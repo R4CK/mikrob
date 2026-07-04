@@ -195,7 +195,13 @@ DIRTY=$(git status --porcelain --untracked-files=no | grep -vE ' HEARTBEAT\.md$'
 if [ -n "$DIRTY" ]; then
   if [ "${AUTO_STASH:-0}" = "1" ]; then
     echo -e "  Lokalis valtozasok stash-elve (auto-stash)..."
-    if ! git stash push --keep-index -m "marveen-update-auto-stash $(date +%Y%m%d-%H%M%S)"; then
+    # NOTE: no --keep-index. --keep-index re-applies staged changes back into
+    # the working tree after stashing, which leaves the tree dirty and makes the
+    # `git pull --ff-only` below fail with "local changes would be overwritten"
+    # -> set -e aborts before the pop, orphaning the stash. Plain `git stash push`
+    # reverts tree AND index to HEAD, so the ff-only pull succeeds and the pop
+    # restores everything after.
+    if ! git stash push -m "marveen-update-auto-stash $(date +%Y%m%d-%H%M%S)"; then
       if [[ "${MARVEEN_LANG:-hu}" == "en" ]]; then
         echo -e "${RED}ERROR:${NC} Auto-stash failed. Check: git status"
       else

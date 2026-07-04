@@ -19,7 +19,13 @@ describe('detectsUsageLimit', () => {
     expect(detectsUsageLimit('5-hour limit reached ∙ resets 3pm')).toBe(true)
     expect(detectsUsageLimit('Approaching usage limit')).toBe(true)
     expect(detectsUsageLimit('Your limit will reset at 18:00')).toBe(true)
-    expect(detectsUsageLimit('/upgrade to increase your usage limit')).toBe(true)
+  })
+
+  it('does NOT match the /upgrade STARTUP HINT shown in fresh idle panes', () => {
+    // Claude Code prints "/upgrade to increase your usage limit." as a slash-
+    // command hint in every fresh session. Treating it as a real limit made the
+    // whole fleet read as limited seconds after boot (2026-06-30 false positive).
+    expect(detectsUsageLimit('/upgrade to increase your usage limit.')).toBe(false)
   })
 
   it('does NOT match a transient API 429 / generic rate limit', () => {

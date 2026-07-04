@@ -69,8 +69,13 @@ const USAGE_LIMIT_BANNER_REGION_LINES = 15
 // / "API Error: 429" (transient overload, handled elsewhere) must NOT match --
 // that is a momentary blip, not a plan-budget exhaustion that warrants a model
 // switch.
+// NOTE (2026-06-30): dropped the "upgrade to increase your usage limit" token.
+// It matched Claude Code's "/upgrade to increase your usage limit." STARTUP HINT
+// shown in every fresh idle pane, so freshly-booted agents read as limited and
+// would be needlessly downgraded. Real limits still match via "usage limit
+// reached" / "limit will reset at" / "N-hour limit reached".
 const USAGE_LIMIT_RX =
-  /(usage limit reached|reached your usage limit|hit (?:your|the) usage limit|approaching (?:your )?usage limit|usage limit (?:will )?reset|limit will reset at|\d+-hour limit reached|upgrade to increase your usage limit)/i
+  /(usage limit reached|reached your usage limit|hit (?:your|the) usage limit|approaching (?:your )?usage limit|usage limit (?:will )?reset|limit will reset at|\d+-hour limit reached)/i
 
 /**
  * True when the live pane shows a Claude *plan usage-limit* banner (not a
