@@ -69,6 +69,23 @@ function mainAgentId() {
   return window._marveen?.agentId || 'marveen'
 }
 
+// Agents currently being run as SUBAGENTS inside MikroB's session (published to
+// store/active-subagents.json, served at /subagent-state.json). Their cards get
+// a blue running-ring instead of green, so it is clear the work runs in MikroB's
+// session, not a separate one. Refreshed on a light interval.
+let activeSubagents = new Set()
+async function refreshSubagents() {
+  try {
+    const r = await fetch('/subagent-state.json', { cache: 'no-store' })
+    if (r.ok) {
+      const arr = await r.json()
+      activeSubagents = new Set(Array.isArray(arr) ? arr.map(String) : [])
+    }
+  } catch { /* keep last known */ }
+}
+refreshSubagents()
+setInterval(refreshSubagents, 5000);
+
 (() => {
   const TOKEN_KEY = 'marveen-dashboard-token'
   const urlParams = new URLSearchParams(window.location.search)
@@ -556,7 +573,7 @@ function renderActivity(entries) {
       ? '<svg class="act-term-icon" width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" title="' + t('activity.tooltip.terminal') + '"><polyline points="4 17 10 11 4 5"/><line x1="12" y1="19" x2="20" y2="19"/></svg>'
       : ''
     return (
-      '<div class="activity-card ' + meta.cls + (canOpen ? ' act-clickable' : '') + '" data-agent="' + escapeHtml(a.name) + '">' +
+      '<div class="activity-card ' + meta.cls + (canOpen ? ' act-clickable' : '') + (a.running ? ' agent-card-running' : '') + (activeSubagents.has(a.name) ? ' agent-card-subagent' : '') + '" data-agent="' + escapeHtml(a.name) + '">' +
         '<div class="activity-card-head">' +
           '<span class="activity-name">' + escapeHtml(a.name) + mainBadge + '</span>' +
           '<span style="display:flex;align-items:center;gap:8px">' +
@@ -1150,8 +1167,18 @@ function createCardEl(card, embeddedChildren = []) {
   // Display the persona displayName (falling back to the id) per #216, while
   // keeping the robust match above and the raw-name fallback chip below.
   const assigneeLabel = assignee ? (assignee.displayName || assignee.name) : ''
+  // Per-agent dot colour: agents all share the type-based green otherwise, which
+  // makes them indistinguishable on the board. Derive a stable colour from the
+  // agent name (owner/bot keep their semantic colour). Requested by Peti.
+  const assigneeColor = (name) => {
+    let h = 0
+    for (let i = 0; i < name.length; i++) h = (h * 31 + name.charCodeAt(i)) >>> 0
+    return `hsl(${h % 360} 60% 45%)`
+  }
+  const agentDotStyle =
+    assignee && assignee.type === 'agent' ? ` style="background:${assigneeColor(assignee.name)}"` : ''
   const assigneeHtml = assignee
-    ? `<span class="kanban-card-assignee"><span class="assignee-dot ${assignee.type}">${escapeHtml(assigneeLabel[0])}</span>${escapeHtml(assigneeLabel)}</span>`
+    ? `<span class="kanban-card-assignee"><span class="assignee-dot ${assignee.type}"${agentDotStyle}>${escapeHtml(assigneeLabel[0])}</span>${escapeHtml(assigneeLabel)}</span>`
     : rawAssignee
       ? `<span class="kanban-card-assignee"><span class="assignee-dot unknown">${escapeHtml(rawAssignee[0])}</span>${escapeHtml(rawAssignee)}</span>`
       : ''
@@ -2504,7 +2531,7 @@ function renderAgents() {
     const mainModelLabel = m.model || 'opus'
     const mainModelClass = m.model || 'opus'
     const mCard = document.createElement('div')
-    mCard.className = 'agent-card marveen-card'
+    mCard.className = 'agent-card marveen-card agent-card-running'
     mCard.innerHTML = `
       <div class="agent-card-top">
         <div class="agent-avatar gradient-1"><img src="/api/marveen/avatar?t=${Date.now()}" alt="${escapeHtml(displayName)}"></div>
@@ -2560,6 +2587,9 @@ function renderAgents() {
     const isRunning = agent.running || false
     const runDotClass = isRunning ? 'running' : 'stopped'
     const runLabel = isRunning ? t('agents.status.running') : t('agents.status.stopped')
+    // Animated border for agents that are actively running (Peti). The class
+    // drives the CSS @keyframes in style.css (.agent-card-running).
+    if (isRunning) card.classList.add('agent-card-running')
 
     card.innerHTML = `
       <div class="agent-card-top">
@@ -8504,6 +8534,9 @@ function renderTeamGraph(container, data) {
     div.className = 'team-node'
     if (node.role === 'main') div.classList.add('main')
     else if (node.role === 'leader') div.classList.add('leader')
+    // Running stripe border on the org-chart nodes too (Csapat page + Overview
+    // team panel both render .team-node). Same shared class.
+    if (node.running) div.classList.add('agent-card-running')
     const roleLabel = node.role === 'main' ? t('team.role.main') : (node.role === 'leader' ? t('team.role.leader') : t('team.role.member'))
     const running = node.running ? t('team.running') : t('team.stopped')
     const avatarUrl = node.id === mainAgentId

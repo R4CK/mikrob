@@ -17,6 +17,28 @@ fi
 CHAT_ID="${ALLOWED_CHAT_ID:-0}"
 CALENDAR_ID="${HEARTBEAT_CALENDAR_ID:-primary}"
 
+# --- Idempotency / sanity guard ------------------------------------------------
+# The systemd timer is Persistent=true and every WSL (re)boot can re-trigger the
+# briefing, so without a guard a few reboots send the "morning" message several
+# times a day (and at odd hours). Two checks, both skippable with --force so the
+# manual /napindito command still works on demand:
+#   1) Once per calendar day -- a dated stamp file in store/.
+#   2) Morning window only (06:00-11:59) for the AUTOMATED path; a 13:00 reboot
+#      should not fire a "morning" briefing.
+if [ "${1:-}" != "--force" ]; then
+  STAMP="$INSTALL_DIR/store/.morning-sent-$(date +%Y%m%d)"
+  if [ -e "$STAMP" ]; then
+    echo "=== Skipped: already sent today $(date) ===" >> "$LOG"
+    exit 0
+  fi
+  HOUR=$(date +%H)
+  if [ "$HOUR" -lt 6 ] || [ "$HOUR" -gt 11 ]; then
+    echo "=== Skipped: outside morning window (${HOUR}h) $(date) ===" >> "$LOG"
+    exit 0
+  fi
+  touch "$STAMP"
+fi
+
 echo "=== Reggeli napindító $(date) ===" >> "$LOG"
 
 cd "$INSTALL_DIR"

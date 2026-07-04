@@ -2,7 +2,7 @@
 // Strategy: network-first for app-shell assets (always fresh when online),
 // cache fallback for offline use. /api/* always bypassed (Bearer-auth safety).
 
-const CACHE_NAME = 'marveen-shell-v1';
+const CACHE_NAME = 'marveen-shell-v7';
 
 self.addEventListener('install', (event) => {
   self.skipWaiting();

@@ -48,6 +48,19 @@ export async function tryHandleStatic(ctx: RouteContext, webDir: string): Promis
   if (path === '/' || path === '/index.html') { serveIndexHtml(ctx, webDir); return true }
   if (path === '/style.css') { serveFile(req, res, join(webDir, 'style.css')); return true }
   if (path === '/app.js') { serveFile(req, res, join(webDir, 'app.js')); return true }
+  // Subagent activity: which agents are currently being run as subagents inside
+  // MikroB's session (published to store/active-subagents.json). The dashboard
+  // colours those cards blue. Always 200 with a JSON array (empty if none).
+  if (path === '/subagent-state.json') {
+    let body = '[]'
+    try {
+      const p = join(webDir, '..', 'store', 'active-subagents.json')
+      if (existsSync(p)) body = readFileSync(p, 'utf-8') || '[]'
+    } catch { /* default empty */ }
+    res.writeHead(200, { 'Content-Type': MIME['.json'] ?? 'application/json', 'Cache-Control': 'no-cache' })
+    res.end(body)
+    return true
+  }
   if (path === '/manifest.json') { serveFile(req, res, join(webDir, 'manifest.json')); return true }
   if (path === '/sw.js') { serveFile(req, res, join(webDir, 'sw.js')); return true }
 

@@ -10,7 +10,7 @@
         "hooks": [
           {
             "type": "agent",
-            "prompt": "A kontextus hamarosan tömörítődik. Három dolgot csinálj:\n\nA Marveen /api/* Bearer tokenes. A token a projekt gyökerében: cat {{PROJECT_ROOT}}/store/.dashboard-token\n\n## 1. Memória mentés\nNézd át az eddigi beszélgetést és mentsd el a fontos dolgokat.\n\nFONTOS: Az agent_id-t a CLAUDE.md-ből derítsd ki (a fájl elején szerepel a neved). Ha nem találod, nézd meg a munkamappa nevét (agents/NEVET).\n\nHasználd a curl parancsokat:\n- Fontos döntések, preferenciák, tanulságok (category=warm):\n  curl -s -X POST http://localhost:3420/api/memories -H 'Content-Type: application/json' -H \"Authorization: Bearer $(cat {{PROJECT_ROOT}}/store/.dashboard-token)\" -d '{\"agent_id\":\"SAJAT_NEVED\",\"content\":\"...\",\"category\":\"warm\",\"keywords\":\"...\"}'\n- Aktív feladatok, pending -> category=hot\n- Hosszútávú tanulság -> category=cold\n- Más agent-nek is -> category=shared\n- Napi napló bejegyzés:\n  curl -s -X POST http://localhost:3420/api/daily-log -H 'Content-Type: application/json' -H \"Authorization: Bearer $(cat {{PROJECT_ROOT}}/store/.dashboard-token)\" -d '{\"agent_id\":\"SAJAT_NEVED\",\"content\":\"...\"}'\n\nCSAK a tényleg fontos, nem nyilvánvaló dolgokat mentsd. Ne mentsd ami a kódból kiderül.\n\n## 2. Skill reflexió (auto-skill generálás)\nNézd át az eddigi munkamenetet és keresd az újrafelhasználható mintákat:\n- Volt 5+ tool hívást igénylő komplex feladat?\n- Volt hiba utáni sikeres recovery?\n- Volt user korrekció amiből tanultál?\n- Volt nem triviális, többlépéses workflow?\n\nHa BÁRMELYIK igaz, generálj SKILL.md fájlt ~/.claude/skills/ mappába:\n\nmkdir -p ~/.claude/skills/SKILL-NEV && cat > ~/.claude/skills/SKILL-NEV/SKILL.md << 'SKILLEOF'\n---\nname: skill-nev\ndescription: Mikor használd, mit csinál (legyél konkrét és \"pushy\" a triggerelésben)\n---\n# Skill neve\n## Mikor használd\n[Konkrét triggerek]\n## Eljárás\n[Számozott lépések]\n## Buktatók\n[Ismert problémák és megoldásaik]\n## Ellenőrzés\n[Hogyan validáld az eredményt]\nSKILLEOF\n\nHa volt korábban hasonló skill, PATCH-eld (csak a megváltozott részt cseréld sed-del vagy a SKILL.md átírásával), ne írd újra az egészet.\n\nHa generáltál vagy patch-eltél skill-t, futtasd az index frissítőt: bash {{PROJECT_ROOT}}/scripts/skill-index.sh\n\nHa nem volt skill-méltó munka, ne csinálj semmit -- ez a rész opcionális.\n\n## 3. Aktív task-state mentés (compact-folytonosság)\nHa ÉPP egy feladaton dolgozol (nem fejezted be), mentsd el strukturáltan, hogy compact után onnan folytasd és NE indítsd újra / NE delegáld újra ami már megvan:\n\ncurl -s -X POST http://localhost:3420/api/agent-taskstate/SAJAT_NEVED -H 'Content-Type: application/json' -H \"Authorization: Bearer $(cat {{PROJECT_ROOT}}/store/.dashboard-token)\" -d '{\"summary\":\"egy mondat mit csinálsz\",\"doneSteps\":[\"már kész lépés\"],\"alreadyDelegated\":[\"mit kinek adtál már át\"],\"nextAction\":\"a következő konkrét lépés\",\"pendingDecision\":\"nyitott döntés vagy blokkoló ha van\"}'\n\nFONTOS: doneSteps = amit MÁR megcsináltál (NE ismételd), alreadyDelegated = amit MÁR átadtál másik agentnek (NE küldd újra), nextAction = a következő konkrét lépés. Ha NINCS aktív feladat (csak beszélgetés/idle), hagyd ki ezt a lépést teljesen -- ilyenkor nem kell rekord.",
+            "prompt": "A kontextus hamarosan t\u00f6m\u00f6r\u00edt\u0151dik. H\u00e1rom dolgot csin\u00e1lj:\n\nA Marveen /api/* Bearer tokenes. A token a projekt gy\u00f6ker\u00e9ben: cat {{PROJECT_ROOT}}/store/.dashboard-token\n\n## 1. Mem\u00f3ria ment\u00e9s\nN\u00e9zd \u00e1t az eddigi besz\u00e9lget\u00e9st \u00e9s mentsd el a fontos dolgokat.\n\nFONTOS: Az agent_id-t a CLAUDE.md-b\u0151l der\u00edtsd ki (a f\u00e1jl elej\u00e9n szerepel a neved). Ha nem tal\u00e1lod, n\u00e9zd meg a munkamappa nev\u00e9t (agents/NEVET).\n\nHaszn\u00e1ld a curl parancsokat:\n- Fontos d\u00f6nt\u00e9sek, preferenci\u00e1k, tanuls\u00e1gok (category=warm):\n  curl -s -X POST http://localhost:3420/api/memories -H 'Content-Type: application/json' -H \"Authorization: Bearer $(cat {{PROJECT_ROOT}}/store/.dashboard-token)\" -d '{\"agent_id\":\"SAJAT_NEVED\",\"content\":\"...\",\"category\":\"warm\",\"keywords\":\"...\"}'\n- Akt\u00edv feladatok, pending -> category=hot\n- Hossz\u00fat\u00e1v\u00fa tanuls\u00e1g -> category=cold\n- M\u00e1s agent-nek is -> category=shared\n- Napi napl\u00f3 bejegyz\u00e9s:\n  curl -s -X POST http://localhost:3420/api/daily-log -H 'Content-Type: application/json' -H \"Authorization: Bearer $(cat {{PROJECT_ROOT}}/store/.dashboard-token)\" -d '{\"agent_id\":\"SAJAT_NEVED\",\"content\":\"...\"}'\n\nCSAK a t\u00e9nyleg fontos, nem nyilv\u00e1nval\u00f3 dolgokat mentsd. Ne mentsd ami a k\u00f3db\u00f3l kider\u00fcl.\n\n## 2. Skill reflexi\u00f3 (auto-skill gener\u00e1l\u00e1s)\nN\u00e9zd \u00e1t az eddigi munkamenetet \u00e9s keresd az \u00fajrafelhaszn\u00e1lhat\u00f3 mint\u00e1kat:\n- Volt 5+ tool h\u00edv\u00e1st ig\u00e9nyl\u0151 komplex feladat?\n- Volt hiba ut\u00e1ni sikeres recovery?\n- Volt user korrekci\u00f3 amib\u0151l tanult\u00e1l?\n- Volt nem trivi\u00e1lis, t\u00f6bbl\u00e9p\u00e9ses workflow?\n\nHa B\u00c1RMELYIK igaz, gener\u00e1lj SKILL.md f\u00e1jlt ~/.claude/skills/ mapp\u00e1ba:\n\nmkdir -p ~/.claude/skills/SKILL-NEV && cat > ~/.claude/skills/SKILL-NEV/SKILL.md << 'SKILLEOF'\n---\nname: skill-nev\ndescription: Mikor haszn\u00e1ld, mit csin\u00e1l (legy\u00e9l konkr\u00e9t \u00e9s \"pushy\" a triggerel\u00e9sben)\n---\n# Skill neve\n## Mikor haszn\u00e1ld\n[Konkr\u00e9t triggerek]\n## Elj\u00e1r\u00e1s\n[Sz\u00e1mozott l\u00e9p\u00e9sek]\n## Buktat\u00f3k\n[Ismert probl\u00e9m\u00e1k \u00e9s megold\u00e1saik]\n## Ellen\u0151rz\u00e9s\n[Hogyan valid\u00e1ld az eredm\u00e9nyt]\nSKILLEOF\n\nHa volt kor\u00e1bban hasonl\u00f3 skill, PATCH-eld (csak a megv\u00e1ltozott r\u00e9szt cser\u00e9ld sed-del vagy a SKILL.md \u00e1t\u00edr\u00e1s\u00e1val), ne \u00edrd \u00fajra az eg\u00e9szet.\n\nHa gener\u00e1lt\u00e1l vagy patch-elt\u00e9l skill-t, futtasd az index friss\u00edt\u0151t: bash {{PROJECT_ROOT}}/scripts/skill-index.sh\n\nHa nem volt skill-m\u00e9lt\u00f3 munka, ne csin\u00e1lj semmit -- ez a r\u00e9sz opcion\u00e1lis.\n\n## 3. Akt\u00edv task-state ment\u00e9s (compact-folytonoss\u00e1g)\nHa \u00c9PP egy feladaton dolgozol (nem fejezted be), mentsd el struktur\u00e1ltan, hogy compact ut\u00e1n onnan folytasd \u00e9s NE ind\u00edtsd \u00fajra / NE deleg\u00e1ld \u00fajra ami m\u00e1r megvan:\n\ncurl -s -X POST http://localhost:3420/api/agent-taskstate/SAJAT_NEVED -H 'Content-Type: application/json' -H \"Authorization: Bearer $(cat {{PROJECT_ROOT}}/store/.dashboard-token)\" -d '{\"summary\":\"egy mondat mit csin\u00e1lsz\",\"doneSteps\":[\"m\u00e1r k\u00e9sz l\u00e9p\u00e9s\"],\"alreadyDelegated\":[\"mit kinek adt\u00e1l m\u00e1r \u00e1t\"],\"nextAction\":\"a k\u00f6vetkez\u0151 konkr\u00e9t l\u00e9p\u00e9s\",\"pendingDecision\":\"nyitott d\u00f6nt\u00e9s vagy blokkol\u00f3 ha van\"}'\n\nFONTOS: doneSteps = amit M\u00c1R megcsin\u00e1lt\u00e1l (NE ism\u00e9teld), alreadyDelegated = amit M\u00c1R \u00e1tadt\u00e1l m\u00e1sik agentnek (NE k\u00fcldd \u00fajra), nextAction = a k\u00f6vetkez\u0151 konkr\u00e9t l\u00e9p\u00e9s. Ha NINCS akt\u00edv feladat (csak besz\u00e9lget\u00e9s/idle), hagyd ki ezt a l\u00e9p\u00e9st teljesen -- ilyenkor nem kell rekord.",
             "timeout": 180
           }
         ]
@@ -40,6 +40,38 @@
             "type": "command",
             "command": "python3 {{PROJECT_ROOT}}/scripts/hooks/voice-reply-directive.py",
             "timeout": 60
+          }
+        ]
+      }
+    ],
+    "PreToolUse": [
+      {
+        "matcher": "Write|Edit|MultiEdit",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "python3 \"/home/neon/marveen/scripts/hooks/secret-write-guard.py\"",
+            "timeout": 10
+          }
+        ]
+      },
+      {
+        "matcher": "Bash",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "python3 \"/home/neon/marveen/scripts/hooks/git-protect-guard.py\"",
+            "timeout": 10
+          }
+        ]
+      },
+      {
+        "matcher": "Write",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "python3 \"/home/neon/marveen/scripts/hooks/big-file-guard.py\"",
+            "timeout": 10
           }
         ]
       }
