@@ -6,6 +6,12 @@ dist/
 __pycache__/
 *.pyc
 
+# Runtime self-modified file: the agent rewrites HEARTBEAT.md every heartbeat
+# tick, so it is a runtime artifact, not source. Phase 1 (this line) makes new
+# clones ignore it; phase 2 (`git rm --cached HEARTBEAT.md`, once the update.sh
+# pre-pull reset-guard is deployed fleet-wide) drops it from tracking for good.
+HEARTBEAT.md
+
 # Secrets & personal data
 .env
 store/

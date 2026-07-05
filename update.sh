@@ -201,7 +201,13 @@ if [ -n "$DIRTY" ]; then
     # -> set -e aborts before the pop, orphaning the stash. Plain `git stash push`
     # reverts tree AND index to HEAD, so the ff-only pull succeeds and the pop
     # restores everything after.
-    if ! git stash push -m "marveen-update-auto-stash $(date +%Y%m%d-%H%M%S)"; then
+    #
+    # -u (include untracked): an untracked local file that collides with an
+    # incoming tracked path aborts `git pull` ("untracked working tree files
+    # would be overwritten"). Stashing untracked files too moves them out of
+    # the way for the pull and restores them on pop. Gitignored files (store/,
+    # dist/, .env) are NOT touched by -u (that needs -a), so runtime data is safe.
+    if ! git stash push -u -m "marveen-update-auto-stash $(date +%Y%m%d-%H%M%S)"; then
       if [[ "${MARVEEN_LANG:-hu}" == "en" ]]; then
         echo -e "${RED}ERROR:${NC} Auto-stash failed. Check: git status"
       else
@@ -224,15 +230,57 @@ fi
 
 # Save current version
 OLD_VERSION=$(git rev-parse --short HEAD 2>/dev/null || echo "unknown")
+# Full pre-pull SHA -- the rollback target recovery-prev-version.sh restores to.
+OLD_VERSION_FULL=$(git rev-parse HEAD 2>/dev/null || echo "unknown")
+
+# HEARTBEAT.md migration/safety: the file is tracked but self-modified every
+# heartbeat tick, so it is chronically dirty. The dirty guard above skips it,
+# but a `git pull --ff-only` still ABORTS if an incoming commit touches it while
+# the worktree copy is modified (e.g. the commit that untracks/gitignores it).
+# Reset it to HEAD before pulling so it can never block the pull. The next
+# heartbeat regenerates it, so nothing durable is lost. Guarded by ls-files so
+# it is a no-op once the file is finally untracked.
+if git ls-files --error-unmatch HEARTBEAT.md >/dev/null 2>&1; then
+  git checkout -- HEARTBEAT.md 2>/dev/null || true
+fi
 
 # Pull latest from the current branch's origin counterpart.
+# Wrapped so an ff-only failure gives a readable diagnosis (the script runs
+# detached with stdio:'ignore', so a bare set -e abort would be invisible) AND
+# so an active auto-stash is restored instead of orphaned on a failed pull.
 echo -e "  Letoltes (origin/${CURRENT_BRANCH})..."
-git pull --ff-only origin "$CURRENT_BRANCH"
+if ! git pull --ff-only origin "$CURRENT_BRANCH"; then
+  echo -e "${RED}HIBA:${NC} A 'git pull --ff-only origin ${CURRENT_BRANCH}' sikertelen."
+  AHEAD=$(git rev-list --count "origin/${CURRENT_BRANCH}..HEAD" 2>/dev/null || echo 0)
+  if [ "${AHEAD:-0}" -gt 0 ]; then
+    echo -e "       ${AHEAD} helyi commit van ami NINCS az origin/${CURRENT_BRANCH}-en, ezert nem lehet"
+    echo -e "       fast-forwardolni. Pushold ki, vagy tedd oket kulon branchre:"
+    echo -e "         git push origin ${CURRENT_BRANCH}    # vagy: git branch mentes-$(date +%Y%m%d); git reset --hard origin/${CURRENT_BRANCH}"
+  else
+    echo -e "       Ellenorizd kezzel: git fetch && git status"
+  fi
+  # Restore the auto-stash so the operator's local changes are not left behind.
+  if [ "$STASHED_AUTO" = "1" ]; then
+    echo -e "  Auto-stash visszaallitasa (a pull megszakadt)..."
+    git stash pop || echo -e "${ORANGE}FIGYELEM:${NC} a stash benne maradt a 'git stash list'-ben."
+  fi
+  exit 5
+fi
 NEW_VERSION=$(git rev-parse --short HEAD 2>/dev/null || echo "unknown")
 # Full SHA for the build-marker (dist/.built-commit). HEAD does not change
 # again in this script (no checkout), so this is the commit any build below
 # produces and the value we compare the marker against.
 NEW_VERSION_FULL=$(git rev-parse HEAD 2>/dev/null || echo "unknown")
+
+# Record a rollback point for recovery-prev-version.sh: the version we were on
+# BEFORE this pull (FROM) and the version we moved to (TO). store/ is gitignored,
+# so this line never blocks a future ff-only pull. Append-only, best-effort.
+if [ "$OLD_VERSION_FULL" != "$NEW_VERSION_FULL" ]; then
+  printf '%s\tupdate\t%s\t%s\t%s\t%s\n' \
+    "$(date '+%Y-%m-%dT%H:%M:%S%z')" "$CURRENT_BRANCH" \
+    "$OLD_VERSION_FULL" "$NEW_VERSION_FULL" "auto" \
+    >>"$INSTALL_DIR/store/.update-history" 2>/dev/null || true
+fi
 BUILT_COMMIT_FILE="$INSTALL_DIR/dist/.built-commit"
 
 if [ "$OLD_VERSION" = "$NEW_VERSION" ]; then
