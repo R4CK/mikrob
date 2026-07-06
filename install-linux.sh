@@ -908,15 +908,31 @@ if [ -d "$SEED_SKILLS_DIR" ]; then
       SEED_SKIP=$((SEED_SKIP + 1))
       continue
     fi
-    mkdir -p "$target"
-    for f in "$skill_dir"*; do
-      [ -f "$f" ] || continue
-      cp "$f" "$target/$(basename "$f")"
-    done
+    # Recursive copy so nested references/, scripts/, assets/, data/ ship too.
+    cp -r "${skill_dir%/}" "$SKILLS_DIR/"
     SEED_NEW=$((SEED_NEW + 1))
   done
   if [ "$SEED_NEW" -gt 0 ] || [ "$SEED_SKIP" -gt 0 ]; then
     ok "Seed skills: ${SEED_NEW} uj, ${SEED_SKIP} kihagyva (mar letezik)"
+  fi
+fi
+
+# Seed subagents: engineering/business/security agent defs from seed-agents/ into ~/.claude/agents/
+# Idempotent: skip agents that already exist (never overwrite user customizations)
+AGENTS_DIR="$HOME/.claude/agents"
+SEED_AGENTS_DIR="$INSTALL_DIR/seed-agents"
+if [ -d "$SEED_AGENTS_DIR" ]; then
+  mkdir -p "$AGENTS_DIR"
+  A_NEW=0; A_SKIP=0
+  for agent_md in "$SEED_AGENTS_DIR"/*.md; do
+    [ -f "$agent_md" ] || continue
+    target="$AGENTS_DIR/$(basename "$agent_md")"
+    if [ -f "$target" ]; then A_SKIP=$((A_SKIP + 1)); continue; fi
+    cp "$agent_md" "$target"
+    A_NEW=$((A_NEW + 1))
+  done
+  if [ "$A_NEW" -gt 0 ] || [ "$A_SKIP" -gt 0 ]; then
+    ok "Seed subagents: ${A_NEW} uj, ${A_SKIP} kihagyva (mar letezik)"
   fi
 fi
 
