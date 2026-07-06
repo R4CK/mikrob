@@ -1,0 +1,6 @@
+{
+  "model": "claude-opus-4-8[1m]",
+  "displayName": "Fullstack",
+  "securityProfile": "developer-senior",
+  "authMode": "shared"
+}

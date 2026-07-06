@@ -87,3 +87,11 @@ scripts/support-mail/no-support-reply.html
 # Python bytecode cache
 __pycache__/
 *.pyc
+
+# Seed fleet-agent scaffolds ARE version-controlled (reproduce the fleet on a
+# fresh install). Override the global CLAUDE.md/SOUL.md/.claude ignores here.
+# Runtime data (memory/, settings.local.json) is NOT copied into the seed.
+!seed-fleet-agents/**/CLAUDE.md
+!seed-fleet-agents/**/SOUL.md
+!seed-fleet-agents/**/.claude/
+!seed-fleet-agents/**/.claude/settings.json

@@ -612,6 +612,27 @@ if [ -d "$SEED_AGENTS_DIR" ]; then
   fi
 fi
 
+# Seed fleet role-agents: dashboard role-agent scaffolds from seed-fleet-agents/
+# into agents/ so a fresh install has the full fleet (backend, qa, cybersec, ...).
+# The app discovers agents from agents/*/agent-config.json. Idempotent: skip
+# agents that already exist. Runtime memory/ is NOT part of the seed.
+SEED_FLEET_DIR="$INSTALL_DIR/seed-fleet-agents"
+FLEET_DIR="$INSTALL_DIR/agents"
+if [ -d "$SEED_FLEET_DIR" ]; then
+  mkdir -p "$FLEET_DIR"
+  F_NEW=0; F_SKIP=0
+  for fa_dir in "$SEED_FLEET_DIR"/*/; do
+    [ -d "$fa_dir" ] || continue
+    fa_name=$(basename "$fa_dir")
+    if [ -d "$FLEET_DIR/$fa_name" ]; then F_SKIP=$((F_SKIP + 1)); continue; fi
+    cp -r "${fa_dir%/}" "$FLEET_DIR/"
+    F_NEW=$((F_NEW + 1))
+  done
+  if [ "$F_NEW" -gt 0 ] || [ "$F_SKIP" -gt 0 ]; then
+    echo -e "  ${GREEN}✓${NC} Seed fleet-agents: ${F_NEW} new, ${F_SKIP} skipped"
+  fi
+fi
+
 # Seed scheduled tasks: from seed-scheduled-tasks/ into ~/.claude/scheduled-tasks/
 # Idempotent: skip directories that already exist. Templates use {{MAIN_AGENT_ID}},
 # {{BOT_NAME}}, {{OWNER_NAME}}, {{INSTALL_DIR}} placeholders.
