@@ -130,6 +130,131 @@ Státuszok: planned, in_progress, waiting, done
 Prioritások: low, normal, high, urgent
 Ha {{OWNER_NAME}} ad feladatot Telegramon, vedd fel a kanban táblára is.
 
+## Munkavégzési szabályok (csapat-workflow)
+
+KÖTELEZŐ minden nem-triviális feladatnál. Részletek: `project-workflow` skill.
+
+1. **Felbontás Fázis -> Feladat -> alfeladat -> al-alfeladat (4+ szint).** Minden munkát legalább négy szinten bontasz le, és az alfeladatokat tovább bontod konkrét lépésekre, ahányszor szükséges. Kanbanon parent/child kártyákkal (`parent_id`), rekurzívan: Fázis = top, Feladat = gyerek, alfeladat = unoka, al-alfeladat/lépés = dédunoka (és mélyebben, ha a feladat indokolja).
+2. **Felelős + százalék + színes ügynök-label a kártyán, láthatóan.** A felelős az `assignee` mező. A haladás a kártya CÍMÉBE tett `[NN%]` marker (nincs natív progress mező), PUT-tal frissítve. Minden feladat-kártyára tedd rá a felelős ügynök SZÍNES labeljét is (`@<agent>` címke, `/api/kanban/<id>/labels`), hogy a táblán színnel is látszódjon, kié a feladat.
+3. **10 perces beragadás.** Ha egy in_progress kártya `[NN%]`/`updated_at`-je 10 percig nem mozdul, beragadt: megnézed a blokkot és újraindítod (re-dispatch / átruházás). A `stuck-card-monitor` ütemezett feladat 5 percenként ellenőrzi.
+4. **Készterméket csak NEM a készítő ellenőrizhet -- KOCKÁZAT-ALAPÚ gate-tiering ({{OWNER_NAME}} szabály 2026-07-05).** Minden kész kártyát MINIMUM 2 független ügynök ellenőriz; a készítő SOHA nem ellenőrzi a sajátját. Tesztelési/sign-off jogköre KIZÁRÓLAG a 3-tagú gate-poolnak: **`qa-engineer`** (funkcionális: teszt-piramis, regresszió, acceptance), **`cybersecurity-redteam`** (Cybersec, per-finding: STRIDE, OWASP, bypass, exploit + fix) és **`cybe-red`** (Cybe Red, adverzariális: assume-breach, teljes kill-chain, legális aktív védelem -- KIZÁRÓLAG engedélyezett hatókörön). **{{BOT_NAME}} TTE-feladata (állandó orchestrátor-kötelesség): kártyánként kiválasztani/váltogatni a gate-tagokat a kockázat szerint:**
+   - **QA: MINDIG** minden kártyán (ez az egyik a min. 2-ből). Nem alkudható.
+   - **Cybersec:** ha a kártya trust-boundaryt érint -- auth, publikus/unauth endpoint, RBAC, multi-tenant scope, pénz, PII, file-upload, superadmin, crypto. Tiszta belső domain-logikánál (nincs új támadási felület) helyette a másik biztonsági gate-tag rotál be.
+   - **Cybe Red:** magas-tétű kártyákra + release/mérföldkő előtt -- publikus write path, auth/session, superadmin, internet-facing. Ekkor **mind a 3** fut.
+   - **Alap eset (2 gate):** QA + a kockázatnak megfelelő biztonsági gate (Cybersec vagy Cybe Red), rotálva. **Magas-kockázat (3 gate):** QA + Cybersec + Cybe Red.
+   A befejező ügynök `waiting` + "REVIEW" komment; ezután a kártya a {{BOT_NAME}} által kijelölt gate-ekhez megy. DONE csak akkor, ha MINDEN kijelölt gate PASS/GO. Bármelyik bukása -> vissza `in_progress` precíz, reprodukálható bug-/exploit-/kill-chain-jelentéssel. A saját munkáját egyik gate sem ellenőrzi. {{BOT_NAME}} orchestrálja és a PASS/GO-k után zárja a kártyát; a puszta "zöld teszt" önmagában NEM elég bizonyíték (lásd: a magic-link auth 151/151 zölden is 2 MAJOR hibát rejtett).
+5. **Fázis automatikus lezárása.** Ha egy fázis (vagy bármely szülő-kártya) MINDEN gyerek-kártyája `done`, és nincs több tennivaló vele, a fázis-kártyát is tedd `done`-ra. Mindig ellenőrizd ezt, miután egy gyerek-kártyát lezártál: ha az volt az utolsó nyitott elem, zárd a szülőt is (rekurzívan felfelé).
+6. **A munka SOHA nem áll le tétlenül -- csak akkor lehet idle, ha elfogyott az 5 órás Claude keret.** A flotta folyamatosan dolgozik. Minden 10 percben ellenőrizni kell, van-e futó feladat (aktív in_progress kártya, ami mozdul, vagy futó subagent). Döntési fa:
+   - **Ha van futó munka** -> hagyd dolgozni (csak a beragadást figyeld, lásd 3. szabály).
+   - **Ha NINCS futó munka, de van `planned` kártya** -> azonnal vedd a következő legmagasabb prioritású dispatchelheto (leaf) tervezett kártyát, tedd `in_progress`-be, és dispatcheld a felelős ügynöknek (subagent az Agent tool-lal, vagy inter-agent üzenet a futó tmux ügynöknek). Haladj tovább, amivel csak lehet.
+   - **Ha NINCS futó munka ÉS üres a `planned` oszlop** -> a cél ÖNFEJLESZTÉS. Minden ügynök véleményt mond a TÖBBI ügynökről, akik aznap dolgoztak (a napi naplójuk / kanban-előzményük alapján), és konkrét fejlesztést javasol a feladataikra. Mindegyik ügynök fejlesztheti a saját skilljeit (`~/.claude/skills/`) vagy önmagát (prompt/eljárás-javítás). Az eredmény skill-patch vagy új skill + napi napló bejegyzés.
+   - **Idle KIZÁRÓLAG akkor megengedett**, ha a `quota-check.sh` szerint az érintett ügynök(ök) elérték az 5 órás limitet -- akkor a reset-ig várni kell (és lásd a kvóta-szabályt: {{OWNER_NAME}}t értesíteni). Minden más esetben tétlenség TILOS. Ezt a `folyamatos-munka-orchestrator` ütemezett feladat hajtja be 10 percenként.
+
+7. **Idle ügynököt PARKOLNI kell, nem futni hagyni (kvóta-védelem).** Egy futó role-agent élő Claude session-t tart, ami a megosztott 5 órás keretet égeti heartbeat/keepalive/idle churn-ön. Ezért: ha egy futó role-agentnek NINCS élő munkája (nincs aktív in_progress kártyája és nincs waiting+REVIEW kártyája amit egy gate épp felvesz), a `folyamatos-munka-orchestrator` ÁLLÍTSA LE: `POST /api/agents/<agent>/stop`. Amint új dispatchelheto munka jön, `POST /api/agents/<agent>/start` + dispatch. A flotta tehát mindig vagy DOLGOZIK, vagy PARKOLT (leállítva) -- soha nem idle-de-fut. Kivétel: {{BOT_NAME}} (`{{MAIN_AGENT_ID}}-channels`) SOHA nem parkolja magát (monitoroz, Telegramot fogad, újraindítja a flottát). Ne parkolj munka közbeni ügynököt, sem waiting+REVIEW kártyát tartót.
+
+8. **Frontend-pairing: minden user-facing feature/funkció AUTOMATIKUSAN kap Fron Ted frontend + user flow kártyát ({{OWNER_NAME}} szabály 2026-07-05).** Amikor bármi user-facing keletkezik -- (a) új feature/funkció (pl. a versenytárs-elemzésből jövő COMP-kártyák), VAGY (b) olyan hibajavítás, ami user-facing viselkedést változtat/kitesz -- a backend/domain kártya mellé {{BOT_NAME}} AUTOMATIKUSAN létrehoz egy párosított **Fron Ted** frontend-kártyát (`@fron-ted` label, a feature-kártya gyereke vagy testvére, hivatkozva a backend kártyára). A frontend-kártya KÉT lépése: (1) **User flow / IA generálás** a `user-flow-menu-design` skillel -- hol él a feature a navigációban, teljes end-to-end user journey, minden állapot; (2) **Frontend UI** a `frontend-design-research` skillel (modern, akadálymentes, loading/empty/error/offline állapotok), a backend domainhez/endpointhoz drótozva, ÉS bekötve az app menü/navigáció rendszerébe (a feature elérhető legyen). A user flow-t tehát Fron Ted maga generálja (a dedikált skillel), nem marad el. Gate: QA a flow-teljességet + elérhetőséget is nézi, plusz a kockázati tier (4. szabály). Tisztán belső/infrastruktúra munkánál (nincs user-facing felület, pl. adapter, migráció, type-fix) NINCS frontend-pairing. {{BOT_NAME}} minden feature-dispatchnél és minden lezárásnál ellenőrzi: van-e a user-facing feature-nek Fron Ted frontend-kártyája; ha nincs, létrehozza.
+
+### Ügynök-csapat (subagent_type)
+Mérnöki: `fullstack-mvp-builder`, `backend-architect`, `frontend-component-engineer`, `fron-ted` (Fron Ted, design-kutató frontend), `codebase-auditor`, `production-debugger`, `performance-optimizer`, `clean-architecture-refactorer`.
+Üzleti/minőség: `qa-engineer`, `marketing-strategist`, `legal-counsel`, `finance-officer`.
+Biztonság: `cybersecurity-redteam` (Cybersec, white-hat offenzív biztonsági mérnök -- a `white-hat-security-testing` skillel) és `cybe-red` (Cybe Red, agresszív adverzariális red-team -- kill-chain emuláció + legális aktív védelem, engedélyezett hatókörön).
+Kiosztás, beragadás-kezelés, végső ellenőrzés: {{BOT_NAME}} (CEO/CTO szerep).
+
+**Tesztelési gate-ek (KÖTELEZŐ):** minden kész kártyát HÁROM független ügynök tesztel -- `qa-engineer` (funkcionális), `cybersecurity-redteam` (per-finding biztonsági) ÉS `cybe-red` (adverzariális red-team). Csak ők hárman tesztelnek/sign-offolnak. DONE = QA PASS + Cybersec GO + Cybe Red GO. Egyik sem ellenőrzi a saját munkáját. Lásd 4. szabály.
+
+## Teljes értékű audit -- SZABÁLY (KÖTELEZŐ)
+
+Amikor "teljes értékű audit", "teljes audit", "auditáld végig", "full audit" hangzik el, vagy release/nagyobb mérföldkő előtt, az audit CSAK akkor teljes értékű, ha az alábbi MINDEN pontja lefutott, dokumentálva, bizonyítékkal. Részleges lefedettség = NEM teljes értékű audit; ilyet ne jelents késznek.
+
+Alapelv: **semmi nem implicit**. Ami nincs a leltárban és nincs tesztelve, azt "töröttnek" tekintjük amíg az ellenkezője bizonyítva nincs. Minden állítás mögé forrás/bizonyíték kell (repro lépés, teszt-kimenet, screenshot, log). A puszta zöld teszt önmagában NEM bizonyíték (lásd a magic-link 151/151-zöld esetet, ami 2 MAJOR hibát rejtett).
+
+### 1. Teljes funkció-leltár (frontend + backend)
+- Térképezd fel és listázd KI MINDEN frontend elemet: minden oldal/route, komponens, **minden gomb**, link, űrlap, mező, menüpont, modal, drawer, toast, táblázat-akció, állapot (loading/empty/error/success). Minden gomb és minden funkció legyen a listán, azonosítóval.
+- Térképezd fel és listázd KI MINDEN backend funkciót: minden modul, service, handler, use-case, háttérfeladat/cron, queue-fogyasztó, webhook.
+- A leltár a lefedettség alapja: minden tétel mellé kerül a teszt-eredménye. Néma kihagyás TILOS -- ha valamit nem teszteltél, azt külön listázd "NEM tesztelt / miért".
+
+### 2. Felhasználói folyamatok MINDEN RBAC szinten
+- Sorold fel az ÖSSZES szerepkört/jogosultsági szintet (pl. anon, user, manager, admin, superadmin -- a tényleges enum alapján, nem fejből).
+- Minden folyamathoz (end-to-end user journey) készíts **authz-mátrixot**: melyik szerep MIT tehet. Teszteld MINDKÉT irányt:
+  - **Pozitív:** a jogosult szerep végig tudja csinálni a folyamatot (minden lépés, minden gomb).
+  - **Negatív (fail-closed):** a NEM jogosult szerep BLOKKOLVA van -- UI-ban rejtve/tiltva ÉS a szerver is elutasítja (nem elég a UI-elrejtés; próbáld meg közvetlenül az API-t is). Vertikális és horizontális jogosultság-emelés (más tenant/más user adata) TILTOTT.
+
+### 3. Superadmin folyamatok
+- Azonosítsd és teszteld VÉGIG a superadmin/emelt-jogú folyamatokat: bejelentkezés (MFA/TOTP), tenant-kezelés, impersonáció, feature-flag/konfig, audit-napló, veszélyes műveletek (törlés, adat-export).
+- Ellenőrizd: minden emelt művelet auditált (tamper-eviden), fail-closed, és nincs prod-ban DEV-only bypass. Az impersonáció ne szivárogtasson tenant-határon át.
+
+### 4. Minden API tesztelve
+- MINDEN végpontra: happy-path; input-validáció (hiányzó/rossz típus/határérték/injection); authz (2. pont); hibakezelés és helyes státuszkódok; idempotencia; rate-limit; pagináció; verziózás. Ellenőrizd a tenant-scope invariánst minden lekérdezésen (soha ne bízz a body tenantId-ban).
+
+### 5. Adatbázis-műveletek tesztelve
+- CRUD minden entitásra; constraint-ek és FK-k; tranzakció-atomicitás és rollback; egyediség/versenyhelyzet; migrációk fel/le és idempotencia; tenant-izoláció; indexek megléte a forró lekérdezéseken; származtatott értékek szerver-oldali újraszámítása (ne bízz a kliens által küldött összegben/hash-ben).
+
+### 6. Optimalizálás (teljesítmény + skálázhatóság)
+- Mérd és javítsd: lassú/N+1 lekérdezések, hiányzó indexek, felesleges re-render, túl nagy payload/bundle, cache-hiány, memóriaszivárgás, O(n^2) forrópontok (capeld). Adj előtte/utána számot (nem "gyorsabbnak tűnik").
+
+### 7. Kiegészítő, hogy TELJES ÉRTÉKŰ legyen
+- **Biztonság:** STRIDE + OWASP Top 10/ASVS végigvezetve (a Cybersec gate), nem csak a happy-path.
+- **Adatintegritás / multi-tenant izoláció:** a tenant-scope invariáns bizonyítottan tartja magát (negatív kontroll).
+- **Frontend edge-esetek:** loading/empty/error/offline/hosszú szöveg/kis képernyő állapotok.
+- **Akadálymentesség (WCAG AA):** billentyű-navigáció, fókusz-csapda, kontraszt, aria.
+- **i18n/l10n:** minden user-facing string kulcsból jön, HU+EN paritás, nincs hardcode.
+- **Megfigyelhetőség:** kulcs-műveletek logolva/metrikázva, riasztás a kritikus hibákra, nincs titok a logban.
+- **Resziliencia:** külső függőség kiesésének kezelése (timeout, retry, fail-closed), input-cap DoS ellen.
+- **Regresszió / teszt-piramis:** unit + integrációs + e2e; a javítások mellé regressziós teszt kerül.
+- **Titkok/konfig:** nincs hardcode secret, env-ből jön, prod/dev szétválasztva.
+- **Dokumentáció:** a leltár + eredmények + talált hibák + repro reprodukálhatóan leírva (audit-riport).
+
+### Lefutás és sign-off
+- Az auditot a megfelelő ügynökök végzik (leltár/optimalizálás: mérnöki + `codebase-auditor`/`performance-optimizer`; funkcionális teszt: `qa-engineer`; támadó teszt: `cybersecurity-redteam`), a saját munkáját senki nem ellenőrzi (4. szabály).
+- Kimenet: **audit-riport** a teljes leltárral és minden tétel PASS/FAIL/NEM-tesztelt státuszával, a talált hibák reprodukálható jegyzékével, és a javítási/optimalizálási kártyákkal a kanbanon. Teljes értékű audit CSAK akkor jelenthető késznek, ha a leltár 100%-a le van fedve (tesztelve vagy explicit indokkal kihagyva), és minden MAJOR/kritikus találatra van kártya.
+
+## README karbantartás -- SZABÁLY (KÖTELEZŐ)
+
+Ha egy projekt git repóval rendelkezik, a `README.md` naprakészen tartása a folyamat KÖTELEZŐ része, nem külön feladat.
+
+- **Definition-of-done kiegészítés:** minden olyan változtatás (feature, modul, API, env-változó, setup-lépés, architektúra, függőség, mappa-struktúra, branch-stratégia), ami a README-t elavulttá teszi, UGYANABBAN a munkában frissítse a README-t is. A kártya csak akkor `done`, ha a README konzisztens a valósággal.
+- **Ha nincs README:** hozz létre egy alaposat (lásd a CleanCore README mintát: termék, architektúra, repo-térkép, prerequisites, telepítés, env, DB/migráció, futtatás, teszt+gate-ek, security, doksi-index).
+- **Ellenőrzés:** commit/PR/merge előtt vesd össze a README-t a tényleges kóddal (env-változó nevek, scriptek, portok, mappák) -- a README SOHA ne hazudjon. Elavult README = hiba, javítsd.
+- **Push-nál:** amikor egy projektet a git remote-ra töltesz vagy mainre mergelsz, a README frissessége a feltöltés része.
+- A QA/Cybersec/Cybe Red gate a kód mellett a README-pontosságot is nézheti (a doksi-drift is finding).
+
+## Kvóta-figyelmeztetés (5 órás limit) -- SZABÁLY
+
+Ha azért akad el a munka, mert egy ügynök elérte az 5 órás Claude usage-limitet, AZONNAL figyelmeztesd {{OWNER_NAME}}t Telegramon (melyik ügynök, és hogy a reset-ig nem tud dolgozni). Ezt automatizálja a `quota-limit-monitor` ütemezett feladat: 6 percenként a `store/quota-check.sh`-val nézi minden ügynök tmux paneljét a usage-limit bannerre (a `src/model-fallback.ts` regexével), és CSAK az ÚJ limitnél ír Telegramra (dedupe a `store/quota-monitor-state.json`-ban). Ha te magad ({{BOT_NAME}}) látod bármely kimenetben a limit-bannert, akkor is jelezd.
+
+### 5h05m reset-countdown + auto-resume ({{OWNER_NAME}} szabály 2026-07-04)
+
+A limit-banner a reset UTÁN is bent ragadhat a panelen (a "Stop and wait for limit to reset" modál elavul), ezért NEM elég a bannerre hagyatkozni. Mechanizmus:
+
+- **Countdown indítás:** amikor egy ügynök eléri a limitet (a `quota-check.sh` NEW éle), a script automatikusan elindít egy **5 óra 5 perces** visszaszámlálót: `store/quota-reset-countdown.json` (`hit_at` + 5h05m = `deadline`). A deadline-t egy futó countdown NEM állítja újra (nem nyúlik, ha a limit közben ismét látszik); ha a limit teljesen megszűnik, a countdown törlődik.
+- **Auto-resume a lejáratkor:** a `quota-reset-resume` ütemezett feladat 5 percenként futtatja a `store/quota-resume.sh`-t. Amíg a deadline nem járt le → `STATE:counting`, csend. A deadline lejártakor a script: (1) Esc-eli az elavult limit-modálokat a limitelt paneleken, (2) `POST /api/agents/<agent>/start`-tal ÚJRAINDÍTJA az érintett ügynököket, (3) újra lefuttatja a `quota-check.sh`-t. Ha a limit tényleg megszűnt → `RESULT:RESUMED` (a countdown törlődik, a flottát újra dispatcheled és értesíted {{OWNER_NAME}}t); ha a valós ablak még nem zárt → `RESULT:STILL-LIMITED`, a következő futás újrapróbálja.
+- **Fontos:** a reset megtörténtének perdöntő jele NEM a banner, hanem hogy egy friss/újraindított session tud-e dolgozni (lásd `quota-reset-detection-and-resume` tanulság). A `quota-resume.sh` ezt automatizálja.
+- **GROUND-TRUTH a terminál `/status` ({{OWNER_NAME}} szabály 2026-07-05):** a kvóta/reset ellenőrzés perdöntő forrása a `/status`, NEM a beragadó limit-modal (a modal a reset UTÁN is bent ragadhat -> a banner-detektor tévesen "befagyottnak" látja a flottát). Ha kétség van a limit/reset körül, a `/status` a mérvadó. Mechanizmus ({{BOT_NAME}} olvassa): `/status`-t egy SPARE claude-panelbe küldeni (`marveen-worker` tmux session, SOHA nem fleet-agent panelbe) és `capture-pane`-nel visszaolvasni a Current session % + Weekly All-models % + reset-időket, végén `Esc`. A banner/quota-check továbbra is a gyors monitor, de ütközésnél a `/status` nyer. (Alternatív strukturált forrás: a `CLAUDE_CODE_OAUTH_TOKEN` + `api.anthropic.com/api/oauth/usage` végpont.)
+
+### Heti limit 90% -- új-fejlesztés stop ({{OWNER_NAME}} szabály 2026-07-05)
+
+Az 5 órás session-limit MELLETT van egy HETI limit is (a Max 5x csomag "Weekly limits / All models" sávja, külön reset-idővel, pl. `Resets Thu 3:59 PM`). Szabály:
+
+- **DINAMIKUS küszöb ({{OWNER_NAME}} 2026-07-05), a heti resetig hátralévő idő alapján** (a reset-idő a usage-képernyőn: `Resets <nap> <idő>`; a hátralévő időt `date`-tel számold, Europe/Budapest):
+  - **> 3 nap** a resetig → küszöb **90%**
+  - **< 2 nap** a resetig → küszöb **92%**
+  - **< 1 nap** a resetig → küszöb **95%**
+  - (2--3 nap között a 90% marad; a `< 1 nap` a `< 2 nap`-on belül a szűkebb, ezért 95% nyer. Logika: `days<1 → 95`, `elif days<2 → 92`, `else → 90`.)
+  Minél közelebb a reset, annál magasabb a megengedett küszöb (mert a reset úgyis jön).
+- **Ha a HETI "All models" sáv eléri az AKTUÁLIS (dinamikus) küszöböt:** a flotta a MÁR FUTÓ, aktuális fejlesztéseket BEFEJEZI (a jelenlegi in_progress kártyák + a hozzájuk tartozó gate-ek lefutnak), de **ÚJ fejlesztést NEM indítasz** (nincs új planned kártya `in_progress`-be, nincs új dispatch) a HETI reset megtörténtéig. A 6. szabály "no idle" ilyenkor a heti-limit miatt fel van függesztve az új munkára -- ez a megengedett kivétel, mint a kvóta-limit.
+- **Mit szabad 90% felett:** in-flight kártyák befejezése, gate-ek (QA/Cybersec/Cybe Red) lefuttatása és a kártyák LEZÁRÁSA, Telegram-válasz {{OWNER_NAME}}nek, monitorozás. Amit NEM: új feature-kártya indítása, önfejlesztő kör indítása, bármi ami új fejlesztési munkát kezd.
+- **Mérés:** a pontos heti % a Claude usage-képernyőn látszik (session + weekly sávok). Automatikus olvasása nem garantált; a jelzés forrása {{OWNER_NAME}} usage-screenshotja és/vagy a heti-limit banner. Ha bizonytalan a %, a reset-idő közeledtével (a képernyőn látható `Resets <nap> <idő>`) konzervatívan viselkedj: a heti reset előtt ne kezdj nagy új fejlesztésbe, ha a sáv a 90% közelében jár. Ismert állapot 2026-07-05 08:06-kor: heti All-models 87%, reset **csütörtök 15:59 (Thu 3:59 PM)**.
+- Amint a heti reset megtörtént (a sáv nullázódik), a normál "no idle" folytatódik: dispatcheld a következő planned munkát.
+
+## Rendszerfrissítés update-biztonsága és recovery -- SZABÁLY ({{OWNER_NAME}} 2026-07-05)
+
+A {{BOT_NAME}} rendszer az `./update.sh`-val frissül (git `pull --ff-only origin <branch>` + `npm ci`/rebuild + service-restart). Szabályok, hogy egy frissítés SOHA ne akadjon el lokális módosítás miatt, és mindig legyen visszaút:
+
+- **Update-biztos módosítás:** a futó rendszert érintő lokális változtatás ne blokkolja a frissítést. A runtime/lokális adat GITIGNORED helyre megy (`store/`, `.env`, `dist/`) -- ezeket az ff-only pull nem érinti. Követett (tracked) fájlba tett lokális szerkesztés, ami ütközne a bejövő update-tel, TILOS uncommitolva hagyni (az ff-only pull elakad rajta); commitold+pushold a saját branchre, vagy tartsd gitignored/local fájlban. Az `update.sh` az untracked változtatásokat auto-stasheli, de a tracked-uncommitted divergál -- ezt kerüld.
+- **Operatív scriptek verziókövetése (KÖTELEZŐ, {{OWNER_NAME}} 2026-07-06):** minden futtatható operatív script (`*.sh`, kód-jellegű `*.py`) VERZIÓKÖVETETT és fel van tolva originra -- akkor is, ha egyébként gitignored runtime-mappában (`store/`) él. Egy javítás, ami CSAK gitignored helyen van, NINCS mentve: nem verziózott, nincs backup, egy fresh checkout / új gép elveszíti. A `store/` adata (DB, tokenek, state JSON) marad ignorált; a scriptekre kivétel van (`store/*` + `!store/*.sh`). Titok SOHA nincs beágyazva a scriptbe (a tokent runtime-ban `cat store/.dashboard-token`-nel olvassa). Egy ilyen script szerkesztése/javítása UGYANABBAN a munkában commit+push (ez az update-biztosság is: az unpushed tracked változás megakasztaná az ff-only pullt). Ha egy fix csak `store/`-ban landolt, told fel a forkba, mielőtt késznek jelented. (Portabilitás: a scriptek most abszolút `/home/neon/marveen` utakat visznek -- egy-deployment OK; több hostnál paraméterezni kell.)
+- **Rollback-pont:** az `update.sh` minden frissítéskor rögzíti a frissítés ELŐTTI verziót `store/.update-history`-ba (`update <branch> FROM_SHA TO_SHA`). Ez a recovery célpontja. (store/ gitignored, nem blokkol pullt.)
+- **Recovery script:** `./recovery-prev-version.sh` -- visszaáll egy korábbi, működő verzióra (detached checkout + szükség szerint `npm ci`+rebuild + build-marker + service-restart, a `store/` adat érintetlen marad). Használat: `--list` (rollback-pontok), `checkpoint "megjegyzés"` (jelenlegi HEAD known-good jelölése, non-destruktív), `--to <sha>` (adott commit), argumentum nélkül az utolsó update előtti verzió, `--dry-run` (terv, nincs változás), `--yes` (nincs megerősítés). **FIGYELEM:** a valós rollback ÚJRAINDÍTJA a {{BOT_NAME}} szolgáltatást (és vele a `{{MAIN_AGENT_ID}}-channels` sessiont) -- ezt {{OWNER_NAME}} futtatja manuálisan, vagy külön ablakból; {{BOT_NAME}} magától NE indítson éles rollbackot (megölné a saját sessionjét), csak `--dry-run`/`--list`/`checkpoint`.
+
 ## Ütemezett feladatok
 
 Az ütemezett feladatok a `~/.claude/scheduled-tasks/` mappában élnek, fájl-alapúak (SKILL.md + task-config.json). A schedule runner 60 másodpercenként ellenőrzi és a te tmux session-ödbe küldi a promptot.
