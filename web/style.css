@@ -4076,6 +4076,85 @@ main.kanban-active { max-width: none; padding-left: 16px; padding-right: 16px; }
 }
 .vault-card-edit-form .input { flex: 1; }
 
+/* Animated "running stripe" border for working agents. Used identically on the
+   Csapat page (.agent-card) and the Attekintes/Overview (.activity-card) via the
+   shared .agent-card-running class (toggled in app.js from agent.running).
+   Technique: a big conic-gradient wheel spins behind the card; an inset cover
+   (background: inherit) hides everything except a 2px ring, so a colour arc runs
+   AROUND the border. No @property, no color-mix, no mask -> works everywhere.
+   No blinking: a single steady rotation. */
+@keyframes agent-ring-spin {
+  from {
+    transform: translate(-50%, -50%) rotate(0deg);
+  }
+  to {
+    transform: translate(-50%, -50%) rotate(360deg);
+  }
+}
+.agent-card-running {
+  position: relative;
+  overflow: hidden;
+  border-color: transparent;
+  isolation: isolate;
+}
+.agent-card-running::before {
+  content: '';
+  position: absolute;
+  z-index: 0;
+  left: 50%;
+  top: 50%;
+  width: max(220%, 460px);
+  height: max(220%, 460px);
+  transform: translate(-50%, -50%);
+  background: conic-gradient(
+    transparent 0deg,
+    var(--ring-color, var(--success)) 55deg,
+    transparent 120deg,
+    transparent 360deg
+  );
+  animation: agent-ring-spin 3.2s linear infinite;
+  pointer-events: none;
+}
+/* Colour = WHERE the work runs. Green (default): the agent runs in its OWN tmux
+   session (fleet), including MikroB. Blue: this agent is currently being run as
+   a SUBAGENT inside MikroB's session (published via store -> /subagent-state.json
+   -> app.js adds .agent-card-subagent), so you don't hunt for a separate session. */
+.agent-card-subagent.agent-card-running {
+  --ring-color: var(--info);
+}
+.agent-card-running::after {
+  content: '';
+  position: absolute;
+  z-index: 0;
+  inset: 2px;
+  border-radius: inherit;
+  /* MUST be opaque, or the spinning wheel bleeds through and tints the whole
+     card (the .main cards use the translucent --accent-soft). Default surface
+     is --bg-card; activity-card and the accent-tinted main cards override. */
+  background: var(--bg-card);
+  pointer-events: none;
+}
+.activity-card.agent-card-running::after {
+  background: var(--bg);
+}
+.team-node.main.agent-card-running::after,
+.marveen-card.agent-card-running::after {
+  /* keep the accent tint, but over an opaque base so nothing bleeds */
+  background: linear-gradient(var(--accent-soft), var(--accent-soft)), var(--bg-card);
+}
+.agent-card-running > * {
+  position: relative;
+  z-index: 1;
+}
+@media (prefers-reduced-motion: reduce) {
+  .agent-card-running::before {
+    animation: none;
+  }
+  .agent-card-running {
+    border-color: var(--ring-color, var(--success));
+  }
+}
+
 /* === SSH Vault Section === */
 .ssh-section {
   margin-top: 32px;
