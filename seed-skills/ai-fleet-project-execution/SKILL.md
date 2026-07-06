@@ -248,6 +248,8 @@ Megjegyzés: a `POST /api/agents/<name>/restart` NEM létezik (404 Not Found). K
 
 - **Inter-agent message queue lag → ne küldj ismétléseket**: a `/api/messages` REST queue gyakran lemarad 1-3 percet. Ilyenkor előfordulhat hogy a child-agent ismétléseket küld. **Reflex**: ha child-agent ismétel, NE küldj újabb status reply-t (csak növeli a queue-zajt), helyette **várj 30-60s** és nézd meg a TÉNYLEGES állapotot (`gh pr view`, `git log`, `SELECT migration`). Plus: ha tényleg minden kész és nincs új teendő, csendben maradj -- a queue magától beéri.
 
+- **Injektált inter-agent üzenet submit NÉLKÜL ül a prompton → Enter-kick** (2026-07-02, QA gate-stall): néha a `/api/messages`-en küldött üzenet BEKERÜL a cél-agent tmux pane-jébe (látszik a `❯` promptnál, néha `[Pasted text]` jelzéssel), DE nem submit-elődik automatikusan -- az agent tétlenül ül, nincs "working"/"Proofing…" indikátor. Ez NEM modal-blokk (nincs dialog) és NEM queue-lag (az üzenet ott van). Diagnózis: `tmux capture-pane -t agent-X -p | tail` → a promptban ott a szöveg, de nincs feldolgozás-animáció. **Megoldás**: `tmux send-keys -t agent-X Enter` (egyszeri), majd 10-15s után capture-pane és ellenőrizd hogy elindult ("Razzle-dazzling…"/"Proofing…"/"Crunched"). Ugyanez a kick használatos kvóta-reset UTÁN a félbehagyott feladat folytatására. NE küldj újabb inter-agent üzenetet (az csak duplázza a promptban lévő szöveget) -- az Enter a fix.
+
 - **PR merge után-push race: post-merge branch commit ELVÉSZ**: ha egy ágens PR-t mergelünk, és a child-agent UTÁNA pusholja az updated commit-okat ugyanarra a (most már zárt) branch-re, azok a változások **nem kerülnek main-re** (a PR már merged). **Megoldás**: minden merge után deletáljuk a branch-et (`--delete-branch` flag a `gh pr merge`-nél), így a push nem mehet vissza. Plus: ha child-agent post-merge "frissítettem" jelzéssel jön, kérd új PR nyitását a friss main-re alapuló branch-en.
 
 - **Cascade conflict párhuzamos PR-eknél azonos fájl-területen**: amikor egy sub-agent egyszerre több feature-PR-t nyit ugyanazon main-szinten és minden PR módosítja ugyanazt a fájlt, a sorrendi merge minden iterációnál újra conflict-ot dob a maradékra. **Megoldás A** (preferált): amikor delegálsz egy multi-PR feature-csomagot egy sub-agent-nek, **kérd hogy egy ÚJ branch-en chain-elve build-elje** (PR1 base = main, PR2 base = PR1, PR3 base = PR2, stb.) -- így a merge sorrendje deterministic és cascade-rebase nincs. **Megoldás B** (fallback ha már külön branch-ek): sub-agent-tel intézd a `git rebase origin/main && git push -f` műveletet PR-enként sorban, NE próbáld te magad rebase-elni a sub-agent munkáját. Plus: 4+ PR-es feature-csomagnál érdemes ELŐRE jelezni a sub-agentnek a branch-strategy-t. 5+ PR-nél a bundled-PR is OK, ha review-méret kezelhető (<=1500 sor).
@@ -276,6 +278,18 @@ const gridColor = css('--border', 'rgba(0,0,0,0.08)');
 ```
 
 **A delegáció-promptban a frontend agentnek**: amikor chart-renderelést kérsz, EXPLICIT írd, hogy "tick + grid colors CSS-var-driven (`--ink-2`, `--border`), NEM hardcoded".
+
+## Buktató -- Dual-gate: `status:done` NEM gate-bizonyíték, és a QA hajlamos a saját PASS-ára lezárni
+
+**Probléma** (2026-07-02, többszörös ismétlődés): DONE = QA PASS + Cybersec GO, MINDKETTŐ kommentként rögzítve, a lezárást az orchestrator csinálja (a készítő NEM ellenőrzi a sajátját). A gyakorlatban két visszatérő hiba:
+1. **QA self-close dev-kártyán**: a QA több dev-kártyát (backend/fullstack/fron-ted munka) `done`-ra tett a SAJÁT QA-PASS-a alapján, a kötelező Cybersec GO NÉLKÜL (5df70bc0, c0742c71, bf091885). A QA CSAK a saját TP-teszt-kártyáit zárhatja, dev-kártyát SOHA.
+2. **Zöld teszt MAJOR-t rejt**: a puszta "minden teszt zöld" NEM bizonyíték. A magic-link auth 151/151 zölden 2 MAJOR-t rejtett; a superadmin SA-fázisban a Cybersec két valós hibát fogott zöld tesztek mögött: (a) `sa:impersonate` UI-gomb + matrix-doc létezett, de a kód-authz-enumból HIÁNYZOTT → a legmagasabb-kockázatú akció gate-je definiálatlan; (b) audit anchor-strip bypass (null-anchor unanchored-degradálás → truncation nem detektált).
+
+**Megoldás / how to apply**:
+- Zárás/parent-auto-close ELŐTT ne bízz a `status:done` mezőben: a kártya KOMMENTJEIBEN ellenőrizd hogy van friss `qa`=PASS ÉS `cybersec`=GO, UGYANARRA a végső commitra, és nincs készítői REVIEW/fix-komment MINDKETTŐ UTÁN (stale-PASS csapda: Cybersec-fix landolt a QA PASS után → a PASS elavult, re-gate kell).
+- **A Cybersec/QA sign-off gyakran csak inter-agent üzenetben érkezik, NEM kártya-kommentként.** Zárás előtt RÖGZÍTSD a GO/PASS-t kommentként a kártyára (audit-nyom), és csak utána zárj.
+- Ha egy parent-fázist tévesen zártál ungated gyerekre, nyisd vissza `in_progress`-re amíg minden leaf valóban gate-elt.
+- Új kártya self-audit a `waiting` előtt: minden UI-ban/route-on elérhető akció-nak legyen authz-enum bejegyzése restricted granttal; tamper-evidence-nél a strip/null-anchor legyen INVALID (nem "unanchored"); minden tamper-teszt NON-VACUOUS (a konkrét támadó-PoC tényleg bukjon).
 
 ## Ellenőrzés
 

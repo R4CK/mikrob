@@ -1,0 +1,202 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1200" height="400" viewBox="0 0 1200 400">
+  <defs>
+    <!-- Background gradient with depth -->
+    <radialGradient id="bgGlow" cx="50%" cy="45%" r="60%">
+      <stop offset="0%" style="stop-color:#1a1408;stop-opacity:1"/>
+      <stop offset="40%" style="stop-color:#0d0d0d;stop-opacity:1"/>
+      <stop offset="100%" style="stop-color:#050505;stop-opacity:1"/>
+    </radialGradient>
+
+    <!-- Premium gold gradient -->
+    <linearGradient id="gold" x1="0%" y1="0%" x2="100%" y2="0%">
+      <stop offset="0%" style="stop-color:#8B6914"/>
+      <stop offset="25%" style="stop-color:#DAA520"/>
+      <stop offset="50%" style="stop-color:#FFD700"/>
+      <stop offset="75%" style="stop-color:#DAA520"/>
+      <stop offset="100%" style="stop-color:#8B6914"/>
+    </linearGradient>
+
+    <!-- Title gold with metallic sheen -->
+    <linearGradient id="goldTitle" x1="0%" y1="0%" x2="0%" y2="100%">
+      <stop offset="0%" style="stop-color:#FFD700"/>
+      <stop offset="30%" style="stop-color:#DAA520"/>
+      <stop offset="60%" style="stop-color:#B8860B"/>
+      <stop offset="100%" style="stop-color:#DAA520"/>
+    </linearGradient>
+
+    <!-- Soft gold glow -->
+    <radialGradient id="goldAura" cx="50%" cy="50%" r="50%">
+      <stop offset="0%" style="stop-color:#DAA520;stop-opacity:0.08"/>
+      <stop offset="60%" style="stop-color:#DAA520;stop-opacity:0.03"/>
+      <stop offset="100%" style="stop-color:#DAA520;stop-opacity:0"/>
+    </radialGradient>
+
+    <!-- Horizontal fade line -->
+    <linearGradient id="lineFade" x1="0%" y1="0%" x2="100%" y2="0%">
+      <stop offset="0%" style="stop-color:#DAA520;stop-opacity:0"/>
+      <stop offset="20%" style="stop-color:#DAA520;stop-opacity:0.6"/>
+      <stop offset="50%" style="stop-color:#FFD700;stop-opacity:1"/>
+      <stop offset="80%" style="stop-color:#DAA520;stop-opacity:0.6"/>
+      <stop offset="100%" style="stop-color:#DAA520;stop-opacity:0"/>
+    </linearGradient>
+
+    <!-- Diamond pattern -->
+    <pattern id="diamonds" x="0" y="0" width="40" height="40" patternUnits="userSpaceOnUse">
+      <path d="M20,0 L40,20 L20,40 L0,20 Z" fill="none" stroke="#DAA520" stroke-width="0.3" opacity="0.08"/>
+    </pattern>
+
+    <!-- Hex grid pattern -->
+    <pattern id="hexgrid" x="0" y="0" width="60" height="52" patternUnits="userSpaceOnUse">
+      <path d="M30,0 L60,15 L60,37 L30,52 L0,37 L0,15 Z" fill="none" stroke="#DAA520" stroke-width="0.25" opacity="0.06"/>
+    </pattern>
+  </defs>
+
+  <!-- Deep background -->
+  <rect width="1200" height="400" fill="url(#bgGlow)"/>
+
+  <!-- Diamond pattern left -->
+  <rect x="0" y="0" width="350" height="400" fill="url(#diamonds)" opacity="0.7"/>
+
+  <!-- Hex grid right -->
+  <rect x="850" y="0" width="350" height="400" fill="url(#hexgrid)" opacity="0.7"/>
+
+  <!-- Central aura glow -->
+  <ellipse cx="600" cy="180" rx="400" ry="200" fill="url(#goldAura)"/>
+  <ellipse cx="600" cy="180" rx="200" ry="100" fill="#DAA520" opacity="0.02"/>
+
+  <!-- Geometric wireframe elements — LEFT -->
+  <g opacity="0.12">
+    <!-- Floating card -->
+    <rect x="55" y="80" width="160" height="110" rx="8" fill="none" stroke="#DAA520" stroke-width="0.8" transform="rotate(-5, 135, 135)"/>
+    <rect x="67" y="92" width="136" height="50" rx="4" fill="#DAA520" fill-opacity="0.04" transform="rotate(-5, 135, 135)"/>
+    <line x1="67" y1="155" x2="170" y2="155" stroke="#DAA520" stroke-width="0.6" transform="rotate(-5, 135, 135)"/>
+    <line x1="67" y1="168" x2="140" y2="168" stroke="#DAA520" stroke-width="0.6" transform="rotate(-5, 135, 135)"/>
+
+    <!-- Button -->
+    <rect x="90" y="240" width="100" height="32" rx="16" fill="#DAA520" fill-opacity="0.06" stroke="#DAA520" stroke-width="0.8"/>
+    <line x1="115" y1="256" x2="165" y2="256" stroke="#DAA520" stroke-width="0.8"/>
+
+    <!-- Toggle -->
+    <rect x="70" y="300" width="44" height="22" rx="11" fill="none" stroke="#DAA520" stroke-width="0.8"/>
+    <circle cx="103" cy="311" r="8" fill="#DAA520" fill-opacity="0.08" stroke="#DAA520" stroke-width="0.6"/>
+
+    <!-- Slider -->
+    <line x1="55" y1="350" x2="215" y2="350" stroke="#DAA520" stroke-width="0.5"/>
+    <circle cx="145" cy="350" r="5" fill="#DAA520" fill-opacity="0.15" stroke="#DAA520" stroke-width="0.6"/>
+    <line x1="55" y1="350" x2="145" y2="350" stroke="#DAA520" stroke-width="1"/>
+  </g>
+
+  <!-- Geometric wireframe elements — RIGHT -->
+  <g opacity="0.10">
+    <!-- Modal -->
+    <rect x="960" y="60" width="185" height="130" rx="10" fill="none" stroke="#DAA520" stroke-width="0.8" transform="rotate(3, 1052, 125)"/>
+    <line x1="960" y1="90" x2="1145" y2="90" stroke="#DAA520" stroke-width="0.4" transform="rotate(3, 1052, 125)"/>
+    <rect x="975" y="102" width="155" height="8" rx="4" fill="#DAA520" fill-opacity="0.05" transform="rotate(3, 1052, 125)"/>
+    <rect x="975" y="118" width="120" height="8" rx="4" fill="#DAA520" fill-opacity="0.05" transform="rotate(3, 1052, 125)"/>
+    <rect x="1065" y="155" width="65" height="24" rx="6" fill="#DAA520" fill-opacity="0.08" stroke="#DAA520" stroke-width="0.6" transform="rotate(3, 1052, 125)"/>
+
+    <!-- Input field -->
+    <rect x="970" y="220" width="170" height="34" rx="6" fill="none" stroke="#DAA520" stroke-width="0.7"/>
+    <line x1="982" y1="237" x2="1050" y2="237" stroke="#DAA520" stroke-width="0.6"/>
+    <text x="1128" y="242" font-family="system-ui" font-size="10" fill="#DAA520" opacity="0.4">|</text>
+
+    <!-- Checkbox list -->
+    <rect x="975" y="275" width="14" height="14" rx="3" fill="#DAA520" fill-opacity="0.1" stroke="#DAA520" stroke-width="0.6"/>
+    <line x1="998" y1="282" x2="1080" y2="282" stroke="#DAA520" stroke-width="0.5"/>
+    <rect x="975" y="298" width="14" height="14" rx="3" fill="none" stroke="#DAA520" stroke-width="0.6"/>
+    <line x1="998" y1="305" x2="1060" y2="305" stroke="#DAA520" stroke-width="0.5"/>
+    <rect x="975" y="321" width="14" height="14" rx="3" fill="none" stroke="#DAA520" stroke-width="0.6"/>
+    <line x1="998" y1="328" x2="1100" y2="328" stroke="#DAA520" stroke-width="0.5"/>
+
+    <!-- Color swatches -->
+    <circle cx="985" cy="365" r="8" fill="#DAA520" fill-opacity="0.15" stroke="#DAA520" stroke-width="0.5"/>
+    <circle cx="1010" cy="365" r="8" fill="#B8860B" fill-opacity="0.15" stroke="#B8860B" stroke-width="0.5"/>
+    <circle cx="1035" cy="365" r="8" fill="#8B6914" fill-opacity="0.15" stroke="#8B6914" stroke-width="0.5"/>
+  </g>
+
+  <!-- Floating particles -->
+  <g>
+    <circle cx="150" cy="50" r="1.5" fill="#DAA520" opacity="0.5"/>
+    <circle cx="320" cy="120" r="1" fill="#FFD700" opacity="0.4"/>
+    <circle cx="450" cy="60" r="1.2" fill="#DAA520" opacity="0.35"/>
+    <circle cx="750" cy="45" r="1" fill="#FFD700" opacity="0.4"/>
+    <circle cx="880" cy="100" r="1.5" fill="#DAA520" opacity="0.3"/>
+    <circle cx="1050" cy="40" r="1" fill="#FFD700" opacity="0.45"/>
+    <circle cx="200" cy="370" r="1.2" fill="#DAA520" opacity="0.3"/>
+    <circle cx="400" cy="350" r="1" fill="#FFD700" opacity="0.35"/>
+    <circle cx="800" cy="360" r="1.5" fill="#DAA520" opacity="0.4"/>
+    <circle cx="1000" cy="380" r="1" fill="#FFD700" opacity="0.3"/>
+    <circle cx="550" cy="340" r="0.8" fill="#DAA520" opacity="0.25"/>
+    <circle cx="650" cy="350" r="0.8" fill="#FFD700" opacity="0.25"/>
+    <circle cx="280" cy="200" r="0.8" fill="#DAA520" opacity="0.2"/>
+    <circle cx="920" cy="190" r="0.8" fill="#DAA520" opacity="0.2"/>
+  </g>
+
+  <!-- Top accent line -->
+  <rect x="200" y="0" width="800" height="1.5" fill="url(#lineFade)"/>
+
+  <!-- Decorative corner brackets -->
+  <g stroke="#DAA520" stroke-width="1.5" fill="none" opacity="0.35">
+    <!-- Top left -->
+    <path d="M15,4 L4,4 L4,30"/>
+    <path d="M28,4 L40,4" opacity="0.15"/>
+    <!-- Top right -->
+    <path d="M1185,4 L1196,4 L1196,30"/>
+    <path d="M1172,4 L1160,4" opacity="0.15"/>
+    <!-- Bottom left -->
+    <path d="M15,396 L4,396 L4,370"/>
+    <path d="M28,396 L40,396" opacity="0.15"/>
+    <!-- Bottom right -->
+    <path d="M1185,396 L1196,396 L1196,370"/>
+    <path d="M1172,396 L1160,396" opacity="0.15"/>
+  </g>
+
+  <!-- Horizontal rule above title -->
+  <line x1="420" y1="115" x2="475" y2="115" stroke="#DAA520" stroke-width="0.5" opacity="0.5"/>
+  <line x1="725" y1="115" x2="780" y2="115" stroke="#DAA520" stroke-width="0.5" opacity="0.5"/>
+  <text x="600" y="119" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif" font-weight="300" font-size="10" fill="#DAA520" letter-spacing="6" opacity="0.45">THE ULTIMATE DESIGN SKILL</text>
+
+  <!-- Main title with glow -->
+  <text x="600" y="170" text-anchor="middle" font-family="system-ui, -apple-system, 'Segoe UI', sans-serif" font-weight="900" font-size="64" fill="url(#goldTitle)" letter-spacing="8">
+    GENESIS
+  </text>
+
+  <!-- Subtitle with wide tracking -->
+  <text x="600" y="210" text-anchor="middle" font-family="system-ui, -apple-system, 'Segoe UI', sans-serif" font-weight="300" font-size="20" fill="#ffffff" letter-spacing="14" opacity="0.92">
+    UI/UX GOLD STANDARD
+  </text>
+
+  <!-- Gold divider with diamond -->
+  <line x1="440" y1="235" x2="575" y2="235" stroke="url(#lineFade)" stroke-width="0.5"/>
+  <rect x="594" y="229" width="12" height="12" rx="1" fill="none" stroke="#DAA520" stroke-width="0.8" opacity="0.5" transform="rotate(45, 600, 235)"/>
+  <line x1="625" y1="235" x2="760" y2="235" stroke="url(#lineFade)" stroke-width="0.5"/>
+
+  <!-- Stats row -->
+  <g font-family="system-ui, -apple-system, 'Segoe UI', sans-serif" text-anchor="middle">
+    <text x="460" y="272" font-weight="700" font-size="16" fill="#DAA520" letter-spacing="1">28</text>
+    <text x="460" y="288" font-weight="300" font-size="10" fill="#888888" letter-spacing="3">TECHNIQUES</text>
+
+    <text x="540" y="280" font-size="10" fill="#DAA520" opacity="0.3">|</text>
+
+    <text x="600" y="272" font-weight="700" font-size="16" fill="#DAA520" letter-spacing="1">5</text>
+    <text x="600" y="288" font-weight="300" font-size="10" fill="#888888" letter-spacing="3">ENGINES</text>
+
+    <text x="660" y="280" font-size="10" fill="#DAA520" opacity="0.3">|</text>
+
+    <text x="740" y="272" font-weight="700" font-size="16" fill="#DAA520" letter-spacing="1">1,334+</text>
+    <text x="740" y="288" font-weight="300" font-size="10" fill="#888888" letter-spacing="3">ENTRIES</text>
+  </g>
+
+  <!-- Tagline -->
+  <text x="600" y="325" text-anchor="middle" font-family="system-ui, -apple-system, 'Segoe UI', sans-serif" font-weight="300" font-size="12" fill="#666666" letter-spacing="2">
+    Award-winning techniques from 9 Awwwards SOTY-level websites
+  </text>
+
+  <!-- Author credit -->
+  <text x="600" y="365" text-anchor="middle" font-family="system-ui, -apple-system, 'Segoe UI', sans-serif" font-weight="400" font-size="11" fill="#DAA520" letter-spacing="5" opacity="0.55">
+    BUILT BY MIGUEL JIMINEZ
+  </text>
+
+  <!-- Bottom accent line -->
+  <rect x="200" y="398.5" width="800" height="1.5" fill="url(#lineFade)"/>
+</svg>
