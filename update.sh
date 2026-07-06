@@ -51,15 +51,18 @@ for arg in "$@"; do
   esac
 done
 
-# Pin Node to the version the dashboard service runs on. The global brew node
-# (26.x) cannot compile better-sqlite3 11.x (removed V8 APIs), which corrupts
-# node_modules on npm ci. Use the nvm-managed node that the launchd plist uses.
+# Pin Node to a runtime that can build/load better-sqlite3's native addon.
+# macOS: the global brew node (26.x) drops V8 APIs better-sqlite3 11.x needs,
+# so prefer the nvm-managed node. Linux/WSL (this host): the system node
+# (/usr/bin/node, what mikrob-dashboard.service runs on) works and is used.
 # See marveen-dashboard-recovery skill for the full story.
-NODE_PIN="$HOME/.nvm/versions/node/v24.16.0/bin"
-if [ -x "$NODE_PIN/node" ]; then
-  export PATH="$NODE_PIN:$PATH"
-  echo -e "  ${DIM}Node pin: $(node -v) (better-sqlite3 ABI)${NC}"
-fi
+for _nodebin in "$HOME/.nvm/versions/node/v24.16.0/bin/node" "/usr/bin/node"; do
+  if [ -x "$_nodebin" ]; then
+    export PATH="$(dirname "$_nodebin"):$PATH"
+    echo -e "  ${DIM}Node pin: $(node -v) (better-sqlite3 ABI)${NC}"
+    break
+  fi
+done
 
 # Pidfile gate. The dashboard's /api/updates/apply creates
 # store/update.pid atomically with O_EXCL before spawning this script,
