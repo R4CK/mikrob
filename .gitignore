@@ -14,7 +14,10 @@ HEARTBEAT.md
 
 # Secrets & personal data
 .env
-store/
+store/*
+# Operational scripts under store/ ARE version-controlled (code, not runtime data).
+# Everything else in store/ (DB, tokens, state JSON) stays ignored.
+!store/*.sh
 workspace/
 agents/
 reports/
