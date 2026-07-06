@@ -27,23 +27,20 @@ Ez a repo a **háttérszolgáltatásokat** adja; a Telegram-kommunikációt a Cl
 - **Vault**: MCP-titkok + SSH-kulcsok/szerverek titkosított kezelése (AES-256-GCM)
 - **Öntanulás**: az ügynökök skilleket írnak/patch-elnek a munkájukból (progressive disclosure)
 
-## Jelenlegi fejlesztések
+## Egyedi fork-fejlesztések (amiért külön fork)
 
-**v1.19.0** (legutóbbi kiadás)
-- **SSH Vault** (#521): központi SSH-szerver- és kulcskezelés a Vaultban, `vault-env-wrapper` bekötéssel
-- **Owner-gated terminál-input** (#522): a dashboard terminál-beviteli kapcsolója opt-in, tulajdonoshoz kötött, per-hívás audittal
-- **Messages-nézet BOT_NAME** (#520): a fő ügynök megjelenített neve látszik a belső routing-id helyett
-- **Kanban kártya-esemény audit** (#518): státuszváltás-napló minden kártyán
-- **Dashboard auth-keményítés**: CORS same-origin proxyra, token memóriában (nem csak localStorage), PWA service-worker kill-switch
+Ezek a MikroB-fork saját fejlesztései a Marveen-bázison felül — főleg a **flotta-workflow, a review-gate-ek és a platform-robusztusság** rétegében (a fleet-szabályok a `templates/CLAUDE.md.template`-be építve, `5d42edf`):
 
-**Üzemeltetési keményítés (v1.19.0 utáni develop)**
-- **Update-biztonság + recovery**: `update.sh` ff-only pull + auto-stash, `store/.update-history` rollback-pont, `recovery-prev-version.sh` (detached checkout korábbi known-good verzióra, a `store/` adat érintetlen)
-- **Cross-platform Node-pin**: az `update.sh` Linux/WSL rendszer-node fallbackkel épít (better-sqlite3 ABI), nem csak macOS/nvm úton
-- **WSL-autostart**: a flotta Windows-bejelentkezéskor/boot-kor magától feláll (systemd + linger a WSL-en belül, Windows-oldali indító)
-- **Operatív scriptek verziókövetése**: a `store/*.sh` monitor-scriptek (quota, stuck-detect, pre-dispatch) trackeltek; a runtime-adat (DB, token, state) ignorált marad
-- **Dashboard-redesign**: ügynök running-ring animációk (saját session vs subagent), per-ügynök státusz-színek
+- **Kockázat-alapú review-gate rendszer**: minden kész kártyát min. 2 független ügynök ellenőriz — **QA mindig**, plusz a kockázat szerint **Cybersec** (trust-boundary: auth, publikus endpoint, RBAC, pénz, PII, file-upload) és/vagy **Cybe Red** (magas-tétű: publikus write path, session, superadmin). A készítő SOHA nem ellenőrzi a sajátját; MikroB kártyánként rotálja a gate-tagokat, és csak PASS/GO után zár.
+- **Teljes értékű audit protokoll**: kötelező leltár (MINDEN gomb + endpoint) → RBAC pozitív/negatív (fail-closed) → superadmin-folyamatok → minden API + DB-művelet → optimalizálás számokkal → STRIDE/OWASP + WCAG + i18n + reziliencia. Semmi nem implicit: ami nincs tesztelve, az „töröttnek" számít.
+- **Fleet-workflow**: 4+ szintű Fázis→Feladat→alfeladat bontás (parent/child kanban), felelős + `[NN%]`-marker + színes ügynök-label, 10 perces beragadás-detektálás, **park-idle** (a tétlen ügynököt leállítja a kvóta védelmére), **frontend-pairing** (user-facing feature automatikusan kap Fron Ted UI + user-flow kártyát).
+- **Kvóta-menedzsment**: 5 órás session-limit figyelés + banner-detektálás, **heti-limit dinamikus küszöbbel** (90/92/95% a resetig hátralévő idő szerint) az új-fejlesztés-stophoz, 5h05m **auto-resume countdown** (a limitelt — akár parkolt — ügynök a resetkor magától visszatér).
+- **Update-biztonság + recovery**: `update.sh` ff-only pull + auto-stash + rollback-pont (`store/.update-history`), `recovery-prev-version.sh` korábbi known-good verzióra (a `store/` adat érintetlen).
+- **WSL-natív üzemeltetés**: cross-platform Node-pin (Linux/WSL rendszer-node fallback a better-sqlite3 ABI-hoz), **Windows-boot autostart** (WSL-en belül systemd + linger, Windows-oldali indító).
+- **Verziókövetett operatív scriptek**: a monitor-scriptek (`store/*.sh`: kvóta, beragadás, pre-dispatch) trackeltek; a runtime-adat (DB, token, state) ignorált marad.
+- **Dashboard-redesign**: ügynök running-ring animációk (saját session vs subagent), per-ügynök státusz-színek.
 
-**v1.18.7**: Gantt/timeline nézet a határidős kártyákra, iOS PWA (safe-area, install), scheduler saturation-refuse + parked-defer, Linux natív rebuild a startup előtt
+> A fork emellett követi a felmenő Marveen kiadásait is (pl. **v1.19.0**: SSH Vault, owner-gated terminál-input, kanban kártya-esemény audit, dashboard auth-keményítés).
 
 ## Architektúra
 
@@ -53,29 +50,33 @@ Ez a repo a **háttérszolgáltatásokat** adja; a Telegram-kommunikációt a Cl
 - **Web dashboard** — admin felület a memória/kanban/ügynök/ütemezés/Vault kezeléséhez
 - **Inter-agent kommunikáció** — ügynökök közötti üzenetsor
 
-## Telepítés
+## Telepítés (ebből a forkból: `R4CK/mikrob`)
 
-### Windows (WSL) — ez a fork elsődleges környezete
+Ez a fork saját telepítendő — NEM a felmenő `Szotasz/marveen`.
+
+### Windows (WSL) — a fork elsődleges környezete
 
 ```powershell
-irm https://raw.githubusercontent.com/Szotasz/marveen/main/install-windows.ps1 | iex
+git clone https://github.com/R4CK/mikrob.git
+cd mikrob
+.\install-windows.ps1
 ```
 
-A telepítő beállítja a WSL-t (Ubuntu) és azon belül telepíti a rendszert. Ha a PowerShell wrapper elakad, nyisd meg az Ubuntu-t és futtasd közvetlenül a Linux-telepítőt:
+A telepítő beállítja a WSL-t (Ubuntu) és azon belül telepíti a rendszert. Ha a PowerShell wrapper elakad, nyisd meg az Ubuntu-t és a WSL shellben futtasd közvetlenül a Linux-telepítőt:
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/Szotasz/marveen/main/install-linux.sh -o install.sh && bash install.sh
+git clone https://github.com/R4CK/mikrob.git && cd mikrob && ./install-linux.sh
 ```
 
 ### Linux / macOS
 
 ```bash
-git clone https://github.com/Szotasz/marveen.git
-cd marveen
+git clone https://github.com/R4CK/mikrob.git
+cd mikrob
 ./install.sh
 ```
 
-A telepítő végigvezet: függőségek, Claude Code bejelentkezés, Telegram bot, a bot/márka neve, szolgáltatások indítása.
+A telepítő végigvezet: függőségek, Claude Code bejelentkezés, Telegram bot, a bot/márka neve, szolgáltatások indítása. Frissítés a forkból: `./update.sh` (ff-only pull az `origin`-ról).
 
 ### Branding (env)
 
