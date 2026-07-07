@@ -1154,6 +1154,7 @@ NODE_PATH="$(which node)"
 DASH_UNIT="${SERVICE_ID}-dashboard"
 CHAN_UNIT="${SERVICE_ID}-channels"
 MORN_UNIT="${SERVICE_ID}-morning"
+WD_UNIT="${SERVICE_ID}-dashboard-watchdog"
 
 # Detect the host timezone so the scheduled-task runner (which reads
 # cron expressions in Node's local TZ) fires at the operator's wall
@@ -1271,6 +1272,39 @@ Persistent=true
 WantedBy=timers.target
 EOF
 
+# ${WD_UNIT}.service + .timer -- dashboard health watchdog.
+# systemd's Restart=on-failure only catches a CRASHED process, not a dashboard
+# whose HTTP listener is hung/flapped (EMFILE, event-loop stall). This timer
+# probes localhost:${DASHBOARD_PORT:-3420} every 2 min and restarts the unit when
+# it is unreachable, so the UI self-heals with no login.
+cat >"$SYSTEMD_DIR/${WD_UNIT}.service" <<EOF
+[Unit]
+Description=${BOT_NAME} Dashboard Health Watchdog
+After=network.target
+
+[Service]
+Type=oneshot
+ExecStart=$INSTALL_DIR/scripts/dashboard-watchdog.sh ${DASH_UNIT}
+Environment=PATH=$HOME/.local/bin:$HOME/.bun/bin:/usr/local/bin:/usr/bin:/bin
+Environment=HOME=$HOME
+${TZ_LINE}
+EOF
+
+cat >"$SYSTEMD_DIR/${WD_UNIT}.timer" <<EOF
+[Unit]
+Description=${BOT_NAME} Dashboard Health Watchdog Timer
+
+[Timer]
+# First check 90s after boot (let the dashboard bind), then every 2 minutes.
+OnBootSec=90
+OnUnitActiveSec=120
+AccuracySec=15
+Persistent=false
+
+[Install]
+WantedBy=timers.target
+EOF
+
 # 1. linger eloszor: ez engedelyezi a user systemd sessiont boot utan is,
 #    es headless-en az aktualis script futasa alatt is szukseges lehet
 if loginctl show-user "$USER" 2>/dev/null | grep -q "Linger=yes"; then
@@ -1299,9 +1333,10 @@ fi
 SVCFAIL=0
 if pidof systemd >/dev/null 2>&1 && systemctl --user status >/dev/null 2>&1; then
   systemctl --user daemon-reload
-  systemctl --user enable "${DASH_UNIT}" "${CHAN_UNIT}" "${MORN_UNIT}.timer" 2>/dev/null || true
+  systemctl --user enable "${DASH_UNIT}" "${CHAN_UNIT}" "${MORN_UNIT}.timer" "${WD_UNIT}.timer" 2>/dev/null || true
   ok "systemd unitok generalva es engedelyezve"
   systemctl --user start "${DASH_UNIT}" "${CHAN_UNIT}" 2>/dev/null || true
+  systemctl --user start "${WD_UNIT}.timer" 2>/dev/null || true
   sleep 2
   for svc in "${DASH_UNIT}" "${CHAN_UNIT}"; do
     if systemctl --user is-active --quiet "$svc" 2>/dev/null; then
