@@ -217,6 +217,7 @@ Ha egy projekt git repóval rendelkezik, a `README.md` naprakészen tartása a f
 - **Ha nincs README:** hozz létre egy alaposat (lásd a CleanCore README mintát: termék, architektúra, repo-térkép, prerequisites, telepítés, env, DB/migráció, futtatás, teszt+gate-ek, security, doksi-index).
 - **Ellenőrzés:** commit/PR/merge előtt vesd össze a README-t a tényleges kóddal (env-változó nevek, scriptek, portok, mappák) -- a README SOHA ne hazudjon. Elavult README = hiba, javítsd.
 - **Push-nál:** amikor egy projektet a git remote-ra töltesz vagy mainre mergelsz, a README frissessége a feltöltés része.
+- **Fork-fejlesztések szekció (KÖTELEZŐ, Peti 2026-07-10):** a `README.md` „## Egyedi fork-fejlesztések (amiért külön fork)" szekcióját MINDIG bővíteni/frissíteni kell, valahányszor bármi eltér vagy hozzáadódik az alap (felmenő) repóhoz képest -- új szabály, skill, script, elnevezés, install-lépés, gate-viselkedés, bugfix ami a forkot megkülönbözteti. Ez dokumentálja MIÉRT külön fork; ha egy fork-divergens változás nincs itt, a doksi hazudik. Ugyanabban a munkában (commit) frissítsd, amiben a változás történt.
 - A QA/Cybersec/Cybered gate a kód mellett a README-pontosságot is nézheti (a doksi-drift is finding).
 
 ## Kvóta-figyelmeztetés (5 órás limit) -- SZABÁLY
