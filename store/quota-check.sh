@@ -20,22 +20,38 @@ COUNTDOWN="$STORE/quota-reset-countdown.json"
 prev=$(cat "$STATE" 2>/dev/null || echo '[]')
 now=()
 running=()
+# Earliest banner-stated reset epoch across limited panes (0 = none parsed). The
+# banner says e.g. "resets 11:50am (Europe/Budapest)"; we honor THAT instead of a
+# blind +5h05m so a short/near reset isn't waited out for 5 hours (Peti 2026-07-10:
+# a stale limit-modal + blind countdown kept QA idle ~30m past its real 11:50 reset).
+reset_epoch=0
 for s in $(tmux ls -F '#{session_name}' 2>/dev/null | grep -E '^agent-|^mikrob-channels$'); do
   running+=("$s")
   pane=$(tmux capture-pane -t "$s" -p -S -20 2>/dev/null)
-  if echo "$pane" | grep -qiE "$RX"; then now+=("$s"); fi
+  if echo "$pane" | grep -qiE "$RX"; then
+    now+=("$s")
+    # Extract "resets <time>" (up to a paren/newline) and convert to an epoch.
+    rt=$(echo "$pane" | grep -oiE 'resets [^()\n]+' | head -1 | sed -E 's/^[Rr]esets[[:space:]]+//')
+    if [ -n "$rt" ]; then
+      ep=$(date -d "$rt" +%s 2>/dev/null || echo "")
+      if [ -n "$ep" ] && { [ "$reset_epoch" -eq 0 ] || [ "$ep" -lt "$reset_epoch" ]; }; then
+        reset_epoch=$ep
+      fi
+    fi
+  fi
 done
 # newly-limited = in now but not in prev
 # Also manage the 5h05m reset countdown (Peti rule 2026-07-04): on the EDGE into
 # the limited state start a countdown (hit_at + 5h05m = deadline); when the limit
 # clears, delete the countdown. The quota-reset-resume task acts at the deadline.
-python3 - "$prev" "$STATE" "$COUNTDOWN" "$(IFS=,; echo "${running[*]:-}")" "${now[@]:-}" <<'PY'
+python3 - "$prev" "$STATE" "$COUNTDOWN" "$reset_epoch" "$(IFS=,; echo "${running[*]:-}")" "${now[@]:-}" <<'PY'
 import json,sys,time
 prev=set(json.loads(sys.argv[1] or "[]"))
 statepath=sys.argv[2]
 countdownpath=sys.argv[3]
-running=[x for x in sys.argv[4].split(",") if x]
-now=[x for x in sys.argv[5:] if x]
+reset_epoch=float(sys.argv[4] or 0)
+running=[x for x in sys.argv[5].split(",") if x]
+now=[x for x in sys.argv[6:] if x]
 new=[s for s in now if s not in prev]
 json.dump(now, open(statepath,"w"))
 # countdown management
@@ -45,7 +61,14 @@ if now:
     # a limit is active: ensure a countdown exists (start it on the first edge)
     if not os.path.exists(countdownpath):
         t=time.time()
-        json.dump({"hit_at":t,"deadline":t+FIVE_H_FIVE_M,"limited":now}, open(countdownpath,"w"))
+        # Honor the banner's stated reset time when parsed, but never wait LONGER
+        # than the 5h05m ceiling; min() also caps a mis-parsed far-future (weekly)
+        # time. A near/past reset shortens the wait; if we resume too early the
+        # quota-reset-resume STILL-LIMITED path just retries -- safe either way.
+        blind = t + FIVE_H_FIVE_M
+        dl = min(blind, reset_epoch + 120) if reset_epoch > 0 else blind
+        src = "banner" if (reset_epoch > 0 and dl < blind) else "blind-5h05m"
+        json.dump({"hit_at":t,"deadline":dl,"deadline_source":src,"limited":now}, open(countdownpath,"w"))
     else:
         # keep the limited list fresh but DO NOT reset the deadline
         try:
