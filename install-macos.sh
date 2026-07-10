@@ -121,6 +121,10 @@ if [ "$MISSING" -eq 1 ]; then
   command -v node &>/dev/null || brew install node@22
   command -v tmux &>/dev/null || brew install tmux
   command -v git &>/dev/null || brew install git
+  # jq + sqlite3 CLI: the scheduled tasks (kanban-audit, stuck-card-monitor, quota
+  # scripts) shell out to them. macOS ships sqlite3, but jq is not preinstalled.
+  command -v jq &>/dev/null || brew install jq
+  command -v sqlite3 &>/dev/null || brew install sqlite
   echo -e "${GREEN}$(_t macos.deps_installed)${NC}"
 fi
 

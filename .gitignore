@@ -41,8 +41,8 @@ test-results/
 # macOS
 .DS_Store
 
-# Generated from template (personal config)
-CLAUDE.md
+# CLAUDE.md IS version-controlled (Peti 2026-07-10): the project rules + fleet
+# workflow live here and must be tracked/pushed, not left local-only.
 
 # Agent persona / soul (per-operator personality; never ship upstream)
 SOUL.md

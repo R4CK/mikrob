@@ -155,7 +155,11 @@ if command -v free &>/dev/null; then
 fi
 
 MISSING_PKGS=""
-for pkg in ffmpeg git tmux lsof curl python3 pipx unzip; do
+# jq + sqlite3 CLI: the scheduled tasks (kanban-audit, stuck-card-monitor, quota
+# scripts) shell out to `jq` and `sqlite3`. jq has the same package name on apt and
+# dnf; the sqlite3 CLI package differs (apt: sqlite3, dnf/Fedora: sqlite) so it is
+# handled in its own manager-aware block below.
+for pkg in ffmpeg git tmux lsof curl python3 pipx unzip jq; do
   if ! command -v "$pkg" &>/dev/null; then
     MISSING_PKGS="$MISSING_PKGS $pkg"
   fi
@@ -172,6 +176,15 @@ if ! command -v make &>/dev/null || ! command -v cc &>/dev/null; then
     MISSING_PKGS="$MISSING_PKGS build-essential"
   else
     MISSING_PKGS="$MISSING_PKGS make gcc gcc-c++"
+  fi
+fi
+
+# sqlite3 CLI package name differs by manager (apt: sqlite3, dnf/Fedora: sqlite).
+if ! command -v sqlite3 &>/dev/null; then
+  if [ "$PKG_MANAGER" = "apt" ]; then
+    MISSING_PKGS="$MISSING_PKGS sqlite3"
+  else
+    MISSING_PKGS="$MISSING_PKGS sqlite"
   fi
 fi
 
