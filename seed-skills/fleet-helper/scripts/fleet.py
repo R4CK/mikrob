@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-ClaudeClaw fleet helper - shared, deterministic plumbing so agents don't burn
+Fleet helper - shared, deterministic plumbing so agents don't burn
 tokens hand-rolling curl/SQL/escaping in the model.
 
 Covers: dashboard API auth (token always read from store/.dashboard-token, never

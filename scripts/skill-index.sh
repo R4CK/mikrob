@@ -3,7 +3,8 @@
 # Generates a Level 0 index of all available skills (name + description only)
 # This keeps token usage low while making all skills discoverable
 
-SKILLS_DIR="$HOME/.claude/skills"
+# Optional first arg overrides the skills dir (e.g. the repo's seed-skills/); defaults to the live skills dir.
+SKILLS_DIR="${1:-$HOME/.claude/skills}"
 OUTPUT="$SKILLS_DIR/.skill-index.md"
 
 if [ ! -d "$SKILLS_DIR" ]; then

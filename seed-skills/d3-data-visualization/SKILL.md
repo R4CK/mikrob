@@ -12,9 +12,9 @@ about making *data* legible and interactive, not spectacle.
 
 ## When to use
 - Dashboards, KPI tiles, analytics panels, reports, exports.
-- CleanCore fits: operations KPIs (jobs done, on-time %, photo-gate pass rate),
+- A field-service SaaS fits: operations KPIs (jobs done, on-time %, photo-gate pass rate),
   evidence/audit timeline, site/zone map (choropleth or pins), inventory trends,
-  billing/usage charts. Charts live in the data-dense Manager Web, NOT the field PWA core.
+  billing/usage charts. Charts live in the data-dense manager web app, NOT the field PWA core.
 - Any time a table would hide the trend a chart would reveal.
 
 ## Choose the right rendering
@@ -61,7 +61,7 @@ const color = getComputedStyle(root).getPropertyValue('--brand-primary').trim();
 - Lazy-load D3 and the chart module (dynamic import) so dashboards stay fast.
 
 ## Dependencies (IMPORTANT in this repo)
-D3 is a new dependency. In the shared CleanCore checkout, deps go through MikroB's
+D3 is a new dependency. In a shared multi-agent checkout, deps go through MikroB's
 lockfile batch — do NOT add `d3` to package.json yourself; request it. Prefer modular
 imports (`d3-scale`, `d3-selection`, `d3-shape`) over the full `d3` to keep bundle small.
 

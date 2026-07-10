@@ -19,7 +19,7 @@ to sign off the look (alongside [[wcag-overlay-patterns]] for overlay a11y).
 
 ## 0. Non-negotiables (apply to EVERY style)
 - **Token-first, never hard-coded values.** Every color, space, radius, shadow,
-  duration is a CSS custom property. White-label/theming demands it (e.g. CleanCore
+  duration is a CSS custom property. White-label/theming demands it (e.g. a
   per-tenant `--brand-primary`). Hard-coded hex in a component = bug.
 - **WCAG-AA contrast on all states** (text 4.5:1, large text/UI 3:1). Style never
   beats legibility. Re-check contrast in BOTH themes and over blurred backdrops.
@@ -27,7 +27,7 @@ to sign off the look (alongside [[wcag-overlay-patterns]] for overlay a11y).
   active/selected, disabled, and loading (skeleton). Plus empty + error at screen level.
 - **Font must be Unicode-complete.** Use a family with full Latin Extended-A/B (and
   the scripts the product needs) so diacritics in all locales render in ONE typeface
-  (CleanCore: EN/DE/PL/IT/FR/HU/ES — ő ű ł ą é è ñ ç ã etc. must not fall back).
+  (e.g. EN/DE/PL/IT/FR/HU/ES — ő ű ł ą é è ñ ç ã etc. must not fall back).
   Safe variable choices: Inter, Geist, IBM Plex Sans, Source Sans 3, Noto Sans.
 - **Respect `prefers-reduced-motion`** and `prefers-color-scheme`.
 
@@ -115,7 +115,7 @@ pure flat removed.
 .btn-primary:hover{ filter: brightness(1.07); }
 ```
 **Use it for:** data-dense apps, dashboards, tables, forms, B2B/operational tooling
-where clarity and speed beat spectacle (e.g. CleanCore Manager Web). Flat scales,
+where clarity and speed beat spectacle (e.g. a manager web app). Flat scales,
 performs, and stays legible.
 **Pitfall:** pure flat can hide what's clickable — use flat 2.0 cues (elevation on
 hover, clear button fills, focus rings) so affordance survives.

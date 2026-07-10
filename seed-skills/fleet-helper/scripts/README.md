@@ -1,6 +1,6 @@
 # fleet-helper
 
-Shared, dependency-free Python helpers for a ClaudeClaw-style agent fleet. The
+Shared, dependency-free Python helpers for a multi-agent fleet. The
 goal: do deterministic work (fetch / filter / SQL / format / escape) in Python
 instead of burning model tokens doing it inside the LLM turn. Python 3 stdlib
 only.
@@ -88,4 +88,4 @@ mail_rules.example.json  # copy to mail_rules.json (gitignored) with real values
 - `mail_rules.json` (your real senders) must be gitignored (see `.gitignore`).
 
 ## License
-MIT, consistent with the parent project (ClaudeClaw / marveen).
+MIT.

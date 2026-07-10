@@ -32,7 +32,7 @@ Helyes sorrend minden jogi feladat végén:
 2. REVIEW komment (`author=jogasz`) az összes érintett kártyán — tartalmazza:
    - Mit tartalmaz a dokumentum (szekciók, fájlútvonal, commit hash)
    - Mely nyelvek/joghatóságok kerültek bele
-   - Milyen placeholder maradt ([CLEANCORE_...] stb.)
+   - Milyen placeholder maradt ([PRODUCT_...] stb.)
    - Pending ügyvédi felülvizsgálati pontok
 3. Innen QA + Cybersec gate jön — ezek sign-off nélkül nem kerül done-ba semmi
 
@@ -67,9 +67,9 @@ Az EU AI Act (2024/1689/EU) 2026-ban lép teljesen hatályba, de a tiltott AI-re
 | **Korlátozott kockázat (Art. 50)** | Chatbot, deepfake, AI-generált tartalom | Átláthatósági kötelezettség: felhasználót tájékoztatni kell, hogy AI-val kommunikál |
 | **Minimális kockázat** | Spam-szűrő, ajánlórendszer (nem high-risk kontextusban) | Nincs kötelező követelmény, de Code of Practice ajánlott |
 
-### CleanCore-specifikus minősítés
+### Platform-specifikus minősítés
 
-A CleanCore munkavállalói jelenléti és monitoring funkciói (check-in/out, munkafotók, geofence) **potenciálisan high-risk** kategóriába eshetnek, ha:
+A platform munkavállalói jelenléti és monitoring funkciói (check-in/out, munkafotók, geofence) **potenciálisan high-risk** kategóriába eshetnek, ha:
 - AI-alapú döntést hoz munkavállalói teljesítményről vagy feladatkiosztásról (Annex III, 4. pont)
 - Biometrikus adatot dolgoz fel azonosítás céljából
 
@@ -133,7 +133,7 @@ A standard ToS/PP/DPA mellett az alábbi GDPR-kötelezettségek rendszeresen kim
 ### Gyermekek adatai (Art. 8, GDPR + nemzeti jog)
 
 - Ha a platform elérhető 16 éven aluliaknak: szülői hozzájárulás szükséges
-- CleanCore: platform B2B, brigádtagok felnőttek — de dokumentálni kell ezt a pozíciót
+- A platform B2B, brigádtagok felnőttek — de dokumentálni kell ezt a pozíciót
 
 ### Cookie és tracking (ePrivacy / TTDSG / Loi Informatique et Libertés)
 
@@ -154,6 +154,189 @@ SCCs-sel fedett non-EEA transzfernél (Stripe, Cloudflare) nem elég az SCC — 
 
 ---
 
+## Magyar jogi specifikumok (HU)
+
+### Polgári jog (Ptk. — 2013. évi V. törvény)
+
+SaaS-szerződések jogi besorolása Ptk. alapján:
+- **Megbízási szerz. (Ptk. 6:272.§):** ha az eredmény nem garantált, csak a gondos eljárás (tipikusan SaaS / platform-hozzáférés)
+- **Vállalkozási szerz. (Ptk. 6:238.§):** ha meghatározott eredményt kell leszállítani (pl. custom fejlesztés)
+- SaaS-nál vegyes innominat szerződés; a megbízási szabályok vonatkoznak analógiával
+
+Kártérítési felelősség (Ptk. 6:522.§):
+- B2B-ben a Ptk. alapján korlátozható a közvetett/elmaradt haszon miatti felelősség
+- Szándékos károkozásra és élethez/testi épséghez kapcsolódó kárra NEM korlátozható
+- Max. 12 havi díjra való korlátozás (ToS) a Ptk.-val összhangban, de explicit kell
+
+Elévülés (Ptk. 6:22.§): általános 5 év; a ToS ne rövidítse (érvénytelen lehetne).
+
+### Számlázás és NAV (Magyarország)
+
+**Online Számla rendszer (NAV):**
+- 2018. VII. 1. óta kötelező minden belföldi B2B számla valós idejű bejelentése ha ÁFA-tartalom > 500.000 Ft (2021. IV. 1. óta 0 Ft-tól minden számla)
+- API-verzió: 3.0 (XSD-alapú XML séma, REST API)
+- A platform mint számlázó szoftver: ha generál számlát, NAV Online Számla API-integrációt kell biztosítani
+- Forrás: https://onlineszamla.nav.gov.hu
+
+**ÁFA törvény (2007. évi CXXVII. törvény):**
+- SaaS-szolgáltatás „elektronikusan nyújtott szolgáltatás" (B2B, fordított adózás EU-n belül)
+- B2C EU-s vevőnek: OSS (One Stop Shop) rendszer; teljesítés helye a vevő országa
+- Tárolt szoftver vs. letöltött szoftver ÁFA-kezelése eltér
+
+**Elektronikus számla (e-számla):**
+- Magyar jogban az e-számla hiteles elektronikus aláírással vagy EDI-csereprotokollal érvényes (ÁFA tv. 175-176.§)
+- PDF önmagában csak akkor fogadott el, ha mindkét fél beleegyezik és sértetlensége biztosított
+
+**Számviteli törvény (2000. évi C. tv.):**
+- Bizonylatok megőrzése: minimum 8 év (szept. törvény, ÁFA-alap bizonylatok)
+- SaaS-ügyfélnek fontos: a platformban tárolt/exportált pénzügyi adatok legalább 8 évig hozzáférhetők legyenek vagy exportálhatók
+
+### Munkajogi vonatkozások (Mt. — 2012. évi I. törvény)
+
+- **Mt. 11/A.§:** munkáltató ellenőrzési joga; előzetesen tájékoztatni kell a munkavállalókat
+- **Mt. 9.§:** munkavállalók személyiségi jogai — csak arányos ellenőrzés engedélyezett
+- **Mt. 293.§:** titoktartási kötelezettség (munkáltató és munkavállalói adatok)
+- Geofence check-in: az Mt. 11/A.§ alapján a munkáltató jogszerűen alkalmazhatja, de a munkaszerződésben / belső szabályzatban rögzíteni kell, és a Mt. 9.§ arányossági teszt elvégezhető
+- Belső szabályzat (munkáltatói utasítás): a munkáltató egyoldalúan vezetheti be (nincs HU-ban BetrVG-jellegű kötelező együttdöntési jog általánosan)
+
+**NAIH (Nemzeti Adatvédelmi és Információszabadság Hatóság):** https://www.naih.hu
+
+---
+
+## Svájci jogi specifikumok (CH)
+
+> **Fontos:** Svájc NEM EU-tagállam. A GDPR közvetlenül nem alkalmazandó — de ha svájci cég EU-s személyek adatát kezeli, a GDPR területen kívüli hatálya (Art. 3(2)) alkalmazhat. Belső svájci jog: nDSG.
+
+### nDSG (Új Szövetségi Adatvédelmi Törvény)
+
+**Hatályba lépett: 2023. szeptember 1.** — felváltotta a régi DSG-t.
+
+Főbb különbségek GDPR-tól:
+- **Nincs kötelező DPO** (adatvédelmi tisztviselő) — de Privacy Advisor kinevezése ajánlott (Art. 10 nDSG)
+- **Nincs art. 28-típusú kötelező adatfeldolgozási szerz.** — de processing agreements elterjedtek és ajánlottak
+- **Profiling és magas kockázatú profiling** (Art. 5 nDSG): ha automata egyéni döntés + különleges adatkategória = emberi felügyelet kötelező
+- **Breach notification (Art. 24 nDSG):** kötelező az FDPIC értesítése „magas kockázat" esetén (48h belül); érintetti értesítés is
+- **Adatalany jogok (Art. 23 nDSG):** Auskunftsrecht (hozzáférési jog), helyesbítés, törlés, adathordozhatóság
+- **Jogalap (Art. 6 nDSG):** jóhiszeműség, arányosság, célhoz kötöttség — de nincs GDPR-azonos jogalap-lista (hozzájárulás + jogos érdek + szerződés elfogadott)
+- **Bírságok:** max. CHF 250.000 (személyes felelősség, NEM szervezet!)
+- **FDPIC (Eidgenössischer Datenschutz- und Öffentlichkeitsbeauftragter):** https://www.edoeb.admin.ch
+
+Svájci PP/DPA sablon eltérő pontjai a GDPR-ostól:
+- Hivatkozz nDSG-re, ne GDPR-ra (de megjelenítheted párhuzamosan ha EU-s adatokat is kezelsz)
+- Breach notification: Art. 24 nDSG (nem Art. 33 GDPR)
+- Felügyeleti hatóság: FDPIC (nem NAIH/BfDI/CNIL stb.)
+- Adatalany jogok gyakorlása: Art. 23-26 nDSG
+
+### OR (Obligationenrecht — Svájci Kötelmi Jog)
+
+SaaS-szerz. besorolása OR szerint:
+- **Auftrag (OR Art. 394ff):** megbízási típusú szerz. — ha gondos eljárás, nem eredmény; egy ilyen SaaS tipikusan ide esik
+- **Werkvertrag (OR Art. 363ff):** ha meghatározott eredményt vállalsz (custom fejlesztés)
+- **Innominatvertrag (nem nevesített):** vegyes SaaS mix, Auftrag analógiával
+- **Mietvertrag (OR Art. 253ff):** szoftver hozzáférés mint „bérlet" — ritkán, de jogvitákban felmerülhet
+
+Felelősség-korlátozás (OR Art. 100):
+- Szándékos és súlyos gondatlanság kizárása TILOS (OR Art. 100 Abs. 1)
+- Könnyű gondatlanság és közvetett kár korlátozható
+- AGB (Általános Szerz. Feltételek) bevonása: OR Art. 1 — a másik félnek ismernie kell és elfogadnia; meglepő feltételek nem kötnek (Ungewöhnlichkeitsregel)
+
+Fizetési késedelem (OR Art. 102):
+- Svájcban kamat: 5% p.a. (OR Art. 104)
+- B2B-ben megállapodhatnak magasabb kamatlábban
+
+**Munkaszerz. (OR Art. 319ff) — munkavállalói monitoring:**
+- OR Art. 328 (személyiségi jog védelme): munkáltató köteles tartózkodni a munkavállalók személyiségi jogainak megsértésétől
+- ArGV3 (Verordnung 3 zum Arbeitsgesetz) Art. 26: TILOS olyan surveillance, aminek elsődleges célja a munkavállalók viselkedésének ellenőrzése
+- Geofence check-in mint munkaidő-nyilvántartás: jogszerű, ha a cél dokumentált (biztonság, jelenlétkövető), nem elsősorban viselkedésellenőrzés
+
+### QR-Rechnung (Svájci QR-Számla)
+
+**Kötelező 2022. október 1. óta** — a korábbi BVR (befizetési szelvény) helyett.
+
+Szabvány: SPS (Swiss Payments Standard), ISO 20022 alapú.
+
+Kötelező elemek a QR-számlán:
+- **QR-IBAN** (nem normál IBAN) — a bank adja ki
+- Swiss QR-kód (pontosan meghatározott struktúra: számlatulajdonos, fizetési összeg, referencia szám, opcionális adatok)
+- Szövegmezők max. karakterszáma kötött (pl. kedvezményezett neve ≤ 70 karakter)
+
+A platform számára releváns ha:
+- CH-s tenantoknak állít ki számlát: a számlán QR-IBAN + QR-kód szükséges
+- Stripe Svájcba: a CH-s tenantok várhatják a svájci formátumú számlát
+- Ha a platform számlat generál tenantoknak: opcionálisan beépíthető QR-Rechnung generátor (pl. swiss-qr-bill npm csomag)
+
+Forrás: https://www.paymentstandards.ch / SIX Group
+
+### e-Faktura (CH)
+
+- Szövetségi közbeszerzés: e-számla kötelező (eCH-0108 szabvány, XML/UBL)
+- Magánszektor B2B: NEM kötelező, de terjedőben (eBill platform, PostFinance)
+- eBill: SIX Group + SwissSign, befogadó bank jóváhagyással; a platformhoz nem szükséges most
+
+---
+
+## EU-szintű szabályozók (SaaS-ra vonatkozó friss rendeletek)
+
+### DSA — Digital Services Act (EU 2022/2065)
+
+**Hatályos 2024. február 17. óta minden platformra.**
+
+Kivel szemben alkalmazandó:
+- **Hosting service** (Art. 2(f)(iii)): szerver-tároló, felhő, SaaS infrastruktúra — ha harmadik felek tartalmát tárolod
+- A platform: valószínűleg hosting service (tenant adatokat tárol)
+- **VLOP/VLOSE** (Very Large Online Platform/Search Engine, 45M+ EU-s felhasználó): NEM a platform
+
+A platformra vonatkozó kötelezettségek (intermediary/hosting level):
+- **Notice and action (Art. 16):** ha illegális tartalomra értesítést kapsz, reagálni kell (de B2B SaaS-ban szinte soha nem merül fel)
+- **Transparency report (Art. 15):** ha 45M+ EU-s felhasználó — NEM vonatkozik a platformra
+- **Terms of Service (Art. 14):** a ToS-ban le kell írni a tartalomra vonatkozó korlátozásokat és a szabálysértések kezelési mechanizmusát
+- **No dark patterns (Art. 25):** az UX nem vezetheti félre a felhasználókat (engedélykezelés, opt-out nehézítése stb.)
+
+Megjegyzés: B2B SaaS esetén a DSA kötelezettségek java nem alkalmazandó (a tenantok nem „végfelhasználók" DSA értelemben) — de az alapelveket érdemes követni.
+
+### E-számlázás (EU-szintű + országonként)
+
+**EU keretszabály: Directive 2014/55/EU** — közbeszerzési e-számla (EN 16931 szabvány, UBL/CII formátumok)
+
+B2B kötelező e-számlázás ország szerint (a platform tenantjai szempontjából):
+
+| Ország | Státusz | Részletek |
+|---|---|---|
+| **IT** | **Kötelező** (2019 óta) | FatturaPA XML, SDI átjárón keresztül; B2C is 2024-től; nincs kivétel |
+| **DE** | **Kötelező** (2025-2027 ütemezés) | Wachstumschancengesetz: befogadási kötel. 2025. I. 1.; kiállítási kötel. 2026-2027; XRechnung / ZUGFeRD |
+| **FR** | **Kötelező** (2026-2027) | Portail Public de la Facturation (PPF); sept. 2026-tól nagy vállalkozásoknak; e-reporting kötelezettség |
+| **PL** | **Kötelező** (KSeF, 2025 után) | KSeF (Krajowy System e-Faktur) — kötelező bevezetés halasztva, várható 2025/2026 |
+| **HU** | **NAV Online Számla** | Nem klasszikus e-számla, hanem valós idejű riportálás; e-számla opcionálisan fogadható |
+| **ES** | **Kötelező** (Ley Crea y Crece, 2025+) | TicketBAI + Verifactu rendszerek; kis vállalatoknál 2025-2026 |
+| **CH** | Nem kötelező (magánszektor) | Közbeszerzésben igen (eCH-0108); magánszektor: eBill önkéntes |
+
+Platform-teendők:
+- Ha a platform számlát generál tenantok nevében VAGY a tenantok a platformból exportálják a számláikat, az adott ország formátumát le kell fedni
+- IT FatturaPA: prioritás (már most kötelező)
+- DE XRechnung / ZUGFeRD: 2025-re előkészíteni
+- FR PPF: 2026 előtt implementálni
+
+### NIS2 Irányelv (EU 2022/2555)
+
+**Hatályos 2024. október 18. óta** (tagállami implementáció eltérhet).
+
+Alkalmazandó ha a platform:
+- „Managed service provider" (MSP) / „managed security service provider" — ha IT-szolgáltatást nyújtasz tenantoknak üzemeltetési felelősséggel
+- Tenantok kritikus szektorban működnek (kórháztakarítás, infrastruktúra)
+
+Ha alkalmazandó:
+- Kockázatkezelési intézkedések (Art. 21): titkosítás, hozzáférés-vezérlés, incidenskezelés
+- Incidensbejelentés: 24h (early warning) + 72h (notification) + 1 hónap (final report) az illetékes hatóságnak
+- Ellátási lánc biztonság: a te sub-processoraidat is auditálni kell (Art. 21(2)(d))
+
+A platform valószínű besorolása: ha nem kritikus szektort szolgálsz ki kizárólag, a NIS2 közvetlen kötelezettség nem áll fenn — de a tenantok NIS2-alanyok lehetnek, és a DPA-ban elvárhatják a NIS2-kompatibilis TOMs-ot.
+
+### DMA — Digital Markets Act (EU 2022/1925)
+
+Nem alkalmazandó a platformra: csak „kapuőr" státuszú nagy platformokra (Google, Apple, Meta stb.). Dokumentálni sem szükséges.
+
+---
+
 ## Buktatók
 - Ne állíts jogi bizonyosságot bizonytalan ügyben. Jelöld a joghatóság-függő részeket.
 - DPA hiánya enterprise dealt blokkolhat -> korán hozd elő.
@@ -162,6 +345,11 @@ SCCs-sel fedett non-EEA transzfernél (Stripe, Cloudflare) nem elég az SCC — 
 - IT piac a legkockázatosabb (Garante bírságok 2024-25, Statuto dei Lavoratori Art. 4).
 - **AI Act:** rule-based rendszer ≠ AI-rendszer automatikusan — de dokumentálni kell, miért nem az.
 - **TIA hiánya:** SCCs önmagában nem elég Schrems II után; TIA nélkül az EU transzfer sebezhető audit esetén.
+- **HU NAV:** ha a platform számlát generál, NAV Online Számla API-integráció kötelező (v3.0 XSD).
+- **CH nDSG:** bírság személyes felelősség (CHF 250k) — a GDPR szervezeti felelősségétől eltérő logika.
+- **CH ArGV3 Art. 26:** geofence/monitoring CH-s tenantnak is OK ha dokumentált cél (jelenlétkövető), de „viselkedésellenőrzés" céljával tilos.
+- **IT FatturaPA:** a platformból exportált adatokból a CH tenantok joggal várják a QR-IBAN-os számlát, az IT tenantok a FatturaPA XML-t.
+- **DE 2025:** XRechnung/ZUGFeRD befogadási kötelezettség már 2025. I. 1-től; kiállítási kötelezettség jön — ne hagyd figyelmen kívül a DE tenantok export-igényét.
 
 ## Ellenőrzés
 - A disclaimer szerepel.

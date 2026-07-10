@@ -11,7 +11,7 @@ The spectacle layer of Fron Ted's toolkit. Use AFTER the visual language
 
 ## When to use (and when NOT)
 - **Use on:** marketing/landing pages, "how it works", onboarding hero, feature reveals,
-  product/site showcases. CleanCore fits: landing hero, a 3D site/zone **walkthrough**
+  product/site showcases. A field-service SaaS fits: landing hero, a 3D site/zone **walkthrough**
   ("see how proof-of-work flows"), a scrolly explainer of the evidence chain.
 - **Do NOT use on:** the daily operational surfaces — the field PWA core flows, dense
   Manager dashboards, forms, tables. Heavy WebGL drains battery and jank low-end phones;
@@ -99,7 +99,7 @@ function frame(t){ camera.position.copy(curve.getPointAt(t)); camera.lookAt(targ
 - Don't autoplay anything that flashes/strobes; respect data-saver where detectable.
 
 ## Dependencies (IMPORTANT in this repo)
-Three.js, GSAP, ScrollTrigger are new deps — in the shared CleanCore checkout they go
+Three.js, GSAP, ScrollTrigger are new deps — in a shared multi-agent checkout they go
 through MikroB's lockfile batch. Do NOT add them yourself; request them, code-split them,
 and keep them OFF the operational PWA bundle (separate marketing/landing entry).
 

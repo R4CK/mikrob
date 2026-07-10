@@ -26,7 +26,7 @@ Kész (vagy közel kész) munka tesztelésekor és a "shippable?" döntésnél. 
 - E2E-t ne szórj szét mindenre — drága és törékeny; csak kritikus flow.
 - Bug találtál, de nincs rá teszt? A javítás nem kész, amíg nincs regressziós teszt.
 
-### Stale-PASS csapda (CleanCore-tanulság)
+### Stale-PASS csapda (valós tanulság)
 Ha Cybersec NO-GO-t adott és az ügynök új commitot készített a fix után, a korábbi QA PASS már egy más artifactra vonatkozik. Kötelező lépések:
 1. Nézd meg a REVIEW kommentben és a Cybersec NO-GO-ban szereplő commit hash-t.
 2. Ha eltérnek (vagy ha a kártyán azóta új commit volt), NE fogadd el a régi PASS-t -- futtasd újra a teszteket a legfrissebb commiten.

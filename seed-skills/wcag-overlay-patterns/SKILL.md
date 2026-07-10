@@ -287,7 +287,7 @@ UX nicety; the domain throw is the real gate.
 ### Font-family tokens and the FONT_FAMILY_RE trap
 
 Vendor-prefixed font names starting with `-` (like `-apple-system`) are NOT matched
-by the FONT_FAMILY_RE whitelist in `@cleancore/brand-tokens`. They must be quoted:
+by the FONT_FAMILY_RE whitelist in `@app/brand-tokens`. They must be quoted:
 
 ```ts
 // WRONG -- fails isSafeToken, token silently dropped

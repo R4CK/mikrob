@@ -1,6 +1,6 @@
 ---
 name: tenant-pure-domain
-description: Build a backend feature as a PURE, dependency-free domain module with injected ports (the IO/crypto/DB seam), a binding tenant-scope invariant, and non-vacuous tests (mutation-proof + negative controls + fail-closed). Use for any multi-tenant SaaS backend card/feature where persistence, HTTP, crypto, image/DNS/network IO are deferred to a later adapter — especially in a workspace where modules resolve via tsconfig paths / test aliases. Distilled from ~25 CleanCore domain cards.
+description: Build a backend feature as a PURE, dependency-free domain module with injected ports (the IO/crypto/DB seam), a binding tenant-scope invariant, and non-vacuous tests (mutation-proof + negative controls + fail-closed). Use for any multi-tenant SaaS backend card/feature where persistence, HTTP, crypto, image/DNS/network IO are deferred to a later adapter — especially in a workspace where modules resolve via tsconfig paths / test aliases. Distilled from ~25 real multi-tenant SaaS domain cards.
 ---
 # Tenant-scoped pure-domain module
 
@@ -123,8 +123,8 @@ bugs. Each test must be able to FAIL for the right reason:
 Many agents share ONE working tree + ONE `pnpm-lock.yaml`. Adding a dependency is
 where a solo instinct (`pnpm add`) corrupts everyone. Classify FIRST, then act:
 
-- **Workspace cross-package dep (`@cleancore/*`)** — e.g. proof needs
-  `@cleancore/evidence`/`@cleancore/sites`. Add `"@cleancore/x": "workspace:*"`
+- **Workspace cross-package dep (`@app/*`)** — e.g. proof needs
+  `@app/evidence`/`@app/sites`. Add `"@app/x": "workspace:*"`
   to YOUR package.json's `dependencies`; it resolves via `tsconfig.base.json`
   paths + the vitest alias, so tsc + tests pass with **NO `pnpm install` and NO
   `pnpm-lock` change**. Commit the package.json yourself. Mention it to the
@@ -174,6 +174,19 @@ every card against all three before you move it to `waiting`.
    reject C0/DEL/C1 controls (U+0000-001F, 007F-009F) and BIDI/RTL overrides (U+202A-202E, U+2066-2069) — a whitespace-only
    filter lets NUL/DEL/RTL through (ec089d56 F1). Reuse the canonical validator;
    never hand-roll a weaker copy.
+4. **The ACTOR of an authz / SoD decision comes from ctx/session — NEVER a caller param.**
+   For any Segregation-of-Duties or "X may not act on their own Y" rule, the acting
+   identity MUST be bound to `ctx.userId` (or the session actor), not passed in as a
+   parameter the caller controls. Comparing two caller-supplied ids (e.g.
+   `if (employeeId === reviewerId) throw`) is NOT a control: the caller sets both, so
+   they just supply a different id and walk through. This recurred TWICE and both
+   times 20+ green tests hid it: supply-request approval (`approverId` param, requester
+   self-approves — 5d03d0bb) and performance self-review (`reviewerId` param, employee
+   reviews self — e9ce895c). Fix pattern: `const actor = ctx.userId; if (actor === targetId) throw SoDError;`
+   and use `actor` as the recorded approver/reviewer — do NOT accept a caller-supplied
+   actor id for the authz decision. Grep every SoD/`!==`/`===` identity guard: if both
+   sides trace to the request body/args rather than ctx, it's a bypass. The domain takes
+   the actor as an explicit arg the ADAPTER fills from ctx — never trusts a body field.
 
 ## Verification checklist (before `waiting`)
 - [ ] Package tests green; new tests include mutation-proof + negative + fail-closed.

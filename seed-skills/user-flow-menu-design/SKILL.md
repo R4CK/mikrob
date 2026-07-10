@@ -104,7 +104,7 @@ Treat the design as failing until all pass:
 - **Deep-link/refresh**: every meaningful state has a stable URL that survives refresh and back.
 A green visual mock is NOT sufficient -- walk each user flow end to end and try to reach every feature and every error branch.
 
-## Notes for this fleet (CleanCore context)
+## Notes for this fleet (multi-tenant SaaS context)
 - Multi-tenant SaaS with a `module_catalog` + plan tiers + RBAC: the menu MUST be entitlement-driven (per-tenant enabled modules, per-user role, per-plan). Reuse the tenant-scope invariant -- nav filtering is presentation; server-side authz (402/403) is the real gate (never UI-hide-only).
 - White-label theming: nav chrome must render per-tenant branding via the shared brand-token validator.
 - Coordinate the URL/tenant-resolution design with the security model (host/JWT-authoritative tenant, never `?tenant=`).
@@ -177,7 +177,7 @@ Recommended order:
 - One prompt for multiple screens: Stitch conflates content; always one prompt = one screen.
 - Skipping system screens: empty/error/offline states are part of the product, not optional.
 
-## V2 per-screen prompt structure (learned from 77-screen CleanCore V2)
+## V2 per-screen prompt structure (learned from a 77-screen SaaS V2)
 
 When the full IA is known and visual direction is chosen, the correct output format is a group-by-surface file with per-screen Stitch prompts. Each group contains:
 

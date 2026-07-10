@@ -72,7 +72,7 @@ Peti 50 szabályának szintézise (deduplikálva, kategóriánként). Ez a KÖTE
 
 ## XI. Szerver-tekintély és authorizáció-keményítés (bevált minták, RBAC-hullám 2026-07)
 A II. (Zero Trust, Fail secure) konkrét, harcban tesztelt implementációs mintái. Ezek a
-CleanCore RBAC-enforcement munkából desztillálva; alkalmazd MINDEN authz/írás-útnál.
+valós multi-tenant RBAC-enforcement munkából desztillálva; alkalmazd MINDEN authz/írás-útnál.
 
 - **Recompute-on-write (a szerver sosem trustolja a kliens számolt értékeit):** minden
   származtatott értéket (ár, összeg, total, score, jutalék) a szerver ÚJRASZÁMOL a nyers
@@ -121,7 +121,7 @@ CleanCore RBAC-enforcement munkából desztillálva; alkalmazd MINDEN authz/ír�
 
 ## Buktatók
 - Ezek baseline-ek, nem dísz. Ha eltérsz egytől, az tudatos, indokolt és dokumentált döntés legyen.
-- A marveen saját kódja egy Claude Code harness -- nem minden szabály (pl. K8s/IaC) értelmezhető 1:1; alkalmazd a kontextushoz, de a security/secrets/observability/kódhigiénia szabályok mindig élnek.
+- A fleet saját kódja egy Claude Code harness -- nem minden szabály (pl. K8s/IaC) értelmezhető 1:1; alkalmazd a kontextushoz, de a security/secrets/observability/kódhigiénia szabályok mindig élnek.
 
 ## Ellenőrzés
 - Új kód: nincs hardcoded secret, input validált, teszt + 80% coverage, strukturált log, README.
