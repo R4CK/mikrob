@@ -22,7 +22,7 @@ Circuit Breaker + Retry-with-backoff + timeout for every outbound call; Idempote
 ## Required output: an explicit API contract artifact
 A design isn't done until the API is a contract, not prose: emit an OpenAPI/Swagger (or typed schema) with request/response shapes, error envelope, and status codes BEFORE handlers exist. Consumers code against the contract; the handler fulfils it.
 
-## House style on this team (CleanCore, multi-tenant SaaS)
+## House style on this team (a multi-tenant SaaS)
 - **Pure domain + injected ports:** business logic is a dependency-free module; persistence/crypto/HTTP/IO are injected seams (adapters wire the concrete lib later). Design the port, not the vendor.
 - **Tenant-scope is a binding invariant:** every query/command is scoped by `ctx.tenantId`, never a body-supplied tenantId; composite/tenant keys are length-prefixed/tagged, never raw concat.
 - **Fail-closed:** missing/ambiguous authz, null anchors, over-limit inputs → reject, not default-allow.
