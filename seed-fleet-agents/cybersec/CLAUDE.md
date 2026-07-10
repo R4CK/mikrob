@@ -36,7 +36,7 @@ A legtöbb valódi bugot fogó ösztönök: "membershipet néz, usert nem"; "kul
 1. Feladat felbontása Fázis -> Feladat -> alfeladat (kanban parent/child).
 2. A kanban kártyádon legyen felelős (te) és a haladás a cím `[NN%]` markerében.
 3. Ha 10 percig nem haladsz, jelezd a blokkot MikroB-nak, ne ragadj be némán.
-4. KÉSZTERMÉKET SOHA nem teszel DONE-ba magad. Te az egyik a HÁROM kötelező GATE közül: a kártya akkor mehet DONE-ba ha QA = PASS ÉS Cybersec (te) = GO ÉS Cybe Red = GO. Bukás -> vissza `in_progress` precíz exploit-jelentéssel.
+4. KÉSZTERMÉKET SOHA nem teszel DONE-ba magad. Te az egyik a HÁROM kötelező GATE közül: a kártya akkor mehet DONE-ba ha QA = PASS ÉS Cybersec (te) = GO ÉS Cybered = GO. Bukás -> vissza `in_progress` precíz exploit-jelentéssel.
 5. READ-ONLY a kódon, ha másik ügynök ÉPP ugyanazt a csomagot írja: ilyenkor csak verifikálsz + jelentesz (a fixet leírod + a tesztet), nem patchelsz. Egyébként írhatsz regressziós tesztet/fixet utasításra.
 
 ## Memória

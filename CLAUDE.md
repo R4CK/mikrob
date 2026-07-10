@@ -136,11 +136,11 @@ KÖTELEZŐ minden nem-triviális feladatnál. Részletek: `project-workflow` ski
 1. **Felbontás Fázis -> Feladat -> alfeladat -> al-alfeladat (4+ szint).** Minden munkát legalább négy szinten bontasz le, és az alfeladatokat tovább bontod konkrét lépésekre, ahányszor szükséges. Kanbanon parent/child kártyákkal (`parent_id`), rekurzívan: Fázis = top, Feladat = gyerek, alfeladat = unoka, al-alfeladat/lépés = dédunoka (és mélyebben, ha a feladat indokolja).
 2. **Felelős + százalék + színes ügynök-label a kártyán, láthatóan.** A felelős az `assignee` mező. A haladás a kártya CÍMÉBE tett `[NN%]` marker (nincs natív progress mező), PUT-tal frissítve. Minden feladat-kártyára tedd rá a felelős ügynök SZÍNES labeljét is (`@<agent>` címke, `/api/kanban/<id>/labels`), hogy a táblán színnel is látszódjon, kié a feladat.
 3. **10 perces beragadás.** Ha egy in_progress kártya `[NN%]`/`updated_at`-je 10 percig nem mozdul, beragadt: megnézed a blokkot és újraindítod (re-dispatch / átruházás). A `stuck-card-monitor` ütemezett feladat 5 percenként ellenőrzi.
-4. **Készterméket csak NEM a készítő ellenőrizhet -- KOCKÁZAT-ALAPÚ gate-tiering (Peti szabály 2026-07-05).** Minden kész kártyát MINIMUM 2 független ügynök ellenőriz; a készítő SOHA nem ellenőrzi a sajátját. Tesztelési/sign-off jogköre KIZÁRÓLAG a 3-tagú gate-poolnak: **`qa-engineer`** (funkcionális: teszt-piramis, regresszió, acceptance), **`cybersecurity-redteam`** (Cybersec, per-finding: STRIDE, OWASP, bypass, exploit + fix) és **`cybe-red`** (Cybe Red, adverzariális: assume-breach, teljes kill-chain, legális aktív védelem -- KIZÁRÓLAG engedélyezett hatókörön). **MikroB TTE-feladata (állandó orchestrátor-kötelesség): kártyánként kiválasztani/váltogatni a gate-tagokat a kockázat szerint:**
+4. **Készterméket csak NEM a készítő ellenőrizhet -- KOCKÁZAT-ALAPÚ gate-tiering (Peti szabály 2026-07-05).** Minden kész kártyát MINIMUM 2 független ügynök ellenőriz; a készítő SOHA nem ellenőrzi a sajátját. Tesztelési/sign-off jogköre KIZÁRÓLAG a 3-tagú gate-poolnak: **`qa-engineer`** (funkcionális: teszt-piramis, regresszió, acceptance), **`cybersecurity-redteam`** (Cybersec, per-finding: STRIDE, OWASP, bypass, exploit + fix) és **`cybered`** (Cybered, adverzariális: assume-breach, teljes kill-chain, legális aktív védelem -- KIZÁRÓLAG engedélyezett hatókörön). **MikroB TTE-feladata (állandó orchestrátor-kötelesség): kártyánként kiválasztani/váltogatni a gate-tagokat a kockázat szerint:**
    - **QA: MINDIG** minden kártyán (ez az egyik a min. 2-ből). Nem alkudható.
    - **Cybersec:** ha a kártya trust-boundaryt érint -- auth, publikus/unauth endpoint, RBAC, multi-tenant scope, pénz, PII, file-upload, superadmin, crypto. Tiszta belső domain-logikánál (nincs új támadási felület) helyette a másik biztonsági gate-tag rotál be.
-   - **Cybe Red:** magas-tétű kártyákra + release/mérföldkő előtt -- publikus write path, auth/session, superadmin, internet-facing. Ekkor **mind a 3** fut.
-   - **Alap eset (2 gate):** QA + a kockázatnak megfelelő biztonsági gate (Cybersec vagy Cybe Red), rotálva. **Magas-kockázat (3 gate):** QA + Cybersec + Cybe Red.
+   - **Cybered:** magas-tétű kártyákra + release/mérföldkő előtt -- publikus write path, auth/session, superadmin, internet-facing. Ekkor **mind a 3** fut.
+   - **Alap eset (2 gate):** QA + a kockázatnak megfelelő biztonsági gate (Cybersec vagy Cybered), rotálva. **Magas-kockázat (3 gate):** QA + Cybersec + Cybered.
    A befejező ügynök `waiting` + "REVIEW" komment; ezután a kártya a MikroB által kijelölt gate-ekhez megy. DONE csak akkor, ha MINDEN kijelölt gate PASS/GO. Bármelyik bukása -> vissza `in_progress` precíz, reprodukálható bug-/exploit-/kill-chain-jelentéssel. A saját munkáját egyik gate sem ellenőrzi. MikroB orchestrálja és a PASS/GO-k után zárja a kártyát; a puszta "zöld teszt" önmagában NEM elég bizonyíték (lásd: a magic-link auth 151/151 zölden is 2 MAJOR hibát rejtett).
 5. **Fázis automatikus lezárása.** Ha egy fázis (vagy bármely szülő-kártya) MINDEN gyerek-kártyája `done`, és nincs több tennivaló vele, a fázis-kártyát is tedd `done`-ra. Mindig ellenőrizd ezt, miután egy gyerek-kártyát lezártál: ha az volt az utolsó nyitott elem, zárd a szülőt is (rekurzívan felfelé).
 6. **A munka SOHA nem áll le tétlenül -- csak akkor lehet idle, ha elfogyott az 5 órás Claude keret.** A flotta folyamatosan dolgozik. Minden 10 percben ellenőrizni kell, van-e futó feladat (aktív in_progress kártya, ami mozdul, vagy futó subagent). Döntési fa:
@@ -156,10 +156,10 @@ KÖTELEZŐ minden nem-triviális feladatnál. Részletek: `project-workflow` ski
 ### Ügynök-csapat (subagent_type)
 Mérnöki: `fullstack-mvp-builder`, `backend-architect`, `frontend-component-engineer`, `fron-ted` (Fron Ted, design-kutató frontend), `codebase-auditor`, `production-debugger`, `performance-optimizer`, `clean-architecture-refactorer`.
 Üzleti/minőség: `qa-engineer`, `marketing-strategist`, `legal-counsel`, `finance-officer`.
-Biztonság: `cybersecurity-redteam` (Cybersec, white-hat offenzív biztonsági mérnök -- a `white-hat-security-testing` skillel) és `cybe-red` (Cybe Red, agresszív adverzariális red-team -- kill-chain emuláció + legális aktív védelem, engedélyezett hatókörön).
+Biztonság: `cybersecurity-redteam` (Cybersec, white-hat offenzív biztonsági mérnök -- a `white-hat-security-testing` skillel) és `cybered` (Cybered, agresszív adverzariális red-team -- kill-chain emuláció + legális aktív védelem, engedélyezett hatókörön).
 Kiosztás, beragadás-kezelés, végső ellenőrzés: MikroB (CEO/CTO szerep).
 
-**Tesztelési gate-ek (KÖTELEZŐ):** minden kész kártyát HÁROM független ügynök tesztel -- `qa-engineer` (funkcionális), `cybersecurity-redteam` (per-finding biztonsági) ÉS `cybe-red` (adverzariális red-team). Csak ők hárman tesztelnek/sign-offolnak. DONE = QA PASS + Cybersec GO + Cybe Red GO. Egyik sem ellenőrzi a saját munkáját. Lásd 4. szabály.
+**Tesztelési gate-ek (KÖTELEZŐ):** minden kész kártyát HÁROM független ügynök tesztel -- `qa-engineer` (funkcionális), `cybersecurity-redteam` (per-finding biztonsági) ÉS `cybered` (adverzariális red-team). Csak ők hárman tesztelnek/sign-offolnak. DONE = QA PASS + Cybersec GO + Cybered GO. Egyik sem ellenőrzi a saját munkáját. Lásd 4. szabály.
 
 ## Teljes értékű audit -- SZABÁLY (KÖTELEZŐ)
 
@@ -215,7 +215,7 @@ Ha egy projekt git repóval rendelkezik, a `README.md` naprakészen tartása a f
 - **Ha nincs README:** hozz létre egy alaposat (lásd a CleanCore README mintát: termék, architektúra, repo-térkép, prerequisites, telepítés, env, DB/migráció, futtatás, teszt+gate-ek, security, doksi-index).
 - **Ellenőrzés:** commit/PR/merge előtt vesd össze a README-t a tényleges kóddal (env-változó nevek, scriptek, portok, mappák) -- a README SOHA ne hazudjon. Elavult README = hiba, javítsd.
 - **Push-nál:** amikor egy projektet a git remote-ra töltesz vagy mainre mergelsz, a README frissessége a feltöltés része.
-- A QA/Cybersec/Cybe Red gate a kód mellett a README-pontosságot is nézheti (a doksi-drift is finding).
+- A QA/Cybersec/Cybered gate a kód mellett a README-pontosságot is nézheti (a doksi-drift is finding).
 
 ## Kvóta-figyelmeztetés (5 órás limit) -- SZABÁLY
 
@@ -241,7 +241,7 @@ Az 5 órás session-limit MELLETT van egy HETI limit is (a Max 5x csomag "Weekly
   - (2--3 nap között a 90% marad; a `< 1 nap` a `< 2 nap`-on belül a szűkebb, ezért 95% nyer. Logika: `days<1 → 95`, `elif days<2 → 92`, `else → 90`.)
   Minél közelebb a reset, annál magasabb a megengedett küszöb (mert a reset úgyis jön).
 - **Ha a HETI "All models" sáv eléri az AKTUÁLIS (dinamikus) küszöböt:** a flotta a MÁR FUTÓ, aktuális fejlesztéseket BEFEJEZI (a jelenlegi in_progress kártyák + a hozzájuk tartozó gate-ek lefutnak), de **ÚJ fejlesztést NEM indítasz** (nincs új planned kártya `in_progress`-be, nincs új dispatch) a HETI reset megtörténtéig. A 6. szabály "no idle" ilyenkor a heti-limit miatt fel van függesztve az új munkára -- ez a megengedett kivétel, mint a kvóta-limit.
-- **Mit szabad 90% felett:** in-flight kártyák befejezése, gate-ek (QA/Cybersec/Cybe Red) lefuttatása és a kártyák LEZÁRÁSA, Telegram-válasz Petinek, monitorozás. Amit NEM: új feature-kártya indítása, önfejlesztő kör indítása, bármi ami új fejlesztési munkát kezd.
+- **Mit szabad 90% felett:** in-flight kártyák befejezése, gate-ek (QA/Cybersec/Cybered) lefuttatása és a kártyák LEZÁRÁSA, Telegram-válasz Petinek, monitorozás. Amit NEM: új feature-kártya indítása, önfejlesztő kör indítása, bármi ami új fejlesztési munkát kezd.
 - **Mérés:** a pontos heti % a Claude usage-képernyőn látszik (session + weekly sávok). Automatikus olvasása nem garantált; a jelzés forrása Peti usage-screenshotja és/vagy a heti-limit banner. Ha bizonytalan a %, a reset-idő közeledtével (a képernyőn látható `Resets <nap> <idő>`) konzervatívan viselkedj: a heti reset előtt ne kezdj nagy új fejlesztésbe, ha a sáv a 90% közelében jár. Ismert állapot 2026-07-05 08:06-kor: heti All-models 87%, reset **csütörtök 15:59 (Thu 3:59 PM)**.
 - Amint a heti reset megtörtént (a sáv nullázódik), a normál "no idle" folytatódik: dispatcheld a következő planned munkát.
 
