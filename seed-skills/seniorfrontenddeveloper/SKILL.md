@@ -1,15 +1,15 @@
 ---
 name: seniorfrontenddeveloper
-description: Senior frontend engineering for React/Next.js — scaffolds projects, generates typed components/hooks with tests and Storybook, analyzes bundle size, and enforces performance, accessibility, and rendering-strategy discipline. Use this skill whenever Peti mentions frontend, React, Next.js, Vite, a new component, a custom hook, project scaffolding, bundle size, Core Web Vitals, LCP/INP/CLS, a11y/WCAG/accessibility, Server vs Client Components, image optimization, data fetching, Tailwind, a design system, choosing a framework or rendering strategy (RSC/SSR/SSG/SPA), or a frontend performance/architecture review.
+description: Senior frontend engineering for React/Next.js — scaffolds projects, generates typed components/hooks with tests and Storybook, analyzes bundle size, and enforces performance, accessibility, and rendering-strategy discipline. Use this skill whenever the user mentions frontend, React, Next.js, Vite, a new component, a custom hook, project scaffolding, bundle size, Core Web Vitals, LCP/INP/CLS, a11y/WCAG/accessibility, Server vs Client Components, image optimization, data fetching, Tailwind, a design system, choosing a framework or rendering strategy (RSC/SSR/SSG/SPA), or a frontend performance/architecture review.
 ---
 
 # Senior Frontend Developer
 
 ## Purpose
-This skill gives Peti a senior-level frontend engineering workflow for React and Next.js apps. It scaffolds projects, generates production-grade components and hooks, audits bundle size, and — most importantly — forces the four assumptions and verifiable success criteria (device, LCP target, SEO vs auth-wall, WCAG target) before making any framework, rendering, or performance recommendation. It routes deep concerns to specialist skills rather than reimplementing them.
+This skill gives a felhasználó a senior-level frontend engineering workflow for React and Next.js apps. It scaffolds projects, generates production-grade components and hooks, audits bundle size, and — most importantly — forces the four assumptions and verifiable success criteria (device, LCP target, SEO vs auth-wall, WCAG target) before making any framework, rendering, or performance recommendation. It routes deep concerns to specialist skills rather than reimplementing them.
 
 ## When to use
-Trigger this skill when Peti:
+Trigger this skill when a felhasználó:
 - Wants to scaffold a new Next.js/React project or generate a component/hook.
 - Mentions bundle size, heavy dependencies, tree-shaking, or Core Web Vitals (LCP, INP, CLS).
 - Asks about Server vs Client Components, SSR/SSG/RSC/SPA, image optimization, or data fetching.
@@ -38,15 +38,15 @@ Trigger this skill when Peti:
 ## Examples
 
 **Example 1**
-Input (Peti): "Scaffold a customer-facing SaaS dashboard, SEO matters, mobile users on 4G."
+Input (a felhasználó): "Scaffold a customer-facing SaaS dashboard, SEO matters, mobile users on 4G."
 Output: Confirm the 4 assumptions → run decision engine → matches `next-app-router` (LCP 2000ms p75, 150 KB-gzip/route). Then: `python scripts/frontend_scaffolder.py dashboard --template nextjs --features auth,api`, followed by the generated `app/` + `components/` tree and the required CI gates (Lighthouse perf ≥ floor, bundle budget check).
 
 **Example 2**
-Input (Peti): "This React app feels heavy, what's bloating it?"
+Input (a felhasználó): "This React app feels heavy, what's bloating it?"
 Output: `python scripts/bundle_analyzer.py . --verbose` → "Bundle Health Score: 75/100 (C). Replace moment (290KB) → date-fns (12KB); lodash (71KB) → lodash-es with tree-shaking." Then concrete import-pattern fixes and a re-run to confirm the new grade.
 
 ## Language rules
-- Speak Hungarian with Peti; refer to the user only as **Peti**.
+- Speak Hungarian with a felhasználó; refer to the user only as **a felhasználó**.
 - Keep all code, commands, filenames, framework terms, and technical identifiers in English.
 - Code comments stay in English.
 

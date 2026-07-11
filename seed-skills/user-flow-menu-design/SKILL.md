@@ -54,7 +54,7 @@ For each KEY journey, draw the step-by-step path through the screens. Always des
 - **Settings / account changes**, **search -> result -> detail**, **error & recovery** paths.
 For each step define: trigger, screen, primary action, success destination, failure/branch destination.
 
-**Flow-connectivity (BINDING — Peti 2026-07-10): every flow must be WIRED to every function it touches.**
+**Flow-connectivity (BINDING — a felhasználó 2026-07-10): every flow must be WIRED to every function it touches.**
 For each flow, enumerate every backend function / endpoint / adjacent feature it touches or can
 reach, and confirm each is actually connected — no decorative buttons, no no-op actions, no dead
 ends, no feature that the flow implies but never links to. A step that "shows a button" but isn't
@@ -94,7 +94,7 @@ Keep these as living docs alongside the design; update when a feature/module is 
 ## Verification (QA uses THIS section as the gate)
 Treat the design as failing until all pass:
 - **Reachability**: every shipped feature is reachable from the nav for at least one role; produce the full feature list and tick each off against the sitemap. Zero orphans.
-- **Flow-connectivity (BINDING — Peti 2026-07-10)**: every flow is WIRED to every function it touches. Produce, per flow, the list of touched backend functions/endpoints/adjacent features and verify each is actually invoked (no decorative/no-op buttons, no dead-end actions, no implied-but-unlinked feature). A button not connected to its real function is a FAIL (missing wiring), not a note. Missing connection whose target EXISTS -> must be wired before pass; target that does NOT exist -> a build card must exist. Reachability is necessary but NOT sufficient — connectivity is the stronger check.
+- **Flow-connectivity (BINDING — a felhasználó 2026-07-10)**: every flow is WIRED to every function it touches. Produce, per flow, the list of touched backend functions/endpoints/adjacent features and verify each is actually invoked (no decorative/no-op buttons, no dead-end actions, no implied-but-unlinked feature). A button not connected to its real function is a FAIL (missing wiring), not a note. Missing connection whose target EXISTS -> must be wired before pass; target that does NOT exist -> a build card must exist. Reachability is necessary but NOT sufficient — connectivity is the stronger check.
 - **No dead ends**: every flow's every branch (success AND failure/empty/permission-denied) has a defined next destination; no screen leaves the user stuck.
 - **Click-depth**: core jobs <= 1 click, any feature <= 3; flag violations.
 - **Role/entitlement correctness**: for each role x plan x module combination, the visible menu matches the entitlement matrix exactly -- and a user CANNOT navigate (by URL typing) to a feature they lack permission/module for (it must 403/hide, verified, not just be absent from the menu). This is a security-adjacent check; cross-tenant nav must fail closed.

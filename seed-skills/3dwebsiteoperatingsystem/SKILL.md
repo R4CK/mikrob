@@ -1,6 +1,6 @@
 ---
 name: 3dwebsiteoperatingsystem
-description: A complete operating system for designing and building premium, agency-quality 3D animated websites — information architecture, visual identity, 3D interaction system, animation language, responsive layouts, accessibility strategy, and an implementation roadmap, with the purpose behind every animation explained. Use this skill whenever Peti mentions a 3D website, immersive/interactive site, WebGL/Three.js/R3F experience, scroll-driven storytelling, hero animation, awwwards-style/agency-quality site, product showcase, landing page with "wow factor", motion design system, or asks to design/architect/plan a premium animated web experience. Also triggers on "3D weboldal", "látványos oldal", "immerzív", "scroll animáció", "legyen prémium/agency szintű".
+description: A complete operating system for designing and building premium, agency-quality 3D animated websites — information architecture, visual identity, 3D interaction system, animation language, responsive layouts, accessibility strategy, and an implementation roadmap, with the purpose behind every animation explained. Use this skill whenever the user mentions a 3D website, immersive/interactive site, WebGL/Three.js/R3F experience, scroll-driven storytelling, hero animation, awwwards-style/agency-quality site, product showcase, landing page with "wow factor", motion design system, or asks to design/architect/plan a premium animated web experience. Also triggers on "3D weboldal", "látványos oldal", "immerzív", "scroll animáció", "legyen prémium/agency szintű".
 ---
 
 # 3D Website Operating System
@@ -9,7 +9,7 @@ description: A complete operating system for designing and building premium, age
 This skill turns a vague "make it look premium and 3D" request into a complete, defensible operating system: the architecture, visual identity, interaction model, motion language, responsive plan, accessibility strategy, and a phased build roadmap. It exists so every 3D site ships as a coherent system — not a pile of disconnected effects — and so every animation has a stated reason (guide attention, communicate depth, reward action, signal state, or tell story). Wow-factor with intent.
 
 ## When to use
-- Peti wants a new premium/immersive/3D/animated website or a redesign toward agency quality.
+- the user wants a new premium/immersive/3D/animated website or a redesign toward agency quality.
 - Requests naming Three.js, React Three Fiber, WebGL, GSAP, ScrollTrigger, shaders, Spline, camera paths, fly-throughs, parallax, scroll storytelling.
 - "Make it look expensive / awwwards-level / cinematic / immersive", hero-section motion, product 3D showcase, portfolio with motion.
 - Planning phase for a site where look-and-feel and motion are the point.
@@ -38,20 +38,20 @@ A single structured document (Markdown) with these headed sections, in this orde
 6. **Responsive & Accessibility** (per-moment fallback + reduced-motion + WCAG notes)
 7. **Implementation Roadmap** (phases 0–6, libraries, perf targets)
 
-Use tables where noted. Keep every motion entry paired with its purpose. Code/config snippets in English; only produce runnable code when Peti asks to build (otherwise stay at system/plan altitude).
+Use tables where noted. Keep every motion entry paired with its purpose. Code/config snippets in English; only produce runnable code when the user asks to build (otherwise stay at system/plan altitude).
 
 ## Examples
 
 **Example 1**
-Input (Peti): "Kell egy prémium 3D landing egy AI SaaS-nak, legyen látványos de konvertáljon."
+Input (a felhasználó): "Kell egy prémium 3D landing egy AI SaaS-nak, legyen látványos de konvertáljon."
 Output: Full OS doc — Positioning (confident, calm-tech tone; CTA = "Start free"); IA spine (hero hook → live 3D product diorama → social proof → pricing → CTA); tokens (near-black base, electric-cyan accent, glass material, single key light); 3D system (R3F, ≤120k tris, scroll-path camera through the diorama, pointer parallax); animation table where "hero float loop → purpose: signal the product is alive & interactive"; mobile fallback = static hero render + CSS gradient sheen; reduced-motion = fade only; roadmap phases 0–6 with LCP < 2.5s / 60fps desktop targets.
 
 **Example 2**
-Input (Peti): "Csak a hero szekció animációs nyelvét tervezd meg egy portfólióhoz."
+Input (a felhasználó): "Csak a hero szekció animációs nyelvét tervezd meg egy portfólióhoz."
 Output: Scoped Animation Language section only — easing set, duration bands, choreography for entrance (text mask-reveal, stagger 60ms → purpose: lead the eye down the headline), pointer parallax on 3D bust (purpose: communicate depth without a click), scroll-scrub camera dolly (purpose: transition from intro to work), plus reduced-motion variants for each.
 
 ## Language rules
-- Converse with Peti in **Hungarian**; refer to the user only as **Peti**.
+- Converse with the user in **Hungarian**; refer to the user only as **a felhasználó**.
 - Keep all code, config, token names, library names, easing/timing values, and technical terms in **English** (e.g. `ScrollTrigger`, `prefers-reduced-motion`, `cubic-bezier`, `--color-accent`).
 - Section headings in the output may stay English (they're technical/structural); prose explanation in Hungarian.
 
@@ -62,4 +62,4 @@ Output: Scoped Animation Language section only — easing set, duration bands, c
 - **Unbounded scenes.** No tri-count/texture/draw-call budget = jank. Always set a perf budget and LCP/FPS target.
 - **Token-less styling.** No hardcoded hex/px scattered in components; drive everything from the token system.
 - **Autoplay audio, hijacked native scroll, motion that traps or nauseates.** Respect user control and WCAG.
-- **Jumping to code too early.** Lock the system (IA + tokens + motion language) before building, unless Peti explicitly says "build it now".
+- **Jumping to code too early.** Lock the system (IA + tokens + motion language) before building, unless the user explicitly says "build it now".

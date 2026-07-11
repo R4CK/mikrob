@@ -1,6 +1,6 @@
 ---
 name: redteam
-description: Red team engagement planning and attack path analysis for AUTHORIZED offensive security simulations. Builds structured, kill-chain-ordered attack plans from MITRE ATT&CK technique selection, access level, and crown jewel targets — scoring techniques by effort and detection risk, identifying choke points, and flagging OPSEC risks. Use this skill whenever Peti mentions red team, red teaming, adversary simulation, adversary emulation, attack path analysis, kill chain, MITRE ATT&CK, engagement planning, Rules of Engagement (RoE), crown jewels, choke points, OPSEC risk, assumed breach, purple team detection validation, or asks to plan/scope an offensive security exercise. NOT for vulnerability scanning (use security-pen-testing) or incident response (use incident-response).
+description: Red team engagement planning and attack path analysis for AUTHORIZED offensive security simulations. Builds structured, kill-chain-ordered attack plans from MITRE ATT&CK technique selection, access level, and crown jewel targets — scoring techniques by effort and detection risk, identifying choke points, and flagging OPSEC risks. Use this skill whenever the user mentions red team, red teaming, adversary simulation, adversary emulation, attack path analysis, kill chain, MITRE ATT&CK, engagement planning, Rules of Engagement (RoE), crown jewels, choke points, OPSEC risk, assumed breach, purple team detection validation, or asks to plan/scope an offensive security exercise. NOT for vulnerability scanning (use security-pen-testing) or incident response (use incident-response).
 ---
 
 # Red Team
@@ -13,7 +13,7 @@ This is adversary *simulation*, not vulnerability discovery (security-pen-testin
 
 ## When to use
 
-Use this skill when Peti asks to:
+Use this skill when the user asks to:
 - Plan or scope a red team / adversary-simulation engagement
 - Build a kill-chain-ordered attack plan from MITRE ATT&CK techniques
 - Analyze attack paths from an access level to crown jewel assets
@@ -27,7 +27,7 @@ Trigger phrases: "red team", "adversary simulation/emulation", "attack path", "k
 
 ## Instructions
 
-1. **Confirm authorization first.** Verify a signed RoE, defined scope, and out-of-scope exclusions exist before any planning. If unclear, ask Peti and stop.
+1. **Confirm authorization first.** Verify a signed RoE, defined scope, and out-of-scope exclusions exist before any planning. If unclear, ask the user and stop.
 2. **Define crown jewels and success criteria** with stakeholders before selecting techniques — engagement success is reaching them, not open-ended hunting.
 3. **Select the access level**: `external` (internet only), `internal` (network foothold, no creds), or `credentialed` (assumed breach, full kill chain).
 4. **Generate the plan** with the tool:
@@ -65,18 +65,18 @@ For structured use, pipe the tool's `--json` output through `jq '.phases, .choke
 ## Examples
 
 **Example 1**
-- Input (Peti): "Scope a quick external red team against the customer database, we have a signed RoE."
+- Input (a felhasználó): "Scope a quick external red team against the customer database, we have a signed RoE."
 - Output: Run `engagement_planner.py --techniques T1566,T1190,T1059,T1003,T1021 --access-level external --crown-jewels "Database Server" --authorized --json`. Present kill-chain phases, flag the credential-access choke point (T1003), note OPSEC risk of LSASS access triggering EDR, and recommend: if choke points are already covered by detection rules, focus the exercise on gaps.
 
 **Example 2**
-- Input (Peti): "Assumed-breach tabletop — compromised credential, target AD and the S3 data bucket."
+- Input (a felhasználó): "Assumed-breach tabletop — compromised credential, target AD and the S3 data bucket."
 - Output: Run with `--access-level credentialed --techniques T1059,T1078,T1021,T1550,T1003,T1048 --crown-jewels "Active Directory,S3 Data Bucket" --target-count 20 --authorized --json`. Show the lateral-movement path (PtH → domain account → DCSync), mark the choke point, and compare path options across access levels.
 
 ## Language rules
 
-- Converse with **Peti in Hungarian** — explanations, recommendations, and phase narration.
+- Converse with **the user in Hungarian** — explanations, recommendations, and phase narration.
 - Keep **English** for all code, CLI commands, flags, MITRE ATT&CK IDs/names, tactic names, JSON keys, and file paths. Do not translate technical identifiers.
-- Refer to the user only as **Peti**.
+- Refer to the user only as **a felhasználó**.
 
 ## What to avoid
 

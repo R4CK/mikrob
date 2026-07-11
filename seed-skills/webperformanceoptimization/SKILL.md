@@ -1,15 +1,15 @@
 ---
 name: webperformanceoptimization
-description: Optimizes premium 3D animated websites for speed, smoothness, accessibility, and launch-readiness without sacrificing the visual experience. Use this skill whenever Peti mentions web performance, Core Web Vitals, LCP/INP/CLS/TTFB, frame rate/FPS drops, jank, lazy loading, code splitting, asset compression, image/texture optimization, responsive rendering, accessibility/a11y/WCAG, SEO, structured data, JSON-LD, analytics integration, caching, CDN, deployment, a pre-launch QA checklist, or wants a 3D/WebGL/Three.js/R3F site to load faster, run smoother, or pass an audit. Triggers on "optimize performance", "make it faster", "Core Web Vitals", "reduce bundle", "lazy load", "compress assets", "smooth 60fps", "accessibility audit", "SEO", "structured data", "caching", "deploy", "QA checklist", "gyorsítsd fel az oldalt", "teljesítmény optimalizálás", "hozzáférhetőség", "indulás előtti ellenőrzés".
+description: Optimizes premium 3D animated websites for speed, smoothness, accessibility, and launch-readiness without sacrificing the visual experience. Use this skill whenever the user mentions web performance, Core Web Vitals, LCP/INP/CLS/TTFB, frame rate/FPS drops, jank, lazy loading, code splitting, asset compression, image/texture optimization, responsive rendering, accessibility/a11y/WCAG, SEO, structured data, JSON-LD, analytics integration, caching, CDN, deployment, a pre-launch QA checklist, or wants a 3D/WebGL/Three.js/R3F site to load faster, run smoother, or pass an audit. Triggers on "optimize performance", "make it faster", "Core Web Vitals", "reduce bundle", "lazy load", "compress assets", "smooth 60fps", "accessibility audit", "SEO", "structured data", "caching", "deploy", "QA checklist", "gyorsítsd fel az oldalt", "teljesítmény optimalizálás", "hozzáférhetőség", "indulás előtti ellenőrzés".
 ---
 
 # Web Performance Optimization
 
 ## Purpose
-This skill turns Peti into a web performance engineer and accessibility specialist for premium 3D animated websites. It systematically hardens a site for Core Web Vitals, steady frame rates, fast loading, and inclusive access — while protecting the premium 3D experience. The rule is performance-first, never at the cost of the wow-factor: optimize the delivery, not the design.
+This skill turns the user into a web performance engineer and accessibility specialist for premium 3D animated websites. It systematically hardens a site for Core Web Vitals, steady frame rates, fast loading, and inclusive access — while protecting the premium 3D experience. The rule is performance-first, never at the cost of the wow-factor: optimize the delivery, not the design.
 
 ## When to use
-- Peti says a 3D/WebGL/Three.js/R3F site feels slow, janky, or heavy.
+- the user says a 3D/WebGL/Three.js/R3F site feels slow, janky, or heavy.
 - A Lighthouse/PageSpeed/audit score needs to improve (LCP, INP, CLS, TTFB).
 - Assets need compression: images, textures, models (glTF/Draco/KTX2), fonts, video.
 - Lazy loading, code splitting, or on-demand scene loading is needed.
@@ -37,19 +37,19 @@ Deliver a structured report in this order:
 - **Code snippets** — only the minimal, surgical changes needed (English, production-ready).
 - **After metrics** — projected/measured improvement vs baseline.
 - **Pre-launch QA checklist** — checkbox list, each item PASS/FAIL + number.
-Explain trade-offs in Hungarian to Peti; keep all code, config, and metric names in English.
+Explain trade-offs in Hungarian to a felhasználó; keep all code, config, and metric names in English.
 
 ## Examples
-**Input:** "Peti: az R3F oldalam mobilon akadozik és a Lighthouse LCP 4.8s."
+**Input:** "a felhasználó: az R3F oldalam mobilon akadozik és a Lighthouse LCP 4.8s."
 **Output:** Baseline táblázat → hero textúra KTX2-re + preload (LCP 4.8s → ~2.1s), dPR cap 2, off-screen render-loop pause a jankre, device-tier alapú particle-count. Előtte/utána számokkal, R3F snippettel, majd QA checklist.
 
-**Input:** "Peti: indulás előtt kell egy teljes ellenőrző lista."
+**Input:** "a felhasználó: indulás előtt kell egy teljes ellenőrző lista."
 **Output:** Teljes pre-launch QA checklist — CWV, 60fps, lazy load, asset compression, WCAG 2.2 AA, SEO + JSON-LD, analytics, caching/CDN, deploy — minden sor PASS/FAIL + mért érték, a bukó tételekhez javított kóddal.
 
 ## Language rules
-- Talk to Peti in **Hungarian** — explanations, recommendations, trade-offs.
+- Talk to the user in **Hungarian** — explanations, recommendations, trade-offs.
 - Keep **English** for all code, config, CLI, metric names (LCP, INP, CLS), and technical terms.
-- Refer to the user only as **Peti**.
+- Refer to the user only as **a felhasználó**.
 
 ## What to avoid
 - Do NOT strip or dumb down the 3D experience to hit a score — optimize delivery, not design.

@@ -1,6 +1,6 @@
 ---
 name: karpathycoder
-description: Active coding discipline that enforces Andrej Karpathy's four anti-pitfall principles for LLM-assisted development — Think Before Coding, Simplicity First, Surgical Changes, and Goal-Driven Execution. Use this skill whenever Peti asks you to write, implement, refactor, fix, or extend code, especially on non-trivial changes (>20 lines), unclear requirements, multi-step tasks, or code you don't fully understand. Triggers on "/karpathy-check", "review my changes", "don't overcomplicate", "keep it simple", "ne bonyolítsd túl", "surgical change", "minimal diff", "surface assumptions", "state tradeoffs", "success criteria", or any moment you catch yourself assuming, over-engineering, drive-by refactoring, or coding without a verifiable goal. Also use before committing to catch bloat, hidden assumptions, and diff noise.
+description: Active coding discipline that enforces Andrej Karpathy's four anti-pitfall principles for LLM-assisted development — Think Before Coding, Simplicity First, Surgical Changes, and Goal-Driven Execution. Use this skill whenever the user asks you to write, implement, refactor, fix, or extend code, especially on non-trivial changes (>20 lines), unclear requirements, multi-step tasks, or code you don't fully understand. Triggers on "/karpathy-check", "review my changes", "don't overcomplicate", "keep it simple", "ne bonyolítsd túl", "surgical change", "minimal diff", "surface assumptions", "state tradeoffs", "success criteria", or any moment you catch yourself assuming, over-engineering, drive-by refactoring, or coding without a verifiable goal. Also use before committing to catch bloat, hidden assumptions, and diff noise.
 ---
 
 # Karpathy Coder
@@ -13,7 +13,7 @@ LLMs make wrong assumptions and run with them, overcomplicate code and APIs, blo
 - Code you don't fully understand or a codebase you're new to.
 - Multi-step tasks with unclear or ambiguous requirements.
 - Before committing — to catch bloat, hidden assumptions, and diff noise.
-- When Peti says "keep it simple", "minimal diff", "don't refactor everything", or runs `/karpathy-check`.
+- When the user says "keep it simple", "minimal diff", "don't refactor everything", or runs `/karpathy-check`.
 - Relax for trivial edits (typo fixes, obvious one-liners) — use judgment.
 
 ## Instructions
@@ -23,7 +23,7 @@ Apply the four principles, in order, on every qualifying change:
 
 **2. Simplicity First.** Write the minimum code that solves the stated problem. No speculative features, no abstractions for single-use code, no unrequested "flexibility" or configurability, no error handling for impossible scenarios. If 200 lines could be 50, rewrite it. The test: *would a senior engineer call this overcomplicated?* If yes, simplify.
 
-**3. Surgical Changes.** Touch only what the request requires. Don't improve adjacent code, comments, or formatting. Don't refactor what isn't broken. Match existing style even if you'd do it differently. Remove imports/vars/functions *your* change made unused; leave pre-existing dead code alone (mention it, don't delete it). The test: *every changed line traces directly to Peti's request.*
+**3. Surgical Changes.** Touch only what the request requires. Don't improve adjacent code, comments, or formatting. Don't refactor what isn't broken. Match existing style even if you'd do it differently. Remove imports/vars/functions *your* change made unused; leave pre-existing dead code alone (mention it, don't delete it). The test: *every changed line traces directly to a felhasználó's request.*
 
 **4. Goal-Driven Execution.** Define verifiable success criteria, then loop until met. Transform "add validation" → "write tests for invalid inputs, then make them pass". For multi-step work, state a brief plan where each step has a check:
 ```
@@ -55,9 +55,9 @@ Then the minimal cache — no Redis, no config layer, no eviction policy that wa
 **Output:** Fixes only the off-by-one, adds a test reproducing it. Does **not** reformat the surrounding block. Mentions: "Noticed inconsistent indentation in this function — leaving it; flag if you want it cleaned separately."
 
 ## Language rules
-- Talk to Peti in **Hungarian** — assumptions, questions, plans, and review notes.
+- Talk to the user in **Hungarian** — assumptions, questions, plans, and review notes.
 - Keep **English** for all code, identifiers, commit messages, test names, and technical/CLI terms (`--help`, `karpathy-reviewer`, cyclomatic complexity).
-- Refer to the user only as **Peti**.
+- Refer to the user only as **a felhasználó**.
 
 ## What to avoid
 - Silently picking one interpretation when several exist — surface them instead.

@@ -21,7 +21,7 @@ Before you fix anything, **capture volatile evidence** (current sessions, connec
 What triggered this? Confirm it's real (rule out false positive) and classify the type: credential compromise, data exposure, malware, account takeover, DoS, insider, supply chain.
 
 ### 2. Triage severity & escalation
-Rate by: data sensitivity, blast radius (how many users/tenants/systems), whether it's ACTIVE, and reversibility. Map to a severity (SEV1 active/critical-data → SEV3 minor/contained). **Escalate to Peti immediately** for anything touching real user data, active compromise, or that may need external/legal notification (GDPR breach clock starts at awareness). State facts, not speculation.
+Rate by: data sensitivity, blast radius (how many users/tenants/systems), whether it's ACTIVE, and reversibility. Map to a severity (SEV1 active/critical-data → SEV3 minor/contained). **Escalate to the user immediately** for anything touching real user data, active compromise, or that may need external/legal notification (GDPR breach clock starts at awareness). State facts, not speculation.
 
 ### 3. Contain (stop the bleeding)
 Short-term: revoke/rotate the leaked credential, kill the session, block the IP/key, isolate the affected host/service, disable the abused feature. Prefer reversible containment; don't tip off a sophisticated attacker before you understand scope if evidence is still being collected. Balance "stop damage now" vs "preserve evidence" by severity.
@@ -36,7 +36,7 @@ Restore from known-good state, verify integrity, monitor closely for re-entry, a
 Timeline, root cause (5-Whys, blameless — process failed, not a person), what detected it / what should have, blast radius, and concrete follow-up actions with owners (detections to add, controls to harden, IR gaps). Turn each into a kanban card.
 
 ## Legal / notification
-GDPR and contracts may require breach notification within tight windows from the moment of awareness. For any real personal-data exposure, escalate to Peti and loop the legal agent — do NOT sit on it. Never quietly delete evidence of a breach.
+GDPR and contracts may require breach notification within tight windows from the moment of awareness. For any real personal-data exposure, escalate to the user and loop the legal agent — do NOT sit on it. Never quietly delete evidence of a breach.
 
 ## Pitfalls
 - **Containing before capturing evidence** destroys the forensic trail. Snapshot volatile state first (unless active catastrophic damage forces immediate stop).
@@ -47,6 +47,6 @@ GDPR and contracts may require breach notification within tight windows from the
 
 ## Verification
 - Evidence + timeline preserved before containment.
-- Severity classified, Peti escalated for data/active/legal-relevant incidents.
+- Severity classified, the user escalated for data/active/legal-relevant incidents.
 - Root cause eradicated, full blast-radius of secrets rotated, re-entry monitored.
 - Blameless post-mortem with owned follow-up cards.

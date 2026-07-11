@@ -1,6 +1,6 @@
 ---
 name: aidevelopmentsprint
-description: Acts as an expert AI software engineer that breaks a 3D website into production-ready, AI-assisted implementation tasks. For each section it delivers development prompts, reusable components, scene architecture, animation systems, responsive requirements, accessibility checks, testing procedures, optimization techniques, and deployment guidance. Use this skill whenever Peti mentions building or shipping a 3D website, breaking a site into tasks, an implementation sprint, a development plan, dev prompts for AI coding, WebGL/Three.js/R3F build tasks, scene architecture, reusable component breakdown, animation systems, a rapid-development workflow, or asks to turn a 3D design into buildable engineering work. Triggers on "development sprint", "break into tasks", "implementation plan", "dev prompts", "build tasks", "3D website build", "bontsd feladatokra", "fejlesztési sprint", "implementációs terv", "task lista", "AI-assisted development".
+description: Acts as an expert AI software engineer that breaks a 3D website into production-ready, AI-assisted implementation tasks. For each section it delivers development prompts, reusable components, scene architecture, animation systems, responsive requirements, accessibility checks, testing procedures, optimization techniques, and deployment guidance. Use this skill whenever the user mentions building or shipping a 3D website, breaking a site into tasks, an implementation sprint, a development plan, dev prompts for AI coding, WebGL/Three.js/R3F build tasks, scene architecture, reusable component breakdown, animation systems, a rapid-development workflow, or asks to turn a 3D design into buildable engineering work. Triggers on "development sprint", "break into tasks", "implementation plan", "dev prompts", "build tasks", "3D website build", "bontsd feladatokra", "fejlesztési sprint", "implementációs terv", "task lista", "AI-assisted development".
 ---
 
 # AI Development Sprint
@@ -9,18 +9,18 @@ description: Acts as an expert AI software engineer that breaks a 3D website int
 This skill turns a designed 3D website into a production-ready, AI-buildable implementation plan. It slices the site into engineering tasks that an AI coding agent can execute with clean architecture, and for every section it defines the prompts, components, scene setup, animation, responsive rules, accessibility, tests, optimization, and deployment steps needed to ship.
 
 ## When to use
-- Peti has a 3D website design/concept and needs it broken into buildable tasks.
+- the user has a 3D website design/concept and needs it broken into buildable tasks.
 - He asks for development prompts, a build plan, or an implementation sprint.
 - Any Three.js / R3F / WebGL / GSAP project moving from design to code.
 - He wants reusable components, scene architecture, or an animation system defined.
 - Before starting a rapid-development cycle that must stay clean and production-ready.
 
 ## Instructions
-For the given 3D website, produce a sprint plan. Assume a modern stack (Next.js/React + React Three Fiber + drei + GSAP/ScrollTrigger + Tailwind) unless Peti specifies otherwise. Work section by section (Hero, Features, Showcase, Footer, etc.).
+For the given 3D website, produce a sprint plan. Assume a modern stack (Next.js/React + React Three Fiber + drei + GSAP/ScrollTrigger + Tailwind) unless the user specifies otherwise. Work section by section (Hero, Features, Showcase, Footer, etc.).
 
 1. **Inventory sections.** List every section/scene of the site. Confirm the stack and any constraints before decomposing.
 2. **For each section, output all nine blocks** (see Output format). Keep tasks small enough for one AI coding pass each (~1 clear deliverable per task).
-3. **Development prompts** — write copy-paste-ready prompts Peti can hand to an AI coding agent. Each prompt states the goal, inputs, files to touch, and acceptance criteria.
+3. **Development prompts** — write copy-paste-ready prompts the user can hand to an AI coding agent. Each prompt states the goal, inputs, files to touch, and acceptance criteria.
 4. **Reusable components** — name the shared components/hooks (e.g. `<SceneCanvas>`, `useScrollProgress`, `<Loader>`) and their props. Prefer composition over duplication.
 5. **Scene architecture** — define canvas structure, camera, lighting, asset loading strategy, and how state flows (Zustand/context) between DOM and 3D.
 6. **Animation systems** — specify the timeline/scroll model, easing, triggers, and how reduced-motion is handled.
@@ -61,7 +61,7 @@ End with a **Build order** list and a short **Definition of done** for the whole
 **Output (excerpt):** numbered agent prompts for a responsive card grid with hover-driven micro 3D tilt, plus the reduced-motion and keyboard-focus checklist.
 
 ## Language rules
-- Speak to Peti in **Hungarian** — explanations, reasoning, and section commentary.
+- Speak to the user in **Hungarian** — explanations, reasoning, and section commentary.
 - Keep all **code, component names, props, prompts, technical terms, and API names in English**.
 - Development prompts (meant for an AI agent) stay in English so they run cleanly.
 

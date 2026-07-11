@@ -1,6 +1,6 @@
 ---
 name: supplychainsecurity
-description: Protects the software supply chain against dependency and artifact tampering with SBOM generation, artifact signing, and SLSA compliance. Use this skill whenever Peti mentions supply chain security, SBOM, software bill of materials, syft, cyclonedx, artifact signing, cosign, Sigstore, keyless signing, image signing, provenance, SLSA, SLSA levels, build attestation, tamper-proof builds, dependency tampering, verifying container images, or wants to harden the build/release pipeline before shipping. Triggers on "generate an SBOM", "sign the image/artifact", "verify this container", "what SLSA level are we", "supply chain audit", "ellátási lánc biztonság", "SBOM kell", "írd alá az image-et".
+description: Protects the software supply chain against dependency and artifact tampering with SBOM generation, artifact signing, and SLSA compliance. Use this skill whenever the user mentions supply chain security, SBOM, software bill of materials, syft, cyclonedx, artifact signing, cosign, Sigstore, keyless signing, image signing, provenance, SLSA, SLSA levels, build attestation, tamper-proof builds, dependency tampering, verifying container images, or wants to harden the build/release pipeline before shipping. Triggers on "generate an SBOM", "sign the image/artifact", "verify this container", "what SLSA level are we", "supply chain audit", "ellátási lánc biztonság", "SBOM kell", "írd alá az image-et".
 ---
 
 # Supply Chain Security
@@ -9,9 +9,9 @@ description: Protects the software supply chain against dependency and artifact 
 Protects the software supply chain against dependency and artifact tampering. Covers three pillars: generating a Software Bill of Materials (SBOM), signing artifacts so consumers can verify origin, and measuring/raising build integrity against the SLSA framework. The goal is a release pipeline where every artifact is inventoried, signed, and provably built by a trusted process.
 
 ## When to use
-- Peti asks to generate, merge, or inspect an SBOM for a container image, source dir, or mono-repo.
-- Peti wants to sign a container image or artifact, or verify an existing signature.
-- Peti asks "what SLSA level are we at?" or how to reach a higher level.
+- the user asks to generate, merge, or inspect an SBOM for a container image, source dir, or mono-repo.
+- the user wants to sign a container image or artifact, or verify an existing signature.
+- the user asks "what SLSA level are we at?" or how to reach a higher level.
 - Before a release or major milestone, as a supply-chain hardening gate.
 - When auditing the build/release pipeline for tamper resistance.
 - Cross-references: `security-pen-testing` (vulnerability exploitation testing), `dependency-auditor` (license and CVE audit for dependencies).
@@ -50,7 +50,7 @@ Protects the software supply chain against dependency and artifact tampering. Co
 
 ## Output format
 - **Current state:** which pillars exist today (SBOM? signing? SLSA level?).
-- **Commands:** copy-pasteable `syft` / `cosign` / `cyclonedx-cli` commands for Peti's setup.
+- **Commands:** copy-pasteable `syft` / `cosign` / `cyclonedx-cli` commands for a felhasználó's setup.
 - **SLSA gap:** current level → next level, with the single concrete change needed.
 - **CI recommendation:** where to insert the generation/verification steps.
 - Rank any risks by severity (Critical, High, Medium, Low).
@@ -59,14 +59,14 @@ Protects the software supply chain against dependency and artifact tampering. Co
 
 **Example 1**
 Input: "Generate an SBOM for our app image and sign it."
-Output: `syft` command producing `sbom.json` (CycloneDX), followed by `cosign sign` (keyless) and a `cosign verify` command Peti can run to confirm, plus a note to attach the SBOM as a release artifact.
+Output: `syft` command producing `sbom.json` (CycloneDX), followed by `cosign sign` (keyless) and a `cosign verify` command the user can run to confirm, plus a note to attach the SBOM as a release artifact.
 
 **Example 2**
 Input: "What SLSA level are we and how do we get higher?"
 Output: An assessment placing the pipeline at (e.g.) Level 1, the specific gap to Level 2 (move to a hosted build service that emits signed provenance), and the CI change to close it.
 
 ## Language rules
-- Speak Hungarian with Peti; address him only as "Peti".
+- Speak Hungarian with a felhasználó; address him only as "a felhasználó".
 - Keep all code, commands, tool names, flags, and technical terms (SBOM, SLSA, cosign, syft, CycloneDX, provenance) in English.
 
 ## What to avoid

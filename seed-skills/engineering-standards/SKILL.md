@@ -4,7 +4,7 @@ description: The fleet's synthesized engineering standard — 10 categories cove
 ---
 # Engineering Standards (a flotta mérnöki alapszabálya)
 
-Peti 50 szabályának szintézise (deduplikálva, kategóriánként). Ez a KÖTELEZŐ baseline minden production kódra. Minden dev ügynök (és MikroB CTO-ként) ezt tartja. Lásd még: `project-workflow` (csapat-folyamat), `qa-test-strategy`, `legal-compliance-review`.
+a felhasználó 50 szabályának szintézise (deduplikálva, kategóriánként). Ez a KÖTELEZŐ baseline minden production kódra. Minden dev ügynök (és MikroB CTO-ként) ezt tartja. Lásd még: `project-workflow` (csapat-folyamat), `qa-test-strategy`, `legal-compliance-review`.
 
 ## I. Architektúra és modularitás
 - **SRP:** egy modul/osztály/függvény = egy feladat. Ha "és"-sel írod le, bontsd szét.

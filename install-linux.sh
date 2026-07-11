@@ -963,6 +963,12 @@ if [ -d "$SEED_FLEET_DIR" ]; then
     fa_name=$(basename "$fa_dir")
     if [ -d "$FLEET_DIR/$fa_name" ]; then F_SKIP=$((F_SKIP + 1)); continue; fi
     cp -r "${fa_dir%/}" "$FLEET_DIR/"
+    # Resolve portability sentinels in the freshly copied agent: the seed ships
+    # placeholders instead of a machine-specific absolute path so the guard-hook
+    # commands + deny-rules work at ANY install location (and leak no username).
+    while IFS= read -r _seedf; do
+      LC_ALL=C sed -i "s|__MARVEEN_INSTALL_DIR__|${INSTALL_DIR}|g; s|__MARVEEN_HOME__|${HOME}|g" "$_seedf"
+    done < <(grep -rlI '__MARVEEN_INSTALL_DIR__\|__MARVEEN_HOME__' "$FLEET_DIR/$fa_name" 2>/dev/null)
     F_NEW=$((F_NEW + 1))
   done
   if [ "$F_NEW" -gt 0 ] || [ "$F_SKIP" -gt 0 ]; then
