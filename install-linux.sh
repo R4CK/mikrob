@@ -974,6 +974,14 @@ if [ -d "$SEED_FLEET_DIR" ]; then
   if [ "$F_NEW" -gt 0 ] || [ "$F_SKIP" -gt 0 ]; then
     ok "Seed fleet-agents: ${F_NEW} uj, ${F_SKIP} kihagyva (mar letezik)"
   fi
+  # Fail-closed assertion: no portability sentinel may survive into the installed
+  # fleet agents. A leftover __MARVEEN_* means a guard-hook path never got rewritten
+  # -> the agent's PreToolUse guards would break silently. Catch it at install, not
+  # in production. (Protects future seed files that add a new sentinel-bearing file.)
+  _leftover="$(grep -rlI '__MARVEEN_INSTALL_DIR__\|__MARVEEN_HOME__' "$FLEET_DIR" 2>/dev/null || true)"
+  if [ -n "$_leftover" ]; then
+    fail "Seed fleet-agents: feloldatlan portability-sentinel maradt (a guard-hookok eltornenek): $(echo $_leftover | tr '\n' ' ')"
+  fi
 fi
 
 INSTALL_STEP="ollama-whisper"

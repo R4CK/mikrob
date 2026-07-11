@@ -641,6 +641,13 @@ if [ -d "$SEED_FLEET_DIR" ]; then
   if [ "$F_NEW" -gt 0 ] || [ "$F_SKIP" -gt 0 ]; then
     echo -e "  ${GREEN}✓${NC} Seed fleet-agents: ${F_NEW} new, ${F_SKIP} skipped"
   fi
+  # Fail-closed assertion: no portability sentinel may survive into the installed
+  # fleet agents (a leftover __MARVEEN_* means a guard-hook path never got rewritten,
+  # silently breaking that agent's PreToolUse guards). Catch at install, not in prod.
+  _leftover="$(grep -rlI '__MARVEEN_INSTALL_DIR__\|__MARVEEN_HOME__' "$FLEET_DIR" 2>/dev/null || true)"
+  if [ -n "$_leftover" ]; then
+    fail "Seed fleet-agents: unresolved portability sentinel survived (guard-hooks would break): $(echo $_leftover | tr '\n' ' ')"
+  fi
 fi
 
 # Seed scheduled tasks: from seed-scheduled-tasks/ into ~/.claude/scheduled-tasks/
