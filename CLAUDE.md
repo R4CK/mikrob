@@ -198,7 +198,7 @@ Alapelv: **semmi nem implicit**. Ami nincs a leltárban és nincs tesztelve, azt
 - **Adatintegritás / multi-tenant izoláció:** a tenant-scope invariáns bizonyítottan tartja magát (negatív kontroll).
 - **Frontend edge-esetek:** loading/empty/error/offline/hosszú szöveg/kis képernyő állapotok.
 - **Akadálymentesség (WCAG AA):** billentyű-navigáció, fókusz-csapda, kontraszt, aria.
-- **i18n/l10n:** minden user-facing string kulcsból jön, HU+EN paritás, nincs hardcode.
+- **i18n/l10n:** minden user-facing string kulcsból jön, nincs hardcode. **Teljes paritás MINDEN konfigurált nyelvre** (a projekt `SUPPORTED_LOCALES` listája, nem csak HU+EN): minden nyelvi fájlnak az összes kulcsot tartalmaznia kell, MINDEN namespace-ben. Az i18n-t **folyamatosan, minden fejlesztéssel együtt kell generálni** (Peti szabály 2026-07-12): új user-facing string ugyanabban a munkában bekerül mindegyik nyelvre. A paritás-guard/teszt az EN VALÓS top-level namespace-eiből származtasson (ne hardcode-olt namespace-allowlist), különben egy új namespace vakfoltként átcsúszik (lásd a `vertical.*` esetet: 5 nyelvből 20-20 kulcs hiányzott, mert a teszt allowlistje nem tartalmazta). A teljes nyelvi paritás a definition-of-done és a QA gate része.
 - **Megfigyelhetőség:** kulcs-műveletek logolva/metrikázva, riasztás a kritikus hibákra, nincs titok a logban.
 - **Resziliencia:** külső függőség kiesésének kezelése (timeout, retry, fail-closed), input-cap DoS ellen.
 - **Regresszió / teszt-piramis:** unit + integrációs + e2e; a javítások mellé regressziós teszt kerül.
