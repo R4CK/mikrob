@@ -210,6 +210,13 @@ Alapelv: **semmi nem implicit**. Ami nincs a leltárban és nincs tesztelve, azt
 - **Titkok/konfig:** nincs hardcode secret, env-ből jön, prod/dev szétválasztva.
 - **Dokumentáció:** a leltár + eredmények + talált hibák + repro reprodukálhatóan leírva (audit-riport).
 
+### 8. Design ↔ flow ↔ funkció kapcsolat + user story-k (KÖTELEZŐ, Peti 2026-07-12)
+Az audit CSAK akkor teljes értékű, ha MINDEN megépített funkcióra igazoltan teljesül:
+- **Design a kivezetett végponton:** a funkciónak a kivezetett végpontján (UI-route / képernyő / gomb / endpoint felülete) VAN design-eleme -- nincs design nélküli, "csupasz" funkció. Ami funkció létezik, annak van megtervezett és megépített felülete (ha hiányzik a design, generálni kell -- lásd a funkció-vezérelt Stitch-generálást).
+- **Design → flow → funkció lánc BE VAN KÖTVE:** a design-elem a valós user-flow-ban él, és a flow a VALÓS funkcióhoz/endpointhoz drótozva (a 9. flow-connectivity szabály szerint). A három (design, flow, funkció) kapcsolata explicit és ellenőrzött -- nincs dekoratív design, nincs be-nem-kötött flow, nincs felület nélküli funkció.
+- **Működik + zöld teszt:** a funkció ténylegesen MŰKÖDIK (valós end-to-end, nem csak zöld unit), és a tesztjei SIKERESEK. A puszta zöld teszt önmagában nem elég bizonyíték (lásd a magic-link esetet) -- valós lefuttatás/repro kell.
+- **User story-k -- MINIMUM 5 funkciónként:** minden funkcióhoz LEGALÁBB 5 teljesülő user story tartozik (szerep + cél + elfogadási kritérium formában). **Ha egy funkciónak nincs (elég) user story-ja, MEG KELL ÍRNI** a hiányzókat (a valós funkció + RBAC-szintek alapján, nem kitalálva). Minden user story végig-tesztelve: pozitív (jogosult szerep végigviszi) ÉS negatív (jogosulatlan blokkolva, fail-closed). A QA gate ezt is ellenőrzi: funkciónként ≥5 teljesülő, tesztelt user story, mindegyik designnal + flow-bekötéssel + zöld end-to-end teszttel; hiány = audit FAIL.
+
 ### Lefutás és sign-off
 - Az auditot a megfelelő ügynökök végzik (leltár/optimalizálás: mérnöki + `codebase-auditor`/`performance-optimizer`; funkcionális teszt: `qa-engineer`; támadó teszt: `cybersecurity-redteam`), a saját munkáját senki nem ellenőrzi (4. szabály).
 - Kimenet: **audit-riport** a teljes leltárral és minden tétel PASS/FAIL/NEM-tesztelt státuszával, a talált hibák reprodukálható jegyzékével, és a javítási/optimalizálási kártyákkal a kanbanon. Teljes értékű audit CSAK akkor jelenthető késznek, ha a leltár 100%-a le van fedve (tesztelve vagy explicit indokkal kihagyva), és minden MAJOR/kritikus találatra van kártya.
