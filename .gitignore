@@ -95,3 +95,4 @@ __pycache__/
 !seed-fleet-agents/**/SOUL.md
 !seed-fleet-agents/**/.claude/
 !seed-fleet-agents/**/.claude/settings.json
+store/stitch-tools/node_modules/
