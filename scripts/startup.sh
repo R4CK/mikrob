@@ -52,5 +52,27 @@ else
   log "watchdog timer unit not installed (run install-linux.sh)"
 fi
 
+# 4. Independent resilience guards (channel-watchdog / stuck-modal / disk-space).
+# These survive a dead dashboard (the in-process channel-monitor does not).
+# install-guard-timers.sh renders the unit files (host-specific paths) and
+# enables them; idempotent, so re-running each boot self-heals a missing/
+# disabled guard even after a fresh checkout that never ran the installer.
+GUARD_INSTALLER="$(dirname "$0")/install-guard-timers.sh"
+if [ -x "$GUARD_INSTALLER" ]; then
+  bash "$GUARD_INSTALLER" >>"$LOG" 2>&1 \
+    && log "resilience guard-timers ensured" || log "guard-timers ensure FAILED"
+else
+  log "guard-timers installer not found ($GUARD_INSTALLER)"
+fi
+
+# 5. Windows-side WSL watchdog (outer net for a TOTAL WSL wedge). WSL-only +
+# self-guarded; idempotent, so a deleted/missing Windows task self-heals at
+# logon. Silent no-op on non-WSL / no-powershell hosts.
+WSL_WD_INSTALLER="$(dirname "$0")/install-wsl-watchdog.sh"
+if [ -x "$WSL_WD_INSTALLER" ]; then
+  bash "$WSL_WD_INSTALLER" >>"$LOG" 2>&1 \
+    && log "WSL watchdog ensured" || log "WSL watchdog ensure skipped/failed"
+fi
+
 log "startup.sh: done"
 exit 0

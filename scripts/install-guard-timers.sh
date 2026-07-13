@@ -25,7 +25,9 @@ INSTALL_DIR="$(cd "$(dirname "$0")/.." && pwd)"
 UNIT_DIR="$HOME/.config/systemd/user"
 STORE="$INSTALL_DIR/store"
 
-MAIN_AGENT_ID="$(grep -E '^MAIN_AGENT_ID=' "$INSTALL_DIR/.env" 2>/dev/null | head -1 | cut -d= -f2- || true)"
+# Prefer an already-exported MAIN_AGENT_ID (install-linux.sh passes it), else
+# read it from .env, else the brand-unaware default.
+MAIN_AGENT_ID="${MAIN_AGENT_ID:-$(grep -E '^MAIN_AGENT_ID=' "$INSTALL_DIR/.env" 2>/dev/null | head -1 | cut -d= -f2-)}"
 MAIN_AGENT_ID="${MAIN_AGENT_ID:-marveen}"
 MAIN_AGENT_ID="${MAIN_AGENT_ID//[^a-zA-Z0-9_-]/}"
 
@@ -85,10 +87,19 @@ write_timer   stuck-modal-guard "Run the MikroB stuck-modal guard every minute" 
 write_service disk-space-guard  "MikroB disk-space guard (reap scratch + alert before root fs fills)"          disk-space-guard.sh  journal
 write_timer   disk-space-guard  "Run the MikroB disk-space guard every minute"                                 90s  60s
 
-systemctl --user daemon-reload
-for t in channel-watchdog stuck-modal-guard disk-space-guard; do
-  systemctl --user enable --now "${MAIN_AGENT_ID}-${t}.timer"
-done
+echo "Rendered guard-timer units for MAIN_AGENT_ID=$MAIN_AGENT_ID into $UNIT_DIR"
 
-echo "Installed + enabled guard timers for MAIN_AGENT_ID=$MAIN_AGENT_ID:"
-systemctl --user list-timers "${MAIN_AGENT_ID}-*" --all --no-pager
+# Enable only if a working user systemd is present. During a fresh headless /
+# WSL install systemctl --user may be unavailable; the unit files are already
+# on disk, so startup.sh (which re-invokes this script) enables them once the
+# user session exists. Never hard-fail the caller (install-linux.sh) over this.
+if pidof systemd >/dev/null 2>&1 && systemctl --user status >/dev/null 2>&1; then
+  systemctl --user daemon-reload || true
+  for t in channel-watchdog stuck-modal-guard disk-space-guard; do
+    systemctl --user enable --now "${MAIN_AGENT_ID}-${t}.timer" || echo "  warn: could not enable ${MAIN_AGENT_ID}-${t}.timer"
+  done
+  echo "Enabled guard timers:"
+  systemctl --user list-timers "${MAIN_AGENT_ID}-*" --all --no-pager || true
+else
+  echo "user systemd not available now -- units rendered; startup.sh will enable them on next start."
+fi

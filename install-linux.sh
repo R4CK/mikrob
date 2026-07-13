@@ -1364,6 +1364,17 @@ if pidof systemd >/dev/null 2>&1 && systemctl --user status >/dev/null 2>&1; the
   ok "systemd unitok generalva es engedelyezve"
   systemctl --user start "${DASH_UNIT}" "${CHAN_UNIT}" 2>/dev/null || true
   systemctl --user start "${WD_UNIT}.timer" 2>/dev/null || true
+  # Independent resilience guards (channel-watchdog / stuck-modal / disk-space):
+  # render + enable the 3 systemd --user timers that survive a dead dashboard.
+  # Idempotent + self-guarded; never hard-fail the install over it.
+  MAIN_AGENT_ID="$MAIN_AGENT_ID" bash "$INSTALL_DIR/scripts/install-guard-timers.sh" 2>/dev/null \
+    && ok "resilience guard-timerek telepitve (channel-watchdog + stuck-modal + disk-space)" \
+    || warn "guard-timerek telepitese kihagyva (startup.sh ujraprobalja)"
+  # Windows-side WSL watchdog (outer net for a TOTAL WSL wedge). WSL-only +
+  # self-guarded; a silent no-op on non-WSL / no-powershell hosts.
+  bash "$INSTALL_DIR/scripts/install-wsl-watchdog.sh" >/dev/null 2>&1 \
+    && ok "Windows WSL-watchdog scheduled task telepitve" \
+    || true
   sleep 2
   for svc in "${DASH_UNIT}" "${CHAN_UNIT}"; do
     if systemctl --user is-active --quiet "$svc" 2>/dev/null; then
