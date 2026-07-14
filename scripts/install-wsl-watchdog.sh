@@ -94,17 +94,36 @@ PS1EOF
 echo "Rendered Windows watchdog for distro=$DISTRO user=$WSL_USER -> $WIN_DIR"
 
 # ----------------------------------------------------------------------------
+# 1b) Hidden VBS launcher: wscript (windowless GUI host) -> powershell hidden.
+#     WITHOUT this the 5-min task pops a console window EVERY run: the task runs
+#     in the interactive session, and `powershell -WindowStyle Hidden` only
+#     hides the powershell host AFTER it (and each inner `& wsl.exe`) has already
+#     flashed a console. wscript.exe is a GUI-subsystem host, and
+#     WScript.Shell.Run(cmd, 0, False) launches powershell fully hidden (window
+#     style 0), so no window ever appears -- the exact proven pattern already
+#     used by the Startup-folder MikroB-WSL-Autostart.vbs launcher.
+# ----------------------------------------------------------------------------
+LAUNCHER_WIN="${WIN_DIR}\\mikrob-wsl-watchdog-launcher.vbs"
+LAUNCHER_WSL="${WSL_DIR}/mikrob-wsl-watchdog-launcher.vbs"
+cat > "$LAUNCHER_WSL" <<VBSEOF
+Set s = CreateObject("WScript.Shell")
+s.Run "powershell -NoProfile -WindowStyle Hidden -ExecutionPolicy Bypass -File ""${WATCHDOG_WIN}""", 0, False
+VBSEOF
+echo "Rendered hidden VBS launcher -> $LAUNCHER_WIN"
+
+# ----------------------------------------------------------------------------
 # 2) Register the Scheduled Task via schtasks.exe. Runs every 5 min as the
 #    interactive user (matches the working MikroB Autostart pattern, reliable
-#    wsl.exe control). Notes: (a) schtasks is used instead of PowerShell's
-#    Register-ScheduledTask because the latter's RepetitionDuration=MaxValue
-#    emits out-of-range TaskXML that Task Scheduler rejects; (b) NO /RL HIGHEST
-#    -- elevation would need an admin shell (Access Denied otherwise) and the
-#    watchdog only needs to call wsl.exe, not admin rights; (c) the .ps1 path
-#    lives under AppData\Local\MikroB (no spaces) so /TR needs no inner quotes.
-#    /F overwrites, so re-running is idempotent.
+#    per-user wsl.exe control). Notes: (a) schtasks is used instead of
+#    PowerShell's Register-ScheduledTask because the latter's
+#    RepetitionDuration=MaxValue emits out-of-range TaskXML that Task Scheduler
+#    rejects; (b) NO /RL HIGHEST -- elevation would need an admin shell (Access
+#    Denied otherwise) and the watchdog only needs to call wsl.exe, not admin
+#    rights; (c) /TR runs wscript on the hidden VBS launcher (1b) so no console
+#    window pops; the launcher path lives under AppData\Local\MikroB (no spaces)
+#    so /TR needs no inner quotes. /F overwrites, so re-running is idempotent.
 # ----------------------------------------------------------------------------
-TR="powershell -NoProfile -WindowStyle Hidden -ExecutionPolicy Bypass -File ${WATCHDOG_WIN}"
+TR="wscript.exe //B //Nologo ${LAUNCHER_WIN}"
 if "$SCHTASKS" /Create /TN "$TASK_NAME" /TR "$TR" /SC MINUTE /MO 5 /F >/dev/null 2>&1; then
   echo "Scheduled Task '$TASK_NAME' registered (every 5 min, as $WSL_USER)."
 else
