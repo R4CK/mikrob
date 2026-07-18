@@ -55,8 +55,22 @@ If the video file is not present, download just the needed span (cheap) with
 `yt-dlp --download-sections "*00:12:00-00:13:00" -o video.mp4 "$URL"`. Then Read the PNG.
 Sample sparingly (cost + time); prefer transcript+description evidence first.
 
-### 4. Emit the 4-part deliverable (exact structure)
-The persona output contract — always all four, in this order:
+### 3.5 Build the tool inventory + GitHub-first substitutes (Peti rule 2026-07-18)
+Every tool, plugin, service, model, IDE and library seen in the video (the distinct
+values from the "Alkalmazott Eszköz / Szoftver" column) gets an entry in a substitution
+table. For each one, find what OTHER programs can replace it — **GitHub open-source
+repos FIRST** (fleet rule 10, GitHub-first / don't reinvent), Stack Overflow + the Stack
+Exchange sites as secondary signal, official vendor pages last. Research with `WebSearch`
+(e.g. `"<tool> open source alternative github"`) and `WebFetch` on the repo page. Per
+alternative capture: repo URL, licence, a maintenance signal (last commit / stars /
+open-issue ratio) and whether it is a **drop-in** or a **partial** substitute. Where a
+proprietary tool has NO real OSS equivalent, say so plainly and name the closest paid
+substitutes. This is due-diligence, not a link dump: flag licence/maintenance/supply-chain
+risk (see the `supplychainsecurity` / `skill-security-auditor` skills). Never invent a
+repo or a star count — only list what you actually verified via a fetch/search.
+
+### 4. Emit the 5-part deliverable (exact structure)
+The persona output contract — always all five, in this order:
 
 1. **Kronológiai Vizuális és Audió Napló** — a Markdown table, one row per meaningful
    beat (not per caption cue; group into logical steps). Columns:
@@ -66,7 +80,11 @@ The persona output contract — always all four, in this order:
 2. **Vezetői Összefoglaló** — max 5 sentences: message, added value, end result.
 3. **Műveleti és Technikai Elemzés** — efficiency factors; bottlenecks / failure points /
    missing steps; required tech stack, licenses, competencies.
-4. **Részletes Megvalósítási Projektterv** — hand to the `operational-project-planning`
+4. **Eszköz-leltár és GitHub-first Helyettesíthetőség** — the substitution table from
+   step 3.5. Columns:
+   `| Eredeti eszköz | GitHub-first alternatíva(k) + repo URL | Licenc | Karbantartottság (utolsó commit / csillag) | Drop-in vagy részleges | Megjegyzés / kockázat |`
+   One row per distinct tool from the video. Proprietary-only tools flagged as such.
+5. **Részletes Megvalósítási Projektterv** — hand to the `operational-project-planning`
    skill (scope, WBS, resources, risk matrix, milestones). If a user-facing product is
    shown, also run `user-flow-menu-design` for the flow/IA.
 
@@ -87,6 +105,9 @@ The persona output contract — always all four, in this order:
 ## Verification
 - Every row's timestamp exists in the transcript or a frame you actually sampled.
 - No step in the reproduction guide is unsupported by evidence (no hallucinated clicks).
-- All 4 sections present; the project plan is actionable (a team could start from it).
+- All 5 sections present; the project plan is actionable (a team could start from it).
+- Every tool from the chronological log appears in the substitution table (section 4); each
+  listed GitHub alternative was actually verified via fetch/search (real repo, real licence),
+  proprietary-only tools flagged, no invented repos or star counts.
 - Language: deliverable in the requester's language (Peti → Hungarian headings as above);
   quoted tool/UI names stay in their original language.
