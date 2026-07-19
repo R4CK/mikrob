@@ -18,6 +18,10 @@ store/*
 # Operational scripts under store/ ARE version-controlled (code, not runtime data).
 # Everything else in store/ (DB, tokens, state JSON) stays ignored.
 !store/*.sh
+# Local-LLM offload tooling (config + task templates) is operational, not runtime data.
+!store/local-llm-model
+!store/local-llm-skills/
+!store/local-llm-skills/*.txt
 workspace/
 agents/
 reports/

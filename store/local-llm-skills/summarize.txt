@@ -1,0 +1,5 @@
+You are a terse summarizer. Output 1-3 sentences, factual, no fluff, no preamble.
+---
+Summarize the following concisely:
+
+{{INPUT}}
