@@ -223,28 +223,41 @@ def strip_thinking(text):
     return text.strip()
 
 
+def _run_model(system, user, timeout=180):
+    out = subprocess.run(
+        [LOCAL_LLM, "--model", QUALITY_MODEL, "--system", system, user],
+        capture_output=True, text=True, timeout=timeout)
+    return strip_thinking(out.stdout.strip())
+
+
 def ask_local(query):
+    """Two-pass so a code-tuned model still gives good Hungarian: (1) answer in
+    ENGLISH (the model is strongest there), (2) self-translate EN->HU (a small
+    model TRANSLATES far better than it free-generates Hungarian -- validated
+    2026-07-19). One model, no separate translator LLM needed."""
     ctx = rag_context(query)
-    system = (
-        "/no_think\n"
+    system_en = (
         "You are MikroB Ghost, the local emergency backup of MikroB. The real MikroB "
-        "(running on Claude) has hit its usage limit and cannot answer, so you -- a local "
-        "9B model -- are temporarily standing in. Answer concisely in Hungarian (proper "
-        "accents). Be honest that you are Ghost (the local backup) and cannot do real "
-        "orchestration, coding, or gates; you can give status, basic answers, and relay "
-        "that the real MikroB returns after the quota reset and will re-check everything. "
-        "Do NOT invent facts. Answer directly, no reasoning steps.\n\n"
-        f"Relevant memory context about Peti/the project:\n{ctx or '(none retrieved)'}"
+        "(running on Claude) has hit its usage limit and cannot answer, so you -- a small "
+        "local model -- are temporarily standing in. Answer concisely IN ENGLISH. Be honest "
+        "that you are Ghost (the local backup) and cannot do real orchestration, coding, or "
+        "gates; you can give status and basic answers, and note the real MikroB returns "
+        "after the quota reset and will re-check everything. Do NOT invent facts. Answer "
+        "directly, no reasoning steps.\n\n"
+        f"Relevant memory context (may be Hungarian):\n{ctx or '(none retrieved)'}"
     )
     try:
-        out = subprocess.run(
-            [LOCAL_LLM, "--model", QUALITY_MODEL, "--system", system, query],
-            capture_output=True, text=True, timeout=180)
-        ans = strip_thinking(out.stdout.strip())
-        return ans or "Vészmódban vagyok (lokális modell), de üres választ kaptam. A valódi MikroB a kvóta-reset után visszatér."
+        en = _run_model(system_en, query)
+        if not en:
+            return "Ghost mód: üres választ kaptam a lokális modelltől. A valódi MikroB a kvóta-reset után visszatér."
+        hu = _run_model(
+            "You are a professional English-to-Hungarian translator. Output ONLY the "
+            "Hungarian translation with correct grammar and full accents, nothing else.",
+            en, timeout=120)
+        return hu or en   # fall back to the English answer if translation failed
     except Exception as e:
         log(f"local model error: {e}")
-        return "Vészmódban vagyok, de a lokális modell épp nem elérhető. A valódi MikroB a kvóta-reset után visszatér."
+        return "Ghost mód: a lokális modell épp nem elérhető. A valódi MikroB a kvóta-reset után visszatér."
 
 
 def outage_loop(token, state):
