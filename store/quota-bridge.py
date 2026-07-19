@@ -39,7 +39,15 @@ ACCESS_JSON = f"{TG_DIR}/access.json"
 BOT_PID_FILE = f"{TG_DIR}/bot.pid"
 STATE_FILE = f"{STORE}/quota-bridge-state.json"
 LOCAL_LLM = f"{STORE}/local-llm.sh"
-QUALITY_MODEL = "hf.co/deepreinforce-ai/Ornith-1.0-9B-GGUF:latest"
+# Single local model (Peti 2026-07-19: one LLM only, coding-focused). Also used by
+# Ghost for degraded comms. Read from the shared config so a model swap is one place.
+def _read_model():
+    try:
+        with open(f"{STORE}/local-llm-model") as f:
+            return f.read().strip() or "qwen2.5-coder:7b-instruct-q4_K_M"
+    except OSError:
+        return "qwen2.5-coder:7b-instruct-q4_K_M"
+QUALITY_MODEL = _read_model()
 DASH = "http://localhost:3420"
 DASH_TOKEN_FILE = f"{STORE}/.dashboard-token"
 MIKROB_PANE = "mikrob-channels"
@@ -245,7 +253,7 @@ def outage_loop(token, state):
     if not state.get("notified_outage"):
         send(token, PETI_CHAT_ID,
              "👻 MikroB Ghost jelentkezik. A valódi MikroB elérte a Claude kvótát és nem "
-             "tud válaszolni, ezért ÁTÁLLTAM vészmódba: egy lokális modell (Ornith-9B) "
+             "tud válaszolni, ezért ÁTÁLLTAM vészmódba: egy lokális modell (Qwen2.5-Coder-7B) "
              "válaszol korlátozottan, a memóriád releváns kontextusával. A valódi MikroB a "
              "kvóta-reset után automatikusan visszaveszi a vonalat, és MINDENT ellenőriz, "
              "amit Ghost módban csináltam.")
@@ -279,7 +287,7 @@ def outage_loop(token, state):
             if chat_id in chats and text.strip():
                 log(f"answering degraded msg from {chat_id}: {text[:60]!r}")
                 ans = ask_local(text)
-                send(token, chat_id, f"👻 MikroB Ghost (lokális Ornith-9B):\n{ans}")
+                send(token, chat_id, f"👻 MikroB Ghost (lokális Qwen2.5-Coder-7B):\n{ans}")
         save_state(state)
 
 
