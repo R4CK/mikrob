@@ -219,12 +219,13 @@ def ask_local(query):
     ctx = rag_context(query)
     system = (
         "/no_think\n"
-        "You are MikroB in DEGRADED EMERGENCY MODE. The real MikroB (running on Claude) "
-        "has hit its usage limit and cannot answer, so you -- a local 9B model -- are "
-        "temporarily standing in. Answer concisely in Hungarian (proper accents). Be honest "
-        "that you are the local backup and cannot do real orchestration, coding, or gates; "
-        "you can give status, basic answers, and relay that the real MikroB returns after "
-        "the quota reset. Do NOT invent facts. Answer directly, no reasoning steps.\n\n"
+        "You are MikroB Ghost, the local emergency backup of MikroB. The real MikroB "
+        "(running on Claude) has hit its usage limit and cannot answer, so you -- a local "
+        "9B model -- are temporarily standing in. Answer concisely in Hungarian (proper "
+        "accents). Be honest that you are Ghost (the local backup) and cannot do real "
+        "orchestration, coding, or gates; you can give status, basic answers, and relay "
+        "that the real MikroB returns after the quota reset and will re-check everything. "
+        "Do NOT invent facts. Answer directly, no reasoning steps.\n\n"
         f"Relevant memory context about Peti/the project:\n{ctx or '(none retrieved)'}"
     )
     try:
@@ -243,9 +244,11 @@ def outage_loop(token, state):
     chats = allowed_chats()
     if not state.get("notified_outage"):
         send(token, PETI_CHAT_ID,
-             "MikroB elérte a Claude kvótát és nem tud válaszolni. Vészmódba léptem: "
-             "egy lokális modell (Ornith-9B) válaszol korlátozottan, memória-kontextussal. "
-             "A valódi MikroB a kvóta-reset után automatikusan visszaveszi a vonalat.")
+             "👻 MikroB Ghost jelentkezik. A valódi MikroB elérte a Claude kvótát és nem "
+             "tud válaszolni, ezért ÁTÁLLTAM vészmódba: egy lokális modell (Ornith-9B) "
+             "válaszol korlátozottan, a memóriád releváns kontextusával. A valódi MikroB a "
+             "kvóta-reset után automatikusan visszaveszi a vonalat, és MINDENT ellenőriz, "
+             "amit Ghost módban csináltam.")
         state["notified_outage"] = True
         save_state(state)
     while True:
@@ -253,7 +256,8 @@ def outage_loop(token, state):
         if not mikrob_down():
             log("MikroB recovered -> relinquishing channel")
             send(token, PETI_CHAT_ID,
-                 "A valódi MikroB visszatért (kvóta feloldva). Átveszem újra a vonalat.")
+                 "✅ A valódi MikroB visszatért (kvóta feloldva), MikroB Ghost visszavonul. "
+                 "Most átnézem, amit Ghost módban megoldottunk, és a normál gate-eken átvezetem.")
             state["phase"] = "healthy"; state["banner_streak"] = 0; state["notified_outage"] = False
             save_state(state)
             return
@@ -275,7 +279,7 @@ def outage_loop(token, state):
             if chat_id in chats and text.strip():
                 log(f"answering degraded msg from {chat_id}: {text[:60]!r}")
                 ans = ask_local(text)
-                send(token, chat_id, f"🤖 [MikroB vészmód, lokális Ornith-9B]:\n{ans}")
+                send(token, chat_id, f"👻 MikroB Ghost (lokális Ornith-9B):\n{ans}")
         save_state(state)
 
 
