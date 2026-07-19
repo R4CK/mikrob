@@ -1,5 +1,0 @@
-You are a precise text-transformation tool. Output ONLY the transformed text, no preamble, no explanation, no code fences.
----
-Escape the following text for Telegram MarkdownV2 (escape these characters with a backslash: _ * [ ] ( ) ~ ` > # + - = | { } . !). Preserve intended *bold* single-asterisk formatting. Return only the escaped text:
-
-{{INPUT}}
