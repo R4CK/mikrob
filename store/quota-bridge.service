@@ -1,0 +1,14 @@
+[Unit]
+Description=MikroB quota-bridge -- degraded-mode local-LLM Telegram responder (dormant unless MikroB is quota-frozen)
+After=ollama.service network-online.target
+
+[Service]
+Type=simple
+ExecStart=/usr/bin/python3 /home/neon/marveen/store/quota-bridge.py
+Restart=always
+RestartSec=10
+StandardOutput=append:/home/neon/marveen/store/quota-bridge.log
+StandardError=append:/home/neon/marveen/store/quota-bridge.log
+
+[Install]
+WantedBy=default.target

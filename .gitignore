@@ -100,3 +100,7 @@ __pycache__/
 !seed-fleet-agents/**/.claude/
 !seed-fleet-agents/**/.claude/settings.json
 store/stitch-tools/node_modules/
+
+# Quota-bridge (degraded-mode local-LLM Telegram responder) operational files
+!store/quota-bridge.py
+!store/quota-bridge.service
