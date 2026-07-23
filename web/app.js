@@ -290,6 +290,8 @@ function switchPage(pageId) {
   if (pageId === 'agents') loadAgents()
   if (pageId === 'memories') { loadMemAgents(); loadMemStats(); loadMemories() }
   if (pageId === 'skills') loadGlobalSkills()
+  if (pageId !== 'localLlm') stopLocalLlmPoll()
+  if (pageId === 'localLlm') loadLocalLlm()
   if (pageId === 'connectors') loadConnectors()
   if (pageId === 'migrate') loadMigrateAgents()
   if (pageId === 'docs') loadDocs()
@@ -345,7 +347,7 @@ const NAV_I18N = {
   agents: 'nav.agents', activity: 'nav.activity', team: 'nav.team',
   messages: 'nav.messages', tasks: 'nav.tasks', memories: 'nav.memories',
   recall: 'nav.recall', naplo: 'nav.recall', bgTasks: 'nav.bgTasks',
-  skills: 'nav.skills', connectors: 'nav.connectors', migrate: 'nav.migrate',
+  skills: 'nav.skills', localLlm: 'nav.localLlm', connectors: 'nav.connectors', migrate: 'nav.migrate',
   docs: 'nav.docs', status: 'nav.status', autonomy: 'nav.autonomy',
   settings: 'nav.settings', vault: 'nav.vault', tokenUsage: 'nav.tokenUsage',
   ideas: 'nav.ideas', updates: 'nav.updates',
@@ -375,6 +377,7 @@ const PAGE_HEADER_I18N = {
   activityPage:   { title: 'activity.page_title',   sub: 'activity.page_subtitle' },
   tasksPage:      { title: 'tasks.page_title',       sub: 'tasks.page_subtitle' },
   skillsPage:     { title: 'skills.page_title',      sub: 'skills.page_subtitle' },
+  localLlmPage:   { title: 'localLlm.page_title',    sub: 'localLlm.page_subtitle' },
   memoriesPage:   { title: 'memories.page_title',    sub: 'memories.page_subtitle' },
   recallPage:     { title: 'recall.page_title',      sub: 'recall.page_subtitle' },
   bgTasksPage:    { title: 'bgTasks.page_title',     sub: 'bgTasks.page_subtitle' },
@@ -8539,6 +8542,268 @@ const STATUS_COMPONENT_LABELS = {
   major_outage: () => t('status.comp.major_outage'),
   under_maintenance: () => t('status.comp.maintenance'),
 }
+
+// ============================================================
+// === Local LLM (Ollama offload) page ===
+// ============================================================
+
+let _llmPollTimer = null
+let _llmLogSource = 'bridge'
+let _llmPullTimer = null
+
+function stopLocalLlmPoll() {
+  if (_llmPollTimer) { clearInterval(_llmPollTimer); _llmPollTimer = null }
+}
+
+function fmtBytes(n) {
+  if (!n || n <= 0) return '0 B'
+  const u = ['B', 'KB', 'MB', 'GB', 'TB']
+  let i = 0, v = n
+  while (v >= 1024 && i < u.length - 1) { v /= 1024; i++ }
+  return `${v.toFixed(i === 0 ? 0 : 1)} ${u[i]}`
+}
+
+async function loadLocalLlm() {
+  await llmRefreshStatus()
+  await llmRefreshLogs()
+  stopLocalLlmPoll()
+  // Live refresh of status + terminal while the page is open.
+  _llmPollTimer = setInterval(() => {
+    if (document.getElementById('localLlmPage').hidden) { stopLocalLlmPoll(); return }
+    llmRefreshStatus()
+    llmRefreshLogs()
+  }, 5000)
+}
+
+async function llmRefreshStatus() {
+  const grid = document.getElementById('llmStatusGrid')
+  const modelsEl = document.getElementById('llmModels')
+  const runningEl = document.getElementById('llmRunning')
+  try {
+    const res = await fetch('/api/local-llm/status')
+    const d = await res.json()
+
+    // Status tiles
+    const tiles = []
+    tiles.push(llmTile(
+      t('localLlm.status.ollama'),
+      d.ollama_up ? t('localLlm.status.up') : t('localLlm.status.down'),
+      d.ollama_up ? 'ok' : 'bad',
+    ))
+    tiles.push(llmTile(
+      t('localLlm.status.active_model'),
+      d.active_model ? escapeHtml(d.active_model) : '—',
+      d.active_model ? (d.active_present ? 'ok' : 'warn') : 'muted',
+      d.active_model && !d.active_present ? t('localLlm.status.not_pulled') : '',
+    ))
+    tiles.push(llmTile(
+      t('localLlm.status.bridge'),
+      d.bridge_active ? t('localLlm.status.running') : t('localLlm.status.stopped'),
+      d.bridge_active ? 'ok' : 'muted',
+    ))
+    if (d.gpu) {
+      const used = d.gpu.mem_total_mb ? `${d.gpu.mem_used_mb} / ${d.gpu.mem_total_mb} MB` : `${d.gpu.mem_used_mb} MB`
+      tiles.push(llmTile(
+        `${t('localLlm.status.gpu')} · ${escapeHtml(d.gpu.name)}`,
+        `${used} · ${d.gpu.util_pct}%`,
+        'ok',
+      ))
+    } else {
+      tiles.push(llmTile(t('localLlm.status.gpu'), t('localLlm.status.no_gpu'), 'muted'))
+    }
+    grid.innerHTML = tiles.join('')
+
+    // Models list
+    const models = Array.isArray(d.models) ? d.models : []
+    if (!d.ollama_up) {
+      modelsEl.innerHTML = `<div class="llm-empty">${t('localLlm.status.down')}</div>`
+    } else if (models.length === 0) {
+      modelsEl.innerHTML = `<div class="llm-empty">${t('localLlm.models.empty')}</div>`
+    } else {
+      modelsEl.innerHTML = models.map(m => {
+        const active = m.name === d.active_model
+        return `<div class="llm-model-row${active ? ' active' : ''}">
+          <div class="llm-model-info">
+            <span class="llm-model-name">${escapeHtml(m.name)}</span>
+            <span class="llm-model-size">${fmtBytes(m.size)}</span>
+          </div>
+          <div class="llm-model-actions">
+            ${active
+              ? `<span class="llm-badge-active">${t('localLlm.models.active')}</span>`
+              : `<button class="btn-secondary btn-compact llm-use-btn" data-model="${escapeHtml(m.name)}">${t('localLlm.models.use')}</button>`}
+            <button class="btn-secondary btn-compact llm-update-btn" data-model="${escapeHtml(m.name)}">${t('localLlm.models.update')}</button>
+          </div>
+        </div>`
+      }).join('')
+      modelsEl.querySelectorAll('.llm-use-btn').forEach(b =>
+        b.addEventListener('click', () => llmSwapModel(b.dataset.model)))
+      modelsEl.querySelectorAll('.llm-update-btn').forEach(b =>
+        b.addEventListener('click', () => { document.getElementById('llmPullInput').value = b.dataset.model; llmStartPull(b.dataset.model) }))
+    }
+
+    // Running generations
+    const running = Array.isArray(d.running) ? d.running : []
+    if (running.length === 0) {
+      runningEl.innerHTML = `<div class="llm-running-empty">${t('localLlm.running.none')}</div>`
+    } else {
+      runningEl.innerHTML = running.map(r => {
+        const vram = r.size_vram ? ` · ${t('localLlm.running.vram')}: ${fmtBytes(r.size_vram)}` : ''
+        return `<div class="llm-running-row"><span class="llm-run-dot"></span><span class="llm-model-name">${escapeHtml(r.name || r.model || '?')}</span><span class="llm-model-size">${fmtBytes(r.size)}${vram}</span></div>`
+      }).join('')
+    }
+  } catch (err) {
+    grid.innerHTML = `<div class="llm-empty">${t('localLlm.load_error')}</div>`
+  }
+}
+
+function llmTile(label, value, kind, note) {
+  return `<div class="llm-tile ${kind}">
+    <div class="llm-tile-label">${label}</div>
+    <div class="llm-tile-value">${value}</div>
+    ${note ? `<div class="llm-tile-note">${note}</div>` : ''}
+  </div>`
+}
+
+async function llmSwapModel(model) {
+  try {
+    const res = await fetch('/api/local-llm/model', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ model }),
+    })
+    const d = await res.json()
+    if (!res.ok) { showToast(d.error || t('localLlm.load_error')); return }
+    showToast(t('localLlm.models.swapped', { model }))
+    llmRefreshStatus()
+  } catch {
+    showToast(t('localLlm.load_error'))
+  }
+}
+
+async function llmStartPull(modelArg) {
+  const input = document.getElementById('llmPullInput')
+  const model = (modelArg || input.value || '').trim()
+  const prog = document.getElementById('llmPullProgress')
+  if (!model) { showToast(t('localLlm.models.pull_empty')); return }
+  prog.hidden = false
+  prog.textContent = t('localLlm.models.pull_starting')
+  try {
+    const res = await fetch('/api/local-llm/pull', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ model }),
+    })
+    const d = await res.json()
+    if (!res.ok) { prog.textContent = d.error || t('localLlm.load_error'); return }
+    llmPollPull(d.job_id)
+  } catch {
+    prog.textContent = t('localLlm.load_error')
+  }
+}
+
+function llmPollPull(jobId) {
+  const prog = document.getElementById('llmPullProgress')
+  if (_llmPullTimer) clearInterval(_llmPullTimer)
+  _llmPullTimer = setInterval(async () => {
+    try {
+      const res = await fetch(`/api/local-llm/pull-status?job_id=${encodeURIComponent(jobId)}`)
+      const d = await res.json()
+      if (!res.ok) { prog.textContent = d.error || t('localLlm.load_error'); clearInterval(_llmPullTimer); return }
+      if (d.done) {
+        clearInterval(_llmPullTimer)
+        if (d.ok) {
+          prog.textContent = t('localLlm.models.pull_done', { model: d.model })
+          showToast(t('localLlm.models.pull_done', { model: d.model }))
+          llmRefreshStatus()
+        } else {
+          prog.textContent = (d.error || t('localLlm.models.pull_failed'))
+        }
+      } else {
+        prog.textContent = `${t('localLlm.models.pulling')}: ${d.last_line || ''}`
+      }
+    } catch {
+      prog.textContent = t('localLlm.load_error')
+      clearInterval(_llmPullTimer)
+    }
+  }, 1500)
+}
+
+async function llmRunTest() {
+  const promptEl = document.getElementById('llmTestPrompt')
+  const out = document.getElementById('llmTestOutput')
+  const btn = document.getElementById('llmTestBtn')
+  const prompt = (promptEl.value || '').trim()
+  if (!prompt) { showToast(t('localLlm.test.empty')); return }
+  out.hidden = false
+  out.className = 'llm-test-output'
+  out.textContent = t('localLlm.test.running')
+  btn.disabled = true
+  try {
+    const res = await fetch('/api/local-llm/run', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ prompt }),
+    })
+    const d = await res.json()
+    if (!res.ok) {
+      out.className = 'llm-test-output error'
+      out.textContent = d.error || t('localLlm.load_error')
+    } else {
+      out.className = 'llm-test-output'
+      out.textContent = d.response || t('localLlm.test.no_output')
+    }
+  } catch {
+    out.className = 'llm-test-output error'
+    out.textContent = t('localLlm.load_error')
+  } finally {
+    btn.disabled = false
+  }
+}
+
+async function llmRefreshLogs() {
+  const term = document.getElementById('llmTerminal')
+  if (!term) return
+  try {
+    const res = await fetch(`/api/local-llm/logs?source=${_llmLogSource}&lines=200`)
+    const d = await res.json()
+    if (d.note && (!d.lines || d.lines.length === 0)) {
+      term.innerHTML = `<span class="llm-muted">${escapeHtml(d.note)}</span>`
+      return
+    }
+    const lines = Array.isArray(d.lines) ? d.lines : []
+    // Preserve scroll-at-bottom behaviour.
+    const atBottom = term.scrollHeight - term.scrollTop - term.clientHeight < 40
+    term.textContent = lines.length ? lines.join('\n') : t('localLlm.logs.empty')
+    if (atBottom) term.scrollTop = term.scrollHeight
+  } catch {
+    term.innerHTML = `<span class="llm-muted">${t('localLlm.load_error')}</span>`
+  }
+}
+
+// Wire the local-llm page controls once at load.
+;(function initLocalLlm() {
+  const refreshBtn = document.getElementById('llmRefreshBtn')
+  if (refreshBtn) refreshBtn.addEventListener('click', () => { llmRefreshStatus(); llmRefreshLogs() })
+  const pullBtn = document.getElementById('llmPullBtn')
+  if (pullBtn) pullBtn.addEventListener('click', () => llmStartPull())
+  const testBtn = document.getElementById('llmTestBtn')
+  if (testBtn) testBtn.addEventListener('click', llmRunTest)
+  const promptEl = document.getElementById('llmTestPrompt')
+  const countEl = document.getElementById('llmTestCount')
+  if (promptEl && countEl) {
+    const upd = () => { countEl.textContent = `${promptEl.value.length} / 4000` }
+    promptEl.addEventListener('input', upd)
+    upd()
+  }
+  document.querySelectorAll('.llm-log-tab').forEach(tab => {
+    tab.addEventListener('click', () => {
+      document.querySelectorAll('.llm-log-tab').forEach(x => x.classList.remove('active'))
+      tab.classList.add('active')
+      _llmLogSource = tab.dataset.source === 'ollama' ? 'ollama' : 'bridge'
+      llmRefreshLogs()
+    })
+  })
+})()
 
 document.getElementById('refreshStatusBtn').addEventListener('click', loadStatus)
 
