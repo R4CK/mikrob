@@ -148,24 +148,27 @@ async function bridgeActive(): Promise<boolean> {
 // Optional GPU snapshot via nvidia-smi. Returns null when the tool is absent
 // (no GPU / not installed) so the UI can honestly say "no GPU data".
 async function gpuInfo(): Promise<null | { name: string; mem_used_mb: number; mem_total_mb: number; util_pct: number }> {
-  const r = await runCmd(
-    'nvidia-smi',
-    ['--query-gpu=name,memory.used,memory.total,utilization.gpu', '--format=csv,noheader,nounits'],
-    { timeoutMs: 5000 },
-  )
-  if (r.code !== 0 || !r.stdout.trim()) return null
-  const line = r.stdout.trim().split('\n')[0]
-  const parts = line.split(',').map(s => s.trim())
-  if (parts.length < 4) return null
-  const mem_used_mb = Number(parts[1])
-  const mem_total_mb = Number(parts[2])
-  const util_pct = Number(parts[3])
-  return {
-    name: parts[0] || 'GPU',
-    mem_used_mb: Number.isFinite(mem_used_mb) ? mem_used_mb : 0,
-    mem_total_mb: Number.isFinite(mem_total_mb) ? mem_total_mb : 0,
-    util_pct: Number.isFinite(util_pct) ? util_pct : 0,
+  // nvidia-smi is often NOT on the systemd service PATH; on WSL it lives at a
+  // fixed absolute path. Try the known locations before giving up.
+  const candidates = ['/usr/lib/wsl/lib/nvidia-smi', '/usr/bin/nvidia-smi', 'nvidia-smi']
+  const args = ['--query-gpu=name,memory.used,memory.total,utilization.gpu', '--format=csv,noheader,nounits']
+  for (const bin of candidates) {
+    const r = await runCmd(bin, args, { timeoutMs: 5000 })
+    if (!r || r.code !== 0 || !r.stdout.trim()) continue
+    const line = r.stdout.trim().split('\n')[0]
+    const parts = line.split(',').map(s => s.trim())
+    if (parts.length < 4) continue
+    const mem_used_mb = Number(parts[1])
+    const mem_total_mb = Number(parts[2])
+    const util_pct = Number(parts[3])
+    return {
+      name: parts[0] || 'GPU',
+      mem_used_mb: Number.isFinite(mem_used_mb) ? mem_used_mb : 0,
+      mem_total_mb: Number.isFinite(mem_total_mb) ? mem_total_mb : 0,
+      util_pct: Number.isFinite(util_pct) ? util_pct : 0,
+    }
   }
+  return null
 }
 
 // --- Pull job registry (in-memory; cap 1 concurrent pull) ------------------
