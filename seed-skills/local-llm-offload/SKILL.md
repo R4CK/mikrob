@@ -98,6 +98,18 @@ default 5), `--query <kw>` (retrieval query, default = task text), `--context
 default so a fleet agent also gets cross-agent context ([[fleet-agents-memory-read-model]]).
 Output is still DRAFT and re-checked ([[local-llm-work-must-be-rechecked]]).
 
+## PROACTIVELY offload -- don't wait to be told (Peti 2026-07-23)
+The local model exists to SAVE Claude tokens. By DEFAULT, offload the genuinely
+mechanical, low-value sub-steps of your task instead of writing them inline -- you
+do NOT need MikroB to tell you each time. Reach for it whenever you hit one of:
+a test scaffold, boilerplate, an enum/type union, a regex, a pure-function body
+from an exact spec, a data-shape transform, or a summary/triage of text you have.
+Then review + integrate the draft (it stays draft-only, you own correctness).
+Keep judgment: if the sub-task is subtle, security-sensitive, or you'd spend more
+time reviewing than writing it, do it inline. But the mechanical bits -> offload.
+A completed task with zero offload of its boilerplate is a missed token saving.
+Usage is metered (dashboard "Használat"); `--caller <youragent>` attributes it.
+
 ## Coding offload -- give the local model CODE tasks (Peti 2026-07-23)
 The active model is `qwen2.5-coder:7b`, a CODE model: it writes correct isolated
 snippets fast (verified: a generic `chunk<T>`, a length-prefixed `compositeKey`
