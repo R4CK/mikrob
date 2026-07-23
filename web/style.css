@@ -6731,6 +6731,107 @@ body {
   white-space: pre;
 }
 .llm-terminal .llm-muted { color: #8a8880; }
+
+/* --- Recommendations + HuggingFace search --- */
+.llm-rec-row { align-items: flex-start; }
+.llm-rec-meta {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+  margin-top: 2px;
+}
+.llm-rec-params {
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--text-secondary);
+}
+.llm-rec-note {
+  font-size: 12px;
+  color: var(--text-muted);
+  margin-top: 4px;
+  line-height: 1.4;
+}
+.llm-fit-badge {
+  font-size: 11px;
+  font-weight: 600;
+  padding: 2px 8px;
+  border-radius: 999px;
+  border: 1px solid var(--border);
+  color: var(--text-secondary);
+  white-space: nowrap;
+}
+.llm-fit-badge.fits {
+  color: var(--success);
+  border-color: var(--success);
+  background: var(--success-soft);
+}
+.llm-fit-badge.tight {
+  color: var(--accent);
+  border-color: var(--accent);
+  background: var(--accent-soft);
+}
+.llm-fit-badge.spills {
+  color: var(--danger);
+  border-color: var(--danger);
+  background: var(--danger-soft, transparent);
+}
+.llm-hf-title { margin-top: 20px; }
+.llm-hf-filters {
+  display: flex;
+  gap: 8px;
+  flex-wrap: wrap;
+  align-items: center;
+  margin-bottom: 12px;
+}
+.llm-select {
+  min-height: 44px;
+  padding: 8px 12px;
+  font-size: 14px;
+  color: var(--text);
+  background: var(--bg-input);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  font-family: inherit;
+}
+.llm-select:focus { outline: none; border-color: var(--border-focus); }
+.llm-hf-toggle {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  min-height: 44px;
+  padding: 0 4px;
+  font-size: 13px;
+  color: var(--text-secondary);
+  cursor: pointer;
+}
+.llm-hf-toggle input { width: 18px; height: 18px; cursor: pointer; }
+.llm-hf-results {
+  max-height: 480px;
+  overflow-y: auto;
+}
+.llm-hf-count {
+  font-size: 12px;
+  color: var(--text-muted);
+  margin-bottom: 8px;
+}
+.llm-hf-row { align-items: center; }
+.llm-hf-link {
+  color: var(--accent);
+  text-decoration: none;
+  word-break: break-all;
+}
+.llm-hf-link:hover { text-decoration: underline; }
+.llm-hf-stat {
+  font-size: 12px;
+  color: var(--text-muted);
+}
+.llm-hf-nogguf {
+  font-size: 12px;
+  color: var(--text-muted);
+  font-style: italic;
+}
+
 /* Rule 13: comfortable touch targets on the Local LLM controls */
 #localLlmPage .btn-compact,
 #localLlmPage .btn-primary,
@@ -6744,6 +6845,10 @@ body {
   .llm-log-tabs { width: 100%; }
   .llm-log-tab { flex: 1; }
   .llm-terminal { font-size: 11px; }
+  .llm-hf-filters > .llm-input,
+  .llm-hf-filters > .llm-select { flex: 1 1 100%; min-width: 0; }
+  .llm-hf-filters .btn-compact { flex: 1; justify-content: center; }
+  .llm-hf-row { align-items: flex-start; }
 }
 
 /* --- Local LLM usage metrics --- */

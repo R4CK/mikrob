@@ -8565,6 +8565,7 @@ function fmtBytes(n) {
 
 async function loadLocalLlm() {
   await llmRefreshStatus()
+  await llmRefreshRecs()
   await llmRefreshLogs()
   await llmRefreshUsage()
   stopLocalLlmPoll()
@@ -8789,8 +8790,109 @@ async function llmSwapModel(model) {
     if (!res.ok) { showToast(d.error || t('localLlm.load_error')); return }
     showToast(t('localLlm.models.swapped', { model }))
     llmRefreshStatus()
+    llmRefreshRecs()
   } catch {
     showToast(t('localLlm.load_error'))
+  }
+}
+
+// --- Curated coding-model recommendations (6 GB GPU) -----------------------
+const LLM_FIT_KEY = { fits: 'localLlm.rec.fit_fits', tight: 'localLlm.rec.fit_tight', spills: 'localLlm.rec.fit_spills' }
+
+async function llmRefreshRecs() {
+  const el = document.getElementById('llmRecs')
+  if (!el) return
+  try {
+    const res = await fetch('/api/local-llm/model-recommendations')
+    const d = await res.json()
+    if (!res.ok) { el.innerHTML = `<div class="llm-empty">${d.error || t('localLlm.rec.load_error')}</div>`; return }
+    const models = Array.isArray(d.models) ? d.models : []
+    if (models.length === 0) { el.innerHTML = `<div class="llm-empty">${t('localLlm.rec.load_error')}</div>`; return }
+    el.innerHTML = models.map(m => {
+      const fitKey = LLM_FIT_KEY[m.gpu_fit] || 'localLlm.rec.fit_fits'
+      const note = m.note_key ? t(m.note_key) : ''
+      return `<div class="llm-model-row llm-rec-row${m.active ? ' active' : ''}">
+        <div class="llm-model-info">
+          <span class="llm-model-name">${escapeHtml(m.name)}</span>
+          <span class="llm-rec-meta">
+            <span class="llm-rec-params">${escapeHtml(m.params || '')}</span>
+            <span class="llm-model-size">${escapeHtml((m.size_gb != null ? m.size_gb : 0) + ' GB')}</span>
+            <span class="llm-fit-badge ${escapeHtml(m.gpu_fit || '')}">${t(fitKey)}</span>
+          </span>
+          ${note ? `<span class="llm-rec-note">${escapeHtml(note)}</span>` : ''}
+        </div>
+        <div class="llm-model-actions">
+          ${m.active
+            ? `<span class="llm-badge-active">${t('localLlm.models.active')}</span>`
+            : `<button class="btn-secondary btn-compact llm-rec-pull-btn" data-model="${escapeHtml(m.name)}">${t('localLlm.rec.pull_btn')}</button>`}
+        </div>
+      </div>`
+    }).join('')
+    el.querySelectorAll('.llm-rec-pull-btn').forEach(b =>
+      b.addEventListener('click', () => {
+        const input = document.getElementById('llmPullInput')
+        if (input) input.value = b.dataset.model
+        llmStartPull(b.dataset.model)
+      }))
+  } catch {
+    el.innerHTML = `<div class="llm-empty">${t('localLlm.rec.load_error')}</div>`
+  }
+}
+
+// --- HuggingFace GGUF model search (Ollama-pullable) -----------------------
+function llmFmtCount(n) {
+  const v = Number(n)
+  if (!Number.isFinite(v) || v <= 0) return '0'
+  if (v >= 1e6) return (v / 1e6).toFixed(1).replace(/\.0$/, '') + 'M'
+  if (v >= 1e3) return (v / 1e3).toFixed(1).replace(/\.0$/, '') + 'k'
+  return String(v)
+}
+
+async function llmHfSearch() {
+  const el = document.getElementById('llmHfResults')
+  const btn = document.getElementById('llmHfSearchBtn')
+  if (!el) return
+  const query = (document.getElementById('llmHfQuery')?.value || '').trim()
+  const task = document.getElementById('llmHfTask')?.value ?? 'text-generation'
+  const sort = document.getElementById('llmHfSort')?.value || 'downloads'
+  const gguf = document.getElementById('llmHfGguf')?.checked ? 'true' : 'false'
+  el.innerHTML = `<div class="llm-empty">${t('localLlm.hf.searching')}</div>`
+  if (btn) btn.disabled = true
+  try {
+    const params = new URLSearchParams({ query, task, sort, gguf, limit: '20' })
+    const res = await fetch(`/api/local-llm/hf-search?${params.toString()}`)
+    const d = await res.json()
+    if (!res.ok) { el.innerHTML = `<div class="llm-empty">${escapeHtml(d.error || t('localLlm.hf.error'))}</div>`; return }
+    const results = Array.isArray(d.results) ? d.results : []
+    if (results.length === 0) { el.innerHTML = `<div class="llm-empty">${t('localLlm.hf.empty')}</div>`; return }
+    const count = `<div class="llm-hf-count">${t('localLlm.hf.result_count', { count: results.length })}</div>`
+    const rows = results.map(r => {
+      const dl = `<span class="llm-hf-stat" title="${t('localLlm.hf.dl')}">↓ ${llmFmtCount(r.downloads)}</span>`
+      const lk = `<span class="llm-hf-stat" title="${t('localLlm.hf.likes')}">♥ ${llmFmtCount(r.likes)}</span>`
+      const badge = r.gguf ? `<span class="llm-fit-badge fits">${t('localLlm.hf.gguf_badge')}</span>` : ''
+      const pullTarget = r.ollama_pull ? String(r.ollama_pull).replace(/^ollama pull /, '') : ''
+      const action = (r.gguf && pullTarget)
+        ? `<button class="btn-secondary btn-compact llm-hf-pull-btn" data-model="${escapeHtml(pullTarget)}">${t('localLlm.hf.pull_btn')}</button>`
+        : `<span class="llm-hf-nogguf">${t('localLlm.hf.not_gguf')}</span>`
+      return `<div class="llm-model-row llm-hf-row">
+        <div class="llm-model-info">
+          <a class="llm-model-name llm-hf-link" href="${escapeHtml(r.hf_url || '#')}" target="_blank" rel="noopener noreferrer">${escapeHtml(r.id || '?')}</a>
+          <span class="llm-rec-meta">${dl}${lk}${badge}</span>
+        </div>
+        <div class="llm-model-actions">${action}</div>
+      </div>`
+    }).join('')
+    el.innerHTML = count + rows
+    el.querySelectorAll('.llm-hf-pull-btn').forEach(b =>
+      b.addEventListener('click', () => {
+        const input = document.getElementById('llmPullInput')
+        if (input) input.value = b.dataset.model
+        llmStartPull(b.dataset.model)
+      }))
+  } catch {
+    el.innerHTML = `<div class="llm-empty">${t('localLlm.hf.error')}</div>`
+  } finally {
+    if (btn) btn.disabled = false
   }
 }
 
@@ -8829,6 +8931,7 @@ function llmPollPull(jobId) {
           prog.textContent = t('localLlm.models.pull_done', { model: d.model })
           showToast(t('localLlm.models.pull_done', { model: d.model }))
           llmRefreshStatus()
+          llmRefreshRecs()
         } else {
           prog.textContent = (d.error || t('localLlm.models.pull_failed'))
         }
@@ -8897,7 +9000,11 @@ async function llmRefreshLogs() {
 // Wire the local-llm page controls once at load.
 ;(function initLocalLlm() {
   const refreshBtn = document.getElementById('llmRefreshBtn')
-  if (refreshBtn) refreshBtn.addEventListener('click', () => { llmRefreshStatus(); llmRefreshLogs(); llmRefreshUsage() })
+  if (refreshBtn) refreshBtn.addEventListener('click', () => { llmRefreshStatus(); llmRefreshRecs(); llmRefreshLogs(); llmRefreshUsage() })
+  const hfBtn = document.getElementById('llmHfSearchBtn')
+  if (hfBtn) hfBtn.addEventListener('click', () => llmHfSearch())
+  const hfQuery = document.getElementById('llmHfQuery')
+  if (hfQuery) hfQuery.addEventListener('keydown', (e) => { if (e.key === 'Enter') { e.preventDefault(); llmHfSearch() } })
   const pullBtn = document.getElementById('llmPullBtn')
   if (pullBtn) pullBtn.addEventListener('click', () => llmStartPull())
   const testBtn = document.getElementById('llmTestBtn')

@@ -38,6 +38,56 @@ const MODEL_RE = /^[A-Za-z0-9._:/@-]{1,200}$/
 const MAX_PROMPT_LEN = 4000
 const RUN_TIMEOUT_MS = 120_000
 
+// --- Model recommendations (curated) + HuggingFace search ------------------
+// The offload GPU is a GTX 1660 Ti with 6 GB VRAM (~5 GB usable). A Q4 model
+// larger than ~5 GB spills its overflow layers to CPU and runs much slower, so
+// every recommendation carries an explicit gpu_fit. These are Ollama-library
+// names (reliably pullable via `ollama pull <name>`), curated for CODING.
+type GpuFit = 'fits' | 'tight' | 'spills'
+interface ModelRec {
+  name: string
+  params: string
+  size_gb: number
+  gpu_fit: GpuFit
+  pullable: true
+  // i18n key resolved on the client (kept locale-neutral in the API).
+  note_key: string
+  ollama_pull: string
+}
+const CODING_MODEL_RECS: Omit<ModelRec, 'ollama_pull'>[] = [
+  { name: 'qwen2.5-coder:1.5b', params: '1.5B', size_gb: 1.0, gpu_fit: 'fits',   pullable: true, note_key: 'localLlm.rec.note.small' },
+  { name: 'qwen2.5-coder:3b',   params: '3B',   size_gb: 1.9, gpu_fit: 'fits',   pullable: true, note_key: 'localLlm.rec.note.balanced' },
+  { name: 'qwen2.5-coder:7b',   params: '7B',   size_gb: 4.7, gpu_fit: 'tight',  pullable: true, note_key: 'localLlm.rec.note.balanced' },
+  { name: 'deepseek-coder:1.3b', params: '1.3B', size_gb: 0.8, gpu_fit: 'fits',  pullable: true, note_key: 'localLlm.rec.note.small' },
+  { name: 'deepseek-coder:6.7b', params: '6.7B', size_gb: 3.8, gpu_fit: 'fits',  pullable: true, note_key: 'localLlm.rec.note.balanced' },
+  { name: 'codegemma:2b',       params: '2B',   size_gb: 1.6, gpu_fit: 'fits',   pullable: true, note_key: 'localLlm.rec.note.small' },
+  { name: 'codegemma:7b',       params: '7B',   size_gb: 5.0, gpu_fit: 'tight',  pullable: true, note_key: 'localLlm.rec.note.tight' },
+  { name: 'codellama:7b',       params: '7B',   size_gb: 3.8, gpu_fit: 'fits',   pullable: true, note_key: 'localLlm.rec.note.balanced' },
+  { name: 'starcoder2:3b',      params: '3B',   size_gb: 1.7, gpu_fit: 'fits',   pullable: true, note_key: 'localLlm.rec.note.small' },
+  { name: 'starcoder2:7b',      params: '7B',   size_gb: 4.0, gpu_fit: 'tight',  pullable: true, note_key: 'localLlm.rec.note.tight' },
+  { name: 'qwen2.5-coder:14b',  params: '14B',  size_gb: 9.0, gpu_fit: 'spills', pullable: true, note_key: 'localLlm.rec.note.spills' },
+  { name: 'deepseek-coder-v2:16b', params: '16B', size_gb: 8.9, gpu_fit: 'spills', pullable: true, note_key: 'localLlm.rec.note.spills' },
+]
+
+const HF_BASE = 'https://huggingface.co/api/models'
+const HF_TIMEOUT_MS = 8000
+const HF_MAX_LIMIT = 30
+const HF_DEFAULT_LIMIT = 20
+// Whitelisted UI sort -> HuggingFace hub API sort field.
+const HF_SORT_MAP: Record<string, string> = {
+  downloads: 'downloads',
+  likes: 'likes',
+  trending: 'trendingScore',
+  lastModified: 'lastModified',
+}
+// Whitelisted pipeline-task filters. '' means "any task" (no task filter).
+const HF_TASK_ALLOW = new Set(['text-generation', 'text2text-generation', ''])
+// Free-text query: strip to a safe charset and cap the length so a crafted
+// value cannot smuggle URL/query control characters or an unbounded string.
+function sanitizeHfQuery(raw: string): string {
+  return raw.replace(/[^A-Za-z0-9 ._/-]/g, ' ').replace(/\s+/g, ' ').trim().slice(0, 80)
+}
+
 interface CmdResult { code: number | null; stdout: string; stderr: string; timedOut: boolean }
 
 // Run a child process with an argv array (never a shell string). Resolves with
@@ -430,6 +480,103 @@ export async function tryHandleLocalLlm(ctx: RouteContext): Promise<boolean> {
   // GET /api/local-llm/usage -> invocation metrics from the append-only ledger
   if (path === '/api/local-llm/usage' && method === 'GET') {
     json(res, buildUsage())
+    return true
+  }
+
+  // GET /api/local-llm/model-recommendations -> curated coding-model list
+  // for this 6 GB GPU. Static/factual; marks the currently active model.
+  if (path === '/api/local-llm/model-recommendations' && method === 'GET') {
+    const active = readActiveModel()
+    // A rec is "active" when it prefixes the on-disk tag: the file may carry a
+    // quant suffix (e.g. qwen2.5-coder:7b-instruct-q4_K_M) that the base name
+    // (qwen2.5-coder:7b) prefixes -- and ':7b' never prefixes ':1.5b', so no
+    // sibling false-match. Anchor on the ':tag' boundary defensively.
+    const isActive = (name: string): boolean => {
+      if (!active) return false
+      if (active === name) return true
+      return active.startsWith(name) && (active.length === name.length || active[name.length] === '-')
+    }
+    const models = CODING_MODEL_RECS.map(m => ({
+      ...m,
+      ollama_pull: `ollama pull ${m.name}`,
+      active: isActive(m.name),
+    }))
+    json(res, {
+      active_model: active,
+      gpu: { name: 'GTX 1660 Ti', vram_gb: 6, usable_gb: 5 },
+      models,
+    })
+    return true
+  }
+
+  // GET /api/local-llm/hf-search?query=&task=&sort=&gguf=&limit=
+  // Proxy the public HuggingFace models API. Params are whitelisted/sanitized;
+  // only GGUF results carry an ollama_pull (Ollama pulls GGUF repos directly).
+  if (path === '/api/local-llm/hf-search' && method === 'GET') {
+    const query = sanitizeHfQuery(url.searchParams.get('query') || '')
+    let task = (url.searchParams.get('task') || 'text-generation').trim()
+    if (!HF_TASK_ALLOW.has(task)) task = 'text-generation'
+    let sort = (url.searchParams.get('sort') || 'downloads').trim()
+    if (!Object.prototype.hasOwnProperty.call(HF_SORT_MAP, sort)) sort = 'downloads'
+    // gguf defaults ON; only an explicit false/0 turns it off.
+    const ggufRaw = (url.searchParams.get('gguf') || 'true').trim().toLowerCase()
+    const gguf = !(ggufRaw === 'false' || ggufRaw === '0' || ggufRaw === 'no')
+    let limit = parseInt(url.searchParams.get('limit') || String(HF_DEFAULT_LIMIT), 10)
+    if (!Number.isFinite(limit) || limit < 1) limit = HF_DEFAULT_LIMIT
+    if (limit > HF_MAX_LIMIT) limit = HF_MAX_LIMIT
+
+    const hf = new URL(HF_BASE)
+    if (query) hf.searchParams.set('search', query)
+    if (task) hf.searchParams.append('filter', task)
+    if (gguf) hf.searchParams.append('filter', 'gguf')
+    hf.searchParams.set('sort', HF_SORT_MAP[sort])
+    hf.searchParams.set('direction', '-1')
+    hf.searchParams.set('limit', String(limit))
+
+    let data: unknown
+    try {
+      const r = await fetch(hf.toString(), {
+        signal: AbortSignal.timeout(HF_TIMEOUT_MS),
+        headers: { Accept: 'application/json' },
+      })
+      if (!r.ok) {
+        json(res, { error: `A HuggingFace keresés hibázott (HTTP ${r.status}). Próbáld újra később.` }, 502)
+        return true
+      }
+      data = await r.json()
+    } catch (err) {
+      const timedOut = err instanceof Error && err.name === 'TimeoutError'
+      json(res, {
+        error: timedOut
+          ? 'A HuggingFace keresés időtúllépés miatt megszakadt. Próbáld újra.'
+          : 'A HuggingFace nem érhető el. Ellenőrizd a hálózatot és próbáld újra.',
+      }, 502)
+      return true
+    }
+    if (!Array.isArray(data)) {
+      json(res, { error: 'A HuggingFace válasza értelmezhetetlen volt. Próbáld újra.' }, 502)
+      return true
+    }
+    const results = data.slice(0, limit).map((m: any) => {
+      const id = String((m && (m.id || m.modelId)) || '')
+      const tags = Array.isArray(m?.tags) ? m.tags.map((x: unknown) => String(x)) : []
+      const isGguf =
+        /gguf/i.test(String(m?.library_name || '')) ||
+        tags.some((tg: string) => /^gguf$/i.test(tg)) ||
+        /gguf/i.test(id)
+      const downloads = Number(m?.downloads)
+      const likes = Number(m?.likes)
+      return {
+        id,
+        downloads: Number.isFinite(downloads) ? downloads : 0,
+        likes: Number.isFinite(likes) ? likes : 0,
+        tags: tags.slice(0, 12),
+        gguf: isGguf,
+        ollama_pull: isGguf && id ? `ollama pull hf.co/${id}` : null,
+        hf_url: id ? `https://huggingface.co/${encodeURI(id)}` : '',
+      }
+    }).filter((x: { id: string }) => x.id)
+    json(res, { query, task, sort, gguf, limit, count: results.length, results })
     return true
   }
 

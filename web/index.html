@@ -506,6 +506,39 @@
         <div class="llm-pull-progress" id="llmPullProgress" hidden></div>
       </div>
 
+      <!-- Model recommendations + HuggingFace search -->
+      <div class="llm-section">
+        <h2 class="llm-section-title" data-i18n="localLlm.rec.title">Ajánlott modellek</h2>
+        <p class="llm-hint" data-i18n="localLlm.rec.hint">A legjobb kódmodellek erre a GPU-ra (GTX 1660 Ti, 6 GB VRAM). Az ~5 GB feletti modellek CPU-ra csúsznak és lassabbak.</p>
+        <div class="llm-recs" id="llmRecs">
+          <div class="llm-loading" data-i18n="common.loading">Betöltés...</div>
+        </div>
+
+        <h3 class="llm-usage-subtitle llm-hf-title" data-i18n="localLlm.hf.title">HuggingFace keresés</h3>
+        <p class="llm-hint" data-i18n="localLlm.hf.hint">Keress GGUF kódmodelleket a HuggingFace-en; a GGUF találatok közvetlenül húzhatók Ollamába.</p>
+        <div class="llm-hf-filters">
+          <input type="text" id="llmHfQuery" class="llm-input" data-i18n-placeholder="localLlm.hf.query_placeholder" placeholder="Keresés (pl. qwen coder, deepseek)" autocomplete="off" spellcheck="false" maxlength="80">
+          <select id="llmHfTask" class="llm-select" data-i18n-aria-label="localLlm.hf.task_label" aria-label="Feladat">
+            <option value="text-generation" data-i18n="localLlm.hf.task_codegen">Szöveggenerálás (kód)</option>
+            <option value="" data-i18n="localLlm.hf.task_any">Bármely</option>
+          </select>
+          <select id="llmHfSort" class="llm-select" data-i18n-aria-label="localLlm.hf.sort_label" aria-label="Rendezés">
+            <option value="downloads" data-i18n="localLlm.hf.sort_downloads">Letöltések</option>
+            <option value="likes" data-i18n="localLlm.hf.sort_likes">Kedvelések</option>
+            <option value="trending" data-i18n="localLlm.hf.sort_trending">Trending</option>
+            <option value="lastModified" data-i18n="localLlm.hf.sort_recent">Legutóbbi</option>
+          </select>
+          <label class="llm-hf-toggle">
+            <input type="checkbox" id="llmHfGguf" checked>
+            <span data-i18n="localLlm.hf.gguf_only">Csak GGUF (Ollama húzható)</span>
+          </label>
+          <button class="btn-primary btn-compact" id="llmHfSearchBtn" data-i18n="localLlm.hf.search_btn">Szűrés indítása</button>
+        </div>
+        <div class="llm-hf-results" id="llmHfResults">
+          <div class="llm-empty" data-i18n="localLlm.hf.initial">Indíts egy keresést a fenti szűrőkkel.</div>
+        </div>
+      </div>
+
       <!-- Quick test -->
       <div class="llm-section">
         <h2 class="llm-section-title" data-i18n="localLlm.test.title">Gyorsteszt</h2>
