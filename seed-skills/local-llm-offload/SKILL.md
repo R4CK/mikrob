@@ -25,7 +25,7 @@ Python escaper). The local model is for FUZZY bounded work: summarize, classify,
 triage, rewrite, draft — where "roughly right" is acceptable and then reviewed.
 
 **One model** (Peti 2026-07-19: a single local LLM, coding-focused). It is
-`qwen2.5-coder:7b-instruct-q4_K_M` (in `store/local-llm-model`), fits the 6GB GPU
+`qwen2.5-coder:7b-instruct-q4_K_M` (in `/home/neon/marveen/store/local-llm-model`), fits the 6GB GPU
 (4.7GB Q4), ~15s. Serves everything: code snippets, fuzzy offload, and Ghost
 comms. Chosen from research (best code model in the ≤7B / 6GB tier, 2026) +
 validated (wrote a correct keyset-pagination fn in 15s where Ornith-9B rambled
@@ -38,50 +38,57 @@ validated (wrote a correct keyset-pagination fn in 15s where Ornith-9B rambled
   for the degraded Ghost fallback, but do not expect fluent HU prose from it.
 
 ## Procedure
-The shared client is `store/local-llm.sh` (in the marveen repo root). It reads the
-**active model** from `store/local-llm-model` at call time, so the model is
+The shared client is `/home/neon/marveen/store/local-llm.sh`. It reads the
+**active model** from `/home/neon/marveen/store/local-llm-model` at call time, so the model is
 swappable centrally.
+
+**ALWAYS call by ABSOLUTE path** (as shown). Fleet agents run from their own
+working dir (e.g. `/mnt/h/LM_Studio_Workdir/CleanCore`), NOT the marveen repo, so
+a relative `store/local-llm.sh` would be "file not found". The absolute path works
+from any cwd (both scripts resolve their own directory for the token + model).
+Verified: both `local-llm.sh` and `local-llm-rag.sh` run correctly from the
+CleanCore working dir.
 
 ```bash
 # simplest: prompt as arg or stdin
-store/local-llm.sh "Classify this message as spam/promo/personal/work"
-echo "long text..." | store/local-llm.sh --task summarize
+/home/neon/marveen/store/local-llm.sh "Classify this message as spam/promo/personal/work"
+echo "long text..." | /home/neon/marveen/store/local-llm.sh --task summarize
 
-# named task templates live in store/local-llm-skills/<task>.txt ({{INPUT}} placeholder)
-store/local-llm.sh --task escape  "raw (text) with #chars."
-store/local-llm.sh --task triage  "Subject: You won a prize! Click here"
+# named task templates live in /home/neon/marveen/store/local-llm-skills/<task>.txt ({{INPUT}} placeholder)
+/home/neon/marveen/store/local-llm.sh --task escape  "raw (text) with #chars."
+/home/neon/marveen/store/local-llm.sh --task triage  "Subject: You won a prize! Click here"
 
 # health / available models
-store/local-llm.sh --health
-store/local-llm.sh --list
+/home/neon/marveen/store/local-llm.sh --health
+/home/neon/marveen/store/local-llm.sh --list
 ```
 
-Adding a new "skill" for the local model = drop a `store/local-llm-skills/<name>.txt`
+Adding a new "skill" for the local model = drop a `/home/neon/marveen/store/local-llm-skills/<name>.txt`
 file: everything before a lone `---` line is the system prompt, everything after is
 the user template (with `{{INPUT}}` replaced by the caller's input).
 
 ## Offloading WITH context + memory (RAG) -- PREFERRED for fleet tasks
-`store/local-llm.sh` is a bare client: it sends only your prompt, the model has
+`/home/neon/marveen/store/local-llm.sh` is a bare client: it sends only your prompt, the model has
 NO memory of the project or the agent. Peti's rule: an offloaded task must carry
 the **proper context + the relevant memory chunks**. Use the RAG wrapper
-`store/local-llm-rag.sh` instead of the bare client whenever the task needs
+`/home/neon/marveen/store/local-llm-rag.sh` instead of the bare client whenever the task needs
 project/agent knowledge. It retrieves the most-relevant memories (dashboard
 memory API, salience-ranked; multi-term recall so a natural-language task still
 matches), prepends them + any inline context, then calls `local-llm.sh`.
 
 ```bash
 # a fleet agent offloads a bounded task WITH its own memory scope + inline context
-store/local-llm-rag.sh --agent backend \
+/home/neon/marveen/store/local-llm-rag.sh --agent backend \
   --context "file: apps/api/src/customers-read.ts; tenant-scope by ctx.tenantId" \
   "Draft a 1-line JSDoc for the listCustomers read port"
 
 # focus the retrieval with --query (keywords beat the full task string; the q=
 # search NARROWS as terms are added, so short salient keywords recall best)
-store/local-llm-rag.sh --agent qa --query "touch target rule 13 mobile" \
+/home/neon/marveen/store/local-llm-rag.sh --agent qa --query "touch target rule 13 mobile" \
   "Summarize our rule-13 QA-fail pattern in 2 sentences"
 
 # inspect what memory would be attached WITHOUT calling the model
-store/local-llm-rag.sh --agent mikrob --query "calendar sync" --show-context "..."
+/home/neon/marveen/store/local-llm-rag.sh --agent mikrob --query "calendar sync" --show-context "..."
 ```
 Flags: `--agent <id>` (memory scope, default mikrob), `--k <N>` (top-N memories,
 default 5), `--query <kw>` (retrieval query, default = task text), `--context
@@ -95,7 +102,7 @@ Output is still DRAFT and re-checked ([[local-llm-work-must-be-rechecked]]).
 The model must stay updatable (Peti requirement). To change or refresh it:
 ```bash
 ollama pull <model>                 # download / update (e.g. qwen2.5:3b-instruct-q4_K_M)
-echo "<model>" > store/local-llm-model   # point the fleet at it (one line)
+echo "<model>" > /home/neon/marveen/store/local-llm-model   # point the fleet at it (one line)
 ```
 GGUF models from HuggingFace pull directly: `ollama pull hf.co/<user>/<repo-GGUF>`.
 On the GTX 1660 Ti (6GB VRAM, ~5GB usable) keep the resident model <=5GB to stay
@@ -114,6 +121,6 @@ needs the `qwen35` arch; 0.5.13 could not load it — we run 0.32.1).
   let local-model output pass a gate or ship unverified.
 
 ## Validation
-- `store/local-llm.sh --health` prints `ollama: UP` and whether the active model
+- `/home/neon/marveen/store/local-llm.sh --health` prints `ollama: UP` and whether the active model
   is present locally.
-- A round-trip: `store/local-llm.sh "Reply with just the word: ok"` returns `ok`.
+- A round-trip: `/home/neon/marveen/store/local-llm.sh "Reply with just the word: ok"` returns `ok`.
