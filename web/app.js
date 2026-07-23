@@ -8566,12 +8566,14 @@ function fmtBytes(n) {
 async function loadLocalLlm() {
   await llmRefreshStatus()
   await llmRefreshLogs()
+  await llmRefreshUsage()
   stopLocalLlmPoll()
-  // Live refresh of status + terminal while the page is open.
+  // Live refresh of status + terminal + usage while the page is open.
   _llmPollTimer = setInterval(() => {
     if (document.getElementById('localLlmPage').hidden) { stopLocalLlmPoll(); return }
     llmRefreshStatus()
     llmRefreshLogs()
+    llmRefreshUsage()
   }, 5000)
 }
 
@@ -8662,6 +8664,118 @@ function llmTile(label, value, kind, note) {
     <div class="llm-tile-value">${value}</div>
     ${note ? `<div class="llm-tile-note">${note}</div>` : ''}
   </div>`
+}
+
+// Local (Europe/Budapest) short timestamp for the usage table.
+function llmFmtTime(epochSec) {
+  if (!Number.isFinite(epochSec)) return '—'
+  try {
+    return new Date(epochSec * 1000).toLocaleString([], {
+      timeZone: 'Europe/Budapest', month: '2-digit', day: '2-digit', hour: '2-digit', minute: '2-digit',
+    })
+  } catch {
+    return '—'
+  }
+}
+
+// Usage metrics: how often the fleet invokes the local model, by agent / source
+// / task / day, plus the most recent calls. Read-only; refreshed with the page.
+async function llmRefreshUsage() {
+  const tilesEl = document.getElementById('llmUsageTiles')
+  if (!tilesEl) return
+  try {
+    const res = await fetch('/api/local-llm/usage')
+    const d = await res.json()
+
+    // Headline stat tiles
+    tilesEl.innerHTML = [
+      llmTile(t('localLlm.usage.total'), String(d.total || 0), 'ok'),
+      llmTile(t('localLlm.usage.today'), String(d.today || 0), 'ok'),
+      llmTile(t('localLlm.usage.last_7d'), String(d.last_7d || 0), 'ok'),
+    ].join('')
+
+    // By agent -- horizontal bars, already sorted count-desc by the backend
+    const callerEl = document.getElementById('llmUsageByCaller')
+    if (callerEl) {
+      const callers = Array.isArray(d.by_caller) ? d.by_caller : []
+      if (callers.length === 0) {
+        callerEl.innerHTML = `<div class="llm-empty">${t('localLlm.usage.none')}</div>`
+      } else {
+        const max = callers[0].count || 1
+        callerEl.innerHTML = callers.map(c => `<div class="llm-usage-bar-row">
+          <span class="llm-usage-bar-label" title="${escapeHtml(c.caller)}">${escapeHtml(c.caller)}</span>
+          <span class="llm-usage-bar-track"><span class="llm-usage-bar-fill" data-pct="${Math.round((c.count / max) * 100)}"></span></span>
+          <span class="llm-usage-bar-count">${c.count}</span>
+        </div>`).join('')
+        callerEl.querySelectorAll('.llm-usage-bar-fill').forEach(el =>
+          el.style.setProperty('--w', (el.dataset.pct || 0) + '%'))
+      }
+    }
+
+    // By source + task highlight (code) + status
+    const srcEl = document.getElementById('llmUsageBySource')
+    if (srcEl) {
+      const bySrc = d.by_source || { bare: 0, rag: 0 }
+      const tasks = Array.isArray(d.by_task) ? d.by_task : []
+      const codeTask = tasks.find(x => x.task === 'code')
+      const codeCount = codeTask ? codeTask.count : 0
+      const st = d.by_status || { ok: 0, err: 0 }
+      srcEl.innerHTML = `
+        <div class="llm-usage-kv"><span>${t('localLlm.usage.source_bare')}</span><span>${bySrc.bare || 0}</span></div>
+        <div class="llm-usage-kv"><span>${t('localLlm.usage.source_rag')}</span><span>${bySrc.rag || 0}</span></div>
+        <div class="llm-usage-kv highlight"><span>${t('localLlm.usage.code_calls')}</span><span>${codeCount}</span></div>
+        <div class="llm-usage-kv"><span>${t('localLlm.usage.status_ok')}</span><span>${st.ok || 0}</span></div>
+        <div class="llm-usage-kv"><span>${t('localLlm.usage.status_err')}</span><span class="${(st.err || 0) > 0 ? 'llm-usage-err' : ''}">${st.err || 0}</span></div>
+        <div class="llm-usage-kv muted"><span>${t('localLlm.usage.ui_probes')}</span><span>${d.ui_probes || 0}</span></div>`
+    }
+
+    // By day -- compact 14-day mini bar chart (heights via --h custom property)
+    const dayEl = document.getElementById('llmUsageByDay')
+    if (dayEl) {
+      const days = Array.isArray(d.by_day) ? d.by_day : []
+      const dmax = days.reduce((m, x) => Math.max(m, x.count || 0), 0) || 1
+      dayEl.innerHTML = days.map(x => {
+        const pct = Math.round(((x.count || 0) / dmax) * 100)
+        return `<div class="llm-usage-day" title="${escapeHtml(x.date)} · ${x.count || 0}">
+          <span class="llm-usage-day-track"><span class="llm-usage-day-bar${(x.count || 0) === 0 ? ' zero' : ''}" data-pct="${pct}"></span></span>
+          <span class="llm-usage-day-x">${escapeHtml((x.date || '').slice(5))}</span>
+        </div>`
+      }).join('')
+      dayEl.querySelectorAll('.llm-usage-day-bar').forEach(el =>
+        el.style.setProperty('--h', (el.dataset.pct || 0) + '%'))
+    }
+
+    // Recent calls table
+    const recEl = document.getElementById('llmUsageRecent')
+    if (recEl) {
+      const recent = Array.isArray(d.recent) ? d.recent : []
+      if (recent.length === 0) {
+        recEl.innerHTML = `<div class="llm-empty">${t('localLlm.usage.none')}</div>`
+      } else {
+        const body = recent.map(r => `<tr>
+          <td>${escapeHtml(llmFmtTime(r.ts))}</td>
+          <td>${escapeHtml(r.caller || '')}</td>
+          <td>${escapeHtml(r.task || '')}</td>
+          <td>${escapeHtml(r.source || '')}</td>
+          <td class="llm-usage-num">${Number.isFinite(r.ms) ? r.ms : 0}</td>
+          <td><span class="llm-usage-status ${r.status === 'err' ? 'err' : 'ok'}">${r.status === 'err' ? t('localLlm.usage.status_err') : t('localLlm.usage.status_ok')}</span></td>
+        </tr>`).join('')
+        recEl.innerHTML = `<table class="llm-usage-table">
+          <thead><tr>
+            <th>${t('localLlm.usage.col_time')}</th>
+            <th>${t('localLlm.usage.col_agent')}</th>
+            <th>${t('localLlm.usage.col_task')}</th>
+            <th>${t('localLlm.usage.col_source')}</th>
+            <th class="llm-usage-num">${t('localLlm.usage.col_ms')}</th>
+            <th>${t('localLlm.usage.col_status')}</th>
+          </tr></thead>
+          <tbody>${body}</tbody>
+        </table>`
+      }
+    }
+  } catch {
+    tilesEl.innerHTML = `<div class="llm-empty">${t('localLlm.load_error')}</div>`
+  }
 }
 
 async function llmSwapModel(model) {
@@ -8783,7 +8897,7 @@ async function llmRefreshLogs() {
 // Wire the local-llm page controls once at load.
 ;(function initLocalLlm() {
   const refreshBtn = document.getElementById('llmRefreshBtn')
-  if (refreshBtn) refreshBtn.addEventListener('click', () => { llmRefreshStatus(); llmRefreshLogs() })
+  if (refreshBtn) refreshBtn.addEventListener('click', () => { llmRefreshStatus(); llmRefreshLogs(); llmRefreshUsage() })
   const pullBtn = document.getElementById('llmPullBtn')
   if (pullBtn) pullBtn.addEventListener('click', () => llmStartPull())
   const testBtn = document.getElementById('llmTestBtn')

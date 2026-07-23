@@ -1,5 +1,5 @@
 import { spawn, execFile } from 'node:child_process'
-import { readFileSync, existsSync } from 'node:fs'
+import { readFileSync, existsSync, openSync, fstatSync, readSync, closeSync } from 'node:fs'
 import { join } from 'node:path'
 import { randomUUID } from 'node:crypto'
 import { STORE_DIR } from '../../config.js'
@@ -24,6 +24,10 @@ import type { RouteContext } from './types.js'
 const OLLAMA_BASE = 'http://127.0.0.1:11434'
 const MODEL_FILE = join(STORE_DIR, 'local-llm-model')
 const RAG_SCRIPT = join(STORE_DIR, 'local-llm-rag.sh')
+// Append-only usage ledger written by the instrumented local-llm wrappers.
+// One TSV line per real model invocation:
+//   epoch_seconds \t caller \t task \t model \t ms \t status \t source
+const USAGE_FILE = join(STORE_DIR, 'local-llm-usage.log')
 const BRIDGE_UNIT = 'quota-bridge.service'
 const OLLAMA_UNIT = 'ollama'
 
@@ -157,6 +161,141 @@ function startPull(model: string): PullJob {
   return job
 }
 
+// --- Usage ledger reading + aggregation -----------------------------------
+// Pure fs read + JS parse; NO shell interpolation. Reads only the tail of the
+// (append-only, unbounded) ledger so a large file can never blow up the heap.
+
+interface UsageRow { ts: number; caller: string; task: string; model: string; ms: number; status: string; source: string }
+
+// Read at most `maxLines` from the END of the ledger, bounded to `maxBytes` of
+// tail so we never load a giant file. Returns [] on a missing/unreadable file.
+function tailUsageLines(maxLines = 5000, maxBytes = 4 * 1024 * 1024): string[] {
+  let fd: number | null = null
+  try {
+    if (!existsSync(USAGE_FILE)) return []
+    fd = openSync(USAGE_FILE, 'r')
+    const size = fstatSync(fd).size
+    if (size === 0) return []
+    const readLen = Math.min(size, maxBytes)
+    const start = size - readLen
+    const buf = Buffer.allocUnsafe(readLen)
+    readSync(fd, buf, 0, readLen, start)
+    let text = buf.toString('utf-8')
+    // If we started mid-file, the first line is likely a partial -- drop it.
+    if (start > 0) { const nl = text.indexOf('\n'); text = nl >= 0 ? text.slice(nl + 1) : '' }
+    const lines = text.split('\n').filter(l => l.length > 0)
+    return lines.length > maxLines ? lines.slice(lines.length - maxLines) : lines
+  } catch {
+    return []
+  } finally {
+    if (fd !== null) { try { closeSync(fd) } catch { /* already gone */ } }
+  }
+}
+
+function parseUsageRows(lines: string[]): UsageRow[] {
+  const rows: UsageRow[] = []
+  for (const line of lines) {
+    const p = line.split('\t')
+    if (p.length < 7) continue // malformed / short -> skip
+    const ts = Number(p[0])
+    if (!Number.isFinite(ts)) continue
+    const ms = Number(p[4])
+    rows.push({
+      ts,
+      caller: (p[1] || 'direct').trim() || 'direct',
+      task: (p[2] || 'chat').trim() || 'chat',
+      model: (p[3] || '').trim(),
+      ms: Number.isFinite(ms) ? ms : 0,
+      // Keep the raw status/source values (do NOT coerce to a fixed pair) so a
+      // UI-probe row (source "ui") stays distinguishable from real bare/rag calls.
+      status: (p[5] || 'ok').trim() || 'ok',
+      source: (p[6] || 'bare').trim() || 'bare',
+    })
+  }
+  return rows
+}
+
+// Calendar date (YYYY-MM-DD) of a UTC epoch in Europe/Budapest local time.
+const BUDAPEST_DAY = new Intl.DateTimeFormat('en-CA', {
+  timeZone: 'Europe/Budapest', year: 'numeric', month: '2-digit', day: '2-digit',
+})
+function budapestDate(epochSec: number): string {
+  return BUDAPEST_DAY.format(new Date(epochSec * 1000))
+}
+
+// The last `n` Budapest calendar days (oldest -> newest). Anchored at 12:00 UTC
+// so whole-day steps never land on a DST midnight boundary.
+function lastDays(n: number, nowSec: number): string[] {
+  const today = budapestDate(nowSec)
+  const [y, m, d] = today.split('-').map(Number)
+  const anchor = Date.UTC(y, m - 1, d, 12, 0, 0)
+  const out: string[] = []
+  for (let i = n - 1; i >= 0; i--) out.push(budapestDate((anchor - i * 86400000) / 1000))
+  return out
+}
+
+// A row is a REAL fleet invocation only when it came from a fleet script
+// (source bare|rag) and is not a dashboard quick-test probe (caller ui-test /
+// source ui). UI probes are counted separately so they never inflate the metric.
+function isRealCall(r: UsageRow): boolean {
+  // source bare|rag already excludes UI probes (source "ui"); also drop the
+  // ui-test caller tag defensively in case a probe ever lands with bare/rag.
+  return (r.source === 'bare' || r.source === 'rag') && r.caller !== 'ui-test'
+}
+
+function buildUsage() {
+  const allRows = parseUsageRows(tailUsageLines())
+  const rows = allRows.filter(isRealCall)
+  const ui_probes = allRows.length - rows.length
+  const nowSec = Math.floor(Date.now() / 1000)
+  const today = budapestDate(nowSec)
+  const days14 = lastDays(14, nowSec)
+  const last7Set = new Set(days14.slice(-7))
+
+  const callerCounts = new Map<string, number>()
+  const taskCounts = new Map<string, number>()
+  const dayCounts = new Map<string, number>()
+  const bySource = { bare: 0, rag: 0 }
+  const byStatus = { ok: 0, err: 0 }
+  let todayCount = 0
+  let last7Count = 0
+
+  for (const r of rows) {
+    callerCounts.set(r.caller, (callerCounts.get(r.caller) || 0) + 1)
+    taskCounts.set(r.task, (taskCounts.get(r.task) || 0) + 1)
+    if (r.source === 'rag') bySource.rag++; else bySource.bare++
+    if (r.status === 'err') byStatus.err++; else byStatus.ok++
+    const day = budapestDate(r.ts)
+    dayCounts.set(day, (dayCounts.get(day) || 0) + 1)
+    if (day === today) todayCount++
+    if (last7Set.has(day)) last7Count++
+  }
+
+  const by_caller = [...callerCounts.entries()]
+    .map(([caller, count]) => ({ caller, count }))
+    .sort((a, b) => b.count - a.count)
+  const by_task = [...taskCounts.entries()]
+    .map(([task, count]) => ({ task, count }))
+    .sort((a, b) => b.count - a.count)
+  const by_day = days14.map(date => ({ date, count: dayCounts.get(date) || 0 }))
+  const recent = rows.slice(-20).reverse().map(r => ({
+    ts: r.ts, caller: r.caller, task: r.task, model: r.model, ms: r.ms, status: r.status, source: r.source,
+  }))
+
+  return {
+    total: rows.length,
+    today: todayCount,
+    last_7d: last7Count,
+    ui_probes,
+    by_caller,
+    by_source: bySource,
+    by_task,
+    by_status: byStatus,
+    by_day,
+    recent,
+  }
+}
+
 export async function tryHandleLocalLlm(ctx: RouteContext): Promise<boolean> {
   const { req, res, path, method, url } = ctx
 
@@ -271,7 +410,13 @@ export async function tryHandleLocalLlm(ctx: RouteContext): Promise<boolean> {
     if (prompt.length > MAX_PROMPT_LEN) { json(res, { error: `A prompt túl hosszú (max ${MAX_PROMPT_LEN} karakter).` }, 400); return true }
     if (!existsSync(RAG_SCRIPT)) { json(res, { error: 'A RAG wrapper (local-llm-rag.sh) nem található.' }, 500); return true }
     // Prompt is piped via stdin, never placed on the argv/command line.
-    const r = await runCmd('bash', [RAG_SCRIPT, '--agent', 'mikrob'], { timeoutMs: RUN_TIMEOUT_MS, input: prompt })
+    // Tag this as a UI probe (caller=ui-test, source=ui) so the usage metric can
+    // exclude dashboard quick-tests from the real fleet-invocation counts.
+    const r = await runCmd(
+      'bash',
+      [RAG_SCRIPT, '--agent', 'mikrob', '--caller', 'ui-test', '--source', 'ui'],
+      { timeoutMs: RUN_TIMEOUT_MS, input: prompt },
+    )
     if (r.timedOut) { json(res, { error: 'A helyi modell időtúllépés miatt nem válaszolt.' }, 504); return true }
     if (r.code !== 0) {
       const detail = (r.stderr.trim() || r.stdout.trim() || 'ismeretlen hiba').slice(0, 500)
@@ -279,6 +424,12 @@ export async function tryHandleLocalLlm(ctx: RouteContext): Promise<boolean> {
       return true
     }
     json(res, { ok: true, response: r.stdout.trim(), model: readActiveModel() })
+    return true
+  }
+
+  // GET /api/local-llm/usage -> invocation metrics from the append-only ledger
+  if (path === '/api/local-llm/usage' && method === 'GET') {
+    json(res, buildUsage())
     return true
   }
 

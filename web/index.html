@@ -464,6 +464,35 @@
         </div>
       </div>
 
+      <!-- Usage metrics -->
+      <div class="llm-section">
+        <h2 class="llm-section-title" data-i18n="localLlm.usage.title">Használat</h2>
+        <div class="llm-status-grid" id="llmUsageTiles">
+          <div class="llm-loading" data-i18n="common.loading">Betöltés...</div>
+        </div>
+
+        <div class="llm-usage-cols">
+          <div class="llm-usage-block">
+            <h3 class="llm-usage-subtitle" data-i18n="localLlm.usage.by_agent">Ügynökök szerint</h3>
+            <div class="llm-usage-bars" id="llmUsageByCaller"></div>
+          </div>
+          <div class="llm-usage-block">
+            <h3 class="llm-usage-subtitle" data-i18n="localLlm.usage.by_source">Forrás és feladat szerint</h3>
+            <div id="llmUsageBySource"></div>
+          </div>
+        </div>
+
+        <div class="llm-usage-block">
+          <h3 class="llm-usage-subtitle" data-i18n="localLlm.usage.by_day">Utolsó 14 nap</h3>
+          <div class="llm-usage-daychart" id="llmUsageByDay"></div>
+        </div>
+
+        <div class="llm-usage-block">
+          <h3 class="llm-usage-subtitle" data-i18n="localLlm.usage.recent">Legutóbbi hívások</h3>
+          <div class="llm-usage-table-wrap" id="llmUsageRecent"></div>
+        </div>
+      </div>
+
       <!-- Model swap -->
       <div class="llm-section">
         <h2 class="llm-section-title" data-i18n="localLlm.models.title">Modellek</h2>

@@ -31,6 +31,7 @@ TOKEN_FILE="$HERE/.dashboard-token"
 LLM="$HERE/local-llm.sh"
 
 AGENT="mikrob"; K=5; QUERY=""; CONTEXT=""; SHARED=1; SHOW_ONLY=0
+CALLER_OVR=""; SOURCE_OVR=""   # optional attribution overrides (e.g. UI probes)
 PASS=()          # passthrough flags to local-llm.sh
 ARGS=()          # the task prompt
 while [[ $# -gt 0 ]]; do
@@ -41,6 +42,8 @@ while [[ $# -gt 0 ]]; do
     --context) CONTEXT="$2"; shift 2 ;;
     --no-shared) SHARED=0; shift ;;
     --show-context) SHOW_ONLY=1; shift ;;
+    --caller)  CALLER_OVR="$2"; shift 2 ;;
+    --source)  SOURCE_OVR="$2"; shift 2 ;;
     --task)    PASS+=(--task "$2"); shift 2 ;;
     --system)  PASS+=(--system "$2"); shift 2 ;;
     --model)   PASS+=(--model "$2"); shift 2 ;;
@@ -148,4 +151,9 @@ if [[ "$SHOW_ONLY" -eq 1 ]]; then
 fi
 
 # --- call the local model via the shared client (attributed as a RAG call) ---
-printf '%s' "$FULL_PROMPT" | "$LLM" --caller "$AGENT" --source rag "${PASS[@]}"
+# Caller/source default to the agent + "rag"; a caller may override both (e.g.
+# the dashboard quick-test tags itself caller=ui-test source=ui so those probes
+# are excludable from the real fleet-usage metric).
+CALLER_FINAL="${CALLER_OVR:-$AGENT}"
+SOURCE_FINAL="${SOURCE_OVR:-rag}"
+printf '%s' "$FULL_PROMPT" | "$LLM" --caller "$CALLER_FINAL" --source "$SOURCE_FINAL" "${PASS[@]}"
