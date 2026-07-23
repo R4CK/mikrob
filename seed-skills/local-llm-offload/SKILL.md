@@ -110,6 +110,17 @@ time reviewing than writing it, do it inline. But the mechanical bits -> offload
 A completed task with zero offload of its boilerplate is a missed token saving.
 Usage is metered (dashboard "Használat"); `--caller <youragent>` attributes it.
 
+**AGGRESSIVE by default (Peti 2026-07-23): push volume + size, tolerate ≤20% draft failure.**
+Being too conservative (offloading one tiny enum) wastes the model's headroom. Per card,
+offload MANY units and BIGGER ones — every validator, WHOLE test files, type/DTO sets,
+docstrings, i18n draft strings, data transforms, isolated functions — aim for several
+calls, not one. A draft that's wrong ~1 in 5 is FINE: discard it and write that one by
+hand; the token saving on the other 4 still wins. TUNE per task-type, not globally: if a
+specific TYPE fails >20% (e.g. the model keeps botching complex async logic), pull that
+type back and keep pushing the types it nails (tests/validators/types/regex/transforms/
+enums/boilerplate). The ONLY hard exclusions stay: decision/authz/isolation/architecture/
+multi-file-wiring logic — those are net-negative to offload. Everything mechanical: offload.
+
 ## Coding offload -- give the local model CODE tasks (Peti 2026-07-23)
 The active model is `qwen2.5-coder:7b`, a CODE model: it writes correct isolated
 snippets fast (verified: a generic `chunk<T>`, a length-prefixed `compositeKey`
