@@ -98,6 +98,47 @@ default 5), `--query <kw>` (retrieval query, default = task text), `--context
 default so a fleet agent also gets cross-agent context ([[fleet-agents-memory-read-model]]).
 Output is still DRAFT and re-checked ([[local-llm-work-must-be-rechecked]]).
 
+## Coding offload -- give the local model CODE tasks (Peti 2026-07-23)
+The active model is `qwen2.5-coder:7b`, a CODE model: it writes correct isolated
+snippets fast (verified: a generic `chunk<T>`, a length-prefixed `compositeKey`
+matching our convention). Offload MECHANICAL, self-contained coding to it and save
+Claude tokens -- then review + integrate the output yourself.
+
+GOOD coding-offload fits (fully specifiable, single unit):
+- A pure function / helper from an exact signature + constraints.
+- A regex, a data transform, a type/interface, a small algorithm.
+- A unit-test scaffold for a given function.
+- A boilerplate conversion (one shape -> another).
+
+NOT for offload: multi-file changes, architecture, anything needing to READ the
+codebase (the model has NO tools/repo access), security-sensitive logic, or a
+whole card. It only sees what you put in the prompt.
+
+HOW (the model is blind to the repo -- you must hand it everything):
+1. Use `--task code` (system prompt: senior engineer, output only code).
+2. Give the EXACT contract: signature, param/return types, constraints, edge cases,
+   and "return only the function/code".
+3. Paste any needed context -- types, a convention, an example -- via `--context`
+   (or use `local-llm-rag.sh` so project conventions come from memory too).
+
+```bash
+# self-contained function from a precise spec
+/home/neon/marveen/store/local-llm.sh --task code \
+  "TypeScript: function chunk<T>(arr: T[], size: number): T[][] -- split into chunks of size, throw RangeError if size<1. Return only the function."
+
+# coding WITH a project convention pulled from memory + inline context
+/home/neon/marveen/store/local-llm-rag.sh --task code --agent backend \
+  --context "types: interface Shift { id: string; tenantId: string; startMinute: number }" \
+  "TS: function shiftKey(s: Shift): string -- length-prefixed cc:<len>:<tenantId>:<len>:<id>. Return only the function."
+```
+
+OUTPUT HANDLING (mandatory):
+- The model often wraps code in ```fences -- STRIP them before use.
+- The output is a DRAFT from a junior: you READ it, integrate it, then run
+  `tsc --noEmit` + lint + the tests. Never paste it blind into a card.
+- It stays draft-only and is re-checked by MikroB + gates
+  ([[local-llm-work-must-be-rechecked]]). It cannot self-close a card.
+
 ## Updating / swapping the model
 The model must stay updatable (Peti requirement). To change or refresh it:
 ```bash
