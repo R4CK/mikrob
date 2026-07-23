@@ -46,9 +46,13 @@ ollama_up() { curl -fsS -m 5 "$OLLAMA_HOST/api/tags" >/dev/null 2>&1; }
 # One TSV line per real model invocation: epoch \t caller \t task \t model \t ms \t status
 USAGE_LOG="$HERE/local-llm-usage.log"
 log_usage() { # $1=status(ok|err)  $2=elapsed_ms
+  # Strip TAB/NEWLINE from free-text fields so a caller/task/source value can never
+  # inject extra TSV columns or fake rows (metric-integrity hardening; Cybersec LOW).
+  local c="${CALLER:-direct}" t="${TASK:-chat}" s="${SOURCE:-bare}" m="$MODEL"
+  c="${c//[$'\t\n']/_}"; t="${t//[$'\t\n']/_}"; s="${s//[$'\t\n']/_}"; m="${m//[$'\t\n']/_}"
   { printf '%s\t%s\t%s\t%s\t%s\t%s\t%s\n' \
-      "$(date +%s 2>/dev/null || echo 0)" "${CALLER:-direct}" "${TASK:-chat}" \
-      "$MODEL" "${2:-0}" "$1" "${SOURCE:-bare}" >> "$USAGE_LOG"; } 2>/dev/null || true
+      "$(date +%s 2>/dev/null || echo 0)" "$c" "$t" "$m" "${2:-0}" "$1" "$s" \
+      >> "$USAGE_LOG"; } 2>/dev/null || true
 }
 
 MODEL=""; SYSTEM=""; TASK=""; MODE="generate"; CALLER=""; SOURCE="bare"
