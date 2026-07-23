@@ -42,13 +42,24 @@ die() { echo "local-llm: $2" >&2; exit "$1"; }
 
 ollama_up() { curl -fsS -m 5 "$OLLAMA_HOST/api/tags" >/dev/null 2>&1; }
 
-MODEL=""; SYSTEM=""; TASK=""; MODE="generate"
+# Usage metering (fail-open, metadata only -- NEVER the prompt/content).
+# One TSV line per real model invocation: epoch \t caller \t task \t model \t ms \t status
+USAGE_LOG="$HERE/local-llm-usage.log"
+log_usage() { # $1=status(ok|err)  $2=elapsed_ms
+  { printf '%s\t%s\t%s\t%s\t%s\t%s\t%s\n' \
+      "$(date +%s 2>/dev/null || echo 0)" "${CALLER:-direct}" "${TASK:-chat}" \
+      "$MODEL" "${2:-0}" "$1" "${SOURCE:-bare}" >> "$USAGE_LOG"; } 2>/dev/null || true
+}
+
+MODEL=""; SYSTEM=""; TASK=""; MODE="generate"; CALLER=""; SOURCE="bare"
 ARGS=()
 while [[ $# -gt 0 ]]; do
   case "$1" in
     --model)  MODEL="$2"; shift 2 ;;
     --system) SYSTEM="$2"; shift 2 ;;
     --task)   TASK="$2"; shift 2 ;;
+    --caller) CALLER="$2"; shift 2 ;;
+    --source) SOURCE="$2"; shift 2 ;;
     --health) MODE="health"; shift ;;
     --list)   MODE="list"; shift ;;
     -h|--help) MODE="help"; shift ;;
@@ -113,13 +124,22 @@ s=os.environ.get("SYSTEM","")
 if s: d["system"]=s
 print(json.dumps(d))')
 
+# nanosecond clock -> milliseconds (robust across date impls; 0 if unavailable)
+START_NS=$(date +%s%N 2>/dev/null || echo 0)
+_elapsed() { # -> elapsed milliseconds since START_NS
+  local e; e=$(date +%s%N 2>/dev/null || echo 0)
+  if [[ "$START_NS" == 0 || "$e" == 0 ]]; then echo 0; else echo $(( (e - START_NS) / 1000000 )); fi
+}
+
 RESP=$(curl -fsS -m "$TIMEOUT" -X POST "$OLLAMA_HOST/api/generate" \
   -H "Content-Type: application/json" -d "$REQ" 2>/dev/null) || {
+  log_usage err "$(_elapsed)"
   # distinguish model-missing from generic error
   if ollama_up && ! curl -fsS -m 5 "$OLLAMA_HOST/api/tags" | grep -q "${MODEL%%:*}"; then
     die 3 "model '$MODEL' not pulled -- run: ollama pull $MODEL"
   fi
   die 5 "ollama api error (timeout ${TIMEOUT}s or server error)"
 }
+log_usage ok "$(_elapsed)"
 
 echo "$RESP" | python3 -c "import json,sys; d=json.load(sys.stdin); print(d.get('response','').rstrip()) if 'response' in d else sys.exit('local-llm: '+d.get('error','unknown error'))"

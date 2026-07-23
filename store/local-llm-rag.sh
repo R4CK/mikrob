@@ -147,5 +147,5 @@ if [[ "$SHOW_ONLY" -eq 1 ]]; then
   exit 0
 fi
 
-# --- call the local model via the shared client ---
-printf '%s' "$FULL_PROMPT" | "$LLM" "${PASS[@]}"
+# --- call the local model via the shared client (attributed as a RAG call) ---
+printf '%s' "$FULL_PROMPT" | "$LLM" --caller "$AGENT" --source rag "${PASS[@]}"
