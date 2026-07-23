@@ -110,7 +110,14 @@ time reviewing than writing it, do it inline. But the mechanical bits -> offload
 A completed task with zero offload of its boilerplate is a missed token saving.
 Usage is metered (dashboard "Használat"); `--caller <youragent>` attributes it.
 
-**AGGRESSIVE by default (Peti 2026-07-23): push volume + size, tolerate ≤20% draft failure.**
+**AGGRESSIVE by default (Peti 2026-07-23): push volume + size, tolerate ≤20% draft failure**
+**(≤30% overnight / when speed doesn't matter — Peti 2026-07-24; never higher than 30%).**
+When latency is a non-issue (e.g. overnight batches), push HARDER and BIGGER: whole
+HTTP-route DTO+validator sets, complete test files, adapter boilerplate, SQL query-
+mapping — and RE-TRY the types that used to hallucinate (interface/type sets, multi-
+state predicates) under the 30% budget, measuring failure PER TYPE. If a type hits
+its threshold (20% normal / 30% overnight), send that type less; keep pushing the
+ones it nails (enums/test-scaffolds/validators/regex/transforms).
 Being too conservative (offloading one tiny enum) wastes the model's headroom. Per card,
 offload MANY units and BIGGER ones — every validator, WHOLE test files, type/DTO sets,
 docstrings, i18n draft strings, data transforms, isolated functions — aim for several
