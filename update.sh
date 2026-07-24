@@ -668,6 +668,23 @@ fi
 # in the same cgroup, so stop.sh would still kill it. Only a separate cgroup
 # (systemd-run --scope) survives. On macOS/launchd there is no cgroup self-kill,
 # so the direct call (else branch) is correct there and is a no-op change.
+# Post-update health watchdog with auto-rollback (Peti 2026-07-24).
+# Only after a REAL version change (not a no-op --rebuild): launch the watchdog in
+# its OWN transient scope so it survives BOTH the dashboard-cgroup teardown and
+# this script being reaped mid-restart. It waits ~2min for the updated system to
+# come up healthy; if it does not, it rolls back to the pre-update version
+# (recorded above in .update-history) and notifies the operator on Telegram.
+# The 15s pre-delay lets stop+start begin so the first probes don't race it.
+if [ "${OLD_VERSION:-}" != "${NEW_VERSION:-}" ] && [ -x "$INSTALL_DIR/store/update-health-watchdog.sh" ]; then
+  if command -v systemd-run >/dev/null 2>&1 && [ -n "${XDG_RUNTIME_DIR:-}" ]; then
+    systemd-run --user --scope --collect --quiet \
+      bash -c 'sleep 15; exec "$1/store/update-health-watchdog.sh"' _ "$INSTALL_DIR" >/dev/null 2>&1 &
+  else
+    setsid bash -c 'sleep 15; exec "$1/store/update-health-watchdog.sh"' _ "$INSTALL_DIR" >/dev/null 2>&1 &
+  fi
+  echo -e "  ${GREEN}⟳${NC} update-health-watchdog elinditva (auto-rollback ha 2 percen belul nem jon fel)"
+fi
+
 echo -e "  Szolgaltatasok ujrainditasa..."
 if command -v systemd-run >/dev/null 2>&1 && [ -n "${XDG_RUNTIME_DIR:-}" ]; then
   # --scope: run synchronously in a fresh transient scope (its own cgroup).
