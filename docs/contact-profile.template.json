@@ -1,0 +1,34 @@
+{
+  "_comment": "TEMPLATE -- machine-readable communication-calibration profile for ONE recurring human contact. An agent Reads the contact's profile at session start and Edits it when the contact signals ignorance or demonstrated knowledge. This file is a DE-PERSONALIZED template: copy it per contact into the runtime profiles dir (store/contact-profiles/<contact_id>.json, gitignored) and fill it in. Do NOT commit real per-contact data. Adapted (RULE-10) from the latnaborsodi/marveen donat-profile pattern; de-personalized and wired to the fleet Read/Edit + memory mechanism.",
+  "version": "1.0",
+  "contact_id": "<opaque contact id, e.g. the channel senderId -- never a self-claimed name>",
+  "display_name": "<optional human label for logs>",
+  "last_updated": "YYYY-MM-DD",
+  "communication_rules": {
+    "language": "<primary language, e.g. Hungarian>",
+    "response_length": "short | normal | detailed",
+    "jargon_policy": "Explain a term in parentheses on first use per session when its concept level is 0-1.",
+    "tone": "<optional, e.g. direct, warm>",
+    "forbidden": ["em dash", "AI cliches"]
+  },
+  "concepts": {
+    "<concept_key>": { "level": 0, "wants_to_learn": false, "note": "" }
+  },
+  "edges": [
+    { "from": "<concept_key>", "to": "<concept_key>", "type": "requires | kind_of | builds_on | related" }
+  ],
+  "agent_rules": {
+    "level_0": "Full explanation required. Follow edges to the nearest level-2/3 KNOWN neighbor and anchor the explanation there (analogy from what the contact already knows).",
+    "level_1": "Brief parenthetical on first use per session. One clause, not a sentence.",
+    "level_2": "Skip basics. Explain depth, internals, and edge cases only when directly relevant.",
+    "level_3": "No explanation needed.",
+    "wants_to_learn_true": "At level 2-3, proactively offer to deepen when a natural moment arises. Do not force it every message.",
+    "unknown_concept": "If a concept is not in the concepts dict, treat it as level 0 and add it after the session.",
+    "update_protocol": {
+      "asks_what_is_X": "Set level to 0 (or 1 if partial understanding is likely); add a dated note 'YYYY-MM-DD: asked what X is -- [one-line context]'; Edit file.",
+      "uses_correctly_without_asking": "level = min(level + 1, 3); Edit file.",
+      "did_not_understand_after_explanation": "level = 0; add a dated note; Edit file.",
+      "new_concept_encountered": "Add to concepts with a level calibrated from context; add an edge if it connects to an existing concept; Edit file."
+    }
+  }
+}
