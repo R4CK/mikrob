@@ -12421,7 +12421,7 @@ async function renderIntegrationsContent(container) {
   let masked = null
 
   try {
-    const res = await fetch('/api/settings/integrations/gemini', { headers: { Authorization: `Bearer ${getAuthToken()}` } })
+    const res = await fetch('/api/settings/integrations/gemini', { headers: { Authorization: `Bearer ${(localStorage.getItem('marveen-dashboard-token') || '')}` } })
     if (!res.ok) throw new Error('fetch failed')
     const data = await res.json()
     configured = !!data.configured
@@ -12545,7 +12545,7 @@ async function renderIntegrationsContent(container) {
     try {
       const res = await fetch('/api/settings/integrations/gemini', {
         method: 'PUT',
-        headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${getAuthToken()}` },
+        headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${(localStorage.getItem('marveen-dashboard-token') || '')}` },
         body: JSON.stringify({ apiKey: val }),
       })
       const data = await res.json()
@@ -12579,7 +12579,7 @@ async function renderIntegrationsContent(container) {
     try {
       const res = await fetch('/api/settings/integrations/gemini', {
         method: 'DELETE',
-        headers: { Authorization: `Bearer ${getAuthToken()}` },
+        headers: { Authorization: `Bearer ${(localStorage.getItem('marveen-dashboard-token') || '')}` },
       })
       const data = await res.json()
       if (!res.ok || !data.ok) throw new Error(data.error || 'failed')
