@@ -199,6 +199,37 @@
         <span class="update-banner-text" id="updateBannerText"></span>
         <a class="update-banner-action" id="updateBannerAction" href="#" data-i18n="overview.updateBanner.action">Frissítések megnyitása</a>
       </div>
+      <!-- Weekly-limit quota gauge (card 8388642a / FÁZIS2): the Claude Max/Pro weekly 'All models'
+           usage %. MANUAL snapshot (no reliable auto-read). Populated by loadWeeklyGauge() from
+           /api/costs/weekly. States: data / needs-input / error. -->
+      <div class="quota-gauge-card" id="quotaGaugeCard">
+        <div class="quota-gauge-ring" id="quotaGaugeRing" role="img" aria-label="Heti limit">
+          <div class="quota-gauge-value" id="quotaGaugeValue">—</div>
+        </div>
+        <div class="quota-gauge-body">
+          <div class="quota-gauge-title" data-i18n="overview.quota.title">Heti Claude limit</div>
+          <div class="quota-gauge-sub" id="quotaGaugeSub"></div>
+          <div class="quota-gauge-empty" id="quotaGaugeEmpty" hidden>
+            <p class="quota-gauge-hint" data-i18n="overview.quota.empty">Nincs rögzített heti %. Add meg a Claude usage-képernyőn látható heti értéket (All models).</p>
+          </div>
+          <form class="quota-gauge-form" id="quotaGaugeForm" hidden>
+            <label class="quota-gauge-field">
+              <span data-i18n="overview.quota.pctLabel">Heti % (0–100)</span>
+              <input type="number" id="quotaGaugePct" min="0" max="100" step="0.1" inputmode="decimal" />
+            </label>
+            <label class="quota-gauge-field">
+              <span data-i18n="overview.quota.resetLabel">Reset (opcionális)</span>
+              <input type="text" id="quotaGaugeReset" placeholder="Thu 3:59 PM" />
+            </label>
+            <div class="quota-gauge-actions">
+              <button type="submit" class="quota-gauge-save" data-i18n="overview.quota.save">Mentés</button>
+              <button type="button" class="quota-gauge-cancel" id="quotaGaugeCancel" data-i18n="common.cancel">Mégse</button>
+            </div>
+            <p class="quota-gauge-error" id="quotaGaugeError" role="alert" hidden></p>
+          </form>
+          <button type="button" class="quota-gauge-edit" id="quotaGaugeEdit" data-i18n="overview.quota.edit">% frissítése</button>
+        </div>
+      </div>
       <div class="overview-stats">
         <div class="overview-stat">
           <div class="overview-stat-label" data-i18n="overview.stat.agents">Aktív ügynökök</div>

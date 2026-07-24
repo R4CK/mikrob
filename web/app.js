@@ -11521,6 +11521,9 @@ async function loadOverview() {
     const d = await res.json()
     // Upstream-update banner (card 3c09ba6b / FÁZIS3): shown when our fork is behind the
     // upstream base. The action navigates to the existing Frissítések (updates) page.
+    // Weekly-limit quota gauge (card 8388642a): wire once + (re)load its data.
+    wireWeeklyGauge()
+    void loadWeeklyGauge()
     const banner = document.getElementById('updateBanner')
     if (banner) {
       const u = d.upstreamUpdate
@@ -11577,6 +11580,90 @@ async function loadOverview() {
   } catch (err) {
     document.getElementById('overviewActivity').innerHTML = '<div style="color:var(--text-muted);font-size:13px">' + t('overview.error', { msg: escapeHtml(String(err.message || err)) }) + '</div>'
   }
+}
+
+// Weekly-limit quota gauge (card 8388642a / FÁZIS2). MANUAL snapshot (no reliable auto-read):
+// reads /api/costs/weekly, renders a conic-gradient ring colored by threshold, and offers an
+// inline form to record the operator's weekly % (POST). States: data / needs-input / error.
+async function loadWeeklyGauge() {
+  const card = document.getElementById('quotaGaugeCard')
+  if (!card) return
+  const ring = document.getElementById('quotaGaugeRing')
+  const valueEl = document.getElementById('quotaGaugeValue')
+  const subEl = document.getElementById('quotaGaugeSub')
+  const emptyEl = document.getElementById('quotaGaugeEmpty')
+  const editBtn = document.getElementById('quotaGaugeEdit')
+  try {
+    const res = await fetch('/api/costs/weekly')
+    if (!res.ok) throw new Error('HTTP ' + res.status)
+    const d = await res.json()
+    if (d.available && typeof d.pct === 'number') {
+      const pct = Math.max(0, Math.min(100, d.pct))
+      // Threshold colors mirror the fleet weekly-limit rule (90/95 bands).
+      const color = pct >= 95 ? 'var(--danger)' : pct >= 90 ? 'var(--accent)' : 'var(--success)'
+      ring.style.setProperty('--gauge-pct', String(pct))
+      ring.style.setProperty('--gauge-color', color)
+      valueEl.textContent = pct + '%'
+      ring.setAttribute('aria-label', t('overview.quota.title') + ' ' + pct + '%')
+      const bits = []
+      if (d.resetAt) bits.push(t('overview.quota.resets', { at: d.resetAt }))
+      if (d.setAt) bits.push(t('overview.quota.updated', { rel: formatRelative(d.setAt * 1000) }))
+      subEl.textContent = bits.join(' · ')
+      if (emptyEl) emptyEl.hidden = true
+    } else {
+      ring.style.setProperty('--gauge-pct', '0')
+      ring.style.setProperty('--gauge-color', 'var(--text-muted)')
+      valueEl.textContent = '—'
+      subEl.textContent = ''
+      if (emptyEl) emptyEl.hidden = false
+    }
+    if (editBtn) editBtn.hidden = false
+  } catch (err) {
+    valueEl.textContent = '—'
+    subEl.textContent = t('overview.quota.error')
+    if (emptyEl) emptyEl.hidden = true
+    if (editBtn) editBtn.hidden = false
+  }
+}
+
+let weeklyGaugeWired = false
+function wireWeeklyGauge() {
+  if (weeklyGaugeWired) return
+  const form = document.getElementById('quotaGaugeForm')
+  const editBtn = document.getElementById('quotaGaugeEdit')
+  const cancelBtn = document.getElementById('quotaGaugeCancel')
+  const errEl = document.getElementById('quotaGaugeError')
+  if (!form || !editBtn) return
+  weeklyGaugeWired = true
+  const showForm = (show) => {
+    form.hidden = !show
+    editBtn.hidden = show
+    if (errEl) errEl.hidden = true
+  }
+  editBtn.addEventListener('click', () => { showForm(true); document.getElementById('quotaGaugePct').focus() })
+  if (cancelBtn) cancelBtn.addEventListener('click', () => showForm(false))
+  form.addEventListener('submit', async (e) => {
+    e.preventDefault()
+    if (errEl) errEl.hidden = true
+    const pct = Number(document.getElementById('quotaGaugePct').value)
+    const resetAt = document.getElementById('quotaGaugeReset').value
+    try {
+      const res = await fetch('/api/costs/weekly', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ pct, resetAt }),
+      })
+      const d = await res.json().catch(() => ({}))
+      if (!res.ok) {
+        if (errEl) { errEl.textContent = d.error || t('overview.quota.saveError'); errEl.hidden = false }
+        return
+      }
+      showForm(false)
+      await loadWeeklyGauge()
+    } catch (err) {
+      if (errEl) { errEl.textContent = t('overview.quota.saveError'); errEl.hidden = false }
+    }
+  })
 }
 
 // Brand mark + product-brand chrome: pull the configured brand from

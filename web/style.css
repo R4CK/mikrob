@@ -542,6 +542,81 @@ main {
   .update-banner-action { width: 100%; }
 }
 
+/* Weekly-limit quota gauge (card 8388642a / FÁZIS2) -- conic-gradient ring, color by threshold,
+   responsive + touch-friendly (rule 13). --gauge-pct + --gauge-color are set inline by app.js. */
+.quota-gauge-card {
+  display: flex;
+  align-items: center;
+  gap: 18px;
+  padding: 16px 20px;
+  margin-bottom: 20px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  background: var(--bg-card);
+}
+.quota-gauge-card[hidden] { display: none; }
+.quota-gauge-ring {
+  --gauge-pct: 0;
+  --gauge-color: var(--success);
+  flex-shrink: 0;
+  width: 84px;
+  height: 84px;
+  border-radius: 50%;
+  background: conic-gradient(var(--gauge-color) calc(var(--gauge-pct) * 1%), var(--bg-input) 0);
+  display: grid;
+  place-items: center;
+  position: relative;
+}
+.quota-gauge-ring::before {
+  content: '';
+  position: absolute;
+  inset: 10px;
+  border-radius: 50%;
+  background: var(--bg-card);
+}
+.quota-gauge-value {
+  position: relative;
+  font-size: 20px;
+  font-weight: 700;
+  color: var(--text);
+}
+.quota-gauge-body { flex: 1 1 auto; min-width: 0; }
+.quota-gauge-title { font-weight: 600; color: var(--text); }
+.quota-gauge-sub { color: var(--text-muted); font-size: 13px; margin-top: 2px; }
+.quota-gauge-hint { color: var(--text-muted); font-size: 13px; margin: 6px 0; }
+.quota-gauge-edit,
+.quota-gauge-save,
+.quota-gauge-cancel {
+  min-height: 44px;
+  padding: 8px 16px;
+  border-radius: var(--radius-sm);
+  cursor: pointer;
+  font-weight: 600;
+  border: 1px solid var(--border);
+  background: var(--bg-input);
+  color: var(--text);
+}
+.quota-gauge-edit { margin-top: 8px; }
+.quota-gauge-save { background: var(--accent); color: #fff; border-color: var(--accent); }
+.quota-gauge-save:hover { background: var(--accent-hover); }
+.quota-gauge-form { margin-top: 10px; display: flex; flex-wrap: wrap; gap: 10px; align-items: flex-end; }
+.quota-gauge-field { display: flex; flex-direction: column; gap: 4px; font-size: 12px; color: var(--text-muted); }
+.quota-gauge-field input {
+  min-height: 40px;
+  padding: 6px 10px;
+  border-radius: var(--radius-sm);
+  border: 1px solid var(--border);
+  background: var(--bg-input);
+  color: var(--text);
+}
+.quota-gauge-actions { display: flex; gap: 8px; }
+.quota-gauge-error { color: var(--danger); font-size: 13px; width: 100%; margin: 4px 0 0; }
+@media (max-width: 768px) {
+  .quota-gauge-card { flex-wrap: wrap; }
+  .quota-gauge-form { flex-direction: column; align-items: stretch; }
+  .quota-gauge-actions button { width: 100%; }
+}
+
 .overview-stats {
   display: grid;
   grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
