@@ -18,6 +18,10 @@ store/*
 # Operational scripts under store/ ARE version-controlled (code, not runtime data).
 # Everything else in store/ (DB, tokens, state JSON) stays ignored.
 !store/*.sh
+# Stitch design-gen tools are operational scripts (tracked except node_modules).
+!store/stitch-tools/gen.mjs
+!store/stitch-tools/fetch-pngs.mjs
+!store/stitch-tools/package.json
 # Local-LLM offload tooling (config + task templates) is operational, not runtime data.
 !store/local-llm-model
 !store/local-llm-skills/
