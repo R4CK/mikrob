@@ -87,6 +87,9 @@ write_timer   stuck-modal-guard "Run the MikroB stuck-modal guard every minute" 
 write_service disk-space-guard  "MikroB disk-space guard (reap scratch + alert before root fs fills)"          disk-space-guard.sh  journal
 write_timer   disk-space-guard  "Run the MikroB disk-space guard every minute"                                 90s  60s
 
+write_service token-health-guard "MikroB bot-token health guard (getMe probe -> alert on a revoked/expired token)" token-health-guard.sh log
+write_timer   token-health-guard "Run the MikroB bot-token health guard every 15 minutes"                          5min 15min
+
 echo "Rendered guard-timer units for MAIN_AGENT_ID=$MAIN_AGENT_ID into $UNIT_DIR"
 
 # Enable only if a working user systemd is present. During a fresh headless /
@@ -95,7 +98,7 @@ echo "Rendered guard-timer units for MAIN_AGENT_ID=$MAIN_AGENT_ID into $UNIT_DIR
 # user session exists. Never hard-fail the caller (install-linux.sh) over this.
 if pidof systemd >/dev/null 2>&1 && systemctl --user status >/dev/null 2>&1; then
   systemctl --user daemon-reload || true
-  for t in channel-watchdog stuck-modal-guard disk-space-guard; do
+  for t in channel-watchdog stuck-modal-guard disk-space-guard token-health-guard; do
     systemctl --user enable --now "${MAIN_AGENT_ID}-${t}.timer" || echo "  warn: could not enable ${MAIN_AGENT_ID}-${t}.timer"
   done
   echo "Enabled guard timers:"
