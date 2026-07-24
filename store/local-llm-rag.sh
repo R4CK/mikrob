@@ -21,7 +21,16 @@
 # Retrieval query defaults to the task text; override with --query for a focused
 # retrieval. Memory scope defaults to agent=mikrob; set --agent to the caller.
 #
-# Exit codes: 0 ok | 2 ollama down (via local-llm.sh) | 4 bad usage | 6 api/token error
+# Local self-repair auto-verify (Peti 2026-07-24): for a FILE-SHAPED draft, add
+#   --out <file> --verify-cmd "<shell check>" [--verify-iter N]
+# The draft is written to <file>, <check> runs (tsc/lint/test); on failure the
+# LOCAL model is re-prompted with the errors up to N times (default 3). Only a
+# green draft returns exit 0; a still-failing one returns exit 7 (UNVERIFIED).
+#   local-llm-rag.sh --agent backend --out /tmp/x.test.ts \
+#     --verify-cmd "cd /mnt/h/LM_Studio_Workdir/CleanCore && npx tsc --noEmit -p packages/x/tsconfig.test.json" \
+#     "write a vitest suite for ..."
+#
+# Exit codes: 0 ok | 2 ollama down (via local-llm.sh) | 4 bad usage | 6 api/token error | 7 verify-fail
 # No secrets embedded; the dashboard token is read at call time from store/.dashboard-token.
 set -euo pipefail
 
@@ -32,6 +41,7 @@ LLM="$HERE/local-llm.sh"
 
 AGENT="mikrob"; K=5; QUERY=""; CONTEXT=""; SHARED=1; SHOW_ONLY=0
 CALLER_OVR=""; SOURCE_OVR=""   # optional attribution overrides (e.g. UI probes)
+OUT=""; VERIFY_CMD=""; VERIFY_ITER=3   # local self-repair loop (auto-verify a file-shaped draft)
 PASS=()          # passthrough flags to local-llm.sh
 ARGS=()          # the task prompt
 while [[ $# -gt 0 ]]; do
@@ -47,6 +57,9 @@ while [[ $# -gt 0 ]]; do
     --task)    PASS+=(--task "$2"); shift 2 ;;
     --system)  PASS+=(--system "$2"); shift 2 ;;
     --model)   PASS+=(--model "$2"); shift 2 ;;
+    --out)     OUT="$2"; shift 2 ;;
+    --verify-cmd) VERIFY_CMD="$2"; shift 2 ;;
+    --verify-iter) VERIFY_ITER="$2"; shift 2 ;;
     -h|--help) sed -n '2,30p' "${BASH_SOURCE[0]}" | sed 's/^# \{0,1\}//'; exit 0 ;;
     --) shift; while [[ $# -gt 0 ]]; do ARGS+=("$1"); shift; done ;;
     *) ARGS+=("$1"); shift ;;
@@ -160,4 +173,45 @@ fi
 # are excludable from the real fleet-usage metric).
 CALLER_FINAL="${CALLER_OVR:-$AGENT}"
 SOURCE_FINAL="${SOURCE_OVR:-rag}"
-printf '%s' "$FULL_PROMPT" | "$LLM" --caller "$CALLER_FINAL" --source "$SOURCE_FINAL" "${PASS[@]}"
+
+call_model() { printf '%s' "$1" | "$LLM" --caller "$CALLER_FINAL" --source "$SOURCE_FINAL" "${PASS[@]}"; }
+# drop a single ```lang ... ``` fence so a file-shaped draft is written as raw code
+strip_fence() { awk '/^[[:space:]]*```/{f=!f; next} {print}'; }
+
+# No local auto-verify requested: single-shot draft to stdout (original behavior).
+if [[ -z "$VERIFY_CMD" || -z "$OUT" ]]; then
+  call_model "$FULL_PROMPT"
+  exit 0
+fi
+
+# --- LOCAL SELF-REPAIR LOOP (auto-verify) -------------------------------------
+# Peti 2026-07-24: make verification GEPI so the online agent gets a PRE-VERIFIED
+# draft (near-zero online tokens). Draft -> write $OUT -> run $VERIFY_CMD (tsc/
+# lint/test) -> on fail, re-prompt the LOCAL model with the errors, up to
+# $VERIFY_ITER times. Only pass=green drafts return exit 0; a still-failing draft
+# returns exit 7 so the caller knows it is UNVERIFIED and needs online review.
+PROMPT="$FULL_PROMPT"
+i=0
+while :; do
+  i=$((i+1))
+  DRAFT="$(call_model "$PROMPT")"
+  printf '%s\n' "$DRAFT" | strip_fence > "$OUT"
+  if VOUT="$(bash -c "$VERIFY_CMD" 2>&1)"; then
+    printf '%s\n' "$DRAFT"
+    echo "local-llm-rag: VERIFY PASS on iter $i (wrote $OUT, check: $VERIFY_CMD)" >&2
+    exit 0
+  fi
+  if [[ "$i" -ge "$VERIFY_ITER" ]]; then
+    printf '%s\n' "$DRAFT"
+    { echo "local-llm-rag: VERIFY FAIL after $i iters -- draft UNVERIFIED, needs online review. Last errors:";
+      printf '%s\n' "$VOUT" | tail -20; } >&2
+    exit 7
+  fi
+  echo "local-llm-rag: verify failed (iter $i/$VERIFY_ITER), re-prompting local model with errors" >&2
+  PROMPT="$FULL_PROMPT
+
+------------------------------------------------------------
+Your previous draft was written to $OUT and FAILED this check: $VERIFY_CMD
+Fix ALL of these errors; return the COMPLETE corrected file, CODE ONLY, no prose:
+$(printf '%s' "$VOUT" | tail -40)"
+done
