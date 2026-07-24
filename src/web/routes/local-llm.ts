@@ -23,6 +23,10 @@ import type { RouteContext } from './types.js'
 
 const OLLAMA_BASE = 'http://127.0.0.1:11434'
 const MODEL_FILE = join(STORE_DIR, 'local-llm-model')
+// The embedding model is used exclusively for memory/RAG vector search (src/db.ts).
+// It never receives code/task dispatches. Exposed in the status response so the
+// dashboard can show both roles clearly and avoid the "nomic gets tasks too?" confusion.
+const EMBED_MODEL = 'nomic-embed-text'
 const RAG_SCRIPT = join(STORE_DIR, 'local-llm-rag.sh')
 // Append-only usage ledger written by the instrumented local-llm wrappers.
 // One TSV line per real model invocation:
@@ -400,6 +404,8 @@ export async function tryHandleLocalLlm(ctx: RouteContext): Promise<boolean> {
       ollama_up: ollamaUp,
       active_model: active,
       active_present: models.some((m: any) => m.name === active),
+      embed_model: EMBED_MODEL,
+      embed_present: models.some((m: any) => m.name === EMBED_MODEL),
       models,
       running,
       bridge_active: bridge,

@@ -7138,6 +7138,12 @@ body {
   color: var(--accent);
   margin-top: 4px;
 }
+.llm-tile-role {
+  font-size: 11px;
+  color: var(--text-muted);
+  margin-top: 6px;
+  font-style: italic;
+}
 .llm-model-row {
   display: flex;
   align-items: center;

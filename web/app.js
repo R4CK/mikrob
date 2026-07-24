@@ -9241,11 +9241,27 @@ async function llmRefreshStatus() {
       d.ollama_up ? t('localLlm.status.up') : t('localLlm.status.down'),
       d.ollama_up ? 'ok' : 'bad',
     ))
+    // Code/offload model tile (qwen2.5-coder or whatever is active)
+    const codeRunning = (Array.isArray(d.running) ? d.running : []).find(r => r.name === d.active_model || r.model === d.active_model)
     tiles.push(llmTile(
-      t('localLlm.status.active_model'),
+      t('localLlm.status.code_model'),
       d.active_model ? escapeHtml(d.active_model) : '—',
       d.active_model ? (d.active_present ? 'ok' : 'warn') : 'muted',
-      d.active_model && !d.active_present ? t('localLlm.status.not_pulled') : '',
+      d.active_model && !d.active_present
+        ? t('localLlm.status.not_pulled')
+        : (codeRunning ? t('localLlm.status.in_vram') : (d.active_model ? t('localLlm.status.not_in_vram') : '')),
+      t('localLlm.status.code_model_role'),
+    ))
+    // Embedding model tile (nomic-embed-text — memory/RAG only, never gets code tasks)
+    const embedRunning = (Array.isArray(d.running) ? d.running : []).find(r => r.name === d.embed_model || r.model === d.embed_model)
+    tiles.push(llmTile(
+      t('localLlm.status.embed_model'),
+      d.embed_model ? escapeHtml(d.embed_model) : '—',
+      d.embed_model ? (d.embed_present ? 'ok' : 'warn') : 'muted',
+      d.embed_model && !d.embed_present
+        ? t('localLlm.status.not_pulled')
+        : (embedRunning ? t('localLlm.status.in_vram') : (d.embed_model ? t('localLlm.status.not_in_vram') : '')),
+      t('localLlm.status.embed_model_role'),
     ))
     tiles.push(llmTile(
       t('localLlm.status.bridge'),
@@ -9307,11 +9323,12 @@ async function llmRefreshStatus() {
   }
 }
 
-function llmTile(label, value, kind, note) {
+function llmTile(label, value, kind, note, role) {
   return `<div class="llm-tile ${kind}">
     <div class="llm-tile-label">${label}</div>
     <div class="llm-tile-value">${value}</div>
     ${note ? `<div class="llm-tile-note">${note}</div>` : ''}
+    ${role ? `<div class="llm-tile-role">${role}</div>` : ''}
   </div>`
 }
 
