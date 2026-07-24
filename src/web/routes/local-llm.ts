@@ -30,6 +30,34 @@ const RAG_SCRIPT = join(STORE_DIR, 'local-llm-rag.sh')
 const USAGE_FILE = join(STORE_DIR, 'local-llm-usage.log')
 const BRIDGE_UNIT = 'quota-bridge.service'
 const OLLAMA_UNIT = 'ollama'
+// Proactive-offload control (card 48f3b675): the aggressiveness slider persists into the SAME config
+// the fleet agents + the local-llm-offload skill read. 0 = never offload, 100 = offload maximally.
+const OFFLOAD_CONFIG_FILE = join(STORE_DIR, 'local-llm-offload-active.json')
+const DEFAULT_AGGRESSIVENESS = 50
+// The marked "optimal" point on the slider. The offload GPU (GTX 1660 Ti, ~5 GB usable) is barely
+// loaded, so the honest recommendation is to offload MORE mechanical work than a naive middle setting.
+const OPTIMAL_AGGRESSIVENESS = 75
+
+/** Clamp/parse an aggressiveness input to an integer in [0,100]; non-numeric -> the default. (Mechanical
+ *  pure fn -- drafted via the local-llm offload per the proactive-offload directive, verified here.) */
+export function normalizeAggressiveness(input: unknown): number {
+  const parsed = typeof input === 'number' ? input : parseFloat(String(input))
+  if (isNaN(parsed) || !isFinite(parsed)) return DEFAULT_AGGRESSIVENESS
+  return Math.round(Math.max(0, Math.min(100, parsed)))
+}
+
+/** Read the offload config JSON, fail-soft to an empty object (the endpoint fills defaults). */
+function readOffloadConfig(): Record<string, unknown> {
+  try {
+    if (existsSync(OFFLOAD_CONFIG_FILE)) {
+      const parsed = JSON.parse(readFileSync(OFFLOAD_CONFIG_FILE, 'utf-8'))
+      if (parsed && typeof parsed === 'object') return parsed as Record<string, unknown>
+    }
+  } catch (err) {
+    logger.warn({ err }, 'offload-config: read/parse failed, using defaults')
+  }
+  return {}
+}
 
 // Model tag charset: letters/digits and the punctuation Ollama allows in a
 // name (repo/name:tag, digests, registry host). Anchored + length-capped so a
@@ -375,6 +403,49 @@ export async function tryHandleLocalLlm(ctx: RouteContext): Promise<boolean> {
       bridge_active: bridge,
       gpu,
     })
+    return true
+  }
+
+  // GET /api/local-llm/offload-config -> the current offload aggressiveness + the marked optimum.
+  if (path === '/api/local-llm/offload-config' && method === 'GET') {
+    const cfg = readOffloadConfig()
+    json(res, {
+      active: cfg.active !== false, // default on unless explicitly disabled
+      mode: typeof cfg.mode === 'string' ? cfg.mode : 'proactive',
+      aggressiveness: normalizeAggressiveness(cfg.aggressiveness),
+      optimal: OPTIMAL_AGGRESSIVENESS,
+    })
+    return true
+  }
+
+  // POST /api/local-llm/offload-config { aggressiveness: 0..100 } -> persist into the shared config the
+  // agents + skill read. Bearer-gated by src/web.ts (never unauth-settable). Only the aggressiveness
+  // field is touched; the rest of the directive metadata (active/mode/set_by/policy) is preserved.
+  if (path === '/api/local-llm/offload-config' && method === 'POST') {
+    const body = (await readBody(req)).toString()
+    let parsed: { aggressiveness?: unknown }
+    try {
+      parsed = JSON.parse(body || '{}')
+    } catch {
+      json(res, { error: 'invalid_json', message: 'A kérés törzse érvénytelen JSON.' }, 400)
+      return true
+    }
+    if (parsed.aggressiveness === undefined) {
+      json(res, { error: 'missing_field', message: 'Hiányzó mező: aggressiveness (0-100).' }, 400)
+      return true
+    }
+    const aggressiveness = normalizeAggressiveness(parsed.aggressiveness)
+    const cfg = readOffloadConfig()
+    cfg.aggressiveness = aggressiveness
+    cfg.aggressiveness_set_at = new Date().toISOString()
+    try {
+      atomicWriteFileSync(OFFLOAD_CONFIG_FILE, JSON.stringify(cfg, null, 2) + '\n')
+    } catch (err) {
+      logger.error({ err }, 'offload-config: write failed')
+      json(res, { error: 'write_failed', message: 'A beállítás mentése nem sikerült, próbáld újra.' }, 500)
+      return true
+    }
+    json(res, { aggressiveness, optimal: OPTIMAL_AGGRESSIVENESS })
     return true
   }
 

@@ -74,7 +74,7 @@ TOKEN="$(cat "$TOKEN_FILE")"
 # (per-term + whole-query), dedup by id, rank by salience, take top K.
 CONTEXT_BLOCK="$(DASH="$DASH" TOKEN="$TOKEN" QUERY="$QUERY" AGENT="$AGENT" K="$K" \
   SHARED="$SHARED" INLINE="$CONTEXT" python3 - <<'PY'
-import json, os, re, urllib.parse, urllib.request
+import json, os, re, sys, urllib.parse, urllib.request
 DASH=os.environ['DASH']; TOKEN=os.environ['TOKEN']
 QUERY=os.environ['QUERY']; AGENT=os.environ['AGENT']
 K=int(os.environ.get('K','5')); SHARED=os.environ.get('SHARED','1')=='1'
@@ -97,7 +97,11 @@ def fetch(params):
         with urllib.request.urlopen(req, timeout=10) as r:
             d=json.loads(r.read().decode())
         return d if isinstance(d,list) else d.get('memories', d.get('data', []))
-    except Exception:
+    except Exception as e:
+        # Rule 12: a memory-retrieval failure degrades the offload draft (no context) but must NOT be
+        # SILENT. Speak the reason on stderr so a degraded run is visible/diagnosable; retrieval is
+        # best-effort augmentation, so we still fail-open (empty context) rather than abort the draft.
+        print("[local-llm-rag] retrieval degraded (memory API unreachable): %s" % e, file=sys.stderr)
         return []
 
 queries=[QUERY]+terms(QUERY)

@@ -7043,6 +7043,65 @@ body {
   color: var(--text);
   margin: 0 0 14px;
 }
+/* Offload aggressiveness slider (card 48f3b675) -- responsive + touch-friendly (rule 13). */
+.llm-offload-desc {
+  color: var(--text-muted);
+  font-size: 13px;
+  margin: 0 0 14px;
+  line-height: 1.5;
+}
+.llm-offload-row {
+  display: flex;
+  align-items: center;
+  gap: 14px;
+  flex-wrap: wrap;
+}
+.llm-offload-slider {
+  flex: 1 1 220px;
+  min-width: 160px;
+  height: 44px; /* touch target >= 44px (rule 13) */
+  accent-color: var(--accent, #6366f1);
+  cursor: pointer;
+}
+.llm-offload-value {
+  font-variant-numeric: tabular-nums;
+  font-weight: 700;
+  font-size: 18px;
+  color: var(--text);
+  min-width: 3ch;
+  text-align: right;
+}
+.llm-offload-legend {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  margin-top: 8px;
+  color: var(--text-muted);
+  font-size: 12px;
+  flex-wrap: wrap;
+}
+.llm-offload-optimal-btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  min-height: 32px;
+  padding: 4px 10px;
+  border: 1px solid var(--border);
+  border-radius: 999px;
+  background: var(--bg-card);
+  color: var(--text);
+  font-size: 12px;
+  cursor: pointer;
+}
+.llm-offload-optimal-btn:hover { border-color: var(--accent, #6366f1); }
+.llm-offload-msg {
+  margin-top: 10px;
+  font-size: 13px;
+  min-height: 18px;
+}
+.llm-offload-msg.ok { color: var(--ok, #16a34a); }
+.llm-offload-msg.bad { color: var(--bad, #dc2626); }
 .llm-loading, .llm-empty, .llm-muted, .llm-running-empty {
   color: var(--text-muted);
   font-size: 13px;

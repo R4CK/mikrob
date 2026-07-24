@@ -522,6 +522,24 @@
         </div>
       </div>
 
+      <!-- Offload aggressiveness slider (card 48f3b675) -->
+      <div class="llm-section">
+        <h2 class="llm-section-title" data-i18n="localLlm.offload.title">Offload agresszivitás</h2>
+        <p class="llm-offload-desc" data-i18n="localLlm.offload.desc">Mennyi mechanikus kód-részt adjunk ki a helyi GPU-nak. Magasabb érték = több offload, kevesebb Claude-token.</p>
+        <div class="llm-offload-row">
+          <input type="range" id="llmOffloadSlider" class="llm-offload-slider" min="0" max="100" step="1" value="50" aria-label="Offload agresszivitás (0-100)">
+          <output id="llmOffloadValue" class="llm-offload-value">50</output>
+        </div>
+        <div class="llm-offload-legend">
+          <span data-i18n="localLlm.offload.off">Ki (0)</span>
+          <button type="button" id="llmOffloadOptimalBtn" class="llm-offload-optimal-btn" title="A GPU alig terhelt -> ajánlott offload-szint">
+            <span data-i18n="localLlm.offload.optimal">Optimum</span>: <span id="llmOffloadOptimal">75</span>
+          </button>
+          <span data-i18n="localLlm.offload.max">Max (100)</span>
+        </div>
+        <div id="llmOffloadMsg" class="llm-offload-msg" role="status" aria-live="polite"></div>
+      </div>
+
       <!-- Usage metrics -->
       <div class="llm-section">
         <h2 class="llm-section-title" data-i18n="localLlm.usage.title">Használat</h2>
