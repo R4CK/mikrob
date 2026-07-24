@@ -53,6 +53,7 @@ import { tryHandleMarveen } from './web/routes/marveen.js'
 import { tryHandleRecall } from './web/routes/recall.js'
 import { tryHandleBackgroundTasks, sweepOrphanedBackgroundTasks } from './web/routes/background-tasks.js'
 import { tryHandleOverview } from './web/routes/overview.js'
+import { tryHandlePublicDigest } from './web/routes/public-digest.js'
 import { tryHandleUpdates } from './web/routes/updates.js'
 import { tryHandleOnboarding } from './web/routes/onboarding.js'
 import { tryHandleStatus } from './web/routes/status.js'
@@ -135,6 +136,9 @@ export function startWebServer(port = 3420): http.Server {
     // via <img src> which can't carry headers -- these are non-sensitive assets).
     const isPublicApi =
       (path === '/api/auth/status' && method === 'GET') ||
+      // Public fleet-health digest (card 5a57ba16 / F2): intentionally UNAUTH, exposes ONLY
+      // aggregate counts + version (never names/paths/tokens/PII -- see public-digest.ts).
+      (path === '/api/public-digest' && method === 'GET') ||
       (method === 'GET' && (
         path === '/api/marveen/avatar' ||
         /^\/api\/agents\/[^/]+\/avatar$/.test(path)
@@ -221,6 +225,7 @@ export function startWebServer(port = 3420): http.Server {
       if (await tryHandleMarveen(routeCtx, WEB_DIR)) return
       if (await tryHandleBackgroundTasks(routeCtx)) return
       if (await tryHandleRecall(routeCtx)) return
+      if (await tryHandlePublicDigest(routeCtx)) return
       if (await tryHandleOverview(routeCtx)) return
       if (await tryHandleUpdates(routeCtx)) return
       if (await tryHandleOnboarding(routeCtx)) return
