@@ -7,10 +7,11 @@
 # is down. It is the COARSE net (total-pipe-death / session-wedge); the
 # dashboard's userbot inbound-probe handles the finer inbound-only deafness.
 #
-# Signal: store/.channel-keepalive mtime. The keep-alive scheduled task does a
-# real Telegram MCP edit_message round-trip every ~6 min and touches that file
-# on success, so a stale file means the session's MCP pipe is no longer doing
-# round-trips (wedged / deaf).
+# Signal: store/.channel-keepalive mtime. Two token-free producers keep it
+# fresh: channel-monitor advances it on organic inbound, and the idle-path
+# channel-keepalive-probe.sh timer touches it every ~3 min while the telegram
+# poller is alive under the channels session. A stale file therefore means the
+# session's channel pipe is genuinely down (wedged / deaf), not merely quiet.
 #
 # Recovery: `tmux respawn-pane` of ONLY the <id>-channels pane -- the precise,
 # fleet-safe restart of just the main channels session. (Historically a
@@ -46,9 +47,11 @@ MAIN_AGENT_ID="${MAIN_AGENT_ID:-marveen}"
 MAIN_AGENT_ID="${MAIN_AGENT_ID//[^a-zA-Z0-9_-]/}"
 SESSION="${MAIN_AGENT_ID}-channels"
 
-TMUX="$(command -v tmux)"
+# NB: use TMUX_BIN, not TMUX -- the latter is tmux's own env var (socket,pid,
+# session); assigning the binary path to it corrupts server-socket detection.
+TMUX_BIN="$(command -v tmux)"
 CLAUDE="$(command -v claude)"
-if [ -z "$TMUX" ] || [ -z "$CLAUDE" ]; then
+if [ -z "$TMUX_BIN" ] || [ -z "$CLAUDE" ]; then
   log "tmux or claude not on PATH; cannot act. PATH=$PATH"
   exit 0
 fi
@@ -56,7 +59,7 @@ fi
 now=$(date +%s)
 
 # --- gate 1: the channels session must EXIST (bridge "running") ---
-if ! "$TMUX" has-session -t "$SESSION" 2>/dev/null; then
+if ! "$TMUX_BIN" has-session -t "$SESSION" 2>/dev/null; then
   log "session $SESSION not present -- systemd marveen-channels.service owns (re)start; watchdog no-op"
   exit 0
 fi
@@ -108,7 +111,7 @@ MODEL_FLAG=""
 RESPAWN_CMD="export PATH=\"/opt/homebrew/bin:\$HOME/.bun/bin:/home/linuxbrew/.linuxbrew/bin:\$HOME/.local/bin:/usr/local/bin:/usr/bin:/bin\" && export CLAUDE_CODE_ENABLE_PROMPT_SUGGESTION=false && $CLAUDE --dangerously-skip-permissions ${MODEL_FLAG}--channels plugin:telegram@claude-plugins-official"
 
 log "keepalive stale ${age}s (>${STALE_SECONDS}s) and session up -- respawn-pane $SESSION (respawn #$((count+1)))"
-if "$TMUX" respawn-pane -k -t "$SESSION" "$RESPAWN_CMD" 2>/dev/null; then
+if "$TMUX_BIN" respawn-pane -k -t "$SESSION" "$RESPAWN_CMD" 2>/dev/null; then
   date +%s > "$RESPAWN_STAMP"
   echo $(( count + 1 )) > "$RESPAWN_COUNT_FILE"
   log "respawn-pane issued"

@@ -48,6 +48,30 @@ Ezek a MikroB-fork saját fejlesztései a Marveen-bázison felül — főleg a *
 - **Lokális-LLM offload rendszer (WSL GPU)**: a flotta a jól körülhatárolt, mechanikus kód/szöveg-részfeladatokat egy helyi Ollama-modellre (GTX 1660 Ti, `qwen2.5-coder:7b`) offloadolja Claude-token helyett — `store/local-llm.sh` (nyers kliens) + `store/local-llm-rag.sh` (memória-RAG wrapper, `--caller`/`--source` attribúcióval), `local-llm-offload` skill. A dashboard **Lokális LLM** menüpontja: státusz (ollama/modell/GPU/quota-bridge), egy-kattintásos modellcsere + `ollama pull` frissítés, kurált coding-modell-ajánlások (GPU-fit jelzéssel) + élő HuggingFace GGUF-kereső, élő log + futó feladatok, gyorsteszt, és egy **Használat-mérő** (valós fleet-hívások: agentenként/mód/kód, az UI-próba kizárva, csak metaadat). **Ghost vészmód-híd** (`quota-bridge`): kvóta-fagyáskor a helyi modell + memória-RAG felel a Telegramon a resetig. Heti-limit 90% felett: minden kódolás a helyi modellre (draft), a verifikáció a reset utánra halasztva.
 - **Update-biztos közösségi átvétel + git-repo-watcher**: a bevált nyílt-forrású skillek/eszközök átvétele KIZÁRÓLAG additív fork-fájlként (új `seed-skills/`, `store/*.sh`, MCP a repón kívül) — sosem felmenő core-fájl szerkesztésével, így az `update.sh` ff-only pull tiszta marad. A `store/git-repo-watcher.sh` (+ `git-repo-watcher` scheduled task) figyeli a bekötött upstream repókat: a szöveg-adoptációk (skill/doc) azonnal ff-frissülnek, a külső **futtatható kód** viszont változáskor csak DETEKTÁL + STAGE + FLAG-el (gyors supply-chain/integritás-ellenőrzés + Peti-értesítés) — sosem fut vakon kompromittálható upstream commit a flottán. Első átvétel: `plan-grilling` skill (MIT).
 
+### Dokumentáció-index
+
+| Funkció | Lap |
+|---------|-----|
+| Heartbeat + fokozatos autonómia | [docs/heartbeat-autonomy.md](docs/heartbeat-autonomy.md) |
+| Memória-rendszer (FTS5 + vektor + RRF) | [docs/memory-system.md](docs/memory-system.md) |
+| Kanban (auto-breakdown, swimlane, WIP-limit, card-aging) | [docs/kanban.md](docs/kanban.md) |
+| Ügynök-flotta + inter-agent | [docs/agent-fleet.md](docs/agent-fleet.md) |
+| Föderáció (több példány összekötése, dashboard-menüvel) | [docs/federation.md](docs/federation.md) |
+| Skill-factory (öntanulás) | [docs/skill-factory.md](docs/skill-factory.md) |
+| Channels (Telegram / Slack) | [docs/channels.md](docs/channels.md) |
+| Printing-press CLI-k | [docs/printing-press-cli.md](docs/printing-press-cli.md) |
+| Skool CLI | [docs/skool-cli.md](docs/skool-cli.md) |
+| connectors.hu | [docs/connectors-hu.md](docs/connectors-hu.md) |
+| Vault & titkosítás | [docs/vault.md](docs/vault.md) |
+| Dream-engine | [docs/dream-engine.md](docs/dream-engine.md) |
+| Háttér-feladatok | [docs/background-tasks.md](docs/background-tasks.md) |
+| Ütemezett feladatok | [docs/scheduled-tasks.md](docs/scheduled-tasks.md) |
+| Költöztetés (másik gépre) | [docs/MIGRATION.md](docs/MIGRATION.md) |
+| Beszélgetés-folytonosság | [docs/conversation-continuity.md](docs/conversation-continuity.md) |
+| Channel reply-guard | [docs/channel-reply-guard.md](docs/channel-reply-guard.md) |
+| Telegram haladásjelző | [docs/telegram-progress-indicator.md](docs/telegram-progress-indicator.md) |
+| Új asszisztens onboarding | [docs/onboarding-uj-asszisztens.md](docs/onboarding-uj-asszisztens.md) |
+
 > A fork emellett követi a felmenő Marveen kiadásait is (pl. **v1.19.0**: SSH Vault, owner-gated terminál-input, kanban kártya-esemény audit, dashboard auth-keményítés).
 
 ## Architektúra
@@ -61,6 +85,20 @@ Ezek a MikroB-fork saját fejlesztései a Marveen-bázison felül — főleg a *
 ## Telepítés (ebből a forkból: `R4CK/mikrob`)
 
 Ez a fork saját telepítendő — NEM a felmenő `Szotasz/marveen`.
+
+### macOS / Linux
+
+```bash
+git clone https://github.com/R4CK/mikrob.git
+cd mikrob
+./install-linux.sh
+```
+
+Alapértelmezés szerint a dashboard a 3420-as porton indul (`http://localhost:3420`). Egyedi port beállításához:
+
+```bash
+./install-linux.sh --port 3421   # vagy: WEB_PORT=3421 ./install-linux.sh
+```
 
 ### Windows (WSL) — a fork elsődleges környezete
 

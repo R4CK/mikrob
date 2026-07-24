@@ -404,6 +404,110 @@ export function detectsBlockingMenu(pane: string): boolean {
   return MENU_NAV_RX.test(footerRegion) || MENU_ESC_RX.test(footerRegion)
 }
 
+// Claude Code FIRST-RUN gates: the interactive dialogs a brand-new install
+// parks on before the prompt ever renders -- the per-project "Do you trust the
+// files in this folder?" consent, the --dangerously-skip-permissions "Bypass
+// Permissions mode" acceptance, the "Select login method" picker, the theme
+// picker and the onboarding welcome screen. A sub-agent session stuck on one
+// of these is the fresh-install failure mode behind "scheduled tasks pile up
+// on the agents" (Oligo2000 VPS, 2026-07-22): the pane has no idle footer and
+// no busy signal, so detectPaneState reads 'unknown', isSessionReadyForPrompt
+// stays false forever, every scheduled task defers into pending_task_retries,
+// and a forceSend task types its prompt blindly into the dialog.
+//
+// These gates need their own detector (distinct from detectsBlockingMenu)
+// because the RECOVERY differs: a /mcp-style modal pops back to the prompt on
+// Escape, but on the trust/bypass dialogs Escape means "No, exit" -- it QUITS
+// the TUI and the session respawns straight back into the same dialog. The
+// monitor must answer them the way scripts/channels.sh's startup guard does
+// (trust -> "1" Enter, bypass -> "2" Enter) and must only ALERT on the login
+// picker (nobody can log in on the operator's behalf).
+//
+// Guards against a healthy session that merely quotes the dialog text follow
+// detectsBlockingMenu's discipline: a busy pane is never a gate, and a visible
+// idle footer means the real prompt is live (capture-pane -p sees only the
+// visible screen, so a quoted phrase always coexists with the live footer).
+export type FirstRunGateKind = 'trust' | 'bypass-permissions' | 'login' | 'theme' | 'welcome'
+
+// Ordered: the login picker and theme screen render UNDER the "Welcome to
+// Claude Code" banner, so the more specific matches must win before the
+// generic welcome fallback.
+const FIRST_RUN_GATES: Array<{ kind: FirstRunGateKind; rx: RegExp }> = [
+  { kind: 'trust', rx: /Do you trust the files in this folder\?/ },
+  { kind: 'bypass-permissions', rx: /Bypass Permissions mode/ },
+  { kind: 'login', rx: /Select login method/ },
+  { kind: 'theme', rx: /Choose the text style/ },
+  { kind: 'welcome', rx: /Welcome to Claude Code/ },
+]
+
+/**
+ * Classify the pane as a Claude Code first-run gate, or null when it is a
+ * normal (busy / idle / typing) surface. Pure + dependency-free.
+ */
+export function detectsFirstRunGate(pane: string): FirstRunGateKind | null {
+  if (!pane || !pane.trim()) return null
+  const lines = pane.split('\n')
+  const busyRegion = lines.slice(-BUSY_LIVE_REGION_LINES).join('\n')
+  for (const rx of BUSY_INDICATORS) {
+    if (rx.test(busyRegion)) return null
+  }
+  const footerRegion = lines.slice(-LIVE_FOOTER_REGION_LINES).join('\n')
+  if (BUSY_ESC_TO_INTERRUPT_RX.test(footerRegion)) return null
+  if (IDLE_FOOTER_RX.test(pane)) return null
+  for (const g of FIRST_RUN_GATES) {
+    if (!g.rx.test(pane)) continue
+    // The welcome banner also heads the NORMAL fresh-session layout (logo +
+    // model + cwd + empty input box, footer not yet rendered). A ❯ prompt
+    // glyph means an input box exists -- that pane is usable, not a gate.
+    // The trust/bypass/login dialogs use ❯ only as their option selector and
+    // are matched above, before this fallback.
+    if (g.kind === 'welcome' && pane.includes('❯')) continue
+    return g.kind
+  }
+  return null
+}
+
+// Claude Code model overage-consent dialog (first observed 2026-07-23; the
+// confirmed root cause of the "agent-config says claude-fable-5 but the
+// session runs Sonnet 5" activeModel drift). When a config root's
+// .claude.json lacks fableOverageConsentV2[<org>], the first Fable 5 turn
+// parks the TUI on:
+//   Fable 5 now uses usage credits
+//     1. Continue with Fable 5
+//   ❯ 2. Switch to Sonnet 5 and continue
+//   Enter to confirm · Esc to cancel
+// with the DEFAULT CURSOR ON THE SWITCH OPTION. Any blind Enter reaching the
+// pane (the post-spawn identity /name, sendPromptToSession's retry-Enter,
+// a human reflex) silently switches the session to Sonnet. The dialog is
+// detected here (pure, unit-testable) and answered in agent-process.ts by
+// actively selecting option 1 ("Continue with <model>") -- never the switch
+// default. Matchers are model-name-agnostic so a future "<other model> now
+// uses usage credits" variant is covered without a new detector.
+//
+// Guards follow detectsFirstRunGate's discipline: a busy pane is never the
+// dialog, and a visible idle footer means the real prompt is live -- so a
+// reply/inter-agent message that merely QUOTES the dialog text (which
+// happened the very day this shipped) can never trigger a keystroke. The
+// confirm hint must sit in the live footer region, not anywhere in the pane.
+const MODEL_CONSENT_TITLE_RX = /(?:now uses|runs on|requires) usage credits/
+const MODEL_CONSENT_CONTINUE_RX = /1\.\s*Continue with /
+const MODEL_CONSENT_CONFIRM_RX = /Enter to confirm/
+
+export function detectsModelConsentDialog(pane: string): boolean {
+  if (!pane || !pane.trim()) return false
+  const lines = pane.split('\n')
+  const busyRegion = lines.slice(-BUSY_LIVE_REGION_LINES).join('\n')
+  for (const rx of BUSY_INDICATORS) {
+    if (rx.test(busyRegion)) return false
+  }
+  const footerRegion = lines.slice(-LIVE_FOOTER_REGION_LINES).join('\n')
+  if (BUSY_ESC_TO_INTERRUPT_RX.test(footerRegion)) return false
+  if (IDLE_FOOTER_RX.test(pane)) return false
+  return MODEL_CONSENT_TITLE_RX.test(pane)
+    && MODEL_CONSENT_CONTINUE_RX.test(pane)
+    && MODEL_CONSENT_CONFIRM_RX.test(footerRegion)
+}
+
 export interface DetectPaneStateOptions {
   /** If true, the 'typing' state (text parked in input box) is
    * merged into 'busy'. Default false -- callers that care about
@@ -526,6 +630,23 @@ export function paneLooksIdle(capture: string): boolean {
  */
 export function isReadyForPrompt(pane: string): boolean {
   return paneLooksIdle(pane)
+}
+
+/**
+ * Idle check that tolerates DIM-only "parked text". Claude Code >=2.1.202
+ * renders a placeholder hint (e.g. "Try refactor...") in dim (SGR-2 faint)
+ * inside the EMPTY input box; a plain capture-pane read shows it as parked
+ * text, detectPaneState classifies 'typing', and a readiness poll never turns
+ * true. Ghost/placeholder text is dim while real typed input is not (the same
+ * invariant clearStaleParkedInput's DIM-GUARD relies on), so when the plain
+ * view says 'typing' the caller re-reads the pane through the dim-stripping
+ * view (captureParkedInputView) and passes it here: if the stripped view is
+ * idle, the box only ever held ghost text and the session IS ready.
+ */
+export function idleConsideringDimGhost(plain: string, dimStripped: string | null): boolean {
+  if (paneLooksIdle(plain)) return true
+  if (detectPaneState(plain) !== 'typing') return false
+  return dimStripped != null && paneLooksIdle(dimStripped)
 }
 
 // Locate the live Claude Code input box and return its inner content as
@@ -902,6 +1023,44 @@ export function stuckInputSignature(pane: string): string | null {
   const box = liveInputBox(pane)
   if (box == null) return null
   const sig = box.replace(/\s+/g, ' ').trim()
+  return sig.length > 0 ? sig : null
+}
+
+// A stable signature of a PARKED `[Pasted text #N]` placeholder sitting in the
+// live input box that the trailing Enter never submitted, or null when there is
+// no such stuck paste. The paste-placeholder sibling of stuckInputSignature().
+//
+// It exists because detectPaneState() deliberately reads a paste placeholder as
+// 'busy' (so the scheduler / keepalive do not pile a second prompt onto it),
+// which makes stuckInputSignature() -- and the whole 'typing'-gated recovery
+// chain (parkedChannelInput, parkedInputText, recoverStuckInputForSession) --
+// return null for it. A long inbound prompt (e.g. a scheduled-task notice
+// > ~700 chars) that the TUI collapses into a `[Pasted text #N]` stub therefore
+// sat parked FOREVER, recoverable only by a manual keystroke (observed on
+// sub-agents repeatedly). This signature lets the stuck-input watcher time-gate
+// a BARE recovery Enter for it -- a placeholder submits on a SINGLE Enter even
+// though it renders across multiple visual rows, so it must never go through the
+// multi-row 'hold' guard, and its collapsed body is NOT recoverable from the
+// pane so clear + re-inject would destroy it.
+//
+// A live busy indicator (spinner / token counter / `esc to interrupt`) means a
+// genuine in-progress paste about to submit on its own -> returns null so a
+// healthy turn is never pre-empted; combined with the watcher's confirm window
+// (the SAME signature must persist for confirmMs) a paste that submits within a
+// second or two is never Enter-spammed. detectsPastePlaceholder() already scopes
+// the stub match to the live input box, so a `[Pasted text #N]` quoted in a
+// reply line or deep scrollback cannot trigger a false recovery.
+export function parkedPasteSignature(pane: string): string | null {
+  if (!pane || !pane.trim()) return null
+  const lines = pane.split('\n')
+  const busyRegion = lines.slice(-BUSY_LIVE_REGION_LINES).join('\n')
+  for (const rx of BUSY_INDICATORS) {
+    if (rx.test(busyRegion)) return null
+  }
+  const footerRegion = lines.slice(-LIVE_FOOTER_REGION_LINES).join('\n')
+  if (BUSY_ESC_TO_INTERRUPT_RX.test(footerRegion)) return null
+  if (!detectsPastePlaceholder(pane)) return null
+  const sig = pastePlaceholderRegion(pane).replace(/\s+/g, ' ').trim()
   return sig.length > 0 ? sig : null
 }
 

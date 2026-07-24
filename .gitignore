@@ -72,6 +72,10 @@ backups/
 # GitNexus knowledge-graph index (local, per-clone; auto-rebuilt by the post-commit hook)
 .gitnexus/
 
+# Context-guard runtime handoff document (auto-written by agents at ~90% context;
+# per-session state, never source).
+HANDOFF.md
+
 # Local one-off artifacts (brainstorm docs, runtime state, rebuild prompts) --
 # never committed; ignored to prevent accidental `git add -A` bloat.
 DREAM.md
@@ -87,6 +91,12 @@ REBUILD_PROMPT_V3.1.md
 # generic IMAP/SMTP CLI (no operator data); each operator keeps their own
 # branded auto-reply here locally. Ignored so it never ships to other installs.
 scripts/support-mail/no-support-reply.html
+
+# M365 / Graph mail credentials (client secret, tenant/client IDs). Plaintext
+# secret -- never commit. Operator keeps this locally per install.
+marveen-mail-ugyfelkod
+*.secret
+.mail-credentials*
 
 # Python bytecode cache
 __pycache__/

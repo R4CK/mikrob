@@ -43,7 +43,10 @@ import {
   MAIN_AGENT_ID,
   WEB_PORT,
   HEARTBEAT_CALENDAR_ACCOUNT,
+  APP_TZ,
+  DASHBOARD_PUBLIC_URL,
 } from '../config.js'
+import { resolveDashboardOrigin } from './agent-scaffold.js'
 import { logger } from '../logger.js'
 
 const HEARTBEAT_AGENT_NAME = 'heartbeat'
@@ -106,7 +109,7 @@ export function currentHeartbeatIdentity(): HeartbeatIdentity {
     botName: BOT_NAME,
     mainAgentId: MAIN_AGENT_ID,
     storeDir: STORE_DIR,
-    dashboardOrigin: `http://localhost:${WEB_PORT}`,
+    dashboardOrigin: resolveDashboardOrigin(DASHBOARD_PUBLIC_URL, WEB_PORT),
     calendarAccount: HEARTBEAT_CALENDAR_ACCOUNT,
   }
 }
@@ -169,7 +172,10 @@ When you receive the heartbeat prompt:
      \`sqlite3 ${id.storeDir}/claudeclaw.db "SELECT status, COUNT(*)
      FROM kanban_cards WHERE archived_at IS NULL GROUP BY status"\`
      for counts, and grab the titles of cards where
-     \`priority='urgent'\` or \`status='waiting'\`.
+     \`archived_at IS NULL AND priority='urgent' AND status != 'done'\`
+     (a card can be \`urgent\` priority but already \`done\` -- exclude
+     those, or you will report closed issues as active every hour)
+     or \`archived_at IS NULL AND status='waiting'\`.
    - **Scheduled tasks** -- count active rows in
      \`scheduled_tasks\` table; record \`next_run_at\` for the
      earliest upcoming one.
@@ -180,7 +186,7 @@ When you receive the heartbeat prompt:
 2. **Format** the result as a single inter-agent message:
 
    \`\`\`
-   ## Heartbeat YYYY-MM-DD HH:MM (Europe/Budapest)
+   ## Heartbeat YYYY-MM-DD HH:MM (${APP_TZ})
 
    ### Calendar (next 2h)
    - HH:MM -- <summary> (<attendees>)
