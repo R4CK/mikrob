@@ -4,11 +4,16 @@
 // startCostsSyncTask() below (called once at server boot), not as a side effect
 // of a client request. No LLM, no provider API, no secrets in the response.
 
-import { json } from '../http-helpers.js'
+import { json, readBody } from '../http-helpers.js'
 import { logger } from '../../logger.js'
 import { getDb } from '../../db.js'
 import { loadCostopsConfig } from '../../costops/config.js'
 import { syncFixedCostsToLedger, getCostSummary, getCostSources } from '../../costops/ledger.js'
+import {
+  readWeeklySnapshot,
+  writeWeeklySnapshot,
+  WeeklyLimitError,
+} from '../../costops/weekly-limit.js'
 import type { RouteContext } from './types.js'
 
 // Runs the fixed-cost -> ledger reflection once immediately (so the summary is
@@ -33,7 +38,47 @@ export function startCostsSyncTask(intervalMs = SYNC_INTERVAL_MS): NodeJS.Timeou
 }
 
 export async function tryHandleCosts(ctx: RouteContext): Promise<boolean> {
-  const { res, path, method, url } = ctx
+  const { req, res, path, method, url } = ctx
+
+  // Weekly-limit % snapshot (card 8388642a, part 3). MANUAL snapshot -- there is no reliable
+  // programmatic weekly-% read (memory: weekly-usage-autoread-unavailable). GET returns the
+  // recorded snapshot or a descriptive needs-input state (rule 12, never a fake number); POST
+  // records the operator's reading.
+  if (path === '/api/costs/weekly' && method === 'GET') {
+    const snap = readWeeklySnapshot()
+    if (!snap) {
+      json(res, {
+        available: false,
+        message:
+          'Nincs heti-limit pillanatkép rögzítve. Add meg a Claude usage-képernyőn látható heti százalékot (All models) a kvóta-gauge-nál.',
+      })
+    } else {
+      json(res, { available: true, ...snap })
+    }
+    return true
+  }
+
+  if (path === '/api/costs/weekly' && method === 'POST') {
+    try {
+      let body: Record<string, unknown>
+      try {
+        body = JSON.parse((await readBody(req)).toString()) as Record<string, unknown>
+      } catch {
+        json(res, { error: 'Érvénytelen JSON törzs.' }, 400)
+        return true
+      }
+      const snap = writeWeeklySnapshot(body, Math.floor(Date.now() / 1000))
+      json(res, { available: true, ...snap })
+    } catch (err) {
+      if (err instanceof WeeklyLimitError) {
+        json(res, { error: err.message }, 400)
+        return true
+      }
+      logger.error({ err }, 'CostOps weekly snapshot write failed')
+      json(res, { error: 'A heti-limit pillanatkép mentése sikertelen.' }, 500)
+    }
+    return true
+  }
 
   if (path === '/api/costs/summary' && method === 'GET') {
     try {
