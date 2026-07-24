@@ -30,6 +30,43 @@ CHAT_ID="${MARVEEN_ALERT_CHAT_ID:-}"
 
 log() { echo "[host-restart-watchdog] $*"; }
 
+# --- prior-shutdown cause classification (card RELIA-A, read-only diagnostic) ---
+# When btime changes we know a (re)boot happened, but NOT why the PREVIOUS boot
+# ended. These helpers attribute the cause (OOM-kill vs clean poweroff vs unclean
+# crash) so the alert names it -- an OOM poweroff (the 2026-07-09 event) is
+# directly actionable (tighten the MemAvailable safe-mode band), a clean restart
+# is benign. Strictly read-only; every failure degrades to "unknown", never a
+# false claim, and never fails the unit (the caller still exits 0).
+
+# Pure classifier: given the PREVIOUS boot's log TEXT, echo oom|poweroff|crash.
+# Empty input -> unknown. Order matters: OOM is checked first (a boot that OOM'd
+# may still reach a shutdown target afterwards, so OOM must win); then a clean
+# systemd shutdown/reboot marker; else a retained-but-markerless log => unclean.
+# Unit-testable without touching journald (the log text is the only input).
+classify_shutdown_from_log() {
+  local log="${1:-}"
+  [[ -z "$log" ]] && { echo unknown; return 0; }
+  if grep -qiE 'out of memory: kill|invoked oom-killer|oom-kill|killed process [0-9]' <<<"$log"; then
+    echo oom; return 0
+  fi
+  if grep -qiE 'reached target (power-?off|shutdown|reboot|halt)|systemd-shutdown\[|powering off|powering down|system is (powering down|rebooting|halting)' <<<"$log"; then
+    echo poweroff; return 0
+  fi
+  echo crash
+}
+
+# Best-effort fetch of the PREVIOUS boot's log (read-only, may be empty). WSL
+# journald is often volatile (wiped on VM reboot), so `-b -1` frequently returns
+# nothing -- that is why the classifier degrades honestly to "unknown".
+prev_boot_log() {
+  command -v journalctl >/dev/null 2>&1 || { echo ""; return 0; }
+  journalctl -b -1 --no-pager -o cat 2>/dev/null || echo ""
+}
+
+# Test hook: `HOST_RESTART_WATCHDOG_LIB=1 source host-restart-watchdog.sh` loads
+# the helpers WITHOUT running the watchdog, so the classifier is unit-testable.
+if [[ "${HOST_RESTART_WATCHDOG_LIB:-}" == "1" ]]; then return 0 2>/dev/null || exit 0; fi
+
 # Real WSL check -- only under WSL is a whole-VM reboot the expected surprise;
 # on a bare-metal/other Linux host a btime change is an ordinary reboot, so we
 # word the alert accordingly instead of always claiming "WSL VM restarted".
@@ -83,9 +120,30 @@ if (( last_alive > 0 )); then
   gap_txt="~${gap_min} perc (utolsó aktivitás ${last_txt} előtt)"
 fi
 
+# Classify WHY the previous boot ended (read-only; card RELIA-A). Primary source
+# is the previous boot's journal; if none was retained, fall back to wtmp (last),
+# which records a "crash" pseudo-login when a boot follows an unclean shutdown.
+cause="$(classify_shutdown_from_log "$(prev_boot_log)")"
+if [[ "$cause" == "unknown" ]] && command -v last >/dev/null 2>&1; then
+  wtmp="$(last -x -n 25 2>/dev/null || echo "")"
+  if grep -qiE '^crash[[:space:]]' <<<"$wtmp"; then
+    cause="crash"
+  elif grep -qiE '^(shutdown|reboot)[[:space:]]' <<<"$wtmp"; then
+    cause="poweroff"
+  fi
+fi
+case "$cause" in
+  oom)      cause_txt="Valószínű ok: MEMÓRIA-KIFOGYÁS (OOM-kill az előző boot naplójában). Érdemes szigorítani a MemAvailable safe-mode sávot (fleet-memory-gate.sh)." ;;
+  poweroff) cause_txt="Valószínű ok: rendezett leállás/újraindítás (tiszta shutdown-marker az előző boot naplójában)." ;;
+  crash)    cause_txt="Valószínű ok: RENDEZETLEN leállás/összeomlás (van előző-boot napló, de nincs benne tiszta shutdown-marker)." ;;
+  *)        cause_txt="Ok: nem meghatározható (nincs megőrzött előző-boot napló; WSL-en a journald gyakran nem perzisztens)." ;;
+esac
+log "prior-shutdown cause classified: $cause"
+
 msg="Marveen ${HOST_KIND} restarted.
 Új boot: ${boot_local}
 Becsült kiesés: ${gap_txt}
+${cause_txt}
 (Ez host/VM szintű restart, NEM app-crash. A dashboard/channels app-crash külön OnFailure-értesítést küld.)"
 
 log "host restart detected: prev btime=$prev new=$btime; sending Telegram"
