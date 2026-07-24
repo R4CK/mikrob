@@ -5,6 +5,7 @@ import { STORE_DIR, DB_FILENAME, ALLOWED_CHAT_ID, OLLAMA_URL, APP_TZ } from './c
 import { getEffectiveSettingValue } from './settings-store.js'
 import { logger } from './logger.js'
 import { TOOL_TIMEOUTS } from './tool-timeouts.js'
+import { initCostOpsSchema } from './costops/schema.js' // LOCAL-FORK: costops seam
 
 let db: Database.Database
 
@@ -700,53 +701,18 @@ export function initDatabase(dbPathOverride?: string): void {
   // Migration: add agent column to installs that created the table before this column existed.
   try { db.exec(`ALTER TABLE store_file_audit ADD COLUMN agent TEXT`) } catch { /* column already exists */ }
 
-  // --- CostOps (local cost ledger) ---
-  // Read-mostly, FOCUS-inspired. cost_sources = provider/subscription origin,
-  // cost_line_items = individual charge rows (estimate or provider-sourced).
-  // No secrets/account IDs stored raw. Budgets are config-driven (costops/config.ts's
-  // BudgetEntry, from store/costops-config.json) -- there is deliberately no separate
-  // `budgets` DB table: an earlier draft of this schema had one, but it was never
-  // read from or written to (config.budgets was always the actual source), so it was
-  // a dead, unused second source of truth. Removed rather than wired up, since the
-  // config file already covers this fully and a DB table would just be a sync burden
-  // for no benefit.
-  db.exec(`
-    CREATE TABLE IF NOT EXISTS cost_sources (
-      id TEXT PRIMARY KEY,
-      name TEXT NOT NULL,
-      provider TEXT NOT NULL,
-      source_type TEXT NOT NULL,
-      account_ref TEXT,
-      currency TEXT NOT NULL DEFAULT 'HUF',
-      active INTEGER NOT NULL DEFAULT 1,
-      notes TEXT,
-      created_at INTEGER NOT NULL,
-      updated_at INTEGER NOT NULL
-    )
-  `)
-  db.exec(`
-    CREATE TABLE IF NOT EXISTS cost_line_items (
-      id INTEGER PRIMARY KEY AUTOINCREMENT,
-      source_id TEXT NOT NULL REFERENCES cost_sources(id),
-      charge_period_start INTEGER NOT NULL,
-      charge_period_end INTEGER NOT NULL,
-      charge_category TEXT NOT NULL,
-      service_name TEXT,
-      usage_type TEXT,
-      consumed_quantity REAL,
-      consumed_unit TEXT,
-      billed_cost REAL NOT NULL,
-      effective_cost REAL,
-      currency TEXT NOT NULL DEFAULT 'HUF',
-      confidence TEXT NOT NULL,
-      data_freshness INTEGER NOT NULL,
-      source_ref TEXT,
-      dedup_key TEXT UNIQUE,
-      created_at INTEGER NOT NULL
-    )
-  `)
-  db.exec(`CREATE INDEX IF NOT EXISTS idx_cost_line_items_period ON cost_line_items(charge_period_start, charge_period_end)`)
-  db.exec(`CREATE INDEX IF NOT EXISTS idx_cost_line_items_source ON cost_line_items(source_id)`)
+  // --- CostOps (local cost ledger) --- LOCAL-FORK: costops seam
+  // The full CostOps schema (every CREATE TABLE / ALTER TABLE / CREATE INDEX
+  // this feature has ever added -- cost_sources, cost_line_items + all its
+  // fx/void/correction columns, budgets, import_runs/locks, provider
+  // balance/ratelimit/reliability snapshots, workspace_alerts, entitlements,
+  // forecast/fx/alerts/period-close/optimization/invoice sub-schemas) lives in
+  // src/costops/schema.ts, NOT inline here. db.ts owns exactly this one call so
+  // the upstream-owned file stops growing a table per CostOps release (see
+  // docs/fork-upstream-policy.md §2a). Idempotent: safe on already-migrated DBs.
+  // Must run AFTER token_usage exists -- it ALTERs that table (model/provider
+  // enrichment) -- which it does (token_usage is created above).
+  initCostOpsSchema(db)
 
   // --- Vault SSH Keys (shared pool) ---
   db.exec(`
