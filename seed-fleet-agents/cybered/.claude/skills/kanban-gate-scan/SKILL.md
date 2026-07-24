@@ -12,7 +12,7 @@ Minden self-advance loop elején (Rule 11): van-e ungated REVIEW kártya amit ga
 ```python
 import urllib.request, json, re
 
-TOKEN = open('/home/neon/marveen/store/.dashboard-token').read().strip()
+TOKEN = open('{{INSTALL_DIR}}/store/.dashboard-token').read().strip()
 BASE = 'http://localhost:3420'
 headers = {'Authorization': f'Bearer {TOKEN}'}
 

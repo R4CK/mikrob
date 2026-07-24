@@ -235,7 +235,7 @@ describe('loadRuntimeAllowlist', () => {
     const gitignore = readFileSync(join(REPO_ROOT, '.gitignore'), 'utf8')
     const storeIgnored = gitignore.split('\n').some((line) => {
       const trimmed = line.trim()
-      return trimmed === 'store/' || trimmed === 'store' || trimmed === '/store/' || trimmed === '/store'
+      return trimmed === 'store/' || trimmed === 'store' || trimmed === '/store/' || trimmed === '/store' || trimmed === 'store/*'
     })
     expect(storeIgnored).toBe(true)
   })
