@@ -653,6 +653,17 @@ let kanbanAllLabels = []
 // AND-combined with the existing project/assignee filters. Persisted in
 // localStorage alongside the swimlane groupBy choice.
 let kanbanLabelFilter = new Set()
+// The kanban quick-filter chip row is generated from the LIVE fleet agent list
+// (GET /api/agents) rather than from the kanban label registry, so EVERY created
+// agent gets a chip -- including newly-created ones and agents that have no
+// @<name> label yet (e.g. qa2, teszter). Populated in loadKanban().
+let kanbanAgents = []
+// Agents whose chip is active but which have no @<name> label to filter by are
+// filtered by assignee instead (lower-cased agent name matched against
+// card.assignee). Parallel OR-dimension to kanbanLabelFilter; the two combine as
+// a single logical quick-filter (a card matches if it carries an active label OR
+// its assignee is an active agent). Persisted alongside the label filter.
+let kanbanAgentFilter = new Set()
 let kanbanProjectFilter = ''
 // Assignee filter for the kanban board. '' = show all. Set via the
 // assignee dropdown / "Csak Gábor" toggle injected by setupAssigneeFilter().
@@ -727,20 +738,34 @@ async function loadKanban() {
         if (Array.isArray(storedLabels)) kanbanLabelFilter = new Set(storedLabels)
       } catch { /* ignore malformed storage */ }
       try {
+        const storedAgents = JSON.parse(localStorage.getItem('marveen.kanbanAgentFilter') || '[]')
+        if (Array.isArray(storedAgents)) kanbanAgentFilter = new Set(storedAgents)
+      } catch { /* ignore malformed storage */ }
+      try {
         const storedHiddenCols = JSON.parse(localStorage.getItem('marveen.kanbanHiddenColumns') || '[]')
         if (Array.isArray(storedHiddenCols)) kanbanHiddenColumns = new Set(storedHiddenCols)
       } catch { /* ignore malformed storage */ }
     }
-    const [cardsRes, assigneesRes, projectsRes, labelsRes] = await Promise.all([
+    const [cardsRes, assigneesRes, projectsRes, labelsRes, agentsRes] = await Promise.all([
       fetch('/api/kanban'),
       fetch('/api/kanban/assignees'),
       fetch('/api/kanban-projects'),
       fetch('/api/kanban/labels'),
+      fetch('/api/agents'),
     ])
     kanbanCards = await cardsRes.json()
     kanbanAssignees = await assigneesRes.json()
     kanbanProjects = await projectsRes.json()
     kanbanAllLabels = await labelsRes.json()
+    // Live fleet agent list drives the quick-filter chip row (one chip per
+    // agent, not per label). A failure here just leaves the previous list in
+    // place -- the board still renders.
+    try {
+      if (agentsRes.ok) {
+        const list = await agentsRes.json()
+        if (Array.isArray(list)) kanbanAgents = list
+      }
+    } catch { /* keep previous kanbanAgents */ }
     populateProjectFilter()
     populateProjectSuggestions()
     setupAssigneeFilter()
@@ -906,13 +931,18 @@ function kanbanCardMatchesBaseFilters(card) {
   return true
 }
 
-// The label-filter dimension itself: a card matches when no label filter is
-// active, or when it carries at least one of the active labels (OR within
-// the dimension).
+// The quick-filter dimension: a card matches when no quick-filter is active, or
+// when it carries at least one active label OR its assignee is an active
+// (label-less) agent. Label and agent selections OR together into one logical
+// quick-filter so mixing a labelled agent (@backend) with a label-less one
+// (qa2) shows the union.
 function kanbanCardMatchesLabelFilter(card) {
-  if (kanbanLabelFilter.size === 0) return true
+  if (kanbanLabelFilter.size === 0 && kanbanAgentFilter.size === 0) return true
   const cardLabelIds = (card.labels || []).map((l) => l.id)
-  return cardLabelIds.some((id) => kanbanLabelFilter.has(id))
+  if (cardLabelIds.some((id) => kanbanLabelFilter.has(id))) return true
+  const asg = String(card.assignee || '').trim().toLowerCase()
+  if (asg && kanbanAgentFilter.has(asg)) return true
+  return false
 }
 
 // Shared by both the header quick-filter chips and the per-card footer label
@@ -924,37 +954,102 @@ function toggleKanbanLabelFilter(labelId) {
   renderKanban()
 }
 
+// Toggle a label-less agent's chip: filters by assignee (lower-cased agent
+// name). Mirrors toggleKanbanLabelFilter but for the assignee OR-dimension.
+function toggleKanbanAgentFilter(agentName) {
+  const key = String(agentName || '').trim().toLowerCase()
+  if (!key) return
+  if (kanbanAgentFilter.has(key)) kanbanAgentFilter.delete(key)
+  else kanbanAgentFilter.add(key)
+  persistKanbanFilters()
+  renderKanban()
+}
+
 function clearKanbanQuickFilters() {
   kanbanLabelFilter.clear()
+  kanbanAgentFilter.clear()
   persistKanbanFilters()
   renderKanban()
 }
 
 function persistKanbanFilters() {
   localStorage.setItem('marveen.kanbanLabelFilter', JSON.stringify([...kanbanLabelFilter]))
+  localStorage.setItem('marveen.kanbanAgentFilter', JSON.stringify([...kanbanAgentFilter]))
 }
 
-// Quick-filter chip row: one chip per defined label (not per priority), tinted
-// with that label's own colour. Clicking toggles the same kanbanLabelFilter
-// set the footer pills use.
+// Deterministic fallback colour for an agent that has no @<name> label (and so
+// no assigned colour). Hashes the name into the configured label palette so the
+// same agent always gets the same chip colour, and two label-less agents rarely
+// collide. Falls back to a neutral slate if the palette is unavailable.
+function agentChipFallbackColor(name) {
+  const palette = window._marveen?.kanbanLabels?.colors
+  if (!Array.isArray(palette) || palette.length === 0) return '#64748b'
+  let hash = 0
+  for (const ch of String(name)) hash = (hash + ch.charCodeAt(0)) % palette.length
+  return palette[hash]
+}
+
+// Build the ordered chip descriptor list from the LIVE fleet agent list. The
+// main agent (mikrob) is prepended -- /api/agents lists only sub-agents, but it
+// carries its own @<name> label and belongs on the board like any other agent.
+// Each descriptor resolves the agent's @<name> label (case-insensitive) to pick
+// up its colour + id; a label-less agent keeps labelId=null and filters by
+// assignee instead.
+function buildKanbanAgentChips() {
+  const chips = []
+  const seen = new Set()
+  const labelByName = new Map(
+    (kanbanAllLabels || []).map((l) => [String(l.name || '').toLowerCase(), l])
+  )
+  const push = (name, displayName) => {
+    const key = String(name || '').trim().toLowerCase()
+    if (!key || seen.has(key)) return
+    seen.add(key)
+    const label = labelByName.get('@' + key) || null
+    chips.push({
+      name: key,
+      displayName: displayName || name,
+      label,
+      color: label ? label.color : agentChipFallbackColor(key),
+    })
+  }
+  // Main agent first.
+  const mv = window._marveen
+  if (mv && mv.agentId) push(mv.agentId, mv.name || mv.agentId)
+  for (const a of kanbanAgents) push(a.name, a.displayName || a.name)
+  return chips
+}
+
+// Quick-filter chip row: one chip per LIVE fleet agent (not per label), tinted
+// with the agent's assigned colour (its @<name> label colour, or a stable
+// palette fallback when it has no label). Clicking a labelled agent toggles the
+// shared kanbanLabelFilter set the footer pills use; a label-less agent toggles
+// the assignee-based kanbanAgentFilter -- both feed the same board filter.
 function renderKanbanQuickFilters() {
   const row = document.getElementById('kanbanQuickFilters')
   if (!row) return
   row.innerHTML = ''
-  for (const label of kanbanAllLabels) {
-    const count = kanbanCards.filter((c) =>
-      kanbanCardMatchesBaseFilters(c) && (c.labels || []).some((l) => l.id === label.id)
-    ).length
-    const active = kanbanLabelFilter.has(label.id)
-    const chip = document.createElement('span')
-    chip.className = 'kanban-quick-filter-chip' + (active ? ' active' : '')
-    chip.dataset.labelId = label.id
-    chip.style.setProperty('--chip-color', label.color)
-    chip.innerHTML = `#${escapeHtml(label.name)} <span class="kanban-quick-filter-count">${count}</span>${active ? '<span class="kanban-quick-filter-clear">&times;</span>' : ''}`
-    chip.addEventListener('click', () => toggleKanbanLabelFilter(label.id))
-    row.appendChild(chip)
+  for (const chip of buildKanbanAgentChips()) {
+    const active = chip.label
+      ? kanbanLabelFilter.has(chip.label.id)
+      : kanbanAgentFilter.has(chip.name)
+    const count = kanbanCards.filter((c) => {
+      if (!kanbanCardMatchesBaseFilters(c)) return false
+      if (chip.label) return (c.labels || []).some((l) => l.id === chip.label.id)
+      return String(c.assignee || '').trim().toLowerCase() === chip.name
+    }).length
+    const el = document.createElement('span')
+    el.className = 'kanban-quick-filter-chip' + (active ? ' active' : '')
+    if (chip.label) el.dataset.labelId = chip.label.id
+    el.dataset.agent = chip.name
+    el.style.setProperty('--chip-color', chip.color)
+    el.innerHTML = `@${escapeHtml(chip.displayName)} <span class="kanban-quick-filter-count">${count}</span>${active ? '<span class="kanban-quick-filter-clear">&times;</span>' : ''}`
+    el.addEventListener('click', () =>
+      chip.label ? toggleKanbanLabelFilter(chip.label.id) : toggleKanbanAgentFilter(chip.name)
+    )
+    row.appendChild(el)
   }
-  if (kanbanLabelFilter.size > 0) {
+  if (kanbanLabelFilter.size > 0 || kanbanAgentFilter.size > 0) {
     const clearAll = document.createElement('button')
     clearAll.className = 'kanban-quick-filter-clear-all'
     clearAll.textContent = t('kanban.filter.clear')

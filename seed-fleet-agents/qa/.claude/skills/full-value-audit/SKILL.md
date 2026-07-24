@@ -1,6 +1,6 @@
 ---
 name: full-value-audit
-description: Run a FULL-VALUE audit of an app -- inventory EVERY frontend + backend function (every page, button, form, endpoint, module), test every user flow at every RBAC level (positive AND negative authz), walk superadmin flows end-to-end, test every API and every DB operation, optimize with numbers, and cover security/WCAG/i18n/observability/resilience/regression, ending in an audit report with three-gate (QA + Cybersec + Cybe Red) sign-off. Use whenever "teljes értékű audit", "teljes audit", "auditáld végig", "full audit", "audit everything", "minden gombot/funkciót tesztelj" comes up, or before a release / major milestone. Nothing implicit: un-inventoried or un-tested = treated as broken until proven otherwise.
+description: Run a FULL-VALUE audit of an app -- inventory EVERY frontend + backend function (every page, button, form, endpoint, module), test every user flow at every RBAC level (positive AND negative authz), walk superadmin flows end-to-end, test every API and every DB operation, optimize with numbers, and cover security/WCAG/i18n/observability/resilience/regression, ending in an audit report with three-gate (QA + Cybersec + Cybered) sign-off. Use whenever "teljes értékű audit", "teljes audit", "auditáld végig", "full audit", "audit everything", "minden gombot/funkciót tesztelj" comes up, or before a release / major milestone. Nothing implicit: un-inventoried or un-tested = treated as broken until proven otherwise.
 ---
 
 # Full-Value Audit
@@ -60,7 +60,7 @@ The bar for calling an audit "done". Partial coverage is NOT a full-value audit 
   - Functional testing: `qa-engineer`.
   - Offensive testing: `cybersecurity-redteam` (Cybersec, `white-hat-security-testing` skill).
 - MikroB orchestrates: decompose into Phase/Task/subtask kanban cards (see `project-workflow`), dispatch to role-agents via inter-agent messages (never a subagent for fleet work), each finisher goes `waiting` + "REVIEW".
-- **Three mandatory gates:** every completed piece passes QA (functional), Cybersec (per-finding security), and Cybe Red (adversarial red-team: assume-breach, kill-chain, active defense). DONE = QA PASS + Cybersec GO + Cybe Red GO. No gate verifies its own work.
+- **Three mandatory gates:** every completed piece passes QA (functional), Cybersec (per-finding security), and Cybered (adversarial red-team: assume-breach, kill-chain, active defense). DONE = QA PASS + Cybersec GO + Cybered GO. No gate verifies its own work.
 
 ## Pitfalls
 - **Reporting partial as full:** if the inventory is not 100% covered (tested, or explicitly skipped with a reason), it is NOT a full-value audit. Do not claim done.
@@ -73,12 +73,12 @@ The bar for calling an audit "done". Partial coverage is NOT a full-value audit 
 - The audit report lists the FULL inventory with each item marked PASS / FAIL / NOT-tested (+reason).
 - Every role has a completed authz matrix (positive + negative).
 - Every found MAJOR/critical issue has a reproducible entry AND a kanban fix/optimization card.
-- All three gates signed off (QA PASS + Cybersec GO + Cybe Red GO) on the tested work.
+- All three gates signed off (QA PASS + Cybersec GO + Cybered GO) on the tested work.
 
 ## Examples
 **Example 1:**
 Input: "Csinálj egy teljes értékű auditot a terméken."
-Output: A Phase/Task kanban tree; a feature inventory (every page/button + every backend handler); per-role authz matrices tested positive+negative; every endpoint + DB op tested; perf before/after numbers; an audit report with PASS/FAIL/NOT-tested per item and fix cards for every MAJOR finding; QA + Cybersec + Cybe Red sign-off.
+Output: A Phase/Task kanban tree; a feature inventory (every page/button + every backend handler); per-role authz matrices tested positive+negative; every endpoint + DB op tested; perf before/after numbers; an audit report with PASS/FAIL/NOT-tested per item and fix cards for every MAJOR finding; QA + Cybersec + Cybered sign-off.
 
 **Example 2:**
 Input: "Minden gomb, minden funkció tesztelve legyen a dashboardon."
