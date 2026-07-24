@@ -11519,6 +11519,20 @@ async function loadOverview() {
     const res = await fetch('/api/overview')
     if (!res.ok) throw new Error('HTTP ' + res.status)
     const d = await res.json()
+    // Upstream-update banner (card 3c09ba6b / FÁZIS3): shown when our fork is behind the
+    // upstream base. The action navigates to the existing Frissítések (updates) page.
+    const banner = document.getElementById('updateBanner')
+    if (banner) {
+      const u = d.upstreamUpdate
+      if (u && u.ok && u.behind > 0) {
+        document.getElementById('updateBannerText').textContent = t('overview.updateBanner.text', { n: u.behind })
+        const action = document.getElementById('updateBannerAction')
+        if (action) action.onclick = (e) => { e.preventDefault(); if (typeof switchPage === 'function') switchPage('updates') }
+        banner.hidden = false
+      } else {
+        banner.hidden = true
+      }
+    }
     // Stats
     document.getElementById('statAgents').textContent = d.agents.running
     document.getElementById('statAgentsSub').textContent = t('overview.stat.agents_sub', { n: d.agents.total })

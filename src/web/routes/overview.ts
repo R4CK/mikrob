@@ -9,6 +9,7 @@ import {
 import { readAgentTeam } from '../agent-team.js'
 import { isAgentRunning } from '../agent-process.js'
 import { json } from '../http-helpers.js'
+import { getUpdateStatus, type AggregateUpdateStatus } from '../update-checker.js'
 import type { RouteContext } from './types.js'
 
 // Count "real" user turns (operator prompts, Telegram messages) in every
@@ -55,6 +56,46 @@ function countUserTurns(fromMs: number, toMs: number = Number.POSITIVE_INFINITY)
     }
   } catch { /* ignore */ }
   return total
+}
+
+export interface UpstreamUpdateState {
+  behind: number
+  upstreamBranch: string | null
+  remote: string | null
+  checkedAt: number
+  ok: boolean
+}
+
+/**
+ * How far our fork is BEHIND the UPSTREAM base (Szotasz/marveen), for the overview
+ * FRISSÍTÉS-BANNER (card 3c09ba6b / FÁZIS3). Rule 10 (GitHub-first, don't reinvent):
+ * this REUSES the existing {@link getUpdateStatus} cache -- update-checker.ts already
+ * computes the per-repo `behind` for BOTH the upstream Marveen and our fork (commit
+ * 6af2e7c) and refreshUpdateStatus already runs every 15 min via startUpdateChecker.
+ * The ONLY thing that was missing was surfacing the upstream repo's `behind` on the
+ * overview; this reads the `marveen` repo out of the aggregate. Fail-safe: null on any
+ * error, absent repo, error status, or never-checked -> the banner simply does not render
+ * (never a false or stale-on-error banner). `agg` is injectable for tests.
+ */
+export function readUpstreamUpdate(
+  agg: AggregateUpdateStatus = getUpdateStatus(),
+): UpstreamUpdateState | null {
+  try {
+    const marveen = agg.repos.find((r) => r.key === 'marveen')
+    if (!marveen) return null
+    // Only surface a check that actually ran cleanly -- an errored or never-run check
+    // must not produce a banner (fail-closed against a false "N updates available").
+    const ok = !marveen.error && marveen.lastChecked > 0
+    return {
+      behind: Number(marveen.behind) || 0,
+      upstreamBranch: typeof marveen.branch === 'string' ? marveen.branch : null,
+      remote: typeof marveen.remote === 'string' ? marveen.remote : null,
+      checkedAt: Number(marveen.lastChecked) || 0,
+      ok,
+    }
+  } catch {
+    return null
+  }
 }
 
 export async function tryHandleOverview(ctx: RouteContext): Promise<boolean> {
@@ -151,6 +192,10 @@ export async function tryHandleOverview(ctx: RouteContext): Promise<boolean> {
       skills: { count: skillCount, today: skillsToday },
       team: agentsForTeam,
       activity: activity.slice(0, 8),
+      // Card 3c09ba6b (FÁZIS3): how many commits our fork is BEHIND the upstream base
+      // (Szotasz/marveen). Written by the daily store/upstream-update-check.sh; the
+      // overview shows a FRISSÍTÉS-BANNER when behind > 0. Null when never checked.
+      upstreamUpdate: readUpstreamUpdate(),
     })
     return true
   }

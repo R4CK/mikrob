@@ -39,6 +39,8 @@ window._i18n.en = {
   'overview.stat.change':           '{n} from yesterday',
   'overview.stat.skills_today':     '{n} today',
   'overview.no_activity':           'No recent activity.',
+  'overview.updateBanner.text':     '{n} upstream update(s) available.',
+  'overview.updateBanner.action':   'Open updates',
   'overview.error':                 'Error: {msg}',
   'overview.updates_subtitle':      'version check',
   'common.error_save':        'Error saving',

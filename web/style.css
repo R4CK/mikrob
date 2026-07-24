@@ -501,6 +501,47 @@ main {
 .subtitle { color: var(--text-muted); font-size: 14px; margin-top: 4px; }
 
 /* === Overview page === */
+/* Upstream-update banner (card 3c09ba6b / FÁZIS3) -- shown atop the overview when the fork
+   is behind the upstream base. Info-toned, responsive + touch-friendly (rule 13). */
+.update-banner {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 12px 16px;
+  margin-bottom: 20px;
+  background: var(--info-soft);
+  border: 1px solid var(--info);
+  border-radius: var(--radius);
+  color: var(--text);
+  font-size: 14px;
+  line-height: 1.4;
+}
+.update-banner[hidden] { display: none; }
+.update-banner-icon { flex-shrink: 0; color: var(--info); }
+.update-banner-text { flex: 1 1 auto; min-width: 0; }
+.update-banner-action {
+  flex-shrink: 0;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-height: 44px;
+  padding: 8px 16px;
+  border: 1px solid var(--info);
+  border-radius: var(--radius-sm);
+  background: var(--bg-card);
+  color: var(--info);
+  font-weight: 600;
+  text-decoration: none;
+  cursor: pointer;
+  transition: background var(--transition), color var(--transition);
+}
+.update-banner-action:hover { background: var(--info); color: var(--bg); }
+.update-banner-action:focus-visible { outline: 2px solid var(--info); outline-offset: 2px; }
+@media (max-width: 768px) {
+  .update-banner { flex-wrap: wrap; }
+  .update-banner-action { width: 100%; }
+}
+
 .overview-stats {
   display: grid;
   grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));

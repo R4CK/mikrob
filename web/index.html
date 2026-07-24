@@ -190,6 +190,15 @@
   <main>
     <!-- === Overview Page (default) === -->
     <div class="page" id="overviewPage">
+      <!-- Upstream-update banner (card 3c09ba6b / FÁZIS3): shown when our fork is behind the
+           upstream base (Szotasz/marveen). Populated by loadOverview() from /api/overview. -->
+      <div class="update-banner" id="updateBanner" role="status" aria-live="polite" hidden>
+        <svg class="update-banner-icon" width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true">
+          <path d="M12 19V5"/><polyline points="5 12 12 5 19 12"/>
+        </svg>
+        <span class="update-banner-text" id="updateBannerText"></span>
+        <a class="update-banner-action" id="updateBannerAction" href="#" data-i18n="overview.updateBanner.action">Frissítések megnyitása</a>
+      </div>
       <div class="overview-stats">
         <div class="overview-stat">
           <div class="overview-stat-label" data-i18n="overview.stat.agents">Aktív ügynökök</div>

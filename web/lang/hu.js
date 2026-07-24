@@ -39,6 +39,8 @@ window._i18n.hu = {
   'overview.stat.change':           '{n} a tegnapihoz',
   'overview.stat.skills_today':     'ebből {n} ma',
   'overview.no_activity':           'Nincs friss esemény.',
+  'overview.updateBanner.text':     '{n} új frissítés érhető el az upstream forrásból.',
+  'overview.updateBanner.action':   'Frissítések megnyitása',
   'overview.error':                 'Hiba: {msg}',
   'overview.updates_subtitle':      'verzió ellenőrzés',
   'common.error_save':        'Hiba a mentés során',
