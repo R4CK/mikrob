@@ -30,6 +30,16 @@
             "timeout": 15
           }
         ]
+      },
+      {
+        "matcher": "startup|resume|compact|clear",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "python3 __MARVEEN_INSTALL_DIR__/scripts/hooks/shared-memory-inject.py",
+            "timeout": 15
+          }
+        ]
       }
     ],
     "UserPromptSubmit": [
