@@ -1,5 +1,5 @@
 {
-  "model": "claude-fable-5",
+  "model": "claude-sonnet-4-6",
   "displayName": "Cybersec",
   "securityProfile": "developer-senior"
 }
