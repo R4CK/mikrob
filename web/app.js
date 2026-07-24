@@ -12507,7 +12507,7 @@ async function renderIntegrationsContent(container) {
   const revealBtn = document.createElement('button')
   revealBtn.type = 'button'
   revealBtn.setAttribute('aria-label', t('integrations.gemini.btn.show'))
-  revealBtn.style.cssText = 'position:absolute;right:8px;top:50%;transform:translateY(-50%);background:none;border:none;cursor:pointer;color:var(--text-muted);padding:4px;min-height:28px;display:flex;align-items:center'
+  revealBtn.style.cssText = 'position:absolute;right:8px;top:50%;transform:translateY(-50%);background:none;border:none;cursor:pointer;color:var(--text-muted);padding:4px;min-height:44px;min-width:44px;display:flex;align-items:center;justify-content:center'
   revealBtn.innerHTML = '<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M1 12s4-8 11-8 11 8 11 8-4 8-11 8-11-8-11-8z"/><circle cx="12" cy="12" r="3"/></svg>'
   revealBtn.addEventListener('click', () => {
     const showing = keyInput.type === 'text'
