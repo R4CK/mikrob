@@ -360,6 +360,20 @@ nav { display: flex; gap: 4px; }
   font-family: 'JetBrains Mono', 'SF Mono', monospace;
 }
 
+/* Two-repo update view: one block per checked repo (upstream Marveen + fork MikroB). */
+.updates-repo-block { margin: 20px 0; }
+.updates-repo-block + .updates-repo-block { padding-top: 12px; border-top: 1px solid var(--border); }
+.updates-repo-label {
+  font-size: 15px;
+  font-weight: 700;
+  margin: 0 0 4px;
+  display: flex;
+  align-items: baseline;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+.updates-repo-remote { font-size: 12px; font-weight: 500; color: var(--text-muted); }
+
 .updates-commits { margin-top: 20px; }
 .updates-commit-list { display: flex; flex-direction: column; gap: 8px; }
 .updates-commit {

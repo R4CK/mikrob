@@ -1920,14 +1920,11 @@
         </div>
       </div>
 
-      <div id="updatesSummary" class="updates-summary"></div>
-
       <div id="updatesDiagnose" class="updates-diagnose" hidden></div>
 
-      <div class="updates-commits">
-        <h3 data-i18n="tokenUsage.changes_title">Változások</h3>
-        <div id="updatesCommitList" class="updates-commit-list"></div>
-      </div>
+      <!-- Two independent version checks: original upstream (Marveen) + our fork (MikroB).
+           Each block is rendered by loadUpdates() with its own status + changes list. -->
+      <div id="updatesRepos"></div>
     </div>
 
     <!-- Costs page (CostOps v0.1, PR #524) -->

@@ -37,16 +37,45 @@ export interface UpdateStatus {
   fork?: boolean
 }
 
-let updateStatusCache: UpdateStatus = {
+/** One repo's check result. Extends UpdateStatus with identity fields so the
+ * dashboard can label/route each block. `branch` is the remote branch checked. */
+export interface RepoStatus extends UpdateStatus {
+  /** Stable key the frontend maps to an i18n label ('marveen' | 'mikrob'). */
+  key: string
+  /** Human label fallback (used if the frontend has no i18n entry). */
+  label: string
+  /** The remote branch this result was computed against. */
+  branch: string
+}
+
+/** The aggregate returned by getUpdateStatus/refreshUpdateStatus. Keeps the
+ * flat single-result shape (mirrors the `mikrob`/origin repo for backward
+ * compatibility -- the badge count and the apply action follow OUR fork) AND
+ * carries the per-repo results in `repos` for the two-block UI. */
+export type AggregateUpdateStatus = UpdateStatus & { repos: RepoStatus[] }
+
+/** Definition of a single repo to check. `trackingRef` is the LOCAL ref used
+ * for the fork merge-base fallback (its merge-base with HEAD is an actual
+ * remote commit that CAN be compared on GitHub even when our HEAD cannot). */
+interface RepoCheckConfig {
+  key: string
+  label: string
+  remote: string
+  branch: string
+  trackingRef: string
+}
+
+let updateStatusCache: AggregateUpdateStatus = {
   current: '',
   latest: '',
   behind: 0,
   commits: [],
   remote: 'Szotasz/marveen',
   lastChecked: 0,
+  repos: [],
 }
 
-export function getUpdateStatus(): UpdateStatus {
+export function getUpdateStatus(): AggregateUpdateStatus {
   return updateStatusCache
 }
 
@@ -158,72 +187,70 @@ export function groupByRelease(commits: UpdateCommit[], fullMessages: string[]):
   return out.concat(groups)
 }
 
-// Merge-base of local HEAD with the upstream tracking ref (origin/<tracked-branch>, which
-// parseGitHubRemote maps to the GitHub remote). For a customised fork this is
-// the fork point -- an actual upstream commit -- so it can be compared on
-// GitHub even though the local HEAD itself never landed there. Empty string
-// when there is no local upstream ref.
-function upstreamMergeBase(): string {
+// Merge-base of local HEAD with a LOCAL tracking ref (e.g. origin/develop or
+// upstream/main). For a customised fork this is the fork point -- an actual
+// commit on that remote -- so it can be compared on GitHub even though the
+// local HEAD itself never landed there. Empty string when the ref is absent.
+function mergeBaseWith(trackingRef: string): string {
   try {
-    return execFileSync('/usr/bin/git', ['merge-base', 'HEAD', `origin/${trackedBranch()}`], { cwd: PROJECT_ROOT, timeout: 3000, encoding: 'utf-8' }).trim()
+    return execFileSync('/usr/bin/git', ['merge-base', 'HEAD', trackingRef], { cwd: PROJECT_ROOT, timeout: 3000, encoding: 'utf-8' }).trim()
   } catch {
     return ''
   }
 }
 
-export async function refreshUpdateStatus(): Promise<UpdateStatus> {
-  const current = currentGitHead()
-  const remote = parseGitHubRemote()
-  const status: UpdateStatus = {
+// Compute the update status for a single repo (remote + branch), reusing the
+// fork-aware compare logic. `current` is the shared local HEAD; `cfg.trackingRef`
+// is the local ref whose merge-base with HEAD provides the fork-fallback base.
+async function computeStatus(current: string, cfg: RepoCheckConfig): Promise<RepoStatus> {
+  const status: RepoStatus = {
+    key: cfg.key,
+    label: cfg.label,
+    branch: cfg.branch,
     current,
     latest: '',
     behind: 0,
     commits: [],
-    remote,
+    remote: cfg.remote,
     lastChecked: Date.now(),
   }
   if (!current) {
     status.error = 'Not a git checkout'
-    updateStatusCache = status
     return status
   }
   try {
-    // 1) find HEAD of the tracked branch (develop on this fork) via the commits endpoint
-    const branch = trackedBranch()
-    const latestRes = await fetch(`https://api.github.com/repos/${remote}/commits/${branch}`, {
-      headers: { 'Accept': 'application/vnd.github+json', 'User-Agent': 'marveen-update-check' },
+    // 1) find HEAD of the target branch via the commits endpoint
+    const latestRes = await fetch(`https://api.github.com/repos/${cfg.remote}/commits/${cfg.branch}`, {
+      headers: GH_HEADERS,
       signal: AbortSignal.timeout(TOOL_TIMEOUTS['github']),
     })
-    if (!latestRes.ok) throw new Error(`GitHub /commits/${branch} -> ${latestRes.status}`)
+    if (!latestRes.ok) throw new Error(`GitHub /commits/${cfg.branch} -> ${latestRes.status}`)
     const latestJson = await latestRes.json() as { sha?: string }
-    if (!latestJson.sha) throw new Error(`No sha on commits/${branch} response`)
+    if (!latestJson.sha) throw new Error(`No sha on commits/${cfg.branch} response`)
     status.latest = latestJson.sha
 
-    if (status.latest === current) {
-      updateStatusCache = status
-      return status
-    }
+    if (status.latest === current) return status
 
     // 2) list commits between local HEAD and the remote latest via compare.
-    const cmp = await fetchCompare(remote, current, status.latest)
+    const cmp = await fetchCompare(cfg.remote, current, status.latest)
     if (cmp && !('notFound' in cmp)) {
       applyCompare(status, cmp)
     } else if (cmp && 'notFound' in cmp) {
       // Local HEAD is not a commit on the GitHub remote -- the normal state of a
       // customised fork carrying local commits on top of upstream. Comparing the
       // raw HEAD 404s forever, surfacing as a permanent scary error. Fall back to
-      // the upstream merge-base (our fork point, which IS an upstream commit) so
-      // `behind`/`commits` reflect genuinely new upstream commits rather than the
-      // fork divergence.
+      // the tracking-ref merge-base (our fork point, which IS a remote commit) so
+      // `behind`/`commits` reflect genuinely new remote commits rather than the
+      // fork divergence. For the upstream (Marveen) repo this is exactly how the
+      // (expectedly large) behind-count against Szotasz/marveen@main is measured.
       status.fork = true
-      const base = upstreamMergeBase()
+      const base = mergeBaseWith(cfg.trackingRef)
       if (!base || base === status.latest) {
-        // No local upstream ref, or the fork point already is the upstream tip:
-        // nothing new upstream. A fork being ahead of upstream is expected, not
-        // an error.
+        // No local tracking ref, or the fork point already is the remote tip:
+        // nothing new. A fork being ahead of the remote is expected, not an error.
         status.behind = 0
       } else {
-        const baseCmp = await fetchCompare(remote, base, status.latest)
+        const baseCmp = await fetchCompare(cfg.remote, base, status.latest)
         if (baseCmp && !('notFound' in baseCmp)) {
           applyCompare(status, baseCmp)
         } else {
@@ -234,8 +261,47 @@ export async function refreshUpdateStatus(): Promise<UpdateStatus> {
   } catch (err) {
     status.error = err instanceof Error ? err.message : String(err)
   }
-  updateStatusCache = status
   return status
+}
+
+// The two repos the dashboard checks: the original upstream (Marveen) and OUR
+// fork (MikroB). The upstream entry is fixed to Szotasz/marveen@main; the fork
+// entry is derived from the local checkout (origin remote + tracked branch) so
+// it keeps working on any fork. The `mikrob` result also becomes the flat
+// top-level status (backward compat: badge + apply follow our fork).
+function repoConfigs(): { marveen: RepoCheckConfig; mikrob: RepoCheckConfig } {
+  const branch = trackedBranch()
+  return {
+    marveen: {
+      key: 'marveen',
+      label: 'Eredeti Marveen',
+      remote: 'Szotasz/marveen',
+      branch: 'main',
+      trackingRef: 'upstream/main',
+    },
+    mikrob: {
+      key: 'mikrob',
+      label: 'MikroB',
+      remote: parseGitHubRemote(),
+      branch,
+      trackingRef: `origin/${branch}`,
+    },
+  }
+}
+
+export async function refreshUpdateStatus(): Promise<AggregateUpdateStatus> {
+  const current = currentGitHead()
+  const cfgs = repoConfigs()
+  // Both checks are independent; run them concurrently.
+  const [marveen, mikrob] = await Promise.all([
+    computeStatus(current, cfgs.marveen),
+    computeStatus(current, cfgs.mikrob),
+  ])
+  // Flat top-level = the fork (mikrob) result for backward compatibility; the
+  // per-repo blocks live in `repos` (upstream first, then our fork).
+  const aggregate: AggregateUpdateStatus = { ...mikrob, repos: [marveen, mikrob] }
+  updateStatusCache = aggregate
+  return aggregate
 }
 
 // Polls the GitHub repo's main branch for new commits and compares to the

@@ -11647,41 +11647,9 @@ async function pollUpdatesBadge() {
   } catch {}
 }
 
-async function loadUpdates() {
-  const summary = document.getElementById('updatesSummary')
-  const list = document.getElementById('updatesCommitList')
-  const applyBtn = document.getElementById('updatesApplyBtn')
-  summary.textContent = t('updates.checking')
-  summary.className = 'updates-summary'
-  list.innerHTML = ''
-  try {
-    const res = await fetch('/api/updates')
-    if (!res.ok) throw new Error('HTTP ' + res.status)
-    const data = await res.json()
-    renderUpdatesBadge(data)
-    const cur = (data.current || '').slice(0, 7) || '–'
-    const lat = (data.latest || '').slice(0, 7) || '–'
-    if (data.error) {
-      summary.className = 'updates-summary error'
-      summary.innerHTML = `<strong>${t('updates.check_failed')}:</strong> ${escapeHtmlUpdates(data.error)}<br>${t('updates.current_label')} <code>${cur}</code>`
-      applyBtn.hidden = true
-    } else if (data.behind === 0) {
-      summary.className = 'updates-summary up-to-date'
-      summary.innerHTML = `<strong>${t('updates.up_to_date_html')}</strong> (<code>${cur}</code>). ${t('updates.no_changes')}`
-      applyBtn.hidden = true
-    } else {
-      summary.className = 'updates-summary behind'
-      const versions = (data.releases || []).filter((r) => r.version)
-      if (versions.length > 0) {
-        // Version-centric: "N uj verzio elerheto (v1.21.0)".
-        summary.innerHTML = `<strong>${t('updates.versions_available', { n: versions.length })}</strong> <code>${escapeHtmlUpdates(versions[0].version)}</code>`
-      } else {
-        // Pre-release: unreleased commits but no new version tag yet.
-        summary.innerHTML = `<strong>${t('updates.changes_available')}</strong> ${t('updates.available_on', { remote: `<code>${escapeHtmlUpdates(data.remote)}</code>` })}`
-      }
-      applyBtn.hidden = false
-    }
-    const commitCard = (c) => `
+// Render the changes list (release-grouped, else flat commits) for one repo.
+function updatesChangesHtml(repo) {
+  const commitCard = (c) => `
         <div class="updates-commit">
           <div class="updates-commit-head">
             <span>${escapeHtmlUpdates(c.short)} · ${escapeHtmlUpdates(c.author)}</span>
@@ -11689,18 +11657,17 @@ async function loadUpdates() {
           </div>
           <div class="updates-commit-msg">${escapeHtmlUpdates(c.message)}</div>
         </div>`
-    if (data.releases && data.releases.length) {
-      // Version-centric: the human-language summary per version is the primary
-      // content; the raw commit list (SHAs, conventional-commit prefixes, author
-      // names) is tucked behind a collapsed "details" so it is never the first
-      // thing the operator sees.
-      list.innerHTML = data.releases.map((rel) => {
-        const isUpcoming = !rel.version
-        const label = isUpcoming ? t('updates.group.upcoming') : escapeHtmlUpdates(rel.version)
-        const human = rel.summary
-          ? escapeHtmlUpdates(rel.summary)
-          : (isUpcoming ? t('updates.upcoming_note') : '')
-        return `
+  if (repo.releases && repo.releases.length) {
+    // Version-centric: the human-language summary per version is the primary
+    // content; the raw commit list (SHAs, conventional-commit prefixes, author
+    // names) is tucked behind a collapsed "details".
+    return repo.releases.map((rel) => {
+      const isUpcoming = !rel.version
+      const label = isUpcoming ? t('updates.group.upcoming') : escapeHtmlUpdates(rel.version)
+      const human = rel.summary
+        ? escapeHtmlUpdates(rel.summary)
+        : (isUpcoming ? t('updates.upcoming_note') : '')
+      return `
         <div class="updates-version">
           <div class="updates-version-tag">${label}</div>
           ${human ? `<div class="updates-version-summary">${human}</div>` : ''}
@@ -11709,15 +11676,67 @@ async function loadUpdates() {
             <div class="updates-commit-list">${rel.commits.map(commitCard).join('')}</div>
           </details>
         </div>`
-      }).join('')
-    } else if (data.commits && data.commits.length) {
-      list.innerHTML = data.commits.map(commitCard).join('')
-    } else if (data.behind === 0) {
-      list.innerHTML = `<p style="color:var(--text-muted);font-size:13px">${t('updates.no_changes')}</p>`
+    }).join('')
+  }
+  if (repo.commits && repo.commits.length) {
+    return repo.commits.map(commitCard).join('')
+  }
+  return `<p style="color:var(--text-muted);font-size:13px">${t('updates.no_changes')}</p>`
+}
+
+// Render one labelled repo block (upstream Marveen or our fork MikroB): a header
+// with the repo label + remote, its own status summary, and its changes list.
+function updatesRepoBlockHtml(repo) {
+  const cur = (repo.current || '').slice(0, 7) || '–'
+  const labelKey = 'updates.repo.' + repo.key
+  const labelTxt = t(labelKey)
+  const label = labelTxt === labelKey ? escapeHtmlUpdates(repo.label || repo.key) : escapeHtmlUpdates(labelTxt)
+  const remote = escapeHtmlUpdates(repo.remote || '')
+  let summaryClass = 'updates-summary'
+  let summaryHtml = ''
+  if (repo.error) {
+    summaryClass += ' error'
+    summaryHtml = `<strong>${t('updates.check_failed')}:</strong> ${escapeHtmlUpdates(repo.error)}<br>${t('updates.current_label')} <code>${cur}</code>`
+  } else if (!repo.behind) {
+    summaryClass += ' up-to-date'
+    summaryHtml = `<strong>${t('updates.up_to_date_html')}</strong> (<code>${cur}</code>). ${t('updates.no_changes')}`
+  } else {
+    summaryClass += ' behind'
+    const versions = (repo.releases || []).filter((r) => r.version)
+    if (versions.length > 0) {
+      summaryHtml = `<strong>${t('updates.versions_available', { n: versions.length })}</strong> <code>${escapeHtmlUpdates(versions[0].version)}</code>`
+    } else {
+      summaryHtml = `<strong>${t('updates.behind', { n: repo.behind })}</strong> ${t('updates.available_on', { remote: `<code>${remote}</code>` })}`
     }
+  }
+  return `
+      <section class="updates-repo-block">
+        <h3 class="updates-repo-label">${label} <span class="updates-repo-remote">(${remote})</span></h3>
+        <div class="${summaryClass}">${summaryHtml}</div>
+        <div class="updates-commit-list">${updatesChangesHtml(repo)}</div>
+      </section>`
+}
+
+async function loadUpdates() {
+  const container = document.getElementById('updatesRepos')
+  const applyBtn = document.getElementById('updatesApplyBtn')
+  container.innerHTML = `<div class="updates-summary">${t('updates.checking')}</div>`
+  try {
+    const res = await fetch('/api/updates')
+    if (!res.ok) throw new Error('HTTP ' + res.status)
+    const data = await res.json()
+    renderUpdatesBadge(data)
+    // Two independent checks live in data.repos. Fall back to the flat single
+    // shape (older backend/cache) synthesised as one 'mikrob' block.
+    const repos = (Array.isArray(data.repos) && data.repos.length)
+      ? data.repos
+      : [{ ...data, key: 'mikrob', label: 'MikroB' }]
+    container.innerHTML = repos.map(updatesRepoBlockHtml).join('')
+    // The Update action targets OUR fork only; its visibility follows the flat
+    // top-level (mikrob) behind count.
+    applyBtn.hidden = !!data.error || !data.behind
   } catch (err) {
-    summary.className = 'updates-summary error'
-    summary.textContent = 'Hiba: ' + (err.message || err)
+    container.innerHTML = `<div class="updates-summary error">${escapeHtmlUpdates('Hiba: ' + (err.message || err))}</div>`
     applyBtn.hidden = true
   }
   renderDiagnoseOffer()

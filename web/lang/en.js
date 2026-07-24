@@ -1015,6 +1015,8 @@ window._i18n.en = {
   'updates.page_title':          'Updates',
   'updates.brand_subtitle':        '{brand} version check',
   'conversation.modal_title':      'Conversation',
+  'updates.repo.marveen':          'Original Marveen',
+  'updates.repo.mikrob':           'MikroB',
   'updates.checking':             'Checking...',
   'updates.btn.check':           'Check',
   'updates.btn.update':          'Update',

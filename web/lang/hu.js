@@ -1310,6 +1310,8 @@ window._i18n.hu = {
   'updates.page_title':          'Frissítések',
   'updates.brand_subtitle':        '{brand} verzió ellenőrzés',
   'conversation.modal_title':      'Beszélgetés',
+  'updates.repo.marveen':          'Eredeti Marveen',
+  'updates.repo.mikrob':           'MikroB',
   'updates.checking':             'Ellenőrzés...',
   'updates.btn.check':           'Ellenőrzés',
   'updates.btn.update':          'Frissítés',
