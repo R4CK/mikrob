@@ -33,10 +33,12 @@ const OLLAMA_UNIT = 'ollama'
 // Proactive-offload control (card 48f3b675): the aggressiveness slider persists into the SAME config
 // the fleet agents + the local-llm-offload skill read. 0 = never offload, 100 = offload maximally.
 const OFFLOAD_CONFIG_FILE = join(STORE_DIR, 'local-llm-offload-active.json')
-const DEFAULT_AGGRESSIVENESS = 50
-// The marked "optimal" point on the slider. The offload GPU (GTX 1660 Ti, ~5 GB usable) is barely
-// loaded, so the honest recommendation is to offload MORE mechanical work than a naive middle setting.
+// The marked "optimal" point on the slider AND the DEFAULT (card 48f3b675, Peti req 2245): the offload
+// GPU (GTX 1660 Ti, ~5 GB usable) is barely loaded (~6% util), so the honest recommendation is to
+// offload MORE than a naive middle setting -- and the DEFAULT starts here so the fleet offloads
+// aggressively out of the box (more mechanical work to the local model, fewer Claude tokens).
 const OPTIMAL_AGGRESSIVENESS = 75
+const DEFAULT_AGGRESSIVENESS = OPTIMAL_AGGRESSIVENESS
 
 /** Clamp/parse an aggressiveness input to an integer in [0,100]; non-numeric -> the default. (Mechanical
  *  pure fn -- drafted via the local-llm offload per the proactive-offload directive, verified here.) */

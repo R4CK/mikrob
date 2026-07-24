@@ -19,20 +19,20 @@ describe('normalizeAggressiveness', () => {
   it('clamps out-of-range values to [0,100]', () => {
     expect(normalizeAggressiveness(-10)).toBe(0)
     expect(normalizeAggressiveness(9999)).toBe(100)
-    expect(normalizeAggressiveness(Infinity)).toBe(50) // non-finite -> default, never NaN/overflow
+    expect(normalizeAggressiveness(Infinity)).toBe(75) // non-finite -> default (75), never NaN/overflow
   })
 
   it('parses numeric strings (a range input POSTs a string)', () => {
-    expect(normalizeAggressiveness('75')).toBe(75)
+    expect(normalizeAggressiveness('60')).toBe(60)
     expect(normalizeAggressiveness(' 42 ')).toBe(42)
   })
 
-  it('falls back to the default (50) for non-numeric / missing input', () => {
-    expect(normalizeAggressiveness('abc')).toBe(50)
-    expect(normalizeAggressiveness('')).toBe(50)
-    expect(normalizeAggressiveness(null)).toBe(50)
-    expect(normalizeAggressiveness(undefined)).toBe(50)
-    expect(normalizeAggressiveness({})).toBe(50)
-    expect(normalizeAggressiveness(NaN)).toBe(50)
+  it('falls back to the default (75, the aggressive optimum) for non-numeric / missing input', () => {
+    expect(normalizeAggressiveness('abc')).toBe(75)
+    expect(normalizeAggressiveness('')).toBe(75)
+    expect(normalizeAggressiveness(null)).toBe(75)
+    expect(normalizeAggressiveness(undefined)).toBe(75)
+    expect(normalizeAggressiveness({})).toBe(75)
+    expect(normalizeAggressiveness(NaN)).toBe(75)
   })
 })
