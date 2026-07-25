@@ -50,8 +50,8 @@ log_usage() { # $1=status(ok|err)  $2=elapsed_ms
   # inject extra TSV columns or fake rows (metric-integrity hardening; Cybersec LOW).
   local c="${CALLER:-direct}" t="${TASK:-chat}" s="${SOURCE:-bare}" m="$MODEL"
   c="${c//[$'\t\n']/_}"; t="${t//[$'\t\n']/_}"; s="${s//[$'\t\n']/_}"; m="${m//[$'\t\n']/_}"
-  { printf '%s\t%s\t%s\t%s\t%s\t%s\t%s\n' \
-      "$(date +%s 2>/dev/null || echo 0)" "$c" "$t" "$m" "${2:-0}" "$1" "$s" \
+  { printf '%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\n' \
+      "$(date +%s 2>/dev/null || echo 0)" "$c" "$t" "$m" "${2:-0}" "$1" "$s" "${3:-0}" "${4:-0}" \
       >> "$USAGE_LOG"; } 2>/dev/null || true
 }
 
@@ -144,6 +144,12 @@ RESP=$(curl -fsS -m "$TIMEOUT" -X POST "$OLLAMA_HOST/api/generate" \
   fi
   die 5 "ollama api error (timeout ${TIMEOUT}s or server error)"
 }
-log_usage ok "$(_elapsed)"
+# Exact local token accounting (Ollama returns eval_count=out, prompt_eval_count=in).
+_TOKS=$(echo "$RESP" | python3 -c "import json,sys
+try:
+    d=json.load(sys.stdin); print(int(d.get('eval_count',0)), int(d.get('prompt_eval_count',0)))
+except Exception:
+    print('0 0')" 2>/dev/null || echo "0 0")
+log_usage ok "$(_elapsed)" $_TOKS
 
 echo "$RESP" | python3 -c "import json,sys; d=json.load(sys.stdin); print(d.get('response','').rstrip()) if 'response' in d else sys.exit('local-llm: '+d.get('error','unknown error'))"
