@@ -20,11 +20,21 @@
 #            Cybersec-hardened: token via 0600 @file, never argv) starts returning real
 #            data and can be cron'd. (2) A MikroB-run terminal `/usage` parse (Peti
 #            2026-07-25 clarified it is `/usage`, not `/status`, that renders the weekly
-#            All-models bar) from a DEDICATED subscription-authed spare panel -- NOT a
-#            fleet-agent panel (sending keys there disrupts its work), and NOT the
-#            mikrob-worker (API-auth: its `/usage` shows only activity characteristics,
-#            not the subscription weekly bar). Role agents are governance-blocked from
-#            `tmux send-keys`, so this panel-parse path is MikroB-only.
+#            All-models bar) from a subscription-LOGIN spare panel. FEASIBILITY re-checked
+#            FRESH 2026-07-25 (read-only tmux inventory + /proc environ, NOT from memory):
+#            both spare sessions (mikrob-worker, mikrob-worker-fast) authenticate via
+#            CLAUDE_CODE_OAUTH_TOKEN (the coding/setup token), NOT an interactive Max
+#            subscription login -- so `/usage` there shows only activity characteristics,
+#            not the weekly All-models bar (MikroB confirmed this live on mikrob-worker;
+#            mikrob-worker-fast carries the identical auth env). The weekly bar renders
+#            only in Max-subscription-login sessions, which today are the fleet-agent
+#            panels (agent-*), off-limits (send-keys disrupts their work). => No usable
+#            subscription-login spare panel exists now; creating one needs an interactive
+#            `claude login` (Peti/browser OAuth) in a fresh spare session. Even then,
+#            driving `/usage` needs `tmux send-keys`, which role agents are governance-
+#            hard-gated from (verified: the gate blocks it). So this panel-parse path is
+#            MikroB/Peti-only on two independent grounds. A role agent CAN still supply
+#            the pure text PARSER for captured `/usage` output on request (needs no tmux).
 #
 # DESIGN: forward-compatible + fail-safe. On a real 200 with a parseable weekly %, it
 # writes the snapshot atomically and prints OK. On ANY failure (scope/auth/ratelimit/
