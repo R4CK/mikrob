@@ -473,12 +473,21 @@ if [ "${SKIP_BUILD:-0}" != "1" ]; then
   # Rebuild. On failure, auto-rollback to the pre-update commit (safe ff-only
   # ancestor) and rebuild that, leaving the box on a WORKING old version rather
   # than git=NEW/dist=OLD.
+  # Clean build: `tsc` emits into dist/ WITHOUT wiping it, so a stale/orphaned
+  # dist file can survive a rebuild and crash-loop the app at import time.
+  # Incident 2026-07-25: dist/web/federation/capabilities.js imported
+  # OWNER_NAME_PLACEHOLDER from a stale dist/config.js that lacked the export
+  # (added in a later source commit) -> ESM SyntaxError crash-loop for ~1h,
+  # while the build-marker still matched HEAD so the self-heal thought dist was
+  # fresh. Wiping dist before every build makes each build internally coherent.
   echo -e "  Forditas..."
+  rm -rf "$INSTALL_DIR/dist"
   if ! retry 2 3 npm run build --silent; then
     echo -e "${RED}HIBA:${NC} build sikertelen. Visszaallitas a korabbi verziora (${OLD_VERSION})..."
     if [ -n "$OLD_VERSION_FULL" ]; then
       git reset --hard "$OLD_VERSION_FULL" >/dev/null 2>&1 || true
       npm rebuild better-sqlite3 --build-from-source --silent 2>/dev/null || true
+      rm -rf "$INSTALL_DIR/dist"
       npm run build --silent 2>/dev/null || true
       [ -d "$INSTALL_DIR/dist" ] && echo "$OLD_VERSION_FULL" > "$BUILT_COMMIT_FILE"
     fi
