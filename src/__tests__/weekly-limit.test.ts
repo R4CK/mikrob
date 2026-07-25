@@ -32,6 +32,9 @@ describe('writeWeeklySnapshot / readWeeklySnapshot', () => {
       source: 'manual',
       resetAt: 'Thu 3:59 PM',
       note: 'Peti screenshot',
+      session: null,
+      fable: null,
+      promo: null,
     })
     expect(readWeeklySnapshot(p())).toEqual(w)
   })
@@ -77,8 +80,81 @@ describe('writeWeeklySnapshot / readWeeklySnapshot', () => {
       source: 'oauth',
       resetAt: 'Thu 3:59 PM',
       note: null,
+      session: null,
+      fable: null,
+      promo: null,
     })
     writeFileSync(p(), JSON.stringify({ pct: 42, setAt: NOW, source: 'weird' }))
     expect(readWeeklySnapshot(p())?.source).toBe('manual')
+  })
+})
+
+// card a91c6039: enriched /usage snapshot -- session/fable/promo captured from the dedicated
+// Max-authed panel (source='panel'), all additive + backward-compatible with old snapshots.
+describe('enriched /usage snapshot (session / fable / promo)', () => {
+  it('round-trips all enriched metrics from a panel auto-read', () => {
+    const w = writeWeeklySnapshot(
+      {
+        pct: 87,
+        resetAt: 'Fri 11:00 AM',
+        source: 'panel',
+        session: { pct: 45, resetAt: 'Thu 3:59 PM' },
+        fable: { pct: 20, resetAt: 'Fri 11:00 AM' },
+        promo: '+50% weekly limit through Aug 19',
+      },
+      NOW,
+      p(),
+    )
+    expect(w).toEqual({
+      pct: 87,
+      setAt: NOW,
+      source: 'panel',
+      resetAt: 'Fri 11:00 AM',
+      note: null,
+      session: { pct: 45, resetAt: 'Thu 3:59 PM' },
+      fable: { pct: 20, resetAt: 'Fri 11:00 AM' },
+      promo: '+50% weekly limit through Aug 19',
+    })
+    expect(readWeeklySnapshot(p())).toEqual(w)
+  })
+
+  it('is backward-compatible: an old snapshot (no enriched fields) reads them as null', () => {
+    writeFileSync(p(), JSON.stringify({ pct: 60, setAt: NOW, source: 'manual', resetAt: 'Thu 3:59 PM' }))
+    const r = readWeeklySnapshot(p())
+    expect(r?.pct).toBe(60)
+    expect(r?.session).toBeNull()
+    expect(r?.fable).toBeNull()
+    expect(r?.promo).toBeNull()
+  })
+
+  it('omits enriched metrics that are not provided', () => {
+    const w = writeWeeklySnapshot({ pct: 87, source: 'panel', session: { pct: 45 } }, NOW, p())
+    expect(w.session).toEqual({ pct: 45, resetAt: null })
+    expect(w.fable).toBeNull()
+    expect(w.promo).toBeNull()
+  })
+
+  it('rejects a present-but-invalid enriched metric fail-closed (never stores garbage)', () => {
+    expect(() => writeWeeklySnapshot({ pct: 87, session: { pct: 130 } }, NOW, p())).toThrow(/session/)
+    expect(() => writeWeeklySnapshot({ pct: 87, fable: { pct: 'x' } }, NOW, p())).toThrow(/fable/)
+    expect(() => writeWeeklySnapshot({ pct: 87, session: 'nope' }, NOW, p())).toThrow(WeeklyLimitError)
+  })
+
+  it('reads a stored panel source through; clamps an out-of-range enriched metric on read', () => {
+    writeFileSync(
+      p(),
+      JSON.stringify({ pct: 50, setAt: NOW, source: 'panel', session: { pct: 250 }, fable: { pct: -5 } }),
+    )
+    const r = readWeeklySnapshot(p())
+    expect(r?.source).toBe('panel')
+    expect(r?.session?.pct).toBe(100) // clamped
+    expect(r?.fable?.pct).toBe(0) // clamped
+  })
+
+  it('ignores a malformed enriched metric on read (fail-safe -> null, never crashes)', () => {
+    writeFileSync(p(), JSON.stringify({ pct: 50, setAt: NOW, source: 'panel', session: { pct: 'x' }, fable: 'nope' }))
+    const r = readWeeklySnapshot(p())
+    expect(r?.session).toBeNull()
+    expect(r?.fable).toBeNull()
   })
 })

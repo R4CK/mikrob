@@ -45,29 +45,22 @@ tmux send-keys -t "$PANE" Escape 2>/dev/null || true
 
 [ -n "$snap" ] || fail "empty capture"
 
-# 3) Parse the "Current week (all models)" section: the % is on the bar line, the
-#    reset on the following "Resets ..." line. Fail-closed if the weekly bar is absent
-#    (e.g. the panel dropped to API-billing auth -> only activity chars, no weekly bar).
-pct="$(printf '%s\n' "$snap" | awk '
-  /Current week \(all models\)/ {found=1; next}
-  found && match($0, /([0-9]+)% used/, m) {print m[1]; exit}
-')"
-reset="$(printf '%s\n' "$snap" | awk '
-  /Current week \(all models\)/ {found=1; next}
-  found && /Resets/ {sub(/^[[:space:]]*Resets[[:space:]]*/,""); print; exit}
-')"
+# 3) Parse ALL /usage sections (card a91c6039): Current session, Current week (all models),
+#    Current week (Fable), plus the +50% weekly promo. The parse is a PURE, unit-tested helper
+#    (store/weekly-usage-parse.sh) so it can be verified against sample captures without tmux.
+#    The weekly (all models) bar is REQUIRED (canonical, drives the stop rule); wu_body returns
+#    non-zero (fail-closed) if it is absent, so we never POST a garbage/partial snapshot.
+# shellcheck source=weekly-usage-parse.sh
+. "${STORE}/weekly-usage-parse.sh"
 
-case "$pct" in
-  ''|*[!0-9]*) fail "weekly % not found in /usage (panel not Max-authed, or format changed)";;
-esac
-[ "$pct" -ge 0 ] && [ "$pct" -le 100 ] || fail "weekly % out of range: $pct"
+note="auto-read a dedikalt /usage panelbol (mikrob-usage-probe, Max-auth)"
+body="$(wu_body "$snap" "$note")" || fail "weekly % not found in /usage (panel not Max-authed, or format changed)"
+pct="$(printf '%s' "$body" | python3 -c 'import json,sys; print(json.load(sys.stdin)["pct"])')"
+reset="$(printf '%s' "$body" | python3 -c 'import json,sys; print(json.load(sys.stdin).get("resetAt") or "")')"
 
 # 4) POST to the widget. Token via 0600 @headerfile (NEVER argv).
 hdr_file="$(mktemp)"; chmod 600 "$hdr_file"
 printf 'Authorization: Bearer %s\n' "$(cat "$TOKEN_FILE")" > "$hdr_file"
-
-note="auto-read a dedikalt /usage panelbol (mikrob-usage-probe, Max-auth)"
-body="$(python3 -c "import json,sys; print(json.dumps({'pct':int(sys.argv[1]),'resetAt':sys.argv[2],'note':sys.argv[3]}))" "$pct" "${reset:-}" "$note")"
 
 http_code="$(curl -s -o /tmp/.wupr-out.$$ -w '%{http_code}' --max-time 15 \
   -X POST "${DASH}/api/costs/weekly" \
