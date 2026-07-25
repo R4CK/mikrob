@@ -9255,11 +9255,36 @@ async function llmPostOffload(value) {
     })
     if (!res.ok) throw new Error('HTTP ' + res.status)
     const d = await res.json()
+    // The threshold may follow the slider (when on "auto"); refresh the dropdown hint too.
+    llmRenderDifficulty(d)
     llmOffloadMsg(t('localLlm.offload.saved', { value: d.aggressiveness }), 'ok')
   } catch (e) {
     // Rule 12: speak the failure in the flow (not a silent no-op) with a retry-able message.
     llmOffloadMsg(t('localLlm.offload.save_error'), 'bad')
   }
+}
+
+// Render the coding-difficulty dropdown + hint from an offload-config response (card afcfe93e).
+// When the operator has not picked an explicit level, the select shows "auto" and the hint states
+// the level DERIVED from the slider. Levels beyond the 7B's reliable ceiling get a caution note.
+function llmRenderDifficulty(d) {
+  const sel = document.getElementById('llmOffloadDifficulty')
+  const hint = document.getElementById('llmOffloadDifficultyHint')
+  if (!sel || !d) return
+  const levels = Array.isArray(d.codingDifficultyLevels) ? d.codingDifficultyLevels : []
+  sel.value = d.codingDifficultyExplicit ? String(d.codingDifficultyThreshold) : 'auto'
+  if (!hint) return
+  const eff = String(d.codingDifficultyThreshold || '')
+  const label = t('localLlm.offload.difficulty.level.' + eff) || eff
+  let msg = d.codingDifficultyExplicit
+    ? t('localLlm.offload.difficulty.hint_explicit', { level: label })
+    : t('localLlm.offload.difficulty.hint_auto', { level: label })
+  // Caution when the effective level is past the local model's reliable ceiling.
+  const ceil = String(d.reliableCeiling || '')
+  if (levels.length && ceil && levels.indexOf(eff) > levels.indexOf(ceil)) {
+    msg += ' ' + t('localLlm.offload.difficulty.beyond_reliable')
+  }
+  hint.textContent = msg
 }
 
 async function llmLoadOffload() {
@@ -9274,9 +9299,29 @@ async function llmLoadOffload() {
     if (out) out.textContent = String(d.aggressiveness)
     if (opt) opt.textContent = String(d.optimal)
     slider.dataset.optimal = String(d.optimal)
+    llmRenderDifficulty(d)
     llmOffloadMsg('')
   } catch (e) {
     llmOffloadMsg(t('localLlm.offload.load_error'), 'bad')
+  }
+}
+
+// Persist the coding-difficulty threshold ('auto' clears the explicit override -> follows slider).
+async function llmPostDifficulty(value) {
+  try {
+    const res = await fetch('/api/local-llm/offload-config', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ codingDifficultyThreshold: value }),
+    })
+    if (!res.ok) throw new Error('HTTP ' + res.status)
+    const d = await res.json()
+    llmRenderDifficulty(d)
+    const eff = t('localLlm.offload.difficulty.level.' + String(d.codingDifficultyThreshold)) || d.codingDifficultyThreshold
+    llmOffloadMsg(t('localLlm.offload.difficulty.saved', { level: eff }), 'ok')
+  } catch (e) {
+    // Rule 12: speak the failure in the flow with a retry-able message.
+    llmOffloadMsg(t('localLlm.offload.save_error'), 'bad')
   }
 }
 
@@ -9300,6 +9345,10 @@ function llmSetupOffload() {
         if (out) out.textContent = String(optimal)
         llmPostOffload(optimal)
       })
+    }
+    const diffSel = document.getElementById('llmOffloadDifficulty')
+    if (diffSel) {
+      diffSel.addEventListener('change', () => llmPostDifficulty(diffSel.value))
     }
   }
   llmLoadOffload()

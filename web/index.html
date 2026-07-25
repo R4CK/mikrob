@@ -578,6 +578,22 @@
           <span data-i18n="localLlm.offload.max">Max (100)</span>
         </div>
         <div id="llmOffloadMsg" class="llm-offload-msg" role="status" aria-live="polite"></div>
+
+        <!-- Coding-difficulty threshold dropdown (card afcfe93e): the hardest coding task that may
+             still be drafted locally. Higher aggressiveness -> harder allowed. Only coding levels. -->
+        <div class="llm-offload-difficulty">
+          <label for="llmOffloadDifficulty" class="llm-offload-difficulty-label" data-i18n="localLlm.offload.difficulty.label">Kódolási nehézségi küszöb</label>
+          <p class="llm-offload-desc" data-i18n="localLlm.offload.difficulty.desc">Meddig terjedő nehézségű kódolási feladat adható ki a helyi modellnek. Magasabb küszöb = nehezebb feladatok is helyben.</p>
+          <select id="llmOffloadDifficulty" class="llm-offload-difficulty-select" aria-describedby="llmOffloadDifficultyHint">
+            <option value="auto" data-i18n="localLlm.offload.difficulty.auto">Automatikus (a csúszkából)</option>
+            <option value="trivial" data-i18n="localLlm.offload.difficulty.trivial">Triviális — snippet / regex / formázás</option>
+            <option value="isolated" data-i18n="localLlm.offload.difficulty.isolated">Izolált — függvény / teszt / típus</option>
+            <option value="module" data-i18n="localLlm.offload.difficulty.module">Modul — több-függvényes (egy fájl)</option>
+            <option value="feature" data-i18n="localLlm.offload.difficulty.feature">Feature — több-fájlos</option>
+            <option value="architecture" data-i18n="localLlm.offload.difficulty.architecture">Architektúra / wiring</option>
+          </select>
+          <p id="llmOffloadDifficultyHint" class="llm-offload-difficulty-hint" role="status" aria-live="polite"></p>
+        </div>
       </div>
 
       <!-- Usage metrics -->

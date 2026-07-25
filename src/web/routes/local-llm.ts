@@ -52,6 +52,49 @@ export function normalizeAggressiveness(input: unknown): number {
   return Math.round(Math.max(0, Math.min(100, parsed)))
 }
 
+// --- Coding-difficulty taxonomy for local-LLM offload (card afcfe93e) --------------------------
+// Ordered ASCENDING by how hard the piece is for the local 7B coding model. ONLY coding tasks --
+// no other category. The higher the offload aggressiveness, the harder a coding task may be handed
+// to the local model. The 7B (qwen2.5-coder) reliably handles up to ~'isolated' (snippet/fn/test/
+// type); 'module' is the practical ceiling; 'feature'/'architecture' are BEYOND its reliable limit
+// (multi-file / cross-file wiring, per the local-llm-offload skill) -- reachable only at max
+// aggressiveness, and expect a higher draft-discard rate there.
+export const CODING_DIFFICULTY_LEVELS = [
+  'trivial', // snippet / regex / format / docstring
+  'isolated', // isolated function / unit test / type / validator
+  'module', // multi-function module (single file)
+  'feature', // multi-file feature
+  'architecture', // architecture / cross-file wiring
+] as const
+export type CodingDifficulty = (typeof CODING_DIFFICULTY_LEVELS)[number]
+
+/** Highest difficulty the local 7B handles RELIABLY; above this is draft-with-higher-discard. */
+export const RELIABLE_CEILING: CodingDifficulty = 'module'
+
+/** Default max coding-difficulty for a given aggressiveness %. Higher % -> harder allowed + more
+ *  task types. Pure + deterministic. The single source of truth for the slider<->dropdown mapping
+ *  (local-llm-rag.sh mirrors this table -- keep them in sync). */
+export function defaultDifficultyForAggressiveness(pct: unknown): CodingDifficulty {
+  const a = normalizeAggressiveness(pct)
+  if (a >= 100) return 'architecture'
+  if (a >= 95) return 'feature'
+  if (a >= 85) return 'module'
+  if (a >= 75) return 'isolated'
+  return 'trivial'
+}
+
+/** Validate a difficulty input to a known level; unknown/absent -> null (caller derives it). */
+export function normalizeDifficulty(input: unknown): CodingDifficulty | null {
+  return typeof input === 'string' && (CODING_DIFFICULTY_LEVELS as readonly string[]).includes(input)
+    ? (input as CodingDifficulty)
+    : null
+}
+
+/** Is a coding task of `taskLevel` allowed to draft locally under `threshold`? At-or-below = yes. */
+export function isDraftableLocally(taskLevel: CodingDifficulty, threshold: CodingDifficulty): boolean {
+  return CODING_DIFFICULTY_LEVELS.indexOf(taskLevel) <= CODING_DIFFICULTY_LEVELS.indexOf(threshold)
+}
+
 /** Read the offload config JSON, fail-soft to an empty object (the endpoint fills defaults). */
 function readOffloadConfig(): Record<string, unknown> {
   try {
@@ -414,14 +457,25 @@ export async function tryHandleLocalLlm(ctx: RouteContext): Promise<boolean> {
     return true
   }
 
-  // GET /api/local-llm/offload-config -> the current offload aggressiveness + the marked optimum.
+  // GET /api/local-llm/offload-config -> the current offload aggressiveness + the marked optimum,
+  // plus the coding-difficulty threshold (card afcfe93e): the effective max difficulty a coding task
+  // may be to still draft locally. `explicit` = the operator picked a level from the dropdown;
+  // otherwise it is DERIVED from the aggressiveness slider via defaultDifficultyForAggressiveness.
   if (path === '/api/local-llm/offload-config' && method === 'GET') {
     const cfg = readOffloadConfig()
+    const aggressiveness = normalizeAggressiveness(cfg.aggressiveness)
+    const explicit = normalizeDifficulty(cfg.codingDifficultyThreshold)
+    const derived = defaultDifficultyForAggressiveness(aggressiveness)
     json(res, {
       active: cfg.active !== false, // default on unless explicitly disabled
       mode: typeof cfg.mode === 'string' ? cfg.mode : 'proactive',
-      aggressiveness: normalizeAggressiveness(cfg.aggressiveness),
+      aggressiveness,
       optimal: OPTIMAL_AGGRESSIVENESS,
+      codingDifficultyThreshold: explicit ?? derived,
+      codingDifficultyExplicit: explicit !== null,
+      codingDifficultyDerived: derived,
+      codingDifficultyLevels: CODING_DIFFICULTY_LEVELS,
+      reliableCeiling: RELIABLE_CEILING,
     })
     return true
   }
@@ -431,21 +485,51 @@ export async function tryHandleLocalLlm(ctx: RouteContext): Promise<boolean> {
   // field is touched; the rest of the directive metadata (active/mode/set_by/policy) is preserved.
   if (path === '/api/local-llm/offload-config' && method === 'POST') {
     const body = (await readBody(req)).toString()
-    let parsed: { aggressiveness?: unknown }
+    let parsed: { aggressiveness?: unknown; codingDifficultyThreshold?: unknown }
     try {
       parsed = JSON.parse(body || '{}')
     } catch {
       json(res, { error: 'invalid_json', message: 'A kérés törzse érvénytelen JSON.' }, 400)
       return true
     }
-    if (parsed.aggressiveness === undefined) {
-      json(res, { error: 'missing_field', message: 'Hiányzó mező: aggressiveness (0-100).' }, 400)
+    const hasAggr = parsed.aggressiveness !== undefined
+    const hasDiff = parsed.codingDifficultyThreshold !== undefined
+    if (!hasAggr && !hasDiff) {
+      json(
+        res,
+        { error: 'missing_field', message: 'Adj meg legalább egy mezőt: aggressiveness (0-100) vagy codingDifficultyThreshold.' },
+        400,
+      )
       return true
     }
-    const aggressiveness = normalizeAggressiveness(parsed.aggressiveness)
     const cfg = readOffloadConfig()
-    cfg.aggressiveness = aggressiveness
-    cfg.aggressiveness_set_at = new Date().toISOString()
+    if (hasAggr) {
+      cfg.aggressiveness = normalizeAggressiveness(parsed.aggressiveness)
+      cfg.aggressiveness_set_at = new Date().toISOString()
+    }
+    if (hasDiff) {
+      // 'auto'/null/'' -> clear the explicit override so the threshold follows the slider again.
+      const raw = parsed.codingDifficultyThreshold
+      if (raw === null || raw === 'auto' || raw === '') {
+        delete cfg.codingDifficultyThreshold
+        delete cfg.coding_difficulty_set_at
+      } else {
+        const diff = normalizeDifficulty(raw)
+        if (diff === null) {
+          json(
+            res,
+            {
+              error: 'invalid_field',
+              message: `Érvénytelen nehézségi szint. Engedélyezett: ${CODING_DIFFICULTY_LEVELS.join(', ')} (vagy "auto").`,
+            },
+            400,
+          )
+          return true
+        }
+        cfg.codingDifficultyThreshold = diff
+        cfg.coding_difficulty_set_at = new Date().toISOString()
+      }
+    }
     try {
       atomicWriteFileSync(OFFLOAD_CONFIG_FILE, JSON.stringify(cfg, null, 2) + '\n')
     } catch (err) {
@@ -453,7 +537,18 @@ export async function tryHandleLocalLlm(ctx: RouteContext): Promise<boolean> {
       json(res, { error: 'write_failed', message: 'A beállítás mentése nem sikerült, próbáld újra.' }, 500)
       return true
     }
-    json(res, { aggressiveness, optimal: OPTIMAL_AGGRESSIVENESS })
+    const aggressiveness = normalizeAggressiveness(cfg.aggressiveness)
+    const explicit = normalizeDifficulty(cfg.codingDifficultyThreshold)
+    const derived = defaultDifficultyForAggressiveness(aggressiveness)
+    json(res, {
+      aggressiveness,
+      optimal: OPTIMAL_AGGRESSIVENESS,
+      codingDifficultyThreshold: explicit ?? derived,
+      codingDifficultyExplicit: explicit !== null,
+      codingDifficultyDerived: derived,
+      codingDifficultyLevels: CODING_DIFFICULTY_LEVELS,
+      reliableCeiling: RELIABLE_CEILING,
+    })
     return true
   }
 

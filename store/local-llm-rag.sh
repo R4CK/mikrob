@@ -30,7 +30,13 @@
 #     --verify-cmd "cd /mnt/h/LM_Studio_Workdir/CleanCore && npx tsc --noEmit -p packages/x/tsconfig.test.json" \
 #     "write a vitest suite for ..."
 #
+# Coding-difficulty offload gate (card afcfe93e): pass --difficulty <trivial|isolated|module|
+# feature|architecture> to refuse offloading a task HARDER than the Local-LLM menu threshold
+# (dropdown, or derived from the aggressiveness slider). Omit it for the old ungated behaviour.
+#   local-llm-rag.sh --agent backend --difficulty module "refactor this multi-fn helper ..."
+#
 # Exit codes: 0 ok | 2 ollama down (via local-llm.sh) | 4 bad usage | 6 api/token error | 7 verify-fail
+#             | 8 difficulty-gated (task harder than the configured local-offload threshold)
 # No secrets embedded; the dashboard token is read at call time from store/.dashboard-token.
 set -euo pipefail
 
@@ -42,11 +48,14 @@ LLM="$HERE/local-llm.sh"
 AGENT="mikrob"; K=5; QUERY=""; CONTEXT=""; SHARED=1; SHOW_ONLY=0
 CALLER_OVR=""; SOURCE_OVR=""   # optional attribution overrides (e.g. UI probes)
 OUT=""; VERIFY_CMD=""; VERIFY_ITER=3   # local self-repair loop (auto-verify a file-shaped draft)
+DIFFICULTY=""    # optional: this coding task's difficulty level (trivial|isolated|module|feature|architecture);
+                 # if set, gate against the configured offload threshold before spending the local model
 PASS=()          # passthrough flags to local-llm.sh
 ARGS=()          # the task prompt
 while [[ $# -gt 0 ]]; do
   case "$1" in
     --agent)   AGENT="$2"; shift 2 ;;
+    --difficulty) DIFFICULTY="$2"; shift 2 ;;
     --k)       K="$2"; shift 2 ;;
     --query)   QUERY="$2"; shift 2 ;;
     --context) CONTEXT="$2"; shift 2 ;;
@@ -77,6 +86,48 @@ else
 fi
 [[ -z "${TASK// }" ]] && die 4 "empty task prompt"
 [[ -z "$QUERY" ]] && QUERY="$TASK"
+
+# --- coding-difficulty offload gate (card afcfe93e) ---------------------------------------------
+# If the caller declares this task's difficulty (--difficulty), refuse to spend the local model on
+# anything HARDER than the configured threshold. The threshold is the explicit dropdown choice
+# (codingDifficultyThreshold) or, if unset, derived from the aggressiveness slider -- mirroring
+# defaultDifficultyForAggressiveness() in src/web/routes/local-llm.ts (keep the two tables in sync).
+# No --difficulty => no gate (backward-compatible). Exit 8 = difficulty-gated (belongs online).
+if [[ -n "$DIFFICULTY" ]]; then
+  GATE="$(DIFFICULTY="$DIFFICULTY" CFG="$HERE/local-llm-offload-active.json" python3 - <<'PY'
+import json, os, sys
+LEVELS = ['trivial', 'isolated', 'module', 'feature', 'architecture']
+def default_for(a):
+    try: a = int(round(float(a)))
+    except Exception: a = 75
+    a = max(0, min(100, a))
+    if a >= 100: return 'architecture'
+    if a >= 95:  return 'feature'
+    if a >= 85:  return 'module'
+    if a >= 75:  return 'isolated'
+    return 'trivial'
+task = (os.environ.get('DIFFICULTY') or '').strip().lower()
+if task not in LEVELS:
+    print('BAD\t' + '|'.join(LEVELS)); sys.exit(0)
+cfg = {}
+try:
+    with open(os.environ['CFG']) as f: cfg = json.load(f)
+except Exception: cfg = {}
+thr = cfg.get('codingDifficultyThreshold')
+if thr not in LEVELS:
+    thr = default_for(cfg.get('aggressiveness', 75))
+allowed = LEVELS.index(task) <= LEVELS.index(thr)
+print(('OK' if allowed else 'DENY') + '\t' + thr)
+PY
+)"
+  verdict="${GATE%%$'\t'*}"; info="${GATE#*$'\t'}"
+  case "$verdict" in
+    BAD)  die 4 "unknown --difficulty '$DIFFICULTY' (allowed: ${info//|/, })" ;;
+    DENY) die 8 "task difficulty '$DIFFICULTY' exceeds the configured local-offload threshold '$info' -> keep this one ONLINE (Claude). Raise the threshold in the Local-LLM menu to offload harder tasks." ;;
+    OK)   : ;;  # within threshold -> proceed
+    *)    die 4 "difficulty gate produced no verdict" ;;
+  esac
+fi
 
 [[ -f "$TOKEN_FILE" ]] || die 6 "no dashboard token at $TOKEN_FILE"
 TOKEN="$(cat "$TOKEN_FILE")"
