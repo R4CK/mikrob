@@ -29,6 +29,10 @@
 #   triage      email/message triage -> {"category","reason"} JSON
 #   msg-triage  inter-agent message triage -> {"category","urgency","suggested_action"} JSON
 #   card-decompose  task -> {"phase","tasks":[{"task","subtasks":[...]}]} work-breakdown JSON
+#   daily-log       events/notes -> a concise HU daily-log entry (MikroB voice)
+#   morning-brief   email/calendar/news -> a scannable HU morning brief
+#   board-reconcile card list -> terse HU board-reconcile summary + next actions
+#   tg-draft        a point -> a non-critical HU Telegram message draft (MikroB voice, no auto-send)
 # These offload work that today burns online Claude tokens; drafts are draft-only
 # (label local-llm-draft) and re-checked by MikroB + gate before shipping.
 #
