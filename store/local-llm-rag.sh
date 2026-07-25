@@ -18,6 +18,18 @@
 #   local-llm-rag.sh --show-context "..."     # print the assembled context, don't call the model
 # Passthrough to local-llm.sh: --task <name>, --system <prompt>, --model <name>.
 #
+# PRESETS (--task <name>; template lives in store/local-llm-skills/<name>.txt):
+#   code        code snippet from an exact spec (RAG + self-repair verify-loop)
+#   commit-msg  git diff / change summary -> one Conventional Commits message
+#   pr-body     commits or diff -> PR description (Summary / Changes / Test plan)
+#   changelog   change summary -> Keep-a-Changelog entries (Added/Changed/Fixed/...)
+#   summarize   1-3 sentence factual summary
+#   rewrite     clear, concise copy-edit
+#   classify    general classifier -> {"label","confidence","reason"} JSON
+#   triage      email/message triage -> {"category","reason"} JSON
+# These offload work that today burns online Claude tokens; drafts are draft-only
+# (label local-llm-draft) and re-checked by MikroB + gate before shipping.
+#
 # Retrieval query defaults to the task text; override with --query for a focused
 # retrieval. Memory scope defaults to agent=mikrob; set --agent to the caller.
 #
@@ -69,7 +81,7 @@ while [[ $# -gt 0 ]]; do
     --out)     OUT="$2"; shift 2 ;;
     --verify-cmd) VERIFY_CMD="$2"; shift 2 ;;
     --verify-iter) VERIFY_ITER="$2"; shift 2 ;;
-    -h|--help) sed -n '2,30p' "${BASH_SOURCE[0]}" | sed 's/^# \{0,1\}//'; exit 0 ;;
+    -h|--help) awk 'NR==1{next} /^#/{sub(/^# ?/,"");print;next} {exit}' "${BASH_SOURCE[0]}"; exit 0 ;;
     --) shift; while [[ $# -gt 0 ]]; do ARGS+=("$1"); shift; done ;;
     *) ARGS+=("$1"); shift ;;
   esac
