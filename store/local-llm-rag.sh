@@ -27,6 +27,8 @@
 #   rewrite     clear, concise copy-edit
 #   classify    general classifier -> {"label","confidence","reason"} JSON
 #   triage      email/message triage -> {"category","reason"} JSON
+#   msg-triage  inter-agent message triage -> {"category","urgency","suggested_action"} JSON
+#   card-decompose  task -> {"phase","tasks":[{"task","subtasks":[...]}]} work-breakdown JSON
 # These offload work that today burns online Claude tokens; drafts are draft-only
 # (label local-llm-draft) and re-checked by MikroB + gate before shipping.
 #
