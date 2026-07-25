@@ -11810,10 +11810,19 @@ function updatesRepoBlockHtml(repo) {
       summaryHtml = `<strong>${t('updates.behind', { n: repo.behind })}</strong> ${t('updates.available_on', { remote: `<code>${remote}</code>` })}`
     }
   }
+  const installBtnHtml = (repo.behind && !repo.error)
+    ? `<div class="updates-install-wrap">
+        <button class="btn-primary btn-compact updates-install-btn" id="updates-install-btn-${repo.key}" data-repo="${escapeHtmlUpdates(repo.key)}">
+          <span class="btn-text">${escapeHtmlUpdates(t('updates.btn.install_repo'))}</span>
+          <span class="btn-loading" hidden>${escapeHtmlUpdates(t('updates.checking'))}</span>
+        </button>
+      </div>`
+    : ''
   return `
       <section class="updates-repo-block">
         <h3 class="updates-repo-label">${label} <span class="updates-repo-remote">(${remote})</span></h3>
         <div class="${summaryClass}">${summaryHtml}</div>
+        ${installBtnHtml}
         <div class="updates-commit-list">${updatesChangesHtml(repo)}</div>
       </section>`
 }
@@ -11833,9 +11842,11 @@ async function loadUpdates() {
       ? data.repos
       : [{ ...data, key: 'mikrob', label: 'MikroB' }]
     container.innerHTML = repos.map(updatesRepoBlockHtml).join('')
-    // The Update action targets OUR fork only; its visibility follows the flat
-    // top-level (mikrob) behind count.
-    applyBtn.hidden = !!data.error || !data.behind
+    // Per-repo install buttons replace the single global apply button.
+    applyBtn.hidden = true
+    document.querySelectorAll('.updates-install-btn').forEach((btn) => {
+      btn.addEventListener('click', () => handleRepoInstallClick(btn))
+    })
   } catch (err) {
     container.innerHTML = `<div class="updates-summary error">${escapeHtmlUpdates('Hiba: ' + (err.message || err))}</div>`
     applyBtn.hidden = true
@@ -11983,6 +11994,96 @@ document.getElementById('updatesApplyBtn').addEventListener('click', async () =>
   if (!confirm(t('updates.confirm.apply'))) return
   await runUpdate(false)
 })
+
+async function handleRepoInstallClick(btn) {
+  const repoKey = btn.dataset.repo
+  const confirmKey = repoKey === 'upstream'
+    ? 'updates.confirm.install_upstream'
+    : 'updates.confirm.install_fork'
+  if (!confirm(t(confirmKey))) return
+  await runRepoInstall(repoKey, btn)
+}
+
+async function runRepoInstall(repoKey, btn) {
+  const textSpan = btn.querySelector('.btn-text')
+  const loadSpan = btn.querySelector('.btn-loading')
+  btn.disabled = true
+  if (textSpan) textSpan.hidden = true
+  if (loadSpan) loadSpan.hidden = false
+  const resetBtn = () => {
+    btn.disabled = false
+    if (textSpan) textSpan.hidden = false
+    if (loadSpan) loadSpan.hidden = true
+  }
+  try {
+    const res = await fetch('/api/updates/apply', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ repo: repoKey }),
+    })
+    const data = await res.json().catch(() => ({}))
+    if (!res.ok) {
+      resetBtn()
+      if (data.reason === 'dirty-tree' && repoKey !== 'upstream') {
+        if (confirm(t('updates.confirm.stash'))) {
+          // Retry with autoStash for fork
+          await runRepoInstallWithStash(repoKey, btn)
+        }
+        return
+      }
+      if (data.reason === 'merge-conflict') {
+        showToast(t('updates.toast.upstream_conflict', { msg: data.error || '' }))
+        return
+      }
+      showToast(t('updates.toast.not_started', { msg: data.error || ('HTTP ' + res.status) }))
+      return
+    }
+    if (repoKey === 'upstream') {
+      resetBtn()
+      showToast(t('updates.toast.upstream_success'))
+      // Reload the updates view so the new commit counts are fresh.
+      await loadUpdates()
+    } else {
+      // Fork update: same poll flow as runUpdate (service restarts)
+      showToast(t('updates.toast.applying'))
+      await pollUpdateOutcome(resetBtn)
+    }
+  } catch (err) {
+    resetBtn()
+    showToast(t('updates.toast.error', { msg: err.message || err }))
+  }
+}
+
+async function runRepoInstallWithStash(repoKey, btn) {
+  const textSpan = btn.querySelector('.btn-text')
+  const loadSpan = btn.querySelector('.btn-loading')
+  btn.disabled = true
+  if (textSpan) textSpan.hidden = true
+  if (loadSpan) loadSpan.hidden = false
+  const resetBtn = () => {
+    btn.disabled = false
+    if (textSpan) textSpan.hidden = false
+    if (loadSpan) loadSpan.hidden = true
+  }
+  try {
+    const res = await fetch('/api/updates/apply', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ repo: repoKey, autoStash: true }),
+    })
+    const data = await res.json().catch(() => ({}))
+    if (!res.ok) {
+      resetBtn()
+      showToast(t('updates.toast.not_started', { msg: data.error || ('HTTP ' + res.status) }))
+      return
+    }
+    showToast(t('updates.toast.applying'))
+    await pollUpdateOutcome(resetBtn)
+  } catch (err) {
+    resetBtn()
+    showToast(t('updates.toast.error', { msg: err.message || err }))
+  }
+}
 
 // Poll the badge on startup and every 5 min so the nav link reflects
 // the cached status even on tabs other than the Updates page.

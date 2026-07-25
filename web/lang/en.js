@@ -1603,6 +1603,14 @@ window._i18n.en = {
   'connectors.builtin.computer_use_html': '<p>Computer Use is a native Claude capability managed by the Claude Code CLI / Claude app itself, not by {brand}. It does not appear in <code>claude mcp list</code> output, so the dashboard cannot auto-detect it.</p><p><strong>Enable:</strong> the exact steps depend on your Claude version and may change between releases. Follow the official Anthropic documentation and Claude Code changelog. Find your main session tmux name on the Agents page and attach with <code>tmux attach</code>.</p><p style="color:var(--text-muted)">This capability grants the agent control over your screen and keyboard, so only use it in a trusted environment.</p>',
   'connectors.builtin.chrome_html': '<p>Claude in Chrome is a launch-time flag for the Claude Code CLI, not a toggleable MCP server. It therefore does not appear in <code>claude mcp list</code> output and the dashboard cannot auto-detect it.</p><p><strong>Enable:</strong> start Claude with the <code>--chrome</code> flag:</p><pre style="background:var(--bg-input);padding:8px 12px;border-radius:4px;font-size:12px;overflow-x:auto">claude --chrome</pre><p style="color:var(--text-muted)">Chrome integration enables browser automation. {brand} sub-agent launches do not currently pass this flag, so only the manually started main session can use it.</p>',
 
+  // --- Updates per-repo install buttons ---
+  'updates.btn.install_repo':          'Install update',
+  'updates.confirm.install_fork':      'Install MikroB fork update. Services will restart (~30 seconds). Continue?',
+  'updates.confirm.install_upstream':  'This merges upstream Marveen changes into the local branch. No service restart. Continue?',
+  'updates.toast.upstream_success':    'Upstream update merged.',
+  'updates.toast.upstream_conflict':   'Upstream merge conflict. Resolve manually: git merge upstream/main, fix conflicts, then git commit. {msg}',
+  'updates.toast.upstream_failed':     'Upstream merge failed: {msg}',
+
   // --- Updates toasts ---
   'updates.toast.not_started':   'Update not started: {msg}',
   'updates.toast.started':       'Update started, dashboard reloading...',

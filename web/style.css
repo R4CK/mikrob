@@ -363,6 +363,7 @@ nav { display: flex; gap: 4px; }
 /* Two-repo update view: one block per checked repo (upstream Marveen + fork MikroB). */
 .updates-repo-block { margin: 20px 0; }
 .updates-repo-block + .updates-repo-block { padding-top: 12px; border-top: 1px solid var(--border); }
+.updates-install-wrap { margin: 10px 0 4px; }
 .updates-repo-label {
   font-size: 15px;
   font-weight: 700;

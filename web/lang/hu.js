@@ -1600,6 +1600,14 @@ window._i18n.hu = {
   'connectors.builtin.computer_use_html': '<p>A Computer Use egy natív Claude képesség, amit nem a {brand} kezel, hanem maga a Claude Code CLI / Claude alkalmazás. Nem jelenik meg a <code>claude mcp list</code> kimenetében, ezért a dashboard sem tudja automatikusan detektálni.</p><p><strong>Bekapcsolás:</strong> a pontos folyamat a Claude verziójától függ és változhat verziók között. Kövesd az Anthropic hivatalos dokumentációját és a Claude Code changelogot. A fő session tmux-nevét az "Ügynökök" oldalon találod -- oda <code>tmux attach</code>-al tudsz belépni manuálisan.</p><p style="color:var(--text-muted)">Ez a képesség engedélyt ad az ügynöknek a képernyő vezérlésére és kattintásra, ezért csak megbízható környezetben használd.</p>',
   'connectors.builtin.chrome_html': '<p>A Claude in Chrome egy indítás-idejű flag a Claude Code CLI-n, nem egy bekapcsolható MCP szerver. Ezért nem jelenik meg a <code>claude mcp list</code> kimenetében, és a dashboard sem tudja automatikusan detektálni.</p><p><strong>Bekapcsolás:</strong> indítsd a Claude-ot a <code>--chrome</code> flaggel:</p><pre style="background:var(--bg-input);padding:8px 12px;border-radius:4px;font-size:12px;overflow-x:auto">claude --chrome</pre><p style="color:var(--text-muted)">A Chrome integráció lehetővé teszi a böngészőautomatizálást. A {brand} sub-agentek indítása jelenleg nem adja át ezt a flaget, így csak a manuálisan indított fő session használhatja.</p>',
 
+  // --- Updates per-repo install buttons ---
+  'updates.btn.install_repo':          'Frissítés telepítése',
+  'updates.confirm.install_fork':      'A MikroB fork frissítése. A szolgáltatások újraindulnak (~30 másodperc). Folytatod?',
+  'updates.confirm.install_upstream':  'Az upstream Marveen változásait beolvasztja a lokális branchbe. Nem indítja újra a szolgáltatásokat. Folytatod?',
+  'updates.toast.upstream_success':    'Upstream frissítés beolvasztva.',
+  'updates.toast.upstream_conflict':   'Upstream merge ütközés. Oldj fel kézzel: git merge upstream/main, javítsd az ütközéseket, majd git commit. {msg}',
+  'updates.toast.upstream_failed':     'Upstream merge nem sikerült: {msg}',
+
   // --- Updates toasts ---
   'updates.toast.not_started':   'Frissítés nem indult: {msg}',
   'updates.toast.started':       'Frissítés elindult, a dashboard újratöltődik...',

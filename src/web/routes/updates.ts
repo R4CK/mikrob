@@ -117,19 +117,25 @@ export async function tryHandleUpdates(ctx: RouteContext): Promise<boolean> {
   }
 
   if (path === '/api/updates/apply' && method === 'POST') {
-    // Optional body { autoStash: true } turns the dirty-tree precheck
-    // failure into a managed stash + pop pattern inside update.sh.
-    // Without it, a dirty working tree returns 409 'dirty-tree' as before.
+    // Optional body { autoStash: true, repo: 'fork' | 'upstream' }.
+    // repo defaults to 'fork' (existing behavior). 'upstream' runs a
+    // synchronous git fetch+merge without restarting services.
     let autoStash = false
+    let repo: 'fork' | 'upstream' = 'fork'
     try {
       const buf = await readBody(ctx.req)
       if (buf.length > 0) {
-        const parsed = JSON.parse(buf.toString()) as { autoStash?: unknown }
+        const parsed = JSON.parse(buf.toString()) as { autoStash?: unknown; repo?: unknown }
         autoStash = parsed.autoStash === true
+        if (parsed.repo === 'upstream') {
+          repo = 'upstream'
+        } else if (parsed.repo !== undefined && parsed.repo !== 'fork') {
+          json(res, { error: 'Invalid repo. Must be "fork" or "upstream".', reason: 'invalid-repo' }, 400)
+          return true
+        }
       }
     } catch {
-      // Empty/invalid body: treat as autoStash=false. Real validation lives
-      // at update.sh's own dirty-tree check; this is just a hint.
+      // Empty/invalid body: treat as defaults.
     }
     const pf: PidfileRunner = {
       readPidfile: () => {
@@ -249,6 +255,41 @@ export async function tryHandleUpdates(ctx: RouteContext): Promise<boolean> {
         return true
       }
     }
+    // Upstream merge: synchronous fetch+merge, no service restart.
+    if (repo === 'upstream') {
+      try {
+        execFileSync('/usr/bin/git', ['fetch', 'upstream'], { cwd: PROJECT_ROOT, timeout: 15_000 })
+        execFileSync(
+          '/usr/bin/git',
+          ['merge', 'upstream/main', '--no-edit'],
+          { cwd: PROJECT_ROOT, timeout: 20_000 },
+        )
+        releaseLock()
+        logger.info('upstream merge completed successfully')
+        json(res, { ok: true })
+      } catch (err) {
+        // Abort any in-progress merge so the tree is clean again.
+        try {
+          execFileSync('/usr/bin/git', ['merge', '--abort'], { cwd: PROJECT_ROOT, timeout: 5_000 })
+        } catch { /* merge --abort fails if no merge in progress; ignore */ }
+        releaseLock()
+        const msg = err instanceof Error ? err.message : String(err)
+        logger.warn({ err }, 'upstream merge failed')
+        // Merge conflict returns exit code 1. Other errors (network, remote
+        // missing) surface the raw message as a general failure.
+        const isConflict = msg.includes('CONFLICT') || msg.includes('Automatic merge failed')
+        if (isConflict) {
+          json(res, {
+            error: 'Upstream merge conflict. Resolve manually: git merge upstream/main, fix conflicts, then git commit.',
+            reason: 'merge-conflict',
+          }, 409)
+        } else {
+          json(res, { error: msg, reason: 'upstream-merge-failed' }, 500)
+        }
+      }
+      return true
+    }
+
     try {
       // Verify store/ is writable BEFORE spawning update.sh. If update.log
       // cannot be opened, the script would die at its own exit-4 with the log
