@@ -11564,8 +11564,7 @@ async function loadOverview() {
     const d = await res.json()
     // Upstream-update banner (card 3c09ba6b / FÁZIS3): shown when our fork is behind the
     // upstream base. The action navigates to the existing Frissítések (updates) page.
-    // Weekly-limit quota gauge (card 8388642a): wire once + (re)load its data.
-    wireWeeklyGauge()
+    // Claude usage info widget (card a91c6039 redesign): load auto-sourced data.
     void loadWeeklyGauge()
     const banner = document.getElementById('updateBanner')
     if (banner) {
@@ -11625,88 +11624,74 @@ async function loadOverview() {
   }
 }
 
-// Weekly-limit quota gauge (card 8388642a / FÁZIS2). MANUAL snapshot (no reliable auto-read):
-// reads /api/costs/weekly, renders a conic-gradient ring colored by threshold, and offers an
-// inline form to record the operator's weekly % (POST). States: data / needs-input / error.
+// Claude Usage Info widget (card a91c6039 redesign). Read-only: renders 3 usage bars
+// (weekly-all / session / fable) + optional promo from /api/costs/weekly. No manual input.
+// Threshold colors: <90% = success (green), 90-95% = accent (amber), >=95% = danger (red).
 async function loadWeeklyGauge() {
   const card = document.getElementById('quotaGaugeCard')
   if (!card) return
-  const ring = document.getElementById('quotaGaugeRing')
-  const valueEl = document.getElementById('quotaGaugeValue')
-  const subEl = document.getElementById('quotaGaugeSub')
   const emptyEl = document.getElementById('quotaGaugeEmpty')
-  const editBtn = document.getElementById('quotaGaugeEdit')
+  const errEl = document.getElementById('usageInfoError')
+  const sourceEl = document.getElementById('usageInfoSource')
+
+  function barColor(pct) {
+    return pct >= 95 ? 'var(--danger)' : pct >= 90 ? 'var(--accent)' : 'var(--success)'
+  }
+
+  function renderBar(rowId, fillId, pctId, resetId, metric) {
+    const row = document.getElementById(rowId)
+    if (!row) return
+    if (!metric || typeof metric.pct !== 'number') { row.hidden = true; return }
+    const pct = Math.max(0, Math.min(100, metric.pct))
+    const fill = document.getElementById(fillId)
+    const pctEl = document.getElementById(pctId)
+    const resetEl = document.getElementById(resetId)
+    if (fill) { fill.style.width = pct + '%'; fill.style.background = barColor(pct) }
+    if (pctEl) pctEl.textContent = pct + '%'
+    if (resetEl) resetEl.textContent = metric.resetAt ? t('overview.quota.resets', { at: metric.resetAt }) : ''
+    row.hidden = false
+  }
+
   try {
     const res = await fetch('/api/costs/weekly')
     if (!res.ok) throw new Error('HTTP ' + res.status)
     const d = await res.json()
-    if (d.available && typeof d.pct === 'number') {
-      const pct = Math.max(0, Math.min(100, d.pct))
-      // Threshold colors mirror the fleet weekly-limit rule (90/95 bands).
-      const color = pct >= 95 ? 'var(--danger)' : pct >= 90 ? 'var(--accent)' : 'var(--success)'
-      ring.style.setProperty('--gauge-pct', String(pct))
-      ring.style.setProperty('--gauge-color', color)
-      valueEl.textContent = pct + '%'
-      ring.setAttribute('aria-label', t('overview.quota.title') + ' ' + pct + '%')
-      const bits = []
-      if (d.resetAt) bits.push(t('overview.quota.resets', { at: d.resetAt }))
-      if (d.setAt) bits.push(t('overview.quota.updated', { rel: formatRelative(d.setAt * 1000) }))
-      subEl.textContent = bits.join(' · ')
-      if (emptyEl) emptyEl.hidden = true
-    } else {
-      ring.style.setProperty('--gauge-pct', '0')
-      ring.style.setProperty('--gauge-color', 'var(--text-muted)')
-      valueEl.textContent = '—'
-      subEl.textContent = ''
-      if (emptyEl) emptyEl.hidden = false
-    }
-    if (editBtn) editBtn.hidden = false
-  } catch (err) {
-    valueEl.textContent = '—'
-    subEl.textContent = t('overview.quota.error')
     if (emptyEl) emptyEl.hidden = true
-    if (editBtn) editBtn.hidden = false
-  }
-}
+    if (errEl) errEl.hidden = true
 
-let weeklyGaugeWired = false
-function wireWeeklyGauge() {
-  if (weeklyGaugeWired) return
-  const form = document.getElementById('quotaGaugeForm')
-  const editBtn = document.getElementById('quotaGaugeEdit')
-  const cancelBtn = document.getElementById('quotaGaugeCancel')
-  const errEl = document.getElementById('quotaGaugeError')
-  if (!form || !editBtn) return
-  weeklyGaugeWired = true
-  const showForm = (show) => {
-    form.hidden = !show
-    editBtn.hidden = show
-    if (errEl) errEl.hidden = true
-  }
-  editBtn.addEventListener('click', () => { showForm(true); document.getElementById('quotaGaugePct').focus() })
-  if (cancelBtn) cancelBtn.addEventListener('click', () => showForm(false))
-  form.addEventListener('submit', async (e) => {
-    e.preventDefault()
-    if (errEl) errEl.hidden = true
-    const pct = Number(document.getElementById('quotaGaugePct').value)
-    const resetAt = document.getElementById('quotaGaugeReset').value
-    try {
-      const res = await fetch('/api/costs/weekly', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ pct, resetAt }),
-      })
-      const d = await res.json().catch(() => ({}))
-      if (!res.ok) {
-        if (errEl) { errEl.textContent = d.error || t('overview.quota.saveError'); errEl.hidden = false }
-        return
+    if (d.available && typeof d.pct === 'number') {
+      // Weekly All-models row (always shown when data is present)
+      renderBar('usageRowWeekly', 'usageBarFillWeekly', 'usageBarPctWeekly', 'usageResetWeekly',
+        { pct: d.pct, resetAt: d.resetAt })
+
+      // Session row (shown when snapshot includes session metric)
+      renderBar('usageRowSession', 'usageBarFillSession', 'usageBarPctSession', 'usageResetSession', d.session)
+
+      // Fable row (shown when snapshot includes fable metric)
+      renderBar('usageRowFable', 'usageBarFillFable', 'usageBarPctFable', 'usageResetFable', d.fable)
+
+      // Promo badge
+      const promoEl = document.getElementById('usageInfoPromo')
+      if (promoEl) { promoEl.textContent = d.promo || ''; promoEl.hidden = !d.promo }
+
+      // Source badge (panel / oauth / manual)
+      if (sourceEl && d.source) {
+        const labels = { panel: t('overview.quota.source.panel'), oauth: t('overview.quota.source.oauth'), manual: t('overview.quota.source.manual') }
+        sourceEl.textContent = labels[d.source] || d.source
+        sourceEl.hidden = false
       }
-      showForm(false)
-      await loadWeeklyGauge()
-    } catch (err) {
-      if (errEl) { errEl.textContent = t('overview.quota.saveError'); errEl.hidden = false }
+    } else {
+      // No snapshot recorded yet
+      const weeklyRow = document.getElementById('usageRowWeekly')
+      if (weeklyRow) weeklyRow.hidden = true
+      if (emptyEl) emptyEl.hidden = false
+      if (sourceEl) sourceEl.hidden = true
     }
-  })
+  } catch (err) {
+    if (errEl) { errEl.textContent = t('overview.quota.error'); errEl.hidden = false }
+    if (emptyEl) emptyEl.hidden = true
+    if (sourceEl) sourceEl.hidden = true
+  }
 }
 
 // Brand mark + product-brand chrome: pull the configured brand from

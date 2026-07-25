@@ -199,36 +199,41 @@
         <span class="update-banner-text" id="updateBannerText"></span>
         <a class="update-banner-action" id="updateBannerAction" href="#" data-i18n="overview.updateBanner.action">Frissítések megnyitása</a>
       </div>
-      <!-- Weekly-limit quota gauge (card 8388642a / FÁZIS2): the Claude Max/Pro weekly 'All models'
-           usage %. MANUAL snapshot (no reliable auto-read). Populated by loadWeeklyGauge() from
-           /api/costs/weekly. States: data / needs-input / error. -->
-      <div class="quota-gauge-card" id="quotaGaugeCard">
-        <div class="quota-gauge-ring" id="quotaGaugeRing" role="img" aria-label="Heti limit">
-          <div class="quota-gauge-value" id="quotaGaugeValue">—</div>
+      <!-- Claude Usage Info widget (card a91c6039 redesign): 3 usage bars (weekly-all / session /
+           fable) + optional promo. No manual input. Populated from /api/costs/weekly by
+           loadWeeklyGauge(). States: data / empty (no snapshot) / error. -->
+      <div class="usage-info-card" id="quotaGaugeCard">
+        <div class="usage-info-head">
+          <span class="usage-info-title" data-i18n="overview.quota.title">Claude Limit</span>
+          <span class="usage-info-source" id="usageInfoSource" hidden></span>
         </div>
-        <div class="quota-gauge-body">
-          <div class="quota-gauge-title" data-i18n="overview.quota.title">Heti Claude limit</div>
-          <div class="quota-gauge-sub" id="quotaGaugeSub"></div>
-          <div class="quota-gauge-empty" id="quotaGaugeEmpty" hidden>
-            <p class="quota-gauge-hint" data-i18n="overview.quota.empty">Nincs rögzített heti %. Add meg a Claude usage-képernyőn látható heti értéket (All models).</p>
+        <div class="usage-info-row" id="usageRowWeekly">
+          <span class="usage-info-label" data-i18n="overview.quota.row.weekly">Heti (All)</span>
+          <div class="usage-bar-wrap">
+            <div class="usage-bar"><div class="usage-bar-fill" id="usageBarFillWeekly"></div></div>
           </div>
-          <form class="quota-gauge-form" id="quotaGaugeForm" hidden>
-            <label class="quota-gauge-field">
-              <span data-i18n="overview.quota.pctLabel">Heti % (0–100)</span>
-              <input type="number" id="quotaGaugePct" min="0" max="100" step="0.1" inputmode="decimal" />
-            </label>
-            <label class="quota-gauge-field">
-              <span data-i18n="overview.quota.resetLabel">Reset (opcionális)</span>
-              <input type="text" id="quotaGaugeReset" placeholder="Thu 3:59 PM" />
-            </label>
-            <div class="quota-gauge-actions">
-              <button type="submit" class="quota-gauge-save" data-i18n="overview.quota.save">Mentés</button>
-              <button type="button" class="quota-gauge-cancel" id="quotaGaugeCancel" data-i18n="common.cancel">Mégse</button>
-            </div>
-            <p class="quota-gauge-error" id="quotaGaugeError" role="alert" hidden></p>
-          </form>
-          <button type="button" class="quota-gauge-edit" id="quotaGaugeEdit" data-i18n="overview.quota.edit">% frissítése</button>
+          <span class="usage-bar-pct" id="usageBarPctWeekly">—</span>
+          <span class="usage-info-reset" id="usageResetWeekly"></span>
         </div>
+        <div class="usage-info-row" id="usageRowSession" hidden>
+          <span class="usage-info-label" data-i18n="overview.quota.row.session">Session</span>
+          <div class="usage-bar-wrap">
+            <div class="usage-bar"><div class="usage-bar-fill" id="usageBarFillSession"></div></div>
+          </div>
+          <span class="usage-bar-pct" id="usageBarPctSession">—</span>
+          <span class="usage-info-reset" id="usageResetSession"></span>
+        </div>
+        <div class="usage-info-row" id="usageRowFable" hidden>
+          <span class="usage-info-label" data-i18n="overview.quota.row.fable">Fable</span>
+          <div class="usage-bar-wrap">
+            <div class="usage-bar"><div class="usage-bar-fill" id="usageBarFillFable"></div></div>
+          </div>
+          <span class="usage-bar-pct" id="usageBarPctFable">—</span>
+          <span class="usage-info-reset" id="usageResetFable"></span>
+        </div>
+        <div class="usage-info-promo" id="usageInfoPromo" hidden></div>
+        <p class="usage-info-empty" id="quotaGaugeEmpty" hidden data-i18n="overview.quota.auto_empty">Nincs adat — a panel olvasó automatikusan frissíti.</p>
+        <p class="usage-info-error" id="usageInfoError" hidden role="alert"></p>
       </div>
       <div class="overview-stats">
         <div class="overview-stat">
