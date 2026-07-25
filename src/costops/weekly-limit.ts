@@ -7,6 +7,15 @@
 // records it here (value + the reset time shown there). No fantasy auto-read. If no
 // snapshot exists, the reader returns null and the API surfaces a DESCRIPTIVE,
 // actionable message (rule 12) instead of a fake number.
+//
+// RE-VERIFIED FRESH 2026-07-25 (card c9ce4254, Peti asked to automate this): a live
+// probe of the account OAuth endpoints with the fleet token (sk-ant-oat0..., from
+// marveen/.env) still fails on scope -- GET /api/oauth/profile -> HTTP 403
+// "OAuth token does not meet scope requirement any_of(user:profile, user:office)".
+// So the manual snapshot remains authoritative. The re-runnable probe + forward-
+// compatible auto-reader lives in store/weekly-usage-probe.sh: if Peti ever re-issues
+// the token WITH an account scope, that script writes this snapshot with source='oauth'
+// (hence the widened source union below) and can be cron'd -- no code change needed.
 
 import { existsSync, readFileSync } from 'node:fs'
 import { join } from 'node:path'
@@ -20,8 +29,11 @@ export interface WeeklyLimitSnapshot {
   readonly pct: number
   /** Unix seconds when the snapshot was recorded. */
   readonly setAt: number
-  /** Only 'manual' for now -- programmatic weekly-% is unavailable (see header). */
-  readonly source: 'manual'
+  /** How the snapshot was obtained: `manual` (operator entry, the only working path
+   *  today) or `oauth` (auto-written by store/weekly-usage-probe.sh IF the token is ever
+   *  re-scoped -- see header). The reader passes the stored value through so an auto-read
+   *  is never mislabelled as manual. */
+  readonly source: 'manual' | 'oauth'
   /** The weekly reset time as shown on the usage screen (e.g. 'Thu 3:59 PM'), or null. */
   readonly resetAt: string | null
   /** Optional operator note. */
@@ -49,7 +61,9 @@ export function readWeeklySnapshot(path: string = SNAPSHOT_PATH): WeeklyLimitSna
     return {
       pct: Math.max(0, Math.min(100, pct)),
       setAt: Number(s['setAt']) || 0,
-      source: 'manual',
+      // Pass the stored source through (an oauth auto-read must not read back as manual);
+      // any unknown/absent value falls back to the safe 'manual' default.
+      source: s['source'] === 'oauth' ? 'oauth' : 'manual',
       resetAt: typeof s['resetAt'] === 'string' ? (s['resetAt'] as string) : null,
       note: typeof s['note'] === 'string' ? (s['note'] as string) : null,
     }
