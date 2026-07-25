@@ -553,7 +553,7 @@ window._i18n.en = {
   'localLlm.offload.difficulty.level.architecture': 'architecture',
   'localLlm.offload.difficulty.hint_explicit': 'Local offload up to: {level} (fixed choice).',
   'localLlm.offload.difficulty.hint_auto': 'Local offload up to: {level} (derived from the slider).',
-  'localLlm.offload.difficulty.beyond_reliable': 'Beyond the local 7B model’s reliable limit — expect more discarded drafts.',
+  'localLlm.offload.difficulty.online_only': 'Feature (multi-file) and architecture / wiring always stay online (Claude) — the local 7B can’t do those reliably.',
   'localLlm.offload.difficulty.saved': 'Saved: up to {level}',
   'localLlm.status.title':       'Status',
   'localLlm.status.ollama':      'Ollama',

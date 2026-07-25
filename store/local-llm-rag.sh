@@ -97,15 +97,16 @@ if [[ -n "$DIFFICULTY" ]]; then
   GATE="$(DIFFICULTY="$DIFFICULTY" CFG="$HERE/local-llm-offload-active.json" python3 - <<'PY'
 import json, os, sys
 LEVELS = ['trivial', 'isolated', 'module', 'feature', 'architecture']
+CEILING = 'module'  # offload ceiling: feature/architecture never offload (mirror local-llm.ts)
 def default_for(a):
     try: a = int(round(float(a)))
     except Exception: a = 75
     a = max(0, min(100, a))
-    if a >= 100: return 'architecture'
-    if a >= 95:  return 'feature'
-    if a >= 85:  return 'module'
-    if a >= 75:  return 'isolated'
+    if a >= 85: return 'module'   # capped at the reliable ceiling, even at 100%
+    if a >= 75: return 'isolated'
     return 'trivial'
+def clamp(level):  # a stored threshold above the ceiling clamps down
+    return CEILING if LEVELS.index(level) > LEVELS.index(CEILING) else level
 task = (os.environ.get('DIFFICULTY') or '').strip().lower()
 if task not in LEVELS:
     print('BAD\t' + '|'.join(LEVELS)); sys.exit(0)
@@ -114,8 +115,7 @@ try:
     with open(os.environ['CFG']) as f: cfg = json.load(f)
 except Exception: cfg = {}
 thr = cfg.get('codingDifficultyThreshold')
-if thr not in LEVELS:
-    thr = default_for(cfg.get('aggressiveness', 75))
+thr = clamp(thr) if thr in LEVELS else default_for(cfg.get('aggressiveness', 75))
 allowed = LEVELS.index(task) <= LEVELS.index(thr)
 print(('OK' if allowed else 'DENY') + '\t' + thr)
 PY
@@ -123,7 +123,13 @@ PY
   verdict="${GATE%%$'\t'*}"; info="${GATE#*$'\t'}"
   case "$verdict" in
     BAD)  die 4 "unknown --difficulty '$DIFFICULTY' (allowed: ${info//|/, })" ;;
-    DENY) die 8 "task difficulty '$DIFFICULTY' exceeds the configured local-offload threshold '$info' -> keep this one ONLINE (Claude). Raise the threshold in the Local-LLM menu to offload harder tasks." ;;
+    DENY)
+      case "$DIFFICULTY" in
+        feature|architecture)
+          die 8 "task difficulty '$DIFFICULTY' is beyond the local 7B's reliable limit (offload ceiling is 'module') -> it ALWAYS stays ONLINE (Claude)." ;;
+        *)
+          die 8 "task difficulty '$DIFFICULTY' exceeds the configured local-offload threshold '$info' -> keep this one ONLINE (Claude), or raise the threshold in the Local-LLM menu." ;;
+      esac ;;
     OK)   : ;;  # within threshold -> proceed
     *)    die 4 "difficulty gate produced no verdict" ;;
   esac

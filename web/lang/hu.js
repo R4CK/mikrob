@@ -767,7 +767,7 @@ window._i18n.hu = {
   'localLlm.offload.difficulty.level.architecture': 'architektúra',
   'localLlm.offload.difficulty.hint_explicit': 'Helyi offload eddig: {level} (rögzített választás).',
   'localLlm.offload.difficulty.hint_auto': 'Helyi offload eddig: {level} (a csúszkából származtatva).',
-  'localLlm.offload.difficulty.beyond_reliable': 'A helyi 7B modell megbízható határa felett — több eldobott draftra számíts.',
+  'localLlm.offload.difficulty.online_only': 'A feature (több-fájlos) és az architektúra / wiring mindig online (Claude) marad — ezeket a helyi 7B nem tudja megbízhatóan.',
   'localLlm.offload.difficulty.saved': 'Mentve: eddig {level}',
   'localLlm.status.title':       'Állapot',
   'localLlm.status.ollama':      'Ollama',

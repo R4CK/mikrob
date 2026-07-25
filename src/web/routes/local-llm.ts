@@ -68,26 +68,48 @@ export const CODING_DIFFICULTY_LEVELS = [
 ] as const
 export type CodingDifficulty = (typeof CODING_DIFFICULTY_LEVELS)[number]
 
-/** Highest difficulty the local 7B handles RELIABLY; above this is draft-with-higher-discard. */
+/** The OFFLOAD CEILING: even at 100% aggressiveness we never hand the local 7B more than it can
+ *  realistically do. Per the local-llm-offload skill the 7B cannot reliably do multi-file features
+ *  or cross-file wiring, so 'module' (multi-function, single file) is the hardest OFFLOADABLE level.
+ *  'feature' and 'architecture' remain in the taxonomy to CLASSIFY tasks, but they always stay
+ *  ONLINE (Claude) -- they are never valid offload thresholds. (Peti: "a 100% se engedjen többet
+ *  mint amit a modell reálisan tud.") */
 export const RELIABLE_CEILING: CodingDifficulty = 'module'
 
-/** Default max coding-difficulty for a given aggressiveness %. Higher % -> harder allowed + more
- *  task types. Pure + deterministic. The single source of truth for the slider<->dropdown mapping
+/** The difficulty levels that may be picked as an offload threshold (<= the reliable ceiling). */
+export const OFFLOADABLE_THRESHOLDS: readonly CodingDifficulty[] = CODING_DIFFICULTY_LEVELS.slice(
+  0,
+  CODING_DIFFICULTY_LEVELS.indexOf(RELIABLE_CEILING) + 1,
+)
+
+/** Default max offloadable coding-difficulty for a given aggressiveness %. Higher % -> more offload
+ *  + harder allowed, but CAPPED at the reliable ceiling ('module') so even 100% never offloads what
+ *  the 7B can't do. Pure + deterministic. Single source of truth for the slider<->dropdown mapping
  *  (local-llm-rag.sh mirrors this table -- keep them in sync). */
 export function defaultDifficultyForAggressiveness(pct: unknown): CodingDifficulty {
   const a = normalizeAggressiveness(pct)
-  if (a >= 100) return 'architecture'
-  if (a >= 95) return 'feature'
-  if (a >= 85) return 'module'
+  if (a >= 85) return 'module' // capped: feature/architecture never auto-offload
   if (a >= 75) return 'isolated'
   return 'trivial'
 }
 
-/** Validate a difficulty input to a known level; unknown/absent -> null (caller derives it). */
+/** Validate a difficulty input to a known taxonomy level; unknown/absent -> null. Used to classify a
+ *  TASK's difficulty (all 5 levels are valid tasks). */
 export function normalizeDifficulty(input: unknown): CodingDifficulty | null {
   return typeof input === 'string' && (CODING_DIFFICULTY_LEVELS as readonly string[]).includes(input)
     ? (input as CodingDifficulty)
     : null
+}
+
+/** Validate an offload THRESHOLD input, CLAMPED to the reliable ceiling. A request for a level above
+ *  the ceiling (feature/architecture) is clamped down to 'module' -- those never offload. Unknown/
+ *  absent -> null (caller derives the threshold from the slider). */
+export function normalizeThreshold(input: unknown): CodingDifficulty | null {
+  const d = normalizeDifficulty(input)
+  if (d === null) return null
+  return CODING_DIFFICULTY_LEVELS.indexOf(d) > CODING_DIFFICULTY_LEVELS.indexOf(RELIABLE_CEILING)
+    ? RELIABLE_CEILING
+    : d
 }
 
 /** Is a coding task of `taskLevel` allowed to draft locally under `threshold`? At-or-below = yes. */
@@ -464,7 +486,7 @@ export async function tryHandleLocalLlm(ctx: RouteContext): Promise<boolean> {
   if (path === '/api/local-llm/offload-config' && method === 'GET') {
     const cfg = readOffloadConfig()
     const aggressiveness = normalizeAggressiveness(cfg.aggressiveness)
-    const explicit = normalizeDifficulty(cfg.codingDifficultyThreshold)
+    const explicit = normalizeThreshold(cfg.codingDifficultyThreshold)
     const derived = defaultDifficultyForAggressiveness(aggressiveness)
     json(res, {
       active: cfg.active !== false, // default on unless explicitly disabled
@@ -475,6 +497,7 @@ export async function tryHandleLocalLlm(ctx: RouteContext): Promise<boolean> {
       codingDifficultyExplicit: explicit !== null,
       codingDifficultyDerived: derived,
       codingDifficultyLevels: CODING_DIFFICULTY_LEVELS,
+      offloadableThresholds: OFFLOADABLE_THRESHOLDS,
       reliableCeiling: RELIABLE_CEILING,
     })
     return true
@@ -513,20 +536,20 @@ export async function tryHandleLocalLlm(ctx: RouteContext): Promise<boolean> {
       if (raw === null || raw === 'auto' || raw === '') {
         delete cfg.codingDifficultyThreshold
         delete cfg.coding_difficulty_set_at
+      } else if (normalizeDifficulty(raw) === null) {
+        json(
+          res,
+          {
+            error: 'invalid_field',
+            message: `Érvénytelen nehézségi szint. Engedélyezett: ${OFFLOADABLE_THRESHOLDS.join(', ')} (vagy "auto").`,
+          },
+          400,
+        )
+        return true
       } else {
-        const diff = normalizeDifficulty(raw)
-        if (diff === null) {
-          json(
-            res,
-            {
-              error: 'invalid_field',
-              message: `Érvénytelen nehézségi szint. Engedélyezett: ${CODING_DIFFICULTY_LEVELS.join(', ')} (vagy "auto").`,
-            },
-            400,
-          )
-          return true
-        }
-        cfg.codingDifficultyThreshold = diff
+        // Clamp to the reliable ceiling: a request for feature/architecture is stored as 'module'
+        // (those never offload). normalizeThreshold(raw) is non-null here (raw is a known level).
+        cfg.codingDifficultyThreshold = normalizeThreshold(raw)
         cfg.coding_difficulty_set_at = new Date().toISOString()
       }
     }
@@ -538,7 +561,7 @@ export async function tryHandleLocalLlm(ctx: RouteContext): Promise<boolean> {
       return true
     }
     const aggressiveness = normalizeAggressiveness(cfg.aggressiveness)
-    const explicit = normalizeDifficulty(cfg.codingDifficultyThreshold)
+    const explicit = normalizeThreshold(cfg.codingDifficultyThreshold)
     const derived = defaultDifficultyForAggressiveness(aggressiveness)
     json(res, {
       aggressiveness,
@@ -547,6 +570,7 @@ export async function tryHandleLocalLlm(ctx: RouteContext): Promise<boolean> {
       codingDifficultyExplicit: explicit !== null,
       codingDifficultyDerived: derived,
       codingDifficultyLevels: CODING_DIFFICULTY_LEVELS,
+      offloadableThresholds: OFFLOADABLE_THRESHOLDS,
       reliableCeiling: RELIABLE_CEILING,
     })
     return true

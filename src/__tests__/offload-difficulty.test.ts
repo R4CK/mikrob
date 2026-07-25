@@ -2,8 +2,10 @@ import { describe, it, expect } from 'vitest'
 import {
   CODING_DIFFICULTY_LEVELS,
   RELIABLE_CEILING,
+  OFFLOADABLE_THRESHOLDS,
   defaultDifficultyForAggressiveness,
   normalizeDifficulty,
+  normalizeThreshold,
   isDraftableLocally,
 } from '../web/routes/local-llm.js'
 
@@ -13,24 +15,33 @@ describe('CODING_DIFFICULTY_LEVELS', () => {
   it('is the ordered coding-only taxonomy (ascending hardness)', () => {
     expect(CODING_DIFFICULTY_LEVELS).toEqual(['trivial', 'isolated', 'module', 'feature', 'architecture'])
   })
-  it("marks 'module' as the local 7B's reliable ceiling", () => {
+  it("marks 'module' as the reliable/offload ceiling; feature+architecture sit above it", () => {
     expect(RELIABLE_CEILING).toBe('module')
-    // feature/architecture sit ABOVE the reliable ceiling
     expect(CODING_DIFFICULTY_LEVELS.indexOf('feature')).toBeGreaterThan(CODING_DIFFICULTY_LEVELS.indexOf(RELIABLE_CEILING))
+    expect(CODING_DIFFICULTY_LEVELS.indexOf('architecture')).toBeGreaterThan(CODING_DIFFICULTY_LEVELS.indexOf(RELIABLE_CEILING))
+  })
+  it('offers only <=ceiling levels as offload thresholds (feature/architecture never offload)', () => {
+    expect(OFFLOADABLE_THRESHOLDS).toEqual(['trivial', 'isolated', 'module'])
+    expect(OFFLOADABLE_THRESHOLDS).not.toContain('feature')
+    expect(OFFLOADABLE_THRESHOLDS).not.toContain('architecture')
   })
 })
 
 describe('defaultDifficultyForAggressiveness', () => {
-  it('maps each aggressiveness band to the documented max difficulty', () => {
+  it('maps aggressiveness -> max difficulty, CAPPED at the reliable ceiling (Peti: 100% never exceeds it)', () => {
     expect(defaultDifficultyForAggressiveness(0)).toBe('trivial')
     expect(defaultDifficultyForAggressiveness(74)).toBe('trivial')
     expect(defaultDifficultyForAggressiveness(75)).toBe('isolated') // the marked optimum
     expect(defaultDifficultyForAggressiveness(84)).toBe('isolated')
     expect(defaultDifficultyForAggressiveness(85)).toBe('module')
-    expect(defaultDifficultyForAggressiveness(94)).toBe('module')
-    expect(defaultDifficultyForAggressiveness(95)).toBe('feature')
-    expect(defaultDifficultyForAggressiveness(99)).toBe('feature')
-    expect(defaultDifficultyForAggressiveness(100)).toBe('architecture')
+    expect(defaultDifficultyForAggressiveness(95)).toBe('module') // capped, not 'feature'
+    expect(defaultDifficultyForAggressiveness(100)).toBe('module') // capped, never 'architecture'
+  })
+  it('never returns a level above the reliable ceiling for any 0..100', () => {
+    const cap = CODING_DIFFICULTY_LEVELS.indexOf(RELIABLE_CEILING)
+    for (let a = 0; a <= 100; a++) {
+      expect(CODING_DIFFICULTY_LEVELS.indexOf(defaultDifficultyForAggressiveness(a))).toBeLessThanOrEqual(cap)
+    }
   })
   it('is monotonic non-decreasing across 0..100', () => {
     let prev = -1
@@ -42,9 +53,27 @@ describe('defaultDifficultyForAggressiveness', () => {
   })
   it('reuses normalizeAggressiveness (clamps/parses/defaults) for its input', () => {
     expect(defaultDifficultyForAggressiveness(-5)).toBe('trivial') // clamped to 0
-    expect(defaultDifficultyForAggressiveness(9999)).toBe('architecture') // clamped to 100
+    expect(defaultDifficultyForAggressiveness(9999)).toBe('module') // clamped to 100 -> capped module
     expect(defaultDifficultyForAggressiveness('85')).toBe('module') // numeric string
     expect(defaultDifficultyForAggressiveness('abc')).toBe('isolated') // non-numeric -> default 75 -> isolated
+  })
+})
+
+describe('normalizeThreshold (clamps to the reliable ceiling)', () => {
+  it('passes through an offloadable level unchanged', () => {
+    expect(normalizeThreshold('trivial')).toBe('trivial')
+    expect(normalizeThreshold('isolated')).toBe('isolated')
+    expect(normalizeThreshold('module')).toBe('module')
+  })
+  it('clamps a level above the ceiling down to module (never offloads feature/architecture)', () => {
+    expect(normalizeThreshold('feature')).toBe('module')
+    expect(normalizeThreshold('architecture')).toBe('module')
+  })
+  it('returns null for unknown/absent (caller derives from the slider)', () => {
+    expect(normalizeThreshold('auto')).toBeNull()
+    expect(normalizeThreshold('nope')).toBeNull()
+    expect(normalizeThreshold(null)).toBeNull()
+    expect(normalizeThreshold(undefined)).toBeNull()
   })
 })
 

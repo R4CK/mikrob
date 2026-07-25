@@ -9271,20 +9271,14 @@ function llmRenderDifficulty(d) {
   const sel = document.getElementById('llmOffloadDifficulty')
   const hint = document.getElementById('llmOffloadDifficultyHint')
   if (!sel || !d) return
-  const levels = Array.isArray(d.codingDifficultyLevels) ? d.codingDifficultyLevels : []
+  // The threshold is capped at the reliable ceiling (module), so it is always a selectable option.
   sel.value = d.codingDifficultyExplicit ? String(d.codingDifficultyThreshold) : 'auto'
   if (!hint) return
   const eff = String(d.codingDifficultyThreshold || '')
   const label = t('localLlm.offload.difficulty.level.' + eff) || eff
-  let msg = d.codingDifficultyExplicit
+  hint.textContent = d.codingDifficultyExplicit
     ? t('localLlm.offload.difficulty.hint_explicit', { level: label })
     : t('localLlm.offload.difficulty.hint_auto', { level: label })
-  // Caution when the effective level is past the local model's reliable ceiling.
-  const ceil = String(d.reliableCeiling || '')
-  if (levels.length && ceil && levels.indexOf(eff) > levels.indexOf(ceil)) {
-    msg += ' ' + t('localLlm.offload.difficulty.beyond_reliable')
-  }
-  hint.textContent = msg
 }
 
 async function llmLoadOffload() {
