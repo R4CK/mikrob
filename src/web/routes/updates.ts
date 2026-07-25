@@ -1,5 +1,5 @@
 import {
-  readFileSync, writeFileSync, mkdirSync, openSync, closeSync, statSync, unlinkSync,
+  readFileSync, writeFileSync, appendFileSync, mkdirSync, openSync, closeSync, statSync, unlinkSync,
 } from 'node:fs'
 import { join } from 'node:path'
 import { spawn, execFileSync } from 'node:child_process'
@@ -27,6 +27,141 @@ const UPDATE_PIDFILE = join(PROJECT_ROOT, 'store', 'update.pid')
 const DIAGNOSE_TASK = 'post-rollback-diagnose'
 // One-diagnosis-per-rollback marker (keyed by the last-result timestamp).
 const DIAGNOSE_MARKER = join(PROJECT_ROOT, 'store', 'update-diagnose.last')
+
+// store/.update-history rollback log, in update.sh's EXACT tab-separated shape (Cybered NO-GO fix,
+// card a3700b69): TIMESTAMP\tKIND\tBRANCH\tFROM_SHA\tTO_SHA\tNOTE\n -- recovery-prev-version.sh's
+// `awk -F'\t' '$2=="update"{v=$4}'` picks the rollback target off field 2 ("update") + field 4
+// (FROM_SHA) BLINDLY, so a differently-shaped line here would silently vanish from --list / never be
+// selected as the recovery target. Before this fix, the upstream-merge branch below never wrote here
+// at all -- update.sh (the fork-pull path) was the ONLY writer, so an upstream merge left NO rollback
+// point: a bad upstream commit -> clean merge -> a later restart -> recovery-prev-version.sh has no
+// record of this point to roll back to.
+const UPDATE_HISTORY_PATH = join(PROJECT_ROOT, 'store', '.update-history')
+
+/** Local-time `%Y-%m-%dT%H:%M:%S%z` (bash `date`'s format: zone offset with NO colon, e.g. +0200) --
+ *  matches every existing line in store/.update-history exactly (both are written on the same host,
+ *  same local TZ). */
+export function updateHistoryTimestamp(d: Date): string {
+  const pad = (n: number): string => String(n).padStart(2, '0')
+  const offMin = -d.getTimezoneOffset() // Date.getTimezoneOffset(): minutes BEHIND UTC, sign inverted
+  const sign = offMin >= 0 ? '+' : '-'
+  const abs = Math.abs(offMin)
+  return (
+    `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}` +
+    `T${pad(d.getHours())}:${pad(d.getMinutes())}:${pad(d.getSeconds())}` +
+    `${sign}${pad(Math.floor(abs / 60))}${pad(abs % 60)}`
+  )
+}
+
+/** Append a rollback point iff the SHA actually changed (mirrors update.sh's own
+ *  `[ "$OLD_VERSION_FULL" != "$NEW_VERSION_FULL" ]` guard) -- append-only, best-effort (store/ is
+ *  gitignored; a write failure here must never fail the merge that already succeeded). Exported for
+ *  direct unit testing of the exact TSV shape (recovery-prev-version.sh's awk parses this blindly). */
+export function recordUpdateHistory(
+  branch: string,
+  fromSha: string,
+  toSha: string,
+  note: string,
+  historyPath: string = UPDATE_HISTORY_PATH,
+): void {
+  if (fromSha === toSha) return
+  const line = `${updateHistoryTimestamp(new Date())}\tupdate\t${branch}\t${fromSha}\t${toSha}\t${note}\n`
+  try {
+    appendFileSync(historyPath, line, { mode: 0o600 })
+  } catch (err) {
+    logger.warn({ err }, 'store/.update-history append failed (best-effort, non-fatal)')
+  }
+}
+
+/** The git operations the upstream-merge branch needs, injected so {@link performUpstreamMerge} is
+ *  unit-testable without a real repo -- same DI shape as {@link GitRunner}/{@link PidfileRunner} in
+ *  this same file. */
+export interface UpstreamMergeRunner {
+  revParseHead(): string
+  fetchUpstream(): void
+  /** Throws on conflict or any other merge failure (the real adapter runs `git merge --no-edit`,
+   *  which exits non-zero on both). */
+  mergeUpstream(): void
+  /** Best-effort; the real adapter's own failure (no merge in progress) is swallowed by the caller. */
+  mergeAbort(): void
+  currentBranch(): string
+}
+
+export type UpstreamMergeResult =
+  | { readonly ok: true }
+  | { readonly ok: false; readonly reason: 'merge-conflict' | 'upstream-merge-failed'; readonly message: string }
+
+/**
+ * Fetch + merge upstream/main, recording a rollback point (store/.update-history) on success and
+ * NEVER on failure -- an aborted/conflicted merge leaves HEAD unchanged, so there is nothing to
+ * record. Pure control flow over the injected {@link UpstreamMergeRunner}; the HTTP route below is a
+ * thin wrapper (lock + response shaping). `recordHistory` is injected too so a test can assert it was
+ * (or was not) called without touching the real store/.update-history file.
+ */
+export function performUpstreamMerge(
+  runner: UpstreamMergeRunner,
+  recordHistory: typeof recordUpdateHistory = recordUpdateHistory,
+): UpstreamMergeResult {
+  // Captured BEFORE the merge so a rollback point can be recorded on success -- HEAD does not move
+  // again after this in the success path (no checkout after the merge commit).
+  const beforeSha = runner.revParseHead().trim()
+  try {
+    runner.fetchUpstream()
+    runner.mergeUpstream()
+  } catch (err) {
+    // Abort any in-progress merge so the tree is clean again. Best-effort: `merge --abort` itself
+    // fails if no merge is in progress (e.g. the fetch failed before any merge started) -- ignored.
+    try {
+      runner.mergeAbort()
+    } catch {
+      /* no merge in progress; nothing to abort */
+    }
+    const msg = err instanceof Error ? err.message : String(err)
+    // Merge conflict returns exit code 1 with CONFLICT/"Automatic merge failed" in the output. Other
+    // errors (network, missing remote) surface the raw message as a general failure.
+    const isConflict = msg.includes('CONFLICT') || msg.includes('Automatic merge failed')
+    return isConflict
+      ? {
+          ok: false,
+          reason: 'merge-conflict',
+          message:
+            'Upstream merge conflict. Resolve manually: git merge upstream/main, fix conflicts, then git commit.',
+        }
+      : { ok: false, reason: 'upstream-merge-failed', message: msg }
+  }
+  const afterSha = runner.revParseHead().trim()
+  recordHistory(runner.currentBranch().trim(), beforeSha, afterSha, 'upstream-merge')
+  return { ok: true }
+}
+
+/** Real {@link UpstreamMergeRunner}: the actual git shell-outs, unchanged from the pre-refactor
+ *  inline calls (same binary, args, cwd, timeouts). */
+const realUpstreamMergeRunner: UpstreamMergeRunner = {
+  revParseHead: () =>
+    execFileSync('/usr/bin/git', ['rev-parse', 'HEAD'], {
+      cwd: PROJECT_ROOT,
+      timeout: 3000,
+      encoding: 'utf-8',
+    }),
+  fetchUpstream: () => {
+    execFileSync('/usr/bin/git', ['fetch', 'upstream'], { cwd: PROJECT_ROOT, timeout: 15_000 })
+  },
+  mergeUpstream: () => {
+    execFileSync('/usr/bin/git', ['merge', 'upstream/main', '--no-edit'], {
+      cwd: PROJECT_ROOT,
+      timeout: 20_000,
+    })
+  },
+  mergeAbort: () => {
+    execFileSync('/usr/bin/git', ['merge', '--abort'], { cwd: PROJECT_ROOT, timeout: 5_000 })
+  },
+  currentBranch: () =>
+    execFileSync('/usr/bin/git', ['rev-parse', '--abbrev-ref', 'HEAD'], {
+      cwd: PROJECT_ROOT,
+      timeout: 3000,
+      encoding: 'utf-8',
+    }),
+}
 
 type LastResult = { status?: string; ts?: number; phase?: string; message?: string }
 function readLastResult(): LastResult | null {
@@ -257,35 +392,14 @@ export async function tryHandleUpdates(ctx: RouteContext): Promise<boolean> {
     }
     // Upstream merge: synchronous fetch+merge, no service restart.
     if (repo === 'upstream') {
-      try {
-        execFileSync('/usr/bin/git', ['fetch', 'upstream'], { cwd: PROJECT_ROOT, timeout: 15_000 })
-        execFileSync(
-          '/usr/bin/git',
-          ['merge', 'upstream/main', '--no-edit'],
-          { cwd: PROJECT_ROOT, timeout: 20_000 },
-        )
-        releaseLock()
+      const result = performUpstreamMerge(realUpstreamMergeRunner)
+      releaseLock()
+      if (result.ok) {
         logger.info('upstream merge completed successfully')
         json(res, { ok: true })
-      } catch (err) {
-        // Abort any in-progress merge so the tree is clean again.
-        try {
-          execFileSync('/usr/bin/git', ['merge', '--abort'], { cwd: PROJECT_ROOT, timeout: 5_000 })
-        } catch { /* merge --abort fails if no merge in progress; ignore */ }
-        releaseLock()
-        const msg = err instanceof Error ? err.message : String(err)
-        logger.warn({ err }, 'upstream merge failed')
-        // Merge conflict returns exit code 1. Other errors (network, remote
-        // missing) surface the raw message as a general failure.
-        const isConflict = msg.includes('CONFLICT') || msg.includes('Automatic merge failed')
-        if (isConflict) {
-          json(res, {
-            error: 'Upstream merge conflict. Resolve manually: git merge upstream/main, fix conflicts, then git commit.',
-            reason: 'merge-conflict',
-          }, 409)
-        } else {
-          json(res, { error: msg, reason: 'upstream-merge-failed' }, 500)
-        }
+      } else {
+        logger.warn({ reason: result.reason }, 'upstream merge failed')
+        json(res, { error: result.message, reason: result.reason }, result.reason === 'merge-conflict' ? 409 : 500)
       }
       return true
     }
