@@ -16,10 +16,15 @@
 #   => There is NO working programmatic source with the CURRENT token. Two unlocks, both
 #      OUTSIDE an agent's authority (flagged to MikroB, see the card REVIEW):
 #        (1) Peti re-issues the OAuth token WITH an account scope (user:profile/user:office)
-#            -- if Anthropic grants it to a setup-token at all; then THIS script starts
-#            returning real data and can be cron'd. (2) A MikroB-run /status parse from a
-#            subscription-authed spare panel -- role agents are governance-blocked from
-#            `tmux send-keys`, so only MikroB can do (a).
+#            -- if Anthropic grants it to a setup-token at all; then THIS script (already
+#            Cybersec-hardened: token via 0600 @file, never argv) starts returning real
+#            data and can be cron'd. (2) A MikroB-run terminal `/usage` parse (Peti
+#            2026-07-25 clarified it is `/usage`, not `/status`, that renders the weekly
+#            All-models bar) from a DEDICATED subscription-authed spare panel -- NOT a
+#            fleet-agent panel (sending keys there disrupts its work), and NOT the
+#            mikrob-worker (API-auth: its `/usage` shows only activity characteristics,
+#            not the subscription weekly bar). Role agents are governance-blocked from
+#            `tmux send-keys`, so this panel-parse path is MikroB-only.
 #
 # DESIGN: forward-compatible + fail-safe. On a real 200 with a parseable weekly %, it
 # writes the snapshot atomically and prints OK. On ANY failure (scope/auth/ratelimit/
@@ -49,10 +54,19 @@ if [ -z "$TOKEN" ]; then
 fi
 
 # --- probe (separate body + status so we never interpolate the token) ---------------
+# SECURITY: the Authorization header goes through a 0600 temp file read with curl's
+# `-H @file`, NEVER on the curl argv. A header on the command line would land in the
+# process's /proc/<pid>/cmdline (world-readable on this host: no hidepid) and `ps`, so
+# any local user -- even one who cannot read the 0600 .env -- could scrape the live
+# token during the probe window. That would break the fleet's binding rule
+# ("token SOHA nem argv-be/logba"). curl reads `@file` headers since 7.55.
 tmp_body="$(mktemp)"
-trap 'rm -f "$tmp_body"' EXIT
+hdr_file="$(mktemp)"
+trap 'rm -f "$tmp_body" "$hdr_file"' EXIT
+chmod 600 "$hdr_file"
+printf 'Authorization: Bearer %s\n' "$TOKEN" > "$hdr_file"
 http_code="$(curl -s -o "$tmp_body" -w '%{http_code}' --max-time 20 \
-  -H "Authorization: Bearer ${TOKEN}" \
+  -H "@$hdr_file" \
   -H "anthropic-beta: oauth-2025-04-20" \
   -H "User-Agent: cleancore-fleet-weekly-usage-probe/1.0" \
   "$USAGE_URL" || echo "000")"
