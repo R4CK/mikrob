@@ -18,12 +18,21 @@ set -uo pipefail
 PANE="mikrob-usage-probe"
 MODE="${1:-start}"
 
+# ISOLATED credential store (frequent-logout root cause, 2026-07-30): the probe is an
+# interactive Max login. If it shared the global ~/.claude/.credentials.json, every fleet
+# agent restart / model-fallback / Peti login elsewhere rewrites that one file and Max
+# rotates the token -> the probe gets evicted -> repeated /login. A dedicated CLAUDE_CONFIG_DIR
+# gives the probe its OWN credentials.json + refresh-token lineage, so one login sticks.
+PROBE_CONFIG_DIR="/home/neon/.claude-usage-probe"
+
 ensure_pane() {
   tmux has-session -t "$PANE" 2>/dev/null && return 0
-  # Recreate the panel with a clean interactive claude (subscription login, no API token env).
+  mkdir -p "$PROBE_CONFIG_DIR" 2>/dev/null || true
+  # Recreate the panel with a clean interactive claude (subscription login, no API token env),
+  # pinned to the ISOLATED config dir so shared-credential contention can't log it out.
   tmux new-session -d -s "$PANE" -c /home/neon 2>/dev/null || return 1
   sleep 1
-  tmux send-keys -t "$PANE" 'env -u CLAUDE_CODE_OAUTH_TOKEN -u ANTHROPIC_API_KEY claude' Enter 2>/dev/null
+  tmux send-keys -t "$PANE" "env CLAUDE_CONFIG_DIR=$PROBE_CONFIG_DIR -u CLAUDE_CODE_OAUTH_TOKEN -u ANTHROPIC_API_KEY claude" Enter 2>/dev/null
   sleep 10
   # Trust-folder prompt, if shown.
   tmux send-keys -t "$PANE" '1' 2>/dev/null; sleep 1; tmux send-keys -t "$PANE" Enter 2>/dev/null
