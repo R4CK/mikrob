@@ -63,6 +63,25 @@ function serveIndexHtml(ctx: RouteContext, webDir: string): void {
         /(<meta name="apple-mobile-web-app-title" content=")[^"]*(">)/,
         `$1${escapeAttr(BRAND_NAME)}$2`,
       )
+      // Bake BRAND_NAME into the tab title and the two chrome brand slots
+      // (mobile topbar + sidebar) so the very first paint shows the configured
+      // brand, never the bundled "Marveen" default. Without this the HTML
+      // ships "Marveen" and only the client's initSidebarBrand() fetch rewrites
+      // it -- which flashes "Marveen" and, on a stale-cached bundle, sticks.
+      // Server-side bake is cache-proof and script-timing-proof, matching the
+      // apple-title treatment above.
+      .replace(
+        /(<title>)[^<]*(<\/title>)/,
+        `$1${escapeAttr(BRAND_NAME)}$2`,
+      )
+      .replace(
+        /(<span class="mobile-topbar-title" id="mobileTopbarTitle">)[^<]*(<\/span>)/,
+        `$1${escapeAttr(BRAND_NAME)}$2`,
+      )
+      .replace(
+        /(<div class="sidebar-brand-name" id="sidebarBrandName">)[^<]*(<\/div>)/,
+        `$1${escapeAttr(BRAND_NAME)}$2`,
+      )
     res.writeHead(200, {
       'Content-Type': MIME['.html'],
       ETag: etag,
