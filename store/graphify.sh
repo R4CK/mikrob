@@ -31,11 +31,24 @@
 set -euo pipefail
 
 PINNED_VERSION="0.9.31"
-GRAPHIFY_BIN="${GRAPHIFY_BIN:-$HOME/.local/bin/graphify}"
+# The pipx VENV binary, addressed directly. The ~/.local/bin/graphify shim is deliberately REMOVED
+# (Cybersec NO-GO @7fdb09b): while it was on PATH, any agent could call the raw CLI and skip this
+# wrapper's allowlist + egress gate, so the card's central claim ("all access is gated") was false.
+# Off PATH, this wrapper is the discoverable/default way in. HONEST LIMIT: this is not an OS-level
+# boundary -- a caller running as the same user can still execute the venv path directly. Making it
+# unbypassable would need a separate uid or a container; what this closes is every DEFAULT and
+# DOCUMENTED path, plus the skill that used to instruct raw `graphify add` (a URL fetch = egress).
+GRAPHIFY_BIN="${GRAPHIFY_BIN:-$HOME/.local/share/pipx/venvs/graphifyy/bin/graphify}"
 
 die() { echo "graphify.sh: $2" >&2; exit "$1"; }
 
 [[ -x "$GRAPHIFY_BIN" ]] || die 4 "graphify not found at $GRAPHIFY_BIN (pipx install 'graphifyy==$PINNED_VERSION')"
+
+# Refuse to run if a raw CLI shim is back on PATH: that would mean the bypass reopened (e.g. a pipx
+# reinstall recreated ~/.local/bin/graphify), and the gate's guarantee would silently be void again.
+if command -v graphify >/dev/null 2>&1; then
+  die 6 "raw 'graphify' is on PATH again ($(command -v graphify)) -- the wrapper gate is bypassable. Remove the shim (rm ~/.local/bin/graphify ~/.local/bin/graphify-mcp) and re-run."
+fi
 
 # --- egress gate: no LLM backend may be auto-detected from the environment ---------------------
 # graphify picks a backend from whichever API key is set. Unset them all for the child so the
