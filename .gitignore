@@ -122,3 +122,8 @@ store/stitch-tools/node_modules/
 # Claude Code Channels runtime config/session dir (sessions, history, tokens,
 # plugins, skills). Per-install runtime state -- never source, never commit.
 .channels-config/
+
+# graphify code knowledge-graph output (card 3646bde7). Generated locally by store/graphify.sh from
+# the working tree; never committed -- it is a derived artifact, it churns on every build, and a
+# tracked copy would collide with update.sh's ff-only pull.
+graphify-out/

@@ -13,6 +13,8 @@
 #   local-llm-rag.sh --agent backend --k 5 "refactor this helper ..."
 #   local-llm-rag.sh --query "calendar sync target" "draft the settings copy"
 #   local-llm-rag.sh --context "file: foo.ts; caller passes ctx.tenantId" "..."
+#   local-llm-rag.sh --graph-node routeTask --graph-repo /home/neon/marveen "explain this fn"
+#                                             # pull graphify code-graph context (card 3646bde7)
 #   echo "task" | local-llm-rag.sh --agent qa
 #   local-llm-rag.sh --no-shared "..."        # skip cross-agent shared memories
 #   local-llm-rag.sh --show-context "..."     # print the assembled context, don't call the model
@@ -72,6 +74,7 @@ TOKEN_FILE="$HERE/.dashboard-token"
 LLM="$HERE/local-llm.sh"
 
 AGENT="mikrob"; K=5; QUERY=""; CONTEXT=""; SHARED=1; SHOW_ONLY=0; AUTO=0
+GRAPH_REPO=""; GRAPH_NODE=""   # optional graphify code-graph context (card 3646bde7)
 CALLER_OVR=""; SOURCE_OVR=""   # optional attribution overrides (e.g. UI probes)
 OUT=""; VERIFY_CMD=""; VERIFY_ITER=3   # local self-repair loop (auto-verify a file-shaped draft)
 DIFFICULTY=""    # optional: this coding task's difficulty level (trivial|isolated|module|feature|architecture);
@@ -85,6 +88,8 @@ while [[ $# -gt 0 ]]; do
     --k)       K="$2"; shift 2 ;;
     --query)   QUERY="$2"; shift 2 ;;
     --context) CONTEXT="$2"; shift 2 ;;
+    --graph-repo) GRAPH_REPO="$2"; shift 2 ;;
+    --graph-node) GRAPH_NODE="$2"; shift 2 ;;
     --no-shared) SHARED=0; shift ;;
     --show-context) SHOW_ONLY=1; shift ;;
     --auto)    AUTO=1; shift ;;
@@ -112,6 +117,26 @@ else
   TASK="$(cat)"
 fi
 [[ -z "${TASK// }" ]] && die 4 "empty task prompt"
+
+# --- graphify code-graph context (card 3646bde7) ------------------------------------------------
+# Give the LOCAL model real code understanding instead of guesses: pull the deterministic knowledge
+# graph's explanation of a node (its neighbours + relations) into the same CONTEXT block the memory
+# retrieval already uses. Goes through store/graphify.sh, never the raw CLI, so the allowlist +
+# egress gate apply here too (code-only, no LLM pass, no URL fetch). Best-effort: if the graph is
+# missing or the node is unknown, the offload proceeds WITHOUT graph context rather than failing --
+# a missing graph must never block a draft.
+if [[ -n "$GRAPH_NODE" ]]; then
+  [[ -n "$GRAPH_REPO" ]] || GRAPH_REPO="$(pwd)"
+  if GRAPH_EXPLAIN="$(bash "$HERE/graphify.sh" explain "$GRAPH_REPO" "$GRAPH_NODE" 2>/dev/null)" \
+     && [[ -n "${GRAPH_EXPLAIN// }" ]]; then
+    CONTEXT="${CONTEXT:+$CONTEXT
+
+}CODE GRAPH (graphify, deterministic AST -- node, neighbours and relations):
+$GRAPH_EXPLAIN"
+  else
+    echo "local-llm-rag: no graph context for '$GRAPH_NODE' (build it: store/graphify.sh build $GRAPH_REPO)" >&2
+  fi
+fi
 [[ -z "$QUERY" ]] && QUERY="$TASK"
 
 # --- AUTO ROUTER (--auto): let routeTask() decide LOCAL vs ONLINE ------------------------------
