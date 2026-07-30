@@ -66,6 +66,28 @@ CASES = [
     (BLOCK, 'bash -c "git reset --hard"'),      # one-level wrapper unwrap
     (BLOCK, "sh -c 'git clean -fd'"),
     (BLOCK, 'eval "git reset --hard"'),
+    # ---- Cybersec NO-GO + QA FAIL on c9e4b5d: git GLOBAL options / env prefix ----
+    # `git -C <path> <sub>` is the NORMAL cross-repo form -- the guard's own primary scenario.
+    (BLOCK, "git -C /mnt/h/LM_Studio_Workdir/CleanCore reset --hard"),
+    (BLOCK, "git --git-dir=.git reset --hard"),
+    (BLOCK, "GIT_DIR=.git git reset --hard"),
+    (BLOCK, "git -C /mnt/h/CleanCore stash"),
+    (BLOCK, "git -C /repo checkout ."),
+    (BLOCK, "git --work-tree=/repo clean -fd"),
+    (BLOCK, "git -c user.name=x -C /repo reset --hard"),
+    (BLOCK, "GIT_DIR=.git GIT_WORK_TREE=. git clean -fd"),
+    (BLOCK, "git -C /repo add -A"),             # the PRE-EXISTING rules were equally bypassable
+    # ALLOW controls: the global-option skip must not overreach into legitimate commands.
+    (ALLOW, "git -C /mnt/h/LM_Studio_Workdir/CleanCore status"),
+    (ALLOW, "git -c user.name=x commit -m 'msg'"),
+    (ALLOW, "git -C /repo log --oneline -5"),
+    (ALLOW, "git -C /repo reset src/foo.ts"),
+    (ALLOW, "git --no-pager diff"),
+    # ---- Cybersec/QA LOW: a heredoc BODY is data, not a command ----
+    (ALLOW, "cat > t.sh <<'EOF'\ngit checkout .\ngit reset --hard\nEOF"),
+    (ALLOW, "cat > doc.md <<EOF\nNe hasznalj git clean -fd-t a kozos fan!\nEOF"),
+    # ...but a REAL destructive command after a heredoc still blocks
+    (BLOCK, "cat > t.sh <<'EOF'\nharmless\nEOF\ngit reset --hard"),
     (ALLOW, "git clean -n"),                    # dry run
     (ALLOW, "git clean --dry-run -d"),
     (ALLOW, "git status"),

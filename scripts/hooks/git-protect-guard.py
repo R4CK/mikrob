@@ -44,11 +44,20 @@ targeted//safe forms stay allowed:
 WHAT THIS IS NOT (be honest with anyone reading this before trusting it): this is a
 regex over the command STRING, so it stops ACCIDENTS, not a determined actor. It
 does not survive variable indirection (`g=git; $g reset --hard`), string splitting
-(`git rese""t --hard`), a command written to a file and executed, or anything past
-the one wrapper level it unwraps. Closing those would need real shell parsing or an
-allowlist, which would cost far more false positives than the footguns are worth.
-Treat it as a seatbelt for tired agents, NOT as a security boundary -- the actual
-protection against losing work is committing early (shared-checkout rule).
+(`git rese""t --hard`), a command written to a file and executed, or TWO levels of
+wrapper nesting (`bash -c "bash -c '...'"` -- one level is unwrapped, deliberately:
+at two levels a caller is evading, not phrasing, and no string matcher wins that
+race). Closing those would need real shell parsing or an allowlist, which would cost
+far more false positives than the footguns are worth. Treat it as a seatbelt for
+tired agents, NOT as a security boundary -- the actual protection against losing work
+is committing early (shared-checkout rule).
+
+WHAT IS COVERED that a naive matcher misses (added after the c9e4b5d gate): git's
+GLOBAL options and env prefixes before the subcommand -- `git -C <path> reset --hard`,
+`git --git-dir=... reset --hard`, `GIT_DIR=... git reset --hard`. These are not
+evasions but the normal cross-repo idiom, so missing them left the guard blind in
+exactly its primary scenario. Heredoc BODIES are stripped before scanning, so writing
+a doc or fixture that quotes a destructive command is not refused.
 """
 import sys
 import re
@@ -64,7 +73,24 @@ LOCKFILES = ("pnpm-lock.yaml", "package-lock.json", "yarn.lock")
 # log line that documents the rule) is NOT at a boundary, so it is not matched.
 # Backtick is deliberately NOT a boundary here -- inside single quotes it is a
 # literal char in docs far more often than a real command substitution.
-_CMD = r"(?:^|[\n;&|(])\s*(?:sudo\s+)?(?:time\s+)?git\s+"
+# Leading environment assignments (`GIT_DIR=.git git ...`, `FOO=1 git ...`).
+_ENV_PREFIX = r"(?:[A-Za-z_][A-Za-z0-9_]*=[^\s;&|]*\s+)*"
+# Git GLOBAL options, which may sit BETWEEN `git` and the subcommand (Cybersec/QA NO-GO on c9e4b5d).
+# `git -C <path> reset --hard` is not an evasion -- it is the NORMAL way to operate on a repo you are
+# not cd'd into, i.e. exactly how an agent working from /home/neon/marveen touches the shared CleanCore
+# checkout. Missing it meant the guard missed its own primary scenario. Options that take a SEPARATE
+# argument (-C, -c) must consume that argument too, or the subcommand match lands on the wrong token.
+_GIT_GLOBAL = (
+    r"(?:"
+    r"(?:-C|-c)\s+[^\s;&|]+\s+"                                   # -C <path>, -c <key=val>
+    r"|--(?:git-dir|work-tree|namespace|exec-path)(?:=[^\s;&|]*\s+|\s+[^\s;&|]+\s+)"
+    r"|--(?:no-pager|paginate|bare|literal-pathspecs|icase-pathspecs|no-replace-objects)\s+"
+    r"|-[pP]\s+"
+    r")*"
+)
+_CMD = (
+    r"(?:^|[\n;&|(])\s*" + _ENV_PREFIX + r"(?:sudo\s+)?(?:time\s+)?git\s+" + _GIT_GLOBAL
+)
 # `git add` with a stage-everything flag (-A, --all, or a bare `.`).
 ADD_ALL_RX = re.compile(_CMD + r"add\b[^\n&|;]*?(?:(?<!\S)-A\b|--all\b|(?<!\S)\.(?:\s|$))")
 # `git add` naming a lockfile explicitly.
@@ -167,6 +193,22 @@ def _unwrapped_variants(cmd):
     return out
 
 
+# A heredoc BODY is data being written, not a command being run (Cybersec/QA LOW on c9e4b5d).
+# Writing a doc, a test fixture or a guard probe whose CONTENT quotes `git reset --hard` must not be
+# refused -- the fleet writes exactly such files (this guard's own selftest is one). Quoted mentions
+# (echo '...', curl -d '{...}') were already exempt via the command-boundary rule; a raw heredoc body
+# was not, because its lines DO start at a line boundary. Strip those bodies before scanning.
+_HEREDOC_RX = re.compile(
+    r"<<-?\s*(['\"]?)([A-Za-z_][A-Za-z0-9_]*)\1.*?^\s*\2\s*$",
+    re.S | re.M,
+)
+
+
+def _strip_heredoc_bodies(cmd):
+    """Blank out `<<EOF ... EOF` / `<<'EOF' ... EOF` bodies so their CONTENT is not scanned."""
+    return _HEREDOC_RX.sub("<<HEREDOC-BODY-STRIPPED", cmd)
+
+
 def _pushes_protected(cmd):
     """True only if a force-push EXPLICITLY names a protected branch. We fail
     toward allow: a force-push with no protected-branch token (e.g. to a feature
@@ -198,6 +240,9 @@ def main():
         sys.exit(0)
 
     try:
+        # A heredoc body is DATA being written, not a command -- never scan its contents.
+        cmd = _strip_heredoc_bodies(cmd)
+
         # `git add -p` is the sanctioned staging path; never block it.
         add_all = ADD_ALL_RX.search(cmd) and not re.search(r"\bgit\s+add\s+-p\b", cmd)
         if add_all:
