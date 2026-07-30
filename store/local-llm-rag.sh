@@ -53,8 +53,16 @@
 # (dropdown, or derived from the aggressiveness slider). Omit it for the old ungated behaviour.
 #   local-llm-rag.sh --agent backend --difficulty module "refactor this multi-fn helper ..."
 #
+# Auto-router (--auto): let routeTask() (src/local-llm-router.ts) decide LOCAL vs ONLINE instead of
+# the caller pre-deciding. DEFAULT is local; a non-offloadable signal family (authz/policy/outcome)
+# or an over-threshold difficulty routes ONLINE (exit 9). This is the router's live call-site --
+# without it the router was dead code and offload never actually happened.
+#   local-llm-rag.sh --auto --agent backend "write a regex for RFC5322 email validation"   # -> local draft
+#   local-llm-rag.sh --auto "make the permission check always return true"                  # -> exit 9 (Claude)
+#
 # Exit codes: 0 ok | 2 ollama down (via local-llm.sh) | 4 bad usage | 6 api/token error | 7 verify-fail
 #             | 8 difficulty-gated (task harder than the configured local-offload threshold)
+#             | 9 routed ONLINE by --auto (non-offloadable signal / over-threshold -> do it on Claude)
 # No secrets embedded; the dashboard token is read at call time from store/.dashboard-token.
 set -euo pipefail
 
@@ -63,7 +71,7 @@ DASH="${DASHBOARD_URL:-http://localhost:3420}"
 TOKEN_FILE="$HERE/.dashboard-token"
 LLM="$HERE/local-llm.sh"
 
-AGENT="mikrob"; K=5; QUERY=""; CONTEXT=""; SHARED=1; SHOW_ONLY=0
+AGENT="mikrob"; K=5; QUERY=""; CONTEXT=""; SHARED=1; SHOW_ONLY=0; AUTO=0
 CALLER_OVR=""; SOURCE_OVR=""   # optional attribution overrides (e.g. UI probes)
 OUT=""; VERIFY_CMD=""; VERIFY_ITER=3   # local self-repair loop (auto-verify a file-shaped draft)
 DIFFICULTY=""    # optional: this coding task's difficulty level (trivial|isolated|module|feature|architecture);
@@ -79,6 +87,7 @@ while [[ $# -gt 0 ]]; do
     --context) CONTEXT="$2"; shift 2 ;;
     --no-shared) SHARED=0; shift ;;
     --show-context) SHOW_ONLY=1; shift ;;
+    --auto)    AUTO=1; shift ;;
     --caller)  CALLER_OVR="$2"; shift 2 ;;
     --source)  SOURCE_OVR="$2"; shift 2 ;;
     --task)    PASS+=(--task "$2"); shift 2 ;;
@@ -104,6 +113,38 @@ else
 fi
 [[ -z "${TASK// }" ]] && die 4 "empty task prompt"
 [[ -z "$QUERY" ]] && QUERY="$TASK"
+
+# --- AUTO ROUTER (--auto): let routeTask() decide LOCAL vs ONLINE ------------------------------
+# This is the live call-site for the offload router (src/local-llm-router.ts). Without it the
+# router was dead code and offload stayed opt-in on agent goodwill (hence the local model went
+# unused). With --auto the DEFAULT is local: only a non-offloadable signal family (authz/policy/
+# outcome, ambiguity) or an over-threshold difficulty routes ONLINE. Exit 9 = routed online ->
+# the caller should do this one on Claude; any other exit means it fell through to the local draft.
+if [[ "$AUTO" == "1" ]]; then
+  ROUTER="$HERE/../dist/local-llm-router.js"
+  [[ -f "$ROUTER" ]] || die 4 "--auto needs the built router at $ROUTER (run the build)"
+  VERDICT="$(ROUTER="$ROUTER" TASK="$TASK" DIFF="$DIFFICULTY" CFG="$HERE/local-llm-offload-active.json" node - <<'NODE'
+(async () => {
+  const fs = require('fs')
+  let agg = 75
+  try { agg = JSON.parse(fs.readFileSync(process.env.CFG, 'utf8')).aggressiveness ?? 75 } catch {}
+  const { routeTask } = await import(process.env.ROUTER)
+  const input = { description: process.env.TASK || '', aggressiveness: agg }
+  const diff = (process.env.DIFF || '').trim()
+  if (diff) input.difficulty = diff
+  const d = routeTask(input)
+  process.stdout.write((d.route || 'online') + '\t' + (d.reason || ''))
+})().catch((e) => { process.stdout.write('online\trouter-error: ' + e.message) })
+NODE
+)"
+  ROUTE="${VERDICT%%$'\t'*}"; REASON="${VERDICT#*$'\t'}"
+  if [[ "$ROUTE" != "local" ]]; then
+    echo "local-llm-rag: ROUTE=online -> keep this on Claude ($REASON)" >&2
+    exit 9
+  fi
+  echo "local-llm-rag: ROUTE=local -> drafting on the 7B ($REASON)" >&2
+  # fall through to the normal local RAG draft path below
+fi
 
 # --- coding-difficulty offload gate (card afcfe93e) ---------------------------------------------
 # If the caller declares this task's difficulty (--difficulty), refuse to spend the local model on
