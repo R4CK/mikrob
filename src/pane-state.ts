@@ -57,7 +57,25 @@ export type PaneState = 'idle' | 'busy' | 'typing' | 'unknown' | 'error'
 // shift+tab hint OR any `·`-separated tail ending in a known idle action (ctrl+t
 // / ↓ to manage). Busy states are filtered above (esc to interrupt / busy
 // indicators / paste placeholder), so this stays idle-specific.
-const IDLE_FOOTER_RX = /bypass permissions on(?: \(shift\+tab to cycle\)| · [^\n]*?(?:ctrl\+t|↓ to manage))|\? for shortcuts/
+//
+// THE MODE PREFIX IS NOT ALWAYS `bypass permissions`. That was the whole bug:
+// the footer names whichever permission mode the session is in --
+// `bypass permissions on`, `accept edits on`, `plan mode on`, `auto mode on`,
+// `manual mode on` -- and only the first was accepted. Every agent NOT in
+// bypass mode read as 'unknown', so the router refused to deliver to it. On
+// 2026-07-27 that silently swallowed four messages to an agent sitting in
+// `accept edits on`, while bypass-mode agents received everything.
+//
+// Deliberately NOT an enumeration of the five known modes. An earlier attempt
+// at this fix listed `auto mode on` and `manual mode on` and still missed
+// `accept edits on` -- the mode that was actually losing messages. Whatever
+// list we write today, Claude Code adds a mode tomorrow and the hole reopens.
+// So: one to three words followed by `on`, and the anti-false-positive work is
+// left where it already was -- in the REQUIRED TAIL. A bare `... on` in
+// scrollback still will not match; it needs the shift+tab hint or a `·`
+// separated idle action, which is UI chrome that prose does not carry.
+// `← for agents` is the FleetView tail on current builds; older tails kept.
+const IDLE_FOOTER_RX = /(?:[A-Za-z][\w-]* ){1,3}on(?: \(shift\+tab to cycle\)| · [^\n]*?(?:ctrl\+t|↓ to manage|← for agents))|\? for shortcuts/
 
 // Positive busy signals. ANY match anywhere in the pane means the turn
 // is mid-flight, even if the footer looks idle for a frame.
@@ -532,6 +550,28 @@ export interface DetectPaneStateOptions {
  *   6. Text parked inside the bottom input box -> 'typing'.
  *   7. Otherwise -> 'idle'.
  */
+// Which permission mode the footer is advertising, e.g. 'bypass permissions',
+// 'accept edits', 'plan mode'. Purely additive: the router still treats every
+// mode as idle, because for DELIVERY purposes they are all idle -- the message
+// can arrive. What differs is what happens next: an agent in an ask-first mode
+// receives the message and then stops at its first tool call, waiting for an
+// approval nobody is watching for. That is how an agent sat unusable for hours
+// on 2026-07-27 while looking perfectly healthy on the dashboard.
+//
+// Returns the phrase VERBATIM rather than mapping to an enum, for the same
+// reason IDLE_FOOTER_RX does not enumerate modes: a new Claude Code mode should
+// show up on the dashboard on its own, not wait for someone to extend a union.
+// 'default' is the no-banner footer ('? for shortcuts'), which is what Claude
+// Code renders when no mode is switched on -- i.e. it asks about everything.
+export function detectPermissionMode(pane: string): string | null {
+  if (!pane || !pane.trim()) return null
+  const m = pane.match(
+    /((?:[A-Za-z][\w-]* ){1,3})on(?: \(shift\+tab to cycle\)| · [^\n]*?(?:ctrl\+t|↓ to manage|← for agents))/,
+  )
+  if (m) return m[1].trim()
+  return /\? for shortcuts/.test(pane) ? 'default' : null
+}
+
 export function detectPaneState(
   pane: string,
   opts: DetectPaneStateOptions = {},
@@ -1125,6 +1165,41 @@ export function parkedInputText(pane: string): string | null {
   return flat.length > 0 ? flat : null
 }
 
+// Machine-origin wrappers the delivery paths prepend to injected prompts.
+// A parked input STARTING with one of these cannot be a human's hand-typed
+// draft, so the recovery stack may act on it (clear a scheduled tick, or
+// hard-restart a wedged pane) without risking a human's work-in-progress.
+// Anchored to the box START on purpose: a human draft that merely QUOTES a
+// wrapper deeper in the text stays protected.
+const MACHINE_ORIGIN_PREFIXES = [
+  /^SCHEDULED TASK NOTICE/,
+  /^<scheduled-task[\s>]/,
+  /^TEAM MEMBER NOTICE/,
+  /^\[Uzenet @/,
+  /^<channel\s+source="plugin:/,
+] as const
+
+// True when the live input box holds parked ('typing') text that is
+// identifiably machine-injected (see MACHINE_ORIGIN_PREFIXES). Pure.
+export function parkedMachineOriginInput(pane: string): boolean {
+  const flat = parkedInputText(pane)
+  if (flat == null) return false
+  return MACHINE_ORIGIN_PREFIXES.some((rx) => rx.test(flat))
+}
+
+// True when the parked text is a scheduled-task injection (the scheduler's
+// wrapper or a bare <scheduled-task> block). Scheduled tasks are (near
+// always) RECURRING: dropping one parked tick is harmless -- the next
+// schedule fire re-delivers the same instruction -- while re-injecting is
+// NOT safe (the TUI truncates long box content mid-text, so the visible
+// capture may be missing lines even when the closing tag is visible).
+// The safe recovery for a parked tick is therefore clear-only.
+export function parkedScheduledTaskInput(pane: string): boolean {
+  const flat = parkedInputText(pane)
+  if (flat == null) return false
+  return /^SCHEDULED TASK NOTICE/.test(flat) || /^<scheduled-task[\s>]/.test(flat)
+}
+
 // How many VISUAL rows the live input box content occupies, ignoring the
 // bare prompt glyph and blank padding. The caller uses this to choose the
 // right submit keystroke: a MULTI-row parked input must NOT be submitted with
@@ -1284,6 +1359,7 @@ export type StuckInputAction =
   | 'reinject-block'   // clear + verbatim re-inject the COMPLETE <channel> block (chat_id-safe)
   | 'reinject-plain'   // clear + re-inject collapsed parked text (sub-agents only)
   | 'clear-preamble'   // clear a truncated/stale safety preamble, never re-inject
+  | 'clear-scheduled'  // clear a parked scheduled-task tick, never re-inject (next fire re-delivers)
   | 'enter'            // a single bare Enter -- ONLY safe at rowCount <= 1
   | 'hold'             // do nothing this tick (multi-row truncated / truncation-guard)
 
@@ -1303,6 +1379,9 @@ export interface StuckInputActionFacts {
   allowPlainReinject: boolean
   /** parkedInputText(pane) != null -- there is collapsed text to re-inject. */
   hasPlainText: boolean
+  /** parkedScheduledTaskInput(pane): a scheduled-task tick is parked. Clear-only
+   * is safe on ANY session (the next schedule fire re-delivers). */
+  scheduledTaskBlock: boolean
 }
 
 /**
@@ -1331,6 +1410,13 @@ export function decideStuckInputAction(f: StuckInputActionFacts): StuckInputActi
   if (f.allowPlainReinject && f.hasPlainText && !f.blockTruncated) {
     return f.escalate || multiRow ? 'reinject-plain' : 'enter'
   }
+  // Parked scheduled-task tick (main session reaches here: no plain re-inject).
+  // Clear-only -- re-injecting risks TUI mid-text truncation corrupting the
+  // instruction, while a dropped tick is re-delivered by the next schedule
+  // fire. Single-row still tries the harmless Enter first.
+  if (f.scheduledTaskBlock) {
+    return f.escalate || multiRow ? 'clear-scheduled' : 'enter'
+  }
   // Truncated safety preamble: clear only (never re-inject a stale preamble).
   if (f.truncatedPreamble && f.escalate) return 'clear-preamble'
   // Truncated <channel> block: hold a multi-row (Enter would corrupt; re-inject
@@ -1338,6 +1424,29 @@ export function decideStuckInputAction(f: StuckInputActionFacts): StuckInputActi
   if (f.blockTruncated) return multiRow ? 'hold' : 'enter'
   // Default swallowed-Enter remedy -- never on multi-row.
   return multiRow ? 'hold' : 'enter'
+}
+
+// Would the soft stuck-input recovery have ANY submitting/clearing move for
+// the MAIN session's parked input at full escalation, or is it wedged in the
+// no-remedy 'hold' branch? Used by the hard-restart busy-guard: a 'typing'
+// pane whose soft recovery still has a move keeps deferring the destructive
+// restart (soft path wins without context loss); a no-remedy hold must NOT
+// defer forever or the channel goes permanently mute (2026-07-25 hermes
+// incident: parked multi-row scheduled-task -> hold + 'typing' deferred both
+// the stuck-input hard restart AND the keepalive-staleness respawn).
+export function parkedMainInputHasRemedy(pane: string): boolean {
+  const block = parkedChannelInput(pane)
+  const facts: StuckInputActionFacts = {
+    escalate: true,
+    rowCount: parkedInputRowCount(pane),
+    blockComplete: block != null && block.complete && block.block != null,
+    blockTruncated: block != null && !block.complete,
+    truncatedPreamble: shouldClearTruncatedPreamble(pane),
+    allowPlainReinject: false,
+    hasPlainText: false,
+    scheduledTaskBlock: parkedScheduledTaskInput(pane),
+  }
+  return decideStuckInputAction(facts) !== 'hold'
 }
 
 // =============================================================================

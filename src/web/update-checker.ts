@@ -31,6 +31,10 @@ export interface UpdateStatus {
   releases?: UpdateRelease[]
   remote: string
   lastChecked: number
+  /** Branch this checkout follows (what update.sh pulls). The frontend warns
+   * when it is not `main`: customer installs that landed on develop via a
+   * branchless clone keep receiving unreleased code until switched back. */
+  branch?: string
   error?: string
   /** True when the local HEAD is not on the GitHub remote (a customised fork);
    * `behind`/`commits` are then computed from the upstream merge-base. */
@@ -76,7 +80,10 @@ let updateStatusCache: AggregateUpdateStatus = {
 }
 
 export function getUpdateStatus(): AggregateUpdateStatus {
-  return updateStatusCache
+  // branch is resolved live (cheap local rev-parse): the cache may predate the
+  // first refresh cycle, and a checkout switch should be visible immediately.
+  // (Fork: return the AggregateUpdateStatus so the per-repo `repos` block is kept.)
+  return { ...updateStatusCache, branch: trackedBranch() }
 }
 
 export function currentGitHead(): string {
@@ -87,16 +94,20 @@ export function currentGitHead(): string {
   }
 }
 
-// The branch to check against on the remote. Derived from the local checkout's
-// current branch (this fork tracks `develop`, upstream tracks `main`), so the
-// update-check works on any fork instead of hard-coding `main` (which 422s when
-// the remote has no `main`). Falls back to `main` on detached HEAD / error.
+// Branch this checkout actually follows. update.sh pulls `origin/<this>`, so
+// the update check must compare against the same ref -- hardcoding `main` made
+// every non-release checkout (e.g. `develop`) report a phantom "new version"
+// that the update button could never deliver, while staying silent about the
+// commits that WERE coming. This fork tracks `develop`, upstream tracks `main`.
+// Falls back to `main` on a detached HEAD, which is also the branch update.sh
+// tells the operator to check out in that state.
 export function trackedBranch(): string {
   try {
     const b = execFileSync('/usr/bin/git', ['rev-parse', '--abbrev-ref', 'HEAD'], { cwd: PROJECT_ROOT, timeout: 3000, encoding: 'utf-8' }).trim()
-    if (b && b !== 'HEAD') return b
-  } catch { /* fall through */ }
-  return 'main'
+    return b && b !== 'HEAD' ? b : 'main'
+  } catch {
+    return 'main'
+  }
 }
 
 export function parseGitHubRemote(): string {
@@ -220,7 +231,7 @@ async function computeStatus(current: string, cfg: RepoCheckConfig): Promise<Rep
   }
   try {
     // 1) find HEAD of the target branch via the commits endpoint
-    const latestRes = await fetch(`https://api.github.com/repos/${cfg.remote}/commits/${cfg.branch}`, {
+    const latestRes = await fetch(`https://api.github.com/repos/${cfg.remote}/commits/${encodeURIComponent(cfg.branch)}`, {
       headers: GH_HEADERS,
       signal: AbortSignal.timeout(TOOL_TIMEOUTS['github']),
     })
@@ -304,7 +315,7 @@ export async function refreshUpdateStatus(): Promise<AggregateUpdateStatus> {
   return aggregate
 }
 
-// Polls the GitHub repo's main branch for new commits and compares to the
+// Polls the GitHub branch this checkout follows for new commits and compares to the
 // local HEAD. Lets the dashboard show a "new version available" badge
 // without anyone having to SSH in and run update.sh.
 export function startUpdateChecker(): NodeJS.Timeout {

@@ -50,6 +50,7 @@ offer_claude_fallback() {
 
 fail() {
   echo -e "  ${RED}✗${NC} $*"
+  explain_install_error "${INSTALL_ERRLOG:-}"
   offer_claude_fallback "$INSTALL_STEP" "$*" "${BASH_LINENO[0]}"
   exit 1
 }
@@ -57,6 +58,7 @@ fail() {
 on_error() {
   echo ""
   echo -e "${RED}Varatlan hiba a(z) '${INSTALL_STEP}' lepesben (sor: $1).${NC}"
+  explain_install_error "${INSTALL_ERRLOG:-}"
   offer_claude_fallback "$INSTALL_STEP" "Unexpected error at line $1" "$1"
   exit 1
 }
@@ -120,6 +122,25 @@ echo ""
 echo -e "${DIM}  Telepito wizard - Linux (Ubuntu/Debian)${NC}"
 echo ""
 
+# ── WSLMNT1 vedohalo: /mnt/ ala klonozott repo ──────────────────────
+# WSL-ben a terminal gyakran a Windows-mappaban (/mnt/c/...) nyilik, es az
+# oda klonozott repon a git/npm chmod-muveletei "Operation not permitted"
+# hibakkal halnak (drvfs nem POSIX). A leggyakoribb elakadas MEG a klonnal
+# tortenik (a script el sem indul -- azt a README `cd ~`-ja fedi); ez a
+# check a MASODIK esetet fogja: a klon valahogy letrejott /mnt/ alatt, es
+# a telepito onnan indult. Ertheto mondat + masolhato kiut, sorszam helyett.
+case "$INSTALL_DIR" in
+  /mnt/*)
+    echo -e "${RED}A telepito a Windows-fajlrendszerrol fut (${INSTALL_DIR}).${NC}"
+    echo -e "  A /mnt/ alatti mappakon a git es az npm jogosultsag-muveletei nem mukodnek (WSL/drvfs) -- a telepites itt elhalna."
+    echo -e "  ${DIM}Kiut: klonozd a Linux home-ba, es onnan futtasd (masold az alabbi sorokat):${NC}"
+    echo "    cd ~"
+    echo "    git clone --branch main https://github.com/Szotasz/marveen.git"
+    echo "    cd marveen && ./install.sh"
+    exit 1
+    ;;
+esac
+
 INSTALL_STEP="prerequisites"
 # ─────────────────────────────────────────────
 # [1/7] Elofeltetelek
@@ -139,6 +160,69 @@ fi
 if [ -z "$PKG_MANAGER" ]; then
   fail "Nem tamogatott csomagkezelo. Ez a telepito apt-get (Debian/Ubuntu) vagy dnf/yum (Fedora/Nobara/RHEL) rendszert var."
 fi
+
+# ── apt lock kezeles (APTLOCK1) ──────────────────────────────────────
+# Friss Ubuntun/WSL-en az apt-daily / unattended-upgrades az elso percekben
+# MAGATOL elindul es fogja a dpkg zarolast, majd perceken belul elengedi. Ez
+# ATMENETI allapot: a helyes viselkedes a lathato varakozas, nem a hibauzenet
+# (2026-07-30, workshop: "Could not get lock /var/lib/dpkg/lock-frontend...
+# It is held by process 6250" -> "Varatlan hiba... (sor: 240)"). A harom
+# allapotot szethuzzuk: atmeneti (var), vegleges (lejart cap, nevesitett
+# holderrel), ismeretlen (nincs fuser -- kimondjuk, es a DPkg::Lock::Timeout
+# vedohalora hagyatkozunk).
+APT_LOCK_FILES="/var/lib/dpkg/lock-frontend /var/lib/dpkg/lock /var/lib/apt/lists/lock"
+APT_LOCK_WAIT_CAP=300   # 5 perc -- az apt-daily ennyi alatt tipikusan vegez
+# Vedohalo minden apt-get hivasra: az apt sajat, fcntl-szintu varakozasa arra
+# az esetre, ha a pre-flight utan, de a parancs elott ugrik be egy uj holder.
+APT_OPTS="-o DPkg::Lock::Timeout=180"
+
+# stdout: "<pid> <procnev>" ha valaki fogja barmelyik lockot; ures + exit 1 ha
+# szabad. fuser nelkul exit 2 = NEM TUDJUK megallapitani (ismeretlen allapot).
+apt_lock_holder() {
+  command -v fuser &>/dev/null || return 2
+  local l pid name
+  for l in $APT_LOCK_FILES; do
+    [ -e "$l" ] || continue
+    pid=$(sudo fuser "$l" 2>/dev/null | tr -s ' ' '\n' | grep -m1 '[0-9]' || true)
+    if [ -n "$pid" ]; then
+      name=$(ps -o comm= -p "$pid" 2>/dev/null || true)
+      echo "$pid ${name:-?}"
+      return 0
+    fi
+  done
+  return 1
+}
+
+wait_for_apt_lock() {
+  local holder rc waited=0 interval=5
+  holder=$(apt_lock_holder); rc=$?
+  if [ "$rc" -eq 2 ]; then
+    # fuser nincs (minimal image) -- nem tudjuk MEGNEZNI, ki fogja a lockot.
+    # Ezt kimondjuk, es az APT_OPTS timeout-ja kezeli, ha tenyleg fogott.
+    echo -e "  ${DIM}$(_t linux.apt_lock_unknown)${NC}"
+    return 0
+  fi
+  [ "$rc" -ne 0 ] && return 0   # szabad
+  warn "$(_t linux.apt_lock_waiting_prefix) ${holder}"
+  echo -e "  ${DIM}$(_t linux.apt_lock_transient_hint)${NC}"
+  while [ "$waited" -lt "$APT_LOCK_WAIT_CAP" ]; do
+    sleep "$interval"; waited=$((waited + interval))
+    holder=$(apt_lock_holder); rc=$?
+    if [ "$rc" -ne 0 ]; then
+      ok "$(_t linux.apt_lock_freed_prefix) ${waited}s"
+      return 0
+    fi
+    if [ $((waited % 30)) -eq 0 ]; then
+      echo -e "  ${DIM}$(_t linux.apt_lock_still_prefix) ${holder} -- ${waited}s / ${APT_LOCK_WAIT_CAP}s${NC}"
+    fi
+  done
+  # Lejart a cap: ez mar nem "varjunk meg egy kicsit" -- nevesitett holderrel
+  # es kiuttal allunk meg, nem sorszammal.
+  echo -e "${RED}$(_t linux.apt_lock_timeout_head) ${holder}${NC}"
+  echo -e "  $(_t linux.apt_lock_timeout_body1)"
+  echo -e "  $(_t linux.apt_lock_timeout_body2)"
+  fail "$(_t linux.apt_lock_timeout_fail)"
+}
 
 # RAM check: npm build can fail on low-memory instances (e.g. t3.micro)
 if command -v free &>/dev/null; then
@@ -218,14 +302,15 @@ if [ -n "$MISSING_PKGS" ]; then
   warn "Hianyzo csomagok:$MISSING_PKGS"
   echo -e "  Telepites sudo-val ($PKG_MANAGER)..."
   if [ "$PKG_MANAGER" = "apt" ]; then
+    wait_for_apt_lock
     if echo "$MISSING_PKGS" | grep -q nodejs; then
       # A nodesource setup-script curl-t igenyel, de csupasz VPS-en (Debian
       # netinst) a curl maga is hianyozhat -- ilyenkor eloszor azt telepitjuk,
       # kulonben a repo-lepes neman kimarad, a disztro sajat (regebbi) nodejs-e
       # telepul, es Debianon az npm (kulon csomag) le se jon -> [1/7] fail.
       if ! command -v curl &>/dev/null; then
-        sudo apt-get update -qq || true
-        sudo apt-get install -y curl -qq || true
+        sudo apt-get $APT_OPTS update -qq || true
+        sudo apt-get $APT_OPTS install -y curl -qq || true
         hash -r
       fi
       echo -e "  Node.js v22 repo hozzaadasa (nodesource)..."
@@ -243,14 +328,14 @@ if [ -n "$MISSING_PKGS" ]; then
         # Fallback: disztro sajat nodejs-e. Debianon az npm kulon csomag,
         # a nodesource-bundle-lel ellentetben nem jon a nodejs-sel magatol.
         warn "nodesource repo hozzaadasa sikertelen -- a disztro sajat nodejs + npm csomagjat telepitem."
-        sudo apt-get update -qq
+        sudo apt-get $APT_OPTS update -qq
         MISSING_PKGS="$MISSING_PKGS npm"
       fi
     else
-      sudo apt-get update -qq
+      sudo apt-get $APT_OPTS update -qq
     fi
     # shellcheck disable=SC2086
-    sudo apt-get install -y $MISSING_PKGS -qq
+    sudo apt-get $APT_OPTS install -y $MISSING_PKGS -qq
   else
     # dnf/yum (Fedora/Nobara/RHEL). A disztro nodejs csomagja v20+ az aktualis
     # kiadasokon, es az npm-et is tartalmazza -- nincs szukseg kulso repora.
@@ -310,7 +395,9 @@ if [ ! -f "$INSTALL_DIR/package.json" ]; then
     ok "Repo klonozva: $TARGET_DIR"
   fi
   echo -e "  Telepito ujrainditasa a checkoutbol..."
-  exec bash "$TARGET_DIR/install-linux.sh"
+  # Forward argv so a run from outside the repo (curl bootstrap, or an explicit
+  # `install-linux.sh --port N`) keeps its flags across the self-reclone exec.
+  exec bash "$TARGET_DIR/install-linux.sh" "$@"
 fi
 
 INSTALL_STEP="claude-bun-install"
@@ -352,7 +439,14 @@ else
     ensure_in_rc 'DISABLE_AUTOUPDATER' 'export DISABLE_AUTOUPDATER=1'
     export DISABLE_AUTOUPDATER=1
     if command -v npm >/dev/null 2>&1; then
-      npm install -g "@anthropic-ai/claude-code@${CLAUDE_PIN}" || warn "npm install sikertelen (@${CLAUDE_PIN})."
+      # NPMPERM1: nodesource-os gepen a globalis node_modules root-tulajdonu
+      # lehet. Auto-mod: nem kerdez, sudo-ra valt lathato megjegyzessel.
+      ensure_global_npm_writable auto || true
+      if [ "${NPM_NEEDS_SUDO:-}" = "1" ]; then
+        sudo npm install -g "@anthropic-ai/claude-code@${CLAUDE_PIN}" || warn "npm install sikertelen (@${CLAUDE_PIN})."
+      else
+        npm install -g "@anthropic-ai/claude-code@${CLAUDE_PIN}" || warn "npm install sikertelen (@${CLAUDE_PIN})."
+      fi
     else
       warn "npm nem elerheto; a pinnelt hivatalos installert probalom (@${CLAUDE_PIN})."
       curl -fsSL https://claude.ai/install.sh | bash -s "${CLAUDE_PIN}" || warn "pinnelt install.sh sikertelen."
@@ -369,9 +463,11 @@ else
   else
     echo -e "  ${RED}HIBA:${NC} claude telepitve, de nem indul (valoszinuleg AVX-hianyos CPU + Bun-binary)."
     if command -v npm >/dev/null 2>&1; then
-      echo -e "  ${DIM}Probald manualisan: npm install -g @anthropic-ai/claude-code@${CLAUDE_PIN}${NC}"
+      echo -e "  ${DIM}Probald manualisan (masold ki az alabbi sort):${NC}"
+      echo "    npm install -g @anthropic-ai/claude-code@${CLAUDE_PIN}"
     else
-      echo -e "  ${DIM}Telepits nvm+node-ot, majd: npm install -g @anthropic-ai/claude-code@${CLAUDE_PIN}${NC}"
+      echo -e "  ${DIM}Telepits nvm+node-ot, majd (masold ki az alabbi sort):${NC}"
+      echo "    npm install -g @anthropic-ai/claude-code@${CLAUDE_PIN}"
     fi
   fi
 fi
@@ -721,9 +817,22 @@ echo -e "${BOLD}$(_t section_5)${NC}"
 cd "$INSTALL_DIR"
 
 echo -e "  npm install..."
-if ! (npm ci --loglevel warn 2>/dev/null || npm install --loglevel warn); then
-  fail "npm install sikertelen. Ellenorizd a hibauzeneteket fentebb."
+# Fast path: npm ci. On a benign lockfile desync it fails harmlessly and we
+# fall back to npm install, so ci's stderr is captured (not shown) to avoid a
+# scary EUSAGE dump on the happy path. But if the fallback ALSO fails -- e.g.
+# node-gyp getting OOM-killed while compiling better-sqlite3 from source, which
+# has no prebuilt binary for newer Node ABIs -- we replay ci's captured stderr
+# so the real error is visible instead of an empty "check above".
+_NPM_CI_LOG=$(mktemp)
+if ! npm ci --loglevel warn 2>"$_NPM_CI_LOG"; then
+  if ! npm install --loglevel warn; then
+    echo -e "  ${DIM}--- npm ci kimenet ---${NC}"
+    cat "$_NPM_CI_LOG" >&2
+    rm -f "$_NPM_CI_LOG"
+    fail "npm install sikertelen. Ellenorizd a fenti hibauzeneteket (pl. node-gyp OOM a better-sqlite3 forditasakor)."
+  fi
 fi
+rm -f "$_NPM_CI_LOG"
 ok "npm csomagok telepitve"
 
 INSTALL_STEP="typescript-build"
@@ -755,33 +864,61 @@ INSTALL_STEP="configuration"
 echo ""
 echo -e "${BOLD}  Konfiguracio letrehozasa...${NC}"
 
-(
-  umask 077 && cat >"$INSTALL_DIR/.env" <<ENVEOF
-# Main agent konfiguracio
-CHANNEL_PROVIDER=${CHANNEL_PROVIDER}
-OWNER_NAME=${OWNER_NAME}
-BOT_NAME=${BOT_NAME}
-BRAND_NAME=${BRAND_NAME}
-MAIN_AGENT_ID=${MAIN_AGENT_ID}
-SERVICE_ID=${SERVICE_ID}
-WEB_PORT=${WEB_PORT:-3420}
-ENVEOF
-)
+# Create or UPDATE .env -- MERGE, never replace (card 8290FF71). The old
+# cat> heredoc regenerated the file on every run, silently dropping every
+# line the installer does not own: wizard-saved credentials
+# (CLAUDE_CODE_OAUTH_TOKEN / ANTHROPIC_API_KEY), operator-added keys
+# (WEB_HOST, GOOGLE_API_KEY, MAIN_AGENT_ISOLATED_CONFIG, ...) and a live
+# pairing (ALLOWED_CHAT_ID) -- so a re-run over a working install broke it.
+# Critical toggles should additionally live in store/config-overrides.json
+# (two-layer store), which install/update never touches.
+env_merge_key() {
+  # env_merge_key KEY VALUE -- drop any existing KEY= line, append KEY=VALUE.
+  _emk_tmp="$INSTALL_DIR/.env.tmp.$$"
+  grep -v "^$1=" "$INSTALL_DIR/.env" > "$_emk_tmp" 2>/dev/null || true
+  printf '%s=%s\n' "$1" "$2" >> "$_emk_tmp"
+  mv "$_emk_tmp" "$INSTALL_DIR/.env"
+  chmod 600 "$INSTALL_DIR/.env"
+}
+env_keep_or_set() {
+  # env_keep_or_set KEY VALUE -- like env_merge_key, but an EMPTY new value
+  # never clobbers an existing non-empty one (re-run with a skipped prompt).
+  _eks_existing="$(grep "^$1=" "$INSTALL_DIR/.env" 2>/dev/null | head -1 | cut -d= -f2-)"
+  if [ -z "$2" ] && [ -n "$_eks_existing" ]; then return 0; fi
+  env_merge_key "$1" "$2"
+}
+(umask 077 && touch "$INSTALL_DIR/.env")
+chmod 600 "$INSTALL_DIR/.env"
+[ -s "$INSTALL_DIR/.env" ] || printf '# Main agent konfiguracio\n' >> "$INSTALL_DIR/.env"
+env_merge_key CHANNEL_PROVIDER "${CHANNEL_PROVIDER}"
+env_merge_key OWNER_NAME "${OWNER_NAME}"
+env_merge_key BOT_NAME "${BOT_NAME}"
+env_merge_key BRAND_NAME "${BRAND_NAME}"
+env_merge_key MAIN_AGENT_ID "${MAIN_AGENT_ID}"
+env_merge_key SERVICE_ID "${SERVICE_ID}"
+env_merge_key WEB_PORT "${WEB_PORT:-3420}"
 if [ "$CHANNEL_PROVIDER" = "telegram" ]; then
-  echo "TELEGRAM_BOT_TOKEN=${BOT_TOKEN}" >> "$INSTALL_DIR/.env"
-  echo "ALLOWED_CHAT_ID=${CHAT_ID}" >> "$INSTALL_DIR/.env"
+  env_keep_or_set TELEGRAM_BOT_TOKEN "${BOT_TOKEN}"
+  # Never demote a paired install: CHAT_ID=0 means pairing was skipped THIS
+  # run -- it must not overwrite a real chat id from a previous run.
+  _existing_chat="$(grep '^ALLOWED_CHAT_ID=' "$INSTALL_DIR/.env" 2>/dev/null | head -1 | cut -d= -f2-)"
+  if [ "${CHAT_ID}" != "0" ] || [ -z "$_existing_chat" ]; then
+    env_merge_key ALLOWED_CHAT_ID "${CHAT_ID}"
+  fi
 elif [ "$CHANNEL_PROVIDER" = "discord" ]; then
-  echo "DISCORD_BOT_TOKEN=${DISCORD_BOT_TOKEN}" >> "$INSTALL_DIR/.env"
-  echo "DISCORD_CHANNEL_ID=${DISCORD_CHANNEL_ID}" >> "$INSTALL_DIR/.env"
-  echo "OPERATOR_DISCORD_USER_ID=${OPERATOR_DISCORD_USER_ID}" >> "$INSTALL_DIR/.env"
+  env_keep_or_set DISCORD_BOT_TOKEN "${DISCORD_BOT_TOKEN}"
+  env_keep_or_set DISCORD_CHANNEL_ID "${DISCORD_CHANNEL_ID}"
+  env_keep_or_set OPERATOR_DISCORD_USER_ID "${OPERATOR_DISCORD_USER_ID}"
 else
-  echo "SLACK_BOT_TOKEN=${SLACK_BOT_TOKEN}" >> "$INSTALL_DIR/.env"
-  echo "SLACK_APP_TOKEN=${SLACK_APP_TOKEN}" >> "$INSTALL_DIR/.env"
+  env_keep_or_set SLACK_BOT_TOKEN "${SLACK_BOT_TOKEN}"
+  env_keep_or_set SLACK_APP_TOKEN "${SLACK_APP_TOKEN}"
 fi
 # Claude auth credentials (API key or OAuth token) -- channels.sh reads
 # these selectively so the tmux-spawned claude process can authenticate.
+# Merged by key, so an auth line saved by a previous run (or the dashboard
+# wizard) survives a re-run where the prompt was skipped.
 if [ -n "${CLAUDE_AUTH_ENV_LINE:-}" ]; then
-  echo "$CLAUDE_AUTH_ENV_LINE" >> "$INSTALL_DIR/.env"
+  env_merge_key "${CLAUDE_AUTH_ENV_LINE%%=*}" "${CLAUDE_AUTH_ENV_LINE#*=}"
 fi
 chmod 600 "$INSTALL_DIR/.env"
 # Fleet setup-token file: per-agent config-dir isolation and the credentials
@@ -1398,10 +1535,16 @@ ${TZ_LINE}
 EOF
 
 # ${MORN_UNIT}.timer
+# NO Requires=/Wants= on the service here: a [Unit] dependency on the
+# triggered service makes EVERY activation of the timer unit (each systemd
+# user-manager start, not just the 07:27 elapse) queue an immediate start of
+# the briefing service. Under user-manager restart churn that multiplied the
+# morning briefing (customer report 2026-07-26: 5 deliveries in one day).
+# The [Timer] section binds to ${MORN_UNIT}.service by name on elapse, which
+# is the only coupling a timer needs.
 cat >"$SYSTEMD_DIR/${MORN_UNIT}.timer" <<EOF
 [Unit]
 Description=${BOT_NAME} Reggeli Napindito Timer
-Requires=${MORN_UNIT}.service
 
 [Timer]
 OnCalendar=*-*-* 07:27:00

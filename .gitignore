@@ -118,3 +118,7 @@ store/stitch-tools/node_modules/
 # Quota-bridge (degraded-mode local-LLM Telegram responder) operational files
 !store/quota-bridge.py
 !store/quota-bridge.service
+
+# Claude Code Channels runtime config/session dir (sessions, history, tokens,
+# plugins, skills). Per-install runtime state -- never source, never commit.
+.channels-config/

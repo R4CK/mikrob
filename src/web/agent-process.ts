@@ -65,17 +65,8 @@ export function delay(ms: number): Promise<void> {
   return new Promise((r) => setTimeout(r, ms))
 }
 
-// The fleet's channel plugins keyed by provider. A sub-agent must enable ONLY
-// its own provider's plugin; the others are forced off so it cannot spawn a
-// competing poller against the main agent's bot token (the dup-poller / 409
-// Conflict class). Keep in sync with the user-scope enabledPlugins ids.
-export const CHANNEL_PLUGIN_IDS: Record<string, string> = {
-  telegram: 'telegram@claude-plugins-official',
-  slack: 'slack-channel@marveen-marketplace',
-  discord: 'discord@claude-plugins-official',
-  googlechat: 'googlechat@claude-channel-googlechat',
-  teams: 'teams@marveen-marketplace',
-}
+import { CHANNEL_PLUGIN_IDS } from './plugin-ids.js'
+export { CHANNEL_PLUGIN_IDS }
 
 // Pure: compute the enabledPlugins map for a sub-agent so that exactly its own
 // channel plugin is enabled and every other channel plugin is disabled.
@@ -95,7 +86,7 @@ export function scopeChannelPlugins(
   existing?: Record<string, boolean>,
 ): Record<string, boolean> {
   const out: Record<string, boolean> = { ...(existing ?? {}) }
-  const ownPlugin = explicitProvider ? CHANNEL_PLUGIN_IDS[explicitProvider] : undefined
+  const ownPlugin = explicitProvider ? CHANNEL_PLUGIN_IDS[explicitProvider as keyof typeof CHANNEL_PLUGIN_IDS] : undefined
   for (const pid of Object.values(CHANNEL_PLUGIN_IDS)) {
     out[pid] = pid === ownPlugin
   }
@@ -295,31 +286,41 @@ const ISOLATED_CONFIG_SKIP = new Set(['settings.json', 'plugins', '.credentials.
 
 export function ensureIsolatedChannelConfigDir(
   name: string,
-  providerType: ChannelProviderType,
+  // null = channel-less agent: provision the isolated dir with EVERY channel
+  // plugin disabled (scopeChannelPlugins(null)) instead of enabling one.
+  providerType: ChannelProviderType | null,
 ): string | null {
   return provisionIsolatedConfigDir(join(agentDir(name), '.claude-config'), agentDir(name), providerType, name)
 }
 
 // The main channels agent (started by scripts/channels.sh, cwd = PROJECT_ROOT)
-// normally keeps the shared ~/.claude by design. On macOS that means it
-// authenticates from the ROTATING Keychain OAuth session, which periodically
-// expires and 401s the main bot (a manual /login is then needed) -- while the
-// isolated sub-agents, which authenticate from the long-lived fleet setup-token,
-// never do. This gives the main agent the SAME isolated CLAUDE_CONFIG_DIR as the
-// sub-agents so it too authenticates from CLAUDE_CODE_OAUTH_TOKEN and never
-// touches the rotating Keychain.
+// normally keeps the shared ~/.claude by design. That means it authenticates
+// from whatever on-process credential refreshes that shared root -- the
+// ROTATING macOS Keychain OAuth session, or (Linux) the shared
+// ~/.claude/.credentials.json, which self-refreshes on its own ~8h cycle --
+// either way, a periodic-401 risk: the refresh can hit a transient error and
+// never retry, and Claude Code prefers an on-disk .credentials.json over an
+// otherwise-valid CLAUDE_CODE_OAUTH_TOKEN env var (claude-credentials-guard.ts),
+// so a stale file wins even with a live token sitting right next to it
+// (confirmed root cause of the 2026-07-23 marveen-channels silent outage,
+// PLAN.md GAP 1). The isolated sub-agents, which authenticate from the
+// long-lived fleet setup-token via an isolated CLAUDE_CONFIG_DIR carrying no
+// .credentials.json at all, never hit this. This gives the main agent the SAME
+// isolated CLAUDE_CONFIG_DIR as the sub-agents so it too authenticates from
+// CLAUDE_CODE_OAUTH_TOKEN and never touches a rotating on-disk credential.
 //
 // Deliberately narrow and OPT-IN (default OFF), so nothing changes for existing
 // installs unless the operator turns it on:
-//   - macOS only -- on Linux the main agent's rotating credentials.json is
-//     handled by the separate credentials-guard; the Keychain-expiry motive is
-//     macOS-specific. This does NOT touch shouldAlertSharedConfigCollision's
-//     darwin early-return (a different failure mode: plugin-slot collision).
+//   - any platform -- the provisioning itself (provisionIsolatedConfigDir) is
+//     100% filesystem-based and already proven identical on every platform via
+//     the sub-agent path; there is no macOS-specific step here. This does NOT
+//     touch shouldAlertSharedConfigCollision's darwin early-return (a different,
+//     genuinely macOS-specific failure mode: plugin-slot collision).
 //   - gated on the MAIN_AGENT_ISOLATED_CONFIG setting via the settings-store, so
 //     BOTH the dashboard toggle (config-overrides.json) AND a hand-set .env key
 //     take effect (resolution: override > .env > default '0'). channels.sh no
-//     longer parses the flag itself -- it always calls the helper on macOS and
-//     this function is the single gate.
+//     longer parses the flag itself -- it always calls the helper and this
+//     function is the single gate.
 //   - gated on the fleet OAuth token (no token -> no isolation, since the
 //     isolated dir carries no .credentials.json -- identical gate to the
 //     sub-agent path in startAgentProcess);
@@ -328,7 +329,6 @@ export function ensureMainAgentIsolatedConfigDir(
   provider?: string,
   platform: NodeJS.Platform = process.platform,
 ): string | null {
-  if (platform !== 'darwin') return null
   let enabled = false
   try { enabled = String(getEffectiveSettingValue('MAIN_AGENT_ISOLATED_CONFIG')) === '1' } catch { enabled = false }
   if (!enabled) return null
@@ -375,7 +375,7 @@ export function resolveMainAgentConfigDir(): string | null {
 function provisionIsolatedConfigDir(
   cfg: string,
   cwd: string,
-  providerType: ChannelProviderType,
+  providerType: ChannelProviderType | null,
   name: string,
 ): string | null {
   try {
@@ -648,6 +648,28 @@ export function stampFableOverageConsent(dotClaudePath: string): boolean {
   } catch (err) {
     logger.warn({ err, dotClaudePath }, 'fable-consent: could not stamp consent (runtime dialog-answer backstop remains)')
     return false
+  }
+}
+
+// FABLEFALL1: the per-agent stamp above only runs on the startAgentProcess
+// spawn path. The MAIN channels session (spawned by channels.sh / launchd)
+// and the interactive workers' shared roots never pass through it, so those
+// roots never self-heal -- and the main session is exactly the long-running
+// process the menu-recovery keystrokes hit (silent Fable->Sonnet drift,
+// measured on 2026-07-28: 5 events, 514 post-fallback Sonnet turns here, 12
+// events at a customer). Called at dashboard boot and before every hard
+// restart of the channels session. Worker dir resolution mirrors
+// agent-worker.ts (env override + fixed default); change-only writes.
+export function stampFableOverageConsentSharedRoots(): void {
+  const mainDir = ensureMainAgentIsolatedConfigDir()
+  const candidates = [
+    mainDir ? join(mainDir, '.claude.json') : null,
+    join(homedir(), '.claude.json'),
+    join(process.env.MARVEEN_WORKER_DIR || join(homedir(), '.marveen-worker'), '.claude-config', '.claude.json'),
+    join(process.env.MARVEEN_WORKER_DIR_FAST || join(homedir(), '.marveen-worker-fast'), '.claude-config', '.claude.json'),
+  ]
+  for (const p of candidates) {
+    if (p && existsSync(p)) stampFableOverageConsent(p)
   }
 }
 
@@ -1079,12 +1101,26 @@ export function startAgentProcess(name: string, opts: { fresh?: boolean } = {}):
     if (!claudeConfigDir && hasFleetOauthToken()) {
       oauthTokenEnv = `export CLAUDE_CODE_OAUTH_TOKEN="$(cat '${FLEET_OAUTH_TOKEN_PATH}')" && `
     }
-    if (!claudeConfigDir && hasChannel && name !== MAIN_AGENT_ID) {
+    // Isolation must also cover CHANNEL-LESS Claude-OAuth agents, not just
+    // channel ones. A shared-root agent authenticates from the ROTATING shared
+    // credential (macOS Keychain entry / .credentials.json), which Claude Code
+    // prefers over an otherwise-valid CLAUDE_CODE_OAUTH_TOKEN env var (see the
+    // ensureMainAgentIsolatedConfigDir header) -- so when that credential
+    // rotates or expires, the agent parks on a 401 even though the fleet token
+    // exported right next to it is fine (dani/geri recurring outage,
+    // 2026-07-25). Only agents that never touch Anthropic OAuth stay on the
+    // shared root: local/BYO-endpoint models (Ollama/DeepSeek/OpenRouter) and
+    // per-agent API-key (authMode 'api') agents.
+    const needsFleetOauth = isClaude && authMode !== 'api'
+    if (!claudeConfigDir && (hasChannel || needsFleetOauth) && name !== MAIN_AGENT_ID) {
       if (hasFleetOauthToken()) {
         // Token present -> isolation works; any earlier degradation is resolved,
         // so re-arm the one-shot alert for a future token loss.
         resetSharedConfigCollisionAlert()
-        const isolated = ensureIsolatedChannelConfigDir(name, agentProvider)
+        // A channel-less agent provisions with a null provider so its isolated
+        // settings.json disables EVERY channel plugin -- it has no bot token,
+        // so a loaded plugin could only fight the fleet over poller slots.
+        const isolated = ensureIsolatedChannelConfigDir(name, hasChannel ? agentProvider : null)
         if (isolated) {
           claudeConfigDir = isolated
           // Read the token at launch via $(cat) so the literal secret never
@@ -1095,8 +1131,10 @@ export function startAgentProcess(name: string, opts: { fresh?: boolean } = {}):
       } else {
         logger.warn({ name }, 'isolated-config: no fleet OAuth token (store/.claude-oauth-token); keeping shared ~/.claude. Run `claude setup-token` and store it to enable per-agent isolation.')
         // H1: the WARN above is silent. With >1 channel sub-agent sharing
-        // ~/.claude this is an active plugin-slot collision -> raise a loud alert.
-        maybeAlertSharedConfigCollision(name)
+        // ~/.claude this is an active plugin-slot collision -> raise a loud
+        // alert. Channel-less agents cannot contend for a plugin slot, so they
+        // only get the WARN.
+        if (hasChannel) maybeAlertSharedConfigCollision(name)
       }
     }
     // Per-project trust pre-seed in the config root this session will ACTUALLY
