@@ -154,6 +154,23 @@ const SHAPE_SIGNALS: ReadonlyArray<readonly [NonOffloadableCategory, RegExp]> = 
   ],
   ['isolation', /\ball\s+(rows|records|results|tenants|companies|users)\b/],
   ['security-decision', /\bfail[-\s]?(closed|open)\b/],
+  // --- OUTCOME / POLICY family (Cybersec 2nd NO-GO) -------------------------------------------
+  // Rule (c) needs a mutation verb AND a guard NOUN. This family has the verb but names no control
+  // artifact -- it states the OUTCOME or POLICY ("grant access", "treat a missing role as owner",
+  // "return results unfiltered") instead of the thing being changed ("the guard", "the permission
+  // check"). Same act, described by its effect, so (c) never fired and these -- fail-open,
+  // access-default, tenant-scope-drop, validation-moved-client -- are the fleet's own highest-
+  // frequency defect classes. Deliberately guard-noun-FREE.
+  // (1) granting access / letting a request through.
+  ['authz', /\b(grant|grants|granting|allow|allows|allowing|permit|permits|permitting|authorize|authorise|let)\b[^.]{0,35}\b(access|request|through|user|users|caller|everyone|anyone|any user)\b/],
+  // (2) treating one thing AS a more privileged thing.
+  ['authz', /\b(treat|treats|treating|interpret|consider|considers|count|counts|regard|regards|map|maps)\b[^.]{0,45}\bas\b[^.]{0,25}\b(owner|admin|administrator|superuser|root|all|everyone|public|authorized|authorised|valid|trusted|allowed)\b/],
+  // (3) ceasing to apply a control -- stated as an activity, not a named artifact.
+  ['authz', /\b(stop|stops|stopping|skip|skips|skipping|bypass|bypasses|disable|disables|disabling|drop|drops|dropping|avoid|omit|no longer)\b[^.]{0,35}\b(apply|applying|applies|filter|filters|filtering|check|checks|checking|validat|scoping|scope|restrict)\w*/],
+  // (4) an explicitly unscoped/unfiltered result set.
+  ['isolation', /\b(unfiltered|unscoped|unrestricted|without filtering|without scoping|without the filter|across all tenants|for all tenants|regardless of (the )?(owner|tenant|site|user|company))\b/],
+  // (5) moving a server-side control to an untrusted client.
+  ['security-decision', /\b(move|moves|moving|shift|shifts|relocate|push|pushes)\b[^.]{0,45}\b(validation|validate|check|checks|authorization|authorisation|authz|auth|permission)\w*\b[^.]{0,35}\b(client|frontend|front-end|browser|ui)\b/],
 ]
 
 /** Strip zero-width/control chars and collapse letter-spaced runs ("s e c u r i t y" -> "security")
