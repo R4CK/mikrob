@@ -1,8 +1,12 @@
 #!/usr/bin/env bash
-# local-llm.sh -- fleet-shared client for the LOCAL offload LLM (Ollama on the WSL GPU).
+# local-llm.sh -- fleet-shared client for the LOCAL offload LLM (Ollama).
 #
 # PURPOSE: let any fleet agent hand a bounded sub-task to a locally-hosted model
-# (GTX 1660 Ti, CUDA via Ollama) instead of burning online Anthropic tokens.
+# instead of burning online Anthropic tokens. CROSS-PLATFORM (card b097b578): it talks
+# only to the Ollama HTTP API, which is identical on Linux, WSL and macOS -- on Linux/WSL
+# the GPU path is CUDA (the fleet host is a GTX 1660 Ti), on macOS Ollama uses Metal
+# automatically. Only the "how to start Ollama" HINT is platform-specific; see
+# detect_platform() below. Nothing else branches on the OS.
 # Use for cheap, well-scoped jobs: MarkdownV2/JSON escaping, text reformat,
 # log/email triage, dedup, short summaries, classification, i18n string drafts.
 # NOT for high-stakes reasoning, security gates, or anything that ships unreviewed.
@@ -29,6 +33,41 @@ OLLAMA_HOST="${OLLAMA_HOST:-http://127.0.0.1:11434}"
 MODEL_FILE="$HERE/local-llm-model"
 SKILL_DIR="$HERE/local-llm-skills"
 TIMEOUT="${LOCAL_LLM_TIMEOUT:-120}"
+
+# --- host-platform detection (card b097b578) -----------------------------------------------------
+# The Ollama HTTP API is identical on every platform, so ONLY the operator-facing "how do I start it"
+# hint differs. Detection is `uname -s` plus the WSL marker, and it is used for MESSAGES ONLY -- no
+# code path branches on it, so a wrong guess can never change what the script actually does.
+#   Linux + /proc/version contains microsoft -> WSL   (systemd --user unit)
+#   Linux                                    -> Linux (systemd --user unit)
+#   Darwin                                   -> macOS (Ollama.app, or `ollama serve` from brew)
+detect_platform() {
+  case "$(uname -s 2>/dev/null || echo unknown)" in
+    Darwin) echo macos ;;
+    Linux)
+      if grep -qi microsoft /proc/version 2>/dev/null; then echo wsl; else echo linux; fi
+      ;;
+    *) echo unknown ;;
+  esac
+}
+LOCAL_LLM_PLATFORM="${LOCAL_LLM_PLATFORM:-$(detect_platform)}"
+
+# Per-platform "Ollama is down, start it like this" hint. macOS has no systemd: Ollama runs either as
+# the menu-bar app or as a plain `ollama serve` (brew install ollama). Homebrew's services wrapper is
+# offered as the background option.
+ollama_start_hint() {
+  case "$LOCAL_LLM_PLATFORM" in
+    macos)
+      echo "start it: open -a Ollama   (or: ollama serve &   |   brew services start ollama)"
+      ;;
+    wsl | linux)
+      echo "start it: systemctl --user start ollama"
+      ;;
+    *)
+      echo "start it: run 'ollama serve' (or your platform's Ollama service)"
+      ;;
+  esac
+}
 
 read_model() {
   if [[ -f "$MODEL_FILE" ]]; then
@@ -83,10 +122,11 @@ if [[ "$MODE" == "health" ]]; then
   if ollama_up; then
     have=$(curl -fsS -m 5 "$OLLAMA_HOST/api/tags" | python3 -c "import json,sys; print('yes' if any(m.get('name','').split(':')[0]==sys.argv[1].split(':')[0] for m in json.load(sys.stdin).get('models',[])) else 'no')" "$MODEL" 2>/dev/null || echo "?")
     echo "ollama: UP ($OLLAMA_HOST)"
+    echo "platform: $LOCAL_LLM_PLATFORM  (override with LOCAL_LLM_PLATFORM=macos|linux|wsl)"
     echo "active model: $MODEL  (present locally: $have)"
     exit 0
   else
-    echo "ollama: DOWN ($OLLAMA_HOST) -- start it: systemctl --user start ollama"
+    echo "ollama: DOWN ($OLLAMA_HOST) [$LOCAL_LLM_PLATFORM] -- $(ollama_start_hint)"
     exit 2
   fi
 fi
@@ -118,7 +158,7 @@ if [[ -n "$TASK" ]]; then
   PROMPT="${USER_TPL//\{\{INPUT\}\}/$PROMPT}"
 fi
 
-ollama_up || die 2 "ollama down at $OLLAMA_HOST -- systemctl --user start ollama"
+ollama_up || die 2 "ollama down at $OLLAMA_HOST [$LOCAL_LLM_PLATFORM] -- $(ollama_start_hint)"
 
 # Build request JSON safely via python (handles all escaping)
 REQ=$(SYSTEM="$SYSTEM" MODEL="$MODEL" PROMPT="$PROMPT" python3 -c '
@@ -128,11 +168,25 @@ s=os.environ.get("SYSTEM","")
 if s: d["system"]=s
 print(json.dumps(d))')
 
-# nanosecond clock -> milliseconds (robust across date impls; 0 if unavailable)
-START_NS=$(date +%s%N 2>/dev/null || echo 0)
-_elapsed() { # -> elapsed milliseconds since START_NS
-  local e; e=$(date +%s%N 2>/dev/null || echo 0)
-  if [[ "$START_NS" == 0 || "$e" == 0 ]]; then echo 0; else echo $(( (e - START_NS) / 1000000 )); fi
+# Millisecond clock -- PORTABLE (card b097b578). GNU date supports %N (nanoseconds); BSD/macOS date
+# does NOT and silently emits a literal "N" (e.g. "1785441395N") with exit status 0, so the old
+# `|| echo 0` guard never fired and the later arithmetic hit a non-numeric operand -- under
+# `set -euo pipefail` that is a hard failure, i.e. the metering broke the whole call on a Mac.
+# We therefore VALIDATE that the output is all digits and fall back to python3 (already a hard
+# dependency of this script for JSON) when it is not.
+_now_ms() {
+  local ns
+  ns=$(date +%s%N 2>/dev/null || true)
+  if [[ "$ns" =~ ^[0-9]+$ ]]; then
+    echo $(( ns / 1000000 ))
+  else
+    python3 -c 'import time; print(int(time.time()*1000))' 2>/dev/null || echo 0
+  fi
+}
+START_MS=$(_now_ms)
+_elapsed() { # -> elapsed milliseconds since START_MS
+  local e; e=$(_now_ms)
+  if [[ "$START_MS" == 0 || "$e" == 0 ]]; then echo 0; else echo $(( e - START_MS )); fi
 }
 
 RESP=$(curl -fsS -m "$TIMEOUT" -X POST "$OLLAMA_HOST/api/generate" \

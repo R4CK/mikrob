@@ -45,7 +45,7 @@
 # LOCAL model is re-prompted with the errors up to N times (default 3). Only a
 # green draft returns exit 0; a still-failing one returns exit 7 (UNVERIFIED).
 #   local-llm-rag.sh --agent backend --out /tmp/x.test.ts \
-#     --verify-cmd "cd /mnt/h/LM_Studio_Workdir/CleanCore && npx tsc --noEmit -p packages/x/tsconfig.test.json" \
+#     --verify-cmd "cd \"$REPO\" && npx tsc --noEmit -p packages/x/tsconfig.test.json" \
 #     "write a vitest suite for ..."
 #
 # Coding-difficulty offload gate (card afcfe93e): pass --difficulty <trivial|isolated|module|
