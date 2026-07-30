@@ -70,11 +70,18 @@ test.describe('Dashboard smoke', () => {
   // reachable from the dashboard" -- this proves the Costs nav link is real, the
   // page actually renders live data from /api/costs/summary (not dead scaffolding),
   // and no JS error fires.
+  //
+  // Navigates via the URL hash rather than clicking the sidebar link: the
+  // link lives inside the collapsible "STATISZTIKÁK" group, which starts
+  // collapsed/invisible on a fresh session (no marveen.sidebarGroups in
+  // localStorage yet) until switchPage() auto-expands the active page's
+  // group -- clicking it first intermittently timed out with "element is
+  // not visible" depending on that default state (found while adding the
+  // repos-page smoke test, card 000ec0d0).
   test('costs page loads and renders live summary data without errors', async ({ page }) => {
     const errors: string[] = []
     page.on('pageerror', (err) => errors.push(err.message))
-    await page.goto(`/?token=${TOKEN}`)
-    await page.click('.sb-link[data-page="costs"]')
+    await page.goto(`/?token=${TOKEN}#costs`)
     await page.waitForTimeout(500)
     const content = page.locator('#costsContent')
     await expect(content).toBeVisible()
@@ -82,6 +89,29 @@ test.describe('Dashboard smoke', () => {
     // any real fixed costs are configured -- proves the fetch to /api/costs/summary
     // actually happened and rendered, not just an empty/loading shell.
     await expect(content).toContainText(/\d{4}-\d{2}/)
+    expect(errors).toHaveLength(0)
+  })
+
+  // Card 000ec0d0: proves the "Beépített repók" nav link + page are real and
+  // wired to the live GET /api/connectors/github-repos endpoint (not dead
+  // scaffolding) -- the stat total renders "0" from a real fetch, and the
+  // real empty-state message is shown since no repos are registered yet.
+  // Navigates via the URL hash (like the kanban test above) rather than
+  // clicking the sidebar link directly: the link lives inside the
+  // collapsible "RENDSZER" group, which starts collapsed/invisible on a
+  // fresh session until switchPage() auto-expands the active page's group --
+  // clicking it first would fail Playwright's visibility check.
+  test('repos page loads and renders live repo count without errors', async ({ page }) => {
+    const errors: string[] = []
+    page.on('pageerror', (err) => errors.push(err.message))
+    await page.goto(`/?token=${TOKEN}#repos`)
+    await page.waitForTimeout(500)
+    const statTotal = page.locator('#reposStatTotal')
+    await expect(statTotal).toBeVisible()
+    await expect(statTotal).toHaveText(/^\d+$/)
+    // The nav link itself must also be visible now (its group auto-expanded
+    // for the active page) -- proves the sidebar entry is real, not orphaned.
+    await expect(page.locator('.sb-link[data-page="repos"]')).toBeVisible()
     expect(errors).toHaveLength(0)
   })
 })

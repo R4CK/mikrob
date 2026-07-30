@@ -4439,6 +4439,144 @@ main.kanban-active { max-width: none; padding-left: 16px; padding-right: 16px; }
   margin-left: 6px;
 }
 
+/* --- Beépített repók dashboard (card 000ec0d0) --- */
+.repos-stats {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(140px, 1fr));
+  gap: 12px;
+  margin-bottom: 16px;
+}
+.repos-add-row {
+  display: flex;
+  gap: 8px;
+  margin-bottom: 8px;
+  flex-wrap: wrap;
+}
+.repos-add-row .input { flex: 1; min-width: 220px; }
+.repos-add-status {
+  padding: 8px 12px;
+  border-radius: var(--radius-sm);
+  font-size: 13px;
+  margin-bottom: 16px;
+}
+.repos-add-status.loading { background: var(--bg-input); color: var(--text-muted); }
+.repos-add-status.success { background: rgba(74, 222, 128, 0.12); color: #16a34a; }
+[data-theme="dark"] .repos-add-status.success { color: #4ade80; }
+.repos-add-status.error { background: rgba(239, 68, 68, 0.12); color: var(--danger); }
+.repos-loading {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 32px 0;
+  color: var(--text-muted);
+  font-size: 14px;
+}
+.repos-loading[hidden] { display: none; }
+.repos-error {
+  text-align: center;
+  padding: 32px 20px;
+  color: var(--danger);
+}
+.repos-error[hidden] { display: none; }
+.repos-error p { margin: 0 0 12px; font-size: 14px; }
+.repos-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(300px, 1fr));
+  gap: 12px;
+}
+.repos-grid[hidden] { display: none; }
+.repo-card {
+  display: flex;
+  flex-direction: column;
+  padding: 16px 18px;
+  background: var(--bg-card);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  transition: all var(--transition);
+  gap: 10px;
+}
+.repo-card:hover {
+  border-color: var(--accent);
+  box-shadow: var(--shadow-sm);
+}
+.repo-card-header {
+  display: flex;
+  align-items: flex-start;
+  gap: 10px;
+}
+.repo-card-icon {
+  flex-shrink: 0;
+  width: 36px;
+  height: 36px;
+  border-radius: var(--radius-sm);
+  background: var(--accent-soft, rgba(99, 102, 241, 0.1));
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  color: var(--accent);
+}
+.repo-card-title { flex: 1; min-width: 0; }
+.repo-card-name {
+  font-weight: 600;
+  font-size: 14px;
+  color: var(--text);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.repo-card-source {
+  display: block;
+  font-size: 11px;
+  color: var(--text-muted);
+  text-decoration: none;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.repo-card-source:hover { color: var(--accent); text-decoration: underline; }
+.repo-card-meta {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+.repo-card-badge {
+  font-size: 11px;
+  font-weight: 500;
+  padding: 2px 8px;
+  border-radius: 999px;
+  background: var(--bg-input);
+  color: var(--text-muted);
+  border: 1px solid var(--border);
+  white-space: nowrap;
+}
+.repo-card-date {
+  font-size: 11px;
+  color: var(--text-muted);
+  white-space: nowrap;
+}
+.repo-card-actions {
+  display: flex;
+  gap: 8px;
+  margin-top: 2px;
+}
+.repos-empty {
+  text-align: center;
+  padding: 48px 20px;
+  color: var(--text-muted);
+}
+.repos-empty[hidden] { display: none; }
+.repos-empty svg { margin-bottom: 12px; opacity: 0.4; }
+.repos-empty p { margin: 4px 0; font-size: 14px; }
+.repos-empty-hint { font-size: 12px !important; opacity: 0.6; }
+
+@media (max-width: 640px) {
+  .repos-add-row { flex-direction: column; }
+  .repos-add-row .input { min-width: 0; }
+  .repo-card-actions { flex-wrap: wrap; }
+}
+
 .vault-card-edit-form {
   padding: 10px 12px;
   border-top: 1px solid var(--border);

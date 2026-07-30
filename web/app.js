@@ -404,6 +404,7 @@ function switchPage(pageId) {
   if (pageId === 'approvals') loadApprovalsPage()
   if (pageId === 'settings') loadSettings()
   if (pageId === 'updates') loadUpdates()
+  if (pageId === 'repos') loadReposPage()
   // 'team' page is merged into 'agents' -- redirect for any lingering deep-links
   if (pageId === 'messages') loadMessagesPage()
   if (pageId === 'tokenUsage') loadTokenUsage()
@@ -453,7 +454,7 @@ const SIDEBAR_GROUPS = [
   { key: 'team',        labelKey: 'nav.group.team',        pages: ['agents', 'activity', 'messages', 'tasks', 'bgTasks'] },
   { key: 'knowledge',   labelKey: 'nav.group.knowledge',   pages: ['memories', 'skills', 'research', 'ideas'] },
   { key: 'stats',       labelKey: 'nav.group.stats',       pages: ['costs', 'tokenUsage'] },
-  { key: 'system',      labelKey: 'nav.group.system',      pages: ['status', 'naplo', 'updates', 'settings', 'vault'] },
+  { key: 'system',      labelKey: 'nav.group.system',      pages: ['status', 'naplo', 'updates', 'repos', 'settings', 'vault'] },
   { key: 'connections', labelKey: 'nav.group.connections', pages: ['connectors', 'federation', 'migrate'] },
 ]
 const sidebarGroupEls = document.querySelectorAll('.sb-group[data-group]')
@@ -8315,6 +8316,152 @@ async function loadGitHubRepos() {
     } finally {
       addBtn.disabled = false
       addBtn.textContent = 'Telepites'
+    }
+  })
+  input.addEventListener('keydown', (e) => { if (e.key === 'Enter') addBtn.click() })
+})()
+
+// --- Beépített repók (dedicated dashboard page, card 000ec0d0 / epic b48fc58c) ---
+// Reuses the existing, real GET/POST/PATCH/DELETE /api/connectors/github-repos
+// endpoints (same backend as the Connectors-page sub-section above). Update-
+// availability DETECTION -- knowing in advance whether a repo actually has new
+// upstream commits -- is separate backend work (card a5c13533, not yet built).
+// The Update button here always attempts a pull and is honestly labelled as
+// such (see the info-box in index.html); it never claims a repo "is up to
+// date" or "has an update available" without real data behind that claim.
+let _reposCache = []
+
+async function loadReposPage() {
+  const loadingEl = document.getElementById('reposLoading')
+  const gridEl = document.getElementById('reposGrid')
+  const emptyEl = document.getElementById('reposEmpty')
+  const errorEl = document.getElementById('reposErrorState')
+  loadingEl.hidden = false
+  gridEl.hidden = true
+  emptyEl.hidden = true
+  errorEl.hidden = true
+  try {
+    const res = await fetch('/api/connectors/github-repos')
+    if (!res.ok) throw new Error('HTTP ' + res.status)
+    const data = await res.json()
+    _reposCache = data.repos || []
+    document.getElementById('reposStatTotal').textContent = String(_reposCache.length)
+    renderReposGrid(_reposCache)
+  } catch (err) {
+    loadingEl.hidden = true
+    errorEl.hidden = false
+    document.getElementById('reposErrorMsg').textContent =
+      t('repos.load_error') + (err && err.message ? ` (${err.message})` : '')
+  }
+}
+
+function renderReposGrid(repos) {
+  const loadingEl = document.getElementById('reposLoading')
+  const gridEl = document.getElementById('reposGrid')
+  const emptyEl = document.getElementById('reposEmpty')
+  loadingEl.hidden = true
+  gridEl.innerHTML = ''
+  if (repos.length === 0) {
+    gridEl.hidden = true
+    emptyEl.hidden = false
+    return
+  }
+  emptyEl.hidden = true
+  gridEl.hidden = false
+  const dateLocale = window._lang === 'en' ? 'en-US' : 'hu-HU'
+  for (const r of repos) {
+    const card = document.createElement('div')
+    card.className = 'repo-card'
+    const date = r.installedAt ? new Date(r.installedAt).toLocaleDateString(dateLocale) : '—'
+    const displayName = escapeHtml((r.name || '').replace('--', '/'))
+    const url = escapeHtml(r.url || '')
+    card.innerHTML = `<div class="repo-card-header"><div class="repo-card-icon"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M9 19c-5 1.5-5-2.5-7-3m14 6v-3.87a3.37 3.37 0 0 0-.94-2.61c3.14-.35 6.44-1.54 6.44-7A5.44 5.44 0 0 0 20 4.77 5.07 5.07 0 0 0 19.91 1S18.73.65 16 2.48a13.38 13.38 0 0 0-7 0C6.27.65 5.09 1 5.09 1A5.07 5.07 0 0 0 5 4.77a5.44 5.44 0 0 0-1.5 3.78c0 5.42 3.3 6.61 6.44 7A3.37 3.37 0 0 0 9 18.13V22"/></svg></div><div class="repo-card-title"><div class="repo-card-name">${displayName}</div><a class="repo-card-source" href="${url}" target="_blank" rel="noopener noreferrer">${url}</a></div></div><div class="repo-card-meta"><span class="repo-card-badge" title="${escapeHtml(t('repos.detect_pending_title'))}">${escapeHtml(t('repos.badge.pending_check'))}</span><span class="repo-card-date">${escapeHtml(t('repos.installed_at'))}: ${date}</span></div><div class="repo-card-actions"><button type="button" class="btn-secondary btn-compact repo-card-update" data-name="${escapeHtml(r.name)}"><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="23 4 23 10 17 10"/><path d="M20.49 15a9 9 0 1 1-2.12-9.36L23 10"/></svg><span>${escapeHtml(t('repos.btn.update'))}</span></button><button type="button" class="btn-secondary btn-compact repo-card-delete" data-name="${escapeHtml(r.name)}"><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="3 6 5 6 21 6"/><path d="M19 6v14a2 2 0 01-2 2H7a2 2 0 01-2-2V6m3 0V4a2 2 0 012-2h4a2 2 0 012 2v2"/></svg><span>${escapeHtml(t('repos.btn.delete'))}</span></button></div>`
+    gridEl.appendChild(card)
+  }
+  gridEl.querySelectorAll('.repo-card-update').forEach((btn) => {
+    btn.addEventListener('click', async () => {
+      const name = btn.getAttribute('data-name')
+      btn.disabled = true
+      const label = btn.querySelector('span')
+      const prevText = label.textContent
+      label.textContent = t('repos.updating')
+      try {
+        const res = await fetch(`/api/connectors/github-repos/${encodeURIComponent(name)}`, { method: 'PATCH' })
+        const data = await res.json().catch(() => ({}))
+        if (!res.ok || data.error) {
+          showToast(t('repos.update_error') + (data.error ? `: ${data.error}` : ''))
+        } else {
+          showToast(t('repos.update_success'))
+          loadReposPage()
+        }
+      } catch (err) {
+        showToast(t('repos.update_error') + ': ' + err.message)
+      } finally {
+        btn.disabled = false
+        label.textContent = prevText
+      }
+    })
+  })
+  gridEl.querySelectorAll('.repo-card-delete').forEach((btn) => {
+    btn.addEventListener('click', async () => {
+      const name = btn.getAttribute('data-name')
+      const displayName = name.replace('--', '/')
+      if (!confirm(t('repos.confirm_delete', { name: displayName }))) return
+      btn.disabled = true
+      try {
+        const res = await fetch(`/api/connectors/github-repos/${encodeURIComponent(name)}`, { method: 'DELETE' })
+        if (!res.ok) { showToast(t('repos.delete_error')); btn.disabled = false; return }
+        loadReposPage()
+        loadConnectors()
+      } catch (err) {
+        showToast(t('repos.delete_error') + ': ' + err.message)
+        btn.disabled = false
+      }
+    })
+  })
+}
+
+;(function wireReposPage() {
+  const refreshBtn = document.getElementById('reposRefreshBtn')
+  const retryBtn = document.getElementById('reposRetryBtn')
+  const addBtn = document.getElementById('reposAddBtn')
+  const input = document.getElementById('reposAddInput')
+  const status = document.getElementById('reposAddStatus')
+  if (!refreshBtn || !addBtn || !input) return
+  refreshBtn.addEventListener('click', () => loadReposPage())
+  if (retryBtn) retryBtn.addEventListener('click', () => loadReposPage())
+  addBtn.addEventListener('click', async () => {
+    const val = input.value.trim()
+    if (!val) return
+    addBtn.disabled = true
+    addBtn.textContent = t('repos.adding')
+    status.hidden = false
+    status.className = 'repos-add-status loading'
+    status.textContent = t('repos.cloning')
+    try {
+      const res = await fetch('/api/connectors/github-repos', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ url: val }),
+      })
+      const data = await res.json().catch(() => ({}))
+      if (!res.ok || data.error) {
+        status.className = 'repos-add-status error'
+        status.textContent = data.error || t('repos.add_error')
+        return
+      }
+      status.className = 'repos-add-status success'
+      status.textContent = t('repos.add_success')
+      input.value = ''
+      loadReposPage()
+      loadConnectors()
+      setTimeout(() => { status.hidden = true }, 4000)
+    } catch (err) {
+      status.className = 'repos-add-status error'
+      status.textContent = t('repos.add_error') + ': ' + err.message
+    } finally {
+      addBtn.disabled = false
+      addBtn.textContent = t('repos.add_btn')
     }
   })
   input.addEventListener('keydown', (e) => { if (e.key === 'Enter') addBtn.click() })
