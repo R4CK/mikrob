@@ -8388,10 +8388,16 @@ function renderReposGrid(repos) {
       try {
         const res = await fetch(`/api/connectors/github-repos/${encodeURIComponent(name)}`, { method: 'PATCH' })
         const data = await res.json().catch(() => ({}))
-        if (!res.ok || data.error) {
+        if (data.reviewRequired) {
+          // Flagged executable (type=code) adoption: the backend refused a blind
+          // one-click update on principle (card 3f576e55) -- this is a distinct,
+          // expected state, not a failure, so it gets its own message rather than
+          // the generic "update failed" wrapper.
+          showToast(data.error || t('repos.review_required'), 6000)
+        } else if (!res.ok || data.error) {
           showToast(t('repos.update_error') + (data.error ? `: ${data.error}` : ''))
         } else {
-          showToast(t('repos.update_success'))
+          showToast(data.depsChanged ? t('repos.update_success_deps') : t('repos.update_success'))
           loadReposPage()
         }
       } catch (err) {

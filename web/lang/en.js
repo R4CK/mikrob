@@ -1748,6 +1748,8 @@ window._i18n.en = {
   'repos.btn.delete':            'Delete',
   'repos.updating':              'Updating...',
   'repos.update_success':        'Updated!',
+  'repos.update_success_deps':   'Updated! This repo\'s dependencies (package.json) may now be stale -- installing them is intentionally not automatic (security reasons).',
+  'repos.review_required':       'This is an executable (type=code) adopted repo: the upstream change must be reviewed first, then it can be updated with one click.',
   'repos.update_error':          'Update failed',
   'repos.confirm_delete':        'Delete {name}?',
   'repos.delete_error':          'Delete failed',

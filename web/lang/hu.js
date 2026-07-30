@@ -1745,6 +1745,8 @@ window._i18n.hu = {
   'repos.btn.delete':            'Törlés',
   'repos.updating':              'Frissítés...',
   'repos.update_success':        'Frissítve!',
+  'repos.update_success_deps':   'Frissítve! A repó függőségei (package.json) esetleg elavultak -- a telepítés szándékosan nem automatikus (biztonsági ok).',
+  'repos.review_required':       'Ez egy végrehajtható (type=code) adoptált repó: az upstream változást előbb át kell nézni, csak utána frissíthető egy kattintással.',
   'repos.update_error':          'Frissítés sikertelen',
   'repos.confirm_delete':        'Törlöd: {name}?',
   'repos.delete_error':          'Törlés sikertelen',
