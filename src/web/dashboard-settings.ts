@@ -180,18 +180,76 @@ export function removeGitHubRepo(name: string): { ok: boolean, error?: string } 
   return { ok: true }
 }
 
-export function updateGitHubRepo(name: string): { ok: boolean, error?: string } {
+/**
+ * Is this repo registered in store/watched-repos.json as an EXECUTABLE (type=code) adoption?
+ *
+ * store/git-repo-watcher.sh classifies adoptions: `text` (docs/skills) fast-forwards freely, `code`
+ * is DETECTED + FLAGGED for a supply-chain review and never auto-applied. The one-click Update button
+ * must honour that same verdict, otherwise the guarantee the watcher provides is trivially bypassed
+ * from the dashboard. Unreadable/absent registry -> not flagged (the lifecycle-script fix below is
+ * what actually closes the RCE; this is defence in depth on top of it).
+ */
+function requiresReviewBeforeUpdate(repoPath: string, repoUrl: string): boolean {
+  try {
+    const raw: unknown = JSON.parse(readFileOr(join(PROJECT_ROOT, 'store', 'watched-repos.json'), '[]'))
+    if (!Array.isArray(raw)) return false
+    const norm = (u: string) => u.replace(/\.git$/, '').replace(/\/+$/, '')
+    return raw.some((r: any) => {
+      if (!r || typeof r !== 'object') return false
+      const sameRepo = (r.local && resolve(String(r.local)) === resolve(repoPath))
+        || (r.repo && norm(String(r.repo)) === norm(repoUrl))
+      return sameRepo && String(r.type || '').toLowerCase() === 'code'
+    })
+  } catch {
+    return false
+  }
+}
+
+/**
+ * Pull a managed GitHub repo forward. DATA ONLY -- deliberately no dependency install.
+ *
+ * SECURITY (card 3f576e55, Cybersec NO-GO cm#6148): this used to run `npm install --production`
+ * whenever the pulled repo had a package.json. npm executes the package's own
+ * preinstall/install/postinstall lifecycle scripts, so a single dashboard click ran ARBITRARY CODE
+ * out of a freshly-pulled third-party commit -- reintroducing exactly the risk the read-only registry
+ * (a5c13533) and the adoption hook-removal (0e8b0a0b) were built to prevent.
+ *
+ * The install step is simply GONE rather than sandboxed or flag-guarded: a pull is a data operation,
+ * and installing dependencies is a build step. Coupling them made a destructive capability a
+ * side-effect of a button. If a pulled repo needs its dependencies refreshed, that is a deliberate,
+ * separately-authorised action -- reported via `depsChanged` so the UI can say so instead of silently
+ * doing it.
+ */
+export function updateGitHubRepo(name: string): {
+  ok: boolean
+  error?: string
+  /** True when the repo ships a package.json, i.e. its deps MAY now be stale. Informational only --
+   *  this function never installs anything. */
+  depsChanged?: boolean
+  /** Set when the update was refused because the repo is a flagged executable adoption. */
+  reviewRequired?: boolean
+} {
   const repos = getGitHubRepos()
   const repo = repos.find(r => r.name === name)
   if (!repo) return { ok: false, error: 'Repo not found' }
   if (!existsSync(repo.path)) return { ok: false, error: 'Directory missing' }
 
+  // Honour the watcher's review-before-update verdict: no blind one-click update of executable code.
+  if (requiresReviewBeforeUpdate(repo.path, repo.url)) {
+    return {
+      ok: false,
+      reviewRequired: true,
+      error:
+        'Ez egy vegrehajthato (type=code) adoptalt repo: az upstream valtozast eloszor at kell nezni '
+        + '(supply-chain review), csak utana frissitheto. Egykattintasos frissites itt nem engedelyezett.',
+    }
+  }
+
   try {
     execSync('git pull --ff-only 2>&1', { cwd: repo.path, timeout: 60000, encoding: 'utf-8', stdio: 'pipe' })
-    if (existsSync(join(repo.path, 'package.json'))) {
-      execSync('npm install --production 2>&1', { cwd: repo.path, timeout: 120000, encoding: 'utf-8', stdio: 'pipe' })
-    }
-    return { ok: true }
+    // NO npm install here -- see the doc comment. Only REPORT that deps may need attention.
+    const depsChanged = existsSync(join(repo.path, 'package.json'))
+    return { ok: true, depsChanged }
   } catch (err: any) {
     return { ok: false, error: err.stderr || err.message }
   }

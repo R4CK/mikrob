@@ -320,8 +320,14 @@ export async function tryHandleConnectors(ctx: RouteContext): Promise<boolean> {
   if (githubRepoMatch && method === 'PATCH') {
     const name = decodeURIComponent(githubRepoMatch[1])
     const result = updateGitHubRepo(name)
-    if (result.error) { json(res, { error: result.error }, 400); return true }
-    json(res, { ok: true })
+    if (result.error) {
+      // reviewRequired surfaced as its own field (not just embedded in the message)
+      // so the FE can render a distinct "flagged for review" state rather than a
+      // generic error toast -- see card 000ec0d0 / 3f576e55.
+      json(res, { error: result.error, reviewRequired: result.reviewRequired === true }, 400)
+      return true
+    }
+    json(res, { ok: true, depsChanged: result.depsChanged === true })
     return true
   }
 
