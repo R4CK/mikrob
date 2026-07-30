@@ -1,0 +1,10 @@
+{
+  "schedule": "*/10 * * * *",
+  "agent": "mikrob",
+  "enabled": true,
+  "type": "heartbeat",
+  "skipIfBusy": false,
+  "forceSend": false,
+  "description": "A flotta sosem all tetlenul, csak ha elfogyott az 5 oras keret. 10 percenkent dispatcheli a kovetkezo tervezett feladatot, vagy onfejlesztest indit.",
+  "createdAt": 1782676202
+}

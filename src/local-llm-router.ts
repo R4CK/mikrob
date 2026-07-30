@@ -118,20 +118,70 @@ const AMBIGUITY_SIGNALS: readonly string[] = [
   'nem tudom', 'derits', 'talald ki', 'valamilyen', 'dontsd el',
 ]
 
-const norm = (s: string): string => s.toLowerCase()
+// --- SHAPE signals (Cybersec NO-GO cm6054) -----------------------------------------------------
+// The keyword nouns above catch the VOCABULARY of security but not its SHAPE: 9/10 real authz changes
+// written in innocuous "mechanical cleanup" language routed LOCAL (default-a-role-to-admin, return-all-
+// rows-instead-of-filtering, invert-canAccess, !==-to-===, remove-the-early-return, ...). Those are one
+// for one this fleet's own bug classes (access-default, tenant-scope, authz-flip, timing-unsafe compare),
+// and the "typo fix" framing invites a LIGHTER re-check downstream -- so the misroute is worst exactly
+// where the backstop is weakest. These four rules route ONLINE on the SHAPE of the change, whatever
+// vocabulary it uses. False positives here cost tokens; that is the intended direction.
+const SHAPE_SIGNALS: ReadonlyArray<readonly [NonOffloadableCategory, RegExp]> = [
+  // (a) returning / inverting a boolean about who may DO or SEE something.
+  ['authz', /\bcan[a-z]*\s*\(|\bcan[A-Z]/],
+  ['authz', /\b(may|can|allowed to|able to|permitted to)\b[^.]{0,40}\b(read|write|see|view|access|edit|delete|list|fetch|modify)\b/],
+  ['authz', /\b(invert|negate|flip|reverse)\b[^.]{0,30}\b(boolean|bool|check|result|return|flag|condition)\b/],
+  ['authz', /\breturns?\b[^.]{0,25}\b(always\s+)?(true|false)\b/],
+  ['authz', /\balways\s+returns?\b/],
+  // (b) comparing two values that may be secrets / ids / tokens / hashes.
+  ['security-decision', /(!==|===|!=|==)/],
+  ['security-decision', /\b(compare|comparison|equality|equals|equal)\b/],
+  // (c) modifying / removing / defaulting / loosening an EXISTING check, guard, filter, WHERE,
+  //     early-return or middleware. Requires a MUTATION verb + a GUARD noun, so "add a regex that
+  //     validates a postal code" (no mutation of an existing control) stays local.
+  [
+    'authz',
+    /\b(remove|removing|delete|deleting|drop|dropping|skip|skipping|bypass|disable|loosen|relax|weaken|simplify|inline|replace|replacing|strip|omit|instead of)\b[^.]{0,60}\b(check|checks|guard|filter|filtering|where clause|where|early return|middleware|validation|predicate|condition|scope|owner|tenant)\b/,
+  ],
+  [
+    'authz',
+    /\b(check|guard|filter|where clause|early return|middleware|validation|predicate)\b[^.]{0,60}\b(remove|removed|drop|dropped|skip|skipped|bypass|disabled|loosen|relaxed|weaken|simplif|inline|replaced|pass for everyone|always pass)\b/,
+  ],
+  // (d) shifting a DEFAULT toward MORE access (privilege-escalating access-default).
+  [
+    'authz',
+    /\b(default|defaults|defaulting|fallback|falls back|when missing|when empty|if absent|on error)\b[^.]{0,60}\b(admin|owner|superuser|root|full access|all rows|all records|everything|everyone|true|allow|grant)\b/,
+  ],
+  ['isolation', /\ball\s+(rows|records|results|tenants|companies|users)\b/],
+  ['security-decision', /\bfail[-\s]?(closed|open)\b/],
+]
+
+/** Strip zero-width/control chars and collapse letter-spaced runs ("s e c u r i t y" -> "security")
+ *  BEFORE matching, so accidental formatting cannot slip a signal past the tables. */
+export function normalizeForMatch(input: string): string {
+  const stripped = input
+    .toLowerCase()
+    .replace(/[\u200B-\u200D\uFEFF\u00AD]/g, '')
+    .replace(/[\u0000-\u001F\u007F]/g, ' ')
+  // Join runs of >=3 single letters separated by single spaces.
+  return stripped.replace(/\b(?:[a-z]\s){2,}[a-z]\b/g, (run) => run.replace(/\s/g, ''))
+}
+
 
 /** The non-offloadable category a description falls into, or null. Deterministic, no LLM. */
 export function classifyCategory(description: string): NonOffloadableCategory | null {
-  const text = norm(description)
+  const text = normalizeForMatch(description)
   for (const [category, needles] of CATEGORY_SIGNALS) {
     for (const needle of needles) if (text.includes(needle)) return category
   }
+  // SHAPE match (Cybersec cm6054): catches a security change dressed as mechanical cleanup.
+  for (const [category, pattern] of SHAPE_SIGNALS) if (pattern.test(text)) return category
   return null
 }
 
 /** Whether the description hedges (caller is unsure) -- fail-closed to ONLINE. */
 export function hasAmbiguitySignal(description: string): boolean {
-  const text = norm(description)
+  const text = normalizeForMatch(description)
   return AMBIGUITY_SIGNALS.some((needle) => text.includes(needle))
 }
 
