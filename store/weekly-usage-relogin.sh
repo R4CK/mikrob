@@ -67,11 +67,35 @@ case "$MODE" in
     ;;
   start)
     ensure_pane || { echo "FAIL: cannot ensure panel" >&2; exit 1; }
+    # Widen the window BEFORE /login prints the URL. tmux does NOT reflow existing scrollback,
+    # so resizing after the URL is printed leaves it wrapped/truncated (the &state= param spills
+    # to the next line and a naive head -n1 drops it -> "Missing state parameter" on the login
+    # page). Wide window = the whole URL lands on one logical line.
+    tmux resize-window -t "$PANE" -x 500 2>/dev/null || true; sleep 1
     # Kick /login and select the subscription (Max) option (menu default = option 1).
     tmux send-keys -t "$PANE" '/login' Enter 2>/dev/null; sleep 6
     # If the 3-way method menu is up, Enter selects the highlighted first item (subscription).
     tmux send-keys -t "$PANE" Enter 2>/dev/null; sleep 8
-    URL="$(tmux capture-pane -t "$PANE" -p 2>/dev/null | grep -oE 'https://claude\.(com|ai)/[^ ]*oauth[^ ]*' | head -n1)"
+    # Capture with -J (join wrapped lines) and, as a belt-and-suspenders, stitch any &state=
+    # continuation line back onto the oauth line.
+    URL="$(tmux capture-pane -t "$PANE" -p -J 2>/dev/null | python3 -c '
+import sys, re
+lines=[l.rstrip("\n") for l in sys.stdin]
+url=""
+for i,l in enumerate(lines):
+    m=re.search(r"https://claude\.(?:com|ai)/\S*oauth\S*", l)
+    if m:
+        url=m.group(0)
+        # stitch trailing continuation fragments (e.g. a wrapped &state=...) with no spaces
+        for nxt in lines[i+1:i+3]:
+            s=nxt.strip()
+            if s and " " not in s and re.match(r"^[&%A-Za-z0-9_=.+-]+$", s):
+                url+=s
+            else:
+                break
+        break
+print(url)
+' 2>/dev/null)"
     if [ -n "$URL" ]; then
       echo "OAUTH_URL: $URL"
       exit 0
