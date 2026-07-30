@@ -1756,6 +1756,7 @@ window._i18n.en = {
   'repos.adding':                'Installing...',
   'repos.cloning':               'Cloning and installing...',
   'repos.add_success':           'Installed!',
+  'repos.add_success_deps':      'Installed! This repo has a package.json -- dependencies are NOT installed (intentionally, for security), you need to do that separately before running it.',
   'repos.add_error':             'Install failed',
 
   // --- Ideas toasts ---

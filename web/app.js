@@ -8457,11 +8457,11 @@ function renderReposGrid(repos) {
         return
       }
       status.className = 'repos-add-status success'
-      status.textContent = t('repos.add_success')
+      status.textContent = data.depsChanged ? t('repos.add_success_deps') : t('repos.add_success')
       input.value = ''
       loadReposPage()
       loadConnectors()
-      setTimeout(() => { status.hidden = true }, 4000)
+      setTimeout(() => { status.hidden = true }, data.depsChanged ? 7000 : 4000)
     } catch (err) {
       status.className = 'repos-add-status error'
       status.textContent = t('repos.add_error') + ': ' + err.message

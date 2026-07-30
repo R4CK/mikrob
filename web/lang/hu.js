@@ -1753,6 +1753,7 @@ window._i18n.hu = {
   'repos.adding':                'Telepítés...',
   'repos.cloning':               'Klónozás és telepítés...',
   'repos.add_success':           'Telepítve!',
+  'repos.add_success_deps':      'Telepítve! A repó tartalmaz package.json-t -- a függőségek NINCSENEK telepítve (szándékosan, biztonsági ok), a repó futtatás előtt ezt külön el kell végezni.',
   'repos.add_error':             'Telepítés sikertelen',
 
   // --- Ideas toasts ---

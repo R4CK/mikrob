@@ -304,7 +304,14 @@ export async function tryHandleConnectors(ctx: RouteContext): Promise<boolean> {
 
     const result = await installGitHubRepo(url.trim(), Object.keys(envVarMapping).length > 0 ? envVarMapping : undefined)
     if (result.error) { json(res, { error: result.error }, 400); return true }
-    json(res, { ok: true, repo: result.repo, requiredEnvVars: result.requiredEnvVars })
+    json(res, {
+      ok: true,
+      repo: result.repo,
+      requiredEnvVars: result.requiredEnvVars,
+      // depsChanged: card f1806370 -- a package.json was found in the clone, but its dependencies are
+      // NOT installed (see installGitHubRepo doc comment). Surfaced so the FE can say so.
+      depsChanged: result.depsChanged === true,
+    })
     return true
   }
 

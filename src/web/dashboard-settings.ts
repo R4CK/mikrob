@@ -2,7 +2,6 @@ import { existsSync, statSync, mkdirSync, rmSync } from 'node:fs'
 import { join, resolve, isAbsolute, basename } from 'node:path'
 import { execSync, spawn } from 'node:child_process'
 import { PROJECT_ROOT } from '../config.js'
-import { logger } from '../logger.js'
 import { readFileOr } from './agent-config.js'
 import { atomicWriteFileSync } from './atomic-write.js'
 
@@ -89,11 +88,30 @@ export function detectRequiredEnvVars(repoPath: string): string[] {
   } catch { return [] }
 }
 
+/**
+ * Clone a GitHub repo and register it. DATA ONLY -- deliberately no dependency install.
+ *
+ * SECURITY (card f1806370, Cybersec re-verify cm#6159 on the 3f576e55 fix): this used to run
+ * `npm install --production` on the just-cloned tree whenever it had a package.json. npm executes
+ * the package's own preinstall/install/postinstall lifecycle scripts, so pasting ANY GitHub URL into
+ * the dashboard's Add form and clicking once ran arbitrary code from that repo -- broader than the
+ * update-path RCE this mirrors, because the URL is attacker-supplied at request time rather than
+ * limited to an already-adopted repo, and there is no review-before-update registry to consult since
+ * nothing has been adopted yet at this point.
+ *
+ * The install step is simply GONE, same reasoning as updateGitHubRepo: cloning is a data operation,
+ * installing dependencies is a build step, and coupling them made a destructive capability a
+ * side-effect of a form submit. `depsChanged` reports that the clone has a package.json so the UI can
+ * say installation is pending, instead of silently running it or silently doing nothing.
+ */
 export async function installGitHubRepo(
   url: string,
   envVars?: Record<string, string>,
   onProgress?: (p: GitHubInstallProgress) => void,
-): Promise<{ repo: GitHubRepo, requiredEnvVars?: string[], error?: never } | { repo?: never, requiredEnvVars?: string[], error: string }> {
+): Promise<
+  | { repo: GitHubRepo, requiredEnvVars?: string[], depsChanged?: boolean, error?: never }
+  | { repo?: never, requiredEnvVars?: string[], depsChanged?: boolean, error: string }
+> {
   const parsed = parseGitHubUrl(url)
   if (!parsed) return { error: 'Invalid GitHub URL' }
 
@@ -122,21 +140,8 @@ export async function installGitHubRepo(
     return { error: `Clone failed: ${err.stderr || err.message}` }
   }
 
-  const hasPackageJson = existsSync(join(targetDir, 'package.json'))
-  if (hasPackageJson) {
-    onProgress?.({ stage: 'installing', message: 'Running npm install...' })
-    try {
-      execSync('npm install --production 2>&1', {
-        cwd: targetDir,
-        timeout: 180000,
-        encoding: 'utf-8',
-        stdio: 'pipe',
-      })
-    } catch (err: any) {
-      logger.warn({ err: err.message }, 'npm install failed for GitHub repo, continuing anyway')
-    }
-  }
-
+  // NO npm install here -- see the doc comment. Only DETECT that deps may be pending; never install.
+  const depsChanged = existsSync(join(targetDir, 'package.json'))
   const requiredEnvVars = detectRequiredEnvVars(targetDir)
 
   const repo: GitHubRepo = {
@@ -159,7 +164,11 @@ export async function installGitHubRepo(
   write(s)
 
   onProgress?.({ stage: 'done', message: `Installed ${repoName}` })
-  return { repo, requiredEnvVars: requiredEnvVars.length > 0 ? requiredEnvVars : undefined }
+  return {
+    repo,
+    requiredEnvVars: requiredEnvVars.length > 0 ? requiredEnvVars : undefined,
+    depsChanged: depsChanged || undefined,
+  }
 }
 
 export function removeGitHubRepo(name: string): { ok: boolean, error?: string } {
