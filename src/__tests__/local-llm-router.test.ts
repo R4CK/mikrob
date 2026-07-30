@@ -168,3 +168,47 @@ describe('REGRESSION: formatting evasions are normalized away before matching', 
     expect(routeTask({ description: 'write a pure function that formats a date as yyyy-mm-dd' }).route).toBe('local')
   })
 })
+
+// ---------------------------------------------------------------------------------------------
+// REGRESSION FIXTURE 2 -- Cybersec 2nd NO-GO. The OUTCOME/POLICY family: a control change stated by
+// its EFFECT ("grant access", "treat a missing role as owner", "return results unfiltered") instead
+// of by the artifact being modified, so the guard-noun rule never fired. 6/6 routed LOCAL in natural
+// task form. These are the fleet's highest-frequency defect classes: fail-open, access-default,
+// tenant-scope-drop, validation-moved-to-client. Cybersec's completion criterion is NO SYSTEMATIC
+// FAMILY failing, so this set covers all five patterns, not just the six reported strings.
+// ---------------------------------------------------------------------------------------------
+
+describe('REGRESSION: outcome/policy phrasing without a guard noun must route ONLINE (Cybersec 2nd NO-GO)', () => {
+  const outcome = [
+    // (1) granting access / letting a request through -- fail-open
+    'grant access when the lookup fails',
+    'allow the request through on timeout',
+    'permit the caller when the permission service is unreachable',
+    // (2) treating one thing AS a more privileged thing -- access-default
+    'treat a missing role as owner',
+    'consider an unknown user as public and continue',
+    // (3) ceasing to apply a control
+    'stop applying the site filter on the read path',
+    'skip validating the payload for internal callers',
+    'no longer check the company on the detail endpoint',
+    // (4) explicitly unscoped result set -- tenant-scope drop
+    'return results unfiltered when no site is selected',
+    'list the records across all tenants for the dashboard',
+    // (5) moving a server-side control to an untrusted client
+    'move the validation to the client from now on',
+    'shift the permission check to the frontend to save a round trip',
+  ]
+  it('covers 12 cases (Cybersec completion criterion)', () => {
+    expect(outcome).toHaveLength(12)
+  })
+  for (const description of outcome) {
+    it(`ONLINE: ${description.slice(0, 52)}`, () => {
+      expect(routeTask({ description }).route).toBe('online')
+    })
+  }
+  it('still ONLINE when declared trivial at max aggressiveness', () => {
+    for (const description of outcome) {
+      expect(routeTask({ description, difficulty: 'trivial', aggressiveness: 100 }).route).toBe('online')
+    }
+  })
+})
