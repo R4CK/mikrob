@@ -317,7 +317,13 @@ function startPull(model: string): PullJob {
 // Pure fs read + JS parse; NO shell interpolation. Reads only the tail of the
 // (append-only, unbounded) ledger so a large file can never blow up the heap.
 
-export interface UsageRow { ts: number; caller: string; task: string; model: string; ms: number; status: string; source: string }
+export interface UsageRow {
+  ts: number; caller: string; task: string; model: string; ms: number; status: string; source: string
+  /** Output tokens the local model reported for this call (Ollama `eval_count`, TSV col 8). */
+  evalTokens: number
+  /** Input tokens the local model reported (Ollama `prompt_eval_count`, TSV col 9). */
+  promptTokens: number
+}
 
 // Read at most `maxLines` from the END of the ledger, bounded to `maxBytes` of
 // tail so we never load a giant file. Returns [] on a missing/unreadable file.
@@ -344,7 +350,9 @@ function tailUsageLines(maxLines = 5000, maxBytes = 4 * 1024 * 1024): string[] {
   }
 }
 
-function parseUsageRows(lines: string[]): UsageRow[] {
+/** Exported for the token-accounting tests (card d08b98f4): the sums the panel shows are only as
+ *  trustworthy as this parse, so it is asserted against known ledger lines rather than by eye. */
+export function parseUsageRows(lines: string[]): UsageRow[] {
   const rows: UsageRow[] = []
   for (const line of lines) {
     const p = line.split('\t')
@@ -352,7 +360,17 @@ function parseUsageRows(lines: string[]): UsageRow[] {
     const ts = Number(p[0])
     if (!Number.isFinite(ts)) continue
     const ms = Number(p[4])
+    // Card d08b98f4: local-llm.sh has ALWAYS written the two token columns (log_usage args 3 and 4,
+    // straight from Ollama's eval_count / prompt_eval_count) -- this parser simply dropped them, so
+    // the dashboard had to guess at "tokens saved". A row written before those columns existed, or a
+    // non-numeric value, counts as 0: a missing measurement must never inflate the saving.
+    const nonNegInt = (v: string | undefined): number => {
+      const n = Number(v)
+      return Number.isFinite(n) && n > 0 ? Math.floor(n) : 0
+    }
     rows.push({
+      evalTokens: nonNegInt(p[7]),
+      promptTokens: nonNegInt(p[8]),
       ts,
       caller: (p[1] || 'direct').trim() || 'direct',
       task: (p[2] || 'chat').trim() || 'chat',
@@ -417,6 +435,12 @@ function buildUsage() {
   const byStatus = { ok: 0, err: 0 }
   let todayCount = 0
   let last7Count = 0
+  // Card d08b98f4: MEASURED, not estimated. Only real (non-probe) calls that actually SUCCEEDED are
+  // counted -- an errored call produced no answer, so it saved nothing -- and the numbers come from
+  // the local model's own eval_count/prompt_eval_count, not from a token-per-character guess.
+  let tokensToday = 0
+  let tokensWeek = 0
+  let tokensTotal = 0
 
   for (const r of rows) {
     callerCounts.set(r.caller, (callerCounts.get(r.caller) || 0) + 1)
@@ -427,6 +451,12 @@ function buildUsage() {
     dayCounts.set(day, (dayCounts.get(day) || 0) + 1)
     if (day === today) todayCount++
     if (last7Set.has(day)) last7Count++
+    if (r.status !== 'err') {
+      const tokens = r.evalTokens + r.promptTokens
+      tokensTotal += tokens
+      if (day === today) tokensToday += tokens
+      if (last7Set.has(day)) tokensWeek += tokens
+    }
   }
 
   const by_caller = [...callerCounts.entries()]
@@ -444,6 +474,15 @@ function buildUsage() {
     total: rows.length,
     today: todayCount,
     last_7d: last7Count,
+    // Card d08b98f4: the Claude Limit panel's third row. `today_count`/`week_count` are the same
+    // numbers as `today`/`last_7d` under the names that card's FE half asks for; the token figures
+    // are the local model's own accounting summed over successful real calls.
+    model: readActiveModel(),
+    today_count: todayCount,
+    week_count: last7Count,
+    tokens_saved_today: tokensToday,
+    tokens_saved_week: tokensWeek,
+    tokens_saved_total: tokensTotal,
     ui_probes,
     by_caller,
     by_source: bySource,

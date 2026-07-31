@@ -36,48 +36,46 @@ THRESHOLD_CONFIG="$STORE/weekly-threshold-config.json"
 # Same limit phrasings as store/quota-check.sh / src/model-fallback.ts.
 RX='usage limit reached|reached your usage limit|hit (your|the) usage limit|approaching (your )?usage limit|usage limit (will )?reset|limit will reset at|[0-9]+-hour limit reached|wait for limit to reset|stop and wait for limit'
 
-# --- editable thresholds (card f3248478), CLAUDE.md defaults if unset/corrupt ---
-# echoes "gt3days lt2days lt1day" (three ints, space-separated).
+# --- editable thresholds (cards f3248478 + d08b98f4) --------------------------
+# Card d08b98f4 (Peti): the three DAY-DEPENDENT thresholds are gone. Two day-independent
+# levels replace them, and they mean different things:
+#   newDevStop (90) -- no NEW development; in-flight work and gate work continue
+#   testStop   (97) -- GATE work stops too and every role agent is parked (MikroB stays)
+# Absent/corrupt file -> the defaults below, never a script failure.
+# Echoes "newDevStop testStop" (two ints, space-separated).
 threshold_config() {
   python3 -c "
 import json
 try:
     with open('$THRESHOLD_CONFIG') as f:
         c = json.load(f)
-    g = int(c.get('gt3days', 90))
-    l2 = int(c.get('lt2days', 92))
-    l1 = int(c.get('lt1day', 95))
+    # Migration: a file written before d08b98f4 has gt3days as its 'stop new development'
+    # level. Adopt it; the old shape has nothing meaning 'stop the gates too', so testStop
+    # takes the default rather than inventing a policy nobody chose.
+    nd = int(c.get('newDevStop', c.get('gt3days', 90)))
+    ts = int(c.get('testStop', 97))
     # Fail-safe bounds: never let a bad edit disable the gate or exceed 100.
-    g = max(1, min(g, 100)); l2 = max(1, min(l2, 100)); l1 = max(1, min(l1, 100))
-    # Card d53c1e00: the API rejects a non-monotonic triple on write, but this file
-    # could be hand-edited outside the API -- fall back to the safe defaults rather
-    # than apply an inverted rule (higher threshold far from reset than near it).
-    if not (g <= l2 <= l1):
-        g, l2, l1 = 90, 92, 95
-    print(g, l2, l1)
+    nd = max(1, min(nd, 100)); ts = max(1, min(ts, 100))
+    # Card d53c1e00: the API rejects a non-monotonic pair on write, but this file can be
+    # hand-edited -- fall back to the defaults rather than stop verification BEFORE work.
+    if nd > ts:
+        nd, ts = 90, 97
+    print(nd, ts)
 except Exception:
-    print(90, 92, 95)
-" 2>/dev/null || echo "90 92 95"
+    print(90, 97)
+" 2>/dev/null || echo "90 97"
 }
 
-# --- dynamic threshold from days-to-reset --------------------------------------
-# args: <reset-label like "Thu 15:59">  -> echoes the integer threshold
-dynamic_threshold() {
-  local reset="${1:-}"
-  local days=99
-  if [ -n "$reset" ]; then
-    local rts now
-    rts="$(date -d "$reset" +%s 2>/dev/null || echo 0)"
-    now="$(date +%s)"
-    if [ "$rts" -gt 0 ]; then
-      [ "$rts" -lt "$now" ] && rts="$(date -d "next $reset" +%s 2>/dev/null || echo "$rts")"
-      days=$(( (rts - now) / 86400 ))
-    fi
-  fi
-  read -r gt3 lt2 lt1 <<< "$(threshold_config)"
-  if   [ "$days" -lt 1 ]; then echo "$lt1"
-  elif [ "$days" -lt 2 ]; then echo "$lt2"
-  else echo "$gt3"; fi
+# Echoes the level at which NEW development stops.
+new_dev_threshold() {
+  read -r nd _ts <<< "$(threshold_config)"
+  echo "$nd"
+}
+
+# Echoes the level at which GATE work stops too.
+test_stop_threshold() {
+  read -r _nd ts <<< "$(threshold_config)"
+  echo "$ts"
 }
 
 # --- best-effort OAuth read of the real weekly % (future-proof) -----------------
@@ -123,6 +121,41 @@ print(round(p))
 PY
 }
 
+# --- hard-stop flag (card d08b98f4) -------------------------------------------
+# The orchestrator scheduled-tasks (gate-reconciler / fleet-nudger / folyamatos-munka) do not
+# all call this script; they read this ONE file. Written on every run so it can never go stale
+# in the dangerous direction: an active flag is refreshed, and dropping below the level clears
+# it immediately.
+#
+# The flag says WHAT IS TRUE, not what to do: `active` plus the numbers behind it. The consumers
+# own the reaction (park role agents, close PASS/GO cards, never dispatch gate work). MikroB
+# itself is never parked -- rule 7's standing exception -- and the file carries that as an
+# explicit field so a consumer cannot forget it.
+HARD_STOP_FLAG="$STORE/weekly-hard-stop.json"
+write_hard_stop() { # $1=active(1|0) $2=percent $3=threshold
+  python3 - "$HARD_STOP_FLAG" "$1" "$2" "$3" <<'PYHS' 2>/dev/null || true
+import json, os, sys, tempfile, time
+path, active, pct, thr = sys.argv[1], sys.argv[2] == '1', int(sys.argv[3]), int(sys.argv[4])
+reason = ''
+if active:
+    reason = 'weekly usage %d%% >= test-stop %d%%: gate work stops, park every role agent' % (pct, thr)
+payload = {
+    'active': active,
+    'percent': pct,
+    'testStop': thr,
+    'updatedAt': int(time.time()),
+    'exemptAgents': ['mikrob'],
+    'reason': reason,
+}
+# Atomic: a half-written flag read by an orchestrator tick must be impossible.
+directory = os.path.dirname(path) or '.'
+fd, tmp = tempfile.mkstemp(dir=directory)
+with os.fdopen(fd, 'w') as fh:
+    json.dump(payload, fh, indent=2)
+os.replace(tmp, path)
+PYHS
+}
+
 cmd="${1:-run}"
 case "$cmd" in
   set-weekly)
@@ -137,7 +170,7 @@ PY
     [ -f "$WEEKLY_STATE" ] && cat "$WEEKLY_STATE" && echo || echo "no weekly-usage.json"
     if [ -f "$WEEKLY_STATE" ]; then
       r="$(python3 -c "import json;print(json.load(open('$WEEKLY_STATE')).get('reset',''))")"
-      echo "threshold now: $(dynamic_threshold "$r")%"
+      echo "new-dev stop: $(new_dev_threshold)%   test/gate stop: $(test_stop_threshold)%   (reset '$r')"
     fi
     exit 0 ;;
 esac
@@ -161,11 +194,19 @@ d=json.load(open(sys.argv[1]))
 print(int(d.get('percent',-1)), d.get('reset',''))
 PY
 )
-  thr="$(dynamic_threshold "$reset")"
-  if [ "$pct" -ge 0 ] 2>/dev/null && [ "$pct" -ge "$thr" ]; then
-    echo "DISPATCH:HOLD:weekly-${pct}%>=threshold-${thr}% (reset ${reset:-unknown})"; exit 0
+  nd="$(new_dev_threshold)"
+  ts="$(test_stop_threshold)"
+  # Card d08b98f4: TWO levels, and the harder one is checked first. At testStop even GATE work
+  # stops, so the caller must be able to tell the two apart, not merely see "held".
+  if [ "$pct" -ge 0 ] 2>/dev/null && [ "$pct" -ge "$ts" ]; then
+    write_hard_stop 1 "$pct" "$ts"
+    echo "DISPATCH:HOLD:HARD-STOP weekly-${pct}%>=test-stop-${ts}% -- gate work stops too, park every role agent (reset ${reset:-unknown})"; exit 0
   fi
-  echo "# weekly ${pct}% < threshold ${thr}% (reset ${reset:-unknown})" >&2
+  write_hard_stop 0 "$pct" "$ts"
+  if [ "$pct" -ge 0 ] 2>/dev/null && [ "$pct" -ge "$nd" ]; then
+    echo "DISPATCH:HOLD:weekly-${pct}%>=new-dev-stop-${nd}% (gates still run; reset ${reset:-unknown})"; exit 0
+  fi
+  echo "# weekly ${pct}% < new-dev stop ${nd}% (test/gate stop ${ts}%, reset ${reset:-unknown})" >&2
 else
   echo "# no weekly-usage.json -- relying on banner only; set with: pre-dispatch-check.sh set-weekly <pct> \"<reset>\"" >&2
 fi

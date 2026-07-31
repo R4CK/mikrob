@@ -9,6 +9,8 @@ const row = (source: string, caller = 'backend'): UsageRow => ({
   ms: 100,
   status: 'ok',
   source,
+  evalTokens: 0,
+  promptTokens: 0,
 })
 
 describe('isRealCall', () => {

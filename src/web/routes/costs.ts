@@ -19,6 +19,7 @@ import {
   writeThresholdConfig,
   WeeklyThresholdError,
 } from '../../costops/weekly-threshold.js'
+import { readHardStop } from '../../costops/weekly-hard-stop.js'
 import type { RouteContext } from './types.js'
 
 // Runs the fixed-cost -> ledger reflection once immediately (so the summary is
@@ -115,7 +116,10 @@ export async function tryHandleCosts(ctx: RouteContext): Promise<boolean> {
   // store/pre-dispatch-check.sh reads, so the dashboard sliders and the bash gate
   // never drift out of sync.
   if (path === '/api/costs/weekly-thresholds' && method === 'GET') {
-    json(res, readThresholdConfig())
+    // Card d08b98f4: the panel needs BOTH the configured levels and whether the harder one is
+    // currently in force -- otherwise the sliders show a policy while the fleet is already parked by
+    // it, with nothing on screen saying so.
+    json(res, { ...readThresholdConfig(), hardStop: readHardStop() })
     return true
   }
 
