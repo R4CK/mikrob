@@ -104,12 +104,48 @@ describe('the wiring, not just the helper', () => {
     expect(dumpLine).toContain('-J')
   })
 
-  it('the START branch dump is deliberately NOT redacted (no code typed yet, public URL only)', () => {
-    // Cybersec explicitly scoped the finding to --paste. Redacting the start dump would hide the
-    // authorize URL that MikroB has to relay to Peti -- breaking the flow to fix a non-problem.
+  // REVERSED BY CARD 201a8de7. The original reasoning was that the start branch has no code to leak
+  // and that redacting would hide the authorize URL MikroB relays to Peti. The first half only held
+  // for the FIRST run (ensure_pane returns immediately for an existing session and never clears it,
+  // so re-running start after a failed paste prints a panel that still shows the code). The second
+  // half does not hold at all: this dump is the branch where NO URL was found -- the success path
+  // printed `OAUTH_URL:` and exited above it, so redaction cannot hide a URL that is not there.
+  it('the START branch dump IS redacted too (card 201a8de7)', () => {
     const startBranch = src.slice(src.indexOf('  start)'))
     const dumpLine = startBranch.split('\n').find((l) => l.includes('capture-pane') && l.includes('tail'))
     expect(dumpLine).toBeDefined()
-    expect(dumpLine).not.toContain('redact_code')
+    expect(dumpLine).toContain('redact_code')
+  })
+})
+
+// Card 4f352199 (Cybersec follow-up): the generic layer only fires on an unbroken 24-character run,
+// so a code the TERMINAL wrapped mid-token can slip through -- each half may be shorter than 24.
+describe('a code broken across a line boundary is still removed (card 4f352199)', () => {
+  const code = 'ac_9f3b21QeR-oauth-code'
+
+  it('catches the code when the terminal split it mid-token', () => {
+    const wrapped = `Login failed\nYou entered: ${code.slice(0, 10)}\n${code.slice(10)}\nTry again\n`
+    const out = redact(wrapped, code)
+    // Neither half may survive: the halves are 10 and 13 chars, both under the generic threshold.
+    expect(out).not.toContain(code.slice(0, 10))
+    expect(out).not.toContain(code.slice(10))
+    expect(out).toContain('***REDACTED***')
+  })
+
+  it('catches it even with padding whitespace inserted at the break', () => {
+    const out = redact(`prompt> ${code.slice(0, 6)}  \n   ${code.slice(6)}\n`, code)
+    expect(out).not.toContain(code.slice(6))
+  })
+
+  it('does NOT over-mask ordinary diagnostic text', () => {
+    // The whitespace-tolerant pattern is built from the exact code, so it can only ever match that
+    // character sequence -- a failure message must stay readable.
+    const out = redact('Error: connection refused after 3 retries (exit 7)\n', code)
+    expect(out.trim()).toBe('Error: connection refused after 3 retries (exit 7)')
+  })
+
+  it('is a no-op when no code was set (the start branch may run without one)', () => {
+    const out = redact('panel is idle\n')
+    expect(out.trim()).toBe('panel is idle')
   })
 })

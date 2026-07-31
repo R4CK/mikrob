@@ -73,8 +73,16 @@ import os, re, sys
 code = os.environ.get("CODE", "")
 text = sys.stdin.read()
 if code:
+    # Layer 1: the exact code we sent -- provable, and the primary mechanism.
     text = text.replace(code, "***REDACTED***")
-# Anything still looking like a credential (24+ chars of the OAuth alphabet) is masked too. Ordinary
+    # Layer 1b (card 4f352199): the SAME code with arbitrary whitespace between its characters. A
+    # terminal that wrapped the code inserts a newline (and often padding) INSIDE it, which breaks
+    # both the exact match above and the 24-char run below -- each half can be shorter than 24. This
+    # cannot over-mask: it only ever matches the exact character sequence we actually sent.
+    if len(code) >= 8:
+        spaced = r"\s*".join(re.escape(ch) for ch in code)
+        text = re.sub(spaced, "***REDACTED***", text)
+# Layer 2: anything still looking like a credential (24+ chars of the OAuth alphabet). Ordinary
 # failure text does not contain unbroken 24-char tokens; a secret is worth more than that diagnostic.
 text = re.sub(r"[A-Za-z0-9_-]{24,}", "***REDACTED***", text)
 sys.stdout.write(text)
@@ -169,7 +177,15 @@ print(url)
       exit 0
     fi
     echo "FAIL: no OAuth URL captured; panel state:" >&2
-    tmux capture-pane -t "$PANE" -p 2>/dev/null | grep -v '^$' | tail -8 >&2
+    # Card 201a8de7 (Cybersec): this dump ALSO goes through the redaction. The original reasoning --
+    # "no code has been typed yet on the start branch" -- only holds for the FIRST run. ensure_pane
+    # returns immediately for an existing session and never clears it, so the realistic sequence is:
+    # start -> paste -> login fails -> the operator runs start AGAIN in the same panel, which still
+    # shows the code they just pasted. That re-run is not an independent event: you re-run start
+    # BECAUSE something already broke, and that was precisely the branch printing unredacted output
+    # into MikroB's transcript. -J joins wrapped lines so a code split across the panel width is one
+    # token and the exact-match layer can see it.
+    tmux capture-pane -t "$PANE" -p -J 2>/dev/null | grep -v '^$' | tail -8 | redact_code >&2
     exit 1
     ;;
   --redact-stdin)
