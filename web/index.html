@@ -323,6 +323,17 @@
             <span data-i18n="overview.quota.threshold.toggle">Kuszobok szerkesztese</span>
           </button>
           <div class="usage-threshold-body" id="thresholdBody" hidden>
+            <!-- Card c5623274 (Cybersec): the sliders show static 90/97 preview values,
+                 while the LIVE gate (pre-dispatch-check.sh) still enforces the old 3-field
+                 90/92/95 config from weekly-threshold-config.json -- a hover-only tooltip on
+                 the disabled Save button wasn't a visible-enough disclosure (invisible on
+                 touch, answers "why can't I save" not "what's actually running"). Visible
+                 badge instead, same pattern as the AssetMaintenancePage DEMO badge. Remove
+                 once d08b98f4 ships and these sliders are wired to the real live config. -->
+            <div class="usage-threshold-preview-badge" id="thresholdPreviewBadge" role="status">
+              <span aria-hidden="true">&#9888;</span>
+              <span data-i18n="overview.quota.threshold.previewBadge">Elonezeti ertek -- nem a futo konfiguracio</span>
+            </div>
             <div class="usage-threshold-row">
               <label for="thrNewDevStop" data-i18n="overview.quota.threshold.newDevStop">Uj fejlesztes leall</label>
               <input type="range" id="thrNewDevStop" min="1" max="100" step="1" value="90">
