@@ -605,12 +605,31 @@ main {
 .usage-info-head {
   display: flex;
   align-items: center;
-  justify-content: space-between;
   margin-bottom: 12px;
   gap: 8px;
 }
 .usage-info-title { font-weight: 600; color: var(--text); font-size: 14px; }
+.usage-info-help-btn {
+  width: 20px;
+  height: 20px;
+  min-width: 44px;
+  min-height: 44px;
+  margin: -12px;
+  padding: 12px;
+  box-sizing: content-box;
+  border-radius: 50%;
+  border: 1px solid var(--border);
+  background: var(--bg-input);
+  color: var(--text-muted);
+  font-size: 12px;
+  font-weight: 700;
+  line-height: 20px;
+  cursor: pointer;
+  flex-shrink: 0;
+}
+.usage-info-help-btn:hover { color: var(--accent); border-color: var(--accent); }
 .usage-info-source {
+  margin-left: auto;
   font-size: 11px;
   color: var(--text-muted);
   background: var(--bg-input);
@@ -699,6 +718,75 @@ main {
 @media (max-width: 480px) {
   .usage-info-row { grid-template-columns: 60px 1fr auto; }
 }
+
+/* --- Editable weekly-threshold section (card f3248478) --- */
+.usage-threshold-section {
+  margin-top: 12px;
+  padding-top: 12px;
+  border-top: 1px solid var(--border);
+}
+.usage-threshold-toggle {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  min-height: 44px;
+  background: none;
+  border: none;
+  color: var(--text-muted);
+  font-size: 12px;
+  font-weight: 600;
+  cursor: pointer;
+  font-family: inherit;
+  padding: 0;
+}
+.usage-threshold-toggle:hover { color: var(--text); }
+.usage-threshold-toggle-arrow { transition: transform 0.15s ease; font-size: 10px; }
+.usage-threshold-toggle[aria-expanded="true"] .usage-threshold-toggle-arrow { transform: rotate(90deg); }
+.usage-threshold-body[hidden] { display: none; }
+.usage-threshold-body { margin-top: 10px; }
+.usage-threshold-row {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  margin-bottom: 10px;
+  flex-wrap: wrap;
+}
+.usage-threshold-row label {
+  flex: 1 1 140px;
+  font-size: 12px;
+  color: var(--text-muted);
+}
+.usage-threshold-row input[type="range"] {
+  flex: 2 1 120px;
+  min-height: 44px;
+  accent-color: var(--accent);
+}
+.usage-threshold-val {
+  width: 42px;
+  text-align: right;
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--text);
+  flex-shrink: 0;
+}
+.usage-threshold-hint {
+  font-size: 11px;
+  color: var(--text-muted);
+  line-height: 1.5;
+  margin: 4px 0 12px;
+}
+.usage-threshold-actions {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  flex-wrap: wrap;
+}
+.usage-threshold-status {
+  font-size: 12px;
+}
+.usage-threshold-status[hidden] { display: none; }
+.usage-threshold-status.success { color: var(--success); }
+.usage-threshold-status.error { color: var(--danger); }
 
 .overview-stats {
   display: grid;

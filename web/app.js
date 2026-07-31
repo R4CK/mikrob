@@ -12453,9 +12453,16 @@ async function loadOverview() {
   }
 }
 
+// Editable weekly new-dev-stop thresholds (card f3248478). Cached module-level so
+// barColor() (weekly row only) reflects whatever the sliders currently hold, not the
+// CLAUDE.md defaults, once loaded.
+let _weeklyThresholds = { gt3days: 90, lt2days: 92, lt1day: 95 }
+
 // Claude Usage Info widget (card a91c6039 redesign). Read-only: renders 3 usage bars
 // (weekly-all / session / fable) + optional promo from /api/costs/weekly. No manual input.
-// Threshold colors: <90% = success (green), 90-95% = accent (amber), >=95% = danger (red).
+// Threshold colors (weekly row): < gt3days = success, gt3days..lt1day = accent, >= lt1day = danger.
+// Session/fable rows are plain 5h-session metrics, unrelated to the weekly-threshold config -- kept
+// at the original fixed 90/95 breakpoints.
 async function loadWeeklyGauge() {
   const card = document.getElementById('quotaGaugeCard')
   if (!card) return
@@ -12467,7 +12474,12 @@ async function loadWeeklyGauge() {
     return pct >= 95 ? 'var(--danger)' : pct >= 90 ? 'var(--accent)' : 'var(--success)'
   }
 
-  function renderBar(rowId, fillId, pctId, resetId, metric) {
+  function barColorWeekly(pct) {
+    const { gt3days, lt1day } = _weeklyThresholds
+    return pct >= lt1day ? 'var(--danger)' : pct >= gt3days ? 'var(--accent)' : 'var(--success)'
+  }
+
+  function renderBar(rowId, fillId, pctId, resetId, metric, colorFn) {
     const row = document.getElementById(rowId)
     if (!row) return
     if (!metric || typeof metric.pct !== 'number') { row.hidden = true; return }
@@ -12475,13 +12487,14 @@ async function loadWeeklyGauge() {
     const fill = document.getElementById(fillId)
     const pctEl = document.getElementById(pctId)
     const resetEl = document.getElementById(resetId)
-    if (fill) { fill.style.width = pct + '%'; fill.style.background = barColor(pct) }
+    if (fill) { fill.style.width = pct + '%'; fill.style.background = (colorFn || barColor)(pct) }
     if (pctEl) pctEl.textContent = pct + '%'
     if (resetEl) resetEl.textContent = metric.resetAt ? t('overview.quota.resets', { at: metric.resetAt }) : ''
     row.hidden = false
   }
 
   try {
+    await loadWeeklyThresholds()
     const res = await fetch('/api/costs/weekly')
     if (!res.ok) throw new Error('HTTP ' + res.status)
     const d = await res.json()
@@ -12491,7 +12504,7 @@ async function loadWeeklyGauge() {
     if (d.available && typeof d.pct === 'number') {
       // Weekly All-models row (always shown when data is present)
       renderBar('usageRowWeekly', 'usageBarFillWeekly', 'usageBarPctWeekly', 'usageResetWeekly',
-        { pct: d.pct, resetAt: d.resetAt })
+        { pct: d.pct, resetAt: d.resetAt }, barColorWeekly)
 
       // Session row (shown when snapshot includes session metric)
       renderBar('usageRowSession', 'usageBarFillSession', 'usageBarPctSession', 'usageResetSession', d.session)
@@ -12522,6 +12535,101 @@ async function loadWeeklyGauge() {
     if (sourceEl) sourceEl.hidden = true
   }
 }
+
+// GET the editable weekly-threshold config and populate the slider UI (card f3248478).
+// Fetched every time the gauge loads, so the sliders + weekly-bar coloring never show a
+// stale value after another session/tab edits them.
+async function loadWeeklyThresholds() {
+  try {
+    const res = await fetch('/api/costs/weekly-thresholds')
+    if (!res.ok) throw new Error('HTTP ' + res.status)
+    const cfg = await res.json()
+    _weeklyThresholds = { gt3days: cfg.gt3days, lt2days: cfg.lt2days, lt1day: cfg.lt1day }
+    const map = { thrGt3: cfg.gt3days, thrLt2: cfg.lt2days, thrLt1: cfg.lt1day }
+    for (const [id, val] of Object.entries(map)) {
+      const input = document.getElementById(id)
+      const label = document.getElementById(id + 'Val')
+      if (input) input.value = val
+      if (label) label.textContent = val + '%'
+    }
+  } catch {
+    // Keep the built-in defaults (already set on _weeklyThresholds) -- the sliders simply
+    // show the CLAUDE.md fallback values baked into the HTML min/max range.
+  }
+}
+
+// Wiring for the Claude Limit panel's help modal + editable threshold sliders (card
+// f3248478). Runs once at script load -- the elements are static HTML, not re-created
+// per navigation, so no need to re-wire on every loadWeeklyGauge() call.
+;(function wireQuotaThresholdControls() {
+  const helpBtn = document.getElementById('quotaHelpBtn')
+  const helpOverlay = document.getElementById('quotaHelpOverlay')
+  const helpClose = document.getElementById('quotaHelpClose')
+  if (helpBtn && helpOverlay) {
+    helpBtn.addEventListener('click', () => openModal(helpOverlay))
+  }
+  if (helpClose && helpOverlay) {
+    helpClose.addEventListener('click', () => closeModal(helpOverlay))
+  }
+  if (helpOverlay) {
+    helpOverlay.addEventListener('click', (e) => { if (e.target === helpOverlay) closeModal(helpOverlay) })
+  }
+
+  const toggle = document.getElementById('thresholdToggle')
+  const body = document.getElementById('thresholdBody')
+  if (toggle && body) {
+    toggle.addEventListener('click', () => {
+      const expanded = toggle.getAttribute('aria-expanded') === 'true'
+      toggle.setAttribute('aria-expanded', String(!expanded))
+      body.hidden = expanded
+    })
+  }
+
+  const sliderIds = ['thrGt3', 'thrLt2', 'thrLt1']
+  for (const id of sliderIds) {
+    const input = document.getElementById(id)
+    const label = document.getElementById(id + 'Val')
+    if (input && label) {
+      input.addEventListener('input', () => { label.textContent = input.value + '%' })
+    }
+  }
+
+  const saveBtn = document.getElementById('thresholdSaveBtn')
+  const statusEl = document.getElementById('thresholdStatus')
+  if (saveBtn) {
+    saveBtn.addEventListener('click', async () => {
+      const gt3days = Number(document.getElementById('thrGt3')?.value)
+      const lt2days = Number(document.getElementById('thrLt2')?.value)
+      const lt1day = Number(document.getElementById('thrLt1')?.value)
+      saveBtn.disabled = true
+      if (statusEl) { statusEl.hidden = true; statusEl.classList.remove('success', 'error') }
+      try {
+        const res = await fetch('/api/costs/weekly-thresholds', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ gt3days, lt2days, lt1day }),
+        })
+        const data = await res.json()
+        if (!res.ok) throw new Error(data.error || ('HTTP ' + res.status))
+        _weeklyThresholds = { gt3days: data.gt3days, lt2days: data.lt2days, lt1day: data.lt1day }
+        if (statusEl) {
+          statusEl.textContent = t('overview.quota.threshold.saved')
+          statusEl.classList.add('success')
+          statusEl.hidden = false
+        }
+        void loadWeeklyGauge()
+      } catch (err) {
+        if (statusEl) {
+          statusEl.textContent = String(err.message || err)
+          statusEl.classList.add('error')
+          statusEl.hidden = false
+        }
+      } finally {
+        saveBtn.disabled = false
+      }
+    })
+  }
+})()
 
 // Brand mark + product-brand chrome: pull the configured brand from
 // /api/marveen and apply it to the dashboard chrome (tab title, mobile topbar,

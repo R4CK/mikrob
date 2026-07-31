@@ -14,6 +14,11 @@ import {
   writeWeeklySnapshot,
   WeeklyLimitError,
 } from '../../costops/weekly-limit.js'
+import {
+  readThresholdConfig,
+  writeThresholdConfig,
+  WeeklyThresholdError,
+} from '../../costops/weekly-threshold.js'
 import type { RouteContext } from './types.js'
 
 // Runs the fixed-cost -> ledger reflection once immediately (so the summary is
@@ -102,6 +107,36 @@ export async function tryHandleCosts(ctx: RouteContext): Promise<boolean> {
     } catch (err) {
       logger.error({ err }, 'CostOps sources failed')
       json(res, { error: 'Cost sources failed' }, 500)
+    }
+    return true
+  }
+
+  // Editable weekly new-dev-stop thresholds (card f3248478): the same file
+  // store/pre-dispatch-check.sh reads, so the dashboard sliders and the bash gate
+  // never drift out of sync.
+  if (path === '/api/costs/weekly-thresholds' && method === 'GET') {
+    json(res, readThresholdConfig())
+    return true
+  }
+
+  if (path === '/api/costs/weekly-thresholds' && method === 'POST') {
+    try {
+      let body: Record<string, unknown>
+      try {
+        body = JSON.parse((await readBody(req)).toString()) as Record<string, unknown>
+      } catch {
+        json(res, { error: 'Érvénytelen JSON törzs.' }, 400)
+        return true
+      }
+      const config = writeThresholdConfig(body, Math.floor(Date.now() / 1000))
+      json(res, config)
+    } catch (err) {
+      if (err instanceof WeeklyThresholdError) {
+        json(res, { error: err.message }, 400)
+        return true
+      }
+      logger.error({ err }, 'Weekly threshold config write failed')
+      json(res, { error: 'A kuszob-beallitasok mentese sikertelen.' }, 500)
     }
     return true
   }

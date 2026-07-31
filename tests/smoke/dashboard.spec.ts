@@ -114,4 +114,32 @@ test.describe('Dashboard smoke', () => {
     await expect(page.locator('.sb-link[data-page="repos"]')).toBeVisible()
     expect(errors).toHaveLength(0)
   })
+
+  // Card f3248478: Claude Limit panel tooltip + editable weekly-threshold sliders.
+  // Overview is the default landing page, so no hash navigation needed. Proves the
+  // sliders load real values from GET /api/costs/weekly-thresholds (not hardcoded
+  // 90/92/95 baked into the HTML) and the help modal opens/closes without error.
+  test('quota threshold panel loads live values and help modal toggles', async ({ page }) => {
+    const errors: string[] = []
+    page.on('pageerror', (err) => errors.push(err.message))
+    await page.goto(`/?token=${TOKEN}`)
+    await page.waitForTimeout(500)
+
+    const toggle = page.locator('#thresholdToggle')
+    await expect(toggle).toBeVisible()
+    await toggle.click()
+    const body = page.locator('#thresholdBody')
+    await expect(body).toBeVisible()
+    await expect(page.locator('#thrGt3')).toHaveValue(/^\d+$/)
+    await expect(page.locator('#thrGt3Val')).toHaveText(/%$/)
+
+    const helpBtn = page.locator('#quotaHelpBtn')
+    await expect(helpBtn).toBeVisible()
+    await helpBtn.click()
+    await expect(page.locator('#quotaHelpOverlay')).toHaveClass(/active/)
+    await page.locator('#quotaHelpClose').click()
+    await expect(page.locator('#quotaHelpOverlay')).not.toHaveClass(/active/)
+
+    expect(errors).toHaveLength(0)
+  })
 })

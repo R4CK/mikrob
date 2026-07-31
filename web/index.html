@@ -272,6 +272,13 @@
       <div class="usage-info-card" id="quotaGaugeCard">
         <div class="usage-info-head">
           <span class="usage-info-title" data-i18n="overview.quota.title">Claude Limit</span>
+          <button
+            type="button"
+            class="usage-info-help-btn"
+            id="quotaHelpBtn"
+            aria-label="Kuszob-szabalyok"
+            data-i18n-aria-label="overview.quota.help_aria"
+          >?</button>
           <span class="usage-info-source" id="usageInfoSource" hidden></span>
         </div>
         <div class="usage-info-row" id="usageRowWeekly">
@@ -301,6 +308,63 @@
         <div class="usage-info-promo" id="usageInfoPromo" hidden></div>
         <p class="usage-info-empty" id="quotaGaugeEmpty" hidden data-i18n="overview.quota.auto_empty">Nincs adat — a panel olvasó automatikusan frissíti.</p>
         <p class="usage-info-error" id="usageInfoError" hidden role="alert"></p>
+
+        <!-- Editable weekly new-dev-stop thresholds (card f3248478). Loaded/saved via
+             /api/costs/weekly-thresholds; the SAME file store/pre-dispatch-check.sh reads. -->
+        <div class="usage-threshold-section">
+          <button type="button" class="usage-threshold-toggle" id="thresholdToggle" aria-expanded="false" aria-controls="thresholdBody">
+            <span class="usage-threshold-toggle-arrow">▶</span>
+            <span data-i18n="overview.quota.threshold.toggle">Kuszobok szerkesztese</span>
+          </button>
+          <div class="usage-threshold-body" id="thresholdBody" hidden>
+            <div class="usage-threshold-row">
+              <label for="thrGt3" data-i18n="overview.quota.threshold.gt3">&gt;3 nap a resetig</label>
+              <input type="range" id="thrGt3" min="1" max="100" step="1">
+              <span class="usage-threshold-val" id="thrGt3Val">90%</span>
+            </div>
+            <div class="usage-threshold-row">
+              <label for="thrLt2" data-i18n="overview.quota.threshold.lt2">&lt;2 nap a resetig</label>
+              <input type="range" id="thrLt2" min="1" max="100" step="1">
+              <span class="usage-threshold-val" id="thrLt2Val">92%</span>
+            </div>
+            <div class="usage-threshold-row">
+              <label for="thrLt1" data-i18n="overview.quota.threshold.lt1">&lt;1 nap a resetig</label>
+              <input type="range" id="thrLt1" min="1" max="100" step="1">
+              <span class="usage-threshold-val" id="thrLt1Val">95%</span>
+            </div>
+            <p class="usage-threshold-hint" id="thresholdHint" data-i18n="overview.quota.threshold.hint">
+              Minel kozelebb a heti reset, annal magasabb a megengedett kuszob -- a flotta ekkor allitja le az uj fejlesztest, amig folyamatban levo munka+gate-ek befejezodnek.
+            </p>
+            <div class="usage-threshold-actions">
+              <button type="button" class="btn-primary btn-compact" id="thresholdSaveBtn" data-i18n="overview.quota.threshold.save">Mentes</button>
+              <span class="usage-threshold-status" id="thresholdStatus" hidden></span>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <!-- Claude Limit kuszob-szabalyok tooltip modal (card f3248478) -->
+      <div class="modal-overlay" id="quotaHelpOverlay">
+        <div class="modal" style="max-width:480px">
+          <div class="modal-header">
+            <h2 data-i18n="overview.quota.help.title">Heti kuszob-szabalyok</h2>
+            <button class="modal-close" id="quotaHelpClose">&times;</button>
+          </div>
+          <div class="modal-body">
+            <p style="font-size:13px;color:var(--text-muted);line-height:1.6;margin-bottom:12px" data-i18n="overview.quota.help.p1">
+              A heti (All models) szazalek eleresekor a flotta leallitja az UJ fejlesztes elinditasat -- a folyamatban levo kartyak es gate-ek meg befejezodnek, csak uj munka nem indul.
+            </p>
+            <p style="font-size:13px;color:var(--text-muted);line-height:1.6;margin-bottom:12px" data-i18n="overview.quota.help.p2">
+              A kuszob DINAMIKUS, a heti resetig hatralevo ido alapjan: minel kozelebb a reset, annal magasabb a megengedett ertek (ugyis hamarosan nullazodik).
+            </p>
+            <p style="font-size:13px;color:var(--text-muted);line-height:1.6;margin-bottom:12px" data-i18n="overview.quota.help.p3">
+              A kuszob elerese utan a fejlesztes NEM all le teljesen: a mechanikus kod-reszek a lokalis LLM-re kerulnek (offload mod), amig a heti kvota nullazodik.
+            </p>
+            <p style="font-size:13px;color:var(--text-muted);line-height:1.6" data-i18n="overview.quota.help.p4">
+              A harom kuszob-ertek (&gt;3 nap / &lt;2 nap / &lt;1 nap) a panel also reszeben szerkesztheto.
+            </p>
+          </div>
+        </div>
       </div>
       <div class="overview-stats">
         <div class="overview-stat">

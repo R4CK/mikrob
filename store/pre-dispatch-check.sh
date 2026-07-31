@@ -29,8 +29,31 @@ set -euo pipefail
 
 STORE="$(cd "$(dirname "$0")" && pwd)"
 WEEKLY_STATE="$STORE/weekly-usage.json"
+# Card f3248478 (Peti): the 90/92/95 thresholds are now superadmin-editable via
+# the dashboard's Claude Limit panel sliders, persisted here. Absent/corrupt
+# file -> the CLAUDE.md defaults below, never a script failure.
+THRESHOLD_CONFIG="$STORE/weekly-threshold-config.json"
 # Same limit phrasings as store/quota-check.sh / src/model-fallback.ts.
 RX='usage limit reached|reached your usage limit|hit (your|the) usage limit|approaching (your )?usage limit|usage limit (will )?reset|limit will reset at|[0-9]+-hour limit reached|wait for limit to reset|stop and wait for limit'
+
+# --- editable thresholds (card f3248478), CLAUDE.md defaults if unset/corrupt ---
+# echoes "gt3days lt2days lt1day" (three ints, space-separated).
+threshold_config() {
+  python3 -c "
+import json
+try:
+    with open('$THRESHOLD_CONFIG') as f:
+        c = json.load(f)
+    g = int(c.get('gt3days', 90))
+    l2 = int(c.get('lt2days', 92))
+    l1 = int(c.get('lt1day', 95))
+    # Fail-safe bounds: never let a bad edit disable the gate or exceed 100.
+    g = max(1, min(g, 100)); l2 = max(1, min(l2, 100)); l1 = max(1, min(l1, 100))
+    print(g, l2, l1)
+except Exception:
+    print(90, 92, 95)
+" 2>/dev/null || echo "90 92 95"
+}
 
 # --- dynamic threshold from days-to-reset --------------------------------------
 # args: <reset-label like "Thu 15:59">  -> echoes the integer threshold
@@ -46,9 +69,10 @@ dynamic_threshold() {
       days=$(( (rts - now) / 86400 ))
     fi
   fi
-  if   [ "$days" -lt 1 ]; then echo 95
-  elif [ "$days" -lt 2 ]; then echo 92
-  else echo 90; fi
+  read -r gt3 lt2 lt1 <<< "$(threshold_config)"
+  if   [ "$days" -lt 1 ]; then echo "$lt1"
+  elif [ "$days" -lt 2 ]; then echo "$lt2"
+  else echo "$gt3"; fi
 }
 
 # --- best-effort OAuth read of the real weekly % (future-proof) -----------------
