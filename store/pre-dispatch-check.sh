@@ -58,24 +58,43 @@ try:
     nd = max(1, min(nd, 100)); ts = max(1, min(ts, 100))
     # Card d53c1e00: the API rejects a non-monotonic pair on write, but this file can be
     # hand-edited -- fall back to the defaults rather than stop verification BEFORE work.
+    # Card 17905a6d: and SAY SO. A silent fallback means an operator who hand-edited the
+    # file believes their thresholds are in force while the defaults are -- the edit was
+    # rejected and nothing told them.
     if nd > ts:
+        import sys
+        print('WARN: weekly-threshold-config.json REJECTED as non-monotonic '
+              '(newDevStop %d > testStop %d) -- using defaults 90/97. '
+              'Fix it in the dashboard Claude Limit panel or the file itself.' % (nd, ts),
+              file=sys.stderr)
         nd, ts = 90, 97
     print(nd, ts)
 except Exception:
     print(90, 97)
-" 2>/dev/null || echo "90 97"
+" || echo "90 97"
+}
+
+# Read the config ONCE per run into NEW_DEV_STOP / TEST_STOP (card 17905a6d). threshold_config emits a
+# warning when it rejects a hand-edited file, and calling it twice printed that warning twice, which
+# reads like two separate problems. Assigned in the PARENT shell -- a `$(...)` cache would be set in a
+# subshell and never survive.
+NEW_DEV_STOP=""
+TEST_STOP=""
+load_thresholds() {
+  [ -n "$NEW_DEV_STOP" ] && return 0
+  read -r NEW_DEV_STOP TEST_STOP <<< "$(threshold_config)"
 }
 
 # Echoes the level at which NEW development stops.
 new_dev_threshold() {
-  read -r nd _ts <<< "$(threshold_config)"
-  echo "$nd"
+  load_thresholds
+  echo "$NEW_DEV_STOP"
 }
 
 # Echoes the level at which GATE work stops too.
 test_stop_threshold() {
-  read -r _nd ts <<< "$(threshold_config)"
-  echo "$ts"
+  load_thresholds
+  echo "$TEST_STOP"
 }
 
 # --- best-effort OAuth read of the real weekly % (future-proof) -----------------
@@ -156,6 +175,21 @@ os.replace(tmp, path)
 PYHS
 }
 
+# Is the flag file itself currently claiming an active hard stop? Used only for the disagreement
+# warning above -- the dispatch decision never depends on it (card 17905a6d).
+flag_says_active() {
+  python3 -c "
+import json
+try:
+    with open('$HARD_STOP_FLAG') as f:
+        raise SystemExit(0 if json.load(f).get('active') is True else 1)
+except SystemExit:
+    raise
+except Exception:
+    raise SystemExit(1)
+" 2>/dev/null
+}
+
 cmd="${1:-run}"
 case "$cmd" in
   set-weekly)
@@ -194,12 +228,24 @@ d=json.load(open(sys.argv[1]))
 print(int(d.get('percent',-1)), d.get('reset',''))
 PY
 )
-  nd="$(new_dev_threshold)"
-  ts="$(test_stop_threshold)"
+  load_thresholds
+  nd="$NEW_DEV_STOP"
+  ts="$TEST_STOP"
   # Card d08b98f4: TWO levels, and the harder one is checked first. At testStop even GATE work
   # stops, so the caller must be able to tell the two apart, not merely see "held".
   if [ "$pct" -ge 0 ] 2>/dev/null && [ "$pct" -ge "$ts" ]; then
+    # Read the flag BEFORE writing it -- comparing against what we just wrote would always agree.
+    flag_was_active=0
+    flag_says_active && flag_was_active=1
     write_hard_stop 1 "$pct" "$ts"
+    # Card 17905a6d (Cybersec LOW #1): SECOND opinion on the flag. This script computes the hard-stop
+    # state from the percentage itself, so dispatch is held correctly even with an unreadable flag --
+    # but PARKING the role agents is driven by the flag file, and a corrupt one means nobody parks and
+    # the fleet burns the shared quota idle-but-running. If our own verdict and the flag disagree, say
+    # so loudly rather than let the two drift silently apart.
+    if [ "$flag_was_active" != "1" ]; then
+      echo "WARN: hard-stop computed ACTIVE (weekly ${pct}% >= ${ts}%) but $HARD_STOP_FLAG is not active -- role agents may NOT be parked. Check the flag file." >&2
+    fi
     echo "DISPATCH:HOLD:HARD-STOP weekly-${pct}%>=test-stop-${ts}% -- gate work stops too, park every role agent (reset ${reset:-unknown})"; exit 0
   fi
   write_hard_stop 0 "$pct" "$ts"
