@@ -171,6 +171,38 @@ describe('the TUI wraps lines itself, and a code split that way is still a code 
     expect(out).toContain('Login failed')
   })
 
+  // Cybersec NO-GO on 0d38dc6: the first round ran the de-wrap AFTER the generic 24-char sweep, so a
+  // split with one half >= 24 was partly masked first, the de-wrapped view no longer held a
+  // candidate, and the OTHER half survived to stderr. Measured tails: split 24 -> 20 chars leaked,
+  // 26 -> 18, 30 -> 14, 36 -> 8. The four original tests all used short-short splits, which is why
+  // they stayed green -- and on a wide terminal short-short is the RARER shape.
+  const LONG_CODE = `ac_${'x'.repeat(20)}QeR${'z'.repeat(18)}` // 44 chars
+  const wrapAt = (n: number): string =>
+    `Login failed\nYour code: ${LONG_CODE.slice(0, n)}\n  ${LONG_CODE.slice(n)}\nTry again\n`
+
+  it('masks the split where the FIRST half is >= 24 (30/14) -- the regression case', () => {
+    const out = redact(wrapAt(30))
+    expect(out).not.toContain(LONG_CODE.slice(0, 30))
+    expect(out).not.toContain(LONG_CODE.slice(30))
+    expect(out).toContain('***REDACTED***')
+  })
+
+  it('masks the split where the SECOND half is >= 24 (10/34)', () => {
+    const out = redact(wrapAt(10))
+    expect(out).not.toContain(LONG_CODE.slice(0, 10))
+    expect(out).not.toContain(LONG_CODE.slice(10))
+  })
+
+  it('leaves no fragment of the code at ANY split point', () => {
+    // The table Cybersec measured, pinned: one case per split, both halves checked.
+    for (const n of [10, 20, 24, 26, 30, 36]) {
+      const out = redact(wrapAt(n))
+      expect(out, `split ${n} head`).not.toContain(LONG_CODE.slice(0, n))
+      expect(out, `split ${n} tail`).not.toContain(LONG_CODE.slice(n))
+      expect(out, `split ${n} context`).toContain('Try again')
+    }
+  })
+
   it('leaves ordinary indented diagnostic text alone (no over-masking)', () => {
     // The alternative fix -- lowering the 24-char threshold -- would start masking words like these,
     // and a dump that redacts everything is a dump nobody reads.
