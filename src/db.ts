@@ -389,6 +389,50 @@ export function initDatabase(dbPathOverride?: string): void {
     )
   `)
   db.exec(`CREATE INDEX IF NOT EXISTS idx_kanban_events_card ON kanban_card_events(card_id, created_at)`)
+
+  // --- Timestamp integrity (card a06314ea) ---------------------------------
+  // Every timestamp in this schema is a UNIX EPOCH INTEGER, and every reader assumes it: the
+  // stuck-card monitor and the re-dispatch guard both do epoch arithmetic. A row written with a
+  // "2026-07-31 14:53:49" TEXT value does not fail anywhere -- it silently poisons those
+  // calculations, which is how it was found.
+  //
+  // The API never writes text (db.ts uses Math.floor(Date.now()/1000) throughout). The rows that
+  // went wrong came from agents writing DIRECTLY into SQLite with datetime('now') or a Python ISO
+  // string, so a TypeScript-side fix could not have caught them. A TRIGGER can: it fires for the
+  // sqlite3 CLI exactly as it does for the app, and it fails LOUDLY with the correct form in the
+  // message instead of letting a bad value land.
+  //
+  // Repair first (the trigger would otherwise reject an UPDATE touching an already-bad row).
+  db.exec(`
+    UPDATE kanban_cards SET created_at = CAST(strftime('%s', created_at) AS INTEGER)
+     WHERE typeof(created_at) <> 'integer' AND strftime('%s', created_at) IS NOT NULL;
+    UPDATE kanban_cards SET updated_at = CAST(strftime('%s', updated_at) AS INTEGER)
+     WHERE typeof(updated_at) <> 'integer' AND strftime('%s', updated_at) IS NOT NULL;
+    UPDATE kanban_comments SET created_at = CAST(strftime('%s', created_at) AS INTEGER)
+     WHERE typeof(created_at) <> 'integer' AND strftime('%s', created_at) IS NOT NULL;
+  `)
+  for (const [table, column] of [
+    ['kanban_cards', 'created_at'],
+    ['kanban_cards', 'updated_at'],
+    ['kanban_comments', 'created_at'],
+  ] as const) {
+    db.exec(`
+      CREATE TRIGGER IF NOT EXISTS trg_${table}_${column}_epoch_insert
+      BEFORE INSERT ON ${table}
+      WHEN typeof(NEW.${column}) <> 'integer'
+      BEGIN
+        SELECT RAISE(ABORT, '${table}.${column} must be a unix epoch INTEGER (use unixepoch(), not datetime()/an ISO string)');
+      END;
+    `)
+    db.exec(`
+      CREATE TRIGGER IF NOT EXISTS trg_${table}_${column}_epoch_update
+      BEFORE UPDATE OF ${column} ON ${table}
+      WHEN typeof(NEW.${column}) <> 'integer'
+      BEGIN
+        SELECT RAISE(ABORT, '${table}.${column} must be a unix epoch INTEGER (use unixepoch(), not datetime()/an ISO string)');
+      END;
+    `)
+  }
   // Migration (card c4f2de32, Cybered follow-up): mark the transitions that only happened because a
   // caller passed `force`. Without it a forced re-open is indistinguishable afterwards from a
   // regular one -- and the whole point of the guard is that re-opening reviewed work leaves a trace.
