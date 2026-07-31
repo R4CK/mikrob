@@ -1725,24 +1725,59 @@ export function createKanbanCard(card: {
 /** Authors whose PASS/FAIL/GO/NO-GO counts as a gate verdict -- the same set the gate-scan scripts
  *  filter on. The orchestrator is deliberately NOT here (card c4f2de32, Cybered): MikroB's routine
  *  tiering sentence ("DONE csak QA PASS + Cybersec GO") reads exactly like a verdict, so counting it
- *  would silently switch the guard off for that card and bring the churn straight back. */
-const GATE_AUTHORS = new Set(['qa', 'qa2', 'cybersec', 'cybersec2', 'cybered'])
+ *  would silently switch the guard off for that card and bring the churn straight back. Nor is the
+ *  card's own author -- a "REVIEW ... tests PASS" must not clear its own review. */
+const GATE_AUTHORS = ['qa', 'qa2', 'cybersec', 'cybersec2', 'cybered']
 
+/** A verdict is ANCHORED at the start of the comment (card c4f2de32, Cybersec NO-GO). Matching
+ *  anywhere in the opening 200 characters let a passing MENTION of a verdict -- "the paired card got
+ *  its GO", a progress note written after the QA PASS -- clear the guard. */
+const VERDICT_HEAD_RE = /^\W*(?:\[[^\]]{0,32}\]\s*)?(?:[A-Z][A-Z0-9_-]{0,16}\s+){0,3}(PASS|FAIL|GO|NO-GO)\b/i
+
+/** Comments the offload script posts on the card automatically. They are 7B free text, so a phrase
+ *  inside one must never decide whether a workflow control holds (same class as the 3307b428
+ *  draft-guard finding). Skipped before any classification. */
+const DRAFT_MARKER_RE = /^\W*(\[)?LOCAL[- ]?LLM/i
+
+function isDraftComment(content: string): boolean {
+  return DRAFT_MARKER_RE.test((content || '').trimStart())
+}
+
+function firstLine(content: string): string {
+  return (content || '').trim().split('\n')[0] ?? ''
+}
+
+/**
+ * The last signal a card carries in its comments:
+ *   'review'  -- the author reported the work done and no GATE has judged it since;
+ *   'verdict' -- a gate answered after that REVIEW (PASS/GO or FAIL/NO-GO);
+ *   'none'    -- neither exists.
+ *
+ * Each class is looked up on its OWN (newest REVIEW, newest gate verdict) rather than scanned in a
+ * fixed window (card c4f2de32, Cybersec NO-GO): with a 20-comment window, a chatty card pushed its
+ * own REVIEW out of view and the guard stopped seeing it -- comment volume must not decide whether a
+ * control holds.
+ */
 export function latestKanbanSignal(cardId: string): 'review' | 'verdict' | 'none' {
   const rows = db.prepare(
-    'SELECT author, content FROM kanban_comments WHERE card_id = ? ORDER BY created_at DESC, id DESC LIMIT 20'
-  ).all(cardId) as { author: string; content: string }[]
-  for (const { author, content } of rows) {
-    const head = content.slice(0, 200).toUpperCase()
-    // A gate verdict is anchored at the start of its comment by fleet convention
-    // ("QA PASS -- ...", "CYBERSEC GO -- ...", "[CYBERSEC GATE] ... NO-GO") AND comes from a gate.
-    const isGate = GATE_AUTHORS.has((author || '').toLowerCase())
-    if (isGate && /\b(PASS|FAIL|GO|NO-GO)\b/.test(head) && !head.startsWith('REVIEW')) {
-      return 'verdict'
+    'SELECT id, author, content FROM kanban_comments WHERE card_id = ? ORDER BY id DESC'
+  ).all(cardId) as { id: number; author: string; content: string }[]
+
+  let lastReviewId = 0
+  let lastVerdictId = 0
+  for (const r of rows) {
+    if (isDraftComment(r.content)) continue
+    const head = firstLine(r.content)
+    const author = (r.author || '').toLowerCase()
+    if (lastVerdictId === 0 && GATE_AUTHORS.includes(author) && VERDICT_HEAD_RE.test(head)) {
+      lastVerdictId = r.id
     }
-    if (head.startsWith('REVIEW')) return 'review'
+    if (lastReviewId === 0 && /^\W*REVIEW\b/i.test(head)) lastReviewId = r.id
+    if (lastReviewId !== 0 && lastVerdictId !== 0) break
   }
-  return 'none'
+
+  if (lastReviewId === 0 && lastVerdictId === 0) return 'none'
+  return lastVerdictId > lastReviewId ? 'verdict' : 'review'
 }
 
 /**
@@ -1759,7 +1794,11 @@ export function reviewedCardBlocksInProgress(id: string, nextStatus: string): bo
   if (nextStatus !== 'in_progress') return false
   const current = (db.prepare('SELECT status FROM kanban_cards WHERE id=?').get(id) as { status: string } | undefined)?.status
   if (current !== 'waiting') return false
-  return latestKanbanSignal(id) === 'review'
+  // FAIL-CLOSED (card c4f2de32, Cybersec NO-GO): only a gate verdict newer than the last REVIEW
+  // opens the way back. An unclassifiable card blocks too -- a waiting card whose comments say
+  // nothing is exactly the case where re-opening it silently is most likely to be a mistake, and
+  // `force` (recorded as such) is the deliberate way through.
+  return latestKanbanSignal(id) !== 'verdict'
 }
 
 /**

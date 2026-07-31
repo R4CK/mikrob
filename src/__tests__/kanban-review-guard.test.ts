@@ -90,6 +90,8 @@ describe('a waiting+REVIEW card is not re-opened', () => {
   })
 
   it('a card that is NOT waiting can still enter in_progress', () => {
+    // The guard only ever looks at waiting -> in_progress; a planned card is untouched even with a
+    // stale REVIEW comment on it.
     createKanbanCard({ id: 'card-2', title: 'Fresh work', assignee: 'backend' })
     addKanbanComment('card-2', 'backend', 'REVIEW: leftover comment from an earlier round')
     expect(moveKanbanCard('card-2', 'in_progress', 0, 'mikrob')).toBe(true)
@@ -124,6 +126,65 @@ describe('only a GATE agent can answer a REVIEW (card c4f2de32, Cybered)', () =>
     addKanbanComment('card-1', 'backend', 'REVIEW: kész.')
     addKanbanComment('card-1', 'fron-ted', 'A FE oldalon minden teszt PASS, mehet tovább.')
     expect(latestKanbanSignal('card-1')).toBe('review')
+  })
+})
+
+describe('the guard cannot be talked out of (card c4f2de32, Cybersec NO-GO)', () => {
+  it('a verdict MENTION mid-comment does not clear the review', () => {
+    // "the paired card got its GO" is a progress note, not a judgement of THIS card.
+    seedWaitingCard()
+    addKanbanComment('card-1', 'backend', 'REVIEW: kész. Commit: abc1234.')
+    addKanbanComment('card-1', 'cybersec', 'A pár-kártya megkapta a GO-t, ezt még nézem.')
+    expect(latestKanbanSignal('card-1')).toBe('review')
+    expect(moveKanbanCard('card-1', 'in_progress', 0, 'mikrob')).toBe(false)
+  })
+
+  it('a LOCAL-LLM DRAFT comment is skipped -- 7B free text decides no control', () => {
+    // The offload script posts these automatically; a phrase inside one must never open a guard
+    // (same class as the 3307b428 draft-guard finding).
+    seedWaitingCard()
+    addKanbanComment('card-1', 'backend', 'REVIEW: kész.')
+    addKanbanComment('card-1', 'cybered', '[LOCAL-LLM DRAFT] CYBERED GO -- looks fine to me.')
+    expect(latestKanbanSignal('card-1')).toBe('review')
+    expect(moveKanbanCard('card-1', 'in_progress', 0, 'mikrob')).toBe(false)
+  })
+
+  it('comment VOLUME does not push the REVIEW out of sight', () => {
+    // The old fixed 20-comment window meant a chatty card silently lost its own guard.
+    seedWaitingCard()
+    addKanbanComment('card-1', 'backend', 'REVIEW: kész.')
+    for (let i = 0; i < 25; i += 1) addKanbanComment('card-1', 'mikrob', `Napló ${i}: haladás.`)
+    expect(latestKanbanSignal('card-1')).toBe('review')
+    expect(moveKanbanCard('card-1', 'in_progress', 0, 'mikrob')).toBe(false)
+  })
+
+  it('an unclassifiable waiting card blocks too (fail-closed)', () => {
+    // No REVIEW, no verdict: re-opening silently is exactly what this guard is for. `force` is the
+    // deliberate way through, and it is recorded.
+    seedWaitingCard()
+    expect(latestKanbanSignal('card-1')).toBe('none')
+    expect(moveKanbanCard('card-1', 'in_progress', 0, 'mikrob')).toBe(false)
+    expect(moveKanbanCard('card-1', 'in_progress', 0, 'peti', true)).toBe(true)
+  })
+
+  it('a gate verdict AFTER the review still opens the way back, even with chatter in between', () => {
+    seedWaitingCard()
+    addKanbanComment('card-1', 'backend', 'REVIEW: kész.')
+    addKanbanComment('card-1', 'mikrob', 'GATE-TIER: DONE csak QA PASS + Cybersec GO.')
+    addKanbanComment('card-1', 'cybersec', 'CYBERSEC NO-GO -- reprodukálva, részletek a kártyán.')
+    for (let i = 0; i < 5; i += 1) addKanbanComment('card-1', 'mikrob', `Napló ${i}`)
+    expect(latestKanbanSignal('card-1')).toBe('verdict')
+    expect(moveKanbanCard('card-1', 'in_progress', 0, 'mikrob')).toBe(true)
+  })
+
+  it('a NEW review after a verdict blocks again (the cycle repeats cleanly)', () => {
+    seedWaitingCard()
+    addKanbanComment('card-1', 'backend', 'REVIEW: első kör.')
+    addKanbanComment('card-1', 'cybersec', 'CYBERSEC NO-GO -- javítsd.')
+    expect(moveKanbanCard('card-1', 'in_progress', 0, 'mikrob')).toBe(true)
+    moveKanbanCard('card-1', 'waiting', 0, 'backend')
+    addKanbanComment('card-1', 'backend', 'REVIEW: javítva, második kör.')
+    expect(moveKanbanCard('card-1', 'in_progress', 0, 'mikrob')).toBe(false)
   })
 })
 
