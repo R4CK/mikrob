@@ -10,6 +10,7 @@
 // posting a comment would need a live dashboard + a loaded 7B; grepping catches the omission directly
 // and runs everywhere.
 import { describe, it, expect } from 'vitest'
+import { execFileSync } from 'node:child_process'
 import { existsSync, readFileSync } from 'node:fs'
 import { join } from 'node:path'
 import { REPO_ROOT } from './helpers/repo-location.js'
@@ -76,5 +77,132 @@ describe('gate sweeps -- a draft is neither a REVIEW nor an orchestrator directi
     const live = join(REPO_ROOT, GATE_SCAN_LIVE)
     if (!existsSync(live)) return
     expect(readFileSync(live, 'utf8')).toContain(`'mikrob', 'qa', 'qa2', '${DRAFT_AUTHOR}'`)
+  })
+})
+
+// --- BEHAVIOURAL half (Cybersec NO-GO F1/F2/F3 on 672001b) --------------------------------------
+//
+// The assertions above pin the SHAPE of the fix; these run the actual Python and pin its BEHAVIOUR.
+// That distinction earned its place here: 672001b patched `is_gate_review` in the skill and left
+// `mikrob_blocked` -- the OTHER door out of the same sweep -- untouched, and a grep-only test happily
+// passed while an open card (e7d530a9) was being falsely blocked on the live board.
+//
+// Both scanners are Python, so the tests drive python3 the way the hook tests already do.
+
+/** Run a Python snippet and return its stdout, trimmed. */
+function py(source: string): string {
+  return execFileSync('python3', ['-c', source], { encoding: 'utf-8' }).trim()
+}
+
+/** Load `mikrob_marker` out of the real scanner and report its verdict for one comment. */
+function markerVerdict(content: string, author = 'mikrob'): boolean {
+  const out = py(`
+import importlib.util, json
+spec = importlib.util.spec_from_file_location('scan', ${JSON.stringify(join(REPO_ROOT, 'store/cybersec-gate-scan.py'))})
+m = importlib.util.module_from_spec(spec); spec.loader.exec_module(m)
+print(json.dumps(m.mikrob_marker({'author': ${JSON.stringify(author)}, 'content': ${JSON.stringify(content)}}, ('DONE',))))
+`)
+  return JSON.parse(out) as boolean
+}
+
+/** Extract `mikrob_blocked` from a gate-scan SKILL recipe and report its verdict.
+ *  Only the marker/function section is executed -- the recipe's prologue reads a live token. */
+function blockedVerdict(skillPath: string, content: string, author = 'mikrob'): boolean {
+  const out = py(`
+import io, json
+src = io.open(${JSON.stringify(skillPath)}, encoding='utf-8').read()
+block = src.split('\u0060\u0060\u0060python', 1)[1].split('\u0060\u0060\u0060', 1)[0]
+snippet = 'import re' + chr(10) + block[block.index('BLOCKED_MARKERS'):block.index('needs = []')]
+ns = {}
+exec(compile(snippet, 'skill', 'exec'), ns)
+print(json.dumps(ns['mikrob_blocked']([{'author': ${JSON.stringify(author)}, 'content': ${JSON.stringify(content)}}])))
+`)
+  return JSON.parse(out) as boolean
+}
+
+/** The BLOCKED_MARKERS tuple a given SKILL copy actually declares. */
+function blockedMarkers(skillPath: string): string[] {
+  const out = py(`
+import io, json
+src = io.open(${JSON.stringify('SKILL_PATH')}, encoding='utf-8').read()
+block = src.split('\u0060\u0060\u0060python', 1)[1].split('\u0060\u0060\u0060', 1)[0]
+snippet = 'import re' + chr(10) + block[block.index('BLOCKED_MARKERS'):block.index('def _marker_re')]
+ns = {}
+exec(compile(snippet, 'skill', 'exec'), ns)
+print(json.dumps(list(ns['BLOCKED_MARKERS'])))
+`.replace('"SKILL_PATH"', JSON.stringify(skillPath)))
+  return JSON.parse(out) as string[]
+}
+
+const DRAFT_PREFIX = '[LOCAL-LLM DRAFT | dispatch-offload] '
+
+describe('cybersec-gate-scan mikrob_marker -- F3: first line, word-bounded', () => {
+  it('a REAL close still counts', () => {
+    expect(markerVerdict('DONE -- QA PASS + Cybersec GO\nzarom a kartyat.')).toBe(true)
+  })
+
+  it('the tiering SENTENCE mid-comment does NOT close the card', () => {
+    // "DONE only after QA PASS + Cybersec GO" is a REQUEST for gating. Matching the whole body read
+    // it as the opposite of what it says.
+    expect(markerVerdict('Risk-tiering: QA + Cybersec.\nDONE csak QA PASS + Cybersec GO')).toBe(false)
+  })
+
+  it('DONE hiding inside ABANDONED is not a close', () => {
+    expect(markerVerdict('ABANDONED approach, uj iranyt viszunk')).toBe(false)
+  })
+
+  it('a historical draft still cannot close a card, even on its first line', () => {
+    expect(markerVerdict(`${DRAFT_PREFIX}DONE\nkesz`)).toBe(false)
+  })
+
+  it('a non-orchestrator author is never a directive', () => {
+    expect(markerVerdict('DONE -- zarom', 'backend2')).toBe(false)
+  })
+})
+
+describe.each([
+  ['reseed source', join(REPO_ROOT, GATE_SCAN_SEED)],
+  ...(existsSync(join(REPO_ROOT, GATE_SCAN_LIVE))
+    ? ([['installed copy', join(REPO_ROOT, GATE_SCAN_LIVE)]] as [string, string][])
+    : []),
+])('gate-scan skill mikrob_blocked (%s) -- F1 + F2', (_label, skillPath) => {
+  it('a historical draft carrying a blocking marker no longer ejects the card', () => {
+    // F1: 672001b patched the REVIEW door and left this one open. 55 drafts are still stored under
+    // the orchestrator's name, so they still reach this function.
+    expect(blockedVerdict(skillPath, `${DRAFT_PREFIX}... BLOKKOLVA ...`)).toBe(false)
+  })
+
+  it('a REAL block from MikroB still blocks', () => {
+    expect(blockedVerdict(skillPath, 'BLOKKOLVA: Peti dontesere var')).toBe(true)
+  })
+
+  // F2, non-vacuously: derive the assertion from THIS copy's OWN markers. The three copies carry
+  // different marker sets (only the installed one currently lists 'HOLD'), so a test hardcoded to
+  // 'placeholder' proves nothing about a copy that has no 'HOLD' -- and a substring regression there
+  // would sail straight through. Gluing letters onto each real marker fires the old substring test
+  // and nothing else.
+  it('a marker embedded INSIDE a longer word does not block (word boundary, not substring)', () => {
+    const markers = blockedMarkers(skillPath).filter((m) => /^[\p{L}\p{N}]/u.test(m) && /[\p{L}\p{N}]$/u.test(m))
+    expect(markers.length).toBeGreaterThan(0) // otherwise this test asserts nothing
+    for (const marker of markers) {
+      expect(blockedVerdict(skillPath, `elozo${marker}kovetkezo`)).toBe(false)
+      // ...while the marker standing on its own still blocks, so the boundary did not disarm it.
+      expect(blockedVerdict(skillPath, `${marker} -- Peti dontesere var`)).toBe(true)
+    }
+  })
+
+  it('the live case that triggered F2: "placeholder" is not a HOLD', () => {
+    // The actual text on card e7d530a9 ("Replace any placeholder graphics") blocked the card in the
+    // installed copy. Asserted on every copy so the bug cannot be introduced into one of them later.
+    expect(blockedVerdict(skillPath, 'Replace any placeholder graphics')).toBe(false)
+    expect(blockedVerdict(skillPath, 'household cleaning module')).toBe(false)
+  })
+
+  it('a marker ending in punctuation still matches (no trailing \\b that can never fire)', () => {
+    expect(blockedVerdict(skillPath, 'blokk: infra hiany')).toBe(true)
+  })
+
+  it('a non-orchestrator author is never a block', () => {
+    expect(blockedVerdict(skillPath, 'BLOKKOLVA', 'backend2')).toBe(false)
   })
 })

@@ -3,6 +3,7 @@
 comment with no cybersec verdict after it. Lives in store/ so a scratchpad wipe
 does not lose it (store/ is gitignored; ops scripts are the tracked exception)."""
 import json
+import re
 import urllib.request
 
 TOKEN = open('/home/neon/marveen/store/.dashboard-token').read().strip()
@@ -88,8 +89,13 @@ def mikrob_marker(c, words):
     content = c.get('content') or ''
     if 'LOCAL-LLM DRAFT' in content:
         return False
-    up = content.upper()
-    return any(w in up for w in words)
+    # FIRST LINE only, WORD-BOUNDED (card 3307b428 F3, the same class as lesson f11d23eb which the
+    # shared gate-scan skill already learned and this scanner never did). Matching the whole body
+    # meant the standard tiering sentence "DONE csak QA PASS + Cybersec GO" -- a REQUEST for gating,
+    # written mid-comment -- dropped the card out of the sweep, and 'DONE' also hides inside
+    # 'ABANDONED', exactly like 'HOLD' inside 'placeholder'.
+    first = content.strip().split('\n')[0]
+    return any(re.search(r'\b' + re.escape(w) + r'\b', first, re.IGNORECASE) for w in words)
 
 
 def main():

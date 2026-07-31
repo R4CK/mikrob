@@ -67,11 +67,28 @@ def is_gate_review(cm):
 BLOCKED_MARKERS = ('BLOKKOLVA', 'KOTOTT FELTETEL', 'gate consolidated',
                    'GATE OSSZEVONVA', 'blokk:', 'NEM stuck')
 
+def _marker_re(m):
+    """Word-bounded where the marker begins/ends in a word character (card 3307b428, F2). A bare
+    substring test made 'HOLD' fire inside 'placeholder', 'household', 'stronghold' -- and that
+    misfires on ANY mikrob comment, draft or not. Markers ending in punctuation ('blokk:') keep no
+    trailing boundary: \b after ':' can never match."""
+    pat = re.escape(m)
+    if m[:1].isalnum(): pat = r'\b' + pat
+    if m[-1:].isalnum(): pat = pat + r'\b'
+    return re.compile(pat, re.IGNORECASE)
+
+BLOCKED_RES = tuple(_marker_re(m) for m in BLOCKED_MARKERS)
+
 def mikrob_blocked(comments):
     for cm in reversed(comments):
         if (cm.get('author') or '').lower() != 'mikrob': continue
         content = cm.get('content', '')
-        if any(m.lower() in content.lower() for m in BLOCKED_MARKERS):
+        # Card 3307b428, F1: 55 historical drafts are STILL stored under the orchestrator's name
+        # (only new ones are signed 'local-llm'). 7B free text is not a MikroB decision, so it must
+        # not be able to drop a card out of the sweep through the BLOCKING door either -- the same
+        # reasoning that keeps this guard in store/cybersec-gate-scan.py.
+        if 'LOCAL-LLM DRAFT' in content: continue
+        if any(r.search(content) for r in BLOCKED_RES):
             return True
     return False
 
