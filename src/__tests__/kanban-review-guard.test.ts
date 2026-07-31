@@ -96,6 +96,54 @@ describe('a waiting+REVIEW card is not re-opened', () => {
   })
 })
 
+describe('only a GATE agent can answer a REVIEW (card c4f2de32, Cybered)', () => {
+  it("the orchestrator's tiering sentence is NOT a verdict", () => {
+    // MikroB routinely writes "DONE csak QA PASS + Cybersec GO" while tiering a card. Counting that
+    // as a verdict switched the guard off for exactly the cards it was written for -- the churn back.
+    seedWaitingCard()
+    addKanbanComment('card-1', 'backend', 'REVIEW: kész. Commit: abc1234.')
+    addKanbanComment('card-1', 'mikrob', 'GATE-TIER: DONE csak QA PASS + Cybersec GO.')
+    expect(latestKanbanSignal('card-1')).toBe('review')
+    expect(moveKanbanCard('card-1', 'in_progress', 0, 'mikrob')).toBe(false)
+  })
+
+  it('a real gate verdict still re-opens the card', () => {
+    for (const author of ['qa', 'qa2', 'cybersec', 'cybered']) {
+      initDatabase(':memory:')
+      seedWaitingCard()
+      addKanbanComment('card-1', 'backend', 'REVIEW: kész.')
+      addKanbanComment('card-1', author, `${author.toUpperCase()} NO-GO -- reproduced.`)
+      expect(latestKanbanSignal('card-1'), author).toBe('verdict')
+      expect(moveKanbanCard('card-1', 'in_progress', 0, 'mikrob'), author).toBe(true)
+    }
+  })
+
+  it("an author who is not a gate cannot clear the guard by writing PASS", () => {
+    // Including the card's own author -- otherwise "REVIEW ... tests PASS" would self-clear.
+    seedWaitingCard()
+    addKanbanComment('card-1', 'backend', 'REVIEW: kész.')
+    addKanbanComment('card-1', 'fron-ted', 'A FE oldalon minden teszt PASS, mehet tovább.')
+    expect(latestKanbanSignal('card-1')).toBe('review')
+  })
+})
+
+describe('a forced re-open is marked as such', () => {
+  it('records forced=1 only for the transition the guard would have refused', () => {
+    seedWaitingCard()
+    addKanbanComment('card-1', 'backend', 'REVIEW: kész.')
+    expect(moveKanbanCard('card-1', 'in_progress', 0, 'peti', true)).toBe(true)
+    const last = getKanbanCardEvents('card-1').at(-1)
+    expect(last?.to_status).toBe('in_progress')
+    expect(last?.forced).toBe(1)
+  })
+
+  it('an ordinary move carrying force is NOT marked (force is not an override of anything)', () => {
+    createKanbanCard({ id: 'card-5', title: 'Plain', assignee: 'backend' })
+    expect(moveKanbanCard('card-5', 'in_progress', 0, 'mikrob', true)).toBe(true)
+    expect(getKanbanCardEvents('card-5').at(-1)?.forced).toBe(0)
+  })
+})
+
 describe('a status change through updateKanbanCard is audited', () => {
   it('records the transition, so a silent re-open is impossible to miss', () => {
     // Before this card, updateKanbanCard rewrote `status` with no event row -- which is why the

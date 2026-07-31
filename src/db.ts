@@ -384,10 +384,19 @@ export function initDatabase(dbPathOverride?: string): void {
       from_status TEXT,
       to_status TEXT NOT NULL,
       actor TEXT,
-      created_at INTEGER NOT NULL
+      created_at INTEGER NOT NULL,
+      forced INTEGER NOT NULL DEFAULT 0
     )
   `)
   db.exec(`CREATE INDEX IF NOT EXISTS idx_kanban_events_card ON kanban_card_events(card_id, created_at)`)
+  // Migration (card c4f2de32, Cybered follow-up): mark the transitions that only happened because a
+  // caller passed `force`. Without it a forced re-open is indistinguishable afterwards from a
+  // regular one -- and the whole point of the guard is that re-opening reviewed work leaves a trace.
+  try {
+    db.exec('ALTER TABLE kanban_card_events ADD COLUMN forced INTEGER NOT NULL DEFAULT 0')
+  } catch {
+    // column already exists
+  }
 
   // --- Kanban labels (tags) -----------------------------------------------
   // Labels are a separate registry (not hardcoded per-card strings) so the
@@ -1713,15 +1722,24 @@ export function createKanbanCard(card: {
  * Used by {@link reviewedCardBlocksInProgress}: a card sitting on an unanswered REVIEW must not be
  * yanked back into in_progress, but one that has been FAILED (or passed) may legitimately move.
  */
+/** Authors whose PASS/FAIL/GO/NO-GO counts as a gate verdict -- the same set the gate-scan scripts
+ *  filter on. The orchestrator is deliberately NOT here (card c4f2de32, Cybered): MikroB's routine
+ *  tiering sentence ("DONE csak QA PASS + Cybersec GO") reads exactly like a verdict, so counting it
+ *  would silently switch the guard off for that card and bring the churn straight back. */
+const GATE_AUTHORS = new Set(['qa', 'qa2', 'cybersec', 'cybersec2', 'cybered'])
+
 export function latestKanbanSignal(cardId: string): 'review' | 'verdict' | 'none' {
   const rows = db.prepare(
-    'SELECT content FROM kanban_comments WHERE card_id = ? ORDER BY created_at DESC, id DESC LIMIT 20'
-  ).all(cardId) as { content: string }[]
-  for (const { content } of rows) {
+    'SELECT author, content FROM kanban_comments WHERE card_id = ? ORDER BY created_at DESC, id DESC LIMIT 20'
+  ).all(cardId) as { author: string; content: string }[]
+  for (const { author, content } of rows) {
     const head = content.slice(0, 200).toUpperCase()
     // A gate verdict is anchored at the start of its comment by fleet convention
-    // ("QA PASS -- ...", "CYBERSEC GO -- ...", "[CYBERSEC GATE] ... NO-GO").
-    if (/\b(PASS|FAIL|GO|NO-GO)\b/.test(head) && !head.startsWith('REVIEW')) return 'verdict'
+    // ("QA PASS -- ...", "CYBERSEC GO -- ...", "[CYBERSEC GATE] ... NO-GO") AND comes from a gate.
+    const isGate = GATE_AUTHORS.has((author || '').toLowerCase())
+    if (isGate && /\b(PASS|FAIL|GO|NO-GO)\b/.test(head) && !head.startsWith('REVIEW')) {
+      return 'verdict'
+    }
     if (head.startsWith('REVIEW')) return 'review'
   }
   return 'none'
@@ -1761,9 +1779,11 @@ export function updateKanbanCard(
   const card = getKanbanCard(id)
   if (!card) return false
   const statusChanges = fields.status !== undefined && fields.status !== card.status
-  if (statusChanges && !opts?.force && reviewedCardBlocksInProgress(id, fields.status as string)) {
-    return false
-  }
+  const blocked = statusChanges && reviewedCardBlocksInProgress(id, fields.status as string)
+  if (blocked && !opts?.force) return false
+  // Only a transition that WOULD have been refused counts as forced -- a `force` flag on an ordinary
+  // move is not an override of anything, and marking it would blunt the signal.
+  const forcedFlag = blocked ? 1 : 0
   const now = Math.floor(Date.now() / 1000)
   const f = { ...card, ...fields, updated_at: now }
   const changed = db.prepare(
@@ -1772,8 +1792,8 @@ export function updateKanbanCard(
   ).run(f.title, f.description, f.status, f.assignee, f.priority, f.project, f.parent_id, f.due_date, f.sort_order, f.updated_at, f.archived_at, id).changes > 0
   if (changed && statusChanges) {
     db.prepare(
-      'INSERT INTO kanban_card_events (card_id, from_status, to_status, actor, created_at) VALUES (?, ?, ?, ?, ?)'
-    ).run(id, card.status, f.status, opts?.actor ?? null, now)
+      'INSERT INTO kanban_card_events (card_id, from_status, to_status, actor, created_at, forced) VALUES (?, ?, ?, ?, ?, ?)'
+    ).run(id, card.status, f.status, opts?.actor ?? null, now, forcedFlag)
   }
   return changed
 }
@@ -1787,7 +1807,8 @@ export function moveKanbanCard(id: string, status: KanbanCard['status'], sortOrd
   // Card c4f2de32: a card waiting on an unanswered REVIEW is finished work, not stalled work --
   // pulling it back to in_progress is what made other agents rebuild it. A gate FAIL leaves a
   // verdict comment and is allowed through; `force` covers a deliberate human override.
-  if (!force && reviewedCardBlocksInProgress(id, status)) return false
+  const forcedOverride = reviewedCardBlocksInProgress(id, status)
+  if (forcedOverride && !force) return false
   // Read the previous status first so we only record an audit event on a real
   // status transition (not a pure sort_order reorder within the same column).
   const prev = (db.prepare('SELECT status FROM kanban_cards WHERE id=?').get(id) as { status: string } | undefined)?.status
@@ -1796,8 +1817,8 @@ export function moveKanbanCard(id: string, status: KanbanCard['status'], sortOrd
   ).run(status, sortOrder, now, id).changes > 0
   if (changed && prev !== undefined && prev !== status) {
     db.prepare(
-      'INSERT INTO kanban_card_events (card_id, from_status, to_status, actor, created_at) VALUES (?, ?, ?, ?, ?)'
-    ).run(id, prev, status, actor ?? null, now)
+      'INSERT INTO kanban_card_events (card_id, from_status, to_status, actor, created_at, forced) VALUES (?, ?, ?, ?, ?, ?)'
+    ).run(id, prev, status, actor ?? null, now, forcedOverride ? 1 : 0)
   }
   return changed
 }
@@ -1905,6 +1926,9 @@ export interface KanbanCardEvent {
   to_status: string
   actor: string | null
   created_at: number
+  /** 1 when the transition only happened because the caller passed `force` past the
+   *  reviewed-card guard (card c4f2de32). 0 for every ordinary move. */
+  forced: number
 }
 
 export function getKanbanCardEvents(cardId: string): KanbanCardEvent[] {
