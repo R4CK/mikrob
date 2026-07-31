@@ -27,14 +27,53 @@ STORE="/home/neon/marveen/store"
 DASH="http://localhost:3420"
 TOKEN_FILE="${STORE}/.dashboard-token"
 
+# ISOLATED credential store (see weekly-usage-relogin.sh): the probe owns its own
+# credentials.json + refresh-token lineage so shared-credential rotation can't evict it.
+PROBE_CONFIG_DIR="/home/neon/.claude-usage-probe"
+
 hdr_file=""
 cleanup() { [ -n "$hdr_file" ] && rm -f "$hdr_file" 2>/dev/null || true; }
 trap cleanup EXIT
 
 fail() { echo "FAIL: $*" >&2; exit 1; }
 
-# 1) Panel must exist (dedicated Max-authed /usage panel).
-tmux has-session -t "$PANE" 2>/dev/null || fail "panel '$PANE' not running (needs one-time claude /login Max). Manual fallback stays."
+# REBOOT-SURVIVABILITY (2026-07-31): a tmux session does NOT survive a machine reboot.
+# The isolated .credentials.json (with a ~month-long refresh token) DOES. So on reboot the
+# creds are still valid but the PANEL is gone -- and the old behaviour ("fail -> escalate to
+# Peti /login") made Peti do a full browser OAuth for NOTHING, because merely RE-STARTING the
+# panel makes claude silently refresh the access token via the still-valid refresh token.
+# Fix: auto-revive the panel from the isolated config dir before failing. Peti is only asked
+# to /login when the refresh token itself is dead (~monthly), which the relogin flow handles.
+revive_pane() {
+  echo "revive: panel '$PANE' dead, recreating from isolated config (refresh-token auto-renew, no Peti login)..." >&2
+  tmux new-session -d -s "$PANE" -c /home/neon 2>/dev/null || return 1
+  sleep 1
+  # env option flags (-u) MUST precede VAR=VALUE assignments (else env treats the assignment
+  # as end-of-options). Isolated config dir pins the probe to its own credential lineage.
+  tmux send-keys -t "$PANE" \
+    "env -u CLAUDE_CODE_OAUTH_TOKEN -u ANTHROPIC_API_KEY CLAUDE_CONFIG_DIR=$PROBE_CONFIG_DIR claude" Enter 2>/dev/null
+  sleep 12
+  # Trust-folder prompt, if shown (first launch in this cwd for the isolated config).
+  local cap; cap="$(tmux capture-pane -t "$PANE" -p 2>/dev/null || true)"
+  if printf '%s' "$cap" | grep -qiE 'trust this folder'; then
+    tmux send-keys -t "$PANE" '1' 2>/dev/null; sleep 1
+    tmux send-keys -t "$PANE" Enter 2>/dev/null; sleep 8
+  fi
+  tmux send-keys -t "$PANE" Enter 2>/dev/null; sleep 4
+  # Logged in via refresh token when the welcome/prompt is up and no /login screen shows.
+  cap="$(tmux capture-pane -t "$PANE" -p 2>/dev/null || true)"
+  if printf '%s' "$cap" | grep -qiE 'Welcome back|manual mode on|for shortcuts'; then
+    echo "revive: panel back up, Max-authed via refresh token (no Peti login needed)." >&2
+    return 0
+  fi
+  echo "revive: panel up but not authed (refresh token likely expired) -> Peti /login needed." >&2
+  return 1
+}
+
+# 1) Panel must exist (dedicated Max-authed /usage panel). Auto-revive after reboot before failing.
+if ! tmux has-session -t "$PANE" 2>/dev/null; then
+  revive_pane || fail "panel '$PANE' not running and refresh-token revive failed (needs claude /login Max). Manual fallback stays."
+fi
 
 # 2) Drive /usage in the dedicated panel, then capture.
 tmux send-keys -t "$PANE" '/usage' Enter 2>/dev/null || fail "send-keys /usage failed"

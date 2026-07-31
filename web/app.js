@@ -8341,10 +8341,35 @@ async function loadReposPage() {
   emptyEl.hidden = true
   errorEl.hidden = true
   try {
-    const res = await fetch('/api/connectors/github-repos')
-    if (!res.ok) throw new Error('HTTP ' + res.status)
-    const data = await res.json()
-    _reposCache = data.repos || []
+    // The page lists EVERY built-in repo: (1) repos manually added via the box below
+    // (/api/connectors/github-repos), AND (2) the repos ADOPTED during earlier development
+    // -- vendored skills + pipx tools/MCPs recorded in store/watched-repos.json, exposed by
+    // /api/integrated-repos. Before, the page only read (1), so the adopted skills/tools
+    // (caveman, crafter-intent-layer, mattpocock-productivity, code-review-graph, graphify)
+    // were invisible even though they are integrated. Merge both sources here.
+    const [manualRes, adoptedRes] = await Promise.all([
+      fetch('/api/connectors/github-repos'),
+      fetch('/api/integrated-repos'),
+    ])
+    if (!manualRes.ok) throw new Error('HTTP ' + manualRes.status)
+    const manualData = await manualRes.json()
+    const manual = (manualData.repos || []).map((r) => ({ ...r, adopted: false }))
+    // Adopted repos are managed OUTSIDE the dashboard (pipx-pinned / vendored), so they are
+    // read-only here: no clone-based update/delete. Normalize to the card shape.
+    let adopted = []
+    if (adoptedRes.ok) {
+      const adoptedData = await adoptedRes.json()
+      adopted = (adoptedData.repos || []).map((r) => ({
+        name: r.name,
+        url: r.repo,
+        installedAt: r.vendoredDate || null,
+        kind: r.kind,
+        behind: r.behind || 0,
+        reviewRequired: !!r.reviewRequired,
+        adopted: true,
+      }))
+    }
+    _reposCache = [...adopted, ...manual]
     document.getElementById('reposStatTotal').textContent = String(_reposCache.length)
     renderReposGrid(_reposCache)
   } catch (err) {
@@ -8375,7 +8400,21 @@ function renderReposGrid(repos) {
     const date = r.installedAt ? new Date(r.installedAt).toLocaleDateString(dateLocale) : '—'
     const displayName = escapeHtml((r.name || '').replace('--', '/'))
     const url = escapeHtml(r.url || '')
-    card.innerHTML = `<div class="repo-card-header"><div class="repo-card-icon"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M9 19c-5 1.5-5-2.5-7-3m14 6v-3.87a3.37 3.37 0 0 0-.94-2.61c3.14-.35 6.44-1.54 6.44-7A5.44 5.44 0 0 0 20 4.77 5.07 5.07 0 0 0 19.91 1S18.73.65 16 2.48a13.38 13.38 0 0 0-7 0C6.27.65 5.09 1 5.09 1A5.07 5.07 0 0 0 5 4.77a5.44 5.44 0 0 0-1.5 3.78c0 5.42 3.3 6.61 6.44 7A3.37 3.37 0 0 0 9 18.13V22"/></svg></div><div class="repo-card-title"><div class="repo-card-name">${displayName}</div><a class="repo-card-source" href="${url}" target="_blank" rel="noopener noreferrer">${url}</a></div></div><div class="repo-card-meta"><span class="repo-card-badge" title="${escapeHtml(t('repos.detect_pending_title'))}">${escapeHtml(t('repos.badge.pending_check'))}</span><span class="repo-card-date">${escapeHtml(t('repos.installed_at'))}: ${date}</span></div><div class="repo-card-actions"><button type="button" class="btn-secondary btn-compact repo-card-update" data-name="${escapeHtml(r.name)}"><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="23 4 23 10 17 10"/><path d="M20.49 15a9 9 0 1 1-2.12-9.36L23 10"/></svg><span>${escapeHtml(t('repos.btn.update'))}</span></button><button type="button" class="btn-secondary btn-compact repo-card-delete" data-name="${escapeHtml(r.name)}"><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="3 6 5 6 21 6"/><path d="M19 6v14a2 2 0 01-2 2H7a2 2 0 01-2-2V6m3 0V4a2 2 0 012-2h4a2 2 0 012 2v2"/></svg><span>${escapeHtml(t('repos.btn.delete'))}</span></button></div>`
+    const header = `<div class="repo-card-header"><div class="repo-card-icon"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M9 19c-5 1.5-5-2.5-7-3m14 6v-3.87a3.37 3.37 0 0 0-.94-2.61c3.14-.35 6.44-1.54 6.44-7A5.44 5.44 0 0 0 20 4.77 5.07 5.07 0 0 0 19.91 1S18.73.65 16 2.48a13.38 13.38 0 0 0-7 0C6.27.65 5.09 1 5.09 1A5.07 5.07 0 0 0 5 4.77a5.44 5.44 0 0 0-1.5 3.78c0 5.42 3.3 6.61 6.44 7A3.37 3.37 0 0 0 9 18.13V22"/></svg></div><div class="repo-card-title"><div class="repo-card-name">${displayName}</div><a class="repo-card-source" href="${url}" target="_blank" rel="noopener noreferrer">${url}</a></div></div>`
+    if (r.adopted) {
+      // Adopted (vendored skill / pipx tool or MCP) -- managed outside the dashboard, so it is
+      // READ-ONLY here: a kind badge instead of update/delete. `kind` (skill/mcp/external) is a
+      // technical identifier, exempt from i18n. "behind" surfaces when upstream has moved ahead.
+      const kind = escapeHtml(r.kind || 'external')
+      const behind = r.behind > 0
+        ? `<span class="repo-card-badge" title="${escapeHtml(t('repos.detect_pending_title'))}">↑ ${r.behind}</span>`
+        : ''
+      card.innerHTML = header +
+        `<div class="repo-card-meta"><span class="repo-card-badge repo-card-badge-kind">${kind}</span><span class="repo-card-badge">${escapeHtml(t('repos.badge.adopted'))}</span>${behind}<span class="repo-card-date">${escapeHtml(t('repos.installed_at'))}: ${date}</span></div>`
+      gridEl.appendChild(card)
+      continue
+    }
+    card.innerHTML = header + `<div class="repo-card-meta"><span class="repo-card-badge" title="${escapeHtml(t('repos.detect_pending_title'))}">${escapeHtml(t('repos.badge.pending_check'))}</span><span class="repo-card-date">${escapeHtml(t('repos.installed_at'))}: ${date}</span></div><div class="repo-card-actions"><button type="button" class="btn-secondary btn-compact repo-card-update" data-name="${escapeHtml(r.name)}"><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="23 4 23 10 17 10"/><path d="M20.49 15a9 9 0 1 1-2.12-9.36L23 10"/></svg><span>${escapeHtml(t('repos.btn.update'))}</span></button><button type="button" class="btn-secondary btn-compact repo-card-delete" data-name="${escapeHtml(r.name)}"><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="3 6 5 6 21 6"/><path d="M19 6v14a2 2 0 01-2 2H7a2 2 0 01-2-2V6m3 0V4a2 2 0 012-2h4a2 2 0 012 2v2"/></svg><span>${escapeHtml(t('repos.btn.delete'))}</span></button></div>`
     gridEl.appendChild(card)
   }
   gridEl.querySelectorAll('.repo-card-update').forEach((btn) => {
