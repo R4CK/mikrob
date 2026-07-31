@@ -4,6 +4,7 @@
   "license": "MIT",
   "type": "module",
   "scripts": {
+    "preinstall": "node scripts/assert-npm-package-manager.mjs",
     "build": "tsc",
     "start": "node dist/index.js",
     "dev": "tsx src/index.ts",
