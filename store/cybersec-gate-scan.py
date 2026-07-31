@@ -69,7 +69,7 @@ def tiered_out(comments):
     return False
 
 
-def mikrob_marker(c, words):
+def mikrob_marker(c, words, anchored=False):
     """A DIRECTIVE from MikroB (DONE / blocked), not merely a comment bearing his name.
 
     Dispatch-time local-LLM offload USED TO post 7B free text to the card with
@@ -94,7 +94,16 @@ def mikrob_marker(c, words):
     # meant the standard tiering sentence "DONE csak QA PASS + Cybersec GO" -- a REQUEST for gating,
     # written mid-comment -- dropped the card out of the sweep, and 'DONE' also hides inside
     # 'ABANDONED', exactly like 'HOLD' inside 'placeholder'.
+    #
+    # `anchored` (Cybersec F3 follow-up, measured 2026-07-31): a CLOSE marker is only a close when
+    # it OPENS the comment. Word-bounding the first line was not enough -- 104 MikroB comments on
+    # this board carry a mid-sentence 'DONE' on their first line ("GATE-TIER: DONE csak QA PASS +
+    # Cybersec GO"), which is a REQUEST for gating, and reading it as a close drops the card out of
+    # the sweep. BLOCK markers stay an unanchored word-bounded search: those legitimately appear
+    # mid-line ("WAITING (kotott-blokk, Peti-dontes)").
     first = content.strip().split('\n')[0]
+    if anchored:
+        return any(re.match(r'\s*' + re.escape(w) + r'\b', first, re.IGNORECASE) for w in words)
     return any(re.search(r'\b' + re.escape(w) + r'\b', first, re.IGNORECASE) for w in words)
 
 
@@ -119,7 +128,7 @@ def main():
         after = [c for c in comments if c.get('created_at', 0) >= t]
         if any(is_cybersec_verdict(c) for c in after):
             continue
-        if any(mikrob_marker(c, ('DONE',)) for c in after):
+        if any(mikrob_marker(c, ('DONE',), anchored=True) for c in after):
             continue
         if any(mikrob_marker(c, ('BLOKKOLVA', 'KOTOTT', 'KÖTÖTT')) for c in after):
             continue
