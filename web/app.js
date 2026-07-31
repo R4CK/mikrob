@@ -12395,6 +12395,7 @@ async function loadOverview() {
     // upstream base. The action navigates to the existing Frissítések (updates) page.
     // Claude usage info widget (card a91c6039 redesign): load auto-sourced data.
     void loadWeeklyGauge()
+    void loadLocalLlmInfo()
     const banner = document.getElementById('updateBanner')
     if (banner) {
       const u = d.upstreamUpdate
@@ -12494,7 +12495,6 @@ async function loadWeeklyGauge() {
   }
 
   try {
-    await loadWeeklyThresholds()
     const res = await fetch('/api/costs/weekly')
     if (!res.ok) throw new Error('HTTP ' + res.status)
     const d = await res.json()
@@ -12547,38 +12547,43 @@ function updateThresholdWarn(id, value) {
   if (val) val.classList.toggle('usage-threshold-val--warn', isMax)
 }
 
-// GET the editable weekly-threshold config and populate the slider UI (card f3248478).
-// Fetched every time the gauge loads, so the sliders + weekly-bar coloring never show a
-// stale value after another session/tab edits them.
-async function loadWeeklyThresholds() {
+// Local-LLM info row (card e7a26045, replaces the removed 3rd slider). today/week counts
+// are real (existing /api/local-llm/usage today/last_7d fields); model + tokens-saved
+// await the backend d08b98f4 API additions -- shown as an honest per-field placeholder
+// rather than invented (rule 12).
+async function loadLocalLlmInfo() {
+  const errEl = document.getElementById('llmInfoError')
+  const modelEl = document.getElementById('llmInfoModel')
+  const todayEl = document.getElementById('llmInfoToday')
+  const weekEl = document.getElementById('llmInfoWeek')
+  const tokensEl = document.getElementById('llmInfoTokensSaved')
   try {
-    const res = await fetch('/api/costs/weekly-thresholds')
+    const res = await fetch('/api/local-llm/usage')
     if (!res.ok) throw new Error('HTTP ' + res.status)
-    const cfg = await res.json()
-    _weeklyThresholds = { gt3days: cfg.gt3days, lt2days: cfg.lt2days, lt1day: cfg.lt1day }
-    const map = { thrGt3: cfg.gt3days, thrLt2: cfg.lt2days, thrLt1: cfg.lt1day }
-    for (const [id, val] of Object.entries(map)) {
-      const input = document.getElementById(id)
-      const label = document.getElementById(id + 'Val')
-      if (input) input.value = val
-      if (label) label.textContent = val + '%'
-      updateThresholdWarn(id, val)
+    const d = await res.json()
+    if (errEl) errEl.hidden = true
+    if (todayEl) todayEl.textContent = t('overview.quota.llm.count', { n: d.today ?? 0 })
+    if (weekEl) weekEl.textContent = t('overview.quota.llm.count', { n: d.last_7d ?? 0 })
+    // Not yet in the API response (waiting on card d08b98f4) -- honest placeholder, not 0.
+    if (modelEl) modelEl.textContent = d.model || t('overview.quota.llm.pending')
+    if (tokensEl) {
+      tokensEl.textContent =
+        typeof d.tokens_saved_total === 'number'
+          ? d.tokens_saved_total.toLocaleString(window._lang === 'hu' ? 'hu-HU' : 'en-US')
+          : t('overview.quota.llm.pending')
     }
-    // Card bb5603cc follow-up: the sliders start disabled (HTML) so a save can never fire
-    // against the browser's raw default range position before this fetch resolves -- only
-    // enable once the real config is actually in the DOM.
-    const saveBtn = document.getElementById('thresholdSaveBtn')
-    if (saveBtn) saveBtn.disabled = false
   } catch {
-    // Keep the built-in defaults (already set on _weeklyThresholds) -- the sliders simply
-    // show the CLAUDE.md fallback values baked into the HTML min/max range. Save stays
-    // disabled (fail-closed): saving unknown default values would be worse than not saving.
+    if (errEl) { errEl.textContent = t('overview.quota.llm.error'); errEl.hidden = false }
+    if (modelEl) modelEl.textContent = '—'
+    if (todayEl) todayEl.textContent = '—'
+    if (weekEl) weekEl.textContent = '—'
+    if (tokensEl) tokensEl.textContent = '—'
   }
 }
 
-// Wiring for the Claude Limit panel's help modal + editable threshold sliders (card
-// f3248478). Runs once at script load -- the elements are static HTML, not re-created
-// per navigation, so no need to re-wire on every loadWeeklyGauge() call.
+// Wiring for the Claude Limit panel's help modal + threshold sliders + local-LLM info
+// help modal (cards f3248478, e7a26045). Runs once at script load -- the elements are
+// static HTML, not re-created per navigation.
 ;(function wireQuotaThresholdControls() {
   const helpBtn = document.getElementById('quotaHelpBtn')
   const helpOverlay = document.getElementById('quotaHelpOverlay')
@@ -12593,6 +12598,19 @@ async function loadWeeklyThresholds() {
     helpOverlay.addEventListener('click', (e) => { if (e.target === helpOverlay) closeModal(helpOverlay) })
   }
 
+  const llmHelpBtn = document.getElementById('llmInfoHelpBtn')
+  const llmHelpOverlay = document.getElementById('llmInfoHelpOverlay')
+  const llmHelpClose = document.getElementById('llmInfoHelpClose')
+  if (llmHelpBtn && llmHelpOverlay) {
+    llmHelpBtn.addEventListener('click', () => openModal(llmHelpOverlay))
+  }
+  if (llmHelpClose && llmHelpOverlay) {
+    llmHelpClose.addEventListener('click', () => closeModal(llmHelpOverlay))
+  }
+  if (llmHelpOverlay) {
+    llmHelpOverlay.addEventListener('click', (e) => { if (e.target === llmHelpOverlay) closeModal(llmHelpOverlay) })
+  }
+
   const toggle = document.getElementById('thresholdToggle')
   const body = document.getElementById('thresholdBody')
   if (toggle && body) {
@@ -12603,27 +12621,23 @@ async function loadWeeklyThresholds() {
     })
   }
 
-  // Card d53c1e00 (Cybersec): the rule is "closer to reset -> higher threshold", i.e.
-  // gt3days <= lt2days <= lt1day. Each slider is 1..100 on its own, so without this the
-  // UI would happily let gt3days end up above lt1day -- valid per-slider, but it inverts
-  // the intended behavior. Cascade the other sliders on drag so the triple can never be
-  // expressed out of order; the backend still re-validates on save (defense in depth).
-  const sliderIds = ['thrGt3', 'thrLt2', 'thrLt1']
+  // Card e7a26045: redesigned from 3 day-dependent sliders to 2 flat, day-independent
+  // levels (newDevStop <= testStop). Save stays permanently disabled (see HTML comment)
+  // until the backend ships the 2-field endpoint (card d08b98f4) -- this cascade only
+  // previews the intended interaction, it does not persist anything yet.
+  const sliderIds = ['thrNewDevStop', 'thrTestStop']
   function enforceMonotonicSliders(changedId) {
-    const els = { thrGt3: document.getElementById('thrGt3'), thrLt2: document.getElementById('thrLt2'), thrLt1: document.getElementById('thrLt1') }
-    if (!els.thrGt3 || !els.thrLt2 || !els.thrLt1) return
-    let g = Number(els.thrGt3.value), l2 = Number(els.thrLt2.value), l1 = Number(els.thrLt1.value)
-    if (changedId === 'thrGt3') {
-      if (g > l2) l2 = g
-      if (l2 > l1) l1 = l2
-    } else if (changedId === 'thrLt2') {
-      if (l2 < g) g = l2
-      if (l2 > l1) l1 = l2
-    } else if (changedId === 'thrLt1') {
-      if (l1 < l2) l2 = l1
-      if (l2 < g) g = l2
+    const els = {
+      thrNewDevStop: document.getElementById('thrNewDevStop'),
+      thrTestStop: document.getElementById('thrTestStop'),
     }
-    els.thrGt3.value = g; els.thrLt2.value = l2; els.thrLt1.value = l1
+    if (!els.thrNewDevStop || !els.thrTestStop) return
+    let n = Number(els.thrNewDevStop.value)
+    let s = Number(els.thrTestStop.value)
+    if (changedId === 'thrNewDevStop' && n > s) s = n
+    if (changedId === 'thrTestStop' && s < n) n = s
+    els.thrNewDevStop.value = n
+    els.thrTestStop.value = s
     for (const id of sliderIds) {
       const label = document.getElementById(id + 'Val')
       if (label) label.textContent = els[id].value + '%'
@@ -12634,51 +12648,8 @@ async function loadWeeklyThresholds() {
     const input = document.getElementById(id)
     if (input) {
       input.addEventListener('input', () => enforceMonotonicSliders(id))
+      updateThresholdWarn(id, input.value)
     }
-  }
-
-  const saveBtn = document.getElementById('thresholdSaveBtn')
-  const statusEl = document.getElementById('thresholdStatus')
-  // Card bb5603cc (Peti screenshot): "Mentve." sat next to the "Mentes" button
-  // permanently after a save, reading as two contradictory states at once (an active
-  // button + an already-done label). Auto-dismiss the SUCCESS confirmation after a
-  // few seconds so it reads as a transient toast; an error stays until the user acts
-  // (rule 12: don't auto-hide something they still need to fix).
-  let statusHideTimer = null
-  if (saveBtn) {
-    saveBtn.addEventListener('click', async () => {
-      const gt3days = Number(document.getElementById('thrGt3')?.value)
-      const lt2days = Number(document.getElementById('thrLt2')?.value)
-      const lt1day = Number(document.getElementById('thrLt1')?.value)
-      saveBtn.disabled = true
-      if (statusHideTimer) { clearTimeout(statusHideTimer); statusHideTimer = null }
-      if (statusEl) { statusEl.hidden = true; statusEl.classList.remove('success', 'error') }
-      try {
-        const res = await fetch('/api/costs/weekly-thresholds', {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ gt3days, lt2days, lt1day }),
-        })
-        const data = await res.json()
-        if (!res.ok) throw new Error(data.error || ('HTTP ' + res.status))
-        _weeklyThresholds = { gt3days: data.gt3days, lt2days: data.lt2days, lt1day: data.lt1day }
-        if (statusEl) {
-          statusEl.textContent = t('overview.quota.threshold.saved')
-          statusEl.classList.add('success')
-          statusEl.hidden = false
-          statusHideTimer = setTimeout(() => { statusEl.hidden = true }, 3000)
-        }
-        void loadWeeklyGauge()
-      } catch (err) {
-        if (statusEl) {
-          statusEl.textContent = String(err.message || err)
-          statusEl.classList.add('error')
-          statusEl.hidden = false
-        }
-      } finally {
-        saveBtn.disabled = false
-      }
-    })
   }
 })()
 

@@ -117,9 +117,10 @@ test.describe('Dashboard smoke', () => {
 
   // Card f3248478: Claude Limit panel tooltip + editable weekly-threshold sliders.
   // Overview is the default landing page, so no hash navigation needed. Proves the
-  // sliders load real values from GET /api/costs/weekly-thresholds (not hardcoded
-  // 90/92/95 baked into the HTML) and the help modal opens/closes without error.
-  test('quota threshold panel loads live values and help modal toggles', async ({ page }) => {
+  // sliders (card e7a26045: redesigned to 2 flat, day-independent levels) and the help
+  // modal opens/closes without error. Save stays disabled -- the backend 2-field
+  // endpoint (card d08b98f4) doesn't exist yet, this only verifies the layout.
+  test('quota threshold panel shows 2 sliders and help modal toggles', async ({ page }) => {
     const errors: string[] = []
     page.on('pageerror', (err) => errors.push(err.message))
     await page.goto(`/?token=${TOKEN}`)
@@ -130,8 +131,10 @@ test.describe('Dashboard smoke', () => {
     await toggle.click()
     const body = page.locator('#thresholdBody')
     await expect(body).toBeVisible()
-    await expect(page.locator('#thrGt3')).toHaveValue(/^\d+$/)
-    await expect(page.locator('#thrGt3Val')).toHaveText(/%$/)
+    await expect(page.locator('#thrNewDevStop')).toHaveValue(/^\d+$/)
+    await expect(page.locator('#thrNewDevStopVal')).toHaveText(/%$/)
+    await expect(page.locator('#thrTestStop')).toHaveValue(/^\d+$/)
+    await expect(page.locator('#thresholdSaveBtn')).toBeDisabled()
 
     const helpBtn = page.locator('#quotaHelpBtn')
     await expect(helpBtn).toBeVisible()
@@ -143,9 +146,9 @@ test.describe('Dashboard smoke', () => {
     expect(errors).toHaveLength(0)
   })
 
-  // Cards d53c1e00 + 52de847d (Cybersec follow-ups): dragging the >3d slider above the
-  // <2d slider must cascade it up rather than allow an inverted (non-monotonic) triple,
-  // and pinning a slider at 100% must show the visible+accessible warning.
+  // Card e7a26045: dragging "New dev stops" above "Testing/review also stops" must
+  // cascade the other slider up rather than allow an inverted pair, and pinning a
+  // slider at 100% must show the visible+accessible warning.
   test('threshold sliders cascade to stay monotonic and flag a 100% value', async ({ page }) => {
     const errors: string[] = []
     page.on('pageerror', (err) => errors.push(err.message))
@@ -154,23 +157,45 @@ test.describe('Dashboard smoke', () => {
     await page.locator('#thresholdToggle').click()
     await expect(page.locator('#thresholdBody')).toBeVisible()
 
-    // Drag thrGt3 above the current thrLt2 -- thrLt2 (and thrLt1) must cascade up.
-    await page.locator('#thrGt3').fill('99')
-    await page.locator('#thrGt3').dispatchEvent('input')
-    const gt3 = Number(await page.locator('#thrGt3').inputValue())
-    const lt2 = Number(await page.locator('#thrLt2').inputValue())
-    const lt1 = Number(await page.locator('#thrLt1').inputValue())
-    expect(gt3).toBeLessThanOrEqual(lt2)
-    expect(lt2).toBeLessThanOrEqual(lt1)
+    // Drag "new dev stops" above the current "testing also stops" -- the latter must
+    // cascade up.
+    await page.locator('#thrNewDevStop').fill('99')
+    await page.locator('#thrNewDevStop').dispatchEvent('input')
+    const newDevStop = Number(await page.locator('#thrNewDevStop').inputValue())
+    const testStop = Number(await page.locator('#thrTestStop').inputValue())
+    expect(newDevStop).toBeLessThanOrEqual(testStop)
 
     // Push it to 100 -- the warning icon for that row must become visible (not just
     // present-but-hidden) and it must have a real accessible name, not aria-hidden.
-    await page.locator('#thrGt3').fill('100')
-    await page.locator('#thrGt3').dispatchEvent('input')
-    const warn = page.locator('#thrGt3Warn')
+    await page.locator('#thrNewDevStop').fill('100')
+    await page.locator('#thrNewDevStop').dispatchEvent('input')
+    const warn = page.locator('#thrNewDevStopWarn')
     await expect(warn).toBeVisible()
     await expect(warn).toHaveAttribute('role', 'img')
     await expect(warn).not.toHaveAttribute('aria-hidden', 'true')
+
+    expect(errors).toHaveLength(0)
+  })
+
+  // Card e7a26045: the local-LLM info row replaces the removed 3rd slider. today/week
+  // counts are real; model/tokens-saved are honest placeholders until the backend
+  // (card d08b98f4) ships those fields.
+  test('local-LLM info row loads and its help modal toggles', async ({ page }) => {
+    const errors: string[] = []
+    page.on('pageerror', (err) => errors.push(err.message))
+    await page.goto(`/?token=${TOKEN}`)
+    await page.waitForTimeout(500)
+
+    await expect(page.locator('#usageLlmInfo')).toBeVisible()
+    await expect(page.locator('#llmInfoToday')).toHaveText(/\d/)
+    await expect(page.locator('#llmInfoWeek')).toHaveText(/\d/)
+
+    const llmHelpBtn = page.locator('#llmInfoHelpBtn')
+    await expect(llmHelpBtn).toBeVisible()
+    await llmHelpBtn.click()
+    await expect(page.locator('#llmInfoHelpOverlay')).toHaveClass(/active/)
+    await page.locator('#llmInfoHelpClose').click()
+    await expect(page.locator('#llmInfoHelpOverlay')).not.toHaveClass(/active/)
 
     expect(errors).toHaveLength(0)
   })

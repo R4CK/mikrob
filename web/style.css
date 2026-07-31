@@ -817,6 +817,57 @@ main {
 .usage-threshold-status[hidden] { display: none; }
 .usage-threshold-status.success { color: var(--success); }
 .usage-threshold-status.error { color: var(--danger); }
+.usage-threshold-pending {
+  font-size: 11px;
+  color: var(--text-muted);
+  font-style: italic;
+  margin: 0 0 10px;
+}
+
+/* Row 3: local-LLM info display (card e7a26045) */
+.usage-llm-info {
+  margin-top: 12px;
+  padding-top: 12px;
+  border-top: 1px solid var(--border);
+}
+.usage-llm-info-head {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-bottom: 8px;
+}
+.usage-llm-info-title {
+  font-weight: 600;
+  color: var(--text);
+  font-size: 13px;
+}
+.usage-llm-info-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(110px, 1fr));
+  gap: 10px;
+  margin: 0;
+}
+.usage-llm-info-item dt {
+  font-size: 11px;
+  color: var(--text-muted);
+  margin: 0 0 2px;
+}
+.usage-llm-info-item dd {
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--text);
+  margin: 0;
+  font-variant-numeric: tabular-nums;
+}
+.usage-llm-info-error {
+  font-size: 12px;
+  color: var(--danger);
+  margin: 8px 0 0;
+}
+.usage-llm-info-error[hidden] { display: none; }
+@media (max-width: 480px) {
+  .usage-llm-info-grid { grid-template-columns: repeat(2, 1fr); }
+}
 
 .overview-stats {
   display: grid;
