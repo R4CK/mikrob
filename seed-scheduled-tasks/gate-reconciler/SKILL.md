@@ -4,8 +4,8 @@ description: Minden waiting kartya gate-verdiktjenek azonnali kezelese: PASS->za
 ---
 
 GATE-RECONCILER (MikroB kotelesseg: a flotta SOHA ne varjon rad egy elvegzett gate-verdikt vagy egy FAIL utan). Nem-trivialis, de rutin -> csendben dolgozz.
-1. Ido+kvota: `date`; `bash /home/neon/marveen/store/quota-check.sh`. Ha limit -> csendben kilep (a kvota-taskok kezelik).
-2. Listazd a WAITING kanban kartyakat: `curl -s -H "Authorization: Bearer $(cat /home/neon/marveen/store/.dashboard-token)" http://localhost:3420/api/kanban` (status==waiting). Mindegyikre olvasd a kommenteket (/api/kanban/<id>/comments) es a kijelolt gate-tiert.
+1. Ido+kvota: `date`; `bash {{INSTALL_DIR}}/store/quota-check.sh`. Ha limit -> csendben kilep (a kvota-taskok kezelik).
+2. Listazd a WAITING kanban kartyakat: `curl -s -H "Authorization: Bearer $(cat {{INSTALL_DIR}}/store/.dashboard-token)" http://localhost:3420/api/kanban` (status==waiting). Mindegyikre olvasd a kommenteket (/api/kanban/<id>/comments) es a kijelolt gate-tiert.
 3. Dontes kartyankent:
    - MINDEN kijelolt gate PASS/GO es nincs kotott-blokk -> PUT status:done + zaro komment. Utana ellenorizd a szulo-fazis auto-lezarasat (CLAUDE.md 5. szabaly, rekurzivan felfele).
    - Barmely gate FAIL/NO-GO -> PUT status:in_progress + re-dispatch a felelosnek a pontos bug-jelentessel (ha parkolt: POST /api/agents/<agent>/start, majd inter-agent uzenet vagy tmux send-keys). Ha a finding uj kartyat igenyel, nyisd meg (projekt+szines label).
@@ -18,5 +18,5 @@ GATE-RECONCILER (MikroB kotelesseg: a flotta SOHA ne varjon rad egy elvegzett ga
 
 --- TOKEN-VEDELEM GUARD (Peti 2026-07-30, KOTELEZO) ---
 MIELOTT barmely agentet megloksz VAGY egy kartyat re-dispatchelsz/nudge-olsz, futtasd:
-  bash /home/neon/marveen/store/redispatch-guard.sh check <cardId> <agent>
-CSAK ha a kimenet pontosan ALLOW -> szabad nudge-olni/re-dispatchelni. Barmely DENY:* (progress / agent-busy / backoff / cap-reached / first-seen-baseline / not-active) -> NE nudge-olj, hagyd dolgozni. Ez akadalyozza meg hogy egy lassu-de-elo kartyat 18x ujra-fejlesszunk (token-eges). A ciklus VEGEN futtasd: bash /home/neon/marveen/store/redispatch-guard.sh escalations -- ha a kimenet nem [], azok a kartyak elertek a re-dispatch hard cap-et (3): NE dispatcheld tovabb, hanem jelentsd Petinek EGYSZER Telegramon (reply chat_id 7929620734) hogy melyik kartya ragadt be es kezi beavatkozas kell. Amikor egy kartyat done-ra zarsz: bash /home/neon/marveen/store/redispatch-guard.sh reset <cardId>.
+  bash {{INSTALL_DIR}}/store/redispatch-guard.sh check <cardId> <agent>
+CSAK ha a kimenet pontosan ALLOW -> szabad nudge-olni/re-dispatchelni. Barmely DENY:* (progress / agent-busy / backoff / cap-reached / first-seen-baseline / not-active) -> NE nudge-olj, hagyd dolgozni. Ez akadalyozza meg hogy egy lassu-de-elo kartyat 18x ujra-fejlesszunk (token-eges). A ciklus VEGEN futtasd: bash {{INSTALL_DIR}}/store/redispatch-guard.sh escalations -- ha a kimenet nem [], azok a kartyak elertek a re-dispatch hard cap-et (3): NE dispatcheld tovabb, hanem jelentsd Petinek EGYSZER Telegramon (reply chat_id {{CHAT_ID}}) hogy melyik kartya ragadt be es kezi beavatkozas kell. Amikor egy kartyat done-ra zarsz: bash {{INSTALL_DIR}}/store/redispatch-guard.sh reset <cardId>.

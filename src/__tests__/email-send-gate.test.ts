@@ -3,6 +3,7 @@ import { describe, it, expect } from 'vitest'
 import { gateDecision } from '../../scripts/email-send-gate.mjs'
 import { injectEmailSendGate, agentGetsEmailGate } from '../web/agent-scaffold.js'
 import { MAIN_AGENT_ID } from '../config.js'
+import { REPO_UNDER_TMP, TMP_SKIP_REASON } from './helpers/repo-location.js'
 
 // The PreToolUse gate decision: which tool calls count as outbound email-send.
 describe('gateDecision', () => {
@@ -64,7 +65,7 @@ describe('agentGetsEmailGate', () => {
 })
 
 // The settings.json wiring that installs the hook for a sub-agent.
-describe('injectEmailSendGate', () => {
+describe.skipIf(REPO_UNDER_TMP)('injectEmailSendGate', () => {
   it('adds the PreToolUse email-gate hook', () => {
     const s: Record<string, unknown> = {}
     injectEmailSendGate(s)
@@ -99,5 +100,18 @@ describe('injectEmailSendGate', () => {
     expect(pre).toHaveLength(2)
     expect(pre.some((e) => JSON.stringify(e).includes('email-send-gate.mjs'))).toBe(true)
     expect(pre.some((e) => e.matcher === 'WebFetch')).toBe(true)
+  })
+})
+
+// Always runs: a CI log must never be ambiguous about whether the tmp-sensitive suites above were
+// armed or skipped (card 252e36d3 -- 13 phantom "failures" were once tracked as a real red baseline).
+describe('tmp-checkout env gate (always runs)', () => {
+  it('reports whether the hook-registration suites in this file were armed or skipped', () => {
+    if (REPO_UNDER_TMP) {
+      console.log(`[${'email-send-gate.test.ts'}] SKIPPED hook-registration suites -- ${TMP_SKIP_REASON}`)
+    } else {
+      console.log(`[${'email-send-gate.test.ts'}] ARMED -- checkout is outside /tmp, hook-registration assertions ran.`)
+    }
+    expect(typeof REPO_UNDER_TMP).toBe('boolean')
   })
 })

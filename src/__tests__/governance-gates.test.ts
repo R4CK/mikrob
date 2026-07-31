@@ -6,6 +6,7 @@ import {
   injectSelfPaceGate,
 } from '../web/agent-scaffold.js'
 import { MAIN_AGENT_ID } from '../config.js'
+import { REPO_UNDER_TMP, TMP_SKIP_REASON } from './helpers/repo-location.js'
 
 // --- self-pace-gate: blocks the agent from scheduling its own future turns ---
 describe('self-pace-gate gateDecision', () => {
@@ -269,7 +270,7 @@ describe('self-pace-gate compound-command false-positives', () => {
 })
 
 // --- scaffold wiring: main-exempt + idempotent ---
-describe('governance gate scaffold wiring', () => {
+describe.skipIf(REPO_UNDER_TMP)('governance gate scaffold wiring', () => {
   it('applies to sub-agents, exempts the main agent', () => {
     expect(agentGetsGovernanceGates('dev2')).toBe(true)
     expect(agentGetsGovernanceGates('dev3')).toBe(true)
@@ -366,5 +367,18 @@ describe('self-pace-gate backtick command-substitution boundary', () => {
   })
   it('still allows a legit read-listing inside a substitution (crontab -l)', () => {
     expect(selfPaceDecision('Bash', { command: 'echo `crontab -l`' }).deny).toBe(false)
+  })
+})
+
+// Always runs: a CI log must never be ambiguous about whether the tmp-sensitive suites above were
+// armed or skipped (card 252e36d3 -- 13 phantom "failures" were once tracked as a real red baseline).
+describe('tmp-checkout env gate (always runs)', () => {
+  it('reports whether the hook-registration suites in this file were armed or skipped', () => {
+    if (REPO_UNDER_TMP) {
+      console.log(`[${'governance-gates.test.ts'}] SKIPPED hook-registration suites -- ${TMP_SKIP_REASON}`)
+    } else {
+      console.log(`[${'governance-gates.test.ts'}] ARMED -- checkout is outside /tmp, hook-registration assertions ran.`)
+    }
+    expect(typeof REPO_UNDER_TMP).toBe('boolean')
   })
 })

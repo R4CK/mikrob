@@ -593,6 +593,11 @@ if [ -d "$SEED_SCHED_DIR" ]; then
     SCHED_NEW=0
     SCHED_SKIP=0
     SCHED_FORCED=0
+    # {{CHAT_ID}} must be substituted here too, not just in the CLAUDE.md regen below: a seeded task
+    # that says "report to chat_id <literal>" would post to ONE operator's personal Telegram on every
+    # install. Empty when .env has no CHAT_ID -> renders as the bound-channel form, never a stale id.
+    SCHED_CHAT_ID=""
+    [ -f "$INSTALL_DIR/.env" ] && SCHED_CHAT_ID=$(grep '^CHAT_ID=' "$INSTALL_DIR/.env" | cut -d= -f2- | tr -d '\r')
     # Default skip-if-exists; --reseed-fleet force-refreshes the canonical task
     # content (SKILL.md + task-config.json). Task RUN-STATE lives in store/ (not
     # in the task dir), so it is preserved across a force-reseed. Tasks the user
@@ -618,6 +623,7 @@ if [ -d "$SEED_SCHED_DIR" ]; then
             -e "s/{{BOT_NAME}}/$BOT_NAME/g" \
             -e "s/{{OWNER_NAME}}/$OWNER_NAME/g" \
             -e "s|{{INSTALL_DIR}}|$INSTALL_DIR|g" \
+            -e "s/{{CHAT_ID}}/$SCHED_CHAT_ID/g" \
             "$f" > "$target/$(basename "$f")"
       done
       if [ "$forced" = "1" ]; then SCHED_FORCED=$((SCHED_FORCED + 1)); else SCHED_NEW=$((SCHED_NEW + 1)); fi

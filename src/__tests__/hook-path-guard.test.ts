@@ -22,11 +22,12 @@ const PRUNE_SCRIPT = join(ROOT, 'scripts', 'boot-hook-prune.py')
 const STALENESS_HOOK = join(ROOT, 'scripts', 'hooks', 'staleness-guard.py')
 
 import { isUnsafeHookCommand, upgradeLegacyHookCommands } from '../web/agent-scaffold.js'
+import { REPO_UNDER_TMP, TMP_SKIP_REASON } from './helpers/repo-location.js'
 
 // ---------------------------------------------------------------------------
 // (a) Registration guard rejects /tmp and non-existent paths
 // ---------------------------------------------------------------------------
-describe('isUnsafeHookCommand (registration guard)', () => {
+describe.skipIf(REPO_UNDER_TMP)('isUnsafeHookCommand (registration guard)', () => {
   it('rejects a bare command with a /tmp path', () => {
     expect(isUnsafeHookCommand('python3 /tmp/scratchpad/mp-test/scripts/hooks/staleness-guard.py')).toBe(true)
   })
@@ -80,7 +81,7 @@ describe('scaffold never emits /tmp hook paths', () => {
 // ---------------------------------------------------------------------------
 // (c) boot-time prune: detects and removes a planted /tmp hook
 // ---------------------------------------------------------------------------
-describe('boot-hook-prune.py', () => {
+describe.skipIf(REPO_UNDER_TMP)('boot-hook-prune.py', () => {
   let tmpHome: string
 
   beforeEach(() => {
@@ -204,7 +205,7 @@ describe('fail-open wrapper (UserPromptSubmit)', () => {
 // ---------------------------------------------------------------------------
 // (e) upgradeLegacyHookCommands: automatic in-place migration
 // ---------------------------------------------------------------------------
-describe('upgradeLegacyHookCommands (automatic migration)', () => {
+describe.skipIf(REPO_UNDER_TMP)('upgradeLegacyHookCommands (automatic migration)', () => {
   const SCRIPT_DIR = join(ROOT, 'scripts', 'hooks')
   const VOICE_HOOK = join(SCRIPT_DIR, 'voice-reply-directive.py')
   const WRAPPER_STALENESS = `bash -c '[ -f ${STALENESS_HOOK} ] && exec python3 ${STALENESS_HOOK}; exit 0'`
@@ -308,5 +309,18 @@ describe('upgradeLegacyHookCommands (automatic migration)', () => {
     expect(hooks.find((h) => h.command === 'python3 /stable/custom-hook.py')?.timeout).toBe(30)
     // old bare gone
     expect(hooks.some((h) => h.command === OLD_STALENESS)).toBe(false)
+  })
+})
+
+// Always runs: a CI log must never be ambiguous about whether the tmp-sensitive suites above were
+// armed or skipped (card 252e36d3 -- 13 phantom "failures" were once tracked as a real red baseline).
+describe('tmp-checkout env gate (always runs)', () => {
+  it('reports whether the hook-registration suites in this file were armed or skipped', () => {
+    if (REPO_UNDER_TMP) {
+      console.log(`[${'hook-path-guard.test.ts'}] SKIPPED hook-registration suites -- ${TMP_SKIP_REASON}`)
+    } else {
+      console.log(`[${'hook-path-guard.test.ts'}] ARMED -- checkout is outside /tmp, hook-registration assertions ran.`)
+    }
+    expect(typeof REPO_UNDER_TMP).toBe('boolean')
   })
 })
