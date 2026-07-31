@@ -8362,7 +8362,9 @@ async function loadReposPage() {
       adopted = (adoptedData.repos || []).map((r) => ({
         name: r.name,
         url: r.repo,
-        installedAt: r.vendoredDate || null,
+        // Real install date = adoptedAt (registry reviewed_at); vendoredDate is the upstream
+        // COMMIT date (wrong meaning) and is null for pipx installs -> only a last-resort fallback.
+        installedAt: r.adoptedAt || r.vendoredDate || null,
         kind: r.kind,
         behind: r.behind || 0,
         reviewRequired: !!r.reviewRequired,
@@ -8425,8 +8427,14 @@ function renderReposGrid(repos) {
       // READ-ONLY here: a kind badge instead of update/delete. `kind` (skill/mcp/external) is a
       // technical identifier, exempt from i18n. "behind" surfaces when upstream has moved ahead.
       const kind = escapeHtml(r.kind || 'external')
+      // Upstream moved ahead (Peti 2026-07-31): highlight the whole card + a warning message,
+      // not just a small badge, so an available update is impossible to miss.
+      if (r.behind > 0) card.classList.add('repo-card-outdated')
       const behind = r.behind > 0
-        ? `<span class="repo-card-badge" title="${escapeHtml(t('repos.detect_pending_title'))}">↑ ${r.behind}</span>`
+        ? `<span class="repo-card-badge repo-card-badge-warn">↑ ${r.behind} ${escapeHtml(t('repos.update_available_badge'))}</span>`
+        : ''
+      const warnRow = r.behind > 0
+        ? `<div class="repo-card-warning" role="status">⚠ ${escapeHtml(t('repos.update_available_msg', { n: String(r.behind) }))}${r.reviewRequired ? ' ' + escapeHtml(t('repos.update_review_required')) : ''}</div>`
         : ''
       // Installed indicator: a pipx/version adoption (e.g. graphify, code-review-graph) has NO
       // git clone yet IS installed -- show the pinned version so it does not read as "missing".
@@ -8435,7 +8443,7 @@ function renderReposGrid(repos) {
         ? `<span class="repo-card-badge repo-card-badge-ok" title="${escapeHtml(t('repos.installed_title'))}">✓ ${escapeHtml(t('repos.installed'))}${r.adoption === 'pipx' ? ` (pipx${ver})` : ''}</span>`
         : `<span class="repo-card-badge" title="${escapeHtml(t('repos.not_installed_title'))}">${escapeHtml(t('repos.not_installed'))}</span>`
       card.innerHTML = header +
-        `<div class="repo-card-meta"><span class="repo-card-badge repo-card-badge-kind">${kind}</span>${installBadge}<span class="repo-card-badge">${escapeHtml(t('repos.badge.adopted'))}</span>${behind}<span class="repo-card-date">${escapeHtml(t('repos.installed_at'))}: ${date}</span></div>`
+        `<div class="repo-card-meta"><span class="repo-card-badge repo-card-badge-kind">${kind}</span>${installBadge}<span class="repo-card-badge">${escapeHtml(t('repos.badge.adopted'))}</span>${behind}<span class="repo-card-date">${escapeHtml(t('repos.installed_at'))}: ${date}</span></div>${warnRow}`
       gridEl.appendChild(card)
       continue
     }

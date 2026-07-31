@@ -64,6 +64,9 @@ export interface IntegratedRepoConfig {
   pinned_version?: string
   /** Human-readable one-liner: what the repo is / what it helps solve. Surfaced in the UI tooltip. */
   description?: string
+  /** Date the repo was adopted/installed into the fleet (YYYY-MM-DD). The real "install date"
+   *  the UI shows -- distinct from vendoredDate, which is the upstream COMMIT date. */
+  reviewed_at?: string
   note?: string
 }
 
@@ -94,6 +97,9 @@ export interface IntegratedRepoStatus {
   pinnedVersion: string | null
   /** Human one-liner (what it is / what it solves) for the UI hover tooltip. */
   description: string
+  /** Adoption/install date (YYYY-MM-DD) -- the real install date the UI shows, not the
+   *  upstream commit date. Null when the registry entry has no recorded reviewed_at. */
+  adoptedAt: string | null
   /** True when the repo is actually INSTALLED: a git checkout exists, OR it is a
    *  version/pipx adoption with a recorded pinned version. A pipx adoption legitimately has
    *  cloned=false yet IS installed -- so `cloned` alone must not read as "not installed". */
@@ -170,6 +176,7 @@ export function statusForRepo(cfg: IntegratedRepoConfig): IntegratedRepoStatus {
     adoption: String(cfg.adoption || ''),
     pinnedVersion: cfg.pinned_version ? String(cfg.pinned_version) : null,
     description: String(cfg.description || cfg.note || ''),
+    adoptedAt: cfg.reviewed_at ? String(cfg.reviewed_at) : null,
     installed: false,
     vendoredSha: null,
     vendoredShort: null,
