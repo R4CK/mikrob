@@ -8362,6 +8362,7 @@ async function loadReposPage() {
       adopted = (adoptedData.repos || []).map((r) => ({
         name: r.name,
         url: r.repo,
+        description: r.description || '',
         // Real install date = adoptedAt (registry reviewed_at); vendoredDate is the upstream
         // COMMIT date (wrong meaning) and is null for pipx installs -> only a last-resort fallback.
         installedAt: r.adoptedAt || r.vendoredDate || null,
