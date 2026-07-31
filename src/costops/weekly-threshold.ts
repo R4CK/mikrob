@@ -46,10 +46,19 @@ export function readThresholdConfig(path: string = CONFIG_PATH): WeeklyThreshold
       const n = Number(v)
       return Number.isFinite(n) ? Math.max(1, Math.min(100, Math.round(n))) : fallback
     }
+    const gt3days = clamp(raw['gt3days'], DEFAULT_THRESHOLDS.gt3days)
+    const lt2days = clamp(raw['lt2days'], DEFAULT_THRESHOLDS.lt2days)
+    const lt1day = clamp(raw['lt1day'], DEFAULT_THRESHOLDS.lt1day)
+    // Defense in depth (card d53c1e00): writeThresholdConfig() already rejects a
+    // non-monotonic triple, but a file hand-edited outside the API could still bypass
+    // that check -- fall back to the safe defaults rather than serve an inverted rule.
+    if (!(gt3days <= lt2days && lt2days <= lt1day)) {
+      return { ...DEFAULT_THRESHOLDS, updatedAt: null }
+    }
     return {
-      gt3days: clamp(raw['gt3days'], DEFAULT_THRESHOLDS.gt3days),
-      lt2days: clamp(raw['lt2days'], DEFAULT_THRESHOLDS.lt2days),
-      lt1day: clamp(raw['lt1day'], DEFAULT_THRESHOLDS.lt1day),
+      gt3days,
+      lt2days,
+      lt1day,
       updatedAt: Number.isFinite(Number(raw['updatedAt'])) ? Number(raw['updatedAt']) : null,
     }
   } catch {
@@ -72,12 +81,20 @@ export function writeThresholdConfig(
     }
     return n
   }
-  const config: WeeklyThresholdConfig = {
-    gt3days: parseInt1to100(input.gt3days, 'gt3days'),
-    lt2days: parseInt1to100(input.lt2days, 'lt2days'),
-    lt1day: parseInt1to100(input.lt1day, 'lt1day'),
-    updatedAt: now,
+  const gt3days = parseInt1to100(input.gt3days, 'gt3days')
+  const lt2days = parseInt1to100(input.lt2days, 'lt2days')
+  const lt1day = parseInt1to100(input.lt1day, 'lt1day')
+  // Card d53c1e00 (Cybersec): the CLAUDE.md rule is "closer to reset -> higher threshold",
+  // i.e. gt3days <= lt2days <= lt1day. Each value passes 1..100 range validation on its
+  // own, so a caller could otherwise save gt3days=100 + lt1day=1 -- valid individually,
+  // but it inverts the intended behavior (unlimited burn with a week of quota left, then
+  // a dead stop right when the reset is near anyway). Reject non-monotonic triples.
+  if (!(gt3days <= lt2days && lt2days <= lt1day)) {
+    throw new WeeklyThresholdError(
+      `A kuszoboknek novekvo sorrendben kell allniuk (gt3days <= lt2days <= lt1day): ${gt3days} / ${lt2days} / ${lt1day} nem az.`,
+    )
   }
+  const config: WeeklyThresholdConfig = { gt3days, lt2days, lt1day, updatedAt: now }
   atomicWriteFileSync(path, JSON.stringify(config, null, 2))
   return config
 }

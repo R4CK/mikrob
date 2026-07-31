@@ -769,6 +769,19 @@ main {
   color: var(--text);
   flex-shrink: 0;
 }
+.usage-threshold-val--warn {
+  color: var(--danger);
+}
+.usage-threshold-warn {
+  color: var(--danger);
+  font-size: 14px;
+  line-height: 1;
+  flex-shrink: 0;
+  cursor: help;
+}
+.usage-threshold-warn[hidden] {
+  display: none;
+}
 .usage-threshold-hint {
   font-size: 11px;
   color: var(--text-muted);

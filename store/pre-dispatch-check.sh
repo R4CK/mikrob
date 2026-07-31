@@ -49,6 +49,11 @@ try:
     l1 = int(c.get('lt1day', 95))
     # Fail-safe bounds: never let a bad edit disable the gate or exceed 100.
     g = max(1, min(g, 100)); l2 = max(1, min(l2, 100)); l1 = max(1, min(l1, 100))
+    # Card d53c1e00: the API rejects a non-monotonic triple on write, but this file
+    # could be hand-edited outside the API -- fall back to the safe defaults rather
+    # than apply an inverted rule (higher threshold far from reset than near it).
+    if not (g <= l2 <= l1):
+        g, l2, l1 = 90, 92, 95
     print(g, l2, l1)
 except Exception:
     print(90, 92, 95)

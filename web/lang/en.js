@@ -71,6 +71,7 @@ window._i18n.en = {
   'overview.quota.threshold.hint':  'Integers between 1 and 100. Takes effect immediately for new dispatch decisions.',
   'overview.quota.threshold.save':  'Save',
   'overview.quota.threshold.saved': 'Saved.',
+  'overview.quota.threshold.warn100': '100% disables the weekly-limit protection for this threshold entirely -- the fleet will never stop new dev on this signal.',
   'overview.error':                 'Error: {msg}',
   'overview.updates_subtitle':      'version check',
   'common.error_save':        'Error saving',

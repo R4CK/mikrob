@@ -12536,6 +12536,17 @@ async function loadWeeklyGauge() {
   }
 }
 
+// Card 52de847d (Cybersec): 100% is a valid slider value but means "never stop" -- it
+// silently disables the weekly-limit protection. Make that visually distinct from 99%
+// so an operator can't mistake it for an ordinary high setting.
+function updateThresholdWarn(id, value) {
+  const warn = document.getElementById(id + 'Warn')
+  const val = document.getElementById(id + 'Val')
+  const isMax = Number(value) >= 100
+  if (warn) warn.hidden = !isMax
+  if (val) val.classList.toggle('usage-threshold-val--warn', isMax)
+}
+
 // GET the editable weekly-threshold config and populate the slider UI (card f3248478).
 // Fetched every time the gauge loads, so the sliders + weekly-bar coloring never show a
 // stale value after another session/tab edits them.
@@ -12551,6 +12562,7 @@ async function loadWeeklyThresholds() {
       const label = document.getElementById(id + 'Val')
       if (input) input.value = val
       if (label) label.textContent = val + '%'
+      updateThresholdWarn(id, val)
     }
   } catch {
     // Keep the built-in defaults (already set on _weeklyThresholds) -- the sliders simply
@@ -12585,12 +12597,37 @@ async function loadWeeklyThresholds() {
     })
   }
 
+  // Card d53c1e00 (Cybersec): the rule is "closer to reset -> higher threshold", i.e.
+  // gt3days <= lt2days <= lt1day. Each slider is 1..100 on its own, so without this the
+  // UI would happily let gt3days end up above lt1day -- valid per-slider, but it inverts
+  // the intended behavior. Cascade the other sliders on drag so the triple can never be
+  // expressed out of order; the backend still re-validates on save (defense in depth).
   const sliderIds = ['thrGt3', 'thrLt2', 'thrLt1']
+  function enforceMonotonicSliders(changedId) {
+    const els = { thrGt3: document.getElementById('thrGt3'), thrLt2: document.getElementById('thrLt2'), thrLt1: document.getElementById('thrLt1') }
+    if (!els.thrGt3 || !els.thrLt2 || !els.thrLt1) return
+    let g = Number(els.thrGt3.value), l2 = Number(els.thrLt2.value), l1 = Number(els.thrLt1.value)
+    if (changedId === 'thrGt3') {
+      if (g > l2) l2 = g
+      if (l2 > l1) l1 = l2
+    } else if (changedId === 'thrLt2') {
+      if (l2 < g) g = l2
+      if (l2 > l1) l1 = l2
+    } else if (changedId === 'thrLt1') {
+      if (l1 < l2) l2 = l1
+      if (l2 < g) g = l2
+    }
+    els.thrGt3.value = g; els.thrLt2.value = l2; els.thrLt1.value = l1
+    for (const id of sliderIds) {
+      const label = document.getElementById(id + 'Val')
+      if (label) label.textContent = els[id].value + '%'
+      updateThresholdWarn(id, els[id].value)
+    }
+  }
   for (const id of sliderIds) {
     const input = document.getElementById(id)
-    const label = document.getElementById(id + 'Val')
-    if (input && label) {
-      input.addEventListener('input', () => { label.textContent = input.value + '%' })
+    if (input) {
+      input.addEventListener('input', () => enforceMonotonicSliders(id))
     }
   }
 

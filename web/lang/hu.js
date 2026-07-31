@@ -71,6 +71,7 @@ window._i18n.hu = {
   'overview.quota.threshold.hint':  '1 és 100 közötti egész szám. Azonnal érvénybe lép az új dispatch-döntéseknél.',
   'overview.quota.threshold.save':  'Mentés',
   'overview.quota.threshold.saved': 'Mentve.',
+  'overview.quota.threshold.warn100': 'A 100% teljesen kikapcsolja ennek a küszöbnek a heti-limit védelmét -- a flotta emiatt a jelzés miatt soha nem fog megállni az új fejlesztéssel.',
   'overview.error':                 'Hiba: {msg}',
   'overview.updates_subtitle':      'verzió ellenőrzés',
   'common.error_save':        'Hiba a mentés során',

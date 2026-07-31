@@ -61,3 +61,27 @@ describe('writeThresholdConfig / readThresholdConfig', () => {
     expect(readThresholdConfig(p())).toEqual({ gt3days: 90, lt2days: 92, lt1day: 97, updatedAt: NOW })
   })
 })
+
+// Card d53c1e00 (Cybersec): each threshold passes 1..100 range validation on its own, so
+// without a cross-field check a caller could save gt3days=100 + lt1day=1 -- individually
+// valid, but it inverts the CLAUDE.md rule ("closer to reset -> higher threshold").
+describe('monotonicity (gt3days <= lt2days <= lt1day)', () => {
+  it('rejects a non-monotonic triple on write with a descriptive error', () => {
+    expect(() => writeThresholdConfig({ gt3days: 100, lt2days: 92, lt1day: 1 }, NOW, p())).toThrow(
+      WeeklyThresholdError,
+    )
+    expect(() => writeThresholdConfig({ gt3days: 96, lt2days: 92, lt1day: 95 }, NOW, p())).toThrow(
+      /novekvo sorrendben/,
+    )
+  })
+
+  it('accepts equal (non-strict) thresholds', () => {
+    const w = writeThresholdConfig({ gt3days: 90, lt2days: 90, lt1day: 90 }, NOW, p())
+    expect(w).toEqual({ gt3days: 90, lt2days: 90, lt1day: 90, updatedAt: NOW })
+  })
+
+  it('falls back to defaults on read when a hand-edited file is non-monotonic (defense in depth)', () => {
+    writeFileSync(p(), JSON.stringify({ gt3days: 100, lt2days: 92, lt1day: 1, updatedAt: NOW }))
+    expect(readThresholdConfig(p())).toEqual({ ...DEFAULT_THRESHOLDS, updatedAt: null })
+  })
+})
