@@ -85,6 +85,26 @@ if code:
 # Layer 2: anything still looking like a credential (24+ chars of the OAuth alphabet). Ordinary
 # failure text does not contain unbroken 24-char tokens; a secret is worth more than that diagnostic.
 text = re.sub(r"[A-Za-z0-9_-]{24,}", "***REDACTED***", text)
+# Layer 2b (card 163576a0, Cybersec R1): the TUI breaks long lines ITSELF -- newline plus indent --
+# when it renders a long user message, and `capture-pane -J` only rejoins what the TERMINAL wrapped.
+# So a code can arrive here already split into two runs, each shorter than 24, and layer 2 sees
+# nothing. Proven with a 14-character fragment reaching stderr.
+#
+# The fix is a DE-WRAP pre-pass rather than a lower threshold: dropping to ~12 would start masking
+# ordinary diagnostic words and make the dump useless, which is how a redaction quietly gets turned
+# off. Instead, candidates are found in a de-wrapped VIEW of the text, then masked in the ORIGINAL
+# with whitespace tolerated between characters (same shape as layer 1b), so the dump keeps its line
+# structure and stays readable.
+# Join ONLY an INDENTED continuation (newline followed by at least one space/tab) -- that is what the
+# TUI produces when it wraps. Gluing every newline would also fuse the start of the NEXT line onto the
+# token and mask an innocent word after it (seen while building this: "Try" ended up inside the run).
+dewrapped = re.sub(r"\n[ \t]+", "", text)
+for cand in sorted(set(re.findall(r"[A-Za-z0-9_-]{24,}", dewrapped)), key=len, reverse=True):
+    # A candidate that also appears contiguously was already handled by layer 2 above.
+    if cand in text:
+        continue
+    spaced = r"\s*".join(re.escape(ch) for ch in cand)
+    text = re.sub(spaced, "***REDACTED***", text)
 sys.stdout.write(text)
 '
 }

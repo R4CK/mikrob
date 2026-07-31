@@ -149,3 +149,37 @@ describe('a code broken across a line boundary is still removed (card 4f352199)'
     expect(out.trim()).toBe('panel is idle')
   })
 })
+
+describe('the TUI wraps lines itself, and a code split that way is still a code (card 163576a0)', () => {
+  // Cybersec R1 on 4f352199: `capture-pane -J` rejoins what the TERMINAL wrapped, but the TUI breaks
+  // long user messages on its own -- newline plus indent -- so a code can arrive already split into
+  // two runs, each shorter than the 24-char threshold. A 14-character fragment reached stderr.
+  const WRAPPED = 'Login failed\nYour code: ac_9f3b21QeR\n  oauthCodeTail99xyz\nTry again\n'
+
+  it('masks a code the TUI split across an INDENTED continuation, with no CODE known', () => {
+    const out = redact(WRAPPED) // no CODE: layer 1 cannot help, this is layer 2b alone
+    expect(out).not.toContain('ac_9f3b21QeR')
+    expect(out).not.toContain('oauthCodeTail99xyz')
+    expect(out).toContain('***REDACTED***')
+  })
+
+  it('keeps the line that FOLLOWS the wrapped token (the fix must not eat the next word)', () => {
+    // De-wrapping every newline also fuses "Try" onto the token and masks it -- seen while building
+    // this. Only an indented continuation is joined.
+    const out = redact(WRAPPED)
+    expect(out).toContain('Try again')
+    expect(out).toContain('Login failed')
+  })
+
+  it('leaves ordinary indented diagnostic text alone (no over-masking)', () => {
+    // The alternative fix -- lowering the 24-char threshold -- would start masking words like these,
+    // and a dump that redacts everything is a dump nobody reads.
+    const dump =
+      'Error: could not reach the auth server\n  retrying in 5 seconds\n  giving up after 3 attempts\n'
+    expect(redact(dump)).toBe(dump)
+  })
+
+  it('still masks a contiguous long token (layer 2 is not weakened)', () => {
+    expect(redact('token=abcdefghijklmnopqrstuvwxyz012345\n')).toContain('***REDACTED***')
+  })
+})
