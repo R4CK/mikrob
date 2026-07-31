@@ -95,16 +95,29 @@ def mikrob_marker(c, words, anchored=False):
     # written mid-comment -- dropped the card out of the sweep, and 'DONE' also hides inside
     # 'ABANDONED', exactly like 'HOLD' inside 'placeholder'.
     #
-    # `anchored` (Cybersec F3 follow-up, measured 2026-07-31): a CLOSE marker is only a close when
-    # it OPENS the comment. Word-bounding the first line was not enough -- 104 MikroB comments on
-    # this board carry a mid-sentence 'DONE' on their first line ("GATE-TIER: DONE csak QA PASS +
-    # Cybersec GO"), which is a REQUEST for gating, and reading it as a close drops the card out of
-    # the sweep. BLOCK markers stay an unanchored word-bounded search: those legitimately appear
-    # mid-line ("WAITING (kotott-blokk, Peti-dontes)").
+    # `anchored` = CLOSE marker (card b3b7e734). My first version demanded a hard line-start anchor;
+    # backend measured that against the real board and it was WRONG -- 491 of 1196 first-line hits
+    # sit behind a short tag or lead-in and are REAL closes ("[GATE CLOSE] ... -> DONE.",
+    # "RE-CLOSE DONE (...)", "CLOSED done: QA PASS ..."). I re-measured on my own sweep data: a hard
+    # anchor recognises 147 of 258, this rule 176. So position + shape, matching the shared skill:
+    # the marker must fall within the first 24 characters, must not be negated right before it
+    # ("HOLD (NEM done)"), and must not be followed by a condition -- "DONE csak QA PASS + Cybersec
+    # GO" states what WOULD close the card, which is the sentence that started this whole thread.
+    # BLOCK markers stay an unanchored word-bounded search: they legitimately appear mid-line
+    # ("WAITING (kotott-blokk, Peti-dontes)").
     first = content.strip().split('\n')[0]
-    if anchored:
-        return any(re.match(r'\s*' + re.escape(w) + r'\b', first, re.IGNORECASE) for w in words)
-    return any(re.search(r'\b' + re.escape(w) + r'\b', first, re.IGNORECASE) for w in words)
+    if not anchored:
+        return any(re.search(r'\b' + re.escape(w) + r'\b', first, re.IGNORECASE) for w in words)
+    for w in words:
+        m = re.search(r'\b' + re.escape(w) + r'\b', first, re.IGNORECASE)
+        if not m or m.start() > 24:
+            continue
+        if re.search(r'\b(NEM|NINCS|NOT|NO)\W{0,3}$', first[:m.start()], re.IGNORECASE):
+            continue
+        if re.match(r'^\W*(csak|only|akkor|ha)\b', first[m.end():], re.IGNORECASE):
+            continue
+        return True
+    return False
 
 
 def main():
@@ -128,7 +141,7 @@ def main():
         after = [c for c in comments if c.get('created_at', 0) >= t]
         if any(is_cybersec_verdict(c) for c in after):
             continue
-        if any(mikrob_marker(c, ('DONE',), anchored=True) for c in after):
+        if any(mikrob_marker(c, ('DONE', 'CLOSE', 'LEZAROM', 'LEZÁRVA'), anchored=True) for c in after):
             continue
         if any(mikrob_marker(c, ('BLOKKOLVA', 'KOTOTT', 'KÖTÖTT')) for c in after):
             continue
