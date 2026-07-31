@@ -49,11 +49,13 @@ describe('writeThresholdConfig / readThresholdConfig', () => {
   })
 
   it('clamps stored out-of-range values on read (defense in depth)', () => {
-    writeFileSync(p(), JSON.stringify({ gt3days: 250, lt2days: -5, lt1day: 95, updatedAt: NOW }))
+    // Clamped-but-still-monotonic combo, so this isolates clamping from the separate
+    // monotonicity fallback covered below (-5 -> 1, 250 -> 100).
+    writeFileSync(p(), JSON.stringify({ gt3days: -5, lt2days: 50, lt1day: 250, updatedAt: NOW }))
     const r = readThresholdConfig(p())
-    expect(r.gt3days).toBe(100)
-    expect(r.lt2days).toBe(1)
-    expect(r.lt1day).toBe(95)
+    expect(r.gt3days).toBe(1)
+    expect(r.lt2days).toBe(50)
+    expect(r.lt1day).toBe(100)
   })
 
   it('falls back to individual defaults for missing keys in a partial/legacy file', () => {
