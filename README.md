@@ -7,6 +7,9 @@
 [![SQLite](https://img.shields.io/badge/SQLite-FTS5+Vector-003B57?logo=sqlite&logoColor=white)](https://www.sqlite.org/)
 [![Claude Code](https://img.shields.io/badge/Claude_Code-Anthropic-D97757?logo=anthropic&logoColor=white)](https://claude.ai/code)
 [![Ollama](https://img.shields.io/badge/Ollama-nomic--embed-000000?logo=ollama&logoColor=white)](https://ollama.com/)
+[![Telegram](https://img.shields.io/badge/Telegram-Bot_API-26A5E4?logo=telegram&logoColor=white)](https://core.telegram.org/bots)
+[![Slack](https://img.shields.io/badge/Slack-Socket_Mode-4A154B?logo=slack&logoColor=white)](https://api.slack.com/)
+[![Discord](https://img.shields.io/badge/Discord-Bot-5865F2?logo=discord&logoColor=white)](https://discord.com/developers/docs/intro)
 
 > Önállóan dolgozó AI-ügynökflotta, Claude Code-ra építve.
 
@@ -64,6 +67,8 @@ Ezek a MikroB-fork saját fejlesztései a Marveen-bázison felül — főleg a *
 - **Rate-limit kulcs-normalizálás keményítés**: az IP-alapú rate-limit kulcs a PARSE-olt IPv6-csoportokból bontja ki az IPv4-mapped címeket (`::ffff:a.b.c.d` és `a.b.c.d` azonos kulcs), szigorú `::ffff:0:0/96` range-check-kel és pontos /56-collapse-szel — bezárja az IPv6-reprezentáció-váltogatásos rate-limit-bypasst anélkül, hogy IPv4-kizárásos DoS-t nyitna (valós exportált függvényen, nem-vakuum regresszió-teszttel igazolva).
 - **Beépített repók oldal — teljes adoptáció-lista + install-állapot**: a dashboard „Beépített repók" oldala (`/api/integrated-repos` a `store/watched-repos.json` felett) MINDEN adoptált fejlesztést listáz — a kézzel hozzáadott GitHub-repókat ÉS a korábbi/új vendorolt skilleket, MCP-ket, eszközöket (a FE union-t mutat, korábban csak a — üres — manuális listát olvasta). Az endpoint `adoption` + `pinnedVersion` + származtatott `installed` mezőt is ad, így a **pipx-adopciók** (code-review-graph, graphify) `cloned=false` DE `installed=true` — a UI „✓ telepítve (pipx <ver>)" jelzéssel, nem tűnik hiányzónak. A `~/.claude/external/` alatti, `external-repos-daily-sync`-kel naponta pull-ozott repók is megjelennek.
 - **Adopt-9 közösségi átvétel + Karpathy kódminőségi alapelvek (Peti 2026-07-31)**: 6 doc/skill/index repo (anthropics/skills, shanraisshan/claude-code-best-practice, jqueryscript/awesome-claude-code, VoltAgent/awesome-agent-skills, alirezarezvani/claude-skills, FlorianBruniaux/claude-code-ultimate-guide) klónozva a **repón kívülre** (`~/.claude/external/`) + `VENDORED.md` + napi sync + registry — a Szotasz/marveen ff-only update ezért sértetlen. A 3 **futtatható** eszköz (atlassian-labs/mcp-compressor, ooples/token-optimizer-mcp, yamadashy/repomix) NEM települ vakon: `pending-audit` a registryben, Cybersec-gate ELŐBB (supply-chain, rule 10). Andrej Karpathy 4 kódminőségi alapelve (Think Before Coding, Simplicity First, Surgical Changes, Goal-Driven Execution) **ötletként beolvasztva a `CLAUDE.md`-be** (minden ügynökre) — a forrás-repo stale + nincs LICENSE fájl, ezért nem vendorolt, csak az elvek, attribúcióval.
+- **mcp-compressor: csak-könyvtár adopció, GO-ra zárva (card b92c10d4, Peti Opció C)**: az `@atlassian/mcp-compressor` N-API tömörítő modulja KÖZVETLENÜL hívva (compression API), a `serve` út (és a hozzá tartozó ~330 sebezhető Rust-crate-lánc) SOHA nem fordul le — prebuilt addon, pinelt verzió (`0.31.7`), `--ignore-scripts`, a csomag a repón KÍVÜL él (`store/mcp-compress.sh`, verziókövetett ops-script). Cybersec a végleges GO-t a saját méréssel zárta (a nyolc OSV-advisory nem érhető el a betöltött library-felületről) + a pinelt verzió a RUN-úton is asszerttálva van, fail-closed (`212207b`). Kísérő: `store/mcp-compressor-watch.sh` upstream-verzió-figyelő (re-gate trigger, ha a felmenő csomag frissül).
+- **Lokális-LLM offload: 44 kategória + éjszakai batch (2026-07-31)**: az offloadolható mechanikus feladat-taxonómia 15-ről 44 kategóriára bővült (kód: regex, TS-típusok, schema-validator, refaktor, bugfix-draft, code-explain, naming, json-transform, sample-data; backend/infra: crud-adapter, sql-migráció-draft, api-kliens, dockerfile, yaml-config, shell-script, cron-expr, env-doku; frontend/minőség: a11y-check, responsive-check, pr-review; doksi: doc-draft, docstring, dep-diff, i18n-keys, release-notes, action-items, hibaüzenet→i18n). Mind DRAFT-only. Egy napi 03:00-s **éjszakai batch-runner** a GPU üresjáratát használja ki: a mechanikus backlogot (in_progress + top-N planned, aminek nincs még draftja) online-token nélkül ledarálja a 7B-re, a heti kvótától függetlenül.
 
 ### Dokumentáció-index
 
@@ -90,6 +95,12 @@ Ezek a MikroB-fork saját fejlesztései a Marveen-bázison felül — főleg a *
 | Új asszisztens onboarding | [docs/onboarding-uj-asszisztens.md](docs/onboarding-uj-asszisztens.md) |
 
 > A fork emellett követi a felmenő Marveen kiadásait is (pl. **v1.19.0**: SSH Vault, owner-gated terminál-input, kanban kártya-esemény audit, dashboard auth-keményítés). Legutóbb integrálva: **v1.27.0** (2026-07-31, kártya `266d8248`) — merge-base diffből, egyenkénti `cherry-pick -x`-szel, sosem blanket merge-dzsel: worker-session halál-detektálás + naplózás (`worker-liveness.ts`, #801), az onboarding-varázsló a VALÓS agent-id-t oldja fel a függő párosítások előtt (#802), a telepítő a SZOLGÁLTATÁSOKNAK is ad auth-credentialt és **fail-closed** ha nincs (#799), a teljes lánc a `WEB_PORT`-ot követi a fix 3420 helyett (#800), a quarantine-reader fetch-allowlistje a tulajdonos egress-gate-jéből származik (#797), plusz egy dashboard-komment javítás (#805). A `v1.27.0` release-rollup commit (`489b35a`) szándékosan KIMARADT: ugyanezeket a változásokat csomagolja, átvétele duplikálna. Előtte: **v1.26.0** (2026-07) — a fork-divergencia megőrzésével átvéve: kiszervezett auth-gate (`resolveAuth`/`requiresAuth` — per-device dashboard-kulcsok + opcionális felhasználónév/jelszó böngésző-login, a Bearer-token út byte-azonos marad, a fork `/api/public-digest` unauth-kivétele megőrizve), oldalsáv-menü csoportosítás (a fork `Lokális LLM` menüpontja a RENDSZER csoportba fűzve), verziózott statikus asszetek cache-elhetősége, upstream-drift branch-figyelmeztetés a Frissítések oldalon, `remote-enroll` eszköz (device-SSH-kulcs onboarding), plusz telepítő/ütemező javítások (WSL home-clone, node@22 launchd-pin, apt-lock kivárás, token-usage költségtábla #737).
+
+## Öntanulás & Seed-ek
+
+Az ügynökök automatikusan tanulnak a munkájukból: komplex feladat vagy hiba-recovery után újrahasznosítható skill-t (receptet) írnak maguknak, a meglévőket pedig célzottan patch-elik. A skillek token-hatékonyan, 3 szinten töltődnek (progressive disclosure). A flotta-szintű skillek és ütemezett feladatok a `seed-skills/` és `seed-scheduled-tasks/` mappából terjednek minden telepítésre (idempotens: a meglévő testreszabást nem írja felül) — a fork saját seed-fleet-agents/ (T Eszter perszóna + skillek) is ugyanígy verziókövetett és reseed-durable.
+
+→ **Részletek:** [docs/skill-factory.md](docs/skill-factory.md)
 
 ## Architektúra
 
@@ -154,11 +165,50 @@ A `MAIN_AGENT_ID` (a `BOT_NAME` ASCII slug-ja) és `SERVICE_ID` (a `BRAND_NAME` 
 
 ## Használat
 
-- **Dashboard**: http://localhost:3420
-- **Csatorna**: írj a botodnak Telegramon — MikroB válaszol
-- **Ügynökök**: a Csapat oldalon hozhatsz létre újat (saját bot, SOUL.md, CLAUDE.md, memória, skillek)
-- **Ütemezések**: task (mindig szól) vagy heartbeat (csak fontosnál) — lista, napi idővonal, heti nézet
-- **Vault**: a titkokat/SSH-kulcsokat a Vault-oldalon kezeled; a `.mcp.json`-ben csak `vault:SECRET_ID` referenciák állnak
+### Dashboard
+
+http://localhost:3420 — memória, kanban, ügynökök, ütemezés, Vault, terminál.
+
+### Csatorna
+
+Ez a fork öt csatorna-providert támogat: **Telegram** (alapértelmezett), **Slack**, **Discord**, **Google Chat**, **Microsoft Teams**. A telepítő Telegram/Slack/Discord közül kér választást; a `CHANNEL_PROVIDER` env-kulcs manuálisan is átállítható a többire. Csatornaváltáshoz futtasd újra a `./install-linux.sh`-t, vagy szerkeszd a `.env`-et és indítsd újra a szolgáltatást (`./scripts/stop.sh && ./scripts/start.sh`).
+
+→ **Részletek + provider-specifikus lépések:** [docs/channels.md](docs/channels.md)
+
+### Ágensek
+
+A Csapat oldalon hozhatsz létre újat. Mindegyik ügynök saját:
+- csatorna-botot (Telegram/Slack/Discord/stb.)
+- személyiséget (`SOUL.md`)
+- utasításokat (`CLAUDE.md`)
+- memóriát és skilleket kap
+
+### Bot profilkép
+
+A telepítő pixel-art avatart generál és elküldi a beállítási utasításokkal. Egyedi kép beállításához:
+
+1. Tedd a fájlt `agents/<ÜGYNÖK_NEVE>/avatar.png` alá (png/jpg/jpeg/webp)
+2. Indítsd újra a szolgáltatást (`./scripts/stop.sh && ./scripts/start.sh`)
+
+A dashboardon (Csapat oldal) is cserélhető: kattints a bot kártyájára, válassz a galériából vagy tölts fel sajátot.
+
+### Ütemezések
+
+task (mindig szól) vagy heartbeat (csak fontosnál) — lista, napi idővonal, heti nézet.
+
+### Vault
+
+A titkokat/SSH-kulcsokat a Vault-oldalon kezeled (AES-256-GCM); a `.mcp.json`-ben csak `vault:SECRET_ID` referenciák állnak, a Scan & Import megtalálja a meglévő plaintext kulcsokat.
+
+→ **Részletek:** [docs/vault.md](docs/vault.md)
+
+### Ágens monitorozás
+
+A `scripts/monitor_agents.sh` egyetlen tmux `monitor` session-be fogja össze az összes futó ügynök session-jét (iTerm2 Control Mode-dal, `-CC`, minden ügynök külön tabként). Automatikusan felderíti a futó `agent-*` és `<szolgáltatás>-channels` session-öket; a monitor session törlése az ügynök-session-öket nem érinti, csak a linked-window referenciákat szünteti meg.
+
+```bash
+./scripts/monitor_agents.sh
+```
 
 ### Frissítés és visszaállás
 
@@ -255,4 +305,12 @@ Részletes, funkciónkénti leírások a [`docs/`](docs/README.md) mappában.
 
 ## Alap és köszönet
 
-Ez a rendszer a **[Marveen](https://github.com/Szotasz/marveen)** (Szota Szabolcs, "AI a mindennapokban") keretrendszerre épül, és több külső projektre. A teljes forrás/szerző/licensz-felsorolás az [ATTRIBUTIONS.md](./ATTRIBUTIONS.md) fájlban. Köszönet a Perplexity AI-nek, Artem Zhutovnak, Mike Van Hornnak, Andrej Karpathynak és Matt Pococknak a munkájukért.
+Ez a rendszer a **[Marveen](https://github.com/Szotasz/marveen)** (Szota Szabolcs, "AI a mindennapokban") keretrendszerre épül, és több külső projektre. A teljes forrás/szerző/licensz-felsorolás az [ATTRIBUTIONS.md](./ATTRIBUTIONS.md) fájlban. Köszönet a Perplexity AI-nek (Bumblebee), Artem Zhutovnak (handoff / retrospective / skill-management skill-suite), Mike Van Hornnak (printing-press), Andrej Karpathynak (CLAUDE.md-minta és a kódminőségi alapelvek) és Matt Pococknak (handoff-design tippek) a munkájukért.
+
+**Az alap-projekt készítője:** Szota Szabolcs — AI-konzultáns, az "AI a mindennapokban" csatorna alapítója. Az alap-Marveen közössége és támogató-anyagai:
+
+- **Skool közösség**: [skool.com/ai-a-mindennapokban](https://skool.com/ai-a-mindennapokban)
+- **YouTube**: [AI a mindennapokban](https://www.youtube.com/@aiamindennapokban)
+- **Weboldal**: [aiamindennapokban.hu](https://aiamindennapokban.hu)
+
+Ez a fork (`R4CK/mikrob`) saját, elkülönült telepítés — a fenti csatornák az alap-keretrendszer forrásaihoz vezetnek, nem ehhez a forkhoz.
