@@ -102,6 +102,23 @@ function fireKanbanDispatch(id: string): void {
   }
 }
 
+/**
+ * Read a repeatable filter parameter (`?status=a&status=b` or `?status=a,b`) as a set, or null when
+ * the caller did not ask for one at all. Card 37ea2f96.
+ *
+ * Blank values are dropped, so `?status=` (empty) means "no filter" rather than "match the empty
+ * string" -- a UI that clears its dropdown sends exactly that.
+ */
+function filterValues(url: URL, name: string): Set<string> | null {
+  const raw = url.searchParams.getAll(name)
+  if (raw.length === 0) return null
+  const values = raw
+    .flatMap((v) => v.split(','))
+    .map((v) => v.trim())
+    .filter((v) => v.length > 0)
+  return values.length === 0 ? null : new Set(values)
+}
+
 export async function tryHandleKanban(ctx: RouteContext): Promise<boolean> {
   const { req, res, path, method } = ctx
 
@@ -110,7 +127,18 @@ export async function tryHandleKanban(ctx: RouteContext): Promise<boolean> {
     // instead of an N+1 per-card lookup, so the footer-pill UI gets
     // everything it needs in a single round trip.
     const labelsByCard = getLabelsForAllCards()
-    const cards = listKanbanCards().map((card) => ({ ...card, labels: labelsByCard.get(card.id) ?? [] }))
+    let cards = listKanbanCards().map((card) => ({ ...card, labels: labelsByCard.get(card.id) ?? [] }))
+    // Card 37ea2f96: `?status=` / `?assignee=` were ACCEPTED and ignored -- the endpoint returned all
+    // 265 cards whatever was asked, so every caller (gates, scanners, the dashboard) filtered client
+    // side and shipped the whole board over the wire each time. A parameter that looks like it works
+    // and does not is worse than an absent one: a caller trusts it and reads the wrong set.
+    //
+    // FAIL-CLOSED ON AN UNKNOWN VALUE: `?status=waitng` (a typo) returns an EMPTY list rather than
+    // everything. Silently widening a filter is how "why is this card in my sweep?" happens.
+    const wanted = filterValues(ctx.url, 'status')
+    if (wanted !== null) cards = cards.filter((c) => wanted.has(String(c.status)))
+    const assignees = filterValues(ctx.url, 'assignee')
+    if (assignees !== null) cards = cards.filter((c) => assignees.has(String(c.assignee ?? '')))
     jsonMaybeGzip(req, res, cards)
     return true
   }
