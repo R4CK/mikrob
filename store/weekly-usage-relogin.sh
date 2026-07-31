@@ -52,6 +52,35 @@ ensure_pane() {
   sleep 6
 }
 
+# --- OAuth-code redaction for pane dumps (card b5746e1e) --------------------------------------
+# The --paste failure branch prints the panel's last lines so a failed login is diagnosable. But the
+# code was JUST typed into that panel, so those lines contain it -- and that output goes to stderr,
+# i.e. into MikroB's transcript and logs. That is a MORE durable exposure than the original argv leak
+# (e5411be1): argv lives for the length of one process, a transcript lives until someone prunes it.
+#
+# The dump still has diagnostic value (it shows WHY the login failed); the code inside it has none --
+# we already know what we sent. So the dump is kept and the code is removed from it.
+#
+# Two layers, because exact matching alone is not enough:
+#   1. exact replacement of the code we sent -- provable, and the primary mechanism;
+#   2. a generic mask for any remaining long token, for the case where the terminal broke the code
+#      across a boundary or inserted a character, so an exact match would silently miss it.
+# Capture uses -J (join wrapped lines, same as the start branch) so a wrapped code is ONE token and
+# layer 1 actually matches.
+redact_code() { # stdin -> stdout, with $CODE and long tokens masked
+  CODE="${CODE:-}" python3 -c '
+import os, re, sys
+code = os.environ.get("CODE", "")
+text = sys.stdin.read()
+if code:
+    text = text.replace(code, "***REDACTED***")
+# Anything still looking like a credential (24+ chars of the OAuth alphabet) is masked too. Ordinary
+# failure text does not contain unbroken 24-char tokens; a secret is worth more than that diagnostic.
+text = re.sub(r"[A-Za-z0-9_-]{24,}", "***REDACTED***", text)
+sys.stdout.write(text)
+'
+}
+
 case "$MODE" in
   --check)
     # Max-authed if /usage shows the weekly bar. Reuse the reader's success as the signal.
@@ -99,8 +128,9 @@ case "$MODE" in
       echo "OK: login successful, panel Max-authed."
       exit 0
     fi
-    echo "FAIL: login did not confirm; capture:" >&2
-    tmux capture-pane -t "$PANE" -p 2>/dev/null | grep -v '^$' | tail -6 >&2
+    echo "FAIL: login did not confirm; capture (OAuth code redacted):" >&2
+    # -J so a wrapped code is one token and the exact redaction below can match it.
+    tmux capture-pane -t "$PANE" -p -J 2>/dev/null | grep -v '^$' | tail -6 | redact_code >&2
     exit 1
     ;;
   start)
@@ -141,6 +171,12 @@ print(url)
     echo "FAIL: no OAuth URL captured; panel state:" >&2
     tmux capture-pane -t "$PANE" -p 2>/dev/null | grep -v '^$' | tail -8 >&2
     exit 1
+    ;;
+  --redact-stdin)
+    # Test/diagnostic seam: pipe text in, get the SAME redaction the --paste failure dump applies.
+    # Exposed so the redaction is directly testable -- the failure branch itself needs a live panel,
+    # and an untested redaction is exactly the kind of thing that silently stops redacting.
+    redact_code
     ;;
   *)
     echo "usage: $0 [start|--check|--paste (code on stdin)|--paste-file <0600-file>]" >&2; exit 2 ;;
