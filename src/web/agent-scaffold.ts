@@ -308,7 +308,10 @@ export function writeAgentSettingsFromProfile(name: string, profile: ProfileTemp
   // through the main agent. (b) self-pace block -- no ScheduleWakeup/Cron*/Bash
   // self-injection. (c) egress gate -- WebFetch calls that are not on the known
   // API allowlist are hard-blocked and logged; arbitrary web content must go
-  // through the quarantine-reader sub-agent. The MAIN_AGENT_ID is exempt from
+  // through the quarantine-reader sub-agent. (d) git-protect guard -- blocks the
+  // whole-tree destructive git ops (`add -A`, `checkout -- .`, `reset --hard`,
+  // `clean -fd`) that would wipe OTHER agents' uncommitted work in the shared
+  // checkout. Applied to EVERY agent: the shared tree is shared by all of them. The MAIN_AGENT_ID is exempt from
   // (a) and (b) but NOT from (c) -- every agent can be hijacked via an injected
   // WebFetch call, including the main one. Merge/deploy is NOT gated: the operator
   // authorizes those autonomously (so test/deploy runs are never blocked); the
@@ -317,6 +320,7 @@ export function writeAgentSettingsFromProfile(name: string, profile: ProfileTemp
   if (agentGetsEmailGate(name)) injectEmailSendGate(existing)
   if (agentGetsGovernanceGates(name)) injectSelfPaceGate(existing)
   injectEgressGate(existing)
+  injectGitProtectGuard(existing)
   atomicWriteFileSync(settingsPath, JSON.stringify(existing, null, 2))
 }
 
@@ -409,6 +413,42 @@ export function injectEgressGate(existing: Record<string, unknown>): void {
   const prev = Array.isArray(hooks.PreToolUse) ? (hooks.PreToolUse as unknown[]) : []
   hooks.PreToolUse = [
     ...prev.filter((e) => !JSON.stringify(e).includes('egress-gate.mjs')),
+    entry,
+  ]
+}
+
+// Idempotently wire the git-protect-guard PreToolUse hook (blocks whole-tree
+// destructive git operations: `add -A`, `checkout -- .`, `reset --hard`,
+// `clean -fd`, and their `-C <path>` / env-prefixed forms).
+//
+// Applied to ALL agents, main included: the danger is not a role, it is the
+// SHARED CHECKOUT. One `git add -A` from any agent stages every other agent's
+// half-finished work; one `git checkout -- .` destroys it outright. The main
+// agent runs in the same tree and can do the same damage.
+//
+// This injector is the fix for a real drift (card 0fa54550, found by Cybered on
+// the 6b532950 gate): the guard had been hand-added to 8 agents' settings.json
+// and was missing from 5, because nothing in the scaffold wired it. Hand-editing
+// N files does not survive the next respawn -- regenerating settings.json would
+// have dropped it again -- and every NEWLY created agent would have started
+// unprotected. Protection that depends on someone remembering to copy a JSON
+// block is not protection; it belongs here, where every spawn re-applies it.
+export function injectGitProtectGuard(existing: Record<string, unknown>): void {
+  const hooks = (existing.hooks && typeof existing.hooks === 'object'
+    ? existing.hooks
+    : (existing.hooks = {})) as Record<string, unknown>
+  const command = `python3 "${join(PROJECT_ROOT, 'scripts', 'hooks', 'git-protect-guard.py')}"`
+  // Registration guard: a /tmp or missing path must never enter shared settings.
+  if (isUnsafeHookCommand(command)) return
+  const entry = {
+    // Bash only: every destructive form goes through a shell command. The native
+    // file tools cannot run git, so widening the matcher would only add noise.
+    matcher: 'Bash',
+    hooks: [{ type: 'command', command, timeout: 10 }],
+  }
+  const prev = Array.isArray(hooks.PreToolUse) ? (hooks.PreToolUse as unknown[]) : []
+  hooks.PreToolUse = [
+    ...prev.filter((e) => !JSON.stringify(e).includes('git-protect-guard.py')),
     entry,
   ]
 }

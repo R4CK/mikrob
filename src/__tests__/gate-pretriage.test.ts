@@ -42,7 +42,8 @@ function commitAndTriage(files: Record<string, string>, message = 'change'): {
 }
 
 const checks = (r: { findings: Array<{ check: string }> }) => r.findings.map((f) => f.check)
-const find = (r: { findings: Array<{ check: string; severity: string }> }, name: string) =>
+type Finding = { severity: string; check: string; detail: string }
+const find = (r: { findings: Finding[] }, name: string): Finding | undefined =>
   r.findings.find((f) => f.check === name)
 
 beforeEach(() => {
