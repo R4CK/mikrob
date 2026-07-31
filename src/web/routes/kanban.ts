@@ -255,8 +255,19 @@ export async function tryHandleKanban(ctx: RouteContext): Promise<boolean> {
   if (kanbanCardMatch && method === 'PUT') {
     const id = decodeURIComponent(kanbanCardMatch[1])
     const body = await readBody(req)
-    const data = JSON.parse(body.toString())
-    if (updateKanbanCard(id, data)) { json(res, { ok: true }); return true }
+    const { actor, force, ...data } = JSON.parse(body.toString()) as Record<string, unknown>
+    if (updateKanbanCard(id, data, { actor: typeof actor === 'string' ? actor : undefined, force: force === true })) {
+      json(res, { ok: true }); return true
+    }
+    // Card c4f2de32: distinguish "no such card" from "refused to re-open reviewed work", so the
+    // caller learns what to do instead of retrying blindly.
+    if (getKanbanCard(id)) {
+      json(res, {
+        error:
+          'A kártya waiting állapotban REVIEW-ra vár: nem húzható vissza in_progress-be, amíg egy gate nem írt rá verdiktet (PASS/GO vagy FAIL/NO-GO). Ha tudatosan újra akarod nyitni, küldd force: true értékkel.',
+      }, 409)
+      return true
+    }
     json(res, { error: 'Kártya nem található' }, 404)
     return true
   }
@@ -273,11 +284,18 @@ export async function tryHandleKanban(ctx: RouteContext): Promise<boolean> {
   if (kanbanMoveMatch && method === 'POST') {
     const id = decodeURIComponent(kanbanMoveMatch[1])
     const body = await readBody(req)
-    const { status, sort_order, actor } = JSON.parse(body.toString())
-    if (moveKanbanCard(id, status, sort_order ?? 0, actor)) {
+    const { status, sort_order, actor, force } = JSON.parse(body.toString())
+    if (moveKanbanCard(id, status, sort_order ?? 0, actor, force === true)) {
       // Wake the assigned agent once when the card enters in_progress.
       if (status === 'in_progress') fireKanbanDispatch(id)
       json(res, { ok: true })
+      return true
+    }
+    if (getKanbanCard(id)) {
+      json(res, {
+        error:
+          'A kártya waiting állapotban REVIEW-ra vár: nem húzható vissza in_progress-be, amíg egy gate nem írt rá verdiktet (PASS/GO vagy FAIL/NO-GO). Ha tudatosan újra akarod nyitni, küldd force: true értékkel.',
+      }, 409)
       return true
     }
     json(res, { error: 'Kártya nem található' }, 404)

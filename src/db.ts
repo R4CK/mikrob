@@ -1704,23 +1704,90 @@ export function createKanbanCard(card: {
   )
 }
 
-export function updateKanbanCard(id: string, fields: Partial<Omit<KanbanCard, 'id' | 'created_at'>>): boolean {
+/**
+ * The last signal a card carries in its comments:
+ *   'review'  -- the author reported the work done and nothing has judged it yet;
+ *   'verdict' -- a gate answered after that REVIEW (PASS/GO or FAIL/NO-GO);
+ *   'none'    -- neither.
+ *
+ * Used by {@link reviewedCardBlocksInProgress}: a card sitting on an unanswered REVIEW must not be
+ * yanked back into in_progress, but one that has been FAILED (or passed) may legitimately move.
+ */
+export function latestKanbanSignal(cardId: string): 'review' | 'verdict' | 'none' {
+  const rows = db.prepare(
+    'SELECT content FROM kanban_comments WHERE card_id = ? ORDER BY created_at DESC, id DESC LIMIT 20'
+  ).all(cardId) as { content: string }[]
+  for (const { content } of rows) {
+    const head = content.slice(0, 200).toUpperCase()
+    // A gate verdict is anchored at the start of its comment by fleet convention
+    // ("QA PASS -- ...", "CYBERSEC GO -- ...", "[CYBERSEC GATE] ... NO-GO").
+    if (/\b(PASS|FAIL|GO|NO-GO)\b/.test(head) && !head.startsWith('REVIEW')) return 'verdict'
+    if (head.startsWith('REVIEW')) return 'review'
+  }
+  return 'none'
+}
+
+/**
+ * True when moving `id` to `in_progress` would re-open work that is finished and waiting to be
+ * judged (card c4f2de32).
+ *
+ * The failure this prevents, seen three times in one afternoon: a card sits at waiting with a
+ * REVIEW comment and a commit, something flips it back to in_progress, and the next agent to look
+ * at the board sees "in progress, no movement" and rebuilds work that already exists. A gate FAIL
+ * is the legitimate way back into in_progress -- and that leaves a verdict comment, which is
+ * exactly what distinguishes the two cases.
+ */
+export function reviewedCardBlocksInProgress(id: string, nextStatus: string): boolean {
+  if (nextStatus !== 'in_progress') return false
+  const current = (db.prepare('SELECT status FROM kanban_cards WHERE id=?').get(id) as { status: string } | undefined)?.status
+  if (current !== 'waiting') return false
+  return latestKanbanSignal(id) === 'review'
+}
+
+/**
+ * Update a card's fields. A status change made THROUGH THIS PATH is audited like a move
+ * ({@link moveKanbanCard}) instead of silently rewriting the column: an unaudited status write is
+ * how a waiting+REVIEW card kept reappearing as in_progress with nothing in kanban_card_events to
+ * show for it (card c4f2de32).
+ *
+ * Returns false and changes NOTHING when the status change is blocked by
+ * {@link reviewedCardBlocksInProgress} -- pass `force` for the rare deliberate override.
+ */
+export function updateKanbanCard(
+  id: string,
+  fields: Partial<Omit<KanbanCard, 'id' | 'created_at'>>,
+  opts?: { actor?: string; force?: boolean }
+): boolean {
   const card = getKanbanCard(id)
   if (!card) return false
+  const statusChanges = fields.status !== undefined && fields.status !== card.status
+  if (statusChanges && !opts?.force && reviewedCardBlocksInProgress(id, fields.status as string)) {
+    return false
+  }
   const now = Math.floor(Date.now() / 1000)
   const f = { ...card, ...fields, updated_at: now }
-  return db.prepare(
+  const changed = db.prepare(
     `UPDATE kanban_cards SET title=?, description=?, status=?, assignee=?, priority=?, project=?, parent_id=?, due_date=?, sort_order=?, updated_at=?, archived_at=?
      WHERE id=?`
   ).run(f.title, f.description, f.status, f.assignee, f.priority, f.project, f.parent_id, f.due_date, f.sort_order, f.updated_at, f.archived_at, id).changes > 0
+  if (changed && statusChanges) {
+    db.prepare(
+      'INSERT INTO kanban_card_events (card_id, from_status, to_status, actor, created_at) VALUES (?, ?, ?, ?, ?)'
+    ).run(id, card.status, f.status, opts?.actor ?? null, now)
+  }
+  return changed
 }
 
 export function getChildCards(parentId: string): KanbanCard[] {
   return db.prepare('SELECT * FROM kanban_cards WHERE parent_id = ? AND archived_at IS NULL ORDER BY sort_order ASC').all(parentId) as KanbanCard[]
 }
 
-export function moveKanbanCard(id: string, status: KanbanCard['status'], sortOrder: number, actor?: string): boolean {
+export function moveKanbanCard(id: string, status: KanbanCard['status'], sortOrder: number, actor?: string, force?: boolean): boolean {
   const now = Math.floor(Date.now() / 1000)
+  // Card c4f2de32: a card waiting on an unanswered REVIEW is finished work, not stalled work --
+  // pulling it back to in_progress is what made other agents rebuild it. A gate FAIL leaves a
+  // verdict comment and is allowed through; `force` covers a deliberate human override.
+  if (!force && reviewedCardBlocksInProgress(id, status)) return false
   // Read the previous status first so we only record an audit event on a real
   // status transition (not a pure sort_order reorder within the same column).
   const prev = (db.prepare('SELECT status FROM kanban_cards WHERE id=?').get(id) as { status: string } | undefined)?.status
