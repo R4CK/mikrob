@@ -53,6 +53,18 @@
 #   env-doc         config/.env sample -> markdown env-var table (names only, no secret values)
 #   mermaid         described flow/arch -> a valid mermaid diagram
 #   bugfix-draft    failing code + repro -> minimal fix draft; DRAFT, needs repro-test + gate
+#   json-transform  JSON + described transform -> resulting JSON
+#   schema-validator type/shape -> runtime validator (zod / JSON Schema)
+#   sample-data     schema + count -> realistic sample rows for tests/seeds (no real PII)
+#   a11y-check      markup -> first-pass WCAG AA findings (QA gate decides)
+#   responsive-check CSS/markup -> first-pass responsive findings (rule 13; QA gate decides)
+#   release-notes   changelog/commits -> user-facing release notes
+#   yaml-config     described pipeline -> valid YAML (CI/compose/k8s)
+#   dockerfile      described stack -> Dockerfile draft (no baked secrets)
+#   shell-script    described task -> bash script draft (safe defaults)
+#   naming          code -> naming suggestions (only where genuinely unclear)
+#   action-items    notes/transcript -> markdown action-item checklist
+#   cron-expr       plain-language schedule -> cron expression + human read-back
 # These offload work that today burns online Claude tokens; drafts are draft-only
 # (label local-llm-draft) and re-checked by MikroB + gate before shipping.
 #
