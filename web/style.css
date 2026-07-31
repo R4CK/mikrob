@@ -4561,6 +4561,61 @@ main.kanban-active { max-width: none; padding-left: 16px; padding-right: 16px; }
   gap: 8px;
   margin-top: 2px;
 }
+/* Hover/tap info tooltip on each repo card (Peti 2026-07-31). */
+.repo-card-header { position: relative; padding-right: 30px; }
+.repo-card-info {
+  position: absolute;
+  top: -8px;
+  right: -8px;
+  width: 44px;               /* rule 13: >=44px touch target (icon centred, hit area transparent) */
+  height: 44px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  color: var(--text-muted);
+  cursor: help;
+  border-radius: 50%;
+  background: transparent;
+  transition: color var(--transition), background var(--transition);
+}
+.repo-card-info:hover,
+.repo-card-info:focus-visible {
+  color: var(--accent);
+  background: var(--accent-soft, rgba(99, 102, 241, 0.1));
+  outline: none;
+}
+.repo-card-tooltip {
+  position: absolute;
+  top: 40px;
+  right: 0;
+  z-index: 30;
+  width: min(300px, 78vw);
+  padding: 10px 12px;
+  background: var(--bg-card);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  box-shadow: var(--shadow, 0 8px 24px rgba(0, 0, 0, 0.18));
+  font-size: 13px;
+  line-height: 1.45;
+  color: var(--text);
+  text-align: left;
+  white-space: normal;
+  opacity: 0;
+  visibility: hidden;
+  transform: translateY(-4px);
+  transition: opacity var(--transition), transform var(--transition), visibility var(--transition);
+  pointer-events: none;
+}
+.repo-card-info:hover .repo-card-tooltip,
+.repo-card-info:focus .repo-card-tooltip,
+.repo-card-info:focus-within .repo-card-tooltip {
+  opacity: 1;
+  visibility: visible;
+  transform: none;
+  pointer-events: auto;
+}
+.repo-card-tooltip .tt-desc { display: block; margin-bottom: 6px; }
+.repo-card-tooltip .tt-how { display: block; color: var(--text-muted); font-size: 12px; }
 .repos-empty {
   text-align: center;
   padding: 48px 20px;

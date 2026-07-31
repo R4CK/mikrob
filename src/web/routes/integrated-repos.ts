@@ -62,6 +62,8 @@ export interface IntegratedRepoConfig {
   adoption?: string
   /** For pipx/version adoptions: the pinned package version actually installed. */
   pinned_version?: string
+  /** Human-readable one-liner: what the repo is / what it helps solve. Surfaced in the UI tooltip. */
+  description?: string
   note?: string
 }
 
@@ -90,6 +92,8 @@ export interface IntegratedRepoStatus {
   adoption: string
   /** For pipx/version adoptions: the pinned package version installed. */
   pinnedVersion: string | null
+  /** Human one-liner (what it is / what it solves) for the UI hover tooltip. */
+  description: string
   /** True when the repo is actually INSTALLED: a git checkout exists, OR it is a
    *  version/pipx adoption with a recorded pinned version. A pipx adoption legitimately has
    *  cloned=false yet IS installed -- so `cloned` alone must not read as "not installed". */
@@ -165,6 +169,7 @@ export function statusForRepo(cfg: IntegratedRepoConfig): IntegratedRepoStatus {
     cloned: false,
     adoption: String(cfg.adoption || ''),
     pinnedVersion: cfg.pinned_version ? String(cfg.pinned_version) : null,
+    description: String(cfg.description || cfg.note || ''),
     installed: false,
     vendoredSha: null,
     vendoredShort: null,

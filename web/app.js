@@ -8403,7 +8403,23 @@ function renderReposGrid(repos) {
     const date = r.installedAt ? new Date(r.installedAt).toLocaleDateString(dateLocale) : '—'
     const displayName = escapeHtml((r.name || '').replace('--', '/'))
     const url = escapeHtml(r.url || '')
-    const header = `<div class="repo-card-header"><div class="repo-card-icon"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M9 19c-5 1.5-5-2.5-7-3m14 6v-3.87a3.37 3.37 0 0 0-.94-2.61c3.14-.35 6.44-1.54 6.44-7A5.44 5.44 0 0 0 20 4.77 5.07 5.07 0 0 0 19.91 1S18.73.65 16 2.48a13.38 13.38 0 0 0-7 0C6.27.65 5.09 1 5.09 1A5.07 5.07 0 0 0 5 4.77a5.44 5.44 0 0 0-1.5 3.78c0 5.42 3.3 6.61 6.44 7A3.37 3.37 0 0 0 9 18.13V22"/></svg></div><div class="repo-card-title"><div class="repo-card-name">${displayName}</div><a class="repo-card-source" href="${url}" target="_blank" rel="noopener noreferrer">${url}</a></div></div>`
+    // Hover/tap info tooltip (Peti 2026-07-31): what the repo is / what it solves + how it is
+    // integrated. Shown on hover (desktop) AND focus/tap (mobile+keyboard, rule 13 touch-friendly).
+    const descText = escapeHtml(r.description || '')
+    let integ
+    if (r.adopted) {
+      if (r.adoption === 'pipx') integ = `pipx${r.pinnedVersion ? ' · v' + escapeHtml(r.pinnedVersion) : ''}`
+      else if (r.adoption === 'rules-folded') integ = 'CLAUDE.md (' + t('repos.integ.folded') + ')'
+      else integ = t('repos.integ.vendored') // vendored clone, daily sync, outside repo
+    } else {
+      integ = t('repos.integ.manual') // added from the dashboard
+    }
+    const kindTxt = r.kind ? ' · ' + escapeHtml(r.kind) : ''
+    const instTxt = r.installed !== false ? ' · ✓ ' + escapeHtml(t('repos.installed')) : ''
+    const tooltip = descText || integ
+      ? `<div class="repo-card-info" tabindex="0" role="button" aria-label="${escapeHtml(t('repos.tooltip.aria'))}"><svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="10"/><line x1="12" y1="16" x2="12" y2="12"/><line x1="12" y1="8" x2="12.01" y2="8"/></svg><span class="repo-card-tooltip" role="tooltip">${descText ? `<span class="tt-desc">${descText}</span>` : ''}<span class="tt-how"><strong>${escapeHtml(t('repos.tooltip.how'))}:</strong> ${integ}${kindTxt}${instTxt}</span></span></div>`
+      : ''
+    const header = `<div class="repo-card-header"><div class="repo-card-icon"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M9 19c-5 1.5-5-2.5-7-3m14 6v-3.87a3.37 3.37 0 0 0-.94-2.61c3.14-.35 6.44-1.54 6.44-7A5.44 5.44 0 0 0 20 4.77 5.07 5.07 0 0 0 19.91 1S18.73.65 16 2.48a13.38 13.38 0 0 0-7 0C6.27.65 5.09 1 5.09 1A5.07 5.07 0 0 0 5 4.77a5.44 5.44 0 0 0-1.5 3.78c0 5.42 3.3 6.61 6.44 7A3.37 3.37 0 0 0 9 18.13V22"/></svg></div><div class="repo-card-title"><div class="repo-card-name">${displayName}</div><a class="repo-card-source" href="${url}" target="_blank" rel="noopener noreferrer">${url}</a></div>${tooltip}</div>`
     if (r.adopted) {
       // Adopted (vendored skill / pipx tool or MCP) -- managed outside the dashboard, so it is
       // READ-ONLY here: a kind badge instead of update/delete. `kind` (skill/mcp/external) is a
