@@ -317,7 +317,7 @@ function startPull(model: string): PullJob {
 // Pure fs read + JS parse; NO shell interpolation. Reads only the tail of the
 // (append-only, unbounded) ledger so a large file can never blow up the heap.
 
-interface UsageRow { ts: number; caller: string; task: string; model: string; ms: number; status: string; source: string }
+export interface UsageRow { ts: number; caller: string; task: string; model: string; ms: number; status: string; source: string }
 
 // Read at most `maxLines` from the END of the ledger, bounded to `maxBytes` of
 // tail so we never load a giant file. Returns [] on a missing/unreadable file.
@@ -386,13 +386,19 @@ function lastDays(n: number, nowSec: number): string[] {
   return out
 }
 
-// A row is a REAL fleet invocation only when it came from a fleet script
-// (source bare|rag) and is not a dashboard quick-test probe (caller ui-test /
-// source ui). UI probes are counted separately so they never inflate the metric.
-function isRealCall(r: UsageRow): boolean {
-  // source bare|rag already excludes UI probes (source "ui"); also drop the
-  // ui-test caller tag defensively in case a probe ever lands with bare/rag.
-  return (r.source === 'bare' || r.source === 'rag') && r.caller !== 'ui-test'
+// A row is a REAL fleet invocation unless it is a dashboard quick-test probe
+// (caller ui-test / source ui). UI probes are counted separately so they never
+// inflate the metric.
+//
+// Was a `source === 'bare' || 'rag'` allowlist, which silently miscounted
+// every dispatch-time offload call (source 'dispatch-offload', introduced by
+// offload-dispatch.sh) as a UI probe -- 83 real local-LLM invocations were
+// invisible in `today`/`total`/`last_7d` and lumped into `ui_probes`, making
+// utilization look near-zero when it wasn't. caller !== 'ui-test' is the only
+// signal that actually identifies a probe; any current or future real source
+// tag must count.
+export function isRealCall(r: UsageRow): boolean {
+  return r.caller !== 'ui-test'
 }
 
 function buildUsage() {
