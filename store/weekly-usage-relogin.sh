@@ -9,13 +9,24 @@
 # (paste step: this script with `--paste <code>`).
 #
 # USAGE:
-#   weekly-usage-relogin.sh              # start /login, print the OAuth URL (for MikroB->Peti)
-#   weekly-usage-relogin.sh --paste CODE # paste the code Peti returned into the panel
+#   weekly-usage-relogin.sh                    # start /login, print the OAuth URL (MikroB->Peti)
+#   printf %s "$CODE" | weekly-usage-relogin.sh --paste        # code on STDIN  (preferred)
+#   weekly-usage-relogin.sh --paste-file /path/to/code         # code from a 0600 file
+#
+# THE CODE NEVER GOES ON THE COMMAND LINE (card e5411be1, Cybersec finding on a91c6039). argv is
+# world-readable via /proc/<pid>/cmdline for the life of the process, and a shell also records it in
+# history -- so `--paste <code>` briefly published a live one-time OAuth code to every local user.
+# It is LOW severity (single-use code, short TTL, rare manual step), but the fix is cheap and the
+# class is the same as the token-in-argv finding c9ce4254, so it is closed for consistency.
 #
 # Idempotent-ish: if the panel is already Max-authed, `--check` reports OK and does nothing.
 set -uo pipefail
 
-PANE="mikrob-usage-probe"
+# Overridable so a test can NEVER address the live probe pane. Learned the hard way: a test that
+# exercised the code-intake path found the real `mikrob-usage-probe` session alive and pasted its
+# fixture text into Peti's logged-in Claude session. Harmless here, but a test must not be able to
+# reach production state by default.
+PANE="${USAGE_PROBE_PANE:-mikrob-usage-probe}"
 MODE="${1:-start}"
 
 # ISOLATED credential store (frequent-logout root cause, 2026-07-30): the probe is an
@@ -50,9 +61,36 @@ case "$MODE" in
       echo "RELOGIN-NEEDED: panel not Max-authed."; exit 8
     fi
     ;;
-  --paste)
-    CODE="${2:-}"
-    [ -n "$CODE" ] || { echo "FAIL: --paste needs the code" >&2; exit 2; }
+  --paste|--paste-file)
+    # Read the code WITHOUT ever placing it in argv.
+    #   --paste            -> stdin (the caller pipes it; nothing lands on a command line at all)
+    #   --paste-file PATH  -> a file that MUST be 0600 and owned by us; anything looser is refused
+    #                         rather than read, because a world-readable code file is the same leak
+    #                         in a different place.
+    if [ "$MODE" = "--paste-file" ]; then
+      CODE_FILE="${2:-}"
+      [ -n "$CODE_FILE" ] || { echo "FAIL: --paste-file needs a path" >&2; exit 2; }
+      [ -f "$CODE_FILE" ] || { echo "FAIL: no such file: $CODE_FILE" >&2; exit 2; }
+      PERM=$(stat -c '%a' "$CODE_FILE" 2>/dev/null || stat -f '%Lp' "$CODE_FILE" 2>/dev/null || echo '?')
+      if [ "$PERM" != "600" ]; then
+        echo "FAIL: $CODE_FILE must be mode 0600 (is $PERM) -- refusing to read a loosely-permissioned code file" >&2
+        exit 2
+      fi
+      CODE=$(cat "$CODE_FILE")
+    else
+      # Refuse an argv code outright instead of silently accepting it: a caller still using the old
+      # `--paste <code>` form must be told, not quietly kept on the leaking path.
+      if [ -n "${2:-}" ]; then
+        echo "FAIL: the code must NOT be passed as an argument (it leaks via /proc/<pid>/cmdline)." >&2
+        echo "      Use:  printf %s \"\$CODE\" | $0 --paste     (or --paste-file <0600-file>)" >&2
+        exit 2
+      fi
+      [ ! -t 0 ] || { echo "FAIL: --paste reads the code from STDIN; pipe it in." >&2; exit 2; }
+      CODE=$(cat)
+    fi
+    # Strip a trailing newline/CR that a pipe or editor adds; the panel expects the bare code.
+    CODE=$(printf %s "$CODE" | tr -d '\r\n')
+    [ -n "$CODE" ] || { echo "FAIL: empty code" >&2; exit 2; }
     tmux has-session -t "$PANE" 2>/dev/null || { echo "FAIL: panel gone" >&2; exit 1; }
     tmux send-keys -t "$PANE" "$CODE" 2>/dev/null; sleep 1
     tmux send-keys -t "$PANE" Enter 2>/dev/null; sleep 8
@@ -105,5 +143,5 @@ print(url)
     exit 1
     ;;
   *)
-    echo "usage: $0 [start|--check|--paste CODE]" >&2; exit 2 ;;
+    echo "usage: $0 [start|--check|--paste (code on stdin)|--paste-file <0600-file>]" >&2; exit 2 ;;
 esac
