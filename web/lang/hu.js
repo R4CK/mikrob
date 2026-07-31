@@ -71,8 +71,6 @@ window._i18n.hu = {
   'overview.quota.threshold.newDevStop': 'Új fejlesztés leáll',
   'overview.quota.threshold.testStop':   'Tesztelés/ellenőrzés is leáll',
   'overview.quota.threshold.hint':  'Az "Új fejlesztés leáll" csak az új munkát blokkolja; a "Tesztelés/ellenőrzés is leáll" a QA/Cybersec/Cybered gate-munkát is leállítja, a szerep-ügynökök parkolva.',
-  'overview.quota.threshold.pendingBackend': 'A mentés egyelőre nem elérhető -- a backend még nem támogatja ezt a két-értékű formátumot (kártya d08b98f4).',
-  'overview.quota.threshold.previewBadge': 'Előnézeti érték -- nem a futó konfiguráció',
   'overview.quota.threshold.save':  'Mentés',
   'overview.quota.threshold.saved': 'Mentve.',
   'overview.quota.threshold.warn100': 'A 100% teljesen kikapcsolja ennek a küszöbnek a heti-limit védelmét -- a flotta emiatt a jelzés miatt soha nem fog megállni az új fejlesztéssel.',

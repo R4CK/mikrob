@@ -311,29 +311,15 @@
 
         <!-- Editable weekly thresholds (card e7a26045, paired to backend d08b98f4). Redesigned
              from 3 day-dependent sliders to 2 flat, day-independent levels: new-dev-stop and
-             test/gate-stop. Backend endpoint for this 2-field shape does not exist yet (d08b98f4
-             still planned) -- Save stays disabled with an honest "waiting for backend" note per
-             rule 12, same pattern as the AssetMaintenancePage/OfferDetailDrawer fixes this
-             session. Do NOT wire this to the old 3-field /api/costs/weekly-thresholds endpoint;
-             the field meaning changed (day-independent, not >3d/<2d/<1d), a temporary mapping
-             would be actively misleading. -->
+             test/gate-stop. Backend now ships the real 2-field endpoint (commit 5a15de8, card
+             4da9ae0b) -- loaded/saved via /api/costs/weekly-thresholds, the SAME file
+             store/pre-dispatch-check.sh reads. -->
         <div class="usage-threshold-section">
           <button type="button" class="usage-threshold-toggle" id="thresholdToggle" aria-expanded="false" aria-controls="thresholdBody">
             <span class="usage-threshold-toggle-arrow">▶</span>
             <span data-i18n="overview.quota.threshold.toggle">Kuszobok szerkesztese</span>
           </button>
           <div class="usage-threshold-body" id="thresholdBody" hidden>
-            <!-- Card c5623274 (Cybersec): the sliders show static 90/97 preview values,
-                 while the LIVE gate (pre-dispatch-check.sh) still enforces the old 3-field
-                 90/92/95 config from weekly-threshold-config.json -- a hover-only tooltip on
-                 the disabled Save button wasn't a visible-enough disclosure (invisible on
-                 touch, answers "why can't I save" not "what's actually running"). Visible
-                 badge instead, same pattern as the AssetMaintenancePage DEMO badge. Remove
-                 once d08b98f4 ships and these sliders are wired to the real live config. -->
-            <div class="usage-threshold-preview-badge" id="thresholdPreviewBadge" role="status">
-              <span aria-hidden="true">&#9888;</span>
-              <span data-i18n="overview.quota.threshold.previewBadge">Elonezeti ertek -- nem a futo konfiguracio</span>
-            </div>
             <div class="usage-threshold-row">
               <label for="thrNewDevStop" data-i18n="overview.quota.threshold.newDevStop">Uj fejlesztes leall</label>
               <input type="range" id="thrNewDevStop" min="1" max="100" step="1" value="90">
@@ -349,11 +335,8 @@
             <p class="usage-threshold-hint" id="thresholdHint" data-i18n="overview.quota.threshold.hint">
               Az "Uj fejlesztes leall" kuszobnel csak uj munka nem indul, a "Teszteles/ellenorzes is leall" kuszobnel mar a QA/Cybersec/Cybered gate-munka is leall, a szerep-agensek parkolva.
             </p>
-            <p class="usage-threshold-pending" id="thresholdPendingNote" data-i18n="overview.quota.threshold.pendingBackend">
-              A mentes egyelore nem elerheto -- a backend meg nem tamogatja ezt a ket-erteku formatumot (kartya d08b98f4).
-            </p>
             <div class="usage-threshold-actions">
-              <button type="button" class="btn-primary btn-compact" id="thresholdSaveBtn" data-i18n="overview.quota.threshold.save" disabled title="" data-i18n-title="overview.quota.threshold.pendingBackend">Mentes</button>
+              <button type="button" class="btn-primary btn-compact" id="thresholdSaveBtn" data-i18n="overview.quota.threshold.save" disabled>Mentes</button>
               <span class="usage-threshold-status" id="thresholdStatus" hidden></span>
             </div>
           </div>

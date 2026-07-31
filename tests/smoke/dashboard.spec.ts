@@ -117,14 +117,15 @@ test.describe('Dashboard smoke', () => {
 
   // Card f3248478: Claude Limit panel tooltip + editable weekly-threshold sliders.
   // Overview is the default landing page, so no hash navigation needed. Proves the
-  // sliders (card e7a26045: redesigned to 2 flat, day-independent levels) and the help
-  // modal opens/closes without error. Save stays disabled -- the backend 2-field
-  // endpoint (card d08b98f4) doesn't exist yet, this only verifies the layout.
-  test('quota threshold panel shows 2 sliders and help modal toggles', async ({ page }) => {
+  // sliders (card e7a26045: redesigned to 2 flat, day-independent levels) load real
+  // data and Save is enabled once it does (card 4da9ae0b: the backend 2-field endpoint
+  // now exists, commit 5a15de8) -- and the help modal opens/closes without error.
+  // /api/overview can take several seconds to respond under fleet load, so this uses a
+  // generous expect timeout rather than a fixed sleep.
+  test('quota threshold panel loads live values and help modal toggles', async ({ page }) => {
     const errors: string[] = []
     page.on('pageerror', (err) => errors.push(err.message))
     await page.goto(`/?token=${TOKEN}`)
-    await page.waitForTimeout(500)
 
     const toggle = page.locator('#thresholdToggle')
     await expect(toggle).toBeVisible()
@@ -134,7 +135,7 @@ test.describe('Dashboard smoke', () => {
     await expect(page.locator('#thrNewDevStop')).toHaveValue(/^\d+$/)
     await expect(page.locator('#thrNewDevStopVal')).toHaveText(/%$/)
     await expect(page.locator('#thrTestStop')).toHaveValue(/^\d+$/)
-    await expect(page.locator('#thresholdSaveBtn')).toBeDisabled()
+    await expect(page.locator('#thresholdSaveBtn')).toBeEnabled({ timeout: 20_000 })
 
     const helpBtn = page.locator('#quotaHelpBtn')
     await expect(helpBtn).toBeVisible()
@@ -153,7 +154,6 @@ test.describe('Dashboard smoke', () => {
     const errors: string[] = []
     page.on('pageerror', (err) => errors.push(err.message))
     await page.goto(`/?token=${TOKEN}`)
-    await page.waitForTimeout(500)
     await page.locator('#thresholdToggle').click()
     await expect(page.locator('#thresholdBody')).toBeVisible()
 
@@ -177,18 +177,19 @@ test.describe('Dashboard smoke', () => {
     expect(errors).toHaveLength(0)
   })
 
-  // Card e7a26045: the local-LLM info row replaces the removed 3rd slider. today/week
-  // counts are real; model/tokens-saved are honest placeholders until the backend
-  // (card d08b98f4) ships those fields.
-  test('local-LLM info row loads and its help modal toggles', async ({ page }) => {
+  // Card e7a26045: the local-LLM info row replaces the removed 3rd slider. Card
+  // 4da9ae0b: model name and measured tokens-saved are now real too (backend commit
+  // 5a15de8), not honest placeholders.
+  test('local-LLM info row loads real data and its help modal toggles', async ({ page }) => {
     const errors: string[] = []
     page.on('pageerror', (err) => errors.push(err.message))
     await page.goto(`/?token=${TOKEN}`)
-    await page.waitForTimeout(500)
 
     await expect(page.locator('#usageLlmInfo')).toBeVisible()
-    await expect(page.locator('#llmInfoToday')).toHaveText(/\d/)
-    await expect(page.locator('#llmInfoWeek')).toHaveText(/\d/)
+    await expect(page.locator('#llmInfoToday')).toHaveText(/\d/, { timeout: 20_000 })
+    await expect(page.locator('#llmInfoWeek')).toHaveText(/\d/, { timeout: 20_000 })
+    await expect(page.locator('#llmInfoModel')).not.toHaveText('—', { timeout: 20_000 })
+    await expect(page.locator('#llmInfoTokensSaved')).toHaveText(/\d/, { timeout: 20_000 })
 
     const llmHelpBtn = page.locator('#llmInfoHelpBtn')
     await expect(llmHelpBtn).toBeVisible()

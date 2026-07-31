@@ -71,8 +71,6 @@ window._i18n.en = {
   'overview.quota.threshold.newDevStop': 'New dev stops',
   'overview.quota.threshold.testStop':   'Testing/review also stops',
   'overview.quota.threshold.hint':  '"New dev stops" only blocks new work; "Testing/review also stops" also halts QA/Cybersec/Cybered gate work, with role-agents parked.',
-  'overview.quota.threshold.pendingBackend': 'Saving isn\'t available yet -- the backend doesn\'t support this two-value format yet (card d08b98f4).',
-  'overview.quota.threshold.previewBadge': 'Preview value -- not the live config',
   'overview.quota.threshold.save':  'Save',
   'overview.quota.threshold.saved': 'Saved.',
   'overview.quota.threshold.warn100': '100% disables the weekly-limit protection for this threshold entirely -- the fleet will never stop new dev on this signal.',

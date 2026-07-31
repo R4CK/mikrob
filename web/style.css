@@ -817,25 +817,6 @@ main {
 .usage-threshold-status[hidden] { display: none; }
 .usage-threshold-status.success { color: var(--success); }
 .usage-threshold-status.error { color: var(--danger); }
-.usage-threshold-pending {
-  font-size: 11px;
-  color: var(--text-muted);
-  font-style: italic;
-  margin: 0 0 10px;
-}
-.usage-threshold-preview-badge {
-  display: flex;
-  align-items: center;
-  gap: 6px;
-  font-size: 11px;
-  font-weight: 600;
-  color: #fbbf24;
-  background: rgba(245, 158, 11, 0.12);
-  border: 1px solid rgba(245, 158, 11, 0.3);
-  border-radius: 6px;
-  padding: 6px 10px;
-  margin: 0 0 10px;
-}
 
 /* Row 3: local-LLM info display (card e7a26045) */
 .usage-llm-info {

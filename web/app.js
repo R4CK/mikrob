@@ -12395,6 +12395,7 @@ async function loadOverview() {
     // upstream base. The action navigates to the existing Frissítések (updates) page.
     // Claude usage info widget (card a91c6039 redesign): load auto-sourced data.
     void loadWeeklyGauge()
+    void loadWeeklyThresholds()
     void loadLocalLlmInfo()
     const banner = document.getElementById('updateBanner')
     if (banner) {
@@ -12547,10 +12548,36 @@ function updateThresholdWarn(id, value) {
   if (val) val.classList.toggle('usage-threshold-val--warn', isMax)
 }
 
-// Local-LLM info row (card e7a26045, replaces the removed 3rd slider). today/week counts
-// are real (existing /api/local-llm/usage today/last_7d fields); model + tokens-saved
-// await the backend d08b98f4 API additions -- shown as an honest per-field placeholder
-// rather than invented (rule 12).
+// GET the editable weekly-threshold config and populate the 2-slider UI (cards e7a26045,
+// 4da9ae0b). Fetched every time the gauge loads, so the sliders never show a stale value
+// after another session/tab edits them.
+async function loadWeeklyThresholds() {
+  try {
+    const res = await fetch('/api/costs/weekly-thresholds')
+    if (!res.ok) throw new Error('HTTP ' + res.status)
+    const cfg = await res.json()
+    const map = { thrNewDevStop: cfg.newDevStop, thrTestStop: cfg.testStop }
+    for (const [id, val] of Object.entries(map)) {
+      const input = document.getElementById(id)
+      const label = document.getElementById(id + 'Val')
+      if (input) input.value = val
+      if (label) label.textContent = val + '%'
+      updateThresholdWarn(id, val)
+    }
+    // The sliders start disabled (HTML) so a save can never fire against the browser's raw
+    // default range position before this fetch resolves -- only enable once real config is
+    // actually in the DOM.
+    const saveBtn = document.getElementById('thresholdSaveBtn')
+    if (saveBtn) saveBtn.disabled = false
+  } catch {
+    // Keep the built-in defaults (already in the HTML value= attributes). Save stays
+    // disabled (fail-closed): saving unknown default values would be worse than not saving.
+  }
+}
+
+// Local-LLM info row (card e7a26045, replaces the removed 3rd slider). All fields are real
+// -- today/week counts, model name, and measured (not estimated) tokens-saved -- from the
+// backend's d08b98f4 API additions to /api/local-llm/usage.
 async function loadLocalLlmInfo() {
   const errEl = document.getElementById('llmInfoError')
   const modelEl = document.getElementById('llmInfoModel')
@@ -12621,10 +12648,10 @@ async function loadLocalLlmInfo() {
     })
   }
 
-  // Card e7a26045: redesigned from 3 day-dependent sliders to 2 flat, day-independent
-  // levels (newDevStop <= testStop). Save stays permanently disabled (see HTML comment)
-  // until the backend ships the 2-field endpoint (card d08b98f4) -- this cascade only
-  // previews the intended interaction, it does not persist anything yet.
+  // Card e7a26045 (+ d53c1e00's class of bug): redesigned from 3 day-dependent sliders to
+  // 2 flat, day-independent levels (newDevStop <= testStop). Cascade the other slider on
+  // drag so the pair can never be expressed out of order in the UI; the backend still
+  // re-validates on save (defense in depth).
   const sliderIds = ['thrNewDevStop', 'thrTestStop']
   function enforceMonotonicSliders(changedId) {
     const els = {
@@ -12650,6 +12677,45 @@ async function loadLocalLlmInfo() {
       input.addEventListener('input', () => enforceMonotonicSliders(id))
       updateThresholdWarn(id, input.value)
     }
+  }
+
+  const saveBtn = document.getElementById('thresholdSaveBtn')
+  const statusEl = document.getElementById('thresholdStatus')
+  // "Mentve." auto-dismisses after a few seconds so it reads as a transient toast, not a
+  // permanent label sitting next to a still-active button (card bb5603cc); an error stays
+  // until the user acts (rule 12).
+  let statusHideTimer = null
+  if (saveBtn) {
+    saveBtn.addEventListener('click', async () => {
+      const newDevStop = Number(document.getElementById('thrNewDevStop')?.value)
+      const testStop = Number(document.getElementById('thrTestStop')?.value)
+      saveBtn.disabled = true
+      if (statusHideTimer) { clearTimeout(statusHideTimer); statusHideTimer = null }
+      if (statusEl) { statusEl.hidden = true; statusEl.classList.remove('success', 'error') }
+      try {
+        const res = await fetch('/api/costs/weekly-thresholds', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ newDevStop, testStop }),
+        })
+        const data = await res.json()
+        if (!res.ok) throw new Error(data.error || ('HTTP ' + res.status))
+        if (statusEl) {
+          statusEl.textContent = t('overview.quota.threshold.saved')
+          statusEl.classList.add('success')
+          statusEl.hidden = false
+          statusHideTimer = setTimeout(() => { statusEl.hidden = true }, 3000)
+        }
+      } catch (err) {
+        if (statusEl) {
+          statusEl.textContent = String(err.message || err)
+          statusEl.classList.add('error')
+          statusEl.hidden = false
+        }
+      } finally {
+        saveBtn.disabled = false
+      }
+    })
   }
 })()
 
