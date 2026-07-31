@@ -55,7 +55,9 @@ def is_gate_review(cm):
              (b) content starts with REVIEW or contains 'REVIEW:' early -- avoids
                  Cybersec NOTEs that mention 'REVIEW' in passing mid-sentence."""
     author = (cm.get('author') or '').lower().strip()
-    if author in ('mikrob', 'qa', 'qa2'): return False
+    # 'local-llm' = a local-model DRAFT, never a gate request (card 3307b428): the offload
+    # script signs drafts with their own author instead of the orchestrator's name.
+    if author in ('mikrob', 'qa', 'qa2', 'local-llm'): return False
     content = (cm.get('content') or '').strip()
     first_line = content.split('\n')[0].upper()
     # Structural: starts with REVIEW, or first 60 chars contain 'REVIEW:'

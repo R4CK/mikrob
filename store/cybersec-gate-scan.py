@@ -27,6 +27,11 @@ def is_review(c):
     author = (c.get('author') or '').lower()
     if author in ('qa', 'qa2'):
         return False
+    # Local-model drafts are not gate requests (card 3307b428). They post under their own author now
+    # (store/offload-dispatch.sh), and the old author='mikrob' used to suppress them here by accident;
+    # deny-list the draft author so that protection is deliberate instead of incidental.
+    if author == 'local-llm':
+        return False
     content = c.get('content') or ''
     first = content.split('\n', 1)[0]
     if first.strip().upper().startswith('REVIEW'):
@@ -66,12 +71,17 @@ def tiered_out(comments):
 def mikrob_marker(c, words):
     """A DIRECTIVE from MikroB (DONE / blocked), not merely a comment bearing his name.
 
-    Dispatch-time local-LLM offload posts 7B free text to the card with
-    author='mikrob' (store/offload-dispatch.sh), so an unfiltered author check reads
+    Dispatch-time local-LLM offload USED TO post 7B free text to the card with
+    author='mikrob' (store/offload-dispatch.sh), so an unfiltered author check read
     model output as an orchestrator decision. Measured 2026-07-31: 27 such drafts, 8
     carrying one of these words, 1 of them posted AFTER a REVIEW -- i.e. the ordering
-    that silently drops a card from this sweep is reachable, not theoretical.
-    Drafts are excluded here; the real fix is a distinct author on the offload side.
+    that silently drops a card from this sweep was reachable, not theoretical.
+
+    Fixed at the source by card 3307b428: new drafts are signed 'local-llm', so they
+    never reach the author=='mikrob' branch at all. The content check below STAYS --
+    those 27 historical drafts are still in the database under the orchestrator's name
+    and would still be misread without it. Removing it would re-open the bug for the
+    existing rows.
     """
     if (c.get('author') or '').lower() != 'mikrob':
         return False
