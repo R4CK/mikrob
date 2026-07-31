@@ -10,53 +10,11 @@ import { readAgentTeam } from '../agent-team.js'
 import { isAgentRunning } from '../agent-process.js'
 import { json, jsonMaybeGzip } from '../http-helpers.js'
 import { getUpdateStatus, type AggregateUpdateStatus } from '../update-checker.js'
+import { refreshUserTurnIndex, turnsOnDay } from '../user-turn-index.js'
 import type { RouteContext } from './types.js'
 
-// Count "real" user turns (operator prompts, Telegram messages) in every
-// Claude Code session JSONL under ~/.claude/projects/. Filters out
-// tool_result, local-command, and synthetic system events so a task-heavy
-// hour doesn't inflate the counter.
-function countUserTurns(fromMs: number, toMs: number = Number.POSITIVE_INFINITY): number {
-  const root = join(homedir(), '.claude', 'projects')
-  if (!existsSync(root)) return 0
-  let total = 0
-  try {
-    for (const projectDir of readdirSync(root)) {
-      const absDir = join(root, projectDir)
-      let stat: ReturnType<typeof statSync>
-      try { stat = statSync(absDir) } catch { continue }
-      if (!stat.isDirectory()) continue
-      for (const fname of readdirSync(absDir)) {
-        if (!fname.endsWith('.jsonl')) continue
-        const absFile = join(absDir, fname)
-        let fstat: ReturnType<typeof statSync>
-        try { fstat = statSync(absFile) } catch { continue }
-        if (fstat.mtimeMs < fromMs) continue
-        try {
-          const data = readFileSync(absFile, 'utf-8')
-          for (const line of data.split('\n')) {
-            if (!line) continue
-            let e: any
-            try { e = JSON.parse(line) } catch { continue }
-            if (e.type !== 'user' || e.isMeta) continue
-            const ts = e.timestamp ? Date.parse(e.timestamp) : 0
-            if (!ts || ts < fromMs || ts >= toMs) continue
-            const content = e.message?.content
-            if (typeof content === 'string') {
-              if (content.startsWith('<local-command') || content.startsWith('<command-name>')) continue
-              total++
-            } else if (Array.isArray(content)) {
-              const hasToolResult = content.some((b: any) => b && b.type === 'tool_result')
-              if (hasToolResult) continue
-              total++
-            }
-          }
-        } catch { /* skip unreadable file */ }
-      }
-    }
-  } catch { /* ignore */ }
-  return total
-}
+// The per-day user-turn tallies now come from src/web/user-turn-index.ts (card ba0d218f): the inline
+// full-scan counter that used to live here re-read every transcript on every request.
 
 export interface UpstreamUpdateState {
   behind: number
@@ -116,8 +74,14 @@ export async function tryHandleOverview(ctx: RouteContext): Promise<boolean> {
     const yesterday = startTs - 24 * 60 * 60 * 1000
     const schedToday = countTaskRunsBetween(startTs)
     const schedYesterday = countTaskRunsBetween(yesterday, startTs)
-    const userTurns = countUserTurns(startTs)
-    const userTurnsPrev = countUserTurns(yesterday, startTs)
+    // Card ba0d218f: these two numbers used to be computed by re-reading and JSON-parsing every
+    // transcript modified since the window start -- measured at 930 MB + 1.01 GB per request on this
+    // host, which is where ~8 of the ~12 seconds went, and it got worse precisely when the fleet was
+    // busy. The index reads only what has been APPENDED since the last pass (transcripts are
+    // append-only), so an idle-ish minute costs a stat() per file and nothing else.
+    const { days: turnDays } = refreshUserTurnIndex()
+    const userTurns = turnsOnDay(turnDays, startTs)
+    const userTurnsPrev = turnsOnDay(turnDays, yesterday)
     const tasksToday = schedToday + userTurns
     const tasksYesterday = schedYesterday + userTurnsPrev
 

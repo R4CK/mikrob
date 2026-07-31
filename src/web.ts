@@ -17,6 +17,7 @@ import { shouldRegisterHooks, pruneStaleHooksFromSettingsFile } from './web/hook
 import { refreshMarveenBotUsername } from './web/telegram.js'
 import { startMessageRouter } from './web/message-router.js'
 import { startUpdateChecker } from './web/update-checker.js'
+import { refreshUserTurnIndex } from './web/user-turn-index.js'
 import { startScheduleRunner } from './web/schedule-runner.js'
 import { startChannelPluginMonitor } from './web/channel-monitor.js'
 import { startInboundProber } from './web/inbound-probe.js'
@@ -418,6 +419,22 @@ export function startWebServer(port = 3420): http.Server {
 
   const updateCheckerInterval = webOnly ? undefined : startUpdateChecker()
   if (!webOnly) logger.info('Update checker started (15min poll)')
+
+  // Card ba0d218f: build the user-turn index in the BACKGROUND at boot. It is incremental, so only
+  // the very first pass is expensive (measured: ~10s over 1.5 GB of transcripts, once); doing it here
+  // means no operator ever pays for it inside a GET /api/overview request. Fire-and-forget on purpose:
+  // a failure only costs the next request one rebuild, and must never block startup.
+  setTimeout(() => {
+    try {
+      const { stats } = refreshUserTurnIndex()
+      logger.info(
+        { filesSeen: stats.filesSeen, filesRead: stats.filesRead, mb: +(stats.bytesRead / 1048576).toFixed(1) },
+        'User-turn index warmed',
+      )
+    } catch (err) {
+      logger.warn({ err }, 'User-turn index warm-up failed (the next overview request will rebuild it)')
+    }
+  }, 2000).unref()
 
   const federationPollerInterval = webOnly ? undefined : startFederationPoller()
   if (!webOnly) logger.info('Federation manifest poller started (10min poll, 25s offset)')
