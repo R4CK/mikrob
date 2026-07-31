@@ -64,9 +64,21 @@ def tiered_out(comments):
 
 
 def mikrob_marker(c, words):
+    """A DIRECTIVE from MikroB (DONE / blocked), not merely a comment bearing his name.
+
+    Dispatch-time local-LLM offload posts 7B free text to the card with
+    author='mikrob' (store/offload-dispatch.sh), so an unfiltered author check reads
+    model output as an orchestrator decision. Measured 2026-07-31: 27 such drafts, 8
+    carrying one of these words, 1 of them posted AFTER a REVIEW -- i.e. the ordering
+    that silently drops a card from this sweep is reachable, not theoretical.
+    Drafts are excluded here; the real fix is a distinct author on the offload side.
+    """
     if (c.get('author') or '').lower() != 'mikrob':
         return False
-    up = (c.get('content') or '').upper()
+    content = c.get('content') or ''
+    if 'LOCAL-LLM DRAFT' in content:
+        return False
+    up = content.upper()
     return any(w in up for w in words)
 
 
