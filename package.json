@@ -36,15 +36,15 @@
     "vitest": "^2.1.0"
   },
   "overrides": {
-    "hono": ">=4.12.27",
-    "fast-uri": ">=3.1.4",
-    "body-parser": ">=2.2.3"
+    "hono": ">=4.12.27 <5",
+    "fast-uri": ">=3.1.4 <4",
+    "body-parser": ">=2.2.3 <3"
   },
   "pnpm": {
     "overrides": {
-      "hono": ">=4.12.27",
-      "fast-uri": ">=3.1.4",
-      "body-parser": ">=2.2.3"
+      "hono": ">=4.12.27 <5",
+      "fast-uri": ">=3.1.4 <4",
+      "body-parser": ">=2.2.3 <3"
     }
   }
 }
