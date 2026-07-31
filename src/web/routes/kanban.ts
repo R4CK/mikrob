@@ -109,7 +109,15 @@ function fireKanbanDispatch(id: string): void {
  * Blank values are dropped, so `?status=` (empty) means "no filter" rather than "match the empty
  * string" -- a UI that clears its dropdown sends exactly that.
  */
-function filterValues(url: URL, name: string): Set<string> | null {
+/**
+ * Read a repeatable, comma-separable filter parameter (`?status=waiting&status=done`,
+ * `?status=waiting,done`) into a set, or null when the caller did not ask for one.
+ *
+ * EXPORTED so the tests drive THIS function (card bfeadc67): the suite used to carry its own copy
+ * of the logic, which passes happily while the route drifts away from it -- a test that cannot fail
+ * when the code changes is not testing the code.
+ */
+export function filterValues(url: URL, name: string): Set<string> | null {
   const raw = url.searchParams.getAll(name)
   if (raw.length === 0) return null
   const values = raw

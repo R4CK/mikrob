@@ -11,21 +11,17 @@ import { describe, it, expect } from 'vitest'
 import { readFileSync } from 'node:fs'
 import { join, dirname } from 'node:path'
 import { fileURLToPath } from 'node:url'
+import { filterValues } from '../web/routes/kanban.js'
 
 const ROUTE = readFileSync(
   join(dirname(fileURLToPath(import.meta.url)), '..', 'web', 'routes', 'kanban.ts'),
   'utf-8',
 )
 
-/** The same reader the route uses, re-implemented here would be a lie -- so drive the real one. */
-async function filterValues(url: string, name: string): Promise<Set<string> | null> {
-  // The helper is module-private on purpose (it is route plumbing, not an API); exercise it through
-  // the same URL semantics the route sees.
-  const u = new URL(url, 'http://x')
-  const raw = u.searchParams.getAll(name)
-  if (raw.length === 0) return null
-  const values = raw.flatMap((v) => v.split(',')).map((v) => v.trim()).filter((v) => v.length > 0)
-  return values.length === 0 ? null : new Set(values)
+/** Drive the REAL helper (card bfeadc67): the previous local copy meant a route that drifted away
+ *  from it would leave these tests green. Only the URL shaping stays here. */
+function readFilter(url: string, name: string): Set<string> | null {
+  return filterValues(new URL(url, 'http://x'), name)
 }
 
 const CARDS = [
@@ -37,12 +33,33 @@ const CARDS = [
 
 async function apply(query: string) {
   let cards = [...CARDS]
-  const wanted = await filterValues(`/api/kanban${query}`, 'status')
+  const wanted = readFilter(`/api/kanban${query}`, 'status')
   if (wanted !== null) cards = cards.filter((c) => wanted.has(String(c.status)))
-  const assignees = await filterValues(`/api/kanban${query}`, 'assignee')
+  const assignees = readFilter(`/api/kanban${query}`, 'assignee')
   if (assignees !== null) cards = cards.filter((c) => assignees.has(String(c.assignee ?? '')))
   return cards.map((c) => c.id)
 }
+
+describe('the tests drive the REAL helper (card bfeadc67)', () => {
+  it('imports filterValues from the route module, not a local copy', () => {
+    // The point of the card: a re-implemented helper keeps passing while the route drifts. If the
+    // export is ever removed or renamed, this file stops compiling -- which is the intended failure.
+    expect(typeof filterValues).toBe('function')
+    expect(ROUTE).toContain('export function filterValues')
+  })
+
+  it('the imported helper has the semantics the route relies on', () => {
+    expect(filterValues(new URL('http://x/api/kanban'), 'status')).toBeNull()
+    expect(filterValues(new URL('http://x/api/kanban?status='), 'status')).toBeNull()
+    expect([...(filterValues(new URL('http://x/api/kanban?status=a,b'), 'status') ?? [])]).toEqual([
+      'a',
+      'b',
+    ])
+    expect([
+      ...(filterValues(new URL('http://x/api/kanban?status=a&status=b'), 'status') ?? []),
+    ]).toEqual(['a', 'b'])
+  })
+})
 
 describe('the route actually applies the filters', () => {
   it('filters by status', async () => {
