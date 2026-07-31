@@ -21,9 +21,13 @@ async function gateWithPort(port: string | undefined) {
   if (port === undefined) delete process.env['WEB_PORT']
   else process.env['WEB_PORT'] = port
   vi.resetModules()
-  return (await import('../../scripts/hooks/egress-gate.mjs')) as {
-    isEgressBlocked: (t: string, i: { url: string }, r?: unknown) => boolean
-  }
+  // The hook is plain ESM JavaScript with no .d.ts, so TS cannot type the dynamic import; the shape
+  // we rely on is asserted immediately below.
+  // @ts-expect-error -- untyped .mjs hook, intentionally imported for a behavioural test
+  const mod = (await import('../../scripts/hooks/egress-gate.mjs')) as unknown
+  const gate = mod as { isEgressBlocked: (t: string, i: { url: string }, r?: unknown) => boolean }
+  expect(typeof gate.isEgressBlocked).toBe('function')
+  return gate
 }
 const blocked = async (port: string | undefined, url: string) =>
   (await gateWithPort(port)).isEgressBlocked('WebFetch', { url }, NO_RUNTIME_LIST)
