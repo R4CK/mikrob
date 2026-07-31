@@ -62,8 +62,17 @@ esac
 
 [[ -t 0 ]] && die 4 "no input: pipe the tool listing JSON on stdin; see --help"
 
-LEVEL="$LEVEL" PKG="$PKG" node --input-type=module -e '
-const { compressToolListing } = await import(process.env.PKG + "/dist/index.js")
+LEVEL="$LEVEL" PKG="$PKG" PINNED="$PINNED_VERSION" node --input-type=module -e '
+const { compressToolListing, VERSION } = await import(process.env.PKG + "/dist/index.js")
+// FAIL-CLOSED version pin (Cybersec condition, card b92c10d4). The package is installed globally
+// WITHOUT a lockfile, so a later `npm install` can silently move it to a release we never audited --
+// and the audit (reachability of the 4 advisory crates, absence of serve/network calls on this path)
+// is only valid for the version it was performed against. Assert on the RUN path, not just in
+// doctor: a pin that is merely printed in an error message does not pin anything.
+if (VERSION !== process.env.PINNED) {
+  console.error(`mcp-compress.sh: version drift -- loaded ${VERSION}, audited/pinned ${process.env.PINNED}. Refusing: the Cybersec reachability audit does not cover this build. Reinstall the pinned version or re-audit.`)
+  process.exit(5)
+}
 const chunks = []
 for await (const c of process.stdin) chunks.push(c)
 const raw = Buffer.concat(chunks).toString("utf8").trim()
