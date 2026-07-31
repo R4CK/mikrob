@@ -57,6 +57,11 @@ export interface IntegratedRepoConfig {
   enabled: boolean
   /** The reviewed/vendored commit the fleet is pinned to, when recorded. */
   last_sha?: string
+  /** How the repo was adopted: 'pipx' (PyPI-pinned), 'vendored', 'vendored-external', etc.
+   *  Distinguishes a pipx/version install (no git checkout) from a git clone. */
+  adoption?: string
+  /** For pipx/version adoptions: the pinned package version actually installed. */
+  pinned_version?: string
   note?: string
 }
 
@@ -81,6 +86,14 @@ export interface IntegratedRepoStatus {
   kind: 'skill' | 'mcp' | 'external'
   /** True when the local checkout exists (an adopted-but-not-yet-cloned entry is valid). */
   cloned: boolean
+  /** How the repo was adopted; surfaced so the UI can tell a pipx install apart from a clone. */
+  adoption: string
+  /** For pipx/version adoptions: the pinned package version installed. */
+  pinnedVersion: string | null
+  /** True when the repo is actually INSTALLED: a git checkout exists, OR it is a
+   *  version/pipx adoption with a recorded pinned version. A pipx adoption legitimately has
+   *  cloned=false yet IS installed -- so `cloned` alone must not read as "not installed". */
+  installed: boolean
   /** The vendored commit currently checked out locally (what the fleet actually runs). */
   vendoredSha: string | null
   vendoredShort: string | null
@@ -150,6 +163,9 @@ export function statusForRepo(cfg: IntegratedRepoConfig): IntegratedRepoStatus {
     enabled: cfg.enabled === true || String(cfg.enabled).toLowerCase() === 'true',
     kind: repoKind(cfg),
     cloned: false,
+    adoption: String(cfg.adoption || ''),
+    pinnedVersion: cfg.pinned_version ? String(cfg.pinned_version) : null,
+    installed: false,
     vendoredSha: null,
     vendoredShort: null,
     vendoredDate: null,
@@ -159,8 +175,12 @@ export function statusForRepo(cfg: IntegratedRepoConfig): IntegratedRepoStatus {
     reviewRequired: false,
   }
 
+  // A pipx/version adoption (e.g. code-review-graph, graphify) has NO git checkout but IS
+  // installed via its pinned package version -- so seed `installed` from that first.
+  base.installed = !!base.pinnedVersion
   if (!base.local || !existsSync(join(base.local, '.git'))) return base
   base.cloned = true
+  base.installed = true
 
   try {
     // What the fleet actually runs: the recorded vendored sha if present, else the checkout HEAD.

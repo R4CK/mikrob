@@ -8366,6 +8366,9 @@ async function loadReposPage() {
         kind: r.kind,
         behind: r.behind || 0,
         reviewRequired: !!r.reviewRequired,
+        adoption: r.adoption || '',
+        pinnedVersion: r.pinnedVersion || null,
+        installed: r.installed !== false,
         adopted: true,
       }))
     }
@@ -8409,8 +8412,14 @@ function renderReposGrid(repos) {
       const behind = r.behind > 0
         ? `<span class="repo-card-badge" title="${escapeHtml(t('repos.detect_pending_title'))}">↑ ${r.behind}</span>`
         : ''
+      // Installed indicator: a pipx/version adoption (e.g. graphify, code-review-graph) has NO
+      // git clone yet IS installed -- show the pinned version so it does not read as "missing".
+      const ver = r.pinnedVersion ? ` ${escapeHtml(r.pinnedVersion)}` : ''
+      const installBadge = r.installed
+        ? `<span class="repo-card-badge repo-card-badge-ok" title="${escapeHtml(t('repos.installed_title'))}">✓ ${escapeHtml(t('repos.installed'))}${r.adoption === 'pipx' ? ` (pipx${ver})` : ''}</span>`
+        : `<span class="repo-card-badge" title="${escapeHtml(t('repos.not_installed_title'))}">${escapeHtml(t('repos.not_installed'))}</span>`
       card.innerHTML = header +
-        `<div class="repo-card-meta"><span class="repo-card-badge repo-card-badge-kind">${kind}</span><span class="repo-card-badge">${escapeHtml(t('repos.badge.adopted'))}</span>${behind}<span class="repo-card-date">${escapeHtml(t('repos.installed_at'))}: ${date}</span></div>`
+        `<div class="repo-card-meta"><span class="repo-card-badge repo-card-badge-kind">${kind}</span>${installBadge}<span class="repo-card-badge">${escapeHtml(t('repos.badge.adopted'))}</span>${behind}<span class="repo-card-date">${escapeHtml(t('repos.installed_at'))}: ${date}</span></div>`
       gridEl.appendChild(card)
       continue
     }
