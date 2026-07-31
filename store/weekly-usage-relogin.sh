@@ -102,7 +102,16 @@ if code:
 # Join ONLY an INDENTED continuation (newline followed by at least one space/tab) -- that is what the
 # TUI produces when it wraps. Gluing every newline would also fuse the start of the NEXT line onto the
 # token and mask an innocent word after it ("Try" ended up inside the run while building this).
-dewrapped = re.sub(r"\n[ \t]+", "", text)
+#
+# Trailing whitespace BEFORE the break is eaten too (card 2788552a, Cybered): tmux capture-pane
+# routinely leaves a space at the end of a wrapped line, and without the leading [ \t]* the join did
+# not happen at all -- the token stayed in two readable halves. Ordinary indented diagnostic text is
+# still untouched, because joining it produces no 24-char run.
+#
+# KNOWN AND DELIBERATE: a wrap with NO indent on the continuation line is not joined, so this layer
+# does not see it. Said out loud so a future TUI change that stops indenting is noticed rather than
+# silently carrying the gap.
+dewrapped = re.sub(r"[ \t]*\n[ \t]+", "", text)
 for cand in sorted(set(re.findall(r"[A-Za-z0-9_-]{24,}", dewrapped)), key=len, reverse=True):
     # A candidate that also appears contiguously is left to the generic sweep below.
     if cand in text:

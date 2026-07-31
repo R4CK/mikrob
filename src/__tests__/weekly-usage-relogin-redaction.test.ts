@@ -203,6 +203,29 @@ describe('the TUI wraps lines itself, and a code split that way is still a code 
     }
   })
 
+  it('masks even when the line break carries TRAILING whitespace (card 2788552a)', () => {
+    // tmux capture-pane routinely leaves a space at the end of a wrapped line. Without eating it the
+    // join never happened and the token stayed in two readable halves.
+    const withSpace = `Login failed\nYour code: ${LONG_CODE.slice(0, 20)} \n  ${LONG_CODE.slice(20)}\nTry again\n`
+    const withTab = `Login failed\nYour code: ${LONG_CODE.slice(0, 30)}\t\n  ${LONG_CODE.slice(30)}\nTry again\n`
+    for (const [label, dump, at] of [
+      ['space', withSpace, 20],
+      ['tab', withTab, 30],
+    ] as const) {
+      const out = redact(dump)
+      expect(out, label).not.toContain(LONG_CODE.slice(0, at))
+      expect(out, label).not.toContain(LONG_CODE.slice(at))
+      expect(out, label).toContain('Try again')
+    }
+  })
+
+  it('ordinary text with a trailing space before the break is still untouched', () => {
+    // The widened pattern must not start masking diagnostics -- joining them produces no 24-char run.
+    const dump =
+      'Error: could not reach the auth server \n  retrying in 5 seconds\n  giving up after 3 attempts\n'
+    expect(redact(dump)).toBe(dump)
+  })
+
   it('leaves ordinary indented diagnostic text alone (no over-masking)', () => {
     // The alternative fix -- lowering the 24-char threshold -- would start masking words like these,
     // and a dump that redacts everything is a dump nobody reads.
