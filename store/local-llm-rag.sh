@@ -35,6 +35,24 @@
 #   morning-brief   email/calendar/news -> a scannable HU morning brief
 #   board-reconcile card list -> terse HU board-reconcile summary + next actions
 #   tg-draft        a point -> a non-critical HU Telegram message draft (MikroB voice, no auto-send)
+#   translate       source text -> translation to a requested language (values only)
+#   doc-draft       code/diff/spec -> a markdown documentation draft
+#   test-scaffold   function/spec -> a test-file scaffold (happy/edge/error, real assertions)
+#   crud-adapter    entity/port spec -> boilerplate CRUD adapter (scope-carrying, no speculative extras)
+#   docstring       function/class -> same code with doc-comments added (code unchanged)
+#   dep-diff        lockfile/manifest diff -> terse add/remove/upgrade summary, major-bumps flagged
+#   pr-review       diff -> first-pass review notes (severity-tagged; a human gate decides)
+#   i18n-keys       EN key/value pairs + target locale(s) -> translated pairs (keys + placeholders preserved)
+#   regex           described pattern + examples -> a regex + MATCH/NO-MATCH check
+#   type-def        sample JSON/usage -> TypeScript type/interface definitions
+#   sql-migration   described schema change -> additive forward SQL migration (+down); DRAFT, gate-critical
+#   api-client      endpoint spec -> one typed API-client function (with error path)
+#   refactor-draft  code + mechanical change -> refactored code, behaviour unchanged
+#   code-explain    snippet -> concise plain-language explanation (read-only)
+#   error-i18n      raw error -> i18n key + descriptive, no-leak user message (rule 12)
+#   env-doc         config/.env sample -> markdown env-var table (names only, no secret values)
+#   mermaid         described flow/arch -> a valid mermaid diagram
+#   bugfix-draft    failing code + repro -> minimal fix draft; DRAFT, needs repro-test + gate
 # These offload work that today burns online Claude tokens; drafts are draft-only
 # (label local-llm-draft) and re-checked by MikroB + gate before shipping.
 #
