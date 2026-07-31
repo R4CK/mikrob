@@ -142,4 +142,36 @@ test.describe('Dashboard smoke', () => {
 
     expect(errors).toHaveLength(0)
   })
+
+  // Cards d53c1e00 + 52de847d (Cybersec follow-ups): dragging the >3d slider above the
+  // <2d slider must cascade it up rather than allow an inverted (non-monotonic) triple,
+  // and pinning a slider at 100% must show the visible+accessible warning.
+  test('threshold sliders cascade to stay monotonic and flag a 100% value', async ({ page }) => {
+    const errors: string[] = []
+    page.on('pageerror', (err) => errors.push(err.message))
+    await page.goto(`/?token=${TOKEN}`)
+    await page.waitForTimeout(500)
+    await page.locator('#thresholdToggle').click()
+    await expect(page.locator('#thresholdBody')).toBeVisible()
+
+    // Drag thrGt3 above the current thrLt2 -- thrLt2 (and thrLt1) must cascade up.
+    await page.locator('#thrGt3').fill('99')
+    await page.locator('#thrGt3').dispatchEvent('input')
+    const gt3 = Number(await page.locator('#thrGt3').inputValue())
+    const lt2 = Number(await page.locator('#thrLt2').inputValue())
+    const lt1 = Number(await page.locator('#thrLt1').inputValue())
+    expect(gt3).toBeLessThanOrEqual(lt2)
+    expect(lt2).toBeLessThanOrEqual(lt1)
+
+    // Push it to 100 -- the warning icon for that row must become visible (not just
+    // present-but-hidden) and it must have a real accessible name, not aria-hidden.
+    await page.locator('#thrGt3').fill('100')
+    await page.locator('#thrGt3').dispatchEvent('input')
+    const warn = page.locator('#thrGt3Warn')
+    await expect(warn).toBeVisible()
+    await expect(warn).toHaveAttribute('role', 'img')
+    await expect(warn).not.toHaveAttribute('aria-hidden', 'true')
+
+    expect(errors).toHaveLength(0)
+  })
 })
