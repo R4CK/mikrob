@@ -610,24 +610,41 @@ main {
 }
 .usage-info-title { font-weight: 600; color: var(--text); font-size: 14px; }
 .usage-info-help-btn {
-  width: 20px;
-  height: 20px;
-  min-width: 44px;
-  min-height: 44px;
-  margin: -12px;
-  padding: 12px;
+  /* Card bb5603cc (Peti screenshot): the border/background/border-radius were on this
+     element directly, so the earlier padding+negative-margin touch-target trick inflated
+     the PAINTED circle too (border-radius:50% clips the whole padded box) -- a 44px grey
+     disc overlapping the title, not a small icon. Fix: this outer button is invisible
+     (no border/background) and only expands the tap area via padding+negative-margin;
+     the actual small visible dot is the nested .usage-info-help-dot span, unaffected by
+     the outer padding. */
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 16px;
+  height: 16px;
+  margin: -14px;
+  padding: 14px;
   box-sizing: content-box;
+  border: none;
+  background: none;
+  cursor: pointer;
+  flex-shrink: 0;
+}
+.usage-info-help-dot {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 16px;
+  height: 16px;
   border-radius: 50%;
   border: 1px solid var(--border);
   background: var(--bg-input);
   color: var(--text-muted);
-  font-size: 12px;
+  font-size: 11px;
   font-weight: 700;
-  line-height: 20px;
-  cursor: pointer;
-  flex-shrink: 0;
+  line-height: 1;
 }
-.usage-info-help-btn:hover { color: var(--accent); border-color: var(--accent); }
+.usage-info-help-btn:hover .usage-info-help-dot { color: var(--accent); border-color: var(--accent); }
 .usage-info-source {
   margin-left: auto;
   font-size: 11px;

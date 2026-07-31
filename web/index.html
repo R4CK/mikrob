@@ -278,7 +278,7 @@
             id="quotaHelpBtn"
             aria-label="Kuszob-szabalyok"
             data-i18n-aria-label="overview.quota.help_aria"
-          >?</button>
+          ><span class="usage-info-help-dot" aria-hidden="true">?</span></button>
           <span class="usage-info-source" id="usageInfoSource" hidden></span>
         </div>
         <div class="usage-info-row" id="usageRowWeekly">
@@ -339,7 +339,7 @@
               Minel kozelebb a heti reset, annal magasabb a megengedett kuszob -- a flotta ekkor allitja le az uj fejlesztest, amig folyamatban levo munka+gate-ek befejezodnek.
             </p>
             <div class="usage-threshold-actions">
-              <button type="button" class="btn-primary btn-compact" id="thresholdSaveBtn" data-i18n="overview.quota.threshold.save">Mentes</button>
+              <button type="button" class="btn-primary btn-compact" id="thresholdSaveBtn" data-i18n="overview.quota.threshold.save" disabled>Mentes</button>
               <span class="usage-threshold-status" id="thresholdStatus" hidden></span>
             </div>
           </div>

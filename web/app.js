@@ -12564,9 +12564,15 @@ async function loadWeeklyThresholds() {
       if (label) label.textContent = val + '%'
       updateThresholdWarn(id, val)
     }
+    // Card bb5603cc follow-up: the sliders start disabled (HTML) so a save can never fire
+    // against the browser's raw default range position before this fetch resolves -- only
+    // enable once the real config is actually in the DOM.
+    const saveBtn = document.getElementById('thresholdSaveBtn')
+    if (saveBtn) saveBtn.disabled = false
   } catch {
     // Keep the built-in defaults (already set on _weeklyThresholds) -- the sliders simply
-    // show the CLAUDE.md fallback values baked into the HTML min/max range.
+    // show the CLAUDE.md fallback values baked into the HTML min/max range. Save stays
+    // disabled (fail-closed): saving unknown default values would be worse than not saving.
   }
 }
 
@@ -12633,12 +12639,19 @@ async function loadWeeklyThresholds() {
 
   const saveBtn = document.getElementById('thresholdSaveBtn')
   const statusEl = document.getElementById('thresholdStatus')
+  // Card bb5603cc (Peti screenshot): "Mentve." sat next to the "Mentes" button
+  // permanently after a save, reading as two contradictory states at once (an active
+  // button + an already-done label). Auto-dismiss the SUCCESS confirmation after a
+  // few seconds so it reads as a transient toast; an error stays until the user acts
+  // (rule 12: don't auto-hide something they still need to fix).
+  let statusHideTimer = null
   if (saveBtn) {
     saveBtn.addEventListener('click', async () => {
       const gt3days = Number(document.getElementById('thrGt3')?.value)
       const lt2days = Number(document.getElementById('thrLt2')?.value)
       const lt1day = Number(document.getElementById('thrLt1')?.value)
       saveBtn.disabled = true
+      if (statusHideTimer) { clearTimeout(statusHideTimer); statusHideTimer = null }
       if (statusEl) { statusEl.hidden = true; statusEl.classList.remove('success', 'error') }
       try {
         const res = await fetch('/api/costs/weekly-thresholds', {
@@ -12653,6 +12666,7 @@ async function loadWeeklyThresholds() {
           statusEl.textContent = t('overview.quota.threshold.saved')
           statusEl.classList.add('success')
           statusEl.hidden = false
+          statusHideTimer = setTimeout(() => { statusEl.hidden = true }, 3000)
         }
         void loadWeeklyGauge()
       } catch (err) {
