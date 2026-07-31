@@ -171,6 +171,17 @@ Kiosztás, beragadás-kezelés, végső ellenőrzés: MikroB (CEO/CTO szerep).
 
 **Tesztelési gate-ek (KÖTELEZŐ):** minden kész kártyát HÁROM független ügynök tesztel -- `qa-engineer` (funkcionális), `cybersecurity-redteam` (per-finding biztonsági) ÉS `cybered` (adverzariális red-team). Csak ők hárman tesztelnek/sign-offolnak. DONE = QA PASS + Cybersec GO + Cybered GO. Egyik sem ellenőrzi a saját munkáját. Lásd 4. szabály.
 
+## Kódminőségi alapelvek -- MINDEN ÜGYNÖKRE (Peti szabály 2026-07-31)
+
+Négy viselkedési alapelv a leggyakoribb LLM-kódolási hibák ellen (forrás/inspiráció: Andrej Karpathy megfigyelései, multica-ai/andrej-karpathy-skills; ötletként átvéve, saját megfogalmazásban). A flotta MINDEN ügynökére áll, minden kódolási és review-feladatnál. Kompromisszum: ezek az elvek az óvatosságot részesítik előnyben a sebességgel szemben; triviális feladatnál használd a megítélésed.
+
+1. **Gondolkodj a kódolás ELŐTT.** Ne feltételezz, ne rejtsd el a bizonytalanságot, tedd láthatóvá a trade-offokat. Implementálás előtt: mondd ki explicit a feltételezéseidet (ha bizonytalan, KÉRDEZZ); ha több értelmezés van, tárd fel őket, ne válassz némán; ha van egyszerűbb út, mondd ki, ellenkezz ha indokolt; ha valami nem világos, ÁLLJ MEG, nevezd meg mi zavaros, és kérdezz.
+2. **Egyszerűség először.** A minimális kód, ami megoldja a problémát, semmi spekulatív. Nincs kért funkción túli feature; nincs absztrakció egyszer-használatos kódra; nincs nem kért "rugalmasság"/"konfigurálhatóság"; nincs hibakezelés lehetetlen esetekre. Ha 200 sort írtál és lehetne 50, írd újra. Kérdezd meg: "egy senior mérnök túlbonyolítottnak mondaná?" Ha igen, egyszerűsíts.
+3. **Sebészi változtatások.** Csak azt érintsd, amit muszáj; csak a SAJÁT rendetlenségedet takarítsd el. Meglévő kód szerkesztésekor: ne "javítsd" a szomszédos kódot/kommentet/formázást; ne refaktorálj, ami nem törött; kövesd a meglévő stílust akkor is, ha te másképp csinálnád; ha nem kapcsolódó holt kódot látsz, JELEZD, ne töröld. Ha a változtatásod árvákat hoz létre: távolítsd el az általad feleslegessé tett importokat/változókat/függvényeket, de a már-létező holt kódot csak kérésre. Teszt: minden megváltoztatott sor közvetlenül a kéréshez vezethető vissza.
+4. **Cél-vezérelt végrehajtás.** Definiálj siker-kritériumot, iterálj amíg igazolt. Alakítsd a feladatot ellenőrizhető céllá: "adj validációt" -> "írj tesztet érvénytelen inputra, majd tedd zölddé"; "javítsd a bugot" -> "írj repro-tesztet, majd tedd zölddé"; "refaktoráld X-et" -> "a tesztek zöldek előtte és utána". Több lépéses feladatnál mondj rövid tervet (lépés -> ellenőrzés). Erős siker-kritérium önálló loopolást tesz lehetővé; a gyenge ("csak működjön") állandó pontosítást igényel.
+
+Az elvek akkor működnek, ha: kevesebb felesleges változás a diffekben, kevesebb újraírás túlbonyolítás miatt, és a tisztázó kérdések a hibák ELŐTT jönnek, nem utánuk.
+
 ## Teljes értékű audit -- SZABÁLY (KÖTELEZŐ)
 
 Amikor "teljes értékű audit", "teljes audit", "auditáld végig", "full audit" hangzik el, vagy release/nagyobb mérföldkő előtt, az audit CSAK akkor teljes értékű, ha az alábbi MINDEN pontja lefutott, dokumentálva, bizonyítékkal. Részleges lefedettség = NEM teljes értékű audit; ilyet ne jelents késznek.
@@ -442,16 +453,16 @@ Utasítások:
 Az autonóm műveletek fokozatait a store/autonomy-config.json szabályozza (level: 1=csak jelez, 2=javasol+jóváhagyás, 3=autonóm+jelent). Mielőtt önállóan cselekszel, nézd meg az adott kategória szintjét.
 
 **Level 1 (csak jelez)**: küldj inter-agent értesítést a főágensnek, de NE végezd el a műveletet. Ezután ÁLLJ MEG.
-curl -s -X POST http://localhost:3420/api/messages -H "Content-Type: application/json" -H "Authorization: Bearer $(cat store/.dashboard-token)" -d "{\"from\":\"mikrob\",\"to\":\"mikrob\",\"content\":\"[FELHÍVÁS] CATEGORY_KEY: MIT akartam elvégezni, de level 1 miatt csak jelzek.\"}"
+curl -s -X POST http://localhost:3420/api/messages -H "Content-Type: application/json" -H "Authorization: Bearer $(cat /home/neon/marveen/store/.dashboard-token)" -d "{\"from\":\"mikrob\",\"to\":\"mikrob\",\"content\":\"[FELHÍVÁS] CATEGORY_KEY: MIT akartam elvégezni, de level 1 miatt csak jelzek.\"}"
 
 **Level 2 (jóváhagyás szükséges)**: kérj jóváhagyást az API-n MIELŐTT cselekszel.
 
 Jóváhagyás kérése (POST):
-curl -s -X POST http://localhost:3420/api/approvals -H "Content-Type: application/json" -H "Authorization: Bearer $(cat store/.dashboard-token)" -d '{"agent_id":"mikrob","category":"CATEGORY_KEY","action_description":"Mit tervezel elvégezni és miért","timeout_seconds":3600}'
+curl -s -X POST http://localhost:3420/api/approvals -H "Content-Type: application/json" -H "Authorization: Bearer $(cat /home/neon/marveen/store/.dashboard-token)" -d '{"agent_id":"mikrob","category":"CATEGORY_KEY","action_description":"Mit tervezel elvégezni és miért","timeout_seconds":3600}'
 A válaszban kapott id-vel kérdezheted le a döntést.
 
 Döntés lekérdezése (GET, 60 mp-enként ismételve):
-curl -s -H "Authorization: Bearer $(cat store/.dashboard-token)" "http://localhost:3420/api/approvals/<id>"
+curl -s -H "Authorization: Bearer $(cat /home/neon/marveen/store/.dashboard-token)" "http://localhost:3420/api/approvals/<id>"
 status=approved -> végezd el a műveletet. status=rejected vagy status=timeout -> ne csináld, naplózd az okot.
 
 **Level 3 (autonóm)**: elvégzed a műveletet, majd utána jelented a főágensnek.
