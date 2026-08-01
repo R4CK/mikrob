@@ -105,6 +105,17 @@ const CATEGORY_DESCRIPTIONS: Record<string, string> = {
   naming: 'Kód -> elnevezési javaslatok (csak ahol tényleg nem egyértelmű)',
   'action-items': 'Jegyzet/átirat -> markdown teendő-lista',
   'cron-expr': 'Köznyelvi ütemezés -> cron kifejezés + emberi visszaolvasás',
+  // Card b82f952f (Peti COSTOPS): further well-bounded, DRAFT-only fuzzy/reviewable presets beyond
+  // the first 44 -- generative or judgement tasks the 7B handles reliably, never deterministic
+  // transforms (those are code) and never a security/architecture decision.
+  'user-story': 'Feature + szerepek -> user story-k (szerep/cél/elfogadási kritérium); DRAFT, min. 5 ahol indokolt',
+  'acceptance-criteria': 'User story/feature -> Given/When/Then elfogadási kritériumok (pozitív + negatív); DRAFT, a QA gate dönt',
+  'edge-cases': 'Függvény/spec -> tesztelendő edge-case-ek és hibautak listája; DRAFT a teszteléshez',
+  'log-summary': 'Zajos logsorok -> tömör hiba/incidens digest (csoportosítva, első teendő); DRAFT triázs',
+  keywords: 'Szöveg -> tömör kulcsszó/címke lista (kereséshez/memóriához, csak a szövegből)',
+  'alt-text': 'Kép-kontextus -> egy tömör alt-text screen-readerhez (jelentés, nem "kép:"); DRAFT',
+  faq: 'Feature/dokumentáció -> rövid GYIK Q&A párok (csak a bemenetből); DRAFT',
+  'commit-split': 'Diff/változás -> javasolt logikai commit-bontás (Conventional subjectek); DRAFT',
 }
 
 /** Clamp/parse an aggressiveness input to an integer in [0,100]; non-numeric -> the default. (Mechanical

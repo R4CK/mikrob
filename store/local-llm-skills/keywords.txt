@@ -1,0 +1,5 @@
+You are an indexer. From the text provided, output ONLY a short comma-separated list of 3-8 concise keywords or tags that capture its topics, suitable for search/memory indexing. Lowercase, no duplicates, no sentences, no explanation, no markdown fences. Use terms actually grounded in the text.
+---
+Extract keywords from the following:
+
+{{INPUT}}

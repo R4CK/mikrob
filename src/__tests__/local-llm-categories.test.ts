@@ -80,3 +80,46 @@ describe('dashboard category-row escapes the meta interpolation (stored-XSS guar
     expect(appJs).not.toContain('llm-category-meta">${meta}')
   })
 })
+
+// Card b82f952f (Peti COSTOPS): further DRAFT-only offload presets beyond the first 44. Each new
+// category must be wired end to end -- a real template on disk (system block + '---' + {{INPUT}}),
+// a curated HU description (not a bare name-fallback), and surfaced by listCategories() so the
+// dashboard toggle controls it.
+describe('new offload categories are wired end to end (card b82f952f)', () => {
+  const NEW_CATEGORIES = [
+    'user-story', 'acceptance-criteria', 'edge-cases', 'log-summary',
+    'keywords', 'alt-text', 'faq', 'commit-split',
+  ]
+  const skillDir = join(STORE_DIR, 'local-llm-skills')
+
+  it('lists at least 52 categories now (44 + the 8 new), sourced from disk', () => {
+    expect(listCategories().length).toBeGreaterThanOrEqual(52)
+  })
+
+  it('each new category has a valid template: non-empty system block, a --- separator, and {{INPUT}}', () => {
+    for (const name of NEW_CATEGORIES) {
+      const tpl = readFileSync(join(skillDir, `${name}.txt`), 'utf8')
+      const sepIdx = tpl.split('\n').indexOf('---')
+      expect(sepIdx, `${name}: missing '---' separator`).toBeGreaterThan(0) // system block precedes it
+      expect(tpl.includes('{{INPUT}}'), `${name}: missing {{INPUT}} placeholder`).toBe(true)
+      // the system block (before ---) must carry a real instruction, not be empty
+      expect(tpl.slice(0, tpl.indexOf('\n---')).trim().length, `${name}: empty system block`).toBeGreaterThan(20)
+    }
+  })
+
+  it('each new category surfaces via listCategories with a curated description (not a bare name fallback)', () => {
+    const byName = new Map(listCategories().map((c) => [c.name, c]))
+    for (const name of NEW_CATEGORIES) {
+      const cat = byName.get(name)
+      expect(cat, `${name}: not listed`).toBeTruthy()
+      // A real description, not the name-fallback the loader uses for an undescribed category.
+      expect(cat!.description).not.toBe(name)
+      expect(cat!.description.length).toBeGreaterThan(name.length)
+      expect(cat!.description).toContain(' ')
+    }
+  })
+
+  it('the new category names all pass the POST allowlist (dashboard toggle can reach them)', () => {
+    for (const name of NEW_CATEGORIES) expect(isValidCategoryName(name)).toBe(true)
+  })
+})

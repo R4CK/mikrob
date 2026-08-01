@@ -65,6 +65,14 @@
 #   naming          code -> naming suggestions (only where genuinely unclear)
 #   action-items    notes/transcript -> markdown action-item checklist
 #   cron-expr       plain-language schedule -> cron expression + human read-back
+#   user-story      feature + roles -> user stories (role/goal/acceptance); DRAFT, >=5 where warranted
+#   acceptance-criteria  story/feature -> Given/When/Then criteria (positive + negative); DRAFT
+#   edge-cases      function/spec -> edge cases + failure modes worth testing; DRAFT
+#   log-summary     noisy log lines -> terse error/incident digest (grouped, first thing to check); DRAFT
+#   keywords        text -> concise keyword/tag list for search/memory (grounded in the text)
+#   alt-text        image context -> one concise screen-reader alt string (meaning, not "image of"); DRAFT
+#   faq             feature/docs -> short Q&A FAQ pairs (grounded in the input); DRAFT
+#   commit-split    diff/change -> suggested logical commit breakdown (Conventional subjects); DRAFT
 # These offload work that today burns online Claude tokens; drafts are draft-only
 # (label local-llm-draft) and re-checked by MikroB + gate before shipping.
 #
