@@ -59,3 +59,30 @@ No client writes, no LLM, no provider API, no secrets in any response.
   is ever derived from tokens here.
 - Additive schema (`CREATE TABLE IF NOT EXISTS`); with no CostOps config the rest
   of the app behaves exactly as before.
+
+## Weekly-limit auto-aggressiveness ramp (`weekly-threshold.ts`, card 346d3933)
+
+Separate from the money ledger: this drives how hard the fleet leans on the free
+local GPU as the **weekly Claude usage** approaches the `newDevStop` threshold.
+
+- **Ramp curve** (`rampAggressiveness`): monotone non-decreasing in weekly %,
+  linear from `RAMP_FLOOR_AGGRESSIVENESS` (75, the standing "optimal" baseline)
+  at weekly 0 up to **100 at `newDevStop`**, pinned at 100 above it. A broken
+  threshold fails **safe to 100**.
+- **Manual override wins** (`applyAggressivenessRamp`): the offload directive
+  (`store/local-llm-offload-active.json`) carries
+  `aggressiveness_source: 'manual' | 'auto'`. A `manual` value -- what the
+  dashboard slider sets -- is **never** overwritten by the ramp; only `auto`
+  follows the curve. A legacy file that already has a value (no `source`) is
+  treated as `manual` so turning the ramp on can never clobber an operator value.
+- **Wiring**: `weekly-usage-panel-read.sh` (every 30 min) writes the live weekly %
+  to `store/weekly-usage.json`, then runs the compiled applier
+  `dist/costops/apply-offload-ramp.js`, which reads that %, the threshold, and the
+  directive, and writes the ramped aggressiveness **only** under automatic control.
+- **FE contract**: `GET /api/local-llm/offload-config` returns
+  `aggressivenessSource` and a `ramp` block (`weeklyPct`, `newDevStop`, `floor`,
+  `autoAggressiveness`, `autoDifficulty`) so the dashboard can show the auto value
+  and offer a "back to Auto" reset (`POST { aggressiveness: "auto" }`).
+- **Safety**: draft-only is unchanged -- a higher aggressiveness only widens which
+  well-bounded coding sub-steps draft locally (capped at the reliable `module`
+  ceiling); it never sends more of the task, and every draft is still gate-checked.

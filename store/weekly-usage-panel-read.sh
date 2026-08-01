@@ -109,6 +109,12 @@ reset="$(printf '%s' "$body" | python3 -c 'import json,sys; print(json.load(sys.
 bash "${STORE}/pre-dispatch-check.sh" set-weekly "$pct" "$reset" >/dev/null 2>&1 || true
 bash "${STORE}/pre-dispatch-check.sh" >/dev/null 2>&1 || true
 
+# 3c) Feed the fresh weekly % into the auto-aggressiveness ramp (card 346d3933). The ramp raises the
+# local-LLM offload aggressiveness as the weekly % approaches newDevStop, UNLESS Peti has set the
+# slider manually (source:'manual' wins). Logic + persistence live in src/costops/weekly-threshold.ts;
+# this compiled CLI is the thin applier. Best-effort: a failure here must not fail the widget POST.
+node "${STORE}/../dist/costops/apply-offload-ramp.js" >/dev/null 2>&1 || true
+
 # 4) POST to the widget. Token via 0600 @headerfile (NEVER argv).
 hdr_file="$(mktemp)"; chmod 600 "$hdr_file"
 printf 'Authorization: Bearer %s\n' "$(cat "$TOKEN_FILE")" > "$hdr_file"

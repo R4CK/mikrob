@@ -6,6 +6,13 @@ import { STORE_DIR } from '../../config.js'
 import { logger } from '../../logger.js'
 import { readBody, json } from '../http-helpers.js'
 import { atomicWriteFileSync } from '../atomic-write.js'
+import {
+  RAMP_FLOOR_AGGRESSIVENESS,
+  rampAggressiveness,
+  readThresholdConfig,
+  readWeeklyPercent,
+  resolveAggressivenessSource,
+} from '../../costops/weekly-threshold.js'
 import type { RouteContext } from './types.js'
 
 // ---------------------------------------------------------------------------
@@ -147,6 +154,30 @@ export function defaultDifficultyForAggressiveness(pct: unknown): CodingDifficul
   if (a >= 85) return 'module' // capped: feature/architecture never auto-offload
   if (a >= 75) return 'isolated'
   return 'trivial'
+}
+
+/** The live auto-ramp state for the FE (card 346d3933): the weekly %, the threshold it climbs to, the
+ *  floor it starts from, and the aggressiveness the ramp WOULD set right now (plus the coding-
+ *  difficulty tier that value unlocks). Read-only view; it never mutates the config. `weeklyPct` is
+ *  null when no live reading exists yet, in which case `autoAggressiveness` is null too. */
+export function offloadRampState(): {
+  weeklyPct: number | null
+  newDevStop: number
+  floor: number
+  autoAggressiveness: number | null
+  autoDifficulty: CodingDifficulty | null
+} {
+  const weeklyPct = readWeeklyPercent()
+  const { newDevStop } = readThresholdConfig()
+  const autoAggressiveness = weeklyPct === null ? null : rampAggressiveness(weeklyPct, newDevStop)
+  return {
+    weeklyPct,
+    newDevStop,
+    floor: RAMP_FLOOR_AGGRESSIVENESS,
+    autoAggressiveness,
+    autoDifficulty:
+      autoAggressiveness === null ? null : defaultDifficultyForAggressiveness(autoAggressiveness),
+  }
 }
 
 /** Validate a difficulty input to a known taxonomy level; unknown/absent -> null. Used to classify a
@@ -642,6 +673,12 @@ export async function tryHandleLocalLlm(ctx: RouteContext): Promise<boolean> {
       mode: typeof cfg.mode === 'string' ? cfg.mode : 'proactive',
       aggressiveness,
       optimal: OPTIMAL_AGGRESSIVENESS,
+      // Card 346d3933: the auto-ramp contract for the FE. `source` says whether the slider is under
+      // manual or automatic control; `ramp` reports the live weekly %, the threshold it climbs to, and
+      // what the auto value would be right now -- so the dashboard can show "Auto: 94% (weekly 82%)"
+      // and offer a "back to Auto" action when the operator has taken manual control.
+      aggressivenessSource: resolveAggressivenessSource(cfg),
+      ramp: offloadRampState(),
       codingDifficultyThreshold: explicit ?? derived,
       codingDifficultyExplicit: explicit !== null,
       codingDifficultyDerived: derived,
@@ -676,7 +713,16 @@ export async function tryHandleLocalLlm(ctx: RouteContext): Promise<boolean> {
     }
     const cfg = readOffloadConfig()
     if (hasAggr) {
-      cfg.aggressiveness = normalizeAggressiveness(parsed.aggressiveness)
+      // Card 346d3933: setting the slider is a MANUAL override -- it wins over the auto ramp until the
+      // operator hands control back with 'auto'. 'auto'/null/'' clears the manual flag so the ramp
+      // (weekly-usage-panel-read.sh -> apply-offload-ramp) resumes driving the value.
+      const raw = parsed.aggressiveness
+      if (raw === 'auto' || raw === null || raw === '') {
+        cfg.aggressiveness_source = 'auto'
+      } else {
+        cfg.aggressiveness = normalizeAggressiveness(raw)
+        cfg.aggressiveness_source = 'manual'
+      }
       cfg.aggressiveness_set_at = new Date().toISOString()
     }
     if (hasDiff) {
