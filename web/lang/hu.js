@@ -811,7 +811,7 @@ window._i18n.hu = {
   'localLlm.offload.load_error': 'A beállítás nem tölthető be.',
   'localLlm.offload.ramp.source_auto': 'Automatikus (heti kvótához kötve)',
   'localLlm.offload.ramp.source_manual': 'Kézi beállítás',
-  'localLlm.offload.ramp.detail': 'Heti kvóta: {weekly}% (küszöb {threshold}%) → auto agresszivitás: {auto}',
+  'localLlm.offload.ramp.numbers': 'Heti kvóta: {weekly}% (küszöb {threshold}%) · cél: {target} · jelenlegi: {current}',
   'localLlm.offload.ramp.no_reading': 'Automatikus mód, de még nincs élő heti-kvóta mérés — a csúszka az utolsó értéken marad, amíg megérkezik.',
   'localLlm.offload.ramp.back_to_auto': 'Vissza az automatikára',
   'localLlm.offload.ramp.back_to_auto_done': 'Visszaállítva automatikára — a heti kvóta vezérli.',

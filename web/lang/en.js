@@ -595,7 +595,7 @@ window._i18n.en = {
   'localLlm.offload.load_error': 'Could not load the setting.',
   'localLlm.offload.ramp.source_auto': 'Automatic (tied to the weekly quota)',
   'localLlm.offload.ramp.source_manual': 'Manual override',
-  'localLlm.offload.ramp.detail': 'Weekly quota: {weekly}% (threshold {threshold}%) → auto aggressiveness: {auto}',
+  'localLlm.offload.ramp.numbers': 'Weekly quota: {weekly}% (threshold {threshold}%) · target: {target} · current: {current}',
   'localLlm.offload.ramp.no_reading': 'Automatic mode, but no live weekly-quota reading yet — the slider holds its last value until one arrives.',
   'localLlm.offload.ramp.back_to_auto': 'Back to automatic',
   'localLlm.offload.ramp.back_to_auto_done': 'Switched back to automatic — the weekly quota now drives it.',

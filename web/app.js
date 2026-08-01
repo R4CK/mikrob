@@ -9999,8 +9999,9 @@ function llmRenderRamp(d) {
   const box = document.getElementById('llmOffloadRamp')
   const srcEl = document.getElementById('llmRampSource')
   const detailEl = document.getElementById('llmRampDetail')
+  const numbersEl = document.getElementById('llmRampNumbers')
   const autoBtn = document.getElementById('llmRampAutoBtn')
-  if (!box || !srcEl || !detailEl || !autoBtn) return
+  if (!box || !srcEl || !detailEl || !numbersEl || !autoBtn) return
 
   // No contract from this backend (pre-346d3933 build) -> nothing honest to show; hide the block.
   if (d.aggressivenessSource == null && d.ramp == null) {
@@ -10010,10 +10011,6 @@ function llmRenderRamp(d) {
   box.hidden = false
 
   const source = d.aggressivenessSource === 'manual' ? 'manual' : 'auto'
-  // Contract (card e93a1dff): ramp is null when there is no live weekly reading; when present it
-  // carries weeklyPercent / newDevStop / target (+ active / current / reason).
-  const ramp = d.ramp || {}
-  const hasReading = typeof ramp.weeklyPercent === 'number'
 
   srcEl.textContent =
     source === 'auto'
@@ -10021,19 +10018,32 @@ function llmRenderRamp(d) {
       : t('localLlm.offload.ramp.source_manual')
   srcEl.className = 'llm-ramp-source llm-ramp-source--' + source
 
-  // Detail line: only meaningful when there is a live weekly reading to explain the auto value.
-  if (hasReading) {
-    detailEl.textContent = t('localLlm.offload.ramp.detail', {
-      weekly: Math.round(ramp.weeklyPercent),
-      threshold: Math.round(ramp.newDevStop),
-      auto: ramp.target == null ? '?' : Math.round(ramp.target),
-    })
+  // Contract (card e93a1dff): `ramp` is null when there is no live weekly reading; when present it
+  // is { active, weeklyPercent, newDevStop, current, target, reason } where `reason` is an i18n KEY
+  // the backend chose for the current state (manual | atThreshold | ramping | floor). We render the
+  // BE's reason key -- not our own restated logic -- so the explanation stays server-authoritative.
+  const ramp = d.ramp
+  if (ramp && typeof ramp.reason === 'string') {
+    const nums = {
+      weekly: typeof ramp.weeklyPercent === 'number' ? Math.round(ramp.weeklyPercent) : '?',
+      threshold: typeof ramp.newDevStop === 'number' ? Math.round(ramp.newDevStop) : '?',
+      target: typeof ramp.target === 'number' ? Math.round(ramp.target) : '?',
+      current: typeof ramp.current === 'number' ? Math.round(ramp.current) : '?',
+    }
+    // Reason line: the BE's own i18n key for the state (server-authoritative, qualitative).
+    detailEl.textContent = t(ramp.reason, nums)
     detailEl.hidden = false
+    // Numbers line: the quantitative state the contract carries (weekly% / threshold / target /
+    // current) -- shows the operator BY HOW MUCH, which the reason sentence alone doesn't.
+    numbersEl.textContent = t('localLlm.offload.ramp.numbers', nums)
+    numbersEl.hidden = false
   } else {
-    // Auto is armed but there is no live weekly % yet (empty state, rule 12) -- say so plainly
-    // rather than implying a value we do not have.
-    detailEl.textContent = source === 'auto' ? t('localLlm.offload.ramp.no_reading') : ''
-    detailEl.hidden = detailEl.textContent === ''
+    // ramp === null: source is known but no live weekly reading yet (empty state, rule 12) -- say so
+    // plainly rather than implying a value we do not have.
+    detailEl.textContent = t('localLlm.offload.ramp.no_reading')
+    detailEl.hidden = false
+    numbersEl.textContent = ''
+    numbersEl.hidden = true
   }
 
   // "Back to Auto" only makes sense in manual mode; offer it whenever the operator has taken over.
