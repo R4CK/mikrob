@@ -151,17 +151,31 @@ PY
 # itself is never parked -- rule 7's standing exception -- and the file carries that as an
 # explicit field so a consumer cannot forget it.
 HARD_STOP_FLAG="$STORE/weekly-hard-stop.json"
-write_hard_stop() { # $1=active(1|0) $2=percent $3=threshold
-  python3 - "$HARD_STOP_FLAG" "$1" "$2" "$3" <<'PYHS' 2>/dev/null || true
+# Card [threshold-live-wiring]: the file now carries BOTH levels, not just testStop. Before this,
+# a consumer that only reads this ONE file (per the comment above) had no way to see the softer
+# newDevStop crossing -- only a caller that ran this script directly could see it, and nothing did.
+# newDevStopActive/newDevStop are additive fields; existing readers that only look at `active`
+# (the testStop level) are unaffected.
+write_hard_stop() { # $1=active(1|0) $2=percent $3=testStop $4=newDevStop $5=newDevActive(1|0)
+  python3 - "$HARD_STOP_FLAG" "$1" "$2" "$3" "$4" "$5" <<'PYHS' 2>/dev/null || true
 import json, os, sys, tempfile, time
-path, active, pct, thr = sys.argv[1], sys.argv[2] == '1', int(sys.argv[3]), int(sys.argv[4])
+path = sys.argv[1]
+active = sys.argv[2] == '1'
+pct = int(sys.argv[3])
+thr = int(sys.argv[4])
+nd = int(sys.argv[5])
+nd_active = sys.argv[6] == '1'
 reason = ''
 if active:
     reason = 'weekly usage %d%% >= test-stop %d%%: gate work stops, park every role agent' % (pct, thr)
+elif nd_active:
+    reason = 'weekly usage %d%% >= new-dev-stop %d%%: no new development, in-flight + gates continue' % (pct, nd)
 payload = {
     'active': active,
     'percent': pct,
     'testStop': thr,
+    'newDevStop': nd,
+    'newDevStopActive': nd_active,
     'updatedAt': int(time.time()),
     'exemptAgents': ['mikrob'],
     'reason': reason,
@@ -237,7 +251,7 @@ PY
     # Read the flag BEFORE writing it -- comparing against what we just wrote would always agree.
     flag_was_active=0
     flag_says_active && flag_was_active=1
-    write_hard_stop 1 "$pct" "$ts"
+    write_hard_stop 1 "$pct" "$ts" "$nd" 1
     # Card 17905a6d (Cybersec LOW #1): SECOND opinion on the flag. This script computes the hard-stop
     # state from the percentage itself, so dispatch is held correctly even with an unreadable flag --
     # but PARKING the role agents is driven by the flag file, and a corrupt one means nobody parks and
@@ -248,8 +262,12 @@ PY
     fi
     echo "DISPATCH:HOLD:HARD-STOP weekly-${pct}%>=test-stop-${ts}% -- gate work stops too, park every role agent (reset ${reset:-unknown})"; exit 0
   fi
-  write_hard_stop 0 "$pct" "$ts"
+  nd_active=0
   if [ "$pct" -ge 0 ] 2>/dev/null && [ "$pct" -ge "$nd" ]; then
+    nd_active=1
+  fi
+  write_hard_stop 0 "$pct" "$ts" "$nd" "$nd_active"
+  if [ "$nd_active" = "1" ]; then
     echo "DISPATCH:HOLD:weekly-${pct}%>=new-dev-stop-${nd}% (gates still run; reset ${reset:-unknown})"; exit 0
   fi
   echo "# weekly ${pct}% < new-dev stop ${nd}% (test/gate stop ${ts}%, reset ${reset:-unknown})" >&2

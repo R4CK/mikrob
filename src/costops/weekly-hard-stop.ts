@@ -30,6 +30,10 @@ export interface WeeklyHardStop {
   readonly percent: number
   /** The testStop threshold it was compared against. */
   readonly testStop: number
+  /** The newDevStop threshold (softer level: no NEW dispatch, in-flight + gates continue). */
+  readonly newDevStop: number
+  /** True when `percent >= newDevStop` (implied true whenever `active` is true). */
+  readonly newDevStopActive: boolean
   /** Agents that are NEVER parked by this (rule 7: MikroB monitors and restarts the fleet). */
   readonly exemptAgents: readonly string[]
   /** Human-readable reason, empty when not active. */
@@ -41,6 +45,8 @@ const INACTIVE: WeeklyHardStop = {
   active: false,
   percent: -1,
   testStop: 97,
+  newDevStop: 90,
+  newDevStopActive: false,
   exemptAgents: ['mikrob'],
   reason: '',
   updatedAt: null,
@@ -63,6 +69,13 @@ export function readHardStop(path: string = FLAG_PATH): WeeklyHardStop {
       active: raw['active'] === true,
       percent: intOr(raw['percent'], -1),
       testStop: intOr(raw['testStop'], INACTIVE.testStop),
+      newDevStop: intOr(raw['newDevStop'], INACTIVE.newDevStop),
+      // A file written before this field existed has no opinion -- fall back to comparing
+      // percent against newDevStop ourselves rather than silently reporting "not active".
+      newDevStopActive:
+        raw['newDevStopActive'] === true ||
+        (raw['active'] === true) ||
+        intOr(raw['percent'], -1) >= intOr(raw['newDevStop'], INACTIVE.newDevStop),
       // MikroB is exempt whatever the file says: a flag that forgot it (hand-edited, or written by an
       // older script) must not become an instruction to park the agent that undoes the stop.
       exemptAgents: exempt.includes('mikrob') ? exempt : [...exempt, 'mikrob'],

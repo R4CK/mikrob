@@ -97,6 +97,18 @@ body="$(wu_body "$snap" "$note")" || fail "weekly % not found in /usage (panel n
 pct="$(printf '%s' "$body" | python3 -c 'import json,sys; print(json.load(sys.stdin)["pct"])')"
 reset="$(printf '%s' "$body" | python3 -c 'import json,sys; print(json.load(sys.stdin).get("resetAt") or "")')"
 
+# 3b) Feed the LIVE % into pre-dispatch-check.sh (card [threshold-live-wiring]). Before this,
+# this script's live read only reached the dashboard gauge (/api/costs/weekly) -- a completely
+# separate store from pre-dispatch-check.sh's own weekly-usage.json, which nothing ever kept
+# fresh (its 'set-weekly' subcommand was manual-screenshot-only). Without this, the newDevStop/
+# testStop thresholds the dashboard sliders save are never actually compared against a live
+# number: the orchestrator's dispatch-gate checks a flag file that no one refreshes. This call
+# both updates weekly-usage.json AND (by running the full check) recomputes+writes
+# weekly-hard-stop.json, so the flag file the orchestrator reads is never more than one probe
+# cycle (30 min) stale. Best-effort: a failure here must not fail the dashboard-widget POST.
+bash "${STORE}/pre-dispatch-check.sh" set-weekly "$pct" "$reset" >/dev/null 2>&1 || true
+bash "${STORE}/pre-dispatch-check.sh" >/dev/null 2>&1 || true
+
 # 4) POST to the widget. Token via 0600 @headerfile (NEVER argv).
 hdr_file="$(mktemp)"; chmod 600 "$hdr_file"
 printf 'Authorization: Bearer %s\n' "$(cat "$TOKEN_FILE")" > "$hdr_file"

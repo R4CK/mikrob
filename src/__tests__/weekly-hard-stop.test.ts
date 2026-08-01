@@ -26,6 +26,8 @@ describe('readHardStop', () => {
       active: true,
       percent: 98,
       testStop: 97,
+      newDevStop: 90,
+      newDevStopActive: true,
       exemptAgents: ['mikrob'],
       reason: 'over',
       updatedAt: 5,
