@@ -22,9 +22,10 @@ store/*
 !store/stitch-tools/gen.mjs
 !store/stitch-tools/fetch-pngs.mjs
 !store/stitch-tools/package.json
-# Cybersec gate-sweep scanner is an operational script (named, not a blanket *.py rule,
+# Gate-sweep scanners are operational scripts (named, not a blanket *.py rule,
 # so future runtime .py data under store/ stays ignored).
 !store/cybersec-gate-scan.py
+!store/cybered-gate-scan.py
 # Local-LLM offload tooling (config + task templates) is operational, not runtime data.
 !store/local-llm-model
 !store/local-llm-skills/
