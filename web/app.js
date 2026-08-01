@@ -12671,51 +12671,55 @@ async function loadWeeklyThresholds() {
   }
 }
 
-// Model-tier stepdown editor (card 5d2002b5): enable toggle + two weekly-% sliders + an
-// editable, dynamic model chain (reorder / add / remove, free-text model IDs). Loaded/saved
-// via /api/costs/model-fallback. The chain is kept in a module-level array the render + save
-// read from, so reorder/remove don't have to re-parse the DOM.
-let _mtChain = []
-let _mtKnownModels = []
+// Model-tier stepdown panel (card 5d2002b5 redesign, Peti 2026-08-01): enable toggle + two
+// weekly-% sliders (editable) + a READ-ONLY per-agent state list. The editable model chain was
+// removed -- the ladder is now the shared, dynamic model list (src/model-catalog.ts) and each
+// agent steps from its OWN base, so there is nothing to hand-edit here. Thresholds save via
+// POST /api/costs/model-fallback; the per-agent state is read from
+// GET /api/costs/model-fallback/agents (base model, effective tier, current model, ramp target).
 
-function renderModelTierChain() {
-  const list = document.getElementById('mtChainList')
+function renderModelTierState(state) {
+  const list = document.getElementById('mtAgentState')
   if (!list) return
   list.innerHTML = ''
-  _mtChain.forEach((model, i) => {
+  const agents = state && Array.isArray(state.agents) ? state.agents : []
+  if (agents.length === 0) {
     const li = document.createElement('li')
-    li.className = 'usage-modeltier-chain-item'
-    const input = document.createElement('input')
-    input.type = 'text'
-    input.className = 'usage-modeltier-model-input'
-    input.setAttribute('list', 'mtModelSuggestions')
-    input.value = model
-    input.placeholder = i === 0
-      ? t('overview.quota.modeltier.primaryPlaceholder')
-      : t('overview.quota.modeltier.stepPlaceholder')
-    input.setAttribute('aria-label', t('overview.quota.modeltier.modelAria', { n: i + 1 }))
-    input.addEventListener('input', () => { _mtChain[i] = input.value })
-    const up = document.createElement('button')
-    up.type = 'button'; up.className = 'btn-compact usage-modeltier-move'
-    up.textContent = '↑'; up.disabled = i === 0
-    up.setAttribute('aria-label', t('overview.quota.modeltier.moveUp'))
-    up.addEventListener('click', () => { _mtChain.splice(i - 1, 0, _mtChain.splice(i, 1)[0]); renderModelTierChain() })
-    const down = document.createElement('button')
-    down.type = 'button'; down.className = 'btn-compact usage-modeltier-move'
-    down.textContent = '↓'; down.disabled = i === _mtChain.length - 1
-    down.setAttribute('aria-label', t('overview.quota.modeltier.moveDown'))
-    down.addEventListener('click', () => { _mtChain.splice(i + 1, 0, _mtChain.splice(i, 1)[0]); renderModelTierChain() })
-    const rm = document.createElement('button')
-    rm.type = 'button'; rm.className = 'btn-compact usage-modeltier-remove'
-    rm.textContent = '✕'
-    rm.setAttribute('aria-label', t('overview.quota.modeltier.removeModel'))
-    rm.addEventListener('click', () => { _mtChain.splice(i, 1); renderModelTierChain() })
-    const idx = document.createElement('span')
-    idx.className = 'usage-modeltier-idx'
-    idx.textContent = i === 0 ? t('overview.quota.modeltier.primaryTag') : String(i)
-    li.append(idx, input, up, down, rm)
+    li.className = 'usage-modeltier-state-empty'
+    li.textContent = t('overview.quota.modeltier.stateEmpty')
     list.appendChild(li)
-  })
+    return
+  }
+  for (const a of agents) {
+    const li = document.createElement('li')
+    li.className = 'usage-modeltier-state-item'
+
+    const name = document.createElement('span')
+    name.className = 'usage-modeltier-state-name'
+    name.textContent = a.name
+
+    const tier = document.createElement('span')
+    tier.className = 'usage-modeltier-state-tier'
+    tier.textContent = a.exempt
+      ? t('overview.quota.modeltier.exemptTag')
+      : t('overview.quota.modeltier.tierTag', { n: a.tier })
+
+    // Base -> current model. When the two differ the agent has been stepped down; showing both
+    // makes the ramp visible without a second click.
+    const models = document.createElement('span')
+    models.className = 'usage-modeltier-state-models'
+    if (a.currentModel === a.baseModel) {
+      models.textContent = a.currentLabel
+    } else {
+      models.textContent = a.baseLabel + ' → ' + a.currentLabel
+    }
+    models.title = t('overview.quota.modeltier.stateAria', {
+      base: a.baseLabel, current: a.currentLabel, target: a.targetLabel,
+    })
+
+    li.append(name, tier, models)
+    list.appendChild(li)
+  }
 }
 
 async function loadModelTierConfig() {
@@ -12732,23 +12736,27 @@ async function loadModelTierConfig() {
       if (input && Number.isFinite(Number(val))) input.value = val
       if (label && Number.isFinite(Number(val))) label.textContent = val + '%'
     }
-    _mtChain = Array.isArray(cfg.chain) ? cfg.chain.slice() : []
-    _mtKnownModels = Array.isArray(cfg.knownModels) ? cfg.knownModels : []
-    const datalist = document.getElementById('mtModelSuggestions')
-    if (datalist) {
-      datalist.innerHTML = ''
-      for (const m of _mtKnownModels) {
-        const opt = document.createElement('option')
-        opt.value = m
-        datalist.appendChild(opt)
-      }
-    }
-    renderModelTierChain()
     const saveBtn = document.getElementById('mtSaveBtn')
     if (saveBtn) saveBtn.disabled = false
   } catch {
     // Keep the HTML defaults; save stays disabled (fail-closed) so we never persist
     // guessed values over a real config we simply failed to read.
+  }
+  // The per-agent state comes from its own endpoint; a failure there leaves an honest
+  // error row without blocking the (separately-loaded) threshold sliders.
+  try {
+    const res = await fetch('/api/costs/model-fallback/agents')
+    if (!res.ok) throw new Error('HTTP ' + res.status)
+    renderModelTierState(await res.json())
+  } catch {
+    const list = document.getElementById('mtAgentState')
+    if (list) {
+      list.innerHTML = ''
+      const li = document.createElement('li')
+      li.className = 'usage-modeltier-state-empty'
+      li.textContent = t('overview.quota.modeltier.stateError')
+      list.appendChild(li)
+    }
   }
 }
 
@@ -12895,9 +12903,10 @@ async function loadLocalLlmInfo() {
     })
   }
 
-  // Model-tier stepdown controls (card 5d2002b5): collapse toggle, live slider labels,
-  // add-model button, and save (POST /api/costs/model-fallback). The backend re-validates
-  // (chain >= 2 non-empty deduped, tier1 < tier2), so a bad edit returns a descriptive error.
+  // Model-tier stepdown controls (card 5d2002b5 redesign): collapse toggle, live slider labels,
+  // and save of the two %-thresholds (POST /api/costs/model-fallback). The model chain editor was
+  // removed -- the ladder is the shared dynamic list and the per-agent state below is read-only.
+  // The backend still re-validates (tier1 < tier2), so a bad pair returns a descriptive error.
   const mtToggle = document.getElementById('modelTierToggle')
   const mtBody = document.getElementById('modelTierBody')
   if (mtToggle && mtBody) {
@@ -12916,50 +12925,35 @@ async function loadLocalLlmInfo() {
       })
     }
   }
-  const mtAdd = document.getElementById('mtChainAdd')
-  if (mtAdd) {
-    mtAdd.addEventListener('click', () => { _mtChain.push(''); renderModelTierChain() })
-  }
   const mtSaveBtn = document.getElementById('mtSaveBtn')
   const mtStatus = document.getElementById('mtStatus')
-  const mtChainError = document.getElementById('mtChainError')
   let mtStatusTimer = null
   if (mtSaveBtn) {
     mtSaveBtn.addEventListener('click', async () => {
       const enabled = !!document.getElementById('mtEnabled')?.checked
       const tier1 = Number(document.getElementById('mtTier1')?.value)
       const tier2 = Number(document.getElementById('mtTier2')?.value)
-      // Trim client-side for a friendly early message; the backend is the authority
-      // (dedupes + enforces >= 2, so this is a hint, not the gate).
-      const chain = _mtChain.map((m) => String(m).trim()).filter((m) => m.length > 0)
-      if (mtChainError) mtChainError.hidden = true
-      if (chain.length < 2) {
-        if (mtChainError) {
-          mtChainError.textContent = t('overview.quota.modeltier.errMinChain')
-          mtChainError.hidden = false
-        }
-        return
-      }
       mtSaveBtn.disabled = true
       if (mtStatusTimer) { clearTimeout(mtStatusTimer); mtStatusTimer = null }
       if (mtStatus) { mtStatus.hidden = true; mtStatus.classList.remove('success', 'error') }
       try {
+        // Only the thresholds + enable flag are sent; the chain is no longer dashboard-editable,
+        // so the config's banner chain is left untouched (the POST parser ignores absent fields).
         const res = await fetch('/api/costs/model-fallback', {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ weeklyTierEnabled: enabled, weeklyTier1Percent: tier1, weeklyTier2Percent: tier2, chain }),
+          body: JSON.stringify({ weeklyTierEnabled: enabled, weeklyTier1Percent: tier1, weeklyTier2Percent: tier2 }),
         })
         const data = await res.json()
         if (!res.ok) throw new Error(data.error || ('HTTP ' + res.status))
-        // Reflect the normalized result the server actually stored.
-        _mtChain = Array.isArray(data.chain) ? data.chain.slice() : chain
-        renderModelTierChain()
         if (mtStatus) {
           mtStatus.textContent = t('overview.quota.modeltier.saved')
           mtStatus.classList.add('success')
           mtStatus.hidden = false
           mtStatusTimer = setTimeout(() => { mtStatus.hidden = true }, 3000)
         }
+        // A new threshold can change which tier the fleet is in -- refresh the read-only state.
+        loadModelTierConfig()
       } catch (err) {
         if (mtStatus) {
           mtStatus.textContent = String(err.message || err)

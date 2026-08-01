@@ -4,6 +4,7 @@ import {
   MODEL_LADDER,
   ladderIndexOf,
   weeklyTargetModel,
+  buildAgentTierRows,
 } from '../model-catalog.js'
 
 describe('the model ladder is one coherent source (card 5d2002b5)', () => {
@@ -59,5 +60,54 @@ describe('weeklyTargetModel steps each agent from its OWN base (the bug this fix
 
   it('an unknown base is treated as the top, so it can only step DOWN', () => {
     expect(weeklyTargetModel('some-openrouter-model', 1)).toBe('claude-opus-4-8[1m]')
+  })
+})
+
+describe('buildAgentTierRows assembles the read-only display (redesign point 4)', () => {
+  it('an exempt agent is pinned to tier 0 and its target equals its base', () => {
+    // mikrob-channels never steps down by the weekly %, even when the fleet is at tier 2.
+    const [row] = buildAgentTierRows(
+      [{ name: 'mikrob-channels', baseModel: 'claude-opus-5', currentModel: 'claude-opus-5', exempt: true }],
+      2,
+    )
+    expect(row.exempt).toBe(true)
+    expect(row.tier).toBe(0)
+    expect(row.targetModel).toBe('claude-opus-5')
+  })
+
+  it('two agents at the same fleet tier target DIFFERENT models by their base (the core fix, end to end)', () => {
+    const rows = buildAgentTierRows(
+      [
+        { name: 'opus-agent', baseModel: 'claude-opus-5', currentModel: 'claude-opus-5', exempt: false },
+        { name: 'haiku-agent', baseModel: 'claude-haiku-4-5-20251001', currentModel: 'claude-haiku-4-5-20251001', exempt: false },
+      ],
+      1,
+    )
+    expect(rows[0].targetModel).toBe('claude-opus-4-8[1m]')
+    expect(rows[1].targetModel).toBe('claude-fable-5') // Haiku's one rung down is the last, clamped
+    expect(rows[0].targetModel).not.toBe(rows[1].targetModel)
+  })
+
+  it('labels resolve from the catalog, and an off-catalog id falls back to the raw id', () => {
+    const [row] = buildAgentTierRows(
+      [{ name: 'a', baseModel: 'openrouter-x', currentModel: 'openrouter-x', exempt: false }],
+      0,
+    )
+    expect(row.baseLabel).toBe('openrouter-x') // no blank for an unknown model
+    const [known] = buildAgentTierRows(
+      [{ name: 'b', baseModel: 'claude-opus-5', currentModel: 'claude-opus-5', exempt: false }],
+      0,
+    )
+    expect(known.baseLabel).toBe('Opus 5 (legújabb Opus)')
+  })
+
+  it('current model distinct from base is preserved (a stepped-down agent shows both)', () => {
+    const [row] = buildAgentTierRows(
+      [{ name: 'a', baseModel: 'claude-opus-5', currentModel: 'claude-sonnet-5', exempt: false }],
+      2,
+    )
+    expect(row.baseModel).toBe('claude-opus-5')
+    expect(row.currentModel).toBe('claude-sonnet-5')
+    expect(row.targetModel).toBe('claude-sonnet-5') // opus base, tier 2 => two rungs down
   })
 })

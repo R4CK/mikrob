@@ -825,36 +825,45 @@ main {
   margin: 10px 0 6px;
   color: var(--text-muted);
 }
-.usage-modeltier-chain {
+/* Read-only per-agent tier state (card 5d2002b5 redesign). No interactive controls, so no
+   44px touch-target minimum applies here. */
+.usage-modeltier-state {
   list-style: none;
   margin: 0 0 8px;
   padding: 0;
   display: flex;
   flex-direction: column;
-  gap: 6px;
+  gap: 4px;
 }
-.usage-modeltier-chain-item {
+.usage-modeltier-state-item {
   display: flex;
-  align-items: center;
-  gap: 6px;
+  align-items: baseline;
+  gap: 8px;
   flex-wrap: wrap;
+  font-size: 12px;
+  padding: 4px 0;
+  border-bottom: 1px solid var(--border, rgba(127, 127, 127, 0.15));
 }
-.usage-modeltier-idx {
+.usage-modeltier-state-item:last-child { border-bottom: none; }
+.usage-modeltier-state-name {
+  font-weight: 600;
+  flex: 0 0 auto;
+  min-width: 96px;
+}
+.usage-modeltier-state-tier {
   font-size: 11px;
   color: var(--text-muted);
-  min-width: 20px;
+  flex: 0 0 auto;
 }
-.usage-modeltier-model-input {
+.usage-modeltier-state-models {
+  color: var(--text-muted);
   flex: 1 1 160px;
-  min-width: 140px;
-  min-height: 44px;
 }
-.usage-modeltier-move,
-.usage-modeltier-remove {
-  min-width: 44px;
-  min-height: 44px;
+.usage-modeltier-state-empty {
+  font-size: 12px;
+  color: var(--text-muted);
+  padding: 6px 0;
 }
-.usage-modeltier-move:disabled { opacity: 0.4; cursor: default; }
 
 /* Row 3: local-LLM info display (card e7a26045) */
 .usage-llm-info {

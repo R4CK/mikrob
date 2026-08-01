@@ -21,7 +21,7 @@ import {
 import { MAIN_CHANNELS_SESSION } from './main-agent.js'
 import { paneLooksIdle } from '../pane-state.js'
 import { readModelFallbackConfig } from './model-fallback-store.js'
-import { ladderIndexOf, weeklyTargetModel } from '../model-catalog.js'
+import { ladderIndexOf, weeklyTargetModel, buildAgentTierRows, type AgentTierRow } from '../model-catalog.js'
 import {
   readBaselineModel,
   recordBaselineIfAbsent,
@@ -211,6 +211,49 @@ function checkAgent(name: string, nowMs: number, cfg: ModelFallbackConfig, weekl
     )
   } catch (err) {
     logger.warn({ err, name }, 'model-fallback: switch failed')
+  }
+}
+
+/** The fleet's current weekly tier (0/1/2), for the read-only dashboard display. Held in memory and
+ *  advanced by the sweep's hysteresis; used as the previous-tier seed when the display recomputes. */
+export function currentWeeklyTier(): number {
+  return weeklyTier
+}
+
+/**
+ * The read-only per-agent tier state the dashboard renders (card 5d2002b5 redesign, point 4).
+ * Recomputes the fleet tier from the live weekly % (seeded with the in-memory tier so the hysteresis
+ * matches what the sweep will do), then, for every agent, reports its DURABLE base, its actual current
+ * model, and where the ramp targets it from its OWN base. mikrob-channels (MAIN) is exempt.
+ *
+ * The base shown is the durable baseline when the agent has been stepped down, else its current model
+ * (never stepped => it IS its own base). No IO beyond reading the same files the sweep reads.
+ */
+export function readFleetTierState(): {
+  weeklyTierEnabled: boolean
+  weeklyPercent: number
+  fleetTier: number
+  agents: AgentTierRow[]
+} {
+  const cfg = readModelFallbackConfig()
+  const percent = readHardStop().percent
+  const fleetTier =
+    cfg.weeklyTierEnabled && percent >= 0 ? weeklyTierIndex(percent, cfg, weeklyTier) : 0
+
+  const rows: Array<{ name: string; baseModel: string; currentModel: string; exempt: boolean }> = []
+  const collect = (name: string, exempt: boolean) => {
+    const currentModel = readModelFor(name)
+    const baseModel = readBaselineModel(name) ?? currentModel
+    rows.push({ name, baseModel, currentModel, exempt })
+  }
+  collect(MAIN_AGENT_ID, true)
+  for (const name of listAgentNames()) collect(name, false)
+
+  return {
+    weeklyTierEnabled: cfg.weeklyTierEnabled,
+    weeklyPercent: percent,
+    fleetTier,
+    agents: buildAgentTierRows(rows, fleetTier),
   }
 }
 

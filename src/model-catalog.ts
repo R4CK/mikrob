@@ -70,3 +70,54 @@ export function weeklyTargetModel(baseModel: string, tier: number): string {
   const target = Math.min(from + steps, MODEL_LADDER.length - 1)
   return MODEL_LADDER[target] ?? baseModel
 }
+
+/** The operator-facing label for a model id, or the id itself for an off-catalog model (an
+ *  OpenRouter id, a manual entry) so the read-only display never shows a blank. */
+export function labelForModel(model: string): string {
+  return CLAUDE_MODELS.find((m) => m.id === model)?.label ?? model
+}
+
+/** One row of the read-only per-agent tier display (card 5d2002b5 redesign, point 4). */
+export interface AgentTierRow {
+  readonly name: string
+  /** mikrob-channels (MAIN) never steps down by the weekly %. */
+  readonly exempt: boolean
+  /** Effective weekly tier for THIS agent: 0 for an exempt agent, else the fleet tier. */
+  readonly tier: number
+  readonly baseModel: string
+  readonly baseLabel: string
+  readonly currentModel: string
+  readonly currentLabel: string
+  /** Where the weekly ramp wants this agent, from its OWN base + its effective tier. */
+  readonly targetModel: string
+  readonly targetLabel: string
+}
+
+/**
+ * Assemble the read-only tier state the dashboard shows. PURE: the caller reads each agent's base +
+ * current model and whether it is exempt; this maps them to display rows. An exempt agent is pinned
+ * to tier 0 (its base), so the target equals its base. Non-exempt agents step from their OWN base by
+ * the fleet tier -- so an Opus base and a Haiku base at the same fleet tier show DIFFERENT targets,
+ * which is the per-agent-base fix this whole card is about.
+ */
+export function buildAgentTierRows(
+  agents: ReadonlyArray<{ name: string; baseModel: string; currentModel: string; exempt: boolean }>,
+  fleetTier: number,
+): AgentTierRow[] {
+  const clampedFleet = Number.isFinite(fleetTier) && fleetTier > 0 ? Math.floor(fleetTier) : 0
+  return agents.map((a) => {
+    const tier = a.exempt ? 0 : clampedFleet
+    const targetModel = weeklyTargetModel(a.baseModel, tier)
+    return {
+      name: a.name,
+      exempt: a.exempt,
+      tier,
+      baseModel: a.baseModel,
+      baseLabel: labelForModel(a.baseModel),
+      currentModel: a.currentModel,
+      currentLabel: labelForModel(a.currentModel),
+      targetModel,
+      targetLabel: labelForModel(targetModel),
+    }
+  })
+}

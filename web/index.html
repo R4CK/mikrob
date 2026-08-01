@@ -344,7 +344,7 @@
 
         <!-- Model-tier stepdown (card 5d2002b5, Peti): as the WEEKLY % climbs, every role agent
              steps one tier down the model chain (work continues on a cheaper model, it does NOT
-             stop). Two configurable thresholds + an editable, dynamic model chain. Loaded/saved via
+             stop). Two configurable thresholds; the model ladder is dynamic (shared with the picker) and the per-agent state is read-only (card 5d2002b5 redesign). Loaded/saved via
              /api/costs/model-fallback (token-gated like the sliders above). mikrob-channels exempt. -->
         <div class="usage-threshold-section">
           <button type="button" class="usage-threshold-toggle" id="modelTierToggle" aria-expanded="false" aria-controls="modelTierBody">
@@ -367,15 +367,12 @@
               <span class="usage-threshold-val" id="mtTier2Val">85%</span>
             </div>
             <p class="usage-threshold-hint" data-i18n="overview.quota.modeltier.hint">
-              A lánc sorrendje adja a lépcsőket: az első elem az elsődleges modell, minden következő egy szinttel olcsóbb. A heti % emelkedésével minden szerep-ügynök lelép a láncon; a resetkor visszaáll az elsődlegesre.
+              Minden ügynök a SAJÁT alap-modelljéről lép egy szintet lejjebb a közös modell-létrán (a képesség szerint csökkenő rangsoron), tier-enként egyet. A heti % emelkedésével lelép, a resetkor a saját alapjára áll vissza. A létra a modellválasztó listával közös forrásból jön.
             </p>
             <div class="usage-modeltier-chain-head">
-              <span data-i18n="overview.quota.modeltier.chainTitle">Modell-lánc (sorrend = lépcsők)</span>
+              <span data-i18n="overview.quota.modeltier.stateTitle">Ügynökök állapota (csak olvasható)</span>
             </div>
-            <ol class="usage-modeltier-chain" id="mtChainList" aria-live="polite"></ol>
-            <datalist id="mtModelSuggestions"></datalist>
-            <button type="button" class="btn-compact" id="mtChainAdd" data-i18n="overview.quota.modeltier.addModel">+ Modell hozzáadása</button>
-            <p class="usage-threshold-hint" id="mtChainError" hidden role="alert"></p>
+            <ul class="usage-modeltier-state" id="mtAgentState" aria-live="polite"></ul>
             <div class="usage-threshold-actions">
               <button type="button" class="btn-primary btn-compact" id="mtSaveBtn" data-i18n="overview.quota.modeltier.save" disabled>Mentés</button>
               <span class="usage-threshold-status" id="mtStatus" hidden></span>

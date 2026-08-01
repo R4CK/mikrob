@@ -25,6 +25,7 @@ import {
   writeModelFallbackConfig,
 } from '../model-fallback-store.js'
 import { parseModelFallbackUpdate, ModelFallbackConfigError } from '../../model-fallback.js'
+import { readFleetTierState } from '../model-fallback-runner.js'
 import { knownModelSuggestions } from '../agent-config.js'
 import type { RouteContext } from './types.js'
 
@@ -158,6 +159,18 @@ export async function tryHandleCosts(ctx: RouteContext): Promise<boolean> {
   // editor still accepts free text, so a future model needs no code change.
   if (path === '/api/costs/model-fallback' && method === 'GET') {
     json(res, { ...readModelFallbackConfig(), knownModels: knownModelSuggestions() })
+    return true
+  }
+
+  // Read-only per-agent tier state for the dashboard (card 5d2002b5 redesign): each agent's durable
+  // base, current model, effective tier, and the ramp target from its OWN base. Same Bearer gate.
+  if (path === '/api/costs/model-fallback/agents' && method === 'GET') {
+    try {
+      json(res, readFleetTierState())
+    } catch (err) {
+      logger.error({ err }, 'Model-fallback agent state read failed')
+      json(res, { error: 'Az ügynök modell-állapot lekérése sikertelen.' }, 500)
+    }
     return true
   }
 
