@@ -20,6 +20,12 @@ import {
   WeeklyThresholdError,
 } from '../../costops/weekly-threshold.js'
 import { readHardStop } from '../../costops/weekly-hard-stop.js'
+import {
+  readModelFallbackConfig,
+  writeModelFallbackConfig,
+} from '../model-fallback-store.js'
+import { parseModelFallbackUpdate, ModelFallbackConfigError } from '../../model-fallback.js'
+import { knownModelSuggestions } from '../agent-config.js'
 import type { RouteContext } from './types.js'
 
 // Runs the fixed-cost -> ledger reflection once immediately (so the summary is
@@ -141,6 +147,39 @@ export async function tryHandleCosts(ctx: RouteContext): Promise<boolean> {
       }
       logger.error({ err }, 'Weekly threshold config write failed')
       json(res, { error: 'A kuszob-beallitasok mentese sikertelen.' }, 500)
+    }
+    return true
+  }
+
+  // Model-fallback config (card 5d2002b5): the banner-fallback toggle + the
+  // editable model CHAIN + the weekly-% tier thresholds, all in one panel. Same
+  // Bearer gate as every /api/* route (enforced centrally in web.ts). GET also
+  // returns the known-model SUGGESTIONS for the chain editor's datalist -- the
+  // editor still accepts free text, so a future model needs no code change.
+  if (path === '/api/costs/model-fallback' && method === 'GET') {
+    json(res, { ...readModelFallbackConfig(), knownModels: knownModelSuggestions() })
+    return true
+  }
+
+  if (path === '/api/costs/model-fallback' && method === 'POST') {
+    try {
+      let body: Record<string, unknown>
+      try {
+        body = JSON.parse((await readBody(req)).toString()) as Record<string, unknown>
+      } catch {
+        json(res, { error: 'Érvénytelen JSON törzs.' }, 400)
+        return true
+      }
+      const update = parseModelFallbackUpdate(body)
+      const config = writeModelFallbackConfig(update)
+      json(res, { ...config, knownModels: knownModelSuggestions() })
+    } catch (err) {
+      if (err instanceof ModelFallbackConfigError) {
+        json(res, { error: err.message }, 400)
+        return true
+      }
+      logger.error({ err }, 'Model-fallback config write failed')
+      json(res, { error: 'A modell-fallback beállítások mentése sikertelen.' }, 500)
     }
     return true
   }

@@ -818,6 +818,44 @@ main {
 .usage-threshold-status.success { color: var(--success); }
 .usage-threshold-status.error { color: var(--danger); }
 
+/* Model-tier stepdown chain editor (card 5d2002b5) */
+.usage-modeltier-chain-head {
+  font-size: 12px;
+  font-weight: 600;
+  margin: 10px 0 6px;
+  color: var(--text-muted);
+}
+.usage-modeltier-chain {
+  list-style: none;
+  margin: 0 0 8px;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+.usage-modeltier-chain-item {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  flex-wrap: wrap;
+}
+.usage-modeltier-idx {
+  font-size: 11px;
+  color: var(--text-muted);
+  min-width: 20px;
+}
+.usage-modeltier-model-input {
+  flex: 1 1 160px;
+  min-width: 140px;
+  min-height: 44px;
+}
+.usage-modeltier-move,
+.usage-modeltier-remove {
+  min-width: 44px;
+  min-height: 44px;
+}
+.usage-modeltier-move:disabled { opacity: 0.4; cursor: default; }
+
 /* Row 3: local-LLM info display (card e7a26045) */
 .usage-llm-info {
   margin-top: 12px;

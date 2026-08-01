@@ -4,8 +4,15 @@ import {
   nextFallbackModel,
   decideModelAction,
   normalizeModelFallbackConfig,
+  weeklyTierIndex,
+  sanitizeChain,
+  parseModelFallbackUpdate,
+  ModelFallbackConfigError,
+  WEEKLY_TIER_DEADBAND,
   DEFAULT_MODEL_CHAIN,
   DEFAULT_MODEL_FALLBACK,
+  DEFAULT_WEEKLY_TIER1_PERCENT,
+  DEFAULT_WEEKLY_TIER2_PERCENT,
 } from '../model-fallback.js'
 
 const CHAIN = [...DEFAULT_MODEL_CHAIN]
@@ -105,8 +112,14 @@ describe('normalizeModelFallbackConfig', () => {
   })
 
   it('honors a valid override', () => {
-    const cfg = normalizeModelFallbackConfig({ enabled: true, chain: ['a', 'b', 'c'], revertAfterMinutes: 120 })
-    expect(cfg).toEqual({ enabled: true, chain: ['a', 'b', 'c'], revertAfterMinutes: 120 })
+    const cfg = normalizeModelFallbackConfig({
+      enabled: true, chain: ['a', 'b', 'c'], revertAfterMinutes: 120,
+      weeklyTierEnabled: true, weeklyTier1Percent: 70, weeklyTier2Percent: 80,
+    })
+    expect(cfg).toEqual({
+      enabled: true, chain: ['a', 'b', 'c'], revertAfterMinutes: 120,
+      weeklyTierEnabled: true, weeklyTier1Percent: 70, weeklyTier2Percent: 80,
+    })
   })
 
   it('rejects a too-short chain and non-string entries', () => {
@@ -114,8 +127,139 @@ describe('normalizeModelFallbackConfig', () => {
     expect(normalizeModelFallbackConfig({ chain: ['a', 2, '', 'b'] }).chain).toEqual(['a', 'b'])
   })
 
+  it('dedupes the chain (first occurrence wins)', () => {
+    expect(normalizeModelFallbackConfig({ chain: ['a', 'a', 'b', 'a', 'c'] }).chain).toEqual(['a', 'b', 'c'])
+    // A chain that dedupes below 2 falls back to the default.
+    expect(normalizeModelFallbackConfig({ chain: ['a', 'a', 'a'] }).chain).toEqual(DEFAULT_MODEL_FALLBACK.chain)
+  })
+
   it('rejects a non-positive revert window', () => {
     expect(normalizeModelFallbackConfig({ revertAfterMinutes: 0 }).revertAfterMinutes).toBe(DEFAULT_MODEL_FALLBACK.revertAfterMinutes)
     expect(normalizeModelFallbackConfig({ revertAfterMinutes: -5 }).revertAfterMinutes).toBe(DEFAULT_MODEL_FALLBACK.revertAfterMinutes)
+  })
+
+  it('defaults the weekly-tier fields (backward compat with pre-feature JSON)', () => {
+    // A file written before this feature carries no weeklyTier* keys.
+    const cfg = normalizeModelFallbackConfig({ enabled: true, chain: ['a', 'b'], revertAfterMinutes: 200 })
+    expect(cfg.weeklyTierEnabled).toBe(false)
+    expect(cfg.weeklyTier1Percent).toBe(DEFAULT_WEEKLY_TIER1_PERCENT)
+    expect(cfg.weeklyTier2Percent).toBe(DEFAULT_WEEKLY_TIER2_PERCENT)
+  })
+
+  it('clamps weekly-tier percents to 1..100 integers', () => {
+    // 0 is finite -> clamped up to the 1 floor (not the non-finite fallback).
+    expect(normalizeModelFallbackConfig({ weeklyTier1Percent: 0 }).weeklyTier1Percent).toBe(1)
+    // Non-finite junk -> the default.
+    expect(normalizeModelFallbackConfig({ weeklyTier1Percent: 'x', weeklyTier2Percent: 88 }).weeklyTier1Percent).toBe(DEFAULT_WEEKLY_TIER1_PERCENT)
+    expect(normalizeModelFallbackConfig({ weeklyTier1Percent: 200, weeklyTier2Percent: 300 })).toMatchObject({
+      weeklyTier1Percent: DEFAULT_WEEKLY_TIER1_PERCENT, // 100 >= 100 -> both reset to defaults (tier1 < tier2 invariant)
+      weeklyTier2Percent: DEFAULT_WEEKLY_TIER2_PERCENT,
+    })
+    expect(normalizeModelFallbackConfig({ weeklyTier1Percent: 40.6, weeklyTier2Percent: 60 }).weeklyTier1Percent).toBe(41)
+  })
+
+  it('resets both weekly percents when tier1 is not below tier2', () => {
+    const cfg = normalizeModelFallbackConfig({ weeklyTier1Percent: 90, weeklyTier2Percent: 80 })
+    expect(cfg.weeklyTier1Percent).toBe(DEFAULT_WEEKLY_TIER1_PERCENT)
+    expect(cfg.weeklyTier2Percent).toBe(DEFAULT_WEEKLY_TIER2_PERCENT)
+    // Equal is also invalid (tier1 must be strictly below tier2).
+    expect(normalizeModelFallbackConfig({ weeklyTier1Percent: 80, weeklyTier2Percent: 80 }).weeklyTier1Percent)
+      .toBe(DEFAULT_WEEKLY_TIER1_PERCENT)
+  })
+})
+
+describe('sanitizeChain', () => {
+  it('trims, drops empties/non-strings, and dedupes preserving order', () => {
+    expect(sanitizeChain([' a ', 'a', '', 2, 'b', null, 'c', 'b'])).toEqual(['a', 'b', 'c'])
+  })
+  it('returns [] for a non-array', () => {
+    expect(sanitizeChain('nope')).toEqual([])
+    expect(sanitizeChain(null)).toEqual([])
+  })
+})
+
+describe('weeklyTierIndex (thresholds + hysteresis)', () => {
+  const cfg = { weeklyTier1Percent: 75, weeklyTier2Percent: 85 }
+  // deadband is 3, so release happens at <72 (tier1) and <82 (tier2).
+
+  it('climbs at the exact threshold from the primary', () => {
+    expect(weeklyTierIndex(74, cfg, 0)).toBe(0)
+    expect(weeklyTierIndex(75, cfg, 0)).toBe(1) // enters tier 1 at the threshold
+    expect(weeklyTierIndex(84, cfg, 0)).toBe(1)
+    expect(weeklyTierIndex(85, cfg, 0)).toBe(2) // jumps straight to tier 2
+  })
+
+  it('holds a tier inside the deadband (no flap just under the threshold)', () => {
+    // Sitting at tier 1, % dips within the deadband (still >= 75-3=72) -> stays tier 1.
+    expect(weeklyTierIndex(74, cfg, 1)).toBe(1)
+    expect(weeklyTierIndex(73, cfg, 1)).toBe(1)
+    expect(weeklyTierIndex(72, cfg, 1)).toBe(1) // exactly at 75-3, still held
+    // Only once it drops BELOW the deadband floor does it release to primary.
+    expect(weeklyTierIndex(71, cfg, 1)).toBe(0) // 71 < 72 -> release
+  })
+
+  it('applies the deadband to the tier-2 boundary too', () => {
+    expect(weeklyTierIndex(83, cfg, 2)).toBe(2) // within deadband of 85
+    expect(weeklyTierIndex(82, cfg, 2)).toBe(2) // exactly at 85-3, still tier 2
+    expect(weeklyTierIndex(81, cfg, 2)).toBe(1) // 81 < 82 -> drop to tier 1
+    // From tier 2, a big drop can fall through both boundaries at once.
+    expect(weeklyTierIndex(71, cfg, 2)).toBe(0)
+  })
+
+  it('uses the up-threshold when climbing (no deadband on the way up)', () => {
+    // At tier 0, 84 must NOT enter tier 2 even though 84 > 85-deadband.
+    expect(weeklyTierIndex(84, cfg, 0)).toBe(1)
+    // At tier 1 climbing to tier 2 requires the full 85 (boundary not yet crossed).
+    expect(weeklyTierIndex(84, cfg, 1)).toBe(1)
+    expect(weeklyTierIndex(85, cfg, 1)).toBe(2)
+  })
+
+  it('holds the current tier on an unknown/negative percent', () => {
+    expect(weeklyTierIndex(-1, cfg, 2)).toBe(2)
+    expect(weeklyTierIndex(NaN, cfg, 1)).toBe(1)
+    expect(weeklyTierIndex(-1, cfg, 0)).toBe(0)
+  })
+
+  it('exposes a 3-point deadband constant', () => {
+    expect(WEEKLY_TIER_DEADBAND).toBe(3)
+  })
+})
+
+describe('parseModelFallbackUpdate (endpoint validation)', () => {
+  it('accepts a valid chain including free-text (unknown) model IDs', () => {
+    const out = parseModelFallbackUpdate({ chain: ['claude-future-9', 'my-local-model'] })
+    expect(out.chain).toEqual(['claude-future-9', 'my-local-model'])
+  })
+
+  it('trims and dedupes an accepted chain', () => {
+    expect(parseModelFallbackUpdate({ chain: [' a ', 'a', 'b'] }).chain).toEqual(['a', 'b'])
+  })
+
+  it('rejects a chain shorter than 2 after dedupe/trim', () => {
+    expect(() => parseModelFallbackUpdate({ chain: ['only'] })).toThrow(ModelFallbackConfigError)
+    expect(() => parseModelFallbackUpdate({ chain: ['a', 'a'] })).toThrow(ModelFallbackConfigError)
+    expect(() => parseModelFallbackUpdate({ chain: ['a', '  '] })).toThrow(ModelFallbackConfigError)
+  })
+
+  it('rejects a non-array chain and non-string entries', () => {
+    expect(() => parseModelFallbackUpdate({ chain: 'a,b' })).toThrow(ModelFallbackConfigError)
+    expect(() => parseModelFallbackUpdate({ chain: ['a', 2] })).toThrow(ModelFallbackConfigError)
+  })
+
+  it('validates weekly-tier percents and their ordering', () => {
+    expect(parseModelFallbackUpdate({ weeklyTier1Percent: 70, weeklyTier2Percent: 80 }))
+      .toEqual({ weeklyTier1Percent: 70, weeklyTier2Percent: 80 })
+    expect(() => parseModelFallbackUpdate({ weeklyTier1Percent: 0 })).toThrow(ModelFallbackConfigError)
+    expect(() => parseModelFallbackUpdate({ weeklyTier1Percent: 50.5 })).toThrow(ModelFallbackConfigError)
+    expect(() => parseModelFallbackUpdate({ weeklyTier1Percent: 85, weeklyTier2Percent: 80 })).toThrow(ModelFallbackConfigError)
+    expect(() => parseModelFallbackUpdate({ weeklyTier1Percent: 80, weeklyTier2Percent: 80 })).toThrow(ModelFallbackConfigError)
+  })
+
+  it('passes through the boolean toggles and only the present fields', () => {
+    expect(parseModelFallbackUpdate({ weeklyTierEnabled: true, enabled: false }))
+      .toEqual({ weeklyTierEnabled: true, enabled: false })
+    expect(parseModelFallbackUpdate({})).toEqual({})
+    // A non-true value coerces to false, never throws.
+    expect(parseModelFallbackUpdate({ weeklyTierEnabled: 'yes' }).weeklyTierEnabled).toBe(false)
   })
 })

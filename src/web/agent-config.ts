@@ -68,6 +68,19 @@ export function resolveModelId(raw: string): string {
   return MODEL_ALIASES[raw] || raw
 }
 
+// Suggestion list for the dashboard model-chain editor (card 5d2002b5): the
+// full resolved model IDs we already know about. Deliberately just SUGGESTIONS
+// -- the editor also accepts free-text so a brand-new model ID can be typed in
+// and used with zero code change. Deduped, primary (DEFAULT_MODEL) first.
+export function knownModelSuggestions(): string[] {
+  const seen = new Set<string>()
+  const out: string[] = []
+  for (const m of [DEFAULT_MODEL, ...Object.values(MODEL_ALIASES)]) {
+    if (m && !seen.has(m)) { seen.add(m); out.push(m) }
+  }
+  return out
+}
+
 // ---- model-profile map (deployment-local, card c755f4b2 Block B) -------------
 //
 // store/ is gitignored, so the concrete profile -> model mapping never leaves

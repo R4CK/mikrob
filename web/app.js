@@ -12491,6 +12491,7 @@ async function loadOverview() {
     // Claude usage info widget (card a91c6039 redesign): load auto-sourced data.
     void loadWeeklyGauge()
     void loadWeeklyThresholds()
+    void loadModelTierConfig()
     void loadLocalLlmInfo()
     const banner = document.getElementById('updateBanner')
     if (banner) {
@@ -12670,6 +12671,87 @@ async function loadWeeklyThresholds() {
   }
 }
 
+// Model-tier stepdown editor (card 5d2002b5): enable toggle + two weekly-% sliders + an
+// editable, dynamic model chain (reorder / add / remove, free-text model IDs). Loaded/saved
+// via /api/costs/model-fallback. The chain is kept in a module-level array the render + save
+// read from, so reorder/remove don't have to re-parse the DOM.
+let _mtChain = []
+let _mtKnownModels = []
+
+function renderModelTierChain() {
+  const list = document.getElementById('mtChainList')
+  if (!list) return
+  list.innerHTML = ''
+  _mtChain.forEach((model, i) => {
+    const li = document.createElement('li')
+    li.className = 'usage-modeltier-chain-item'
+    const input = document.createElement('input')
+    input.type = 'text'
+    input.className = 'usage-modeltier-model-input'
+    input.setAttribute('list', 'mtModelSuggestions')
+    input.value = model
+    input.placeholder = i === 0
+      ? t('overview.quota.modeltier.primaryPlaceholder')
+      : t('overview.quota.modeltier.stepPlaceholder')
+    input.setAttribute('aria-label', t('overview.quota.modeltier.modelAria', { n: i + 1 }))
+    input.addEventListener('input', () => { _mtChain[i] = input.value })
+    const up = document.createElement('button')
+    up.type = 'button'; up.className = 'btn-compact usage-modeltier-move'
+    up.textContent = '↑'; up.disabled = i === 0
+    up.setAttribute('aria-label', t('overview.quota.modeltier.moveUp'))
+    up.addEventListener('click', () => { _mtChain.splice(i - 1, 0, _mtChain.splice(i, 1)[0]); renderModelTierChain() })
+    const down = document.createElement('button')
+    down.type = 'button'; down.className = 'btn-compact usage-modeltier-move'
+    down.textContent = '↓'; down.disabled = i === _mtChain.length - 1
+    down.setAttribute('aria-label', t('overview.quota.modeltier.moveDown'))
+    down.addEventListener('click', () => { _mtChain.splice(i + 1, 0, _mtChain.splice(i, 1)[0]); renderModelTierChain() })
+    const rm = document.createElement('button')
+    rm.type = 'button'; rm.className = 'btn-compact usage-modeltier-remove'
+    rm.textContent = '✕'
+    rm.setAttribute('aria-label', t('overview.quota.modeltier.removeModel'))
+    rm.addEventListener('click', () => { _mtChain.splice(i, 1); renderModelTierChain() })
+    const idx = document.createElement('span')
+    idx.className = 'usage-modeltier-idx'
+    idx.textContent = i === 0 ? t('overview.quota.modeltier.primaryTag') : String(i)
+    li.append(idx, input, up, down, rm)
+    list.appendChild(li)
+  })
+}
+
+async function loadModelTierConfig() {
+  try {
+    const res = await fetch('/api/costs/model-fallback')
+    if (!res.ok) throw new Error('HTTP ' + res.status)
+    const cfg = await res.json()
+    const enabled = document.getElementById('mtEnabled')
+    if (enabled) enabled.checked = cfg.weeklyTierEnabled === true
+    const map = { mtTier1: cfg.weeklyTier1Percent, mtTier2: cfg.weeklyTier2Percent }
+    for (const [id, val] of Object.entries(map)) {
+      const input = document.getElementById(id)
+      const label = document.getElementById(id + 'Val')
+      if (input && Number.isFinite(Number(val))) input.value = val
+      if (label && Number.isFinite(Number(val))) label.textContent = val + '%'
+    }
+    _mtChain = Array.isArray(cfg.chain) ? cfg.chain.slice() : []
+    _mtKnownModels = Array.isArray(cfg.knownModels) ? cfg.knownModels : []
+    const datalist = document.getElementById('mtModelSuggestions')
+    if (datalist) {
+      datalist.innerHTML = ''
+      for (const m of _mtKnownModels) {
+        const opt = document.createElement('option')
+        opt.value = m
+        datalist.appendChild(opt)
+      }
+    }
+    renderModelTierChain()
+    const saveBtn = document.getElementById('mtSaveBtn')
+    if (saveBtn) saveBtn.disabled = false
+  } catch {
+    // Keep the HTML defaults; save stays disabled (fail-closed) so we never persist
+    // guessed values over a real config we simply failed to read.
+  }
+}
+
 // Local-LLM info row (card e7a26045, replaces the removed 3rd slider). All fields are real
 // -- today/week counts, model name, and measured (not estimated) tokens-saved -- from the
 // backend's d08b98f4 API additions to /api/local-llm/usage.
@@ -12809,6 +12891,83 @@ async function loadLocalLlmInfo() {
         }
       } finally {
         saveBtn.disabled = false
+      }
+    })
+  }
+
+  // Model-tier stepdown controls (card 5d2002b5): collapse toggle, live slider labels,
+  // add-model button, and save (POST /api/costs/model-fallback). The backend re-validates
+  // (chain >= 2 non-empty deduped, tier1 < tier2), so a bad edit returns a descriptive error.
+  const mtToggle = document.getElementById('modelTierToggle')
+  const mtBody = document.getElementById('modelTierBody')
+  if (mtToggle && mtBody) {
+    mtToggle.addEventListener('click', () => {
+      const expanded = mtToggle.getAttribute('aria-expanded') === 'true'
+      mtToggle.setAttribute('aria-expanded', String(!expanded))
+      mtBody.hidden = expanded
+    })
+  }
+  for (const id of ['mtTier1', 'mtTier2']) {
+    const input = document.getElementById(id)
+    if (input) {
+      input.addEventListener('input', () => {
+        const label = document.getElementById(id + 'Val')
+        if (label) label.textContent = input.value + '%'
+      })
+    }
+  }
+  const mtAdd = document.getElementById('mtChainAdd')
+  if (mtAdd) {
+    mtAdd.addEventListener('click', () => { _mtChain.push(''); renderModelTierChain() })
+  }
+  const mtSaveBtn = document.getElementById('mtSaveBtn')
+  const mtStatus = document.getElementById('mtStatus')
+  const mtChainError = document.getElementById('mtChainError')
+  let mtStatusTimer = null
+  if (mtSaveBtn) {
+    mtSaveBtn.addEventListener('click', async () => {
+      const enabled = !!document.getElementById('mtEnabled')?.checked
+      const tier1 = Number(document.getElementById('mtTier1')?.value)
+      const tier2 = Number(document.getElementById('mtTier2')?.value)
+      // Trim client-side for a friendly early message; the backend is the authority
+      // (dedupes + enforces >= 2, so this is a hint, not the gate).
+      const chain = _mtChain.map((m) => String(m).trim()).filter((m) => m.length > 0)
+      if (mtChainError) mtChainError.hidden = true
+      if (chain.length < 2) {
+        if (mtChainError) {
+          mtChainError.textContent = t('overview.quota.modeltier.errMinChain')
+          mtChainError.hidden = false
+        }
+        return
+      }
+      mtSaveBtn.disabled = true
+      if (mtStatusTimer) { clearTimeout(mtStatusTimer); mtStatusTimer = null }
+      if (mtStatus) { mtStatus.hidden = true; mtStatus.classList.remove('success', 'error') }
+      try {
+        const res = await fetch('/api/costs/model-fallback', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ weeklyTierEnabled: enabled, weeklyTier1Percent: tier1, weeklyTier2Percent: tier2, chain }),
+        })
+        const data = await res.json()
+        if (!res.ok) throw new Error(data.error || ('HTTP ' + res.status))
+        // Reflect the normalized result the server actually stored.
+        _mtChain = Array.isArray(data.chain) ? data.chain.slice() : chain
+        renderModelTierChain()
+        if (mtStatus) {
+          mtStatus.textContent = t('overview.quota.modeltier.saved')
+          mtStatus.classList.add('success')
+          mtStatus.hidden = false
+          mtStatusTimer = setTimeout(() => { mtStatus.hidden = true }, 3000)
+        }
+      } catch (err) {
+        if (mtStatus) {
+          mtStatus.textContent = String(err.message || err)
+          mtStatus.classList.add('error')
+          mtStatus.hidden = false
+        }
+      } finally {
+        mtSaveBtn.disabled = false
       }
     })
   }

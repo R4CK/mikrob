@@ -342,6 +342,47 @@
           </div>
         </div>
 
+        <!-- Model-tier stepdown (card 5d2002b5, Peti): as the WEEKLY % climbs, every role agent
+             steps one tier down the model chain (work continues on a cheaper model, it does NOT
+             stop). Two configurable thresholds + an editable, dynamic model chain. Loaded/saved via
+             /api/costs/model-fallback (token-gated like the sliders above). mikrob-channels exempt. -->
+        <div class="usage-threshold-section">
+          <button type="button" class="usage-threshold-toggle" id="modelTierToggle" aria-expanded="false" aria-controls="modelTierBody">
+            <span class="usage-threshold-toggle-arrow">▶</span>
+            <span data-i18n="overview.quota.modeltier.toggle">Modell-lépcső (heti %)</span>
+          </button>
+          <div class="usage-threshold-body" id="modelTierBody" hidden>
+            <label class="usage-threshold-row" style="cursor:pointer">
+              <input type="checkbox" id="mtEnabled">
+              <span data-i18n="overview.quota.modeltier.enable">Heti model-lépcső bekapcsolva</span>
+            </label>
+            <div class="usage-threshold-row">
+              <label for="mtTier1" data-i18n="overview.quota.modeltier.tier1">1. lépcső (egy szinttel olcsóbb)</label>
+              <input type="range" id="mtTier1" min="1" max="100" step="1" value="75">
+              <span class="usage-threshold-val" id="mtTier1Val">75%</span>
+            </div>
+            <div class="usage-threshold-row">
+              <label for="mtTier2" data-i18n="overview.quota.modeltier.tier2">2. lépcső (még egy szinttel olcsóbb)</label>
+              <input type="range" id="mtTier2" min="1" max="100" step="1" value="85">
+              <span class="usage-threshold-val" id="mtTier2Val">85%</span>
+            </div>
+            <p class="usage-threshold-hint" data-i18n="overview.quota.modeltier.hint">
+              A lánc sorrendje adja a lépcsőket: az első elem az elsődleges modell, minden következő egy szinttel olcsóbb. A heti % emelkedésével minden szerep-ügynök lelép a láncon; a resetkor visszaáll az elsődlegesre.
+            </p>
+            <div class="usage-modeltier-chain-head">
+              <span data-i18n="overview.quota.modeltier.chainTitle">Modell-lánc (sorrend = lépcsők)</span>
+            </div>
+            <ol class="usage-modeltier-chain" id="mtChainList" aria-live="polite"></ol>
+            <datalist id="mtModelSuggestions"></datalist>
+            <button type="button" class="btn-compact" id="mtChainAdd" data-i18n="overview.quota.modeltier.addModel">+ Modell hozzáadása</button>
+            <p class="usage-threshold-hint" id="mtChainError" hidden role="alert"></p>
+            <div class="usage-threshold-actions">
+              <button type="button" class="btn-primary btn-compact" id="mtSaveBtn" data-i18n="overview.quota.modeltier.save" disabled>Mentés</button>
+              <span class="usage-threshold-status" id="mtStatus" hidden></span>
+            </div>
+          </div>
+        </div>
+
         <!-- Row 3 (card e7a26045): local-LLM info display, replacing the removed 3rd slider.
              model + tokens-saved fields await the backend d08b98f4 API additions -- shown as an
              honest "coming soon" per field rather than invented (rule 12); today/week counts are
