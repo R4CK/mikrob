@@ -16,6 +16,24 @@ import { normalizeKanbanRefs } from '../kanban-ref-normalize.js'
 import { OWNER_NAME, BOT_NAME, MAIN_AGENT_ID, STORE_DIR, WEB_HOST, WEB_PORT, KANBAN_LABEL_COLORS } from '../../config.js'
 import { listAgentNames, readAgentDisplayName } from '../agent-config.js'
 import { isAgentRunning } from '../agent-process.js'
+import { readHardStop, isNewDevStartBlocked } from '../../costops/weekly-hard-stop.js'
+
+// Weekly NEW-DEV stop enforcement (Peti 2026-08-01). The newDevStop threshold was COMPUTED and shown,
+// but nothing refused the work: role agents self-advance to the next `planned` card on their own and
+// the status-write endpoints accepted `planned -> in_progress` unconditionally, so new development
+// kept starting above the threshold and burned the weekly quota it was meant to protect. The block
+// lives at the API boundary (both status-write routes) so every caller -- agent curl, dashboard drag,
+// PUT and POST /move -- hits it. A `waiting -> in_progress` transition is a FAIL-fix / gate resume,
+// NOT new development, so it stays allowed; `force: true` is the deliberate MikroB override for a
+// critical-infra exception.
+function newDevStopWouldBlock(id: string, nextStatus: unknown, force: boolean): boolean {
+  if (nextStatus !== 'in_progress' || force) return false // cheap early-out avoids the flag + DB read
+  const flag = readHardStop()
+  if (!flag.newDevStopActive) return false
+  return isNewDevStartBlocked(getKanbanCard(id)?.status, nextStatus, force, flag)
+}
+const NEW_DEV_STOP_MESSAGE =
+  'Heti "új fejlesztés leáll" küszöb átlépve: a planned -> in_progress átmenet (új fejlesztés indítása) le van tiltva a heti resetig. In-flight és gate-munka továbbra is mehet (waiting -> in_progress); tudatos felülíráshoz küldd force: true értékkel.'
 import { resolveKanbanDispatchTarget } from '../../kanban-dispatch.js'
 import { generateBreakdown } from '../llm-breakdown.js'
 import { logger } from '../../logger.js'
@@ -264,6 +282,10 @@ export async function tryHandleKanban(ctx: RouteContext): Promise<boolean> {
     const id = decodeURIComponent(kanbanCardMatch[1])
     const body = await readBody(req)
     const { actor, force, ...data } = JSON.parse(body.toString()) as Record<string, unknown>
+    if (newDevStopWouldBlock(id, data.status, force === true)) {
+      json(res, { error: NEW_DEV_STOP_MESSAGE }, 409)
+      return true
+    }
     if (updateKanbanCard(id, data, { actor: typeof actor === 'string' ? actor : undefined, force: force === true })) {
       json(res, { ok: true }); return true
     }
@@ -293,6 +315,10 @@ export async function tryHandleKanban(ctx: RouteContext): Promise<boolean> {
     const id = decodeURIComponent(kanbanMoveMatch[1])
     const body = await readBody(req)
     const { status, sort_order, actor, force } = JSON.parse(body.toString())
+    if (newDevStopWouldBlock(id, status, force === true)) {
+      json(res, { error: NEW_DEV_STOP_MESSAGE }, 409)
+      return true
+    }
     if (moveKanbanCard(id, status, sort_order ?? 0, actor, force === true)) {
       // Wake the assigned agent once when the card enters in_progress.
       if (status === 'in_progress') fireKanbanDispatch(id)

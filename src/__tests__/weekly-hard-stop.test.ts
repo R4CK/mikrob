@@ -5,7 +5,7 @@ import { describe, it, expect, beforeEach, afterEach } from 'vitest'
 import { mkdtempSync, rmSync, writeFileSync } from 'node:fs'
 import { join } from 'node:path'
 import { tmpdir } from 'node:os'
-import { readHardStop, isParkedByHardStop } from '../costops/weekly-hard-stop.js'
+import { readHardStop, isParkedByHardStop, isNewDevStartBlocked } from '../costops/weekly-hard-stop.js'
 
 let dir: string
 const p = () => join(dir, 'weekly-hard-stop.json')
@@ -78,5 +78,44 @@ describe('isParkedByHardStop', () => {
 
   it('matches the agent id case-insensitively (a config typo must not un-exempt MikroB)', () => {
     expect(isParkedByHardStop('MikroB', active())).toBe(false)
+  })
+})
+
+describe('isNewDevStartBlocked (weekly NEW-DEV stop enforcement, Peti 2026-08-01)', () => {
+  // The SOFT level: newDevStopActive true (percent >= newDevStop) while the hard `active` stays false.
+  // This is the exact state that leaked -- 67% over a 65% newDevStop -- so it is the state to prove.
+  const softStop = () => {
+    write({ active: false, percent: 67, testStop: 90, newDevStop: 65, exemptAgents: ['mikrob'] })
+    const flag = readHardStop(p())
+    expect(flag.newDevStopActive).toBe(true) // guard against a vacuous test: the state must really be soft-stopped
+    expect(flag.active).toBe(false)
+    return flag
+  }
+  const inactive = () => {
+    write({ active: false, percent: 50, testStop: 90, newDevStop: 65 })
+    const flag = readHardStop(p())
+    expect(flag.newDevStopActive).toBe(false)
+    return flag
+  }
+
+  it('BLOCKS planned -> in_progress (starting new development) while newDevStop is active', () => {
+    expect(isNewDevStartBlocked('planned', 'in_progress', false, softStop())).toBe(true)
+  })
+
+  it('ALLOWS waiting -> in_progress (a FAIL-fix / gate resume is not new development)', () => {
+    expect(isNewDevStartBlocked('waiting', 'in_progress', false, softStop())).toBe(false)
+  })
+
+  it('ALLOWS planned -> in_progress with force (deliberate MikroB critical-infra override)', () => {
+    expect(isNewDevStartBlocked('planned', 'in_progress', true, softStop())).toBe(false)
+  })
+
+  it('does NOT block planned -> in_progress when the stop is inactive', () => {
+    expect(isNewDevStartBlocked('planned', 'in_progress', false, inactive())).toBe(false)
+  })
+
+  it('only guards the in_progress target -- a planned -> waiting move is never blocked', () => {
+    expect(isNewDevStartBlocked('planned', 'waiting', false, softStop())).toBe(false)
+    expect(isNewDevStartBlocked('planned', 'done', false, softStop())).toBe(false)
   })
 })

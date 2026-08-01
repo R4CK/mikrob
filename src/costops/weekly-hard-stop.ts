@@ -92,3 +92,18 @@ export function isParkedByHardStop(agentId: string, flag: WeeklyHardStop = readH
   if (!flag.active) return false
   return !flag.exemptAgents.includes(agentId.trim().toLowerCase())
 }
+
+/**
+ * Pure predicate for the NEW-DEV stop (Peti 2026-08-01): a `planned -> in_progress` transition IS the
+ * start of new development and must be refused once the weekly newDevStop threshold is crossed.
+ * `waiting -> in_progress` (a FAIL-fix / gate resume) is NOT new dev and is allowed; `force` is the
+ * deliberate override. Pure so the status-write endpoints can test the decision without a file/DB.
+ */
+export function isNewDevStartBlocked(
+  prevStatus: string | undefined,
+  nextStatus: unknown,
+  force: boolean,
+  flag: WeeklyHardStop,
+): boolean {
+  return !force && flag.newDevStopActive === true && nextStatus === 'in_progress' && prevStatus === 'planned'
+}
