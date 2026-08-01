@@ -10106,7 +10106,7 @@ async function llmRefreshCategories() {
           <button type="button" class="llm-category-info-btn" data-tip="${tipId}" aria-expanded="false" aria-describedby="${tipId}" aria-label="${escapeHtml(t('localLlm.categories.infoAria', { task: c.name }))}">&#9432;</button>
         </div>
         <div class="llm-category-tooltip" id="${tipId}" role="tooltip" hidden>${escapeHtml(c.description)}</div>
-        <span class="llm-category-meta">${meta}</span>
+        <span class="llm-category-meta">${escapeHtml(meta)}</span>
         <button type="button" class="llm-category-toggle${c.enabled ? ' on' : ' off'}" data-task="${escapeHtml(c.name)}" data-enabled="${c.enabled ? '1' : '0'}" aria-pressed="${c.enabled ? 'true' : 'false'}">
           ${c.enabled ? t('localLlm.categories.on') : t('localLlm.categories.off')}
         </button>

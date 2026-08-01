@@ -1,8 +1,8 @@
 import { describe, it, expect } from 'vitest'
-import { readdirSync } from 'node:fs'
+import { readdirSync, readFileSync } from 'node:fs'
 import { join } from 'node:path'
 import { STORE_DIR } from '../config.js'
-import { listCategories } from '../web/routes/local-llm.js'
+import { listCategories, isValidCategoryName } from '../web/routes/local-llm.js'
 
 // Card 0c054ebf: the dashboard must show ALL --task presets, not just the 4
 // coding-difficulty levels -- and the list must be sourced from the real
@@ -35,5 +35,48 @@ describe('listCategories', () => {
       expect(typeof c.count).toBe('number')
       expect(c.lastTs === null || typeof c.lastTs === 'number').toBe(true)
     }
+  })
+})
+
+// Card 18a0acb9 (Cybersec adjacent findings): (1) the categories POST must reject a path-traversal
+// task name BEFORE joining it into a filesystem path; (2) the dashboard category row must escape the
+// `meta` interpolation so no data-origin value can inject markup on the Bearer-gated admin surface.
+describe('isValidCategoryName (path-traversal guard, card 18a0acb9)', () => {
+  it('rejects traversal + injection payloads', () => {
+    for (const bad of [
+      '../../etc/passwd', '../foo', 'a/b', 'foo.txt', '.', '..', 'foo\0bar',
+      'UPPER', 'space name', 'a'.repeat(65), '', 'foo;rm', 'café',
+    ]) {
+      expect(isValidCategoryName(bad)).toBe(false)
+    }
+  })
+
+  it('accepts every real category name on disk (does not break legit input)', () => {
+    for (const c of listCategories()) {
+      expect(isValidCategoryName(c.name)).toBe(true)
+    }
+    // and a couple of representative shapes explicitly
+    expect(isValidCategoryName('card-decompose')).toBe(true)
+    expect(isValidCategoryName('regex')).toBe(true)
+  })
+
+  it('the POST handler validates the name BEFORE the path join (wiring, not just the predicate)', () => {
+    const src = readFileSync(join(STORE_DIR, '..', 'src', 'web', 'routes', 'local-llm.ts'), 'utf8')
+    const guardAt = src.indexOf('isValidCategoryName(task)')
+    const joinAt = src.indexOf('existsSync(join(SKILL_DIR, `${task}.txt`))')
+    expect(guardAt).toBeGreaterThan(0)
+    expect(joinAt).toBeGreaterThan(0)
+    // The guard must appear before the join, or a `../` could reach the filesystem path.
+    expect(guardAt).toBeLessThan(joinAt)
+  })
+})
+
+describe('dashboard category-row escapes the meta interpolation (stored-XSS guard, card 18a0acb9)', () => {
+  it('web/app.js interpolates ${escapeHtml(meta)}, never a bare ${meta}', () => {
+    const appJs = readFileSync(join(STORE_DIR, '..', 'web', 'app.js'), 'utf8')
+    // The escaped form must be present...
+    expect(appJs).toContain('llm-category-meta">${escapeHtml(meta)}')
+    // ...and the unescaped form must be gone, so a future edit reverting it fails CI.
+    expect(appJs).not.toContain('llm-category-meta">${meta}')
   })
 })

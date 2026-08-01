@@ -204,6 +204,16 @@ export function isDraftableLocally(taskLevel: CodingDifficulty, threshold: Codin
   return CODING_DIFFICULTY_LEVELS.indexOf(taskLevel) <= CODING_DIFFICULTY_LEVELS.indexOf(threshold)
 }
 
+/**
+ * Is `task` a syntactically valid category name (Cybersec, card 18a0acb9)? Every real --task preset
+ * is lower kebab/snake-case, so a strict allowlist lets the categories POST reject a `../`-bearing
+ * value BEFORE it is joined into a filesystem path -- no traversal out of the skills dir, no probe on
+ * a malformed name. Pure so the guard is unit-testable without the route.
+ */
+export function isValidCategoryName(task: string): boolean {
+  return /^[a-z0-9_-]{1,64}$/.test(task)
+}
+
 /** Read the offload config JSON, fail-soft to an empty object (the endpoint fills defaults). */
 function readOffloadConfig(): Record<string, unknown> {
   try {
@@ -795,6 +805,13 @@ export async function tryHandleLocalLlm(ctx: RouteContext): Promise<boolean> {
     const task = typeof parsed.task === 'string' ? parsed.task.trim() : ''
     if (!task) {
       json(res, { error: 'missing_field', message: 'Adj meg egy task nevet.' }, 400)
+      return true
+    }
+    // Charset allowlist BEFORE the path join (Cybersec, card 18a0acb9): keeps a `../`-bearing value
+    // from ever reaching join(SKILL_DIR, ...) and escaping the skills dir. Fail-closed 400 -- no
+    // filesystem probe on a malformed name.
+    if (!isValidCategoryName(task)) {
+      json(res, { error: 'invalid_category', message: 'Érvénytelen kategórianév: csak a-z, 0-9, kötőjel és aláhúzás engedélyezett (legfeljebb 64 karakter).' }, 400)
       return true
     }
     if (!existsSync(join(SKILL_DIR, `${task}.txt`))) {
