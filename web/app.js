@@ -9964,6 +9964,8 @@ async function llmPostOffload(value) {
     const d = await res.json()
     // The threshold may follow the slider (when on "auto"); refresh the dropdown hint too.
     llmRenderDifficulty(d)
+    // A manual drag flips the source to 'manual' -- reflect that + offer "back to Auto".
+    llmRenderRamp(d)
     llmOffloadMsg(t('localLlm.offload.saved', { value: d.aggressiveness }), 'ok')
   } catch (e) {
     // Rule 12: speak the failure in the flow (not a silent no-op) with a retry-able message.
@@ -9988,6 +9990,61 @@ function llmRenderDifficulty(d) {
     : t('localLlm.offload.difficulty.hint_auto', { level: label })
 }
 
+// Render the auto-ramp status (card 8b4ddcf0, 346d3933 contract): whether the slider is under
+// automatic (weekly-quota-driven) or manual control, the live weekly %/auto value when known, and
+// a "back to Auto" action once the operator has taken manual control. Degrades gracefully when the
+// backend predates 346d3933 and returns no `aggressivenessSource`/`ramp` (stale dist): the whole
+// block simply stays hidden rather than showing a broken/empty shell.
+function llmRenderRamp(d) {
+  const box = document.getElementById('llmOffloadRamp')
+  const srcEl = document.getElementById('llmRampSource')
+  const detailEl = document.getElementById('llmRampDetail')
+  const autoBtn = document.getElementById('llmRampAutoBtn')
+  if (!box || !srcEl || !detailEl || !autoBtn) return
+
+  // No contract from this backend (pre-346d3933 build) -> nothing honest to show; hide the block.
+  if (d.aggressivenessSource == null && d.ramp == null) {
+    box.hidden = true
+    return
+  }
+  box.hidden = false
+
+  const source = d.aggressivenessSource === 'manual' ? 'manual' : 'auto'
+  // Contract (card e93a1dff): ramp is null when there is no live weekly reading; when present it
+  // carries weeklyPercent / newDevStop / target (+ active / current / reason).
+  const ramp = d.ramp || {}
+  const hasReading = typeof ramp.weeklyPercent === 'number'
+
+  srcEl.textContent =
+    source === 'auto'
+      ? t('localLlm.offload.ramp.source_auto')
+      : t('localLlm.offload.ramp.source_manual')
+  srcEl.className = 'llm-ramp-source llm-ramp-source--' + source
+
+  // Detail line: only meaningful when there is a live weekly reading to explain the auto value.
+  if (hasReading) {
+    detailEl.textContent = t('localLlm.offload.ramp.detail', {
+      weekly: Math.round(ramp.weeklyPercent),
+      threshold: Math.round(ramp.newDevStop),
+      auto: ramp.target == null ? '?' : Math.round(ramp.target),
+    })
+    detailEl.hidden = false
+  } else {
+    // Auto is armed but there is no live weekly % yet (empty state, rule 12) -- say so plainly
+    // rather than implying a value we do not have.
+    detailEl.textContent = source === 'auto' ? t('localLlm.offload.ramp.no_reading') : ''
+    detailEl.hidden = detailEl.textContent === ''
+  }
+
+  // "Back to Auto" only makes sense in manual mode; offer it whenever the operator has taken over.
+  if (source === 'manual') {
+    autoBtn.hidden = false
+    autoBtn.textContent = t('localLlm.offload.ramp.back_to_auto')
+  } else {
+    autoBtn.hidden = true
+  }
+}
+
 async function llmLoadOffload() {
   const slider = document.getElementById('llmOffloadSlider')
   const out = document.getElementById('llmOffloadValue')
@@ -10001,9 +10058,27 @@ async function llmLoadOffload() {
     if (opt) opt.textContent = String(d.optimal)
     slider.dataset.optimal = String(d.optimal)
     llmRenderDifficulty(d)
+    llmRenderRamp(d)
     llmOffloadMsg('')
   } catch (e) {
     llmOffloadMsg(t('localLlm.offload.load_error'), 'bad')
+  }
+}
+
+// Hand control back to the weekly auto-ramp (POST {aggressiveness:'auto'} -> clears the manual flag).
+async function llmBackToAuto() {
+  try {
+    const res = await fetch('/api/local-llm/offload-config', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ aggressiveness: 'auto' }),
+    })
+    if (!res.ok) throw new Error('HTTP ' + res.status)
+    // Re-load so the slider value, source badge, and ramp detail all reflect the resumed auto value.
+    await llmLoadOffload()
+    llmOffloadMsg(t('localLlm.offload.ramp.back_to_auto_done'), 'ok')
+  } catch (e) {
+    llmOffloadMsg(t('localLlm.offload.save_error'), 'bad')
   }
 }
 
@@ -10050,6 +10125,10 @@ function llmSetupOffload() {
     const diffSel = document.getElementById('llmOffloadDifficulty')
     if (diffSel) {
       diffSel.addEventListener('change', () => llmPostDifficulty(diffSel.value))
+    }
+    const autoBtn = document.getElementById('llmRampAutoBtn')
+    if (autoBtn) {
+      autoBtn.addEventListener('click', () => llmBackToAuto())
     }
   }
   llmLoadOffload()

@@ -829,15 +829,27 @@
         </div>
         <div id="llmOffloadMsg" class="llm-offload-msg" role="status" aria-live="polite"></div>
 
+        <!-- Auto-ramp status (card 8b4ddcf0 tier-activation, backed by 346d3933's contract):
+             GET /api/local-llm/offload-config returns aggressivenessSource ('auto'|'manual') and
+             ramp {weeklyPct, newDevStop, floor, autoAggressiveness, autoDifficulty}. When on Auto,
+             the weekly quota drives the slider (leans toward 100 as the weekly limit nears); a
+             manual drag takes over until the operator hands control back. Contents rendered by
+             llmRenderRamp() in app.js; hidden/neutral when no live weekly reading exists. -->
+        <div id="llmOffloadRamp" class="llm-ramp" role="status" aria-live="polite" hidden>
+          <div class="llm-ramp-head">
+            <span id="llmRampSource" class="llm-ramp-source"></span>
+            <button type="button" id="llmRampAutoBtn" class="llm-ramp-auto-btn" hidden></button>
+          </div>
+          <p id="llmRampDetail" class="llm-ramp-detail"></p>
+        </div>
+
         <!-- Coding-difficulty threshold dropdown (card afcfe93e): the hardest coding task that may
              still be drafted locally. Higher aggressiveness -> harder allowed. Only coding levels.
-             Card 8b4ddcf0 (Peti) asked whether the slider makes this dropdown redundant now that it
-             is meant to drive category activation by tier -- KEPT, with reason: the tier-order +
-             per-aggressiveness-level active-category contract that would let the slider actually
-             replace this dropdown's job is the deliverable of a SIBLING backend card (346d3933,
-             still planned/not started). Removing this dropdown now, before that contract exists,
-             would leave coding-difficulty with no control at all -- a real regression, not a
-             cleanup. Revisit once 346d3933 ships (see the REVIEW comment on this card). -->
+             KEPT (not replaced by the slider): 346d3933 (now done) delivered the auto-aggressiveness
+             RAMP (the slider VALUE auto-tracks the weekly quota), not a per-category difficulty/
+             security tier-ORDERING that could drive per-category activation. So this dropdown still
+             owns the coding-difficulty control; the slider's auto behaviour is surfaced by the
+             ramp-status block above. -->
         <div class="llm-offload-difficulty">
           <label for="llmOffloadDifficulty" class="llm-offload-difficulty-label" data-i18n="localLlm.offload.difficulty.label">Kódolási nehézségi küszöb</label>
           <p class="llm-offload-desc" data-i18n="localLlm.offload.difficulty.desc">Meddig terjedő nehézségű kódolási feladat adható ki a helyi modellnek. Magasabb küszöb = nehezebb feladatok is helyben.</p>
