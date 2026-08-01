@@ -4,6 +4,9 @@ import { homedir } from 'node:os'
 import { PROJECT_ROOT, MAIN_AGENT_ID, DEFAULT_AGENT_MODEL } from '../config.js'
 import { atomicWriteFileSync } from './atomic-write.js'
 import { safeJoin } from './sanitize.js'
+// Model-id allowlist lives in a dep-free module so model-fallback.ts can share it (card b7fa5281).
+import { isValidModelId, InvalidModelIdError } from '../model-id.js'
+export { MODEL_ID_RE, isValidModelId, InvalidModelIdError } from '../model-id.js'
 import {
   resolveAgentModelFromConfig,
   validateModelProfileMap,
@@ -146,6 +149,9 @@ export function writeAgentModelProfile(name: string, profile: string | null): vo
 }
 
 export function writeAgentModel(name: string, model: string): void {
+  // The chokepoint EVERY writer goes through (routes/agents.ts create + PATCH). Validating here means
+  // no code path can persist a shell-unsafe id, even one added later that forgot to pre-validate.
+  if (!isValidModelId(model)) throw new InvalidModelIdError(model)
   const configPath = join(agentDir(name), 'agent-config.json')
   let config: Record<string, unknown> = {}
   try { config = JSON.parse(readFileOr(configPath, '{}')) } catch {}

@@ -21,6 +21,8 @@ import {
   extractDescriptionFromClaudeMd,
   findAvatarForAgent,
   resolveModelId,
+  isValidModelId,
+  InvalidModelIdError,
   readAgentModel,
   resolveAgentModelDetailed,
   readModelProfileMap,
@@ -755,6 +757,12 @@ export async function tryHandleAgents(ctx: RouteContext, webDir: string): Promis
 
     if (!name) { json(res, { error: 'Name is required' }, 400); return true }
     if (!description) { json(res, { error: 'Description is required' }, 400); return true }
+    // Card b7fa5281: reject a shell-unsafe model id BEFORE scaffolding anything -- the value ends up
+    // in the agent-launch shell command, so a quote in it is command injection.
+    if (!isValidModelId(model)) {
+      json(res, { error: new InvalidModelIdError(model).message }, 400)
+      return true
+    }
     if (existsSync(agentDir(name))) { json(res, { error: 'Agent already exists' }, 409); return true }
 
     scaffoldAgentDir(name)
@@ -1896,7 +1904,14 @@ export async function tryHandleAgents(ctx: RouteContext, webDir: string): Promis
     }
     if (data.soulMd !== undefined) atomicWriteFileSync(join(agentDir(name), 'SOUL.md'), data.soulMd)
     if (data.mcpJson !== undefined) atomicWriteFileSync(join(agentDir(name), '.mcp.json'), data.mcpJson)
-    if (data.model !== undefined) writeAgentModel(name, data.model)
+    if (data.model !== undefined) {
+      // Card b7fa5281: same allowlist on the PATCH path -- data.model was persisted unvalidated.
+      if (!isValidModelId(data.model)) {
+        json(res, { error: new InvalidModelIdError(data.model).message }, 400)
+        return true
+      }
+      writeAgentModel(name, data.model)
+    }
     // Card c755f4b2 Block B: optional generic capability tier. An unknown id
     // is a 400, never a persisted value -- storing one would leave the UI
     // showing a profile while resolution silently fell back to the install

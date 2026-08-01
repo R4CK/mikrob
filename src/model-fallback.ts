@@ -8,8 +8,9 @@
 // model -- on a separate budget -- takes over without losing the conversation.
 // After a revert window with no limit in sight, it climbs back to the primary.
 //
-// This module is dependency-free so every decision is unit-testable without a
-// clock, tmux, or the filesystem. The I/O (capture-pane, model write, restart)
+// This module stays dependency-light -- its only import is the dep-free model-id allowlist
+// (model-id.js), so every decision is still unit-testable without a clock, tmux, or the filesystem.
+// The I/O (capture-pane, model write, restart)
 // lives in src/web/model-fallback-runner.ts; the config store lives in
 // src/web/model-fallback-store.ts.
 
@@ -17,6 +18,8 @@
 // chain[0] is the primary (what we revert UP to); each subsequent entry is the
 // next downgrade target. Kept as literals here to preserve the zero-import,
 // trivially-testable property of this module.
+import { isValidModelId, InvalidModelIdError } from './model-id.js'
+
 export const DEFAULT_MODEL_CHAIN: readonly string[] = [
   'claude-opus-4-8[1m]',
   'claude-sonnet-5',
@@ -144,6 +147,12 @@ export function parseModelFallbackUpdate(body: unknown): Partial<ModelFallbackCo
     const chain = sanitizeChain(o.chain)
     if (chain.length < 2) {
       throw new ModelFallbackConfigError('A modell-lánc legalább 2 különböző, nem üres modell-azonosítót kell tartalmazzon (elsődleges + legalább egy visszalépés).')
+    }
+    // Card b7fa5281: a chain id is resolved and launched exactly like a per-agent model, so it goes
+    // through the SAME shell command string. Reject a shell-unsafe entry here rather than store it.
+    const bad = chain.find((m) => !isValidModelId(m))
+    if (bad !== undefined) {
+      throw new ModelFallbackConfigError(new InvalidModelIdError(bad).message)
     }
     out.chain = chain
   }
