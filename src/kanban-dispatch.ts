@@ -44,3 +44,24 @@ export function resolveKanbanDispatchTarget(
 
   return null
 }
+
+/**
+ * True when the agent that moved a card to `in_progress` IS its own assignee -- i.e. a self-advance
+ * (rule 11: an agent taking its next card without waiting for MikroB), not a fresh dispatch.
+ *
+ * In that case the kanban->agent dispatch message is a DELAYED ECHO of the agent's own decision: it
+ * queues while the agent works, and is delivered once the card is already waiting+REVIEW, where it
+ * reads as a phantom re-dispatch. Backend diagnosed exactly this with second-matching DB evidence
+ * (card 7a033f8d), and it is the root of the "STALE DISPATCH" noise every self-advancing agent saw.
+ *
+ * FAIL-SAFE: an empty/unknown actor (a move with no recorded actor) returns false, so the normal
+ * dispatch still fires -- suppression only ever triggers on an explicit actor==assignee match.
+ */
+export function isSelfAdvanceMove(
+  assignee: string | null | undefined,
+  actor: string | null | undefined,
+): boolean {
+  const a = (assignee ?? '').trim().toLowerCase()
+  const b = (actor ?? '').trim().toLowerCase()
+  return a !== '' && b !== '' && a === b
+}

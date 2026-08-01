@@ -34,7 +34,7 @@ function newDevStopWouldBlock(id: string, nextStatus: unknown, force: boolean): 
 }
 const NEW_DEV_STOP_MESSAGE =
   'Heti "új fejlesztés leáll" küszöb átlépve: a planned -> in_progress átmenet (új fejlesztés indítása) le van tiltva a heti resetig. In-flight és gate-munka továbbra is mehet (waiting -> in_progress); tudatos felülíráshoz küldd force: true értékkel.'
-import { resolveKanbanDispatchTarget } from '../../kanban-dispatch.js'
+import { resolveKanbanDispatchTarget, isSelfAdvanceMove } from '../../kanban-dispatch.js'
 import { generateBreakdown } from '../llm-breakdown.js'
 import { logger } from '../../logger.js'
 import { readBody, json, jsonMaybeGzip } from '../http-helpers.js'
@@ -98,10 +98,19 @@ export function kanbanMoveInstructions(id: string, target: string): string {
 // assigned agent once via the inter-agent message router (createAgentMessage),
 // which gives retry / dedup / trust-wrapping / busy-receiver handling for free.
 // dispatched_at is the once-only guard; errors never block the card move.
-function fireKanbanDispatch(id: string): void {
+function fireKanbanDispatch(id: string, actor?: string): void {
   try {
     const card = getKanbanCard(id)
     if (!card || card.dispatched_at) return
+    // Self-advance (rule 11, card 7a033f8d): the assignee moved its OWN card to in_progress. A
+    // dispatch here is a delayed echo of the agent's own decision -- it lands after the card is
+    // already waiting+REVIEW and reads as a phantom re-dispatch. Mark it dispatched (so no later
+    // auto-dispatch fires either) and send nothing. A missing/other actor still dispatches normally.
+    if (isSelfAdvanceMove(card.assignee, actor)) {
+      markKanbanCardDispatched(id)
+      logger.info({ id, actor, assignee: card.assignee }, 'Kanban self-advance: dispatch echo suppressed')
+      return
+    }
     const target = resolveKanbanDispatchTarget(card.assignee, {
       ownerName: OWNER_NAME,
       botName: BOT_NAME,
@@ -321,7 +330,7 @@ export async function tryHandleKanban(ctx: RouteContext): Promise<boolean> {
     }
     if (moveKanbanCard(id, status, sort_order ?? 0, actor, force === true)) {
       // Wake the assigned agent once when the card enters in_progress.
-      if (status === 'in_progress') fireKanbanDispatch(id)
+      if (status === 'in_progress') fireKanbanDispatch(id, actor)
       json(res, { ok: true })
       return true
     }

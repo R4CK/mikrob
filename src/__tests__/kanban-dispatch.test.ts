@@ -47,3 +47,36 @@ describe('resolveKanbanDispatchTarget', () => {
     expect(resolveKanbanDispatchTarget('SomebodyElse', base)).toBeNull()
   })
 })
+
+// Self-advance echo suppression (card 7a033f8d): when the agent that moved a card to in_progress IS
+// its own assignee, the kanban->agent dispatch is a delayed echo of the agent's own decision and must
+// be suppressed. The predicate is fail-safe: only an explicit actor==assignee match suppresses.
+import { isSelfAdvanceMove } from '../kanban-dispatch.js'
+
+describe('isSelfAdvanceMove', () => {
+  it('is TRUE when the actor equals the assignee (self-advance)', () => {
+    expect(isSelfAdvanceMove('backend2', 'backend2')).toBe(true)
+  })
+
+  it('matches case- and whitespace-insensitively', () => {
+    expect(isSelfAdvanceMove(' Backend2 ', 'backend2')).toBe(true)
+    expect(isSelfAdvanceMove('QA', 'qa')).toBe(true)
+  })
+
+  it('is FALSE when a DIFFERENT actor moved the card (a real dispatch, e.g. MikroB)', () => {
+    expect(isSelfAdvanceMove('backend2', 'mikrob')).toBe(false)
+  })
+
+  it('FAILS SAFE to false when the actor is missing -- the normal dispatch still fires', () => {
+    expect(isSelfAdvanceMove('backend2', undefined)).toBe(false)
+    expect(isSelfAdvanceMove('backend2', null)).toBe(false)
+    expect(isSelfAdvanceMove('backend2', '')).toBe(false)
+    expect(isSelfAdvanceMove('backend2', '   ')).toBe(false)
+  })
+
+  it('is false when the assignee is missing (nothing to compare against)', () => {
+    expect(isSelfAdvanceMove(undefined, 'backend2')).toBe(false)
+    expect(isSelfAdvanceMove('', 'backend2')).toBe(false)
+    expect(isSelfAdvanceMove(null, null)).toBe(false)
+  })
+})
