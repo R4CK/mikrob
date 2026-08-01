@@ -10095,16 +10095,18 @@ async function llmRefreshCategories() {
       listEl.innerHTML = `<div class="llm-empty">${t('localLlm.categories.empty')}</div>`
       return
     }
-    listEl.innerHTML = categories.map(c => {
+    listEl.innerHTML = categories.map((c, i) => {
       const meta = c.count > 0
         ? t('localLlm.categories.meta_used', { count: c.count, when: llmFmtTime(c.lastTs) })
         : t('localLlm.categories.meta_unused')
+      const tipId = `llmCatTip${i}`
       return `<div class="llm-category-row${c.enabled ? '' : ' disabled'}">
         <div class="llm-category-info">
           <span class="llm-category-name">${escapeHtml(c.name)}</span>
-          <span class="llm-category-desc">${escapeHtml(c.description)}</span>
-          <span class="llm-category-meta">${meta}</span>
+          <button type="button" class="llm-category-info-btn" data-tip="${tipId}" aria-expanded="false" aria-describedby="${tipId}" aria-label="${escapeHtml(t('localLlm.categories.infoAria', { task: c.name }))}">&#9432;</button>
         </div>
+        <div class="llm-category-tooltip" id="${tipId}" role="tooltip" hidden>${escapeHtml(c.description)}</div>
+        <span class="llm-category-meta">${meta}</span>
         <button type="button" class="llm-category-toggle${c.enabled ? ' on' : ' off'}" data-task="${escapeHtml(c.name)}" data-enabled="${c.enabled ? '1' : '0'}" aria-pressed="${c.enabled ? 'true' : 'false'}">
           ${c.enabled ? t('localLlm.categories.on') : t('localLlm.categories.off')}
         </button>
@@ -10112,6 +10114,20 @@ async function llmRefreshCategories() {
     }).join('')
     listEl.querySelectorAll('.llm-category-toggle').forEach(btn =>
       btn.addEventListener('click', () => llmToggleCategory(btn.dataset.task, btn.dataset.enabled !== '1')))
+    // Tap/click-to-open info tooltip (card 8b4ddcf0): hover alone would be invisible on touch/PWA.
+    // Only one open at a time; closes on a second click, an outside click, or Escape.
+    listEl.querySelectorAll('.llm-category-info-btn').forEach(btn =>
+      btn.addEventListener('click', (e) => {
+        e.stopPropagation()
+        const tip = document.getElementById(btn.dataset.tip)
+        const opening = tip.hidden
+        listEl.querySelectorAll('.llm-category-tooltip').forEach(t => { t.hidden = true })
+        listEl.querySelectorAll('.llm-category-info-btn').forEach(b => b.setAttribute('aria-expanded', 'false'))
+        if (opening) {
+          tip.hidden = false
+          btn.setAttribute('aria-expanded', 'true')
+        }
+      }))
     llmCategoriesMsg('')
   } catch (err) {
     // Rule 12: speak the failure honestly, no raw status code -- llmRefreshBtn re-fetches.
@@ -10575,6 +10591,21 @@ async function llmRefreshLogs() {
 ;(function initLocalLlm() {
   const refreshBtn = document.getElementById('llmRefreshBtn')
   if (refreshBtn) refreshBtn.addEventListener('click', () => { llmRefreshStatus(); llmRefreshRecs(); llmRefreshLogs(); llmRefreshUsage(); llmRefreshCategories() })
+  // Close any open category info-tooltip (card 8b4ddcf0) on outside click or Escape. Bound once
+  // here rather than per-render, since llmRefreshCategories() re-renders the list on every poll.
+  document.addEventListener('click', (e) => {
+    const list = document.getElementById('llmCategoriesList')
+    if (!list || list.contains(e.target)) return
+    list.querySelectorAll('.llm-category-tooltip').forEach(t => { t.hidden = true })
+    list.querySelectorAll('.llm-category-info-btn').forEach(b => b.setAttribute('aria-expanded', 'false'))
+  })
+  document.addEventListener('keydown', (e) => {
+    if (e.key !== 'Escape') return
+    const list = document.getElementById('llmCategoriesList')
+    if (!list) return
+    list.querySelectorAll('.llm-category-tooltip').forEach(t => { t.hidden = true })
+    list.querySelectorAll('.llm-category-info-btn').forEach(b => b.setAttribute('aria-expanded', 'false'))
+  })
   const hfBtn = document.getElementById('llmHfSearchBtn')
   if (hfBtn) hfBtn.addEventListener('click', () => llmHfSearch())
   const hfQuery = document.getElementById('llmHfQuery')

@@ -602,6 +602,7 @@ window._i18n.en = {
   'localLlm.categories.empty':   'No categories found in the local router.',
   'localLlm.categories.on':      'On',
   'localLlm.categories.off':     'Off',
+  'localLlm.categories.infoAria': '{task} description',
   'localLlm.categories.meta_used': '{count} calls · last used: {when}',
   'localLlm.categories.meta_unused': 'Not used yet',
   'localLlm.categories.enabled_msg': 'Category enabled: {task}',

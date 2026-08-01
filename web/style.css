@@ -7823,53 +7823,98 @@ body {
   color: var(--text-muted, #6b7280);
   opacity: 0.85;
 }
-/* Categories (card 0c054ebf): all --task presets, live from GET /api/local-llm/categories.
-   Rule 13: toggle button is a real 44px touch target, list stacks on narrow screens. */
+/* Categories (card 0c054ebf, redesign 8b4ddcf0): all --task presets, live from
+   GET /api/local-llm/categories. Compact tile grid (Peti: "kisebb kartyak") instead of full-width
+   rows -- many more visible without scrolling. Rule 13: toggle + info button are real 44px touch
+   targets; grid reflows to a single column on narrow screens. */
 .llm-categories-list {
-  display: flex;
-  flex-direction: column;
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(148px, 1fr));
   gap: 8px;
+  align-items: start;
 }
 .llm-category-row {
+  position: relative;
   display: flex;
-  align-items: center;
-  justify-content: space-between;
-  gap: 12px;
-  padding: 10px 12px;
+  flex-direction: column;
+  gap: 6px;
+  padding: 8px 10px;
   border: 1px solid var(--border);
   border-radius: var(--radius-sm);
   background: var(--bg-input);
-  flex-wrap: wrap;
 }
 .llm-category-row.disabled { opacity: 0.6; }
 .llm-category-info {
   display: flex;
-  flex-direction: column;
-  gap: 2px;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 6px;
   min-width: 0;
-  flex: 1 1 260px;
 }
 .llm-category-name {
-  font-size: 13px;
+  font-size: 12px;
   font-weight: 600;
   color: var(--text);
   font-family: var(--font-mono, monospace);
-}
-.llm-category-desc {
-  font-size: 12px;
-  color: var(--text-muted);
   word-break: break-word;
+  min-width: 0;
+}
+/* Description moved OUT of the always-visible card body into a tap/click tooltip (card 8b4ddcf0):
+   a hover-only tooltip would be invisible on touch/PWA, so this is a real toggle button, not CSS
+   :hover -- works with mouse, keyboard (Enter/Space) and touch alike. */
+.llm-category-info-btn {
+  flex: 0 0 auto;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  /* border-box (global reset, style.css:50): min-width/height ARE the real 44px hit-area -- no
+     padding/negative-margin trick needed, and none tried after the first version measured 22x22
+     in a real browser (this project resets box-sizing globally, so padding-based expansion silently
+     no-ops). The glyph stays visually small via font-size inside the full-size button. */
+  min-width: 44px;
+  min-height: 44px;
+  margin: -8px -8px -8px 0;
+  border: none;
+  border-radius: 50%;
+  background-color: transparent;
+  color: var(--text-muted);
+  font-size: 13px;
+  line-height: 1;
+  cursor: pointer;
+}
+.llm-category-info-btn:hover,
+.llm-category-info-btn[aria-expanded="true"] {
+  color: var(--accent, #6366f1);
+}
+.llm-category-info-btn:focus-visible {
+  outline: 2px solid var(--accent, #6366f1);
+  outline-offset: 1px;
+}
+.llm-category-tooltip {
+  position: absolute;
+  z-index: 5;
+  top: 100%;
+  right: 8px;
+  left: 8px;
+  margin-top: 4px;
+  padding: 8px 10px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  background: var(--bg-card);
+  box-shadow: 0 4px 16px rgba(0, 0, 0, 0.25);
+  color: var(--text);
+  font-size: 12px;
+  line-height: 1.4;
 }
 .llm-category-meta {
-  font-size: 11px;
+  font-size: 10px;
   color: var(--text-muted);
   opacity: 0.85;
 }
 .llm-category-toggle {
-  flex: 0 0 auto;
   min-height: 44px;
-  min-width: 96px;
-  padding: 0 16px;
+  width: 100%;
+  padding: 0 12px;
   border: 1px solid var(--border);
   border-radius: 999px;
   background: var(--bg-card);
@@ -7893,8 +7938,7 @@ body {
   outline-offset: 2px;
 }
 @media (max-width: 480px) {
-  .llm-category-row { flex-direction: column; align-items: stretch; }
-  .llm-category-toggle { width: 100%; }
+  .llm-categories-list { grid-template-columns: repeat(auto-fill, minmax(140px, 1fr)); }
 }
 
 .llm-loading, .llm-empty, .llm-muted, .llm-running-empty {

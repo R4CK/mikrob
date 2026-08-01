@@ -792,7 +792,14 @@
         <div id="llmOffloadMsg" class="llm-offload-msg" role="status" aria-live="polite"></div>
 
         <!-- Coding-difficulty threshold dropdown (card afcfe93e): the hardest coding task that may
-             still be drafted locally. Higher aggressiveness -> harder allowed. Only coding levels. -->
+             still be drafted locally. Higher aggressiveness -> harder allowed. Only coding levels.
+             Card 8b4ddcf0 (Peti) asked whether the slider makes this dropdown redundant now that it
+             is meant to drive category activation by tier -- KEPT, with reason: the tier-order +
+             per-aggressiveness-level active-category contract that would let the slider actually
+             replace this dropdown's job is the deliverable of a SIBLING backend card (346d3933,
+             still planned/not started). Removing this dropdown now, before that contract exists,
+             would leave coding-difficulty with no control at all -- a real regression, not a
+             cleanup. Revisit once 346d3933 ships (see the REVIEW comment on this card). -->
         <div class="llm-offload-difficulty">
           <label for="llmOffloadDifficulty" class="llm-offload-difficulty-label" data-i18n="localLlm.offload.difficulty.label">Kódolási nehézségi küszöb</label>
           <p class="llm-offload-desc" data-i18n="localLlm.offload.difficulty.desc">Meddig terjedő nehézségű kódolási feladat adható ki a helyi modellnek. Magasabb küszöb = nehezebb feladatok is helyben.</p>
@@ -807,11 +814,12 @@
         </div>
       </div>
 
-      <!-- Categories (card 0c054ebf): all --task presets, not just the 4 coding-difficulty
-           levels above. Sourced live from GET /api/local-llm/categories (backed by
+      <!-- Categories (card 0c054ebf, redesigned card 8b4ddcf0): all --task presets, not just the 4
+           coding-difficulty levels above. Sourced live from GET /api/local-llm/categories (backed by
            store/local-llm-skills/*.txt on disk, never a hardcoded list). Per-category toggle
            is real enforcement (store/local-llm.sh reads the same config before running any
-           --task), not decorative. -->
+           --task), not decorative. Card 8b4ddcf0 (Peti): compact tiles, description behind a
+           tap/click-friendly info-tooltip (not inline text -- works on touch/PWA, not just hover). -->
       <div class="llm-section">
         <h2 class="llm-section-title" data-i18n="localLlm.categories.title">Kategóriák</h2>
         <p class="llm-offload-desc" data-i18n="localLlm.categories.desc">Az összes helyi-offload feladattípus, élőben a routerből -- nem csak a kódolási nehézség. Kikapcsolt kategória a dashboardról: az adott feladat innentől online (Claude) fut.</p>
