@@ -10,6 +10,8 @@ import {
   readAgentModel,
   writeAgentModel,
   resolveModelId,
+  isValidModelId,
+  InvalidModelIdError,
   DEFAULT_MODEL,
 } from './agent-config.js'
 import {
@@ -72,6 +74,10 @@ function readMainModel(): string {
 }
 
 function writeMainModel(model: string): void {
+  // Validate BEFORE the write chokepoint, mirroring writeAgentModel's guard (card 6610edff): no
+  // code path to a persisted model id may bypass the allowlist, even though this one only reaches
+  // .claude/settings.json (not a shell sink) and today only receives already-validated ramp values.
+  if (!isValidModelId(model)) throw new InvalidModelIdError(model)
   let cfg: Record<string, unknown> = {}
   try { cfg = JSON.parse(readFileSync(MAIN_SETTINGS_PATH, 'utf-8')) } catch {}
   cfg.model = model
