@@ -149,6 +149,12 @@ fi
 
 # Optional named task template (store/local-llm-skills/<task>.txt); {{INPUT}} is replaced.
 if [[ -n "$TASK" ]]; then
+  # Charset allowlist BEFORE the path join (card 2de47a4e; mirrors isValidCategoryName in
+  # src/web/routes/local-llm.ts from 18a0acb9): every real category name is kebab/snake-case, so a
+  # strict allowlist stops a '../'-bearing --task value from escaping SKILL_DIR before it is joined
+  # into a path. Fail-closed -- no filesystem probe on a malformed name; keeps this shell entry point
+  # consistent with the API route (two entry points, one policy).
+  [[ "$TASK" =~ ^[a-z0-9_-]{1,64}$ ]] || die 4 "invalid --task name '$TASK' (allowed: a-z 0-9 _ -, max 64)"
   TPL="$SKILL_DIR/$TASK.txt"
   [[ -f "$TPL" ]] || die 4 "unknown --task '$TASK' (no $TPL)"
   # Card 0c054ebf: per-category on/off toggle from the dashboard. Enforced HERE (the one place
