@@ -21,6 +21,12 @@ import {
 import { MAIN_CHANNELS_SESSION } from './main-agent.js'
 import { paneLooksIdle } from '../pane-state.js'
 import { readModelFallbackConfig } from './model-fallback-store.js'
+import { ladderIndexOf, weeklyTargetModel } from '../model-catalog.js'
+import {
+  readBaselineModel,
+  recordBaselineIfAbsent,
+  clearBaseline,
+} from './model-tier-baseline-store.js'
 import {
   detectsUsageLimit,
   decideModelAction,
@@ -139,14 +145,41 @@ function checkAgent(name: string, nowMs: number, cfg: ModelFallbackConfig, weekl
     else bannerDesired = currentIdx // 'none' = hold current (e.g. still inside the revert window)
   }
 
-  // Weekly-tier target (index). mikrob-channels (MAIN) is exempt like every other
-  // fleet-exempt path, so it never gets stepped down by the weekly %.
-  const weeklyDesired = name === MAIN_AGENT_ID ? 0 : Math.min(Math.max(0, weeklyIdx), chain.length - 1)
+  const bannerModel = chain[Math.max(0, Math.min(bannerDesired, chain.length - 1))] ?? currentModel
 
-  // Cheaper tier wins: the more-downgraded of the two never gets undone by the other.
-  const desired = Math.max(bannerDesired, weeklyDesired)
-  const targetModel = chain[desired]
-  if (!targetModel || targetModel === currentModel) return
+  // Weekly-tier target -- PER AGENT, relative to its OWN base (card 5d2002b5, Peti). mikrob-channels
+  // (MAIN) is exempt like every other fleet-exempt path, so it never steps down by the weekly %.
+  //
+  // The base is DURABLE (model-tier-baseline.json): recorded the first time an agent is stepped down
+  // (its then-current model IS the base), read back on every sweep, and cleared once the agent is
+  // home again. So a dashboard restart mid-ramp no longer loses the base and strand the agent on the
+  // cheap model -- it reverts to the model it actually started on. The old code used `weeklyIdx` as
+  // an ABSOLUTE chain index, so every agent landed on chain[weeklyIdx] regardless of its base.
+  const agentTier = name === MAIN_AGENT_ID ? 0 : Math.max(0, weeklyIdx)
+  let weeklyModel = currentModel
+  if (agentTier > 0) {
+    const base = readBaselineModel(name) ?? currentModel
+    weeklyModel = weeklyTargetModel(base, agentTier)
+  } else {
+    // Tier 0 = the weekly ramp is not pulling this agent down: home is its recorded base if one
+    // exists (it is climbing back), else its current model (never stepped).
+    weeklyModel = readBaselineModel(name) ?? currentModel
+  }
+
+  // Cheaper tier wins: of the banner target and the weekly target, the one FURTHER DOWN THE LADDER
+  // stands, so neither axis undoes the other's downgrade. Compared by ladder position, not by two
+  // different index spaces.
+  const targetModel =
+    ladderIndexOf(weeklyModel) >= ladderIndexOf(bannerModel) ? weeklyModel : bannerModel
+  if (!targetModel || targetModel === currentModel) {
+    // Even with no model change, a fully-reverted agent (home, tier 0, banner clear) must not keep a
+    // stale durable base around -- otherwise a later restart would treat the cheap model as the base.
+    if (agentTier === 0 && bannerDesired === 0 && readBaselineModel(name) !== null) {
+      clearBaseline(name)
+      downgradedAt.delete(name)
+    }
+    return
+  }
 
   // Downgrade may run on a limit-paused pane (which reads idle); revert must not
   // cut a live turn. Both go through restart, so require idle for both.
@@ -155,16 +188,25 @@ function checkAgent(name: string, nowMs: number, cfg: ModelFallbackConfig, weekl
     return
   }
 
+  // Whether this is a step DOWN, for the durable-base + revert-clock bookkeeping.
+  const steppingDown = ladderIndexOf(targetModel) > ladderIndexOf(currentModel)
+
   try {
+    // Record the base BEFORE the write, so the durable base is the pre-downgrade model, and only when
+    // this step is a weekly-driven step down (the banner axis has its own chain[0] home).
+    if (steppingDown && agentTier > 0) recordBaselineIfAbsent(name, currentModel)
     writeModelFor(name, targetModel)
     restartFor(name)
-    // downgradedAt drives the banner revert clock. Re-start it on each step DOWN
-    // (matches the banner-only behaviour), clear it once back on the primary.
-    if (desired === 0) downgradedAt.delete(name)
-    else if (desired > currentIdx) downgradedAt.set(name, nowMs)
+    // downgradedAt drives the banner revert clock. Re-start it on each step DOWN, and once the agent
+    // is back on its base (weekly home + banner clear), clear both the clock and the durable base.
+    const homeAgain = agentTier === 0 && bannerDesired === 0
+    if (homeAgain) {
+      downgradedAt.delete(name)
+      clearBaseline(name)
+    } else if (steppingDown) downgradedAt.set(name, nowMs)
     else if (!downgradedAt.has(name)) downgradedAt.set(name, nowMs)
     logger.info(
-      { name, from: currentModel, to: targetModel, bannerDesired, weeklyDesired },
+      { name, from: currentModel, to: targetModel, bannerModel, weeklyModel, agentTier },
       'model-fallback: switched model',
     )
   } catch (err) {

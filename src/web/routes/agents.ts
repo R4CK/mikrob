@@ -1,4 +1,5 @@
 import { existsSync, readFileSync, mkdirSync, mkdtempSync, readdirSync, rmSync, statSync, unlinkSync, writeFileSync, copyFileSync, renameSync } from 'node:fs'
+import { CLAUDE_MODELS } from '../../model-catalog.js'
 import { join, extname, dirname } from 'node:path'
 import { homedir, platform, tmpdir } from 'node:os'
 import { execSync } from 'node:child_process'
@@ -497,14 +498,9 @@ export async function tryHandleAgents(ctx: RouteContext, webDir: string): Promis
     const hasOpenRouter = getSecret('openrouter-fleet-key') !== null
     const orCatalog = loadOpenRouterCatalog()
     json(res, {
-      claude: [
-        { id: 'claude-opus-5', label: 'Opus 5 (legújabb Opus)' },
-        { id: 'claude-sonnet-5', label: 'Sonnet 5' },
-        { id: 'claude-sonnet-4-6', label: 'Sonnet 4.6' },
-        { id: 'claude-fable-5', label: 'Fable 5' },
-        { id: 'claude-opus-4-8[1m]', label: 'Opus 4.8 (1M kontextus)' },
-        { id: 'claude-haiku-4-5-20251001', label: 'Haiku 4.5 (leggyorsabb)' },
-      ],
+      // Card 5d2002b5: the ONE source, shared with the weekly-tier ladder (src/model-catalog.ts).
+      // A model added there appears both here and as a valid tier target, in one edit.
+      claude: CLAUDE_MODELS,
       deepseek: hasDeepseek
         ? [
             { id: 'deepseek-v4-pro', label: 'DeepSeek-V4-Pro (1M kontextus, erősebb)' },
