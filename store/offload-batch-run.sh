@@ -24,11 +24,18 @@ log() { echo "[$(ts)] $*" >>"$LOG"; }
 
 if [[ -z "$TOK" ]]; then log "no dashboard token; abort"; echo "ERROR no-token"; exit 0; fi
 
+# SECURITY (Cybersec/gate-ops-scripts-token-in-argv, card edb7559f): the token must never be a curl
+# argv (/proc/<pid>/cmdline is world-readable). Private 0600 header file instead, -H @"$hdr_file",
+# removed on EXIT.
+hdr_file="$(mktemp)"; chmod 600 "$hdr_file"
+trap 'rm -f "$hdr_file"' EXIT
+printf 'Authorization: Bearer %s\n' "$TOK" > "$hdr_file"
+
 # candidate cards: all in_progress + planned, ordered in_progress-first then by priority.
 # We skip any card that already has a LOCAL-LLM DRAFT comment (offload-dispatch re-checks
 # too, but filtering here avoids spinning the model up for nothing).
 mapfile -t CARDS < <(
-  curl -s -H "Authorization: Bearer $TOK" "$DASH/api/kanban" | python3 -c "
+  curl -s -H @"$hdr_file" "$DASH/api/kanban" | python3 -c "
 import json,sys
 order={'urgent':0,'high':1,'normal':2,'low':3}
 cards=json.load(sys.stdin)
@@ -43,7 +50,7 @@ done=0
 for id in "${CARDS[@]}"; do
   (( done >= CAP )) && { log "cap $CAP reached; stopping"; break; }
   # skip if already drafted
-  has=$(curl -s -H "Authorization: Bearer $TOK" "$DASH/api/kanban/$id/comments" \
+  has=$(curl -s -H @"$hdr_file" "$DASH/api/kanban/$id/comments" \
         | python3 -c "import json,sys; d=json.load(sys.stdin); print('Y' if any('LOCAL-LLM DRAFT' in (c.get('content') or '') for c in d) else 'N')" 2>/dev/null || echo Y)
   [[ "$has" == "Y" ]] && continue
   log "offload -> card $id"

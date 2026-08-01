@@ -14,6 +14,13 @@ TOK="$(cat "$STORE/.dashboard-token" 2>/dev/null)"
 
 [ -f "$CD" ] || { echo "STATE:no-countdown"; exit 0; }
 
+# SECURITY (Cybersec/gate-ops-scripts-token-in-argv, card edb7559f): the token must never be a curl
+# argv (/proc/<pid>/cmdline is world-readable). Private 0600 header file instead, -H @"$hdr_file",
+# removed on EXIT. Created only once we know there is a countdown to act on.
+hdr_file="$(mktemp)"; chmod 600 "$hdr_file"
+trap 'rm -f "$hdr_file"' EXIT
+printf 'Authorization: Bearer %s\n' "$TOK" > "$hdr_file"
+
 due=$(python3 -c "import json,time;d=json.load(open('$CD'));print(1 if time.time()>=d.get('deadline',9e18) else 0)" 2>/dev/null || echo 0)
 rem=$(python3 -c "import json,time;d=json.load(open('$CD'));s=int(d.get('deadline',0)-time.time());print(f'{max(0,s)//60}m')" 2>/dev/null || echo '?')
 if [ "$due" != "1" ]; then echo "STATE:counting (deadline in $rem)"; exit 0; fi
@@ -25,7 +32,7 @@ for s in $(tmux ls -F '#{session_name}' 2>/dev/null | grep -E '^agent-'); do
   if echo "$pane" | grep -qiE 'stop and wait for limit|usage limit reached|limit will reset'; then
     tmux send-keys -t "$s" Escape 2>/dev/null
     name="${s#agent-}"
-    curl -s -X POST "http://localhost:3420/api/agents/$name/start" -H "Authorization: Bearer $TOK" -d '{}' >/dev/null 2>&1
+    curl -s -X POST "http://localhost:3420/api/agents/$name/start" -H @"$hdr_file" -d '{}' >/dev/null 2>&1
     resumed+=("$name")
   fi
 done
@@ -37,7 +44,7 @@ done
 for s in $(python3 -c "import json;print(' '.join(json.load(open('$CD')).get('limited',[])))" 2>/dev/null); do
   name="${s#agent-}"
   case " ${resumed[*]:-} " in *" $name "*) continue ;; esac
-  curl -s -X POST "http://localhost:3420/api/agents/$name/start" -H "Authorization: Bearer $TOK" -d '{}' >/dev/null 2>&1
+  curl -s -X POST "http://localhost:3420/api/agents/$name/start" -H @"$hdr_file" -d '{}' >/dev/null 2>&1
   resumed+=("$name")
 done
 echo "ATTEMPTED:${resumed[*]:-none}"

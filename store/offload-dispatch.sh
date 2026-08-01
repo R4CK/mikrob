@@ -43,9 +43,16 @@ RAG="$HERE/local-llm-rag.sh"
 CARD="${1:-}"
 [[ -z "$CARD" ]] && { echo "usage: offload-dispatch.sh <cardId> [assignee]" >&2; exit 2; }
 
+# SECURITY (Cybersec/gate-ops-scripts-token-in-argv, card edb7559f): the token must never be a curl
+# argv (/proc/<pid>/cmdline is world-readable). Private 0600 header file instead, -H @"$hdr_file",
+# removed on EXIT. Covers BOTH calls below (the card-lookup GET and the draft-comment POST).
+hdr_file="$(mktemp)"; chmod 600 "$hdr_file"
+trap 'rm -f "$hdr_file"' EXIT
+printf 'Authorization: Bearer %s\n' "$TOK" > "$hdr_file"
+
 # The single-card GET only accepts the full id; fetch the list and match by id
 # prefix so a short (8-char) card id works too.
-J="$(curl -s -H "Authorization: Bearer $TOK" "$DASH/api/kanban" 2>/dev/null | CID="$CARD" python3 -c '
+J="$(curl -s -H @"$hdr_file" "$DASH/api/kanban" 2>/dev/null | CID="$CARD" python3 -c '
 import json,os,sys
 cid=os.environ["CID"]
 try:
@@ -112,7 +119,7 @@ BODY="[LOCAL-LLM DRAFT | dispatch-offload] A kartya mechanikus reszeinek helyi (
 
 $DRAFTS"
 curl -s -X POST "$DASH/api/kanban/$CARD/comments" -H "Content-Type: application/json" \
-  -H "Authorization: Bearer $TOK" \
+  -H @"$hdr_file" \
   -d "$(python3 -c 'import json,sys; print(json.dumps({"author":sys.argv[1],"content":sys.argv[2]}))' "$DRAFT_AUTHOR" "$BODY")" >/dev/null 2>&1
 echo "offload-dispatch: $CARD -> posted local draft(s) [$ASSIGNEE]"
 exit 0

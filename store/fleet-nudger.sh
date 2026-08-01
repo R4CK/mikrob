@@ -9,11 +9,19 @@ TOK="$(cat "$ROOT/store/.dashboard-token" 2>/dev/null)"
 API="http://localhost:3420/api/kanban"
 [ -z "$TOK" ] && exit 0
 
+# SECURITY (Cybersec/gate-ops-scripts-token-in-argv, card edb7559f): the dashboard bearer token must
+# NEVER be passed on a curl command line -- /proc/<pid>/cmdline is world-readable to any local user or
+# process. A private 0600 temp file carries the header instead; -H @"$hdr_file" reads it without ever
+# putting the token in argv. Removed on EXIT.
+hdr_file="$(mktemp)"; chmod 600 "$hdr_file"
+trap 'rm -f "$hdr_file"' EXIT
+printf 'Authorization: Bearer %s\n' "$TOK" > "$hdr_file"
+
 ENG="backend fullstack fron-ted fron-teddy"
 GATE="qa qa2 cybersec cybered"
 
 # One kanban snapshot -> per-agent work availability (JSON: {agent: has_work_bool}).
-WORK="$(curl -s -H "Authorization: Bearer $TOK" "$API" 2>/dev/null | python3 -c '
+WORK="$(curl -s -H @"$hdr_file" "$API" 2>/dev/null | python3 -c '
 import json,sys
 try: cards=json.load(sys.stdin)
 except Exception: sys.exit(0)
