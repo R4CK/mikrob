@@ -93,6 +93,14 @@ _CMD = (
 )
 # `git add` with a stage-everything flag (-A, --all, or a bare `.`).
 ADD_ALL_RX = re.compile(_CMD + r"add\b[^\n&|;]*?(?:(?<!\S)-A\b|--all\b|(?<!\S)\.(?:\s|$))")
+# `git commit -a`/`-am`/`--all` -- the OTHER swallow vector (card 42a2f45d). `-a` stages EVERY
+# modified tracked file at commit time, so on a shared checkout it sweeps a peer's in-flight tracked
+# edits into your commit exactly like `git add -A` -- and the guard did not cover it, so it was the
+# path the swallow kept happening through after `git add -A` was blocked. Matches a short-flag cluster
+# containing `a` (`-a`, `-am`, `-ap`) and `--all`; `--amend` and `-m` alone (no `a`) stay allowed.
+COMMIT_ALL_RX = re.compile(
+    _CMD + r"commit\b[^\n&|;]*?(?:--all\b|(?<!\S)-[A-Za-z]*a[A-Za-z]*\b)"
+)
 # `git add` naming a lockfile explicitly.
 ADD_LOCK_RX = re.compile(
     _CMD + r"add\b[^\n&|;]*?(?:" + "|".join(re.escape(f) for f in LOCKFILES) + r")"
@@ -209,6 +217,23 @@ def _strip_heredoc_bodies(cmd):
     return _HEREDOC_RX.sub("<<HEREDOC-BODY-STRIPPED", cmd)
 
 
+# The CONTENT of a quoted argument is DATA, not shell syntax (card 42a2f45d). The command-boundary
+# rule (_CMD) already exempts a quoted `git add -A` that has no inner separator -- but a `;`/`|`/`&`/
+# newline INSIDE the quotes (a JSON payload, a curl body, a commit message, an inter-agent message
+# that documents the rule) was still read as a real command boundary, so `curl -d '...; git add -A'`
+# false-blocked. Blanking quoted spans (keeping the quote chars, so token structure is intact) removes
+# that whole false-positive class. A REAL destructive command is never inside quotes; a `bash -c "..."`
+# / `eval "..."` wrapper is handled separately by _unwrapped_variants (which reads the RAW, un-stripped
+# command), so a genuinely-wrapped destructive op is still caught.
+_QUOTED_RX = re.compile(r"'[^']*'|\"(?:\\.|[^\"\\])*\"", re.S)
+
+
+def _strip_quoted_literals(cmd):
+    """Replace the CONTENT of single-/double-quoted spans with an empty quote of the same kind, left
+    to right (so a `"` inside a `'...'` span is treated as the literal it is in a shell)."""
+    return _QUOTED_RX.sub(lambda m: "''" if m.group(0)[0] == "'" else '""', cmd)
+
+
 def _pushes_protected(cmd):
     """True only if a force-push EXPLICITLY names a protected branch. We fail
     toward allow: a force-push with no protected-branch token (e.g. to a feature
@@ -243,35 +268,46 @@ def main():
         # A heredoc body is DATA being written, not a command -- never scan its contents.
         cmd = _strip_heredoc_bodies(cmd)
 
-        # `git add -p` is the sanctioned staging path; never block it.
-        add_all = ADD_ALL_RX.search(cmd) and not re.search(r"\bgit\s+add\s+-p\b", cmd)
-        if add_all:
-            sys.stderr.write(
-                "GIT-PROTECT-GUARD: `git add -A/./--all` blokkolva -- kozos "
-                "checkout-on ez mas agentek valtozasait is stage-eli. Csak a SAJAT "
-                "fajljaidat/hunkjaidat add hozza: `git add <path>` vagy `git add -p`."
-            )
-            sys.exit(2)
+        # Scan the command AND one level of bash -c / eval unwrapping (from the RAW command, so a
+        # genuinely-wrapped destructive op is still seen), and within each variant blank quoted spans
+        # so a separator inside a quoted payload is not read as a real command boundary (card 42a2f45d).
+        for variant in (_strip_quoted_literals(v) for v in _unwrapped_variants(cmd)):
+            # `git add -p` is the sanctioned staging path; never block it.
+            if ADD_ALL_RX.search(variant) and not re.search(r"\bgit\s+add\s+-p\b", variant):
+                sys.stderr.write(
+                    "GIT-PROTECT-GUARD: `git add -A/./--all` blokkolva -- kozos "
+                    "checkout-on ez mas agentek valtozasait is stage-eli. Csak a SAJAT "
+                    "fajljaidat/hunkjaidat add hozza: `git add <path>` vagy `git add -p`."
+                )
+                sys.exit(2)
 
-        if ADD_LOCK_RX.search(cmd):
-            sys.stderr.write(
-                "GIT-PROTECT-GUARD: lockfile (pnpm-lock.yaml / package-lock.json) "
-                "git add-je blokkolva -- a fuggosegeket MikroB batcheli, agent nem "
-                "nyul a lockfile-hoz. Hagyd ki a lockfile-t a commitbol."
-            )
-            sys.exit(2)
+            if COMMIT_ALL_RX.search(variant):
+                sys.stderr.write(
+                    "GIT-PROTECT-GUARD: `git commit -a/-am/--all` blokkolva -- kozos "
+                    "checkout-on ez MINDEN modositott kovetett fajlt stage-el commit kozben, "
+                    "beleertve mas agentek eppen futo valtozasait. Stage-eld es commitold a "
+                    "SAJAT fajljaidat: `git add <fajl> && git commit ...` vagy `git commit <fajl>`. "
+                    "(`git commit -m` es `git commit --amend` -a nelkul engedelyezett.)"
+                )
+                sys.exit(2)
 
-        if _pushes_protected(cmd):
-            sys.stderr.write(
-                "GIT-PROTECT-GUARD: force-push vedett branchre (main/master/develop) "
-                "blokkolva -- ez kozos historiat ir felul. Pushold feature branchre, "
-                "vagy nyiss PR-t. Force-push privat feature branchre engedelyezett."
-            )
-            sys.exit(2)
+            if ADD_LOCK_RX.search(variant):
+                sys.stderr.write(
+                    "GIT-PROTECT-GUARD: lockfile (pnpm-lock.yaml / package-lock.json) "
+                    "git add-je blokkolva -- a fuggosegeket MikroB batcheli, agent nem "
+                    "nyul a lockfile-hoz. Hagyd ki a lockfile-t a commitbol."
+                )
+                sys.exit(2)
 
-        # --- destructive whole-tree ops (card 6b532950) ---------------------------------------
-        # Scanned against the command AND one level of bash -c / eval unwrapping.
-        for variant in _unwrapped_variants(cmd):
+            if _pushes_protected(variant):
+                sys.stderr.write(
+                    "GIT-PROTECT-GUARD: force-push vedett branchre (main/master/develop) "
+                    "blokkolva -- ez kozos historiat ir felul. Pushold feature branchre, "
+                    "vagy nyiss PR-t. Force-push privat feature branchre engedelyezett."
+                )
+                sys.exit(2)
+
+            # --- destructive whole-tree ops (card 6b532950) -----------------------------------
             for rx, msg in _DESTRUCTIVE_RULES:
                 if rx.search(variant):
                     sys.stderr.write("GIT-PROTECT-GUARD: " + msg)

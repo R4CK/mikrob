@@ -32,6 +32,27 @@ CASES = [
     # the documented false positive: the rule text quoted inside another command
     (ALLOW, "curl -d '{\"content\":\"never run git add -A here\"}' http://x"),
 
+    # ---- NEW: git commit -a swallow vector (card 42a2f45d) ----
+    (BLOCK, "git commit -a"),
+    (BLOCK, 'git commit -am "wip"'),
+    (BLOCK, "git commit --all"),
+    (BLOCK, 'git commit -a -m "wip"'),
+    (BLOCK, 'git commit -v -a -m "x"'),
+    (BLOCK, 'git -C /mnt/h/LM_Studio_Workdir/CleanCore commit -am "x"'),
+    (BLOCK, 'bash -c "git commit -am wip"'),
+    # ...but a targeted / message-only / amend commit stays allowed
+    (ALLOW, 'git commit -m "a proper message"'),
+    (ALLOW, "git commit --amend --no-edit"),
+    (ALLOW, "git commit apps/api/src/server.ts"),
+    (ALLOW, 'git -c user.name=x commit -m "msg"'),
+    (ALLOW, 'git commit -m "document the -a / --all footgun"'),  # -a only inside the message
+
+    # ---- NEW: false boundary INSIDE a quoted payload must not false-block (card 42a2f45d) ----
+    (ALLOW, "curl -d '{\"note\":\"do not run; git add -A here\"}' http://x"),
+    (ALLOW, 'echo "step 1; git reset --hard step 2"'),
+    (ALLOW, "curl -d '{\"content\":\"first; then git commit -am done\"}' http://x"),
+    (ALLOW, "curl -d \"{\\\"c\\\":\\\"a; git clean -fd b\\\"}\" http://x"),
+
     # ---- NEW: destructive whole-tree ops (card 6b532950) ----
     (BLOCK, "git reset --hard"),
     (BLOCK, "git reset --hard HEAD~1"),
