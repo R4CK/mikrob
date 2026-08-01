@@ -1,5 +1,5 @@
 import { spawn, execFile } from 'node:child_process'
-import { readFileSync, existsSync, openSync, fstatSync, readSync, closeSync } from 'node:fs'
+import { readFileSync, existsSync, openSync, fstatSync, readSync, closeSync, readdirSync } from 'node:fs'
 import { join } from 'node:path'
 import { randomUUID } from 'node:crypto'
 import { STORE_DIR } from '../../config.js'
@@ -28,6 +28,11 @@ const MODEL_FILE = join(STORE_DIR, 'local-llm-model')
 // dashboard can show both roles clearly and avoid the "nomic gets tasks too?" confusion.
 const EMBED_MODEL = 'nomic-embed-text'
 const RAG_SCRIPT = join(STORE_DIR, 'local-llm-rag.sh')
+// Card 0c054ebf: the --task preset templates ARE the category list -- this directory is the single
+// source of truth (readdirSync below), never a hand-maintained UI array that could drift from what
+// local-llm.sh actually offers. HU descriptions are curated (no other source carries prose text),
+// keyed by filename; an on-disk category with no curated entry still appears (name-only fallback).
+const SKILL_DIR = join(STORE_DIR, 'local-llm-skills')
 // Append-only usage ledger written by the instrumented local-llm wrappers.
 // One TSV line per real model invocation:
 //   epoch_seconds \t caller \t task \t model \t ms \t status \t source
@@ -43,6 +48,57 @@ const OFFLOAD_CONFIG_FILE = join(STORE_DIR, 'local-llm-offload-active.json')
 // aggressively out of the box (more mechanical work to the local model, fewer Claude tokens).
 const OPTIMAL_AGGRESSIVENESS = 75
 const DEFAULT_AGGRESSIVENESS = OPTIMAL_AGGRESSIVENESS
+
+// Curated HU one-line descriptions per --task preset (card 0c054ebf), mirroring the EN comment
+// block in store/local-llm-rag.sh. Keyed by the preset name (== store/local-llm-skills/<name>.txt).
+// A category on disk without an entry here still lists (falls back to just its name) -- the
+// description map is a UX nicety, never a gate on whether a category is shown or controllable.
+const CATEGORY_DESCRIPTIONS: Record<string, string> = {
+  code: 'Kódrészlet pontos specifikációból (RAG + önjavító ellenőrző kör)',
+  'commit-msg': 'Git diff / változás-összefoglaló -> egy Conventional Commits üzenet',
+  'pr-body': 'Commitok vagy diff -> PR-leírás (Summary / Changes / Test plan)',
+  changelog: 'Változás-összefoglaló -> Keep-a-Changelog bejegyzések (Added/Changed/Fixed/...)',
+  summarize: '1-3 mondatos tényszerű összefoglaló',
+  rewrite: 'Világos, tömör szövegjavítás',
+  classify: 'Általános osztályozó -> {"label","confidence","reason"} JSON',
+  triage: 'E-mail/üzenet triázs -> {"category","reason"} JSON',
+  'msg-triage': 'Inter-agent üzenet triázs -> {"category","urgency","suggested_action"} JSON',
+  'card-decompose': 'Feladat -> {"phase","tasks":[{"task","subtasks":[...]}]} munkabontás JSON',
+  'daily-log': 'Események/jegyzetek -> tömör HU napi napló bejegyzés (MikroB hangnem)',
+  'morning-brief': 'E-mail/naptár/hírek -> átfutható HU reggeli összefoglaló',
+  'board-reconcile': 'Kártya-lista -> tömör HU board-reconcile összefoglaló + következő lépések',
+  'tg-draft': 'Egy gondolat -> nem-kritikus HU Telegram-üzenet vázlat (MikroB hangnem, nincs auto-küldés)',
+  translate: 'Forrásszöveg -> fordítás a kért nyelvre (csak az értékek)',
+  'doc-draft': 'Kód/diff/spec -> markdown dokumentáció-vázlat',
+  'test-scaffold': 'Függvény/spec -> teszt-fájl váz (happy/edge/error, valós assertek)',
+  'crud-adapter': 'Entitás/port spec -> CRUD adapter boilerplate (scope-hű, nincs spekulatív extra)',
+  docstring: 'Függvény/osztály -> ugyanaz a kód doc-kommentekkel kiegészítve (a kód változatlan)',
+  'dep-diff': 'Lockfile/manifest diff -> tömör add/remove/upgrade összefoglaló, major-bump jelzéssel',
+  'pr-review': 'Diff -> első körös review-jegyzetek (súlyozott; a végső döntés emberi gate-é)',
+  'i18n-keys': 'EN kulcs/érték párok + célnyelv(ek) -> lefordított párok (kulcsok/placeholderek megtartva)',
+  regex: 'Leírt minta + példák -> egy regex + MATCH/NO-MATCH ellenőrzés',
+  'type-def': 'Minta JSON/használat -> TypeScript típus/interface definíció',
+  'sql-migration': 'Leírt séma-változás -> additív forward SQL migráció (+down); DRAFT, gate-kritikus',
+  'api-client': 'Végpont-spec -> egy típusos API-kliens függvény (hiba-úttal)',
+  'refactor-draft': 'Kód + mechanikus változás -> refaktorált kód, viselkedés változatlan',
+  'code-explain': 'Kódrészlet -> tömör, egyszerű nyelvű magyarázat (csak olvasás)',
+  'error-i18n': 'Nyers hiba -> i18n kulcs + beszédes, nem-szivárogtató felhasználói üzenet (12. szabály)',
+  'env-doc': 'Config/.env minta -> markdown env-változó táblázat (csak nevek, nincs titkos érték)',
+  mermaid: 'Leírt folyamat/architektúra -> érvényes mermaid diagram',
+  'bugfix-draft': 'Hibás kód + repró -> minimális javítás-vázlat; DRAFT, repró-teszt + gate kell',
+  'json-transform': 'JSON + leírt transzformáció -> az eredmény JSON',
+  'schema-validator': 'Típus/alak -> futásidejű validátor (zod / JSON Schema)',
+  'sample-data': 'Séma + darabszám -> valósághű minta-sorok teszthez/seedhez (nincs valós PII)',
+  'a11y-check': 'Markup -> első körös WCAG AA leletek (a QA gate dönt)',
+  'responsive-check': 'CSS/markup -> első körös reszponzivitási leletek (13. szabály; a QA gate dönt)',
+  'release-notes': 'Changelog/commitok -> felhasználó-orientált kiadási jegyzetek',
+  'yaml-config': 'Leírt pipeline -> érvényes YAML (CI/compose/k8s)',
+  dockerfile: 'Leírt stack -> Dockerfile-vázlat (nincs sütött titok)',
+  'shell-script': 'Leírt feladat -> bash script vázlat (biztonságos alapértékekkel)',
+  naming: 'Kód -> elnevezési javaslatok (csak ahol tényleg nem egyértelmű)',
+  'action-items': 'Jegyzet/átirat -> markdown teendő-lista',
+  'cron-expr': 'Köznyelvi ütemezés -> cron kifejezés + emberi visszaolvasás',
+}
 
 /** Clamp/parse an aggressiveness input to an integer in [0,100]; non-numeric -> the default. (Mechanical
  *  pure fn -- drafted via the local-llm offload per the proactive-offload directive, verified here.) */
@@ -430,6 +486,10 @@ function buildUsage() {
 
   const callerCounts = new Map<string, number>()
   const taskCounts = new Map<string, number>()
+  // Card 0c054ebf: last-used timestamp per task, alongside the count -- the categories panel shows
+  // both ("N hívás, utoljára: ..."), not just the count. rows are appended chronologically so the
+  // last assignment in the loop for a given task is always its latest ts; no need to compare/max.
+  const taskLastTs = new Map<string, number>()
   const dayCounts = new Map<string, number>()
   const bySource = { bare: 0, rag: 0 }
   const byStatus = { ok: 0, err: 0 }
@@ -445,6 +505,7 @@ function buildUsage() {
   for (const r of rows) {
     callerCounts.set(r.caller, (callerCounts.get(r.caller) || 0) + 1)
     taskCounts.set(r.task, (taskCounts.get(r.task) || 0) + 1)
+    taskLastTs.set(r.task, r.ts)
     if (r.source === 'rag') bySource.rag++; else bySource.bare++
     if (r.status === 'err') byStatus.err++; else byStatus.ok++
     const day = budapestDate(r.ts)
@@ -463,7 +524,7 @@ function buildUsage() {
     .map(([caller, count]) => ({ caller, count }))
     .sort((a, b) => b.count - a.count)
   const by_task = [...taskCounts.entries()]
-    .map(([task, count]) => ({ task, count }))
+    .map(([task, count]) => ({ task, count, lastTs: taskLastTs.get(task) ?? null }))
     .sort((a, b) => b.count - a.count)
   const by_day = days14.map(date => ({ date, count: dayCounts.get(date) || 0 }))
   const recent = rows.slice(-20).reverse().map(r => ({
@@ -491,6 +552,49 @@ function buildUsage() {
     by_day,
     recent,
   }
+}
+
+/** All --task presets, sourced from disk (never a hardcoded UI array -- card 0c054ebf), merged with
+ *  usage (count + last-used) and the per-category enable state persisted in the offload config. A
+ *  category present on disk but never invoked still lists, with count 0 and lastTs null. */
+export function listCategories(): Array<{
+  name: string
+  description: string
+  enabled: boolean
+  count: number
+  lastTs: number | null
+}> {
+  let names: string[] = []
+  try {
+    names = readdirSync(SKILL_DIR)
+      .filter((f) => f.endsWith('.txt'))
+      .map((f) => f.slice(0, -'.txt'.length))
+      .sort()
+  } catch (err) {
+    logger.warn({ err }, 'listCategories: could not read skill dir')
+    return []
+  }
+
+  const rows = parseUsageRows(tailUsageLines()).filter(isRealCall)
+  const counts = new Map<string, number>()
+  const lastTs = new Map<string, number>()
+  for (const r of rows) {
+    counts.set(r.task, (counts.get(r.task) || 0) + 1)
+    lastTs.set(r.task, r.ts) // chronological order (see buildUsage) -> last write wins
+  }
+
+  const cfg = readOffloadConfig()
+  const disabled = new Set(
+    Array.isArray(cfg.disabledCategories) ? (cfg.disabledCategories as unknown[]).map(String) : [],
+  )
+
+  return names.map((name) => ({
+    name,
+    description: CATEGORY_DESCRIPTIONS[name] ?? name,
+    enabled: !disabled.has(name),
+    count: counts.get(name) ?? 0,
+    lastTs: lastTs.get(name) ?? null,
+  }))
 }
 
 export async function tryHandleLocalLlm(ctx: RouteContext): Promise<boolean> {
@@ -618,6 +722,55 @@ export async function tryHandleLocalLlm(ctx: RouteContext): Promise<boolean> {
       offloadableThresholds: OFFLOADABLE_THRESHOLDS,
       reliableCeiling: RELIABLE_CEILING,
     })
+    return true
+  }
+
+  // GET /api/local-llm/categories -> all --task presets (card 0c054ebf), not just the 4 coding-
+  // difficulty levels the threshold dropdown covers. Source of truth is the skill-template
+  // directory on disk, merged with real usage counts/last-used and the per-category on/off state.
+  if (path === '/api/local-llm/categories' && method === 'GET') {
+    json(res, { categories: listCategories() })
+    return true
+  }
+
+  // POST /api/local-llm/categories { task, enabled } -> toggle ONE category's enabled state. Single-
+  // field mutate (not a full-array replace) so two browser tabs toggling different categories can't
+  // race and silently drop each other's change. Enforcement lives in store/local-llm.sh (reads the
+  // same disabledCategories array before running any --task preset) -- this is not decorative.
+  if (path === '/api/local-llm/categories' && method === 'POST') {
+    const body = (await readBody(req)).toString()
+    let parsed: { task?: unknown; enabled?: unknown }
+    try {
+      parsed = JSON.parse(body || '{}')
+    } catch {
+      json(res, { error: 'invalid_json', message: 'A kérés törzse érvénytelen JSON.' }, 400)
+      return true
+    }
+    const task = typeof parsed.task === 'string' ? parsed.task.trim() : ''
+    if (!task) {
+      json(res, { error: 'missing_field', message: 'Adj meg egy task nevet.' }, 400)
+      return true
+    }
+    if (!existsSync(join(SKILL_DIR, `${task}.txt`))) {
+      json(res, { error: 'unknown_category', message: `Ismeretlen kategória: "${task}".` }, 404)
+      return true
+    }
+    const enabled = parsed.enabled !== false // default true (enable) if the field is omitted/truthy
+    const cfg = readOffloadConfig()
+    const current = new Set(
+      Array.isArray(cfg.disabledCategories) ? (cfg.disabledCategories as unknown[]).map(String) : [],
+    )
+    if (enabled) current.delete(task)
+    else current.add(task)
+    cfg.disabledCategories = [...current].sort()
+    try {
+      atomicWriteFileSync(OFFLOAD_CONFIG_FILE, JSON.stringify(cfg, null, 2) + '\n')
+    } catch (err) {
+      logger.error({ err }, 'categories: write failed')
+      json(res, { error: 'write_failed', message: 'A beállítás mentése nem sikerült, próbáld újra.' }, 500)
+      return true
+    }
+    json(res, { categories: listCategories() })
     return true
   }
 

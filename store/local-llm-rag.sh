@@ -350,9 +350,12 @@ call_model() { printf '%s' "$1" | "$LLM" --caller "$CALLER_FINAL" --source "$SOU
 strip_fence() { awk '/^[[:space:]]*```/{f=!f; next} {print}'; }
 
 # No local auto-verify requested: single-shot draft to stdout (original behavior).
+# Card 0c054ebf: propagate call_model's REAL exit code (was unconditional `exit 0`, which
+# silently swallowed a disabled-category exit 9 from local-llm.sh -- the toggle would have
+# been enforced at the shell layer but invisible through this, the fleet's default call path).
 if [[ -z "$VERIFY_CMD" || -z "$OUT" ]]; then
   call_model "$FULL_PROMPT"
-  exit 0
+  exit $?
 fi
 
 # --- LOCAL SELF-REPAIR LOOP (auto-verify) -------------------------------------

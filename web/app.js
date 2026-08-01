@@ -10060,6 +10060,7 @@ async function loadLocalLlm() {
   await llmRefreshRecs()
   await llmRefreshLogs()
   await llmRefreshUsage()
+  await llmRefreshCategories()
   llmSetupOffload()
   stopLocalLlmPoll()
   // Live refresh of status + terminal + usage while the page is open.
@@ -10069,6 +10070,69 @@ async function loadLocalLlm() {
     llmRefreshLogs()
     llmRefreshUsage()
   }, 5000)
+}
+
+function llmCategoriesMsg(text, cls) {
+  const m = document.getElementById('llmCategoriesMsg')
+  if (!m) return
+  m.textContent = text || ''
+  m.className = 'llm-offload-msg' + (cls ? ' ' + cls : '')
+}
+
+// Categories (card 0c054ebf): all --task presets from GET /api/local-llm/categories, sourced
+// on the backend from store/local-llm-skills/*.txt (never a hardcoded UI list). Each row shows
+// name, description, call count, last-used, and a real enable/disable toggle -- store/local-llm.sh
+// reads the same disabledCategories config before running any --task, so this is not decorative.
+async function llmRefreshCategories() {
+  const listEl = document.getElementById('llmCategoriesList')
+  if (!listEl) return
+  try {
+    const res = await fetch('/api/local-llm/categories')
+    if (!res.ok) throw new Error('HTTP ' + res.status)
+    const d = await res.json()
+    const categories = Array.isArray(d.categories) ? d.categories : []
+    if (categories.length === 0) {
+      listEl.innerHTML = `<div class="llm-empty">${t('localLlm.categories.empty')}</div>`
+      return
+    }
+    listEl.innerHTML = categories.map(c => {
+      const meta = c.count > 0
+        ? t('localLlm.categories.meta_used', { count: c.count, when: llmFmtTime(c.lastTs) })
+        : t('localLlm.categories.meta_unused')
+      return `<div class="llm-category-row${c.enabled ? '' : ' disabled'}">
+        <div class="llm-category-info">
+          <span class="llm-category-name">${escapeHtml(c.name)}</span>
+          <span class="llm-category-desc">${escapeHtml(c.description)}</span>
+          <span class="llm-category-meta">${meta}</span>
+        </div>
+        <button type="button" class="llm-category-toggle${c.enabled ? ' on' : ' off'}" data-task="${escapeHtml(c.name)}" data-enabled="${c.enabled ? '1' : '0'}" aria-pressed="${c.enabled ? 'true' : 'false'}">
+          ${c.enabled ? t('localLlm.categories.on') : t('localLlm.categories.off')}
+        </button>
+      </div>`
+    }).join('')
+    listEl.querySelectorAll('.llm-category-toggle').forEach(btn =>
+      btn.addEventListener('click', () => llmToggleCategory(btn.dataset.task, btn.dataset.enabled !== '1')))
+    llmCategoriesMsg('')
+  } catch (err) {
+    // Rule 12: speak the failure honestly, no raw status code -- llmRefreshBtn re-fetches.
+    listEl.innerHTML = `<div class="llm-empty">${t('localLlm.load_error')}</div>`
+  }
+}
+
+async function llmToggleCategory(task, enabled) {
+  try {
+    const res = await fetch('/api/local-llm/categories', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ task, enabled }),
+    })
+    const d = await res.json()
+    if (!res.ok) throw new Error(d.message || ('HTTP ' + res.status))
+    await llmRefreshCategories()
+    llmCategoriesMsg(enabled ? t('localLlm.categories.enabled_msg', { task }) : t('localLlm.categories.disabled_msg', { task }), 'ok')
+  } catch (err) {
+    llmCategoriesMsg(t('localLlm.categories.save_error'), 'bad')
+  }
 }
 
 async function llmRefreshStatus() {
@@ -10510,7 +10574,7 @@ async function llmRefreshLogs() {
 // Wire the local-llm page controls once at load.
 ;(function initLocalLlm() {
   const refreshBtn = document.getElementById('llmRefreshBtn')
-  if (refreshBtn) refreshBtn.addEventListener('click', () => { llmRefreshStatus(); llmRefreshRecs(); llmRefreshLogs(); llmRefreshUsage() })
+  if (refreshBtn) refreshBtn.addEventListener('click', () => { llmRefreshStatus(); llmRefreshRecs(); llmRefreshLogs(); llmRefreshUsage(); llmRefreshCategories() })
   const hfBtn = document.getElementById('llmHfSearchBtn')
   if (hfBtn) hfBtn.addEventListener('click', () => llmHfSearch())
   const hfQuery = document.getElementById('llmHfQuery')

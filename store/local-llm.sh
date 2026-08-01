@@ -151,6 +151,27 @@ fi
 if [[ -n "$TASK" ]]; then
   TPL="$SKILL_DIR/$TASK.txt"
   [[ -f "$TPL" ]] || die 4 "unknown --task '$TASK' (no $TPL)"
+  # Card 0c054ebf: per-category on/off toggle from the dashboard. Enforced HERE (the one place
+  # every --task caller funnels through, direct or via local-llm-rag.sh) so the toggle is not
+  # decorative. Same config file the offload-config/categories endpoints read+write; a bad/missing
+  # config fails OPEN (treat as enabled) so a config hiccup never silently blocks all offload --
+  # the toggle is an opt-out, not a fail-closed gate. Exit 9 matches local-llm-rag.sh's --auto
+  # "ROUTE=online" code: to a caller, a disabled category is the same signal as "do this online".
+  DISABLED_CHECK="$(TASK="$TASK" CFG="$HERE/local-llm-offload-active.json" python3 -c '
+import json, os
+task = os.environ["TASK"]
+try:
+    with open(os.environ["CFG"]) as f:
+        cfg = json.load(f)
+    disabled = cfg.get("disabledCategories") or []
+    print("DISABLED" if task in disabled else "OK")
+except Exception:
+    print("OK")
+' 2>/dev/null)"
+  if [[ "$DISABLED_CHECK" == "DISABLED" ]]; then
+    echo "local-llm: category '$TASK' is disabled from the dashboard (Lokális LLM -> Kategóriák) -- this call belongs online" >&2
+    exit 9
+  fi
   # split template: first a system line block until a line '---', then user template
   SYS_FROM_TPL="$(awk '/^---$/{exit} {print}' "$TPL")"
   USER_TPL="$(awk 'f{print} /^---$/{f=1}' "$TPL")"

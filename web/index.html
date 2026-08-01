@@ -807,6 +807,20 @@
         </div>
       </div>
 
+      <!-- Categories (card 0c054ebf): all --task presets, not just the 4 coding-difficulty
+           levels above. Sourced live from GET /api/local-llm/categories (backed by
+           store/local-llm-skills/*.txt on disk, never a hardcoded list). Per-category toggle
+           is real enforcement (store/local-llm.sh reads the same config before running any
+           --task), not decorative. -->
+      <div class="llm-section">
+        <h2 class="llm-section-title" data-i18n="localLlm.categories.title">Kategóriák</h2>
+        <p class="llm-offload-desc" data-i18n="localLlm.categories.desc">Az összes helyi-offload feladattípus, élőben a routerből -- nem csak a kódolási nehézség. Kikapcsolt kategória a dashboardról: az adott feladat innentől online (Claude) fut.</p>
+        <div id="llmCategoriesMsg" class="llm-offload-msg" role="status" aria-live="polite"></div>
+        <div class="llm-categories-list" id="llmCategoriesList">
+          <div class="llm-loading" data-i18n="common.loading">Betöltés...</div>
+        </div>
+      </div>
+
       <!-- Usage metrics -->
       <div class="llm-section">
         <h2 class="llm-section-title" data-i18n="localLlm.usage.title">Használat</h2>
