@@ -65,6 +65,14 @@ export function ladderIndexOf(model: string): number {
  * position, which is the bug this replaces (the old code used tier as an absolute index for everyone).
  */
 export function weeklyTargetModel(baseModel: string, tier: number): string {
+  // An OFF-CATALOG base (Ollama / DeepSeek / OpenRouter -- a deliberate local or cheap choice) is not
+  // on the Claude cost ladder, so the weekly Claude-ramp must LEAVE IT ALONE. Without this guard the
+  // step would REWRITE such an agent onto a paid Claude model: ladderIndexOf(off-catalog) is 0 (the
+  // top rung), so weeklyTargetModel(base, tier>=1) returned MODEL_LADDER[tier] (Opus 4.8, then Sonnet
+  // 5) -- burning the very quota the ramp exists to protect and undoing the operator's offload
+  // (Cybered HIGH, card 5d2002b5; see [[weekly-limit-is-offload-not-park]]). An off-ladder base's
+  // weekly target is always itself; only ladder models step down the ladder.
+  if (!isLadderModel(baseModel)) return baseModel
   const from = ladderIndexOf(baseModel)
   const steps = Number.isFinite(tier) && tier > 0 ? Math.floor(tier) : 0
   const target = Math.min(from + steps, MODEL_LADDER.length - 1)

@@ -58,8 +58,14 @@ describe('weeklyTargetModel steps each agent from its OWN base (the bug this fix
     expect(weeklyTargetModel('claude-fable-5', 2)).toBe('claude-fable-5')
   })
 
-  it('an unknown base is treated as the top, so it can only step DOWN', () => {
-    expect(weeklyTargetModel('some-openrouter-model', 1)).toBe('claude-opus-4-8[1m]')
+  it('an OFF-CATALOG base is left on its own model, never rewritten onto Claude by the weekly ramp', () => {
+    // Cybered HIGH (card 5d2002b5): an agent deliberately on Ollama/DeepSeek/OpenRouter must NOT be
+    // stepped onto a paid Claude model when the weekly % climbs -- that would burn the quota the ramp
+    // protects and undo the offload. Its weekly target is always itself, at every tier.
+    expect(weeklyTargetModel('some-openrouter-model', 1)).toBe('some-openrouter-model')
+    expect(weeklyTargetModel('ollama:deepseek-coder', 2)).toBe('ollama:deepseek-coder')
+    // and it is emphatically NOT any ladder (Claude) model
+    expect(MODEL_LADDER).not.toContain(weeklyTargetModel('some-openrouter-model', 2))
   })
 })
 
@@ -109,5 +115,17 @@ describe('buildAgentTierRows assembles the read-only display (redesign point 4)'
     expect(row.baseModel).toBe('claude-opus-5')
     expect(row.currentModel).toBe('claude-sonnet-5')
     expect(row.targetModel).toBe('claude-sonnet-5') // opus base, tier 2 => two rungs down
+  })
+
+  it('an off-catalog agent at a non-zero tier targets its OWN model, not a Claude rung (Cybered HIGH)', () => {
+    // The display must not tell the operator that an Ollama/OpenRouter agent will be stepped onto
+    // Claude at tier 2 -- because it will not (weeklyTargetModel leaves off-ladder bases alone).
+    const [row] = buildAgentTierRows(
+      [{ name: 'local', baseModel: 'ollama:deepseek-coder', currentModel: 'ollama:deepseek-coder', exempt: false }],
+      2,
+    )
+    expect(row.tier).toBe(2) // it IS at the fleet tier...
+    expect(row.targetModel).toBe('ollama:deepseek-coder') // ...but its target stays its own model
+    expect(MODEL_LADDER).not.toContain(row.targetModel)
   })
 })
