@@ -28,12 +28,19 @@ FROM="${1:?from required}"; TO="${2:?to required}"; C="${3:?content required (or
 [ -r "$TOKEN_FILE" ] || { echo "FAIL: no token file at $TOKEN_FILE"; exit 1; }
 TOKEN="$(cat "$TOKEN_FILE")"
 
+# SECURITY (Cybersec/gate-ops-scripts-token-in-argv, card b267df80): the token must never be a curl
+# argv (/proc/<pid>/cmdline is world-readable). Private 0600 header file instead, -H @"$hdr_file",
+# removed on EXIT.
+hdr_file="$(mktemp)"; chmod 600 "$hdr_file"
+trap 'rm -f "$hdr_file"' EXIT
+printf 'Authorization: Bearer %s\n' "$TOKEN" > "$hdr_file"
+
 BODY="$(FROM="$FROM" TO="$TO" C="$C" python3 -c 'import json,os; print(json.dumps({"from":os.environ["FROM"],"to":os.environ["TO"],"content":os.environ["C"]}))')"
 
 attempt=0; max=3; CODE=""; ID=""
 while [ "$attempt" -lt "$max" ]; do
   attempt=$((attempt+1))
-  RESP="$(curl -s -X POST "$URL" -H "Content-Type: application/json" -H "Authorization: Bearer $TOKEN" -d "$BODY" -w $'\n%{http_code}' 2>/dev/null || true)"
+  RESP="$(curl -s -X POST "$URL" -H "Content-Type: application/json" -H @"$hdr_file" -d "$BODY" -w $'\n%{http_code}' 2>/dev/null || true)"
   CODE="$(printf '%s' "$RESP" | tail -n1)"
   JSON="$(printf '%s' "$RESP" | sed '$d')"
   ID="$(printf '%s' "$JSON" | python3 -c 'import sys,json

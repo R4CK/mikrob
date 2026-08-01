@@ -195,7 +195,12 @@ done
 # --- Dashboard API ---
 echo -e "\n${BOLD}Dashboard${RESET}"
 if [ -f "store/.dashboard-token" ]; then
-  HTTP=$(curl -s -o /dev/null -w "%{http_code}" -H "Authorization: Bearer $(cat store/.dashboard-token)" "http://localhost:${WEB_PORT}/api/agents" 2>/dev/null)
+  # SECURITY (Cybersec/gate-ops-scripts-token-in-argv, card b267df80): 0600 temp
+  # header file instead of a curl argv (/proc/<pid>/cmdline is world-readable).
+  _hdr_file="$(mktemp)"; chmod 600 "$_hdr_file"
+  printf 'Authorization: Bearer %s\n' "$(cat store/.dashboard-token)" > "$_hdr_file"
+  HTTP=$(curl -s -o /dev/null -w "%{http_code}" -H @"$_hdr_file" "http://localhost:${WEB_PORT}/api/agents" 2>/dev/null)
+  rm -f "$_hdr_file"; unset _hdr_file
   if [ "$HTTP" = "200" ]; then
     ok "Dashboard API: responding (HTTP 200)"
   else

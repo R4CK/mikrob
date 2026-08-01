@@ -52,8 +52,14 @@ fi
 export PATH="/opt/homebrew/bin:$HOME/.bun/bin:/home/linuxbrew/.linuxbrew/bin:$HOME/.local/bin:/usr/local/bin:/usr/bin:/bin:$PATH"
 
 TOKEN=""
+HDR_FILE=""
 if [ -f "$INSTALL_DIR/store/.dashboard-token" ]; then
   TOKEN=$(cat "$INSTALL_DIR/store/.dashboard-token")
+  # SECURITY (Cybersec/gate-ops-scripts-token-in-argv, card b267df80): 0600 temp
+  # header file instead of a curl argv (/proc/<pid>/cmdline is world-readable).
+  HDR_FILE="$(mktemp)"; chmod 600 "$HDR_FILE"
+  trap 'rm -f "$HDR_FILE"' EXIT
+  printf 'Authorization: Bearer %s\n' "$TOKEN" > "$HDR_FILE"
 fi
 
 # Replays delivered-but-not-completed messages from the last 2 hours into
@@ -69,7 +75,7 @@ replay_unfinished_messages() {
   CUTOFF=$(( NOW - 7200 ))
 
   RESPONSE=$(curl -s -m 5 \
-    -H "Authorization: Bearer $TOKEN" \
+    -H @"$HDR_FILE" \
     "http://localhost:${WEB_PORT}/api/messages?to=${AGENT_ID}&limit=200" 2>/dev/null) || return
 
   [ -z "$RESPONSE" ] || [ "$RESPONSE" = "[]" ] && return
