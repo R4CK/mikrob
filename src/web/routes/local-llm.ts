@@ -12,6 +12,7 @@ import {
   readThresholdConfig,
   readWeeklyPercent,
   resolveAggressivenessSource,
+  type AggressivenessSource,
 } from '../../costops/weekly-threshold.js'
 import type { RouteContext } from './types.js'
 
@@ -189,6 +190,40 @@ export function offloadRampState(): {
     autoDifficulty:
       autoAggressiveness === null ? null : defaultDifficultyForAggressiveness(autoAggressiveness),
   }
+}
+
+/** The auto-ramp state SHAPED for the FE contract (card e93a1dff): what fron-ted's 8b4ddcf0 panel
+ *  renders, derived from the raw {@link offloadRampState} plus the resolved source and the current
+ *  aggressiveness. Returns null when there is no live weekly reading (nothing honest to show). PURE:
+ *  it never mutates the config or changes ramp behaviour -- it only re-expresses 346d3933's internals.
+ *  `reason` is an i18n KEY, never hardcoded text (rule 12). */
+export interface RampContract {
+  active: boolean
+  weeklyPercent: number
+  newDevStop: number
+  current: number
+  target: number
+  reason: string
+}
+export function mapRampState(
+  ramp: ReturnType<typeof offloadRampState>,
+  source: AggressivenessSource,
+  current: number,
+): RampContract | null {
+  if (ramp.weeklyPct === null || ramp.autoAggressiveness === null) return null
+  const target = ramp.autoAggressiveness
+  // "Actively ramping" only under AUTO control AND when the weekly % has pushed the target above the
+  // floor -- a manual override or a floor-level auto value is present but not elevating.
+  const active = source === 'auto' && target > ramp.floor
+  const reason =
+    source === 'manual'
+      ? 'localLlm.offload.ramp.reason.manual'
+      : ramp.weeklyPct >= ramp.newDevStop
+        ? 'localLlm.offload.ramp.reason.atThreshold'
+        : target > ramp.floor
+          ? 'localLlm.offload.ramp.reason.ramping'
+          : 'localLlm.offload.ramp.reason.floor'
+  return { active, weeklyPercent: ramp.weeklyPct, newDevStop: ramp.newDevStop, current, target, reason }
 }
 
 /** Validate a difficulty input to a known taxonomy level; unknown/absent -> null. Used to classify a
@@ -699,7 +734,7 @@ export async function tryHandleLocalLlm(ctx: RouteContext): Promise<boolean> {
       // what the auto value would be right now -- so the dashboard can show "Auto: 94% (weekly 82%)"
       // and offer a "back to Auto" action when the operator has taken manual control.
       aggressivenessSource: resolveAggressivenessSource(cfg),
-      ramp: offloadRampState(),
+      ramp: mapRampState(offloadRampState(), resolveAggressivenessSource(cfg), aggressiveness),
       codingDifficultyThreshold: explicit ?? derived,
       codingDifficultyExplicit: explicit !== null,
       codingDifficultyDerived: derived,
