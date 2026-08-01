@@ -5,7 +5,7 @@
 // deterministic OFFLINE CORE (`--repo <path> --sha <sha> --dry-run`) against a throwaway git repo, so
 // the comment body's SHAPE and the "never a verdict" contract are pinned without touching the network.
 import { describe, it, expect, beforeEach, afterEach } from 'vitest'
-import { mkdtempSync, rmSync, writeFileSync, mkdirSync } from 'node:fs'
+import { mkdtempSync, rmSync, writeFileSync, mkdirSync, readFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join, dirname } from 'node:path'
 import { execFileSync } from 'node:child_process'
@@ -103,5 +103,38 @@ describe('offline-core guards', () => {
       code = (e as { status?: number }).status ?? 1
     }
     expect(code).toBe(2)
+  })
+})
+
+// Security regression (card 83191d8d, Cybersec NO-GO): the dashboard token must NEVER reach a curl
+// command line -- /proc/<pid>/cmdline is world-readable. This runs at EVERY gate, so a leak here is a
+// full /api compromise. Pin the 0600 @headerfile pattern in the source so a future edit cannot regress it.
+describe('the token is never passed in a curl argv (Cybersec)', () => {
+  const src = readFileSync(SCRIPT, 'utf-8')
+  const code = src
+    .split('\n')
+    .filter((l) => !l.trimStart().startsWith('#'))
+    .join('\n')
+
+  it('every curl reads the auth header from a file (-H @<file>), never a literal Authorization arg', () => {
+    const curls = code.split('\n').filter((l) => /\bcurl\b/.test(l))
+    expect(curls.length).toBeGreaterThan(0)
+    for (const c of curls) {
+      if (!/Authorization|hdr_file|-H @/.test(c)) continue // a curl with no auth at all is fine
+      expect(c).toMatch(/-H @"\$hdr_file"/)
+      expect(c).not.toMatch(/-H ["']?Authorization/) // no inline Authorization header
+      expect(c).not.toMatch(/\$\(cat[^)]*TOKEN/) // no `$(cat ...token)` on the command line
+    }
+  })
+
+  it('uses a private 0600 temp header file, cleaned up on EXIT', () => {
+    expect(code).toContain('chmod 600')
+    expect(code).toMatch(/trap\s+cleanup\s+EXIT/)
+    expect(code).toContain("printf 'Authorization: Bearer %s")
+  })
+
+  it('does NOT define the old auth() helper that returned the header for an argv -H', () => {
+    expect(code).not.toMatch(/auth\(\)\s*\{/)
+    expect(code).not.toContain('-H "$(auth)"')
   })
 })

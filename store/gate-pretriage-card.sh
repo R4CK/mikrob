@@ -33,7 +33,22 @@ while [[ $# -gt 0 ]]; do
   esac
 done
 
-auth() { printf 'Authorization: Bearer %s' "$(cat "$TOKEN_FILE")"; }
+# SECURITY (Cybersec lesson gate-ops-scripts-token-in-argv): the dashboard bearer token must NEVER be
+# passed on a curl command line -- /proc/<pid>/cmdline is world-readable, so `curl -H "Authorization:
+# Bearer <token>"` leaks it to any local user/process. Instead we write the header to a private 0600
+# temp file ONCE and pass `-H @"$hdr_file"`; the file is unlinked on EXIT. Same pattern as
+# weekly-usage-panel-read.sh. The header file is created lazily (only card mode needs it; the offline
+# --repo/--sha core never touches the network).
+hdr_file=""
+cleanup() { [ -n "$hdr_file" ] && rm -f "$hdr_file" 2>/dev/null || true; }
+trap cleanup EXIT
+
+ensure_auth_header() {
+  [ -n "$hdr_file" ] && return 0
+  hdr_file="$(mktemp)" || return 1
+  chmod 600 "$hdr_file"
+  printf 'Authorization: Bearer %s\n' "$(cat "$TOKEN_FILE")" > "$hdr_file"
+}
 
 # Build the INPUT comment body for repo+sha. Prints the body; returns 3 (benign skip) if the commit is
 # not present or the pre-triage cannot run. The body deliberately contains NO PASS/FAIL/GO/NO-GO word.
@@ -74,8 +89,9 @@ fi
 # ---- Card mode: resolve repo + latest REVIEW commit from the live API. ----
 [[ -n "$CARD" ]] || { echo "usage: gate-pretriage-card.sh <cardId> [--dry-run]" >&2; exit 2; }
 
-comments="$(curl -s -H "$(auth)" "$DASH/api/kanban/$CARD/comments" 2>/dev/null || true)"
-board="$(curl -s -H "$(auth)" "$DASH/api/kanban?limit=500" 2>/dev/null || true)"
+ensure_auth_header || { echo "SKIP: could not create auth header file"; exit 0; }
+comments="$(curl -s -H @"$hdr_file" "$DASH/api/kanban/$CARD/comments" 2>/dev/null || true)"
+board="$(curl -s -H @"$hdr_file" "$DASH/api/kanban?limit=500" 2>/dev/null || true)"
 [[ -n "$comments" && -n "$board" ]] || { echo "SKIP: dashboard unreachable"; exit 0; }
 
 project="$(printf '%s' "$board" | CARD="$CARD" python3 -c '
@@ -128,6 +144,6 @@ if [[ $DRYRUN -eq 1 ]]; then printf '%s\n' "$body"; exit 0; fi
 # Post as its own author so the comment is unmistakably pre-triage INPUT, not a gate verdict.
 tmp="$(mktemp)"
 BODY="$body" python3 -c 'import json, os; print(json.dumps({"author": "gate-pretriage", "content": os.environ["BODY"]}))' > "$tmp"
-curl -s -X POST "$DASH/api/kanban/$CARD/comments" -H "$(auth)" -H 'Content-Type: application/json' --data @"$tmp" >/dev/null || true
+curl -s -X POST "$DASH/api/kanban/$CARD/comments" -H @"$hdr_file" -H 'Content-Type: application/json' --data @"$tmp" >/dev/null || true
 rm -f "$tmp"
 echo "posted pre-triage for $sha on $CARD"
