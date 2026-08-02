@@ -17,10 +17,12 @@ PASS_RE = re.compile(r'^(QA2?\s+PASS|CYBERSEC\s+GO|CYBERED\s+(FULL-CARD\s+)?GO)'
 FAIL_RE = re.compile(r'^(QA2?\s+FAIL|CYBERSEC\s+NO-GO|CYBERED\s+NO-GO)', re.IGNORECASE)
 # My own verdict opener, in any of the shapes I have used (incl. "GO (feltetelekkel)").
 # TIER-DÖNTÉS counts too: an explicit "this card is below my tier, and here is why" is a HANDLED
-# card, not an ungated one -- without it the sweep re-surfaces the same card every round and the
-# only way to silence it would be to post a duplicate gate (churn).
+# card, not an ungated one. DUPLIKATUM(-ZARAS) counts too: an explicit "already covered by card X,
+# verified by commits not just title" is also HANDLED, not ungated -- without these the sweep
+# re-surfaces the same card every round and the only way to silence it would be to post a duplicate
+# gate (churn).
 MY_VERDICT_RE = re.compile(
-    r'^\s*CYBERED\b.*(\b(GO|NO-GO)\b|TIER-D[OÖ]NT[EÉ]S)', re.IGNORECASE
+    r'^\s*CYBERED\b.*(\b(GO|NO-GO)\b|TIER-D[OÖ]NT[EÉ]S|DUPLIK[AÁ]TUM)', re.IGNORECASE
 )
 
 MY_GATE = 'cybered'
