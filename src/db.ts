@@ -1864,9 +1864,12 @@ export function updateKanbanCard(
   const statusChanges = fields.status !== undefined && fields.status !== card.status
   const blocked = statusChanges && reviewedCardBlocksInProgress(id, fields.status as string)
   if (blocked && !opts?.force) return false
-  // Only a transition that WOULD have been refused counts as forced -- a `force` flag on an ordinary
-  // move is not an override of anything, and marking it would blunt the signal.
-  const forcedFlag = blocked ? 1 : 0
+  // Record forced=1 whenever a force override was actually exercised on this transition -- either
+  // the reviewed-card-reopen guard (`blocked`) or the newDevStop threshold guard at the route layer
+  // (`opts.force` on a planned->in_progress move). Previously only `blocked` was recorded, so a
+  // newDevStop force:true bypass showed as forced=0 in the audit trail, indistinguishable from an
+  // unguarded gap (investigation 2026-08-02, cards 8c4a6d9c/cf068369/89fba8e4).
+  const forcedFlag = (blocked || (statusChanges && fields.status === 'in_progress' && opts?.force)) ? 1 : 0
   const now = Math.floor(Date.now() / 1000)
   const f = { ...card, ...fields, updated_at: now }
   const changed = db.prepare(
@@ -1899,9 +1902,13 @@ export function moveKanbanCard(id: string, status: KanbanCard['status'], sortOrd
     'UPDATE kanban_cards SET status=?, sort_order=?, updated_at=? WHERE id=?'
   ).run(status, sortOrder, now, id).changes > 0
   if (changed && prev !== undefined && prev !== status) {
+    // `forced` records whether THIS call used a force override of ANY guard (reviewed-card-reopen
+    // OR the newDevStop threshold at the route layer) -- previously only forcedOverride (the
+    // reviewed-card guard) was recorded, so a newDevStop force:true bypass showed as forced=0 in
+    // the audit trail, indistinguishable from a real guard gap (investigation 2026-08-02).
     db.prepare(
       'INSERT INTO kanban_card_events (card_id, from_status, to_status, actor, created_at, forced) VALUES (?, ?, ?, ?, ?, ?)'
-    ).run(id, prev, status, actor ?? null, now, forcedOverride ? 1 : 0)
+    ).run(id, prev, status, actor ?? null, now, (forcedOverride || force) ? 1 : 0)
   }
   return changed
 }

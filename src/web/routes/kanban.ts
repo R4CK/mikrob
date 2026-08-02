@@ -279,7 +279,18 @@ export async function tryHandleKanban(ctx: RouteContext): Promise<boolean> {
 
   if (path === '/api/kanban' && method === 'POST') {
     const body = await readBody(req)
-    const data = JSON.parse(body.toString())
+    const { force, ...data } = JSON.parse(body.toString())
+    // Card 8c4a6d9c/cf068369/89fba8e4 investigation (2026-08-02): the two status-write routes
+    // (PUT, POST /move) block a fresh planned->in_progress start above the weekly threshold, but a
+    // card CREATED already in_progress skipped both -- there is no prior 'planned' status for
+    // isNewDevStartBlocked to see. Block that specific creation shape the same way (force:true escapes it).
+    if (data.status === 'in_progress' && force !== true) {
+      const flag = readHardStop()
+      if (flag.newDevStopActive) {
+        json(res, { error: NEW_DEV_STOP_MESSAGE }, 409)
+        return true
+      }
+    }
     const id = randomUUID().slice(0, 8)
     createKanbanCard({ id, ...data })
     json(res, { ok: true, id })
