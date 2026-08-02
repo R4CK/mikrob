@@ -23,7 +23,13 @@ import {
 import { MAIN_CHANNELS_SESSION } from './main-agent.js'
 import { paneLooksIdle } from '../pane-state.js'
 import { readModelFallbackConfig } from './model-fallback-store.js'
-import { ladderIndexOf, weeklyTargetModel, buildAgentTierRows, type AgentTierRow } from '../model-catalog.js'
+import {
+  ladderIndexOf,
+  weeklyTargetModel,
+  buildAgentTierRows,
+  decideParkedModelUpdate,
+  type AgentTierRow,
+} from '../model-catalog.js'
 import {
   readBaselineModel,
   recordBaselineIfAbsent,
@@ -126,17 +132,19 @@ function restartFor(name: string): void {
 function updateStoredModelForParkedAgent(name: string, weeklyIdx: number): void {
   const currentModel = readModelFor(name)
   const agentTier = Math.max(0, weeklyIdx)
-  const weeklyModel =
-    agentTier > 0
-      ? weeklyTargetModel(readBaselineModel(name) ?? currentModel, agentTier)
-      : readBaselineModel(name) ?? currentModel
+  // The model-CHOICE decision is a pure function (model-catalog.ts, card a115cd7f): it also enforces
+  // "cheaper tier wins" -- an agent already sitting on a model cheaper than the weekly target (its
+  // OWN banner axis dropped it further, then it got parked) must not be written back UP while the
+  // ramp is still active, or a park/start cycle would silently undo that cost-saving downgrade.
+  const action = decideParkedModelUpdate(currentModel, readBaselineModel(name), agentTier)
 
-  if (!weeklyModel || weeklyModel === currentModel) {
-    // Already home and no stale base left lying around -- nothing to do.
+  if (action.kind === 'none') {
+    // Already home (or correctly left alone) -- no stale base left lying around when truly home.
     if (agentTier === 0 && readBaselineModel(name) !== null) clearBaseline(name)
     return
   }
 
+  const { model: weeklyModel } = action
   const steppingDown = ladderIndexOf(weeklyModel) > ladderIndexOf(currentModel)
   try {
     if (steppingDown && agentTier > 0) recordBaselineIfAbsent(name, currentModel)

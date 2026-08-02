@@ -5,6 +5,7 @@ import {
   ladderIndexOf,
   weeklyTargetModel,
   buildAgentTierRows,
+  decideParkedModelUpdate,
 } from '../model-catalog.js'
 
 describe('the model ladder is one coherent source (card 5d2002b5)', () => {
@@ -127,5 +128,40 @@ describe('buildAgentTierRows assembles the read-only display (redesign point 4)'
     expect(row.tier).toBe(2) // it IS at the fleet tier...
     expect(row.targetModel).toBe('ollama:deepseek-coder') // ...but its target stays its own model
     expect(MODEL_LADDER).not.toContain(row.targetModel)
+  })
+})
+
+// Cybered finding on card e33af7c4 (card a115cd7f, LOW): the PARKED-agent path must not silently
+// undo a cheaper model an agent already sits on (e.g. its own banner-fallback axis already dropped
+// it to Haiku before it got parked) by writing the weekly tier's target back UP over it.
+describe('decideParkedModelUpdate enforces "cheaper tier wins" for parked agents (card a115cd7f)', () => {
+  it('writes the weekly target when the parked agent is still on its (pricier) base', () => {
+    const action = decideParkedModelUpdate('claude-sonnet-5', null, 1)
+    expect(action).toEqual({ kind: 'write', model: 'claude-sonnet-4-6' })
+  })
+
+  it('does NOT write a pricier weekly target over an already-cheaper current model', () => {
+    // The agent is on Haiku (its own banner axis dropped it further than the weekly target would),
+    // baseline says Sonnet 5 -> weekly target at tier 1 is Sonnet 4.6, which is MORE expensive than
+    // Haiku. Writing it would undo the deeper downgrade -- must stay put.
+    const action = decideParkedModelUpdate('claude-haiku-4-5-20251001', 'claude-sonnet-5', 1)
+    expect(action).toEqual({ kind: 'none' })
+  })
+
+  it('writes when the parked agent is already exactly at the weekly target (idempotent no-op via none)', () => {
+    const action = decideParkedModelUpdate('claude-sonnet-4-6', 'claude-sonnet-5', 1)
+    expect(action).toEqual({ kind: 'none' })
+  })
+
+  it('at tier 0 (home), targets the recorded baseline regardless of ladder position', () => {
+    // Tier 0 is a genuine revert -- climbing back UP to base is the correct direction, so the
+    // cheaper-wins guard (which only applies at tier > 0) must not block it.
+    const action = decideParkedModelUpdate('claude-haiku-4-5-20251001', 'claude-sonnet-5', 0)
+    expect(action).toEqual({ kind: 'write', model: 'claude-sonnet-5' })
+  })
+
+  it('at tier 0 with no baseline and already-current model, nothing to do', () => {
+    const action = decideParkedModelUpdate('claude-sonnet-5', null, 0)
+    expect(action).toEqual({ kind: 'none' })
   })
 })

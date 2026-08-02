@@ -85,6 +85,34 @@ export function labelForModel(model: string): string {
   return CLAUDE_MODELS.find((m) => m.id === model)?.label ?? model
 }
 
+export type ParkedModelAction = { readonly kind: 'none' } | { readonly kind: 'write'; readonly model: string }
+
+/**
+ * PURE decision for a PARKED (not running) agent's stored model (Cybered finding, e33af7c4, card
+ * a115cd7f). Whether to overwrite `currentModel` with the weekly-tier target, given the durable
+ * baseline and the fleet's current tier.
+ *
+ * "Cheaper tier wins" -- an agent already on a model CHEAPER than the weekly target (e.g. its own
+ * banner-fallback axis already dropped it to Haiku, then it got parked) must NOT be written UP to
+ * the weekly target while the ramp is still active (agentTier > 0): that would silently undo a
+ * cost-saving downgrade and hand the agent a MORE expensive model on its next start -- the exact
+ * quota-burn class the ramp exists to prevent, just via the park/start path instead of the sweep.
+ * The running-agent path already enforces this via its cheaper-of-banner-vs-weekly merge; this is
+ * the parked-path equivalent, expressed as a pure comparison so it is unit-testable without the
+ * fs/tmux I/O the runner wraps it in.
+ */
+export function decideParkedModelUpdate(
+  currentModel: string,
+  baselineModel: string | null,
+  agentTier: number,
+): ParkedModelAction {
+  const tier = Number.isFinite(agentTier) && agentTier > 0 ? Math.floor(agentTier) : 0
+  const weeklyModel = tier > 0 ? weeklyTargetModel(baselineModel ?? currentModel, tier) : (baselineModel ?? currentModel)
+  if (!weeklyModel || weeklyModel === currentModel) return { kind: 'none' }
+  if (tier > 0 && ladderIndexOf(weeklyModel) < ladderIndexOf(currentModel)) return { kind: 'none' }
+  return { kind: 'write', model: weeklyModel }
+}
+
 /** One row of the read-only per-agent tier display (card 5d2002b5 redesign, point 4). */
 export interface AgentTierRow {
   readonly name: string
