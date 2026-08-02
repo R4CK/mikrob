@@ -6,6 +6,8 @@ import {
   weeklyTargetModel,
   buildAgentTierRows,
   decideParkedModelUpdate,
+  applyNoHaikuFloor,
+  NO_HAIKU_AGENTS,
 } from '../model-catalog.js'
 
 describe('the model ladder is one coherent source (card 5d2002b5)', () => {
@@ -18,9 +20,14 @@ describe('the model ladder is one coherent source (card 5d2002b5)', () => {
     expect([...ladderIds].filter((id) => !pickerIds.has(id))).toEqual([])
   })
 
-  it('the ladder is capability/price DESCENDING (Opus 5 first, Fable last)', () => {
-    expect(MODEL_LADDER[0]).toBe('claude-opus-5')
-    expect(MODEL_LADDER[MODEL_LADDER.length - 1]).toBe('claude-fable-5')
+  it('the ladder is capability/price DESCENDING (Fable 5 first, Haiku last)', () => {
+    // Corrected 2026-08-02 (Peti caught it): Anthropic prices Fable 5 ABOVE Opus 5
+    // ($10/$50 vs $5/$25 per MTok) and calls it "the most capable widely released model" --
+    // it is the top rung, not the bottom. A prior session had guessed the opposite with no
+    // benchmark backing it, purely from the name sounding like a lighter/creative model.
+    expect(MODEL_LADDER[0]).toBe('claude-fable-5')
+    expect(MODEL_LADDER[MODEL_LADDER.length - 1]).toBe('claude-haiku-4-5-20251001')
+    expect(ladderIndexOf('claude-fable-5')).toBeLessThan(ladderIndexOf('claude-opus-5'))
     expect(ladderIndexOf('claude-opus-5')).toBeLessThan(ladderIndexOf('claude-sonnet-5'))
     expect(ladderIndexOf('claude-sonnet-5')).toBeLessThan(ladderIndexOf('claude-haiku-4-5-20251001'))
   })
@@ -54,9 +61,16 @@ describe('weeklyTargetModel steps each agent from its OWN base (the bug this fix
   })
 
   it('an agent already near the bottom clamps at the cheapest, never off the end', () => {
-    // A Haiku-based agent at tier 2 cannot step past Fable; it does not wrap or return undefined.
-    expect(weeklyTargetModel('claude-haiku-4-5-20251001', 2)).toBe('claude-fable-5')
-    expect(weeklyTargetModel('claude-fable-5', 2)).toBe('claude-fable-5')
+    // A Haiku-based agent at tier 2 cannot step past Haiku (now the actual cheapest rung); it does
+    // not wrap or return undefined.
+    expect(weeklyTargetModel('claude-haiku-4-5-20251001', 2)).toBe('claude-haiku-4-5-20251001')
+  })
+
+  it('a Fable-based agent steps DOWN the ladder like any other base (Fable is the top rung now)', () => {
+    // Fable 5 is the most capable/priciest rung (corrected 2026-08-02), so stepping it down moves
+    // toward Opus, not toward itself -- the reverse of the old (wrong) placement.
+    expect(weeklyTargetModel('claude-fable-5', 1)).toBe('claude-opus-5')
+    expect(weeklyTargetModel('claude-fable-5', 2)).toBe('claude-opus-4-8[1m]')
   })
 
   it('an OFF-CATALOG base is left on its own model, never rewritten onto Claude by the weekly ramp', () => {
@@ -91,7 +105,7 @@ describe('buildAgentTierRows assembles the read-only display (redesign point 4)'
       1,
     )
     expect(rows[0].targetModel).toBe('claude-opus-4-8[1m]')
-    expect(rows[1].targetModel).toBe('claude-fable-5') // Haiku's one rung down is the last, clamped
+    expect(rows[1].targetModel).toBe('claude-haiku-4-5-20251001') // Haiku is the last rung, clamps to itself
     expect(rows[0].targetModel).not.toBe(rows[1].targetModel)
   })
 
@@ -163,5 +177,37 @@ describe('decideParkedModelUpdate enforces "cheaper tier wins" for parked agents
   it('at tier 0 with no baseline and already-current model, nothing to do', () => {
     const action = decideParkedModelUpdate('claude-sonnet-5', null, 0)
     expect(action).toEqual({ kind: 'none' })
+  })
+})
+
+// Peti policy (2026-08-02, Telegram): step down VERSION within a model family before jumping to a
+// lower-capability family, and coding agents (Backend/Backend2/Cybered/Cybersec/fullstack) may
+// never be stepped all the way down to Haiku -- it isn't reliable enough for their work.
+describe('NO_HAIKU_AGENTS floor keeps coding agents off the cheapest rung (Peti 2026-08-02)', () => {
+  it('lists exactly the five named coding agents', () => {
+    expect(NO_HAIKU_AGENTS).toEqual(new Set(['backend', 'backend2', 'cybered', 'cybersec', 'fullstack']))
+  })
+
+  it('clamps a coding agent at Haiku up to the next rung instead', () => {
+    expect(applyNoHaikuFloor('backend', 'claude-haiku-4-5-20251001')).toBe('claude-sonnet-4-6')
+    expect(applyNoHaikuFloor('cybersec', 'claude-haiku-4-5-20251001')).toBe('claude-sonnet-4-6')
+  })
+
+  it('is a no-op for a non-coding agent, or a coding agent not actually targeting Haiku', () => {
+    expect(applyNoHaikuFloor('marketing', 'claude-haiku-4-5-20251001')).toBe('claude-haiku-4-5-20251001')
+    expect(applyNoHaikuFloor('backend', 'claude-sonnet-4-6')).toBe('claude-sonnet-4-6')
+  })
+
+  it('decideParkedModelUpdate applies the floor when given the agent name', () => {
+    // backend at tier 2 from a Sonnet 4.6 baseline would normally land on Haiku -- floored to Sonnet 4.6.
+    const floored = decideParkedModelUpdate('claude-sonnet-4-6', 'claude-sonnet-4-6', 2, 'backend')
+    expect(floored).toEqual({ kind: 'none' }) // already AT the floored target -- no write needed
+    const stillHigher = decideParkedModelUpdate('claude-sonnet-5', 'claude-sonnet-5', 2, 'cybered')
+    expect(stillHigher).toEqual({ kind: 'write', model: 'claude-sonnet-4-6' }) // floored, not Haiku
+  })
+
+  it('omitting agentName preserves the old (unfloored) behavior', () => {
+    const action = decideParkedModelUpdate('claude-sonnet-4-6', 'claude-sonnet-4-6', 2)
+    expect(action).toEqual({ kind: 'write', model: 'claude-haiku-4-5-20251001' })
   })
 })

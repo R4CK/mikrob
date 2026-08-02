@@ -28,6 +28,7 @@ import {
   weeklyTargetModel,
   buildAgentTierRows,
   decideParkedModelUpdate,
+  applyNoHaikuFloor,
   type AgentTierRow,
 } from '../model-catalog.js'
 import {
@@ -136,7 +137,7 @@ function updateStoredModelForParkedAgent(name: string, weeklyIdx: number): void 
   // "cheaper tier wins" -- an agent already sitting on a model cheaper than the weekly target (its
   // OWN banner axis dropped it further, then it got parked) must not be written back UP while the
   // ramp is still active, or a park/start cycle would silently undo that cost-saving downgrade.
-  const action = decideParkedModelUpdate(currentModel, readBaselineModel(name), agentTier)
+  const action = decideParkedModelUpdate(currentModel, readBaselineModel(name), agentTier, name)
 
   if (action.kind === 'none') {
     // Already home (or correctly left alone) -- no stale base left lying around when truly home.
@@ -217,7 +218,7 @@ function checkAgent(name: string, nowMs: number, cfg: ModelFallbackConfig, weekl
   let weeklyModel = currentModel
   if (agentTier > 0) {
     const base = readBaselineModel(name) ?? currentModel
-    weeklyModel = weeklyTargetModel(base, agentTier)
+    weeklyModel = applyNoHaikuFloor(name, weeklyTargetModel(base, agentTier))
   } else {
     // Tier 0 = the weekly ramp is not pulling this agent down: home is its recorded base if one
     // exists (it is climbing back), else its current model (never stepped).

@@ -28,16 +28,54 @@ export const CLAUDE_MODELS: ReadonlyArray<{ readonly id: string; readonly label:
  * which" is a judgement, not the display order -- but it is defined HERE, next to the list, so a new
  * model is ranked in the same edit that adds it.
  *
- * Opus 5 > Opus 4.8 (1M) > Sonnet 5 > Sonnet 4.6 > Haiku 4.5 > Fable 5.
+ * Fable 5 > Opus 5 > Opus 4.8 (1M) > Sonnet 5 > Sonnet 4.6 > Haiku 4.5.
+ *
+ * CORRECTED 2026-08-02 (Peti caught it): Fable 5 was placed LAST here by a prior session with no
+ * verified basis -- an unbenchmarked guess, likely from the name sounding lighter/creative-writing.
+ * Anthropic's own pricing puts Fable 5 ABOVE Opus 5 ($10/$50 per MTok vs Opus 5's $5/$25) and
+ * describes it as "Anthropic's most capable widely released model" -- i.e. the most expensive AND
+ * most capable rung, not the cheapest. Moved to the front. Every relative step already tested
+ * (Opus 5 -> Opus 4.8 -> Sonnet 5 -> Sonnet 4.6 -> Haiku 4.5) is unchanged; only Fable moved.
+ *
+ * Also implements Peti's stepping policy (2026-08-02): within one model FAMILY, step down VERSION
+ * first (Opus 5 -> Opus 4.8) before jumping to a lower-capability family (-> Sonnet); only jump
+ * families once the family has no lower version left on the ladder. See applyNoHaikuFloor below for
+ * the companion rule: coding agents may never be stepped all the way down to Haiku.
  */
 export const MODEL_LADDER: readonly string[] = [
+  'claude-fable-5',
   'claude-opus-5',
   'claude-opus-4-8[1m]',
   'claude-sonnet-5',
   'claude-sonnet-4-6',
   'claude-haiku-4-5-20251001',
-  'claude-fable-5',
 ]
+
+/**
+ * Agents whose job is primarily writing/reviewing code. Peti policy (2026-08-02): the weekly ramp
+ * must never step one of these all the way down to Haiku 4.5 -- Haiku is not reliable enough for
+ * Backend/Backend2/Cybered/Cybersec/fullstack coding work, so their floor is the SECOND-cheapest
+ * rung (currently Sonnet 4.6), never the cheapest.
+ */
+export const NO_HAIKU_AGENTS: ReadonlySet<string> = new Set([
+  'backend',
+  'backend2',
+  'cybered',
+  'cybersec',
+  'fullstack',
+])
+
+/**
+ * Clamp a weekly-ramp target so a NO_HAIKU_AGENTS agent never lands on the ladder's cheapest rung --
+ * it holds at the next rung up instead. No-op for every other agent, and a no-op if the target isn't
+ * actually the bottom rung.
+ */
+export function applyNoHaikuFloor(agentName: string, targetModel: string): string {
+  if (!NO_HAIKU_AGENTS.has(agentName)) return targetModel
+  const bottomIdx = MODEL_LADDER.length - 1
+  if (ladderIndexOf(targetModel) < bottomIdx) return targetModel
+  return MODEL_LADDER[bottomIdx - 1] ?? targetModel
+}
 
 /** Every id the ladder knows, for validation. */
 export function isLadderModel(model: string): boolean {
@@ -105,9 +143,11 @@ export function decideParkedModelUpdate(
   currentModel: string,
   baselineModel: string | null,
   agentTier: number,
+  agentName?: string,
 ): ParkedModelAction {
   const tier = Number.isFinite(agentTier) && agentTier > 0 ? Math.floor(agentTier) : 0
-  const weeklyModel = tier > 0 ? weeklyTargetModel(baselineModel ?? currentModel, tier) : (baselineModel ?? currentModel)
+  let weeklyModel = tier > 0 ? weeklyTargetModel(baselineModel ?? currentModel, tier) : (baselineModel ?? currentModel)
+  if (tier > 0 && agentName) weeklyModel = applyNoHaikuFloor(agentName, weeklyModel)
   if (!weeklyModel || weeklyModel === currentModel) return { kind: 'none' }
   if (tier > 0 && ladderIndexOf(weeklyModel) < ladderIndexOf(currentModel)) return { kind: 'none' }
   return { kind: 'write', model: weeklyModel }
@@ -143,7 +183,7 @@ export function buildAgentTierRows(
   const clampedFleet = Number.isFinite(fleetTier) && fleetTier > 0 ? Math.floor(fleetTier) : 0
   return agents.map((a) => {
     const tier = a.exempt ? 0 : clampedFleet
-    const targetModel = weeklyTargetModel(a.baseModel, tier)
+    const targetModel = tier > 0 ? applyNoHaikuFloor(a.name, weeklyTargetModel(a.baseModel, tier)) : weeklyTargetModel(a.baseModel, tier)
     return {
       name: a.name,
       exempt: a.exempt,
