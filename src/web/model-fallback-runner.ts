@@ -117,9 +117,53 @@ function restartFor(name: string): void {
   }
 }
 
+/**
+ * Update a PARKED (not running) agent's stored model to match the weekly tier, WITHOUT restarting
+ * anything (there is no live session). Mirrors the weekly-axis half of the running-agent path in
+ * `checkAgent`: same durable-baseline bookkeeping, same per-agent-base target math, just no pane,
+ * no banner axis, and a write instead of a write+restart.
+ */
+function updateStoredModelForParkedAgent(name: string, weeklyIdx: number): void {
+  const currentModel = readModelFor(name)
+  const agentTier = Math.max(0, weeklyIdx)
+  const weeklyModel =
+    agentTier > 0
+      ? weeklyTargetModel(readBaselineModel(name) ?? currentModel, agentTier)
+      : readBaselineModel(name) ?? currentModel
+
+  if (!weeklyModel || weeklyModel === currentModel) {
+    // Already home and no stale base left lying around -- nothing to do.
+    if (agentTier === 0 && readBaselineModel(name) !== null) clearBaseline(name)
+    return
+  }
+
+  const steppingDown = ladderIndexOf(weeklyModel) > ladderIndexOf(currentModel)
+  try {
+    if (steppingDown && agentTier > 0) recordBaselineIfAbsent(name, currentModel)
+    writeModelFor(name, weeklyModel)
+    if (agentTier === 0) clearBaseline(name)
+    logger.info(
+      { name, from: currentModel, to: weeklyModel, agentTier },
+      'model-fallback: updated a PARKED agent\'s stored model (no restart, none needed)',
+    )
+  } catch (err) {
+    logger.warn({ err, name }, 'model-fallback: parked-agent model update failed')
+  }
+}
+
 function checkAgent(name: string, nowMs: number, cfg: ModelFallbackConfig, weeklyIdx: number): void {
-  // Sub-agents must be up; the main session is launchd-managed (always present).
-  if (name !== MAIN_AGENT_ID && agentRunState(name) !== 'running') return
+  // A PARKED sub-agent has no live pane, so the banner axis (which needs to read a usage-limit
+  // banner and restart a running session) cannot apply -- but the WEEKLY tier still must update its
+  // STORED model, or a park/start cycle silently exempts it from the whole ramp: it would start back
+  // up on its full-price base the moment someone (a heartbeat or the operator) starts it, even while
+  // the fleet is deep in a cost-saving tier (Peti 2026-08-02: screenshot showed several parked agents
+  // still on their base model with no step applied, while running siblings on the SAME base had
+  // stepped correctly). No restart needed here -- there is no session to restart; the next `start`
+  // simply reads the already-updated model.
+  if (name !== MAIN_AGENT_ID && agentRunState(name) !== 'running') {
+    updateStoredModelForParkedAgent(name, weeklyIdx)
+    return
+  }
 
   const chain = cfg.chain
   const session = sessionFor(name)
