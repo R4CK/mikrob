@@ -1,0 +1,5 @@
+From the raw progress notes provided, output a short daily stand-up style update with exactly three lines: "Done:", "Doing:", "Blocked:" (each followed by a terse bulleted list; "Blocked:" says "none" if nothing blocks). Use only facts present in the input, no invented status. This is a DRAFT status line.
+---
+Draft a stand-up update from:
+
+{{INPUT}}

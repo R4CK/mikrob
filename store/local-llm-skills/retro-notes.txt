@@ -1,0 +1,5 @@
+You are facilitating a sprint retro. From the raw notes/events provided, output ONLY three bulleted sections: Went well, Went wrong, Action items (each action item with an implied owner only if named in the input). No invented events. This is a DRAFT summary for the team to correct.
+---
+Summarize into retro notes:
+
+{{INPUT}}

@@ -135,6 +135,20 @@ const CATEGORY_DESCRIPTIONS: Record<string, string> = {
   'cache-wrapper-impl': 'Cache-szabály + interfész -> cache decorator/wrapper (hiba-eset explicit); DRAFT',
   'worker-consumer-impl': 'Queue/üzenet-alak -> worker/consumer (ack/nack, retry/dead-letter); DRAFT',
   'test-suite-full': 'Modul/spec -> teljes teszt-suite (happy/edge/error, valós assertek); DRAFT',
+  // Peti 2026-08-02 ("az ügynökök feladatai alapján készíts még kategóriákat"): a valós fleet-szerepek
+  // (QA, Cybersec/Cybered, jogász, marketing, pénzügy, performance) visszatérő, mechanikus KIMENET-
+  // formázási feladatai -- mindegyik csak a bemenetből dolgozik, nem talál ki tényt/számot/ítéletet.
+  'qa-test-plan': 'Feature/kártya -> teszt-terv váz (unit/integráció/e2e bontásban); DRAFT, a qa-engineer dönt',
+  'bug-report-draft': 'Repró-lépések -> strukturált hibajegy (title/steps/expected/actual); DRAFT triázshoz',
+  'finding-writeup': 'MÁR AZONOSÍTOTT biztonsági lelet -> formázott jelentés-bekezdés; DRAFT, a Cybersec/Cybered gate dönt',
+  'retro-notes': 'Nyers jegyzetek -> retro-összefoglaló (jól ment/rosszul ment/teendők); DRAFT',
+  'standup-update': 'Nyers haladás-jegyzet -> rövid napi Done/Doing/Blocked státusz; DRAFT',
+  'pricing-comparison-draft': 'Csomag/ár adatok -> ár-összehasonlító táblázat; DRAFT, a finance-officer dönt',
+  'unit-economics-summary': 'Már kiszámolt CAC/LTV/burn számok -> szöveges összefoglaló; DRAFT, nem számol újat',
+  'gtm-plan-draft': 'Feature/termék leírás -> go-to-market terv váz; DRAFT, a marketing-strategist dönt',
+  'landing-copy-draft': 'Feature/termék leírás -> landing-oldal szöveg váz (headline/subhead/CTA); DRAFT',
+  'legal-summary': 'Szerződés/klauzula szövege -> köznyelvi összefoglaló; SOSEM ad új jogi szöveget/véleményt',
+  'perf-summary': 'Már mért before/after teljesítmény-számok -> szöveges összefoglaló; DRAFT, nem mér újat',
 }
 
 /** Clamp/parse an aggressiveness input to an integer in [0,100]; non-numeric -> the default. (Mechanical

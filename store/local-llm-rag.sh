@@ -89,6 +89,19 @@
 #   cache-wrapper-impl  cache policy + interface -> cache decorator/wrapper (error path explicit); DRAFT
 #   worker-consumer-impl  queue/message shape -> worker/consumer (ack/nack, retry/dead-letter); DRAFT
 #   test-suite-full  module/spec -> full test suite (happy/edge/error, real assertions); DRAFT
+#   -- Peti-approved batch 2026-08-02 (agent-task-driven): recurring role-agent OUTPUT formatting,
+#   never a new fact/number/verdict -- QA/Cybersec/Cybered/jogász/marketing/pénzügy/performance:
+#   qa-test-plan    feature/card -> test-plan skeleton (unit/integration/e2e); DRAFT, qa-engineer decides
+#   bug-report-draft  repro steps -> structured bug report (title/steps/expected/actual); DRAFT triage
+#   finding-writeup   an ALREADY-IDENTIFIED security finding -> formatted report entry; DRAFT, Cybersec/Cybered gate decides
+#   retro-notes     raw notes -> retro summary (went-well/went-wrong/action-items); DRAFT
+#   standup-update  raw progress notes -> short Done/Doing/Blocked status; DRAFT
+#   pricing-comparison-draft  tier/feature/number input -> pricing comparison table; DRAFT, finance-officer decides
+#   unit-economics-summary  ALREADY-COMPUTED CAC/LTV/burn numbers -> narrative summary; DRAFT, never computes new numbers
+#   gtm-plan-draft  feature/product description -> go-to-market plan skeleton; DRAFT, marketing-strategist decides
+#   landing-copy-draft  feature/product description -> landing-page copy skeleton (headline/subhead/CTA); DRAFT
+#   legal-summary   contract/clause text -> plain-language summary; NEVER drafts new legal wording or opinion
+#   perf-summary    ALREADY-MEASURED before/after perf numbers -> narrative summary; DRAFT, never measures new numbers
 # These offload work that today burns online Claude tokens; drafts are draft-only
 # (label local-llm-draft) and re-checked by MikroB + gate before shipping.
 #
