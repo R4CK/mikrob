@@ -96,14 +96,21 @@ export function isParkedByHardStop(agentId: string, flag: WeeklyHardStop = readH
 /**
  * Pure predicate for the NEW-DEV stop (Peti 2026-08-01): a `planned -> in_progress` transition IS the
  * start of new development and must be refused once the weekly newDevStop threshold is crossed.
- * `waiting -> in_progress` (a FAIL-fix / gate resume) is NOT new dev and is allowed; `force` is the
- * deliberate override. Pure so the status-write endpoints can test the decision without a file/DB.
+ * `waiting -> in_progress` (a FAIL-fix / gate resume) is NOT new dev and is allowed; `force` is
+ * meant as MikroB's deliberate override for a critical-infra exception (kanban.ts:27) -- but until
+ * 2026-08-02 `force` alone bypassed this for ANY caller, and a role-agent's own self-advance used it
+ * to force-start ordinary LOW-priority planned cards during newDevStopActive (cards 31cc1cd4,
+ * 874a9fb0, 23594bbc), defeating the exact quota protection this stop exists for. `force` now only
+ * overrides when the caller is one of `flag.exemptAgents` (mikrob) -- everyone else's force is ignored.
+ * Pure so the status-write endpoints can test the decision without a file/DB.
  */
 export function isNewDevStartBlocked(
   prevStatus: string | undefined,
   nextStatus: unknown,
   force: boolean,
   flag: WeeklyHardStop,
+  actor?: string,
 ): boolean {
-  return !force && flag.newDevStopActive === true && nextStatus === 'in_progress' && prevStatus === 'planned'
+  const exemptOverride = force && !!actor && flag.exemptAgents.includes(actor.trim().toLowerCase())
+  return !exemptOverride && flag.newDevStopActive === true && nextStatus === 'in_progress' && prevStatus === 'planned'
 }

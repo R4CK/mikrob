@@ -24,16 +24,19 @@ import { readHardStop, isNewDevStartBlocked } from '../../costops/weekly-hard-st
 // kept starting above the threshold and burned the weekly quota it was meant to protect. The block
 // lives at the API boundary (both status-write routes) so every caller -- agent curl, dashboard drag,
 // PUT and POST /move -- hits it. A `waiting -> in_progress` transition is a FAIL-fix / gate resume,
-// NOT new development, so it stays allowed; `force: true` is the deliberate MikroB override for a
-// critical-infra exception.
-function newDevStopWouldBlock(id: string, nextStatus: unknown, force: boolean): boolean {
-  if (nextStatus !== 'in_progress' || force) return false // cheap early-out avoids the flag + DB read
+// NOT new development, so it stays allowed; `force: true` is meant as the deliberate MikroB override
+// for a critical-infra exception -- but until 2026-08-02 the early-out below (`|| force`) returned
+// "not blocked" for ANY caller's force:true with no actor check, and a role-agent used it to
+// self-force-start ordinary planned cards during newDevStopActive (cards 31cc1cd4/874a9fb0/23594bbc).
+// `isNewDevStartBlocked` now only honours `force` when the actor is an exempt agent (mikrob).
+function newDevStopWouldBlock(id: string, nextStatus: unknown, force: boolean, actor?: string): boolean {
+  if (nextStatus !== 'in_progress') return false // cheap early-out avoids the flag + DB read
   const flag = readHardStop()
   if (!flag.newDevStopActive) return false
-  return isNewDevStartBlocked(getKanbanCard(id)?.status, nextStatus, force, flag)
+  return isNewDevStartBlocked(getKanbanCard(id)?.status, nextStatus, force, flag, actor)
 }
 const NEW_DEV_STOP_MESSAGE =
-  'Heti "új fejlesztés leáll" küszöb átlépve: a planned -> in_progress átmenet (új fejlesztés indítása) le van tiltva a heti resetig. In-flight és gate-munka továbbra is mehet (waiting -> in_progress); tudatos felülíráshoz küldd force: true értékkel.'
+  'Heti "új fejlesztés leáll" küszöb átlépve: a planned -> in_progress átmenet (új fejlesztés indítása) le van tiltva a heti resetig. In-flight és gate-munka továbbra is mehet (waiting -> in_progress); tudatos felülíráshoz MikroB force: true-val nyithatja meg.'
 import { resolveKanbanDispatchTarget, isSelfAdvanceMove } from '../../kanban-dispatch.js'
 import { generateBreakdown } from '../llm-breakdown.js'
 import { logger } from '../../logger.js'
@@ -279,14 +282,16 @@ export async function tryHandleKanban(ctx: RouteContext): Promise<boolean> {
 
   if (path === '/api/kanban' && method === 'POST') {
     const body = await readBody(req)
-    const { force, ...data } = JSON.parse(body.toString())
+    const { force, actor, ...data } = JSON.parse(body.toString())
     // Card 8c4a6d9c/cf068369/89fba8e4 investigation (2026-08-02): the two status-write routes
     // (PUT, POST /move) block a fresh planned->in_progress start above the weekly threshold, but a
     // card CREATED already in_progress skipped both -- there is no prior 'planned' status for
-    // isNewDevStartBlocked to see. Block that specific creation shape the same way (force:true escapes it).
-    if (data.status === 'in_progress' && force !== true) {
+    // isNewDevStartBlocked to see. Block that specific creation shape the same way. `force` only
+    // exempts an actor in exemptAgents (mikrob) -- see newDevStopWouldBlock above.
+    if (data.status === 'in_progress') {
       const flag = readHardStop()
-      if (flag.newDevStopActive) {
+      const exempt = force === true && typeof actor === 'string' && flag.exemptAgents.includes(actor.trim().toLowerCase())
+      if (flag.newDevStopActive && !exempt) {
         json(res, { error: NEW_DEV_STOP_MESSAGE }, 409)
         return true
       }
@@ -302,7 +307,7 @@ export async function tryHandleKanban(ctx: RouteContext): Promise<boolean> {
     const id = decodeURIComponent(kanbanCardMatch[1])
     const body = await readBody(req)
     const { actor, force, ...data } = JSON.parse(body.toString()) as Record<string, unknown>
-    if (newDevStopWouldBlock(id, data.status, force === true)) {
+    if (newDevStopWouldBlock(id, data.status, force === true, typeof actor === 'string' ? actor : undefined)) {
       json(res, { error: NEW_DEV_STOP_MESSAGE }, 409)
       return true
     }
@@ -335,7 +340,7 @@ export async function tryHandleKanban(ctx: RouteContext): Promise<boolean> {
     const id = decodeURIComponent(kanbanMoveMatch[1])
     const body = await readBody(req)
     const { status, sort_order, actor, force } = JSON.parse(body.toString())
-    if (newDevStopWouldBlock(id, status, force === true)) {
+    if (newDevStopWouldBlock(id, status, force === true, typeof actor === 'string' ? actor : undefined)) {
       json(res, { error: NEW_DEV_STOP_MESSAGE }, 409)
       return true
     }

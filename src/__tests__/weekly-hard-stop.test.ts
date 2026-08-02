@@ -106,8 +106,13 @@ describe('isNewDevStartBlocked (weekly NEW-DEV stop enforcement, Peti 2026-08-01
     expect(isNewDevStartBlocked('waiting', 'in_progress', false, softStop())).toBe(false)
   })
 
-  it('ALLOWS planned -> in_progress with force (deliberate MikroB critical-infra override)', () => {
-    expect(isNewDevStartBlocked('planned', 'in_progress', true, softStop())).toBe(false)
+  it('ALLOWS planned -> in_progress with force WHEN the actor is exempt (deliberate MikroB critical-infra override)', () => {
+    expect(isNewDevStartBlocked('planned', 'in_progress', true, softStop(), 'mikrob')).toBe(false)
+  })
+
+  it('STILL BLOCKS planned -> in_progress with force from a non-exempt actor -- a role-agent self-force-starting a planned card is not a critical-infra override (2026-08-02, cards 31cc1cd4/874a9fb0/23594bbc)', () => {
+    expect(isNewDevStartBlocked('planned', 'in_progress', true, softStop(), 'backend')).toBe(true)
+    expect(isNewDevStartBlocked('planned', 'in_progress', true, softStop())).toBe(true) // no actor at all
   })
 
   it('does NOT block planned -> in_progress when the stop is inactive', () => {
