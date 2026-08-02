@@ -675,13 +675,18 @@ export function listCategories(): Array<{
     Array.isArray(cfg.disabledCategories) ? (cfg.disabledCategories as unknown[]).map(String) : [],
   )
 
-  return names.map((name) => ({
-    name,
-    description: CATEGORY_DESCRIPTIONS[name] ?? name,
-    enabled: !disabled.has(name),
-    count: counts.get(name) ?? 0,
-    lastTs: lastTs.get(name) ?? null,
-  }))
+  // Peti 2026-08-02: most-used categories first (call count desc), name asc as a stable tie-break
+  // for zero-usage categories -- so the list reads as "what the fleet actually reaches for", not
+  // an arbitrary filesystem order.
+  return names
+    .map((name) => ({
+      name,
+      description: CATEGORY_DESCRIPTIONS[name] ?? name,
+      enabled: !disabled.has(name),
+      count: counts.get(name) ?? 0,
+      lastTs: lastTs.get(name) ?? null,
+    }))
+    .sort((a, b) => b.count - a.count || a.name.localeCompare(b.name))
 }
 
 export async function tryHandleLocalLlm(ctx: RouteContext): Promise<boolean> {
