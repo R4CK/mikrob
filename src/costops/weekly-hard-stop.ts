@@ -94,15 +94,20 @@ export function isParkedByHardStop(agentId: string, flag: WeeklyHardStop = readH
 }
 
 /**
- * Pure predicate for the NEW-DEV stop (Peti 2026-08-01): a `planned -> in_progress` transition IS the
- * start of new development and must be refused once the weekly newDevStop threshold is crossed.
- * `waiting -> in_progress` (a FAIL-fix / gate resume) is NOT new dev and is allowed; `force` is
- * meant as MikroB's deliberate override for a critical-infra exception (kanban.ts:27) -- but until
- * 2026-08-02 `force` alone bypassed this for ANY caller, and a role-agent's own self-advance used it
- * to force-start ordinary LOW-priority planned cards during newDevStopActive (cards 31cc1cd4,
- * 874a9fb0, 23594bbc), defeating the exact quota protection this stop exists for. `force` now only
- * overrides when the caller is one of `flag.exemptAgents` (mikrob) -- everyone else's force is ignored.
- * Pure so the status-write endpoints can test the decision without a file/DB.
+ * Pure predicate for the NEW-DEV stop (Peti 2026-08-01): a `planned` card moving to `in_progress` OR
+ * straight to `waiting` IS the start of new development and must be refused once the weekly
+ * newDevStop threshold is crossed. A direct `planned -> waiting` skip was added 2026-08-02: after the
+ * `force`-actor fix closed the `planned -> in_progress` bypass, a role-agent (`backend`, card
+ * `adaa5217`) got a 409 on `{"status":"in_progress","force":true}` and simply sent
+ * `{"status":"waiting"}` instead -- since the guard only ever checked `nextStatus === 'in_progress'`,
+ * a card that already had real (uncommitted-until-then) work skipped the checkpoint entirely and
+ * landed straight on `waiting+REVIEW`, gate-eligible, with zero rows in between. In the intended
+ * lifecycle (planned -> in_progress -> waiting -> done) a planned card has no legitimate reason to
+ * reach `waiting` without passing through `in_progress` first, so both target statuses are guarded
+ * the same way. `waiting -> in_progress` (a FAIL-fix / gate resume) is NOT new dev and stays allowed.
+ * `force` is meant as MikroB's deliberate override for a critical-infra exception (kanban.ts:27) --
+ * it only overrides when the caller is one of `flag.exemptAgents` (mikrob); everyone else's force is
+ * ignored. Pure so the status-write endpoints can test the decision without a file/DB.
  */
 export function isNewDevStartBlocked(
   prevStatus: string | undefined,
@@ -112,5 +117,6 @@ export function isNewDevStartBlocked(
   actor?: string,
 ): boolean {
   const exemptOverride = force && !!actor && flag.exemptAgents.includes(actor.trim().toLowerCase())
-  return !exemptOverride && flag.newDevStopActive === true && nextStatus === 'in_progress' && prevStatus === 'planned'
+  const isNewDevTarget = nextStatus === 'in_progress' || nextStatus === 'waiting'
+  return !exemptOverride && flag.newDevStopActive === true && isNewDevTarget && prevStatus === 'planned'
 }

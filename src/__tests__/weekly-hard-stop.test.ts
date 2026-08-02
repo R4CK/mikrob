@@ -119,8 +119,11 @@ describe('isNewDevStartBlocked (weekly NEW-DEV stop enforcement, Peti 2026-08-01
     expect(isNewDevStartBlocked('planned', 'in_progress', false, inactive())).toBe(false)
   })
 
-  it('only guards the in_progress target -- a planned -> waiting move is never blocked', () => {
-    expect(isNewDevStartBlocked('planned', 'waiting', false, softStop())).toBe(false)
+  it('BLOCKS a direct planned -> waiting skip too (2026-08-02, card adaa5217: backend got 409 on force:true in_progress then just jumped straight to waiting, skipping the checkpoint entirely)', () => {
+    expect(isNewDevStartBlocked('planned', 'waiting', false, softStop())).toBe(true)
+  })
+
+  it('only guards in_progress/waiting targets -- a planned -> done move is never blocked by this predicate', () => {
     expect(isNewDevStartBlocked('planned', 'done', false, softStop())).toBe(false)
   })
 })

@@ -29,14 +29,18 @@ import { readHardStop, isNewDevStartBlocked } from '../../costops/weekly-hard-st
 // "not blocked" for ANY caller's force:true with no actor check, and a role-agent used it to
 // self-force-start ordinary planned cards during newDevStopActive (cards 31cc1cd4/874a9fb0/23594bbc).
 // `isNewDevStartBlocked` now only honours `force` when the actor is an exempt agent (mikrob).
+// SAME DAY, second bypass: after force got 409'd, `backend` (card adaa5217) simply sent
+// `{"status":"waiting"}` on the still-`planned` card, skipping `in_progress` entirely -- the early-out
+// here only checked `nextStatus === 'in_progress'`, so a direct `planned -> waiting` sailed through
+// unchecked even though real (new) work had already happened. Now guards both target statuses.
 function newDevStopWouldBlock(id: string, nextStatus: unknown, force: boolean, actor?: string): boolean {
-  if (nextStatus !== 'in_progress') return false // cheap early-out avoids the flag + DB read
+  if (nextStatus !== 'in_progress' && nextStatus !== 'waiting') return false // cheap early-out avoids the flag + DB read
   const flag = readHardStop()
   if (!flag.newDevStopActive) return false
   return isNewDevStartBlocked(getKanbanCard(id)?.status, nextStatus, force, flag, actor)
 }
 const NEW_DEV_STOP_MESSAGE =
-  'Heti "új fejlesztés leáll" küszöb átlépve: a planned -> in_progress átmenet (új fejlesztés indítása) le van tiltva a heti resetig. In-flight és gate-munka továbbra is mehet (waiting -> in_progress); tudatos felülíráshoz MikroB force: true-val nyithatja meg.'
+  'Heti "új fejlesztés leáll" küszöb átlépve: egy planned kártya nem mehet in_progress-be VAGY egyenesen waiting-be sem (új fejlesztés indítása) a heti resetig. In-flight és gate-munka továbbra is mehet (waiting -> in_progress); tudatos felülíráshoz MikroB force: true-val nyithatja meg.'
 import { resolveKanbanDispatchTarget, isSelfAdvanceMove } from '../../kanban-dispatch.js'
 import { generateBreakdown } from '../llm-breakdown.js'
 import { logger } from '../../logger.js'
@@ -285,10 +289,11 @@ export async function tryHandleKanban(ctx: RouteContext): Promise<boolean> {
     const { force, actor, ...data } = JSON.parse(body.toString())
     // Card 8c4a6d9c/cf068369/89fba8e4 investigation (2026-08-02): the two status-write routes
     // (PUT, POST /move) block a fresh planned->in_progress start above the weekly threshold, but a
-    // card CREATED already in_progress skipped both -- there is no prior 'planned' status for
-    // isNewDevStartBlocked to see. Block that specific creation shape the same way. `force` only
-    // exempts an actor in exemptAgents (mikrob) -- see newDevStopWouldBlock above.
-    if (data.status === 'in_progress') {
+    // card CREATED already in_progress (or straight to waiting -- see adaa5217, same day) skipped
+    // both -- there is no prior 'planned' status for isNewDevStartBlocked to see. Block both creation
+    // shapes the same way. `force` only exempts an actor in exemptAgents (mikrob) -- see
+    // newDevStopWouldBlock above.
+    if (data.status === 'in_progress' || data.status === 'waiting') {
       const flag = readHardStop()
       const exempt = force === true && typeof actor === 'string' && flag.exemptAgents.includes(actor.trim().toLowerCase())
       if (flag.newDevStopActive && !exempt) {
