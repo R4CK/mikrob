@@ -19,9 +19,15 @@ TOKEN_FILE="${MARVEEN_TOKEN_FILE:-/home/neon/marveen/store/.dashboard-token}"
 STATE_FILE="${MARVEEN_STATE_FILE:-/home/neon/marveen/store/szotasz-marveen-daily-state.json}"
 
 [[ -r "$TOKEN_FILE" ]] || { echo "ERROR:no-token-file"; exit 2; }
-TOKEN="$(cat "$TOKEN_FILE")"
 
-RESP="$(curl -s -H "Authorization: Bearer $TOKEN" "$DASH/api/overview" 2>/dev/null)"
+# SECURITY: 0600 temp header file instead of a curl argv -- /proc/<pid>/cmdline is
+# world-readable, so a bare `-H "Authorization: Bearer $TOKEN"` leaks the dashboard
+# token to any local user (same class as gate-ops-scripts-token-in-argv, b267df80).
+_hdr_file="$(mktemp)"; chmod 600 "$_hdr_file"
+trap 'rm -f "$_hdr_file"' EXIT
+printf 'Authorization: Bearer %s\n' "$(cat "$TOKEN_FILE")" > "$_hdr_file"
+
+RESP="$(curl -s -H @"$_hdr_file" "$DASH/api/overview" 2>/dev/null)"
 [[ -n "$RESP" ]] || { echo "ERROR:empty-response"; exit 2; }
 
 BEHIND="$(echo "$RESP" | python3 -c "
