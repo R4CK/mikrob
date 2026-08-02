@@ -214,9 +214,18 @@ apt_lock_holder() {
   return 1
 }
 
+# A ket ertekadas alatt SZANDEKOSAN `&& rc=0 || rc=$?` all, nem `; rc=$?`.
+# A szkript `set -e` alatt fut (5. sor), es egy ertekadas kilepesi kodja a
+# parancs-behelyettesitese -- tehat `holder=$(apt_lock_holder); rc=$?` eseten a
+# shell MAR AZON A SORON kilep, ha a fuggveny nem nullat ad. Az pedig pontosan
+# akkor ad nem nullat, amikor NINCS zar (return 1) vagy nincs fuser (return 2),
+# vagyis a haromallapotu logika alatta SOSEM futott le: az egyetlen tulelo ag az
+# volt, amikor tenyleg fogta valaki a lockot. A zar-figyelo igy a NYUGODT gepen
+# olte meg a telepitest, es a lock-versenyes gepen engedte at -- ezert ment at a
+# 07-30-i workshopon es bukott egy friss VPS-en 08-02-an.
 wait_for_apt_lock() {
   local holder rc waited=0 interval=5
-  holder=$(apt_lock_holder); rc=$?
+  holder=$(apt_lock_holder) && rc=0 || rc=$?
   if [ "$rc" -eq 2 ]; then
     # fuser nincs (minimal image) -- nem tudjuk MEGNEZNI, ki fogja a lockot.
     # Ezt kimondjuk, es az APT_OPTS timeout-ja kezeli, ha tenyleg fogott.
@@ -228,7 +237,7 @@ wait_for_apt_lock() {
   echo -e "  ${DIM}$(_t linux.apt_lock_transient_hint)${NC}"
   while [ "$waited" -lt "$APT_LOCK_WAIT_CAP" ]; do
     sleep "$interval"; waited=$((waited + interval))
-    holder=$(apt_lock_holder); rc=$?
+    holder=$(apt_lock_holder) && rc=0 || rc=$?
     if [ "$rc" -ne 0 ]; then
       ok "$(_t linux.apt_lock_freed_prefix) ${waited}s"
       return 0
@@ -1805,8 +1814,32 @@ fi
 SVCFAIL=0
 if pidof systemd >/dev/null 2>&1 && systemctl --user status >/dev/null 2>&1; then
   systemctl --user daemon-reload
-  systemctl --user enable "${DASH_UNIT}" "${CHAN_UNIT}" "${MORN_UNIT}.timer" "${WD_UNIT}.timer" "${SERVICE_ID}-host-watchdog.service" 2>/dev/null || true
-  ok "systemd unitok generalva es engedelyezve"
+  # The green tick used to print unconditionally after a `|| true`, so a failed
+  # enable was reported as success -- the visible version of the same defect the
+  # macOS branch had. `if` rather than `&&`: a failing enable inside an if
+  # CONDITION is exempt from errexit and from the ERR trap, so the installer
+  # reports it instead of dying on it. Fork addition: ${WD_UNIT}.timer is in the
+  # enable list too (upstream doesn't have this fork-only watchdog timer).
+  if systemctl --user enable "${DASH_UNIT}" "${CHAN_UNIT}" "${MORN_UNIT}.timer" "${WD_UNIT}.timer" "${SERVICE_ID}-host-watchdog.service" 2>/dev/null; then
+    ok "systemd unitok generalva es engedelyezve"
+  else
+    warn "A unit-fajlok elkeszultek, de az engedelyezesuk nem sikerult -- ujrainditas utan a szolgaltatasok nem indulnak el maguktol."
+    # ALL FIVE units the enable above covers, not just the two services. A
+    # command that silently drops a timer or the watchdog would leave them
+    # disabled while the operator sees no error and believes the fix worked --
+    # an incomplete instruction ends the same way as a false claim.
+    # The label gets its own line. With "Javitas most:" in front of the command,
+    # the backslashes join all three printed lines into ONE command whose first
+    # token is `Javitas`, so a pasted block fails with "Javitas: command not
+    # found" and enables nothing. Measured by rendering the block and running it.
+    # `bash -n` does NOT catch this: the pasted text is valid shell, just a
+    # different command than the one we meant to offer. Same shape as
+    # install-macos.sh, where the label is already on its own line.
+    echo -e "  ${DIM}Javitas most:${NC}"
+    echo -e "  ${DIM}systemctl --user enable \\${NC}"
+    echo -e "  ${DIM}    ${DASH_UNIT} ${CHAN_UNIT} \\${NC}"
+    echo -e "  ${DIM}    ${MORN_UNIT}.timer ${WD_UNIT}.timer ${SERVICE_ID}-host-watchdog.service${NC}"
+  fi
   systemctl --user start "${DASH_UNIT}" "${CHAN_UNIT}" 2>/dev/null || true
   systemctl --user start "${WD_UNIT}.timer" 2>/dev/null || true
   # Independent resilience guards (channel-watchdog / stuck-modal / disk-space):
