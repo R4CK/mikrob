@@ -28,9 +28,16 @@ SECURITY_GATE_LOW_RISK_TITLE_PREFIXES = ('[OFFLOAD]',)
 
 def is_gate_review(cm):
     author = (cm.get('author') or '').lower().strip()
-    if author in ('mikrob', 'qa', 'qa2', 'local-llm'): return False
+    if author in ('qa', 'qa2', 'local-llm'): return False
     content = (cm.get('content') or '').strip()
     first_line = content.split('\n')[0].upper()
+    # MikroB is normally the orchestrator, not a builder, so his comments are mostly dispatch/
+    # decision chatter that must NOT read as a REVIEW. But when a card is assigned to HIM (fork/infra
+    # work on this repo) he builds it and posts the REVIEW himself -- blanket-excluding him hid card
+    # e33af7c4 (weekly model-ladder) from this sweep entirely. So he is admitted through the STRICT
+    # opener only: the first line must literally start with REVIEW, never the loose in-first-60-chars
+    # fallback (which his "-> waiting+REVIEW -> QA" dispatch lines would trip).
+    if author == 'mikrob': return first_line.startswith('REVIEW')
     return first_line.startswith('REVIEW') or 'REVIEW:' in content[:60].upper()
 
 BLOCKED_MARKERS = ('BLOKKOLVA', 'KOTOTT FELTETEL', 'kotott-blokk', 'kötött-blokk',
