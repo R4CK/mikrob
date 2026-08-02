@@ -117,6 +117,24 @@ const CATEGORY_DESCRIPTIONS: Record<string, string> = {
   'alt-text': 'Kép-kontextus -> egy tömör alt-text screen-readerhez (jelentés, nem "kép:"); DRAFT',
   faq: 'Feature/dokumentáció -> rövid GYIK Q&A párok (csak a bemenetből); DRAFT',
   'commit-split': 'Diff/változás -> javasolt logikai commit-bontás (Conventional subjectek); DRAFT',
+  // Card 91b68885 (Peti jóváhagyás, 2026-08-02): +15 kategória a 2026-08-02-i javaslat-listából.
+  // (A) általános kategóriák + (B) nehezebb, de "module"-plafon alatti programozási kategóriák --
+  // a RELIABLE_CEILING nem emelkedik, feature/architektúra továbbra is mindig online.
+  'code-review-checklist': 'Diff -> súlyozott review-checklist (bug/hibakezelés/security/teszt/style)',
+  'migration-plan-draft': 'Séma-változás leírás -> lépésenkénti migrációs terv (nem SQL, rollback-lépésekkel)',
+  'api-doc-draft': 'Endpoint/kód -> OpenAPI-szerű doksi-vázlat',
+  'onboarding-doc': 'Modul/repo -> gyors "hogyan indulj el" onboarding doksi',
+  'incident-postmortem-draft': 'Incidens-log/repró -> blameless postmortem-vázlat (idővonal/ok/fix/teendő)',
+  'module-impl': 'Modul-specifikáció -> teljes multi-függvényes modul (egyfájlos, module-szint); DRAFT',
+  'class-impl': 'Osztály-specifikáció -> teljes osztály minden metódussal; DRAFT',
+  'state-machine-impl': 'Leírt átmenetek -> állapotgép implementáció (érvénytelen átmenet explicit elutasítva); DRAFT',
+  'algorithm-impl': 'Bounded algoritmus-specifikáció -> implementáció + komplexitás-komment; DRAFT',
+  'parser-impl': 'Leírt grammatika -> kis parser/tokenizer implementáció; DRAFT',
+  'rate-limiter-impl': 'Limitálási szabály -> rate-limiter/backoff wrapper (fail-closed alapértelmezés); DRAFT',
+  'validation-pipeline': 'Validációs lépések -> pipeline, ami MINDEN hibát összegyűjt, nem csak az elsőt; DRAFT',
+  'cache-wrapper-impl': 'Cache-szabály + interfész -> cache decorator/wrapper (hiba-eset explicit); DRAFT',
+  'worker-consumer-impl': 'Queue/üzenet-alak -> worker/consumer (ack/nack, retry/dead-letter); DRAFT',
+  'test-suite-full': 'Modul/spec -> teljes teszt-suite (happy/edge/error, valós assertek); DRAFT',
 }
 
 /** Clamp/parse an aggressiveness input to an integer in [0,100]; non-numeric -> the default. (Mechanical

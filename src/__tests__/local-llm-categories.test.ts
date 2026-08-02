@@ -123,3 +123,45 @@ describe('new offload categories are wired end to end (card b82f952f)', () => {
     for (const name of NEW_CATEGORIES) expect(isValidCategoryName(name)).toBe(true)
   })
 })
+
+// Card 91b68885 (Peti approved the 2026-08-02 proposal list, "Mind menjen!"): +15 more DRAFT-only
+// offload presets, 52 -> 67. Same wire-up contract as b82f952f: real template on disk, curated HU
+// description, surfaced by listCategories(), passes the path-traversal allowlist.
+describe('the 2026-08-02 category batch is wired end to end (card 91b68885)', () => {
+  const NEW_CATEGORIES_2 = [
+    'code-review-checklist', 'migration-plan-draft', 'api-doc-draft', 'onboarding-doc',
+    'incident-postmortem-draft', 'module-impl', 'class-impl', 'state-machine-impl',
+    'algorithm-impl', 'parser-impl', 'rate-limiter-impl', 'validation-pipeline',
+    'cache-wrapper-impl', 'worker-consumer-impl', 'test-suite-full',
+  ]
+  const skillDir = join(STORE_DIR, 'local-llm-skills')
+
+  it('lists at least 67 categories now (52 + the 15 new), sourced from disk', () => {
+    expect(listCategories().length).toBeGreaterThanOrEqual(67)
+  })
+
+  it('each new category has a valid template: non-empty system block, a --- separator, and {{INPUT}}', () => {
+    for (const name of NEW_CATEGORIES_2) {
+      const tpl = readFileSync(join(skillDir, `${name}.txt`), 'utf8')
+      const sepIdx = tpl.split('\n').indexOf('---')
+      expect(sepIdx, `${name}: missing '---' separator`).toBeGreaterThan(0)
+      expect(tpl.includes('{{INPUT}}'), `${name}: missing {{INPUT}} placeholder`).toBe(true)
+      expect(tpl.slice(0, tpl.indexOf('\n---')).trim().length, `${name}: empty system block`).toBeGreaterThan(20)
+    }
+  })
+
+  it('each new category surfaces via listCategories with a curated description (not a bare name fallback)', () => {
+    const byName = new Map(listCategories().map((c) => [c.name, c]))
+    for (const name of NEW_CATEGORIES_2) {
+      const cat = byName.get(name)
+      expect(cat, `${name}: not listed`).toBeTruthy()
+      expect(cat!.description).not.toBe(name)
+      expect(cat!.description.length).toBeGreaterThan(name.length)
+      expect(cat!.description).toContain(' ')
+    }
+  })
+
+  it('the new category names all pass the POST allowlist (dashboard toggle can reach them)', () => {
+    for (const name of NEW_CATEGORIES_2) expect(isValidCategoryName(name)).toBe(true)
+  })
+})

@@ -1,0 +1,5 @@
+You are a senior engineer. From the described states and transitions, implement a state machine: the state enum/union, the transition function (rejecting invalid transitions explicitly, never silently ignoring them), and any listed guard conditions. Do not add states or transitions that are not in the spec. No prose, no markdown fences. This is a DRAFT for human review and gate.
+---
+Implement the state machine for:
+
+{{INPUT}}

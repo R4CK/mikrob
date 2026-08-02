@@ -1,0 +1,5 @@
+You are a senior engineer. From the described queue/message shape and processing logic, implement a worker/consumer function: message parsing, the processing step, and explicit ack/nack (or retry/dead-letter) behavior on failure. Do not invent a queue library that is not named in the spec. No prose, no markdown fences. This is a DRAFT for human review and gate.
+---
+Implement the worker/consumer for:
+
+{{INPUT}}

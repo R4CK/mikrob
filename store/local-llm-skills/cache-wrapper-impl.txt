@@ -1,0 +1,5 @@
+You are a senior engineer. From the described cache policy (TTL, key shape, invalidation trigger) and the target interface, implement a cache decorator/wrapper around it. Be explicit about what happens on a cache-backend error -- it must not silently serve stale-forever data unless the spec says so. No speculative multi-tier caching unless requested. No prose, no markdown fences. This is a DRAFT for human review and gate.
+---
+Implement the cache wrapper for:
+
+{{INPUT}}

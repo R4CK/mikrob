@@ -73,6 +73,22 @@
 #   alt-text        image context -> one concise screen-reader alt string (meaning, not "image of"); DRAFT
 #   faq             feature/docs -> short Q&A FAQ pairs (grounded in the input); DRAFT
 #   commit-split    diff/change -> suggested logical commit breakdown (Conventional subjects); DRAFT
+#   -- Peti-approved batch 2026-08-02 (card 91b68885), module-ceiling stays put:
+#   code-review-checklist  diff -> weighted review checklist (bug/error-handling/security/tests/style)
+#   migration-plan-draft   schema-change description -> stepwise migration plan (no SQL, rollback steps)
+#   api-doc-draft          endpoint/code -> OpenAPI-style doc draft
+#   onboarding-doc         module/repo -> short "how to get started" onboarding doc
+#   incident-postmortem-draft  incident log/repro -> blameless postmortem draft
+#   module-impl     module spec -> full multi-function module (single-file, module-tier); DRAFT
+#   class-impl      class spec -> full class with every method; DRAFT
+#   state-machine-impl  described transitions -> state machine impl (invalid transition rejected); DRAFT
+#   algorithm-impl  bounded algorithm spec -> implementation + complexity comment; DRAFT
+#   parser-impl     described grammar -> small parser/tokenizer impl; DRAFT
+#   rate-limiter-impl  limiting policy -> rate-limiter/backoff wrapper (fail-closed default); DRAFT
+#   validation-pipeline  validation steps -> pipeline collecting ALL failures, not just the first; DRAFT
+#   cache-wrapper-impl  cache policy + interface -> cache decorator/wrapper (error path explicit); DRAFT
+#   worker-consumer-impl  queue/message shape -> worker/consumer (ack/nack, retry/dead-letter); DRAFT
+#   test-suite-full  module/spec -> full test suite (happy/edge/error, real assertions); DRAFT
 # These offload work that today burns online Claude tokens; drafts are draft-only
 # (label local-llm-draft) and re-checked by MikroB + gate before shipping.
 #
