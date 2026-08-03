@@ -282,7 +282,14 @@ function maybeAlertSharedConfigCollision(name: string): void {
 //
 // Idempotent and best-effort: returns the dir on success, or null so the caller
 // falls back to the shared ~/.claude (degraded, but never a launch failure).
-const ISOLATED_CONFIG_SKIP = new Set(['settings.json', 'plugins', '.credentials.json'])
+// 'skills' is skipped so a fresh agent inherits ONLY its role-curated
+// agents/<name>/.claude/skills/ set (project-level, untouched by this
+// function) instead of the entire shared ~/.claude/skills catalog -- Peti
+// 2026-08-03: skills should match each agent's actual tasks, not be
+// blanket-shared. An agent that genuinely needs a skill outside its curated
+// set can still Read the file directly from ~/.claude/skills/<name>/SKILL.md
+// (same filesystem, same OS user); it just isn't preloaded into every turn.
+const ISOLATED_CONFIG_SKIP = new Set(['settings.json', 'plugins', '.credentials.json', 'skills'])
 
 export function ensureIsolatedChannelConfigDir(
   name: string,
