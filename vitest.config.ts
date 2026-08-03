@@ -4,9 +4,16 @@ import { defineConfig, configDefaults } from 'vitest/config'
 // (playwright.config.ts), not by `vitest run`. Playwright's test() API throws
 // when collected under vitest, which fails the unit gate. Keep all vitest
 // defaults; only carve out the e2e directory.
+//
+// agents/** is gitignored, live-install-only runtime data: each role-agent's
+// .claude-config symlinks into ~/.claude/external/claude-agent-sdk, so a bare
+// `vitest run` on a live checkout collects the vendored SDK's example test
+// suite once per agent (thousands of duplicate, unrunnable live.test.ts
+// files with no DB/creds), drowning any real signal. Excluded so the suite
+// stays meaningful if ever run outside the mandated worktree.
 export default defineConfig({
   test: {
-    exclude: [...configDefaults.exclude, 'tests/smoke/**'],
+    exclude: [...configDefaults.exclude, 'tests/smoke/**', 'agents/**'],
     // Hard gate: refuse to run inside a live install (see the setup file header
     // for the 2026-07-27 incident this prevents). Runs in every worker before
     // any test module is imported.

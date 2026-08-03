@@ -1902,13 +1902,13 @@ export function moveKanbanCard(id: string, status: KanbanCard['status'], sortOrd
     'UPDATE kanban_cards SET status=?, sort_order=?, updated_at=? WHERE id=?'
   ).run(status, sortOrder, now, id).changes > 0
   if (changed && prev !== undefined && prev !== status) {
-    // `forced` records whether THIS call used a force override of ANY guard (reviewed-card-reopen
-    // OR the newDevStop threshold at the route layer) -- previously only forcedOverride (the
-    // reviewed-card guard) was recorded, so a newDevStop force:true bypass showed as forced=0 in
-    // the audit trail, indistinguishable from a real guard gap (investigation 2026-08-02).
+    // `forced` records only whether THIS transition actually needed the reviewed-card-reopen
+    // override -- an ordinary move that happens to carry `force:true` (e.g. an exempt agent's
+    // client always sends it) is not itself a guard override and must not read as one; a caller
+    // that wants the newDevStop route-layer bypass in the audit trail records that separately.
     db.prepare(
       'INSERT INTO kanban_card_events (card_id, from_status, to_status, actor, created_at, forced) VALUES (?, ?, ?, ?, ?, ?)'
-    ).run(id, prev, status, actor ?? null, now, (forcedOverride || force) ? 1 : 0)
+    ).run(id, prev, status, actor ?? null, now, forcedOverride ? 1 : 0)
   }
   return changed
 }
