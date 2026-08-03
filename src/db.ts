@@ -1864,12 +1864,11 @@ export function updateKanbanCard(
   const statusChanges = fields.status !== undefined && fields.status !== card.status
   const blocked = statusChanges && reviewedCardBlocksInProgress(id, fields.status as string)
   if (blocked && !opts?.force) return false
-  // Record forced=1 whenever a force override was actually exercised on this transition -- either
-  // the reviewed-card-reopen guard (`blocked`) or the newDevStop threshold guard at the route layer
-  // (`opts.force` on a planned->in_progress move). Previously only `blocked` was recorded, so a
-  // newDevStop force:true bypass showed as forced=0 in the audit trail, indistinguishable from an
-  // unguarded gap (investigation 2026-08-02, cards 8c4a6d9c/cf068369/89fba8e4).
-  const forcedFlag = (blocked || (statusChanges && fields.status === 'in_progress' && opts?.force)) ? 1 : 0
+  // `forced` records only whether THIS transition actually needed the reviewed-card-reopen
+  // override -- an ordinary in_progress move that happens to carry `force:true` (e.g. an exempt
+  // agent's client always sends it) is not itself a guard override and must not read as one; see
+  // the sibling fix in moveKanbanCard (kanban-review-guard.test.ts pins the same contract there).
+  const forcedFlag = blocked ? 1 : 0
   const now = Math.floor(Date.now() / 1000)
   const f = { ...card, ...fields, updated_at: now }
   const changed = db.prepare(

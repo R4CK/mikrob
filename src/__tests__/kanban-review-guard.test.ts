@@ -203,6 +203,19 @@ describe('a forced re-open is marked as such', () => {
     expect(moveKanbanCard('card-5', 'in_progress', 0, 'mikrob', true)).toBe(true)
     expect(getKanbanCardEvents('card-5').at(-1)?.forced).toBe(0)
   })
+
+  it('updateKanbanCard: records forced=1 only for the transition the guard would have refused', () => {
+    seedWaitingCard()
+    addKanbanComment('card-1', 'backend', 'REVIEW: kész.')
+    expect(updateKanbanCard('card-1', { status: 'in_progress' }, { actor: 'peti', force: true })).toBe(true)
+    expect(getKanbanCardEvents('card-1').at(-1)?.forced).toBe(1)
+  })
+
+  it('updateKanbanCard: an ordinary in_progress move carrying force is NOT marked', () => {
+    createKanbanCard({ id: 'card-6', title: 'Plain', assignee: 'backend' })
+    expect(updateKanbanCard('card-6', { status: 'in_progress' }, { actor: 'mikrob', force: true })).toBe(true)
+    expect(getKanbanCardEvents('card-6').at(-1)?.forced).toBe(0)
+  })
 })
 
 describe('a status change through updateKanbanCard is audited', () => {
