@@ -52,10 +52,13 @@ export const MODEL_LADDER: readonly string[] = [
 ]
 
 /**
- * Agents whose job is primarily writing/reviewing code. Peti policy (2026-08-02): the weekly ramp
- * must never step one of these all the way down to Haiku 4.5 -- Haiku is not reliable enough for
- * Backend/Backend2/Cybered/Cybersec/fullstack coding work, so their floor is the SECOND-cheapest
- * rung (currently Sonnet 4.6), never the cheapest.
+ * Agents whose job is primarily writing/reviewing code. Peti policy (2026-08-02, widened 2026-08-03):
+ * the weekly ramp must never step one of these all the way down to Haiku 4.5 -- Haiku is not reliable
+ * enough for coding work, so their floor is the SECOND-cheapest rung (currently Sonnet 4.6), never the
+ * cheapest. Originally scoped to Backend/Backend2/Cybered/Cybersec/fullstack; widened 2026-08-03 (Peti:
+ * "az alapmodellek egy ügynöknek programozásra megfeleljen") to every agent that writes code as part of
+ * its own base task -- Fron Ted/Fron Teddy build+wire frontend components, QA/teszter write test suites.
+ * Business/support agents (marketing, jogász, pénzügy) write no code, so they keep no floor.
  */
 export const NO_HAIKU_AGENTS: ReadonlySet<string> = new Set([
   'backend',
@@ -63,6 +66,11 @@ export const NO_HAIKU_AGENTS: ReadonlySet<string> = new Set([
   'cybered',
   'cybersec',
   'fullstack',
+  'fron-ted',
+  'fron-teddy',
+  'qa',
+  'qa2',
+  'teszter',
 ])
 
 /**

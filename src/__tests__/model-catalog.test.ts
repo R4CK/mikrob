@@ -180,17 +180,23 @@ describe('decideParkedModelUpdate enforces "cheaper tier wins" for parked agents
   })
 })
 
-// Peti policy (2026-08-02, Telegram): step down VERSION within a model family before jumping to a
-// lower-capability family, and coding agents (Backend/Backend2/Cybered/Cybersec/fullstack) may
-// never be stepped all the way down to Haiku -- it isn't reliable enough for their work.
-describe('NO_HAIKU_AGENTS floor keeps coding agents off the cheapest rung (Peti 2026-08-02)', () => {
-  it('lists exactly the five named coding agents', () => {
-    expect(NO_HAIKU_AGENTS).toEqual(new Set(['backend', 'backend2', 'cybered', 'cybersec', 'fullstack']))
+// Peti policy (2026-08-02, Telegram; widened 2026-08-03): step down VERSION within a model family
+// before jumping to a lower-capability family, and coding agents may never be stepped all the way
+// down to Haiku -- it isn't reliable enough for their work. Widened 2026-08-03 to every agent that
+// writes code as part of its own base task (Fron Ted/Fron Teddy build frontend, QA/teszter write tests).
+describe('NO_HAIKU_AGENTS floor keeps coding agents off the cheapest rung (Peti 2026-08-02, widened 2026-08-03)', () => {
+  it('lists every agent that writes code as part of its own base task', () => {
+    expect(NO_HAIKU_AGENTS).toEqual(new Set([
+      'backend', 'backend2', 'cybered', 'cybersec', 'fullstack',
+      'fron-ted', 'fron-teddy', 'qa', 'qa2', 'teszter',
+    ]))
   })
 
   it('clamps a coding agent at Haiku up to the next rung instead', () => {
     expect(applyNoHaikuFloor('backend', 'claude-haiku-4-5-20251001')).toBe('claude-sonnet-4-6')
     expect(applyNoHaikuFloor('cybersec', 'claude-haiku-4-5-20251001')).toBe('claude-sonnet-4-6')
+    expect(applyNoHaikuFloor('fron-ted', 'claude-haiku-4-5-20251001')).toBe('claude-sonnet-4-6')
+    expect(applyNoHaikuFloor('qa', 'claude-haiku-4-5-20251001')).toBe('claude-sonnet-4-6')
   })
 
   it('is a no-op for a non-coding agent, or a coding agent not actually targeting Haiku', () => {
