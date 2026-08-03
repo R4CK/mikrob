@@ -28,49 +28,45 @@ export const CLAUDE_MODELS: ReadonlyArray<{ readonly id: string; readonly label:
  * which" is a judgement, not the display order -- but it is defined HERE, next to the list, so a new
  * model is ranked in the same edit that adds it.
  *
- * Fable 5 > Opus 5 > Opus 4.8 (1M) > Sonnet 5 > Sonnet 4.6 > Haiku 4.5.
+ * Fable 5 > Opus 5 > Sonnet 5 > Sonnet 4.6 > Haiku 4.5.
  *
- * CORRECTED 2026-08-02 (Peti caught it): Fable 5 was placed LAST here by a prior session with no
- * verified basis -- an unbenchmarked guess, likely from the name sounding lighter/creative-writing.
- * Anthropic's own pricing puts Fable 5 ABOVE Opus 5 ($10/$50 per MTok vs Opus 5's $5/$25) and
- * describes it as "Anthropic's most capable widely released model" -- i.e. the most expensive AND
- * most capable rung, not the cheapest. Moved to the front. Every relative step already tested
- * (Opus 5 -> Opus 4.8 -> Sonnet 5 -> Sonnet 4.6 -> Haiku 4.5) is unchanged; only Fable moved.
+ * Fable 5 sits at the front (Peti caught a prior mis-ranking 2026-08-02): Anthropic's own pricing puts
+ * it ABOVE Opus 5 ($10/$50 per MTok vs Opus 5's $5/$25) and describes it as "Anthropic's most capable
+ * widely released model" -- the most expensive AND most capable rung, not the cheapest.
  *
- * Also implements Peti's stepping policy (2026-08-02): within one model FAMILY, step down VERSION
- * first (Opus 5 -> Opus 4.8) before jumping to a lower-capability family (-> Sonnet); only jump
- * families once the family has no lower version left on the ladder. See applyNoHaikuFloor below for
- * the companion rule: coding agents may never be stepped all the way down to Haiku.
+ * REVISED 2026-08-03 (Peti's per-agent chain policy): Opus 4.8 was REMOVED from the ladder so the
+ * ramp steps map exactly to the chains Peti specified. He watches only the WEEKLY limit (the 5h banner
+ * axis is irrelevant here). With one rung per tier from each agent's own base, the chains fall out
+ * cleanly: a coding agent based on Opus 5 goes Opus 5 -> Sonnet 5 -> Sonnet 4.6 (2 tiers, never Haiku);
+ * an FE/support agent based on Sonnet 5 goes Sonnet 5 -> Sonnet 4.6 -> Haiku 4.5; a light agent based
+ * on Sonnet 4.6 goes Sonnet 4.6 -> Haiku 4.5. Opus 4.8 stays selectable in CLAUDE_MODELS but is no
+ * longer a ramp rung (nothing uses it as a base). See applyNoHaikuFloor below for the QA-gate carve-out.
  */
 export const MODEL_LADDER: readonly string[] = [
   'claude-fable-5',
   'claude-opus-5',
-  'claude-opus-4-8[1m]',
   'claude-sonnet-5',
   'claude-sonnet-4-6',
   'claude-haiku-4-5-20251001',
 ]
 
 /**
- * Agents whose job is primarily writing/reviewing code. Peti policy (2026-08-02, widened 2026-08-03):
- * the weekly ramp must never step one of these all the way down to Haiku 4.5 -- Haiku is not reliable
- * enough for coding work, so their floor is the SECOND-cheapest rung (currently Sonnet 4.6), never the
- * cheapest. Originally scoped to Backend/Backend2/Cybered/Cybersec/fullstack; widened 2026-08-03 (Peti:
- * "az alapmodellek egy ügynöknek programozásra megfeleljen") to every agent that writes code as part of
- * its own base task -- Fron Ted/Fron Teddy build+wire frontend components, QA/teszter write test suites.
- * Business/support agents (marketing, jogász, pénzügy) write no code, so they keep no floor.
+ * The QA-gate carve-out. Peti policy (2026-08-03, option "b"): the review gate must never lose quality
+ * exactly when the fleet is under the heaviest weekly pressure. QA and QA2 are the review safety-net --
+ * if the gate itself runs on Haiku, there is nothing left to catch a bug a builder missed (cf. the
+ * magic-link 151/151-green case that still hid 2 MAJOR bugs). So the weekly ramp holds QA/QA2 at the
+ * second-cheapest rung (Sonnet 4.6) instead of the cheapest (Haiku): their chain is
+ * Sonnet 5 -> Sonnet 4.6 -> Sonnet 4.6.
+ *
+ * Everyone else follows their own chain to its natural bottom, Haiku included -- Peti deliberately
+ * routes the FE builders (Fron Ted/Fron Teddy) and support agents (jogász, pénzügy) down to Haiku at
+ * tier 2 (cheap-but-running beats stopped; the draft is still gated). The Opus-5-based coding agents
+ * (backend/backend2/cybered/cybersec/fullstack) never reach Haiku anyway -- their 2-tier chain bottoms
+ * out at Sonnet 4.6 -- so they need no floor entry.
  */
 export const NO_HAIKU_AGENTS: ReadonlySet<string> = new Set([
-  'backend',
-  'backend2',
-  'cybered',
-  'cybersec',
-  'fullstack',
-  'fron-ted',
-  'fron-teddy',
   'qa',
   'qa2',
-  'teszter',
 ])
 
 /**

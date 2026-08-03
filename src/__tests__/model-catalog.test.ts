@@ -11,13 +11,15 @@ import {
 } from '../model-catalog.js'
 
 describe('the model ladder is one coherent source (card 5d2002b5)', () => {
-  it('every dropdown model has a rung on the ladder, and vice versa', () => {
-    // The whole point of the redesign: one list, no drift. A model in the picker with no ladder rung
-    // could be assigned but never tier-stepped; a rung with no picker entry is a target nobody can be.
+  it('every ladder rung is a pickable model; the picker may carry extra off-ladder models', () => {
+    // A rung with no picker entry is a target nobody can be assigned -- still forbidden.
+    // But since 2026-08-03 (Peti's per-agent-chain policy) the picker MAY expose a model that is not a
+    // ramp rung: Opus 4.8 stays selectable but was removed from the ladder, so an operator can still
+    // pick it while the weekly ramp leaves an Opus-4.8 base alone (off-ladder = never stepped).
     const pickerIds = new Set(CLAUDE_MODELS.map((m) => m.id))
     const ladderIds = new Set(MODEL_LADDER)
-    expect([...pickerIds].filter((id) => !ladderIds.has(id))).toEqual([])
     expect([...ladderIds].filter((id) => !pickerIds.has(id))).toEqual([])
+    expect([...pickerIds].filter((id) => !ladderIds.has(id))).toEqual(['claude-opus-4-8[1m]'])
   })
 
   it('the ladder is capability/price DESCENDING (Fable 5 first, Haiku last)', () => {
@@ -51,13 +53,13 @@ describe('weeklyTargetModel steps each agent from its OWN base (the bug this fix
     // That is exactly the defect: a Sonnet agent should not be stepped onto Opus's cheaper neighbour.
     const opusAtT1 = weeklyTargetModel('claude-opus-5', 1)
     const sonnetAtT1 = weeklyTargetModel('claude-sonnet-5', 1)
-    expect(opusAtT1).toBe('claude-opus-4-8[1m]') // one rung below Opus 5
+    expect(opusAtT1).toBe('claude-sonnet-5') // one rung below Opus 5 (Opus 4.8 removed from ladder 2026-08-03)
     expect(sonnetAtT1).toBe('claude-sonnet-4-6') // one rung below Sonnet 5
     expect(opusAtT1).not.toBe(sonnetAtT1)
   })
 
   it('tier 2 steps two rungs from the base', () => {
-    expect(weeklyTargetModel('claude-opus-5', 2)).toBe('claude-sonnet-5')
+    expect(weeklyTargetModel('claude-opus-5', 2)).toBe('claude-sonnet-4-6') // Opus 5 -> Sonnet 5 -> Sonnet 4.6
   })
 
   it('an agent already near the bottom clamps at the cheapest, never off the end', () => {
@@ -70,7 +72,7 @@ describe('weeklyTargetModel steps each agent from its OWN base (the bug this fix
     // Fable 5 is the most capable/priciest rung (corrected 2026-08-02), so stepping it down moves
     // toward Opus, not toward itself -- the reverse of the old (wrong) placement.
     expect(weeklyTargetModel('claude-fable-5', 1)).toBe('claude-opus-5')
-    expect(weeklyTargetModel('claude-fable-5', 2)).toBe('claude-opus-4-8[1m]')
+    expect(weeklyTargetModel('claude-fable-5', 2)).toBe('claude-sonnet-5') // Fable -> Opus 5 -> Sonnet 5
   })
 
   it('an OFF-CATALOG base is left on its own model, never rewritten onto Claude by the weekly ramp', () => {
@@ -104,7 +106,7 @@ describe('buildAgentTierRows assembles the read-only display (redesign point 4)'
       ],
       1,
     )
-    expect(rows[0].targetModel).toBe('claude-opus-4-8[1m]')
+    expect(rows[0].targetModel).toBe('claude-sonnet-5') // Opus 5 base, tier 1 => one rung down
     expect(rows[1].targetModel).toBe('claude-haiku-4-5-20251001') // Haiku is the last rung, clamps to itself
     expect(rows[0].targetModel).not.toBe(rows[1].targetModel)
   })
@@ -129,7 +131,7 @@ describe('buildAgentTierRows assembles the read-only display (redesign point 4)'
     )
     expect(row.baseModel).toBe('claude-opus-5')
     expect(row.currentModel).toBe('claude-sonnet-5')
-    expect(row.targetModel).toBe('claude-sonnet-5') // opus base, tier 2 => two rungs down
+    expect(row.targetModel).toBe('claude-sonnet-4-6') // opus base, tier 2 => two rungs down
   })
 
   it('an off-catalog agent at a non-zero tier targets its OWN model, not a Claude rung (Cybered HIGH)', () => {
@@ -180,40 +182,39 @@ describe('decideParkedModelUpdate enforces "cheaper tier wins" for parked agents
   })
 })
 
-// Peti policy (2026-08-02, Telegram; widened 2026-08-03): step down VERSION within a model family
-// before jumping to a lower-capability family, and coding agents may never be stepped all the way
-// down to Haiku -- it isn't reliable enough for their work. Widened 2026-08-03 to every agent that
-// writes code as part of its own base task (Fron Ted/Fron Teddy build frontend, QA/teszter write tests).
-describe('NO_HAIKU_AGENTS floor keeps coding agents off the cheapest rung (Peti 2026-08-02, widened 2026-08-03)', () => {
-  it('lists every agent that writes code as part of its own base task', () => {
-    expect(NO_HAIKU_AGENTS).toEqual(new Set([
-      'backend', 'backend2', 'cybered', 'cybersec', 'fullstack',
-      'fron-ted', 'fron-teddy', 'qa', 'qa2', 'teszter',
-    ]))
+// Peti policy (2026-08-03, option "b"): the ONLY agents floored off Haiku are the review gate QA/QA2 --
+// the gate must not lose quality under the heaviest weekly pressure (nothing left to catch a missed
+// bug). Everyone else follows their chain to its natural bottom, Haiku included: Peti deliberately
+// routes the FE builders and support agents to Haiku at tier 2. The Opus-5-based coding agents never
+// reach Haiku anyway (2-tier chain bottoms at Sonnet 4.6), so they need no floor entry.
+describe('NO_HAIKU_AGENTS floors only the QA gate off the cheapest rung (Peti 2026-08-03, option b)', () => {
+  it('lists exactly QA and QA2', () => {
+    expect(NO_HAIKU_AGENTS).toEqual(new Set(['qa', 'qa2']))
   })
 
-  it('clamps a coding agent at Haiku up to the next rung instead', () => {
-    expect(applyNoHaikuFloor('backend', 'claude-haiku-4-5-20251001')).toBe('claude-sonnet-4-6')
-    expect(applyNoHaikuFloor('cybersec', 'claude-haiku-4-5-20251001')).toBe('claude-sonnet-4-6')
-    expect(applyNoHaikuFloor('fron-ted', 'claude-haiku-4-5-20251001')).toBe('claude-sonnet-4-6')
+  it('clamps a QA-gate agent at Haiku up to Sonnet 4.6 instead', () => {
     expect(applyNoHaikuFloor('qa', 'claude-haiku-4-5-20251001')).toBe('claude-sonnet-4-6')
+    expect(applyNoHaikuFloor('qa2', 'claude-haiku-4-5-20251001')).toBe('claude-sonnet-4-6')
   })
 
-  it('is a no-op for a non-coding agent, or a coding agent not actually targeting Haiku', () => {
+  it('is a no-op for a non-gate agent (FE builders and support DO reach Haiku), or a target that is not Haiku', () => {
+    expect(applyNoHaikuFloor('fron-ted', 'claude-haiku-4-5-20251001')).toBe('claude-haiku-4-5-20251001')
+    expect(applyNoHaikuFloor('jogasz', 'claude-haiku-4-5-20251001')).toBe('claude-haiku-4-5-20251001')
     expect(applyNoHaikuFloor('marketing', 'claude-haiku-4-5-20251001')).toBe('claude-haiku-4-5-20251001')
-    expect(applyNoHaikuFloor('backend', 'claude-sonnet-4-6')).toBe('claude-sonnet-4-6')
+    expect(applyNoHaikuFloor('qa', 'claude-sonnet-4-6')).toBe('claude-sonnet-4-6')
   })
 
-  it('decideParkedModelUpdate applies the floor when given the agent name', () => {
-    // backend at tier 2 from a Sonnet 4.6 baseline would normally land on Haiku -- floored to Sonnet 4.6.
-    const floored = decideParkedModelUpdate('claude-sonnet-4-6', 'claude-sonnet-4-6', 2, 'backend')
-    expect(floored).toEqual({ kind: 'none' }) // already AT the floored target -- no write needed
-    const stillHigher = decideParkedModelUpdate('claude-sonnet-5', 'claude-sonnet-5', 2, 'cybered')
+  it('decideParkedModelUpdate applies the QA floor when given the agent name', () => {
+    // qa at tier 2 from a Sonnet 5 baseline would normally land on Haiku -- floored to Sonnet 4.6.
+    const stillHigher = decideParkedModelUpdate('claude-sonnet-5', 'claude-sonnet-5', 2, 'qa')
     expect(stillHigher).toEqual({ kind: 'write', model: 'claude-sonnet-4-6' }) // floored, not Haiku
+    // a non-gate FE builder is NOT floored: Sonnet 5 base at tier 2 goes all the way to Haiku.
+    const feBuilder = decideParkedModelUpdate('claude-sonnet-5', 'claude-sonnet-5', 2, 'fron-ted')
+    expect(feBuilder).toEqual({ kind: 'write', model: 'claude-haiku-4-5-20251001' })
   })
 
-  it('omitting agentName preserves the old (unfloored) behavior', () => {
-    const action = decideParkedModelUpdate('claude-sonnet-4-6', 'claude-sonnet-4-6', 2)
+  it('omitting agentName preserves the unfloored behavior', () => {
+    const action = decideParkedModelUpdate('claude-sonnet-5', 'claude-sonnet-5', 2)
     expect(action).toEqual({ kind: 'write', model: 'claude-haiku-4-5-20251001' })
   })
 })
