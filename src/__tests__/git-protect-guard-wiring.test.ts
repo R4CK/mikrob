@@ -13,6 +13,7 @@ import { readFileSync, existsSync, readdirSync, statSync } from 'node:fs'
 import { join, dirname } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { injectGitProtectGuard } from '../web/agent-scaffold.js'
+import { REPO_UNDER_TMP, TMP_SKIP_REASON } from './helpers/repo-location.js'
 
 const REPO_ROOT = join(dirname(fileURLToPath(import.meta.url)), '..', '..')
 const AGENTS_DIR = join(REPO_ROOT, 'agents')
@@ -22,7 +23,11 @@ const preToolUse = (s: Record<string, unknown>): unknown[] =>
 const guardEntries = (s: Record<string, unknown>): unknown[] =>
   preToolUse(s).filter((e) => JSON.stringify(e).includes('git-protect-guard.py'))
 
-describe('injectGitProtectGuard', () => {
+// injectGitProtectGuard derives its script path from PROJECT_ROOT and runs it through
+// isUnsafeHookCommand, so from a /tmp worktree the registration guard correctly rejects its own
+// script and every assertion below goes red for a reason unrelated to the code under test (see
+// helpers/repo-location.ts).
+describe.skipIf(REPO_UNDER_TMP)('injectGitProtectGuard', () => {
   it('adds a Bash-matched PreToolUse hook pointing at the guard', () => {
     const s: Record<string, unknown> = {}
     injectGitProtectGuard(s)
@@ -59,6 +64,19 @@ describe('injectGitProtectGuard', () => {
     injectGitProtectGuard(s)
     expect(guardEntries(s)).toHaveLength(1)
     expect(s.effortLevel).toBe('high') // untouched
+  })
+})
+
+// Always runs: a CI log must never be ambiguous about whether the injector suite above was armed
+// or skipped (card 252e36d3 -- 13 phantom "failures" were once tracked as a real red baseline).
+describe('tmp-checkout env gate (always runs)', () => {
+  it('reports whether the injectGitProtectGuard suite in this file was armed or skipped', () => {
+    if (REPO_UNDER_TMP) {
+      console.log(`[git-protect-guard-wiring.test.ts] SKIPPED injectGitProtectGuard suite -- ${TMP_SKIP_REASON}`)
+    } else {
+      console.log('[git-protect-guard-wiring.test.ts] ARMED -- checkout is outside /tmp, injector assertions ran.')
+    }
+    expect(typeof REPO_UNDER_TMP).toBe('boolean')
   })
 })
 

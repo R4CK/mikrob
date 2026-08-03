@@ -12,6 +12,7 @@ import {
   ensureGovernanceGateCommands,
 } from '../web/agent-scaffold.js'
 import { PROJECT_ROOT } from '../config.js'
+import { REPO_UNDER_TMP, TMP_SKIP_REASON } from './helpers/repo-location.js'
 
 // Review feedback on PR #803, pinned as tests:
 //  1. every injector must write a QUOTED absolute interpreter path -- an
@@ -61,7 +62,11 @@ describe('hookCommand builder', () => {
 // BLOKKOLJON, ne 127-tel csendben atengedjen. Az allitas ezert includes(), es a
 // vedett tulajdonsag valtozatlan: abszolut, idezojelezett interpreter, soha nem
 // csupasz `node`.
-describe('injectors write a quoted absolute interpreter, never a bare node', () => {
+// These three describe blocks call the real injectors/ensure* migrations, which derive their
+// script path from PROJECT_ROOT and run it through isUnsafeHookCommand -- so from a /tmp worktree
+// the registration guard correctly rejects its own scripts and every assertion here goes red for a
+// reason that has nothing to do with the code under test (see helpers/repo-location.ts).
+describe.skipIf(REPO_UNDER_TMP)('injectors write a quoted absolute interpreter, never a bare node', () => {
   for (const [label, inject] of [
     ['injectEmailSendGate', injectEmailSendGate],
     ['injectSelfPaceGate', injectSelfPaceGate],
@@ -80,7 +85,7 @@ describe('injectors write a quoted absolute interpreter, never a bare node', () 
   }
 })
 
-describe('hookCommandWired', () => {
+describe.skipIf(REPO_UNDER_TMP)('hookCommandWired', () => {
   it('finds a freshly injected command (posix path)', () => {
     const s: Record<string, unknown> = {}
     injectEgressGate(s)
@@ -99,7 +104,7 @@ describe('hookCommandWired', () => {
   })
 })
 
-describe('ensure* migrations are idempotent (true, then false)', () => {
+describe.skipIf(REPO_UNDER_TMP)('ensure* migrations are idempotent (true, then false)', () => {
   it('ensureEgressGate', () => {
     mkdirSync(join(testAgentDir, '.claude'), { recursive: true })
     expect(ensureEgressGate(TEST_AGENT)).toBe(true)
@@ -135,5 +140,18 @@ describe('ensure* migrations are idempotent (true, then false)', () => {
       expect(cmd.includes(`"${HOOK_NODE_BIN}" "`)).toBe(true)
       expect(cmd).not.toMatch(/^node /)
     }
+  })
+})
+
+// Always runs: a CI log must never be ambiguous about whether the tmp-sensitive suites above were
+// armed or skipped (card 252e36d3 -- 13 phantom "failures" were once tracked as a real red baseline).
+describe('tmp-checkout env gate (always runs)', () => {
+  it('reports whether the hook-registration suites in this file were armed or skipped', () => {
+    if (REPO_UNDER_TMP) {
+      console.log(`[hook-command-quoting.test.ts] SKIPPED hook-registration suites -- ${TMP_SKIP_REASON}`)
+    } else {
+      console.log('[hook-command-quoting.test.ts] ARMED -- checkout is outside /tmp, hook-registration assertions ran.')
+    }
+    expect(typeof REPO_UNDER_TMP).toBe('boolean')
   })
 })
