@@ -33,6 +33,12 @@ OLLAMA_HOST="${OLLAMA_HOST:-http://127.0.0.1:11434}"
 MODEL_FILE="$HERE/local-llm-model"
 SKILL_DIR="$HERE/local-llm-skills"
 TIMEOUT="${LOCAL_LLM_TIMEOUT:-120}"
+# GPU-concurrency guard (card 2026-08-03, Peti driver-update follow-up): the WSL2 GPU-passthrough
+# kernel driver (dxgkrnl) crashed the whole VM under sustained/overlapping Ollama GPU load -- this
+# serializes generate calls system-wide so only one runs at a time, regardless of how many cards/
+# agents try to offload concurrently. Cheap insurance that holds even if a future driver regresses.
+GPU_LOCK="/tmp/local-llm-gpu.lock"
+GPU_LOCK_WAIT="${LOCAL_LLM_LOCK_WAIT:-600}"
 
 # --- host-platform detection (card b097b578) -----------------------------------------------------
 # The Ollama HTTP API is identical on every platform, so ONLY the operator-facing "how do I start it"
@@ -216,7 +222,7 @@ _elapsed() { # -> elapsed milliseconds since START_MS
   if [[ "$START_MS" == 0 || "$e" == 0 ]]; then echo 0; else echo $(( e - START_MS )); fi
 }
 
-RESP=$(curl -fsS -m "$TIMEOUT" -X POST "$OLLAMA_HOST/api/generate" \
+RESP=$(flock -w "$GPU_LOCK_WAIT" "$GPU_LOCK" curl -fsS -m "$TIMEOUT" -X POST "$OLLAMA_HOST/api/generate" \
   -H "Content-Type: application/json" -d "$REQ" 2>/dev/null) || {
   log_usage err "$(_elapsed)"
   # distinguish model-missing from generic error
