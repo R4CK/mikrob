@@ -93,6 +93,23 @@ export type UpstreamMergeResult =
   | { readonly ok: false; readonly reason: 'merge-conflict' | 'upstream-merge-failed'; readonly message: string }
 
 /**
+ * `git merge` writes its "CONFLICT (content): ..." / "Automatic merge failed" report to STDOUT, not
+ * stderr -- but `execFileSync`'s thrown Error.message does NOT include stdout (Node only folds
+ * stderr into the message), so {@link performUpstreamMerge}'s `msg.includes('CONFLICT')`
+ * classification below would never match a real conflict without this. Found live 2026-08-04: a
+ * real package-lock.json conflict against upstream/main came back as a bare 500
+ * ('upstream-merge-failed') instead of the 409 'merge-conflict' with the "resolve manually"
+ * guidance. Re-throws with stdout appended to the message; a no-op if the error carries no stdout.
+ */
+export function foldStdoutIntoMergeError(err: unknown): never {
+  if (err instanceof Error) {
+    const stdout = (err as NodeJS.ErrnoException & { stdout?: string }).stdout
+    if (stdout) err.message = `${err.message}\n${stdout}`
+  }
+  throw err
+}
+
+/**
  * Fetch + merge upstream/main, recording a rollback point (store/.update-history) on success and
  * NEVER on failure -- an aborted/conflicted merge leaves HEAD unchanged, so there is nothing to
  * record. Pure control flow over the injected {@link UpstreamMergeRunner}; the HTTP route below is a
@@ -148,10 +165,15 @@ const realUpstreamMergeRunner: UpstreamMergeRunner = {
     execFileSync('/usr/bin/git', ['fetch', 'upstream'], { cwd: PROJECT_ROOT, timeout: 15_000 })
   },
   mergeUpstream: () => {
-    execFileSync('/usr/bin/git', ['merge', 'upstream/main', '--no-edit'], {
-      cwd: PROJECT_ROOT,
-      timeout: 20_000,
-    })
+    try {
+      execFileSync('/usr/bin/git', ['merge', 'upstream/main', '--no-edit'], {
+        cwd: PROJECT_ROOT,
+        timeout: 20_000,
+        encoding: 'utf-8',
+      })
+    } catch (err) {
+      foldStdoutIntoMergeError(err)
+    }
   },
   mergeAbort: () => {
     execFileSync('/usr/bin/git', ['merge', '--abort'], { cwd: PROJECT_ROOT, timeout: 5_000 })

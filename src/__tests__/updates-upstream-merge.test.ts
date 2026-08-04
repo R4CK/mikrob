@@ -14,6 +14,7 @@ import {
   updateHistoryTimestamp,
   analyzeUpstreamChanges,
   formatUpstreamAnalysis,
+  foldStdoutIntoMergeError,
   type UpstreamMergeRunner,
   type UpstreamAnalysisRunner,
 } from '../web/routes/updates.js'
@@ -62,6 +63,43 @@ describe('performUpstreamMerge -- success', () => {
     // instead, in the recordUpdateHistory describe block below. Here we only assert the merge
     // succeeds cleanly with no exception when before===after.
     expect(recordCalls).toBe(1)
+  })
+})
+
+describe('foldStdoutIntoMergeError -- real-world bug found 2026-08-04', () => {
+  it('git writes CONFLICT to STDOUT, not stderr -- folds stdout into err.message so the CONFLICT classification above can see it', () => {
+    // execFileSync's real shape on a non-zero exit: Error.message is Node's own
+    // "Command failed: ..." (+ stderr if any) -- stdout is a SEPARATE property, not in .message.
+    const err = Object.assign(new Error('Command failed: /usr/bin/git merge upstream/main --no-edit'), {
+      stdout: 'Auto-merging package.json\nCONFLICT (content): Merge conflict in package-lock.json\nAutomatic merge failed; fix conflicts and then commit the result.\n',
+    })
+    expect(() => foldStdoutIntoMergeError(err)).toThrow(err)
+    expect(err.message).toContain('CONFLICT')
+    expect(err.message).toContain('Automatic merge failed')
+  })
+
+  it('is a no-op when the error carries no stdout (e.g. fetch/network failure)', () => {
+    const err = new Error('fatal: unable to access upstream: Could not resolve host')
+    expect(() => foldStdoutIntoMergeError(err)).toThrow(err)
+    expect(err.message).toBe('fatal: unable to access upstream: Could not resolve host')
+  })
+
+  it('end-to-end: a runner using this fold makes performUpstreamMerge correctly classify a real-shaped conflict', () => {
+    const runner = fakeRunner({
+      mergeUpstream: () => {
+        try {
+          throw Object.assign(new Error('Command failed: /usr/bin/git merge upstream/main --no-edit'), {
+            stdout: 'CONFLICT (content): Merge conflict in package-lock.json\nAutomatic merge failed; fix conflicts and then commit the result.\n',
+          })
+        } catch (err) {
+          foldStdoutIntoMergeError(err)
+        }
+      },
+    })
+    const result = performUpstreamMerge(runner, () => undefined)
+    expect(result.ok).toBe(false)
+    if (result.ok) return
+    expect(result.reason).toBe('merge-conflict')
   })
 })
 
