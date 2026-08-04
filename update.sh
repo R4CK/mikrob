@@ -84,6 +84,17 @@ REGEN_CLAUDEMD="${REGEN_CLAUDEMD:-0}"
 #       build-marker self-heal in the already-latest branch below). The marker
 #       normally heals this automatically; --rebuild is the explicit override.
 FORCE_REBUILD="${FORCE_REBUILD:-0}"
+#   POST_MERGE_MODE=1 (env only, no CLI flag -- set by the dashboard's
+#       POST /api/updates/apply repo=upstream handler after it has already
+#       fetched+merged upstream/main directly). HEAD is already where it needs
+#       to be, so skip the ahead-check + `git pull` below (HEAD being ahead of
+#       origin is the EXPECTED result of that merge, not the divergence the
+#       ahead-check guards against) and go straight to dep-install/build/
+#       restart with the already-current HEAD. POST_MERGE_OLD_SHA is the
+#       PRE-MERGE sha (captured by the caller before HEAD moved), used as the
+#       rollback/dep-diff baseline in place of the normal pre-pull OLD_VERSION.
+POST_MERGE_MODE="${POST_MERGE_MODE:-0}"
+POST_MERGE_OLD_SHA="${POST_MERGE_OLD_SHA:-}"
 for arg in "$@"; do
   case "$arg" in
     --reseed-fleet|--security-reseed) RESEED_FLEET=1 ;;
@@ -330,39 +341,60 @@ fi
 # of NEW, so reset --hard $OLD_VERSION_FULL reverts without a force-push.
 OLD_VERSION_FULL=$(git rev-parse HEAD 2>/dev/null || echo "")
 
-# Ahead-detect: local commits not on upstream make ff-only refuse. Report it
-# actionably instead of dying silently under set -e (the dominant failure).
 RESULT_PHASE="pull"
-AHEAD=$(git rev-list --count '@{u}..HEAD' 2>/dev/null || echo 0)
-if [ "${AHEAD:-0}" -gt 0 ]; then
-  RESULT_MSG="A helyi checkout ${AHEAD} committal elore van az upstreamhez kepest; a fast-forward frissites nem lehetseges. Nezd meg: git log @{u}..HEAD"
-  echo -e "${RED}HIBA:${NC} a helyi checkout ${AHEAD} committal elore van az upstreamhez kepest; fast-forward nem lehetseges. Nezd: git log @{u}..HEAD"
-  restore_stash_before_exit
-  exit 5
-fi
+if [ "$POST_MERGE_MODE" = "1" ]; then
+  # The caller (POST /api/updates/apply, repo=upstream) already did `git fetch
+  # upstream` + `git merge upstream/main` before invoking this script, so HEAD
+  # is already where it needs to be -- there is nothing to pull, and being
+  # ahead of origin is the EXPECTED/intentional result of that merge (not the
+  # divergence the ahead-check below guards against), so skip both. The
+  # rollback point for this transition was already recorded by
+  # recordUpdateHistory() in src/web/routes/updates.ts (note "upstream-merge");
+  # writing a second line below would be a harmless but redundant duplicate,
+  # so that write is skipped too. OLD_VERSION_FULL is overridden to the
+  # PRE-MERGE sha the caller captured (before this script started, since the
+  # merge already moved HEAD) so the dep-install diff and rollback target
+  # below cover the right range.
+  if [ -n "$POST_MERGE_OLD_SHA" ]; then
+    OLD_VERSION_FULL="$POST_MERGE_OLD_SHA"
+    OLD_VERSION=$(git rev-parse --short "$POST_MERGE_OLD_SHA" 2>/dev/null || echo "$OLD_VERSION")
+  fi
+  NEW_VERSION=$(git rev-parse --short HEAD 2>/dev/null || echo "unknown")
+  NEW_VERSION_FULL=$(git rev-parse HEAD 2>/dev/null || echo "unknown")
+else
+  # Ahead-detect: local commits not on upstream make ff-only refuse. Report it
+  # actionably instead of dying silently under set -e (the dominant failure).
+  AHEAD=$(git rev-list --count '@{u}..HEAD' 2>/dev/null || echo 0)
+  if [ "${AHEAD:-0}" -gt 0 ]; then
+    RESULT_MSG="A helyi checkout ${AHEAD} committal elore van az upstreamhez kepest; a fast-forward frissites nem lehetseges. Nezd meg: git log @{u}..HEAD"
+    echo -e "${RED}HIBA:${NC} a helyi checkout ${AHEAD} committal elore van az upstreamhez kepest; fast-forward nem lehetseges. Nezd: git log @{u}..HEAD"
+    restore_stash_before_exit
+    exit 5
+  fi
 
-# Pull latest, NON-fatal under set -e so a diverged/network failure is reported.
-echo -e "  Letoltes (origin/${CURRENT_BRANCH})..."
-if ! retry 3 3 git pull --ff-only origin "$CURRENT_BRANCH"; then
-  RESULT_MSG="git pull --ff-only sikertelen (divergencia vagy halozati hiba). Nezd: git status; git log @{u}..HEAD"
-  echo -e "${RED}HIBA:${NC} git pull --ff-only sikertelen origin/${CURRENT_BRANCH}."
-  restore_stash_before_exit
-  exit 5
-fi
-NEW_VERSION=$(git rev-parse --short HEAD 2>/dev/null || echo "unknown")
-# Full SHA for the build-marker (dist/.built-commit). HEAD does not change
-# again in this script (no checkout), so this is the commit any build below
-# produces and the value we compare the marker against.
-NEW_VERSION_FULL=$(git rev-parse HEAD 2>/dev/null || echo "unknown")
+  # Pull latest, NON-fatal under set -e so a diverged/network failure is reported.
+  echo -e "  Letoltes (origin/${CURRENT_BRANCH})..."
+  if ! retry 3 3 git pull --ff-only origin "$CURRENT_BRANCH"; then
+    RESULT_MSG="git pull --ff-only sikertelen (divergencia vagy halozati hiba). Nezd: git status; git log @{u}..HEAD"
+    echo -e "${RED}HIBA:${NC} git pull --ff-only sikertelen origin/${CURRENT_BRANCH}."
+    restore_stash_before_exit
+    exit 5
+  fi
+  NEW_VERSION=$(git rev-parse --short HEAD 2>/dev/null || echo "unknown")
+  # Full SHA for the build-marker (dist/.built-commit). HEAD does not change
+  # again in this script (no checkout), so this is the commit any build below
+  # produces and the value we compare the marker against.
+  NEW_VERSION_FULL=$(git rev-parse HEAD 2>/dev/null || echo "unknown")
 
-# Record a rollback point for recovery-prev-version.sh: the version we were on
-# BEFORE this pull (FROM) and the version we moved to (TO). store/ is gitignored,
-# so this line never blocks a future ff-only pull. Append-only, best-effort.
-if [ "$OLD_VERSION_FULL" != "$NEW_VERSION_FULL" ]; then
-  printf '%s\tupdate\t%s\t%s\t%s\t%s\n' \
-    "$(date '+%Y-%m-%dT%H:%M:%S%z')" "$CURRENT_BRANCH" \
-    "$OLD_VERSION_FULL" "$NEW_VERSION_FULL" "auto" \
-    >>"$INSTALL_DIR/store/.update-history" 2>/dev/null || true
+  # Record a rollback point for recovery-prev-version.sh: the version we were on
+  # BEFORE this pull (FROM) and the version we moved to (TO). store/ is gitignored,
+  # so this line never blocks a future ff-only pull. Append-only, best-effort.
+  if [ "$OLD_VERSION_FULL" != "$NEW_VERSION_FULL" ]; then
+    printf '%s\tupdate\t%s\t%s\t%s\t%s\n' \
+      "$(date '+%Y-%m-%dT%H:%M:%S%z')" "$CURRENT_BRANCH" \
+      "$OLD_VERSION_FULL" "$NEW_VERSION_FULL" "auto" \
+      >>"$INSTALL_DIR/store/.update-history" 2>/dev/null || true
+  fi
 fi
 BUILT_COMMIT_FILE="$INSTALL_DIR/dist/.built-commit"
 

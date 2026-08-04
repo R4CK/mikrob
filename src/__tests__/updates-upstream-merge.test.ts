@@ -12,7 +12,10 @@ import {
   performUpstreamMerge,
   recordUpdateHistory,
   updateHistoryTimestamp,
+  analyzeUpstreamChanges,
+  formatUpstreamAnalysis,
   type UpstreamMergeRunner,
+  type UpstreamAnalysisRunner,
 } from '../web/routes/updates.js'
 
 function fakeRunner(over: Partial<UpstreamMergeRunner> = {}): UpstreamMergeRunner {
@@ -170,5 +173,89 @@ describe('recordUpdateHistory -- exact TSV shape (recovery-prev-version.sh awk-c
     expect(() =>
       recordUpdateHistory('develop', 'x0000000000000000000000000000000000000', 'y0000000000000000000000000000000000000', 'upstream-merge', badPath),
     ).not.toThrow()
+  })
+})
+
+// Peti directive 2026-08-04 (Telegram msg 3284): the "Frissites telepitese" button must analyze what
+// an upstream merge would change AND the risk from our own fork divergence before implementing.
+function fakeAnalysisRunner(over: Partial<UpstreamAnalysisRunner> = {}): UpstreamAnalysisRunner {
+  return {
+    fetchUpstream: () => undefined,
+    commitsBehind: () => '',
+    diffStat: () => '',
+    oursChangedFiles: () => '',
+    theirsChangedFiles: () => '',
+    ...over,
+  }
+}
+
+describe('analyzeUpstreamChanges', () => {
+  it('fetches upstream before reading any diff (data must be current)', () => {
+    const calls: string[] = []
+    analyzeUpstreamChanges(fakeAnalysisRunner({
+      fetchUpstream: () => { calls.push('fetch') },
+      commitsBehind: () => { calls.push('commits'); return '' },
+    }))
+    expect(calls).toEqual(['fetch', 'commits'])
+  })
+
+  it('counts incoming commits from the oneline log, ignoring blank lines', () => {
+    const a = analyzeUpstreamChanges(fakeAnalysisRunner({
+      commitsBehind: () => 'abc1234 fix one thing\ndef5678 fix another\n',
+    }))
+    expect(a.commitCount).toBe(2)
+    expect(a.commits).toEqual(['abc1234 fix one thing', 'def5678 fix another'])
+  })
+
+  it('zero incoming commits -> zero risk even if file lists are noisy', () => {
+    const a = analyzeUpstreamChanges(fakeAnalysisRunner({ commitsBehind: () => '' }))
+    expect(a.commitCount).toBe(0)
+    expect(a.hasRisk).toBe(false)
+    expect(a.riskyFiles).toEqual([])
+  })
+
+  it('flags NO risk when our changes and upstream changes touch disjoint files', () => {
+    const a = analyzeUpstreamChanges(fakeAnalysisRunner({
+      commitsBehind: () => 'abc1234 upstream change\n',
+      oursChangedFiles: () => 'store/quota-check.sh\nCLAUDE.md\n',
+      theirsChangedFiles: () => 'src/web/routes/updates.ts\nREADME.md\n',
+    }))
+    expect(a.hasRisk).toBe(false)
+    expect(a.riskyFiles).toEqual([])
+  })
+
+  it('flags risk for files touched on BOTH sides since the merge-base (the real conflict-risk zone)', () => {
+    const a = analyzeUpstreamChanges(fakeAnalysisRunner({
+      commitsBehind: () => 'abc1234 upstream change\n',
+      oursChangedFiles: () => 'src/web/routes/updates.ts\nCLAUDE.md\n',
+      theirsChangedFiles: () => 'src/web/routes/updates.ts\nREADME.md\n',
+    }))
+    expect(a.hasRisk).toBe(true)
+    expect(a.riskyFiles).toEqual(['src/web/routes/updates.ts'])
+  })
+
+  it('preserves upstream file order and dedupes nothing beyond the ours/theirs overlap', () => {
+    const a = analyzeUpstreamChanges(fakeAnalysisRunner({
+      oursChangedFiles: () => 'b.ts\na.ts\n',
+      theirsChangedFiles: () => 'a.ts\nb.ts\nc.ts\n',
+    }))
+    expect(a.riskyFiles).toEqual(['a.ts', 'b.ts'])
+  })
+})
+
+describe('formatUpstreamAnalysis', () => {
+  it('reports a low-risk message with no overlap', () => {
+    const msg = formatUpstreamAnalysis({ commitCount: 3, commits: [], diffStat: '', riskyFiles: [], hasRisk: false })
+    expect(msg).toContain('3 uj commit')
+    expect(msg).toContain('alacsony konfliktus-eselyes')
+  })
+
+  it('reports the risky file list, truncated past 10 entries', () => {
+    const many = Array.from({ length: 12 }, (_, i) => `file${i}.ts`)
+    const msg = formatUpstreamAnalysis({ commitCount: 5, commits: [], diffStat: '', riskyFiles: many, hasRisk: true })
+    expect(msg).toContain('12 fajlt')
+    expect(msg).toContain('file0.ts')
+    expect(msg).toContain('...')
+    expect(msg).not.toContain('file11.ts')
   })
 })

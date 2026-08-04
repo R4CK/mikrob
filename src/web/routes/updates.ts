@@ -2,6 +2,7 @@ import {
   readFileSync, writeFileSync, appendFileSync, mkdirSync, openSync, closeSync, statSync, unlinkSync,
 } from 'node:fs'
 import { join } from 'node:path'
+import type http from 'node:http'
 import { spawn, execFileSync } from 'node:child_process'
 import { PROJECT_ROOT, STORE_DIR } from '../../config.js'
 import { logger } from '../../logger.js'
@@ -88,7 +89,7 @@ export interface UpstreamMergeRunner {
 }
 
 export type UpstreamMergeResult =
-  | { readonly ok: true }
+  | { readonly ok: true; readonly beforeSha: string; readonly afterSha: string }
   | { readonly ok: false; readonly reason: 'merge-conflict' | 'upstream-merge-failed'; readonly message: string }
 
 /**
@@ -131,7 +132,7 @@ export function performUpstreamMerge(
   }
   const afterSha = runner.revParseHead().trim()
   recordHistory(runner.currentBranch().trim(), beforeSha, afterSha, 'upstream-merge')
-  return { ok: true }
+  return { ok: true, beforeSha, afterSha }
 }
 
 /** Real {@link UpstreamMergeRunner}: the actual git shell-outs, unchanged from the pre-refactor
@@ -161,6 +162,153 @@ const realUpstreamMergeRunner: UpstreamMergeRunner = {
       timeout: 3000,
       encoding: 'utf-8',
     }),
+}
+
+/** The read-only git queries {@link analyzeUpstreamChanges} needs, injected the same way as
+ *  {@link UpstreamMergeRunner} so the analysis is unit-testable without a real repo. Runs BEFORE the
+ *  merge (against the pre-merge HEAD), so `mergeBase`/`oursChangedFiles` reflect our fork's own
+ *  divergence from the point the two histories split. */
+export interface UpstreamAnalysisRunner {
+  fetchUpstream(): void
+  /** `git log --oneline <mergeBase>..upstream/main`: the incoming commits, one per line. */
+  commitsBehind(): string
+  /** `git diff --stat <mergeBase> upstream/main`: human-readable file/line change summary. */
+  diffStat(): string
+  /** Files WE changed since the merge-base (our own fork divergence). */
+  oursChangedFiles(): string
+  /** Files the upstream side changed since the merge-base. */
+  theirsChangedFiles(): string
+}
+
+export interface UpstreamAnalysis {
+  commitCount: number
+  commits: string[]
+  diffStat: string
+  /** Files touched on BOTH sides since the merge-base -- the actual conflict-risk zone (a real
+   *  conflict is still decided by git itself during the merge; this is a pre-merge heads-up). */
+  riskyFiles: string[]
+  hasRisk: boolean
+}
+
+/** Pure analysis of what an upstream merge WOULD change, run before touching HEAD. Read-only:
+ *  computes the incoming commit/diff summary plus the file-level overlap between "what we changed"
+ *  and "what upstream changed" since the merge-base -- the files most likely to conflict. */
+export function analyzeUpstreamChanges(runner: UpstreamAnalysisRunner): UpstreamAnalysis {
+  runner.fetchUpstream()
+  const commits = runner.commitsBehind().trim().split('\n').filter(Boolean)
+  const diffStat = runner.diffStat().trim()
+  const ours = new Set(runner.oursChangedFiles().trim().split('\n').filter(Boolean))
+  const theirs = runner.theirsChangedFiles().trim().split('\n').filter(Boolean)
+  const riskyFiles = theirs.filter((f) => ours.has(f))
+  return {
+    commitCount: commits.length,
+    commits,
+    diffStat,
+    riskyFiles,
+    hasRisk: riskyFiles.length > 0,
+  }
+}
+
+/** Real {@link UpstreamAnalysisRunner}: same binary/cwd/timeout conventions as
+ *  {@link realUpstreamMergeRunner}. `fetchUpstream` is separate from the merge's own fetch (idempotent,
+ *  cheap) so this analysis can run standalone before {@link performUpstreamMerge}. */
+const realUpstreamAnalysisRunner: UpstreamAnalysisRunner = {
+  fetchUpstream: () => {
+    execFileSync('/usr/bin/git', ['fetch', 'upstream'], { cwd: PROJECT_ROOT, timeout: 15_000 })
+  },
+  commitsBehind: () => {
+    const base = execFileSync('/usr/bin/git', ['merge-base', 'HEAD', 'upstream/main'], {
+      cwd: PROJECT_ROOT, timeout: 5000, encoding: 'utf-8',
+    }).trim()
+    return execFileSync('/usr/bin/git', ['log', '--oneline', `${base}..upstream/main`], {
+      cwd: PROJECT_ROOT, timeout: 10_000, encoding: 'utf-8',
+    })
+  },
+  diffStat: () => {
+    const base = execFileSync('/usr/bin/git', ['merge-base', 'HEAD', 'upstream/main'], {
+      cwd: PROJECT_ROOT, timeout: 5000, encoding: 'utf-8',
+    }).trim()
+    return execFileSync('/usr/bin/git', ['diff', '--stat', base, 'upstream/main'], {
+      cwd: PROJECT_ROOT, timeout: 10_000, encoding: 'utf-8',
+    })
+  },
+  oursChangedFiles: () => {
+    const base = execFileSync('/usr/bin/git', ['merge-base', 'HEAD', 'upstream/main'], {
+      cwd: PROJECT_ROOT, timeout: 5000, encoding: 'utf-8',
+    }).trim()
+    return execFileSync('/usr/bin/git', ['diff', '--name-only', base, 'HEAD'], {
+      cwd: PROJECT_ROOT, timeout: 10_000, encoding: 'utf-8',
+    })
+  },
+  theirsChangedFiles: () => {
+    const base = execFileSync('/usr/bin/git', ['merge-base', 'HEAD', 'upstream/main'], {
+      cwd: PROJECT_ROOT, timeout: 5000, encoding: 'utf-8',
+    }).trim()
+    return execFileSync('/usr/bin/git', ['diff', '--name-only', base, 'upstream/main'], {
+      cwd: PROJECT_ROOT, timeout: 10_000, encoding: 'utf-8',
+    })
+  },
+}
+
+/** Renders {@link UpstreamAnalysis} as a short plain-text summary for a Telegram notice / log line.
+ *  Plain text only (no HTML) -- scripts/notify.sh sends with parse_mode=HTML, so unescaped commit
+ *  subjects containing `<`/`&` could break the message; callers must not feed this straight into HTML
+ *  without escaping if that ever changes. */
+export function formatUpstreamAnalysis(a: UpstreamAnalysis): string {
+  const lines = [
+    `Upstream elemzes: ${a.commitCount} uj commit.`,
+    a.hasRisk
+      ? `Kockazat: ${a.riskyFiles.length} fajlt MI IS modositottunk, amit az upstream is erint (utkozes-eselyes): ${a.riskyFiles.slice(0, 10).join(', ')}${a.riskyFiles.length > 10 ? ', ...' : ''}`
+      : 'Kockazat: nincs atfedes a sajat modositasainkkal, alacsony konfliktus-eselyes.',
+  ]
+  return lines.join('\n')
+}
+
+/** Spawns update.sh detached (same shape for both the fork-pull path and the post-upstream-merge
+ *  rebuild+restart path below), with `extraEnv` layered over the inherited environment. The pidfile
+ *  lock is handed off to update.sh's own pidfile-overwrite (update.sh:133-158); `releaseLock` is only
+ *  invoked here on a failure BEFORE that handoff (log-open failure, spawn error racing a still-ours
+ *  pidfile). Writes the JSON response itself so callers just return after invoking it. */
+function spawnUpdateScript(
+  res: http.ServerResponse,
+  extraEnv: Record<string, string>,
+  pidfileContent: string,
+  releaseLock: () => void,
+): void {
+  try {
+    let outFd: number | 'ignore' = 'ignore'
+    try {
+      mkdirSync(STORE_DIR, { recursive: true })
+      outFd = openSync(join(STORE_DIR, 'update.log'), 'a', 0o600)
+    } catch (err) {
+      releaseLock()
+      logger.error({ err }, 'store/update.log not writable; refusing to start a blind update')
+      json(res, { error: 'store/ is not writable; cannot run the updater safely.', reason: 'store-unwritable' }, 500)
+      return
+    }
+    const child = spawn('/bin/bash', [join(PROJECT_ROOT, 'update.sh')], {
+      cwd: PROJECT_ROOT,
+      detached: true,
+      stdio: ['ignore', outFd, outFd],
+      env: { ...process.env, ...extraEnv },
+    })
+    child.on('error', (err) => {
+      logger.error({ err }, 'update.sh spawn reported an async error')
+      let stillOurs = false
+      try {
+        stillOurs = readFileSync(UPDATE_PIDFILE, 'utf-8') === pidfileContent
+      } catch { /* file already gone -- nothing to release */ }
+      if (stillOurs) releaseLock()
+    })
+    child.unref()
+    if (typeof outFd === 'number') {
+      try { closeSync(outFd) } catch { /* already closed */ }
+    }
+    json(res, { ok: true })
+  } catch (err) {
+    releaseLock()
+    json(res, { error: err instanceof Error ? err.message : String(err) }, 500)
+  }
 }
 
 type LastResult = { status?: string; ts?: number; phase?: string; message?: string }
@@ -390,58 +538,48 @@ export async function tryHandleUpdates(ctx: RouteContext): Promise<boolean> {
         return true
       }
     }
-    // Upstream merge: synchronous fetch+merge, no service restart.
+    // Upstream merge: analyze what would change + the conflict-risk (own-divergence overlap) BEFORE
+    // touching HEAD, notify Peti with that summary, merge, then -- on success -- hand off to update.sh
+    // in POST_MERGE_MODE (rebuild + the SAME restart/health-check/auto-rollback the fork-pull path
+    // uses, skipping the pull step since the merge already advanced HEAD). Peti directive 2026-08-04
+    // (Telegram msg 3284): analyze -> assess risk -> implement -> safe restart+health-check+rollback,
+    // all behind the one button.
     if (repo === 'upstream') {
+      let analysis: UpstreamAnalysis | undefined
+      try {
+        analysis = analyzeUpstreamChanges(realUpstreamAnalysisRunner)
+      } catch (err) {
+        logger.warn({ err }, 'upstream pre-merge analysis failed (non-fatal, merge proceeds without it)')
+      }
+      if (analysis) {
+        try {
+          execFileSync('/bin/bash', [join(PROJECT_ROOT, 'scripts', 'notify.sh'), formatUpstreamAnalysis(analysis)], {
+            cwd: PROJECT_ROOT, timeout: 10_000,
+          })
+        } catch (err) {
+          logger.warn({ err }, 'pre-merge analysis notify failed (non-fatal)')
+        }
+      }
       const result = performUpstreamMerge(realUpstreamMergeRunner)
-      releaseLock()
-      if (result.ok) {
-        logger.info('upstream merge completed successfully')
-        json(res, { ok: true })
-      } else {
+      if (!result.ok) {
+        releaseLock()
         logger.warn({ reason: result.reason }, 'upstream merge failed')
         json(res, { error: result.message, reason: result.reason }, result.reason === 'merge-conflict' ? 409 : 500)
+        return true
       }
+      logger.info({ beforeSha: result.beforeSha, afterSha: result.afterSha }, 'upstream merge completed successfully; handing off to update.sh for rebuild+restart')
+      // Lock handoff to update.sh's own pidfile-overwrite (same as the fork path below) --
+      // releaseLock() is only called by spawnUpdateScript on a failure BEFORE that handoff.
+      spawnUpdateScript(res, {
+        AUTO_STASH: '0',
+        POST_MERGE_MODE: '1',
+        POST_MERGE_OLD_SHA: result.beforeSha,
+        MARVEEN_UPDATE_NOTIFY: '1',
+      }, pidfileContent, releaseLock)
       return true
     }
 
-    try {
-      // Verify store/ is writable BEFORE spawning update.sh. If update.log
-      // cannot be opened, the script would die at its own exit-4 with the log
-      // (its only output channel) being the very thing that failed -> a silent
-      // detached death. Surface it here as a synchronous error instead.
-      let outFd: number | 'ignore' = 'ignore'
-      try {
-        mkdirSync(STORE_DIR, { recursive: true })
-        outFd = openSync(join(STORE_DIR, 'update.log'), 'a', 0o600)
-      } catch (err) {
-        releaseLock()
-        logger.error({ err }, 'store/update.log not writable; refusing to start a blind update')
-        json(res, { error: 'store/ is not writable; cannot run the updater safely.', reason: 'store-unwritable' }, 500)
-        return true
-      }
-      const child = spawn('/bin/bash', [join(PROJECT_ROOT, 'update.sh')], {
-        cwd: PROJECT_ROOT,
-        detached: true,
-        stdio: ['ignore', outFd, outFd],
-        env: { ...process.env, AUTO_STASH: autoStash ? '1' : '0' },
-      })
-      child.on('error', (err) => {
-        logger.error({ err }, 'update.sh spawn reported an async error')
-        let stillOurs = false
-        try {
-          stillOurs = readFileSync(UPDATE_PIDFILE, 'utf-8') === pidfileContent
-        } catch { /* file already gone -- nothing to release */ }
-        if (stillOurs) releaseLock()
-      })
-      child.unref()
-      if (typeof outFd === 'number') {
-        try { closeSync(outFd) } catch { /* already closed */ }
-      }
-      json(res, { ok: true })
-    } catch (err) {
-      releaseLock()
-      json(res, { error: err instanceof Error ? err.message : String(err) }, 500)
-    }
+    spawnUpdateScript(res, { AUTO_STASH: autoStash ? '1' : '0' }, pidfileContent, releaseLock)
     return true
   }
 
