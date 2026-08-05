@@ -595,6 +595,68 @@ migrate_channels_restart() {
 }
 migrate_channels_restart
 
+# ExecStartPre native-module guard migration (Linux only). ensure-native-modules.sh
+# rebuilds better-sqlite3 for the current Node ABI before the unit starts (the
+# "Could not locate the bindings file" crash-loop, root-caused 2026-07-03).
+# install-linux.sh wires it in for new installs, but hosts installed before that
+# fix -- or that had it stripped by a manual unit edit -- never get it, so a
+# restart during/after a Node/npm upgrade can crash-loop with no self-heal (Peti
+# report 2026-08-05: has to start WSL/MikroB by hand). Idempotent: only adds the
+# line when missing, right before ExecStart=.
+migrate_native_module_guard() {
+  units_dir="${1:-$HOME/.config/systemd/user}"
+  [ -d "$units_dir" ] || return 0
+  _patched=0
+  for svc_unit in "$units_dir/"*-channels.service "$units_dir/"*-dashboard.service; do
+    [ -f "$svc_unit" ] || continue
+    grep -q '^ExecStartPre=.*ensure-native-modules\.sh' "$svc_unit" && continue
+    guard="$INSTALL_DIR/scripts/ensure-native-modules.sh"
+    [ -x "$guard" ] || continue
+    if sed -i.marveen-bak "s|^ExecStart=|ExecStartPre=${guard}\nExecStart=|" "$svc_unit" 2>/dev/null; then
+      rm -f "${svc_unit}.marveen-bak"
+      _patched=1
+      echo -e "  Unit javitva (natic-modul guard ExecStartPre felvéve): $(basename "$svc_unit")"
+    else
+      echo -e "  FIGYELEM: a unit nem volt irhato: $svc_unit"
+    fi
+  done
+  if [ "$_patched" = "1" ]; then
+    systemctl --user daemon-reload 2>/dev/null || true
+  fi
+  return 0
+}
+migrate_native_module_guard
+
+# StartLimit* section-placement migration (Linux only). systemd only honors
+# StartLimitIntervalSec/StartLimitBurst under [Unit]; earlier templates wrote
+# them under [Service], where systemd logs "Unknown key" and silently ignores
+# them -- so a tight crash-loop never trips the built-in stop-restarting safety
+# net. Idempotent: only adds the [Unit]-section copy when missing there; leaves
+# the harmless ignored [Service] copy alone.
+migrate_channels_startlimit() {
+  units_dir="${1:-$HOME/.config/systemd/user}"
+  [ -d "$units_dir" ] || return 0
+  _patched=0
+  for chan_unit in "$units_dir/"*-channels.service; do
+    [ -f "$chan_unit" ] || continue
+    if awk '/^\[Unit\]/{u=1;next} /^\[/{u=0} u&&/^StartLimitIntervalSec=/{f=1} END{exit !f}' "$chan_unit"; then
+      continue
+    fi
+    if sed -i.marveen-bak '/^\[Unit\]/a StartLimitIntervalSec=300\nStartLimitBurst=5' "$chan_unit" 2>/dev/null; then
+      rm -f "${chan_unit}.marveen-bak"
+      _patched=1
+      echo -e "  Csatorna-unit javitva (StartLimit* felvéve [Unit]-be): $(basename "$chan_unit")"
+    else
+      echo -e "  FIGYELEM: a csatorna-unit nem volt irhato: $chan_unit"
+    fi
+  done
+  if [ "$_patched" = "1" ]; then
+    systemctl --user daemon-reload 2>/dev/null || true
+  fi
+  return 0
+}
+migrate_channels_startlimit
+
 # Seed skills & scheduled tasks (idempotent: skip existing)
 # Source .env for template variables needed by seed-scheduled-tasks
 MAIN_AGENT_ID=""
