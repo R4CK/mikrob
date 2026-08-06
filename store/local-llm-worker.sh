@@ -55,9 +55,13 @@ api() {
     ${3:+--data-binary @-}
 }
 
+# Returns: 0 = processed one row | 1 = nothing to do | 2 = error reaching the API.
+# The distinction matters for --once, which runs as a MONITORED scheduled command: an empty queue
+# is the normal steady state and must NOT look like a failure, or the scheduler's failThreshold
+# fires a Telegram alert every couple of minutes forever.
 drain_one() {
   local claimed
-  claimed=$(api POST /local-llm/queue/claim 2>/dev/null) || return 1
+  claimed=$(api POST /local-llm/queue/claim 2>/dev/null) || return 2
   [ -n "$claimed" ] || return 1
 
   local id prompt template
@@ -97,12 +101,15 @@ sys.stdout.write(json.dumps({"error": sys.stdin.read()[:2000]}))
 
 if [ "$ONCE" = "1" ]; then
   drain_one
-  exit $?
+  rc=$?
+  # 1 ("nothing to do") is SUCCESS for a scheduled poke. Only a real error is non-zero.
+  case "$rc" in
+    0|1) exit 0 ;;
+    *)   log "ERROR: could not reach the queue API"; exit 2 ;;
+  esac
 fi
 
 log "worker start (idle sleep ${IDLE_SLEEP}s)"
 while true; do
-  if ! drain_one; then
-    sleep "$IDLE_SLEEP"
-  fi
+  drain_one || sleep "$IDLE_SLEEP"
 done
