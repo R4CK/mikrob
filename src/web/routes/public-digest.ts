@@ -46,17 +46,42 @@ export interface PublicDigest {
 }
 
 /**
- * Build the safe public digest. Pure of HTTP; returns ONLY the whitelisted non-sensitive
- * aggregate fields, so a test can assert no identifying data can leak. `now` is injected.
+ * TTL for the agent-count scan (card 5d8612b6).
+ *
+ * isAgentRunning() spawns a SYNCHRONOUS tmux subprocess per agent, on the Node event loop.
+ * Uncached, one unauth request costs N spawns (~80ms blocking at N=15), so ~11 req/s stalls
+ * the whole dashboard -- and the fleet runs on this same API. Remote agents are worse: their
+ * captureTmux goes over SSH with an 8s timeout, so a single unreachable host can block the
+ * loop for seconds. Fleet health does not change by the millisecond, so a short TTL removes
+ * the entire amplification (N spawns per TTL window, not per request) with no staleness that
+ * matters for a health digest.
  */
-export function buildPublicDigest(now: number): PublicDigest {
+const AGENT_COUNT_TTL_MS = 10_000
+
+let agentCountCache: { running: number; total: number; expiresAt: number } | null = null
+
+/** Cached agent counts. `now` is the injected clock, so the TTL is testable without fake timers. */
+function agentCounts(now: number): { running: number; total: number } {
+  const cached = agentCountCache
+  if (cached !== null && now < cached.expiresAt) {
+    return { running: cached.running, total: cached.total }
+  }
   const agents = listAgentNames()
   // +1 accounts for the main agent, which is not in listAgentNames().
   const running = agents.filter((n) => isAgentRunning(n)).length + 1
   const total = agents.length + 1
+  agentCountCache = { running, total, expiresAt: now + AGENT_COUNT_TTL_MS }
+  return { running, total }
+}
+
+/**
+ * Build the safe public digest. Pure of HTTP; returns ONLY the whitelisted non-sensitive
+ * aggregate fields, so a test can assert no identifying data can leak. `now` is injected.
+ */
+export function buildPublicDigest(now: number): PublicDigest {
   return {
     ok: true,
-    agents: { running, total },
+    agents: agentCounts(now),
     name: BOT_NAME,
     version: readVersion(),
     checkedAt: now,
