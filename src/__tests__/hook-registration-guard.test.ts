@@ -269,3 +269,95 @@ describe('pruneStaleHooksFromSettingsFile', () => {
     }
   })
 })
+
+// Card bb7276e7 (prompt-cache / wakeup-cost work). Measured 2026-08-06: 13 of 14 fleet agents
+// plus the main settings.json carried the SAME UserPromptSubmit group twice, so both hooks in it
+// ran twice per prompt -- and voice-reply-directive.py writes the voice transcript to stdout,
+// which a UserPromptSubmit hook injects into the model context. The transcript was duplicated.
+describe('pruneStaleHookEntries -- exact duplicate groups', () => {
+  const alive = () => true
+
+  const group = (...cmds: string[]) => ({
+    hooks: cmds.map((command) => ({ type: 'command', command, timeout: 10 })),
+  })
+  const STALENESS = 'bash -c \'[ -f /x/scripts/hooks/staleness-guard.py ] && exec python3 /x/scripts/hooks/staleness-guard.py; exit 0\''
+  const VOICE = 'bash -c \'[ -f /x/scripts/hooks/voice-reply-directive.py ] && exec python3 /x/scripts/hooks/voice-reply-directive.py; exit 0\''
+
+  it('collapses a byte-identical duplicate group (the real fleet shape)', () => {
+    const settings = {
+      hooks: {
+        UserPromptSubmit: [group(STALENESS, VOICE), group(STALENESS, VOICE), group('cmd-drain')],
+      },
+    } as Record<string, unknown>
+    const res = pruneStaleHookEntries(settings, { fileExists: alive })
+    expect(res.changed).toBe(true)
+    const ups = (settings.hooks as Record<string, unknown>)['UserPromptSubmit'] as unknown[]
+    expect(ups).toHaveLength(2)
+    // The surviving copy is intact -- dedupe must not damage the kept group.
+    expect(JSON.stringify(ups[0])).toBe(JSON.stringify(group(STALENESS, VOICE)))
+    expect(JSON.stringify(ups[1])).toBe(JSON.stringify(group('cmd-drain')))
+  })
+
+  it('reports each removed duplicate command so the collapse is visible in the log', () => {
+    const settings = {
+      hooks: { UserPromptSubmit: [group(STALENESS, VOICE), group(STALENESS, VOICE)] },
+    } as Record<string, unknown>
+    const res = pruneStaleHookEntries(settings, { fileExists: alive })
+    expect(res.removed.filter((r) => r.startsWith('[duplicate]'))).toHaveLength(2)
+  })
+
+  it('NEGATIVE CONTROL: groups differing by matcher are deliberate config, both kept', () => {
+    const settings = {
+      hooks: {
+        PreToolUse: [
+          { matcher: 'Write', ...group('cmd-a') },
+          { matcher: 'Bash', ...group('cmd-a') },
+        ],
+      },
+    } as Record<string, unknown>
+    const res = pruneStaleHookEntries(settings, { fileExists: alive })
+    expect(res.changed).toBe(false)
+    expect((settings.hooks as Record<string, unknown>)['PreToolUse']).toHaveLength(2)
+  })
+
+  it('NEGATIVE CONTROL: groups differing only by timeout are kept (not byte-identical)', () => {
+    const settings = {
+      hooks: {
+        UserPromptSubmit: [
+          { hooks: [{ type: 'command', command: 'cmd-a', timeout: 10 }] },
+          { hooks: [{ type: 'command', command: 'cmd-a', timeout: 30 }] },
+        ],
+      },
+    } as Record<string, unknown>
+    const res = pruneStaleHookEntries(settings, { fileExists: alive })
+    expect(res.changed).toBe(false)
+    expect((settings.hooks as Record<string, unknown>)['UserPromptSubmit']).toHaveLength(2)
+  })
+
+  it('a foreign (non-ours) duplicated group is collapsed too -- running it twice is never intended', () => {
+    const settings = {
+      hooks: { UserPromptSubmit: [group('/opt/vendor/thing.sh'), group('/opt/vendor/thing.sh')] },
+    } as Record<string, unknown>
+    const res = pruneStaleHookEntries(settings, { fileExists: alive })
+    expect(res.changed).toBe(true)
+    expect((settings.hooks as Record<string, unknown>)['UserPromptSubmit']).toHaveLength(1)
+  })
+
+  it('is idempotent: a second pass over already-deduped settings changes nothing', () => {
+    const settings = {
+      hooks: { UserPromptSubmit: [group(STALENESS, VOICE), group(STALENESS, VOICE)] },
+    } as Record<string, unknown>
+    pruneStaleHookEntries(settings, { fileExists: alive })
+    const second = pruneStaleHookEntries(settings, { fileExists: alive })
+    expect(second.changed).toBe(false)
+  })
+
+  it('dedupe and stale-prune compose: a duplicated group whose script is gone leaves no entry', () => {
+    const settings = {
+      hooks: { UserPromptSubmit: [group(STALENESS), group(STALENESS)] },
+    } as Record<string, unknown>
+    const res = pruneStaleHookEntries(settings, { fileExists: () => false })
+    expect(res.changed).toBe(true)
+    expect((settings.hooks as Record<string, unknown>)['UserPromptSubmit']).toBeUndefined()
+  })
+})
