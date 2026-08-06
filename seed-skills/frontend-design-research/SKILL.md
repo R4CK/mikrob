@@ -39,3 +39,8 @@ Bármilyen frontend/UI feladat ELŐTT, ahol a megjelenés számít: landing, das
 - https://dribbble.com/search/website-2025 , https://dribbble.com/awwwards/tags/web_design_trends
 - https://7kc.me/blog/web-design-trends-2025
 - https://spotlightmediafargo.com/web-design-trends-best-examples-2025/
+## Új források (2026-08, Peti bővítés)
+A dribbble/awwwards MELLÉ, egyenrangú kutatási forrásként:
+- https://21st.dev -- 12k+ közösségi React komponens/template/shadcn theme; AI-ready promptként másolható. Használat: design-minta referencia, kompozíciós konvenciók (shadcn/ui + Tailwind), interakció-trendek, gyors prototípus. NEM 1:1 másolás (jogi/brand kockázat) -- adaptálj.
+- https://motionsites.ai/ -- motion/animált landing-galéria (kategorizált: SaaS/Agency/E-commerce/...). Használat: aktuális motion-trend, animált hero/háttér minták, a mögöttes AI-prompt reverse-engineeringje a brief-hez. Teljesítmény-budget alatt (<2s hero).
+Anti-slop szűrő: minden frontend kártyán futtasd az `impeccable` skillt (pbakaus/impeccable, 59 determinisztikus detector) a REVIEW előtt -- ez a NEGATÍV szűrő az AI-slop jelekre (Inter mindenre, purple gradient, kártya-kártyában), amit ez a POZITÍV etalon-kutatás nem fog meg.
