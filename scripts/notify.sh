@@ -68,9 +68,15 @@ if [ -n "${VITEST:-}" ] || [ "${NODE_ENV:-}" = "test" ]; then
   MESSAGE="[TESZT] ${MESSAGE}"
 fi
 
+# --data-urlencode, NOT -d, for the message body (card b43d6dfd, Cybersec finding on the
+# a52ffdf8 gate). With plain `-d` the value is sent raw, so an `&` anywhere in the message
+# (a filename list, a URL, a shell snippet) starts a NEW form parameter: everything after it
+# is silently dropped from `text`, and it can even override a later field such as parse_mode.
+# --data-urlencode percent-encodes the value, so the whole message arrives intact. Behaviour
+# is identical for ordinary ASCII messages, so every existing caller is unaffected.
 curl -s -X POST "https://api.telegram.org/bot${TOKEN}/sendMessage" \
-  -d "chat_id=${CHAT_ID}" \
-  -d "text=${MESSAGE}" \
-  -d "parse_mode=HTML" > /dev/null
+  --data-urlencode "chat_id=${CHAT_ID}" \
+  --data-urlencode "text=${MESSAGE}" \
+  --data-urlencode "parse_mode=HTML" > /dev/null
 
 echo "Ertesites elkuldve."
