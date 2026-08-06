@@ -128,7 +128,8 @@ alert_owner() {
   if [ -z "$token" ] || [ -z "$chat" ]; then
     log "ALERT (no bot token or owner chat id configured): $msg"; return 1
   fi
-  curl -s -m 10 -o /dev/null "https://api.telegram.org/bot${token}/sendMessage" \
+  printf 'url = "https://api.telegram.org/bot%s/sendMessage"\n' "$token" \
+    | curl -s -m 10 -o /dev/null -K - \
     --data-urlencode "chat_id=${chat}" --data-urlencode "text=${msg}" \
     && log "owner alerted via direct Bot API" || log "ALERT sendMessage FAILED: $msg"
 }

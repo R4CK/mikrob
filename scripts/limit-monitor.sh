@@ -73,7 +73,8 @@ $SNIP
 
 Lehet hogy közeledünk vagy elértük a Claude előfizetés keretét. Ha kell, ritkítom a heartbeatet vagy szünetet tartok. Nézd meg a sessiont ha tudod."
 if [ -n "$TOKEN" ]; then
-  curl -s -m 15 "https://api.telegram.org/bot$TOKEN/sendMessage" \
+  printf 'url = "https://api.telegram.org/bot%s/sendMessage"\n' "$TOKEN" \
+    | curl -s -m 15 -K - \
     --data-urlencode "chat_id=$CHAT_ID" \
     --data-urlencode "text=$MSG" \
     --data-urlencode "disable_web_page_preview=true" -o /dev/null

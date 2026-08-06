@@ -27,8 +27,8 @@ if [[ -f "$ENV_FILE" ]]; then
   token="$(grep -E '^TELEGRAM_BOT_TOKEN=' "$ENV_FILE" 2>/dev/null | head -1 | cut -d= -f2- | tr -d '"'"'"' \r\n')"
 fi
 if [[ -n "$token" && -n "$CHAT_ID" ]]; then
-  curl -s --max-time 15 \
-    "https://api.telegram.org/bot${token}/sendMessage" \
+  printf 'url = "https://api.telegram.org/bot%s/sendMessage"\n' "$token" \
+    | curl -s --max-time 15 -K - \
     --data-urlencode "chat_id=${CHAT_ID}" \
     --data-urlencode "text=${msg}" >/dev/null 2>&1 || true
 else

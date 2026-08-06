@@ -50,8 +50,8 @@ CHAT_ID="$(grep -E '^ALLOWED_CHAT_ID=' .env | cut -d= -f2- | tr -d '"'"'"' ')"
 send_telegram() {
   local text="$1"
   [ -n "${BOT_TOKEN:-}" ] && [ -n "${CHAT_ID:-}" ] || return 0
-  curl -s -m 20 -o /dev/null \
-    -X POST "https://api.telegram.org/bot${BOT_TOKEN}/sendMessage" \
+  printf 'url = "https://api.telegram.org/bot%s/sendMessage"\n' "$BOT_TOKEN" \
+    | curl -s -m 20 -o /dev/null -X POST -K - \
     --data-urlencode "chat_id=${CHAT_ID}" \
     --data-urlencode "text=${text}" \
     --data-urlencode "disable_web_page_preview=true" || true
