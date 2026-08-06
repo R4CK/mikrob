@@ -7,6 +7,7 @@ import { logger } from '../../logger.js'
 import { readBody, json } from '../http-helpers.js'
 import { atomicWriteFileSync } from '../atomic-write.js'
 import { getDb } from '../../db.js'
+import { pickTemplate } from '../../local-llm-template-picker.js'
 import {
   enqueue as enqueueLocalLlm,
   claimNext as claimNextLocalLlm,
@@ -784,10 +785,19 @@ export async function tryHandleLocalLlm(ctx: RouteContext): Promise<boolean> {
     // `template` names a file under store/local-llm-skills; the same allowlist local-llm.sh
     // enforces is applied HERE too, so a '../' can never reach the worker's argv in the first
     // place. Rejecting at the edge beats sanitizing at the sink.
-    const template = typeof payload['template'] === 'string' ? payload['template'] : null
+    let template = typeof payload['template'] === 'string' ? payload['template'] : null
     if (template !== null && !isValidCategoryName(template)) {
       json(res, { error: 'invalid template name' }, 400)
       return true
+    }
+    // Card 48aacf56 item 4: when the caller names no template, infer one from the task shape.
+    // 78 templates ship and they beat free-form chat, but measured over 740 calls almost none were
+    // used because the caller had to know the name. The picker only ever returns an allowlisted
+    // name and returns null when nothing fits -- an explicit caller choice always wins.
+    let templateAuto = false
+    if (template === null) {
+      const picked = pickTemplate(prompt)
+      if (picked) { template = picked; templateAuto = true }
     }
     const priority = payload['priority']
     const allowedPriority = ['low', 'normal', 'high', 'urgent']
@@ -808,7 +818,7 @@ export async function tryHandleLocalLlm(ctx: RouteContext): Promise<boolean> {
         },
         Date.now(),
       )
-      json(res, { id, status: 'pending' })
+      json(res, { id, status: 'pending', template, template_auto: templateAuto })
     } catch (err) {
       json(res, { error: err instanceof Error ? err.message : 'enqueue failed' }, 400)
     }
