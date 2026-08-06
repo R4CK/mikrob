@@ -23,7 +23,7 @@
 # OS boundary. It closes every default and documented path, which is what a fleet convention can do.
 set -euo pipefail
 
-PINNED_VERSION="1.17.0"
+PINNED_VERSION="1.18.0"
 REPOMIX_BIN="${REPOMIX_BIN:-$HOME/.npm-tools/bin/repomix}"
 OUT_DIR_DEFAULT="/home/neon/marveen/store/repomix-out"
 
