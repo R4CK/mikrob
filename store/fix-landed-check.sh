@@ -27,9 +27,16 @@
 # OUTPUT (first line is machine-readable)
 #   LANDED <short-sha>
 #   NOT-LANDED <short-sha> <reason>[,<reason>...]
+#   UNKNOWN <short-sha> <what-could-not-be-checked>
 #   ERROR:<why>
 # Reasons: missing-commit, not-merged, not-deployed, files-missing, stale-build
-# Exit: 0 landed | 1 not landed | 2 error
+# Unknowns: merge-unverifiable, deploy-unverifiable, build-unverifiable
+# Exit: 0 landed | 1 not landed | 2 error/usage | 3 unknown
+#
+# UNKNOWN exists because a check that could not RUN is not a check that PASSED.
+# A missing origin/develop ref (fresh clone, never fetched) or a missing
+# dist/.built-commit used to be a footnote while the verdict stayed LANDED --
+# a landed-checker that says LANDED by mistake is worse than none.
 #
 # Env: LANDED_CHECK_REF (default origin/develop), LANDED_CHECK_INSTALL
 
@@ -61,6 +68,13 @@ while [ $# -gt 0 ]; do
   esac
 done
 
+# A non-numeric or zero limit used to make `[ "$total" -lt "$SWEEP_LIMIT" ]` error
+# to stderr and evaluate false, so the loop exited immediately and the sweep
+# reported `checked=0 not-landed=0` with exit 0 -- a mistyped parameter read as
+# "everything landed".
+case "$SWEEP_LIMIT" in ''|*[!0-9]*) echo "ERROR:invalid-limit:$SWEEP_LIMIT"; exit 2 ;; esac
+[ "$SWEEP_LIMIT" -gt 0 ] || { echo "ERROR:invalid-limit:$SWEEP_LIMIT"; exit 2; }
+
 # The live install is the MAIN worktree, not whichever worktree this script runs
 # from -- checking a feature worktree against itself would always say "deployed"
 # and hide the exact gap this exists to find.
@@ -80,7 +94,11 @@ _short() { git -C "$INSTALL" rev-parse --short "$1" 2>/dev/null || printf '%s' "
 # Prints the verdict line, then indented detail lines. Returns 0 landed, 1 not, 2 error.
 check_commit() {
   local sha="$1"
-  local reasons=() details=()
+  # `unknowns` is deliberately separate from `reasons`: an UNVERIFIED check is not
+  # a passed check. Folding it into details (as the first version did) let a
+  # missing ref or a missing build marker read as green -- the exact false-pass
+  # this script exists to catch (QA2 FAIL / Cybersec NO-GO on d4d8c56).
+  local reasons=() unknowns=() details=()
 
   if ! git -C "$INSTALL" cat-file -e "${sha}^{commit}" 2>/dev/null; then
     echo "NOT-LANDED $sha missing-commit"
@@ -99,13 +117,16 @@ check_commit() {
       details+=("merge: NINCS a(z) $REF agban -- csak feature-agon el")
     fi
   else
-    details+=("merge: NEM ELLENORIZHETO -- a(z) $REF ref nem letezik lokalisan (git fetch kell)")
+    # NOT fetched on purpose: a fetch writes to the repo, and this tool must stay
+    # read-only. Unverifiable is reported, never assumed good.
+    unknowns+=("merge-unverifiable")
+    details+=("merge: NEM ELLENORIZHETO -- a(z) $REF ref nem letezik lokalisan (git fetch kell; ez a script nem fetchel)")
   fi
 
   # 2. present in the LIVE install's checked-out HEAD
   local live_head; live_head="$(git -C "$INSTALL" rev-parse HEAD 2>/dev/null || echo "")"
   if [ -z "$live_head" ]; then
-    reasons+=("not-deployed"); details+=("deploy: az elo install HEAD-je nem olvashato")
+    unknowns+=("deploy-unverifiable"); details+=("deploy: az elo install HEAD-je nem olvashato")
   elif git -C "$INSTALL" merge-base --is-ancestor "$full" "$live_head" 2>/dev/null; then
     details+=("deploy: OK -- benne van az elo install HEAD-jeben ($(_short "$live_head"))")
   else
@@ -139,9 +160,9 @@ check_commit() {
   if [ -r "$built_file" ]; then
     local built; built="$(tr -d ' \n\r' < "$built_file")"
     if [ -z "$built" ]; then
-      details+=("build: a dist/.built-commit ures")
+      unknowns+=("build-unverifiable"); details+=("build: a dist/.built-commit ures")
     elif ! git -C "$INSTALL" cat-file -e "${built}^{commit}" 2>/dev/null; then
-      details+=("build: a dist/.built-commit ismeretlen commitra mutat ($built)")
+      unknowns+=("build-unverifiable"); details+=("build: a dist/.built-commit ismeretlen commitra mutat ($built)")
     elif git -C "$INSTALL" merge-base --is-ancestor "$full" "$built" 2>/dev/null; then
       details+=("build: OK -- a dist ebbol vagy ujabbol epult ($(_short "$built"))")
     else
@@ -149,17 +170,27 @@ check_commit() {
       details+=("build: a dist REGEBBI commitbol epult ($(_short "$built")) -- ujraforditas kell")
     fi
   else
+    unknowns+=("build-unverifiable")
     details+=("build: nincs dist/.built-commit -- nem ellenorizheto")
   fi
 
-  if [ "${#reasons[@]}" -eq 0 ]; then
-    echo "LANDED $shortsha"
-  else
+  # A definite failure outranks an unknown: "not landed" is more informative than
+  # "cannot tell" when we already know one check failed.
+  if [ "${#reasons[@]}" -gt 0 ]; then
     local joined; joined="$(IFS=,; echo "${reasons[*]}")"
     echo "NOT-LANDED $shortsha $joined"
+    printf '  %s\n' "${details[@]}"
+    return 1
   fi
+  if [ "${#unknowns[@]}" -gt 0 ]; then
+    local ujoined; ujoined="$(IFS=,; echo "${unknowns[*]}")"
+    echo "UNKNOWN $shortsha $ujoined"
+    printf '  %s\n' "${details[@]}"
+    return 3
+  fi
+  echo "LANDED $shortsha"
   printf '  %s\n' "${details[@]}"
-  [ "${#reasons[@]}" -eq 0 ]
+  return 0
 }
 
 # ---- sweep ------------------------------------------------------------------
@@ -171,8 +202,18 @@ sweep() {
   [ -r "$db" ] || { echo "ERROR:no-kanban-db:$db"; exit 2; }
   command -v sqlite3 >/dev/null 2>&1 || { echo "ERROR:sqlite3-not-installed"; exit 2; }
 
-  local status_in
-  status_in="$(printf '%s' "$SWEEP_STATUS" | awk -F, '{for(i=1;i<=NF;i++){printf "%s'\''%s'\''", (i>1?",":""), $i}}')"
+  # Status values are interpolated into SQL, so they come off a fixed allowlist
+  # rather than being escaped. The sweep is built for automation, and the first
+  # caller passing a non-constant status would otherwise open a real injection
+  # path: `--status "x') OR 1=1 --"` returned rows the filter should have excluded.
+  local status_in="" _s
+  for _s in $(printf '%s' "$SWEEP_STATUS" | tr ',' ' '); do
+    case "$_s" in
+      planned|in_progress|waiting|done) status_in="${status_in:+$status_in,}'$_s'" ;;
+      *) echo "ERROR:invalid-status:$_s"; exit 2 ;;
+    esac
+  done
+  [ -n "$status_in" ] || { echo "ERROR:invalid-status:$SWEEP_STATUS"; exit 2; }
   # read-only open: a sweep must never be able to touch the live board
   local rows
   # Comment bodies are multi-line; flattened in SQL because a raw newline would
@@ -185,7 +226,7 @@ sweep() {
     ORDER BY cm.created_at DESC LIMIT 400;" 2>/dev/null)" || { echo "ERROR:sqlite-read-failed"; exit 2; }
 
   # card_id -> first commit-looking token in its comments
-  local seen_cards="" total=0 bad=0
+  local seen_cards="" total=0 bad=0 unsure=0
   local card sha line
   while IFS='|' read -r card line; do
     [ -n "$card" ] || continue
@@ -201,11 +242,21 @@ sweep() {
     local verdict
     verdict="$(check_commit "$sha" | head -1)"
     echo "$card $verdict"
-    case "$verdict" in NOT-LANDED*) bad=$((bad + 1)) ;; esac
+    case "$verdict" in
+      NOT-LANDED*) bad=$((bad + 1)) ;;
+      UNKNOWN*)    unsure=$((unsure + 1)) ;;
+    esac
   done <<< "$rows"
 
-  echo "SUMMARY checked=$total not-landed=$bad"
-  [ "$bad" -eq 0 ]
+  # Zero coverage is not a clean bill of health. A mistyped parameter in a
+  # scheduled caller used to print `checked=0 not-landed=0` and exit 0, i.e.
+  # "everything landed" -- the same overstated-coverage class this tool measures.
+  [ "$total" -gt 0 ] || { echo "ERROR:nothing-checked"; exit 2; }
+
+  echo "SUMMARY checked=$total not-landed=$bad unknown=$unsure"
+  [ "$bad" -eq 0 ] || return 1
+  [ "$unsure" -eq 0 ] || return 3
+  return 0
 }
 
 # ---- selftest ---------------------------------------------------------------
@@ -226,6 +277,9 @@ selftest() {
   local feat; feat="$(git -C "$tmp" rev-parse HEAD)"
 
   INSTALL="$tmp"; REF="fake-integration"
+  # give the box a build marker up front so the LANDED case has all four checks
+  # actually RUN -- an unchecked build must not be able to produce LANDED
+  mkdir -p "$tmp/dist"; echo "$feat" > "$tmp/dist/.built-commit"
 
   local out
   out="$(check_commit "$base")"
@@ -251,7 +305,7 @@ selftest() {
   git -C "$tmp" checkout -q -- b
 
   # stale build marker
-  mkdir -p "$tmp/dist"; echo "$base" > "$tmp/dist/.built-commit"
+  echo "$base" > "$tmp/dist/.built-commit"
   out="$(check_commit "$feat" | head -1)"
   case "$out" in *stale-build*) echo "ok   dist built from an older commit -> stale-build" ;;
                  *) echo "FAIL stale-build: $out"; fail=1 ;; esac
@@ -259,6 +313,20 @@ selftest() {
   out="$(check_commit "0000000000000000000000000000000000000000" | head -1)"
   case "$out" in *missing-commit*) echo "ok   unknown commit -> missing-commit" ;;
                  *) echo "FAIL missing-commit: $out"; fail=1 ;; esac
+
+  # an UNVERIFIED check must never read as a passed one
+  echo "$feat" > "$tmp/dist/.built-commit"
+  REF="no-such-ref-anywhere"
+  out="$(check_commit "$base" | head -1)"
+  case "$out" in UNKNOWN*merge-unverifiable*) echo "ok   missing ref -> UNKNOWN, not LANDED" ;;
+                 *) echo "FAIL missing ref: $out"; fail=1 ;; esac
+  check_commit "$base" >/dev/null; [ "$?" = "3" ] || { echo "FAIL missing ref: exit was not 3"; fail=1; }
+
+  REF="fake-integration"
+  rm -f "$tmp/dist/.built-commit"
+  out="$(check_commit "$base" | head -1)"
+  case "$out" in UNKNOWN*build-unverifiable*) echo "ok   missing build marker -> UNKNOWN, not LANDED" ;;
+                 *) echo "FAIL missing build marker: $out"; fail=1 ;; esac
 
   [ "$fail" = "0" ] && echo "selftest OK"
   return "$fail"
