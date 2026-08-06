@@ -249,7 +249,9 @@ duplikált `update-health-watchdog.sh`-t). Minden más esetben a visszaállás *
 jelenlegi verzión marad, a döntés bekerül a `store/.update-history`-ba (`rollback-refused`) és a
 `store/rollback-guard.log`-ba, és a tulajdonos értesítést kap. Tudatos, mélyebb visszaállás emberi
 kézzel továbbra is lehetséges: `./recovery-prev-version.sh --to <sha> --force` (automata hívónak nincs
-ilyen felülbírálása).
+ilyen felülbírálása). Érvénytelen (nem numerikus) `ROLLBACK_GUARD_MAX_DISTANCE` az alapértékre esik
+vissza, nem kapcsolja ki az ellenőrzést; minden nem-alapértelmezett konfig nyomot hagy a
+`store/rollback-guard.log`-ban, mert egy gyengített biztonsági kontroll nem lehet néma.
 
 Miért: 2026-08-06-án egy elavult rollback-cél 529 committal vitte vissza az élő installt, egymás után
 háromszor, mindannyiszor „sikeres" naplóbejegyzéssel — a visszaállított fa ugyanis újra magával hozta a

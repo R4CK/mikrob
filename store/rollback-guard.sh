@@ -40,16 +40,50 @@
 #             store/rollback-guard.sh --quarantine-stray [dir]     # boot hygiene
 #             store/rollback-guard.sh --selftest                   # no repo needed
 #
-# Env overrides (tests / forks):
-#   ROLLBACK_GUARD_MAX_DISTANCE   default 50
+# Env overrides (tests / forks). A non-numeric MAX_DISTANCE falls back to the
+# default instead of disabling the check, and any non-default value is written to
+# store/rollback-guard.log -- a weakened control must not be silent.
+#   ROLLBACK_GUARD_MAX_DISTANCE   default 50 (non-numeric -> back to 50)
 #   ROLLBACK_GUARD_MIN_SHA        default 5bc0983 (empty string disables the floor)
 #   ROLLBACK_GUARD_NOTIFY         0 = do not send an operator notification
 
-ROLLBACK_GUARD_MAX_DISTANCE="${ROLLBACK_GUARD_MAX_DISTANCE:-50}"
+ROLLBACK_GUARD_DEFAULT_MAX_DISTANCE=50
+ROLLBACK_GUARD_DEFAULT_MIN_SHA="5bc09832367c530dbc9796c3efc90d29f54ae728"
+
+ROLLBACK_GUARD_MAX_DISTANCE="${ROLLBACK_GUARD_MAX_DISTANCE:-$ROLLBACK_GUARD_DEFAULT_MAX_DISTANCE}"
 # Set explicitly to "" to disable the floor check; unset falls back to the default.
 if [ -z "${ROLLBACK_GUARD_MIN_SHA+x}" ]; then
-  ROLLBACK_GUARD_MIN_SHA="5bc09832367c530dbc9796c3efc90d29f54ae728"
+  ROLLBACK_GUARD_MIN_SHA="$ROLLBACK_GUARD_DEFAULT_MIN_SHA"
 fi
+
+# A non-numeric threshold makes `[ "$distance" -gt "$MAX" ]` print an integer
+# error to stderr and evaluate FALSE -- so the "over the limit, refuse" branch
+# never runs and the guard fails OPEN. A typo in a fork or test env would then
+# silently disable the only control against a deep rollback (Cybersec NO-GO on
+# 0006c5f: MAX=abc / 50x / "  " all ALLOWED the real 529-commit target).
+# Validated at USE time, not just at source time, so a caller that sets the
+# variable after sourcing is covered too. Same `case` shape the repo already
+# uses in scripts/disk-space-guard.sh.
+_rg_validate_max() {
+  case "$ROLLBACK_GUARD_MAX_DISTANCE" in
+    ''|*[!0-9]*)
+      echo "[rollback-guard] ervenytelen ROLLBACK_GUARD_MAX_DISTANCE=($ROLLBACK_GUARD_MAX_DISTANCE); vissza a(z) ${ROLLBACK_GUARD_DEFAULT_MAX_DISTANCE}-es alapertekre" >&2
+      ROLLBACK_GUARD_MAX_DISTANCE="$ROLLBACK_GUARD_DEFAULT_MAX_DISTANCE" ;;
+  esac
+}
+
+# A weakened control must never be silent: a permissive override (huge distance
+# limit, disabled floor) is exactly the configuration under which a bad rollback
+# would sail through, so it leaves a trace to read afterwards.
+_rg_config_note() {
+  local notes=""
+  [ "$ROLLBACK_GUARD_MAX_DISTANCE" = "$ROLLBACK_GUARD_DEFAULT_MAX_DISTANCE" ] || \
+    notes="max-distance=$ROLLBACK_GUARD_MAX_DISTANCE"
+  if [ "$ROLLBACK_GUARD_MIN_SHA" != "$ROLLBACK_GUARD_DEFAULT_MIN_SHA" ]; then
+    notes="${notes:+$notes }floor=${ROLLBACK_GUARD_MIN_SHA:-<kikapcsolva>}"
+  fi
+  printf '%s' "$notes"
+}
 
 # rollback_guard_reason <install_dir> <current_sha> <target_sha>
 # Prints an empty string when the rollback is allowed, otherwise a one-line
@@ -58,6 +92,9 @@ fi
 rollback_guard_reason() {
   local dir="$1" cur="$2" target="$3"
   local reason=""
+  _rg_validate_max
+  local cfg; cfg="$(_rg_config_note)"
+  [ -z "$cfg" ] || echo "[rollback-guard] NEM-ALAPERTELMEZETT konfig: $cfg" >&2
 
   if [ -z "$target" ]; then
     printf '%s' "nincs rollback-cel (ures SHA)"; return 0
@@ -116,8 +153,16 @@ _rg_short() { git -C "$1" rev-parse --short "$2" 2>/dev/null || printf '%s' "$2"
 # store/rollback-guard.log, and best-effort notifies the operator.
 rollback_guard_check() {
   local dir="$1" cur="$2" target="$3" context="${4:-rollback}"
-  local reason
+  local reason cfg
   reason="$(rollback_guard_reason "$dir" "$cur" "$target")"
+  # Record a weakened configuration even when the rollback is ALLOWED -- that is
+  # precisely the case where the trace matters afterwards.
+  cfg="$(_rg_config_note)"
+  if [ -n "$cfg" ]; then
+    mkdir -p "$dir/store" 2>/dev/null || true
+    echo "[$(date '+%Y-%m-%d %H:%M:%S')] NON-DEFAULT-CONFIG ($context) $cfg" \
+      >>"$dir/store/rollback-guard.log" 2>/dev/null || true
+  fi
   [ -z "$reason" ] && return 0
 
   local line="[$(date '+%Y-%m-%d %H:%M:%S')] REFUSED ($context) $cur -> $target :: $reason"
