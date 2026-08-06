@@ -513,11 +513,26 @@ SEED_REFRESH_KEPT=0
 
 # Render a template stream the same way the seeder does. Keep in sync with the
 # sed blocks in the seeding loops below and in install-linux.sh.
+# Resolved HERE, before the first render_seed_template call (refresh_untouched_seeds at ~line 600),
+# not at the scheduled-task seeding block further down -- that block runs AFTER, so a value set only
+# there is empty at render time (card d041760b, Cybered MEDIUM).
+#
+# WHY IT MATTERS: render_seed_template arrived from upstream, where NO seed task uses {{CHAT_ID}} --
+# so upstream is correct to omit it. In THIS fork four fleet tasks do use it (gate-reconciler,
+# fleet-nudger, folyamatos-munka-orchestrator, stuck-card-monitor). Without the rule below, the
+# rendered template keeps the literal {{CHAT_ID}} while the INSTALLED file has the real id, the
+# hashes never match, and seed_copy_is_untouched concludes "operator-modified" -- so those four
+# files are skipped FOREVER and silently booked as KEPT. A fix to gate-reconciler would never
+# reach a single install.
+SCHED_CHAT_ID=""
+[ -f "$INSTALL_DIR/.env" ] && SCHED_CHAT_ID=$(grep '^CHAT_ID=' "$INSTALL_DIR/.env" | cut -d= -f2- | tr -d '\r')
+
 render_seed_template() {
   sed -e "s/{{MAIN_AGENT_ID}}/${MAIN_AGENT_ID:-}/g" \
       -e "s/{{BOT_NAME}}/${BOT_NAME:-}/g" \
       -e "s/{{OWNER_NAME}}/${OWNER_NAME:-}/g" \
       -e "s|{{INSTALL_DIR}}|${INSTALL_DIR}|g" \
+      -e "s/{{CHAT_ID}}/${SCHED_CHAT_ID:-}/g" \
       -e "s/{{WEB_PORT}}/${WEB_PORT:-3420}/g"
 }
 
@@ -889,8 +904,8 @@ if [ -d "$SEED_SCHED_DIR" ]; then
     # {{CHAT_ID}} must be substituted here too, not just in the CLAUDE.md regen below: a seeded task
     # that says "report to chat_id <literal>" would post to ONE operator's personal Telegram on every
     # install. Empty when .env has no CHAT_ID -> renders as the bound-channel form, never a stale id.
-    SCHED_CHAT_ID=""
-    [ -f "$INSTALL_DIR/.env" ] && SCHED_CHAT_ID=$(grep '^CHAT_ID=' "$INSTALL_DIR/.env" | cut -d= -f2- | tr -d '\r')
+    # Already resolved once near render_seed_template (card d041760b) -- deliberately NOT re-derived
+    # here, so the seed-refresh comparison and this seeding pass can never disagree about the value.
     # Default skip-if-exists; --reseed-fleet force-refreshes the canonical task
     # content (SKILL.md + task-config.json). Task RUN-STATE lives in store/ (not
     # in the task dir), so it is preserved across a force-reseed. Tasks the user

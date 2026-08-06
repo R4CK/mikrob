@@ -105,4 +105,47 @@ describe('seed template placeholders are all substituted by every seeder', () =>
     }
     expect(offenders).toEqual([])
   })
+
+  // Card d041760b (Cybered MEDIUM). render_seed_template() came in from upstream, where NO seed task
+  // uses {{CHAT_ID}} -- so omitting that rule is correct THERE. In this fork four fleet tasks use it.
+  // Without the rule, the rendered template keeps the literal {{CHAT_ID}} while the installed file
+  // carries the real id; the hashes never match, seed_copy_is_untouched concludes
+  // "operator-modified", and those four are skipped FOREVER while being reported as KEPT. A fix to
+  // gate-reconciler would never reach a single install.
+  //
+  // This asserts on update.sh's TEXT rather than executing it: the script restarts services and
+  // rewrites a live install, so running it in the suite is exactly what the live-install guard
+  // exists to prevent.
+  describe('{{CHAT_ID}} survives the seed-refresh comparison (card d041760b)', () => {
+    const updateSh = readFileSync(join(REPO_ROOT, 'update.sh'), 'utf-8')
+
+    it('render_seed_template substitutes {{CHAT_ID}}', () => {
+      const fn = updateSh.slice(updateSh.indexOf('render_seed_template() {'))
+      const body = fn.slice(0, fn.indexOf('\n}'))
+      expect(body).toContain('{{CHAT_ID}}')
+    })
+
+    it('CHAT_ID is resolved BEFORE the first render call, not only at the seeding block', () => {
+      // Ordering is the whole defect: the value was assigned far below the render call sites, so
+      // the substitution ran with an empty variable even once the rule existed.
+      const assign = updateSh.indexOf('SCHED_CHAT_ID=$(grep')
+      const renderDef = updateSh.indexOf('render_seed_template() {')
+      const firstUse = updateSh.indexOf('refresh_untouched_seeds "seed-scheduled-tasks"')
+      expect(assign).toBeGreaterThan(-1)
+      expect(assign).toBeLessThan(renderDef)
+      expect(assign).toBeLessThan(firstUse)
+    })
+
+    it('the four fleet tasks that use {{CHAT_ID}} are still the known set', () => {
+      // If a fifth task starts using it, this test should make someone look rather than silently
+      // widen the blast radius of any future regression.
+      const users = readdirSync(SEED_DIR).filter((task) => {
+        const f = join(SEED_DIR, task, 'SKILL.md')
+        return existsSync(f) && readFileSync(f, 'utf-8').includes('{{CHAT_ID}}')
+      })
+      expect(users.sort()).toEqual(
+        ['fleet-nudger', 'folyamatos-munka-orchestrator', 'gate-reconciler', 'stuck-card-monitor'].sort(),
+      )
+    })
+  })
 })
