@@ -69,6 +69,43 @@ def tiered_out(comments):
     return False
 
 
+def _marker_pattern(w):
+    """Word-bounded ONLY where the marker begins/ends in a word character.
+
+    `\\b` is defined between a word and a non-word character, so wrapping a marker that
+    already starts or ends in punctuation -- 'WAITING (bound to', 'blokk:' -- in
+    unconditional `\\b` produces a regex that can never match. Those markers were
+    therefore silently inert before this helper existed (same class as the shared
+    gate-scan skill's `_marker_re`).
+    """
+    pat = re.escape(w)
+    if w[:1].isalnum():
+        pat = r'\b' + pat
+    if w[-1:].isalnum():
+        pat = pat + r'\b'
+    return pat
+
+
+# Every phrasing MikroB actually uses to park a card. Narrower lists surfaced HOLD'd
+# cards as ungated and cost redundant tiering notes (b92c10d4 2026-07-31: the real text
+# was 'WAITING (kotott-blokk, Peti-dontes)' + 'Addig ne churn-old', none of which the
+# BLOKKOLVA/KOTOTT pair matched; 82ea4267: 'WAITING (bound to CAL-5 make-live, ...)').
+# Direction of failure matters here: a missing marker only causes churn, never a missed
+# gate -- but the churn is quota, and it repeats every sweep until the card closes.
+BLOCK_MARKERS = (
+    'BLOKKOLVA', 'KOTOTT', 'KÖTÖTT', 'kotott-blokk', 'kötött-blokk',
+    'PETI DONTES', 'PETI DÖNTÉS', 'HOLD', 'ne churn-old',
+    'gate consolidated', 'GATE OSSZEVONVA', 'blokk:',
+    'WAITING (bound-block', 'WAITING (bound to', 'bound to CAL-', 'bound to WF-',
+)
+
+# Fleet-infra local-LLM offload cards (marveen repo, shell/template presets) carry no
+# endpoint, auth surface or trust boundary, so rule 4 risk-tiering puts them at QA-only.
+# Coarse heuristic by design: if such a card's REVIEW mentions credentials, an external
+# network call or any real trust boundary, READ IT -- do not trust the prefix.
+LOW_RISK_TITLE_PREFIXES = ('[OFFLOAD]',)
+
+
 def mikrob_marker(c, words, anchored=False):
     """A DIRECTIVE from MikroB (DONE / blocked), not merely a comment bearing his name.
 
@@ -107,9 +144,9 @@ def mikrob_marker(c, words, anchored=False):
     # ("WAITING (kotott-blokk, Peti-dontes)").
     first = content.strip().split('\n')[0]
     if not anchored:
-        return any(re.search(r'\b' + re.escape(w) + r'\b', first, re.IGNORECASE) for w in words)
+        return any(re.search(_marker_pattern(w), first, re.IGNORECASE) for w in words)
     for w in words:
-        m = re.search(r'\b' + re.escape(w) + r'\b', first, re.IGNORECASE)
+        m = re.search(_marker_pattern(w), first, re.IGNORECASE)
         if not m or m.start() > 24:
             continue
         if re.search(r'\b(NEM|NINCS|NOT|NO)\W{0,3}$', first[:m.start()], re.IGNORECASE):
@@ -123,8 +160,12 @@ def mikrob_marker(c, words, anchored=False):
 def main():
     cards = [c for c in get('/api/kanban') if c.get('status') in ('waiting', 'in_progress')]
     out = []
+    skipped_low_risk = []
     for card in cards:
         cid = card.get('id')
+        if (card.get('title') or '').startswith(LOW_RISK_TITLE_PREFIXES):
+            skipped_low_risk.append(cid)
+            continue
         try:
             comments = sorted(get(f'/api/kanban/{cid}/comments'),
                               key=lambda c: c.get('created_at', 0))
@@ -143,13 +184,17 @@ def main():
             continue
         if any(mikrob_marker(c, ('DONE', 'CLOSE', 'LEZAROM', 'LEZÁRVA'), anchored=True) for c in after):
             continue
-        if any(mikrob_marker(c, ('BLOKKOLVA', 'KOTOTT', 'KÖTÖTT')) for c in after):
+        if any(mikrob_marker(c, BLOCK_MARKERS) for c in after):
             continue
         if tiered_out(comments):
             continue
         out.append((card, review))
 
     out.sort(key=lambda x: x[1].get('created_at', 0))
+    # Never let a coverage reduction be silent: a skipped card must be visible, or the
+    # sweep reads as "nothing to gate" when it means "I chose not to look".
+    if skipped_low_risk:
+        print(f'Skipped (low-risk title prefix, QA-only tier): {", ".join(skipped_low_risk)}')
     print(f'Ungated (cybersec): {len(out)}')
     for card, review in out:
         print(f"{card.get('id')} | {card.get('title')} | assignee={card.get('assignee')} "
