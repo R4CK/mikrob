@@ -17,6 +17,47 @@ MARVEEN_LANG="$(cat "${INSTALL_DIR}/.lang" 2>/dev/null || echo hu)"
 export MARVEEN_LANG
 # shellcheck source=install-lang.sh
 source "$(dirname "$0")/install-lang.sh"
+
+# --- Outcome reporting (kills the false-success UI) ---------------------------
+RESULT_STATUS="failed"
+RESULT_PHASE="init"
+RESULT_MSG=""
+RESULT_FILE="$INSTALL_DIR/store/update.last-result"
+# Once the restart is handed off to the detached finalizer, that process owns
+# the outcome file. update.sh may be reaped mid-restart on Linux (dashboard
+# cgroup teardown), so its EXIT trap must NOT clobber the finalizer's verdict.
+FINALIZE_LAUNCHED=0
+
+_json_escape() { printf '%s' "$1" | python3 -c 'import json,sys; print(json.dumps(sys.stdin.read()))' 2>/dev/null || printf '"%s"' "$1"; }
+
+write_result() {
+  local code="${1:-$?}"
+  [ "$FINALIZE_LAUNCHED" = "1" ] && return 0
+  mkdir -p "$INSTALL_DIR/store" 2>/dev/null || true
+  printf '{"status":%s,"phase":%s,"code":%s,"old":%s,"new":%s,"message":%s,"ts":%s}\n' \
+    "$(_json_escape "$RESULT_STATUS")" "$(_json_escape "$RESULT_PHASE")" "$code" \
+    "$(_json_escape "${OLD_VERSION:-unknown}")" "$(_json_escape "${NEW_VERSION:-unknown}")" \
+    "$(_json_escape "$RESULT_MSG")" "$(date +%s)" > "$RESULT_FILE" 2>/dev/null || true
+}
+
+retry() {
+  local tries="$1" pause="$2"; shift 2
+  local i=1
+  while true; do
+    if "$@"; then return 0; fi
+    if [ "$i" -ge "$tries" ]; then return 1; fi
+    echo -e "  ${DIM}retry $i/$tries...${NC}"; sleep "$pause"; pause=$(( pause * 2 )); i=$(( i + 1 ))
+  done
+}
+
+health_ok() {
+  local port="${WEB_PORT:-3420}" i=0
+  while [ "$i" -lt 20 ]; do
+    if curl -fsS -m 3 -o /dev/null "http://127.0.0.1:${port}/" 2>/dev/null; then return 0; fi
+    sleep 1; i=$(( i + 1 ))
+  done
+  return 1
+}
 # ─────────────────────────────────────────────────────────────────────────────
 
 
@@ -43,6 +84,17 @@ REGEN_CLAUDEMD="${REGEN_CLAUDEMD:-0}"
 #       build-marker self-heal in the already-latest branch below). The marker
 #       normally heals this automatically; --rebuild is the explicit override.
 FORCE_REBUILD="${FORCE_REBUILD:-0}"
+#   POST_MERGE_MODE=1 (env only, no CLI flag -- set by the dashboard's
+#       POST /api/updates/apply repo=upstream handler after it has already
+#       fetched+merged upstream/main directly). HEAD is already where it needs
+#       to be, so skip the ahead-check + `git pull` below (HEAD being ahead of
+#       origin is the EXPECTED result of that merge, not the divergence the
+#       ahead-check guards against) and go straight to dep-install/build/
+#       restart with the already-current HEAD. POST_MERGE_OLD_SHA is the
+#       PRE-MERGE sha (captured by the caller before HEAD moved), used as the
+#       rollback/dep-diff baseline in place of the normal pre-pull OLD_VERSION.
+POST_MERGE_MODE="${POST_MERGE_MODE:-0}"
+POST_MERGE_OLD_SHA="${POST_MERGE_OLD_SHA:-}"
 for arg in "$@"; do
   case "$arg" in
     --reseed-fleet|--security-reseed) RESEED_FLEET=1 ;;
@@ -51,18 +103,34 @@ for arg in "$@"; do
   esac
 done
 
-# Pin Node to a runtime that can build/load better-sqlite3's native addon.
-# macOS: the global brew node (26.x) drops V8 APIs better-sqlite3 11.x needs,
-# so prefer the nvm-managed node. Linux/WSL (this host): the system node
-# (/usr/bin/node, what mikrob-dashboard.service runs on) works and is used.
-# See marveen-dashboard-recovery skill for the full story.
-for _nodebin in "$HOME/.nvm/versions/node/v24.16.0/bin/node" "/usr/bin/node"; do
-  if [ -x "$_nodebin" ]; then
-    export PATH="$(dirname "$_nodebin"):$PATH"
-    echo -e "  ${DIM}Node pin: $(node -v) (better-sqlite3 ABI)${NC}"
-    break
+# Pin Node to the version the RUNNING dashboard service uses, so the native
+# better-sqlite3 rebuild yields a binding the service node can load. The old
+# hardcoded nvm version disagreed with .nvmrc (22) and package.json engines
+# (<24); compiling for the wrong ABI crash-looped the service. Resolution:
+#   1) the node exe of the live dashboard process; 2) .nvmrc via nvm; 3) PATH node.
+resolve_service_node_dir() {
+  local pid exe
+  pid="$(pgrep -f "$INSTALL_DIR/dist/index.js" 2>/dev/null | head -n1)"
+  if [ -n "$pid" ]; then
+    if command -v lsof >/dev/null 2>&1; then
+      exe="$(lsof -p "$pid" -Fn 2>/dev/null | awk '/\/node$/{print substr($0,2); exit}')"
+    fi
+    [ -z "$exe" ] && [ -r "/proc/$pid/exe" ] && exe="$(readlink -f "/proc/$pid/exe" 2>/dev/null)"
+    if [ -n "$exe" ] && [ -x "$exe" ]; then dirname "$exe"; return 0; fi
   fi
-done
+  if [ -f "$INSTALL_DIR/.nvmrc" ] && [ -s "$HOME/.nvm/nvm.sh" ]; then
+    local want cand
+    want="$(tr -d ' \n' < "$INSTALL_DIR/.nvmrc")"
+    cand="$(ls -d "$HOME"/.nvm/versions/node/v"$want"* 2>/dev/null | sort -V | tail -n1)"
+    [ -n "$cand" ] && [ -x "$cand/bin/node" ] && { echo "$cand/bin"; return 0; }
+  fi
+  return 1
+}
+NODE_PIN_DIR="$(resolve_service_node_dir || true)"
+if [ -n "$NODE_PIN_DIR" ] && [ -x "$NODE_PIN_DIR/node" ]; then
+  export PATH="$NODE_PIN_DIR:$PATH"
+  echo -e "  ${DIM}Node pin: $(node -v) (matches the running dashboard, better-sqlite3 ABI)${NC}"
+fi
 
 # Pidfile gate. The dashboard's /api/updates/apply creates
 # store/update.pid atomically with O_EXCL before spawning this script,
@@ -83,7 +151,7 @@ UPDATE_PIDFILE_TMP="$UPDATE_PIDFILE.$$.tmp"
 # still holds its placeholder lock. Clean up only the tmp file if it
 # leaked; leave the dashboard's pidfile alone so the lock does not
 # disappear on a write error.
-trap 'rm -f "$UPDATE_PIDFILE_TMP"' EXIT
+trap 'rc=$?; write_result "$rc"; rm -f "$UPDATE_PIDFILE_TMP"' EXIT
 {
   echo "$$"
   # Portable wall-clock epoch in ms. date +%s%3N is GNU-only; on BSD
@@ -102,7 +170,7 @@ mv "$UPDATE_PIDFILE_TMP" "$UPDATE_PIDFILE"
 # Only after mv succeeds do we own the lock; extend the trap to remove
 # the final pidfile too. Until this point a mv failure left the
 # dashboard's placeholder intact for its normal age-based recovery.
-trap 'rm -f "$UPDATE_PIDFILE" "$UPDATE_PIDFILE_TMP"' EXIT
+trap 'rc=$?; write_result "$rc"; rm -f "$UPDATE_PIDFILE" "$UPDATE_PIDFILE_TMP"' EXIT
 
 # Tee the full run into store/update.log so failures are inspectable
 # after the fact. The dashboard launches this script detached with
@@ -231,6 +299,28 @@ if [ -n "$DIRTY" ]; then
   fi
 fi
 
+# Restore an auto-stash before an EARLY exit (AHEAD-check / pull-failure /
+# build-failure below) -- any exit between the stash push above and the
+# normal restore point further down would otherwise strand the operator's
+# local files with no restore. Incident (2026-07-12): the AHEAD-check exit
+# left scripts/imap-business-mail/*.py, billingo-report, crm-report etc.
+# stashed for hours until manually recovered via `git stash apply`.
+restore_stash_before_exit() {
+  if [ "$STASHED_AUTO" = "1" ]; then
+    echo -e "  Auto-stash visszaallitasa (korai kilepes elott)..."
+    if git stash pop; then
+      STASHED_AUTO=0
+    else
+      if [[ "${MARVEEN_LANG:-hu}" == "en" ]]; then
+        echo -e "${RED}WARNING:${NC} Auto-stash pop had conflicts; the stash remains in 'git stash list'."
+      else
+        echo -e "${RED}FIGYELEM:${NC} Auto-stash pop konfliktusos; a stash benne marad a 'git stash list'-ben."
+      fi
+      echo "          Manualisan kezeld: git stash list / git stash apply / git stash drop"
+    fi
+  fi
+}
+
 # Save current version
 OLD_VERSION=$(git rev-parse --short HEAD 2>/dev/null || echo "unknown")
 # Full pre-pull SHA -- the rollback target recovery-prev-version.sh restores to.
@@ -247,42 +337,64 @@ if git ls-files --error-unmatch HEARTBEAT.md >/dev/null 2>&1; then
   git checkout -- HEARTBEAT.md 2>/dev/null || true
 fi
 
-# Pull latest from the current branch's origin counterpart.
-# Wrapped so an ff-only failure gives a readable diagnosis (the script runs
-# detached with stdio:'ignore', so a bare set -e abort would be invisible) AND
-# so an active auto-stash is restored instead of orphaned on a failed pull.
-echo -e "  Letoltes (origin/${CURRENT_BRANCH})..."
-if ! git pull --ff-only origin "$CURRENT_BRANCH"; then
-  echo -e "${RED}HIBA:${NC} A 'git pull --ff-only origin ${CURRENT_BRANCH}' sikertelen."
-  AHEAD=$(git rev-list --count "origin/${CURRENT_BRANCH}..HEAD" 2>/dev/null || echo 0)
-  if [ "${AHEAD:-0}" -gt 0 ]; then
-    echo -e "       ${AHEAD} helyi commit van ami NINCS az origin/${CURRENT_BRANCH}-en, ezert nem lehet"
-    echo -e "       fast-forwardolni. Pushold ki, vagy tedd oket kulon branchre:"
-    echo -e "         git push origin ${CURRENT_BRANCH}    # vagy: git branch mentes-$(date +%Y%m%d); git reset --hard origin/${CURRENT_BRANCH}"
-  else
-    echo -e "       Ellenorizd kezzel: git fetch && git status"
-  fi
-  # Restore the auto-stash so the operator's local changes are not left behind.
-  if [ "$STASHED_AUTO" = "1" ]; then
-    echo -e "  Auto-stash visszaallitasa (a pull megszakadt)..."
-    git stash pop || echo -e "${ORANGE}FIGYELEM:${NC} a stash benne maradt a 'git stash list'-ben."
-  fi
-  exit 5
-fi
-NEW_VERSION=$(git rev-parse --short HEAD 2>/dev/null || echo "unknown")
-# Full SHA for the build-marker (dist/.built-commit). HEAD does not change
-# again in this script (no checkout), so this is the commit any build below
-# produces and the value we compare the marker against.
-NEW_VERSION_FULL=$(git rev-parse HEAD 2>/dev/null || echo "unknown")
+# Full SHA snapshot for a safe rollback: ff-only means OLD is a strict ancestor
+# of NEW, so reset --hard $OLD_VERSION_FULL reverts without a force-push.
+OLD_VERSION_FULL=$(git rev-parse HEAD 2>/dev/null || echo "")
 
-# Record a rollback point for recovery-prev-version.sh: the version we were on
-# BEFORE this pull (FROM) and the version we moved to (TO). store/ is gitignored,
-# so this line never blocks a future ff-only pull. Append-only, best-effort.
-if [ "$OLD_VERSION_FULL" != "$NEW_VERSION_FULL" ]; then
-  printf '%s\tupdate\t%s\t%s\t%s\t%s\n' \
-    "$(date '+%Y-%m-%dT%H:%M:%S%z')" "$CURRENT_BRANCH" \
-    "$OLD_VERSION_FULL" "$NEW_VERSION_FULL" "auto" \
-    >>"$INSTALL_DIR/store/.update-history" 2>/dev/null || true
+RESULT_PHASE="pull"
+if [ "$POST_MERGE_MODE" = "1" ]; then
+  # The caller (POST /api/updates/apply, repo=upstream) already did `git fetch
+  # upstream` + `git merge upstream/main` before invoking this script, so HEAD
+  # is already where it needs to be -- there is nothing to pull, and being
+  # ahead of origin is the EXPECTED/intentional result of that merge (not the
+  # divergence the ahead-check below guards against), so skip both. The
+  # rollback point for this transition was already recorded by
+  # recordUpdateHistory() in src/web/routes/updates.ts (note "upstream-merge");
+  # writing a second line below would be a harmless but redundant duplicate,
+  # so that write is skipped too. OLD_VERSION_FULL is overridden to the
+  # PRE-MERGE sha the caller captured (before this script started, since the
+  # merge already moved HEAD) so the dep-install diff and rollback target
+  # below cover the right range.
+  if [ -n "$POST_MERGE_OLD_SHA" ]; then
+    OLD_VERSION_FULL="$POST_MERGE_OLD_SHA"
+    OLD_VERSION=$(git rev-parse --short "$POST_MERGE_OLD_SHA" 2>/dev/null || echo "$OLD_VERSION")
+  fi
+  NEW_VERSION=$(git rev-parse --short HEAD 2>/dev/null || echo "unknown")
+  NEW_VERSION_FULL=$(git rev-parse HEAD 2>/dev/null || echo "unknown")
+else
+  # Ahead-detect: local commits not on upstream make ff-only refuse. Report it
+  # actionably instead of dying silently under set -e (the dominant failure).
+  AHEAD=$(git rev-list --count '@{u}..HEAD' 2>/dev/null || echo 0)
+  if [ "${AHEAD:-0}" -gt 0 ]; then
+    RESULT_MSG="A helyi checkout ${AHEAD} committal elore van az upstreamhez kepest; a fast-forward frissites nem lehetseges. Nezd meg: git log @{u}..HEAD"
+    echo -e "${RED}HIBA:${NC} a helyi checkout ${AHEAD} committal elore van az upstreamhez kepest; fast-forward nem lehetseges. Nezd: git log @{u}..HEAD"
+    restore_stash_before_exit
+    exit 5
+  fi
+
+  # Pull latest, NON-fatal under set -e so a diverged/network failure is reported.
+  echo -e "  Letoltes (origin/${CURRENT_BRANCH})..."
+  if ! retry 3 3 git pull --ff-only origin "$CURRENT_BRANCH"; then
+    RESULT_MSG="git pull --ff-only sikertelen (divergencia vagy halozati hiba). Nezd: git status; git log @{u}..HEAD"
+    echo -e "${RED}HIBA:${NC} git pull --ff-only sikertelen origin/${CURRENT_BRANCH}."
+    restore_stash_before_exit
+    exit 5
+  fi
+  NEW_VERSION=$(git rev-parse --short HEAD 2>/dev/null || echo "unknown")
+  # Full SHA for the build-marker (dist/.built-commit). HEAD does not change
+  # again in this script (no checkout), so this is the commit any build below
+  # produces and the value we compare the marker against.
+  NEW_VERSION_FULL=$(git rev-parse HEAD 2>/dev/null || echo "unknown")
+
+  # Record a rollback point for recovery-prev-version.sh: the version we were on
+  # BEFORE this pull (FROM) and the version we moved to (TO). store/ is gitignored,
+  # so this line never blocks a future ff-only pull. Append-only, best-effort.
+  if [ "$OLD_VERSION_FULL" != "$NEW_VERSION_FULL" ]; then
+    printf '%s\tupdate\t%s\t%s\t%s\t%s\n' \
+      "$(date '+%Y-%m-%dT%H:%M:%S%z')" "$CURRENT_BRANCH" \
+      "$OLD_VERSION_FULL" "$NEW_VERSION_FULL" "auto" \
+      >>"$INSTALL_DIR/store/.update-history" 2>/dev/null || true
+  fi
 fi
 BUILT_COMMIT_FILE="$INSTALL_DIR/dist/.built-commit"
 
@@ -319,6 +431,20 @@ if [ "$OLD_VERSION" = "$NEW_VERSION" ]; then
     else
       echo -e "  ${GREEN}✓${NC} Már a legfrissebb verzión vagy ($NEW_VERSION)"
     fi
+    # Report SUCCESS explicitly. RESULT_STATUS defaults to "failed" (line 22)
+    # and is only flipped to a success verdict by the detached restart
+    # finalizer (_finish success ...). This happy path exits 0 WITHOUT
+    # restarting, so without setting the status here the EXIT trap's
+    # write_result records {status:"failed",phase:"pull",code:0} -- a false
+    # failure that the dashboard shows as "update failed" every time the box
+    # is already current. Set the real outcome before the clean exit.
+    RESULT_STATUS="success"
+    RESULT_PHASE="up-to-date"
+    RESULT_MSG="Mar a legfrissebb verzion ($NEW_VERSION); nincs teendo."
+    # Nothing to pull, but an auto-stash may still be sitting on top of HEAD
+    # (dashboard's "stash + update" run against an already-current checkout).
+    # Without this, the operator's local files stay stashed with no restore.
+    restore_stash_before_exit
     exit 0
   else
     # --reseed-fleet / --regen-claudemd are explicit refresh requests, so they
@@ -344,7 +470,8 @@ fi
 # patched-over malicious dep.
 if git diff "$OLD_VERSION" "$NEW_VERSION" --name-only | grep -qE "^package(-lock)?\.json$"; then
   echo -e "  Fuggosegek frissitese (lock-strict)..."
-  if ! npm ci --silent; then
+  RESULT_PHASE="npm-ci"
+  if ! retry 3 3 npm ci --silent; then
     echo -e "  HIBA: npm ci sikertelen. Valoszinuleg a package-lock.json nincs szinkronban."
     echo -e "  Reszletekert futtasd: npm ci"
     exit 1
@@ -372,11 +499,35 @@ fi
 # Skipped on an already-up-to-date --reseed-fleet/--regen-claudemd run: the
 # compiled tree did not change, only the seeded skills/tasks need refreshing.
 if [ "${SKIP_BUILD:-0}" != "1" ]; then
-  npm rebuild better-sqlite3 --build-from-source --silent
+  RESULT_PHASE="build"
+  retry 2 3 npm rebuild better-sqlite3 --build-from-source --silent || true
 
-  # Rebuild
+  # Rebuild. On failure, auto-rollback to the pre-update commit (safe ff-only
+  # ancestor) and rebuild that, leaving the box on a WORKING old version rather
+  # than git=NEW/dist=OLD.
+  # Clean build: `tsc` emits into dist/ WITHOUT wiping it, so a stale/orphaned
+  # dist file can survive a rebuild and crash-loop the app at import time.
+  # Incident 2026-07-25: dist/web/federation/capabilities.js imported
+  # OWNER_NAME_PLACEHOLDER from a stale dist/config.js that lacked the export
+  # (added in a later source commit) -> ESM SyntaxError crash-loop for ~1h,
+  # while the build-marker still matched HEAD so the self-heal thought dist was
+  # fresh. Wiping dist before every build makes each build internally coherent.
   echo -e "  Forditas..."
-  npm run build --silent
+  rm -rf "$INSTALL_DIR/dist"
+  if ! retry 2 3 npm run build --silent; then
+    echo -e "${RED}HIBA:${NC} build sikertelen. Visszaallitas a korabbi verziora (${OLD_VERSION})..."
+    if [ -n "$OLD_VERSION_FULL" ]; then
+      git reset --hard "$OLD_VERSION_FULL" >/dev/null 2>&1 || true
+      npm rebuild better-sqlite3 --build-from-source --silent 2>/dev/null || true
+      rm -rf "$INSTALL_DIR/dist"
+      npm run build --silent 2>/dev/null || true
+      [ -d "$INSTALL_DIR/dist" ] && echo "$OLD_VERSION_FULL" > "$BUILT_COMMIT_FILE"
+    fi
+    RESULT_STATUS="rolled-back"
+    RESULT_MSG="A build elbukott; a rendszer visszaallt a korabbi mukodo verziora (${OLD_VERSION}). A frissites nem ment ki."
+    restore_stash_before_exit
+    exit 6
+  fi
 
   # Stamp the build-marker AFTER a successful build (set -e means we only
   # reach this line if the build succeeded). dist/.built-commit records the
@@ -396,6 +547,115 @@ if [ -x "$INSTALL_DIR/scripts/sync-hooks.sh" ]; then
   echo -e "  Hook-ok szinkronizalasa..."
   bash "$INSTALL_DIR/scripts/sync-hooks.sh" || echo -e "  FIGYELEM: sync-hooks.sh nem-nulla exit; manualisan ellenorizd."
 fi
+
+# Morning-timer unit repair (Linux only). Earlier installers wrote
+# Requires=<unit>.service into the timer's [Unit] section, which makes every
+# activation of the timer unit (each systemd user-manager start, not just the
+# 07:27 elapse) start the briefing service immediately -- restart churn then
+# multiplies the morning briefing (customer report 2026-07-26: 5 deliveries in
+# one day). Idempotent: strips the line wherever it is still present.
+if [ -d "$HOME/.config/systemd/user" ]; then
+  for morn_timer in "$HOME/.config/systemd/user/"*-morning.timer; do
+    [ -f "$morn_timer" ] || continue
+    if grep -q '^Requires=.*-morning\.service' "$morn_timer"; then
+      sed -i.marveen-bak '/^Requires=.*-morning\.service/d' "$morn_timer" && rm -f "${morn_timer}.marveen-bak"
+      systemctl --user daemon-reload 2>/dev/null || true
+      echo -e "  Reggeli-napindito timer javitva (Requires= a [Unit]-bol eltavolitva): $(basename "$morn_timer")"
+    fi
+  done
+fi
+
+# Channels-unit restart-policy migration (Linux only). The installer template is
+# the only place that writes the unit file, and update.sh does NOT re-run the
+# installer -- so a fix to the template reaches new installs only. Every machine
+# installed before this change keeps Restart=on-failure, under which channels.sh
+# exiting zero from its own watchdog leaves the unit inactive/dead forever (seen
+# live 2026-08-04). This migration is what actually lands the fix on those hosts.
+# Idempotent: it only touches units that still carry the old value.
+migrate_channels_restart() {
+  units_dir="${1:-$HOME/.config/systemd/user}"
+  [ -d "$units_dir" ] || return 0
+  _patched=0
+  for chan_unit in "$units_dir/"*-channels.service; do
+    [ -f "$chan_unit" ] || continue
+    if grep -q '^Restart=on-failure[[:space:]]*$' "$chan_unit"; then
+      if sed -i.marveen-bak 's/^Restart=on-failure[[:space:]]*$/Restart=always/' "$chan_unit" 2>/dev/null; then
+        rm -f "${chan_unit}.marveen-bak"
+        _patched=1
+        echo -e "  Csatorna-unit javitva (Restart=on-failure -> always): $(basename "$chan_unit")"
+      else
+        echo -e "  FIGYELEM: a csatorna-unit nem volt irhato: $chan_unit"
+      fi
+    fi
+  done
+  if [ "$_patched" = "1" ]; then
+    systemctl --user daemon-reload 2>/dev/null || true
+  fi
+  return 0
+}
+migrate_channels_restart
+
+# ExecStartPre native-module guard migration (Linux only). ensure-native-modules.sh
+# rebuilds better-sqlite3 for the current Node ABI before the unit starts (the
+# "Could not locate the bindings file" crash-loop, root-caused 2026-07-03).
+# install-linux.sh wires it in for new installs, but hosts installed before that
+# fix -- or that had it stripped by a manual unit edit -- never get it, so a
+# restart during/after a Node/npm upgrade can crash-loop with no self-heal (Peti
+# report 2026-08-05: has to start WSL/MikroB by hand). Idempotent: only adds the
+# line when missing, right before ExecStart=.
+migrate_native_module_guard() {
+  units_dir="${1:-$HOME/.config/systemd/user}"
+  [ -d "$units_dir" ] || return 0
+  _patched=0
+  for svc_unit in "$units_dir/"*-channels.service "$units_dir/"*-dashboard.service; do
+    [ -f "$svc_unit" ] || continue
+    grep -q '^ExecStartPre=.*ensure-native-modules\.sh' "$svc_unit" && continue
+    guard="$INSTALL_DIR/scripts/ensure-native-modules.sh"
+    [ -x "$guard" ] || continue
+    if sed -i.marveen-bak "s|^ExecStart=|ExecStartPre=${guard}\nExecStart=|" "$svc_unit" 2>/dev/null; then
+      rm -f "${svc_unit}.marveen-bak"
+      _patched=1
+      echo -e "  Unit javitva (natic-modul guard ExecStartPre felvéve): $(basename "$svc_unit")"
+    else
+      echo -e "  FIGYELEM: a unit nem volt irhato: $svc_unit"
+    fi
+  done
+  if [ "$_patched" = "1" ]; then
+    systemctl --user daemon-reload 2>/dev/null || true
+  fi
+  return 0
+}
+migrate_native_module_guard
+
+# StartLimit* section-placement migration (Linux only). systemd only honors
+# StartLimitIntervalSec/StartLimitBurst under [Unit]; earlier templates wrote
+# them under [Service], where systemd logs "Unknown key" and silently ignores
+# them -- so a tight crash-loop never trips the built-in stop-restarting safety
+# net. Idempotent: only adds the [Unit]-section copy when missing there; leaves
+# the harmless ignored [Service] copy alone.
+migrate_channels_startlimit() {
+  units_dir="${1:-$HOME/.config/systemd/user}"
+  [ -d "$units_dir" ] || return 0
+  _patched=0
+  for chan_unit in "$units_dir/"*-channels.service; do
+    [ -f "$chan_unit" ] || continue
+    if awk '/^\[Unit\]/{u=1;next} /^\[/{u=0} u&&/^StartLimitIntervalSec=/{f=1} END{exit !f}' "$chan_unit"; then
+      continue
+    fi
+    if sed -i.marveen-bak '/^\[Unit\]/a StartLimitIntervalSec=300\nStartLimitBurst=5' "$chan_unit" 2>/dev/null; then
+      rm -f "${chan_unit}.marveen-bak"
+      _patched=1
+      echo -e "  Csatorna-unit javitva (StartLimit* felvéve [Unit]-be): $(basename "$chan_unit")"
+    else
+      echo -e "  FIGYELEM: a csatorna-unit nem volt irhato: $chan_unit"
+    fi
+  done
+  if [ "$_patched" = "1" ]; then
+    systemctl --user daemon-reload 2>/dev/null || true
+  fi
+  return 0
+}
+migrate_channels_startlimit
 
 # Seed skills & scheduled tasks (idempotent: skip existing)
 # Source .env for template variables needed by seed-scheduled-tasks
@@ -457,6 +717,11 @@ if [ -d "$SEED_SCHED_DIR" ]; then
     SCHED_NEW=0
     SCHED_SKIP=0
     SCHED_FORCED=0
+    # {{CHAT_ID}} must be substituted here too, not just in the CLAUDE.md regen below: a seeded task
+    # that says "report to chat_id <literal>" would post to ONE operator's personal Telegram on every
+    # install. Empty when .env has no CHAT_ID -> renders as the bound-channel form, never a stale id.
+    SCHED_CHAT_ID=""
+    [ -f "$INSTALL_DIR/.env" ] && SCHED_CHAT_ID=$(grep '^CHAT_ID=' "$INSTALL_DIR/.env" | cut -d= -f2- | tr -d '\r')
     # Default skip-if-exists; --reseed-fleet force-refreshes the canonical task
     # content (SKILL.md + task-config.json). Task RUN-STATE lives in store/ (not
     # in the task dir), so it is preserved across a force-reseed. Tasks the user
@@ -482,6 +747,7 @@ if [ -d "$SEED_SCHED_DIR" ]; then
             -e "s/{{BOT_NAME}}/$BOT_NAME/g" \
             -e "s/{{OWNER_NAME}}/$OWNER_NAME/g" \
             -e "s|{{INSTALL_DIR}}|$INSTALL_DIR|g" \
+            -e "s/{{CHAT_ID}}/$SCHED_CHAT_ID/g" \
             "$f" > "$target/$(basename "$f")"
       done
       if [ "$forced" = "1" ]; then SCHED_FORCED=$((SCHED_FORCED + 1)); else SCHED_NEW=$((SCHED_NEW + 1)); fi
@@ -528,6 +794,7 @@ if [ "$RESEED_FLEET" = "1" ] || [ "$REGEN_CLAUDEMD" = "1" ]; then
         -e "s/{{CHAT_ID}}/$REGEN_CHAT_ID/g" \
         -e "s/{{BOT_NAME}}/$BOT_NAME/g" \
         -e "s/{{MAIN_AGENT_ID}}/$MAIN_AGENT_ID/g" \
+        -e "s/{{WEB_PORT}}/${WEB_PORT:-3420}/g" \
         "$INSTALL_DIR/templates/CLAUDE.md.template" > "$CLAUDE_MD"
     echo -e "  ${GREEN}✓${NC} CLAUDE.md újrarenderelve a sablonból (előző verzió mentve: CLAUDE.md.backup-*)"
   elif [ -f "$CLAUDE_MD" ]; then
@@ -619,10 +886,10 @@ if [ -d "$MARKETPLACE_PLUGIN_DIR" ]; then
       fi
     fi
     SLACK_REF_TMP="$(mktemp "${SLACK_REF_FILE}.XXXXXX")"
-    trap 'rm -f "$UPDATE_PIDFILE" "$UPDATE_PIDFILE_TMP" "$SLACK_REF_TMP"' EXIT
+    trap 'rc=$?; write_result "$rc"; rm -f "$UPDATE_PIDFILE" "$UPDATE_PIDFILE_TMP" "$SLACK_REF_TMP"' EXIT
     echo "$CURRENT_REF" > "$SLACK_REF_TMP"
     mv "$SLACK_REF_TMP" "$SLACK_REF_FILE"
-    trap 'rm -f "$UPDATE_PIDFILE" "$UPDATE_PIDFILE_TMP"' EXIT
+    trap 'rc=$?; write_result "$rc"; rm -f "$UPDATE_PIDFILE" "$UPDATE_PIDFILE_TMP"' EXIT
   fi
 fi
 
@@ -641,9 +908,36 @@ fi
 # the same lines the operator had locally; we drop and warn rather
 # than block the restart, but the entry stays in `git stash list`
 # until the operator deals with it.
+#
+# Incident (2026-07-12): the build above (SKIP_BUILD branch aside) compiles
+# whatever is on disk AT THAT POINT -- the pulled commit WITHOUT the
+# operator's stashed local files, since the stash is not popped until here.
+# A locally-added source file (e.g. a new route) therefore never made it into
+# dist/, even though `git stash pop` puts it back on disk right after: the
+# pop happens too late for the build that already ran. Rebuild again below,
+# only when the pop actually restored something, to close that gap without
+# moving the pop earlier -- an earlier pop would put local edits back on disk
+# before the build-failure rollback further up, so a failed build's
+# `git reset --hard` would destroy them instead of leaving them safe in the
+# stash.
 if [ "$STASHED_AUTO" = "1" ]; then
   echo -e "  Auto-stash visszaallitasa..."
-  if ! git stash pop; then
+  if git stash pop; then
+    STASHED_AUTO=0
+    if [ "${SKIP_BUILD:-0}" != "1" ]; then
+      echo -e "  Ujraforditas a visszaallitott helyi valtozasokkal..."
+      if ! retry 2 3 npm run build --silent; then
+        if [[ "${MARVEEN_LANG:-hu}" == "en" ]]; then
+          echo -e "${RED}WARNING:${NC} Rebuild after stash-restore failed; dist/ may not reflect local changes."
+        else
+          echo -e "${RED}FIGYELEM:${NC} Az ujraforditas a stash-visszaallitas utan sikertelen; a dist/ lehet hogy nem tartalmazza a helyi valtozasokat."
+        fi
+        echo -e "          Futtasd kezzel: npm run build"
+      elif [ -d "$INSTALL_DIR/dist" ]; then
+        echo "$NEW_VERSION_FULL" > "$BUILT_COMMIT_FILE"
+      fi
+    fi
+  else
     if [[ "${MARVEEN_LANG:-hu}" == "en" ]]; then
       echo -e "${RED}WARNING:${NC} Auto-stash pop had conflicts; the stash remains in 'git stash list'."
     else
@@ -653,57 +947,116 @@ if [ "$STASHED_AUTO" = "1" ]; then
   fi
 fi
 
-# Restart services.
+# Restart services -- via a DETACHED finalizer.
 #
-# BUG FIX (update.sh self-kill): when the update is triggered from the dashboard,
-# update.sh runs INSIDE the marveen-*-dashboard systemd service's cgroup. stop.sh
-# tears that cgroup down, which reaps THIS script before start.sh runs -> both
-# services stay `inactive (dead)` after every update (update.log ends at the
-# "inditas..." line, no "elinditva"). Run the stop+start in a transient systemd
-# scope OUTSIDE our cgroup so the restart completes even though our own process
-# is killed mid-way. The scope is registered with (and survives under) the user
-# systemd manager, independent of the dashboard cgroup.
+# Two hard constraints force this shape:
+#   1) Self-kill: when triggered from the dashboard, update.sh runs INSIDE the
+#      marveen-*-dashboard systemd cgroup. stop.sh tears that cgroup down, which
+#      reaps THIS script before start.sh runs -> services stay dead. setsid is
+#      NOT enough (same cgroup); only a separate cgroup (systemd-run --scope)
+#      survives. So the restart must run OUTSIDE our cgroup.
+#   2) Health-check + rollback must ALSO survive our death. Since update.sh may
+#      be reaped at stop.sh, the whole restart -> health-poll -> rollback-on-fail
+#      -> write final result sequence lives in a standalone finalizer script that
+#      we launch detached and then exit. The finalizer, not update.sh, owns the
+#      outcome file from here on (FINALIZE_LAUNCHED guards the EXIT trap).
 #
-# NOTE: setsid is NOT a valid escape here -- a new session/process-group is still
-# in the same cgroup, so stop.sh would still kill it. Only a separate cgroup
-# (systemd-run --scope) survives. On macOS/launchd there is no cgroup self-kill,
-# so the direct call (else branch) is correct there and is a no-op change.
-# Post-update health watchdog with auto-rollback (Peti 2026-07-24).
-# Only after a REAL version change (not a no-op --rebuild): launch the watchdog in
-# its OWN transient scope so it survives BOTH the dashboard-cgroup teardown and
-# this script being reaped mid-restart. It waits ~2min for the updated system to
-# come up healthy; if it does not, it rolls back to the pre-update version
-# (recorded above in .update-history) and notifies the operator on Telegram.
-# The 15s pre-delay lets stop+start begin so the first probes don't race it.
-if [ "${OLD_VERSION:-}" != "${NEW_VERSION:-}" ] && [ -x "$INSTALL_DIR/store/update-health-watchdog.sh" ]; then
-  if command -v systemd-run >/dev/null 2>&1 && [ -n "${XDG_RUNTIME_DIR:-}" ]; then
-    systemd-run --user --scope --collect --quiet \
-      bash -c 'sleep 15; exec "$1/store/update-health-watchdog.sh"' _ "$INSTALL_DIR" >/dev/null 2>&1 &
-  else
-    setsid bash -c 'sleep 15; exec "$1/store/update-health-watchdog.sh"' _ "$INSTALL_DIR" >/dev/null 2>&1 &
-  fi
-  echo -e "  ${GREEN}⟳${NC} update-health-watchdog elinditva (auto-rollback ha 2 percen belul nem jon fel)"
+# XDG_RUNTIME_DIR is derived if unset (service env sometimes trims it), so the
+# systemd-run scope can be created instead of silently falling back to a direct
+# restart that self-kills and bricks the box.
+FINALIZE_SCRIPT="$INSTALL_DIR/store/update-finalize.sh"
+cat > "$FINALIZE_SCRIPT" <<'FINALIZE_EOF'
+#!/usr/bin/env bash
+# Detached update finalizer. Args:
+#   $1 INSTALL_DIR  $2 OLD_FULL_SHA  $3 OLD_SHORT  $4 PORT
+#   $5 RESULT_FILE  $6 BUILT_COMMIT_FILE  $7 NEW_SHORT  $8 NODE_PIN_DIR
+#   $9 NOTIFY (1 = also send a channel report after the outcome; used by the
+#             unattended auto-update task, silent for a dashboard-triggered run)
+INSTALL_DIR="$1"; OLD_FULL="$2"; OLD_SHORT="$3"; PORT="$4"
+RESULT_FILE="$5"; BUILT="$6"; NEW_SHORT="$7"; NODE_PIN_DIR="$8"; NOTIFY="${9:-0}"
+[ -n "$NODE_PIN_DIR" ] && export PATH="$NODE_PIN_DIR:$PATH"
+cd "$INSTALL_DIR" 2>/dev/null || true
+
+_esc() { printf '%s' "$1" | python3 -c 'import json,sys; print(json.dumps(sys.stdin.read()))' 2>/dev/null || printf '"%s"' "$1"; }
+_write() { # status phase code message
+  printf '{"status":%s,"phase":%s,"code":%s,"old":%s,"new":%s,"message":%s,"ts":%s}\n' \
+    "$(_esc "$1")" "$(_esc "$2")" "$3" "$(_esc "$OLD_SHORT")" "$(_esc "$NEW_SHORT")" \
+    "$(_esc "$4")" "$(date +%s)" > "$RESULT_FILE" 2>/dev/null || true
+}
+# Channel report for the unattended auto-update. Plugin-independent (Bot API via
+# notify.sh), because at 4am the Telegram plugin may be down and the finalizer
+# runs detached with no tmux session. Silent (NOTIFY!=1) for manual runs, where
+# the dashboard UI already polls /api/updates/status.
+_notify() { # status
+  [ "$NOTIFY" = "1" ] || return 0
+  [ -x "$INSTALL_DIR/scripts/notify.sh" ] || [ -f "$INSTALL_DIR/scripts/notify.sh" ] || return 0
+  local msg
+  case "$1" in
+    success)     msg="✅ Auto-update kesz: ${OLD_SHORT} -> ${NEW_SHORT}. A dashboard ujraindult es valaszol (health OK)." ;;
+    rolled-back) msg="⚠️ Auto-update: a frissites nem sikerult (a dashboard nem indult), visszaalltunk a korabbi mukodo verziora (${OLD_SHORT}). Reszletek: store/update.log" ;;
+    *)           msg="🔴 Auto-update SIKERTELEN: a dashboard a frissites ES a rollback utan sem valaszol a ${PORT} porton. Kezi beavatkozas kell. Reszletek: store/update.log" ;;
+  esac
+  bash "$INSTALL_DIR/scripts/notify.sh" "$msg" >/dev/null 2>&1 || true
+}
+_finish() { _write "$1" "$2" "$3" "$4"; _notify "$1"; exit "$3"; }
+_health() { local i=0; while [ "$i" -lt 20 ]; do
+  curl -fsS -m 3 -o /dev/null "http://127.0.0.1:${PORT}/" 2>/dev/null && return 0
+  sleep 1; i=$(( i + 1 )); done; return 1; }
+_restart() { "$INSTALL_DIR/scripts/stop.sh"; "$INSTALL_DIR/scripts/start.sh"; }
+
+_restart
+if _health; then _finish success restart 0 ""; fi
+
+# Restart did not bring the dashboard back -> auto-rollback to the pre-update
+# commit (safe: ff-only ancestor, no force-push, no local-change discard) and
+# restart that, so the box ends on a WORKING old version.
+if [ -n "$OLD_FULL" ]; then
+  git reset --hard "$OLD_FULL" >/dev/null 2>&1 || true
+  npm ci --silent 2>/dev/null || true
+  npm rebuild better-sqlite3 --build-from-source --silent 2>/dev/null || true
+  npm run build --silent 2>/dev/null || true
+  [ -d "$INSTALL_DIR/dist" ] && echo "$OLD_FULL" > "$BUILT"
+  _restart
 fi
+if _health; then
+  _finish rolled-back health-check 6 "A frissites utan a dashboard nem indult el; visszaalltunk a korabbi mukodo verziora (${OLD_SHORT}). A frissites nem ment ki."
+else
+  _finish failed health-check 1 "A dashboard a frissites es a visszaallitas utan sem valaszol a ${PORT} porton. Kezi beavatkozas szukseges."
+fi
+FINALIZE_EOF
+chmod +x "$FINALIZE_SCRIPT"
 
 echo -e "  Szolgaltatasok ujrainditasa..."
-if command -v systemd-run >/dev/null 2>&1 && [ -n "${XDG_RUNTIME_DIR:-}" ]; then
-  # --scope: run synchronously in a fresh transient scope (its own cgroup).
-  # --collect: garbage-collect the scope unit once it exits.
-  # $INSTALL_DIR is passed as the positional arg so the inner shell sees it even
-  # if the environment is trimmed.
-  systemd-run --user --scope --collect --quiet \
-    bash -c '"$1/scripts/stop.sh"; "$1/scripts/start.sh"' _ "$INSTALL_DIR" \
-    || { "$INSTALL_DIR/scripts/stop.sh"; "$INSTALL_DIR/scripts/start.sh"; }
+RESULT_PHASE="restart"
+# The finalizer owns the result file from here; do not let our EXIT trap write.
+FINALIZE_LAUNCHED=1
+# MARVEEN_UPDATE_NOTIFY=1 (set by the unattended auto-update task) makes the
+# finalizer send a channel report after the restart+health outcome. A manual
+# dashboard-triggered run leaves it unset -> silent (the UI polls the status).
+FINALIZE_ARGS=("$INSTALL_DIR" "$OLD_VERSION_FULL" "$OLD_VERSION" "${WEB_PORT:-3420}" "$RESULT_FILE" "$BUILT_COMMIT_FILE" "$NEW_VERSION" "${NODE_PIN_DIR:-}" "${MARVEEN_UPDATE_NOTIFY:-0}")
+XDG_RUN="${XDG_RUNTIME_DIR:-/run/user/$(id -u 2>/dev/null)}"
+if command -v systemd-run >/dev/null 2>&1 && [ -d "$XDG_RUN" ]; then
+  # Linux/systemd: the finalizer runs inside a transient scope whose OWN cgroup
+  # is separate from the dashboard cgroup, so it survives stop.sh tearing that
+  # cgroup down (which reaps update.sh). Cgroup separation -- not foreground/bg
+  # -- is what guarantees survival, so we background it and return promptly; if
+  # scope creation fails, fall back to a plain detached setsid run.
+  XDG_RUNTIME_DIR="$XDG_RUN" systemd-run --user --scope --collect --quiet \
+    bash "$FINALIZE_SCRIPT" "${FINALIZE_ARGS[@]}" \
+    || setsid bash "$FINALIZE_SCRIPT" "${FINALIZE_ARGS[@]}" < /dev/null > /dev/null 2>&1 &
+elif command -v setsid >/dev/null 2>&1; then
+  # macOS/launchd or no user-systemd: no cgroup self-kill. Detach in the
+  # background so a parent signal during restart cannot abort the health/
+  # rollback sequence and update.sh returns promptly.
+  setsid bash "$FINALIZE_SCRIPT" "${FINALIZE_ARGS[@]}" < /dev/null > /dev/null 2>&1 &
 else
-  # macOS/launchd, or no user-systemd: no cgroup self-kill, restart directly.
-  "$INSTALL_DIR/scripts/stop.sh"
-  "$INSTALL_DIR/scripts/start.sh"
+  bash "$FINALIZE_SCRIPT" "${FINALIZE_ARGS[@]}" < /dev/null > /dev/null 2>&1 &
 fi
 
 echo ""
 if [[ "${MARVEEN_LANG:-hu}" == "en" ]]; then
-  echo -e "${GREEN}✓ Updated: ${OLD_VERSION} -> ${NEW_VERSION}${NC}"
+  echo -e "${GREEN}✓ Update applied (${OLD_VERSION} -> ${NEW_VERSION}); restarting and health-checking...${NC}"
 else
-  echo -e "${GREEN}✓ Frissítve: ${OLD_VERSION} -> ${NEW_VERSION}${NC}"
+  echo -e "${GREEN}✓ Frissites alkalmazva (${OLD_VERSION} -> ${NEW_VERSION}); ujrainditas es health-check folyamatban...${NC}"
 fi
 echo ""

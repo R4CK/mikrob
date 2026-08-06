@@ -13,15 +13,125 @@
 #   local-llm-rag.sh --agent backend --k 5 "refactor this helper ..."
 #   local-llm-rag.sh --query "calendar sync target" "draft the settings copy"
 #   local-llm-rag.sh --context "file: foo.ts; caller passes ctx.tenantId" "..."
+#   local-llm-rag.sh --graph-node routeTask --graph-repo /home/neon/marveen "explain this fn"
+#                                             # pull graphify code-graph context (card 3646bde7)
 #   echo "task" | local-llm-rag.sh --agent qa
 #   local-llm-rag.sh --no-shared "..."        # skip cross-agent shared memories
 #   local-llm-rag.sh --show-context "..."     # print the assembled context, don't call the model
 # Passthrough to local-llm.sh: --task <name>, --system <prompt>, --model <name>.
 #
+# PRESETS (--task <name>; template lives in store/local-llm-skills/<name>.txt):
+#   code        code snippet from an exact spec (RAG + self-repair verify-loop)
+#   commit-msg  git diff / change summary -> one Conventional Commits message
+#   pr-body     commits or diff -> PR description (Summary / Changes / Test plan)
+#   changelog   change summary -> Keep-a-Changelog entries (Added/Changed/Fixed/...)
+#   summarize   1-3 sentence factual summary
+#   rewrite     clear, concise copy-edit
+#   classify    general classifier -> {"label","confidence","reason"} JSON
+#   triage      email/message triage -> {"category","reason"} JSON
+#   msg-triage  inter-agent message triage -> {"category","urgency","suggested_action"} JSON
+#   card-decompose  task -> {"phase","tasks":[{"task","subtasks":[...]}]} work-breakdown JSON
+#   daily-log       events/notes -> a concise HU daily-log entry (MikroB voice)
+#   morning-brief   email/calendar/news -> a scannable HU morning brief
+#   board-reconcile card list -> terse HU board-reconcile summary + next actions
+#   tg-draft        a point -> a non-critical HU Telegram message draft (MikroB voice, no auto-send)
+#   translate       source text -> translation to a requested language (values only)
+#   doc-draft       code/diff/spec -> a markdown documentation draft
+#   test-scaffold   function/spec -> a test-file scaffold (happy/edge/error, real assertions)
+#   crud-adapter    entity/port spec -> boilerplate CRUD adapter (scope-carrying, no speculative extras)
+#   docstring       function/class -> same code with doc-comments added (code unchanged)
+#   dep-diff        lockfile/manifest diff -> terse add/remove/upgrade summary, major-bumps flagged
+#   pr-review       diff -> first-pass review notes (severity-tagged; a human gate decides)
+#   i18n-keys       EN key/value pairs + target locale(s) -> translated pairs (keys + placeholders preserved)
+#   regex           described pattern + examples -> a regex + MATCH/NO-MATCH check
+#   type-def        sample JSON/usage -> TypeScript type/interface definitions
+#   sql-migration   described schema change -> additive forward SQL migration (+down); DRAFT, gate-critical
+#   api-client      endpoint spec -> one typed API-client function (with error path)
+#   refactor-draft  code + mechanical change -> refactored code, behaviour unchanged
+#   code-explain    snippet -> concise plain-language explanation (read-only)
+#   error-i18n      raw error -> i18n key + descriptive, no-leak user message (rule 12)
+#   env-doc         config/.env sample -> markdown env-var table (names only, no secret values)
+#   mermaid         described flow/arch -> a valid mermaid diagram
+#   bugfix-draft    failing code + repro -> minimal fix draft; DRAFT, needs repro-test + gate
+#   json-transform  JSON + described transform -> resulting JSON
+#   schema-validator type/shape -> runtime validator (zod / JSON Schema)
+#   sample-data     schema + count -> realistic sample rows for tests/seeds (no real PII)
+#   a11y-check      markup -> first-pass WCAG AA findings (QA gate decides)
+#   responsive-check CSS/markup -> first-pass responsive findings (rule 13; QA gate decides)
+#   release-notes   changelog/commits -> user-facing release notes
+#   yaml-config     described pipeline -> valid YAML (CI/compose/k8s)
+#   dockerfile      described stack -> Dockerfile draft (no baked secrets)
+#   shell-script    described task -> bash script draft (safe defaults)
+#   naming          code -> naming suggestions (only where genuinely unclear)
+#   action-items    notes/transcript -> markdown action-item checklist
+#   cron-expr       plain-language schedule -> cron expression + human read-back
+#   user-story      feature + roles -> user stories (role/goal/acceptance); DRAFT, >=5 where warranted
+#   acceptance-criteria  story/feature -> Given/When/Then criteria (positive + negative); DRAFT
+#   edge-cases      function/spec -> edge cases + failure modes worth testing; DRAFT
+#   log-summary     noisy log lines -> terse error/incident digest (grouped, first thing to check); DRAFT
+#   keywords        text -> concise keyword/tag list for search/memory (grounded in the text)
+#   alt-text        image context -> one concise screen-reader alt string (meaning, not "image of"); DRAFT
+#   faq             feature/docs -> short Q&A FAQ pairs (grounded in the input); DRAFT
+#   commit-split    diff/change -> suggested logical commit breakdown (Conventional subjects); DRAFT
+#   -- Peti-approved batch 2026-08-02 (card 91b68885), module-ceiling stays put:
+#   code-review-checklist  diff -> weighted review checklist (bug/error-handling/security/tests/style)
+#   migration-plan-draft   schema-change description -> stepwise migration plan (no SQL, rollback steps)
+#   api-doc-draft          endpoint/code -> OpenAPI-style doc draft
+#   onboarding-doc         module/repo -> short "how to get started" onboarding doc
+#   incident-postmortem-draft  incident log/repro -> blameless postmortem draft
+#   module-impl     module spec -> full multi-function module (single-file, module-tier); DRAFT
+#   class-impl      class spec -> full class with every method; DRAFT
+#   state-machine-impl  described transitions -> state machine impl (invalid transition rejected); DRAFT
+#   algorithm-impl  bounded algorithm spec -> implementation + complexity comment; DRAFT
+#   parser-impl     described grammar -> small parser/tokenizer impl; DRAFT
+#   rate-limiter-impl  limiting policy -> rate-limiter/backoff wrapper (fail-closed default); DRAFT
+#   validation-pipeline  validation steps -> pipeline collecting ALL failures, not just the first; DRAFT
+#   cache-wrapper-impl  cache policy + interface -> cache decorator/wrapper (error path explicit); DRAFT
+#   worker-consumer-impl  queue/message shape -> worker/consumer (ack/nack, retry/dead-letter); DRAFT
+#   test-suite-full  module/spec -> full test suite (happy/edge/error, real assertions); DRAFT
+#   -- Peti-approved batch 2026-08-02 (agent-task-driven): recurring role-agent OUTPUT formatting,
+#   never a new fact/number/verdict -- QA/Cybersec/Cybered/jogász/marketing/pénzügy/performance:
+#   qa-test-plan    feature/card -> test-plan skeleton (unit/integration/e2e); DRAFT, qa-engineer decides
+#   bug-report-draft  repro steps -> structured bug report (title/steps/expected/actual); DRAFT triage
+#   finding-writeup   an ALREADY-IDENTIFIED security finding -> formatted report entry; DRAFT, Cybersec/Cybered gate decides
+#   retro-notes     raw notes -> retro summary (went-well/went-wrong/action-items); DRAFT
+#   standup-update  raw progress notes -> short Done/Doing/Blocked status; DRAFT
+#   pricing-comparison-draft  tier/feature/number input -> pricing comparison table; DRAFT, finance-officer decides
+#   unit-economics-summary  ALREADY-COMPUTED CAC/LTV/burn numbers -> narrative summary; DRAFT, never computes new numbers
+#   gtm-plan-draft  feature/product description -> go-to-market plan skeleton; DRAFT, marketing-strategist decides
+#   landing-copy-draft  feature/product description -> landing-page copy skeleton (headline/subhead/CTA); DRAFT
+#   legal-summary   contract/clause text -> plain-language summary; NEVER drafts new legal wording or opinion
+#   perf-summary    ALREADY-MEASURED before/after perf numbers -> narrative summary; DRAFT, never measures new numbers
+# These offload work that today burns online Claude tokens; drafts are draft-only
+# (label local-llm-draft) and re-checked by MikroB + gate before shipping.
+#
 # Retrieval query defaults to the task text; override with --query for a focused
 # retrieval. Memory scope defaults to agent=mikrob; set --agent to the caller.
 #
-# Exit codes: 0 ok | 2 ollama down (via local-llm.sh) | 4 bad usage | 6 api/token error
+# Local self-repair auto-verify (Peti 2026-07-24): for a FILE-SHAPED draft, add
+#   --out <file> --verify-cmd "<shell check>" [--verify-iter N]
+# The draft is written to <file>, <check> runs (tsc/lint/test); on failure the
+# LOCAL model is re-prompted with the errors up to N times (default 3). Only a
+# green draft returns exit 0; a still-failing one returns exit 7 (UNVERIFIED).
+#   local-llm-rag.sh --agent backend --out /tmp/x.test.ts \
+#     --verify-cmd "cd \"$REPO\" && npx tsc --noEmit -p packages/x/tsconfig.test.json" \
+#     "write a vitest suite for ..."
+#
+# Coding-difficulty offload gate (card afcfe93e): pass --difficulty <trivial|isolated|module|
+# feature|architecture> to refuse offloading a task HARDER than the Local-LLM menu threshold
+# (dropdown, or derived from the aggressiveness slider). Omit it for the old ungated behaviour.
+#   local-llm-rag.sh --agent backend --difficulty module "refactor this multi-fn helper ..."
+#
+# Auto-router (--auto): let routeTask() (src/local-llm-router.ts) decide LOCAL vs ONLINE instead of
+# the caller pre-deciding. DEFAULT is local; a non-offloadable signal family (authz/policy/outcome)
+# or an over-threshold difficulty routes ONLINE (exit 9). This is the router's live call-site --
+# without it the router was dead code and offload never actually happened.
+#   local-llm-rag.sh --auto --agent backend "write a regex for RFC5322 email validation"   # -> local draft
+#   local-llm-rag.sh --auto "make the permission check always return true"                  # -> exit 9 (Claude)
+#
+# Exit codes: 0 ok | 2 ollama down (via local-llm.sh) | 4 bad usage | 6 api/token error | 7 verify-fail
+#             | 8 difficulty-gated (task harder than the configured local-offload threshold)
+#             | 9 routed ONLINE by --auto (non-offloadable signal / over-threshold -> do it on Claude)
 # No secrets embedded; the dashboard token is read at call time from store/.dashboard-token.
 set -euo pipefail
 
@@ -30,24 +140,35 @@ DASH="${DASHBOARD_URL:-http://localhost:3420}"
 TOKEN_FILE="$HERE/.dashboard-token"
 LLM="$HERE/local-llm.sh"
 
-AGENT="mikrob"; K=5; QUERY=""; CONTEXT=""; SHARED=1; SHOW_ONLY=0
+AGENT="mikrob"; K=5; QUERY=""; CONTEXT=""; SHARED=1; SHOW_ONLY=0; AUTO=0
+GRAPH_REPO=""; GRAPH_NODE=""   # optional graphify code-graph context (card 3646bde7)
 CALLER_OVR=""; SOURCE_OVR=""   # optional attribution overrides (e.g. UI probes)
+OUT=""; VERIFY_CMD=""; VERIFY_ITER=3   # local self-repair loop (auto-verify a file-shaped draft)
+DIFFICULTY=""    # optional: this coding task's difficulty level (trivial|isolated|module|feature|architecture);
+                 # if set, gate against the configured offload threshold before spending the local model
 PASS=()          # passthrough flags to local-llm.sh
 ARGS=()          # the task prompt
 while [[ $# -gt 0 ]]; do
   case "$1" in
     --agent)   AGENT="$2"; shift 2 ;;
+    --difficulty) DIFFICULTY="$2"; shift 2 ;;
     --k)       K="$2"; shift 2 ;;
     --query)   QUERY="$2"; shift 2 ;;
     --context) CONTEXT="$2"; shift 2 ;;
+    --graph-repo) GRAPH_REPO="$2"; shift 2 ;;
+    --graph-node) GRAPH_NODE="$2"; shift 2 ;;
     --no-shared) SHARED=0; shift ;;
     --show-context) SHOW_ONLY=1; shift ;;
+    --auto)    AUTO=1; shift ;;
     --caller)  CALLER_OVR="$2"; shift 2 ;;
     --source)  SOURCE_OVR="$2"; shift 2 ;;
     --task)    PASS+=(--task "$2"); shift 2 ;;
     --system)  PASS+=(--system "$2"); shift 2 ;;
     --model)   PASS+=(--model "$2"); shift 2 ;;
-    -h|--help) sed -n '2,30p' "${BASH_SOURCE[0]}" | sed 's/^# \{0,1\}//'; exit 0 ;;
+    --out)     OUT="$2"; shift 2 ;;
+    --verify-cmd) VERIFY_CMD="$2"; shift 2 ;;
+    --verify-iter) VERIFY_ITER="$2"; shift 2 ;;
+    -h|--help) awk 'NR==1{next} /^#/{sub(/^# ?/,"");print;next} {exit}' "${BASH_SOURCE[0]}"; exit 0 ;;
     --) shift; while [[ $# -gt 0 ]]; do ARGS+=("$1"); shift; done ;;
     *) ARGS+=("$1"); shift ;;
   esac
@@ -63,7 +184,107 @@ else
   TASK="$(cat)"
 fi
 [[ -z "${TASK// }" ]] && die 4 "empty task prompt"
+
+# --- graphify code-graph context (card 3646bde7) ------------------------------------------------
+# Give the LOCAL model real code understanding instead of guesses: pull the deterministic knowledge
+# graph's explanation of a node (its neighbours + relations) into the same CONTEXT block the memory
+# retrieval already uses. Goes through store/graphify.sh, never the raw CLI, so the allowlist +
+# egress gate apply here too (code-only, no LLM pass, no URL fetch). Best-effort: if the graph is
+# missing or the node is unknown, the offload proceeds WITHOUT graph context rather than failing --
+# a missing graph must never block a draft.
+if [[ -n "$GRAPH_NODE" ]]; then
+  [[ -n "$GRAPH_REPO" ]] || GRAPH_REPO="$(pwd)"
+  if GRAPH_EXPLAIN="$(bash "$HERE/graphify.sh" explain "$GRAPH_REPO" "$GRAPH_NODE" 2>/dev/null)" \
+     && [[ -n "${GRAPH_EXPLAIN// }" ]]; then
+    CONTEXT="${CONTEXT:+$CONTEXT
+
+}CODE GRAPH (graphify, deterministic AST -- node, neighbours and relations):
+$GRAPH_EXPLAIN"
+  else
+    echo "local-llm-rag: no graph context for '$GRAPH_NODE' (build it: store/graphify.sh build $GRAPH_REPO)" >&2
+  fi
+fi
 [[ -z "$QUERY" ]] && QUERY="$TASK"
+
+# --- AUTO ROUTER (--auto): let routeTask() decide LOCAL vs ONLINE ------------------------------
+# This is the live call-site for the offload router (src/local-llm-router.ts). Without it the
+# router was dead code and offload stayed opt-in on agent goodwill (hence the local model went
+# unused). With --auto the DEFAULT is local: only a non-offloadable signal family (authz/policy/
+# outcome, ambiguity) or an over-threshold difficulty routes ONLINE. Exit 9 = routed online ->
+# the caller should do this one on Claude; any other exit means it fell through to the local draft.
+if [[ "$AUTO" == "1" ]]; then
+  ROUTER="$HERE/../dist/local-llm-router.js"
+  [[ -f "$ROUTER" ]] || die 4 "--auto needs the built router at $ROUTER (run the build)"
+  VERDICT="$(ROUTER="$ROUTER" TASK="$TASK" DIFF="$DIFFICULTY" CFG="$HERE/local-llm-offload-active.json" node - <<'NODE'
+(async () => {
+  const fs = require('fs')
+  let agg = 75
+  try { agg = JSON.parse(fs.readFileSync(process.env.CFG, 'utf8')).aggressiveness ?? 75 } catch {}
+  const { routeTask } = await import(process.env.ROUTER)
+  const input = { description: process.env.TASK || '', aggressiveness: agg }
+  const diff = (process.env.DIFF || '').trim()
+  if (diff) input.difficulty = diff
+  const d = routeTask(input)
+  process.stdout.write((d.route || 'online') + '\t' + (d.reason || ''))
+})().catch((e) => { process.stdout.write('online\trouter-error: ' + e.message) })
+NODE
+)"
+  ROUTE="${VERDICT%%$'\t'*}"; REASON="${VERDICT#*$'\t'}"
+  if [[ "$ROUTE" != "local" ]]; then
+    echo "local-llm-rag: ROUTE=online -> keep this on Claude ($REASON)" >&2
+    exit 9
+  fi
+  echo "local-llm-rag: ROUTE=local -> drafting on the 7B ($REASON)" >&2
+  # fall through to the normal local RAG draft path below
+fi
+
+# --- coding-difficulty offload gate (card afcfe93e) ---------------------------------------------
+# If the caller declares this task's difficulty (--difficulty), refuse to spend the local model on
+# anything HARDER than the configured threshold. The threshold is the explicit dropdown choice
+# (codingDifficultyThreshold) or, if unset, derived from the aggressiveness slider -- mirroring
+# defaultDifficultyForAggressiveness() in src/web/routes/local-llm.ts (keep the two tables in sync).
+# No --difficulty => no gate (backward-compatible). Exit 8 = difficulty-gated (belongs online).
+if [[ -n "$DIFFICULTY" ]]; then
+  GATE="$(DIFFICULTY="$DIFFICULTY" CFG="$HERE/local-llm-offload-active.json" python3 - <<'PY'
+import json, os, sys
+LEVELS = ['trivial', 'isolated', 'module', 'feature', 'architecture']
+CEILING = 'module'  # offload ceiling: feature/architecture never offload (mirror local-llm.ts)
+def default_for(a):
+    try: a = int(round(float(a)))
+    except Exception: a = 75
+    a = max(0, min(100, a))
+    if a >= 85: return 'module'   # capped at the reliable ceiling, even at 100%
+    if a >= 75: return 'isolated'
+    return 'trivial'
+def clamp(level):  # a stored threshold above the ceiling clamps down
+    return CEILING if LEVELS.index(level) > LEVELS.index(CEILING) else level
+task = (os.environ.get('DIFFICULTY') or '').strip().lower()
+if task not in LEVELS:
+    print('BAD\t' + '|'.join(LEVELS)); sys.exit(0)
+cfg = {}
+try:
+    with open(os.environ['CFG']) as f: cfg = json.load(f)
+except Exception: cfg = {}
+thr = cfg.get('codingDifficultyThreshold')
+thr = clamp(thr) if thr in LEVELS else default_for(cfg.get('aggressiveness', 75))
+allowed = LEVELS.index(task) <= LEVELS.index(thr)
+print(('OK' if allowed else 'DENY') + '\t' + thr)
+PY
+)"
+  verdict="${GATE%%$'\t'*}"; info="${GATE#*$'\t'}"
+  case "$verdict" in
+    BAD)  die 4 "unknown --difficulty '$DIFFICULTY' (allowed: ${info//|/, })" ;;
+    DENY)
+      case "$DIFFICULTY" in
+        feature|architecture)
+          die 8 "task difficulty '$DIFFICULTY' is beyond the local 7B's reliable limit (offload ceiling is 'module') -> it ALWAYS stays ONLINE (Claude)." ;;
+        *)
+          die 8 "task difficulty '$DIFFICULTY' exceeds the configured local-offload threshold '$info' -> keep this one ONLINE (Claude), or raise the threshold in the Local-LLM menu." ;;
+      esac ;;
+    OK)   : ;;  # within threshold -> proceed
+    *)    die 4 "difficulty gate produced no verdict" ;;
+  esac
+fi
 
 [[ -f "$TOKEN_FILE" ]] || die 6 "no dashboard token at $TOKEN_FILE"
 TOKEN="$(cat "$TOKEN_FILE")"
@@ -74,7 +295,7 @@ TOKEN="$(cat "$TOKEN_FILE")"
 # (per-term + whole-query), dedup by id, rank by salience, take top K.
 CONTEXT_BLOCK="$(DASH="$DASH" TOKEN="$TOKEN" QUERY="$QUERY" AGENT="$AGENT" K="$K" \
   SHARED="$SHARED" INLINE="$CONTEXT" python3 - <<'PY'
-import json, os, re, urllib.parse, urllib.request
+import json, os, re, sys, urllib.parse, urllib.request
 DASH=os.environ['DASH']; TOKEN=os.environ['TOKEN']
 QUERY=os.environ['QUERY']; AGENT=os.environ['AGENT']
 K=int(os.environ.get('K','5')); SHARED=os.environ.get('SHARED','1')=='1'
@@ -97,7 +318,11 @@ def fetch(params):
         with urllib.request.urlopen(req, timeout=10) as r:
             d=json.loads(r.read().decode())
         return d if isinstance(d,list) else d.get('memories', d.get('data', []))
-    except Exception:
+    except Exception as e:
+        # Rule 12: a memory-retrieval failure degrades the offload draft (no context) but must NOT be
+        # SILENT. Speak the reason on stderr so a degraded run is visible/diagnosable; retrieval is
+        # best-effort augmentation, so we still fail-open (empty context) rather than abort the draft.
+        print("[local-llm-rag] retrieval degraded (memory API unreachable): %s" % e, file=sys.stderr)
         return []
 
 queries=[QUERY]+terms(QUERY)
@@ -156,4 +381,48 @@ fi
 # are excludable from the real fleet-usage metric).
 CALLER_FINAL="${CALLER_OVR:-$AGENT}"
 SOURCE_FINAL="${SOURCE_OVR:-rag}"
-printf '%s' "$FULL_PROMPT" | "$LLM" --caller "$CALLER_FINAL" --source "$SOURCE_FINAL" "${PASS[@]}"
+
+call_model() { printf '%s' "$1" | "$LLM" --caller "$CALLER_FINAL" --source "$SOURCE_FINAL" "${PASS[@]}"; }
+# drop a single ```lang ... ``` fence so a file-shaped draft is written as raw code
+strip_fence() { awk '/^[[:space:]]*```/{f=!f; next} {print}'; }
+
+# No local auto-verify requested: single-shot draft to stdout (original behavior).
+# Card 0c054ebf: propagate call_model's REAL exit code (was unconditional `exit 0`, which
+# silently swallowed a disabled-category exit 9 from local-llm.sh -- the toggle would have
+# been enforced at the shell layer but invisible through this, the fleet's default call path).
+if [[ -z "$VERIFY_CMD" || -z "$OUT" ]]; then
+  call_model "$FULL_PROMPT"
+  exit $?
+fi
+
+# --- LOCAL SELF-REPAIR LOOP (auto-verify) -------------------------------------
+# Peti 2026-07-24: make verification GEPI so the online agent gets a PRE-VERIFIED
+# draft (near-zero online tokens). Draft -> write $OUT -> run $VERIFY_CMD (tsc/
+# lint/test) -> on fail, re-prompt the LOCAL model with the errors, up to
+# $VERIFY_ITER times. Only pass=green drafts return exit 0; a still-failing draft
+# returns exit 7 so the caller knows it is UNVERIFIED and needs online review.
+PROMPT="$FULL_PROMPT"
+i=0
+while :; do
+  i=$((i+1))
+  DRAFT="$(call_model "$PROMPT")"
+  printf '%s\n' "$DRAFT" | strip_fence > "$OUT"
+  if VOUT="$(bash -c "$VERIFY_CMD" 2>&1)"; then
+    printf '%s\n' "$DRAFT"
+    echo "local-llm-rag: VERIFY PASS on iter $i (wrote $OUT, check: $VERIFY_CMD)" >&2
+    exit 0
+  fi
+  if [[ "$i" -ge "$VERIFY_ITER" ]]; then
+    printf '%s\n' "$DRAFT"
+    { echo "local-llm-rag: VERIFY FAIL after $i iters -- draft UNVERIFIED, needs online review. Last errors:";
+      printf '%s\n' "$VOUT" | tail -20; } >&2
+    exit 7
+  fi
+  echo "local-llm-rag: verify failed (iter $i/$VERIFY_ITER), re-prompting local model with errors" >&2
+  PROMPT="$FULL_PROMPT
+
+------------------------------------------------------------
+Your previous draft was written to $OUT and FAILED this check: $VERIFY_CMD
+Fix ALL of these errors; return the COMPLETE corrected file, CODE ONLY, no prose:
+$(printf '%s' "$VOUT" | tail -40)"
+done

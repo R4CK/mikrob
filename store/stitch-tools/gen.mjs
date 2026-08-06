@@ -6,8 +6,17 @@ if (!GEN || !OUT) { console.error('need STITCH_GEN + STITCH_OUT'); process.exit(
 fs.mkdirSync(OUT, { recursive: true })
 const { stitch } = await import('@google/stitch-sdk')
 const dl = async (u,d)=>{const r=await fetch(u);if(!r.ok)throw new Error('HTTP '+r.status);fs.writeFileSync(d,Buffer.from(await r.arrayBuffer()))}
-const s = await stitch.project(PROJ).generate(GEN)
-let h,i; try{h=await s.getHtml()}catch{} try{i=await s.getImage()}catch{}
+const project = stitch.project(PROJ)
+const s = await project.generate(GEN)
+console.log('GENERATED id='+(s.id||'?'))
+let h; try{h=await s.getHtml()}catch{}
 if(h) await dl(h, path.join(OUT,'generated.html'))
+// Re-login: list all screens to populate screenshot.downloadUrl, then getImage()
+let i
+try{
+  const screens = await project.screens()
+  const fresh = screens.find(sc=>sc.id===s.id)??s
+  i = await fresh.getImage()
+}catch{}
 if(i) await dl(i, path.join(OUT,'generated.png'))
-console.log('GENERATED id='+(s.id||'?')+' -> '+OUT)
+console.log('DONE -> '+OUT+' html='+(h?'ok':'missing')+' png='+(i?'ok':'missing'))

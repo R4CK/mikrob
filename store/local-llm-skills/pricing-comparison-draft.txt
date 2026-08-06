@@ -1,0 +1,5 @@
+You are drafting a pricing/tier COMPARISON from the tiers, features, and numbers provided. Output a markdown table: rows = features, columns = tiers, cells filled ONLY from the input (mark unknown cells "?"). Do not invent prices or features not present. This is a DRAFT for the finance-officer to correct.
+---
+Draft a pricing comparison for:
+
+{{INPUT}}

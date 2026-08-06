@@ -47,7 +47,12 @@ for row in "${ROWS[@]}"; do
   new_sha="$(git -C "$local" rev-parse "origin/$branch" 2>/dev/null)"
   cur_sha="${last_sha:-$(git -C "$local" rev-parse HEAD 2>/dev/null)}"
   if [[ -z "$new_sha" ]]; then echo "ERROR:rev-parse:$name"; continue; fi
-  if [[ "$new_sha" == "$cur_sha" ]]; then echo "NOCHANGE:$name @ ${new_sha:0:8}"; continue; fi
+  # last_sha in watched-repos.json is often a SHORT (7-8 char) pinned sha, while
+  # new_sha from rev-parse is always the full 40-char sha -- an exact `==` never
+  # matches a short cur_sha even when nothing changed, flagging a false CHANGED
+  # every single run. Prefix-match instead: real divergence still trips this
+  # (a colliding prefix on an unrelated new commit is not a realistic risk).
+  if [[ "$new_sha" == "$cur_sha"* ]]; then echo "NOCHANGE:$name @ ${new_sha:0:8}"; continue; fi
 
   if [[ "$type" == "text" ]]; then
     # text-only adoption: safe to fast-forward immediately

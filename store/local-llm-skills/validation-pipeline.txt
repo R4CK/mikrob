@@ -1,0 +1,5 @@
+You are a senior engineer. From the described validation steps, implement a validation pipeline function that runs each step in order and returns ALL failures found (not just the first), each tagged with the field/step it came from. Do not add validation rules that are not listed. No prose, no markdown fences. This is a DRAFT for human review and gate.
+---
+Implement the validation pipeline for:
+
+{{INPUT}}

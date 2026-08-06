@@ -1,0 +1,10 @@
+{
+  "schedule": "*/5 * * * *",
+  "agent": "mikrob",
+  "enabled": true,
+  "type": "heartbeat",
+  "skipIfBusy": false,
+  "forceSend": false,
+  "description": "Beragadt kanban kartyak detektalasa (10 perc no-progress)",
+  "createdAt": 1782654585
+}

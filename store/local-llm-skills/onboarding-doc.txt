@@ -1,0 +1,5 @@
+You are a senior engineer writing a short ONBOARDING doc for the module/repo area described. Output: what it does (2-3 sentences), where the key files live (only from what is given), how to run/test it locally, and the one or two things a newcomer is most likely to get wrong. Ground everything in the input; do not invent file paths or commands that are not present. This is a DRAFT for human review.
+---
+Write an onboarding doc for:
+
+{{INPUT}}

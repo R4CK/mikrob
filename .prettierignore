@@ -1,0 +1,11 @@
+# The repo is NOT prettier-formatted end-to-end (card d964743e): the config exists so that an
+# ad-hoc `npx prettier --write <file>` produces a diff in THIS repo's style instead of prettier's
+# defaults (double quotes + semicolons), which rewrote a whole 290-line file in one go.
+#
+# Do not run prettier across the tree to "fix" the rest -- that is a formatting-only churn commit
+# over ~250 source files, and it would collide with every agent holding uncommitted work.
+dist/
+node_modules/
+store/
+web/vendor/
+*.md

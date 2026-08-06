@@ -1,0 +1,10 @@
+{
+  "schedule": "*/2 * * * *",
+  "agent": "mikrob",
+  "enabled": true,
+  "type": "heartbeat",
+  "skipIfBusy": false,
+  "forceSend": false,
+  "description": "2 percenkent meglolki az idle agenteket + zar/re-dispatch",
+  "createdAt": 1783882212
+}

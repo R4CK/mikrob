@@ -50,8 +50,18 @@ const SELF_PACE_BASH_PATTERNS = [
   /\btmux\b[\s\S]*\b(send-keys|paste-buffer|run-shell|set-buffer)\b/i,
   // self-backgrounding that relaunches claude (nohup/setsid/disown + claude)
   /\b(nohup|setsid|disown)\b[\s\S]*\bclaude\b/i,
-  // the loop slash-skill driven from a shell
-  /\bclaude\b[\s\S]*\/loop\b/i,
+  // the loop slash-skill driven from a shell. `/loop` must be in SLASH-COMMAND
+  // position -- a standalone token (segment-start / whitespace / quote before it,
+  // whitespace / quote / end after it) -- never a PATH segment. The old
+  // `\/loop\b` fired on any `loop`-prefixed path component whenever `.claude` was
+  // in the same command (\bclaude\b matches the `.claude` in every memory/skill
+  // path), so reading `.../memory/loop-stop-...md` or `~/.claude/skills/loop/...`
+  // was denied (measured 2026-07-26, found by pg: Heli denied a harmless memory
+  // read). Same bug class as the at/batch and launchctl fixes below: a keyword in
+  // a PATH collided with a call pattern; the fix is to match the invocation SHAPE.
+  // Every real form stays denied: `claude /loop 5m`, `claude -p "/loop x"`,
+  // `claude '/loop'`, bare `claude /loop`.
+  /\bclaude\b[\s\S]*(?:^|[\s'"])\/loop(?=[\s'"]|$)/i,
 ]
 
 // OS-level schedulers + delayed exec (cron / launchd / systemd / at / batch): the
@@ -63,10 +73,51 @@ const SELF_PACE_BASH_PATTERNS = [
 // "netstat" / "crontab-helper.sh"; (?!\s*=) so a bare NAME=value assignment
 // (`at=$(...)`) is not mistaken for the `at` binary.
 const SCHED_PREFIX = String.raw`(?:(?:[A-Za-z_]\w*=\S*|sudo|env|command|exec|nice|builtin|time)\s+)*(?:\S*/)?`
-const SCHEDULER_RX = new RegExp(String.raw`(^|[;&|(]\s*)${SCHED_PREFIX}(crontab|launchctl|systemd-run|batch|at)\b(?!-)(?!\s*=)`, 'i')
+// The command-boundary anchor includes `(` so a $(...) command substitution
+// (`X=$(crontab -)`) is caught, AND a backtick so a legacy `...` substitution
+// (`X=`crontab -r``) is caught too -- both run the enclosed command in a shell
+// context, so a scheduler binary immediately inside either is a real self-pace.
+const SCHED_BOUNDARY = '[;&|(`]'
+// `at` and `batch` are also ordinary English words, and splitSegments splits on
+// NEWLINES -- so a PROSE line inside a multi-line commit body ("at least 80% of
+// entries", "batch size is 50") lands at a segment start and looked exactly like
+// the at(1)/batch(1) binaries. Measured 2026-07-25 (found by JogAsz): a heredoc
+// commit message was denied for the words "at least"; the identical command
+// passed after rewording that one line. The `-m "$(...)"` form is deliberately
+// NOT blanked by stripGitCommitMessages (a real substitution could hide there),
+// so the body does reach the splitter -- the fix belongs here, not there.
+//
+// For these two words ONLY, also require something that looks like an actual
+// invocation: end of segment (a bare `batch` reads stdin -- still a real vector),
+// a flag, an input redirect, or an at(1) TIMESPEC (which at(1) requires anyway,
+// so a real submit can never omit it). crontab/launchctl/systemd-run keep the
+// plain match: they are not English words, so prose cannot collide with them.
+const AT_INVOCATION = String.raw`(?=\s*$|\s+-|\s*<|\s+(?:now|noon|midnight|teatime|today|tomorrow|next\b|\+\s*\d|\d{1,2}:\d{2}|\d{3,4}\b|\d{1,2}\s*(?:am|pm)\b|\d{1,2}[./]\d{1,2}|(?:mon|tue|wed|thu|fri|sat|sun)|(?:jan|feb|mar|apr|may|jun|jul|aug|sep|oct|nov|dec)))`
+// `launchctl` needed the SAME narrowing, for a different reason than at/batch, and
+// the comment above ("not English words, so prose cannot collide") was measured
+// wrong on 2026-07-26 (found by Hacker). It is not an English word -- but the
+// fleet's own heartbeats ORDER every agent to report `launchctl list | grep
+// com.jarvis.channels` output, so a launchd JOB LABEL appears in prose constantly.
+// splitSegments splits on `;`, so a report line "...; launchctl com.jarvis.channels
+// PID 555" put `launchctl <label>` at a segment start and it read as a real
+// invocation. His status message was denied; the finding is systemic, not his.
+//
+// The narrowing mirrors AT_INVOCATION: instead of enumerating dangerous
+// subcommands (a denylist -- miss one and it is a hole), require the SHAPE of a
+// real invocation. Every launchctl self-pace vector (load/bootstrap/submit/
+// kickstart/start/enable/...) takes a SUBCOMMAND word first, so demand that the
+// next token could be one: a bare lowercase word, no dot and no slash. A job
+// label (`com.jarvis.channels`) and a path both fail that and pass through as
+// prose. End-of-segment and a flag stay DENIED -- a bare `launchctl` is
+// interactive, still a real vector.
+const LAUNCHCTL_SUBCOMMAND = String.raw`(?=\s*$|\s+-|\s+[a-z][a-z-]*(?:\s|$))`
+const SCHEDULER_RX = new RegExp(
+  String.raw`(^|${SCHED_BOUNDARY}\s*)${SCHED_PREFIX}(?:(?:crontab|systemd-run)\b(?!-)(?!\s*=)|launchctl\b(?!-)(?!\s*=)${LAUNCHCTL_SUBCOMMAND}|(?:batch|at)\b(?!-)(?!\s*=)${AT_INVOCATION})`,
+  'i',
+)
 // ...but allow a pure READ-listing of one's own schedule (parity with the store /
 // schedule-API read exemptions): crontab -l, launchctl list/print, atq.
-const SCHEDULER_READ_RX = new RegExp(String.raw`(^|[;&|(]\s*)${SCHED_PREFIX}(crontab\s+-l\b|launchctl\s+(?:list|print|dumpstate|blame|examine)\b|atq\b)`, 'i')
+const SCHEDULER_READ_RX = new RegExp(String.raw`(^|${SCHED_BOUNDARY}\s*)${SCHED_PREFIX}(crontab\s+-l\b|launchctl\s+(?:list|print|dumpstate|blame|examine)\b|atq\b)`, 'i')
 
 // The Claude self-schedule store. Blocked for WRITE on any route (a Bash write,
 // or the native Write/Edit/NotebookEdit tool); a read/grep is legit diagnostics.
@@ -91,9 +142,9 @@ const HTTP_WRITE_RX = /(-X\s*(POST|PUT|PATCH|DELETE)|--request\s+(POST|PUT|PATCH
 //     `git commit -m "fix; crontab -r"`) splits and could false-deny. Rare
 //     enough (the quoted ; must be immediately followed by a blocked binary at a
 //     segment start) that a full shell-tokenizer is not warranted here.
-//   - Backtick / $(...) substitution that assigns a scheduler result
-//     (`X=$(crontab -)`) can slip; the exotic-route tail is the documented
-//     denylist limit, covered by the ScheduleWakeup/Cron* tool-deny layer.
+//   - A $(...) or backtick substitution that assigns a scheduler result
+//     (`X=$(crontab -)`, `X=`crontab -``) is caught by SCHEDULER_RX's boundary
+//     anchor, which now includes both `(` and the backtick.
 export function splitSegments(command) {
   return String(command ?? '')
     .replace(/\\\r?\n/g, ' ')
@@ -112,12 +163,10 @@ export function splitSegments(command) {
 // single-quoted '...', ANSI-C $'...', and double-quoted "..." WITHOUT
 // $(...)/backtick. A payload that can run a command substitution (double-quoted
 // with $(...) / backticks) is left intact so a real command-substitution payload
-// is not blanked. A `$(...)` payload is then still denied by SCHEDULER_RX (its `(`
-// sits at a command boundary the anchor recognises); a backtick one leans on the
-// ScheduleWakeup/Cron* runtime tool-deny layer, since SCHEDULER_RX's boundary
-// anchor omits the backtick -- a pre-existing denylist limit (see splitSegments
-// notes), not something this payload-strip introduces. The data FLAG itself is
-// kept, so HTTP-write detection (-d /
+// is not blanked. Such a payload is then still denied by SCHEDULER_RX, whose
+// boundary anchor recognises both `$(` and the backtick as a command boundary,
+// so a scheduler binary inside either substitution form is caught. The data FLAG
+// itself is kept, so HTTP-write detection (-d /
 // --data) is unchanged; the URL and method args live OUTSIDE the payload, so a
 // real WRITE to /api/schedules is still denied.
 //
@@ -139,6 +188,50 @@ export function stripDataPayloads(seg) {
   )
 }
 
+// Blank out git commit/tag/stash -m/--message LITERAL text before self-pace
+// matching. A commit message is prose, NEVER a shell invocation, so a trigger
+// token that only appears INSIDE the message must not false-deny (2026-07-13,
+// DrCode: a long `git commit -m "...batch...; at..."` blocked twice, the short
+// one passed -- the message text was split as shell segments). Same principle
+// and same literal-only quote handling as stripDataPayloads: single-quoted,
+// ANSI-C $'...', and double-quoted WITHOUT $(...)/backtick are blanked; a
+// double-quoted message that CAN command-substitute (`git commit -m "$(crontab
+// -r)"`) is left intact so SCHEDULER_RX still catches the real substitution.
+// Scoped to git commit/tag/stash so a `-m` on an unrelated binary is untouched.
+export function stripGitCommitMessages(command) {
+  const cmd = String(command ?? '')
+  if (!/\bgit\b[\s\S]*\b(commit|tag|stash)\b/i.test(cmd)) return cmd
+  return cmd.replace(
+    /((?:^|\s)(?:-m|--message)(?:\s+|=))('[^']*'|\$'(?:[^'\\]|\\.)*'|"(?:[^"\\]|\\.)*")/gi,
+    (full, flag, arg) => {
+      const dq = arg.startsWith('"')
+      if (dq && (arg.includes('$(') || arg.includes('`'))) return full // may substitute -> keep
+      return flag + (dq ? '""' : "''") // literal message -> blank the content
+    },
+  )
+}
+
+// Normalise two shell-level obfuscations that bash resolves at EXEC time, so an
+// invocation whose SHAPE is a real self-pace cannot dodge the slash-command match
+// with quoting the shell undoes anyway. Measured end-to-end through the gate hook
+// (upstream review, 2026-07-27): `claude \/loop` and `claude$IFS/loop` BOTH run
+// `claude /loop` in bash but slipped the `(?:^|[\s'"])\/loop` match -- the char
+// before `/loop` was `\` and `S` (end of `$IFS`), neither in the [\s'"] class.
+// The fix is NOT to widen that class (that would let more prose through); it is to
+// resolve what the shell resolves before matching: `$IFS`/`${IFS}` word-splits to
+// a space, and a backslash escape `\X` collapses to `X`. Side effect: also closes
+// `claude /lo\op`. Applied ONLY to the self-pace bash patterns below; the
+// scheduler/store/API checks keep the raw segment (upstream measured them clean,
+// and this PR is scoped to these two loop regressions). This cannot introduce a
+// false positive: collapsing escapes / dropping `$IFS` never synthesises the
+// literal `tmux`+send-keys, `nohup`+claude, or `claude`+`/loop` tokens out of
+// prose -- it only removes an evasion.
+export function normalizeShellEvasion(seg) {
+  return String(seg ?? '')
+    .replace(/\$\{IFS\}|\$IFS\b/g, ' ') // $IFS / ${IFS} -> the space it expands to
+    .replace(/\\(.)/g, '$1') // \X -> X (bash unescape of a backslash-escaped char)
+}
+
 // Pure decision: does this tool call set up self-pace / self-injection?
 export function gateDecision(toolName, toolInput) {
   const name = String(toolName ?? '')
@@ -156,11 +249,14 @@ export function gateDecision(toolName, toolInput) {
     // it), so the URL/method args still match but the body text never does. A
     // separator OUTSIDE the payload still splits, so `curl -d '' x ; crontab -r`
     // is still caught.
-    const safeCommand = stripDataPayloads(String(toolInput?.command ?? ''))
+    const safeCommand = stripDataPayloads(stripGitCommitMessages(String(toolInput?.command ?? '')))
     // Per-segment so an unrelated token elsewhere in a compound command cannot
     // turn a legit read (store inspection, schedule-API GET) into a false deny.
     for (const seg of splitSegments(safeCommand)) {
-      if (SELF_PACE_BASH_PATTERNS.some((re) => re.test(seg))) return { deny: true }
+      // Match the self-pace bash patterns against the shell-normalised segment so a
+      // `\/loop` / `$IFS/loop` evasion (which bash resolves to `/loop` at exec) is
+      // still caught; the scheduler/store/API checks below use the RAW seg (scoped).
+      if (SELF_PACE_BASH_PATTERNS.some((re) => re.test(normalizeShellEvasion(seg)))) return { deny: true }
       // scheduler binaries: deny the exec/submit forms, allow pure read-listing
       if (SCHEDULER_RX.test(seg) && !SCHEDULER_READ_RX.test(seg)) return { deny: true }
       // self-schedule store: block WRITE only (a read/grep is legit diagnostics)

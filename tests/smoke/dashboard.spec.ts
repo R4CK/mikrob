@@ -65,4 +65,139 @@ test.describe('Dashboard smoke', () => {
     await page.waitForTimeout(500)
     expect(errors).toHaveLength(0)
   })
+
+  // Card 2ed90db1 / PR #524 review blocker: "no UI is wired, /api/costs isn't
+  // reachable from the dashboard" -- this proves the Costs nav link is real, the
+  // page actually renders live data from /api/costs/summary (not dead scaffolding),
+  // and no JS error fires.
+  //
+  // Navigates via the URL hash rather than clicking the sidebar link: the
+  // link lives inside the collapsible "STATISZTIKÁK" group, which starts
+  // collapsed/invisible on a fresh session (no marveen.sidebarGroups in
+  // localStorage yet) until switchPage() auto-expands the active page's
+  // group -- clicking it first intermittently timed out with "element is
+  // not visible" depending on that default state (found while adding the
+  // repos-page smoke test, card 000ec0d0).
+  test('costs page loads and renders live summary data without errors', async ({ page }) => {
+    const errors: string[] = []
+    page.on('pageerror', (err) => errors.push(err.message))
+    await page.goto(`/?token=${TOKEN}#costs`)
+    await page.waitForTimeout(500)
+    const content = page.locator('#costsContent')
+    await expect(content).toBeVisible()
+    // The summary always includes a "month" stat (YYYY-MM), regardless of whether
+    // any real fixed costs are configured -- proves the fetch to /api/costs/summary
+    // actually happened and rendered, not just an empty/loading shell.
+    await expect(content).toContainText(/\d{4}-\d{2}/)
+    expect(errors).toHaveLength(0)
+  })
+
+  // Card 000ec0d0: proves the "Beépített repók" nav link + page are real and
+  // wired to the live GET /api/connectors/github-repos endpoint (not dead
+  // scaffolding) -- the stat total renders "0" from a real fetch, and the
+  // real empty-state message is shown since no repos are registered yet.
+  // Navigates via the URL hash (like the kanban test above) rather than
+  // clicking the sidebar link directly: the link lives inside the
+  // collapsible "RENDSZER" group, which starts collapsed/invisible on a
+  // fresh session until switchPage() auto-expands the active page's group --
+  // clicking it first would fail Playwright's visibility check.
+  test('repos page loads and renders live repo count without errors', async ({ page }) => {
+    const errors: string[] = []
+    page.on('pageerror', (err) => errors.push(err.message))
+    await page.goto(`/?token=${TOKEN}#repos`)
+    await page.waitForTimeout(500)
+    const statTotal = page.locator('#reposStatTotal')
+    await expect(statTotal).toBeVisible()
+    await expect(statTotal).toHaveText(/^\d+$/)
+    // The nav link itself must also be visible now (its group auto-expanded
+    // for the active page) -- proves the sidebar entry is real, not orphaned.
+    await expect(page.locator('.sb-link[data-page="repos"]')).toBeVisible()
+    expect(errors).toHaveLength(0)
+  })
+
+  // Card f3248478: Claude Limit panel tooltip + editable weekly-threshold sliders.
+  // Overview is the default landing page, so no hash navigation needed. Proves the
+  // sliders (card e7a26045: redesigned to 2 flat, day-independent levels) load real
+  // data and Save is enabled once it does (card 4da9ae0b: the backend 2-field endpoint
+  // now exists, commit 5a15de8) -- and the help modal opens/closes without error.
+  // /api/overview can take several seconds to respond under fleet load, so this uses a
+  // generous expect timeout rather than a fixed sleep.
+  test('quota threshold panel loads live values and help modal toggles', async ({ page }) => {
+    const errors: string[] = []
+    page.on('pageerror', (err) => errors.push(err.message))
+    await page.goto(`/?token=${TOKEN}`)
+
+    const toggle = page.locator('#thresholdToggle')
+    await expect(toggle).toBeVisible()
+    await toggle.click()
+    const body = page.locator('#thresholdBody')
+    await expect(body).toBeVisible()
+    await expect(page.locator('#thrNewDevStop')).toHaveValue(/^\d+$/)
+    await expect(page.locator('#thrNewDevStopVal')).toHaveText(/%$/)
+    await expect(page.locator('#thrTestStop')).toHaveValue(/^\d+$/)
+    await expect(page.locator('#thresholdSaveBtn')).toBeEnabled({ timeout: 20_000 })
+
+    const helpBtn = page.locator('#quotaHelpBtn')
+    await expect(helpBtn).toBeVisible()
+    await helpBtn.click()
+    await expect(page.locator('#quotaHelpOverlay')).toHaveClass(/active/)
+    await page.locator('#quotaHelpClose').click()
+    await expect(page.locator('#quotaHelpOverlay')).not.toHaveClass(/active/)
+
+    expect(errors).toHaveLength(0)
+  })
+
+  // Card e7a26045: dragging "New dev stops" above "Testing/review also stops" must
+  // cascade the other slider up rather than allow an inverted pair, and pinning a
+  // slider at 100% must show the visible+accessible warning.
+  test('threshold sliders cascade to stay monotonic and flag a 100% value', async ({ page }) => {
+    const errors: string[] = []
+    page.on('pageerror', (err) => errors.push(err.message))
+    await page.goto(`/?token=${TOKEN}`)
+    await page.locator('#thresholdToggle').click()
+    await expect(page.locator('#thresholdBody')).toBeVisible()
+
+    // Drag "new dev stops" above the current "testing also stops" -- the latter must
+    // cascade up.
+    await page.locator('#thrNewDevStop').fill('99')
+    await page.locator('#thrNewDevStop').dispatchEvent('input')
+    const newDevStop = Number(await page.locator('#thrNewDevStop').inputValue())
+    const testStop = Number(await page.locator('#thrTestStop').inputValue())
+    expect(newDevStop).toBeLessThanOrEqual(testStop)
+
+    // Push it to 100 -- the warning icon for that row must become visible (not just
+    // present-but-hidden) and it must have a real accessible name, not aria-hidden.
+    await page.locator('#thrNewDevStop').fill('100')
+    await page.locator('#thrNewDevStop').dispatchEvent('input')
+    const warn = page.locator('#thrNewDevStopWarn')
+    await expect(warn).toBeVisible()
+    await expect(warn).toHaveAttribute('role', 'img')
+    await expect(warn).not.toHaveAttribute('aria-hidden', 'true')
+
+    expect(errors).toHaveLength(0)
+  })
+
+  // Card e7a26045: the local-LLM info row replaces the removed 3rd slider. Card
+  // 4da9ae0b: model name and measured tokens-saved are now real too (backend commit
+  // 5a15de8), not honest placeholders.
+  test('local-LLM info row loads real data and its help modal toggles', async ({ page }) => {
+    const errors: string[] = []
+    page.on('pageerror', (err) => errors.push(err.message))
+    await page.goto(`/?token=${TOKEN}`)
+
+    await expect(page.locator('#usageLlmInfo')).toBeVisible()
+    await expect(page.locator('#llmInfoToday')).toHaveText(/\d/, { timeout: 20_000 })
+    await expect(page.locator('#llmInfoWeek')).toHaveText(/\d/, { timeout: 20_000 })
+    await expect(page.locator('#llmInfoModel')).not.toHaveText('—', { timeout: 20_000 })
+    await expect(page.locator('#llmInfoTokensSaved')).toHaveText(/\d/, { timeout: 20_000 })
+
+    const llmHelpBtn = page.locator('#llmInfoHelpBtn')
+    await expect(llmHelpBtn).toBeVisible()
+    await llmHelpBtn.click()
+    await expect(page.locator('#llmInfoHelpOverlay')).toHaveClass(/active/)
+    await page.locator('#llmInfoHelpClose').click()
+    await expect(page.locator('#llmInfoHelpOverlay')).not.toHaveClass(/active/)
+
+    expect(errors).toHaveLength(0)
+  })
 })

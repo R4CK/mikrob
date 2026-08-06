@@ -1,11 +1,12 @@
 import { describe, it, expect } from 'vitest'
 // @ts-expect-error -- plain .mjs hook script, no types
-import { gateDecision as selfPaceDecision, stripDataPayloads } from '../../scripts/self-pace-gate.mjs'
+import { gateDecision as selfPaceDecision, stripDataPayloads, stripGitCommitMessages } from '../../scripts/self-pace-gate.mjs'
 import {
   agentGetsGovernanceGates,
   injectSelfPaceGate,
 } from '../web/agent-scaffold.js'
 import { MAIN_AGENT_ID } from '../config.js'
+import { REPO_UNDER_TMP, TMP_SKIP_REASON } from './helpers/repo-location.js'
 
 // --- self-pace-gate: blocks the agent from scheduling its own future turns ---
 describe('self-pace-gate gateDecision', () => {
@@ -36,6 +37,43 @@ describe('self-pace-gate gateDecision', () => {
   it('does NOT misfire "at" on a substring (netstat / cat)', () => {
     expect(selfPaceDecision('Bash', { command: 'cat file.txt && netstat -an' }).deny).toBe(false)
   })
+  // Regression (2026-07-25, found by JogAsz): splitSegments splits on NEWLINES, so
+  // every prose line of a multi-line commit body became its own "segment". A line
+  // starting with the English words "at" / "batch" then looked like the at(1) /
+  // batch(1) binaries and false-denied a plain `git commit`. The `-m "$(...)"`
+  // form is deliberately NOT blanked by stripGitCommitMessages (a real command
+  // substitution could hide there), so the body does reach the splitter.
+  it('does NOT misfire on PROSE starting with "at"/"batch" in a heredoc commit body', () => {
+    const body = (line: string) => `git commit -m "$(cat <<'EOF'\nfix(lib): parser tweak\n\n${line}\nEOF\n)"`
+    for (const line of [
+      'at least 80% of parsed entries must carry a date',
+      'at most 3 retries before giving up',
+      'at runtime the parser reads the header',
+      'at the same time we clear the cache',
+      'batch size is 50 by default',
+    ]) {
+      expect(selfPaceDecision('Bash', { command: body(line) }).deny).toBe(false)
+    }
+  })
+  it('STILL denies a real at/batch submit (timespec, flag, redirect, bare batch)', () => {
+    for (const cmd of [
+      'at now + 1 minute',
+      'at 14:00',
+      'at tomorrow',
+      'at -f /tmp/x.sh now',
+      'batch',
+      'batch < /tmp/x.sh',
+      'echo hi ; at now + 5 min',
+      '/usr/bin/at now',
+    ]) {
+      expect(selfPaceDecision('Bash', { command: cmd }).deny).toBe(true)
+    }
+  })
+  it('STILL denies a real command substitution hidden in a commit message', () => {
+    expect(selfPaceDecision('Bash', { command: 'git commit -m "$(crontab -r)"' }).deny).toBe(true)
+    // unquoted heredoc delimiter DOES expand -> must stay caught
+    expect(selfPaceDecision('Bash', { command: 'git commit -m "$(cat <<EOF\nfix\n$(at now)\nEOF\n)"' }).deny).toBe(true)
+  })
   it('denies a WRITE to the self-schedule store (redirect)', () => {
     expect(selfPaceDecision('Bash', { command: 'echo "{}" > ~/.claude/scheduled_tasks.json' }).deny).toBe(true)
   })
@@ -56,6 +94,24 @@ describe('self-pace-gate gateDecision', () => {
   })
   it('denies a shell-driven /loop', () => {
     expect(selfPaceDecision('Bash', { command: 'claude /loop "keep polling"' }).deny).toBe(true)
+  })
+  // Two forms the slash-command-position match regressed on (upstream review,
+  // 2026-07-27): both EXECUTE `claude /loop` in bash but the char before `/loop`
+  // was `\` / end-of-`$IFS`, not in the [\s'"] class. Fixed by normalising the
+  // segment (resolve `\X`->`X`, `$IFS`->space) before the pattern runs.
+  it('denies a /loop hidden by a backslash-escaped slash (claude \\/loop)', () => {
+    expect(selfPaceDecision('Bash', { command: 'claude \\/loop "keep polling"' }).deny).toBe(true)
+  })
+  it('denies a /loop hidden by $IFS word-splitting (claude$IFS/loop)', () => {
+    expect(selfPaceDecision('Bash', { command: 'claude$IFS/loop 5m' }).deny).toBe(true)
+  })
+  it('denies the /lo\\op mid-token backslash form (side effect of the same fix)', () => {
+    expect(selfPaceDecision('Bash', { command: 'claude /lo\\op' }).deny).toBe(true)
+  })
+  it('ALLOWS reading a memory path with a loop- prefix (normalisation keeps prose through)', () => {
+    // `.claude` matches \bclaude\b and the name starts `loop-`, but `/loop` is not
+    // in slash-command position (a `-` follows), so it must still pass.
+    expect(selfPaceDecision('Bash', { command: 'cat ~/.claude/memory/loop-stop-vs-truncation.md' }).deny).toBe(false)
   })
   it('ALLOWS a normal Bash command', () => {
     expect(selfPaceDecision('Bash', { command: 'git status && ls -la' }).deny).toBe(false)
@@ -179,6 +235,26 @@ describe('self-pace-gate compound-command false-positives', () => {
     expect(selfPaceDecision('Bash', { command: 'crontab -r' }).deny).toBe(true)
     expect(selfPaceDecision('Bash', { command: 'launchctl submit -l self -- node x.mjs' }).deny).toBe(true)
   })
+  // Measured false positive, 2026-07-26 (found by Hacker): the heartbeats ORDER every
+  // agent to report `launchctl list | grep com.jarvis.channels` output, so a launchd
+  // job LABEL shows up in prose constantly. splitSegments splits on `;`, which put
+  // `launchctl <label>` at a segment start and it read as a real invocation -- a status
+  // report was denied. Same shape as the at/batch "at least" case, different binary.
+  // The narrowing requires the SHAPE of an invocation (a bare lowercase subcommand
+  // word), not a denylist of subcommands.
+  it('does NOT deny a launchd job LABEL appearing in prose (no subcommand follows)', () => {
+    expect(selfPaceDecision('Bash', { command: 'echo hello; launchctl com.jarvis.channels PID 555' }).deny).toBe(false)
+    expect(selfPaceDecision('Bash', { command: 'launchctl com.marveen.dashboard is up' }).deny).toBe(false)
+  })
+  it('STILL denies every real launchctl form after that narrowing', () => {
+    // a subcommand word follows -> real invocation
+    expect(selfPaceDecision('Bash', { command: 'launchctl load ~/Library/LaunchAgents/x.plist' }).deny).toBe(true)
+    expect(selfPaceDecision('Bash', { command: 'launchctl kickstart -k gui/501/com.jarvis.channels' }).deny).toBe(true)
+    expect(selfPaceDecision('Bash', { command: 'launchctl bootout gui/501' }).deny).toBe(true)
+    // a bare `launchctl` is interactive, and a flag form is an invocation: both stay denied
+    expect(selfPaceDecision('Bash', { command: 'launchctl' }).deny).toBe(true)
+    expect(selfPaceDecision('Bash', { command: 'launchctl -h' }).deny).toBe(true)
+  })
   it('denies scheduler WRITE behind a sudo/env/PATH/absolute-path wrapper', () => {
     expect(selfPaceDecision('Bash', { command: 'sudo crontab -r' }).deny).toBe(true)
     expect(selfPaceDecision('Bash', { command: '/usr/bin/at now + 1 minute' }).deny).toBe(true)
@@ -194,7 +270,7 @@ describe('self-pace-gate compound-command false-positives', () => {
 })
 
 // --- scaffold wiring: main-exempt + idempotent ---
-describe('governance gate scaffold wiring', () => {
+describe.skipIf(REPO_UNDER_TMP)('governance gate scaffold wiring', () => {
   it('applies to sub-agents, exempts the main agent', () => {
     expect(agentGetsGovernanceGates('dev2')).toBe(true)
     expect(agentGetsGovernanceGates('dev3')).toBe(true)
@@ -231,5 +307,78 @@ describe('governance gate scaffold wiring', () => {
     // operator-confirmation-gate is intentionally NOT wired: merge/deploy is
     // operator-authorized autonomously; the self-decide vector is covered above.
     expect(pre.some((e) => JSON.stringify(e).includes('operator-confirmation-gate.mjs'))).toBe(false)
+  })
+})
+
+
+// --- stripGitCommitMessages: a `git commit -m` message is PROSE, never a shell
+// invocation, so a trigger token inside it must not false-deny (2026-07-13 DrCode
+// report: long commit blocked, short passed). Same literal-only quote handling as
+// stripDataPayloads; a $()/backtick double-quoted message is kept so a REAL
+// substitution stays gated. ---
+describe('self-pace-gate stripGitCommitMessages (commit-message false-positive guard)', () => {
+  it('blanks a single-quoted commit message', () => {
+    expect(stripGitCommitMessages(`git commit -m 'batch queue; at offset'`)).toBe(`git commit -m ''`)
+  })
+  it('blanks a double-quoted commit message with trigger words', () => {
+    expect(stripGitCommitMessages(`git commit -m "orchestration: tmux send-keys nem"`)).toBe(`git commit -m ""`)
+  })
+  it('keeps a $()-substituting double-quoted message intact (still gated downstream)', () => {
+    const cmd = `git commit -m "$(crontab -r)"`
+    expect(stripGitCommitMessages(cmd)).toBe(cmd)
+  })
+  it('leaves non-git -m flags untouched', () => {
+    const cmd = `mkdir -m 755 dir`
+    expect(stripGitCommitMessages(cmd)).toBe(cmd)
+  })
+  it('gateDecision: legit commit with trigger words in the message is ALLOWED', () => {
+    expect(selfPaceDecision('Bash', { command: `git commit -m "ETA; at offset; batch observe"` }).deny).toBe(false)
+    expect(selfPaceDecision('Bash', { command: `git commit -m "gui token-auth /api/schedules read-only"` }).deny).toBe(false)
+  })
+  it('gateDecision: a REAL self-pace after the commit (outside the message) is still DENIED', () => {
+    expect(selfPaceDecision('Bash', { command: `git commit -m "ok" ; crontab -r` }).deny).toBe(true)
+    expect(selfPaceDecision('Bash', { command: `git commit -m "$(crontab -r)"` }).deny).toBe(true)
+  })
+})
+
+// --- backtick command substitution: the boundary anchor recognises `...` the
+// same as $(...), so a scheduler binary inside a legacy backtick substitution is
+// caught (was a documented pre-existing denylist gap: $() denied, backtick not).
+describe('self-pace-gate backtick command-substitution boundary', () => {
+  it('denies a bare backtick scheduler substitution', () => {
+    expect(selfPaceDecision('Bash', { command: 'git status `crontab -r`' }).deny).toBe(true)
+  })
+  it('denies an assignment via backtick substitution', () => {
+    expect(selfPaceDecision('Bash', { command: 'X=`crontab -r`' }).deny).toBe(true)
+  })
+  it('denies a backtick substitution after a commit message (message blanked, op remains)', () => {
+    expect(selfPaceDecision('Bash', { command: 'git commit -m "a" `crontab -r`' }).deny).toBe(true)
+  })
+  it('denies a backtick launchctl load', () => {
+    expect(selfPaceDecision('Bash', { command: 'echo `launchctl load x`' }).deny).toBe(true)
+  })
+  it('parity with $(): both substitution forms of the same op are denied', () => {
+    expect(selfPaceDecision('Bash', { command: 'git status $(crontab -r)' }).deny).toBe(true)
+    expect(selfPaceDecision('Bash', { command: 'git status `crontab -r`' }).deny).toBe(true)
+  })
+  it('does not over-fire: a backtick substitution of a NON-scheduler binary is allowed', () => {
+    expect(selfPaceDecision('Bash', { command: 'echo `date`' }).deny).toBe(false)
+    expect(selfPaceDecision('Bash', { command: 'FILES=`ls -1`' }).deny).toBe(false)
+  })
+  it('still allows a legit read-listing inside a substitution (crontab -l)', () => {
+    expect(selfPaceDecision('Bash', { command: 'echo `crontab -l`' }).deny).toBe(false)
+  })
+})
+
+// Always runs: a CI log must never be ambiguous about whether the tmp-sensitive suites above were
+// armed or skipped (card 252e36d3 -- 13 phantom "failures" were once tracked as a real red baseline).
+describe('tmp-checkout env gate (always runs)', () => {
+  it('reports whether the hook-registration suites in this file were armed or skipped', () => {
+    if (REPO_UNDER_TMP) {
+      console.log(`[${'governance-gates.test.ts'}] SKIPPED hook-registration suites -- ${TMP_SKIP_REASON}`)
+    } else {
+      console.log(`[${'governance-gates.test.ts'}] ARMED -- checkout is outside /tmp, hook-registration assertions ran.`)
+    }
+    expect(typeof REPO_UNDER_TMP).toBe('boolean')
   })
 })

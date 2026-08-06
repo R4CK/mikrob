@@ -19,11 +19,11 @@ export function buildManifest(raw: string, brandName: string): string {
     .replace(/^(\s*"short_name"\s*:\s*)"[^"]*"/m, (_m, p: string) => `${p}${JSON.stringify(brandName)}`)
 }
 
-// Returns a short version token derived from app.js mtime+size so the
-// script URL changes whenever the file changes, busting browser cache.
-function appJsVersion(webDir: string): string {
+// Returns a short version token derived from a web asset's mtime+size so the
+// asset URL changes whenever the file changes, busting browser cache.
+function assetVersion(webDir: string, fileName: string): string {
   try {
-    const s = statSync(join(webDir, 'app.js'))
+    const s = statSync(join(webDir, fileName))
     return `${s.mtimeMs.toString(36)}-${s.size.toString(36)}`
   } catch {
     return '0'
@@ -35,7 +35,9 @@ function serveIndexHtml(ctx: RouteContext, webDir: string): void {
   try {
     const filePath = join(webDir, 'index.html')
     const s = statSync(filePath)
-    const etag = `"${s.mtimeMs}-${s.size}-${appJsVersion(webDir)}"`
+    // Both versioned asset tokens are part of the index ETag: a cached
+    // index.html must be invalidated whenever the rewritten ?v= URLs change.
+    const etag = `"${s.mtimeMs}-${s.size}-${assetVersion(webDir, 'app.js')}-${assetVersion(webDir, 'style.css')}"`
     const ifNoneMatch = req.headers['if-none-match']
     if (ifNoneMatch === etag) {
       res.writeHead(304, { ETag: etag, 'Cache-Control': 'no-cache' })
@@ -45,7 +47,13 @@ function serveIndexHtml(ctx: RouteContext, webDir: string): void {
     const html = readFileSync(filePath, 'utf-8')
       .replace(
         /(<script\s+src=")\/app\.js(")/,
-        `$1/app.js?v=${appJsVersion(webDir)}$2`,
+        `$1/app.js?v=${assetVersion(webDir, 'app.js')}$2`,
+      )
+      // style.css gets the same ?v= cache-busting as app.js so both can be
+      // served with a long max-age (see tryHandleStatic below).
+      .replace(
+        /(<link\s+rel="stylesheet"\s+href=")\/style\.css(")/,
+        `$1/style.css?v=${assetVersion(webDir, 'style.css')}$2`,
       )
       // Bake the iOS home-screen label into apple-mobile-web-app-title so an
       // installed PWA shows the configured main-agent name (BRAND_NAME), not the
@@ -53,6 +61,25 @@ function serveIndexHtml(ctx: RouteContext, webDir: string): void {
       // at "Add to Home Screen" time regardless of script timing.
       .replace(
         /(<meta name="apple-mobile-web-app-title" content=")[^"]*(">)/,
+        `$1${escapeAttr(BRAND_NAME)}$2`,
+      )
+      // Bake BRAND_NAME into the tab title and the two chrome brand slots
+      // (mobile topbar + sidebar) so the very first paint shows the configured
+      // brand, never the bundled "Marveen" default. Without this the HTML
+      // ships "Marveen" and only the client's initSidebarBrand() fetch rewrites
+      // it -- which flashes "Marveen" and, on a stale-cached bundle, sticks.
+      // Server-side bake is cache-proof and script-timing-proof, matching the
+      // apple-title treatment above.
+      .replace(
+        /(<title>)[^<]*(<\/title>)/,
+        `$1${escapeAttr(BRAND_NAME)}$2`,
+      )
+      .replace(
+        /(<span class="mobile-topbar-title" id="mobileTopbarTitle">)[^<]*(<\/span>)/,
+        `$1${escapeAttr(BRAND_NAME)}$2`,
+      )
+      .replace(
+        /(<div class="sidebar-brand-name" id="sidebarBrandName">)[^<]*(<\/div>)/,
         `$1${escapeAttr(BRAND_NAME)}$2`,
       )
     res.writeHead(200, {
@@ -84,8 +111,11 @@ export async function tryHandleStatic(ctx: RouteContext, webDir: string): Promis
   const { req, res, path } = ctx
 
   if (path === '/' || path === '/index.html') { serveIndexHtml(ctx, webDir); return true }
-  if (path === '/style.css') { serveFile(req, res, join(webDir, 'style.css')); return true }
-  if (path === '/app.js') { serveFile(req, res, join(webDir, 'app.js')); return true }
+  // app.js/style.css URLs are versioned (?v=mtime-size, rewritten into
+  // index.html above), so a long max-age is safe: any content change produces
+  // a new URL. index.html itself stays no-cache.
+  if (path === '/style.css') { serveFile(req, res, join(webDir, 'style.css'), { cacheSeconds: 86400 }); return true }
+  if (path === '/app.js') { serveFile(req, res, join(webDir, 'app.js'), { cacheSeconds: 86400 }); return true }
   // Subagent activity: which agents are currently being run as subagents inside
   // MikroB's session (published to store/active-subagents.json). The dashboard
   // colours those cards blue. Always 200 with a JSON array (empty if none).
@@ -142,7 +172,7 @@ export async function tryHandleStatic(ctx: RouteContext, webDir: string): Promis
   if (path.startsWith('/avatars/')) {
     const avatarFile = path.replace('/avatars/', '')
     const avatarPath = join(webDir, 'avatars', avatarFile)
-    if (existsSync(avatarPath)) { serveFile(req, res, avatarPath); return true }
+    if (existsSync(avatarPath)) { serveFile(req, res, avatarPath, { cacheSeconds: 3600 }); return true }
     res.writeHead(404); res.end()
     return true
   }
@@ -150,7 +180,7 @@ export async function tryHandleStatic(ctx: RouteContext, webDir: string): Promis
   if (path.startsWith('/icons/')) {
     const iconFile = path.replace('/icons/', '')
     const iconPath = join(webDir, 'icons', iconFile)
-    if (existsSync(iconPath)) { serveFile(req, res, iconPath); return true }
+    if (existsSync(iconPath)) { serveFile(req, res, iconPath, { cacheSeconds: 3600 }); return true }
     res.writeHead(404); res.end()
     return true
   }

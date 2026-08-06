@@ -18,6 +18,14 @@ store/*
 # Operational scripts under store/ ARE version-controlled (code, not runtime data).
 # Everything else in store/ (DB, tokens, state JSON) stays ignored.
 !store/*.sh
+# Stitch design-gen tools are operational scripts (tracked except node_modules).
+!store/stitch-tools/gen.mjs
+!store/stitch-tools/fetch-pngs.mjs
+!store/stitch-tools/package.json
+# Gate-sweep scanners are operational scripts (named, not a blanket *.py rule,
+# so future runtime .py data under store/ stays ignored).
+!store/cybersec-gate-scan.py
+!store/cybered-gate-scan.py
 # Local-LLM offload tooling (config + task templates) is operational, not runtime data.
 !store/local-llm-model
 !store/local-llm-skills/
@@ -72,6 +80,10 @@ backups/
 # GitNexus knowledge-graph index (local, per-clone; auto-rebuilt by the post-commit hook)
 .gitnexus/
 
+# Context-guard runtime handoff document (auto-written by agents at ~90% context;
+# per-session state, never source).
+HANDOFF.md
+
 # Local one-off artifacts (brainstorm docs, runtime state, rebuild prompts) --
 # never committed; ignored to prevent accidental `git add -A` bloat.
 DREAM.md
@@ -87,6 +99,12 @@ REBUILD_PROMPT_V3.1.md
 # generic IMAP/SMTP CLI (no operator data); each operator keeps their own
 # branded auto-reply here locally. Ignored so it never ships to other installs.
 scripts/support-mail/no-support-reply.html
+
+# M365 / Graph mail credentials (client secret, tenant/client IDs). Plaintext
+# secret -- never commit. Operator keeps this locally per install.
+marveen-mail-ugyfelkod
+*.secret
+.mail-credentials*
 
 # Python bytecode cache
 __pycache__/
@@ -104,3 +122,14 @@ store/stitch-tools/node_modules/
 # Quota-bridge (degraded-mode local-LLM Telegram responder) operational files
 !store/quota-bridge.py
 !store/quota-bridge.service
+
+# Claude Code Channels runtime config/session dir (sessions, history, tokens,
+# plugins, skills). Per-install runtime state -- never source, never commit.
+.channels-config/
+
+# graphify code knowledge-graph output (card 3646bde7). Generated locally by store/graphify.sh from
+# the working tree; never committed -- it is a derived artifact, it churns on every build, and a
+# tracked copy would collide with update.sh's ff-only pull.
+graphify-out/
+# Added by code-review-graph
+.code-review-graph/

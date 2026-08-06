@@ -1,9 +1,12 @@
 import { readFileSync, existsSync } from 'node:fs'
 import { join } from 'node:path'
 import { homedir } from 'node:os'
-import { PROJECT_ROOT, ALLOWED_CHAT_ID } from '../config.js'
+import { PROJECT_ROOT } from '../config.js'
+import { resolveOwnerChatId } from '../owner-chat.js'
 import { logger } from '../logger.js'
 import { agentDir, readFileOr, findAvatarForAgent } from './agent-config.js'
+import { TOOL_TIMEOUTS } from '../tool-timeouts.js'
+import { markIfTestRun } from '../test-run-marker.js'
 
 export function readAgentTelegramConfig(name: string): { hasTelegram: boolean; botUsername?: string } {
   const envPath = join(agentDir(name), '.claude', 'channels', 'telegram', '.env')
@@ -98,7 +101,7 @@ export async function refreshMarveenBotUsername(): Promise<void> {
   const token = tokenMatch?.[1]?.trim()
   if (!token) return
   try {
-    const r = await fetch(`https://api.telegram.org/bot${token}/getMe`)
+    const r = await fetch(`https://api.telegram.org/bot${token}/getMe`, { signal: AbortSignal.timeout(TOOL_TIMEOUTS['telegram']) })
     const data = await r.json() as { ok?: boolean; result?: { username?: string } }
     if (data.ok && data.result?.username) {
       marveenBotUsernameCache.value = `@${data.result.username}`
@@ -108,10 +111,14 @@ export async function refreshMarveenBotUsername(): Promise<void> {
 }
 
 export async function sendTelegramMessage(token: string, chatId: string, text: string): Promise<void> {
+  // Test-run marking happens HERE too, not only in notifyChannel: this path
+  // reads its token from .env FILES (schedule-runner alerts), so blanking
+  // CHANNEL_TOKEN/CHANNEL_CHAT_ID in a test's environment does not stop it.
   const resp = await fetch(`https://api.telegram.org/bot${token}/sendMessage`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ chat_id: chatId, text }),
+    body: JSON.stringify({ chat_id: chatId, text: markIfTestRun(text) }),
+    signal: AbortSignal.timeout(TOOL_TIMEOUTS['telegram']),
   })
   // fetch does not throw on 4xx -- a wrong chat_id or revoked token resolves
   // silently, which historically made "alert sent" log lines lies. Throw so
@@ -128,7 +135,7 @@ export async function sendTelegramPhoto(token: string, chatId: string, photoPath
   const boundary = '----FormBoundary' + Date.now()
   const parts: Buffer[] = []
   parts.push(Buffer.from(`--${boundary}\r\nContent-Disposition: form-data; name="chat_id"\r\n\r\n${chatId}\r\n`))
-  parts.push(Buffer.from(`--${boundary}\r\nContent-Disposition: form-data; name="caption"\r\n\r\n${caption}\r\n`))
+  parts.push(Buffer.from(`--${boundary}\r\nContent-Disposition: form-data; name="caption"\r\n\r\n${markIfTestRun(caption)}\r\n`))
   parts.push(Buffer.from(`--${boundary}\r\nContent-Disposition: form-data; name="photo"; filename="avatar.png"\r\nContent-Type: image/png\r\n\r\n`))
   parts.push(fileData)
   parts.push(Buffer.from(`\r\n--${boundary}--\r\n`))
@@ -136,11 +143,13 @@ export async function sendTelegramPhoto(token: string, chatId: string, photoPath
     method: 'POST',
     headers: { 'Content-Type': `multipart/form-data; boundary=${boundary}` },
     body: Buffer.concat(parts),
+    signal: AbortSignal.timeout(TOOL_TIMEOUTS['telegram']),
   })
 }
 
 export async function sendWelcomeMessage(agentName: string, token: string): Promise<void> {
-  const chatId = ALLOWED_CHAT_ID
+  const chatId = resolveOwnerChatId()
+  if (!chatId) { logger.warn('Telegram send skipped: no owner chat on this install') ; return }
   const dir = agentDir(agentName)
   const soulMd = readFileOr(join(dir, 'SOUL.md'), '')
   const firstLine = soulMd.split('\n').find(l => l.trim() && !l.startsWith('#'))?.trim() || ''
@@ -167,7 +176,8 @@ export async function sendMarveenAvatarChange(avatarPath: string): Promise<void>
   const tokenMatch = envContent.match(/TELEGRAM_BOT_TOKEN=(.+)/)
   const token = tokenMatch?.[1]?.trim()
   if (!token) return
-  const chatId = ALLOWED_CHAT_ID
+  const chatId = resolveOwnerChatId()
+  if (!chatId) { logger.warn('Telegram send skipped: no owner chat on this install') ; return }
 
   try {
     const messages = [
@@ -189,7 +199,8 @@ export async function sendMarveenAvatarChange(avatarPath: string): Promise<void>
 export async function sendAvatarChangeMessage(agentName: string, avatarPath: string): Promise<void> {
   const token = parseTelegramToken(agentName)
   if (!token) return
-  const chatId = ALLOWED_CHAT_ID
+  const chatId = resolveOwnerChatId()
+  if (!chatId) { logger.warn('Telegram send skipped: no owner chat on this install') ; return }
 
   try {
     // Generate a fun message about the new look
@@ -211,7 +222,7 @@ export async function sendAvatarChangeMessage(agentName: string, avatarPath: str
 
 export async function validateTelegramToken(token: string): Promise<{ ok: boolean; botUsername?: string; botId?: number; error?: string }> {
   try {
-    const resp = await fetch(`https://api.telegram.org/bot${token}/getMe`)
+    const resp = await fetch(`https://api.telegram.org/bot${token}/getMe`, { signal: AbortSignal.timeout(TOOL_TIMEOUTS['telegram']) })
     const data = await resp.json() as { ok: boolean; result?: { username: string; id: number } }
     if (data.ok && data.result) {
       return { ok: true, botUsername: data.result.username, botId: data.result.id }
@@ -237,7 +248,9 @@ export async function sendMarveenAlert(text: string): Promise<void> {
     const tokenMatch = envContent.match(/TELEGRAM_BOT_TOKEN=(.+)/)
     const token = tokenMatch?.[1]?.trim()
     if (!token) return
-    await sendTelegramMessage(token, ALLOWED_CHAT_ID, text)
+    const chatId = resolveOwnerChatId()
+    if (!chatId) { logger.warn('Telegram send skipped: no owner chat on this install'); return }
+    await sendTelegramMessage(token, chatId, text)
   } catch (err) {
     logger.warn({ err }, 'Failed to send marveen plugin alert')
   }

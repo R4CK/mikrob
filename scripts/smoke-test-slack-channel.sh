@@ -45,6 +45,12 @@ if [ -z "$SLACK_BOT_TOKEN" ]; then
   exit 1
 fi
 
+# SECURITY (Cybersec/gate-ops-scripts-token-in-argv, card b267df80): 0600 temp
+# header file instead of a curl argv (/proc/<pid>/cmdline is world-readable).
+SLACK_HDR_FILE="$(mktemp)"; chmod 600 "$SLACK_HDR_FILE"
+trap 'rm -f "$SLACK_HDR_FILE"' EXIT
+printf 'Authorization: Bearer %s\n' "$SLACK_BOT_TOKEN" > "$SLACK_HDR_FILE"
+
 # Read first allowed user from access.json
 if [ ! -f "$ACCESS_FILE" ]; then
   log "Nem található: $ACCESS_FILE"
@@ -64,7 +70,7 @@ if [ "$DRY_RUN" = "1" ]; then
   DM_CHANNEL="DRY_RUN_CHANNEL"
 else
   OPEN_RESP="$(curl -sf -X POST 'https://slack.com/api/conversations.open' \
-    -H "Authorization: Bearer $SLACK_BOT_TOKEN" \
+    -H @"$SLACK_HDR_FILE" \
     -H 'Content-Type: application/json' \
     -d "{\"users\":\"$USER_ID\"}" 2>/dev/null || true)"
   DM_OK="$(echo "$OPEN_RESP" | python3 -c "import json,sys; print(str(json.load(sys.stdin).get('ok','')).lower())" 2>/dev/null || true)"
@@ -97,7 +103,7 @@ if [ "$DRY_RUN" = "1" ]; then
   log "[DRY-RUN] chat.postMessage channel=$DM_CHANNEL text=$RANDOM_ID"
 else
   MSG_RESP="$(curl -sf -X POST 'https://slack.com/api/chat.postMessage' \
-    -H "Authorization: Bearer $SLACK_BOT_TOKEN" \
+    -H @"$SLACK_HDR_FILE" \
     -H 'Content-Type: application/json' \
     -d "{\"channel\":\"$DM_CHANNEL\",\"text\":\"$RANDOM_ID\"}" 2>/dev/null || true)"
   MSG_OK="$(echo "$MSG_RESP" | python3 -c "import json,sys; print(str(json.load(sys.stdin).get('ok','')).lower())" 2>/dev/null || true)"

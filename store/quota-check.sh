@@ -28,7 +28,15 @@ API="http://localhost:3420"
 # positive in 2026-06-30.)
 RX='usage limit reached|reached your usage limit|hit (your|the) usage limit|approaching (your )?usage limit|usage limit (will )?reset|limit will reset at|[0-9]+-hour limit reached|wait for limit to reset|stop and wait for limit|upgrade your plan'
 
+# SECURITY (Cybersec/gate-ops-scripts-token-in-argv, card edb7559f): the token must never be a curl
+# argv (/proc/<pid>/cmdline is world-readable). write_auth_header refreshes a private 0600 header file
+# (curl -H @"$hdr_file" reads it) instead of interpolating "Authorization: Bearer $T" on the command
+# line. Called once per suspect (T is re-read from disk each time, unchanged from the original
+# defensive per-iteration check); the ONE temp file is removed on EXIT.
 tok() { cat "$TOKEN_FILE" 2>/dev/null; }
+hdr_file="$(mktemp)"; chmod 600 "$hdr_file"
+trap 'rm -f "$hdr_file"' EXIT
+write_auth_header() { printf 'Authorization: Bearer %s\n' "$1" > "$hdr_file"; }
 have_modal() { tmux capture-pane -t "$1" -p -S -25 2>/dev/null | grep -qiE "$RX"; }
 # Parse the banner's stated reset time (e.g. "resets 11:50am") -> epoch, or "".
 reset_epoch_of() {
@@ -60,11 +68,12 @@ for s in "${suspect[@]:-}"; do
   agent="${s#agent-}"
   T=$(tok)
   if [ -z "$T" ]; then confirmed+=("$s"); continue; fi   # fail-safe: can't probe -> treat as limited
+  write_auth_header "$T"
   # RESTART-PROBE: fresh session re-checks the limit on boot.
-  curl -s -o /dev/null -X POST "$API/api/agents/$agent/stop"  -H "Authorization: Bearer $T" -d '{}'
-  curl -s -o /dev/null -X POST "$API/api/agents/$agent/start" -H "Authorization: Bearer $T" -d '{}'
+  curl -s -o /dev/null -X POST "$API/api/agents/$agent/stop"  -H @"$hdr_file" -d '{}'
+  curl -s -o /dev/null -X POST "$API/api/agents/$agent/start" -H @"$hdr_file" -d '{}'
   # wait for boot (no foreground sleep: bounded poll on a cheap endpoint)
-  for _ in $(seq 1 40); do curl -s -o /dev/null "$API/api/kanban" -H "Authorization: Bearer $T"; done
+  for _ in $(seq 1 40); do curl -s -o /dev/null "$API/api/kanban" -H @"$hdr_file"; done
   if have_modal "$s"; then
     confirmed+=("$s"); ep=$(reset_epoch_of "$s")
     [ -n "$ep" ] && { [ "$reset_epoch" -eq 0 ] || [ "$ep" -lt "$reset_epoch" ]; } && reset_epoch=$ep
