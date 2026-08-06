@@ -21,7 +21,7 @@
 import { isValidModelId, InvalidModelIdError } from './model-id.js'
 
 export const DEFAULT_MODEL_CHAIN: readonly string[] = [
-  'claude-opus-4-8[1m]',
+  'claude-opus-5',
   'claude-sonnet-5',
   'claude-haiku-4-5-20251001',
 ]

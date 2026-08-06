@@ -27,12 +27,11 @@ export const DEFAULT_MODEL = DEFAULT_AGENT_MODEL
 
 // Map short model names to full Claude model IDs (backwards compat with old configs)
 //
-// The bare 'opus' alias tracks OUR ladder primary (DEFAULT_MODEL_CHAIN[0]), not upstream's
-// distribution default -- see the note on DISTRIBUTION_DEFAULT_AGENT_MODEL in config-registry.ts
-// (card d041760b, upstream #918). Nothing is lost by this: 'opus-5'/'opus5' below already name
-// Opus 5 explicitly for anyone who wants it.
+// The bare 'opus' alias tracks the ladder primary (DEFAULT_MODEL_CHAIN[0]). An alias pointing at a
+// model the fallback would immediately revert away from is the silent trap this pairing avoids, so
+// the two move together (card d041760b, Peti 2026-08-06).
 export const MODEL_ALIASES: Record<string, string> = {
-  'opus': 'claude-opus-4-8[1m]',
+  'opus': 'claude-opus-5',
   'sonnet': 'claude-sonnet-5',
   'sonnet-5': 'claude-sonnet-5',
   'sonnet5': 'claude-sonnet-5',
