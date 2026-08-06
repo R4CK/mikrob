@@ -66,6 +66,47 @@ function leaksTokenInArgv(invocation: string): boolean {
   return !/-H\s+@/.test(invocation)
 }
 
+/**
+ * Credential-carrying URL query parameter names. Anchored as WHOLE parameter names so
+ * `?keyword=$Q` (an ordinary search query) is not mistaken for `?key=$Q`.
+ */
+const CREDENTIAL_QUERY_PARAMS = [
+  'key',
+  'api[-_]?key',
+  'apikey',
+  'token',
+  'access[-_]?token',
+  'auth[-_]?token',
+  'id[-_]?token',
+  'refresh[-_]?token',
+  'auth',
+  'secret',
+  'client[-_]?secret',
+  'password',
+  'passwd',
+  'pwd',
+  'sig',
+  'signature',
+].join('|')
+
+/**
+ * True iff the invocation embeds a credential in a URL QUERY PARAMETER (`?key=$VAR`,
+ * `&token=$(cat ...)`, `?api_key=${VAR}`).
+ *
+ * SAME LEAK CLASS as the Bearer-in-argv rule, different shape: the URL is an argv element, so
+ * /proc/<pid>/cmdline exposes it to any local process. A URL credential is strictly worse than a
+ * header, because it additionally lands in server access logs, proxy logs, and Referer headers.
+ *
+ * Card 0864de63 (Cybersec MINOR on the b267df80 gate): the concrete occurrence -- Gemini's
+ * `?key=$GEMINI_KEY` -- was found and fixed BY HAND (moved to an x-goog-api-key header), but the
+ * CLASS had no guard rule, so the next one would slip through the same way. There is NO sanctioned
+ * escape hatch here (unlike `-H @file` for headers): a secret never belongs in a URL.
+ */
+function leaksTokenInUrlQuery(invocation: string): boolean {
+  const re = new RegExp(`[?&](${CREDENTIAL_QUERY_PARAMS})=\\$(\\(|\\{|[A-Za-z_])`, 'i')
+  return re.test(invocation)
+}
+
 function scanDir(dir: string): string[] {
   return readdirSync(dir).filter((f) => f.endsWith('.sh'))
 }
@@ -93,6 +134,20 @@ describe('no store/*.sh or scripts/*.sh puts a Bearer token in curl argv', () =>
         `${file} passes a Bearer token in curl argv (/proc/<pid>/cmdline leak) at:\n${detail}\n` +
           `Fix: 0600 temp header file + \`-H @"$hdr_file"\`, trap 'rm -f "$hdr_file"' EXIT ` +
           `(see weekly-usage-panel-read.sh or offload-dispatch.sh).`,
+      )
+    }
+  })
+
+  it.each(cases)('$file: no curl embeds a credential in a URL query parameter', ({ dir, file }) => {
+    const source = readFileSync(join(dir, file), 'utf8')
+    const offenders = findCurlInvocations(source).filter((c) => leaksTokenInUrlQuery(c.text))
+    if (offenders.length > 0) {
+      const detail = offenders.map((o) => `  line ${o.startLine}: ${o.text.trim().slice(0, 100)}`).join('\n')
+      throw new Error(
+        `${file} puts a credential in a URL query parameter at:\n${detail}\n` +
+          `The URL is an argv element (/proc/<pid>/cmdline) AND lands in access/proxy logs and Referer. ` +
+          `Fix: send it as a header instead (e.g. Gemini's \`?key=$K\` became \`x-goog-api-key\`), ` +
+          `read from a 0600 temp file with \`-H @"$hdr_file"\` when the header itself is the secret.`,
       )
     }
   })
@@ -142,5 +197,80 @@ describe('the scanner itself catches what a naive single-line regex would miss',
     // without the word "curl" on the same joined invocation is data, not code.
     const script = '#!/usr/bin/env bash\n# never write Authorization: Bearer $TOK on a command line\necho hi\n'
     expect(findCurlInvocations(script)).toEqual([])
+  })
+})
+
+// Card 0864de63: the URL-query rule. No store/ or scripts/ file carries this shape today (the one
+// real occurrence, Gemini's `?key=$GEMINI_KEY`, was hand-fixed on the b267df80 gate), so the
+// per-file assertions above pass vacuously for THIS rule. These synthetic cases are what makes the
+// rule non-vacuous: they prove it fires on the class and does not fire on lookalikes.
+describe('the URL-query credential rule (card 0864de63)', () => {
+  function scan(lines: string[]): CurlInvocation[] {
+    return findCurlInvocations(lines.join('\n')).filter((c) => leaksTokenInUrlQuery(c.text))
+  }
+
+  it('flags the exact shape that was hand-fixed: Gemini `?key=$VAR`', () => {
+    const hits = scan([
+      '#!/usr/bin/env bash',
+      'curl -s "https://generativelanguage.googleapis.com/v1beta/models?key=$GEMINI_KEY"',
+    ])
+    expect(hits).toHaveLength(1)
+    expect(hits[0]?.startLine).toBe(2)
+  })
+
+  it.each([
+    ['bare variable', 'curl -s "https://api.example/v1?token=$TOK"'],
+    ['command substitution', 'curl -s "https://api.example/v1?key=$(cat store/.k)"'],
+    ['braced variable', 'curl -s "https://api.example/v1?api_key=${API_KEY}"'],
+    ['second query param (&)', 'curl -s "https://api.example/v1?page=1&access_token=$TOK"'],
+    ['hyphenated name', 'curl -s "https://api.example/v1?api-key=$K"'],
+    ['uppercase param', 'curl -s "https://api.example/v1?TOKEN=$T"'],
+    ['client secret', 'curl -s "https://api.example/oauth?client_secret=$CS"'],
+    ['signature', 'curl -s "https://api.example/v1?signature=$SIG"'],
+  ])('flags a credential in a URL query: %s', (_label, line) => {
+    expect(scan(['#!/usr/bin/env bash', line])).toHaveLength(1)
+  })
+
+  it('flags a credential URL split across a CONTINUATION line', () => {
+    const hits = scan([
+      '#!/usr/bin/env bash',
+      'curl -s -X POST \\',
+      '  "https://api.example/v1?key=$K" \\',
+      "  -d '{}'",
+    ])
+    expect(hits).toHaveLength(1)
+    expect(hits[0]?.startLine).toBe(2)
+  })
+
+  it('does NOT flag `keyword` -- an ordinary search param that merely CONTAINS "key"', () => {
+    // A substring match would make this rule unusable; the param name is anchored whole.
+    expect(scan(['#!/usr/bin/env bash', 'curl -s "https://api.example/search?keyword=$Q"'])).toEqual([])
+  })
+
+  it('does NOT flag other non-credential params that contain a credential substring', () => {
+    expect(scan(['#!/usr/bin/env bash', 'curl -s "https://api.example/x?tokenize=$N&keyboard=$B&authors=$A"'])).toEqual([])
+  })
+
+  it('does NOT flag the sanctioned fix: the credential moved into a header', () => {
+    expect(scan([
+      '#!/usr/bin/env bash',
+      'hdr="$(mktemp)"; chmod 600 "$hdr"',
+      'printf \'x-goog-api-key: %s\\n\' "$GEMINI_KEY" > "$hdr"',
+      'curl -s -H @"$hdr" "https://generativelanguage.googleapis.com/v1beta/models"',
+    ])).toEqual([])
+  })
+
+  it('does NOT flag a URL with no credential param at all', () => {
+    expect(scan(['#!/usr/bin/env bash', 'curl -s "https://api.example/v1?page=2&limit=50"'])).toEqual([])
+  })
+
+  it('is INDEPENDENT of the Bearer rule -- a URL leak with a correct @headerfile is still caught', () => {
+    // The two rules cover different shapes; passing one must not excuse the other.
+    const lines = [
+      '#!/usr/bin/env bash',
+      'curl -s -H @"$hdr" "https://api.example/v1?key=$K"',
+    ]
+    expect(scan(lines)).toHaveLength(1)
+    expect(findCurlInvocations(lines.join('\n')).filter((c) => leaksTokenInArgv(c.text))).toEqual([])
   })
 })
