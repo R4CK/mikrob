@@ -27,9 +27,17 @@ const LIVE_MARKERS = [
 
 const found = LIVE_MARKERS.filter((m) => existsSync(join(repoRoot, m)))
 if (found.length > 0) {
+  // The remedy must NOT suggest /tmp (card 9070461f). It used to, and that sent every agent who hit
+  // this message into the other trap: from a /tmp worktree the hook-registration guard correctly
+  // refuses its own script paths, so 7 suites SKIP and the run silently measures less than it looks
+  // like it does (see helpers/repo-location.ts -- a "14 failing tests" baseline was once tracked as
+  // a defect when 13 were purely that artifact). store/fleet-test.sh manages one durable, non-/tmp
+  // worktree and is the single supported way in.
   throw new Error(
     `REFUSING TO RUN TESTS: ${repoRoot} looks like a LIVE install (found: ${found.join(', ')}). ` +
       'The suite mutates files under the checkout it runs in (store/, .env, .claude/skills/). ' +
-      'Run it from a git worktree or CI checkout instead, e.g. `git worktree add /tmp/claw-test && cd /tmp/claw-test && npm test`.',
+      'Run it via `store/fleet-test.sh` (optionally with vitest paths/args), which reuses the ' +
+      'fleet test worktree. Do NOT use a /tmp worktree: 7 suites skip there because the ' +
+      'hook-registration guard rejects /tmp-rooted script paths.',
   )
 }
