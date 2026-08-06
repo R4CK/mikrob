@@ -233,6 +233,14 @@ Respond ONLY with JSON, nothing else:
     if (!data.attempt?.trim()) { json(res, { error: 'attempt is required' }, 400); return true }
     if (!data.error?.trim()) { json(res, { error: 'error is required' }, 400); return true }
     if (!data.lesson?.trim()) { json(res, { error: 'lesson is required' }, 400); return true }
+    // Input-hardening parity with POST /api/memories: every field lands in the
+    // stored memory content, so all four must pass the same filter.
+    const combined = [data.task, data.attempt, data.error, data.lesson].join('\n')
+    if (containsSuspiciousContent(combined)) {
+      logger.warn({ agent: data.agent_id }, 'Failed episode rejected: suspicious pattern')
+      json(res, { error: 'Content rejected by security filter' }, 400)
+      return true
+    }
     const agentId = data.agent_id?.trim() || MAIN_AGENT_ID
     const result = saveFailedEpisode({
       agentId,
