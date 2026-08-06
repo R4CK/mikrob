@@ -2,6 +2,7 @@ import {
   saveAgentMemory, getAgentMemories, searchAgentMemories, getMemoryStats, updateMemory,
   hybridSearch, backfillEmbeddings,
   searchMemories, getMemoriesForChat, getDb,
+  saveFailedEpisode, listFailedEpisodes, auditMemoryRecall,
   type Memory,
 } from '../../db.js'
 import { MAIN_AGENT_ID, ALLOWED_CHAT_ID, OLLAMA_URL } from '../../config.js'
@@ -200,6 +201,50 @@ Respond ONLY with JSON, nothing else:
 
     logger.info({ agentId, imported, stats }, 'Migráció befejezve')
     json(res, { ok: true, imported, stats })
+    return true
+  }
+
+  if (path === '/api/memories/failed-episode' && method === 'POST') {
+    const body = await readBody(req)
+    const data = JSON.parse(body.toString()) as {
+      agent_id?: string
+      task?: string
+      attempt?: string
+      error?: string
+      lesson?: string
+      keywords?: string
+    }
+    if (!data.task?.trim()) { json(res, { error: 'task is required' }, 400); return true }
+    if (!data.attempt?.trim()) { json(res, { error: 'attempt is required' }, 400); return true }
+    if (!data.error?.trim()) { json(res, { error: 'error is required' }, 400); return true }
+    if (!data.lesson?.trim()) { json(res, { error: 'lesson is required' }, 400); return true }
+    const agentId = data.agent_id?.trim() || MAIN_AGENT_ID
+    const result = saveFailedEpisode({
+      agentId,
+      task: data.task.trim(),
+      attempt: data.attempt.trim(),
+      error: data.error.trim(),
+      lesson: data.lesson.trim(),
+      keywords: data.keywords?.trim(),
+    })
+    logger.info({ agentId, id: result.id }, 'Failed episode saved')
+    json(res, { ok: true, id: result.id, topicKey: result.topicKey })
+    return true
+  }
+
+  if (path === '/api/memories/failed-episodes' && method === 'GET') {
+    const agentId = url.searchParams.get('agent') || MAIN_AGENT_ID
+    const limit = Math.min(parseInt(url.searchParams.get('limit') || '20', 10), 100)
+    const results = listFailedEpisodes(agentId, limit)
+    json(res, results.map(m => ({ ...m, embedding: undefined })))
+    return true
+  }
+
+  if (path === '/api/memories/recall-audit' && method === 'GET') {
+    const agentId = url.searchParams.get('agent') || MAIN_AGENT_ID
+    const sampleSize = Math.min(parseInt(url.searchParams.get('sample') || '50', 10), 200)
+    const audit = auditMemoryRecall(agentId, sampleSize)
+    json(res, audit)
     return true
   }
 

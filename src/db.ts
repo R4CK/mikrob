@@ -855,6 +855,133 @@ export function getMemoryStats(): { total: number; byAgent: Record<string, numbe
   return { total, byAgent, byTier, withEmbedding }
 }
 
+// --- Episodic: failed-episode lessons (card baeddb21) ---
+
+export interface FailedEpisodeParams {
+  agentId: string
+  task: string       // what was attempted
+  attempt: string    // how it was tried
+  error: string      // what went wrong
+  lesson: string     // what to do instead
+  keywords?: string  // optional extra search terms
+}
+
+export interface FailedEpisodeMemory {
+  id: number
+  agentId: string
+  topicKey: string
+  content: string
+}
+
+let _failedEpisodeSeq = 0
+export function saveFailedEpisode(params: FailedEpisodeParams): FailedEpisodeMemory {
+  const { agentId, task, attempt, error, lesson, keywords } = params
+  const now = Math.floor(Date.now() / 1000)
+  const seq = ++_failedEpisodeSeq
+  // slug: first 24 chars of task, safe for topic_key
+  const slug = task.toLowerCase().replace(/[^\p{L}\p{N}]+/gu, '-').slice(0, 24).replace(/-+$/, '')
+  const topicKey = `failed_episode:${slug}:${now}:${seq}`
+  const content = `[BUKOTT_EPIZÓD] Feladat: ${task} | Próbálkozás: ${attempt} | Hiba: ${error} | Tanulság: ${lesson}`
+  const kw = [
+    'bukott epizod tanulsag hiba',
+    task.slice(0, 60),
+    keywords || '',
+  ].filter(Boolean).join(' ')
+
+  const info = db.prepare(
+    'INSERT INTO memories (chat_id, topic_key, content, sector, salience, created_at, accessed_at, agent_id, category, auto_generated, keywords) VALUES (?, ?, ?, ?, 1.5, ?, ?, ?, ?, ?, ?)'
+  ).run(ALLOWED_CHAT_ID, topicKey, content, 'episodic', now, now, agentId, 'cold', 1, kw)
+  const id = Number(info.lastInsertRowid)
+
+  generateEmbedding(content + ' ' + kw).then(emb => {
+    if (emb) db.prepare('UPDATE memories SET embedding = ? WHERE id = ?').run(JSON.stringify(emb), id)
+  }).catch(() => {})
+
+  return { id, agentId, topicKey, content }
+}
+
+export function listFailedEpisodes(agentId: string, limit: number = 20): Memory[] {
+  return db.prepare(
+    "SELECT * FROM memories WHERE agent_id = ? AND sector = 'episodic' AND topic_key LIKE 'failed_episode:%' ORDER BY created_at DESC LIMIT ?"
+  ).all(agentId, limit) as Memory[]
+}
+
+// --- LoCoMo-inspired recall audit (card baeddb21) ---
+
+export interface MemoryRecallAudit {
+  sampleSize: number
+  testedCount: number
+  keywordPrecisionAtK: number      // % of keyword-tagged memories found in top-10 search
+  staleRatio: number               // % memories never accessed after creation
+  tierDistribution: Record<string, number>
+  failedEpisodeCount: number       // total failed_episode entries for agent
+  ftsHealthy: boolean              // basic FTS5 self-check
+  runAt: number
+}
+
+export function auditMemoryRecall(agentId: string, sampleSize: number = 50): MemoryRecallAudit {
+  const now = Math.floor(Date.now() / 1000)
+
+  // FTS5 health check: run a harmless wildcard query, no throw = healthy
+  let ftsHealthy = true
+  try {
+    db.prepare(
+      "SELECT m.id FROM memories m JOIN memories_fts f ON m.id = f.rowid WHERE f.memories_fts MATCH ? AND (m.agent_id = ? OR m.category = 'shared') LIMIT 1"
+    ).all('health*', agentId)
+  } catch {
+    ftsHealthy = false
+  }
+
+  // Sample memories for the agent
+  const sampled = db.prepare(
+    "SELECT * FROM memories WHERE (agent_id = ? OR category = 'shared') ORDER BY RANDOM() LIMIT ?"
+  ).all(agentId, sampleSize) as Memory[]
+
+  // Tier distribution
+  const tierDistribution: Record<string, number> = { hot: 0, warm: 0, cold: 0, shared: 0 }
+  let staleCount = 0
+  for (const m of sampled) {
+    tierDistribution[m.category] = (tierDistribution[m.category] ?? 0) + 1
+    if (m.accessed_at <= m.created_at + 2) staleCount++  // +2s tolerance for write race
+  }
+
+  // Keyword precision@10: test memories that have keywords
+  const withKeywords = sampled.filter(m => m.keywords && m.keywords.trim().length > 3)
+  let hits = 0
+  for (const m of withKeywords) {
+    const firstKeyword = (m.keywords ?? '').split(/[,\s]+/).find(t => t.trim().length > 2) ?? ''
+    if (!firstKeyword) continue
+    const terms = buildFtsMatchExpression(firstKeyword)
+    if (!terms) continue
+    try {
+      const found = db.prepare(
+        "SELECT m2.id FROM memories m2 JOIN memories_fts f ON m2.id = f.rowid WHERE f.memories_fts MATCH ? AND (m2.agent_id = ? OR m2.category = 'shared') ORDER BY rank LIMIT 10"
+      ).all(terms, agentId) as { id: number }[]
+      if (found.some(r => r.id === m.id)) hits++
+    } catch {
+      // FTS error on this row -- skip
+    }
+  }
+  const testedCount = withKeywords.length
+  const keywordPrecisionAtK = testedCount > 0 ? hits / testedCount : 0
+
+  // Failed episode count for agent
+  const failedEpisodeCount = (db.prepare(
+    "SELECT COUNT(*) as c FROM memories WHERE agent_id = ? AND sector = 'episodic' AND topic_key LIKE 'failed_episode:%'"
+  ).get(agentId) as { c: number }).c
+
+  return {
+    sampleSize,
+    testedCount,
+    keywordPrecisionAtK: Math.round(keywordPrecisionAtK * 1000) / 1000,
+    staleRatio: sampled.length > 0 ? Math.round(staleCount / sampled.length * 1000) / 1000 : 0,
+    tierDistribution,
+    failedEpisodeCount,
+    ftsHealthy,
+    runAt: now,
+  }
+}
+
 export function updateMemory(id: number, content: string, category?: string, agentId?: string, keywords?: string): boolean {
   const now = Math.floor(Date.now() / 1000)
   const sets: string[] = ['content = ?', 'accessed_at = ?']
