@@ -13,6 +13,19 @@
 // (a zero-import module) so the registry default and the boot-time constant in
 // config.ts cannot drift apart -- bumping the distribution default is a
 // one-line change in exactly one place.
+// The model a fresh install runs when DEFAULT_AGENT_MODEL is unset. Kept here
+// (a zero-import module) so the registry default and the boot-time constant in
+// config.ts cannot drift apart -- bumping the distribution default is a
+// one-line change in exactly one place.
+//
+// DELIBERATE FORK DIVERGENCE (card d041760b, upstream #916/#917/#918). Upstream
+// moves this to 'claude-opus-5[1m]'. We keep 4.8[1m] because this value must
+// agree with DEFAULT_MODEL_CHAIN[0] in model-fallback.ts: chain[0] is what the
+// fallback reverts UP to, so a distribution default ABOVE the chain primary
+// would make a new agent's first quota-revert a silent DOWNGRADE. Changing the
+// default is therefore not a one-line upstream adoption -- it requires moving
+// the ladder primary in the same step, which is a fleet product decision
+// (per-agent chains, Peti 2026-08-03), not a merge resolution.
 export const DISTRIBUTION_DEFAULT_AGENT_MODEL = 'claude-opus-4-8[1m]'
 
 export type SettingType = 'int' | 'string' | 'color' | 'boolean'
@@ -421,6 +434,7 @@ export const SETTINGS_REGISTRY: SettingDefinition[] = [
     requiresRestart: true,
     valueSet: [
       'claude-opus-5',
+      'claude-opus-5[1m]',
       'claude-sonnet-5',
       'claude-fable-5',
       'claude-opus-4-8[1m]',
