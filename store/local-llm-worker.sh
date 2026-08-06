@@ -13,7 +13,8 @@
 # CRASH SAFETY: rows are reclaimed by the API side (reclaimStaleRunning) rather than here, because a
 # worker that died is by definition not running to clean up after itself.
 #
-# NO SECRETS IN ARGV: the dashboard token is read from the file at call time (ps(1) is world-readable).
+# NO SECRETS IN ARGV: the token is passed to curl via a 0600 header FILE (-H @file), never on the
+# command line -- see the header-file block below for why reading it from a file is not sufficient.
 #
 # Usage:
 #   local-llm-worker.sh            # loop until killed
@@ -34,11 +35,22 @@ log() { echo "$(date '+%Y-%m-%d %H:%M:%S') $*" >> "$LOG"; }
 [ -x "$LLM" ] || { log "FATAL: $LLM missing"; exit 3; }
 [ -r "$TOKEN_FILE" ] || { log "FATAL: token unreadable"; exit 3; }
 
+# SECURITY (card defcc189, Cybersec NO-GO on bf6fe53): the Authorization header goes through a 0600
+# temp file read with curl's `-H @file`, NEVER on the curl argv. `-H "Bearer $(cat token)"` is
+# expanded by the shell BEFORE exec, so the token itself lands in /proc/<pid>/cmdline (world-readable
+# here: no hidepid) and in `ps` -- any local user could scrape it during the call window, even one
+# who cannot read the 0600 token file. Same pattern as store/weekly-usage-probe.sh.
+HDR_FILE="$(mktemp)"
+trap 'rm -f "$HDR_FILE"' EXIT
+chmod 600 "$HDR_FILE"
+printf 'Authorization: Bearer %s\n' "$(cat "$TOKEN_FILE")" > "$HDR_FILE"
+
+
 api() {
   # $1=method $2=path ; body on stdin when POST/PATCH
   local method="$1" path="$2"
   curl -fsS -X "$method" "$API$path" \
-    -H "Authorization: Bearer $(cat "$TOKEN_FILE")" \
+    -H "@$HDR_FILE" \
     -H 'Content-Type: application/json' \
     ${3:+--data-binary @-}
 }

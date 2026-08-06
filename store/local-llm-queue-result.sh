@@ -22,7 +22,18 @@ TOKEN_FILE="$ROOT/store/.dashboard-token"
 die() { echo "local-llm-queue-result.sh: $2" >&2; exit "$1"; }
 [ -r "$TOKEN_FILE" ] || die 3 "dashboard token unreadable"
 
-get() { curl -fsS "$API$1" -H "Authorization: Bearer $(cat "$TOKEN_FILE")" 2>/dev/null; }
+# SECURITY (card defcc189, Cybersec NO-GO on bf6fe53): the Authorization header goes through a 0600
+# temp file read with curl's `-H @file`, NEVER on the curl argv. `-H "Bearer $(cat token)"` is
+# expanded by the shell BEFORE exec, so the token itself lands in /proc/<pid>/cmdline (world-readable
+# here: no hidepid) and in `ps` -- any local user could scrape it during the call window, even one
+# who cannot read the 0600 token file. Same pattern as store/weekly-usage-probe.sh.
+HDR_FILE="$(mktemp)"
+trap 'rm -f "$HDR_FILE"' EXIT
+chmod 600 "$HDR_FILE"
+printf 'Authorization: Bearer %s\n' "$(cat "$TOKEN_FILE")" > "$HDR_FILE"
+
+
+get() { curl -fsS "$API$1" -H "@$HDR_FILE" 2>/dev/null; }
 
 if [ "${1:-}" = "--stats" ]; then
   # No f-strings with quoted subscripts here: this python is embedded in a single-quoted shell

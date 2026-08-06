@@ -21,6 +21,10 @@ import {
 /** A queue row still `running` after this long means its worker died: the 7B's slowest measured
  *  call is ~70s, so 10 minutes is far past any legitimate run. */
 const STALE_RUNNING_MS = 10 * 60 * 1000
+
+/** Upper bound on a queued prompt. Not the main defence (the caller is authenticated) -- it stops a
+ *  runaway caller from parking megabytes in the queue and monopolising the single GPU slot. */
+const MAX_QUEUE_PROMPT_BYTES = 100_000
 import {
   RAMP_FLOOR_AGGRESSIVENESS,
   rampAggressiveness,
@@ -761,6 +765,20 @@ export async function tryHandleLocalLlm(ctx: RouteContext): Promise<boolean> {
     const prompt = typeof payload['prompt'] === 'string' ? payload['prompt'] : ''
     if (!agent || !prompt.trim()) {
       json(res, { error: 'agent and prompt are required' }, 400)
+      return true
+    }
+    // Explicit size cap (Cybersec non-blocking note on bf6fe53). The caller is authenticated, so
+    // this is not the main defence -- it stops one runaway caller from parking megabytes of prompt
+    // in the queue table and then occupying the single GPU slot for however long that takes.
+    // 100 KB is far above any real sub-task and far below "someone pasted a repo in".
+    if (prompt.length > MAX_QUEUE_PROMPT_BYTES) {
+      json(
+        res,
+        {
+          error: `prompt too large (${prompt.length} chars, max ${MAX_QUEUE_PROMPT_BYTES}) -- split it into smaller sub-tasks`,
+        },
+        413,
+      )
       return true
     }
     // `template` names a file under store/local-llm-skills; the same allowlist local-llm.sh

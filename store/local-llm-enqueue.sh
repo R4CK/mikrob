@@ -13,7 +13,8 @@
 # The draft is still DRAFT-ONLY: you review and integrate it, and the gate re-checks. Nothing the
 # local model writes ships unverified.
 #
-# NO SECRETS IN ARGV: the dashboard token is read from the file at call time (ps(1) is world-readable).
+# NO SECRETS IN ARGV: the token is passed to curl via a 0600 header FILE (-H @file), never on the
+# command line -- see the header-file block below for why reading it from a file is not sufficient.
 # The PROMPT is passed on stdin or as one argument; it is sent as a JSON body, never interpolated
 # into a shell command.
 #
@@ -58,6 +59,17 @@ fi
 [ -n "${PROMPT// }" ] || die 2 "empty prompt"
 [ -r "$TOKEN_FILE" ] || die 3 "dashboard token unreadable ($TOKEN_FILE)"
 
+# SECURITY (card defcc189, Cybersec NO-GO on bf6fe53): the Authorization header goes through a 0600
+# temp file read with curl's `-H @file`, NEVER on the curl argv. `-H "Bearer $(cat token)"` is
+# expanded by the shell BEFORE exec, so the token itself lands in /proc/<pid>/cmdline (world-readable
+# here: no hidepid) and in `ps` -- any local user could scrape it during the call window, even one
+# who cannot read the 0600 token file. Same pattern as store/weekly-usage-probe.sh.
+HDR_FILE="$(mktemp)"
+trap 'rm -f "$HDR_FILE"' EXIT
+chmod 600 "$HDR_FILE"
+printf 'Authorization: Bearer %s\n' "$(cat "$TOKEN_FILE")" > "$HDR_FILE"
+
+
 # Build the JSON in python, never by string-concatenation: the prompt is arbitrary text and would
 # otherwise break the payload (quotes/newlines) or, worse, be interpolated by the shell.
 BODY=$(AGENT="$AGENT" PROMPT="$PROMPT" CARD="$CARD" TASK="$TASK" PRIORITY="$PRIORITY" SOURCE="$SOURCE" CONTEXT="$CONTEXT" python3 -c '
@@ -73,7 +85,7 @@ print(json.dumps(d))
 # says WHAT was wrong (bad template name, missing agent). Distinguish "rejected" from "unreachable"
 # instead of blaming the network for a validation error.
 HTTP=$(printf '%s' "$BODY" | curl -sS -o /tmp/llmq-resp.$$ -w '%{http_code}' -X POST "$API/local-llm/queue" \
-  -H "Authorization: Bearer $(cat "$TOKEN_FILE")" \
+  -H "@$HDR_FILE" \
   -H 'Content-Type: application/json' \
   --data-binary @- 2>/dev/null)
 RC=$?
