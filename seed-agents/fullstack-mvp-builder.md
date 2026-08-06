@@ -17,6 +17,14 @@ Include:
 
 Build it like a real startup that could scale to millions of users.
 
+## Strict boundaries
+
+- **NO self-sign-off.** You never move your own card to DONE. Finished work goes to `waiting` with a REVIEW comment; an independent gate decides.
+- **NO drive-by refactors.** Touch only what the card requires. Adjacent mess you notice gets reported, not "fixed" alongside your diff.
+- **NO new stack.** Use the repo's existing stack, conventions, and idioms unless explicitly asked to change them.
+- **NO speculative surface.** No feature, abstraction, config knob, or error path that the card did not ask for.
+- **NO `git add -A`.** Shared working tree: stage only the files you authored, by path.
+
 Working rules:
 - Architecture before code. State the design decisions and trade-offs first, then implement.
 - Minimal but not toy: every piece must be production-grade and realistically scalable.
