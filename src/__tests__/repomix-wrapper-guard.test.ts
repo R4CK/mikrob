@@ -35,7 +35,10 @@ describe('store/repomix.sh -- Cybersec conditions stay enforced (card b41c3dd3)'
 
   it('condition 2: pins an exact repomix version, never floating latest', () => {
     const pin = WRAPPER.match(/PINNED_VERSION="([^"]+)"/)
-    expect(pin?.[1]).toBe('1.17.0')
+    // The literal is deliberate, not brittleness: an UNREVIEWED bump must fail here, so every
+    // version change is acknowledged by a human. Bumped 1.17.0 -> 1.18.0 with card 827330ce
+    // (upstream security release; the ReDoS-hardened redaction also runs on the local pack path).
+    expect(pin?.[1]).toBe('1.18.0')
     expect(WRAPPER).not.toContain('repomix@latest')
   })
 

@@ -145,6 +145,45 @@ export function initDatabase(dbPathOverride?: string): void {
   `)
   db.exec(`CREATE INDEX IF NOT EXISTS idx_tasks_status_next ON scheduled_tasks(status, next_run)`)
 
+  // --- Local-LLM work queue (card defcc189) ---
+  //
+  // WHY A QUEUE. Local-LLM offload is currently SYNCHRONOUS and ONE-SHOT: an agent blocks 15-70s
+  // waiting for the 7B, and a card only gets a local draft at the dispatch instant. Measured over
+  // 740 calls, 87% were that single dispatch shot. Blocking is what caps the volume -- every call
+  // costs the agent time it could spend on its own online work, so agents avoid making them.
+  //
+  // The queue makes offload ASYNC and REPEATABLE: any source (dispatch, an agent mid-task, MikroB's
+  // periodic reconciliation) inserts a row and returns immediately; a single worker drains it behind
+  // the existing GPU flock. `status` is the whole state machine, and `started_at`/`finished_at`
+  // bound each phase so a crashed worker's rows are recoverable (see reclaimStaleRunning).
+  //
+  // ADDITIVE ONLY: the synchronous local-llm.sh / local-llm-rag.sh paths keep working unchanged.
+  db.exec(`
+    CREATE TABLE IF NOT EXISTS local_llm_queue (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      agent TEXT NOT NULL,
+      card_id TEXT,
+      task_type TEXT,
+      template TEXT,
+      prompt TEXT NOT NULL,
+      context TEXT,
+      priority TEXT NOT NULL DEFAULT 'normal' CHECK(priority IN ('low','normal','high','urgent')),
+      status TEXT NOT NULL DEFAULT 'pending' CHECK(status IN ('pending','running','done','failed')),
+      source TEXT NOT NULL DEFAULT 'agent',
+      attempts INTEGER NOT NULL DEFAULT 0,
+      created_at INTEGER NOT NULL,
+      started_at INTEGER,
+      finished_at INTEGER,
+      result TEXT,
+      error TEXT
+    )
+  `)
+  // The worker's hot query is "oldest pending, highest priority first"; the status+created_at index
+  // serves both that and the per-status dashboard counts.
+  db.exec(`CREATE INDEX IF NOT EXISTS idx_llmq_status_created ON local_llm_queue(status, created_at)`)
+  db.exec(`CREATE INDEX IF NOT EXISTS idx_llmq_agent ON local_llm_queue(agent, created_at)`)
+  db.exec(`CREATE INDEX IF NOT EXISTS idx_llmq_card ON local_llm_queue(card_id)`)
+
   // --- Kanban ---
   db.exec(`
     CREATE TABLE IF NOT EXISTS kanban_cards (

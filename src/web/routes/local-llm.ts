@@ -6,6 +6,21 @@ import { STORE_DIR } from '../../config.js'
 import { logger } from '../../logger.js'
 import { readBody, json } from '../http-helpers.js'
 import { atomicWriteFileSync } from '../atomic-write.js'
+import { getDb } from '../../db.js'
+import {
+  enqueue as enqueueLocalLlm,
+  claimNext as claimNextLocalLlm,
+  complete as completeLocalLlm,
+  fail as failLocalLlm,
+  reclaimStaleRunning as reclaimStaleLocalLlm,
+  getById as queueGetById,
+  stats as queueStats,
+  statsByAgent as queueStatsByAgent,
+} from '../../local-llm-queue.js'
+
+/** A queue row still `running` after this long means its worker died: the 7B's slowest measured
+ *  call is ~70s, so 10 minutes is far past any legitimate run. */
+const STALE_RUNNING_MS = 10 * 60 * 1000
 import {
   RAMP_FLOOR_AGGRESSIVENESS,
   rampAggressiveness,
@@ -725,6 +740,126 @@ export async function tryHandleLocalLlm(ctx: RouteContext): Promise<boolean> {
   const { req, res, path, method, url } = ctx
 
   if (!path.startsWith('/api/local-llm/')) return false
+
+  // --- Async work queue (card defcc189) -------------------------------------------------
+  // The offload path was synchronous and one-shot: an agent blocked 15-70s per call, so agents
+  // rationally made few of them (measured: 87% of 740 calls were the single dispatch shot).
+  // These three endpoints make it fire-and-forget, which is what lets offload be REPEATED during
+  // a card instead of happening once at dispatch.
+
+  // POST /api/local-llm/queue -> enqueue, returns the id immediately (never blocks on the model)
+  if (path === '/api/local-llm/queue' && method === 'POST') {
+    const body = (await readBody(req)).toString()
+    let payload: Record<string, unknown>
+    try {
+      payload = JSON.parse(body || '{}') as Record<string, unknown>
+    } catch {
+      json(res, { error: 'invalid JSON body' }, 400)
+      return true
+    }
+    const agent = typeof payload['agent'] === 'string' ? payload['agent'].trim() : ''
+    const prompt = typeof payload['prompt'] === 'string' ? payload['prompt'] : ''
+    if (!agent || !prompt.trim()) {
+      json(res, { error: 'agent and prompt are required' }, 400)
+      return true
+    }
+    // `template` names a file under store/local-llm-skills; the same allowlist local-llm.sh
+    // enforces is applied HERE too, so a '../' can never reach the worker's argv in the first
+    // place. Rejecting at the edge beats sanitizing at the sink.
+    const template = typeof payload['template'] === 'string' ? payload['template'] : null
+    if (template !== null && !isValidCategoryName(template)) {
+      json(res, { error: 'invalid template name' }, 400)
+      return true
+    }
+    const priority = payload['priority']
+    const allowedPriority = ['low', 'normal', 'high', 'urgent']
+    try {
+      const id = enqueueLocalLlm(
+        getDb(),
+        {
+          agent,
+          prompt,
+          cardId: typeof payload['card_id'] === 'string' ? payload['card_id'] : null,
+          taskType: typeof payload['task_type'] === 'string' ? payload['task_type'] : null,
+          template,
+          context: typeof payload['context'] === 'string' ? payload['context'] : null,
+          priority: (typeof priority === 'string' && allowedPriority.includes(priority)
+            ? priority
+            : 'normal') as 'low' | 'normal' | 'high' | 'urgent',
+          source: typeof payload['source'] === 'string' ? payload['source'] : 'agent',
+        },
+        Date.now(),
+      )
+      json(res, { id, status: 'pending' })
+    } catch (err) {
+      json(res, { error: err instanceof Error ? err.message : 'enqueue failed' }, 400)
+    }
+    return true
+  }
+
+  // GET /api/local-llm/queue -> depth + latency + per-agent breakdown (dashboard feedback loop:
+  // it shows WHICH agents never use the local model, which is the number Peti tunes against).
+  if (path === '/api/local-llm/queue' && method === 'GET') {
+    json(res, { ...queueStats(getDb()), by_agent: queueStatsByAgent(getDb()) })
+    return true
+  }
+
+  // POST /api/local-llm/queue/claim -> the WORKER takes the next row (atomic; see claimNext).
+  // Empty queue answers 200 with an empty object rather than 404: "nothing to do" is the normal
+  // steady state, not an error, and the worker polls this on every idle tick.
+  if (path === '/api/local-llm/queue/claim' && method === 'POST') {
+    // Reclaim first: a worker killed mid-run (service restart, OOM, the WSL VM dropping) leaves its
+    // row `running` forever. Doing it here means recovery happens whenever a worker is alive,
+    // without a second timer -- and a dead worker cannot clean up after itself by definition.
+    reclaimStaleLocalLlm(getDb(), STALE_RUNNING_MS, Date.now())
+    const row = claimNextLocalLlm(getDb(), Date.now())
+    json(res, row ?? {})
+    return true
+  }
+
+  // POST /api/local-llm/queue/<id>/complete | /fail -- worker result sinks.
+  const doneMatch = path.match(/^\/api\/local-llm\/queue\/(\d+)\/(complete|fail)$/)
+  if (doneMatch && method === 'POST') {
+    const id = Number(doneMatch[1])
+    const kind = doneMatch[2]
+    const body = (await readBody(req)).toString()
+    let payload: Record<string, unknown>
+    try {
+      payload = JSON.parse(body || '{}') as Record<string, unknown>
+    } catch {
+      json(res, { error: 'invalid JSON body' }, 400)
+      return true
+    }
+    if (!queueGetById(getDb(), id)) {
+      json(res, { error: 'not found' }, 404)
+      return true
+    }
+    if (kind === 'complete') {
+      completeLocalLlm(getDb(), id, String(payload['result'] ?? ''), Date.now())
+      json(res, { id, status: 'done' })
+    } else {
+      const status = failLocalLlm(getDb(), id, String(payload['error'] ?? 'unknown error'), Date.now())
+      json(res, { id, status })
+    }
+    return true
+  }
+
+  // GET /api/local-llm/queue/<id> -> poll one row (the agent picks its draft up later)
+  if (path.startsWith('/api/local-llm/queue/') && method === 'GET') {
+    const raw = path.slice('/api/local-llm/queue/'.length)
+    const id = Number(raw)
+    if (!Number.isInteger(id) || id <= 0) {
+      json(res, { error: 'invalid queue id' }, 400)
+      return true
+    }
+    const row = queueGetById(getDb(), id)
+    if (!row) {
+      json(res, { error: 'not found' }, 404)
+      return true
+    }
+    json(res, row)
+    return true
+  }
 
   // GET /api/local-llm/status
   if (path === '/api/local-llm/status' && method === 'GET') {
