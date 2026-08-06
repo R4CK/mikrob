@@ -34,11 +34,13 @@ describe('parked-agent cheaper-tier-wins invariant (Cybered e33af7c4 finding 3)'
     expect(weeklyTargetModel(sonnet, 1)).toBe(haiku)
   })
 
-  // The kill-chain requires a baseline that is ABOVE (cheaper) than the banner-
-  // downgraded model: baseline=haiku-4-5 (already at cheapest in common use),
-  // tier 1 from haiku is fable-5. That IS cheaper, so no conflict. The dangerous
-  // scenario is baseline=sonnet-5 or sonnet-4-6, tier 1 stepping to haiku-4-5 --
-  // but the agent was ALREADY banner-downgraded past haiku. Let's confirm.
+  // The kill-chain requires a baseline ABOVE (costlier than) the banner-downgraded model.
+  // With a haiku-4-5 baseline there is no conflict: haiku is the ladder's BOTTOM rung, so
+  // tier 1 from haiku clamps to haiku itself -- it cannot step anywhere. (This comment used to
+  // read "tier 1 from haiku is fable-5", which was true only under the pre-2026-08-03 ladder
+  // order; fable-5 is now the TOP rung. No assertion depended on it -- documentation fix only,
+  // card a62e0f4a, QA finding.) The dangerous scenario is baseline=sonnet-5 or sonnet-4-6,
+  // tier 1 stepping to haiku-4-5 -- but the agent was ALREADY banner-downgraded past haiku.
   it('the cheaper-tier-wins guard triggers when weekly target is costlier than current', () => {
     // Scenario: baseline = sonnet-5 (idx 2), tier 1 -> sonnet-4-6 (idx 3).
     // Agent was banner-downgraded to haiku-4-5 (idx 4) and parked.

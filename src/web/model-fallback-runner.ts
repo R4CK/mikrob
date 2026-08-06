@@ -160,6 +160,31 @@ function updateStoredModelForParkedAgent(name: string, weeklyIdx: number): void 
   }
 }
 
+/**
+ * Resolve the model an agent should end up on from BOTH fallback axes.
+ *
+ * Cheaper tier wins: of the banner target and the weekly target, whichever sits FURTHER down the
+ * ladder stands, so neither axis undoes the other's downgrade. Compared by ladder position, not by
+ * two different index spaces.
+ *
+ * The no-Haiku floor is applied to BOTH inputs, and that is the point of this function existing
+ * (card a62e0f4a, Cybered latent finding). The floor used to run on the weekly axis only, which the
+ * cheaper-tier-wins rule then quietly undid: a QA agent whose BANNER chain reached Haiku beat its
+ * floored weekly target (Sonnet 4.6), so the review gate would have run on Haiku anyway. Peti's rule
+ * carries no axis qualifier ("Haiku SOHA nem lehet"), so the floor has to hold wherever the target is
+ * decided -- clamping one input and then picking the other is not a floor at all.
+ *
+ * Flooring the weekly input too is redundant with the caller today, but it is idempotent and makes
+ * the invariant hold for ANY caller rather than depending on what the caller happened to pre-clamp.
+ *
+ * PURE -- no IO, no module state.
+ */
+export function resolveTargetModel(agentName: string, bannerModel: string, weeklyModel: string): string {
+  const banner = applyNoHaikuFloor(agentName, bannerModel)
+  const weekly = applyNoHaikuFloor(agentName, weeklyModel)
+  return ladderIndexOf(weekly) >= ladderIndexOf(banner) ? weekly : banner
+}
+
 function checkAgent(name: string, nowMs: number, cfg: ModelFallbackConfig, weeklyIdx: number): void {
   // A PARKED sub-agent has no live pane, so the banner axis (which needs to read a usage-limit
   // banner and restart a running session) cannot apply -- but the WEEKLY tier still must update its
@@ -225,11 +250,8 @@ function checkAgent(name: string, nowMs: number, cfg: ModelFallbackConfig, weekl
     weeklyModel = readBaselineModel(name) ?? currentModel
   }
 
-  // Cheaper tier wins: of the banner target and the weekly target, the one FURTHER DOWN THE LADDER
-  // stands, so neither axis undoes the other's downgrade. Compared by ladder position, not by two
-  // different index spaces.
-  const targetModel =
-    ladderIndexOf(weeklyModel) >= ladderIndexOf(bannerModel) ? weeklyModel : bannerModel
+  // Cheaper tier wins, with the no-Haiku floor enforced on BOTH axes. See resolveTargetModel.
+  const targetModel = resolveTargetModel(name, bannerModel, weeklyModel)
   if (!targetModel || targetModel === currentModel) {
     // Even with no model change, a fully-reverted agent (home, tier 0, banner clear) must not keep a
     // stale durable base around -- otherwise a later restart would treat the cheap model as the base.
