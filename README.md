@@ -41,6 +41,7 @@ Ezek a MikroB-fork saját fejlesztései a Marveen-bázison felül — főleg a *
 - **npm-only csomagkezelő-őr (`preinstall`)**: a `package-lock.json` a követett lockfile (az `update.sh`/`install-*.sh`/`recovery-prev-version.sh` mind `npm ci` + `npm rebuild better-sqlite3 --build-from-source` + `npm run build`) — egy idegen csomagkezelő (pnpm/yarn) csendben lecserélheti egy ÉLŐ szolgáltatás függőségi fáját és eltörheti a better-sqlite3 natív bindingját. A `scripts/assert-npm-package-manager.mjs` `preinstall`-őr ezt hangossá teszi: kizárólag POZITÍV pnpm/yarn jelre utasít el, ismeretlen/hiányzó agent esetén átenged.
 - **Update-biztonság + recovery**: `update.sh` ff-only pull + auto-stash + rollback-pont (`store/.update-history`), `recovery-prev-version.sh` korábbi known-good verzióra (a `store/` adat érintetlen); fork-tudatos verzió-ellenőrzés (az update-checker a tracked branchet — `develop` — kérdezi).
 - **Rollback distance-guard (`store/rollback-guard.sh`)**: az automatikus visszaállás nem hisz vakon a rollback-célnak. Mindhárom hívó (`update.sh` build-bukás, `store/update-finalize.sh` health-check, `recovery-prev-version.sh`) csak akkor állít vissza, ha a cél őse a HEAD-nek, legfeljebb 50 committal van hátra, és tartalmazza a padló-commitot (`5bc0983`); különben MEGTAGADJA, a jelenlegi verzión marad, és értesít (`rollback-refused` a `store/.update-history`-ban). Emberi felülbírálás: `--force`. A `scripts/start.sh` induláskor karanténba teszi a duplikált `store/update-health-watchdog.sh`-t, ha visszakerülne. Oka: 2026-08-06-án egy elavult cél háromszor, egyenként 529 committal vitte vissza az élő installt, minden alkalommal „sikerként" naplózva.
+- **Landed-check (`store/fix-landed-check.sh`)**: a „kész" kártya és a valóság közti szakadékot méri. Egy commitra megmondja, merge-elve van-e az integrációs ágba, benne van-e az élő install HEAD-fájában, a fájljai a lemezen vannak-e, és a `dist` ebből épült-e; `--sweep` móddal a kanban REVIEW-kommentjeiből kiszedett commitokra futtatva megmutatja, mely gate-elt munka nincs valójában élesben. Read-only. Oka: 2026-08-06-án egy délután alatt három kártyán derült ki ugyanaz — a fix megvolt, tesztelt és gate-elt, de csak egy feature-ágon élt, és a legrosszabb esetben maga a recidiva-védelem (rollback-guard) volt csak papíron.
 - **Upstream-frissítés-figyelés, két rétegben**: a dashboard áttekintés-nézete folyamatosan (15 percenként, `update-checker.ts`) összeveti a forkot a felmenő Szotasz/marveen-nel és FRISSÍTÉS-BANNERT mutat, ha van lemaradás (`/api/overview`, `getUpdateStatus().marveen.behind`). Emellett egy **napi ütemezett Telegram-digest** (`szotasz-marveen-daily-check.sh`) ugyanezt a cache-et olvassa ki és jelez Petinek, ha a lemaradás száma változott (dedupe azonos értékre) — a passzív dashboard-banner mellett egy aktív napi jelzés is van.
 - **Upstream-frissítés telepítése: elemzés + kockázat + biztonságos restart** (Peti 2026-08-04): a „Frissítés telepítése" gomb (Eredeti Marveen blokk) a mergeelés ELŐTT elemzi a bejövő upstream-commiteket (`analyzeUpstreamChanges`) — hány commit, mely fájlokat érinti, és melyik fájlt módosítottuk MI IS a merge-base óta (a valódi ütközés-kockázati zóna) —, ezt Telegramon jelzi, majd fetch+merge után átadja az irányítást az `update.sh`-nak egy új `POST_MERGE_MODE=1` módban: a pull-lépést kihagyva ugyanaz a rebuild + restart + health-check + auto-rollback fut le, mint a fork-saját frissítésnél (`store/update-finalize.sh`), és a kimenetről Peti Telegramon kap visszajelzést (siker/rollback/kézi-beavatkozás).
 - **WSL-natív üzemeltetés**: cross-platform Node-pin (Linux/WSL rendszer-node fallback a better-sqlite3 ABI-hoz), Windows-boot autostart (WSL-en belül systemd + linger, Windows-oldali indító); az installer a `sqlite3` és `jq` CLI-t is telepíti.
@@ -225,7 +226,18 @@ A `scripts/monitor_agents.sh` egyetlen tmux `monitor` session-be fogja össze az
 ./recovery-prev-version.sh --list        # elérhető rollback-pontok
 ./recovery-prev-version.sh --dry-run     # mit tenne (nincs változás)
 ./store/rollback-guard.sh --check <sha>  # elfogadható-e ez a rollback-cél?
+./store/fix-landed-check.sh --commit <sha>  # tényleg földet ért-e ez a fix?
+./store/fix-landed-check.sh --sweep         # mely "kész" kártyák kódja nincs élesben?
 ```
+
+**Landed-check (`store/fix-landed-check.sh`).** A „commitolva" nem azonos azzal, hogy „élesben van".
+Egy commitra négy kérdést válaszol meg: benne van-e az integrációs ágban (`origin/develop`), benne
+van-e az élő install HEAD-fájában, az általa érintett fájlok ott vannak-e a lemezen is, és a
+`dist/.built-commit` szerint tartalmazza-e a lefordított build. Első sora gép-olvasható
+(`LANDED` / `NOT-LANDED <ok-lista>` / `ERROR:<ok>`), exit 0/1/2. A `--sweep` a kanban REVIEW-kommentjeiből
+szedi ki a commitokat, és megmondja, mely késznek jelentett kártya kódja nincs valójában élesben.
+Szigorúan **csak olvas**: git plumbing, read-only SQLite, `stat` — nem mergel, nem checkoutol, nem
+indít újra semmit.
 
 A valós rollback újraindítja a szolgáltatást — éles visszaállást a tulajdonos futtat manuálisan.
 
