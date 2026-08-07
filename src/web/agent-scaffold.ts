@@ -369,6 +369,7 @@ export function writeAgentSettingsFromProfile(name: string, profile: ProfileTemp
   if (agentGetsGovernanceGates(name)) injectSelfPaceGate(existing)
   injectEgressGate(existing)
   injectGitProtectGuard(existing)
+  injectNpmProtectGuard(existing)
   atomicWriteFileSync(settingsPath, JSON.stringify(existing, null, 2))
 }
 
@@ -501,6 +502,37 @@ export function injectGitProtectGuard(existing: Record<string, unknown>): void {
   ]
 }
 
+// Idempotently wire the npm-protect-guard PreToolUse hook (card 0e135261): blocks
+// `npm ci`/`install`/`add`, the pnpm/yarn equivalents, and `rm -rf node_modules`
+// when they would hit the SHARED checkout's node_modules.
+//
+// Twice in one day an agent ran `npm ci` in the shared tree to verify a dependency
+// and a context-restart landed mid-run. `npm ci` deletes first and installs
+// second, so the interrupted run left node_modules EMPTY; the live dashboard
+// survived only on already-resident modules, and the next restart would have
+// found an unbootable install.
+//
+// Wired here for the same reason as its git sibling: a guard that has to be
+// hand-copied into N settings.json files is not protection (card 0fa54550 --
+// 5 of 13 agents were silently unguarded). Applied to EVERY agent, main included:
+// the danger is not a role, it is the shared checkout.
+export function injectNpmProtectGuard(existing: Record<string, unknown>): void {
+  const hooks = (existing.hooks && typeof existing.hooks === 'object'
+    ? existing.hooks
+    : (existing.hooks = {})) as Record<string, unknown>
+  const command = `python3 "${join(PROJECT_ROOT, 'scripts', 'hooks', 'npm-protect-guard.py')}"`
+  if (isUnsafeHookCommand(command)) return
+  const entry = {
+    matcher: 'Bash',
+    hooks: [{ type: 'command', command, timeout: 10 }],
+  }
+  const prev = Array.isArray(hooks.PreToolUse) ? (hooks.PreToolUse as unknown[]) : []
+  hooks.PreToolUse = [
+    ...prev.filter((e) => !JSON.stringify(e).includes('npm-protect-guard.py')),
+    entry,
+  ]
+}
+
 // Idempotent migration: ensure every agent's settings.json carries the egress
 // gate hook. Called at server startup (alongside ensureAgentStalenessHook) so
 // the hook is applied to both existing and newly-created agents without a full
@@ -524,6 +556,33 @@ export function ensureEgressGate(name: string): boolean {
   if (ptuJson.includes('egress-gate.mjs') && hookCommandWired(ptuJson, command)) return false
   if (isUnsafeHookCommand(command)) return false
   injectEgressGate(settings)
+  if (name !== MAIN_AGENT_ID) mkdirSync(join(agentDir(name), '.claude'), { recursive: true })
+  atomicWriteFileSync(settingsPath, JSON.stringify(settings, null, 2))
+  return true
+}
+
+// Boot-time backfill for the npm-protect guard (card 0e135261).
+//
+// injectNpmProtectGuard alone reaches an agent only when its settings.json is
+// REGENERATED, i.e. on the next spawn. The incident this guards against happened
+// twice in one day, so waiting for every agent to respawn is too slow: this runs
+// in the startup migration loop next to ensureEgressGate, so a dashboard restart
+// arms the whole fleet at once. Returns true when it actually changed a file.
+export function ensureNpmProtectGuard(name: string): boolean {
+  const settingsPath = agentSettingsPath(name)
+  let settings: Record<string, unknown> = {}
+  if (existsSync(settingsPath)) {
+    try { settings = JSON.parse(readFileSync(settingsPath, 'utf-8')) } catch { return false }
+  }
+  const command = `python3 "${join(PROJECT_ROOT, 'scripts', 'hooks', 'npm-protect-guard.py')}"`
+  const hooks = (settings.hooks && typeof settings.hooks === 'object')
+    ? settings.hooks as Record<string, unknown>
+    : {}
+  const ptu = Array.isArray(hooks.PreToolUse) ? hooks.PreToolUse as unknown[] : []
+  const ptuJson = JSON.stringify(ptu)
+  if (ptuJson.includes('npm-protect-guard.py') && hookCommandWired(ptuJson, command)) return false
+  if (isUnsafeHookCommand(command)) return false
+  injectNpmProtectGuard(settings)
   if (name !== MAIN_AGENT_ID) mkdirSync(join(agentDir(name), '.claude'), { recursive: true })
   atomicWriteFileSync(settingsPath, JSON.stringify(settings, null, 2))
   return true
