@@ -5,7 +5,7 @@ description: Minden waiting kartya gate-verdiktjenek azonnali kezelese: PASS->za
 
 GATE-RECONCILER (MikroB kotelesseg: a flotta SOHA ne varjon rad egy elvegzett gate-verdikt vagy egy FAIL utan). Nem-trivialis, de rutin -> csendben dolgozz.
 1. Ido+kvota: `date`; `bash {{INSTALL_DIR}}/store/quota-check.sh`. Ha limit -> csendben kilep (a kvota-taskok kezelik).
-1b. HARD-STOP FLAG (card d08b98f4): `cat {{INSTALL_DIR}}/store/weekly-hard-stop.json`. Ha `active:true` -> a heti test-stop kuszob at van lepve, EVEN GATE-MUNKA leall: NE dispatchelj UJ gate-et (a 3. lepes 3. franciabekezdese TILOS ilyenkor), csak (a) MAR meglevo PASS/GO kartyakat zarj, (b) parkolj minden role-agentet akinek nincs elo munkaja (kiveve mikrob). Ha `active:false` -> tovabb normalisan.
+1b. HARD-STOP FLAG (card d08b98f4): `cat {{INSTALL_DIR}}/store/weekly-hard-stop.json`. Ha `active:true` -> a heti test-stop kuszob at van lepve, EVEN GATE-MUNKA leall: NE dispatchelj UJ gate-et (a 3. lepes 3. franciabekezdese TILOS ilyenkor), csak (a) MAR meglevo PASS/GO kartyakat zarj, (b) parkolj minden role-agentet akinek nincs elo munkaja (kiveve {{MAIN_AGENT_ID}}). Ha `active:false` -> tovabb normalisan.
 2. Listazd a WAITING kanban kartyakat: `curl -s -H "Authorization: Bearer $(cat {{INSTALL_DIR}}/store/.dashboard-token)" http://localhost:3420/api/kanban` (status==waiting). Mindegyikre olvasd a kommenteket (/api/kanban/<id>/comments) es a kijelolt gate-tiert.
 3. Dontes kartyankent:
    - MINDEN kijelolt gate PASS/GO es nincs kotott-blokk -> PUT status:done + zaro komment. Utana ellenorizd a szulo-fazis auto-lezarasat (CLAUDE.md 5. szabaly, rekurzivan felfele).
