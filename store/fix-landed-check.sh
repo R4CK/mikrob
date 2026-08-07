@@ -138,6 +138,12 @@ check_commit() {
   # 3. the files it touched actually exist on disk. A commit can be an ancestor of
   #    HEAD and the file still be gone: a later commit may have removed it, or a
   #    detached-HEAD window may have left the tree inconsistent.
+  #    `-m --first-parent` is REQUIRED: without it `git show --name-only` prints
+  #    NOTHING for a merge commit, so the loop below ran zero times and the check
+  #    reported "files: OK -- all 0 files present" -- a vacuous pass on exactly the
+  #    commits that matter most. Measured on 6ac4d10: 0 files without the flags, 5
+  #    with. --first-parent picks the diff against the mainline, i.e. what the merge
+  #    actually brought in.
   local missing=0 checked=0 f
   while IFS= read -r f; do
     [ -n "$f" ] || continue
@@ -147,9 +153,14 @@ check_commit() {
     elif [ ! -e "$INSTALL/$f" ]; then
       missing=$((missing + 1)); details+=("file: a HEAD-ben benne van, de a LEMEZEN nincs -- $f")
     fi
-  done < <(git -C "$INSTALL" show --pretty=format: --name-only --diff-filter=d "$full" 2>/dev/null | sort -u)
+  done < <(git -C "$INSTALL" show -m --first-parent --pretty=format: --name-only --diff-filter=d "$full" 2>/dev/null | sed '/^$/d' | sort -u)
   if [ "$missing" -gt 0 ]; then
     reasons+=("files-missing")
+  elif [ "$checked" -eq 0 ]; then
+    # Nothing enumerated means nothing was verified. Reporting OK here is the
+    # false-green this whole tool exists to catch.
+    unknowns+=("files-unverifiable")
+    details+=("files: NEM ELLENORIZHETO -- a commit egyetlen fajlt sem sorolt fel")
   else
     details+=("files: OK -- mind a $checked erintett fajl a helyen van")
   fi

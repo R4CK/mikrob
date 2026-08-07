@@ -176,6 +176,52 @@ describe('fix-landed-check.sh (card f507541b)', () => {
     }
   })
 
+  // QA2 F3 on d4d8c56: `git show --name-only` prints NOTHING for a merge commit unless given
+  // `-m --first-parent`, so the file loop ran zero times and the check reported "all 0 files present".
+  // Measured on the real 6ac4d10: 0 files without the flags, 5 with. Merge commits are exactly the
+  // ones a landing check gets pointed at, so the blind spot sat on the hot path.
+  it('enumerates a merge commit\'s files instead of vacuously passing on zero', () => {
+    const { dir, base } = makeInstall()
+    try {
+      git(dir, 'checkout', '-q', '-b', 'side', base)
+      writeFileSync(join(dir, 'side-file'), 'from the side branch')
+      git(dir, 'add', 'side-file')
+      git(dir, 'commit', '-q', '-m', 'side work')
+      git(dir, 'checkout', '-q', 'fake-integration')
+      git(dir, 'merge', '-q', '--no-ff', 'side', '-m', 'merge side')
+      const mergeSha = git(dir, 'rev-parse', 'HEAD')
+      mkdirSync(join(dir, 'dist'), { recursive: true })
+      writeFileSync(join(dir, 'dist', '.built-commit'), mergeSha)
+
+      // the file the merge brought in is gone from disk -> only visible if the merge is enumerated
+      unlinkSync(join(dir, 'side-file'))
+      const r = run(['--commit', mergeSha, '--install', dir, '--ref', 'fake-integration'])
+      expect(r.out).toContain('files-missing')
+      expect(r.out).toContain('side-file')
+      expect(r.out).not.toMatch(/mind a 0 erintett fajl/) // the vacuous pass
+      expect(r.status).toBe(1)
+    } finally {
+      rmSync(dir, { recursive: true, force: true })
+    }
+  })
+
+  it('reports files-unverifiable when a commit enumerates no files at all', () => {
+    const { dir, feat } = makeInstall()
+    try {
+      git(dir, 'commit', '-q', '--allow-empty', '-m', 'empty commit')
+      const empty = git(dir, 'rev-parse', 'HEAD')
+      mkdirSync(join(dir, 'dist'), { recursive: true })
+      writeFileSync(join(dir, 'dist', '.built-commit'), empty)
+      git(dir, 'branch', '-f', 'fake-integration', empty)
+      const r = run(['--commit', empty, '--install', dir, '--ref', 'fake-integration'])
+      expect(r.out.split('\n')[0]).toMatch(/^UNKNOWN .* files-unverifiable/)
+      expect(r.status).toBe(3)
+      expect(feat).toBeTruthy()
+    } finally {
+      rmSync(dir, { recursive: true, force: true })
+    }
+  })
+
   it('reports missing-commit rather than guessing, for an unknown sha', () => {
     const { dir } = makeInstall()
     try {
