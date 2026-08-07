@@ -48,8 +48,13 @@ printf 'Authorization: Bearer %s\n' "$(cat "$TOKEN_FILE")" > "$HDR_FILE"
 
 api() {
   # $1=method $2=path ; body on stdin when POST/PATCH
+  # --max-time: this worker calls its OWN dashboard API. If the dashboard is
+  # wedged (listener alive, not responding), an unbounded curl hangs forever,
+  # which then blocks the poke scheduled-task's cron slot and stalls systemd
+  # stop (KillMode=process leaves this bash+curl running) -- a self-reinforcing
+  # restart-loop that fed a false auto-rollback trigger (Cybersec, 2026-08-06).
   local method="$1" path="$2"
-  curl -fsS -X "$method" "$API$path" \
+  curl -fsS --max-time 20 -X "$method" "$API$path" \
     -H "@$HDR_FILE" \
     -H 'Content-Type: application/json' \
     ${3:+--data-binary @-}
