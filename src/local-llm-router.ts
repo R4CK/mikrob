@@ -202,6 +202,52 @@ export function hasAmbiguitySignal(description: string): boolean {
   return AMBIGUITY_SIGNALS.some((needle) => text.includes(needle))
 }
 
+
+/**
+ * Signals that a task is HARD, used only when the caller declared no difficulty.
+ *
+ * WHY THIS EXISTS (card c7a0c142, Cybersec on the c6cc2c97 gate). Without `--difficulty` the gate
+ * below never ran: the threshold reached the REASON STRING and nothing else, so the ceiling applied
+ * to whoever declared honestly and not to whoever left the flag off. A control that only binds the
+ * cooperative caller is not a control, and this one guards the local 7B's reliability limit.
+ *
+ * DELIBERATELY NARROW. The fleet directive is to offload aggressively, and a false "too hard" costs
+ * a real offload every time it fires. So these match only work that is hard by SHAPE -- several
+ * files, a whole module, a schema change carried with its code, a design decision -- never mere
+ * length or vocabulary. Anything unmatched keeps today's default-local answer untouched.
+ */
+const HARDNESS_SIGNALS: ReadonlyArray<readonly [CodingDifficulty, RegExp]> = [
+  // Design/architecture asks: the caller wants a decision made, not a function written.
+  ['architecture', /\b(design|architect|re-?architect)\b[^.]{0,40}\b(system|architecture|schema|data model|module|service|integration)\b/],
+  ['architecture', /\b(architecture|architectural)\b[^.]{0,30}\b(change|refactor|decision|redesign)\b/],
+  // Work whose unit is "the whole thing" rather than a named function.
+  ['feature', /\b(across|throughout)\b[^.]{0,25}\b(the )?(codebase|repo|repository|app|application|project)\b/],
+  ['feature', /\b(multi|several|multiple)[-\s]?(file|files|module|modules|package|packages)\b/],
+  ['feature', /\b(end[-\s]?to[-\s]?end|full[-\s]?stack)\b/],
+  ['feature', /\b(wire|wiring|hook)\s+up\b[^.]{0,30}\b(route|endpoint|adapter|store|handler|service)\b/],
+  // A migration travelling with the code that reads it is never an isolated snippet.
+  ['feature', /\bmigration\b[^.]{0,40}\b(and|plus|\+)\b[^.]{0,30}\b(adapter|handler|endpoint|route|store|code)\b/],
+  ['feature', /\b(rewrite|overhaul|port)\b[^.]{0,25}\b(the )?(module|package|service|feature|page)\b/],
+]
+
+/**
+ * The difficulty implied by a description, or null when nothing hard is visible.
+ *
+ * Returns the HIGHEST level any signal implies -- one architecture-shaped phrase is enough, because
+ * the cost of under-calling here is a 7B draft nobody can use.
+ */
+export function inferDifficulty(description: string): CodingDifficulty | null {
+  const text = normalizeForMatch(description)
+  let worst: CodingDifficulty | null = null
+  for (const [level, pattern] of HARDNESS_SIGNALS) {
+    if (!pattern.test(text)) continue
+    if (worst === null || CODING_DIFFICULTY_LEVELS.indexOf(level) > CODING_DIFFICULTY_LEVELS.indexOf(worst)) {
+      worst = level
+    }
+  }
+  return worst
+}
+
 /**
  * Route one task: LOCAL by default, ONLINE only when a non-offloadable category matches, the
  * declared difficulty exceeds the configured threshold, or the input is ambiguous/unusable.
@@ -237,8 +283,24 @@ export function routeTask(input: RouteInput): RouteDecision {
     return { route: 'local', reason: `difficulty '${declared}' within threshold '${threshold}'`, difficulty: declared }
   }
 
-  // No declared difficulty and no blocking signal -> the new DEFAULT is local.
-  return { route: 'local', reason: `default-local (no blocking signal, threshold '${threshold}')` }
+  // No declared difficulty: INFER one rather than skipping the gate (card c7a0c142). Undeclared
+  // used to mean unguarded, which made omitting --difficulty the cheapest way past the ceiling.
+  const inferred = inferDifficulty(description)
+  if (inferred !== null && !isDraftableLocally(inferred, threshold)) {
+    return {
+      route: 'online',
+      reason: `inferred difficulty '${inferred}' exceeds threshold '${threshold}' (undeclared)`,
+      difficulty: inferred,
+    }
+  }
+  // Nothing hard visible -> the DEFAULT stays local, as before.
+  return inferred === null
+    ? { route: 'local', reason: `default-local (no blocking signal, threshold '${threshold}')` }
+    : {
+        route: 'local',
+        reason: `inferred difficulty '${inferred}' within threshold '${threshold}' (undeclared)`,
+        difficulty: inferred,
+      }
 }
 
 /** The levels that can never be offloaded, for callers that want to show the ceiling. */
