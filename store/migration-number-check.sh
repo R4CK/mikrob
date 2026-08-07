@@ -126,6 +126,13 @@ case "${1:-}" in
     REPO="${2:-$REPO_DEFAULT}"; BASE="${3:-origin/main}"
     [[ -d "$REPO/.git" ]] || { echo "SKIP: $REPO is not a git repo"; exit 0; }
     git -C "$REPO" rev-parse --verify "$BASE" >/dev/null 2>&1 || { echo "SKIP: base ref $BASE not found"; exit 0; }
+    # A repo with no migrations directory must SAY SO, not report a clean board. Without this the
+    # wrong --repo argument produces "SUMMARY: 0 collision(s)" + exit 0, indistinguishable from a
+    # genuinely clean run -- a confident green on a tree the check never looked at. Same principle
+    # as a test runner that must fail rather than skip when its fixture is missing.
+    if ! git -C "$REPO" cat-file -e "${BASE}:${MIG_DIR}" 2>/dev/null; then
+      echo "SKIP: $MIG_DIR does not exist on $BASE in $REPO -- nothing was checked"; exit 0
+    fi
     out="$(_collect "$REPO" "$BASE" | _decide)"
     echo "$out"
     grep -q '^COLLISION:' <<< "$out" && exit 8 || exit 0
@@ -134,6 +141,8 @@ case "${1:-}" in
   next)
     REPO="${2:-$REPO_DEFAULT}"; BASE="${3:-origin/main}"
     [[ -d "$REPO/.git" ]] || { echo "SKIP: $REPO is not a git repo"; exit 0; }
+    git -C "$REPO" cat-file -e "${BASE}:${MIG_DIR}" 2>/dev/null || {
+      echo "SKIP: $MIG_DIR does not exist on $BASE in $REPO -- refusing to invent 0001" >&2; exit 3; }
     highest="$(git -C "$REPO" ls-tree -r --name-only "$BASE" -- "$MIG_DIR" 2>/dev/null \
       | sed -nE 's#.*/([0-9]{3,4})_.*#\1#p' | sort -n | tail -1)"
     _collect "$REPO" "$BASE" | _next_free "$((10#${highest:-0}))"
