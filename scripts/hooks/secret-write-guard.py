@@ -35,9 +35,49 @@ PATTERNS = [
     ("Stripe live secret key", re.compile(r"\bsk_live_[0-9A-Za-z]{24,}")),
 ]
 
-# Placeholder / example values that legitimately look secret-ish. If the matched
-# span is one of these, it is not a real leak -> allow.
-PLACEHOLDER_RX = re.compile(r"(?:EXAMPLE|XXXX|PLACEHOLDER|YOUR[_-]?|\.\.\.|<[^>]+>)", re.IGNORECASE)
+# Placeholder / example values that legitimately look secret-ish.
+#
+# THIS IS DELIBERATELY NARROW (card 746ea4e4). The previous version searched a +-20 character WINDOW
+# around the match, so anything nearby could wave a REAL key through: Cybersec measured a bare key
+# blocked, the same key ALLOWED once "EXAMPLE" or even a `<div>` sat within 20 characters, and blocked
+# again at 60. `<[^>]+>` was the worst of it -- in any TSX/HTML file a tag within 20 characters of a
+# string is ordinary, so this leaked by ACCIDENT, not only by someone gaming it.
+#
+# That is the same shape as a secret scanner that lets the scanned CONTENT switch the control off.
+# The rule now looks ONLY at the matched span itself, two ways:
+#
+#   1. the span is an exact, published example value (vendors mint these precisely so docs can show
+#      a key without it being one), or
+#   2. the span CONTAINS a placeholder marker -- `AKIAXXXXXXXXXXXXXXXX` is self-evidently not a key.
+#
+# Neighbouring text no longer votes. A real key next to the word EXAMPLE is now blocked, which is
+# the point: the only thing that can prove a key is fake is the key.
+
+# Exact published example values, compared case-insensitively against the whole matched span.
+KNOWN_EXAMPLE_SECRETS = frozenset(
+    v.lower()
+    for v in (
+        # AWS's own documentation keys (IAM user guide / CLI docs).
+        "AKIAIOSFODNN7EXAMPLE",
+        "ASIAIOSFODNN7EXAMPLE",
+        "AKIAI44QH8DHBEXAMPLE",
+    )
+)
+
+# Filler markers that must appear INSIDE the matched secret, not merely near it. Deliberately only
+# the self-evident ones: a span containing XXXX or PLACEHOLDER or YOUR_ is nobody's live credential.
+#
+# EXAMPLE is NOT here, even though vendors put it in their published keys -- those go through the
+# exact list above instead. A mutation showed why: with EXAMPLE as an in-span marker, deleting the
+# whole KNOWN_EXAMPLE_SECRETS list changed nothing and every test still passed, i.e. the list was
+# dead code pretending to be a control. Keeping the precise rule precise makes it load-bearing, and
+# "EXAMPLE appears somewhere in these 20 characters" is the loosest of the markers anyway.
+PLACEHOLDER_IN_SPAN_RX = re.compile(r"(?:XXXX|PLACEHOLDER|YOUR[_-]?)", re.IGNORECASE)
+
+
+def _is_placeholder(span):
+    """True only if the SPAN itself proves it is not a live credential."""
+    return span.lower() in KNOWN_EXAMPLE_SECRETS or bool(PLACEHOLDER_IN_SPAN_RX.search(span))
 
 
 def _content_from(tool_name, tool_input):
@@ -82,9 +122,8 @@ def main():
         if not m:
             continue
         span = m.group(0)
-        # Skip obvious placeholders/examples.
-        window = content[max(0, m.start() - 20): m.end() + 20]
-        if PLACEHOLDER_RX.search(window):
+        # Judged on the span alone -- surrounding text cannot vouch for it (card 746ea4e4).
+        if _is_placeholder(span):
             continue
         sys.stderr.write(
             "SECRET-WRITE-GUARD: a beirni kivant tartalom valodinak tuno titkot "
