@@ -18,6 +18,7 @@ import { OWNER_NAME, BOT_NAME, MAIN_AGENT_ID, STORE_DIR, WEB_HOST, WEB_PORT, KAN
 import { listAgentNames, readAgentDisplayName } from '../agent-config.js'
 import { isAgentRunning } from '../agent-process.js'
 import { readHardStop, isNewDevStartBlocked } from '../../costops/weekly-hard-stop.js'
+import { landedGuardVerdict } from '../kanban-landed-guard.js'
 
 // Weekly NEW-DEV stop enforcement (Peti 2026-08-01). The newDevStop threshold was COMPUTED and shown,
 // but nothing refused the work: role agents self-advance to the next `planned` card on their own and
@@ -343,6 +344,13 @@ export async function tryHandleKanban(ctx: RouteContext): Promise<boolean> {
       json(res, { error: NEW_DEV_STOP_MESSAGE }, 409)
       return true
     }
+    // Closing a card is the only moment where "did this actually land?" changes the outcome
+    // (card 9cc72f2c). Applies to BOTH close paths -- PUT with a status and POST /move -- because
+    // guarding one of two doors guards neither.
+    {
+      const v = landedGuardVerdict(id, data.status, force === true, typeof actor === 'string' ? actor : undefined)
+      if (v.blocked) { json(res, { error: v.message }, 409); return true }
+    }
     if (updateKanbanCard(id, data, { actor: typeof actor === 'string' ? actor : undefined, force: force === true })) {
       json(res, { ok: true }); return true
     }
@@ -375,6 +383,10 @@ export async function tryHandleKanban(ctx: RouteContext): Promise<boolean> {
     if (newDevStopWouldBlock(id, status, force === true, typeof actor === 'string' ? actor : undefined)) {
       json(res, { error: NEW_DEV_STOP_MESSAGE }, 409)
       return true
+    }
+    {
+      const v = landedGuardVerdict(id, status, force === true, typeof actor === 'string' ? actor : undefined)
+      if (v.blocked) { json(res, { error: v.message }, 409); return true }
     }
     if (moveKanbanCard(id, status, sort_order ?? 0, actor, force === true)) {
       // Wake the assigned agent once when the card enters in_progress.
