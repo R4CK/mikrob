@@ -876,6 +876,12 @@ const AUTONOMY_BLOCK_RE = new RegExp(
   `${AUTONOMY_BEGIN.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}[\\s\\S]*?${AUTONOMY_END.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}`,
 )
 
+const LOCAL_FIRST_BEGIN = '<!-- BEGIN GENERATED: local-llm-first (auto-generated, do not edit by hand) -->'
+const LOCAL_FIRST_END = '<!-- END GENERATED: local-llm-first -->'
+const LOCAL_FIRST_BLOCK_RE = new RegExp(
+  `${LOCAL_FIRST_BEGIN.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}[\\s\\S]*?${LOCAL_FIRST_END.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}`,
+)
+
 // Builds the text body that goes between the BEGIN/END markers.
 // Single source of truth -- called by both generateClaudeMd() (initial
 // generation) and ensureFleetRosterSection() (idempotent update on respawn).
@@ -1038,6 +1044,80 @@ export function ensureFleetRosterSection(name: string): void {
   } else {
     updated = existing.trimEnd() + '\n\n' + block + '\n'
   }
+
+  if (updated === existing) return
+  atomicWriteFileSync(claudeMdPath, updated)
+}
+
+// Builds the local-first reminder body (card 3828a2b6, Peti direktíva 2026-08-07).
+//
+// Why this is injected rather than written into the seed templates: measured on 2026-08-07, NONE of
+// the 11 seed personas and NONE of the 14 live agents mentioned the local model at all. Editing 25
+// files by hand would drift immediately, and `agents/` is gitignored -- a live edit is not version
+// controlled and does not survive a fresh install. The generated block is the only surface that
+// reaches every agent (including the lane clones like backend2/qa2 that have no seed persona) from
+// one version-controlled source.
+//
+// The skill itself carries the full procedure and the NOT-list; this block deliberately does not
+// restate them. Its whole job is to move the DEFAULT: the skill is only read once an agent decides
+// it is relevant, and an agent mid-card does not stop to ask "should this be local?". This puts the
+// question in the standing context instead.
+function buildLocalFirstBody(): string {
+  return [
+    '## Lokális LLM: alapértelmezés szerint ELŐSZÖR ott próbáld',
+    '',
+    'Ha munka közben olyan egységhez érsz, ami ÖNMAGÁBAN körülhatárolt, az ELSŐ lépés a lokális',
+    'modell, nem az online Claude. Nem a dispatch-időben kapott draftra vársz: magadtól kéred.',
+    '',
+    'Konkrétan ilyen egységeknél:',
+    '- új teszt-fájl egy függvényhez, aminek a szignatúrája már megvan',
+    '- kis segédfüggvény pontos specifikációból',
+    '- i18n draft-string vagy draft-fájl egy meglévő kulcslistából',
+    '- egyszerű CRUD/boilerplate egy már megtervezett store-hoz',
+    '',
+    'A hívás és a teljes eljárás a `local-llm-offload` skillben van (azt kövesd, ne ezt a blokkot):',
+    '',
+    '```bash',
+    '/home/neon/marveen/store/local-llm-rag.sh --task code --caller <a te agent_id-d> \\',
+    '  --context "<a szükséges típusok/szignatúrák>" "<a pontos feladat>"',
+    '```',
+    '',
+    'Amit a mérés mond (2026-08-07, meleg modell): egy valós közepes feladat (segédfüggvény + 3 teszt)',
+    '**26,8 mp** alatt kész, használható kimenettel. Az ELSŐ hívás tétlenség után viszont sokkal lassabb',
+    'lehet (egy mérésem 120 mp-nél kifutott, a rákövetkezők 27-33 mp voltak) -- ez egyszeri modell-betöltési',
+    'költség, NEM azt jelenti, hogy a lokális LLM halott. Egyetlen lassú hívásból ne vond le, hogy nem megy.',
+    '',
+    'A kimenet DRAFT: elolvasod, lefuttatod a typecheck-et és a teszteket, és a helyességért TE felelsz.',
+    'Ugyanarra az egységre 3 sikertelen lokális próba után állj le, és írd meg online.',
+    '',
+    'ONLINE marad, és a router is így dönt: authz, tenant-izoláció, architektúra, több-fájlos wiring,',
+    'biztonsági döntés. Ha `route: online` jön vissza, ne vitatkozz vele -- írd meg magad.',
+  ].join('\n')
+}
+
+// Idempotently ensures the local-first block is present in the agent's CLAUDE.md.
+// Called on every startAgentProcess(), same as the roster and autonomy blocks, so existing agents
+// pick it up on respawn with no manual migration. Idempotency contract mirrors
+// ensureFleetRosterSection (five rules apply).
+export function ensureLocalFirstSection(name: string): void {
+  const claudeMdPath =
+    name === MAIN_AGENT_ID
+      ? join(PROJECT_ROOT, 'CLAUDE.md')
+      : join(agentDir(name), 'CLAUDE.md')
+  if (!existsSync(claudeMdPath)) return
+
+  const block = `${LOCAL_FIRST_BEGIN}\n${buildLocalFirstBody()}\n${LOCAL_FIRST_END}`
+
+  let existing: string
+  try {
+    existing = readFileSync(claudeMdPath, 'utf-8')
+  } catch {
+    return
+  }
+
+  const updated = LOCAL_FIRST_BLOCK_RE.test(existing)
+    ? existing.replace(LOCAL_FIRST_BLOCK_RE, block)
+    : existing.trimEnd() + '\n\n' + block + '\n'
 
   if (updated === existing) return
   atomicWriteFileSync(claudeMdPath, updated)
