@@ -36,8 +36,15 @@ if (found.length > 0) {
   throw new Error(
     `REFUSING TO RUN TESTS: ${repoRoot} looks like a LIVE install (found: ${found.join(', ')}). ` +
       'The suite mutates files under the checkout it runs in (store/, .env, .claude/skills/). ' +
+      // SUITERED807 (upstream) reached the same conclusion we did: the remedy must not send
+      // people to /tmp, because our own hook-path guard (isUnsafeHookCommand) rejects a
+      // /tmp-prefixed PROJECT_ROOT and 7 suites then go falsely red. Keeping OUR remedy --
+      // `store/fleet-test.sh` is fork-specific and does more than a bare worktree: it reuses one
+      // durable non-/tmp checkout, symlinks node_modules and refuses temp-dir targets -- and
+      // adopting upstream's reasoning for why /tmp is the wrong answer.
       'Run it via `store/fleet-test.sh` (optionally with vitest paths/args), which reuses the ' +
-      'fleet test worktree. Do NOT use a /tmp worktree: 7 suites skip there because the ' +
-      'hook-registration guard rejects /tmp-rooted script paths.',
+      'fleet test worktree UNDER YOUR HOME. Do NOT use a /tmp worktree: the hook-registration ' +
+      'guard rejects /tmp-rooted script paths, so 7 suites would skip and the gate tests would ' +
+      'go falsely red there.',
   )
 }
