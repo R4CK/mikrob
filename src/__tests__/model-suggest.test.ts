@@ -1,5 +1,6 @@
 import { describe, it, expect } from 'vitest'
 import { classifyPersona, suggestForAgent , humanModelLabel } from '../web/model-suggest.js'
+import { DEFAULT_MODEL_CHAIN } from '../model-fallback.js'
 import { DISTRIBUTION_DEFAULT_AGENT_MODEL } from '../config-registry.js'
 
 describe('classifyPersona', () => {
@@ -215,8 +216,17 @@ describe('suggestForAgent -- reason structure (6 sections)', () => {
 // endpoint before the fix: 8 of 10 agents were suggested 4.8, 7 of them with
 // changeAdvised, 5 of those running Opus 5; after: 0 of 10).
 describe('MODELSUGGEST807 -- top tier is the shipped distribution default', () => {
-  it('the constant this suite locks to is Opus 5 (1M) today', () => {
-    expect(DISTRIBUTION_DEFAULT_AGENT_MODEL).toBe('claude-opus-5[1m]')
+  // FORK DIVERGENCE, deliberate. Upstream ships `claude-opus-5[1m]`; this fork ships
+  // `claude-opus-5`. Both sides documented a reason, and ours is an invariant our own code
+  // enforces: the distribution default must EQUAL DEFAULT_MODEL_CHAIN[0], because chain[0] is
+  // what a quota revert climbs back UP to -- a default above the chain primary makes a new
+  // agent's first revert a silent DOWNGRADE (card d041760b, Peti 2026-08-06). Our chain[0] is
+  // `claude-opus-5`; upstream's is still `claude-opus-4-8[1m]`, a rung Peti removed from our
+  // ladder. Adopting upstream's literal would break our invariant AND reintroduce 4.8.
+  // Asserted against the constant's neighbour rather than a literal, so the pair cannot drift.
+  it('the distribution default equals the fallback chain primary (fork invariant)', () => {
+    expect(DISTRIBUTION_DEFAULT_AGENT_MODEL).toBe('claude-opus-5')
+    expect(DISTRIBUTION_DEFAULT_AGENT_MODEL).toBe(DEFAULT_MODEL_CHAIN[0])
   })
 
   it('an agent already ON the distribution default is never advised to change tier upward', () => {
