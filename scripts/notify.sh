@@ -74,7 +74,8 @@ fi
 # is silently dropped from `text`, and it can even override a later field such as parse_mode.
 # --data-urlencode percent-encodes the value, so the whole message arrives intact. Behaviour
 # is identical for ordinary ASCII messages, so every existing caller is unaffected.
-curl -s -X POST "https://api.telegram.org/bot${TOKEN}/sendMessage" \
+printf 'url = "https://api.telegram.org/bot%s/sendMessage"\n' "$TOKEN" \
+  | curl -s -X POST -K - \
   --data-urlencode "chat_id=${CHAT_ID}" \
   --data-urlencode "text=${MESSAGE}" \
   --data-urlencode "parse_mode=HTML" > /dev/null

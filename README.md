@@ -40,6 +40,8 @@ Ezek a MikroB-fork saját fejlesztései a Marveen-bázison felül — főleg a *
 - **Kvóta-menedzsment, két rendszerben**: (1) **5 órás session-limit** figyelés + banner-detektálás, auto-resume a valós reset-időre. (2) **Heti-% rendszer**, EGYETLEN forrásból (egy script olvassa ki a heti %-ot, egy fájlba írja mindkét küszöböt) — ugyanaz a szám két fokozatú választ vált ki: **60%-nál** (`newDevStopActive`) csak az ÚJ planned-kártya dispatch áll le (gate-munka + folyamatban lévő kártyák mennek tovább, idle nem-gate ügynökök parkolásra kerülnek); **90/92/95%-nál** (dinamikus, a resetig hátralévő idő szerint) minden — a gate-munka is — leáll. A két küszöb ugyanabból az adatból, ugyanazon a válaszúton fut, csak eltérő szigorral.
 - **npm-only csomagkezelő-őr (`preinstall`)**: a `package-lock.json` a követett lockfile (az `update.sh`/`install-*.sh`/`recovery-prev-version.sh` mind `npm ci` + `npm rebuild better-sqlite3 --build-from-source` + `npm run build`) — egy idegen csomagkezelő (pnpm/yarn) csendben lecserélheti egy ÉLŐ szolgáltatás függőségi fáját és eltörheti a better-sqlite3 natív bindingját. A `scripts/assert-npm-package-manager.mjs` `preinstall`-őr ezt hangossá teszi: kizárólag POZITÍV pnpm/yarn jelre utasít el, ismeretlen/hiányzó agent esetén átenged.
 - **Update-biztonság + recovery**: `update.sh` ff-only pull + auto-stash + rollback-pont (`store/.update-history`), `recovery-prev-version.sh` korábbi known-good verzióra (a `store/` adat érintetlen); fork-tudatos verzió-ellenőrzés (az update-checker a tracked branchet — `develop` — kérdezi).
+- **Rollback distance-guard (`store/rollback-guard.sh`)**: az automatikus visszaállás nem hisz vakon a rollback-célnak. Mindhárom hívó (`update.sh` build-bukás, `store/update-finalize.sh` health-check, `recovery-prev-version.sh`) csak akkor állít vissza, ha a cél őse a HEAD-nek, legfeljebb 50 committal van hátra, és tartalmazza a padló-commitot (`5bc0983`); különben MEGTAGADJA, a jelenlegi verzión marad, és értesít (`rollback-refused` a `store/.update-history`-ban). Emberi felülbírálás: `--force`. A `scripts/start.sh` induláskor karanténba teszi a duplikált `store/update-health-watchdog.sh`-t, ha visszakerülne. Oka: 2026-08-06-án egy elavult cél háromszor, egyenként 529 committal vitte vissza az élő installt, minden alkalommal „sikerként" naplózva.
+- **Landed-check (`store/fix-landed-check.sh`)**: a „kész" kártya és a valóság közti szakadékot méri. Egy commitra megmondja, merge-elve van-e az integrációs ágba, benne van-e az élő install HEAD-fájában, a fájljai a lemezen vannak-e, és a `dist` ebből épült-e; `--sweep` móddal a kanban REVIEW-kommentjeiből kiszedett commitokra futtatva megmutatja, mely gate-elt munka nincs valójában élesben. Read-only. Oka: 2026-08-06-án egy délután alatt három kártyán derült ki ugyanaz — a fix megvolt, tesztelt és gate-elt, de csak egy feature-ágon élt, és a legrosszabb esetben maga a recidiva-védelem (rollback-guard) volt csak papíron.
 - **Upstream-frissítés-figyelés, két rétegben**: a dashboard áttekintés-nézete folyamatosan (15 percenként, `update-checker.ts`) összeveti a forkot a felmenő Szotasz/marveen-nel és FRISSÍTÉS-BANNERT mutat, ha van lemaradás (`/api/overview`, `getUpdateStatus().marveen.behind`). Emellett egy **napi ütemezett Telegram-digest** (`szotasz-marveen-daily-check.sh`) ugyanezt a cache-et olvassa ki és jelez Petinek, ha a lemaradás száma változott (dedupe azonos értékre) — a passzív dashboard-banner mellett egy aktív napi jelzés is van.
 - **Upstream-frissítés telepítése: elemzés + kockázat + biztonságos restart** (Peti 2026-08-04): a „Frissítés telepítése" gomb (Eredeti Marveen blokk) a mergeelés ELŐTT elemzi a bejövő upstream-commiteket (`analyzeUpstreamChanges`) — hány commit, mely fájlokat érinti, és melyik fájlt módosítottuk MI IS a merge-base óta (a valódi ütközés-kockázati zóna) —, ezt Telegramon jelzi, majd fetch+merge után átadja az irányítást az `update.sh`-nak egy új `POST_MERGE_MODE=1` módban: a pull-lépést kihagyva ugyanaz a rebuild + restart + health-check + auto-rollback fut le, mint a fork-saját frissítésnél (`store/update-finalize.sh`), és a kimenetről Peti Telegramon kap visszajelzést (siker/rollback/kézi-beavatkozás).
 - **WSL-natív üzemeltetés**: cross-platform Node-pin (Linux/WSL rendszer-node fallback a better-sqlite3 ABI-hoz), Windows-boot autostart (WSL-en belül systemd + linger, Windows-oldali indító); az installer a `sqlite3` és `jq` CLI-t is telepíti.
@@ -223,9 +225,44 @@ A `scripts/monitor_agents.sh` egyetlen tmux `monitor` session-be fogja össze az
 ./update.sh                      # ff-only pull + rebuild + service-restart, rollback-pont mentése
 ./recovery-prev-version.sh --list        # elérhető rollback-pontok
 ./recovery-prev-version.sh --dry-run     # mit tenne (nincs változás)
+./store/rollback-guard.sh --check <sha>  # elfogadható-e ez a rollback-cél?
+./store/fix-landed-check.sh --commit <sha>  # tényleg földet ért-e ez a fix?
+./store/fix-landed-check.sh --sweep         # mely "kész" kártyák kódja nincs élesben?
 ```
 
+**Landed-check (`store/fix-landed-check.sh`).** A „commitolva" nem azonos azzal, hogy „élesben van".
+Egy commitra négy kérdést válaszol meg: benne van-e az integrációs ágban (`origin/develop`), benne
+van-e az élő install HEAD-fájában, az általa érintett fájlok ott vannak-e a lemezen is, és a
+`dist/.built-commit` szerint tartalmazza-e a lefordított build. Első sora gép-olvasható
+(`LANDED` / `NOT-LANDED <ok-lista>` / `UNKNOWN <mit-nem-lehetett-ellenőrizni>` / `ERROR:<ok>`),
+exit 0/1/3/2. Az `UNKNOWN` azért kell, mert **egy le nem futott ellenőrzés nem sikeres ellenőrzés**:
+hiányzó `origin/develop` ref (friss klón) vagy hiányzó `dist/.built-commit` nem lehet néma zöld.
+Ugyanezért utasít el a `--sweep` érvénytelen `--limit`/`--status` értéket és a nulla lefedettséget
+(`ERROR:nothing-checked`, exit 2) — egy elgépelt paraméter nem jelenthet „minden landolt"-at.
+A `--sweep` a kanban REVIEW-kommentjeiből szedi ki a commitokat, és megmondja, mely késznek jelentett
+kártya kódja nincs valójában élesben.
+Szigorúan **csak olvas**: git plumbing, read-only SQLite, `stat` — nem mergel, nem checkoutol, nem
+indít újra semmit.
+
 A valós rollback újraindítja a szolgáltatást — éles visszaállást a tulajdonos futtat manuálisan.
+
+**Rollback distance-guard (`store/rollback-guard.sh`).** Minden automatikus visszaállás átmegy rajta:
+az `update.sh` build-bukás ága, a `store/update-finalize.sh` health-check ága és a
+`recovery-prev-version.sh` is. A cél csak akkor fogadható el, ha (1) őse a jelenlegi HEAD-nek,
+(2) legfeljebb 50 committal van hátra, és (3) tartalmazza a padló-commitot (`5bc0983`, ez vezette ki a
+duplikált `update-health-watchdog.sh`-t). Minden más esetben a visszaállás **megtagadva**: a rendszer a
+jelenlegi verzión marad, a döntés bekerül a `store/.update-history`-ba (`rollback-refused`) és a
+`store/rollback-guard.log`-ba, és a tulajdonos értesítést kap. Tudatos, mélyebb visszaállás emberi
+kézzel továbbra is lehetséges: `./recovery-prev-version.sh --to <sha> --force` (automata hívónak nincs
+ilyen felülbírálása). Érvénytelen (nem numerikus) `ROLLBACK_GUARD_MAX_DISTANCE` az alapértékre esik
+vissza, nem kapcsolja ki az ellenőrzést; minden nem-alapértelmezett konfig nyomot hagy a
+`store/rollback-guard.log`-ban, mert egy gyengített biztonsági kontroll nem lehet néma.
+
+Miért: 2026-08-06-án egy elavult rollback-cél 529 committal vitte vissza az élő installt, egymás után
+háromszor, mindannyiszor „sikeres" naplóbejegyzéssel — a visszaállított fa ugyanis újra magával hozta a
+régi `store/update-health-watchdog.sh`-t, ami ugyanazt az elavult célt olvasta. A `scripts/start.sh`
+ezért induláskor karanténba is teszi ezt a scriptet, ha bárhogy visszakerülne
+(`store/quarantine/`).
 
 ### Remote access key enrollment
 

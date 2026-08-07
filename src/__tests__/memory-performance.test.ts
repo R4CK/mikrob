@@ -117,13 +117,29 @@ describe('getAgentMemories in-process cache', () => {
 // 3. Embedding backfill
 // ---------------------------------------------------------------------------
 describe('backfillEmbeddings', () => {
-  it('returns 0 when all memories already have embeddings or Ollama is unreachable', async () => {
-    // In the test environment Ollama is not running; the function must
-    // complete gracefully and return 0 (no memories without embeddings
-    // that it could successfully embed).
+  it('returns 0 when every memory already has an embedding', async () => {
+    // FLAKY FIX (card 0677c9ad). This used to assume "Ollama is not running in the test
+    // environment" and simply call backfillEmbeddings() on whatever the shared DB happened to
+    // contain. Both halves of that were wrong:
+    //   * backfillEmbeddings() walks EVERY memory with a NULL embedding and sleeps 100ms per row,
+    //     so its runtime is a function of how many rows OTHER test files inserted before it. Run
+    //     alone it saw a handful and passed; run in the full suite it saw enough to blow the 5s
+    //     test timeout. That is the order-dependence -- via row COUNT, not via state leakage.
+    //   * Ollama IS running on this host now (the local-LLM queue work made it a live dependency),
+    //     so each row also costs a real network round-trip instead of failing fast.
+    // The assertion was vacuous anyway: `typeof count === 'number'` and `>= 0` hold for every
+    // possible return value, so the test could only ever fail by timing out.
+    //
+    // Now the test establishes its OWN precondition -- the exact one its name claims -- so it is
+    // independent of suite order and does no network I/O at all.
+    getDb().prepare("UPDATE memories SET embedding = ? WHERE embedding IS NULL").run('[]')
+    const remaining = getDb()
+      .prepare('SELECT COUNT(*) AS n FROM memories WHERE embedding IS NULL')
+      .get() as { n: number }
+    expect(remaining.n).toBe(0) // precondition actually holds
+
     const count = await backfillEmbeddings()
-    expect(typeof count).toBe('number')
-    expect(count).toBeGreaterThanOrEqual(0)
+    expect(count).toBe(0) // nothing to backfill -> exactly 0, not merely ">= 0"
   })
 
   it('processes rows without embeddings and updates them when Ollama responds', async () => {

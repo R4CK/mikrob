@@ -1,0 +1,88 @@
+#!/usr/bin/env bash
+# fleet-test.sh -- the ONE way the fleet runs the vitest suite (card 9070461f).
+#
+# WHY THIS EXISTS. Running `npm test` in the live install is a HARD failure by design
+# (src/__tests__/setup/assert-not-live-install.ts): the suite mutates store/, .env and
+# .claude/skills/ under whatever checkout it runs in, and on 2026-07-27 a full-suite run in
+# production deleted the live config-overrides.json, rewrote .env 600->644, and fired real
+# break-glass Telegram alerts. So a separate checkout is REQUIRED.
+#
+# But the obvious separate checkout is the wrong one. A worktree under /tmp makes 7 test files
+# SKIP -- the hook-registration guard correctly refuses /tmp-rooted script paths, so those suites
+# cannot assert what they exist to assert (see src/__tests__/helpers/repo-location.ts; a "14 failing
+# tests" baseline was once tracked as a defect when 13 were purely this artifact).
+#
+# Every agent was rediscovering both facts and hand-rolling a temp worktree. This script encodes the
+# answer once: ONE durable, non-/tmp worktree, reused across runs and agents.
+#
+# Usage:
+#   store/fleet-test.sh                     # sync to the live install's HEAD, run the whole suite
+#   store/fleet-test.sh src/__tests__/x.ts  # ...run only these paths (any vitest args pass through)
+#   store/fleet-test.sh --ref <sha|branch>  # test a specific commit instead of HEAD
+#   store/fleet-test.sh --path              # print the worktree path and exit (for scripting)
+#
+# Exit: the vitest exit code | 2 bad usage | 3 setup failed
+set -uo pipefail
+
+ROOT="/home/neon/marveen"
+TEST_TREE="${FLEET_TEST_TREE:-/home/neon/marveen-test}"
+
+die() { echo "fleet-test.sh: $2" >&2; exit "$1"; }
+
+case "$TEST_TREE" in
+  /tmp/*|/var/folders/*|/private/var/folders/*)
+    die 2 "FLEET_TEST_TREE points under a temp dir ($TEST_TREE). That is exactly the case this script exists to avoid: 7 suites would silently SKIP there." ;;
+esac
+
+REF=""
+ARGS=()
+while [ $# -gt 0 ]; do
+  case "$1" in
+    --ref)  REF="${2:-}"; shift 2 ;;
+    --path) echo "$TEST_TREE"; exit 0 ;;
+    -h|--help) sed -n '2,30p' "$0"; exit 0 ;;
+    *) ARGS+=("$1"); shift ;;
+  esac
+done
+
+cd "$ROOT" || die 3 "cannot cd to $ROOT"
+[ -n "$REF" ] || REF="$(git rev-parse HEAD)"
+TARGET="$(git rev-parse "$REF" 2>/dev/null)" || die 2 "unknown ref '$REF'"
+
+# Create once, reuse forever. `git worktree add --detach` fails if the path exists, so the
+# create and the update paths are deliberately separate.
+if [ ! -d "$TEST_TREE/.git" ] && [ ! -f "$TEST_TREE/.git" ]; then
+  echo "fleet-test.sh: creating the fleet test worktree at $TEST_TREE (one-time)" >&2
+  git worktree add --detach "$TEST_TREE" "$TARGET" >/dev/null 2>&1 \
+    || die 3 "could not create the worktree at $TEST_TREE"
+else
+  # Reset rather than pull: this tree is a disposable mirror, never a place to author changes.
+  # Anything left in it from a previous run is noise we WANT gone before measuring.
+  git -C "$TEST_TREE" checkout --detach "$TARGET" >/dev/null 2>&1 \
+    || die 3 "could not move $TEST_TREE to $TARGET"
+  git -C "$TEST_TREE" reset --hard "$TARGET" >/dev/null 2>&1
+  git -C "$TEST_TREE" clean -fdq -e node_modules >/dev/null 2>&1
+fi
+
+# Share the live install's node_modules by symlink instead of installing a second copy: the deps are
+# large, and a per-run `npm ci` would dominate the runtime of a 20-second suite. The symlink is
+# re-pointed every run so it cannot go stale.
+if [ ! -e "$TEST_TREE/node_modules" ]; then
+  ln -s "$ROOT/node_modules" "$TEST_TREE/node_modules" 2>/dev/null \
+    || die 3 "could not link node_modules into $TEST_TREE"
+fi
+
+# Belt and braces: prove the guard will let us run. If a live marker ever appears in the test tree
+# (someone pointed FLEET_TEST_TREE at an install), fail HERE with a clear reason rather than letting
+# the suite throw its generic refusal.
+for m in store/.dashboard-token store/claudeclaw.db store/.claude-oauth-token; do
+  [ -e "$TEST_TREE/$m" ] && die 3 "$TEST_TREE contains a LIVE marker ($m) -- it is an install, not a test tree"
+done
+
+echo "fleet-test.sh: $TEST_TREE @ $(git -C "$TEST_TREE" rev-parse --short HEAD)" >&2
+cd "$TEST_TREE" || die 3 "cannot cd to $TEST_TREE"
+if [ ${#ARGS[@]} -gt 0 ]; then
+  exec npx vitest run "${ARGS[@]}"
+else
+  exec npx vitest run
+fi

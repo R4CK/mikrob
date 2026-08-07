@@ -42,15 +42,30 @@ if _health; then _finish success restart 0 ""; fi
 # Restart did not bring the dashboard back -> auto-rollback to the pre-update
 # commit (safe: ff-only ancestor, no force-push, no local-change discard) and
 # restart that, so the box ends on a WORKING old version.
+# Gated by the rollback distance-guard (card 980454f7). Incident 2026-08-06: a
+# stale OLD_FULL sent the live install back 529 commits, three times, each run
+# reported as a successful rollback. A refused rollback is the safer failure --
+# it leaves a visibly broken version instead of a plausible two-week-old one.
+ROLLED_BACK=0
 if [ -n "$OLD_FULL" ]; then
-  git reset --hard "$OLD_FULL" >/dev/null 2>&1 || true
-  npm ci --silent 2>/dev/null || true
-  npm rebuild better-sqlite3 --build-from-source --silent 2>/dev/null || true
-  npm run build --silent 2>/dev/null || true
-  [ -d "$INSTALL_DIR/dist" ] && echo "$OLD_FULL" > "$BUILT"
-  _restart
+  if [ -r "$INSTALL_DIR/store/rollback-guard.sh" ]; then
+    . "$INSTALL_DIR/store/rollback-guard.sh"
+  else
+    rollback_guard_check() { echo "[rollback-guard] MEGTAGADVA: store/rollback-guard.sh hianyzik, a rollback-cel nem ellenorizheto" >&2; return 1; }
+  fi
+  if rollback_guard_check "$INSTALL_DIR" "$(git rev-parse HEAD 2>/dev/null || echo unknown)" "$OLD_FULL" "update-health-check"; then
+    git reset --hard "$OLD_FULL" >/dev/null 2>&1 || true
+    npm ci --silent 2>/dev/null || true
+    npm rebuild better-sqlite3 --build-from-source --silent 2>/dev/null || true
+    npm run build --silent 2>/dev/null || true
+    [ -d "$INSTALL_DIR/dist" ] && echo "$OLD_FULL" > "$BUILT"
+    ROLLED_BACK=1
+    _restart
+  fi
 fi
-if _health; then
+if [ "$ROLLED_BACK" = "0" ]; then
+  _finish failed health-check 1 "A dashboard a frissites utan nem valaszol a ${PORT} porton, a visszaallitast pedig a rollback-guard megtagadta (elavult vagy tul tavoli cel). A rendszer a jelenlegi verzion maradt. Kezi dontes kell: ./recovery-prev-version.sh --list"
+elif _health; then
   _finish rolled-back health-check 6 "A frissites utan a dashboard nem indult el; visszaalltunk a korabbi mukodo verziora (${OLD_SHORT}). A frissites nem ment ki."
 else
   _finish failed health-check 1 "A dashboard a frissites es a visszaallitas utan sem valaszol a ${PORT} porton. Kezi beavatkozas szukseges."

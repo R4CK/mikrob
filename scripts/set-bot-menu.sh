@@ -33,7 +33,8 @@ fi
 # Wait for plugin to set its commands first
 sleep 15
 
-curl -s -X POST "https://api.telegram.org/bot${BOT_TOKEN}/setMyCommands" \
+printf 'url = "https://api.telegram.org/bot%s/setMyCommands"\n' "$BOT_TOKEN" \
+  | curl -s -X POST -K - \
   -H "Content-Type: application/json" \
   -d '{
     "commands": [

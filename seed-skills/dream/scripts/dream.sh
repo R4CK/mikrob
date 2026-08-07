@@ -4,8 +4,37 @@
 # best-effort evidence collection; the agent STILL applies 0d judgment.
 set -euo pipefail
 
-MEM="/home/neon/.claude/projects/-home-neon-marveen/memory"
-PROJECTS="/home/neon/.claude/projects"
+# Portable resolution (card 6eb09d9b). These were hardcoded to one operator's absolute paths, so
+# the skill silently did nothing on any other machine or user -- and seed-skills/ is SHIPPED
+# content, copied to every install. Note {{INSTALL_DIR}} is NOT usable here: update.sh copies
+# seed-skills with a plain `cp` and only substitutes placeholders in seed-scheduled-tasks, so a
+# placeholder would survive literally into the running script.
+PROJECTS="${DREAM_PROJECTS_DIR:-$HOME/.claude/projects}"
+
+# The memory store lives under the project dir Claude Code derives from the INSTALL path, which
+# this script cannot know. Resolve it instead of guessing: an explicit override wins, otherwise
+# auto-detect the single projects dir that has a memory/ inside. Ambiguity is reported, never
+# silently resolved -- writing dream proposals into the wrong install's memory would be worse
+# than stopping.
+if [ -n "${DREAM_MEM_DIR:-}" ]; then
+  MEM="$DREAM_MEM_DIR"
+else
+  _found=""
+  _count=0
+  for _d in "$PROJECTS"/*/memory; do
+    [ -d "$_d" ] || continue
+    _found="$_d"; _count=$((_count + 1))
+  done
+  if [ "$_count" -eq 1 ]; then
+    MEM="$_found"
+  elif [ "$_count" -eq 0 ]; then
+    echo "STOP: no memory store found under $PROJECTS/*/memory. Set DREAM_MEM_DIR to the memory directory." >&2
+    exit 1
+  else
+    echo "STOP: $_count memory stores found under $PROJECTS/*/memory -- ambiguous. Set DREAM_MEM_DIR to the one you mean." >&2
+    exit 1
+  fi
+fi
 PETI_ID="7929620734"
 
 ensure_git() {

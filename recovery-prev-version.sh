@@ -25,6 +25,12 @@
 #   ./recovery-prev-version.sh checkpoint [msg] # record current HEAD as a known-good point (non-destructive)
 #   ./recovery-prev-version.sh --dry-run       # print the plan, change nothing
 #   ./recovery-prev-version.sh --yes           # skip the confirmation prompt
+#   ./recovery-prev-version.sh --to <sha> --force  # override the rollback distance-guard
+#
+# The rollback distance-guard (store/rollback-guard.sh) refuses a target that is
+# not an ancestor of HEAD, is more than 50 commits back, or predates the
+# update-health-watchdog floor commit. --force overrides it for a deliberate
+# operator-driven recovery; automated callers cannot override it.
 #
 # To go forward again after a rollback:  git checkout <branch> && ./update.sh
 set -e
@@ -37,11 +43,12 @@ HIST="$INSTALL_DIR/store/.update-history"
 LOG="$INSTALL_DIR/store/recovery.log"
 mkdir -p "$INSTALL_DIR/store"
 
-TARGET=""; DRY_RUN=0; ASSUME_YES=0; ACTION="rollback"
+TARGET=""; DRY_RUN=0; ASSUME_YES=0; ACTION="rollback"; FORCE=0
 while [ $# -gt 0 ]; do
   case "$1" in
     --to) TARGET="$2"; shift 2 ;;
     --to=*) TARGET="${1#*=}"; shift ;;
+    --force) FORCE=1; shift ;;
     --list) ACTION="list"; shift ;;
     checkpoint) ACTION="checkpoint"; CKPT_MSG="${2:-manual}"; shift; [ $# -gt 0 ] && shift || true ;;
     --dry-run|-n) DRY_RUN=1; shift ;;
@@ -110,6 +117,50 @@ TARGET_SHORT="$(git rev-parse --short "$TARGET_FULL")"
 if [ "$TARGET_FULL" = "$CUR_FULL" ]; then
   echo -e "${ORANGE}A cél megegyezik a jelenlegi verzióval${NC} ($CUR_SHORT). Nincs teendő."
   exit 0
+fi
+
+# ---- rollback distance-guard (card 980454f7) --------------------------------
+# The default target comes from store/.update-history, which can go stale: on
+# 2026-08-06 it named a 529-commit-old SHA and three separate rollbacks walked
+# the live install back to it, each reporting success. The guard rejects a
+# target that is not an ancestor of HEAD, is more than 50 commits back, or sits
+# below the update-health-watchdog floor commit.
+# --force exists for the human operator: an interactive, deliberate deep
+# rollback is a legitimate recovery move, and a guard that made it impossible
+# would be worse than the bug. Automated callers have no such escape hatch.
+if [ -r "$INSTALL_DIR/store/rollback-guard.sh" ]; then
+  # shellcheck source=store/rollback-guard.sh
+  . "$INSTALL_DIR/store/rollback-guard.sh"
+else
+  rollback_guard_check() {
+    echo -e "${RED}[rollback-guard] store/rollback-guard.sh hiányzik${NC} -- a cél nem ellenőrizhető." >&2
+    return 1
+  }
+  rollback_guard_reason() { printf '%s' "store/rollback-guard.sh hiányzik -- a cél nem ellenőrizhető"; }
+fi
+# --dry-run must stay side-effect-free, so it reports the verdict via the
+# no-side-effect reason function instead of the escalating check (which writes
+# history + notifies). A dry run that silently notified the owner would make the
+# "changes nothing" promise false.
+if [ "$DRY_RUN" = "1" ]; then
+  GUARD_REASON="$(rollback_guard_reason "$INSTALL_DIR" "$CUR_FULL" "$TARGET_FULL" 2>/dev/null || true)"
+  if [ -n "$GUARD_REASON" ]; then
+    echo -e "${RED}[rollback-guard] Ezt a célt éles futáskor MEGTAGADNÁ:${NC} $GUARD_REASON"
+    [ "$FORCE" = "1" ] && echo -e "${ORANGE}[--force] ...de a --force felülbírálná.${NC}"
+  else
+    echo -e "${GREEN}[rollback-guard] A cél elfogadható.${NC}"
+  fi
+elif ! rollback_guard_check "$INSTALL_DIR" "$CUR_FULL" "$TARGET_FULL" "recovery-prev-version"; then
+  if [ "$FORCE" = "1" ]; then
+    echo -e "${ORANGE}[--force] A guard tiltását felülbírálod; a visszaállítás folytatódik.${NC}"
+    log "rollback-guard OVERRIDDEN (--force) $CUR_FULL -> $TARGET_FULL"
+  else
+    echo
+    echo -e "${RED}A visszaállítás megtagadva.${NC} A cél nem felel meg a rollback-guard feltételeinek."
+    echo -e "Nézd meg a lehetőségeket: ${BOLD}./recovery-prev-version.sh --list${NC}"
+    echo -e "Ha tudatosan ezt a célt akarod: ${BOLD}./recovery-prev-version.sh --to $TARGET_SHORT --force${NC}"
+    exit 3
+  fi
 fi
 
 echo -e "${BOLD}Visszaállítás:${NC} $CUR_SHORT  ->  $TARGET_SHORT   ${DIM}(${BRANCH})${NC}"

@@ -18,6 +18,25 @@ export MARVEEN_LANG
 # shellcheck source=install-lang.sh
 source "$(dirname "$0")/install-lang.sh"
 
+# --- Rollback distance-guard (card 980454f7) ---------------------------------
+# Every auto-rollback below must clear store/rollback-guard.sh first: ancestor of
+# HEAD, within 50 commits, above the update-health-watchdog floor. Incident
+# 2026-08-06: a stale target rolled the live install back 529 commits, three
+# times in a row, each one logged as a success.
+# The guard missing is itself the anomaly this exists to catch, so the fallback
+# refuses rather than waving the rollback through -- a refused rollback leaves a
+# visibly broken version someone fixes today, a wrong one leaves a plausible old
+# version nobody notices for two weeks.
+if [ -r "$INSTALL_DIR/store/rollback-guard.sh" ]; then
+  # shellcheck source=store/rollback-guard.sh
+  source "$INSTALL_DIR/store/rollback-guard.sh"
+else
+  rollback_guard_check() {
+    echo "[rollback-guard] MEGTAGADVA: store/rollback-guard.sh hianyzik, a rollback-cel nem ellenorizheto" >&2
+    return 1
+  }
+fi
+
 # --- Outcome reporting (kills the false-success UI) ---------------------------
 RESULT_STATUS="failed"
 RESULT_PHASE="init"
@@ -741,15 +760,25 @@ if [ "${SKIP_BUILD:-0}" != "1" ]; then
   rm -rf "$INSTALL_DIR/dist"
   if ! retry 2 3 npm run build --silent; then
     echo -e "${RED}HIBA:${NC} build sikertelen. Visszaallitas a korabbi verziora (${OLD_VERSION})..."
-    if [ -n "$OLD_VERSION_FULL" ]; then
+    ROLLED_BACK=0
+    if [ -n "$OLD_VERSION_FULL" ] && rollback_guard_check "$INSTALL_DIR" "$(git rev-parse HEAD 2>/dev/null || echo unknown)" "$OLD_VERSION_FULL" "update-build-failure"; then
       git reset --hard "$OLD_VERSION_FULL" >/dev/null 2>&1 || true
       npm rebuild better-sqlite3 --build-from-source --silent 2>/dev/null || true
       rm -rf "$INSTALL_DIR/dist"
       npm run build --silent 2>/dev/null || true
       [ -d "$INSTALL_DIR/dist" ] && echo "$OLD_VERSION_FULL" > "$BUILT_COMMIT_FILE"
+      ROLLED_BACK=1
     fi
-    RESULT_STATUS="rolled-back"
-    RESULT_MSG="A build elbukott; a rendszer visszaallt a korabbi mukodo verziora (${OLD_VERSION}). A frissites nem ment ki."
+    if [ "$ROLLED_BACK" = "1" ]; then
+      RESULT_STATUS="rolled-back"
+      RESULT_MSG="A build elbukott; a rendszer visszaallt a korabbi mukodo verziora (${OLD_VERSION}). A frissites nem ment ki."
+    else
+      # Guard refused (or there was no target): stay put and say so plainly.
+      # Reporting this as "rolled-back" would be the exact false-success the
+      # guard exists to prevent.
+      RESULT_STATUS="failed"
+      RESULT_MSG="A build elbukott, ES a visszaallitast a rollback-guard megtagadta (elavult/tul tavoli cel). A rendszer a jelenlegi verzion maradt, kezi beavatkozas kell: ./recovery-prev-version.sh --list"
+    fi
     restore_stash_before_exit
     exit 6
   fi
@@ -1200,15 +1229,30 @@ if _health; then _finish success restart 0 ""; fi
 # Restart did not bring the dashboard back -> auto-rollback to the pre-update
 # commit (safe: ff-only ancestor, no force-push, no local-change discard) and
 # restart that, so the box ends on a WORKING old version.
+# Gated by the rollback distance-guard (card 980454f7). Incident 2026-08-06: a
+# stale OLD_FULL sent the live install back 529 commits, three times, each run
+# reported as a successful rollback. A refused rollback is the safer failure --
+# it leaves a visibly broken version instead of a plausible two-week-old one.
+ROLLED_BACK=0
 if [ -n "$OLD_FULL" ]; then
-  git reset --hard "$OLD_FULL" >/dev/null 2>&1 || true
-  npm ci --silent 2>/dev/null || true
-  npm rebuild better-sqlite3 --build-from-source --silent 2>/dev/null || true
-  npm run build --silent 2>/dev/null || true
-  [ -d "$INSTALL_DIR/dist" ] && echo "$OLD_FULL" > "$BUILT"
-  _restart
+  if [ -r "$INSTALL_DIR/store/rollback-guard.sh" ]; then
+    . "$INSTALL_DIR/store/rollback-guard.sh"
+  else
+    rollback_guard_check() { echo "[rollback-guard] MEGTAGADVA: store/rollback-guard.sh hianyzik, a rollback-cel nem ellenorizheto" >&2; return 1; }
+  fi
+  if rollback_guard_check "$INSTALL_DIR" "$(git rev-parse HEAD 2>/dev/null || echo unknown)" "$OLD_FULL" "update-health-check"; then
+    git reset --hard "$OLD_FULL" >/dev/null 2>&1 || true
+    npm ci --silent 2>/dev/null || true
+    npm rebuild better-sqlite3 --build-from-source --silent 2>/dev/null || true
+    npm run build --silent 2>/dev/null || true
+    [ -d "$INSTALL_DIR/dist" ] && echo "$OLD_FULL" > "$BUILT"
+    ROLLED_BACK=1
+    _restart
+  fi
 fi
-if _health; then
+if [ "$ROLLED_BACK" = "0" ]; then
+  _finish failed health-check 1 "A dashboard a frissites utan nem valaszol a ${PORT} porton, a visszaallitast pedig a rollback-guard megtagadta (elavult vagy tul tavoli cel). A rendszer a jelenlegi verzion maradt. Kezi dontes kell: ./recovery-prev-version.sh --list"
+elif _health; then
   _finish rolled-back health-check 6 "A frissites utan a dashboard nem indult el; visszaalltunk a korabbi mukodo verziora (${OLD_SHORT}). A frissites nem ment ki."
 else
   _finish failed health-check 1 "A dashboard a frissites es a visszaallitas utan sem valaszol a ${PORT} porton. Kezi beavatkozas szukseges."

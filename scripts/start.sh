@@ -30,6 +30,16 @@ source "${INSTALL_DIR}/install-lang.sh"
 # blocks every UserPromptSubmit, creating a silent fleet lockout (2026-07-14 incident).
 INSTALL_DIR="$INSTALL_DIR" python3 "${INSTALL_DIR}/scripts/boot-hook-prune.py" 2>&1 | grep -v '^$' | sed 's/^/[boot-hook-prune] /' || true
 
+# Quarantine a stray store/update-health-watchdog.sh (card 980454f7). Upstream
+# v1.23.1 replaced it with the integrated store/update-finalize.sh; a copy that
+# reappears (untracked leftover, or restored by a rollback below the floor
+# commit) re-arms the auto-rollback loop that walked the live install back 529
+# commits on 2026-08-06.
+if [ -r "${INSTALL_DIR}/store/rollback-guard.sh" ]; then
+  bash "${INSTALL_DIR}/store/rollback-guard.sh" --quarantine-stray "$INSTALL_DIR" 2>&1 \
+    | grep -v '^$' | sed 's/^/[rollback-guard] /' || true
+fi
+
 echo "${BOT_NAME:-Marveen} $(_t start.starting)"
 OS="$(uname -s)"
 LAUNCHD_FAILED=""

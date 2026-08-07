@@ -194,8 +194,36 @@ export function pruneStaleHookEntries(
         keptGroups.push(group)
       }
     }
+    // Collapse EXACT duplicate groups (card bb7276e7). Measured 2026-08-06: 13 of 14 fleet
+    // agents plus the main settings.json carried the SAME UserPromptSubmit group twice, so
+    // staleness-guard.py and voice-reply-directive.py each ran twice on every prompt. That is
+    // not only a wasted subprocess pair per wakeup -- voice-reply-directive WRITES to stdout
+    // (the voice transcript + directive), and a UserPromptSubmit hook's stdout is injected into
+    // the model context, so a voice message was being injected TWICE.
+    //
+    // Byte-identical groups only (canonical JSON compare): two groups that differ in matcher,
+    // timeout, or order are deliberate configuration and are preserved untouched. Dropping an
+    // exact duplicate cannot change behaviour, because running the same command twice with the
+    // same input is what we are removing.
+    const seen = new Set<string>()
+    const deduped: HookGroup[] = []
+    for (const group of keptGroups) {
+      const key = JSON.stringify(group)
+      if (seen.has(key)) {
+        eventChanged = true
+        for (const h of group?.hooks ?? []) {
+          if (h && typeof h === 'object' && typeof h.command === 'string') {
+            removed.push(`[duplicate] ${h.command}`)
+          }
+        }
+        continue
+      }
+      seen.add(key)
+      deduped.push(group)
+    }
+
     if (eventChanged) {
-      if (keptGroups.length > 0) hooksRecord[event] = keptGroups
+      if (deduped.length > 0) hooksRecord[event] = deduped
       else delete hooksRecord[event]
     }
   }

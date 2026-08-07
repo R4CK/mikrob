@@ -79,6 +79,8 @@ const CREDENTIAL_QUERY_PARAMS = [
   'auth[-_]?token',
   'id[-_]?token',
   'refresh[-_]?token',
+  'job[-_]?token',
+  'private[-_]?token',
   'auth',
   'secret',
   'client[-_]?secret',
@@ -87,6 +89,16 @@ const CREDENTIAL_QUERY_PARAMS = [
   'pwd',
   'sig',
   'signature',
+  // Card 2834e7f3 gap 3. `code` is the OAuth authorization code (we run live OAuth) and is the
+  // one name with plausible lookalike noise (`?code=$COUNTRY_CODE`). Measured before adding:
+  // zero occurrences of ANY `code=$...` across scripts/, store/ and src/**, so it costs nothing
+  // today. If it ever turns noisy, drop this entry rather than let anyone disable the rule --
+  // an over-greedy guard gets switched off, which is worse than a slightly narrow one.
+  'code',
+  'assertion',
+  'session',
+  'private[-_]?key',
+  'subscription[-_]?key',
 ].join('|')
 
 /**
@@ -105,6 +117,62 @@ const CREDENTIAL_QUERY_PARAMS = [
 function leaksTokenInUrlQuery(invocation: string): boolean {
   const re = new RegExp(`[?&](${CREDENTIAL_QUERY_PARAMS})=\\$(\\(|\\{|[A-Za-z_])`, 'i')
   return re.test(invocation)
+}
+
+/**
+ * The same rule, but for a `curl -G` invocation, where curl BUILDS the query string from
+ * --data/--data-urlencode instead of it appearing literally in the URL (card 2834e7f3 gap 3):
+ *
+ *   curl -s -G "https://x/v1" --data-urlencode "key=$K"
+ *
+ * The resulting request URL -- and therefore the access log, the proxy log and the Referer --
+ * carries the credential exactly as if it had been written inline. (argv is NOT the exposure here:
+ * --data-urlencode's value is an argv element either way. The URL-side exposure is the point.)
+ * Without `-G` those same flags become a POST BODY, which is the sanctioned form, so the `-G`
+ * is what makes this a finding.
+ */
+function leaksTokenInGetQuery(invocation: string): boolean {
+  if (!/(^|\s)-G(\s|$)|(^|\s)--get(\s|$)/.test(invocation)) return false
+  const re = new RegExp(`--data(?:-urlencode|-raw)?\\s+["']?(${CREDENTIAL_QUERY_PARAMS})=\\$`, 'i')
+  return re.test(invocation)
+}
+
+/**
+ * A secret embedded in the URL PATH rather than the query (card 2834e7f3 gap 1). The live family
+ * is the Telegram Bot API, which REQUIRES the token in the path -- `https://api.telegram.org/bot<TOKEN>/...`
+ * -- so "move it to a header" is not available here.
+ *
+ * MEASURED, not read: with the URL passed as an argv element the token is visible in
+ * /proc/<pid>/cmdline (verified live against a stalling listener); with the URL supplied through a
+ * curl config (`-K -` / `-K file` / `--config`) the argv reads only `curl ... -K -` and the token
+ * never appears. So the sanctioned form here is the config file, exactly parallel to `-H @file`.
+ *
+ * The rule therefore flags a path-embedded bot token ONLY when the invocation does not read its
+ * URL from a config.
+ */
+function leaksTokenInUrlPath(invocation: string): boolean {
+  if (!/api\.telegram\.org\/bot\$\{?[A-Za-z_]/.test(invocation)) return false
+  return !/(^|\s)(-K|--config)(\s|=)/.test(invocation)
+}
+
+/**
+ * Gap 2 (card 2834e7f3): a URL assembled into a VARIABLE first --
+ *
+ *   URL="https://x/v1?key=$K"
+ *   curl -s "$URL"            # the curl line alone shows only $URL
+ *
+ * -- is invisible to any rule that only inspects reassembled curl invocations, and building a URL
+ * in a variable is completely ordinary scripting, so the next real occurrence could easily take
+ * this shape. This guard is a LINT on our own scripts (it catches a developer slip, it does not
+ * chase an attacker), so scanning every line rather than only curl lines is the right trade: the
+ * parameter names are already anchored as whole names, which is what keeps the false-positive rate
+ * at zero on the current corpus.
+ */
+function credentialUrlLines(source: string): Array<{ text: string; startLine: number }> {
+  return source
+    .split('\n')
+    .map((text, i) => ({ text, startLine: i + 1 }))
+    .filter((l) => leaksTokenInUrlQuery(l.text))
 }
 
 function scanDir(dir: string): string[] {
@@ -138,9 +206,11 @@ describe('no store/*.sh or scripts/*.sh puts a Bearer token in curl argv', () =>
     }
   })
 
-  it.each(cases)('$file: no curl embeds a credential in a URL query parameter', ({ dir, file }) => {
+  // Scans EVERY line, not just curl invocations -- a URL built into a variable first would
+  // otherwise slip through (card 2834e7f3 gap 2).
+  it.each(cases)('$file: no line builds a URL with a credential query parameter', ({ dir, file }) => {
     const source = readFileSync(join(dir, file), 'utf8')
-    const offenders = findCurlInvocations(source).filter((c) => leaksTokenInUrlQuery(c.text))
+    const offenders = credentialUrlLines(source)
     if (offenders.length > 0) {
       const detail = offenders.map((o) => `  line ${o.startLine}: ${o.text.trim().slice(0, 100)}`).join('\n')
       throw new Error(
@@ -148,6 +218,32 @@ describe('no store/*.sh or scripts/*.sh puts a Bearer token in curl argv', () =>
           `The URL is an argv element (/proc/<pid>/cmdline) AND lands in access/proxy logs and Referer. ` +
           `Fix: send it as a header instead (e.g. Gemini's \`?key=$K\` became \`x-goog-api-key\`), ` +
           `read from a 0600 temp file with \`-H @"$hdr_file"\` when the header itself is the secret.`,
+      )
+    }
+  })
+
+  it.each(cases)('$file: no curl -G builds a credential into the query string', ({ dir, file }) => {
+    const source = readFileSync(join(dir, file), 'utf8')
+    const offenders = findCurlInvocations(source).filter((c) => leaksTokenInGetQuery(c.text))
+    if (offenders.length > 0) {
+      const detail = offenders.map((o) => `  line ${o.startLine}: ${o.text.trim().slice(0, 100)}`).join('\n')
+      throw new Error(
+        `${file} uses \`curl -G\` with a credential in --data*, which curl appends to the QUERY STRING at:\n${detail}\n` +
+          `Fix: drop -G so the same flags become a POST body, or move the credential to a header.`,
+      )
+    }
+  })
+
+  it.each(cases)('$file: a path-embedded bot token is read from a curl config, not argv', ({ dir, file }) => {
+    const source = readFileSync(join(dir, file), 'utf8')
+    const offenders = findCurlInvocations(source).filter((c) => leaksTokenInUrlPath(c.text))
+    if (offenders.length > 0) {
+      const detail = offenders.map((o) => `  line ${o.startLine}: ${o.text.trim().slice(0, 100)}`).join('\n')
+      throw new Error(
+        `${file} passes a Telegram bot token in the URL PATH as a curl argument at:\n${detail}\n` +
+          `The Bot API requires the token in the path, so it cannot move to a header. Fix: feed the URL ` +
+          `through a curl config instead, so it never becomes an argv element:\n` +
+          `  printf 'url = "https://api.telegram.org/bot%s/sendMessage"\\n' "$token" | curl -sS -K - --data-urlencode ...`,
       )
     }
   })
@@ -264,6 +360,23 @@ describe('the URL-query credential rule (card 0864de63)', () => {
     expect(scan(['#!/usr/bin/env bash', 'curl -s "https://api.example/v1?page=2&limit=50"'])).toEqual([])
   })
 
+  it.each([
+    ['OAuth authorization code', 'curl -s "https://idp.example/token?code=$AUTH_CODE"'],
+    ['RFC 7523 JWT assertion', 'curl -s "https://idp.example/token?assertion=$JWT"'],
+    ['session id', 'curl -s "https://api.example/v1?session=$SID"'],
+    ['private key', 'curl -s "https://api.example/v1?private_key=$PK"'],
+    ['Azure APIM subscription key', 'curl -s "https://api.example/v1?subscription-key=$SK"'],
+    ['GitLab job token', 'curl -s "https://gitlab.example/api?job_token=$JT"'],
+    ['GitLab private token', 'curl -s "https://gitlab.example/api?private_token=$PT"'],
+  ])('flags the parameter names added by card 2834e7f3: %s', (_label, line) => {
+    expect(scan(['#!/usr/bin/env bash', line])).toHaveLength(1)
+  })
+
+  it('does NOT flag `?country_code=` / `?postcode=` -- the lookalikes `code` could have cost us', () => {
+    // `code` is the one added name with plausible noise. Whole-name anchoring keeps these clean.
+    expect(scan(['#!/usr/bin/env bash', 'curl -s "https://api.example/x?country_code=$C&postcode=$P"'])).toEqual([])
+  })
+
   it('is INDEPENDENT of the Bearer rule -- a URL leak with a correct @headerfile is still caught', () => {
     // The two rules cover different shapes; passing one must not excuse the other.
     const lines = [
@@ -272,5 +385,104 @@ describe('the URL-query credential rule (card 0864de63)', () => {
     ]
     expect(scan(lines)).toHaveLength(1)
     expect(findCurlInvocations(lines.join('\n')).filter((c) => leaksTokenInArgv(c.text))).toEqual([])
+  })
+})
+
+// Card 2834e7f3, gap 2: a URL assembled into a VARIABLE first is invisible to any rule that only
+// inspects reassembled curl invocations -- and building a URL in a variable is ordinary scripting,
+// so the next real occurrence could easily take this shape.
+describe('URL built into a variable first (card 2834e7f3 gap 2)', () => {
+  it('the OLD curl-only scan MISSES it (this is the gap, stated as a fact)', () => {
+    const script = ['#!/usr/bin/env bash', 'URL="https://api.example/v1?key=$K"', 'curl -s "$URL"'].join('\n')
+    // The curl line alone contains only `$URL`; nothing credential-shaped is visible there.
+    expect(findCurlInvocations(script).filter((c) => leaksTokenInUrlQuery(c.text))).toEqual([])
+  })
+
+  it('the whole-file scan CATCHES it', () => {
+    const script = ['#!/usr/bin/env bash', 'URL="https://api.example/v1?key=$K"', 'curl -s "$URL"'].join('\n')
+    const hits = credentialUrlLines(script)
+    expect(hits).toHaveLength(1)
+    expect(hits[0]?.startLine).toBe(2) // the assignment line, where the credential actually is
+  })
+
+  it.each([
+    ['single-quoted assignment', "BASE='https://api.example/v1?token=$T'"],
+    ['appended later', 'URL="$BASE?api_key=$K"'],
+    ['a local in a function', '  local u="https://api.example/x?secret=$S"'],
+    ['printf into a variable', 'u=$(printf "https://api.example/x?password=$P")'],
+  ])('catches a credential URL on a non-curl line: %s', (_label, line) => {
+    expect(credentialUrlLines(['#!/usr/bin/env bash', line].join('\n'))).toHaveLength(1)
+  })
+
+  it('does NOT flag an ordinary URL variable with no credential', () => {
+    expect(credentialUrlLines('#!/usr/bin/env bash\nURL="https://api.example/v1?page=1&limit=50"\n')).toEqual([])
+  })
+
+  it('does NOT flag the `keyword` lookalike on a non-curl line either', () => {
+    expect(credentialUrlLines('#!/usr/bin/env bash\nQ="https://api.example/search?keyword=$W"\n')).toEqual([])
+  })
+})
+
+// Card 2834e7f3, gap 3 (second half): `curl -G` makes curl BUILD the query string, so a credential
+// passed via --data-urlencode ends up in the request URL, the access log and the Referer.
+describe('curl -G builds the credential into the query string (card 2834e7f3 gap 3)', () => {
+  function scanG(lines: string[]) {
+    return findCurlInvocations(lines.join('\n')).filter((c) => leaksTokenInGetQuery(c.text))
+  }
+
+  it('flags -G with a credential in --data-urlencode', () => {
+    expect(scanG(['#!/usr/bin/env bash', 'curl -s -G "https://api.example/v1" --data-urlencode "key=$K"'])).toHaveLength(1)
+  })
+
+  it('flags the long form --get as well', () => {
+    expect(scanG(['#!/usr/bin/env bash', 'curl -s --get "https://api.example/v1" --data-urlencode "token=$T"'])).toHaveLength(1)
+  })
+
+  it('flags it across a continuation line', () => {
+    expect(scanG([
+      '#!/usr/bin/env bash',
+      'curl -s -G "https://api.example/v1" \\',
+      '  --data-urlencode "api_key=$K"',
+    ])).toHaveLength(1)
+  })
+
+  it('does NOT flag the SAME flags without -G -- that is a POST body, the sanctioned form', () => {
+    // This is the exact shape every fixed Telegram caller now uses; flagging it would be a
+    // false positive on our own remediation.
+    expect(scanG(['#!/usr/bin/env bash', 'curl -s -X POST -K - --data-urlencode "text=$MSG"'])).toEqual([])
+  })
+
+  it('does NOT flag -G with only non-credential parameters', () => {
+    expect(scanG(['#!/usr/bin/env bash', 'curl -s -G "https://api.example/v1" --data-urlencode "q=$Q"'])).toEqual([])
+  })
+})
+
+// Card 2834e7f3, gap 1: the Telegram Bot API REQUIRES the token in the URL path, so "move it to a
+// header" does not exist here. MEASURED against a live stalling listener: with the URL as an argv
+// element the token is visible in /proc/<pid>/cmdline; with `-K` it is not.
+describe('path-embedded bot token (card 2834e7f3 gap 1)', () => {
+  function scanP(lines: string[]) {
+    return findCurlInvocations(lines.join('\n')).filter((c) => leaksTokenInUrlPath(c.text))
+  }
+
+  it.each([
+    ['bare variable', 'curl -s "https://api.telegram.org/bot$TOKEN/sendMessage"'],
+    ['braced variable', 'curl -s "https://api.telegram.org/bot${token}/sendMessage"'],
+    ['with -X POST', 'curl -s -X POST "https://api.telegram.org/bot${BOT_TOKEN}/sendMessage"'],
+  ])('flags a path token passed as an argument: %s', (_label, line) => {
+    expect(scanP(['#!/usr/bin/env bash', line])).toHaveLength(1)
+  })
+
+  it('does NOT flag the sanctioned config form (`-K -`), which is what the 9 scripts now use', () => {
+    expect(scanP([
+      '#!/usr/bin/env bash',
+      'printf \'url = "https://api.telegram.org/bot%s/sendMessage"\\n\' "$token" \\',
+      '  | curl -sS --max-time 15 -K - \\',
+      '    --data-urlencode "text=${msg}"',
+    ])).toEqual([])
+  })
+
+  it('does NOT flag a Telegram URL with no variable in the path (a literal doc example)', () => {
+    expect(scanP(['#!/usr/bin/env bash', 'curl -s "https://api.telegram.org/bot123456/getMe"'])).toEqual([])
   })
 })

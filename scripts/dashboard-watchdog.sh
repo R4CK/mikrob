@@ -22,6 +22,15 @@ PORT="${MIKROB_DASH_PORT:-3420}"
 URL="http://localhost:${PORT}/"
 LOG="$INSTALL_DIR/store/dashboard-watchdog.log"
 TIMEOUT=8
+# The unit has no TimeoutStopSec override, so systemd's default (90s) applies
+# to `systemctl restart` when children linger (KillMode=process; a hung
+# local-llm-worker.sh + its curl are not part of the tracked main PID and can
+# hold the stop up to that limit). An 8s post-restart wait was declaring
+# "STILL DOWN" mid-restart, inflating the fail streak toward a false
+# auto-rollback trigger (Cybersec, measured 2026-08-06: real restarts took
+# ~90-107s). Poll up to this budget instead of a single fixed sleep.
+RESTART_WAIT=110
+RESTART_POLL=5
 
 # Peti 2026-08-05: "if you can't start on the first try, try 2 more times,
 # then restore yourself to the last working backup" -- FAIL_STREAK persists
@@ -100,9 +109,17 @@ fi
 echo "$(ts) UNHEALTHY (http='${code:-000}') -> restart $UNIT" >>"$LOG"
 systemctl --user restart "$UNIT" >>"$LOG" 2>&1
 
-# Give the listener time to rebind, then confirm.
-sleep "$TIMEOUT"
-code2="$(probe)"
+# Give the listener time to rebind (systemd stop can legitimately take up to
+# ~90s, see RESTART_WAIT above), polling so a fast restart doesn't cost the
+# full budget.
+code2="000"
+waited=0
+while ((waited < RESTART_WAIT)); do
+  sleep "$RESTART_POLL"
+  waited=$((waited + RESTART_POLL))
+  code2="$(probe)"
+  [ "$code2" = "200" ] && break
+done
 if [ "$code2" = "200" ]; then
   echo "$(ts) RECOVERED after restart (http=200)" >>"$LOG"
   rm -f "$FAIL_STREAK_FILE" 2>/dev/null

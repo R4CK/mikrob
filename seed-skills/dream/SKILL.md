@@ -43,7 +43,7 @@ Env is WSL/Linux, so NOT Windows Task Scheduler. Two options, both one-line:
   ```bash
   curl -s -X POST http://localhost:3420/api/schedules \
     -H "Content-Type: application/json" \
-    -H "Authorization: Bearer $(cat /home/neon/marveen/store/.dashboard-token)" \
+    -H "Authorization: Bearer $(cat <install>/store/.dashboard-token)" \
     -d '{"name":"dream-nightly","description":"Nightly read-only memory consolidation (propose-only)","prompt":"Run /dream in UNATTENDED read-only mode: bash ~/.claude/skills/dream/scripts/dream.sh --unattended, then follow the dream skill section 2-3 to write proposals to memory/dream-report.md ONLY. Apply nothing. Stay silent on Telegram unless urgent.","schedule":"0 3 * * *","agent":"mikrob","type":"heartbeat"}'
   ```
   Answers to the reliability questions (WSL, not Windows):
