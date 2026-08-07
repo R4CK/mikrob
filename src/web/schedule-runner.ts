@@ -1229,8 +1229,12 @@ export function startScheduleRunner(): NodeJS.Timeout {
       // tmux, no target agent. They self-manage failure streaks + Telegram
       // alerts. Record the run time like a fired task so the catch-up window
       // does not double-run them on a dashboard restart.
+      // Awaited, not fire-and-forget: the child now runs off the event loop, so
+      // the HTTP server stays responsive either way, and awaiting keeps the
+      // existing one-task-at-a-time ordering inside a tick (and with it the
+      // no-stacking guarantee) instead of introducing new concurrency.
       if (task.type === 'command') {
-        runCommandTask(task, now)
+        await runCommandTask(task, now)
         scheduleLastRun.set(task.name, now)
         persistScheduleLastRun()
         continue

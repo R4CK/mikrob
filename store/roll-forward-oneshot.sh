@@ -99,9 +99,17 @@ systemctl --user restart mikrob-channels.service >>"$LOG" 2>&1 || log "WARN: cha
 
 # 6. Health probe
 sleep 25
+# SECURITY: the dashboard token goes to curl through a 0600 header FILE, never on
+# argv -- `-H "Authorization: Bearer $(cat ...)"` expands BEFORE exec, so the token
+# lands in /proc/<pid>/cmdline, which every local process can read. Same pattern the
+# bot-token notify above already uses, and the one the token-in-argv guard enforces.
+HDR_FILE="$(mktemp)"
+chmod 600 "$HDR_FILE"
+printf 'Authorization: Bearer %s\n' "$(cat store/.dashboard-token 2>/dev/null)" > "$HDR_FILE"
 CODE=$(curl -s -o /dev/null -w '%{http_code}' --max-time 10 \
-  -H "Authorization: Bearer $(cat store/.dashboard-token 2>/dev/null)" \
+  -H "@$HDR_FILE" \
   http://localhost:3420/api/agents 2>/dev/null)
+rm -f "$HDR_FILE"
 log "post-restart: dashboard http=${CODE:-none}, HEAD=$(git rev-parse --short HEAD), built=$(cat dist/.built-commit 2>/dev/null)"
 
 if [ "$CODE" = "200" ]; then
