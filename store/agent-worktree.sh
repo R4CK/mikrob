@@ -8,6 +8,12 @@
 #
 # The main clone stays the fetch/PR base. Nobody commits into it directly.
 #
+# NEVER run a dependency installer (pnpm/npm install, npm ci, pnpm add) from inside a worktree.
+# The worktree's node_modules are SYMLINKS into the main clone, so an install run here does not
+# create a local copy -- it rewrites the tree every agent is reading, mid-work. Same class as the
+# earlier npm-ci-in-a-shared-checkout incident, with a wider blast radius now that N agents share
+# one node_modules. Install in $CLEANCORE_MAIN, then re-run this script to top up any new links.
+#
 #   store/agent-worktree.sh <agent>            # create (or top up) the agent's worktree
 #   store/agent-worktree.sh <agent> --path     # print the path and exit (for scripting)
 #
@@ -23,6 +29,13 @@ AGENT="${1:-}"
 [ -n "$AGENT" ] || die 2 "usage: agent-worktree.sh <agent> [--path]"
 case "$AGENT" in
   # Keep the name a single safe path segment: it becomes a directory AND a branch name.
+  #
+  # LOWERCASE-ONLY IS LOAD-BEARING, not tidiness. Measured on this install: the default worktree
+  # root sits on /mnt/h, which is CASE-INSENSITIVE (touch Agent; test -e agent -> true), while /home
+  # is not. Relaxing this to [A-Za-z0-9-] would let two agents whose names differ only in case --
+  # "backend" and "Backend" -- resolve to the SAME directory while git happily kept two distinct
+  # branches, so each would silently commit over the other's tree. The root is configurable via
+  # CLEANCORE_WORKTREES, so we cannot assume any particular filesystem: keep the restriction.
   *[!a-z0-9-]*|-*|'') die 2 "agent name must match [a-z0-9-]+ (got: $AGENT)" ;;
 esac
 
@@ -40,9 +53,12 @@ else
   mkdir -p "$ROOT"
   # NOT --force, and no rm -rf anywhere in this script: if the path is occupied by something we did
   # not create, the right outcome is a loud failure, not a silent delete of somebody's work.
-  git -C "$MAIN" worktree add "$TREE" -b "$BRANCH" origin/main >/dev/null 2>&1 \
-    || git -C "$MAIN" worktree add "$TREE" "$BRANCH" >/dev/null 2>&1 \
-    || die 3 "could not create the worktree at $TREE"
+  # git's own diagnosis is the useful part when this fails (path occupied, branch already checked
+  # out in another worktree, detached HEAD...). Capture it instead of discarding it: an earlier
+  # version sent both attempts to /dev/null and left only "could not create", which says nothing.
+  add_err="$(git -C "$MAIN" worktree add "$TREE" -b "$BRANCH" origin/main 2>&1)" \
+    || add_err="$add_err"$'\n'"$(git -C "$MAIN" worktree add "$TREE" "$BRANCH" 2>&1)" \
+    || die 3 "could not create the worktree at $TREE -- git said:"$'\n'"$add_err"
   echo "created $TREE on $BRANCH"
 fi
 
