@@ -543,15 +543,28 @@ SEED_REFRESH_KEPT=0
 # hashes never match, and seed_copy_is_untouched concludes "operator-modified" -- so those four
 # files are skipped FOREVER and silently booked as KEPT. A fix to gate-reconciler would never
 # reach a single install.
+# The installer WRITES `ALLOWED_CHAT_ID` (install-linux.sh: env_merge_key ALLOWED_CHAT_ID)
+# and renders the seeds from its own `$CHAT_ID` shell variable. Grepping only `^CHAT_ID=`
+# here matched nothing, so this rendered EMPTY while the installer rendered the real id.
+# That is worse than the literal `{{CHAT_ID}}` it replaced: the two renderings diverge, so
+# seed_copy_is_untouched() never matches any historical hash and the four fleet-orchestration
+# prompts are treated as user-modified FOREVER -- refresh_untouched_seeds stops updating
+# them, silently. The escalation line they carry (`reply chat_id {{CHAT_ID}}`) also loses its
+# destination. Read the key the installer actually writes, preferring a bare CHAT_ID if some
+# install ever sets one, and default to `0` exactly as the installer does.
 SCHED_CHAT_ID=""
-[ -f "$INSTALL_DIR/.env" ] && SCHED_CHAT_ID=$(grep '^CHAT_ID=' "$INSTALL_DIR/.env" | cut -d= -f2- | tr -d '\r')
+if [ -f "$INSTALL_DIR/.env" ]; then
+  SCHED_CHAT_ID=$(grep '^CHAT_ID=' "$INSTALL_DIR/.env" | head -1 | cut -d= -f2- | tr -d '\r')
+  [ -n "$SCHED_CHAT_ID" ] || SCHED_CHAT_ID=$(grep '^ALLOWED_CHAT_ID=' "$INSTALL_DIR/.env" | head -1 | cut -d= -f2- | tr -d '\r')
+fi
+SCHED_CHAT_ID="${SCHED_CHAT_ID:-0}"
 
 render_seed_template() {
   sed -e "s/{{MAIN_AGENT_ID}}/${MAIN_AGENT_ID:-}/g" \
       -e "s/{{BOT_NAME}}/${BOT_NAME:-}/g" \
       -e "s/{{OWNER_NAME}}/${OWNER_NAME:-}/g" \
       -e "s|{{INSTALL_DIR}}|${INSTALL_DIR}|g" \
-      -e "s/{{CHAT_ID}}/${SCHED_CHAT_ID:-}/g" \
+      -e "s/{{CHAT_ID}}/${SCHED_CHAT_ID}/g" \
       -e "s/{{WEB_PORT}}/${WEB_PORT:-3420}/g"
 }
 
@@ -965,7 +978,7 @@ if [ -d "$SEED_SCHED_DIR" ]; then
             -e "s/{{BOT_NAME}}/$BOT_NAME/g" \
             -e "s/{{OWNER_NAME}}/$OWNER_NAME/g" \
             -e "s|{{INSTALL_DIR}}|$INSTALL_DIR|g" \
-            -e "s/{{CHAT_ID}}/$SCHED_CHAT_ID/g" \
+            -e "s/{{CHAT_ID}}/${SCHED_CHAT_ID}/g" \
             -e "s/{{WEB_PORT}}/${WEB_PORT:-3420}/g" \
             "$f" > "$target/$(basename "$f")"
       done
