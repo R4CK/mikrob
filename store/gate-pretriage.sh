@@ -137,8 +137,18 @@ fi
 
 # --- 7. type-check, scoped to the repo's own command --------------------------------------------
 TSC="unknown"
+# The repo's OWN tsc, by explicit path -- never `npx --no-install tsc` (card aae6632c). npx resolves
+# upward and through its cache, so in a throwaway repo with no node_modules it can find SOME tsc on
+# the machine and type-check the fixture against a toolchain the repo does not have. That is how
+# this check reported `errors:1` where it should have reported `unavailable`, and it made
+# gate-pretriage.test.ts red on develop for anyone whose machine happened to have a resolvable tsc.
+TSC_BIN="./node_modules/.bin/tsc"
 if [[ -f tsconfig.json ]]; then
-  if npx --no-install tsc --noEmit >/tmp/gate-pretriage-tsc.log 2>&1; then
+  if [[ ! -x "$TSC_BIN" ]]; then
+    # No local toolchain: say so instead of type-checking against someone else's compiler.
+    TSC="unavailable"
+    add "info" "tsc-unavailable" "tsc could not run here (no local toolchain) -- type-check NOT verified"
+  elif "$TSC_BIN" --noEmit >/tmp/gate-pretriage-tsc.log 2>&1; then
     TSC="clean"
   else
     # `grep -c` EXITS 1 when it matches nothing, so `... || echo '?'` emitted BOTH the count and the
@@ -149,9 +159,10 @@ if [[ -f tsconfig.json ]]; then
       TSC="errors:${_tsc_errs}"
       add "high" "tsc-errors" "$TSC (see /tmp/gate-pretriage-tsc.log)"
     else
-      # Non-zero exit with ZERO "error TS" lines means the COMPILER never ran (no node_modules, no
-      # local tsc). Reporting that as "0 errors, high severity" would be doubly wrong: it invents a
-      # code defect AND lets a gate read "tsc: errors:0" as a clean type-check. Say so plainly.
+      # The local tsc EXISTS and exited non-zero, yet logged no `error TS` line: it crashed, ran out
+      # of memory, or rejected its own config. Reporting that as "0 errors, high severity" would be
+      # doubly wrong: it invents a code defect AND lets a gate read "tsc: errors:0" as a clean
+      # type-check. (The missing-toolchain case is caught above, before tsc is invoked at all.)
       TSC="unavailable"
       add "info" "tsc-unavailable" "tsc could not run here (no local toolchain) -- type-check NOT verified"
     fi
