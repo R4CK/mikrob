@@ -142,7 +142,7 @@ function measurePct(name: string, cfgLimit: number | null): number | null {
   return tokens / limit
 }
 
-function performRestart(name: string): void {
+async function performRestart(name: string): Promise<void> {
   if (name === MAIN_AGENT_ID) {
     // Platform-correct main-session restart. This was a hardcoded
     // `/bin/launchctl kickstart`, which exists only on macOS: on Linux every
@@ -161,7 +161,7 @@ function performRestart(name: string): void {
     const res = hardRestartMarveenChannels()
     if (!res.ok) throw new Error(res.error ?? 'main channels hard restart failed')
   } else {
-    restartAgentProcess(name, { fresh: true })
+    await restartAgentProcess(name, { fresh: true })
   }
 }
 
@@ -279,7 +279,7 @@ async function checkAgent(name: string, nowMs: number): Promise<void> {
         } catch (err) {
           logger.warn({ err, name }, 'context-guard: pre-restart pane snapshot failed')
         }
-        performRestart(name)
+        await performRestart(name)
         try {
           createAgentMessage(
             name,
