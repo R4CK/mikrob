@@ -15,7 +15,7 @@
 
 import { existsSync, readFileSync } from 'node:fs'
 import { join } from 'node:path'
-import { execFileSync } from 'node:child_process'
+import { execFileAsync } from './exec-async.js'
 import { logger } from '../logger.js'
 import { PROJECT_ROOT } from '../config.js'
 import { agentDir } from './agent-config.js'
@@ -136,12 +136,15 @@ export function decideMcpPrecheck(
  * Returns ok:true (with empty lists) whenever absence cannot be proven:
  * remote host, unresolvable claude PID, ps failure, or no requirements.
  */
-export function checkTaskMcpRequirements(
+// Async because it runs ON the scheduler tick, via attemptFireTask. A synchronous
+// `/bin/ps` here froze the whole event loop for up to 3s per fired task -- bounded, but
+// the same class the tick's own runners were fixed for (cards 955f014e / 92e2bb1b).
+export async function checkTaskMcpRequirements(
   required: string[] | undefined,
   agentName: string,
   session: string,
   host: string | null,
-): McpPrecheckResult {
+): Promise<McpPrecheckResult> {
   if (!required || required.length === 0) return { ok: true, missing: [], unknown: [] }
   if (host) {
     logger.debug({ agent: agentName, session }, 'MCP pre-check skipped: remote session')
@@ -152,13 +155,12 @@ export function checkTaskMcpRequirements(
     logger.debug({ agent: agentName, session }, 'MCP pre-check skipped: claude pid unresolved')
     return { ok: true, missing: [], unknown: [] }
   }
-  let psOutput: string
-  try {
-    psOutput = execFileSync('/bin/ps', ['-axo', 'pid,ppid,command'], { timeout: 3000, encoding: 'utf-8' })
-  } catch {
-    logger.debug({ agent: agentName, session }, 'MCP pre-check skipped: ps failed')
+  const ps = await execFileAsync('/bin/ps', ['-axo', 'pid,ppid,command'], { timeoutMs: 3000 })
+  if (ps.status !== 0) {
+    logger.debug({ agent: agentName, session, timedOut: ps.timedOut }, 'MCP pre-check skipped: ps failed')
     return { ok: true, missing: [], unknown: [] }
   }
+  const psOutput = ps.stdout
   const result = decideMcpPrecheck(
     required,
     resolveMcpProcessPatterns(agentName),
