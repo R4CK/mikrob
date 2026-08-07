@@ -1,9 +1,9 @@
 {
-  "schedule": "0 9 * * 1",
+  "schedule": "7 2 * * *",
   "agent": "{{MAIN_AGENT_ID}}",
   "enabled": true,
-  "type": "heartbeat",
+  "type": "dream-engine",
   "skipIfBusy": false,
-  "createdAt": 0,
+  "createdAt": 1778480400,
   "catchUpMaxAgeMinutes": 1440
 }
