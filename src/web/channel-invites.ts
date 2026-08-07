@@ -25,7 +25,7 @@
 // Tokens are 16 random bytes (base64url, ~22 chars), unguessable in practice.
 import { existsSync, readdirSync, readFileSync, writeFileSync, mkdirSync } from 'node:fs'
 import { join } from 'node:path'
-import { randomBytes } from 'node:crypto'
+import { randomBytes, createHash } from 'node:crypto'
 import { logger } from '../logger.js'
 import { channelStateDir, type ChannelProviderType } from '../channel-provider.js'
 import { agentDir } from './agent-config.js'
@@ -251,9 +251,27 @@ export function runInviteMonitorTick(mainAgentId: string, agentsRoot: string): v
 
       writeAccess(accessPath, access)
       writeInvites(invitesPath, store)
-      logger.info({ name, provider, senderId: pEntry.senderId, token: tToken }, 'Channel invite auto-approved')
+      logger.info({ name, provider, senderId: pEntry.senderId, invite: inviteLogRef(tToken) }, 'Channel invite auto-approved')
     }
   }
+}
+
+/**
+ * A short, non-reversible reference to an invite token, for logs (card 961843fb).
+ *
+ * The approval line used to log the token ITSELF, which put a live invite credential into the
+ * journal -- the same class as the startup-token leak closed on card 62631948, and the journal is
+ * readable by anyone who can read the service log. It is only LOW because the token is single-use
+ * (`usedAt` is set before this line runs), but "already spent" is a property of the flow, not of
+ * the logging, and the flow can change.
+ *
+ * senderId alone would have been enough for audit correlation; the digest prefix is kept so a
+ * specific invite stays identifiable when several are outstanding for the same sender. Eight hex
+ * characters of SHA-256 over a 128-bit random token: enough to tell invites apart in a log, and
+ * not enough to recover or brute-force one.
+ */
+export function inviteLogRef(token: string): string {
+  return createHash('sha256').update(token).digest('hex').slice(0, 8)
 }
 
 let inviteMonitorInterval: NodeJS.Timeout | null = null
