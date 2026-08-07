@@ -88,10 +88,12 @@ function avatarBust() { return _avatarEpoch ? `?t=${_avatarEpoch}` : '' }
 })()
 
 // === Dashboard auth bootstrap ===
-// The server prints an URL like http://127.0.0.1:3420/?token=XXX on startup.
-// On first visit we pluck the token out of the URL, store it in localStorage,
-// strip it from the visible URL, and then inject it into every /api/* fetch
-// as a Bearer header so the server lets us through.
+// Card 62631948/8ca8576: the server no longer prints a ?token= startup URL (that put a
+// root-equivalent credential in the service manager's log). A ?token= URL is still ACCEPTED
+// here for anyone holding an older link -- on first visit we pluck it out, store it in
+// localStorage, strip it from the visible URL, and inject it into every /api/* fetch as a
+// Bearer header. The normal path now is the paste overlay (see handleAuthFailure below),
+// fed from `cat store/.dashboard-token`.
 
 // The main (channels) agent's real id. The backend /api/marveen route returns
 // the configured MAIN_AGENT_ID (NOT the literal "marveen") in window._marveen;
