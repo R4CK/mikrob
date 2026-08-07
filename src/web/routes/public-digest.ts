@@ -18,7 +18,10 @@ import { json } from '../http-helpers.js'
 import type { RouteContext } from './types.js'
 
 let cachedVersion: string | null = null
-function readVersion(): string {
+/** Exported for routes/version.ts (card 1bf4f8a4) -- the sidebar's real-semver need is the same
+ *  "read package.json's version, once, cheaply" as this digest's, so it reuses this rather than a
+ *  second copy of the same read+cache. */
+export function readVersion(): string {
   if (cachedVersion !== null) return cachedVersion
   try {
     const p = join(PROJECT_ROOT, 'package.json')

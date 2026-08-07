@@ -13318,6 +13318,25 @@ async function initSidebarBrand() {
 }
 initSidebarBrand()
 
+// Sidebar version line (card 1bf4f8a4, Peti's correction: a bare commit hash says nothing on its
+// own -- a real semver version is the point). /api/version reports what dist/.built-commit says
+// is ACTUALLY running, not live git HEAD, which can be ahead of an un-rebuilt dist (the same
+// stale-dist trap this fleet has hit before) -- see routes/version.ts for why that source was
+// chosen. Refreshes automatically on the next page load after a service restart; no separate
+// wiring needed since the sidebar re-runs its init on every load.
+async function initSidebarVersion() {
+  try {
+    const res = await fetch('/api/version')
+    if (!res.ok) return
+    const v = await res.json()
+    const el = document.getElementById('sidebarVersion')
+    if (!el || !v.version) return
+    el.textContent = v.commitHash ? `v${v.version} (${v.commitHash})` : `v${v.version}`
+    el.hidden = false
+  } catch {}
+}
+initSidebarVersion()
+
 // In an installed (standalone) PWA, lock the zoom: iOS otherwise auto-zooms when
 // a small-text input is focused and allows stray pinch-zoom, neither of which
 // suits an app-like control panel. Left untouched in a normal browser tab so

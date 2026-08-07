@@ -209,6 +209,13 @@ body {
 .sidebar-brand-mark img { width: 100%; height: 100%; object-fit: cover; }
 .sidebar-brand-name { font-weight: 600; font-size: 15px; letter-spacing: -0.01em; }
 .sidebar-brand-sub { font-size: 11px; color: var(--text-muted); }
+.sidebar-version {
+  padding: 6px 6px 10px;
+  font-size: 10px;
+  color: var(--text-muted);
+  opacity: 0.65;
+  letter-spacing: 0.01em;
+}
 .sidebar-nav {
   display: flex;
   flex-direction: column;
