@@ -1,4 +1,4 @@
-import { readFileSync, existsSync } from 'node:fs'
+import { existsSync } from 'node:fs'
 import { join } from 'node:path'
 import { homedir } from 'node:os'
 import { STORE_DIR, WEB_PORT } from '../config.js'
@@ -47,17 +47,24 @@ export function buildTtsDirective(opts: {
 }): string | null {
   try {
     const tokenPath = join(STORE_DIR, '.dashboard-token')
+    // Existence only -- the VALUE is never read here any more. It used to be interpolated straight
+    // into the command below, which put a root-equivalent credential into the agent's prompt, its
+    // transcript, and /proc/<pid>/cmdline of the curl it then ran (card 2834e7f3, Cybered NO-GO).
+    // The snippet now reads the file itself, at the moment it runs.
     if (!existsSync(tokenPath)) return null
-    const token = readFileSync(tokenPath, 'utf-8').trim()
     const { chatId, stateDir, voiceModel } = opts
     // Escape stateDir for embedding in a jq string argument
     const escapedStateDir = stateDir.replace(/'/g, "'\\''")
+    // The header goes through a 0600 temp FILE rather than stdin: `-d @-` already owns stdin here
+    // (jq pipes the body in), so `-H @-` / `-K -` are not available at this call site.
     return (
       `\n\n[Hang válasz direktíva]: A fenti hangüzenetre HANGBAN válaszolj. ` +
       `Amikor megvan a válaszod szövege, futtasd le ezt a parancsot (a szöveget JSON-escape-elve add meg a --arg-ban):\n` +
       `\`\`\`bash\n` +
+      `hdr="$(mktemp)"; chmod 600 "$hdr"; trap 'rm -f "$hdr"' EXIT\n` +
+      `printf 'Authorization: Bearer %s\\n' "$(cat ${tokenPath})" > "$hdr"\n` +
       `jq -n --arg t "A_VÁLASZOD_SZÖVEGE" '{"text":$t,"chat_id":"${chatId}","state_dir":"${escapedStateDir}","voice_model":"${voiceModel}"}' | ` +
-      `curl -s -X POST http://localhost:${WEB_PORT}/api/voice/tts -H "Content-Type: application/json" -H "Authorization: Bearer ${token}" -d @-\n` +
+      `curl -s -X POST http://localhost:${WEB_PORT}/api/voice/tts -H "Content-Type: application/json" -H @"$hdr" -d @-\n` +
       `\`\`\`\n` +
       `Szöveges választ NE küldj -- CSAK a fenti curl-t futtasd le a hangküldéshez.`
     )

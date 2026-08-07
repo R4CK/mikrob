@@ -72,13 +72,28 @@ function findCurlInvocations(source: string): CurlInvocation[] {
 
 /**
  * True iff the invocation carries a literal `Authorization: Bearer $VAR`-shaped header (argv leak).
- * `$VAR` covers BOTH a bare variable (`$TOK`) and a command substitution (`$(cat "...")`) -- a regex
- * matching only `[A-Za-z_]` after the `$` misses the latter entirely, since `(` isn't a variable-name
- * character. That gap let scripts/channels.sh and scripts/doctor.sh (which inline `$(cat "...")`) slip
- * past an earlier draft of this scanner (card b267df80).
+ *
+ * The character after the `$` is where this rule keeps failing, so it is enumerated rather than
+ * assumed:
+ *   `$TOK`        bare variable            -- `[A-Za-z_]`
+ *   `$(cat ...)`  command substitution     -- `(`; a regex anchored on `[A-Za-z_]` misses it,
+ *                 which is how scripts/channels.sh and scripts/doctor.sh slipped past an earlier
+ *                 draft (card b267df80)
+ *   `${TOK}`      braced expansion         -- `{`; missed until card 2834e7f3's Cybered NO-GO, and
+ *                 NOT hypothetical: src/web/voice-directive.ts:60 built
+ *                 `-H "Authorization: Bearer ${token}"` into a command it hands an agent to run,
+ *                 shipped since 7b185eb and present in dist. The guard scanned that file and
+ *                 reported green over it.
+ *   `` `cat ...` ``  legacy substitution   -- a backtick, added in the same pass; nothing in the
+ *                 corpus uses it today, so it costs nothing and closes the spelling.
+ *
+ * Note this is a SHAPE rule: it catches an interpolation, not a token literal typed out in full.
+ * Measured across the whole corpus, no `Bearer <20+ opaque chars>` literal exists, so that variant
+ * is reported rather than guessed at here -- a rule for it would have to tell a real secret from
+ * `Bearer <token>` and `Bearer %s`, and inventing that on no evidence is how guards get disabled.
  */
 function leaksTokenInArgv(invocation: string): boolean {
-  if (!/Authorization:\s*Bearer\s*\$(\(|[A-Za-z_])/.test(invocation)) return false
+  if (!/Authorization:\s*Bearer\s*(\$(\(|\{|[A-Za-z_])|`)/.test(invocation)) return false
   // The sanctioned form reads the header from a file (`-H @"$hdr_file"` / `-H @"$hdr"` / `-H @"$hf"`);
   // that never matches the Bearer-in-argv pattern above in the first place, but keep this as an
   // explicit second check so a future refactor that keeps BOTH forms in one invocation still trips.
@@ -438,6 +453,33 @@ describe('the scanner itself catches what a naive single-line regex would miss',
       '```',
     ].join('\n')
     expect(findCurlInvocations(doc).filter((c) => leaksTokenInArgv(c.text))).toEqual([])
+  })
+
+  // The braced expansion `${TOK}` is the spelling this rule was blind to until card 2834e7f3, and
+  // it was NOT a hypothetical: src/web/voice-directive.ts built a curl carrying
+  // `-H "Authorization: Bearer ${token}"` -- with the token's VALUE, not a shell reference -- into
+  // a command handed to an agent to run. Shipped since 7b185eb, present in dist, and the guard
+  // scanned that very file and reported green. Both directions are pinned below, because a rule
+  // widened until it flags the sanctioned form too is a rule someone switches off.
+  it('flags a BRACED expansion, the shape a TS template literal produces', () => {
+    const script = ['#!/usr/bin/env bash', 'curl -s -H "Authorization: Bearer ${token}" "$DASH/api/x"'].join('\n')
+    expect(findCurlInvocations(script).filter((c) => leaksTokenInArgv(c.text))).toHaveLength(1)
+  })
+
+  it('flags a braced expansion with a default, and a legacy backtick substitution', () => {
+    const braced = 'curl -s -H "Authorization: Bearer ${TOK:-fallback}" "$DASH/api/x"'
+    const backtick = 'curl -s -H "Authorization: Bearer `cat store/.dashboard-token`" "$DASH/api/x"'
+    expect(findCurlInvocations(braced).filter((c) => leaksTokenInArgv(c.text))).toHaveLength(1)
+    expect(findCurlInvocations(backtick).filter((c) => leaksTokenInArgv(c.text))).toHaveLength(1)
+  })
+
+  it('does NOT flag a braced expansion that is read from a header FILE', () => {
+    const script = [
+      '#!/usr/bin/env bash',
+      'printf \'Authorization: Bearer %s\\n\' "${TOK}" > "$hdr"',
+      'curl -s -H @"$hdr" "$DASH/api/x" -d @-',
+    ].join('\n')
+    expect(findCurlInvocations(script).filter((c) => leaksTokenInArgv(c.text))).toEqual([])
   })
 
   it('does NOT flag the sanctioned @headerfile pattern', () => {
