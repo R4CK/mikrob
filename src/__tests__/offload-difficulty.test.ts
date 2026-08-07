@@ -15,27 +15,26 @@ describe('CODING_DIFFICULTY_LEVELS', () => {
   it('is the ordered coding-only taxonomy (ascending hardness)', () => {
     expect(CODING_DIFFICULTY_LEVELS).toEqual(['trivial', 'isolated', 'module', 'feature', 'architecture'])
   })
-  it("marks 'module' as the reliable/offload ceiling; feature+architecture sit above it", () => {
-    expect(RELIABLE_CEILING).toBe('module')
-    expect(CODING_DIFFICULTY_LEVELS.indexOf('feature')).toBeGreaterThan(CODING_DIFFICULTY_LEVELS.indexOf(RELIABLE_CEILING))
+  it("marks 'feature' as the reliable/offload ceiling (Peti, 2026-08-07); architecture sits above it", () => {
+    expect(RELIABLE_CEILING).toBe('feature')
     expect(CODING_DIFFICULTY_LEVELS.indexOf('architecture')).toBeGreaterThan(CODING_DIFFICULTY_LEVELS.indexOf(RELIABLE_CEILING))
   })
-  it('offers only <=ceiling levels as offload thresholds (feature/architecture never offload)', () => {
-    expect(OFFLOADABLE_THRESHOLDS).toEqual(['trivial', 'isolated', 'module'])
-    expect(OFFLOADABLE_THRESHOLDS).not.toContain('feature')
+  it('offers only <=ceiling levels as offload thresholds (architecture never offloads)', () => {
+    expect(OFFLOADABLE_THRESHOLDS).toEqual(['trivial', 'isolated', 'module', 'feature'])
     expect(OFFLOADABLE_THRESHOLDS).not.toContain('architecture')
   })
 })
 
 describe('defaultDifficultyForAggressiveness', () => {
-  it('maps aggressiveness -> max difficulty, CAPPED at the reliable ceiling (Peti: 100% never exceeds it)', () => {
+  it('maps aggressiveness -> max difficulty, CAPPED at the reliable ceiling (Peti 2026-08-07: 100% never exceeds it)', () => {
     expect(defaultDifficultyForAggressiveness(0)).toBe('trivial')
     expect(defaultDifficultyForAggressiveness(74)).toBe('trivial')
     expect(defaultDifficultyForAggressiveness(75)).toBe('isolated') // the marked optimum
     expect(defaultDifficultyForAggressiveness(84)).toBe('isolated')
     expect(defaultDifficultyForAggressiveness(85)).toBe('module')
-    expect(defaultDifficultyForAggressiveness(95)).toBe('module') // capped, not 'feature'
-    expect(defaultDifficultyForAggressiveness(100)).toBe('module') // capped, never 'architecture'
+    expect(defaultDifficultyForAggressiveness(94)).toBe('module')
+    expect(defaultDifficultyForAggressiveness(95)).toBe('feature')
+    expect(defaultDifficultyForAggressiveness(100)).toBe('feature') // capped, never 'architecture'
   })
   it('never returns a level above the reliable ceiling for any 0..100', () => {
     const cap = CODING_DIFFICULTY_LEVELS.indexOf(RELIABLE_CEILING)
@@ -53,7 +52,7 @@ describe('defaultDifficultyForAggressiveness', () => {
   })
   it('reuses normalizeAggressiveness (clamps/parses/defaults) for its input', () => {
     expect(defaultDifficultyForAggressiveness(-5)).toBe('trivial') // clamped to 0
-    expect(defaultDifficultyForAggressiveness(9999)).toBe('module') // clamped to 100 -> capped module
+    expect(defaultDifficultyForAggressiveness(9999)).toBe('feature') // clamped to 100 -> capped feature
     expect(defaultDifficultyForAggressiveness('85')).toBe('module') // numeric string
     expect(defaultDifficultyForAggressiveness('abc')).toBe('isolated') // non-numeric -> default 75 -> isolated
   })
@@ -64,10 +63,10 @@ describe('normalizeThreshold (clamps to the reliable ceiling)', () => {
     expect(normalizeThreshold('trivial')).toBe('trivial')
     expect(normalizeThreshold('isolated')).toBe('isolated')
     expect(normalizeThreshold('module')).toBe('module')
+    expect(normalizeThreshold('feature')).toBe('feature')
   })
-  it('clamps a level above the ceiling down to module (never offloads feature/architecture)', () => {
-    expect(normalizeThreshold('feature')).toBe('module')
-    expect(normalizeThreshold('architecture')).toBe('module')
+  it('clamps a level above the ceiling down to feature (architecture never offloads)', () => {
+    expect(normalizeThreshold('architecture')).toBe('feature')
   })
   it('returns null for unknown/absent (caller derives from the slider)', () => {
     expect(normalizeThreshold('auto')).toBeNull()
