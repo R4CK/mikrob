@@ -75,6 +75,82 @@ export function delay(ms: number): Promise<void> {
   return new Promise((r) => setTimeout(r, ms))
 }
 
+// Per-agent in-flight guard for the lifecycle operations (card 74ba7c78).
+//
+// Before these functions became async (card 873c48df) they were fully synchronous, so nothing else
+// could run between the `isAgentRunning()` check and its effect: the guard was atomic BY ACCIDENT,
+// as a side effect of blocking the event loop. Making them async was right -- a 3-second freeze of
+// the whole dashboard is not a locking strategy -- but it removed that accident and left a TOCTOU
+// window across every `await`, so two concurrent requests could both pass the same guard.
+//
+// COALESCING, not queueing. A second caller arriving while an operation is in flight for the SAME
+// agent joins it and receives its result, instead of running a second stop+start behind it. Two
+// concurrent restarts therefore produce exactly one stop and one start, and two concurrent starts
+// produce exactly one session-creation attempt, which is the property that matters -- a duplicate
+// tmux session is how an agent ends up with two pollers racing the same bot token.
+//
+// Scope, stated rather than implied: this is an IN-PROCESS map, sufficient because the dashboard is
+// a singleton (O_EXCL pidfile, index.ts). It does not serialize a second process, and it does not
+// cover the direct tmux callers listed in session-send-lock.ts.
+interface LifecycleEntry {
+  readonly token: symbol
+  /** Which operation is running: a stop must never be answered by a start's result. */
+  readonly kind: 'start' | 'stop' | 'restart'
+  /** Stable options identity, so a {fresh:true} caller is not handed a {fresh:false} run. */
+  readonly optsKey: string
+  readonly promise: Promise<unknown>
+}
+
+const lifecycleInFlight = new Map<string, LifecycleEntry>()
+
+/** Exported for tests: how many agents currently have an operation in flight. */
+export function lifecycleInFlightCount(): number {
+  return lifecycleInFlight.size
+}
+
+/** Exported for tests ONLY so the behaviour below is proven on the real lock, not on a copy. */
+export function withLifecycleLock<T>(
+  name: string,
+  kind: 'start' | 'stop' | 'restart',
+  optsKey: string,
+  op: () => Promise<T>,
+): Promise<T> {
+  const running = lifecycleInFlight.get(name)
+
+  // COALESCE only an IDENTICAL request. Two callers who asked for the same thing can share one
+  // answer; a caller who asked for something ELSE must get their own operation run. The first
+  // version of this lock keyed on the agent alone, so a stop() arriving during a start() was handed
+  // the start's promise, never ran, and still reported {ok:true} -- and routes/agents.ts then drops
+  // the desired-state entry unconditionally, so the reconciler stopped bringing the agent back
+  // while it was in fact still running. A control that reports success for work it did not do is
+  // worse than the race it replaced (Cybersec + Cybered NO-GO).
+  if (running !== undefined && running.kind === kind && running.optsKey === optsKey) {
+    return running.promise as Promise<T>
+  }
+
+  // A DIFFERENT request QUEUES behind the running one: still never two concurrent tmux operations
+  // on one agent, but the stop actually stops -- just after the start finishes.
+  const prev = running?.promise
+  const token = Symbol(name)
+  const p: Promise<T> = (async () => {
+    // The predecessor's failure belongs to ITS caller; it must not become ours.
+    if (prev !== undefined) {
+      try {
+        await prev
+      } catch {
+        /* not our result */
+      }
+    }
+    try {
+      return await op()
+    } finally {
+      if (lifecycleInFlight.get(name)?.token === token) lifecycleInFlight.delete(name)
+    }
+  })()
+  lifecycleInFlight.set(name, { token, kind, optsKey, promise: p })
+  return p
+}
+
 import { CHANNEL_PLUGIN_IDS } from './plugin-ids.js'
 export { CHANNEL_PLUGIN_IDS }
 
@@ -938,7 +1014,7 @@ function startRemoteAgentProcess(
   }
 }
 
-export async function startAgentProcess(name: string, opts: { fresh?: boolean } = {}): Promise<{ ok: boolean; pid?: number; error?: string }> {
+async function startAgentProcessUnlocked(name: string, opts: { fresh?: boolean } = {}): Promise<{ ok: boolean; pid?: number; error?: string }> {
   const dir = agentDir(name)
   if (!existsSync(dir)) return { ok: false, error: 'Agent not found' }
 
@@ -1380,7 +1456,7 @@ export async function startAgentProcess(name: string, opts: { fresh?: boolean } 
   }
 }
 
-export async function stopAgentProcess(name: string): Promise<{ ok: boolean; error?: string }> {
+async function stopAgentProcessUnlocked(name: string): Promise<{ ok: boolean; error?: string }> {
   const session = agentSessionName(name)
   if (!isAgentRunning(name)) return { ok: false, error: 'Agent is not running' }
 
@@ -1419,12 +1495,12 @@ export function getAgentProcessInfo(name: string): { running: boolean; session?:
   }
 }
 
-export async function restartAgentProcess(name: string, opts: { fresh?: boolean } = {}): Promise<{ ok: boolean; pid?: number; error?: string }> {
+async function restartAgentProcessUnlocked(name: string, opts: { fresh?: boolean } = {}): Promise<{ ok: boolean; pid?: number; error?: string }> {
   if (isAgentRunning(name)) {
-    const stopResult = await stopAgentProcess(name)
+    const stopResult = await stopAgentProcessUnlocked(name)
     if (!stopResult.ok) return { ok: false, error: stopResult.error || 'Failed to stop running agent before restart' }
   }
-  return await startAgentProcess(name, opts)
+  return await startAgentProcessUnlocked(name, opts)
 }
 
 // Claude Code occasionally pops a "How is Claude doing this session? (optional)"
@@ -2187,3 +2263,26 @@ export async function clearStaleParkedInput(session: string, host: string | null
   return true
 }
 
+
+
+// The public lifecycle API. Every entry point goes through the per-agent in-flight guard, so a
+// concurrent caller joins the running operation instead of racing it past the same check
+// (card 74ba7c78). The *Unlocked variants stay private: restart composes stop+start INSIDE one
+// critical section, and calling the public ones there would make it join its own lock.
+/** Stable options identity. `fresh` is the only option today; naming it explicitly keeps a future
+ *  option from silently widening what counts as "the same request". */
+function optsKeyOf(opts: { fresh?: boolean }): string {
+  return `fresh=${opts.fresh === true}`
+}
+
+export function startAgentProcess(name: string, opts: { fresh?: boolean } = {}): Promise<{ ok: boolean; pid?: number; error?: string }> {
+  return withLifecycleLock(name, 'start', optsKeyOf(opts), () => startAgentProcessUnlocked(name, opts))
+}
+
+export function stopAgentProcess(name: string): Promise<{ ok: boolean; error?: string }> {
+  return withLifecycleLock(name, 'stop', '', () => stopAgentProcessUnlocked(name))
+}
+
+export function restartAgentProcess(name: string, opts: { fresh?: boolean } = {}): Promise<{ ok: boolean; pid?: number; error?: string }> {
+  return withLifecycleLock(name, 'restart', optsKeyOf(opts), () => restartAgentProcessUnlocked(name, opts))
+}
