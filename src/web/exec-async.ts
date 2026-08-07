@@ -88,15 +88,3 @@ export function execFileAsync(
     child.on('close', (code) => finish(timedOut ? null : code))
   })
 }
-
-/** Convenience for the common "give me stdout, throw on failure" shape. */
-export async function execFileAsyncOutput(
-  file: string,
-  args: readonly string[],
-  opts: ExecAsyncOptions = {},
-): Promise<string> {
-  const r = await execFileAsync(file, args, opts)
-  if (r.timedOut) throw new Error(`${file} timed out after ${opts.timeoutMs ?? 30_000}ms`)
-  if (r.status !== 0) throw new Error(`${file} exited ${r.status}: ${r.stderr.trim().slice(0, 200)}`)
-  return r.stdout
-}

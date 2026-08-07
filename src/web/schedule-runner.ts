@@ -2,7 +2,7 @@ import { join, isAbsolute } from 'node:path'
 import { homedir } from 'node:os'
 import { checkTaskMcpRequirements } from './schedule-mcp-precheck.js'
 import { existsSync, readFileSync } from 'node:fs'
-import { spawnSync } from 'node:child_process'
+import { execFile } from 'node:child_process'
 import { atomicWriteFileSync } from './atomic-write.js'
 import { logger } from '../logger.js'
 import {
@@ -431,7 +431,12 @@ export function resolveBoundChatId(agentName: string): string | null {
   } catch { return null }
 }
 
-export function runPreCheck(task: ScheduledTask): { skip: boolean; prefix?: string } {
+// MUST stay async, for the same reason command-task's runner does (card 955f014e):
+// this runs ON the scheduler tick, so a synchronous child would freeze the whole
+// event loop -- HTTP server included -- for as long as the pre-check takes. The
+// 10s timeout bounded the damage but did not remove it: a pre-check that hits the
+// network could stall every dashboard request for ten seconds, once per tick.
+export async function runPreCheck(task: ScheduledTask): Promise<{ skip: boolean; prefix?: string }> {
   if (!task.preCheck) return { skip: false }
   const scriptPath = isAbsolute(task.preCheck)
     ? task.preCheck
@@ -441,7 +446,15 @@ export function runPreCheck(task: ScheduledTask): { skip: boolean; prefix?: stri
     return { skip: false }
   }
   try {
-    const r = spawnSync('bash', [scriptPath], { timeout: 10_000, encoding: 'utf-8' })
+    const r = await new Promise<{ error?: Error; status: number | null; stdout: string; stderr: string }>((resolve) => {
+      execFile('bash', [scriptPath], { timeout: 10_000, encoding: 'utf-8', maxBuffer: 1024 * 1024 }, (err, stdout, stderr) => {
+        if (!err) { resolve({ status: 0, stdout, stderr }); return }
+        const e = err as NodeJS.ErrnoException & { killed?: boolean }
+        // A timeout or a spawn failure is an `error`; a plain non-zero exit is not.
+        if (typeof e.code === 'number') { resolve({ status: e.code, stdout, stderr }); return }
+        resolve({ error: e, status: null, stdout, stderr })
+      })
+    })
     if (r.error) {
       logger.warn({ task: task.name, error: r.error.message }, 'pre-check script spawn error, running LLM anyway')
       return { skip: false }
@@ -1161,7 +1174,7 @@ export function startScheduleRunner(): NodeJS.Timeout {
 
       // Re-run pre-check on retry: state may have changed since the task
       // was first scheduled (e.g. kanban cards already processed).
-      const retryPc = runPreCheck(taskDef)
+      const retryPc = await runPreCheck(taskDef)
       if (retryPc.skip) {
         deletePendingTaskRetry(row.task_name, row.agent_name)
         appendTaskRun(row.task_name, row.agent_name, 'skipped')
@@ -1252,7 +1265,7 @@ export function startScheduleRunner(): NodeJS.Timeout {
 
       // Run pre-check once per task (not per agent) since it queries shared
       // state (DB, filesystem) that does not vary by target agent.
-      const cronPc = runPreCheck(task)
+      const cronPc = await runPreCheck(task)
       if (cronPc.skip) {
         scheduleLastRun.set(task.name, now)
         persistScheduleLastRun()

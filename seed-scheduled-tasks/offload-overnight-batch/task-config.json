@@ -1,0 +1,14 @@
+{
+  "schedule": "0 3 * * *",
+  "agent": "{{MAIN_AGENT_ID}}",
+  "enabled": true,
+  "type": "command",
+  "skipIfBusy": false,
+  "forceSend": false,
+  "description": "Ejszakai local-LLM batch: a mechanikus backlog draftolasa a 7B-re, ingyen. type=command -> nyers bash -lc, 0 token/run, nem fugg attol hogy a MikroB session el-e 03:00-kor. Hatterben indul (nohup &), a naplo store/offload-batch.log. catchUpMaxAgeMinutes=1440, mert a gep 03:00-kor alszik es reggel kell behozni (card 975e5a97).",
+  "createdAt": 1785518341,
+  "command": "nohup {{INSTALL_DIR}}/store/offload-batch-run.sh >/dev/null 2>&1 &",
+  "timeoutMs": 15000,
+  "failThreshold": 3,
+  "catchUpMaxAgeMinutes": 1440
+}

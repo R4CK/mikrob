@@ -1,0 +1,11 @@
+{
+  "schedule": "0 */6 * * *",
+  "agent": "{{MAIN_AGENT_ID}}",
+  "enabled": true,
+  "type": "command",
+  "description": "Jelzi, ha egy utemezett feladat NEM fut (never-fired / all-missed). type=command -> nyers bash -lc, 0 token/run. Exit 0=tiszta, 1=talalat (riaszt), 2=hiba. failThreshold=1, mert egy nem-futo feladat azonnali jelzest erdemel. Card 975e5a97.",
+  "command": "{{INSTALL_DIR}}/store/scheduled-task-canary.sh",
+  "timeoutMs": 30000,
+  "failThreshold": 1,
+  "createdAt": 0
+}
