@@ -7,7 +7,7 @@
 // "secret-in-argv" on a commit that only swapped a path inside lines already containing the pattern,
 // and a check that fires on untouched risk trains gates to ignore it.
 import { describe, it, expect, beforeEach, afterEach } from 'vitest'
-import { mkdtempSync, rmSync, writeFileSync, mkdirSync } from 'node:fs'
+import { mkdtempSync, rmSync, writeFileSync, mkdirSync, chmodSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join, dirname } from 'node:path'
 import { execFileSync } from 'node:child_process'
@@ -150,6 +150,26 @@ describe('gate-pretriage.sh -- checks fire on a planted defect', () => {
     expect(r.tsc).toBe('unavailable')
     expect(checks(r)).toContain('tsc-unavailable')
     expect(checks(r)).not.toContain('tsc-errors')
+  })
+
+  // The OTHER direction, and the one that keeps the fix honest (card aae6632c). Reporting
+  // "unavailable" unconditionally would make the test above pass while silently disabling the
+  // type-check for every repo. So: give the fixture a local ./node_modules/.bin/tsc and prove the
+  // script actually RUNS it and reports what it says.
+  it('runs the repo OWN tsc when there is one, instead of reporting it unavailable', () => {
+    const bin = join(repo, 'node_modules', '.bin')
+    mkdirSync(bin, { recursive: true })
+    // A stand-in compiler: exits non-zero and prints one `error TS` line, like tsc would.
+    writeFileSync(join(bin, 'tsc'), '#!/usr/bin/env bash\necho "src/x.ts(1,1): error TS2304: planted."\nexit 2\n')
+    chmodSync(join(bin, 'tsc'), 0o755)
+    try {
+      const r = commitAndTriage({ 'tsconfig.json': JSON.stringify({ compilerOptions: {} }, null, 2) }, 'local tsc')
+      expect(r.tsc, 'the local compiler was not run -- the lookup regressed to "unavailable"').toBe('errors:1')
+      expect(checks(r)).toContain('tsc-errors')
+      expect(checks(r)).not.toContain('tsc-unavailable')
+    } finally {
+      rmSync(join(repo, 'node_modules'), { recursive: true, force: true })
+    }
   })
 })
 
