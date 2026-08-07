@@ -95,10 +95,16 @@ describe('routeTask -- fail-closed behaviour', () => {
     expect(d.reason).toContain('exceeds threshold')
   })
 
-  it('feature/architecture never draft locally even at max aggressiveness (reliable ceiling)', () => {
-    for (const difficulty of ['feature', 'architecture']) {
-      expect(routeTask({ description: 'a big change', difficulty, aggressiveness: 100 }).route).toBe('online')
-    }
+  it('architecture never drafts locally even at max aggressiveness (reliable ceiling)', () => {
+    expect(routeTask({ description: 'a big change', difficulty: 'architecture', aggressiveness: 100 }).route).toBe(
+      'online',
+    )
+  })
+
+  it('feature drafts locally at max aggressiveness (ceiling raised 2026-08-07, Peti)', () => {
+    expect(routeTask({ description: 'a big change', difficulty: 'feature', aggressiveness: 100 }).route).toBe(
+      'local',
+    )
   })
 
   it('classifyCategory is case-insensitive (no trivial bypass)', () => {
