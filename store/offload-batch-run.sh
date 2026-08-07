@@ -68,14 +68,24 @@ if [[ "${1:-}" == "--status" ]]; then
   exit 0
 fi
 
-trap emit_end_line EXIT
+# ONE trap, not two (card 5f00664c, Cybered F1 + Cybersec + QA, all three reproduced it). A second
+# `trap ... EXIT` REPLACES the first rather than chaining, so the earlier `trap emit_end_line EXIT`
+# plus a later `trap 'rm -f "$hdr_file"' EXIT` meant the END line never fired on any run that got
+# past the token check -- i.e. every normal run -- and --status answered NEVER-COMPLETED forever.
+#
+# Neither obvious fix is safe. Dropping the cleanup trap leaks the DASHBOARD TOKEN: $hdr_file is the
+# 0600 mktemp file holding it, and this task runs overnight, so every run would leave a token in
+# /tmp until reboot (the class closed on roll-forward-oneshot.sh). Dropping the emit trap throws away
+# the card's whole purpose. So they are COMBINED here, cleanup first, and registered in final form
+# BEFORE $hdr_file exists -- `rm -f` on a missing path is silent, which is what makes that safe.
+hdr_file=""   # declared before the trap so `set -u` cannot kill the handler
+trap 'rm -f "$hdr_file"; emit_end_line' EXIT
 if [[ -z "$TOK" ]]; then BATCH_END_STATUS="no-token"; log "no dashboard token; abort"; echo "ERROR no-token"; exit 0; fi
 
 # SECURITY (Cybersec/gate-ops-scripts-token-in-argv, card edb7559f): the token must never be a curl
 # argv (/proc/<pid>/cmdline is world-readable). Private 0600 header file instead, -H @"$hdr_file",
 # removed on EXIT.
 hdr_file="$(mktemp)"; chmod 600 "$hdr_file"
-trap 'rm -f "$hdr_file"' EXIT
 printf 'Authorization: Bearer %s\n' "$TOK" > "$hdr_file"
 
 # candidate cards: all in_progress + planned, ordered in_progress-first then by priority.
