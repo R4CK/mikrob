@@ -27,6 +27,8 @@ let known = new Set<string>()
 let onMain = new Set<string>()
 /** Refs that exist in the repo under test. marveen genuinely has no origin/main. */
 let knownRefs = new Set<string>()
+/** sha -> its own commit message, what `git log --grep` reads to attribute a commit to a card. */
+let messages: Record<string, string> = {}
 /** Counts spawns, so the "one cat-file, not one per token" fix is asserted and not just intended. */
 export let spawns: string[][] = []
 vi.mock('node:child_process', () => ({
@@ -48,6 +50,15 @@ vi.mock('node:child_process', () => ({
           .filter(Boolean)
           .map((tok) => (known.has(tok) ? `${tok} commit 42` : `${tok} missing`))
         cb(null, lines.join('\n'))
+        return
+      }
+      const grep = a.find((s) => s.startsWith('--grep='))
+      if (a.includes('log') && grep !== undefined) {
+        // `git log --no-walk --grep=<cardId> <sha>...` prints only the revs whose OWN message
+        // matches. An unknown sha simply has no message and so never matches.
+        const needle = grep.slice('--grep='.length).toLowerCase()
+        const revs = a.slice(a.indexOf('--fixed-strings') + 2)
+        cb(null, revs.filter((r) => (messages[r] ?? '').toLowerCase().includes(needle)).join('\n'))
         return
       }
       if (a.includes('--is-ancestor')) {
@@ -85,6 +96,7 @@ beforeEach(() => {
   known = new Set([SHA_A, SHA_B])
   onMain = new Set()
   knownRefs = new Set(['origin/main', 'origin/develop'])
+  messages = {}
 })
 
 describe('the landed guard blocks exactly one thing', () => {
@@ -184,6 +196,65 @@ describe('a machine-generated comment is not a landing claim (cards a7b7fe43, f9
     onMain = new Set()
     expect((await landedGuardVerdict('c1', 'done', false, 'backend2')).blocked).toBe(false)
     expect(infoLogs[0]).toMatchObject({ reason: 'no-commit-named', skippedGeneratedComments: 1 })
+  })
+})
+
+describe("a commit is only this card's if its own message says so (QA FAIL 9689 on 9cc72f2c)", () => {
+  // QA's scenario, verbatim: the card's own work (SHA_A) never landed, and a comment mentions an
+  // unrelated commit (SHA_B) for context -- "same pattern as", "see also". SHA_B is on main, so the
+  // old rule closed the card on someone else's work. It is not a rare shape: it freed 3 of the 51
+  // cards MikroB had confirmed unlanded, and 4 open done cards are standing on it right now.
+  it('does not let a commit belonging to ANOTHER card free this one', async () => {
+    comments = [
+      { content: `REVIEW -- done @ ${SHA_A}` },
+      { content: `for context, the same pattern as ${SHA_B}` },
+    ]
+    messages = { [SHA_A]: 'fix(x): the thing (card c1)', [SHA_B]: 'feat(y): unrelated (card zz99)' }
+    onMain = new Set([SHA_B])
+    const v = await landedGuardVerdict('c1', 'done', false, 'backend2')
+    expect(v.blocked).toBe(true)
+    // and the block names the card's OWN commit, not the foreign one it just discarded
+    expect(v.message).toContain(SHA_A.slice(0, 8))
+    expect(v.message).not.toContain(SHA_B.slice(0, 8))
+  })
+
+  it('allows once the card OWN commit lands, even with the foreign one still quoted', async () => {
+    comments = [
+      { content: `REVIEW -- done @ ${SHA_A}` },
+      { content: `for context, the same pattern as ${SHA_B}` },
+    ]
+    messages = { [SHA_A]: 'fix(x): the thing (card c1)', [SHA_B]: 'feat(y): unrelated (card zz99)' }
+    onMain = new Set([SHA_A, SHA_B])
+    expect((await landedGuardVerdict('c1', 'done', false, 'backend2')).blocked).toBe(false)
+  })
+
+  it('keeps EVERY candidate when no commit message names the card -- the rebase/cherry-pick case', async () => {
+    // The breadth QA explicitly asked us not to destroy: the same work can land under a different sha
+    // after a rebase or a conflict-resolved cherry-pick, and plenty of commits carry no card id at
+    // all. Narrowing only happens when it has a better answer than the fallback.
+    comments = [{ content: `REVIEW -- done @ ${SHA_A}` }, { content: `landed as ${SHA_B}` }]
+    messages = { [SHA_A]: 'fix(x): the thing', [SHA_B]: 'fix(x): the thing, rebased' }
+    onMain = new Set([SHA_B])
+    expect((await landedGuardVerdict('c1', 'done', false, 'backend2')).blocked).toBe(false)
+    // It allowed because it CHECKED and found a landing -- not because the narrowing emptied the
+    // set and left nothing to check. Without this line, dropping the fallback still passes.
+    expect(infoLogs).toHaveLength(0)
+  })
+
+  it('falls back to every candidate when the attribution query itself fails', async () => {
+    // A checker that cannot answer must not manufacture a block. `messages` empty = git returned
+    // nothing, which is indistinguishable from "no commit names this card".
+    comments = [{ content: `REVIEW ${SHA_A}` }, { content: `see also ${SHA_B}` }]
+    onMain = new Set([SHA_B])
+    expect((await landedGuardVerdict('c1', 'done', false, 'backend2')).blocked).toBe(false)
+    expect(infoLogs).toHaveLength(0)
+  })
+
+  it('does not spend a spawn on attribution when there is only one candidate', async () => {
+    comments = [{ content: `REVIEW -- done @ ${SHA_A}` }]
+    onMain = new Set([SHA_A])
+    await landedGuardVerdict('c1', 'done', false, 'backend2')
+    expect(spawns.some((s) => s.some((x) => x.startsWith('--grep=')))).toBe(false)
   })
 })
 

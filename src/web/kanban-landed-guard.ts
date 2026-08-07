@@ -168,6 +168,49 @@ async function claimedCommits(cardId: string, repo: string): Promise<Claimed> {
 }
 
 /**
+ * Of the commits a card names, the ones whose OWN message says they are this card's work.
+ *
+ * QA's finding on card 9cc72f2c, and it is the fleet's normal way of writing: a comment says "same
+ * pattern as <sha>" or "see also <sha>", that unrelated commit is on main, and a rule of "ANY named
+ * commit landed -> allow" closes the card on someone else's work. Measured on the 51 cards MikroB had
+ * independently confirmed as NOT landed, three were freed exactly this way; among the 304 open done
+ * cards, four are closed on it right now -- including 24038ea3, an URGENT security revoke whose own
+ * commit never left the branch and which was freed by an unrelated prettier run.
+ *
+ * QA proposed narrowing to the last REVIEW comment. Replayed over those 304 cards that costs 11
+ * correctly-landed cards (they become unchecked closes) and re-frees two the guard blocks today,
+ * because the landing evidence is usually MikroB's "Landolva: <sha> mergelve main-re" line rather
+ * than the REVIEW. The commit MESSAGE is the better witness: `fix(sec): ... (card 24038ea3)` is
+ * written by the author of the work, in the repo, and a commit belonging to another card does not
+ * carry this id. One `git log --grep`, one spawn, on a path that already spawns.
+ *
+ * FALLBACK IS THE POINT: when no candidate names the card, every candidate is kept. Not all commits
+ * carry a card id, and the "same work, different sha after a rebase or cherry-pick" case QA asked us
+ * to preserve depends on that breadth. This narrows only when it has a better answer, so it can turn
+ * an allow into a block (loud, forceable) but never a block into an allow.
+ */
+async function attributedToCard(repo: string, cardId: string, commits: string[]): Promise<string[]> {
+  // With a single candidate the answer cannot change: it is either attributed and kept, or not
+  // attributed and kept by the fallback. Skip the spawn.
+  if (commits.length < 2) return commits
+  const res = await git(repo, [
+    'log',
+    '--no-walk',
+    '--format=%H',
+    '-i',
+    '--fixed-strings',
+    `--grep=${cardId}`,
+    ...commits,
+  ])
+  // ONE fallback, not two: an empty answer, a git failure and an answer naming nothing we hold all
+  // arrive here as an empty `owned`. An early return for each would read as care and would be a
+  // branch no test can kill -- this way the fallback that matters is the one under test.
+  const matched = new Set(res.out.split('\n'))
+  const owned = commits.filter((c) => matched.has(c))
+  return owned.length > 0 ? owned : commits
+}
+
+/**
  * A close that the guard did NOT verify, recorded so it is distinguishable from a verified one.
  *
  * Both outcomes return `blocked: false`, which is what card b428f3da is about: "no commit to check"
@@ -229,7 +272,7 @@ export async function landedGuardVerdict(
     logger.warn({ err, cardId }, 'landed-guard could not read the card; allowing the close')
     return { blocked: false }
   }
-  const commits = claimed.commits
+  const commits = await attributedToCard(repo, cardId, claimed.commits)
   if (commits.length === 0) {
     // Two different silences, now two different lines. `named > 0` means the card DOES name commit-
     // shaped tokens, none of which exists in the repo this project maps to -- the 94727c79 shape.
