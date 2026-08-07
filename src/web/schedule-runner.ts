@@ -607,7 +607,7 @@ async function attemptFireTask(
   // forceSend keeps its "always eventually land" contract: it logs the gap
   // loudly but still delivers.
   if (task.type !== 'command' && task.requires?.mcp_servers?.length) {
-    const check = checkTaskMcpRequirements(task.requires.mcp_servers, agentName, session, host)
+    const check = await checkTaskMcpRequirements(task.requires.mcp_servers, agentName, session, host)
     if (!check.ok) {
       if (task.forceSend) {
         logger.warn({ task: task.name, agent: agentName, session, missing: check.missing }, 'MCP pre-check failed but forceSend=true -- delivering anyway')

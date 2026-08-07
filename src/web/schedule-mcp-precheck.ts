@@ -15,7 +15,7 @@
 
 import { existsSync, readFileSync } from 'node:fs'
 import { join } from 'node:path'
-import { execFileSync } from 'node:child_process'
+import { execFileAsync } from './exec-async.js'
 import { logger } from '../logger.js'
 import { PROJECT_ROOT } from '../config.js'
 import { agentDir } from './agent-config.js'
@@ -136,12 +136,12 @@ export function decideMcpPrecheck(
  * Returns ok:true (with empty lists) whenever absence cannot be proven:
  * remote host, unresolvable claude PID, ps failure, or no requirements.
  */
-export function checkTaskMcpRequirements(
+export async function checkTaskMcpRequirements(
   required: string[] | undefined,
   agentName: string,
   session: string,
   host: string | null,
-): McpPrecheckResult {
+): Promise<McpPrecheckResult> {
   if (!required || required.length === 0) return { ok: true, missing: [], unknown: [] }
   if (host) {
     logger.debug({ agent: agentName, session }, 'MCP pre-check skipped: remote session')
@@ -152,13 +152,16 @@ export function checkTaskMcpRequirements(
     logger.debug({ agent: agentName, session }, 'MCP pre-check skipped: claude pid unresolved')
     return { ok: true, missing: [], unknown: [] }
   }
-  let psOutput: string
-  try {
-    psOutput = execFileSync('/bin/ps', ['-axo', 'pid,ppid,command'], { timeout: 3000, encoding: 'utf-8' })
-  } catch {
+  // ASYNC on purpose: this runs on the scheduler tick, and execFileSync froze the whole event
+  // loop -- dashboard included -- for however long `ps` took, up to its 3s ceiling, on every tick
+  // with an mcp_servers requirement. execFileAsync never rejects, so the failure path stays the
+  // same shape: absence that cannot be PROVEN yields ok:true.
+  const ps = await execFileAsync('/bin/ps', ['-axo', 'pid,ppid,command'], { timeoutMs: 3000 })
+  if (ps.timedOut || ps.status !== 0) {
     logger.debug({ agent: agentName, session }, 'MCP pre-check skipped: ps failed')
     return { ok: true, missing: [], unknown: [] }
   }
+  const psOutput = ps.stdout
   const result = decideMcpPrecheck(
     required,
     resolveMcpProcessPatterns(agentName),
