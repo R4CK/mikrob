@@ -564,7 +564,7 @@ render_seed_template() {
       -e "s/{{BOT_NAME}}/${BOT_NAME:-}/g" \
       -e "s/{{OWNER_NAME}}/${OWNER_NAME:-}/g" \
       -e "s|{{INSTALL_DIR}}|${INSTALL_DIR}|g" \
-      -e "s/{{CHAT_ID}}/${SCHED_CHAT_ID}/g" \
+      -e "s/{{CHAT_ID}}/${SCHED_CHAT_ID:-0}/g" \
       -e "s/{{WEB_PORT}}/${WEB_PORT:-3420}/g"
 }
 
@@ -978,7 +978,7 @@ if [ -d "$SEED_SCHED_DIR" ]; then
             -e "s/{{BOT_NAME}}/$BOT_NAME/g" \
             -e "s/{{OWNER_NAME}}/$OWNER_NAME/g" \
             -e "s|{{INSTALL_DIR}}|$INSTALL_DIR|g" \
-            -e "s/{{CHAT_ID}}/${SCHED_CHAT_ID}/g" \
+            -e "s/{{CHAT_ID}}/${SCHED_CHAT_ID:-0}/g" \
             -e "s/{{WEB_PORT}}/${WEB_PORT:-3420}/g" \
             "$f" > "$target/$(basename "$f")"
       done
@@ -1019,11 +1019,14 @@ if [ "$RESEED_FLEET" = "1" ] || [ "$REGEN_CLAUDEMD" = "1" ]; then
     # Opt-in: re-render from the canonical template with this install's identity.
     # Back up first -- the operator may have hand-edited CLAUDE.md.
     [ -f "$CLAUDE_MD" ] && cp "$CLAUDE_MD" "$CLAUDE_MD.backup-$(date +%Y%m%d-%H%M%S)"
-    REGEN_CHAT_ID=""
-    [ -f "$INSTALL_DIR/.env" ] && REGEN_CHAT_ID=$(grep '^CHAT_ID=' "$INSTALL_DIR/.env" | cut -d= -f2-)
+    # Reuses the SCHED_CHAT_ID resolved once at the top instead of re-deriving it here.
+    # The local copy grepped `^CHAT_ID=`, the key the installer never writes, so this path
+    # rendered {{CHAT_ID}} EMPTY into the regenerated CLAUDE.md -- the same defect Cybered
+    # found in the seed path, in a third place. Two variables resolving the same value from
+    # different keys is what produced this bug family; one source of truth removes the class.
     sed -e "s/{{OWNER_NAME}}/$OWNER_NAME/g" \
         -e "s|{{INSTALL_DIR}}|$INSTALL_DIR|g" \
-        -e "s/{{CHAT_ID}}/$REGEN_CHAT_ID/g" \
+        -e "s/{{CHAT_ID}}/${SCHED_CHAT_ID:-0}/g" \
         -e "s/{{BOT_NAME}}/$BOT_NAME/g" \
         -e "s/{{MAIN_AGENT_ID}}/$MAIN_AGENT_ID/g" \
         -e "s/{{WEB_PORT}}/${WEB_PORT:-3420}/g" \

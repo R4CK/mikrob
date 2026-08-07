@@ -89,4 +89,22 @@ describe('seed rendering parity between installer and updater (card d041760b)', 
     expect(UPDATE).toMatch(/SCHED_CHAT_ID="\$\{SCHED_CHAT_ID:-0\}"/)
     expect(UPDATE).not.toMatch(/\{\{CHAT_ID\}\}\/\$\{SCHED_CHAT_ID:-\}/)
   })
+
+  // Every {{CHAT_ID}} substitution must carry its OWN `:-` default, not rely on a top-level
+  // assignment running first. render_seed_template is sliced out and executed on its own under
+  // `set -u` by seed-refresh-untouched-only.test.ts; without the in-line default that probe dies
+  // with "SCHED_CHAT_ID: unbound variable" (QA FAIL on 7a376c9). The redundancy IS the safety net.
+  it('gives every CHAT_ID substitution its own default', () => {
+    const subs = [...UPDATE.matchAll(/-e "s\/\{\{CHAT_ID\}\}\/([^"]*)\/g"/g)].map((m) => m[1] as string)
+    expect(subs.length, 'no CHAT_ID substitution found -- the regex would make this vacuous').toBeGreaterThanOrEqual(3)
+    for (const sub of subs) expect(sub, `substitution "${sub}" has no :- default`).toMatch(/:-.+\}$/)
+  })
+
+  // One resolved value, not several. Two variables deriving the same id from different keys is what
+  // produced this bug family: the seed path and the CLAUDE.md regen path disagreed.
+  it('resolves the chat id once, in a single variable', () => {
+    expect(UPDATE).not.toMatch(/REGEN_CHAT_ID/)
+    const assignments = [...UPDATE.matchAll(/^\s*[A-Z_]*CHAT_ID=\$\(grep/gm)]
+    expect(assignments.length, 'more than one place greps the chat id out of .env').toBeLessThanOrEqual(2)
+  })
 })
