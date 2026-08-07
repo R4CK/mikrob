@@ -57,15 +57,22 @@ describe('renderFederationBlock', () => {
     expect(block).toContain('SAJÁT csatornádon')      // binary-results rule
   })
 
-  it('stays within the byte budget in BOTH languages AND EVERY routing mode at the 5-system scale (L5 raised 2048->3072)', () => {
+  it('stays within the byte budget in BOTH languages AND EVERY routing mode at the 5-system scale (L5 raised 2048->3072->3200)', () => {
     // Every peer baseUrl at realistic Tailscale length, not one long + three short.
     // Iterate the routing modes too: 'strong' renders the LONGEST directive, so a
     // default-only guard would let the worst-case mode silently breach the budget.
+    //
+    // 3072 -> 3200 (card 2834e7f3): the curl example had to stop passing the bearer token as an
+    // argv header, because /proc/<pid>/cmdline is world-readable and this brief is copied verbatim
+    // by every peer that reads it. Reading the header from stdin costs 19 bytes per rendered
+    // block, which put hu/strong and en/strong 5-6 bytes over. Raised deliberately and visibly
+    // rather than shortening the security snippet or dropping the guard: the budget exists to keep
+    // the brief compact, not to veto a fix that makes it correct.
     for (const lang of ['hu', 'en'] as const) {
       for (const routingMode of ['strong', 'catalog-first', 'advisory'] as const) {
         const block = renderFederationBlock({ ...cfg(REALISTIC_PEERS), routingMode }, { ...ID, lang })
         const bytes = Buffer.byteLength(block.replace(/https:\/\/\w+\.example/g, 'https://machine-name.tail1abcd.ts.net'), 'utf-8')
-        expect(bytes, `${lang}/${routingMode}`).toBeLessThan(3072)
+        expect(bytes, `${lang}/${routingMode}`).toBeLessThan(3200)
       }
     }
   })

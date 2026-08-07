@@ -40,14 +40,14 @@ Ha a config hiányzik vagy a kulcs nincs benne → default level 3 (régi viselk
 
 2. **Tisztítás**: 7+ napos done kártyák archiválása (előbb listázd, aztán archiváld egyesével):
    ```bash
-   curl -s -H "Authorization: Bearer $TOKEN" "http://localhost:$PORT/api/kanban" | python3 -c "
+   printf 'Authorization: Bearer %s\n' "$TOKEN" | curl -H @- -s "http://localhost:$PORT/api/kanban" | python3 -c "
 import json,sys,time
 cut=int(time.time())-7*86400
 for c in json.load(sys.stdin):
     if c.get('status')=='done' and not c.get('archived_at') and (c.get('updated_at') or 0) < cut:
         print(c['id'])
 " | while read -r id; do
-     curl -s -X POST -H "Authorization: Bearer $TOKEN" "http://localhost:$PORT/api/kanban/$id/archive" >/dev/null
+     printf 'Authorization: Bearer %s\n' "$TOKEN" | curl -H @- -s -X POST "http://localhost:$PORT/api/kanban/$id/archive" >/dev/null
    done
    ```
 
@@ -58,7 +58,7 @@ import json
 try: print(json.load(open('{{INSTALL_DIR}}/store/kanban-audit-state.json')).get('last_audit_at') or 0)
 except Exception: print(0)
 ")"
-   curl -s -H "Authorization: Bearer $TOKEN" "http://localhost:$PORT/api/kanban" | python3 -c "
+   printf 'Authorization: Bearer %s\n' "$TOKEN" | curl -H @- -s "http://localhost:$PORT/api/kanban" | python3 -c "
 import json,sys,time
 last=int('''$LAST''' or 0); now=int(time.time())
 rows=[c for c in json.load(sys.stdin)

@@ -5,7 +5,7 @@ description: Minden waiting kartya gate-verdiktjenek azonnali kezelese: PASS->za
 
 GATE-RECONCILER (MikroB kotelesseg: a flotta SOHA ne varjon rad egy elvegzett gate-verdikt vagy egy FAIL utan). Nem-trivialis, de rutin -> csendben dolgozz.
 1. Ido+kvota: `date`; `bash {{INSTALL_DIR}}/store/quota-check.sh`. Ha limit -> csendben kilep (a kvota-taskok kezelik).
-2. Listazd a WAITING kanban kartyakat: `curl -s -H "Authorization: Bearer $(cat {{INSTALL_DIR}}/store/.dashboard-token)" http://localhost:3420/api/kanban` (status==waiting). Mindegyikre olvasd a kommenteket (/api/kanban/<id>/comments) es a kijelolt gate-tiert.
+2. Listazd a WAITING kanban kartyakat: `printf 'Authorization: Bearer %s\n' "$(cat {{INSTALL_DIR}}/store/.dashboard-token)" | curl -H @- -s http://localhost:3420/api/kanban` (status==waiting). Mindegyikre olvasd a kommenteket (/api/kanban/<id>/comments) es a kijelolt gate-tiert.
 3. Dontes kartyankent:
    - MINDEN kijelolt gate PASS/GO es nincs kotott-blokk -> PUT status:done + zaro komment. Utana ellenorizd a szulo-fazis auto-lezarasat (CLAUDE.md 5. szabaly, rekurzivan felfele).
    - Barmely gate FAIL/NO-GO -> PUT status:in_progress + re-dispatch a felelosnek a pontos bug-jelentessel (ha parkolt: POST /api/agents/<agent>/start, majd inter-agent uzenet vagy tmux send-keys). Ha a finding uj kartyat igenyel, nyisd meg (projekt+szines label).

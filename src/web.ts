@@ -4,7 +4,8 @@ import { join } from 'node:path'
 import { tmpdir } from 'node:os'
 import { execFileSync } from 'node:child_process'
 import { runLsof } from './lsof.js'
-import { PROJECT_ROOT, WEB_HOST, DASHBOARD_PUBLIC_URL, DASHBOARD_ALLOWED_ORIGINS, MAIN_AGENT_ID } from './config.js'
+import { PROJECT_ROOT, STORE_DIR, WEB_HOST, DASHBOARD_PUBLIC_URL, DASHBOARD_ALLOWED_ORIGINS, MAIN_AGENT_ID } from './config.js'
+import { renderBootstrapNotice } from './web/bootstrap-notice.js'
 import { loadOrCreateDashboardToken } from './web/dashboard-auth.js'
 import { resolveAuth, requiresAuth, isFederationWireEndpoint, type AuthResult } from './web/auth-gate.js'
 import { sweepExpiredSessions } from './web/auth-sessions.js'
@@ -292,14 +293,10 @@ export function startWebServer(port = 3420): http.Server {
 
   server.listen(port, WEB_HOST, () => {
     logger.info({ port }, `Web dashboard: http://localhost:${port}`)
-    // Do NOT log the bearer token: launchd/journal/pipe captures of the
-    // structured log would otherwise carry a root-equivalent credential.
-    // Print the bootstrap URL directly to stderr instead so it shows in the
-    // interactive terminal but does not land in the pino log stream.
-    const bootstrapUrl = `http://127.0.0.1:${port}/?token=${DASHBOARD_TOKEN}`
-    process.stderr.write(
-      `\nDashboard access URL (paste into browser, token is stored afterward):\n  ${bootstrapUrl}\n\n`
-    )
+    // Never print the bearer token, on ANY stream. Writing it to stderr instead of pino did not
+    // keep it out of the logs: a service manager captures stderr too (journal / StandardErrorPath).
+    // See bootstrap-notice.ts for the reasoning and the login path that replaces it.
+    process.stderr.write(renderBootstrapNotice(port, join(STORE_DIR, '.dashboard-token')))
   })
 
   // Self-heal a SILENT listener failure. Under launchd, a `kickstart -k` can

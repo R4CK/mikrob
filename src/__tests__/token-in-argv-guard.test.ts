@@ -13,18 +13,36 @@
 // invocation across backslash-continued lines before testing it, the same way bash itself does.
 import { describe, it, expect } from 'vitest'
 import { readFileSync, readdirSync } from 'node:fs'
-import { join, dirname, relative } from 'node:path'
+import { join, dirname, relative, sep } from 'node:path'
 import { fileURLToPath } from 'node:url'
 
 const REPO_ROOT = join(dirname(fileURLToPath(import.meta.url)), '..', '..')
 const STORE_DIR = join(REPO_ROOT, 'store')
 const SCRIPTS_DIR = join(REPO_ROOT, 'scripts')
 const SEED_SKILLS_DIR = join(REPO_ROOT, 'seed-skills')
+const SEED_FLEET_AGENTS_DIR = join(REPO_ROOT, 'seed-fleet-agents')
+const SEED_TASKS_DIR = join(REPO_ROOT, 'seed-scheduled-tasks')
+const SRC_DIR = join(REPO_ROOT, 'src')
 
 /** One curl invocation, reassembled across `\`-continued lines, with its 1-based start line. */
 interface CurlInvocation {
   readonly text: string
   readonly startLine: number
+}
+
+/**
+ * Split one joined chunk at every `curl` token, so a chunk holding SEVERAL commands is not judged
+ * as one (card 3a042d4c).
+ *
+ * This matters because leaksTokenInArgv clears an invocation that contains the sanctioned `-H @`
+ * anywhere in it. A seeded PreCompact hook prompt is a single JSON string -- one "line" carrying
+ * three separate curl commands -- so one fixed command vouched for its two unfixed neighbours and
+ * the guard went green over a live offender. Measured: reintroducing the argv shape into
+ * seed-fleet-agents/qa/.claude/settings.json did not fail a single test before this split.
+ */
+function splitAtCurl(text: string, startLine: number): CurlInvocation[] {
+  const parts = text.split(/(?=\bcurl\b)/)
+  return parts.filter((p) => /\bcurl\b/.test(p)).map((p) => ({ text: p, startLine }))
 }
 
 /** Split a script into logical curl invocations (continuation lines joined), like bash would see them. */
@@ -44,7 +62,7 @@ function findCurlInvocations(source: string): CurlInvocation[] {
     if (inCurl) {
       buf.push(line)
       if (!line.trimEnd().endsWith('\\')) {
-        out.push({ text: buf.join('\n'), startLine })
+        out.push(...splitAtCurl(buf.join('\n'), startLine))
         inCurl = false
       }
     }
@@ -181,32 +199,57 @@ function scanDir(dir: string): string[] {
 }
 
 /**
- * Every SKILL.md and shell script under seed-skills/, recursively (card 2834e7f3 gap 4).
+ * Every text file under a shipped-template tree, recursively (card 2834e7f3 gap 4 + M1).
  *
  * Cybersec's finding: the guard forbade the argv-leak SHAPE in two directories while our own
- * SHIPPED documentation TAUGHT it in five templates. A SKILL.md is not executable, which is
- * exactly why it is worse than a script -- an agent following `dream` or `handoff` copies that
+ * SHIPPED documentation TAUGHT it. A SKILL.md is not executable, which is exactly why it is worse
+ * than a script -- an agent following `dream` or `handoff` copies that
  * `-H "Authorization: Bearer $(cat ...)"` line into whatever it writes next, so the guard kept
  * removing symptoms while the source of the pattern shipped to every new install untouched.
  * It stopped being theoretical when three fresh scripts on card defcc189 were written that way.
  *
+ * The keep-filter is derived from the EXTENSION, not from a list of filenames. A name list
+ * ("SKILL.md or *.sh") passed while `references/*.md` -- which demonstrably carries the pattern in
+ * the live skill tree -- stayed invisible. A guard scope that has to be maintained by hand drifts
+ * behind the threat; an extension covers the file that has not been written yet.
+ *
  * The scanner is text-based, so a fenced bash block inside markdown reads the same as a script.
  */
-function scanTree(dir: string, keep: (file: string) => boolean): string[] {
+// `.json` is in the list because the seeded PreCompact hook prompt lives in
+// seed-fleet-agents/*/.claude/settings.json as a JSON STRING, and it taught the argv shape three
+// times per agent -- a file class the first extension list still missed for the same reason the
+// name list missed `references/*.md` (card 3a042d4c). The scanner is text-based, so an escaped
+// shell snippet inside a JSON string reads like any other line.
+const TEXT_FILE = /\.(md|sh|py|js|mjs|cjs|ts|json)$/
+
+function scanTree(dir: string, base: string = dir): string[] {
   const out: string[] = []
   for (const entry of readdirSync(dir, { withFileTypes: true })) {
     const full = join(dir, entry.name)
-    if (entry.isDirectory()) out.push(...scanTree(full, keep))
-    else if (keep(entry.name)) out.push(relative(SEED_SKILLS_DIR, full))
+    if (entry.isDirectory()) out.push(...scanTree(full, base))
+    else if (TEXT_FILE.test(entry.name)) out.push(relative(base, full))
   }
   return out
 }
 
 const STORE_SCRIPTS = scanDir(STORE_DIR)
 const SCRIPTS_SCRIPTS = scanDir(SCRIPTS_DIR)
-const SEED_SKILL_DOCS = scanTree(SEED_SKILLS_DIR, (f) => f === 'SKILL.md' || f.endsWith('.sh'))
+const SEED_SKILL_DOCS = scanTree(SEED_SKILLS_DIR)
+const SEED_AGENT_DOCS = scanTree(SEED_FLEET_AGENTS_DIR)
+const SEED_TASK_DOCS = scanTree(SEED_TASKS_DIR)
 
-describe('no store/*.sh, scripts/*.sh or shipped seed-skills template puts a Bearer token in curl argv', () => {
+/**
+ * The GENERATORS (card 2834e7f3, QA/Cybered re-gate). Everything above guards COPIES; these files
+ * are where the copies come from. `src/web/agent-scaffold.ts` alone emitted the argv shape into
+ * seven places of every new agent's CLAUDE.md, so each fresh agent was born teaching the leak no
+ * matter how many shipped templates had been cleaned. Same for the heartbeat scaffold, the
+ * federation onboarding brief and the kanban dispatch instructions.
+ *
+ * __tests__ is excluded because this file deliberately contains synthetic offenders.
+ */
+const SRC_FILES = scanTree(SRC_DIR).filter((f) => /\.ts$/.test(f) && !f.startsWith('__tests__'))
+
+describe('no shipped script, template or GENERATOR puts a Bearer token in curl argv', () => {
   it('scans a non-trivial number of scripts in both directories (the guard is not vacuously passing)', () => {
     expect(STORE_SCRIPTS.length).toBeGreaterThan(10)
     expect(SCRIPTS_SCRIPTS.length).toBeGreaterThan(3)
@@ -219,12 +262,41 @@ describe('no store/*.sh, scripts/*.sh or shipped seed-skills template puts a Bea
     for (const skill of ['dream', 'handoff', 'retrospective', 'approval-request-handling', 'ai-fleet-project-execution']) {
       expect(SEED_SKILL_DOCS).toContain(join(skill, 'SKILL.md'))
     }
+    // M1: a `references/*.md` is neither SKILL.md nor *.sh, and the live skill tree proves that
+    // file class carries the pattern. The extension filter is what puts it in scope.
+    expect(SEED_SKILL_DOCS.some((f) => f.includes(`references${sep}`) && f.endsWith('.md'))).toBe(true)
   })
 
-  const cases: Array<{ dir: string; file: string }> = [
+  it('scans the seeded fleet agents and scheduled tasks (they ship the same instructions)', () => {
+    expect(SEED_AGENT_DOCS.filter((f) => f.endsWith('CLAUDE.md')).length).toBeGreaterThan(5)
+    expect(SEED_TASK_DOCS.filter((f) => f.endsWith('SKILL.md')).length).toBeGreaterThan(3)
+  })
+
+  it('scans the generators themselves, not only what they emit', () => {
+    for (const generator of [
+      join('web', 'agent-scaffold.ts'),
+      join('web', 'heartbeat-agent-scaffold.ts'),
+      join('web', 'federation', 'onboarding.ts'),
+      join('web', 'routes', 'kanban.ts'),
+    ]) {
+      expect(SRC_FILES).toContain(generator)
+    }
+  })
+
+  const shellCases: Array<{ dir: string; file: string }> = [
+    // The repo's own rulebook taught the argv shape in nine places while the guard enforced the
+    // opposite everywhere else -- the most-read file in the project was the last one covered.
+    { dir: REPO_ROOT, file: 'CLAUDE.md' },
     ...STORE_SCRIPTS.map((file) => ({ dir: STORE_DIR, file })),
     ...SCRIPTS_SCRIPTS.map((file) => ({ dir: SCRIPTS_DIR, file })),
     ...SEED_SKILL_DOCS.map((file) => ({ dir: SEED_SKILLS_DIR, file })),
+    ...SEED_AGENT_DOCS.map((file) => ({ dir: SEED_FLEET_AGENTS_DIR, file })),
+    ...SEED_TASK_DOCS.map((file) => ({ dir: SEED_TASKS_DIR, file })),
+  ]
+
+  const cases: Array<{ dir: string; file: string }> = [
+    ...shellCases,
+    ...SRC_FILES.map((file) => ({ dir: SRC_DIR, file })),
   ]
 
   it.each(cases)('$file: every curl reads its auth header from a file, never argv', ({ dir, file }) => {
@@ -242,7 +314,15 @@ describe('no store/*.sh, scripts/*.sh or shipped seed-skills template puts a Bea
 
   // Scans EVERY line, not just curl invocations -- a URL built into a variable first would
   // otherwise slip through (card 2834e7f3 gap 2).
-  it.each(cases)('$file: no line builds a URL with a credential query parameter', ({ dir, file }) => {
+  //
+  // SHELL CORPORA ONLY, deliberately. The rule's premise is that the URL becomes an argv element
+  // of a spawned process; in TypeScript, a template literal that builds a URL is ordinary code and
+  // spawns nothing, so the premise does not transfer. Applying it there produced exactly one hit,
+  // `src/web.ts`'s browser bootstrap URL, which is a considered design (printed to stderr, kept
+  // out of the pino stream on purpose) and not this card's subject. It is reported to the gate
+  // rather than exempted here, because a hand-kept allowlist is the failure mode this card exists
+  // to fix. The three CURL-shaped rules above DO run over src/ -- those inspect a command line.
+  it.each(shellCases)('$file: no line builds a URL with a credential query parameter', ({ dir, file }) => {
     const source = readFileSync(join(dir, file), 'utf8')
     const offenders = credentialUrlLines(source)
     if (offenders.length > 0) {
@@ -305,6 +385,29 @@ describe('the scanner itself catches what a naive single-line regex would miss',
     ].join('\n')
     const offenders = findCurlInvocations(script).filter((c) => leaksTokenInArgv(c.text))
     expect(offenders).toHaveLength(1)
+  })
+
+  // One "line" can hold several commands -- a seeded PreCompact prompt is a single JSON string
+  // with three curls in it. Without splitting at each `curl`, the fixed command's `-H @-` cleared
+  // the whole chunk and vouched for its leaking neighbour, and the guard reported green over a
+  // live offender.
+  it('judges each curl separately when one line carries several commands', () => {
+    const oneLine =
+      `printf 'Authorization: Bearer %s\\n' "$(cat tok)" | curl -H @- -s http://x/a` +
+      ` && curl -s http://x/b -H "Authorization: Bearer $(cat tok)"`
+    const offenders = findCurlInvocations(oneLine).filter((c) => leaksTokenInArgv(c.text))
+    expect(offenders).toHaveLength(1)
+    expect(offenders[0]?.text).toContain('http://x/b')
+  })
+
+  it('does not double-count a single command that spans continuation lines', () => {
+    const script = [
+      '#!/usr/bin/env bash',
+      'curl -s -X POST "$DASH/api/x" \\',
+      '  -H "Authorization: Bearer $TOK" \\',
+      "  -d '{}'",
+    ].join('\n')
+    expect(findCurlInvocations(script)).toHaveLength(1)
   })
 
   // A SKILL.md is prose with fenced bash, so the scanner must read it the same way it reads a

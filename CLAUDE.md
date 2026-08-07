@@ -102,23 +102,23 @@ A dashboard `/api/*` végpontjai Bearer tokennel védettek. A token a
 
 Memória mentés:
 ```bash
-curl -s -X POST http://localhost:3420/api/memories \
+printf 'Authorization: Bearer %s\n' "$(cat store/.dashboard-token)" \
+| curl -H @- -s -X POST http://localhost:3420/api/memories \
   -H "Content-Type: application/json" \
-  -H "Authorization: Bearer $(cat store/.dashboard-token)" \
   -d '{"agent_id":"mikrob","content":"MIT","category":"CATEGORY","keywords":"kulcsszó1, kulcsszó2"}'
 ```
 
 Napi napló (append-only):
 ```bash
-curl -s -X POST http://localhost:3420/api/daily-log \
+printf 'Authorization: Bearer %s\n' "$(cat store/.dashboard-token)" \
+| curl -H @- -s -X POST http://localhost:3420/api/daily-log \
   -H "Content-Type: application/json" \
-  -H "Authorization: Bearer $(cat store/.dashboard-token)" \
   -d '{"agent_id":"mikrob","content":"## HH:MM -- Téma\nMi történt, mi lett az eredmény"}'
 ```
 
 Keresés (mielőtt válaszolsz, nézd meg van-e releváns emlék):
 ```bash
-curl -s -H "Authorization: Bearer $(cat store/.dashboard-token)" \
+printf 'Authorization: Bearer %s\n' "$(cat store/.dashboard-token)" | curl -H @- -s \
   "http://localhost:3420/api/memories?agent=mikrob&q=KULCSSZÓ&category=warm"
 ```
 
@@ -291,9 +291,9 @@ Az ütemezett feladatok a `~/.claude/scheduled-tasks/` mappában élnek, fájl-a
 ### Feladat létrehozása API-n keresztül
 
 ```bash
-curl -s -X POST http://localhost:3420/api/schedules \
+printf 'Authorization: Bearer %s\n' "$(cat store/.dashboard-token)" \
+| curl -H @- -s -X POST http://localhost:3420/api/schedules \
   -H "Content-Type: application/json" \
-  -H "Authorization: Bearer $(cat store/.dashboard-token)" \
   -d '{"name": "feladat-nev", "description": "Rövid leírás", "prompt": "A részletes prompt amit végre kell hajtani", "schedule": "0 8 * * *", "agent": "mikrob", "type": "heartbeat"}'
 ```
 
@@ -321,9 +321,9 @@ Az ágensek közvetlenül tudnak egymásnak üzenni egy közös SQLite üzenetso
 Ha delegálni akarsz egy feladatot másik ágensnek, használd az API-t:
 
 ```bash
-curl -s -X POST http://localhost:3420/api/messages \
+printf 'Authorization: Bearer %s\n' "$(cat store/.dashboard-token)" \
+| curl -H @- -s -X POST http://localhost:3420/api/messages \
   -H "Content-Type: application/json" \
-  -H "Authorization: Bearer $(cat store/.dashboard-token)" \
   -d '{"from": "mikrob", "to": "TARGET_AGENT", "content": "Feladat leírása."}'
 ```
 
@@ -334,7 +334,7 @@ A rendszer automatikusan:
 
 ### Fontos szabályok
 - Csak futó ágensnek lehet üzenni (tmux session kell hozzá)
-- Az elérhető ágensek listája: `curl -s -H "Authorization: Bearer $(cat store/.dashboard-token)" http://localhost:3420/api/agents`
+- Az elérhető ágensek listája: `printf 'Authorization: Bearer %s\n' "$(cat store/.dashboard-token)" | curl -H @- -s http://localhost:3420/api/agents`
 
 ### Sub-ágens ismeretlen-sender ping kezelése (auto-approval, default-deny)
 
@@ -453,16 +453,16 @@ Utasítások:
 Az autonóm műveletek fokozatait a store/autonomy-config.json szabályozza (level: 1=csak jelez, 2=javasol+jóváhagyás, 3=autonóm+jelent). Mielőtt önállóan cselekszel, nézd meg az adott kategória szintjét.
 
 **Level 1 (csak jelez)**: küldj inter-agent értesítést a főágensnek, de NE végezd el a műveletet. Ezután ÁLLJ MEG.
-curl -s -X POST http://localhost:3420/api/messages -H "Content-Type: application/json" -H "Authorization: Bearer $(cat /home/neon/marveen/store/.dashboard-token)" -d "{\"from\":\"mikrob\",\"to\":\"mikrob\",\"content\":\"[FELHÍVÁS] CATEGORY_KEY: MIT akartam elvégezni, de level 1 miatt csak jelzek.\"}"
+printf 'Authorization: Bearer %s\n' "$(cat /home/neon/marveen/store/.dashboard-token)" | curl -H @- -s -X POST http://localhost:3420/api/messages -H "Content-Type: application/json" -d "{\"from\":\"mikrob\",\"to\":\"mikrob\",\"content\":\"[FELHÍVÁS] CATEGORY_KEY: MIT akartam elvégezni, de level 1 miatt csak jelzek.\"}"
 
 **Level 2 (jóváhagyás szükséges)**: kérj jóváhagyást az API-n MIELŐTT cselekszel.
 
 Jóváhagyás kérése (POST):
-curl -s -X POST http://localhost:3420/api/approvals -H "Content-Type: application/json" -H "Authorization: Bearer $(cat /home/neon/marveen/store/.dashboard-token)" -d '{"agent_id":"mikrob","category":"CATEGORY_KEY","action_description":"Mit tervezel elvégezni és miért","timeout_seconds":3600}'
+printf 'Authorization: Bearer %s\n' "$(cat /home/neon/marveen/store/.dashboard-token)" | curl -H @- -s -X POST http://localhost:3420/api/approvals -H "Content-Type: application/json" -d '{"agent_id":"mikrob","category":"CATEGORY_KEY","action_description":"Mit tervezel elvégezni és miért","timeout_seconds":3600}'
 A válaszban kapott id-vel kérdezheted le a döntést.
 
 Döntés lekérdezése (GET, 60 mp-enként ismételve):
-curl -s -H "Authorization: Bearer $(cat /home/neon/marveen/store/.dashboard-token)" "http://localhost:3420/api/approvals/<id>"
+printf 'Authorization: Bearer %s\n' "$(cat /home/neon/marveen/store/.dashboard-token)" | curl -H @- -s "http://localhost:3420/api/approvals/<id>"
 status=approved -> végezd el a műveletet. status=rejected vagy status=timeout -> ne csináld, naplózd az okot.
 
 **Level 3 (autonóm)**: elvégzed a műveletet, majd utána jelented a főágensnek.

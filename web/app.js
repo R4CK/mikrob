@@ -183,21 +183,15 @@ setInterval(refreshSubagents, 5000);
       showLoginOverlay()
       return
     }
-    // An installed (home-screen) PWA has its own localStorage, separate from
-    // Safari's, and the manifest start_url has no ?token=, so the very first
-    // standalone launch is token-less and 401s. There is no address bar to paste
-    // a ?token= URL into either. Offer an in-app paste field that writes the
-    // token to the app's own storage, then reload.
-    const isStandalone = window.navigator.standalone === true ||
-      (window.matchMedia && window.matchMedia('(display-mode: standalone)').matches)
-    if (isStandalone) {
-      showStandaloneTokenPrompt(TOKEN_KEY)
-    } else {
-      alert(
-        'Dashboard authentication failed. Check the server log for the access URL ' +
-        '(look for "Dashboard access URL" with ?token=...), then reopen it in your browser.'
-      )
-    }
+    // The paste field is the token login for EVERY browser now, not just an
+    // installed PWA (card 62631948). It used to be standalone-only because a
+    // normal browser could be sent the server's `?token=...` startup URL --
+    // but that URL printed a root-equivalent credential into the service
+    // manager's log, so the server stopped emitting it. The token now comes
+    // from `store/.dashboard-token`, which is a paste, not a link, and the
+    // old `alert()` pointing at the server log would send the user looking
+    // for a line that no longer exists.
+    showStandaloneTokenPrompt(TOKEN_KEY)
   }
 
   // Full-screen username+password login overlay. Posts to /api/auth/login; on
@@ -253,10 +247,11 @@ setInterval(refreshSubagents, 5000);
     setTimeout(() => userEl.focus(), 50)
   }
 
-  // Full-screen, one-time token paste for installed PWAs (see the 401 handler).
-  // The user pastes the access token (the value after ?token= in the server's
-  // startup URL, or from the dashboard Settings / mobile-login QR); it is saved
-  // to this app instance's localStorage and the page reloads authenticated.
+  // Full-screen, one-time token paste (see the 401 handler). The user pastes the
+  // access token -- from `store/.dashboard-token` on the server host, or from the
+  // dashboard Settings / mobile-login QR -- and it is saved to this browser's
+  // localStorage, then the page reloads authenticated. Still accepts a full
+  // `?token=...` URL for anyone holding an older link.
   function showStandaloneTokenPrompt(tokenKey) {
     if (document.getElementById('mv-token-overlay')) return
     // Lang files are not yet loaded here; use a local inline lookup so EN mode works.
@@ -264,13 +259,13 @@ setInterval(refreshSubagents, 5000);
     const _pwa = {
       hu: {
         title: 'Hozzáférés szükséges',
-        desc: 'A home-screen app saját tárhelye még üres. Illeszd be a dashboard access tokent (a szerver indítási URL-jében a ?token= utáni rész, vagy a Beállítások / mobil-login QR), és elmentődik ehhez az apphoz.',
+        desc: 'Illeszd be a dashboard access tokent. A szerver gépén: cat store/.dashboard-token (vagy a Beállítások / mobil-login QR). A token szándékosan nem szerepel a szerver indítási kimenetében, mert azt a szolgáltatáskezelő naplózza.',
         btn: 'Mentés és újratöltés',
         empty_token: 'Üres token.'
       },
       en: {
         title: 'Access Required',
-        desc: "The home-screen app's own storage is empty. Paste the dashboard access token (the part after ?token= in the server startup URL, or from Settings / mobile-login QR), and it will be saved for this app.",
+        desc: 'Paste the dashboard access token. On the server host: cat store/.dashboard-token (or use Settings / the mobile-login QR). The token is deliberately absent from the server startup output, because the service manager captures it.',
         btn: 'Save & Reload',
         empty_token: 'Empty token.'
       }

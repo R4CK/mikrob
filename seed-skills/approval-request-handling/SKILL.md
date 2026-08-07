@@ -44,9 +44,9 @@ Az `id` rövid előtagja is elég a válaszhoz, ha egyértelmű -- de a PATCH-he
 ### 3. Zárd le
 ```bash
 # A token in curl argv is world-readable via /proc/<pid>/cmdline -- feed it through a curl
-# config on stdin instead. Ugyanez a minta minden dashboard-hívásnál.
-printf 'header = "Authorization: Bearer %s"\n' "$(cat <install>/store/.dashboard-token)" \
-| curl -s -K - -X PATCH "http://localhost:3420/api/approvals/<id>" \
+# stdin-rol olvassuk (`-H @-`). Ugyanez a minta minden dashboard-hivasnal.
+printf 'Authorization: Bearer %s\n' "$(cat <install>/store/.dashboard-token)" \
+| curl -s -H @- -X PATCH "http://localhost:3420/api/approvals/<id>" \
   -H "Content-Type: application/json" \
   -d '{"status":"approved","resolved_by":"telegram_text","telegram_message_id":<int|null>}'
 ```
