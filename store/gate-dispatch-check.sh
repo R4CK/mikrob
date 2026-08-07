@@ -61,7 +61,7 @@ _curl_get() { # $1 = path
 # exercise the SAME code the live path uses, instead of a re-implementation of it.
 _decide() { # $1 = agent
   AGENT="$1" python3 -c '
-import json, sys, os
+import json, re, sys, os
 agent = os.environ["AGENT"]
 try:
     d = json.load(sys.stdin)
@@ -80,10 +80,15 @@ if not mine:
     print("ALLOW:no-verdict"); sys.exit(0)
 
 last_mine = max(ts(c) for c in mine)
-# A REVIEW is the signal that new work is on the table. Only comments by SOMEONE ELSE
-# count: a gate agent quoting the word REVIEW in its own verdict must not re-arm itself.
+# A REVIEW is the signal that new work is on the table. Two narrowings, both measured:
+#  - by SOMEONE ELSE: a gate agent quoting the word in its own verdict must not re-arm itself;
+#  - ANCHORED to the start of a line, not "contains". Across 28 real comments mentioning the
+#    word, only 8 were submissions; the other 20 were verdicts by other agents quoting it
+#    ("QA PASS -- ...the REVIEW claim holds") or prose ("a te REVIEW-od utan"). A substring
+#    test re-arms on all of those, which is the fail-open direction but pure noise.
+review_rx = re.compile(r"^\s*(?:[#*>\-]*\s*)?REVIEW\b", re.M)
 reviews = [ts(c) for c in cs
-           if c.get("author") != agent and "REVIEW" in (c.get("content") or "")]
+           if c.get("author") != agent and review_rx.search(c.get("content") or "")]
 last_review = max(reviews) if reviews else 0
 
 if last_review > last_mine:
@@ -121,6 +126,10 @@ case "${1:-}" in
     t "malformed json"                "ALLOW"              cybersec <<< 'not json'
     t "object-wrapped comments"       "ADVISE-SKIP:already-gated" cybersec <<< '{"comments":[{"author":"backend","created_at":100,"content":"REVIEW"},{"author":"cybersec","created_at":200,"content":"GO"}]}'
     t "missing created_at"            "ADVISE-SKIP:already-gated" cybersec <<< '[{"author":"cybersec","content":"GO"}]'
+    # Anchoring: a later comment that only MENTIONS the word must not re-arm the dispatch.
+    t "later peer QUOTES the word"    "ADVISE-SKIP:already-gated" cybersec <<< '[{"author":"cybersec","created_at":200,"content":"GO"},{"author":"mikrob","created_at":300,"content":"bontsd fel, a te REVIEW-od utan nyitom a gyerekkartyat"}]'
+    t "later peer SUBMITS a review"   "ALLOW:stale-verdict" cybersec <<< '[{"author":"cybersec","created_at":200,"content":"GO"},{"author":"backend","created_at":300,"content":"REVIEW -- kesz, commit abc1234"}]'
+    t "submission behind a md bullet" "ALLOW:stale-verdict" cybersec <<< '[{"author":"cybersec","created_at":200,"content":"GO"},{"author":"backend","created_at":300,"content":"## REVIEW\nkesz"}]'
     [[ $fail -eq 0 ]] && { echo "selftest: PASS"; exit 0; } || { echo "selftest: FAIL"; exit 1; }
     ;;
 
