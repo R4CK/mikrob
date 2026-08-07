@@ -34,7 +34,18 @@ log() { echo "[$(ts)] $*" >>"$LOG"; }
 # it back and IS the health check: fast, foreground, and its exit code is real.
 BATCH_END_STATUS="aborted"
 DRAFTED=0
-emit_end_line() { log "batch END status=${BATCH_END_STATUS} drafted=${DRAFTED}"; }
+hdr_file=""
+# ONE EXIT handler, doing both jobs. Two separate `trap ... EXIT` lines do NOT compose in bash --
+# the second REPLACES the first -- so registering the end-line trap and then a cleanup trap meant
+# every normal run silently lost the end line and `--status` reported NEVER-COMPLETED forever
+# (Cybered/Cybersec F1 on b50f539). Choosing one over the other is not an option either: the
+# cleanup removes the 0600 file holding the dashboard token, so dropping it leaks a credential
+# into /tmp on every nightly run. `rm -f` on an empty/absent path is a no-op, so this can be armed
+# before the file exists.
+on_exit() {
+  [[ -n "$hdr_file" ]] && rm -f "$hdr_file"
+  log "batch END status=${BATCH_END_STATUS} drafted=${DRAFTED}"
+}
 
 # --- status mode -------------------------------------------------------------
 # Usage: offload-batch-run.sh --status [--max-age-hours N]   (default 26h: a nightly
@@ -68,14 +79,13 @@ if [[ "${1:-}" == "--status" ]]; then
   exit 0
 fi
 
-trap emit_end_line EXIT
+trap on_exit EXIT
 if [[ -z "$TOK" ]]; then BATCH_END_STATUS="no-token"; log "no dashboard token; abort"; echo "ERROR no-token"; exit 0; fi
 
 # SECURITY (Cybersec/gate-ops-scripts-token-in-argv, card edb7559f): the token must never be a curl
 # argv (/proc/<pid>/cmdline is world-readable). Private 0600 header file instead, -H @"$hdr_file",
 # removed on EXIT.
 hdr_file="$(mktemp)"; chmod 600 "$hdr_file"
-trap 'rm -f "$hdr_file"' EXIT
 printf 'Authorization: Bearer %s\n' "$TOK" > "$hdr_file"
 
 # candidate cards: all in_progress + planned, ordered in_progress-first then by priority.

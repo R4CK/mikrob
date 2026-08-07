@@ -10,7 +10,7 @@
 // one it cannot see: fired, then died immediately.
 import { describe, it, expect } from 'vitest'
 import { execFileSync } from 'node:child_process'
-import { mkdtempSync, rmSync, writeFileSync, readFileSync } from 'node:fs'
+import { mkdtempSync, rmSync, writeFileSync, readFileSync, mkdirSync, readdirSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join, dirname } from 'node:path'
 import { fileURLToPath } from 'node:url'
@@ -115,10 +115,52 @@ describe('offload batch health signal (card 5f00664c)', () => {
     }
   })
 
-  // The END line has to survive abnormal exits, otherwise a crashed run is indistinguishable from a
-  // run that never started -- and the whole point is telling those apart.
-  it('writes the END line from an EXIT trap, not just on the success path', () => {
-    expect(SRC).toMatch(/trap emit_end_line EXIT/)
+  // Two `trap ... EXIT` lines do NOT compose in bash: the second REPLACES the first. Registering the
+  // end-line trap and then a cleanup trap meant every NORMAL run lost the end line, so `--status`
+  // reported NEVER-COMPLETED forever -- a check that fires every night, which gets ignored exactly as
+  // fast as one that never fires (Cybered/Cybersec F1 on b50f539).
+  it('installs exactly ONE EXIT trap, so nothing can overwrite the end line', () => {
+    const codeLines = SRC.split('\n').filter((l) => !l.trim().startsWith('#'))
+    expect(codeLines.filter((l) => /trap .* EXIT/.test(l))).toHaveLength(1)
+  })
+
+  // ...and that one handler must do BOTH jobs. Dropping the cleanup instead would leave the 0600 file
+  // holding the dashboard token in /tmp after every nightly run: fixing a health signal by opening a
+  // credential leak is not a fix.
+  it('the single handler both writes the end line and removes the token file', () => {
+    const handler = SRC.slice(SRC.indexOf('on_exit() {'), SRC.indexOf('}', SRC.indexOf('on_exit() {')))
+    expect(handler).toMatch(/rm -f "\$hdr_file"/)
+    expect(handler).toMatch(/batch END status=/)
+  })
+
+  // The behavioural half, on the path where the bug actually was. The previous version of this test
+  // exercised only the early no-token abort, which returns BEFORE the second trap was installed --
+  // so it passed while every real run was broken.
+  it('a NORMAL run writes the END line and leaves no token file behind', () => {
+    const dir = mkdtempSync(join(tmpdir(), 'offload-health-'))
+    try {
+      const store = join(dir, 'store')
+      const tmp = join(dir, 'tmp')
+      mkdirSync(store, { recursive: true })
+      mkdirSync(tmp, { recursive: true })
+      writeFileSync(join(store, '.dashboard-token'), 'faketoken')
+      const log = join(store, 'offload-batch.log')
+      const copy = join(dir, 'batch.sh')
+      writeFileSync(copy, SRC.replace(/^HERE=.*$/m, `HERE="${store}"`).replace(/^LOG=.*$/m, `LOG="${log}"`))
+      // port 9 (discard) is refused instantly: the card list comes back empty and the run completes
+      execFileSync('bash', [copy], {
+        env: { ...process.env, TMPDIR: tmp, DASHBOARD_URL: 'http://127.0.0.1:9' },
+        encoding: 'utf-8', stdio: 'pipe', timeout: 60_000,
+      })
+      expect(readFileSync(log, 'utf-8')).toMatch(/batch END status=ok/)
+      expect(readdirSync(tmp), 'the 0600 token header file was left behind').toHaveLength(0)
+    } finally {
+      rmSync(dir, { recursive: true, force: true })
+    }
+  })
+
+  it('still writes the END line on the early abort path', () => {
+    expect(SRC).toMatch(/trap on_exit EXIT/)
     const dir = mkdtempSync(join(tmpdir(), 'offload-health-'))
     try {
       const log = join(dir, 'batch.log')
