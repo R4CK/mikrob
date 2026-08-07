@@ -19,6 +19,8 @@ vi.mock('../logger.js', () => ({ logger: { warn: () => {} } }))
 /** git stub: `known` are commits that exist, `onMain` are also reachable from origin/main. */
 let known = new Set<string>()
 let onMain = new Set<string>()
+/** Refs that exist in the repo under test. marveen genuinely has no origin/main. */
+let knownRefs = new Set<string>()
 /** Counts spawns, so the "one cat-file, not one per token" fix is asserted and not just intended. */
 export let spawns: string[][] = []
 vi.mock('node:child_process', () => ({
@@ -43,7 +45,17 @@ vi.mock('node:child_process', () => ({
         return
       }
       if (a.includes('--is-ancestor')) {
-        const sha = a[a.indexOf('--is-ancestor') + 1]!
+        const i = a.indexOf('--is-ancestor')
+        const sha = a[i + 1]!
+        const ref = a[i + 2]!
+        // The ref is checked, not ignored. The previous stub answered from a sha set alone, which
+        // made the REF NAME invisible -- so the guard asking for a ref that does not exist in this
+        // repo (origin/main in marveen) passed every test and would have blocked every marveen card.
+        // A stub that discards an argument cannot fail on that argument being wrong.
+        if (!knownRefs.has(ref)) {
+          cb(new Error(`bad revision ${ref}`), '')
+          return
+        }
         cb(onMain.has(sha) ? null : new Error('not an ancestor'), '')
         return
       }
@@ -65,6 +77,7 @@ beforeEach(() => {
   comments = []
   known = new Set([SHA_A, SHA_B])
   onMain = new Set()
+  knownRefs = new Set(['origin/main', 'origin/develop'])
 })
 
 describe('the landed guard blocks exactly one thing', () => {
@@ -157,9 +170,15 @@ describe('the guard does not stall the single-threaded server (Cybersec NO-GO on
   })
 })
 
-describe('marveen own cards are covered too (card 84091afd)', () => {
+describe('marveen own cards are covered too, on ITS ref (cards 84091afd + Cybersec NO-GO)', () => {
+  // marveen integrates on develop and has NO origin/main. Every assertion here runs with only
+  // origin/develop existing, so asking for the wrong ref fails instead of passing quietly.
+  beforeEach(() => {
+    knownRefs = new Set(['origin/develop'])
+  })
+
   it.each(['marveen', 'mikrob-infra', 'fleet-infra', 'mikrob'])(
-    'project %s is checked, not silently exempt',
+    'project %s blocks an unlanded commit',
     async (project) => {
       card.project = project
       comments = [{ content: `REVIEW -- ${SHA_A}` }]
@@ -167,6 +186,52 @@ describe('marveen own cards are covered too (card 84091afd)', () => {
       expect((await landedGuardVerdict('c1', 'done', false, 'backend2')).blocked).toBe(true)
     },
   )
+
+  it.each(['marveen', 'mikrob-infra', 'fleet-infra', 'mikrob'])(
+    'project %s ALLOWS a commit that landed on develop -- the regression Cybersec caught',
+    async (project) => {
+      // This is the one that mattered: with origin/main hardcoded, a correctly landed marveen card
+      // was blocked because the ref itself does not resolve. Every close would have failed.
+      card.project = project
+      comments = [{ content: `REVIEW -- ${SHA_A}` }]
+      onMain = new Set([SHA_A])
+      expect((await landedGuardVerdict('c1', 'done', false, 'backend2')).blocked).toBe(false)
+    },
+  )
+
+  it('asks for origin/develop, never origin/main, in a marveen repo', async () => {
+    card.project = 'marveen'
+    comments = [{ content: `REVIEW -- ${SHA_A}` }]
+    onMain = new Set([SHA_A])
+    await landedGuardVerdict('c1', 'done', false, 'backend2')
+    const refs = spawns.filter((s) => s.includes('--is-ancestor')).map((s) => s[s.indexOf('--is-ancestor') + 2])
+    expect(refs.length).toBeGreaterThan(0)
+    expect(refs.every((r) => r === 'origin/develop')).toBe(true)
+  })
+
+  it('the FETCH names the same branch as the ref, not a hardcoded main', async () => {
+    // Found by mutation: asserting only the --is-ancestor ref left the fetch free to pull
+    // `origin main`, which does not exist here. It would fail silently and the re-check would then
+    // run against a possibly-stale origin/develop -- the same false-block class, one step narrower.
+    card.project = 'marveen'
+    comments = [{ content: `REVIEW -- ${SHA_A}` }]
+    onMain = new Set()
+    await landedGuardVerdict('c1', 'done', false, 'backend2')
+    const fetches = spawns.filter((s) => s.includes('fetch'))
+    expect(fetches.length).toBe(1)
+    expect(fetches[0]).toContain('develop')
+    expect(fetches[0]).not.toContain('main')
+  })
+
+  it('CleanCore still asks for origin/main', async () => {
+    card.project = 'cleancore'
+    knownRefs = new Set(['origin/main'])
+    comments = [{ content: `REVIEW -- ${SHA_A}` }]
+    onMain = new Set([SHA_A])
+    await landedGuardVerdict('c1', 'done', false, 'backend2')
+    const refs = spawns.filter((s) => s.includes('--is-ancestor')).map((s) => s[s.indexOf('--is-ancestor') + 2])
+    expect(refs.every((r) => r === 'origin/main')).toBe(true)
+  })
 })
 
 describe('force is not a free pass', () => {

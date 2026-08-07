@@ -42,12 +42,30 @@ import { logger } from '../logger.js'
  * close-on-unlanded-commit class. The risk is lower -- marveen is not shared across parallel
  * worktrees the way CleanCore is -- but "lower" is not "absent", and the guard costs nothing extra.
  */
-const PROJECT_REPOS: Readonly<Record<string, string>> = {
-  cleancore: process.env['CLEANCORE_MAIN'] ?? '/mnt/h/LM_Studio_Workdir/CleanCore',
-  marveen: PROJECT_ROOT,
-  'mikrob-infra': PROJECT_ROOT,
-  'fleet-infra': PROJECT_ROOT,
-  mikrob: PROJECT_ROOT,
+interface RepoTarget {
+  readonly root: string
+  /** The ref that means "landed" for THIS repo. Not every repo integrates on main. */
+  readonly mainRef: string
+}
+
+const CLEANCORE: RepoTarget = {
+  root: process.env['CLEANCORE_MAIN'] ?? '/mnt/h/LM_Studio_Workdir/CleanCore',
+  mainRef: 'origin/main',
+}
+// marveen integrates on DEVELOP and has no origin/main at all (Cybersec, card 84091afd). The first
+// version of this map hardcoded origin/main for every project, so `merge-base --is-ancestor <sha>
+// origin/main` would have failed on a bad ref for every marveen card, the fetch would have failed
+// too, and the guard would have blocked EVERY correctly-landed marveen card -- a fleet-wide close
+// blocker. Carried per-entry rather than resolved at runtime: resolving the default branch costs
+// another git call on a path that was just brought from 7307ms down to 502ms.
+const MARVEEN: RepoTarget = { root: PROJECT_ROOT, mainRef: 'origin/develop' }
+
+const PROJECT_REPOS: Readonly<Record<string, RepoTarget>> = {
+  cleancore: CLEANCORE,
+  marveen: MARVEEN,
+  'mikrob-infra': MARVEEN,
+  'fleet-infra': MARVEEN,
+  mikrob: MARVEEN,
 }
 
 /** Only agents allowed to close a card despite an unlanded commit. */
@@ -107,9 +125,9 @@ async function claimedCommits(cardId: string, repo: string): Promise<string[]> {
   return out
 }
 
-async function anyAncestorOfOriginMain(repo: string, commits: string[]): Promise<boolean> {
+async function anyAncestorOfMainRef(t: RepoTarget, commits: string[]): Promise<boolean> {
   for (const c of commits) {
-    if ((await git(repo, ['merge-base', '--is-ancestor', c, 'origin/main'])).ok) return true
+    if ((await git(t.root, ['merge-base', '--is-ancestor', c, t.mainRef])).ok) return true
   }
   return false
 }
@@ -125,8 +143,9 @@ export async function landedGuardVerdict(
   if (force && actor !== undefined && FORCE_ACTORS.has(actor)) return { blocked: false }
 
   const card = getKanbanCard(cardId)
-  const repo = PROJECT_REPOS[(card?.project ?? '').toLowerCase()]
-  if (repo === undefined || !existsSync(`${repo}/.git`)) return { blocked: false }
+  const target = PROJECT_REPOS[(card?.project ?? '').toLowerCase()]
+  if (target === undefined || !existsSync(`${target.root}/.git`)) return { blocked: false }
+  const repo = target.root
 
   let commits: string[]
   try {
@@ -141,19 +160,20 @@ export async function landedGuardVerdict(
 
   // Happy path: no network, no fetch. Most closes land here and cost one cat-file plus one
   // merge-base.
-  if (await anyAncestorOfOriginMain(repo, commits)) return { blocked: false }
+  if (await anyAncestorOfMainRef(target, commits)) return { blocked: false }
 
   // Only now is a stale ref worth 2.5 seconds -- we are about to block, and being wrong here costs
   // someone a re-run. Note the asymmetry: a stale ref can only make us block something that is
   // actually fine, never wave through something that is not.
-  await git(repo, ['fetch', 'origin', 'main', '--quiet'])
-  if (await anyAncestorOfOriginMain(repo, commits)) return { blocked: false }
+  const [remote, branch] = target.mainRef.split('/')
+  await git(repo, ['fetch', remote ?? 'origin', branch ?? 'main', '--quiet'])
+  if (await anyAncestorOfMainRef(target, commits)) return { blocked: false }
 
   const short = commits.map((c) => c.slice(0, 8)).join(', ')
   return {
     blocked: true,
     message:
-      `Ez a kártya nem zárható: a REVIEW-ban megnevezett commit(ok) NINCSENEK az origin/main-en (${short}). ` +
+      `Ez a kártya nem zárható: a REVIEW-ban megnevezett commit(ok) NINCSENEK a(z) ${target.mainRef}-en (${short}). ` +
       `A gate-verdikt a TARTALOMRÓL szól, nem arról, hogy a munka landolt-e -- 2026-08-07-én 42 kártya ` +
       `állt nem-landolt commiton emiatt. Mergeld az ágat, VAGY ha cherry-pick/konfliktus-feloldás miatt ` +
       `más SHA-val landolt, futtasd a store/cleancore-landed-check.py-t (az patch-id és tartalom alapján ` +
