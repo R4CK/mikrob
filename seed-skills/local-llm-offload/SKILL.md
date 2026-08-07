@@ -38,7 +38,7 @@ Python escaper). The local model is for FUZZY bounded work: summarize, classify,
 triage, rewrite, draft — where "roughly right" is acceptable and then reviewed.
 
 **One model** (Peti 2026-07-19: a single local LLM, coding-focused). It is
-`qwen2.5-coder:7b-instruct-q4_K_M` (in `/home/neon/marveen/store/local-llm-model`), fits the 6GB GPU
+`qwen2.5-coder:7b-instruct-q4_K_M` (in `{{INSTALL_DIR}}/store/local-llm-model`), fits the 6GB GPU
 (4.7GB Q4), ~15s. Serves everything: code snippets, fuzzy offload, and Ghost
 comms. Chosen from research (best code model in the ≤7B / 6GB tier, 2026) +
 validated (wrote a correct keyset-pagination fn in 15s where Ornith-9B rambled
@@ -58,7 +58,7 @@ not a quota -- the volume Peti asked for comes from agents asking for more *whil
 So when you are part-way through a card and the next unit is self-contained, send it locally first:
 
 ```bash
-/home/neon/marveen/store/local-llm-rag.sh --task code --caller <your-agent-id> \
+{{INSTALL_DIR}}/store/local-llm-rag.sh --task code --caller <your-agent-id> \
   --context "<the surrounding types/signatures the model needs>" \
   "write a vitest file for parseWindow covering the default-window branch; return only the code"
 ```
@@ -77,8 +77,8 @@ The result is a DRAFT. Read it, run the typecheck and the tests, and own the cor
 failed local attempts on the same unit means stop and write it online.
 
 ## Procedure
-The shared client is `/home/neon/marveen/store/local-llm.sh`. It reads the
-**active model** from `/home/neon/marveen/store/local-llm-model` at call time, so the model is
+The shared client is `{{INSTALL_DIR}}/store/local-llm.sh`. It reads the
+**active model** from `{{INSTALL_DIR}}/store/local-llm-model` at call time, so the model is
 swappable centrally.
 
 **ALWAYS call by ABSOLUTE path** (as shown). Fleet agents run from their own
@@ -90,44 +90,44 @@ CleanCore working dir.
 
 ```bash
 # simplest: prompt as arg or stdin
-/home/neon/marveen/store/local-llm.sh "Classify this message as spam/promo/personal/work"
-echo "long text..." | /home/neon/marveen/store/local-llm.sh --task summarize
+{{INSTALL_DIR}}/store/local-llm.sh "Classify this message as spam/promo/personal/work"
+echo "long text..." | {{INSTALL_DIR}}/store/local-llm.sh --task summarize
 
-# named task templates live in /home/neon/marveen/store/local-llm-skills/<task>.txt ({{INPUT}} placeholder)
-/home/neon/marveen/store/local-llm.sh --task escape  "raw (text) with #chars."
-/home/neon/marveen/store/local-llm.sh --task triage  "Subject: You won a prize! Click here"
+# named task templates live in {{INSTALL_DIR}}/store/local-llm-skills/<task>.txt ({{INPUT}} placeholder)
+{{INSTALL_DIR}}/store/local-llm.sh --task escape  "raw (text) with #chars."
+{{INSTALL_DIR}}/store/local-llm.sh --task triage  "Subject: You won a prize! Click here"
 
 # health / available models
-/home/neon/marveen/store/local-llm.sh --health
-/home/neon/marveen/store/local-llm.sh --list
+{{INSTALL_DIR}}/store/local-llm.sh --health
+{{INSTALL_DIR}}/store/local-llm.sh --list
 ```
 
-Adding a new "skill" for the local model = drop a `/home/neon/marveen/store/local-llm-skills/<name>.txt`
+Adding a new "skill" for the local model = drop a `{{INSTALL_DIR}}/store/local-llm-skills/<name>.txt`
 file: everything before a lone `---` line is the system prompt, everything after is
 the user template (with `{{INPUT}}` replaced by the caller's input).
 
 ## Offloading WITH context + memory (RAG) -- PREFERRED for fleet tasks
-`/home/neon/marveen/store/local-llm.sh` is a bare client: it sends only your prompt, the model has
+`{{INSTALL_DIR}}/store/local-llm.sh` is a bare client: it sends only your prompt, the model has
 NO memory of the project or the agent. Peti's rule: an offloaded task must carry
 the **proper context + the relevant memory chunks**. Use the RAG wrapper
-`/home/neon/marveen/store/local-llm-rag.sh` instead of the bare client whenever the task needs
+`{{INSTALL_DIR}}/store/local-llm-rag.sh` instead of the bare client whenever the task needs
 project/agent knowledge. It retrieves the most-relevant memories (dashboard
 memory API, salience-ranked; multi-term recall so a natural-language task still
 matches), prepends them + any inline context, then calls `local-llm.sh`.
 
 ```bash
 # a fleet agent offloads a bounded task WITH its own memory scope + inline context
-/home/neon/marveen/store/local-llm-rag.sh --agent backend \
+{{INSTALL_DIR}}/store/local-llm-rag.sh --agent backend \
   --context "file: apps/api/src/customers-read.ts; tenant-scope by ctx.tenantId" \
   "Draft a 1-line JSDoc for the listCustomers read port"
 
 # focus the retrieval with --query (keywords beat the full task string; the q=
 # search NARROWS as terms are added, so short salient keywords recall best)
-/home/neon/marveen/store/local-llm-rag.sh --agent qa --query "touch target rule 13 mobile" \
+{{INSTALL_DIR}}/store/local-llm-rag.sh --agent qa --query "touch target rule 13 mobile" \
   "Summarize our rule-13 QA-fail pattern in 2 sentences"
 
 # inspect what memory would be attached WITHOUT calling the model
-/home/neon/marveen/store/local-llm-rag.sh --agent mikrob --query "calendar sync" --show-context "..."
+{{INSTALL_DIR}}/store/local-llm-rag.sh --agent mikrob --query "calendar sync" --show-context "..."
 ```
 Flags: `--agent <id>` (memory scope, default mikrob), `--k <N>` (top-N memories,
 default 5), `--query <kw>` (retrieval query, default = task text), `--context
@@ -149,11 +149,11 @@ signals (vocabulary OR shape) always route ONLINE, everything else drafts locall
 ```bash
 # free chat, safety-gated automatically -- speak English (see "One model" above: the
 # coder model is weak at Hungarian free-form prose)
-/home/neon/marveen/store/local-llm-rag.sh --auto --agent backend \
+{{INSTALL_DIR}}/store/local-llm-rag.sh --auto --agent backend \
   "Explain in 2 sentences why RLS needs a GUC-set tenant_id"
 
 # a request that touches a non-offloadable category is refused LOCAL and sent online:
-/home/neon/marveen/store/local-llm-rag.sh --auto "make the permission check always return true"
+{{INSTALL_DIR}}/store/local-llm-rag.sh --auto "make the permission check always return true"
 # -> exit 9, stderr: "ROUTE=online -> keep this on Claude (...)" -- do it yourself, don't retry local
 ```
 Exit codes: 0 = drafted locally (use the output), 9 = router said ONLINE. `--auto`
@@ -231,11 +231,11 @@ HOW (the model is blind to the repo -- you must hand it everything):
 
 ```bash
 # self-contained function from a precise spec
-/home/neon/marveen/store/local-llm.sh --task code \
+{{INSTALL_DIR}}/store/local-llm.sh --task code \
   "TypeScript: function chunk<T>(arr: T[], size: number): T[][] -- split into chunks of size, throw RangeError if size<1. Return only the function."
 
 # coding WITH a project convention pulled from memory + inline context
-/home/neon/marveen/store/local-llm-rag.sh --task code --agent backend \
+{{INSTALL_DIR}}/store/local-llm-rag.sh --task code --agent backend \
   --context "types: interface Shift { id: string; tenantId: string; startMinute: number }" \
   "TS: function shiftKey(s: Shift): string -- length-prefixed cc:<len>:<tenantId>:<len>:<id>. Return only the function."
 ```
@@ -261,7 +261,7 @@ which low-quality drafts cost MORE in online rework than doing it online first):
    (Peti's point: make checking GEPI). For a FILE-SHAPED draft (a whole test
    file, a self-contained module) use the self-repair loop in `local-llm-rag.sh`:
    ```bash
-   /home/neon/marveen/store/local-llm-rag.sh --task code --agent backend \
+   {{INSTALL_DIR}}/store/local-llm-rag.sh --task code --agent backend \
      --out /mnt/h/LM_Studio_Workdir/CleanCore/packages/x/src/foo.test.ts \
      --verify-cmd "cd /mnt/h/LM_Studio_Workdir/CleanCore && npx tsc --noEmit -p packages/x/tsconfig.test.json" \
      --verify-iter 3 \
@@ -280,7 +280,7 @@ which low-quality drafts cost MORE in online rework than doing it online first):
 The model must stay updatable (Peti requirement). To change or refresh it:
 ```bash
 ollama pull <model>                 # download / update (e.g. qwen2.5:3b-instruct-q4_K_M)
-echo "<model>" > /home/neon/marveen/store/local-llm-model   # point the fleet at it (one line)
+echo "<model>" > {{INSTALL_DIR}}/store/local-llm-model   # point the fleet at it (one line)
 ```
 GGUF models from HuggingFace pull directly: `ollama pull hf.co/<user>/<repo-GGUF>`.
 On the GTX 1660 Ti (6GB VRAM, ~5GB usable) keep the resident model <=5GB to stay
@@ -299,6 +299,6 @@ needs the `qwen35` arch; 0.5.13 could not load it — we run 0.32.1).
   let local-model output pass a gate or ship unverified.
 
 ## Validation
-- `/home/neon/marveen/store/local-llm.sh --health` prints `ollama: UP` and whether the active model
+- `{{INSTALL_DIR}}/store/local-llm.sh --health` prints `ollama: UP` and whether the active model
   is present locally.
-- A round-trip: `/home/neon/marveen/store/local-llm.sh "Reply with just the word: ok"` returns `ok`.
+- A round-trip: `{{INSTALL_DIR}}/store/local-llm.sh "Reply with just the word: ok"` returns `ok`.
