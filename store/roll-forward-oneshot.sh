@@ -107,15 +107,13 @@ systemctl --user restart mikrob-channels.service >>"$LOG" 2>&1 || log "WARN: cha
 
 # 6. Health probe
 sleep 25
-# SECURITY (Cybered, 2026-08-07, msg 7525): token via 0600 header file, never
-# argv -- `-H "Authorization: Bearer $(cat ...)"` expands BEFORE exec, so the
-# token would land in /proc/<pid>/cmdline. Same pattern as local-llm-worker.sh.
-DASH_HDR="$(mktemp)"; chmod 600 "$DASH_HDR"
-printf 'Authorization: Bearer %s\n' "$(cat store/.dashboard-token 2>/dev/null)" > "$DASH_HDR"
-CODE=$(curl -s -o /dev/null -w '%{http_code}' --max-time 10 \
-  -H "@$DASH_HDR" \
-  http://localhost:3420/api/agents 2>/dev/null)
-rm -f "$DASH_HDR"
+# SECURITY (Cybered msg 7525, Cybersec follow-up msg 7529): token never in
+# argv AND no temp file that could be orphaned if this script is killed mid-run
+# (it restarts services, including indirectly itself -- a real way to get
+# killed). Header goes over curl's own stdin config (-K -), same as notify().
+CODE=$(printf 'header = "Authorization: Bearer %s"\n' "$(cat store/.dashboard-token 2>/dev/null)" \
+  | curl -s -o /dev/null -w '%{http_code}' --max-time 10 -K - \
+    http://localhost:3420/api/agents 2>/dev/null)
 log "post-restart: dashboard http=${CODE:-none}, HEAD=$(git rev-parse --short HEAD), built=$(cat dist/.built-commit 2>/dev/null)"
 
 if [ "$CODE" = "200" ]; then
