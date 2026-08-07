@@ -191,7 +191,8 @@ When you receive the heartbeat prompt:
    - **Kanban** -- ONE call, and do not compose a query of your own:
 
      \`\`\`bash
-     curl -s -H "Authorization: Bearer $(cat ${id.storeDir}/.dashboard-token)" \\
+     printf 'Authorization: Bearer %s\\n' "$(cat ${id.storeDir}/.dashboard-token)" \\
+     | curl -s -H @- \\
        ${id.dashboardOrigin}/api/kanban/heartbeat-summary
      \`\`\`
 
@@ -219,7 +220,8 @@ When you receive the heartbeat prompt:
      deployment, and a count taken from it reports 0 forever):
 
      \`\`\`bash
-     curl -s -H "Authorization: Bearer $(cat ${id.storeDir}/.dashboard-token)" \\
+     printf 'Authorization: Bearer %s\\n' "$(cat ${id.storeDir}/.dashboard-token)" \\
+     | curl -s -H @- \\
        ${id.dashboardOrigin}/api/schedules \\
        | python3 -c "import json,sys; r=json.load(sys.stdin); print(sum(1 for x in r if x.get('enabled')))"
      \`\`\`
@@ -273,10 +275,9 @@ When you receive the heartbeat prompt:
 3. **Send** that string to the main agent via the dashboard API:
 
    \`\`\`bash
-   TOKEN=$(cat ${id.storeDir}/.dashboard-token)
-   curl -s -X POST ${id.dashboardOrigin}/api/messages \\
+   printf 'Authorization: Bearer %s\\n' "$(cat ${id.storeDir}/.dashboard-token)" \\
+   | curl -s -H @- -X POST ${id.dashboardOrigin}/api/messages \\
      -H "Content-Type: application/json" \\
-     -H "Authorization: Bearer $TOKEN" \\
      -d '{"from":"heartbeat","to":"${id.mainAgentId}","content":"<the formatted text>"}'
    \`\`\`
 

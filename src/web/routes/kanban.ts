@@ -59,7 +59,9 @@ import type { RouteContext } from './types.js'
 export function kanbanMoveInstructions(id: string, target: string): string {
   const tokenPath = join(STORE_DIR, '.dashboard-token')
   const base = `http://${WEB_HOST}:${WEB_PORT}`
-  const auth = `-H "Authorization: Bearer $(cat ${tokenPath})"`
+  // The token is read from STDIN (`-H @-`), never as an argv element: /proc/<pid>/cmdline
+  // is world-readable, and these instructions are copied verbatim by every agent that reads them.
+  const auth = `printf 'Authorization: Bearer %s\\n' "$(cat ${tokenPath})" \\`
   const moveUrl = `${base}/api/kanban/${id}/move`
   const commentUrl = `${base}/api/kanban/${id}/comments`
   const cardUrl = `${base}/api/kanban/${id}`
@@ -76,22 +78,22 @@ export function kanbanMoveInstructions(id: string, target: string): string {
     'A kártyát in_progress-re húzták. Amikor VÉGEZTÉL, két lépés (mindkettő a kártyára kerül, a web UI-ban látszik):',
     '',
     '1) Írj egy rövid eredmény-összefoglalót kommentként (1-2 mondat: mi lett a vége):',
-    `  curl -s -X POST ${commentUrl} \\`,
-    `    ${auth} \\`,
+    `  ${auth}`,
+    `  | curl -s -H @- -X POST ${commentUrl} \\`,
     `    -H 'Content-Type: application/json' \\`,
     `    -d '{"author":"${target}","content":"AZ EREDMENY ROVIDEN"}'`,
     '',
     '2) Állítsd a kártyát done-ra:',
-    `  curl -s -X POST ${moveUrl} \\`,
-    `    ${auth} \\`,
+    `  ${auth}`,
+    `  | curl -s -H @- -X POST ${moveUrl} \\`,
     `    -H 'Content-Type: application/json' \\`,
     `    -d '{"status":"done"}'`,
     '',
     `Ha elakadtál / ${escalateTo} döntésére/lépésére vársz: NE csak status="waiting"-et állíts be. HÁROM lépés kell EGYÜTT:`,
     `  a) Írj egy kommentet ami KÖZVETLENÜL ${escalateTo}-hez szól, egyértelműen megfogalmazva mit kell eldöntenie/megtennie (NE a saját belső elemzésedet írd oda) -- ugyanaz a comments hívás mint fent, "content" mezőben.`,
     `  b) Told át a kártyát ${escalateTo}-re, hogy egyértelmű legyen a felelősség (a te neved NE maradjon rajta, ha nem te vagy a blokkoló):`,
-    `     curl -s -X PUT ${cardUrl} \\`,
-    `       ${auth} \\`,
+    `     ${auth}`,
+    `     | curl -s -H @- -X PUT ${cardUrl} \\`,
     `       -H 'Content-Type: application/json' \\`,
     `       -d '{"assignee":"${escalateTo}"}'`,
     `  c) Csak EZUTÁN állítsd a kártyát status="waiting"-re (a fenti move-hívással, "waiting" értékkel "done" helyett).`,

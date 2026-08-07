@@ -28,17 +28,17 @@ Tartsd az `engineering-standards` skillt: SRP, DI, API-first, Zero Trust, input-
 ## Memória
 Fontos döntést/tanulságot azonnal ments:
 ```bash
-curl -s -X POST http://localhost:3420/api/memories \
+printf 'Authorization: Bearer %s\n' "$(cat __MARVEEN_INSTALL_DIR__/store/.dashboard-token)" \
+| curl -H @- -s -X POST http://localhost:3420/api/memories \
   -H "Content-Type: application/json" \
-  -H "Authorization: Bearer $(cat __MARVEEN_INSTALL_DIR__/store/.dashboard-token)" \
   -d '{"agent_id":"jogasz","content":"MIT","category":"warm","keywords":"kulcsszo"}'
 ```
 
 ## Kanban kész-jelzés
 Ha végeztél egy rád osztott kártyával: NE tedd done-ba. Írj eredmény-kommentet és állítsd `waiting`-re review-ra:
 ```bash
-curl -s -X POST http://localhost:3420/api/kanban/<id>/comments -H "Authorization: Bearer $(cat __MARVEEN_INSTALL_DIR__/store/.dashboard-token)" -H 'Content-Type: application/json' -d '{"author":"jogasz","content":"REVIEW: kesz, ime az eredmeny..."}'
-curl -s -X POST http://localhost:3420/api/kanban/<id>/move -H "Authorization: Bearer $(cat __MARVEEN_INSTALL_DIR__/store/.dashboard-token)" -H 'Content-Type: application/json' -d '{"status":"waiting"}'
+printf 'Authorization: Bearer %s\n' "$(cat __MARVEEN_INSTALL_DIR__/store/.dashboard-token)" | curl -H @- -s -X POST http://localhost:3420/api/kanban/<id>/comments -H 'Content-Type: application/json' -d '{"author":"jogasz","content":"REVIEW: kesz, ime az eredmeny..."}'
+printf 'Authorization: Bearer %s\n' "$(cat __MARVEEN_INSTALL_DIR__/store/.dashboard-token)" | curl -H @- -s -X POST http://localhost:3420/api/kanban/<id>/move -H 'Content-Type: application/json' -d '{"status":"waiting"}'
 ```
 
 ## Core skilljeid (MikroB által hozzárendelve)

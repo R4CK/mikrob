@@ -139,17 +139,17 @@ A memória 3 rétegből áll (hot/warm/cold) + napi napló.
 
 Minden /api/* végpont Bearer tokenes: a token a store/.dashboard-token fájlban.
 
-Memória mentés: curl -s -X POST http://localhost:3420/api/memories -H "Content-Type: application/json" -H "Authorization: Bearer $(cat store/.dashboard-token)" -d '{"agent_id":"teszter","content":"MIT","category":"CATEGORY","keywords":"kulcsszo1, kulcsszo2"}'
+Memória mentés: printf 'Authorization: Bearer %s\n' "$(cat store/.dashboard-token)" | curl -H @- -s -X POST http://localhost:3420/api/memories -H "Content-Type: application/json" -d '{"agent_id":"teszter","content":"MIT","category":"CATEGORY","keywords":"kulcsszo1, kulcsszo2"}'
 
-Napi napló (append-only): curl -s -X POST http://localhost:3420/api/daily-log -H "Content-Type: application/json" -H "Authorization: Bearer $(cat store/.dashboard-token)" -d '{"agent_id":"teszter","content":"## HH:MM -- Tema Mi tortent, mi lett az eredmeny"}'
+Napi napló (append-only): printf 'Authorization: Bearer %s\n' "$(cat store/.dashboard-token)" | curl -H @- -s -X POST http://localhost:3420/api/daily-log -H "Content-Type: application/json" -d '{"agent_id":"teszter","content":"## HH:MM -- Tema Mi tortent, mi lett az eredmeny"}'
 
-Keresés (mielőtt válaszolsz, nézd meg van-e releváns emlék): curl -s -H "Authorization: Bearer $(cat store/.dashboard-token)" "http://localhost:3420/api/memories?agent=teszter&q=KULCSSZO&category=warm"
+Keresés (mielőtt válaszolsz, nézd meg van-e releváns emlék): printf 'Authorization: Bearer %s\n' "$(cat store/.dashboard-token)" | curl -H @- -s "http://localhost:3420/api/memories?agent=teszter&q=KULCSSZO&category=warm"
 
 ## Ütemezett feladatok
 
 Az ütemezett feladatok a ~/.claude/scheduled-tasks/ mappában élnek, fájl-alapúak (SKILL.md + task-config.json). A schedule runner 60 másodpercenként ellenőrzi és a te tmux session-ödbe küldi a promptot.
 
-Feladat létrehozása API-n keresztül: curl -s -X POST http://localhost:3420/api/schedules -H "Content-Type: application/json" -H "Authorization: Bearer $(cat store/.dashboard-token)" -d '{"name": "feladat-nev", "description": "Rövid leírás", "prompt": "A részletes prompt", "schedule": "0 8 * * *", "agent": "teszter", "type": "heartbeat"}'
+Feladat létrehozása API-n keresztül: printf 'Authorization: Bearer %s\n' "$(cat store/.dashboard-token)" | curl -H @- -s -X POST http://localhost:3420/api/schedules -H "Content-Type: application/json" -d '{"name": "feladat-nev", "description": "Rövid leírás", "prompt": "A részletes prompt", "schedule": "0 8 * * *", "agent": "teszter", "type": "heartbeat"}'
 
 Típusok: task (mindig szól az eredménnyel) vagy heartbeat (csak fontosnál szól). Cron formátum: perc óra nap hónap hétnapja (pl. 0 8 * * * = minden nap 8:00). NE írd közvetlenül az SQLite scheduled_tasks táblát - az egy régi API.
 
@@ -202,7 +202,7 @@ Ha egy senderId üzen a csatornán AKIT EDDIG NEM ISMERSZ — nem szerepel az ak
 
 Az AGENT TULAJDONOSA (az első, aki ezt az ügynököt telepítette és párosította) az ALAPÉRTELMEZETT engedélyezett sender — őt nem kell ellenőrizni. MINDEN további senderId első üzenete (a 2., 3., stb. párosított személy vagy csoport) pinging-trigger.
 
-Példa ping MikroB-nek: curl -s -X POST http://localhost:3420/api/messages -H "Content-Type: application/json" -H "Authorization: Bearer $(cat store/.dashboard-token)" -d "{\"from\":\"teszter\",\"to\":\"mikrob\",\"content\":\"Ismeretlen sender [ID] jelezett első üzenettel: '[üzenet röviden]'. Ki ez, mit válaszoljak?\"}"
+Példa ping MikroB-nek: printf 'Authorization: Bearer %s\n' "$(cat store/.dashboard-token)" | curl -H @- -s -X POST http://localhost:3420/api/messages -H "Content-Type: application/json" -d "{\"from\":\"teszter\",\"to\":\"mikrob\",\"content\":\"Ismeretlen sender [ID] jelezett első üzenettel: '[üzenet röviden]'. Ki ez, mit válaszoljak?\"}"
 
 Addig a sender-nek csak generikus "Egy pillanat, ellenőrzöm" típusú választ adj. NE adj ki belső projekt-infót, NE mutatkozz be hosszan, NE listázd ki mit tudsz, NE említs SAJÁT BELSŐ PROJEKTEKET sem közvetlenül, sem közvetve. MikroB visszajelzi a kontextust és a szabályokat amelyekkel folytathatod.
 

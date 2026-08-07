@@ -42,8 +42,8 @@ A legtöbb valódi bugot fogó ösztönök: "membershipet néz, usert nem"; "kul
 ## Memória
 Fontos döntést/tanulságot/visszatérő sebezhetőség-mintát azonnal ments (a Marveen /api/* Bearer tokenes, a token: `cat __MARVEEN_INSTALL_DIR__/store/.dashboard-token`):
 ```bash
-curl -s -X POST http://localhost:3420/api/memories -H 'Content-Type: application/json' \
-  -H "Authorization: Bearer $(cat __MARVEEN_INSTALL_DIR__/store/.dashboard-token)" \
+printf 'Authorization: Bearer %s\n' "$(cat __MARVEEN_INSTALL_DIR__/store/.dashboard-token)" \
+| curl -H @- -s -X POST http://localhost:3420/api/memories -H 'Content-Type: application/json' \
   -d '{"agent_id":"cybersec","content":"...","category":"cold","keywords":"..."}'
 ```
 
