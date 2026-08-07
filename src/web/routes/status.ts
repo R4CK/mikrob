@@ -1,11 +1,17 @@
 import { logger } from '../../logger.js'
 import { json, jsonMaybeGzip } from '../http-helpers.js'
+import { readLastUpdate } from '../last-update.js'
 import type { RouteContext } from './types.js'
 
 export async function tryHandleStatus(ctx: RouteContext): Promise<boolean> {
   const { req, res, path, method } = ctx
 
   if (path === '/api/status' && method === 'GET') {
+    // Read BEFORE the network calls and reuse in both exits (card 0898db66). This route proxies
+    // status.claude.com with a 10s timeout; computing our own field inside the try would mean the
+    // badge goes blank whenever an EXTERNAL service is slow -- a local fact hidden by a remote
+    // failure. It is local, synchronous and cannot throw, so it belongs outside.
+    const lastUpdate = readLastUpdate()
     try {
       const rssResponse = await fetch('https://status.claude.com/history.rss', { signal: AbortSignal.timeout(10000) })
       const rssText = await rssResponse.text()
@@ -56,10 +62,10 @@ export async function tryHandleStatus(ctx: RouteContext): Promise<boolean> {
         logger.warn({ err }, 'Failed to fetch Claude status components')
       }
 
-      jsonMaybeGzip(req, res, { overall, components, incidents: items.slice(0, 15), fetchedAt: Date.now() })
+      jsonMaybeGzip(req, res, { overall, components, incidents: items.slice(0, 15), fetchedAt: Date.now(), lastUpdate })
     } catch (err) {
       logger.warn({ err }, 'Failed to fetch Claude status')
-      json(res, { overall: 'unknown', components: [], incidents: [], fetchedAt: Date.now(), error: 'Failed to fetch status' })
+      json(res, { overall: 'unknown', components: [], incidents: [], fetchedAt: Date.now(), lastUpdate, error: 'Failed to fetch status' })
     }
     return true
   }
