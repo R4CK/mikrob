@@ -25,9 +25,14 @@ function withLog(dir: string, logPath: string): string {
   return copy
 }
 
-function run(script: string, args: string[]): { status: number; out: string } {
+function run(
+  script: string,
+  args: string[],
+  env: Readonly<Record<string, string>> = {},
+): { status: number; out: string } {
+  const opts = { encoding: 'utf-8' as const, stdio: 'pipe' as const, env: { ...process.env, ...env } }
   try {
-    return { status: 0, out: execFileSync('bash', [script, ...args], { encoding: 'utf-8', stdio: 'pipe' }) }
+    return { status: 0, out: execFileSync('bash', [script, ...args], opts) }
   } catch (e) {
     const err = e as { status?: number; stdout?: string; stderr?: string }
     return { status: err.status ?? -1, out: String(err.stdout ?? '') + String(err.stderr ?? '') }
@@ -117,16 +122,45 @@ describe('offload batch health signal (card 5f00664c)', () => {
 
   // The END line has to survive abnormal exits, otherwise a crashed run is indistinguishable from a
   // run that never started -- and the whole point is telling those apart.
-  it('writes the END line from an EXIT trap, not just on the success path', () => {
-    expect(SRC).toMatch(/trap emit_end_line EXIT/)
+  //
+  // QA FAIL, round 4: the previous version of this test was VACUOUS and passed on the BROKEN commit
+  // too. Two independent reasons, both worth naming so they are not rebuilt:
+  //   1. `expect(SRC).toMatch(/trap emit_end_line EXIT/)` matched the PROSE of the comment on line 73
+  //      that describes the OLD broken code -- never the real `trap` line, which reads
+  //      `trap 'rm -f "$hdr_file"; emit_end_line' EXIT`. A source regex that can be satisfied by a
+  //      comment tests the documentation.
+  //   2. Forcing `TOK=""` takes the early no-token abort at line 83, which returns BEFORE the code
+  //      path the bug lived on. It exercised the one exit route that was never broken.
+  // So this drives the REAL normal-completion path instead: a token IS present, and DASHBOARD_URL
+  // points at a closed port so curl fails fast and the run reaches `BATCH_END_STATUS="ok"; exit 0`.
+  it('writes the END line on the NORMAL exit path and removes the token header file', () => {
     const dir = mkdtempSync(join(tmpdir(), 'offload-health-'))
+    // A value unique to this run, so the /tmp sweep below cannot match some other process's file.
+    const marker = `tok-5f00664c-${process.pid}-${process.hrtime.bigint()}`
     try {
       const log = join(dir, 'batch.log')
-      // force the early no-token abort, which returns before any normal completion
       const copy = join(dir, 'batch.sh')
-      writeFileSync(copy, SRC.replace(/^LOG=.*$/m, `LOG="${log}"`).replace(/^TOK=.*$/m, 'TOK=""'))
-      run(copy, [])
-      expect(readFileSync(log, 'utf-8')).toMatch(/batch END status=no-token/)
+      writeFileSync(copy, SRC.replace(/^LOG=.*$/m, `LOG="${log}"`))
+      // HERE resolves to the script's own directory, so this is the token the copy will read.
+      writeFileSync(join(dir, '.dashboard-token'), marker)
+
+      const r = run(copy, [], { DASHBOARD_URL: 'http://127.0.0.1:1' })
+      expect(r.status).toBe(0)
+
+      // (a) the END line fires on the path that was actually broken -- NOT the no-token route.
+      const text = readFileSync(log, 'utf-8')
+      expect(text).toMatch(/batch END status=ok/)
+      expect(text).not.toMatch(/status=no-token/)
+
+      // (b) the same single trap must still delete the 0600 header file holding the token. Dropping
+      // the cleanup to make the END line fire would leak the dashboard token into /tmp, so assert
+      // BOTH halves -- the merge of the two traps is the actual fix, and either half alone is a bug.
+      const leaks = execFileSync(
+        'bash',
+        ['-c', `grep -rlF ${JSON.stringify(marker)} /tmp 2>/dev/null | grep -vF ${JSON.stringify(dir)} || true`],
+        { encoding: 'utf-8' },
+      ).trim()
+      expect(leaks).toBe('')
     } finally {
       rmSync(dir, { recursive: true, force: true })
     }
