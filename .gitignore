@@ -32,6 +32,8 @@ store/*
 # so future runtime .py data under store/ stays ignored).
 !store/cybersec-gate-scan.py
 !store/cybered-gate-scan.py
+# Shape-based secret pre-filter the repomix pack path runs before packing (card 2f781b49).
+!store/secret-shape-scan.py
 # Local-LLM offload tooling (config + task templates) is operational, not runtime data.
 !store/local-llm-model
 !store/local-llm-skills/

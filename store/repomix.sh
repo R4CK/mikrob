@@ -28,12 +28,21 @@
 #     files detected". `pack` now REFUSES a tree containing such a marker, which closes that path --
 #     but the mechanism is a content convention, not a guarantee, so treat a clean scan as evidence
 #     about DEFAULTS, never as proof the tree is secret-free.
-#   * AWS coverage is KEYWORD-ANCHORED. The bundled preset matches on names like
-#     `aws_secret_access_key`; a bare `AKIA[0-9A-Z]{16}` access key ID is NOT detected at all. This is
-#     a property of the secretlint preset, not of any repomix version -- pinning back would not help.
-#     A shape-based second pass (own rule or gitleaks) is the open follow-up.
+#   * AWS coverage is KEYWORD-ANCHORED, and worse than first written (re-measured, card 2f781b49):
+#     an access key ID is NOT detected in ANY form -- not bare, and not even named
+#     (`aws_access_key_id = <key>`); the preset's AWS anchor only ever fires on the SECRET key. And
+#     that secret rule ends in `\b` while its own 40-char class contains `/`, `+`, `=`, so a secret
+#     whose LAST character is one of those silently passes (~3% of AWS-generated secrets; measured
+#     with five files differing only in the final character). Both are properties of the secretlint
+#     preset, not of any repomix version -- pinning back would not help.
+#     NOW MITIGATED, not eliminated: `pack` runs store/secret-shape-scan.py first, a shape-based
+#     pre-filter that catches both cases. It does not make the preset better; it means the preset is
+#     no longer the only thing between a credential and the pack.
 # A control we wrongly believe is closed is worse than one with a known gap; that is why both are
 # written here rather than in a card comment.
+#
+# Exit: 0 ok | 2 bad usage | 4 setup/usage failure | 5 secretlint-disable marker in the tree
+#       | 6 forbidden flag (--no-security-check / --remote) | 7 shape-scan refusal
 set -euo pipefail
 
 PINNED_VERSION="1.18.0"
@@ -68,6 +77,17 @@ case "$CMD" in
       echo "repomix.sh: REFUSED -- these files mute the secret scanner from their own content:" >&2
       printf '  %s\n' $MUTED >&2
       die 5 "remove the secretlint-disable markers, or pack a subtree that excludes them"
+    fi
+    # --- HONEST LIMIT 2, now closed on the shape axis (card 2f781b49, Cybersec). The bundled
+    # secretlint covers AWS by KEYWORD anchor: an access key ID is never detected (not even named),
+    # and the secret-key rule ends in `\b` while its own 40-char class contains `/`, `+`, `=` -- so
+    # a secret ending in one of those silently passes (~3% of AWS-generated secrets; measured with
+    # five files differing ONLY in the final character). This pre-filter runs a SHAPE-based scan
+    # first, so a clean repomix Security Check is no longer the only thing standing between a
+    # credential and the pack. It refuses rather than warns, for the same reason as the marker
+    # guard above.
+    if ! python3 "$(dirname "${BASH_SOURCE[0]}")/secret-shape-scan.py" "$REPO"; then
+      die 7 "shape-based scan refused this tree (see above) -- remove the credentials, or pack a subtree that excludes them"
     fi
     mkdir -p "$OUT_DIR_DEFAULT"
     OUT="$OUT_DIR_DEFAULT/$(basename "$REPO")-pack.xml"
