@@ -82,6 +82,32 @@ prev_sha=""; prev_fails=""
 if [ -f "$STATE" ]; then
   prev_sha="$(sed -n 's/.*"sha"[[:space:]]*:[[:space:]]*"\([0-9a-f]*\)".*/\1/p' "$STATE" | head -1)"
   prev_fails="$(sed -n 's/.*"fails"[[:space:]]*:[[:space:]]*\([0-9-]*\).*/\1/p' "$STATE" | head -1)"
+  # A CORRUPT state file must not quietly become "no baseline" (card 6d46c7d3, Cybersec on the
+  # ec44220b GO). The comparison below is a numeric `-gt`; on a non-numeric value bash errors to
+  # STDERR and the test evaluates false, so the run would print RESULT:OK and the caller -- which
+  # reads only the RESULT: lines -- would be told everything is fine while the alarm was off.
+  # Fail LOUDLY instead: a guard whose memory is unreadable knows nothing, and must say so.
+  #
+  # KEY PRESENT vs VALUE PARSED, and my first attempt got this wrong. The extractor captures
+  # `[0-9-]*`, so a corrupted `"fails":"twenty-one"` yields the EMPTY string -- indistinguishable
+  # from a file that never had the key, which is treated as "no baseline" and passes silently. The
+  # exact failure Cybersec described, reproduced by my own test. So ask both questions: does the key
+  # exist, and did a value come out of it?
+  # This script only ever writes BOTH keys, so a file that exists and lacks either one is damaged --
+  # including a truncated one whose `sha` survived. That case looked benign in testing (the run just
+  # says STATE:unchanged) and is the worst of the three: the sha matches, nothing measures, and the
+  # baseline silently disappears at the next commit. No state file at all is fine and means "first
+  # run"; a PARTIAL one never is.
+  for key in fails sha; do
+    val="$prev_fails"; [ "$key" = sha ] && val="$prev_sha"
+    [ -n "$val" ] || die "state file $STATE is missing or could not parse \"$key\" -- corrupt (we always write both); delete it to re-baseline rather than let it decay silently"
+  done
+  if [ -n "$prev_fails" ] && ! printf '%s' "$prev_fails" | grep -Eq '^-?[0-9]+$'; then
+    die "state file $STATE has a non-numeric \"fails\" ($prev_fails) -- refusing to compare against it"
+  fi
+  if [ -n "$prev_sha" ] && ! printf '%s' "$prev_sha" | grep -Eq '^[0-9a-f]{7,40}$'; then
+    die "state file $STATE has a malformed \"sha\" ($prev_sha) -- refusing to compare against it"
+  fi
 fi
 
 if [ "$FORCE" -eq 0 ] && [ "$HEAD" = "$prev_sha" ]; then
@@ -91,13 +117,25 @@ fi
 
 # Disposable mirror of the committed tip. Reset rather than pull: anything left from a previous run
 # is noise we want gone before measuring.
+#
+# THE DESTRUCTIVE BRANCH ONLY EVER RUNS ON A TREE THIS SCRIPT CREATED (card 6d46c7d3, Cybersec).
+# `reset --hard` + `clean -fdq` on $TREE is exactly the pair that erases an agent's uncommitted work,
+# $TREE is overridable from the environment, and its default sits in `/home/neon/cc-*` -- the fleet's
+# own worktree naming convention, where LIVE agent worktrees live. The repo hook that bans
+# `git clean -f` is PreToolUse, so it never sees a cron-launched script. A typo or an inherited
+# CC_MAIN_GUARD_TREE would therefore be unopposed. The marker makes ownership a precondition rather
+# than a convention: no marker, no destruction.
+MARKER="$TREE/.cleancore-main-suite-guard"
 if [ ! -e "$TREE/.git" ]; then
   git -C "$REPO" worktree add --detach "$TREE" "$HEAD" >/dev/null 2>&1 \
     || die "could not create the guard worktree at $TREE"
+  printf 'Created by store/cleancore-main-suite-guard.sh (card ec44220b). Disposable: this script\nresets and cleans this tree on every run. Do not put work here.\n' >"$MARKER"
+elif [ ! -f "$MARKER" ]; then
+  die "$TREE is a git tree but carries no $(basename "$MARKER") marker -- refusing to reset/clean a tree this guard did not create. If it really is the guard's own, create the marker by hand; if it is someone's worktree, point CC_MAIN_GUARD_TREE elsewhere."
 else
   git -C "$TREE" checkout --detach "$HEAD" >/dev/null 2>&1 || die "could not move $TREE to $HEAD"
   git -C "$TREE" reset --hard "$HEAD" >/dev/null 2>&1
-  git -C "$TREE" clean -fdq -e node_modules -e '*/node_modules' >/dev/null 2>&1
+  git -C "$TREE" clean -fdq -e node_modules -e '*/node_modules' -e "$(basename "$MARKER")" >/dev/null 2>&1
 fi
 
 # pnpm resolves per package, so a single root symlink is NOT enough -- vitest fails to resolve its
@@ -116,11 +154,28 @@ trap 'rm -f "$log"' EXIT
 summary="$(grep -E '^[[:space:]]*Tests[[:space:]]' "$log" | tail -1)"
 [ -n "$summary" ] || { sed -n '$p' "$log" >&2; die "the suite produced no 'Tests' summary (see the tail above)"; }
 
+# An INFRASTRUCTURE failure must never be reported as a code regression (card 6d46c7d3, Cybersec's
+# closing note). The guard symlinks the shared node_modules, so it also shares vite's cache dir with
+# whatever else is running vitest at that moment; a torn cache surfaces as ERR_MODULE_NOT_FOUND in
+# otherwise fine files. That would arrive as "failures rose, here are the commits" and point at
+# innocent work. These strings mean the harness broke, not the tree.
+if grep -qE 'ERR_MODULE_NOT_FOUND|Failed to load url|Cannot find package' "$log"; then
+  grep -m1 -E 'ERR_MODULE_NOT_FOUND|Failed to load url|Cannot find package' "$log" >&2
+  die "the run hit a module-resolution error (shared vite cache or a mid-install node_modules), not a code failure -- not reporting a regression from it"
+fi
+
 fails="$(printf '%s' "$summary" | sed -n 's/.*[^0-9]\([0-9][0-9]*\) failed.*/\1/p')"
 [ -n "$fails" ] || fails=0
 
+# ATOMIC (card 6d46c7d3): write beside the target and rename. A plain `>` truncates first, so a run
+# killed mid-write -- a reboot, an OOM, the 15-minute tick overlapping a slow machine -- leaves a
+# half-written file. The next run then reads a corrupt baseline, and the validation above turns that
+# into a loud failure rather than a wrong verdict; rename removes the window entirely.
 printf '{"sha":"%s","fails":%s,"suite":"%s","summary":"%s"}\n' \
-  "$HEAD" "$fails" "$SUITE" "$(printf '%s' "$summary" | tr -d '"' | sed 's/^[[:space:]]*//')" >"$STATE"
+  "$HEAD" "$fails" "$SUITE" "$(printf '%s' "$summary" | tr -d '"' | sed 's/^[[:space:]]*//')" \
+  >"$STATE.tmp.$$" \
+  && mv -f "$STATE.tmp.$$" "$STATE" \
+  || die "could not write the state file at $STATE"
 echo "STATE:measured"
 echo "  $BRANCH @ ${HEAD:0:8} -- ${summary# }"
 
@@ -145,7 +200,11 @@ if [ "$fails" -gt "$prev_fails" ]; then
   # serialised path the dashboard itself uses.
   tok="/home/neon/marveen/store/.dashboard-token"
   if [ -r "$tok" ]; then
-    body="$(printf 'A megosztott lokalis %s PIROSABB lett: apps/api bukasok %s -> %s (%s).\nGyanusitottak (a legutobbi meres, %s ota):\n%s\nRepro: cd %s && ./node_modules/.bin/vitest run %s' \
+    # Self-identify as the CRON GUARD in the TEXT. The API only accepts a registered fleet agent as
+    # `from`, so the sender must stay 'fullstack' until someone registers a guard agent -- and a
+    # machine alert wearing a person's name has already cost one investigation (msg 9164). The
+    # prefix is the cheap half of card 6d46c7d3 finding 3a; the real fix needs an agent id.
+    body="$(printf '[cleancore-main-suite-guard / cron -- automatikus, nem kezi jelzes]\nA megosztott lokalis %s PIROSABB lett: apps/api bukasok %s -> %s (%s).\nGyanusitottak (a legutobbi meres, %s ota):\n%s\nRepro: cd %s && ./node_modules/.bin/vitest run %s' \
       "$BRANCH" "$prev_fails" "$fails" "${HEAD:0:8}" "${prev_sha:0:8}" "$suspects" "$TREE" "$SUITE" \
       | python3 -c 'import json,sys; print(json.dumps({"from":"fullstack","to":"mikrob","content":sys.stdin.read()}))')"
     printf 'Authorization: Bearer %s\n' "$(cat "$tok")" \
