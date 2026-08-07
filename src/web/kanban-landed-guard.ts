@@ -7,7 +7,10 @@
 //
 // The guard makes exactly one claim -- "a commit id written in this card's comments is not reachable
 // from origin/main" -- and stays silent about everything else. A card naming no commit (an E2E/user-
-// story card, a decision card -- 17 of the 120 that day) makes no landing claim, so it closes.
+// story card, a decision card -- 17 of the 120 that day) makes no landing claim, so it closes. It
+// closes NOISILY though (card b428f3da): "nothing to check" and "checked, it landed" both allow, and
+// until they were logged apart, a card the guard never actually verified looked exactly like a
+// verified one. See allowUnverified().
 //
 // COST, and why this file looks the way it does (Cybersec NO-GO on the first version): the dashboard
 // is ONE single-threaded node server. The first cut used execFileSync and spawned `git cat-file` per
@@ -75,9 +78,43 @@ const SHA_RX = /\b[0-9a-f]{7,40}\b/g
 const MAX_CANDIDATES = 40
 const GIT_TIMEOUT_MS = 8000
 
+/**
+ * Comment authors whose text is MACHINE-GENERATED and therefore never a landing claim about THIS
+ * card. Their comments are skipped when collecting candidate commit ids.
+ *
+ * This is not a precaution -- it is two reproduced false passes. Card a7b7fe43 was let through to
+ * done while both of its sides (d7a8520c, c90c5dd8) sat on a branch: its `local-llm` draft comment
+ * quoted fcc535b3 and 11a366eb inside an invented example, both real commits on CleanCore main, and
+ * the guard read them as the card's own. A sweep of all 304 open done cards found card f91fcd7e
+ * freed by the SAME two hashes, from the same kind of comment. The guard is an "any named commit
+ * landed -> allow" rule, so every extra token can only ever free a card, never block one.
+ *
+ * Both names come from the two writers that post generated text, not from a guess:
+ * `store/offload-dispatch.sh` (DRAFT_AUTHOR="local-llm") and `store/gate-pretriage-card.sh`
+ * ("gate-pretriage"). `store/cybersec-gate-scan.py` and `store/cybered-gate-scan.py` already skip
+ * `local-llm` for the same reason -- this is that existing rule reaching the close path.
+ *
+ * gate-pretriage does usually name the RIGHT commit, so skipping it loses a true reference. That is
+ * the safe direction: its sha is copied from the REVIEW comment the guard still reads, and its own
+ * resolution has a weak bare-hex fallback that has already named the wrong commit once. Measured
+ * over all 304 done cards, excluding both authors blocks exactly one more card (f91fcd7e, a true
+ * catch) and costs zero false blocks.
+ */
+const GENERATED_COMMENT_AUTHORS: ReadonlySet<string> = new Set(['local-llm', 'gate-pretriage'])
+
 export interface LandedVerdict {
   readonly blocked: boolean
   readonly message?: string
+}
+
+/** What the card's comments claim, and how much of that claim the guard could resolve. */
+interface Claimed {
+  /** Candidate tokens that `cat-file` confirmed are real commits in the mapped repo. */
+  readonly commits: string[]
+  /** Hex tokens named in non-generated comments, before that confirmation. */
+  readonly named: number
+  /** Comments skipped as machine-generated -- explains a card that names nothing. */
+  readonly skippedGenerated: number
 }
 
 function git(repo: string, args: string[], stdin?: string): Promise<{ ok: boolean; out: string }> {
@@ -103,26 +140,58 @@ function git(repo: string, args: string[], stdin?: string): Promise<{ ok: boolea
  * ("card 1bf4f8a4") would count as a missing commit and block a perfectly good close. A guard that
  * invents its own findings is one people learn to force past.
  */
-async function claimedCommits(cardId: string, repo: string): Promise<string[]> {
+async function claimedCommits(cardId: string, repo: string): Promise<Claimed> {
   const candidates: string[] = []
+  let skippedGenerated = 0
   for (const c of getKanbanComments(cardId)) {
+    if (GENERATED_COMMENT_AUTHORS.has(c.author ?? '')) {
+      skippedGenerated += 1
+      continue
+    }
     for (const m of (c.content ?? '').match(SHA_RX) ?? []) {
       if (!candidates.includes(m)) candidates.push(m)
       if (candidates.length >= MAX_CANDIDATES) break
     }
     if (candidates.length >= MAX_CANDIDATES) break
   }
-  if (candidates.length === 0) return []
+  if (candidates.length === 0) return { commits: [], named: 0, skippedGenerated }
 
   const res = await git(repo, ['cat-file', '--batch-check'], candidates.join('\n') + '\n')
-  if (!res.ok && res.out === '') return []
+  if (!res.ok && res.out === '') return { commits: [], named: candidates.length, skippedGenerated }
   const out: string[] = []
   for (const line of res.out.split('\n')) {
     // "<sha> commit <size>" for a hit; "<token> missing" otherwise.
     const parts = line.trim().split(/\s+/)
     if (parts.length >= 2 && parts[1] === 'commit' && !out.includes(parts[0]!)) out.push(parts[0]!)
   }
-  return out
+  return { commits: out, named: candidates.length, skippedGenerated }
+}
+
+/**
+ * A close that the guard did NOT verify, recorded so it is distinguishable from a verified one.
+ *
+ * Both outcomes return `blocked: false`, which is what card b428f3da is about: "no commit to check"
+ * and "checked, it landed" were the same silent event. They are not the same thing. 52 of the 304
+ * done cards close with nothing checked -- some rightly (decision and user-story cards make no
+ * landing claim), and at least one wrongly: on card 94727c79 the project label said mikrob while the
+ * work lived in CleanCore, so the guard looked in the wrong history, found nothing, and allowed. That
+ * case is `reason: named-commits-absent-from-mapped-repo` here, and it reads differently from a card
+ * that simply named no commit -- which is the whole point of separating them.
+ *
+ * Deliberately NOT a block: 17 of the 120 cards in the original sweep name no commit at all, and
+ * blocking those would stop every legitimate non-code close.
+ */
+function allowUnverified(
+  cardId: string,
+  project: string,
+  reason: string,
+  extra: Record<string, unknown> = {},
+): LandedVerdict {
+  logger.info(
+    { cardId, project, reason, ...extra },
+    'landed-guard: allowing a close it could NOT verify (no commit checked)',
+  )
+  return { blocked: false }
 }
 
 async function anyAncestorOfMainRef(t: RepoTarget, commits: string[]): Promise<boolean> {
@@ -143,20 +212,34 @@ export async function landedGuardVerdict(
   if (force && actor !== undefined && FORCE_ACTORS.has(actor)) return { blocked: false }
 
   const card = getKanbanCard(cardId)
-  const target = PROJECT_REPOS[(card?.project ?? '').toLowerCase()]
-  if (target === undefined || !existsSync(`${target.root}/.git`)) return { blocked: false }
+  const project = card?.project ?? ''
+  const target = PROJECT_REPOS[project.toLowerCase()]
+  if (target === undefined) return allowUnverified(cardId, project, 'no-repo-mapping')
+  if (!existsSync(`${target.root}/.git`)) {
+    return allowUnverified(cardId, project, 'mapped-repo-missing', { root: target.root })
+  }
   const repo = target.root
 
-  let commits: string[]
+  let claimed: Claimed
   try {
-    commits = await claimedCommits(cardId, repo)
+    claimed = await claimedCommits(cardId, repo)
   } catch (err) {
     // A guard that throws must not become a guard that closes the board. Log and stand aside: this
     // is the ONE place failing open is right, because the failure is in the checker, not the claim.
     logger.warn({ err, cardId }, 'landed-guard could not read the card; allowing the close')
     return { blocked: false }
   }
-  if (commits.length === 0) return { blocked: false }
+  const commits = claimed.commits
+  if (commits.length === 0) {
+    // Two different silences, now two different lines. `named > 0` means the card DOES name commit-
+    // shaped tokens, none of which exists in the repo this project maps to -- the 94727c79 shape.
+    const reason = claimed.named > 0 ? 'named-commits-absent-from-mapped-repo' : 'no-commit-named'
+    return allowUnverified(cardId, project, reason, {
+      repo,
+      namedTokens: claimed.named,
+      skippedGeneratedComments: claimed.skippedGenerated,
+    })
+  }
 
   // Happy path: no network, no fetch. Most closes land here and cost one cat-file plus one
   // merge-base.

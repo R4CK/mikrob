@@ -8,13 +8,19 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest'
 
 const card = { id: 'c1', project: 'cleancore', status: 'waiting' as string | undefined }
-let comments: Array<{ content: string }> = []
+// `author` is part of the record the guard reads: a machine-generated comment is not a landing claim
+// (card b428f3da). A fixture without it could not tell the two apart, so it defaults here only.
+let comments: Array<{ author?: string; content: string }> = []
 
 vi.mock('../db.js', () => ({
   getKanbanCard: () => card,
-  getKanbanComments: () => comments,
+  getKanbanComments: () => comments.map((c) => ({ author: c.author ?? 'backend2', content: c.content })),
 }))
-vi.mock('../logger.js', () => ({ logger: { warn: () => {} } }))
+/** Every allow-without-checking line, so "it was logged" is asserted and not assumed. */
+export let infoLogs: Array<Record<string, unknown>> = []
+vi.mock('../logger.js', () => ({
+  logger: { warn: () => {}, info: (o: Record<string, unknown>) => infoLogs.push(o) },
+}))
 
 /** git stub: `known` are commits that exist, `onMain` are also reachable from origin/main. */
 let known = new Set<string>()
@@ -73,6 +79,7 @@ const SHA_B = 'bbbbbbb'
 
 beforeEach(() => {
   spawns = []
+  infoLogs = []
   card.project = 'cleancore'
   comments = []
   known = new Set([SHA_A, SHA_B])
@@ -128,6 +135,95 @@ describe('the landed guard stays out of the way', () => {
     card.project = 'some-other-product'
     comments = [{ content: `REVIEW -- ${SHA_A}` }]
     expect((await landedGuardVerdict('c1', 'done', false, 'backend2')).blocked).toBe(false)
+  })
+})
+
+describe('a machine-generated comment is not a landing claim (cards a7b7fe43, f91fcd7e)', () => {
+  // The live failure, twice: a `local-llm` 7B draft answered a generic offload sub-task with INVENTED
+  // example text that quoted two real CleanCore commits (fcc535b3, 11a366eb). The guard read them as
+  // the card's own, found them on main, and let a7b7fe43 close while both of its real commits sat on
+  // a branch. A sweep of all 304 done cards found f91fcd7e freed by the very same two hashes.
+  it('does NOT let a commit quoted by a local-llm draft free the card', async () => {
+    comments = [
+      { author: 'fron-ted', content: `REVIEW: kesz, commit ${SHA_A} (local main).` },
+      { author: 'local-llm', content: `[LOCAL-LLM DRAFT] pelda: "javitva a ${SHA_B} commitban"` },
+    ]
+    onMain = new Set([SHA_B]) // the quoted foreign commit really is on main -- that was the trap
+    const v = await landedGuardVerdict('c1', 'done', false, 'backend2')
+    expect(v.blocked).toBe(true)
+    expect(v.message).toContain(SHA_A.slice(0, 8))
+    // and the foreign hash is not reported as this card's claim either
+    expect(v.message).not.toContain(SHA_B.slice(0, 8))
+  })
+
+  it('does NOT let a commit quoted by gate-pretriage free the card', async () => {
+    comments = [
+      { author: 'backend', content: `REVIEW: kesz, ${SHA_A}` },
+      { author: 'gate-pretriage', content: `GATE PRE-TRIAGE (mechanikus, verdict:null) @ ${SHA_B}` },
+    ]
+    onMain = new Set([SHA_B])
+    expect((await landedGuardVerdict('c1', 'done', false, 'backend2')).blocked).toBe(true)
+  })
+
+  it('still lets a landed commit named by ANY human/agent comment free the card', async () => {
+    // The exclusion is by author, not by phrasing. MikroB's "Landolva: <sha> mergelve main-re" and a
+    // gate's "QA PASS -- commit <sha>" are both real landing evidence, and 13 done cards are freed by
+    // exactly such a line -- narrowing to the last REVIEW comment would have false-blocked them.
+    comments = [
+      { author: 'fron-ted', content: `REVIEW: kesz, ${SHA_A}` },
+      { author: 'mikrob', content: `Landolva: ${SHA_A} mergelve main-re (${SHA_B}).` },
+    ]
+    onMain = new Set([SHA_B])
+    expect((await landedGuardVerdict('c1', 'done', false, 'backend2')).blocked).toBe(false)
+  })
+
+  it('a card whose ONLY sha is in a generated comment becomes an unverified close, not a block', async () => {
+    // Skipping the author must not invent a finding: with nothing left to check the guard has no
+    // claim to falsify. It says so in the log instead of blocking.
+    comments = [{ author: 'local-llm', content: `[LOCAL-LLM DRAFT] pelda commit ${SHA_A}` }]
+    onMain = new Set()
+    expect((await landedGuardVerdict('c1', 'done', false, 'backend2')).blocked).toBe(false)
+    expect(infoLogs[0]).toMatchObject({ reason: 'no-commit-named', skippedGeneratedComments: 1 })
+  })
+})
+
+describe('an unverified close is recorded apart from a verified one (card b428f3da)', () => {
+  // Both allow. Until they were logged apart, a card the guard never checked was indistinguishable
+  // from one it checked and found landed -- 52 of the 304 done cards close this way.
+  it('logs a card that names no commit at all', async () => {
+    comments = [{ content: 'REVIEW -- 6 user stories verified, no code artefact' }]
+    await landedGuardVerdict('c1', 'done', false, 'backend2')
+    expect(infoLogs).toHaveLength(1)
+    expect(infoLogs[0]).toMatchObject({ cardId: 'c1', reason: 'no-commit-named', namedTokens: 0 })
+  })
+
+  it('logs the project-label-vs-real-repo case with its OWN reason (94727c79)', async () => {
+    // The card names commit-shaped tokens; none of them exists in the repo its project label maps to,
+    // because the work is in the other repo. Same allow, different cause, different line.
+    comments = [{ content: 'REVIEW -- kesz, commit ccccccc' }]
+    await landedGuardVerdict('c1', 'done', false, 'backend2')
+    expect(infoLogs[0]).toMatchObject({ reason: 'named-commits-absent-from-mapped-repo', namedTokens: 1 })
+  })
+
+  it('logs an unmapped project instead of waving it through in silence', async () => {
+    card.project = 'some-other-product'
+    comments = [{ content: `REVIEW -- ${SHA_A}` }]
+    await landedGuardVerdict('c1', 'done', false, 'backend2')
+    expect(infoLogs[0]).toMatchObject({ reason: 'no-repo-mapping', project: 'some-other-product' })
+  })
+
+  it('logs NOTHING when it actually verified the landing -- the line must mean something', async () => {
+    comments = [{ content: `REVIEW -- ${SHA_A}` }]
+    onMain = new Set([SHA_A])
+    expect((await landedGuardVerdict('c1', 'done', false, 'backend2')).blocked).toBe(false)
+    expect(infoLogs).toHaveLength(0)
+  })
+
+  it('logs nothing on a block, and nothing for a status other than done', async () => {
+    comments = [{ content: `REVIEW -- ${SHA_A}` }]
+    expect((await landedGuardVerdict('c1', 'done', false, 'backend2')).blocked).toBe(true)
+    await landedGuardVerdict('c1', 'waiting', false, 'backend2')
+    expect(infoLogs).toHaveLength(0)
   })
 })
 
