@@ -248,12 +248,13 @@ if [[ -n "$DIFFICULTY" ]]; then
   GATE="$(DIFFICULTY="$DIFFICULTY" CFG="$HERE/local-llm-offload-active.json" python3 - <<'PY'
 import json, os, sys
 LEVELS = ['trivial', 'isolated', 'module', 'feature', 'architecture']
-CEILING = 'module'  # offload ceiling: feature/architecture never offload (mirror local-llm.ts)
+CEILING = 'feature'  # offload ceiling: architecture never offloads (mirror local-llm.ts, Peti 2026-08-07)
 def default_for(a):
     try: a = int(round(float(a)))
     except Exception: a = 75
     a = max(0, min(100, a))
-    if a >= 85: return 'module'   # capped at the reliable ceiling, even at 100%
+    if a >= 95: return 'feature'  # capped at the reliable ceiling, even at 100%
+    if a >= 85: return 'module'
     if a >= 75: return 'isolated'
     return 'trivial'
 def clamp(level):  # a stored threshold above the ceiling clamps down
@@ -276,8 +277,8 @@ PY
     BAD)  die 4 "unknown --difficulty '$DIFFICULTY' (allowed: ${info//|/, })" ;;
     DENY)
       case "$DIFFICULTY" in
-        feature|architecture)
-          die 8 "task difficulty '$DIFFICULTY' is beyond the local 7B's reliable limit (offload ceiling is 'module') -> it ALWAYS stays ONLINE (Claude)." ;;
+        architecture)
+          die 8 "task difficulty '$DIFFICULTY' is beyond the local 7B's reliable limit (offload ceiling is 'feature') -> it ALWAYS stays ONLINE (Claude)." ;;
         *)
           die 8 "task difficulty '$DIFFICULTY' exceeds the configured local-offload threshold '$info' -> keep this one ONLINE (Claude), or raise the threshold in the Local-LLM menu." ;;
       esac ;;

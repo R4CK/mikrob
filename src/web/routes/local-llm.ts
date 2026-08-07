@@ -140,8 +140,9 @@ const CATEGORY_DESCRIPTIONS: Record<string, string> = {
   faq: 'Feature/dokumentáció -> rövid GYIK Q&A párok (csak a bemenetből); DRAFT',
   'commit-split': 'Diff/változás -> javasolt logikai commit-bontás (Conventional subjectek); DRAFT',
   // Card 91b68885 (Peti jóváhagyás, 2026-08-02): +15 kategória a 2026-08-02-i javaslat-listából.
-  // (A) általános kategóriák + (B) nehezebb, de "module"-plafon alatti programozási kategóriák --
-  // a RELIABLE_CEILING nem emelkedik, feature/architektúra továbbra is mindig online.
+  // (A) általános kategóriák + (B) nehezebb programozási kategóriák -- a RELIABLE_CEILING a
+  // 2026-08-07-i döntéssel "feature"-ig emelkedett (lásd RELIABLE_CEILING definíciója), csak az
+  // "architecture" (cross-file wiring, rendszertervezés) marad mindig online.
   'code-review-checklist': 'Diff -> súlyozott review-checklist (bug/hibakezelés/security/teszt/style)',
   'migration-plan-draft': 'Séma-változás leírás -> lépésenkénti migrációs terv (nem SQL, rollback-lépésekkel)',
   'api-doc-draft': 'Endpoint/kód -> OpenAPI-szerű doksi-vázlat',
@@ -198,12 +199,13 @@ export const CODING_DIFFICULTY_LEVELS = [
 export type CodingDifficulty = (typeof CODING_DIFFICULTY_LEVELS)[number]
 
 /** The OFFLOAD CEILING: even at 100% aggressiveness we never hand the local 7B more than it can
- *  realistically do. Per the local-llm-offload skill the 7B cannot reliably do multi-file features
- *  or cross-file wiring, so 'module' (multi-function, single file) is the hardest OFFLOADABLE level.
- *  'feature' and 'architecture' remain in the taxonomy to CLASSIFY tasks, but they always stay
- *  ONLINE (Claude) -- they are never valid offload thresholds. (Peti: "a 100% se engedjen többet
- *  mint amit a modell reálisan tud.") */
-export const RELIABLE_CEILING: CodingDifficulty = 'module'
+ *  realistically do. Raised 'module' -> 'feature' (Peti, 2026-08-07: explicit reversal of the
+ *  2026-08-02 decision below, for token savings -- full file creation and multi-file/medium-difficulty
+ *  tasks may now offload at high aggressiveness). 'architecture' (cross-file wiring, system design)
+ *  remains BEYOND the reliable limit and always stays ONLINE (Claude) -- it is never a valid offload
+ *  threshold. Prior reasoning (kept for context): "a 100% se engedjen többet mint amit a modell
+ *  reálisan tud" -- still true, just re-drawn one level higher after Peti's explicit re-ask. */
+export const RELIABLE_CEILING: CodingDifficulty = 'feature'
 
 /** The difficulty levels that may be picked as an offload threshold (<= the reliable ceiling). */
 export const OFFLOADABLE_THRESHOLDS: readonly CodingDifficulty[] = CODING_DIFFICULTY_LEVELS.slice(
@@ -217,7 +219,8 @@ export const OFFLOADABLE_THRESHOLDS: readonly CodingDifficulty[] = CODING_DIFFIC
  *  (local-llm-rag.sh mirrors this table -- keep them in sync). */
 export function defaultDifficultyForAggressiveness(pct: unknown): CodingDifficulty {
   const a = normalizeAggressiveness(pct)
-  if (a >= 85) return 'module' // capped: feature/architecture never auto-offload
+  if (a >= 95) return 'feature' // capped: architecture never auto-offloads (Peti, 2026-08-07)
+  if (a >= 85) return 'module'
   if (a >= 75) return 'isolated'
   return 'trivial'
 }
