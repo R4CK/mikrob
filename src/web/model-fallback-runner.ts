@@ -104,7 +104,7 @@ function sessionFor(name: string): string {
   return name === MAIN_AGENT_ID ? MAIN_CHANNELS_SESSION : agentSessionName(name)
 }
 
-function restartFor(name: string): void {
+async function restartFor(name: string): Promise<void> {
   if (name === MAIN_AGENT_ID) {
     // A fresh main relaunch re-reads .claude/settings.json (and thus the new
     // model). channels.sh always starts fresh for main, so a conversation is
@@ -120,7 +120,7 @@ function restartFor(name: string): void {
   } else {
     // 'continue' (fresh: false) re-spawns with --continue so the conversation
     // survives the model swap.
-    restartAgentProcess(name, { fresh: false })
+    await restartAgentProcess(name, { fresh: false })
   }
 }
 
@@ -185,7 +185,7 @@ export function resolveTargetModel(agentName: string, bannerModel: string, weekl
   return ladderIndexOf(weekly) >= ladderIndexOf(banner) ? weekly : banner
 }
 
-function checkAgent(name: string, nowMs: number, cfg: ModelFallbackConfig, weeklyIdx: number): void {
+async function checkAgent(name: string, nowMs: number, cfg: ModelFallbackConfig, weeklyIdx: number): Promise<void> {
   // A PARKED sub-agent has no live pane, so the banner axis (which needs to read a usage-limit
   // banner and restart a running session) cannot apply -- but the WEEKLY tier still must update its
   // STORED model, or a park/start cycle silently exempts it from the whole ramp: it would start back
@@ -277,7 +277,7 @@ function checkAgent(name: string, nowMs: number, cfg: ModelFallbackConfig, weekl
     // this step is a weekly-driven step down (the banner axis has its own chain[0] home).
     if (steppingDown && agentTier > 0) recordBaselineIfAbsent(name, currentModel)
     writeModelFor(name, targetModel)
-    restartFor(name)
+    await restartFor(name)
     // downgradedAt drives the banner revert clock. Re-start it on each step DOWN, and once the agent
     // is back on its base (weekly home + banner clear), clear both the clock and the durable base.
     const homeAgain = agentTier === 0 && bannerDesired === 0
@@ -339,7 +339,7 @@ export function readFleetTierState(): {
 }
 
 export function startModelFallbackRunner(): NodeJS.Timeout {
-  function sweep() {
+  async function sweep() {
     const cfg = readModelFallbackConfig()
     if (!cfg.enabled && !cfg.weeklyTierEnabled) {
       if (downgradedAt.size > 0) downgradedAt.clear() // re-seed cleanly if re-enabled
@@ -357,10 +357,10 @@ export function startModelFallbackRunner(): NodeJS.Timeout {
       weeklyTier = 0
     }
     const weeklyIdx = weeklyTier
-    try { checkAgent(MAIN_AGENT_ID, now, cfg, weeklyIdx) }
+    try { await checkAgent(MAIN_AGENT_ID, now, cfg, weeklyIdx) }
     catch (err) { logger.debug({ err }, 'model-fallback: main check error') }
     for (const name of listAgentNames()) {
-      try { checkAgent(name, now, cfg, weeklyIdx) }
+      try { await checkAgent(name, now, cfg, weeklyIdx) }
       catch (err) { logger.debug({ err, agent: name }, 'model-fallback: agent check error') }
     }
   }

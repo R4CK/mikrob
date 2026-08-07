@@ -1097,12 +1097,12 @@ export async function tryHandleAgents(ctx: RouteContext, webDir: string): Promis
         setAgentEnabledPlugins(name, provider)
         gcWasRunning = isAgentRunning(name)
         if (gcWasRunning) {
-          const stopRes = stopAgentProcess(name)
+          const stopRes = await stopAgentProcess(name)
           if (stopRes.ok) {
             // was `execSync('sleep 2')`: a whole process spawned just to wait, blocking
             // the event loop for two seconds. A timer does the same thing for free.
             await new Promise((r) => setTimeout(r, 2000))
-            gcRestarted = startAgentProcess(name).ok
+            gcRestarted = (await startAgentProcess(name)).ok
           }
         }
       }
@@ -1182,12 +1182,12 @@ export async function tryHandleAgents(ctx: RouteContext, webDir: string): Promis
       if (provider === 'telegram') sendWelcomeMessage(name, botToken.trim()).catch(() => {})
       wasRunning = isAgentRunning(name)
       if (wasRunning) {
-        const stopRes = stopAgentProcess(name)
+        const stopRes = await stopAgentProcess(name)
         if (stopRes.ok) {
           // was `execSync('sleep 2')`: a process spawned purely to wait, freezing the
           // event loop for two seconds (card 89d0bfde).
           await new Promise((r) => setTimeout(r, 2000))
-          const startRes = startAgentProcess(name)
+          const startRes = await startAgentProcess(name)
           restarted = startRes.ok
         }
       }
@@ -1742,7 +1742,7 @@ export async function tryHandleAgents(ctx: RouteContext, webDir: string): Promis
     // the --channels plugin MCP server (agent comes up deaf).
     let startFresh = false
     try { startFresh = JSON.parse((await readBody(req)).toString() || '{}').fresh === true } catch {}
-    const result = startAgentProcess(name, { fresh: startFresh })
+    const result = await startAgentProcess(name, { fresh: startFresh })
     // Record operator intent so the monitor keeps this agent up across shared
     // tmux-server restarts / reboots (see agent-desired-state.ts).
     if (result.ok || result.error === 'Agent is already running') addDesiredAgent(name)
@@ -1758,7 +1758,7 @@ export async function tryHandleAgents(ctx: RouteContext, webDir: string): Promis
       json(res, { error: 'Main agent lifecycle is service-managed; use /api/marveen/restart for recovery' }, 400)
       return true
     }
-    const result = stopAgentProcess(name)
+    const result = await stopAgentProcess(name)
     // Explicit stop clears intent so the monitor will not resurrect it.
     removeDesiredAgent(name)
     if (result.ok) { json(res, { ok: true }); return true }
@@ -1821,7 +1821,7 @@ export async function tryHandleAgents(ctx: RouteContext, webDir: string): Promis
     // Optional { "fresh": true } body -> no `--continue` (see /start note).
     let restartFresh = false
     try { restartFresh = JSON.parse((await readBody(req)).toString() || '{}').fresh === true } catch {}
-    const result = restartAgentProcess(name, { fresh: restartFresh })
+    const result = await restartAgentProcess(name, { fresh: restartFresh })
     if (result.ok) { json(res, { ok: true }); return true }
     json(res, { error: result.error }, 400)
     return true
