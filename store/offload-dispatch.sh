@@ -50,6 +50,20 @@ OFFLOAD_MAX_SUBTASKS="${OFFLOAD_MAX_SUBTASKS:-24}"
 CARD="${1:-}"
 [[ -z "$CARD" ]] && { echo "usage: offload-dispatch.sh <cardId> [assignee]" >&2; exit 2; }
 
+# PER-CARD IN-FLIGHT LOCK (2026-08-07, Peti report: "the offload queue isn't moving"). The
+# offload-sweep heartbeat's own dedup only checks for a POSTED draft comment, which doesn't exist
+# until this whole script (up to OFFLOAD_MAX_SUBTASKS serial local-model calls) finishes. Every
+# ~10min heartbeat tick that fires while a card's dispatch is still mid-flight therefore launched a
+# DUPLICATE run for the same card, all serializing on the single /tmp/local-llm-gpu.lock -- so queue
+# depth kept growing while completed-draft throughput stayed flat. Non-blocking: a second concurrent
+# invocation for the same card exits immediately instead of queuing more GPU work behind itself.
+lock_file="/tmp/offload-dispatch-$CARD.lock"
+exec 8>"$lock_file"
+if ! flock -n 8; then
+  echo "offload-dispatch: $CARD -> already in flight (lock held), skipping duplicate"
+  exit 0
+fi
+
 # SECURITY (Cybersec/gate-ops-scripts-token-in-argv, card edb7559f): the token must never be a curl
 # argv (/proc/<pid>/cmdline is world-readable). Private 0600 header file instead, -H @"$hdr_file",
 # removed on EXIT. Covers BOTH calls below (the card-lookup GET and the draft-comment POST).
