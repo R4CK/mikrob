@@ -22,7 +22,7 @@ import {
 function fakeRunner(over: Partial<UpstreamMergeRunner> = {}): UpstreamMergeRunner {
   return {
     revParseHead: () => 'abc123\n',
-    fetchUpstream: () => undefined,
+    fetchUpstream: async () => undefined,
     mergeUpstream: () => undefined,
     mergeAbort: () => undefined,
     currentBranch: () => 'develop\n',
@@ -31,19 +31,19 @@ function fakeRunner(over: Partial<UpstreamMergeRunner> = {}): UpstreamMergeRunne
 }
 
 describe('performUpstreamMerge -- success', () => {
-  it('fetches, merges, and records a rollback point (before -> after SHA) when HEAD moved', () => {
+  it('fetches, merges, and records a rollback point (before -> after SHA) when HEAD moved', async () => {
     let head = 'before000000000000000000000000000000000\n'
     const calls: string[] = []
     const runner = fakeRunner({
       revParseHead: () => head,
-      fetchUpstream: () => { calls.push('fetch') },
+      fetchUpstream: async () => { calls.push('fetch') },
       mergeUpstream: () => {
         calls.push('merge')
         head = 'after1111111111111111111111111111111111\n' // simulates the merge advancing HEAD
       },
     })
     const recorded: { branch: string; from: string; to: string; note: string }[] = []
-    const result = performUpstreamMerge(runner, (branch, from, to, note) => {
+    const result = await performUpstreamMerge(runner, (branch, from, to, note) => {
       recorded.push({ branch, from, to, note })
     })
     expect(result.ok).toBe(true)
@@ -53,10 +53,10 @@ describe('performUpstreamMerge -- success', () => {
     ])
   })
 
-  it('does NOT record a rollback point when the merge was a no-op (HEAD unchanged, e.g. already up to date)', () => {
+  it('does NOT record a rollback point when the merge was a no-op (HEAD unchanged, e.g. already up to date)', async () => {
     const runner = fakeRunner({ revParseHead: () => 'same0000000000000000000000000000000000\n' })
     let recordCalls = 0
-    const result = performUpstreamMerge(runner, () => { recordCalls++ })
+    const result = await performUpstreamMerge(runner, () => { recordCalls++ })
     expect(result.ok).toBe(true)
     // recordUpdateHistory itself no-ops on fromSha===toSha; performUpstreamMerge always CALLS it
     // (the guard lives in recordUpdateHistory) -- verify via the REAL function against a temp file
@@ -67,7 +67,7 @@ describe('performUpstreamMerge -- success', () => {
 })
 
 describe('foldStdoutIntoMergeError -- real-world bug found 2026-08-04', () => {
-  it('git writes CONFLICT to STDOUT, not stderr -- folds stdout into err.message so the CONFLICT classification above can see it', () => {
+  it('git writes CONFLICT to STDOUT, not stderr -- folds stdout into err.message so the CONFLICT classification above can see it', async () => {
     // execFileSync's real shape on a non-zero exit: Error.message is Node's own
     // "Command failed: ..." (+ stderr if any) -- stdout is a SEPARATE property, not in .message.
     const err = Object.assign(new Error('Command failed: /usr/bin/git merge upstream/main --no-edit'), {
@@ -78,13 +78,13 @@ describe('foldStdoutIntoMergeError -- real-world bug found 2026-08-04', () => {
     expect(err.message).toContain('Automatic merge failed')
   })
 
-  it('is a no-op when the error carries no stdout (e.g. fetch/network failure)', () => {
+  it('is a no-op when the error carries no stdout (e.g. fetch/network failure)', async () => {
     const err = new Error('fatal: unable to access upstream: Could not resolve host')
     expect(() => foldStdoutIntoMergeError(err)).toThrow(err)
     expect(err.message).toBe('fatal: unable to access upstream: Could not resolve host')
   })
 
-  it('end-to-end: a runner using this fold makes performUpstreamMerge correctly classify a real-shaped conflict', () => {
+  it('end-to-end: a runner using this fold makes performUpstreamMerge correctly classify a real-shaped conflict', async () => {
     const runner = fakeRunner({
       mergeUpstream: () => {
         try {
@@ -96,7 +96,7 @@ describe('foldStdoutIntoMergeError -- real-world bug found 2026-08-04', () => {
         }
       },
     })
-    const result = performUpstreamMerge(runner, () => undefined)
+    const result = await performUpstreamMerge(runner, () => undefined)
     expect(result.ok).toBe(false)
     if (result.ok) return
     expect(result.reason).toBe('merge-conflict')
@@ -104,7 +104,7 @@ describe('foldStdoutIntoMergeError -- real-world bug found 2026-08-04', () => {
 })
 
 describe('performUpstreamMerge -- conflict', () => {
-  it('aborts the merge and returns merge-conflict, WITHOUT recording any rollback point', () => {
+  it('aborts the merge and returns merge-conflict, WITHOUT recording any rollback point', async () => {
     const aborts: string[] = []
     const runner = fakeRunner({
       mergeUpstream: () => {
@@ -113,7 +113,7 @@ describe('performUpstreamMerge -- conflict', () => {
       mergeAbort: () => { aborts.push('abort') },
     })
     let recordCalls = 0
-    const result = performUpstreamMerge(runner, () => { recordCalls++ })
+    const result = await performUpstreamMerge(runner, () => { recordCalls++ })
     expect(result.ok).toBe(false)
     if (result.ok) return
     expect(result.reason).toBe('merge-conflict')
@@ -124,14 +124,14 @@ describe('performUpstreamMerge -- conflict', () => {
 })
 
 describe('performUpstreamMerge -- other failure (network / missing remote)', () => {
-  it('returns upstream-merge-failed with the raw message, attempts abort, records nothing', () => {
+  it('returns upstream-merge-failed with the raw message, attempts abort, records nothing', async () => {
     const aborts: string[] = []
     const runner = fakeRunner({
-      fetchUpstream: () => { throw new Error('fatal: unable to access upstream: Could not resolve host') },
+      fetchUpstream: async () => { throw new Error('fatal: unable to access upstream: Could not resolve host') },
       mergeAbort: () => { aborts.push('abort') },
     })
     let recordCalls = 0
-    const result = performUpstreamMerge(runner, () => { recordCalls++ })
+    const result = await performUpstreamMerge(runner, () => { recordCalls++ })
     expect(result.ok).toBe(false)
     if (result.ok) return
     expect(result.reason).toBe('upstream-merge-failed')
@@ -140,12 +140,12 @@ describe('performUpstreamMerge -- other failure (network / missing remote)', () 
     expect(recordCalls).toBe(0)
   })
 
-  it('a failing mergeAbort (no merge was in progress) does not mask the original error', () => {
+  it('a failing mergeAbort (no merge was in progress) does not mask the original error', async () => {
     const runner = fakeRunner({
       mergeUpstream: () => { throw new Error('some other git failure') },
       mergeAbort: () => { throw new Error('fatal: There is no merge to abort') },
     })
-    const result = performUpstreamMerge(runner, () => undefined)
+    const result = await performUpstreamMerge(runner, () => undefined)
     expect(result.ok).toBe(false)
     if (result.ok) return
     expect(result.reason).toBe('upstream-merge-failed')
@@ -154,7 +154,7 @@ describe('performUpstreamMerge -- other failure (network / missing remote)', () 
 })
 
 describe('updateHistoryTimestamp -- exact bash `date +%Y-%m-%dT%H:%M:%S%z` shape', () => {
-  it('zero-pads every field and uses a NO-COLON zone offset (+HHMM, not +HH:MM)', () => {
+  it('zero-pads every field and uses a NO-COLON zone offset (+HHMM, not +HH:MM)', async () => {
     const d = new Date(2026, 6, 5, 9, 3, 7) // local time: 2026-07-05 09:03:07
     const ts = updateHistoryTimestamp(d)
     // The trailing [+-]\d{4}$ anchor already proves the offset is exactly 4 digits with no colon;
@@ -177,7 +177,7 @@ describe('recordUpdateHistory -- exact TSV shape (recovery-prev-version.sh awk-c
     rmSync(tmp, { recursive: true, force: true })
   })
 
-  it('appends a 6-field tab-separated line: ts\\tupdate\\tbranch\\tfrom\\tto\\tnote', () => {
+  it('appends a 6-field tab-separated line: ts\\tupdate\\tbranch\\tfrom\\tto\\tnote', async () => {
     recordUpdateHistory('develop', 'aaa0000000000000000000000000000000000a', 'bbb0000000000000000000000000000000000b', 'upstream-merge', histPath)
     const line = readFileSync(histPath, 'utf-8').trimEnd()
     const fields = line.split('\t')
@@ -197,7 +197,7 @@ describe('recordUpdateHistory -- exact TSV shape (recovery-prev-version.sh awk-c
     expect(existsSync(histPath)).toBe(false)
   })
 
-  it('is append-only: two calls produce two lines, earlier content preserved', () => {
+  it('is append-only: two calls produce two lines, earlier content preserved', async () => {
     recordUpdateHistory('develop', 'a0000000000000000000000000000000000000', 'b0000000000000000000000000000000000000', 'upstream-merge', histPath)
     recordUpdateHistory('develop', 'b0000000000000000000000000000000000000', 'c0000000000000000000000000000000000000', 'upstream-merge', histPath)
     const lines = readFileSync(histPath, 'utf-8').trimEnd().split('\n')
@@ -206,7 +206,7 @@ describe('recordUpdateHistory -- exact TSV shape (recovery-prev-version.sh awk-c
     expect(lines[1]?.split('\t')[3]).toBe('b0000000000000000000000000000000000000')
   })
 
-  it('is best-effort: a write failure (unwritable path) does not throw', () => {
+  it('is best-effort: a write failure (unwritable path) does not throw', async () => {
     const badPath = join(tmp, 'no-such-dir', '.update-history')
     expect(() =>
       recordUpdateHistory('develop', 'x0000000000000000000000000000000000000', 'y0000000000000000000000000000000000000', 'upstream-merge', badPath),
@@ -218,7 +218,7 @@ describe('recordUpdateHistory -- exact TSV shape (recovery-prev-version.sh awk-c
 // an upstream merge would change AND the risk from our own fork divergence before implementing.
 function fakeAnalysisRunner(over: Partial<UpstreamAnalysisRunner> = {}): UpstreamAnalysisRunner {
   return {
-    fetchUpstream: () => undefined,
+    fetchUpstream: async () => undefined,
     commitsBehind: () => '',
     diffStat: () => '',
     oursChangedFiles: () => '',
@@ -228,32 +228,32 @@ function fakeAnalysisRunner(over: Partial<UpstreamAnalysisRunner> = {}): Upstrea
 }
 
 describe('analyzeUpstreamChanges', () => {
-  it('fetches upstream before reading any diff (data must be current)', () => {
+  it('fetches upstream before reading any diff (data must be current)', async () => {
     const calls: string[] = []
-    analyzeUpstreamChanges(fakeAnalysisRunner({
-      fetchUpstream: () => { calls.push('fetch') },
+    await analyzeUpstreamChanges(fakeAnalysisRunner({
+      fetchUpstream: async () => { calls.push('fetch') },
       commitsBehind: () => { calls.push('commits'); return '' },
     }))
     expect(calls).toEqual(['fetch', 'commits'])
   })
 
-  it('counts incoming commits from the oneline log, ignoring blank lines', () => {
-    const a = analyzeUpstreamChanges(fakeAnalysisRunner({
+  it('counts incoming commits from the oneline log, ignoring blank lines', async () => {
+    const a = await analyzeUpstreamChanges(fakeAnalysisRunner({
       commitsBehind: () => 'abc1234 fix one thing\ndef5678 fix another\n',
     }))
     expect(a.commitCount).toBe(2)
     expect(a.commits).toEqual(['abc1234 fix one thing', 'def5678 fix another'])
   })
 
-  it('zero incoming commits -> zero risk even if file lists are noisy', () => {
-    const a = analyzeUpstreamChanges(fakeAnalysisRunner({ commitsBehind: () => '' }))
+  it('zero incoming commits -> zero risk even if file lists are noisy', async () => {
+    const a = await analyzeUpstreamChanges(fakeAnalysisRunner({ commitsBehind: () => '' }))
     expect(a.commitCount).toBe(0)
     expect(a.hasRisk).toBe(false)
     expect(a.riskyFiles).toEqual([])
   })
 
-  it('flags NO risk when our changes and upstream changes touch disjoint files', () => {
-    const a = analyzeUpstreamChanges(fakeAnalysisRunner({
+  it('flags NO risk when our changes and upstream changes touch disjoint files', async () => {
+    const a = await analyzeUpstreamChanges(fakeAnalysisRunner({
       commitsBehind: () => 'abc1234 upstream change\n',
       oursChangedFiles: () => 'store/quota-check.sh\nCLAUDE.md\n',
       theirsChangedFiles: () => 'src/web/routes/updates.ts\nREADME.md\n',
@@ -262,8 +262,8 @@ describe('analyzeUpstreamChanges', () => {
     expect(a.riskyFiles).toEqual([])
   })
 
-  it('flags risk for files touched on BOTH sides since the merge-base (the real conflict-risk zone)', () => {
-    const a = analyzeUpstreamChanges(fakeAnalysisRunner({
+  it('flags risk for files touched on BOTH sides since the merge-base (the real conflict-risk zone)', async () => {
+    const a = await analyzeUpstreamChanges(fakeAnalysisRunner({
       commitsBehind: () => 'abc1234 upstream change\n',
       oursChangedFiles: () => 'src/web/routes/updates.ts\nCLAUDE.md\n',
       theirsChangedFiles: () => 'src/web/routes/updates.ts\nREADME.md\n',
@@ -272,8 +272,8 @@ describe('analyzeUpstreamChanges', () => {
     expect(a.riskyFiles).toEqual(['src/web/routes/updates.ts'])
   })
 
-  it('preserves upstream file order and dedupes nothing beyond the ours/theirs overlap', () => {
-    const a = analyzeUpstreamChanges(fakeAnalysisRunner({
+  it('preserves upstream file order and dedupes nothing beyond the ours/theirs overlap', async () => {
+    const a = await analyzeUpstreamChanges(fakeAnalysisRunner({
       oursChangedFiles: () => 'b.ts\na.ts\n',
       theirsChangedFiles: () => 'a.ts\nb.ts\nc.ts\n',
     }))
@@ -282,13 +282,13 @@ describe('analyzeUpstreamChanges', () => {
 })
 
 describe('formatUpstreamAnalysis', () => {
-  it('reports a low-risk message with no overlap', () => {
+  it('reports a low-risk message with no overlap', async () => {
     const msg = formatUpstreamAnalysis({ commitCount: 3, commits: [], diffStat: '', riskyFiles: [], hasRisk: false })
     expect(msg).toContain('3 uj commit')
     expect(msg).toContain('alacsony konfliktus-eselyes')
   })
 
-  it('reports the risky file list, truncated past 10 entries', () => {
+  it('reports the risky file list, truncated past 10 entries', async () => {
     const many = Array.from({ length: 12 }, (_, i) => `file${i}.ts`)
     const msg = formatUpstreamAnalysis({ commitCount: 5, commits: [], diffStat: '', riskyFiles: many, hasRisk: true })
     expect(msg).toContain('12 fajlt')

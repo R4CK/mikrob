@@ -3,6 +3,7 @@ import { CLAUDE_MODELS } from '../../model-catalog.js'
 import { join, extname, dirname } from 'node:path'
 import { homedir, platform, tmpdir } from 'node:os'
 import { execSync } from 'node:child_process'
+import { execFileAsync } from '../exec-async.js'
 import { logger } from '../../logger.js'
 import { isModelProfileId, MODEL_PROFILE_IDS } from '../../model-profiles.js'
 import { MAIN_AGENT_ID, currentBotName, PROJECT_ROOT } from '../../config.js'
@@ -995,17 +996,16 @@ export async function tryHandleAgents(ctx: RouteContext, webDir: string): Promis
       json(res, { error: 'SLACK_SMOKE_TEST_ALLOWED=true nincs beállítva az agent .env-jében' }, 403)
       return true
     }
-    try {
-      const output = execSync(`bash "${scriptPath}" "${name}"`, {
-        timeout: 60000,
-        encoding: 'utf-8',
-        env: { ...process.env, SLACK_SMOKE_TEST_ALLOWED: 'true' },
-      })
-      json(res, { ok: true, output })
-    } catch (err: unknown) {
-      const execErr = err as { stdout?: string; stderr?: string }
-      json(res, { ok: false, output: (execErr.stdout || '') + (execErr.stderr || '') }, 200)
-    }
+    // Async: a 60s smoke test on the main thread froze every other request for its
+    // whole duration -- the largest blocking call in any route handler (card 89d0bfde).
+    // Args are passed as argv, not interpolated into a shell string, so an agent name
+    // can no longer reach `bash -c`.
+    const smoke = await execFileAsync('/bin/bash', [scriptPath, name], {
+      timeoutMs: 60_000,
+      env: { ...process.env, SLACK_SMOKE_TEST_ALLOWED: 'true' },
+    })
+    if (smoke.status === 0) json(res, { ok: true, output: smoke.stdout })
+    else json(res, { ok: false, output: smoke.stdout + smoke.stderr }, 200)
     return true
   }
 
@@ -1100,7 +1100,9 @@ export async function tryHandleAgents(ctx: RouteContext, webDir: string): Promis
         if (gcWasRunning) {
           const stopRes = stopAgentProcess(name)
           if (stopRes.ok) {
-            try { execSync('sleep 2', { timeout: 4000 }) } catch {}
+            // was `execSync('sleep 2')`: a whole process spawned just to wait, blocking
+            // the event loop for two seconds. A timer does the same thing for free.
+            await new Promise((r) => setTimeout(r, 2000))
             gcRestarted = startAgentProcess(name).ok
           }
         }
