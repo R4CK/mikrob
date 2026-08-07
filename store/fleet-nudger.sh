@@ -7,6 +7,7 @@ set -u
 ROOT="/home/neon/marveen"
 TOK="$(cat "$ROOT/store/.dashboard-token" 2>/dev/null)"
 API="http://localhost:3420/api/kanban"
+MSG_API="http://localhost:3420/api/messages"
 [ -z "$TOK" ] && exit 0
 
 # SECURITY (Cybersec/gate-ops-scripts-token-in-argv, card edb7559f): the dashboard bearer token must
@@ -49,12 +50,38 @@ get() { echo "$WORK" | python3 -c "import json,sys;print(json.load(sys.stdin).ge
 NUDGE_ENG='SELF-ADVANCE (rule 11, NE varj MikroB-ra): ha nincs aktiv munkad, curl a kanbant es vedd a neked cimzett legmagasabb-prio planned kartyat (nem BLOKKOLT) -> in_progress -> epitsd -> vegen waiting+REVIEW. Ha nincs planned, epitsd a design-impl kovetkezo kepernyoit (fron-ted/fron-teddy) v. a kovetkezo sec-followupot (backend/fullstack). Szabaly 10/11.'
 NUDGE_GATE='SELF-ADVANCE (rule 11, NE varj MikroB-ra): ha nincs aktiv munkad, curl a kanbant es vedd a legregebbi waiting+REVIEW kartyat a hataskorodben (QA=minden funkcionalisan; Cybersec=trust-boundary; Cybered=magas-tetu) amin nincs a TE verdikted -> gate-eld -> majd a kovetkezot. Szabaly 11.'
 
+# Delivery goes through the dashboard, NOT straight into the tmux pane (card 7560bb6a).
+#
+# This script writes from a cron process, so the dashboard's in-process pane mutex
+# (src/web/session-send-lock.ts) could not reach it -- and the previous version sent the text and
+# the Enter as two separate calls with a `sleep 1` between them, leaving a FULL SECOND in which the
+# dashboard's chunked writer could interleave into the same pane. That is not theory: a self-advance
+# reminder from this script spliced itself into the MIDDLE of inter-agent message 8701, and foreign
+# text inside a trusted-sender frame is a prompt-injection surface.
+#
+# POSTing to /api/messages reuses the path that is ALREADY serialised
+# (message-router -> sendPromptToSession -> withSessionSendLock). No second locking scheme for the
+# same resource -- two overlapping mechanisms on one pane is how one of them quietly fails open.
+#
+# No new dependency: this script already cannot work without the dashboard (the kanban snapshot
+# above exits early when the API is unreachable).
+#
+# ATTRIBUTION: the message is sent as `mikrob`, because that is what makes it a trusted-peer inside
+# our own team rather than untrusted external data -- an untrusted-framed nudge is data the agent is
+# told NOT to act on, which would defeat it. A separate sender id is not available: trusted-peer
+# requires an agents/<name> directory, and inventing one would put a phantom agent in every peer's
+# roster. Since a cron script then speaks with MikroB's authority, the TEXT says plainly that it is
+# automated, so no reader mistakes it for MikroB having looked at their card.
 nudge() { # session, message
-  local sess="$1" msg="$2"
+  local sess="$1" msg="$2" agent="${1#agent-}"
   tmux has-session -t "$sess" 2>/dev/null || return
-  # skip if working (spinner present)
+  # Skip if working (spinner present). A capture-pane READ cannot corrupt the pane, so this stays a
+  # cheap pre-filter; it is not a lock and never was.
   tmux capture-pane -pt "$sess" 2>/dev/null | grep -q 'esc to interrupt' && return
-  tmux send-keys -t "$sess" -l "$msg"; sleep 1; tmux send-keys -t "$sess" Enter
+  python3 -c 'import json,sys; print(json.dumps({"from":"mikrob","to":sys.argv[1],"content":"[fleet-nudger, automatikus emlekezteto -- nem MikroB olvasta el a kartyadat]\n\n"+sys.argv[2]}))' \
+    "$agent" "$msg" \
+    | curl -s -o /dev/null -H @"$hdr_file" -H 'Content-Type: application/json' \
+        -X POST "$MSG_API" --data-binary @- 2>/dev/null || true
 }
 
 # ENG agents: always nudge if idle -- there is always work (design-impl has 65
