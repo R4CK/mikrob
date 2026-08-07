@@ -214,6 +214,13 @@
         <span class="sb-label">Dokumentáció</span>
       </a>
     </div>
+    <!-- Card 77be6b51 (pairing 0898db66): "last updated" badge, sourced from GET /api/status
+         lastUpdate ({timestamp, toSha, version, source}). source distinguishes a real recorded
+         update from the built-commit fallback (see web/app.js renderLastUpdateBadge) -- shown
+         even if the status.claude.com proxy call fails, since it's computed before that call. -->
+    <div class="sidebar-update-badge" id="sidebarUpdateBadge" title="">
+      <span id="sidebarUpdateText" data-i18n="lastUpdate.loading">—</span>
+    </div>
     <div class="sidebar-footer">
       <button class="theme-toggle" id="langToggle" title="Language / Nyelv">HU</button>
       <button class="theme-toggle" id="mobileLoginBtn" title="Mobil belépés (QR)">

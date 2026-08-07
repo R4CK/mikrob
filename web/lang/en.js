@@ -854,6 +854,15 @@ window._i18n.en = {
   'research.empty_content':      'No documents to display.',
   'research.open_error':         'Failed to open',
 
+  // --- Last update badge (card 77be6b51 / 0898db66) ---
+  'lastUpdate.loading':          '—',
+  'lastUpdate.unknown':          'Update: unknown',
+  'lastUpdate.updated':          'Last updated: {time} (v{version})',
+  'lastUpdate.updatedNoVersion': 'Last updated: {time}',
+  'lastUpdate.build':            'Build: {time} (v{version})',
+  'lastUpdate.buildNoVersion':   'Build: {time}',
+  'lastUpdate.shaTitle':         'Commit: {sha}',
+
   // --- Status ---
   'status.page_title':           'Status',
   'status.page_subtitle':        'Claude service status',

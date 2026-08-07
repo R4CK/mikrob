@@ -1115,6 +1115,15 @@ window._i18n.hu = {
   'research.empty_content':      'Nincs megjeleníthető dokumentum.',
   'research.open_error':         'Nem sikerült megnyitni',
 
+  // --- Last update badge (card 77be6b51 / 0898db66) ---
+  'lastUpdate.loading':          '—',
+  'lastUpdate.unknown':          'Frissítés: ismeretlen',
+  'lastUpdate.updated':          'Utoljára frissítve: {time} (v{version})',
+  'lastUpdate.updatedNoVersion': 'Utoljára frissítve: {time}',
+  'lastUpdate.build':            'Build: {time} (v{version})',
+  'lastUpdate.buildNoVersion':   'Build: {time}',
+  'lastUpdate.shaTitle':         'Commit: {sha}',
+
   // --- Status ---
   'status.page_title':           'Státusz',
   'status.page_subtitle':        'Claude szolgáltatások állapota',
