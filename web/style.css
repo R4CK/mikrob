@@ -8698,6 +8698,7 @@ body {
 }
 .mv-auth-card button {
   padding: 11px;
+  min-height: 44px;
   border: 0;
   border-radius: 8px;
   background: var(--accent);

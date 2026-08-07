@@ -78,3 +78,22 @@ describe('the browser can still authenticate without the URL that used to carry 
     expect(appJs).toContain('cat store/.dashboard-token')
   })
 })
+
+describe('the auth overlay buttons meet the 44px touch-target minimum', () => {
+  // Card c91cb325 (rule 13): the token-paste "Save & Reload" button (inline-styled, app.js) and
+  // the username+password "Sign in" button (.mv-auth-card button, style.css) both landed at ~42px
+  // (padding alone, no explicit height) -- just under the minimum. Both overlays are the ONLY way
+  // in when auth fails, so a cramped tap target there is the worst place for one.
+  const appJs = readFileSync(join(REPO_ROOT, 'web', 'app.js'), 'utf8')
+  const styleCss = readFileSync(join(REPO_ROOT, 'web', 'style.css'), 'utf8')
+
+  it('the inline-styled token-save button declares min-height:44px', () => {
+    const btnMarkup = appJs.slice(appJs.indexOf('id="mv-token-save"'), appJs.indexOf('id="mv-token-save"') + 200)
+    expect(btnMarkup).toMatch(/min-height:\s*44px/)
+  })
+
+  it('.mv-auth-card button declares min-height: 44px', () => {
+    const rule = styleCss.slice(styleCss.indexOf('.mv-auth-card button {'), styleCss.indexOf('.mv-auth-card button {') + 300)
+    expect(rule).toMatch(/min-height:\s*44px/)
+  })
+})

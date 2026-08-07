@@ -284,8 +284,8 @@ setInterval(refreshSubagents, 5000);
         '<textarea id="mv-token-input" rows="3" autocapitalize="off" autocorrect="off" spellcheck="false" ' +
           'style="width:100%;box-sizing:border-box;padding:10px;border-radius:8px;border:1px solid #555;' +
           'background:#0f0e0d;color:#faf9f5;font-size:14px;font-family:monospace" placeholder="token..."></textarea>' +
-        '<button id="mv-token-save" style="padding:12px;border:0;border-radius:8px;background:#10b981;' +
-          'color:#fff;font-size:15px;font-weight:600">' + _p.btn + '</button>' +
+        '<button id="mv-token-save" style="padding:12px;min-height:44px;border:0;border-radius:8px;' +
+          'background:#10b981;color:#fff;font-size:15px;font-weight:600">' + _p.btn + '</button>' +
         '<div id="mv-token-err" style="color:#f87171;font-size:13px;min-height:16px;text-align:center"></div>' +
       '</div>'
     document.body.appendChild(overlay)
