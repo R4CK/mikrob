@@ -32,7 +32,7 @@ for s in $(tmux ls -F '#{session_name}' 2>/dev/null | grep -E '^agent-'); do
   if echo "$pane" | grep -qiE 'stop and wait for limit|usage limit reached|limit will reset'; then
     tmux send-keys -t "$s" Escape 2>/dev/null
     name="${s#agent-}"
-    curl -s -X POST "http://localhost:3420/api/agents/$name/start" -H @"$hdr_file" -d '{}' >/dev/null 2>&1
+    curl -s --max-time 15 -X POST "http://localhost:3420/api/agents/$name/start" -H @"$hdr_file" -d '{}' >/dev/null 2>&1
     resumed+=("$name")
   fi
 done
@@ -44,7 +44,7 @@ done
 for s in $(python3 -c "import json;print(' '.join(json.load(open('$CD')).get('limited',[])))" 2>/dev/null); do
   name="${s#agent-}"
   case " ${resumed[*]:-} " in *" $name "*) continue ;; esac
-  curl -s -X POST "http://localhost:3420/api/agents/$name/start" -H @"$hdr_file" -d '{}' >/dev/null 2>&1
+  curl -s --max-time 15 -X POST "http://localhost:3420/api/agents/$name/start" -H @"$hdr_file" -d '{}' >/dev/null 2>&1
   resumed+=("$name")
 done
 echo "ATTEMPTED:${resumed[*]:-none}"
