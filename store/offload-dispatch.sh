@@ -41,12 +41,15 @@ DASH="${DASHBOARD_URL:-http://localhost:3420}"
 TOK="$(cat "$HERE/.dashboard-token" 2>/dev/null || true)"
 RAG="$HERE/local-llm-rag.sh"
 # How many decomposed sub-tasks may be drafted locally for ONE card (card a717d8b5, Peti directive
-# 2026-08-07). Was a hard-coded 6, which was the real ceiling on local-LLM volume -- not the router,
-# which already routes a whole new test file or an i18n draft LOCAL at aggressiveness 100. Still
-# BOUNDED rather than unlimited: this loop is synchronous at dispatch time, so an unbounded
-# decomposition would stall the dispatch for as long as the model takes times N. Tune without a code
-# change; routeTask still judges every one of them individually and sends the unsuitable ones online.
-OFFLOAD_MAX_SUBTASKS="${OFFLOAD_MAX_SUBTASKS:-24}"
+# 2026-08-07). Was a hard-coded 6, then raised to 24 the same day -- but the GPU is single-slot
+# (`-np 1`, 6GiB card, no request batching), so every card's subtasks serialize on one shared lock
+# and a 24-subtask card could hog the queue long enough that other cards' drafts never arrived.
+# Brought back down to 15 (Peti, same day) to trade a bit of per-card depth for more cards getting
+# at least a partial draft sooner. Still BOUNDED rather than unlimited: this loop is synchronous at
+# dispatch time, so an unbounded decomposition would stall the dispatch for as long as the model
+# takes times N. Tune without a code change; routeTask still judges every one of them individually
+# and sends the unsuitable ones online.
+OFFLOAD_MAX_SUBTASKS="${OFFLOAD_MAX_SUBTASKS:-15}"
 CARD="${1:-}"
 [[ -z "$CARD" ]] && { echo "usage: offload-dispatch.sh <cardId> [assignee]" >&2; exit 2; }
 
@@ -110,7 +113,7 @@ else
   DECOMP="$("$RAG" --task card-decompose --agent "$ASSIGNEE" --source dispatch-offload "$TASK" 2>/dev/null || true)"
   mapfile -t SUBS < <(printf '%s' "$DECOMP" | OFFLOAD_MAX_SUBTASKS="$OFFLOAD_MAX_SUBTASKS" python3 -c '
 import json,sys,re,os
-CAP=max(1,int(os.environ.get("OFFLOAD_MAX_SUBTASKS","24")))
+CAP=max(1,int(os.environ.get("OFFLOAD_MAX_SUBTASKS","15")))
 raw=sys.stdin.read()
 m=re.search(r"\{.*\}", raw, re.S)
 out=[]
