@@ -40,6 +40,13 @@ HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 DASH="${DASHBOARD_URL:-http://localhost:3420}"
 TOK="$(cat "$HERE/.dashboard-token" 2>/dev/null || true)"
 RAG="$HERE/local-llm-rag.sh"
+# How many decomposed sub-tasks may be drafted locally for ONE card (card a717d8b5, Peti directive
+# 2026-08-07). Was a hard-coded 6, which was the real ceiling on local-LLM volume -- not the router,
+# which already routes a whole new test file or an i18n draft LOCAL at aggressiveness 100. Still
+# BOUNDED rather than unlimited: this loop is synchronous at dispatch time, so an unbounded
+# decomposition would stall the dispatch for as long as the model takes times N. Tune without a code
+# change; routeTask still judges every one of them individually and sends the unsuitable ones online.
+OFFLOAD_MAX_SUBTASKS="${OFFLOAD_MAX_SUBTASKS:-24}"
 CARD="${1:-}"
 [[ -z "$CARD" ]] && { echo "usage: offload-dispatch.sh <cardId> [assignee]" >&2; exit 2; }
 
@@ -87,8 +94,9 @@ else
   # 2) Non-offloadable as a whole -> decompose LOCALLY (a local call in itself),
   #    then draft each mechanical, local-eligible subtask on the 7B.
   DECOMP="$("$RAG" --task card-decompose --agent "$ASSIGNEE" --source dispatch-offload "$TASK" 2>/dev/null || true)"
-  mapfile -t SUBS < <(printf '%s' "$DECOMP" | python3 -c '
-import json,sys,re
+  mapfile -t SUBS < <(printf '%s' "$DECOMP" | OFFLOAD_MAX_SUBTASKS="$OFFLOAD_MAX_SUBTASKS" python3 -c '
+import json,sys,re,os
+CAP=max(1,int(os.environ.get("OFFLOAD_MAX_SUBTASKS","24")))
 raw=sys.stdin.read()
 m=re.search(r"\{.*\}", raw, re.S)
 out=[]
@@ -101,7 +109,7 @@ if m:
                 if isinstance(s,str) and s.strip(): out.append(s.strip())
             if not subs and t.get("task"): out.append(str(t["task"]).strip())
     except Exception: pass
-for s in out[:6]: print(s.replace(chr(10)," ").strip())
+for s in out[:CAP]: print(s.replace(chr(10)," ").strip())
 ' 2>/dev/null)
   for s in "${SUBS[@]:-}"; do
     [[ -z "${s// }" ]] && continue
