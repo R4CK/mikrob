@@ -21,6 +21,19 @@
 #
 # HONEST LIMIT: same-user callers can still execute the pinned binary directly; this is not an
 # OS boundary. It closes every default and documented path, which is what a fleet convention can do.
+#
+# HONEST LIMIT 2 -- what condition 4 does NOT cover (measured by Cybersec 2026-08-07, do not delete):
+#   * The scan can be muted FROM CONTENT. secretlint honours in-file `secretlint-disable` markers, so
+#     a file could silence the scan of its own secret while the pack still reported "No suspicious
+#     files detected". `pack` now REFUSES a tree containing such a marker, which closes that path --
+#     but the mechanism is a content convention, not a guarantee, so treat a clean scan as evidence
+#     about DEFAULTS, never as proof the tree is secret-free.
+#   * AWS coverage is KEYWORD-ANCHORED. The bundled preset matches on names like
+#     `aws_secret_access_key`; a bare `AKIA[0-9A-Z]{16}` access key ID is NOT detected at all. This is
+#     a property of the secretlint preset, not of any repomix version -- pinning back would not help.
+#     A shape-based second pass (own rule or gitleaks) is the open follow-up.
+# A control we wrongly believe is closed is worse than one with a known gap; that is why both are
+# written here rather than in a card comment.
 set -euo pipefail
 
 PINNED_VERSION="1.18.0"
@@ -46,6 +59,16 @@ case "$CMD" in
     REPO="${1:-}"; shift || true
     [[ -n "$REPO" && -d "$REPO" ]] || die 4 "usage: repomix.sh pack <repo-path> [-- <args>]"
     [[ "${1:-}" == "--" ]] && shift || true
+    # --- condition 4, CONTENT side (Cybersec NO-GO cm 2026-08-07): the flag refusal above only
+    # closes the CLI surface. secretlint honours in-FILE `secretlint-disable` markers, so a file can
+    # mute the scan of its own secret and the pack reports "No suspicious files detected" while the
+    # secret sits in the output verbatim -- a proven bypass, not a theoretical one. Refuse the pack.
+    # Deliberately a REFUSAL, not a warning: a warning on a bulk-export tool is read as noise.
+    if MUTED=$(grep -rIl --exclude-dir=.git -e 'secretlint-disable' "$REPO" 2>/dev/null) && [[ -n "$MUTED" ]]; then
+      echo "repomix.sh: REFUSED -- these files mute the secret scanner from their own content:" >&2
+      printf '  %s\n' $MUTED >&2
+      die 5 "remove the secretlint-disable markers, or pack a subtree that excludes them"
+    fi
     mkdir -p "$OUT_DIR_DEFAULT"
     OUT="$OUT_DIR_DEFAULT/$(basename "$REPO")-pack.xml"
     # --security-check is upstream-default ON; passed explicitly so the intent is visible in logs.
