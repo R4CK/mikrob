@@ -2,7 +2,6 @@ import { existsSync, readFileSync, mkdirSync, mkdtempSync, readdirSync, rmSync, 
 import { CLAUDE_MODELS } from '../../model-catalog.js'
 import { join, extname, dirname } from 'node:path'
 import { homedir, platform, tmpdir } from 'node:os'
-import { execSync } from 'node:child_process'
 import { execFileAsync } from '../exec-async.js'
 import { logger } from '../../logger.js'
 import { isModelProfileId, MODEL_PROFILE_IDS } from '../../model-profiles.js'
@@ -1185,7 +1184,9 @@ export async function tryHandleAgents(ctx: RouteContext, webDir: string): Promis
       if (wasRunning) {
         const stopRes = stopAgentProcess(name)
         if (stopRes.ok) {
-          try { execSync('sleep 2', { timeout: 4000 }) } catch {}
+          // was `execSync('sleep 2')`: a process spawned purely to wait, freezing the
+          // event loop for two seconds (card 89d0bfde).
+          await new Promise((r) => setTimeout(r, 2000))
           const startRes = startAgentProcess(name)
           restarted = startRes.ok
         }
@@ -1703,7 +1704,9 @@ export async function tryHandleAgents(ctx: RouteContext, webDir: string): Promis
       // Wait for Claude Code to render the auth URL (typically 3-6s)
       let authUrl: string | null = null
       for (let i = 0; i < 12; i++) {
-        execSync('sleep 1', { timeout: 3000 })
+        // was `execSync('sleep 1')` INSIDE this 12-iteration loop: up to twelve seconds of
+        // frozen event loop for one /login request -- the largest window in this file (card 89d0bfde).
+        await new Promise((r) => setTimeout(r, 1000))
         const pane = capturePane(session, host)
         if (!pane) continue
         const urlMatch = pane.match(/https:\/\/console\.anthropic\.com\/[^\s"']+/)

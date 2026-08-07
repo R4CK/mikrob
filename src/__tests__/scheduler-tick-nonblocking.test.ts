@@ -22,6 +22,10 @@ const WEB = join(dirname(fileURLToPath(import.meta.url)), '..', 'web')
 
 // Files whose code runs synchronously inside a scheduler tick.
 const TICK_PATH_FILES = ['command-task.ts', 'schedule-runner.ts'] as const
+// Route handlers: a single inbound HTTP request triggers these, so a blocking child freezes every
+// other request. agents.ts held three `execSync('sleep N')` calls -- one of them inside a
+// 12-iteration loop, i.e. up to twelve seconds of frozen dashboard per /login (card 89d0bfde).
+const ROUTE_FILES = ['routes/agents.ts'] as const
 const SYNC_CHILD_APIS = ['spawnSync', 'execSync', 'execFileSync'] as const
 
 describe('scheduler tick stays off the blocking path (card 92e2bb1b)', () => {
@@ -42,6 +46,18 @@ describe('scheduler tick stays off the blocking path (card 92e2bb1b)', () => {
     if (execFileCalls === 0) return
     expect(src).toMatch(/new Promise/)
     expect(src).toMatch(/await /)
+  })
+
+  it.each(ROUTE_FILES)('%s spawns no synchronous child, and never a process just to wait', (file) => {
+    const src = readFileSync(join(WEB, file), 'utf-8')
+    expect(src.length).toBeGreaterThan(0)
+    const codeLines = src.split('\n').filter((l) => !l.trim().startsWith('//'))
+    for (const api of SYNC_CHILD_APIS) {
+      expect(codeLines.join('\n'), `${file} must not call ${api} on the request path`)
+        .not.toMatch(new RegExp(`\\b${api}\\(`))
+    }
+    // spawning `sleep` is the daftest form of it: a whole process to do what a timer does for free
+    expect(codeLines.join('\n')).not.toMatch(/['"`]sleep \d/)
   })
 
   it('keeps the two runners async, so the callers can await instead of blocking', () => {
