@@ -61,6 +61,20 @@ describe('seed-scheduled-tasks durability (card 975e5a97)', () => {
     expect(readSeed(name).agent).toBe('{{MAIN_AGENT_ID}}')
   })
 
+  // A missing trailing newline was, on its own, enough to make seed_copy_is_untouched() never match:
+  // every live file ends with 0a, every seed SKILL.md ended with `.` (0x2e). For stuck-card-monitor
+  // that single byte was the ONLY difference -- zero content drift, yet the refresh treated it as
+  // user-modified forever (card dec9a318, measured by Cybered).
+  it('every seed SKILL.md ends with a newline', () => {
+    const files = readdirSync(SEED_DIR)
+      .map((n) => join(SEED_DIR, n, 'SKILL.md'))
+      .filter((f) => existsSync(f))
+    expect(files.length, 'no seed SKILL.md found -- this assertion would be vacuous').toBeGreaterThan(3)
+    for (const f of files) {
+      expect(readFileSync(f, 'utf-8').endsWith('\n'), `${f} has no trailing newline`).toBe(true)
+    }
+  })
+
   it('every seed config is valid JSON', () => {
     for (const name of readdirSync(SEED_DIR)) {
       const file = join(SEED_DIR, name, 'task-config.json')
