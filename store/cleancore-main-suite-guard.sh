@@ -58,6 +58,23 @@ case "${1:-}" in
   *) echo "usage: $0 [--force|--status]" >&2; exit 2 ;;
 esac
 
+# ONE RUN AT A TIME. Added the moment this went on cron at */15 (card ec44220b): the full apps/api
+# suite is 8.1 minutes MEASURED on a quiet machine, and the fleet does not keep the machine quiet.
+# A run that overruns 15 minutes would meet the next tick, and the damage is not merely two suites
+# competing for CPU -- both instances drive the SAME worktree, so the second one's
+# `checkout --detach` + `reset --hard` + `clean -fd` yanks files out from under the first one's
+# vitest. That manufactures failures that no commit caused, writes them to the shared state file,
+# and sends a REGRESSION alert naming innocent commits. A guard that cries wolf is worse than no
+# guard, so a second instance exits immediately and silently instead.
+LOCK="${CC_MAIN_GUARD_LOCK:-/home/neon/marveen/store/.cleancore-main-suite-guard.lock}"
+if command -v flock >/dev/null 2>&1; then
+  exec 9>"$LOCK" || die "cannot open the lock file at $LOCK"
+  if ! flock -n 9; then
+    echo "STATE:busy"   # a previous run is still measuring; the next tick will pick it up
+    exit 0
+  fi
+fi
+
 [ -d "$REPO/.git" ] || die "no CleanCore checkout at $REPO"
 HEAD="$(git -C "$REPO" rev-parse "$BRANCH" 2>/dev/null)" || die "cannot resolve $BRANCH in $REPO"
 
