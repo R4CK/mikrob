@@ -214,9 +214,11 @@ export const OFFLOADABLE_THRESHOLDS: readonly CodingDifficulty[] = CODING_DIFFIC
 )
 
 /** Default max offloadable coding-difficulty for a given aggressiveness %. Higher % -> more offload
- *  + harder allowed, but CAPPED at the reliable ceiling ('module') so even 100% never offloads what
- *  the 7B can't do. Pure + deterministic. Single source of truth for the slider<->dropdown mapping
- *  (local-llm-rag.sh mirrors this table -- keep them in sync). */
+ *  + harder allowed, but CAPPED at RELIABLE_CEILING so even 100% never offloads what the 7B can't do.
+ *  Pure + deterministic. Single source of truth for the slider<->dropdown mapping (local-llm-rag.sh
+ *  mirrors this table -- keep them in sync). Cybersec 2026-08-07 (c6cc2c97): this doc comment itself
+ *  went stale once already (said 'module' after the ceiling moved to 'feature') -- don't hardcode the
+ *  level name here again, read it off RELIABLE_CEILING instead. */
 export function defaultDifficultyForAggressiveness(pct: unknown): CodingDifficulty {
   const a = normalizeAggressiveness(pct)
   if (a >= 95) return 'feature' // capped: architecture never auto-offloads (Peti, 2026-08-07)
