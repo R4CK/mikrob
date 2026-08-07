@@ -27,6 +27,15 @@ export interface ExecAsyncResult {
   timedOut: boolean
 }
 
+/**
+ * How long to keep reading after the child's own `exit` before settling anyway.
+ *
+ * Generous on purpose: it is only ever paid when a pipe outlives the child (a daemonised
+ * grandchild), because the ordinary case settles on 'close' well inside this window. A second of
+ * latency in the pathological case is the price for never hanging in it.
+ */
+const PIPE_DRAIN_MS = 1_000
+
 export interface ExecAsyncOptions {
   cwd?: string
   timeoutMs?: number
@@ -78,13 +87,39 @@ export function execFileAsync(
     timer.unref?.()
 
     let settled = false
+    let drainTimer: NodeJS.Timeout | undefined
     const finish = (status: number | null) => {
       if (settled) return
       settled = true
       clearTimeout(timer)
+      if (drainTimer) clearTimeout(drainTimer)
       resolve({ stdout, stderr, status, timedOut })
     }
     child.on('error', () => finish(null))
     child.on('close', (code) => finish(timedOut ? null : code))
+
+    // 'close' fires only after the child has exited AND every stdio pipe has closed. A child
+    // that daemonises a grandchild (`setsid ... &`, and tmux does exactly this) leaves that
+    // grandchild holding the inherited stdout/stderr write ends, so the pipes never close and
+    // 'close' never fires -- the promise stayed pending FOREVER, and the timeout did not save
+    // it either: the grandchild left the process group, so `kill(-pid)` misses it. Measured on
+    // `setsid sleep 30 & exit 0`: unsettled after 10s with the timer long expired.
+    //
+    // 'exit' fires on the CHILD's own exit and owes nothing to the pipes, so it is the event
+    // that actually bounds the call. The short drain window after it is for the ordinary case,
+    // where output written just before exit is still in flight; in that case 'close' arrives
+    // first anyway and clears this timer, so the normal path keeps its current latency. Only
+    // the pathological shape pays the drain, and paying 1s beats hanging forever.
+    child.on('exit', (code) => {
+      if (settled || drainTimer) return
+      drainTimer = setTimeout(() => {
+        // Release OUR read ends. The grandchild keeps the write ends open for as long as it
+        // lives; without this the fds would stay pinned in this process too.
+        child.stdout?.destroy()
+        child.stderr?.destroy()
+        finish(timedOut ? null : code)
+      }, PIPE_DRAIN_MS)
+      drainTimer.unref?.()
+    })
   })
 }
