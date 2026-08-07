@@ -240,6 +240,20 @@ describe('fix-landed-check.sh --sweep', () => {
     execFileSync('sqlite3', [db], { input: sql, stdio: 'pipe' })
   }
 
+  /** Same board, but with the comment body given verbatim -- for rows that carry no commit sha. */
+  function seedBoardRaw(dir: string, rows: Array<{ card: string; status: string; comment: string }>) {
+    const db = join(dir, 'store', 'claudeclaw.db')
+    const sql = [
+      'CREATE TABLE kanban_cards (id TEXT PRIMARY KEY, status TEXT);',
+      'CREATE TABLE kanban_comments (card_id TEXT, content TEXT, created_at INTEGER);',
+      ...rows.flatMap((r, i) => [
+        `INSERT INTO kanban_cards VALUES ('${r.card}', '${r.status}');`,
+        `INSERT INTO kanban_comments VALUES ('${r.card}', '${r.comment.replace(/'/g, "''")}', ${1000 + i});`,
+      ]),
+    ].join('\n')
+    execFileSync('sqlite3', [db], { input: sql, stdio: 'pipe' })
+  }
+
   it('extracts the commit from a multi-line REVIEW comment and verdicts each card', () => {
     const { dir, base, feat } = makeInstall()
     try {
@@ -280,24 +294,44 @@ describe('fix-landed-check.sh --sweep', () => {
   // Cybersec NO-GO F1 on d4d8c56: a mistyped parameter printed `checked=0 not-landed=0` and exited 0,
   // i.e. "everything landed". Zero coverage is not a clean bill of health -- the same overstated-
   // coverage class this tool exists to measure.
+  // Each case asserts the SPECIFIC error, not just "some ERROR:". With a bad parameter the loop ends
+  // with total=0, so the nothing-checked guard also exits 2 -- a generic `/^ERROR:/` assertion passes
+  // no matter which guard fired, leaving the parameter validation itself unproven.
   it.each([
-    ['--limit', 'abc'],
-    ['--limit', '0'],
-    ['--limit', '-1'],
-    ['--status', 'nosuchstatus'],
-    ['--status', "x') OR 1=1 --"], // F2 as reported: breaks the quoting
+    ['--limit', 'abc', 'ERROR:invalid-limit:abc'],
+    ['--limit', '0', 'ERROR:invalid-limit:0'],
+    ['--limit', '-1', 'ERROR:invalid-limit:-1'],
+    ['--status', 'nosuchstatus', 'ERROR:invalid-status:nosuchstatus'],
+    ['--status', "x') OR 1=1 --", 'ERROR:invalid-status:'], // F2 as reported: breaks the quoting
     // The space-free variant is the one that matters: it survives the word-split and, without the
     // allowlist, forms valid SQL (`IN ('waiting')OR('1'='1')`) that matches every row. The spaced
     // version above only produces a syntax error, so it would pass even with the allowlist removed.
-    ['--status', "waiting')OR('1'='1"],
-  ])('exits 2 instead of reporting a clean sweep for %s=%j', (flag, value) => {
+    ['--status', "waiting')OR('1'='1", 'ERROR:invalid-status:'],
+  ])('exits 2 with the specific error for %s=%j', (flag, value, expected) => {
     const { dir, base } = makeInstall()
     try {
       seedBoard(dir, [{ card: 'aaaaaaaa', sha: base, status: 'done' }])
       const r = run(['--sweep', '--install', dir, '--ref', 'fake-integration', flag, value])
       expect(r.status).toBe(2)
-      expect(r.out).toMatch(/^ERROR:/m)
+      expect(r.out).toContain(expected) // the parameter guard fired, not merely some guard
       expect(r.out).not.toContain('not-landed=0') // must never read as "all clear"
+    } finally {
+      rmSync(dir, { recursive: true, force: true })
+    }
+  })
+
+  // The input where nothing-checked is the ONLY guard that can fire: parameters are valid, so the
+  // parameter guards stay silent, and the board simply yields no checkable commit. Without this the
+  // guard's coverage is vacuous -- deleting it left the suite fully green, because every other test
+  // feeds a bad parameter that the parameter guards catch first.
+  it('exits 2 when valid parameters produce zero checkable cards', () => {
+    const { dir } = makeInstall()
+    try {
+      seedBoardRaw(dir, [{ card: 'aaaaaaaa', status: 'done', comment: 'REVIEW: kesz, nincs benne commit-sha.' }])
+      const r = run(['--sweep', '--install', dir, '--ref', 'fake-integration', '--limit', '40'])
+      expect(r.status).toBe(2)
+      expect(r.out).toContain('ERROR:nothing-checked')
+      expect(r.out).not.toContain('SUMMARY') // never summarise a sweep that inspected nothing
     } finally {
       rmSync(dir, { recursive: true, force: true })
     }
