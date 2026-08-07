@@ -39,11 +39,17 @@ describe('agent-process.ts never spawns a process just to wait (card 873c48df)',
     expect(src).toMatch(/await delay\(2000\)/)
   })
 
-  it('start/stop/restart are async, so a caller can await instead of blocking', () => {
+  it('start/stop/restart are awaitable, so a caller can await instead of blocking', () => {
     const src = code()
-    expect(src).toMatch(/export async function startAgentProcess/)
-    expect(src).toMatch(/export async function stopAgentProcess/)
-    expect(src).toMatch(/export async function restartAgentProcess/)
+    // Card 74ba7c78 split each entry point into a `export function X(): Promise<...>` wrapper that
+    // takes the per-agent in-flight guard, plus the async `XUnlocked` that does the work. The
+    // property this test protects is unchanged -- the caller gets a promise, not a frozen loop --
+    // so it is asserted on the shape that now carries it rather than on the old keyword.
+    for (const fn of ['startAgentProcess', 'stopAgentProcess', 'restartAgentProcess']) {
+      expect(src, `${fn} must return a Promise`).toMatch(new RegExp(`export function ${fn}\\(`))
+      expect(src, `${fn}'s work must still be async`).toMatch(new RegExp(`async function ${fn}Unlocked\\(`))
+    }
+    expect(src).toMatch(/Promise<\{ ok: boolean; pid\?: number; error\?: string \}>/)
   })
 
   // The four REMAINING sync calls -- runTmux, captureTmux and two liveness probes -- are bounded
