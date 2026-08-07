@@ -29,6 +29,33 @@
 // sendPromptToSession, so no in-process lock can reach it (a cross-process file
 // lock would be a separate change). A reader must not assume the pane is fully
 // serialized: it is serialized for the two acquirers above, no more.
+//
+// CRON-SHELL WRITERS (card 7560bb6a). A whole class no in-process lock can ever
+// reach, because they are separate processes started by cron. This is not
+// theoretical: store/fleet-nudger.sh sent `-l <text>`, slept a full SECOND, then
+// sent Enter into an `agent-*` pane, and its self-advance reminder spliced itself
+// into the MIDDLE of inter-agent message 8701. Foreign text inside a
+// trusted-sender frame is a prompt-injection surface. That one now delivers
+// through POST /api/messages, i.e. through this lock.
+//
+// The rest of the class, measured 2026-08-07 -- NOT five equivalent offenders,
+// which is why each is listed with what it actually sends:
+//
+//   store/context-compact-monitor.sh:150  agent-* pane, `-l "/compact"` + sleep 1
+//       + Enter. SAME SHAPE as the nudger and STILL UNFIXED. It cannot take the
+//       /api/messages route: a slash command must be typed into the pane, and a
+//       message would arrive as text content, not as a command. Needs either an
+//       endpoint that drives a slash command through this lock, or the
+//       cross-process file lock.
+//   store/quota-resume.sh:33              agent-* pane, `Escape` ONLY -- no text.
+//       It can interrupt a modal mid-delivery but cannot splice content into a
+//       message frame. Lower severity, different failure mode; still unserialized.
+//   store/weekly-usage-panel-read.sh      targets the DEDICATED `mikrob-usage-probe`
+//   store/weekly-usage-relogin.sh         pane, not an agent session, so it does not
+//       contend with delivery at all. relogin takes the pane from
+//       $USAGE_PROBE_PANE, so pointing that at an agent session would put it back
+//       in this class.
+//   store/weekly-usage-probe.sh           writes NOTHING; its only match is a comment.
 
 const delay = (ms: number): Promise<void> => new Promise(res => setTimeout(res, ms))
 
