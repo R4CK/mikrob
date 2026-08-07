@@ -39,8 +39,12 @@ Collect data from these sources (skip any that return empty):
 # call died with exit 127 while python3 was present on both.
 AGENT_ID="$(echo $BOT_NAME | tr '[:upper:]' '[:lower:]')"
 PORT="$(sed -n 's/^WEB_PORT=//p' .env 2>/dev/null | head -1 | tr -d '"')"; PORT="${PORT:-3420}"
-curl -s -H "Authorization: Bearer $(cat store/.dashboard-token)" \
-  "http://localhost:$PORT/api/kanban" | AGENT_ID="$AGENT_ID" python3 -c "
+# The dashboard token goes through a curl config on stdin, NEVER as `-H "...$(cat ...)"`:
+# /proc/<pid>/cmdline is world-readable, so an argv header hands the token to any local
+# process that can list processes. Same shape for every call below.
+AUTH() { printf 'header = "Authorization: Bearer %s"\n' "$(cat store/.dashboard-token)"; }
+
+AUTH | curl -s -K - "http://localhost:$PORT/api/kanban" | AGENT_ID="$AGENT_ID" python3 -c "
 import json,os,sys
 me=os.environ.get('AGENT_ID','')
 rows=[c for c in json.load(sys.stdin)
@@ -52,17 +56,14 @@ for c in rows[:10]:
 "
 
 # Hot memories from last 24h
-curl -s -H "Authorization: Bearer $(cat store/.dashboard-token)" \
-  "http://localhost:$PORT/api/memories?agent=$AGENT_ID&category=hot&limit=10"
+AUTH | curl -s -K - "http://localhost:$PORT/api/memories?agent=$AGENT_ID&category=hot&limit=10"
 
 # Recent warm memories (project context)
-curl -s -H "Authorization: Bearer $(cat store/.dashboard-token)" \
-  "http://localhost:$PORT/api/memories?agent=$AGENT_ID&category=warm&limit=5"
+AUTH | curl -s -K - "http://localhost:$PORT/api/memories?agent=$AGENT_ID&category=warm&limit=5"
 
 # Today's daily log
 DATE=$(date +%Y-%m-%d)
-curl -s -H "Authorization: Bearer $(cat store/.dashboard-token)" \
-  "http://localhost:$PORT/api/daily-log?agent=$AGENT_ID&date=$DATE"
+AUTH | curl -s -K - "http://localhost:$PORT/api/daily-log?agent=$AGENT_ID&date=$DATE"
 ```
 
 Also include from your current conversation context:
@@ -119,9 +120,9 @@ Keep each step concrete enough to execute without asking questions.}
 **Inter-agent mode** (`target=` specified): Send the full HANDOFF.md content as an inter-agent message:
 
 ```bash
-curl -s -X POST http://localhost:$PORT/api/messages \
+printf 'header = "Authorization: Bearer %s"\n' "$(cat store/.dashboard-token)" \
+| curl -s -K - -X POST http://localhost:$PORT/api/messages \
   -H "Content-Type: application/json" \
-  -H "Authorization: Bearer $(cat store/.dashboard-token)" \
   -d "{\"from\":\"$AGENT_ID\",\"to\":\"TARGET\",\"content\":\"[HANDOFF] purpose: ... \n\n$(cat HANDOFF.md)\"}"
 ```
 

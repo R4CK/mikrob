@@ -13,12 +13,13 @@
 // invocation across backslash-continued lines before testing it, the same way bash itself does.
 import { describe, it, expect } from 'vitest'
 import { readFileSync, readdirSync } from 'node:fs'
-import { join, dirname } from 'node:path'
+import { join, dirname, relative } from 'node:path'
 import { fileURLToPath } from 'node:url'
 
 const REPO_ROOT = join(dirname(fileURLToPath(import.meta.url)), '..', '..')
 const STORE_DIR = join(REPO_ROOT, 'store')
 const SCRIPTS_DIR = join(REPO_ROOT, 'scripts')
+const SEED_SKILLS_DIR = join(REPO_ROOT, 'seed-skills')
 
 /** One curl invocation, reassembled across `\`-continued lines, with its 1-based start line. */
 interface CurlInvocation {
@@ -179,18 +180,51 @@ function scanDir(dir: string): string[] {
   return readdirSync(dir).filter((f) => f.endsWith('.sh'))
 }
 
+/**
+ * Every SKILL.md and shell script under seed-skills/, recursively (card 2834e7f3 gap 4).
+ *
+ * Cybersec's finding: the guard forbade the argv-leak SHAPE in two directories while our own
+ * SHIPPED documentation TAUGHT it in five templates. A SKILL.md is not executable, which is
+ * exactly why it is worse than a script -- an agent following `dream` or `handoff` copies that
+ * `-H "Authorization: Bearer $(cat ...)"` line into whatever it writes next, so the guard kept
+ * removing symptoms while the source of the pattern shipped to every new install untouched.
+ * It stopped being theoretical when three fresh scripts on card defcc189 were written that way.
+ *
+ * The scanner is text-based, so a fenced bash block inside markdown reads the same as a script.
+ */
+function scanTree(dir: string, keep: (file: string) => boolean): string[] {
+  const out: string[] = []
+  for (const entry of readdirSync(dir, { withFileTypes: true })) {
+    const full = join(dir, entry.name)
+    if (entry.isDirectory()) out.push(...scanTree(full, keep))
+    else if (keep(entry.name)) out.push(relative(SEED_SKILLS_DIR, full))
+  }
+  return out
+}
+
 const STORE_SCRIPTS = scanDir(STORE_DIR)
 const SCRIPTS_SCRIPTS = scanDir(SCRIPTS_DIR)
+const SEED_SKILL_DOCS = scanTree(SEED_SKILLS_DIR, (f) => f === 'SKILL.md' || f.endsWith('.sh'))
 
-describe('no store/*.sh or scripts/*.sh puts a Bearer token in curl argv', () => {
+describe('no store/*.sh, scripts/*.sh or shipped seed-skills template puts a Bearer token in curl argv', () => {
   it('scans a non-trivial number of scripts in both directories (the guard is not vacuously passing)', () => {
     expect(STORE_SCRIPTS.length).toBeGreaterThan(10)
     expect(SCRIPTS_SCRIPTS.length).toBeGreaterThan(3)
   })
 
+  it('scans the shipped seed-skills templates too (gap 4: the docs taught the leak)', () => {
+    expect(SEED_SKILL_DOCS.length).toBeGreaterThan(30)
+    // The five templates Cybersec named must be IN the corpus, by name -- a recursive walk that
+    // silently stopped at the first level would still satisfy a bare count.
+    for (const skill of ['dream', 'handoff', 'retrospective', 'approval-request-handling', 'ai-fleet-project-execution']) {
+      expect(SEED_SKILL_DOCS).toContain(join(skill, 'SKILL.md'))
+    }
+  })
+
   const cases: Array<{ dir: string; file: string }> = [
     ...STORE_SCRIPTS.map((file) => ({ dir: STORE_DIR, file })),
     ...SCRIPTS_SCRIPTS.map((file) => ({ dir: SCRIPTS_DIR, file })),
+    ...SEED_SKILL_DOCS.map((file) => ({ dir: SEED_SKILLS_DIR, file })),
   ]
 
   it.each(cases)('$file: every curl reads its auth header from a file, never argv', ({ dir, file }) => {
@@ -271,6 +305,36 @@ describe('the scanner itself catches what a naive single-line regex would miss',
     ].join('\n')
     const offenders = findCurlInvocations(script).filter((c) => leaksTokenInArgv(c.text))
     expect(offenders).toHaveLength(1)
+  })
+
+  // A SKILL.md is prose with fenced bash, so the scanner must read it the same way it reads a
+  // script -- otherwise gap 4 reopens the moment someone documents the old shape again.
+  it('flags the argv shape inside a markdown fenced block, the way it appears in a SKILL.md', () => {
+    const doc = [
+      '## Memória mentés',
+      '```bash',
+      'curl -s -X POST http://localhost:3420/api/memories \\',
+      '  -H "Content-Type: application/json" \\',
+      '  -H "Authorization: Bearer $(cat store/.dashboard-token)" \\',
+      "  -d '{\"content\":\"x\"}'",
+      '```',
+    ].join('\n')
+    expect(findCurlInvocations(doc).filter((c) => leaksTokenInArgv(c.text))).toHaveLength(1)
+  })
+
+  // The form the five templates were converted TO. curl reads the header from a config on stdin,
+  // so the token is never an argv element -- measured live against /proc/<pid>/cmdline: the `-H`
+  // form showed the canary token, this one showed only `curl -s -K -`.
+  it('does NOT flag the curl-config form the templates now teach', () => {
+    const doc = [
+      '```bash',
+      `printf 'header = "Authorization: Bearer %s"\\n' "$(cat store/.dashboard-token)" \\`,
+      '| curl -s -K - -X POST http://localhost:3420/api/memories \\',
+      '  -H "Content-Type: application/json" \\',
+      "  -d '{\"content\":\"x\"}'",
+      '```',
+    ].join('\n')
+    expect(findCurlInvocations(doc).filter((c) => leaksTokenInArgv(c.text))).toEqual([])
   })
 
   it('does NOT flag the sanctioned @headerfile pattern', () => {

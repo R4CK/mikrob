@@ -41,9 +41,12 @@ Env is WSL/Linux, so NOT Windows Task Scheduler. Two options, both one-line:
 - **Manual (default):** Peti types `/dream` at the end of a session. Nothing to schedule.
 - **Nightly 3am via the fleet dashboard scheduler** (the fleet's own cron, runs only while MikroB's tmux session is up):
   ```bash
-  curl -s -X POST http://localhost:3420/api/schedules \
+  # The token goes through a curl config on stdin, never as an argv element:
+  # /proc/<pid>/cmdline is world-readable, so an auth header built with `-H` and a command
+  # substitution hands the dashboard token to any local process that can list processes.
+  printf 'header = "Authorization: Bearer %s"\n' "$(cat <install>/store/.dashboard-token)" \
+  | curl -s -K - -X POST http://localhost:3420/api/schedules \
     -H "Content-Type: application/json" \
-    -H "Authorization: Bearer $(cat <install>/store/.dashboard-token)" \
     -d '{"name":"dream-nightly","description":"Nightly read-only memory consolidation (propose-only)","prompt":"Run /dream in UNATTENDED read-only mode: bash ~/.claude/skills/dream/scripts/dream.sh --unattended, then follow the dream skill section 2-3 to write proposals to memory/dream-report.md ONLY. Apply nothing. Stay silent on Telegram unless urgent.","schedule":"0 3 * * *","agent":"mikrob","type":"heartbeat"}'
   ```
   Answers to the reliability questions (WSL, not Windows):

@@ -42,14 +42,17 @@ Also pull external state:
 ```bash
 AGENT_ID="$(echo $BOT_NAME | tr '[:upper:]' '[:lower:]')"
 
+# The dashboard token goes through a curl config on stdin, NEVER as `-H "...$(cat ...)"`:
+# /proc/<pid>/cmdline is world-readable, so an argv header hands the token to any local
+# process that can list processes. Same shape for every call below.
+AUTH() { printf 'header = "Authorization: Bearer %s"\n' "$(cat store/.dashboard-token)"; }
+
 # Recent memories written this session
-curl -s -H "Authorization: Bearer $(cat store/.dashboard-token)" \
-  "http://localhost:3420/api/memories?agent=$AGENT_ID&category=hot&limit=20"
+AUTH | curl -s -K - "http://localhost:3420/api/memories?agent=$AGENT_ID&category=hot&limit=20"
 
 # Today's daily log entries
 DATE=$(date +%Y-%m-%d)
-curl -s -H "Authorization: Bearer $(cat store/.dashboard-token)" \
-  "http://localhost:3420/api/daily-log?agent=$AGENT_ID&date=$DATE"
+AUTH | curl -s -K - "http://localhost:3420/api/daily-log?agent=$AGENT_ID&date=$DATE"
 
 # Skills that were referenced or used
 ls ~/.claude/skills/ | head -30
@@ -145,8 +148,8 @@ On user approval:
 
 After execution, log the retrospective to the daily log:
 ```bash
-curl -s -X POST -H "Authorization: Bearer $(cat store/.dashboard-token)" \
-  http://localhost:3420/api/daily-log \
+printf 'header = "Authorization: Bearer %s"\n' "$(cat store/.dashboard-token)" \
+| curl -s -K - -X POST http://localhost:3420/api/daily-log \
   -H "Content-Type: application/json" \
   -d "{\"agent_id\":\"$AGENT_ID\",\"content\":\"## $(date +%H:%M) -- Retrospective\n[count] skill changes, [count] memory updates, [count] workflow changes applied.\"}"
 ```

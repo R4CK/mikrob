@@ -14,7 +14,11 @@ description: Reply to a Telegram user when the telegram channel MCP reply tool (
 2. chat_id: a valós felhasználói chat ID az allowlistából (`~/.claude/channels/telegram/access.json` -> `allowFrom[0]`), NEM a 0. A `chat_id: 0` csak az MCP reply tool belső konvenciója a fő csatornára; a nyers Bot API valós numerikus chat_id-t vár.
 3. Küldés (plain text a legbiztosabb, parse_mode nélkül -- nincs escaping-buktató):
    ```bash
-   curl -s -X POST "https://api.telegram.org/bot${TOKEN}/sendMessage" \
+   # A bot token a Bot API-nál KÖTELEZŐEN az URL útvonalában van, headerbe nem tehető -- ezért az
+   # URL-t curl-configon (stdin) adjuk át, nem argv-ben: a /proc/<pid>/cmdline bárki számára
+   # olvasható, tehát egy argv-ben átadott URL a tokent is odaadja minden helyi processznek.
+   printf 'url = "https://api.telegram.org/bot%s/sendMessage"\n' "$TOKEN" \
+   | curl -s -X POST -K - \
      --data-urlencode "chat_id=<REAL_ID>" \
      --data-urlencode "text=${MSG}" -o out.json
    ```
