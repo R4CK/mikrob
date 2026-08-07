@@ -1,0 +1,11 @@
+{
+  "schedule": "23 5 * * *",
+  "agent": "{{MAIN_AGENT_ID}}",
+  "enabled": true,
+  "type": "heartbeat",
+  "skipIfBusy": false,
+  "forceSend": false,
+  "description": "Napi egyszer: uj skillek besorolasa kozos vs celzott-ugynok kategoriaba (Peti szabaly 2026-07-17)",
+  "createdAt": 1784269248,
+  "catchUpMaxAgeMinutes": 1440
+}
