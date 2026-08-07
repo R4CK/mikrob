@@ -15,8 +15,10 @@ import {
   fail as failLocalLlm,
   reclaimStaleRunning as reclaimStaleLocalLlm,
   getById as queueGetById,
+  listRecent as queueListRecent,
   stats as queueStats,
   statsByAgent as queueStatsByAgent,
+  type QueueStatus,
 } from '../../local-llm-queue.js'
 
 /** A queue row still `running` after this long means its worker died: the 7B's slowest measured
@@ -829,6 +831,22 @@ export async function tryHandleLocalLlm(ctx: RouteContext): Promise<boolean> {
   // it shows WHICH agents never use the local model, which is the number Peti tunes against).
   if (path === '/api/local-llm/queue' && method === 'GET') {
     json(res, { ...queueStats(getDb()), by_agent: queueStatsByAgent(getDb()) })
+    return true
+  }
+
+  // GET /api/local-llm/queue/list?status=&limit= -> recent rows for the dashboard panel (card
+  // 48aacf56 item 5): pending/running/done/failed drafts with agent, task, timing. Checked BEFORE
+  // the /queue/<id> catch-all below, or "list" would parse as an invalid numeric id.
+  if (path === '/api/local-llm/queue/list' && method === 'GET') {
+    const rawStatus = url.searchParams.get('status')
+    const VALID_STATUSES: readonly QueueStatus[] = ['pending', 'running', 'done', 'failed']
+    if (rawStatus !== null && !(VALID_STATUSES as readonly string[]).includes(rawStatus)) {
+      json(res, { error: `invalid status (want one of ${VALID_STATUSES.join(', ')})` }, 400)
+      return true
+    }
+    const limit = parseInt(url.searchParams.get('limit') || '100', 10)
+    const rows = queueListRecent(getDb(), limit, (rawStatus as QueueStatus | null) ?? undefined)
+    json(res, { rows })
     return true
   }
 

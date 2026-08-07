@@ -179,6 +179,27 @@ export function getById(db: Database, id: number): QueueRow | null {
   return (db.prepare('SELECT * FROM local_llm_queue WHERE id = ?').get(id) as QueueRow) ?? null
 }
 
+/** A queue row shaped for a list view: everything but `prompt`/`context`/`result`, which can each
+ *  run up to MAX_QUEUE_PROMPT_BYTES -- a list panel shows status/agent/task/timing, not full
+ *  content. A caller that needs the full row already has {@link getById}. */
+export type QueueListRow = Omit<QueueRow, 'prompt' | 'context' | 'result'>
+
+/** Recent queue rows for the dashboard panel (card 48aacf56 item 5), newest first, optionally
+ *  filtered to one status. Capped at 500 regardless of the requested limit so a caller cannot force
+ *  an unbounded scan of an unbounded table. */
+export function listRecent(db: Database, limit: number, status?: QueueStatus): QueueListRow[] {
+  const cappedLimit = Math.max(1, Math.min(500, Math.floor(limit) || 100))
+  const cols = 'id, agent, card_id, task_type, template, priority, status, source, attempts, created_at, started_at, finished_at, error'
+  if (status) {
+    return db
+      .prepare(`SELECT ${cols} FROM local_llm_queue WHERE status = ? ORDER BY created_at DESC LIMIT ?`)
+      .all(status, cappedLimit) as QueueListRow[]
+  }
+  return db
+    .prepare(`SELECT ${cols} FROM local_llm_queue ORDER BY created_at DESC LIMIT ?`)
+    .all(cappedLimit) as QueueListRow[]
+}
+
 export interface QueueStats {
   readonly pending: number
   readonly running: number

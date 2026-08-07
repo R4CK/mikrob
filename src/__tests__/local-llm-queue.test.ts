@@ -11,6 +11,7 @@ import {
   fail,
   reclaimStaleRunning,
   getById,
+  listRecent,
   stats,
   statsByAgent,
   MAX_ATTEMPTS,
@@ -228,5 +229,47 @@ describe('stats', () => {
     const rows = statsByAgent(db)
     expect(rows.find((r) => r.agent === 'backend')!.done).toBe(1)
     expect(rows.find((r) => r.agent === 'penzugy')!.pending).toBe(1)
+  })
+})
+
+describe('listRecent (dashboard panel, card 48aacf56 item 5)', () => {
+  it('returns rows newest first', () => {
+    enqueue(db, { agent: 'a', prompt: 'first' }, T0)
+    enqueue(db, { agent: 'a', prompt: 'second' }, T0 + 1)
+    enqueue(db, { agent: 'a', prompt: 'third' }, T0 + 2)
+    const rows = listRecent(db, 100)
+    expect(rows.map((r) => r.created_at)).toEqual([T0 + 2, T0 + 1, T0])
+  })
+
+  it('filters to one status when given', () => {
+    const a = enqueue(db, { agent: 'a', prompt: 'p1' }, T0)
+    enqueue(db, { agent: 'a', prompt: 'p2' }, T0 + 1)
+    claimNext(db, T0 + 10)
+    complete(db, a, 'r', T0 + 20)
+    const done = listRecent(db, 100, 'done')
+    expect(done).toHaveLength(1)
+    expect(done[0]!.id).toBe(a)
+    const pending = listRecent(db, 100, 'pending')
+    expect(pending).toHaveLength(1)
+  })
+
+  it('never includes the prompt/context/result fields (list view, not detail)', () => {
+    enqueue(db, { agent: 'a', prompt: 'sensitive prompt text', context: 'sensitive context' }, T0)
+    const row = listRecent(db, 10)[0] as unknown as Record<string, unknown>
+    expect(row).not.toHaveProperty('prompt')
+    expect(row).not.toHaveProperty('context')
+    expect(row).not.toHaveProperty('result')
+  })
+
+  it('caps the limit at 500 even when a larger value is requested', () => {
+    for (let i = 0; i < 5; i += 1) enqueue(db, { agent: 'a', prompt: `p${i}` }, T0 + i)
+    // 5 rows exist; asking for 5000 must not throw and must not exceed what exists.
+    expect(listRecent(db, 5000)).toHaveLength(5)
+  })
+
+  it('defaults to a sane limit when given a non-numeric/zero value', () => {
+    enqueue(db, { agent: 'a', prompt: 'p' }, T0)
+    expect(listRecent(db, NaN)).toHaveLength(1)
+    expect(listRecent(db, 0)).toHaveLength(1)
   })
 })
