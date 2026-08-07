@@ -4,6 +4,7 @@ import {
 import { join } from 'node:path'
 import type http from 'node:http'
 import { spawn, execFileSync } from 'node:child_process'
+import { execFileAsync } from '../exec-async.js'
 import { PROJECT_ROOT, STORE_DIR } from '../../config.js'
 import { logger } from '../../logger.js'
 import {
@@ -79,7 +80,8 @@ export function recordUpdateHistory(
  *  this same file. */
 export interface UpstreamMergeRunner {
   revParseHead(): string
-  fetchUpstream(): void
+  /** Network call: async so a 15s git fetch cannot freeze the HTTP server (card 89d0bfde). */
+  fetchUpstream(): Promise<void>
   /** Throws on conflict or any other merge failure (the real adapter runs `git merge --no-edit`,
    *  which exits non-zero on both). */
   mergeUpstream(): void
@@ -116,15 +118,15 @@ export function foldStdoutIntoMergeError(err: unknown): never {
  * thin wrapper (lock + response shaping). `recordHistory` is injected too so a test can assert it was
  * (or was not) called without touching the real store/.update-history file.
  */
-export function performUpstreamMerge(
+export async function performUpstreamMerge(
   runner: UpstreamMergeRunner,
   recordHistory: typeof recordUpdateHistory = recordUpdateHistory,
-): UpstreamMergeResult {
+): Promise<UpstreamMergeResult> {
   // Captured BEFORE the merge so a rollback point can be recorded on success -- HEAD does not move
   // again after this in the success path (no checkout after the merge commit).
   const beforeSha = runner.revParseHead().trim()
   try {
-    runner.fetchUpstream()
+    await runner.fetchUpstream()
     runner.mergeUpstream()
   } catch (err) {
     // Abort any in-progress merge so the tree is clean again. Best-effort: `merge --abort` itself
@@ -161,8 +163,9 @@ const realUpstreamMergeRunner: UpstreamMergeRunner = {
       timeout: 3000,
       encoding: 'utf-8',
     }),
-  fetchUpstream: () => {
-    execFileSync('/usr/bin/git', ['fetch', 'upstream'], { cwd: PROJECT_ROOT, timeout: 15_000 })
+  fetchUpstream: async () => {
+    const r = await execFileAsync('/usr/bin/git', ['fetch', 'upstream'], { cwd: PROJECT_ROOT, timeoutMs: 15_000 })
+    if (r.status !== 0) throw new Error(r.timedOut ? 'git fetch upstream timed out' : `git fetch upstream exited ${r.status}: ${r.stderr.trim().slice(0, 200)}`)
   },
   mergeUpstream: () => {
     try {
@@ -191,7 +194,8 @@ const realUpstreamMergeRunner: UpstreamMergeRunner = {
  *  merge (against the pre-merge HEAD), so `mergeBase`/`oursChangedFiles` reflect our fork's own
  *  divergence from the point the two histories split. */
 export interface UpstreamAnalysisRunner {
-  fetchUpstream(): void
+  /** Network call: async so a 15s git fetch cannot freeze the HTTP server (card 89d0bfde). */
+  fetchUpstream(): Promise<void>
   /** `git log --oneline <mergeBase>..upstream/main`: the incoming commits, one per line. */
   commitsBehind(): string
   /** `git diff --stat <mergeBase> upstream/main`: human-readable file/line change summary. */
@@ -215,8 +219,8 @@ export interface UpstreamAnalysis {
 /** Pure analysis of what an upstream merge WOULD change, run before touching HEAD. Read-only:
  *  computes the incoming commit/diff summary plus the file-level overlap between "what we changed"
  *  and "what upstream changed" since the merge-base -- the files most likely to conflict. */
-export function analyzeUpstreamChanges(runner: UpstreamAnalysisRunner): UpstreamAnalysis {
-  runner.fetchUpstream()
+export async function analyzeUpstreamChanges(runner: UpstreamAnalysisRunner): Promise<UpstreamAnalysis> {
+  await runner.fetchUpstream()
   const commits = runner.commitsBehind().trim().split('\n').filter(Boolean)
   const diffStat = runner.diffStat().trim()
   const ours = new Set(runner.oursChangedFiles().trim().split('\n').filter(Boolean))
@@ -235,8 +239,9 @@ export function analyzeUpstreamChanges(runner: UpstreamAnalysisRunner): Upstream
  *  {@link realUpstreamMergeRunner}. `fetchUpstream` is separate from the merge's own fetch (idempotent,
  *  cheap) so this analysis can run standalone before {@link performUpstreamMerge}. */
 const realUpstreamAnalysisRunner: UpstreamAnalysisRunner = {
-  fetchUpstream: () => {
-    execFileSync('/usr/bin/git', ['fetch', 'upstream'], { cwd: PROJECT_ROOT, timeout: 15_000 })
+  fetchUpstream: async () => {
+    const r = await execFileAsync('/usr/bin/git', ['fetch', 'upstream'], { cwd: PROJECT_ROOT, timeoutMs: 15_000 })
+    if (r.status !== 0) throw new Error(r.timedOut ? 'git fetch upstream timed out' : `git fetch upstream exited ${r.status}: ${r.stderr.trim().slice(0, 200)}`)
   },
   commitsBehind: () => {
     const base = execFileSync('/usr/bin/git', ['merge-base', 'HEAD', 'upstream/main'], {
@@ -569,7 +574,7 @@ export async function tryHandleUpdates(ctx: RouteContext): Promise<boolean> {
     if (repo === 'upstream') {
       let analysis: UpstreamAnalysis | undefined
       try {
-        analysis = analyzeUpstreamChanges(realUpstreamAnalysisRunner)
+        analysis = await analyzeUpstreamChanges(realUpstreamAnalysisRunner)
       } catch (err) {
         logger.warn({ err }, 'upstream pre-merge analysis failed (non-fatal, merge proceeds without it)')
       }
@@ -582,7 +587,7 @@ export async function tryHandleUpdates(ctx: RouteContext): Promise<boolean> {
           logger.warn({ err }, 'pre-merge analysis notify failed (non-fatal)')
         }
       }
-      const result = performUpstreamMerge(realUpstreamMergeRunner)
+      const result = await performUpstreamMerge(realUpstreamMergeRunner)
       if (!result.ok) {
         releaseLock()
         logger.warn({ reason: result.reason }, 'upstream merge failed')
