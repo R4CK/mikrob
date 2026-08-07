@@ -129,7 +129,11 @@ def main():
         # Each span judged on itself -- surrounding text cannot vouch for it (card 746ea4e4).
         if not real:
             continue
-        span = real[0]
+        # The message names the PATTERN, never the matched value (card 40f90f8b). stderr is read by
+        # the agent and lands in transcripts and logs, so printing the key here would leak exactly
+        # what this hook exists to keep out of files -- a control that reports the secret it caught
+        # has moved it, not stopped it. `name` is enough to act on: it says which credential class
+        # was found, and the author already knows what they typed.
         sys.stderr.write(
             "SECRET-WRITE-GUARD: a beirni kivant tartalom valodinak tuno titkot "
             f"tartalmaz ({name}). A muvelet blokkolva. Ne irj literal kredencialt "

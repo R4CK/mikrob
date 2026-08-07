@@ -53,6 +53,21 @@ describe('secret-write-guard blocks a real-looking key regardless of its neighbo
     expect(stderr).toContain('AWS access key id')
   })
 
+  it('names the PATTERN and never the matched value (card 40f90f8b)', () => {
+    // stderr reaches the agent, the transcript and the logs. A control that reports the secret it
+    // caught has moved it, not stopped it. Pinned as an assertion rather than a comment, because
+    // the obvious "improvement" -- naming the offending key so the author can find it -- is exactly
+    // the leak, and it will look helpful to whoever proposes it.
+    const { blocked, stderr } = writeAttempt(`const k = '${REAL_LOOKING}'`)
+    expect(blocked).toBe(true)
+    // Not vacuous: the positive half proves stderr really is the guard's message, so the negative
+    // half is asserting about the right string rather than about an empty one.
+    expect(stderr).toContain('AWS access key id')
+    expect(stderr).not.toContain(REAL_LOOKING)
+    // Not even a fragment long enough to be useful to a reader of the log.
+    expect(stderr).not.toContain(REAL_LOOKING.slice(0, 12))
+  })
+
   it.each([
     ['EXAMPLE next to it', `// EXAMPLE\nconst k = '${REAL_LOOKING}'`],
     ['a JSX tag next to it', `<div>{'${REAL_LOOKING}'}</div>`],
