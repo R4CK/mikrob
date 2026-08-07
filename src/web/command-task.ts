@@ -1,4 +1,4 @@
-import { spawnSync } from "node:child_process"
+import { execFile } from "node:child_process"
 import { join } from "node:path"
 import { readFileSync } from "node:fs"
 import { STORE_DIR, TELEGRAM_BOT_TOKEN } from "../config.js"
@@ -63,23 +63,41 @@ export function evaluateCommandResult(
   }
 }
 
-function runCommand(cmd: string, timeoutMs: number): { ok: boolean; detail: string } {
-  try {
-    const r = spawnSync("bash", ["-lc", cmd], { timeout: timeoutMs, encoding: "utf-8" })
-    if (r.error) {
-      const code = (r.error as NodeJS.ErrnoException).code
-      if (code === "ETIMEDOUT") return { ok: false, detail: `timeout ${timeoutMs}ms` }
-      return { ok: false, detail: r.error.message }
-    }
-    if (r.status === 0) return { ok: true, detail: "exit 0" }
-    const err = (r.stderr || "").trim().slice(0, 200)
-    return { ok: false, detail: `exit ${r.status}${err ? ": " + err : ""}` }
-  } catch (err) {
-    return { ok: false, detail: (err as Error).message }
-  }
+// MUST stay async. This used to call the SYNCHRONOUS spawn API, which blocks the
+// WHOLE Node event loop -- the HTTP server included -- until the child exits. One
+// command task (context-compact-dry) runs a script that curls this very dashboard
+// to refresh token usage, so that request could never be served while the loop sat
+// blocked in the child: a guaranteed self-deadlock for the child's full curl budget.
+// Observed 2026-08-07: dashboard silent 09:00:05.247 -> 09:01:05.342, exactly the
+// script's `curl -m 60`, ended by this task's own "command task ran" line.
+// Same defect class as the external-cron path fixed in 4ddad4d; this was the
+// in-process sibling, and strictly worse because the deadlock is guaranteed.
+function runCommand(cmd: string, timeoutMs: number): Promise<{ ok: boolean; detail: string }> {
+  return new Promise((resolve) => {
+    execFile(
+      "bash",
+      ["-lc", cmd],
+      { timeout: timeoutMs, encoding: "utf-8", maxBuffer: 1024 * 1024 },
+      (err, _stdout, stderr) => {
+        if (!err) { resolve({ ok: true, detail: "exit 0" }); return }
+        const e = err as NodeJS.ErrnoException & { killed?: boolean }
+        // Node sets killed=true when IT kills the child for exceeding `timeout`.
+        // Checked before the exit-code branch: a timed-out child also carries a
+        // code/signal, and reporting that instead would hide the timeout.
+        if (e.killed === true || e.code === "ETIMEDOUT") {
+          resolve({ ok: false, detail: `timeout ${timeoutMs}ms` }); return
+        }
+        if (typeof e.code === "number") {
+          const tail = (stderr || "").trim().slice(0, 200)
+          resolve({ ok: false, detail: `exit ${e.code}${tail ? ": " + tail : ""}` }); return
+        }
+        resolve({ ok: false, detail: e.message })
+      },
+    )
+  })
 }
 
-export function runCommandTask(task: ScheduledTask, now: number): void {
+export async function runCommandTask(task: ScheduledTask, now: number): Promise<void> {
   if (!task.command) {
     logger.warn({ task: task.name }, "command task has no command, skipping")
     return
@@ -87,7 +105,7 @@ export function runCommandTask(task: ScheduledTask, now: number): void {
   const timeoutMs = task.timeoutMs && task.timeoutMs > 0 ? task.timeoutMs : 10_000
   const failThreshold = task.failThreshold && task.failThreshold > 0 ? task.failThreshold : 2
   const map = load()
-  const { ok, detail } = runCommand(task.command, timeoutMs)
+  const { ok, detail } = await runCommand(task.command, timeoutMs)
   const { next, action } = evaluateCommandResult(map[task.name], ok, failThreshold, now)
   map[task.name] = next
   persist()

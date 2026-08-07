@@ -176,6 +176,52 @@ describe('fix-landed-check.sh (card f507541b)', () => {
     }
   })
 
+  // QA2 F3 on d4d8c56: `git show --name-only` prints NOTHING for a merge commit unless given
+  // `-m --first-parent`, so the file loop ran zero times and the check reported "all 0 files present".
+  // Measured on the real 6ac4d10: 0 files without the flags, 5 with. Merge commits are exactly the
+  // ones a landing check gets pointed at, so the blind spot sat on the hot path.
+  it('enumerates a merge commit\'s files instead of vacuously passing on zero', () => {
+    const { dir, base } = makeInstall()
+    try {
+      git(dir, 'checkout', '-q', '-b', 'side', base)
+      writeFileSync(join(dir, 'side-file'), 'from the side branch')
+      git(dir, 'add', 'side-file')
+      git(dir, 'commit', '-q', '-m', 'side work')
+      git(dir, 'checkout', '-q', 'fake-integration')
+      git(dir, 'merge', '-q', '--no-ff', 'side', '-m', 'merge side')
+      const mergeSha = git(dir, 'rev-parse', 'HEAD')
+      mkdirSync(join(dir, 'dist'), { recursive: true })
+      writeFileSync(join(dir, 'dist', '.built-commit'), mergeSha)
+
+      // the file the merge brought in is gone from disk -> only visible if the merge is enumerated
+      unlinkSync(join(dir, 'side-file'))
+      const r = run(['--commit', mergeSha, '--install', dir, '--ref', 'fake-integration'])
+      expect(r.out).toContain('files-missing')
+      expect(r.out).toContain('side-file')
+      expect(r.out).not.toMatch(/mind a 0 erintett fajl/) // the vacuous pass
+      expect(r.status).toBe(1)
+    } finally {
+      rmSync(dir, { recursive: true, force: true })
+    }
+  })
+
+  it('reports files-unverifiable when a commit enumerates no files at all', () => {
+    const { dir, feat } = makeInstall()
+    try {
+      git(dir, 'commit', '-q', '--allow-empty', '-m', 'empty commit')
+      const empty = git(dir, 'rev-parse', 'HEAD')
+      mkdirSync(join(dir, 'dist'), { recursive: true })
+      writeFileSync(join(dir, 'dist', '.built-commit'), empty)
+      git(dir, 'branch', '-f', 'fake-integration', empty)
+      const r = run(['--commit', empty, '--install', dir, '--ref', 'fake-integration'])
+      expect(r.out.split('\n')[0]).toMatch(/^UNKNOWN .* files-unverifiable/)
+      expect(r.status).toBe(3)
+      expect(feat).toBeTruthy()
+    } finally {
+      rmSync(dir, { recursive: true, force: true })
+    }
+  })
+
   it('reports missing-commit rather than guessing, for an unknown sha', () => {
     const { dir } = makeInstall()
     try {
@@ -240,6 +286,20 @@ describe('fix-landed-check.sh --sweep', () => {
     execFileSync('sqlite3', [db], { input: sql, stdio: 'pipe' })
   }
 
+  /** Same board, but with the comment body given verbatim -- for rows that carry no commit sha. */
+  function seedBoardRaw(dir: string, rows: Array<{ card: string; status: string; comment: string }>) {
+    const db = join(dir, 'store', 'claudeclaw.db')
+    const sql = [
+      'CREATE TABLE kanban_cards (id TEXT PRIMARY KEY, status TEXT);',
+      'CREATE TABLE kanban_comments (card_id TEXT, content TEXT, created_at INTEGER);',
+      ...rows.flatMap((r, i) => [
+        `INSERT INTO kanban_cards VALUES ('${r.card}', '${r.status}');`,
+        `INSERT INTO kanban_comments VALUES ('${r.card}', '${r.comment.replace(/'/g, "''")}', ${1000 + i});`,
+      ]),
+    ].join('\n')
+    execFileSync('sqlite3', [db], { input: sql, stdio: 'pipe' })
+  }
+
   it('extracts the commit from a multi-line REVIEW comment and verdicts each card', () => {
     const { dir, base, feat } = makeInstall()
     try {
@@ -280,24 +340,44 @@ describe('fix-landed-check.sh --sweep', () => {
   // Cybersec NO-GO F1 on d4d8c56: a mistyped parameter printed `checked=0 not-landed=0` and exited 0,
   // i.e. "everything landed". Zero coverage is not a clean bill of health -- the same overstated-
   // coverage class this tool exists to measure.
+  // Each case asserts the SPECIFIC error, not just "some ERROR:". With a bad parameter the loop ends
+  // with total=0, so the nothing-checked guard also exits 2 -- a generic `/^ERROR:/` assertion passes
+  // no matter which guard fired, leaving the parameter validation itself unproven.
   it.each([
-    ['--limit', 'abc'],
-    ['--limit', '0'],
-    ['--limit', '-1'],
-    ['--status', 'nosuchstatus'],
-    ['--status', "x') OR 1=1 --"], // F2 as reported: breaks the quoting
+    ['--limit', 'abc', 'ERROR:invalid-limit:abc'],
+    ['--limit', '0', 'ERROR:invalid-limit:0'],
+    ['--limit', '-1', 'ERROR:invalid-limit:-1'],
+    ['--status', 'nosuchstatus', 'ERROR:invalid-status:nosuchstatus'],
+    ['--status', "x') OR 1=1 --", 'ERROR:invalid-status:'], // F2 as reported: breaks the quoting
     // The space-free variant is the one that matters: it survives the word-split and, without the
     // allowlist, forms valid SQL (`IN ('waiting')OR('1'='1')`) that matches every row. The spaced
     // version above only produces a syntax error, so it would pass even with the allowlist removed.
-    ['--status', "waiting')OR('1'='1"],
-  ])('exits 2 instead of reporting a clean sweep for %s=%j', (flag, value) => {
+    ['--status', "waiting')OR('1'='1", 'ERROR:invalid-status:'],
+  ])('exits 2 with the specific error for %s=%j', (flag, value, expected) => {
     const { dir, base } = makeInstall()
     try {
       seedBoard(dir, [{ card: 'aaaaaaaa', sha: base, status: 'done' }])
       const r = run(['--sweep', '--install', dir, '--ref', 'fake-integration', flag, value])
       expect(r.status).toBe(2)
-      expect(r.out).toMatch(/^ERROR:/m)
+      expect(r.out).toContain(expected) // the parameter guard fired, not merely some guard
       expect(r.out).not.toContain('not-landed=0') // must never read as "all clear"
+    } finally {
+      rmSync(dir, { recursive: true, force: true })
+    }
+  })
+
+  // The input where nothing-checked is the ONLY guard that can fire: parameters are valid, so the
+  // parameter guards stay silent, and the board simply yields no checkable commit. Without this the
+  // guard's coverage is vacuous -- deleting it left the suite fully green, because every other test
+  // feeds a bad parameter that the parameter guards catch first.
+  it('exits 2 when valid parameters produce zero checkable cards', () => {
+    const { dir } = makeInstall()
+    try {
+      seedBoardRaw(dir, [{ card: 'aaaaaaaa', status: 'done', comment: 'REVIEW: kesz, nincs benne commit-sha.' }])
+      const r = run(['--sweep', '--install', dir, '--ref', 'fake-integration', '--limit', '40'])
+      expect(r.status).toBe(2)
+      expect(r.out).toContain('ERROR:nothing-checked')
+      expect(r.out).not.toContain('SUMMARY') // never summarise a sweep that inspected nothing
     } finally {
       rmSync(dir, { recursive: true, force: true })
     }
