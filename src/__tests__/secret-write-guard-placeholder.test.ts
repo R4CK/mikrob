@@ -70,6 +70,36 @@ describe('secret-write-guard blocks a real-looking key regardless of its neighbo
   })
 })
 
+describe('every match is examined, not just the first (card 57112049)', () => {
+  // rx.search() stopped at match #1 per pattern. A decoy placeholder ABOVE a real key meant the
+  // real key was never looked at and the write went through -- reproduced 3/3 by Cybersec, and NOT
+  // covered by any of the seven controls above: each of those puts a single key in the content, so
+  // "first match" and "every match" were indistinguishable. The gap was in the input space, not in
+  // the assertions.
+  it('blocks when a placeholder decoy is placed BEFORE a real key', () => {
+    const decoyFirst = `const example = '${SELF_EVIDENT}'\nconst real = '${REAL_LOOKING}'`
+    expect(writeAttempt(decoyFirst).blocked).toBe(true)
+  })
+
+  it('blocks with the published AWS example as the decoy -- the other placeholder path', () => {
+    const decoyFirst = `# docs: ${AWS_DOC_EXAMPLE}\nAWS_ACCESS_KEY_ID=${REAL_LOOKING}`
+    expect(writeAttempt(decoyFirst).blocked).toBe(true)
+  })
+
+  it('blocks with the real key LAST among several decoys', () => {
+    const many = [SELF_EVIDENT, AWS_DOC_EXAMPLE, SELF_EVIDENT, REAL_LOOKING]
+      .map((k, i) => `const k${i} = '${k}'`)
+      .join('\n')
+    expect(writeAttempt(many).blocked).toBe(true)
+  })
+
+  it('still ALLOWS a file whose every match is a placeholder -- no new false positive', () => {
+    // The other half: "one real key blocks" must not become "several placeholders block".
+    const allFake = `${SELF_EVIDENT}\n${AWS_DOC_EXAMPLE}\n${SELF_EVIDENT}`
+    expect(writeAttempt(allFake).blocked).toBe(false)
+  })
+})
+
 describe('secret-write-guard still allows values that are provably not credentials', () => {
   it("allows AWS's own published example key", () => {
     expect(writeAttempt(`AWS_ACCESS_KEY_ID=${AWS_DOC_EXAMPLE}`).blocked).toBe(false)

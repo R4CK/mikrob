@@ -118,13 +118,18 @@ def main():
         sys.exit(0)
 
     for name, rx in PATTERNS:
-        m = rx.search(content)
-        if not m:
+        # EVERY match, not just the first (card 57112049). rx.search() stopped at match #1, so a
+        # decoy placeholder placed ABOVE a real key meant the real key was never examined and the
+        # write went through -- Cybersec reproduced it 3/3. The pattern only clears if ALL of its
+        # matches are placeholders; one real key among them blocks.
+        matches = [m.group(0) for m in rx.finditer(content)]
+        if not matches:
             continue
-        span = m.group(0)
-        # Judged on the span alone -- surrounding text cannot vouch for it (card 746ea4e4).
-        if _is_placeholder(span):
+        real = [s for s in matches if not _is_placeholder(s)]
+        # Each span judged on itself -- surrounding text cannot vouch for it (card 746ea4e4).
+        if not real:
             continue
+        span = real[0]
         sys.stderr.write(
             "SECRET-WRITE-GUARD: a beirni kivant tartalom valodinak tuno titkot "
             f"tartalmaz ({name}). A muvelet blokkolva. Ne irj literal kredencialt "
