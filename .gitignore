@@ -20,6 +20,12 @@ store/*
 !store/*.sh
 # Stitch design-gen tools are operational scripts (tracked except node_modules).
 !store/stitch-tools/gen.mjs
+# The watched-repos registry is hand-maintained CONFIG, not runtime state -- nothing writes it (the
+# watcher and both dashboard consumers only read), so tracking it causes no churn. It was ignored, and
+# a security-relevant correction (repomix pin 1.17.0 -> 1.18.0, card 435e5083) therefore existed only
+# on this disk: unversioned, unbacked-up, and a fresh checkout would have restored the stale pin.
+# Contains no secrets -- verified; the token/secret word matches in it are prose. Card 8338cf69.
+!store/watched-repos.json
 !store/stitch-tools/fetch-pngs.mjs
 !store/stitch-tools/package.json
 # Gate-sweep scanners are operational scripts (named, not a blanket *.py rule,
