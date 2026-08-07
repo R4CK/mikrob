@@ -1,4 +1,4 @@
-import { execFile } from "node:child_process"
+import { execFileAsync } from "./exec-async.js"
 import { join } from "node:path"
 import { readFileSync } from "node:fs"
 import { STORE_DIR, TELEGRAM_BOT_TOKEN } from "../config.js"
@@ -72,29 +72,18 @@ export function evaluateCommandResult(
 // script's `curl -m 60`, ended by this task's own "command task ran" line.
 // Same defect class as the external-cron path fixed in 4ddad4d; this was the
 // in-process sibling, and strictly worse because the deadlock is guaranteed.
-function runCommand(cmd: string, timeoutMs: number): Promise<{ ok: boolean; detail: string }> {
-  return new Promise((resolve) => {
-    execFile(
-      "bash",
-      ["-lc", cmd],
-      { timeout: timeoutMs, encoding: "utf-8", maxBuffer: 1024 * 1024 },
-      (err, _stdout, stderr) => {
-        if (!err) { resolve({ ok: true, detail: "exit 0" }); return }
-        const e = err as NodeJS.ErrnoException & { killed?: boolean }
-        // Node sets killed=true when IT kills the child for exceeding `timeout`.
-        // Checked before the exit-code branch: a timed-out child also carries a
-        // code/signal, and reporting that instead would hide the timeout.
-        if (e.killed === true || e.code === "ETIMEDOUT") {
-          resolve({ ok: false, detail: `timeout ${timeoutMs}ms` }); return
-        }
-        if (typeof e.code === "number") {
-          const tail = (stderr || "").trim().slice(0, 200)
-          resolve({ ok: false, detail: `exit ${e.code}${tail ? ": " + tail : ""}` }); return
-        }
-        resolve({ ok: false, detail: e.message })
-      },
-    )
-  })
+async function runCommand(cmd: string, timeoutMs: number): Promise<{ ok: boolean; detail: string }> {
+  // execFileAsync, not a raw execFile: Node's own `timeout` SIGTERMs only the direct
+  // child, so a command task whose script backgrounds work (or redirects, making bash
+  // fork) leaves orphans running while the caller is told "timeout" -- work then piles
+  // up invisibly, which is what the outage actually looked like. The helper kills the
+  // process GROUP instead (card 423b8274, Cybersec 8304 item 2).
+  const r = await execFileAsync("bash", ["-lc", cmd], { timeoutMs, maxBuffer: 1024 * 1024 })
+  if (r.timedOut) return { ok: false, detail: `timeout ${timeoutMs}ms` }
+  if (r.status === 0) return { ok: true, detail: "exit 0" }
+  if (r.status === null) return { ok: false, detail: r.stderr.trim().slice(0, 200) || "spawn failed" }
+  const tail = r.stderr.trim().slice(0, 200)
+  return { ok: false, detail: `exit ${r.status}${tail ? ": " + tail : ""}` }
 }
 
 export async function runCommandTask(task: ScheduledTask, now: number): Promise<void> {

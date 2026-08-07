@@ -56,9 +56,17 @@ const TICK_SYNC_EXCEPTIONS: Readonly<Record<string, number>> = {
   'agent-process.ts': 6, // tmux execFileSync wrapper, timeout 3000 local / 8000 remote
 }
 // Route handlers: a single inbound HTTP request triggers these, so a blocking child freezes every
-// other request. agents.ts held three `execSync('sleep N')` calls -- one of them inside a
-// 12-iteration loop, i.e. up to twelve seconds of frozen dashboard per /login (card 89d0bfde).
-const ROUTE_FILES = ['routes/agents.ts'] as const
+// other request -- worse than the tick, which at least fires on a schedule. agents.ts held three
+// `execSync('sleep N')` calls, one inside a 12-iteration loop (12s of frozen dashboard per /login);
+// the rest of the class was swept in card 423b8274, connectors.ts being the sharpest at 30s over the
+// network. Counts measured per file, not quoted: connectors had 6 sites and skills 4, where the
+// report said 5 and 3 -- a quoted number would have pinned the wrong thing.
+const ROUTE_FILES = [
+  'routes/agents.ts',
+  'routes/connectors.ts',   // `claude mcp add`, up to 30s and NETWORK-dependent -- the worst of the set
+  'routes/skills.ts',       // unzip / zip / cp, 5-15s
+  'routes/agents-skills.ts', // unzip, 5-10s
+] as const
 const SYNC_CHILD_APIS = ['spawnSync', 'execSync', 'execFileSync'] as const
 
 describe('scheduler tick stays off the blocking path (card 92e2bb1b)', () => {

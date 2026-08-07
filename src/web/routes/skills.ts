@@ -2,7 +2,7 @@ import { createReadStream, existsSync, readdirSync, mkdirSync, writeFileSync, un
 import { join, sep, basename } from 'node:path'
 import { homedir, tmpdir } from 'node:os'
 import { randomUUID } from 'node:crypto'
-import { execSync } from 'node:child_process'
+import { execShellAsync } from '../exec-async.js'
 import { logger } from '../../logger.js'
 import { atomicWriteFileSync } from '../atomic-write.js'
 import { AGENTS_BASE_DIR, listAgentNames, readFileOr, agentDir } from '../agent-config.js'
@@ -225,9 +225,9 @@ export async function tryHandleSkills(ctx: RouteContext): Promise<boolean> {
     }
     const tmpZip = join(tmpdir(), `skills-export-${randomUUID()}.zip`)
     try {
-      execSync(
+      await execShellAsync(
         `cd ${shellEscape(USER_SKILLS_DIR)} && zip -r ${shellEscape(tmpZip)} . --include "*/SKILL.md" --include "*/references/*"`,
-        { timeout: 15000 }
+        { timeoutMs: 15000 }
       )
       const stat = statSync(tmpZip)
       res.setHeader('Content-Type', 'application/zip')
@@ -394,7 +394,7 @@ export async function tryHandleSkills(ctx: RouteContext): Promise<boolean> {
     const before = new Set(readdirSync(skillsDir))
     try {
       writeFileSync(tmpPath, file.data)
-      const listOutput = execSync(`unzip -Z1 "${tmpPath}" 2>&1`, { timeout: 5000, encoding: 'utf-8' })
+      const listOutput = await execShellAsync(`unzip -Z1 "${tmpPath}" 2>&1`, { timeoutMs: 5000 })
       const entries = listOutput.split('\n').map(l => l.trim()).filter(Boolean)
       for (const entry of entries) {
         if (entry.includes('..') || entry.startsWith('/') || /^[a-zA-Z]:[\\/]/.test(entry)) {
@@ -417,7 +417,7 @@ export async function tryHandleSkills(ctx: RouteContext): Promise<boolean> {
           return true
         }
       }
-      execSync(`unzip -o "${tmpPath}" -d "${skillsDir}"`, { timeout: 10000 })
+      await execShellAsync(`unzip -o "${tmpPath}" -d "${skillsDir}"`, { timeoutMs: 10000 })
       unlinkSync(tmpPath)
 
       const after = readdirSync(skillsDir).filter(f => !before.has(f))
@@ -500,7 +500,7 @@ export async function tryHandleSkills(ctx: RouteContext): Promise<boolean> {
       mkdirSync(agentSkillsDir, { recursive: true })
       const destDir = join(agentSkillsDir, skillName)
       if (existsSync(destDir)) rmSync(destDir, { recursive: true, force: true })
-      execSync(`cp -r ${shellEscape(globalSkillDir)} ${shellEscape(destDir)}`, { timeout: 10000 })
+      await execShellAsync(`cp -r ${shellEscape(globalSkillDir)} ${shellEscape(destDir)}`, { timeoutMs: 10000 })
     }
 
     for (const agentName of allAgentNames) {
