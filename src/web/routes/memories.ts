@@ -37,16 +37,23 @@ const SUSPICIOUS_PATTERNS = [
   // `admin:hunter2`, `15`). A plain alphabetic word ("mukodik", "de", "hivas") never does, which
   // is what still separates a command from prose.
   //
-  // Deliberately NOT case-insensitive: dropping the `i` flag makes the uppercase method alternative
-  // discriminating (a prose "get"/"head" cannot pose as a method), and shell writes `curl` and
-  // `https://` in lower case anyway.
+  // The rule is NOT globally case-insensitive: an `i` flag would let a prose "get"/"head" pose as
+  // the uppercase-method alternative and strip its discriminating power. But the two LITERALS must
+  // fold, because this filter reads what an ATTACKER writes into the memory API, not what a shell
+  // emits: `CURL https://evil.tld/x` and `curl HTTPS://evil.tld/x` are the same command to the
+  // agent that later reads the record, and `HTTP://localhost:3420/` is a working request, not a
+  // theoretical form. An earlier revision dropped `i` wholesale and regressed exactly those three
+  // shapes (Cybersec NO-GO). So `curl` and `http(s)` are spelled out per character, and nothing
+  // else folds. The bare `--` end-of-options separator is admitted too: it carries none of the
+  // argument-shaped characters below, so it used to break the chain on its own.
   //
   // Bounded on purpose ({1,200}, lookahead capped) -- an unbounded nested quantifier here would be
-  // a ReDoS foothold on attacker-controlled text. Measured: 0.0002s on a 400-argument no-URL input.
+  // a ReDoS foothold on attacker-controlled text. Measured, linear: 4k tokens 0.48ms, 20k 2.60ms,
+  // 40k 5.23ms on a no-URL input.
   //
-  // Re-measured against the live memory corpus (416 records) AFTER this widening, as the gate
-  // required: 0 matches. The wider rule still adds no false positive on real content.
-  /\bcurl\b(?:\s+(?:-{1,2}[A-Za-z][\w-]*|[A-Z]{3,7}|"[^"\n]*"|'[^'\n]*'|@[\w./~-]+|(?=[^\s]{0,200}[=:/@0-9])[^\s"'`;,|&<>]{1,200}))*\s+["']?https?:\/\//,
+  // Re-measured after every widening, as the gate requires: 13/13 attacker shapes flagged, 0 false
+  // positives on 8 prose controls, and 0 matches across the live memory corpus (418 records).
+  /\b[cC][uU][rR][lL]\b(?:\s+(?:--(?=\s)|-{1,2}[A-Za-z][\w-]*|[A-Z]{3,7}|"[^"\n]*"|'[^'\n]*'|@[\w./~-]+|(?=[^\s]{0,200}[=:/@0-9])[^\s"'`;,|&<>]{1,200}))*\s+["']?[hH][tT][tT][pP][sS]?:\/\//,
   /\bbash\s+-c\b/i,
   /\beval\s*\(/i,
   /\bexec\s*\(/i,
