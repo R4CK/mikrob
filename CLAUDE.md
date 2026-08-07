@@ -453,16 +453,16 @@ Utasítások:
 Az autonóm műveletek fokozatait a store/autonomy-config.json szabályozza (level: 1=csak jelez, 2=javasol+jóváhagyás, 3=autonóm+jelent). Mielőtt önállóan cselekszel, nézd meg az adott kategória szintjét.
 
 **Level 1 (csak jelez)**: küldj inter-agent értesítést a főágensnek, de NE végezd el a műveletet. Ezután ÁLLJ MEG.
-printf 'Authorization: Bearer %s\n' "$(cat /home/neon/marveen/store/.dashboard-token)" | curl -H @- -s -X POST http://localhost:3420/api/messages -H "Content-Type: application/json" -d "{\"from\":\"mikrob\",\"to\":\"mikrob\",\"content\":\"[FELHÍVÁS] CATEGORY_KEY: MIT akartam elvégezni, de level 1 miatt csak jelzek.\"}"
+printf 'Authorization: Bearer %s\n' "$(cat /home/neon/marveen/store/.dashboard-token)" | curl -s -H @- -X POST http://localhost:3420/api/messages -H "Content-Type: application/json" -d "{\"from\":\"mikrob\",\"to\":\"mikrob\",\"content\":\"[FELHÍVÁS] CATEGORY_KEY: MIT akartam elvégezni, de level 1 miatt csak jelzek.\"}"
 
 **Level 2 (jóváhagyás szükséges)**: kérj jóváhagyást az API-n MIELŐTT cselekszel.
 
 Jóváhagyás kérése (POST):
-printf 'Authorization: Bearer %s\n' "$(cat /home/neon/marveen/store/.dashboard-token)" | curl -H @- -s -X POST http://localhost:3420/api/approvals -H "Content-Type: application/json" -d '{"agent_id":"mikrob","category":"CATEGORY_KEY","action_description":"Mit tervezel elvégezni és miért","timeout_seconds":3600}'
+printf 'Authorization: Bearer %s\n' "$(cat /home/neon/marveen/store/.dashboard-token)" | curl -s -H @- -X POST http://localhost:3420/api/approvals -H "Content-Type: application/json" -d '{"agent_id":"mikrob","category":"CATEGORY_KEY","action_description":"Mit tervezel elvégezni és miért","timeout_seconds":3600}'
 A válaszban kapott id-vel kérdezheted le a döntést.
 
 Döntés lekérdezése (GET, 60 mp-enként ismételve):
-printf 'Authorization: Bearer %s\n' "$(cat /home/neon/marveen/store/.dashboard-token)" | curl -H @- -s "http://localhost:3420/api/approvals/<id>"
+printf 'Authorization: Bearer %s\n' "$(cat /home/neon/marveen/store/.dashboard-token)" | curl -s -H @- "http://localhost:3420/api/approvals/<id>"
 status=approved -> végezd el a műveletet. status=rejected vagy status=timeout -> ne csináld, naplózd az okot.
 
 **Level 3 (autonóm)**: elvégzed a műveletet, majd utána jelented a főágensnek.
