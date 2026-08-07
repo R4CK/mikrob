@@ -134,6 +134,48 @@ describe('fix-landed-check.sh (card f507541b)', () => {
     }
   })
 
+  // QA2 FAIL on d4d8c56: an UNVERIFIED check was recorded as a detail line only, so a repo with no
+  // origin/develop ref (fresh clone, never fetched) reported LANDED with exit 0 while merge status was
+  // never looked at. A landed-checker that says LANDED by mistake is worse than none.
+  it('reports UNKNOWN, exit 3, when the integration ref does not exist locally', () => {
+    const { dir, base, feat } = makeInstall()
+    try {
+      mkdirSync(join(dir, 'dist'), { recursive: true })
+      writeFileSync(join(dir, 'dist', '.built-commit'), feat)
+      const r = run(['--commit', base, '--install', dir, '--ref', 'no-such-ref-anywhere'])
+      expect(r.out.split('\n')[0]).toMatch(/^UNKNOWN .* merge-unverifiable$/)
+      expect(r.status).toBe(3)
+      expect(r.out).not.toContain('LANDED') // NOT-LANDED also contains "LANDED" as a substring
+    } finally {
+      rmSync(dir, { recursive: true, force: true })
+    }
+  })
+
+  it('reports UNKNOWN, exit 3, when there is no build marker to check against', () => {
+    const { dir, base } = makeInstall()
+    try {
+      const r = check(dir, base) // makeInstall creates no dist/
+      expect(r.out.split('\n')[0]).toMatch(/^UNKNOWN .* build-unverifiable$/)
+      expect(r.status).toBe(3)
+    } finally {
+      rmSync(dir, { recursive: true, force: true })
+    }
+  })
+
+  // A definite failure is more informative than "cannot tell", so it must win.
+  it('prefers NOT-LANDED over UNKNOWN when a check has definitely failed', () => {
+    const { dir, base, feat } = makeInstall()
+    try {
+      git(dir, 'checkout', '-q', base) // feat is now definitely NOT deployed...
+      // ...while the missing ref and missing build marker are merely unknown
+      const r = run(['--commit', feat, '--install', dir, '--ref', 'no-such-ref-anywhere'])
+      expect(r.out.split('\n')[0]).toMatch(/^NOT-LANDED .* not-deployed/)
+      expect(r.status).toBe(1)
+    } finally {
+      rmSync(dir, { recursive: true, force: true })
+    }
+  })
+
   it('reports missing-commit rather than guessing, for an unknown sha', () => {
     const { dir } = makeInstall()
     try {
@@ -202,6 +244,8 @@ describe('fix-landed-check.sh --sweep', () => {
     const { dir, base, feat } = makeInstall()
     try {
       git(dir, 'checkout', '-q', base)
+      mkdirSync(join(dir, 'dist'), { recursive: true })
+      writeFileSync(join(dir, 'dist', '.built-commit'), feat) // so the build check actually RUNS
       seedBoard(dir, [
         { card: 'aaaaaaaa', sha: base, status: 'done' },
         { card: 'bbbbbbbb', sha: feat, status: 'waiting' },
@@ -209,7 +253,7 @@ describe('fix-landed-check.sh --sweep', () => {
       const r = run(['--sweep', '--install', dir, '--ref', 'fake-integration'])
       expect(r.out).toMatch(/aaaaaaaa LANDED/)
       expect(r.out).toMatch(/bbbbbbbb NOT-LANDED/)
-      expect(r.out).toContain('SUMMARY checked=2 not-landed=1')
+      expect(r.out).toContain('SUMMARY checked=2 not-landed=1 unknown=0')
       expect(r.status).toBe(1) // any not-landed card is a non-zero sweep
     } finally {
       rmSync(dir, { recursive: true, force: true })
@@ -227,7 +271,52 @@ describe('fix-landed-check.sh --sweep', () => {
       ])
       const r = run(['--sweep', '--limit', '2', '--install', dir, '--ref', 'fake-integration'])
       expect(r.out).toContain('checked=2') // not 3: an off-by-one here reports a card it never checked
-      expect(r.out.split('\n').filter((l) => /^[a-z]{8} (LANDED|NOT-LANDED)/.test(l))).toHaveLength(2)
+      expect(r.out.split('\n').filter((l) => /^[a-z]{8} (LANDED|NOT-LANDED|UNKNOWN)/.test(l))).toHaveLength(2)
+    } finally {
+      rmSync(dir, { recursive: true, force: true })
+    }
+  })
+
+  // Cybersec NO-GO F1 on d4d8c56: a mistyped parameter printed `checked=0 not-landed=0` and exited 0,
+  // i.e. "everything landed". Zero coverage is not a clean bill of health -- the same overstated-
+  // coverage class this tool exists to measure.
+  it.each([
+    ['--limit', 'abc'],
+    ['--limit', '0'],
+    ['--limit', '-1'],
+    ['--status', 'nosuchstatus'],
+    ['--status', "x') OR 1=1 --"], // F2 as reported: breaks the quoting
+    // The space-free variant is the one that matters: it survives the word-split and, without the
+    // allowlist, forms valid SQL (`IN ('waiting')OR('1'='1')`) that matches every row. The spaced
+    // version above only produces a syntax error, so it would pass even with the allowlist removed.
+    ['--status', "waiting')OR('1'='1"],
+  ])('exits 2 instead of reporting a clean sweep for %s=%j', (flag, value) => {
+    const { dir, base } = makeInstall()
+    try {
+      seedBoard(dir, [{ card: 'aaaaaaaa', sha: base, status: 'done' }])
+      const r = run(['--sweep', '--install', dir, '--ref', 'fake-integration', flag, value])
+      expect(r.status).toBe(2)
+      expect(r.out).toMatch(/^ERROR:/m)
+      expect(r.out).not.toContain('not-landed=0') // must never read as "all clear"
+    } finally {
+      rmSync(dir, { recursive: true, force: true })
+    }
+  })
+
+  // Without this the validation could be "fixed" by rejecting everything.
+  it('still sweeps normally with valid parameters', () => {
+    const { dir, base, feat } = makeInstall()
+    try {
+      git(dir, 'checkout', '-q', base)
+      mkdirSync(join(dir, 'dist'), { recursive: true })
+      writeFileSync(join(dir, 'dist', '.built-commit'), base)
+      seedBoard(dir, [
+        { card: 'aaaaaaaa', sha: base, status: 'done' },
+        { card: 'bbbbbbbb', sha: feat, status: 'done' },
+      ])
+      const r = run(['--sweep', '--install', dir, '--ref', 'fake-integration', '--limit', '40'])
+      expect(r.status).toBe(1) // bbbbbbbb is genuinely not landed
+      expect(r.out).toContain('checked=2')
     } finally {
       rmSync(dir, { recursive: true, force: true })
     }

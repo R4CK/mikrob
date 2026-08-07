@@ -213,7 +213,77 @@ describe('rollback-guard wiring (card 980454f7)', () => {
 
   it('pins the floor to the commit that removed the duplicate watchdog', () => {
     // A drifting floor would quietly re-open the exact window the loop came through.
-    expect(readFileSync(GUARD, 'utf-8')).toContain('ROLLBACK_GUARD_MIN_SHA="5bc09832367c530dbc9796c3efc90d29f54ae728"')
+    expect(readFileSync(GUARD, 'utf-8')).toContain(
+      'ROLLBACK_GUARD_DEFAULT_MIN_SHA="5bc09832367c530dbc9796c3efc90d29f54ae728"',
+    )
+  })
+
+  // Cybersec NO-GO on 0006c5f: `[ "$distance" -gt "$MAX" ]` with a non-numeric MAX prints an integer
+  // error to stderr and evaluates FALSE, so the refusal branch never runs and the guard fails OPEN --
+  // a typo in a fork or test env silently disabled the only control against a deep rollback.
+  it.each(['abc', '50x', ' ', '-5', '5.0'])(
+    'falls back to the default limit instead of failing open on MAX_DISTANCE=%j',
+    (bad) => {
+      const dir = makeRepo(60)
+      try {
+        const head = sha(dir, 'HEAD')
+        const far = sha(dir, 'HEAD~55') // well past the default 50
+        const r = runGuard(`rollback_guard_check "${dir}" "${head}" "${far}" "badcfg"`, {
+          ROLLBACK_GUARD_MAX_DISTANCE: bad,
+        })
+        expect(r.status, `MAX=${JSON.stringify(bad)} must still refuse`).not.toBe(0)
+        expect(r.out).toContain('ervenytelen ROLLBACK_GUARD_MAX_DISTANCE')
+        expect(r.out).toContain('55 committal van hatra')
+      } finally {
+        rmSync(dir, { recursive: true, force: true })
+      }
+    },
+  )
+
+  // Without this the validation could be "fixed" by ignoring the variable entirely.
+  it('still honours a deliberate, valid permissive limit', () => {
+    const dir = makeRepo(60)
+    try {
+      const head = sha(dir, 'HEAD')
+      const r = runGuard(`rollback_guard_check "${dir}" "${head}" "${sha(dir, 'HEAD~55')}" "override"`, {
+        ROLLBACK_GUARD_MAX_DISTANCE: '99999',
+      })
+      expect(r.status).toBe(0)
+      expect(r.out).not.toContain('ervenytelen')
+    } finally {
+      rmSync(dir, { recursive: true, force: true })
+    }
+  })
+
+  it('leaves a log trace whenever it runs with a weakened configuration', () => {
+    const dir = makeRepo(6)
+    try {
+      const head = sha(dir, 'HEAD')
+      const log = join(dir, 'store', 'rollback-guard.log')
+      // permissive on both axes: huge limit AND floor disabled -> allowed, but recorded
+      const r = runGuard(`rollback_guard_check "${dir}" "${head}" "${sha(dir, 'HEAD~5')}" "weak"`, {
+        ROLLBACK_GUARD_MAX_DISTANCE: '99999',
+        ROLLBACK_GUARD_MIN_SHA: '',
+      })
+      expect(r.status).toBe(0) // it did allow
+      const written = readFileSync(log, 'utf-8')
+      expect(written).toContain('NON-DEFAULT-CONFIG')
+      expect(written).toContain('max-distance=99999')
+      expect(written).toContain('floor=<kikapcsolva>')
+    } finally {
+      rmSync(dir, { recursive: true, force: true })
+    }
+  })
+
+  it('writes no config trace on a default run', () => {
+    const dir = makeRepo(6)
+    try {
+      const head = sha(dir, 'HEAD')
+      runGuard(`rollback_guard_check "${dir}" "${head}" "${sha(dir, 'HEAD~1')}" "plain"`)
+      expect(existsSync(join(dir, 'store', 'rollback-guard.log'))).toBe(false)
+    } finally {
+      rmSync(dir, { recursive: true, force: true })
+    }
   })
 
   it('keeps --dry-run side-effect-free (reason, not the escalating check)', () => {

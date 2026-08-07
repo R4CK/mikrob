@@ -234,8 +234,13 @@ A `scripts/monitor_agents.sh` egyetlen tmux `monitor` session-be fogja össze az
 Egy commitra négy kérdést válaszol meg: benne van-e az integrációs ágban (`origin/develop`), benne
 van-e az élő install HEAD-fájában, az általa érintett fájlok ott vannak-e a lemezen is, és a
 `dist/.built-commit` szerint tartalmazza-e a lefordított build. Első sora gép-olvasható
-(`LANDED` / `NOT-LANDED <ok-lista>` / `ERROR:<ok>`), exit 0/1/2. A `--sweep` a kanban REVIEW-kommentjeiből
-szedi ki a commitokat, és megmondja, mely késznek jelentett kártya kódja nincs valójában élesben.
+(`LANDED` / `NOT-LANDED <ok-lista>` / `UNKNOWN <mit-nem-lehetett-ellenőrizni>` / `ERROR:<ok>`),
+exit 0/1/3/2. Az `UNKNOWN` azért kell, mert **egy le nem futott ellenőrzés nem sikeres ellenőrzés**:
+hiányzó `origin/develop` ref (friss klón) vagy hiányzó `dist/.built-commit` nem lehet néma zöld.
+Ugyanezért utasít el a `--sweep` érvénytelen `--limit`/`--status` értéket és a nulla lefedettséget
+(`ERROR:nothing-checked`, exit 2) — egy elgépelt paraméter nem jelenthet „minden landolt"-at.
+A `--sweep` a kanban REVIEW-kommentjeiből szedi ki a commitokat, és megmondja, mely késznek jelentett
+kártya kódja nincs valójában élesben.
 Szigorúan **csak olvas**: git plumbing, read-only SQLite, `stat` — nem mergel, nem checkoutol, nem
 indít újra semmit.
 
@@ -249,7 +254,9 @@ duplikált `update-health-watchdog.sh`-t). Minden más esetben a visszaállás *
 jelenlegi verzión marad, a döntés bekerül a `store/.update-history`-ba (`rollback-refused`) és a
 `store/rollback-guard.log`-ba, és a tulajdonos értesítést kap. Tudatos, mélyebb visszaállás emberi
 kézzel továbbra is lehetséges: `./recovery-prev-version.sh --to <sha> --force` (automata hívónak nincs
-ilyen felülbírálása).
+ilyen felülbírálása). Érvénytelen (nem numerikus) `ROLLBACK_GUARD_MAX_DISTANCE` az alapértékre esik
+vissza, nem kapcsolja ki az ellenőrzést; minden nem-alapértelmezett konfig nyomot hagy a
+`store/rollback-guard.log`-ban, mert egy gyengített biztonsági kontroll nem lehet néma.
 
 Miért: 2026-08-06-án egy elavult rollback-cél 529 committal vitte vissza az élő installt, egymás után
 háromszor, mindannyiszor „sikeres" naplóbejegyzéssel — a visszaállított fa ugyanis újra magával hozta a
