@@ -2595,6 +2595,7 @@ const addBtn = document.getElementById('addAgentBtn')
 const agentWizardOverlay = document.getElementById('agentWizardOverlay')
 const agentDetailOverlay = document.getElementById('agentDetailOverlay')
 const skillModalOverlay = document.getElementById('skillModalOverlay')
+const llmQueueDetailOverlay = document.getElementById('llmQueueDetailOverlay')
 const agentName = document.getElementById('agentName')
 const agentDesc = document.getElementById('agentDesc')
 const agentModel = document.getElementById('agentModel')
@@ -2655,11 +2656,13 @@ addBtn.addEventListener('click', () => {
 document.getElementById('wizardClose').addEventListener('click', () => closeModal(agentWizardOverlay))
 document.getElementById('agentDetailClose').addEventListener('click', () => closeModal(agentDetailOverlay))
 document.getElementById('skillModalClose').addEventListener('click', () => closeModal(skillModalOverlay))
+document.getElementById('llmQueueDetailClose').addEventListener('click', () => closeModal(llmQueueDetailOverlay))
 
 // Click-outside-to-close
 agentWizardOverlay.addEventListener('click', (e) => { if (e.target === agentWizardOverlay) closeModal(agentWizardOverlay) })
 agentDetailOverlay.addEventListener('click', (e) => { if (e.target === agentDetailOverlay) closeModal(agentDetailOverlay) })
 skillModalOverlay.addEventListener('click', (e) => { if (e.target === skillModalOverlay) closeModal(skillModalOverlay) })
+llmQueueDetailOverlay.addEventListener('click', (e) => { if (e.target === llmQueueDetailOverlay) closeModal(llmQueueDetailOverlay) })
 
 // Close all modals on Escape
 document.addEventListener('keydown', (e) => {
@@ -10185,15 +10188,20 @@ async function loadLocalLlm() {
   await llmRefreshRecs()
   await llmRefreshLogs()
   await llmRefreshUsage()
+  await llmRefreshQueue()
   await llmRefreshCategories()
   llmSetupOffload()
+  llmSetupQueueFilter()
   stopLocalLlmPoll()
-  // Live refresh of status + terminal + usage while the page is open.
+  // Live refresh of status + terminal + usage + queue while the page is open. The queue is the
+  // fastest-changing of these (pending -> running -> done can happen within seconds), so it shares
+  // the same 5s tick rather than a slower one.
   _llmPollTimer = setInterval(() => {
     if (document.getElementById('localLlmPage').hidden) { stopLocalLlmPoll(); return }
     llmRefreshStatus()
     llmRefreshLogs()
     llmRefreshUsage()
+    llmRefreshQueue()
   }, 5000)
 }
 
@@ -10494,6 +10502,129 @@ async function llmRefreshUsage() {
   }
 }
 
+// --- Async work queue (card 48aacf56 item 5) --------------------------------
+// The list view (GET /api/local-llm/queue/list) is metadata-only by design --
+// no prompt/context/result -- so a row's full content is fetched on demand via
+// GET /api/local-llm/queue/<id> when the operator opens it (llmQueueOpenDetail).
+
+let _llmQueueFilter = ''
+
+function llmQueueStatusLabel(status) {
+  const key = {
+    pending: 'localLlm.queue.status.pending',
+    running: 'localLlm.queue.status.running',
+    done: 'localLlm.queue.status.done',
+    failed: 'localLlm.queue.status.failed',
+  }[status]
+  return key ? t(key) : (status || '—')
+}
+
+async function llmRefreshQueue() {
+  const tilesEl = document.getElementById('llmQueueTiles')
+  const recEl = document.getElementById('llmQueueRecent')
+  if (!tilesEl && !recEl) return
+  try {
+    const listUrl = '/api/local-llm/queue/list' +
+      (_llmQueueFilter ? ('?status=' + encodeURIComponent(_llmQueueFilter)) : '')
+    const [statsRes, listRes] = await Promise.all([fetch('/api/local-llm/queue'), fetch(listUrl)])
+    const s = await statsRes.json()
+    const l = await listRes.json()
+    if (!statsRes.ok || !listRes.ok) throw new Error('queue load failed')
+
+    if (tilesEl) {
+      const latency = s.avgLatencyMs != null ? (Math.round(s.avgLatencyMs / 100) / 10) + 's' : '—'
+      tilesEl.innerHTML = [
+        llmTile(t('localLlm.queue.tile.pending'), s.pending ?? 0, 'muted'),
+        llmTile(t('localLlm.queue.tile.running'), s.running ?? 0, 'ok'),
+        llmTile(t('localLlm.queue.tile.done'), s.done ?? 0, 'ok'),
+        llmTile(t('localLlm.queue.tile.failed'), s.failed ?? 0, (s.failed ?? 0) > 0 ? 'bad' : 'muted'),
+        llmTile(t('localLlm.queue.tile.latency'), latency, 'muted'),
+      ].join('')
+    }
+
+    if (recEl) {
+      const rows = Array.isArray(l.rows) ? l.rows : []
+      if (rows.length === 0) {
+        recEl.innerHTML = `<div class="llm-empty">${t('localLlm.queue.none')}</div>`
+      } else {
+        const body = rows.map(r => {
+          const taskLabel = r.template || r.task_type || '—'
+          const canView = r.status === 'done' || r.status === 'failed'
+          return `<tr>
+            <td>${escapeHtml(llmFmtTime(Math.floor(r.created_at / 1000)))}</td>
+            <td>${escapeHtml(r.agent || '')}</td>
+            <td>${escapeHtml(taskLabel)}</td>
+            <td>${escapeHtml(r.priority || '')}</td>
+            <td><span class="llm-queue-status ${escapeHtml(r.status || '')}">${escapeHtml(llmQueueStatusLabel(r.status))}</span></td>
+            <td>${canView ? `<button type="button" class="btn-secondary btn-compact llm-queue-view-btn" data-id="${r.id}">${t('localLlm.queue.view_btn')}</button>` : '—'}</td>
+          </tr>`
+        }).join('')
+        recEl.innerHTML = `<table class="llm-usage-table">
+          <thead><tr>
+            <th>${t('localLlm.queue.col_time')}</th>
+            <th>${t('localLlm.queue.col_agent')}</th>
+            <th>${t('localLlm.queue.col_task')}</th>
+            <th>${t('localLlm.queue.col_priority')}</th>
+            <th>${t('localLlm.queue.col_status')}</th>
+            <th>${t('localLlm.queue.col_action')}</th>
+          </tr></thead>
+          <tbody>${body}</tbody>
+        </table>`
+        recEl.querySelectorAll('.llm-queue-view-btn').forEach(btn => {
+          btn.addEventListener('click', () => llmQueueOpenDetail(Number(btn.dataset.id)))
+        })
+      }
+    }
+  } catch {
+    if (recEl) recEl.innerHTML = `<div class="llm-empty">${t('localLlm.queue.load_error')}</div>`
+  }
+}
+
+async function llmQueueOpenDetail(id) {
+  const body = document.getElementById('llmQueueDetailBody')
+  if (!body) return
+  body.innerHTML = `<div class="llm-loading">${t('common.loading')}</div>`
+  openModal(llmQueueDetailOverlay)
+  try {
+    const res = await fetch('/api/local-llm/queue/' + id)
+    const d = await res.json()
+    if (!res.ok) { body.innerHTML = `<div class="llm-empty">${t('localLlm.queue.detail.load_error')}</div>`; return }
+    const kvRows = [
+      [t('localLlm.queue.detail.agent'), d.agent],
+      [t('localLlm.queue.detail.task'), d.task_type || '—'],
+      [t('localLlm.queue.detail.template'), d.template || '—'],
+      [t('localLlm.queue.detail.priority'), d.priority],
+      [t('localLlm.queue.detail.status'), llmQueueStatusLabel(d.status)],
+      [t('localLlm.queue.detail.attempts'), d.attempts],
+      [t('localLlm.queue.detail.card'), d.card_id || '—'],
+      [t('localLlm.queue.detail.created'), llmFmtTime(Math.floor((d.created_at || 0) / 1000))],
+      [t('localLlm.queue.detail.started'), d.started_at ? llmFmtTime(Math.floor(d.started_at / 1000)) : '—'],
+      [t('localLlm.queue.detail.finished'), d.finished_at ? llmFmtTime(Math.floor(d.finished_at / 1000)) : '—'],
+    ]
+    const kv = kvRows
+      .map(([k, v]) => `<div class="llm-usage-kv"><span>${escapeHtml(k)}</span><span>${escapeHtml(String(v ?? '—'))}</span></div>`)
+      .join('')
+    const resultBlock = d.status === 'failed'
+      ? `<h3 class="llm-usage-subtitle">${t('localLlm.queue.detail.error')}</h3><pre class="llm-queue-detail-text llm-usage-err">${escapeHtml(d.error || '')}</pre>`
+      : `<h3 class="llm-usage-subtitle">${t('localLlm.queue.detail.result')}</h3><pre class="llm-queue-detail-text">${d.result ? escapeHtml(d.result) : escapeHtml(t('localLlm.queue.detail.no_result'))}</pre>`
+    body.innerHTML = `<div class="llm-usage-cols">${kv}</div>${resultBlock}`
+  } catch {
+    body.innerHTML = `<div class="llm-empty">${t('localLlm.queue.detail.load_error')}</div>`
+  }
+}
+
+function llmSetupQueueFilter() {
+  document.querySelectorAll('.llm-queue-filter-btn').forEach(btn => {
+    if (btn.dataset.bound) return
+    btn.dataset.bound = '1'
+    btn.addEventListener('click', () => {
+      _llmQueueFilter = btn.dataset.status || ''
+      document.querySelectorAll('.llm-queue-filter-btn').forEach(b => b.classList.toggle('active', b === btn))
+      llmRefreshQueue()
+    })
+  })
+}
+
 async function llmSwapModel(model) {
   try {
     const res = await fetch('/api/local-llm/model', {
@@ -10715,7 +10846,7 @@ async function llmRefreshLogs() {
 // Wire the local-llm page controls once at load.
 ;(function initLocalLlm() {
   const refreshBtn = document.getElementById('llmRefreshBtn')
-  if (refreshBtn) refreshBtn.addEventListener('click', () => { llmRefreshStatus(); llmRefreshRecs(); llmRefreshLogs(); llmRefreshUsage(); llmRefreshCategories() })
+  if (refreshBtn) refreshBtn.addEventListener('click', () => { llmRefreshStatus(); llmRefreshRecs(); llmRefreshLogs(); llmRefreshUsage(); llmRefreshQueue(); llmRefreshCategories() })
   // Close any open category info-tooltip (card 8b4ddcf0) on outside click or Escape. Bound once
   // here rather than per-render, since llmRefreshCategories() re-renders the list on every poll.
   document.addEventListener('click', (e) => {

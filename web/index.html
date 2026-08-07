@@ -812,6 +812,30 @@
         </div>
       </div>
 
+      <!-- Async work queue (card 48aacf56 item 5): pending/running/done/failed drafts, split off
+           item 4's auto-router so it would not block that gate. Backed by GET /api/local-llm/queue
+           (aggregate stats) and GET /api/local-llm/queue/list (recent rows). Row click opens the
+           detail modal (GET /api/local-llm/queue/<id>), which is the only place the prompt/result
+           text is fetched -- the list view is metadata-only by design (see local-llm-queue.ts). -->
+      <div class="llm-section">
+        <h2 class="llm-section-title" data-i18n="localLlm.queue.title">Feladat-sor</h2>
+        <p class="llm-offload-desc" data-i18n="localLlm.queue.desc">Az aszinkron helyi-LLM feladatsor élő állapota: sorban álló, futó, kész és sikertelen draftok.</p>
+        <div class="llm-status-grid" id="llmQueueTiles">
+          <div class="llm-loading" data-i18n="common.loading">Betöltés...</div>
+        </div>
+        <div class="llm-usage-block">
+          <h3 class="llm-usage-subtitle" data-i18n="localLlm.queue.recent">Legutóbbi tételek</h3>
+          <div class="llm-queue-filter" role="group" aria-label="Szűrés státusz szerint" data-i18n-aria-label="localLlm.queue.filter.aria">
+            <button type="button" class="llm-queue-filter-btn active" data-status="" data-i18n="localLlm.queue.filter.all">Mind</button>
+            <button type="button" class="llm-queue-filter-btn" data-status="pending" data-i18n="localLlm.queue.filter.pending">Várakozó</button>
+            <button type="button" class="llm-queue-filter-btn" data-status="running" data-i18n="localLlm.queue.filter.running">Fut</button>
+            <button type="button" class="llm-queue-filter-btn" data-status="done" data-i18n="localLlm.queue.filter.done">Kész</button>
+            <button type="button" class="llm-queue-filter-btn" data-status="failed" data-i18n="localLlm.queue.filter.failed">Sikertelen</button>
+          </div>
+          <div class="llm-usage-table-wrap" id="llmQueueRecent"></div>
+        </div>
+      </div>
+
       <!-- Offload aggressiveness slider (card 48f3b675) -->
       <div class="llm-section">
         <h2 class="llm-section-title" data-i18n="localLlm.offload.title">Offload agresszivitás</h2>
@@ -3279,6 +3303,19 @@
             <span class="btn-loading" hidden><span class="spinner"></span> <span data-i18n="common.importing">Importálás...</span></span>
           </button>
         </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- Modal: Local-LLM queue item detail (card 48aacf56 item 5) -->
+  <div class="modal-overlay" id="llmQueueDetailOverlay">
+    <div class="modal">
+      <div class="modal-header">
+        <h2 data-i18n="localLlm.queue.detail.title">Feladat-sor tétel</h2>
+        <button class="modal-close" id="llmQueueDetailClose">&times;</button>
+      </div>
+      <div class="modal-body" id="llmQueueDetailBody">
+        <div class="llm-loading" data-i18n="common.loading">Betöltés...</div>
       </div>
     </div>
   </div>
