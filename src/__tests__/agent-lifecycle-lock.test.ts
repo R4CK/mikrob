@@ -23,7 +23,10 @@ const src = readFileSync(AGENT_PROCESS, 'utf-8')
 // and then deleting the module's coalescing left every test green: the copy was testing itself.
 // Agent names are unique per test so the shared module-level map cannot couple them.
 let seq = 0
-const lock = <T>(suffix: string, op: () => Promise<T>): Promise<T> => withLifecycleLock(`t${seq}-${suffix}`, op)
+// Default to the SAME operation identity so the existing coalescing cases read unchanged; the
+// mixed-overlap cases below pass their own kind/optsKey.
+const lock = <T>(suffix: string, op: () => Promise<T>, kind: 'start' | 'stop' | 'restart' = 'start', optsKey = ''): Promise<T> =>
+  withLifecycleLock(`t${seq}-${suffix}`, kind, optsKey, op)
 
 const tick = (ms: number): Promise<void> => new Promise((r) => setTimeout(r, ms))
 
@@ -71,6 +74,87 @@ describe('the per-agent in-flight guard collapses concurrent lifecycle calls', (
 
   it('the module starts with nothing in flight (no leaked entries at import time)', () => {
     expect(lifecycleInFlightCount()).toBe(0)
+  })
+})
+
+describe('a DIFFERENT operation never joins a running one (Cybersec + Cybered NO-GO)', () => {
+  beforeEach(() => { seq += 1 })
+
+  // The regression that made the first version worse than the race it fixed: a stop() arriving
+  // during a start() was handed the start's promise, never ran, and returned {ok:true}. The caller
+  // in routes/agents.ts then drops the desired-state entry unconditionally, so the reconciler stops
+  // bringing the agent back -- while it is in fact still running and still burning the shared quota.
+  it('a stop arriving during a start RUNS, and returns its OWN result', async () => {
+    const ran: string[] = []
+    const startOp = async (): Promise<{ ok: boolean; pid?: number }> => {
+      ran.push('start'); await tick(30); return { ok: true, pid: 4242 }
+    }
+    const stopOp = async (): Promise<{ ok: boolean }> => { ran.push('stop'); await tick(5); return { ok: true } }
+
+    const started = lock('alpha', startOp, 'start', 'fresh=false')
+    await tick(5)
+    const stopped = lock('alpha', stopOp, 'stop', '')
+    const [s1, s2] = await Promise.all([started, stopped])
+
+    expect(ran, 'the stop never ran -- it joined the start').toEqual(['start', 'stop'])
+    expect(s1).toEqual({ ok: true, pid: 4242 })
+    expect(s2, 'the stop caller was handed the start result').toEqual({ ok: true })
+  })
+
+  it('a start arriving during a stop RUNS too, after it', async () => {
+    const ran: string[] = []
+    const stopOp = async (): Promise<{ ok: boolean }> => { ran.push('stop'); await tick(25); return { ok: true } }
+    const startOp = async (): Promise<{ ok: boolean; pid?: number }> => {
+      ran.push('start'); await tick(5); return { ok: true, pid: 7 }
+    }
+    const stopped = lock('alpha', stopOp, 'stop', '')
+    await tick(5)
+    const started = lock('alpha', startOp, 'start', 'fresh=false')
+    await Promise.all([stopped, started])
+    expect(ran).toEqual(['stop', 'start'])
+    expect(await started).toEqual({ ok: true, pid: 7 })
+  })
+
+  it('different OPTIONS are a different request too -- a fresh start is not answered by a warm one', async () => {
+    const ran: string[] = []
+    const warm = async (): Promise<{ ok: boolean; fresh: boolean }> => {
+      ran.push('warm'); await tick(25); return { ok: true, fresh: false }
+    }
+    const fresh = async (): Promise<{ ok: boolean; fresh: boolean }> => {
+      ran.push('fresh'); await tick(5); return { ok: true, fresh: true }
+    }
+    const a = lock('alpha', warm, 'start', 'fresh=false')
+    await tick(5)
+    const b = lock('alpha', fresh, 'start', 'fresh=true')
+    await Promise.all([a, b])
+    expect(ran, 'the fresh start silently got the warm run').toEqual(['warm', 'fresh'])
+    expect(await b).toEqual({ ok: true, fresh: true })
+  })
+
+  it('the queued operation still runs when the one ahead of it FAILS', async () => {
+    const ran: string[] = []
+    const boom = async (): Promise<never> => { ran.push('start'); await tick(15); throw new Error('start failed') }
+    const stopOp = async (): Promise<{ ok: boolean }> => { ran.push('stop'); return { ok: true } }
+    const failing = lock('alpha', boom, 'start', 'fresh=false')
+    await tick(5)
+    const stopped = lock('alpha', stopOp, 'stop', '')
+    await expect(failing).rejects.toThrow('start failed')
+    expect(await stopped, 'the queued stop inherited the start failure').toEqual({ ok: true })
+    expect(ran).toEqual(['start', 'stop'])
+  })
+
+  it('still never runs two operations on one agent AT THE SAME TIME', async () => {
+    let concurrent = 0
+    let peak = 0
+    const op = async (): Promise<void> => {
+      concurrent += 1; peak = Math.max(peak, concurrent); await tick(15); concurrent -= 1
+    }
+    await Promise.all([
+      lock('alpha', op, 'start', 'fresh=false'),
+      lock('alpha', op, 'stop', ''),
+      lock('alpha', op, 'restart', 'fresh=true'),
+    ])
+    expect(peak, 'two lifecycle operations overlapped on one agent').toBe(1)
   })
 })
 

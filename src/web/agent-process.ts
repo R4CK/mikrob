@@ -92,8 +92,16 @@ export function delay(ms: number): Promise<void> {
 // Scope, stated rather than implied: this is an IN-PROCESS map, sufficient because the dashboard is
 // a singleton (O_EXCL pidfile, index.ts). It does not serialize a second process, and it does not
 // cover the direct tmux callers listed in session-send-lock.ts.
-const lifecycleInFlight = new Map<string, Promise<unknown>>()
-const activeToken = new Map<string, symbol>()
+interface LifecycleEntry {
+  readonly token: symbol
+  /** Which operation is running: a stop must never be answered by a start's result. */
+  readonly kind: 'start' | 'stop' | 'restart'
+  /** Stable options identity, so a {fresh:true} caller is not handed a {fresh:false} run. */
+  readonly optsKey: string
+  readonly promise: Promise<unknown>
+}
+
+const lifecycleInFlight = new Map<string, LifecycleEntry>()
 
 /** Exported for tests: how many agents currently have an operation in flight. */
 export function lifecycleInFlightCount(): number {
@@ -101,26 +109,45 @@ export function lifecycleInFlightCount(): number {
 }
 
 /** Exported for tests ONLY so the behaviour below is proven on the real lock, not on a copy. */
-export function withLifecycleLock<T>(name: string, op: () => Promise<T>): Promise<T> {
+export function withLifecycleLock<T>(
+  name: string,
+  kind: 'start' | 'stop' | 'restart',
+  optsKey: string,
+  op: () => Promise<T>,
+): Promise<T> {
   const running = lifecycleInFlight.get(name)
-  if (running !== undefined) return running as Promise<T>
-  // The stored promise must be the SAME object the caller gets, or a joiner could receive a
-  // different one and the map entry would outlive the work it represents.
-  // A token identifies THIS operation, so the cleanup only removes its own entry -- comparing the
-  // promise object itself would need `p` before it is assigned.
+
+  // COALESCE only an IDENTICAL request. Two callers who asked for the same thing can share one
+  // answer; a caller who asked for something ELSE must get their own operation run. The first
+  // version of this lock keyed on the agent alone, so a stop() arriving during a start() was handed
+  // the start's promise, never ran, and still reported {ok:true} -- and routes/agents.ts then drops
+  // the desired-state entry unconditionally, so the reconciler stopped bringing the agent back
+  // while it was in fact still running. A control that reports success for work it did not do is
+  // worse than the race it replaced (Cybersec + Cybered NO-GO).
+  if (running !== undefined && running.kind === kind && running.optsKey === optsKey) {
+    return running.promise as Promise<T>
+  }
+
+  // A DIFFERENT request QUEUES behind the running one: still never two concurrent tmux operations
+  // on one agent, but the stop actually stops -- just after the start finishes.
+  const prev = running?.promise
   const token = Symbol(name)
-  activeToken.set(name, token)
   const p: Promise<T> = (async () => {
+    // The predecessor's failure belongs to ITS caller; it must not become ours.
+    if (prev !== undefined) {
+      try {
+        await prev
+      } catch {
+        /* not our result */
+      }
+    }
     try {
       return await op()
     } finally {
-      if (activeToken.get(name) === token) {
-        activeToken.delete(name)
-        lifecycleInFlight.delete(name)
-      }
+      if (lifecycleInFlight.get(name)?.token === token) lifecycleInFlight.delete(name)
     }
   })()
-  lifecycleInFlight.set(name, p)
+  lifecycleInFlight.set(name, { token, kind, optsKey, promise: p })
   return p
 }
 
@@ -2242,14 +2269,20 @@ export async function clearStaleParkedInput(session: string, host: string | null
 // concurrent caller joins the running operation instead of racing it past the same check
 // (card 74ba7c78). The *Unlocked variants stay private: restart composes stop+start INSIDE one
 // critical section, and calling the public ones there would make it join its own lock.
+/** Stable options identity. `fresh` is the only option today; naming it explicitly keeps a future
+ *  option from silently widening what counts as "the same request". */
+function optsKeyOf(opts: { fresh?: boolean }): string {
+  return `fresh=${opts.fresh === true}`
+}
+
 export function startAgentProcess(name: string, opts: { fresh?: boolean } = {}): Promise<{ ok: boolean; pid?: number; error?: string }> {
-  return withLifecycleLock(name, () => startAgentProcessUnlocked(name, opts))
+  return withLifecycleLock(name, 'start', optsKeyOf(opts), () => startAgentProcessUnlocked(name, opts))
 }
 
 export function stopAgentProcess(name: string): Promise<{ ok: boolean; error?: string }> {
-  return withLifecycleLock(name, () => stopAgentProcessUnlocked(name))
+  return withLifecycleLock(name, 'stop', '', () => stopAgentProcessUnlocked(name))
 }
 
 export function restartAgentProcess(name: string, opts: { fresh?: boolean } = {}): Promise<{ ok: boolean; pid?: number; error?: string }> {
-  return withLifecycleLock(name, () => restartAgentProcessUnlocked(name, opts))
+  return withLifecycleLock(name, 'restart', optsKeyOf(opts), () => restartAgentProcessUnlocked(name, opts))
 }
