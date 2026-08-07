@@ -13,7 +13,11 @@
 // (a zero-import module) so the registry default and the boot-time constant in
 // config.ts cannot drift apart -- bumping the distribution default is a
 // one-line change in exactly one place.
-export const DISTRIBUTION_DEFAULT_AGENT_MODEL = 'claude-opus-4-8[1m]'
+//
+// Must stay equal to DEFAULT_MODEL_CHAIN[0] in model-fallback.ts: chain[0] is what the fallback
+// reverts UP to, so a default above the chain primary would make a new agent's first quota-revert
+// a silent DOWNGRADE. Moving one means moving both (card d041760b, Peti 2026-08-06).
+export const DISTRIBUTION_DEFAULT_AGENT_MODEL = 'claude-opus-5'
 
 export type SettingType = 'int' | 'string' | 'color' | 'boolean'
 
@@ -421,6 +425,7 @@ export const SETTINGS_REGISTRY: SettingDefinition[] = [
     requiresRestart: true,
     valueSet: [
       'claude-opus-5',
+      'claude-opus-5[1m]',
       'claude-sonnet-5',
       'claude-fable-5',
       'claude-opus-4-8[1m]',

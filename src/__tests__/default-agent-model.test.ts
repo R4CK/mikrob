@@ -64,11 +64,18 @@ describe('agent-config default wiring', () => {
     expect(resolveModelId('inherit')).toBe(DEFAULT_AGENT_MODEL)
   })
 
-  it("leaves the bare 'opus' alias pinned to 4.8", () => {
-    // Deliberate upstream decision (v1.23.2): raising the install default must
-    // not silently reconfigure agents whose config says the generic 'opus'.
-    expect(MODEL_ALIASES['opus']).toBe('claude-opus-4-8[1m]')
-    expect(resolveModelId('opus')).toBe('claude-opus-4-8[1m]')
+  it("resolves the bare 'opus' alias to the ladder primary, whatever it is", () => {
+    // Card d041760b (fork divergence from upstream MODELMIGRATE806). Upstream asserts the literal
+    // 'claude-opus-5[1m]' here; this fork asserts the RELATIONSHIP instead, because the literal is
+    // not the requirement -- the requirement is that the bare alias and the fallback chain's primary
+    // never disagree. If they do, whoever writes 'opus' lands on a model the fallback would
+    // immediately "revert up" away from, which is the silent trap upstream's own note describes.
+    //
+    // Written as an invariant so a future product decision to move the ladder (Peti 2026-08-03
+    // phased Opus 4.8 out; the live fleet already runs Opus 5) flips both together or fails here --
+    // instead of this test having to be edited every time and quietly rubber-stamping a drift.
+    expect(MODEL_ALIASES['opus']).toBe(DEFAULT_MODEL_CHAIN[0])
+    expect(resolveModelId('opus')).toBe(DEFAULT_MODEL_CHAIN[0])
   })
 })
 
