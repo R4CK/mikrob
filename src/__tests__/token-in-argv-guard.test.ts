@@ -30,6 +30,21 @@ interface CurlInvocation {
   readonly startLine: number
 }
 
+/**
+ * Split one joined chunk at every `curl` token, so a chunk holding SEVERAL commands is not judged
+ * as one (card 3a042d4c).
+ *
+ * This matters because leaksTokenInArgv clears an invocation that contains the sanctioned `-H @`
+ * anywhere in it. A seeded PreCompact hook prompt is a single JSON string -- one "line" carrying
+ * three separate curl commands -- so one fixed command vouched for its two unfixed neighbours and
+ * the guard went green over a live offender. Measured: reintroducing the argv shape into
+ * seed-fleet-agents/qa/.claude/settings.json did not fail a single test before this split.
+ */
+function splitAtCurl(text: string, startLine: number): CurlInvocation[] {
+  const parts = text.split(/(?=\bcurl\b)/)
+  return parts.filter((p) => /\bcurl\b/.test(p)).map((p) => ({ text: p, startLine }))
+}
+
 /** Split a script into logical curl invocations (continuation lines joined), like bash would see them. */
 function findCurlInvocations(source: string): CurlInvocation[] {
   const lines = source.split('\n')
@@ -47,7 +62,7 @@ function findCurlInvocations(source: string): CurlInvocation[] {
     if (inCurl) {
       buf.push(line)
       if (!line.trimEnd().endsWith('\\')) {
-        out.push({ text: buf.join('\n'), startLine })
+        out.push(...splitAtCurl(buf.join('\n'), startLine))
         inCurl = false
       }
     }
@@ -200,7 +215,12 @@ function scanDir(dir: string): string[] {
  *
  * The scanner is text-based, so a fenced bash block inside markdown reads the same as a script.
  */
-const TEXT_FILE = /\.(md|sh|py|js|mjs|cjs|ts)$/
+// `.json` is in the list because the seeded PreCompact hook prompt lives in
+// seed-fleet-agents/*/.claude/settings.json as a JSON STRING, and it taught the argv shape three
+// times per agent -- a file class the first extension list still missed for the same reason the
+// name list missed `references/*.md` (card 3a042d4c). The scanner is text-based, so an escaped
+// shell snippet inside a JSON string reads like any other line.
+const TEXT_FILE = /\.(md|sh|py|js|mjs|cjs|ts|json)$/
 
 function scanTree(dir: string, base: string = dir): string[] {
   const out: string[] = []
@@ -264,6 +284,9 @@ describe('no shipped script, template or GENERATOR puts a Bearer token in curl a
   })
 
   const shellCases: Array<{ dir: string; file: string }> = [
+    // The repo's own rulebook taught the argv shape in nine places while the guard enforced the
+    // opposite everywhere else -- the most-read file in the project was the last one covered.
+    { dir: REPO_ROOT, file: 'CLAUDE.md' },
     ...STORE_SCRIPTS.map((file) => ({ dir: STORE_DIR, file })),
     ...SCRIPTS_SCRIPTS.map((file) => ({ dir: SCRIPTS_DIR, file })),
     ...SEED_SKILL_DOCS.map((file) => ({ dir: SEED_SKILLS_DIR, file })),
@@ -362,6 +385,29 @@ describe('the scanner itself catches what a naive single-line regex would miss',
     ].join('\n')
     const offenders = findCurlInvocations(script).filter((c) => leaksTokenInArgv(c.text))
     expect(offenders).toHaveLength(1)
+  })
+
+  // One "line" can hold several commands -- a seeded PreCompact prompt is a single JSON string
+  // with three curls in it. Without splitting at each `curl`, the fixed command's `-H @-` cleared
+  // the whole chunk and vouched for its leaking neighbour, and the guard reported green over a
+  // live offender.
+  it('judges each curl separately when one line carries several commands', () => {
+    const oneLine =
+      `printf 'Authorization: Bearer %s\\n' "$(cat tok)" | curl -H @- -s http://x/a` +
+      ` && curl -s http://x/b -H "Authorization: Bearer $(cat tok)"`
+    const offenders = findCurlInvocations(oneLine).filter((c) => leaksTokenInArgv(c.text))
+    expect(offenders).toHaveLength(1)
+    expect(offenders[0]?.text).toContain('http://x/b')
+  })
+
+  it('does not double-count a single command that spans continuation lines', () => {
+    const script = [
+      '#!/usr/bin/env bash',
+      'curl -s -X POST "$DASH/api/x" \\',
+      '  -H "Authorization: Bearer $TOK" \\',
+      "  -d '{}'",
+    ].join('\n')
+    expect(findCurlInvocations(script)).toHaveLength(1)
   })
 
   // A SKILL.md is prose with fenced bash, so the scanner must read it the same way it reads a
