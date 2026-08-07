@@ -216,15 +216,19 @@ export const OFFLOADABLE_THRESHOLDS: readonly CodingDifficulty[] = CODING_DIFFIC
 /** Default max offloadable coding-difficulty for a given aggressiveness %. Higher % -> more offload
  *  + harder allowed, but CAPPED at RELIABLE_CEILING so even 100% never offloads what the 7B can't do.
  *  Pure + deterministic. Single source of truth for the slider<->dropdown mapping (local-llm-rag.sh
- *  mirrors this table -- keep them in sync). Cybersec 2026-08-07 (c6cc2c97): this doc comment itself
- *  went stale once already (said 'module' after the ceiling moved to 'feature') -- don't hardcode the
- *  level name here again, read it off RELIABLE_CEILING instead. */
+ *  mirrors this table -- keep them in sync).
+ *
+ *  Cybersec 2026-08-07 (c6cc2c97, comment 9908): the raw tier below is CLAMPED to RELIABLE_CEILING
+ *  via Math.min on the level index, not returned as a bare literal -- a literal here would silently
+ *  outrun the ceiling if it's ever lowered again (the router uses this as the default threshold for
+ *  callers that declare no difficulty of their own, local-llm-router.ts). Raising the ceiling is
+ *  always safe; only a future lowering depends on this clamp actually doing something today. */
 export function defaultDifficultyForAggressiveness(pct: unknown): CodingDifficulty {
   const a = normalizeAggressiveness(pct)
-  if (a >= 95) return 'feature' // capped: architecture never auto-offloads (Peti, 2026-08-07)
-  if (a >= 85) return 'module'
-  if (a >= 75) return 'isolated'
-  return 'trivial'
+  const raw: CodingDifficulty = a >= 95 ? 'feature' : a >= 85 ? 'module' : a >= 75 ? 'isolated' : 'trivial'
+  const rawIdx = CODING_DIFFICULTY_LEVELS.indexOf(raw)
+  const ceilingIdx = CODING_DIFFICULTY_LEVELS.indexOf(RELIABLE_CEILING)
+  return CODING_DIFFICULTY_LEVELS[Math.min(rawIdx, ceilingIdx)]!
 }
 
 /** The live auto-ramp state for the FE (card 346d3933): the weekly %, the threshold it climbs to, the
