@@ -22,7 +22,54 @@ LOG="$HERE/offload-batch.log"
 ts() { date '+%Y-%m-%d %H:%M:%S'; }
 log() { echo "[$(ts)] $*" >>"$LOG"; }
 
-if [[ -z "$TOK" ]]; then log "no dashboard token; abort"; echo "ERROR no-token"; exit 0; fi
+# --- health signal -----------------------------------------------------------
+# The scheduled task launches this with `nohup ... &`, which returns exit 0 in ~11ms no
+# matter what happens next. So the task's own timeoutMs/failThreshold can never fire:
+# "fired + exit 0" looks identical whether the batch drafted 20 cards or died instantly
+# (Cybersec finding on card 975e5a97). Backgrounding is right -- a 20-card 7B run must
+# not hold the scheduler tick -- so the signal has to come from the LOG instead.
+#
+# Every run therefore ends with one machine-readable line, written from an EXIT trap so
+# it appears on the abnormal paths too (kill, set -e, unhandled error). `--status` reads
+# it back and IS the health check: fast, foreground, and its exit code is real.
+BATCH_END_STATUS="aborted"
+DRAFTED=0
+emit_end_line() { log "batch END status=${BATCH_END_STATUS} drafted=${DRAFTED}"; }
+
+# --- status mode -------------------------------------------------------------
+# Usage: offload-batch-run.sh --status [--max-age-hours N]   (default 26h: a nightly
+# task plus a margin, so a single late catch-up does not cry wolf)
+if [[ "${1:-}" == "--status" ]]; then
+  MAX_AGE_H=26
+  shift
+  while [[ $# -gt 0 ]]; do
+    case "$1" in
+      --max-age-hours) [[ $# -ge 2 ]] || { echo "ERROR:missing-value:--max-age-hours"; exit 2; }; MAX_AGE_H="$2"; shift 2 ;;
+      *) echo "ERROR:unknown-argument:$1"; exit 2 ;;
+    esac
+  done
+  # a non-numeric bound would make `(( age_h > MAX_AGE_H ))` treat it as 0 and report STALE
+  # on every run -- a check that always fires is ignored as fast as one that never does
+  case "$MAX_AGE_H" in ''|*[!0-9]*) echo "ERROR:invalid-max-age:$MAX_AGE_H"; exit 2 ;; esac
+  if [[ ! -r "$LOG" ]]; then echo "NEVER-RAN no log at $LOG"; exit 1; fi
+  last_end="$(grep 'batch END status=' "$LOG" | tail -1)"
+  if [[ -z "$last_end" ]]; then echo "NEVER-COMPLETED log exists but no END line"; exit 1; fi
+  # leading "[YYYY-MM-DD HH:MM:SS]"
+  stamp="$(printf '%s' "$last_end" | sed -n 's/^\[\([^]]*\)\].*/\1/p')"
+  end_epoch="$(date -d "$stamp" +%s 2>/dev/null || echo "")"
+  case "$end_epoch" in ''|*[!0-9]*) echo "ERROR:unparseable-timestamp:$stamp"; exit 2 ;; esac
+  age_h=$(( ( $(date +%s) - end_epoch ) / 3600 ))
+  # `[a-z-]`, not `[a-z]`: a hyphenated status like `no-token` was being truncated to `no`,
+  # which still reported a failure but named the wrong one
+  status="$(printf '%s' "$last_end" | sed -n 's/.*status=\([a-z-]*\).*/\1/p')"
+  if [[ "$status" != "ok" ]]; then echo "LAST-RUN-FAILED status=$status age=${age_h}h"; exit 1; fi
+  if (( age_h > MAX_AGE_H )); then echo "STALE last ok run ${age_h}h ago (max ${MAX_AGE_H}h)"; exit 1; fi
+  echo "FRESH last ok run ${age_h}h ago, ${last_end##*drafted=} card(s)"
+  exit 0
+fi
+
+trap emit_end_line EXIT
+if [[ -z "$TOK" ]]; then BATCH_END_STATUS="no-token"; log "no dashboard token; abort"; echo "ERROR no-token"; exit 0; fi
 
 # SECURITY (Cybersec/gate-ops-scripts-token-in-argv, card edb7559f): the token must never be a curl
 # argv (/proc/<pid>/cmdline is world-readable). Private 0600 header file instead, -H @"$hdr_file",
@@ -58,6 +105,8 @@ for id in "${CARDS[@]}"; do
   done=$(( done + 1 ))
 done
 
+DRAFTED="$done"
+BATCH_END_STATUS="ok"
 log "batch done: $done cards drafted this run"
 echo "OK drafted=$done"
 exit 0
