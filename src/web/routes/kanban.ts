@@ -348,7 +348,7 @@ export async function tryHandleKanban(ctx: RouteContext): Promise<boolean> {
     // (card 9cc72f2c). Applies to BOTH close paths -- PUT with a status and POST /move -- because
     // guarding one of two doors guards neither.
     {
-      const v = landedGuardVerdict(id, data.status, force === true, typeof actor === 'string' ? actor : undefined)
+      const v = await landedGuardVerdict(id, data.status, force === true, typeof actor === 'string' ? actor : undefined)
       if (v.blocked) { json(res, { error: v.message }, 409); return true }
     }
     if (updateKanbanCard(id, data, { actor: typeof actor === 'string' ? actor : undefined, force: force === true })) {
@@ -385,7 +385,7 @@ export async function tryHandleKanban(ctx: RouteContext): Promise<boolean> {
       return true
     }
     {
-      const v = landedGuardVerdict(id, status, force === true, typeof actor === 'string' ? actor : undefined)
+      const v = await landedGuardVerdict(id, status, force === true, typeof actor === 'string' ? actor : undefined)
       if (v.blocked) { json(res, { error: v.message }, 409); return true }
     }
     if (moveKanbanCard(id, status, sort_order ?? 0, actor, force === true)) {

@@ -3,89 +3,124 @@
 // On 2026-08-07 MikroB closed three cards on QA/Cybersec/Cybered PASS+GO alone; all three lived only
 // on a feature branch. A sweep of that day's 120 closed CleanCore cards then found 39 more. The trap
 // is documented (committed-is-not-landed) and store/fix-landed-check.sh exists for it -- but it runs
-// AFTER the fact, and only for this repo. Detecting it afterwards means someone must remember to
-// look; the same trap had already been documented before it caught 39 cards.
+// AFTER the fact. Detecting it later means someone must remember to look.
 //
-// So this checks at the moment of closing, which is the only moment where the answer changes the
-// outcome. It is deliberately narrow -- it makes exactly one claim:
+// The guard makes exactly one claim -- "a commit id written in this card's comments is not reachable
+// from origin/main" -- and stays silent about everything else. A card naming no commit (an E2E/user-
+// story card, a decision card -- 17 of the 120 that day) makes no landing claim, so it closes.
 //
-//   "a commit id written in this card's comments is not reachable from origin/main"
+// COST, and why this file looks the way it does (Cybersec NO-GO on the first version): the dashboard
+// is ONE single-threaded node server. The first cut used execFileSync and spawned `git cat-file` per
+// candidate token -- 110 spawns at ~42ms plus a fixed 2.5s `git fetch` -- which froze the WHOLE fleet
+// API for 3-7 seconds on every close, including /api/messages, so inter-agent delivery stopped too.
+// A guard that stalls the fleet gets removed, and rightly. So:
 //
-// and stays silent about everything else. A card with no commit named in its comments (an E2E/user-
-// story card, a decision card -- 17 of the 120 that day) is not making a claim this can check, so it
-// closes normally. That is not a fail-open: there is no landing claim to falsify.
+//   * one `git cat-file --batch-check` fed from stdin resolves every candidate in a single spawn
+//   * NO fetch on the happy path -- ancestry is asked of the origin/main ref we already have, and a
+//     fetch happens only when we are otherwise about to BLOCK. A stale ref can therefore cause a
+//     false block (loud, recoverable, and the fetch then clears it) but never a false pass, which is
+//     the direction a security-adjacent check must fail in
+//   * everything is async, so the event loop keeps serving while git runs
 //
-// KNOWN LIMIT, stated rather than hidden: this checks ANCESTRY only. A cherry-pick with a conflict
+// KNOWN LIMIT, stated rather than hidden: this checks ANCESTRY only. A cherry-pick whose conflict was
 // resolved on the way lands the content under a different sha with a different patch, and ancestry
-// says no -- the sweep tool (store/cleancore-landed-check.py) adds patch-id and content probes for
-// that, but they are too slow for a request path. So `force` exists, and the message says which
-// check failed so the operator can run the fuller one.
-import { execFileSync } from 'node:child_process'
+// says no -- measured on card bf2ba50e. The patch-id and content probes live in
+// store/cleancore-landed-check.py; they are far too slow for a request path, so the block message
+// names that tool instead of pretending completeness.
+import { execFile } from 'node:child_process'
 import { existsSync } from 'node:fs'
 import { getKanbanCard, getKanbanComments } from '../db.js'
+import { PROJECT_ROOT } from '../config.js'
 import { logger } from '../logger.js'
 
 /**
- * project -> git checkout. Parametric on purpose: the kanban DB holds cards for several repos, and
- * the guard must not assume the one it happens to run inside. An unmapped project simply is not
- * checked -- better than guessing a repo and reporting a commit "missing" from the wrong history.
+ * project -> git checkout. Parametric because the kanban DB serves several repos and the guard must
+ * not assume the one it runs inside. An unmapped project is simply not checked: guessing a repo
+ * would report a commit "missing" from the wrong history.
+ *
+ * marveen's own project labels are here too (card 84091afd, QA2): its cards face the same
+ * close-on-unlanded-commit class. The risk is lower -- marveen is not shared across parallel
+ * worktrees the way CleanCore is -- but "lower" is not "absent", and the guard costs nothing extra.
  */
 const PROJECT_REPOS: Readonly<Record<string, string>> = {
   cleancore: process.env['CLEANCORE_MAIN'] ?? '/mnt/h/LM_Studio_Workdir/CleanCore',
+  marveen: PROJECT_ROOT,
+  'mikrob-infra': PROJECT_ROOT,
+  'fleet-infra': PROJECT_ROOT,
+  mikrob: PROJECT_ROOT,
 }
 
 /** Only agents allowed to close a card despite an unlanded commit. */
 const FORCE_ACTORS = new Set(['mikrob'])
 
 const SHA_RX = /\b[0-9a-f]{7,40}\b/g
+const MAX_CANDIDATES = 40
+const GIT_TIMEOUT_MS = 8000
 
 export interface LandedVerdict {
   readonly blocked: boolean
   readonly message?: string
 }
 
-function git(repo: string, args: string[]): { ok: boolean; out: string } {
-  try {
-    const out = execFileSync('git', ['-C', repo, ...args], {
-      encoding: 'utf-8',
-      timeout: 8000,
-      stdio: ['ignore', 'pipe', 'ignore'],
-    })
-    return { ok: true, out: out.trim() }
-  } catch {
-    return { ok: false, out: '' }
-  }
+function git(repo: string, args: string[], stdin?: string): Promise<{ ok: boolean; out: string }> {
+  return new Promise((resolve) => {
+    const child = execFile(
+      'git',
+      ['-C', repo, ...args],
+      { timeout: GIT_TIMEOUT_MS, maxBuffer: 1 << 20 },
+      (err, stdout) => resolve({ ok: err === null, out: (stdout ?? '').trim() }),
+    )
+    if (stdin !== undefined) {
+      child.stdin?.end(stdin)
+    }
+  })
 }
 
 /**
  * Commit ids named in the card's comments that are real commits in `repo`.
  *
- * A 7-hex word is a loose pattern, so every candidate is confirmed against the object database
- * before it counts. Without that, any hex-looking token in prose ("card 1bf4f8a4") would be treated
- * as a missing commit and block the close -- a guard inventing its own findings, which is the
- * failure mode that makes people disable guards.
+ * ONE spawn: `cat-file --batch-check` takes the candidates on stdin and answers per line, so a card
+ * with a hundred hex-looking tokens costs the same as a card with one. The confirmation itself is not
+ * optional -- a 7-hex word is a loose pattern, and without it any hex-looking token in prose
+ * ("card 1bf4f8a4") would count as a missing commit and block a perfectly good close. A guard that
+ * invents its own findings is one people learn to force past.
  */
-function claimedCommits(cardId: string, repo: string): string[] {
-  const out: string[] = []
+async function claimedCommits(cardId: string, repo: string): Promise<string[]> {
+  const candidates: string[] = []
   for (const c of getKanbanComments(cardId)) {
     for (const m of (c.content ?? '').match(SHA_RX) ?? []) {
-      if (out.length >= 12) break
-      const t = git(repo, ['cat-file', '-t', m])
-      if (!t.ok || t.out !== 'commit') continue
-      const full = git(repo, ['rev-parse', m])
-      if (full.ok && !out.includes(full.out)) out.push(full.out)
+      if (!candidates.includes(m)) candidates.push(m)
+      if (candidates.length >= MAX_CANDIDATES) break
     }
+    if (candidates.length >= MAX_CANDIDATES) break
+  }
+  if (candidates.length === 0) return []
+
+  const res = await git(repo, ['cat-file', '--batch-check'], candidates.join('\n') + '\n')
+  if (!res.ok && res.out === '') return []
+  const out: string[] = []
+  for (const line of res.out.split('\n')) {
+    // "<sha> commit <size>" for a hit; "<token> missing" otherwise.
+    const parts = line.trim().split(/\s+/)
+    if (parts.length >= 2 && parts[1] === 'commit' && !out.includes(parts[0]!)) out.push(parts[0]!)
   }
   return out
 }
 
+async function anyAncestorOfOriginMain(repo: string, commits: string[]): Promise<boolean> {
+  for (const c of commits) {
+    if ((await git(repo, ['merge-base', '--is-ancestor', c, 'origin/main'])).ok) return true
+  }
+  return false
+}
+
 /** Blocks a move to `done` when every commit the card names is absent from origin/main. */
-export function landedGuardVerdict(
+export async function landedGuardVerdict(
   cardId: string,
   nextStatus: unknown,
   force: boolean,
   actor?: string,
-): LandedVerdict {
+): Promise<LandedVerdict> {
   if (nextStatus !== 'done') return { blocked: false }
   if (force && actor !== undefined && FORCE_ACTORS.has(actor)) return { blocked: false }
 
@@ -95,7 +130,7 @@ export function landedGuardVerdict(
 
   let commits: string[]
   try {
-    commits = claimedCommits(cardId, repo)
+    commits = await claimedCommits(cardId, repo)
   } catch (err) {
     // A guard that throws must not become a guard that closes the board. Log and stand aside: this
     // is the ONE place failing open is right, because the failure is in the checker, not the claim.
@@ -104,11 +139,15 @@ export function landedGuardVerdict(
   }
   if (commits.length === 0) return { blocked: false }
 
-  git(repo, ['fetch', 'origin', 'main', '--quiet'])
-  const landed = commits.filter(
-    (c) => git(repo, ['merge-base', '--is-ancestor', c, 'origin/main']).ok,
-  )
-  if (landed.length > 0) return { blocked: false }
+  // Happy path: no network, no fetch. Most closes land here and cost one cat-file plus one
+  // merge-base.
+  if (await anyAncestorOfOriginMain(repo, commits)) return { blocked: false }
+
+  // Only now is a stale ref worth 2.5 seconds -- we are about to block, and being wrong here costs
+  // someone a re-run. Note the asymmetry: a stale ref can only make us block something that is
+  // actually fine, never wave through something that is not.
+  await git(repo, ['fetch', 'origin', 'main', '--quiet'])
+  if (await anyAncestorOfOriginMain(repo, commits)) return { blocked: false }
 
   const short = commits.map((c) => c.slice(0, 8)).join(', ')
   return {
