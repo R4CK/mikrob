@@ -61,6 +61,18 @@ if ! git merge-base --is-ancestor "$CURRENT_HEAD" "$TARGET" 2>/dev/null; then
   exit 3
 fi
 COMMITS_AHEAD="$(git rev-list --count "${CURRENT_HEAD}..${TARGET}" 2>/dev/null || echo '?')"
+# Cybersec/Cybered (2026-08-07, msg 7533/7537): `is-ancestor X X` is true (a
+# commit is its own ancestor), so TARGET == HEAD slipped through the check
+# above as "strictly ahead". That's a no-op roll-forward that still pays for a
+# full checkout+npm-ci+rebuild+double-service-restart -- an unforced outage
+# with zero code change, on the exact script whose restart-loop history took
+# the dashboard down for hours this morning. Treat an unresolved count ('?')
+# as unsafe too, same as 0 -- fail closed on "don't know", not open.
+if [ "$COMMITS_AHEAD" = "0" ] || [ "$COMMITS_AHEAD" = "?" ]; then
+  log "REFUSED: target ${TARGET:0:7} is ${COMMITS_AHEAD} commits ahead of HEAD ${CURRENT_HEAD:0:7} -- nothing to roll forward, refusing the restart."
+  notify "Roll-forward MEGTAGADVA: a cel (${TARGET:0:7}) 0 commit-tel (vagy ismeretlen tavolsaggal) van elore -- nincs mit elorevinni, nem futott le semmi."
+  exit 3
+fi
 
 # 1. Attach live tree to develop branch at target (no longer detached HEAD)
 if git checkout -B develop "$TARGET" >>"$LOG" 2>&1; then
