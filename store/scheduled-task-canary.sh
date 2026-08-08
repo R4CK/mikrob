@@ -21,11 +21,13 @@
 # deploy-freshness-monitor: dropped every tick, no pre-check) and would have called a
 # permanently-late-but-working task "never fired". 4 of 6 detected instead of 6 of 6.
 #
-# `skipped` is overloaded at the source: schedule-runner writes it both for "the
+# `skipped` USED TO BE overloaded at the source: schedule-runner wrote it both for "the
 # pre-check said there is nothing to do" (healthy) and for "the session was busy, tick
-# dropped" (not healthy). They are distinguishable from here only by whether the task
-# HAS a pre-check at all, which is what dropped-busy keys on. The real fix is a
-# distinct status at the write site; until then this is the honest approximation.
+# dropped" (not healthy). Card f7bff451 split the write side: a busy-drop now writes
+# `dropped`, never `skipped`. Any `dropped` run in the window is an unconditional finding
+# below, regardless of pre-check. The has-pre-check heuristic stays as a FALLBACK for rows
+# written before this split (still recorded as plain `skipped`) so a window straddling the
+# fix does not lose coverage on a no-pre-check task.
 #
 # READ-ONLY: opens the DB with mode=ro and writes nothing.
 #
@@ -100,17 +102,21 @@ check() {
     if [ -z "$recent" ]; then
       findings+=("unverifiable $name  (a legutobbi futasok lekerdezese nem sikerult)"); continue
     fi
-    local n_recent n_ok n_skipped
+    local n_recent n_ok n_skipped n_dropped
     n_recent="$(printf '%s\n' "$recent" | sed '/^$/d' | wc -l)"
     n_ok="$(printf '%s\n' "$recent" | grep -cE '^(fired|fired_late)$' || true)"
     n_skipped="$(printf '%s\n' "$recent" | grep -c '^skipped$' || true)"
+    n_dropped="$(printf '%s\n' "$recent" | grep -c '^dropped$' || true)"
     [ "$n_recent" -ge "$WINDOW" ] || continue
 
     if [ "$n_ok" -eq 0 ]; then
-      if [ "$n_skipped" -eq "$n_recent" ]; then
-        # EVERY recent run was `skipped`. With a pre-check that is the healthy case --
-        # the task itself decided there was nothing to do. Without one, the only writer
-        # of `skipped` is the skipIfBusy drop, i.e. the task never got to run at all.
+      if [ "$n_dropped" -gt 0 ]; then
+        # UNAMBIGUOUS since card f7bff451's write-side split: a skipIfBusy tick-drop now
+        # writes `dropped`, never conflated with the pre-check's `skipped`. Any dropped run
+        # in the window is a finding regardless of whether the task has a pre-check.
+        findings+=("dropped-busy  $name  (last $n_recent runs include $n_dropped dropped -> ticks dropped by skipIfBusy, not \"nothing to do\")")
+      elif [ "$n_skipped" -eq "$n_recent" ]; then
+        # Legacy fallback for rows written before the dropped/skipped split -- see header.
         if _has_precheck "$cfg"; then
           : # legitimately idle, not a finding
         else
@@ -199,6 +205,20 @@ selftest() {
   out="$(check 2>&1)"
   if printf '%s' "$out" | grep -q 'nothingtodo'; then echo "FAIL pre-check skip reported as dead: $out"; fail=1
   else echo "ok   skipped WITH a pre-check is not a finding"; fi
+
+  # card f7bff451's exact blind spot: a task WITH a pre-check that ALSO gets busy-dropped.
+  # Pre-fix this was indistinguishable from "nothingtodo" above (same has-pre-check
+  # heuristic) and read as healthy. Post-fix the write side records `dropped`, not
+  # `skipped`, so this must be caught even though the task has a pre-check.
+  sqlite3 "$db" "INSERT INTO task_runs (name,agent,ts,status) VALUES
+    ('busywithprecheck','a',1,'fired'),('busywithprecheck','a',2,'dropped'),
+    ('busywithprecheck','a',3,'dropped'),('busywithprecheck','a',4,'dropped');"
+  mkdir -p "$tmp/tasks/busywithprecheck"
+  echo '{"enabled":true,"preCheck":"pre.sh"}' > "$tmp/tasks/busywithprecheck/task-config.json"
+  out="$(check 2>&1)"
+  if printf '%s' "$out" | grep -q 'dropped-busy  busywithprecheck'; then
+    echo "ok   dropped WITH a pre-check is still a dropped-busy finding (the blind spot this closes)"
+  else echo "FAIL busywithprecheck: $out"; fail=1; fi
 
   # a broken query must be REPORTED, never silently skipped into a clean OK
   local db2="$tmp/db2.sqlite"
