@@ -148,23 +148,33 @@ if [[ -f tsconfig.json ]]; then
     # No local toolchain: say so instead of type-checking against someone else's compiler.
     TSC="unavailable"
     add "info" "tsc-unavailable" "tsc could not run here (no local toolchain) -- type-check NOT verified"
-  elif "$TSC_BIN" --noEmit >/tmp/gate-pretriage-tsc.log 2>&1; then
-    TSC="clean"
   else
-    # `grep -c` EXITS 1 when it matches nothing, so `... || echo '?'` emitted BOTH the count and the
-    # fallback -- a newline inside the value, which then broke the JSON encoder downstream. Capture
-    # with `|| true` and default in the expansion instead.
-    _tsc_errs=$(grep -c 'error TS' /tmp/gate-pretriage-tsc.log 2>/dev/null || true)
-    if [[ "${_tsc_errs:-0}" -gt 0 ]]; then
-      TSC="errors:${_tsc_errs}"
-      add "high" "tsc-errors" "$TSC (see /tmp/gate-pretriage-tsc.log)"
+    # Card aba71f7d: a single FIXED path shared by every invocation was a cross-process race hazard
+    # (e.g. concurrent test cases each spawning this script). mktemp gives each invocation its own,
+    # created only here (tsc is actually about to run) so the common no-tsconfig/no-local-tsc paths
+    # above never leak an unused temp file. Not cleaned up unconditionally: an errors/crash finding
+    # below points a human at this exact path ("see $TSC_LOG") for follow-up, so only the clean
+    # (nothing to inspect) case removes it.
+    TSC_LOG="$(mktemp "${TMPDIR:-/tmp}/gate-pretriage-tsc.XXXXXX.log")"
+    if "$TSC_BIN" --noEmit >"$TSC_LOG" 2>&1; then
+      TSC="clean"
+      rm -f "$TSC_LOG"
     else
-      # The local tsc EXISTS and exited non-zero, yet logged no `error TS` line: it crashed, ran out
-      # of memory, or rejected its own config. Reporting that as "0 errors, high severity" would be
-      # doubly wrong: it invents a code defect AND lets a gate read "tsc: errors:0" as a clean
-      # type-check. (The missing-toolchain case is caught above, before tsc is invoked at all.)
-      TSC="unavailable"
-      add "info" "tsc-unavailable" "tsc could not run here (no local toolchain) -- type-check NOT verified"
+      # `grep -c` EXITS 1 when it matches nothing, so `... || echo '?'` emitted BOTH the count and
+      # the fallback -- a newline inside the value, which then broke the JSON encoder downstream.
+      # Capture with `|| true` and default in the expansion instead.
+      _tsc_errs=$(grep -c 'error TS' "$TSC_LOG" 2>/dev/null || true)
+      if [[ "${_tsc_errs:-0}" -gt 0 ]]; then
+        TSC="errors:${_tsc_errs}"
+        add "high" "tsc-errors" "$TSC (see $TSC_LOG)"
+      else
+        # The local tsc EXISTS and exited non-zero, yet logged no `error TS` line: it crashed, ran
+        # out of memory, or rejected its own config. Reporting that as "0 errors, high severity"
+        # would be doubly wrong: it invents a code defect AND lets a gate read "tsc: errors:0" as a
+        # clean type-check. (The missing-toolchain case is caught above, before tsc runs at all.)
+        TSC="unavailable"
+        add "info" "tsc-unavailable" "tsc could not run here (no local toolchain) -- type-check NOT verified"
+      fi
     fi
   fi
   # A repo whose tsconfig excludes tests cannot surface a stale fixture via `tsc --noEmit`.
