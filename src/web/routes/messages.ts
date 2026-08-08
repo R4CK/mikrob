@@ -2,6 +2,7 @@ import {
   createAgentMessage, getPendingMessages, listAgentMessages,
   getAgentConversation, getAgentConversationThreads,
   getKanbanSeqByIdPrefix,
+  getKanbanCardStateByIdPrefix,
   markMessageDone, markMessageFailed, getAgentMessage,
   closeOtelSpan,
   getPendingBacklogByAgent,
@@ -14,6 +15,7 @@ import { isKnownAgent } from '../agent-config.js'
 import { OWNER_NAME } from '../../config.js'
 import { readBody, json, jsonMaybeGzip } from '../http-helpers.js'
 import { normalizeKanbanRefs } from '../kanban-ref-normalize.js'
+import { appendCardStateStamp } from '../kanban-state-stamp.js'
 import { parseQualifiedId, formatQualifiedId } from '../federation/address.js'
 import { getFederationConfig } from '../federation/config.js'
 import type { RouteContext } from './types.js'
@@ -127,10 +129,14 @@ export async function tryHandleMessages(ctx: RouteContext): Promise<boolean> {
     // every downstream consumer sees the canonical reference even when a
     // sub-agent forgets the CLAUDE.md rule (#75 Cuzcoo dispatch).
     const normalizedContent = normalizeKanbanRefs(content.trim(), getKanbanSeqByIdPrefix)
+    // Card ffaa4ff1: stamp what the board says RIGHT NOW for any card this message names, so a
+    // recipient reading it an hour later can see at a glance that the state has moved. A hint, not
+    // a lock -- the runbook rule (re-read the card before working) ships with it, not instead of it.
+    const stampedContent = appendCardStateStamp(normalizedContent, getKanbanCardStateByIdPrefix)
     // Card 06f062e4: optional attributability tag, self-declared like `from`
     // itself -- capped short so it stays a label, not a second content field.
     const trimmedOriginNote = origin_note?.trim().slice(0, 120) || null
-    const msg = createAgentMessage(from.trim(), storedTo, normalizedContent, trimmedOriginNote)
+    const msg = createAgentMessage(from.trim(), storedTo, stampedContent, trimmedOriginNote)
     logger.info({ id: msg.id, from: msg.from_agent, to: msg.to_agent, originNote: msg.origin_note }, 'Agent message created')
     json(res, msg)
     return true
