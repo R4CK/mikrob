@@ -18,6 +18,10 @@ store/*
 # Operational scripts under store/ ARE version-controlled (code, not runtime data).
 # Everything else in store/ (DB, tokens, state JSON) stays ignored.
 !store/*.sh
+# ...and .py, which the rule above always meant: store/cleancore-landed-check.py is tracked only
+# because someone force-added it, so the next operational python landed IGNORED and unbacked-up
+# until this line (card d7ac3470). A rule that needs a `git add -f` to obey is not a rule.
+!store/*.py
 # Stitch design-gen tools are operational scripts (tracked except node_modules).
 !store/stitch-tools/gen.mjs
 # The watched-repos registry is hand-maintained CONFIG, not runtime state -- nothing writes it (the

@@ -99,25 +99,12 @@ import json, sys, os
 d = json.load(sys.stdin); rows = d if isinstance(d, list) else d.get("cards", d.get("data", []))
 print(next((c.get("project") or "" for c in rows if c.get("id") == os.environ["CARD"]), ""))' 2>/dev/null || true)"
 
-# CANDIDATE commits from the comments. A card id is ALSO an 8-hex token, so a regex alone cannot tell
-# a short SHA from a card id -- the disambiguation is "does it resolve to a real commit" (below).
-# Preference: SHAs written after "commit" (the REVIEW convention), newest first, then a weak bare-hex
-# fallback. Emitted newline-separated; bash picks the first that git confirms is a commit.
-candidates="$(COMMENTS="$comments" python3 <<'PY' 2>/dev/null || true
-import json, os, re
-d = json.loads(os.environ["COMMENTS"]); rows = d if isinstance(d, list) else d.get("comments", [])
-pref, weak = [], []
-for c in rows:  # oldest-first
-    txt = c.get("content") or ""
-    pref += re.findall(r"[Cc]ommit[:\s]+([0-9a-f]{7,40})\b", txt)
-    weak += re.findall(r"\b([0-9a-f]{7,40})\b", txt)
-seen, order = set(), []
-for s in list(reversed(pref)) + list(reversed(weak)):  # commit-prefixed first, newest first
-    if s not in seen:
-        seen.add(s); order.append(s)
-print("\n".join(order))
-PY
-)"
+# CANDIDATE commits from the comments, NEWEST REVIEW FIRST (card d7ac3470). A card id is ALSO an
+# 8-hex token, so a regex alone cannot tell a short SHA from a card id -- the disambiguation is "does
+# it resolve to a real commit" (below). The ordering lives in its own tracked, TESTABLE file because
+# the bug it fixes was invisible from here: the old inline version let an old comment's `commit <sha>`
+# wording outrank a newer comment's fresh sha, and it fed on its own previous output.
+candidates="$(printf '%s' "$comments" | python3 "$(dirname "${BASH_SOURCE[0]}")/gate-pretriage-candidates.py" "$CARD" "$MARKER" 2>/dev/null || true)"
 
 # Resolve project -> primary repo, then find the FIRST candidate that is a real commit in either repo.
 case "$project" in
