@@ -33,6 +33,14 @@ describe('the nudger stays out of the class it was moved out of', () => {
   })
 })
 
+describe('context-compact-monitor.sh stays out of the class it was moved out of (card 9cfed589)', () => {
+  it('writes to no pane, and delivers through the compact API instead', () => {
+    const src = code('store/context-compact-monitor.sh')
+    expect(WRITE.test(src)).toBe(false)
+    expect(src).toMatch(/\/api\/agents\/\$\{?agent\}?\/compact/)
+  })
+})
+
 describe('scripts that do NOT contend with delivery, and why', () => {
   it.each(['store/weekly-usage-panel-read.sh', 'store/weekly-usage-relogin.sh'])(
     '%s targets the dedicated probe pane, not an agent session',
@@ -60,22 +68,20 @@ describe('scripts that do NOT contend with delivery, and why', () => {
   })
 })
 
-describe('the one that IS still the nudger bug', () => {
-  it('context-compact-monitor.sh still writes literal text into an agent pane', () => {
-    // Asserted as the CURRENT state, not as desired behaviour. When it is fixed this test fails,
-    // which is the intent: the header in session-send-lock.ts must be corrected in the same change,
-    // or the next reader is told a gap exists that no longer does.
-    const src = code('store/context-compact-monitor.sh')
-    expect(TEXT_WRITE.test(src)).toBe(true)
-    expect(src).toMatch(/sleep 1/)
-  })
-
-  it('session-send-lock.ts documents this class, with the unfixed one named', () => {
+describe('the class documentation in session-send-lock.ts stays accurate', () => {
+  it('names both scripts, with both fixes recorded (card 9cfed589)', () => {
+    // Card 9cfed589 closed the class's last live member. Both entries are still named here
+    // (not deleted) so a reader keeps the history of what the class was and how each one closed,
+    // rather than the header quietly shrinking with no trace of what used to be true.
     const header = read('src/web/session-send-lock.ts')
     expect(header).toContain('CRON-SHELL WRITERS')
     expect(header).toContain('context-compact-monitor.sh')
     expect(header).toContain('quota-resume.sh')
-    // The nudger's fix is recorded too, so the header does not read as if it were still open.
     expect(header).toContain('/api/messages')
+    expect(header).toContain('/api/agents/:name/compact')
+    // The unfixed framing must not survive alongside the fix -- that combination is exactly the
+    // stale-doc failure mode this whole file exists to catch (this test's own predecessor pinned
+    // "STILL UNFIXED" as a fact; a real fix that forgot to update it would leave both true at once).
+    expect(header).not.toMatch(/context-compact-monitor\.sh[^\n]*STILL UNFIXED/)
   })
 })

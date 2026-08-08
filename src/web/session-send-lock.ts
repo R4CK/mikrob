@@ -41,12 +41,14 @@
 // The rest of the class, measured 2026-08-07 -- NOT five equivalent offenders,
 // which is why each is listed with what it actually sends:
 //
-//   store/context-compact-monitor.sh:150  agent-* pane, `-l "/compact"` + sleep 1
-//       + Enter. SAME SHAPE as the nudger and STILL UNFIXED. It cannot take the
-//       /api/messages route: a slash command must be typed into the pane, and a
-//       message would arrive as text content, not as a command. Needs either an
-//       endpoint that drives a slash command through this lock, or the
-//       cross-process file lock.
+//   store/context-compact-monitor.sh      FIXED (card 9cfed589). It could not take the
+//       /api/messages route the nudger used: a slash command must be typed into the
+//       pane as the first thing an idle input sees, and a message wrapped with the
+//       trusted-peer "[Uzenet @X-tol ...]" prefix would arrive as prose, not as the
+//       command. Instead: POST /api/agents/:name/compact, a new route that calls
+//       sendPromptToSession directly -- through THIS lock -- with a literal
+//       unwrapped '/compact', the same way /api/agents/:name/auth/init already sends
+//       a literal '/login'.
 //   store/quota-resume.sh:33              agent-* pane, `Escape` ONLY -- no text.
 //       It can interrupt a modal mid-delivery but cannot splice content into a
 //       message frame. Lower severity, different failure mode; still unserialized.
