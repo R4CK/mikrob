@@ -1400,15 +1400,6 @@ main {
   cursor: pointer;
 }
 .archived-card:active { cursor: pointer; }
-.archived-prio-pill {
-  font-size: 10px;
-  font-weight: 600;
-  padding: 1px 8px;
-  border-radius: 8px;
-  color: var(--prio-color);
-  background: color-mix(in srgb, var(--prio-color) 16%, transparent);
-  line-height: 1.5;
-}
 .archived-card-foot {
   display: flex;
   align-items: center;
@@ -1506,6 +1497,33 @@ main {
 .kanban-card[data-priority="high"] { border-left: 3px solid var(--accent); }
 .kanban-card[data-priority="normal"] { border-left: 3px solid transparent; }
 .kanban-card[data-priority="low"] { border-left: 3px solid var(--border); }
+
+/* Priority badge -- card cf3c25ea's sibling (Peti screenshot 2026-08-08): the border-left above is
+   the ONLY priority signal a card had, and it MEASURES badly against the dark card background
+   (--bg-card #1f1e1d) -- "low" (var(--border) #3d3d3a) is 1.53:1, "normal" is literally
+   transparent, and even "urgent" (var(--danger)) is 3.45:1, under the 4.5:1 WCAG AA text
+   threshold. A colored border is a UI-component (3:1 floor, WCAG 1.4.11); readable TEXT needs
+   4.5:1 (WCAG 1.4.3), and that is what a label demands. Solid-fill pills with white text instead --
+   verified 5.0-7.6:1 for all four levels, independent of theme, because the FILL is the
+   background the text sits on, not the card underneath it. The border-left stays as a secondary,
+   at-a-glance cue; the badge is the one that actually reads under WCAG AA. */
+.priority-badge {
+  display: inline-flex;
+  align-items: center;
+  padding: 1px 7px;
+  border-radius: 999px;
+  font-size: 10px;
+  font-weight: 600;
+  line-height: 1.6;
+  text-transform: uppercase;
+  letter-spacing: 0.02em;
+  color: #fff;
+  white-space: nowrap;
+}
+.priority-badge.priority-urgent { background: #b91c1c; }
+.priority-badge.priority-high   { background: #b45309; }
+.priority-badge.priority-normal { background: #1d4ed8; }
+.priority-badge.priority-low    { background: #475569; }
 
 /* Card aging: left stripe overrides priority border when card is stale.
    Colour is set as --card-aging-color via inline style by JS. */

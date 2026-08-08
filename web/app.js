@@ -997,6 +997,7 @@ async function loadKanban() {
       }
     } catch { /* keep previous kanbanAgents */ }
     populateProjectFilter()
+    populatePriorityProjectFilter()
     populateProjectSuggestions()
     setupAssigneeFilter()
     renderKanban()
@@ -1024,6 +1025,59 @@ function populateProjectFilter() {
   }
   if (prev && !kanbanProjects.includes(prev)) kanbanProjectFilter = ''
 }
+
+// Project-level dispatch priority dropdown (card e291e9c4, BE sibling 2d6587fe). Single-select in
+// the UI: the API supports an ordered array (multiple projects) for a future need, but a dropdown
+// is a single choice, which is what "legordulo menu" actually asked for -- the array with zero or
+// one entries is the simplest form that fits both.
+async function populatePriorityProjectFilter() {
+  const sel = document.getElementById('kanbanPriorityProjectSelect')
+  if (!sel) return
+  sel.innerHTML = `<option value="">${t('kanban.filter.priority_default')}</option>`
+  for (const p of kanbanProjects) {
+    const opt = document.createElement('option')
+    opt.value = p
+    opt.textContent = p
+    sel.appendChild(opt)
+  }
+  try {
+    const res = await fetch('/api/config/project-priority')
+    if (res.ok) {
+      const data = await res.json()
+      const current = Array.isArray(data.priority) ? data.priority[0] : undefined
+      // The saved project may no longer exist (renamed/no cards left) -- fall back to the default
+      // option rather than silently selecting nothing the dropdown never offered.
+      sel.value = current && kanbanProjects.includes(current) ? current : ''
+    }
+  } catch { /* leave the default selection -- the board still works without this */ }
+  // Baseline for the change handler's revert-on-failure below -- without this, the FIRST edit
+  // after page load would revert to '' regardless of what was actually loaded above.
+  sel.dataset.lastValue = sel.value
+}
+
+document.getElementById('kanbanPriorityProjectSelect').addEventListener('change', async (e) => {
+  const sel = e.target
+  const value = sel.value
+  const prevValue = sel.dataset.lastValue || ''
+  try {
+    const res = await fetch('/api/config/project-priority', {
+      method: 'PUT',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ priority: value ? [value] : [] }),
+    })
+    if (!res.ok) throw new Error('save-failed')
+    sel.dataset.lastValue = value
+    showToast(value ? t('kanban.filter.priority_saved', { project: value }) : t('kanban.filter.priority_cleared'))
+  } catch {
+    // Revert the visible selection to what is actually saved -- a silently-failed PUT must not
+    // leave the dropdown claiming a priority that was never persisted. Never surface the raw
+    // server error text here (rule 12): the dropdown only ever offers real project names, so a
+    // rejection means the save itself failed, not a user input mistake -- a generic, localized,
+    // retry-pointing message is both honest and all that is actionable from here.
+    sel.value = prevValue
+    showToast(t('kanban.filter.priority_save_failed'))
+  }
+})
 
 function renderKanbanColumnChips() {
   const container = document.getElementById('kanbanColumnChips')
@@ -1629,6 +1683,13 @@ function createCardEl(card, embeddedChildren = []) {
     ? `<span class="kanban-card-seq" style="font-family:monospace;font-size:11px;color:var(--muted);margin-right:5px">#${card.seq}</span>`
     : ''
 
+  // WCAG AA priority badge (card e291e9c4): the border-left alone was the only signal and does
+  // not read as text at all -- see the .priority-badge CSS comment for the measured contrast.
+  const priorityLabel = KANBAN_PRIORITY_LABELS[card.priority]?.() ?? card.priority
+  const priorityBadgeHtml = card.priority
+    ? `<span class="priority-badge priority-${escapeHtml(card.priority)}">${escapeHtml(priorityLabel)}</span>`
+    : ''
+
   // Card aging: left stripe + top-right badge based on hours since last update.
   // Skipped for done cards. Config thresholds and colours come from window._marveen.kanbanAging.
   let agingBadgeHtml = ''
@@ -1672,7 +1733,7 @@ function createCardEl(card, embeddedChildren = []) {
   el.innerHTML = `
     ${projectHtml}
     <div class="kanban-card-title">${seqHtml}${escapeHtml(card.title)}</div>
-    <div class="kanban-card-footer">${assigneeHtml}${dueHtml}</div>
+    <div class="kanban-card-footer">${priorityBadgeHtml}${assigneeHtml}${dueHtml}</div>
     ${labelsHtml}
     <div class="kanban-card-actions">
       <button class="card-breakdown-btn" title="${t('kanban.btn.breakdown')}" aria-label="${t('kanban.btn.breakdown')}">⚡</button>
@@ -18137,7 +18198,6 @@ async function openResearchDoc(agent, name) {
     high:   () => t('kanban.priority.high'),
     urgent: () => t('kanban.priority.urgent')
   }
-  const PRIORITY_COLORS = { low: '#9ca3af', normal: '#6b7280', high: '#f59e0b', urgent: '#ef4444' }
 
   function fmtDate(unix) {
     if (!unix) return ''
@@ -18149,7 +18209,6 @@ async function openResearchDoc(agent, name) {
   // the .kanban-card frame. The whole card opens a read-only detail modal on
   // click; the restore button stops propagation so it doesn't also open it.
   function renderArchivedCard(card) {
-    const prioColor = PRIORITY_COLORS[card.priority] || '#6b7280'
     const prioLabel = PRIORITY_LABELS[card.priority]?.() ?? card.priority
     const seqHtml = card.seq != null
       ? `<span class="kanban-card-seq" style="font-family:monospace;font-size:11px;color:var(--text-muted);margin-right:5px">#${card.seq}</span>`
@@ -18164,7 +18223,10 @@ async function openResearchDoc(agent, name) {
         .join('')
       labelsHtml = `<div class="kanban-card-labels">${pills}</div>`
     }
-    const prioPill = `<span class="archived-prio-pill" style="--prio-color:${prioColor}">${prioLabel}</span>`
+    // Same .priority-badge as the live board (card e291e9c4) -- the old .archived-prio-pill used a
+    // separate, low-contrast palette (translucent tint of the priority color, text IN that color),
+    // exactly the class of problem Peti's screenshot flagged, just on a different page.
+    const prioPill = `<span class="priority-badge priority-${esc(card.priority)}">${prioLabel}</span>`
     return `<div class="kanban-card archived-card" data-id="${esc(card.id)}" data-priority="${esc(card.priority)}">
       ${projectHtml}
       <div class="kanban-card-title">${seqHtml}${esc(card.title)}</div>

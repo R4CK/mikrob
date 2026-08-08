@@ -517,6 +517,10 @@
         <select id="kanbanProjectFilter" style="font-size:13px;padding:4px 8px;border-radius:6px;border:1px solid var(--border);background:var(--bg);color:var(--fg);min-width:140px;">
           <option value="">Mind</option>
         </select>
+        <label for="kanbanPriorityProjectSelect" style="font-size:13px;color:var(--muted);white-space:nowrap;margin-left:8px;" data-i18n="kanban.filter.priority_label">Dispatch-prioritás:</label>
+        <select id="kanbanPriorityProjectSelect" data-i18n-title="kanban.filter.priority_tooltip" title="Ha be van állítva, ennek a projektnek a kártyái mennek elöl minden dispatch-döntésnél (14. szabály), amíg vissza nem áll Alap sorrendre." style="font-size:13px;padding:4px 8px;border-radius:6px;border:1px solid var(--border);background:var(--bg);color:var(--fg);min-width:140px;">
+          <option value="" data-i18n="kanban.filter.priority_default">Alap sorrend</option>
+        </select>
         <label for="kanbanGroupBy" style="font-size:13px;color:var(--muted);white-space:nowrap;margin-left:8px;" data-i18n="kanban.filter.group_label">Csoportosítás:</label>
         <select id="kanbanGroupBy" style="font-size:13px;padding:4px 8px;border-radius:6px;border:1px solid var(--border);background:var(--bg);color:var(--fg);min-width:140px;">
           <option value="none" data-i18n="kanban.filter.group_none">Nincs</option>
