@@ -19,6 +19,16 @@ import { logger } from '../logger.js'
 //
 // So the child gets its own process GROUP (`detached: true`) and the timeout kills the
 // group (`process.kill(-pid)`), which reaches the grandchildren too.
+//
+// CAVEAT (card 9b11fd13, Cybered): that only applies ON A TIMEOUT. Since card 4afb44c8 settled
+// the promise on the CHILD's own 'exit' (plus a short drain) rather than waiting for 'close', a
+// grandchild that stays IN the group but is merely backgrounded (`sleep 121 & exit 0`) now
+// survives too -- the parent's own exit resolves the call well before any timeout could reach the
+// group-kill. Only a grandchild the caller is actually still WAITING on past the timeout (e.g. a
+// foreground `sleep 122`) still gets group-killed. This reverses the old guarantee this comment
+// used to make (every same-group descendant dies with the call); Cybered and MikroB agree the new
+// behaviour is correct (a deliberately backgrounded sibling surviving is the point of `&`), so this
+// is a doc fix, not a revert.
 export interface ExecAsyncResult {
   stdout: string
   stderr: string
