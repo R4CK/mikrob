@@ -166,4 +166,26 @@ run_case designated   38814 "qa qa2"    # designation: Gate: QA. excludes cybers
 run_case eng-one-planned 38815 "backend"       "ENG-WORK"  # positive: only backend has a planned card
 run_case no-review       38816 ""              "ENG-WORK"  # negative: no planned card for either
 
+# PROJECT DISPATCH PRIORITY (card 2d6587fe): PROJECT_PRIORITY_CONFIG override, same isolation
+# pattern as the rest of this file -- a throwaway file, never the live setting.
+PRIO_FILE="$TMP/priority.json"
+echo '{"priority":["marveen-infra","cleancore"]}' > "$PRIO_FILE"
+python3 "$TMP/fakeboard.py" no-review 38817 &
+PRIO_PID=$!
+for _ in $(seq 1 40); do curl -sf -o /dev/null "http://127.0.0.1:38817/api/kanban" && break; sleep 0.25; done
+prio_out="$(DASH="http://127.0.0.1:38817" PROJECT_PRIORITY_CONFIG="$PRIO_FILE" bash "$NUDGER" --dry-run 2>/dev/null | sed -n 's/^PRIORITY-PROJECTS://p')"
+kill "$PRIO_PID" 2>/dev/null; wait "$PRIO_PID" 2>/dev/null
+if [ "$prio_out" = "marveen-infra, cleancore" ]; then echo "  ok   priority config read, order preserved -> '$prio_out'"
+else echo "  FAIL priority config -> got '$prio_out'"; fail=1; fi
+
+# Missing/empty config -> "none", unchanged wording (already exercised implicitly by every case
+# above, none of which set PROJECT_PRIORITY_CONFIG -- this makes the "none" default explicit).
+python3 "$TMP/fakeboard.py" no-review 38818 &
+NOPRIO_PID=$!
+for _ in $(seq 1 40); do curl -sf -o /dev/null "http://127.0.0.1:38818/api/kanban" && break; sleep 0.25; done
+noprio_out="$(DASH="http://127.0.0.1:38818" PROJECT_PRIORITY_CONFIG="$TMP/does-not-exist.json" bash "$NUDGER" --dry-run 2>/dev/null | sed -n 's/^PRIORITY-PROJECTS://p')"
+kill "$NOPRIO_PID" 2>/dev/null; wait "$NOPRIO_PID" 2>/dev/null
+if [ "$noprio_out" = "none" ]; then echo "  ok   missing config -> none (default order, unchanged wording)"
+else echo "  FAIL missing config -> got '$noprio_out'"; fail=1; fi
+
 [ $fail -eq 0 ] && { echo "selftest: PASS"; exit 0; } || { echo "selftest: FAIL"; exit 1; }

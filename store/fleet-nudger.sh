@@ -77,7 +77,29 @@ print(json.dumps(out))
 
 get() { echo "$WORK" | python3 -c "import json,sys;print(json.load(sys.stdin).get(sys.argv[1],False))" "$1" 2>/dev/null; }
 
+# Project dispatch priority (card 2d6587fe): rule 14 hardcodes "project cards (CleanCore) before
+# non-project (marveen-infra)". This reads the same setting the dashboard's dropdown writes
+# (store/project-dispatch-priority.json), so a Peti override at the dashboard actually reaches the
+# nudge text instead of only living in a prose rule nobody re-reads at dispatch time. Empty/missing
+# -> unchanged wording (rule 14's own default order still applies, just not named explicitly).
+# Overridable so a selftest can point at a throwaway file instead of the live setting.
+PRIORITY_CONFIG="${PROJECT_PRIORITY_CONFIG:-$ROOT/store/project-dispatch-priority.json}"
+PRIORITY_PROJECTS="$(python3 -c "
+import json
+try:
+    d = json.load(open('$PRIORITY_CONFIG'))
+    p = d.get('priority') or []
+    print(', '.join(x for x in p if isinstance(x, str)))
+except Exception:
+    print('')
+" 2>/dev/null)"
 NUDGE_ENG='SELF-ADVANCE (rule 11, NE varj MikroB-ra): ha nincs aktiv munkad, curl a kanbant es vedd a neked cimzett legmagasabb-prio planned kartyat (nem BLOKKOLT) -> in_progress -> epitsd -> vegen waiting+REVIEW. Ha nincs planned, epitsd a design-impl kovetkezo kepernyoit (fron-ted/fron-teddy) v. a kovetkezo sec-followupot (backend/fullstack). Szabaly 10/11.'
+if [ -n "$PRIORITY_PROJECTS" ]; then
+  NUDGE_ENG="$NUDGE_ENG DISPATCH-PRIORITAS BEALLITVA: ($PRIORITY_PROJECTS) projekt(ek) kartyai MOST elozzek meg a tobbit, EBBEN a sorrendben (dashboard-beallitas, felulirja a rule 14 alap sorrendjet, amig ez a beallitas fenn van)."
+fi
+# Observable in --dry-run without printing the whole nudge body (same summary-line convention as
+# GATE-WORK/ENG-WORK below).
+[ "$DRY_RUN" = "1" ] && echo "PRIORITY-PROJECTS:${PRIORITY_PROJECTS:-none}"
 NUDGE_GATE='SELF-ADVANCE (rule 11, NE varj MikroB-ra): ha nincs aktiv munkad, curl a kanbant es vedd a legregebbi waiting+REVIEW kartyat a hataskorodben (QA=minden funkcionalisan; Cybersec=trust-boundary; Cybered=magas-tetu) amin nincs a TE verdikted -> gate-eld -> majd a kovetkezot. Szabaly 11.'
 
 # Delivery goes through the dashboard, NOT straight into the tmux pane (card 7560bb6a).
