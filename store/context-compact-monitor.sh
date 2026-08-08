@@ -99,6 +99,7 @@ fi
 # it). Best-effort: if the refresh fails we still run, and the staleness check below is what stops
 # us acting on an old reading. Token from a 0600 header file, never argv.
 TOKEN_FILE="$ROOT/store/.dashboard-token"
+HDR_FILE=""   # stays empty if the token is unreadable; the compact call below checks this (set -u)
 if [ -r "$TOKEN_FILE" ]; then
   HDR_FILE="$(mktemp)"; trap 'rm -f "$HDR_FILE"' EXIT; chmod 600 "$HDR_FILE"
   printf 'Authorization: Bearer %s\n' "$(cat "$TOKEN_FILE")" > "$HDR_FILE"
@@ -135,26 +136,35 @@ except Exception: print(0)" 2>/dev/null || echo 0)
     continue
   fi
 
-  # Session names are NOT the agent id: role agents run as `agent-<name>` and the orchestrator as
-  # `mikrob-channels`. Assuming sess=="$agent" made this a silent no-op -- it logged "no tmux
-  # session" for every agent and never compacted anything. Resolve properly, and if no session
-  # matches, say so rather than pretending we acted.
-  sess=""
-  for cand in "agent-$agent" "$agent" "$agent-channels"; do
-    if tmux has-session -t "$cand" 2>/dev/null; then sess="$cand"; break; fi
-  done
-  if [ -z "$sess" ]; then
-    log "SKIP $agent: no tmux session (tried agent-$agent, $agent, $agent-channels)"
+  # POST /api/agents/<agent>/compact, not a direct tmux write (card 9cfed589, Cybered's
+  # cron-shell-pane-writers survey; same defect class as fleet-nudger.sh, card 7560bb6a). The old
+  # line -- `tmux send-keys ... && sleep 1 && tmux send-keys Enter` -- ran from this scheduled-task
+  # process, OUTSIDE the dashboard's in-process pane mutex, with a full second between the text and
+  # the Enter for another writer's keystrokes to land in the middle of it. The API route holds the
+  # SAME lock every other delivery path in this codebase uses, and still sends a LITERAL, unwrapped
+  # '/compact' (unlike /api/messages, which prefixes every delivery with a trusted-peer frame that
+  # would turn the command into prose Claude Code no longer recognizes as the built-in slash
+  # command). $HDR_FILE already exists above (the token-usage refresh reuses it) -- no argv token.
+  # Checked for non-empty first: under `set -u` an unset var would abort the whole run, and a
+  # missing token should skip this one compact, not crash every remaining agent in the loop.
+  if [ -z "$HDR_FILE" ]; then
+    log "SKIP $agent: no dashboard token available, cannot call the compact API"
     continue
   fi
-  tmux send-keys -t "$sess" -l "/compact" && sleep 1 && tmux send-keys -t "$sess" Enter
+  resp="$(curl -fsS -m 15 -X POST "http://127.0.0.1:${WEB_PORT:-3420}/api/agents/${agent}/compact" \
+    -H "@$HDR_FILE" 2>&1)"
+  rc=$?
+  if [ "$rc" -ne 0 ]; then
+    log "SKIP $agent: compact request failed ($resp)"
+    continue
+  fi
   python3 -c "
 import json
 try: d = json.load(open('$STATE'))
 except Exception: d = {}
 d['$agent'] = $NOW
 json.dump(d, open('$STATE','w'))"
-  log "COMPACT $agent (session $sess) ctx=${ctx_k}k (threshold ${THRESHOLD_K}k)"
+  log "COMPACT $agent ctx=${ctx_k}k (threshold ${THRESHOLD_K}k)"
   ACTED=$((ACTED + 1))
 done
 

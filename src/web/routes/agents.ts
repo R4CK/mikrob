@@ -1744,6 +1744,40 @@ export async function tryHandleAgents(ctx: RouteContext, webDir: string): Promis
     return true
   }
 
+  // POST /api/agents/:name/compact -- send a literal /compact into the agent's own tmux session.
+  //
+  // WHY THIS EXISTS (card 9cfed589, Cybered's cron-shell-pane-writers survey). Before this,
+  // store/context-compact-monitor.sh wrote directly into the pane -- `tmux send-keys ... && sleep 1
+  // && tmux send-keys Enter` -- from a scheduled-task process, the SAME race fleet-nudger.sh had
+  // (card 7560bb6a): an external process cannot reach the dashboard's in-process pane mutex, and
+  // the sleep window between the two writes is a full second in which another writer's keystrokes
+  // can interleave into the middle of the command.
+  //
+  // /api/messages does NOT fit this job: every delivery through it is wrapped with a
+  // "[Uzenet @X-tol ...]" trusted-peer prefix (agent-message-wrap.ts), so a literal "/compact"
+  // would arrive as PROSE inside that frame, not as the built-in slash command Claude Code only
+  // recognizes when it is the first thing typed into an idle input box -- defeating the monitor's
+  // actual job, which is unconditional compaction, not a suggestion the target agent might not act
+  // on. This mirrors /api/agents/:name/auth/init just above, which sends a literal '/login' the
+  // same way, through the SAME in-process sendPromptToSession + pane lock every other delivery
+  // path in this codebase already goes through.
+  const compactMatch = path.match(/^\/api\/agents\/([^/]+)\/compact$/)
+  if (compactMatch && method === 'POST') {
+    const name = decodeURIComponent(compactMatch[1])
+    if (!existsSync(agentDir(name))) { json(res, { error: 'Agent not found' }, 404); return true }
+    if (!isAgentRunning(name)) { json(res, { error: 'Agent is not running' }, 400); return true }
+    const session = agentSessionName(name)
+    const host = readAgentRemoteHost(name)
+    try {
+      await sendPromptToSession(session, '/compact', host)
+      json(res, { ok: true })
+    } catch (err) {
+      logger.error({ err, name }, 'Compact trigger failed')
+      json(res, { error: 'Compact indítása sikertelen' }, 500)
+    }
+    return true
+  }
+
   const startMatch = path.match(/^\/api\/agents\/([^/]+)\/start$/)
   if (startMatch && method === 'POST') {
     const name = decodeURIComponent(startMatch[1])
