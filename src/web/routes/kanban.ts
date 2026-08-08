@@ -20,6 +20,26 @@ import { isAgentRunning } from '../agent-process.js'
 import { readHardStop, isNewDevStartBlocked } from '../../costops/weekly-hard-stop.js'
 import { landedGuardVerdict } from '../kanban-landed-guard.js'
 
+// Card project-name drift (Peti 2026-08-08): `project` was free-text with no case-folding, so
+// "CleanCore" / "cleancore" / "MikroB" / "mikrob-infra" / "fleet-infra" / "marveen" / "Infra" all
+// piled up as distinct buckets in the project filter -- the same work reading as several different
+// projects. Fold known case/spelling variants onto their canonical name on every write; an
+// unrecognised project passes through untouched (this is normalisation, not an allowlist -- a
+// genuinely new project must stay creatable).
+const CANONICAL_PROJECTS: Record<string, string> = Object.fromEntries(
+  [
+    ['CleanCore', ['cleancore']],
+    ['MikroB', ['mikrob-infra', 'mikrob', 'fleet-infra', 'marveen', 'infra', 'mikrob-ops', 'marveen-infra']],
+  ].flatMap(([canonical, variants]) => (variants as string[]).map((v) => [v, canonical as string])),
+)
+export function normalizeProjectName<T extends { project?: unknown }>(data: T): T {
+  if (typeof data.project === 'string') {
+    const canonical = CANONICAL_PROJECTS[data.project.trim().toLowerCase()]
+    if (canonical) return { ...data, project: canonical }
+  }
+  return data
+}
+
 // Weekly NEW-DEV stop enforcement (Peti 2026-08-01). The newDevStop threshold was COMPUTED and shown,
 // but nothing refused the work: role agents self-advance to the next `planned` card on their own and
 // the status-write endpoints accepted `planned -> in_progress` unconditionally, so new development
@@ -330,7 +350,7 @@ export async function tryHandleKanban(ctx: RouteContext): Promise<boolean> {
       }
     }
     const id = randomUUID().slice(0, 8)
-    createKanbanCard({ id, ...data })
+    createKanbanCard({ id, ...normalizeProjectName(data) })
     json(res, { ok: true, id })
     return true
   }
@@ -351,7 +371,7 @@ export async function tryHandleKanban(ctx: RouteContext): Promise<boolean> {
       const v = await landedGuardVerdict(id, data.status, force === true, typeof actor === 'string' ? actor : undefined)
       if (v.blocked) { json(res, { error: v.message }, 409); return true }
     }
-    if (updateKanbanCard(id, data, { actor: typeof actor === 'string' ? actor : undefined, force: force === true })) {
+    if (updateKanbanCard(id, normalizeProjectName(data), { actor: typeof actor === 'string' ? actor : undefined, force: force === true })) {
       json(res, { ok: true }); return true
     }
     // Card c4f2de32: distinguish "no such card" from "refused to re-open reviewed work", so the
