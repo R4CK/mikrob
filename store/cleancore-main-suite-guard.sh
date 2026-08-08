@@ -48,6 +48,15 @@ set -uo pipefail
 REPO="${CC_REPO:-/mnt/h/LM_Studio_Workdir/CleanCore}"
 TREE="${CC_MAIN_GUARD_TREE:-/home/neon/cc-mainguard}"
 STATE="${CC_MAIN_GUARD_STATE:-/home/neon/marveen/store/cleancore-main-suite-state.json}"
+# Overridable for the same reason REPO/TREE/STATE are (a selftest must never touch the live
+# equivalent) -- and this one was MISSED once already. A REGRESSION fixture run through
+# gate-dispatch-check-selftest-shaped mutation testing during this card's own gate posted real
+# alerts to the real mikrob: "from":"fullstack" (this script cannot self-identify, see below), a
+# repro path into a temp sandbox that no longer existed, and commit numbers from a throwaway git
+# repo -- indistinguishable from a genuine finding until investigated. Every other side-effecting
+# path in this script (REPO/TREE/STATE/LOCK) was already made overridable; this one alerts a human
+# and was not, which is the worse direction to leave un-isolatable.
+DASH="${CC_MAIN_GUARD_DASH:-http://localhost:3420}"
 SUITE="${CC_MAIN_GUARD_SUITE:-apps/api}"
 BRANCH="${CC_MAIN_GUARD_BRANCH:-main}"
 
@@ -250,7 +259,7 @@ if [ "$fails" -gt "$prev_fails" ]; then
       "$BRANCH" "$prev_fails" "$fails" "${HEAD:0:8}" "${prev_sha:0:8}" "$suspects" "$TREE" "$SUITE" \
       | python3 -c 'import json,sys; print(json.dumps({"from":"fullstack","to":"mikrob","content":sys.stdin.read()}))')"
     printf 'Authorization: Bearer %s\n' "$(cat "$tok")" \
-      | curl -H @- -s -m 15 -X POST http://localhost:3420/api/messages \
+      | curl -H @- -s -m 15 -X POST "$DASH/api/messages" \
         -H 'Content-Type: application/json' --data-binary "$body" >/dev/null 2>&1 \
       || echo "  (note: could not reach the message API -- the finding is only in this output)"
   fi

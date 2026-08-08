@@ -28,9 +28,16 @@ EOF
 chmod +x "$TREE/node_modules/.bin/vitest"
 
 run() { # $1 = fixture file -> prints the RESULT: line, sets $rc
+  # CC_MAIN_GUARD_DASH points at a port nothing listens on. A REGRESSION run alerts the real
+  # dashboard by default, and this file's own "regression + poisoned name" case genuinely produces
+  # one -- earlier runs of this exact selftest, before this override existed, sent real alert
+  # messages to mikrob with a fabricated commit range and a repro path into a since-deleted
+  # sandbox. The curl failure is swallowed by the script's own `|| echo (note: ...)` fallback, so
+  # this changes nothing else about what the selftest observes.
   FAKE_VITEST_OUT="$1" \
   CC_REPO="$REPO" CC_MAIN_GUARD_TREE="$TREE" \
   CC_MAIN_GUARD_STATE="$SB/state.json" CC_MAIN_GUARD_LOCK="$SB/guard.lock" \
+  CC_MAIN_GUARD_DASH="http://127.0.0.1:1" \
     bash "$G" --force 2>/dev/null | sed -n 's/^RESULT:\(.*\)/\1/p' | head -1
 }
 
