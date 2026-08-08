@@ -169,7 +169,7 @@ Mérnöki: `fullstack-mvp-builder`, `backend-architect`, `frontend-component-eng
 Biztonság: `cybersecurity-redteam` (Cybersec, white-hat offenzív biztonsági mérnök -- a `white-hat-security-testing` skillel) és `cybered` (Cybered, agresszív adverzariális red-team -- kill-chain emuláció + legális aktív védelem, engedélyezett hatókörön).
 Kiosztás, beragadás-kezelés, végső ellenőrzés: MikroB (CEO/CTO szerep).
 
-**Tesztelési gate-ek (KÖTELEZŐ):** minden kész kártyát HÁROM független ügynök tesztel -- `qa-engineer` (funkcionális), `cybersecurity-redteam` (per-finding biztonsági) ÉS `cybered` (adverzariális red-team). Csak ők hárman tesztelnek/sign-offolnak. DONE = QA PASS + Cybersec GO + Cybered GO. Egyik sem ellenőrzi a saját munkáját. Lásd 4. szabály.
+**Tesztelési gate-ek (KÖTELEZŐ):** sign-off jogköre KIZÁRÓLAG `qa-engineer` + `cybersecurity-redteam` + `cybered` hármasáé, a kockázat-alapú tiering szerint (4. szabály: QA mindig + risk-tiered 2/3-gate). Egyik sem ellenőrzi a saját munkáját.
 
 ## Kódminőségi alapelvek -- MINDEN ÜGYNÖKRE (Peti szabály 2026-07-31)
 
@@ -184,56 +184,7 @@ Az elvek akkor működnek, ha: kevesebb felesleges változás a diffekben, keves
 
 ## Teljes értékű audit -- SZABÁLY (KÖTELEZŐ)
 
-Amikor "teljes értékű audit", "teljes audit", "auditáld végig", "full audit" hangzik el, vagy release/nagyobb mérföldkő előtt, az audit CSAK akkor teljes értékű, ha az alábbi MINDEN pontja lefutott, dokumentálva, bizonyítékkal. Részleges lefedettség = NEM teljes értékű audit; ilyet ne jelents késznek.
-
-Alapelv: **semmi nem implicit**. Ami nincs a leltárban és nincs tesztelve, azt "töröttnek" tekintjük amíg az ellenkezője bizonyítva nincs. Minden állítás mögé forrás/bizonyíték kell (repro lépés, teszt-kimenet, screenshot, log). A puszta zöld teszt önmagában NEM bizonyíték (lásd a magic-link 151/151-zöld esetet, ami 2 MAJOR hibát rejtett).
-
-### 1. Teljes funkció-leltár (frontend + backend)
-- Térképezd fel és listázd KI MINDEN frontend elemet: minden oldal/route, komponens, **minden gomb**, link, űrlap, mező, menüpont, modal, drawer, toast, táblázat-akció, állapot (loading/empty/error/success). Minden gomb és minden funkció legyen a listán, azonosítóval.
-- Térképezd fel és listázd KI MINDEN backend funkciót: minden modul, service, handler, use-case, háttérfeladat/cron, queue-fogyasztó, webhook.
-- A leltár a lefedettség alapja: minden tétel mellé kerül a teszt-eredménye. Néma kihagyás TILOS -- ha valamit nem teszteltél, azt külön listázd "NEM tesztelt / miért".
-
-### 2. Felhasználói folyamatok MINDEN RBAC szinten
-- Sorold fel az ÖSSZES szerepkört/jogosultsági szintet (pl. anon, user, manager, admin, superadmin -- a tényleges enum alapján, nem fejből).
-- Minden folyamathoz (end-to-end user journey) készíts **authz-mátrixot**: melyik szerep MIT tehet. Teszteld MINDKÉT irányt:
-  - **Pozitív:** a jogosult szerep végig tudja csinálni a folyamatot (minden lépés, minden gomb).
-  - **Negatív (fail-closed):** a NEM jogosult szerep BLOKKOLVA van -- UI-ban rejtve/tiltva ÉS a szerver is elutasítja (nem elég a UI-elrejtés; próbáld meg közvetlenül az API-t is). Vertikális és horizontális jogosultság-emelés (más tenant/más user adata) TILTOTT.
-
-### 3. Superadmin folyamatok
-- Azonosítsd és teszteld VÉGIG a superadmin/emelt-jogú folyamatokat: bejelentkezés (MFA/TOTP), tenant-kezelés, impersonáció, feature-flag/konfig, audit-napló, veszélyes műveletek (törlés, adat-export).
-- Ellenőrizd: minden emelt művelet auditált (tamper-eviden), fail-closed, és nincs prod-ban DEV-only bypass. Az impersonáció ne szivárogtasson tenant-határon át.
-
-### 4. Minden API tesztelve
-- MINDEN végpontra: happy-path; input-validáció (hiányzó/rossz típus/határérték/injection); authz (2. pont); hibakezelés és helyes státuszkódok; idempotencia; rate-limit; pagináció; verziózás. Ellenőrizd a tenant-scope invariánst minden lekérdezésen (soha ne bízz a body tenantId-ban).
-
-### 5. Adatbázis-műveletek tesztelve
-- CRUD minden entitásra; constraint-ek és FK-k; tranzakció-atomicitás és rollback; egyediség/versenyhelyzet; migrációk fel/le és idempotencia; tenant-izoláció; indexek megléte a forró lekérdezéseken; származtatott értékek szerver-oldali újraszámítása (ne bízz a kliens által küldött összegben/hash-ben).
-
-### 6. Optimalizálás (teljesítmény + skálázhatóság)
-- Mérd és javítsd: lassú/N+1 lekérdezések, hiányzó indexek, felesleges re-render, túl nagy payload/bundle, cache-hiány, memóriaszivárgás, O(n^2) forrópontok (capeld). Adj előtte/utána számot (nem "gyorsabbnak tűnik").
-
-### 7. Kiegészítő, hogy TELJES ÉRTÉKŰ legyen
-- **Biztonság:** STRIDE + OWASP Top 10/ASVS végigvezetve (a Cybersec gate), nem csak a happy-path.
-- **Adatintegritás / multi-tenant izoláció:** a tenant-scope invariáns bizonyítottan tartja magát (negatív kontroll).
-- **Frontend edge-esetek:** loading/empty/error/offline/hosszú szöveg/kis képernyő állapotok.
-- **Akadálymentesség (WCAG AA):** billentyű-navigáció, fókusz-csapda, kontraszt, aria.
-- **i18n/l10n:** minden user-facing string kulcsból jön, nincs hardcode. **Teljes paritás MINDEN konfigurált nyelvre** (a projekt `SUPPORTED_LOCALES` listája, nem csak HU+EN): minden nyelvi fájlnak az összes kulcsot tartalmaznia kell, MINDEN namespace-ben. Az i18n-t **folyamatosan, minden fejlesztéssel együtt kell generálni** (Peti szabály 2026-07-12): új user-facing string ugyanabban a munkában bekerül mindegyik nyelvre. A paritás-guard/teszt az EN VALÓS top-level namespace-eiből származtasson (ne hardcode-olt namespace-allowlist), különben egy új namespace vakfoltként átcsúszik (lásd a `vertical.*` esetet: 5 nyelvből 20-20 kulcs hiányzott, mert a teszt allowlistje nem tartalmazta). A teljes nyelvi paritás a definition-of-done és a QA gate része.
-- **Megfigyelhetőség:** kulcs-műveletek logolva/metrikázva, riasztás a kritikus hibákra, nincs titok a logban.
-- **Resziliencia:** külső függőség kiesésének kezelése (timeout, retry, fail-closed), input-cap DoS ellen.
-- **Regresszió / teszt-piramis:** unit + integrációs + e2e; a javítások mellé regressziós teszt kerül.
-- **Titkok/konfig:** nincs hardcode secret, env-ből jön, prod/dev szétválasztva.
-- **Dokumentáció:** a leltár + eredmények + talált hibák + repro reprodukálhatóan leírva (audit-riport).
-
-### 8. Design ↔ flow ↔ funkció kapcsolat + user story-k (KÖTELEZŐ, Peti 2026-07-12)
-Az audit CSAK akkor teljes értékű, ha MINDEN megépített funkcióra igazoltan teljesül:
-- **Design a kivezetett végponton:** a funkciónak a kivezetett végpontján (UI-route / képernyő / gomb / endpoint felülete) VAN design-eleme -- nincs design nélküli, "csupasz" funkció. Ami funkció létezik, annak van megtervezett és megépített felülete (ha hiányzik a design, generálni kell -- lásd a funkció-vezérelt Stitch-generálást).
-- **Design → flow → funkció lánc BE VAN KÖTVE:** a design-elem a valós user-flow-ban él, és a flow a VALÓS funkcióhoz/endpointhoz drótozva (a 9. flow-connectivity szabály szerint). A három (design, flow, funkció) kapcsolata explicit és ellenőrzött -- nincs dekoratív design, nincs be-nem-kötött flow, nincs felület nélküli funkció.
-- **Működik + zöld teszt:** a funkció ténylegesen MŰKÖDIK (valós end-to-end, nem csak zöld unit), és a tesztjei SIKERESEK. A puszta zöld teszt önmagában nem elég bizonyíték (lásd a magic-link esetet) -- valós lefuttatás/repro kell.
-- **User story-k -- MINIMUM 5 funkciónként:** minden funkcióhoz LEGALÁBB 5 teljesülő user story tartozik (szerep + cél + elfogadási kritérium formában). **Ha egy funkciónak nincs (elég) user story-ja, MEG KELL ÍRNI** a hiányzókat (a valós funkció + RBAC-szintek alapján, nem kitalálva). Minden user story végig-tesztelve: pozitív (jogosult szerep végigviszi) ÉS negatív (jogosulatlan blokkolva, fail-closed). A QA gate ezt is ellenőrzi: funkciónként ≥5 teljesülő, tesztelt user story, mindegyik designnal + flow-bekötéssel + zöld end-to-end teszttel; hiány = audit FAIL.
-
-### Lefutás és sign-off
-- Az auditot a megfelelő ügynökök végzik (leltár/optimalizálás: mérnöki + `codebase-auditor`/`performance-optimizer`; funkcionális teszt: `qa-engineer`; támadó teszt: `cybersecurity-redteam`), a saját munkáját senki nem ellenőrzi (4. szabály).
-- Kimenet: **audit-riport** a teljes leltárral és minden tétel PASS/FAIL/NEM-tesztelt státuszával, a talált hibák reprodukálható jegyzékével, és a javítási/optimalizálási kártyákkal a kanbanon. Teljes értékű audit CSAK akkor jelenthető késznek, ha a leltár 100%-a le van fedve (tesztelve vagy explicit indokkal kihagyva), és minden MAJOR/kritikus találatra van kártya.
+Amikor "teljes értékű audit", "teljes audit", "auditáld végig", "full audit" hangzik el, vagy release/nagyobb mérföldkő előtt: lásd a `full-audit-checklist` skillt, és futtasd le KÖTELEZŐEN MINDEN pontját, dokumentálva, bizonyítékkal. Részleges lefedettség = NEM teljes értékű audit; ilyet ne jelents késznek. A puszta zöld teszt önmagában NEM bizonyíték (lásd a magic-link 151/151-zöld esetet, ami 2 MAJOR hibát rejtett).
 
 ## README karbantartás -- SZABÁLY (KÖTELEZŐ)
 
@@ -248,41 +199,11 @@ Ha egy projekt git repóval rendelkezik, a `README.md` naprakészen tartása a f
 
 ## Kvóta-figyelmeztetés (5 órás limit) -- SZABÁLY
 
-Ha azért akad el a munka, mert egy ügynök elérte az 5 órás Claude usage-limitet, AZONNAL figyelmeztesd Petit Telegramon (melyik ügynök, és hogy a reset-ig nem tud dolgozni). Ezt automatizálja a `quota-limit-monitor` ütemezett feladat: 6 percenként a `store/quota-check.sh`-val nézi minden ügynök tmux paneljét a usage-limit bannerre (a `src/model-fallback.ts` regexével), és CSAK az ÚJ limitnél ír Telegramra (dedupe a `store/quota-monitor-state.json`-ban). Ha te magad (MikroB) látod bármely kimenetben a limit-bannert, akkor is jelezd.
-
-### 5h05m reset-countdown + auto-resume (Peti szabály 2026-07-04)
-
-A limit-banner a reset UTÁN is bent ragadhat a panelen (a "Stop and wait for limit to reset" modál elavul), ezért NEM elég a bannerre hagyatkozni. Mechanizmus:
-
-- **Countdown indítás:** amikor egy ügynök eléri a limitet (a `quota-check.sh` NEW éle), a script automatikusan elindít egy **5 óra 5 perces** visszaszámlálót: `store/quota-reset-countdown.json` (`hit_at` + 5h05m = `deadline`). A deadline-t egy futó countdown NEM állítja újra (nem nyúlik, ha a limit közben ismét látszik); ha a limit teljesen megszűnik, a countdown törlődik.
-- **Auto-resume a lejáratkor:** a `quota-reset-resume` ütemezett feladat 5 percenként futtatja a `store/quota-resume.sh`-t. Amíg a deadline nem járt le → `STATE:counting`, csend. A deadline lejártakor a script: (1) Esc-eli az elavult limit-modálokat a limitelt paneleken, (2) `POST /api/agents/<agent>/start`-tal ÚJRAINDÍTJA az érintett ügynököket, (3) újra lefuttatja a `quota-check.sh`-t. Ha a limit tényleg megszűnt → `RESULT:RESUMED` (a countdown törlődik, a flottát újra dispatcheled és értesíted Petit); ha a valós ablak még nem zárt → `RESULT:STILL-LIMITED`, a következő futás újrapróbálja.
-- **Fontos:** a reset megtörténtének perdöntő jele NEM a banner, hanem hogy egy friss/újraindított session tud-e dolgozni (lásd `quota-reset-detection-and-resume` tanulság). A `quota-resume.sh` ezt automatizálja.
-- **GROUND-TRUTH a terminál `/status` (Peti szabály 2026-07-05):** a kvóta/reset ellenőrzés perdöntő forrása a `/status`, NEM a beragadó limit-modal (a modal a reset UTÁN is bent ragadhat -> a banner-detektor tévesen "befagyottnak" látja a flottát). Ha kétség van a limit/reset körül, a `/status` a mérvadó. Mechanizmus (MikroB olvassa): `/status`-t egy SPARE claude-panelbe küldeni (`marveen-worker` tmux session, SOHA nem fleet-agent panelbe) és `capture-pane`-nel visszaolvasni a Current session % + Weekly All-models % + reset-időket, végén `Esc`. A banner/quota-check továbbra is a gyors monitor, de ütközésnél a `/status` nyer. (Alternatív strukturált forrás: a `CLAUDE_CODE_OAUTH_TOKEN` + `api.anthropic.com/api/oauth/usage` végpont.)
-
-### Heti limit 90% -- új-fejlesztés stop (Peti szabály 2026-07-05)
-
-Az 5 órás session-limit MELLETT van egy HETI limit is (a Max 5x csomag "Weekly limits / All models" sávja, külön reset-idővel, pl. `Resets Thu 3:59 PM`). Szabály:
-
-- **DINAMIKUS küszöb (Peti 2026-07-05), a heti resetig hátralévő idő alapján** (a reset-idő a usage-képernyőn: `Resets <nap> <idő>`; a hátralévő időt `date`-tel számold, Europe/Budapest):
-  - **> 3 nap** a resetig → küszöb **90%**
-  - **< 2 nap** a resetig → küszöb **92%**
-  - **< 1 nap** a resetig → küszöb **95%**
-  - (2--3 nap között a 90% marad; a `< 1 nap` a `< 2 nap`-on belül a szűkebb, ezért 95% nyer. Logika: `days<1 → 95`, `elif days<2 → 92`, `else → 90`.)
-  Minél közelebb a reset, annál magasabb a megengedett küszöb (mert a reset úgyis jön).
-- **Ha a HETI "All models" sáv eléri az AKTUÁLIS (dinamikus) küszöböt:** a flotta a MÁR FUTÓ, aktuális fejlesztéseket BEFEJEZI (a jelenlegi in_progress kártyák + a hozzájuk tartozó gate-ek lefutnak), de **ÚJ fejlesztést NEM indítasz** (nincs új planned kártya `in_progress`-be, nincs új dispatch) a HETI reset megtörténtéig. A 6. szabály "no idle" ilyenkor a heti-limit miatt fel van függesztve az új munkára -- ez a megengedett kivétel, mint a kvóta-limit.
-- **Mit szabad 90% felett:** in-flight kártyák befejezése, gate-ek (QA/Cybersec/Cybered) lefuttatása és a kártyák LEZÁRÁSA, Telegram-válasz Petinek, monitorozás. Amit NEM online: új feature-kártya online-kódolása, önfejlesztő kör, bármi ami ONLINE Claude-tokent éget kódolásra.
-- **LOKÁLIS-LLM OFFLOAD MÓD 90% felett (Peti szabály 2026-07-23, a "stop" MÓDOSÍTÁSA):** a heti küszöb felett a kódolás NEM áll le teljesen -- helyette MINDEN programozási feladatot a LOKÁLIS LLM-re kell kiadni (draft-only, `local-llm-draft` label), és a MikroB + gate VISSZAELLENŐRZÉST a következő kvóta-resetig HALASZTANI. Így a helyi (ingyenes) GPU meghosszabbítja a kvótát a kódolásra. Mechanizmus: az online role-agentek NE égessenek Claude-tokent kódolásra; a kódot a `/home/neon/marveen/store/local-llm-rag.sh --agent <agent> --task code` adja draftként (a `local-llm-offload` skill szerint), amit egy `local-llm-draft`-címkés kártyán gyűjtünk. **Korlát (őszinte):** a 7B csak jól körülhatárolt, IZOLÁLT kód-darabot tud megbízhatóan (függvény/teszt/típus/regex/snippet), teljes több-fájlos kártyát/architektúrát/wiringet NEM -- amit nem lehet offloadolni, az a resetig VÁR. **A verifikáció (MikroB + QA/Cybersec/Cybered gate) MINDIG a reset után, online fut -- draft SOHA nem megy élesbe/DONE-ra ellenőrizetlenül** ([[local-llm-work-must-be-rechecked]]). Reset után: a `local-llm-draft` kártyák elsőbbséggel újra-ellenőrzés + gate, majd normál dispatch.
-- **Mérés:** a pontos heti % a Claude usage-képernyőn látszik (session + weekly sávok). Automatikus olvasása nem garantált; a jelzés forrása Peti usage-screenshotja és/vagy a heti-limit banner. Ha bizonytalan a %, a reset-idő közeledtével (a képernyőn látható `Resets <nap> <idő>`) konzervatívan viselkedj: a heti reset előtt ne kezdj nagy új fejlesztésbe, ha a sáv a 90% közelében jár. Ismert állapot 2026-07-05 08:06-kor: heti All-models 87%, reset **csütörtök 15:59 (Thu 3:59 PM)**.
-- Amint a heti reset megtörtént (a sáv nullázódik), a normál "no idle" folytatódik: dispatcheld a következő planned munkát.
+Ha azért akad el a munka, mert egy ügynök elérte az 5 órás Claude usage-limitet, AZONNAL figyelmeztesd Petit Telegramon (melyik ügynök, reset-ig nem tud dolgozni). Automatizálva (`quota-limit-monitor`, 6 percenként). Limit-elérésnél automatikusan indul egy **5 óra 5 perces** reset-countdown + auto-resume (a banner a reset után is bent ragadhat, ezért NEM elég rá hagyatkozni -- ground-truth a `/status`). Heti "All models" sávnál DINAMIKUS új-fejlesztés-stop küszöb, a resetig hátralévő idő szerint: **>3 nap → 90%, <2 nap → 92%, <1 nap → 95%**. Küszöb felett: in-flight kártyák + gate-ek + zárás mehet, de ÚJ kódolás csak LOKÁLIS LLM-en draft-only (`local-llm-offload` skill), online visszaellenőrzés a resetig halasztva, draft SOHA nem megy DONE-ra ellenőrizetlenül. Pontos mechanika (script-nevek, JSON-fájlok, lépésről lépésre): `quota-management` skill.
 
 ## Rendszerfrissítés update-biztonsága és recovery -- SZABÁLY (Peti 2026-07-05)
 
-A MikroB rendszer az `./update.sh`-val frissül (git `pull --ff-only origin <branch>` + `npm ci`/rebuild + service-restart). Szabályok, hogy egy frissítés SOHA ne akadjon el lokális módosítás miatt, és mindig legyen visszaút:
-
-- **Update-biztos módosítás:** a futó rendszert érintő lokális változtatás ne blokkolja a frissítést. A runtime/lokális adat GITIGNORED helyre megy (`store/`, `.env`, `dist/`) -- ezeket az ff-only pull nem érinti. Követett (tracked) fájlba tett lokális szerkesztés, ami ütközne a bejövő update-tel, TILOS uncommitolva hagyni (az ff-only pull elakad rajta); commitold+pushold a saját branchre, vagy tartsd gitignored/local fájlban. Az `update.sh` az untracked változtatásokat auto-stasheli, de a tracked-uncommitted divergál -- ezt kerüld.
-- **Operatív scriptek verziókövetése (KÖTELEZŐ, Peti 2026-07-06):** minden futtatható operatív script (`*.sh`, kód-jellegű `*.py`) VERZIÓKÖVETETT és fel van tolva originra -- akkor is, ha egyébként gitignored runtime-mappában (`store/`) él. Egy javítás, ami CSAK gitignored helyen van, NINCS mentve: nem verziózott, nincs backup, egy fresh checkout / új gép elveszíti. A `store/` adata (DB, tokenek, state JSON) marad ignorált; a scriptekre kivétel van (`store/*` + `!store/*.sh`). Titok SOHA nincs beágyazva a scriptbe (a tokent runtime-ban `cat store/.dashboard-token`-nel olvassa). Egy ilyen script szerkesztése/javítása UGYANABBAN a munkában commit+push (ez az update-biztosság is: az unpushed tracked változás megakasztaná az ff-only pullt). Ha egy fix csak `store/`-ban landolt, told fel a forkba, mielőtt késznek jelented. (Portabilitás: a scriptek most abszolút `/home/neon/marveen` utakat visznek -- egy-deployment OK; több hostnál paraméterezni kell.)
-- **Rollback-pont:** az `update.sh` minden frissítéskor rögzíti a frissítés ELŐTTI verziót `store/.update-history`-ba (`update <branch> FROM_SHA TO_SHA`). Ez a recovery célpontja. (store/ gitignored, nem blokkol pullt.)
-- **Recovery script:** `./recovery-prev-version.sh` -- visszaáll egy korábbi, működő verzióra (detached checkout + szükség szerint `npm ci`+rebuild + build-marker + service-restart, a `store/` adat érintetlen marad). Használat: `--list` (rollback-pontok), `checkpoint "megjegyzés"` (jelenlegi HEAD known-good jelölése, non-destruktív), `--to <sha>` (adott commit), argumentum nélkül az utolsó update előtti verzió, `--dry-run` (terv, nincs változás), `--yes` (nincs megerősítés). **FIGYELEM:** a valós rollback ÚJRAINDÍTJA a MikroB szolgáltatást (és vele a `mikrob-channels` sessiont) -- ezt Peti futtatja manuálisan, vagy külön ablakból; MikroB magától NE indítson éles rollbackot (megölné a saját sessionjét), csak `--dry-run`/`--list`/`checkpoint`.
+A MikroB rendszer az `./update.sh`-val frissül (git `pull --ff-only` + rebuild + service-restart). Két KÖTELEZŐ elv: (1) tracked fájlba tett lokális szerkesztés, ami ütközne a bejövő update-tel, SOHA nem marad uncommitolva -- commitold+pushold, vagy tartsd gitignored fájlban; (2) minden futtatható operatív script (`*.sh`, operatív `*.py`) VERZIÓKÖVETETT és pusholt, akkor is ha egyébként gitignored `store/`-ban él -- egy csak-lokális fix nincs mentve. Rollback: `store/.update-history` + `./recovery-prev-version.sh` (`--list`/`checkpoint`/`--to <sha>`/`--dry-run`/`--yes`) -- ÉLES rollbackot MikroB magától NE indítson (megölné a saját sessionjét), csak `--dry-run`/`--list`/`checkpoint`. Teljes mechanika: `update-safety` skill.
 
 ## Ütemezett feladatok
 
