@@ -203,12 +203,13 @@ for cid, m in meta.items():
 GATE_WITH_WORK=""
 for a in $GATE; do
   has_work=0
+  work_card=""
   for card in $CARDS; do
     if [ ! -f "$CACHE/$card" ]; then
       curl -s --max-time 12 -H @"$hdr_file" "$API/$card/comments" > "$CACHE/$card" 2>/dev/null
     fi
     body="$(cat "$CACHE/$card" 2>/dev/null)"
-    if [ -z "$body" ]; then has_work=1; break; fi          # unreadable -> assume work (fail open)
+    if [ -z "$body" ]; then has_work=1; work_card="$card"; break; fi  # unreadable -> assume work (fail open)
     if [ -x "$CHECK" ] || [ -f "$CHECK" ]; then
       gate_labels="$(cat "$CACHE/$card.labels" 2>/dev/null)"
       gate_line="$(cat "$CACHE/$card.gateline" 2>/dev/null)"
@@ -218,15 +219,27 @@ for a in $GATE; do
       verdict="ALLOW"                                       # checker missing -> fail open
     fi
     case "$verdict" in
-      ALLOW*|'') has_work=1; break ;;
+      ALLOW*|'') has_work=1; work_card="$card"; break ;;
       *) : ;;                                               # ADVISE-SKIP -> this card is answered
     esac
   done
-  [ "$has_work" = "1" ] && GATE_WITH_WORK="$GATE_WITH_WORK $a"
+  if [ "$has_work" = "1" ]; then
+    GATE_WITH_WORK="$GATE_WITH_WORK $a"
+    eval "WORK_CARD_$a=\"\$work_card\""
+  fi
 done
 # The predicate result, separate from delivery. Delivery then drops agents with no session or a busy
 # pane -- pre-existing filters, unrelated to whether the work exists. Keeping the two apart is what
 # makes this testable: a control can assert the DECISION without depending on live tmux state.
 [ "$DRY_RUN" = "1" ] && echo "GATE-WORK:${GATE_WITH_WORK:- none}"
-for a in $GATE_WITH_WORK; do nudge "agent-$a" "$NUDGE_GATE"; done
+# Naming the first still-open card (card 801774f2 follow-up: cybersec logged 4 straight replies
+# saying an already-gated card was re-pinged, because the generic nudge made the agent re-scan its
+# entire waiting queue from scratch every minute instead of going straight to the one real item).
+for a in $GATE_WITH_WORK; do
+  wc_var="WORK_CARD_$a"
+  card_id="${!wc_var:-}"
+  msg="$NUDGE_GATE"
+  [ -n "$card_id" ] && msg="$msg KONKRET KARTYA amin meg nincs a verdikted: $card_id (ezzel kezdd, ne scannelj vegig mindent)."
+  nudge "agent-$a" "$msg"
+done
 exit 0
