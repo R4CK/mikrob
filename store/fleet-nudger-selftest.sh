@@ -83,9 +83,20 @@ DESIGNATED = {
     'comments': {'c1': [{'author': 'backend', 'created_at': 100, 'content': 'REVIEW -- kesz'}]},
 }
 
+# ENG-CONDITIONAL end-to-end: one non-blocked planned card, assigned to backend. fullstack has
+# none. Both must be idle/no-session in this fixture (no tmux to check against), so ENG-WORK is
+# the only signal being asserted -- delivery itself is covered by the gate cases above.
+ENG_ONE_PLANNED = {
+    'cards': [
+        {'id': 'p1', 'status': 'planned', 'title': 'a real card', 'assignee': 'backend'},
+        {'id': 'p2', 'status': 'planned', 'title': 'BLOKKOLT: parked', 'assignee': 'fullstack'},
+    ],
+    'comments': {},
+}
+
 FIX = {
     'all-answered': ALL_ANSWERED, 'one-open': ONE_OPEN, 'no-review': NO_REVIEW,
-    'designated': DESIGNATED,
+    'designated': DESIGNATED, 'eng-one-planned': ENG_ONE_PLANNED,
 }[SCENARIO]
 
 
@@ -117,8 +128,8 @@ class H(BaseHTTPRequestHandler):
 HTTPServer(('127.0.0.1', PORT), H).serve_forever()
 PYEOF
 
-run_case() { # $1 = scenario, $2 = port, $3 = expected gate agents (space separated, "" = none)
-  local scen="$1" port="$2" want="$3" pid got
+run_case() { # $1 = scenario, $2 = port, $3 = expected gate agents, $4 = field (default GATE-WORK)
+  local scen="$1" port="$2" want="$3" field="${4:-GATE-WORK}" pid got
   python3 "$TMP/fakeboard.py" "$scen" "$port" &
   pid=$!
   for _ in $(seq 1 40); do
@@ -132,13 +143,13 @@ run_case() { # $1 = scenario, $2 = port, $3 = expected gate agents (space separa
     kill "$pid" 2>/dev/null; fail=1; return
   fi
 
-  got="$(DASH="http://127.0.0.1:$port" bash "$NUDGER" --dry-run 2>/dev/null | sed -n 's/^GATE-WORK://p')"
+  got="$(DASH="http://127.0.0.1:$port" bash "$NUDGER" --dry-run 2>/dev/null | sed -n "s/^${field}://p")"
   kill "$pid" 2>/dev/null; wait "$pid" 2>/dev/null
   [ "$(echo $got)" = "none" ] && got=""
   got="$(echo $got | tr ' ' '\n' | sort | tr '\n' ' ' | sed 's/ *$//')"
 
-  if [ "$got" = "$want" ]; then echo "  ok   $scen -> gate work for: '${got:-<none>}'"
-  else echo "  FAIL $scen -> got '$got', expected '$want'"; fail=1; fi
+  if [ "$got" = "$want" ]; then echo "  ok   $scen ($field) -> '${got:-<none>}'"
+  else echo "  FAIL $scen ($field) -> got '$got', expected '$want'"; fail=1; fi
 }
 
 echo "fleet-nudger gate-predicate controls"
@@ -146,5 +157,13 @@ run_case one-open     38811 "cybered"   # positive: exactly the one agent that o
 run_case all-answered 38812 ""          # negative: the case the card is about
 run_case no-review    38813 ""          # negative: parked card, nothing submitted
 run_case designated   38814 "qa qa2"    # designation: Gate: QA. excludes cybersec/cybered end-to-end
+
+# ENG-CONDITIONAL (MikroB decision, msg 9910, follow-up to card 14acfadd): backend/fullstack must
+# respect plan[a] the same way the gate loop respects designation -- "there is always a
+# sec-followup" was the same unconditional assumption the OLD gate predicate made. fron-ted/
+# fron-teddy stay unconditional on purpose (design-impl always has a next screen), so they are NOT
+# asserted here -- ENG-WORK only ever reports on the conditional pair.
+run_case eng-one-planned 38815 "backend"       "ENG-WORK"  # positive: only backend has a planned card
+run_case no-review       38816 ""              "ENG-WORK"  # negative: no planned card for either
 
 [ $fail -eq 0 ] && { echo "selftest: PASS"; exit 0; } || { echo "selftest: FAIL"; exit 1; }

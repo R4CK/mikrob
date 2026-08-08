@@ -22,7 +22,15 @@ hdr_file="$(mktemp)"; chmod 600 "$hdr_file"
 trap 'rm -f "$hdr_file"' EXIT
 printf 'Authorization: Bearer %s\n' "$TOK" > "$hdr_file"
 
-ENG="backend fullstack fron-ted fron-teddy"
+# Split by whether "always work" is actually true for that agent (MikroB decision, msg 9910,
+# follow-up to card 14acfadd). fron-ted/fron-teddy have their own always-available backlog (65
+# design-impl screens they can self-create from), so unconditional is correct for them. backend/
+# fullstack do not: "there is always a sec-followup" was the same kind of unconditional assumption
+# the OLD gate predicate made ("any waiting card exists"), and it has the same failure mode --
+# waking an idle agent that provably has nothing dispatched. plan[a] (below) is already computed
+# from THIS SAME snapshot for exactly this purpose; the ENG loop just never read it.
+ENG_ALWAYS="fron-ted fron-teddy"
+ENG_CONDITIONAL="backend fullstack"
 GATE="qa qa2 cybersec cybered"
 DRY_RUN=0
 [ "${1:-}" = "--dry-run" ] && DRY_RUN=1
@@ -119,10 +127,19 @@ nudge() { # session, message
         -X POST "$MSG_API" --data-binary @- 2>/dev/null || true
 }
 
-# ENG agents: always nudge if idle -- there is always work (design-impl has 65
-# screens, backend/fullstack have sec-followups + wiring). The message tells them
-# to take a planned card OR self-create+build the next design-impl screen.
-for a in $ENG; do
+# fron-ted/fron-teddy: always nudge if idle -- design-impl always has a next screen to self-create.
+for a in $ENG_ALWAYS; do
+  nudge "agent-$a" "$NUDGE_ENG"
+done
+# backend/fullstack: nudge ONLY if plan[a] says a non-blocked planned card is actually assigned to
+# them. Reuses the SAME per-agent snapshot the gate loop below reads from -- no second question
+# asked of the board, just a check nothing was reading before now.
+ENG_WITH_WORK=""
+for a in $ENG_CONDITIONAL; do
+  [ "$(get "$a")" = "True" ] && ENG_WITH_WORK="$ENG_WITH_WORK $a"
+done
+[ "$DRY_RUN" = "1" ] && echo "ENG-WORK:${ENG_WITH_WORK:- none}"
+for a in $ENG_WITH_WORK; do
   nudge "agent-$a" "$NUDGE_ENG"
 done
 # GATE agents: nudge an agent ONLY if some card is actually waiting for THAT agent's verdict.
