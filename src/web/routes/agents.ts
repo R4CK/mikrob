@@ -2142,6 +2142,30 @@ export async function tryHandleAgents(ctx: RouteContext, webDir: string): Promis
     const name = decodeURIComponent(agentMatch[1])
     const dir = agentDir(name)
     if (!existsSync(dir)) { json(res, { error: 'Agent not found' }, 404); return true }
+    // STOP THE LIVE SESSION FIRST (card 82762751, Cybered's finding). rmSync alone left the tmux
+    // session running as a GHOST: it keeps burning quota and holding any channel credential, and
+    // it is invisible everywhere in the dashboard once the directory is gone --
+    // listAgentNames() (agent-config.ts) is built from the directory, and the only OTHER
+    // enumeration (background-tasks.ts) only looks at bg-* tasks, not agent sessions. The start
+    // path also 404s afterward ('Agent not found'), so the only way back was the stop path, and
+    // only if the operator already knew the name to target.
+    //
+    // Best-effort, not a hard gate: rejecting the delete with a 409 while the session is running
+    // was the other option on the table, but the existing frontend delete button (web/app.js)
+    // never checks the response status -- it always shows "deleted" regardless, so a 409 would
+    // fail the delete while telling the operator it succeeded. The comment already on this
+    // handler makes the same call for removeDesiredAgent below ("deleting is AT LEAST as strong a
+    // statement of intent as stopping"), so stop-then-delete is the consistent reading, not a new
+    // policy. A stop failure does not block the delete -- it is worth knowing about, since a
+    // failed stop immediately followed by a successful delete is exactly how the ghost forms.
+    let stoppedRunningAgent = false
+    if (isAgentRunning(name)) {
+      const stopRes = await stopAgentProcess(name)
+      stoppedRunningAgent = stopRes.ok
+      if (!stopRes.ok) {
+        logger.warn({ name, error: stopRes.error }, 'Agent delete: could not stop the running session before deleting -- a ghost session may remain')
+      }
+    }
     rmSync(dir, { recursive: true, force: true })
     cleanupTeamReferences(name)
     // Deleting an agent is at least as strong a statement of intent as stopping
@@ -2152,7 +2176,7 @@ export async function tryHandleAgents(ctx: RouteContext, webDir: string): Promis
     // correctly. The sharper hazard is later: create an agent with the same
     // name again and the stale entry starts it immediately, unasked.
     removeDesiredAgent(name)
-    json(res, { ok: true })
+    json(res, { ok: true, stoppedRunningAgent })
     return true
   }
 

@@ -15,14 +15,25 @@
 // Measured on the live host the same day: agents-desired.json held 9 names and
 // all 9 had a directory, so the defect had not fired there yet. This test is
 // what keeps it from firing.
+import { execFileSync } from 'node:child_process'
 import { existsSync, mkdirSync, rmSync } from 'node:fs'
 import { join } from 'node:path'
 import { afterEach, describe, expect, it } from 'vitest'
 import { PROJECT_ROOT, STORE_DIR } from '../config.js'
 import { agentDir } from '../web/agent-config.js'
 import { addDesiredAgent, getDesiredAgents, removeDesiredAgent } from '../web/agent-desired-state.js'
+import { agentSessionName } from '../web/agent-process.js'
 import { tryHandleAgents } from '../web/routes/agents.js'
 import type { RouteContext } from '../web/routes/types.js'
+
+const hasTmuxSession = (session: string): boolean => {
+  try {
+    execFileSync('tmux', ['has-session', '-t', session], { stdio: 'ignore' })
+    return true
+  } catch {
+    return false
+  }
+}
 
 // A name no live fleet member can collide with. The card is explicit about
 // this: prove it with a throwaway name, never with a running fleet agent.
@@ -52,6 +63,9 @@ function fakeCtx(path: string, method: string): {
 afterEach(() => {
   rmSync(agentDir(THROWAWAY), { recursive: true, force: true })
   removeDesiredAgent(THROWAWAY)
+  // Belt-and-braces: if a test's own cleanup didn't reach the kill (an assertion threw first),
+  // a leaked session must not survive to the next test file/run.
+  try { execFileSync('tmux', ['kill-session', '-t', agentSessionName(THROWAWAY)], { stdio: 'ignore' }) } catch {}
 })
 
 describe('DELETE /api/agents/:name and the desired run-state', () => {
@@ -89,6 +103,42 @@ describe('DELETE /api/agents/:name and the desired run-state', () => {
     } finally {
       removeDesiredAgent(bystander)
     }
+  })
+
+  it('stops the live tmux session before deleting, and reports it (card 82762751)', async () => {
+    // The exact regression Cybered found: rmSync alone left the session running, a ghost that
+    // burns quota and is invisible everywhere else once the directory it enumerates from is gone.
+    mkdirSync(agentDir(THROWAWAY), { recursive: true })
+    mkdirSync(STORE_DIR, { recursive: true })
+    const session = agentSessionName(THROWAWAY)
+    execFileSync('tmux', ['new-session', '-d', '-s', session, 'sleep 300'])
+
+    // Positive control on the instrument: prove the session is really up before deleting through
+    // it, or the assertion below would pass on a session that never existed.
+    expect(hasTmuxSession(session)).toBe(true)
+
+    const { ctx, out } = fakeCtx(`/api/agents/${THROWAWAY}`, 'DELETE')
+    const handled = await tryHandleAgents(ctx, join(PROJECT_ROOT, 'web'))
+
+    expect(handled).toBe(true)
+    expect(out.body?.ok).toBe(true)
+    expect(out.body?.stoppedRunningAgent).toBe(true)
+    expect(hasTmuxSession(session)).toBe(false)
+    expect(existsSync(agentDir(THROWAWAY))).toBe(false)
+  })
+
+  it('reports stoppedRunningAgent:false when there was nothing to stop', async () => {
+    // The other half: a delete on an already-stopped agent must not claim a stop that never
+    // happened, and must not regress into trying to stop something that isn't running.
+    mkdirSync(agentDir(THROWAWAY), { recursive: true })
+    mkdirSync(STORE_DIR, { recursive: true })
+    expect(hasTmuxSession(agentSessionName(THROWAWAY))).toBe(false)
+
+    const { ctx, out } = fakeCtx(`/api/agents/${THROWAWAY}`, 'DELETE')
+    await tryHandleAgents(ctx, join(PROJECT_ROOT, 'web'))
+
+    expect(out.body?.ok).toBe(true)
+    expect(out.body?.stoppedRunningAgent).toBe(false)
   })
 
   it('does not touch the desired state when the agent does not exist', async () => {
