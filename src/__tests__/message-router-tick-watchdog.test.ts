@@ -84,8 +84,6 @@ vi.mock('../web/agent-message-wrap.js', () => ({
   wrapAgentMessageForDelivery: () => ({ prefix: '', wrapped: '' }),
 }))
 
-import { startMessageRouter } from '../web/message-router.js'
-
 function makePending(count: number, toAgent = 'dex') {
   const nowSec = Math.floor(Date.now() / 1000)
   return Array.from({ length: count }, (_, i) => ({
@@ -99,8 +97,9 @@ function makePending(count: number, toAgent = 'dex') {
 
 describe('message router tick watchdog (card 4a406989)', () => {
   let handle: NodeJS.Timeout | undefined
+  let startMessageRouter: typeof import('../web/message-router.js').startMessageRouter
 
-  beforeEach(() => {
+  beforeEach(async () => {
     vi.useFakeTimers()
     vi.clearAllMocks()
     readyCallCount = 0
@@ -111,6 +110,14 @@ describe('message router tick watchdog (card 4a406989)', () => {
     })
     mockSessionExistsOnHost.mockReturnValue(true)
     mockGetPendingMessages.mockReturnValue(makePending(1))
+    // _tickRunning/_tickStartedAt are private module-level state in
+    // message-router.ts. Without a fresh module instance per test, a hang
+    // left latched by one test (by design, in the hang test) would leak
+    // into the next test's fresh _tickStartedAt comparison. vi.mock() calls
+    // are file-scoped and re-apply after resetModules, so the dynamic
+    // re-import below still resolves through the same mocks.
+    vi.resetModules()
+    ;({ startMessageRouter } = await import('../web/message-router.js'))
   })
 
   afterEach(() => {
@@ -128,16 +135,19 @@ describe('message router tick watchdog (card 4a406989)', () => {
     // Several more interval periods pass. Each one sees _tickRunning still
     // true (the hang has not settled) and must be a no-op: no second call
     // into isSessionReadyForPrompt, no watchdog notice yet (under the 120s
-    // threshold), no delivery.
-    await vi.advanceTimersByTimeAsync(5000 * 10) // +50s, total 55s since hang start
+    // threshold), no delivery. 50s elapsed since the hang started (5000ms
+    // hang-start + 50000ms here), well under TICK_WATCHDOG_MS.
+    await vi.advanceTimersByTimeAsync(5000 * 10) // +50s since hang start
     expect(readyCallCount).toBe(1)
     expect(mockCreateAgentMessage).not.toHaveBeenCalled()
 
-    // Cross the 120s watchdog threshold (total elapsed since the hung tick
-    // started: 55s + 70s = 125s). The NEXT interval firing must detect the
-    // stall, log it, notify the orchestrator, clear the guard, and
-    // immediately attempt a fresh tick in the same callback.
-    await vi.advanceTimersByTimeAsync(5000 * 14) // +70s, crosses 120s
+    // Cross the 120s watchdog threshold: 50s + 75s = 125s since the hang
+    // started, strictly past TICK_WATCHDOG_MS (the guard is `>`, not `>=`,
+    // so landing exactly on 120s would not fire it -- go past). The next
+    // interval firing at/after that point must detect the stall, log it,
+    // notify the orchestrator, clear the guard, and immediately attempt a
+    // fresh tick in the same callback.
+    await vi.advanceTimersByTimeAsync(5000 * 15) // +75s, past the threshold
     expect(mockCreateAgentMessage).toHaveBeenCalledTimes(1)
     const [, to, body] = mockCreateAgentMessage.mock.calls[0]
     expect(to).toBe('orin') // MAIN_AGENT_ID
@@ -153,10 +163,10 @@ describe('message router tick watchdog (card 4a406989)', () => {
 
   it('a tick well under the watchdog threshold never trips it', async () => {
     // Baseline: a tick that resolves normally (never hangs) must NOT ever
-    // create a watchdog notice, across many ticks.
+    // create a watchdog notice, across many ticks. Empty backlog so the
+    // per-message loop (and the never-resolving mock) never engages.
     handle = startMessageRouter()
-    mockGetPendingMessages.mockReturnValue([]) // nothing to process -> isSessionReadyForPrompt never called
-    readyCallCount = 1 // pretend the "hang slot" is already consumed so later calls resolve fast if hit
+    mockGetPendingMessages.mockReturnValue([])
 
     await vi.advanceTimersByTimeAsync(5000 * 40) // 200s of healthy, empty ticks
     expect(mockCreateAgentMessage).not.toHaveBeenCalled()
