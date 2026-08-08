@@ -18,7 +18,7 @@ const mockMarkDelivered = vi.fn((..._a: unknown[]) => true)
 const mockMarkFailed = vi.fn((..._a: unknown[]) => true)
 const mockCreateAgentMessage = vi.fn((..._a: unknown[]) => ({ id: 999 }))
 const mockSessionExistsOnHost = vi.fn((..._a: unknown[]) => true)
-const mockSendPromptToSession = vi.fn(async () => 'sent' as const)
+const mockSendPromptToSession = vi.fn(async (..._a: unknown[]) => 'sent' as const)
 
 // Controls the isSessionReadyForPrompt promise per-call: the FIRST call never
 // settles (simulating the measured hang); later calls resolve normally so a
