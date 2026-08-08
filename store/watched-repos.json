@@ -95,7 +95,7 @@
     "last_sha": "",
     "kind": "skill",
     "adoption": "vendored-external",
-    "note": "KORAI ADOPCIO (~/.claude/external), NAPONTA szinkronizalva a external-repos-daily-sync utemezett taskkal (06:17) a ~/.claude/external/sync.sh-n at (git pull --ff-only). enabled=false itt, mert a frissitest a napi sync kezeli (a git-repo-watcher NE dupla-huzza); az /api/integrated-repos igy is olvassa es listazza (behind-detektalas mukodik, mert a napi sync fetch-el). Licenc: lasd a repot.",
+    "note": "KORAI ADOPCIO (~/.claude/external), NAPONTA szinkronizalva a external-repos-daily-sync utemezett taskkal (06:17) a ~/.claude/external/sync.sh-n at (git pull --ff-only, nem-ff eseten biztonsagos reset a mult-szinkronponthoz kepest -- lasd store/external-repos-sync.sh, card 9b9422d1). enabled=false itt, mert a frissitest a napi sync kezeli (a git-repo-watcher NE dupla-huzza); az /api/integrated-repos igy is olvassa es listazza (behind-detektalas mukodik, mert a napi sync fetch-el). Licenc: lasd a repot.",
     "description": "Kurált Claude-skill index (közösségi gyűjtemény), cherry-pick forrás.",
     "reviewed_at": "2026-07-31"
   },
@@ -109,7 +109,7 @@
     "last_sha": "",
     "kind": "external",
     "adoption": "vendored-external",
-    "note": "KORAI ADOPCIO (~/.claude/external), NAPONTA szinkronizalva a external-repos-daily-sync utemezett taskkal (06:17) a ~/.claude/external/sync.sh-n at (git pull --ff-only). enabled=false itt, mert a frissitest a napi sync kezeli (a git-repo-watcher NE dupla-huzza); az /api/integrated-repos igy is olvassa es listazza (behind-detektalas mukodik, mert a napi sync fetch-el). Licenc: lasd a repot.",
+    "note": "KORAI ADOPCIO (~/.claude/external), NAPONTA szinkronizalva a external-repos-daily-sync utemezett taskkal (06:17) a ~/.claude/external/sync.sh-n at (git pull --ff-only, nem-ff eseten biztonsagos reset a mult-szinkronponthoz kepest -- lasd store/external-repos-sync.sh, card 9b9422d1). enabled=false itt, mert a frissitest a napi sync kezeli (a git-repo-watcher NE dupla-huzza); az /api/integrated-repos igy is olvassa es listazza (behind-detektalas mukodik, mert a napi sync fetch-el). Licenc: lasd a repot.",
     "description": "Hivatalos Anthropic Agent SDK — referencia agent-építéshez és tool-use mintákhoz.",
     "reviewed_at": "2026-07-31"
   },
@@ -123,7 +123,7 @@
     "last_sha": "",
     "kind": "skill",
     "adoption": "vendored-external",
-    "note": "KORAI ADOPCIO (~/.claude/external), NAPONTA szinkronizalva a external-repos-daily-sync utemezett taskkal (06:17) a ~/.claude/external/sync.sh-n at (git pull --ff-only). enabled=false itt, mert a frissitest a napi sync kezeli (a git-repo-watcher NE dupla-huzza); az /api/integrated-repos igy is olvassa es listazza (behind-detektalas mukodik, mert a napi sync fetch-el). Licenc: lasd a repot.",
+    "note": "KORAI ADOPCIO (~/.claude/external), NAPONTA szinkronizalva a external-repos-daily-sync utemezett taskkal (06:17) a ~/.claude/external/sync.sh-n at (git pull --ff-only, nem-ff eseten biztonsagos reset a mult-szinkronponthoz kepest -- lasd store/external-repos-sync.sh, card 9b9422d1). enabled=false itt, mert a frissitest a napi sync kezeli (a git-repo-watcher NE dupla-huzza); az /api/integrated-repos igy is olvassa es listazza (behind-detektalas mukodik, mert a napi sync fetch-el). Licenc: lasd a repot.",
     "description": "obra 'superpowers' skill-készlet; a markdown-skillek sp- prefixszel automatikusan belinkelve a ~/.claude/skills alá.",
     "reviewed_at": "2026-07-31"
   },
@@ -137,7 +137,7 @@
     "last_sha": "",
     "kind": "external",
     "adoption": "vendored-external",
-    "note": "KORAI ADOPCIO (~/.claude/external), NAPONTA szinkronizalva a external-repos-daily-sync utemezett taskkal (06:17) a ~/.claude/external/sync.sh-n at (git pull --ff-only). enabled=false itt, mert a frissitest a napi sync kezeli (a git-repo-watcher NE dupla-huzza); az /api/integrated-repos igy is olvassa es listazza (behind-detektalas mukodik, mert a napi sync fetch-el). Licenc: lasd a repot.",
+    "note": "KORAI ADOPCIO (~/.claude/external), NAPONTA szinkronizalva a external-repos-daily-sync utemezett taskkal (06:17) a ~/.claude/external/sync.sh-n at (git pull --ff-only, nem-ff eseten biztonsagos reset a mult-szinkronponthoz kepest -- lasd store/external-repos-sync.sh, card 9b9422d1). enabled=false itt, mert a frissitest a napi sync kezeli (a git-repo-watcher NE dupla-huzza); az /api/integrated-repos igy is olvassa es listazza (behind-detektalas mukodik, mert a napi sync fetch-el). Licenc: lasd a repot.",
     "description": "Skill-generáló/felderítő toolkit — új skillek építéséhez.",
     "reviewed_at": "2026-07-31"
   },
@@ -151,7 +151,7 @@
     "last_sha": "",
     "kind": "skill",
     "adoption": "vendored-external",
-    "note": "KORAI ADOPCIO (~/.claude/external), NAPONTA szinkronizalva a external-repos-daily-sync utemezett taskkal (06:17) a ~/.claude/external/sync.sh-n at (git pull --ff-only). enabled=false itt, mert a frissitest a napi sync kezeli (a git-repo-watcher NE dupla-huzza); az /api/integrated-repos igy is olvassa es listazza (behind-detektalas mukodik, mert a napi sync fetch-el). Licenc: lasd a repot.",
+    "note": "KORAI ADOPCIO (~/.claude/external), NAPONTA szinkronizalva a external-repos-daily-sync utemezett taskkal (06:17) a ~/.claude/external/sync.sh-n at (git pull --ff-only, nem-ff eseten biztonsagos reset a mult-szinkronponthoz kepest -- lasd store/external-repos-sync.sh, card 9b9422d1). enabled=false itt, mert a frissitest a napi sync kezeli (a git-repo-watcher NE dupla-huzza); az /api/integrated-repos igy is olvassa es listazza (behind-detektalas mukodik, mert a napi sync fetch-el). Licenc: lasd a repot.",
     "description": "loki-mode skill/operációs-mód készlet ügynökökhöz.",
     "reviewed_at": "2026-07-31"
   },
