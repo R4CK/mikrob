@@ -97,14 +97,14 @@ describe('priority badge contrast fix (card e291e9c4)', () => {
   })
 
   it('the archived-cards view uses the SAME badge class, not its own low-contrast pill', () => {
-    // The old archived-prio-pill CSS class (built via string concatenation below, so this file's
-    // own explanatory prose mentioning the name does not trip the assertion) used a translucent
-    // tint of the priority color as both text and background -- the same class of contrast
-    // problem this card exists to fix, just on a different page. Pinned so a future edit cannot
-    // quietly reintroduce a second scheme.
+    // The old archived-prio-pill CSS class used a translucent tint of the priority color as both
+    // text and background -- the same class of contrast problem this card exists to fix, just on
+    // a different page. Checked as an actual CLASS REFERENCE (a class="..." attribute or a CSS
+    // selector), not a bare substring match: app.js keeps a WHY-comment naming the old class it
+    // replaced, and that mention is legitimate documentation, not a regression.
     const oldClassName = 'archived' + '-prio-pill'
-    expect(APP).not.toContain(oldClassName)
-    expect(CSS).not.toContain(oldClassName)
+    expect(APP).not.toMatch(new RegExp(`class="${oldClassName}`))
+    expect(CSS).not.toMatch(new RegExp(`\\.${oldClassName}\\s*{`))
     const body = fnBody(APP, 'function renderArchivedCard')
     expect(body).toMatch(/class="priority-badge priority-\$\{/)
   })
