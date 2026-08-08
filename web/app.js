@@ -169,7 +169,13 @@ async function refreshLastUpdateBadge() {
     renderLastUpdateBadge(null)
   }
 }
-refreshLastUpdateBadge()
+try {
+  refreshLastUpdateBadge()
+} catch {
+  // A failure here (env-specific quirk, extension interference, etc.) must never
+  // block the auth/fetch-wrapping IIFE below -- that would silently break login
+  // for the whole page. The badge is cosmetic; the token flow is not.
+}
 
 (() => {
   const TOKEN_KEY = 'marveen-dashboard-token'
