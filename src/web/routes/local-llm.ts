@@ -1197,9 +1197,12 @@ export async function tryHandleLocalLlm(ctx: RouteContext): Promise<boolean> {
     // Prompt is piped via stdin, never placed on the argv/command line.
     // Tag this as a UI probe (caller=ui-test, source=ui) so the usage metric can
     // exclude dashboard quick-tests from the real fleet-invocation counts.
+    // --no-route (card e817817c): the wrapper now routes by default, and this box exists to ask THE
+    // LOCAL MODEL something. Whoever typed here already decided; a routing verdict would surface as
+    // exit 9 -> a 502 "futtatása hibázott", i.e. the test box breaking on a subset of prompts.
     const r = await runCmd(
       'bash',
-      [RAG_SCRIPT, '--agent', 'mikrob', '--caller', 'ui-test', '--source', 'ui'],
+      [RAG_SCRIPT, '--no-route', '--agent', 'mikrob', '--caller', 'ui-test', '--source', 'ui'],
       { timeoutMs: RUN_TIMEOUT_MS, input: prompt },
     )
     if (r.timedOut) { json(res, { error: 'A helyi modell időtúllépés miatt nem válaszolt.' }, 504); return true }

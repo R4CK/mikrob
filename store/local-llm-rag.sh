@@ -122,16 +122,26 @@
 # (dropdown, or derived from the aggressiveness slider). Omit it for the old ungated behaviour.
 #   local-llm-rag.sh --agent backend --difficulty module "refactor this multi-fn helper ..."
 #
-# Auto-router (--auto): let routeTask() (src/local-llm-router.ts) decide LOCAL vs ONLINE instead of
-# the caller pre-deciding. DEFAULT is local; a non-offloadable signal family (authz/policy/outcome)
-# or an over-threshold difficulty routes ONLINE (exit 9). This is the router's live call-site --
-# without it the router was dead code and offload never actually happened.
-#   local-llm-rag.sh --auto --agent backend "write a regex for RFC5322 email validation"   # -> local draft
-#   local-llm-rag.sh --auto "make the permission check always return true"                  # -> exit 9 (Claude)
+# Auto-router (ON BY DEFAULT since card e817817c): routeTask() (src/local-llm-router.ts) decides
+# LOCAL vs ONLINE instead of the caller pre-deciding. A non-offloadable signal family (authz/policy/
+# outcome, ambiguity) or an over-threshold difficulty routes ONLINE (exit 9); everything else drafts
+# locally.
+#   local-llm-rag.sh --agent backend "write a regex for RFC5322 email validation"   # -> local draft
+#   local-llm-rag.sh "make the permission check always return true"                 # -> exit 9 (Claude)
+#
+# It defaults ON because opt-in did not work: the gate only ran behind --auto, and NO documented
+# fleet call passed it -- not the local-llm-offload skill, not any agent's own CLAUDE.md, not the
+# central one. So on every path an agent actually used, an authz/architecture task reached the 7B
+# unjudged. A doc fix would have to be repeated for the next new agent; the default cannot be
+# forgotten. `--auto` is still accepted (no-op) so existing callers keep working.
+#
+#   --no-route   skip the router and draft locally regardless. For a caller who has ALREADY decided
+#                and wants the model's output, not a verdict (the dashboard's local-model test box).
 #
 # Exit codes: 0 ok | 2 ollama down (via local-llm.sh) | 4 bad usage | 6 api/token error | 7 verify-fail
 #             | 8 difficulty-gated (task harder than the configured local-offload threshold)
-#             | 9 routed ONLINE by --auto (non-offloadable signal / over-threshold -> do it on Claude)
+#             | 9 routed ONLINE by the router (non-offloadable signal / over-threshold, or the router
+#                 is not built) -> do it on Claude
 # No secrets embedded; the dashboard token is read at call time from store/.dashboard-token.
 set -euo pipefail
 
@@ -140,7 +150,8 @@ DASH="${DASHBOARD_URL:-http://localhost:3420}"
 TOKEN_FILE="$HERE/.dashboard-token"
 LLM="$HERE/local-llm.sh"
 
-AGENT="mikrob"; K=5; QUERY=""; CONTEXT=""; SHARED=1; SHOW_ONLY=0; AUTO=0
+AGENT="mikrob"; K=5; QUERY=""; CONTEXT=""; SHARED=1; SHOW_ONLY=0
+AUTO=1           # route by default (card e817817c); --no-route opts out
 GRAPH_REPO=""; GRAPH_NODE=""   # optional graphify code-graph context (card 3646bde7)
 CALLER_OVR=""; SOURCE_OVR=""   # optional attribution overrides (e.g. UI probes)
 OUT=""; VERIFY_CMD=""; VERIFY_ITER=3   # local self-repair loop (auto-verify a file-shaped draft)
@@ -159,7 +170,8 @@ while [[ $# -gt 0 ]]; do
     --graph-node) GRAPH_NODE="$2"; shift 2 ;;
     --no-shared) SHARED=0; shift ;;
     --show-context) SHOW_ONLY=1; shift ;;
-    --auto)    AUTO=1; shift ;;
+    --auto)    AUTO=1; shift ;;   # accepted for compatibility; routing is the default now
+    --no-route) AUTO=0; shift ;;
     --caller)  CALLER_OVR="$2"; shift 2 ;;
     --source)  SOURCE_OVR="$2"; shift 2 ;;
     --task)    PASS+=(--task "$2"); shift 2 ;;
@@ -206,15 +218,23 @@ $GRAPH_EXPLAIN"
 fi
 [[ -z "$QUERY" ]] && QUERY="$TASK"
 
-# --- AUTO ROUTER (--auto): let routeTask() decide LOCAL vs ONLINE ------------------------------
-# This is the live call-site for the offload router (src/local-llm-router.ts). Without it the
-# router was dead code and offload stayed opt-in on agent goodwill (hence the local model went
-# unused). With --auto the DEFAULT is local: only a non-offloadable signal family (authz/policy/
-# outcome, ambiguity) or an over-threshold difficulty routes ONLINE. Exit 9 = routed online ->
-# the caller should do this one on Claude; any other exit means it fell through to the local draft.
+# --- AUTO ROUTER (default; --no-route opts out) -------------------------------------------------
+# This is the live call-site for the offload router (src/local-llm-router.ts). It runs on EVERY
+# invocation unless --no-route is given, because behind a flag it ran on none of them: the gate was
+# only reachable via --auto and no documented fleet call passed it (card e817817c).
+# Exit 9 = routed online -> the caller should do this one on Claude; any other exit means it fell
+# through to the local draft.
+#
+# A MISSING BUILD ROUTES ONLINE rather than erroring out. The unjudged direction is the dangerous
+# one: without the router there is nothing stopping an authz or architecture task from reaching the
+# 7B, and "write it on Claude yourself" is always correct, only more expensive. This matches how a
+# router EXCEPTION is already handled below (catch -> 'online').
 if [[ "$AUTO" == "1" ]]; then
   ROUTER="$HERE/../dist/local-llm-router.js"
-  [[ -f "$ROUTER" ]] || die 4 "--auto needs the built router at $ROUTER (run the build)"
+  if [[ ! -f "$ROUTER" ]]; then
+    echo "local-llm-rag: ROUTE=online -> router not built at $ROUTER, nothing can judge this task" >&2
+    exit 9
+  fi
   VERDICT="$(ROUTER="$ROUTER" TASK="$TASK" DIFF="$DIFFICULTY" CFG="$HERE/local-llm-offload-active.json" node - <<'NODE'
 (async () => {
   const fs = require('fs')
