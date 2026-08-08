@@ -17,7 +17,7 @@ const SCRIPT = join(
   '..',
   '..',
   'store',
-  'gate-pretriage-candidates.py',
+  'gate-pretriage-candidates.py'
 )
 const MARKER = 'GATE PRE-TRIAGE (mechanikus, verdict:null)'
 
@@ -28,7 +28,10 @@ interface Row {
 }
 
 const run = (rows: Row[], card = '', marker = ''): string[] =>
-  execFileSync('python3', [SCRIPT, card, marker], { input: JSON.stringify(rows), encoding: 'utf-8' })
+  execFileSync('python3', [SCRIPT, card, marker], {
+    input: JSON.stringify(rows),
+    encoding: 'utf-8',
+  })
     .split('\n')
     .filter(Boolean)
 
@@ -44,7 +47,7 @@ describe('THE INCIDENT: recency beats wording', () => {
     { author: 'fullstack', created_at: 1_786_165_725, content: 'Javitva: ce83bcf pusholva' },
   ]
 
-  it('picks the NEWEST comment\'s sha, not the one with the nicer wording', () => {
+  it("picks the NEWEST comment's sha, not the one with the nicer wording", () => {
     expect(run(incident, '63e2069c', MARKER)[0]).toBe('ce83bcf')
   })
 
@@ -82,6 +85,41 @@ describe('the tool does not feed on its own output', () => {
     ]
     expect(run(rows, '63e2069c', '')[0]).toBe('7021f00')
   })
+
+  // Cybersec, card d7ac3470 follow-up: the marker-text skip above is content-only, so ANY comment
+  // quoting the marker verbatim -- not just the tool's own output -- drops out of candidacy. The
+  // fleet's own convention is to quote a prior comment when responding to or correcting it, so an
+  // honest, newer REVIEW that happens to quote the pre-triage line resurrects the exact
+  // stale-commit-wins bug this file exists to close, just via a different trigger. Measured with the
+  // realistic three-comment shape Cybersec used: an old genuine review, then the tool's own output,
+  // then a new genuine review that quotes the marker while fixing it.
+  it("a REAL review that quotes the marker text is NOT mistaken for the tool's own output", () => {
+    const rows: Row[] = [
+      { author: 'fullstack', created_at: 100, content: 'REVIEW: commit 1111111' },
+      { author: 'gate-pretriage', created_at: 200, content: `${MARKER} @ 1111111` },
+      {
+        author: 'fullstack',
+        created_at: 300,
+        content: `Javitva a "${MARKER}" altal jelzettek alapjan: commit 2222222`,
+      },
+    ]
+    // The newest genuine review (2222222) must win -- not the old pre-triage answer (1111111).
+    expect(run(rows, '', MARKER)[0]).toBe('2222222')
+  })
+
+  it('MUTATION CONTROL: an attacker-authored comment quoting the marker is ALSO not skipped', () => {
+    // Same shape, but the quoting comment is authored by neither fullstack nor gate-pretriage --
+    // proves the gate is on AUTHOR, not on some allowlist of "trusted" non-attacker names.
+    const rows: Row[] = [
+      { author: 'gate-pretriage', created_at: 100, content: `${MARKER} @ 1111111` },
+      {
+        author: 'someone-else',
+        created_at: 200,
+        content: `${MARKER} @ 1111111, real fix: 2222222`,
+      },
+    ]
+    expect(run(rows, '', MARKER)[0]).toBe('2222222')
+  })
 })
 
 describe('ordering is computed, not inherited from the API', () => {
@@ -97,7 +135,10 @@ describe('ordering is computed, not inherited from the API', () => {
   })
 
   it('a row with NO created_at sorts last instead of crashing', () => {
-    const rows: Row[] = [{ content: 'timestamp nelkul: aaaaaaa' }, { created_at: 5, content: 'bbbbbbb' }]
+    const rows: Row[] = [
+      { content: 'timestamp nelkul: aaaaaaa' },
+      { created_at: 5, content: 'bbbbbbb' },
+    ]
     expect(run(rows, '', MARKER)).toEqual(['bbbbbbb', 'aaaaaaa'])
   })
 })

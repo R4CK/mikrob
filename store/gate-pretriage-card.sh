@@ -121,7 +121,19 @@ done <<< "$candidates"
 [[ -n "$sha" ]] || { echo "SKIP: no REVIEW commit resolvable on $CARD"; exit 0; }
 
 # Idempotent: do not re-post for a commit already triaged on this card.
-if printf '%s' "$comments" | grep -qF "$MARKER @ $sha"; then
+#
+# AUTHOR-GATED, not content-alone (Cybersec, card d7ac3470 follow-up). A bare `grep -qF` over ALL
+# comment text is satisfied by ANY comment containing this exact string -- and the fleet's own
+# convention is to quote a prior comment verbatim when responding to it, so a REVIEW that happens to
+# quote this line would make the script believe it already ran and silently skip a real triage. Scope
+# the match to comments the tool itself posted.
+if printf '%s' "$comments" | MARKER="$MARKER" SHA="$sha" python3 -c '
+import json, os, sys
+marker_line = os.environ["MARKER"] + " @ " + os.environ["SHA"]
+rows = json.load(sys.stdin)
+rows = rows if isinstance(rows, list) else rows.get("comments", [])
+sys.exit(0 if any(c.get("author") == "gate-pretriage" and marker_line in (c.get("content") or "") for c in rows) else 1)
+' 2>/dev/null; then
   echo "SKIP: pre-triage for $sha already on $CARD"; exit 0
 fi
 

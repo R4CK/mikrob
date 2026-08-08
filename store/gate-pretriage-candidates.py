@@ -43,7 +43,15 @@ def candidates(rows, card_id="", marker=""):
     for c in ordered:
         text = c.get("content") or ""
         # Skip the tool's OWN previous output: its sha is an answer, not evidence.
-        if marker and marker in text:
+        #
+        # AUTHOR-GATED, not content-alone (Cybersec, card d7ac3470 follow-up, GO-conditioned on this
+        # landing before push). A content-only check (`marker in text`) is satisfied by ANY comment
+        # that quotes the marker -- and the fleet's own convention is to quote a prior comment
+        # verbatim when responding to or correcting it, so an honest REVIEW that quotes the
+        # pre-triage line would silently drop out of candidacy, resurrecting the exact
+        # stale-commit-wins bug this file exists to close, just via a different trigger. Requiring
+        # the AUTHOR too closes that: only the tool's own posts satisfy both.
+        if marker and marker in text and c.get("author") == "gate-pretriage":
             continue
         pref = COMMIT_PREFIXED.findall(text)
         weak = BARE_HEX.findall(text)
