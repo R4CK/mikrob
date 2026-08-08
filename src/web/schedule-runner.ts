@@ -1311,7 +1311,13 @@ export function startScheduleRunner(): NodeJS.Timeout {
             // Daily/weekly schedules keep skipIfBusy=false so the queue
             // + alert path catches a long-running busy state.
             logger.info({ task: task.name, agent: agentName }, 'Schedule busy, skipIfBusy=true: dropping tick silently')
-            appendTaskRun(task.name, agentName, 'skipped')
+            // Card f7bff451 (Cybered finding #8300): distinct from the pre-check's 'skipped' write
+            // above (nothing-to-do, healthy) -- this is a tick that never got to run at all. Sharing
+            // one status string made the two indistinguishable at the read side, so
+            // scheduled-task-canary.sh could only INFER the difference from whether the task has a
+            // pre-check configured at all (a real gap: a task WITH a pre-check that also gets
+            // busy-dropped read as healthy). See the canary's own header for the read-side half.
+            appendTaskRun(task.name, agentName, 'dropped')
             continue
           }
           // First encounter -- insert a new pending row. If somehow a
