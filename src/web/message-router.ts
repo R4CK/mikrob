@@ -205,6 +205,56 @@ const TICK_WATCHDOG_MS = 120_000
 
 // Max messages drained per 5s tick; a larger backlog rolls to the next tick.
 export const MAX_MESSAGES_PER_TICK = 25
+
+/**
+ * Pick up to `cap` messages from `sorted` (oldest-first, as returned by
+ * getPendingMessages) FAIRLY across distinct receivers, instead of taking the
+ * global-oldest-first prefix.
+ *
+ * Measured live 2026-08-08: a single chronically-busy agent (fron-ted, stuck
+ * mid-turn for 3+ hours) had its oldest pending message pinned at the front
+ * of the GLOBAL queue. `localPending.slice(0, 25)` then took almost entirely
+ * fron-ted's own backlog every tick, forever -- its messages are never
+ * abandoned (shouldAbandon needs the session ABSENT, not merely busy), so
+ * they occupy the same slots on every subsequent tick too. Every OTHER
+ * agent's messages, however new, sat behind that wall and were never even
+ * passed to isSessionReadyForPrompt -- no busy log, no delivery, nothing:
+ * cybersec/cybered/qa/qa2/backend2 all starved, confirmed empty and ready in
+ * their own panes while their queues sat untouched.
+ *
+ * Round-robins by receiver instead: each agent's OWN messages stay
+ * oldest-first (their bucket is shifted from the front), but the
+ * INTERLEAVING across agents guarantees every receiver with at least one
+ * pending message gets evaluated THIS tick, as long as the number of
+ * distinct receivers does not exceed `cap`.
+ */
+export function selectFairBatch(sorted: readonly AgentMessage[], cap: number): AgentMessage[] {
+  const byAgent = new Map<string, AgentMessage[]>()
+  const order: string[] = []
+  for (const m of sorted) {
+    let bucket = byAgent.get(m.to_agent)
+    if (!bucket) {
+      bucket = []
+      byAgent.set(m.to_agent, bucket)
+      order.push(m.to_agent)
+    }
+    bucket.push(m)
+  }
+  const selected: AgentMessage[] = []
+  let progressed = true
+  while (selected.length < cap && progressed) {
+    progressed = false
+    for (const agent of order) {
+      if (selected.length >= cap) break
+      const next = byAgent.get(agent)!.shift()
+      if (next) {
+        selected.push(next)
+        progressed = true
+      }
+    }
+  }
+  return selected
+}
 // Federated (slash-qualified to_agent) messages get their own, smaller
 // per-tick budget: each attempt is an HTTPS round-trip with a 5s timeout
 // inside the serialized tick, so the cap bounds how long federation can hold
@@ -406,7 +456,7 @@ export async function runMessageRouterTick(): Promise<void> {
     // rest roll to the next 5s tick. Bounds a single tick's wall-time so a
     // backlog (e.g. after a delivery stall) can never make one tick run long
     // and starve the event loop -- the slow-tick half of the progressive-hang
-    // pattern. Ordering is preserved (oldest first) so nothing is starved.
+    // pattern.
     //
     // Federated (slash-qualified) recipients are split out FIRST: they must
     // never reach the local path (agentSessionName / readAgentRemoteHost would
@@ -416,7 +466,7 @@ export async function runMessageRouterTick(): Promise<void> {
     const localPending: AgentMessage[] = []
     const federatedPending: AgentMessage[] = []
     for (const m of allPending) (isQualifiedId(m.to_agent) ? federatedPending : localPending).push(m)
-    const pending = localPending.slice(0, MAX_MESSAGES_PER_TICK)
+    const pending = selectFairBatch(localPending, MAX_MESSAGES_PER_TICK)
     const now = Date.now()
     // ---- update absent/present tracking for all receivers in this tick ----
     // Rebuild the stuck-detector's view of which agents are absent RIGHT NOW.
