@@ -104,13 +104,15 @@ describe('PUT /api/config/project-priority', () => {
   })
 
   it('dedups while preserving the caller-given order (order IS the priority order)', async () => {
+    const THROWAWAY_PROJECT_2 = 'zz-priority-probe-project-2'
+    const THROWAWAY_CARD_2 = 'zz-priority-probe-card-2'
     createKanbanCard({ id: THROWAWAY_CARD, title: 'probe', project: THROWAWAY_PROJECT })
+    createKanbanCard({ id: THROWAWAY_CARD_2, title: 'probe2', project: THROWAWAY_PROJECT_2 })
     const { ctx, out } = fakeCtx('/api/config/project-priority', 'PUT', {
-      priority: [THROWAWAY_PROJECT, 'cleancore', THROWAWAY_PROJECT],
+      priority: [THROWAWAY_PROJECT, THROWAWAY_PROJECT_2, THROWAWAY_PROJECT],
     })
     await tryHandleProjectPriority(ctx)
-    // cleancore may or may not exist on this board; only assert what this test itself controls.
-    expect((out.body?.priority as string[]).filter((p) => p === THROWAWAY_PROJECT)).toHaveLength(1)
+    expect(out.body?.priority).toEqual([THROWAWAY_PROJECT, THROWAWAY_PROJECT_2])
   })
 
   it('an empty array clears it back to the default order', async () => {
