@@ -102,6 +102,18 @@ if not reviews:
     print("ADVISE-SKIP:no-review"); sys.exit(0)
 
 mine = [c for c in cs if c.get("author") == agent]
+
+# QA2-COVERED-BY-QA (MikroB decision, card 14acfadd follow-up, msg 9825): QA2 exists for parallel
+# THROUGHPUT, not as a second mandatory review layer (CLAUDE.md own words) -- a QA PASS on this
+# SAME submission already covers qa2. Modeled as widening "mine" with qa PASS comment rather than
+# a separate branch, so the EXISTING staleness rule re-arms it for free: if MikroB explicitly
+# re-requests qa2 (e.g. after a prior FAIL, on a fix commit), that arrives as a new REVIEW, and
+# last_review > last_mine already fires ALLOW:stale-verdict -- no separate case needed for that
+# exception. Narrow on purpose: only a PASS counts (a QA FAIL does not excuse qa2 from anything),
+# and only for agent == qa2 (the decision was QA/QA2-specific, not a general gate-rotation rule).
+if agent == "qa2":
+    qa_pass_rx = re.compile(r"^\s*QA\s+PASS\b", re.I)
+    mine = mine + [c for c in cs if c.get("author") == "qa" and qa_pass_rx.search(c.get("content") or "")]
 if not mine:
     print("ALLOW:no-verdict"); sys.exit(0)
 
@@ -173,6 +185,17 @@ case "${1:-}" in
     d "decide: agent has no verdict"  "ALLOW:no-verdict"          0 cybersec
     SELFTEST_JSON='[{"author":"backend","created_at":100,"content":"REVIEW"},{"author":"cybersec","created_at":200,"content":"GO"}]'
     d "decide: already gated"         "ADVISE-SKIP:already-gated" 8 cybersec
+
+    # QA2-covered-by-QA (MikroB decision, msg 9825).
+    SELFTEST_JSON='[{"author":"backend","created_at":100,"content":"REVIEW"},{"author":"qa","created_at":200,"content":"QA PASS -- commit abc1234"}]'
+    d "decide: QA PASS covers qa2"                "ADVISE-SKIP:already-gated" 8 qa2
+    SELFTEST_JSON='[{"author":"backend","created_at":100,"content":"REVIEW"},{"author":"qa","created_at":200,"content":"QA FAIL -- 3 broken assertions"}]'
+    d "decide: a QA FAIL does NOT cover qa2"       "ALLOW:no-verdict"          0 qa2
+    SELFTEST_JSON='[{"author":"backend","created_at":100,"content":"REVIEW"},{"author":"qa","created_at":200,"content":"QA PASS -- commit abc1234"},{"author":"backend","created_at":300,"content":"REVIEW -- fix for the FAIL, commit def5678"}]'
+    d "decide: a re-request after QA PASS re-arms" "ALLOW:stale-verdict"       0 qa2
+    SELFTEST_JSON='[{"author":"backend","created_at":100,"content":"REVIEW"},{"author":"qa","created_at":200,"content":"QA PASS -- commit abc1234"}]'
+    d "decide: the QA-covers-qa2 exception is qa2-only" "ALLOW:no-verdict"     0 cybersec
+
     [[ $fail -eq 0 ]] && { echo "selftest: PASS"; exit 0; } || { echo "selftest: FAIL"; exit 1; }
     ;;
 
