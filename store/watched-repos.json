@@ -26,10 +26,10 @@
     "kind": "skill",
     "adoption": "vendored",
     "license": "MIT",
-    "reviewed_at": "2026-08-06",
+    "reviewed_at": "2026-08-08",
     "vendored_to": "/home/neon/.claude/skills/mattpocock-productivity",
     "vendored_subdir": "skills/productivity",
-    "note": "VENDORED 2026-07-30 (card f64fe6e1) via store/vendor-skill.sh. Clone watched here; the vendored copy lives in ~/.claude/skills/mattpocock-productivity with VENDORED.md (source+SHA+licence). type=code so upstream changes are FLAGGED, never auto-applied. | 2026-08-07: upstream f958fa17..84fdeffd = our vendored skills/productivity subdir: README wording + 1 new no-op skill (wait-what, disable-model-invocation, plain text re-pitch prompt). Repo-wide package.json version bump only (we do not build from this repo). Nincs exec/halozat/fuggoseg-valtozas. Vendorolt masolat erintetlen. Peti ertesitve, update-review kartya nyitva.",
+    "note": "VENDORED 2026-07-30 (card f64fe6e1) via store/vendor-skill.sh. Clone watched here; the vendored copy lives in ~/.claude/skills/mattpocock-productivity with VENDORED.md (source+SHA+licence). type=code so upstream changes are FLAGGED, never auto-applied. | 2026-08-07: upstream f958fa17..84fdeffd = our vendored skills/productivity subdir: README wording + 1 new no-op skill (wait-what, disable-model-invocation, plain text re-pitch prompt). Repo-wide package.json version bump only (we do not build from this repo). Nincs exec/halozat/fuggoseg-valtozas. Vendorolt masolat erintetlen. Peti ertesitve, update-review kartya nyitva. | 2026-08-08 (card f8cd6020): RESYNCELVE -- store/vendor-skill.sh --ref 84fdeffd, a vendorolt masolat most mar tartalmazza a wait-what skillt es a frissitett README-t. Diff visszaellenorizve elvegzes elott (git diff f958fa17..84fdeffd -- skills/productivity): valoban csak README + uj no-op skill + egy openai.yaml metaadat-valtozas, nincs exec/fuggoseg. Kartya lezarva.",
     "description": "Matt Pocock produktivitási skilljei (TypeScript/dev workflow). Vendorolt skill-készlet a ~/.claude/skills alatt.",
     "last_checked_upstream_sha": "84fdeffd"
   },
