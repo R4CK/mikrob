@@ -21,7 +21,15 @@
 #       -> "ALLOW:no-verdict"               exit 0  (agent has never commented)
 #       -> "ALLOW:stale-verdict"            exit 0  (a REVIEW landed after the verdict)
 #       -> "ADVISE-SKIP:already-gated:<ts>" exit 8  (the verdict is the newest word)
+#       -> "ADVISE-SKIP:no-review"          exit 8  (nothing was submitted for a gate to answer)
+#   gate-dispatch-check.sh decide <agent>   -> same verdict, comments JSON on STDIN, no API call
 #   gate-dispatch-check.sh selftest         -> offline self-test, no API calls, no side effects
+#
+# `decide` exists for a caller that must ask about MANY (card, agent) pairs at once -- the fleet
+# nudger asks 4 gate agents about every non-blocked waiting card. Going through `check` would refetch
+# the same card's comments once per agent; `decide` lets the caller fetch each card once and ask four
+# times offline. It is the SAME _decide function the live path and the selftest use, so there is no
+# second copy of the rule to drift.
 #
 # ADVISORY, NOT A BLOCK -- and this is the important part, measured rather than assumed.
 # Replayed against the six real gate dispatches of 2026-08-07 it returns:
@@ -75,11 +83,6 @@ def ts(c):
     v = c.get("created_at")
     return v if isinstance(v, (int, float)) else 0
 
-mine = [c for c in cs if c.get("author") == agent]
-if not mine:
-    print("ALLOW:no-verdict"); sys.exit(0)
-
-last_mine = max(ts(c) for c in mine)
 # A REVIEW is the signal that new work is on the table. Two narrowings, both measured:
 #  - by SOMEONE ELSE: a gate agent quoting the word in its own verdict must not re-arm itself;
 #  - ANCHORED to the start of a line, not "contains". Across 28 real comments mentioning the
@@ -89,7 +92,21 @@ last_mine = max(ts(c) for c in mine)
 review_rx = re.compile(r"^\s*(?:[#*>\-]*\s*)?REVIEW\b", re.M)
 reviews = [ts(c) for c in cs
            if c.get("author") != agent and review_rx.search(c.get("content") or "")]
-last_review = max(reviews) if reviews else 0
+
+# NO REVIEW AT ALL -> there is nothing submitted for this gate to answer. A waiting card without a
+# submission is parked for some other reason (a bound block, a question to MikroB), and treating it
+# as gate work is what woke four gate agents for 53 blocked cards every nudger run (card 14acfadd).
+# Checked BEFORE the verdict question on purpose: "nobody submitted anything" is a different and
+# stronger answer than "you have not commented yet".
+if not reviews:
+    print("ADVISE-SKIP:no-review"); sys.exit(0)
+
+mine = [c for c in cs if c.get("author") == agent]
+if not mine:
+    print("ALLOW:no-verdict"); sys.exit(0)
+
+last_mine = max(ts(c) for c in mine)
+last_review = max(reviews)
 
 if last_review > last_mine:
     print("ALLOW:stale-verdict")
@@ -109,6 +126,14 @@ case "${1:-}" in
     [[ "$verdict" == ADVISE-SKIP:* ]] && exit 8 || exit 0
     ;;
 
+  decide)
+    AGENT="${2:-}"
+    [[ -n "$AGENT" ]] || { echo "usage: $0 decide <agent>  (comments JSON on stdin)" >&2; exit 2; }
+    verdict="$(_decide "$AGENT" || echo ALLOW)"
+    echo "$verdict"
+    [[ "$verdict" == ADVISE-SKIP:* ]] && exit 8 || exit 0
+    ;;
+
   selftest)
     fail=0
     t() { # $1 = label, $2 = expected prefix, $3 = agent, stdin = comments json
@@ -117,19 +142,37 @@ case "${1:-}" in
       else echo "  FAIL $1 -> got '$got', expected '$2'*"; fail=1; fi
     }
     echo "gate-dispatch-check selftest"
-    t "no comments at all"            "ALLOW:no-verdict"   cybersec <<< '[]'
+    # CONTRACT CHANGE (card 14acfadd): a card with no submission is no longer "dispatch it" -- see
+    # the no-review branch in _decide. The two cases below expected ALLOW before that.
+    t "no comments at all"            "ADVISE-SKIP:no-review" cybersec <<< '[]'
+    t "a comment, but no REVIEW"      "ADVISE-SKIP:no-review" cybersec <<< '[{"author":"mikrob","created_at":100,"content":"kotott blokk, a 2a37a4df landolasara var"}]'
     t "only someone else's REVIEW"    "ALLOW:no-verdict"   cybersec <<< '[{"author":"backend","created_at":100,"content":"REVIEW -- done"}]'
     t "verdict is the newest word"    "ADVISE-SKIP:already-gated" cybersec <<< '[{"author":"backend","created_at":100,"content":"REVIEW"},{"author":"cybersec","created_at":200,"content":"CYBERSEC GO"}]'
     t "new REVIEW after the verdict"  "ALLOW:stale-verdict" cybersec <<< '[{"author":"cybersec","created_at":200,"content":"NO-GO"},{"author":"backend2","created_at":300,"content":"REVIEW -- fixed"}]'
-    t "another gate commented later"  "ADVISE-SKIP:already-gated" cybersec <<< '[{"author":"cybersec","created_at":200,"content":"GO"},{"author":"qa","created_at":300,"content":"QA PASS"}]'
+    t "another gate commented later"  "ADVISE-SKIP:already-gated" cybersec <<< '[{"author":"backend","created_at":100,"content":"REVIEW"},{"author":"cybersec","created_at":200,"content":"GO"},{"author":"qa","created_at":300,"content":"QA PASS"}]'
     t "own comment says REVIEW"       "ADVISE-SKIP:already-gated" cybersec <<< '[{"author":"backend","created_at":100,"content":"REVIEW"},{"author":"cybersec","created_at":200,"content":"GO -- the REVIEW claim holds"}]'
     t "malformed json"                "ALLOW"              cybersec <<< 'not json'
     t "object-wrapped comments"       "ADVISE-SKIP:already-gated" cybersec <<< '{"comments":[{"author":"backend","created_at":100,"content":"REVIEW"},{"author":"cybersec","created_at":200,"content":"GO"}]}'
-    t "missing created_at"            "ADVISE-SKIP:already-gated" cybersec <<< '[{"author":"cybersec","content":"GO"}]'
+    # ts() robustness: a comment with no created_at must not crash the max(). Needs a REVIEW present
+    # now, otherwise the no-review branch answers first and the ts() path is never reached.
+    t "missing created_at"            "ADVISE-SKIP:already-gated" cybersec <<< '[{"author":"backend","content":"REVIEW"},{"author":"cybersec","content":"GO"}]'
     # Anchoring: a later comment that only MENTIONS the word must not re-arm the dispatch.
-    t "later peer QUOTES the word"    "ADVISE-SKIP:already-gated" cybersec <<< '[{"author":"cybersec","created_at":200,"content":"GO"},{"author":"mikrob","created_at":300,"content":"bontsd fel, a te REVIEW-od utan nyitom a gyerekkartyat"}]'
+    t "later peer QUOTES the word"    "ADVISE-SKIP:already-gated" cybersec <<< '[{"author":"backend","created_at":100,"content":"REVIEW"},{"author":"cybersec","created_at":200,"content":"GO"},{"author":"mikrob","created_at":300,"content":"bontsd fel, a te REVIEW-od utan nyitom a gyerekkartyat"}]'
     t "later peer SUBMITS a review"   "ALLOW:stale-verdict" cybersec <<< '[{"author":"cybersec","created_at":200,"content":"GO"},{"author":"backend","created_at":300,"content":"REVIEW -- kesz, commit abc1234"}]'
     t "submission behind a md bullet" "ALLOW:stale-verdict" cybersec <<< '[{"author":"cybersec","created_at":200,"content":"GO"},{"author":"backend","created_at":300,"content":"## REVIEW\nkesz"}]'
+    # `decide` must be the same answer as the internal function, and must carry the exit code the
+    # nudger branches on -- a subcommand that printed the right word with the wrong status would
+    # make every card look like work.
+    d() { # $1 = label, $2 = expected verdict prefix, $3 = expected exit, $4 = agent
+      local got st
+      got="$(bash "$0" decide "$4" <<< "$SELFTEST_JSON")" && st=0 || st=$?
+      if [[ "$got" == "$2"* && "$st" == "$3" ]]; then echo "  ok   $1 -> $got (exit $st)"
+      else echo "  FAIL $1 -> got '$got' exit $st, expected '$2'* exit $3"; fail=1; fi
+    }
+    SELFTEST_JSON='[{"author":"backend","created_at":100,"content":"REVIEW"}]'
+    d "decide: agent has no verdict"  "ALLOW:no-verdict"          0 cybersec
+    SELFTEST_JSON='[{"author":"backend","created_at":100,"content":"REVIEW"},{"author":"cybersec","created_at":200,"content":"GO"}]'
+    d "decide: already gated"         "ADVISE-SKIP:already-gated" 8 cybersec
     [[ $fail -eq 0 ]] && { echo "selftest: PASS"; exit 0; } || { echo "selftest: FAIL"; exit 1; }
     ;;
 

@@ -1,0 +1,133 @@
+#!/usr/bin/env bash
+# fleet-nudger-selftest.sh -- controls for fleet-nudger.sh's GATE predicate (card 14acfadd).
+#
+# WHY THIS EXISTS. The nudger decides who gets woken, and its old gate predicate was
+# `any waiting card exists` -- permanently true on this board (70 waiting cards, 49 of them
+# BLOKKOLT-*), so all four gate agents were woken every run whether or not any of them had a card
+# to answer. Cybered checked its 17 apparent hits and every one was a false positive.
+#
+# The only way to test a nudger is to observe who it pokes, and against the live board the answer
+# depends on the live board. So this stands up a FAKE dashboard with a known set of cards and
+# comments, points the real script at it via DASH, and asserts the decision.
+#
+# It asserts the PREDICATE (the --dry-run GATE-WORK line), not delivery. Delivery additionally drops
+# agents with no tmux session or a busy pane -- real behaviour, but live state that would make these
+# controls flap depending on who happens to be working.
+#
+# Usage: store/fleet-nudger-selftest.sh          (exit 0 = PASS, 1 = FAIL)
+# No secrets, no writes outside a temp dir, and it never touches the live dashboard.
+set -uo pipefail
+
+HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+NUDGER="$HERE/fleet-nudger.sh"
+TMP="$(mktemp -d)"
+trap 'rm -rf "$TMP"' EXIT
+fail=0
+
+cat > "$TMP/fakeboard.py" <<'PYEOF'
+import json
+import sys
+from http.server import BaseHTTPRequestHandler, HTTPServer
+
+SCENARIO, PORT = sys.argv[1], int(sys.argv[2])
+
+# Every waiting card is already answered by every gate -> nobody has work.
+ALL_ANSWERED = {
+    'cards': [
+        {'id': 'c1', 'status': 'waiting', 'title': 'plain card', 'assignee': 'backend'},
+        {'id': 'c2', 'status': 'waiting', 'title': 'BLOKKOLT: waiting on another card', 'assignee': 'backend'},
+    ],
+    'comments': {
+        'c1': [
+            {'author': 'backend', 'created_at': 100, 'content': 'REVIEW -- kesz'},
+            {'author': 'qa', 'created_at': 200, 'content': 'QA PASS'},
+            {'author': 'qa2', 'created_at': 201, 'content': 'QA2 PASS'},
+            {'author': 'cybersec', 'created_at': 202, 'content': 'GO'},
+            {'author': 'cybered', 'created_at': 203, 'content': 'GO'},
+        ],
+        # c2 is BLOKKOLT: dropped before any comment is fetched. If the title filter regressed, this
+        # card looks like unanswered work for all four gates and the all-answered case goes red.
+        'c2': [{'author': 'backend', 'created_at': 100, 'content': 'REVIEW -- kesz'}],
+    },
+}
+
+# A REVIEW cybered has not answered -> exactly cybered has work.
+ONE_OPEN = {
+    'cards': [{'id': 'c1', 'status': 'waiting', 'title': 'plain card', 'assignee': 'backend'}],
+    'comments': {
+        'c1': [
+            {'author': 'backend', 'created_at': 100, 'content': 'REVIEW -- kesz'},
+            {'author': 'qa', 'created_at': 200, 'content': 'QA PASS'},
+            {'author': 'qa2', 'created_at': 201, 'content': 'QA2 PASS'},
+            {'author': 'cybersec', 'created_at': 202, 'content': 'GO'},
+        ],
+    },
+}
+
+# A waiting card with no submission is not gate work for anyone.
+NO_REVIEW = {
+    'cards': [{'id': 'c1', 'status': 'waiting', 'title': 'plain card', 'assignee': 'backend'}],
+    'comments': {'c1': [{'author': 'mikrob', 'created_at': 100, 'content': 'kotott blokk, var'}]},
+}
+
+FIX = {'all-answered': ALL_ANSWERED, 'one-open': ONE_OPEN, 'no-review': NO_REVIEW}[SCENARIO]
+
+
+class H(BaseHTTPRequestHandler):
+    def log_message(self, *a):
+        pass
+
+    def _send(self, obj):
+        body = json.dumps(obj).encode()
+        self.send_response(200)
+        self.send_header('Content-Type', 'application/json')
+        self.send_header('Content-Length', str(len(body)))
+        self.end_headers()
+        self.wfile.write(body)
+
+    def do_GET(self):
+        if self.path == '/api/kanban':
+            self._send(FIX['cards'])
+        elif self.path.startswith('/api/kanban/') and self.path.endswith('/comments'):
+            self._send(FIX['comments'].get(self.path.split('/')[3], []))
+        else:
+            self._send([])
+
+    def do_POST(self):
+        self.rfile.read(int(self.headers.get('Content-Length') or 0))
+        self._send({'ok': True})
+
+
+HTTPServer(('127.0.0.1', PORT), H).serve_forever()
+PYEOF
+
+run_case() { # $1 = scenario, $2 = port, $3 = expected gate agents (space separated, "" = none)
+  local scen="$1" port="$2" want="$3" pid got
+  python3 "$TMP/fakeboard.py" "$scen" "$port" &
+  pid=$!
+  for _ in $(seq 1 40); do
+    curl -sf -o /dev/null "http://127.0.0.1:$port/api/kanban" && break
+    sleep 0.25
+  done
+  # An unreachable board makes the nudger exit early and print nothing, which would look exactly
+  # like "nobody was woken" and pass two of the three cases for the wrong reason.
+  if ! curl -sf -o /dev/null "http://127.0.0.1:$port/api/kanban"; then
+    echo "  FAIL $scen -- fake board never came up (the control would be vacuous)"
+    kill "$pid" 2>/dev/null; fail=1; return
+  fi
+
+  got="$(DASH="http://127.0.0.1:$port" bash "$NUDGER" --dry-run 2>/dev/null | sed -n 's/^GATE-WORK://p')"
+  kill "$pid" 2>/dev/null; wait "$pid" 2>/dev/null
+  [ "$(echo $got)" = "none" ] && got=""
+  got="$(echo $got | tr ' ' '\n' | sort | tr '\n' ' ' | sed 's/ *$//')"
+
+  if [ "$got" = "$want" ]; then echo "  ok   $scen -> gate work for: '${got:-<none>}'"
+  else echo "  FAIL $scen -> got '$got', expected '$want'"; fail=1; fi
+}
+
+echo "fleet-nudger gate-predicate controls"
+run_case one-open     38811 "cybered"   # positive: exactly the one agent that owes a verdict
+run_case all-answered 38812 ""          # negative: the case the card is about
+run_case no-review    38813 ""          # negative: parked card, nothing submitted
+
+[ $fail -eq 0 ] && { echo "selftest: PASS"; exit 0; } || { echo "selftest: FAIL"; exit 1; }
