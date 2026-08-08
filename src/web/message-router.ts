@@ -187,6 +187,21 @@ function stampTraceOnMessage(msg: AgentMessage, nowMs: number): { trace_id: stri
 // Checks for pending messages every 5 seconds and injects them into target
 // agent tmux sessions.
 let _tickRunning = false
+// When the in-flight tick started, so a watchdog can tell "still working" from
+// "wedged forever" (card 4a406989: a tick that never resolves latches
+// _tickRunning true permanently -- restart does not help if the SAME live
+// conditions re-wedge the very first tick, and every symptom the router would
+// normally surface, including the 60-minute abandon window, requires a tick to
+// run at all). null while no tick is in flight.
+let _tickStartedAt: number | null = null
+// Every documented single await inside a tick is individually bounded well
+// under this (tmux capture/inject: 3-8s; federated HTTP: 5s x 3 messages;
+// session-send-lock fail-open: 60s), so a tick genuinely working through a
+// full MAX_MESSAGES_PER_TICK batch finishes in well under two minutes.
+// Past that, "still running" and "wedged" are indistinguishable from outside,
+// so treat it as wedged: the alternative (staying silent) is what card
+// 4a406989 measured -- zero deliveries for 18+ minutes across a restart.
+const TICK_WATCHDOG_MS = 120_000
 
 // Max messages drained per 5s tick; a larger backlog rolls to the next tick.
 export const MAX_MESSAGES_PER_TICK = 25
@@ -278,12 +293,39 @@ export function startMessageRouter(): NodeJS.Timeout {
   return setInterval(async () => {
     // Re-entrancy guard: STT can hold a tick for up to 65s; skip new ticks
     // while the previous one is still in flight to prevent double-delivery.
-    if (_tickRunning) return
+    if (_tickRunning) {
+      if (_tickStartedAt !== null && Date.now() - _tickStartedAt > TICK_WATCHDOG_MS) {
+        // Wedged, not merely slow (card 4a406989). Force-clear the guard so
+        // the router can resume instead of staying silently dead until the
+        // next restart -- and a restart does not even help if the live
+        // conditions that caused the hang are still there. This accepts the
+        // same trade-off session-send-lock's deliver-mode fail-open already
+        // makes one layer down: a rare re-interleave with whatever the zombie
+        // tick eventually does is cheaper than a permanently wedged queue.
+        const stuckMs = Date.now() - _tickStartedAt
+        logger.error({ stuckMs }, 'message-router: tick watchdog fired -- a tick has not returned in over 2 minutes, forcing the guard clear')
+        try {
+          createAgentMessage(
+            'system',
+            MAIN_AGENT_ID,
+            `[router-watchdog] Az inter-agent message-router egy tick-je ${Math.round(stuckMs / 1000)} mp-ig nem tert vissza (>2 perc kuszob). A guard automatikusan felszabadult, a kovetkezo tick-ek folytatodnak. Ez korabban CSENDBEN allt le (card 4a406989) -- ha ujra elofordul, a gyokerok meg mindig nincs behatarolva, csak a tunet kezelve.`,
+          )
+        } catch (err) {
+          logger.warn({ err }, 'message-router: failed to enqueue watchdog notice')
+        }
+        _tickRunning = false
+        _tickStartedAt = null
+      } else {
+        return
+      }
+    }
     _tickRunning = true
+    _tickStartedAt = Date.now()
     try {
       await runMessageRouterTick()
     } finally {
       _tickRunning = false
+      _tickStartedAt = null
     }
   }, 5000)
 }
