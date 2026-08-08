@@ -108,6 +108,13 @@ import json, os, re
 d = json.loads(os.environ["COMMENTS"]); rows = d if isinstance(d, list) else d.get("comments", [])
 pref, weak = [], []
 for c in rows:  # oldest-first
+    # Cybersec GO on d7ac3470 (measured, card comment 10364): a gate-pretriage comment's OWN "@ <sha>"
+    # line is a bare hex string too, so without this exclusion it can itself become a weak candidate --
+    # if a later REVIEW happens to quote the marker text, a STALE pre-triage sha can outrank the real
+    # newest commit. Excluded by AUTHOR, not by re-detecting the marker string in content (a content
+    # check is exactly what a quoted marker defeats).
+    if c.get("author") == "gate-pretriage":
+        continue
     txt = c.get("content") or ""
     pref += re.findall(r"[Cc]ommit[:\s]+([0-9a-f]{7,40})\b", txt)
     weak += re.findall(r"\b([0-9a-f]{7,40})\b", txt)
@@ -133,8 +140,19 @@ done <<< "$candidates"
 
 [[ -n "$sha" ]] || { echo "SKIP: no REVIEW commit resolvable on $CARD"; exit 0; }
 
-# Idempotent: do not re-post for a commit already triaged on this card.
-if printf '%s' "$comments" | grep -qF "$MARKER @ $sha"; then
+# Idempotent: do not re-post for a commit already triaged on this card. AUTHOR-based, not a raw
+# content grep over the whole comments blob (Cybersec GO on d7ac3470, measured): a plain grep matches
+# the marker text inside ANY comment, including a REVIEW that quotes a prior pre-triage block --
+# exactly the same class this script's own header already guards the POST against ("as its own
+# author so the comment is unmistakably pre-triage INPUT"), now applied to the read side too.
+already_posted="$(MARKER="$MARKER" SHA="$sha" COMMENTS="$comments" python3 <<'PY' 2>/dev/null || true
+import json, os
+d = json.loads(os.environ["COMMENTS"]); rows = d if isinstance(d, list) else d.get("comments", [])
+needle = f'{os.environ["MARKER"]} @ {os.environ["SHA"]}'
+print("1" if any(c.get("author") == "gate-pretriage" and needle in (c.get("content") or "") for c in rows) else "")
+PY
+)"
+if [[ -n "$already_posted" ]]; then
   echo "SKIP: pre-triage for $sha already on $CARD"; exit 0
 fi
 
