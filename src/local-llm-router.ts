@@ -93,6 +93,9 @@ const CATEGORY_SIGNALS: ReadonlyArray<readonly [NonOffloadableCategory, readonly
     [
       'tenant', 'multi-tenant', 'isolation', 'rls', 'row-level', 'cross-tenant', 'scope leak',
       'data leak', 'izolacio', 'izoláció', 'berlo',
+      // Card c1661fff: the same isolation defect described with a tenant SYNONYM the fleet's own
+      // card language actually uses, rather than the word "tenant" itself.
+      'organization', 'organisation', 'company', 'account',
     ],
   ],
   [
@@ -171,6 +174,21 @@ const SHAPE_SIGNALS: ReadonlyArray<readonly [NonOffloadableCategory, RegExp]> = 
   ['isolation', /\b(unfiltered|unscoped|unrestricted|without filtering|without scoping|without the filter|across all tenants|for all tenants|regardless of (the )?(owner|tenant|site|user|company))\b/],
   // (5) moving a server-side control to an untrusted client.
   ['security-decision', /\b(move|moves|moving|shift|shifts|relocate|push|pushes)\b[^.]{0,45}\b(validation|validate|check|checks|authorization|authorisation|authz|auth|permission)\w*\b[^.]{0,35}\b(client|frontend|front-end|browser|ui)\b/],
+  // --- WIDENING family (card c1661fff, Cybered) -------------------------------------------------
+  // Every rule above is tuned to the REMOVAL grammar (remove/skip/bypass a check, drop a filter).
+  // A row-scope/tenant-isolation removal can just as easily be phrased as an EXPANSION -- nothing
+  // is described as removed, so (c) and the OUTCOME family both miss it. Three real cards routed
+  // local this way: "return rows for every company, not just the current one"; "widen the query so
+  // a foreman sees all crews"; "open any work order, not only their own".
+  // (6) an explicit widen/broaden/expand verb next to a scope-shaped noun.
+  ['isolation', /\b(widen|widens|widening|broaden|broadens|broadening|expand|expands|expanding)\b[^.]{0,50}\b(quer(?:y|ies)|scope|filter|filtering|access|visibility|results?|rows?|records?|endpoint)\b/],
+  // (7) every/all/any + a tenant-or-resource noun, qualified by "not just/only" (or its siblings)
+  // -- the noun alone is too generic (any/all USER input is fine), the QUALIFIER is what marks this
+  // as a scope being widened past its current boundary rather than a plain plural reference.
+  [
+    'isolation',
+    /\b(every|all|any)\b[^.]{0,40}\b(compan(?:y|ies)|organi[sz]ations?|accounts?|tenants?|crews?|customers?|clients?|records?|rows?|databases?|work\s?orders?)\b[^.]{0,40}\b(not\s+(?:just|only)|instead of|rather than)\b/,
+  ],
 ]
 
 /** Strip zero-width/control chars and collapse letter-spaced runs ("s e c u r i t y" -> "security")

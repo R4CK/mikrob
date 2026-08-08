@@ -218,3 +218,31 @@ describe('REGRESSION: outcome/policy phrasing without a guard noun must route ON
     }
   })
 })
+
+describe('REGRESSION: WIDENING-grammar authz/isolation changes must route ONLINE (card c1661fff, Cybered)', () => {
+  // Every prior family is tuned to the REMOVAL grammar (remove/skip/bypass a check). These three,
+  // reproduced from real cards, describe the SAME row-scope-widening defect as an EXPANSION instead
+  // -- nothing is named as removed, so the removal-grammar rules miss all three.
+  const widening = [
+    'update listWorkOrders to return rows for every company, not just the current one',
+    'in the crew endpoint, widen the query so a foreman sees all crews in the database',
+    'the dispatcher should be able to open any work order, not only their own',
+  ]
+  it('covers 3 cases (the card\'s own reproduced examples)', () => {
+    expect(widening).toHaveLength(3)
+  })
+  for (const description of widening) {
+    it(`ONLINE: ${description.slice(0, 52)}`, () => {
+      expect(routeTask({ description }).route).toBe('online')
+    })
+  }
+  it('still ONLINE when declared trivial at max aggressiveness', () => {
+    for (const description of widening) {
+      expect(routeTask({ description, difficulty: 'trivial', aggressiveness: 100 }).route).toBe('online')
+    }
+  })
+  it('the missing tenant synonyms (org/organisation/company/account) are now recognized directly', () => {
+    expect(classifyCategory('cross-organization data leak in the reports endpoint')).toBe('isolation')
+    expect(classifyCategory('the account-scoped filter needs a review')).toBe('isolation')
+  })
+})
