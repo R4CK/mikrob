@@ -447,7 +447,15 @@ export async function runPreCheck(task: ScheduledTask): Promise<{ skip: boolean;
   }
   try {
     const r = await new Promise<{ error?: Error; status: number | null; stdout: string; stderr: string }>((resolve) => {
-      execFile('bash', [scriptPath], { timeout: 10_000, encoding: 'utf-8', maxBuffer: 1024 * 1024 }, (err, stdout, stderr) => {
+      const child = execFile('bash', [scriptPath], { timeout: 10_000, encoding: 'utf-8', maxBuffer: 1024 * 1024 }, (err, stdout, stderr) => {
+        // A script that traps the timeout's SIGTERM and exits 0 looks, to `err`, identical to an
+        // honest clean exit: `err` is null either way, because Node only sets `err` from the exit
+        // code/signal the process actually reported, not from whether Node itself sent a signal.
+        // `child.killed` is set by Node the moment it calls child.kill() for the timeout,
+        // independent of how (or whether) the child's own exit ends up looking -- it is the only
+        // signal that distinguishes "the script decided SKIP" from "the script got killed before
+        // it could decide anything" (card 68bfbff2 / Cybered card 92e2bb1b comment #8673).
+        if (child.killed) { resolve({ error: new Error('pre-check timed out'), status: null, stdout, stderr }); return }
         if (!err) { resolve({ status: 0, stdout, stderr }); return }
         const e = err as NodeJS.ErrnoException & { killed?: boolean }
         // A timeout or a spawn failure is an `error`; a plain non-zero exit is not.

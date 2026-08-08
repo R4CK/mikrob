@@ -93,6 +93,45 @@ describe('runPreCheck', () => {
   })
 })
 
+describe('runPreCheck timeout-vs-kill classification (card 68bfbff2)', () => {
+  // Cybered's probes (card 92e2bb1b comment #8673), reproduced against the REAL runPreCheck and
+  // its real 10s execFile timeout -- not a re-implementation, and not mocked timers, because the
+  // bug is specifically about real OS signal/exec semantics that a mock would paper over.
+  // [honest-skip] (a script that just echoes SKIP and exits) is already covered above by
+  // 'returns skip=true when script outputs SKIP'; not duplicated here.
+
+  it('[traps-term] a pre-check killed by the timeout, whose trap exits 0, must NOT silently skip', async () => {
+    // Backgrounding the sleep + `wait` is required for a FAST, non-vacuous test: a FOREGROUND
+    // `sleep` defers bash's own trap dispatch until the sleep itself returns control to the
+    // shell (measured: ~10s elapsed even against a 1s signal, i.e. the trap never runs before
+    // the sleep completes naturally). `wait` IS interruptible, so backgrounding the sleep and
+    // blocking on `wait` instead makes the trap fire within ~1s of the signal arriving.
+    const { file, dir } = withScript(
+      "#!/usr/bin/env bash\ntrap 'exit 0' TERM\necho SKIP\nsleep 30 & wait\n",
+    )
+    try {
+      const result = await runPreCheck(makeTask({ preCheck: file }))
+      // Pre-fix: err=null because the trap exited 0 -> stdout trims to 'SKIP' -> skip=true.
+      // The script was KILLED mid-flight; it never reached an honest decision, so the scheduled
+      // task (a detection control: gate-reconciler, stuck-card-monitor, quota-limit-monitor) must
+      // not be silently skipped.
+      expect(result.skip).toBe(false)
+    } finally {
+      rmSync(dir, { recursive: true })
+    }
+  }, 15_000)
+
+  it('[no-trap] a pre-check killed by the timeout with no trap still fails open (unaffected by the fix)', async () => {
+    const { file, dir } = withScript('#!/usr/bin/env bash\necho SKIP\nsleep 30\n')
+    try {
+      const result = await runPreCheck(makeTask({ preCheck: file }))
+      expect(result.skip).toBe(false)
+    } finally {
+      rmSync(dir, { recursive: true })
+    }
+  }, 15_000)
+})
+
 describe('schedule-runner pre-check integration (source-level)', () => {
   it('exports runPreCheck function', () => {
     expect(SRC).toMatch(/export async function runPreCheck/) // async: it runs on the scheduler tick (card 92e2bb1b)
