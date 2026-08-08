@@ -29,10 +29,20 @@
 #   store/cleancore-main-suite-guard.sh --force    # run even if HEAD is unchanged
 #   store/cleancore-main-suite-guard.sh --status   # print the recorded baseline and exit
 #
-# Output contract (for the scheduled task that reads it):
-#   STATE:unchanged | STATE:measured
+# Output contract:
+#   STATE:unchanged | STATE:measured | STATE:busy
 #   RESULT:OK | RESULT:REGRESSION | RESULT:IMPROVED | RESULT:SETUP-FAILED
 # Exit: 0 measured or skipped | 1 regression | 3 setup failed | 2 bad usage
+#
+# WHO CONSUMES THIS (corrected -- card 6d46c7d3, Cybered F1). This block used to say "for the
+# scheduled task that reads it", and no such task exists. What is actually true:
+#   - A REGRESSION alerts ITSELF, from inside this script, via POST /api/messages. That path does
+#     not depend on anything reading the log.
+#   - Cron appends stdout to store/cleancore-main-suite-guard.log, and NOTHING reads that file. So
+#     RESULT:SETUP-FAILED -- the guard announcing it could not measure -- currently goes to a file
+#     nobody opens. That is the remaining hole; MikroB is adding the heartbeat that reads it.
+# Stated plainly because a header that claims a consumer it does not have is how a guard looks
+# wired while being unwatched.
 set -uo pipefail
 
 REPO="${CC_REPO:-/mnt/h/LM_Studio_Workdir/CleanCore}"
@@ -67,12 +77,22 @@ esac
 # and sends a REGRESSION alert naming innocent commits. A guard that cries wolf is worse than no
 # guard, so a second instance exits immediately and silently instead.
 LOCK="${CC_MAIN_GUARD_LOCK:-/home/neon/marveen/store/.cleancore-main-suite-guard.lock}"
-if command -v flock >/dev/null 2>&1; then
-  exec 9>"$LOCK" || die "cannot open the lock file at $LOCK"
-  if ! flock -n 9; then
-    echo "STATE:busy"   # a previous run is still measuring; the next tick will pick it up
-    exit 0
-  fi
+#
+# NO flock, NO RUN (card 6d46c7d3, Cybersec SEC-1 on 6821012). This used to be
+# `if command -v flock; then ... fi` with no else, so on a host without flock the whole block was
+# skipped and the script carried on exactly as if it had taken the lock -- silently, which is the
+# one thing this guard is not allowed to be. The protection was tied to the tool being present
+# rather than to the tool working. Latent today (flock is on this machine, measured), but a
+# narrowed PATH under cron or a different host is all it takes.
+# Refusing is the right failure here rather than a mkdir fallback: a mkdir lock is not released
+# when the holder dies, so a killed run would block every later tick until someone noticed -- the
+# same silent stop, just delayed.
+command -v flock >/dev/null 2>&1 \
+  || die "flock is not on PATH -- refusing to run without mutual exclusion (two runs share one worktree and would corrupt each other's measurement)"
+exec 9>"$LOCK" || die "cannot open the lock file at $LOCK"
+if ! flock -n 9; then
+  echo "STATE:busy"   # a previous run is still measuring; the next tick will pick it up
+  exit 0
 fi
 
 [ -d "$REPO/.git" ] || die "no CleanCore checkout at $REPO"
@@ -159,10 +179,32 @@ summary="$(grep -E '^[[:space:]]*Tests[[:space:]]' "$log" | tail -1)"
 # whatever else is running vitest at that moment; a torn cache surfaces as ERR_MODULE_NOT_FOUND in
 # otherwise fine files. That would arrive as "failures rose, here are the commits" and point at
 # innocent work. These strings mean the harness broke, not the tree.
-if grep -qE 'ERR_MODULE_NOT_FOUND|Failed to load url|Cannot find package' "$log"; then
-  grep -m1 -E 'ERR_MODULE_NOT_FOUND|Failed to load url|Cannot find package' "$log" >&2
+#
+# SCOPED TO THE FAILED-SUITES BLOCK, not the whole log (card 6d46c7d3, Cybered NO-GO on 6821012).
+# The first version grepped the entire vitest output, and vitest prints the names of PASSING tests
+# too. So one well-meant test name containing "Cannot find package" made a fully green run report
+# SETUP-FAILED: the baseline froze, and a real regression arriving in the same run raised no alert.
+# The card exists to stop this guard going quiet unnoticed; that line reintroduced it by another
+# door. Zero such names exist in the corpus today, so it was latent -- and trivial to trigger.
+#
+# The region is chosen from MEASURED output shape, not guessed. A module-resolution error fails the
+# SUITE at collect time, and vitest reports it under `Failed Suites` as
+# `Error: Failed to load url ...`, with the summary reading `Tests  no tests`. Test names never
+# appear in that block -- they are listed under `Failed Tests`, which is where the scan now stops.
+# Measured both ways: real failure -> 1 hit inside the block, poisoned-but-green run -> 0 hits.
+suite_errors="$(awk '/Failed Suites/{f=1;next} f && (/Failed Tests/ || /^[[:space:]]*Test Files/){f=0} f' "$log")"
+if printf '%s\n' "$suite_errors" | grep -qE 'ERR_MODULE_NOT_FOUND|Failed to load url|Cannot find package'; then
+  printf '%s\n' "$suite_errors" | grep -m1 -E 'ERR_MODULE_NOT_FOUND|Failed to load url|Cannot find package' >&2
   die "the run hit a module-resolution error (shared vite cache or a mid-install node_modules), not a code failure -- not reporting a regression from it"
 fi
+
+# A run that collected NOTHING measured nothing. `Tests  no tests` still satisfies the summary check
+# above, and the failure count parses as 0 -- so without this the guard would record a clean
+# baseline for a suite that never executed. Same family as the two findings above: the quiet way for
+# this guard to stop guarding.
+case "$summary" in
+  *"no tests"*) die "the suite collected no tests at all -- nothing was measured, refusing to record a baseline" ;;
+esac
 
 fails="$(printf '%s' "$summary" | sed -n 's/.*[^0-9]\([0-9][0-9]*\) failed.*/\1/p')"
 [ -n "$fails" ] || fails=0
