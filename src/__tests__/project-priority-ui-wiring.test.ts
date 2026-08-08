@@ -44,9 +44,9 @@ describe('project dispatch-priority dropdown', () => {
   })
 
   it('saves via PUT to the BE sibling endpoint, sending an array (order = priority)', () => {
-    const idx = APP.indexOf("addEventListener('change'")
-    const changeHandlerIdx = APP.lastIndexOf('kanbanPriorityProjectSelect', idx)
-    expect(changeHandlerIdx).toBeGreaterThan(-1)
+    const anchor = "kanbanPriorityProjectSelect').addEventListener('change'"
+    const idx = APP.indexOf(anchor)
+    expect(idx, 'the priority-select change listener was not found').toBeGreaterThan(-1)
     const body = APP.slice(idx, idx + 1500)
     expect(body).toContain("method: 'PUT'")
     expect(body).toContain('/api/config/project-priority')
@@ -54,7 +54,8 @@ describe('project dispatch-priority dropdown', () => {
   })
 
   it('reverts the visible selection on a failed save, and never shows a raw server error', () => {
-    const idx = APP.indexOf("addEventListener('change'")
+    const anchor = "kanbanPriorityProjectSelect').addEventListener('change'"
+    const idx = APP.indexOf(anchor)
     const body = APP.slice(idx, idx + 1500)
     expect(body).toContain('sel.value = prevValue')
     // Rule 12: no raw fetch/response error text surfaced to the user.
@@ -96,11 +97,14 @@ describe('priority badge contrast fix (card e291e9c4)', () => {
   })
 
   it('the archived-cards view uses the SAME badge class, not its own low-contrast pill', () => {
-    // The old .archived-prio-pill used a translucent tint of the priority color as both text and
-    // background -- the same class of contrast problem this card exists to fix, just on a
-    // different page. Both pinned so a future edit cannot quietly reintroduce a second scheme.
-    expect(APP).not.toContain('archived-prio-pill')
-    expect(CSS).not.toContain('archived-prio-pill')
+    // The old archived-prio-pill CSS class (built via string concatenation below, so this file's
+    // own explanatory prose mentioning the name does not trip the assertion) used a translucent
+    // tint of the priority color as both text and background -- the same class of contrast
+    // problem this card exists to fix, just on a different page. Pinned so a future edit cannot
+    // quietly reintroduce a second scheme.
+    const oldClassName = 'archived' + '-prio-pill'
+    expect(APP).not.toContain(oldClassName)
+    expect(CSS).not.toContain(oldClassName)
     const body = fnBody(APP, 'function renderArchivedCard')
     expect(body).toMatch(/class="priority-badge priority-\$\{/)
   })
