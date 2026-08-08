@@ -246,3 +246,28 @@ describe('REGRESSION: WIDENING-grammar authz/isolation changes must route ONLINE
     expect(classifyCategory('the account-scoped filter needs a review')).toBe('isolation')
   })
 })
+
+describe('REGRESSION: "companies" (irregular plural) must not bypass the "company" keyword (Cybered NO-GO on c1661fff, comment 10714)', () => {
+  // Plain keyword matching is substring-based, so a REGULAR plural (organizations, accounts)
+  // already contains its singular for free -- "company" -> "companies" does not (y -> ies), and
+  // Cybered's own adversarial probe found three real bypasses this shape opened, one of them a
+  // close paraphrase of this card's own reproduced example #2 with the widening verb removed.
+  const bypasses = [
+    'let a foreman see crews from other companies too',
+    'a report visible across companies',
+    'sharing data between companies now allowed',
+  ]
+  it('covers 3 cases (Cybered\'s own adversarial probe)', () => {
+    expect(bypasses).toHaveLength(3)
+  })
+  for (const description of bypasses) {
+    it(`ONLINE: ${description.slice(0, 52)}`, () => {
+      expect(routeTask({ description }).route).toBe('online')
+    })
+  }
+  it('the singular "company" control case still routes online too', () => {
+    expect(routeTask({ description: 'let a foreman see crews from other company too' }).route).toBe(
+      'online',
+    )
+  })
+})

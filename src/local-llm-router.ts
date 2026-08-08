@@ -96,6 +96,13 @@ const CATEGORY_SIGNALS: ReadonlyArray<readonly [NonOffloadableCategory, readonly
       // Card c1661fff: the same isolation defect described with a tenant SYNONYM the fleet's own
       // card language actually uses, rather than the word "tenant" itself.
       'organization', 'organisation', 'company', 'account',
+      // Cybered NO-GO on c1661fff (comment 10714): matching is plain substring, so a REGULAR
+      // plural (organizations/accounts) already contains its singular and needed no separate
+      // entry -- but "company" -> "companies" is an IRREGULAR plural (y -> ies) that does not
+      // contain "company" as a substring, so it silently bypassed every rule above. Checked the
+      // rest of this bag for the same shape: 'tenant'/'berlo' pluralize regularly in both
+      // languages (tenants, bérlők both keep the stem as a substring); 'company' was the only gap.
+      'companies',
     ],
   ],
   [
