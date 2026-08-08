@@ -58,16 +58,16 @@
     "local": "/home/neon/marveen/store/adopted/JuliusBrussee__caveman",
     "type": "code",
     "enabled": true,
-    "last_sha": "ec83e5ba",
+    "last_sha": "14d4f2e2",
     "kind": "skill",
     "adoption": "vendored",
     "license": "MIT",
     "reviewed_at": "2026-07-30",
     "vendored_to": "/home/neon/.claude/skills/caveman",
     "vendored_subdir": "",
-    "note": "VENDORED 2026-07-30 (card f64fe6e1) via store/vendor-skill.sh. Clone watched here; the vendored copy lives in ~/.claude/skills/caveman with VENDORED.md (source+SHA+licence). type=code so upstream changes are FLAGGED, never auto-applied. KORLATOZOTT: csak belso/gepi kimenetre, soha nem user-facing szoveghez. | 2026-08-03: upstream 0d95a81d..7066cc81 = REAL change (bin/->cli/ rename+Windows hardening, uj caveman-parse.js, mode-tracker rewrite, checksums.sha256 csere, install.sh/.ps1 mod, tesztbovites, 62 fajl). Vendorolt masolat ERINTETLEN (baseline valtozatlan). Quick supply-chain check: nincs gyanus minta. Peti ertesitve, update-review kartya nyitva: cavemn8103. | 2026-08-04: upstream 7066cc81..ec83e5ba = README.md wording only (1 line), nincs kod/viselkedes valtozas. Vendorolt masolat ERINTETLEN. Peti ertesitve, update-review kartya nyitva: 15393d90.",
+    "note": "VENDORED 2026-07-30 (card f64fe6e1) via store/vendor-skill.sh. Clone watched here; the vendored copy lives in ~/.claude/skills/caveman with VENDORED.md (source+SHA+licence). type=code so upstream changes are FLAGGED, never auto-applied. KORLATOZOTT: csak belso/gepi kimenetre, soha nem user-facing szoveghez. | 2026-08-03: upstream 0d95a81d..7066cc81 = REAL change (bin/->cli/ rename+Windows hardening, uj caveman-parse.js, mode-tracker rewrite, checksums.sha256 csere, install.sh/.ps1 mod, tesztbovites, 62 fajl). Vendorolt masolat ERINTETLEN (baseline valtozatlan). Quick supply-chain check: nincs gyanus minta. Peti ertesitve, update-review kartya nyitva: cavemn8103. | 2026-08-04: upstream 7066cc81..ec83e5ba = README.md wording only (1 line), nincs kod/viselkedes valtozas. Vendorolt masolat ERINTETLEN. Peti ertesitve, update-review kartya nyitva: 15393d90. | 2026-08-08: upstream ec83e5ba..14d4f2e2 = README.md +4 sor (Trendshift badge), nincs kod/viselkedes valtozas. Vendorolt masolat ERINTETLEN. Peti ertesitve Telegramon, kartya zarva: 24624e26.",
     "description": "Token-tömörítő kimeneti stílus (kizárólag belső/gépi kimenetre). Vendorolt skill.",
-    "last_checked_upstream_sha": "ec83e5ba"
+    "last_checked_upstream_sha": "14d4f2e2"
   },
   {
     "name": "graphify",
