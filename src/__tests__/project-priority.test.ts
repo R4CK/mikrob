@@ -4,9 +4,9 @@
 // preference. Empty priority = the hardcoded default order still applies unchanged.
 import { existsSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
 import { join } from 'node:path'
-import { afterEach, describe, expect, it } from 'vitest'
+import { afterEach, beforeEach, describe, expect, it } from 'vitest'
 import { PROJECT_ROOT } from '../config.js'
-import { createKanbanCard, deleteKanbanCard } from '../db.js'
+import { createKanbanCard, initDatabase } from '../db.js'
 import { tryHandleProjectPriority } from '../web/routes/project-priority.js'
 import type { RouteContext } from '../web/routes/types.js'
 
@@ -46,11 +46,16 @@ function fakeCtx(path: string, method: string, body?: unknown): {
 }
 
 // Whatever config existed before this file ran is restored after, so running the suite does not
-// permanently change a real operator setting on a shared checkout.
+// permanently change a real operator setting on a shared checkout. The kanban DATA side needs no
+// such care -- an in-memory DB per test, matching kanban-labels.test.ts's own convention, so
+// listKanbanProjects() never touches the real store.
 const originalConfig: string | null = existsSync(CONFIG_PATH) ? readFileSync(CONFIG_PATH, 'utf-8') : null
 
+beforeEach(() => {
+  initDatabase(':memory:')
+})
+
 afterEach(() => {
-  deleteKanbanCard(THROWAWAY_CARD)
   if (originalConfig !== null) {
     writeFileSync(CONFIG_PATH, originalConfig, 'utf-8')
   } else {
