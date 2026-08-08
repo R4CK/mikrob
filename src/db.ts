@@ -2204,6 +2204,25 @@ export function getKanbanSeqByIdPrefix(prefix: string): number | null {
   return rows[0].seq
 }
 
+/**
+ * The board's CURRENT view of one card, for the send-time state stamp (card ffaa4ff1).
+ *
+ * Prefix-safe like getKanbanSeqByIdPrefix: `LIMIT 2` and a rows.length !== 1 bail, so an ambiguous
+ * prefix resolves to nothing rather than to whichever row SQLite happened to return first. Archived
+ * cards are included on purpose -- "this card is archived" is exactly the staleness the stamp exists
+ * to surface, and hiding it would make an archived card look like a live one.
+ */
+export function getKanbanCardStateByIdPrefix(
+  prefix: string,
+): { id: string; status: string; updatedAt: number } | null {
+  const rows = db
+    .prepare('SELECT id, status, updated_at FROM kanban_cards WHERE id = ? COLLATE NOCASE LIMIT 2')
+    .all(prefix) as { id: string; status: string; updated_at: number }[]
+  if (rows.length !== 1) return null
+  const r = rows[0]
+  return { id: r.id, status: r.status, updatedAt: r.updated_at }
+}
+
 // Find an active (non-archived) kanban card by exact title match, or
 // undefined when none exists.
 export function findActiveKanbanCardByTitle(title: string): KanbanCard | undefined {

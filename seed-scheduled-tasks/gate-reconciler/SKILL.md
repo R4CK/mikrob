@@ -11,9 +11,10 @@ GATE-RECONCILER (MikroB kotelesseg: a flotta SOHA ne varjon rad egy elvegzett ga
    - Barmely gate FAIL/NO-GO -> PUT status:in_progress + re-dispatch a felelosnek a pontos bug-jelentessel (ha parkolt: POST /api/agents/<agent>/start, majd inter-agent uzenet vagy tmux send-keys). Ha a finding uj kartyat igenyel, nyisd meg (projekt+szines label).
    - REVIEW-komment van, de a gate-ek MEG nincsenek dispatchelve -> dispatcheld a kijelolt gate-eket (QA MINDIG + kockazat szerinti Cybersec/Cybered, 4. szabaly).
    - Kotott-blokk (pl. Cybered WC1/WC2, vagy Peti-infra blokk) -> hagyd waiting, egyszer annotald, tobbet ne bolygasd.
-4. Idle-de-futo agentek parkolasa (nincs elo munkajuk, se in_progress se altaluk vitt gate), kiveve MikroB (7. szabaly).
-5. Heti-limit (store/weekly-limit-stop.json active:true): ha aktiv, CSAK gate+zaras+in-flight befejezes, uj feature-t NE indits.
-6. Telegram CSAK ha fontos (lezarult kartya amirol Peti tudni akar, vagy FAIL/dontes ami Petit igenyli). Rutin reconciliation -> CSEND.
+4. RE-DISPATCH ES NUDGE ELOTT/UTAN -- a statusz elavulasa (kartya ffaa4ff1). Minden altalad kuldott dispatch/re-dispatch uzenet a `POST /api/messages`-en at megy, ami a kuldes pillanataban automatikusan hozzafuzi a hivatkozott kartyak `status`+`updated_at` allapotat (`[card-state @send]`). Ezt NEM kell kezzel beirnod. Amit viszont KOTELEZO: a cimzettnek szolo dispatch szovegeben mondd ki, hogy a munka ELSO lepese a kartya friss statuszanak ujraolvasasa -- a stamp csak azt mondja, mi volt a kuldeskor, es egy percekkel-orakkal kesobb elolvasott dispatch mar elavult lehet (kesz kartya, mas vitte el, ujranyitva mas leletttel).
+5. Idle-de-futo agentek parkolasa (nincs elo munkajuk, se in_progress se altaluk vitt gate), kiveve MikroB (7. szabaly).
+6. Heti-limit (store/weekly-limit-stop.json active:true): ha aktiv, CSAK gate+zaras+in-flight befejezes, uj feature-t NE indits.
+7. Telegram CSAK ha fontos (lezarult kartya amirol Peti tudni akar, vagy FAIL/dontes ami Petit igenyli). Rutin reconciliation -> CSEND.
 
 
 --- TOKEN-VEDELEM GUARD (Peti 2026-07-30, KOTELEZO) ---
