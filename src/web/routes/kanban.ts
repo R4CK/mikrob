@@ -32,7 +32,7 @@ const CANONICAL_PROJECTS: Record<string, string> = Object.fromEntries(
     ['MikroB', ['mikrob-infra', 'mikrob', 'fleet-infra', 'marveen', 'infra', 'mikrob-ops', 'marveen-infra']],
   ].flatMap(([canonical, variants]) => (variants as string[]).map((v) => [v, canonical as string])),
 )
-export function normalizeProjectName<T extends { project?: unknown }>(data: T): T {
+export function normalizeProjectName<T extends Record<string, unknown>>(data: T): T {
   if (typeof data.project === 'string') {
     const canonical = CANONICAL_PROJECTS[data.project.trim().toLowerCase()]
     if (canonical) return { ...data, project: canonical }
