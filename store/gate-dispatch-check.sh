@@ -22,7 +22,12 @@
 #       -> "ALLOW:stale-verdict"            exit 0  (a REVIEW landed after the verdict)
 #       -> "ADVISE-SKIP:already-gated:<ts>" exit 8  (the verdict is the newest word)
 #       -> "ADVISE-SKIP:no-review"          exit 8  (nothing was submitted for a gate to answer)
+#       -> "ADVISE-SKIP:not-designated"     exit 8  (the card names OTHER gates, not this one)
 #   gate-dispatch-check.sh decide <agent>   -> same verdict, comments JSON on STDIN, no API call
+#       optional env: GATE_LABELS="qa,cybersec" (comma list of gate-agent names from the card's
+#       OWN kanban labels) and/or GATE_LINE="QA + Cybersec ..." (the card's free-text "Gate: ..."
+#       line, if any) -- see DESIGNATION below. Env, not CLI flags, so a caller never has to
+#       shell-quote free-text card content.
 #   gate-dispatch-check.sh selftest         -> offline self-test, no API calls, no side effects
 #
 # `decide` exists for a caller that must ask about MANY (card, agent) pairs at once -- the fleet
@@ -50,6 +55,37 @@
 #
 # NOT WIRED ANYWHERE YET. It changes when a gate agent is woken, so it goes live only
 # after MikroB's review (a gate agent must not silently edit its own dispatch path).
+#
+# DESIGNATION (card 5bc10089, follow-up to 14acfadd; Cybered's proposals 1+3, MikroB decision
+# msg 9850): "has no verdict" and "owes a verdict" are not the same fact. Rule 4 has MikroB
+# pick which gates a card needs by risk; a card that never named a gate is not that gate's
+# debt, and dispatching it there was Cybered's measured false-positive (4 of their apparent
+# hits on the live board were cards whose OWN text designated other gates).
+#
+# TWO SOURCES, in priority order:
+#   1. GATE_LABELS -- the card's own kanban labels (@qa/@qa2/@cybersec/@cybered). Durable,
+#      because it takes a deliberate act by MikroB to attach one (rule 2's own convention,
+#      just not yet used for gate designation). Authoritative when present.
+#   2. GATE_LINE -- the card's free-text "Gate: ..." line, when no labels exist yet. Weaker
+#      (prose, easy to under-specify), used as a fallback until labels are the norm.
+# Neither present -> no exclusion, unchanged pre-existing behavior (only ~4 of 27 waiting
+# cards carry a Gate: line at all today, so most of the board is unaffected either way).
+#
+# WHY EXCLUSION IS SAFE DESPITE A REAL COUNTER-EXAMPLE (fullstack measured it, card 14acfadd
+# comment 10118): 6d46c7d3's own Gate line named QA + a Cybersec re-check, not Cybered -- yet
+# Cybered is exactly who found the blocking finding there. Excluding Cybered from the passive
+# NUDGE for that card would not have stopped that finding: Cybered reached it through their
+# own initiative, not because a reminder fired, and said so on the card in the same breath
+# ("NEM verdikt... en vagyok az egyik erintett"). MikroB's own close of 14acfadd made the same
+# distinction explicit: a voluntary measurement outside the designated set is welcomed and
+# valued, it is simply not OWED, so it should not generate an automated wake. This script only
+# ever gates a passive reminder; it has no way to and does not try to stop an agent's own
+# judgment about what to look at. The mutations below deliberately exercise this exact
+# tradeoff so the decision stays auditable.
+#
+# "QA" DESIGNATES QA2 TOO, in both sources -- consistent with the qa2-covered-by-qa exception
+# just above it: QA2 is a capacity twin of QA (CLAUDE.md's own words), not an independent role,
+# so naming one names both for designation purposes.
 set -euo pipefail
 
 STORE="$(cd "$(dirname "$0")" && pwd)"
@@ -101,6 +137,32 @@ reviews = [ts(c) for c in cs
 if not reviews:
     print("ADVISE-SKIP:no-review"); sys.exit(0)
 
+GATE_AGENTS = ("qa", "qa2", "cybersec", "cybered")
+
+def widen_qa(names):
+    return names | {"qa", "qa2"} if ("qa" in names or "qa2" in names) else names
+
+def designated_from_labels(csv):
+    names = {n.strip().lstrip("@").lower() for n in csv.split(",") if n.strip()}
+    names = {n for n in names if n in GATE_AGENTS}
+    return widen_qa(names) if names else None
+
+def designated_from_gate_line(text):
+    low = text.lower()
+    names = set()
+    if re.search(r"\bqa2\b", low): names.add("qa2")
+    if re.search(r"\bqa\b", low): names.add("qa")
+    if re.search(r"\bcybersec\b", low): names.add("cybersec")
+    if re.search(r"\bcybered\b", low): names.add("cybered")
+    return widen_qa(names) if names else None
+
+designated = (
+    designated_from_labels(os.environ.get("GATE_LABELS", ""))
+    or designated_from_gate_line(os.environ.get("GATE_LINE", ""))
+)
+if designated is not None and agent not in designated:
+    print("ADVISE-SKIP:not-designated"); sys.exit(0)
+
 mine = [c for c in cs if c.get("author") == agent]
 
 # QA2-COVERED-BY-QA (MikroB decision, card 14acfadd follow-up, msg 9825): QA2 exists for parallel
@@ -133,7 +195,33 @@ case "${1:-}" in
     [[ -n "$CARD" && -n "$AGENT" ]] || { echo "usage: $0 check <cardId> <agent>" >&2; exit 2; }
     body="$(_curl_get "/api/kanban/${CARD}/comments" || true)"
     [[ -n "$body" ]] || { echo "ALLOW"; exit 0; }   # no answer from the API -> fail OPEN
-    verdict="$(printf '%s' "$body" | _decide "$AGENT" || echo ALLOW)"
+    # DESIGNATION (card 5bc10089): fetch the card's own labels + description here too, same as
+    # the nudger does from its bulk snapshot, so `check` and `decide` never drift on this rule.
+    # There is no single-card GET; the bulk list is what the rest of the fleet already uses for
+    # this. Best-effort: any failure here just leaves GATE_LABELS/GATE_LINE unset (fail OPEN,
+    # matching this whole script's stance -- a lookup failure must widen dispatch, never narrow it).
+    CARD_JSON="$(_curl_get "/api/kanban" || true)"
+    GATE_LABELS="$(CID="$CARD" python3 -c '
+import json, os, sys
+try: cards = json.load(sys.stdin)
+except Exception: sys.exit(0)
+for c in cards if isinstance(cards, list) else []:
+    if c.get("id") == os.environ["CID"]:
+        print(",".join(l.get("name", "").lstrip("@") for l in (c.get("labels") or [])))
+        break
+' <<< "$CARD_JSON" 2>/dev/null || true)"
+    GATE_LINE="$(CID="$CARD" python3 -c '
+import json, os, re, sys
+try: cards = json.load(sys.stdin)
+except Exception: sys.exit(0)
+rx = re.compile(r"^\s*Gate\s*:\s*(.+)$", re.M | re.I)
+for c in cards if isinstance(cards, list) else []:
+    if c.get("id") == os.environ["CID"]:
+        m = rx.search(c.get("description") or "")
+        if m: print(m.group(1))
+        break
+' <<< "$CARD_JSON" 2>/dev/null || true)"
+    verdict="$(printf '%s' "$body" | GATE_LABELS="$GATE_LABELS" GATE_LINE="$GATE_LINE" _decide "$AGENT" || echo ALLOW)"
     echo "$verdict"
     [[ "$verdict" == ADVISE-SKIP:* ]] && exit 8 || exit 0
     ;;
@@ -195,6 +283,38 @@ case "${1:-}" in
     d "decide: a re-request after QA PASS re-arms" "ALLOW:stale-verdict"       0 qa2
     SELFTEST_JSON='[{"author":"backend","created_at":100,"content":"REVIEW"},{"author":"qa","created_at":200,"content":"QA PASS -- commit abc1234"}]'
     d "decide: the QA-covers-qa2 exception is qa2-only" "ALLOW:no-verdict"     0 cybersec
+
+    # DESIGNATION (card 5bc10089). dd() is d() plus GATE_LABELS/GATE_LINE, since designation is
+    # per-card context the plain d() has no way to pass.
+    dd() { # $1=label $2=expected-prefix $3=expected-exit $4=agent $5=GATE_LABELS $6=GATE_LINE
+      local got st
+      got="$(GATE_LABELS="$5" GATE_LINE="$6" bash "$0" decide "$4" <<< "$SELFTEST_JSON")" && st=0 || st=$?
+      if [[ "$got" == "$2"* && "$st" == "$3" ]]; then echo "  ok   $1 -> $got (exit $st)"
+      else echo "  FAIL $1 -> got '$got' exit $st, expected '$2'* exit $3"; fail=1; fi
+    }
+    SELFTEST_JSON='[{"author":"backend","created_at":100,"content":"REVIEW"}]'
+    dd "designation: labels name the agent -> unaffected"      "ALLOW:no-verdict"      0 cybersec "qa,cybersec" ""
+    dd "designation: labels name OTHER agents -> excluded"     "ADVISE-SKIP:not-designated" 8 cybered "qa,cybersec" ""
+    dd "designation: gate-line names the agent -> unaffected"  "ALLOW:no-verdict"      0 cybersec "" "QA + Cybersec (RBAC-akciok)"
+    dd "designation: gate-line names OTHER agents -> excluded" "ADVISE-SKIP:not-designated" 8 cybered "" "QA + Cybersec (RBAC-akciok)"
+    dd "designation: no labels, no gate-line -> unaffected"    "ALLOW:no-verdict"      0 cybered "" ""
+    # Real case, card 2b7fe8ee: "Gate: QA." names only QA -> cybered excluded.
+    dd "designation: 2b7fe8ee-shape, Gate: QA. excludes cybered" "ADVISE-SKIP:not-designated" 8 cybered "" "QA."
+    dd "designation: 2b7fe8ee-shape, QA itself is unaffected"    "ALLOW:no-verdict"      0 qa "" "QA."
+    # Real case, card 6d46c7d3: names QA + a Cybersec re-check, not Cybered. This is the counter-
+    # example fullstack measured (comment 10118): Cybered found the blocking finding on this exact
+    # card despite not being named. MikroB decided anyway (msg 9850) -- exclusion only silences the
+    # passive NUDGE, it does not and cannot stop an agent's own initiative, which is what actually
+    # happened here. Encoded as a test, not a footnote, so a reader hits the tradeoff on purpose.
+    dd "designation: 6d46c7d3-shape EXCLUDES cybered (known, accepted tradeoff)" "ADVISE-SKIP:not-designated" 8 cybered "" "QA (a blokkolo ketto), Cybersec ujra-nezi telepites elott."
+    # Labels take priority over a conflicting gate-line.
+    dd "designation: labels override a conflicting gate-line"  "ALLOW:no-verdict"      0 cybered "cybered" "QA only, nothing else"
+    # QA/QA2 symmetry: naming either designates both.
+    SELFTEST_JSON='[{"author":"backend","created_at":100,"content":"REVIEW"}]'
+    dd "designation: Gate: QA. also designates qa2 (twin)"     "ALLOW:no-verdict"      0 qa2 "" "QA."
+    dd "designation: a QA2-only label also designates qa"      "ALLOW:no-verdict"      0 qa "qa2" ""
+    # Unrecognized free text (no gate keyword at all) must not accidentally exclude everyone.
+    dd "designation: unparseable gate-line -> no exclusion"    "ALLOW:no-verdict"      0 cybered "" "see the linked design doc"
 
     [[ $fail -eq 0 ]] && { echo "selftest: PASS"; exit 0; } || { echo "selftest: FAIL"; exit 1; }
     ;;

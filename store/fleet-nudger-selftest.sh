@@ -70,7 +70,23 @@ NO_REVIEW = {
     'comments': {'c1': [{'author': 'mikrob', 'created_at': 100, 'content': 'kotott blokk, var'}]},
 }
 
-FIX = {'all-answered': ALL_ANSWERED, 'one-open': ONE_OPEN, 'no-review': NO_REVIEW}[SCENARIO]
+# DESIGNATION end-to-end (card 5bc10089): the card names only QA in its own text, and NOBODY has
+# verdicted yet. Without designation this would be GATE-WORK for all four; with it, only qa/qa2
+# (QA's twin) should show up -- cybersec and cybered are excluded despite having no verdict, because
+# they were never asked. Proves the board -> per-card labels/description -> decide wiring actually
+# carries the fields, not just that gate-dispatch-check.sh's own unit-level selftest handles them.
+DESIGNATED = {
+    'cards': [{
+        'id': 'c1', 'status': 'waiting', 'title': 'plain card', 'assignee': 'backend',
+        'description': 'Some feature.\n\nGate: QA.\n',
+    }],
+    'comments': {'c1': [{'author': 'backend', 'created_at': 100, 'content': 'REVIEW -- kesz'}]},
+}
+
+FIX = {
+    'all-answered': ALL_ANSWERED, 'one-open': ONE_OPEN, 'no-review': NO_REVIEW,
+    'designated': DESIGNATED,
+}[SCENARIO]
 
 
 class H(BaseHTTPRequestHandler):
@@ -129,5 +145,6 @@ echo "fleet-nudger gate-predicate controls"
 run_case one-open     38811 "cybered"   # positive: exactly the one agent that owes a verdict
 run_case all-answered 38812 ""          # negative: the case the card is about
 run_case no-review    38813 ""          # negative: parked card, nothing submitted
+run_case designated   38814 "qa qa2"    # designation: Gate: QA. excludes cybersec/cybered end-to-end
 
 [ $fail -eq 0 ] && { echo "selftest: PASS"; exit 0; } || { echo "selftest: FAIL"; exit 1; }

@@ -48,8 +48,21 @@ for c in cards:
 # (No apostrophes in this block: the whole program is a single-quoted -c argument.)
 gate_cards=[c.get("id") for c in cards
             if c.get("status")=="waiting" and "BLOKKOLT" not in (c.get("title") or "")]
+# DESIGNATION (card 5bc10089): pulled from THIS SAME snapshot, not a second bulk fetch -- the
+# fleet already has the labels and description in memory here. gate-dispatch-check.sh turns
+# these into an exclusion; an empty value on either simply means no exclusion for that card.
+import re
+gate_line_rx = re.compile(r"^\s*Gate\s*:\s*(.+)$", re.M | re.I)
+meta={}
+by_id={c.get("id"): c for c in cards}
+for cid in gate_cards:
+    c=by_id.get(cid) or {}
+    labels=",".join((l.get("name") or "").lstrip("@") for l in (c.get("labels") or []))
+    m=gate_line_rx.search(c.get("description") or "")
+    meta[cid]={"labels": labels, "gate_line": (m.group(1) if m else "")}
 out={a:plan[a] for a in eng}
 out["_gate_cards"]=gate_cards
+out["_meta"]=meta
 print(json.dumps(out))
 ' 2>/dev/null)"
 [ -z "$WORK" ] && exit 0
@@ -137,6 +150,17 @@ CARDS="$(echo "$WORK" | python3 -c 'import json,sys;print(" ".join(json.load(sys
 CHECK="$ROOT/store/gate-dispatch-check.sh"
 CACHE="$(mktemp -d)"
 trap 'rm -f "$hdr_file"; rm -rf "$CACHE"' EXIT
+# One file per candidate card, written ONCE for all four agents to read (same reasoning as the
+# comment cache just below: this loop asks 4 agents about every card, and re-deriving designation
+# per agent would just be the per-agent-fetch cost paid again for a different field).
+echo "$WORK" | python3 -c '
+import json, sys, os
+meta = json.load(sys.stdin).get("_meta", {})
+cache = sys.argv[1]
+for cid, m in meta.items():
+    with open(os.path.join(cache, cid + ".labels"), "w") as f: f.write(m.get("labels", ""))
+    with open(os.path.join(cache, cid + ".gateline"), "w") as f: f.write(m.get("gate_line", ""))
+' "$CACHE" 2>/dev/null
 GATE_WITH_WORK=""
 for a in $GATE; do
   has_work=0
@@ -147,7 +171,10 @@ for a in $GATE; do
     body="$(cat "$CACHE/$card" 2>/dev/null)"
     if [ -z "$body" ]; then has_work=1; break; fi          # unreadable -> assume work (fail open)
     if [ -x "$CHECK" ] || [ -f "$CHECK" ]; then
-      verdict="$(printf '%s' "$body" | bash "$CHECK" decide "$a" 2>/dev/null || true)"
+      gate_labels="$(cat "$CACHE/$card.labels" 2>/dev/null)"
+      gate_line="$(cat "$CACHE/$card.gateline" 2>/dev/null)"
+      verdict="$(printf '%s' "$body" \
+        | GATE_LABELS="$gate_labels" GATE_LINE="$gate_line" bash "$CHECK" decide "$a" 2>/dev/null || true)"
     else
       verdict="ALLOW"                                       # checker missing -> fail open
     fi
