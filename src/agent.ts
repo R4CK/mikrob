@@ -65,6 +65,15 @@ export function classifyAgentResult(event: {
   return { text: null, blocked: true, reason: bits.join(' ') || 'unknown error result' }
 }
 
+/** Pull the session id off an SDK 'system'/'init' message. Card bcd96d52: the SDK's
+ *  SDKSystemMessage type carries `session_id` (snake_case) in both 0.2.116 and 0.3.224 --
+ *  `sessionId` (camelCase) is real, but on a DIFFERENT, adjacent shape (the transcript
+ *  JSONL), which is almost certainly how an `as any` cast let the wrong field through
+ *  silently: newSessionId was always undefined, so resume on this path never worked. */
+export function extractInitSessionId(event: { session_id?: unknown }): string | undefined {
+  return typeof event.session_id === 'string' ? event.session_id : undefined
+}
+
 // The bundled SDK's runtime libc detection picks the linux-x64-musl variant
 // even on glibc Ubuntu/Debian/RHEL hosts, so its native binary fails to
 // spawn ("ld-musl-* not found"). We pick the right subpackage ourselves and
@@ -189,7 +198,7 @@ export async function runAgent(
 
     for await (const event of events) {
       if (event.type === 'system' && 'subtype' in event && (event as any).subtype === 'init') {
-        newSessionId = (event as any).sessionId as string
+        newSessionId = extractInitSessionId(event as any)
       }
       if (event.type === 'result') {
         const c = classifyAgentResult(event as any)
