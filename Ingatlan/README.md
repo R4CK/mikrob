@@ -73,5 +73,9 @@ napi lekérdezés NEM hoz létre új sort (ld. `db.ts` `recordSightingIfChanged`
 ## Futtatás (a blokkolók megoldása után)
 
 ```bash
-tsx Ingatlan/src/run.ts
+npm run ingatlan:run       # = tsx Ingatlan/src/run.ts
+npm run ingatlan:typecheck # = tsc -p Ingatlan --noEmit
 ```
+
+A két URL-t env változóban kell megadni (`INGATLAN_SEARCH_URL_HAZ`, `INGATLAN_SEARCH_URL_LAKAS`),
+pl. `Ingatlan/.env`-ben (gitignore-olt).
