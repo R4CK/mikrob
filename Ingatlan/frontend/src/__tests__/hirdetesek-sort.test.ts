@@ -9,11 +9,12 @@ function makeListing(id: string, overrides: Partial<Listing> = {}): Listing {
     url: '',
     tipus: 'lakas',
     ar: 50_000_000,
-    nm2_ar: null,
+    nm2_ar: 1_000_000,
     alapterulet_m2: null,
     delta_pct: null,
     median_rel: null,
     ar_history: [],
+    elso_eszlelt_at: '',
     ...overrides,
   }
 }
@@ -55,23 +56,23 @@ describe('applySort', () => {
     expect(result.map((l) => l.id)).toEqual(['c', 'a', 'b'])
   })
 
-  it('pushes null values to the end when sorting asc', () => {
+  it('pushes null alapterulet to the end when sorting asc', () => {
     const withNull = [
-      makeListing('x', { ar: 30_000_000 }),
-      makeListing('y', { ar: null as unknown as number }),
-      makeListing('z', { ar: 20_000_000 }),
+      makeListing('x', { alapterulet_m2: 80 }),
+      makeListing('y', { alapterulet_m2: null }),
+      makeListing('z', { alapterulet_m2: 60 }),
     ]
-    const result = applySort(withNull, { col: 'ar', dir: 'asc' })
+    const result = applySort(withNull, { col: 'alapterulet_m2', dir: 'asc' })
     expect(result[result.length - 1].id).toBe('y')
   })
 
-  it('pushes null values to the end when sorting desc (unknown data stays last)', () => {
+  it('pushes null alapterulet to the end when sorting desc (unknown data stays last)', () => {
     const withNull = [
-      makeListing('x', { ar: 30_000_000 }),
-      makeListing('y', { ar: null as unknown as number }),
-      makeListing('z', { ar: 20_000_000 }),
+      makeListing('x', { alapterulet_m2: 80 }),
+      makeListing('y', { alapterulet_m2: null }),
+      makeListing('z', { alapterulet_m2: 60 }),
     ]
-    const result = applySort(withNull, { col: 'ar', dir: 'desc' })
+    const result = applySort(withNull, { col: 'alapterulet_m2', dir: 'desc' })
     expect(result[result.length - 1].id).toBe('y')
   })
 

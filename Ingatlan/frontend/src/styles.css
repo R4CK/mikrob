@@ -405,6 +405,26 @@ table.listings tr.in-band {
   background: color-mix(in srgb, var(--gold) 18%, var(--surface));
   font-weight: 600;
 }
+.search-input {
+  height: 36px;
+  padding: 0 12px;
+  border-radius: 8px;
+  border: 1px solid var(--border);
+  background: var(--surface);
+  color: var(--text1);
+  font-size: 0.875rem;
+  min-width: 180px;
+  flex: 1 1 180px;
+  max-width: 280px;
+}
+.search-input:focus {
+  outline: 2px solid var(--gold);
+  outline-offset: -1px;
+}
+.search-input::placeholder {
+  color: var(--text2);
+}
+
 .csv-btn {
   margin-left: auto;
   min-height: 36px;

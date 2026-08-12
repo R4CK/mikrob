@@ -32,6 +32,12 @@ function applyFilter(listings: Listing[], filter: FilterId): Listing[] {
   return listings
 }
 
+export function applySearch(listings: Listing[], query: string): Listing[] {
+  const q = query.trim().toLowerCase()
+  if (!q) return listings
+  return listings.filter((l) => (l.cim ?? l.id).toLowerCase().includes(q))
+}
+
 export function applySort(listings: Listing[], sort: SortConfig | null): Listing[] {
   if (!sort) return listings
   const { col, dir } = sort
@@ -61,6 +67,7 @@ function SortableTh({
 export function HirdetesekView() {
   const listings = useApiData(fetchListings)
   const [filter, setFilter] = useState<FilterId>('mind')
+  const [search, setSearch] = useState('')
   const [sort, setSort] = useState<SortConfig | null>(null)
   const [selectedId, setSelectedId] = useState<string | null>(null)
 
@@ -75,9 +82,9 @@ export function HirdetesekView() {
   const filtered = useMemo(
     () =>
       listings.state.status === 'data'
-        ? applySort(applyFilter(listings.state.value, filter), sort)
+        ? applySort(applySearch(applyFilter(listings.state.value, filter), search), sort)
         : [],
-    [listings.state, filter, sort],
+    [listings.state, filter, search, sort],
   )
   const selected = listings.state.status === 'data' ? listings.state.value.find((l) => l.id === selectedId) ?? null : null
 
@@ -109,6 +116,14 @@ export function HirdetesekView() {
             </button>
           ))}
         </div>
+        <input
+          type="search"
+          className="search-input"
+          placeholder="Keresés cím alapján…"
+          value={search}
+          onChange={(e) => setSearch(e.target.value)}
+          aria-label="Hirdetések szűrése cím szerint"
+        />
         <button type="button" className="csv-btn" onClick={() => downloadCsv('hirdetesek.csv', listingsToCsv(filtered))}>
           ⬇ CSV export
         </button>
