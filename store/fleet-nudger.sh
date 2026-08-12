@@ -71,6 +71,18 @@ for cid in gate_cards:
 out={a:plan[a] for a in eng}
 out["_gate_cards"]=gate_cards
 out["_meta"]=meta
+# No-change fingerprint (card bb1751f2): (id, updated_at) for every gate-candidate card, sorted so
+# key order never causes a spurious mismatch. updated_at bumps on every new comment (db.ts
+# addKanbanComment does an explicit UPDATE ... SET updated_at on the parent card alongside the
+# INSERT), so this single value -- already in hand from THIS SAME fetch, no second request -- catches
+# BOTH a changed candidate SET (a card entered/left "waiting, not BLOKKOLT") AND a new comment/verdict
+# on an unchanged card (a card sitting still with no new comment has an unchanged updated_at). A
+# deliberately coarse signal: it cannot tell a real verdict from an unrelated edit that also touches
+# updated_at, so it only ever suppresses a resend when NOTHING recorded changed at all -- a
+# false-changed reads as "resend", never the reverse, matching the existing fail-open stance in this file.
+fp_src=sorted((c.get("id"), c.get("updated_at")) for c in cards if c.get("id") in set(gate_cards))
+import hashlib
+out["_fp"]=hashlib.sha256(repr(fp_src).encode()).hexdigest()
 print(json.dumps(out))
 ' 2>/dev/null)"
 [ -z "$WORK" ] && exit 0
@@ -185,6 +197,37 @@ done
 #
 # FAIL-OPEN, matching gate-dispatch-check.sh's own stance: if the comments cannot be read, the card
 # counts as work. A cost guard that goes quiet on an API hiccup is a fleet that silently stops gating.
+
+# NO-CHANGE PRECHECK (card bb1751f2, Cybersec msg 10933): the SAME rule-11 nudge, in full, went out
+# to the gate agents on 7 straight runs while the waiting-card list -- and every candidate card's
+# updated_at -- was provably byte-identical each time. Each send is a FULL context reload for the
+# receiving agent regardless of whether anything to act on actually changed, so a run that would
+# reach the exact same GATE-WORK conclusion as last time is pure waste. Persisted across cron
+# invocations (this script's own process never lives between runs); overridable so a selftest never
+# touches the live state file.
+NUDGER_STATE="${NUDGER_STATE_FILE:-$ROOT/store/.fleet-nudger-state.json}"
+FP="$(get "_fp")"
+LAST_FP="$(NUDGER_STATE="$NUDGER_STATE" python3 -c '
+import json, os
+try:
+    print(json.load(open(os.environ["NUDGER_STATE"])).get("gateFp", ""))
+except Exception:
+    print("")
+' 2>/dev/null)"
+if [ -n "$FP" ] && [ "$FP" = "$LAST_FP" ]; then
+  # Nothing recorded changed since the last run that HAD this exact fingerprint -- no candidate
+  # card entered/left the waiting-not-BLOKKOLT set, and none of them picked up a new comment. Short
+  # no-op: skip the per-card gate-dispatch-check.sh calls and every nudge send this run.
+  [ "$DRY_RUN" = "1" ] && echo "GATE-WORK:none (no-change precheck, fp unchanged)"
+else
+  NUDGER_STATE="$NUDGER_STATE" FP="$FP" python3 -c '
+import json, os
+try:
+    with open(os.environ["NUDGER_STATE"], "w") as f:
+        json.dump({"gateFp": os.environ["FP"]}, f)
+except Exception:
+    pass
+' 2>/dev/null
 CARDS="$(echo "$WORK" | python3 -c 'import json,sys;print(" ".join(json.load(sys.stdin).get("_gate_cards",[])))' 2>/dev/null)"
 CHECK="$ROOT/store/gate-dispatch-check.sh"
 CACHE="$(mktemp -d)"
@@ -242,4 +285,5 @@ for a in $GATE_WITH_WORK; do
   [ -n "$card_id" ] && msg="$msg KONKRET KARTYA amin meg nincs a verdikted: $card_id (ezzel kezdd, ne scannelj vegig mindent)."
   nudge "agent-$a" "$msg"
 done
+fi
 exit 0

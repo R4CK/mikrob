@@ -143,7 +143,12 @@ run_case() { # $1 = scenario, $2 = port, $3 = expected gate agents, $4 = field (
     kill "$pid" 2>/dev/null; fail=1; return
   fi
 
-  got="$(DASH="http://127.0.0.1:$port" bash "$NUDGER" --dry-run 2>/dev/null | sed -n "s/^${field}://p")"
+  # Isolated per call (card bb1751f2's no-change precheck persists a fingerprint across runs) --
+  # without this EVERY case here would default to the LIVE store/.fleet-nudger-state.json, both
+  # corrupting the real cron job's persisted state AND letting one case's fingerprint silently
+  # suppress the next case's decision (measured: identical placeholder card ids + absent
+  # updated_at across these fixtures made every case after the first look like a no-op).
+  got="$(DASH="http://127.0.0.1:$port" NUDGER_STATE_FILE="$TMP/state-$scen-$port.json" bash "$NUDGER" --dry-run 2>/dev/null | sed -n "s/^${field}://p")"
   kill "$pid" 2>/dev/null; wait "$pid" 2>/dev/null
   [ "$(echo $got)" = "none" ] && got=""
   got="$(echo $got | tr ' ' '\n' | sort | tr '\n' ' ' | sed 's/ *$//')"
@@ -173,7 +178,7 @@ echo '{"priority":["marveen-infra","cleancore"]}' > "$PRIO_FILE"
 python3 "$TMP/fakeboard.py" no-review 38817 &
 PRIO_PID=$!
 for _ in $(seq 1 40); do curl -sf -o /dev/null "http://127.0.0.1:38817/api/kanban" && break; sleep 0.25; done
-prio_out="$(DASH="http://127.0.0.1:38817" PROJECT_PRIORITY_CONFIG="$PRIO_FILE" bash "$NUDGER" --dry-run 2>/dev/null | sed -n 's/^PRIORITY-PROJECTS://p')"
+prio_out="$(DASH="http://127.0.0.1:38817" PROJECT_PRIORITY_CONFIG="$PRIO_FILE" NUDGER_STATE_FILE="$TMP/state-prio.json" bash "$NUDGER" --dry-run 2>/dev/null | sed -n 's/^PRIORITY-PROJECTS://p')"
 kill "$PRIO_PID" 2>/dev/null; wait "$PRIO_PID" 2>/dev/null
 if [ "$prio_out" = "marveen-infra, cleancore" ]; then echo "  ok   priority config read, order preserved -> '$prio_out'"
 else echo "  FAIL priority config -> got '$prio_out'"; fail=1; fi
@@ -183,9 +188,45 @@ else echo "  FAIL priority config -> got '$prio_out'"; fail=1; fi
 python3 "$TMP/fakeboard.py" no-review 38818 &
 NOPRIO_PID=$!
 for _ in $(seq 1 40); do curl -sf -o /dev/null "http://127.0.0.1:38818/api/kanban" && break; sleep 0.25; done
-noprio_out="$(DASH="http://127.0.0.1:38818" PROJECT_PRIORITY_CONFIG="$TMP/does-not-exist.json" bash "$NUDGER" --dry-run 2>/dev/null | sed -n 's/^PRIORITY-PROJECTS://p')"
+noprio_out="$(DASH="http://127.0.0.1:38818" PROJECT_PRIORITY_CONFIG="$TMP/does-not-exist.json" NUDGER_STATE_FILE="$TMP/state-noprio.json" bash "$NUDGER" --dry-run 2>/dev/null | sed -n 's/^PRIORITY-PROJECTS://p')"
 kill "$NOPRIO_PID" 2>/dev/null; wait "$NOPRIO_PID" 2>/dev/null
 if [ "$noprio_out" = "none" ]; then echo "  ok   missing config -> none (default order, unchanged wording)"
 else echo "  FAIL missing config -> got '$noprio_out'"; fail=1; fi
+
+# NO-CHANGE PRECHECK (card bb1751f2, Cybersec msg 10933): the same GATE-WORK conclusion, reached
+# twice in a row against a byte-identical board, must send the FULL nudge only the first time -- the
+# second run is a short no-op. A genuinely CHANGED board (here: switching fixtures, same effect as a
+# new comment bumping updated_at) must resend normally, proving the precheck is not a one-way switch
+# that silences the nudger forever.
+NUDGE_STATE_FILE="$TMP/nudge-state.json"
+python3 "$TMP/fakeboard.py" one-open 38819 &
+PRECHECK_PID=$!
+for _ in $(seq 1 40); do curl -sf -o /dev/null "http://127.0.0.1:38819/api/kanban" && break; sleep 0.25; done
+run1="$(DASH="http://127.0.0.1:38819" NUDGER_STATE_FILE="$NUDGE_STATE_FILE" bash "$NUDGER" --dry-run 2>/dev/null | sed -n 's/^GATE-WORK://p')"
+run2="$(DASH="http://127.0.0.1:38819" NUDGER_STATE_FILE="$NUDGE_STATE_FILE" bash "$NUDGER" --dry-run 2>/dev/null | sed -n 's/^GATE-WORK://p')"
+kill "$PRECHECK_PID" 2>/dev/null; wait "$PRECHECK_PID" 2>/dev/null
+if [ "$(echo $run1)" = "cybered" ]; then echo "  ok   no-change precheck run 1 (fresh state) -> 'cybered', full decision made"
+else echo "  FAIL no-change precheck run 1 -> got '$run1', expected 'cybered'"; fail=1; fi
+if echo "$run2" | grep -q 'no-change precheck'; then echo "  ok   no-change precheck run 2 (identical board) -> no-op, nudge NOT resent"
+else echo "  FAIL no-change precheck run 2 -> got '$run2', expected the no-op line (fingerprint should have matched)"; fail=1; fi
+
+# A genuinely different candidate SET (fixture switch to zero waiting cards -- eng-one-planned has
+# only 'planned' cards, none 'waiting') must NOT be suppressed -- the precheck compares fingerprints,
+# not "did we already run once". NOT all-answered/no-review/designated: those fixtures' single
+# waiting card also happens to be id "c1" with no updated_at field, same as one-open's -- the
+# fingerprint is over (id, updated_at) pairs, so those genuinely collide with run1/run2's state
+# (this IS the mechanism working correctly, not a test bug -- caught while writing this control).
+python3 "$TMP/fakeboard.py" eng-one-planned 38820 &
+CHANGED_PID=$!
+for _ in $(seq 1 40); do curl -sf -o /dev/null "http://127.0.0.1:38820/api/kanban" && break; sleep 0.25; done
+run3="$(DASH="http://127.0.0.1:38820" NUDGER_STATE_FILE="$NUDGE_STATE_FILE" bash "$NUDGER" --dry-run 2>/dev/null | sed -n 's/^GATE-WORK://p')"
+kill "$CHANGED_PID" 2>/dev/null; wait "$CHANGED_PID" 2>/dev/null
+# "none" (the real, computed decision -- eng-one-planned has no WAITING cards at all, let alone gate
+# work) is a DIFFERENT string than the no-change-precheck's own no-op line, even though both mean
+# "nobody gets nudged
+# this run" -- the assertion is that a REAL decision ran, not that gate agents ended up empty either way.
+if [ "$(echo $run3)" = "none" ]; then
+  echo "  ok   no-change precheck run 3 (different board) -> real decision made, not suppressed"
+else echo "  FAIL no-change precheck run 3 -> got '$run3', expected 'none' (a real, non-precheck decision)"; fail=1; fi
 
 [ $fail -eq 0 ] && { echo "selftest: PASS"; exit 0; } || { echo "selftest: FAIL"; exit 1; }
