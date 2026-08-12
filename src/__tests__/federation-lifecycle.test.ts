@@ -1,8 +1,9 @@
-import { describe, it, expect, beforeAll, beforeEach, afterAll } from 'vitest'
+import { describe, it, expect, beforeAll, beforeEach, afterAll, vi } from 'vitest'
 import { EventEmitter } from 'node:events'
 import { mkdtempSync, rmSync, writeFileSync, existsSync, readFileSync } from 'node:fs'
 import { join } from 'node:path'
 import { tmpdir } from 'node:os'
+import { PROJECT_ROOT } from '../config.js'
 import {
   initDatabase,
   createAgentMessage,
@@ -18,6 +19,26 @@ import {
   getFederationConfig,
 } from '../web/federation/config.js'
 import type { RouteContext } from '../web/routes/types.js'
+
+// Card a5b71f29: every peer/enabled/routing-mode mutation below runs through the REAL
+// tryHandleFederation, which calls ensureFederationClaudeMdSection() (federation.ts's own
+// production wiring) after each write. Nothing in this file mocked that, so every run appended
+// the live "MARVEEN-FEDERATION:POLICY" block to THIS repo's own root CLAUDE.md (and every
+// sub-agent's CLAUDE.md, via the SAME function's catalogAgentNames() loop) -- a suite testing
+// federation.json CRUD was mutating a tracked persona file as a side effect, in whatever
+// worktree it happened to run in. This file already isolates the federation CONFIG store
+// (_setFederationStoreDirForTest below); the onboarding side effect needs the same isolation,
+// and mocking it out is correct here because federation-onboarding.test.ts (not this file) is
+// what actually tests ensureFederationClaudeMdSection's rendering -- this file has never
+// asserted anything about CLAUDE.md content. vi.mock (and the vi.hoisted it references) are
+// hoisted above the imports above by vitest's transform, so the mock is registered before
+// federation.js's own import of onboarding.js runs.
+const { ensureFederationClaudeMdSectionMock } = vi.hoisted(() => ({
+  ensureFederationClaudeMdSectionMock: vi.fn(() => false),
+}))
+vi.mock('../web/federation/onboarding.js', () => ({
+  ensureFederationClaudeMdSection: () => ensureFederationClaudeMdSectionMock(),
+}))
 
 const TMP = mkdtempSync(join(tmpdir(), 'fed-lifecycle-test-'))
 const IN_TOKEN = 'a'.repeat(64)
@@ -305,5 +326,19 @@ describe('master switch + full removal', () => {
     expect(getAgentMessage(q.id)?.status).toBe('failed')
     const again = await call('POST', '/api/federation/remove')
     expect(again.json.ok).toBe(true)
+  })
+})
+
+describe('this suite does not write the repo it runs in (card a5b71f29)', () => {
+  it('a mutation reaches the mocked onboarding call (not a vacuous mock)', async () => {
+    ensureFederationClaudeMdSectionMock.mockClear()
+    writeConfigFile({ enabled: true, systemId: 'localsys', peers: [] })
+    await call('POST', '/api/federation/peers', { id: 'vacuous-check', baseUrl: 'https://x.example' })
+    expect(ensureFederationClaudeMdSectionMock).toHaveBeenCalled()
+  })
+
+  it('the real project CLAUDE.md is untouched after every mutation test above has already run', () => {
+    const claudeMdPath = join(PROJECT_ROOT, 'CLAUDE.md')
+    expect(readFileSync(claudeMdPath, 'utf-8')).not.toContain('MARVEEN-FEDERATION:POLICY')
   })
 })
