@@ -15,6 +15,15 @@ HEARTBEAT.md
 # Secrets & personal data
 .env
 store/*
+# Ingatlan (personal real-estate market tracker, Peti 2026-08-12): scraped listing
+# data, OAuth tokens/session, and DB files are personal runtime data, not source --
+# code (scraper/analysis/webapp) under Ingatlan/ stays tracked as usual.
+Ingatlan/data/
+Ingatlan/*.db
+Ingatlan/*.sqlite*
+Ingatlan/.env
+Ingatlan/.credentials/
+Ingatlan/token*
 # Operational scripts under store/ ARE version-controlled (code, not runtime data).
 # Everything else in store/ (DB, tokens, state JSON) stays ignored.
 !store/*.sh
