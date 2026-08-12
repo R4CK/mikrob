@@ -30,7 +30,7 @@
 # Output lands in <repo-path>/graphify-out/ (graphify's own default), which each repo gitignores.
 set -euo pipefail
 
-PINNED_VERSION="0.9.31"
+PINNED_VERSION="0.9.35"
 # The pipx VENV binary, addressed directly. The ~/.local/bin/graphify shim is deliberately REMOVED
 # (Cybersec NO-GO @7fdb09b): while it was on PATH, any agent could call the raw CLI and skip this
 # wrapper's allowlist + egress gate, so the card's central claim ("all access is gated") was false.
@@ -85,8 +85,14 @@ case "$CMD" in
   query)
     need_repo "${1:-}"; G="$(need_graph "$1")"
     [[ -n "${2:-}" ]] || die 4 'missing "<question>"'
+    Q="$2"
     shift 2
-    run_graphify query "$1" --graph "$G" "$@" 2>/dev/null || run_graphify query "$G" --graph "$G"
+    # Card 40b5342b (found by this card's own smoke-test, pre-existing on 0.9.31 too, unrelated to
+    # the version bump): the question was shifted away BEFORE being read back as "$1", so the
+    # minimal documented usage (`query <repo-path> "Q"`, exactly 2 args) left nothing at $1 and hit
+    # `set -u`'s unbound-variable error before graphify ever ran. $Q preserves it; "$@" still carries
+    # any EXTRA trailing args past the question, unchanged from the original intent.
+    run_graphify query "$Q" --graph "$G" "$@" 2>/dev/null || run_graphify query "$G" --graph "$G"
     ;;
   path)
     need_repo "${1:-}"; G="$(need_graph "$1")"
