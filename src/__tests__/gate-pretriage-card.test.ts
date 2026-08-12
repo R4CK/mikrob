@@ -18,8 +18,9 @@ const git = (...args: string[]): void => {
   execFileSync('git', args, { cwd: repo, stdio: 'pipe' })
 }
 
-/** Commit `files` and return the pre-triage INPUT comment body the wiring would post for that commit. */
-function commitAndBody(files: Record<string, string>): string {
+/** Commit `files` and return the pre-triage INPUT comment body the wiring would post for that commit.
+ *  `title` (optional) exercises the card-title-vs-changed-files self-check (card ce159d2b). */
+function commitAndBody(files: Record<string, string>, title?: string): string {
   for (const [rel, body] of Object.entries(files)) {
     const abs = join(repo, rel)
     mkdirSync(dirname(abs), { recursive: true })
@@ -28,10 +29,9 @@ function commitAndBody(files: Record<string, string>): string {
   git('add', '-A')
   git('commit', '-q', '-m', 'change')
   const sha = execFileSync('git', ['rev-parse', 'HEAD'], { cwd: repo, encoding: 'utf-8' }).trim()
-  return execFileSync('bash', [SCRIPT, '--repo', repo, '--sha', sha, '--dry-run'], {
-    encoding: 'utf-8',
-    stdio: 'pipe',
-  })
+  const args = [SCRIPT, '--repo', repo, '--sha', sha, '--dry-run']
+  if (title !== undefined) args.push('--title', title)
+  return execFileSync('bash', args, { encoding: 'utf-8', stdio: 'pipe' })
 }
 
 beforeEach(() => {
@@ -71,6 +71,53 @@ describe('the INPUT comment body', () => {
     const body = commitAndBody({ 'docs/notes.md': 'just docs\n' })
     expect(body).toContain('Mechanikus lelet: nincs')
     expect(body).toContain('ez NEM jelenti, hogy a kartya jo')
+  })
+})
+
+// Card ce159d2b, incident 57112049/6199f0b: a resolved commit belonging to an ENTIRELY DIFFERENT
+// card (dashboard semver display, not the secret-write-guard fix its own card described) got
+// mechanically triaged and reported with nothing flagging the mismatch. This is a NUDGE only -- it
+// never changes the resolved SHA or the exit code, it only adds a warning line for the human/gate.
+describe('the title-vs-changed-files self-check (card ce159d2b)', () => {
+  it("warns when NONE of the title's meaningful words appear in the changed files", () => {
+    const body = commitAndBody(
+      { 'web/dashboard-semver-display.js': 'export const x = 1\n' },
+      '[SEC] secret-write-guard.py finditer fix',
+    )
+    expect(body).toContain('FIGYELEM -- ONELLENORZES')
+    expect(body).toContain('ELLENORIZD KEZZEL')
+  })
+
+  it('stays quiet when the title shares a real word with the changed-files paths', () => {
+    const body = commitAndBody(
+      { 'web/dashboard-semver-display.js': 'export const x = 1\n' },
+      '[BUG] dashboard semver display broken',
+    )
+    expect(body).not.toContain('FIGYELEM')
+  })
+
+  it('no title given (offline manual use) -- the check is skipped, not a false warning', () => {
+    const body = commitAndBody({ 'web/dashboard-semver-display.js': 'export const x = 1\n' })
+    expect(body).not.toContain('FIGYELEM')
+  })
+
+  it('generic bracket-tag words alone (MikroB/INFRA/SEC/HIGH) do not count as a "match" -- they say nothing about WHAT changed', () => {
+    const body = commitAndBody(
+      { 'src/totally-unrelated.ts': 'export const y = 2\n' },
+      '[MikroB][INFRA][SEC][HIGH] generic tag-only title',
+    )
+    // "generic", "tag-only", "title" are the only non-stopword tokens and none appear in the path.
+    expect(body).toContain('FIGYELEM -- ONELLENORZES')
+  })
+
+  it('too few meaningful words in the title -- the check does not fire on noise alone', () => {
+    const body = commitAndBody(
+      { 'src/anything.ts': 'export const z = 3\n' },
+      '[MikroB][INFRA] fix',
+    )
+    // "mikrob"/"infra" are stopwords and "fix" is under the 4-char minimum -- zero survives the
+    // filter, well below the 2-word minimum, so the check does not fire on noise alone.
+    expect(body).not.toContain('FIGYELEM')
   })
 })
 

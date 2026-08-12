@@ -79,6 +79,53 @@ describe('WITHIN-COMMENT ORDER: a REVIEW front-loads its answer (card 34e7285e)'
     expect(out[0]).toBe('2222222')
   })
 
+  it('REGRESSION (real incident 57112049, card ce159d2b): a CYBERSEC GO verdict front-loads its answer too, not just a literal REVIEW', () => {
+    const out = run([
+      {
+        author: 'backend2',
+        created_at: 100,
+        content: 'REVIEW -- 57112049 @ fea51c4 (marveen, develop, pusholva)\n\nfix details.',
+      },
+      {
+        author: 'gate-pretriage',
+        created_at: 150,
+        content: 'GATE PRE-TRIAGE (mechanikus, verdict:null) @ 6199f0b\nreszletek...',
+      },
+      {
+        author: 'cybersec',
+        created_at: 200,
+        content:
+          'CYBERSEC GO -- 57112049 @ `fea51c4` (marveen, develop). A `fea51c4`-et neztem, nem a ' +
+          'pretriage altal kiirt `6199f0b`-t (koszonom a korrekciot). Kapcsolodo elozo kartya: 746ea4e4.',
+      },
+    ])
+    expect(out[0]).toBe('fea51c4')
+  })
+
+  it('REGRESSION (real incident 57112049): QA PASS also front-loads (uses the "commit X" form)', () => {
+    const out = run([
+      {
+        author: 'qa',
+        created_at: 100,
+        content:
+          'QA PASS -- 57112049, commit fea51c4 (marveen fleet repo, develop, mar HEAD-en). ' +
+          'Ugyanaz a hookot erinti mint 746ea4e4, ugyanazzal a korulzarassal ellenoriztem.',
+      },
+    ])
+    expect(out[0]).toBe('fea51c4')
+  })
+
+  it('a comment merely discussing a past verdict mid-text (not starting with it) is NOT swept into first-mention-wins', () => {
+    const out = run([
+      {
+        author: 'someone',
+        created_at: 100,
+        content: 'Followed up on the earlier CYBERSEC GO @ 1111111, real fix here: commit 2222222',
+      },
+    ])
+    expect(out[0]).toBe('2222222')
+  })
+
   it('falls back to scanning the whole history when no comment starts with REVIEW', () => {
     const out = run([{ author: 'someone', created_at: 1, content: 'still working on it, current head is ccccccc3' }])
     expect(out).toContain('ccccccc3')

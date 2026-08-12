@@ -24,6 +24,15 @@ wins, because THAT shape is where a genuine self-correction ends on the answer. 
 whose (stripped) text starts with "review" (case-insensitive) -> FIRST occurrence wins; every other
 comment -> LAST occurrence wins, as before.
 
+(3) THE "REVIEW"-ONLY CHECK MISSED THE FLEET'S OTHER FRONT-LOADED COMMENTS (card ce159d2b, incident
+57112049). QA/Cybersec/Cybered verdicts use the SAME front-loaded "<VERDICT> -- <card> @ `<sha>`"
+shape as a REVIEW (e.g. "CYBERSEC GO -- 57112049 @ `fea51c4` ... nem a pretriage altal kiirt
+`6199f0b`-t"), but is_review only matched a comment starting with the literal word "review" -- so a
+verdict comment fell through to last-mention-wins, and a card-id or unrelated sha named later in the
+verdict's own prose (here: 746ea4e4, a DIFFERENT card referenced for context) outranked the real
+subject sha named up front. Fix: FRONT_LOADED recognizes the review/QA/Cybersec/Cybered verdict
+prefixes as one class -- all front-load their answer, so all get first-mention-wins.
+
 Also removed, both incident classes:
   - THE SCRIPT'S OWN OUTPUT. The pre-triage posts a comment naming the sha it triaged; left in the
     corpus that is one more vote for a stale answer on the next run. Excluded by AUTHOR
@@ -53,10 +62,20 @@ COMMIT_PREFIXED = re.compile(r"[Cc]ommit[:\s]+([0-9a-f]{7,40})\b")
 REVIEW_PREFIXED = re.compile(r"(?:[Cc]ommit[:\s]+|@\s*`?)([0-9a-f]{7,40})\b")
 BARE_HEX = re.compile(r"\b([0-9a-f]{7,40})\b")
 
+# The fleet's front-loaded, subject-naming comment shapes -- a REVIEW is only ONE of them. QA/Cybersec/
+# Cybered verdicts use the identical "<VERDICT> -- <card> @ `<sha>`" convention (card ce159d2b,
+# incident 57112049: "CYBERSEC GO -- 57112049 @ `fea51c4` ... nem a pretriage altal kiirt `6199f0b`-t"
+# fell through to last-mention-wins because it does not start with the word "review", so the LATER,
+# unrelated-card mention outranked the real subject sha named up front). Anchored at the start (after
+# stripping) so a comment merely discussing a past verdict mid-text is not swept in.
+FRONT_LOADED = re.compile(
+    r"^(?:REVIEW|QA\s+(?:PASS|FAIL)|CYBER(?:SEC|ED)\s+(?:GO|NO-GO))\b", re.IGNORECASE
+)
+
 
 def candidates(rows, card_id="", marker=""):
-    """Yield candidate SHAs, newest comment first; within a REVIEW-prefixed comment the FIRST
-    mention wins, within any other comment the LAST mention wins."""
+    """Yield candidate SHAs, newest comment first; within a front-loaded comment (REVIEW, or a
+    QA/Cybersec/Cybered verdict) the FIRST mention wins, within any other comment the LAST wins."""
     del marker  # CLI-compat only (see module docstring) -- the exclusion below is author-only now.
     # Explicit sort; `created_at` missing sorts last (treated as oldest) rather than crashing.
     ordered = sorted(rows, key=lambda c: c.get("created_at") or 0, reverse=True)
@@ -67,7 +86,7 @@ def candidates(rows, card_id="", marker=""):
         if c.get("author") == "gate-pretriage":
             continue
         text = c.get("content") or ""
-        is_review = text.strip().upper().startswith("REVIEW")
+        is_review = FRONT_LOADED.match(text.strip()) is not None
         pref = (REVIEW_PREFIXED if is_review else COMMIT_PREFIXED).findall(text)
         weak = BARE_HEX.findall(text)
         # A REVIEW comment front-loads its answer -- first mention wins. Any other comment (a plain

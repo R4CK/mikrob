@@ -22,12 +22,13 @@ MARKER="GATE PRE-TRIAGE (mechanikus, verdict:null)"
 CLEANCORE_REPO="/mnt/h/LM_Studio_Workdir/CleanCore"
 MIKROB_REPO="/home/neon/marveen"
 
-CARD=""; REPO=""; SHA=""; DRYRUN=0
+CARD=""; REPO=""; SHA=""; DRYRUN=0; TITLE=""
 while [[ $# -gt 0 ]]; do
   case "$1" in
     --dry-run) DRYRUN=1; shift ;;
     --repo) REPO="${2:-}"; shift 2 ;;
     --sha) SHA="${2:-}"; shift 2 ;;
+    --title) TITLE="${2:-}"; shift 2 ;;
     --*) echo "gate-pretriage-card: unknown arg '$1'" >&2; exit 2 ;;
     *) CARD="$1"; shift ;;
   esac
@@ -52,22 +53,48 @@ ensure_auth_header() {
 
 # Build the INPUT comment body for repo+sha. Prints the body; returns 3 (benign skip) if the commit is
 # not present or the pre-triage cannot run. The body deliberately contains NO PASS/FAIL/GO/NO-GO word.
+# `title` (optional, may be "") drives the SELF-CHECK below -- card ce159d2b, incident 6199f0b: a
+# resolved commit belonging to an ENTIRELY DIFFERENT card (dashboard semver display) got mechanically
+# triaged and reported as if it were the card's own change, with nothing flagging that the changed-
+# files list had no relation to the card at all. This is a NUDGE for the human/gate reading the
+# comment, not a second commit-selector -- it runs AFTER selection, on whatever commit was already
+# resolved, and only ever adds a warning LINE; it never blocks or changes SHA/exit code.
 build_body() {
-  local repo="$1" sha="$2" json
+  local repo="$1" sha="$2" title="${3:-}" json
   [[ -d "$repo/.git" ]] || return 3
   git -C "$repo" cat-file -e "${sha}^{commit}" 2>/dev/null || return 3
   json="$(bash "$PRETRIAGE" --repo "$repo" --base "${sha}~1" --head "$sha" --json 2>/dev/null)" || return 3
-  MARKER="$MARKER" SHA="$sha" REPO="$repo" PT_JSON="$json" python3 <<'PY'
-import json, os
+  MARKER="$MARKER" SHA="$sha" REPO="$repo" PT_JSON="$json" TITLE="$title" python3 <<'PY'
+import json, os, re
 d = json.loads(os.environ["PT_JSON"])
 repo = os.path.basename(os.environ["REPO"].rstrip("/"))
+changed = d.get("changed_files") or []
 out = [
     f'{os.environ["MARKER"]} @ {os.environ["SHA"]}',
     "Ez NEM gate-verdikt -- a gate BEMENETE: helyben futott, determinisztikus mechanikus elso kor,",
     "hogy a QA/Cybersec ne online tokenert deritse ki ugyanezt. A gate a valos reviewt tovabbra is elvegzi.",
     "",
-    f'repo: {repo}   tsc: {d.get("tsc")}   valtozott fajlok: {d.get("changed_files")}',
+    f'repo: {repo}   tsc: {d.get("tsc")}   valtozott fajlok: {changed}',
 ]
+
+# SELF-CHECK (card ce159d2b): the title's meaningful words vs. the changed-files paths. Generic
+# bracket-tags (MikroB, INFRA, SEC, CleanCore, priority words, ...) and short/numeric tokens are
+# dropped on purpose -- they say nothing about WHAT changed and would make every title "match".
+STOPWORDS = {
+    "mikrob", "cleancore", "infra", "sec", "bug", "feat", "feature", "deploy", "peti",
+    "high", "medium", "low", "urgent", "normal", "card", "the", "and", "for", "with",
+}
+title = os.environ.get("TITLE", "")
+words = [w for w in re.findall(r"[a-zA-Z][a-zA-Z0-9-]{3,}", title.lower()) if w not in STOPWORDS]
+if len(words) >= 2 and changed:
+    haystack = " ".join(changed).lower()
+    if not any(w in haystack for w in words):
+        out.append(
+            "[FIGYELEM -- ONELLENORZES] a kartya cimenek egyetlen ertelmes szava sem jelenik meg a "
+            "valtozott fajlok listajaban -- ELLENORIZD KEZZEL, hogy a fenti commit tenyleg ehhez a "
+            f"kartyahoz tartozik-e (cim: {title!r})."
+        )
+
 fs = d.get("findings") or []
 if not fs:
     out.append("Mechanikus lelet: nincs (az olcso csapdak tisztak -- ez NEM jelenti, hogy a kartya jo).")
@@ -82,7 +109,7 @@ PY
 # ---- Offline core mode (tests / manual): --repo + --sha + --dry-run, no API. ----
 if [[ -n "$REPO" && -n "$SHA" ]]; then
   [[ $DRYRUN -eq 1 ]] || { echo "gate-pretriage-card: --repo/--sha is offline mode, requires --dry-run" >&2; exit 2; }
-  if body="$(build_body "$REPO" "$SHA")"; then printf '%s\n' "$body"; else echo "SKIP: commit $SHA not in $REPO (or pre-triage failed)"; fi
+  if body="$(build_body "$REPO" "$SHA" "$TITLE")"; then printf '%s\n' "$body"; else echo "SKIP: commit $SHA not in $REPO (or pre-triage failed)"; fi
   exit 0
 fi
 
@@ -98,6 +125,10 @@ project="$(printf '%s' "$board" | CARD="$CARD" python3 -c '
 import json, sys, os
 d = json.load(sys.stdin); rows = d if isinstance(d, list) else d.get("cards", d.get("data", []))
 print(next((c.get("project") or "" for c in rows if c.get("id") == os.environ["CARD"]), ""))' 2>/dev/null || true)"
+title="$(printf '%s' "$board" | CARD="$CARD" python3 -c '
+import json, sys, os
+d = json.load(sys.stdin); rows = d if isinstance(d, list) else d.get("cards", d.get("data", []))
+print(next((c.get("title") or "" for c in rows if c.get("id") == os.environ["CARD"]), ""))' 2>/dev/null || true)"
 
 # CANDIDATE commits from the comments, newest first (cards d7ac3470 + 34e7285e). A card id is ALSO
 # an 8-hex token, so a regex alone cannot tell a short SHA from a card id -- the disambiguation is
@@ -136,7 +167,7 @@ if [[ -n "$already_posted" ]]; then
   echo "SKIP: pre-triage for $sha already on $CARD"; exit 0
 fi
 
-body="$(build_body "$repo" "$sha")" || { echo "SKIP: pre-triage could not run for $sha"; exit 0; }
+body="$(build_body "$repo" "$sha" "$title")" || { echo "SKIP: pre-triage could not run for $sha"; exit 0; }
 if [[ $DRYRUN -eq 1 ]]; then printf '%s\n' "$body"; exit 0; fi
 
 # Post as its own author so the comment is unmistakably pre-triage INPUT, not a gate verdict.
