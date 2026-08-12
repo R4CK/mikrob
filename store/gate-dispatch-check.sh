@@ -126,15 +126,15 @@ def ts(c):
 #    ("QA PASS -- ...the REVIEW claim holds") or prose ("a te REVIEW-od utan"). A substring
 #    test re-arms on all of those, which is the fail-open direction but pure noise.
 review_rx = re.compile(r"^\s*(?:[#*>\-]*\s*)?REVIEW\b", re.M)
-reviews = [ts(c) for c in cs
-           if c.get("author") != agent and review_rx.search(c.get("content") or "")]
+review_comments = [c for c in cs
+                    if c.get("author") != agent and review_rx.search(c.get("content") or "")]
 
 # NO REVIEW AT ALL -> there is nothing submitted for this gate to answer. A waiting card without a
 # submission is parked for some other reason (a bound block, a question to MikroB), and treating it
 # as gate work is what woke four gate agents for 53 blocked cards every nudger run (card 14acfadd).
 # Checked BEFORE the verdict question on purpose: "nobody submitted anything" is a different and
 # stronger answer than "you have not commented yet".
-if not reviews:
+if not review_comments:
     print("ADVISE-SKIP:no-review"); sys.exit(0)
 
 GATE_AGENTS = ("qa", "qa2", "cybersec", "cybered")
@@ -180,7 +180,33 @@ if not mine:
     print("ALLOW:no-verdict"); sys.exit(0)
 
 last_mine = max(ts(c) for c in mine)
-last_review = max(reviews)
+last_review = max(ts(c) for c in review_comments)
+
+# SHA CHECK (card 011b3f89, real incident 25083c6f): a REVIEW that merely re-describes the SAME
+# commit the verdict already covers is not new work, no matter which comment is timestamped
+# later -- the pure timestamp comparison below produced a false ALLOW:stale-verdict on 25083c6f
+# (Cybered GO at 596f0f15, then a later REVIEW comment that re-described that SAME 596f0f15 in
+# more detail, not a new commit). Compare the short-sha(s) named in the newest REVIEW against the
+# short-sha(s) named in the newest verdict; only fall back to the timestamp rule when at least one
+# side names no sha at all (fail-open, same stance as the rest of this script).
+def extract_shas(text):
+    return {m.group(0).lower() for m in re.finditer(r"\b[0-9a-fA-F]{7,40}\b", text or "")
+            if re.search(r"[a-fA-F]", m.group(0))}
+
+def shas_overlap(a, b):
+    return any(x.startswith(y) or y.startswith(x) for x in a for y in b)
+
+newest_mine = max(mine, key=ts)
+newest_review = max(review_comments, key=ts)
+mine_shas = extract_shas(newest_mine.get("content") or "")
+review_shas = extract_shas(newest_review.get("content") or "")
+
+if mine_shas and review_shas:
+    if shas_overlap(mine_shas, review_shas):
+        print(f"ADVISE-SKIP:already-gated:{int(last_mine)}")
+    else:
+        print("ALLOW:stale-verdict")
+    sys.exit(0)
 
 if last_review > last_mine:
     print("ALLOW:stale-verdict")
@@ -260,6 +286,19 @@ for c in cards if isinstance(cards, list) else []:
     t "later peer QUOTES the word"    "ADVISE-SKIP:already-gated" cybersec <<< '[{"author":"backend","created_at":100,"content":"REVIEW"},{"author":"cybersec","created_at":200,"content":"GO"},{"author":"mikrob","created_at":300,"content":"bontsd fel, a te REVIEW-od utan nyitom a gyerekkartyat"}]'
     t "later peer SUBMITS a review"   "ALLOW:stale-verdict" cybersec <<< '[{"author":"cybersec","created_at":200,"content":"GO"},{"author":"backend","created_at":300,"content":"REVIEW -- kesz, commit abc1234"}]'
     t "submission behind a md bullet" "ALLOW:stale-verdict" cybersec <<< '[{"author":"cybersec","created_at":200,"content":"GO"},{"author":"backend","created_at":300,"content":"## REVIEW\nkesz"}]'
+    # SHA CHECK (card 011b3f89). The real 25083c6f incident: Cybered's GO named 596f0f15
+    # (comment 8825, ts 1786108474); backend's LATER REVIEW (comment 9999, ts 1786140913) just
+    # re-described that SAME commit in more detail, not a new one -- the pure timestamp rule alone
+    # would say ALLOW:stale-verdict here (last_review > last_mine), which is the false positive this
+    # card fixes.
+    t "25083c6f real incident: later REVIEW repeats the SAME sha" "ADVISE-SKIP:already-gated" cybered <<< '[{"author":"cybered","created_at":1786108474,"content":"CYBERED GO -- 25083c6f @ `596f0f15`. Es lezarom a CustodyAuthzError-vitat."},{"author":"backend","created_at":1786140913,"content":"REVIEW -- RESZLEGES TELJESITES, MikroB dontese szerint. Ag fix/error-mapping-25083c6f, 2 commit, pusholva. Az 5 lekepezes kesz (596f0f15)."}]'
+    # Contrast case: a REVIEW naming a DIFFERENT sha is genuinely new work -- must still re-arm.
+    t "a REVIEW naming a DIFFERENT sha still re-arms" "ALLOW:stale-verdict" cybered <<< '[{"author":"cybered","created_at":100,"content":"GO -- 596f0f15"},{"author":"backend","created_at":200,"content":"REVIEW -- new fix, commit a1b2c3d4"}]'
+    # Short-shas for the same commit can differ in length (7 vs 8+ hex chars) -- prefix match, not
+    # exact-string match, so this must NOT re-arm either.
+    t "same commit, different short-sha LENGTH still matches" "ADVISE-SKIP:already-gated" cybered <<< '[{"author":"cybered","created_at":100,"content":"GO -- 596f0f1"},{"author":"backend","created_at":200,"content":"REVIEW -- same fix, commit 596f0f15"}]'
+    # No sha on either side -> unchanged, falls back to the pre-existing timestamp rule (fail-open).
+    t "no sha anywhere falls back to the timestamp rule" "ALLOW:stale-verdict" cybersec <<< '[{"author":"cybersec","created_at":100,"content":"NO-GO"},{"author":"backend","created_at":200,"content":"REVIEW -- fixed, no commit mentioned"}]'
     # `decide` must be the same answer as the internal function, and must carry the exit code the
     # nudger branches on -- a subcommand that printed the right word with the wrong status would
     # make every card look like work.
