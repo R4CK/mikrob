@@ -366,7 +366,7 @@ describe('/api/messages to-authentication (card 523a1426)', () => {
     // standalone check that could also re-run on an already-validated
     // federated/rejected-colon address.
     expect(src).toMatch(
-      /storedTo\.includes\(':'\)[\s\S]{0,400}\} else if \(!isKnownAgent\(sanitizeAgentIdent\(storedTo\)\)\)/,
+      /storedTo\.includes\(':'\)[\s\S]{0,1200}\} else if \(!isKnownAgent\(sanitizeAgentIdent\(storedTo\)\)\)/,
     )
   })
 })
