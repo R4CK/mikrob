@@ -79,6 +79,12 @@ const CATEGORY_SIGNALS: ReadonlyArray<readonly [NonOffloadableCategory, readonly
       'encrypt', 'decrypt', 'signature', 'signing', 'hash', 'hmac', 'secret', 'password', 'token',
       'credential', 'csrf', 'xss', 'injection', 'sanitiz', 'escap', 'cookie', 'session', 'tls',
       'certificate', 'audit log', 'tamper', 'biztonsag', 'biztonsági', 'sebezhet', 'titok', 'jelszo',
+      // Card 7a23c045 (Cybersec): TOTP/2FA/OTP generation+verification and login rate-limiting are
+      // auth-implementation primitives that named none of the words above -- "implement TOTP
+      // generation and verification" and "add login rate-limiting" both routed LOCAL with zero
+      // matching signal, confirmed by directly probing routeTask before this fix.
+      'totp', '2fa', 'two-factor', 'one-time password', 'rate limit', 'rate-limit', 'throttl',
+      'brute force', 'brute-force', 'kétfaktoros', 'ketfaktoros',
     ],
   ],
   [
@@ -86,6 +92,11 @@ const CATEGORY_SIGNALS: ReadonlyArray<readonly [NonOffloadableCategory, readonly
     [
       'authz', 'authoriz', 'authentic', 'rbac', 'permission', 'role-', 'roles', 'acl', 'guard',
       'gate ', 'access control', 'privilege', 'superadmin', 'admin-only', 'jogosult', 'hozzafer',
+      // Card 7a23c045: "add step-up verification for high-risk admin actions" routed LOCAL --
+      // it only routed ONLINE elsewhere by accidentally co-occurring with "authentication"/
+      // "password" in the same sentence, which an adversarial (or just differently-worded) prompt
+      // would not repeat.
+      'step-up', 'step up',
     ],
   ],
   [
@@ -195,6 +206,20 @@ const SHAPE_SIGNALS: ReadonlyArray<readonly [NonOffloadableCategory, RegExp]> = 
   [
     'isolation',
     /\b(every|all|any)\b[^.]{0,40}\b(compan(?:y|ies)|organi[sz]ations?|accounts?|tenants?|crews?|customers?|clients?|records?|rows?|databases?|work\s?orders?)\b[^.]{0,40}\b(not\s+(?:just|only)|instead of|rather than)\b/,
+  ],
+  // --- BURN/single-use family (card 7a23c045) ---------------------------------------------------
+  // "burn" alone is too common a word to route on directly (burn rate, burndown, slow burn) -- but
+  // "burn" NEAR a one-time-use noun is specifically the exactly-once-redemption security property
+  // (a magic link / OTP / recovery token used twice is a replay). Both word orders, matching this
+  // file's own established mirrored-pair convention: "mark the ... code as burned" and "burn the
+  // magic link" both need to match, and so does "single-use burn semantics" (noun before verb).
+  [
+    'security-decision',
+    /\bburn(s|ed|ing)?\b[^.]{0,40}\b(token|code|link|otp|one-time|single-use|magic)\b/,
+  ],
+  [
+    'security-decision',
+    /\b(token|code|link|otp|one-time|single-use|magic)\b[^.]{0,40}\bburn(s|ed|ing)?\b/,
   ],
 ]
 

@@ -271,3 +271,51 @@ describe('REGRESSION: "companies" (irregular plural) must not bypass the "compan
     )
   })
 })
+
+describe('REGRESSION: auth-implementation primitives (TOTP/step-up/burn/login-rate-limit) must route ONLINE (card 7a23c045, Cybersec)', () => {
+  // Card 7a23c045: these four terms are named explicitly in the fleet's own local-LLM-offload
+  // exclusion policy as security-critical, but none of them was a keyword before this fix --
+  // confirmed by directly probing routeTask, all four routed LOCAL.
+  it('TOTP generation/verification routes online (no prior keyword matched "totp")', () => {
+    expect(
+      routeTask({ description: 'implement TOTP generation and verification for the login flow' })
+        .route,
+    ).toBe('online')
+  })
+
+  it('step-up, WITHOUT the word "authentication" co-occurring, still routes online', () => {
+    // Before this fix, "step-up authentication" only routed online by accident, via the unrelated
+    // "authentic" keyword already in the sentence -- this phrasing has no such lucky co-occurrence.
+    expect(
+      routeTask({ description: 'add step-up verification for high-risk admin actions' }).route,
+    ).toBe('online')
+  })
+
+  it('login rate-limiting / throttling / brute-force protection routes online', () => {
+    for (const description of [
+      'add login rate-limiting to slow down repeated failed attempts',
+      'add throttling on repeated failed login attempts',
+      'add brute-force protection on the login endpoint',
+    ]) {
+      expect(routeTask({ description }).route, description).toBe('online')
+    }
+  })
+
+  it('burn/single-use semantics route online in BOTH word orders, without the word "token"', () => {
+    // Before this fix these only routed online when "token" happened to appear too -- bare "burn"
+    // is deliberately NOT a keyword (burn rate, burndown), so the shape needs the noun nearby.
+    for (const description of [
+      'mark the one-time login code as burned after it is used',
+      'burn the magic link after first use so it cannot fire twice',
+      'implement single-use burn semantics for the recovery flow',
+    ]) {
+      expect(routeTask({ description }).route, description).toBe('online')
+    }
+  })
+
+  it('CONTROL: unrelated uses of "burn" stay local (the word alone is not the signal)', () => {
+    expect(routeTask({ description: 'update the burn rate chart on the finance dashboard' }).route).toBe(
+      'local',
+    )
+  })
+})
