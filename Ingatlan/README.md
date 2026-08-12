@@ -14,6 +14,20 @@ Csak személyes használatra. Nincs republikálás, nincs kereskedelmi felhaszn�
 `src/robots.ts`-ben respektálja a robots.txt-et (RFC 9309 szerint: leghosszabb egyező szabály nyer,
 döntetlennél Allow), és `src/http.ts`-ben minimum-időközt (rate limit) tart a kérések között.
 
+## Állapot (2/4 kártya: elemző réteg)
+
+**KÉSZ és tesztelt** (28 teszt, `src/analysis/`): grouped (ház/lakás/összevont) átlag/medián/
+min/max nm2-ár (`analysis/stats.ts`), median ±5%-os sávba eső hirdetések (ugyanott), és egy
+lineáris trend-előrejelzés (`analysis/trend.ts`) -- napi medián-sorozat REKONSTRUÁLVA a
+price_history-ból (egy hirdetés utolsó ismert ára "előre görgetve" azokra a napokra, amikor nem
+volt ár-változás, mert `recordSighting` csak változásnál ír sort), majd OLS lineáris illesztés.
+14 napnál kevesebb historikus napi mintánál `insufficient-data`-t ad vissza (a kártya explicit
+kérése: "kezdetben csak keresztmetszeti statisztikat adjon"), nem erőltet trendet zajra.
+`src/query.ts` a DB-olvasó adapter, `src/analysis/report.ts` az orchestráció (`analyzeMarket`),
+`src/analyze.ts` egy CLI (`npm run ingatlan:analyze`) ami kiírja a jelentést. Jelenleg "nincs adat"-
+ot ír minden csoportra, mert a DB üres (1/4 scraper blokkolva, ld. alább) -- ez a helyes, várt
+viselkedés, nem hiba.
+
 ## Állapot (1/4 kártya: adattároló + scraper)
 
 **KÉSZ és tesztelt** (nem függ a konkrét URL-ektől/oldal-struktúrától):

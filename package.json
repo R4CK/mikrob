@@ -17,7 +17,8 @@
     "syntax-check": "node --check web/app.js web/sw.js",
     "smoke": "playwright test --config=playwright.config.ts",
     "ingatlan:typecheck": "tsc -p Ingatlan --noEmit",
-    "ingatlan:run": "tsx Ingatlan/src/run.ts"
+    "ingatlan:run": "tsx Ingatlan/src/run.ts",
+    "ingatlan:analyze": "tsx Ingatlan/src/analyze.ts"
   },
   "engines": {
     "node": ">=20 <24"
