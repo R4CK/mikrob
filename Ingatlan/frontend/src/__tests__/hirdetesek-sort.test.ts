@@ -65,14 +65,14 @@ describe('applySort', () => {
     expect(result[result.length - 1].id).toBe('y')
   })
 
-  it('pushes null values to the start when sorting desc', () => {
+  it('pushes null values to the end when sorting desc (unknown data stays last)', () => {
     const withNull = [
       makeListing('x', { ar: 30_000_000 }),
       makeListing('y', { ar: null as unknown as number }),
       makeListing('z', { ar: 20_000_000 }),
     ]
     const result = applySort(withNull, { col: 'ar', dir: 'desc' })
-    expect(result[0].id).toBe('y')
+    expect(result[result.length - 1].id).toBe('y')
   })
 
   it('does not mutate the input array', () => {
