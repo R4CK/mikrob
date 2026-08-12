@@ -268,3 +268,74 @@ describe('noise that must not become a candidate', () => {
     expect(out.trim()).toBe('')
   })
 })
+
+describe('the fleet\'s OTHER completion markers front-load too, not just REVIEW/verdicts (card 2dd93b53, Cybered)', () => {
+  it('REGRESSION (the real comment text, card ac7d5530): a KÉSZ close now uses first-mention-wins, not last', () => {
+    // Verbatim (the real observed content), which has NO "commit "/"@ " prefix anywhere -- both
+    // 871dfcff and 481b61cf are bare hex. This test is honest about what the fix actually changes:
+    // it does NOT resolve WHICH bare hex is the semantically right one (that is the separate,
+    // acknowledged bare-hex-fallback weakness this same card names but does not ask this fix to
+    // solve) -- it only changes the ORDER a KÉSZ-prefixed comment is read in. Before this fix, KÉSZ
+    // matched no prefix, so the comment fell through to last-mention-wins and ranked 11d3e76a (a
+    // card id mentioned only in passing, "Fix (481b61cf/11d3e76a)") FIRST -- the worst of the three.
+    // After this fix, KÉSZ front-loads, so first-mention-wins ranks 871dfcff first -- at least a
+    // real, actually-deployed commit, even though it is not the ideal target either.
+    const out = run([
+      {
+        author: 'teszter',
+        created_at: 100,
+        content:
+          'KÉSZ: 6 US story API-szinten verifikálva a post-deploy (871dfcff) szerveren. ' +
+          'Fix (481b61cf/11d3e76a) él: minimális body most 400, nem 500.',
+      },
+    ])
+    expect(out[0]).toBe('871dfcff')
+    expect(out).toEqual(['871dfcff', '481b61cf', '11d3e76a'])
+  })
+
+  // The next four tests all use TWO bare-hex mentions (no "commit "/"@ " prefix) so that
+  // front-loaded (first-mention-wins) and non-front-loaded (last-mention-wins) genuinely disagree
+  // on the answer -- a single prefixed mention would pass either way and prove nothing about
+  // WHICH ordering rule actually ran (a real mistake in an earlier draft of these tests, caught by
+  // mutation-testing them: they stayed green even with the marker recognition reverted).
+  it('the unaccented spelling (KESZ) is recognised too -- not every agent types the accent', () => {
+    const out = run([{ created_at: 100, content: 'KESZ: 1111111, kapcsolodo: 2222222' }])
+    expect(out[0]).toBe('1111111')
+  })
+
+  it('DONE front-loads', () => {
+    const out = run([{ created_at: 100, content: 'DONE: 1111111, see also 2222222' }])
+    expect(out[0]).toBe('1111111')
+  })
+
+  it('ELKÉSZÜLT (accented) and the unaccented ELKESZULT both front-load', () => {
+    for (const marker of ['ELKÉSZÜLT', 'ELKESZULT']) {
+      const out = run([{ created_at: 100, content: `${marker}: 1111111, lasd 2222222` }])
+      expect(out[0]).toBe('1111111')
+    }
+  })
+
+  it('the BEFEJEZ- stem front-loads regardless of its Hungarian ending', () => {
+    for (const word of ['BEFEJEZVE', 'BEFEJEZTEM', 'BEFEJEZTÜK']) {
+      const out = run([{ created_at: 100, content: `${word}: 1111111, kontextus 2222222` }])
+      expect(out[0]).toBe('1111111')
+    }
+  })
+
+  it('CONTROL: a comment merely mentioning "befejez..." mid-text (not starting with it) still uses last-mention-wins', () => {
+    const out = run([
+      { created_at: 100, content: 'a korabbi befejezesre hivatkozva, javitva: 1111111, majd 2222222' },
+    ])
+    expect(out[0]).toBe('2222222')
+  })
+
+  it('CONTROL: an unrelated word starting with "kesz" but not the marker itself is not swept in oddly -- checked against a realistic sentence', () => {
+    // "készen" ("ready") is a real Hungarian word starting with the same letters as KÉSZ. The regex
+    // requires a WORD BOUNDARY right after the marker, so "KÉSZEN" (one word) must NOT match -- only
+    // the bare marker (optionally followed by punctuation/whitespace) counts.
+    const out = run([
+      { created_at: 100, content: 'készen áll a build, de meg nem indult: 1111111, majd 2222222' },
+    ])
+    expect(out[0]).toBe('2222222') // last-mention-wins path, same as any ordinary comment
+  })
+})

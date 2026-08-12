@@ -33,6 +33,17 @@ verdict's own prose (here: 746ea4e4, a DIFFERENT card referenced for context) ou
 subject sha named up front. Fix: FRONT_LOADED recognizes the review/QA/Cybersec/Cybered verdict
 prefixes as one class -- all front-load their answer, so all get first-mention-wins.
 
+(4) THE CONVENTION ITSELF IS NOT UNIVERSAL (card 2dd93b53, Cybered). REVIEW is this fleet's
+convention, but not every engineering agent uses that exact word: card ac7d5530's own REVIEW-
+equivalent close was "KÉSZ: 6 US story API-szinten verifikálva ..." -- a real, observed comment, not
+a hypothetical -- which FRONT_LOADED (REVIEW-only at the time) missed entirely, falling through to
+last-mention-wins and nearly picking an unrelated commit named later in that same comment. Widened to
+recognize the fleet's other completion markers as the SAME front-loaded class: KÉSZ/KESZ (accented or
+not -- both are seen in the wild), DONE, ELKÉSZÜLT/ELKESZULT, and the BEFEJEZ- stem (BEFEJEZVE,
+BEFEJEZTEM, ...). This is a robustness net, not a license to skip the convention: agents should still
+use REVIEW so a human scanning the board sees one consistent word; this only means the TOOLING no
+longer silently mis-triages a card when someone doesn't.
+
 Also removed, both incident classes:
   - THE SCRIPT'S OWN OUTPUT. The pre-triage posts a comment naming the sha it triaged; left in the
     corpus that is one more vote for a stale answer on the next run. Excluded by AUTHOR
@@ -68,8 +79,16 @@ BARE_HEX = re.compile(r"\b([0-9a-f]{7,40})\b")
 # fell through to last-mention-wins because it does not start with the word "review", so the LATER,
 # unrelated-card mention outranked the real subject sha named up front). Anchored at the start (after
 # stripping) so a comment merely discussing a past verdict mid-text is not swept in.
+#
+# ALSO the fleet's OTHER completion markers (card 2dd93b53, Cybered), not just REVIEW: KÉSZ/KESZ (an
+# observed real close, card ac7d5530 -- "KÉSZ: 6 US story API-szinten verifikálva ..."), DONE,
+# ELKÉSZÜLT/ELKESZULT, and the BEFEJEZ- stem (BEFEJEZVE, BEFEJEZTEM, ...). Same reasoning as the
+# verdict class above: whichever word an agent's completion comment actually starts with, that
+# comment front-loads its answer, so first-mention-wins applies the same way.
 FRONT_LOADED = re.compile(
-    r"^(?:REVIEW|QA\s+(?:PASS|FAIL)|CYBER(?:SEC|ED)\s+(?:GO|NO-GO))\b", re.IGNORECASE
+    r"^(?:REVIEW|QA\s+(?:PASS|FAIL)|CYBER(?:SEC|ED)\s+(?:GO|NO-GO)|"
+    r"K[ÉE]SZ|DONE|ELK[ÉE]SZ[ÜU]LT|BEFEJEZ\w*)\b",
+    re.IGNORECASE,
 )
 
 
