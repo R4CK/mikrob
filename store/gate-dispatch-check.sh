@@ -215,6 +215,40 @@ else:
 '
 }
 
+# Extracts a card's own kanban labels, comma-joined, from a bulk /api/kanban JSON array on stdin.
+# Kept as its own function (mirroring _decide) so selftest can exercise the SAME code the live
+# `check` path uses.
+_extract_gate_labels() { # $1 = cardId, stdin = /api/kanban JSON array
+  CID="$1" python3 -c '
+import json, os, sys
+try: cards = json.load(sys.stdin)
+except Exception: sys.exit(0)
+for c in cards if isinstance(cards, list) else []:
+    if c.get("id") == os.environ["CID"]:
+        print(",".join(l.get("name", "").lstrip("@") for l in (c.get("labels") or [])))
+        break
+'
+}
+
+# Extracts a card's free-text "Gate: ..." line from its description, from the SAME bulk JSON.
+# findall() + the LAST match, not search()'s first: a description can carry more than one
+# "Gate: ..." line (an earlier tier decision superseded by a later one, appended rather than
+# edited in place -- card 84fd2839, Cybered's finding on 5bc10089). The newest line is the live
+# decision; taking the first would let a stale, since-overridden Gate: line keep winning forever.
+_extract_gate_line() { # $1 = cardId, stdin = /api/kanban JSON array
+  CID="$1" python3 -c '
+import json, os, re, sys
+try: cards = json.load(sys.stdin)
+except Exception: sys.exit(0)
+rx = re.compile(r"^\s*Gate\s*:\s*(.+)$", re.M | re.I)
+for c in cards if isinstance(cards, list) else []:
+    if c.get("id") == os.environ["CID"]:
+        matches = rx.findall(c.get("description") or "")
+        if matches: print(matches[-1])
+        break
+'
+}
+
 case "${1:-}" in
   check)
     CARD="${2:-}"; AGENT="${3:-}"
@@ -227,26 +261,8 @@ case "${1:-}" in
     # this. Best-effort: any failure here just leaves GATE_LABELS/GATE_LINE unset (fail OPEN,
     # matching this whole script's stance -- a lookup failure must widen dispatch, never narrow it).
     CARD_JSON="$(_curl_get "/api/kanban" || true)"
-    GATE_LABELS="$(CID="$CARD" python3 -c '
-import json, os, sys
-try: cards = json.load(sys.stdin)
-except Exception: sys.exit(0)
-for c in cards if isinstance(cards, list) else []:
-    if c.get("id") == os.environ["CID"]:
-        print(",".join(l.get("name", "").lstrip("@") for l in (c.get("labels") or [])))
-        break
-' <<< "$CARD_JSON" 2>/dev/null || true)"
-    GATE_LINE="$(CID="$CARD" python3 -c '
-import json, os, re, sys
-try: cards = json.load(sys.stdin)
-except Exception: sys.exit(0)
-rx = re.compile(r"^\s*Gate\s*:\s*(.+)$", re.M | re.I)
-for c in cards if isinstance(cards, list) else []:
-    if c.get("id") == os.environ["CID"]:
-        m = rx.search(c.get("description") or "")
-        if m: print(m.group(1))
-        break
-' <<< "$CARD_JSON" 2>/dev/null || true)"
+    GATE_LABELS="$(_extract_gate_labels "$CARD" <<< "$CARD_JSON" 2>/dev/null || true)"
+    GATE_LINE="$(_extract_gate_line "$CARD" <<< "$CARD_JSON" 2>/dev/null || true)"
     verdict="$(printf '%s' "$body" | GATE_LABELS="$GATE_LABELS" GATE_LINE="$GATE_LINE" _decide "$AGENT" || echo ALLOW)"
     echo "$verdict"
     [[ "$verdict" == ADVISE-SKIP:* ]] && exit 8 || exit 0
@@ -354,6 +370,22 @@ for c in cards if isinstance(cards, list) else []:
     dd "designation: a QA2-only label also designates qa"      "ALLOW:no-verdict"      0 qa "qa2" ""
     # Unrecognized free text (no gate keyword at all) must not accidentally exclude everyone.
     dd "designation: unparseable gate-line -> no exclusion"    "ALLOW:no-verdict"      0 cybered "" "see the linked design doc"
+
+    # GATE_LINE EXTRACTION (card 84fd2839, Cybered's finding on 5bc10089): a description can carry
+    # MORE THAN ONE "Gate: ..." line -- an earlier tier decision superseded by a later one, appended
+    # rather than edited in place. _extract_gate_line must return the LAST one, not the first. These
+    # exercise the SAME function `check` calls against a real /api/kanban array, not a re-implementation.
+    e() { # $1=label $2=expected-output $3=cardId, stdin=cards JSON array
+      local got
+      got="$(_extract_gate_line "$3")"
+      if [[ "$got" == "$2" ]]; then echo "  ok   $1 -> '$got'"
+      else echo "  FAIL $1 -> got '$got', expected '$2'"; fail=1; fi
+    }
+    e "single Gate: line -> that line" "QA + Cybersec" c1 <<< '[{"id":"c1","description":"intro text\nGate: QA + Cybersec\nmore text"}]'
+    e "two Gate: lines -> the LAST (newest), not the first" "QA + Cybersec + Cybered (current)" c1 <<< '[{"id":"c1","description":"Gate: QA only\n\nFRISSITVE (MikroB): a scope bovult.\nGate: QA + Cybersec + Cybered (current)"}]'
+    e "no Gate: line at all -> empty" "" c1 <<< '[{"id":"c1","description":"no gate line here"}]'
+    e "card id not found in the array -> empty" "" c2 <<< '[{"id":"c1","description":"Gate: QA"}]'
+    e "case-insensitive and indented Gate: line" "Cybered" c1 <<< '[{"id":"c1","description":"  gate:   Cybered"}]'
 
     [[ $fail -eq 0 ]] && { echo "selftest: PASS"; exit 0; } || { echo "selftest: FAIL"; exit 1; }
     ;;
