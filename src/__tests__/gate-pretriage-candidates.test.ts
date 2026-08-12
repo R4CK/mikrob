@@ -269,6 +269,52 @@ describe('noise that must not become a candidate', () => {
   })
 })
 
+describe('EXPLICIT LABEL ALWAYS WINS, even inside a front-loaded comment (card d9a57239)', () => {
+  it('REGRESSION (real incident 011b3f89): an explicit "Commit: X" trailer beats an EARLIER, merely-contextual "@ <sha>"', () => {
+    // Verbatim shape from the actual comment: a REVIEW quotes an old incident's example sha
+    // ("cybered GO @596f0f15") while explaining a fix, then states the REAL commit at the end.
+    const out = run([
+      {
+        author: 'fullstack',
+        created_at: 100,
+        content:
+          'REVIEW: kesz. Piros->zoldon bizonyitva: git stash-eltem a fixem, kozvetlenul lefuttattam ' +
+          'a 25083c6f valos fixture-t (cybered GO @596f0f15, kesobbi backend REVIEW ami csak ' +
+          'reszletezi ugyanazt a 596f0f15-ot) a REGI kodon -> ALLOW:stale-verdict. Osszesen 33/33 ' +
+          'selftest zold. Commit: 26ea788.',
+      },
+    ])
+    expect(out[0]).toBe('26ea788')
+  })
+
+  it('REGRESSION (real incident 3f6bcc41): a "Commitok:" (plural) multi-commit trailer picks the LAST commit, not the first', () => {
+    const out = run([
+      {
+        author: 'fullstack',
+        created_at: 100,
+        content:
+          'REVIEW: kesz, 108/108 zold teszt. Commitok: bbbed68/f9b0976/99d98e4/4bee60f/7847afe/762cd8a/6d12b81/5467c0f.',
+      },
+    ])
+    expect(out[0]).toBe('5467c0f')
+  })
+
+  it('a bare "Commit: X" (singular) inside a REVIEW still beats an earlier @-mention, minimal synthetic case', () => {
+    const out = run([{ created_at: 100, content: 'REVIEW -- @ 1111111 (context only). Commit: 2222222.' }])
+    expect(out[0]).toBe('2222222')
+  })
+
+  it('a "Commitok:" list works the same in a PLAIN (non-front-loaded) follow-up comment', () => {
+    const out = run([{ created_at: 100, content: 'Javitva, commitok: aaaaaaa/bbbbbbb/ccccccc.' }])
+    expect(out[0]).toBe('ccccccc')
+  })
+
+  it('with NO explicit label present, the existing @-mention/bare-hex tiers behave exactly as before', () => {
+    const out = run([{ created_at: 100, content: 'REVIEW -- kesz, konyv 1111111-rol, @ 2222222' }])
+    expect(out[0]).toBe('2222222')
+  })
+})
+
 describe('the fleet\'s OTHER completion markers front-load too, not just REVIEW/verdicts (card 2dd93b53, Cybered)', () => {
   it('REGRESSION (the real comment text, card ac7d5530): a KÉSZ close now uses first-mention-wins, not last', () => {
     // Verbatim (the real observed content), which has NO "commit "/"@ " prefix anywhere -- both
