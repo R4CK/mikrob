@@ -207,19 +207,25 @@ const SHAPE_SIGNALS: ReadonlyArray<readonly [NonOffloadableCategory, RegExp]> = 
     'isolation',
     /\b(every|all|any)\b[^.]{0,40}\b(compan(?:y|ies)|organi[sz]ations?|accounts?|tenants?|crews?|customers?|clients?|records?|rows?|databases?|work\s?orders?)\b[^.]{0,40}\b(not\s+(?:just|only)|instead of|rather than)\b/,
   ],
-  // --- BURN/single-use family (card 7a23c045) ---------------------------------------------------
+  // --- BURN/single-use family (card 7a23c045, plural fix: card b215ca62, Cybersec follow-up) -----
   // "burn" alone is too common a word to route on directly (burn rate, burndown, slow burn) -- but
   // "burn" NEAR a one-time-use noun is specifically the exactly-once-redemption security property
   // (a magic link / OTP / recovery token used twice is a replay). Both word orders, matching this
   // file's own established mirrored-pair convention: "mark the ... code as burned" and "burn the
   // magic link" both need to match, and so does "single-use burn semantics" (noun before verb).
+  //
+  // (token|code|link|otp)? MUST accept the plural too -- \b requires an exact word match, so
+  // "burn the magic LINKS"/"the OTPS get burned"/"mark the login CODES as burned" all silently fell
+  // through to local (security-critical) until this fix. "token" alone happened to be masked from
+  // this specific gap because it is ALSO a separate substring keyword in CATEGORY_SIGNALS above
+  // (matches "tokens" as a substring of "token" regardless), but code/link/otp had no such backup.
   [
     'security-decision',
-    /\bburn(s|ed|ing)?\b[^.]{0,40}\b(token|code|link|otp|one-time|single-use|magic)\b/,
+    /\bburn(s|ed|ing)?\b[^.]{0,40}\b(tokens?|codes?|links?|otps?|one-time|single-use|magic)\b/,
   ],
   [
     'security-decision',
-    /\b(token|code|link|otp|one-time|single-use|magic)\b[^.]{0,40}\bburn(s|ed|ing)?\b/,
+    /\b(tokens?|codes?|links?|otps?|one-time|single-use|magic)\b[^.]{0,40}\bburn(s|ed|ing)?\b/,
   ],
 ]
 

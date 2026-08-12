@@ -319,6 +319,34 @@ describe('REGRESSION: auth-implementation primitives (TOTP/step-up/burn/login-ra
       'local',
     )
   })
+
+  it('REGRESSION (card b215ca62, Cybersec follow-up on 7a23c045): the burn-shape noun must match its PLURAL too', () => {
+    // The card's own three examples (isolated from a co-occurring singular keyword that would
+    // otherwise mask the gap -- e.g. "one-time"/"magic" alongside a plural noun): before this fix
+    // \b(...|code|link|otp|...)\b required an EXACT word match, so "codes"/"links"/"otps" alone
+    // (no other keyword nearby) silently fell through to local despite being security-critical.
+    for (const description of [
+      'mark the login codes as burned',
+      'burn the shared links after use',
+      'the otps get burned after redemption',
+    ]) {
+      expect(routeTask({ description }).route, description).toBe('online')
+    }
+  })
+
+  it("the card's own three example sentences also route online (plural noun PLUS an incidental singular keyword)", () => {
+    for (const description of [
+      'mark the one-time login codes as burned',
+      'burn the magic links after first use',
+      'the otps get burned after redemption',
+    ]) {
+      expect(routeTask({ description }).route, description).toBe('online')
+    }
+  })
+
+  it('CONTROL: "token" was already protected before this fix (a separate substring keyword), still online', () => {
+    expect(routeTask({ description: 'burn the tokens after use' }).route).toBe('online')
+  })
 })
 
 describe('stripGateLine (card 14a73ce6, measured false-positive: card 543d62ff)', () => {
