@@ -43,3 +43,13 @@ export interface Listing {
   ar_history: ListingArHistoryPoint[]
   elso_eszlelt_at: string
 }
+
+export interface IngestLogEntry {
+  ran_at: string
+  ok: boolean
+  new_listings: number
+  price_changes: number
+  rejected_count: number
+  error: string | null
+}
+

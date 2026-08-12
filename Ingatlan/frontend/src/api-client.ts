@@ -1,4 +1,4 @@
-import type { MarketSummary, TrendPoint, Listing } from './types.js'
+import type { MarketSummary, TrendPoint, Listing, IngestLogEntry } from './types.js'
 
 export class ApiError extends Error {
   constructor(
@@ -26,3 +26,4 @@ async function getJson<T>(path: string): Promise<T> {
 export const fetchMarketSummary = (): Promise<MarketSummary> => getJson<MarketSummary>('/api/market-summary')
 export const fetchTrend = (): Promise<TrendPoint[]> => getJson<TrendPoint[]>('/api/trend')
 export const fetchListings = (): Promise<Listing[]> => getJson<Listing[]>('/api/listings')
+export const fetchIngestLog = (): Promise<IngestLogEntry[]> => getJson<IngestLogEntry[]>('/api/ingest-log')

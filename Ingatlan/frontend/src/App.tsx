@@ -3,6 +3,8 @@ import './styles.css'
 import { TopBar } from './components/TopBar.js'
 import { Nav, type ViewId } from './components/Nav.js'
 import { PiacView } from './components/PiacView.js'
+import { HirdetesekView } from './components/HirdetesekView.js'
+import { NaploView } from './components/NaploView.js'
 import { useApiData } from './hooks/useApiData.js'
 import { fetchMarketSummary } from './api-client.js'
 
@@ -19,17 +21,6 @@ function usePersistedTheme(): [ 'light' | 'dark', () => void ] {
   }, [theme])
   const toggle = () => setTheme((t) => (t === 'dark' ? 'light' : 'dark'))
   return [theme, toggle]
-}
-
-// Hirdetések and Napló (card 1f51f050) are not built yet -- a clearly-labelled placeholder, not
-// a silently broken tab, keeps the shell honest about what is and isn't wired.
-function ComingSoon({ label }: { label: string }) {
-  return (
-    <div className="state-panel">
-      <span style={{ fontSize: '2rem' }}>🚧</span>
-      <p>{label} nézet hamarosan (kártya 1f51f050)</p>
-    </div>
-  )
 }
 
 export function App() {
@@ -53,8 +44,8 @@ export function App() {
       />
       <main className="content">
         {view === 'piac' && <PiacView onViewAllListings={() => setView('hirdetesek')} />}
-        {view === 'hirdetesek' && <ComingSoon label="Hirdetések" />}
-        {view === 'naplo' && <ComingSoon label="Napló" />}
+        {view === 'hirdetesek' && <HirdetesekView />}
+        {view === 'naplo' && <NaploView />}
       </main>
     </div>
   )
