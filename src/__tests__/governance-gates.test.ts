@@ -579,3 +579,58 @@ describe('self-pace-gate: quoted prose cannot fake a command position', () => {
     expect(selfPaceDecision('Bash', { command: 'cat <<PY\n$(crontab -r)\nPY' }).deny).toBe(true)
   })
 })
+
+// --- scheduler binaries hidden in a heredoc body (card 46c4ad4a, Cybered's finding on 4638c14c) ---
+//
+// maskInertLiterals blanks every heredoc body BY DESIGN before the anchored SCHEDULER_RX check
+// ever sees it (that check exists to stop a QUOTED-PROSE fake command position, not to read
+// heredoc contents). So crontab/launchctl/at/systemd-run/batch hidden in a heredoc body -- the
+// exact vector this gate exists to catch for tmux (its own founding incident) -- were invisible
+// to BOTH the anchored check (masked away) and the unanchored one (the scheduler group was never
+// added there, only tmux/nohup/loop). extractHeredocBodies + a per-line unanchored scan closes
+// this without reopening the quote-fakery class: two regressions were measured and fixed while
+// building it (see the code comments at the call site) -- a bare `echo 'foo | crontab | bar'`
+// argument, and a heredoc body containing a QUOTED prose sentence with the same shape.
+describe('self-pace-gate: scheduler binaries hidden in a heredoc BODY (card 46c4ad4a)', () => {
+  it('denies crontab -r hidden in a bash heredoc body', () => {
+    expect(selfPaceDecision('Bash', { command: `bash <<${Q}TAG${Q}\ncrontab -r\nTAG` }).deny).toBe(true)
+  })
+  it('denies systemd-run hidden in a bash heredoc body', () => {
+    expect(selfPaceDecision('Bash', { command: `bash <<${Q}TAG${Q}\nsystemd-run --user echo hi\nTAG` }).deny).toBe(true)
+  })
+  it('denies launchctl bootstrap hidden in a bash heredoc body', () => {
+    expect(selfPaceDecision('Bash', { command: `bash <<${Q}TAG${Q}\nlaunchctl bootstrap gui/501 x.plist\nTAG` }).deny).toBe(true)
+  })
+  it('denies "at now" hidden in a bash heredoc body', () => {
+    expect(selfPaceDecision('Bash', { command: `bash <<${Q}TAG${Q}\nat now\nTAG` }).deny).toBe(true)
+  })
+  it('REGRESSION (Cybered\'s own adversarial example): a python list-literal subprocess.run(["crontab","-r"]) is still denied', () => {
+    expect(selfPaceDecision('Bash', {
+      command: heredoc(`import subprocess\nsubprocess.run([${Q}crontab${Q},${Q}-r${Q}])`),
+    }).deny).toBe(true)
+  })
+  it('a multi-command heredoc LINE is still caught (trailing content after the real invocation)', () => {
+    expect(selfPaceDecision('Bash', { command: `bash <<${Q}TAG${Q}\ncrontab -r; echo done\nTAG` }).deny).toBe(true)
+  })
+  it('allows a pure read-listing (crontab -l) hidden in a heredoc body', () => {
+    expect(selfPaceDecision('Bash', { command: `bash <<${Q}TAG${Q}\ncrontab -l\nTAG` }).deny).toBe(false)
+  })
+  it('allows ordinary, non-scheduler heredoc content', () => {
+    expect(selfPaceDecision('Bash', { command: `bash <<${Q}TAG${Q}\nnpm test\nTAG` }).deny).toBe(false)
+  })
+
+  // --- both regressions measured and fixed while building this, pinned so they cannot return ---
+  it('REGRESSION GUARD 1: a single quoted argument naming crontab (no heredoc at all) is still allowed', () => {
+    // `splitSegments` is not quote-aware and splits on a bare `|` -- this is the SAME
+    // 2026-08-05 finding (PATTERN/BAR above), re-checked here because the first draft of this
+    // fix applied the new scheduler scan to every naive top-level segment and regressed exactly
+    // this case (a single quoted echo argument, pipe-split into a bare `crontab` segment).
+    expect(selfPaceDecision('Bash', { command: `echo ${Q}foo ${BAR} crontab ${BAR} bar${Q}` }).deny).toBe(false)
+  })
+  it('REGRESSION GUARD 2: a heredoc body containing the SAME quoted-prose pattern is still allowed', () => {
+    // A second, deeper instance of the same class: the measured PATTERN (real incident text)
+    // placed INSIDE a heredoc body as a quoted python string. The first fix for this card split
+    // heredoc bodies with splitSegments too, which re-faked a boundary around "launchctl" here.
+    expect(selfPaceDecision('Bash', { command: heredoc(`t = "${PATTERN}"`) }).deny).toBe(false)
+  })
+})
