@@ -4,7 +4,7 @@
 caller resolves each against git and takes the first that is a real commit -- a card id is also an
 8-hex token, so only git can tell a short SHA from a card id.
 
-TWO REAL INCIDENT CLASSES, both fixed here:
+SEVERAL REAL INCIDENT CLASSES, all fixed here:
 
 (1) RECENCY BEATS WORDING (card d7ac3470, incidents 63e2069c/45331a93/2124e347). The original inline
 version collected every `commit <sha>` mention across ALL comments into one list, every bare hex into
@@ -44,6 +44,20 @@ BEFEJEZTEM, ...). This is a robustness net, not a license to skip the convention
 use REVIEW so a human scanning the board sees one consistent word; this only means the TOOLING no
 longer silently mis-triages a card when someone doesn't.
 
+(5) AN EXPLICIT LABEL LOST TO A WEAKER MENTION, TWICE IN ONE EVENING (card d9a57239). Front-loaded
+comments (tier: is_review) used to treat "commit X" and "@ X" as EQUALLY strong, breaking ties by
+TEXT POSITION -- so an early, merely-contextual "@ <sha>" (e.g. quoting a past incident's example
+sha while explaining a fix) outranked a later, deliberate "Commit: X" trailer (011b3f89: quoted
+"cybered GO @596f0f15" from the 25083c6f incident write-up beat the real "Commit: 26ea788").
+SEPARATELY, this fleet's own "Commitok: a/b/c." multi-commit trailer (plural, listing several
+commits chronologically) never matched the singular-only commit-colon-or-space pattern at all --
+"commit" immediately followed by "ok:" is not ":"/whitespace -- so it fell all the way to the
+bare-hex tier and picked the FIRST (oldest) commit in the list instead of the last (3f6bcc41:
+"Commitok: bbbed68/.../5467c0f." picked bbbed68, the very first WIP commit, not the final one).
+Fixed with EXPLICIT_LABEL (tier 1, singular+plural, list-aware -- takes the LAST sha within each
+occurrence's own list) that ALWAYS outranks AT_MENTION (tier 2, front-loaded only) and BARE_HEX
+(tier 3), regardless of front-loaded status or text position.
+
 Also removed, both incident classes:
   - THE SCRIPT'S OWN OUTPUT. The pre-triage posts a comment naming the sha it triaged; left in the
     corpus that is one more vote for a stale answer on the next run. Excluded by AUTHOR
@@ -59,18 +73,41 @@ import os
 import re
 import sys
 
-# `commit <sha>` (the REVIEW/JAVITVA convention) is a strong, prefixed mention everywhere. `@ <sha>` /
-# `@ `<sha>`` (the "REVIEW -- card @ sha" convention this fleet also uses) is ALSO strong, but ONLY
-# inside a REVIEW-prefixed comment -- the pre-triage tool's OWN marker line has the same "@ <sha>"
-# shape ("GATE PRE-TRIAGE (...) @ <sha>"), so trusting "@" as strong everywhere lets a REAL comment
-# that quotes the marker (to correct/respond to it, the fleet's own convention) have the quoted, stale
-# sha outrank its own later, genuine fix mention -- the same class of bug the author-exclusion above
-# exists to close, via a different trigger. Measured with a mutation control (someone-else quotes the
-# marker, then states the real fix): without this restriction the quoted "@ <sha>" wins; with it, the
-# comment is not REVIEW-prefixed so only "commit " counts as strong there, and last-mention-wins
-# correctly picks the real, later fix.
-COMMIT_PREFIXED = re.compile(r"[Cc]ommit[:\s]+([0-9a-f]{7,40})\b")
-REVIEW_PREFIXED = re.compile(r"(?:[Cc]ommit[:\s]+|@\s*`?)([0-9a-f]{7,40})\b")
+# THREE tiers, strongest first, ALL applied within a comment regardless of whether it is
+# front-loaded (see candidates() for how front-loaded vs not changes which OCCURRENCE wins,
+# not whether a tier is used at all):
+#
+# TIER 1 -- EXPLICIT_LABEL: a "commit"/"commitok" (Hungarian plural) label followed by one or
+# more sha tokens. This is the strongest, most deliberate signal an agent can give -- and, per
+# card d9a57239, it must win even inside a REVIEW/verdict comment where it appears LATER than a
+# weaker "@ <sha>" mention. Real incident (011b3f89): "...cybered GO @596f0f15 (quoting an OLD
+# incident's example sha, mid-explanation)...Commit: 26ea788." used to pick 596f0f15, because the
+# old code treated "@ <sha>" as EQUALLY strong as "Commit: <sha>" and broke ties by position
+# within a front-loaded comment. An explicit label now always outranks a bare "@" mention.
+#
+# When a label is followed by a LIST of shas (this fleet's own multi-commit convention, e.g.
+# "Commitok: aaa/bbb/ccc.") the LAST sha in that list is the answer -- commits are listed
+# chronologically, oldest first. Real incident (3f6bcc41): "Commitok: bbbed68/.../5467c0f."
+# used to pick bbbed68 (the FIRST, earliest commit) because it fell through to the bare-hex tier
+# entirely -- "commit" immediately followed by "ok:" (not ":"/whitespace) never matched the old,
+# singular-only COMMIT_PREFIXED pattern at all.
+EXPLICIT_LABEL = re.compile(r"\b[Cc]ommit(?:ok)?\b[:\s]+((?:[0-9a-f]{7,40}[\s/,]*)+)")
+SHA_TOKEN = re.compile(r"[0-9a-f]{7,40}")
+
+# TIER 2 -- AT_MENTION: `@ <sha>` / `@ `<sha>`` (the "REVIEW -- card @ sha" convention this fleet
+# also uses). Weaker than an explicit label (tier 1), stronger than a bare token (tier 3), and
+# ONLY consulted inside a front-loaded comment -- the pre-triage tool's OWN marker line has this
+# same "@ <sha>" shape ("GATE PRE-TRIAGE (...) @ <sha>"), so trusting "@" as strong in a PLAIN
+# (non-front-loaded) comment lets a REAL comment that quotes the marker (to correct/respond to
+# it, the fleet's own convention) have the quoted, stale sha outrank its own later, genuine fix
+# mention -- the same class of bug the author-exclusion above exists to close, via a different
+# trigger. Measured with a mutation control (someone-else quotes the marker, then states the real
+# fix): without this restriction the quoted "@ <sha>" wins; restricted to front-loaded comments,
+# a plain follow-up quoting the marker falls to tier 3 (last-mention-wins) and correctly picks the
+# real, later fix instead.
+AT_MENTION = re.compile(r"@\s*`?([0-9a-f]{7,40})\b")
+
+# TIER 3 -- BARE_HEX: anything else. The weakest signal, used only when tiers 1-2 found nothing.
 BARE_HEX = re.compile(r"\b([0-9a-f]{7,40})\b")
 
 # The fleet's front-loaded, subject-naming comment shapes -- a REVIEW is only ONE of them. QA/Cybersec/
@@ -92,9 +129,25 @@ FRONT_LOADED = re.compile(
 )
 
 
+def _explicit_label_shas(text):
+    """One resolved sha per EXPLICIT_LABEL occurrence, in the order the labels appear in the
+    text -- each occurrence already resolved to the LAST sha in ITS OWN list (card d9a57239's
+    "commits are listed oldest-first" convention), regardless of front-loaded status."""
+    out = []
+    for m in EXPLICIT_LABEL.finditer(text):
+        tokens = SHA_TOKEN.findall(m.group(1))
+        if tokens:
+            out.append(tokens[-1])
+    return out
+
+
 def candidates(rows, card_id="", marker=""):
-    """Yield candidate SHAs, newest comment first; within a front-loaded comment (REVIEW, or a
-    QA/Cybersec/Cybered verdict) the FIRST mention wins, within any other comment the LAST wins."""
+    """Yield candidate SHAs, newest comment first. Within one comment, three tiers apply in order
+    (explicit label > @-mention > bare hex -- see the tier comments above); within a front-loaded
+    comment (REVIEW, or a QA/Cybersec/Cybered verdict) the FIRST occurrence of a tier wins, within
+    any other comment the LAST occurrence wins. Tier 1 (explicit label) ALWAYS outranks tiers 2-3
+    regardless of front-loaded status or text position (card d9a57239) -- an explicit "Commit: X"
+    is a deliberate statement, not a hash mentioned in passing."""
     del marker  # CLI-compat only (see module docstring) -- the exclusion below is author-only now.
     # Explicit sort; `created_at` missing sorts last (treated as oldest) rather than crashing.
     ordered = sorted(rows, key=lambda c: c.get("created_at") or 0, reverse=True)
@@ -106,13 +159,18 @@ def candidates(rows, card_id="", marker=""):
             continue
         text = c.get("content") or ""
         is_review = FRONT_LOADED.match(text.strip()) is not None
-        pref = (REVIEW_PREFIXED if is_review else COMMIT_PREFIXED).findall(text)
+
+        explicit = _explicit_label_shas(text)
+        at_mentions = AT_MENTION.findall(text) if is_review else []
         weak = BARE_HEX.findall(text)
-        # A REVIEW comment front-loads its answer -- first mention wins. Any other comment (a plain
-        # follow-up/self-correction) ends on its answer -- last mention wins.
-        ordered_pref = pref if is_review else list(reversed(pref))
+        # A front-loaded comment states its answer up front -- first occurrence wins within a
+        # tier. Any other comment (a plain follow-up/self-correction) ends on its answer -- last
+        # occurrence wins. AT_MENTION is only ever consulted for front-loaded comments (see its
+        # own comment above), so it needs no separate branch here.
+        ordered_explicit = explicit if is_review else list(reversed(explicit))
         ordered_weak = weak if is_review else list(reversed(weak))
-        for sha in ordered_pref + ordered_weak:  # commit-prefixed first within the comment
+
+        for sha in ordered_explicit + at_mentions + ordered_weak:  # strongest tier first
             s = sha.lower()
             if s == card or s in seen:
                 continue
