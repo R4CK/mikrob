@@ -313,6 +313,28 @@ describe('EXPLICIT LABEL ALWAYS WINS, even inside a front-loaded comment (card d
     const out = run([{ created_at: 100, content: 'REVIEW -- kesz, konyv 1111111-rol, @ 2222222' }])
     expect(out[0]).toBe('2222222')
   })
+
+  it('REGRESSION (real incident 1f51f050, card bb15a712): a "+"-joined two-commit mention picks the LAST commit, not the first', () => {
+    // Verbatim shape: this fleet's own post-gate-fix convention, no "Commit:" label on the pair,
+    // "+" between the two shas. Before the fix, "+" broke EXPLICIT_LABEL's match right after the
+    // first sha, so e6097b6 (the commit the SECOND one fixes a regression in) won instead of the
+    // real final answer.
+    const out = run([
+      {
+        author: 'fullstack',
+        created_at: 100,
+        content:
+          'POST-GATE FIX: Cybersec MEDIUM leletere es egy sajat regresszio javitasa, ' +
+          'commit e6097b6 + 4152268 (a QA PASS / Cybersec GO altal mar attekintett 917fd71 utan).',
+      },
+    ])
+    expect(out[0]).toBe('4152268')
+  })
+
+  it('a "+"-joined pair works the same with an explicit "Commit:" label too', () => {
+    const out = run([{ created_at: 100, content: 'Commit: 1111111 + 2222222.' }])
+    expect(out[0]).toBe('2222222')
+  })
 })
 
 describe('the fleet\'s OTHER completion markers front-load too, not just REVIEW/verdicts (card 2dd93b53, Cybered)', () => {

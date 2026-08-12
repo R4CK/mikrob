@@ -58,6 +58,17 @@ Fixed with EXPLICIT_LABEL (tier 1, singular+plural, list-aware -- takes the LAST
 occurrence's own list) that ALWAYS outranks AT_MENTION (tier 2, front-loaded only) and BARE_HEX
 (tier 3), regardless of front-loaded status or text position.
 
+(6) A "+"-JOINED TWO-COMMIT MENTION LOST TO ITS OWN FIRST HALF (card bb15a712). This fleet's own
+post-gate-fix convention -- a plain follow-up naming two commits without the "Commit:" label, e.g.
+"posztoltam ket commitot (e6097b6 + 4152268)" -- used the "+" character to join the two shas, but
+EXPLICIT_LABEL's separator class only allowed whitespace/slash/comma between list tokens. "+" broke
+the match right after the FIRST sha, so the label only ever captured "e6097b6" and _explicit_label_shas
+picked THAT as the answer, even though "4152268" (the real final commit, fixing a regression in the
+first) was named later in the very same sentence. Real incident (1f51f050): "commit e6097b6 + 4152268
+(a mar attekintett 917fd71 utan)" picked e6097b6, not 4152268. Fixed by adding "+" to the separator
+class -- the existing "last token in an explicit-label's own list wins" rule (see incident 5 above)
+then does the rest; no new ranking logic needed, just a wider list-separator.
+
 Also removed, both incident classes:
   - THE SCRIPT'S OWN OUTPUT. The pre-triage posts a comment naming the sha it triaged; left in the
     corpus that is one more vote for a stale answer on the next run. Excluded by AUTHOR
@@ -91,7 +102,10 @@ import sys
 # used to pick bbbed68 (the FIRST, earliest commit) because it fell through to the bare-hex tier
 # entirely -- "commit" immediately followed by "ok:" (not ":"/whitespace) never matched the old,
 # singular-only COMMIT_PREFIXED pattern at all.
-EXPLICIT_LABEL = re.compile(r"\b[Cc]ommit(?:ok)?\b[:\s]+((?:[0-9a-f]{7,40}[\s/,]*)+)")
+#
+# Separator class includes "+" (card bb15a712, incident 6 above): this fleet's own post-gate-fix
+# comments join two commits with "+" ("commit X + Y"), not just "/"/","/whitespace.
+EXPLICIT_LABEL = re.compile(r"\b[Cc]ommit(?:ok)?\b[:\s]+((?:[0-9a-f]{7,40}[\s/,+]*)+)")
 SHA_TOKEN = re.compile(r"[0-9a-f]{7,40}")
 
 # TIER 2 -- AT_MENTION: `@ <sha>` / `@ `<sha>`` (the "REVIEW -- card @ sha" convention this fleet
