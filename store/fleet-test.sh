@@ -81,8 +81,42 @@ done
 
 echo "fleet-test.sh: $TEST_TREE @ $(git -C "$TEST_TREE" rev-parse --short HEAD)" >&2
 cd "$TEST_TREE" || die 3 "cannot cd to $TEST_TREE"
+
+# KNOWN BENIGN FLAKE (card 54699bbb). vitest's own worker-pool RPC (birpc) has a HARDCODED 60s
+# timeout with no config knob before vitest 3.x; under load (this suite, this WSL sandbox) that
+# round-trip occasionally misses it, and vitest exits 1 with an "Unhandled Error: [vitest-worker]:
+# Timeout calling \"onTaskUpdate\"" even though every single test passed. This is not our bug: it
+# is upstream and reported non-deterministic (vitest-dev/vitest #6479, #4497, #8164 -- "~1 in 5
+# runs locally", CI-only for some). Reproduced identically in an UNRELATED codebase (CleanCore,
+# vitest 3.2.6) in the same sandbox, confirming it tracks the environment, not this repo's tests.
+#
+# The exit code is real and callers must NOT swallow it -- but a reader who sees only "exit 1"
+# without reading the whole log can mistake this for a regression (exactly the signal-blindness
+# risk this card exists to close: don't just eyeball the green counter, and don't just eyeball
+# the exit code either -- read what's ACTUALLY unhandled). So: run once, capture the log, and if
+# the ONLY thing wrong is this exact known flake (no "N failed" anywhere in the summary), say so
+# explicitly instead of leaving a bare exit 1 for the next reader to re-diagnose from scratch.
+run_log="$(mktemp)"
+trap 'rm -f "$run_log"' EXIT
 if [ ${#ARGS[@]} -gt 0 ]; then
-  exec npx vitest run "${ARGS[@]}"
+  npx vitest run "${ARGS[@]}" 2>&1 | tee "$run_log"
 else
-  exec npx vitest run
+  npx vitest run 2>&1 | tee "$run_log"
 fi
+status="${PIPESTATUS[0]}"
+
+if [ "$status" -ne 0 ] \
+  && grep -q 'Timeout calling "onTaskUpdate"' "$run_log" \
+  && ! grep -qE '(Test Files|Tests)[[:space:]]+[0-9]+ failed' "$run_log"
+then
+  {
+    echo
+    echo "fleet-test.sh: KNOWN BENIGN FLAKE, not a regression (card 54699bbb)."
+    echo "  Every test above passed (no 'N failed' in the summary). The nonzero exit ($status)"
+    echo "  comes ONLY from vitest's own worker-RPC timeout (birpc's hardcoded 60s bound,"
+    echo "  vitest-dev/vitest#6479/#4497/#8164), not from this repo. Re-run for a clean exit"
+    echo "  code if you need one; do not treat this run alone as a failed suite."
+  } >&2
+fi
+
+exit "$status"
