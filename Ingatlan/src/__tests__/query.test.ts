@@ -1,7 +1,7 @@
 import { describe, it, expect, beforeEach, afterEach } from 'vitest'
 import Database from 'better-sqlite3'
 import { openDb, recordSighting } from '../db.js'
-import { getLatestSnapshots, getPriceHistoryPoints } from '../query.js'
+import { getLatestSnapshots, getPriceHistoryPoints, getListingsWithHistory } from '../query.js'
 import type { ScrapedListing } from '../types.js'
 
 const listing = (overrides: Partial<ScrapedListing> = {}): ScrapedListing => ({
@@ -50,5 +50,51 @@ describe('query adapters', () => {
   it('returns empty arrays for an empty DB', () => {
     expect(getLatestSnapshots(db)).toEqual([])
     expect(getPriceHistoryPoints(db)).toEqual([])
+  })
+
+  describe('getListingsWithHistory', () => {
+    it('returns the descriptive fields, the CURRENT price, and the full history in order', () => {
+      recordSighting(
+        db,
+        listing({ id: 'a', cim: 'Budapest II. ker.', alapteruletM2: 65, ar: 1000, nm2Ar: 100 }),
+        1000,
+      )
+      recordSighting(db, listing({ id: 'a', ar: 1200, nm2Ar: 120 }), 2000)
+
+      const [row] = getListingsWithHistory(db)
+      expect(row.id).toBe('a')
+      expect(row.cim).toBe('Budapest II. ker.')
+      expect(row.alapteruletM2).toBe(65)
+      expect(row.elsoEszleltAt).toBe(1000)
+      // current price is the LATEST, not the first
+      expect(row.ar).toBe(1200)
+      expect(row.nm2Ar).toBe(120)
+      expect(row.arHistory).toEqual([
+        { ar: 1000, nm2Ar: 100, eszleltAt: 1000 },
+        { ar: 1200, nm2Ar: 120, eszleltAt: 2000 },
+      ])
+    })
+
+    it('a listing with no price change has a ONE-entry history, not a duplicate', () => {
+      recordSighting(db, listing({ id: 'a', ar: 1000, nm2Ar: 100 }), 1000)
+      recordSighting(db, listing({ id: 'a', ar: 1000, nm2Ar: 100 }), 2000) // unchanged re-sighting
+
+      const [row] = getListingsWithHistory(db)
+      expect(row.arHistory).toHaveLength(1)
+    })
+
+    it('multiple listings are each returned with their OWN history', () => {
+      recordSighting(db, listing({ id: 'a', tipus: 'haz', ar: 1000, nm2Ar: 100 }), 1000)
+      recordSighting(db, listing({ id: 'b', tipus: 'lakas', ar: 2000, nm2Ar: 200 }), 1000)
+
+      const rows = getListingsWithHistory(db).sort((x, y) => x.id.localeCompare(y.id))
+      expect(rows.map((r) => r.id)).toEqual(['a', 'b'])
+      expect(rows[0].tipus).toBe('haz')
+      expect(rows[1].tipus).toBe('lakas')
+    })
+
+    it('returns an empty array for an empty DB', () => {
+      expect(getListingsWithHistory(db)).toEqual([])
+    })
   })
 })
