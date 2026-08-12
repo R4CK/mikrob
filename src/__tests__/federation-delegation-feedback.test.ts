@@ -119,6 +119,10 @@ describe('POST /api/messages to-authentication (card 523a1426)', () => {
   // tryHandleMessages route handler, not an isolated function call), per Cybered's own
   // reproduction in kanban comment 10941.
   it('SECURITY REGRESSION (Cybered 523a1426): garbage-suffixed/prefixed variants of a real name canonicalize to the SAME bucket, not their own', async () => {
+    // Delta, not an absolute count: this suite's in-memory DB persists across tests in
+    // the file, and an earlier test in this same describe block already sends one
+    // message to 'localmate' -- an absolute-length assertion here is order-dependent.
+    const before = getPendingMessages('localmate').length
     const variants = ['localmate', 'localmate.', '.localmate', 'localmate!', 'localmate#', 'localmate$']
     for (const to of variants) {
       const r = await postMessage({ from: 'localboss', to, content: 'probe' })
@@ -129,7 +133,7 @@ describe('POST /api/messages to-authentication (card 523a1426)', () => {
     }
     // All 6 variants landed in ONE bucket, not six: selectFairBatch would give 'localmate'
     // exactly one round-robin slot per tick, same as if only the canonical form was ever sent.
-    expect(getPendingMessages('localmate')).toHaveLength(variants.length)
+    expect(getPendingMessages('localmate')).toHaveLength(before + variants.length)
   })
 
   it('CONTROL: a REAL extra letter (not a stripped symbol) is a genuinely different, still-rejected name', async () => {
