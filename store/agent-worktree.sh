@@ -76,6 +76,34 @@ while IFS= read -r d; do
 done < <(cd "$MAIN" && ls -d apps/*/ packages/*/ packages/modules/*/ 2>/dev/null)
 echo "node_modules links added: $linked"
 
+# HOOKS ISOLATION (card 420ef7b4, Cybersec NO-GO -- flagged by MikroB BEFORE this rollout, comment
+# 10146, then missed by REVIEW+QA and caught only at the gate). The own-index property above stops
+# a PEER'S STAGED WORK from being swept into a commit, but every worktree still shares ONE
+# .git/hooks directory with the main clone by default (`git -C <tree> rev-parse --git-path hooks`
+# resolves identically for all of them) -- an agent locally testing a hook variant (exactly what
+# this session's own pre-commit work did, deliberately in a scratch clone instead) would otherwise
+# rewrite every OTHER agent's commit path with one `cp`. `core.hooksPath`, set per-worktree via
+# git's own supported mechanism (`extensions.worktreeConfig` + `git config --worktree`), gives each
+# worktree its own hooks directory instead. Populated from THAT worktree's own checked-out
+# scripts/hooks/ (so a worktree on a different ref gets that ref's hooks) and re-copied on every
+# run, same idempotent top-up shape as the node_modules pass above -- a hook update in
+# scripts/hooks/ propagates on the next re-run instead of silently going stale.
+git -C "$MAIN" config extensions.worktreeConfig true
+OWN_HOOKS="$(git -C "$TREE" rev-parse --git-dir)/hooks-own"
+mkdir -p "$OWN_HOOKS"
+hooks_copied=0
+if [ -d "$TREE/scripts/hooks" ]; then
+  for h in "$TREE"/scripts/hooks/*; do
+    [ -f "$h" ] || continue
+    cp "$h" "$OWN_HOOKS/$(basename "$h")"
+    chmod +x "$OWN_HOOKS/$(basename "$h")"
+    hooks_copied=$((hooks_copied + 1))
+  done
+fi
+git -C "$TREE" config --worktree core.hooksPath "$OWN_HOOKS"
+echo "hooks own-copied: $hooks_copied"
+
 echo "path:   $TREE"
 echo "branch: $(git -C "$TREE" rev-parse --abbrev-ref HEAD) @ $(git -C "$TREE" rev-parse --short HEAD)"
 echo "index:  $(git -C "$TREE" rev-parse --git-dir)/index   (own index -- peer commits cannot reach it)"
+echo "hooks:  $OWN_HOOKS   (own hooksPath -- isolated from the shared .git/hooks)"
