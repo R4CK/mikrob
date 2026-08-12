@@ -18,7 +18,8 @@
     "smoke": "playwright test --config=playwright.config.ts",
     "ingatlan:typecheck": "tsc -p Ingatlan --noEmit",
     "ingatlan:run": "tsx Ingatlan/src/run.ts",
-    "ingatlan:analyze": "tsx Ingatlan/src/analyze.ts"
+    "ingatlan:analyze": "tsx Ingatlan/src/analyze.ts",
+    "ingatlan:ingest": "tsx Ingatlan/src/run-ingest.ts"
   },
   "engines": {
     "node": ">=20 <24"
