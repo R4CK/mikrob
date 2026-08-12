@@ -8,6 +8,9 @@ import { useApiData } from '../hooks/useApiData.js'
 import { fetchListings } from '../api-client.js'
 
 type FilterId = 'mind' | 'haz' | 'lakas' | 'mediansav'
+type SortCol = 'ar' | 'nm2_ar' | 'alapterulet_m2' | 'delta_pct'
+type SortDir = 'asc' | 'desc'
+interface SortConfig { col: SortCol; dir: SortDir }
 
 const FILTERS: Array<{ id: FilterId; label: string }> = [
   { id: 'mind', label: 'Mind' },
@@ -29,14 +32,52 @@ function applyFilter(listings: Listing[], filter: FilterId): Listing[] {
   return listings
 }
 
+export function applySort(listings: Listing[], sort: SortConfig | null): Listing[] {
+  if (!sort) return listings
+  const { col, dir } = sort
+  return [...listings].sort((a, b) => {
+    const av = a[col] ?? (dir === 'asc' ? Infinity : -Infinity)
+    const bv = b[col] ?? (dir === 'asc' ? Infinity : -Infinity)
+    return dir === 'asc' ? (av as number) - (bv as number) : (bv as number) - (av as number)
+  })
+}
+
+function SortableTh({
+  col, label, sort, onSort,
+}: { col: SortCol; label: string; sort: SortConfig | null; onSort: (col: SortCol) => void }) {
+  const active = sort?.col === col
+  const indicator = active ? (sort!.dir === 'asc' ? ' ▲' : ' ▼') : ''
+  return (
+    <th
+      className={`sortable-th${active ? ' sorted' : ''}`}
+      onClick={() => onSort(col)}
+      aria-sort={active ? (sort!.dir === 'asc' ? 'ascending' : 'descending') : 'none'}
+    >
+      {label}{indicator}
+    </th>
+  )
+}
+
 export function HirdetesekView() {
   const listings = useApiData(fetchListings)
   const [filter, setFilter] = useState<FilterId>('mind')
+  const [sort, setSort] = useState<SortConfig | null>(null)
   const [selectedId, setSelectedId] = useState<string | null>(null)
 
+  function handleSort(col: SortCol) {
+    setSort((prev) =>
+      prev?.col === col
+        ? { col, dir: prev.dir === 'asc' ? 'desc' : 'asc' }
+        : { col, dir: 'asc' },
+    )
+  }
+
   const filtered = useMemo(
-    () => (listings.state.status === 'data' ? applyFilter(listings.state.value, filter) : []),
-    [listings.state, filter],
+    () =>
+      listings.state.status === 'data'
+        ? applySort(applyFilter(listings.state.value, filter), sort)
+        : [],
+    [listings.state, filter, sort],
   )
   const selected = listings.state.status === 'data' ? listings.state.value.find((l) => l.id === selectedId) ?? null : null
 
@@ -79,10 +120,10 @@ export function HirdetesekView() {
             <tr>
               <th>Cím</th>
               <th>Típus</th>
-              <th>Alapterület</th>
-              <th>Ár</th>
-              <th>nm²-ár</th>
-              <th>Δ ár</th>
+              <SortableTh col="alapterulet_m2" label="Alapterület" sort={sort} onSort={handleSort} />
+              <SortableTh col="ar" label="Ár" sort={sort} onSort={handleSort} />
+              <SortableTh col="nm2_ar" label="nm²-ár" sort={sort} onSort={handleSort} />
+              <SortableTh col="delta_pct" label="Δ ár" sort={sort} onSort={handleSort} />
               <th>Mediánsáv</th>
             </tr>
           </thead>

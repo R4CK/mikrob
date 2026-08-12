@@ -353,6 +353,20 @@ table.listings tr.in-band {
   cursor: pointer;
 }
 
+/* ---- Sortable table headers ---- */
+.sortable-th {
+  cursor: pointer;
+  user-select: none;
+  white-space: nowrap;
+}
+.sortable-th:hover {
+  color: var(--gold);
+}
+.sortable-th.sorted {
+  color: var(--gold);
+  font-weight: 700;
+}
+
 /* ---- Hirdetések view ---- */
 .hirdetesek-view {
   display: flex;
