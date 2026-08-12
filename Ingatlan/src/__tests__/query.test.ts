@@ -1,7 +1,7 @@
 import { describe, it, expect, beforeEach, afterEach } from 'vitest'
 import Database from 'better-sqlite3'
-import { openDb, recordSighting } from '../db.js'
-import { getLatestSnapshots, getPriceHistoryPoints, getListingsWithHistory } from '../query.js'
+import { openDb, recordSighting, recordIngestRun } from '../db.js'
+import { getLatestSnapshots, getPriceHistoryPoints, getListingsWithHistory, getIngestLog } from '../query.js'
 import type { ScrapedListing } from '../types.js'
 
 const listing = (overrides: Partial<ScrapedListing> = {}): ScrapedListing => ({
@@ -95,6 +95,25 @@ describe('query adapters', () => {
 
     it('returns an empty array for an empty DB', () => {
       expect(getListingsWithHistory(db)).toEqual([])
+    })
+  })
+
+  describe('getIngestLog', () => {
+    it('returns runs newest-first', () => {
+      recordIngestRun(db, { ok: true, newListings: 1, priceChanges: 0, rejectedCount: 0, error: null }, 1000)
+      recordIngestRun(db, { ok: true, newListings: 2, priceChanges: 0, rejectedCount: 0, error: null }, 2000)
+      const rows = getIngestLog(db)
+      expect(rows.map((r) => r.ranAt)).toEqual([2000, 1000])
+    })
+
+    it('respects the limit', () => {
+      recordIngestRun(db, { ok: true, newListings: 0, priceChanges: 0, rejectedCount: 0, error: null }, 1000)
+      recordIngestRun(db, { ok: true, newListings: 0, priceChanges: 0, rejectedCount: 0, error: null }, 2000)
+      expect(getIngestLog(db, 1)).toHaveLength(1)
+    })
+
+    it('returns an empty array when no runs are logged', () => {
+      expect(getIngestLog(db)).toEqual([])
     })
   })
 })

@@ -71,6 +71,17 @@ describe('ingest server (real HTTP, real DB)', () => {
     expect(db.prepare('SELECT * FROM listings WHERE id = ?').get('l1')).toBeTruthy()
   })
 
+  it('a successful ingest also writes an ok=1 row to ingest_log (Napló source, card 1f51f050)', async () => {
+    await fetch(`${baseUrl}/api/ingatlan/ingest`, {
+      method: 'POST',
+      headers: { Authorization: `Bearer ${TOKEN}` },
+      body: JSON.stringify({ listings: [validListing()] }),
+    })
+    const rows = db.prepare('SELECT * FROM ingest_log').all() as Array<{ ok: number; new_listings: number; error: string | null }>
+    expect(rows).toHaveLength(1)
+    expect(rows[0]).toMatchObject({ ok: 1, new_listings: 1, error: null })
+  })
+
   it('a MIX of valid and invalid listings partially accepts, reporting the invalid index+reason', async () => {
     const res = await fetch(`${baseUrl}/api/ingatlan/ingest`, {
       method: 'POST',
@@ -95,6 +106,18 @@ describe('ingest server (real HTTP, real DB)', () => {
     expect(res.status).toBe(400)
   })
 
+  it('malformed JSON body also writes a FAILED run to ingest_log -- Napló must be able to show it', async () => {
+    await fetch(`${baseUrl}/api/ingatlan/ingest`, {
+      method: 'POST',
+      headers: { Authorization: `Bearer ${TOKEN}` },
+      body: '{not json',
+    })
+    const rows = db.prepare('SELECT * FROM ingest_log').all() as Array<{ ok: number; error: string | null }>
+    expect(rows).toHaveLength(1)
+    expect(rows[0].ok).toBe(0)
+    expect(rows[0].error).toBeTruthy()
+  })
+
   it('body.listings not an array is 400', async () => {
     const res = await fetch(`${baseUrl}/api/ingatlan/ingest`, {
       method: 'POST',
@@ -102,6 +125,17 @@ describe('ingest server (real HTTP, real DB)', () => {
       body: JSON.stringify({ listings: 'nope' }),
     })
     expect(res.status).toBe(400)
+  })
+
+  it('body.listings not an array also writes a FAILED run to ingest_log', async () => {
+    await fetch(`${baseUrl}/api/ingatlan/ingest`, {
+      method: 'POST',
+      headers: { Authorization: `Bearer ${TOKEN}` },
+      body: JSON.stringify({ listings: 'nope' }),
+    })
+    const rows = db.prepare('SELECT * FROM ingest_log').all() as Array<{ ok: number; error: string | null }>
+    expect(rows).toHaveLength(1)
+    expect(rows[0]).toMatchObject({ ok: 0, error: 'body.listings must be an array' })
   })
 
   it('GET on the ingest path (wrong method) is 405', async () => {
@@ -130,6 +164,8 @@ describe('ingest server (real HTTP, real DB)', () => {
     })
     expect(res.status).toBe(200)
     expect(debugCaptures).toEqual([{ pageUrl: 'https://ingatlan.com/x', note: 'found nothing' }])
+    // /debug is a diagnostic capture, not a scrape run -- it must not pollute Napló.
+    expect(db.prepare('SELECT COUNT(*) c FROM ingest_log').get()).toEqual({ c: 0 })
   })
 
   it('a payload larger than the configured limit is rejected, not accepted or crashed on', async () => {

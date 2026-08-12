@@ -1,9 +1,10 @@
 import type Database from 'better-sqlite3'
-import { getLatestSnapshots, getPriceHistoryPoints, getListingsWithHistory } from '../query.js'
+import { getLatestSnapshots, getPriceHistoryPoints, getListingsWithHistory, getIngestLog } from '../query.js'
 import { groupedMarketStats } from '../analysis/stats.js'
 import { buildTrendPoints } from './build-trend-points.js'
 import { buildMarketSummary } from './build-market-summary.js'
 import { buildListings } from './build-listings.js'
+import { buildIngestLog } from './build-ingest-log.js'
 
 export interface ApiRouteResult {
   status: number
@@ -30,6 +31,10 @@ export function handleApiRoute(db: Database.Database, method: string, pathname: 
   if (pathname === '/api/listings') {
     const grouped = groupedMarketStats(getLatestSnapshots(db))
     return { status: 200, body: buildListings(getListingsWithHistory(db), grouped) }
+  }
+
+  if (pathname === '/api/ingest-log') {
+    return { status: 200, body: buildIngestLog(getIngestLog(db)) }
   }
 
   return null

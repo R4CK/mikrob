@@ -1,6 +1,6 @@
 import { createServer, type IncomingMessage, type ServerResponse, type Server } from 'node:http'
 import type Database from 'better-sqlite3'
-import { recordSighting } from './db.js'
+import { recordSighting, recordIngestRun } from './db.js'
 import { validateIngestListing } from './ingest-validate.js'
 
 const DEFAULT_MAX_BODY_BYTES = 2 * 1024 * 1024
@@ -89,7 +89,15 @@ export function createIngestServer(opts: IngestServerOptions): Server {
       try {
         body = await readJsonBody(req, maxBodyBytes)
       } catch (err) {
-        send(res, 400, { error: err instanceof Error ? err.message : 'bad request' })
+        const message = err instanceof Error ? err.message : 'bad request'
+        if (isIngestPath) {
+          recordIngestRun(
+            opts.db,
+            { ok: false, newListings: 0, priceChanges: 0, rejectedCount: 0, error: message },
+            Math.floor(now() / 1000),
+          )
+        }
+        send(res, 400, { error: message })
         return
       }
 
@@ -101,12 +109,17 @@ export function createIngestServer(opts: IngestServerOptions): Server {
 
       // isIngestPath
       const listings = (body as { listings?: unknown[] } | null)?.listings
+      const nowEpochSeconds = Math.floor(now() / 1000)
       if (!Array.isArray(listings)) {
+        recordIngestRun(
+          opts.db,
+          { ok: false, newListings: 0, priceChanges: 0, rejectedCount: 0, error: 'body.listings must be an array' },
+          nowEpochSeconds,
+        )
         send(res, 400, { error: 'body.listings must be an array' })
         return
       }
 
-      const nowEpochSeconds = Math.floor(now() / 1000)
       const rejected: Array<{ index: number; error: string }> = []
       let accepted = 0
       let newListings = 0
@@ -122,6 +135,15 @@ export function createIngestServer(opts: IngestServerOptions): Server {
         if (outcome.isNewListing) newListings++
         if (outcome.priceChanged) priceChanges++
       })
+      // A run that fully processed (even if every single listing was individually rejected) is
+      // still "ok" at the run level -- Napló's error state is for the RUN failing, not for a
+      // scrape pass that legitimately found nothing new to accept. Per-listing rejects are still
+      // visible via rejected_count.
+      recordIngestRun(
+        opts.db,
+        { ok: true, newListings, priceChanges, rejectedCount: rejected.length, error: null },
+        nowEpochSeconds,
+      )
       send(res, 200, { accepted, rejected, newListings, priceChanges })
     })().catch(() => {
       if (!res.headersSent) send(res, 500, { error: 'internal error' })

@@ -3,7 +3,7 @@ import { mkdtempSync, rmSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import Database from 'better-sqlite3'
-import { openDb, recordSighting } from '../db.js'
+import { openDb, recordSighting, recordIngestRun } from '../db.js'
 import type { ScrapedListing } from '../types.js'
 
 const listing = (overrides: Partial<ScrapedListing> = {}): ScrapedListing => ({
@@ -87,5 +87,18 @@ describe('Ingatlan db', () => {
     const rows = reopened.prepare('SELECT * FROM listings').all()
     expect(rows).toHaveLength(1)
     reopened.close()
+  })
+
+  it('recordIngestRun writes both successful and failed runs as separate rows', () => {
+    recordIngestRun(db, { ok: true, newListings: 3, priceChanges: 1, rejectedCount: 0, error: null }, 1000)
+    recordIngestRun(
+      db,
+      { ok: false, newListings: 0, priceChanges: 0, rejectedCount: 0, error: 'invalid JSON' },
+      2000,
+    )
+    const rows = db.prepare('SELECT * FROM ingest_log ORDER BY ran_at').all() as Array<{ ok: number; error: string | null }>
+    expect(rows).toHaveLength(2)
+    expect(rows[0]).toMatchObject({ ok: 1, error: null })
+    expect(rows[1]).toMatchObject({ ok: 0, error: 'invalid JSON' })
   })
 })

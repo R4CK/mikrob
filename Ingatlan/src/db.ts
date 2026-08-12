@@ -32,7 +32,38 @@ export function openDb(dbPath: string): Database.Database {
     CREATE INDEX IF NOT EXISTS price_history_listing_time
       ON price_history(listing_id, eszlelt_at)
   `)
+  db.exec(`
+    CREATE TABLE IF NOT EXISTS ingest_log (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      ran_at INTEGER NOT NULL,
+      ok INTEGER NOT NULL,
+      new_listings INTEGER NOT NULL,
+      price_changes INTEGER NOT NULL,
+      rejected_count INTEGER NOT NULL,
+      error TEXT
+    )
+  `)
   return db
+}
+
+export interface IngestRunRecord {
+  ok: boolean
+  newListings: number
+  priceChanges: number
+  rejectedCount: number
+  error: string | null
+}
+
+// One row per /api/ingatlan/ingest call (the "scraper run" of DESIGN-IA.md section 3.3 -- the
+// extension's each POST IS a run under the current ingest architecture, replacing the cron-job
+// notion the design doc was originally written against). Logged for BOTH outcomes: a run that
+// threw before reaching recordSighting (bad JSON, wrong shape) is exactly what "Napló" exists to
+// surface, not just the successful ones.
+export function recordIngestRun(db: Database.Database, run: IngestRunRecord, nowEpochSeconds: number): void {
+  db.prepare(
+    `INSERT INTO ingest_log (ran_at, ok, new_listings, price_changes, rejected_count, error)
+     VALUES (?, ?, ?, ?, ?, ?)`,
+  ).run(nowEpochSeconds, run.ok ? 1 : 0, run.newListings, run.priceChanges, run.rejectedCount, run.error)
 }
 
 export interface SightingResult {

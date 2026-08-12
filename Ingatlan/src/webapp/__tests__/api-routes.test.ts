@@ -1,6 +1,6 @@
 import { describe, it, expect, beforeEach, afterEach } from 'vitest'
 import Database from 'better-sqlite3'
-import { openDb, recordSighting } from '../../db.js'
+import { openDb, recordSighting, recordIngestRun } from '../../db.js'
 import { handleApiRoute } from '../api-routes.js'
 import type { ScrapedListing } from '../../types.js'
 
@@ -50,6 +50,18 @@ describe('handleApiRoute', () => {
     expect(handleApiRoute(db, 'GET', '/api/trend')?.body).toEqual([])
     expect(handleApiRoute(db, 'GET', '/api/market-summary')?.body).toMatchObject({ aktiv_db: 0, haz_median_nm2: null })
     expect(handleApiRoute(db, 'GET', '/api/listings')?.body).toEqual([])
+  })
+
+  it('GET /api/ingest-log returns 200 with runs newest-first and ISO timestamps', () => {
+    recordIngestRun(db, { ok: true, newListings: 2, priceChanges: 0, rejectedCount: 0, error: null }, 1000)
+    recordIngestRun(db, { ok: false, newListings: 0, priceChanges: 0, rejectedCount: 0, error: 'bad request' }, 2000)
+    const result = handleApiRoute(db, 'GET', '/api/ingest-log')
+    expect(result?.status).toBe(200)
+    const body = result?.body as Array<{ ran_at: string; ok: boolean; error: string | null }>
+    expect(body).toHaveLength(2)
+    expect(body[0]).toMatchObject({ ok: false, error: 'bad request' })
+    expect(body[0].ran_at).toBe(new Date(2000 * 1000).toISOString())
+    expect(body[1]).toMatchObject({ ok: true, error: null })
   })
 
   it('returns null (unhandled) for an unknown path', () => {

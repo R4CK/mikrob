@@ -81,3 +81,26 @@ export function getListingsWithHistory(db: Database.Database): ListingWithHistor
     return { ...l, ar: latest.ar, nm2Ar: latest.nm2Ar, arHistory }
   })
 }
+
+export interface IngestLogRow {
+  ranAt: number
+  ok: boolean
+  newListings: number
+  priceChanges: number
+  rejectedCount: number
+  error: string | null
+}
+
+// Napló (DESIGN-IA.md section 3.3): most recent run first. `limit` bounds the payload -- the log
+// grows one row per extension POST forever, and the UI only ever shows a chronological list, not
+// a full-history report.
+export function getIngestLog(db: Database.Database, limit = 100): IngestLogRow[] {
+  const rows = db
+    .prepare(
+      `SELECT ran_at as ranAt, ok, new_listings as newListings, price_changes as priceChanges,
+              rejected_count as rejectedCount, error
+       FROM ingest_log ORDER BY ran_at DESC, id DESC LIMIT ?`,
+    )
+    .all(limit) as Array<Omit<IngestLogRow, 'ok'> & { ok: number }>
+  return rows.map((r) => ({ ...r, ok: r.ok === 1 }))
+}
