@@ -302,6 +302,74 @@ export function stripDataPayloads(seg) {
   )
 }
 
+// Blank a heredoc body that feeds curl's OWN `-d @-` / `--data-binary @-` stdin-read
+// (card ce159d2b's sibling, 4638c14c; incidents msg 8746/8796/8881 -- three denials in
+// one day, all mid security-report). The fleet builds long, accented JSON payloads with
+// `python3 - <<'PY' | curl ... -d @- ...` to dodge curl's own UTF-8/quoting traps
+// (stripDataPayloads' own header names this exact gap: exempted for `-d '...'`, not for
+// a payload PRODUCED via heredoc). splitSegments splits on bare newlines, so each LINE
+// of the heredoc body becomes its own "segment" before any of this runs -- a report
+// LINE that merely mentions "tmux send-keys" as prose reads as a real invocation.
+//
+// WHY THIS IS SAFE WHERE maskInertLiterals' heredoc-blanking deliberately is NOT
+// (see that function's header, "founding incident" 2026-08-05): its blanking is scoped
+// OFF the unanchored checks on purpose, because a heredoc feeding an INTERPRETER
+// (`python3 -`, `bash`, `sh`) is CODE -- a real `subprocess.run(['tmux','send-keys'])`
+// can hide inside it, indistinguishable by text alone from an inert string literal.
+// This function does the opposite of "exempt heredocs generally": it ONLY blanks a
+// heredoc whose OWN redirect feeds curl's `-d @-`-shaped stdin-read, i.e. a heredoc
+// curl reads and SENDS as HTTP body bytes -- curl never executes what it is given as
+// -d/--data, so there is no code path through this heredoc that could run tmux/cron/
+// claude at all. A `python3 - <<PY ... PY | curl -d @-` PIPELINE is NOT this shape --
+// python3, not curl, reads that heredoc as its OWN program, so it stays fully scanned
+// (unfixed, on purpose; flagged in the card's REVIEW rather than guessed at).
+//
+// PER-HEREDOC, NOT WHOLE-COMMAND: the check is scoped to the text SINCE THE LAST
+// command boundary (`;`, `&`, `|`, or a bare newline -- the same separators
+// splitSegments treats as boundaries), not "does -d @- appear ANYWHERE in the
+// command". A whole-command check would ALSO blank the python3-heredoc-piped-into-
+// curl shape above (curl's `-d @-` sits AFTER the pipe, so it technically appears in
+// the same command STRING) -- exactly the interpreter-executed heredoc this function
+// must NOT touch. Scoping to "since the last boundary" means a preceding `python3 -`
+// with no `-d @-` in ITS OWN span leaves that heredoc fully exposed to the scan,
+// while `curl ... -d @- <<TAG` (same simple command, no boundary in between) blanks.
+const CURL_STDIN_DATA_RX = /(?:^|\s)(?:-d|--data(?:-(?:raw|binary|ascii))?)(?:\s+|=)@-(?=\s|$)/i
+export function stripHeredocDataPayloads(command) {
+  const src = String(command ?? '')
+  let out = ''
+  let i = 0
+  let boundary = 0 // index where the CURRENT simple command started
+  while (i < src.length) {
+    const c = src[i]
+    if (c === ';' || c === '&' || c === '|' || c === '\n') { out += c; i++; boundary = i; continue }
+    const here = /^<<-?\s*(?:'([^']*)'|"([^"]*)"|([A-Za-z_]\w*))/.exec(src.slice(i))
+    if (!here) { out += c; i++; continue }
+    const feedsCurlStdin = CURL_STDIN_DATA_RX.test(src.slice(boundary, i))
+    const tag = here[1] ?? here[2] ?? here[3]
+    const quotedTag = here[1] != null || here[2] != null
+    out += here[0]
+    i += here[0].length
+    const nl = src.indexOf('\n', i)
+    if (nl === -1) { out += src.slice(i); break } // heredoc announced, no body yet -- leave as-is
+    out += src.slice(i, nl + 1)
+    i = nl + 1
+    const endRx = new RegExp(`^[ \\t]*${tag.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}[ \\t]*$`, 'm')
+    const rel = endRx.exec(src.slice(i))
+    if (!rel) { out += src.slice(i); break } // unterminated -- leave as-is, naive scan still covers it
+    const body = src.slice(i, i + rel.index)
+    // unquoted tag -> bash itself expands $(...)/backtick in the body BEFORE curl ever
+    // sees it, so a real command could run there regardless of curl's own semantics --
+    // same fail-closed rule maskInertLiterals uses, for the same reason.
+    const substitutable = !quotedTag && /\$\(|`/.test(body)
+    if (feedsCurlStdin && !substitutable) out += ' '.repeat(body.length)
+    else out += body
+    out += rel[0]
+    i += rel.index + rel[0].length
+    boundary = i
+  }
+  return out
+}
+
 // Blank out git commit/tag/stash -m/--message LITERAL text before self-pace
 // matching. A commit message is prose, NEVER a shell invocation, so a trigger
 // token that only appears INSIDE the message must not false-deny (2026-07-13,
@@ -362,8 +430,12 @@ export function gateDecision(toolName, toolInput) {
     // that false-matches. Stripping first blanks the body (incl. any separators in
     // it), so the URL/method args still match but the body text never does. A
     // separator OUTSIDE the payload still splits, so `curl -d '' x ; crontab -r`
-    // is still caught.
-    const safeCommand = stripDataPayloads(stripGitCommitMessages(String(toolInput?.command ?? '')))
+    // is still caught. stripHeredocDataPayloads (card 4638c14c) covers the SAME
+    // class produced via `curl -d @- <<TAG ... TAG` instead of an inline quote --
+    // also newline-safe BEFORE splitSegments' newline-based split ever sees it.
+    const safeCommand = stripHeredocDataPayloads(
+      stripDataPayloads(stripGitCommitMessages(String(toolInput?.command ?? ''))),
+    )
     // Per-segment so an unrelated token elsewhere in a compound command cannot
     // turn a legit read (store inspection, schedule-API GET) into a false deny.
     const naiveSegs = splitSegments(safeCommand)

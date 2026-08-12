@@ -1,6 +1,6 @@
 import { describe, it, expect } from 'vitest'
 // @ts-expect-error -- plain .mjs hook script, no types
-import { gateDecision as selfPaceDecision, stripDataPayloads, stripGitCommitMessages } from '../../scripts/self-pace-gate.mjs'
+import { gateDecision as selfPaceDecision, stripDataPayloads, stripGitCommitMessages, stripHeredocDataPayloads } from '../../scripts/self-pace-gate.mjs'
 import {
   agentGetsGovernanceGates,
   injectSelfPaceGate,
@@ -338,6 +338,105 @@ describe('self-pace-gate stripGitCommitMessages (commit-message false-positive g
   it('gateDecision: a REAL self-pace after the commit (outside the message) is still DENIED', () => {
     expect(selfPaceDecision('Bash', { command: `git commit -m "ok" ; crontab -r` }).deny).toBe(true)
     expect(selfPaceDecision('Bash', { command: `git commit -m "$(crontab -r)"` }).deny).toBe(true)
+  })
+})
+
+// --- stripHeredocDataPayloads: the fleet builds long/accented JSON with
+// `curl -d @- <<'EOF' ... EOF` to dodge curl's own inline-quoting traps (card
+// 4638c14c, incidents msg 8746/8796/8881 -- three denials in one day, all mid
+// security-report). Same principle as stripDataPayloads (a payload is data, never
+// an invocation), narrower syntax match, PER-HEREDOC scoped: only a heredoc curl
+// itself reads via -d @- is blanked; a heredoc feeding an INTERPRETER (python3/
+// bash/sh) that happens to be piped toward a LATER curl -d @- stays fully exposed
+// to the scan, because that heredoc is CODE, not HTTP-body bytes. ---
+describe('self-pace-gate stripHeredocDataPayloads (heredoc data-payload false-positive guard)', () => {
+  it('blanks a heredoc body feeding `curl -d @-` (quoted tag)', () => {
+    const out = stripHeredocDataPayloads(
+      `curl -X POST u -d @- <<'EOF'\n{"content":"tmux send-keys demo"}\nEOF\n`,
+    )
+    expect(out).not.toContain('tmux send-keys')
+    expect(out).toContain(`-d @- <<'EOF'`)
+    expect(out).toContain('EOF\n') // terminator kept
+  })
+
+  it('blanks a heredoc body feeding `--data-binary @-` (unquoted tag, no substitution)', () => {
+    const out = stripHeredocDataPayloads(
+      'curl -X POST u --data-binary @- <<EOF\n{"content":"tmux send-keys demo"}\nEOF\n',
+    )
+    expect(out).not.toContain('tmux send-keys')
+  })
+
+  it('is a no-op when there is no `-d @-`/`--data* @-` flag at all', () => {
+    const cmd = `python3 - <<'PY'\nprint('tmux send-keys')\nPY\n`
+    expect(stripHeredocDataPayloads(cmd)).toBe(cmd)
+  })
+
+  // THE SAFETY BOUNDARY: a heredoc feeding python3 (CODE), later piped to a curl
+  // that DOES use -d @-, must NOT be blanked -- the flag lives in the command
+  // string, but not on the SAME simple command as this heredoc's redirect.
+  it('does NOT blank a heredoc feeding an INTERPRETER, even when -d @- appears LATER via a pipe', () => {
+    const cmd = `python3 - <<'PY' | curl -X POST u -d @-\nimport subprocess\nsubprocess.run(['tmux','send-keys'])\nPY\n`
+    expect(stripHeredocDataPayloads(cmd)).toBe(cmd) // fully unchanged -- still scannable
+  })
+
+  it('does NOT blank a heredoc that PRECEDES an unrelated curl -d @- after a `;` boundary', () => {
+    const cmd = `bash <<'X'\ntmux send-keys real-attack\nX\n; curl -d @- u <<'Y'\nfine\nY\n`
+    const out = stripHeredocDataPayloads(cmd)
+    expect(out).toContain('tmux send-keys real-attack') // NOT this one -- bash executes it
+    expect(out).not.toContain('fine') // this one IS curl's own payload -- blanked
+  })
+
+  it('fail-closed: an UNQUOTED tag whose body can command-substitute is NOT blanked even for -d @-', () => {
+    const cmd = 'curl -d @- <<EOF\n$(crontab -r) tmux send-keys\nEOF\n'
+    expect(stripHeredocDataPayloads(cmd)).toBe(cmd)
+  })
+
+  it('a QUOTED tag with a literal $(...)-looking string IS blanked (bash never expands it)', () => {
+    const out = stripHeredocDataPayloads("curl -d @- <<'EOF'\n$(literal) tmux send-keys\nEOF\n")
+    expect(out).not.toContain('tmux send-keys')
+  })
+
+  it('gateDecision: a real report sent via python3-heredoc-piped-to-curl-@- is ALLOWED', () => {
+    expect(
+      selfPaceDecision('Bash', {
+        command:
+          `python3 -c "import json,sys; print(json.dumps({'content':sys.argv[1]}))" ` +
+          `'the tmux send-keys path writes scheduled_tasks.json on /loop' | ` +
+          `curl -X POST http://localhost:3420/api/messages -d @-`,
+      }).deny,
+    ).toBe(false)
+  })
+
+  it('gateDecision: a heredoc-built curl report mentioning trigger words as prose is ALLOWED', () => {
+    expect(
+      selfPaceDecision('Bash', {
+        command:
+          `curl -X POST http://localhost:3420/api/messages -d @- <<'EOF'\n` +
+          `{"to":"mikrob","content":"root cause: tmux send-keys writes scheduled_tasks.json on /loop"}\n` +
+          `EOF\n`,
+      }).deny,
+    ).toBe(false)
+  })
+
+  it('gateDecision: a REAL tmux self-pace hidden in a python heredoc piped to curl -d @- is STILL DENIED', () => {
+    expect(
+      selfPaceDecision('Bash', {
+        command:
+          `python3 - <<'PY' | curl -X POST http://localhost:3420/api/messages -d @-\n` +
+          `import subprocess\n` +
+          `subprocess.run(['tmux', 'send-keys', '-t', 'self', 'go'])\n` +
+          `PY\n`,
+      }).deny,
+    ).toBe(true)
+  })
+
+  it('gateDecision: STILL denies a real WRITE to /api/schedules sent via the heredoc idiom', () => {
+    expect(
+      selfPaceDecision('Bash', {
+        command:
+          `curl -X POST http://localhost:3420/api/schedules -d @- <<'EOF'\n{"schedule":"*/5 * * * *"}\nEOF\n`,
+      }).deny,
+    ).toBe(true)
   })
 })
 
