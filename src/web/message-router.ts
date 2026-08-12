@@ -261,6 +261,18 @@ let _tickRunning = false
 // normally surface, including the 60-minute abandon window, requires a tick to
 // run at all). null while no tick is in flight.
 let _tickStartedAt: number | null = null
+// Generation counter (card 5094561b, Cybersec adversarial finding on 4a406989's watchdog,
+// MEDIUM/non-blocking): _tickRunning/_tickStartedAt alone are simple shared state with no
+// notion of WHICH tick owns them. If a zombie tick's own await finally settles very late --
+// after the watchdog has ALREADY force-cleared its guard and a third, genuinely running tick
+// has started -- the zombie's `finally` unconditionally clears the guard again, falsely
+// freeing a tick that is not the zombie's own. The next 5s firing then sees _tickRunning
+// false and starts a FOURTH tick concurrently with the still-running third. Measured with a
+// fake-timer probe: readyCallCount goes 3 -> 4, i.e. a tick starts while another is
+// genuinely in flight. Damage is bounded (markMessageDelivered is a status-guarded UPDATE,
+// so at most a duplicate tmux injection, not data loss/privilege escalation) but the guard's
+// entire PURPOSE is serializing ticks, so this defeats it under a specific, real timing.
+let _tickGeneration = 0
 // Every documented single await inside a tick is individually bounded well
 // under this (tmux capture/inject: 3-8s; federated HTTP: 5s x 3 messages;
 // session-send-lock fail-open: 60s), so a tick genuinely working through a
@@ -438,11 +450,18 @@ export function startMessageRouter(): NodeJS.Timeout {
     }
     _tickRunning = true
     _tickStartedAt = Date.now()
+    const myGen = ++_tickGeneration
     try {
       await runMessageRouterTick()
     } finally {
-      _tickRunning = false
-      _tickStartedAt = null
+      // Only clear if THIS invocation is still the current generation. A zombie tick's
+      // await can settle long after the watchdog force-cleared its guard and started a
+      // newer generation -- without this check, the zombie's finally would clear the
+      // NEWER tick's guard instead of its own (card 5094561b).
+      if (myGen === _tickGeneration) {
+        _tickRunning = false
+        _tickStartedAt = null
+      }
     }
   }, 5000)
 }
