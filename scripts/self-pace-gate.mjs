@@ -119,6 +119,41 @@ const SCHEDULER_RX = new RegExp(
 // schedule-API read exemptions): crontab -l, launchctl list/print, atq.
 const SCHEDULER_READ_RX = new RegExp(String.raw`(^|${SCHED_BOUNDARY}\s*)${SCHED_PREFIX}(crontab\s+-l\b|launchctl\s+(?:list|print|dumpstate|blame|examine)\b|atq\b)`, 'i')
 
+// UNANCHORED companion to SCHEDULER_RX (card 46c4ad4a, Cybered's finding on 4638c14c): the
+// anchored check above only sees segments AFTER maskInertLiterals blanks every heredoc body
+// entirely, so a crontab/launchctl/at/systemd-run/batch invocation hidden inside a heredoc -- the
+// EXACT vector this gate exists to catch for tmux (measured 2026-08-05, this gate's founding
+// incident) -- was invisible to BOTH the anchored check (masked away) AND the unanchored one
+// (the scheduler group was never added there, only tmux/nohup/loop). Tested against the NAIVE
+// segments (heredoc bodies included, since splitSegments' newline split turns each heredoc body
+// line into its own segment), same treatment as SELF_PACE_BASH_PATTERNS.
+//
+// Reuses SCHEDULER_RX's own per-binary shape guards (AT_INVOCATION/LAUNCHCTL_SUBCOMMAND) so the
+// SAME prose-collision classes already fixed there (measured: "at least 80%", a launchd job
+// label in a status report) do not reopen here.
+//
+// crontab/systemd-run get a NARROWER guard here than SCHEDULER_RX gives them, unlike the other
+// two. SCHEDULER_RX's crontab/systemd-run branch is bare (no shape check) because it is ANCHORED
+// to a command-start position, which prose essentially never occupies. This check is NOT
+// anchored, so ordinary prose reaches it too -- measured directly while building this fix:
+// `echo "the crontab entries need review"` false-denied with a plain end-of-segment-or-flag
+// guard (rejected because "entries" is neither). The guard actually used instead is a NEGATIVE
+// lookahead: reject only when the binary is followed by whitespace then a lowercase word
+// character -- i.e. reject the ENGLISH-SENTENCE shape specifically, accept everything else
+// (a flag, end-of-segment, or being immediately followed by a quote/comma/bracket with NO
+// whitespace, e.g. the adversarial `subprocess.run(["crontab","-r"])` shape -- Cybered's own
+// example for this exact card). A plain end-of-segment-or-flag guard would have missed that
+// python-list form entirely, since a `","` follows with no space and no leading `-`.
+const SCHED_BARE_SHAPE = String.raw`(?!\s+[a-z])`
+const UNANCHORED_SCHEDULER_RX = new RegExp(
+  String.raw`\b(?:crontab|systemd-run)\b(?!-)(?!\s*=)${SCHED_BARE_SHAPE}|\blaunchctl\b(?!-)(?!\s*=)${LAUNCHCTL_SUBCOMMAND}|\b(?:batch|at)\b(?!-)(?!\s*=)${AT_INVOCATION}`,
+  'i',
+)
+const UNANCHORED_SCHEDULER_READ_RX = new RegExp(
+  String.raw`crontab\s+-l\b|launchctl\s+(?:list|print|dumpstate|blame|examine)\b|atq\b`,
+  'i',
+)
+
 // The Claude self-schedule store. Blocked for WRITE on any route (a Bash write,
 // or the native Write/Edit/NotebookEdit tool); a read/grep is legit diagnostics.
 const SCHEDULE_STORE_RX = /scheduled_tasks\.json/i
@@ -265,6 +300,36 @@ export function maskInertLiterals(command) {
     cur += c; i++
   }
   return cur
+}
+
+// Collects the text of every heredoc BODY in the command (card 46c4ad4a, Cybered's finding on
+// 4638c14c). maskInertLiterals above blanks these to nothing FOR THE ANCHORED SCHEDULER CHECK --
+// this is the counterpart that surfaces them instead, for the UNANCHORED scheduler scan
+// specifically (see its call site). Mirrors maskInertLiterals' own heredoc-tag matching (this
+// file already accepts each function having its own narrowly-scoped heredoc walk -- see
+// stripHeredocDataPayloads below -- rather than a shared state machine multiple call sites would
+// have to agree on). Best-effort: an unterminated heredoc or one with no body yet simply stops
+// collecting further bodies, matching this file's fail-open-on-parse, fail-closed-on-content
+// stance (the naive/anchored checks elsewhere still cover whatever this could not resolve).
+export function extractHeredocBodies(command) {
+  const src = String(command ?? '').replace(/\\\r?\n/g, ' ')
+  const bodies = []
+  let i = 0
+  while (i < src.length) {
+    const here = /^<<-?\s*(?:'([^']*)'|"([^"]*)"|([A-Za-z_]\w*))/.exec(src.slice(i))
+    if (!here) { i++; continue }
+    const tag = here[1] ?? here[2] ?? here[3]
+    i += here[0].length
+    const nl = src.indexOf('\n', i)
+    if (nl === -1) break // heredoc announced but no body yet
+    i = nl + 1
+    const endRx = new RegExp(`^[ \\t]*${tag.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}[ \\t]*$`, 'm')
+    const rel = endRx.exec(src.slice(i))
+    if (!rel) break // unterminated
+    bodies.push(src.slice(i, i + rel.index))
+    i += rel.index + rel[0].length
+  }
+  return bodies
 }
 
 // Blank out curl/HTTP DATA-PAYLOAD arguments before self-pace matching. A -d /
@@ -478,6 +543,20 @@ export function gateDecision(toolName, toolInput) {
     for (const seg of (masked == null ? naiveSegs : splitSegments(masked))) {
       // scheduler binaries: deny the exec/submit forms, allow pure read-listing
       if (SCHEDULER_RX.test(seg) && !SCHEDULER_READ_RX.test(seg)) return { deny: true }
+    }
+    // scheduler binaries hidden in a heredoc BODY (card 46c4ad4a): maskInertLiterals blanks
+    // every heredoc body before the anchored check above ever sees it (by design, see its own
+    // header comment), so this is the ONE place such a body is genuinely invisible. Scoped
+    // specifically to extracted heredoc body text -- NOT every naive segment broadly -- because
+    // that broader attempt regressed a pre-existing false-positive fix (measured while building
+    // this: `echo 'foo | crontab | bar'`, a single quoted argument, pipe-split by the naive
+    // segmenter into a bare `crontab` segment with nothing around it, false-denied). A heredoc
+    // body is not shell-quoted prose a naive split can fake a command position inside of -- it
+    // is literal text bounded by real, unambiguous open/terminator lines.
+    for (const body of extractHeredocBodies(safeCommand)) {
+      for (const seg of splitSegments(body)) {
+        if (UNANCHORED_SCHEDULER_RX.test(seg) && !UNANCHORED_SCHEDULER_READ_RX.test(seg)) return { deny: true }
+      }
     }
   }
   return { deny: false }
