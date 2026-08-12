@@ -8,6 +8,7 @@ import { describe, it, expect } from 'vitest'
 import {
   routeTask,
   classifyCategory,
+  stripGateLine,
   NON_OFFLOADABLE_CATEGORIES,
 } from '../local-llm-router.js'
 
@@ -317,5 +318,68 @@ describe('REGRESSION: auth-implementation primitives (TOTP/step-up/burn/login-ra
     expect(routeTask({ description: 'update the burn rate chart on the finance dashboard' }).route).toBe(
       'local',
     )
+  })
+})
+
+describe('stripGateLine (card 14a73ce6, measured false-positive: card 543d62ff)', () => {
+  it('removes a single trailing "Gate: ..." line', () => {
+    const stripped = stripGateLine('Fix the off-by-one in the paginator.\n\nGate: QA.')
+    expect(stripped).toBe('Fix the off-by-one in the paginator.')
+  })
+
+  it('removes MULTIPLE Gate: lines (an earlier tier decision superseded by a later one)', () => {
+    const stripped = stripGateLine('Bump the test timeout.\n\nGate: QA only.\n\nGate: QA + Cybersec (updated).')
+    expect(stripped).not.toContain('Gate:')
+    expect(stripped).toBe('Bump the test timeout.')
+  })
+
+  it('is case-insensitive and tolerant of leading whitespace/indentation', () => {
+    expect(stripGateLine('text\n  gate:   qa')).toBe('text')
+    expect(stripGateLine('text\nGATE: QA + Cybersec')).toBe('text')
+  })
+
+  it('leaves non-Gate: content completely untouched', () => {
+    const desc = 'Line one.\nLine two.\nLine three.'
+    expect(stripGateLine(desc)).toBe(desc)
+  })
+
+  it('does NOT strip a line that merely mentions "gate" without the line-anchored label shape', () => {
+    // "gate" as an ordinary word (not the fleet's "Gate: ..." convention) must survive -- this is
+    // deliberately narrow, matching gate-dispatch-check.sh's own GATE_LINE extraction shape.
+    const desc = 'The login gate keeps failing under load, not a Gate: line at all.'
+    expect(stripGateLine(desc)).toBe(desc)
+  })
+})
+
+describe('the Gate: line no longer contaminates classification (card 14a73ce6)', () => {
+  it('REGRESSION (real incident 47bc80e1): a mechanical constant-pin + unit-test task now routes LOCAL once its own Gate: trailer is excluded', () => {
+    const description =
+      'MIN_REASON_CHARS threshold is not pinned, and exemptionReasonFor() has no direct unit test. ' +
+      'Pin the constant and add a test for the pure function.\n\n' +
+      'Gate: QA + Cybersec (biztonsag-relevans guard tesztlefedettsege -- a legutobbi hasonlo kartya tiere).'
+    // Before the fix, classifyCategory saw "biztonsag" in the Gate: trailer and forced online.
+    expect(classifyCategory(description)).toBeNull()
+    expect(routeTask({ description }).route).toBe('local')
+  })
+
+  it('REGRESSION (real incident 54699bbb): a CI/test-signal-integrity bug now routes LOCAL once its own Gate: trailer is excluded', () => {
+    const description =
+      'vitest exits code 1 even though every test is green (unhandled rejection in onTaskUpdate). ' +
+      'Find and fix the reporter bug so a real CI failure cannot slip through unnoticed.\n\n' +
+      'Gate: QA + rotalt biztonsagi gate a rule 4 alapesete szerint (trust-boundary/uj tamadasi felulet).'
+    expect(classifyCategory(description)).toBeNull()
+    expect(routeTask({ description }).route).toBe('local')
+  })
+
+  it('CONTROL: a genuine security signal in the TASK BODY (not just the Gate: line) still routes ONLINE', () => {
+    // Proves the fix narrows the false-positive source, it does not weaken real detection.
+    const description =
+      'Add CSRF token validation to the password-reset endpoint.\n\nGate: QA + Cybersec.'
+    expect(routeTask({ description }).route).toBe('online')
+  })
+
+  it('CONTROL: a description with NO Gate: line at all is unaffected by stripGateLine', () => {
+    const description = 'Rename this variable consistently across the file.'
+    expect(routeTask({ description }).route).toBe('local')
   })
 })

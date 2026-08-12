@@ -235,9 +235,24 @@ export function normalizeForMatch(input: string): string {
 }
 
 
+// Same line-shape gate-dispatch-check.sh already extracts (its GATE_LINE lookup) -- reused here so
+// the two never drift on what counts as a Gate: line, even though this file uses it for the
+// opposite purpose (removing the line, not reading its value).
+const GATE_LINE_RX = /^[ \t]*Gate[ \t]*:[ \t]*.*$/gim
+
+/** Strips the card's own "Gate: ..." metadata line(s) (card 14a73ce6, measured false-positive:
+ *  543d62ff). This line names WHO reviews the card ("Gate: QA + Cybersec (biztonsag-relevans
+ *  guard tesztlefedettsege...)"), not what the task IS, but routinely carries security vocabulary
+ *  the classifier would otherwise read as describing the task's own content -- 2 of 6 measured
+ *  false positives (54699bbb, 47bc80e1) were driven entirely by this line. Deliberately narrow:
+ *  only removes lines shaped like the fleet's own Gate: convention, nothing else. */
+export function stripGateLine(description: string): string {
+  return description.replace(GATE_LINE_RX, '').trim()
+}
+
 /** The non-offloadable category a description falls into, or null. Deterministic, no LLM. */
 export function classifyCategory(description: string): NonOffloadableCategory | null {
-  const text = normalizeForMatch(description)
+  const text = normalizeForMatch(stripGateLine(description))
   for (const [category, needles] of CATEGORY_SIGNALS) {
     for (const needle of needles) if (text.includes(needle)) return category
   }
