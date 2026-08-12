@@ -84,7 +84,7 @@ export async function tryHandleMessages(ctx: RouteContext): Promise<boolean> {
     }
     // Qualified to ("peer/agent"): validate at creation time so the sender
     // gets an actionable error NOW instead of a silent 1h abandon. Local
-    // (slash-free) recipients are untouched.
+    // (slash-free) recipients are validated too, below (card 523a1426).
     let storedTo = to.trim()
     if (storedTo.includes('/')) {
       const target = parseQualifiedId(storedTo)
@@ -121,6 +121,20 @@ export async function tryHandleMessages(ctx: RouteContext): Promise<boolean> {
       // legitimate local agent id can contain one, and the channel
       // coordinator inserts directly into the DB, bypassing this endpoint.
       json(res, { error: 'Invalid recipient: use "<system>/<agent>" (slash) for a federated address, not the "federation:x:y" source form' }, 400)
+      return true
+    } else if (!isKnownAgent(sanitizeAgentIdent(storedTo))) {
+      // To-authentication (card 523a1426, Cybersec finding while gating 801774f2): the from-side
+      // guard above stops an unknown SENDER, but a local (slash-free) to_agent was never checked
+      // against isKnownAgent at all -- storedTo just became whatever the caller sent. selectFairBatch
+      // (message-router.ts) buckets pending messages BY to_agent and round-robins across buckets, one
+      // slot per distinct bucket per tick; it has no notion of "real" vs "forged" recipient. Measured:
+      // ~30 forged to_agent values (sent with a valid, known from) each open their own bucket and each
+      // claim one of the ~25 per-tick slots, so real agents' buckets (cybersec/cybered/qa/...) can be
+      // completely crowded out of a tick -- the same starvation class 801774f2 fixed for one stuck
+      // agent, reachable here with nothing but message volume from any token holder. Rejecting an
+      // unknown local recipient at creation time (same sanitizeAgentIdent normalization as the from
+      // check, for the same router-parity reason) means a forged bucket is never created at all.
+      json(res, { error: `unknown agent '${storedTo}' -- to must be a registered fleet agent id, or "<system>/<agent>" for a federated address` }, 400)
       return true
     }
     // Code-side enforcement of the kanban-ref convention: rewrite any

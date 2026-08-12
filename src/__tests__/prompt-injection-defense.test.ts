@@ -344,6 +344,34 @@ describe('/api/messages from-authentication', () => {
 })
 
 // ---------------------------------------------------------------------------
+// 3b. to-authentication (card 523a1426): the symmetric guard for the LOCAL
+// (slash-free) recipient -- selectFairBatch has no notion of a "real" vs
+// "forged" to_agent, so an unknown local recipient must be rejected at
+// creation time the same way an unknown sender already is.
+// ---------------------------------------------------------------------------
+describe('/api/messages to-authentication (card 523a1426)', () => {
+  const src = readFileSync(join(REPO_ROOT, 'src', 'web', 'routes', 'messages.ts'), 'utf8')
+
+  it('calls isKnownAgent with the sanitized LOCAL to field', () => {
+    expect(src).toMatch(/isKnownAgent\(\s*sanitizeAgentIdent\(storedTo\)\s*\)/)
+  })
+
+  it('rejects an unknown local recipient with 400', () => {
+    expect(src).toMatch(/unknown agent.*400|400.*unknown agent/s)
+  })
+
+  it('the to-auth check runs only for the LOCAL branch (not the qualified/colon-form ones)', () => {
+    // Structural: the check must be reachable ONLY when storedTo has neither
+    // '/' nor ':' -- an `else if` sibling of those two branches, not a
+    // standalone check that could also re-run on an already-validated
+    // federated/rejected-colon address.
+    expect(src).toMatch(
+      /storedTo\.includes\(':'\)[\s\S]{0,400}\} else if \(!isKnownAgent\(sanitizeAgentIdent\(storedTo\)\)\)/,
+    )
+  })
+})
+
+// ---------------------------------------------------------------------------
 // 4. wrapUntrustedFetch + generateFetchNonce in prompt-safety.ts
 // ---------------------------------------------------------------------------
 describe('generateFetchNonce', () => {

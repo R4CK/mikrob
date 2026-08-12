@@ -10,9 +10,10 @@ import { _setFederationStoreDirForTest, reloadFederationForTest } from '../web/f
 import { AGENTS_BASE_DIR } from '../web/agent-config.js'
 import type { RouteContext } from '../web/routes/types.js'
 
-// Fixture agent directories required by the from-auth check in /api/messages.
-// 'localboss' is the fictional test sender used throughout this suite.
-const FIXTURE_AGENTS = ['localboss']
+// Fixture agent directories required by the from/to-auth checks in /api/messages
+// (card 523a1426 added the to-side check). 'localboss' is the fictional test
+// sender, 'localmate' the fictional local recipient, both used throughout this suite.
+const FIXTURE_AGENTS = ['localboss', 'localmate']
 
 const TMP = mkdtempSync(join(tmpdir(), 'fed-feedback-test-'))
 const IN_TOKEN = 'b'.repeat(64)
@@ -80,6 +81,34 @@ describe('POST /api/messages colon-form to guard (L5)', () => {
   it('still accepts a normal local recipient and a valid qualified one', async () => {
     expect((await postMessage({ from: 'localboss', to: 'localmate', content: 'hi' })).statusCode).toBe(200)
     expect((await postMessage({ from: 'localboss', to: 'teodor/kutato', content: 'hi' })).statusCode).toBe(200)
+  })
+})
+
+// Card 523a1426 (Cybersec finding while gating 801774f2): selectFairBatch buckets pending
+// messages BY to_agent with no notion of "real" vs "forged" recipient -- a flood of distinct,
+// made-up local to_agent values (sent with a valid, known from) each open their own bucket and
+// each claim one of the ~25 per-tick round-robin slots, starving real agents' buckets out of a
+// tick. Rejecting an unknown local recipient AT CREATION means a forged bucket can never exist.
+describe('POST /api/messages to-authentication (card 523a1426)', () => {
+  it('rejects an unknown LOCAL recipient with 400 -- a forged to_agent can never open a fair-batch bucket', async () => {
+    const r = await postMessage({ from: 'localboss', to: 'totally-made-up-agent-42', content: 'hi' })
+    expect(r.statusCode).toBe(400)
+    expect(r.json.error).toMatch(/unknown agent/i)
+  })
+
+  it('accepts the special MAIN_AGENT_ID recipient (not a fixture directory, but always known)', async () => {
+    expect((await postMessage({ from: 'localboss', to: 'marveen', content: 'hi' })).statusCode).toBe(200)
+  })
+
+  it('a flood of distinct forged recipients is rejected one by one -- none is ever stored under its own bucket name', async () => {
+    for (let i = 0; i < 30; i++) {
+      const to = `attacker-bucket-${i}`
+      const r = await postMessage({ from: 'localboss', to, content: 'flood' })
+      expect(r.statusCode).toBe(400)
+      // Proves the row was never created at all, not merely unreachable by some other query --
+      // a forged to_agent that WAS persisted would still open its own selectFairBatch bucket.
+      expect(getPendingMessages(to)).toHaveLength(0)
+    }
   })
 })
 
