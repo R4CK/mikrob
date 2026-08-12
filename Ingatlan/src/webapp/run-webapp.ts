@@ -6,9 +6,11 @@ import { join, dirname } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { openDb } from '../db.js'
 import { createWebappServer, startWebappServer } from './webapp-server.js'
+import { createStaticFileServer } from './static-server.js'
 
 const HERE = dirname(fileURLToPath(import.meta.url))
 const DB_PATH = join(HERE, '..', '..', 'data', 'ingatlan.db')
+const FRONTEND_DIST = join(HERE, '..', '..', 'frontend', 'dist')
 const PORT = Number(process.env.INGATLAN_WEBAPP_PORT || 8788)
 
 function requireEnv(name: string): string {
@@ -38,6 +40,7 @@ async function main(): Promise<void> {
     clientId,
     allowlist: [allowedEmail],
     db,
+    serveDashboard: createStaticFileServer(FRONTEND_DIST),
   })
 
   const actualPort = await startWebappServer(server, PORT)
