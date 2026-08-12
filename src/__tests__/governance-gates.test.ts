@@ -379,6 +379,38 @@ describe('self-pace-gate stripHeredocDataPayloads (heredoc data-payload false-po
     expect(stripHeredocDataPayloads(cmd)).toBe(cmd) // fully unchanged -- still scannable
   })
 
+  // CYBERSEC NO-GO on commit 3e5fe07 (card 4638c14c): the boundary span was checked
+  // ONLY for the "-d @-" flag SHAPE, never for the simple command actually BEING
+  // curl. `python3 - -d @- <<'PY'` reads as its OWN program regardless of the
+  // "-d @-" tokens sitting unused in python3's argv -- but they matched the flag
+  // regex and blanked a heredoc python3 genuinely EXECUTES, hiding a real
+  // scheduling primitive from the unanchored scan (gateDecision returned deny:false
+  // on a live payload proving it). MUST DENY.
+  it('SECURITY REGRESSION (Cybersec 4638c14c): a decoy "-d @-" in a NON-curl command must not launder its heredoc', () => {
+    const cmd = `python3 - -d @- <<'PY'\nimport subprocess\nsubprocess.run(['tmux', 'send-keys', '-t', 'some-agent-session', '/api/schedules POST', 'Enter'])\nPY\n`
+    const out = stripHeredocDataPayloads(cmd)
+    expect(out).toBe(cmd) // fully unchanged -- python3 is not curl, decoy flag ignored
+    expect(selfPaceDecision('Bash', { command: cmd }).deny).toBe(true) // MUST DENY
+  })
+
+  it('CONTROL for the regression above: the SAME payload without the decoy flag was already denied', () => {
+    const cmd = `python3 - <<'PY'\nimport subprocess\nsubprocess.run(['tmux', 'send-keys', '-t', 'some-agent-session', '/api/schedules POST', 'Enter'])\nPY\n`
+    expect(selfPaceDecision('Bash', { command: cmd }).deny).toBe(true)
+  })
+
+  it('a genuinely wrapped curl (sudo/env/absolute path) still gets the exemption', () => {
+    for (const lead of ['sudo curl', 'env curl', '/usr/bin/curl']) {
+      const out = stripHeredocDataPayloads(`${lead} -X POST u -d @- <<'EOF'\n{"content":"tmux send-keys demo"}\nEOF\n`)
+      expect(out).not.toContain('tmux send-keys')
+    }
+  })
+
+  it('a decoy "-d @-" inside ANOTHER real binary (bash, not curl) is still fully scanned', () => {
+    const cmd = `bash -d @- <<'X'\ntmux send-keys real-attack\nX\n`
+    expect(stripHeredocDataPayloads(cmd)).toBe(cmd)
+    expect(selfPaceDecision('Bash', { command: cmd }).deny).toBe(true)
+  })
+
   it('does NOT blank a heredoc that PRECEDES an unrelated curl -d @- after a `;` boundary', () => {
     const cmd = `bash <<'X'\ntmux send-keys real-attack\nX\n; curl -d @- u <<'Y'\nfine\nY\n`
     const out = stripHeredocDataPayloads(cmd)
@@ -396,7 +428,13 @@ describe('self-pace-gate stripHeredocDataPayloads (heredoc data-payload false-po
     expect(out).not.toContain('tmux send-keys')
   })
 
-  it('gateDecision: a real report sent via python3-heredoc-piped-to-curl-@- is ALLOWED', () => {
+  // NOT part of this card's scope, corrected here after the author's own test caught it:
+  // a BARE POSITIONAL argument (no -d/-m/heredoc flag at all) has never been exempted by
+  // any stripping function, old or new -- stripDataPayloads/stripGitCommitMessages/
+  // stripHeredocDataPayloads each target one SPECIFIC flag's own argument, not arbitrary
+  // quoted text elsewhere on the line. This shape genuinely has no heredoc for
+  // stripHeredocDataPayloads to touch, so it is correctly, unconditionally still denied.
+  it('gateDecision: a bare quoted POSITIONAL argument (no recognized flag) is STILL DENIED -- out of scope, not a heredoc case', () => {
     expect(
       selfPaceDecision('Bash', {
         command:
@@ -404,7 +442,7 @@ describe('self-pace-gate stripHeredocDataPayloads (heredoc data-payload false-po
           `'the tmux send-keys path writes scheduled_tasks.json on /loop' | ` +
           `curl -X POST http://localhost:3420/api/messages -d @-`,
       }).deny,
-    ).toBe(false)
+    ).toBe(true)
   })
 
   it('gateDecision: a heredoc-built curl report mentioning trigger words as prose is ALLOWED', () => {

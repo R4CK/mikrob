@@ -333,6 +333,20 @@ export function stripDataPayloads(seg) {
 // must NOT touch. Scoping to "since the last boundary" means a preceding `python3 -`
 // with no `-d @-` in ITS OWN span leaves that heredoc fully exposed to the scan,
 // while `curl ... -d @- <<TAG` (same simple command, no boundary in between) blanks.
+//
+// SECURITY REGRESSION FOUND BY CYBERSEC BEFORE LANDING (card 4638c14c, NO-GO on
+// commit 3e5fe07, fixed here): the boundary span was checked ONLY for the `-d @-`
+// FLAG SHAPE, never for the simple command actually BEING curl. `python3 - -d @-
+// <<'PY' ... PY` has "-d @-" sitting in python3's own (ignored) argv, matched
+// CURL_STDIN_DATA_RX, and blanked a heredoc body that python3 -- not curl --
+// genuinely EXECUTES as a program, hiding a real tmux/scheduler call from the
+// unanchored scan (deny:false on a live payload proving it). CURL_LEADING_RX now
+// pins the span's OWN leading binary to curl (mirroring SCHED_PREFIX's wrapper
+// handling below, so `sudo curl ...` / `env curl ...` / `/usr/bin/curl ...` still
+// count); `feedsCurlStdin` requires BOTH the leading-curl match AND the flag shape,
+// so a decoy `-d @-` sitting in some OTHER binary's own argv can no longer curl-y
+// launder a heredoc it does not read as its data.
+const CURL_LEADING_RX = /^\s*(?:(?:[A-Za-z_]\w*=\S*|sudo|env|command|exec|nice|builtin|time)\s+)*(?:\S*\/)?curl\b/i
 const CURL_STDIN_DATA_RX = /(?:^|\s)(?:-d|--data(?:-(?:raw|binary|ascii))?)(?:\s+|=)@-(?=\s|$)/i
 export function stripHeredocDataPayloads(command) {
   const src = String(command ?? '')
@@ -344,7 +358,8 @@ export function stripHeredocDataPayloads(command) {
     if (c === ';' || c === '&' || c === '|' || c === '\n') { out += c; i++; boundary = i; continue }
     const here = /^<<-?\s*(?:'([^']*)'|"([^"]*)"|([A-Za-z_]\w*))/.exec(src.slice(i))
     if (!here) { out += c; i++; continue }
-    const feedsCurlStdin = CURL_STDIN_DATA_RX.test(src.slice(boundary, i))
+    const span = src.slice(boundary, i)
+    const feedsCurlStdin = CURL_LEADING_RX.test(span) && CURL_STDIN_DATA_RX.test(span)
     const tag = here[1] ?? here[2] ?? here[3]
     const quotedTag = here[1] != null || here[2] != null
     out += here[0]
