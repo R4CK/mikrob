@@ -67,6 +67,35 @@ pontosíthatók, nem újra kitalálva.
    a kiegészítő automatikusan kiolvassa és elküldi a hirdetéseket. `npm run ingatlan:analyze`
    ezután valós adatot fog mutatni.
 
+## Állapot (3a/4 kártya: OAuth login + session + védett API-végpontok)
+
+**KÉSZ és tesztelt** (197 teszt összesen az Ingatlan-fán): a hivatalos `google-auth-library`
+(Google saját, karbantartott csomagja -- 10. szabály) `OAuth2Client`-jét egy injektált
+port-interfészen keresztül használja (`webapp/oauth-flow.ts`), így a teljes bejelentkezési logika
+tesztelhető valódi Google-hitelesítő adatok nélkül is (`webapp-server.test.ts`: teljes login->
+callback->API kör, allowlist-elutasítás, nem-verifikált email elutasítása, CSRF state
+egyszer-használatos + lejáró, ismeretlen/lejárt session 401, logout valóban invalidál
+szerver-oldalon). `webapp/session-store.ts` in-memory session-tár (egyszemélyes, lokális app --
+nincs szükség adatbázis-alapú session-re), `webapp/allowlist.ts` explicit email-allowlist
+(KIZÁRÓLAG a `INGATLAN_ALLOWED_EMAIL`-ben megadott cím fér hozzá).
+
+**Telepítés Petinek:**
+1. [Google Cloud Console](https://console.cloud.google.com/apis/credentials) -> hozz létre egy
+   OAuth 2.0 Client ID-t ("Web application" típus). Az "Authorized redirect URIs" mezőbe:
+   `http://127.0.0.1:8788/auth/google/callback` (vagy a saját portod, ha eltér).
+2. Add meg a kapott Client ID-t, Client Secret-et, és a saját Google email-címedet
+   `Ingatlan/.env`-ben (gitignore-olt):
+   ```
+   INGATLAN_GOOGLE_CLIENT_ID=...
+   INGATLAN_GOOGLE_CLIENT_SECRET=...
+   INGATLAN_ALLOWED_EMAIL=peti@gmail.com
+   ```
+3. `npm run ingatlan:webapp` -- elindítja a szervert, kiírja a login-linket.
+
+A frontend (65e96a20) még nincs bekötve -- addig egy hitelesített oldal-kérés egy egyszerű
+placeholder JSON-t ad vissza (nem hibát), az `/api/*` végpontok viszont már most is valós adatot
+szolgálnak ki, hitelesítve.
+
 ## Állapot (2/4 kártya: elemző réteg)
 
 **KÉSZ és tesztelt** (28 teszt, `src/analysis/`): grouped (ház/lakás/összevont) átlag/medián/
