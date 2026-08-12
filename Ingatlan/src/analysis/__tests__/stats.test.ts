@@ -70,8 +70,9 @@ describe('listingsWithinBand', () => {
   })
 
   it('supports a custom band percentage', () => {
-    const snapshots = [snap({ id: 'a', nm2Ar: 890 }), snap({ id: 'b', nm2Ar: 910 })]
+    // 930: within +-10% of 1000 (900..1100) but outside +-5% (950..1050).
+    const snapshots = [snap({ id: 'a', nm2Ar: 930 }), snap({ id: 'b', nm2Ar: 970 })]
     expect(listingsWithinBand(snapshots, 1000, 0.1).map((s) => s.id)).toEqual(['a', 'b'])
-    expect(listingsWithinBand(snapshots, 1000, 0.05).map((s) => s.id)).toEqual([])
+    expect(listingsWithinBand(snapshots, 1000, 0.05).map((s) => s.id)).toEqual(['b'])
   })
 })
