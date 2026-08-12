@@ -31,7 +31,8 @@
     "cron-parser": "^5.0.0",
     "google-auth-library": "^11.0.2",
     "pino": "^9.6.0",
-    "pino-pretty": "^13.0.0"
+    "pino-pretty": "^13.0.0",
+    "recharts": "^3.10.1"
   },
   "devDependencies": {
     "@playwright/test": "^1.61.0",
