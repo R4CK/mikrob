@@ -1,0 +1,332 @@
+/* Design tokens (DESIGN-IA.md section 7, card 9ca81f45/Fron Ted). Dark values are the ones
+   explicitly specified; the light palette's accent colors (house/apt/gold/good/warn) are kept
+   IDENTICAL to dark for brand consistency (a common, deliberate light/dark pairing convention),
+   only bg/surface/text were derived (the design doc names bg/surface for light explicitly and
+   defers the rest to its artifact, which is not machine-readable from here -- documented gap). */
+:root {
+  --house: #9580ff;
+  --apt: #36caf5;
+  --gold: #f0a500;
+  --good: #34d399;
+  --warn: #f87171;
+
+  --bg: #eef2fa;
+  --surface: #ffffff;
+  --text1: #16213a;
+  --text2: #5b6d8f;
+  --border: #dbe3f0;
+}
+
+:root[data-theme='dark'] {
+  --bg: #0d1525;
+  --surface: #152038;
+  --text1: #dce8fa;
+  --text2: #7d96c4;
+  --border: #24314f;
+}
+
+* {
+  box-sizing: border-box;
+}
+
+body {
+  margin: 0;
+  background: var(--bg);
+  color: var(--text1);
+  font-family:
+    system-ui,
+    -apple-system,
+    'Segoe UI',
+    sans-serif;
+}
+
+.app-shell {
+  display: flex;
+  min-height: 100vh;
+}
+
+/* ---- Top bar ---- */
+.top-bar {
+  position: fixed;
+  top: 0;
+  left: 0;
+  right: 0;
+  height: 56px;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 0 16px;
+  background: var(--surface);
+  border-bottom: 1px solid var(--border);
+  z-index: 10;
+}
+
+.top-bar .brand {
+  font-weight: 700;
+}
+
+.top-bar .brand small {
+  display: block;
+  font-weight: 400;
+  color: var(--text2);
+  font-size: 0.75rem;
+}
+
+.freshness-dot {
+  display: inline-block;
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  margin-right: 6px;
+}
+.freshness-dot.green {
+  background: var(--good);
+}
+.freshness-dot.yellow {
+  background: var(--gold);
+}
+.freshness-dot.red {
+  background: var(--warn);
+}
+.freshness-dot.unknown {
+  background: var(--text2);
+}
+
+.icon-button {
+  min-width: 44px;
+  min-height: 44px;
+  border: none;
+  background: transparent;
+  cursor: pointer;
+  font-size: 1.1rem;
+  color: var(--text1);
+}
+
+/* ---- Nav: sidebar on desktop, bottom tab bar on mobile (DESIGN-IA.md section 8) ---- */
+.nav {
+  position: fixed;
+  top: 56px;
+  bottom: 0;
+  left: 0;
+  width: 200px;
+  background: var(--surface);
+  border-right: 1px solid var(--border);
+  padding-top: 8px;
+}
+
+.nav-item {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 12px 16px;
+  min-height: 44px;
+  color: var(--text2);
+  text-decoration: none;
+  border-left: 3px solid transparent;
+  cursor: pointer;
+  background: none;
+  border-top: none;
+  border-bottom: none;
+  border-right: none;
+  width: 100%;
+  text-align: left;
+  font-size: 0.95rem;
+}
+
+.nav-item.active {
+  color: var(--text1);
+  border-left-color: var(--gold);
+  font-weight: 600;
+}
+
+.nav-item .badge {
+  margin-left: auto;
+  background: var(--gold);
+  color: #1a1a1a;
+  border-radius: 999px;
+  padding: 1px 8px;
+  font-size: 0.75rem;
+}
+
+main.content {
+  margin-top: 56px;
+  margin-left: 200px;
+  padding: 20px;
+  flex: 1;
+  width: 100%;
+}
+
+@media (max-width: 900px) {
+  main.content {
+    margin-left: 0;
+    padding: 12px;
+    padding-bottom: 72px; /* room for the bottom tab bar */
+  }
+  .nav {
+    top: auto;
+    bottom: 0;
+    left: 0;
+    right: 0;
+    width: 100%;
+    height: 56px;
+    display: flex;
+    border-right: none;
+    border-top: 1px solid var(--border);
+    padding-top: 0;
+  }
+  .nav-item {
+    flex-direction: column;
+    justify-content: center;
+    gap: 2px;
+    border-left: none;
+    border-top: 3px solid transparent;
+    text-align: center;
+    font-size: 0.7rem;
+  }
+  .nav-item.active {
+    border-left-color: transparent;
+    border-top-color: var(--gold);
+  }
+}
+
+/* ---- KPI strip ---- */
+.kpi-strip {
+  display: grid;
+  grid-template-columns: repeat(4, 1fr);
+  gap: 12px;
+  margin-bottom: 20px;
+}
+@media (max-width: 900px) {
+  .kpi-strip {
+    grid-template-columns: repeat(2, 1fr);
+  }
+}
+.kpi-cell {
+  padding: 14px;
+}
+.kpi-cell .label {
+  color: var(--text2);
+  font-size: 0.8rem;
+}
+.kpi-cell .value {
+  font-size: 1.4rem;
+  font-weight: 700;
+}
+.kpi-cell .delta.good {
+  color: var(--good);
+}
+.kpi-cell .delta.warn {
+  color: var(--warn);
+}
+
+/* ---- Charts row ---- */
+.charts-row {
+  display: grid;
+  grid-template-columns: 3fr 2fr;
+  gap: 16px;
+  margin-bottom: 20px;
+}
+@media (max-width: 900px) {
+  .charts-row {
+    grid-template-columns: 1fr;
+  }
+}
+.chart-card {
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  padding: 12px;
+  min-height: 260px;
+}
+
+/* ---- Median band cards ---- */
+.median-band-cards {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 12px;
+  margin-bottom: 20px;
+}
+@media (max-width: 680px) {
+  .median-band-cards {
+    grid-template-columns: 1fr;
+  }
+}
+.median-band-card {
+  background: var(--surface);
+  border: 1px solid var(--gold);
+  border-radius: 10px;
+  padding: 14px;
+}
+
+/* ---- Table ---- */
+table.listings {
+  width: 100%;
+  border-collapse: collapse;
+  background: var(--surface);
+  border-radius: 10px;
+  overflow: hidden;
+}
+table.listings th,
+table.listings td {
+  padding: 10px 12px;
+  text-align: left;
+  border-bottom: 1px solid var(--border);
+  font-size: 0.9rem;
+}
+table.listings tr.in-band {
+  background: color-mix(in srgb, var(--gold) 12%, transparent);
+}
+.type-chip {
+  display: inline-block;
+  padding: 2px 8px;
+  border-radius: 999px;
+  font-size: 0.75rem;
+}
+.type-chip.haz {
+  background: color-mix(in srgb, var(--house) 20%, transparent);
+  color: var(--house);
+}
+.type-chip.lakas {
+  background: color-mix(in srgb, var(--apt) 20%, transparent);
+  color: var(--apt);
+}
+.delta.good {
+  color: var(--good);
+}
+.delta.warn {
+  color: var(--warn);
+}
+.median-pill {
+  font-size: 0.75rem;
+}
+.median-pill.belul {
+  color: var(--gold);
+}
+.median-pill.folott {
+  color: #f97316;
+}
+.median-pill.alatt {
+  color: var(--text2);
+}
+
+/* ---- State panels (loading/empty/error/offline) ---- */
+.state-panel {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 12px;
+  padding: 60px 20px;
+  color: var(--text2);
+  text-align: center;
+}
+.state-panel button {
+  min-height: 44px;
+  padding: 0 18px;
+  border-radius: 8px;
+  border: 1px solid var(--gold);
+  background: var(--gold);
+  color: #1a1a1a;
+  font-weight: 600;
+  cursor: pointer;
+}
