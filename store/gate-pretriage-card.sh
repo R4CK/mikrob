@@ -99,12 +99,12 @@ import json, sys, os
 d = json.load(sys.stdin); rows = d if isinstance(d, list) else d.get("cards", d.get("data", []))
 print(next((c.get("project") or "" for c in rows if c.get("id") == os.environ["CARD"]), ""))' 2>/dev/null || true)"
 
-# CANDIDATE commits from the comments. A card id is ALSO an 8-hex token, so a regex alone cannot tell
-# a short SHA from a card id -- the disambiguation is "does it resolve to a real commit" (below).
-# Selection logic lives in gate-pretriage-candidates.py (card 34e7285e) so it is independently
-# testable without a live dashboard -- see that file for the "why the latest REVIEW comment only"
-# rationale. Emitted newline-separated; bash below picks the first that git confirms is a commit.
-candidates="$(printf '%s' "$comments" | python3 "$HERE/gate-pretriage-candidates.py" 2>/dev/null || true)"
+# CANDIDATE commits from the comments, newest first (cards d7ac3470 + 34e7285e). A card id is ALSO
+# an 8-hex token, so a regex alone cannot tell a short SHA from a card id -- the disambiguation is
+# "does it resolve to a real commit" (below). Selection logic lives in gate-pretriage-candidates.py
+# so it is independently testable without a live dashboard -- see that file for the two incident
+# classes it fixes (recency-vs-wording across comments, and first-vs-last mention within one REVIEW).
+candidates="$(printf '%s' "$comments" | python3 "$HERE/gate-pretriage-candidates.py" "$CARD" "$MARKER" 2>/dev/null || true)"
 
 # Resolve project -> primary repo, then find the FIRST candidate that is a real commit in either repo.
 case "$project" in
