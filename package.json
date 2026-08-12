@@ -19,7 +19,8 @@
     "ingatlan:typecheck": "tsc -p Ingatlan --noEmit",
     "ingatlan:run": "tsx Ingatlan/src/run.ts",
     "ingatlan:analyze": "tsx Ingatlan/src/analyze.ts",
-    "ingatlan:ingest": "tsx Ingatlan/src/run-ingest.ts"
+    "ingatlan:ingest": "tsx Ingatlan/src/run-ingest.ts",
+    "ingatlan:webapp": "tsx Ingatlan/src/webapp/run-webapp.ts"
   },
   "engines": {
     "node": ">=20 <24"
