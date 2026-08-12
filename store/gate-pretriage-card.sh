@@ -95,6 +95,29 @@ if len(words) >= 2 and changed:
             f"kartyahoz tartozik-e (cim: {title!r})."
         )
 
+# FE-LABEL VS BACKEND-FILE MECHANICAL WARNING (card c92c2142, Cybersec finding pattern seen TWICE
+# in one session -- 65e96a20: static-server.ts's own path-traversal guard; 1f51f050: /api/ingest-log
+# -- both were [FE]-labeled cards whose own "Gate:" line said QA-only/no-trust-boundary, but the
+# changed files were actually backend/server code, caught only by Cybersec's own source read, not
+# by the assigned reviewer. This is a NUDGE, not a verdict: it only fires when the title carries an
+# [FE] bracket-tag AND at least one changed file looks server/route/handler/API-shaped -- it never
+# blocks or changes the resolved commit/exit code, same contract as the self-check above.
+#
+# The api-clause matches "/api/" only as its OWN path segment (apps/api/..., src/api/...), not as a
+# filename prefix -- "api-client.ts" (an ordinary frontend fetch wrapper, a near-universal SPA
+# filename) would otherwise false-positive on every frontend card that talks to an API at all.
+BACKEND_FILE_RX = re.compile(
+    r"(^|/)[\w.-]*-(server|http)\.[jt]sx?$|(^|/)[\w.-]*(route|handler)[\w.-]*\.[jt]sx?$|(^|/)api/",
+    re.IGNORECASE,
+)
+if re.search(r"\[FE\]", title, re.IGNORECASE) and any(BACKEND_FILE_RX.search(f) for f in changed):
+    out.append(
+        "[FIGYELEM -- FE-CIMKE VS BACKEND-FAJL] a kartya cime [FE]-cimkes, de a valtozott fajlok "
+        "kozott szerver/route/handler/API-mintazatu fajl is szerepel -- ELLENORIZD, hogy a kartya "
+        "sajat Gate: sora tenyleg lefedi-e a backend-erintett reszt (ne maradjon QA-only/nincs-"
+        "trust-boundary, ha valojaban van)."
+    )
+
 fs = d.get("findings") or []
 if not fs:
     out.append("Mechanikus lelet: nincs (az olcso csapdak tisztak -- ez NEM jelenti, hogy a kartya jo).")

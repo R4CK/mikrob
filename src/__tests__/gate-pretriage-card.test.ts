@@ -121,6 +121,62 @@ describe('the title-vs-changed-files self-check (card ce159d2b)', () => {
   })
 })
 
+// Card c92c2142, Cybersec's own request after finding the same pattern TWICE in one session
+// (65e96a20's static-server.ts, 1f51f050's api-routes.ts) -- an [FE]-labeled card whose own
+// Gate: line said QA-only actually carried backend/server code. A NUDGE only, same contract as
+// the self-check above: never blocks, never changes the resolved commit.
+describe('the [FE]-label-vs-backend-file mechanical warning (card c92c2142)', () => {
+  it('warns when an [FE]-tagged card touches a *-server.ts file', () => {
+    const body = commitAndBody(
+      { 'src/webapp/static-server.ts': 'export const x = 1\n' },
+      '[Ingatlan][3c/4][FE] Webapp SPA shell',
+    )
+    expect(body).toContain('FIGYELEM -- FE-CIMKE VS BACKEND-FAJL')
+  })
+
+  it('warns when an [FE]-tagged card touches an *-routes.ts file', () => {
+    const body = commitAndBody(
+      { 'src/webapp/api-routes.ts': 'export const x = 1\n' },
+      '[Ingatlan][3d/4][FE] Hirdetesek nezet',
+    )
+    expect(body).toContain('FIGYELEM -- FE-CIMKE VS BACKEND-FAJL')
+  })
+
+  it('warns when an [FE]-tagged card touches a file under an api/ directory segment', () => {
+    const body = commitAndBody({ 'apps/api/handler.ts': 'export const x = 1\n' }, '[FE] some card')
+    expect(body).toContain('FIGYELEM -- FE-CIMKE VS BACKEND-FAJL')
+  })
+
+  it('stays quiet for an [FE]-tagged card that only touches real frontend files', () => {
+    const body = commitAndBody(
+      { 'frontend/src/components/HirdetesekView.tsx': 'export const x = 1\n' },
+      '[Ingatlan][3d/4][FE] Hirdetesek nezet',
+    )
+    expect(body).not.toContain('FIGYELEM -- FE-CIMKE VS BACKEND-FAJL')
+  })
+
+  it('CONTROL: a frontend api-client.ts does NOT false-positive -- "api" as a filename prefix is not a path segment', () => {
+    const body = commitAndBody(
+      { 'frontend/src/api-client.ts': 'export const x = 1\n' },
+      '[Ingatlan][3c/4][FE] Webapp SPA shell',
+    )
+    expect(body).not.toContain('FIGYELEM -- FE-CIMKE VS BACKEND-FAJL')
+  })
+
+  it('stays quiet when the backend file is touched but the card has no [FE] tag', () => {
+    const body = commitAndBody(
+      { 'src/webapp/static-server.ts': 'export const x = 1\n' },
+      '[Ingatlan][3c/4][BE] Static file server',
+    )
+    expect(body).not.toContain('FIGYELEM -- FE-CIMKE VS BACKEND-FAJL')
+  })
+
+  it('no title given (offline manual use) -- the check is skipped, not a false warning', () => {
+    const body = commitAndBody({ 'src/webapp/static-server.ts': 'export const x = 1\n' })
+    expect(body).not.toContain('FIGYELEM -- FE-CIMKE VS BACKEND-FAJL')
+  })
+})
+
 describe('offline-core guards', () => {
   it('a commit that does not exist is a benign SKIP, not an error', () => {
     const out = execFileSync(
