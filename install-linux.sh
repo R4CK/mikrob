@@ -360,8 +360,9 @@ MISSING_PKGS=""
 # jq + sqlite3 CLI: the scheduled tasks (kanban-audit, stuck-card-monitor, quota
 # scripts) shell out to `jq` and `sqlite3`. jq has the same package name on apt and
 # dnf; the sqlite3 CLI package differs (apt: sqlite3, dnf/Fedora: sqlite) so it is
-# handled in its own manager-aware block below.
-for pkg in ffmpeg git tmux lsof curl python3 pipx unzip jq; do
+# handled in its own manager-aware block below. zstd is needed later to extract
+# the Ollama installer.
+for pkg in ffmpeg git tmux lsof curl python3 pipx unzip jq zstd; do
   if ! command -v "$pkg" &>/dev/null; then
     MISSING_PKGS="$MISSING_PKGS $pkg"
   fi
@@ -440,7 +441,7 @@ if [ -n "$MISSING_PKGS" ]; then
     # dnf/yum (Fedora/Nobara/RHEL). A disztro nodejs csomagja v20+ az aktualis
     # kiadasokon, es az npm-et is tartalmazza -- nincs szukseg kulso repora.
     # Csomagnevek megegyeznek a Debian-belivel (ffmpeg/git/tmux/lsof/curl/
-    # python3/pipx/unzip/nodejs). Az ffmpeg-hez Fedoran az RPM Fusion repo
+    # python3/pipx/unzip/jq/zstd/nodejs). Az ffmpeg-hez Fedoran az RPM Fusion repo
     # kellhet; ha mar engedelyezve van, a csomag elerheto.
     # shellcheck disable=SC2086
     pkg_install_noninteractive $MISSING_PKGS
@@ -470,6 +471,7 @@ ok "pipx" $(pipx --version)
 ok "python3 $(python3 --version | awk '{print $2}')"
 ok "tmux $(tmux -V | awk '{print $2}')"
 ok "unzip" $(unzip -v | awk 'NR==1 {print $2}')
+ok "zstd $(zstd --version | grep -oE 'v[0-9]+\.[0-9]+\.[0-9]+' | head -1)"
 
 # ─────────────────────────────────────────────
 # Repo bootstrap
@@ -615,6 +617,9 @@ export PATH="$BUN_INSTALL/bin:$PATH"
 if command -v bun &>/dev/null; then
   ok "bun mar telepitve: $(bun --version)"
 else
+  # unzip -- a Bun hivatalos telepitoje ezzel csomagolja ki a binarist; nincs alapertelmezetten telepitve friss WSL distrokon,
+  # nelkule "error: unzip is required to install bun"-nal elhasal.
+  command -v unzip &>/dev/null || pkg_install_noninteractive unzip || true
   echo -e "  Bun telepitese (Telegram plugin fuggoseg)..."
   curl -fsSL https://bun.sh/install | bash 2>/dev/null
   if ! command -v bun &>/dev/null; then
@@ -1520,6 +1525,9 @@ else
   # Az ollama telepitoje sudo-val ir a /usr/local/bin-be es allit be systemd service-t.
   # Elore gyorsitotarazzuk a sudo hitelesitest, hogy a gyermek-script sudo prompt-ja ne bukjon el.
   sudo -v 2>/dev/null || true
+  # zstd -- az ollama telepitoje ezzel csomagolja ki a binarist; nincs alapertelmezetten telepitve friss WSL distron,
+  # nelkule "ERROR: This version requires zstd for extraction" hibaval elhasal.
+  command -v zstd &>/dev/null || pkg_install_noninteractive zstd || true
   # NEM fatalis: ha az ollama telepitoje hibara fut (pl. sudo, halozat, WSL),
   # csak figyelmeztetunk es kihagyjuk a szemantikus memoria lepest -- a telepito megy tovabb.
   if curl -fsSL https://ollama.com/install.sh | sh; then
@@ -1548,21 +1556,37 @@ fi
 # stream:false --> szinkron, egyetlen valaszt ad vissza a letoltes utan
 ollama_pull() {
   local model="$1" size="$2"
+  # API-up guard (BC100FAIL810): this whole step is declared optional/non-fatal,
+  # but on a host where the ollama BINARY installed yet its SERVICE never came up
+  # (no ollama.service unit, API at :11434 dead -- measured on ai-bootcamp-vps100
+  # 2026-08-10), the pull below would abort the whole install. Under `set -e` the
+  # `status=$(curl ... | python3 json.load)` assignment inherits the pipeline's
+  # exit code -- an empty curl (connection refused) makes json.load raise, python3
+  # exits non-zero, the assignment inherits it, and the ERR trap kills the
+  # install at step "ollama-whisper". So skip -- non-fatal -- whenever the API is
+  # not answering, instead of trying a pull that cannot work.
+  if ! curl -s --max-time 5 http://localhost:11434/api/version &>/dev/null; then
+    warn "ollama API nem valaszol (:11434) -- $model letoltese kimarad (a szolgaltatas nem all fel). Kesobb: ollama serve && ollama pull $model"
+    return 0
+  fi
   if curl -s http://localhost:11434/api/tags | grep -q "\"$model\""; then
     ok "$model mar letoltve"
     return 0
   fi
   echo -e "  $model letoltese ($size)..."
   local status
+  # `|| status=""` is load-bearing under `set -e`: a command-substitution
+  # assignment aborts the script when its pipeline exits non-zero (empty body ->
+  # json.load raises -> python3 exits 1). The guard turns that into the warn path.
   status=$(curl -s --max-time 600 \
     -X POST http://localhost:11434/api/pull \
     -H 'Content-Type: application/json' \
     -d "{\"model\": \"$model\", \"stream\": false}" |
-    python3 -c "import sys,json; d=json.load(sys.stdin); print(d.get('status','?'))" 2>/dev/null)
+    python3 -c "import sys,json; d=json.load(sys.stdin); print(d.get('status','?'))" 2>/dev/null) || status=""
   if [ "$status" = "success" ]; then
     ok "$model kesz"
   else
-    warn "$model letoltese sikertelen (status: $status) -- kezzel: ollama pull $model"
+    warn "$model letoltese sikertelen (status: ${status:-<ures valasz>}) -- kezzel: ollama pull $model"
   fi
 }
 
