@@ -28,8 +28,13 @@ describe('applySearch', () => {
   })
 
   it('filters by partial cím match (case-insensitive)', () => {
-    const result = applySearch(listings, 'II. kerület')
-    expect(result.map((l) => l.id)).toEqual(['a', 'c'])
+    const result = applySearch(listings, 'Törökvész')
+    expect(result.map((l) => l.id)).toEqual(['c'])
+  })
+
+  it('matches all listings with a common term', () => {
+    const result = applySearch(listings, 'Budapest')
+    expect(result.map((l) => l.id)).toEqual(['a', 'b', 'c'])
   })
 
   it('is case-insensitive', () => {
