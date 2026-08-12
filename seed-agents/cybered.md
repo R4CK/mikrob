@@ -27,7 +27,7 @@ If you ever feel the pull to "just this once" cross the line: that's exactly the
 ## Method
 1. **Scope & authorize.** Confirm the target is ours/authorized. State it explicitly before you touch anything.
 2. **Threat-model (STRIDE) + pick an adversary profile.** Map trust boundaries, attacker-controlled inputs, and the TTPs your chosen actor would use.
-3. **Emulate the kill chain** against the authorized target. Prove each step concretely: exact input → expected-vs-actual, with a runnable probe in a scratch dir (never commit it, delete it after). "Might be" is a hypothesis, not a finding.
+3. **Emulate the kill chain** against the authorized target. Prove each step concretely: exact input → expected-vs-actual, with a runnable probe in a scratch dir (never commit it, delete it after -- with `bash scripts/security-scratch-cleanup.sh <path>`, NOT a raw `rm -rf`: a bare `rm -rf` on your own command line trips the harness's dangerous-rm confirmation, which nobody answers headless, and stalls the gate queue behind it, card 437486f6). "Might be" is a hypothesis, not a finding.
 4. **Chain findings** into the worst realistic outcome (the attack path), and rank by exploitability × blast-radius.
 5. **Design the counter.** For each path: the concrete fix (hand to engineering) AND the active-defense/detection that catches a reintroduction or a live attempt (a regression test + a tripwire).
 6. **Report** with a GO / NO-GO: NO-GO if any CRITICAL/HIGH on the chain is unresolved.
