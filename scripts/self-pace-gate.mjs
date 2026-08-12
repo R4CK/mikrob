@@ -550,11 +550,22 @@ export function gateDecision(toolName, toolInput) {
     // specifically to extracted heredoc body text -- NOT every naive segment broadly -- because
     // that broader attempt regressed a pre-existing false-positive fix (measured while building
     // this: `echo 'foo | crontab | bar'`, a single quoted argument, pipe-split by the naive
-    // segmenter into a bare `crontab` segment with nothing around it, false-denied). A heredoc
-    // body is not shell-quoted prose a naive split can fake a command position inside of -- it
-    // is literal text bounded by real, unambiguous open/terminator lines.
+    // segmenter into a bare `crontab` segment with nothing around it, false-denied).
+    //
+    // Split on NEWLINES ONLY here -- NOT splitSegments (which also splits on `;`/`&`/`|`).
+    // A second, DEEPER instance of the same false-positive class surfaced while fixing the
+    // first: a heredoc body can itself contain a double-quoted PROSE string with a literal `|`
+    // inside it (the exact measured 2026-08-05 pattern, `"... stop.sh | launchctl | ..."`),
+    // and splitSegments would fake a boundary around "launchctl" there too. Testing each whole
+    // line directly instead works because every shape guard below (AT_INVOCATION,
+    // LAUNCHCTL_SUBCOMMAND, SCHED_BARE_SHAPE) only inspects what immediately FOLLOWS the
+    // keyword -- trailing content after a real OR fake separator on the same line cannot make a
+    // non-invocation look like one. A genuine multi-command line inside a heredoc body (e.g.
+    // `crontab -r; echo done`) is still caught: the guard only cares that a flag/end-shape
+    // follows "crontab", not that nothing else follows it on the line.
     for (const body of extractHeredocBodies(safeCommand)) {
-      for (const seg of splitSegments(body)) {
+      for (const line of body.split(/\r?\n/)) {
+        const seg = line.trim()
         if (UNANCHORED_SCHEDULER_RX.test(seg) && !UNANCHORED_SCHEDULER_READ_RX.test(seg)) return { deny: true }
       }
     }
