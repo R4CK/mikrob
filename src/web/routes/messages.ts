@@ -122,7 +122,7 @@ export async function tryHandleMessages(ctx: RouteContext): Promise<boolean> {
       // coordinator inserts directly into the DB, bypassing this endpoint.
       json(res, { error: 'Invalid recipient: use "<system>/<agent>" (slash) for a federated address, not the "federation:x:y" source form' }, 400)
       return true
-    } else if (!isKnownAgent(sanitizeAgentIdent(storedTo))) {
+    } else {
       // To-authentication (card 523a1426, Cybersec finding while gating 801774f2): the from-side
       // guard above stops an unknown SENDER, but a local (slash-free) to_agent was never checked
       // against isKnownAgent at all -- storedTo just became whatever the caller sent. selectFairBatch
@@ -134,8 +134,18 @@ export async function tryHandleMessages(ctx: RouteContext): Promise<boolean> {
       // agent, reachable here with nothing but message volume from any token holder. Rejecting an
       // unknown local recipient at creation time (same sanitizeAgentIdent normalization as the from
       // check, for the same router-parity reason) means a forged bucket is never created at all.
-      json(res, { error: `unknown agent '${storedTo}' -- to must be a registered fleet agent id, or "<system>/<agent>" for a federated address` }, 400)
-      return true
+      const sanitized = sanitizeAgentIdent(storedTo)
+      if (!isKnownAgent(sanitized)) {
+        json(res, { error: `unknown agent '${storedTo}' -- to must be a registered fleet agent id, or "<system>/<agent>" for a federated address` }, 400)
+        return true
+      }
+      // Cybered NO-GO on the first version of this check (card 523a1426): validating the
+      // SANITIZED form while storing the RAW one left the actual vulnerability class open --
+      // selectFairBatch buckets by the STORED to_agent, so "cybered." / ".cybered" / "cybered!"
+      // all sanitize to a real, known name (validation passes) yet each stored RAW would still
+      // open its own distinct bucket. Store what was validated, same as the federated branch
+      // above already canonicalizes to formatQualifiedId(...) rather than the raw input.
+      storedTo = sanitized
     }
     // Code-side enforcement of the kanban-ref convention: rewrite any
     // `#<hex8>` token that maps to a real kanban_cards row into its

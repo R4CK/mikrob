@@ -110,6 +110,37 @@ describe('POST /api/messages to-authentication (card 523a1426)', () => {
       expect(getPendingMessages(to)).toHaveLength(0)
     }
   })
+
+  // Cybered NO-GO on the first version of this check (commit 6323ec6): validating
+  // sanitizeAgentIdent(storedTo) while STORING the raw storedTo left the actual bucket-
+  // splitting vulnerability open -- "localmate.", ".localmate", "localmate!" all sanitize
+  // to the real, known "localmate" (validation passes), but each RAW value would still
+  // open its OWN distinct selectFairBatch bucket. Live end-to-end proof (through the real
+  // tryHandleMessages route handler, not an isolated function call), per Cybered's own
+  // reproduction in kanban comment 10941.
+  it('SECURITY REGRESSION (Cybered 523a1426): garbage-suffixed/prefixed variants of a real name canonicalize to the SAME bucket, not their own', async () => {
+    const variants = ['localmate', 'localmate.', '.localmate', 'localmate!', 'localmate#', 'localmate$']
+    for (const to of variants) {
+      const r = await postMessage({ from: 'localboss', to, content: 'probe' })
+      expect(r.statusCode).toBe(200)
+      // The STORED to_agent must be the canonical name -- not the raw garbage-suffixed
+      // input -- so selectFairBatch buckets every variant together with the real agent.
+      expect(r.json.to_agent).toBe('localmate')
+    }
+    // All 6 variants landed in ONE bucket, not six: selectFairBatch would give 'localmate'
+    // exactly one round-robin slot per tick, same as if only the canonical form was ever sent.
+    expect(getPendingMessages('localmate')).toHaveLength(variants.length)
+  })
+
+  it('CONTROL: a REAL extra letter (not a stripped symbol) is a genuinely different, still-rejected name', async () => {
+    // Not a false-positive fix: sanitizeAgentIdent only strips [^a-zA-Z0-9_-] -- it never
+    // removes an actual alphanumeric character, so appending a real letter changes the
+    // identity for good (no fixture directory for 'localmatex'), unlike appending a
+    // symbol which the sanitizer strips back down to the real name. Confirms the fix
+    // canonicalizes garbage away without loosening validation for a genuinely new name.
+    const r = await postMessage({ from: 'localboss', to: 'localmatex', content: 'probe' })
+    expect(r.statusCode).toBe(400)
+  })
 })
 
 describe('delegation failure feedback (L5)', () => {
