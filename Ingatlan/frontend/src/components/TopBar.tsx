@@ -19,9 +19,9 @@ export function TopBar({ utolsoFrissites, theme, onToggleTheme }: TopBarProps) {
         <small>BP II. ker. · 50m²+ / 120M</small>
       </div>
       <div style={{ display: 'flex', alignItems: 'center', gap: 16 }}>
-        <span>
+        <span className="freshness-label" title={label}>
           <span className={`freshness-dot ${level}`} />
-          {label}
+          <span className="freshness-text">{label}</span>
         </span>
         <button
           type="button"
@@ -32,8 +32,9 @@ export function TopBar({ utolsoFrissites, theme, onToggleTheme }: TopBarProps) {
         >
           {theme === 'dark' ? '☀️' : '🌙'}
         </button>
-        <span>
-          Peti · <a href="/logout">kijelentkezés</a>
+        <span className="user-chip">
+          <span className="user-name">Peti · </span>
+          <a href="/logout">kijelentkezés</a>
         </span>
       </div>
     </header>

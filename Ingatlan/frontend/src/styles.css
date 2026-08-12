@@ -102,6 +102,28 @@ body {
   color: var(--text1);
 }
 
+/* Narrow top bar (measured, real bug: the brand subtitle + full freshness timestamp + user chip
+   collided/wrapped illegibly at 375px in a real-browser check). Keep the essentials -- brand
+   icon+name, the freshness DOT (the actual at-a-glance signal per DESIGN-IA.md section 4; the
+   full timestamp is still available via the title= tooltip/long-press), and the theme+logout
+   controls -- drop the rest rather than shrink text to the point of being unreadable. */
+@media (max-width: 680px) {
+  .top-bar {
+    padding: 0 8px;
+  }
+  .top-bar .brand small {
+    display: none;
+  }
+  .freshness-text {
+    display: none;
+  }
+  /* Logout must stay reachable (it is the only way to log out) -- drop the "Peti ·" prefix
+     only, not the whole control. */
+  .user-chip .user-name {
+    display: none;
+  }
+}
+
 /* ---- Nav: sidebar on desktop, bottom tab bar on mobile (DESIGN-IA.md section 8) ---- */
 .nav {
   position: fixed;
