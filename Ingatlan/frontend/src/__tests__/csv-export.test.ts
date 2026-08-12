@@ -51,4 +51,25 @@ describe('listingsToCsv', () => {
   it('an empty listing array produces just the header', () => {
     expect(listingsToCsv([])).toBe('Cím,Típus,Alapterület (m2),Ár (Ft),nm2 ár (Ft),Delta ár (%),Mediánsáv')
   })
+
+  // CSV/formula-injection (OWASP, Cybersec finding on card 1f51f050 @ 917fd71): a cím starting
+  // with =, +, -, or @ must NOT be exported as a live formula.
+  it('a cím starting with "=" is neutralized, not exported as a live formula', () => {
+    const csv = listingsToCsv([listing({ cim: '=2+2' })])
+    const cell = csv.split('\r\n')[1].split(',')[0]
+    expect(cell).toBe("'=2+2")
+    expect(cell.startsWith('=')).toBe(false)
+  })
+
+  it.each(['+36301234567', '-2. emelet', '@lakópark'])('a cím starting with "%s"-like prefix is neutralized', (cim) => {
+    const csv = listingsToCsv([listing({ cim })])
+    const cell = csv.split('\r\n')[1].split(',')[0]
+    expect(cell.startsWith("'")).toBe(true)
+    expect(cell.slice(1)).toBe(cim)
+  })
+
+  it('a normal cím with no leading special character is left unprefixed', () => {
+    const csv = listingsToCsv([listing({ cim: 'Teszt utca 1.' })])
+    expect(csv.split('\r\n')[1].startsWith('Teszt utca 1.,')).toBe(true)
+  })
 })

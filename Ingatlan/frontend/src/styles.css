@@ -359,6 +359,12 @@ table.listings tr.in-band {
   flex-direction: column;
   gap: 12px;
 }
+.hirdetesek-toolbar {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  flex-wrap: wrap;
+}
 .filter-bar {
   display: flex;
   gap: 8px;
@@ -385,7 +391,8 @@ table.listings tr.in-band {
   background: color-mix(in srgb, var(--gold) 18%, var(--surface));
   font-weight: 600;
 }
-.csv-export-button {
+.csv-btn {
+  margin-left: auto;
   min-height: 36px;
   padding: 0 14px;
   border-radius: 8px;
@@ -395,61 +402,100 @@ table.listings tr.in-band {
   font-size: 0.875rem;
   cursor: pointer;
 }
-.csv-export-button:hover {
+.csv-btn:hover {
   color: var(--text1);
   border-color: var(--text2);
 }
 
-/* Clickable listing rows */
-.clickable-row {
+.table-scroll {
+  overflow-x: auto;
+}
+.listing-row {
   cursor: pointer;
 }
-.clickable-row:hover {
+.listing-row:hover {
   background: color-mix(in srgb, var(--text2) 8%, transparent);
 }
-.clickable-row:focus {
+.listing-row:focus {
   outline: 2px solid var(--gold);
   outline-offset: -2px;
 }
-.filter-empty-hint {
+.listing-cim {
+  max-width: 220px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.listings-count {
   color: var(--text2);
-  font-size: 0.875rem;
-  text-align: center;
-  padding: 24px 0;
+  font-size: 0.85rem;
+  margin-top: 4px;
 }
 
-/* ---- Detail panel (fixed right) ---- */
+/* ---- Detail panel (slide-in from right, dims the page behind it) ---- */
+.detail-overlay {
+  position: fixed;
+  inset: 0;
+  background: rgba(0, 0, 0, 0.45);
+  z-index: 20;
+}
 .detail-panel {
   position: fixed;
   top: 56px;
   right: 0;
   bottom: 0;
-  width: min(400px, 100vw);
+  width: min(420px, 100vw);
   background: var(--surface);
   border-left: 1px solid var(--border);
   z-index: 30;
   display: flex;
   flex-direction: column;
-  gap: 12px;
+  gap: 16px;
   overflow-y: auto;
-  padding: 16px;
+  padding: 20px;
   box-shadow: -4px 0 24px rgba(0, 0, 0, 0.25);
 }
 .detail-panel-header {
   display: flex;
-  align-items: center;
+  align-items: flex-start;
   gap: 8px;
 }
-.detail-panel-header h3 {
+.detail-panel-title {
   flex: 1;
   margin: 0;
-  font-size: 0.95rem;
+  font-size: 1rem;
   font-weight: 600;
+  color: var(--text1);
 }
-.external-link {
+.detail-panel-close {
+  flex-shrink: 0;
+  color: var(--text2);
+}
+.detail-meta {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 10px 16px;
+  margin: 0;
+}
+.detail-meta dt {
+  font-size: 0.75rem;
+  color: var(--text2);
+}
+.detail-meta dd {
+  margin: 0;
+  font-size: 0.9rem;
+  font-weight: 500;
+}
+.detail-chart-section h3 {
+  font-size: 0.875rem;
+  color: var(--text2);
+  margin: 0 0 8px;
+  font-weight: 500;
+}
+.detail-link-btn {
   display: block;
-  min-height: 40px;
-  line-height: 40px;
+  min-height: 44px;
+  line-height: 44px;
   text-align: center;
   border-radius: 8px;
   border: 1px solid var(--gold);
@@ -458,12 +504,29 @@ table.listings tr.in-band {
   font-size: 0.9rem;
   font-weight: 500;
 }
-.external-link:hover {
-  background: color-mix(in srgb, var(--gold) 10%, transparent);
+.detail-link-btn:hover {
+  background: color-mix(in srgb, var(--gold) 12%, transparent);
 }
 
 /* ---- Napló view ---- */
-.naplo-list {
+.naplo-header {
+  display: flex;
+  align-items: center;
+  gap: 16px;
+  flex-wrap: wrap;
+  margin-bottom: 16px;
+}
+.naplo-title {
+  font-size: 1rem;
+  font-weight: 600;
+  margin: 0;
+}
+.naplo-summary {
+  display: flex;
+  gap: 12px;
+  align-items: center;
+}
+.log-list {
   list-style: none;
   margin: 0;
   padding: 0;
@@ -471,53 +534,65 @@ table.listings tr.in-band {
   flex-direction: column;
   gap: 4px;
 }
-.naplo-row {
+.log-row {
   background: var(--surface);
   border: 1px solid var(--border);
   border-radius: 8px;
   overflow: hidden;
 }
-.naplo-row.error {
+.log-row-error {
   border-color: color-mix(in srgb, var(--warn) 40%, var(--border));
 }
-.naplo-row-summary {
+.log-row-main {
   display: flex;
   align-items: center;
   gap: 10px;
   padding: 10px 14px;
   min-height: 44px;
+  flex-wrap: wrap;
 }
-.naplo-dot {
+.log-dot {
   display: inline-block;
   width: 10px;
   height: 10px;
   border-radius: 50%;
   flex-shrink: 0;
 }
-.naplo-dot.ok {
+.log-dot.ok {
   background: var(--good);
 }
-.naplo-dot.error {
+.log-dot.err {
   background: var(--warn);
 }
-.naplo-time {
+.log-time {
   color: var(--text2);
   font-size: 0.875rem;
   font-variant-numeric: tabular-nums;
   white-space: nowrap;
 }
-.naplo-summary-text {
-  flex: 1;
-  font-size: 0.875rem;
-  color: var(--text1);
+.log-stats {
+  display: flex;
+  gap: 8px;
+  flex-wrap: wrap;
+  margin-left: 4px;
 }
-.naplo-chevron {
-  flex-shrink: 0;
+.log-stat {
+  font-size: 0.8rem;
+  color: var(--text2);
+  display: flex;
+  align-items: center;
+  gap: 4px;
+}
+.log-stat-warn {
+  color: var(--warn);
+}
+.log-chevron {
+  margin-left: auto;
   font-size: 0.75rem;
   min-width: 32px;
   min-height: 32px;
 }
-.naplo-error-detail {
+.log-error-detail {
   margin: 0;
   padding: 10px 14px;
   background: color-mix(in srgb, var(--warn) 8%, var(--surface));
@@ -532,5 +607,8 @@ table.listings tr.in-band {
   .detail-panel {
     top: auto;
     bottom: 56px; /* clear the mobile bottom tab bar */
+  }
+  .csv-btn {
+    margin-left: 0;
   }
 }

@@ -2,11 +2,21 @@ import type { Listing } from './types.js'
 
 const HEADER = ['Cím', 'Típus', 'Alapterület (m2)', 'Ár (Ft)', 'nm2 ár (Ft)', 'Delta ár (%)', 'Mediánsáv']
 
+// CSV/formula-injection (OWASP): a cell starting with =, +, -, or @ is interpreted as a formula
+// by Excel/Sheets/LibreOffice on open. `cím` comes from ingatlan.com listing text (via the browser
+// extension, card 3f6bcc41) -- third-party free text, not our own controlled data, so a listing
+// title/állapot that happens to start with one of these characters is a real, if narrow, exposure
+// (Cybersec finding on 917fd71, card 1f51f050). A leading apostrophe is the standard mitigation:
+// spreadsheet apps treat it as "force text" and it is invisible in the rendered cell.
+function neutralizeFormula(text: string): string {
+  return /^[=+\-@]/.test(text) ? `'${text}` : text
+}
+
 // RFC 4180: a field containing a comma, quote, or newline must be quoted, and embedded quotes are
 // doubled. Without this an address like "Kossuth utca 4, fszt 2" would silently corrupt the CSV
 // into an extra column instead of a garbled cell -- a real listing field, not a hypothetical.
 function csvField(value: string | number): string {
-  const text = String(value)
+  const text = neutralizeFormula(String(value))
   if (/[",\n]/.test(text)) return `"${text.replace(/"/g, '""')}"`
   return text
 }
