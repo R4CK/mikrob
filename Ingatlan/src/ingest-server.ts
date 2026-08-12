@@ -16,17 +16,18 @@ export interface IngestServerOptions {
 function readJsonBody(req: IncomingMessage, maxBytes: number): Promise<unknown> {
   return new Promise((resolve, reject) => {
     let size = 0
+    let tooLarge = false
     const chunks: Buffer[] = []
     req.on('data', (chunk: Buffer) => {
       size += chunk.length
-      if (size > maxBytes) {
-        reject(new Error('payload too large'))
-        req.destroy()
-        return
-      }
+      // Stop BUFFERING once over the limit (bounds memory) but keep draining the socket instead
+      // of destroying it -- req and res share one connection, so destroying req here would kill
+      // the response too and the caller would see a socket error instead of a clean 400.
+      if (size > maxBytes) { tooLarge = true; return }
       chunks.push(chunk)
     })
     req.on('end', () => {
+      if (tooLarge) { reject(new Error('payload too large')); return }
       try {
         const text = Buffer.concat(chunks).toString('utf-8')
         resolve(text ? JSON.parse(text) : {})
