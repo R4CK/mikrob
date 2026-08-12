@@ -49,6 +49,48 @@ describe('gateDecision', () => {
   })
 })
 
+// Card 132fc28c, incident msg 8641: a kanban-comment POST to an UNRELATED endpoint
+// (localhost:3420/api/kanban, not an email API) carried prose discussing whether the
+// PRODUCT should send a registration email; the text mentioned "Resend" (the email
+// provider) near "email"/"send" and matched SEND_PATTERNS's proximity regex, blocking
+// the comment as if it were an actual send. The gate must key on the ACTION (a real
+// email-API/SMTP call), not on text content that merely discusses email.
+describe('gateDecision: data-payload false-positive guard (card 132fc28c)', () => {
+  it('ALLOWS a kanban-comment POST whose JSON body discusses sending a registration email via Resend', () => {
+    const cmd =
+      `curl -s -X POST http://localhost:3420/api/kanban/06f81738/comments -d ` +
+      `'{"author":"backend","content":"Kell-e a termeknek Resend-en keresztul regisztracios aktivacios emailt kuldenie?"}'`
+    expect(gateDecision('Bash', { command: cmd }).deny).toBe(false)
+  })
+
+  it('ALLOWS the same content in a double-quoted payload without substitution', () => {
+    const cmd =
+      `curl -s -X POST http://localhost:3420/api/kanban/06f81738/comments -d ` +
+      `"{\\"content\\":\\"resend api key kell a regisztracios email kuldeshez\\"}"`
+    expect(gateDecision('Bash', { command: cmd }).deny).toBe(false)
+  })
+
+  it('KEEPS a payload that can command-substitute ($(...)) -- not blanked, still scannable', () => {
+    const cmd = `curl -d "$(sendmail user@host)" http://localhost:3420/api/kanban`
+    expect(gateDecision('Bash', { command: cmd }).deny).toBe(true)
+  })
+
+  it('STILL denies a REAL send to api.resend.com -- the URL lives outside the payload', () => {
+    const cmd = `curl -s -X POST https://api.resend.com/emails -d '{"to":"a@b.hu"}'`
+    expect(gateDecision('Bash', { command: cmd }).deny).toBe(true)
+  })
+
+  it('STILL denies sendmail/msmtp/swaks even when a DIFFERENT curl -d payload is present in the same command', () => {
+    const cmd = `curl -d '{"note":"resend the invoice email"}' http://localhost:3420/x ; sendmail user@host`
+    expect(gateDecision('Bash', { command: cmd }).deny).toBe(true)
+  })
+
+  it('a -d @file (file reference, no inline text) is untouched -- nothing to blank either way', () => {
+    expect(gateDecision('Bash', { command: 'curl -s -X POST https://api.resend.com/emails -d @body.json' }).deny).toBe(true)
+    expect(gateDecision('Bash', { command: 'curl -s -X POST http://localhost:3420/api/kanban/x/comments -d @comment.json' }).deny).toBe(false)
+  })
+})
+
 // The main-exempt guard: every sub-agent is gated, the main agent never is.
 // Mirrors security-profile-resolution.test.ts -- pure, keyed on the configured
 // MAIN_AGENT_ID (not a hardcoded name), so a customer install exempts its own owner.

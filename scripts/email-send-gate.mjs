@@ -42,6 +42,30 @@ const SEND_PATTERNS = [
   /\bsendMail\s*\(/i,
 ]
 
+// Blank a curl -d/--data LITERAL payload before the SEND_PATTERNS scan (card 132fc28c,
+// incident msg 8641): a kanban-comment POST to localhost:3420/api/kanban -- an unrelated
+// endpoint, not an email API -- carried prose discussing whether the PRODUCT should send a
+// registration activation email; that prose mentioned "Resend" (the email-provider name)
+// near "email"/"send" and matched the RESEND_RX below, blocking a comment post as if it were
+// an actual outbound send. The gate exists to stop the ACTION (a real email-API/SMTP call),
+// not to censor text that happens to discuss email. A `-d @file`/`--data-binary @file`
+// argument (a file reference, no inline text) is untouched -- there is nothing to blank, and
+// this is exactly the shape the existing api.resend.com regression test already uses, so a
+// REAL send to that host stays caught either way. Same literal-only quote handling as
+// self-pace-gate.mjs's stripDataPayloads (single-quoted, ANSI-C $'...', double-quoted
+// WITHOUT $(...)/backtick -- a substitutable double-quoted payload is left intact so a real
+// substitution is not hidden from the scan).
+function stripDataPayloads(cmd) {
+  return String(cmd ?? '').replace(
+    /((?:^|\s)(?:-d|--data(?:-(?:raw|binary|ascii|urlencode))?)(?:\s+|=))('[^']*'|\$'(?:[^'\\]|\\.)*'|"(?:[^"\\]|\\.)*")/gi,
+    (full, flag, arg) => {
+      const dq = arg.startsWith('"')
+      if (dq && (arg.includes('$(') || arg.includes('`'))) return full // may substitute -> keep
+      return flag + (dq ? '""' : "''") // literal payload -> blank the content
+    },
+  )
+}
+
 // Pure decision: does this tool call send (or attempt to send) email?
 export function gateDecision(toolName, toolInput) {
   const name = String(toolName ?? '')
@@ -49,7 +73,7 @@ export function gateDecision(toolName, toolInput) {
   // server in a customer install -> the matcher + this both key on send_email).
   if (/send_email/i.test(name)) return { deny: true }
   if (name === 'Bash') {
-    const cmd = String(toolInput?.command ?? '')
+    const cmd = stripDataPayloads(String(toolInput?.command ?? ''))
     if (SEND_PATTERNS.some((re) => re.test(cmd))) return { deny: true }
   }
   return { deny: false }
