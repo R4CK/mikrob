@@ -1,0 +1,28 @@
+{
+  "manifest_version": 3,
+  "name": "Ingatlan Ar-koveto (szemelyes, Peti)",
+  "version": "1.0.0",
+  "description": "Kiolvassa a ket megadott ingatlan.com terkep-kereses hirdeteseit Peti valodi bongeszesekor, es elkulndi a lokalis (127.0.0.1) ingest-vegpontnak. Csak sajat hasznalatra.",
+  "permissions": ["storage"],
+  "host_permissions": [
+    "http://127.0.0.1/*"
+  ],
+  "background": {
+    "service_worker": "background.js"
+  },
+  "content_scripts": [
+    {
+      "matches": [
+        "https://ingatlan.com/terkep/elado+haz*",
+        "https://ingatlan.com/terkep/elado+lakas*"
+      ],
+      "js": ["content-script.js"],
+      "type": "module",
+      "run_at": "document_idle"
+    }
+  ],
+  "options_page": "options.html",
+  "action": {
+    "default_title": "Ingatlan Ar-koveto"
+  }
+}
