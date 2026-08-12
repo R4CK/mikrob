@@ -20,7 +20,11 @@ export function findPrice(text) {
 }
 
 export function findAreaM2(text) {
-  const m = text.match(/(\d+(?:[.,]\d+)?)\s*m[²2]\b/i)
+  // NOT \b after the character class: '²' (U+00B2) is not a \w character, so "m²" followed by a
+  // space has NO word boundary there (\b needs exactly one side to be \w) and silently failed to
+  // match. (?![a-zA-Z0-9]) checks the same "not glued to more alphanumerics" intent without
+  // depending on what \b considers a word character.
+  const m = text.match(/(\d+(?:[.,]\d+)?)\s*m[²2](?![a-zA-Z0-9])/i)
   return m ? parseHunNumber(m[1]) : null
 }
 
