@@ -353,7 +353,8 @@ describe('/api/messages to-authentication (card 523a1426)', () => {
   const src = readFileSync(join(REPO_ROOT, 'src', 'web', 'routes', 'messages.ts'), 'utf8')
 
   it('calls isKnownAgent with the sanitized LOCAL to field', () => {
-    expect(src).toMatch(/isKnownAgent\(\s*sanitizeAgentIdent\(storedTo\)\s*\)/)
+    expect(src).toMatch(/const sanitized = sanitizeAgentIdent\(storedTo\)/)
+    expect(src).toMatch(/if \(!isKnownAgent\(sanitized\)\)/)
   })
 
   it('rejects an unknown local recipient with 400', () => {
@@ -362,12 +363,24 @@ describe('/api/messages to-authentication (card 523a1426)', () => {
 
   it('the to-auth check runs only for the LOCAL branch (not the qualified/colon-form ones)', () => {
     // Structural: the check must be reachable ONLY when storedTo has neither
-    // '/' nor ':' -- an `else if` sibling of those two branches, not a
+    // '/' nor ':' -- an `else` sibling of those two branches, not a
     // standalone check that could also re-run on an already-validated
-    // federated/rejected-colon address.
-    expect(src).toMatch(
-      /storedTo\.includes\(':'\)[\s\S]{0,1200}\} else if \(!isKnownAgent\(sanitizeAgentIdent\(storedTo\)\)\)/,
-    )
+    // federated/rejected-colon address. Ordering via indexOf rather than a
+    // char-distance regex budget -- the latter broke twice already (card
+    // 523a1426) as the explanatory comments between the anchors grew.
+    const slashIdx = src.indexOf("storedTo.includes('/')")
+    const colonIdx = src.indexOf("storedTo.includes(':')")
+    const sanitizedIdx = src.indexOf('const sanitized = sanitizeAgentIdent(storedTo)')
+    expect(slashIdx).toBeGreaterThan(0)
+    expect(colonIdx).toBeGreaterThan(slashIdx)
+    expect(sanitizedIdx).toBeGreaterThan(colonIdx)
+  })
+
+  // Cybered NO-GO on the first version of this check (commit 6323ec6, card 523a1426):
+  // validating the sanitized form while STORING the raw one left the actual
+  // vulnerability open -- selectFairBatch buckets by the stored value.
+  it('STORES the sanitized form, not the raw one (Cybered NO-GO on 6323ec6)', () => {
+    expect(src).toMatch(/storedTo = sanitized/)
   })
 })
 
