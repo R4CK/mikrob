@@ -20,6 +20,7 @@ import { fileURLToPath } from 'node:url'
 
 const WEB = join(dirname(fileURLToPath(import.meta.url)), '..', 'web')
 const ROUTES = join(WEB, 'routes')
+const SRC = dirname(WEB)
 
 const SYNC_CHILD_APIS = ['spawnSync', 'execSync', 'execFileSync'] as const
 const SYNC_CALL_RX = new RegExp(`\\b(?:${SYNC_CHILD_APIS.join('|')})\\(`)
@@ -52,6 +53,65 @@ function tickPathFiles(): string[] {
     }
   })
 }
+
+/**
+ * Background-runner files, DERIVED from how they are actually wired to run (card 6b440e42,
+ * Cybered's supplementary measurement after 92e2bb1b/423b8274). The tick-path derivation above
+ * sees exactly ONE background runner (agent-process.ts, and only because schedule-runner.ts
+ * happens to import it) out of 18+ setInterval-based monitors that run on the SAME shared event
+ * loop (HTTP server + scheduler tick) -- the boundary today is drawn by WHERE the bug happened to
+ * live, not by the property (a sync child call on a live setInterval) that makes it dangerous.
+ *
+ * Derived from BOTH composition roots (web.ts wires most; a few -- channel-invites.ts,
+ * channel-request-watcher.ts -- are wired from index.ts instead), via either a static
+ * `import { startX } from './Y.js'` or a lazy `import('./Y.js').then(m => { ... m.startX() ... })`
+ * (worker-liveness.ts is lazy-loaded specifically so a missing/broken import cannot itself start an
+ * orphaned interval -- see its own comment in web.ts). Cybered's own scope test is TWO conditions,
+ * both required: the file is start-wired AND it installs its OWN setInterval. A file that is
+ * start-wired but delegates its scheduling elsewhere (agent-worker.ts, agent-process.ts -- no
+ * setInterval in either) is a DIFFERENT risk shape (worker-message-driven, not a live timer this
+ * process owns) and is out of THIS guard's derivation on purpose, not by oversight -- agent-
+ * process.ts is already covered by the tick-path guard above via its own route into
+ * schedule-runner.ts.
+ */
+function backgroundRunnerFiles(): string[] {
+  const files = new Set<string>()
+  for (const root of ['web.ts', 'index.ts']) {
+    const src = readFileSync(join(SRC, root), 'utf-8')
+    for (const line of src.split('\n')) {
+      const m = line.match(/^import\s*\{([^}]*)\}\s*from\s*'(\.\/[^']+)\.js'/)
+      if (m && /\bstart[A-Z]\w*/.test(m[1])) files.add(`${m[2].replace(/^\.\//, '')}.ts`)
+    }
+    const dynRe = /import\(['"](\.\/[^'"]+)\.js['"]\)/g
+    let dm: RegExpExecArray | null
+    while ((dm = dynRe.exec(src))) {
+      const window = src.slice(dm.index, dm.index + 400)
+      if (/\.\s*start[A-Z]\w*\s*\(/.test(window)) files.add(`${dm[1].replace(/^\.\//, '')}.ts`)
+    }
+  }
+  return [...files]
+    .filter((f) => {
+      try {
+        return /\bsetInterval\(/.test(codeOf(f, SRC))
+      } catch {
+        return false
+      }
+    })
+    .sort()
+}
+
+/** Background-runner files that legitimately call a sync child on their interval TODAY, measured
+ *  fresh for this card (comment-stripped, via codeOf -- a prior raw-text pass over
+ *  channel-health-monitor.ts would have counted its OWN header comment describing a DIFFERENT
+ *  file's call as if it were code here). Gate-reviewed as local and bounded, same stance as
+ *  KNOWN_SYNC_ROUTES below. */
+const KNOWN_SYNC_RUNNERS = [
+  'web.ts',
+  'web/auto-restart-runner.ts',
+  'web/channel-monitor.ts',
+  'web/stuck-tool-call-watcher.ts',
+  'web/update-checker.ts',
+] as const
 
 /**
  * Every route handler, DERIVED from the directory (card 095edfec, Cybersec). A single inbound
@@ -170,5 +230,57 @@ const KNOWN_SYNC_TICK_FILES = ['agent-process.ts'] as const
   it('scans a plausible number of route files (a broken walk would pass vacuously)', () => {
     expect(ROUTE_FILES.length).toBeGreaterThan(30)
     expect(ROUTE_FILES).toContain('agents.ts')
+  })
+
+  it.each(backgroundRunnerFiles().filter((f) => !(KNOWN_SYNC_RUNNERS as readonly string[]).includes(f)))(
+    '%s (background runner, own setInterval) uses no synchronous child_process API',
+    (file) => {
+      const code = codeOf(file, SRC)
+      for (const api of SYNC_CHILD_APIS) {
+        expect(
+          code,
+          `${file} installs its own setInterval on the shared event loop and must not call ${api}: ` +
+            `it would freeze the HTTP server + scheduler tick for the child's lifetime`,
+        ).not.toMatch(new RegExp(`\\b${api}\\(`))
+      }
+    },
+  )
+
+  it('no NEW background-runner file starts calling a synchronous child on its interval', () => {
+    const runners = backgroundRunnerFiles()
+    const offenders = runners.filter((f) => SYNC_CALL_RX.test(codeOf(f, SRC))).sort()
+    const unexpected = offenders.filter((f) => !(KNOWN_SYNC_RUNNERS as readonly string[]).includes(f))
+    expect(
+      unexpected,
+      `these background-runner files call a synchronous child_process API on their OWN setInterval ` +
+        `and are not on the reviewed inventory:\n${unexpected.join('\n')}\nA blocking child here freezes ` +
+        `the HTTP server too, not just this monitor. Use execFileAsync (src/web/exec-async.ts), or add ` +
+        `the file to KNOWN_SYNC_RUNNERS with a reason if the call is genuinely local and bounded.`,
+    ).toEqual([])
+    // ...and the inventory must not rot in the other direction either.
+    const stale = (KNOWN_SYNC_RUNNERS as readonly string[]).filter((f) => !offenders.includes(f))
+    expect(
+      stale,
+      `these files no longer call a sync child on their interval and should leave KNOWN_SYNC_RUNNERS: ${stale.join(', ')}`,
+    ).toEqual([])
+  })
+
+  it('covers every background-runner file known to be start-wired with its own setInterval', () => {
+    const runners = backgroundRunnerFiles()
+    // The two files the naive "web.ts only" derivation would have missed entirely (wired from
+    // index.ts instead) -- pinned by name so a future refactor cannot quietly shrink the reach.
+    expect(runners).toContain('web/channel-invites.ts')
+    expect(runners).toContain('web/channel-request-watcher.ts')
+    // The lazily-imported one -- a regex that only matched static `import {}` would miss it.
+    expect(runners).toContain('web/worker-liveness.ts')
+    // Derivation sanity: a broken walk would yield nothing (or everything) and pass vacuously.
+    expect(runners.length, 'the background-runner list collapsed -- the derivation is broken').toBeGreaterThan(15)
+  })
+
+  it("the background-runner exemption list stays honest -- every entry really is a runner with its own setInterval", () => {
+    const runners = backgroundRunnerFiles()
+    for (const f of KNOWN_SYNC_RUNNERS) {
+      expect(runners, `${f} is pinned in KNOWN_SYNC_RUNNERS but is no longer derived as a background runner -- stale pin`).toContain(f)
+    }
   })
 })
