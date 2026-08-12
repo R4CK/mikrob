@@ -72,4 +72,14 @@ describe('listingsToCsv', () => {
     const csv = listingsToCsv([listing({ cim: 'Teszt utca 1.' })])
     expect(csv.split('\r\n')[1].startsWith('Teszt utca 1.,')).toBe(true)
   })
+
+  // Regression: the formula-injection guard must apply ONLY to cím (free text from a third party),
+  // not to our own numeric columns -- Δ ár is legitimately negative on every price DROP (the common,
+  // good case), and "-3.5" also matches the "starts with -" trigger. An earlier version of this fix
+  // applied the guard everywhere and silently turned every price-drop row's Δ ár into quoted text.
+  it('a negative Δ ár (price dropped) is exported as a plain number, NOT apostrophe-prefixed', () => {
+    const csv = listingsToCsv([listing({ delta_pct: -3.5294117647058822 })])
+    const cells = csv.split('\r\n')[1].split(',')
+    expect(cells[5]).toBe('-3.5294117647058822')
+  })
 })
