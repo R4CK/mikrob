@@ -24,9 +24,11 @@ describe('runScrapeCycle', () => {
 
   it('fetches, parses, and records each source, returning accurate per-source counts', async () => {
     const fetchHtml = vi.fn(async (url: string) => `<html for ${url}>`)
+    // Real ingatlan.com listing ids are globally unique regardless of tipus -- prefix by tipus
+    // here only so this fixture doesn't accidentally collide across the two sources.
     const parseHtml = vi.fn((_html: string, tipus: string) => [
-      listing({ id: 'a', tipus: tipus as 'haz' | 'lakas' }),
-      listing({ id: 'b', tipus: tipus as 'haz' | 'lakas' }),
+      listing({ id: `${tipus}-a`, tipus: tipus as 'haz' | 'lakas' }),
+      listing({ id: `${tipus}-b`, tipus: tipus as 'haz' | 'lakas' }),
     ])
 
     const results = await runScrapeCycle(
