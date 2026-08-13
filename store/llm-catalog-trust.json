@@ -1,0 +1,24 @@
+{
+  "_doc": "TWO SEPARATE LISTS, deliberately in one file so the distinction is visible to whoever edits it (Cybered, card 87d7c86f). trustedPublishers decides what may be INSTALLED without an explicit operator confirmation -- it is a security control and changes to it deserve a security review. relevantFamilies and relevanceKeywords decide what is shown as a CODING model -- that is a cheap data edit and is expected to change often. Do not merge them: a list that must stay easy to refresh must not also be the thing that gates installation.",
+
+  "trustedPublishers": [
+    "qwen",
+    "meta-llama",
+    "mistralai",
+    "google",
+    "microsoft",
+    "deepseek-ai",
+    "bigcode",
+    "bartowski",
+    "unsloth"
+  ],
+
+  "relevantFamilies": [
+    "qwen",
+    "deepseek-ai",
+    "bigcode",
+    "codellama"
+  ],
+
+  "relevanceKeywords": ["coder", "code", "starcoder"]
+}

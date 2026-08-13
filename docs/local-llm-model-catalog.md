@@ -134,8 +134,16 @@ machine with no internet must still offer something.
 ```
 required_mib = file_mib
              + kv_cache_mib(ctx, kv_quant)
-             + runtime_overhead_mib      (~600, weights-load scratch + compute buffers)
+             + runtime_overhead_mib      (1024 -- CALIBRATED, see below)
 ```
+
+**The overhead is calibrated from the one measurement, not chosen for roundness.** The first
+implementation used 600, and the selftest caught it: with 600 the rule called the fleet's own
+qwen2.5-coder 7B q4_K_M (4466 MiB) `fits` on this 6144 MiB card -- contradicting the only hard data
+point we have, which says it does NOT fully fit (16-27% of layers stay on CPU). The constraint is
+`required(4466) > 0.90 * 6144`, i.e. overhead > 945; 1024 satisfies it with a little margin. ONE
+data point on ONE GPU: a floor derived from a real failure to fit, not a law, and it should be
+re-derived per hardware class once a second measurement exists.
 
 `kv_cache_mib` is measurable per model rather than guessable: **measured** on qwen2.5-coder 7B with
 `OLLAMA_FLASH_ATTENTION=1` + `OLLAMA_KV_CACHE_TYPE=q8_0`, the KV cache was 119 MiB at ctx 4096,
