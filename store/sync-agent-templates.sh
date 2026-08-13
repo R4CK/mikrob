@@ -30,6 +30,11 @@
 #   * Every rewrite is validated BEFORE it is written (JSON parses; markdown bash fences still parse
 #     under `bash -n`). A rewrite that does not validate is DISCARDED and reported -- the file on disk
 #     is never opened for writing, so there is nothing to restore and no half-applied state to find.
+#   * Writes are ATOMIC: a unique sibling temp file, fsync, then os.replace (Cybered, card 265fdc2c).
+#     truncate-then-write would leave a FRAGMENT on a crash or a full disk, and these files are what an
+#     agent boots from -- with agents/ gitignored there is no git to restore from. A one-time .bak is
+#     kept beside each file it rewrites, created only when absent so a second run cannot overwrite the
+#     pristine original with an already-fixed copy.
 #   * Idempotent: a file already carrying the good shape is untouched and counted as such.
 #
 # Usage:
@@ -64,7 +69,7 @@ done
 # a test arriving with it.
 _run_python() {
   python3 - "$@" <<'PYEOF'
-import json, re, subprocess, sys, tempfile, os
+import json, os, re, secrets, shutil, stat, subprocess, sys, tempfile
 
 # --- pattern registry -----------------------------------------------------------------------------
 # Each entry: a name, a detector, and a rewriter over ONE line of shell text. The rewriter returns the
@@ -145,6 +150,55 @@ def validate(path, raw):
             return False
     return True
 
+def atomic_write(path, data):
+    """Write via a UNIQUE sibling temp file + os.replace (Cybered NO-GO on card 265fdc2c).
+
+    The first cut did open(path, 'w').write(...), which TRUNCATES then writes: a crash, a kill or a
+    full disk between the two leaves a half-written file. These are boot-critical -- an agent reads its
+    CLAUDE.md and settings.json at start -- and agents/ is gitignored, so there is no git to restore
+    from. os.replace() is atomic on POSIX: the target is either the old file or the new one, never a
+    fragment.
+
+    The temp name carries pid + random, mirroring src/web/atomic-write.ts, NOT a fixed `.tmp` suffix:
+    a fixed name collides when two runs overlap, and this script is exactly the kind of thing an
+    operator runs twice in a row.
+
+    fsync before the replace so the content is on disk, not only in the page cache -- otherwise a
+    power loss can leave the rename durable while the bytes it points at are not.
+    """
+    tmp = f'{path}.{os.getpid()}.{secrets.token_hex(4)}.tmp'
+    try:
+        mode = stat.S_IMODE(os.stat(path).st_mode)
+    except OSError:
+        mode = None
+    try:
+        with open(tmp, 'w', encoding='utf-8') as fh:
+            fh.write(data)
+            fh.flush()
+            os.fsync(fh.fileno())
+        if mode is not None:
+            os.chmod(tmp, mode)  # a boot file must not silently change permissions
+        os.replace(tmp, path)
+    except BaseException:
+        try:
+            os.unlink(tmp)  # never leave a stray temp beside a boot file
+        except OSError:
+            pass
+        raise
+
+
+def backup_once(path):
+    """Keep ONE pristine copy beside the file, created only if absent.
+
+    Cybered asked for a .bak on first rewrite. Created only when missing on purpose: a second run
+    would otherwise overwrite the pristine original with an already-rewritten copy, which is the
+    failure mode a backup exists to prevent.
+    """
+    bak = f'{path}.bak'
+    if not os.path.exists(bak):
+        shutil.copy2(path, bak)
+
+
 def process(path, apply_writes):
     raw = open(path, encoding='utf-8').read()
     try:
@@ -161,7 +215,8 @@ def process(path, apply_writes):
         print(f'  FAIL  {path}: rewrite did not validate -- NOT written')
         return 0, hits, 1, 0
     if apply_writes:
-        open(path, 'w', encoding='utf-8').write(new)
+        backup_once(path)
+        atomic_write(path, new)
         print(f'  fixed {path}: {hits}')
     else:
         print(f'  would fix {path}: {hits}')
@@ -223,6 +278,46 @@ if [[ "$MODE" == selftest ]]; then
     echo "  ok   unparseable file: reported, left byte-identical, and NOT counted as a failure"
   else
     echo "  FAIL unparseable file mishandled (rc=$rc)"; fail=1
+  fi
+
+  # --- atomicity + backup (Cybered NO-GO, card 265fdc2c) ----------------------------------------
+  # 6. a one-time .bak holds the ORIGINAL, and a second run does not clobber it with the fixed copy.
+  printf 'ORIGINAL\ncurl -s -H "Authorization: Bearer $(cat /t/tok)" http://x\n' > "$tmp/f.md"
+  _run_python apply "$tmp/f.md" >/dev/null
+  if grep -q 'ORIGINAL' "$tmp/f.md.bak" && grep -q 'Bearer \$(cat' "$tmp/f.md.bak"; then
+    echo "  ok   backup holds the pristine ORIGINAL, not the rewritten copy"
+  else
+    echo "  FAIL backup does not hold the original"; fail=1
+  fi
+  cp "$tmp/f.md.bak" "$tmp/f.md.bak.snapshot"
+  printf 'curl -s -H "Authorization: Bearer $(cat /t/tok)" http://y\n' >> "$tmp/f.md"
+  _run_python apply "$tmp/f.md" >/dev/null
+  if cmp -s "$tmp/f.md.bak" "$tmp/f.md.bak.snapshot"; then
+    echo "  ok   a second run leaves the existing backup untouched"
+  else
+    echo "  FAIL second run overwrote the pristine backup"; fail=1
+  fi
+
+  # 7. no stray temp file survives a successful write -- a leftover beside a boot file is its own hazard.
+  if [[ -z "$(find "$tmp" -name '*.tmp' -print -quit)" ]]; then
+    echo "  ok   no temp file left behind after a successful write"
+  else
+    echo "  FAIL a .tmp file survived the write"; fail=1
+  fi
+
+  # 8. THE ATOMICITY PROOF: make the temp creation fail (read-only DIRECTORY) and assert the target is
+  #    byte-identical afterwards. With the old truncate-then-write this leaves an EMPTY boot file; with
+  #    tmp+os.replace the original survives untouched, which is the whole point of the change.
+  mkdir -p "$tmp/ro"
+  printf 'BOOT CRITICAL\ncurl -s -H "Authorization: Bearer $(cat /t/tok)" http://x\n' > "$tmp/ro/g.md"
+  sum_before="$(cksum < "$tmp/ro/g.md")"
+  chmod 500 "$tmp/ro"
+  _run_python apply "$tmp/ro/g.md" >/dev/null 2>&1
+  chmod 700 "$tmp/ro"
+  if [[ "$(cksum < "$tmp/ro/g.md")" == "$sum_before" ]]; then
+    echo "  ok   a write that cannot create its temp leaves the target BYTE-IDENTICAL"
+  else
+    echo "  FAIL the target was damaged when the write could not complete"; fail=1
   fi
 
   [[ $fail -eq 0 ]] && { echo 'selftest: PASS'; exit 0; } || { echo 'selftest: FAIL'; exit 1; }
