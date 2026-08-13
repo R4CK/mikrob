@@ -127,7 +127,7 @@ def ts(c):
 #    test re-arms on all of those, which is the fail-open direction but pure noise.
 review_rx = re.compile(r"^\s*(?:[#*>\-]*\s*)?REVIEW\b", re.M)
 review_comments = [c for c in cs
-                    if c.get("author") != agent and review_rx.search(c.get("content") or "")]
+                    if (c.get("author") or "").lower() != agent.lower() and review_rx.search(c.get("content") or "")]
 
 # NO REVIEW AT ALL -> there is nothing submitted for this gate to answer. A waiting card without a
 # submission is parked for some other reason (a bound block, a question to MikroB), and treating it
@@ -163,7 +163,7 @@ designated = (
 if designated is not None and agent not in designated:
     print("ADVISE-SKIP:not-designated"); sys.exit(0)
 
-mine = [c for c in cs if c.get("author") == agent]
+mine = [c for c in cs if (c.get("author") or "").lower() == agent.lower()]
 
 # QA2-COVERED-BY-QA (MikroB decision, card 14acfadd follow-up, msg 9825): QA2 exists for parallel
 # THROUGHPUT, not as a second mandatory review layer (CLAUDE.md own words) -- a QA PASS on this
@@ -175,7 +175,7 @@ mine = [c for c in cs if c.get("author") == agent]
 # and only for agent == qa2 (the decision was QA/QA2-specific, not a general gate-rotation rule).
 if agent == "qa2":
     qa_pass_rx = re.compile(r"^\s*QA\s+PASS\b", re.I)
-    mine = mine + [c for c in cs if c.get("author") == "qa" and qa_pass_rx.search(c.get("content") or "")]
+    mine = mine + [c for c in cs if (c.get("author") or "").lower() == "qa" and qa_pass_rx.search(c.get("content") or "")]
 if not mine:
     print("ALLOW:no-verdict"); sys.exit(0)
 
@@ -189,9 +189,18 @@ last_review = max(ts(c) for c in review_comments)
 # more detail, not a new commit). Compare the short-sha(s) named in the newest REVIEW against the
 # short-sha(s) named in the newest verdict; only fall back to the timestamp rule when at least one
 # side names no sha at all (fail-open, same stance as the rest of this script).
+# CARD-ID COLLISION (real incident, fef84e46/63c4b270, 2026-08-13): kanban card ids are the SAME
+# hex-lookalike shape as a git short-sha, and a card almost always mentions its OWN id somewhere
+# in a comment (title echo, kartya <id>, or a branch name like fix/foo-<cardId>). That id then
+# gets extracted as a sha on BOTH sides and trivially overlaps itself, producing a false
+# ADVISE-SKIP:already-gated that HIDES a genuinely unreviewed new commit. Strip the card own id
+# (env CID, optional -- callers that cannot supply it just skip this filter, fail-open) before
+# comparing.
+_cid = (os.environ.get("CID") or "").lower()
 def extract_shas(text):
-    return {m.group(0).lower() for m in re.finditer(r"\b[0-9a-fA-F]{7,40}\b", text or "")
-            if re.search(r"[a-fA-F]", m.group(0))}
+    found = {m.group(0).lower() for m in re.finditer(r"\b[0-9a-fA-F]{7,40}\b", text or "")
+             if re.search(r"[a-fA-F]", m.group(0))}
+    return found - {_cid} if _cid else found
 
 def shas_overlap(a, b):
     return any(x.startswith(y) or y.startswith(x) for x in a for y in b)
@@ -271,7 +280,7 @@ case "${1:-}" in
     CARD_JSON="$(_curl_get "/api/kanban" || true)"
     GATE_LABELS="$(_extract_gate_labels "$CARD" <<< "$CARD_JSON" 2>/dev/null || true)"
     GATE_LINE="$(_extract_gate_line "$CARD" <<< "$CARD_JSON" 2>/dev/null || true)"
-    verdict="$(printf '%s' "$body" | GATE_LABELS="$GATE_LABELS" GATE_LINE="$GATE_LINE" _decide "$AGENT" || echo ALLOW)"
+    verdict="$(printf '%s' "$body" | GATE_LABELS="$GATE_LABELS" GATE_LINE="$GATE_LINE" CID="$CARD" _decide "$AGENT" || echo ALLOW)"
     echo "$verdict"
     [[ "$verdict" == ADVISE-SKIP:* ]] && exit 8 || exit 0
     ;;

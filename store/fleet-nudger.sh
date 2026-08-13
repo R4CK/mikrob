@@ -264,7 +264,7 @@ for a in $GATE; do
       gate_labels="$(cat "$CACHE/$card.labels" 2>/dev/null)"
       gate_line="$(cat "$CACHE/$card.gateline" 2>/dev/null)"
       verdict="$(printf '%s' "$body" \
-        | GATE_LABELS="$gate_labels" GATE_LINE="$gate_line" bash "$CHECK" decide "$a" 2>/dev/null || true)"
+        | GATE_LABELS="$gate_labels" GATE_LINE="$gate_line" CID="$card" bash "$CHECK" decide "$a" 2>/dev/null || true)"
     else
       verdict="ALLOW"                                       # checker missing -> fail open
     fi
