@@ -3391,6 +3391,7 @@ function agentHudBlockHtml(hudKey, activeModel) {
       ${modelLine}
       <div class="agent-hud-row agent-hud-tool-row" hidden></div>
       <div class="agent-hud-row agent-hud-subagent-row" hidden></div>
+      <span class="agent-hud-truncated" hidden role="img" aria-label="${escapeHtml(t('agents.hud.truncated'))}" title="${escapeHtml(t('agents.hud.truncated'))}">&#9888;</span>
       <div class="agent-hud-stale" hidden></div>
     </div>
   `
@@ -3643,6 +3644,13 @@ async function refreshAgentHud() {
           subagentRow.hidden = true
         }
       }
+      // The tail-scan bound was hit: activeTool/runningSubAgents came from only
+      // PART of the transcript. Per BE's contract, an in-flight call is always
+      // recent enough to survive the bound -- but a reader must still be able to
+      // tell "confirmed idle" from "scan was cut short", not silently treat both
+      // as the same empty state.
+      const truncatedEl = hud.querySelector('.agent-hud-truncated')
+      if (truncatedEl) truncatedEl.hidden = !hudEntry.truncated
     }
     const staleEl = hud.querySelector('.agent-hud-stale')
     if (staleEl) {

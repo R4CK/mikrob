@@ -104,22 +104,29 @@ describe('per-agent HUD active-tool + running-sub-agent (GET /api/agent-hud)', (
     expect(body).toContain("t('agents.hud.subagent_running', { n })")
   })
 
-  it('SECURITY: only reads activeTool and runningSubAgents off the response -- never a raw field dump', () => {
+  it('SECURITY: only reads activeTool/runningSubAgents/truncated off the response -- never a raw field dump', () => {
     // Card e9504aba's binding constraint (no tool arguments, no transcript quotes) is
     // enforced server-side; this guards the FE side of the same contract -- the response
-    // also carries contextTokens/activeModel/truncated, and none of those may be used
-    // here (pct/model already come from their own sources; a second reader would be a
-    // second source of truth, and `truncated` describes the SCAN, not a thing to show).
+    // also carries contextTokens/activeModel, which must NOT be read here (pct/model
+    // already come from their own sources; a second reader would be a second source
+    // of truth).
     const body = fnBody(APP, 'async function refreshAgentHud()')
     expect(body).not.toMatch(/hudEntry\.contextTokens/)
     expect(body).not.toMatch(/hudEntry\.activeModel/)
-    expect(body).not.toMatch(/hudEntry\.truncated/)
   })
 
   it('the tool/sub-agent slots exist in the shell markup, both starting hidden', () => {
     const body = fnBody(APP, 'function agentHudBlockHtml(hudKey, activeModel)')
     expect(body).toContain('class="agent-hud-row agent-hud-tool-row" hidden')
     expect(body).toContain('class="agent-hud-row agent-hud-subagent-row" hidden')
+  })
+
+  it('surfaces a truncated-scan indicator instead of letting a partial scan read as confirmed-idle', () => {
+    const shellBody = fnBody(APP, 'function agentHudBlockHtml(hudKey, activeModel)')
+    expect(shellBody).toContain('class="agent-hud-truncated" hidden role="img"')
+    expect(shellBody).toContain("aria-label=\"${escapeHtml(t('agents.hud.truncated'))}\"")
+    const pollBody = fnBody(APP, 'async function refreshAgentHud()')
+    expect(pollBody).toContain('truncatedEl.hidden = !hudEntry.truncated')
   })
 })
 
@@ -131,6 +138,7 @@ describe('per-agent HUD i18n (rule 12: no hardcoded, HU+EN parity)', () => {
     'agents.hud.stale',
     'agents.hud.active_tool',
     'agents.hud.subagent_running',
+    'agents.hud.truncated',
   ]
   it.each(KEYS)('%s exists in hu.js', (key) => {
     expect(HU).toContain(`'${key}':`)

@@ -1994,6 +1994,13 @@ main.kanban-active { padding-left: 16px; padding-right: 16px; }
   color: var(--text-muted);
   opacity: 0.75;
 }
+.agent-hud-truncated {
+  color: var(--info);
+  font-size: 12px;
+  line-height: 1;
+  cursor: help;
+  align-self: flex-start;
+}
 
 /* === Per-agent tmux attach copy buttons (running agents only) === */
 .agent-tmux-cmds {

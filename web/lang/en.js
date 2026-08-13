@@ -1231,6 +1231,7 @@ window._i18n.en = {
   'agents.hud.stale':              'Updated: {sec}s ago',
   'agents.hud.active_tool':        'Tool: {tool}',
   'agents.hud.subagent_running':   'Running: {n} sub-agent(s)',
+  'agents.hud.truncated':          'Partial transcript scan -- some activity may not be shown',
   'agents.marveen_process_tip':    'Running: the main assistant always runs in the --channels session. This card always shows Running -- no per-agent tmux check.',
   'agents.marveen_channel_tip':    'Online: the main assistant channel is managed by the --channels session, so it is always online (no separate token check).',
   'agents.running_tip':            'Running: the agent has a live tmux session (Claude Code process running). Source: tmux list-sessions.',

@@ -414,6 +414,7 @@ window._i18n.hu = {
   'agents.hud.stale':              'Friss.: {sec}s',
   'agents.hud.active_tool':        'Eszköz: {tool}',
   'agents.hud.subagent_running':   'Fut: {n} sub-agent',
+  'agents.hud.truncated':          'Részleges transcript-olvasás -- előfordulhat, hogy nem minden aktivitás látszik',
   'agents.marveen_process_tip':    'Fut: a fő asszisztens mindig a --channels session-ben fut. Ez a kártya fixen Fut állapotot mutat, nincs per-ágens tmux-ellenőrzés.',
   'agents.marveen_channel_tip':    'Online: a fő asszisztens csatornáját a --channels session kezeli, ezért fixen online (nincs külön token-ellenőrzés).',
   'agents.running_tip':            'Fut: él az ágens tmux session-je (a Claude Code folyamat fut). Forrás: tmux list-sessions.',
