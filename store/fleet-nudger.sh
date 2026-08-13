@@ -112,7 +112,7 @@ try:
 except Exception:
     print('')
 " 2>/dev/null)"
-NUDGE_ENG='SELF-ADVANCE (rule 11, NE varj MikroB-ra): ha nincs aktiv munkad, curl a kanbant es vedd a neked cimzett legmagasabb-prio planned kartyat (nem BLOKKOLT) -> in_progress -> epitsd -> vegen waiting+REVIEW. Ha nincs planned, epitsd a design-impl kovetkezo kepernyoit (fron-ted/fron-teddy) v. a kovetkezo sec-followupot (backend/fullstack). Szabaly 10/11.'
+NUDGE_ENG='SELF-ADVANCE (rule 11, NE varj MikroB-ra): ha nincs aktiv munkad, curl a kanbant es vedd a neked cimzett legmagasabb-prio planned kartyat (nem BLOKKOLT) -> in_progress -> epitsd -> vegen waiting+REVIEW. Ha nincs planned, epitsd a design-impl kovetkezo kepernyoit (fron-ted/fron-teddy) v. a kovetkezo sec-followupot (backend/fullstack). Szabaly 10/11. TOKEN-SPOROLAS (Peti 2026-08-13): a kartyan mar rajta lehet egy LOCAL-LLM DRAFT komment (helyi 7B, offload-dispatch.sh irta) -- ELOSZOR ezt nezd meg. Ha lefedi a feladatot/hibat, VALIDALD (futtasd le a teszteket, olvasd at) es azt ALKALMAZD, NE irj ujra nulla-tol Claude-dal. Csak akkor irj sajat kodot, ha a draft hianyzik, hianyos, vagy hibas -- ilyenkor ird le roviden a REVIEW kommentben, mit hagytal el a draftbol es miert.'
 if [ -n "$PRIORITY_PROJECTS" ]; then
   NUDGE_ENG="$NUDGE_ENG DISPATCH-PRIORITAS BEALLITVA: ($PRIORITY_PROJECTS) projekt(ek) kartyai MOST elozzek meg a tobbit, EBBEN a sorrendben (dashboard-beallitas, felulirja a rule 14 alap sorrendjet, amig ez a beallitas fenn van)."
 fi
