@@ -90,13 +90,26 @@ const CATEGORY_SIGNALS: ReadonlyArray<readonly [NonOffloadableCategory, readonly
   [
     'authz',
     [
-      'authz', 'authoriz', 'authentic', 'rbac', 'permission', 'role-', 'roles', 'acl', 'guard',
-      'gate ', 'access control', 'privilege', 'superadmin', 'admin-only', 'jogosult', 'hozzafer',
+      'authz', 'authoriz', 'authentic', 'rbac', 'permission', 'role-', 'roles', 'acl',
+      'access control', 'privilege', 'superadmin', 'admin-only', 'jogosult', 'hozzafer',
       // Card 7a23c045: "add step-up verification for high-risk admin actions" routed LOCAL --
       // it only routed ONLINE elsewhere by accidentally co-occurring with "authentication"/
       // "password" in the same sentence, which an adversarial (or just differently-worded) prompt
       // would not repeat.
       'step-up', 'step up',
+      // 2026-08-13: bare 'guard' and 'gate ' REMOVED -- measured false-positive on THIS fleet's own
+      // dialect, where "gate" means the QA/Cybersec/Cybered review checkpoint (every card carries a
+      // "Gate: ..." line -- already stripped by stripGateLine, but prose ALSO says things like "a
+      // QA/gate bizonyíték" or "gate kartyánként: qa + cy...") and "guard" means any code-level safety
+      // net (redispatch-guard.sh, "a repo saját guard-tesztje bukik", no-floating-promises guard).
+      // Probed live: 3 same-day cards (ad78347c, 39d591b4, 85c867bf) each routed ONLINE purely on one
+      // of these two words, none touching authorization -- a meaningful slice of why local-LLM
+      // offload sees so few cards despite RELIABLE_CEILING='feature' and aggressiveness=100.
+      // Genuine guard/gate MUTATIONS (removing, bypassing, disabling an existing check) are still
+      // caught by the SHAPE_SIGNALS rule below regardless of wording; a direct authz-guard MENTION is
+      // still caught by these narrower compound phrases.
+      'auth guard', 'authz guard', 'access guard', 'rbac guard', 'permission guard', 'route guard',
+      'security gate', 'access gate', 'auth gate',
     ],
   ],
   [
