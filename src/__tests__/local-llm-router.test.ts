@@ -73,6 +73,17 @@ describe('routeTask -- negative: non-offloadable categories NEVER go local', () 
     // comparison; these are the shape it exists for -- a timing-unsafe check of a secret.
     ['security-decision', 'Compare the provided token === the stored one before granting access.'],
     ['security-decision', 'The digest check uses == instead of a constant-time compare.'],
+    // PREDICTABILITY/STRENGTH axis (Cybered NO-GO on c26a9064). None of these carries an auth or
+    // isolation word -- "is this secret hard to guess" is a security decision on its own axis, and
+    // the qualifier lists had no vocabulary for it at all.
+    ['security-decision', 'the invite token is guessable'],
+    ['security-decision', 'token entropy is too low, make it 32 bytes'],
+    ['security-decision', 'the session id is sequential'],
+    // Found by the FULL manual read of the reclaimed set, not by any probe:
+    // (a) `\b` does not fire inside snake_case -- `has_table_privilege` hid the `privilege` needle
+    ['authz', 'derivalt privilegium-guard: has_table_privilege(SELECT/INSERT) + SET ROLE cleancore_app'],
+    // (b) the axes were English-only, and this fleet writes Hungarian as often as not
+    ['security-decision', 'Futasideju token-in-argv ellenorzes -- elo szivargas van a lemezen'],
   ]
   for (const [category, description] of blocked) {
     it(`online (${category}): ${description.slice(0, 40)}`, () => {
@@ -100,6 +111,8 @@ describe('routeTask -- negative: non-offloadable categories NEVER go local', () 
     // only five contained a comparison operator at all, and not one was a secret comparison.
     'Add an empty-state when sites.length === 0 after load.',
     'Handle both 404 and a raw network error: if (status === 404 || status === 0)',
+    // The widened boundary must still not fire inside an ordinary word: `scap` in "landscape".
+    'render the landscape orientation preview',
   ]
   for (const description of stillLocal) {
     it(`still local (no permission modal): ${description.slice(0, 38)}`, () => {

@@ -310,23 +310,47 @@ export function stripGateLine(description: string): string {
  * the local model; a false positive costs one online draft. Those are not symmetric, so when in
  * doubt a word stays in.
  */
+// THREE SECURITY VOCABULARIES, named. Card c26a9064 was NO-GO'd because a qualifier list carries
+// only as much vocabulary as its author happened to think of, and that failed three times in a row
+// on the SAME shape:
+//   1. `login` missing from the token list        -- found by the manual read (B.5)
+//   2. isolation words missing from account/org   -- found by Cybered's pre-existing c1661fff test
+//   3. predictability words missing from token/session -- found by Cybered's probes on this card
+//        "the invite token is guessable" / "token entropy is too low" / "the session id is sequential"
+//        all reclaimed to local, and all three are textbook security work.
+//
+// Patching a third list would invite a fourth. So the axes are named ONCE, and each ambiguous needle
+// declares WHICH of them it can legitimately appear in. Adding a word later means adding it to an
+// AXIS, where every needle that shares that axis gets it -- rather than to one list that happens to
+// be the one someone was looking at.
+// The axes carry HUNGARIAN terms too. The fleet's cards are written in Hungarian at least as often
+// as English, and an English-only qualifier list silently reclaims every Hungarian-worded security
+// card. Found in the same full read: 5b6dd606 ("futasideju token-in-argv ellenorzes ... elo
+// SZIVARGAS van a lemezen") carries `token` with a leak qualifier -- in Hungarian, so nothing fired.
+const V_AUTH =
+  'auth|bearer|refresh|access|reset|magic|csrf|oauth|jwt|api ?key|secret|credential|login|log ?in|logout|sign ?in|revoke|expir|verify|sign|permission|privilege|impersonat' +
+  '|jogosult|hozzafer|hitelesit|belepes|azonosit|titok|jelszo|kulcs'
+const V_ISOLATION =
+  'tenant|cross|across|between|leak|share|shar|scope|isolat|other|foreign|boundary|member' +
+  '|szivarg|berlo|hataron|elkulonit|megosztas|kereszt'
+// STRENGTH is the axis that was missing entirely: it is about whether a secret is HARD TO GUESS,
+// which is a security decision even when no auth or isolation word appears anywhere in the sentence.
+const V_STRENGTH =
+  'guessab|predictab|entropy|random|sequential|brute|enumerat|collision|weak|rotat|timing|constant.?time|length|bytes|bits' +
+  '|kitalalhato|megjosolhato|gyenge|veletlen|sorszamoz'
+const V_CRYPTO = 'password|passwd|token|secret|signature|hmac|digest|integrity|chain|tamper|salt|bcrypt|argon|sha[0-9]'
+
+const axes = (...v: string[]): RegExp => new RegExp(v.join('|'))
+
 const QUALIFIERS: ReadonlyArray<readonly [string, RegExp]> = [
-  // `login` is in this list because the manual-read control (B.5) caught its absence: a card titled
-  // "Dashboard TOKEN-LOGIN overlay" was reclaimed to local, and token-login is obviously auth. The
-  // qualifier lists are only as good as the words actually used on this board.
-  ['token', /auth|bearer|refresh|access|reset|magic|csrf|oauth|jwt|api ?key|secret|session|revoke|expir|verify|sign|login|log ?in|logout/],
-  ['session', /login|log ?in|cookie|auth|jwt|expir|hijack|fixation|token|revoke|logout|sign ?in/],
-  ['hash', /password|token|secret|signature|hmac|digest|integrity|chain|tamper|salt|bcrypt|argon|sha[0-9]/],
-  // `account` and `organization` are ISOLATION needles as well as auth ones, and the qualifier list
-  // has to carry BOTH vocabularies. Caught by Cybered's pre-existing regression (card c1661fff):
-  // "cross-organization data LEAK" and "the account-SCOPED filter" are textbook tenant-isolation
-  // cards, and my first list -- tuned only for the auth sense -- reclaimed both to local. This is
-  // why the method requirement is the FULL suite and not fresh probes: my own probes all passed.
-  ['account', /user|login|takeover|lockout|auth|enumerat|register|credential|owner|password|scope|cross|across|between|leak|share|shar|other|tenant|isolat/],
-  ['organization', /tenant|scope|isolation|isolat|member|permission|access|rbac|boundary|leak|cross|across|between|share|shar|other|foreign/],
-  ['organisation', /tenant|scope|isolation|isolat|member|permission|access|rbac|boundary|leak|cross|across|between|share|shar|other|foreign/],
+  ['token', axes(V_AUTH, V_ISOLATION, V_STRENGTH)],
+  ['session', axes(V_AUTH, V_ISOLATION, V_STRENGTH, 'cookie|hijack|fixation')],
+  ['hash', axes(V_CRYPTO, V_STRENGTH)],
+  ['account', axes(V_AUTH, V_ISOLATION, 'takeover|lockout|register|owner')],
+  ['organization', axes(V_ISOLATION, V_AUTH, 'rbac')],
+  ['organisation', axes(V_ISOLATION, V_AUTH, 'rbac')],
   ['compose', /docker|container|stack|orchestrat/],
-  ['roles', /permission|access|rbac|allowed|grant|assign|authoriz|admin|scope|privilege|approve|deny/],
+  ['roles', axes(V_AUTH, 'rbac|allowed|grant|assign|admin|approve|deny')],
 ]
 const QUALIFIER_WINDOW = 80
 
@@ -340,9 +364,16 @@ function escapeRx(s: string): string {
  * "landscape"); the qualifier window removes the fleet-dialect class the measurement above found.
  */
 function needleFires(text: string, needle: string): boolean {
-  // Start-boundary only: several needles are deliberate STEMS (`authoriz`, `vulnerab`, `sanitiz`)
-  // and must keep matching their inflections.
-  const rx = new RegExp('\\b' + escapeRx(needle), 'g')
+  // NOT `\b`. Identifiers use `_` and `-` as separators, and both are... `_` is a WORD character, so
+  // `\bprivilege` does NOT match inside `has_table_privilege`. That cost a real card: 187e29d9
+  // ("derived privilege guard -- has_table_privilege + SET ROLE") is a database-grant verification
+  // card, it was classified `authz` before this work, and word-boundary matching reclaimed it to
+  // local. Found by the FULL manual read of the reclaimed set, not by any probe.
+  //
+  // `(?<![a-z0-9])` keeps what the boundary was for -- `scap` still does not match inside
+  // "landscape", because the preceding char is a letter -- while firing after `_`, `-`, `.`, `/`
+  // and whitespace, which is where identifiers actually put their separators.
+  const rx = new RegExp('(?<![a-z0-9])' + escapeRx(needle), 'g')
   const qualifier = QUALIFIERS.find(([n]) => n === needle)?.[1]
   let m: RegExpExecArray | null
   while ((m = rx.exec(text)) !== null) {
