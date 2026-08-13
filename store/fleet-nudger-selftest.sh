@@ -98,9 +98,24 @@ ENG_ONE_PLANNED = {
     'comments': {},
 }
 
+# Same SHAPE as ENG_ONE_PLANNED -- backend still has exactly one non-blocked planned card, so plan[a]
+# is identical -- but the card moved (different id and updated_at). That is the distinction the
+# per-agent precheck has to make: "backend has work" is unchanged, yet the WORK ITSELF is new, so the
+# nudge must go out again. A precheck keyed on the boolean instead of the set would suppress this and
+# starve a genuinely new card.
+ENG_PLANNED_MOVED = {
+    'cards': [
+        {'id': 'p9', 'status': 'planned', 'title': 'a different real card', 'assignee': 'backend',
+         'updated_at': 999},
+        {'id': 'p2', 'status': 'planned', 'title': 'BLOKKOLT: parked', 'assignee': 'fullstack'},
+    ],
+    'comments': {},
+}
+
 FIX = {
     'all-answered': ALL_ANSWERED, 'one-open': ONE_OPEN, 'no-review': NO_REVIEW,
     'designated': DESIGNATED, 'eng-one-planned': ENG_ONE_PLANNED,
+    'eng-planned-moved': ENG_PLANNED_MOVED,
 }[SCENARIO]
 
 
@@ -232,5 +247,53 @@ kill "$CHANGED_PID" 2>/dev/null; wait "$CHANGED_PID" 2>/dev/null
 if [ "$(echo $run3)" = "none" ]; then
   echo "  ok   no-change precheck run 3 (different board) -> real decision made, not suppressed"
 else echo "  FAIL no-change precheck run 3 -> got '$run3', expected 'none' (a real, non-precheck decision)"; fail=1; fi
+
+# ENG-CONDITIONAL NO-CHANGE PRECHECK (card 4cdb7e31). plan[a] answers "is there a planned card",
+# never "is there anything new", and four cards on the live board sit in planned by decision rather
+# than by a BLOKKOLT- title -- so backend was sent the identical full rule-11 nudge every minute
+# forever. Three runs against ONE state file: first send, suppressed resend, and a genuinely moved
+# card that must NOT be suppressed.
+ENG_STATE_FILE="$TMP/eng-state.json"
+eng_run() { # $1 = scenario, $2 = port -> sets ENG_WORK / ENG_UNCH
+  local pid
+  python3 "$TMP/fakeboard.py" "$1" "$2" &
+  pid=$!
+  for _ in $(seq 1 40); do curl -sf -o /dev/null "http://127.0.0.1:$2/api/kanban" && break; sleep 0.25; done
+  local out
+  out="$(DASH="http://127.0.0.1:$2" NUDGER_STATE_FILE="$ENG_STATE_FILE" bash "$NUDGER" --dry-run 2>/dev/null)"
+  kill "$pid" 2>/dev/null; wait "$pid" 2>/dev/null
+  ENG_WORK="$(echo "$out" | sed -n 's/^ENG-WORK://p' | xargs)"
+  ENG_UNCH="$(echo "$out" | sed -n 's/^ENG-UNCHANGED://p' | xargs)"
+}
+
+eng_run eng-one-planned 38821
+if [ "$ENG_WORK" = "backend" ] && [ "$ENG_UNCH" = "none" ]; then
+  echo "  ok   eng precheck run 1 (fresh state) -> nudged 'backend', nothing suppressed"
+else echo "  FAIL eng precheck run 1 -> work='$ENG_WORK' unchanged='$ENG_UNCH', expected 'backend' / 'none'"; fail=1; fi
+
+eng_run eng-one-planned 38822
+if [ "$ENG_WORK" = "none" ] && [ "$ENG_UNCH" = "backend" ]; then
+  echo "  ok   eng precheck run 2 (identical board) -> suppressed, nudge NOT resent"
+else echo "  FAIL eng precheck run 2 -> work='$ENG_WORK' unchanged='$ENG_UNCH', expected 'none' / 'backend'"; fail=1; fi
+
+# The load-bearing negative control: plan['backend'] is True in BOTH fixtures, so anything keyed on
+# the boolean passes run 2 above and still fails here.
+eng_run eng-planned-moved 38823
+if [ "$ENG_WORK" = "backend" ] && [ "$ENG_UNCH" = "none" ]; then
+  echo "  ok   eng precheck run 3 (card moved, same boolean) -> resent, not suppressed"
+else echo "  FAIL eng precheck run 3 -> work='$ENG_WORK' unchanged='$ENG_UNCH', expected 'backend' / 'none'"; fail=1; fi
+
+# STATE MERGE (card 4cdb7e31): two branches now persist into one file. The gate branch used to write
+# the whole object, which would drop engFp on every run and silently turn the precheck just added
+# back off -- with no visible symptom except the original bug returning. The runs above went through
+# the gate branch too, so both keys must be present together.
+keys="$(python3 -c "
+import json
+d = json.load(open('$ENG_STATE_FILE'))
+print('gateFp' in d, 'engFp:backend' in d)
+" 2>/dev/null)"
+if [ "$keys" = "True True" ]; then
+  echo "  ok   state file keeps gateFp and engFp:backend together (write merges, not replaces)"
+else echo "  FAIL state merge -> got '$keys', expected 'True True' (one branch clobbered the other)"; fail=1; fi
 
 [ $fail -eq 0 ] && { echo "selftest: PASS"; exit 0; } || { echo "selftest: FAIL"; exit 1; }

@@ -90,11 +90,63 @@ out["_meta"]=meta
 fp_src=sorted((c.get("id"), c.get("updated_at")) for c in cards if c.get("id") in set(gate_cards))
 import hashlib
 out["_fp"]=hashlib.sha256(repr(fp_src).encode()).hexdigest()
+# PER-AGENT no-change fingerprint for the CONDITIONAL eng agents (card 4cdb7e31). Same construction
+# and the same fail-open stance as _fp, but over the PLANNED set plan[a] is derived from, because
+# that is the set the ENG predicate actually reads. plan[a] is a pure existence test, so a card that
+# is semantically finished yet still sits in "planned" without a BLOKKOLT- title -- the decision
+# recorded ONLY in its comments (8779c351 "marad LOW, nem epitunk", b077e073 "csak ha uzletileg
+# dontunk", f3278236 "kotott feltetel", b63c93b8 EPIC parent whose children are all done/waiting) --
+# holds it True forever, and the full rule-11 nudge went out every minute regardless: 6 identical
+# sends in a row, zero board delta between them.
+# Per agent, not one shared hash: a change in the backend set must not resend the fullstack nudge.
+# NOT a comment-reading heuristic (option b on the card): deciding "is this card really live" from the
+# last comment would need a semantic convention nobody enforces, and its failure direction is the
+# dangerous one -- a false negative silently starves a real card, while a false "changed" here costs
+# exactly one redundant nudge.
+eng_fp={}
+for a in eng:
+    src=sorted((c.get("id"), c.get("updated_at")) for c in cards
+               if c.get("status")=="planned" and "BLOKKOLT" not in (c.get("title") or "")
+               and c.get("assignee")==a)
+    eng_fp[a]=hashlib.sha256(repr(src).encode()).hexdigest()
+out["_eng_fp"]=eng_fp
 print(json.dumps(out))
 ' 2>/dev/null)"
 [ -z "$WORK" ] && exit 0
 
 get() { echo "$WORK" | python3 -c "import json,sys;print(json.load(sys.stdin).get(sys.argv[1],False))" "$1" 2>/dev/null; }
+eng_fp() { echo "$WORK" | python3 -c "import json,sys;print(json.load(sys.stdin).get('_eng_fp',{}).get(sys.argv[1],''))" "$1" 2>/dev/null; }
+
+# Persisted no-change fingerprints (this script's own process never lives between cron runs).
+# Overridable so a selftest never touches the live state file.
+#
+# ONE key per branch in ONE file, and the writer MERGES. The gate branch used to rewrite the whole
+# object, which was harmless only while gateFp was the single key -- the moment a second branch
+# stores its own fingerprint, a whole-object write drops the other one every run and silently turns
+# that branch's precheck back off. This is the failure mode the precheck exists to prevent, so the
+# read/write pair lives here once instead of being open-coded per branch.
+NUDGER_STATE="${NUDGER_STATE_FILE:-$ROOT/store/.fleet-nudger-state.json}"
+state_get() { NUDGER_STATE="$NUDGER_STATE" python3 -c '
+import json, os, sys
+try:
+    print(json.load(open(os.environ["NUDGER_STATE"])).get(sys.argv[1], ""))
+except Exception:
+    print("")
+' "$1" 2>/dev/null; }
+state_set() { NUDGER_STATE="$NUDGER_STATE" python3 -c '
+import json, os, sys
+path = os.environ["NUDGER_STATE"]
+try:
+    data = json.load(open(path))
+    if not isinstance(data, dict): data = {}
+except Exception:
+    data = {}
+data[sys.argv[1]] = sys.argv[2]
+try:
+    with open(path, "w") as f: json.dump(data, f)
+except Exception:
+    pass
+' "$1" "$2" 2>/dev/null; }
 
 # Project dispatch priority (card 2d6587fe): rule 14 hardcodes "project cards (CleanCore) before
 # non-project (marveen-infra)". This reads the same setting the dashboard's dropdown writes
@@ -175,11 +227,39 @@ done
 # backend/fullstack: nudge ONLY if plan[a] says a non-blocked planned card is actually assigned to
 # them. Reuses the SAME per-agent snapshot the gate loop below reads from -- no second question
 # asked of the board, just a check nothing was reading before now.
+#
+# NO-CHANGE PRECHECK (card 4cdb7e31), per agent: plan[a] answers "is there a planned card", never
+# "is there anything NEW". Four cards on this board sit in planned indefinitely by decision rather
+# than by a BLOKKOLT- title, so plan[a] is permanently True for backend and the identical full
+# rule-11 nudge -- a complete context reload for the receiver -- went out every minute forever. Same
+# remedy the gate branch already carries (bb1751f2): resend only when the agent's own candidate set
+# actually moved.
+#
+# The fingerprint is burned on the DECISION to nudge, not on confirmed delivery, matching the gate
+# branch. Delivery can still drop the send (no session, or a busy pane), and then this agent is not
+# nudged again until its board changes. Accepted rather than papered over: a busy agent is already
+# working, a session-less one is parked, and both are covered by rule 11 self-advance plus MikroB's
+# 10-minute orchestrator. Making persistence depend on delivery would make the decision depend on
+# live tmux state, which is precisely what this file keeps out of the predicate so it stays testable.
 ENG_WITH_WORK=""
+ENG_UNCHANGED=""
 for a in $ENG_CONDITIONAL; do
-  [ "$(get "$a")" = "True" ] && ENG_WITH_WORK="$ENG_WITH_WORK $a"
+  [ "$(get "$a")" = "True" ] || continue
+  fp="$(eng_fp "$a")"
+  # Empty fp -> the snapshot could not produce one; fail open and nudge, same stance as everywhere
+  # else here. A cost guard that goes quiet on a parse hiccup is a fleet that quietly stops working.
+  if [ -n "$fp" ] && [ "$fp" = "$(state_get "engFp:$a")" ]; then
+    ENG_UNCHANGED="$ENG_UNCHANGED $a"
+    continue
+  fi
+  state_set "engFp:$a" "$fp"
+  ENG_WITH_WORK="$ENG_WITH_WORK $a"
 done
 [ "$DRY_RUN" = "1" ] && echo "ENG-WORK:${ENG_WITH_WORK:- none}"
+# Reported separately from ENG-WORK so a suppressed agent is distinguishable from an agent that
+# simply has no planned card -- both end in nobody being woken, but only one of them is this
+# precheck acting, and a control that cannot tell them apart would pass either way.
+[ "$DRY_RUN" = "1" ] && echo "ENG-UNCHANGED:${ENG_UNCHANGED:- none}"
 for a in $ENG_WITH_WORK; do
   nudge "agent-$a" "$NUDGE_ENG"
 done
@@ -209,32 +289,18 @@ done
 # to the gate agents on 7 straight runs while the waiting-card list -- and every candidate card's
 # updated_at -- was provably byte-identical each time. Each send is a FULL context reload for the
 # receiving agent regardless of whether anything to act on actually changed, so a run that would
-# reach the exact same GATE-WORK conclusion as last time is pure waste. Persisted across cron
-# invocations (this script's own process never lives between runs); overridable so a selftest never
-# touches the live state file.
-NUDGER_STATE="${NUDGER_STATE_FILE:-$ROOT/store/.fleet-nudger-state.json}"
+# reach the exact same GATE-WORK conclusion as last time is pure waste. Persistence is the shared
+# state_get/state_set pair above (card 4cdb7e31 gave the file a second key, so the write has to merge
+# rather than replace the object).
 FP="$(get "_fp")"
-LAST_FP="$(NUDGER_STATE="$NUDGER_STATE" python3 -c '
-import json, os
-try:
-    print(json.load(open(os.environ["NUDGER_STATE"])).get("gateFp", ""))
-except Exception:
-    print("")
-' 2>/dev/null)"
+LAST_FP="$(state_get gateFp)"
 if [ -n "$FP" ] && [ "$FP" = "$LAST_FP" ]; then
   # Nothing recorded changed since the last run that HAD this exact fingerprint -- no candidate
   # card entered/left the waiting-not-BLOKKOLT set, and none of them picked up a new comment. Short
   # no-op: skip the per-card gate-dispatch-check.sh calls and every nudge send this run.
   [ "$DRY_RUN" = "1" ] && echo "GATE-WORK:none (no-change precheck, fp unchanged)"
 else
-  NUDGER_STATE="$NUDGER_STATE" FP="$FP" python3 -c '
-import json, os
-try:
-    with open(os.environ["NUDGER_STATE"], "w") as f:
-        json.dump({"gateFp": os.environ["FP"]}, f)
-except Exception:
-    pass
-' 2>/dev/null
+  state_set gateFp "$FP"
 CARDS="$(echo "$WORK" | python3 -c 'import json,sys;print(" ".join(json.load(sys.stdin).get("_gate_cards",[])))' 2>/dev/null)"
 CHECK="$ROOT/store/gate-dispatch-check.sh"
 CACHE="$(mktemp -d)"
