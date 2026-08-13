@@ -75,12 +75,19 @@ ollama_start_hint() {
   esac
 }
 
+# ONE opinion about which model is active, and it is this file -- no reader carries its own fallback.
+# Before this, THREE files carried FOUR different literals and they DISAGREED: this one fell back to
+# the general `qwen2.5:7b` while local-llm-bench.sh and quota-bridge.py fell back to the CODER build.
+# So a missing config did not degrade to a known state -- it silently started asking a non-coding
+# model for code while the bench and the quota bridge still reported on the coder model, and nothing
+# errored. A loud failure is the only safe answer: the config is written by first-run, and using the
+# local LLM before that step has run is itself the bug.
 read_model() {
   if [[ -f "$MODEL_FILE" ]]; then
-    tr -d '[:space:]' < "$MODEL_FILE" | head -c 200
-  else
-    echo "qwen2.5:7b-instruct-q4_K_M"
+    local m; m="$(tr -d '[:space:]' < "$MODEL_FILE" | head -c 200)"
+    if [[ -n "$m" ]]; then echo "$m"; return 0; fi
   fi
+  die 4 "no model configured ($MODEL_FILE missing or empty) -- run store/first-run-llm.sh"
 }
 
 die() { echo "local-llm: $2" >&2; exit "$1"; }

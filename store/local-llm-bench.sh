@@ -26,7 +26,14 @@
 set -uo pipefail
 
 HOST="${OLLAMA_HOST:-http://127.0.0.1:11434}"
-MODEL="${LOCAL_LLM_MODEL:-$(cat "$(dirname "${BASH_SOURCE[0]}")/local-llm-model" 2>/dev/null || echo 'qwen2.5-coder:7b-instruct-q4_K_M')}"
+# No literal fallback -- see the note in local-llm.sh read_model(). Benchmarking a model nobody
+# configured would publish throughput numbers for a model the fleet is not running.
+MODEL="${LOCAL_LLM_MODEL:-$(cat "$(dirname "${BASH_SOURCE[0]}")/local-llm-model" 2>/dev/null || true)}"
+MODEL="$(printf '%s' "$MODEL" | tr -d '[:space:]')"
+if [[ -z "$MODEL" ]]; then
+  echo "local-llm-bench: no model configured -- run store/first-run-llm.sh (or set LOCAL_LLM_MODEL)" >&2
+  exit 4
+fi
 CTX_LIST="4096"
 LABEL="run"
 REPEAT=1

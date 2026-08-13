@@ -42,12 +42,17 @@ LOCAL_LLM = f"{STORE}/local-llm.sh"
 # Single local model (Peti 2026-07-19: one LLM only, coding-focused). Also used by
 # Ghost for degraded comms. Read from the shared config so a model swap is one place.
 def _read_model():
+    """The active model, or None. NO literal fallback -- see local-llm.sh read_model().
+
+    This is a reporting path, so unlike the two shell entry points it must not abort; but it must
+    not INVENT a name either. Reporting a model the fleet is not running is worse than reporting
+    that none is configured, because the number then looks attributed when it is not."""
     try:
         with open(f"{STORE}/local-llm-model") as f:
-            return f.read().strip() or "qwen2.5-coder:7b-instruct-q4_K_M"
+            return f.read().strip() or None
     except OSError:
-        return "qwen2.5-coder:7b-instruct-q4_K_M"
-QUALITY_MODEL = _read_model()
+        return None
+QUALITY_MODEL = _read_model() or "<none configured>"
 DASH = "http://localhost:3420"
 DASH_TOKEN_FILE = f"{STORE}/.dashboard-token"
 MIKROB_PANE = "mikrob-channels"
