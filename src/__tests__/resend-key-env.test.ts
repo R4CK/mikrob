@@ -25,8 +25,9 @@ const ABSENT = join(dir, 'no-such-key-file')
 describe('resend key env export helper', () => {
   it('emits no export at all when the key file is absent', () => {
     // A launcher on an install without the key must be byte-identical to the
-    // pre-change one. The header then stays unexpanded and Resend answers 401:
-    // fail-closed, and specifically NOT a fallback to some baked-in key.
+    // pre-change one. Claude Code then leaves the header unexpanded and says so
+    // (`Missing environment variables: RESEND_API_KEY`), and the Resend calls
+    // fail -- specifically NOT a fallback to some baked-in key.
     expect(hasResendApiKey(ABSENT)).toBe(false)
     expect(resendApiKeyExport(' && ', ABSENT)).toBe('')
   })

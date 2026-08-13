@@ -245,8 +245,12 @@ export const RESEND_API_KEY_PATH = join(STORE_DIR, '.resend-api-key')
 
 // Shell snippet that puts the Resend key in the launched session's environment,
 // or '' when the key file is absent (an install without it launches exactly as
-// before -- the header then stays unexpanded and Resend answers 401, which is
-// the fail-closed direction: no silent fallback to a baked-in key).
+// before). Measured behaviour without the key: the HTTP MCP server still shows
+// as Connected -- Resend authenticates per call, not at connect -- but Claude
+// Code reports `[resend] Missing environment variables: RESEND_API_KEY` in
+// `claude mcp list` and every actual Resend call goes out with the literal
+// "Bearer ${RESEND_API_KEY}" and fails. So: loud, and no silent fallback to a
+// baked-in key.
 //
 // The value is read at launch via $(cat) so the secret never appears in the
 // command string we build, nor in `ps` -- same pattern, and the same reason, as
