@@ -72,6 +72,17 @@ const OLLAMA_UNIT = 'ollama'
 // Proactive-offload control (card 48f3b675): the aggressiveness slider persists into the SAME config
 // the fleet agents + the local-llm-offload skill read. 0 = never offload, 100 = offload maximally.
 const OFFLOAD_CONFIG_FILE = join(STORE_DIR, 'local-llm-offload-active.json')
+// GPU-filtered, trust-labelled HuggingFace model catalogue (card 61a4a85f, EPIC ebc7b4dd T4).
+// The script owns cache/staleness/fallback itself (store/llm-catalog.py: envelope()/fallback()) --
+// this route only decides WHEN to pay for a live refresh, never reimplements those semantics.
+const LLM_CATALOG_SCRIPT = join(STORE_DIR, 'llm-catalog.py')
+const LLM_CATALOG_CACHE_FILE = join(STORE_DIR, 'llm-catalog-cache.json')
+// HuggingFace discovery hits 3 keyword searches + a tree fetch per candidate repo -- slow relative
+// to a dashboard poll, and the catalogue does not meaningfully change within a day. A GET this
+// page-load-frequent must not refresh live every time.
+const LLM_CATALOG_TTL_MS = 12 * 60 * 60 * 1000
+const LLM_CATALOG_LIVE_TIMEOUT_MS = 45_000
+const LLM_CATALOG_OFFLINE_TIMEOUT_MS = 10_000
 // The marked "optimal" point on the slider AND the DEFAULT (card 48f3b675, Peti req 2245): the offload
 // GPU (GTX 1660 Ti, ~5 GB usable) is barely loaded (~6% util), so the honest recommendation is to
 // offload MORE than a naive middle setting -- and the DEFAULT starts here so the fleet offloads
@@ -426,6 +437,28 @@ function runCmd(
       child.stdin.end(opts.input)
     }
   })
+}
+
+// Serves the cache file as-is when it is younger than LLM_CATALOG_TTL_MS, so a repeat dashboard
+// visit costs a file read, not a HuggingFace round-trip. Any read/parse failure (missing file,
+// corrupt JSON, unparsable generatedAt) is treated as "no fresh cache" -- the caller falls through
+// to a live refresh rather than surfacing a parse error for a file it did not ask the user about.
+function readLlmCatalogCacheIfFresh(): unknown | null {
+  try {
+    const doc = JSON.parse(readFileSync(LLM_CATALOG_CACHE_FILE, 'utf-8'))
+    const generatedMs = Date.parse(doc?.generatedAt)
+    if (Number.isFinite(generatedMs) && Date.now() - generatedMs < LLM_CATALOG_TTL_MS) return doc
+  } catch { /* no cache yet, or unreadable -- fall through to a live/offline run */ }
+  return null
+}
+
+// Runs llm-catalog.py with the given extra args (`[]` for a live refresh, `['--offline']` for the
+// script's own cache-or-bundled-fallback path) and parses its stdout. Never throws: a bad exit code,
+// empty output, or unparsable JSON all resolve to null so the route can try the next fallback tier.
+async function runLlmCatalogScript(args: string[], timeoutMs: number): Promise<unknown | null> {
+  const r = await runCmd('python3', [LLM_CATALOG_SCRIPT, ...args], { timeoutMs, maxBuffer: 4 * 1024 * 1024 })
+  if (r.code !== 0 || !r.stdout.trim()) return null
+  try { return JSON.parse(r.stdout) } catch { return null }
 }
 
 async function ollama(pathname: string, timeoutMs = 5000): Promise<any | null> {
@@ -938,6 +971,30 @@ export async function tryHandleLocalLlm(ctx: RouteContext): Promise<boolean> {
       running,
       bridge_active: bridge,
       gpu,
+    })
+    return true
+  }
+
+  // GET /api/local-llm/catalog -> the GPU-filtered, trust-labelled HuggingFace model catalogue
+  // (card 61a4a85f). Three tiers, each cheaper/less fresh than the last: a fresh cache file, then a
+  // live refresh, then the script's own --offline (cache-or-bundled, marked stale) fallback. Only if
+  // ALL THREE fail does this route synthesize an empty envelope itself -- still a structurally valid
+  // document (rule 12: never a raw error for the UI to choke on), never a bare 500.
+  if (path === '/api/local-llm/catalog' && method === 'GET') {
+    const fresh = readLlmCatalogCacheIfFresh()
+    if (fresh) { json(res, fresh); return true }
+    const live = await runLlmCatalogScript([], LLM_CATALOG_LIVE_TIMEOUT_MS)
+    if (live) { json(res, live); return true }
+    const offline = await runLlmCatalogScript(['--offline'], LLM_CATALOG_OFFLINE_TIMEOUT_MS)
+    if (offline) { json(res, offline); return true }
+    json(res, {
+      schemaVersion: 1,
+      generatedAt: new Date().toISOString(),
+      source: 'none',
+      stale: true,
+      host: { gpu: null, ramTotalMib: null },
+      models: [],
+      warnings: ['llm-catalog.py did not produce output (live and --offline both failed)'],
     })
     return true
   }
