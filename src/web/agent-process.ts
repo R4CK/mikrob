@@ -231,6 +231,43 @@ export function hasFleetOauthToken(): boolean {
   }
 }
 
+// The Resend API key, stored 0600 in store/ instead of baked into every agent's
+// config (card 8c2bae37: the live key sat as plaintext in the `resend` MCP
+// server's Authorization header in all 14 agents/<name>/.claude-config/
+// .claude.json files, in the shared ~/.claude.json they are seeded from, and in
+// the worker config dirs -- one credential usable from anywhere any copy of
+// those files travels). Claude Code expands ${VAR} references in an MCP server's
+// url/headers/env/args from process.env at connect time, for local (.claude.json
+// projects[cwd].mcpServers) scope exactly as for the .mcp.json ones, so the
+// configs now carry "Bearer ${RESEND_API_KEY}" and the launchers supply the
+// value from this file.
+export const RESEND_API_KEY_PATH = join(STORE_DIR, '.resend-api-key')
+
+// Shell snippet that puts the Resend key in the launched session's environment,
+// or '' when the key file is absent (an install without it launches exactly as
+// before -- the header then stays unexpanded and Resend answers 401, which is
+// the fail-closed direction: no silent fallback to a baked-in key).
+//
+// The value is read at launch via $(cat) so the secret never appears in the
+// command string we build, nor in `ps` -- same pattern, and the same reason, as
+// CLAUDE_CODE_OAUTH_TOKEN above. `separator` is what follows the statement in
+// the caller's command string (' && ' for the &&-chained launchers, '; ' for
+// the ;-chained worker one, '' when the caller adds its own joiner).
+// keyPath is a parameter only so the tests can exercise both states without
+// touching the live key file; every caller uses the default.
+export function hasResendApiKey(keyPath: string = RESEND_API_KEY_PATH): boolean {
+  try {
+    return existsSync(keyPath) && readFileSync(keyPath, 'utf-8').trim().length > 0
+  } catch {
+    return false
+  }
+}
+
+export function resendApiKeyExport(separator = ' && ', keyPath: string = RESEND_API_KEY_PATH): string {
+  if (!hasResendApiKey(keyPath)) return ''
+  return `export RESEND_API_KEY="$(cat '${keyPath}')"${separator}`
+}
+
 // H1 silent-degradation hardening (2026-06-30, refined 2026-07-10).
 //
 // When the fleet OAuth token is absent, channel sub-agents skip isolation and
@@ -1337,6 +1374,11 @@ async function startAgentProcessUnlocked(name: string, opts: { fresh?: boolean }
       claudeConfigDir ? join(claudeConfigDir, '.claude.json') : join(homedir(), '.claude.json'),
     )
     const claudeConfigEnv = claudeConfigDir ? `export CLAUDE_CONFIG_DIR="${claudeConfigDir}" && ` : ''
+    // Every agent config carries the `resend` MCP server with a ${RESEND_API_KEY}
+    // placeholder header; this is what fills it in. Unconditional (not gated on
+    // isolation or channel): the placeholder is in the shared ~/.claude.json too,
+    // so a shared-root agent needs it just the same.
+    const resendEnv = resendApiKeyExport()
     // `--continue` requires an existing session; on a brand-new agent the
     // Claude Code projects directory does not yet exist and `claude` exits
     // immediately with an obscure "No deferred tool marker found" error
@@ -1412,7 +1454,7 @@ async function startAgentProcessUnlocked(name: string, opts: { fresh?: boolean }
     // values like `claude-opus-4-8[1m]` (1M-context suffix) from being glob-expanded AND makes a `'`
     // in the value inert rather than a quote-break -> command injection. Same escape at the three
     // ANTHROPIC_MODEL env sites above.
-    const cmd = `export PATH="/opt/homebrew/bin:$HOME/.bun/bin:/usr/local/bin:/usr/bin:/bin:$PATH" && ${unsetTokens} && ${autoUpdaterEnv}${promptSuggestionEnv}${mcpEnv}${channelSetup}${apiKeyEnv}${claudeConfigEnv}${oauthTokenEnv}${ollamaEnv}${deepseekEnv}${openrouterEnv}cd "${dir}" && ${claudeBin()} ${continueFlag}${skipFlag}--model ${shSingleQuote(model)} ${channelFlag}`.trimEnd()
+    const cmd = `export PATH="/opt/homebrew/bin:$HOME/.bun/bin:/usr/local/bin:/usr/bin:/bin:$PATH" && ${unsetTokens} && ${autoUpdaterEnv}${promptSuggestionEnv}${mcpEnv}${channelSetup}${apiKeyEnv}${claudeConfigEnv}${oauthTokenEnv}${resendEnv}${ollamaEnv}${deepseekEnv}${openrouterEnv}cd "${dir}" && ${claudeBin()} ${continueFlag}${skipFlag}--model ${shSingleQuote(model)} ${channelFlag}`.trimEnd()
     runTmux(null, ['new-session', '-d', '-s', session, cmd], { timeout: 10000 })
 
     logger.info({ name, session, channelDir: agentChannelDir }, 'Agent tmux session started')
