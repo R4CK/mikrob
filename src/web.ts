@@ -45,6 +45,7 @@ import { ensureFederationClaudeMdSection } from './web/federation/onboarding.js'
 import { tryHandleAgentTerminal } from './web/routes/agent-terminal.js'
 import { tryHandleAgentConversation } from './web/routes/agent-conversation.js'
 import { tryHandleAgentTaskState } from './web/routes/agent-taskstate.js'
+import { tryHandleAgentHud } from './web/routes/agent-hud.js'
 import { sweepOrphanTaskStates } from './web/agent-taskstate.js'
 import { tryHandleDailyLog } from './web/routes/daily-log.js'
 import { tryHandleMemories } from './web/routes/memories.js'
@@ -200,6 +201,7 @@ export function startWebServer(port = 3420): http.Server {
       if (await tryHandleAgentTerminal(routeCtx)) return
       if (await tryHandleAgentConversation(routeCtx)) return
       if (await tryHandleAgentTaskState(routeCtx)) return
+      if (tryHandleAgentHud(routeCtx)) return
       if (await tryHandleAgents(routeCtx, WEB_DIR)) return
       if (await tryHandleMarveen(routeCtx, WEB_DIR)) return
       if (await tryHandleBackgroundTasks(routeCtx)) return
