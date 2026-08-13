@@ -578,6 +578,17 @@ fi
 BRAND_NAME="$BOT_NAME"
 SERVICE_ID="$MAIN_AGENT_ID"
 
+# CLAUDE.md variant: friss (vekony upstream-vaz) vagy elotelepitett (a MOST
+# klonozott checkout jelenlegi, mar finomitott TELJES CLAUDE.md-je, csak
+# nevre szemelyre szabva). Lasd az azonos dontest install-linux.sh-ban.
+echo ""
+read -rp "$(_t prompt_claude_variant)" CLAUDE_VARIANT_CHOICE
+if [ "$CLAUDE_VARIANT_CHOICE" = "2" ]; then
+  CLAUDE_VARIANT="preconfigured"
+else
+  CLAUDE_VARIANT="fresh"
+fi
+
 # Resolve the Node the launchd SERVICES will run, and pin the whole install to
 # it. Idempotent: sets NODE_PATH / NODE_BIN_DIR once, both the npm step below and
 # the launchagent step later call it.
@@ -813,8 +824,15 @@ case "$INSTALL_AUTH_STATE" in
 esac
 echo -e "  ${GREEN}✓${NC} $(_t macos.dirs_created)"
 
-# Generate CLAUDE.md from template
-if [ -f "$INSTALL_DIR/templates/CLAUDE.md.template" ]; then
+# Generate CLAUDE.md: friss (template-bol) VAGY elotelepitett (a klonozott
+# checkout sajat, jelenlegi CLAUDE.md-je szemelyre szabva).
+if [ "$CLAUDE_VARIANT" = "preconfigured" ] && [ -f "$INSTALL_DIR/CLAUDE.md" ]; then
+  sed -e "s/Peti/$OWNER_NAME/g" \
+      -e "s/MikroB/$BOT_NAME/g" \
+      -e "s/mikrob/$MAIN_AGENT_ID/g" \
+      "$INSTALL_DIR/CLAUDE.md" > "$INSTALL_DIR/CLAUDE.md.new" && mv "$INSTALL_DIR/CLAUDE.md.new" "$INSTALL_DIR/CLAUDE.md"
+  echo -e "  ${GREEN}✓${NC} $(_t claude_variant_preconfigured)"
+elif [ -f "$INSTALL_DIR/templates/CLAUDE.md.template" ]; then
   sed -e "s/{{OWNER_NAME}}/$OWNER_NAME/g" \
       -e "s|{{INSTALL_DIR}}|$INSTALL_DIR|g" \
       -e "s/{{CHAT_ID}}/$CHAT_ID/g" \
@@ -822,7 +840,7 @@ if [ -f "$INSTALL_DIR/templates/CLAUDE.md.template" ]; then
       -e "s/{{MAIN_AGENT_ID}}/$MAIN_AGENT_ID/g" \
       -e "s/{{WEB_PORT}}/${WEB_PORT:-3420}/g" \
       "$INSTALL_DIR/templates/CLAUDE.md.template" > "$INSTALL_DIR/CLAUDE.md"
-  echo -e "  ${GREEN}✓${NC} $(_t macos.claude_md_generated)"
+  echo -e "  ${GREEN}✓${NC} $(_t claude_variant_fresh)"
 else
   echo -e "  ${ORANGE}⚠${NC} CLAUDE.md.template nem talalhato, CLAUDE.md nem generalhato"
 fi

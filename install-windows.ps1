@@ -207,6 +207,13 @@ Write-Host "[5/5] Konfiguráció..." -ForegroundColor White
 $ownerName = Read-Host "  Mi a neved?"
 
 Write-Host ""
+Write-Host "  CLAUDE.md valtozat:" -ForegroundColor White
+Write-Host "    1. Friss -- csak a vekony, alap upstream szabalyrendszer" -ForegroundColor Cyan
+Write-Host "    2. Elotelepitett -- a jelen fork checkout-jan mar finomitott TELJES szabalyrendszer, a Te nevedre szemelyre szabva" -ForegroundColor Cyan
+$claudeVariantChoice = Read-Host "  Valassz (1/2) [1]"
+if ($claudeVariantChoice -eq "2") { $claudeVariant = "preconfigured" } else { $claudeVariant = "fresh" }
+
+Write-Host ""
 Write-Host "  Csatorna beallitas:" -ForegroundColor White
 Write-Host "    1. Telegram (alapertelmezett)" -ForegroundColor Cyan
 Write-Host "    2. Slack" -ForegroundColor Cyan
@@ -245,10 +252,16 @@ fi
 chmod 600 .env
 echo '  ✓ .env létrehozva (chmod 600)'
 
-# Generate CLAUDE.md from template
-if [ -f templates/CLAUDE.md.template ]; then
+# Generate CLAUDE.md: friss (template-bol) VAGY elotelepitett (a klonozott
+# checkout sajat, jelenlegi CLAUDE.md-je szemelyre szabva -- csak a
+# tulajdonos-nev cserelodik, a bot neve/agent_id-je ezen az uton marad ami a
+# checkout-ban van, mert ez a script nem kerdez botNev-et).
+if [ '$claudeVariant' = 'preconfigured' ] && [ -f CLAUDE.md ]; then
+    sed 's/Peti/$ownerName/g' CLAUDE.md > CLAUDE.md.new && mv CLAUDE.md.new CLAUDE.md
+    echo '  ✓ CLAUDE.md szemelyre szabva (elotelepitett)'
+elif [ -f templates/CLAUDE.md.template ]; then
     sed 's/{{OWNER_NAME}}/$ownerName/g' templates/CLAUDE.md.template > CLAUDE.md
-    echo '  ✓ CLAUDE.md generálva'
+    echo '  ✓ CLAUDE.md generálva (friss)'
 fi
 
 # Create directories

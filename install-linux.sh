@@ -978,6 +978,20 @@ fi
 BRAND_NAME="$BOT_NAME"
 SERVICE_ID="$MAIN_AGENT_ID"
 
+# CLAUDE.md variant: friss (vekony upstream-vaz) vagy elotelepitett (a MOST
+# klonozott checkout jelenlegi, mar finomitott TELJES CLAUDE.md-je, csak
+# nevre szemelyre szabva). Ez a checkout sajat fork-divergenciaja lehet
+# vekony vagy gazdag -- a valasztas ettol fuggetlenul mukodik, mert a
+# "preconfigured" ag mindig a TENYLEGESEN klonozott CLAUDE.md-bol indul ki,
+# nem egy kulon karbantartott masodik sablonbol.
+echo ""
+read -rp "$(_t prompt_claude_variant)" CLAUDE_VARIANT_CHOICE
+if [ "$CLAUDE_VARIANT_CHOICE" = "2" ]; then
+  CLAUDE_VARIANT="preconfigured"
+else
+  CLAUDE_VARIANT="fresh"
+fi
+
 INSTALL_STEP="npm-install"
 # ─────────────────────────────────────────────
 # [5/7] Fuggosegek telepitese + konfiguracic
@@ -1212,8 +1226,21 @@ case "$INSTALL_AUTH_STATE" in
     ;;
 esac
 
-# CLAUDE.md generalasa template-bol
-if [ -f "$INSTALL_DIR/templates/CLAUDE.md.template" ]; then
+# CLAUDE.md generalasa: friss (template-bol) VAGY elotelepitett (a klonozott
+# checkout SAJAT, jelenlegi CLAUDE.md-je szemelyre szabva -- lasd a valasztas
+# fenti indoklasat).
+if [ "$CLAUDE_VARIANT" = "preconfigured" ] && [ -f "$INSTALL_DIR/CLAUDE.md" ]; then
+  # A klonozott CLAUDE.md-t szemelyre szabjuk: a nev-hivatkozasokat (a
+  # felhasznalo neve, a bot kijelzett neve, es a bot lowercase agent_id-je,
+  # ami mindenutt ugyanugy hivatkozik az agensre mint a MAIN_AGENT_ID)
+  # lecsereljuk az uj tulajdonoseira. Nem kulon karbantartott sablonbol jon --
+  # amit a checkout MOST tartalmaz, az a "teljes, aktualis" alap.
+  sed -e "s/Peti/$OWNER_NAME/g" \
+    -e "s/MikroB/$BOT_NAME/g" \
+    -e "s/mikrob/$MAIN_AGENT_ID/g" \
+    "$INSTALL_DIR/CLAUDE.md" >"$INSTALL_DIR/CLAUDE.md.new" && mv "$INSTALL_DIR/CLAUDE.md.new" "$INSTALL_DIR/CLAUDE.md"
+  ok "$(_t claude_variant_preconfigured)"
+elif [ -f "$INSTALL_DIR/templates/CLAUDE.md.template" ]; then
   sed -e "s/{{OWNER_NAME}}/$OWNER_NAME/g" \
     -e "s|{{INSTALL_DIR}}|$INSTALL_DIR|g" \
     -e "s/{{CHAT_ID}}/$CHAT_ID/g" \
@@ -1221,7 +1248,7 @@ if [ -f "$INSTALL_DIR/templates/CLAUDE.md.template" ]; then
     -e "s/{{MAIN_AGENT_ID}}/$MAIN_AGENT_ID/g" \
     -e "s/{{WEB_PORT}}/${WEB_PORT:-3420}/g" \
     "$INSTALL_DIR/templates/CLAUDE.md.template" >"$INSTALL_DIR/CLAUDE.md"
-  ok "CLAUDE.md generalva"
+  ok "$(_t claude_variant_fresh)"
 else
   warn "CLAUDE.md.template nem talalhato, CLAUDE.md nem generalhato"
 fi

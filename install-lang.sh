@@ -58,6 +58,12 @@ _t() {
     hu:prompt_discord_user_id) echo "  A Te Discord user ID-d (operator): " ;;
     en:prompt_bot_name) echo "  What should your bot be named? [Marveen]: " ;;
     hu:prompt_bot_name) echo "  Mi legyen a botod neve? [Marveen]: " ;;
+    en:prompt_claude_variant) echo -e "  1) Fresh -- minimal upstream ruleset only\n  2) Pre-configured -- the full ruleset already refined on THIS fork's checkout, personalized to your name\n  Choose (1/2) [1]: " ;;
+    hu:prompt_claude_variant) echo -e "  1) Friss -- csak a vékony, alap upstream szabályrendszer\n  2) Előtelepített -- a jelen fork checkout-ján már finomított TELJES szabályrendszer, a Te nevedre személyre szabva\n  Válassz (1/2) [1]: " ;;
+    en:claude_variant_fresh) echo "  Fresh CLAUDE.md generated" ;;
+    hu:claude_variant_fresh) echo "  Friss CLAUDE.md legenerálva" ;;
+    en:claude_variant_preconfigured) echo "  Pre-configured CLAUDE.md personalized (this checkout's current full ruleset)" ;;
+    hu:claude_variant_preconfigured) echo "  Előtelepített CLAUDE.md személyre szabva (ennek a checkoutnak a jelenlegi teljes szabályrendszere)" ;;
     en:prompt_pair_code) echo "  Pairing code (or leave empty, do it later): " ;;
     hu:prompt_pair_code) echo "  Párosító kód (vagy hagyd üresen, ha később csinálod): " ;;
     en:prompt_migrate) echo "  Would you like to run the migration now? (y/n) [n]: " ;;
