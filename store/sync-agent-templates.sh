@@ -308,6 +308,33 @@ if [[ "$MODE" == selftest ]]; then
     echo "  FAIL unparseable file mishandled (rc=$rc)"; fail=1
   fi
 
+  # --- variant B: the token via a shell VARIABLE (Cybersec NO-GO, card ec5173a5) -----------------
+  # This is the shape that slipped past the first sweep entirely: the detector knew only
+  # `Bearer $(cat ...)`, so `Bearer $TOKEN` was invisible however many file types it scanned.
+  printf '#!/usr/bin/env bash\nTOKEN=$(cat /t/tok)\ncurl -s -H "Authorization: Bearer $TOKEN" http://x\n' > "$tmp/b.sh"
+  _t "variant B: token via a shell variable is rewritten" 1 "$tmp/b.sh"
+  if grep -q 'printf .Authorization: Bearer %s' "$tmp/b.sh" && grep -q 'curl -H @-' "$tmp/b.sh"; then
+    echo "  ok   variant B: emits printf-with-the-variable piped into curl -H @-"
+  else
+    echo "  FAIL variant B: wrong replacement shape"; fail=1
+  fi
+  # The assignment must survive: the variable may be read elsewhere in the file, and this script has
+  # no business deciding that. It also means the rewrite works when the value comes from the
+  # environment, where no path could be guessed.
+  grep -q 'TOKEN=\$(cat /t/tok)' "$tmp/b.sh" \
+    && echo "  ok   variant B: the assignment is left alone" \
+    || { echo "  FAIL variant B: the assignment was touched"; fail=1 ; }
+  _t "variant B: idempotent on a second run" 0 "$tmp/b.sh"
+
+  # Braced form, because ${TOKEN} is just as common as $TOKEN in real scripts.
+  printf 'curl -s -H "Authorization: Bearer ${TOK}" http://x\n' > "$tmp/b2.sh"
+  _t "variant B: braced \${TOK} form too" 1 "$tmp/b2.sh"
+
+  # A variant-B line with NO curl on it must be left alone -- otherwise the rewriter would mangle any
+  # sentence that merely mentions the header shape (the documented-anti-pattern problem again).
+  printf 'echo "set -H \"Authorization: Bearer $TOK\" is wrong"\n' > "$tmp/b3.sh"
+  _t "variant B: a line without curl is not rewritten" 0 "$tmp/b3.sh"
+
   # --- atomicity + backup (Cybered NO-GO, card 265fdc2c) ----------------------------------------
   # 6. a one-time .bak holds the ORIGINAL, and a second run does not clobber it with the fixed copy.
   printf 'ORIGINAL\ncurl -s -H "Authorization: Bearer $(cat /t/tok)" http://x\n' > "$tmp/f.md"
