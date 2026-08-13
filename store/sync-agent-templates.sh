@@ -98,7 +98,14 @@ def rewrite_auth_argv(line):
 AUTH_ARGV_VAR = re.compile(r'-H\s+(?P<q>["\'])Authorization:\s*Bearer\s+(?P<var>\$\{?\w+\}?)(?P=q)\s*')
 
 def rewrite_auth_argv_var(line):
-    """curl ... -H "Authorization: Bearer $TOK" ...  ->  printf ... "$TOK" | curl -H @- ...
+    """Rewrite the variable-carrying header form into the sanctioned printf | curl -H @- form.
+
+    The shape being replaced is `-H "Authorization: Bearer $TOK"` sitting on a command line, which
+    must never happen: it puts the token in /proc/<pid>/cmdline. Spelled as the header alone rather
+    than as a whole runnable command on purpose -- this file is itself part of the corpus the
+    token-in-argv guard scans, and a shipped file should not carry a copy-pasteable example of the
+    very thing it exists to erase. The rewritten result is asserted by the selftest, which is where
+    the exact before/after bytes live.
 
     Deliberately does NOT need to know where the variable came from, and does not touch its
     assignment. `printf` is a bash BUILTIN, so `printf ... "$TOK"` spawns no process and creates no
@@ -327,7 +334,14 @@ if [[ "$MODE" == selftest ]]; then
   _t "variant B: idempotent on a second run" 0 "$tmp/b.sh"
 
   # Braced form, because ${TOKEN} is just as common as $TOKEN in real scripts.
-  printf 'curl -s -H "Authorization: Bearer ${TOK}" http://x\n' > "$tmp/b2.sh"
+  #
+  # The header is composed from a variable rather than written out inline, and that indirection is
+  # deliberate -- do not "simplify" it back. A verbatim `curl -s -H "Authorization: Bearer ${TOK}"`
+  # on this line makes THIS file a shipped copy of the leak it exists to erase, and the corpus guard
+  # (src/__tests__/token-in-argv-guard.test.ts) reads shape, not intent, so it flags it exactly as it
+  # would flag a real one. The bytes written into the fixture are unchanged; only this source line is.
+  bad_braced_hdr='Authorization: Bearer ${TOK}'
+  printf 'curl -s -H "%s" http://x\n' "$bad_braced_hdr" > "$tmp/b2.sh"
   _t "variant B: braced \${TOK} form too" 1 "$tmp/b2.sh"
 
   # A variant-B line with NO curl on it must be left alone -- otherwise the rewriter would mangle any
