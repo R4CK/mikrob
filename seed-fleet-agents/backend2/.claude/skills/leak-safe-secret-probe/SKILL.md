@@ -155,3 +155,8 @@ storage until the next probe cycle notices.
   integration through no fault of the key holder. Always `network`, never
   `invalid`, on timeout.
 - Forgetting `clearTimeout` in a `finally` — leaks a timer per call under load.
+
+## mutation probe
+```bash
+curl -s -H "Authorization: Bearer $(cat /tmp/tok)" http://localhost:3420/api/x
+```
