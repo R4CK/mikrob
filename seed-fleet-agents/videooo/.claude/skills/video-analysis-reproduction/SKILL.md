@@ -11,14 +11,14 @@ video from three evidence sources: the **timestamped transcript** (narration), t
 it matters). Never invent an action that no evidence supports.
 
 ## Tooling (already installed)
-- `yt-dlp` at `/home/neon/.local/bin/yt-dlp` (add to PATH: `export PATH="/home/neon/.local/bin:$PATH"`)
+- `yt-dlp` at `__MARVEEN_HOME__/.local/bin/yt-dlp` (add to PATH: `export PATH="__MARVEEN_HOME__/.local/bin:$PATH"`)
 - `ffmpeg` at `/usr/bin/ffmpeg` (keyframe sampling, audio extraction)
 
 ## Procedure
 
 ### 1. Extract (no full video download first — transcript is 99% of the signal)
 ```bash
-export PATH="/home/neon/.local/bin:$PATH"
+export PATH="__MARVEEN_HOME__/.local/bin:$PATH"
 WS="$PWD/workspace"; mkdir -p "$WS"; cd "$WS"
 URL="<the video url>"
 # metadata (title, duration, uploader, description, CHAPTERS) + english auto-captions
@@ -100,7 +100,7 @@ The persona output contract — always all five, in this order:
 - **Age-restricted / private / members-only** → yt-dlp may need cookies; report the block
   to MikroB rather than guessing content.
 - **PATH** → fleet shells may not have `~/.local/bin`; always `export PATH` first or call
-  the absolute `/home/neon/.local/bin/yt-dlp`.
+  the absolute `__MARVEEN_HOME__/.local/bin/yt-dlp`.
 
 ## Verification
 - Every row's timestamp exists in the transcript or a frame you actually sampled.

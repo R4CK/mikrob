@@ -1,0 +1,5 @@
+{
+  "model": "claude-opus-5",
+  "securityProfile": "developer-senior",
+  "displayName": "Backend 2"
+}
