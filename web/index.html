@@ -961,7 +961,8 @@
       <!-- Model recommendations + HuggingFace search -->
       <div class="llm-section">
         <h2 class="llm-section-title" data-i18n="localLlm.rec.title">Ajánlott modellek</h2>
-        <p class="llm-hint" data-i18n="localLlm.rec.hint">A legjobb kódmodellek erre a GPU-ra (GTX 1660 Ti, 6 GB VRAM). Az ~5 GB feletti modellek CPU-ra csúsznak és lassabbak.</p>
+        <p class="llm-hint" id="llmRecsGpuHint" data-i18n="localLlm.rec.hint">A legjobb kódmodellek erre a GPU-ra (GTX 1660 Ti, 6 GB VRAM). Az ~5 GB feletti modellek CPU-ra csúsznak és lassabbak.</p>
+        <div class="llm-rec-stale-banner" id="llmRecsStaleBanner" role="status" aria-live="polite" hidden></div>
         <div class="llm-recs" id="llmRecs">
           <div class="llm-loading" data-i18n="common.loading">Betöltés...</div>
         </div>

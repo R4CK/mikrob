@@ -10894,36 +10894,84 @@ async function llmSwapModel(model) {
   }
 }
 
-// --- Curated coding-model recommendations (6 GB GPU) -----------------------
-const LLM_FIT_KEY = { fits: 'localLlm.rec.fit_fits', tight: 'localLlm.rec.fit_tight', spills: 'localLlm.rec.fit_spills' }
+// --- GPU-filtered model catalogue (card 61a4a85f, EPIC ebc7b4dd T4) --------
+// Sourced from GET /api/local-llm/catalog (store/llm-catalog.py): real GPU/VRAM math, trust
+// labels (allowlisted-publisher vs unverified, card 87d7c86f), never a hardcoded/guessed
+// throughput. Replaces the old static-hint "Ajánlott modellek" list -- same section, same
+// element ids, real (and validated) data instead of a curated guess.
+const LLM_TIER_FIT_KEY = { fits: 'localLlm.rec.fit_fits', partial: 'localLlm.rec.fit_tight' }
+
+function llmFmtVram(mib) {
+  if (typeof mib !== 'number' || !Number.isFinite(mib)) return '?'
+  return (mib / 1024).toFixed(1).replace(/\.0$/, '') + ' GB'
+}
 
 async function llmRefreshRecs() {
   const el = document.getElementById('llmRecs')
+  const gpuHint = document.getElementById('llmRecsGpuHint')
+  const staleBanner = document.getElementById('llmRecsStaleBanner')
   if (!el) return
   try {
-    const res = await fetch('/api/local-llm/model-recommendations')
-    const d = await res.json()
-    if (!res.ok) { el.innerHTML = `<div class="llm-empty">${d.error || t('localLlm.rec.load_error')}</div>`; return }
+    const [catRes, statusRes] = await Promise.all([
+      fetch('/api/local-llm/catalog'),
+      fetch('/api/local-llm/status').then(r => r.ok ? r.json() : null).catch(() => null),
+    ])
+    const d = await catRes.json()
+    if (!catRes.ok) { el.innerHTML = `<div class="llm-empty">${t('localLlm.rec.load_error')}</div>`; return }
+
+    const gpu = d.host && d.host.gpu
+    if (gpuHint) {
+      gpuHint.textContent = gpu && !gpu.cpuOnly && gpu.vramTotalMib
+        ? t('localLlm.rec.gpu_hint', { name: gpu.name || t('localLlm.rec.gpu_unknown'), vram: llmFmtVram(gpu.vramTotalMib) })
+        : t('localLlm.rec.cpu_only_hint')
+    }
+    if (staleBanner) {
+      if (d.stale) {
+        staleBanner.hidden = false
+        staleBanner.textContent = t('localLlm.rec.stale_banner')
+      } else {
+        staleBanner.hidden = true
+      }
+    }
+
     const models = Array.isArray(d.models) ? d.models : []
-    if (models.length === 0) { el.innerHTML = `<div class="llm-empty">${t('localLlm.rec.load_error')}</div>`; return }
+    if (models.length === 0) {
+      el.innerHTML = `<div class="llm-empty">${t('localLlm.rec.empty')}</div>`
+      return
+    }
+
+    const activeModel = statusRes && statusRes.active_model
+    const installedNames = new Set((statusRes && Array.isArray(statusRes.models) ? statusRes.models : []).map(m => m.name))
+
     el.innerHTML = models.map(m => {
-      const fitKey = LLM_FIT_KEY[m.gpu_fit] || 'localLlm.rec.fit_fits'
-      const note = m.note_key ? t(m.note_key) : ''
-      return `<div class="llm-model-row llm-rec-row${m.active ? ' active' : ''}">
+      const fitKey = LLM_TIER_FIT_KEY[m.tier] || 'localLlm.rec.fit_fits'
+      const isActive = m.installRef === activeModel
+      const isInstalled = installedNames.has(m.installRef)
+      const digest = m.parts && m.parts[0] && m.parts[0].sha256 ? String(m.parts[0].sha256).slice(0, 8) : null
+      const note = Array.isArray(m.notes) && m.notes.length ? m.notes.join(' ') : ''
+      let action
+      if (isActive) {
+        action = `<span class="llm-badge-active">${t('localLlm.models.active')}</span>`
+      } else if (isInstalled) {
+        action = `<button class="btn-secondary btn-compact llm-rec-use-btn" data-model="${escapeHtml(m.installRef)}">${t('localLlm.rec.use_btn')}</button>`
+      } else {
+        action = `<button class="btn-secondary btn-compact llm-rec-pull-btn" data-model="${escapeHtml(m.installRef)}">${t('localLlm.rec.pull_btn')}</button>`
+      }
+      return `<div class="llm-model-row llm-rec-row${isActive ? ' active' : ''}">
         <div class="llm-model-info">
-          <span class="llm-model-name">${escapeHtml(m.name)}</span>
+          <span class="llm-model-name">${escapeHtml(m.displayName || m.repo || m.id)}</span>
           <span class="llm-rec-meta">
-            <span class="llm-rec-params">${escapeHtml(m.params || '')}</span>
-            <span class="llm-model-size">${escapeHtml((m.size_gb != null ? m.size_gb : 0) + ' GB')}</span>
-            <span class="llm-fit-badge ${escapeHtml(m.gpu_fit || '')}">${t(fitKey)}</span>
+            <span class="llm-rec-params">${escapeHtml(m.quant || '')}</span>
+            <span class="llm-model-size">${escapeHtml((m.fileMib != null ? (m.fileMib / 1024).toFixed(1) : '?') + ' GB')}</span>
+            <span class="llm-fit-badge ${escapeHtml(m.tier || '')}">${t(fitKey)}</span>
+            <span class="llm-trust-badge ${m.trusted ? 'trusted' : 'unverified'}" title="${escapeHtml(t(m.trusted ? 'localLlm.rec.trust.trusted_tip' : 'localLlm.rec.trust.unverified_tip'))}">${t(m.trusted ? 'localLlm.rec.trust.trusted' : 'localLlm.rec.trust.unverified')}</span>
+            ${typeof m.downloads === 'number' ? `<span class="llm-rec-downloads" title="${escapeHtml(t('localLlm.rec.downloads_tip'))}">↓ ${llmFmtCount(m.downloads)}</span>` : ''}
+            ${digest ? `<span class="llm-rec-digest" title="${escapeHtml(t('localLlm.rec.digest_tip'))}">${escapeHtml(digest)}</span>` : ''}
           </span>
           ${note ? `<span class="llm-rec-note">${escapeHtml(note)}</span>` : ''}
+          <span class="llm-rec-installref">${escapeHtml(m.installRef || '')}</span>
         </div>
-        <div class="llm-model-actions">
-          ${m.active
-            ? `<span class="llm-badge-active">${t('localLlm.models.active')}</span>`
-            : `<button class="btn-secondary btn-compact llm-rec-pull-btn" data-model="${escapeHtml(m.name)}">${t('localLlm.rec.pull_btn')}</button>`}
-        </div>
+        <div class="llm-model-actions">${action}</div>
       </div>`
     }).join('')
     el.querySelectorAll('.llm-rec-pull-btn').forEach(b =>
@@ -10931,6 +10979,25 @@ async function llmRefreshRecs() {
         const input = document.getElementById('llmPullInput')
         if (input) input.value = b.dataset.model
         llmStartPull(b.dataset.model)
+      }))
+    // "Use this" (card first-run-llm.sh philosophy: a finished download never silently becomes
+    // the fleet default -- activation is its own explicit, logged step).
+    el.querySelectorAll('.llm-rec-use-btn').forEach(b =>
+      b.addEventListener('click', async () => {
+        b.disabled = true
+        try {
+          const res = await fetch('/api/local-llm/model', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ model: b.dataset.model }),
+          })
+          if (!res.ok) throw new Error('activate failed')
+          await llmRefreshRecs()
+          await llmRefreshStatus()
+        } catch {
+          b.disabled = false
+          showToast(t('localLlm.rec.activate_error'))
+        }
       }))
   } catch {
     el.innerHTML = `<div class="llm-empty">${t('localLlm.rec.load_error')}</div>`
