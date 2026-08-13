@@ -90,9 +90,37 @@ def rewrite_auth_argv(line):
     printf = f"{indent}printf 'Authorization: Bearer %s\\n' \"$(cat {path})\" \\\n"
     return printf + f"{indent}| curl -H @-{tail.rstrip()}\n"
 
+# VARIANT B (Cybersec NO-GO on card ec5173a5): the token reaches the header through a SHELL VARIABLE,
+# e.g. `TOKEN=$(cat path)` earlier in the file and then `-H "Authorization: Bearer $TOKEN"`. My first
+# detector matched only `Bearer $(cat ...)` -- ONE spelling -- so this variant was invisible to it no
+# matter which file types I scanned. That was the real gap, deeper than the file-type scope: a detector
+# that knows one spelling reports a clean sweep over a corpus that still leaks.
+AUTH_ARGV_VAR = re.compile(r'-H\s+(?P<q>["\'])Authorization:\s*Bearer\s+(?P<var>\$\{?\w+\}?)(?P=q)\s*')
+
+def rewrite_auth_argv_var(line):
+    """curl ... -H "Authorization: Bearer $TOK" ...  ->  printf ... "$TOK" | curl -H @- ...
+
+    Deliberately does NOT need to know where the variable came from, and does not touch its
+    assignment. `printf` is a bash BUILTIN, so `printf ... "$TOK"` spawns no process and creates no
+    /proc/<pid>/cmdline entry -- which is the same reason the house pattern
+    `printf ... "$(cat file)"` is safe. That makes one rewrite cover both the case where the
+    assignment is visible in this file and the case where the value arrives from the environment,
+    where guessing a path would be exactly the kind of certainty this script refuses to fake.
+    """
+    if 'curl' not in line or not AUTH_ARGV_VAR.search(line):
+        return None
+    m = AUTH_ARGV_VAR.search(line)
+    var = m.group('var')
+    stripped = AUTH_ARGV_VAR.sub('', line, count=1)
+    idx = stripped.index('curl')
+    indent, tail = stripped[:idx], stripped[idx + 4:]
+    printf = f"{indent}printf 'Authorization: Bearer %s\\n' \"{var}\" \\\n"
+    return printf + f"{indent}| curl -H @-{tail.rstrip()}\n"
+
 PATTERNS = [
     # card ec5173a5: the dashboard token as a curl argv element -> /proc/<pid>/cmdline leak.
     ('bearer-token-in-curl-argv', AUTH_ARGV, rewrite_auth_argv),
+    ('bearer-token-in-curl-argv-via-var', AUTH_ARGV_VAR, rewrite_auth_argv_var),
 ]
 
 def fix_text(text):
@@ -333,9 +361,14 @@ for dir in "$AGENTS_DIR"/*/; do
     for want in "${ONLY_AGENTS[@]}"; do [[ "$want" == "$name" ]] && skip=0; done
     [[ $skip -eq 1 ]] && continue
   fi
-  for rel in CLAUDE.md .claude/settings.json .claude-config/settings.json; do
-    [[ -f "$dir$rel" ]] && targets+=("$dir$rel")
-  done
+  # DERIVED, not a three-name list (Cybersec NO-GO on card ec5173a5): the first version scanned
+  # CLAUDE.md plus the two settings.json, and an EXECUTABLE script under agents/qa/ -- the most
+  # dangerous case, because it actually runs -- was outside that list. Scan by TYPE instead, and skip
+  # what must never be rewritten: the .bak copies this script itself makes, and any vendored tree.
+  while IFS= read -r -d '' f; do targets+=("$f")
+  done < <(find "$dir" \
+    \( -name node_modules -o -name .git -o -name '*.bak' \) -prune -o \
+    -type f \( -name '*.md' -o -name '*.json' -o -name '*.sh' \) -print0 2>/dev/null)
 done
 
 if [[ ${#targets[@]} -eq 0 ]]; then echo "sync-agent-templates: no target files"; exit 0; fi
