@@ -338,8 +338,16 @@ describe('no shipped script, template or GENERATOR puts a Bearer token in curl a
   function isDocumentedAntiPattern(source: string, startLine: number): boolean {
     if (!source.includes('```')) return false // not a markdown-ish doc: no exemption at all
     if (fencedLines(source).has(startLine)) return false // condition 1
-    const line = source.split('\n')[startLine - 1] ?? ''
-    return NEGATION.test(line) // condition 2
+    // Condition 2 reads the enclosing PARAGRAPH, not the single line. Prose wraps: in the real file
+    // the negation ("never on argv") opens the bullet on line 33 while the second forbidden example
+    // sits on line 34, so a line-local check exempted one occurrence and flagged its twin. The span
+    // is the contiguous run of non-blank lines around the offender -- one bullet, one sentence.
+    const lines = source.split('\n')
+    let from = startLine - 1
+    while (from > 0 && lines[from - 1].trim() !== '') from -= 1
+    let to = startLine - 1
+    while (to + 1 < lines.length && lines[to + 1].trim() !== '') to += 1
+    return NEGATION.test(lines.slice(from, to + 1).join(' ')) // condition 2
   }
 
   const shellCases: Array<{ dir: string; file: string }> = [
