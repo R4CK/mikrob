@@ -121,6 +121,20 @@ describe('per-agent HUD active-tool + running-sub-agent (GET /api/agent-hud)', (
     expect(body).toContain('class="agent-hud-row agent-hud-subagent-row" hidden')
   })
 
+  it('[hidden] actually hides the .agent-hud-row elements (regression: an unconditional display:flex silently wins over [hidden])', () => {
+    // .agent-hud-row sets display:flex unconditionally -- without an [hidden] override, any
+    // element carrying both classes (the pct/tool/sub-agent rows all do) renders regardless of
+    // .hidden, because an author rule of equal specificity beats the UA stylesheet's
+    // [hidden]{display:none}. Caught by hidden-attribute-css-contract.test.ts for LITERAL
+    // index.html markup, but this shell is JS-template-generated in app.js, outside that
+    // guard's scan -- hence a dedicated assertion here.
+    const rowIdx = CSS.indexOf('.agent-hud-row {')
+    expect(rowIdx).toBeGreaterThan(-1)
+    const rowBlock = CSS.slice(rowIdx, CSS.indexOf('}', rowIdx) + 1)
+    expect(rowBlock).toMatch(/display\s*:\s*flex/)
+    expect(CSS).toMatch(/\.agent-hud-row\[hidden\]\s*\{\s*display\s*:\s*none/)
+  })
+
   it('surfaces a truncated-scan indicator instead of letting a partial scan read as confirmed-idle', () => {
     const shellBody = fnBody(APP, 'function agentHudBlockHtml(hudKey, activeModel)')
     expect(shellBody).toContain('class="agent-hud-truncated" hidden role="img"')

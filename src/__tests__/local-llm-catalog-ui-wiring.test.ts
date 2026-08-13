@@ -143,4 +143,15 @@ describe('model catalogue CSS', () => {
     const body = CSS.slice(idx, idx + 200)
     expect(body).toContain('overflow-wrap: anywhere;')
   })
+
+  it('[hidden] actually hides the stale banner (regression: unconditional display:flex silently wins over [hidden])', () => {
+    // Same class of bug hidden-attribute-css-contract.test.ts exists to catch: an author rule
+    // with display:flex and no [hidden] override beats the UA stylesheet's [hidden]{display:
+    // none} at equal specificity, so toggling staleBanner.hidden would have no visible effect.
+    const idx = CSS.indexOf('.llm-rec-stale-banner {')
+    expect(idx).toBeGreaterThan(-1)
+    const block = CSS.slice(idx, CSS.indexOf('}', idx) + 1)
+    expect(block).toMatch(/display\s*:\s*flex/)
+    expect(CSS).toMatch(/\.llm-rec-stale-banner\[hidden\]\s*\{\s*display\s*:\s*none/)
+  })
 })

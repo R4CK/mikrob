@@ -1951,6 +1951,10 @@ main.kanban-active { padding-left: 16px; padding-right: 16px; }
   align-items: center;
   gap: 6px;
 }
+/* Without this, `[hidden]`'s display:none loses to the unconditional display:flex above
+   (equal specificity, author rule wins over the UA stylesheet) -- the tool/sub-agent/pct rows
+   would render even while .hidden is true. See hidden-attribute-css-contract.test.ts. */
+.agent-hud-row[hidden] { display: none; }
 .agent-hud-label {
   font-size: 11px;
   color: var(--text-muted);
@@ -8517,6 +8521,7 @@ body {
   padding: 8px 12px;
   margin-bottom: 10px;
 }
+.llm-rec-stale-banner[hidden] { display: none; }
 .llm-hf-title { margin-top: 20px; }
 .llm-hf-filters {
   display: flex;
