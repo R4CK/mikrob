@@ -3370,11 +3370,12 @@ function attachTmuxCopyButtons(card, agent) {
 }
 
 // Per-agent live HUD shell (kanban f07c5b7c): context-pct bar (filled by
-// refreshAgentHud() below from GET /api/context-guard, polled alongside the
-// existing busy-poll) + a static active-model line (from the already-fetched
-// agents list, no extra request). Active-tool/sub-agent are intentionally
-// NOT rendered yet: backend (e9504aba) has not shipped that field, and an
-// empty slot with nothing to show would be decorative, not live data.
+// refreshAgentHud() below from GET /api/context-guard) + a static active-model
+// line (from the already-fetched agents list, no extra request) + active-tool
+// and running-sub-agent (filled from GET /api/agent-hud, card e9504aba). The
+// tool/sub-agent rows start hidden and only appear once the poll has a value --
+// an idle agent (activeTool===null) legitimately shows neither, that is real
+// data, not a missing slot.
 function agentHudBlockHtml(hudKey, activeModel) {
   const modelLine = activeModel
     ? `<div class="agent-hud-row agent-hud-model">${escapeHtml(t('agents.hud.active_model', { model: activeModel }))}</div>`
@@ -3388,6 +3389,8 @@ function agentHudBlockHtml(hudKey, activeModel) {
       </div>
       <div class="agent-hud-disabled-label" hidden>${t('agents.hud.context_disabled')}</div>
       ${modelLine}
+      <div class="agent-hud-row agent-hud-tool-row" hidden></div>
+      <div class="agent-hud-row agent-hud-subagent-row" hidden></div>
       <div class="agent-hud-stale" hidden></div>
     </div>
   `
@@ -3568,41 +3571,80 @@ async function refreshAgentTerminalBusy() {
 // keeps the last good value and surfaces a discreet "updated Xs ago" note
 // instead of a raw error (rule 12).
 const agentHudLastGoodAt = new Map()
+async function fetchJsonOrNull(url) {
+  try {
+    const res = await fetch(url)
+    if (!res.ok) return null
+    return await res.json()
+  } catch { return null }
+}
+
 async function refreshAgentHud() {
   if (!agentsGrid) return
-  let list
-  try {
-    const res = await fetch('/api/context-guard')
-    if (!res.ok) return
-    const data = await res.json()
-    list = Array.isArray(data?.agents) ? data.agents : []
-  } catch { return }
+  const [guardData, hudData] = await Promise.all([
+    fetchJsonOrNull('/api/context-guard'),
+    fetchJsonOrNull('/api/agent-hud'),
+  ])
+  // A poll tick with BOTH endpoints unreachable is a network blip, not new
+  // data -- bail out and let the existing DOM (+ staleness note below) speak
+  // for itself instead of wiping every card back to "-".
+  if (!guardData && !hudData) return
+  const guardList = Array.isArray(guardData?.agents) ? guardData.agents : []
+  const hudList = Array.isArray(hudData?.agents) ? hudData.agents : []
   const now = Date.now()
-  const byAgent = new Map(list.map((e) => [e.agent, e]))
+  const guardByAgent = new Map(guardList.map((e) => [e.agent, e]))
+  const hudByAgent = new Map(hudList.map((e) => [e.agent, e]))
   agentsGrid.querySelectorAll('[data-hud-agent]').forEach((hud) => {
     const key = hud.dataset.hudAgent
-    const entry = byAgent.get(key)
-    if (!entry) return
-    const pctRow = hud.querySelector('.agent-hud-row--pct')
-    const disabledLabel = hud.querySelector('.agent-hud-disabled-label')
-    const fill = hud.querySelector('.agent-hud-bar-fill')
-    const pctText = hud.querySelector('.agent-hud-pct')
-    const staleEl = hud.querySelector('.agent-hud-stale')
-    if (entry.enabled && typeof entry.pct === 'number') {
-      agentHudLastGoodAt.set(key, now)
-      if (pctRow) pctRow.hidden = false
-      if (disabledLabel) disabledLabel.hidden = true
-      const pct = Math.max(0, Math.min(100, Math.round(entry.pct)))
-      if (fill) {
-        fill.style.width = `${pct}%`
-        fill.classList.toggle('agent-hud-bar-fill--mid', pct >= 70 && pct < 90)
-        fill.classList.toggle('agent-hud-bar-fill--danger', pct >= 90)
+    const guardEntry = guardByAgent.get(key)
+    const hudEntry = hudByAgent.get(key)
+    if (!guardEntry && !hudEntry) return
+    agentHudLastGoodAt.set(key, now)
+    if (guardEntry) {
+      const pctRow = hud.querySelector('.agent-hud-row--pct')
+      const disabledLabel = hud.querySelector('.agent-hud-disabled-label')
+      const fill = hud.querySelector('.agent-hud-bar-fill')
+      const pctText = hud.querySelector('.agent-hud-pct')
+      if (guardEntry.enabled && typeof guardEntry.pct === 'number') {
+        if (pctRow) pctRow.hidden = false
+        if (disabledLabel) disabledLabel.hidden = true
+        const pct = Math.max(0, Math.min(100, Math.round(guardEntry.pct)))
+        if (fill) {
+          fill.style.width = `${pct}%`
+          fill.classList.toggle('agent-hud-bar-fill--mid', pct >= 70 && pct < 90)
+          fill.classList.toggle('agent-hud-bar-fill--danger', pct >= 90)
+        }
+        if (pctText) pctText.textContent = `${pct}%`
+      } else {
+        if (pctRow) pctRow.hidden = true
+        if (disabledLabel) disabledLabel.hidden = false
       }
-      if (pctText) pctText.textContent = `${pct}%`
-    } else {
-      if (pctRow) pctRow.hidden = true
-      if (disabledLabel) disabledLabel.hidden = false
     }
+    if (hudEntry) {
+      // SECURITY: only the tool NAME and a sub-agent COUNT ever reach the DOM --
+      // never entry.contextTokens/activeModel duplicates (pct/model already come
+      // from their own sources above) and never anything transcript-shaped.
+      const toolRow = hud.querySelector('.agent-hud-tool-row')
+      if (toolRow) {
+        if (typeof hudEntry.activeTool === 'string' && hudEntry.activeTool) {
+          toolRow.hidden = false
+          toolRow.textContent = t('agents.hud.active_tool', { tool: hudEntry.activeTool })
+        } else {
+          toolRow.hidden = true
+        }
+      }
+      const subagentRow = hud.querySelector('.agent-hud-subagent-row')
+      if (subagentRow) {
+        const n = hudEntry.runningSubAgents
+        if (typeof n === 'number' && n > 0) {
+          subagentRow.hidden = false
+          subagentRow.textContent = t('agents.hud.subagent_running', { n })
+        } else {
+          subagentRow.hidden = true
+        }
+      }
+    }
+    const staleEl = hud.querySelector('.agent-hud-stale')
     if (staleEl) {
       const lastGood = agentHudLastGoodAt.get(key)
       const ageSec = lastGood ? Math.round((now - lastGood) / 1000) : null
