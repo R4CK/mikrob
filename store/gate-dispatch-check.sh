@@ -210,11 +210,18 @@ newest_review = max(review_comments, key=ts)
 mine_shas = extract_shas(newest_mine.get("content") or "")
 review_shas = extract_shas(newest_review.get("content") or "")
 
+# INTERSECTION vs DIFFERENCE (Cybersec, real incident 36d559e5/974509e3, 2026-08-13): the prior
+# check asked "does the REVIEW overlap the verdict shas at all" -- but a REVIEW naming BOTH a
+# genuinely new sha AND a superseded one (e.g. "974509e3 supersedes 6fd834e2/91a22169, do not
+# gate those separately", which is the RIGHT thing for an author to write) still overlaps, so the
+# whole REVIEW was skipped as already-gated and the new sha was never reviewed. The correct
+# question is whether the REVIEW names at least one sha the verdict does NOT cover.
 if mine_shas and review_shas:
-    if shas_overlap(mine_shas, review_shas):
-        print(f"ADVISE-SKIP:already-gated:{int(last_mine)}")
-    else:
+    new_shas = {s for s in review_shas if not any(s.startswith(v) or v.startswith(s) for v in mine_shas)}
+    if new_shas:
         print("ALLOW:stale-verdict")
+    else:
+        print(f"ADVISE-SKIP:already-gated:{int(last_mine)}")
     sys.exit(0)
 
 if last_review > last_mine:
@@ -330,6 +337,15 @@ case "${1:-}" in
     # Short-shas for the same commit can differ in length (7 vs 8+ hex chars) -- prefix match, not
     # exact-string match, so this must NOT re-arm either.
     t "same commit, different short-sha LENGTH still matches" "ADVISE-SKIP:already-gated" cybered <<< '[{"author":"cybered","created_at":100,"content":"GO -- 596f0f1"},{"author":"backend","created_at":200,"content":"REVIEW -- same fix, commit 596f0f15"}]'
+    # INTERSECTION vs DIFFERENCE (Cybersec, real incident 36d559e5/974509e3, 2026-08-13). A REVIEW
+    # that names BOTH a new sha AND a superseded one (the author explicitly saying "X supersedes Y,
+    # do not gate Y separately") used to overlap on the superseded sha and get skipped whole -- the
+    # new sha was never reviewed. Three controls: (a) review repeats only the verdict's sha -> skip;
+    # (b) review adds one new sha alongside the old one -> must re-arm; (c) review names only a new
+    # sha -> must re-arm (already covered above, kept here for the family).
+    t "review repeats ONLY the verdict sha" "ADVISE-SKIP:already-gated" cybersec <<< '[{"author":"cybersec","created_at":100,"content":"NO-GO -- abc1111"},{"author":"backend","created_at":200,"content":"REVIEW -- same fix, commit abc1111"}]'
+    t "review names verdict sha PLUS a new one -- must re-arm" "ALLOW:stale-verdict" cybersec <<< '[{"author":"cybersec","created_at":100,"content":"NO-GO -- abc1111"},{"author":"backend","created_at":200,"content":"REVIEW -- fixed, new commit def2222 supersedes abc1111, dont gate that one separately"}]'
+    t "review names ONLY a new sha -- must re-arm" "ALLOW:stale-verdict" cybersec <<< '[{"author":"cybersec","created_at":100,"content":"NO-GO -- abc1111"},{"author":"backend","created_at":200,"content":"REVIEW -- fixed, commit def2222"}]'
     # No sha on either side -> unchanged, falls back to the pre-existing timestamp rule (fail-open).
     t "no sha anywhere falls back to the timestamp rule" "ALLOW:stale-verdict" cybersec <<< '[{"author":"cybersec","created_at":100,"content":"NO-GO"},{"author":"backend","created_at":200,"content":"REVIEW -- fixed, no commit mentioned"}]'
     # `decide` must be the same answer as the internal function, and must carry the exit code the
