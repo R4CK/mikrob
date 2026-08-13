@@ -3369,6 +3369,30 @@ function attachTmuxCopyButtons(card, agent) {
   card.appendChild(row)
 }
 
+// Per-agent live HUD shell (kanban f07c5b7c): context-pct bar (filled by
+// refreshAgentHud() below from GET /api/context-guard, polled alongside the
+// existing busy-poll) + a static active-model line (from the already-fetched
+// agents list, no extra request). Active-tool/sub-agent are intentionally
+// NOT rendered yet: backend (e9504aba) has not shipped that field, and an
+// empty slot with nothing to show would be decorative, not live data.
+function agentHudBlockHtml(hudKey, activeModel) {
+  const modelLine = activeModel
+    ? `<div class="agent-hud-row agent-hud-model">${escapeHtml(t('agents.hud.active_model', { model: activeModel }))}</div>`
+    : ''
+  return `
+    <div class="agent-hud" data-hud-agent="${escapeHtml(hudKey)}">
+      <div class="agent-hud-row agent-hud-row--pct">
+        <span class="agent-hud-label">${t('agents.hud.context_label')}</span>
+        <div class="agent-hud-bar"><div class="agent-hud-bar-fill" style="width:0%"></div></div>
+        <span class="agent-hud-pct">-</span>
+      </div>
+      <div class="agent-hud-disabled-label" hidden>${t('agents.hud.context_disabled')}</div>
+      ${modelLine}
+      <div class="agent-hud-stale" hidden></div>
+    </div>
+  `
+}
+
 function renderAgents() {
   agentsGrid.querySelectorAll('.agent-card:not(.add-card)').forEach((el) => el.remove())
 
@@ -3397,6 +3421,7 @@ function renderAgents() {
         <span class="process-indicator" title="${t('agents.marveen_process_tip')}"><span class="process-dot running"></span>${t('agents.status.running')}</span>
         <span class="tg-status" title="${t('agents.marveen_channel_tip')}"><span class="tg-dot connected"></span>${t('agents.status.online')}</span>
       </div>
+      ${agentHudBlockHtml(mainAgentId(), null)}
       <div class="agent-card-actions">
         <button class="btn-secondary btn-compact agent-conversation-btn" title="${t('agents.btn.conversation')}">
           <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z"/></svg>
@@ -3456,6 +3481,7 @@ function renderAgents() {
         <span class="process-indicator" title="${escapeHtml(processTip(isRunning))}"><span class="process-dot ${runDotClass}"></span>${runLabel}</span>
         <span class="tg-status" title="${escapeHtml(channelTip(chConnected))}"><span class="tg-dot ${chDotClass}"></span>${chLabel}</span>
       </div>
+      ${isRunning ? agentHudBlockHtml(agent.name, agent.activeModel) : ''}
       ${agent.needsReauth ? `
         <div class="agent-reauth-banner">
           <span class="agent-reauth-reason">${escapeHtml(agent.reauthReason || t('agents.reauth.reason'))}</span>
@@ -3507,8 +3533,9 @@ function renderAgents() {
 let agentsBusyTimer = null
 function startAgentsBusyPoll() {
   refreshAgentTerminalBusy()
+  refreshAgentHud()
   if (agentsBusyTimer) clearInterval(agentsBusyTimer)
-  agentsBusyTimer = setInterval(refreshAgentTerminalBusy, 3000)
+  agentsBusyTimer = setInterval(() => { refreshAgentTerminalBusy(); refreshAgentHud() }, 3000)
 }
 function stopAgentsBusyPoll() {
   if (agentsBusyTimer) { clearInterval(agentsBusyTimer); agentsBusyTimer = null }
@@ -3530,6 +3557,62 @@ async function refreshAgentTerminalBusy() {
     const id = card.classList.contains('marveen-card') ? mainId : card.dataset.name
     const working = !!id && stateByName.get(id) === 'working'
     btn.classList.toggle('agent-terminal-btn--busy', working)
+  })
+}
+
+// Live context-pct fill for the per-agent HUD (kanban f07c5b7c). Reads the
+// existing GET /api/context-guard (already computed for the context-guard
+// feature, no new backend work) and paints only the bar/label -- the shell
+// was already created by agentHudBlockHtml() in renderAgents(). A stale
+// fetch (network blip or a poll that returns late) never blanks the bar: it
+// keeps the last good value and surfaces a discreet "updated Xs ago" note
+// instead of a raw error (rule 12).
+const agentHudLastGoodAt = new Map()
+async function refreshAgentHud() {
+  if (!agentsGrid) return
+  let list
+  try {
+    const res = await fetch('/api/context-guard')
+    if (!res.ok) return
+    const data = await res.json()
+    list = Array.isArray(data?.agents) ? data.agents : []
+  } catch { return }
+  const now = Date.now()
+  const byAgent = new Map(list.map((e) => [e.agent, e]))
+  agentsGrid.querySelectorAll('[data-hud-agent]').forEach((hud) => {
+    const key = hud.dataset.hudAgent
+    const entry = byAgent.get(key)
+    if (!entry) return
+    const pctRow = hud.querySelector('.agent-hud-row--pct')
+    const disabledLabel = hud.querySelector('.agent-hud-disabled-label')
+    const fill = hud.querySelector('.agent-hud-bar-fill')
+    const pctText = hud.querySelector('.agent-hud-pct')
+    const staleEl = hud.querySelector('.agent-hud-stale')
+    if (entry.enabled && typeof entry.pct === 'number') {
+      agentHudLastGoodAt.set(key, now)
+      if (pctRow) pctRow.hidden = false
+      if (disabledLabel) disabledLabel.hidden = true
+      const pct = Math.max(0, Math.min(100, Math.round(entry.pct)))
+      if (fill) {
+        fill.style.width = `${pct}%`
+        fill.classList.toggle('agent-hud-bar-fill--mid', pct >= 70 && pct < 90)
+        fill.classList.toggle('agent-hud-bar-fill--danger', pct >= 90)
+      }
+      if (pctText) pctText.textContent = `${pct}%`
+    } else {
+      if (pctRow) pctRow.hidden = true
+      if (disabledLabel) disabledLabel.hidden = false
+    }
+    if (staleEl) {
+      const lastGood = agentHudLastGoodAt.get(key)
+      const ageSec = lastGood ? Math.round((now - lastGood) / 1000) : null
+      if (ageSec != null && ageSec >= 15) {
+        staleEl.hidden = false
+        staleEl.textContent = t('agents.hud.stale', { sec: ageSec })
+      } else {
+        staleEl.hidden = true
+      }
+    }
   })
 }
 

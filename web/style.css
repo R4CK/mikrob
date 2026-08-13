@@ -1937,6 +1937,64 @@ main.kanban-active { padding-left: 16px; padding-right: 16px; }
 .agent-model-badge.sonnet { background: var(--info-soft); color: var(--info); }
 .agent-model-badge.haiku { background: var(--success-soft); color: var(--success); }
 
+/* === Per-agent live HUD: context-pct + active-model (kanban f07c5b7c) === */
+.agent-hud {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  margin-top: 8px;
+  padding-top: 8px;
+  border-top: 1px solid var(--border, rgba(255,255,255,0.08));
+}
+.agent-hud-row {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+.agent-hud-label {
+  font-size: 11px;
+  color: var(--text-muted);
+  flex-shrink: 0;
+}
+.agent-hud-bar {
+  flex: 1 1 auto;
+  height: 5px;
+  border-radius: 3px;
+  background: var(--bg-input);
+  overflow: hidden;
+}
+.agent-hud-bar-fill {
+  height: 100%;
+  border-radius: 3px;
+  background: var(--success);
+  transition: width 0.3s ease, background-color 0.3s ease;
+}
+.agent-hud-bar-fill--mid { background: var(--info); }
+.agent-hud-bar-fill--danger { background: var(--danger); }
+.agent-hud-pct {
+  font-size: 11px;
+  font-weight: 600;
+  color: var(--text-muted);
+  flex-shrink: 0;
+  min-width: 30px;
+  text-align: right;
+  font-variant-numeric: tabular-nums;
+}
+.agent-hud-disabled-label {
+  font-size: 11px;
+  color: var(--text-muted);
+  font-style: italic;
+}
+.agent-hud-model {
+  font-size: 11px;
+  color: var(--text-muted);
+}
+.agent-hud-stale {
+  font-size: 10px;
+  color: var(--text-muted);
+  opacity: 0.75;
+}
+
 /* === Per-agent tmux attach copy buttons (running agents only) === */
 .agent-tmux-cmds {
   display: flex;
