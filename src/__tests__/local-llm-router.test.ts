@@ -61,6 +61,14 @@ describe('routeTask -- negative: non-offloadable categories NEVER go local', () 
     ['authz', 'Which user groups should be allowed to approve a shift?'],
     ['authz', 'Decide which admins may revoke a membership.'],
     ['authz', 'Which team leads can deny a leave request?'],
+    // QUALIFIER regressions (card c26a9064). Narrowing the ambiguous needles to a qualifier window
+    // is only safe if the REAL uses still fire. Each of these carries an ambiguous needle WITH its
+    // domain qualifier nearby, which is exactly the shape the narrowing must keep catching.
+    // 'token-login' is here because the manual-read control caught it escaping: the qualifier list
+    // had no `login`, so a genuine auth-flow card was reclaimed to local.
+    ['security-decision', 'Dashboard token-login overlay: flow and copy verification'],
+    ['security-decision', 'Rotate the refresh token and invalidate the old session on logout.'],
+    ['security-decision', 'Store only the hash of the password, never the password itself.'],
   ]
   for (const [category, description] of blocked) {
     it(`online (${category}): ${description.slice(0, 40)}`, () => {
@@ -77,6 +85,13 @@ describe('routeTask -- negative: non-offloadable categories NEVER go local', () 
     'Rename the approve button label to Accept.',
     'Fix the toast that appears after a user rejects a draft.',
     'Add a helper that formats a duration in minutes as h:mm.',
+    // FLEET-DIALECT controls (card c26a9064). Measured on the live board: of the 40 cards whose
+    // `token` matched, 32 had no auth word within +/-60 chars, and of 28 `session` matches, 21 meant
+    // a tmux or Claude session. These three are that class, and routing them online starved the
+    // local model of exactly the mechanical work it should draft.
+    'This cuts the per-wakeup token cost, the biggest multiplier.',
+    'The scheduler logs "session busy, tick dropped" the same as "nothing to do".',
+    'Print the version number and commit hash in the sidebar header.',
   ]
   for (const description of stillLocal) {
     it(`still local (no permission modal): ${description.slice(0, 38)}`, () => {

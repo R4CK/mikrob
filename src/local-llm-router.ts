@@ -280,11 +280,67 @@ export function stripGateLine(description: string): string {
   return description.replace(GATE_LINE_RX, '').trim()
 }
 
+/**
+ * Needles that are AMBIGUOUS IN THIS FLEET'S OWN DIALECT and therefore only count when a domain
+ * qualifier sits near them. Measured over the 145 cards the classifier put in `security-decision`:
+ *
+ *     needle     cards   with NO auth word within +/-60 chars
+ *     token        40     32  (80%)  -- LLM token COST, an `id_token` regex variable, token-in-argv
+ *     session      28     21  (75%)  -- a tmux session, a Claude session, a SessionStart hook
+ *
+ * A bare substring match on these routes ordinary infra work online and starves the local model of
+ * exactly the mechanical cards it should be drafting. This is a recurring class, not a one-off:
+ * `guard` and `gate ` were deleted from the authz needles on 2026-08-13 for the same reason, one
+ * word at a time, which treats instances and leaves the class.
+ *
+ * The qualifier lists are deliberately GENEROUS. A false negative here sends a real security card to
+ * the local model; a false positive costs one online draft. Those are not symmetric, so when in
+ * doubt a word stays in.
+ */
+const QUALIFIERS: ReadonlyArray<readonly [string, RegExp]> = [
+  // `login` is in this list because the manual-read control (B.5) caught its absence: a card titled
+  // "Dashboard TOKEN-LOGIN overlay" was reclaimed to local, and token-login is obviously auth. The
+  // qualifier lists are only as good as the words actually used on this board.
+  ['token', /auth|bearer|refresh|access|reset|magic|csrf|oauth|jwt|api ?key|secret|session|revoke|expir|verify|sign|login|log ?in|logout/],
+  ['session', /login|log ?in|cookie|auth|jwt|expir|hijack|fixation|token|revoke|logout|sign ?in/],
+  ['hash', /password|token|secret|signature|hmac|digest|integrity|chain|tamper|salt|bcrypt|argon|sha[0-9]/],
+  ['account', /user|login|takeover|lockout|auth|enumerat|register|credential|owner|password/],
+  ['organization', /tenant|scope|isolation|member|permission|access|rbac|boundary/],
+  ['organisation', /tenant|scope|isolation|member|permission|access|rbac|boundary/],
+  ['compose', /docker|container|stack|orchestrat/],
+  ['roles', /permission|access|rbac|allowed|grant|assign|authoriz|admin|scope|privilege|approve|deny/],
+]
+const QUALIFIER_WINDOW = 80
+
+function escapeRx(s: string): string {
+  return s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')
+}
+
+/**
+ * Does this needle appear as a WORD, and -- when it is one of the ambiguous ones -- with a qualifier
+ * nearby? Word-boundary matching alone already removes a class of nonsense (`escap` inside
+ * "landscape"); the qualifier window removes the fleet-dialect class the measurement above found.
+ */
+function needleFires(text: string, needle: string): boolean {
+  // Start-boundary only: several needles are deliberate STEMS (`authoriz`, `vulnerab`, `sanitiz`)
+  // and must keep matching their inflections.
+  const rx = new RegExp('\\b' + escapeRx(needle), 'g')
+  const qualifier = QUALIFIERS.find(([n]) => n === needle)?.[1]
+  let m: RegExpExecArray | null
+  while ((m = rx.exec(text)) !== null) {
+    if (!qualifier) return true
+    const from = Math.max(0, m.index - QUALIFIER_WINDOW)
+    const window = text.slice(from, m.index + needle.length + QUALIFIER_WINDOW)
+    if (qualifier.test(window)) return true
+  }
+  return false
+}
+
 /** The non-offloadable category a description falls into, or null. Deterministic, no LLM. */
 export function classifyCategory(description: string): NonOffloadableCategory | null {
   const text = normalizeForMatch(stripGateLine(description))
   for (const [category, needles] of CATEGORY_SIGNALS) {
-    for (const needle of needles) if (text.includes(needle)) return category
+    for (const needle of needles) if (needleFires(text, needle)) return category
   }
   // SHAPE match (Cybersec cm6054): catches a security change dressed as mechanical cleanup.
   for (const [category, pattern] of SHAPE_SIGNALS) if (pattern.test(text)) return category
