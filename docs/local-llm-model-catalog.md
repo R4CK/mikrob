@@ -336,3 +336,22 @@ with the seam, not stay bound to Ollama's API shape.
 3. **Disk budget.** Model files land on `/` (**measured** earlier: ~933 GB free), not `/mnt/h` (94 %
    full). The catalogue should still show `sizeOnDiskMib` and check free space before a pull.
 4. **AMD/Apple probes are unverified** (§1.4) and need a host or an explicit "not supported yet".
+
+### DECIDED 2026-08-13 (MikroB)
+
+**The embedding model does NOT enter this schema.** `nomic-embed-text` stays a separate, fixed,
+always-installed default (~274 MB, GPU-independent), brought in by first-run before or independently
+of the coding-model choice. That keeps this contract describing exactly one thing, which was
+Cybered's point. Open question 2 above is closed on those terms.
+
+**But the step cannot simply stay where it is, and T2 must not just "keep line 1621".** Measured:
+`install-linux.sh:1621` is `ollama_pull "nomic-embed-text" "~274 MB"`, and it sits
+
+- **inside** the line range T2 (`fbbb4015`) is scoped to delete (~1539-1622), and
+- **inside** an `if command -v ollama` block that closes on line 1622.
+
+Once the installer no longer installs Ollama, that guard is false at installer time, so the pull
+would not run even if the line survived the edit. The embedding pull therefore has to MOVE into the
+first-run flow, immediately after the runtime install and before/independent of the coding-model
+choice — not be preserved in place. This is a T2 acceptance item, recorded here because the decision
+that depends on it lives here.

@@ -71,8 +71,10 @@ change. If T2 makes the runtime user-chosen, this is the real work — and the d
 memory **embeddings**, not coding. Selecting a coding model from the T1 catalogue does not cover it,
 and if the first-run flow installs a coding model but no embedding model, semantic memory search
 silently degrades to keyword-only — which has happened before and is invisible from the outside.
-The catalogue needs a second, small entry class for the embedding model, or first-run must state
-plainly that memory search needs its own model.
+**DECIDED 2026-08-13 (MikroB):** not a second catalogue class. `nomic-embed-text` stays a separate,
+fixed, always-installed default that first-run brings in independently of the coding-model choice —
+see the decision block at the end of `docs/local-llm-model-catalog.md`, including why T2 must MOVE
+that pull rather than keep it in place.
 
 ---
 
@@ -219,8 +221,10 @@ work reaching the model, and that is a failure, not a win.
 
 ## Open questions
 
-1. **Where does the stage-1 classifier run when the local model is not installed yet?** First-run
-   has no model. The backstop blocklist must be able to carry routing alone until one exists.
+1. ~~**Where does the stage-1 classifier run when the local model is not installed yet?**~~
+   **DECIDED 2026-08-13 (MikroB): the backstop blocklist carries routing alone until a model is
+   installed** — there is nothing for stage 2 to compare against before that, so this is the only
+   available answer, and it is fail-closed by construction.
 2. **Embedding model** (A.5) — does the T1 catalogue gain a second entry class, or does first-run
    state that memory search needs its own model? Needs MikroB's call; it changes T1's schema.
 3. **Runtime swap** (A.4) is seven files and owns the GPU-crash `flock`. It is T2-shaped work, not
