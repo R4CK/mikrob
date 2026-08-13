@@ -150,9 +150,19 @@ fail-closed: disagreement routes online.
 **4. Convert vetoes into escalations, which is what actually raises difficulty.** Today a blocked
 category produces *nothing* locally. Instead, still draft locally, mark the output
 `advisory-only`, and let the online model **review a draft instead of writing from scratch**. The
-security decision stays online — the drafting does not. This is the change that gives the local LLM
-*harder* work rather than merely more of the same easy work, and it does it without weakening a
-single gate.
+decision stays online — the drafting does not. This is the change that gives the local LLM *harder*
+work rather than merely more of the same easy work.
+
+**SCOPED DOWN 2026-08-13 after a Cybered NO-GO, and the original claim here was too broad.** This
+paragraph said the change weakens "not a single gate". That is not established for the
+highest-stakes categories, and asserting it was the overclaim: for `security-decision`, `authz` and
+`isolation` the local draft would itself be produced by the weights the trust layer does not yet
+cover, so the escalation is only sound *after* provenance and the trust allowlist land
+(card 87d7c86f). Until then **the veto stays as-is on those three categories**, and the escalation
+applies to the remaining ones — where it genuinely weakens no gate, because nothing about a
+`multi-file-wiring` or `feature` card was ever gated on the draft's origin.
+
+Tracked as its own card, `37756c9c`, blocked on `87d7c86f`.
 
 ### B.3b The `roles` / `approve` trap — and why it is a live hole, not just a precondition
 
