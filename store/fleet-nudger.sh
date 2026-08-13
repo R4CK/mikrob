@@ -60,14 +60,21 @@ gate_cards=[c.get("id") for c in cards
 # fleet already has the labels and description in memory here. gate-dispatch-check.sh turns
 # these into an exclusion; an empty value on either simply means no exclusion for that card.
 import re
-gate_line_rx = re.compile(r"^\s*Gate\s*:\s*(.+)$", re.M | re.I)
+# No line-start anchor (card 165ff1af, 2026-08-13): this is a second, independently-drifted copy
+# of the same regex carried by gate-dispatch-check.sh _extract_gate_line -- it required "Gate:" at
+# the start of a line, which real card 165ff1af defeats by writing it mid-paragraph (preceded by a
+# space, not a newline). Cybersec was nudged on 165ff1af 6+ times because THIS copy, not the one in
+# gate-dispatch-check.sh, is what the nudger actually calls per-card. findall()[-1] instead of
+# search() for the same reason gate-dispatch-check.sh takes the last match: a superseding Gate:
+# line appended later (card 84fd2839) must win over a stale one earlier in the description.
+gate_line_rx = re.compile(r"\bGate\s*:\s*(.+)$", re.M | re.I)
 meta={}
 by_id={c.get("id"): c for c in cards}
 for cid in gate_cards:
     c=by_id.get(cid) or {}
     labels=",".join((l.get("name") or "").lstrip("@") for l in (c.get("labels") or []))
-    m=gate_line_rx.search(c.get("description") or "")
-    meta[cid]={"labels": labels, "gate_line": (m.group(1) if m else "")}
+    matches=gate_line_rx.findall(c.get("description") or "")
+    meta[cid]={"labels": labels, "gate_line": (matches[-1] if matches else "")}
 out={a:plan[a] for a in eng}
 out["_gate_cards"]=gate_cards
 out["_meta"]=meta

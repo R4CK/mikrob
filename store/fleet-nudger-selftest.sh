@@ -75,10 +75,14 @@ NO_REVIEW = {
 # (QA's twin) should show up -- cybersec and cybered are excluded despite having no verdict, because
 # they were never asked. Proves the board -> per-card labels/description -> decide wiring actually
 # carries the fields, not just that gate-dispatch-check.sh's own unit-level selftest handles them.
+# Gate: written mid-paragraph, preceded by a space not a newline (real card 165ff1af shape,
+# 2026-08-13) -- must still exclude cybersec/cybered. A line-start-anchored regex misses this
+# entirely (empty gate_line -> no exclusion -> cybersec gets nudged on a QA-only card, the real
+# incident: 6+ repeat nudges on 165ff1af before this fixture caught it).
 DESIGNATED = {
     'cards': [{
         'id': 'c1', 'status': 'waiting', 'title': 'plain card', 'assignee': 'backend',
-        'description': 'Some feature.\n\nGate: QA.\n',
+        'description': 'Some feature. Gate: QA. (funkcionalis lefedettseg, nincs trust-boundary erintes)',
     }],
     'comments': {'c1': [{'author': 'backend', 'created_at': 100, 'content': 'REVIEW -- kesz'}]},
 }
