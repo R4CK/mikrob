@@ -152,6 +152,53 @@ security decision stays online — the drafting does not. This is the change tha
 *harder* work rather than merely more of the same easy work, and it does it without weakening a
 single gate.
 
+### B.3b The `roles` / `approve` trap — and why it is a live hole, not just a precondition
+
+A parallel deep audit (MikroB, card f62ba108) found eight more bare needles and shapes in the same
+class: `token`, `session`, `hash`, `account`, `organization`/`organisation`, `roles`, `compose`, and
+the **bare operator shape** `/(!==|===|!=|==)/` with no context condition at all.
+
+It also flagged a trap in B.3.2 that I had not found, and it is correct. The pinned test
+`src/__tests__/local-llm-router.test.ts:49` — *"Which roles should be allowed to approve a shift?"*
+→ `authz`/online — is carried **entirely** by the bare `roles` needle, because the SHAPE authz-verb
+list (`read|write|see|view|access|edit|delete|list|fetch|modify`) does not contain `approve`.
+Narrow `roles` and the test fails; worse, a genuine RBAC design question routes local in silence.
+
+I verified it by probing the real router rather than reading the code, and the third probe is the
+one that matters:
+
+| Probe | Route |
+|---|---|
+| `Which roles should be allowed to approve a shift?` | ONLINE (authz) |
+| `Which user groups should be allowed to approve a shift?` | **LOCAL** |
+| `Which user groups should be allowed to view a shift?` | ONLINE (authz) |
+
+The same question, same meaning, differing only in whether it happens to use the word "roles",
+already routes local **today**. `approve|reject|deny` are missing from the verb list, so the
+protection is vocabulary-dependent rather than semantic. That reframes MikroB's either/or:
+
+**Extending the SHAPE authz-verb list with `approve|reject|deny|grant|revoke` is not a precondition
+for narrowing `roles` — it is a fix for a hole that exists right now, and it should land first, on
+its own.** Once it does, narrowing `roles` becomes a safe follow-up instead of a trade.
+
+The bare operator shape is a **different** class from the needles and B.3.2 does not cover it: it is
+a regex over punctuation, so word boundaries and qualifier windows have nothing to attach to.
+Verified false positives:
+
+```
+"Fix the badge: isActive === true should render the green dot."         -> ONLINE security-decision
+"a.order == b.order ties should keep input order."                      -> ONLINE security-decision
+```
+
+It needs its own condition — an equality comparison counts only when one side is a secret/id/token/
+hash-shaped identifier — and until it has one it is a large, silent share of the 145.
+
+**Method note for whoever implements this:** every narrowing must be validated with the full
+existing suite (`store/fleet-test.sh`), not with new probes alone. The `roles` trap is exactly the
+failure a fresh-probe-only check misses — the probe passes, the pinned test dies. New regression
+tests for each false-positive sentence found here should be added in the same change, so the class
+cannot slide back a third time.
+
 ### B.4 Difficulty ceiling: per-category, not global
 
 Because the global gate never fires (B.1), the ceiling should stop being one number. `RELIABLE_CEILING`
