@@ -298,6 +298,50 @@ describe('no shipped script, template or GENERATOR puts a Bearer token in curl a
     }
   })
 
+  /**
+   * Line numbers that sit inside a ```fenced``` block. Everything else in a .md file is prose.
+   *
+   * Needed for the ONE exemption below, and kept structural on purpose: a filename allowlist is the
+   * exact failure mode this guard exists to prevent, so the rule is derived from the document instead
+   * (card ec5173a5).
+   */
+  function fencedLines(source: string): Set<number> {
+    const inside = new Set<number>()
+    let open = false
+    source.split('\n').forEach((line, i) => {
+      if (/^\s*```/.test(line)) {
+        open = !open
+        return
+      }
+      if (open) inside.add(i + 1)
+    })
+    return inside
+  }
+
+  /**
+   * Is this offender a security doc TEACHING the anti-pattern rather than using it?
+   *
+   * seed-skills/.../leak-safe-secret-probe/SKILL.md exists to tell an agent never to put a secret on
+   * argv, and it shows the forbidden shape so the reader recognises it. Rewriting that to satisfy the
+   * scanner would trade real teaching value for a green tick, so the guard learns to read it instead.
+   *
+   * TWO conditions, both required, both derived from the text:
+   *   1. the curl is NOT inside a fenced block -- a fence is what a reader copy-pastes, so a fenced
+   *      command is a command no matter what the surrounding prose claims;
+   *   2. the same line carries a NEGATION -- the sentence has to say not to do this.
+   * Either condition alone is too weak: (1) alone would exempt any inline one-liner, and (2) alone
+   * would let a fenced command through under a "never do this" heading. Both are asserted below by
+   * tests that drop one condition at a time.
+   */
+  const NEGATION = /\bnever\b|\bdo not\b|\bdon't\b|\bnot\b|\binstead\b|\bavoid\b|\bwrong\b|\bbad\b|\bhelyett\b|\bsoha\b|\bne\b/i
+
+  function isDocumentedAntiPattern(source: string, startLine: number): boolean {
+    if (!source.includes('```')) return false // not a markdown-ish doc: no exemption at all
+    if (fencedLines(source).has(startLine)) return false // condition 1
+    const line = source.split('\n')[startLine - 1] ?? ''
+    return NEGATION.test(line) // condition 2
+  }
+
   const shellCases: Array<{ dir: string; file: string }> = [
     // The repo's own rulebook taught the argv shape in nine places while the guard enforced the
     // opposite everywhere else -- the most-read file in the project was the last one covered.
@@ -316,7 +360,9 @@ describe('no shipped script, template or GENERATOR puts a Bearer token in curl a
 
   it.each(cases)('$file: every curl reads its auth header from a file, never argv', ({ dir, file }) => {
     const source = readFileSync(join(dir, file), 'utf8')
-    const offenders = findCurlInvocations(source).filter((c) => leaksTokenInArgv(c.text))
+    const offenders = findCurlInvocations(source)
+      .filter((c) => leaksTokenInArgv(c.text))
+      .filter((c) => !isDocumentedAntiPattern(source, c.startLine))
     if (offenders.length > 0) {
       const detail = offenders.map((o) => `  line ${o.startLine}: ${o.text.trim().slice(0, 100)}`).join('\n')
       throw new Error(
@@ -339,7 +385,9 @@ describe('no shipped script, template or GENERATOR puts a Bearer token in curl a
   // to fix. The three CURL-shaped rules above DO run over src/ -- those inspect a command line.
   it.each(shellCases)('$file: no line builds a URL with a credential query parameter', ({ dir, file }) => {
     const source = readFileSync(join(dir, file), 'utf8')
-    const offenders = credentialUrlLines(source)
+    const offenders = credentialUrlLines(source).filter(
+      (o) => !isDocumentedAntiPattern(source, o.startLine),
+    )
     if (offenders.length > 0) {
       const detail = offenders.map((o) => `  line ${o.startLine}: ${o.text.trim().slice(0, 100)}`).join('\n')
       throw new Error(
