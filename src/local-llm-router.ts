@@ -304,9 +304,14 @@ const QUALIFIERS: ReadonlyArray<readonly [string, RegExp]> = [
   ['token', /auth|bearer|refresh|access|reset|magic|csrf|oauth|jwt|api ?key|secret|session|revoke|expir|verify|sign|login|log ?in|logout/],
   ['session', /login|log ?in|cookie|auth|jwt|expir|hijack|fixation|token|revoke|logout|sign ?in/],
   ['hash', /password|token|secret|signature|hmac|digest|integrity|chain|tamper|salt|bcrypt|argon|sha[0-9]/],
-  ['account', /user|login|takeover|lockout|auth|enumerat|register|credential|owner|password/],
-  ['organization', /tenant|scope|isolation|member|permission|access|rbac|boundary/],
-  ['organisation', /tenant|scope|isolation|member|permission|access|rbac|boundary/],
+  // `account` and `organization` are ISOLATION needles as well as auth ones, and the qualifier list
+  // has to carry BOTH vocabularies. Caught by Cybered's pre-existing regression (card c1661fff):
+  // "cross-organization data LEAK" and "the account-SCOPED filter" are textbook tenant-isolation
+  // cards, and my first list -- tuned only for the auth sense -- reclaimed both to local. This is
+  // why the method requirement is the FULL suite and not fresh probes: my own probes all passed.
+  ['account', /user|login|takeover|lockout|auth|enumerat|register|credential|owner|password|scope|cross|across|between|leak|share|shar|other|tenant|isolat/],
+  ['organization', /tenant|scope|isolation|isolat|member|permission|access|rbac|boundary|leak|cross|across|between|share|shar|other|foreign/],
+  ['organisation', /tenant|scope|isolation|isolat|member|permission|access|rbac|boundary|leak|cross|across|between|share|shar|other|foreign/],
   ['compose', /docker|container|stack|orchestrat/],
   ['roles', /permission|access|rbac|allowed|grant|assign|authoriz|admin|scope|privilege|approve|deny/],
 ]
