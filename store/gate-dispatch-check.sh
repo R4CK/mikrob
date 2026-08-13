@@ -216,6 +216,23 @@ review_shas = extract_shas(newest_review.get("content") or "")
 # gate those separately", which is the RIGHT thing for an author to write) still overlaps, so the
 # whole REVIEW was skipped as already-gated and the new sha was never reviewed. The correct
 # question is whether the REVIEW names at least one sha the verdict does NOT cover.
+# ORDER FIRST (Cybersec, card d9ce20f5): the sha branch below used to sit here and exit before this
+# comparison could run, so ANY review naming shas the verdict does not cover re-armed the card --
+# including a review written DAYS BEFORE the verdict. Measured blast radius: 26 (agent, card) pairs on
+# 10 waiting cards, e.g. 339cd617/cybersec where the REVIEW predates the verdict by 95 hours and still
+# produced ALLOW:stale-verdict. Fail-open in the cheap direction (wasted gate rework, quota burn), but
+# real. A review that predates the verdict is stale by definition: the verdict is the newest word about
+# it, whatever shas it happens to mention.
+#
+# TIE-BREAK is deliberate: `<=` gives the verdict the win when both carry the SAME timestamp. Kanban
+# comment timestamps are second-granular and the API does not return them sorted, so ties happen; the
+# direction chosen here is the one that produces FEWER re-arms, which is the point of this card.
+if last_review <= last_mine:
+    print(f"ADVISE-SKIP:already-gated:{int(last_mine)}")
+    sys.exit(0)
+
+# From here the review IS newer than the verdict, so the only question left is whether it says anything
+# the verdict has not already covered -- which is exactly what the sha difference answers.
 if mine_shas and review_shas:
     new_shas = {s for s in review_shas if not any(s.startswith(v) or v.startswith(s) for v in mine_shas)}
     if new_shas:
@@ -224,10 +241,7 @@ if mine_shas and review_shas:
         print(f"ADVISE-SKIP:already-gated:{int(last_mine)}")
     sys.exit(0)
 
-if last_review > last_mine:
-    print("ALLOW:stale-verdict")
-else:
-    print(f"ADVISE-SKIP:already-gated:{int(last_mine)}")
+print("ALLOW:stale-verdict")
 '
 }
 
@@ -334,6 +348,15 @@ case "${1:-}" in
     t "25083c6f real incident: later REVIEW repeats the SAME sha" "ADVISE-SKIP:already-gated" cybered <<< '[{"author":"cybered","created_at":1786108474,"content":"CYBERED GO -- 25083c6f @ `596f0f15`. Es lezarom a CustodyAuthzError-vitat."},{"author":"backend","created_at":1786140913,"content":"REVIEW -- RESZLEGES TELJESITES, MikroB dontese szerint. Ag fix/error-mapping-25083c6f, 2 commit, pusholva. Az 5 lekepezes kesz (596f0f15)."}]'
     # Contrast case: a REVIEW naming a DIFFERENT sha is genuinely new work -- must still re-arm.
     t "a REVIEW naming a DIFFERENT sha still re-arms" "ALLOW:stale-verdict" cybered <<< '[{"author":"cybered","created_at":100,"content":"GO -- 596f0f15"},{"author":"backend","created_at":200,"content":"REVIEW -- new fix, commit a1b2c3d4"}]'
+
+    # Card d9ce20f5: the case the sha branch answered WRONG while it ran first. Same shape as the test
+    # directly above -- review names a sha the verdict does not cover -- but the review is OLDER. It must
+    # NOT re-arm: the verdict came after it and is the newest word. Mutation check: putting the sha
+    # branch back ahead of the order check turns this red and leaves the three above green, which is
+    # precisely why the earlier controls did not catch the regression.
+    t "an OLDER review naming a different sha does NOT re-arm" "ADVISE-SKIP:already-gated" cybered <<< '[{"author":"backend","created_at":100,"content":"REVIEW -- older submission, commit a1b2c3d4"},{"author":"cybered","created_at":200,"content":"GO -- 596f0f15"}]'
+    # The 95-hour real pair from the incident, in the shape the measurement found it.
+    t "339cd617 real pair: REVIEW 95h older than the verdict" "ADVISE-SKIP:already-gated" cybersec <<< '[{"author":"backend","created_at":1786000000,"content":"REVIEW -- kesz, commit 11aa22bb"},{"author":"cybersec","created_at":1786342000,"content":"CYBERSEC GO -- 339cd617 @ 596f0f15"}]'
     # Short-shas for the same commit can differ in length (7 vs 8+ hex chars) -- prefix match, not
     # exact-string match, so this must NOT re-arm either.
     t "same commit, different short-sha LENGTH still matches" "ADVISE-SKIP:already-gated" cybered <<< '[{"author":"cybered","created_at":100,"content":"GO -- 596f0f1"},{"author":"backend","created_at":200,"content":"REVIEW -- same fix, commit 596f0f15"}]'
