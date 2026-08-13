@@ -72,9 +72,15 @@ src="$clone"
 [[ -d "$src" ]] || { echo "vendor-skill: subdir '$SUBDIR' not in $REPO@$SHA" >&2; exit 4; }
 
 # Licence text, if the upstream ships one (copied verbatim alongside the vendored files).
+# SUBDIR FIRST, repo root second: a skill monorepo can licence each skill separately and ship NO root
+# LICENSE at all (anthropics/skills -- Apache-2.0 per skill dir, proprietary for the document skills).
+# Root-only lookup made VENDORED.md claim "upstream ships no LICENSE file" while the real licence sat
+# in the vendored subdir -- a provenance record that lies about the licence is worse than none.
 LICENSE_FILE=""
-for c in LICENSE LICENSE.md LICENSE.txt COPYING; do
-  [[ -f "$clone/$c" ]] && { LICENSE_FILE="$clone/$c"; break; }
+for d in ${SUBDIR:+"$src"} "$clone"; do
+  for c in LICENSE LICENSE.md LICENSE.txt COPYING; do
+    [[ -f "$d/$c" ]] && { LICENSE_FILE="$d/$c"; break 2; }
+  done
 done
 
 dest="$SKILLS_DIR/$NAME"
@@ -83,6 +89,15 @@ mkdir -p "$dest"
 find "$dest" -mindepth 1 -maxdepth 1 ! -name 'VENDORED.md' ! -name 'UPSTREAM-LICENSE' -exec rm -rf {} + 2>/dev/null
 cp -R "$src/." "$dest/" 2>/dev/null || { echo "vendor-skill: copy failed" >&2; exit 4; }
 [[ -n "$LICENSE_FILE" ]] && cp "$LICENSE_FILE" "$dest/UPSTREAM-LICENSE"
+
+# The two ${VAR:+...}${VAR:-...} halves cannot share one variable: when LICENSE_FILE is SET the
+# second half expands to its VALUE, not to the fallback, so the row rendered as
+# "see UPSTREAM-LICENSE next to this file/abs/path/LICENSE". Resolve the row up front instead.
+if [[ -n "$LICENSE_FILE" ]]; then
+  LICENSE_ROW="see UPSTREAM-LICENSE next to this file (upstream: \`${LICENSE_FILE#"$clone"/}\`)"
+else
+  LICENSE_ROW="(upstream ships no LICENSE file -- verify before use)"
+fi
 
 cat > "$dest/VENDORED.md" <<EOF
 # VENDORED -- do not edit here
@@ -97,7 +112,7 @@ change it upstream, or fork it and re-point this entry.
 | vendored commit | \`$SHA\` |
 | commit date | $SHA_DATE |
 | vendored at | $(date -Iseconds) |
-| licence | ${LICENSE_FILE:+see UPSTREAM-LICENSE next to this file}${LICENSE_FILE:-(upstream ships no LICENSE file -- verify before use)} |
+| licence | $LICENSE_ROW |
 | watch clone | $clone |
 
 ${NOTE:+> **Usage restriction:** $NOTE}
