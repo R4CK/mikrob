@@ -161,6 +161,81 @@ throughput shown next to a real one is indistinguishable from it in the UI.
 
 ---
 
+## 3.4 A quant is a FILE SET, not a file (defect found in this design, 2026-08-13)
+
+The fit rule above says "at least one `.gguf` file whose computed requirement fits". **That is
+wrong for any model published in shards, and it fails in the dangerous direction.** Measured on
+`Qwen/Qwen2.5-Coder-7B-Instruct-GGUF`:
+
+| quant | parts | total | part 1 alone |
+|---|---|---|---|
+| fp16 | 5 | **30.48 GB** | 3.95 GB |
+| q8_0 | 4 | 16.20 GB | 3.98 GB |
+| q6_k | 3 | 12.51 GB | 3.95 GB |
+
+Taking a single file's size would size the 30 GB fp16 model at 3.95 GB and mark it **`fits` on a
+6 GB card** -- exactly the promise the three-tier rule exists to prevent, produced by the rule
+itself. The trap is that every shard is ~4 GB, so the wrong number looks precisely like a genuine
+7B q4 file: nothing about it reads as wrong.
+
+**Rule:** group `.gguf` entries by stripping the `-NNNNN-of-NNNNN` shard suffix, and size the
+QUANT SET (`sum(lfs.size)` over its parts). `fileMib` is the set total; `parts` and `partCount`
+belong in the schema so a consumer can show "5 files, 30.5 GB" instead of one misleading number.
+
+---
+
+## 3.5 Trust is a separate axis from fit and relevance (Cybered, card 87d7c86f)
+
+The catalogue as designed models **fit** (VRAM) and **relevance** (is it a coding model). It does
+not model **trust** -- and the installed weights become the fleet's code-suggesting oracle, so a
+backdoored model is a supply-chain attack that arrives through agent integration. Three
+requirements, all closed before T2 starts:
+
+**(1) Provenance in the schema.** The tree call already in use carries it -- no extra request:
+
+```
+GET /api/models/<repo>/tree/main?recursive=true
+-> { path, size, oid, xetHash, lfs: { oid: "<64-hex sha256>", size, pointerSize } }
+```
+
+**Measured:** `lfs.oid` is a sha256 per file. Record it **per part** (see 3.4 -- a sharded quant has
+one digest per shard, and a set is only pinned when all of them are), plus `repoOwner` from the
+model API's `author` field (**measured**: `author: "Qwen"`).
+
+**(2) Trust allowlist separate from the relevance allowlist.** 2.2's curated list answers "is this
+a coding model" and must stay easy to refresh -- a data edit, no release. Trust answers a different
+question, "may this be INSTALLED", and must not inherit that looseness. Two lists, two lifetimes,
+two review bars. Anything outside the trust list installs only on **explicit operator confirmation**,
+and the confirmation prompt must show what the decision rests on: repo owner, download count, and
+the digest. A confirmation that shows only a name is a click-through, not a decision.
+
+**(3) A new model never becomes the default silently.** Installing must not write
+`store/local-llm-model` as a side effect. That write is its own explicit, logged step, and a
+freshly installed model carries `trusted: false` until it has been benchmarked
+(`store/local-llm-bench.sh`) -- because "it downloaded" is not evidence that it produces usable code.
+The catalogue therefore also carries `installedAt` and `benchmarkedAt`, and the UI must distinguish
+*installed* from *in use*.
+
+Schema additions for all of the above:
+
+```jsonc
+{
+  "quant": "Q4_K_M",
+  "parts": [
+    { "path": "...-00001-of-00003.gguf", "sizeMib": 3768, "sha256": "2da8da61..." }
+  ],
+  "partCount": 3,
+  "fileMib": 10390,          // SUM over parts -- never one part
+  "repoOwner": "Qwen",
+  "trusted": true,           // from the TRUST list, not the relevance list
+  "trustReason": "allowlisted-publisher",   // or "operator-confirmed" / "unverified"
+  "installedAt": null,
+  "benchmarkedAt": null
+}
+```
+
+---
+
 ## 4. The shared data structure
 
 One versioned JSON document, written by the generator, read by **both** consumers. Bash (T2) reads
