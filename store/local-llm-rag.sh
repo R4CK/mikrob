@@ -254,6 +254,27 @@ NODE
     echo "local-llm-rag: ROUTE=online -> keep this on Claude ($REASON)" >&2
     exit 9
   fi
+  # STAGE 1 (card 05f8d99c): the deterministic rules said LOCAL. Ask the local model whether this is
+  # a security/authz DECISION before drafting it.
+  #
+  # THE SAFETY PROPERTY IS THE POSITION OF THIS BLOCK, not the prompt. It runs ONLY on a `local`
+  # verdict and can ONLY flip to `online`. A wrong answer, a hung model, no model at all (first run)
+  # or a parse failure all yield UNKNOWN, which changes nothing -- the deterministic verdict stands.
+  # So stage 1 can cost an online draft; it cannot open a hole. That is why it is safe to put a 7B
+  # in the routing path at all.
+  #
+  # It exists because five rounds of keyword fixes could not close the class: Cybersec produced five
+  # real RBAC questions ("Restrict the payroll export to the finance team", "Give admins the ability
+  # to impersonate a user") that name no security noun and no list caught. Measured on those five
+  # plus negative controls, and on a HELD-OUT set the prompt never saw: 10/10. Same model, one-line
+  # zero-shot prompt: 2/5 -- the prompt was the constraint, so route-triage.txt is load-bearing.
+  if [[ "${ROUTE_CLASSIFY:-1}" == "1" && -x "$HERE/route-classify.sh" ]]; then
+    TRIAGE="$(bash "$HERE/route-classify.sh" "$TASK" 2>/dev/null || echo UNKNOWN)"
+    if [[ "$TRIAGE" == "SECURITY" ]]; then
+      echo "local-llm-rag: ROUTE=online -> stage-1 classifier called this a security decision (deterministic rules said: $REASON)" >&2
+      exit 9
+    fi
+  fi
   echo "local-llm-rag: ROUTE=local -> drafting on the 7B ($REASON)" >&2
   # fall through to the normal local RAG draft path below
 fi
