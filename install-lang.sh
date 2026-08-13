@@ -181,18 +181,6 @@ _t() {
     en:macos.bumblebee_installed) echo "  Bumblebee threat-intel catalogs installed" ;;
     hu:macos.bumblebee_installed) echo "  Bumblebee threat-intel katalógusok telepítve" ;;
     # ── Ollama ────────────────────────────────────────────────────────
-    en:macos.ollama_check) echo "  Checking Ollama (semantic memory search)..." ;;
-    hu:macos.ollama_check) echo "  Ollama ellenőrzés (szemantikus memória kereséshez)..." ;;
-    en:macos.ollama_installed) echo "  Ollama installed" ;;
-    hu:macos.ollama_installed) echo "  Ollama telepítve" ;;
-    en:macos.ollama_installing) echo "  Installing Ollama..." ;;
-    hu:macos.ollama_installing) echo "  Ollama telepítése..." ;;
-    en:macos.ollama_starting) echo "  Starting Ollama..." ;;
-    hu:macos.ollama_starting) echo "  Ollama indítás..." ;;
-    en:macos.nomic_downloading) echo "  Downloading nomic-embed-text model (~274 MB)..." ;;
-    hu:macos.nomic_downloading) echo "  nomic-embed-text modell letöltése (~274 MB)..." ;;
-    en:macos.ollama_done) echo "  Ollama + nomic-embed-text ready" ;;
-    hu:macos.ollama_done) echo "  Ollama + nomic-embed-text kész" ;;
     # ── Whisper / ffmpeg ──────────────────────────────────────────────
     en:macos.whisper_installing) echo "  Installing Whisper (speech-to-text)..." ;;
     hu:macos.whisper_installing) echo "  Whisper telepítés (beszéd -> szöveg leirat)..." ;;

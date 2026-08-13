@@ -1543,83 +1543,20 @@ INSTALL_STEP="ollama-whisper"
 echo ""
 echo -e "${BOLD}$(_t section_6_linux)${NC}"
 
-# --- Ollama telepites ---
-echo -e "  Ollama ellenorzese (szemantikus memoria kereseshez)..."
-if command -v ollama &>/dev/null; then
-  ok "ollama mar telepitve"
-else
-  echo -e "  Ollama telepitese..."
-  # Az ollama telepitoje sudo-val ir a /usr/local/bin-be es allit be systemd service-t.
-  # Elore gyorsitotarazzuk a sudo hitelesitest, hogy a gyermek-script sudo prompt-ja ne bukjon el.
-  sudo -v 2>/dev/null || true
-  # zstd -- az ollama telepitoje ezzel csomagolja ki a binarist; nincs alapertelmezetten telepitve friss WSL distron,
-  # nelkule "ERROR: This version requires zstd for extraction" hibaval elhasal.
-  command -v zstd &>/dev/null || pkg_install_noninteractive zstd || true
-  # NEM fatalis: ha az ollama telepitoje hibara fut (pl. sudo, halozat, WSL),
-  # csak figyelmeztetunk es kihagyjuk a szemantikus memoria lepest -- a telepito megy tovabb.
-  if curl -fsSL https://ollama.com/install.sh | sh; then
-    ok "ollama telepitve"
-  else
-    warn "ollama telepitese sikertelen -- a szemantikus memoria kereses kimarad."
-    echo -e "  ${DIM}Kesobb kezzel: sudo -v && curl -fsSL https://ollama.com/install.sh | sh${NC}"
-  fi
-fi
-
-# A service-inditas es modell-letoltes csak akkor fut, ha az ollama tenyleg telepult.
-if command -v ollama &>/dev/null; then
-# A telepito letrehoz egy ollama.service systemd egységet és elindítja.
-# Ha megis nem futna, systemctl-lel indítjuk -- NEM ollama serve &
-if ! curl -s http://localhost:11434/api/version &>/dev/null; then
-  echo -e "$(_t linux.ollama_starting)"
-  sudo systemctl enable --now ollama 2>/dev/null || true
-  # Megvarjuk amig az API valaszol (max 15 mp)
-  for i in $(seq 1 15); do
-    curl -s http://localhost:11434/api/version &>/dev/null && break
-    sleep 1
-  done
-fi
-
-# Modell letoltese az Ollama HTTP API-n keresztul (CLI script-ben ismert TTY-bug miatt)
-# stream:false --> szinkron, egyetlen valaszt ad vissza a letoltes utan
-ollama_pull() {
-  local model="$1" size="$2"
-  # API-up guard (BC100FAIL810): this whole step is declared optional/non-fatal,
-  # but on a host where the ollama BINARY installed yet its SERVICE never came up
-  # (no ollama.service unit, API at :11434 dead -- measured on ai-bootcamp-vps100
-  # 2026-08-10), the pull below would abort the whole install. Under `set -e` the
-  # `status=$(curl ... | python3 json.load)` assignment inherits the pipeline's
-  # exit code -- an empty curl (connection refused) makes json.load raise, python3
-  # exits non-zero, the assignment inherits it, and the ERR trap kills the
-  # install at step "ollama-whisper". So skip -- non-fatal -- whenever the API is
-  # not answering, instead of trying a pull that cannot work.
-  if ! curl -s --max-time 5 http://localhost:11434/api/version &>/dev/null; then
-    warn "ollama API nem valaszol (:11434) -- $model letoltese kimarad (a szolgaltatas nem all fel). Kesobb: ollama serve && ollama pull $model"
-    return 0
-  fi
-  if curl -s http://localhost:11434/api/tags | grep -q "\"$model\""; then
-    ok "$model mar letoltve"
-    return 0
-  fi
-  echo -e "  $model letoltese ($size)..."
-  local status
-  # `|| status=""` is load-bearing under `set -e`: a command-substitution
-  # assignment aborts the script when its pipeline exits non-zero (empty body ->
-  # json.load raises -> python3 exits 1). The guard turns that into the warn path.
-  status=$(curl -s --max-time 600 \
-    -X POST http://localhost:11434/api/pull \
-    -H 'Content-Type: application/json' \
-    -d "{\"model\": \"$model\", \"stream\": false}" |
-    python3 -c "import sys,json; d=json.load(sys.stdin); print(d.get('status','?'))" 2>/dev/null) || status=""
-  if [ "$status" = "success" ]; then
-    ok "$model kesz"
-  else
-    warn "$model letoltese sikertelen (status: ${status:-<ures valasz>}) -- kezzel: ollama pull $model"
-  fi
-}
-
-# nomic-embed-text (szemantikus memoria, kotelozo)
-ollama_pull "nomic-embed-text" "~274 MB"
-fi  # command -v ollama
+# --- Local LLM: NOT installed here (Peti directive, 2026-08-13, EPIC ebc7b4dd) ---
+#
+# This step used to install Ollama and pull models by itself. It no longer does. The user picks a
+# coding model AFTER boot, from a catalogue filtered to what their GPU can actually run, and starts
+# the install themselves -- store/first-run-llm.sh.
+#
+# THE EMBEDDING MODEL MOVED WITH IT, and that is the part worth being careful about. The
+# `ollama_pull "nomic-embed-text"` that lived here sat INSIDE an `if command -v ollama` block, so
+# with the pre-install gone it could never have run again anyway -- leaving the line in place would
+# have looked like the dependency was still handled while semantic memory search silently degraded
+# to keyword-only. first-run-llm.sh fetches it right after the runtime, independently of the coding
+# model choice, precisely because it is a dependency and not a preference.
+echo -e "  Local LLM: nem telepitunk semmit automatikusan."
+echo -e "  ${DIM}Rendszerinditas utan valassz modellt a gepedhez: store/first-run-llm.sh${NC}"
 
 # --- Whisper (opcionalis) ---
 echo ""

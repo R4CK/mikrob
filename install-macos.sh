@@ -1108,29 +1108,14 @@ if [ -d "$SEED_CONFIG_DIR" ]; then
   done
 fi
 
-# Ollama + nomic-embed-text (szemantikus kereséshez)
+# Local LLM: NOT installed here (Peti directive, 2026-08-13, EPIC ebc7b4dd) -- same change as
+# install-linux.sh. The runtime and the models are chosen after boot, by the user, from a catalogue
+# filtered to the machine: store/first-run-llm.sh. The nomic-embed-text pull moved there too, right
+# after the runtime, because semantic memory search depends on it and a dependency must not ride
+# along with a preference.
 echo ""
-echo -e "$(_t macos.ollama_check)"
-if command -v ollama &>/dev/null; then
-  echo -e "  ${GREEN}✓${NC} $(_t macos.ollama_installed)"
-else
-  echo -e "  ${ORANGE}$(_t macos.ollama_installing)${NC}"
-  brew install ollama 2>/dev/null || curl -fsSL https://ollama.com/install.sh | sh
-fi
-
-# Start Ollama if not running
-if ! curl -s http://localhost:11434/api/version &>/dev/null; then
-  echo -e "$(_t macos.ollama_starting)"
-  ollama serve &>/dev/null &
-  sleep 3
-fi
-
-# Pull nomic-embed-text model
-if ! ollama list 2>/dev/null | grep -q "nomic-embed-text"; then
-  echo -e "$(_t macos.nomic_downloading)"
-  ollama pull nomic-embed-text
-fi
-echo -e "$(_t macos.ollama_done)"
+echo -e "  Local LLM: nothing is installed automatically."
+echo -e "  After boot, pick a model that fits this Mac: store/first-run-llm.sh"
 
 # Whisper (speech-to-text for video transcription) -- OPTIONAL.
 #
