@@ -235,12 +235,20 @@ for c in cards if isinstance(cards, list) else []:
 # "Gate: ..." line (an earlier tier decision superseded by a later one, appended rather than
 # edited in place -- card 84fd2839, Cybered's finding on 5bc10089). The newest line is the live
 # decision; taking the first would let a stale, since-overridden Gate: line keep winning forever.
+#
+# NO LINE-START ANCHOR (card 165ff1af, 2026-08-13): the regex used to require "Gate:" at the
+# start of a line (`^\s*Gate\s*:`). Real card 165ff1af writes it mid-paragraph -- "...MemoryRouter
+# routing context. Gate: QA. (funkcionalis lefedettseg...)" -- with a plain space before "Gate:",
+# not a newline. The anchored regex silently matched nothing, GATE_LINE came back empty, and
+# Cybersec (correctly excluded by a QA-only card) got nudged 8 times before anyone noticed. Now
+# matches "Gate:" anywhere via a word boundary (`\bGate\s*:`), so placement within a sentence no
+# longer defeats extraction.
 _extract_gate_line() { # $1 = cardId, stdin = /api/kanban JSON array
   CID="$1" python3 -c '
 import json, os, re, sys
 try: cards = json.load(sys.stdin)
 except Exception: sys.exit(0)
-rx = re.compile(r"^\s*Gate\s*:\s*(.+)$", re.M | re.I)
+rx = re.compile(r"\bGate\s*:\s*(.+)$", re.M | re.I)
 for c in cards if isinstance(cards, list) else []:
     if c.get("id") == os.environ["CID"]:
         matches = rx.findall(c.get("description") or "")
@@ -386,6 +394,10 @@ case "${1:-}" in
     e "no Gate: line at all -> empty" "" c1 <<< '[{"id":"c1","description":"no gate line here"}]'
     e "card id not found in the array -> empty" "" c2 <<< '[{"id":"c1","description":"Gate: QA"}]'
     e "case-insensitive and indented Gate: line" "Cybered" c1 <<< '[{"id":"c1","description":"  gate:   Cybered"}]'
+    # Real incident, card 165ff1af (2026-08-13): "Gate:" embedded mid-paragraph, preceded by a
+    # space not a newline. A line-start-anchored regex used to miss this entirely (empty GATE_LINE
+    # -> no designation exclusion -> Cybersec nudged 8x on a QA-only card).
+    e "mid-paragraph Gate: (no preceding newline)" "QA. (funkcionalis lefedettseg, nincs trust-boundary erintes)" c1 <<< '[{"id":"c1","description":"MemoryRouter routing context. Gate: QA. (funkcionalis lefedettseg, nincs trust-boundary erintes)"}]'
 
     [[ $fail -eq 0 ]] && { echo "selftest: PASS"; exit 0; } || { echo "selftest: FAIL"; exit 1; }
     ;;
