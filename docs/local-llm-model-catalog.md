@@ -229,8 +229,16 @@ The EPIC requires the agent↔local-LLM flow to work with **whatever** model the
 seam already exists and must be the only thing selection writes to:
 
 - `store/local-llm-model` — a one-line file, today `qwen2.5-coder:7b-instruct-q4_K_M`
-- read by exactly three places (**measured**): `store/local-llm.sh`, `store/local-llm-bench.sh`,
-  `src/web/routes/local-llm.ts`
+- read by **four** places: `store/local-llm.sh`, `store/local-llm-bench.sh`,
+  `src/web/routes/local-llm.ts` and `store/quota-bridge.py`
+
+  **Corrected 2026-08-13 by card 87e0e197 (T3).** This originally said "exactly three places
+  (measured)". The measurement behind it was a grep restricted to `--include="*.sh" --include="*.ts"`,
+  so it could not see the Python reader. A file-type-filtered grep answers only for those file
+  types, and "exactly N" is precisely the claim such a filter breaks silently. T3 also found that
+  the fallbacks in those readers **disagree** (`local-llm.sh` falls back to the non-coder
+  `qwen2.5:7b`), and that `nomic-embed-text` is a second, separate hardcoded model dependency for
+  memory embeddings — see `docs/local-llm-model-agnostic-routing.md` §A.
 
 So "apply the user's choice" = write the chosen `installRef` (or its local tag) to that file. No
 call site learns a new model name, and nothing in the dispatch path hardcodes one.
