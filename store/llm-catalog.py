@@ -315,7 +315,88 @@ def fallback(gpu, why):
     return envelope(gpu, [], "none", [why, "no cache and no bundled catalogue available"], stale=True)
 
 
+# --- the CONSUMER CONTRACT ---------------------------------------------------------------------
+# T2 (the installer/first-run step) and T4 (the selector UI) both read this document. A schema is
+# only a contract if something FAILS when it drifts, so this validator is the enforceable half and
+# `--validate` is how a shell consumer checks a document before trusting it.
+#
+# It checks DERIVED facts, not just presence. `fileMib` being an integer proves nothing; `fileMib`
+# equalling the sum of its parts is the property that was actually wrong once and shipped
+# (a quant summed against itself, and before that sized by one shard of five).
+REQUIRED_MODEL_FIELDS = (
+    "id", "repo", "repoOwner", "quant", "parts", "partCount", "fileMib", "requiredMib",
+    "kvCacheMib", "contextTokens", "tier", "tokensPerSecond", "installRef", "trusted",
+    "trustReason", "installedAt", "benchmarkedAt",
+)
+
+
+def validate(doc):
+    """Return a list of contract violations. Empty list = usable by both consumers."""
+    errs = []
+    if not isinstance(doc, dict):
+        return ["document is not an object"]
+    v = doc.get("schemaVersion")
+    if v != SCHEMA_VERSION:
+        # A consumer that reads fields from a version it does not know is reading fields that may
+        # have moved. Refusing is the only safe answer, so it is a hard error, not a warning.
+        errs.append("unsupported schemaVersion %r (this build understands %d)" % (v, SCHEMA_VERSION))
+    for key in ("generatedAt", "source", "models", "warnings", "host"):
+        if key not in doc:
+            errs.append("missing top-level '%s'" % key)
+    for i, m in enumerate(doc.get("models") or []):
+        where = "models[%d]" % i
+        for f in REQUIRED_MODEL_FIELDS:
+            if f not in m:
+                errs.append("%s missing '%s'" % (where, f))
+        if errs and any(e.startswith(where) for e in errs):
+            continue
+        parts = m.get("parts") or []
+        if not parts:
+            errs.append("%s has no parts" % where)
+            continue
+        if m.get("partCount") != len(parts):
+            errs.append("%s partCount %r != len(parts) %d" % (where, m.get("partCount"), len(parts)))
+        summed = sum(int(p.get("sizeMib") or 0) for p in parts)
+        # Tolerate rounding across parts, nothing more. This is the check that would have caught
+        # both shipped sizing defects.
+        if abs(summed - int(m.get("fileMib") or 0)) > len(parts):
+            errs.append("%s fileMib %r is not the sum of its parts (%d)" % (where, m.get("fileMib"), summed))
+        if any(not p.get("sha256") for p in parts):
+            errs.append("%s has a part with no sha256 -- the set is not pinned" % where)
+        if int(m.get("requiredMib") or 0) <= int(m.get("fileMib") or 0):
+            errs.append("%s requiredMib must exceed fileMib (KV cache + overhead)" % where)
+        if m.get("tier") not in ("fits", "partial"):
+            errs.append("%s tier %r is not offerable" % (where, m.get("tier")))
+        tps = m.get("tokensPerSecond")
+        if tps is not None and not isinstance(tps, (int, float)):
+            errs.append("%s tokensPerSecond must be null or a number" % where)
+        ref = str(m.get("installRef") or "")
+        if not ref.startswith("hf.co/") or ":" not in ref:
+            errs.append("%s installRef %r is not an installable reference" % (where, ref))
+    return errs
+
+
 def main(argv):
+    if "--validate" in argv:
+        target = argv[argv.index("--validate") + 1]
+        try:
+            with open(target) as f:
+                doc = json.load(f)
+        except Exception as exc:
+            print("INVALID: cannot read %s (%s)" % (target, type(exc).__name__))
+            return 1
+        errs = validate(doc)
+        if errs:
+            print("INVALID: %d violation(s)" % len(errs))
+            for e in errs[:20]:
+                print("  " + e)
+            return 1
+        print("VALID: schemaVersion %d, %d model(s)" % (doc.get("schemaVersion"), len(doc.get("models") or [])))
+        return 0
+    return _main(argv)
+
+
+def _main(argv):
     fixture = None
     gpu_path = None
     offline = "--offline" in argv
