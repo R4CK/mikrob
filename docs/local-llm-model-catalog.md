@@ -182,6 +182,22 @@ itself. The trap is that every shard is ~4 GB, so the wrong number looks precise
 QUANT SET (`sum(lfs.size)` over its parts). `fileMib` is the set total; `parts` and `partCount`
 belong in the schema so a consumer can show "5 files, 30.5 GB" instead of one misleading number.
 
+**"How many parts does this model have" is not a well-formed question.** This repo carries 25 GGUF
+files in **9 quant sets**, and the part count differs per set: fp16 has 5, q8_0 has 4, q6_k/q5_k_m/
+q4_k_m have 3 each. A part count quoted without naming its quant will disagree with another reading
+of the same repo, and neither is wrong. Always carry (quant, partCount, setTotal) together.
+
+**Re-measured 2026-08-13 19:49 after QA reported a possible change — the numbers are unchanged**
+(fp16 5/30.48 GB, q8_0 4/16.20 GB, q6_k 3/12.51 GB). No drift occurred here; the differing reading
+was one quant set being taken for the repo.
+
+**Drift is still a real class, and it is the second reason the digests in §3.5 matter.** A catalogue
+generated at time T and installed at T+1 can legitimately differ — HF repos get re-uploaded and
+re-quantised. Recording `lfs.oid` per part therefore defends two distinct things: tampering (the
+threat Cybered named) and ordinary upstream drift (what QA was reasoning about). If the digest of a
+part no longer matches at install time, the install stops and the catalogue entry is refreshed —
+whichever cause it was.
+
 ---
 
 ## 3.5 Trust is a separate axis from fit and relevance (Cybered, card 87d7c86f)
