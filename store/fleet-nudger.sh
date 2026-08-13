@@ -172,6 +172,22 @@ fi
 # GATE-WORK/ENG-WORK below).
 [ "$DRY_RUN" = "1" ] && echo "PRIORITY-PROJECTS:${PRIORITY_PROJECTS:-none}"
 NUDGE_GATE='SELF-ADVANCE (rule 11, NE varj MikroB-ra): ha nincs aktiv munkad, curl a kanbant es vedd a legregebbi waiting+REVIEW kartyat a hataskorodben (QA=minden funkcionalisan; Cybersec=trust-boundary; Cybered=magas-tetu) amin nincs a TE verdikted -> gate-eld -> majd a kovetkezot. Szabaly 11.'
+# SELF-PICKED cards (card fa637e41). The loop below already runs gate-dispatch-check.sh per
+# (card, agent) and never NAMES a card this agent is not designated for -- measured on the live
+# board: cybered is offered beeb6963, not the Gate:QA-only 165ff1af. But the sentence above also
+# tells the agent to go FIND a card by itself, and on that path the scope judgement is the agent's
+# own prose reading of "a hataskorodben". That is how cybered re-picked one QA-only card 7 times.
+# The deterministic answer already exists as a one-liner, so point at it instead of adding a second
+# copy of the rule here: `check` derives designation from the card itself (verified: it returns
+# not-designated for cybered on 165ff1af with no extra input).
+#
+# And explicitly: do NOT leave a skip comment. It was adopted as a workaround so the card would
+# carry a trace, but a comment bumps kanban_cards.updated_at (db.ts addKanbanComment does that
+# UPDATE outright), and updated_at is exactly the input to the no-change fingerprint above -- so
+# every skip comment invalidates the fingerprint and re-arms the full gate-nudge round it was
+# meant to stop. The trace is not needed either: not-designated is derived from the card
+# description, so the check answers it identically whether or not anyone commented.
+NUDGE_GATE="$NUDGE_GATE Ha MAGAD valasztasz kartyat (nem a lent megnevezettet), ELOSZOR futtasd ra: bash $ROOT/store/gate-dispatch-check.sh check <cardId> <a te agent-neved>. ADVISE-SKIP:not-designated -> NEM a te hataskorod, hagyd ki. NE irj rola skip-kommentet: a komment bumpolja a kartya updated_at-jet, ami a nudger no-change fingerprintjenek bemenete, tehat ujra-armozza az egesz gate-nudge kort. A check ugyanezt a valaszt adja komment nelkul is."
 
 # Delivery goes through the dashboard, NOT straight into the tmux pane (card 7560bb6a).
 #
