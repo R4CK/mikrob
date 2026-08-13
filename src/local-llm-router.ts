@@ -163,7 +163,18 @@ const AMBIGUITY_SIGNALS: readonly string[] = [
 const SHAPE_SIGNALS: ReadonlyArray<readonly [NonOffloadableCategory, RegExp]> = [
   // (a) returning / inverting a boolean about who may DO or SEE something.
   ['authz', /\bcan[a-z]*\s*\(|\bcan[A-Z]/],
-  ['authz', /\b(may|can|allowed to|able to|permitted to)\b[^.]{0,40}\b(read|write|see|view|access|edit|delete|list|fetch|modify)\b/],
+  // DECISION verbs added 2026-08-13 (card 6fbf42bb). The list was purely about READING and EDITING,
+  // so an authorization question phrased around a decision -- approve, reject, deny, grant, revoke --
+  // matched nothing here. Measured on the real router before the change:
+  //     "Which roles should be allowed to approve a shift?"        -> ONLINE  (only via the bare
+  //                                                                   `roles` needle, incidentally)
+  //     "Which user GROUPS should be allowed to approve a shift?"  -> LOCAL   <-- a real RBAC
+  //                                                                   design question, routed local
+  //     "Which user groups should be allowed to VIEW a shift?"     -> ONLINE  (verb list has `view`)
+  // The same question, same meaning, differing only in whether it happened to contain the word
+  // "roles". That made the protection vocabulary-dependent rather than semantic, and it was a LIVE
+  // hole -- not merely a precondition for narrowing the `roles` needle later.
+  ['authz', /\b(may|can|allowed to|able to|permitted to)\b[^.]{0,40}\b(read|write|see|view|access|edit|delete|list|fetch|modify|approve|reject|deny|grant|revoke)\b/],
   ['authz', /\b(invert|negate|flip|reverse)\b[^.]{0,30}\b(boolean|bool|check|result|return|flag|condition)\b/],
   ['authz', /\breturns?\b[^.]{0,25}\b(always\s+)?(true|false)\b/],
   ['authz', /\balways\s+returns?\b/],

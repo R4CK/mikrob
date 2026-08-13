@@ -53,12 +53,34 @@ describe('routeTask -- negative: non-offloadable categories NEVER go local', () 
     ['architecture', 'Write the db schema migration for shift assignments'],
     ['multi-file-wiring', 'Wire the new store into main.ts and the router'],
     ['multi-file-wiring', 'Integrate this adapter end-to-end across files'],
+    // DECISION-VERB regressions (card 6fbf42bb). Before the verb list gained approve/reject/deny/
+    // grant/revoke, the first of these routed LOCAL -- a genuine RBAC design question, protected
+    // only by the accident that the OTHER phrasing happens to contain the word "roles". Measured on
+    // the real router, not inferred. These pin the SEMANTIC route so the protection cannot go back
+    // to depending on one vocabulary choice.
+    ['authz', 'Which user groups should be allowed to approve a shift?'],
+    ['authz', 'Decide which admins may revoke a membership.'],
+    ['authz', 'Which team leads can deny a leave request?'],
   ]
   for (const [category, description] of blocked) {
     it(`online (${category}): ${description.slice(0, 40)}`, () => {
       const d = routeTask({ description })
       expect(d.route).toBe('online')
       expect(d.category).toBe(category)
+    })
+  }
+
+  // The other half of the same change: widening a signal is only safe if it did not start catching
+  // ordinary work. Each of these CONTAINS a decision verb and must still route LOCAL, because none
+  // of them asks WHO MAY do it -- the permission modal is what makes it an authz question.
+  const stillLocal = [
+    'Rename the approve button label to Accept.',
+    'Fix the toast that appears after a user rejects a draft.',
+    'Add a helper that formats a duration in minutes as h:mm.',
+  ]
+  for (const description of stillLocal) {
+    it(`still local (no permission modal): ${description.slice(0, 38)}`, () => {
+      expect(routeTask({ description }).route).toBe('local')
     })
   }
 
