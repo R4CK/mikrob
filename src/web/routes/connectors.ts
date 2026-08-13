@@ -1,8 +1,8 @@
 import { existsSync, readFileSync, readdirSync, statSync } from 'node:fs'
 import { join, basename } from 'node:path'
 import { homedir } from 'node:os'
-import { execSync } from 'node:child_process'
 import { PROJECT_ROOT, OLLAMA_URL } from '../../config.js'
+import { execShellAsync } from '../exec-async.js'
 import { logger } from '../../logger.js'
 import {
   slugify as slugifyMcp,
@@ -438,7 +438,7 @@ export async function tryHandleConnectors(ctx: RouteContext): Promise<boolean> {
 
       if ((data.type === 'http' || data.type === 'sse') && data.url) {
         const transport = data.type === 'sse' ? 'sse' : 'http'
-        execSync(`claude mcp add --transport ${transport} ${scopeFlag} ${shellEscape(sanitizedName)} ${shellEscape(data.url)} 2>&1`, { timeout: 15000, encoding: 'utf-8' })
+        await execShellAsync(`claude mcp add --transport ${transport} ${scopeFlag} ${shellEscape(sanitizedName)} ${shellEscape(data.url)} 2>&1`, { timeoutMs: 15000 })
         catalogEntry.type = 'remote'
         catalogEntry.url = data.url
         catalogEntry.transport = transport
@@ -449,7 +449,7 @@ export async function tryHandleConnectors(ctx: RouteContext): Promise<boolean> {
           Object.entries(data.env || {}).filter(([, v]) => v !== ''),
         ) as Record<string, string>
         const argsStr = data.args ? data.args.split(/\s+/).filter(Boolean).map(a => shellEscape(a)).join(' ') : ''
-        execSync(`claude mcp add ${scopeFlag} ${shellEscape(sanitizedName)} -- ${shellEscape(data.command)} ${argsStr} 2>&1`, { timeout: 15000, encoding: 'utf-8' })
+        await execShellAsync(`claude mcp add ${scopeFlag} ${shellEscape(sanitizedName)} -- ${shellEscape(data.command)} ${argsStr} 2>&1`, { timeoutMs: 15000 })
         catalogEntry.type = 'local'
         catalogEntry.command = data.command
         catalogEntry.args = data.args ? data.args.split(/\s+/).filter(Boolean) : []
@@ -679,7 +679,7 @@ export async function tryHandleConnectors(ctx: RouteContext): Promise<boolean> {
 
         const argsStr = (item.args || []).map((a: string) => shellEscape(a)).join(' ')
         const cmd = `claude mcp add --scope user ${shellEscape(cliName)} ${envFlags} -- ${shellEscape(item.command)} ${argsStr} 2>&1`
-        execSync(cmd, { timeout: 30000, encoding: 'utf-8' })
+        await execShellAsync(cmd, { timeoutMs: 30000 })
         if (Object.keys(userSecrets).length) {
           vaultAndBindEnvSecrets(cliName, join(homedir(), '.claude.json'), userSecrets)
         }
@@ -689,7 +689,7 @@ export async function tryHandleConnectors(ctx: RouteContext): Promise<boolean> {
         // Respect the catalog item's transport (http/sse) instead of forcing sse,
         // so one-click remote installs can use streamable-http (e.g. n8n).
         const transport = item.transport === 'http' ? 'http' : 'sse'
-        execSync(`claude mcp add --transport ${transport} --scope user ${shellEscape(cliName)} ${shellEscape(url)} 2>&1`, { timeout: 30000, encoding: 'utf-8' })
+        await execShellAsync(`claude mcp add --transport ${transport} --scope user ${shellEscape(cliName)} ${shellEscape(url)} 2>&1`, { timeoutMs: 30000 })
       }
 
       let message = 'Telepítve'
@@ -715,10 +715,10 @@ export async function tryHandleConnectors(ctx: RouteContext): Promise<boolean> {
 
       const cliName = item.id
       try {
-        execSync(`claude mcp remove ${shellEscape(cliName)} -s user 2>&1`, { timeout: 15000 })
+        await execShellAsync(`claude mcp remove ${shellEscape(cliName)} -s user 2>&1`, { timeoutMs: 15000 })
       } catch {
         try {
-          execSync(`claude mcp remove ${shellEscape(cliName)} -s project 2>&1`, { timeout: 15000 })
+          await execShellAsync(`claude mcp remove ${shellEscape(cliName)} -s project 2>&1`, { timeoutMs: 15000 })
         } catch { /* ignore if not found anywhere */ }
       }
 

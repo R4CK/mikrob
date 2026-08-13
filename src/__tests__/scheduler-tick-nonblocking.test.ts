@@ -5,11 +5,22 @@
 // command-task.ts was the 60-second case; runPreCheck() in schedule-runner.ts was the same shape with
 // a 10-second ceiling, once per tick, and had been there the whole time.
 //
-// SCOPE, deliberately narrow and measured rather than assumed. A repo-wide "no sync child_process on
-// the server" rule is NOT implementable today: `src/web/**` has 30+ files and hundreds of such call
-// sites (updates.ts alone has 20). Most are short, bounded, local commands. Banning the API globally
-// would land red and be switched off, which is worse than no rule. So the invariant covers exactly the
-// two files that execute ON the tick, where the cost is a frozen dashboard rather than a slow function.
+// SCOPE, measured rather than assumed. A repo-wide "no sync child_process on the server" rule is NOT
+// implementable today: `src/web/**` has 30+ files and hundreds of such call sites (updates.ts alone
+// has 20). Most are short, bounded, local commands. Banning the API globally would land red and be
+// switched off, which is worse than no rule.
+//
+// WHAT THIS DOES AND DOES NOT CLAIM. An earlier version of this header said the invariant "covers
+// exactly the two files that execute ON the tick". That was false, and Cybersec was right to block on
+// it: the tick reaches further than those two files. `schedule-runner.ts` calls capturePane() and
+// sendEnterToSession() from `agent-process.ts` (tmux via execFileSync, 3s local / 8s remote) directly
+// inside runCheck. Those calls are bounded and predate this card, but a reader seeing this suite green
+// would have concluded the tick spawns no synchronous child at all -- a check that did not run on what
+// it talks about, read as a pass. That is the very class this card exists to close.
+//
+// So: the tick's own RUNNERS are fully enforced, and every other tick-reachable file is listed as a
+// PINNED exception with its exact current count. A new sync call site in an exception file turns this
+// red even though the file is not clean yet, so the gap can shrink but never silently grow.
 //
 // The optional part of the card -- `-m/--max-time` on self-curls -- is a soft guideline by MikroB's own
 // decision, so it is NOT gated here.
@@ -225,6 +236,15 @@ const KNOWN_SYNC_TICK_FILES = ['agent-process.ts'] as const
     // If it ever leaves the tick path the pin is stale and must go, or it silently exempts a file
     // the guard no longer needs to care about.
     expect(tickPathFiles()).toContain('agent-process.ts')
+  })
+
+  // schedule-mcp-precheck.ts ran `/bin/ps` synchronously from attemptFireTask. This card converted it,
+  // so it is now held to the same zero-tolerance rule as the runners rather than being an exception.
+  it('schedule-mcp-precheck.ts is clean, and its pre-check is awaited on the tick', () => {
+    const code = codeOf('schedule-mcp-precheck.ts')
+    expect(code).not.toMatch(SYNC_CALL_RX)
+    expect(code).toMatch(/export async function checkTaskMcpRequirements/)
+    expect(codeOf('schedule-runner.ts')).toMatch(/await checkTaskMcpRequirements\(/)
   })
 
   it('scans a plausible number of route files (a broken walk would pass vacuously)', () => {

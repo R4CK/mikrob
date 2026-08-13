@@ -133,3 +133,21 @@ export function execFileAsync(
     })
   })
 }
+
+/**
+ * Drop-in async replacement for the `execSync(cmd, { timeout })` shape used across the
+ * route handlers: same shell, same command string, merged output. Throws like execSync
+ * did, so the existing try/catch error paths keep working -- the only difference is
+ * that the event loop stays free and a timeout kills the process GROUP.
+ *
+ * Kept as a shell call on purpose. Re-deriving argv for a dozen call sites would change
+ * quoting semantics in code whose escaping Cybersec has already reviewed as correct;
+ * the defect being fixed here is blocking, not injection.
+ */
+export async function execShellAsync(cmd: string, opts: ExecAsyncOptions = {}): Promise<string> {
+  const r = await execFileAsync('/bin/bash', ['-lc', cmd], opts)
+  const output = r.stdout + r.stderr
+  if (r.timedOut) throw new Error(`command timed out after ${opts.timeoutMs ?? 30_000}ms: ${output.trim().slice(0, 200)}`)
+  if (r.status !== 0) throw new Error(`command exited ${r.status}: ${output.trim().slice(0, 200)}`)
+  return output
+}

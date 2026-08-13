@@ -2,7 +2,7 @@ import { existsSync, readFileSync, readdirSync, mkdirSync, writeFileSync, unlink
 import { join } from 'node:path'
 import { homedir } from 'node:os'
 import { randomUUID } from 'node:crypto'
-import { execSync } from 'node:child_process'
+import { execShellAsync } from '../exec-async.js'
 import { logger } from '../../logger.js'
 import { MAIN_AGENT_ID } from '../../config.js'
 import { atomicWriteFileSync } from '../atomic-write.js'
@@ -86,7 +86,7 @@ export async function tryHandleAgentsSkills(ctx: RouteContext): Promise<boolean>
     const before = new Set(readdirSync(skillsDir))
     try {
       writeFileSync(tmpPath, file.data)
-      const listOutput = execSync(`unzip -Z1 "${tmpPath}" 2>&1`, { timeout: 5000, encoding: 'utf-8' })
+      const listOutput = await execShellAsync(`unzip -Z1 "${tmpPath}" 2>&1`, { timeoutMs: 5000 })
       const entries = listOutput.split('\n').map((l) => l.trim()).filter(Boolean)
       for (const entry of entries) {
         if (entry.includes('..') || entry.startsWith('/') || /^[a-zA-Z]:[\\/]/.test(entry)) {
@@ -95,7 +95,7 @@ export async function tryHandleAgentsSkills(ctx: RouteContext): Promise<boolean>
           return true
         }
       }
-      execSync(`unzip -o "${tmpPath}" -d "${skillsDir}"`, { timeout: 10000 })
+      await execShellAsync(`unzip -o "${tmpPath}" -d "${skillsDir}"`, { timeoutMs: 10000 })
       unlinkSync(tmpPath)
 
       const after = readdirSync(skillsDir).filter((f) => !before.has(f))

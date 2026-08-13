@@ -22,6 +22,11 @@ interface SeedConfig {
   timeoutMs?: number
 }
 
+const seeds = (): Array<[string, SeedConfig]> =>
+  readdirSync(SEED_DIR)
+    .filter((n) => existsSync(join(SEED_DIR, n, 'task-config.json')))
+    .map((n) => [n, JSON.parse(readFileSync(join(SEED_DIR, n, 'task-config.json'), 'utf-8')) as SeedConfig])
+
 const readSeed = (name: string): SeedConfig =>
   JSON.parse(readFileSync(join(SEED_DIR, name, 'task-config.json'), 'utf-8')) as SeedConfig
 
@@ -52,13 +57,40 @@ describe('seed-scheduled-tasks durability (card 975e5a97)', () => {
     }
   })
 
-  // Scoped to the tasks this card owns, on purpose. Four PRE-EXISTING seeds pin the concrete agent
-  // id `mikrob` instead of the template: fleet-nudger, folyamatos-munka-orchestrator, gate-reconciler
-  // and stuck-card-monitor. On a fork whose main agent has another name they would target an agent
-  // that does not exist -- a real portability bug, but somebody else's card. Reported, not silently
-  // "fixed" here, and not made to fail a build it did not break.
-  it.each(MUST_BE_SEEDED)('%s names its agent via the template, not a concrete id', (name) => {
-    expect(readSeed(name).agent).toBe('{{MAIN_AGENT_ID}}')
+  // Now repo-wide (card 699675d7 closed the four stragglers). A seed that pins a concrete agent id
+  // targets an agent that does not exist on a fork whose main agent has another name.
+  it('no seed pins a concrete agent id', () => {
+    const all = seeds()
+    expect(all.length, 'no seeds parsed -- this assertion would be vacuous').toBeGreaterThan(5)
+    for (const [name, cfg] of all) expect(cfg.agent, `${name} pins a concrete agent id`).toBe('{{MAIN_AGENT_ID}}')
+  })
+
+  // The prompt BODIES carried the same hardcoding, and that half matters more: one of them was an
+  // actual API payload (`{"from":"mikrob",...}`), which on a differently-named fork attributes the
+  // message to a nonexistent sender. The prose name "MikroB" is not an id and stays.
+  it('no seed prompt hardcodes the main agent id in its body', () => {
+    const files = readdirSync(SEED_DIR)
+      .map((n) => join(SEED_DIR, n, 'SKILL.md'))
+      .filter((f) => existsSync(f))
+    expect(files.length).toBeGreaterThan(3)
+    for (const f of files) {
+      const body = readFileSync(f, 'utf-8')
+      expect(/(?<![A-Za-z0-9_-])mikrob(?![A-Za-z0-9_])/.test(body), `${f} hardcodes the agent id`).toBe(false)
+    }
+  })
+
+  // A missing trailing newline was, on its own, enough to make seed_copy_is_untouched() never match:
+  // every live file ends with 0a, every seed SKILL.md ended with `.` (0x2e). For stuck-card-monitor
+  // that single byte was the ONLY difference -- zero content drift, yet the refresh treated it as
+  // user-modified forever (card dec9a318, measured by Cybered).
+  it('every seed SKILL.md ends with a newline', () => {
+    const files = readdirSync(SEED_DIR)
+      .map((n) => join(SEED_DIR, n, 'SKILL.md'))
+      .filter((f) => existsSync(f))
+    expect(files.length, 'no seed SKILL.md found -- this assertion would be vacuous').toBeGreaterThan(3)
+    for (const f of files) {
+      expect(readFileSync(f, 'utf-8').endsWith('\n'), `${f} has no trailing newline`).toBe(true)
+    }
   })
 
   it('every seed config is valid JSON', () => {

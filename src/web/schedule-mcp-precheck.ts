@@ -158,7 +158,7 @@ export async function checkTaskMcpRequirements(
   // same shape: absence that cannot be PROVEN yields ok:true.
   const ps = await execFileAsync('/bin/ps', ['-axo', 'pid,ppid,command'], { timeoutMs: 3000 })
   if (ps.timedOut || ps.status !== 0) {
-    logger.debug({ agent: agentName, session }, 'MCP pre-check skipped: ps failed')
+    logger.debug({ agent: agentName, session, timedOut: ps.timedOut }, 'MCP pre-check skipped: ps failed')
     return { ok: true, missing: [], unknown: [] }
   }
   const psOutput = ps.stdout
