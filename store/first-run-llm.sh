@@ -78,6 +78,58 @@ if [ "${1:-}" = "--use" ]; then
     say "(refusing to point the fleet at a model that is not there)"
     exit 4
   fi
+  # DIGEST VERIFICATION, and it is a real one (card 429dadb2). Cybered's point stood: recording a
+  # sha256 that nothing ever compares is documentation, not a control.
+  #
+  # MEASURED 2026-08-13, which is what makes the strong form possible: ollama stores a pulled GGUF
+  # VERBATIM in a content-addressed blob, so the blob filename is the sha256 of the bytes on disk --
+  # and for `ollama pull hf.co/<repo>:<QUANT>` that digest EQUALS the HF lfs.oid. Pulled
+  # hf.co/RichardErkhov/bigcode_-_tiny_starcoder_py-gguf:Q2_K and found
+  # blobs/sha256-aa8c2170...1f41, exactly the oid the catalogue recorded. So we can compare what
+  # LANDED against what was CATALOGUED, not merely re-ask the registry what it claims today.
+  #
+  # A model with no catalogue entry (e.g. the registry.ollama.ai default this fleet already runs)
+  # cannot be verified this way. That is reported LOUDLY rather than silently passed or refused:
+  # blocking it would break a working fleet, and pretending it was verified would be a lie.
+  BLOBS="${FIRST_RUN_BLOBS:-$HOME/.ollama/models/blobs}"
+  verdict="unverified-not-in-catalogue"
+  cache="$HERE/llm-catalog-cache.json"
+  if [ -f "$cache" ]; then
+    verdict="$(WANT="$want" BLOBS="$BLOBS" python3 -c '
+import json, os, sys
+want, blobs = os.environ["WANT"], os.environ["BLOBS"]
+try:
+    doc = json.load(open(sys.argv[1]))
+except Exception:
+    print("unverified-no-catalogue"); raise SystemExit
+m = next((x for x in doc.get("models", []) if x.get("installRef") == want), None)
+if m is None:
+    print("unverified-not-in-catalogue"); raise SystemExit
+missing = [p["path"] for p in m.get("parts", [])
+           if not p.get("sha256") or not os.path.exists(os.path.join(blobs, "sha256-" + p["sha256"]))]
+print("ok" if not missing else "MISMATCH:" + ",".join(missing[:3]))
+' "$cache" 2>/dev/null || echo unverified-error)"
+  fi
+  case "$verdict" in
+    ok)
+      say "digest check: OK -- every part matches the sha256 recorded when it was catalogued."
+      log "digest check ok: $want" ;;
+    MISMATCH:*)
+      # REFUSE. The bytes on disk are not the bytes we catalogued, and this model is about to become
+      # the fleet's code-suggesting oracle.
+      say "DIGEST MISMATCH -- refusing to make '$want' the fleet default."
+      say "  These parts are not present with the catalogued digest: ${verdict#MISMATCH:}"
+      say "  The weights on disk are not the weights that were catalogued. Re-pull, or re-run"
+      say "  python3 store/llm-catalog.py if the upstream repo legitimately changed."
+      log "digest check FAILED: $want (${verdict#MISMATCH:})"
+      exit 6 ;;
+    *)
+      say "digest check: NOT POSSIBLE ($verdict)."
+      say "  This model has no catalogue entry, so its provenance is UNVERIFIED. Proceeding, but"
+      say "  it is not covered by the digest control."
+      log "digest check skipped: $want ($verdict)" ;;
+  esac
+
   prev="$( [ -s "$MODEL_FILE" ] && tr -d '[:space:]' < "$MODEL_FILE" || echo '<none>' )"
   printf '%s\n' "$want" > "$MODEL_FILE" || { say "could not write $MODEL_FILE"; exit 5; }
   log "default model: $prev -> $want (explicit --use)"
