@@ -114,9 +114,10 @@ export async function tryHandleSkills(ctx: RouteContext): Promise<boolean> {
             const skillMdPath = join(skillDirPath, 'SKILL.md')
             if (!existsSync(skillMdPath)) continue
             const pluginPackage = packagePath.join('/')
-            // Treat segments that look like a version (semver, v-prefix, rc/beta/etc.)
-            // as the version, and the segment before them as the plugin id.
-            const VERSION_LIKE = /^(?:\d|v\d|(?:rc|beta|alpha|pre|snapshot)(?:[.\-_]|\d|$))/i
+            // Treat segments that look like a version (semver, v-prefix, rc/beta/etc.),
+            // an unresolved "unknown" placeholder, or a hex commit/package hash as the
+            // version, and the segment before them as the plugin id.
+            const VERSION_LIKE = /^(?:\d|v\d|(?:rc|beta|alpha|pre|snapshot)(?:[.\-_]|\d|$)|unknown$|[0-9a-f]{6,40}$)/i
             const lastIdx = packagePath.length - 1
             let shortPluginIdx = lastIdx
             if (lastIdx >= 1 && VERSION_LIKE.test(packagePath[lastIdx] || '')) {
