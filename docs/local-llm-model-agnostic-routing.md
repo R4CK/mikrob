@@ -158,9 +158,20 @@ paragraph said the change weakens "not a single gate". That is not established f
 highest-stakes categories, and asserting it was the overclaim: for `security-decision`, `authz` and
 `isolation` the local draft would itself be produced by the weights the trust layer does not yet
 cover, so the escalation is only sound *after* provenance and the trust allowlist land
-(card 87d7c86f). Until then **the veto stays as-is on those three categories**, and the escalation
-applies to the remaining ones — where it genuinely weakens no gate, because nothing about a
-`multi-file-wiring` or `feature` card was ever gated on the draft's origin.
+(card 87d7c86f). Until then **the veto stays as-is on those three categories** — what happens there
+is decided by card `37756c9c`, after `87d7c86f` lands, and nothing in this proposal applies to them.
+
+On the remaining categories the escalation removes no downstream gate: nothing about a
+`multi-file-wiring` or `feature` card was ever gated on where the draft came from, and QA/Cybersec
+still see the same finished work.
+
+**It does, however, change what the online step IS, and that should be said rather than implied.**
+Today the online model is the AUTHOR; under the escalation it is a REVIEWER of a local draft. That
+is a change in kind, not just in cost. A reviewer anchors on what it is given — a plausible-looking
+wrong draft is a different failure mode from a blank page, and it is the one the reviewer is worst
+placed to catch. So the acceptance measurement in §B.5 must include the escalated cards
+specifically: if reviewed-draft output is measurably worse than written-from-scratch output on the
+same category, the escalation is not free and the trade has to be re-opened.
 
 Tracked as its own card, `37756c9c`, blocked on `87d7c86f`.
 
