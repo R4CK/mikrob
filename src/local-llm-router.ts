@@ -179,7 +179,20 @@ const SHAPE_SIGNALS: ReadonlyArray<readonly [NonOffloadableCategory, RegExp]> = 
   ['authz', /\breturns?\b[^.]{0,25}\b(always\s+)?(true|false)\b/],
   ['authz', /\balways\s+returns?\b/],
   // (b) comparing two values that may be secrets / ids / tokens / hashes.
-  ['security-decision', /(!==|===|!=|==)/],
+  //
+  // The operator alone used to be enough, which was a far broader rule than the intent it was
+  // written for. MEASURED on the live board: of the 117 cards still classified security-decision,
+  // only FIVE contain a comparison operator at all, and every sampled one is ordinary code --
+  // `sites.length === 0` for an empty state, `status === 404 || status === 0` for HTTP handling,
+  // `err.code === invalid_receiving`, and a Hungarian sentence containing "commit!=elo". Not one
+  // was a secret comparison. So the rule was contributing false positives and no visible true
+  // positives, while being untouchable by the word-boundary/qualifier work (card c26a9064) because
+  // it matches PUNCTUATION -- there is nothing for a word boundary to attach to.
+  //
+  // Narrowed to what it was for: an equality check where one side is a SENSITIVE value. A timing
+  // -unsafe comparison of a token or digest is the real hazard; comparing a list length is not.
+  ['security-decision', /(!==|===|!=|==)[^.]{0,40}\b(token|secret|password|passwd|hash|digest|signature|sig|hmac|key|nonce|otp|credential|salt)\b/],
+  ['security-decision', /\b(token|secret|password|passwd|hash|digest|signature|sig|hmac|key|nonce|otp|credential|salt)\b[^.]{0,40}(!==|===|!=|==)/],
   ['security-decision', /\b(compare|comparison|equality|equals|equal)\b/],
   // (c) modifying / removing / defaulting / loosening an EXISTING check, guard, filter, WHERE,
   //     early-return or middleware. Requires a MUTATION verb + a GUARD noun, so "add a regex that

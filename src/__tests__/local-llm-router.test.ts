@@ -69,6 +69,10 @@ describe('routeTask -- negative: non-offloadable categories NEVER go local', () 
     ['security-decision', 'Dashboard token-login overlay: flow and copy verification'],
     ['security-decision', 'Rotate the refresh token and invalidate the old session on logout.'],
     ['security-decision', 'Store only the hash of the password, never the password itself.'],
+    // OPERATOR-SHAPE regressions (card d1027d5a). The rule now needs a SENSITIVE value beside the
+    // comparison; these are the shape it exists for -- a timing-unsafe check of a secret.
+    ['security-decision', 'Compare the provided token === the stored one before granting access.'],
+    ['security-decision', 'The digest check uses == instead of a constant-time compare.'],
   ]
   for (const [category, description] of blocked) {
     it(`online (${category}): ${description.slice(0, 40)}`, () => {
@@ -92,6 +96,10 @@ describe('routeTask -- negative: non-offloadable categories NEVER go local', () 
     'This cuts the per-wakeup token cost, the biggest multiplier.',
     'The scheduler logs "session busy, tick dropped" the same as "nothing to do".',
     'Print the version number and commit hash in the sidebar header.',
+    // OPERATOR-SHAPE false positives, measured on the live board: of 117 security-decision cards
+    // only five contained a comparison operator at all, and not one was a secret comparison.
+    'Add an empty-state when sites.length === 0 after load.',
+    'Handle both 404 and a raw network error: if (status === 404 || status === 0)',
   ]
   for (const description of stillLocal) {
     it(`still local (no permission modal): ${description.slice(0, 38)}`, () => {
