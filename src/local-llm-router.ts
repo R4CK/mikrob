@@ -191,8 +191,16 @@ const SHAPE_SIGNALS: ReadonlyArray<readonly [NonOffloadableCategory, RegExp]> = 
   //
   // Narrowed to what it was for: an equality check where one side is a SENSITIVE value. A timing
   // -unsafe comparison of a token or digest is the real hazard; comparing a list length is not.
-  ['security-decision', /(!==|===|!=|==)[^.]{0,40}\b(token|secret|password|passwd|hash|digest|signature|sig|hmac|key|nonce|otp|credential|salt)\b/],
-  ['security-decision', /\b(token|secret|password|passwd|hash|digest|signature|sig|hmac|key|nonce|otp|credential|salt)\b[^.]{0,40}(!==|===|!=|==)/],
+  // TRAILING guard only, no leading \b -- Cybered NO-GO on d1027d5a. normalizeForMatch lowercases,
+  // so `userToken` arrives as `usertoken` and a leading \b never fires: the codebase's own camelCase
+  // hid every identifier-shaped secret. Measured before the fix: `token !== provided` ONLINE but
+  // `userToken !== provided` and `apiKey === suppliedValue` both LOCAL.
+  //
+  // `(?![a-z0-9])` keeps the word from matching mid-identifier -- `key` still does not fire inside
+  // "keyboard", `token` not inside "tokenize", `sig` not inside "design" -- while allowing it as an
+  // identifier SUFFIX, which is exactly how these values are named.
+  ['security-decision', /(!==|===|!=|==)[^.]{0,40}(token|secret|password|passwd|hash|digest|signature|sig|hmac|key|nonce|otp|credential|salt)(?![a-z0-9])/],
+  ['security-decision', /(token|secret|password|passwd|hash|digest|signature|sig|hmac|key|nonce|otp|credential|salt)(?![a-z0-9])[^.]{0,40}(!==|===|!=|==)/],
   ['security-decision', /\b(compare|comparison|equality|equals|equal)\b/],
   // (c) modifying / removing / defaulting / loosening an EXISTING check, guard, filter, WHERE,
   //     early-return or middleware. Requires a MUTATION verb + a GUARD noun, so "add a regex that
@@ -339,16 +347,30 @@ const V_STRENGTH =
   'guessab|predictab|entropy|random|sequential|brute|enumerat|collision|weak|rotat|timing|constant.?time|length|bytes|bits' +
   '|kitalalhato|megjosolhato|gyenge|veletlen|sorszamoz'
 const V_CRYPTO = 'password|passwd|token|secret|signature|hmac|digest|integrity|chain|tamper|salt|bcrypt|argon|sha[0-9]'
+// CRYPTO WEAKNESS is not CRYPTO CONSTRUCTION. Cybered's fifth same-shape case: the hash list named
+// only what a scheme is BUILT from, so "we use sha1 for the hash" fired (sha[0-9] matched by
+// accident) while "we use md5 for the hash" did not -- the same decision, opposite routes, and the
+// difference had nothing to do with risk.
+const V_WEAK = 'md5|sha-?1|des\\b|rc4|deprecat|legacy|outdated|obsolete'
+// A FOURTH AXIS the first three missed: changing a security object's STRENGTH, LIFETIME, OWNERSHIP
+// or EXISTENCE. Cybersec's six sentences all have this shape and all routed local -- "switch the
+// hash to something STRONGER", "MAKE the session LAST LONGER", "SHORTEN how long the token stays
+// valid", "DELETE the account", "MERGE two accounts", "MOVE a user to a different organization".
+// The nouns were covered; the verb applied to them was not, so the decision was invisible.
+const V_CHANGE =
+  'stronger|strength|weaker|longer|shorter|shorten|extend|increase|decrease|raise|lower' +
+  '|delete|remove|purge|erase|merge|move|transfer|reassign|different|another' +
+  '|lifetime|ttl|duration|stays valid|valid for|last longer|expiry'
 
 const axes = (...v: string[]): RegExp => new RegExp(v.join('|'))
 
 const QUALIFIERS: ReadonlyArray<readonly [string, RegExp]> = [
-  ['token', axes(V_AUTH, V_ISOLATION, V_STRENGTH)],
-  ['session', axes(V_AUTH, V_ISOLATION, V_STRENGTH, 'cookie|hijack|fixation')],
-  ['hash', axes(V_CRYPTO, V_STRENGTH)],
-  ['account', axes(V_AUTH, V_ISOLATION, 'takeover|lockout|register|owner')],
-  ['organization', axes(V_ISOLATION, V_AUTH, 'rbac')],
-  ['organisation', axes(V_ISOLATION, V_AUTH, 'rbac')],
+  ['token', axes(V_AUTH, V_ISOLATION, V_STRENGTH, V_CHANGE)],
+  ['session', axes(V_AUTH, V_ISOLATION, V_STRENGTH, V_CHANGE, 'cookie|hijack|fixation')],
+  ['hash', axes(V_CRYPTO, V_STRENGTH, V_WEAK, V_CHANGE)],
+  ['account', axes(V_AUTH, V_ISOLATION, V_CHANGE, 'takeover|lockout|register|owner')],
+  ['organization', axes(V_ISOLATION, V_AUTH, V_CHANGE, 'rbac')],
+  ['organisation', axes(V_ISOLATION, V_AUTH, V_CHANGE, 'rbac')],
   ['compose', /docker|container|stack|orchestrat/],
   ['roles', axes(V_AUTH, 'rbac|allowed|grant|assign|admin|approve|deny')],
 ]

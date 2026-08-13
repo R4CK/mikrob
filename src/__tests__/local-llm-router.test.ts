@@ -84,6 +84,22 @@ describe('routeTask -- negative: non-offloadable categories NEVER go local', () 
     ['authz', 'derivalt privilegium-guard: has_table_privilege(SELECT/INSERT) + SET ROLE cleancore_app'],
     // (b) the axes were English-only, and this fleet writes Hungarian as often as not
     ['security-decision', 'Futasideju token-in-argv ellenorzes -- elo szivargas van a lemezen'],
+    // CHANGE axis (Cybersec, 6 measured sentences). The security NOUN was covered; the VERB applied
+    // to it was not, so "make it weaker / shorter-lived / owned by someone else / gone" was invisible.
+    ['security-decision', 'Switch the hash to something stronger.'],
+    ['isolation', 'Delete the account and everything attached to it.'],
+    ['isolation', 'Merge two accounts that belong to the same person.'],
+    ['isolation', 'Move a user to a different organization.'],
+    ['security-decision', 'Make the session last longer.'],
+    ['security-decision', 'Shorten how long the token stays valid.'],
+    // CRYPTO WEAKNESS != CRYPTO CONSTRUCTION (Cybered's fifth same-shape case). Before the fix these
+    // two identical decisions took opposite routes, because `sha[0-9]` matched sha1 by accident.
+    ['security-decision', 'we use md5 for the hash'],
+    ['security-decision', 'we use sha1 for the hash'],
+    // camelCase: normalizeForMatch lowercases, so `userToken` arrives as `usertoken` and a leading
+    // \b never fires -- the codebase's own naming convention hid the secret (Cybered on d1027d5a).
+    ['security-decision', 'if (userToken !== provided) return 401'],
+    ['security-decision', 'if (apiKey === suppliedValue) allow'],
   ]
   for (const [category, description] of blocked) {
     it(`online (${category}): ${description.slice(0, 40)}`, () => {
@@ -113,6 +129,10 @@ describe('routeTask -- negative: non-offloadable categories NEVER go local', () 
     'Handle both 404 and a raw network error: if (status === 404 || status === 0)',
     // The widened boundary must still not fire inside an ordinary word: `scap` in "landscape".
     'render the landscape orientation preview',
+    // Cybersec's own negative control: the `compose` needle must not fire on ordinary composition.
+    'Compose the invite email from the template.',
+    // The camelCase widening must not start matching a word that merely ENDS in a needle.
+    'render the keyboard shortcut overlay when help === true',
   ]
   for (const description of stillLocal) {
     it(`still local (no permission modal): ${description.slice(0, 38)}`, () => {
