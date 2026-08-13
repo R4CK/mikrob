@@ -119,7 +119,11 @@ describe('GET /api/local-llm/catalog', () => {
     expect(out.status).toBe(200)
     expect(out.body.source).toBe('cache')
     expect(out.body.stale).toBe(true)
-    const calls = readFileSync(MARKER_FILE, 'utf-8').trim().split('\n')
+    // Each write ends with '\n' (including the live call's empty-argv line), so split on '\n'
+    // and drop only the trailing empty entry the final newline produces -- .trim() would also
+    // eat the leading empty-argv line and hide the live attempt.
+    const raw = readFileSync(MARKER_FILE, 'utf-8').split('\n')
+    const calls = raw[raw.length - 1] === '' ? raw.slice(0, -1) : raw
     expect(calls).toEqual(['', '--offline']) // live attempt first, then the offline fallback
   })
 
