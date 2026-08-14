@@ -201,11 +201,31 @@ fi
 ollama_up || die 2 "ollama down at $OLLAMA_HOST [$LOCAL_LLM_PLATFORM] -- $(ollama_start_hint)"
 
 # Build request JSON safely via python (handles all escaping)
+#
+# SAMPLING PARAMETERS (card 05f8d99c, Cybersec F1). Ollama's defaults sample, and nothing here used
+# to override them -- fine for drafting prose, WRONG for a caller that uses the model as a
+# classifier inside a control path: the same input returned MECHANICAL/SECURITY/SECURITY/SECURITY/
+# MECHANICAL/MECHANICAL over six runs, which makes every score measured through this script one
+# draw rather than a measurement. Callers that need a reproducible answer set
+# LOCAL_LLM_TEMPERATURE=0 (and a seed); everything else keeps ollama's defaults untouched, so this
+# changes no existing behaviour.
 REQ=$(SYSTEM="$SYSTEM" MODEL="$MODEL" PROMPT="$PROMPT" python3 -c '
 import json,os
 d={"model":os.environ["MODEL"],"prompt":os.environ["PROMPT"],"stream":False}
 s=os.environ.get("SYSTEM","")
 if s: d["system"]=s
+opts={}
+t=os.environ.get("LOCAL_LLM_TEMPERATURE","").strip()
+sd=os.environ.get("LOCAL_LLM_SEED","").strip()
+# Junk is ignored rather than fatal: a bad env value must not take down every local call. The
+# caller that cares about determinism verifies it by measuring, not by trusting this line.
+if t:
+    try: opts["temperature"]=float(t)
+    except ValueError: pass
+if sd:
+    try: opts["seed"]=int(sd)
+    except ValueError: pass
+if opts: d["options"]=opts
 print(json.dumps(d))')
 
 # Millisecond clock -- PORTABLE (card b097b578). GNU date supports %N (nanoseconds); BSD/macOS date

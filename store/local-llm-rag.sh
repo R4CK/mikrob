@@ -265,15 +265,28 @@ NODE
   #
   # It exists because five rounds of keyword fixes could not close the class: Cybersec produced five
   # real RBAC questions ("Restrict the payroll export to the finance team", "Give admins the ability
-  # to impersonate a user") that name no security noun and no list caught. Measured on those five
-  # plus negative controls, and on a HELD-OUT set the prompt never saw: 10/10. Same model, one-line
-  # zero-shot prompt: 2/5 -- the prompt was the constraint, so route-triage.txt is load-bearing.
-  if [[ "${ROUTE_CLASSIFY:-1}" == "1" && -x "$HERE/route-classify.sh" ]]; then
+  # to impersonate a user") that name no security noun and no list caught. The classifier's own
+  # numbers live in store/route-classify-selftest.sh and are measured at temperature 0 -- the
+  # pre-2026-08-14 figures were single draws from a sampling model and were discarded.
+  #
+  # The guard tests -f, not -x (Cybersec F4): the call below is `bash <script>`, which needs a
+  # readable file and not an exec bit. Testing a property the call does not need means a lost exec
+  # bit (a copy, a permission change) would silently remove the control while it would still run.
+  if [[ "${ROUTE_CLASSIFY:-1}" == "1" && -f "$HERE/route-classify.sh" ]]; then
     TRIAGE="$(bash "$HERE/route-classify.sh" "$TASK" 2>/dev/null || echo UNKNOWN)"
     if [[ "$TRIAGE" == "SECURITY" ]]; then
       echo "local-llm-rag: ROUTE=online -> stage-1 classifier called this a security decision (deterministic rules said: $REASON)" >&2
       exit 9
     fi
+    # The verdict is named, not implied. MECHANICAL ("the classifier read it and did not object")
+    # and UNKNOWN ("the classifier could not answer -- no model, timeout, parse failure") are very
+    # different states, and printing the same line for both is how a broken control stays invisible.
+    echo "local-llm-rag: ROUTE=local -> stage 1 verdict=$TRIAGE ($REASON)" >&2
+  else
+    # Cybersec F5: say WHICH state this is. A disabled stage 1 used to print the same line as a
+    # stage 1 that ran and passed, so a log could not tell "the control cleared it" from "the
+    # control was off".
+    echo "local-llm-rag: ROUTE=local -> stage 1 DISABLED (ROUTE_CLASSIFY=${ROUTE_CLASSIFY:-1}, classifier present: $( [ -f "$HERE/route-classify.sh" ] && echo yes || echo no ))" >&2
   fi
   echo "local-llm-rag: ROUTE=local -> drafting on the 7B ($REASON)" >&2
   # fall through to the normal local RAG draft path below
