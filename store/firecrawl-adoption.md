@@ -130,6 +130,39 @@ Licence checked one level deeper by Cybersec and still clean: the client's trans
 `firecrawl` 4.30.1 — the place an AGPL payload could hide behind an MIT wrapper, because it shares the
 project's name — is MIT too, with no unusual dependencies.
 
+## DECIDED AND ACTIVATED (2026-08-14)
+
+The key arrived. Peti scoped it to **this agent's config only**, not shared fleet-wide use, and the
+vault label is **`Firecrawl`** -- not `firecrawl.apiKey` as this document originally guessed; the
+config below uses the real label.
+
+**Quarantine outcome chosen: (a) -- the call goes through `quarantine-reader`.** In order of weight:
+
+1. It reuses the boundary that already exists and is already tested, instead of adding a second one
+   that depends on every future caller remembering.
+2. It answers the size-limit item for free: the quarantine protocol already truncates content at
+   50 000 characters, so the "no limit on returned content" gap closes with the same decision instead
+   of needing its own mechanism.
+3. It keeps the **nonce**, which is what makes an incident investigable: the nonce is embedded in the
+   `<untrusted>` tag, so if scraped content later causes an exfiltration tool call, the tool input
+   carries the nonce and names the exact fetch that delivered the payload.
+
+**The honest limit of that choice, stated rather than papered over.** A sub-agent's `tools:` list is
+an ALLOWLIST for that sub-agent; it does not remove the MCP tool from the agent that owns the server.
+So the sanctioned path exists and is the rule -- but the owning agent can still call the tool
+directly, and nothing mechanically prevents that today. That is discipline, not enforcement, and
+calling it enforcement would be exactly the "control we wrongly believe is closed" this fleet keeps
+finding. A `PreToolUse` hook denying `mcp__firecrawl__*` outside the sub-agent is how to make it real,
+in the same shape as `git-protect-guard` / `npm-protect-guard`; it is recorded as the follow-up rather
+than claimed here, because I have not verified that such a hook can tell the sub-agent caller apart.
+
+**Blast radius (item 1) is answered by the scope Peti chose:** one agent's config holds the key, so a
+compromise of any other agent does not carry it. That is the smaller radius of the two options, and it
+was decided knowingly rather than by default.
+
+**Item 2 stands for the acceptance run:** the grep for the key's literal value covers `agents/**`, not
+only the session transcript.
+
 ## What is left once the key exists
 
 The `.mcp.json` entry above, the quarantine decision from the previous section, and the acceptance
