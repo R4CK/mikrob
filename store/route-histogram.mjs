@@ -73,9 +73,28 @@ async function liveCorpus() {
 }
 
 const corpusFile = flag('--corpus')
-const corpus = (corpusFile ? JSON.parse(readFileSync(corpusFile, 'utf-8')) : await liveCorpus())
+const rawCorpus = corpusFile ? JSON.parse(readFileSync(corpusFile, 'utf-8')) : await liveCorpus()
+const corpus = rawCorpus
   // A card with almost no text says nothing about the router and would only dilute the share.
   .filter((r) => (r.text ?? '').length > 20)
+
+// AN EMPTY CORPUS IS NOT A CLEAN RUN (card b975dc0e, Cybersec on the 9446ddb GO). Everything below
+// -- the shares, and above all the "no card left a security category" line -- is vacuously true of
+// nothing, and this tool's machine-readable surface IS the exit code. A caller that feeds it a
+// truncated or wrong-shaped corpus would read "no regression" from a measurement that never
+// happened, which is the failure this script exists to prevent, aimed at itself.
+//
+// The two causes are separated because they need different fixes: an empty INPUT is a broken
+// producer, while a full input filtered down to nothing means the rows do not carry `text` (the
+// usual cause: a raw kanban dump, where the field is `description`).
+if (corpus.length === 0) {
+  console.error(`route-histogram: nothing to measure -- ${rawCorpus.length} row(s) in, 0 usable.`)
+  if (rawCorpus.length > 0) {
+    console.error("Every row was dropped by the >20-char `text` filter. A raw board dump has `title`/")
+    console.error('`description`, not `text` -- map it first, or the run measures an empty set.')
+  }
+  process.exit(2)
+}
 
 const saveTo = flag('--save')
 if (saveTo) {
@@ -125,13 +144,31 @@ if (baselineFile) {
     console.log('Freeze a corpus with --save and measure both sides against it, or the delta is noise.')
   }
   const toLocal = [], toOnline = [], categoryOnly = []
+  let compared = 0
   for (const [id, now] of Object.entries(result.perCard)) {
     const was = before.perCard?.[id]
     if (!was) continue
+    compared++
     if (was.route !== now.route) (now.route === 'local' ? toLocal : toOnline).push([id, was, now])
     else if (was.category !== now.category) categoryOnly.push([id, was, now])
   }
+  // THE OVERLAP IS THE COMPARISON (card b975dc0e). Cards absent from the baseline are skipped
+  // silently, so a baseline from a different board -- or one whose perCard the producer never
+  // wrote -- compares NOTHING and still prints a confident "local 240 -> 230" headline plus the
+  // all-clear line. Reported as a count on every run, and fatal at zero.
+  //
+  // Deliberately NOT a percentage threshold on the size difference, which is what "drastically
+  // different" would suggest: a corpus can grow by one card between runs and still be a perfectly
+  // good before/after, while two same-sized corpora from different boards share nothing. Zero
+  // overlap is the condition that is unambiguously not a comparison, so that is the one asserted.
+  if (compared === 0) {
+    console.error('\nroute-histogram: the baseline shares no cards with this corpus -- nothing was')
+    console.error('compared, so a before/after cannot be stated and the security check below would')
+    console.error('pass by examining an empty set.')
+    process.exit(2)
+  }
   console.log(`\nvs ${baselineFile}:  local ${before.local} -> ${result.local} (${share(result.local)})`)
+  console.log(`   cards present in BOTH runs: ${compared} of ${result.corpusSize}`)
   console.log(`   online->local: ${toLocal.length}   local->online: ${toOnline.length}   category changed, route same: ${categoryOnly.length}`)
   for (const [id, was, now] of toLocal) console.log(`   -> LOCAL  ${id} ${String(was.category).padEnd(18)} -> ${String(now.category).padEnd(18)} ${now.title}`)
   for (const [id, was, now] of toOnline) console.log(`   -> ONLINE ${id} ${String(was.category).padEnd(18)} -> ${String(now.category).padEnd(18)} ${now.title}`)

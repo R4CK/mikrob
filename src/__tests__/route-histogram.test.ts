@@ -127,6 +127,71 @@ describe('route-histogram.mjs (card 7ca946a4)', () => {
     )
     const r = run(['--corpus', corpus, '--baseline', baseline])
     expect(r.out).toContain('WARNING: baseline corpus was 999 cards, this one is 3')
+    // ...and it does not merely SAY so: this baseline has an empty perCard, so nothing was compared
+    // (card b975dc0e). Asserted here too, because the case was already in this suite and used to
+    // exit 0 -- a warning a caller can ignore by reading the exit code was the whole defect.
+    expect(r.status).toBe(2)
+  })
+
+  describe('an unmeasurable run must not exit 0 (card b975dc0e, Cybersec on the 9446ddb GO)', () => {
+    // The tool's machine surface IS the exit code. Every number below a broken corpus -- including
+    // "no card left a security category" -- is vacuously true of nothing, so a caller feeding it a
+    // truncated or wrong-shaped file would read "no regression" from a measurement that never ran.
+    it('an EMPTY corpus exits 2 rather than reporting a clean run', () => {
+      const empty = join(sandbox, 'empty.json')
+      writeFileSync(empty, '[]')
+      const r = run(['--corpus', empty])
+      expect(r.status).toBe(2)
+      expect(r.out).toContain('nothing to measure -- 0 row(s) in, 0 usable')
+    })
+
+    it('a corpus whose rows carry no `text` exits 2 and names the likely cause', () => {
+      // The realistic shape of this: a raw board dump, which has `description`, not `text`. Every
+      // row is silently dropped by the length filter and the run measures an empty set.
+      const raw = join(sandbox, 'raw-shape.json')
+      writeFileSync(raw, JSON.stringify([{ id: 'a', title: 't', description: 'a long enough description here' }]))
+      const r = run(['--corpus', raw])
+      expect(r.status).toBe(2)
+      expect(r.out).toContain('1 row(s) in, 0 usable')
+      expect(r.out).toContain('`description`')
+    })
+
+    it('a baseline sharing NO cards with this corpus exits 2 -- that is not a before/after', () => {
+      const baseline = join(sandbox, 'before-other-board.json')
+      writeFileSync(
+        baseline,
+        JSON.stringify({
+          corpusSize: 3,
+          local: 1,
+          online: 2,
+          perCard: { zzz00001: { route: 'local', category: null, reason: 'x', title: 'other board' } },
+        }),
+      )
+      const r = run(['--corpus', corpus, '--baseline', baseline])
+      expect(r.status).toBe(2)
+      expect(r.out).toContain('shares no cards with this corpus')
+    })
+
+    it('CONTROL: a baseline that DOES overlap still passes, and says how much overlapped', () => {
+      // Without this the exit-2 cases above would be satisfied by a script that refuses everything.
+      const baseline = join(sandbox, 'before-overlap.json')
+      writeFileSync(
+        baseline,
+        JSON.stringify({
+          corpusSize: 3,
+          local: 2,
+          online: 1,
+          perCard: {
+            sec00001: { route: 'online', category: 'authz', reason: 'x', title: 'authz card' },
+            mech0001: { route: 'local', category: null, reason: 'x', title: 'rename card' },
+            mech0002: { route: 'local', category: null, reason: 'x', title: 'format card' },
+          },
+        }),
+      )
+      const r = run(['--corpus', corpus, '--baseline', baseline])
+      expect(r.status).toBe(0)
+      expect(r.out).toContain('cards present in BOTH runs: 3 of 3')
+    })
   })
 
   it('refuses to measure at all without a router build (exit 2), instead of measuring the source', () => {
