@@ -81,6 +81,19 @@ out["_meta"]=meta
 # Every card id on the board (card b60835e1): gate-dispatch-check.sh needs it to tell a
 # sibling card id apart from a commit sha, now that a sha in any comment can arm a gate.
 out["_card_ids"]=[c.get("id") for c in cards if c.get("id")]
+# MISSING TIER DECISION (card 50d75b47). A gate candidate with NEITHER a gate label NOR a Gate:
+# line has no designation decision AT ALL -- and absence is indistinguishable from a deliberate
+# 2-gate default, so a gate can be left out by omission instead of by MikroB choosing (rule 4).
+# Derived from THIS SAME snapshot, so it costs no extra request.
+gate_names={"qa","qa2","cybersec","cybered"}
+no_desig=[]
+for cid in gate_cards:
+    m=meta.get(cid) or {}
+    labels_set={x.strip().lstrip("@").lower() for x in (m.get("labels") or "").split(",") if x.strip()}
+    if labels_set & gate_names: continue
+    if (m.get("gate_line") or "").strip(): continue
+    no_desig.append(cid)
+out["_no_designation"]=no_desig
 # No-change fingerprint (card bb1751f2): (id, updated_at) for every gate-candidate card, sorted so
 # key order never causes a spurious mismatch. updated_at bumps on every new comment (db.ts
 # addKanbanComment does an explicit UPDATE ... SET updated_at on the parent card alongside the
@@ -311,6 +324,47 @@ done
 # reach the exact same GATE-WORK conclusion as last time is pure waste. Persistence is the shared
 # state_get/state_set pair above (card 4cdb7e31 gave the file a second key, so the write has to merge
 # rather than replace the object).
+# MISSING TIER DECISION -> LOUD (card 50d75b47, Cybered msg 13487). Rule 4 has MikroB pick the
+# gates per card by risk; a card with neither a gate label nor a Gate: line never had that decision
+# made, and NOTHING in the pipeline says so. Today that reads as "no exclusion", which happens to be
+# the loud direction -- but only by accident: the moment the fleet leans harder on the deterministic
+# check (which is the direction it is going), an absent line becomes a silent skip instead of a
+# deliberate 2-gate default. Either way an omission must not be able to impersonate a decision.
+#
+# Sent to MikroB, not the gates: it is a decision to MAKE, not work to do. Its own fingerprint, not
+# the gate one, so it fires the first time it sees an undesignated set rather than waiting for some
+# unrelated board change; and it only re-fires when the SET itself moves, so a standing backlog does
+# not re-nudge every minute.
+#
+# NO SUBMISSION FILTER on purpose: the tier decision is due when the card is OPENED, not when a
+# REVIEW lands. Measured on the live board -- all 9 undesignated candidates already carried a
+# submission -- so the filter would have changed nothing today while costing a fetch per card.
+#
+# Two dry-run lines, the same split the ENG branch already uses: GATE-TIER-MISSING is what is being
+# reported NOW (or "none"), GATE-TIER-SUPPRESSED is a standing backlog held back because the set has
+# not moved. One line that meant both would make "nothing to report" and "reported already"
+# indistinguishable to a reader and to a control.
+NO_DESIG="$(echo "$WORK" | python3 -c 'import json,sys;print(" ".join(json.load(sys.stdin).get("_no_designation",[])))' 2>/dev/null)"
+if [ -z "$NO_DESIG" ]; then
+  [ "$NO_DESIG" != "$(state_get tierFp)" ] && state_set tierFp ""
+  [ "$DRY_RUN" = "1" ] && echo "GATE-TIER-MISSING:none"
+elif [ "$NO_DESIG" = "$(state_get tierFp)" ]; then
+  [ "$DRY_RUN" = "1" ] && { echo "GATE-TIER-MISSING:none"; echo "GATE-TIER-SUPPRESSED:$NO_DESIG"; }
+else
+  state_set tierFp "$NO_DESIG"
+  if [ -n "$NO_DESIG" ]; then
+    n_desig="$(echo $NO_DESIG | wc -w)"
+    tier_msg="TIER-DONTES HIANYZIK $n_desig gate-jelolt kartyan: $NO_DESIG. Egyiken sincs sem gate-cimke (@qa/@qa2/@cybersec/@cybered), sem Gate: sor a LEIRASBAN -- tehat a 4. szabaly szerinti kockazat-alapu tier-dontes nem szuletett meg, csak elmaradt. Kerlek dontsd el kartyankent, es ird be a Gate: sort a LEIRASBA (kommentbe nem eleg, onnan a tool nem olvassa). Ez automatikus jelzes; ujra csak akkor szol, ha ez a kartya-halmaz valtozik."
+    if [ "$DRY_RUN" = "1" ]; then
+      echo "GATE-TIER-MISSING:$NO_DESIG"
+    elif tmux has-session -t mikrob-channels 2>/dev/null; then
+      python3 -c 'import json,sys; print(json.dumps({"from":"mikrob","to":"mikrob","content":"[fleet-nudger, automatikus jelzes]\n\n"+sys.argv[1]}))' "$tier_msg" \
+        | curl -s -o /dev/null -H @"$hdr_file" -H 'Content-Type: application/json' \
+            -X POST "$MSG_API" --data-binary @- 2>/dev/null || true
+    fi
+  fi
+fi
+
 FP="$(get "_fp")"
 LAST_FP="$(state_get gateFp)"
 if [ -n "$FP" ] && [ "$FP" = "$LAST_FP" ]; then

@@ -70,6 +70,18 @@ NO_REVIEW = {
     'comments': {'c1': [{'author': 'mikrob', 'created_at': 100, 'content': 'kotott blokk, var'}]},
 }
 
+# MISSING TIER DECISION (card 50d75b47): a gate candidate carrying a LABEL but no Gate: line has
+# had its designation decided -- by the stronger of the two sources -- so it must NOT be reported as
+# undesignated. This is the fixture that keeps the check keyed on "was a decision made", not on
+# "is there a Gate: line".
+LABELED = {
+    'cards': [{
+        'id': 'c1', 'status': 'waiting', 'title': 'plain card', 'assignee': 'backend',
+        'labels': [{'name': '@qa'}],
+    }],
+    'comments': {'c1': [{'author': 'backend', 'created_at': 100, 'content': 'REVIEW -- kesz'}]},
+}
+
 # DESIGNATION end-to-end (card 5bc10089): the card names only QA in its own text, and NOBODY has
 # verdicted yet. Without designation this would be GATE-WORK for all four; with it, only qa/qa2
 # (QA's twin) should show up -- cybersec and cybered are excluded despite having no verdict, because
@@ -114,7 +126,7 @@ ENG_PLANNED_MOVED = {
 
 FIX = {
     'all-answered': ALL_ANSWERED, 'one-open': ONE_OPEN, 'no-review': NO_REVIEW,
-    'designated': DESIGNATED, 'eng-one-planned': ENG_ONE_PLANNED,
+    'designated': DESIGNATED, 'labeled': LABELED, 'eng-one-planned': ENG_ONE_PLANNED,
     'eng-planned-moved': ENG_PLANNED_MOVED,
 }[SCENARIO]
 
@@ -182,6 +194,16 @@ run_case all-answered 38812 ""          # negative: the case the card is about
 run_case no-review    38813 ""          # negative: parked card, nothing submitted
 run_case designated   38814 "qa qa2"    # designation: Gate: QA. excludes cybersec/cybered end-to-end
 
+# MISSING TIER DECISION -> LOUD (card 50d75b47). Rule 4 makes the gate set a per-card DECISION; a
+# card with neither a label nor a Gate: line never had one made, and the pipeline used to be unable
+# to tell that apart from a deliberate default. These assert the new GATE-TIER-MISSING line.
+# all-answered is the load-bearing fixture: c1 carries no designation (reported) while c2 is
+# BLOKKOLT (a bound block is not gate work, so it must NOT appear) -- one case, both directions.
+run_case all-answered 38821 "c1" "GATE-TIER-MISSING"
+run_case designated   38822 ""   "GATE-TIER-MISSING"   # a Gate: line IS a decision
+run_case labeled      38823 ""   "GATE-TIER-MISSING"   # so is a gate label, with no line at all
+run_case no-review    38824 "c1" "GATE-TIER-MISSING"   # due at card open, not when a REVIEW lands
+
 # ENG-CONDITIONAL (MikroB decision, msg 9910, follow-up to card 14acfadd): backend/fullstack must
 # respect plan[a] the same way the gate loop respects designation -- "there is always a
 # sec-followup" was the same unconditional assumption the OLD gate predicate made. fron-ted/
@@ -211,6 +233,24 @@ noprio_out="$(DASH="http://127.0.0.1:38818" PROJECT_PRIORITY_CONFIG="$TMP/does-n
 kill "$NOPRIO_PID" 2>/dev/null; wait "$NOPRIO_PID" 2>/dev/null
 if [ "$noprio_out" = "none" ]; then echo "  ok   missing config -> none (default order, unchanged wording)"
 else echo "  FAIL missing config -> got '$noprio_out'"; fail=1; fi
+
+# TIER-SIGNAL SUPPRESSION (card 50d75b47): the same undesignated SET, seen twice, must be reported
+# once. Without this the signal would re-fire every minute on a standing backlog -- which is how a
+# loud signal trains its reader to ignore it, and the whole point is that MikroB acts on it.
+# Its own fingerprint, deliberately not the gate one, so the two are asserted independently here.
+TIER_STATE_FILE="$TMP/tier-state.json"
+python3 "$TMP/fakeboard.py" all-answered 38825 &
+TIER_PID=$!
+for _ in $(seq 1 40); do curl -sf -o /dev/null "http://127.0.0.1:38825/api/kanban" && break; sleep 0.25; done
+tier1="$(DASH="http://127.0.0.1:38825" NUDGER_STATE_FILE="$TIER_STATE_FILE" bash "$NUDGER" --dry-run 2>/dev/null | sed -n 's/^GATE-TIER-MISSING://p')"
+tier2_missing="$(DASH="http://127.0.0.1:38825" NUDGER_STATE_FILE="$TIER_STATE_FILE" bash "$NUDGER" --dry-run 2>/dev/null | sed -n 's/^GATE-TIER-MISSING://p')"
+tier2_suppressed="$(DASH="http://127.0.0.1:38825" NUDGER_STATE_FILE="$TIER_STATE_FILE" bash "$NUDGER" --dry-run 2>/dev/null | sed -n 's/^GATE-TIER-SUPPRESSED://p')"
+kill "$TIER_PID" 2>/dev/null; wait "$TIER_PID" 2>/dev/null
+if [ "$(echo $tier1)" = "c1" ]; then echo "  ok   tier signal run 1 (fresh state) -> 'c1', reported"
+else echo "  FAIL tier signal run 1 -> got '$tier1', expected 'c1'"; fail=1; fi
+if [ "$(echo $tier2_missing)" = "none" ] && [ "$(echo $tier2_suppressed)" = "c1" ]; then
+  echo "  ok   tier signal run 2 (identical set) -> suppressed, not re-reported"
+else echo "  FAIL tier signal run 2 -> missing='$tier2_missing' suppressed='$tier2_suppressed', expected 'none' and 'c1'"; fail=1; fi
 
 # NO-CHANGE PRECHECK (card bb1751f2, Cybersec msg 10933): the same GATE-WORK conclusion, reached
 # twice in a row against a byte-identical board, must send the FULL nudge only the first time -- the
