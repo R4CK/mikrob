@@ -1,0 +1,139 @@
+{
+  "schemaVersion": 1,
+  "generatedAt": "2026-08-14T06:38:12Z",
+  "source": "bundled-fallback",
+  "stale": true,
+  "host": {
+    "gpu": null,
+    "ramTotalMib": null
+  },
+  "models": [
+    {
+      "id": "qwen_qwen2.5-coder-7b-instruct-gguf:q2_k",
+      "repo": "Qwen/Qwen2.5-Coder-7B-Instruct-GGUF",
+      "repoOwner": "Qwen",
+      "displayName": "Qwen2.5-Coder-7B-Instruct",
+      "quant": "Q2_K",
+      "parts": [
+        {
+          "path": "qwen2.5-coder-7b-instruct-q2_k.gguf",
+          "sizeMib": 2876,
+          "sha256": "6ce2630974b0ef631e2b29064cd10a9cb16b278d001961d72bfd86987392c8d9"
+        }
+      ],
+      "partCount": 1,
+      "fileMib": 2876,
+      "requiredMib": 4019,
+      "kvCacheMib": 119,
+      "contextTokens": 4096,
+      "tier": "fits",
+      "tokensPerSecond": null,
+      "downloads": 175821,
+      "gated": false,
+      "installRef": "hf.co/Qwen/Qwen2.5-Coder-7B-Instruct-GGUF:Q2_K",
+      "sizeOnDiskMib": 2876,
+      "trusted": true,
+      "trustReason": "allowlisted-publisher",
+      "installedAt": null,
+      "benchmarkedAt": null,
+      "notes": []
+    },
+    {
+      "id": "bartowski_dolphincoder-starcoder2-7b-gguf:q4_k_m",
+      "repo": "bartowski/dolphincoder-starcoder2-7b-GGUF",
+      "repoOwner": "bartowski",
+      "displayName": "dolphincoder-starcoder2-7b",
+      "quant": "Q4_K_M",
+      "parts": [
+        {
+          "path": "dolphincoder-starcoder2-7b-Q4_K_M.gguf",
+          "sizeMib": 4376,
+          "sha256": "c01588e77a1559dedb454cf537dc6c6d8d7d98a6394905bcb19d85065d6b9a45"
+        }
+      ],
+      "partCount": 1,
+      "fileMib": 4376,
+      "requiredMib": 5519,
+      "kvCacheMib": 119,
+      "contextTokens": 4096,
+      "tier": "fits",
+      "tokensPerSecond": null,
+      "downloads": 663,
+      "gated": false,
+      "installRef": "hf.co/bartowski/dolphincoder-starcoder2-7b-GGUF:Q4_K_M",
+      "sizeOnDiskMib": 4376,
+      "trusted": true,
+      "trustReason": "allowlisted-publisher",
+      "installedAt": null,
+      "benchmarkedAt": null,
+      "notes": []
+    },
+    {
+      "id": "qwen_qwen2.5-coder-14b-instruct-gguf:q4_k_m",
+      "repo": "Qwen/Qwen2.5-Coder-14B-Instruct-GGUF",
+      "repoOwner": "Qwen",
+      "displayName": "Qwen2.5-Coder-14B-Instruct",
+      "quant": "Q4_K_M",
+      "parts": [
+        {
+          "path": "qwen2.5-coder-14b-instruct-q4_k_m.gguf",
+          "sizeMib": 8571,
+          "sha256": "c1e659736d89ac1065fb495330fb824d94001974a4bfa78e7270e43476a8d940"
+        }
+      ],
+      "partCount": 1,
+      "fileMib": 8571,
+      "requiredMib": 9714,
+      "kvCacheMib": 119,
+      "contextTokens": 4096,
+      "tier": "partial",
+      "tokensPerSecond": null,
+      "downloads": 71694,
+      "gated": false,
+      "installRef": "hf.co/Qwen/Qwen2.5-Coder-14B-Instruct-GGUF:Q4_K_M",
+      "sizeOnDiskMib": 8571,
+      "trusted": true,
+      "trustReason": "allowlisted-publisher",
+      "installedAt": null,
+      "benchmarkedAt": null,
+      "notes": [
+        "some layers stay on CPU at this VRAM -- slower, still usable"
+      ]
+    },
+    {
+      "id": "bartowski_starcoder2-15b-instruct-v0.1-gguf:q6_k",
+      "repo": "bartowski/starcoder2-15b-instruct-v0.1-GGUF",
+      "repoOwner": "bartowski",
+      "displayName": "starcoder2-15b-instruct-v0.1",
+      "quant": "Q6_K",
+      "parts": [
+        {
+          "path": "starcoder2-15b-instruct-v0.1-Q6_K.gguf",
+          "sizeMib": 12494,
+          "sha256": "fb6753e3d5b5fd315e62ca2b875b78eaff3f041e9e317de8d89aebd75675fc10"
+        }
+      ],
+      "partCount": 1,
+      "fileMib": 12494,
+      "requiredMib": 13637,
+      "kvCacheMib": 119,
+      "contextTokens": 4096,
+      "tier": "partial",
+      "tokensPerSecond": null,
+      "downloads": 1570,
+      "gated": false,
+      "installRef": "hf.co/bartowski/starcoder2-15b-instruct-v0.1-GGUF:Q6_K",
+      "sizeOnDiskMib": 12494,
+      "trusted": true,
+      "trustReason": "allowlisted-publisher",
+      "installedAt": null,
+      "benchmarkedAt": null,
+      "notes": [
+        "some layers stay on CPU at this VRAM -- slower, still usable"
+      ]
+    }
+  ],
+  "warnings": [
+    "bundled fallback catalogue: shipped in the repo for a first run with no cache and no network. Entries are frozen facts; fit (tier/requiredMib) is recomputed for the reading host, and the digests are as of generatedAt."
+  ]
+}

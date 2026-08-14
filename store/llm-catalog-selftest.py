@@ -129,6 +129,44 @@ check("fallback marks staleness", True, env["stale"])
 check("fallback still emits a valid envelope", 1, env["schemaVersion"])
 check("fallback explains itself", True, any("simulated outage" in w for w in env["warnings"]))
 
+# --- 7. the SHIPPED fallback catalogue, and the host-dependence it must not carry (card e35bc379) --
+# The bundled file is the last resort: no cache, no network, first run. It was REFERENCED by the code
+# from the start and never existed, so that path returned an empty list -- the one outcome this
+# design says must never happen. It exists now, and these controls pin both halves.
+#
+# The second half is the part that is easy to get wrong: a catalogue entry mixes FACTS (repo, quant,
+# parts, size -- true anywhere) with HOST-DEPENDENT fit (tier, requiredMib -- computed against the
+# VRAM of the machine that produced the file). Shipping stored tiers would tell a 4 GB card that a
+# 12 GB model fits, which is worse than shipping nothing, because fit filtering is what this document
+# is FOR. So the fallback recomputes them for the reading host, and these checks compare two hosts.
+BUNDLED_DOC = None
+try:
+    with open(cat.BUNDLED) as f:
+        BUNDLED_DOC = json.load(f)
+except Exception as exc:
+    fails.append("bundled")
+    print("  FAIL bundled catalogue is readable -> %s" % exc)
+
+if BUNDLED_DOC is not None:
+    check("bundled catalogue ships models", True, len(BUNDLED_DOC.get("models") or []) > 0)
+    check("bundled document satisfies the consumer contract", [], cat.validate(BUNDLED_DOC))
+    check("every bundled part carries a digest", True,
+          all(p.get("sha256") for m in BUNDLED_DOC["models"] for p in m.get("parts") or []))
+
+    TINY = {"vramTotalMib": 4096, "vramFreeMib": 4096, "ramTotalMib": 8000, "cpuOnly": False}
+    BIG = {"vramTotalMib": 24576, "vramFreeMib": 24576, "ramTotalMib": 64000, "cpuOnly": False}
+    tiny = cat.retier(BUNDLED_DOC["models"], TINY)
+    big = cat.retier(BUNDLED_DOC["models"], BIG)
+    check("a big host is offered every bundled entry", len(BUNDLED_DOC["models"]), len(big))
+    check("  ...and they all read as 'fits' there", True, all(m["tier"] == "fits" for m in big))
+    # THE CONTROL THAT MATTERS: the same file, a smaller card, a different answer. If retier were a
+    # no-op (stored tiers served as-is) these two lists would be identical.
+    check("a small host is offered strictly fewer", True, len(tiny) < len(big))
+    check("  ...and nothing it cannot run", True, all(m["tier"] != "too-big" for m in tiny))
+    biggest = max(BUNDLED_DOC["models"], key=lambda m: m.get("fileMib") or 0)
+    check("  ...specifically not the largest entry", True,
+          all(m["repo"] != biggest["repo"] or m["quant"] != biggest["quant"] for m in tiny))
+
 print()
 if fails:
     print("selftest: FAIL (%d)" % len(fails))

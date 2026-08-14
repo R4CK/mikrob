@@ -302,6 +302,36 @@ def read_gpu(path=None):
                 "vramTotalMib": None, "vramFreeMib": None, "ramTotalMib": None}
 
 
+def retier(models, gpu):
+    """Recompute the HOST-DEPENDENT fields of stored entries, and drop what cannot run here.
+
+    A stored catalogue mixes two kinds of field. The FACTS -- repo, owner, quant, parts, digests,
+    fileMib, downloads -- are true wherever the file is read. `requiredMib` and `tier` are not: they
+    were computed against the VRAM of whatever machine produced the file. The bundled catalogue ships
+    in the repo and is read on machines it has never seen, so serving its stored tiers would tell a
+    6 GB card that a 12 GB model "fits" -- worse than no catalogue, because the fit filter is the
+    entire point of this document.
+
+    The cache goes through the same recompute rather than being trusted as-is: it was written on this
+    machine, but a GPU can be added, removed or reassigned between two runs, and a stale "fits" reads
+    exactly like a fresh one.
+    """
+    out = []
+    for m in models:
+        m = dict(m)
+        file_mib = m.get("fileMib") or 0
+        if file_mib > 0:
+            m["requiredMib"] = required_mib(file_mib)
+            m["tier"] = tier_of(
+                m["requiredMib"], gpu.get("vramTotalMib"), gpu.get("ramTotalMib"), gpu.get("cpuOnly", True)
+            )
+        # Same rule as the live path: an entry that cannot run on this machine is not offered.
+        if m.get("tier") == "too-big":
+            continue
+        out.append(m)
+    return out
+
+
 def fallback(gpu, why):
     """A failed refresh serves the cache or the bundled copy WITH a staleness flag -- never an empty
     list. First-run on a machine with no internet must still offer something."""
@@ -309,9 +339,16 @@ def fallback(gpu, why):
         try:
             with open(path) as f:
                 d = json.load(f)
-            return envelope(gpu, d.get("models", []), src, [why], stale=True)
         except Exception:
             continue
+        models = retier(d.get("models", []), gpu)
+        notes = [why]
+        if not models:
+            # An empty list HERE means something different from "no catalogue": every stored entry
+            # was measured against this machine and none of them fits. Saying so is the honest
+            # answer -- offering a model that cannot load would not help anyone.
+            notes.append("no %s entry fits this machine (all above its memory)" % src)
+        return envelope(gpu, models, src, notes, stale=True)
     return envelope(gpu, [], "none", [why, "no cache and no bundled catalogue available"], stale=True)
 
 
