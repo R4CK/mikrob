@@ -82,7 +82,8 @@ The shared client is `{{INSTALL_DIR}}/store/local-llm.sh`. It reads the
 swappable centrally.
 
 **ALWAYS call by ABSOLUTE path** (as shown). Fleet agents run from their own
-working dir (e.g. `/mnt/h/LM_Studio_Workdir/CleanCore`), NOT the marveen repo, so
+working dir (their OWN CleanCore worktree -- resolve it with
+`/home/neon/marveen/store/agent-worktree.sh <agent> --path`, card 973ed6eb), NOT the marveen repo, so
 a relative `store/local-llm.sh` would be "file not found". The absolute path works
 from any cwd (both scripts resolve their own directory for the token + model).
 Verified: both `local-llm.sh` and `local-llm-rag.sh` run correctly from the
@@ -261,9 +262,10 @@ which low-quality drafts cost MORE in online rework than doing it online first):
    (Peti's point: make checking GEPI). For a FILE-SHAPED draft (a whole test
    file, a self-contained module) use the self-repair loop in `local-llm-rag.sh`:
    ```bash
+   CC="$(/home/neon/marveen/store/agent-worktree.sh <your agent name> --path)"   # your OWN worktree
    {{INSTALL_DIR}}/store/local-llm-rag.sh --task code --agent backend \
-     --out /mnt/h/LM_Studio_Workdir/CleanCore/packages/x/src/foo.test.ts \
-     --verify-cmd "cd /mnt/h/LM_Studio_Workdir/CleanCore && npx tsc --noEmit -p packages/x/tsconfig.test.json" \
+     --out "$CC/packages/x/src/foo.test.ts" \
+     --verify-cmd "cd \"$CC\" && npx tsc --noEmit -p packages/x/tsconfig.test.json" \
      --verify-iter 3 \
      "Write a vitest suite for <fn> covering <cases>. Return the complete file, code only."
    ```

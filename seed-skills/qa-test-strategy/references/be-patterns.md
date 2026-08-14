@@ -241,7 +241,7 @@ Valós eset: SKILL-FULL-BACKUP.md#679.
 
 ## Marveen/fleet model-fallback gate patterns (dda9870, ae55270, e33af7c4 tapasztalat, 2026-08-02)
 
-CleanCore-tól eltérő hatókör: `src/` (marveen repo), nem `/mnt/h/LM_Studio_Workdir/CleanCore`.
+CleanCore-tól eltérő hatókör: `src/` (marveen repo), nem a CleanCore checkout.
 Teszt futtatás: `cd /tmp/cc-qa-<sha> && npx vitest run src/` (worktree-ben).
 tsc: `npx tsc --noEmit` (project root-ból a worktree-ben).
 

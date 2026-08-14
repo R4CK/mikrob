@@ -225,7 +225,7 @@ Következmény: minden false claim extra QA2 FAIL kommentálást + javítási k�
 A root `npx tsc --noEmit` kihagyja az `apps/` mappákat és a test fájlokat
 (root-tsc-excludes-test-files memory). CleanCore-on MINDIG:
 ```bash
-cd /mnt/h/LM_Studio_Workdir/CleanCore && npm run typecheck 2>&1 | grep "error TS" | head -20
+cd "${CC:-${CLEANCORE_MAIN:-/mnt/h/LM_Studio_Workdir/CleanCore}}" && npm run typecheck 2>&1 | grep "error TS" | head -20
 ```
 
 Valós eset (qa2-strictness-gap, 2026-07-17): qa2 "tsc 0" PASS-t adott,

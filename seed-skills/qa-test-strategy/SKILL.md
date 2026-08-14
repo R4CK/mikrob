@@ -18,7 +18,13 @@ MikroB vagy a QA ügynök teheti, és csak NEM saját munkát.
 3b. **Atomic-fact verifikáció** (KÖTELEZŐ, `atomic-fact-gate-protocol` skill) -- a REVIEW kommentből kinyert minden állítást atomi tényekre bonts és mindegyiket önállóan igazold. Zöld teszt nem bizonyíték: egy FAILED atom = QA FAIL még akkor is, ha X/X teszt zöld. -> részletek: `atomic-fact-gate-protocol` skill + `references/atomic-fact.md` claim sablon-ok.
 4. **Test pyramid futtatás**:
    ```bash
-   cd /mnt/h/LM_Studio_Workdir/CleanCore
+   # HOL futtasd (kártya 973ed6eb): a fejlesztő ügynökök saját worktree-ben dolgoznak, a
+   # megosztott klón CSAK fetch/landolás-alap. Gate-ként a felülvizsgált SHA-ra nyitott
+   # eldobható worktree-ben futtass; ha csak olvasol/typecheckelsz, a fő klón is jó. SOHA ne
+   # futtass más ügynök worktree-jében (ott élő, félkész munka van), és oda ne is commitolj.
+   CC_MAIN="${CLEANCORE_MAIN:-/mnt/h/LM_Studio_Workdir/CleanCore}"
+   git -C "$CC_MAIN" worktree add /home/neon/qa-<sha> <sha>    # eldobható, a végén: worktree remove
+   cd /home/neon/qa-<sha>
    npx vitest run --reporter=verbose apps/<scope>
    npx tsc --noEmit 2>&1 | grep -E "error TS"
    ```
