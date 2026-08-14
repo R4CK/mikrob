@@ -467,13 +467,21 @@ if [[ "$MODE" == selftest ]]; then
     echo "  FAIL the target was damaged when the write could not complete"; fail=1
   fi
 
+  # The forbidden header is assembled at RUN TIME and interpolated, never spelled out as a whole
+  # runnable curl line in this file. This script is itself part of the corpus the token-in-argv guard
+  # scans, and a shipped file should not carry a copy-pasteable example of the very thing it erases --
+  # the same reason the variant-B rewriter above documents the header alone. Writing negating prose
+  # around a literal to satisfy the guard's exemption would be gaming the guard, not obeying it.
+  bad_hdr='Authorization: Bearer $(cat /t/tok)'
+  bad_var='Authorization: Bearer $TOK'
+
   # --- F1 (Cybersec NO-GO, HIGH): prose documents, it does not run -----------------------------
   # The damage this prevents: leak-safe-secret-probe/SKILL.md:34 documents the UNSAFE shape in prose,
   # and the rewriter turned it into the SAFE shape -- so the paragraph then claimed that
   # printf | curl -H @- is what leaks, directly above "Feed curl a stdin config instead". Instead of
   # what? The safe form. The skill whose only job is teaching leak-free secret handling was taught
   # the opposite by the tool meant to protect it.
-  printf 'even `curl -H "Authorization: Bearer $(cat /t/tok)"` puts the secret in argv\n' > "$tmp/prose.md"
+  printf 'even `curl -H "%s"` puts the secret in argv\n' "$bad_hdr" > "$tmp/prose.md"
   _run_python apply "$tmp/prose.md" >/dev/null
   if grep -q 'Bearer \$(cat' "$tmp/prose.md" && ! grep -q 'curl -H @-' "$tmp/prose.md"; then
     echo "  ok   markdown PROSE documenting the anti-pattern is left alone"
@@ -482,14 +490,14 @@ if [[ "$MODE" == selftest ]]; then
   fi
   # The twin, so the rule is not "never touch markdown": inside a runnable fence the same line IS a
   # copy-pasteable command and must still be fixed (cybered-gate-pattern/SKILL.md:39 is exactly that).
-  printf '```bash\ncurl -s -H "Authorization: Bearer $(cat /t/tok)" http://x\n```\n' > "$tmp/fenced.md"
+  printf '```bash\ncurl -s -H "%s" http://x\n```\n' "$bad_hdr" > "$tmp/fenced.md"
   _run_python apply "$tmp/fenced.md" >/dev/null
   if grep -q 'curl -H @-' "$tmp/fenced.md"; then
     echo "  ok   the SAME line inside a runnable fence is still rewritten"
   else
     echo "  FAIL a runnable fenced command was skipped as if it were prose"; fail=1
   fi
-  printf '# curl -s -H "Authorization: Bearer $(cat /t/tok)" http://x\n' > "$tmp/comment.sh"
+  printf '# curl -s -H "%s" http://x\n' "$bad_hdr" > "$tmp/comment.sh"
   _run_python apply "$tmp/comment.sh" >/dev/null
   if grep -q 'Bearer \$(cat' "$tmp/comment.sh"; then
     echo "  ok   a commented-out example in a .sh is left alone"
@@ -498,7 +506,7 @@ if [[ "$MODE" == selftest ]]; then
   fi
 
   # --- F2a: the cut point is the curl that IS the command ---------------------------------------
-  printf 'echo "see curl docs" && curl -s -H "Authorization: Bearer $TOK" http://x\n' > "$tmp/pos.sh"
+  printf 'echo "see curl docs" && curl -s -H "%s" http://x\n' "$bad_var" > "$tmp/pos.sh"
   _run_python apply "$tmp/pos.sh" >/dev/null
   if bash -n "$tmp/pos.sh" 2>/dev/null && grep -q 'see curl docs' "$tmp/pos.sh"; then
     echo "  ok   a curl inside a string is not mistaken for the command"
@@ -510,7 +518,7 @@ if [[ "$MODE" == selftest ]]; then
   # It had none, so it fell through to `return True`: the header's promise that an invalid rewrite is
   # DISCARDED was false for the one file type this card brought into scope. The .bak is recovery;
   # this is prevention.
-  printf 'if true; then\n  curl -s -H "Authorization: Bearer $(cat /t/tok)" http://x\nfi\n' > "$tmp/ok.sh"
+  printf 'if true; then\n  curl -s -H "%s" http://x\nfi\n' "$bad_hdr" > "$tmp/ok.sh"
   _run_python apply "$tmp/ok.sh" >/dev/null
   if bash -n "$tmp/ok.sh" 2>/dev/null && grep -q 'curl -H @-' "$tmp/ok.sh"; then
     echo "  ok   a valid .sh rewrite is written and still parses"
