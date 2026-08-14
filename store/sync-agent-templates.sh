@@ -40,11 +40,27 @@
 # Usage:
 #   sync-agent-templates.sh                 # dry-run over every agent, prints what WOULD change
 #   sync-agent-templates.sh --apply         # actually rewrite
+#   sync-agent-templates.sh --check         # dry-run, but EXIT 1 if anything would change
 #   sync-agent-templates.sh --agent qa2     # limit to one agent (repeatable)
 #   sync-agent-templates.sh selftest        # fixture-based checks, touches nothing real
 #
 # Exit: 0 ok (or dry-run with findings, or a file skipped as unparseable) | 2 bad usage
 #       3 a rewrite did not validate and was discarded -- something needs a human
+#       1 --check only: the installed tree still carries the pattern
+#
+# WHY --check EXISTS (Cybersec BLOCKER 2 on card ec5173a5). The vitest guard covers the shipped
+# templates and, since ec5173a5, the installed agents too -- but it can never RUN where a fleet is
+# installed: the suite refuses to start in a live install (assert-not-live-install.ts, because it
+# mutates the checkout it runs in), and the one sanctioned context, the fleet-test worktree, has an
+# empty agents/. So the installed half of that guard is real code that never executes. This script
+# already runs in the live install and already walks the live tree; --check turns that walk into a
+# gate by giving it an exit code.
+#
+# VENDORED THIRD-PARTY DOCS ARE OUT OF SCOPE BY CONSTRUCTION, not by an allowlist. The patterns key
+# on a token that actually resolves -- `Bearer $(cat PATH)` or `Bearer $VAR` -- so the mcp-builder
+# copies' literal `Bearer token123` examples never match. That is the honest boundary: a path
+# allowlist would rot the moment a vendored tree moved, and it would also hide a REAL leak that
+# happened to live under the same directory.
 set -uo pipefail
 
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -52,11 +68,13 @@ ROOT="$(cd "$HERE/.." && pwd)"
 AGENTS_DIR="$ROOT/agents"
 
 APPLY=0
+CHECK=0
 ONLY_AGENTS=()
 MODE=sync
 while [[ $# -gt 0 ]]; do
   case "$1" in
     --apply)   APPLY=1; shift ;;
+    --check)   CHECK=1; shift ;;
     --agent)   ONLY_AGENTS+=("$2"); shift 2 ;;
     selftest)  MODE=selftest; shift ;;
     -h|--help) sed -n '/^# Usage:/,/^# Exit:/p' "${BASH_SOURCE[0]}"; exit 0 ;;
@@ -175,14 +193,47 @@ def fix_text(text, kind='shell'):
     prose = 0
     in_runnable_fence = False
     lines = text.splitlines(keepends=True)
-    for i, line in enumerate(lines):
+    i = 0
+    while i < len(lines):
+        line = lines[i]
         if kind == 'markdown':
             f = FENCE.match(line)
             if f:
                 # An opening fence names its language; the closing one names nothing.
                 in_runnable_fence = f.group(1).lower() in RUNNABLE_FENCE if not in_runnable_fence else False
+                i += 1
                 continue
         executable = (kind != 'markdown' or in_runnable_fence) and not line.lstrip().startswith('#')
+
+        # BACKSLASH CONTINUATIONS (Cybersec BLOCKER 1). This loop used to look at one PHYSICAL line,
+        # so a curl split across lines was invisible: the `-H "Authorization: Bearer $TOKEN"` line
+        # carries no `curl`, and every rewrite starts by requiring one. Four live occurrences in
+        # cybered's loaded gate-pattern skill survived a full --apply for exactly that reason, while
+        # the single-line sibling twelve lines above was fixed -- and the DETECTOR already knew about
+        # continuation lines, so the rewriter was the narrower half of a pair that must match.
+        #
+        # The run is joined into one logical command, rewritten, and emitted as one line. Collapsing
+        # is deliberate: the sanctioned replacement is itself a two-line pipeline, and trying to
+        # preserve the original line breaks would mean guessing where to fold someone else's command.
+        span = i
+        while span < len(lines) - 1 and lines[span].rstrip('\n').endswith('\\'):
+            span += 1
+        if span > i:
+            indent = line[: len(line) - len(line.lstrip())]
+            joined = ' '.join(l.rstrip('\n').rstrip('\\').strip() for l in lines[i : span + 1])
+            for _name, det, rewrite in PATTERNS:
+                if det.search(joined):
+                    if not executable:
+                        prose += 1
+                        break
+                    new = rewrite(joined)
+                    if new is not None:
+                        lines[i : span + 1] = [indent + new.strip() + '\n']
+                        hits += 1
+                        break
+            i += 1
+            continue
+
         for _name, det, rewrite in PATTERNS:
             if det.search(line):
                 if not executable:
@@ -192,6 +243,7 @@ def fix_text(text, kind='shell'):
                 if new is not None:
                     lines[i] = new
                     hits += 1
+        i += 1
     return ''.join(lines), hits, prose
 
 def fix_json(raw):
@@ -551,4 +603,20 @@ done
 
 if [[ ${#targets[@]} -eq 0 ]]; then echo "sync-agent-templates: no target files"; exit 0; fi
 echo "sync-agent-templates: ${#targets[@]} file(s), mode=$([[ $APPLY -eq 1 ]] && echo APPLY || echo DRY-RUN)"
-_run_python "$([[ $APPLY -eq 1 ]] && echo apply || echo dry)" "${targets[@]}"
+out="$(_run_python "$([[ $APPLY -eq 1 ]] && echo apply || echo dry)" "${targets[@]}")"
+printf '%s\n' "$out"
+if [[ $CHECK -eq 1 ]]; then
+  # Parsed from the summary the run just printed, so the gate cannot disagree with what the operator
+  # reads. A summary line that never appeared is itself a failure -- silence is not a clean result.
+  n="$(printf '%s\n' "$out" | sed -n 's/^SUMMARY: would-fix=\([0-9]*\) .*/\1/p')"
+  if [[ -z "$n" ]]; then
+    echo "sync-agent-templates --check: no SUMMARY line -- the scan did not complete" >&2
+    exit 3
+  fi
+  if [[ "$n" -gt 0 ]]; then
+    echo "sync-agent-templates --check: $n occurrence(s) still put a Bearer token in curl argv." >&2
+    echo "  Fix with: store/sync-agent-templates.sh --apply" >&2
+    exit 1
+  fi
+  echo "sync-agent-templates --check: the installed tree is clean."
+fi

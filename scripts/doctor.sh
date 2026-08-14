@@ -254,6 +254,25 @@ else
   ok "No failure log"
 fi
 
+# --- Installed agents: Bearer token in curl argv (card ec5173a5) ---
+# The vitest guard covers the SHIPPED templates and, since ec5173a5, the installed agents too -- but
+# it can never RUN where a fleet is installed: the suite refuses to start in a live install, and the
+# one sanctioned context (the fleet-test worktree) has an empty agents/. doctor.sh DOES run here, on
+# the real tree, which is what makes this the consumer that check needed. A detector with no consumer
+# is decoration; this is the consumer.
+echo ""
+echo -e "${BOLD}Installed agents -- token in curl argv${RESET}"
+if [ -x store/sync-agent-templates.sh ]; then
+  if ARGV_OUT="$(store/sync-agent-templates.sh --check 2>&1)"; then
+    ok "$(printf '%s\n' "$ARGV_OUT" | tail -1)"
+  else
+    fail "$(printf '%s\n' "$ARGV_OUT" | grep '^sync-agent-templates --check:' | head -1)"
+    printf '%s\n' "$ARGV_OUT" | grep '^  would fix' | sed 's/^/    /'
+  fi
+else
+  warn "store/sync-agent-templates.sh missing or not executable -- the installed tree is UNCHECKED"
+fi
+
 # --- Summary ---
 echo ""
 if [ "$FAIL" -eq 0 ]; then
