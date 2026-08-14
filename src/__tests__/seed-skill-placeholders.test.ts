@@ -23,6 +23,13 @@ const SEED_SKILLS = join(REPO_ROOT, 'seed-skills')
  *  double-brace form it teaches you to find), not an identity placeholder. */
 const IDENTITY_PLACEHOLDER_RX = /\{\{([A-Z][A-Z0-9_]*)\}\}/g
 
+/** There are TWO placeholder namespaces here, and this test found the second one by failing on it.
+ *  `{{INPUT}}` belongs to the local-model task templates (store/local-llm-skills/<task>.txt) and is
+ *  replaced by store/local-llm.sh at CALL time -- a skill that documents that mechanism has to print
+ *  it literally, so rendering it at seed time would corrupt the documentation. Listed by name rather
+ *  than by a loose pattern: a new unrenderable placeholder should still fail here. */
+const RUNTIME_PLACEHOLDERS = new Set(['INPUT'])
+
 function walk(dir: string): string[] {
   if (!existsSync(dir)) return []
   const out: string[] = []
@@ -50,10 +57,18 @@ describe('seed-skills placeholders are renderable (card 041681b5)', () => {
       const rendered = substituteTemplatePlaceholders(text, IDENTITY)
       // Whatever survives the renderer would ship LITERALLY to a user's skill file.
       for (const m of rendered.matchAll(IDENTITY_PLACEHOLDER_RX)) {
+        if (RUNTIME_PLACEHOLDERS.has(m[1])) continue
         unknown.push(`${file.slice(REPO_ROOT.length + 1)}: {{${m[1]}}}`)
       }
     }
     expect(unknown, `Unrenderable placeholder in a shipped skill:\n${unknown.join('\n')}`).toEqual([])
+  })
+
+  it('the {{INPUT}} exemption is real: local-llm.sh is what replaces it, at call time', () => {
+    // An exemption is a claim; this checks the claim instead of repeating it. If the runtime stops
+    // handling {{INPUT}}, the skill's documentation of it becomes wrong and this fails.
+    const runtime = readFileSync(join(REPO_ROOT, 'store', 'local-llm.sh'), 'utf-8')
+    expect(runtime).toContain('{{INPUT}}')
   })
 
   it('CONTROL: the check can fail -- an unknown placeholder is not silently accepted', () => {
