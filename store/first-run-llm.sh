@@ -112,7 +112,15 @@ except Exception:
 m = next((x for x in doc.get("models", []) if x.get("installRef") == want), None)
 if m is None:
     print("unverified-not-in-catalogue"); raise SystemExit
-missing = [p["path"] for p in m.get("parts", [])
+parts = m.get("parts") or []
+# An entry with no parts USED TO print "digest check: OK -- every part matches", because an empty
+# list has no mismatches (Cybersec F2). Verifying nothing and verifying successfully are different
+# claims, and the confident wording is worse than silence: it lends authority to an entry nobody
+# checked. Today no real catalogue entry is partless (0 of 435), so this is reachable only by a
+# hand-written cache -- which is exactly the situation where the false reassurance would land.
+if not parts:
+    print("unverified-no-parts"); raise SystemExit
+missing = [p["path"] for p in parts
            if not p.get("sha256") or not os.path.exists(os.path.join(blobs, "sha256-" + p["sha256"]))]
 print("ok" if not missing else "MISMATCH:" + ",".join(missing[:3]))
 ' "$cache" 2>/dev/null || echo unverified-error)"
@@ -153,13 +161,29 @@ print("ok" if not missing else "MISMATCH:" + ",".join(missing[:3]))
   # It behaves identically with and without a TTY on purpose. A gate that auto-accepts in a pipe is
   # not a gate, and one that can only ever be answered by hand would make an untrusted model
   # impossible to adopt at all -- so the escape hatch is one explicit, logged flag.
-  BASIS="$(WANT="$want" python3 -c '
+  #
+  # WHERE THE DECISION COMES FROM, which is the part the first version got wrong (Cybersec F1). It
+  # read the `trusted` BOOLEAN stored in llm-catalog-cache.json -- a gitignored, unreviewed, agent-
+  # writable file where that flag was frozen at catalogue-BUILD time. Two consequences, both proven
+  # with a two-way control: flipping only that cached flag walked straight past the gate, and
+  # removing a publisher from the reviewed list changed nothing for entries already cached, so the
+  # control could be edited but not enforced. The cache now supplies FACTS ONLY (owner, downloads,
+  # parts, digests) and the DECISION is recomputed here, at decision time, from the tracked and
+  # reviewed store/llm-catalog-trust.json. An unreadable or missing trust list means NOT trusted.
+  TRUST_FILE="$HERE/llm-catalog-trust.json"
+  BASIS="$(WANT="$want" TRUSTFILE="$TRUST_FILE" python3 -c '
 import json, os, sys
 want = os.environ["WANT"]
 try:
     doc = json.load(open(sys.argv[1]))
 except Exception:
     doc = {}
+# The reviewed list, read fresh on every decision. Fail closed: no list, no trust.
+try:
+    trusted_pubs = {str(p).strip().lower()
+                    for p in json.load(open(os.environ["TRUSTFILE"])).get("trustedPublishers", [])}
+except Exception:
+    trusted_pubs = set()
 m = next((x for x in doc.get("models", []) if x.get("installRef") == want), None)
 if m is None:
     # No entry means no provenance at all, which is strictly weaker than an untrusted publisher --
@@ -169,8 +193,10 @@ if m is None:
 else:
     parts = m.get("parts") or []
     dl = m.get("downloads")
-    print("%s\t%s\t%s\t%d" % ("yes" if m.get("trusted") else "no",
-                              m.get("repoOwner") or "unknown",
+    owner = (m.get("repoOwner") or "unknown").strip()
+    # NOT m.get("trusted"): that is the cached opinion. This is the current one.
+    print("%s\t%s\t%s\t%d" % ("yes" if owner.lower() in trusted_pubs else "no",
+                              owner,
                               "unknown" if dl is None else dl,
                               len(parts)))
     for p in parts:
@@ -181,6 +207,13 @@ else:
 ' "$cache" 2>/dev/null)"
   [ -n "$BASIS" ] || BASIS="$(printf 'no\tunverified\tunknown\t0\n      (catalogue unreadable)')"
   IFS="$(printf '\t')" read -r T_TRUSTED T_OWNER T_DOWNLOADS T_PARTS <<< "$(printf '%s\n' "$BASIS" | head -1)"
+  # WHAT THE OPERATOR HAS TO TYPE BACK (Cybersec F3). Naming the publisher works as a
+  # read-the-screen check only while the name varies. For a model with no catalogue entry the owner
+  # is the literal string "unverified" -- the same answer for every model, memorised once and typed
+  # forever after -- so the case carrying the LEAST information had the weakest confirmation. There
+  # the answer is the model tag instead, which differs per model.
+  T_ANSWER="$T_OWNER"
+  [ "$T_OWNER" = "unverified" ] && T_ANSWER="$want"
   if [ "$T_TRUSTED" != "yes" ]; then
     say ""
     say "UNTRUSTED PUBLISHER -- '$T_OWNER' is not on the installable-trust list"
@@ -194,15 +227,14 @@ else:
     say "    parts:      $T_PARTS"
     say "    digests:"
     printf '%s\n' "$BASIS" | tail -n +2
-    if [ -n "$ITRUST" ] && [ "$(printf '%s' "$ITRUST" | tr '[:upper:]' '[:lower:]')" = "$(printf '%s' "$T_OWNER" | tr '[:upper:]' '[:lower:]')" ]; then
+    if [ -n "$ITRUST" ] && [ "$(printf '%s' "$ITRUST" | tr '[:upper:]' '[:lower:]')" = "$(printf '%s' "$T_ANSWER" | tr '[:upper:]' '[:lower:]')" ]; then
       say ""
-      say "  Accepted: you named the publisher explicitly. Recorded in $LOG."
+      say "  Accepted: you named it explicitly. Recorded in $LOG."
       log "untrusted default ACCEPTED: $want (publisher $T_OWNER, downloads $T_DOWNLOADS, parts $T_PARTS, explicit --i-trust)"
     else
       say ""
-      say "  Not making it the default. If you have read the above and still want it, name the"
-      say "  publisher back:"
-      say "      store/first-run-llm.sh --use $want --i-trust $T_OWNER"
+      say "  Not making it the default. If you have read the above and still want it, name it back:"
+      say "      store/first-run-llm.sh --use $want --i-trust $T_ANSWER"
       log "untrusted default REFUSED: $want (publisher $T_OWNER, no matching --i-trust)"
       exit 7
     fi
@@ -307,11 +339,20 @@ fi
 
 say ""
 say "  Models that fit this machine (top 5 of $COUNT):"
-printf '%s' "$CATALOG" | python3 -c '
-import json,sys
+printf '%s' "$CATALOG" | TRUSTFILE="$HERE/llm-catalog-trust.json" python3 -c '
+import json,os,sys
 d=json.load(sys.stdin)
+# Same rule as the gate: the label is recomputed from the reviewed list, not read from the cached
+# flag. A publisher removed after an incident must stop being shown as trusted immediately, not
+# whenever someone next rebuilds the catalogue -- and the label the operator reads here must agree
+# with the decision the gate will make later.
+try:
+    pubs = {str(p).strip().lower()
+            for p in json.load(open(os.environ["TRUSTFILE"])).get("trustedPublishers", [])}
+except Exception:
+    pubs = set()
 for i,m in enumerate(d["models"][:5],1):
-    trust = "trusted publisher" if m.get("trusted") else "UNVERIFIED publisher"
+    trust = "trusted publisher" if (m.get("repoOwner") or "").strip().lower() in pubs else "UNVERIFIED publisher"
     note = (" -- " + m["notes"][0]) if m.get("notes") else ""
     print("   %d) %-42s %-8s %5.1f GB  %-7s  %s%s"
           % (i, m["repo"][:42], m["quant"], m["fileMib"]/1024, m["tier"], trust, note))

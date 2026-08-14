@@ -28,16 +28,17 @@ let sandbox: string
 let server: ChildProcess
 let host: string
 
-/** The catalogue the gate reads. `withUntrusted: false` drops the entry entirely, which is the
- *  no-provenance case -- strictly weaker than an untrusted publisher, so it must gate too. */
-function writeCatalogue(withUntrusted: boolean): void {
+/** The catalogue the gate reads for FACTS. Note what the `trusted` flag is doing in here: it is
+ *  set to the OPPOSITE of the truth in the two cache-versus-list tests below, because the whole
+ *  point after Cybersec F1 is that this cached boolean no longer decides anything. */
+function writeCatalogue(withUntrusted: boolean, cachedTrustedOverrides: Record<string, boolean> = {}): void {
   const models: unknown[] = [
     {
       installRef: TRUSTED_REF,
       repo: 'Qwen/Good-GGUF',
       repoOwner: 'Qwen',
       downloads: 91234,
-      trusted: true,
+      trusted: cachedTrustedOverrides[TRUSTED_REF] ?? true,
       parts: [{ path: 'good-q4_k_m.gguf', sha256: OID_TRUSTED }],
     },
   ]
@@ -47,11 +48,21 @@ function writeCatalogue(withUntrusted: boolean): void {
       repo: 'Sketchy/Thing-GGUF',
       repoOwner: 'Sketchy',
       downloads: 12,
-      trusted: false,
+      trusted: cachedTrustedOverrides[UNTRUSTED_REF] ?? false,
       parts: [{ path: 'thing-q4_k_m.gguf', sha256: OID_UNTRUSTED }],
     })
   }
   writeFileSync(join(sandbox, 'llm-catalog-cache.json'), JSON.stringify({ schemaVersion: 1, models }))
+}
+
+/** The REVIEWED list -- tracked in git, and the only thing allowed to decide trust. */
+function writeTrustList(publishers: string[] | null): void {
+  const p = join(sandbox, 'llm-catalog-trust.json')
+  if (publishers === null) {
+    rmSync(p, { force: true })
+    return
+  }
+  writeFileSync(p, JSON.stringify({ trustedPublishers: publishers, relevantFamilies: [], relevanceKeywords: [] }))
 }
 
 function use(args: string[]): { code: number; out: string; modelFile: string } {
@@ -84,6 +95,7 @@ beforeAll(async () => {
   writeFileSync(join(sandbox, 'blobs', `sha256-${OID_TRUSTED}`), '')
   writeFileSync(join(sandbox, 'blobs', `sha256-${OID_UNTRUSTED}`), '')
   writeCatalogue(true)
+  writeTrustList(['qwen'])
 
   // THE STUB RUNTIME MUST BE ITS OWN PROCESS. An in-process http server cannot answer these
   // requests: every case below drives the script with spawnSync, which blocks this thread's event
@@ -163,14 +175,94 @@ describe('first-run-llm.sh --use: publisher trust gate', () => {
     expect(log).toMatch(/untrusted default ACCEPTED: .*Sketchy/)
   })
 
-  it('a model with no catalogue entry gates too -- no provenance is weaker than untrusted', () => {
+  it('a model with no catalogue entry gates too, and the answer is the MODEL TAG, not a constant', () => {
+    // Cybersec F3: while the required answer was the literal "unverified" for every entry-less
+    // model, the case with the least information had the most memorisable password. The answer is
+    // now the tag, which differs per model -- so it still has to be read off the screen.
     clearModelFile()
     writeCatalogue(false)
     const r = use([UNTRUSTED_REF])
     expect(r.code, r.out).toBe(7)
     expect(r.modelFile).toBe('')
-    expect(r.out).toContain('--i-trust unverified')
+    expect(r.out).toContain(`--i-trust ${UNTRUSTED_REF}`)
+    expect(r.out).not.toContain('--i-trust unverified')
+
+    // The old constant must no longer work...
+    const stale = use([UNTRUSTED_REF, '--i-trust', 'unverified'])
+    expect(stale.code, stale.out).toBe(7)
+    expect(stale.modelFile).toBe('')
+
+    // ...and the tag must.
+    const ok = use([UNTRUSTED_REF, '--i-trust', UNTRUSTED_REF])
+    expect(ok.code, ok.out).toBe(0)
+    expect(ok.modelFile).toBe(UNTRUSTED_REF)
     writeCatalogue(true)
+  })
+
+  it('an entry with NO parts does not get a confident "digest check: OK"', () => {
+    // Cybersec F2: an empty parts list produced no mismatches, so the script announced that every
+    // part matched -- a confident security claim about something it never checked. Reachable only
+    // via a hand-written cache today, which is exactly the case where that reassurance would be
+    // read as corroboration of a bypass.
+    clearModelFile()
+    writeFileSync(
+      join(sandbox, 'llm-catalog-cache.json'),
+      JSON.stringify({
+        schemaVersion: 1,
+        models: [{ installRef: TRUSTED_REF, repo: 'Qwen/Good-GGUF', repoOwner: 'Qwen', downloads: 1, trusted: true, parts: [] }],
+      }),
+    )
+    const r = use([TRUSTED_REF])
+    expect(r.out).not.toContain('digest check: OK')
+    expect(r.out).toContain('digest check: NOT POSSIBLE')
+    writeCatalogue(true)
+  })
+
+  describe('the decision comes from the reviewed list, not the cached flag (Cybersec F1)', () => {
+    // The defect this replaced: the gate read the `trusted` boolean stored in the gitignored,
+    // agent-writable llm-catalog-cache.json, frozen at catalogue-build time. Flipping only that
+    // flag walked past the gate entirely, and removing a publisher from the reviewed list had no
+    // effect on anything already cached -- a control that could be edited but not enforced.
+    it('a cached trusted:true does NOT pass a publisher who is off the list', () => {
+      clearModelFile()
+      writeCatalogue(true, { [UNTRUSTED_REF]: true }) // the cache lies in the dangerous direction
+      writeTrustList(['qwen']) // ...and Sketchy is still not on the reviewed list
+      const r = use([UNTRUSTED_REF])
+      expect(r.code, r.out).toBe(7)
+      expect(r.modelFile).toBe('')
+      writeCatalogue(true)
+    })
+
+    it('a cached trusted:false does NOT block a publisher who IS on the list', () => {
+      // The other direction matters just as much: revocation must work, but so must the ordinary
+      // path. A gate that ignored the cache by always refusing would pass the test above.
+      clearModelFile()
+      writeCatalogue(true, { [TRUSTED_REF]: false })
+      writeTrustList(['qwen'])
+      const r = use([TRUSTED_REF])
+      expect(r.code, r.out).toBe(0)
+      expect(r.modelFile).toBe(TRUSTED_REF)
+      expect(r.out).not.toContain('UNTRUSTED PUBLISHER')
+      writeCatalogue(true)
+    })
+
+    it('revoking a publisher takes effect immediately, without rebuilding the catalogue', () => {
+      clearModelFile()
+      writeTrustList([]) // incident: Qwen removed from the reviewed list
+      const r = use([TRUSTED_REF]) // the cache still says trusted:true
+      expect(r.code, r.out).toBe(7)
+      expect(r.modelFile).toBe('')
+      writeTrustList(['qwen'])
+    })
+
+    it('a missing trust list means NOT trusted, not "trust everything"', () => {
+      clearModelFile()
+      writeTrustList(null)
+      const r = use([TRUSTED_REF])
+      expect(r.code, r.out).toBe(7)
+      expect(r.modelFile).toBe('')
+      writeTrustList(['qwen'])
+    })
   })
 
   it('the gate behaves identically without a TTY -- a pipe is not a yes', () => {
