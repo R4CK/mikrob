@@ -80,7 +80,12 @@ for a in "$@"; do
     *) echo "unknown option: $a" >&2; exit 2 ;;
   esac
 done
-WT="/home/neon/cc-land-$CARD"
+# $$ makes the path private to this process. QA2's finding on card 67beaf74 was against the pre-gate,
+# but the defect is the shape, not the script: a deterministic worktree path means a second run's
+# closing `git worktree remove --force` can pull the directory out from under this one's tsc/vitest
+# mid-cycle, and the result is REAL-LOOKING errors (TS6053 File not found, whole-file test load
+# failures) that the harness-fault detector cannot recognise, because the race lands half-way.
+WT="/home/neon/cc-land-$CARD-$$"
 
 git -C "$MAIN" fetch origin --quiet || die 3 "could not fetch origin"
 BASE="$(git -C "$MAIN" rev-parse --short origin/main)"
@@ -198,7 +203,10 @@ else
   if [ -f "$BASE_ERR" ]; then
     say "typecheck: baseline for main $BASE reused from cache ($(wc -l < "$BASE_ERR") error(s))"
   else
-    BWT="/home/neon/cc-land-base-$BASE"
+    # The riskier of the two here: this path is keyed on the BASE sha, and a landing queue is mostly
+    # cards forked from the same base -- so two concurrent landings of DIFFERENT cards would have
+    # collided on it, which is the common case rather than the rare one.
+    BWT="/home/neon/cc-land-base-$BASE-$$"
     rm -rf "$BWT"
     git -C "$MAIN" worktree add --detach -q "$BWT" origin/main || die 3 "could not create the baseline worktree"
     link_node_modules "$BWT"

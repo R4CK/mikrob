@@ -86,20 +86,55 @@ mkdir -p "$CACHE_DIR"
 # forked from it -- which is most of a queue, and is where the runtime actually goes. The web flag is
 # part of the key: without it a cached web-less run would be reused for a web-touching branch and
 # report the narrower measurement as if it were the wider one.
+# QA2 FAIL on 52fdfc7, reproduced against a live parallel run, not argued: the worktree path used to
+# be `/home/neon/cc-pregate-$label-$shortsha` -- deterministic and NOT process-unique. Two gate agents
+# running the SAME documented reproduction (the intended use) wrote the same path, and one run's
+# closing `git worktree remove --force` pulled the directory out from under the other's tsc/vitest
+# mid-cycle. That produced 161 "typecheck errors" (mostly TS6053 File not found) and 122 "failing
+# tests" (whole-file load failures) -- numbers that LOOK real. The HARNESS-FAULT detector cannot see
+# it, because the race lands half-way: files loaded before the directory vanished, so tsc exits
+# non-zero WITH `error TS` lines. A silently wrong measurement is the exact class this tool exists to
+# prevent, so it was vulnerable to its own subject. $$ makes the path private to this process.
 measure() { # $1 = full sha, $2 = label
-  local full="$1" label="$2" wt="/home/neon/cc-pregate-$2-$(git -C "$MAIN" rev-parse --short "$1")"
+  local full="$1" label="$2" short; short="$(git -C "$MAIN" rev-parse --short "$1")"
+  local wt="/home/neon/cc-pregate-$2-$short-$$"
   local errf="$CACHE_DIR/tsc-$full-web$WANT_WEB.txt" testf="$CACHE_DIR/tests-$full.txt"
   if [ -f "$errf" ] && { [ "$RUN_TESTS" -eq 0 ] || [ -f "$testf" ]; }; then
-    say "$label $(git -C "$MAIN" rev-parse --short "$1"): reused from cache"
+    say "$label $short: reused from cache"
     return 0
   fi
   rm -rf "$wt"
-  git -C "$MAIN" worktree add --detach -q "$wt" "$full" || { echo "could not create worktree for $label"; return 1; }
+  # Self-heal, QA's second MINOR: an interrupted run leaves a registered-but-missing worktree, and
+  # every later invocation against that sha then hard-fails until someone prunes by hand. Prune first,
+  # and retry once after a forced removal -- a stale entry is bookkeeping, not a reason to refuse.
+  git -C "$MAIN" worktree prune >/dev/null 2>&1
+  if ! git -C "$MAIN" worktree add --detach -q "$wt" "$full" 2>/dev/null; then
+    git -C "$MAIN" worktree remove --force "$wt" >/dev/null 2>&1
+    git -C "$MAIN" worktree prune >/dev/null 2>&1
+    git -C "$MAIN" worktree add --detach -q "$wt" "$full" || {
+      echo "could not create worktree for $label at $wt"; return 1; }
+    say "$label: recovered a stale worktree registration before measuring"
+  fi
   link_node_modules "$wt"
-  [ -f "$errf" ] || typecheck_errors "$wt" "$WANT_WEB" > "$errf"
-  say "$label $(git -C "$MAIN" rev-parse --short "$1"): $(wc -l < "$errf") typecheck error(s)"
+  # Write to a private temp file and rename. The cache is shared BY DESIGN (a merge-base result serves
+  # every card forked from it), so two runs can measure the same sha at once; without the rename a
+  # reader could pick up a half-written file and compare against it.
+  if [ ! -f "$errf" ]; then
+    typecheck_errors "$wt" "$WANT_WEB" > "$errf.$$.tmp" && mv -f "$errf.$$.tmp" "$errf"
+  fi
+  # Count FAULT lines separately (QA's first MINOR): they used to be tallied as typecheck errors, so a
+  # faulted run printed "base: 4 typecheck error(s)" when the file held 4 HARNESS-FAULT lines and no
+  # errors at all. The final gate refused correctly, but the live log said something untrue.
+  local faults errs
+  faults="$(grep -c '^HARNESS-FAULT' "$errf" 2>/dev/null || true)"
+  errs=$(( $(wc -l < "$errf") - faults ))
+  if [ "$faults" -gt 0 ]; then
+    say "$label $short: $errs typecheck error(s) + $faults HARNESS-FAULT line(s) -- not a measurement"
+  else
+    say "$label $short: $errs typecheck error(s)"
+  fi
   if [ "$RUN_TESTS" -eq 1 ] && [ ! -f "$testf" ]; then
-    test_failures "$wt" > "$testf"
+    test_failures "$wt" > "$testf.$$.tmp" && mv -f "$testf.$$.tmp" "$testf"
     say "$label: $(wc -l < "$testf") failing test(s)"
   fi
   git -C "$MAIN" worktree remove --force "$wt" >/dev/null 2>&1
