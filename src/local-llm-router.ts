@@ -567,7 +567,19 @@ export function routeTask(input: RouteInput): RouteDecision {
       ...cat,
     }
   }
-  // Nothing hard visible -> the DEFAULT stays local, as before.
+  // Nothing hard visible -> the DEFAULT stays local, as before -- EXCEPT inside a capped category.
+  // There, absence of a difficulty signal is not evidence of easiness: the text already matched a
+  // category the model struggles with, and these descriptions are exactly the ones with no explicit
+  // difficulty word in them. A capped category therefore needs POSITIVE evidence that the piece is
+  // small (a declared difficulty, or an inferred one within the ceiling); with none, it stays
+  // online, which is also what this router did for the whole category before the ceiling existed.
+  if (inferred === null && capped) {
+    return {
+      route: 'online',
+      reason: `category '${category}' caps at '${categoryCeiling}' and no difficulty was declared or inferred (fail-closed)`,
+      ...cat,
+    }
+  }
   return inferred === null
     ? { route: 'local', reason: `default-local (no blocking signal, threshold '${why}')`, ...cat }
     : {
