@@ -155,14 +155,26 @@ review_rx = re.compile(r"^\s*(?:[#*>\-]*\s*)?REVIEW\b", re.M)
 # what makes a mention cheap to write about. (No apostrophes in this block on purpose -- the whole
 # program is a single-quoted bash argument, and one apostrophe ends it mid-regex.)
 #
+# QUOTING IS THE WHOLE POINT, AND THE FIRST CUT GOT IT WRONG (Cybered NO-GO on 25c0c64). That regex
+# copied review_rx-s prefix class, which EXPLICITLY allows `>` -- the markdown quote marker, i.e.
+# the one character whose exclusion was the goal -- and its leading `\s*` also let an indented or
+# fenced quote through. Three natural quote forms armed:
+#     "> Gate-SHA: 1234abcd"  |  "    Gate-SHA: 1234abcd"  |  a ```-fenced block containing the line
+# Since a declared line is a SUBMISSION SIGNAL on its own, that let a gate manufacture a phantom
+# submission by quoting a review inside its own verdict -- the b60835e1 shape, one level up. So:
+# fenced blocks are removed before matching, and the line must start at column 0 with at most a
+# list/heading marker. A stricter match fails into the OLD heuristics (the field simply does not
+# count), which is the same fail-open direction the rest of this script takes.
+#
 # MIGRATION IS THE DEFAULT, NOT A PHASE: no field -> the old heuristics run unchanged, so a card
 # written before this convention (i.e. every card today) behaves exactly as it did. Fail-open, same
 # stance as the rest of this script.
-gate_sha_rx = re.compile(r"^\s*(?:[#*>\-]*\s*)?Gate-SHA:[ \t]*([0-9a-fA-F]{7,40}(?:[ \t]*[, ][ \t]*[0-9a-fA-F]{7,40})*)", re.M | re.I)
+gate_sha_rx = re.compile(r"^(?:[-*#]+[ \t]*)?Gate-SHA:[ \t]*([0-9a-fA-F]{7,40}(?:[ \t]*[, ][ \t]*[0-9a-fA-F]{7,40})*)", re.M | re.I)
+fence_rx = re.compile(r"(```|~~~).*?(\1|\Z)", re.S)
 
 def structured_shas(text):
     out = set()
-    for m in gate_sha_rx.finditer(text or ""):
+    for m in gate_sha_rx.finditer(fence_rx.sub("", text or "")):
         out |= {s.lower() for s in re.findall(r"[0-9a-fA-F]{7,40}", m.group(1))}
     return out
 
@@ -456,6 +468,20 @@ print(",".join(c.get("id") or "" for c in cards if isinstance(c, dict)))
     # MIGRATION IS THE DEFAULT: without the field, every pre-convention card behaves exactly as
     # before. Pinned so a later "cleanup" cannot make the field mandatory by accident.
     t "no field at all -> old behaviour"          "ADVISE-SKIP:already-gated" cybersec <<< '[{"author":"backend","created_at":100,"content":"REVIEW -- ac792b3b"},{"author":"cybersec","created_at":200,"content":"GO @ ac792b3b"}]'
+    # QUOTE FORMS (Cybered NO-GO on 25c0c64). The first cut reused review_rx-s prefix class, which
+    # allows `>` -- the markdown quote marker, the one character that had to be excluded -- and its
+    # leading \s* also passed indented and fenced quotes. Each of the three forms Cybered measured
+    # gets its own case, because a declared line is a submission signal on its own: a gate quoting a
+    # review inside its own verdict could otherwise manufacture a phantom submission.
+    t "markdown-quoted Gate-SHA does not arm"     "ADVISE-SKIP:already-gated" cybersec <<< '[{"author":"backend","created_at":100,"content":"REVIEW -- ac792b3b"},{"author":"cybersec","created_at":200,"content":"GO @ ac792b3b"},{"author":"cybered","created_at":300,"content":"Idezem a reviewt:\n> Gate-SHA: 1234abcd\nennyi volt."}]'
+    t "indented Gate-SHA does not arm"            "ADVISE-SKIP:already-gated" cybersec <<< '[{"author":"backend","created_at":100,"content":"REVIEW -- ac792b3b"},{"author":"cybersec","created_at":200,"content":"GO @ ac792b3b"},{"author":"cybered","created_at":300,"content":"Idezem a reviewt:\n    Gate-SHA: 1234abcd\nennyi volt."}]'
+    t "fenced Gate-SHA does not arm"              "ADVISE-SKIP:already-gated" cybersec <<< '[{"author":"backend","created_at":100,"content":"REVIEW -- ac792b3b"},{"author":"cybersec","created_at":200,"content":"GO @ ac792b3b"},{"author":"cybered","created_at":300,"content":"Idezem:\n```\nGate-SHA: 1234abcd\n```\nennyi volt."}]'
+    # An UNCLOSED fence must swallow to the end too -- a truncated paste is the likeliest real form.
+    t "unclosed fence swallows the line"          "ADVISE-SKIP:already-gated" cybersec <<< '[{"author":"backend","created_at":100,"content":"REVIEW -- ac792b3b"},{"author":"cybersec","created_at":200,"content":"GO @ ac792b3b"},{"author":"cybered","created_at":300,"content":"Pelda:\n```\nGate-SHA: 1234abcd"}]'
+    # ...and the stricter match must not swallow a REAL declaration that follows a quoted one.
+    t "quoted then really declared -> arms"       "ALLOW:stale-verdict" cybersec <<< '[{"author":"backend","created_at":100,"content":"REVIEW -- 6fd834e2"},{"author":"cybersec","created_at":200,"content":"NO-GO @ 6fd834e2"},{"author":"backend","created_at":300,"content":"A regi sor:\n```\nGate-SHA: 6fd834e2\n```\nAz uj:\nGate-SHA: 974509e3"}]'
+    # A list marker is formatting, not quoting: a bulleted declaration still counts.
+    t "list-marker declaration still arms"        "ADVISE-SKIP:already-gated" cybered <<< '[{"author":"backend2","created_at":100,"content":"REVIEW -- ac792b3b"},{"author":"cybered","created_at":200,"content":"CYBERED GO -- @ ac792b3b"},{"author":"backend2","created_at":300,"content":"- Gate-SHA: ac792b3b\nValasz: valtozatlan, a testver 63c4b270 landolt."}]'
     # Multiple shas on one line (a review that submits two commits together).
     t "two declared shas, one still new"          "ALLOW:stale-verdict" cybersec <<< '[{"author":"backend","created_at":100,"content":"REVIEW -- 6fd834e2"},{"author":"cybersec","created_at":200,"content":"Gate-SHA: 6fd834e2\nNO-GO"},{"author":"backend","created_at":300,"content":"Gate-SHA: 6fd834e2, 974509e3\nREVIEW -- fix + follow-up."}]'
     t "malformed json"                "ALLOW"              cybersec <<< 'not json'
