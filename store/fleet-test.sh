@@ -26,6 +26,9 @@ set -uo pipefail
 
 ROOT="/home/neon/marveen"
 TEST_TREE="${FLEET_TEST_TREE:-/home/neon/marveen-test}"
+# How long to queue behind another agent's run before giving up. A full suite is ~40s including the
+# build, so this is many runs deep; it exists so a stuck holder fails loudly instead of hanging.
+LOCK_WAIT_SECONDS="${FLEET_TEST_LOCK_WAIT:-900}"
 
 die() { echo "fleet-test.sh: $2" >&2; exit "$1"; }
 
@@ -48,6 +51,36 @@ done
 cd "$ROOT" || die 3 "cannot cd to $ROOT"
 [ -n "$REF" ] || REF="$(git rev-parse HEAD)"
 TARGET="$(git rev-parse "$REF" 2>/dev/null)" || die 2 "unknown ref '$REF'"
+
+# ONE RUN AT A TIME PER TREE (card 85faec1b). Everything below -- checkout, reset, clean, build,
+# vitest -- mutates the tree, and until this lock existed every agent did that to the SAME tree with
+# no coordination.
+#
+# MEASURED, not theorised. Two full-suite runs at the same sha reported 13 and 7 failures with
+# different failing sets. The tree's reflog named the cause: while one run was in flight, other
+# agents checked out fb60b0f at 20:27:54, ccb86e6 at 20:28:19 and fb60b0f again at 20:28:55. Their
+# checkouts swapped the source under the running suite and rewrote source mtimes, so the
+# dist-loading suites judged a build that no longer matched. The same sha in an uncontended tree
+# gave 8073 passed with one unrelated failure.
+#
+# WHY THIS IS NOT MERELY NOISY: a gate verdict (QA/Cybersec/Cybered PASS or FAIL) could depend on
+# another agent's checkout. A false red sends correct work back to in_progress; a false green lets a
+# real defect through. That is corrupted evidence, not flakiness -- and it reads like flakiness,
+# which invites a re-run instead of an investigation.
+#
+# WHY A LOCK AND NOT A TREE PER AGENT. A per-agent tree looks like the tidier fix and is not
+# sufficient: the same agent can have two runs in flight (its own plus a scheduled task), and they
+# would collide in exactly this way. The lock is sufficient on its own, so it is what ships;
+# FLEET_TEST_TREE remains for anyone who wants their own tree, and gets its own lock, because the
+# lock is keyed on the TREE PATH. A private tree therefore never queues behind the shared one.
+command -v flock >/dev/null 2>&1 || die 3 "flock is required to serialise runs against $TEST_TREE (util-linux)"
+LOCK_FILE="${TEST_TREE}.lock"   # beside the tree, never inside it: `git clean` must not be able to remove it
+exec 9>"$LOCK_FILE" || die 3 "cannot open the lock file $LOCK_FILE"
+if ! flock -n 9; then
+  echo "fleet-test.sh: another run holds $TEST_TREE -- waiting (up to ${LOCK_WAIT_SECONDS}s)" >&2
+  flock -w "$LOCK_WAIT_SECONDS" 9 \
+    || die 3 "timed out after ${LOCK_WAIT_SECONDS}s waiting for $TEST_TREE. Another run is stuck, or use FLEET_TEST_TREE=<your own path>."
+fi
 
 # Create once, reuse forever. `git worktree add --detach` fails if the path exists, so the
 # create and the update paths are deliberately separate.
