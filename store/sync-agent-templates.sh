@@ -76,6 +76,18 @@ import json, os, re, secrets, shutil, stat, subprocess, sys, tempfile
 # replacement line, or None when it cannot rewrite with certainty -- an uncertain case is REPORTED,
 # never guessed at.
 
+# F2a (Cybersec NO-GO on this card): the cut point used to be `stripped.index('curl')`, the FIRST
+# occurrence of the substring anywhere on the line. `echo "see curl docs" && curl -s -H ...` cut
+# inside the echo string and emitted shell that does not parse. Only a curl at COMMAND POSITION is
+# the command: line start, or preceded by a pipe, a separator, a subshell opener, or `&&`/`||`.
+def curl_command_index(line):
+    """Index of the curl that is actually the command, or None."""
+    for m in re.finditer(r'curl(?=\s|$)', line):
+        before = line[:m.start()].rstrip()
+        if before == '' or before.endswith(('|', ';', '&&', '||', '(', '$(', '`', '&')):
+            return m.start()
+    return None
+
 AUTH_ARGV = re.compile(r'-H\s+(?P<q>["\'])Authorization:\s*Bearer\s+\$\(cat\s+(?P<path>[^)]+)\)(?P=q)\s*')
 
 def rewrite_auth_argv(line):
@@ -85,7 +97,10 @@ def rewrite_auth_argv(line):
     m = AUTH_ARGV.search(line)
     path = m.group('path').strip()
     stripped = AUTH_ARGV.sub('', line, count=1)
-    idx = stripped.index('curl')
+    idx = curl_command_index(stripped)
+    if idx is None:
+        return None  # a curl that is not the command -- report, never guess at the cut point
+
     indent, tail = stripped[:idx], stripped[idx + 4:]
     printf = f"{indent}printf 'Authorization: Bearer %s\\n' \"$(cat {path})\" \\\n"
     return printf + f"{indent}| curl -H @-{tail.rstrip()}\n"
@@ -119,7 +134,10 @@ def rewrite_auth_argv_var(line):
     m = AUTH_ARGV_VAR.search(line)
     var = m.group('var')
     stripped = AUTH_ARGV_VAR.sub('', line, count=1)
-    idx = stripped.index('curl')
+    idx = curl_command_index(stripped)
+    if idx is None:
+        return None  # a curl that is not the command -- report, never guess at the cut point
+
     indent, tail = stripped[:idx], stripped[idx + 4:]
     printf = f"{indent}printf 'Authorization: Bearer %s\\n' \"{var}\" \\\n"
     return printf + f"{indent}| curl -H @-{tail.rstrip()}\n"
@@ -130,18 +148,51 @@ PATTERNS = [
     ('bearer-token-in-curl-argv-via-var', AUTH_ARGV_VAR, rewrite_auth_argv_var),
 ]
 
-def fix_text(text):
-    """Rewrite every known-bad pattern in a shell/markdown text. Returns (new_text, hits)."""
+FENCE = re.compile(r'^\s*```\s*(\w*)')
+RUNNABLE_FENCE = {'bash', 'sh', 'shell', 'console'}
+
+def fix_text(text, kind='shell'):
+    """Rewrite every known-bad pattern. Returns (new_text, hits, prose_hits).
+
+    F1 (Cybersec NO-GO, HIGH). The only test for "is this an executable command?" used to be
+    `'curl' in line`. A documented ANTI-PATTERN necessarily contains curl -- that is how anti-patterns
+    are written down -- so the rewriter edited the prose that TEACHES the safe shape and inverted the
+    lesson: leak-safe-secret-probe/SKILL.md ended up saying that the SAFE `printf | curl -H @-` form
+    is what leaks, immediately above "Feed curl a stdin config instead". Instead of what? The safe
+    form. A control whose whole job is teaching leak-free secret handling was turned around by the
+    tool meant to protect it.
+
+    So executability is decided by POSITION, not by content. In markdown, only lines inside a
+    runnable fence are rewritten; prose is COUNTED and reported, never edited. Comment lines are
+    skipped for the same reason -- a `#` line documents, it does not run. JSON string values are hook
+    commands and are all code, which is why fix_json calls this with kind='shell'.
+
+    Cybersec's own measurement backs the fence as the discriminator: of the 21 dry-run hits, the 18
+    settings.json hook commands and cybered-gate-pattern/SKILL.md:39 (inside a ```bash fence) are
+    real, while the SKILL.md:34 prose is not.
+    """
     hits = 0
+    prose = 0
+    in_runnable_fence = False
     lines = text.splitlines(keepends=True)
     for i, line in enumerate(lines):
+        if kind == 'markdown':
+            f = FENCE.match(line)
+            if f:
+                # An opening fence names its language; the closing one names nothing.
+                in_runnable_fence = f.group(1).lower() in RUNNABLE_FENCE if not in_runnable_fence else False
+                continue
+        executable = (kind != 'markdown' or in_runnable_fence) and not line.lstrip().startswith('#')
         for _name, det, rewrite in PATTERNS:
             if det.search(line):
+                if not executable:
+                    prose += 1
+                    break
                 new = rewrite(line)
                 if new is not None:
                     lines[i] = new
                     hits += 1
-    return ''.join(lines), hits
+    return ''.join(lines), hits, prose
 
 def fix_json(raw):
     """Rewrite inside JSON string values via parse -> edit -> serialise. Returns (new_raw, hits)."""
@@ -158,7 +209,7 @@ def fix_json(raw):
             return
         for key, val in list(items):
             if isinstance(val, str):
-                new, n = fix_text(val)
+                new, n, _prose = fix_text(val)
                 if n:
                     node[key] = new
                     total += n
@@ -178,6 +229,12 @@ def validate(path, raw):
             return True
         except Exception:
             return False
+    if path.endswith('.sh'):
+        # F2b: there was NO .sh branch, so the function fell through to `return True` -- the header's
+        # promise that "a rewrite that does not validate is DISCARDED" was simply false for the one
+        # file type this card brought into scope, and executable scripts were the reason for adding
+        # it. The .bak is recovery; this is prevention.
+        return subprocess.run(['bash', '-n'], input=raw, text=True, capture_output=True).returncode == 0
     # markdown: every ```bash fence must still parse as shell
     for block in re.findall(r'```bash\n(.*?)```', raw, re.S):
         probe = block.replace('__MARVEEN_INSTALL_DIR__', '/tmp')
@@ -237,13 +294,21 @@ def backup_once(path):
 def process(path, apply_writes):
     raw = open(path, encoding='utf-8').read()
     try:
-        new, hits = fix_json(raw) if path.endswith('.json') else fix_text(raw)
+        if path.endswith('.json'):
+            new, hits = fix_json(raw)
+            prose = 0
+        else:
+            kind = 'markdown' if path.endswith('.md') else 'shell'
+            new, hits, prose = fix_text(raw, kind)
     except Exception as exc:
         # Unparseable input is SKIPPED, not failed: we never wrote to it, so there is nothing to
         # restore and nothing half-applied. Keeping the two apart matters because the exit code is a
         # promise -- 3 means "a rewrite was attempted and did not validate".
         print(f'  SKIP  {path}: cannot parse ({exc})')
         return 0, 0, 0, 1
+    if prose:
+        # Reported, never edited: a documented anti-pattern is the point of the document.
+        print(f'  prose {path}: {prose} documented occurrence(s) left alone (not executable)')
     if hits == 0:
         return 0, 0, 0, 0
     if not validate(path, new):
@@ -280,7 +345,7 @@ if [[ "$MODE" == selftest ]]; then
   }
 
   # 1. the known-bad shape is rewritten
-  printf 'curl -s -H "Authorization: Bearer $(cat /t/tok)" http://x\n' > "$tmp/a.md"
+  printf '```bash\ncurl -s -H "Authorization: Bearer $(cat /t/tok)" http://x\n```\n' > "$tmp/a.md"
   _t "markdown: argv token rewritten" 1 "$tmp/a.md"
   grep -q 'printf .Authorization' "$tmp/a.md" && grep -q 'curl -H @-' "$tmp/a.md" \
     && echo "  ok   markdown: emits the printf | curl -H @- shape" \
@@ -290,14 +355,14 @@ if [[ "$MODE" == selftest ]]; then
   _t "markdown: already-good file untouched" 0 "$tmp/a.md"
 
   # 3. CUSTOMISATION PRESERVED -- the whole point of not copying the template over
-  printf 'MY OWN NOTE\ncurl -s -H "Authorization: Bearer $(cat /t/tok)" http://x\nANOTHER NOTE\n' > "$tmp/c.md"
+  printf 'MY OWN NOTE\n```bash\ncurl -s -H "Authorization: Bearer $(cat /t/tok)" http://x\n```\nANOTHER NOTE\n' > "$tmp/c.md"
   _run_python apply "$tmp/c.md" >/dev/null
   grep -q 'MY OWN NOTE' "$tmp/c.md" && grep -q 'ANOTHER NOTE' "$tmp/c.md" \
     && echo "  ok   customisation around the pattern is preserved" \
     || { echo "  FAIL customisation was lost"; fail=1; }
 
   # 4. JSON goes through parse -> edit -> serialise and stays valid
-  python3 -c "import json;json.dump({'hooks':{'x':'run: curl -s -H \"Authorization: Bearer \$(cat /t/tok)\" http://x'}},open('$tmp/d.json','w'))"
+  python3 -c "import json;json.dump({'hooks':{'x':'curl -s -H \"Authorization: Bearer \$(cat /t/tok)\" http://x'}},open('$tmp/d.json','w'))"
   _t "json: rewritten inside a string value" 1 "$tmp/d.json"
   python3 -c "import json;json.load(open('$tmp/d.json'))" \
     && echo "  ok   json: still parses after the rewrite" \
@@ -351,7 +416,7 @@ if [[ "$MODE" == selftest ]]; then
 
   # --- atomicity + backup (Cybered NO-GO, card 265fdc2c) ----------------------------------------
   # 6. a one-time .bak holds the ORIGINAL, and a second run does not clobber it with the fixed copy.
-  printf 'ORIGINAL\ncurl -s -H "Authorization: Bearer $(cat /t/tok)" http://x\n' > "$tmp/f.md"
+  printf 'ORIGINAL\n```bash\ncurl -s -H "Authorization: Bearer $(cat /t/tok)" http://x\n```\n' > "$tmp/f.md"
   _run_python apply "$tmp/f.md" >/dev/null
   if grep -q 'ORIGINAL' "$tmp/f.md.bak" && grep -q 'Bearer \$(cat' "$tmp/f.md.bak"; then
     echo "  ok   backup holds the pristine ORIGINAL, not the rewritten copy"
@@ -359,7 +424,7 @@ if [[ "$MODE" == selftest ]]; then
     echo "  FAIL backup does not hold the original"; fail=1
   fi
   cp "$tmp/f.md.bak" "$tmp/f.md.bak.snapshot"
-  printf 'curl -s -H "Authorization: Bearer $(cat /t/tok)" http://y\n' >> "$tmp/f.md"
+  printf '```bash\ncurl -s -H "Authorization: Bearer $(cat /t/tok)" http://y\n```\n' >> "$tmp/f.md"
   _run_python apply "$tmp/f.md" >/dev/null
   if cmp -s "$tmp/f.md.bak" "$tmp/f.md.bak.snapshot"; then
     echo "  ok   a second run leaves the existing backup untouched"
@@ -390,7 +455,7 @@ if [[ "$MODE" == selftest ]]; then
   #    DIRECTORY, while the old truncating write only needed write on the existing FILE, which it
   #    still has. That asymmetry is exactly what makes this a real discriminator.
   mkdir -p "$tmp/ro"
-  printf 'BOOT CRITICAL\ncurl -s -H "Authorization: Bearer $(cat /t/tok)" http://x\n' > "$tmp/ro/g.md"
+  printf 'BOOT CRITICAL\n```bash\ncurl -s -H "Authorization: Bearer $(cat /t/tok)" http://x\n```\n' > "$tmp/ro/g.md"
   cp "$tmp/ro/g.md" "$tmp/ro/g.md.bak"
   sum_before="$(cksum < "$tmp/ro/g.md")"
   chmod 500 "$tmp/ro"
@@ -400,6 +465,57 @@ if [[ "$MODE" == selftest ]]; then
     echo "  ok   a write that cannot create its temp leaves the target BYTE-IDENTICAL"
   else
     echo "  FAIL the target was damaged when the write could not complete"; fail=1
+  fi
+
+  # --- F1 (Cybersec NO-GO, HIGH): prose documents, it does not run -----------------------------
+  # The damage this prevents: leak-safe-secret-probe/SKILL.md:34 documents the UNSAFE shape in prose,
+  # and the rewriter turned it into the SAFE shape -- so the paragraph then claimed that
+  # printf | curl -H @- is what leaks, directly above "Feed curl a stdin config instead". Instead of
+  # what? The safe form. The skill whose only job is teaching leak-free secret handling was taught
+  # the opposite by the tool meant to protect it.
+  printf 'even `curl -H "Authorization: Bearer $(cat /t/tok)"` puts the secret in argv\n' > "$tmp/prose.md"
+  _run_python apply "$tmp/prose.md" >/dev/null
+  if grep -q 'Bearer \$(cat' "$tmp/prose.md" && ! grep -q 'curl -H @-' "$tmp/prose.md"; then
+    echo "  ok   markdown PROSE documenting the anti-pattern is left alone"
+  else
+    echo "  FAIL prose was rewritten -- the documented anti-pattern got inverted"; fail=1
+  fi
+  # The twin, so the rule is not "never touch markdown": inside a runnable fence the same line IS a
+  # copy-pasteable command and must still be fixed (cybered-gate-pattern/SKILL.md:39 is exactly that).
+  printf '```bash\ncurl -s -H "Authorization: Bearer $(cat /t/tok)" http://x\n```\n' > "$tmp/fenced.md"
+  _run_python apply "$tmp/fenced.md" >/dev/null
+  if grep -q 'curl -H @-' "$tmp/fenced.md"; then
+    echo "  ok   the SAME line inside a runnable fence is still rewritten"
+  else
+    echo "  FAIL a runnable fenced command was skipped as if it were prose"; fail=1
+  fi
+  printf '# curl -s -H "Authorization: Bearer $(cat /t/tok)" http://x\n' > "$tmp/comment.sh"
+  _run_python apply "$tmp/comment.sh" >/dev/null
+  if grep -q 'Bearer \$(cat' "$tmp/comment.sh"; then
+    echo "  ok   a commented-out example in a .sh is left alone"
+  else
+    echo "  FAIL a comment was rewritten"; fail=1
+  fi
+
+  # --- F2a: the cut point is the curl that IS the command ---------------------------------------
+  printf 'echo "see curl docs" && curl -s -H "Authorization: Bearer $TOK" http://x\n' > "$tmp/pos.sh"
+  _run_python apply "$tmp/pos.sh" >/dev/null
+  if bash -n "$tmp/pos.sh" 2>/dev/null && grep -q 'see curl docs' "$tmp/pos.sh"; then
+    echo "  ok   a curl inside a string is not mistaken for the command"
+  else
+    echo "  FAIL the rewrite cut at the wrong curl -- result does not parse"; fail=1
+  fi
+
+  # --- F2b: validate() now has a .sh branch -----------------------------------------------------
+  # It had none, so it fell through to `return True`: the header's promise that an invalid rewrite is
+  # DISCARDED was false for the one file type this card brought into scope. The .bak is recovery;
+  # this is prevention.
+  printf 'if true; then\n  curl -s -H "Authorization: Bearer $(cat /t/tok)" http://x\nfi\n' > "$tmp/ok.sh"
+  _run_python apply "$tmp/ok.sh" >/dev/null
+  if bash -n "$tmp/ok.sh" 2>/dev/null && grep -q 'curl -H @-' "$tmp/ok.sh"; then
+    echo "  ok   a valid .sh rewrite is written and still parses"
+  else
+    echo "  FAIL a valid .sh rewrite was rejected or produced broken shell"; fail=1
   fi
 
   [[ $fail -eq 0 ]] && { echo 'selftest: PASS'; exit 0; } || { echo 'selftest: FAIL'; exit 1; }
