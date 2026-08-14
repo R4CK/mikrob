@@ -96,11 +96,20 @@ describe('llmRefreshRecs (GET /api/local-llm/catalog)', () => {
     expect(body).toContain('llmStartPull(b.dataset.model)')
   })
 
-  it('activation is its own explicit POST /api/local-llm/model -- a download never silently becomes active', () => {
+  it('the use button routes through the explicit activation gate, not an inline fetch here', () => {
+    // The actual POST /api/local-llm/model call now lives in llmPostActivateModel, shared by
+    // the plain-click path and the publisher-trust confirm retry (card fa8959cd) -- see
+    // local-llm-trust-confirm-ui-wiring.test.ts for the full activation + trust-gate contract.
     const body = fnBody(APP, 'async function llmRefreshRecs()')
+    expect(body).toContain('llmActivateModelClick(b.dataset.model, b)')
+    expect(body).not.toMatch(/fetch\('\/api\/local-llm\/model'/)
+  })
+
+  it('activation is still its own explicit POST /api/local-llm/model -- a download never silently becomes active', () => {
+    const body = fnBody(APP, 'async function llmPostActivateModel(model, iTrust)')
     expect(body).toContain("fetch('/api/local-llm/model'")
     expect(body).toContain("method: 'POST'")
-    expect(body).toContain('JSON.stringify({ model: b.dataset.model })')
+    expect(body).toContain('JSON.stringify(iTrust ? { model, iTrust } : { model })')
   })
 
   it('an empty catalogue (0 models fitting this GPU) gets its own message, not the generic load-error text', () => {
