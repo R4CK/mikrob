@@ -39,6 +39,9 @@ LOG="$HERE/first-run-llm.log"
 EMBED_MODEL="${FIRST_RUN_EMBED_MODEL:-nomic-embed-text}"
 OLLAMA_HOST="${OLLAMA_HOST:-http://127.0.0.1:11434}"
 OLLAMA_BIN="${FIRST_RUN_OLLAMA_BIN:-ollama}"
+# The one catalogue schema this build knows how to read (card 4117f98e). Bump it in the same
+# change that teaches this script the new shape -- never ahead of it.
+SUPPORTED_CATALOG_SCHEMA=1
 
 log() { printf '%s  %s\n' "$(date '+%Y-%m-%d %H:%M:%S')" "$*" >> "$LOG" 2>/dev/null || true; }
 say() { printf '%s\n' "$*"; }
@@ -343,6 +346,24 @@ else: print("  %s -- size unknown, entries will be filtered against system RAM" 
 ' 2>/dev/null
 
 CATALOG="$(python3 "$HERE/llm-catalog.py" 2>/dev/null)"
+# SCHEMA CHECK BEFORE READING ANY FIELD (card 4117f98e). The catalogue carries a schemaVersion so
+# that a consumer meeting a document it does not understand REFUSES it, instead of reading fields
+# that may have moved -- and this is a consumer that turns those fields into install instructions.
+# The producer has enforced its own version since day one; this side never looked, which made the
+# guard decorative on exactly the path it was written for.
+#
+# 0 models and an unknown version are different failures, so they get different messages: one means
+# "nothing fits", the other means "this build cannot read this file".
+CATALOG_SCHEMA="$(printf '%s' "$CATALOG" | python3 -c 'import json,sys
+try: print(json.load(sys.stdin).get("schemaVersion"))
+except Exception: print("none")' 2>/dev/null)"
+if [ "$CATALOG_SCHEMA" != "$SUPPORTED_CATALOG_SCHEMA" ]; then
+  say "  The catalogue is version '$CATALOG_SCHEMA'; this build understands $SUPPORTED_CATALOG_SCHEMA."
+  say "  Not reading it: a document from another schema may have moved the fields this step turns"
+  say "  into install instructions. Update MikroB (./update.sh), then re-run store/first-run-llm.sh."
+  log "catalog: unsupported schemaVersion '$CATALOG_SCHEMA' (understood: $SUPPORTED_CATALOG_SCHEMA)"
+  exit 0
+fi
 COUNT="$(printf '%s' "$CATALOG" | python3 -c 'import json,sys
 try: print(len(json.load(sys.stdin).get("models",[])))
 except Exception: print(0)' 2>/dev/null)"

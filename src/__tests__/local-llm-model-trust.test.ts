@@ -186,6 +186,28 @@ describe('GET /api/local-llm/catalog labels trust from the reviewed list', () =>
     expect(m.trusted).toBe(true)
     expect(m.trustReason).toBe('allowlisted-publisher')
   })
+
+  it('a document from an unknown schema is NOT served -- the version is checked, not assumed', async () => {
+    // Card 4117f98e. schemaVersion exists so that a consumer meeting a document it does not
+    // understand refuses it rather than reading fields that may have moved. This route is one of
+    // the two consumers the version was written for, and it never looked -- so the guard was the
+    // producer checking itself. With no readable tier (the sandbox has no catalogue script either)
+    // the answer is the empty envelope: structurally valid, never a raw error for the UI.
+    writeFileSync(
+      CACHE,
+      JSON.stringify({
+        schemaVersion: 99,
+        generatedAt: new Date().toISOString(),
+        models: [{ installRef: TRUSTED, repo: 'Qwen/Good-GGUF', repoOwner: 'Qwen', parts: [] }],
+      }),
+    )
+    const r = await get()
+    expect(r.body.source).toBe('none')
+    expect(r.body.models).toEqual([])
+    // ...and it says WHICH failure this was, so a reader is not sent hunting a broken script when
+    // the file is merely newer than the code.
+    expect(String(r.body.warnings)).toContain('schemaVersion')
+  })
 })
 
 describe('POST /api/local-llm/model applies the same decision as the CLI door', () => {

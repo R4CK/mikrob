@@ -320,6 +320,38 @@ describe('first-run-llm.sh --use: publisher trust gate', () => {
     }
   })
 
+  describe('the catalogue listing checks schemaVersion before reading a field (card 4117f98e)', () => {
+    // The other consumer the version was written for. This step turns catalogue fields into
+    // install instructions, so reading a document from a schema it does not know is the exact
+    // failure schemaVersion exists to prevent -- and it never looked either.
+    function withStubCatalogue(schemaVersion: unknown): { code: number; out: string } {
+      // A stub llm-catalog.py in the sandbox: the script resolves it next to itself, so this
+      // exercises the real read path with a controlled document instead of the network.
+      writeFileSync(
+        join(sandbox, 'llm-catalog.py'),
+        `#!/usr/bin/env python3\nimport json\nprint(json.dumps({"schemaVersion": ${JSON.stringify(schemaVersion)}, "generatedAt": "2026-08-14T00:00:00Z", "source": "cache", "stale": False, "host": {}, "warnings": [], "models": [{"repo": "Qwen/Good-GGUF", "quant": "Q4_K_M", "fileMib": 4000, "tier": "fits", "installRef": ${JSON.stringify(TRUSTED_REF)}, "repoOwner": "Qwen", "trusted": True, "notes": []}]}))\n`,
+      )
+      const r = spawnSync('bash', [join(sandbox, 'first-run-llm.sh')], {
+        encoding: 'utf-8',
+        timeout: 60_000,
+        env: { ...process.env, OLLAMA_HOST: host, FIRST_RUN_BLOBS: join(sandbox, 'blobs') },
+      })
+      return { code: r.status ?? -1, out: `${r.stdout ?? ''}${r.stderr ?? ''}` }
+    }
+
+    it('refuses to read a version it does not understand, and says which failure it is', () => {
+      const r = withStubCatalogue(99)
+      expect(r.out).toContain("version '99'")
+      expect(r.out).not.toContain('Qwen/Good-GGUF') // no field of that document was rendered
+    })
+
+    it('CONTROL: the same document at the supported version IS listed', () => {
+      // Without this, "never lists anything" would pass the test above.
+      const r = withStubCatalogue(1)
+      expect(r.out).toContain('Qwen/Good-GGUF')
+    })
+  })
+
   it('the gate behaves identically without a TTY -- a pipe is not a yes', () => {
     // Every case above already runs without a TTY (spawnSync gives pipes), so this pins the
     // property rather than discovering it: there is no interactive branch that a terminal would

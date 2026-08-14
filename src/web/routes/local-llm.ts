@@ -86,6 +86,9 @@ const LLM_CATALOG_CACHE_FILE = join(STORE_DIR, 'llm-catalog-cache.json')
 const LLM_CATALOG_TRUST_FILE = join(STORE_DIR, 'llm-catalog-trust.json')
 // Written ONLY by store/local-llm-bench.sh, on a run that actually succeeded.
 const LLM_BENCH_STATE_FILE = join(STORE_DIR, 'local-llm-model-state.json')
+// The one catalogue schema this build knows how to read (card 4117f98e). It is compared, not
+// assumed: a document from another version may have moved the very fields read below.
+const CATALOG_SCHEMA_VERSION = 1
 const OLLAMA_BLOBS_DIR = process.env.FIRST_RUN_BLOBS || join(homedir(), '.ollama', 'models', 'blobs')
 // HuggingFace discovery hits 3 keyword searches + a tree fetch per candidate repo -- slow relative
 // to a dashboard poll, and the catalogue does not meaningfully change within a day. A GET this
@@ -1008,20 +1011,42 @@ export async function tryHandleLocalLlm(ctx: RouteContext): Promise<boolean> {
     // following an incident, that snapshot keeps saying "trusted" until someone rebuilds, so the
     // badge would contradict the gate the operator meets one click later.
     const label = <T extends { models?: unknown[] }>(doc: T): T => relabelCatalogueTrust(doc, LLM_CATALOG_TRUST_FILE)
-    const fresh = readLlmCatalogCacheIfFresh()
+    // SCHEMA CHECK ON EVERY TIER (card 4117f98e). schemaVersion exists so that a consumer meeting a
+    // document it does not understand refuses it rather than reading fields that may have moved --
+    // and this route is one of the two consumers the version was written for. It never looked, so
+    // the guard was enforced only by the producer against itself.
+    //
+    // An unknown version does not end the request: the next tier may still be readable (a cache
+    // written by a newer build, with a live refresh from this one). Only when no tier produces a
+    // document this build understands does the empty envelope below go out, saying why.
+    const usable = <T,>(doc: T | null): T | null => {
+      if (!doc) return null
+      const v = (doc as { schemaVersion?: unknown }).schemaVersion
+      if (v === CATALOG_SCHEMA_VERSION) return doc
+      logger.warn({ schemaVersion: v, understood: CATALOG_SCHEMA_VERSION }, 'local-llm: nem ismert katalógus-séma, kihagyva')
+      return null
+    }
+    const fresh = usable(readLlmCatalogCacheIfFresh())
     if (fresh) { json(res, label(fresh)); return true }
-    const live = await runLlmCatalogScript([], LLM_CATALOG_LIVE_TIMEOUT_MS)
+    const live = usable(await runLlmCatalogScript([], LLM_CATALOG_LIVE_TIMEOUT_MS))
     if (live) { json(res, label(live)); return true }
-    const offline = await runLlmCatalogScript(['--offline'], LLM_CATALOG_OFFLINE_TIMEOUT_MS)
+    const offline = usable(await runLlmCatalogScript(['--offline'], LLM_CATALOG_OFFLINE_TIMEOUT_MS))
     if (offline) { json(res, label(offline)); return true }
     json(res, {
-      schemaVersion: 1,
+      schemaVersion: CATALOG_SCHEMA_VERSION,
       generatedAt: new Date().toISOString(),
       source: 'none',
       stale: true,
       host: { gpu: null, ramTotalMib: null },
       models: [],
-      warnings: ['llm-catalog.py did not produce output (live and --offline both failed)'],
+      // The message names BOTH ways this line is reached, because they call for different
+      // actions: nothing produced a document, or every document was from a schema this build
+      // does not read (update MikroB). A single generic string would send the reader looking
+      // for a broken script when the file is merely newer than the code.
+      warnings: [
+        'llm-catalog.py did not produce a document this build can read (live and --offline both '
+          + `failed, or their schemaVersion was not ${CATALOG_SCHEMA_VERSION})`,
+      ],
     })
     return true
   }
