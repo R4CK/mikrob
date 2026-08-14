@@ -114,6 +114,41 @@ def quant_of(path):
     return m.group(1).upper() if m else "UNKNOWN"
 
 
+# Ascending quality, in the order GGUF quantisations are conventionally understood. Only used to
+# break a tie BETWEEN QUANTS OF ONE REPO -- see the sort below for why that is the whole scope.
+#
+# THE IQ FAMILY IS IN HERE FOR A MEASURED REASON. The first version of this table listed only the
+# classic Q/F names, and 24 of the 40 distinct quants in the live 435-model catalogue fell outside
+# it -- IQ4_XS alone appears 15 times. Unranked entries sort last within their repo, so IQ4_XS (a
+# Q4-class artefact) would have been offered BELOW Q2_K: the exact inversion this card exists to
+# remove, reintroduced by an incomplete list. Measured before writing the table, not after.
+QUANT_QUALITY = [
+    "IQ1_S", "IQ1_M",
+    "IQ2_XXS", "IQ2_XS", "IQ2_XS_H", "IQ2_S", "IQ2_M",
+    "Q2_K", "Q2_K_L", "Q2_K_XL",
+    "IQ3_XXS", "IQ3_XS", "IQ3_S", "IQ3_M",
+    "Q3_K_S", "Q3_K", "Q3_K_M", "Q3_K_L", "Q3_K_XL",
+    "IQ4_XS", "IQ4_NL", "IQ4_K_M",
+    # The _4_4 / _4_8 / _8_8 suffixes are ARM-repacked Q4_0: same precision, different layout.
+    "Q4_0", "Q4_0_4_4", "Q4_0_4_8", "Q4_0_8_8", "Q4_1",
+    "Q4_K_S", "Q4_K", "Q4_K_M", "Q4_K_L",
+    "Q5_0", "Q5_1", "Q5_K_S", "Q5_K", "Q5_K_M",
+    "Q6_K", "Q8_0",
+    "F16", "FP16", "BF16", "F32",
+]
+
+
+def quant_rank(quant):
+    """Higher is better. An unrecognised quant ranks BELOW every known one (-1) rather than being
+    guessed at: this decides which model an operator is offered first, and a quant nobody has
+    characterised should not be promoted over one that has been. A catalogue containing one also
+    carries a WARNING (see build below) -- ranking last silently is how an incomplete table hides."""
+    try:
+        return QUANT_QUALITY.index((quant or "").upper())
+    except ValueError:
+        return -1
+
+
 def quant_sets(tree):
     """Group .gguf entries into QUANT SETS, stripping the -NNNNN-of-NNNNN shard suffix.
 
@@ -263,7 +298,38 @@ def build(gpu, limit=20, fixture=None, keywords=None):
                         ),
                     }
                 )
-    models.sort(key=lambda m: (m["tier"] != "fits", not m["trusted"], -(m["downloads"] or 0)))
+    # ORDER IS AN OFFER, not a listing: first-run-llm.sh prints models[:5] numbered for the operator
+    # and retier() drops what does not fit on the reading host but never re-sorts, so position 1 is
+    # what gets installed on a machine with no network.
+    #
+    # The last key is new (card 51ad7c7c). Without it the order was (fits, trusted, downloads) and
+    # quantisation appeared nowhere, so the most DOWNLOADED quant of a model led -- which put
+    # Qwen2.5-Coder-7B Q2_K, a weak coder, ahead of the same repo's Q4_0 on a host where both fit.
+    # That contradicted the rule the catalogue work was written under: the better quantisation wins
+    # over the more popular one.
+    #
+    # DELIBERATELY THE LAST KEY, so its effect is confined to a tie. `downloads` is a REPO-level
+    # number -- every quant of one repo carries the same value -- so entries only reach this key when
+    # they are the same repo at the same tier. Cross-repo ordering is therefore untouched: this does
+    # not let a niche model outrank a popular one, it only picks the better artefact of the model
+    # already chosen.
+    models.sort(
+        key=lambda m: (
+            m["tier"] != "fits",
+            not m["trusted"],
+            -(m["downloads"] or 0),
+            -quant_rank(m["quant"]),
+        )
+    )
+    # An unranked quant sorts last within its repo, which is the safe default but an INVISIBLE one:
+    # a table that has fallen behind the ecosystem looks exactly like a table that is complete. Say
+    # it instead, so the gap is a line in the output rather than a quiet mis-ordering.
+    unranked = sorted({m["quant"] for m in models if quant_rank(m["quant"]) < 0})
+    if unranked:
+        notes.append(
+            "quantisations not in QUANT_QUALITY, ordered last within their repo: %s"
+            % ", ".join(unranked)
+        )
     return models, notes
 
 

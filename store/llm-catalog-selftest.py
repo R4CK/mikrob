@@ -167,6 +167,34 @@ if BUNDLED_DOC is not None:
     check("  ...specifically not the largest entry", True,
           all(m["repo"] != biggest["repo"] or m["quant"] != biggest["quant"] for m in tiny))
 
+# --- ORDER IS AN OFFER (card 51ad7c7c) --------------------------------------------------------
+# first-run-llm.sh prints models[:5] numbered and retier() never re-sorts, so position 1 is what an
+# operator installs. The key used to be (fits, trusted, downloads) with quantisation absent, which
+# put the most DOWNLOADED quant of a model first -- Q2_K ahead of the same repo's Q4_0.
+print("\n-- offer order --")
+check("a better quant outranks a weaker one", True, cat.quant_rank("Q4_0") > cat.quant_rank("Q2_K"))
+check("  ...across families too (IQ4_XS beats Q2_K)", True,
+      cat.quant_rank("IQ4_XS") > cat.quant_rank("Q2_K"))
+check("  ...and IQ1 is the floor it should be", True, cat.quant_rank("IQ1_S") < cat.quant_rank("Q2_K"))
+# An unranked quant must sort LAST within its repo, never be guessed upward: 24 of the 40 quants in
+# the live catalogue were unranked by the first version of the table, IQ4_XS among them.
+check("an unknown quant ranks below every known one", True, cat.quant_rank("Q9_NOPE") < 0)
+
+_rows = [
+    {"repo": "A/x", "quant": "Q2_K", "tier": "fits", "trusted": True, "downloads": 100},
+    {"repo": "A/x", "quant": "Q4_K_M", "tier": "fits", "trusted": True, "downloads": 100},
+    {"repo": "A/x", "quant": "Q3_K_M", "tier": "fits", "trusted": True, "downloads": 100},
+    {"repo": "B/y", "quant": "Q8_0", "tier": "fits", "trusted": True, "downloads": 500},
+]
+_sorted = sorted(_rows, key=lambda m: (m["tier"] != "fits", not m["trusted"],
+                                       -(m["downloads"] or 0), -cat.quant_rank(m["quant"])))
+check("within one repo the best quant leads", ["Q4_K_M", "Q3_K_M", "Q2_K"],
+      [m["quant"] for m in _sorted if m["repo"] == "A/x"])
+# THE COST CONTROL. The quant key is deliberately LAST so it only breaks a tie -- downloads are a
+# repo-level number, so entries reach it only when they are the same repo. A popular model must not
+# lose its place to a niche one with a fancier quant.
+check("  ...and the more popular REPO still leads", "B/y", _sorted[0]["repo"])
+
 print()
 if fails:
     print("selftest: FAIL (%d)" % len(fails))
