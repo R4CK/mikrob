@@ -136,9 +136,22 @@ BARE_HEX = re.compile(r"\b([0-9a-f]{7,40})\b")
 # ELKÉSZÜLT/ELKESZULT, and the BEFEJEZ- stem (BEFEJEZVE, BEFEJEZTEM, ...). Same reasoning as the
 # verdict class above: whichever word an agent's completion comment actually starts with, that
 # comment front-loads its answer, so first-mention-wins applies the same way.
+#
+# (6) THE BEFEJEZ- STEM ALSO MATCHED ITS OWN NEGATION (card 9a2090eb, Cybered's side-finding on
+# 2dd93b53). BEFEJEZ\w* has to end in \w* to cover Hungarian conjugation (BEFEJEZVE, BEFEJEZTEM,
+# BEFEJEZTÜK) -- and that same \w* swallowed BEFEJEZETLEN ("unfinished") and BEFEJEZETLENÜL, which
+# mean the OPPOSITE of a completion marker. Cybered's own probe: FRONT_LOADED matched
+# "Befejezetlen, meg dolgozom rajta -- ne triazsold".
+#
+# Excluded by DERIVING the family, not by listing words: Hungarian forms this negation with the
+# -tlan/-tlen suffix, which on this stem always surfaces as ...ETLEN (befejezETLEN,
+# befejezetlenÜL, befejezetlenSÉG, and with the potential suffix befejezhETETLEN). So the lookahead
+# rejects any continuation containing ETLEN rather than naming the inflections -- a word list here
+# would be incomplete again the first time someone writes a form nobody thought of. No positive
+# form of this stem contains ETLEN, so nothing legitimate is lost.
 FRONT_LOADED = re.compile(
     r"^(?:REVIEW|QA\s+(?:PASS|FAIL)|CYBER(?:SEC|ED)\s+(?:GO|NO-GO)|"
-    r"K[ÉE]SZ|DONE|ELK[ÉE]SZ[ÜU]LT|BEFEJEZ\w*)\b",
+    r"K[ÉE]SZ|DONE|ELK[ÉE]SZ[ÜU]LT|BEFEJEZ(?!\w*ETLEN)\w*)\b",
     re.IGNORECASE,
 )
 

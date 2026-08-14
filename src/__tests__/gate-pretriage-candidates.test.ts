@@ -390,6 +390,18 @@ describe('the fleet\'s OTHER completion markers front-load too, not just REVIEW/
     }
   })
 
+  // Card 9a2090eb (Cybered's side-finding on 2dd93b53): the \w* that covers Hungarian conjugation
+  // also swallowed the stem's NEGATION, so a comment saying the work is UNFINISHED was read as a
+  // completion marker and front-loaded its first sha. The negation is derived, not listed -- every
+  // negated form of this stem carries ...ETLEN -- so these cases cover the family, including the
+  // potential-suffix form nobody would have thought to enumerate.
+  it('the NEGATED BEFEJEZ- forms are not completion markers', () => {
+    for (const word of ['Befejezetlen', 'BEFEJEZETLENÜL', 'befejezetlenseg', 'Befejezhetetlen']) {
+      const out = run([{ created_at: 100, content: `${word}: 1111111, kontextus 2222222` }])
+      expect(out[0], word).toBe('2222222')   // last-mention-wins, i.e. NOT front-loaded
+    }
+  })
+
   it('CONTROL: a comment merely mentioning "befejez..." mid-text (not starting with it) still uses last-mention-wins', () => {
     const out = run([
       { created_at: 100, content: 'a korabbi befejezesre hivatkozva, javitva: 1111111, majd 2222222' },
