@@ -156,7 +156,9 @@ describe('POST /api/local-llm/model applies the same decision as the CLI door', 
       writeHead(status: number) { out.status = status; return res },
       end(chunk?: string) { if (chunk) out.body = JSON.parse(chunk) },
     }
-    const req: any = Readable.from([JSON.stringify(body)])
+    // Buffer chunks, not strings: readBody concatenates them as Buffers, and a string chunk throws
+    // ERR_INVALID_ARG_TYPE inside the route rather than failing an assertion.
+    const req: any = Readable.from([Buffer.from(JSON.stringify(body))])
     req.headers = {}
     const url = new URL('http://localhost:3420/api/local-llm/model')
     const ctx = { req, res, path: url.pathname, method: 'POST', url } as unknown as RouteContext
