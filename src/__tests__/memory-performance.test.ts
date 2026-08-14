@@ -142,37 +142,90 @@ describe('backfillEmbeddings', () => {
     expect(count).toBe(0) // nothing to backfill -> exactly 0, not merely ">= 0"
   })
 
-  it('processes rows without embeddings and updates them when Ollama responds', async () => {
-    const BACKFILL_AGENT = 'backfill-test-agent'
+  // FLAKY FIX #2 (card ac74b0e9, QA2 found it red in a full fleet-test run). One test here was
+  // repaired for suite-order dependence under card 0677c9ad; THIS one was left calling the real
+  // Ollama, which is the same defect class one door down -- a pattern gets fixed in the copy that
+  // happened to fail.
+  //
+  // MEASURED CAUSE, not guessed: `nomic-embed-text` costs 4.15s on its FIRST call (the model load)
+  // and 0.022s once warm -- 190x. The 5s budget therefore decided the verdict by whether some other
+  // process had warmed the model, and the fleet's local-LLM work keeps a 7B model resident on the
+  // same GPU. Raising the timeout would only move the coin-flip.
+  //
+  // But the timeout was the smaller problem. The old test was named "...updates them when Ollama
+  // responds" and asserted NOTHING about that -- its own comment said "no assertion on count here",
+  // and its other comment claimed a stub that did not exist. It could not fail for a real reason:
+  // an embedding that came back mangled, a count that did not match, a row updated when the backend
+  // was down. Stubbing `fetch` (the idiom already used in six suites here) makes both branches
+  // deterministic and finally tests the sentence in the name.
+  const OLLAMA_EMBEDDING = [0.1, 0.2, 0.3]
 
-    // Insert a memory bypassing saveAgentMemory so embedding stays NULL.
+  /** The one row this test cares about, with every other NULL closed off first. */
+  function insertRowNeedingBackfill(content: string): number {
     const db = getDb()
+    // Establish the precondition instead of assuming it: backfillEmbeddings walks EVERY NULL row,
+    // so a neighbour's leftover would make the count assertions below meaningless.
+    db.prepare("UPDATE memories SET embedding = ? WHERE embedding IS NULL").run('[]')
     const now = Math.floor(Date.now() / 1000)
     const result = db.prepare(
       `INSERT INTO memories (chat_id, topic_key, content, sector, salience,
        created_at, accessed_at, agent_id, category, auto_generated, keywords)
        VALUES (?, NULL, ?, 'semantic', 1.0, ?, ?, ?, 'cold', 0, NULL)`
-    ).run('test-chat', 'Backfill target content', now, now, BACKFILL_AGENT)
+    ).run('test-chat', content, now, now, 'backfill-test-agent')
     const id = Number(result.lastInsertRowid)
+    const before = db.prepare('SELECT embedding FROM memories WHERE id = ?').get(id) as { embedding: string | null }
+    expect(before.embedding).toBeNull()
+    return id
+  }
 
-    // Stub generateEmbedding so the test does not depend on a live Ollama.
-    // We reach into the module internals via the DB update path and verify
-    // the row stays untouched when the stub returns null (Ollama unavailable).
-    const rowBefore = db.prepare('SELECT embedding FROM memories WHERE id = ?').get(id) as { embedding: string | null }
-    expect(rowBefore.embedding).toBeNull()
+  it('updates the row when Ollama responds -- the case the name always claimed', async () => {
+    const id = insertRowNeedingBackfill('Backfill target content')
+    try {
+      vi.stubGlobal('fetch', async () => ({
+        ok: true,
+        status: 200,
+        json: async () => ({ embedding: OLLAMA_EMBEDDING }),
+      }))
+      const count = await backfillEmbeddings()
+      expect(count).toBe(1) // exactly the one row, not ">= 0"
 
-    // backfillEmbeddings calls generateEmbedding internally; without Ollama
-    // it returns null and the row remains NULL — that is the correct no-op path.
-    await backfillEmbeddings()
+      const after = getDb().prepare('SELECT embedding FROM memories WHERE id = ?').get(id) as { embedding: string | null }
+      // The stored value must be the embedding that came back -- "some valid JSON array" would pass
+      // just as happily on a row that was written with the wrong vector.
+      expect(JSON.parse(after.embedding!)).toEqual(OLLAMA_EMBEDDING)
+    } finally {
+      vi.unstubAllGlobals()
+    }
+  })
 
-    // No assertion on count here: it depends on whether Ollama is reachable.
-    // We just assert no exception is thrown and the row is still valid.
-    const rowAfter = db.prepare('SELECT embedding FROM memories WHERE id = ?').get(id) as { embedding: string | null }
-    // Embedding is either still null (Ollama unreachable) or a valid JSON array string.
-    if (rowAfter.embedding !== null) {
-      expect(() => JSON.parse(rowAfter.embedding!)).not.toThrow()
-      const parsed = JSON.parse(rowAfter.embedding!)
-      expect(Array.isArray(parsed)).toBe(true)
+  it('leaves the row NULL when Ollama is unreachable, and does not throw', async () => {
+    const id = insertRowNeedingBackfill('Backfill target while Ollama is down')
+    try {
+      vi.stubGlobal('fetch', async () => {
+        throw new Error('connect ECONNREFUSED 127.0.0.1:11434')
+      })
+      const count = await backfillEmbeddings()
+      expect(count).toBe(0) // nothing was written, and the failure was swallowed on purpose
+
+      const after = getDb().prepare('SELECT embedding FROM memories WHERE id = ?').get(id) as { embedding: string | null }
+      expect(after.embedding).toBeNull()
+    } finally {
+      vi.unstubAllGlobals()
+    }
+  })
+
+  it('CONTROL: a malformed response is not written -- the stub can express failure', async () => {
+    // Without this, the two tests above share one blind spot: a `generateEmbedding` that returned
+    // something truthy for ANY response would satisfy both. Ollama answering 200 with no embedding
+    // field is the realistic shape (wrong model name, for instance).
+    const id = insertRowNeedingBackfill('Backfill target with a malformed reply')
+    try {
+      vi.stubGlobal('fetch', async () => ({ ok: true, status: 200, json: async () => ({}) }))
+      expect(await backfillEmbeddings()).toBe(0)
+      const after = getDb().prepare('SELECT embedding FROM memories WHERE id = ?').get(id) as { embedding: string | null }
+      expect(after.embedding).toBeNull()
+    } finally {
+      vi.unstubAllGlobals()
     }
   })
 })
