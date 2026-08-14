@@ -573,11 +573,18 @@ export function routeTask(input: RouteInput): RouteDecision {
   // difficulty word in them. A capped category therefore needs POSITIVE evidence that the piece is
   // small (a declared difficulty, or an inferred one within the ceiling); with none, it stays
   // online, which is also what this router did for the whole category before the ceiling existed.
-  if (inferred === null && capped) {
+  if (capped) {
+    // INSIDE A CAPPED CATEGORY, ONLY A DECLARED DIFFICULTY COUNTS. Inference is not evidence here,
+    // and that is measured rather than assumed: the suite's own multi-file-wiring case ("Wire the
+    // new store into main.ts and the composition root") infers something within 'module' and would
+    // have started drafting locally -- a genuinely two-file change reading as a single-file one.
+    // The inferrer under-reads exactly the texts this category is made of, so the caller has to
+    // state the size. With no declaration the route is what it was before the ceiling existed.
     return {
       route: 'online',
-      reason: `category '${category}' caps at '${categoryCeiling}' and no difficulty was declared or inferred (fail-closed)`,
+      reason: `category '${category}' caps at '${categoryCeiling}'; no DECLARED difficulty, and inference is not trusted inside a capped category (fail-closed)`,
       ...cat,
+      ...(inferred === null ? {} : { difficulty: inferred }),
     }
   }
   return inferred === null
