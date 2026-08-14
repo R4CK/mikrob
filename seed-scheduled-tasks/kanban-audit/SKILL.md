@@ -61,13 +61,16 @@ except Exception: print(0)
    printf 'Authorization: Bearer %s\n' "$TOKEN" | curl -H @- -s "http://localhost:$PORT/api/kanban" | python3 -c "
 import json,sys,time
 last=int('''$LAST''' or 0); now=int(time.time())
-rows=[c for c in json.load(sys.stdin)
-      if c.get('status')=='in_progress' and not c.get('archived_at') and (c.get('updated_at') or 0) < last]
+cards=json.load(sys.stdin)
+parents=set(c.get('parent_id') for c in cards if c.get('parent_id'))
+rows=[c for c in cards
+      if c.get('status')=='in_progress' and c.get('id') not in parents and not c.get('archived_at') and (c.get('updated_at') or 0) < last]
 rows.sort(key=lambda c: c.get('updated_at') or 0)
 for c in rows:
     print(c['id'], '|', (c.get('assignee') or '-'), '|', round((now-(c.get('updated_at') or now))/3600.0,1), 'h |', c.get('title'))
 "
    ```
+   PARENT-KARTYA KIZARAS (2026-08-14, ugyanaz az osztaly mint a stuck-card-monitor mar rogzitett buktatoja, kartya ad78347c): egy szulo-kartya (amire masik kartya parent_id-je mutat) updated_at-je termeszet szerint nem mozdul, mert a haladas a gyerekeken tortenik -- kizarva a `parents` halmazzal, kulonben minden auditkor felesleges pinget kap a felelose egy epic-ert, ami valojaban aktivan halad a gyerekein keresztul.
 
 4. **Beakadt task -> ping**: minden beakadt kártyához küldj inter-agent message-t az assignee-nek (kivéve {{MAIN_AGENT_ID}}-nek és üres assignee-nek):
    ```
