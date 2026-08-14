@@ -44,6 +44,19 @@ if (!existsSync(ROUTER)) {
   console.error('Measuring the source instead would answer a question nobody asked: the fleet runs the build.')
   process.exit(2)
 }
+// ...and a build older than its source answers a question nobody asked either (card a3611ecc): the
+// numbers would describe the routing this repo USED to do, which is the most misleading possible
+// output from a tool whose entire job is to prove a routing change. Same exit 2 as no build at all.
+// Skipped when a stub router is injected: the seam exists so tests can run against a router with no
+// source tree, and "no source" is exactly the case the checker cannot decide.
+if (!process.env.ROUTE_HISTOGRAM_ROUTER) {
+  const { checkBuildFreshness } = await import(join(HERE, 'build-freshness.mjs'))
+  const freshness = checkBuildFreshness(ROUTER)
+  if (freshness.status !== 'fresh') {
+    console.error(`route-histogram: ${freshness.status} build -- ${freshness.reason}`)
+    process.exit(2)
+  }
+}
 const { routeTask, classifyCategory } = await import(ROUTER)
 
 /** The board as a corpus: one text per card, the same text the dispatch path would hand the router. */

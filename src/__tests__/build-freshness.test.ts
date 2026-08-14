@@ -184,6 +184,39 @@ describe('store/local-llm-rag.sh refuses a stale build (card a3611ecc)', () => {
     expect(r.status).toBe(9)
   })
 
+  it('store/route-histogram.mjs refuses the same way -- a measurement is the worst place for it', () => {
+    // Its own suite drives it through ROUTE_HISTOGRAM_ROUTER, and the guard is deliberately skipped
+    // for an injected stub (a stub has no source tree), so without this case the extension would
+    // have no test at all -- only my manual run, which is exactly the kind of evidence that rots.
+    const dir = mkdtempSync(join(tmpdir(), 'histogram-stale-'))
+    mkdirSync(join(dir, 'store'))
+    mkdirSync(join(dir, 'dist'))
+    mkdirSync(join(dir, 'src'))
+    copyFileSync(join(ROOT, 'store', 'route-histogram.mjs'), join(dir, 'store', 'route-histogram.mjs'))
+    copyFileSync(MODULE, join(dir, 'store', 'build-freshness.mjs'))
+    const built = join(dir, 'dist', 'local-llm-router.js')
+    writeFileSync(built, 'export function routeTask() { return { route: "local", reason: "stub" } }\nexport function classifyCategory() { return null }\n')
+    writeFileSync(join(dir, 'src', 'local-llm-router.ts'), 'export function routeTask() { return null }\n')
+    writeFileSync(join(dir, 'corpus.json'), '[]')
+    const now = Date.now() / 1000
+    utimesSync(join(dir, 'src', 'local-llm-router.ts'), now - 60, now - 60)
+    utimesSync(built, now, now)
+    const go = () =>
+      spawnSync('node', [join(dir, 'store', 'route-histogram.mjs'), '--corpus', join(dir, 'corpus.json')], {
+        encoding: 'utf-8',
+        timeout: 60_000,
+        env: { ...process.env, ROUTE_HISTOGRAM_ROUTER: '' },
+      })
+
+    const fresh = go()
+    expect(`${fresh.stdout ?? ''}${fresh.stderr ?? ''}`).not.toContain('stale build')
+
+    backdate(built, 3600)
+    const stale = go()
+    expect(stale.stderr ?? '').toContain('stale build')
+    expect(stale.status).toBe(2) // the machine interface is the exit code, not the prose
+  })
+
   it('"cannot tell" reads differently from "out of date" -- same refusal, different fact', () => {
     // Runs last: it removes the sandbox's source tree. A caller told "stale build" would go run a
     // build; on a box with no sources that is a wasted trip, so the two cases must not share wording.
