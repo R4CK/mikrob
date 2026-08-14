@@ -188,6 +188,51 @@ done
 
 die() { echo "local-llm-rag: $2" >&2; exit "$1"; }
 
+# --- ADVISORY-ONLY DRAFT ON AN ONLINE VERDICT (card ee43a6ac) ------------------------------------
+# Until now an ONLINE verdict produced NOTHING locally: the router said "do this on Claude" and the
+# 7B sat idle, so the hardest work was also the work the local model never touched. This path keeps
+# the DECISION exactly where it was and moves only the DRAFTING: the local model writes a draft, the
+# online agent REVIEWS it instead of starting from an empty file.
+#
+# THE SAFETY PROPERTY IS THE EXIT CODE, and it is structural rather than promised: an advisory run
+# ALWAYS ends in `exit 9`, the same answer the caller got before, so no caller can read a draft as
+# permission to skip the online work. Concretely, in advisory mode:
+#   * the file-writing self-repair loop is NOT used -- it owns the only exit-0 path in this script,
+#     and an unverified security draft must not land on disk where a later step could pick it up as
+#     if it had been checked;
+#   * --show-context also exits 9, so even the prompt-dump path cannot answer 0 on an online task;
+#   * a failed, empty or timed-out draft changes nothing -- the run still ends 9, with one line
+#     saying the draft is missing. A local model that is down must not alter routing.
+# The draft is time-boxed for the same reason: the caller is waiting to do the work itself, and a
+# hung 7B must not become a stall on the online path.
+#
+# WHERE IT DOES NOT RUN, deliberately: when the online verdict says the input is unusable or hedged
+# (empty description, ambiguity fail-closed), because a draft written from an ask nobody understood
+# is confident noise, and reviewing noise costs more than writing from scratch. Also not on the
+# difficulty gate (exit 8): that gate's whole statement is "the model is not reliable at this size",
+# so its draft would be the least useful and the most likely to mislead.
+#
+# DATA FLOW, stated because a gate will ask: this sends the task text to the LOCAL model on this box
+# (ollama on 127.0.0.1), which is where every locally-routed task and every stage-1 classification
+# already goes. Nothing leaves the machine, and no draft is treated as an answer.
+ADVISORY="${LOCAL_LLM_ADVISORY:-1}"                 # 0 turns the draft off; routing is unaffected
+ADVISORY_TIMEOUT="${LOCAL_LLM_ADVISORY_TIMEOUT:-120}"
+ADVISORY_REASON=""                                  # set = this run is an advisory draft, exit 9
+
+# Route ONLINE. Either exits 9 now, or (advisory) records why and lets the draft path continue.
+online() { # $1 = the reason string the caller would have printed
+  local reason="$1"
+  echo "local-llm-rag: ROUTE=online -> $reason" >&2
+  if [[ "$ADVISORY" != "1" ]]; then exit 9; fi
+  case "$reason" in
+    # The two "we do not know what is being asked" cases -- see above.
+    *"empty or non-string description"*|*"ambiguous/hedged"*|*"router not built"*)
+      echo "local-llm-rag: advisory draft SKIPPED -- the online reason is that the ask itself is unusable" >&2
+      exit 9 ;;
+  esac
+  ADVISORY_REASON="$reason"
+}
+
 # --- gather task prompt (args or stdin) ---
 if [[ ${#ARGS[@]} -gt 0 ]]; then
   TASK="${ARGS[*]}"
@@ -232,8 +277,7 @@ fi
 if [[ "$AUTO" == "1" ]]; then
   ROUTER="$HERE/../dist/local-llm-router.js"
   if [[ ! -f "$ROUTER" ]]; then
-    echo "local-llm-rag: ROUTE=online -> router not built at $ROUTER, nothing can judge this task" >&2
-    exit 9
+    online "router not built at $ROUTER, nothing can judge this task"
   fi
   VERDICT="$(ROUTER="$ROUTER" TASK="$TASK" DIFF="$DIFFICULTY" CFG="$HERE/local-llm-offload-active.json" node - <<'NODE'
 (async () => {
@@ -251,9 +295,11 @@ NODE
 )"
   ROUTE="${VERDICT%%$'\t'*}"; REASON="${VERDICT#*$'\t'}"
   if [[ "$ROUTE" != "local" ]]; then
-    echo "local-llm-rag: ROUTE=online -> keep this on Claude ($REASON)" >&2
-    exit 9
-  fi
+    # In advisory mode `online` RETURNS instead of exiting (card ee43a6ac), so everything below --
+    # stage 1 and the "drafting on the 7B" line -- must be skipped: those belong to a LOCAL verdict
+    # and printing them here would put ROUTE=local in the log of a task that is going online.
+    online "keep this on Claude ($REASON)"
+  else
   # STAGE 1 (card 05f8d99c): the deterministic rules said LOCAL. Ask the local model whether this is
   # a security/authz DECISION before drafting it.
   #
@@ -275,8 +321,7 @@ NODE
   if [[ "${ROUTE_CLASSIFY:-1}" == "1" && -f "$HERE/route-classify.sh" ]]; then
     TRIAGE="$(bash "$HERE/route-classify.sh" "$TASK" 2>/dev/null || echo UNKNOWN)"
     if [[ "$TRIAGE" == "SECURITY" ]]; then
-      echo "local-llm-rag: ROUTE=online -> stage-1 classifier called this a security decision (deterministic rules said: $REASON)" >&2
-      exit 9
+      online "stage-1 classifier called this a security decision (deterministic rules said: $REASON)"
     fi
     # The verdict is named, not implied. MECHANICAL ("the classifier read it and did not object")
     # and UNKNOWN ("the classifier could not answer -- no model, timeout, parse failure") are very
@@ -290,6 +335,7 @@ NODE
   fi
   echo "local-llm-rag: ROUTE=local -> drafting on the 7B ($REASON)" >&2
   # fall through to the normal local RAG draft path below
+  fi
 fi
 
 # --- coding-difficulty offload gate (card afcfe93e) ---------------------------------------------
@@ -298,7 +344,10 @@ fi
 # (codingDifficultyThreshold) or, if unset, derived from the aggressiveness slider -- mirroring
 # defaultDifficultyForAggressiveness() in src/web/routes/local-llm.ts (keep the two tables in sync).
 # No --difficulty => no gate (backward-compatible). Exit 8 = difficulty-gated (belongs online).
-if [[ -n "$DIFFICULTY" ]]; then
+# Skipped in advisory mode (card ee43a6ac): the routing decision has already been made and printed,
+# and this gate can only re-state it as `die 8` -- which would throw away the draft we came here for
+# without changing where the work happens.
+if [[ -z "$ADVISORY_REASON" && -n "$DIFFICULTY" ]]; then
   GATE="$(DIFFICULTY="$DIFFICULTY" CFG="$HERE/local-llm-offload-active.json" python3 - <<'PY'
 import json, os, sys
 LEVELS = ['trivial', 'isolated', 'module', 'feature', 'architecture']
@@ -427,6 +476,9 @@ fi
 
 if [[ "$SHOW_ONLY" -eq 1 ]]; then
   printf '%s\n' "$FULL_PROMPT"
+  # An advisory run answers 9 on EVERY path, including this one: --show-context on an online task
+  # must not hand back a 0 that a caller could read as "local handled it".
+  [[ -n "$ADVISORY_REASON" ]] && exit 9
   exit 0
 fi
 
@@ -440,6 +492,41 @@ SOURCE_FINAL="${SOURCE_OVR:-rag}"
 call_model() { printf '%s' "$1" | "$LLM" --caller "$CALLER_FINAL" --source "$SOURCE_FINAL" "${PASS[@]}"; }
 # drop a single ```lang ... ``` fence so a file-shaped draft is written as raw code
 strip_fence() { awk '/^[[:space:]]*```/{f=!f; next} {print}'; }
+
+# --- ADVISORY DRAFT (card ee43a6ac): draft for an ONLINE task, then still answer 9 ---------------
+# One exit, one code. The banner is on STDOUT with the draft because they must travel together: a
+# draft that gets separated from "this was not reviewed" is exactly the artefact this path must not
+# produce.
+if [[ -n "$ADVISORY_REASON" ]]; then
+  if [[ -n "$OUT" || -n "$VERIFY_CMD" ]]; then
+    echo "local-llm-rag: advisory draft ignores --out/--verify-cmd -- an unverified draft for an ONLINE task is not written to disk" >&2
+  fi
+  DRAFT="$(timeout "$ADVISORY_TIMEOUT" bash -c 'printf "%s" "$1" | "$2" --caller "$3" --source advisory "${@:4}"' _ \
+             "$FULL_PROMPT" "$LLM" "$CALLER_FINAL" "${PASS[@]}" 2>/dev/null || true)"
+  if [[ -z "${DRAFT// }" ]]; then
+    # A missing draft is a non-event: the answer was always going to be 9.
+    echo "local-llm-rag: advisory draft unavailable (local model failed, empty or over ${ADVISORY_TIMEOUT}s) -- nothing changes, this task is ONLINE" >&2
+    exit 9
+  fi
+  cat <<BANNER
+=== ADVISORY DRAFT -- NOT AN ANSWER, NOT REVIEWED =============================
+This task was routed ONLINE: $ADVISORY_REASON
+The decision is unchanged. What follows is a draft from the LOCAL 7B, produced
+only so you review something instead of starting from an empty file.
+
+READ IT AS A SUSPECT, NOT AS A HEAD START:
+  * every line is unverified -- no test, no typecheck, no gate has seen it;
+  * the reason this task is online is precisely the reason the local model is
+    not trusted with it, so the draft is most likely to be wrong exactly where
+    it matters;
+  * if reviewing it takes longer than writing it, throw it away. That is a
+    correct outcome, not a failure of this path.
+==============================================================================
+BANNER
+  printf '%s\n' "$DRAFT"
+  echo "local-llm-rag: advisory draft produced ($(printf '%s' "$DRAFT" | wc -c) bytes) -- ROUTE stays online, exit 9" >&2
+  exit 9
+fi
 
 # No local auto-verify requested: single-shot draft to stdout (original behavior).
 # Card 0c054ebf: propagate call_model's REAL exit code (was unconditional `exit 0`, which
