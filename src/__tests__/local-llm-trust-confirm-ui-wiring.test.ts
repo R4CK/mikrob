@@ -153,10 +153,18 @@ describe('llmSubmitTrustConfirm (the confirmation itself)', () => {
 
   it('SECURITY: a digest mismatch has NO override path -- it closes and reports, it never retries as if confirmable', () => {
     const body = fnBody(APP, 'async function llmSubmitTrustConfirm()')
-    // the digest-mismatch/other-failure fallthrough is the code after the 403 branch's `return`
-    const afterWrongAnswerReturn = body.slice(body.lastIndexOf('return\n    }'))
-    expect(afterWrongAnswerReturn).toContain('closeLlmTrustConfirm()')
-    expect(afterWrongAnswerReturn).toContain('showToast(data.error')
+    // Isolate strictly the fallthrough branch (after the wrong-answer 403 `if` block, before the
+    // `catch`) -- NOT the whole tail of the function, which would also contain the catch block's
+    // own independent closeLlmTrustConfirm() call and let a missing call in THIS branch pass
+    // vacuously.
+    const wrongAnswerIfEnd = body.indexOf("data.code === 'publisher_not_trusted') {")
+    const fallthroughStart = body.indexOf('\n    }', wrongAnswerIfEnd) + '\n    }'.length
+    const fallthroughEnd = body.indexOf('} catch {', fallthroughStart)
+    expect(fallthroughStart).toBeGreaterThan(wrongAnswerIfEnd)
+    expect(fallthroughEnd).toBeGreaterThan(fallthroughStart)
+    const fallthrough = body.slice(fallthroughStart, fallthroughEnd)
+    expect(fallthrough).toContain('closeLlmTrustConfirm()')
+    expect(fallthrough).toContain('showToast(data.error')
   })
 
   it('shows a loading state on the submit button while the request is in flight', () => {
