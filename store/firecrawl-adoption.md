@@ -85,5 +85,52 @@ The config lands in the same change as the key, not before it.
    paid -- a spend decision, hence level 1 / locked for the fleet).
 2. Whether the key goes in the shared vault (all agents can scrape) or is scoped to one agent.
 
-Once the key is in the vault as `firecrawl.apiKey`, the remaining work is the four lines of
-`.mcp.json` above plus the acceptance run in the previous section.
+## BLOCKING PREREQUISITE: scraped content must not arrive unwrapped (Cybersec, HIGH)
+
+**Read this before the four lines of `.mcp.json` look like the whole job.** They are not.
+
+An MCP tool result lands **directly in the calling model's context**. Every other external fetch in
+this fleet goes through the `quarantine-reader` sub-agent and then `wrapUntrustedFetch()`
+(`~/.claude/agents/quarantine-reader.md`, `src/prompt-safety.ts:136`,
+`src/__tests__/prompt-injection-defense.test.ts`). Wiring firecrawl naively would therefore create the
+fleet's **first unwrapped external-content channel** — and scraped pages are the highest-yield
+prompt-injection surface there is, which is the entire point of the capability we are adding.
+
+One of three outcomes must be chosen and written down on activation day. "It's an MCP tool" is not a
+reason — that is the mechanism of the bypass, not a justification for it.
+
+**Recommended: (a), routing the call through `quarantine-reader`.** It reuses the boundary that
+already exists and is already tested, instead of adding a second, discipline-based one. Mechanics,
+checked against the current definitions:
+
+- `quarantine-reader` declares `tools: WebFetch`. It needs the firecrawl MCP tool added to that list
+  — that is the whole change; its protocol already returns `{ url, nonce, status, content }`.
+- The caller then wraps with `wrapUntrustedFetch(url, content, nonce)` exactly as today. Keeping the
+  **nonce** matters beyond tidiness: it is embedded in the tag, so if scraped content later triggers
+  an exfiltration tool call, the tool input carries the nonce and names the exact fetch that
+  delivered the payload.
+- Honest limit: even here the raw content reaches the SUB-AGENT unwrapped. The protection is that the
+  sub-agent has no other tools and cannot act on injected instructions, and its output is data the
+  caller wraps. That is the same trade the existing WebFetch path already makes — consistent, not a
+  new exposure.
+
+(b) wrapping at each call site works, but depends on every future caller remembering; (c) an explicit,
+argued exception is allowed but must state what makes this channel different from every other fetch.
+
+Three smaller items for the same day (not blocking, but record the decision):
+
+1. **Vault scope — shared key vs one agent.** A blast-radius decision, not a convenience one: with a
+   shared key, any agent's compromise takes the key with it. Peti should decide this knowingly.
+2. **The acceptance grep for the key's literal value must include the `agents/**` tree**, not just the
+   session transcript.
+3. **Size/time limit on returned content.** There is none today; the quarantine protocol already
+   truncates at 50 000 chars, which is the natural precedent.
+
+Licence checked one level deeper by Cybersec and still clean: the client's transitive dependency
+`firecrawl` 4.30.1 — the place an AGPL payload could hide behind an MIT wrapper, because it shares the
+project's name — is MIT too, with no unusual dependencies.
+
+## What is left once the key exists
+
+The `.mcp.json` entry above, the quarantine decision from the previous section, and the acceptance
+run — in that order. The middle one is the part that will feel skippable and is not.
