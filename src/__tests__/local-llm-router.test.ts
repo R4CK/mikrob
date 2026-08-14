@@ -429,6 +429,54 @@ describe('REGRESSION: auth-implementation primitives (TOTP/step-up/burn/login-ra
   })
 })
 
+describe('trust decisions and control-blind-spots are online (card b55a3980)', () => {
+  // Cybered's finding on a7accbfb was that stripGateLine drops real signals. Measured over the
+  // frozen 561-card board, the strip changes the ROUTE of 15 cards, and in the handful where the
+  // card's own work really is security the BODY says so in vocabulary this file did not have --
+  // `trust`, `bizalmi` and `telepit` appeared in no table at all. Re-admitting the Gate: line would
+  // have bought those few back at the price of every card whose Gate: line is a NEGATION
+  // ("nincs uj tamadasi felulet"), which keyword matching cannot see.
+
+  it('deciding what may be INSTALLED on the basis of trust is a security decision', () => {
+    expect(
+      routeTask({ description: 'Separate the trust list from the relevance list: a model outside the trust list may only be installed after an explicit operator confirmation.' }).route,
+    ).toBe('online')
+  })
+
+  it('the same decision in the fleet\'s own Hungarian (eb843c46, which routed LOCAL before)', () => {
+    expect(
+      routeTask({ description: 'A bizalmi listan kivuli modell CSAK explicit operator-megerositessel telepulhet, a megerosito kepernyo mutassa min alapul a dontes.' }).route,
+    ).toBe('online')
+  })
+
+  it('the reverse word order too -- "install ... trusted", not only "trust ... install"', () => {
+    expect(routeTask({ description: 'The installer must only run a model whose publisher is trusted.' }).route).toBe('online')
+  })
+
+  it('something being INVISIBLE to a check is a security decision even though no check is removed', () => {
+    // 46c4ad4a: the scheduler group hidden in a masked heredoc is invisible to SCHEDULER_RX, so the
+    // gate still runs and still sees nothing. The removal grammar (rule c) has nothing to match.
+    expect(
+      routeTask({ description: 'A heredocba rejtett crontab parancs teljesen lathatatlan az anchored ellenorzesnek, tehat eszrevetlenul athaladhat a gate-en.' }).route,
+    ).toBe('online')
+  })
+
+  it('English phrasing of the same blind spot', () => {
+    expect(routeTask({ description: 'A command hidden in a masked heredoc stays undetected by the scanner and slips past the guard.' }).route).toBe('online')
+  })
+
+  it('CONTROL: "silently" is NOT part of the rule -- a silently-dead cron task stays local', () => {
+    // Measured cost of the first draft: `silently` pulled in 7cc8641a, a plain maintenance card,
+    // because the word describes how a FAILURE is reported far more often than evading a control.
+    // Without this control the rule looks equally good and quietly routes maintenance work online.
+    expect(routeTask({ description: 'Fix three more silently-dead scheduled tasks whose validation step never ran.' }).route).toBe('local')
+  })
+
+  it('CONTROL: plain trust-free install work is still local', () => {
+    expect(routeTask({ description: 'Install the new lint rule and run the formatter over the repo.' }).route).toBe('local')
+  })
+})
+
 describe('stripGateLine (card 14a73ce6, measured false-positive: card 543d62ff)', () => {
   it('removes a single trailing "Gate: ..." line', () => {
     const stripped = stripGateLine('Fix the off-by-one in the paginator.\n\nGate: QA.')

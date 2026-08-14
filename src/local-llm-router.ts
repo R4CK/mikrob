@@ -326,6 +326,48 @@ const SHAPE_SIGNALS: ReadonlyArray<readonly [NonOffloadableCategory, RegExp]> = 
     'security-decision',
     /\b(tokens?|codes?|links?|otps?|one-time|single-use|magic)\b[^.]{0,40}\bburn(s|ed|ing)?\b/,
   ],
+  // --- TRUST-DECISION family (card b55a3980) ----------------------------------------------------
+  // Deciding whether an ARTIFACT may be installed or run is an authorization question about code
+  // rather than about a user, and nothing in this file spoke that language: `trust`, `bizalmi` and
+  // `telepit` appeared in no table at all. Two live cards proved the gap -- separating the TRUST
+  // list from the RELEVANCE list (eb843c46: "a bizalmi listan kivuli modell CSAK explicit
+  // operator-megerositessel telepulhet"), and splitting the catalogue's provenance field
+  // (87d7c86f) -- both routed LOCAL on their own text and were reaching the 7B for a decision about
+  // what this box may execute.
+  //
+  // COST, measured on the frozen 561-card board rather than argued: 6 cards match, 3 of which
+  // already route online; the 3 it moves are eb843c46, 87d7c86f and fa8959cd, every one of them a
+  // [SEC]-labelled trust-decision card. The reverse-order rule adds d730070e, a34effcb (both [SEC])
+  // and 61a4a85f -- the model-picker UI, which is where the trust evidence is shown to the operator,
+  // and eb843c46's own words for getting that screen wrong are "nem dontes hanem atkattintas".
+  [
+    'security-decision',
+    /\b(trust|trusted|untrusted|trustworthy|bizalmi|megbizhato|megbízható)\w*\b[^.]{0,60}\b(list|lista|allowlist|allow-list|decision|dontes|döntés|install|installable|telepit|telepít|execute|run)\w*/,
+  ],
+  [
+    'security-decision',
+    /\b(install|installable|telepit|telepít|execute)\w*\b[^.]{0,60}\b(trust|trusted|untrusted|bizalmi|megbizhato|megbízható)\w*/,
+  ],
+  // --- INVISIBLE-TO-A-CONTROL family (card b55a3980) ---------------------------------------------
+  // Rule (3) above catches CEASING to apply a control ("bypass the check"). It does not catch the
+  // other half: the control still runs, and something is structurally invisible to it. Card
+  // 46c4ad4a is exactly that -- a scheduler command hidden in a masked heredoc "TELJESEN lathatatlan
+  // a SCHEDULER_RX ellenorzesnek", so a crontab/at/systemd-run line "eszrevetlenul athaladhat" the
+  // self-pace gate. Changing what a control can SEE is a security decision even when no check is
+  // removed, and the fleet writes this in Hungarian, where none of the removal grammar applies.
+  //
+  // `silently` was in the first draft of this rule and is NOT here: measured, it dragged in
+  // 7cc8641a ("silently-dead scheduled tasks"), a plain maintenance card, because "silently" is
+  // about how a FAILURE is reported far more often than about evading a control. Without it the
+  // rule moves exactly one card on the whole board -- 46c4ad4a, the one it was written for.
+  [
+    'security-decision',
+    /\b(invisible|unnoticed|undetected|unseen|lathatatlan|láthatatlan|eszrevetlen|észrevétlen|rejtve|rejtett)\w*\b[^.]{0,70}\b(check|checks|guard|gate|detector|detect|scan|scanner|validation|ellenorz|ellenőrz|detektor|szur|szűr)\w*/,
+  ],
+  [
+    'security-decision',
+    /\b(athalad|áthalad|atmegy|átmegy|slip|slips|slipped|sneak|sneaks)\w*\b[^.]{0,70}\b(check|guard|gate|detector|scan|validation|ellenorz|ellenőrz|detektor|szur|szűr)\w*/,
+  ],
 ]
 
 /** Strip zero-width/control chars and collapse letter-spaced runs ("s e c u r i t y" -> "security")
