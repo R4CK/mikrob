@@ -244,8 +244,25 @@ else:
   printf '%s\n' "$want" > "$MODEL_FILE" || { say "could not write $MODEL_FILE"; exit 5; }
   log "default model: $prev -> $want (explicit --use)"
   say "Fleet default is now: $want   (was: $prev)"
-  say "NOT YET BENCHMARKED on this hardware -- run store/local-llm-bench.sh before trusting its"
-  say "throughput numbers, and treat its drafts as drafts until then."
+  # The benchmark warning is now a FACT, not a fixed line (card d730070e). It used to print on every
+  # switch, including for a model measured five minutes earlier, and a warning that is always there
+  # is one nobody reads. store/local-llm-model-state.json is written only by local-llm-bench.sh, and
+  # only on a run that succeeded.
+  BENCH="$(WANT="$want" python3 -c '
+import json, os, sys
+try:
+    rec = (json.load(open(sys.argv[1])).get("models") or {}).get(os.environ["WANT"])
+except Exception:
+    rec = None
+if rec and rec.get("benchmarkedAt"):
+    print("%s\t%s" % (rec["benchmarkedAt"], rec.get("evalTps") or "?"))
+' "$HERE/local-llm-model-state.json" 2>/dev/null)"
+  if [ -n "$BENCH" ]; then
+    say "Benchmarked on this hardware: ${BENCH%%	*} (${BENCH##*	} tok/s)."
+  else
+    say "NOT YET BENCHMARKED on this hardware -- run store/local-llm-bench.sh before trusting its"
+    say "throughput numbers, and treat its drafts as drafts until then."
+  fi
   exit 0
 fi
 

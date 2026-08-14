@@ -8,6 +8,7 @@ import { logger } from '../../logger.js'
 import { readBody, json } from '../http-helpers.js'
 import { atomicWriteFileSync } from '../atomic-write.js'
 import { decideModelTrust, confirmationMatches, relabelCatalogueTrust } from '../../local-llm-model-trust.js'
+import { readBenchState, benchInfoFor } from '../../local-llm-bench-state.js'
 import { getDb } from '../../db.js'
 import { pickTemplate } from '../../local-llm-template-picker.js'
 import {
@@ -83,6 +84,8 @@ const LLM_CATALOG_CACHE_FILE = join(STORE_DIR, 'llm-catalog-cache.json')
 // against. Both are overridable by env for tests only -- production reads the real locations, and
 // nothing here decides anything from an environment variable that is absent in production.
 const LLM_CATALOG_TRUST_FILE = join(STORE_DIR, 'llm-catalog-trust.json')
+// Written ONLY by store/local-llm-bench.sh, on a run that actually succeeded.
+const LLM_BENCH_STATE_FILE = join(STORE_DIR, 'local-llm-model-state.json')
 const OLLAMA_BLOBS_DIR = process.env.FIRST_RUN_BLOBS || join(homedir(), '.ollama', 'models', 'blobs')
 // HuggingFace discovery hits 3 keyword searches + a tree fetch per candidate repo -- slow relative
 // to a dashboard poll, and the catalogue does not meaningfully change within a day. A GET this
@@ -965,7 +968,19 @@ export async function tryHandleLocalLlm(ctx: RouteContext): Promise<boolean> {
       gpuInfo(),
     ])
     const ollamaUp = tags !== null
-    const models = (tags?.models || []).map((m: any) => ({ name: m.name, size: m.size ?? 0 }))
+    // INSTALLED and BENCHMARKED are separate facts with separate sources (card d730070e).
+    // `installedAt` is ollama's own modified_at, so it is right even for a model pulled by hand;
+    // `benchmarked` comes from the file store/local-llm-bench.sh writes when a run succeeds. Both
+    // were `null` placeholders in the catalogue schema with nothing behind them, which left the UI
+    // unable to distinguish a measured model from one downloaded a minute ago -- and this card
+    // exists because "the download finished" is not evidence it produces usable code.
+    const benchState = readBenchState(LLM_BENCH_STATE_FILE)
+    const models = (tags?.models || []).map((m: any) => ({
+      name: m.name,
+      size: m.size ?? 0,
+      installedAt: typeof m.modified_at === 'string' ? m.modified_at : null,
+      ...benchInfoFor(benchState, m.name),
+    }))
     const running = ps?.models || []
     const active = readActiveModel()
     json(res, {

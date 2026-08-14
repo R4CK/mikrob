@@ -26,6 +26,50 @@
 set -uo pipefail
 
 HOST="${OLLAMA_HOST:-http://127.0.0.1:11434}"
+
+STATE_FILE="${LOCAL_LLM_STATE_FILE:-$(dirname "${BASH_SOURCE[0]}")/local-llm-model-state.json}"
+BEST_TPS=0
+BEST_CTX=0
+
+record_bench() { # $1 model, $2 eval_tps, $3 ctx, $4 label
+  # Read-modify-write through a temp file: other models' records must survive, and a half-written
+  # state file would read as "nothing was ever benchmarked" -- which is the safe direction, but
+  # losing another model's record to a crash is not.
+  MODEL="$1" TPS="$2" CTX="$3" LBL="$4" STATE="$STATE_FILE" python3 - <<'PY'
+import json, os, tempfile, datetime
+state = os.environ["STATE"]
+try:
+    doc = json.load(open(state))
+    if not isinstance(doc, dict) or not isinstance(doc.get("models"), dict):
+        doc = {"models": {}}
+except Exception:
+    doc = {"models": {}}
+doc["models"][os.environ["MODEL"]] = {
+    "benchmarkedAt": datetime.datetime.now(datetime.timezone.utc).replace(microsecond=0).isoformat().replace("+00:00", "Z"),
+    "evalTps": float(os.environ["TPS"]),
+    "ctx": int(os.environ["CTX"]),
+    "label": os.environ["LBL"],
+}
+d = os.path.dirname(state) or "."
+fd, tmp = tempfile.mkstemp(dir=d)
+with os.fdopen(fd, "w") as f:
+    json.dump(doc, f, indent=2)
+os.replace(tmp, state)
+print("local-llm-bench: recorded benchmark for %s (%s tok/s @ ctx %s)" % (
+    os.environ["MODEL"], os.environ["TPS"], os.environ["CTX"]))
+PY
+}
+
+# --record <model> <eval_tps> <ctx> <label>: write the state entry without running a benchmark.
+# It exists so the recording itself is testable -- the measurement needs a GPU and a model, the
+# bookkeeping does not, and an untested writer is where a silent "everything is benchmarked" bug
+# would live.
+if [[ "${1:-}" == "--record" ]]; then
+  [[ $# -eq 5 ]] || { echo "usage: local-llm-bench.sh --record <model> <eval_tps> <ctx> <label>" >&2; exit 2; }
+  record_bench "$2" "$3" "$4" "$5"
+  exit 0
+fi
+
 # No literal fallback -- see the note in local-llm.sh read_model(). Benchmarking a model nobody
 # configured would publish throughput numbers for a model the fleet is not running.
 MODEL="${LOCAL_LLM_MODEL:-$(cat "$(dirname "${BASH_SOURCE[0]}")/local-llm-model" 2>/dev/null || true)}"
@@ -117,5 +161,21 @@ print(round(d.get("load_duration", 0) / 1e6), tps("prompt_eval_count", "prompt_e
   [[ -z "$metrics" ]] && metrics="- - -"
   read -r load_ms ptps etps <<< "$metrics"
   echo "$LABEL,$MODEL,$ctx,$split,$ctxload,$kv,$kvtype,$load_ms,$ptps,$etps,ok"
+  # Keep the best successful run, to record afterwards (card d730070e). Best rather than last: a
+  # repeat that lands while another agent is on the GPU measures the contention, not the model.
+  if [[ "$etps" != "-" ]] && awk "BEGIN{exit !($etps > $BEST_TPS)}"; then
+    BEST_TPS="$etps"; BEST_CTX="$ctx"
+  fi
  done
 done
+
+# RECORD THAT A MEASUREMENT HAPPENED. Until now this script printed CSV and kept nothing, so
+# "benchmarked" was a claim no file could support -- the catalogue's benchmarkedAt was hardcoded
+# null and the UI could not tell a measured model from one downloaded a minute ago. Only this
+# script writes the file: a record asserting that a measurement took place must be written by the
+# thing that measures, never by an installer or a UI action.
+if [[ "$BEST_TPS" != "0" ]]; then
+  record_bench "$MODEL" "$BEST_TPS" "$BEST_CTX" "$LABEL"
+else
+  echo "local-llm-bench: no successful run -- not recording a benchmark for '$MODEL'" >&2
+fi
