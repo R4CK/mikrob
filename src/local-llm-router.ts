@@ -643,23 +643,32 @@ export function routeTask(input: RouteInput): RouteDecision {
   // like an ordinary slider decision -- in precisely the situation where the interesting fact is
   // that this category stopped vetoing. That is the sentence we will be looking for in an incident,
   // so it says so.
-  const why = capped
-    ? `${threshold}' (capped by category '${category}`
+  //
+  // COMPOSED, NOT SPLICED (card 6034941c). This used to be a fragment that borrowed the caller's
+  // surrounding quotes -- `${threshold}' (capped by category '${category}` dropped into
+  // `threshold '${why}'` -- so the quote that was meant to close the THRESHOLD ended up closing the
+  // category instead, the parenthesis never closed at all, and on the undeclared branch a stray
+  // apostrophe landed in front of "(undeclared)". Six live cards printed it. My own histogram tool
+  // found it on its first run, which is the argument for the tool: nobody reads an audit line until
+  // an incident, and then it is the only thing to read. The note now carries its own quotes and
+  // brackets, and the call sites interpolate it whole.
+  const thresholdNote = capped
+    ? `'${threshold}' (capped by category '${category}')`
     : inCappedCategory
-      ? `${threshold}' (category '${category}' caps but no longer vetoes`
-      : threshold
+      ? `'${threshold}' (category '${category}' caps but no longer vetoes)`
+      : `'${threshold}'`
   const cat = category === null || categoryCeiling === 'never' ? {} : { category }
   const declared = normalizeDifficulty(input.difficulty)
   if (declared !== null) {
     if (!isDraftableLocally(declared, threshold)) {
       return {
         route: 'online',
-        reason: `difficulty '${declared}' exceeds threshold '${why}'`,
+        reason: `difficulty '${declared}' exceeds threshold ${thresholdNote}`,
         difficulty: declared,
         ...cat,
       }
     }
-    return { route: 'local', reason: `difficulty '${declared}' within threshold '${why}'`, difficulty: declared, ...cat }
+    return { route: 'local', reason: `difficulty '${declared}' within threshold ${thresholdNote}`, difficulty: declared, ...cat }
   }
 
   // No declared difficulty: INFER one rather than skipping the gate (card c7a0c142). Undeclared
@@ -668,7 +677,7 @@ export function routeTask(input: RouteInput): RouteDecision {
   if (inferred !== null && !isDraftableLocally(inferred, threshold)) {
     return {
       route: 'online',
-      reason: `inferred difficulty '${inferred}' exceeds threshold '${why}' (undeclared)`,
+      reason: `inferred difficulty '${inferred}' exceeds threshold ${thresholdNote} (undeclared)`,
       difficulty: inferred,
       ...cat,
     }
@@ -694,10 +703,10 @@ export function routeTask(input: RouteInput): RouteDecision {
     }
   }
   return inferred === null
-    ? { route: 'local', reason: `default-local (no blocking signal, threshold '${why}')`, ...cat }
+    ? { route: 'local', reason: `default-local (no blocking signal, threshold ${thresholdNote})`, ...cat }
     : {
         route: 'local',
-        reason: `inferred difficulty '${inferred}' within threshold '${why}' (undeclared)`,
+        reason: `inferred difficulty '${inferred}' within threshold ${thresholdNote} (undeclared)`,
         difficulty: inferred,
         ...cat,
       }
