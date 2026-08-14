@@ -72,12 +72,23 @@ SHORT="$(git -C "$MAIN" rev-parse --short "$SHA")"
 MBSHORT="$(git -C "$MAIN" rev-parse --short "$MB")"
 echo "PRE-GATE $CARD: $SHORT vs its merge-base $MBSHORT (origin/main $(git -C "$MAIN" rev-parse --short origin/main))"
 
+# apps/web is a separate tsc project and was hardcoded OFF here, so the sentinel printed a clean
+# "0 typecheck error(s)" for a branch it had not fully measured -- a filtered result reported without
+# its filter, which is worse than a slow one. Same derived rule cleancore-land.sh already uses: the
+# project is measured when the branch touches it, so nobody has to remember a flag.
+WANT_WEB=0
+git -C "$MAIN" diff --name-only "$MB..$SHA" | grep -q '^apps/web/' && WANT_WEB=1
+[ "$WANT_WEB" = 1 ] && say "typecheck: including apps/web (the branch touches it)" \
+                    || say "typecheck: apps/web NOT measured (the branch does not touch it)"
+
 mkdir -p "$CACHE_DIR"
 # Keyed by the FULL sha of the tree measured, so the merge-base result is shared by every card that
-# forked from it -- which is most of a queue, and is where the runtime actually goes.
+# forked from it -- which is most of a queue, and is where the runtime actually goes. The web flag is
+# part of the key: without it a cached web-less run would be reused for a web-touching branch and
+# report the narrower measurement as if it were the wider one.
 measure() { # $1 = full sha, $2 = label
   local full="$1" label="$2" wt="/home/neon/cc-pregate-$2-$(git -C "$MAIN" rev-parse --short "$1")"
-  local errf="$CACHE_DIR/tsc-$full.txt" testf="$CACHE_DIR/tests-$full.txt"
+  local errf="$CACHE_DIR/tsc-$full-web$WANT_WEB.txt" testf="$CACHE_DIR/tests-$full.txt"
   if [ -f "$errf" ] && { [ "$RUN_TESTS" -eq 0 ] || [ -f "$testf" ]; }; then
     say "$label $(git -C "$MAIN" rev-parse --short "$1"): reused from cache"
     return 0
@@ -85,7 +96,7 @@ measure() { # $1 = full sha, $2 = label
   rm -rf "$wt"
   git -C "$MAIN" worktree add --detach -q "$wt" "$full" || { echo "could not create worktree for $label"; return 1; }
   link_node_modules "$wt"
-  [ -f "$errf" ] || typecheck_errors "$wt" 0 > "$errf"
+  [ -f "$errf" ] || typecheck_errors "$wt" "$WANT_WEB" > "$errf"
   say "$label $(git -C "$MAIN" rev-parse --short "$1"): $(wc -l < "$errf") typecheck error(s)"
   if [ "$RUN_TESTS" -eq 1 ] && [ ! -f "$testf" ]; then
     test_failures "$wt" > "$testf"
@@ -97,8 +108,19 @@ measure() { # $1 = full sha, $2 = label
 measure "$MB" base || exit 4
 measure "$(git -C "$MAIN" rev-parse "$SHA")" head || exit 4
 
-BASE_ERR="$CACHE_DIR/tsc-$MB.txt"
-HEAD_ERR="$CACHE_DIR/tsc-$(git -C "$MAIN" rev-parse "$SHA").txt"
+# Same name measure() writes, web flag included. Reading a DIFFERENT name here would silently compare
+# two files that do not exist: the diff comes out empty and the run reports CLEAN without having
+# compared anything.
+BASE_ERR="$CACHE_DIR/tsc-$MB-web$WANT_WEB.txt"
+HEAD_ERR="$CACHE_DIR/tsc-$(git -C "$MAIN" rev-parse "$SHA")-web$WANT_WEB.txt"
+
+# An ABSENT measurement is not an empty one. The compare below is a set difference, so two missing
+# files produce "adds nothing" and the run announces CLEAN having read neither -- which is how the
+# rename above would have failed if this check were not here. Fail on the missing file, not on the
+# conclusion drawn from it.
+for f in "$BASE_ERR" "$HEAD_ERR"; do
+  [ -f "$f" ] || { echo "MEASUREMENT MISSING: $f -- nothing was compared, this is NOT a pass"; exit 4; }
+done
 
 if grep -q '^HARNESS-FAULT' "$BASE_ERR" "$HEAD_ERR" 2>/dev/null; then
   echo "HARNESS FAULT -- this is NOT a clean measurement, do not read it as a pass:"
@@ -151,5 +173,14 @@ else
   say "tests: SKIPPED (--no-tests) -- the suite was NOT run, so this is a typecheck-only result"
 fi
 
-[ "$findings" -eq 0 ] && echo "PRE-GATE CLEAN: $CARD @ $SHORT adds no typecheck error and breaks no test."
+# The summary line may only claim what was actually measured. Under --no-tests the old wording said
+# "breaks no test" about a suite that never ran -- exactly the shape a reader quotes as evidence
+# later, when the SKIPPED line four rows up has scrolled away.
+if [ "$findings" -eq 0 ]; then
+  if [ "$RUN_TESTS" -eq 1 ]; then
+    echo "PRE-GATE CLEAN: $CARD @ $SHORT adds no typecheck error and breaks no test."
+  else
+    echo "PRE-GATE CLEAN (typecheck only): $CARD @ $SHORT adds no typecheck error. Tests NOT run."
+  fi
+fi
 exit "$findings"
