@@ -337,12 +337,59 @@ if last_review < last_mine:
     print(f"ADVISE-SKIP:already-gated:{int(last_mine)}")
     sys.exit(0)
 
+# A SILENCED WAKE MUST NOT LOOK LIKE A QUIET ONE (Cybersec HIGH, reproduced by QA2, card f910eabd).
+# The declared field overrides the prose scrape -- that is the point, and in the noise direction it
+# only costs tokens. In the OTHER direction it costs a review: a STALE Gate-SHA header, copied from
+# the previous comment (the likeliest real mistake, since the convention asks for the line on every
+# REVIEW), makes a comment whose PROSE announces a new fix look already-gated. Measured:
+#     verdict "NO-GO @ ac792b3b", then "REVIEW -- the HIGH is fixed, new commit 974509e3"
+#     without the line -> ALLOW:stale-verdict     with a stale "Gate-SHA: ac792b3b" -> ADVISE-SKIP
+# So the answer says WHICH of the two it is. The verdict stays a skip (this is an advisory cost
+# guard, and turning the declaration into an arming signal would just re-open the sibling-card-id
+# class the field exists to close) -- but a distinguishable label means a sweep can audit exactly
+# the cases where a declaration, and nothing else, kept a gate away from an open finding.
+#
+# The counterfactual mirrors the real rule instead of restating it: what would this same code have
+# answered if neither comment carried a declaration? Both sides are checked, because a stale
+# declaration on the VERDICT can swallow a review just as well as one on the review.
+def without_declaration_lines(text):
+    """The comment as it would read if its declaration had never been written.
+
+    Naively scraping the raw text is NOT that world: extract_shas also sees the sha INSIDE the
+    `Gate-SHA:` line, so a stale declaration on the verdict side quietly re-entered the
+    counterfactual through the very line under test and hid its own silencing. Fence state is
+    tracked so a quoted line -- which was never a declaration -- keeps contributing its shas.
+    """
+    out, fenced = [], False
+    for line in (text or "").split("\n"):
+        stripped = line.lstrip()
+        if stripped.startswith("```") or stripped.startswith("~~~"):
+            fenced = not fenced
+            out.append(line)
+            continue
+        if not fenced and gate_sha_rx.match(line):
+            continue
+        out.append(line)
+    return "\n".join(out)
+
+mine_prose = extract_shas(without_declaration_lines(newest_mine.get("content") or ""))
+review_prose = extract_shas(without_declaration_lines(newest_review.get("content") or ""))
+declared = bool(structured_shas(newest_mine.get("content") or "")
+                or structured_shas(newest_review.get("content") or ""))
+
+def prose_would_arm():
+    if not (mine_prose and review_prose):
+        return True  # the rule below falls through to ALLOW when either side names nothing
+    return bool({s for s in review_prose if not any(s.startswith(v) or v.startswith(s) for v in mine_prose)})
+
 # From here the review IS newer than the verdict, so the only question left is whether it says anything
 # the verdict has not already covered -- which is exactly what the sha difference answers.
 if mine_shas and review_shas:
     new_shas = {s for s in review_shas if not any(s.startswith(v) or v.startswith(s) for v in mine_shas)}
     if new_shas:
         print("ALLOW:stale-verdict")
+    elif declared and prose_would_arm():
+        print(f"ADVISE-SKIP:already-gated-by-declaration:{int(last_mine)}")
     else:
         print(f"ADVISE-SKIP:already-gated:{int(last_mine)}")
     sys.exit(0)
@@ -430,6 +477,15 @@ print(",".join(c.get("id") or "" for c in cards if isinstance(c, dict)))
 
   selftest)
     fail=0
+    # PREFIX matching, which is fine until two verdicts SHARE a prefix -- and since card f910eabd
+    # two do: "already-gated" is a prefix of "already-gated-by-declaration", so a case expecting the
+    # plain one passes on either. `tno` is the other half: assert a verdict does NOT start with a
+    # prefix, so the two answers can actually be told apart in a test.
+    tno() { # $1 = label, $2 = FORBIDDEN prefix, $3 = agent, stdin = comments json
+      local got; got="$(_decide "$3")"
+      if [[ "$got" != "$2"* ]]; then echo "  ok   $1 -> $got"
+      else echo "  FAIL $1 -> got '$got', which must NOT start with '$2'"; fail=1; fi
+    }
     t() { # $1 = label, $2 = expected prefix, $3 = agent, stdin = comments json
       local got; got="$(_decide "$3")"
       if [[ "$got" == "$2"* ]]; then echo "  ok   $1 -> $got"
@@ -468,6 +524,26 @@ print(",".join(c.get("id") or "" for c in cards if isinstance(c, dict)))
     # MIGRATION IS THE DEFAULT: without the field, every pre-convention card behaves exactly as
     # before. Pinned so a later "cleanup" cannot make the field mandatory by accident.
     t "no field at all -> old behaviour"          "ADVISE-SKIP:already-gated" cybersec <<< '[{"author":"backend","created_at":100,"content":"REVIEW -- ac792b3b"},{"author":"cybersec","created_at":200,"content":"GO @ ac792b3b"}]'
+    # SILENCED vs QUIET (Cybersec HIGH on 780f024, reproduced by QA2). A stale Gate-SHA header --
+    # the likeliest real mistake, since the convention asks for the line on every REVIEW -- can make
+    # a comment whose PROSE announces a new fix look already-gated. The verdict stays a skip, but it
+    # SAYS that a declaration is what silenced it, so a sweep can audit exactly those cases.
+    #
+    # The pair is the test: identical text, one line added. Without the line the same input arms.
+    t "stale declaration is a VISIBLE silencing"  "ADVISE-SKIP:already-gated-by-declaration" cybersec <<< '[{"author":"cybersec","created_at":100,"content":"CYBERSEC NO-GO @ac792b3b -- one HIGH open"},{"author":"backend","created_at":200,"content":"Gate-SHA: ac792b3b\nREVIEW -- the HIGH is fixed, new commit 974509e3 pushed."}]'
+    t "...and without the line the same text arms" "ALLOW:stale-verdict" cybersec <<< '[{"author":"cybersec","created_at":100,"content":"CYBERSEC NO-GO @ac792b3b -- one HIGH open"},{"author":"backend","created_at":200,"content":"REVIEW -- the HIGH is fixed, new commit 974509e3 pushed."}]'
+    # SYMMETRIC: a stale declaration on the VERDICT swallows a review just as well as one on the
+    # review, so the counterfactual checks both sides.
+    t "stale declaration on the VERDICT side too"  "ADVISE-SKIP:already-gated-by-declaration" cybersec <<< '[{"author":"cybersec","created_at":100,"content":"Gate-SHA: 974509e3\nCYBERSEC NO-GO @ac792b3b"},{"author":"backend","created_at":200,"content":"REVIEW -- fixed in 974509e3"}]'
+    # An HONEST skip must keep the plain label -- otherwise the new one means nothing. `tno` because
+    # "already-gated" is a PREFIX of "already-gated-by-declaration": a plain prefix assertion here
+    # would pass on either answer and prove nothing.
+    tno "an honest skip is NOT labelled a silencing" "ADVISE-SKIP:already-gated-by-declaration" cybered <<< '[{"author":"backend2","created_at":100,"content":"REVIEW -- ac792b3b"},{"author":"cybered","created_at":200,"content":"CYBERED GO -- @ ac792b3b"},{"author":"backend2","created_at":300,"content":"Gate-SHA: ac792b3b\nAnswer to the question: ac792b3b is unchanged."}]'
+    # The measured coincidence of this card (a stray sibling-card id) IS a silencing by declaration --
+    # a correct one, and now an auditable one. Same verdict family as the stale-header case, which is
+    # the honest reading: the declaration, and nothing else, kept the gate away.
+    t "the stray-token case is auditable too"     "ADVISE-SKIP:already-gated-by-declaration" cybered <<< '[{"author":"backend2","created_at":100,"content":"REVIEW -- kesz, commit ac792b3b"},{"author":"cybered","created_at":200,"content":"CYBERED GO -- @ ac792b3b"},{"author":"backend2","created_at":300,"content":"Gate-SHA: ac792b3b\nValasz: valtozatlan, a testver 63c4b270 landolt."}]'
+
     # QUOTE FORMS (Cybered NO-GO on 25c0c64). The first cut reused review_rx-s prefix class, which
     # allows `>` -- the markdown quote marker, the one character that had to be excluded -- and its
     # leading \s* also passed indented and fenced quotes. Each of the three forms Cybered measured
