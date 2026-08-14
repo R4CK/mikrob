@@ -4,6 +4,26 @@ import { serveFile, MIME } from '../http-helpers.js'
 import { PROJECT_ROOT, BRAND_NAME } from '../../config.js'
 import type { RouteContext } from './types.js'
 
+// THE RULE FOR THIS FILE (card 6ed41c9d): every prefix rule that takes a PATH PARAMETER validates
+// the SHAPE of that parameter itself. It does not rely on the caller having normalised the URL.
+//
+// Why it is written down: three rules here take a parameter and, before this card, they were
+// protected to three different degrees. /lang/ has a two-item allowlist and /fork- has an anchored
+// regex whose charset admits no separator -- both independently safe. /avatars/ and /icons/ had NO
+// shape check at all: they string-replaced the prefix and joined the rest onto webDir. Their
+// traversal protection came entirely from src/web.ts parsing the request with `new URL(...)`, which
+// resolves `..` and decodes `%2e` before any handler sees the path. Measured on the running
+// dashboard, `/avatars/../../package.json` and its percent-encoded form both 404 -- so this was
+// never exploitable. It was, however, ACCIDENTAL: these routes are unauthenticated, and an innocuous
+// refactor of web.ts (say, `req.url.split('?')[0]`) would have made them traversable while /fork-
+// and /lang/ stayed safe, because those two do not depend on anyone else.
+//
+// So: one shared, anchored name pattern, no separator and no dot inside the name part, an explicit
+// extension list. Fitted to the files that actually ship (web/avatars, web/icons) rather than
+// guessed -- every existing asset matches, which is the regression this card was most at risk of.
+const STATIC_ASSET_NAME = /^[a-z0-9_-]+\.(?:png|jpe?g|gif|svg|webp|ico|html)$/
+
+
 // Substitute the configured brand into the PWA manifest's user-visible fields
 // (name/short_name) so an install that sets BRAND_NAME shows its own name on
 // the installed home-screen icon. Replaces only those two quoted string values
@@ -190,7 +210,7 @@ export async function tryHandleStatic(ctx: RouteContext, webDir: string): Promis
   if (path.startsWith('/avatars/')) {
     const avatarFile = path.replace('/avatars/', '')
     const avatarPath = join(webDir, 'avatars', avatarFile)
-    if (existsSync(avatarPath)) { serveFile(req, res, avatarPath, { cacheSeconds: 3600 }); return true }
+    if (STATIC_ASSET_NAME.test(avatarFile) && existsSync(avatarPath)) { serveFile(req, res, avatarPath, { cacheSeconds: 3600 }); return true }
     res.writeHead(404); res.end()
     return true
   }
@@ -198,7 +218,7 @@ export async function tryHandleStatic(ctx: RouteContext, webDir: string): Promis
   if (path.startsWith('/icons/')) {
     const iconFile = path.replace('/icons/', '')
     const iconPath = join(webDir, 'icons', iconFile)
-    if (existsSync(iconPath)) { serveFile(req, res, iconPath, { cacheSeconds: 3600 }); return true }
+    if (STATIC_ASSET_NAME.test(iconFile) && existsSync(iconPath)) { serveFile(req, res, iconPath, { cacheSeconds: 3600 }); return true }
     res.writeHead(404); res.end()
     return true
   }
