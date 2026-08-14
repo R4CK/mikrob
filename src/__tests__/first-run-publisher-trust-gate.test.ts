@@ -352,6 +352,84 @@ describe('first-run-llm.sh --use: publisher trust gate', () => {
     })
   })
 
+  // --- what the OFFER shows, card a34effcb (Cybered on the fbbb4015 gate) -----------------------
+  // Two findings about the same screen: the line said "pull <installRef from the catalogue>" while
+  // printing the REPO cut at 42 characters (45% of a live 435-model catalogue is longer than that,
+  // and a repo is not a pullable ref at all -- it lacks the hf.co prefix and the quant tag), and the
+  // trust label carried no evidence even though downloads and per-part digests were already in the
+  // document. A confirmation that shows only a name is a click-through, not a decision (T1), and
+  // that applies to the offer as much as to the confirm dialog.
+  describe('the catalogue offer is copy-pasteable and its trust label is checkable (card a34effcb)', () => {
+    const LONG_REPO = 'unsloth/Qwen2.5-Coder-32B-Instruct-128K-GGUF-extra' // 50 chars, was cut at 42
+    const LONG_REF = `hf.co/${LONG_REPO}:Q4_K_M`
+
+    function listWith(models: unknown[]): string {
+      writeFileSync(
+        join(sandbox, 'llm-catalog.py'),
+        `#!/usr/bin/env python3\nimport json\nprint(json.dumps({"schemaVersion": 1, "generatedAt": "2026-08-14T00:00:00Z", "source": "cache", "stale": False, "host": {}, "warnings": [], "models": ${JSON.stringify(models)}}))\n`,
+      )
+      const r = spawnSync('bash', [join(sandbox, 'first-run-llm.sh')], {
+        encoding: 'utf-8',
+        timeout: 60_000,
+        env: { ...process.env, OLLAMA_HOST: host, FIRST_RUN_BLOBS: join(sandbox, 'blobs') },
+      })
+      return `${r.stdout ?? ''}${r.stderr ?? ''}`
+    }
+
+    const trustedLong = {
+      repo: LONG_REPO, repoOwner: 'Qwen', quant: 'Q4_K_M', fileMib: 4000, tier: 'fits',
+      installRef: LONG_REF, downloads: 175821, notes: [],
+      parts: [{ path: 'a.gguf', sha256: 'abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789' }],
+    }
+
+    it('a long repo name is printed in FULL, not silently cut', () => {
+      const out = listWith([trustedLong])
+      expect(out).toContain(LONG_REPO)
+    })
+
+    it('the pull line carries the installRef verbatim -- the thing you actually type', () => {
+      const out = listWith([trustedLong])
+      expect(out).toContain(`pull: ${LONG_REF}`)
+      // ...and the instruction no longer sends the reader to a field that was never on screen.
+      expect(out).not.toContain('<installRef from the catalogue>')
+    })
+
+    it('the trust label comes with its evidence: downloads + digest prefix', () => {
+      const out = listWith([trustedLong])
+      expect(out).toContain('trusted publisher')
+      expect(out).toContain('175821 downloads')
+      expect(out).toContain('sha256 abcdef012345')
+    })
+
+    it('a missing digest is SAID, not left to be assumed -- with a control that one shows otherwise', () => {
+      const noDigest = { ...trustedLong, parts: [{ path: 'a.gguf' }] }
+      expect(listWith([noDigest])).toContain('no digest published')
+      expect(listWith([trustedLong])).not.toContain('no digest published')
+    })
+
+    it('a missing download count is said too, rather than printing a bare label', () => {
+      const noDownloads = { ...trustedLong, downloads: null }
+      expect(listWith([noDownloads])).toContain('download count unknown')
+    })
+
+    it('an UNVERIFIED entry in the offered list is called out, with the reason it got there', () => {
+      // The ordering is (tier, trusted, downloads), so within a tier the reviewed publishers come
+      // first -- an unverified entry this high means nothing trusted was left at that size. That is
+      // information, and it used to be visible only as an absence.
+      const sketchy = {
+        repo: 'Sketchy/Thing-GGUF', repoOwner: 'Sketchy', quant: 'Q4_K_M', fileMib: 4000,
+        tier: 'fits', installRef: UNTRUSTED_REF, downloads: 12, notes: [],
+        parts: [{ path: 'b.gguf', sha256: OID_UNTRUSTED }],
+      }
+      const out = listWith([trustedLong, sketchy])
+      expect(out).toContain('UNVERIFIED publisher')
+      expect(out).toContain('NOT on the reviewed list')
+      // CONTROL: an all-trusted list must NOT print the callout, otherwise the assertion above
+      // would pass on a line that is always there.
+      expect(listWith([trustedLong])).not.toContain('NOT on the reviewed list')
+    })
+  })
+
   it('the gate behaves identically without a TTY -- a pipe is not a yes', () => {
     // Every case above already runs without a TTY (spawnSync gives pipes), so this pins the
     // property rather than discovering it: there is no interactive branch that a terminal would

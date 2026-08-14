@@ -389,16 +389,48 @@ try:
             for p in json.load(open(os.environ["TRUSTFILE"])).get("trustedPublishers", [])}
 except Exception:
     pubs = set()
+unverified = 0
 for i,m in enumerate(d["models"][:5],1):
-    trust = "trusted publisher" if (m.get("repoOwner") or "").strip().lower() in pubs else "UNVERIFIED publisher"
+    ok = (m.get("repoOwner") or "").strip().lower() in pubs
+    if not ok: unverified += 1
+    trust = "trusted publisher" if ok else "UNVERIFIED publisher"
     note = (" -- " + m["notes"][0]) if m.get("notes") else ""
-    print("   %d) %-42s %-8s %5.1f GB  %-7s  %s%s"
-          % (i, m["repo"][:42], m["quant"], m["fileMib"]/1024, m["tier"], trust, note))
+    # NAME LINE: no truncation. The old line cut the repo at 42 characters with no marker, and 45%
+    # of a live 435-model catalogue is longer than that -- so what an operator read as a name was
+    # routinely a prefix of one (Cybered, card a34effcb). A wrapped long line is a cosmetic problem;
+    # a silently shortened identifier is a wrong one.
+    print("   %d) %s  %s  %.1f GB  %s  %s%s"
+          % (i, m["repo"], m["quant"], m["fileMib"]/1024, m["tier"], trust, note))
+    # EVIDENCE LINE: the label has to be checkable. "A confirmation that shows only a name is a
+    # click-through, not a decision" (T1) applies to the offer as much as to the confirm dialog, so
+    # the two facts the catalogue already carries go next to the label: how many people pulled it,
+    # and what the artefact hashes to. sha256 lives per PART, not on the model (measured: 0 of 435
+    # carry a top-level sha256, 435 of 435 carry parts) -- and when a part carries none, the line
+    # SAYS so rather than leaving the reader to assume the digest was checked.
+    parts = m.get("parts") or []
+    dig = (parts[0].get("sha256") or "") if parts else ""
+    dig = ("sha256 " + dig[:12] + (" (%d parts)" % len(parts) if len(parts) > 1 else "")) if dig else "no digest published"
+    dl = m.get("downloads")
+    dl = ("%d downloads" % dl) if isinstance(dl, int) else "download count unknown"
+    print("      %s | %s" % (dl, dig))
+    # PULL LINE: the exact string to type. The instruction below used to say "pull <installRef from
+    # the catalogue>" while the only ref on screen was the truncated repo -- and repo is not a
+    # pullable ref at all: it lacks the hf.co prefix and the quant tag that select the artefact.
+    print("      pull: %s" % (m.get("installRef") or "(no installRef in the catalogue entry)"))
+if unverified:
+    # Ordering is (tier, trusted, downloads) in llm-catalog.py, so within one tier the reviewed
+    # publishers come first. An UNVERIFIED entry this high therefore carries information: nothing
+    # trusted was left at that size. That is a fact worth stating rather than leaving as an absence.
+    print("")
+    print("   %d of the %d above are from publishers NOT on the reviewed list. They are shown"
+          % (unverified, min(5, len(d["models"]))))
+    print("   because within a size tier the reviewed ones are listed first -- so nothing trusted")
+    print("   remained that fits this machine at that size, not because they were vouched for.")
 ' 2>/dev/null
 
 say ""
-say "  Nothing is downloaded until you choose. To install one:"
-say "    $OLLAMA_BIN pull <installRef from the catalogue>"
+say "  Nothing is downloaded until you choose. To install one, copy its pull: line above:"
+say "    $OLLAMA_BIN pull hf.co/<publisher>/<repo>:<quant>"
 say "  Then make it the fleet default -- a SEPARATE, deliberate step:"
 say "    store/first-run-llm.sh --use <model-tag>"
 log "catalog: offered $COUNT models, none installed"
