@@ -408,7 +408,10 @@ describe('first-run-llm.sh --use: publisher trust gate', () => {
     })
 
     it('a missing download count is said too, rather than printing a bare label', () => {
-      const noDownloads = { ...trustedLong, downloads: null }
+      // The key is OMITTED rather than set to null on purpose: the stub is a Python source file, so
+      // a JSON `null` would not even parse there -- and an absent field is the shape a real
+      // catalogue entry takes when the API returned no count.
+      const { downloads: _dropped, ...noDownloads } = trustedLong
       expect(listWith([noDownloads])).toContain('download count unknown')
     })
 
