@@ -13,8 +13,7 @@
 // Every case asserts the MODEL FILE, not just the exit code: the property under test is whether an
 // untrusted model became the fleet default, and an exit code is only a proxy for that.
 import { describe, it, expect, beforeAll, afterAll } from 'vitest'
-import { spawnSync } from 'node:child_process'
-import { createServer, type Server } from 'node:http'
+import { spawnSync, spawn, type ChildProcess } from 'node:child_process'
 import { writeFileSync, mkdtempSync, copyFileSync, mkdirSync, existsSync, readFileSync, rmSync } from 'node:fs'
 import { join } from 'node:path'
 import { tmpdir } from 'node:os'
@@ -26,7 +25,7 @@ const OID_TRUSTED = `aaaa${'0'.repeat(56)}1111`
 const OID_UNTRUSTED = `bbbb${'0'.repeat(56)}2222`
 
 let sandbox: string
-let server: Server
+let server: ChildProcess
 let host: string
 
 /** The catalogue the gate reads. `withUntrusted: false` drops the entry entirely, which is the
@@ -86,18 +85,35 @@ beforeAll(async () => {
   writeFileSync(join(sandbox, 'blobs', `sha256-${OID_UNTRUSTED}`), '')
   writeCatalogue(true)
 
+  // THE STUB RUNTIME MUST BE ITS OWN PROCESS. An in-process http server cannot answer these
+  // requests: every case below drives the script with spawnSync, which blocks this thread's event
+  // loop, so the server would never get to reply and the script would exit 3 ("runtime not
+  // answering") before reaching the gate at all. Every test would then fail for the wrong reason.
   const tags = JSON.stringify({ models: [{ name: TRUSTED_REF }, { name: UNTRUSTED_REF }] })
-  server = createServer((_req, res) => {
-    res.writeHead(200, { 'Content-Type': 'application/json' })
-    res.end(tags)
+  const stub = join(sandbox, 'stub-runtime.js')
+  writeFileSync(
+    stub,
+    `const http = require('node:http')
+const body = ${JSON.stringify(tags)}
+http.createServer((_q, s) => {
+  s.writeHead(200, { 'Content-Type': 'application/json' })
+  s.end(body)
+}).listen(0, '127.0.0.1', function () { console.log(this.address().port) })
+`,
+  )
+  server = spawn(process.execPath, [stub], { stdio: ['ignore', 'pipe', 'ignore'] })
+  const port = await new Promise<string>((resolve, reject) => {
+    const timer = setTimeout(() => reject(new Error('stub runtime never reported a port')), 15_000)
+    server.stdout?.once('data', (d: Buffer) => {
+      clearTimeout(timer)
+      resolve(d.toString().trim())
+    })
   })
-  await new Promise<void>((resolve) => server.listen(0, '127.0.0.1', resolve))
-  const addr = server.address()
-  host = `http://127.0.0.1:${typeof addr === 'object' && addr ? addr.port : 0}`
+  host = `http://127.0.0.1:${port}`
 })
 
-afterAll(async () => {
-  await new Promise<void>((resolve) => server.close(() => resolve()))
+afterAll(() => {
+  server.kill()
   rmSync(sandbox, { recursive: true, force: true })
 })
 
