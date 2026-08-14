@@ -78,6 +78,7 @@ for i, ref in enumerate(REFS):
     files = [f for f in git('diff', '--name-only', f'{mb}..{ref}').split('\n')
              if f.strip() and f in at_ref]
     missing = []
+    reflowed = 0
     for f in files:
         p = os.path.join(WT, f)
         if not os.path.exists(p):
@@ -91,13 +92,42 @@ for i, ref in enumerate(REFS):
                         open(p, encoding='utf-8', errors='replace').read().split('\n')]
         ref_lines = [l.strip() for l in git('show', f'{ref}:{f}').split('\n')]
         mc, rc = Counter(merged_lines), Counter(ref_lines)
+        # A formatter run between the ref and the merged tree reflows lines, and a line-for-line
+        # comparison calls every reflowed line a loss. Measured: 21 such findings on 3e224b35, all of
+        # them prettier joining an `expect(` call the branch had split -- the pin was completely
+        # intact. Unreported noise on that scale teaches people to ignore the tool, so the two cases
+        # are separated: LOST (gone even when all whitespace is ignored) drives the exit code,
+        # REFLOWED is counted and named but is not a finding.
+        squashed = ''.join(merged_lines).replace(' ', '').replace('\t', '')
         for ln in git('diff', f'{mb}..{ref}', '--', f).split('\n'):
             if ln.startswith('+') and not ln.startswith('+++'):
                 body = ln[1:].strip()
-                if interesting(body) and mc[body] < rc[body]:
+                if not interesting(body) or mc[body] >= rc[body]:
+                    continue
+                sq = body.replace(' ', '').replace('\t', '')
+                # A joined call moves the trailing comma: `foo,` on its own line becomes `foo)` when
+                # it is the last argument. Six of 3e224b35's findings were exactly this, and every one
+                # was present in the merged file.
+                #
+                # But the relaxation is NOT safe for a bare identifier line. `ExpectedConsignmentStatus,`
+                # is an import member, and without its comma it matches the type's every other use, so
+                # deleting the import reads as a reflow -- the exact mutation this tool must catch, and
+                # the relaxed rule swallowed it. A line earns the comma relaxation only if it carries
+                # something that pins it to a position: a call, an assignment, a string, a key.
+                # ...and the reflow check only applies to a line long enough to be unambiguous. The
+                # squash concatenates the whole file, so a SHORT token matches almost anywhere:
+                # `ExpectedConsignmentStatus,` is an import member that also occurs in a type list, so
+                # deleting the import read as a reflow -- the very mutation this tool exists to catch.
+                # Short lines are judged by COUNT alone, which is the strict, blind-spot-free path.
+                distinctive = any(c in body for c in '()=\'":')
+                long_enough = len(sq) >= 40
+                if long_enough and (sq in squashed or (distinctive and sq.rstrip(',') in squashed)):
+                    reflowed += 1
+                else:
                     missing.append((f, f'{body[:90]}  [{rc[body]}x on the branch, {mc[body]}x merged]'))
     short = git('rev-parse', '--short', ref).strip() or ref
-    print(f'{ref} ({short}): {len(files)} file(s) touched, {len(missing)} added line(s) NOT in the merge')
+    tail = f', {reflowed} reflowed by a formatter (not a loss)' if reflowed else ''
+    print(f'{ref} ({short}): {len(files)} file(s) touched, {len(missing)} added line(s) NOT in the merge{tail}')
     for f, b in missing[:25]:
         print(f'    {f}: {b}')
     if len(missing) > 25:
