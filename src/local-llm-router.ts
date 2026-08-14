@@ -272,6 +272,69 @@ const AMBIGUITY_SIGNALS: readonly string[] = [
   'nem tudom', 'derits', 'talald ki', 'valamilyen', 'dontsd el',
 ]
 
+// --- Verb inflection for the SHAPE rules (card 339d7d0b, Cybersec) -----------------------------
+//
+// THE DEFECT WAS A MORPHOLOGY, NOT A WORD. The OUTCOME-family rules listed their verbs by hand --
+// `treat|treats|treating` -- and every one of them was missing the PAST PARTICIPLE, which is exactly
+// how a card describes a change that has already been decided: "a missing role is TREATED as owner",
+// "the filter is BYPASSED", "the check is no longer APPLIED". Cybersec measured 14 such gaps across
+// three families on the installed artifact. Adding fourteen words would leave the fifteenth verb to
+// be found by the next person, so the forms are GENERATED from the stem in one place.
+//
+// OVER-GENERATION IS FREE, MISSING A FORM IS NOT. English doubling ("map" -> "mapped") cannot be
+// decided from spelling alone: the same CVC shape gives "mapped" but "interpreted". So both are
+// emitted. A form that no English text contains simply never matches -- it costs one alternation
+// branch. A form that IS written and NOT emitted is a routing hole, which is the failure this card
+// exists to close. The asymmetry decides the design.
+const IRREGULAR_PAST: Readonly<Record<string, readonly string[]>> = {
+  // Only verbs whose past form cannot be derived by suffixing. Kept deliberately tiny: every entry
+  // here is a hand-maintained list of the kind this function exists to replace.
+  let: ['let'],
+}
+
+/** base, 3rd person, past/participle and gerund for a regular English verb stem. */
+export function verbForms(base: string): string[] {
+  const out = new Set<string>([base])
+  const last = base.slice(-1)
+  const prev = base.slice(-2, -1)
+  const isVowel = (c: string) => 'aeiou'.includes(c)
+
+  // 3rd person singular
+  if (/(s|x|z|ch|sh)$/.test(base)) out.add(base + 'es')
+  else if (last === 'y' && !isVowel(prev)) out.add(base.slice(0, -1) + 'ies')
+  else out.add(base + 's')
+
+  // past / past participle -- the forms the old hand-written lists were missing
+  for (const p of IRREGULAR_PAST[base] ?? []) out.add(p)
+  if (!IRREGULAR_PAST[base]) {
+    if (last === 'e') out.add(base + 'd')
+    else if (last === 'y' && !isVowel(prev)) out.add(base.slice(0, -1) + 'ied')
+    else out.add(base + 'ed')
+  }
+
+  // gerund
+  if (last === 'e' && base.slice(-2) !== 'ee') out.add(base.slice(0, -1) + 'ing')
+  else out.add(base + 'ing')
+
+  // Consonant doubling, emitted ALONGSIDE the plain form rather than instead of it (see above).
+  // The trigger is the classic consonant-vowel-consonant ending, minus final w/x/y which never
+  // double ("allow" -> "allowed", not "allowwed").
+  const third = base.slice(-3, -2)
+  const isCVC = base.length >= 3 && !isVowel(third) && isVowel(prev) && !isVowel(last)
+  if (isCVC && !'wxy'.includes(last)) {
+    out.add(base + last + 'ed')
+    out.add(base + last + 'ing')
+  }
+  return [...out]
+}
+
+/** `a|b|c` over every inflected form of every stem, longest first so the regex cannot stop short.
+ *  Returned BARE so a call site can add its own alternatives inside one group. */
+function verbAlternation(...stems: string[]): string {
+  const forms = [...new Set(stems.flatMap(verbForms))].sort((a, b) => b.length - a.length)
+  return forms.join('|')
+}
+
 // --- SHAPE signals (Cybersec NO-GO cm6054) -----------------------------------------------------
 // The keyword nouns above catch the VOCABULARY of security but not its SHAPE: 9/10 real authz changes
 // written in innocuous "mechanical cleanup" language routed LOCAL (default-a-role-to-admin, return-all-
@@ -348,11 +411,37 @@ const SHAPE_SIGNALS: ReadonlyArray<readonly [NonOffloadableCategory, RegExp]> = 
   // access-default, tenant-scope-drop, validation-moved-client -- are the fleet's own highest-
   // frequency defect classes. Deliberately guard-noun-FREE.
   // (1) granting access / letting a request through.
-  ['authz', /\b(grant|grants|granting|allow|allows|allowing|permit|permits|permitting|authorize|authorise|let)\b[^.]{0,35}\b(access|request|through|user|users|caller|everyone|anyone|any user)\b/],
+  ['authz', new RegExp(`\\b(?:${verbAlternation('grant', 'allow', 'permit', 'authorize', 'authorise', 'let')})\\b[^.]{0,35}\\b(access|request|through|user|users|caller|everyone|anyone|any user)\\b`)],
   // (2) treating one thing AS a more privileged thing.
-  ['authz', /\b(treat|treats|treating|interpret|consider|considers|count|counts|regard|regards|map|maps)\b[^.]{0,45}\bas\b[^.]{0,25}\b(owner|admin|administrator|superuser|root|all|everyone|public|authorized|authorised|valid|trusted|allowed)\b/],
+  ['authz', new RegExp(`\\b(?:${verbAlternation('treat', 'interpret', 'consider', 'count', 'regard', 'map')})\\b[^.]{0,45}\\bas\\b[^.]{0,25}\\b(owner|admin|administrator|superuser|root|all|everyone|public|authorized|authorised|valid|trusted|allowed)\\b`)],
   // (3) ceasing to apply a control -- stated as an activity, not a named artifact.
-  ['authz', /\b(stop|stops|stopping|skip|skips|skipping|bypass|bypasses|disable|disables|disabling|drop|drops|dropping|avoid|omit|no longer)\b[^.]{0,35}\b(apply|applying|applies|filter|filters|filtering|check|checks|checking|validat|scoping|scope|restrict)\w*/],
+  //
+  // BOTH SIDES needed the inflection, not just the verb list. The object side used to be
+  // `(apply|applying|applies|...)\w*`, and `apply\w*` does NOT match "applied" -- the y becomes an
+  // i, so the single most natural phrasing of the whole family, "the filter is no longer APPLIED",
+  // fell through a rule written specifically for it.
+  [
+    'authz',
+    new RegExp(
+      `\\b(?:${verbAlternation('stop', 'skip', 'bypass', 'disable', 'drop', 'avoid', 'omit')}|no longer)\\b` +
+        `[^.]{0,35}\\b(?:${verbAlternation('apply', 'filter', 'check', 'scope', 'restrict')}|validat\\w*|scoping)`,
+    ),
+  ],
+  // (3b) the SAME sentence in the passive voice, which puts the control FIRST: "the scope check is
+  // omitted", "the tenant filter is bypassed". Measured while closing the verb-form gap (card
+  // 339d7d0b): adding the participles fixed 12 of the 14 reported cases, and the two that stayed
+  // local were not missing a word at all -- rule (3) only matches verb-then-object, and the passive
+  // reverses that order. So the residual was a GRAMMAR gap hiding behind a vocabulary one. The (c)
+  // family already carries a mirrored pair for exactly this reason; this family had only one
+  // direction. Narrower than (3) on purpose: the control noun must be the SUBJECT being acted on,
+  // so the window is short and the verb must be a past participle.
+  [
+    'authz',
+    new RegExp(
+      `\\b(?:filter|filtering|check|guard|scope|scoping|validation|restriction|predicate|middleware)\\b` +
+        `[^.]{0,25}\\b(?:is|are|was|were|gets?|being)\\b[^.]{0,15}\\b(?:bypassed|omitted|skipped|dropped|disabled|removed|no longer applied)\\b`,
+    ),
+  ],
   // (4) an explicitly unscoped/unfiltered result set.
   ['isolation', /\b(unfiltered|unscoped|unrestricted|without filtering|without scoping|without the filter|across all tenants|for all tenants|regardless of (the )?(owner|tenant|site|user|company))\b/],
   // (5) moving a server-side control to an untrusted client.
