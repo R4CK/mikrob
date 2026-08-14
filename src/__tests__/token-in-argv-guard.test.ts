@@ -268,8 +268,14 @@ const SEED_AGENT_DOCS = scanTree(SEED_FLEET_AGENTS_DIR)
  * TEXT_FILE does not match them. Measured before relying on it -- 0 matching files under that path.
  */
 const INSTALLED_AGENTS_DIR = join(REPO_ROOT, 'agents')
-const AGENTS_INSTALLED = existsSync(INSTALLED_AGENTS_DIR)
-const INSTALLED_AGENT_DOCS = AGENTS_INSTALLED ? scanTree(INSTALLED_AGENTS_DIR) : []
+const INSTALLED_AGENT_DOCS = existsSync(INSTALLED_AGENTS_DIR)
+  ? scanTree(INSTALLED_AGENTS_DIR)
+  : []
+// DERIVED from what the walk actually found, not from the directory existing. The fleet test
+// worktree has an EMPTY `agents/` left behind by an earlier run, so `existsSync` alone reported an
+// installed fleet where there is none and the coverage assertion below fired on a correct tree. An
+// agent is present when it brought its CLAUDE.md; nothing else is evidence of an install.
+const AGENTS_INSTALLED = INSTALLED_AGENT_DOCS.some((f) => f.endsWith('CLAUDE.md'))
 const SEED_TASK_DOCS = scanTree(SEED_TASKS_DIR)
 
 /**
