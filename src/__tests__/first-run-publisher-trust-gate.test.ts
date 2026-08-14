@@ -384,7 +384,24 @@ describe('first-run-llm.sh --use: publisher trust gate', () => {
 
     it('a long repo name is printed in FULL, not silently cut', () => {
       const out = listWith([trustedLong])
-      expect(out).toContain(LONG_REPO)
+      // ASSERT ON THE NAME LINE ITSELF, not on "the string appears somewhere" (QA FAIL on 55ed33e).
+      // The first version of this test was VACUOUS: `toContain(LONG_REPO)` is satisfied by the
+      // `pull: <installRef>` line, and installRef CONTAINS the repo by construction -- so it stayed
+      // green under a mutation that put `[:42]` back on the name line, which is the one regression
+      // this test exists to catch. QA proved that by mutating the print statement and re-running.
+      // Pinning the numbered entry plus the quant that follows it ties the assertion to the line
+      // whose truncation was the defect; the fixture below keeps the two facts independent as well.
+      const nameLine = new RegExp(`^\\s*1\\) ${LONG_REPO.replace(/[.*+?^${}()|[\]\\/-]/g, '\\$&')}\\s+Q4_K_M\\b`, 'm')
+      expect(out).toMatch(nameLine)
+    })
+
+    it('CONTROL for the test above: it fails when the name line is truncated', () => {
+      // The control that the first version lacked, expressed as data instead of as a code mutation:
+      // the same assertion run against a name line that WAS cut at 42 characters must not match. If
+      // this ever passes, the regex above stopped being anchored to the name line.
+      const cut = `   1) ${LONG_REPO.slice(0, 42)}  Q4_K_M  4.0 GB  fits  trusted publisher`
+      const nameLine = new RegExp(`^\\s*1\\) ${LONG_REPO.replace(/[.*+?^${}()|[\]\\/-]/g, '\\$&')}\\s+Q4_K_M\\b`, 'm')
+      expect(cut).not.toMatch(nameLine)
     })
 
     it('the pull line carries the installRef verbatim -- the thing you actually type', () => {
