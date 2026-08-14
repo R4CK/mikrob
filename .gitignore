@@ -50,6 +50,10 @@ Ingatlan/token*
 !store/cleancore-landed-check.py
 # gate-pretriage-card.sh's candidate-commit selection, extracted for independent testing (card 34e7285e).
 !store/gate-pretriage-candidates.py
+# The Firecrawl adoption decision (card 91c4a369): licence finding, key-handling shape and the
+# acceptance procedure. Blocked on a key today, which is exactly why it must survive this disk --
+# the next reader needs to know it was decided, not forgotten.
+!store/firecrawl-adoption.md
 # The CodeBurn policy (card 56ed32df) is a POLICY, not runtime data: it carries Peti's approved
 # limits and the audited reasons for them (share/pair forbidden, and the always-share flag that
 # re-exposes the machine from a plain `codeburn`). A prohibition that exists only on one disk is not
