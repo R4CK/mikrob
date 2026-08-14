@@ -82,6 +82,23 @@ LABELED = {
     'comments': {'c1': [{'author': 'backend', 'created_at': 100, 'content': 'REVIEW -- kesz'}]},
 }
 
+# OUT-OF-SCOPE ANSWER IS AN ANSWER (card 8e4e5b58). Cybered measured the same card being handed
+# to the same gate 5-7 times in a row after that gate had already said "not mine". The property
+# that makes this self-correcting is subtle and was untested: gate-dispatch-check.sh counts ANY
+# comment by the agent as its own word, not only a formal verdict -- so a one-line skip note ends
+# the loop by itself. Here cybered has answered (out of scope) while cybersec has not, so exactly
+# cybersec must be woken. If someone ever narrows `mine` to verdict-shaped comments, the 5-7x
+# repetition comes straight back, and this case is what says so.
+OUT_OF_SCOPE = {
+    'cards': [{'id': 'c1', 'status': 'waiting', 'title': 'plain card', 'assignee': 'backend',
+               'description': 'Gate: Cybersec + Cybered'}],
+    'comments': {'c1': [
+        {'author': 'backend', 'created_at': 100, 'content': 'REVIEW -- kesz'},
+        {'author': 'cybered', 'created_at': 200,
+         'content': 'CYBERED SKIP: nem az en hataskorom, a kartya nem jelol meg engem.'},
+    ]},
+}
+
 # DESIGNATION end-to-end (card 5bc10089): the card names only QA in its own text, and NOBODY has
 # verdicted yet. Without designation this would be GATE-WORK for all four; with it, only qa/qa2
 # (QA's twin) should show up -- cybersec and cybered are excluded despite having no verdict, because
@@ -126,7 +143,8 @@ ENG_PLANNED_MOVED = {
 
 FIX = {
     'all-answered': ALL_ANSWERED, 'one-open': ONE_OPEN, 'no-review': NO_REVIEW,
-    'designated': DESIGNATED, 'labeled': LABELED, 'eng-one-planned': ENG_ONE_PLANNED,
+    'designated': DESIGNATED, 'labeled': LABELED, 'out-of-scope': OUT_OF_SCOPE,
+    'eng-one-planned': ENG_ONE_PLANNED,
     'eng-planned-moved': ENG_PLANNED_MOVED,
 }[SCENARIO]
 
@@ -193,6 +211,9 @@ run_case one-open     38811 "cybered"   # positive: exactly the one agent that o
 run_case all-answered 38812 ""          # negative: the case the card is about
 run_case no-review    38813 ""          # negative: parked card, nothing submitted
 run_case designated   38814 "qa qa2"    # designation: Gate: QA. excludes cybersec/cybered end-to-end
+# The gate that already answered (even with a one-line out-of-scope note) drops out; the one that
+# has not still gets woken. Card 8e4e5b58.
+run_case out-of-scope 38826 "cybersec"
 
 # MISSING TIER DECISION -> LOUD (card 50d75b47). Rule 4 makes the gate set a per-card DECISION; a
 # card with neither a label nor a Gate: line never had one made, and the pipeline used to be unable
