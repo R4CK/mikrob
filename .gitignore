@@ -50,6 +50,12 @@ Ingatlan/token*
 !store/cleancore-landed-check.py
 # gate-pretriage-card.sh's candidate-commit selection, extracted for independent testing (card 34e7285e).
 !store/gate-pretriage-candidates.py
+# The CodeBurn policy (card 56ed32df) is a POLICY, not runtime data: it carries Peti's approved
+# limits and the audited reasons for them (share/pair forbidden, and the always-share flag that
+# re-exposes the machine from a plain `codeburn`). A prohibition that exists only on one disk is not
+# a prohibition -- same argument as watched-repos.json above. Named, not a blanket *.md rule, so
+# runtime markdown under store/ stays ignored.
+!store/codeburn-usage-policy.md
 # Local-LLM offload tooling (config + task templates) is operational, not runtime data.
 !store/local-llm-model
 !store/local-llm-skills/
