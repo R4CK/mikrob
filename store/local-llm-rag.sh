@@ -256,6 +256,12 @@ online() { # $1 = the reason string the caller would have printed
     *"empty or non-string description"*|*"ambiguous/hedged"*|*"router not built"*)
       echo "local-llm-rag: advisory draft SKIPPED -- the online reason is that the ask itself is unusable" >&2
       exit 9 ;;
+    # A stale build is treated exactly like a missing one (card a3611ecc): nothing CURRENT judged this
+    # task, so we do not hand the local model a task that may be the very kind the rebuilt router
+    # would have refused. Fix the build and the draft comes back.
+    *"stale build"*)
+      echo "local-llm-rag: advisory draft SKIPPED -- no current router judged this task; run \`npm run build\`" >&2
+      exit 9 ;;
   esac
   ADVISORY_REASON="$reason"
 }
@@ -306,9 +312,19 @@ if [[ "$AUTO" == "1" ]]; then
   if [[ ! -f "$ROUTER" ]]; then
     online "router not built at $ROUTER, nothing can judge this task"
   fi
-  VERDICT="$(ROUTER="$ROUTER" TASK="$TASK" DIFF="$DIFFICULTY" CFG="$HERE/local-llm-offload-active.json" node - <<'NODE'
+  VERDICT="$(ROUTER="$ROUTER" FRESH="$HERE/build-freshness.mjs" TASK="$TASK" DIFF="$DIFFICULTY" CFG="$HERE/local-llm-offload-active.json" node - <<'NODE'
 (async () => {
   const fs = require('fs')
+  // A STALE ROUTER IS NOT A ROUTER (card a3611ecc). The verdict below is only worth having if the
+  // artifact producing it was built from the source that is on disk now; asked here, in the process
+  // that is about to import it, so it costs ~2ms and no extra spawn. Anything other than `fresh` --
+  // including "cannot tell" -- goes online, exactly like a missing build.
+  const { checkBuildFreshness } = await import(process.env.FRESH)
+  const freshness = checkBuildFreshness(process.env.ROUTER)
+  if (freshness.status !== 'fresh') {
+    process.stdout.write('online\tstale build (' + freshness.status + '): ' + freshness.reason)
+    return
+  }
   let agg = 75
   try { agg = JSON.parse(fs.readFileSync(process.env.CFG, 'utf8')).aggressiveness ?? 75 } catch {}
   const { routeTask } = await import(process.env.ROUTER)
