@@ -82,6 +82,36 @@ done
 echo "fleet-test.sh: $TEST_TREE @ $(git -C "$TEST_TREE" rev-parse --short HEAD)" >&2
 cd "$TEST_TREE" || die 3 "cannot cd to $TEST_TREE"
 
+# BUILD, because syncing the SOURCE says nothing about the ARTIFACT (card c32577e4).
+#
+# Nine suites load dist/ rather than src/ (process-lock, local-llm-rag-routes-by-default,
+# build-freshness, version, fix-landed-check and four more). dist/ is gitignored, so the checkout
+# above does not touch it and `git clean -fd` does not remove it -- it is simply whatever some
+# earlier run happened to leave behind, at some other commit, with nothing recording which.
+#
+# MEASURED, not argued: `fleet-test.sh --ref ccb86e6` (the commit BEFORE the router's SEC-tag
+# feature) synced a source with zero occurrences of SECURITY_TAGS while dist/local-llm-router.js
+# still held two. The suite ran the OLD commit's source against the NEW commit's artifact and
+# reported 5 failures that belonged to neither. A run like that is worse than no run: it produces a
+# verdict about a commit it never tested.
+#
+# WHY A MARKER AND NOT AN UNCONDITIONAL BUILD. tsc takes 6.8s here, and the common call is a single
+# test file that finishes in 0.5s -- a 13x tax on the cheapest, most frequent use. The marker is
+# sound precisely because of the hard reset above: the tree is an exact checkout of TARGET, so the
+# sha determines the source completely. Same file and same convention the live install uses
+# (update.sh, recovery-prev-version.sh), so a reader meets one idea, not two.
+#
+# The marker is removed BEFORE building and written only after tsc succeeds: an interrupted or
+# failing build must not leave behind a claim that dist matches TARGET. A failed build is fatal --
+# running the suite anyway would put us back in exactly the case above, testing a stale artifact.
+BUILT_MARKER="dist/.built-commit"
+if [ "$(cat "$BUILT_MARKER" 2>/dev/null)" != "$TARGET" ]; then
+  echo "fleet-test.sh: building dist (was: $(cat "$BUILT_MARKER" 2>/dev/null || echo 'unrecorded'))" >&2
+  rm -f "$BUILT_MARKER"
+  npx tsc || die 3 "the build failed -- refusing to run the suite against a stale dist/ (see above)"
+  echo "$TARGET" > "$BUILT_MARKER"
+fi
+
 # KNOWN BENIGN FLAKE (card 54699bbb). vitest's own worker-pool RPC (birpc) has a HARDCODED 60s
 # timeout with no config knob before vitest 3.x; under load (this suite, this WSL sandbox) that
 # round-trip occasionally misses it, and vitest exits 1 with an "Unhandled Error: [vitest-worker]:
