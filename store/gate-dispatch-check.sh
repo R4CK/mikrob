@@ -30,6 +30,17 @@
 #       shell-quote free-text card content.
 #   gate-dispatch-check.sh selftest         -> offline self-test, no API calls, no side effects
 #
+# THE ONE THING AN AUTHOR CAN DO TO MAKE THIS EXACT (card f910eabd): put a line
+#
+#     Gate-SHA: <sha>[, <sha>...]
+#
+# in the REVIEW comment (a gate verdict may declare the sha it reviewed the same way). When that
+# line is present it REPLACES the prose scrape for that comment: no keyword guessing, no card-id
+# collisions, no "does this hex token mean a commit". Everything below is heuristics reading prose,
+# and prose has produced four documented false-positive classes here; one declared line removes the
+# guesswork for the comment that carries it. It is OPTIONAL and stays optional -- no line means the
+# old heuristics run unchanged, which is what every card written before this convention relies on.
+#
 # `decide` exists for a caller that must ask about MANY (card, agent) pairs at once -- the fleet
 # nudger asks 4 gate agents about every non-blocked waiting card. Going through `check` would refetch
 # the same card's comments once per agent; `decide` lets the caller fetch each card once and ask four
@@ -127,6 +138,34 @@ def ts(c):
 #    test re-arms on all of those, which is the fail-open direction but pure noise.
 review_rx = re.compile(r"^\s*(?:[#*>\-]*\s*)?REVIEW\b", re.M)
 
+# STRUCTURED FIELD (card f910eabd). Everything below this line is heuristics reading prose, and the
+# prose keeps winning: four documented false-positive classes on the same guesswork (REVIEW-prefix,
+# intersection-vs-difference, and the one measured for this card -- a comment that names the SAME
+# already-gated sha plus one stray hex token, which the difference rule reads as new work). The
+# stray token is usually a SIBLING CARD ID, and the card-id filter cannot close that: the board
+# listing truncates done cards, so CARD_IDS is partial by construction.
+#
+# So an author may say it outright: a line `Gate-SHA: <sha>[ <sha>...]` names exactly what is being
+# submitted, and when it is present it REPLACES the scrape for that comment -- no card-id
+# subtraction either, because an explicit value needs no guessing about what its author meant.
+# Verdicts may carry the same line for the sha they reviewed; the comparison is symmetric.
+#
+# LINE-ANCHORED, like review_rx and for the same measured reason: a gate quoting the convention in
+# prose ("the Gate-SHA: 1234abc named in that review is stale") must not arm anything. Anchoring is
+# what makes a mention cheap to write about. (No apostrophes in this block on purpose -- the whole
+# program is a single-quoted bash argument, and one apostrophe ends it mid-regex.)
+#
+# MIGRATION IS THE DEFAULT, NOT A PHASE: no field -> the old heuristics run unchanged, so a card
+# written before this convention (i.e. every card today) behaves exactly as it did. Fail-open, same
+# stance as the rest of this script.
+gate_sha_rx = re.compile(r"^\s*(?:[#*>\-]*\s*)?Gate-SHA:[ \t]*([0-9a-fA-F]{7,40}(?:[ \t]*[, ][ \t]*[0-9a-fA-F]{7,40})*)", re.M | re.I)
+
+def structured_shas(text):
+    out = set()
+    for m in gate_sha_rx.finditer(text or ""):
+        out |= {s.lower() for s in re.findall(r"[0-9a-fA-F]{7,40}", m.group(1))}
+    return out
+
 # CARD-ID COLLISION (real incident, fef84e46/63c4b270, 2026-08-13): kanban card ids are the SAME
 # hex-lookalike shape as a git short-sha, and a card almost always mentions its OWN id somewhere
 # in a comment (title echo, kartya <id>, or a branch name like fix/foo-<cardId>). That id then
@@ -153,6 +192,11 @@ def extract_shas(text):
     found = {m.group(0).lower() for m in re.finditer(r"\b[0-9a-fA-F]{7,40}\b", text or "")
              if re.search(r"[a-fA-F]", m.group(0))}
     return found - _card_ids
+
+def shas_of(comment):
+    """The shas a comment is ABOUT: its declared ones if it declares any, else the scrape."""
+    text = comment.get("content") or ""
+    return structured_shas(text) or extract_shas(text)
 
 GATE_AGENTS = ("qa", "qa2", "cybersec", "cybered")
 # Who cannot be SUBMITTING work: the gates themselves (their verdicts are the other side of this
@@ -181,6 +225,11 @@ def is_submission(c):
     if author == agent.lower():
         return False
     text = c.get("content") or ""
+    # A declared Gate-SHA IS the submission signal (card f910eabd): whoever writes that line is
+    # naming a commit for a gate to look at, which is the whole definition. Checked before the
+    # prose rules because it is the only one that cannot be triggered by quoting.
+    if structured_shas(text):
+        return True
     if review_rx.search(text):
         return True
     if author in NON_SUBMITTERS:
@@ -249,8 +298,8 @@ last_review = max(ts(c) for c in review_comments)
 # side names no sha at all (fail-open, same stance as the rest of this script).
 newest_mine = max(mine, key=ts)
 newest_review = max(review_comments, key=ts)
-mine_shas = extract_shas(newest_mine.get("content") or "")
-review_shas = extract_shas(newest_review.get("content") or "")
+mine_shas = shas_of(newest_mine)
+review_shas = shas_of(newest_review)
 
 # INTERSECTION vs DIFFERENCE (Cybersec, real incident 36d559e5/974509e3, 2026-08-13): the prior
 # check asked "does the REVIEW overlap the verdict shas at all" -- but a REVIEW naming BOTH a
@@ -384,6 +433,31 @@ print(",".join(c.get("id") or "" for c in cards if isinstance(c, dict)))
     t "new REVIEW after the verdict"  "ALLOW:stale-verdict" cybersec <<< '[{"author":"cybersec","created_at":200,"content":"NO-GO"},{"author":"backend2","created_at":300,"content":"REVIEW -- fixed"}]'
     t "another gate commented later"  "ADVISE-SKIP:already-gated" cybersec <<< '[{"author":"backend","created_at":100,"content":"REVIEW"},{"author":"cybersec","created_at":200,"content":"GO"},{"author":"qa","created_at":300,"content":"QA PASS"}]'
     t "own comment says REVIEW"       "ADVISE-SKIP:already-gated" cybersec <<< '[{"author":"backend","created_at":100,"content":"REVIEW"},{"author":"cybersec","created_at":200,"content":"GO -- the REVIEW claim holds"}]'
+    # --- Gate-SHA: the declared field beats the prose scrape (card f910eabd) ------------------
+    # THE MEASURED CASE. A comment newer than the verdict that names the SAME already-gated sha
+    # plus ONE stray hex token (here a sibling card id) -- the difference rule reads the stray as
+    # new work and wakes the gate for nothing. The card-id filter cannot close this: the board
+    # listing truncates done cards, so CARD_IDS is partial by construction. The pair below is the
+    # point of the card: identical text, one line added.
+    t "stray hex token re-arms without the field" "ALLOW:stale-verdict" cybered <<< '[{"author":"backend2","created_at":100,"content":"REVIEW -- kesz, commit ac792b3b"},{"author":"cybered","created_at":200,"content":"CYBERED GO -- @ ac792b3b"},{"author":"backend2","created_at":300,"content":"Valasz: az ac792b3b valtozatlan, a testver-kartya 63c4b270 mar landolt."}]'
+    t "declared Gate-SHA suppresses it"           "ADVISE-SKIP:already-gated" cybered <<< '[{"author":"backend2","created_at":100,"content":"REVIEW -- kesz, commit ac792b3b"},{"author":"cybered","created_at":200,"content":"CYBERED GO -- @ ac792b3b"},{"author":"backend2","created_at":300,"content":"Gate-SHA: ac792b3b\nValasz: az ac792b3b valtozatlan, a testver-kartya 63c4b270 mar landolt."}]'
+    # NO REGRESSION of the difference rule (cards e76c1b7e/2737207): a review that supersedes older
+    # shas still re-arms, and now says so exactly instead of being inferred from the sentence.
+    t "declared NEW sha still re-arms"            "ALLOW:stale-verdict" cybersec <<< '[{"author":"backend","created_at":100,"content":"REVIEW -- 6fd834e2"},{"author":"cybersec","created_at":200,"content":"NO-GO @ 6fd834e2"},{"author":"backend","created_at":300,"content":"Gate-SHA: 974509e3\nREVIEW -- 974509e3 supersedes 6fd834e2/91a22169."}]'
+    # ANCHORING is what makes the convention safe to talk about: a gate quoting it mid-sentence
+    # must not arm anything -- the same failure shape as the quoted REVIEW word (card b60835e1).
+    t "quoted Gate-SHA mid-line does not arm"     "ADVISE-SKIP:already-gated" cybersec <<< '[{"author":"backend","created_at":100,"content":"REVIEW -- ac792b3b"},{"author":"cybersec","created_at":200,"content":"GO @ ac792b3b"},{"author":"cybered","created_at":300,"content":"Megjegyzes: a review-bol hianyzik a Gate-SHA: 1234abcd sor, kerem potolni."}]'
+    # The field is a submission signal on its own -- an author who declares a sha has submitted it,
+    # whatever the comment opens with (the "JAVITVA -- commit X" shape that b60835e1 measured).
+    t "Gate-SHA alone counts as a submission"     "ALLOW:no-verdict" cybersec <<< '[{"author":"backend2","created_at":100,"content":"Gate-SHA: ac792b3b\nJAVITVA, ugyanaz az ag."}]'
+    # SYMMETRIC: a verdict may declare what it reviewed, and that side is read the same way. Here
+    # the verdict declares the new sha, so the later review naming it is NOT new work.
+    t "verdict declares what it gated"            "ADVISE-SKIP:already-gated" cybersec <<< '[{"author":"backend","created_at":100,"content":"REVIEW -- 6fd834e2"},{"author":"cybersec","created_at":300,"content":"Gate-SHA: 974509e3\nCYBERSEC GO"},{"author":"backend","created_at":200,"content":"REVIEW -- 974509e3"}]'
+    # MIGRATION IS THE DEFAULT: without the field, every pre-convention card behaves exactly as
+    # before. Pinned so a later "cleanup" cannot make the field mandatory by accident.
+    t "no field at all -> old behaviour"          "ADVISE-SKIP:already-gated" cybersec <<< '[{"author":"backend","created_at":100,"content":"REVIEW -- ac792b3b"},{"author":"cybersec","created_at":200,"content":"GO @ ac792b3b"}]'
+    # Multiple shas on one line (a review that submits two commits together).
+    t "two declared shas, one still new"          "ALLOW:stale-verdict" cybersec <<< '[{"author":"backend","created_at":100,"content":"REVIEW -- 6fd834e2"},{"author":"cybersec","created_at":200,"content":"Gate-SHA: 6fd834e2\nNO-GO"},{"author":"backend","created_at":300,"content":"Gate-SHA: 6fd834e2, 974509e3\nREVIEW -- fix + follow-up."}]'
     t "malformed json"                "ALLOW"              cybersec <<< 'not json'
     t "object-wrapped comments"       "ADVISE-SKIP:already-gated" cybersec <<< '{"comments":[{"author":"backend","created_at":100,"content":"REVIEW"},{"author":"cybersec","created_at":200,"content":"GO"}]}'
     # ts() robustness: a comment with no created_at must not crash the max(). Needs a REVIEW present
