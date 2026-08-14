@@ -10983,26 +10983,144 @@ async function llmRefreshRecs() {
     // "Use this" (card first-run-llm.sh philosophy: a finished download never silently becomes
     // the fleet default -- activation is its own explicit, logged step).
     el.querySelectorAll('.llm-rec-use-btn').forEach(b =>
-      b.addEventListener('click', async () => {
-        b.disabled = true
-        try {
-          const res = await fetch('/api/local-llm/model', {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ model: b.dataset.model }),
-          })
-          if (!res.ok) throw new Error('activate failed')
-          await llmRefreshRecs()
-          await llmRefreshStatus()
-        } catch {
-          b.disabled = false
-          showToast(t('localLlm.rec.activate_error'))
-        }
-      }))
+      b.addEventListener('click', () => llmActivateModelClick(b.dataset.model, b)))
   } catch {
     el.innerHTML = `<div class="llm-empty">${t('localLlm.rec.load_error')}</div>`
   }
 }
+
+// --- Publisher-trust confirmation gate (card fa8959cd, backend gate eb843c46) ----------------
+// POST /api/local-llm/model 403s for an untrusted/unknown publisher with a structured basis
+// (owner, downloads, full digests) plus the exact string the operator must type back
+// (confirmWith). This mirrors store/first-run-llm.sh --i-trust: a confirmation that only shows
+// a name is a click-through, not a decision, so the modal renders the basis instead of a bare
+// "are you sure?".
+let _llmTrustConfirmCtx = null // { model, useBtn }
+
+async function llmPostActivateModel(model, iTrust) {
+  const res = await fetch('/api/local-llm/model', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(iTrust ? { model, iTrust } : { model }),
+  })
+  const data = await res.json().catch(() => ({}))
+  return { ok: res.ok, status: res.status, data }
+}
+
+async function llmActivateModelClick(model, btn) {
+  btn.disabled = true
+  try {
+    const { ok, status, data } = await llmPostActivateModel(model)
+    if (ok) {
+      await llmRefreshRecs()
+      await llmRefreshStatus()
+      return
+    }
+    if (status === 403 && data.code === 'publisher_not_trusted' && data.requiresConfirmation) {
+      openLlmTrustConfirm(model, data, btn)
+      return
+    }
+    // Every other failure (not installed, digest mismatch, ollama down, ...) has no confirmation
+    // path -- the backend error text is already a curated, specific Hungarian message, not a raw
+    // exception, so it is shown as-is (rule 12).
+    btn.disabled = false
+    showToast(data.error || t('localLlm.rec.activate_error'))
+  } catch {
+    btn.disabled = false
+    showToast(t('localLlm.rec.activate_error'))
+  }
+}
+
+function openLlmTrustConfirm(model, data, useBtn) {
+  _llmTrustConfirmCtx = { model, useBtn }
+  const basis = data.basis || {}
+  document.getElementById('llmTrustConfirmDesc').textContent = data.error || ''
+  const parts = Array.isArray(basis.parts) ? basis.parts : []
+  // Never truncated: a shortened digest cannot be compared against anything (same rule as the
+  // catalogue's own installRef field -- this is the one place a full sha256 is deliberately shown
+  // in full, not the 8-char prefix the catalogue badge uses elsewhere).
+  const digestsHtml = parts.length
+    ? parts.map((p) => `<div class="llm-trust-confirm-digest">${escapeHtml(p.sha256 || t('localLlm.trustConfirm.digest_missing'))}</div>`).join('')
+    : `<div class="llm-trust-confirm-digest">${t('localLlm.trustConfirm.digest_missing')}</div>`
+  document.getElementById('llmTrustConfirmBasis').innerHTML = `
+    <dl class="llm-trust-confirm-list">
+      <dt>${t('localLlm.trustConfirm.basis_owner')}</dt><dd>${escapeHtml(basis.owner || '?')}</dd>
+      <dt>${t('localLlm.trustConfirm.basis_downloads')}</dt><dd>${typeof basis.downloads === 'number' ? llmFmtCount(basis.downloads) : t('localLlm.trustConfirm.basis_downloads_unknown')}</dd>
+      <dt>${t('localLlm.trustConfirm.basis_parts', { count: basis.partCount ?? parts.length })}</dt><dd>${digestsHtml}</dd>
+    </dl>`
+  document.getElementById('llmTrustConfirmInputLabel').textContent = t('localLlm.trustConfirm.input_label')
+  const input = document.getElementById('llmTrustConfirmInput')
+  input.value = ''
+  const errEl = document.getElementById('llmTrustConfirmError')
+  errEl.hidden = true
+  errEl.textContent = ''
+  document.getElementById('llmTrustConfirmOverlay').hidden = false
+  setTimeout(() => input.focus(), 50)
+}
+
+function closeLlmTrustConfirm() {
+  document.getElementById('llmTrustConfirmOverlay').hidden = true
+  if (_llmTrustConfirmCtx && _llmTrustConfirmCtx.useBtn) _llmTrustConfirmCtx.useBtn.disabled = false
+  _llmTrustConfirmCtx = null
+}
+
+async function llmSubmitTrustConfirm() {
+  if (!_llmTrustConfirmCtx) return
+  const { model } = _llmTrustConfirmCtx
+  const input = document.getElementById('llmTrustConfirmInput')
+  const answer = input.value.trim()
+  const errEl = document.getElementById('llmTrustConfirmError')
+  if (!answer) {
+    errEl.textContent = t('localLlm.trustConfirm.empty_error')
+    errEl.hidden = false
+    return
+  }
+  const submitBtn = document.getElementById('llmTrustConfirmSubmit')
+  submitBtn.querySelector('.btn-text').hidden = true
+  submitBtn.querySelector('.btn-loading').hidden = false
+  submitBtn.disabled = true
+  try {
+    const { ok, status, data } = await llmPostActivateModel(model, answer)
+    if (ok) {
+      closeLlmTrustConfirm()
+      await llmRefreshRecs()
+      await llmRefreshStatus()
+      return
+    }
+    if (status === 403 && data.code === 'publisher_not_trusted') {
+      // Wrong name typed back -- stay open, this is the whole point of the gate.
+      errEl.textContent = t('localLlm.trustConfirm.wrong_answer_error')
+      errEl.hidden = false
+      return
+    }
+    // Digest mismatch (409) has NO override, here or on the CLI: the bytes on disk are not the
+    // bytes that were catalogued, so there is nothing left to confirm. Close and surface the
+    // curated backend message rather than looping the operator on an unwinnable retry.
+    closeLlmTrustConfirm()
+    showToast(data.error || t('localLlm.rec.activate_error'))
+  } catch {
+    closeLlmTrustConfirm()
+    showToast(t('localLlm.rec.activate_error'))
+  } finally {
+    submitBtn.querySelector('.btn-text').hidden = false
+    submitBtn.querySelector('.btn-loading').hidden = true
+    submitBtn.disabled = false
+  }
+}
+
+;(function initLlmTrustConfirmModal() {
+  function cancel() { closeLlmTrustConfirm() }
+  document.addEventListener('DOMContentLoaded', () => {
+    document.getElementById('llmTrustConfirmSubmit').addEventListener('click', llmSubmitTrustConfirm)
+    document.getElementById('llmTrustConfirmClose').addEventListener('click', cancel)
+    document.getElementById('llmTrustConfirmCancel').addEventListener('click', cancel)
+    document.getElementById('llmTrustConfirmOverlay').addEventListener('click', (e) => { if (e.target === e.currentTarget) cancel() })
+    document.getElementById('llmTrustConfirmInput').addEventListener('keydown', (e) => { if (e.key === 'Enter') llmSubmitTrustConfirm() })
+    document.addEventListener('keydown', (e) => {
+      if (e.key === 'Escape' && !document.getElementById('llmTrustConfirmOverlay').hidden) cancel()
+    })
+  })
+})()
 
 // --- HuggingFace GGUF model search (Ollama-pullable) -----------------------
 function llmFmtCount(n) {

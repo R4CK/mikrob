@@ -3320,6 +3320,35 @@
     </div>
   </div>
 
+  <!-- Modal: local-LLM publisher-trust confirmation (card fa8959cd, backend gate eb843c46).
+       Shown when POST /api/local-llm/model 403s with code:'publisher_not_trusted'. The operator
+       must read the decision basis (owner, downloads, full digests) and type the name back --
+       a confirmation that only shows a name is a click-through, not a decision. -->
+  <div class="modal-overlay" id="llmTrustConfirmOverlay" hidden role="dialog" aria-modal="true" aria-labelledby="llmTrustConfirmTitle">
+    <div class="modal" style="max-width:480px">
+      <div class="modal-header">
+        <h2 id="llmTrustConfirmTitle" data-i18n="localLlm.trustConfirm.title">Nem jóváhagyott kiadó</h2>
+        <button class="modal-close" id="llmTrustConfirmClose">&times;</button>
+      </div>
+      <div class="modal-body">
+        <p id="llmTrustConfirmDesc" style="font-size:13px;color:var(--text-muted);margin-bottom:16px;"></p>
+        <div id="llmTrustConfirmBasis"></div>
+        <div class="form-group" style="margin-top:16px;margin-bottom:0;">
+          <label for="llmTrustConfirmInput" id="llmTrustConfirmInputLabel"></label>
+          <input type="text" id="llmTrustConfirmInput" autocomplete="off" spellcheck="false">
+        </div>
+        <p class="llm-trust-confirm-error" id="llmTrustConfirmError" hidden role="alert"></p>
+      </div>
+      <div class="modal-footer">
+        <button class="btn-secondary" id="llmTrustConfirmCancel" data-i18n="common.btn.cancel">Mégse</button>
+        <button class="btn-primary btn-compact" id="llmTrustConfirmSubmit">
+          <span class="btn-text" data-i18n="localLlm.trustConfirm.submit_btn">Megerősítés</span>
+          <span class="btn-loading" hidden><span class="spinner"></span></span>
+        </button>
+      </div>
+    </div>
+  </div>
+
   <!-- Modal: Local-LLM queue item detail (card 48aacf56 item 5) -->
   <div class="modal-overlay" id="llmQueueDetailOverlay">
     <div class="modal">
