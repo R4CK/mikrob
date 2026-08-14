@@ -116,7 +116,7 @@ export interface RouteInput {
    * FAIL-CLOSED DIRECTION, as the card required: an unknown or absent tag means "no extra signal",
    * never "safe". Text classification runs exactly as before either way.
    */
-  readonly tags?: readonly string[]
+  readonly tags?: readonly string[] | string
 }
 
 /** Tags that mean the fleet declared this work security-relevant. Compared as WHOLE tags, never as
@@ -142,10 +142,31 @@ export function titleTags(title: string): string[] {
   return [...lead[0].matchAll(/\[([^\]]*)\]/g)].map((m) => m[1]!.trim().toUpperCase()).filter(Boolean)
 }
 
-/** Whether the caller handed us a tag that declares this work security-relevant. */
-export function hasSecurityTag(tags: readonly string[] | undefined): boolean {
-  if (!Array.isArray(tags)) return false
-  return tags.some((t) => SECURITY_TAGS.has(String(t ?? '').trim().toUpperCase()))
+/**
+ * Whether the caller handed us a tag that declares this work security-relevant.
+ *
+ * ACCEPTS A STRING TOO, and refuses everything else LOUDLY (Cybersec's LOW on 0603450). The first
+ * version required an array, which made two malformed inputs behave in opposite ways: `'SEC'` -- the
+ * likelier caller mistake, since the shell path carries a comma-separated string right up to the
+ * boundary -- returned false and the signal vanished in silence, while `[['SEC']]` DID fire, because
+ * String(['SEC']) is 'SEC'. A card about a silent gap letting 30 cards through should not ship one.
+ *
+ * A throw is the right kind of loud here rather than a returned false: the only caller is the router
+ * below, whose shell wrapper turns an exception into `router-error` -> ONLINE. So a malformed tag
+ * list fails towards Claude and says why, instead of quietly reading as "no security tag".
+ */
+export function hasSecurityTag(tags: readonly string[] | string | undefined | null): boolean {
+  if (tags === undefined || tags === null) return false
+  const list = typeof tags === 'string' ? tags.split(',') : tags
+  if (!Array.isArray(list)) {
+    throw new TypeError(`tags must be a string or an array of strings, got ${typeof tags}`)
+  }
+  return list.some((t) => {
+    if (typeof t !== 'string') {
+      throw new TypeError(`tags must contain strings, got ${Array.isArray(t) ? 'an array' : typeof t}`)
+    }
+    return SECURITY_TAGS.has(t.trim().toUpperCase())
+  })
 }
 
 // --- deterministic signal tables --------------------------------------------------------------

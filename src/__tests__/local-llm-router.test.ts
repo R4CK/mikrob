@@ -468,6 +468,29 @@ describe('a declared SEC tag is a router input, not a word to find in prose (car
     expect(hasSecurityTag('SEC' as unknown as string[])).toBe(false)
   })
 
+  it('a comma-separated STRING is accepted -- the shell path carries one right up to the boundary', () => {
+    // Cybersec's LOW on 0603450: requiring an array made the likelier caller mistake the SILENT one.
+    // `'SEC'` returned false and the signal vanished, while `[['SEC']]` fired, because String(['SEC'])
+    // is 'SEC'. Two malformed inputs, opposite behaviours, and the quiet one was the probable one.
+    expect(hasSecurityTag('SEC')).toBe(true)
+    expect(hasSecurityTag('BE,SEC,LOW')).toBe(true)
+    expect(hasSecurityTag('BE,LOW')).toBe(false)
+    expect(routeTask({ description: MECHANICAL, tags: 'SEC' }).route).toBe('online')
+    expect(routeTask({ description: MECHANICAL, tags: 'BE,LOW' }).route).toBe('local')
+  })
+
+  it('a malformed tag list THROWS instead of reading as "no security tag"', () => {
+    // A throw is the right kind of loud here: the only caller is routeTask, whose shell wrapper turns
+    // an exception into `router-error` -> ONLINE (measured on this repo's own offload path). So a
+    // broken tag list fails towards Claude and says why. Silence is the one answer it must not give.
+    expect(() => hasSecurityTag([['SEC']] as unknown as string[])).toThrow(/must contain strings/)
+    expect(() => hasSecurityTag(42 as unknown as string[])).toThrow(/string or an array/)
+    expect(() => hasSecurityTag([{ t: 'SEC' }] as unknown as string[])).toThrow(/must contain strings/)
+    // ...and the two shapes that legitimately mean "nothing declared" stay quiet.
+    expect(hasSecurityTag(null as unknown as string[])).toBe(false)
+    expect(hasSecurityTag(undefined)).toBe(false)
+  })
+
   it('titleTags reads only the LEADING bracket run, so quoted prose cannot forge a tag', () => {
     expect(titleTags('[100%][MikroB][SEC][LOW] gpu-detect.sh: TAB in the name')).toEqual(['100%', 'MIKROB', 'SEC', 'LOW'])
     // The brittleness the card warned about: grepping a title for [SEC] would fire on this.
