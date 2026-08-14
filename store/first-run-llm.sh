@@ -28,6 +28,9 @@
 #   store/first-run-llm.sh              # interactive when a TTY is present, otherwise a dry report
 #   store/first-run-llm.sh --status     # what is present / missing, no changes, no network
 #   store/first-run-llm.sh --yes        # non-interactive: runtime + embedding only, no coding model
+#   store/first-run-llm.sh --use <tag> [--i-trust <publisher>]
+#                                       # make an installed model the fleet default. A publisher
+#                                       # outside store/llm-catalog-trust.json needs --i-trust.
 set -uo pipefail
 
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -67,7 +70,11 @@ status() {
 # the worst place to discover it.
 if [ "${1:-}" = "--use" ]; then
   want="${2:-}"
-  [ -n "$want" ] || { say "usage: first-run-llm.sh --use <model-tag>"; exit 2; }
+  # --i-trust <publisher>: the operator's answer to the trust gate further down. It is a separate
+  # argument rather than a yes/no so that answering it requires having read the publisher name.
+  ITRUST=""
+  [ "${3:-}" = "--i-trust" ] && ITRUST="${4:-}"
+  [ -n "$want" ] || { say "usage: first-run-llm.sh --use <model-tag> [--i-trust <publisher>]"; exit 2; }
   if ! runtime_up; then
     say "The runtime is not answering at $OLLAMA_HOST -- start it, then retry."
     exit 3
@@ -129,6 +136,77 @@ print("ok" if not missing else "MISMATCH:" + ",".join(missing[:3]))
       say "  it is not covered by the digest control."
       log "digest check skipped: $want ($verdict)" ;;
   esac
+
+  # PUBLISHER TRUST GATE (card eb843c46). The digest check above answers "are these the bytes we
+  # catalogued". It says NOTHING about whether the PUBLISHER should be trusted with this job: a
+  # faithfully delivered backdoor matches its own digest perfectly. Those are two different
+  # questions with two different lists and two different lifecycles -- relevance ("is this a coding
+  # model", cheap data edit) versus trust ("may this be installed", security control), which is why
+  # store/llm-catalog-trust.json keeps them apart.
+  #
+  # For a publisher OUTSIDE trustedPublishers the decision is the operator's, not this script's, and
+  # a confirmation that shows only a name is a click-through rather than a decision. So the gate
+  # prints what the decision actually rests on -- publisher, downloads, part count, full digests --
+  # and then requires the operator to NAME the publisher back. Reading is the point; a bare y/N
+  # could be answered without looking.
+  #
+  # It behaves identically with and without a TTY on purpose. A gate that auto-accepts in a pipe is
+  # not a gate, and one that can only ever be answered by hand would make an untrusted model
+  # impossible to adopt at all -- so the escape hatch is one explicit, logged flag.
+  BASIS="$(WANT="$want" python3 -c '
+import json, os, sys
+want = os.environ["WANT"]
+try:
+    doc = json.load(open(sys.argv[1]))
+except Exception:
+    doc = {}
+m = next((x for x in doc.get("models", []) if x.get("installRef") == want), None)
+if m is None:
+    # No entry means no provenance at all, which is strictly weaker than an untrusted publisher --
+    # so it goes through the same gate, under a name the operator has to type deliberately.
+    print("no\tunverified\tunknown\t0")
+    print("      (no catalogue entry -- nothing is recorded about where these weights came from)")
+else:
+    parts = m.get("parts") or []
+    dl = m.get("downloads")
+    print("%s\t%s\t%s\t%d" % ("yes" if m.get("trusted") else "no",
+                              m.get("repoOwner") or "unknown",
+                              "unknown" if dl is None else dl,
+                              len(parts)))
+    for p in parts:
+        # Never truncated: a shortened digest cannot be compared against anything.
+        print("      %s  %s" % (p.get("sha256") or "MISSING", p.get("path") or "?"))
+    if not parts:
+        print("      (no parts recorded)")
+' "$cache" 2>/dev/null)"
+  [ -n "$BASIS" ] || BASIS="$(printf 'no\tunverified\tunknown\t0\n      (catalogue unreadable)')"
+  IFS="$(printf '\t')" read -r T_TRUSTED T_OWNER T_DOWNLOADS T_PARTS <<< "$(printf '%s\n' "$BASIS" | head -1)"
+  if [ "$T_TRUSTED" != "yes" ]; then
+    say ""
+    say "UNTRUSTED PUBLISHER -- '$T_OWNER' is not on the installable-trust list"
+    say "  (store/llm-catalog-trust.json -> trustedPublishers). This step makes the model the"
+    say "  code-suggesting oracle for every agent in the fleet, so the call is yours."
+    say ""
+    say "  What the decision rests on:"
+    say "    model:      $want"
+    say "    publisher:  $T_OWNER"
+    say "    downloads:  $T_DOWNLOADS"
+    say "    parts:      $T_PARTS"
+    say "    digests:"
+    printf '%s\n' "$BASIS" | tail -n +2
+    if [ -n "$ITRUST" ] && [ "$(printf '%s' "$ITRUST" | tr '[:upper:]' '[:lower:]')" = "$(printf '%s' "$T_OWNER" | tr '[:upper:]' '[:lower:]')" ]; then
+      say ""
+      say "  Accepted: you named the publisher explicitly. Recorded in $LOG."
+      log "untrusted default ACCEPTED: $want (publisher $T_OWNER, downloads $T_DOWNLOADS, parts $T_PARTS, explicit --i-trust)"
+    else
+      say ""
+      say "  Not making it the default. If you have read the above and still want it, name the"
+      say "  publisher back:"
+      say "      store/first-run-llm.sh --use $want --i-trust $T_OWNER"
+      log "untrusted default REFUSED: $want (publisher $T_OWNER, no matching --i-trust)"
+      exit 7
+    fi
+  fi
 
   prev="$( [ -s "$MODEL_FILE" ] && tr -d '[:space:]' < "$MODEL_FILE" || echo '<none>' )"
   printf '%s\n' "$want" > "$MODEL_FILE" || { say "could not write $MODEL_FILE"; exit 5; }
