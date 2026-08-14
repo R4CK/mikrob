@@ -49,27 +49,37 @@ LOG="$ROOT/store/context-compact-monitor.log"
 TARGET_AGENTS="${COMPACT_TARGET_AGENTS:-backend backend2 fullstack cybered cybersec}"
 
 # THRESHOLD IS A PERCENTAGE OF THE MODEL CONTEXT WINDOW, NOT A TOKEN COUNT (Peti rule, CLAUDE.md
-# 2026-08-14, commit 4f315c8; card 35533cca). The earlier fixed 350k meant something different on
-# every model, and against the ~1M window these agents actually run it fired at ~35% -- far earlier
-# than the rule wants, so every compact cost a summarisation pass sooner than necessary.
+# 2026-08-14, commit 4f315c8; card 35533cca). A fixed token count means something different on every
+# model, which is the whole reason the rule is phrased as a percentage.
 #
-# The absolute trigger is therefore DERIVED PER AGENT from the model that agent is really running,
-# which token_usage.model records on every call. Window sizes are only listed for models actually
-# observed in this fleet, all measured to carry sessions past 900k (backend 974k, backend2 996k,
-# mikrob 932k on 2026-08-13) -- an unmeasured model must be added deliberately, and until it is, it
-# takes the default AND gets a log line, so a new model can never ride a silent assumption.
+# THE WINDOW COMES FROM THE FLEET'S OWN FUNCTION, NOT FROM A TABLE HERE (Cybered NO-GO, comment
+# 11790, finding 3). My first cut hand-listed opus-5 / sonnet-5 / sonnet-4-6 as 1M each, generalising
+# from sessions measured on OPUS. src/context-guard.ts already answers this question with evidence
+# and says otherwise: sonnet is 200k ("this host has never observed a sonnet session above 198k;
+# sonnet-5 max 197,885 across 14 days"), and its default for an unknown model is 200k, not 1M. So my
+# table would have set a 750k trigger on a 200k-window model -- unreachable, meaning a sonnet session
+# would NEVER be compacted and would run into its real ceiling. That is precisely the freeze this
+# card exists to prevent, introduced by the fix for it. backend alone made 1704 sonnet-4-6 calls in
+# the 24h before this was caught.
+#
+# So: call contextLimitForModel from dist. One definition, already tested, already calibrated from
+# this host's transcripts. If dist cannot be read we fall back to its own conservative default
+# (200k) rather than to the largest window -- under-estimating compacts too eagerly, which is loud
+# and cheap; over-estimating is silent and ends in the ceiling.
 COMPACT_PCT="${COMPACT_PCT:-75}"
-COMPACT_WINDOW_K_DEFAULT="${COMPACT_WINDOW_K_DEFAULT:-1000}"
-window_k_for_model() {
-  case "$1" in
-    claude-opus-5|claude-sonnet-5|claude-sonnet-4-6) echo 1000 ;;
-    *) echo "$COMPACT_WINDOW_K_DEFAULT" ;;
-  esac
+CONTEXT_GUARD_JS="${CONTEXT_GUARD_JS:-$ROOT/dist/context-guard.js}"
+window_tokens_for_model() {
+  local w
+  w="$(node -e '
+import(process.argv[1]).then(m => console.log(m.contextLimitForModel(process.argv[2] || null)))
+  .catch(() => process.exit(1))
+' "$CONTEXT_GUARD_JS" "$1" 2>/dev/null)"
+  case "$w" in (''|*[!0-9]*) echo 200000 ;; (*) echo "$w" ;; esac
 }
 # The live threshold, as its own function so the selftest exercises the SAME arithmetic the loop
 # uses rather than a copy of it -- put a token constant back anywhere in this chain and the
 # derived-value cases go red.
-threshold_k_for_model() { echo $(( $(window_k_for_model "$1") * COMPACT_PCT / 100 )); }
+threshold_tokens_for_model() { echo $(( $(window_tokens_for_model "$1") * COMPACT_PCT / 100 )); }
 COOLDOWN_MIN="${COMPACT_COOLDOWN_MIN:-45}"
 # Only trust a reading this fresh; a stale row means the agent is parked, and compacting a parked
 # session wakes it up for nothing.
@@ -85,6 +95,10 @@ case "${1:-}" in
 esac
 
 log() { echo "$(date '+%Y-%m-%d %H:%M:%S') $*" >> "$LOG"; }
+# The dry-run prints to stdout, which the scheduled task redirects into the SAME log -- and until now
+# without a timestamp, so 978 of the log's 989 lines could not be ordered or correlated with anything
+# (Cybered NO-GO, finding 4). Evidence a control depends on has to be datable.
+say() { echo "$(date '+%Y-%m-%d %H:%M:%S') $*"; }
 
 # --- decision logic, isolated so the selftest can exercise it without a DB or tmux -------------
 # should_compact <ctx_k> <threshold_k> <age_min> <max_age_min> <mins_since_last> <cooldown_min>
@@ -115,7 +129,7 @@ STATE_JSON='{}'
 # half-written file that the fail-closed path above has to defend against.
 state_put() {
   python3 - "$STATE" "$1" "$2" "$3" <<'PY'
-import json, os, sys, tempfile
+import json, os, stat, sys, tempfile
 path, payload, agent, stamp = sys.argv[1], sys.argv[2], sys.argv[3], int(sys.argv[4])
 data = json.loads(payload)
 data[agent] = stamp
@@ -126,6 +140,14 @@ try:
         json.dump(data, fh)
         fh.flush()
         os.fsync(fh.fileno())
+    # Carry the existing mode over (Cybered NO-GO, finding 5). mkstemp creates 0600 and os.replace
+    # takes the temp file's mode with it, so an atomic write silently tightened 0664 -> 0600. Here
+    # that was a hardening, but a write that changes permissions as a side effect is a surprise
+    # waiting for the first other process that has to read the file; preserving it costs one call.
+    try:
+        os.chmod(tmp, stat.S_IMODE(os.stat(path).st_mode))
+    except OSError:
+        pass          # no existing file (first run) -> mkstemp's 0600 is the right default
     os.replace(tmp, path)
 except BaseException:
     try:
@@ -153,6 +175,38 @@ except Exception as exc:
 else:
     print('OK ' + json.dumps(data))
 PY
+}
+
+# read_agent_ctx <db> <agent> <now> -> "<context_tokens> <timestamp> <model>" for that agent's newest
+# real call, or nothing. Its own function so the selftest can run it against a fixture DB -- the query
+# was the one part of this script no case covered, and it was where the worst bug lived.
+#
+# ONE ROW (Cybered NO-GO, comment 11790, finding 1). It used to be
+#   SELECT MAX(cache_read_tokens) ... || MAX(timestamp) ... WHERE agent=? AND timestamp > now-7200
+# -- two INDEPENDENT aggregates over a 2h window that spans session restarts. The size could come
+# from a dead session's peak while the timestamp came from a fresh row, and the staleness gate, seeing
+# only the fresh timestamp, waved it through. Cybered measured 71 such 15-minute ticks in 7 days, the
+# worst pairing a ~998k peak with a live context of 0-19k. The consequence chain is the opposite of
+# this card's purpose: a pointless compact on a just-restarted agent, then a 45-minute cooldown stamp
+# that suppresses the REAL compact while the session actually grows.
+#
+# THE FULL CONTEXT, NOT THE CACHE-READ PROXY (same NO-GO, finding 3). cache_read_tokens is
+# cache_read_input_tokens alone: it omits the uncached prefix and the newly-cached segment, so a
+# percentage of it is not a percentage of the window. The prompt size of a call is
+# input + cache_read + cache_creation -- which is what src/web/active-model.ts
+# (readContextTokensFromProjectDir) computes from the transcript, and what token-usage.ts itself
+# already treats as context size (its minTokens filter and per-call totals).
+#
+# NEWEST NON-ZERO ROW: bookkeeping rows carry zeros, and a zero is not a measurement. Same rule as
+# readContextTokensFromProjectDir, which walks back to the last usage line with a positive total.
+read_agent_ctx() {
+  sqlite3 "$1" "SELECT (input_tokens + cache_read_tokens + cache_creation_tokens) || ' ' ||
+                       timestamp || ' ' ||
+                       CASE WHEN model IS NULL OR model IN ('', '<synthetic>') THEN '?' ELSE model END
+                FROM token_usage
+                WHERE agent='$2' AND timestamp > $(( $3 - 7200 ))
+                  AND (input_tokens + cache_read_tokens + cache_creation_tokens) > 0
+                ORDER BY timestamp DESC LIMIT 1;" 2>/dev/null
 }
 
 # cooldown_stamp <json> <agent> -> that agent's last-compact epoch, or ERR if it is not a timestamp.
@@ -233,40 +287,110 @@ if [ "${1:-}" = "--selftest" ]; then
   # The trigger is COMPACT_PCT% of the model context window, derived per agent, never a token
   # constant. Put a fixed number back in place of the derivation and the two derived-value cases
   # below go red -- which is the whole point of pinning the arithmetic rather than the outcome.
-  s "known model resolves to its measured window" "1000" "$(window_k_for_model claude-opus-5)"
-  s "sonnet-5 too"                                "1000" "$(window_k_for_model claude-sonnet-5)"
-  s "sonnet-4-6 too"                              "1000" "$(window_k_for_model claude-sonnet-4-6)"
-  s "an unlisted model takes the default"         "1000" "$(window_k_for_model claude-future-9)"
-  s "the default is overridable"                  "200" \
-    "$(COMPACT_WINDOW_K_DEFAULT=200 window_k_for_model claude-future-9)"
-  # 75% of a 1M window is 750k -- NOT the 350k this script shipped with, which was ~35% of the
-  # window these agents actually run and so fired far earlier than the rule wants.
-  s "75% of a 1M window is 750k"   "750" "$(threshold_k_for_model claude-opus-5)"
-  s "75% of a 200k window is 150k" "150" \
-    "$(COMPACT_WINDOW_K_DEFAULT=200 threshold_k_for_model claude-future-9)"
-  s "the percentage itself is overridable" "500" "$(COMPACT_PCT=50 threshold_k_for_model claude-opus-5)"
+  # The window comes from the fleet's own contextLimitForModel, so these assert AGREEMENT with it,
+  # not a private table. My first cut listed sonnet as 1M and would have set an unreachable 750k
+  # trigger on a 200k model -- a sonnet session would never have been compacted at all.
+  s "opus-5 is a 1M-window model"        "1000000" "$(window_tokens_for_model claude-opus-5)"
+  s "sonnet-5 is 200k, NOT 1M"           "200000"  "$(window_tokens_for_model claude-sonnet-5)"
+  s "sonnet-4-6 is 200k, NOT 1M"         "200000"  "$(window_tokens_for_model claude-sonnet-4-6)"
+  s "an unknown model is conservative"   "200000"  "$(window_tokens_for_model claude-future-9)"
+  s "an unreadable dist falls back small" "200000" \
+    "$(CONTEXT_GUARD_JS=/nonexistent/context-guard.js window_tokens_for_model claude-opus-5)"
+  s "75% of a 1M window"    "750000" "$(threshold_tokens_for_model claude-opus-5)"
+  s "75% of a 200k window"  "150000" "$(threshold_tokens_for_model claude-sonnet-5)"
+  s "the percentage is overridable" "500000" "$(COMPACT_PCT=50 threshold_tokens_for_model claude-opus-5)"
   # And the derived number has to be the one the decision actually uses, at its boundary.
-  s "at the derived threshold it acts"     "compact"         "$(should_compact 750 750 5 20 60 45)"
-  s "one below the derived threshold it does not" "below-threshold" "$(should_compact 749 750 5 20 60 45)"
+  s "at the derived threshold it acts"     "compact"         "$(should_compact 750000 750000 5 20 60 45)"
+  s "one below the derived threshold it does not" "below-threshold" "$(should_compact 749999 750000 5 20 60 45)"
   # The old constant must no longer be able to trigger on its own.
   s "the old 350k constant is below the derived threshold" "below-threshold" \
-    "$(should_compact 350 750 5 20 60 45)"
+    "$(should_compact 350000 750000 5 20 60 45)"
 
-  [ "$fails" -eq 0 ] && { echo "selftest OK (31 cases)"; exit 0; } || { echo "selftest FAILED: $fails"; exit 1; }
+  # --- THE QUERY (Cybered NO-GO finding 1) -----------------------------------------------------
+  # A fixture DB with TWO sessions inside the same 2h window: a dead one that peaked at 998k and a
+  # fresh one sitting at 20k. That is the real 2026-08-13 cybered shape. The old two-aggregate query
+  # paired the dead peak with the fresh timestamp; the reader must return the FRESH row, whole.
+  qdb="$sttmp/usage.db"
+  sqlite3 "$qdb" "CREATE TABLE token_usage (agent TEXT, session_id TEXT, timestamp INTEGER,
+    input_tokens INTEGER DEFAULT 0, output_tokens INTEGER DEFAULT 0, cache_read_tokens INTEGER DEFAULT 0,
+    cache_creation_tokens INTEGER DEFAULT 0, model TEXT);" 2>/dev/null
+  qnow=2000000000
+  sqlite3 "$qdb" "INSERT INTO token_usage VALUES
+    ('cybered','dead', $((qnow-3600)), 1000, 0, 990000, 7000, 'claude-opus-5'),
+    ('cybered','live', $((qnow-60)),    500, 0,  19000,  500, 'claude-opus-5'),
+    ('backend','live', $((qnow-120)),  2000, 0, 300000, 1000, 'claude-sonnet-4-6');" 2>/dev/null
+  s "two sessions: the FRESH row wins, not the dead peak" "20000 $((qnow-60)) claude-opus-5" \
+    "$(read_agent_ctx "$qdb" cybered "$qnow")"
+  s "context is input+cache_read+cache_creation, not cache_read alone" "303000 $((qnow-120)) claude-sonnet-4-6" \
+    "$(read_agent_ctx "$qdb" backend "$qnow")"
+  # A zero-total bookkeeping row must not become the reading, and must not shadow a real one.
+  sqlite3 "$qdb" "INSERT INTO token_usage VALUES ('cybered','live', $((qnow-30)), 0,0,0,0, '<synthetic>');" 2>/dev/null
+  s "a zero-total row is not a measurement" "20000 $((qnow-60)) claude-opus-5" \
+    "$(read_agent_ctx "$qdb" cybered "$qnow")"
+  # Outside the 2h window there is nothing to report -- an empty answer, not a stale one.
+  s "nothing inside the window -> empty" "" "$(read_agent_ctx "$qdb" cybered "$((qnow + 100000))")"
+
+  [ "$fails" -eq 0 ] && { echo "selftest OK (36 cases)"; exit 0; } || { echo "selftest FAILED: $fails"; exit 1; }
 fi
 
 [ -r "$DB" ] || { echo "context-compact-monitor.sh: cannot read $DB" >&2; exit 3; }
 
+# The dashboard header file is built HERE, before the state read, because the quarantine branch
+# below has to be able to raise an alarm -- not only because the token-usage refresh further down
+# needs it. Token from a 0600 header file, never argv.
+TOKEN_FILE="$ROOT/store/.dashboard-token"
+HDR_FILE=""   # stays empty if the token is unreadable; every caller checks this (set -u)
+if [ -r "$TOKEN_FILE" ]; then
+  HDR_FILE="$(mktemp)"; trap 'rm -f "$HDR_FILE"' EXIT; chmod 600 "$HDR_FILE"
+  printf 'Authorization: Bearer %s\n' "$(cat "$TOKEN_FILE")" > "$HDR_FILE"
+fi
+
+# QUARANTINE TRIPWIRE (Cybered NO-GO, comment 11790, finding 2). The fail-closed branch below is
+# self-healing for ONE corruption -- but not for a repeated one: writing `{` into the state file
+# every 45 minutes stamps all five targets each time and keeps the control permanently, silently
+# off. Every fleet agent runs as the same UNIX user and all of them read untrusted external text,
+# so this is reachable without crossing a privilege boundary.
+#
+# The counter lives in its OWN file, not in the state JSON: the thing being counted is the state
+# file being destroyed, and a counter inside it would be destroyed with it.
+#
+# Cybered's framing, which is the part worth keeping: the quarantine branch is NEVER legitimate --
+# nobody damages this file by accident -- so it is the cheapest possible tripwire, and one whose
+# only current output is a line in the very log this card proves nobody read for 8 days. A control
+# whose failure is reported only into an unread log is decoration. From the SECOND consecutive
+# quarantine it messages MikroB directly.
+QUARANTINE_COUNT_FILE="${COMPACT_QUARANTINE_FILE:-$ROOT/store/.context-compact-quarantines}"
+quarantine_count() {
+  local n; n="$(cat "$QUARANTINE_COUNT_FILE" 2>/dev/null)"
+  case "$n" in (''|*[!0-9]*) echo 0 ;; (*) echo "$n" ;; esac
+}
+alert_mikrob() { # alert_mikrob <text>
+  [ -n "$HDR_FILE" ] || { log "WARN: no dashboard token, cannot alert MikroB"; return; }
+  python3 -c 'import json,sys; print(json.dumps({"from":"mikrob","to":"mikrob","content":sys.argv[1]}))' "$1" \
+    | curl -fsS -m 15 -o /dev/null -H "@$HDR_FILE" -H 'Content-Type: application/json' \
+        -X POST "http://127.0.0.1:${WEB_PORT:-3420}/api/messages" --data-binary @- 2>/dev/null \
+    || log "WARN: could not deliver the quarantine alert"
+}
+
 state_raw="$(read_state 2>&1)"
 if [ "${state_raw%% *}" = "OK" ]; then
   STATE_JSON="${state_raw#OK }"
+  # A clean read ends the streak. Counting CONSECUTIVE quarantines is the point: one is an accident
+  # to recover from, a second in a row is somebody or something doing it repeatedly.
+  [ "$(quarantine_count)" = "0" ] || echo 0 > "$QUARANTINE_COUNT_FILE" 2>/dev/null || true
 else
   if [ "$DRY" = "1" ]; then
     # --dry-run promises no side effects, so it reports the damage instead of repairing it.
-    echo "SKIP RUN: cooldown state unreadable (${state_raw#ERR }) -- a live run would quarantine it"
+    say "SKIP RUN: cooldown state unreadable (${state_raw#ERR }) -- a live run would quarantine it"
     exit 0
   fi
   log "SKIP RUN: cooldown state unreadable (${state_raw#ERR }) -- quarantining and stamping all targets"
+  QCOUNT=$(( $(quarantine_count) + 1 ))
+  echo "$QCOUNT" > "$QUARANTINE_COUNT_FILE" 2>/dev/null || true
+  if [ "$QCOUNT" -ge 2 ]; then
+    log "ALERT: ${QCOUNT} consecutive quarantines -- notifying MikroB"
+    alert_mikrob "[context-compact-monitor] RIASZTAS: a cooldown-allapot ${QCOUNT}. alkalommal EGYMAS UTAN serult (${STATE}). Ez az ag SOHA nem legitim -- ezt a fajlt senki nem rontja el veletlenul. Amig ismetlodik, minden korben mind az ot cel-agens 'epp most compactolva' belyeget kap, tehat a compact-vedelem 45 percenkent ujra ki van kapcsolva. A serult peldanyok a $(dirname "$STATE") mappaban vannak .corrupt.<ts> neven, nezd meg oket. (Kartya 35533cca, Cybered 2. lelete.)"
+  fi
   # Quarantine, never delete: the damaged file is the only evidence of what went wrong. If the move
   # itself fails we leave it in place and carry on -- state_put's os.replace overwrites it anyway.
   mv -f "$STATE" "$STATE.corrupt.$(date +%s)" 2>/dev/null || log "WARN: could not quarantine $STATE"
@@ -282,11 +406,7 @@ fi
 # safe basis for compacting a live session (the agent may already have compacted, or grown far past
 # it). Best-effort: if the refresh fails we still run, and the staleness check below is what stops
 # us acting on an old reading. Token from a 0600 header file, never argv.
-TOKEN_FILE="$ROOT/store/.dashboard-token"
-HDR_FILE=""   # stays empty if the token is unreadable; the compact call below checks this (set -u)
-if [ -r "$TOKEN_FILE" ]; then
-  HDR_FILE="$(mktemp)"; trap 'rm -f "$HDR_FILE"' EXIT; chmod 600 "$HDR_FILE"
-  printf 'Authorization: Bearer %s\n' "$(cat "$TOKEN_FILE")" > "$HDR_FILE"
+if [ -n "$HDR_FILE" ]; then
   curl -fsS -m 60 -X POST "http://127.0.0.1:${WEB_PORT:-3420}/api/token-usage/collect" \
     -H "@$HDR_FILE" >/dev/null 2>&1 || log "WARN: token-usage refresh failed; using stored rows"
 fi
@@ -295,28 +415,18 @@ NOW=$(date +%s)
 ACTED=0
 
 for agent in $TARGET_AGENTS; do
-  # Third field: the model of this agent NEWEST real call, which sets the context window the
-  # percentage threshold is taken from. '<synthetic>' and empty rows are bookkeeping, not a model,
-  # so they are skipped rather than mistaken for an unknown one.
-  row=$(sqlite3 "$DB" "SELECT CAST(MAX(cache_read_tokens)/1000 AS INT) || ' ' || MAX(timestamp) || ' ' ||
-                       COALESCE((SELECT model FROM token_usage
-                                 WHERE agent='$agent' AND timestamp > $((NOW - 7200))
-                                   AND model IS NOT NULL AND model NOT IN ('', '<synthetic>')
-                                 ORDER BY timestamp DESC LIMIT 1), '?')
-                       FROM token_usage WHERE agent='$agent' AND timestamp > $((NOW - 7200));" 2>/dev/null)
-  ctx_k=$(echo "$row" | awk '{print $1}')
+  row=$(read_agent_ctx "$DB" "$agent" "$NOW")
+  ctx=$(echo "$row" | awk '{print $1}')
   ts=$(echo "$row" | awk '{print $2}')
   model=$(echo "$row" | awk '{print $3}')
-  [ -n "$ctx_k" ] && [ "$ctx_k" != "" ] || continue
-  case "$ctx_k" in (*[!0-9]*) continue ;; esac
+  [ -n "$ctx" ] || continue
+  case "$ctx" in (*[!0-9]*) continue ;; esac
+  case "$ts" in (''|*[!0-9]*) continue ;; esac
 
   # Per-agent threshold, derived: COMPACT_PCT% of that model window.
-  window_k=$(window_k_for_model "$model")
-  case "$model" in
-    claude-opus-5|claude-sonnet-5|claude-sonnet-4-6) ;;
-    *) log "NOTE $agent: unlisted model '$model', using the default ${window_k}k window" ;;
-  esac
-  THRESHOLD_K=$(threshold_k_for_model "$model")
+  window=$(window_tokens_for_model "$model")
+  THRESHOLD=$(threshold_tokens_for_model "$model")
+  ctx_k=$(( ctx / 1000 )); window_k=$(( window / 1000 )); THRESHOLD_K=$(( THRESHOLD / 1000 ))
 
   age_min=$(( (NOW - ts) / 60 ))
   # From the already-validated state of this run. A per-agent value that is not a plain timestamp is
@@ -326,14 +436,14 @@ for agent in $TARGET_AGENTS; do
   case "$last" in (''|*[!0-9]*) log "SKIP $agent: cooldown stamp is not a timestamp"; continue ;; esac
   since_min=$(( (NOW - last) / 60 ))
 
-  reason=$(should_compact "$ctx_k" "$THRESHOLD_K" "$age_min" "$MAX_AGE_MIN" "$since_min" "$COOLDOWN_MIN")
+  reason=$(should_compact "$ctx" "$THRESHOLD" "$age_min" "$MAX_AGE_MIN" "$since_min" "$COOLDOWN_MIN")
   if [ "$reason" != "compact" ]; then
-    [ "$DRY" = "1" ] && echo "SKIP $agent ctx=${ctx_k}k/${window_k}k (${COMPACT_PCT}% = ${THRESHOLD_K}k) age=${age_min}m since=${since_min}m -> $reason"
+    [ "$DRY" = "1" ] && say "SKIP $agent ctx=${ctx_k}k/${window_k}k (${COMPACT_PCT}% = ${THRESHOLD_K}k) age=${age_min}m since=${since_min}m -> $reason"
     continue
   fi
 
   if [ "$DRY" = "1" ]; then
-    echo "WOULD COMPACT $agent ctx=${ctx_k}k/${window_k}k (${COMPACT_PCT}% = ${THRESHOLD_K}k, ${model}) age=${age_min}m since=${since_min}m"
+    say "WOULD COMPACT $agent ctx=${ctx_k}k/${window_k}k (${COMPACT_PCT}% = ${THRESHOLD_K}k, ${model}) age=${age_min}m since=${since_min}m"
     continue
   fi
 
