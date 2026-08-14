@@ -19,7 +19,8 @@
 # ANTI-BURN. A /compact is not free -- it costs a summarisation pass -- so spamming it would trade
 # one waste for another. Guards, in order:
 #   1. only TARGET_AGENTS (the ceiling-runners), never the whole fleet;
-#   2. only above THRESHOLD_K;
+#   2. only above the threshold, which is COMPACT_PCT% of that agent model context window
+#      (Peti rule, CLAUDE.md 2026-08-14) -- derived per agent, never a fixed token count;
 #   3. a per-agent COOLDOWN, so a still-large context right after a compact does not re-trigger;
 #   4. --dry-run, which is what a scheduled task should use first.
 # NOTE: this deliberately does NOT go through store/redispatch-guard.sh -- that guard is keyed by
@@ -46,7 +47,29 @@ LOG="$ROOT/store/context-compact-monitor.log"
 # orchestrator: it dispatches, gates and answers Peti, and a mid-flight compact there disturbs the
 # whole fleet rather than one worker. Opt it in deliberately via COMPACT_TARGET_AGENTS if wanted.
 TARGET_AGENTS="${COMPACT_TARGET_AGENTS:-backend backend2 fullstack cybered cybersec}"
-THRESHOLD_K="${COMPACT_THRESHOLD_K:-350}"
+
+# THRESHOLD IS A PERCENTAGE OF THE MODEL CONTEXT WINDOW, NOT A TOKEN COUNT (Peti rule, CLAUDE.md
+# 2026-08-14, commit 4f315c8; card 35533cca). The earlier fixed 350k meant something different on
+# every model, and against the ~1M window these agents actually run it fired at ~35% -- far earlier
+# than the rule wants, so every compact cost a summarisation pass sooner than necessary.
+#
+# The absolute trigger is therefore DERIVED PER AGENT from the model that agent is really running,
+# which token_usage.model records on every call. Window sizes are only listed for models actually
+# observed in this fleet, all measured to carry sessions past 900k (backend 974k, backend2 996k,
+# mikrob 932k on 2026-08-13) -- an unmeasured model must be added deliberately, and until it is, it
+# takes the default AND gets a log line, so a new model can never ride a silent assumption.
+COMPACT_PCT="${COMPACT_PCT:-75}"
+COMPACT_WINDOW_K_DEFAULT="${COMPACT_WINDOW_K_DEFAULT:-1000}"
+window_k_for_model() {
+  case "$1" in
+    claude-opus-5|claude-sonnet-5|claude-sonnet-4-6) echo 1000 ;;
+    *) echo "$COMPACT_WINDOW_K_DEFAULT" ;;
+  esac
+}
+# The live threshold, as its own function so the selftest exercises the SAME arithmetic the loop
+# uses rather than a copy of it -- put a token constant back anywhere in this chain and the
+# derived-value cases go red.
+threshold_k_for_model() { echo $(( $(window_k_for_model "$1") * COMPACT_PCT / 100 )); }
 COOLDOWN_MIN="${COMPACT_COOLDOWN_MIN:-45}"
 # Only trust a reading this fresh; a stale row means the agent is parked, and compacting a parked
 # session wakes it up for nothing.
@@ -206,7 +229,30 @@ if [ "${1:-}" = "--selftest" ]; then
   s "atomic-write-leaves-no-temp-debris" "0" \
     "$(find "$sttmp" -name '.context-compact-state.*.tmp' | wc -l)"
 
-  [ "$fails" -eq 0 ] && { echo "selftest OK (20 cases)"; exit 0; } || { echo "selftest FAILED: $fails"; exit 1; }
+  # --- PERCENTAGE THRESHOLD (Peti rule, CLAUDE.md 2026-08-14; card 35533cca) --------------------
+  # The trigger is COMPACT_PCT% of the model context window, derived per agent, never a token
+  # constant. Put a fixed number back in place of the derivation and the two derived-value cases
+  # below go red -- which is the whole point of pinning the arithmetic rather than the outcome.
+  s "known model resolves to its measured window" "1000" "$(window_k_for_model claude-opus-5)"
+  s "sonnet-5 too"                                "1000" "$(window_k_for_model claude-sonnet-5)"
+  s "sonnet-4-6 too"                              "1000" "$(window_k_for_model claude-sonnet-4-6)"
+  s "an unlisted model takes the default"         "1000" "$(window_k_for_model claude-future-9)"
+  s "the default is overridable"                  "200" \
+    "$(COMPACT_WINDOW_K_DEFAULT=200 window_k_for_model claude-future-9)"
+  # 75% of a 1M window is 750k -- NOT the 350k this script shipped with, which was ~35% of the
+  # window these agents actually run and so fired far earlier than the rule wants.
+  s "75% of a 1M window is 750k"   "750" "$(threshold_k_for_model claude-opus-5)"
+  s "75% of a 200k window is 150k" "150" \
+    "$(COMPACT_WINDOW_K_DEFAULT=200 threshold_k_for_model claude-future-9)"
+  s "the percentage itself is overridable" "500" "$(COMPACT_PCT=50 threshold_k_for_model claude-opus-5)"
+  # And the derived number has to be the one the decision actually uses, at its boundary.
+  s "at the derived threshold it acts"     "compact"         "$(should_compact 750 750 5 20 60 45)"
+  s "one below the derived threshold it does not" "below-threshold" "$(should_compact 749 750 5 20 60 45)"
+  # The old constant must no longer be able to trigger on its own.
+  s "the old 350k constant is below the derived threshold" "below-threshold" \
+    "$(should_compact 350 750 5 20 60 45)"
+
+  [ "$fails" -eq 0 ] && { echo "selftest OK (31 cases)"; exit 0; } || { echo "selftest FAILED: $fails"; exit 1; }
 fi
 
 [ -r "$DB" ] || { echo "context-compact-monitor.sh: cannot read $DB" >&2; exit 3; }
@@ -249,12 +295,28 @@ NOW=$(date +%s)
 ACTED=0
 
 for agent in $TARGET_AGENTS; do
-  row=$(sqlite3 "$DB" "SELECT CAST(MAX(cache_read_tokens)/1000 AS INT) || ' ' || MAX(timestamp)
+  # Third field: the model of this agent NEWEST real call, which sets the context window the
+  # percentage threshold is taken from. '<synthetic>' and empty rows are bookkeeping, not a model,
+  # so they are skipped rather than mistaken for an unknown one.
+  row=$(sqlite3 "$DB" "SELECT CAST(MAX(cache_read_tokens)/1000 AS INT) || ' ' || MAX(timestamp) || ' ' ||
+                       COALESCE((SELECT model FROM token_usage
+                                 WHERE agent='$agent' AND timestamp > $((NOW - 7200))
+                                   AND model IS NOT NULL AND model NOT IN ('', '<synthetic>')
+                                 ORDER BY timestamp DESC LIMIT 1), '?')
                        FROM token_usage WHERE agent='$agent' AND timestamp > $((NOW - 7200));" 2>/dev/null)
   ctx_k=$(echo "$row" | awk '{print $1}')
   ts=$(echo "$row" | awk '{print $2}')
+  model=$(echo "$row" | awk '{print $3}')
   [ -n "$ctx_k" ] && [ "$ctx_k" != "" ] || continue
   case "$ctx_k" in (*[!0-9]*) continue ;; esac
+
+  # Per-agent threshold, derived: COMPACT_PCT% of that model window.
+  window_k=$(window_k_for_model "$model")
+  case "$model" in
+    claude-opus-5|claude-sonnet-5|claude-sonnet-4-6) ;;
+    *) log "NOTE $agent: unlisted model '$model', using the default ${window_k}k window" ;;
+  esac
+  THRESHOLD_K=$(threshold_k_for_model "$model")
 
   age_min=$(( (NOW - ts) / 60 ))
   # From the already-validated state of this run. A per-agent value that is not a plain timestamp is
@@ -266,12 +328,12 @@ for agent in $TARGET_AGENTS; do
 
   reason=$(should_compact "$ctx_k" "$THRESHOLD_K" "$age_min" "$MAX_AGE_MIN" "$since_min" "$COOLDOWN_MIN")
   if [ "$reason" != "compact" ]; then
-    [ "$DRY" = "1" ] && echo "SKIP $agent ctx=${ctx_k}k age=${age_min}m since=${since_min}m -> $reason"
+    [ "$DRY" = "1" ] && echo "SKIP $agent ctx=${ctx_k}k/${window_k}k (${COMPACT_PCT}% = ${THRESHOLD_K}k) age=${age_min}m since=${since_min}m -> $reason"
     continue
   fi
 
   if [ "$DRY" = "1" ]; then
-    echo "WOULD COMPACT $agent ctx=${ctx_k}k age=${age_min}m since=${since_min}m"
+    echo "WOULD COMPACT $agent ctx=${ctx_k}k/${window_k}k (${COMPACT_PCT}% = ${THRESHOLD_K}k, ${model}) age=${age_min}m since=${since_min}m"
     continue
   fi
 
@@ -300,7 +362,7 @@ for agent in $TARGET_AGENTS; do
   STATE_JSON="$(state_put "$STATE_JSON" "$agent" "$NOW")" || {
     # The compact already happened; failing to record it would let the next run repeat it.
     log "WARN $agent: compacted but could not persist the cooldown stamp"; }
-  log "COMPACT $agent ctx=${ctx_k}k (threshold ${THRESHOLD_K}k)"
+  log "COMPACT $agent ctx=${ctx_k}k (${COMPACT_PCT}% of ${window_k}k = ${THRESHOLD_K}k, model ${model})"
   ACTED=$((ACTED + 1))
 done
 
