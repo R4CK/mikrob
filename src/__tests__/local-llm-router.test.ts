@@ -464,8 +464,13 @@ describe('a declared SEC tag is a router input, not a word to find in prose (car
     expect(hasSecurityTag(['sec'])).toBe(true)
     expect(hasSecurityTag(['CYBERSEC'])).toBe(true)
     expect(hasSecurityTag(undefined)).toBe(false)
-    // Not an array (a caller passing a bare string) must not be treated as a tag list.
-    expect(hasSecurityTag('SEC' as unknown as string[])).toBe(false)
+    // THIS LINE USED TO ASSERT THE DEFECT. It said a bare string "must not be treated as a tag list"
+    // and expected false -- which is exactly the silent signal loss Cybersec's LOW named: the shell
+    // path carries a comma-separated string right up to this boundary, so a caller handing one over
+    // is the likely mistake, and answering "no security tag" to it is the one answer that is unsafe.
+    // A string is now a tag list; the whole-tag rule below is what this case is really about.
+    expect(hasSecurityTag('SEC')).toBe(true)
+    expect(hasSecurityTag('SECTION')).toBe(false)
   })
 
   it('a comma-separated STRING is accepted -- the shell path carries one right up to the boundary', () => {
