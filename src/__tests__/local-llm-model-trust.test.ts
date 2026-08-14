@@ -149,6 +149,40 @@ describe('decideModelTrust', () => {
   })
 })
 
+describe('GET /api/local-llm/catalog labels trust from the reviewed list', () => {
+  // The badge and the gate must give the same answer. Rendering the cached flag meant a publisher
+  // dropped after an incident still showed as trusted until someone rebuilt the catalogue -- the UI
+  // telling the operator "fine" one click before the gate refuses them.
+  function get(): Promise<{ status: number; body: any }> {
+    const out: { status: number; body: any } = { status: 0, body: null }
+    const res: any = {
+      writeHead(status: number) { out.status = status; return res },
+      end(chunk?: string) { if (chunk) out.body = JSON.parse(chunk) },
+    }
+    const url = new URL('http://localhost:3420/api/local-llm/catalog')
+    const ctx = { req: {} as any, res, path: url.pathname, method: 'GET', url } as unknown as RouteContext
+    return tryHandleLocalLlm(ctx).then(() => out)
+  }
+
+  it('a revoked publisher is labelled unverified even while the cache says trusted', async () => {
+    writeCache([{ ref: TRUSTED, owner: 'Qwen', oid: OID_T, cachedTrusted: true }])
+    writeTrust([])
+    const r = await get()
+    const m = r.body.models.find((x: any) => x.installRef === TRUSTED)
+    expect(m.trusted).toBe(false)
+    expect(m.trustReason).toBe('unverified')
+  })
+
+  it('a listed publisher is labelled trusted even while the cache says otherwise', async () => {
+    writeCache([{ ref: TRUSTED, owner: 'Qwen', oid: OID_T, cachedTrusted: false }])
+    writeTrust(['qwen'])
+    const r = await get()
+    const m = r.body.models.find((x: any) => x.installRef === TRUSTED)
+    expect(m.trusted).toBe(true)
+    expect(m.trustReason).toBe('allowlisted-publisher')
+  })
+})
+
 describe('POST /api/local-llm/model applies the same decision as the CLI door', () => {
   function post(body: unknown): Promise<{ status: number; body: any }> {
     const out: { status: number; body: any } = { status: 0, body: null }

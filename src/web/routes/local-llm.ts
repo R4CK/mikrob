@@ -7,7 +7,7 @@ import { STORE_DIR } from '../../config.js'
 import { logger } from '../../logger.js'
 import { readBody, json } from '../http-helpers.js'
 import { atomicWriteFileSync } from '../atomic-write.js'
-import { decideModelTrust, confirmationMatches } from '../../local-llm-model-trust.js'
+import { decideModelTrust, confirmationMatches, relabelCatalogueTrust } from '../../local-llm-model-trust.js'
 import { getDb } from '../../db.js'
 import { pickTemplate } from '../../local-llm-template-picker.js'
 import {
@@ -988,12 +988,17 @@ export async function tryHandleLocalLlm(ctx: RouteContext): Promise<boolean> {
   // ALL THREE fail does this route synthesize an empty envelope itself -- still a structurally valid
   // document (rule 12: never a raw error for the UI to choke on), never a bare 500.
   if (path === '/api/local-llm/catalog' && method === 'GET') {
+    // The trust label is recomputed from the reviewed list on the way out, whichever tier answered.
+    // The `trusted` flag inside the catalogue is a build-time snapshot: after a publisher is removed
+    // following an incident, that snapshot keeps saying "trusted" until someone rebuilds, so the
+    // badge would contradict the gate the operator meets one click later.
+    const label = <T extends { models?: unknown[] }>(doc: T): T => relabelCatalogueTrust(doc, LLM_CATALOG_TRUST_FILE)
     const fresh = readLlmCatalogCacheIfFresh()
-    if (fresh) { json(res, fresh); return true }
+    if (fresh) { json(res, label(fresh)); return true }
     const live = await runLlmCatalogScript([], LLM_CATALOG_LIVE_TIMEOUT_MS)
-    if (live) { json(res, live); return true }
+    if (live) { json(res, label(live)); return true }
     const offline = await runLlmCatalogScript(['--offline'], LLM_CATALOG_OFFLINE_TIMEOUT_MS)
-    if (offline) { json(res, offline); return true }
+    if (offline) { json(res, label(offline)); return true }
     json(res, {
       schemaVersion: 1,
       generatedAt: new Date().toISOString(),

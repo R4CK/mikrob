@@ -17,6 +17,7 @@ import { spawnSync, spawn, type ChildProcess } from 'node:child_process'
 import { writeFileSync, mkdtempSync, copyFileSync, mkdirSync, existsSync, readFileSync, rmSync } from 'node:fs'
 import { join } from 'node:path'
 import { tmpdir } from 'node:os'
+import { decideModelTrust } from '../local-llm-model-trust.js'
 
 const ROOT = join(__dirname, '..', '..')
 const TRUSTED_REF = 'hf.co/Qwen/Good-GGUF:Q4_K_M'
@@ -268,6 +269,55 @@ describe('first-run-llm.sh --use: publisher trust gate', () => {
       expect(r.code, r.out).toBe(7)
       expect(r.modelFile).toBe('')
     })
+  })
+
+  describe('the two doors agree, case by case', () => {
+    // Cybersec's objection to fixing the HTTP door with its own copy of the rules was that two
+    // implementations drift -- which is exactly what this card is about. Their suggestion was for
+    // the route to shell out to this script. I kept a shared decision module instead (no subprocess
+    // on a request path, and a structured basis the UI can render rather than human-readable
+    // stdout), which makes the drift risk real and worth MEASURING rather than promising.
+    //
+    // So: the same scenario matrix, run through the script (exit code) and through the module the
+    // HTTP door uses (decision object). They must agree on every row. If someone edits one side's
+    // rules, this goes red the same day.
+    const rows: { name: string; ref: string; trust: string[] | null; cachedTrusted?: boolean; entry: boolean }[] = [
+      { name: 'listed publisher', ref: TRUSTED_REF, trust: ['qwen'], entry: true },
+      { name: 'unlisted publisher', ref: UNTRUSTED_REF, trust: ['qwen'], entry: true },
+      { name: 'cache lies trusted, list omits', ref: UNTRUSTED_REF, trust: ['qwen'], cachedTrusted: true, entry: true },
+      { name: 'cache lies untrusted, list names', ref: TRUSTED_REF, trust: ['qwen'], cachedTrusted: false, entry: true },
+      { name: 'publisher revoked', ref: TRUSTED_REF, trust: [], entry: true },
+      { name: 'trust list missing', ref: TRUSTED_REF, trust: null, entry: true },
+      { name: 'no catalogue entry', ref: UNTRUSTED_REF, trust: ['qwen'], entry: false },
+    ]
+
+    for (const row of rows) {
+      it(`${row.name}: script and module reach the same verdict`, () => {
+        clearModelFile()
+        if (row.entry) {
+          writeCatalogue(true, row.cachedTrusted === undefined ? {} : { [row.ref]: row.cachedTrusted })
+        } else {
+          writeCatalogue(false)
+          if (row.ref === TRUSTED_REF) throw new Error('the no-entry row must use the ref the catalogue drops')
+        }
+        writeTrustList(row.trust)
+
+        const module = decideModelTrust({
+          model: row.ref,
+          cacheFile: join(sandbox, 'llm-catalog-cache.json'),
+          trustFile: join(sandbox, 'llm-catalog-trust.json'),
+          blobsDir: join(sandbox, 'blobs'),
+        })
+        // Exit 0 = the script let it through without asking; exit 7 = it stopped and demanded a
+        // named confirmation. That is precisely "trusted" versus "not trusted".
+        const script = use([row.ref])
+        expect(script.code === 0, `script exit ${script.code}, module trusted=${module.trusted}\n${script.out}`)
+          .toBe(module.trusted)
+        // ...and when they both refuse, they must demand the SAME answer, or one door's instructions
+        // would not work on the other.
+        if (!module.trusted) expect(script.out).toContain(`--i-trust ${module.confirmWith}`)
+      })
+    }
   })
 
   it('the gate behaves identically without a TTY -- a pipe is not a yes', () => {

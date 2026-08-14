@@ -112,6 +112,27 @@ export function decideModelTrust(opts: {
   }
 }
 
+/**
+ * Recompute the trust LABEL on a catalogue envelope before it is served.
+ *
+ * The badge the operator reads and the decision the gate makes have to be the same answer. They
+ * were not: the dashboard rendered `m.trusted` straight from the catalogue cache, so a publisher
+ * removed from the reviewed list after an incident kept its "trusted" badge until someone happened
+ * to rebuild the catalogue -- and the operator would then be refused by a gate that had told them,
+ * one screen earlier, that this publisher was fine.
+ */
+export function relabelCatalogueTrust<T extends { models?: unknown[] }>(doc: T, trustFile: string): T {
+  if (!doc || !Array.isArray(doc.models)) return doc
+  const publishers = readTrustedPublishers(trustFile)
+  const models = doc.models.map((raw) => {
+    const m = raw as { repoOwner?: string }
+    if (!m || typeof m !== 'object') return raw
+    const trusted = publishers.has((m.repoOwner || '').trim().toLowerCase())
+    return { ...m, trusted, trustReason: trusted ? 'allowlisted-publisher' : 'unverified' }
+  })
+  return { ...doc, models }
+}
+
 /** Case-insensitive, trimmed: the answer is a name to be read off a screen, not a token. */
 export function confirmationMatches(basis: ModelTrustBasis, answer: string | undefined): boolean {
   if (!answer) return false
