@@ -413,6 +413,26 @@ export function stripDataPayloads(seg) {
 // launder a heredoc it does not read as its data.
 const CURL_LEADING_RX = /^\s*(?:(?:[A-Za-z_]\w*=\S*|sudo|env|command|exec|nice|builtin|time)\s+)*(?:\S*\/)?curl\b/i
 const CURL_STDIN_DATA_RX = /(?:^|\s)(?:-d|--data(?:-(?:raw|binary|ascii))?)(?:\s+|=)@-(?=\s|$)/i
+// SECOND STDIN-DATA SHAPE: `git commit -F -` (card 0229c844). Same class as curl's `-d @-`, found
+// the same way -- twice, mid-report: a commit message that DESCRIBED a scheduling primitive was
+// denied, while the identical text passed once written to a file and given as `-F <file>`. Which
+// way an agent chooses to hand git its message had become a security decision, and the workaround
+// (write the prose to a temp file first) makes the record no safer, only more roundabout.
+//
+// Safe for exactly the reason the curl branch is: git reads these bytes as a MESSAGE and never
+// executes them. `git commit -F -` cannot run tmux/cron/claude no matter what the body says, so
+// blanking removes no detection -- unlike a heredoc feeding python3/bash, which stays fully scanned.
+// The same three guards still apply and are the load-bearing part: the span's OWN leading binary
+// must be git (a decoy `-F -` in some other argv launders nothing, per Cybersec's 4638c14c
+// finding), the subcommand must be one that takes a message file, and an unquoted tag whose body
+// can command-substitute is left intact because bash expands it before git ever sees it.
+const GIT_LEADING_RX = /^\s*(?:(?:[A-Za-z_]\w*=\S*|sudo|env|command|exec|nice|builtin|time)\s+)*(?:\S*\/)?git\b/i
+// commit/tag/notes are the subcommands that read a message from a file; `-F` means something else
+// entirely elsewhere in git (e.g. `git branch -F` does not exist, but `git grep -F` is fixed-string
+// matching), so the subcommand check is what keeps this from becoming a general `-F -` exemption.
+const GIT_MSG_SUBCMD_RX = /(?:^|\s)(?:commit|tag|notes)(?:\s|$)/i
+// -F-, -F -, --file -, --file=-
+const GIT_STDIN_MSG_RX = /(?:^|\s)(?:-F\s*-|--file(?:\s+|=)-)(?=\s|$)/
 export function stripHeredocDataPayloads(command) {
   const src = String(command ?? '')
   let out = ''
@@ -425,6 +445,9 @@ export function stripHeredocDataPayloads(command) {
     if (!here) { out += c; i++; continue }
     const span = src.slice(boundary, i)
     const feedsCurlStdin = CURL_LEADING_RX.test(span) && CURL_STDIN_DATA_RX.test(span)
+    const feedsGitMessageStdin =
+      GIT_LEADING_RX.test(span) && GIT_MSG_SUBCMD_RX.test(span) && GIT_STDIN_MSG_RX.test(span)
+    const feedsStdinData = feedsCurlStdin || feedsGitMessageStdin
     const tag = here[1] ?? here[2] ?? here[3]
     const quotedTag = here[1] != null || here[2] != null
     out += here[0]
@@ -441,7 +464,7 @@ export function stripHeredocDataPayloads(command) {
     // sees it, so a real command could run there regardless of curl's own semantics --
     // same fail-closed rule maskInertLiterals uses, for the same reason.
     const substitutable = !quotedTag && /\$\(|`/.test(body)
-    if (feedsCurlStdin && !substitutable) out += ' '.repeat(body.length)
+    if (feedsStdinData && !substitutable) out += ' '.repeat(body.length)
     else out += body
     out += rel[0]
     i += rel.index + rel[0].length

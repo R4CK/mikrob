@@ -428,6 +428,52 @@ describe('self-pace-gate stripHeredocDataPayloads (heredoc data-payload false-po
     expect(out).not.toContain('tmux send-keys')
   })
 
+  // --- SECOND STDIN-DATA SHAPE: `git commit -F -` (card 0229c844) ---------------------------
+  // Found the same way as the curl one and twice over: a commit message that DESCRIBED a
+  // scheduling primitive was denied, while the identical prose passed once written to a file and
+  // passed as `-F <file>`. Same reasoning as -d @-: git reads these bytes as a MESSAGE and never
+  // executes them, so blanking removes no detection. The guards below are the load-bearing part.
+  it('blanks a heredoc body feeding `git commit -F-` -- prose about a primitive is not a call', () => {
+    const cmd = `git commit -F- <<'EOF'\nthis fix stops tmux send-keys prose from denying\nEOF\n`
+    expect(stripHeredocDataPayloads(cmd)).not.toContain('tmux send-keys')
+    expect(selfPaceDecision('Bash', { command: cmd }).deny).toBe(false)
+  })
+
+  it('covers the spaced and long-flag spellings git actually accepts', () => {
+    for (const flag of ['-F -', '--file -', '--file=-']) {
+      const cmd = `git commit ${flag} <<'EOF'\ntmux send-keys in prose\nEOF\n`
+      expect(selfPaceDecision('Bash', { command: cmd }).deny, flag).toBe(false)
+    }
+  })
+
+  it('SECURITY: a decoy "-F-" on a NON-git command launders nothing', () => {
+    // The 4638c14c finding, re-run for this flag: python3 EXECUTES the body it is handed, and an
+    // unused "-F-" sitting in its argv must not make that body invisible to the scan.
+    const cmd = `python3 - -F- <<'PY'\nimport subprocess\nsubprocess.run(['tmux', 'send-keys', '-t', 'a', 'x', 'Enter'])\nPY\n`
+    expect(stripHeredocDataPayloads(cmd)).toBe(cmd)
+    expect(selfPaceDecision('Bash', { command: cmd }).deny).toBe(true)
+  })
+
+  it('SECURITY: `-F` on a git subcommand that does not take a message file is not exempt', () => {
+    // `git grep -F -` is fixed-string matching, not a message. Without the subcommand check this
+    // would have become a general "git ... -F -" exemption.
+    const cmd = `git grep -F - <<'EOF'\ntmux send-keys demo\nEOF\n`
+    expect(stripHeredocDataPayloads(cmd)).toBe(cmd)
+    expect(selfPaceDecision('Bash', { command: cmd }).deny).toBe(true)
+  })
+
+  it('SECURITY: a real invocation AFTER the exempted heredoc is still denied', () => {
+    // The exemption is scoped to the heredoc body, not to the command that contains it.
+    const cmd = `git commit -F- <<'EOF'\nmsg\nEOF\ntmux send-keys -t agent-x hello Enter`
+    expect(selfPaceDecision('Bash', { command: cmd }).deny).toBe(true)
+  })
+
+  it('SECURITY: fail-closed on an unquoted tag whose body can command-substitute', () => {
+    const cmd = 'git commit -F- <<EOF\n$(tmux send-keys -t a x Enter)\nEOF\n'
+    expect(stripHeredocDataPayloads(cmd)).toBe(cmd)
+    expect(selfPaceDecision('Bash', { command: cmd }).deny).toBe(true)
+  })
+
   // NOT part of this card's scope, corrected here after the author's own test caught it:
   // a BARE POSITIONAL argument (no -d/-m/heredoc flag at all) has never been exempted by
   // any stripping function, old or new -- stripDataPayloads/stripGitCommitMessages/
