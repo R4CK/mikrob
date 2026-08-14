@@ -444,13 +444,61 @@ function needleFires(text: string, needle: string): boolean {
 }
 
 /** The non-offloadable category a description falls into, or null. Deterministic, no LLM. */
+/**
+ * Categories matched on the TASK STATEMENT only, not on the whole card (card a7accbfb).
+ *
+ * On this board a description carries far more than the request: gate verdicts, incident history,
+ * token-cost notes, quoted logs. Those are ABOUT the work, not the work -- and a word like "wire"
+ * or "migration" in a quoted postmortem said nothing about what is being asked now.
+ *
+ * WHICH categories get this treatment is the whole safety question, and the answer is the same split
+ * the ceilings use: only the QUALITY ones. If a security signal appears forty lines down -- in a
+ * quoted requirement, a gate's own finding, a log line showing a token -- that is exactly the case
+ * this router exists to catch, and narrowing its reading window would be a false negative in the one
+ * direction that costs something real. So authz, isolation and security-decision keep reading
+ * EVERYTHING; architecture and multi-file-wiring read the statement.
+ */
+const STATEMENT_SCOPED_CATEGORIES: ReadonlySet<NonOffloadableCategory> = new Set([
+  'architecture',
+  'multi-file-wiring',
+])
+
+/** How much of a description counts as the statement: the title line plus the first paragraph. */
+const STATEMENT_MAX_CHARS = 600
+
+/**
+ * The task statement: the first line (a card title, or the whole prompt when there is one line) plus
+ * the paragraph that follows it, capped. Everything after the first blank line that ends that
+ * paragraph is context, not request.
+ */
+export function taskStatement(description: string): string {
+  const lines = String(description ?? '').split('\n')
+  const out: string[] = []
+  let started = false
+  for (const line of lines) {
+    const blank = line.trim().length === 0
+    if (blank) {
+      if (started) break // the first paragraph has ended
+      continue // leading blank lines are not the end of anything
+    }
+    started = true
+    out.push(line)
+    if (out.join('\n').length >= STATEMENT_MAX_CHARS) break
+  }
+  return out.join('\n').slice(0, STATEMENT_MAX_CHARS)
+}
+
 export function classifyCategory(description: string): NonOffloadableCategory | null {
   const text = normalizeForMatch(stripGateLine(description))
+  const statement = normalizeForMatch(stripGateLine(taskStatement(description)))
+  const textFor = (category: NonOffloadableCategory): string =>
+    STATEMENT_SCOPED_CATEGORIES.has(category) ? statement : text
   for (const [category, needles] of CATEGORY_SIGNALS) {
-    for (const needle of needles) if (needleFires(text, needle)) return category
+    const hay = textFor(category)
+    for (const needle of needles) if (needleFires(hay, needle)) return category
   }
   // SHAPE match (Cybersec cm6054): catches a security change dressed as mechanical cleanup.
-  for (const [category, pattern] of SHAPE_SIGNALS) if (pattern.test(text)) return category
+  for (const [category, pattern] of SHAPE_SIGNALS) if (pattern.test(textFor(category))) return category
   return null
 }
 

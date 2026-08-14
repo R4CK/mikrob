@@ -11,6 +11,7 @@ import {
   stripGateLine,
   NON_OFFLOADABLE_CATEGORIES,
   CATEGORY_CEILINGS,
+  taskStatement,
 } from '../local-llm-router.js'
 
 describe('routeTask -- positive: mechanical work drafts LOCALLY (the token saving)', () => {
@@ -550,5 +551,60 @@ describe('routeTask -- per-category ceiling', () => {
     expect(d.route).toBe('local')
     expect(d.category).toBeUndefined()
     expect(d.reason).not.toContain('capped by category')
+  })
+})
+
+// --- MATCH THE STATEMENT, NOT THE WHOLE CARD (card a7accbfb) ------------------------------------
+// A description on this board carries gate verdicts, incident history and quoted logs alongside the
+// request. Those are ABOUT the work, not the work. The split of WHICH categories may narrow their
+// reading window is the safety question, and it is the same one the ceilings use: quality
+// categories read the statement, security categories keep reading everything.
+describe('routeTask -- statement-scoped matching for quality categories', () => {
+  const MECHANICAL_TITLE = 'Rename the approve button label to Accept.'
+
+  it('a wiring word buried in quoted history no longer classifies the task', () => {
+    const description = [
+      MECHANICAL_TITLE,
+      '',
+      'QA PASS. Korabbi incidens: a modult anno kezzel kellett bekotni a composition rootba es a',
+      'main.ts-be is, ami ket helyen csuszott el. Idezet a naplobol: "wire the store into main.ts".',
+    ].join('\n')
+    expect(classifyCategory(description)).toBeNull()
+    expect(routeTask({ description }).route).toBe('local')
+  })
+
+  it('...but the same word IN THE STATEMENT still classifies it', () => {
+    // The control. Without it, "never classify wiring at all" would pass the test above.
+    const description = [
+      'Wire the new invoice store into main.ts and the composition root.',
+      '',
+      'QA PASS. Semmi mas.',
+    ].join('\n')
+    expect(classifyCategory(description)).toBe('multi-file-wiring')
+    expect(routeTask({ description }).route).toBe('online')
+  })
+
+  it('SECURITY SIGNALS STILL READ THE WHOLE CARD -- this is the line that must not move', () => {
+    // A security requirement, a gate finding or a quoted log line can appear anywhere in a card, and
+    // that is precisely what this router exists to catch. Narrowing the window here would be a false
+    // negative in the only direction that costs something real.
+    const description = [
+      MECHANICAL_TITLE,
+      '',
+      'Reszletek lentebb, sok soron at...',
+      '',
+      'Megjegyzes a 40. sorban: a jelszo-hash osszehasonlitast is at kell allitani.',
+    ].join('\n')
+    expect(classifyCategory(description)).toBe('security-decision')
+    expect(routeTask({ description }).route).toBe('online')
+  })
+
+  it('taskStatement: one paragraph is the whole prompt; a second paragraph is context', () => {
+    expect(taskStatement('Add a helper that formats minutes.')).toBe('Add a helper that formats minutes.')
+    expect(taskStatement('Title line\nstill the statement\n\ncontext below')).toBe(
+      'Title line\nstill the statement',
+    )
+    // Leading blank lines are not the end of a paragraph that has not started.
+    expect(taskStatement('\n\nTitle after blanks\n\ntail')).toBe('Title after blanks')
   })
 })
