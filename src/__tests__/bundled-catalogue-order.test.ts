@@ -98,10 +98,16 @@ describe('bundled catalogue order (card 3f6087f4)', () => {
     expect(wrong.map((m) => m.id)).toEqual([])
   })
 
-  it('the file says out loud that a regeneration would undo the order', () => {
-    // The order is hand-held: the live path sorts by downloads and has no notion of quantisation, so
-    // the next regeneration silently restores the defect. A comment is the only thing standing
-    // between that and a repeat, so its presence is asserted rather than hoped for.
-    expect(catalogue.warnings.join('\n')).toContain('REGENERATED')
+  it('the file says out loud where its order comes from', () => {
+    // WHAT THIS ASSERTION USED TO SAY, and why it changed: it required the file to warn that a
+    // regeneration would UNDO the order, because the live sort was (fits, trusted, downloads) and
+    // knew nothing about quantisation -- the order here was hand-held and one regeneration from
+    // being lost. Card 51ad7c7c put the quant rank into that sort, so the warning became FALSE and
+    // a file that warns about a thing that can no longer happen teaches the next reader wrong.
+    // The assertion follows the fact rather than being deleted: the note must still explain the
+    // order, and now names the sort that reproduces it.
+    const notes = catalogue.warnings.join('\n')
+    expect(notes).toContain('51ad7c7c')
+    expect(notes).toMatch(/REGENERATION NOW REPRODUCES/i)
   })
 })
