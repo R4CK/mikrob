@@ -307,6 +307,10 @@ fi
 # one: without the router there is nothing stopping an authz or architecture task from reaching the
 # 7B, and "write it on Claude yourself" is always correct, only more expensive. This matches how a
 # router EXCEPTION is already handled below (catch -> 'online').
+#
+# A STALE BUILD IS TREATED THE SAME WAY (card a3611ecc), and for the same reason: an artifact built
+# before the source it claims to implement is not a judge, it is a memory of one. Checked in the node
+# call below, before the import -- see store/build-freshness.mjs for why the check is not compiled.
 if [[ "$AUTO" == "1" ]]; then
   ROUTER="$HERE/../dist/local-llm-router.js"
   if [[ ! -f "$ROUTER" ]]; then
@@ -322,7 +326,11 @@ if [[ "$AUTO" == "1" ]]; then
   const { checkBuildFreshness } = await import(process.env.FRESH)
   const freshness = checkBuildFreshness(process.env.ROUTER)
   if (freshness.status !== 'fresh') {
-    process.stdout.write('online\tstale build (' + freshness.status + '): ' + freshness.reason)
+    // Both wordings contain "stale build" so the advisory-skip case below matches either, but they
+    // must not read the same: "cannot tell" is a different fact from "is out of date", and a caller
+    // that gets told the wrong one will go looking in the wrong place.
+    const what = freshness.status === 'stale' ? 'stale build: ' : 'stale build check inconclusive: '
+    process.stdout.write('online\t' + what + freshness.reason)
     return
   }
   let agg = 75

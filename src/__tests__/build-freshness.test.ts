@@ -165,7 +165,7 @@ describe('store/local-llm-rag.sh refuses a stale build (card a3611ecc)', () => {
     backdate(router, 3600)
     const r = run()
     expect(r.stderr).toContain('ROUTE=online')
-    expect(r.stderr).toContain('stale build (stale)')
+    expect(r.stderr).toContain('stale build: ') // "is out of date", not the "cannot tell" wording
     expect(r.stderr).toContain('npm run build') // speaking: says what to do, not just that it failed
     expect(r.stderr).not.toContain('STUB-ROUTER-WAS-REACHED') // the stale judge never got asked
     expect(r.status).toBe(9)
@@ -181,6 +181,16 @@ describe('store/local-llm-rag.sh refuses a stale build (card a3611ecc)', () => {
       env: { ...process.env, DASHBOARD_URL: 'http://127.0.0.1:9', LOCAL_LLM_ADVISORY: '1' },
     })
     expect(r.stderr ?? '').toContain('advisory draft SKIPPED')
+    expect(r.status).toBe(9)
+  })
+
+  it('"cannot tell" reads differently from "out of date" -- same refusal, different fact', () => {
+    // Runs last: it removes the sandbox's source tree. A caller told "stale build" would go run a
+    // build; on a box with no sources that is a wasted trip, so the two cases must not share wording.
+    rmSync(join(sandbox, 'src'), { recursive: true, force: true })
+    const r = run()
+    expect(r.stderr).toContain('stale build check inconclusive')
+    expect(r.stderr).toContain('no source tree')
     expect(r.status).toBe(9)
   })
 })
