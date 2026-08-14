@@ -29,6 +29,12 @@ beforeAll(() => {
   sandbox = mkdtempSync(join(tmpdir(), 'advisory-env-'))
   mkdirSync(join(sandbox, 'store'))
   copyFileSync(join(ROOT, 'store', 'local-llm-rag.sh'), join(sandbox, 'store', 'local-llm-rag.sh'))
+  // The script now checks that the router it is about to import was built from the source on disk
+  // (card a3611ecc), so a fake install needs BOTH: the checker itself, and a source tree to compare
+  // against. Without the source the answer is "cannot tell" -> online, which is the intended
+  // fail-closed behaviour but not the case under test here.
+  copyFileSync(join(ROOT, 'store', 'build-freshness.mjs'), join(sandbox, 'store', 'build-freshness.mjs'))
+  symlinkSync(join(ROOT, 'src'), join(sandbox, 'src'))
   // SYMLINK the whole dist, not a copy of the one file: local-llm-router.js imports
   // ./web/routes/local-llm.js, so a lone copy fails to load -- and the script then routes online with
   // "router-error", which is correctly fail-closed but is NOT the case under test. (Worth knowing:
