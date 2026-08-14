@@ -12,7 +12,7 @@
 //
 // Every case asserts the MODEL FILE, not just the exit code: the property under test is whether an
 // untrusted model became the fleet default, and an exit code is only a proxy for that.
-import { describe, it, expect, beforeAll, afterAll } from 'vitest'
+import { describe, it, expect, beforeAll, beforeEach, afterAll } from 'vitest'
 import { spawnSync, spawn, type ChildProcess } from 'node:child_process'
 import { writeFileSync, mkdtempSync, copyFileSync, mkdirSync, existsSync, readFileSync, rmSync } from 'node:fs'
 import { join } from 'node:path'
@@ -129,6 +129,17 @@ afterAll(() => {
   rmSync(sandbox, { recursive: true, force: true })
 })
 
+// STATE IS SET UP BEFORE EACH TEST, NOT RESTORED AFTER. Found while mutation-testing this file: the
+// restore-at-the-end version left the sandbox dirty whenever a test failed, and the next two tests
+// then passed FOR THE WRONG REASON off that leftover state -- they were green under a mutation that
+// should have broken them. A test that only cleans up when it succeeds provides no isolation
+// exactly when isolation matters.
+beforeEach(() => {
+  writeCatalogue(true)
+  writeTrustList(['qwen'])
+  clearModelFile()
+})
+
 describe('first-run-llm.sh --use: publisher trust gate', () => {
   it('a trusted publisher passes straight through -- no new friction where there is no new risk', () => {
     clearModelFile()
@@ -196,7 +207,6 @@ describe('first-run-llm.sh --use: publisher trust gate', () => {
     const ok = use([UNTRUSTED_REF, '--i-trust', UNTRUSTED_REF])
     expect(ok.code, ok.out).toBe(0)
     expect(ok.modelFile).toBe(UNTRUSTED_REF)
-    writeCatalogue(true)
   })
 
   it('an entry with NO parts does not get a confident "digest check: OK"', () => {
@@ -215,7 +225,6 @@ describe('first-run-llm.sh --use: publisher trust gate', () => {
     const r = use([TRUSTED_REF])
     expect(r.out).not.toContain('digest check: OK')
     expect(r.out).toContain('digest check: NOT POSSIBLE')
-    writeCatalogue(true)
   })
 
   describe('the decision comes from the reviewed list, not the cached flag (Cybersec F1)', () => {
@@ -230,7 +239,6 @@ describe('first-run-llm.sh --use: publisher trust gate', () => {
       const r = use([UNTRUSTED_REF])
       expect(r.code, r.out).toBe(7)
       expect(r.modelFile).toBe('')
-      writeCatalogue(true)
     })
 
     it('a cached trusted:false does NOT block a publisher who IS on the list', () => {
@@ -243,7 +251,6 @@ describe('first-run-llm.sh --use: publisher trust gate', () => {
       expect(r.code, r.out).toBe(0)
       expect(r.modelFile).toBe(TRUSTED_REF)
       expect(r.out).not.toContain('UNTRUSTED PUBLISHER')
-      writeCatalogue(true)
     })
 
     it('revoking a publisher takes effect immediately, without rebuilding the catalogue', () => {
@@ -252,7 +259,6 @@ describe('first-run-llm.sh --use: publisher trust gate', () => {
       const r = use([TRUSTED_REF]) // the cache still says trusted:true
       expect(r.code, r.out).toBe(7)
       expect(r.modelFile).toBe('')
-      writeTrustList(['qwen'])
     })
 
     it('a missing trust list means NOT trusted, not "trust everything"', () => {
@@ -261,7 +267,6 @@ describe('first-run-llm.sh --use: publisher trust gate', () => {
       const r = use([TRUSTED_REF])
       expect(r.code, r.out).toBe(7)
       expect(r.modelFile).toBe('')
-      writeTrustList(['qwen'])
     })
   })
 
