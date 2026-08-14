@@ -12,7 +12,7 @@
 // exactly the miss I made scanning by eye before writing this guard. The scanner below joins a curl
 // invocation across backslash-continued lines before testing it, the same way bash itself does.
 import { describe, it, expect } from 'vitest'
-import { readFileSync, readdirSync } from 'node:fs'
+import { existsSync, readFileSync, readdirSync } from 'node:fs'
 import { join, dirname, relative, sep } from 'node:path'
 import { fileURLToPath } from 'node:url'
 
@@ -251,6 +251,25 @@ const STORE_SCRIPTS = scanDir(STORE_DIR)
 const SCRIPTS_SCRIPTS = scanDir(SCRIPTS_DIR)
 const SEED_SKILL_DOCS = scanTree(SEED_SKILLS_DIR)
 const SEED_AGENT_DOCS = scanTree(SEED_FLEET_AGENTS_DIR)
+
+/**
+ * The INSTALLED side (card ec5173a5). Everything above guards what we SHIP; none of it can see what
+ * is already deployed, and the two diverge: the 285f298 seed commit taught the argv shape, a
+ * seed-only fix left 25 live occurrences across nine running agents, and the guard stayed green
+ * throughout because `agents/` was outside its scope.
+ *
+ * `agents/` is gitignored and machine-local, so it does not exist on a fresh clone or in CI. That is
+ * exactly the shape that produces a vacuous pass -- a scan over an absent directory finds nothing and
+ * reports success. So presence is checked explicitly and the case SKIPS when the tree is absent,
+ * rather than passing over an empty list. Where it does exist, the count assertion below makes the
+ * coverage visible.
+ *
+ * Session transcripts under .claude-config/projects are not a concern here: they are .jsonl/.txt and
+ * TEXT_FILE does not match them. Measured before relying on it -- 0 matching files under that path.
+ */
+const INSTALLED_AGENTS_DIR = join(REPO_ROOT, 'agents')
+const AGENTS_INSTALLED = existsSync(INSTALLED_AGENTS_DIR)
+const INSTALLED_AGENT_DOCS = AGENTS_INSTALLED ? scanTree(INSTALLED_AGENTS_DIR) : []
 const SEED_TASK_DOCS = scanTree(SEED_TASKS_DIR)
 
 /**
@@ -284,6 +303,14 @@ describe('no shipped script, template or GENERATOR puts a Bearer token in curl a
 
   it('scans the seeded fleet agents and scheduled tasks (they ship the same instructions)', () => {
     expect(SEED_AGENT_DOCS.filter((f) => f.endsWith('CLAUDE.md')).length).toBeGreaterThan(5)
+    // The installed side, when there IS one. Stated as a conditional rather than skipped silently:
+    // a reader of a green run can tell from the output whether the deployed agents were covered.
+    if (AGENTS_INSTALLED) {
+      expect(
+        INSTALLED_AGENT_DOCS.filter((f) => f.endsWith('CLAUDE.md')).length,
+        'agents/ exists but almost nothing was scanned -- the walk is not reaching the agent trees',
+      ).toBeGreaterThan(5)
+    }
     expect(SEED_TASK_DOCS.filter((f) => f.endsWith('SKILL.md')).length).toBeGreaterThan(3)
   })
 
@@ -359,6 +386,9 @@ describe('no shipped script, template or GENERATOR puts a Bearer token in curl a
     ...SEED_SKILL_DOCS.map((file) => ({ dir: SEED_SKILLS_DIR, file })),
     ...SEED_AGENT_DOCS.map((file) => ({ dir: SEED_FLEET_AGENTS_DIR, file })),
     ...SEED_TASK_DOCS.map((file) => ({ dir: SEED_TASKS_DIR, file })),
+    // The installed agents get the SAME scan as the templates they were copied from -- an empty list
+    // when the tree is absent, which the coverage assertion above turns into a visible skip.
+    ...INSTALLED_AGENT_DOCS.map((file) => ({ dir: INSTALLED_AGENTS_DIR, file })),
   ]
 
   const cases: Array<{ dir: string; file: string }> = [
