@@ -71,12 +71,13 @@ describe('/avatars/ and /icons/ validate their own path parameter (card 6ed41c9d
     }
   })
 
-  it('POSITIVE: the avatar gallery page keeps working -- the extension list is fitted to what ships', async () => {
-    // The regression this card was most at risk of: an image-only allowlist would have 404'd a page
-    // that is served today.
+  it('NEGATIVE: html is NOT served, even from a name that is otherwise well-formed (card 58ee30fd)', async () => {
+    // Cybersec's follow-up: these are unauth paths, and an HTML body from the dashboard's own origin
+    // is a script surface the moment anything writes into web/avatars. Nothing does today (the avatar
+    // upload writes into agents/<name>/), which is exactly why the narrowing is cheap now.
     const { ctx, status } = ctxFor('/avatars/gallery.html')
     expect(await tryHandleStatic(ctx, webDir)).toBe(true)
-    expect(status()).not.toBe(404)
+    expect(status()).toBe(404)
   })
 
   it('NEGATIVE: a raw traversal is refused by the rule itself, not by the caller', async () => {
@@ -104,17 +105,30 @@ describe('/avatars/ and /icons/ validate their own path parameter (card 6ed41c9d
     expect(status()).toBe(404)
   })
 
-  it('the allowlist admits every asset that actually ships in this repo', async () => {
-    // The card names this as the main regression risk, so it is asserted against the real directories
-    // rather than against the fixture: a name that ships and does not match would be a live 404.
+  // Deliberately excluded from serving, listed BY NAME so the exception is reviewable instead of
+  // being absorbed into a looser rule. Anything else that stops serving fails the test below.
+  const KNOWN_UNSERVED = new Set(['avatars/gallery.html'])
+
+  it('the allowlist admits every asset that ships -- except the ones we deliberately dropped', async () => {
+    // The main regression risk named by card 6ed41c9d, asserted against the REAL directories: a name
+    // that ships and does not match would be a live 404. Card 58ee30fd then removed html on purpose,
+    // so the assertion has to distinguish "we meant that" from "we broke something".
+    const unexpectedly404: string[] = []
+    const servedButListed: string[] = []
     for (const dir of ['avatars', 'icons']) {
       const real = join(ROOT, 'web', dir)
       if (!existsSync(real)) continue
       for (const name of readdirSync(real)) {
         const { ctx, status } = ctxFor(`/${dir}/${name}`)
         expect(await tryHandleStatic(ctx, join(ROOT, 'web')), `${dir}/${name}`).toBe(true)
-        expect(status(), `${dir}/${name} must still be served`).not.toBe(404)
+        const is404 = status() === 404
+        const listed = KNOWN_UNSERVED.has(`${dir}/${name}`)
+        if (is404 && !listed) unexpectedly404.push(`${dir}/${name}`)
+        if (!is404 && listed) servedButListed.push(`${dir}/${name}`)
       }
     }
+    expect(unexpectedly404, 'these ship but no longer serve').toEqual([])
+    // The other direction matters too: a stale entry here would quietly excuse a file that is fine.
+    expect(servedButListed, 'these serve but are listed as deliberately dropped').toEqual([])
   })
 })

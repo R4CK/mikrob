@@ -21,7 +21,16 @@ import type { RouteContext } from './types.js'
 // So: one shared, anchored name pattern, no separator and no dot inside the name part, an explicit
 // extension list. Fitted to the files that actually ship (web/avatars, web/icons) rather than
 // guessed -- every existing asset matches, which is the regression this card was most at risk of.
-const STATIC_ASSET_NAME = /^[a-z0-9_-]+\.(?:png|jpe?g|gif|svg|webp|ico|html)$/
+// NO html (Cybersec, card 58ee30fd). These are UNAUTH paths, and an HTML body served from the
+// dashboard's own origin is a script surface: it would only need something to start writing into
+// web/avatars for that to become stored XSS. Measured before narrowing rather than assumed -- the
+// avatar upload writes into agents/<name>/avatar.<ext>, and web/avatars is read-only at runtime (it
+// is the gallery the upload COPIES FROM), so nothing is exposed today. That is precisely the
+// accidental-property shape this file's rule exists to stop relying on.
+// Consequence, stated because it is a behaviour change: web/avatars/gallery.html (a developer
+// gallery page, linked from nowhere) is no longer served. The file stays in the repo; open it from
+// disk.
+const STATIC_ASSET_NAME = /^[a-z0-9_-]+\.(?:png|jpe?g|gif|svg|webp|ico)$/
 
 
 // Substitute the configured brand into the PWA manifest's user-visible fields
