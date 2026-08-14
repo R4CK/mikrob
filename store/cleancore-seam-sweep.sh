@@ -65,6 +65,20 @@ if stale:
     print('Pass the sha this tree actually merged. Nothing swept.')
     sys.exit(2)
 
+# Being an ancestor is NOT enough. A ref that is an OLDER ancestor of what the tree actually merged
+# passes the check above and then reports every line the newer commits REMOVED as a loss. Measured:
+# sweeping this batch against a remembered origin/main (610408d6) while the tree had merged effb863c
+# gave 120 findings, all of them phantom -- 50e5bfc9 had landed in between and rewritten the file.
+# The merge's own parents are the ground truth, so print them and say which passed ref is behind one.
+PARENTS = git('rev-list', '--parents', '-n', '1', HEAD).split()[1:]
+if PARENTS:
+    print(f'merged tree {HEAD[:8]} merged: ' +
+          ', '.join(git('rev-parse', '--short', p).strip() for p in PARENTS))
+# Printed, not warned per-ref. Every card branch in a batch is legitimately BEHIND the first parent
+# -- that is what a batch IS -- so a per-ref note fires on all of them and becomes the noise this
+# tool already refuses to produce. One line naming what the tree actually merged is enough to catch
+# the real mistake: passing a remembered origin/main that main has since moved past.
+
 total = 0
 for i, ref in enumerate(REFS):
     others = [r for r in REFS if r != ref]
