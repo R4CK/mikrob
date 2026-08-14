@@ -218,6 +218,18 @@ trap 'code=$?; if [[ -n "${ADVISORY_REASON:-}" ]]; then echo "local-llm-rag: adv
 #   * --show-context also exits 9, so even the prompt-dump path cannot answer 0 on an online task;
 #   * a failed, empty or timed-out draft changes nothing -- the run still ends 9, with one line
 #     saying the draft is missing. A local model that is down must not alter routing.
+#
+# WHAT THIS DOES CHANGE, stated because the first version of this comment did not (card 37756c9c,
+# Cybered condition iii). "No gate is weakened" is true of the ROUTING gate and false as a general
+# claim: in the vetoed categories -- authz, isolation, security-decision -- the online step's role
+# moves from WRITER to REVIEWER, and those are not the same control. A reviewer is systematically
+# worse at noticing what is ABSENT: two measured cases on this board (9632b4d6, a missing trust
+# dimension; 36d559e5, a missing conflicting-decision test) were omissions a reviewer accepted and a
+# writer would have had to invent. So the honest statement is: the decision stays online and the
+# routing gate is untouched, but the ONLINE AGENT's job changed, and it is now the agent's
+# responsibility to ask "what is missing from this draft" rather than only "is what is here correct".
+# That is why the envelope hands over the SPEC first and marks the draft discardable: reading the
+# spec before the draft is what keeps the reviewer able to see an omission at all.
 # The draft is time-boxed for the same reason: the caller is waiting to do the work itself, and a
 # hung 7B must not become a stall on the online path.
 #
@@ -523,23 +535,45 @@ if [[ -n "$ADVISORY_REASON" ]]; then
     echo "local-llm-rag: advisory draft unavailable (local model failed, empty or over ${ADVISORY_TIMEOUT}s) -- nothing changes, this task is ONLINE" >&2
     exit 9
   fi
-  cat <<BANNER
-=== ADVISORY DRAFT -- NOT AN ANSWER, NOT REVIEWED =============================
-This task was routed ONLINE: $ADVISORY_REASON
-The decision is unchanged. What follows is a draft from the LOCAL 7B, produced
-only so you review something instead of starting from an empty file.
-
-READ IT AS A SUSPECT, NOT AS A HEAD START:
-  * every line is unverified -- no test, no typecheck, no gate has seen it;
-  * the reason this task is online is precisely the reason the local model is
-    not trusted with it, so the draft is most likely to be wrong exactly where
-    it matters;
-  * if reviewing it takes longer than writing it, throw it away. That is a
-    correct outcome, not a failure of this path.
-==============================================================================
-BANNER
-  printf '%s\n' "$DRAFT"
-  echo "local-llm-rag: advisory draft produced ($(printf '%s' "$DRAFT" | wc -c) bytes) -- ROUTE stays online, exit 9" >&2
+  # STRUCTURAL MARKING, NOT A STRING IN THE PROSE (card 37756c9c, Cybered condition ii). The first
+  # version printed a banner and then the draft, both as plain text on the same stream -- so a draft
+  # that emitted its own "=== END ADVISORY ===" line could impersonate the wrapper, and the only thing
+  # separating an untrusted payload from a trusted instruction was punctuation the payload controls.
+  # The envelope moves the marker into the TRANSPORT: `advisory` and `trust` are fields, the draft is
+  # a JSON string VALUE, and anything the model writes inside it -- including a perfect copy of this
+  # envelope -- stays escaped inside that value and cannot become a sibling field.
+  #
+  # SPEC FIRST, DRAFT AS A SEPARATE, DISCARDABLE ATTACHMENT (condition i): the reader gets `spec` --
+  # the task as the router judged it -- as its own field, before `draft`. Dropping the draft leaves a
+  # complete, usable request; that is what "discardable" has to mean to be true.
+  #
+  # The human line stays on stderr, so stdout carries the envelope and nothing else.
+  ADVISORY_JSON="$(ADV_REASON="$ADVISORY_REASON" ADV_SPEC="$TASK" ADV_DRAFT="$DRAFT" python3 -c '
+import hashlib, json, os
+draft = os.environ.get("ADV_DRAFT", "")
+print(json.dumps({
+    "advisory": True,
+    "trust": "unverified-local-draft",
+    "route": "online",
+    "reason": os.environ.get("ADV_REASON", ""),
+    "spec": os.environ.get("ADV_SPEC", ""),
+    "draft": draft,
+    "draftBytes": len(draft.encode("utf-8")),
+    "draftSha256": hashlib.sha256(draft.encode("utf-8")).hexdigest(),
+}, ensure_ascii=False))
+' 2>/dev/null)"
+  if [[ -z "${ADVISORY_JSON// }" ]]; then
+    echo "local-llm-rag: advisory envelope could not be built -- dropping the draft, this task is ONLINE" >&2
+    exit 9
+  fi
+  printf '%s\n' "$ADVISORY_JSON"
+  {
+    echo "local-llm-rag: ADVISORY DRAFT on stdout as JSON -- NOT an answer, NOT reviewed."
+    echo "  route stays ONLINE ($ADVISORY_REASON); the envelope fields carry the marking, not the text."
+    echo "  read .spec first, treat .draft as an unverified attachment, and throw it away if reviewing"
+    echo "  it costs more than writing the thing yourself. That is a correct outcome."
+    echo "local-llm-rag: advisory draft produced ($(printf '%s' "$DRAFT" | wc -c) bytes) -- ROUTE stays online, exit 9"
+  } >&2
   exit 9
 fi
 
