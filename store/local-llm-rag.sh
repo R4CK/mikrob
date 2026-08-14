@@ -186,7 +186,21 @@ while [[ $# -gt 0 ]]; do
   esac
 done
 
-die() { echo "local-llm-rag: $2" >&2; exit "$1"; }
+# ONCE THE ROUTER HAS SPOKEN, NOTHING DOWNSTREAM MAY CHANGE THE ANSWER (card ee43a6ac). In advisory
+# mode the run continues past the routing decision only to produce a draft, so every later failure --
+# no dashboard token, memory API down, graph context unavailable, an unexpected non-zero anywhere --
+# must still end in the exit code the router chose. Measured, not theoretical: the first cut let the
+# run fall through to memory retrieval, and on a box with no token an ONLINE task exited 6 instead of
+# 9. Two chokepoints rather than one promise: die() below, and an ERR trap for whatever does not go
+# through die().
+die() {
+  if [[ -n "${ADVISORY_REASON:-}" ]]; then
+    echo "local-llm-rag: advisory draft unavailable ($2) -- nothing changes, this task is ONLINE" >&2
+    exit 9
+  fi
+  echo "local-llm-rag: $2" >&2; exit "$1";
+}
+trap 'code=$?; if [[ -n "${ADVISORY_REASON:-}" ]]; then echo "local-llm-rag: advisory path failed after the routing decision (exit $code) -- nothing changes, this task is ONLINE" >&2; exit 9; fi' ERR
 
 # --- ADVISORY-ONLY DRAFT ON AN ONLINE VERDICT (card ee43a6ac) ------------------------------------
 # Until now an ONLINE verdict produced NOTHING locally: the router said "do this on Claude" and the
