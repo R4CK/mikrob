@@ -146,12 +146,19 @@ if [ "$(cat "$BUILT_MARKER" 2>/dev/null)" != "$TARGET" ]; then
 fi
 
 # KNOWN BENIGN FLAKE (card 54699bbb). vitest's own worker-pool RPC (birpc) has a HARDCODED 60s
-# timeout with no config knob before vitest 3.x; under load (this suite, this WSL sandbox) that
-# round-trip occasionally misses it, and vitest exits 1 with an "Unhandled Error: [vitest-worker]:
-# Timeout calling \"onTaskUpdate\"" even though every single test passed. This is not our bug: it
-# is upstream and reported non-deterministic (vitest-dev/vitest #6479, #4497, #8164 -- "~1 in 5
+# timeout with no config knob; under load (this suite, this WSL sandbox) that round-trip
+# occasionally misses it, and vitest exits 1 with an "Unhandled Error: [vitest-worker]: Timeout
+# calling \"onTaskUpdate\"" even though every single test passed. This is not our bug: it is
+# upstream and reported non-deterministic (vitest-dev/vitest #6479, #4497, #8164 -- "~1 in 5
 # runs locally", CI-only for some). Reproduced identically in an UNRELATED codebase (CleanCore,
 # vitest 3.2.6) in the same sandbox, confirming it tracks the environment, not this repo's tests.
+#
+# CORRECTED 2026-08-14 (backend, card e00c12ad; verified here in the installed source rather than
+# taken on trust). This used to say "no config knob BEFORE vitest 3.x", which reads as though 3.x
+# has one. It does not: in vitest 3.2.6, `createForksRpcOptions()` returns serialize/deserialize/
+# post/on and passes NO timeout at all, so birpc's default applies on this version too. The scope of
+# the statement was wrong, not its conclusion -- and a comment that quietly narrows a known
+# limitation is how the next person stops looking for it.
 #
 # The exit code is real and callers must NOT swallow it -- but a reader who sees only "exit 1"
 # without reading the whole log can mistake this for a regression (exactly the signal-blindness
