@@ -198,6 +198,43 @@ describe('seed refresh touches only provably untouched copies', () => {
     }
   })
 
+  it('heals a copy that is our own text UNRENDERED -- the placeholder transition (card 041681b5)', () => {
+    // QA2's reproduction, on a live install: a file becomes a template AFTER it was already seeded
+    // verbatim, so the installed copy is byte-identical to a shipped blob and still full of raw
+    // {{...}}. Compared only against RENDERED hashes it matches nothing and is booked as an operator
+    // edit -- permanently, on every future update. The card's own motivating example
+    // (~/.claude/skills/local-llm-offload/SKILL.md) was exactly this file.
+    const f = makeFixture()
+    try {
+      const dir = join(f.home, '.claude', 'scheduled-tasks', 'demo-task')
+      mkdirSync(dir, { recursive: true })
+      writeFileSync(join(dir, 'SKILL.md'), f.taskVersions[0]) // shipped v1, never rendered
+      const r = runRefresh(f.install, f.home)
+      expect(r.code).toBe(0)
+      expect(readFileSync(join(dir, 'SKILL.md'), 'utf-8')).toBe('task v3 marveen\n')
+      expect(r.out).toMatch(/frissitve: 1/)
+    } finally {
+      rmSync(f.base, { recursive: true, force: true })
+    }
+  })
+
+  it('...but an EDITED unrendered copy is still left alone -- the rule did not get looser', () => {
+    // The whole risk of accepting raw blobs is that "untouched" starts meaning less. It does not:
+    // the copy must still be byte-identical to something we shipped, and one added line ends it.
+    const f = makeFixture()
+    try {
+      const dir = join(f.home, '.claude', 'scheduled-tasks', 'demo-task')
+      mkdirSync(dir, { recursive: true })
+      const edited = f.taskVersions[0] + '# operator note\n'
+      writeFileSync(join(dir, 'SKILL.md'), edited)
+      const r = runRefresh(f.install, f.home)
+      expect(readFileSync(join(dir, 'SKILL.md'), 'utf-8')).toBe(edited)
+      expect(r.out).not.toMatch(/frissitve: [1-9]/)
+    } finally {
+      rmSync(f.base, { recursive: true, force: true })
+    }
+  })
+
   it('is idempotent: a second pass changes nothing and reports nothing', () => {
     const f = makeFixture()
     try {

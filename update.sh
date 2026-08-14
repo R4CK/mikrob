@@ -580,6 +580,20 @@ seed_copy_is_untouched() {
   for blob in $(git -C "$INSTALL_DIR" log --format=%H -n 25 -- "$rel" 2>/dev/null); do
     if [ "$mode" = "template" ]; then
       candidate="$(git -C "$INSTALL_DIR" show "$blob:$rel" 2>/dev/null | render_seed_template | shasum -a 256 | awk '{print $1}')"
+      [ "$cur" = "$candidate" ] && return 0
+      # ...and ALSO accept the UNRENDERED blob (card 041681b5, QA2's reproduction on a live install).
+      # A file can be byte-identical to something we shipped and still contain raw {{INSTALL_DIR}}:
+      # that is what an install looks like when a path was turned into a placeholder in a directory
+      # that was being seeded VERBATIM at the time. Compared only against rendered hashes, such a
+      # copy matches nothing -- a rendered blob never equals its own unrendered source unless the
+      # substituted value happens to equal its own literal -- so it is booked as operator-modified
+      # and skipped FOREVER. Measured on this box: ~/.claude/skills/local-llm-offload/SKILL.md kept
+      # 25 raw {{INSTALL_DIR}} through every update, and the card's own motivating example was the
+      # one file that could never heal itself.
+      #
+      # This does not weaken the rule it belongs to. "Untouched" still means byte-identical to
+      # something WE shipped; this only stops treating our own unrendered text as a stranger's edit.
+      candidate="$(git -C "$INSTALL_DIR" show "$blob:$rel" 2>/dev/null | shasum -a 256 | awk '{print $1}')"
     else
       candidate="$(git -C "$INSTALL_DIR" show "$blob:$rel" 2>/dev/null | shasum -a 256 | awk '{print $1}')"
     fi
