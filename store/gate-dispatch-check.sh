@@ -126,8 +126,68 @@ def ts(c):
 #    ("QA PASS -- ...the REVIEW claim holds") or prose ("a te REVIEW-od utan"). A substring
 #    test re-arms on all of those, which is the fail-open direction but pure noise.
 review_rx = re.compile(r"^\s*(?:[#*>\-]*\s*)?REVIEW\b", re.M)
-review_comments = [c for c in cs
-                    if (c.get("author") or "").lower() != agent.lower() and review_rx.search(c.get("content") or "")]
+
+# CARD-ID COLLISION (real incident, fef84e46/63c4b270, 2026-08-13): kanban card ids are the SAME
+# hex-lookalike shape as a git short-sha, and a card almost always mentions its OWN id somewhere
+# in a comment (title echo, kartya <id>, or a branch name like fix/foo-<cardId>). That id then
+# gets extracted as a sha on BOTH sides and trivially overlaps itself, producing a false
+# ADVISE-SKIP:already-gated that HIDES a genuinely unreviewed new commit. Strip the card own id
+# (env CID, optional -- callers that cannot supply it just skip this filter, fail-open) before
+# comparing.
+#
+# OTHER CARDS ids too (card b60835e1). Stripping only the own id was not enough once a sha in ANY
+# comment could arm a gate: measured on the live board, the extra dispatches came almost entirely
+# from SIBLING card ids being read as commits -- one E2E sweep comment named eight sibling cards and
+# armed all four gates on a card with no submission at all. Every real commit in the two incidents
+# this card is about (415967c0, ac792b3b, 66f36444, 04ad1760) is NOT a card id, and every noise
+# trigger except one WAS, so the discriminator is clean. Env CARD_IDS, comma-separated, optional and
+# fail-open like CID: a caller that cannot supply the board just gets the old behaviour. The board
+# listing truncates done cards, so this set is partial by nature -- an unknown id stays a sha, which
+# is the loud direction. Accepted collision: an 8-hex short-sha that IS some card id gets dropped;
+# with a few hundred ids that is a ~1e-7 chance per token, against a measured, recurring noise class.
+_cid = (os.environ.get("CID") or "").lower()
+_card_ids = {i.strip().lower() for i in (os.environ.get("CARD_IDS") or "").split(",") if i.strip()}
+if _cid:
+    _card_ids.add(_cid)
+def extract_shas(text):
+    found = {m.group(0).lower() for m in re.finditer(r"\b[0-9a-fA-F]{7,40}\b", text or "")
+             if re.search(r"[a-fA-F]", m.group(0))}
+    return found - _card_ids
+
+GATE_AGENTS = ("qa", "qa2", "cybersec", "cybered")
+# Who cannot be SUBMITTING work: the gates themselves (their verdicts are the other side of this
+# question), the orchestrator, and the mechanical pre-triage tool (which quotes the sha it ran
+# against and would otherwise re-arm every gate by itself).
+NON_SUBMITTERS = set(GATE_AGENTS) | {"mikrob", "gate-pretriage"}
+
+# WHAT COUNTS AS A SUBMISSION (card b60835e1; incidents beeb6963 and 339cd617). The line-anchored
+# REVIEW prefix was the ONLY signal, and build agents do not always write it: real announcements
+# read "JAVITVA -- commit ac792b3b" and "CYBERED NO-GO JAVITVA. Uj commit 66f36444". Measured on the
+# real comment history of both cards, with the card truncated to the moment of the incident, the
+# miss ran in the DANGEROUS direction on four (card, agent) pairs -- 339cd617/cybered and
+# 339cd617/qa, beeb6963/cybered and beeb6963/qa2 all returned ADVISE-SKIP:already-gated while a
+# fresh commit fixing that very gate own finding was sitting on the card unreviewed. (The card
+# text predicted the harmless direction for beeb6963; the measurement says otherwise.)
+#
+# So an engineering-role comment that NAMES A COMMIT also counts as a submission, whatever it opens
+# with. Newness is deliberately NOT decided here -- the sha-difference rule further down already
+# owns that question, and duplicating it in the classifier is how the two answers drift apart.
+#
+# Direction of the remaining error: a build agent who mentions a sha in passing now re-arms the
+# gate. That is a cheap, self-correcting false positive (a gate looks, sees nothing new, moves on),
+# and the whole point of this card is that the opposite error is silent.
+def is_submission(c):
+    author = (c.get("author") or "").lower()
+    if author == agent.lower():
+        return False
+    text = c.get("content") or ""
+    if review_rx.search(text):
+        return True
+    if author in NON_SUBMITTERS:
+        return False
+    return bool(extract_shas(text))
+
+review_comments = [c for c in cs if is_submission(c)]
 
 # NO REVIEW AT ALL -> there is nothing submitted for this gate to answer. A waiting card without a
 # submission is parked for some other reason (a bound block, a question to MikroB), and treating it
@@ -136,8 +196,6 @@ review_comments = [c for c in cs
 # stronger answer than "you have not commented yet".
 if not review_comments:
     print("ADVISE-SKIP:no-review"); sys.exit(0)
-
-GATE_AGENTS = ("qa", "qa2", "cybersec", "cybered")
 
 def widen_qa(names):
     return names | {"qa", "qa2"} if ("qa" in names or "qa2" in names) else names
@@ -189,22 +247,6 @@ last_review = max(ts(c) for c in review_comments)
 # more detail, not a new commit). Compare the short-sha(s) named in the newest REVIEW against the
 # short-sha(s) named in the newest verdict; only fall back to the timestamp rule when at least one
 # side names no sha at all (fail-open, same stance as the rest of this script).
-# CARD-ID COLLISION (real incident, fef84e46/63c4b270, 2026-08-13): kanban card ids are the SAME
-# hex-lookalike shape as a git short-sha, and a card almost always mentions its OWN id somewhere
-# in a comment (title echo, kartya <id>, or a branch name like fix/foo-<cardId>). That id then
-# gets extracted as a sha on BOTH sides and trivially overlaps itself, producing a false
-# ADVISE-SKIP:already-gated that HIDES a genuinely unreviewed new commit. Strip the card own id
-# (env CID, optional -- callers that cannot supply it just skip this filter, fail-open) before
-# comparing.
-_cid = (os.environ.get("CID") or "").lower()
-def extract_shas(text):
-    found = {m.group(0).lower() for m in re.finditer(r"\b[0-9a-fA-F]{7,40}\b", text or "")
-             if re.search(r"[a-fA-F]", m.group(0))}
-    return found - {_cid} if _cid else found
-
-def shas_overlap(a, b):
-    return any(x.startswith(y) or y.startswith(x) for x in a for y in b)
-
 newest_mine = max(mine, key=ts)
 newest_review = max(review_comments, key=ts)
 mine_shas = extract_shas(newest_mine.get("content") or "")
@@ -304,7 +346,15 @@ case "${1:-}" in
     CARD_JSON="$(_curl_get "/api/kanban" || true)"
     GATE_LABELS="$(_extract_gate_labels "$CARD" <<< "$CARD_JSON" 2>/dev/null || true)"
     GATE_LINE="$(_extract_gate_line "$CARD" <<< "$CARD_JSON" 2>/dev/null || true)"
-    verdict="$(printf '%s' "$body" | GATE_LABELS="$GATE_LABELS" GATE_LINE="$GATE_LINE" CID="$CARD" _decide "$AGENT" || echo ALLOW)"
+    # Every card id on the board, so sibling ids quoted in a comment are not read as commits
+    # (card b60835e1). Same bulk JSON already in hand; failure leaves it empty (fail OPEN).
+    CARD_IDS="$(printf '%s' "$CARD_JSON" | python3 -c '
+import json, sys
+try: cards = json.load(sys.stdin)
+except Exception: sys.exit(0)
+print(",".join(c.get("id") or "" for c in cards if isinstance(c, dict)))
+' 2>/dev/null || true)"
+    verdict="$(printf '%s' "$body" | GATE_LABELS="$GATE_LABELS" GATE_LINE="$GATE_LINE" CID="$CARD" CARD_IDS="$CARD_IDS" _decide "$AGENT" || echo ALLOW)"
     echo "$verdict"
     [[ "$verdict" == ADVISE-SKIP:* ]] && exit 8 || exit 0
     ;;
@@ -384,6 +434,39 @@ case "${1:-}" in
     t "review names ONLY a new sha -- must re-arm" "ALLOW:stale-verdict" cybersec <<< '[{"author":"cybersec","created_at":100,"content":"NO-GO -- abc1111"},{"author":"backend","created_at":200,"content":"REVIEW -- fixed, commit def2222"}]'
     # No sha on either side -> unchanged, falls back to the pre-existing timestamp rule (fail-open).
     t "no sha anywhere falls back to the timestamp rule" "ALLOW:stale-verdict" cybersec <<< '[{"author":"cybersec","created_at":100,"content":"NO-GO"},{"author":"backend","created_at":200,"content":"REVIEW -- fixed, no commit mentioned"}]'
+
+    # SUBMISSION WITHOUT THE REVIEW PREFIX (card b60835e1). Both cases are the real comment shapes,
+    # and both were measured against the live comment history truncated to the moment of the
+    # incident: the old rule answered ADVISE-SKIP:already-gated on all four (card, agent) pairs
+    # while a fresh commit fixing that gate own finding sat on the card unreviewed. Mutation check:
+    # drop the sha arm of is_submission and these two go red while every case above stays green --
+    # which is exactly why 40+ existing controls did not catch this.
+    t "339cd617 real shape: JAVITVA (no REVIEW prefix) names a new commit" "ALLOW:stale-verdict" cybered <<< '[{"author":"backend2","created_at":1786212647,"content":"REVIEW -- kesz, commit 415967c0, ag feat/settings-calendar-write"},{"author":"cybered","created_at":1786213071,"content":"CYBERED GO -- @ 415967c0 (backend2, settings/calendar write-oldal + RBAC-dontes)"},{"author":"backend2","created_at":1786213391,"content":"JAVITVA -- commit ac792b3b (ugyanaz az ag, origin-ra pusholva, a korabbi 415967c0 folott)"}]'
+    t "beeb6963 real shape: NO-GO JAVITVA names the fix commit" "ALLOW:stale-verdict" cybered <<< '[{"author":"backend","created_at":1786168835,"content":"REVIEW: kesz. Branch feat/precommit-declared-paths, commit 04ad1760, pusholva."},{"author":"cybered","created_at":1786170631,"content":"CYBERED NO-GO -- @ 04ad1760 (a negyedik megkerulesi ut nyitva)"},{"author":"backend","created_at":1786177051,"content":"CYBERED NO-GO JAVITVA. Uj commit 66f36444 a tipjen (a 04ad1760 folott), pusholva."}]'
+    # ...and the same shape must still SKIP when the announced commit is the one already gated.
+    t "a JAVITVA repeating the gated sha does NOT re-arm" "ADVISE-SKIP:already-gated" cybered <<< '[{"author":"backend","created_at":100,"content":"REVIEW -- commit 04ad1760"},{"author":"cybered","created_at":200,"content":"GO -- 04ad1760"},{"author":"backend","created_at":300,"content":"JAVITVA -- ugyanaz a commit 04ad1760, csak ujrapusholva"}]'
+
+    # WHO CANNOT SUBMIT. Without these the widening arms every gate off its own machinery: the
+    # pre-triage tool quotes the sha it ran against, the other gates quote it in their verdicts, and
+    # MikroB quotes it when deciding the tier. All three are the SAME sha the gate would be asked
+    # about, so counting them would make "no submission" impossible to ever answer.
+    t "another gate naming a sha is not a submission"  "ADVISE-SKIP:no-review" cybersec <<< '[{"author":"cybered","created_at":100,"content":"CYBERED GO -- 04ad1760"}]'
+    t "gate-pretriage naming a sha is not a submission" "ADVISE-SKIP:no-review" cybersec <<< '[{"author":"gate-pretriage","created_at":100,"content":"GATE PRE-TRIAGE (mechanikus, verdict:null) @ 66f36444"}]'
+    t "mikrob naming a sha is not a submission"        "ADVISE-SKIP:no-review" cybersec <<< '[{"author":"mikrob","created_at":100,"content":"TIER-DONTES valtozatlan: QA + Cybered. Friss commit 66f36444."}]'
+    t "an engineering comment with no sha is not a submission" "ADVISE-SKIP:no-review" cybersec <<< '[{"author":"backend","created_at":100,"content":"Kerdes MikroB-nak: melyik migracios szamot vegyem?"}]'
+
+    # SIBLING CARD IDS (card b60835e1, measured on the live board). Card ids are the same hex shape
+    # as a short sha, and cards quote each other constantly -- one real E2E sweep comment named eight
+    # sibling cards and armed all four gates on a card with no submission at all. tc() is t() plus
+    # CARD_IDS, which is how `check` and the nudger both call this.
+    tc() { # $1 = label, $2 = expected prefix, $3 = agent, $4 = CARD_IDS, stdin = comments json
+      local got; got="$(CARD_IDS="$4" _decide "$3")"
+      if [[ "$got" == "$2"* ]]; then echo "  ok   $1 -> $got"
+      else echo "  FAIL $1 -> got '$got', expected '$2'*"; fail=1; fi
+    }
+    tc "sibling card ids are not commits" "ADVISE-SKIP:no-review" cybered "564df813,ac7d5530,90ad1000" <<< '[{"author":"teszter","created_at":100,"content":"E2E Sweep kesz. Erintett kartyak: 564df813, ac7d5530, 90ad1000."}]'
+    tc "a real commit alongside sibling ids still counts" "ALLOW:no-verdict" cybered "564df813,ac7d5530" <<< '[{"author":"backend2","created_at":100,"content":"JAVITVA -- commit ac792b3b (a 564df813 es ac7d5530 kartyakat is erinti)"}]'
+    tc "an unknown id stays a sha (partial board, fail-open)" "ALLOW:no-verdict" cybered "564df813" <<< '[{"author":"backend2","created_at":100,"content":"JAVITVA -- commit ac792b3b"}]'
     # `decide` must be the same answer as the internal function, and must carry the exit code the
     # nudger branches on -- a subcommand that printed the right word with the wrong status would
     # make every card look like work.

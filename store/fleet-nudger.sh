@@ -78,6 +78,9 @@ for cid in gate_cards:
 out={a:plan[a] for a in eng}
 out["_gate_cards"]=gate_cards
 out["_meta"]=meta
+# Every card id on the board (card b60835e1): gate-dispatch-check.sh needs it to tell a
+# sibling card id apart from a commit sha, now that a sha in any comment can arm a gate.
+out["_card_ids"]=[c.get("id") for c in cards if c.get("id")]
 # No-change fingerprint (card bb1751f2): (id, updated_at) for every gate-candidate card, sorted so
 # key order never causes a spurious mismatch. updated_at bumps on every new comment (db.ts
 # addKanbanComment does an explicit UPDATE ... SET updated_at on the parent card alongside the
@@ -318,6 +321,7 @@ if [ -n "$FP" ] && [ "$FP" = "$LAST_FP" ]; then
 else
   state_set gateFp "$FP"
 CARDS="$(echo "$WORK" | python3 -c 'import json,sys;print(" ".join(json.load(sys.stdin).get("_gate_cards",[])))' 2>/dev/null)"
+CARD_IDS="$(echo "$WORK" | python3 -c 'import json,sys;print(",".join(json.load(sys.stdin).get("_card_ids",[])))' 2>/dev/null)"
 CHECK="$ROOT/store/gate-dispatch-check.sh"
 CACHE="$(mktemp -d)"
 trap 'rm -f "$hdr_file"; rm -rf "$CACHE"' EXIT
@@ -346,7 +350,7 @@ for a in $GATE; do
       gate_labels="$(cat "$CACHE/$card.labels" 2>/dev/null)"
       gate_line="$(cat "$CACHE/$card.gateline" 2>/dev/null)"
       verdict="$(printf '%s' "$body" \
-        | GATE_LABELS="$gate_labels" GATE_LINE="$gate_line" CID="$card" bash "$CHECK" decide "$a" 2>/dev/null || true)"
+        | GATE_LABELS="$gate_labels" GATE_LINE="$gate_line" CID="$card" CARD_IDS="$CARD_IDS" bash "$CHECK" decide "$a" 2>/dev/null || true)"
     else
       verdict="ALLOW"                                       # checker missing -> fail open
     fi
