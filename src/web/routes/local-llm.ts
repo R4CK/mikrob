@@ -1,11 +1,13 @@
 import { spawn, execFile } from 'node:child_process'
 import { readFileSync, existsSync, openSync, fstatSync, readSync, closeSync, readdirSync } from 'node:fs'
 import { join } from 'node:path'
+import { homedir } from 'node:os'
 import { randomUUID } from 'node:crypto'
 import { STORE_DIR } from '../../config.js'
 import { logger } from '../../logger.js'
 import { readBody, json } from '../http-helpers.js'
 import { atomicWriteFileSync } from '../atomic-write.js'
+import { decideModelTrust, confirmationMatches } from '../../local-llm-model-trust.js'
 import { getDb } from '../../db.js'
 import { pickTemplate } from '../../local-llm-template-picker.js'
 import {
@@ -77,6 +79,11 @@ const OFFLOAD_CONFIG_FILE = join(STORE_DIR, 'local-llm-offload-active.json')
 // this route only decides WHEN to pay for a live refresh, never reimplements those semantics.
 const LLM_CATALOG_SCRIPT = join(STORE_DIR, 'llm-catalog.py')
 const LLM_CATALOG_CACHE_FILE = join(STORE_DIR, 'llm-catalog-cache.json')
+// The REVIEWED trust list, and the content-addressed blob directory the digest check compares
+// against. Both are overridable by env for tests only -- production reads the real locations, and
+// nothing here decides anything from an environment variable that is absent in production.
+const LLM_CATALOG_TRUST_FILE = join(STORE_DIR, 'llm-catalog-trust.json')
+const OLLAMA_BLOBS_DIR = process.env.FIRST_RUN_BLOBS || join(homedir(), '.ollama', 'models', 'blobs')
 // HuggingFace discovery hits 3 keyword searches + a tree fetch per candidate repo -- slow relative
 // to a dashboard poll, and the catalogue does not meaningfully change within a day. A GET this
 // page-load-frequent must not refresh live every time.
@@ -1198,17 +1205,72 @@ export async function tryHandleLocalLlm(ctx: RouteContext): Promise<boolean> {
     return true
   }
 
-  // POST /api/local-llm/model  {model} -> swap active model
+  // POST /api/local-llm/model  {model, iTrust?} -> swap active model
+  //
+  // THIS IS THE SECOND DOOR ONTO store/local-llm-model, and until card eb843c46 it was the unguarded
+  // one: the CLI path (store/first-run-llm.sh --use) refuses an unreviewed publisher and a digest
+  // mismatch, while this endpoint checked the model NAME and whether ollama had the file, then
+  // wrote. Same end state -- the model every agent's drafts come from -- under two different rule
+  // sets, which means the stricter set was advisory. Both doors now apply the same decision, from
+  // src/local-llm-model-trust.ts, so they cannot drift apart.
   if (path === '/api/local-llm/model' && method === 'POST') {
     let model = ''
-    try { model = (JSON.parse((await readBody(req)).toString()).model || '').trim() } catch { /* bad json */ }
+    let iTrust: string | undefined
+    try {
+      const body = JSON.parse((await readBody(req)).toString())
+      model = (body.model || '').trim()
+      iTrust = typeof body.iTrust === 'string' ? body.iTrust : undefined
+    } catch { /* bad json */ }
     if (!MODEL_RE.test(model)) { json(res, { error: 'Érvénytelen modellnév.' }, 400); return true }
     const tags = await ollama('/api/tags')
     if (tags === null) { json(res, { error: 'Az Ollama nem elérhető.' }, 503); return true }
     const present = (tags.models || []).some((m: any) => m.name === model)
     if (!present) { json(res, { error: 'Ez a modell nincs letöltve. Előbb húzd le (pull).' }, 409); return true }
+
+    const basis = decideModelTrust({
+      model,
+      cacheFile: LLM_CATALOG_CACHE_FILE,
+      trustFile: LLM_CATALOG_TRUST_FILE,
+      blobsDir: OLLAMA_BLOBS_DIR,
+    })
+    // A digest mismatch has NO override, here or in the script: the bytes on disk are not the bytes
+    // that were catalogued, so there is nothing an operator could knowingly consent to.
+    if (basis.digest === 'mismatch') {
+      logger.warn({ model, missing: basis.missing }, 'local-llm: digest-eltérés, aktív modell váltás elutasítva')
+      json(res, {
+        error: 'A letöltött súlyok nem egyeznek a katalógusban rögzített ellenőrzőösszeggel, ezért nem tehető alapértelmezetté. Töltsd le újra a modellt, vagy frissítsd a katalógust.',
+        code: 'digest_mismatch',
+        basis: { model, missing: basis.missing },
+      }, 409)
+      return true
+    }
+    if (!basis.trusted && !confirmationMatches(basis, iTrust)) {
+      // Everything the decision rests on goes back to the caller, so the confirmation screen can
+      // show it. A confirmation that displays only a name is a click-through, not a decision.
+      logger.warn({ model, owner: basis.owner }, 'local-llm: nem jóváhagyott kiadó, megerősítés nélkül elutasítva')
+      json(res, {
+        error: `Ez a modell nem jóváhagyott kiadótól származik (${basis.owner}), ezért nem lesz automatikusan a flotta alapértelmezett modellje. Nézd át a kiadót, a letöltésszámot és az ellenőrzőösszegeket, majd erősítsd meg a kiadó nevének megadásával.`,
+        code: 'publisher_not_trusted',
+        requiresConfirmation: true,
+        confirmWith: basis.confirmWith,
+        basis: {
+          model,
+          owner: basis.owner,
+          downloads: basis.downloads,
+          partCount: basis.parts.length,
+          // Never truncated: a shortened digest cannot be compared against anything.
+          parts: basis.parts,
+          digest: basis.digest,
+        },
+      }, 403)
+      return true
+    }
     try {
       atomicWriteFileSync(MODEL_FILE, model + '\n')
+      logger.info(
+        { model, owner: basis.owner, trusted: basis.trusted, digest: basis.digest, confirmed: !basis.trusted },
+        'local-llm: aktív modell beállítva',
+      )
     } catch (err) {
       logger.warn({ err }, 'local-llm: aktív modell írása sikertelen')
       json(res, { error: 'Az aktív modell mentése nem sikerült.' }, 500)
