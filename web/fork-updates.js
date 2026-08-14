@@ -1,0 +1,142 @@
+// fork-updates.js -- the fork's two-repo Updates page, as a real overlay seam.
+//
+// WHY THIS FILE EXISTS. Peti's rule is that upstream must always merge into this
+// fork without conflicts. web/app.js broke that rule (card eba65f46): the fork had
+// REPLACED loadUpdates() in place -- a 78-line single-repo renderer became a
+// 27-line dispatcher over two repos (upstream Marveen + our fork MikroB) -- while
+// upstream kept growing the same function (#963 added renderUpdatesVersion). That
+// is three-way divergence on ONE shared function, which no amount of helper
+// extraction resolves: the conflict is inside the function itself.
+//
+// So the seam is a runtime override, not a source-level edit. loadUpdates() in
+// app.js is now byte-for-byte upstream's version and stays that way; this file
+// loads after app.js and replaces the global with the fork's renderer. app.js's
+// three call sites are unqualified `loadUpdates()` references, so they resolve to
+// the global at call time and get this one.
+//
+// CONSEQUENCE WORTH KNOWING: the upstream loadUpdates left in app.js is dead code
+// here and would throw if it ever ran -- the fork's index.html replaced upstream's
+// #updatesCommitList container with #updatesRepos. If this file ever fails to
+// load, the Updates page breaks rather than degrades. It is a plain static file
+// served from the same directory as app.js, loaded by the same kind of script tag,
+// so that failure mode is the same one app.js itself has.
+//
+// SCOPE. This is a move, not a rewrite: the three functions below are the fork's
+// existing code, unchanged except for the rename that makes the override explicit.
+// handleRepoInstallClick() deliberately stays in app.js -- it is fork-only, it does
+// not conflict, and moving it would be diff for its own sake. Two things upstream
+// has and the fork does not (renderUpdatesVersion in the header subtitle, and
+// window._updatesStatus set from loadUpdates) are NOT ported here on purpose: that
+// is a user-visible change and belongs on its own card, not inside a refactor whose
+// whole claim is that behaviour is identical.
+
+// Render the changes list (release-grouped, else flat commits) for one repo.
+function updatesChangesHtml(repo) {
+  const commitCard = (c) => `
+        <div class="updates-commit">
+          <div class="updates-commit-head">
+            <span>${escapeHtmlUpdates(c.short)} · ${escapeHtmlUpdates(c.author)}</span>
+            <span>${escapeHtmlUpdates((c.date || '').slice(0, 10))}</span>
+          </div>
+          <div class="updates-commit-msg">${escapeHtmlUpdates(c.message)}</div>
+        </div>`
+  if (repo.releases && repo.releases.length) {
+    // Version-centric: the human-language summary per version is the primary
+    // content; the raw commit list (SHAs, conventional-commit prefixes, author
+    // names) is tucked behind a collapsed "details".
+    return repo.releases.map((rel) => {
+      const isUpcoming = !rel.version
+      const label = isUpcoming ? t('updates.group.upcoming') : escapeHtmlUpdates(rel.version)
+      const human = rel.summary
+        ? escapeHtmlUpdates(rel.summary)
+        : (isUpcoming ? t('updates.upcoming_note') : '')
+      return `
+        <div class="updates-version">
+          <div class="updates-version-tag">${label}</div>
+          ${human ? `<div class="updates-version-summary">${human}</div>` : ''}
+          <details class="updates-version-details">
+            <summary>${t('updates.details', { n: rel.commits.length })}</summary>
+            <div class="updates-commit-list">${rel.commits.map(commitCard).join('')}</div>
+          </details>
+        </div>`
+    }).join('')
+  }
+  if (repo.commits && repo.commits.length) {
+    return repo.commits.map(commitCard).join('')
+  }
+  return `<p style="color:var(--text-muted);font-size:13px">${t('updates.no_changes')}</p>`
+}
+
+// Render one labelled repo block (upstream Marveen or our fork MikroB): a header
+// with the repo label + remote, its own status summary, and its changes list.
+function updatesRepoBlockHtml(repo) {
+  const cur = (repo.current || '').slice(0, 7) || '–'
+  const labelKey = 'updates.repo.' + repo.key
+  const labelTxt = t(labelKey)
+  const label = labelTxt === labelKey ? escapeHtmlUpdates(repo.label || repo.key) : escapeHtmlUpdates(labelTxt)
+  const remote = escapeHtmlUpdates(repo.remote || '')
+  let summaryClass = 'updates-summary'
+  let summaryHtml = ''
+  if (repo.error) {
+    summaryClass += ' error'
+    summaryHtml = `<strong>${t('updates.check_failed')}:</strong> ${escapeHtmlUpdates(repo.error)}<br>${t('updates.current_label')} <code>${cur}</code>`
+  } else if (!repo.behind) {
+    summaryClass += ' up-to-date'
+    summaryHtml = `<strong>${t('updates.up_to_date_html')}</strong> (<code>${cur}</code>). ${t('updates.no_changes')}`
+  } else {
+    summaryClass += ' behind'
+    const versions = (repo.releases || []).filter((r) => r.version)
+    if (versions.length > 0) {
+      summaryHtml = `<strong>${t('updates.versions_available', { n: versions.length })}</strong> <code>${escapeHtmlUpdates(versions[0].version)}</code>`
+    } else {
+      summaryHtml = `<strong>${t('updates.behind', { n: repo.behind })}</strong> ${t('updates.available_on', { remote: `<code>${remote}</code>` })}`
+    }
+  }
+  const installBtnHtml = (repo.behind && !repo.error)
+    ? `<div class="updates-install-wrap">
+        <button class="btn-primary btn-compact updates-install-btn" id="updates-install-btn-${repo.key}" data-repo="${escapeHtmlUpdates(repo.key)}">
+          <span class="btn-text">${escapeHtmlUpdates(t('updates.btn.install_repo'))}</span>
+          <span class="btn-loading" hidden>${escapeHtmlUpdates(t('updates.checking'))}</span>
+        </button>
+      </div>`
+    : ''
+  return `
+      <section class="updates-repo-block">
+        <h3 class="updates-repo-label">${label} <span class="updates-repo-remote">(${remote})</span></h3>
+        <div class="${summaryClass}">${summaryHtml}</div>
+        ${installBtnHtml}
+        <div class="updates-commit-list">${updatesChangesHtml(repo)}</div>
+      </section>`
+}
+
+async function forkLoadUpdates() {
+  const container = document.getElementById('updatesRepos')
+  const applyBtn = document.getElementById('updatesApplyBtn')
+  container.innerHTML = `<div class="updates-summary">${t('updates.checking')}</div>`
+  try {
+    const res = await fetch('/api/updates')
+    if (!res.ok) throw new Error('HTTP ' + res.status)
+    const data = await res.json()
+    renderUpdatesBadge(data)
+    renderBranchNotice(data)
+    // Two independent checks live in data.repos. Fall back to the flat single
+    // shape (older backend/cache) synthesised as one 'mikrob' block.
+    const repos = (Array.isArray(data.repos) && data.repos.length)
+      ? data.repos
+      : [{ ...data, key: 'mikrob', label: 'MikroB' }]
+    container.innerHTML = repos.map(updatesRepoBlockHtml).join('')
+    // Per-repo install buttons replace the single global apply button.
+    applyBtn.hidden = true
+    document.querySelectorAll('.updates-install-btn').forEach((btn) => {
+      btn.addEventListener('click', () => handleRepoInstallClick(btn))
+    })
+  } catch (err) {
+    container.innerHTML = `<div class="updates-summary error">${escapeHtmlUpdates('Hiba: ' + (err.message || err))}</div>`
+    applyBtn.hidden = true
+  }
+  renderDiagnoseOffer()
+}
+
+// The override itself. app.js declared its own loadUpdates(); this replaces that
+// global binding, and every unqualified call in app.js follows it here.
+window.loadUpdates = forkLoadUpdates

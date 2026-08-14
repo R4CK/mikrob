@@ -158,6 +158,24 @@ export async function tryHandleStatic(ctx: RouteContext, webDir: string): Promis
   }
   if (path === '/sw.js') { serveFile(req, res, join(webDir, 'sw.js')); return true }
 
+  // Fork overlay scripts (web/fork-*.js). The fork's convention is that new
+  // fork-only frontend code lives in its own file loaded after app.js and
+  // overrides the globals it needs, so app.js stays mergeable with upstream
+  // (card 241532d8). One prefix rule rather than a line per overlay, so adding
+  // the next one needs no change here. Allowlisted by shape, not by existence:
+  // the name must be exactly fork-<lowercase-name>.js, which admits no path
+  // separators and no traversal. No cacheSeconds -- these URLs are not
+  // versioned like /app.js, so they revalidate via ETag and can never go stale.
+  if (path.startsWith('/fork-')) {
+    const overlay = path.slice(1)
+    if (/^fork-[a-z0-9-]+\.js$/.test(overlay) && existsSync(join(webDir, overlay))) {
+      serveFile(req, res, join(webDir, overlay))
+      return true
+    }
+    res.writeHead(404); res.end()
+    return true
+  }
+
   if (path.startsWith('/lang/')) {
     const langFile = path.replace('/lang/', '')
     // Allowlist: only the two known language files (no path traversal).
