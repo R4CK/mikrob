@@ -64,6 +64,28 @@ def significant(line):
     return bool(s) and not s.startswith("*") and len(s.strip("{}()[],;")) > 3
 
 
+OBJ_KEY = re.compile(r"^\s*([A-Za-z_$][\w$]*)\s*:")
+
+
+def shared_keys(ours, theirs):
+    """Object-literal keys BOTH sides define. Keeping both would emit the property twice.
+
+    Distinct from `overlaps`, which compares whole lines: here the two sides differ in the VALUE
+    and agree only on the key --
+
+        <<<<<<<  feedbackStore: env.DATABASE_URL ? createPgFeedbackStore(...) : shared.store,
+        =======  feedbackStore: shared.store,
+        >>>>>>>
+
+    -- so line equality sees nothing while "keep both" produces a duplicate property. In an object
+    literal the LAST one silently wins, which is how a PG-backed store got shadowed by the in-memory
+    fallback with everything still compiling and every test still green.
+    """
+    def keys(side):
+        return {m.group(1) for line in side.splitlines() for m in [OBJ_KEY.match(line)] if m}
+    return sorted(keys(ours) & keys(theirs))
+
+
 def overlaps(ours, theirs):
     """Lines both sides contain. Keeping both would EXECUTE them twice.
 
@@ -86,7 +108,7 @@ def resolve(text):
         out.append(text[pos:m.start()])
         ours, theirs = m.group("ours"), m.group("theirs")
         tail = text[m.end():].split("\n", 1)[0] + "\n"
-        dup = overlaps(ours, theirs)
+        dup = overlaps(ours, theirs) + [f"{k}: (same key, different value)" for k in shared_keys(ours, theirs)]
         if dup:
             out.append(m.group(0))
             stats["shared_line"] += 1
@@ -151,6 +173,21 @@ def _selftest():
     if "<<<<<<<" in got:
         print("  FAIL an additive hunk whose ternary closes with a real value was left conflicted")
         fails += 1
+    # The SAME object-literal key on both sides, with different values: "keep both" would emit the
+    # property twice and let the last one silently win. Real shape, from card 3e224b35.
+    samekey = ("<<<<<<< a\n    feedbackStore: env.DATABASE_URL\n      ? createPgFeedbackStore(x)\n"
+               "      : shared.store,\n=======\n    feedbackStore: shared.store,\n>>>>>>> b\n")
+    got, _ = resolve(samekey)
+    if "<<<<<<<" not in got:
+        print("  FAIL the same object key on both sides was duplicated instead of left for a human")
+        fails += 1
+    # Two DIFFERENT keys must still resolve -- that is the ordinary additive wiring case.
+    diffkey = "<<<<<<< a\n    alphaStore: makeAlpha(),\n=======\n    betaStore: makeBeta(),\n>>>>>>> b\n"
+    got, _ = resolve(diffkey)
+    if "<<<<<<<" in got:
+        print("  FAIL two different object keys were left conflicted")
+        fails += 1
+
     # A `//` inside a string must not be mistaken for a comment.
     urls = "<<<<<<< a\n  const a = 'https://one.example'\n=======\n  const b = 'https://two.example'\n>>>>>>> b\n"
     got, _ = resolve(urls)
@@ -171,7 +208,7 @@ def _selftest():
     if "<<<<<<<" not in got:
         print("  FAIL unbalanced shape was resolved instead of left for a human")
         fails += 1
-    print(f"selftest: {len(cases) + 6} case(s), {'PASS' if fails == 0 else 'FAIL'}")
+    print(f"selftest: {len(cases) + 8} case(s), {'PASS' if fails == 0 else 'FAIL'}")
     return fails
 
 
