@@ -11,23 +11,117 @@
 #  * MIGRATION NUMBER FREE ON THE *CURRENT* main, not on the main the branch forked from -- main
 #    moved while the queue was blocked. A duplicate number means two different migrations answer to
 #    one name. Refuses on a clash; MikroB's rule is to renumber on the branch first.
-#  * SEAM CHECK. A conflict-free merge is not a correct merge: on card 36d559e5 both sides had
-#    touched server.ts and wiring-manifest.ts, and "no conflict" says nothing about whether one
-#    side's additions survived. Every line the branch ADDED must be present in the merge result.
+#  * SEAM CHECK, BOTH DIRECTIONS. A conflict-free merge is not a correct merge: on card 36d559e5
+#    both sides had touched server.ts and wiring-manifest.ts, and "no conflict" says nothing about
+#    whether one side's additions survived. The first version of this check was ONE-DIRECTIONAL --
+#    it only asked whether the BRANCH's added lines survived. That is how the batch merge silently
+#    dropped main's own `stockLevels` wiring-manifest entry: nothing on the branch side was missing,
+#    so the check passed while main lost content. Both sides are checked now.
+#  * POST-MERGE TYPECHECK, AS A DELTA. "No line was lost" does not mean "it compiles" -- card
+#    0a500b2e landed 2 TS4104 errors on main through a full gate round, because nobody ran tsc on
+#    the merge result. A plain pass/fail is useless here, though: main itself can already be red,
+#    and refusing on inherited errors would block every branch. So this compares the merge result
+#    against the CURRENT main and refuses only on errors the merge ADDS.
 #  * DETACHED landing worktree from origin/main -- never the main clone's working tree (nobody
 #    commits there) and never the agent's own branch.
 #
-# Usage:  cleancore-land.sh <cardId> <gated-sha> [--dry-run]
+# Usage:  cleancore-land.sh <cardId> <gated-sha> [--dry-run] [--allow-main-loss] [--skip-typecheck]
+#         cleancore-land.sh --selftest
 # Exit: 0 landed (or dry-run clean) | 2 bad usage | 3 refused a precondition | 4 merge/push failed
 set -uo pipefail
 
-CARD="${1:-}"; SHA="${2:-}"; DRY="${3:-}"
-[ -n "$CARD" ] && [ -n "$SHA" ] || { echo "usage: cleancore-land.sh <cardId> <gated-sha> [--dry-run]" >&2; exit 2; }
-
 MAIN="${CLEANCORE_MAIN:-/mnt/h/LM_Studio_Workdir/CleanCore}"
-WT="/home/neon/cc-land-$CARD"
+TSC_TIMEOUT="${TSC_TIMEOUT:-900}"
+CACHE_DIR="${CLEANCORE_LAND_CACHE:-$HOME/.cache/cleancore-land}"
 say() { echo "  $*"; }
 die() { echo "REFUSED: $2" >&2; exit "$1"; }
+
+# The four fast projects the root `typecheck` script runs, in its order. apps/web is separate and
+# deliberately conditional (it is minutes slow); see typecheck_errors().
+TSC_PROJECTS="tsconfig.json packages/control-plane/tsconfig.test.json packages/modules/workforce/tsconfig.test.json apps/api/tsconfig.json"
+
+# NEVER call `npm run typecheck` here. Its last step is `pnpm --filter @cleancore/web typecheck`,
+# and pnpm's dep-status check shells out to `pnpm install`, which asks to REMOVE the modules
+# directory. In these worktrees node_modules is a SYMLINK into the shared main clone, so a purge
+# that proceeds deletes every agent's dependencies mid-work. Only the missing TTY stopped it when
+# it was hit for real (ERR_PNPM_ABORTED_REMOVE_MODULES_DIR_NO_TTY), and pnpm's own advice --
+# "set CI=true" -- would have made it proceed silently. tsc is invoked directly instead.
+link_node_modules() {
+  local wt="$1" d rel n=0
+  while IFS= read -r d; do
+    rel="${d#$MAIN/}"
+    [ -e "$wt/$rel" ] && continue
+    mkdir -p "$wt/$(dirname "$rel")" && ln -s "$d" "$wt/$rel" && n=$((n+1))
+  done < <(find "$MAIN" -maxdepth 4 -type d -name node_modules -not -path "*/node_modules/*" 2>/dev/null)
+  say "linked $n node_modules into $(basename "$wt")"
+}
+
+# Normalise a tsc line to something that survives the merge shifting code up or down: keep the file
+# and the error, drop the (line,col). Without this every pre-existing error below an inserted hunk
+# reads as "new" and the delta is noise.
+norm_errors() { sed -E 's/\(([0-9]+),([0-9]+)\)//' | grep -E 'error TS[0-9]+' | sort -u; }
+
+# Prints normalised error lines on stdout. A non-zero exit with NO `error TS` line is a broken
+# harness (missing deps, wrong binary, timeout), not a clean project -- it is reported as such
+# rather than counted as zero errors, which is exactly how a vacuous `npx tsc` once read green.
+typecheck_errors() {
+  local wt="$1" want_web="$2" p out rc
+  for p in $TSC_PROJECTS; do
+    out="$(cd "$wt" && timeout "$TSC_TIMEOUT" node_modules/.bin/tsc --noEmit -p "$p" 2>&1)"; rc=$?
+    printf '%s\n' "$out" | norm_errors
+    if [ "$rc" -ne 0 ] && ! printf '%s' "$out" | grep -q 'error TS'; then
+      echo "HARNESS-FAULT in $p: $(printf '%s' "$out" | tr '\n' ' ' | cut -c1-160)"
+    fi
+  done
+  if [ "$want_web" = 1 ]; then
+    out="$(cd "$wt/apps/web" && timeout "$TSC_TIMEOUT" ../../node_modules/.bin/tsc --noEmit -p tsconfig.json 2>&1)"; rc=$?
+    printf '%s\n' "$out" | norm_errors
+    if [ "$rc" -ne 0 ] && ! printf '%s' "$out" | grep -q 'error TS'; then
+      echo "HARNESS-FAULT in apps/web: $(printf '%s' "$out" | tr '\n' ' ' | cut -c1-160)"
+    fi
+  fi
+}
+
+if [ "${1:-}" = "--selftest" ]; then
+  fail=0; n=0
+  t() { n=$((n+1)); [ "$2" = "$3" ] || { echo "  FAIL $1: got [$2] want [$3]"; fail=1; }; }
+  t "strips line:col" \
+    "$(printf 'src/a.ts(12,5): error TS2322: bad\n' | norm_errors)" \
+    "src/a.ts: error TS2322: bad"
+  t "same error at a shifted line collapses to one" \
+    "$(printf 'src/a.ts(12,5): error TS1: x\nsrc/a.ts(99,5): error TS1: x\n' | norm_errors | wc -l)" \
+    "1"
+  t "keeps two different errors in one file" \
+    "$(printf 'src/a.ts(1,1): error TS1: x\nsrc/a.ts(1,1): error TS2: y\n' | norm_errors | wc -l)" \
+    "2"
+  t "drops non-error chatter" \
+    "$(printf 'Found 0 errors.\n> tsc --noEmit\n' | norm_errors | wc -l)" \
+    "0"
+  t "a new error is reported by the delta" \
+    "$(comm -13 <(printf 'a: error TS1: x\n') <(printf 'a: error TS1: x\nb: error TS2: y\n'))" \
+    "b: error TS2: y"
+  t "an inherited error is NOT reported by the delta" \
+    "$(comm -13 <(printf 'a: error TS1: x\n') <(printf 'a: error TS1: x\n') | wc -l)" \
+    "0"
+  t "a FIXED error does not read as new" \
+    "$(comm -13 <(printf 'a: error TS1: x\nb: error TS2: y\n') <(printf 'a: error TS1: x\n') | wc -l)" \
+    "0"
+  echo "selftest: $n case(s), $([ $fail -eq 0 ] && echo PASS || echo FAIL)"
+  exit $fail
+fi
+
+CARD="${1:-}"; SHA="${2:-}"; shift 2 2>/dev/null
+[ -n "$CARD" ] && [ -n "$SHA" ] || { echo "usage: cleancore-land.sh <cardId> <gated-sha> [--dry-run] [--allow-main-loss] [--skip-typecheck]" >&2; exit 2; }
+DRY=""; ALLOW_MAIN_LOSS=0; SKIP_TSC=0
+for a in "$@"; do
+  case "$a" in
+    --dry-run) DRY="--dry-run" ;;
+    --allow-main-loss) ALLOW_MAIN_LOSS=1 ;;
+    --skip-typecheck) SKIP_TSC=1 ;;
+    *) echo "unknown option: $a" >&2; exit 2 ;;
+  esac
+done
+WT="/home/neon/cc-land-$CARD"
 
 git -C "$MAIN" fetch origin --quiet || die 3 "could not fetch origin"
 BASE="$(git -C "$MAIN" rev-parse --short origin/main)"
@@ -81,35 +175,108 @@ if ! merge_err="$(git -C "$WT" -c user.email=backend@marveen.local -c user.name=
 fi
 say "merged --no-ff, no conflicts ($(git -C "$WT" diff --name-only "$BASE..HEAD" | wc -l) files)"
 
-# SEAM CHECK on the files BOTH sides touched: every line the branch added must be in the result.
+# SEAM CHECK on the files BOTH sides touched, in BOTH directions: every line either side ADDED
+# since the merge base must be present in the result. Checking only the branch side is what let the
+# batch merge drop main's own `stockLevels` manifest entry unnoticed.
 MB="$(git -C "$MAIN" merge-base "$SHA" "$BASE")"
 BRANCH_FILES="$(git -C "$MAIN" diff --name-only "$MB..$SHA")"
 MAIN_FILES="$(git -C "$MAIN" diff --name-only "$MB..$BASE")"
 OVERLAP="$(comm -12 <(echo "$BRANCH_FILES" | sort) <(echo "$MAIN_FILES" | sort))"
-if [ -z "$OVERLAP" ]; then
-  say "seam: no file was touched by both sides"
-else
-  missing=0
+
+# $1 = side label, $2 = the sha whose additions must survive. Echoes the number of losses.
+seam_side() {
+  local label="$1" tip="$2" f line body lost=0
   while IFS= read -r f; do
     [ -n "$f" ] || continue
-    [ -f "$WT/$f" ] || { echo "  SEAM FAIL: $f is missing from the merge result"; missing=$((missing+1)); continue; }
+    [ -f "$WT/$f" ] || { echo "  SEAM FAIL ($label): $f is missing from the merge result" >&2; lost=$((lost+1)); continue; }
     while IFS= read -r line; do
       case "$line" in (''|'+++'*) continue ;; esac
       body="${line#+}"
       [ -n "${body// }" ] || continue
-      grep -qF -- "$body" "$WT/$f" || { echo "  SEAM FAIL in $f: dropped line: ${body:0:90}"; missing=$((missing+1)); }
-    done < <(git -C "$MAIN" diff "$MB..$SHA" -- "$f" | grep '^+')
+      grep -qF -- "$body" "$WT/$f" || { echo "  SEAM FAIL ($label) in $f: dropped line: ${body:0:90}" >&2; lost=$((lost+1)); }
+    done < <(git -C "$MAIN" diff "$MB..$tip" -- "$f" | grep '^+')
   done < <(echo "$OVERLAP")
-  [ "$missing" -eq 0 ] || { echo "REFUSED: the merge dropped $missing line(s) from the branch"; exit 4; }
-  say "seam: $(echo "$OVERLAP" | wc -l) shared file(s), every added line survived"
+  echo "$lost"
+}
+
+if [ -z "$OVERLAP" ]; then
+  say "seam: no file was touched by both sides"
+else
+  lost_branch="$(seam_side branch "$SHA")"
+  lost_main="$(seam_side main "$BASE")"
+  [ "$lost_branch" -eq 0 ] || { echo "REFUSED: the merge dropped $lost_branch line(s) the BRANCH added"; exit 4; }
+  # A branch may legitimately delete something main added -- card cb6b2c70 replaces the whole
+  # `stockLevels` port on purpose. That is a real decision, not a merge artefact, so it is refused
+  # by default and released only by --allow-main-loss, after a human has read each line above.
+  if [ "$lost_main" -ne 0 ]; then
+    if [ "$ALLOW_MAIN_LOSS" -eq 1 ]; then
+      say "seam: $lost_main line(s) of MAIN's own content are gone -- accepted via --allow-main-loss"
+    else
+      echo "REFUSED: the merge dropped $lost_main line(s) MAIN added."
+      echo "         If the branch removes them ON PURPOSE, re-run with --allow-main-loss."
+      exit 4
+    fi
+  fi
+  say "seam: $(echo "$OVERLAP" | wc -l) shared file(s) checked in both directions"
 fi
 
-if [ "$DRY" = "--dry-run" ]; then say "DRY-RUN: not pushing"; exit 0; fi
+# POST-MERGE TYPECHECK, as a delta against the current main. Absolute pass/fail is the wrong
+# question: main can already be red from earlier work, and the branch is not answerable for that.
+if [ "$SKIP_TSC" -eq 1 ]; then
+  say "typecheck: SKIPPED (--skip-typecheck) -- the merge result was NOT compiled"
+else
+  mkdir -p "$CACHE_DIR"
+  link_node_modules "$WT"
+  # apps/web is minutes slow, so it runs only when the merge actually reaches it. Said out loud,
+  # because a silently narrowed check reads like full coverage in a report.
+  WANT_WEB=0
+  git -C "$MAIN" diff --name-only "$MB..$SHA" | grep -q '^apps/web/' && WANT_WEB=1
+  [ "$WANT_WEB" = 1 ] && say "typecheck: including apps/web (the branch touches it)" \
+                      || say "typecheck: apps/web NOT checked (the branch does not touch it)"
+
+  BASE_FULL="$(git -C "$MAIN" rev-parse origin/main)"
+  BASE_ERR="$CACHE_DIR/base-$BASE_FULL-web$WANT_WEB.txt"
+  if [ -f "$BASE_ERR" ]; then
+    say "typecheck: baseline for main $BASE reused from cache ($(wc -l < "$BASE_ERR") error(s))"
+  else
+    BWT="/home/neon/cc-land-base-$BASE"
+    rm -rf "$BWT"
+    git -C "$MAIN" worktree add --detach -q "$BWT" origin/main || die 3 "could not create the baseline worktree"
+    link_node_modules "$BWT"
+    typecheck_errors "$BWT" "$WANT_WEB" > "$BASE_ERR"
+    git -C "$MAIN" worktree remove --force "$BWT" >/dev/null 2>&1
+    say "typecheck: baseline main $BASE has $(wc -l < "$BASE_ERR") error(s)"
+  fi
+
+  MERGE_ERR="$(mktemp)"
+  typecheck_errors "$WT" "$WANT_WEB" > "$MERGE_ERR"
+  if grep -q '^HARNESS-FAULT' "$MERGE_ERR" || grep -q '^HARNESS-FAULT' "$BASE_ERR"; then
+    echo "REFUSED: the typecheck harness itself failed -- this is NOT a clean result:"
+    grep -h '^HARNESS-FAULT' "$BASE_ERR" "$MERGE_ERR" | sed 's/^/    /'
+    exit 4
+  fi
+  NEW="$(comm -13 "$BASE_ERR" "$MERGE_ERR")"
+  if [ -n "$NEW" ]; then
+    echo "REFUSED: the merge result adds $(echo "$NEW" | wc -l) typecheck error(s) main does not have:"
+    echo "$NEW" | sed 's/^/    /'
+    rm -f "$MERGE_ERR"; exit 4
+  fi
+  say "typecheck: no new error vs main ($(wc -l < "$MERGE_ERR") inherited)"
+fi
+
+if [ "$DRY" = "--dry-run" ]; then say "DRY-RUN: not pushing"; rm -f "${MERGE_ERR:-}" 2>/dev/null; exit 0; fi
 
 git -C "$WT" push origin HEAD:main >/dev/null 2>&1 || { echo "PUSH FAILED"; exit 4; }
 git -C "$MAIN" fetch origin --quiet
 if git -C "$MAIN" merge-base --is-ancestor "$SHA" origin/main; then
   MERGE="$(git -C "$WT" rev-parse --short HEAD)"
+  # What we just compiled IS the new main, so it is the next landing's baseline -- carried over so a
+  # queue of landings pays for one baseline typecheck, not one per card. Keyed by the new sha, so a
+  # main that moves underneath us (someone else pushing) simply misses the cache and re-measures.
+  if [ "$SKIP_TSC" -eq 0 ] && [ -f "${MERGE_ERR:-/nonexistent}" ]; then
+    cp "$MERGE_ERR" "$CACHE_DIR/base-$(git -C "$MAIN" rev-parse origin/main)-web$WANT_WEB.txt" 2>/dev/null
+  fi
+  rm -f "${MERGE_ERR:-}" 2>/dev/null
   echo "LANDED $CARD: $GSHORT -> origin/main (merge $MERGE)"
   exit 0
 fi
