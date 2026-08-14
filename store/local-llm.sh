@@ -100,20 +100,26 @@ USAGE_LOG="$HERE/local-llm-usage.log"
 log_usage() { # $1=status(ok|err)  $2=elapsed_ms
   # Strip TAB/NEWLINE from free-text fields so a caller/task/source value can never
   # inject extra TSV columns or fake rows (metric-integrity hardening; Cybersec LOW).
-  local c="${CALLER:-direct}" t="${TASK:-chat}" s="${SOURCE:-bare}" m="$MODEL"
+  # LOG_TASK is the label ONLY (card ea3e4270). --task also picks a prompt template and is subject to
+  # the dashboard's per-category switch, so a caller that just wants the metric to say what this call
+  # WAS cannot use it without changing what the model receives. Measured consequence of not having
+  # this: the fleet's whole dispatch-offload path logged as `chat` (median 35s, 941 output tokens --
+  # real drafting work), so "the share of task=code" measured who typed a flag, not what ran.
+  local c="${CALLER:-direct}" t="${LOG_TASK:-${TASK:-chat}}" s="${SOURCE:-bare}" m="$MODEL"
   c="${c//[$'\t\n']/_}"; t="${t//[$'\t\n']/_}"; s="${s//[$'\t\n']/_}"; m="${m//[$'\t\n']/_}"
   { printf '%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\n' \
       "$(date +%s 2>/dev/null || echo 0)" "$c" "$t" "$m" "${2:-0}" "$1" "$s" "${3:-0}" "${4:-0}" \
       >> "$USAGE_LOG"; } 2>/dev/null || true
 }
 
-MODEL=""; SYSTEM=""; TASK=""; MODE="generate"; CALLER=""; SOURCE="bare"
+MODEL=""; SYSTEM=""; TASK=""; MODE="generate"; CALLER=""; SOURCE="bare"; LOG_TASK=""
 ARGS=()
 while [[ $# -gt 0 ]]; do
   case "$1" in
     --model)  MODEL="$2"; shift 2 ;;
     --system) SYSTEM="$2"; shift 2 ;;
     --task)   TASK="$2"; shift 2 ;;
+    --log-task) LOG_TASK="$2"; shift 2 ;;   # label the usage log only; no template, no gating
     --caller) CALLER="$2"; shift 2 ;;
     --source) SOURCE="$2"; shift 2 ;;
     --health) MODE="health"; shift ;;
@@ -161,6 +167,10 @@ fi
 [[ -z "${PROMPT// }" ]] && die 4 "empty prompt"
 
 # Optional named task template (store/local-llm-skills/<task>.txt); {{INPUT}} is replaced.
+if [[ -n "$LOG_TASK" ]]; then
+  [[ "$LOG_TASK" =~ ^[a-z0-9_-]{1,64}$ ]] || die 4 "invalid --log-task name '$LOG_TASK' (allowed: a-z 0-9 _ -, max 64)"
+fi
+
 if [[ -n "$TASK" ]]; then
   # Charset allowlist BEFORE the path join (card 2de47a4e; mirrors isValidCategoryName in
   # src/web/routes/local-llm.ts from 18a0acb9): every real category name is kebab/snake-case, so a

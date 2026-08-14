@@ -175,6 +175,7 @@ while [[ $# -gt 0 ]]; do
     --caller)  CALLER_OVR="$2"; shift 2 ;;
     --source)  SOURCE_OVR="$2"; shift 2 ;;
     --task)    PASS+=(--task "$2"); shift 2 ;;
+    --log-task) PASS+=(--log-task "$2"); shift 2 ;;   # usage-log label only (card ea3e4270)
     --system)  PASS+=(--system "$2"); shift 2 ;;
     --model)   PASS+=(--model "$2"); shift 2 ;;
     --out)     OUT="$2"; shift 2 ;;

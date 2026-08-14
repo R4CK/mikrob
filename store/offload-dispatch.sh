@@ -103,7 +103,10 @@ DRAFTS=""
 add_draft() { DRAFTS+="#### $1"$'\n'"$2"$'\n\n'; }
 
 # 1) Whole-card route: small/mechanical cards draft as-is; features fall through.
-WHOLE="$("$RAG" --auto --agent "$ASSIGNEE" --source dispatch-offload "$TASK" 2>/dev/null)"
+# --log-task labels the usage log only -- it does NOT pick a template or change the prompt (card
+# ea3e4270). Without it every call on this path logged as `chat`, the default, so the offload metric
+# could not tell the fleet's main drafting route from a bare chat probe.
+WHOLE="$("$RAG" --auto --agent "$ASSIGNEE" --source dispatch-offload --log-task card-draft "$TASK" 2>/dev/null)"
 rc=$?
 if [[ $rc -eq 0 && -n "${WHOLE// }" ]]; then
   add_draft "Teljes kartya (local draft)" "$WHOLE"
@@ -130,7 +133,7 @@ for s in out[:CAP]: print(s.replace(chr(10)," ").strip())
 ' 2>/dev/null)
   for s in "${SUBS[@]:-}"; do
     [[ -z "${s// }" ]] && continue
-    D="$("$RAG" --auto --agent "$ASSIGNEE" --source dispatch-offload "$s" 2>/dev/null)"
+    D="$("$RAG" --auto --agent "$ASSIGNEE" --source dispatch-offload --log-task subtask-draft "$s" 2>/dev/null)"
     [[ $? -eq 0 && -n "${D// }" ]] && add_draft "$s" "$D"
   done
 fi
