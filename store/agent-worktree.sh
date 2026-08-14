@@ -25,8 +25,16 @@ ROOT="${CLEANCORE_WORKTREES:-/mnt/h/LM_Studio_Workdir/CleanCore-worktrees}"
 
 die() { echo "agent-worktree.sh: $2" >&2; exit "$1"; }
 
-AGENT="${1:-}"
-[ -n "$AGENT" ] || die 2 "usage: agent-worktree.sh <agent> [--path]"
+# --check-links takes no agent: it asks about the MAIN clone, not about anyone's worktree. Handled
+# before the name check so a sentinel can call it without inventing an agent to pass in.
+if [ "${1:-}" = "--check-links" ]; then
+  CHECK_LINKS_ONLY=1
+else
+  CHECK_LINKS_ONLY=0
+  AGENT="${1:-}"
+  [ -n "$AGENT" ] || die 2 "usage: agent-worktree.sh <agent> [--path] | agent-worktree.sh --check-links"
+fi
+if [ "$CHECK_LINKS_ONLY" -eq 0 ]; then
 case "$AGENT" in
   # Keep the name a single safe path segment: it becomes a directory AND a branch name.
   #
@@ -38,11 +46,79 @@ case "$AGENT" in
   # CLEANCORE_WORKTREES, so we cannot assume any particular filesystem: keep the restriction.
   *[!a-z0-9-]*|-*|'') die 2 "agent name must match [a-z0-9-]+ (got: $AGENT)" ;;
 esac
+fi
 
-TREE="$ROOT/$AGENT"
-BRANCH="agent/$AGENT/work"
+TREE="$ROOT/${AGENT:-}"
+BRANCH="agent/${AGENT:-}/work"
 
 if [ "${2:-}" = "--path" ]; then echo "$TREE"; exit 0; fi
+
+# --- workspace-link integrity in the MAIN clone (card 67beaf74 follow-up, MikroB 14417) ----------
+#
+# THE FAILURE THIS CATCHES, seen for real on 2026-08-14:
+#   apps/api/node_modules/@cleancore/i18n -> /tmp/tmp.bnTa1qNyAC/packages/i18n   (target deleted)
+# Its 30 siblings are all RELATIVE (../../../../packages/...). A process ran an install from a
+# throwaway temp worktree and pnpm wrote an ABSOLUTE link into the SHARED clone; when the temp
+# directory was cleaned up the module stopped resolving -- for the main clone AND for every agent
+# worktree that symlinks node_modules from it.
+#
+# It is worth catching here because the symptom lies: `TS2307: Cannot find module '@cleancore/i18n'`
+# reads like the BRANCH is wrong. Card ea51e22a looked green in its own worktree (which happens to
+# hold a real node_modules) and red everywhere else, and the honest-looking conclusion was "the card
+# introduced a bad dependency".
+#
+# The repair target is DERIVED, never a hardcoded map: the package directory is found by reading
+# package.json names under the main clone, and the relative path is computed from the link's own
+# directory. A guard that carries its own list of answers goes stale the first time someone adds a
+# package.
+check_workspace_links() {
+  local found=0 fixed=0 link target pkgdir rel
+  while IFS= read -r link; do
+    [ -n "$link" ] || continue
+    found=$((found + 1))
+    target="$(readlink "$link")"
+    if [ -e "$link" ]; then
+      # Points into /tmp but still resolves: not broken YET, and repairing a live link is not this
+      # script's call. Say it and move on -- it will break the moment that directory is cleaned up.
+      echo "  WARNING: $link -> $target (absolute, into /tmp -- will break when that path goes)"
+      continue
+    fi
+    pkgdir="$(pkg_dir_for "$(basename "$link")")"
+    if [ -z "$pkgdir" ]; then
+      echo "  BROKEN: $link -> $target (target gone, and no package under $MAIN matches it -- fix by hand)"
+      continue
+    fi
+    rel="$(python3 -c "import os,sys; print(os.path.relpath(sys.argv[1], sys.argv[2]))" "$MAIN/$pkgdir" "$(dirname "$link")")"
+    ln -sfn "$rel" "$link"
+    echo "  REPAIRED: $link -> $rel (was $target, gone)"
+    fixed=$((fixed + 1))
+  done < <(find "$MAIN" -maxdepth 6 -type l -lname '/tmp/*' 2>/dev/null)
+  if [ "$found" -eq 0 ]; then
+    echo "workspace links: no /tmp-pointing symlink in the main clone"
+  else
+    echo "workspace links: $found /tmp-pointing symlink(s), $fixed repaired"
+  fi
+  [ "$found" -eq "$fixed" ]
+}
+
+# The directory of the workspace package whose package.json declares @cleancore/<name>, relative to
+# $MAIN. Empty when nothing matches.
+pkg_dir_for() {
+  local name="$1" f
+  while IFS= read -r f; do
+    if grep -q "\"name\"[[:space:]]*:[[:space:]]*\"@cleancore/$name\"" "$MAIN/$f" 2>/dev/null; then
+      dirname "$f"; return 0
+    fi
+  done < <(cd "$MAIN" && ls apps/*/package.json packages/*/package.json packages/modules/*/package.json 2>/dev/null)
+  echo ""
+}
+
+if [ "$CHECK_LINKS_ONLY" -eq 1 ]; then
+  check_workspace_links
+  exit $?
+fi
+
+
 
 [ -d "$MAIN/.git" ] || die 3 "no CleanCore clone at $MAIN (set CLEANCORE_MAIN)"
 git -C "$MAIN" fetch origin main --quiet || die 3 "could not fetch origin/main"
@@ -75,6 +151,10 @@ while IFS= read -r d; do
   linked=$((linked + 1))
 done < <(cd "$MAIN" && ls -d apps/*/ packages/*/ packages/modules/*/ 2>/dev/null)
 echo "node_modules links added: $linked"
+
+# Before those links are trusted, make sure the thing they point AT is sound: a dangling
+# /tmp-pointing link in the main clone is inherited by every worktree that links from it.
+check_workspace_links || echo "  (a link above needs a human -- the worktree is still usable)"
 
 # HOOKS ISOLATION (card 420ef7b4, Cybersec NO-GO -- flagged by MikroB BEFORE this rollout, comment
 # 10146, then missed by REVIEW+QA and caught only at the gate). The own-index property above stops
