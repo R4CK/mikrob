@@ -540,7 +540,13 @@ export function routeTask(input: RouteInput): RouteDecision {
   // When a category narrowed the threshold, say so in the reason and carry the category on the
   // decision: otherwise the audit line reads "exceeds threshold 'module'" and nobody can tell
   // whether that was the operator's slider or the category's own limit.
-  const capped = category !== null && categoryCeiling !== null && categoryCeiling !== 'never' && threshold !== configured
+  // TWO DIFFERENT QUESTIONS, and conflating them cost a round: `inCappedCategory` is "this category
+  // carries a ceiling at all" (which decides whether inference may be trusted), while `capped` is
+  // "the ceiling actually lowered the configured threshold" (which only decides how the reason
+  // reads). With one flag doing both, a slider already stricter than the ceiling made the category
+  // rule vanish -- and the pinned multi-file-wiring case went local.
+  const inCappedCategory = category !== null && categoryCeiling !== null && categoryCeiling !== 'never'
+  const capped = inCappedCategory && threshold !== configured
   const why = capped ? `${threshold}' (capped by category '${category}` : threshold
   const cat = category === null || categoryCeiling === 'never' ? {} : { category }
   const declared = normalizeDifficulty(input.difficulty)
@@ -573,7 +579,7 @@ export function routeTask(input: RouteInput): RouteDecision {
   // difficulty word in them. A capped category therefore needs POSITIVE evidence that the piece is
   // small (a declared difficulty, or an inferred one within the ceiling); with none, it stays
   // online, which is also what this router did for the whole category before the ceiling existed.
-  if (capped) {
+  if (inCappedCategory) {
     // INSIDE A CAPPED CATEGORY, ONLY A DECLARED DIFFICULTY COUNTS. Inference is not evidence here,
     // and that is measured rather than assumed: the suite's own multi-file-wiring case ("Wire the
     // new store into main.ts and the composition root") infers something within 'module' and would
