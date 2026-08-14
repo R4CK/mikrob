@@ -199,6 +199,10 @@ Ha egy projekt git repóval rendelkezik, a `README.md` naprakészen tartása a f
 
 Ha azért akad el a munka, mert egy ügynök elérte az 5 órás Claude usage-limitet, AZONNAL figyelmeztesd Petit Telegramon (melyik ügynök, reset-ig nem tud dolgozni). Automatizálva (`quota-limit-monitor`, 6 percenként). Limit-elérésnél automatikusan indul egy **5 óra 5 perces** reset-countdown + auto-resume (a banner a reset után is bent ragadhat, ezért NEM elég rá hagyatkozni -- ground-truth a `/status`). Heti "All models" sávnál DINAMIKUS új-fejlesztés-stop küszöb, a resetig hátralévő idő szerint: **>3 nap → 90%, <2 nap → 92%, <1 nap → 95%**. Küszöb felett: in-flight kártyák + gate-ek + zárás mehet, de ÚJ kódolás csak LOKÁLIS LLM-en draft-only (`local-llm-offload` skill), online visszaellenőrzés a resetig halasztva, draft SOHA nem megy DONE-ra ellenőrizetlenül. Pontos mechanika (script-nevek, JSON-fájlok, lépésről lépésre): `quota-management` skill.
 
+## Kontextus-tömörítés küszöb -- SZABÁLY (Peti 2026-08-14)
+
+Ügynök-session kontextusa NE nőhessen a modell kontextusablakának 75%-a fölé anélkül, hogy tömörítés (`/compact`) el ne indulna. A küszöböt a kontextus-tömörítő eszköz (`store/context-compact-monitor.sh`) érvényesíti százalékos alapon (a modell tényleges kontextusablakának 75%-a), nem rögzített token-számmal -- mert a rögzített szám modellenként/agensenként mást jelent. Ez a szabály előzi meg azt a hibaosztályt, ami 2026-08-13 este többszöri lefagyást okozott (backend/backend2/cybered kontextusa a ~100%-os plafonig nőtt, mert a tömörítő eszköz 8 napig csak dry-run maradt, sosem lett élesítve). Az eszköznek ÉLESNEK kell lennie (tényleges `/compact` küldés, nem csak logolás) -- egy dry-run-only tömörítő-eszköz befejezetlen kontrollnak számít, nem védelemnek.
+
 ## Rendszerfrissítés update-biztonsága és recovery -- SZABÁLY (Peti 2026-07-05)
 
 A MikroB rendszer az `./update.sh`-val frissül (git `pull --ff-only` + rebuild + service-restart). Két KÖTELEZŐ elv: (1) tracked fájlba tett lokális szerkesztés, ami ütközne a bejövő update-tel, SOHA nem marad uncommitolva -- commitold+pushold, vagy tartsd gitignored fájlban; (2) minden futtatható operatív script (`*.sh`, operatív `*.py`) VERZIÓKÖVETETT és pusholt, akkor is ha egyébként gitignored `store/`-ban él -- egy csak-lokális fix nincs mentve. Rollback: `store/.update-history` + `./recovery-prev-version.sh` (`--list`/`checkpoint`/`--to <sha>`/`--dry-run`/`--yes`) -- ÉLES rollbackot MikroB magától NE indítson (megölné a saját sessionjét), csak `--dry-run`/`--list`/`checkpoint`. Teljes mechanika: `update-safety` skill.
@@ -372,16 +376,16 @@ Utasítások:
 Az autonóm műveletek fokozatait a store/autonomy-config.json szabályozza (level: 1=csak jelez, 2=javasol+jóváhagyás, 3=autonóm+jelent). Mielőtt önállóan cselekszel, nézd meg az adott kategória szintjét.
 
 **Level 1 (csak jelez)**: küldj inter-agent értesítést a főágensnek, de NE végezd el a műveletet. Ezután ÁLLJ MEG.
-printf 'Authorization: Bearer %s\n' "$(cat store/.dashboard-token)" | curl -s -H @- -X POST http://localhost:3420/api/messages -H "Content-Type: application/json" -d "{\"from\":\"mikrob\",\"to\":\"mikrob\",\"content\":\"[FELHÍVÁS] CATEGORY_KEY: MIT akartam elvégezni, de level 1 miatt csak jelzek.\"}"
+printf 'Authorization: Bearer %s\n' "$(cat /home/neon/marveen/store/.dashboard-token)" | curl -s -H @- -X POST http://localhost:3420/api/messages -H "Content-Type: application/json" -d "{\"from\":\"mikrob\",\"to\":\"mikrob\",\"content\":\"[FELHÍVÁS] CATEGORY_KEY: MIT akartam elvégezni, de level 1 miatt csak jelzek.\"}"
 
 **Level 2 (jóváhagyás szükséges)**: kérj jóváhagyást az API-n MIELŐTT cselekszel.
 
 Jóváhagyás kérése (POST):
-printf 'Authorization: Bearer %s\n' "$(cat store/.dashboard-token)" | curl -s -H @- -X POST http://localhost:3420/api/approvals -H "Content-Type: application/json" -d '{"agent_id":"mikrob","category":"CATEGORY_KEY","action_description":"Mit tervezel elvégezni és miért","timeout_seconds":3600}'
+printf 'Authorization: Bearer %s\n' "$(cat /home/neon/marveen/store/.dashboard-token)" | curl -s -H @- -X POST http://localhost:3420/api/approvals -H "Content-Type: application/json" -d '{"agent_id":"mikrob","category":"CATEGORY_KEY","action_description":"Mit tervezel elvégezni és miért","timeout_seconds":3600}'
 A válaszban kapott id-vel kérdezheted le a döntést.
 
 Döntés lekérdezése (GET, 60 mp-enként ismételve):
-printf 'Authorization: Bearer %s\n' "$(cat store/.dashboard-token)" | curl -s -H @- "http://localhost:3420/api/approvals/<id>"
+printf 'Authorization: Bearer %s\n' "$(cat /home/neon/marveen/store/.dashboard-token)" | curl -s -H @- "http://localhost:3420/api/approvals/<id>"
 status=approved -> végezd el a műveletet. status=rejected vagy status=timeout -> ne csináld, naplózd az okot.
 
 **Level 3 (autonóm)**: elvégzed a műveletet, majd utána jelented a főágensnek.
