@@ -375,6 +375,26 @@ if [ "${COUNT:-0}" -eq 0 ]; then
   exit 0
 fi
 
+# WHERE THIS LIST CAME FROM, said out loud (card 3f6087f4, Cybered's LOW). The envelope has carried
+# `stale` and `source` since it was written and NOTHING outside the JSON read them -- so an operator
+# choosing from a frozen, shipped-in-the-repo fallback saw exactly what a live catalogue looks like.
+# That matters here more than in most places: the digests on screen are the evidence for the trust
+# label, and "as of generatedAt" is part of what that evidence means.
+STALE_NOTE="$(printf '%s' "$CATALOG" | python3 -c 'import json,sys
+try:
+    d = json.load(sys.stdin)
+except Exception:
+    sys.exit(0)
+if d.get("stale"):
+    print("this list is NOT live -- source: %s, recorded %s"
+          % (d.get("source") or "unknown", d.get("generatedAt") or "unknown"))' 2>/dev/null)"
+if [ -n "$STALE_NOTE" ]; then
+  say ""
+  say "  NOTE: $STALE_NOTE"
+  say "  The entries and their digests are as of that moment; a newer or better model may exist now."
+  log "catalog: stale envelope surfaced to the operator"
+fi
+
 say ""
 say "  Models that fit this machine (top 5 of $COUNT):"
 printf '%s' "$CATALOG" | TRUSTFILE="$HERE/llm-catalog-trust.json" python3 -c '

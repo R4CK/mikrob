@@ -352,6 +352,42 @@ describe('first-run-llm.sh --use: publisher trust gate', () => {
     })
   })
 
+  describe('a STALE catalogue says so before the operator picks from it (card 3f6087f4)', () => {
+    // Cybered's LOW on the e35bc379 GO: the envelope has carried `stale` and `source` since it was
+    // written, and nothing outside the JSON ever read them. So an operator choosing from a frozen
+    // fallback shipped in the repo saw a screen identical to a live catalogue -- while the digests
+    // on it are the evidence behind the trust label, and "as of generatedAt" is part of what that
+    // evidence means.
+    function listWithStaleness(stale: boolean): string {
+      writeFileSync(
+        join(sandbox, 'llm-catalog.py'),
+        `#!/usr/bin/env python3\nimport json\nprint(json.dumps({"schemaVersion": 1, "generatedAt": "2026-08-14T06:38:12Z", "source": "bundled-fallback", "stale": ${stale ? 'True' : 'False'}, "host": {}, "warnings": [], "models": [{"repo": "Qwen/Good-GGUF", "quant": "Q4_K_M", "fileMib": 4000, "tier": "fits", "installRef": ${JSON.stringify(TRUSTED_REF)}, "repoOwner": "Qwen", "trusted": True, "notes": []}]}))\n`,
+      )
+      const r = spawnSync('bash', [join(sandbox, 'first-run-llm.sh')], {
+        encoding: 'utf-8',
+        timeout: 60_000,
+        env: { ...process.env, OLLAMA_HOST: host, FIRST_RUN_BLOBS: join(sandbox, 'blobs') },
+      })
+      return `${r.stdout ?? ''}${r.stderr ?? ''}`
+    }
+
+    it('names the source and the moment it was recorded', () => {
+      const out = listWithStaleness(true)
+      expect(out).toContain('NOT live')
+      expect(out).toContain('bundled-fallback')
+      expect(out).toContain('2026-08-14T06:38:12Z')
+      expect(out).toContain('Qwen/Good-GGUF') // and it still offers the models
+    })
+
+    it('CONTROL: a LIVE catalogue gets no such note', () => {
+      // Otherwise a script that printed the warning unconditionally would pass the test above, and
+      // a notice shown on every run is one nobody reads by the second week.
+      const out = listWithStaleness(false)
+      expect(out).not.toContain('NOT live')
+      expect(out).toContain('Qwen/Good-GGUF')
+    })
+  })
+
   // --- what the OFFER shows, card a34effcb (Cybered on the fbbb4015 gate) -----------------------
   // Two findings about the same screen: the line said "pull <installRef from the catalogue>" while
   // printing the REPO cut at 42 characters (45% of a live 435-model catalogue is longer than that,
