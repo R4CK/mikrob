@@ -73,6 +73,76 @@ should_compact() {
   echo "compact"; return 0
 }
 
+# --- cooldown state: read once, FAIL CLOSED on damage (Cybered, card 9f74a0da comment 8232) ------
+# The old inline read swallowed every exception into last=0, which made since_min enormous and
+# silently switched the cooldown off for EVERY agent -- the anti-burn control disappearing exactly
+# when its own state got corrupted. Keep one asymmetry: a VALID state with no entry for an agent
+# still means "never compacted" and is allowed to act; only a file we cannot parse is a fault.
+#
+# On a fault we do not just skip and leave the file damaged -- that would make the monitor silently
+# dead, which is the 8-day failure this card exists to fix. We quarantine the damaged file and stamp
+# every target agent with NOW: the most conservative reading available (as if all had just been
+# compacted). This round is skipped; normal operation resumes after one full cooldown.
+#
+# Both helpers read $STATE at call time, so the selftest can point them at a throwaway file.
+STATE_JSON='{}'
+
+# state_put <json> <agent> <epoch> -> prints the updated json, having written it ATOMICALLY.
+# temp file in the same directory + fsync + os.replace: an interrupted run can no longer leave the
+# half-written file that the fail-closed path above has to defend against.
+state_put() {
+  python3 - "$STATE" "$1" "$2" "$3" <<'PY'
+import json, os, sys, tempfile
+path, payload, agent, stamp = sys.argv[1], sys.argv[2], sys.argv[3], int(sys.argv[4])
+data = json.loads(payload)
+data[agent] = stamp
+fd, tmp = tempfile.mkstemp(dir=os.path.dirname(path) or '.',
+                           prefix='.context-compact-state.', suffix='.tmp')
+try:
+    with os.fdopen(fd, 'w') as fh:
+        json.dump(data, fh)
+        fh.flush()
+        os.fsync(fh.fileno())
+    os.replace(tmp, path)
+except BaseException:
+    try:
+        os.unlink(tmp)
+    except OSError:
+        pass
+    raise
+print(json.dumps(data))
+PY
+}
+
+# read_state -> "OK <json>" or "ERR <reason>". An absent file is a first run, not corruption.
+read_state() {
+  python3 - "$STATE" <<'PY'
+import json, sys
+try:
+    with open(sys.argv[1]) as fh:
+        data = json.load(fh)
+    if not isinstance(data, dict):
+        raise ValueError('state is not a JSON object')
+except FileNotFoundError:
+    print('OK {}')
+except Exception as exc:
+    print('ERR ' + str(exc).replace('\n', ' '))
+else:
+    print('OK ' + json.dumps(data))
+PY
+}
+
+# cooldown_stamp <json> <agent> -> that agent's last-compact epoch, or ERR if it is not a timestamp.
+# A missing key in a valid state is 0 ("never compacted"), which is allowed to act; anything that is
+# not a plain non-negative number is a fault, because defaulting it to 0 is what dropped the cooldown.
+cooldown_stamp() {
+  python3 -c "
+import json, sys
+v = json.loads(sys.argv[1]).get(sys.argv[2], 0)
+print(int(v) if isinstance(v, (int, float)) and not isinstance(v, bool) and v >= 0 else 'ERR')
+" "$1" "$2" 2>/dev/null || echo ERR
+}
+
 if [ "${1:-}" = "--selftest" ]; then
   fails=0
   t() { # t <expect> <args...>
@@ -87,11 +157,77 @@ if [ "${1:-}" = "--selftest" ]; then
   t stale-reading    400 350 99 20 60 45  # agent parked -> do not wake it
   t cooldown         400 350 5 20 10 45   # compacted recently
   t compact          400 350 5 20 45 45   # boundary: cooldown exactly elapsed
-  [ "$fails" -eq 0 ] && { echo "selftest OK (7 cases)"; exit 0; } || { echo "selftest FAILED: $fails"; exit 1; }
+
+  # --- cooldown-state layer (Cybered comment 8232: fail-open cooldown + non-atomic write) -------
+  # The seven cases above only ever exercised should_compact's arithmetic. They stayed green while
+  # the state file -- the thing that FEEDS the `since` argument -- silently degraded the cooldown to
+  # a no-op. These cases test that input.
+  s() { # s <label> <expect> <got>
+    if [ "$3" != "$2" ]; then echo "FAIL: $1 want=[$2] got=[$3]"; fails=$((fails+1)); fi
+  }
+  s_err() { # s_err <label> <got> -- an ERR verdict; read_state appends a reason, cooldown_stamp does not
+    case "$2" in ERR|ERR\ *) ;; *) echo "FAIL: $1 want=[ERR...] got=[$2]"; fails=$((fails+1)) ;; esac
+  }
+  sttmp="$(mktemp -d)"
+  trap 'rm -rf "$sttmp"' EXIT
+  STATE="$sttmp/state.json"
+
+  s     "absent-state-is-a-first-run-not-corruption" "OK {}"                   "$(read_state)"
+  printf '{"backend": 1700000000}' > "$STATE"
+  s     "valid-state-parses"        'OK {"backend": 1700000000}'               "$(read_state)"
+  printf '{"backend": 17000'        > "$STATE"   # what a truncated write leaves behind
+  s_err "truncated-state-is-a-fault"                                           "$(read_state)"
+  : > "$STATE"                                   # and what an interrupted one leaves behind
+  s_err "empty-state-is-a-fault"                                               "$(read_state)"
+  printf '[]'                       > "$STATE"
+  s_err "non-object-state-is-a-fault"                                          "$(read_state)"
+
+  s "missing-agent-in-a-valid-state-means-never-compacted" "0" \
+    "$(cooldown_stamp '{"other": 1700000000}' backend)"
+  s "present-agent-returns-its-stamp"      "1700000000" \
+    "$(cooldown_stamp '{"backend": 1700000000}' backend)"
+  s_err "non-numeric-stamp-is-a-fault"     "$(cooldown_stamp '{"backend": "soon"}' backend)"
+  s_err "negative-stamp-is-a-fault"        "$(cooldown_stamp '{"backend": -5}' backend)"
+  s_err "unparseable-payload-is-a-fault"   "$(cooldown_stamp '{"backend"' backend)"
+
+  # ATOMICITY DISCRIMINATOR. A read-only state file in a writable directory: os.replace only needs
+  # write permission on the DIRECTORY, so the atomic write goes through, while the old truncating
+  # open(path,'w') fails with EACCES. Put that write back and this case turns RED -- that mutation,
+  # not a green suite, is what makes the case evidence. Skipped as root, which ignores the mode.
+  if [ "$(id -u)" != "0" ]; then
+    printf '{"backend": 1}' > "$STATE"; chmod 400 "$STATE"
+    s "atomic-write-survives-a-read-only-state-file" '{"backend": 1786700000}' \
+      "$(state_put '{"backend": 1}' backend 1786700000 2>/dev/null)"
+    chmod 600 "$STATE" 2>/dev/null
+    s "atomic-write-actually-landed-on-disk"         '{"backend": 1786700000}' "$(cat "$STATE")"
+  else
+    echo "NOTE: running as root, skipping the read-only-file atomicity case"
+  fi
+  s "atomic-write-leaves-no-temp-debris" "0" \
+    "$(find "$sttmp" -name '.context-compact-state.*.tmp' | wc -l)"
+
+  [ "$fails" -eq 0 ] && { echo "selftest OK (20 cases)"; exit 0; } || { echo "selftest FAILED: $fails"; exit 1; }
 fi
 
 [ -r "$DB" ] || { echo "context-compact-monitor.sh: cannot read $DB" >&2; exit 3; }
-[ -f "$STATE" ] || echo '{}' > "$STATE"
+
+state_raw="$(read_state 2>&1)"
+if [ "${state_raw%% *}" = "OK" ]; then
+  STATE_JSON="${state_raw#OK }"
+else
+  if [ "$DRY" = "1" ]; then
+    # --dry-run promises no side effects, so it reports the damage instead of repairing it.
+    echo "SKIP RUN: cooldown state unreadable (${state_raw#ERR }) -- a live run would quarantine it"
+    exit 0
+  fi
+  log "SKIP RUN: cooldown state unreadable (${state_raw#ERR }) -- quarantining and stamping all targets"
+  mv -f "$STATE" "$STATE.corrupt.$(date +%s)" 2>/dev/null || rm -f "$STATE"
+  for agent in $TARGET_AGENTS; do
+    STATE_JSON="$(state_put "$STATE_JSON" "$agent" "$(date +%s)")" || {
+      log "SKIP RUN: could not rewrite cooldown state, giving up this round"; exit 3; }
+  done
+  exit 0
+fi
 
 # Refresh token_usage BEFORE deciding. The dashboard only auto-collects hourly (web.ts), so without
 # this the monitor would read context sizes up to an hour old -- and an hour-old number is not a
@@ -119,10 +255,11 @@ for agent in $TARGET_AGENTS; do
   case "$ctx_k" in (*[!0-9]*) continue ;; esac
 
   age_min=$(( (NOW - ts) / 60 ))
-  last=$(python3 -c "
-import json,sys
-try: print(json.load(open('$STATE')).get('$agent', 0))
-except Exception: print(0)" 2>/dev/null || echo 0)
+  # From the already-validated state of this run. A per-agent value that is not a plain timestamp is
+  # the same class of fault as an unparseable file, so it skips this agent rather than defaulting to
+  # 0 (which would read as "never compacted" and drop the cooldown).
+  last=$(cooldown_stamp "$STATE_JSON" "$agent")
+  case "$last" in (''|*[!0-9]*) log "SKIP $agent: cooldown stamp is not a timestamp"; continue ;; esac
   since_min=$(( (NOW - last) / 60 ))
 
   reason=$(should_compact "$ctx_k" "$THRESHOLD_K" "$age_min" "$MAX_AGE_MIN" "$since_min" "$COOLDOWN_MIN")
@@ -158,12 +295,9 @@ except Exception: print(0)" 2>/dev/null || echo 0)
     log "SKIP $agent: compact request failed ($resp)"
     continue
   fi
-  python3 -c "
-import json
-try: d = json.load(open('$STATE'))
-except Exception: d = {}
-d['$agent'] = $NOW
-json.dump(d, open('$STATE','w'))"
+  STATE_JSON="$(state_put "$STATE_JSON" "$agent" "$NOW")" || {
+    # The compact already happened; failing to record it would let the next run repeat it.
+    log "WARN $agent: compacted but could not persist the cooldown stamp"; }
   log "COMPACT $agent ctx=${ctx_k}k (threshold ${THRESHOLD_K}k)"
   ACTED=$((ACTED + 1))
 done
