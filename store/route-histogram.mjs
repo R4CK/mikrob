@@ -49,7 +49,9 @@ if (!existsSync(ROUTER)) {
 // output from a tool whose entire job is to prove a routing change. Same exit 2 as no build at all.
 // Skipped when a stub router is injected: the seam exists so tests can run against a router with no
 // source tree, and "no source" is exactly the case the checker cannot decide.
-if (!process.env.ROUTE_HISTOGRAM_ROUTER) {
+// Same nullish test the ROUTER line above uses: an empty ROUTE_HISTOGRAM_ROUTER counts as SET
+// there, so it has to count as set here too, or the two lines disagree about which router this is.
+if ((process.env.ROUTE_HISTOGRAM_ROUTER ?? null) === null) {
   const { checkBuildFreshness } = await import(join(HERE, 'build-freshness.mjs'))
   const freshness = checkBuildFreshness(ROUTER)
   if (freshness.status !== 'fresh') {

@@ -201,11 +201,16 @@ describe('store/local-llm-rag.sh refuses a stale build (card a3611ecc)', () => {
     const now = Date.now() / 1000
     utimesSync(join(dir, 'src', 'local-llm-router.ts'), now - 60, now - 60)
     utimesSync(built, now, now)
+    // The seam variable is REMOVED, not blanked: route-histogram resolves the router with `??`, so
+    // an empty value counts as "a router was injected" and points at nothing. (Found by writing it
+    // the other way first and reading the failure.)
+    const env = { ...process.env }
+    delete env.ROUTE_HISTOGRAM_ROUTER
     const go = () =>
       spawnSync('node', [join(dir, 'store', 'route-histogram.mjs'), '--corpus', join(dir, 'corpus.json')], {
         encoding: 'utf-8',
         timeout: 60_000,
-        env: { ...process.env, ROUTE_HISTOGRAM_ROUTER: '' },
+        env,
       })
 
     const fresh = go()
