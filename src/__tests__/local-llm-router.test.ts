@@ -10,6 +10,7 @@ import {
   classifyCategory,
   stripGateLine,
   NON_OFFLOADABLE_CATEGORIES,
+  CATEGORY_CEILINGS,
 } from '../local-llm-router.js'
 
 describe('routeTask -- positive: mechanical work drafts LOCALLY (the token saving)', () => {
@@ -487,5 +488,67 @@ describe('the Gate: line no longer contaminates classification (card 14a73ce6)',
   it('CONTROL: a description with NO Gate: line at all is unaffected by stripGateLine', () => {
     const description = 'Rename this variable consistently across the file.'
     expect(routeTask({ description }).route).toBe('local')
+  })
+})
+
+// --- PER-CATEGORY CEILING (card 09c957f7) -------------------------------------------------------
+// One global ceiling was a single number for five categories whose risk is not the same kind. The
+// symptom it fixes: the categories veto FIRST, so the global gate never gets a say, and the cap
+// never lands where the traffic is. Each category now carries its own limit, and the split that
+// matters is SECURITY ('never', unchanged) versus QUALITY (a level).
+describe('routeTask -- per-category ceiling', () => {
+  const WIRING = 'Wire the new invoice module into the API router and the composition root.'
+
+  it('multi-file wiring is capped, not vetoed: an isolated piece of it drafts locally', () => {
+    // The behaviour this card adds. Before, any wiring-flavoured text was an unconditional ONLINE.
+    const d = routeTask({ description: WIRING, difficulty: 'isolated', aggressiveness: 100 })
+    expect(d.route).toBe('local')
+    expect(d.category).toBe('multi-file-wiring')
+  })
+
+  it('...but a genuine multi-file change still goes online, at maximum aggressiveness too', () => {
+    // Without this the cap would just be a way past the gate: at the top of the slider the global
+    // threshold is 'feature', and only the category ceiling ('module') keeps this online.
+    const d = routeTask({ description: WIRING, difficulty: 'feature', aggressiveness: 100 })
+    expect(d.route).toBe('online')
+    expect(d.reason).toContain('multi-file-wiring')
+  })
+
+  it('the reason names WHICH limit stopped it -- slider or category', () => {
+    const d = routeTask({ description: WIRING, difficulty: 'feature', aggressiveness: 100 })
+    expect(d.reason).toContain('capped by category')
+  })
+
+  it('a ceiling never WIDENS: a stricter slider still wins', () => {
+    // threshold 'trivial' is below the category ceiling 'module'; the lower of the two must apply,
+    // or a category could buy headroom the operator never granted.
+    const d = routeTask({ description: WIRING, difficulty: 'module', threshold: 'trivial' })
+    expect(d.route).toBe('online')
+  })
+
+  for (const category of ['authz', 'isolation', 'security-decision', 'architecture'] as const) {
+    it(`SECURITY/ARCHITECTURE control: '${category}' is still vetoed outright`, () => {
+      // The negative controls for the whole change. If a level ever appears here, a trivial-looking
+      // authz task starts drafting on the 7B -- the one outcome this router exists to prevent.
+      // Card ee43a6ac is where that may change, deliberately, with advisory-only drafts.
+      expect(CATEGORY_CEILINGS[category]).toBe('never')
+    })
+  }
+
+  it('a trivial-looking authz task is STILL online (the veto is not a difficulty question)', () => {
+    const d = routeTask({
+      description: 'Rename the isAdmin permission check helper for readability.',
+      difficulty: 'trivial',
+      aggressiveness: 100,
+    })
+    expect(d.route).toBe('online')
+    expect(d.category).toBe('authz')
+  })
+
+  it('CONTROL: a task in no category is routed exactly as before', () => {
+    const d = routeTask({ description: 'Add a helper that formats minutes as h:mm.', difficulty: 'isolated' })
+    expect(d.route).toBe('local')
+    expect(d.category).toBeUndefined()
+    expect(d.reason).not.toContain('capped by category')
   })
 })

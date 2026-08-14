@@ -44,6 +44,42 @@ export const NON_OFFLOADABLE_CATEGORIES = [
 ] as const
 export type NonOffloadableCategory = (typeof NON_OFFLOADABLE_CATEGORIES)[number]
 
+/**
+ * PER-CATEGORY CEILING (card 09c957f7). One global ceiling turned out to be the wrong shape: it is
+ * a single number for five categories whose risk is not the same kind at all, so it either sits high
+ * enough to be useless or low enough to block work that was never dangerous. The measured symptom is
+ * in this file already (see the note at the aggressiveness comment): almost nothing reaches the local
+ * model even at RELIABLE_CEILING='feature' and 100% aggressiveness -- the categories veto first, and
+ * the global gate never gets a say.
+ *
+ * So each category carries its own limit, and the two kinds are treated as what they are:
+ *   'never'  -- a SECURITY decision. authz, tenant isolation and security-decision stay vetoed
+ *               whatever the difficulty: a wrong answer there is not a quality problem, and no
+ *               difficulty is low enough to make it one. Card ee43a6ac (advisory-only drafts) is
+ *               where that changes, if it changes -- not here, and not as a side effect.
+ *   a level  -- a QUALITY limit. multi-file wiring is hard for a 7B, not unsafe for it, so the cap
+ *               is 'module': a small, contained piece of a wiring-flavoured task may draft locally,
+ *               a genuine multi-file change may not. This is the card's own example, and it is the
+ *               only category whose behaviour this change alters.
+ * 'architecture' keeps 'never' because the taxonomy it comes from already says so: cross-file design
+ * is beyond the model's reliable limit at every difficulty, so a ceiling would be a fiction.
+ *
+ * The ceiling only ever LOWERS the effective threshold -- it can never raise one. A category cannot
+ * buy a task more headroom than the configured slider already allows.
+ */
+export const CATEGORY_CEILINGS: Readonly<Record<NonOffloadableCategory, CodingDifficulty | 'never'>> = {
+  authz: 'never',
+  isolation: 'never',
+  'security-decision': 'never',
+  architecture: 'never',
+  'multi-file-wiring': 'module',
+}
+
+/** The lower of two difficulty levels -- the ceiling narrows a threshold, never widens it. */
+function lowerDifficulty(a: CodingDifficulty, b: CodingDifficulty): CodingDifficulty {
+  return CODING_DIFFICULTY_LEVELS.indexOf(a) <= CODING_DIFFICULTY_LEVELS.indexOf(b) ? a : b
+}
+
 export type Route = 'local' | 'online'
 
 export interface RouteDecision {
@@ -482,7 +518,8 @@ export function routeTask(input: RouteInput): RouteDecision {
   }
 
   const category = classifyCategory(description)
-  if (category !== null) {
+  const categoryCeiling = category === null ? null : CATEGORY_CEILINGS[category]
+  if (category !== null && categoryCeiling === 'never') {
     return { route: 'online', reason: `non-offloadable category: ${category}`, category }
   }
 
@@ -491,18 +528,32 @@ export function routeTask(input: RouteInput): RouteDecision {
   }
 
   // Difficulty gate -- REUSES the shared taxonomy + slider default; no second threshold copy.
-  const threshold =
+  // A matched category with a LEVEL ceiling narrows that threshold (card 09c957f7): the task is not
+  // vetoed, it is held to what the model can do in that kind of work. Narrowing only -- taking the
+  // lower of the two means a category can never hand a task more headroom than the slider allows.
+  const configured =
     normalizeDifficulty(input.threshold) ?? defaultDifficultyForAggressiveness(input.aggressiveness)
+  const threshold =
+    categoryCeiling === null || categoryCeiling === 'never'
+      ? configured
+      : lowerDifficulty(configured, categoryCeiling)
+  // When a category narrowed the threshold, say so in the reason and carry the category on the
+  // decision: otherwise the audit line reads "exceeds threshold 'module'" and nobody can tell
+  // whether that was the operator's slider or the category's own limit.
+  const capped = category !== null && categoryCeiling !== null && categoryCeiling !== 'never' && threshold !== configured
+  const why = capped ? `${threshold}' (capped by category '${category}` : threshold
+  const cat = category === null || categoryCeiling === 'never' ? {} : { category }
   const declared = normalizeDifficulty(input.difficulty)
   if (declared !== null) {
     if (!isDraftableLocally(declared, threshold)) {
       return {
         route: 'online',
-        reason: `difficulty '${declared}' exceeds threshold '${threshold}'`,
+        reason: `difficulty '${declared}' exceeds threshold '${why}'`,
         difficulty: declared,
+        ...cat,
       }
     }
-    return { route: 'local', reason: `difficulty '${declared}' within threshold '${threshold}'`, difficulty: declared }
+    return { route: 'local', reason: `difficulty '${declared}' within threshold '${why}'`, difficulty: declared, ...cat }
   }
 
   // No declared difficulty: INFER one rather than skipping the gate (card c7a0c142). Undeclared
@@ -511,17 +562,19 @@ export function routeTask(input: RouteInput): RouteDecision {
   if (inferred !== null && !isDraftableLocally(inferred, threshold)) {
     return {
       route: 'online',
-      reason: `inferred difficulty '${inferred}' exceeds threshold '${threshold}' (undeclared)`,
+      reason: `inferred difficulty '${inferred}' exceeds threshold '${why}' (undeclared)`,
       difficulty: inferred,
+      ...cat,
     }
   }
   // Nothing hard visible -> the DEFAULT stays local, as before.
   return inferred === null
-    ? { route: 'local', reason: `default-local (no blocking signal, threshold '${threshold}')` }
+    ? { route: 'local', reason: `default-local (no blocking signal, threshold '${why}')`, ...cat }
     : {
         route: 'local',
-        reason: `inferred difficulty '${inferred}' within threshold '${threshold}' (undeclared)`,
+        reason: `inferred difficulty '${inferred}' within threshold '${why}' (undeclared)`,
         difficulty: inferred,
+        ...cat,
       }
 }
 
