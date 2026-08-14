@@ -101,6 +101,51 @@ export interface RouteInput {
   readonly aggressiveness?: number
   /** Explicit configured threshold; falls back to the slider-derived default. */
   readonly threshold?: string | null
+  /**
+   * Tags the FLEET has already attached to this work, passed as DATA rather than left in the prose
+   * (card 5f0e7aa5). A `SEC` tag is not a word the classifier has to recognise -- it is a decision
+   * someone already made about this card, and the router should not have to re-derive it from
+   * vocabulary it may not have.
+   *
+   * Measured on the frozen 561-card board: 155 cards carry a SEC/CYBERSEC tag, 125 already route
+   * online, and 30 route LOCAL with `classifyCategory` returning null -- their text contains no
+   * signal this file recognises, in either language. Reading six of the least security-looking of
+   * those 30, only two are genuinely mechanical, so the tag recovers roughly 25 real security cards
+   * at the cost of about 5 mechanical ones going online.
+   *
+   * FAIL-CLOSED DIRECTION, as the card required: an unknown or absent tag means "no extra signal",
+   * never "safe". Text classification runs exactly as before either way.
+   */
+  readonly tags?: readonly string[]
+}
+
+/** Tags that mean the fleet declared this work security-relevant. Compared as WHOLE tags, never as
+ *  substrings: `[SECTION]` is not `[SEC]`, and the point of taking tags as data is to stop matching
+ *  fragments of prose. */
+const SECURITY_TAGS: ReadonlySet<string> = new Set(['SEC', 'CYBERSEC', 'SECURITY'])
+
+/**
+ * The leading run of `[...]` tags a fleet card title carries -- `[100%][MikroB][SEC][LOW] title...`
+ * -> ['100%', 'MIKROB', 'SEC', 'LOW'].
+ *
+ * ONLY the leading run, and only whole tags. That is what makes this different from grepping a title
+ * for "[SEC]": a card whose PROSE quotes another card's `[SEC]` marker mid-sentence contributes
+ * nothing here, which is exactly the free-text brittleness the card warned against.
+ *
+ * This lives here rather than in the caller so both the extraction rule and the decision it feeds
+ * are testable in one place; the CALLER decides where tags come from (a real kanban label when one
+ * exists, this title convention until then).
+ */
+export function titleTags(title: string): string[] {
+  const lead = /^(?:\s*\[[^\]]*\])+/.exec(typeof title === 'string' ? title : '')
+  if (!lead) return []
+  return [...lead[0].matchAll(/\[([^\]]*)\]/g)].map((m) => m[1]!.trim().toUpperCase()).filter(Boolean)
+}
+
+/** Whether the caller handed us a tag that declares this work security-relevant. */
+export function hasSecurityTag(tags: readonly string[] | undefined): boolean {
+  if (!Array.isArray(tags)) return false
+  return tags.some((t) => SECURITY_TAGS.has(String(t ?? '').trim().toUpperCase()))
 }
 
 // --- deterministic signal tables --------------------------------------------------------------
@@ -648,6 +693,14 @@ export function routeTask(input: RouteInput): RouteDecision {
   // Unusable input -> ONLINE (never guess a route from nothing).
   if (description.length === 0) {
     return { route: 'online', reason: 'empty or non-string description (fail-closed)' }
+  }
+
+  // A DECLARED tag outranks every inference below it (card 5f0e7aa5). Everything else in this file
+  // guesses what the work is from its wording; this is the one input where somebody already decided.
+  // It is checked FIRST so the answer does not depend on whether the prose happens to carry a word
+  // the tables know -- which for 30 SEC-tagged cards on the live board, it does not.
+  if (hasSecurityTag(input.tags)) {
+    return { route: 'online', reason: 'declared security tag on the card (fleet decision, not inferred)' }
   }
 
   const category = classifyCategory(description)

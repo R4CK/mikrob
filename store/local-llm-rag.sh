@@ -155,6 +155,7 @@ AUTO=1           # route by default (card e817817c); --no-route opts out
 GRAPH_REPO=""; GRAPH_NODE=""   # optional graphify code-graph context (card 3646bde7)
 CALLER_OVR=""; SOURCE_OVR=""   # optional attribution overrides (e.g. UI probes)
 OUT=""; VERIFY_CMD=""; VERIFY_ITER=3   # local self-repair loop (auto-verify a file-shaped draft)
+TAGS=""          # optional: comma-separated tags the fleet already put on this card
 DIFFICULTY=""    # optional: this coding task's difficulty level (trivial|isolated|module|feature|architecture);
                  # if set, gate against the configured offload threshold before spending the local model
 PASS=()          # passthrough flags to local-llm.sh
@@ -163,6 +164,7 @@ while [[ $# -gt 0 ]]; do
   case "$1" in
     --agent)   AGENT="$2"; shift 2 ;;
     --difficulty) DIFFICULTY="$2"; shift 2 ;;
+    --tags)    TAGS="$2"; shift 2 ;;   # comma-separated card tags, passed to the router as DATA (card 5f0e7aa5)
     --k)       K="$2"; shift 2 ;;
     --query)   QUERY="$2"; shift 2 ;;
     --context) CONTEXT="$2"; shift 2 ;;
@@ -316,7 +318,7 @@ if [[ "$AUTO" == "1" ]]; then
   if [[ ! -f "$ROUTER" ]]; then
     online "router not built at $ROUTER, nothing can judge this task"
   fi
-  VERDICT="$(ROUTER="$ROUTER" FRESH="$HERE/build-freshness.mjs" TASK="$TASK" DIFF="$DIFFICULTY" CFG="$HERE/local-llm-offload-active.json" node - <<'NODE'
+  VERDICT="$(ROUTER="$ROUTER" FRESH="$HERE/build-freshness.mjs" TASK="$TASK" DIFF="$DIFFICULTY" TAGS="$TAGS" CFG="$HERE/local-llm-offload-active.json" node - <<'NODE'
 (async () => {
   const fs = require('fs')
   // A STALE ROUTER IS NOT A ROUTER (card a3611ecc). The verdict below is only worth having if the
@@ -339,6 +341,11 @@ if [[ "$AUTO" == "1" ]]; then
   const input = { description: process.env.TASK || '', aggressiveness: agg }
   const diff = (process.env.DIFF || '').trim()
   if (diff) input.difficulty = diff
+  // Tags arrive as DATA, not as text appended to the description (card 5f0e7aa5): a tag must not be
+  // something the classifier has to find in prose, and appending it would also let a card's own
+  // wording forge one.
+  const tags = (process.env.TAGS || '').split(',').map((t) => t.trim()).filter(Boolean)
+  if (tags.length) input.tags = tags
   const d = routeTask(input)
   process.stdout.write((d.route || 'online') + '\t' + (d.reason || ''))
 })().catch((e) => { process.stdout.write('online\trouter-error: ' + e.message) })

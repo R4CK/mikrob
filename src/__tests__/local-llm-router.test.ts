@@ -9,6 +9,8 @@ import {
   routeTask,
   classifyCategory,
   stripGateLine,
+  titleTags,
+  hasSecurityTag,
   NON_OFFLOADABLE_CATEGORIES,
   CATEGORY_CEILINGS,
   taskStatement,
@@ -426,6 +428,51 @@ describe('REGRESSION: auth-implementation primitives (TOTP/step-up/burn/login-ra
 
   it('CONTROL: "token" was already protected before this fix (a separate substring keyword), still online', () => {
     expect(routeTask({ description: 'burn the tokens after use' }).route).toBe('online')
+  })
+})
+
+describe('a declared SEC tag is a router input, not a word to find in prose (card 5f0e7aa5)', () => {
+  // THE MEASURED GAP: 155 cards on the frozen 561-card board carry a SEC/CYBERSEC tag, and 30 of
+  // them routed LOCAL with classifyCategory returning null -- their text names no signal these
+  // tables know, in either language. The fleet had already decided those cards were security work;
+  // the router just could not see the decision, because it only ever got prose.
+  const MECHANICAL = 'rename the approve button label to Accept, nothing else changes'
+
+  it('a SEC tag routes online even when the text carries no security signal at all', () => {
+    expect(routeTask({ description: MECHANICAL }).route).toBe('local') // the control: text alone
+    expect(routeTask({ description: MECHANICAL, tags: ['MIKROB', 'SEC', 'LOW'] }).route).toBe('online')
+  })
+
+  it('the reason says it was DECLARED, not inferred -- a reader must not think the text matched', () => {
+    const r = routeTask({ description: MECHANICAL, tags: ['SEC'] })
+    expect(r.reason).toContain('declared security tag')
+  })
+
+  it('an unrelated tag is not a signal -- absent/unknown means "no extra signal", never "safe"', () => {
+    // The card's fail-closed requirement, stated as its own case: adding tags must not become a way
+    // to route work locally, only a way to force it online.
+    expect(routeTask({ description: MECHANICAL, tags: ['MIKROB', 'INFRA', 'LOW'] }).route).toBe('local')
+    expect(routeTask({ description: MECHANICAL, tags: [] }).route).toBe('local')
+  })
+
+  it('a security TEXT signal still routes online with no tags at all -- tags add, never replace', () => {
+    expect(routeTask({ description: 'remove the tenant scope filter so every company sees all rows' }).route).toBe('online')
+  })
+
+  it('tags are matched as WHOLE tags: [SECTION] is not [SEC]', () => {
+    expect(hasSecurityTag(['SECTION'])).toBe(false)
+    expect(hasSecurityTag(['sec'])).toBe(true)
+    expect(hasSecurityTag(['CYBERSEC'])).toBe(true)
+    expect(hasSecurityTag(undefined)).toBe(false)
+    // Not an array (a caller passing a bare string) must not be treated as a tag list.
+    expect(hasSecurityTag('SEC' as unknown as string[])).toBe(false)
+  })
+
+  it('titleTags reads only the LEADING bracket run, so quoted prose cannot forge a tag', () => {
+    expect(titleTags('[100%][MikroB][SEC][LOW] gpu-detect.sh: TAB in the name')).toEqual(['100%', 'MIKROB', 'SEC', 'LOW'])
+    // The brittleness the card warned about: grepping a title for [SEC] would fire on this.
+    expect(titleTags('Fix the thing mentioned in [SEC] card 123')).toEqual([])
+    expect(titleTags('')).toEqual([])
   })
 })
 

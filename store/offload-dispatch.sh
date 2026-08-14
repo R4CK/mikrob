@@ -99,6 +99,32 @@ TASK="$TITLE
 
 $DESC"
 
+# TAGS AS DATA (card 5f0e7aa5). The router gets the fleet's own marking as an input field instead of
+# having to find it in the prose. Measured on the frozen 561-card board: 155 cards carry a SEC tag,
+# and 30 of them routed LOCAL because their text names no signal the classifier knows -- in either
+# language. A tag is a decision somebody already made; re-deriving it from vocabulary is what this
+# router has already paid for twice.
+#
+# LABELS FIRST, title convention second. Real kanban labels are the durable home for this, and the
+# read below already prefers them -- but measured today, 0 of 500 live cards carry a SEC label while
+# 145 carry the marker in the title's LEADING bracket run. So the fallback is what actually fires.
+# When a real SEC label exists, this keeps working with no change here.
+#
+# Only the LEADING run of [..] tags is read, and whole tags only: a description that quotes another
+# card's [SEC] marker mid-sentence contributes nothing, which is the free-text brittleness the card
+# asked us to avoid.
+TAGS="$(printf '%s' "$J" | python3 -c 'import json,sys,re
+try:
+    c = json.load(sys.stdin)
+except Exception:
+    sys.exit(0)
+tags = [str((l or {}).get("name") or "").strip().lstrip("@").upper() for l in (c.get("labels") or [])]
+lead = re.match(r"^(?:\s*\[[^\]]*\])+", c.get("title") or "")
+if lead:
+    tags += [t.strip().upper() for t in re.findall(r"\[([^\]]*)\]", lead.group(0))]
+print(",".join(t for t in dict.fromkeys(tags) if t))' 2>/dev/null)"
+[[ -n "$TAGS" ]] && echo "offload-dispatch: card tags -> $TAGS" >&2
+
 DRAFTS=""
 add_draft() { DRAFTS+="#### $1"$'\n'"$2"$'\n\n'; }
 
@@ -106,7 +132,7 @@ add_draft() { DRAFTS+="#### $1"$'\n'"$2"$'\n\n'; }
 # --log-task labels the usage log only -- it does NOT pick a template or change the prompt (card
 # ea3e4270). Without it every call on this path logged as `chat`, the default, so the offload metric
 # could not tell the fleet's main drafting route from a bare chat probe.
-WHOLE="$("$RAG" --auto --agent "$ASSIGNEE" --source dispatch-offload --log-task card-draft "$TASK" 2>/dev/null)"
+WHOLE="$("$RAG" --auto --agent "$ASSIGNEE" --source dispatch-offload --log-task card-draft --tags "$TAGS" "$TASK" 2>/dev/null)"
 rc=$?
 if [[ $rc -eq 0 && -n "${WHOLE// }" ]]; then
   add_draft "Teljes kartya (local draft)" "$WHOLE"
@@ -133,7 +159,10 @@ for s in out[:CAP]: print(s.replace(chr(10)," ").strip())
 ' 2>/dev/null)
   for s in "${SUBS[@]:-}"; do
     [[ -z "${s// }" ]] && continue
-    D="$("$RAG" --auto --agent "$ASSIGNEE" --source dispatch-offload --log-task subtask-draft "$s" 2>/dev/null)"
+    # The card's tags go with its SUBTASKS too. This is the sharper half of the gap: a subtask is
+    # routed on a bare sentence ("add a helper for X") with no card context at all, so a
+    # security card's decomposed pieces had even less signal than the card itself.
+    D="$("$RAG" --auto --agent "$ASSIGNEE" --source dispatch-offload --log-task subtask-draft --tags "$TAGS" "$s" 2>/dev/null)"
     [[ $? -eq 0 && -n "${D// }" ]] && add_draft "$s" "$D"
   done
 fi
