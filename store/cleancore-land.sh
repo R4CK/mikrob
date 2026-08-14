@@ -36,51 +36,10 @@ CACHE_DIR="${CLEANCORE_LAND_CACHE:-$HOME/.cache/cleancore-land}"
 say() { echo "  $*"; }
 die() { echo "REFUSED: $2" >&2; exit "$1"; }
 
-# The four fast projects the root `typecheck` script runs, in its order. apps/web is separate and
-# deliberately conditional (it is minutes slow); see typecheck_errors().
-TSC_PROJECTS="tsconfig.json packages/control-plane/tsconfig.test.json packages/modules/workforce/tsconfig.test.json apps/api/tsconfig.json"
-
-# NEVER call `npm run typecheck` here. Its last step is `pnpm --filter @cleancore/web typecheck`,
-# and pnpm's dep-status check shells out to `pnpm install`, which asks to REMOVE the modules
-# directory. In these worktrees node_modules is a SYMLINK into the shared main clone, so a purge
-# that proceeds deletes every agent's dependencies mid-work. Only the missing TTY stopped it when
-# it was hit for real (ERR_PNPM_ABORTED_REMOVE_MODULES_DIR_NO_TTY), and pnpm's own advice --
-# "set CI=true" -- would have made it proceed silently. tsc is invoked directly instead.
-link_node_modules() {
-  local wt="$1" d rel n=0
-  while IFS= read -r d; do
-    rel="${d#$MAIN/}"
-    [ -e "$wt/$rel" ] && continue
-    mkdir -p "$wt/$(dirname "$rel")" && ln -s "$d" "$wt/$rel" && n=$((n+1))
-  done < <(find "$MAIN" -maxdepth 4 -type d -name node_modules -not -path "*/node_modules/*" 2>/dev/null)
-  say "linked $n node_modules into $(basename "$wt")"
-}
-
-# Normalise a tsc line to something that survives the merge shifting code up or down: keep the file
-# and the error, drop the (line,col). Without this every pre-existing error below an inserted hunk
-# reads as "new" and the delta is noise.
-norm_errors() { sed -E 's/\(([0-9]+),([0-9]+)\)//' | grep -E 'error TS[0-9]+' | sort -u; }
-
-# Prints normalised error lines on stdout. A non-zero exit with NO `error TS` line is a broken
-# harness (missing deps, wrong binary, timeout), not a clean project -- it is reported as such
-# rather than counted as zero errors, which is exactly how a vacuous `npx tsc` once read green.
-typecheck_errors() {
-  local wt="$1" want_web="$2" p out rc
-  for p in $TSC_PROJECTS; do
-    out="$(cd "$wt" && timeout "$TSC_TIMEOUT" node_modules/.bin/tsc --noEmit -p "$p" 2>&1)"; rc=$?
-    printf '%s\n' "$out" | norm_errors
-    if [ "$rc" -ne 0 ] && ! printf '%s' "$out" | grep -q 'error TS'; then
-      echo "HARNESS-FAULT in $p: $(printf '%s' "$out" | tr '\n' ' ' | cut -c1-160)"
-    fi
-  done
-  if [ "$want_web" = 1 ]; then
-    out="$(cd "$wt/apps/web" && timeout "$TSC_TIMEOUT" ../../node_modules/.bin/tsc --noEmit -p tsconfig.json 2>&1)"; rc=$?
-    printf '%s\n' "$out" | norm_errors
-    if [ "$rc" -ne 0 ] && ! printf '%s' "$out" | grep -q 'error TS'; then
-      echo "HARNESS-FAULT in apps/web: $(printf '%s' "$out" | tr '\n' ' ' | cut -c1-160)"
-    fi
-  fi
-}
+# Measurement helpers (link_node_modules / norm_errors / typecheck_errors / test_failures) live in
+# ONE place, so a trap fixed here is not left standing in the pre-gate sentinel that shares them.
+# shellcheck source=./cleancore-tsc-lib.sh
+. "$(dirname "$0")/cleancore-tsc-lib.sh"
 
 if [ "${1:-}" = "--selftest" ]; then
   fail=0; n=0
