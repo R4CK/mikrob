@@ -121,6 +121,12 @@ const CATEGORY_SIGNALS: ReadonlyArray<readonly [NonOffloadableCategory, readonly
       // matching signal, confirmed by directly probing routeTask before this fix.
       'totp', '2fa', 'two-factor', 'one-time password', 'rate limit', 'rate-limit', 'throttl',
       'brute force', 'brute-force', 'kétfaktoros', 'ketfaktoros',
+      // Same short-stem sweep as the authz bag above (card 09c957f7). 'vuln' and 'creds' are the
+      // written-down forms in real cards; the long ones ('vulnerab', 'credential') are already here
+      // but do not contain them. Deliberately NOT added: 'cert' (fires inside "certain"), 'perm'
+      // ("permanent"), 'priv' ("private") and 'sig' ("significant") -- each would trade a rare real
+      // hit for constant false ones on ordinary prose, and this bag is read on EVERY card.
+      'vuln', 'creds',
     ],
   ],
   [
@@ -133,6 +139,18 @@ const CATEGORY_SIGNALS: ReadonlyArray<readonly [NonOffloadableCategory, readonly
       // "password" in the same sentence, which an adversarial (or just differently-worded) prompt
       // would not repeat.
       'step-up', 'step up',
+      // SHORT STEMS (card 09c957f7, QA2 + QA independently). The bag held only the LONG forms
+      // 'authoriz' and 'authentic', so "Wire the new auth middleware into main.ts" matched neither
+      // and fell through to multi-file-wiring -- which used to be an unconditional veto and is now a
+      // ceiling, so the gap turned from harmless into a route to the local model. 'auth' covers
+      // auth/authn/authz/authoriz*/authentic* in one stem; the matcher's lookbehind means it does
+      // NOT fire inside 'oauth', so that needs its own entry. The rest are abbreviations that
+      // contain no long form at all: a card can say jwt/sso/mfa and never write the word out.
+      //
+      // The cost is measured, not hand-waved: 'auth' also fires on 'author', which routes an
+      // authoring task online. That is the fail-closed direction (it costs tokens, never safety),
+      // and on the live board it is worth exactly one card -- see the card's REVIEW.
+      'auth', 'oauth', 'jwt', 'sso', 'mfa', 'privesc',
       // 2026-08-13: bare 'guard' and 'gate ' REMOVED -- measured false-positive on THIS fleet's own
       // dialect, where "gate" means the QA/Cybersec/Cybered review checkpoint (every card carries a
       // "Gate: ..." line -- already stripped by stripGateLine, but prose ALSO says things like "a

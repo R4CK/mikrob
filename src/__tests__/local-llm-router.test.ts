@@ -608,3 +608,52 @@ describe('routeTask -- statement-scoped matching for quality categories', () => 
     expect(taskStatement('\n\nTitle after blanks\n\ntail')).toBe('Title after blanks')
   })
 })
+
+// --- REGRESSION: the bare `auth` stem (card 09c957f7, found by QA2, reproduced by QA) -------------
+// The signal bag held only the LONG forms 'authoriz' and 'authentic', so "Wire the new auth
+// middleware into main.ts" matched neither and fell through to multi-file-wiring. That was harmless
+// while every category was an unconditional veto; the moment multi-file-wiring became a CEILING, the
+// same gap turned into a route to the local model for an auth change. Pinned here so it cannot
+// silently reopen -- with the ceiling in place, a missing stem is a security hole, not a nuisance.
+describe('REGRESSION: short security stems must classify (card 09c957f7)', () => {
+  const MAX_LOCAL = { difficulty: 'trivial', threshold: 'feature', aggressiveness: 100 } as const
+
+  const cases: ReadonlyArray<readonly [string, string]> = [
+    ['authz', 'Wire the new auth middleware into main.ts and the composition root.'],
+    ['authz', 'Wire the new auth check into main.ts and the composition root.'],
+    ['authz', 'Add an authn helper to the shared module.'],
+    ['authz', 'Refactor the oauth callback handler into its own file.'],
+    ['authz', 'Wire the sso button into the login page and the router.'],
+    ['authz', 'Add mfa enrolment to the account page.'],
+    ['security-decision', 'Move the jwt parsing helper next to the session store.'],
+    ['security-decision', 'Store the creds in the local config file.'],
+    ['security-decision', 'Triage the vuln report from the scanner.'],
+  ]
+
+  for (const [expected, description] of cases) {
+    it(`${expected}: ${description.slice(0, 46)}`, () => {
+      expect(classifyCategory(description)).toBe(expected)
+      // ...and it must survive the most permissive settings the fleet can configure, because that
+      // is the state in which the gap was reachable.
+      expect(routeTask({ description, ...MAX_LOCAL }).route).toBe('online')
+    })
+  }
+
+  it('CONTROL: ordinary mechanical work is untouched by the wider stems', () => {
+    for (const description of [
+      'Rename the approve button label to Accept.',
+      'Add a helper that formats a duration in minutes as h:mm.',
+      'Split the 400-line component into three files.',
+    ]) {
+      expect(classifyCategory(description), description).toBeNull()
+      expect(routeTask({ description }).route, description).toBe('local')
+    }
+  })
+
+  it('the known cost of the bare stem is stated, not hidden: "author" also fires', () => {
+    // Fail-closed direction: an authoring task routes online and costs tokens, never safety. On the
+    // live board this was worth exactly one card when measured. Pinned so nobody "fixes" it into a
+    // narrower stem without re-reading why the stem is wide.
+    expect(classifyCategory('Rewrite the author bio section of the docs.')).toBe('authz')
+  })
+})
