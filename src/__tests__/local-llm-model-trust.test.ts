@@ -49,6 +49,11 @@ function writeCache(entries: { ref: string; owner: string; oid: string | null; d
     CACHE,
     JSON.stringify({
       schemaVersion: 1,
+      // Stamped at write time, not a fixed date: the catalog route serves the cache only while it
+      // is inside its TTL, and a hardcoded timestamp would quietly age past it and send the route
+      // down the live-script path instead -- where the sandbox has no script and the answer is an
+      // empty model list.
+      generatedAt: new Date().toISOString(),
       models: entries.map((e) => ({
         installRef: e.ref,
         repo: e.ref,
