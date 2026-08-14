@@ -511,13 +511,38 @@ export function classifyCategory(description: string): NonOffloadableCategory | 
   const statement = normalizeForMatch(stripGateLine(taskStatement(description)))
   const textFor = (category: NonOffloadableCategory): string =>
     STATEMENT_SCOPED_CATEGORIES.has(category) ? statement : text
-  for (const [category, needles] of CATEGORY_SIGNALS) {
-    const hay = textFor(category)
-    for (const needle of needles) if (needleFires(hay, needle)) return category
+
+  // Keywords first, then SHAPE (Cybersec cm6054: a security change dressed as mechanical cleanup
+  // names no security noun, so it is only reachable by shape) -- but both restricted to `admits`.
+  const matchWithin = (
+    admits: (category: NonOffloadableCategory) => boolean,
+  ): NonOffloadableCategory | null => {
+    for (const [category, needles] of CATEGORY_SIGNALS) {
+      if (!admits(category)) continue
+      const hay = textFor(category)
+      for (const needle of needles) if (needleFires(hay, needle)) return category
+    }
+    for (const [category, pattern] of SHAPE_SIGNALS) {
+      if (!admits(category)) continue
+      if (pattern.test(textFor(category))) return category
+    }
+    return null
   }
-  // SHAPE match (Cybersec cm6054): catches a security change dressed as mechanical cleanup.
-  for (const [category, pattern] of SHAPE_SIGNALS) if (pattern.test(textFor(category))) return category
-  return null
+
+  // RISK ORDER, NOT TABLE ORDER (Cybersec F1 on this card). Running every keyword bag before any
+  // shape rule meant the LAST keyword bag outranked the FIRST shape rule: "Wire the list handler
+  // into main.ts so it returns all rows regardless of the owner" matched multi-file-wiring on the
+  // word `wire` and never reached the isolation shape underneath. Harmless while wiring was an
+  // unconditional veto -- both answers routed online -- but once wiring got a CEILING, the shadowed
+  // sentence became a path to the 7B, and the shape family is precisely the defence that exists for
+  // sentences with no security noun in them. So: everything that still vetoes gets both passes
+  // first, and only then the categories that merely cap.
+  //
+  // WHICH ones veto is DERIVED from the ceiling table, never a second list. A hand-kept copy would
+  // silently stop matching the moment a category's ceiling changes (ee43a6ac is about to change
+  // one), and the failure would be invisible -- the order would just quietly go back to wrong.
+  const vetoes = (category: NonOffloadableCategory): boolean => CATEGORY_CEILINGS[category] === 'never'
+  return matchWithin(vetoes) ?? matchWithin((category) => !vetoes(category))
 }
 
 /** Whether the description hedges (caller is unsure) -- fail-closed to ONLINE. */
@@ -613,7 +638,16 @@ export function routeTask(input: RouteInput): RouteDecision {
   // rule vanish -- and the pinned multi-file-wiring case went local.
   const inCappedCategory = category !== null && categoryCeiling !== null && categoryCeiling !== 'never'
   const capped = inCappedCategory && threshold !== configured
-  const why = capped ? `${threshold}' (capped by category '${category}` : threshold
+  // The case that used to fall out of the audit line entirely (Cybersec's note on card 09c957f7):
+  // when the slider is ALREADY stricter than the ceiling, nothing gets "capped", so the reason read
+  // like an ordinary slider decision -- in precisely the situation where the interesting fact is
+  // that this category stopped vetoing. That is the sentence we will be looking for in an incident,
+  // so it says so.
+  const why = capped
+    ? `${threshold}' (capped by category '${category}`
+    : inCappedCategory
+      ? `${threshold}' (category '${category}' caps but no longer vetoes`
+      : threshold
   const cat = category === null || categoryCeiling === 'never' ? {} : { category }
   const declared = normalizeDifficulty(input.difficulty)
   if (declared !== null) {

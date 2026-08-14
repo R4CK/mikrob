@@ -657,3 +657,86 @@ describe('REGRESSION: short security stems must classify (card 09c957f7)', () =>
     expect(classifyCategory('Rewrite the author bio section of the docs.')).toBe('authz')
   })
 })
+
+// --- REGRESSION: risk order, not table order (card 09c957f7, Cybersec F1) -------------------------
+// Every keyword bag used to run before every SHAPE rule, so the LAST keyword bag outranked the FIRST
+// shape rule: a `wire` clause classified the sentence as multi-file-wiring and the security shape
+// underneath was never reached. Harmless while wiring vetoed unconditionally (both answers went
+// online); a route to the 7B once wiring only capped.
+//
+// THE ASSERTION IS THE PAIR, NOT THE VERDICT. "P1 routes online" would go vacuous the day someone
+// adds a keyword that happens to catch P1 for an unrelated reason. What must hold is that PREFIXING
+// A WIRING CLAUSE CHANGES NOTHING -- same category, same route.
+describe('REGRESSION: a wiring clause must not shadow a security shape (card 09c957f7)', () => {
+  const MAX_LOCAL = { difficulty: 'trivial', threshold: 'feature', aggressiveness: 100 } as const
+
+  // Cybersec's minimal pairs: bare sentence, then the same sentence with a wiring clause in front.
+  // P4/P5 are the negative controls -- there the security hit is a KEYWORD, which never was shadowed,
+  // so they prove the fix is about precedence and not "wiring stopped matching".
+  const PAIRS: ReadonlyArray<readonly [string, string, string]> = [
+    ['P1 shape/isolation', 'Change the list handler so it returns all rows regardless of the owner.',
+      'Wire the list handler into main.ts so it returns all rows regardless of the owner.'],
+    ['P2 shape/authz', 'Change canAccess to always return true for now.',
+      'Wire the new canAccess helper into main.ts and make it always return true for now.'],
+    ['P3 shape/authz', 'Let any user through when the header is missing.',
+      'Wire the new middleware into main.ts and let any user through when the header is missing.'],
+    ['P4 keyword control', 'Remove the permission check from the export endpoint.',
+      'Wire the export endpoint into main.ts and remove the permission check.'],
+    ['P5 keyword control', 'Return the rows unscoped, across all tenants.',
+      'Wire the report query into main.ts and return the rows unscoped, across all tenants.'],
+  ]
+
+  for (const [name, bare, wired] of PAIRS) {
+    it(`${name}: the wiring clause changes neither category nor route`, () => {
+      const category = classifyCategory(bare)
+      expect(category, 'the bare sentence must classify -- otherwise the pair proves nothing').not.toBeNull()
+      expect(classifyCategory(wired)).toBe(category)
+      // Measured at the most permissive settings the fleet can configure, which is the state in
+      // which the shadowed sentence actually reached the local model.
+      expect(routeTask({ description: bare, ...MAX_LOCAL }).route).toBe('online')
+      expect(routeTask({ description: wired, ...MAX_LOCAL }).route).toBe('online')
+    })
+  }
+
+  it('the benefit of the ceiling survives: harmless wiring work still drafts locally', () => {
+    const wired = 'Wire the new formatDate helper into main.ts and the two call sites.'
+    expect(classifyCategory(wired)).toBe('multi-file-wiring')
+    expect(routeTask({ description: wired, difficulty: 'trivial' }).route).toBe('local')
+  })
+
+  it('the order is DERIVED from the ceilings, so a category that stops vetoing moves itself', () => {
+    // Not a restatement of the table: this is the invariant the two-pass match relies on. If someone
+    // later hand-lists the veto categories inside classifyCategory, this stays green -- so it is
+    // paired with the pairs above, which is what would actually break.
+    const vetoing = NON_OFFLOADABLE_CATEGORIES.filter((c) => CATEGORY_CEILINGS[c] === 'never')
+    expect(vetoing.length).toBeGreaterThan(0)
+    for (const category of vetoing) expect(CATEGORY_CEILINGS[category]).toBe('never')
+    // Every capped category must be reachable at all -- a pass that admits nothing would make the
+    // whole second stage dead code and the first assertion would still pass.
+    const capped = NON_OFFLOADABLE_CATEGORIES.filter((c) => CATEGORY_CEILINGS[c] !== 'never')
+    expect(capped.length).toBeGreaterThan(0)
+    expect(classifyCategory('Wire the new formatDate helper into main.ts and the two call sites.'))
+      .toBe('multi-file-wiring')
+  })
+})
+
+// --- the audit line must not go silent where the change actually happened (card 09c957f7) --------
+// Cybersec measured the live settings (aggressiveness 75 -> threshold 'isolated') and found that a
+// 'module' ceiling lowers nothing there, so the reason string read exactly like a plain slider
+// decision -- in the one case where the load-bearing fact is that the category stopped vetoing.
+describe('the reason string names a ceiling even when it lowered nothing (card 09c957f7)', () => {
+  const WIRED = 'Wire the new formatDate helper into main.ts and the two call sites.'
+
+  it('slider already stricter than the ceiling: the reason still names the category', () => {
+    const d = routeTask({ description: WIRED, difficulty: 'trivial', threshold: 'isolated' })
+    expect(d.route).toBe('local')
+    expect(d.category).toBe('multi-file-wiring')
+    expect(d.reason).toContain('multi-file-wiring')
+    expect(d.reason).not.toContain('capped by category') // nothing was capped, and it must not claim so
+  })
+
+  it('a task in no category keeps the plain slider reason', () => {
+    const d = routeTask({ description: 'Add a helper that formats minutes as h:mm.', difficulty: 'trivial' })
+    expect(d.reason).not.toContain('category')
+  })
+})
