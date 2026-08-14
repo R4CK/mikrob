@@ -221,7 +221,9 @@ else
     exit 0
   fi
   log "SKIP RUN: cooldown state unreadable (${state_raw#ERR }) -- quarantining and stamping all targets"
-  mv -f "$STATE" "$STATE.corrupt.$(date +%s)" 2>/dev/null || rm -f "$STATE"
+  # Quarantine, never delete: the damaged file is the only evidence of what went wrong. If the move
+  # itself fails we leave it in place and carry on -- state_put's os.replace overwrites it anyway.
+  mv -f "$STATE" "$STATE.corrupt.$(date +%s)" 2>/dev/null || log "WARN: could not quarantine $STATE"
   for agent in $TARGET_AGENTS; do
     STATE_JSON="$(state_put "$STATE_JSON" "$agent" "$(date +%s)")" || {
       log "SKIP RUN: could not rewrite cooldown state, giving up this round"; exit 3; }
