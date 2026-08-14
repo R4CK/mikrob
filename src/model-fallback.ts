@@ -202,8 +202,18 @@ const USAGE_LIMIT_BANNER_REGION_LINES = 15
 // shown in every fresh idle pane, so freshly-booted agents read as limited and
 // would be needlessly downgraded. Real limits still match via "usage limit
 // reached" / "limit will reset at" / "N-hour limit reached".
+//
+// FORK/UPSTREAM RESOLUTION (2026-08-14, card f085fd44) -- this line is a standing merge conflict,
+// so the rule is written down rather than re-derived under time pressure at the next integration:
+//   ADOPT from upstream: the "session limit" alternative. Production shows
+//     "You hit your session limit - resets 5:50pm" (upstream, 2026-08-08), and nothing else in this
+//     pattern covers it -- "resets 5:50pm" is not "limit will reset at". Without it a genuinely
+//     limited agent reads as healthy and keeps hammering a paused session.
+//   KEEP from the fork: the absence of "upgrade to increase your usage limit" (above).
+// The two changes are independent, which is why neither side's file can be taken wholesale: a
+// theirs-merge reintroduces the fleet-wide false positive, an ours-merge drops a real detection.
 const USAGE_LIMIT_RX =
-  /(usage limit reached|reached your usage limit|hit (?:your|the) usage limit|approaching (?:your )?usage limit|usage limit (?:will )?reset|limit will reset at|\d+-hour limit reached)/i
+  /(usage limit reached|reached your usage limit|hit (?:your|the) (?:session|usage) limit|approaching (?:your )?usage limit|usage limit (?:will )?reset|limit will reset at|\d+-hour limit reached)/i
 
 /**
  * True when the live pane shows a Claude *plan usage-limit* banner (not a

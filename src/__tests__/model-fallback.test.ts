@@ -35,6 +35,23 @@ describe('detectsUsageLimit', () => {
     expect(detectsUsageLimit('/upgrade to increase your usage limit.')).toBe(false)
   })
 
+  it('matches the SESSION-limit banner adopted from upstream (2026-08-08)', () => {
+    // Card f085fd44. Production shows "You hit your session limit · resets 5:50pm", and no other
+    // alternative in the pattern covers it: "resets 5:50pm" is not "limit will reset at". Before
+    // this, a genuinely limited agent read as healthy and kept hammering a paused session.
+    expect(detectsUsageLimit('You hit your session limit ∙ resets 5:50pm')).toBe(true)
+    expect(detectsUsageLimit('You hit the session limit')).toBe(true)
+  })
+
+  it('keeps BOTH halves of the fork/upstream resolution at once', () => {
+    // The two changes are independent and pull in opposite directions, so this pins them together:
+    // taking upstream's file wholesale reintroduces the /upgrade false positive, keeping ours
+    // wholesale drops the real session-limit detection. A future merge that resolves this file by
+    // picking one side entirely turns this red instead of shipping quietly.
+    expect(detectsUsageLimit('You hit your session limit ∙ resets 5:50pm')).toBe(true)
+    expect(detectsUsageLimit('/upgrade to increase your usage limit.')).toBe(false)
+  })
+
   it('does NOT match a transient API 429 / generic rate limit', () => {
     expect(detectsUsageLimit('  ⎿  API Error: 429 rate_limit_error: too many requests')).toBe(false)
     expect(detectsUsageLimit('  ⎿  API Error: 429 overloaded_error: server busy, retrying')).toBe(false)

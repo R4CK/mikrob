@@ -2,6 +2,13 @@
 // fork-owned web files (web/app.js, web/lang/{hu,en}.js, web/style.css). See the "Upstream-owned vs
 // fork-owned fájlok" README section for the full investigation.
 //
+// Card f085fd44 widened it. The original guard could only see the four files it was told about, and
+// that is exactly what went wrong: three OTHER files were conflicting -- one of them behaviour-
+// critical (src/model-fallback.ts, where a wholesale merge in either direction either reintroduces
+// a fleet-wide false positive or drops a real detection) -- and nothing was watching them. So the
+// question this file answers is no longer "do these four still merge cleanly" but "is every
+// conflicting file one we have already decided how to resolve".
+//
 // The premise this test enforces was MEASURED, not assumed: a real `git merge --no-commit --no-ff
 // upstream/develop` dry-run (throwaway worktree, never touching the real checkout) currently gives
 // zero conflicts on those files -- upstream and the fork's ~496 web/app.js references live in
@@ -32,6 +39,36 @@ const FETCH_TIMEOUT_MS = 20_000
 // git state can compute -- the guard's job is to check THESE specific files stay conflict-free, not
 // to discover the list.
 const GUARDED_FILES = ['web/app.js', 'web/lang/hu.js', 'web/lang/en.js', 'web/style.css'] as const
+
+// Files that DO conflict today, deliberately, and whose resolution rule is written down (card
+// f085fd44). This list is not a second copy of the one above: those files must never conflict,
+// these are KNOWN to, and the point of naming them is that the resolution is a decision someone
+// already made rather than one improvised mid-merge.
+//
+// They are listed here for one reason -- so the check below can be about the WHOLE conflict set
+// rather than four hand-picked files. Before this, a manual list of four could only ever see what
+// it already knew about: three files conflicted for weeks with nothing watching them, and the only
+// reason anyone noticed was a human running the dry-run by hand.
+const ACKNOWLEDGED_CONFLICTS: Readonly<Record<string, string>> = {
+  // BEHAVIOUR-CRITICAL. The fork removed "upgrade to increase your usage limit" from the
+  // usage-limit regex (2026-06-30: it matched Claude Code's /upgrade STARTUP HINT, so fresh agents
+  // read as limited and got needlessly downgraded). Upstream still has that token AND added a real
+  // "session limit" variant (2026-08-08). Resolution: ADOPT the session-limit alternative, KEEP the
+  // /upgrade removal. Neither side's file may be taken wholesale -- see the pinned pair in
+  // model-fallback.test.ts ("keeps BOTH halves of the fork/upstream resolution at once").
+  'src/model-fallback.ts':
+    'take upstream session-limit alternative, keep the fork /upgrade removal (never a wholesale side)',
+  // The test file diverges with the module it tests: fork-only weekly-tier tests plus the pinned
+  // resolution pair above. Resolution: keep both sides' cases, drop neither.
+  'src/__tests__/model-fallback.test.ts': 'union of both sides cases -- fork weekly-tier + upstream additions',
+  // The fork restructured this file into a MULTI-REPO aggregate (marveen + mikrob blocks, per-repo
+  // results in `repos`); upstream kept the single-result shape and is still adding features to it,
+  // e.g. the running `version` in the Updates header (upstream aefa693). So it is not "fork parts
+  // are additive" in either direction -- measured 2026-08-14, the fork side currently LACKS that
+  // version field. Resolution: keep the fork's aggregate structure, and port upstream's new
+  // single-result features onto it one by one.
+  'src/web/update-checker.ts': 'keep the fork aggregate shape, port upstream single-result features onto it',
+}
 
 function git(args: string[], cwd: string): string {
   return execFileSync('git', args, { cwd, encoding: 'utf-8', timeout: FETCH_TIMEOUT_MS })
@@ -109,6 +146,25 @@ describe('fork/upstream web-file merge-conflict guard (card 641aca3f)', () => {
             'The "zero-conflict" claim in the README\'s "Upstream-owned vs fork-owned fájlok" section no ' +
             'longer holds -- re-run the card 641aca3f investigation (measure whether an overlay extraction ' +
             'is now justified) before the next upstream integration.',
+        ).toEqual([])
+
+        // The check the original guard could not make (card f085fd44). Watching four named files
+        // means a conflict anywhere else is invisible: three files -- one of them behaviour-critical
+        // -- had been conflicting with nothing watching, and were found only because a human ran
+        // the dry-run by hand. So this asserts on the WHOLE conflict set: every conflicting file
+        // must be one someone has already decided how to resolve.
+        const unwatched = conflicted.filter(
+          (f) =>
+            !(GUARDED_FILES as readonly string[]).includes(f) &&
+            !Object.prototype.hasOwnProperty.call(ACKNOWLEDGED_CONFLICTS, f),
+        )
+        expect(
+          unwatched,
+          `upstream/develop conflicts on file(s) nobody has decided how to resolve: ${unwatched.join(', ')}. ` +
+            'Decide the rule NOW, while there is time to look at both sides, and record it in ' +
+            'ACKNOWLEDGED_CONFLICTS above -- not during the merge, when the cheap move is to take one ' +
+            'side wholesale. If the file is fork-owned and should never conflict, it belongs in ' +
+            'GUARDED_FILES instead.',
         ).toEqual([])
       } finally {
         try {
