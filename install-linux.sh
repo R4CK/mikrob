@@ -1475,6 +1475,20 @@ if [ -d "$SEED_SKILLS_DIR" ]; then
     fi
     # Recursive copy so nested references/, scripts/, assets/, data/ ship too.
     cp -r "${skill_dir%/}" "$SKILLS_DIR/"
+    # ...then render the identity placeholders, exactly as the scheduled-task seeding above does.
+    # Without this the skills shipped their {{INSTALL_DIR}} LITERALLY: a live install here had
+    # `{{INSTALL_DIR}}/store/local-llm-rag.sh` sitting in a command an agent is told to run (card
+    # 041681b5). Only UPPERCASE identity placeholders are touched, so a skill that legitimately
+    # discusses `{{name}}` (the i18n double-brace rule) is unaffected.
+    while IFS= read -r _skillf; do
+      LC_ALL=C sed -i \
+        -e "s|{{INSTALL_DIR}}|$INSTALL_DIR|g" \
+        -e "s/{{MAIN_AGENT_ID}}/$MAIN_AGENT_ID/g" \
+        -e "s/{{BOT_NAME}}/$BOT_NAME/g" \
+        -e "s/{{OWNER_NAME}}/$OWNER_NAME/g" \
+        -e "s/{{WEB_PORT}}/${WEB_PORT:-3420}/g" \
+        "$_skillf"
+    done < <(grep -rlI '{{INSTALL_DIR}}\|{{MAIN_AGENT_ID}}\|{{BOT_NAME}}\|{{OWNER_NAME}}\|{{WEB_PORT}}' "$SKILLS_DIR/$skill_name" 2>/dev/null)
     SEED_NEW=$((SEED_NEW + 1))
   done
   if [ "$SEED_NEW" -gt 0 ] || [ "$SEED_SKIP" -gt 0 ]; then

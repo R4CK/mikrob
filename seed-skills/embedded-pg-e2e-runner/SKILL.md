@@ -61,7 +61,7 @@ try {
     'npx vitest run apps/api/src/rls-chat.e2e.test.ts --no-file-parallelism',
     {
       // A SAJÁT worktree-d, sosem a megosztott klón:
-      //   CC="$(/home/neon/marveen/store/agent-worktree.sh <a te agent-neved> --path)"
+      //   CC="$({{INSTALL_DIR}}/store/agent-worktree.sh <a te agent-neved> --path)"
       cwd: process.env.CC || CC_MAIN,
       env: { ...process.env, PG_E2E_URL, LD_LIBRARY_PATH: libPath },
       stdio: 'inherit',   // inherit: stdout/stderr -> terminal, nem pufferelt
@@ -113,7 +113,7 @@ $CLEANCORE_MAIN/node_modules/.pnpm/embedded-postgres@18.4.0-beta.17/node_modules
 
 ### 6. Worktree vs. main repo: migration-tartalom eltérhet
 Ha a gatelendő commit egy FEATURE BRANCEN él (nem a main repo HEAD-en), a worktree
-(`/home/neon/qa-<cardid>`) más migráció-fájlokat tartalmazhat mint a main CleanCore checkout.
+(`$HOME/qa-<cardid>`) más migráció-fájlokat tartalmazhat mint a main CleanCore checkout.
 Ellenőrzés: `git -C "${CLEANCORE_MAIN:-/mnt/h/LM_Studio_Workdir/CleanCore}" merge-base --is-ancestor <sha> HEAD`
 Ha a commit NEM ős: a migrációkat a WORKTREE-ből kell futtatni, nem a main repóból.
 

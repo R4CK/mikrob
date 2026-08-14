@@ -17,12 +17,12 @@ az elején egyszer feloldod a sajátodat, és onnantól `$CC`-t (shellben) vagy 
 használsz:
 
 ```bash
-CC="$(/home/neon/marveen/store/agent-worktree.sh <a te agent-neved> --path)"   # pl. backend, fullstack
+CC="$({{INSTALL_DIR}}/store/agent-worktree.sh <a te agent-neved> --path)"   # pl. backend, fullstack
 ```
 
 ```python
 import subprocess
-CC = subprocess.run(['/home/neon/marveen/store/agent-worktree.sh', '<a te agent-neved>', '--path'],
+CC = subprocess.run(['{{INSTALL_DIR}}/store/agent-worktree.sh', '<a te agent-neved>', '--path'],
                     capture_output=True, text=True).stdout.strip()
 ```
 
@@ -198,7 +198,7 @@ print('Done.')
 ### 3. Commit (namespace-enként vagy batch)
 
 ```bash
-cd "$(/home/neon/marveen/store/agent-worktree.sh <a te agent-neved> --path)"
+cd "$({{INSTALL_DIR}}/store/agent-worktree.sh <a te agent-neved> --path)"
 git add packages/i18n/messages/de.json packages/i18n/messages/es.json \
         packages/i18n/messages/fr.json packages/i18n/messages/it.json \
         packages/i18n/messages/pl.json
@@ -211,7 +211,7 @@ git commit -m "feat(i18n): <namespace> translations — de/es/fr/it/pl"
 ### 4. Teszt
 
 ```bash
-cd "$(/home/neon/marveen/store/agent-worktree.sh <a te agent-neved> --path)"
+cd "$({{INSTALL_DIR}}/store/agent-worktree.sh <a te agent-neved> --path)"
 npx vitest run apps/web/src/i18n-locale-guard.test.ts
 # 14/14 kell
 ```

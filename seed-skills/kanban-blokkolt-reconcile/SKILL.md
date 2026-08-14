@@ -16,7 +16,7 @@ description: Find BLOKKOLT-landolasra waiting cards whose gate commit is NOW on 
 import os, subprocess, re, json
 import urllib.request
 
-TOKEN = open('/home/neon/marveen/store/.dashboard-token').read().strip()
+TOKEN = open('{{INSTALL_DIR}}/store/.dashboard-token').read().strip()
 BASE = 'http://localhost:3420'
 # A FŐ klón, szándékosan (kártya 973ed6eb): ez a kérdés az, hogy egy sha LANDOLT-e az
 # origin/main-en -- landolás-ellenőrzés, nem munka. Ügynök-worktree-t itt ne használj, és ide

@@ -47,7 +47,7 @@ Before reporting done:
 ## API key
 
 ```bash
-KEY=$(echo "K=Stitch" | node /home/neon/marveen/scripts/vault-resolve.mjs 2>/dev/null | sed 's/^K=//')
+KEY=$(echo "K=Stitch" | node {{INSTALL_DIR}}/scripts/vault-resolve.mjs 2>/dev/null | sed 's/^K=//')
 STITCH_API_KEY="$KEY" node your-script.mjs
 ```
 
@@ -64,7 +64,7 @@ STITCH_API_KEY="$KEY" node your-script.mjs
 - **Count verification only**: 133→143 is necessary but not sufficient. Verify each ID individually.
 - **Stale `project.screens()` mid-batch**: only call once at the end, not after each upload (quota burn).
 - **HTML file size**: 12-20KB HTML files upload fine. Larger files may time out.
-- **Working directory**: `stitch-tools/` is in `/home/neon/marveen/store/stitch-tools/`. Scripts write into `DL_BASE = <your own CleanCore worktree>/docs/design-previews/stitch-gen/`; resolve it with `/home/neon/marveen/store/agent-worktree.sh <your agent name> --path` (card 973ed6eb). Never the shared clone -- these files get committed, so they belong in your own tree.
+- **Working directory**: `stitch-tools/` is in `{{INSTALL_DIR}}/store/stitch-tools/`. Scripts write into `DL_BASE = <your own CleanCore worktree>/docs/design-previews/stitch-gen/`; resolve it with `{{INSTALL_DIR}}/store/agent-worktree.sh <your agent name> --path` (card 973ed6eb). Never the shared clone -- these files get committed, so they belong in your own tree.
 
 ## Ellenőrzés
 

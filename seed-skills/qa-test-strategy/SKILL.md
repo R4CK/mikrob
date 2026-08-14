@@ -23,8 +23,8 @@ MikroB vagy a QA ügynök teheti, és csak NEM saját munkát.
    # eldobható worktree-ben futtass; ha csak olvasol/typecheckelsz, a fő klón is jó. SOHA ne
    # futtass más ügynök worktree-jében (ott élő, félkész munka van), és oda ne is commitolj.
    CC_MAIN="${CLEANCORE_MAIN:-/mnt/h/LM_Studio_Workdir/CleanCore}"
-   git -C "$CC_MAIN" worktree add /home/neon/qa-<sha> <sha>    # eldobható, a végén: worktree remove
-   cd /home/neon/qa-<sha>
+   git -C "$CC_MAIN" worktree add $HOME/qa-<sha> <sha>    # eldobható, a végén: worktree remove
+   cd $HOME/qa-<sha>
    npx vitest run --reporter=verbose apps/<scope>
    npx tsc --noEmit 2>&1 | grep -E "error TS"
    ```

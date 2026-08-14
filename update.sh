@@ -644,7 +644,11 @@ run_seed_refresh() {
     OWNER_NAME="${OWNER_NAME:-$(sed -n 's/^OWNER_NAME=//p' "$INSTALL_DIR/.env" | head -1 | tr -d '"')}"
     WEB_PORT="${WEB_PORT:-$(sed -n 's/^WEB_PORT=//p' "$INSTALL_DIR/.env" | head -1 | tr -d '"')}"
   fi
-  refresh_untouched_seeds "seed-skills" "$HOME/.claude/skills" "verbatim"
+  # TEMPLATE, not verbatim (card 041681b5): seed skills carry {{INSTALL_DIR}}, and copying them
+  # byte-for-byte shipped that placeholder into commands agents are told to run. render_seed_template
+  # only replaces the known UPPERCASE identity placeholders, so the i18n skill's {{name}} examples --
+  # which are its subject matter -- pass through untouched.
+  refresh_untouched_seeds "seed-skills" "$HOME/.claude/skills" "template"
   if [ -n "${MAIN_AGENT_ID:-}" ]; then
     refresh_untouched_seeds "seed-scheduled-tasks" "$HOME/.claude/scheduled-tasks" "template"
   fi
