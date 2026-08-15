@@ -109,19 +109,23 @@ export function removeBindingsForSecret(vaultSecretId: string): void {
     for (const target of binding.targets) {
       try {
         const content = JSON.parse(readFileOr(target.mcpFilePath, '{}'))
-        const serverCfg = content.mcpServers?.[target.serverName]
-        if (!serverCfg) continue
-        if (binding.headerName) {
-          // Rebuild the server's headersHelper from the header bindings that
-          // survive this secret's removal.
-          applyHeadersHelper(
-            serverCfg,
-            headerBindingsForServer(target.mcpFilePath, target.serverName, remaining),
-          )
-        } else {
-          if (!serverCfg.env) continue
-          delete serverCfg.env[binding.envVar]
-          if (!serverHasVaultRefs(serverCfg.env)) unwrapCommand(serverCfg)
+        // EVERY scope, not just the top level: the same server is often declared under
+        // projects[<cwd>] in a .claude.json, which is where the fleet's actually live.
+        const scopes = findServerScopes(content, target.serverName)
+        if (scopes.length === 0) continue
+        for (const { cfg: serverCfg } of scopes) {
+          if (binding.headerName) {
+            // Rebuild the server's headersHelper from the header bindings that
+            // survive this secret's removal.
+            applyHeadersHelper(
+              serverCfg,
+              headerBindingsForServer(target.mcpFilePath, target.serverName, remaining),
+            )
+          } else {
+            if (!serverCfg.env) continue
+            delete serverCfg.env[binding.envVar]
+            if (!serverHasVaultRefs(serverCfg.env)) unwrapCommand(serverCfg)
+          }
         }
         atomicWriteFileSync(target.mcpFilePath, JSON.stringify(content, null, 2))
       } catch { /* skip */ }
@@ -131,17 +135,86 @@ export function removeBindingsForSecret(vaultSecretId: string): void {
   writeBindings(store)
 }
 
-export function collectAllMcpFilePaths(): Array<{ path: string, label: string }> {
+function isPlainObject(v: unknown): v is Record<string, unknown> {
+  return typeof v === 'object' && v !== null && !Array.isArray(v)
+}
+
+/**
+ * Every declaration of `serverName` in one parsed config, at ANY scope.
+ *
+ * Two shapes carry MCP servers and only one of them was ever read here: the top-level
+ * `mcpServers` of a .mcp.json, and `projects[<cwd>].mcpServers` inside a .claude.json. The live
+ * fleet's servers are in the SECOND one (measured 2026-08-15, card 691f5475: all 15 `resend`
+ * declarations are project-scoped), so binding one through the dashboard was impossible -- the
+ * sync looked at `content.mcpServers[name]`, found nothing, and reported "server not found".
+ * That is why the first credential migration had to be a one-off script instead of this mechanism.
+ *
+ * Returns the live config objects, so a caller mutates them in place and writes the document back.
+ */
+export function findServerScopes(
+  doc: unknown,
+  serverName: string,
+): Array<{ scope: string; cfg: Record<string, any> }> {
+  const out: Array<{ scope: string; cfg: Record<string, any> }> = []
+  for (const entry of allServerScopes(doc)) {
+    if (entry.serverName === serverName) out.push({ scope: entry.scope, cfg: entry.cfg })
+  }
+  return out
+}
+
+/** Every (scope, serverName, cfg) triple in one parsed config -- the scan-side counterpart. */
+export function allServerScopes(
+  doc: unknown,
+): Array<{ scope: string; serverName: string; cfg: Record<string, any> }> {
+  const out: Array<{ scope: string; serverName: string; cfg: Record<string, any> }> = []
+  if (!isPlainObject(doc)) return out
+  const push = (scope: string, servers: unknown): void => {
+    if (!isPlainObject(servers)) return
+    for (const [serverName, cfg] of Object.entries(servers)) {
+      if (isPlainObject(cfg)) out.push({ scope, serverName, cfg: cfg as Record<string, any> })
+    }
+  }
+  push('root', (doc as Record<string, unknown>)['mcpServers'])
+  const projects = (doc as Record<string, unknown>)['projects']
+  if (isPlainObject(projects)) {
+    for (const [cwd, node] of Object.entries(projects)) {
+      if (isPlainObject(node)) push(`projects[${cwd}]`, (node as Record<string, unknown>)['mcpServers'])
+    }
+  }
+  return out
+}
+
+/**
+ * The roots this walks. Parameters only so the tests can build a throwaway tree: every caller uses
+ * the defaults. Without them this function is untestable in the fleet test worktree, which has no
+ * agents/ directory at all -- any assertion about agent configs would pass there vacuously.
+ */
+export interface McpFileRoots {
+  projectRoot?: string
+  homeDir?: string
+  agentsDir?: string
+  agentNames?: string[]
+}
+
+export function collectAllMcpFilePaths(roots: McpFileRoots = {}): Array<{ path: string, label: string }> {
+  const projectRoot = roots.projectRoot ?? PROJECT_ROOT
+  const home = roots.homeDir ?? homedir()
+  const agentsDir = roots.agentsDir ?? AGENTS_BASE_DIR
   const paths: Array<{ path: string, label: string }> = []
-  const projectMcp = join(PROJECT_ROOT, '.mcp.json')
+  const projectMcp = join(projectRoot, '.mcp.json')
   if (existsSync(projectMcp)) paths.push({ path: projectMcp, label: 'project' })
-  const userMcp = join(homedir(), '.claude.json')
+  const userMcp = join(home, '.claude.json')
   if (existsSync(userMcp)) paths.push({ path: userMcp, label: 'user' })
 
-  for (const agentName of listAgentNames()) {
-    const agentMcp = join(AGENTS_BASE_DIR, agentName, '.mcp.json')
+  for (const agentName of roots.agentNames ?? listAgentNames()) {
+    const agentMcp = join(agentsDir, agentName, '.mcp.json')
     if (existsSync(agentMcp)) paths.push({ path: agentMcp, label: `agent:${agentName}` })
-    const projectsDir = join(AGENTS_BASE_DIR, agentName, 'projects')
+    // The isolated per-agent config -- each agent runs with CLAUDE_CONFIG_DIR pointing at it, and
+    // it is where the fleet's MCP servers actually live. It was missing from this list, so nothing
+    // bound through the dashboard could ever reach a running agent.
+    const agentClaude = join(agentsDir, agentName, '.claude-config', '.claude.json')
+    if (existsSync(agentClaude)) paths.push({ path: agentClaude, label: `agent-config:${agentName}` })
+    const projectsDir = join(agentsDir, agentName, 'projects')
     if (existsSync(projectsDir)) {
       try {
         for (const proj of readdirSync(projectsDir)) {
@@ -191,8 +264,10 @@ export function scanMcpConfigs(): ScanFinding[] {
   for (const { path: mcpPath } of mcpFiles) {
     try {
       const parsed = JSON.parse(readFileOr(mcpPath, '{}'))
-      const servers = parsed.mcpServers || {}
-      for (const [serverName, cfg] of Object.entries(servers) as Array<[string, any]>) {
+      // Scan project-scoped servers too, not only the top level -- otherwise a plaintext secret
+      // sitting in a .claude.json's projects[<cwd>].mcpServers is invisible to the scan that
+      // exists to find exactly that.
+      for (const { serverName, cfg } of allServerScopes(parsed)) {
         const env = cfg?.env || {}
         for (const [envVar, envVal] of Object.entries(env) as Array<[string, string]>) {
           if (!looksLikeSensitiveKey(envVar)) continue
@@ -282,22 +357,24 @@ export function syncSecret(vaultSecretId: string): SyncResult {
     for (const target of binding.targets) {
       try {
         const content = JSON.parse(readFileOr(target.mcpFilePath, '{}'))
-        const serverCfg = content.mcpServers?.[target.serverName]
-        if (!serverCfg) {
+        const scopes = findServerScopes(content, target.serverName)
+        if (scopes.length === 0) {
           errors.push(`Server "${target.serverName}" not found in ${target.mcpFilePath}`)
           continue
         }
-        if (binding.headerName) {
-          // Remote header binding: wire the headersHelper (rebuilt from ALL
-          // header bindings for this server) and strip any plaintext header.
-          applyHeadersHelper(
-            serverCfg,
-            headerBindingsForServer(target.mcpFilePath, target.serverName),
-          )
-        } else {
-          if (!serverCfg.env) serverCfg.env = {}
-          serverCfg.env[binding.envVar] = `vault:${vaultSecretId}`
-          if (serverCfg.command && !serverCfg.url) wrapCommand(serverCfg)
+        for (const { cfg: serverCfg } of scopes) {
+          if (binding.headerName) {
+            // Remote header binding: wire the headersHelper (rebuilt from ALL
+            // header bindings for this server) and strip any plaintext header.
+            applyHeadersHelper(
+              serverCfg,
+              headerBindingsForServer(target.mcpFilePath, target.serverName),
+            )
+          } else {
+            if (!serverCfg.env) serverCfg.env = {}
+            serverCfg.env[binding.envVar] = `vault:${vaultSecretId}`
+            if (serverCfg.command && !serverCfg.url) wrapCommand(serverCfg)
+          }
         }
         atomicWriteFileSync(target.mcpFilePath, JSON.stringify(content, null, 2))
         updated++
@@ -325,17 +402,19 @@ export function unsyncBinding(vaultSecretId: string, envVar: string): void {
     for (const target of binding.targets) {
       try {
         const content = JSON.parse(readFileOr(target.mcpFilePath, '{}'))
-        const serverCfg = content.mcpServers?.[target.serverName]
-        if (!serverCfg) continue
-        if (binding.headerName) {
-          applyHeadersHelper(
-            serverCfg,
-            headerBindingsForServer(target.mcpFilePath, target.serverName, remaining),
-          )
-        } else {
-          if (!serverCfg.env) continue
-          delete serverCfg.env[envVar]
-          if (!serverHasVaultRefs(serverCfg.env)) unwrapCommand(serverCfg)
+        const scopes = findServerScopes(content, target.serverName)
+        if (scopes.length === 0) continue
+        for (const { cfg: serverCfg } of scopes) {
+          if (binding.headerName) {
+            applyHeadersHelper(
+              serverCfg,
+              headerBindingsForServer(target.mcpFilePath, target.serverName, remaining),
+            )
+          } else {
+            if (!serverCfg.env) continue
+            delete serverCfg.env[envVar]
+            if (!serverHasVaultRefs(serverCfg.env)) unwrapCommand(serverCfg)
+          }
         }
         atomicWriteFileSync(target.mcpFilePath, JSON.stringify(content, null, 2))
       } catch { /* skip */ }
