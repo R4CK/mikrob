@@ -43,10 +43,16 @@ const DELIBERATE_NUL: Readonly<Record<string, number>> = {
   'seed-fleet-agents/cybered/.claude/skills/cybered-gate-pattern/SKILL.md': 1,
   // Two regex character classes written with a literal NUL as the range start:
   // `const FORBIDDEN = /[<NUL>-\x1f\x7f-\x9f‪-‮⁦-⁩]/` and `[<NUL>-\x1f\x7f]`.
-  // Three deployed copies plus the seed; they are byte-identical.
-  'seed-fleet-agents/cybered/.claude/skills/white-hat-security-testing/references/recurring-no-go-classes.md': 2,
-  'seed-fleet-agents/cybersec/.claude/skills/white-hat-security-testing/references/recurring-no-go-classes.md': 2,
-  'seed-fleet-agents/teszter/.claude/skills/white-hat-security-testing/references/recurring-no-go-classes.md': 2,
+  //
+  // THE LIST SHRANK ON ITS FIRST DAY, which is the whole point of it. Three sibling copies
+  // (cybered, cybersec, teszter) were rewritten hours after this guard landed -- 6434 -> 11607
+  // bytes, literal NULs replaced by escapes -- exactly the follow-up flagged on card ee01f7ce as
+  // "their call, not a drive-by here". The stale-list assertion caught it by name and their entries
+  // were deleted rather than re-pinned at 0, because an entry that says "this file holds a
+  // deliberate NUL" about a file with none is a lie the list must not carry.
+  //
+  // The seed copy was NOT rewritten and still holds its two, so it stays. When it follows, delete
+  // this line too; it must never be updated to 0.
   'seed-skills/white-hat-security-testing/references/recurring-no-go-classes.md': 2,
   // A test fixture: `for (const content of ['', '<NUL>\x01garbage', '\n\n\n'])` -- the NUL is the
   // input under test, so escaping it here would weaken the test it belongs to.
