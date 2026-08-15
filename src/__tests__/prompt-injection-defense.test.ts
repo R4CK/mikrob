@@ -14,6 +14,7 @@ import { isEgressBlocked, loadRuntimeAllowlist } from '../../scripts/hooks/egres
 import {
   injectEgressGate,
   ensureEgressGate,
+  EGRESS_GATE_MATCHER,
 } from '../web/agent-scaffold.js'
 import {
   generateFetchNonce,
@@ -181,6 +182,48 @@ describe('isEgressBlocked', () => {
     // WebFetch keeps its historical behaviour: a missing url there is a malformed call the tool
     // itself rejects, and changing that is not this card's business.
     expect(isEgressBlocked('WebFetch', {})).toBe(false)
+  })
+
+  it('the hook is REGISTERED for the tools it now judges, not only for WebFetch', () => {
+    // The half that nearly shipped broken. Widening isEgressBlocked() changed nothing while the
+    // PreToolUse matcher still said `WebFetch`: Claude Code would not invoke the hook for
+    // `mcp__firecrawl__*` at all, so every assertion above would pass over logic that never ran.
+    // Measured on the live agents/backend/.claude/settings.json before the fix -- matcher "WebFetch".
+    //
+    // This asserts the two ends agree, using the matcher as a JS regex. That is a PROXY for Claude
+    // Code's own matching, not a reproduction of it -- said out loud because the proxy is the part a
+    // future reader should distrust first.
+    const re = new RegExp(EGRESS_GATE_MATCHER)
+    for (const tool of [
+      'WebFetch',
+      'mcp__firecrawl__firecrawl_scrape',
+      'mcp__firecrawl__firecrawl_map',
+      'mcp__firecrawl__firecrawl_search',
+      'mcp__firecrawl__firecrawl_crawl',
+    ]) {
+      expect(re.test(tool), `${tool} would never reach the gate`).toBe(true)
+    }
+    const settings: Record<string, unknown> = {}
+    injectEgressGate(settings)
+    const ptu = (settings.hooks as { PreToolUse: { matcher: string }[] }).PreToolUse
+    expect(ptu[0]?.matcher).toBe(EGRESS_GATE_MATCHER)
+  })
+
+  it('the migration re-wires an agent whose matcher is the OLD WebFetch-only one', () => {
+    // Without this the widening reaches nobody: every existing agent already references the script,
+    // so the idempotency check would answer "already wired" forever. The stale-matcher case has to
+    // fall through exactly like the legacy bare-`node` command case it sits next to.
+    const stale = {
+      hooks: {
+        PreToolUse: [
+          { matcher: 'WebFetch', hooks: [{ type: 'command', command: 'node .../egress-gate.mjs' }] },
+        ],
+      },
+    }
+    injectEgressGate(stale as unknown as Record<string, unknown>)
+    const ptu = (stale.hooks as { PreToolUse: { matcher: string }[] }).PreToolUse
+    expect(ptu).toHaveLength(1) // replaced in place, not appended alongside the stale one
+    expect(ptu[0]?.matcher).toBe(EGRESS_GATE_MATCHER)
   })
 
   it('a tool merely NAMED like firecrawl is not caught, and the prefix is exact', () => {

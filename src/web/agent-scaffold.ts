@@ -448,6 +448,10 @@ export function injectSelfPaceGate(existing: Record<string, unknown>): void {
 // agents including MAIN_AGENT_ID -- the hook defends against prompt-injection
 // that exfiltrates data via an outbound WebFetch, and the main agent faces the
 // same risk as sub-agents. Same dedupe shape as the other gate injectors.
+/** Tool names the egress gate must be INVOKED for. Exported so the migration below can detect a
+ *  stale matcher on an already-wired agent, and so tests can assert the two ends agree. */
+export const EGRESS_GATE_MATCHER = 'WebFetch|mcp__firecrawl__'
+
 export function injectEgressGate(existing: Record<string, unknown>): void {
   const hooks = (existing.hooks && typeof existing.hooks === 'object'
     ? existing.hooks
@@ -456,7 +460,16 @@ export function injectEgressGate(existing: Record<string, unknown>): void {
   // Registration guard: a /tmp or missing path must never enter shared settings.
   if (isUnsafeHookCommand(command)) return
   const entry = {
-    matcher: 'WebFetch',
+    // The MATCHER decides whether the hook RUNS; the script decides the verdict. Widening
+    // isEgressBlocked() to cover the Firecrawl MCP tools (card 91c4a369, Cybersec blocking
+    // precondition 4) did nothing on its own while this said `WebFetch` alone -- the hook was never
+    // invoked for `mcp__firecrawl__*`, so the new logic was unreachable. Measured on the live
+    // agents/backend/.claude/settings.json before this fix: matcher "WebFetch".
+    //
+    // That is the "wired detection with no consumer" shape, and it is the easy half to miss because
+    // the unit tests of the decision function all pass. Over-matching here is harmless -- the script
+    // returns allow for anything it does not govern -- while under-matching is silent non-enforcement.
+    matcher: EGRESS_GATE_MATCHER,
     hooks: [{ type: 'command', command, timeout: 10 }],
   }
   const prev = Array.isArray(hooks.PreToolUse) ? (hooks.PreToolUse as unknown[]) : []
@@ -553,7 +566,17 @@ export function ensureEgressGate(name: string): boolean {
   // entry (dead on nvm PATHs, exit 127 = silently non-enforcing) must NOT
   // count as wired -- fall through so injectEgressGate replaces it in place.
   const ptuJson = JSON.stringify(ptu)
-  if (ptuJson.includes('egress-gate.mjs') && hookCommandWired(ptuJson, command)) return false
+  // A STALE MATCHER is the third way to be wired-but-not-enforcing, alongside the legacy bare-`node`
+  // case above (card 91c4a369). Every agent already carries this hook with `matcher: "WebFetch"`, so
+  // without this clause the widened matcher would reach exactly nobody: the migration would say
+  // "already wired" and return, forever. Same reasoning as the bare-node check -- referencing the
+  // script is not the same as running it on the calls that matter.
+  const matcherCurrent = ptu.some(
+    (e) => JSON.stringify(e).includes('egress-gate.mjs') &&
+      (e as { matcher?: unknown })?.matcher === EGRESS_GATE_MATCHER,
+  )
+  if (ptuJson.includes('egress-gate.mjs') && hookCommandWired(ptuJson, command) && matcherCurrent)
+    return false
   if (isUnsafeHookCommand(command)) return false
   injectEgressGate(settings)
   if (name !== MAIN_AGENT_ID) mkdirSync(join(agentDir(name), '.claude'), { recursive: true })
