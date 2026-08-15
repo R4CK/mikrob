@@ -82,6 +82,33 @@ return now >= deadline ? { status: SUSPENDED } : { status: GRACE }
 **PoC:** `evaluate({status:GRACE, graceEndsAt:null, trialEndsAt:set}, now=+9999d)` MUST be
 SUSPENDED (not perpetual GRACE); `{both null}` → SUSPENDED. (CleanCore: 7c0db72e, 2× NO-GO.)
 
+## 6. Async floating-promise = silent authz/audit bypass (CRITICAL class)
+**Smell:** a sync→async migration of a guard/audit function leaves a call site that does NOT
+`await` the result. A Promise that rejects (= deny) is silently swallowed; the synchronous
+control flow continues past the "guard" and the privileged operation runs UN-DENIED, UN-LOGGED.
+tsc alone CANNOT catch this: a `Promise<void>` returned from an async `authz()` call is
+type-correct whether awaited or not. The suite stays green (the non-async test path still passes).
+**Scope:** any auth, authz, audit, burn, revoke, or idempotency-mark function turned async.
+The failure mode applies to EVERY call site — ~300 sites in the CleanCore superadmin plane
+(8deac0b2 CRITICAL, reverted; the TOTP-burn async cascade 4d6a1148 is the current live instance).
+**Fix (non-negotiable):**
+1. `@typescript-eslint/no-floating-promises: error` + `@typescript-eslint/no-misused-promises: error` in ESLint CI config, enforced on EVERY PR. Without this the defect is invisible.
+2. `await` EVERY authz/audit/burn/revoke/mark call, mechanically, across ALL call sites in the chain (not just the 5 you changed — grep the downstream callers).
+3. Durable-before-ack: for state-changing guards (burn, revoke, mark-as-used) the `await` MUST resolve BEFORE the success response is emitted; fail-closed: `AlreadyUsed/conflict → deny`.
+4. Per-path regression: a test that asserts the guard-ON path DENIES must FAIL if the `await` is removed (use a spy that returns a rejecting Promise).
+**PoC template:**
+```ts
+// Make the guard return a rejected Promise
+jest.spyOn(deps, 'burnTotpStep').mockReturnValue(Promise.reject(new Error('AlreadyUsed')))
+// If the await is missing, login still succeeds (BYPASS). With await it throws.
+await expect(superadminLogin(creds, deps)).rejects.toThrow()
+```
+**Standing probe (run on EVERY async migration of a guard fn):**
+`command grep -rna 'burnTotpStep\|authorizeSuperadmin\|assertSession\|revoke\|markUsed' --include='*.ts' | command grep -v 'await '`
+— any hit that is NOT `await`-prefixed and NOT inside an already-async chain tail is a candidate bypass. (CleanCore: 8deac0b2 CRITICAL; pattern confirmed in async-refactor-fail-open-guard skill.)
+`command grep`, not bare `grep`, and that is not stylistic — see #7: a bare `grep` in an agent's own
+shell silently skips gitignored paths and binary-looking files.
+
 ---
 
 ## 7. A grep you TYPED is not the grep you think — an agent's shell shims it
@@ -140,7 +167,7 @@ So "I checked the ignore file, only X is excluded" is not a sound inference eith
 actual invocation.
 
 **On the fleet's own tree, measured (filenames only, no content printed):** `grep -rl <marker> .`
-from `/home/neon/marveen` misses `agents/backend2/CLAUDE.md` and `store/autonomy-config.json` — it
+from `{{INSTALL_DIR}}` misses `agents/backend2/CLAUDE.md` and `store/autonomy-config.json` — it
 returns only the tracked `seed-*` copies, which looks like a plausible complete answer rather than a
 truncated one. `command grep -rl` returns those plus `store/claudeclaw.db`. Note `store/*` is ignored
 but `!store/*.sh` un-ignores the scripts, so SOME of `store/` is visible and some is not: a spot check
