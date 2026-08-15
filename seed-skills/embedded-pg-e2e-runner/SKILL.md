@@ -61,7 +61,7 @@ try {
     'npx vitest run apps/api/src/rls-chat.e2e.test.ts --no-file-parallelism',
     {
       // A SAJÁT worktree-d, sosem a megosztott klón:
-      //   CC="$({{INSTALL_DIR}}/store/agent-worktree.sh <a te agent-neved> --path)"
+      //   CC="$(/home/neon/marveen/store/agent-worktree.sh <a te agent-neved> --path)"
       cwd: process.env.CC || CC_MAIN,
       env: { ...process.env, PG_E2E_URL, LD_LIBRARY_PATH: libPath },
       stdio: 'inherit',   // inherit: stdout/stderr -> terminal, nem pufferelt
@@ -89,12 +89,30 @@ const require = createRequire(import.meta.url)
 const { default: EmbeddedPostgres } = require('.../embedded-postgres/dist/index.js')
 ```
 
-### 2. LD_LIBRARY_PATH hiánya -- PG nem indul WSL2-n
-A beágyazott PG natív binárisaihoz kellenek a `.so` könyvtárak. Ha hiányzik a `LD_LIBRARY_PATH`:
+### 2. `cannot open shared object file` -- DE ELŐBB MÉRD MEG, KELL-E EGYÁLTALÁN
+**Mérve 2026-08-15 ezen a gépen: NEM kellett sem `LD_LIBRARY_PATH`, sem symlink-shim.**
+`env -u LD_LIBRARY_PATH` mellett az `initialise()` + `start()` + egy valódi kapcsolat + `stop()`
+végigment (PostgreSQL 18.4). Ha valaki azért nem futtat PG-s e2e-t, mert azt hiszi, hogy ehhez
+külön setup kell, próbálja meg előbb setup nélkül -- valószínűleg megy.
+
+Ha MÉGIS ez jön:
 ```
 error while loading shared libraries: libpq.so.5: cannot open shared object file
 ```
-Megoldás: `LD_LIBRARY_PATH` az `@embedded-postgres/linux-x64/native/lib` mappára.
+akkor a diagnózis konkrét: nézd meg, hogy a hibaüzenetben NÉVSZERINT megnevezett soname létezik-e a
+`@embedded-postgres/linux-x64/native/lib` mappában.
+- ha ott van, csak nincs a loader útján -> `LD_LIBRARY_PATH` arra a mappára;
+- ha NINCS ott, de van verziózott párja (pl. `libpq.so.5.18` van, `libpq.so.5` nincs) -> a csomagból
+  hiányoznak a soname-symlinkek. Ez 2026-08-14-én pontosan így állt, mára javult.
+
+Ilyenkor a symlinkeket **külön shim-mappába** tedd és azt fűzd elé, **SOHA ne a `node_modules`-ba**:
+worktree-ben az a megosztott fő klónba mutató symlink, tehát ott az egész flotta fáját írnád át.
+```bash
+for f in "$NATIVE/lib"/*.so.*; do b=$(basename "$f")
+  soname=$(echo "$b" | sed -E 's/^(.*\.so\.[0-9]+)\.[0-9.]+$/\1/')
+  [ "$soname" != "$b" ] && ln -sf "$f" "$SHIM/$soname"; done
+LD_LIBRARY_PATH="$SHIM:$NATIVE/lib" node <boot script>
+```
 
 ### 3. OOM kill (exit 137) -- stderr/stdout túl nagy
 Ha `stdio: 'pipe'` és a vitest + PG naplók pufferelve mennek, Node OOM-kill-t kaphat nagy outputnál.
@@ -151,8 +169,46 @@ de `connect ECONNREFUSED` jön vissza mert az adatkönyvtár eltűnt.
 Megoldás: mindig friss `mkdtemp`-pel indíts új PG-t, ne próbálj csatlakozni a régire.
 A PG jelenlétét ne a process-listán ellenőrizd -- próbálj valódi connection-t.
 
+### 9. A SÉMÁT EGYSZER kell felhúzni -- a `migration-idempotency.e2e` NEM provizionáló
+Ez a legdrágább buktató a listán: **nem hibát okoz, hanem HAMIS MÉRÉST**, és a hiba a te kódodra
+mutat, nem a provizionálásra.
+
+`migration-idempotency.e2e.test.ts` SZÁNDÉKOSAN kétszer futtatja a teljes migrációs készletet (a
+második menet a tesztje). A második menet a 0055 ismert nem-idempotenciáján hasal el -- de már
+azután, hogy újra lefuttatta a **0010**-et (blanket `ALTER DEFAULT PRIVILEGES`/`GRANT`: visszaadja a
+DELETE-et minden táblának, visszacsinálva minden későbbi REVOKE-ot) és a **0008/0025**-öt
+(`CREATE OR REPLACE FUNCTION`: visszaállítja a 0125 előtti epoch-only WORM trigger-törzseket).
+
+Mérve 2026-08-15, három futás, amik KIZÁRÓLAG a provizionálásban térnek el:
+
+| provizionálás | sorrend | eredmény |
+|---|---|---|
+| friss DB + a lánc EGYSZER | csak a guard | 17/17 zöld |
+| friss DB + a lánc EGYSZER | matrix, majd guard | 17/17 zöld |
+| friss DB + idempotency (2 menet) | matrix, majd guard | **3 bukás**, közte 2 biztonsági állítás |
+
+A tévedés **polaritás-függő**: egy "nem tarthatja" állítás hamisan PIROS, egy "már nem tartja"
+hamisan ZÖLD -- és a második a veszélyes, mert haladásnak olvasódik. A piros pedig egy ártatlan
+szomszéd fájlra mutat: egy egész délutánt vitt el, mire kiderült, hogy nem a fájl a hibás, hanem az
+adatbázis (kártya e91e0b63).
+
+**Helyesen:** a láncot EGY menetben alkalmazd, `applyOne`-nal végig, vagy a `control-plane-migrate`
+úton. Két dolog, ami órát visz el, ha nem tudod:
+- **az adatbázist `cleancore_control`-nak KELL hívni** -- a 0010 `GRANT CONNECT ON DATABASE
+  cleancore_control`-t futtat, más néven a lánc ott elhasal;
+- a `schema_migrations` táblát a RUNNER hozza létre (`ensureVersionTable`), NEM egy migráció (a 0087
+  csak revokál rajta) -- ha kézzel applikálsz, neked kell létrehoznod.
+
 ## Ellenőrzés
 ```bash
 node --experimental-vm-modules run-e2e.mjs
 # Várt kimenet: "X passed (X)" -- nincs OOM, nincs timeout, PG leáll a finally-ban
+```
+Ha jogosultságot vagy trigger-törzset MÉRSZ, előbb ezt ellenőrizd -- egy sor, és megfogja a
+kétszer-applikált fát:
+```sql
+-- a 0123 REVOKE-ja: ha a conversations tart UPDATE-et vagy DELETE-et, a 0010 újra lefutott utána
+SELECT privilege_type FROM information_schema.table_privileges
+ WHERE grantee = 'cleancore_app' AND table_name = 'conversations';
+-- várt: üres (vagy csak SELECT/INSERT)
 ```
