@@ -35,9 +35,52 @@ describe('quarantine-reader sub-agent definition', () => {
     expect(existsSync(tplPath)).toBe(true)
   })
 
-  it('restricts tools to WebFetch only in frontmatter', () => {
+  // Card 91c4a369 widened this surface from WebFetch alone to WebFetch plus three READ-ONLY Firecrawl
+  // tools, because WebFetch cannot render a JS-heavy page. This test pinned `tools: WebFetch` exactly
+  // and went red on that commit -- my regression, found by a full-suite run rather than reported, and
+  // a red security test is worse than a narrow one, so it is repaired rather than deleted.
+  //
+  // The assertion is now an EXACT SET, not a prefix or a "contains". The property that matters is not
+  // "WebFetch is present" but "nothing else got in": the Firecrawl server exposes 27 tools and the
+  // rest create or drive REMOTE STATE (monitor_create/_delete/_run, agent, interact, crawl), which is
+  // not fetching and has no business behind a quarantine boundary. An exact set is what fails when
+  // someone appends one.
+  const ALLOWED_TOOLS = [
+    'WebFetch',
+    'mcp__firecrawl__firecrawl_scrape',
+    'mcp__firecrawl__firecrawl_map',
+    'mcp__firecrawl__firecrawl_search',
+  ]
+
+  it('grants exactly the reviewed read-only fetch tools, and nothing else', () => {
     const content = readFileSync(tplPath, 'utf8')
-    expect(content).toMatch(/^tools:\s*WebFetch\s*$/m)
+    const line = content.match(/^tools:\s*(.+)$/m)
+    expect(line, 'no tools: line at all -- the sub-agent would inherit every tool').not.toBeNull()
+    const granted = line![1]!
+      .split(',')
+      .map((t) => t.trim())
+      .filter((t) => t.length > 0)
+    expect([...granted].sort()).toEqual([...ALLOWED_TOOLS].sort())
+  })
+
+  it('none of the state-changing Firecrawl tools are reachable from the quarantine', () => {
+    // Named individually rather than derived from a prefix: adding any ONE of these should be a
+    // decision someone makes in the open. A prefix rule would silently bless a new
+    // `mcp__firecrawl__firecrawl_*` tool the day the server grows one.
+    const content = readFileSync(tplPath, 'utf8')
+    const line = content.match(/^tools:\s*(.+)$/m)![1]!
+    for (const forbidden of [
+      'firecrawl_monitor_create',
+      'firecrawl_monitor_delete',
+      'firecrawl_monitor_run',
+      'firecrawl_monitor_update',
+      'firecrawl_agent',
+      'firecrawl_interact',
+      'firecrawl_crawl',
+      'firecrawl_extract',
+    ]) {
+      expect(line, `${forbidden} drives remote state; it is not a fetch`).not.toContain(forbidden)
+    }
   })
 
   it('instructs structured JSON output (url, nonce, status, content, error fields)', () => {
