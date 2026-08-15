@@ -61,7 +61,7 @@ try {
     'npx vitest run apps/api/src/rls-chat.e2e.test.ts --no-file-parallelism',
     {
       // A SAJÁT worktree-d, sosem a megosztott klón:
-      //   CC="$(/home/neon/marveen/store/agent-worktree.sh <a te agent-neved> --path)"
+      //   CC="$({{INSTALL_DIR}}/store/agent-worktree.sh <a te agent-neved> --path)"
       cwd: process.env.CC || CC_MAIN,
       env: { ...process.env, PG_E2E_URL, LD_LIBRARY_PATH: libPath },
       stdio: 'inherit',   // inherit: stdout/stderr -> terminal, nem pufferelt
