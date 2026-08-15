@@ -35,15 +35,20 @@ The fleet already has the mechanism, so this needs no invention:
   the vault id.
 - Claude Code additionally expands `${VAR}` inside an MCP server's `env`/`args`/`headers` in every
   config scope, so `"FIRECRAWL_API_KEY": "${FIRECRAWL_API_KEY}"` works with a launch-time export.
+  **This is the road NOT taken** -- it is written down because it exists, not because we use it. The
+  deployed entry is the `vault:` one below; an export-based variant would put the key in the
+  launching process's environment, which is what the vault wrapper exists to avoid.
 
-Planned entry (NOT yet added to `.mcp.json` -- see "why it is not activated"):
+The entry, as it is LIVE today in this agent's `.mcp.json` (see "DECIDED AND ACTIVATED" below). This
+block is byte-for-byte what is deployed, not a sketch -- it is the one people copy, so it must not
+drift from the real config:
 
 ```jsonc
 "firecrawl": {
   "type": "stdio",
   "command": "/home/neon/marveen/scripts/vault-env-wrapper.sh",
   "args": ["npx", "-y", "firecrawl-mcp@3.24.0"],
-  "env": { "FIRECRAWL_API_KEY": "vault:firecrawl.apiKey" }
+  "env": { "FIRECRAWL_API_KEY": "vault:Firecrawl" }
 }
 ```
 
@@ -63,8 +68,9 @@ real signal is the diagnostics warning line:
 
 So the acceptance procedure is:
 
-1. Store the key in the vault as `firecrawl.apiKey` (never in `.mcp.json`, never in a shell history,
-   never in a log line).
+1. Store the key in the vault under the label `Firecrawl` (never in `.mcp.json`, never in a shell
+   history, never in a log line). The label is the literal string after `vault:` in the entry above;
+   they have to match exactly or `vault-env-wrapper.sh` resolves nothing.
 2. Add the entry above, restart the session.
 3. A/B it: run once with the vault entry present and once with it removed. Both will say Connected;
    only the second prints the warning. **Read the warning line, not the status.**
@@ -133,8 +139,10 @@ project's name — is MIT too, with no unusual dependencies.
 ## DECIDED AND ACTIVATED (2026-08-14)
 
 The key arrived. Peti scoped it to **this agent's config only**, not shared fleet-wide use, and the
-vault label is **`Firecrawl`** -- not `firecrawl.apiKey` as this document originally guessed; the
-config below uses the real label.
+vault label is **`Firecrawl`** -- an earlier draft of this document guessed `firecrawl.apiKey` and
+was wrong. That guess is corrected at every occurrence now, not just noted here (QA finding on card
+91c4a369): a note further down does not undo a wrong value further up, because the wrong value is
+the copy-pasteable one and the note is not.
 
 **Quarantine outcome chosen: (a) -- the call goes through `quarantine-reader`.** In order of weight:
 

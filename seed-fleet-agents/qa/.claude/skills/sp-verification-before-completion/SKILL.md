@@ -48,6 +48,16 @@ Skip any step = lying, not verifying
 | Regression test works | Red-green cycle verified | Test passes once |
 | Agent completed | VCS diff shows changes | Agent reports "success" |
 | Requirements met | Line-by-line checklist | Tests passing |
+| X appears nowhere / no secret in the tree | `command grep -ra ...`, or a filesystem walk that reads bytes | bare `grep` — see below |
+
+**The bare-`grep` trap.** An agent's interactive shell defines `grep` as a FUNCTION that prepends
+`--ignore-files -I` (measured: `declare -f grep`). So a typed `grep` silently skips `.gitignore`d
+paths and binary-looking files — and on a secret sweep that is exactly the wrong half to skip, since
+`.env`, `store/` and `agents/` are usually gitignored. Measured on a 3-file probe: bare `grep -rl`
+found 1 of 3, `grep -ral` 2 of 3, `command grep -ral` 3 of 3. `-a` alone is not the fix.
+Scripts run as subprocesses are NOT affected (the function is not exported); what you TYPE is.
+Full mechanism, blast radius and PoC: `white-hat-security-testing/references/recurring-no-go-classes.md` #7.
+
 
 ## Red Flags - STOP
 
@@ -56,6 +66,7 @@ Skip any step = lying, not verifying
 - About to commit/push/PR without verification
 - Trusting agent success reports
 - Relying on partial verification
+- Accepting a bare `grep` 0-hit as proof that something is absent (yours or another agent's)
 - Thinking "just this once"
 - Tired and wanting work over
 - **ANY wording implying success without having run verification**
