@@ -45,6 +45,27 @@ describe('the value-shaped detector can fail (negative control)', () => {
     // Most secrets are not from a vendor with a recognisable prefix.
     expect(looksLikeCredentialValue('Xk7pQ2mZ9vR4tL8wN1cB6yH3jF5sD0gA')).toBe(true)
   })
+
+  it('flags a TWO-class secret -- lowercase hex, no capitals anywhere', () => {
+    // QA FAIL on 2886f31a, caught by mutation: every positive case above happens to carry all three
+    // character classes, so changing the detector's `classes >= 2` to `>= 3` left the whole suite
+    // green. A well-meant future "tightening" would then silently stop flagging the commonest real
+    // shape there is -- a lowercase hex API key. This case pins the threshold at exactly 2.
+    // (Assembled from pieces for the same reason as the vendor tokens above: the secret-write-guard
+    // hook rejects a file carrying a literal 40-char hex string.)
+    const hexKey = '3f9a1c7e0b52d84f' + '6a1e9c3b7d05f28e' + '4a6c9b13'
+    expect(hexKey).toHaveLength(40)
+    expect(/[A-Z]/.test(hexKey), 'the point of this case is that it has NO uppercase').toBe(false)
+    expect(looksLikeCredentialValue(hexKey)).toBe(true)
+  })
+
+  it('flags a 24-character secret -- the exact lower edge of the length rule', () => {
+    // Pins the other threshold the same way: raising the 24 to anything higher must fail here, not
+    // pass quietly. 30- and 32-character cases above cannot see a change from 24 to 25.
+    const edge = 'a7Kd93' + 'ZqLx28' + 'Bv51Rn' + 'Ty06Wc'
+    expect(edge).toHaveLength(24)
+    expect(looksLikeCredentialValue(edge)).toBe(true)
+  })
 })
 
 describe('what must NOT be flagged, or the scan is noise', () => {
