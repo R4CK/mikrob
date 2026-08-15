@@ -7,11 +7,36 @@
 // runtime fault. Actually packing a repo would need a fixture tree and the pinned binary; grepping
 // the script catches the omission directly and runs everywhere.
 import { describe, it, expect } from 'vitest'
-import { readFileSync } from 'node:fs'
+import { readFileSync, mkdtempSync, writeFileSync, rmSync } from 'node:fs'
+import { execFileSync } from 'node:child_process'
+import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { REPO_ROOT } from './helpers/repo-location.js'
 
 const WRAPPER = readFileSync(join(REPO_ROOT, 'store/repomix.sh'), 'utf8')
+
+/** The mute-scan command AS THE SCRIPT WRITES IT, lifted out of the source rather than retyped.
+ *  Retyping it would test this file's copy of the command and stay green while the script's own
+ *  went blind -- which is exactly the failure card ee01f7ce found. */
+function muteScanCommand(): string {
+  const m = WRAPPER.match(/MUTED=\$\((grep [^)]*)\)/)
+  if (!m) throw new Error('the mute-scan grep is gone from store/repomix.sh')
+  return m[1]!
+}
+
+/** Runs a grep invocation over a throwaway tree, with the script's `"$REPO"` bound to it. */
+function scan(command: string, dir: string): { status: number; out: string } {
+  try {
+    const out = execFileSync('bash', ['-c', command.replace('"$REPO"', JSON.stringify(dir))], {
+      encoding: 'utf-8',
+      stdio: 'pipe',
+    })
+    return { status: 0, out }
+  } catch (e) {
+    const err = e as { status?: number; stdout?: string }
+    return { status: err.status ?? -1, out: String(err.stdout ?? '') }
+  }
+}
 
 describe('store/repomix.sh -- Cybersec conditions stay enforced (card b41c3dd3)', () => {
   it('condition 4: refuses --no-security-check so secretlint can never be switched off', () => {
@@ -50,6 +75,49 @@ describe('store/repomix.sh -- Cybersec conditions stay enforced (card b41c3dd3)'
   it('condition 5: default output path is under the gitignored store/ tree', () => {
     const out = WRAPPER.match(/OUT_DIR_DEFAULT="([^"]+)"/)
     expect(out?.[1]).toContain('/store/')
+  })
+
+  // ── the mute scan must be able to SEE the file it judges (card ee01f7ce, Cybersec F3) ──────────
+  //
+  // The guard above pins that the refusal EXISTS. This pins that it can still look: a scan that
+  // skips the file is indistinguishable from a clean repo, because both produce no output and rc=1.
+  // Behavioural rather than source-level on purpose -- the whole finding was that the source READ
+  // correctly (`grep -rIl ... secretlint-disable`) and did the wrong thing.
+
+  it('a secretlint-disable marker is found even in a file that also contains a NUL byte', () => {
+    const dir = mkdtempSync(join(tmpdir(), 'repomix-nul-'))
+    try {
+      writeFileSync(join(dir, 'plain.txt'), 'nothing to see\n')
+      // A NUL anywhere in the file is enough for grep to call it binary. One byte, at the end,
+      // after a perfectly ordinary marker line.
+      writeFileSync(join(dir, 'muted.txt'), 'secretlint-disable\nAKIAIOSFODNN7EXAMPLE\n\0')
+      const { status, out } = scan(muteScanCommand(), dir)
+      expect(status, 'the mute scan reported nothing -- it did not see the file').toBe(0)
+      expect(out).toContain('muted.txt')
+      expect(out, 'a clean file must not be reported').not.toContain('plain.txt')
+    } finally {
+      rmSync(dir, { recursive: true, force: true })
+    }
+  })
+
+  it('the fixture really is invisible to the old form -- so the test above is not vacuous', () => {
+    // Without this, a fixture that any grep would find makes the assertion above pass for free. The
+    // two forms differ ONLY in -I vs -a, and this is the measured difference card ee01f7ce is about.
+    // It also documents the near-miss: `-aI` is still blind, because -a and -I set one setting and
+    // the last one wins. Anyone "fixing" the script by appending -I re-opens the hole.
+    const dir = mkdtempSync(join(tmpdir(), 'repomix-nul-neg-'))
+    try {
+      writeFileSync(join(dir, 'muted.txt'), 'secretlint-disable\nAKIAIOSFODNN7EXAMPLE\n\0')
+      const blind = `grep -rIl --exclude-dir=.git -e 'secretlint-disable' "$REPO"`
+      expect(
+        scan(blind, dir).status,
+        'the -I form found it -- this platform does not reproduce'
+      ).toBe(1)
+      const alsoBlind = `grep -raIl --exclude-dir=.git -e 'secretlint-disable' "$REPO"`
+      expect(scan(alsoBlind, dir).status, '-aI is not a fix; -I wins as the later flag').toBe(1)
+    } finally {
+      rmSync(dir, { recursive: true, force: true })
+    }
   })
 
   it('binary is the isolated pinned install, not a PATH lookup (no wrapper bypass)', () => {

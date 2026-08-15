@@ -73,7 +73,19 @@ case "$CMD" in
     # mute the scan of its own secret and the pack reports "No suspicious files detected" while the
     # secret sits in the output verbatim -- a proven bypass, not a theoretical one. Refuse the pack.
     # Deliberately a REFUSAL, not a warning: a warning on a bulk-export tool is read as noise.
-    if MUTED=$(grep -rIl --exclude-dir=.git -e 'secretlint-disable' "$REPO" 2>/dev/null) && [[ -n "$MUTED" ]]; then
+    #
+    # `-a`, NOT `-I` (card ee01f7ce, Cybersec F3). This scan used to pass `-I`, which skips any file
+    # grep judges binary -- and ONE NUL byte is enough for that judgement. So a `secretlint-disable`
+    # marker in a file that also contains a NUL was invisible here, silently, with no warning and
+    # rc=1: the mute survived and the pack went ahead. Measured on this box against GNU grep 3.12.
+    # `-a` (--binary-files=text) is the inverse and makes the file readable again; `-l` keeps the
+    # output filenames only, so nothing binary is ever printed.
+    #
+    # THE TRAP, because the obvious fix is wrong: `-a` and `-I` set the SAME setting and the LAST one
+    # wins. `grep -aI` is therefore still blind (measured: rc=1 on a NUL fixture) while `grep -Ia`
+    # works. Do not "restore" the -I here -- there is no ordering of the two that is both safe and
+    # obvious, so the flag is gone rather than reordered.
+    if MUTED=$(grep -ral --exclude-dir=.git -e 'secretlint-disable' "$REPO" 2>/dev/null) && [[ -n "$MUTED" ]]; then
       echo "repomix.sh: REFUSED -- these files mute the secret scanner from their own content:" >&2
       printf '  %s\n' $MUTED >&2
       die 5 "remove the secretlint-disable markers, or pack a subtree that excludes them"
