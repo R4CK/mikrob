@@ -356,31 +356,55 @@ describe('no shipped script, template or GENERATOR puts a Bearer token in curl a
    *
    * seed-skills/.../leak-safe-secret-probe/SKILL.md exists to tell an agent never to put a secret on
    * argv, and it shows the forbidden shape so the reader recognises it. Rewriting that to satisfy the
-   * scanner would trade real teaching value for a green tick, so the guard learns to read it instead.
+   * scanner would trade real teaching value for a green tick, so the exemption stays -- but it is now
+   * a DECLARED one rather than one the guard infers from prose (card 48d5f255, Cybersec F1, raised
+   * twice: msg 13936 on card 265fdc2c and again as the ec5173a5 NO-GO).
    *
-   * TWO conditions, both required, both derived from the text:
-   *   1. the curl is NOT inside a fenced block -- a fence is what a reader copy-pastes, so a fenced
-   *      command is a command no matter what the surrounding prose claims;
-   *   2. the same line carries a NEGATION -- the sentence has to say not to do this.
-   * Either condition alone is too weak: (1) alone would exempt any inline one-liner, and (2) alone
-   * would let a fenced command through under a "never do this" heading. Both are asserted below by
-   * tests that drop one condition at a time.
+   * WHAT THE OLD RULE DID AND WHY IT HAD TO GO. It exempted an unfenced curl whose PARAGRAPH matched
+   * a negation word: never|do not|not|instead|avoid|wrong|bad|helyett|soha|**ne**. Two measured
+   * problems, neither hypothetical in a bilingual corpus:
+   *   * `ne`, `not` and `instead` are ordinary words. "use the header instead" written above a REAL
+   *     leak exempts it silently -- and Hungarian `ne` matches inside a sentence about anything.
+   *   * the enabling check `source.includes('```')` was FILE-level, so a single fenced block anywhere
+   *     in a .sh turned the exemption on for every curl invocation in that file.
+   *
+   * WHAT IT DOES NOW. An occurrence is exempt only if it carries an EXPLICIT machine marker:
+   *
+   *     guard-allow: documented-anti-pattern <reason>
+   *
+   * somewhere in its own paragraph (the contiguous run of non-blank lines around it -- one bullet,
+   * one comment block). The reason is required, not decorative: an empty marker does not exempt.
+   *
+   * A marker is a decision someone typed. Prose is a coincidence of vocabulary, and vocabulary is
+   * exactly what an attacker (or a careless author) controls.
+   *
+   * FENCES STILL DISQUALIFY, and this is where I did NOT follow the card as written. It asked for
+   * "inside a ```bash/```sh fence counts as documentation, OR an explicit marker". Implementing the
+   * first half would INVERT the guarantee this guard has today: a fence is what a reader copy-pastes,
+   * so a fenced command is a command whatever the surrounding prose claims, and exempting fenced
+   * blocks would let every fenced leak through. Measured on the current corpus, nothing needs it --
+   * all five exempted occurrences are unfenced prose. So the marker is the ONLY route, which is
+   * strictly stronger than either the old rule or the card's version. Reported to the gate rather
+   * than done quietly.
    */
-  const NEGATION = /\bnever\b|\bdo not\b|\bdon't\b|\bnot\b|\binstead\b|\bavoid\b|\bwrong\b|\bbad\b|\bhelyett\b|\bsoha\b|\bne\b/i
+  const GUARD_ALLOW = /guard-allow:\s*documented-anti-pattern\b(?<reason>[^\n]*)/
+
+  /** The contiguous run of non-blank lines containing `startLine` -- one bullet, one comment block.
+   *  LOCAL by construction, which is the half of Cybersec's finding the old file-level `includes`
+   *  check failed: prose wraps, so a strictly line-local marker would need repeating on every line
+   *  of the same sentence, but a file-wide one exempts neighbours that were never reviewed. */
+  function paragraphAround(lines: string[], startLine: number): string[] {
+    let from = startLine - 1
+    while (from > 0 && (lines[from - 1] ?? '').trim() !== '') from -= 1
+    let to = startLine - 1
+    while (to + 1 < lines.length && (lines[to + 1] ?? '').trim() !== '') to += 1
+    return lines.slice(from, to + 1)
+  }
 
   function isDocumentedAntiPattern(source: string, startLine: number): boolean {
-    if (!source.includes('```')) return false // not a markdown-ish doc: no exemption at all
-    if (fencedLines(source).has(startLine)) return false // condition 1
-    // Condition 2 reads the enclosing PARAGRAPH, not the single line. Prose wraps: in the real file
-    // the negation ("never on argv") opens the bullet on line 33 while the second forbidden example
-    // sits on line 34, so a line-local check exempted one occurrence and flagged its twin. The span
-    // is the contiguous run of non-blank lines around the offender -- one bullet, one sentence.
-    const lines = source.split('\n')
-    let from = startLine - 1
-    while (from > 0 && lines[from - 1].trim() !== '') from -= 1
-    let to = startLine - 1
-    while (to + 1 < lines.length && lines[to + 1].trim() !== '') to += 1
-    return NEGATION.test(lines.slice(from, to + 1).join(' ')) // condition 2
+    if (fencedLines(source).has(startLine)) return false
+    const m = GUARD_ALLOW.exec(paragraphAround(source.split('\n'), startLine).join('\n'))
+    return (m?.groups?.['reason'] ?? '').trim().length > 0
   }
 
   const shellCases: Array<{ dir: string; file: string }> = [
@@ -453,6 +477,66 @@ describe('no shipped script, template or GENERATOR puts a Bearer token in curl a
           `Fix: drop -G so the same flags become a POST body, or move the credential to a header.`,
       )
     }
+  })
+
+  // ── the exemption itself, in BOTH directions (card 48d5f255, Cybersec F1 finding 3) ────────────
+  //
+  // Until now nothing exercised isDocumentedAntiPattern directly: every exempted occurrence in the
+  // corpus was load-bearing (5 of 5), so there was no control population. If the rule silently
+  // widened to cover a REAL leak, every test here would still be green -- which is the property a
+  // security exemption must never have. These four cases are the control: two that must be exempt,
+  // two that must not, differing only in the thing the rule claims to read.
+  //
+  // The offender line is identical in all four. Only the marker, the fence and the prose change.
+  const LEAK_LINE = 'curl -s -H "Authorization: Bearer $TOK" "$DASH/api/x"'
+  const exemptCount = (doc: string) =>
+    findCurlInvocations(doc)
+      .filter((c) => leaksTokenInArgv(c.text))
+      .filter((c) => isDocumentedAntiPattern(doc, c.startLine)).length
+
+  it('exemption: a marked prose occurrence IS exempt', () => {
+    const doc = ['# guard-allow: documented-anti-pattern teaching the forbidden shape', `# ${LEAK_LINE}`].join('\n')
+    expect(exemptCount(doc)).toBe(1)
+  })
+
+  it('exemption: the marker reaches the whole paragraph, because prose wraps', () => {
+    // The real file needs this: the SKILL.md bullet carries TWO forbidden examples on consecutive
+    // lines, and a strictly line-local marker would have to be repeated on each. The span is one
+    // contiguous non-blank run -- one bullet, one comment block -- never the file.
+    const doc = ['# guard-allow: documented-anti-pattern one bullet, two examples', '# first, prose', `# ${LEAK_LINE}`].join('\n')
+    expect(exemptCount(doc)).toBe(1)
+  })
+
+  it('exemption: the SAME line without a marker is NOT exempt, however the prose is worded', () => {
+    // Every word the old NEGATION rule accepted, in one sentence, above a real leak. This passed
+    // before card 48d5f255 -- and `ne`/`not`/`instead` are ordinary words in a bilingual corpus, so
+    // this is the accident the rule was one careless sentence away from.
+    const doc = [
+      '# Never put a token on argv -- do not do this, avoid it, use the header instead (ne, soha, helyett).',
+      `# ${LEAK_LINE}`,
+    ].join('\n')
+    expect(exemptCount(doc)).toBe(0)
+  })
+
+  it('exemption: a marker with no reason does not exempt anything', () => {
+    const doc = ['# guard-allow: documented-anti-pattern', `# ${LEAK_LINE}`].join('\n')
+    expect(exemptCount(doc)).toBe(0)
+  })
+
+  it('exemption: a marker does NOT rescue a command inside a runnable fence', () => {
+    // A fence is what a reader copy-pastes, so it stays a command whatever the marker claims. This
+    // is where the card asked for the opposite ("inside a ```bash fence counts as documentation");
+    // implementing that would exempt every fenced leak, so the marker is the only route instead.
+    const doc = ['guard-allow: documented-anti-pattern I promise this is only an example', '```bash', LEAK_LINE, '```'].join('\n')
+    expect(exemptCount(doc)).toBe(0)
+  })
+
+  it('exemption: a fence elsewhere in the file no longer switches the exemption on', () => {
+    // Cybersec finding 2: the enabling check used to be `source.includes("```")`, i.e. FILE-level.
+    // One fenced block anywhere in a .sh turned the exemption on for every curl in it. Here the
+    // fence and the leak are unrelated neighbours and the leak must still be reported.
+    const doc = ['```bash', 'echo unrelated', '```', '', '# use the header instead', `# ${LEAK_LINE}`].join('\n')
+    expect(exemptCount(doc)).toBe(0)
   })
 
   it.each(cases)('$file: a path-embedded bot token is read from a curl config, not argv', ({ dir, file }) => {

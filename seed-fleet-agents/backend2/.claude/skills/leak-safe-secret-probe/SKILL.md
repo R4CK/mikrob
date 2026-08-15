@@ -34,6 +34,8 @@ reinvent it.
   even `curl -H "Authorization: Bearer $SECRET"` puts the secret in
   `/proc/<pid>/cmdline`, visible to any other process on the host (`ps aux`,
   procfs). Feed curl a **stdin config** instead:
+  <!-- guard-allow: documented-anti-pattern the two shapes above are the forbidden forms this bullet
+       exists to teach; both are inline prose, not runnable, and the safe form follows in the fence -->
   ```bash
   printf 'url = "%s"\nheader = "Authorization: Bearer %s"\n' "$URL" "$SECRET" \
     | curl -sS -K - -w '%{http_code}'

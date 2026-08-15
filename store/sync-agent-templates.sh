@@ -109,7 +109,11 @@ def curl_command_index(line):
 AUTH_ARGV = re.compile(r'-H\s+(?P<q>["\'])Authorization:\s*Bearer\s+\$\(cat\s+(?P<path>[^)]+)\)(?P=q)\s*')
 
 def rewrite_auth_argv(line):
-    """curl ... -H "Authorization: Bearer $(cat P)" ...  ->  printf ... | curl -H @- ..."""
+    """curl ... -H "Authorization: Bearer $(cat P)" ...  ->  printf ... | curl -H @- ...
+    guard-allow: documented-anti-pattern the line above names the shape this function REWRITES; it is
+    the contract, not a call. The marker must share this paragraph -- a blank line between them makes
+    it a different one, which is exactly what "local, not file-level" buys.
+    """
     if 'curl' not in line or not AUTH_ARGV.search(line):
         return None
     m = AUTH_ARGV.search(line)
@@ -205,6 +209,8 @@ def fix_text(text, kind='shell'):
                 continue
         executable = (kind != 'markdown' or in_runnable_fence) and not line.lstrip().startswith('#')
 
+        # guard-allow: documented-anti-pattern this comment quotes the header line that the
+        # continuation bug made invisible; it explains a fixed defect and runs nothing.
         # BACKSLASH CONTINUATIONS (Cybersec BLOCKER 1). This loop used to look at one PHYSICAL line,
         # so a curl split across lines was invisible: the `-H "Authorization: Bearer $TOKEN"` line
         # carries no `curl`, and every rewrite starts by requiring one. Four live occurrences in
@@ -450,6 +456,9 @@ if [[ "$MODE" == selftest ]]; then
     || { echo "  FAIL variant B: the assignment was touched"; fail=1 ; }
   _t "variant B: idempotent on a second run" 0 "$tmp/b.sh"
 
+  # guard-allow: documented-anti-pattern the quoted header below is the selftest FIXTURE's shape,
+  # written out so the next reader does not "simplify" the variable indirection away.
+  #
   # Braced form, because ${TOKEN} is just as common as $TOKEN in real scripts.
   #
   # The header is composed from a variable rather than written out inline, and that indirection is
