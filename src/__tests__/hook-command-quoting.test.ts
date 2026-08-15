@@ -10,6 +10,7 @@ import {
   injectEgressGate,
   ensureEgressGate,
   ensureGovernanceGateCommands,
+  EGRESS_GATE_MATCHER,
 } from '../web/agent-scaffold.js'
 import { PROJECT_ROOT } from '../config.js'
 import { REPO_UNDER_TMP, TMP_SKIP_REASON } from './helpers/repo-location.js'
@@ -113,6 +114,53 @@ describe.skipIf(REPO_UNDER_TMP)('ensure* migrations are idempotent (true, then f
     for (const cmd of ptuCommands(written)) {
       expect(cmd.includes(`"${HOOK_NODE_BIN}" "`)).toBe(true)
     }
+  })
+
+  // QA's finding on card 91c4a369: the tests for the widened egress matcher all called
+  // injectEgressGate DIRECTLY, so the CONDITIONAL path -- the one that decides whether the migration
+  // fires at all -- was never exercised. That branch is the whole delivery mechanism: every agent
+  // already references egress-gate.mjs with the old `WebFetch` matcher, so if ensureEgressGate keeps
+  // answering "already wired", the new matcher reaches nobody and the enforcement is decorative.
+  it('ensureEgressGate REWIRES an agent whose matcher is the old WebFetch-only one', () => {
+    mkdirSync(join(testAgentDir, '.claude'), { recursive: true })
+    // A settings file in exactly the state the fleet was in: correct script, correct interpreter,
+    // STALE matcher. Everything the old idempotency check looked at is already right here.
+    const stale = {
+      hooks: {
+        PreToolUse: [
+          {
+            matcher: 'WebFetch',
+            hooks: [
+              {
+                type: 'command',
+                command: hookCommand(join(PROJECT_ROOT, 'scripts', 'hooks', 'egress-gate.mjs')),
+                timeout: 10,
+              },
+            ],
+          },
+        ],
+      },
+    }
+    writeFileSync(
+      join(testAgentDir, '.claude', 'settings.json'),
+      JSON.stringify(stale, null, 2),
+      'utf-8'
+    )
+
+    expect(ensureEgressGate(TEST_AGENT), 'a stale matcher must NOT count as wired').toBe(true)
+    const written = JSON.parse(
+      readFileSync(join(testAgentDir, '.claude', 'settings.json'), 'utf-8')
+    ) as { hooks: { PreToolUse: { matcher: string }[] } }
+    const egress = written.hooks.PreToolUse.filter((e) =>
+      JSON.stringify(e).includes('egress-gate.mjs')
+    )
+    expect(egress, 'replaced in place, not appended alongside the stale entry').toHaveLength(1)
+    expect(egress[0]?.matcher).toBe(EGRESS_GATE_MATCHER)
+    expect(new RegExp(EGRESS_GATE_MATCHER).test('mcp__firecrawl__firecrawl_scrape')).toBe(true)
+    // ...and it settles: a second call has nothing left to do.
+    expect(ensureEgressGate(TEST_AGENT), 'the migration must be idempotent once current').toBe(
+      false
+    )
   })
 
   it('ensureGovernanceGateCommands upgrades a legacy bare-node entry, then settles', () => {
