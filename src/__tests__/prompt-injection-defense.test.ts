@@ -410,9 +410,15 @@ describe('injectEgressGate (source-level checks)', () => {
     expect(scaffoldSrc).toContain('export function ensureEgressGate(')
   })
 
-  it('egress-gate hook script is referenced with the WebFetch matcher', () => {
-    expect(scaffoldSrc).toContain("matcher: 'WebFetch'")
+  it('egress-gate hook script is referenced with a matcher that still covers WebFetch', () => {
+    // Retargeted, not relaxed (card 91c4a369). This pinned the literal `matcher: 'WebFetch'`, which
+    // is exactly the string that had to change: the gate now also judges the Firecrawl MCP tools,
+    // and a matcher of `WebFetch` alone meant the hook was never invoked for them. The property
+    // worth guarding was never the literal -- it is that the gate is registered AND that WebFetch is
+    // still among the tools it fires on, which a careless widening could drop.
+    expect(scaffoldSrc).toContain('EGRESS_GATE_MATCHER')
     expect(scaffoldSrc).toContain('egress-gate.mjs')
+    expect(new RegExp(EGRESS_GATE_MATCHER).test('WebFetch')).toBe(true)
   })
 
   it('injectEgressGate is called unconditionally in writeAgentSettingsFromProfile (no main-agent exemption)', () => {
