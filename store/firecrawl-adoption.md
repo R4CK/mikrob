@@ -160,13 +160,38 @@ an ALLOWLIST for that sub-agent; it does not remove the MCP tool from the agent 
 So the sanctioned path exists and is the rule -- but the owning agent can still call the tool
 directly, and nothing mechanically prevents that today. That is discipline, not enforcement, and
 calling it enforcement would be exactly the "control we wrongly believe is closed" this fleet keeps
-finding. A `PreToolUse` hook denying `mcp__firecrawl__*` outside the sub-agent is how to make it real,
-in the same shape as `git-protect-guard` / `npm-protect-guard`; it is recorded as the follow-up rather
-than claimed here, because I have not verified that such a hook can tell the sub-agent caller apart.
+finding.
+
+**Half of that follow-up now exists, and only half** (card 91c4a369, Cybersec blocking precondition
+4). `scripts/hooks/egress-gate.mjs` treats `mcp__firecrawl__` as a DEFAULT-DENY namespace: everything
+in it is blocked except `firecrawl_scrape` and `firecrawl_map`, and those two are judged against the
+same hostname allowlist as `WebFetch`, reading the `url` their schemas require. So the 25 other tools
+are now mechanically unreachable from ANY caller, not merely absent from a sub-agent's list.
+
+What is still discipline rather than enforcement is the narrower question: the owning agent can call
+`firecrawl_scrape` on an ALLOWLISTED host directly, without going through `quarantine-reader`, and
+that content would arrive unwrapped. The hook sees a tool name and its input, not which agent is
+asking, so it cannot tell the sanctioned path from the direct one. That gap is smaller than the
+original (a scrape of an arbitrary host is now blocked outright) but it is real, and it is the reason
+outcome (a) is a rule people follow rather than a wall.
 
 **Blast radius (item 1) is answered by the scope Peti chose:** one agent's config holds the key, so a
 compromise of any other agent does not carry it. That is the smaller radius of the two options, and it
 was decided knowingly rather than by default.
+
+**But the key is NOT what limits the scope, and that is worth saying plainly** (Cybersec MEDIUM,
+2026-08-15). The server works WITHOUT a key on an IP-limited free tier, and the keyless tool set is
+named in the pinned dist:
+
+```js
+var KEYLESS_TOOL_NAMES = new Set(['firecrawl_scrape', 'firecrawl_search', 'firecrawl_parse'])
+```
+
+So `firecrawl_scrape` is reachable keyless; `firecrawl_map` is not. What actually holds the scope to
+one agent today is the CONFIGURATION -- the server is only declared in `agents/backend/.mcp.json` --
+not the absence of a key elsewhere. Anyone adding the server block to another agent's config gets a
+working scrape tool without needing the vault at all, on this fleet's shared IP. Do not reason about
+this as "they cannot use it without the key".
 
 **Item 2 stands for the acceptance run:** the grep for the key's literal value covers `agents/**`, not
 only the session transcript.

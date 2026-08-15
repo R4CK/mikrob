@@ -35,10 +35,17 @@ describe('quarantine-reader sub-agent definition', () => {
     expect(existsSync(tplPath)).toBe(true)
   })
 
-  // Card 91c4a369 widened this surface from WebFetch alone to WebFetch plus three READ-ONLY Firecrawl
-  // tools, because WebFetch cannot render a JS-heavy page. This test pinned `tools: WebFetch` exactly
-  // and went red on that commit -- my regression, found by a full-suite run rather than reported, and
-  // a red security test is worse than a narrow one, so it is repaired rather than deleted.
+  // Card 91c4a369 widened this surface from WebFetch alone, because WebFetch cannot render a JS-heavy
+  // page. This test pinned `tools: WebFetch` exactly and went red on that commit -- my regression,
+  // found by a full-suite run rather than reported, and a red security test is worse than a narrow
+  // one, so it is repaired rather than deleted.
+  //
+  // The set then SHRANK from four to three (Cybersec blocking precondition 5): `firecrawl_search`
+  // came out. It is the one tool here that no URL allowlist can gate -- its schema carries no `url`
+  // at all and the server annotates it `openWorldHint: true`, "arbitrary domains and sources". The
+  // other two take a required `url`, so the egress gate judges them by the same hostname rules as
+  // WebFetch. Nothing was lost: WebSearch already exists, and the capability gap this card was opened
+  // for was JS-heavy structured SCRAPING.
   //
   // The assertion is now an EXACT SET, not a prefix or a "contains". The property that matters is not
   // "WebFetch is present" but "nothing else got in": the Firecrawl server exposes 27 tools and the
@@ -49,7 +56,6 @@ describe('quarantine-reader sub-agent definition', () => {
     'WebFetch',
     'mcp__firecrawl__firecrawl_scrape',
     'mcp__firecrawl__firecrawl_map',
-    'mcp__firecrawl__firecrawl_search',
   ]
 
   it('grants exactly the reviewed read-only fetch tools, and nothing else', () => {
@@ -78,6 +84,9 @@ describe('quarantine-reader sub-agent definition', () => {
       'firecrawl_interact',
       'firecrawl_crawl',
       'firecrawl_extract',
+      // Not a state-changer, but ungateable, which lands it in the same place. It was on this list
+      // for a day; putting it back needs a stated exception, not a convenient edit.
+      'firecrawl_search',
     ]) {
       expect(line, `${forbidden} drives remote state; it is not a fetch`).not.toContain(forbidden)
     }
@@ -116,6 +125,69 @@ describe('isEgressBlocked', () => {
   it('only fires on WebFetch tool, not Bash or others', () => {
     expect(isEgressBlocked('Bash', { command: 'curl https://evil.com' })).toBe(false)
     expect(isEgressBlocked('Read', { file_path: '/etc/passwd' })).toBe(false)
+  })
+
+  // ── the Firecrawl MCP tools (card 91c4a369, Cybersec blocking precondition 4) ──────────────────
+  //
+  // The condition used to be `toolName !== 'WebFetch'`, so a Firecrawl scrape did not reach the
+  // allowlist at ALL -- the fleet's first unwrapped external-content channel would have been ungated
+  // on the one axis that matters. These cases are the control population for that fix: the same URLs
+  // that WebFetch is judged on, judged identically here.
+
+  it('applies the SAME allowlist to firecrawl_scrape and firecrawl_map as to WebFetch', () => {
+    const blocked = 'https://example.com/article'
+    const allowed = 'https://api.github.com/repos/x/y/pulls'
+    for (const tool of ['mcp__firecrawl__firecrawl_scrape', 'mcp__firecrawl__firecrawl_map']) {
+      expect(isEgressBlocked(tool, { url: blocked }), `${tool} must block an off-list host`).toBe(true)
+      expect(isEgressBlocked(tool, { url: allowed }), `${tool} must allow an on-list host`).toBe(false)
+    }
+    // The pairing is what makes this non-vacuous: a gate that blocks everything would pass the first
+    // assertion alone, and WebFetch's own verdict on the same two URLs is the reference.
+    expect(isEgressBlocked('WebFetch', { url: blocked })).toBe(true)
+    expect(isEgressBlocked('WebFetch', { url: allowed })).toBe(false)
+  })
+
+  it('denies firecrawl_search outright -- it cannot be gated by a URL allowlist', () => {
+    // Measured in the pinned firecrawl-mcp@3.24.0 dist: its parameters are `searchToolBaseFields`
+    // plus `scrapeParamsSchema.omit({ url: true })`, so there is no url to check, and the server
+    // annotates it `openWorldHint: true`. Blocked whatever it is handed.
+    expect(isEgressBlocked('mcp__firecrawl__firecrawl_search', { query: 'anything' })).toBe(true)
+    // Including when a caller supplies a url-shaped field it does not actually have.
+    expect(
+      isEgressBlocked('mcp__firecrawl__firecrawl_search', { url: 'https://api.github.com/x' }),
+    ).toBe(true)
+  })
+
+  it('the Firecrawl namespace is default-DENY, not two exceptions on a default-allow', () => {
+    // The quarantine-reader `tools:` line restricts that SUB-agent; the main agent can reach every
+    // tool the server exposes. So the other 24 have to be denied here rather than merely unlisted
+    // there -- including one that does not exist yet, which is the point of testing the namespace.
+    for (const tool of [
+      'mcp__firecrawl__firecrawl_crawl',
+      'mcp__firecrawl__firecrawl_monitor_create',
+      'mcp__firecrawl__firecrawl_agent',
+      'mcp__firecrawl__firecrawl_interact',
+      'mcp__firecrawl__firecrawl_some_tool_added_next_year',
+    ]) {
+      expect(isEgressBlocked(tool, { url: 'https://api.github.com/repos/x/y' }), tool).toBe(true)
+    }
+  })
+
+  it('a URL-bearing Firecrawl tool called with no url is denied, not waved through', () => {
+    // `url` is REQUIRED by both schemas, so its absence means the input is not what this gate thinks
+    // it is -- and a gate that cannot see what it is judging must not approve it.
+    expect(isEgressBlocked('mcp__firecrawl__firecrawl_scrape', {})).toBe(true)
+    expect(isEgressBlocked('mcp__firecrawl__firecrawl_map', { search: 'x' })).toBe(true)
+    // WebFetch keeps its historical behaviour: a missing url there is a malformed call the tool
+    // itself rejects, and changing that is not this card's business.
+    expect(isEgressBlocked('WebFetch', {})).toBe(false)
+  })
+
+  it('a tool merely NAMED like firecrawl is not caught, and the prefix is exact', () => {
+    // The namespace rule keys on the `mcp__firecrawl__` prefix. A different server's tool must not
+    // be swept into a deny that was reasoned about one specific server's 27 tools.
+    expect(isEgressBlocked('mcp__firecrawler__scrape', { url: 'https://example.com' })).toBe(false)
+    expect(isEgressBlocked('firecrawl_scrape', { url: 'https://example.com' })).toBe(false)
   })
 
   it('allows GitHub API', () => {

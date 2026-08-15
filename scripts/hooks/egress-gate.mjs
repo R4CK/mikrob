@@ -24,10 +24,38 @@
 // The log is separate from the main Marveen log so operators can grep it
 // independently: `tail -f store/egress-blocked.log`
 //
-// Scope: this guard covers the Claude Code WebFetch tool only. It does NOT
-// intercept WebSearch, curl/Bash network calls, or MCP-server outbound
-// requests. Those channels are out of scope for this hook mechanism and require
-// separate controls if needed.
+// Scope: this guard covers the Claude Code WebFetch tool AND the Firecrawl MCP
+// fetch tools (card 91c4a369, Cybersec blocking precondition 4). It does NOT
+// intercept WebSearch or curl/Bash network calls; those channels are out of
+// scope for this hook mechanism and require separate controls if needed.
+//
+// WHY THE FIRECRAWL TOOLS ARE HERE. The condition below used to read
+// `toolName !== 'WebFetch'`, so a Firecrawl scrape carried no URL past this
+// gate at all -- the allowlist simply did not apply to it, and the fleet's
+// first unwrapped external-content channel would have been ungated on the one
+// axis that matters. `firecrawl_scrape` and `firecrawl_map` both take a
+// required `url` (measured in the pinned firecrawl-mcp@3.24.0 dist:
+// `scrapeParamsSchema = z.object({ url: z.string().url(), ... })` and
+// `parameters: z.object({ url: z.string().url(), search?, sitemap?, ... })`),
+// so the SAME hostname rules apply to them unchanged.
+//
+// THE FIRECRAWL NAMESPACE IS DEFAULT-DENY, not an allowlist of two exceptions
+// bolted onto a default-allow. Everything under `mcp__firecrawl__` that is not
+// scrape or map is BLOCKED here, for two measured reasons:
+//   * `firecrawl_search` cannot be gated by a URL allowlist even in principle:
+//     its schema has no `url` (it is `searchToolBaseFields` plus
+//     `scrapeParamsSchema.omit({ url: true })`), and the server's own
+//     annotation says `openWorldHint: true`, "arbitrary domains and sources".
+//     Its optional `includeDomains`/`excludeDomains` do not rescue it -- they
+//     are model-supplied and can simply be omitted.
+//   * the server exposes 27 tools, and the rest create or drive REMOTE state
+//     (monitor_create/_delete/_run, agent, interact, crawl). The
+//     quarantine-reader sub-agent's `tools:` line restricts THAT sub-agent, not
+//     the main agent, which can reach every tool the server offers. So the
+//     tools line is a scope decision and this is the enforcement.
+// A default-allow here would mean each of the other 25 stays reachable until
+// someone remembers to name it, which is the shape of every gap this file
+// exists to close.
 
 import { readFileSync, appendFileSync, mkdirSync } from 'node:fs'
 import { realpathSync } from 'node:fs'
@@ -113,10 +141,27 @@ export function loadRuntimeAllowlist() {
 // Domain matching uses URL-parsed hostname ONLY, not string-contains, to prevent
 // bypasses like `https://evil.com/?x=docs.anthropic.com` matching the domain
 // "docs.anthropic.com" via a simple includes() check.
+/** Firecrawl tools that carry a required `url` and can therefore be judged by the same rules as
+ *  WebFetch. Anything else in the namespace is denied outright -- see the header. */
+const FIRECRAWL_URL_TOOLS = new Set([
+  'mcp__firecrawl__firecrawl_scrape',
+  'mcp__firecrawl__firecrawl_map',
+])
+const FIRECRAWL_PREFIX = 'mcp__firecrawl__'
+
 export function isEgressBlocked(toolName, toolInput, runtimeList = { domains: [], prefixes: [] }) {
-  if (toolName !== 'WebFetch') return false
+  const name = String(toolName ?? '')
+  const isFirecrawl = name.startsWith(FIRECRAWL_PREFIX)
+  // Default-deny inside the Firecrawl namespace: a tool that is not one of the two URL-bearing ones
+  // cannot be checked against a hostname allowlist, so there is no version of "allowed" for it here.
+  if (isFirecrawl && !FIRECRAWL_URL_TOOLS.has(name)) return true
+  if (name !== 'WebFetch' && !isFirecrawl) return false
   const url = String(toolInput?.url ?? '')
-  if (!url) return false
+  // A URL-bearing tool invoked WITHOUT a url is a call this gate cannot judge, so it is denied.
+  // WebFetch keeps its historical behaviour (nothing to fetch, nothing to block) because a missing
+  // url there is a malformed call the tool itself rejects; for Firecrawl the field is REQUIRED by
+  // the schema, so its absence means the input is not what we think it is.
+  if (!url) return isFirecrawl
 
   // 1. Built-in prefix check (startsWith is correct here: the prefix already
   //    includes the trailing slash so a prefix-extension attack is impossible,
