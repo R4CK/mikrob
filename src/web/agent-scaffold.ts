@@ -854,7 +854,34 @@ export function scaffoldAgentDir(name: string) {
   const memoryMd = join(dir, 'memory', 'MEMORY.md')
   if (!existsSync(memoryMd)) writeFileSync(memoryMd, '')
   const mcpJson = join(dir, '.mcp.json')
-  if (!existsSync(mcpJson)) {
+  // The sentinel is "has NO server configured", not "the file is absent" (card e6fc74e0).
+  //
+  // `if (!existsSync(...))` alone is defeated by an EMPTY file, and an empty file is exactly what
+  // shows up here: `.mcp.json` is gitignored (.gitignore:98), so copies accumulate untracked in
+  // seed-fleet-agents/<agent>/ and install-linux.sh:1531 `cp -r`s them into agents/ -- precisely the
+  // path this code then inspects. Measured on this checkout: 14 such files, 13 of them an empty
+  // `{"mcpServers":{}}`. With the old guard the copy below never ran for those agents, and nothing
+  // back-fills later: connectors.ts installs to PROJECT_ROOT/.mcp.json or ~/.claude.json, never into
+  // an agent's own file. So the agent silently lost every PROJECT-scope server, permanently.
+  //
+  // An empty file is not a neutral leftover -- it SATISFIES a sentinel and switches a branch off,
+  // with no trace in any log or guard (backend's phrasing, card f39dd8fb). Reading the content
+  // instead of the inode makes the outcome independent of how the file got there.
+  //
+  // Deliberately narrow: a file that declares even ONE server is a real configuration and is left
+  // alone, exactly as before. Unparseable content is treated as configured too -- overwriting
+  // something we cannot read would be worse than leaving it.
+  const mcpNeedsSeeding = ((): boolean => {
+    if (!existsSync(mcpJson)) return true
+    try {
+      const parsed: unknown = JSON.parse(readFileSync(mcpJson, 'utf-8'))
+      const servers = (parsed as { mcpServers?: Record<string, unknown> } | null)?.mcpServers
+      return !servers || Object.keys(servers).length === 0
+    } catch {
+      return false
+    }
+  })()
+  if (mcpNeedsSeeding) {
     // Copy shared MCP config so agents get access to common tools (e.g. aiam-blog)
     const sharedMcp = join(PROJECT_ROOT, '.mcp.json')
     if (existsSync(sharedMcp)) {
