@@ -36,24 +36,25 @@ const BINARY_EXT: readonly string[] = ['.png', '.jpg']
 
 /** Text files that hold a NUL on purpose, with the exact number of them. The count is the point: a
  *  NEW NUL appearing in one of these files changes it and turns this red, so an entry cannot become
- *  a blanket exemption for the file. This list must only ever SHRINK. */
+ *  a blanket exemption for the file. This list must only ever SHRINK.
+ *
+ *  AND IT HAS, TWICE, BOTH TIMES BY NAME. It landed at six entries (681db275). Four of them were
+ *  the security reference `recurring-no-go-classes.md` -- three agent copies (cybered, cybersec,
+ *  teszter) plus the `seed-skills/` one -- each holding two literal NULs inside a regex character
+ *  class. All four are gone now: rewritten with `\x00` escapes on cards cec36660 and bf67711e,
+ *  which is exactly the follow-up card ee01f7ce flagged as "their call, not a drive-by here". The
+ *  stale assertion below named each one as it happened (`expected 2, found no NUL at all`), which
+ *  is the only reason anyone noticed the pin had gone false.
+ *
+ *  Every one was DELETED rather than re-pinned at 0, and that rule is not cosmetic. This list is a
+ *  set of REVIEWED EXEMPTIONS: a `: 0` entry states "this file holds a deliberate NUL" about a file
+ *  that holds none, and it keeps a name on the exemption list long after anyone decided anything
+ *  about it. A file with no NUL needs no entry -- the undeclared-NUL assertion covers it already,
+ *  and covers it more strictly than any pin could. Deleting is the only form that stays true. */
 const DELIBERATE_NUL: Readonly<Record<string, number>> = {
   // Prose describing an injection test, quoting the literal characters it is about:
   // "when the verdict text quotes an injection/control-char test (literal `<NUL>`, `\x01`, BIDI ...)"
   'seed-fleet-agents/cybered/.claude/skills/cybered-gate-pattern/SKILL.md': 1,
-  // Two regex character classes written with a literal NUL as the range start:
-  // `const FORBIDDEN = /[<NUL>-\x1f\x7f-\x9f‪-‮⁦-⁩]/` and `[<NUL>-\x1f\x7f]`.
-  //
-  // THE LIST SHRANK ON ITS FIRST DAY, which is the whole point of it. Three sibling copies
-  // (cybered, cybersec, teszter) were rewritten hours after this guard landed -- 6434 -> 11607
-  // bytes, literal NULs replaced by escapes -- exactly the follow-up flagged on card ee01f7ce as
-  // "their call, not a drive-by here". The stale-list assertion caught it by name and their entries
-  // were deleted rather than re-pinned at 0, because an entry that says "this file holds a
-  // deliberate NUL" about a file with none is a lie the list must not carry.
-  //
-  // The seed copy was NOT rewritten and still holds its two, so it stays. When it follows, delete
-  // this line too; it must never be updated to 0.
-  'seed-skills/white-hat-security-testing/references/recurring-no-go-classes.md': 2,
   // A test fixture: `for (const content of ['', '<NUL>\x01garbage', '\n\n\n'])` -- the NUL is the
   // input under test, so escaping it here would weaken the test it belongs to.
   'src/__tests__/last-update-badge.test.ts': 1,
