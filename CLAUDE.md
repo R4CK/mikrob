@@ -220,6 +220,8 @@ Minden git repóval rendelkező projekt README-jének "Complete feature list" (v
 
 **Automatikus frissítés:** minden commit után, ami új funkciót ad hozzá, meglévőt módosít, vagy elvesz, a listát UGYANABBAN a munkában (vagy a README-karbantartás szabály szerinti definition-of-done részeként) frissíteni kell -- nem különálló, elmaradható utómunka.
 
+**RBAC-szerepenkénti bontás (Peti 2026-08-15, kiegészítés, KÜLÖN SZEKCIÓ):** a "Complete feature list" alatt, attól elkülönítve legyen egy **"Szerepkörönkénti user story és user flow"** (vagy honosított megfelelő) szekció is: minden RBAC-szerephez (amit a projekt RBAC-mátrixa definiál -- pl. superadmin, tenant-admin, member, guest, stb.) és minden funkcióhoz, amit az adott szerep elér, KÜLÖN user story + user flow, mert ugyanaz a funkció más szerepnél más jogosultsággal/más UI-úton érhető el (pl. superadmin lát mindent cross-tenant, member csak sajátot). Ahol egy szerepnek egy funkcióhoz nincs hozzáférése, azt is jelölni kell (nem hallgatni el, hogy a mátrix onnantól tiltja).
+
 **Léptékkezelés:** ha egy projekt feature-listája nagy (pl. CleanCore, 25+ alszekció, 150+ funkció), a kezdeti feltöltés önálló, dedikált munka -- Fázis/Feladat/alfeladat/lépés bontásban (1. munkavégzési szabály), szekciónként haladva. Ezután minden ÚJ/módosuló funkció a normál definition-of-done része, nem a nagy feltöltés ismétlése.
 
 **Felelős kijelölés:** a kezdeti feltöltést és a user flow-k hitelesítését az végezze, aki a funkciókat élőben, böngészőben végig tudja járni (pl. `teszter`/T Eszter), a frontend-hiány/funkció-hiány jelölés pedig a `user-flow-menu-design` skill logikáját kövesse (wired/needs-wiring/needs-build). Gate: QA (a lista teljessége és pontossága is finding-köteles, ugyanúgy mint a README-pontosság).
