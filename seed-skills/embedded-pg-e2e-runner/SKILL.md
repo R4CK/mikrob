@@ -199,6 +199,21 @@ adatbázis (kártya e91e0b63).
 - a `schema_migrations` táblát a RUNNER hozza létre (`ensureVersionTable`), NEM egy migráció (a 0087
   csak revokál rajta) -- ha kézzel applikálsz, neked kell létrehoznod.
 
+**ÉS HA SZÁNDÉKOSAN a kétszer-applikált esetet akarod előállítani (pl. egy detektort mérsz), a
+kísérlet HAMISAN ZÖLD lehet, mert a szennyezés meg sem történt.** A `migration-idempotency.e2e`
+NEM hozza létre a `cleancore_control` adatbázist -- azt a matrix-e2e csinálja a saját `beforeAll`-jában.
+Ha az idempotency fut ELSŐKÉNT egy olyan példányon, ahol az adatbázis még nincs meg, akkor már az
+1. menet 0010-én elhasal (`GRANT CONNECT ON DATABASE cleancore_control`), tehát semmit nem applikál
+kétszer, és a detektorod tiszta adatbázist mér -- zölden, hibátlanul, semmiről.
+
+Ellenőrizd az idempotency-futás kimenetén, hogy MELYIK menet bukott:
+```
+pass 2: 0055_email_check_collation_pinned.sql is NOT re-applicable   <- JÓ: a szennyezés megtörtént
+pass 1: 0010_audit_appendonly_role.sql ...                            <- ÜRES MÉRÉS: hozd létre a DB-t
+```
+(backend lelete, kártya e91e0b63; nálam azért nem jött elő, mert a provizionálóm létrehozta a
+DB-t a futás előtt -- vagyis a csapda pont annak áll, aki NEM használ külön provizionálót.)
+
 ## Ellenőrzés
 ```bash
 node --experimental-vm-modules run-e2e.mjs
