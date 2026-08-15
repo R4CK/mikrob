@@ -109,12 +109,22 @@ three), 2026-08-15:**
 blobs; they live in `.env`, `store/`, `agents/` — the paths a `.gitignore` names, which is the half
 `-a` leaves shut.
 
-**The exposure is narrower and sharper than "ignored paths are never searched" (measure before you
-repeat it):** the ignore file only prunes TRAVERSAL, so the blind spot is RECURSIVE search from a
-root at or above the `.gitignore` that excludes the target. Measured: root above it → missed; root
-INSIDE the ignored directory → found; the file named explicitly → found (`grep -c level
-store/autonomy-config.json` reports the same 14 as `command grep`). A sweep that `cd`s into `store/`
-is fine; the same sweep from the repo root is not. Review a sweep's ROOT, not only its flags.
+**THE TWO AXES HAVE DIFFERENT SCOPE, and conflating them is how a reader talks themselves into
+trusting a 0-hit (Cybersec NO-GO on the first version of this section, which did exactly that).**
+`--ignore-files` only prunes the TRAVERSAL, so the path blind spot depends on the root: a recursive
+search at or above the `.gitignore` misses the target, while starting from inside the ignored
+directory finds it. `-I` applies to EVERY invocation, including a named file: a file containing a NUL
+is not read even when you name it by hand. Measured on a two-file fixture, no recursion:
+
+| named file | shim `grep -l` | `command grep -l` |
+|---|---|---|
+| `plain.txt` | found | found |
+| `withnul.txt` | **no output, rc=1** | found |
+
+So the root fixes half the problem, not all of it. "I named the file, so I saw it" is false, and the
+fleet has documented NUL-carrying files (card ee01f7ce), so a `grep 'sk-' <file>` returning 0 is a
+real false negative, not a hypothetical one. Review a sweep's ROOT **and** whether it can read a
+binary-looking file.
 
 **And you cannot infer the coverage from reading the `.gitignore`, because which of its rules apply
 depends on how the ROOT IS SPELLED.** Same directory, same ignore file, measured:
