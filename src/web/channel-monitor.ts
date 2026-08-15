@@ -26,8 +26,6 @@ import {
   ensureSharedClaudeOnboarded,
   hasFleetOauthToken,
   FLEET_OAUTH_TOKEN_PATH,
-  hasResendApiKey,
-  RESEND_API_KEY_PATH,
   answerFirstRunGates,
   shSingleQuote,
 } from './agent-process.js'
@@ -646,13 +644,6 @@ export function buildMainSessionRespawnCmd(opts: {
    */
   fleetToken?: boolean
   /**
-   * When true (store/.resend-api-key present), the respawn exports
-   * RESEND_API_KEY so the `resend` MCP server's "Bearer ${RESEND_API_KEY}"
-   * header in ~/.claude.json resolves. Passed in rather than probed here to
-   * keep this builder pure -- same reason as fleetToken.
-   */
-  resendKey?: boolean
-  /**
    * Secondary plugin ids to co-listen on alongside `pluginId`, from
    * readExtraChannelPluginIds(). Omitting them is what silently half-mutes every
    * non-primary channel after a recovery respawn -- see that helper's comment.
@@ -677,8 +668,6 @@ export function buildMainSessionRespawnCmd(opts: {
       : opts.fleetToken
         ? [`&& export CLAUDE_CODE_OAUTH_TOKEN="$(cat '${FLEET_OAUTH_TOKEN_PATH}')"`]
         : []),
-    // Same $(cat) treatment for the Resend key -- see RESEND_API_KEY_PATH.
-    ...(opts.resendKey ? [`&& export RESEND_API_KEY="$(cat '${RESEND_API_KEY_PATH}')"`] : []),
     '&&', opts.claudePath,
     ...(opts.continueSession ? ['--continue'] : []),
     '--dangerously-skip-permissions',
@@ -732,7 +721,6 @@ export function respawnMainSessionFresh(): void {
     continueSession: false,
     isolatedConfigDir: ensureMainAgentIsolatedConfigDir(),
     fleetToken: hasFleetOauthToken(),
-    resendKey: hasResendApiKey(),
   })
   execFileSync(TMUX, ['respawn-pane', '-k', '-t', MAIN_CHANNELS_SESSION, claudeCmd], { timeout: 15000 })
   // Stamp IMMEDIATELY after the respawn, before the scheduling follow-ups.
@@ -805,7 +793,6 @@ export async function resumeMarveenSession(): Promise<boolean> {
       // preserving the prior shared-root behaviour.
       isolatedConfigDir: ensureMainAgentIsolatedConfigDir(),
       fleetToken: hasFleetOauthToken(),
-      resendKey: hasResendApiKey(),
     })
     execFileSync(TMUX, ['respawn-pane', '-k', '-t', MAIN_CHANNELS_SESSION, claudeCmd], { timeout: 15000 })
 
@@ -1018,7 +1005,6 @@ function respawnMarveenSessionFresh(): boolean {
       // itself or it 401s on the rotating macOS Keychain. null when off/no token.
       isolatedConfigDir: ensureMainAgentIsolatedConfigDir(),
       fleetToken: hasFleetOauthToken(),
-      resendKey: hasResendApiKey(),
     })
     execFileSync(TMUX, ['respawn-pane', '-k', '-t', MAIN_CHANNELS_SESSION, claudeCmd], { timeout: 15000 })
     logger.warn({ provider: provider.type }, 'Hard restart: marveen session respawned fresh (no --continue)')

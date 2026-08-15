@@ -531,18 +531,11 @@ if [ -n "$_node_bin" ] && [ -f "$INSTALL_DIR/dist/web/agent-process.js" ]; then
 fi
 unset _node_bin
 
-# The `resend` MCP server's Authorization header is "Bearer ${RESEND_API_KEY}"
-# in every config root (shared ~/.claude.json and the isolated dirs seeded from
-# it) instead of the live key in plaintext -- card 8c2bae37. Claude Code expands
-# ${VAR} in MCP headers from the environment, so supply the value here. $(cat)
-# is evaluated in the launched shell, so the secret never lands in argv/`ps`;
-# empty when the 0600 key file is absent, and the header then simply does not
-# resolve (Resend 401 -- fail-closed, no baked-in fallback). Independent of
-# CFG_ENV: the placeholder is in the shared root too.
-RESEND_ENV=""
-if [ -s "$INSTALL_DIR/store/.resend-api-key" ]; then
-  RESEND_ENV="export RESEND_API_KEY=\"\$(cat '$INSTALL_DIR/store/.resend-api-key')\" && "
-fi
+# NO RESEND_API_KEY EXPORT HERE, DELIBERATELY -- card 691f5475 / 0ea08957, after incident
+# f8db701c. This used to put the live Resend credential in the main session's environment for its
+# whole lifetime; $(cat) kept it out of argv but not out of `env`, and an environment dump pasted
+# into a message is exactly how it leaked. The `resend` MCP server now resolves its own credential
+# at connection time through scripts/vault-headers-helper.sh, so no session needs the value.
 
 # Re-seed hasCompletedOnboarding in the SHARED ~/.claude.json BEFORE launching
 # the main claude. If the key was lost (2026-07-15 bootcamp incident), the
@@ -673,7 +666,7 @@ $TMUX set-environment -g CLAUDE_CODE_ENABLE_PROMPT_SUGGESTION false 2>/dev/null 
 # otherwise new-session below fails with "duplicate session".
 $TMUX kill-session -t "$SESSION" 2>/dev/null || true
 $TMUX new-session -d -s "$SESSION" -c "$INSTALL_DIR" \
-  "${MCP_BATCH_ENV}${CFG_ENV}${RESEND_ENV}$CLAUDE --dangerously-skip-permissions ${MODEL_FLAG}--channels plugin:${PLUGIN_ID}${EXTRA_CHANNELS}"
+  "${MCP_BATCH_ENV}${CFG_ENV}$CLAUDE --dangerously-skip-permissions ${MODEL_FLAG}--channels plugin:${PLUGIN_ID}${EXTRA_CHANNELS}"
 
 # Session startup guard: a Claude Code first-run dialogusait auto-accept-eljuk
 # kulonben a headless session orokre parkolna a prompton es a Telegram plugin
@@ -714,7 +707,7 @@ for i in 1 2 3 4 5 6 7 8 9 10 11 12; do
         # entry); see the PR description / card 7EB18437.
         [ -e "$INSTALL_DIR/CLAUDE.md" ] && ln -sf "$INSTALL_DIR/CLAUDE.md" "$_CHANNELS_STARTDIR/CLAUDE.md" 2>/dev/null || true
         $TMUX new-session -d -s "$SESSION" -c "$_CHANNELS_STARTDIR" \
-          "${MCP_BATCH_ENV}${CFG_ENV}${RESEND_ENV}$CLAUDE --dangerously-skip-permissions ${MODEL_FLAG}--channels plugin:${PLUGIN_ID}${EXTRA_CHANNELS}"
+          "${MCP_BATCH_ENV}${CFG_ENV}$CLAUDE --dangerously-skip-permissions ${MODEL_FLAG}--channels plugin:${PLUGIN_ID}${EXTRA_CHANNELS}"
         unset _CHANNELS_STARTDIR
       fi
       continue
