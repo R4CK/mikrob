@@ -49,6 +49,13 @@ const NON_SENSITIVE_VALUE_PATTERNS = [
   /^\$\{/,
 ]
 
+/**
+ * Where a credential was found. Only `env` findings are auto-bindable: the vault wrapper injects an
+ * environment variable, so a header- or arg-carried secret needs a human decision (usually: move it
+ * behind headersHelper), and the UI must not offer a one-click "sync" that cannot work.
+ */
+export type CredentialCarrier = 'env' | 'headers' | 'args' | 'headersHelper'
+
 export interface ScanFinding {
   mcpFilePath: string
   serverName: string
@@ -57,6 +64,10 @@ export interface ScanFinding {
   suggestedVaultId: string
   alreadyInVault: boolean
   existingVaultId?: string
+  /** Absent means `env` -- older callers predate the other three carriers. */
+  carrier?: CredentialCarrier
+  /** Human-readable spot inside the declaration, e.g. `headers.Authorization` or `args[3]`. */
+  location?: string
 }
 
 export interface SyncResult {
@@ -250,9 +261,98 @@ function looksLikeSensitiveKey(key: string): boolean {
   return SENSITIVE_PATTERNS.some(p => p.test(key))
 }
 
-export function scanMcpConfigs(): ScanFinding[] {
+/**
+ * VALUE-shaped credential detection, for the carriers that have no key name worth reading.
+ *
+ * The env scan asks "is this key called something like a secret" (SENSITIVE_PATTERNS), which works
+ * because env vars are SCREAMING_SNAKE and people name them honestly. That heuristic is useless one
+ * layer over: header names are `Authorization`, `X-Api-Key`, `X-Auth-Token` -- every one of them
+ * scores FALSE against patterns written for `_TOKEN$`/`_KEY$` -- and a CLI arg has no name at all.
+ * So here the VALUE is the evidence: a known token shape, or something with the length and entropy
+ * of a random string. Card 2f42a24d, from Cybersec's finding on 8763e412.
+ */
+const TOKEN_SHAPES = [
+  /^sk-[A-Za-z0-9_-]{16,}$/,          // OpenAI-style
+  /^re_[A-Za-z0-9_-]{16,}$/,          // Resend
+  /^ghp_[A-Za-z0-9]{20,}$/,           // GitHub PAT (classic)
+  /^github_pat_[A-Za-z0-9_]{20,}$/,   // GitHub PAT (fine-grained)
+  /^gh[pousr]_[A-Za-z0-9]{20,}$/,     // the rest of the GitHub family
+  /^xox[baprs]-[A-Za-z0-9-]{10,}$/,   // Slack
+  /^AKIA[0-9A-Z]{16}$/,               // AWS access key id
+  /^AIza[A-Za-z0-9_-]{30,}$/,         // Google API key
+  /^eyJ[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]{8,}\./,  // JWT
+]
+
+/** Shannon entropy per character -- a random token sits around 4+, English prose around 2-3. */
+function shannonEntropy(v: string): number {
+  if (!v) return 0
+  const freq = new Map<string, number>()
+  for (const ch of v) freq.set(ch, (freq.get(ch) ?? 0) + 1)
+  let bits = 0
+  for (const n of freq.values()) {
+    const p = n / v.length
+    bits -= p * Math.log2(p)
+  }
+  return bits
+}
+
+const OPAQUE_TOKEN = /^[A-Za-z0-9+/=_.-]{24,}$/
+
+/**
+ * `model-context-protocol-server-filesystem` shaped: two or more separator-delimited segments that
+ * are all plain lowercase words. Measured, not guessed -- entropy alone put that exact string above
+ * a 3.5 threshold, so length+entropy on their own flag package names as credentials.
+ */
+function looksLikeWords(v: string): boolean {
+  const parts = v.split(/[-._]/).filter(Boolean)
+  return parts.length >= 2 && parts.every(p => /^[a-z]{3,}$/.test(p))
+}
+
+export function looksLikeCredentialValue(raw: string): boolean {
+  const v = (raw ?? '').trim().replace(/^(Bearer|Basic|Token|ApiKey)\s+/i, '')
+  if (!v) return false
+  if (v.startsWith('${') || v.startsWith('vault:')) return false   // already a reference
+  if (/^https?:\/\//.test(v) || v.startsWith('/') || v.startsWith('~/')) return false
+  if (TOKEN_SHAPES.some(p => p.test(v))) return true
+  // Nothing recognisable: fall back to shape. THREE conditions, because any two of them let
+  // something through that measurably matters:
+  //   length alone           -> every package path is a credential
+  //   entropy alone          -> a six-character random string is one, a real 40-char key is not
+  //   without class-mixing   -> `modelcontextprotocol-server-filesystem` scores 3.6 bits and passes
+  if (!OPAQUE_TOKEN.test(v)) return false
+  if (looksLikeWords(v)) return false
+  const classes = [/[a-z]/, /[A-Z]/, /[0-9]/].filter(p => p.test(v)).length
+  return classes >= 2 && shannonEntropy(v) >= 3.0
+}
+
+/**
+ * A CLI arg or a helper command line can carry the secret embedded in a bigger string:
+ *   --header "Authorization: Bearer <token>"      Authorization=Bearer:::ReSend      --key=<token>
+ * so each whitespace-separated word is also tried without its `name=` / `name:` prefix. Both the
+ * whole word and the suffix are tested rather than only the suffix, because base64 padding ends in
+ * `=` and stripping there would truncate a real token into a shorter one.
+ */
+function credentialCandidates(text: string): string[] {
+  const out: string[] = []
+  for (const word of String(text ?? '').split(/[\s"'`,;]+/)) {
+    if (!word) continue
+    out.push(word)
+    const eq = word.lastIndexOf('=')
+    if (eq >= 0 && eq < word.length - 1) out.push(word.slice(eq + 1))
+    const colon = word.lastIndexOf(':')
+    if (colon >= 0 && colon < word.length - 1) out.push(word.slice(colon + 1))
+  }
+  return out
+}
+
+/**
+ * `roots` exists so the scan can be pointed at a fixture directory in a test. Without it the only
+ * way to check that the detector is WIRED -- rather than merely correct in isolation -- would be to
+ * plant a fake credential in the live fleet config, which is the last place to put one.
+ */
+export function scanMcpConfigs(roots: McpFileRoots = {}): ScanFinding[] {
   const findings: ScanFinding[] = []
-  const mcpFiles = collectAllMcpFilePaths()
+  const mcpFiles = collectAllMcpFilePaths(roots)
   const existingSecrets = listSecrets()
 
   const vaultValues = new Map<string, string>()
@@ -282,7 +382,52 @@ export function scanMcpConfigs(): ScanFinding[] {
             suggestedVaultId: `${serverName}-${envVar}`,
             alreadyInVault: !!existingVaultId,
             existingVaultId,
+            carrier: 'env',
+            location: `env.${envVar}`,
           })
+        }
+
+        // The other three carriers. `headers` is empty across every declaration today, which is the
+        // reason to add it now rather than later: the scan going quiet on the NEXT remote server is
+        // not something anyone would notice.
+        const push = (carrier: CredentialCarrier, location: string, value: string): void => {
+          const existingVaultId = vaultValues.get(value)
+          findings.push({
+            mcpFilePath: mcpPath,
+            serverName,
+            envVar: location,
+            maskedValue: maskValue(value),
+            suggestedVaultId: `${serverName}-${location.replace(/[^A-Za-z0-9]+/g, '-')}`,
+            alreadyInVault: !!existingVaultId,
+            existingVaultId,
+            carrier,
+            location,
+          })
+        }
+
+        for (const [header, headerVal] of Object.entries(cfg?.headers ?? {}) as Array<[string, string]>) {
+          if (looksLikeCredentialValue(String(headerVal))) {
+            push('headers', `headers.${header}`, String(headerVal))
+          }
+        }
+
+        const args: unknown[] = Array.isArray(cfg?.args) ? cfg.args : []
+        args.forEach((arg, i) => {
+          for (const candidate of credentialCandidates(String(arg))) {
+            if (looksLikeCredentialValue(candidate)) {
+              push('args', `args[${i}]`, candidate)
+              return   // one finding per arg: the same token would otherwise report twice
+            }
+          }
+        })
+
+        if (typeof cfg?.headersHelper === 'string') {
+          for (const candidate of credentialCandidates(cfg.headersHelper)) {
+            if (looksLikeCredentialValue(candidate)) {
+              push('headersHelper', 'headersHelper', candidate)
+              break
+            }
+          }
         }
       }
     } catch { /* skip unreadable files */ }
