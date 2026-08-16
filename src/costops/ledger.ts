@@ -362,7 +362,7 @@ export function getTokenCostByAgentDay(
 
   const byAgentDay = new Map<string, AgentDayCost>()
   for (const r of raw) {
-    const key = `${r.agent} ${r.day}`
+    const key = `${r.agent}|${r.day}`
     let acc = byAgentDay.get(key)
     if (!acc) {
       acc = { agent: r.agent, day: r.day, estimated_cost_usd: 0, priced_calls: 0, unpriced_calls: 0, unpriced_tokens: 0 }
