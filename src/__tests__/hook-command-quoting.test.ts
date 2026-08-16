@@ -156,7 +156,11 @@ describe.skipIf(REPO_UNDER_TMP)('ensure* migrations are idempotent (true, then f
     )
     expect(egress, 'replaced in place, not appended alongside the stale entry').toHaveLength(1)
     expect(egress[0]?.matcher).toBe(EGRESS_GATE_MATCHER)
-    expect(new RegExp(EGRESS_GATE_MATCHER).test('mcp__firecrawl__firecrawl_scrape')).toBe(true)
+    // ANCHORED on purpose: Claude Code matches the matcher against the whole tool name, so an
+    // unanchored proxy here passed for a bare `mcp__firecrawl__` prefix that fired for nothing.
+    expect(
+      new RegExp(`^(?:${EGRESS_GATE_MATCHER})$`).test('mcp__firecrawl__firecrawl_scrape')
+    ).toBe(true)
     // ...and it settles: a second call has nothing left to do.
     expect(ensureEgressGate(TEST_AGENT), 'the migration must be idempotent once current').toBe(
       false

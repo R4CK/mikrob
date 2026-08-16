@@ -449,8 +449,16 @@ export function injectSelfPaceGate(existing: Record<string, unknown>): void {
 // that exfiltrates data via an outbound WebFetch, and the main agent faces the
 // same risk as sub-agents. Same dedupe shape as the other gate injectors.
 /** Tool names the egress gate must be INVOKED for. Exported so the migration below can detect a
- *  stale matcher on an already-wired agent, and so tests can assert the two ends agree. */
-export const EGRESS_GATE_MATCHER = 'WebFetch|mcp__firecrawl__'
+ *  stale matcher on an already-wired agent, and so tests can assert the two ends agree.
+ *
+ *  The `.*` is load-bearing. Claude Code matches this string against the WHOLE tool name, so the
+ *  bare prefix `mcp__firecrawl__` matched nothing -- there is no tool called exactly that. Measured
+ *  live on 2026-08-16 in a session started AFTER the migration: `firecrawl_scrape` on an
+ *  off-allowlist host returned 200 with content and appended no line to the block log, while
+ *  `WebFetch` to the same host from the same session was denied by this very hook. The official
+ *  hook docs shipped with the CLI say the same thing by example -- every namespace pattern there is
+ *  written `mcp__.*`, `mcp__plugin_asana_.*`, `mcp__.*__delete.*`, never a bare prefix. */
+export const EGRESS_GATE_MATCHER = 'WebFetch|mcp__firecrawl__.*'
 
 export function injectEgressGate(existing: Record<string, unknown>): void {
   const hooks = (existing.hooks && typeof existing.hooks === 'object'

@@ -191,9 +191,13 @@ describe('isEgressBlocked', () => {
     // Measured on the live agents/backend/.claude/settings.json before the fix -- matcher "WebFetch".
     //
     // This asserts the two ends agree, using the matcher as a JS regex. That is a PROXY for Claude
-    // Code's own matching, not a reproduction of it -- said out loud because the proxy is the part a
-    // future reader should distrust first.
-    const re = new RegExp(EGRESS_GATE_MATCHER)
+    // Code's own matching, not a reproduction of it -- and the proxy was WRONG, in the one way that
+    // let the gate ship inert: it was unanchored, so `mcp__firecrawl__` "matched"
+    // `mcp__firecrawl__firecrawl_scrape` here and matched nothing at all in Claude Code, which
+    // compares against the WHOLE tool name. Measured 2026-08-16: an off-allowlist scrape returned
+    // 200 while WebFetch from the same session was denied. The proxy is anchored now, which is what
+    // makes a bare prefix fail HERE too.
+    const re = new RegExp(`^(?:${EGRESS_GATE_MATCHER})$`)
     for (const tool of [
       'WebFetch',
       'mcp__firecrawl__firecrawl_scrape',
@@ -202,6 +206,11 @@ describe('isEgressBlocked', () => {
       'mcp__firecrawl__firecrawl_crawl',
     ]) {
       expect(re.test(tool), `${tool} would never reach the gate`).toBe(true)
+    }
+    // Negative control: without this, a matcher of `.*` would satisfy every assertion above while
+    // firing the gate on every tool call in the fleet.
+    for (const tool of ['Bash', 'WebSearch', 'Read', 'mcp__playwright__browser_navigate']) {
+      expect(re.test(tool), `${tool} must not drag the egress gate into every call`).toBe(false)
     }
     const settings: Record<string, unknown> = {}
     injectEgressGate(settings)
@@ -418,7 +427,7 @@ describe('injectEgressGate (source-level checks)', () => {
     // still among the tools it fires on, which a careless widening could drop.
     expect(scaffoldSrc).toContain('EGRESS_GATE_MATCHER')
     expect(scaffoldSrc).toContain('egress-gate.mjs')
-    expect(new RegExp(EGRESS_GATE_MATCHER).test('WebFetch')).toBe(true)
+    expect(new RegExp(`^(?:${EGRESS_GATE_MATCHER})$`).test('WebFetch')).toBe(true)
   })
 
   it('injectEgressGate is called unconditionally in writeAgentSettingsFromProfile (no main-agent exemption)', () => {
