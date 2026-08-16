@@ -412,6 +412,22 @@ const SHAPE_SIGNALS: ReadonlyArray<readonly [NonOffloadableCategory, RegExp]> = 
   // frequency defect classes. Deliberately guard-noun-FREE.
   // (1) granting access / letting a request through.
   ['authz', new RegExp(`\\b(?:${verbAlternation('grant', 'allow', 'permit', 'authorize', 'authorise', 'let')})\\b[^.]{0,35}\\b(access|request|through|user|users|caller|everyone|anyone|any user)\\b`)],
+  // (1b) the SAME grant-family sentence in the passive voice, subject-first: "access is granted to
+  // the caller", "the request is permitted through". Same shape as (3b) below (card 339d7d0b) --
+  // MikroB's correction on card 0f1e9fa9: NOT a recipient-noun vocabulary gap (nouns cannot be
+  // stemmed from a verb the way verbAlternation() does) -- rule (1) requires the bag-word AFTER the
+  // verb within 35 chars, and passive voice puts it BEFORE. Measured: "...access is granted to the
+  // support team." and "...access is granted to the role." both stayed LOCAL even though "access"
+  // was already in the bag-word list, because the verb-then-noun order never matched. Zero new
+  // vocabulary -- reuses the SAME bag-word list and the SAME verbAlternation() call as (1).
+  [
+    'authz',
+    new RegExp(
+      `\\b(access|request|through|user|users|caller|everyone|anyone|any user)\\b` +
+        `[^.]{0,25}\\b(?:is|are|was|were|gets?|being)\\b[^.]{0,15}` +
+        `\\b(?:${verbAlternation('grant', 'allow', 'permit', 'authorize', 'authorise', 'let')})\\b`,
+    ),
+  ],
   // (2) treating one thing AS a more privileged thing.
   ['authz', new RegExp(`\\b(?:${verbAlternation('treat', 'interpret', 'consider', 'count', 'regard', 'map')})\\b[^.]{0,45}\\bas\\b[^.]{0,25}\\b(owner|admin|administrator|superuser|root|all|everyone|public|authorized|authorised|valid|trusted|allowed)\\b`)],
   // (3) ceasing to apply a control -- stated as an activity, not a named artifact.
@@ -445,7 +461,19 @@ const SHAPE_SIGNALS: ReadonlyArray<readonly [NonOffloadableCategory, RegExp]> = 
   // (4) an explicitly unscoped/unfiltered result set.
   ['isolation', /\b(unfiltered|unscoped|unrestricted|without filtering|without scoping|without the filter|across all tenants|for all tenants|regardless of (the )?(owner|tenant|site|user|company))\b/],
   // (5) moving a server-side control to an untrusted client.
-  ['security-decision', /\b(move|moves|moving|shift|shifts|relocate|push|pushes)\b[^.]{0,45}\b(validation|validate|check|checks|authorization|authorisation|authz|auth|permission)\w*\b[^.]{0,35}\b(client|frontend|front-end|browser|ui)\b/],
+  //
+  // The verb group was hand-listed (move|moves|moving|shift|...) and, like the OUTCOME family
+  // before card 339d7d0b, missing the past participle -- "moved", "shifted", "relocated", "pushed"
+  // were all absent, so "The check was moved to the browser." stayed LOCAL. Card 0f1e9fa9 (MikroB):
+  // migrated to the SAME verbAlternation() generator (1)/(2)/(3) already use, zero new vocabulary.
+  [
+    'security-decision',
+    new RegExp(
+      `\\b(?:${verbAlternation('move', 'shift', 'relocate', 'push')})\\b[^.]{0,45}` +
+        `\\b(validation|validate|check|checks|authorization|authorisation|authz|auth|permission)\\w*\\b[^.]{0,35}` +
+        `\\b(client|frontend|front-end|browser|ui)\\b`,
+    ),
+  ],
   // --- WIDENING family (card c1661fff, Cybered) -------------------------------------------------
   // Every rule above is tuned to the REMOVAL grammar (remove/skip/bypass a check, drop a filter).
   // A row-scope/tenant-isolation removal can just as easily be phrased as an EXPANSION -- nothing
@@ -453,7 +481,18 @@ const SHAPE_SIGNALS: ReadonlyArray<readonly [NonOffloadableCategory, RegExp]> = 
   // local this way: "return rows for every company, not just the current one"; "widen the query so
   // a foreman sees all crews"; "open any work order, not only their own".
   // (6) an explicit widen/broaden/expand verb next to a scope-shaped noun.
-  ['isolation', /\b(widen|widens|widening|broaden|broadens|broadening|expand|expands|expanding)\b[^.]{0,50}\b(quer(?:y|ies)|scope|filter|filtering|access|visibility|results?|rows?|records?|endpoint)\b/],
+  //
+  // Same gap as (5): the hand-listed verb group had no past participle -- "widened", "broadened",
+  // "expanded" were all absent, so "The query was widened so a foreman sees all crews." (the exact
+  // card Cybered wrote this family for, c1661fff) stayed LOCAL. Migrated to verbAlternation() (card
+  // 0f1e9fa9, MikroB), zero new vocabulary.
+  [
+    'isolation',
+    new RegExp(
+      `\\b(?:${verbAlternation('widen', 'broaden', 'expand')})\\b[^.]{0,50}` +
+        `\\b(quer(?:y|ies)|scope|filter|filtering|access|visibility|results?|rows?|records?|endpoint)\\b`,
+    ),
+  ],
   // (7) every/all/any + a tenant-or-resource noun, qualified by "not just/only" (or its siblings)
   // -- the noun alone is too generic (any/all USER input is fine), the QUALIFIER is what marks this
   // as a scope being widened past its current boundary rather than a plain plural reference.
