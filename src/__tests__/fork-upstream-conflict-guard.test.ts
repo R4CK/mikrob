@@ -105,14 +105,39 @@ const SKIP_REASON =
   '(no network, or CI has no upstream fetch access). This guard needs a live upstream fetch, so it ' +
   'skips rather than false-failing on an environment limitation.'
 
+// Pure, so both states are unit-testable without touching real network reachability (card
+// d359535c, Cybered's finding): the old META test asserted only `typeof canRun === 'boolean'`,
+// which is true whichever way canRun goes -- it could never distinguish armed from skipped, so a
+// suite with a dead upstream remote read exactly as green as one with a live one, and the only
+// trace of the difference was a console.log line most CI views never surface.
+//
+// The fix does NOT make the guard fail when skipped -- that would reopen exactly the false-red-on-
+// an-environment-limitation problem this file's header comment already rejected (same discipline as
+// REPO_UNDER_TMP-gated suites: skip, do not false-fail, when the precondition is an environment
+// fact rather than a code defect). Instead the skip state is baked into the TEST'S OWN NAME, which
+// every reporter shows (console list, JUnit XML, GitHub Actions summary) -- unlike a console.log
+// line, a test name cannot be collapsed or filtered out of a green run's summary.
+export function metaAnnouncement(armed: boolean): { name: string; message: string } {
+  return armed
+    ? {
+        name: 'META: ARMED -- upstream reachable, the merge-conflict guard below actually ran',
+        message:
+          '[fork-upstream-conflict-guard] ARMED -- upstream reachable, running the real merge dry-run.',
+      }
+    : {
+        name: 'META: SKIPPED -- the merge-conflict guard below did NOT run this pass (no upstream reachability)',
+        message: `[fork-upstream-conflict-guard] SKIPPED -- ${SKIP_REASON}`,
+      }
+}
+
+const META = metaAnnouncement(canRun)
+
 describe('fork/upstream web-file merge-conflict guard (card 641aca3f)', () => {
-  it('META: states whether the network-dependent guard below is armed or skipped', () => {
-    console.log(
-      canRun
-        ? '[fork-upstream-conflict-guard] ARMED -- upstream reachable, running the real merge dry-run.'
-        : `[fork-upstream-conflict-guard] SKIPPED -- ${SKIP_REASON}`,
-    )
-    expect(typeof canRun).toBe('boolean')
+  it(META.name, () => {
+    console.log(META.message)
+    // Content check, not a type check: pins the message to the SAME state the test name reports,
+    // so the two cannot drift apart silently.
+    expect(META.message).toContain(canRun ? 'ARMED' : 'SKIPPED')
   })
 
   it.skipIf(!canRun)(
@@ -182,4 +207,28 @@ describe('fork/upstream web-file merge-conflict guard (card 641aca3f)', () => {
       }
     },
   )
+})
+
+// Always runs, no network involved: pins BOTH states of metaAnnouncement() deterministically (card
+// d359535c). The live META test above can only ever exercise whichever state this environment
+// happens to be in right now -- these two cases are what actually prove the skip path produces a
+// distinct, loud test name rather than silently reusing the armed one.
+describe('metaAnnouncement (card d359535c: the skip state must be loud, not just typeof-boolean)', () => {
+  it('armed: the name says ARMED and the message matches', () => {
+    const a = metaAnnouncement(true)
+    expect(a.name).toContain('ARMED')
+    expect(a.name).not.toContain('SKIPPED')
+    expect(a.message).toContain('ARMED')
+  })
+
+  it('skipped: the name says SKIPPED and the message matches -- this is what used to be invisible', () => {
+    const a = metaAnnouncement(false)
+    expect(a.name).toContain('SKIPPED')
+    expect(a.name).not.toContain('ARMED')
+    expect(a.message).toContain('SKIPPED')
+  })
+
+  it('the two states never produce the same test name (armed cannot masquerade as skipped or vice versa)', () => {
+    expect(metaAnnouncement(true).name).not.toBe(metaAnnouncement(false).name)
+  })
 })
