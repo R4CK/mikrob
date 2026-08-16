@@ -64,16 +64,17 @@ function serveIndexHtml(ctx: RouteContext, webDir: string): void {
   try {
     const filePath = join(webDir, 'index.html')
     const s = statSync(filePath)
-    // Both versioned asset tokens are part of the index ETag: a cached
-    // index.html must be invalidated whenever the rewritten ?v= URLs change.
-    const etag = `"${s.mtimeMs}-${s.size}-${assetVersion(webDir, 'app.js')}-${assetVersion(webDir, 'style.css')}"`
-    const ifNoneMatch = req.headers['if-none-match']
-    if (ifNoneMatch === etag) {
-      res.writeHead(304, { ETag: etag, 'Cache-Control': 'no-cache' })
-      res.end()
-      return
-    }
-    const html = readFileSync(filePath, 'utf-8')
+    const rawHtml = readFileSync(filePath, 'utf-8')
+    // Every /app-<slice>.js reference gets its OWN mtime+size token, same as app.js/style.css
+    // below (card 787e5f62): before this, only app.js and style.css were cache-busted, so the 40+
+    // modular slice files this app.js-splitting epic produced were served unversioned. A browser
+    // could keep an old slice cached past a deploy and mix it with a new app.js -- Peti's live
+    // incident, 2026-08-16 (blanket 401s + a TypeError from a slice that no longer matched app.js's
+    // expectations). Collected here so every token can also fold into the index ETag below: an
+    // index.html that 304s must mean NOTHING it references changed, slices included, or a client
+    // could keep a cached index.html whose slice URLs never update after a deploy either.
+    const sliceVersions: string[] = []
+    const html = rawHtml
       .replace(
         /(<script\s+src=")\/app\.js(")/,
         `$1/app.js?v=${assetVersion(webDir, 'app.js')}$2`,
@@ -84,6 +85,12 @@ function serveIndexHtml(ctx: RouteContext, webDir: string): void {
         /(<link\s+rel="stylesheet"\s+href=")\/style\.css(")/,
         `$1/style.css?v=${assetVersion(webDir, 'style.css')}$2`,
       )
+      .replace(/(<script\s+src=")\/app-([a-z0-9-]+\.js)(")/g, (_m, pre: string, rest: string, post: string) => {
+        const fileName = `app-${rest}`
+        const v = assetVersion(webDir, fileName)
+        sliceVersions.push(v)
+        return `${pre}/${fileName}?v=${v}${post}`
+      })
       // Bake the iOS home-screen label into apple-mobile-web-app-title so an
       // installed PWA shows the configured main-agent name (BRAND_NAME), not the
       // bundled "Marveen" default. Done server-side (not JS) so it is reliable
@@ -111,6 +118,16 @@ function serveIndexHtml(ctx: RouteContext, webDir: string): void {
         /(<div class="sidebar-brand-name" id="sidebarBrandName">)[^<]*(<\/div>)/,
         `$1${escapeAttr(BRAND_NAME)}$2`,
       )
+    // Every versioned asset token is part of the index ETag -- app.js, style.css and now every
+    // slice -- so a cached index.html is invalidated whenever ANY rewritten ?v= URL it carries
+    // would change, not just the two that used to be tracked.
+    const etag = `"${s.mtimeMs}-${s.size}-${assetVersion(webDir, 'app.js')}-${assetVersion(webDir, 'style.css')}-${sliceVersions.join('-')}"`
+    const ifNoneMatch = req.headers['if-none-match']
+    if (ifNoneMatch === etag) {
+      res.writeHead(304, { ETag: etag, 'Cache-Control': 'no-cache' })
+      res.end()
+      return
+    }
     res.writeHead(200, {
       'Content-Type': MIME['.html'],
       ETag: etag,
