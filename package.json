@@ -14,6 +14,7 @@
     "dashboard-user": "tsx scripts/dashboard-user.ts",
     "test": "vitest run",
     "typecheck": "tsc --noEmit",
+    "lint": "eslint src",
     "syntax-check": "node --check web/app.js web/sw.js",
     "smoke": "playwright test --config=playwright.config.ts"
   },
@@ -38,8 +39,10 @@
     "@types/react": "^19.2.18",
     "@types/react-dom": "^19.2.4",
     "@vitejs/plugin-react": "^4.7.0",
+    "eslint": "^10.8.1",
     "tsx": "^4.19.0",
     "typescript": "^5.7.0",
+    "typescript-eslint": "^8.67.0",
     "vite": "^5.4.21",
     "vitest": "^2.1.0"
   },
