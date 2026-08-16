@@ -51,13 +51,16 @@ function sandbox(stepSource: string, opts: { fakeTailscaleOnPath?: boolean; stat
   return { dir, bin, script }
 }
 
+// Absolute path so spawnSync's own executable lookup doesn't depend on the scoped PATH below.
+const BASH = spawnSync('command', ['-v', 'bash'], { encoding: 'utf-8', shell: '/bin/sh' }).stdout.trim() || '/usr/bin/bash'
+
 function run(script: string, bin: string, opts: { stdin?: string; extraBin?: string } = {}) {
   // Deliberately NO /usr/bin or /bin here: this host has a real tailscale binary installed
   // system-wide, and letting it leak onto PATH would silently defeat the "not installed" cases.
   // bash's own needs (read, echo, source, printf, [[ ]]) are all builtins -- no external PATH
   // dependency for the sentinel-bounded step itself.
   const path = [opts.extraBin, bin].filter(Boolean).join(':')
-  return spawnSync('bash', [script], {
+  return spawnSync(BASH, [script], {
     encoding: 'utf-8',
     input: opts.stdin ?? '\n',
     env: { PATH: path, HOME: process.env.HOME ?? '', LANG_FILE_PATH: LANG_FILE, MARVEEN_LANG: 'hu' },
