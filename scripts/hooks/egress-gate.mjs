@@ -10,24 +10,25 @@
 // Two-tier allowlist:
 //   1. Built-in (ALLOWED_PREFIXES): hard-coded, always enforced.
 //   2. Runtime (store/egress-allowlist.json): operator-managed, loaded on each
-//      invocation. Shape: { "domains": ["example.com"], "prefixes": ["https://host/path/"] }
-//      Both keys are optional. Missing file or malformed JSON -> treated as empty
-//      lists (FAIL-OPEN on the file, FAIL-SAFE on the decision: the built-in list
-//      still guards; no extra URLs are allowed merely because the file is missing).
+//      invocation. Shape: { "domains": ["example.com"], "prefixes": ["https://host/path/"],
+//      "quarantine_domains": ["feeds.example.org"] }. All keys optional. Missing file or
+//      malformed JSON -> treated as empty lists (FAIL-OPEN on the file, FAIL-SAFE on the
+//      decision: the built-in list still guards; no extra URLs are allowed merely because
+//      the file is missing).
 //
-// When a URL is not on either allowlist:
+// When a URL is not on any allowlist tier:
 //   - The tool call is HARD-BLOCKED (decision: deny).
 //   - The blocked call is appended to EGRESS_BLOCK_LOG for operator review.
 //   - The operator can approve the URL/domain: add it to store/egress-allowlist.json,
-//     then re-run the WebFetch. No restart required.
+//     then re-run the call. No restart required.
 //
 // The log is separate from the main Marveen log so operators can grep it
 // independently: `tail -f store/egress-blocked.log`
 //
-// Scope: this guard covers the Claude Code WebFetch tool AND the Firecrawl MCP
-// fetch tools (card 91c4a369, Cybersec blocking precondition 4). It does NOT
-// intercept WebSearch or curl/Bash network calls; those channels are out of
-// scope for this hook mechanism and require separate controls if needed.
+// Scope: this guard covers the Claude Code WebFetch tool AND the Firecrawl MCP fetch
+// tools (card 91c4a369, Cybersec blocking precondition 4). It does NOT intercept
+// WebSearch or curl/Bash network calls; those channels are out of scope for this hook
+// mechanism and require separate controls if needed.
 //
 // WHY THE FIRECRAWL TOOLS ARE HERE. The condition below used to read
 // `toolName !== 'WebFetch'`, so a Firecrawl scrape carried no URL past this
@@ -59,6 +60,29 @@
 // A default-allow here would mean each of the other 25 stays reachable until
 // someone remembers to name it, which is the shape of every gap this file
 // exists to close.
+//
+// THE QUARANTINE TIER. The block message above tells the caller to fetch through the
+// quarantine-reader sub-agent -- and until this tier existed, this same hook blocked that
+// sub-agent too, so the escape hatch the gate prescribed was one the gate closed
+// (kanban #224). A sub-agent's PreToolUse payload carries a field a main agent's does
+// not: `agent_type` (measured 2026-08-03). `agentType` is what separates the tiers, and
+// it gates BOTH channels this file judges -- WebFetch and the two URL-bearing Firecrawl
+// tools -- because the quarantine-reader sub-agent's own `tools:` line lists
+// firecrawl_scrape/firecrawl_map alongside WebFetch; a tier that only widened WebFetch
+// would leave the sub-agent's other declared tool still hitting the ordinary allowlist.
+//
+// FAIL-CLOSED: only an exact `agent_type` match opens this tier. A missing, empty,
+// unknown or misspelled value is treated as a main agent, i.e. blocked. A mistake here
+// can only deny a fetch, never grant one.
+//
+// The domain list mirrors the one in the sub-agent's own definition
+// (templates/sub-agents/quarantine-reader.md). That copy is a promise the sub-agent
+// makes to itself in its prompt; this one is enforcement. Keep them in step -- and when
+// they disagree, this file is the one that decides.
+//
+// AUDITED, NOT SILENT. The quarantine tier is the one grant a main agent cannot obtain,
+// so every use of it (WebFetch or a Firecrawl scrape/map) leaves an ALLOWED_QUARANTINE
+// line next to the denials -- the ordinary allowlist tiers stay quiet, same as before.
 
 import { readFileSync, appendFileSync, mkdirSync } from 'node:fs'
 import { realpathSync } from 'node:fs'
@@ -118,32 +142,45 @@ const ALLOWED_PREFIXES = [
   `http://127.0.0.1:${DASHBOARD_PORT}/`,
 ]
 
-// Load the runtime allowlist from store/egress-allowlist.json.
-// FAIL-OPEN on the file: missing or malformed -> empty lists, NOT an error.
-// The caller must still apply the built-in ALLOWED_PREFIXES.
-export function loadRuntimeAllowlist() {
+// The quarantine tier's domain list -- see the header comment for the full rationale.
+const QUARANTINE_AGENT_TYPE = 'quarantine-reader'
+
+// `path` (optional) narrows a domain to the URLs the sub-agent's definition
+// actually promises. Reddit is the reason it exists: the definition allows RSS
+// feeds only, and hostname matching alone would hand over the entire site.
+const QUARANTINE_DOMAINS = [
+  { domain: 'status.anthropic.com' },
+  { domain: 'status.claude.com' },
+  { domain: 'feeds.feedburner.com' },
+  { domain: 'rss.arxiv.org' },
+  { domain: 'export.arxiv.org' },
+  { domain: 'hnrss.org' },
+  { domain: 'feeds.arstechnica.com' },
+  { domain: 'techcrunch.com' },
+  { domain: 'feeds.reuters.com' },
+  { domain: 'feeds.bbci.co.uk' },
+  { domain: 'www.reddit.com', path: (p) => p.endsWith('.rss') },
+]
+
+function matchesQuarantineDomain(url, extraDomains = []) {
+  let parsed
   try {
-    const raw = readFileSync(RUNTIME_ALLOWLIST_PATH, 'utf-8')
-    const parsed = JSON.parse(raw)
-    return {
-      domains: Array.isArray(parsed.domains) ? parsed.domains.filter((d) => typeof d === 'string') : [],
-      prefixes: Array.isArray(parsed.prefixes) ? parsed.prefixes.filter((p) => typeof p === 'string') : [],
-    }
+    parsed = new URL(url)
   } catch {
-    // Missing file or JSON parse error: treat as empty, never propagate.
-    return { domains: [], prefixes: [] }
+    return false
   }
+  const hostMatches = (d) => parsed.hostname === d || parsed.hostname.endsWith('.' + d)
+  for (const entry of QUARANTINE_DOMAINS) {
+    if (!hostMatches(entry.domain)) continue
+    if (entry.path && !entry.path(parsed.pathname)) return false
+    return true
+  }
+  // Operator additions carry no path rule: an entry someone typed into the
+  // store file is a deliberate act, and second-guessing its shape here would
+  // only make the file's behaviour harder to predict.
+  return extraDomains.some(hostMatches)
 }
 
-// Pure decision: allowed (false) or blocked (true)?
-//
-// `runtimeList` is the decoded store/egress-allowlist.json (or any equivalent
-// object). Keeping file I/O out of this function makes it fully unit-testable
-// without touching the filesystem.
-//
-// Domain matching uses URL-parsed hostname ONLY, not string-contains, to prevent
-// bypasses like `https://evil.com/?x=docs.anthropic.com` matching the domain
-// "docs.anthropic.com" via a simple includes() check.
 /** Firecrawl tools that carry a required `url` and can therefore be judged by the same rules as
  *  WebFetch. Anything else in the namespace is denied outright -- see the header. */
 const FIRECRAWL_URL_TOOLS = new Set([
@@ -193,31 +230,81 @@ export function firecrawlDisallowedParams(toolName, toolInput) {
   return Object.keys(toolInput ?? {}).filter((k) => !FIRECRAWL_SCRAPE_ALLOWED_KEYS.has(k))
 }
 
-export function isEgressBlocked(toolName, toolInput, runtimeList = { domains: [], prefixes: [] }) {
+// Load the runtime allowlist from store/egress-allowlist.json.
+// FAIL-OPEN on the file: missing or malformed -> empty lists, NOT an error.
+// The caller must still apply the built-in ALLOWED_PREFIXES.
+export function loadRuntimeAllowlist() {
+  try {
+    const raw = readFileSync(RUNTIME_ALLOWLIST_PATH, 'utf-8')
+    const parsed = JSON.parse(raw)
+    return {
+      domains: Array.isArray(parsed.domains) ? parsed.domains.filter((d) => typeof d === 'string') : [],
+      prefixes: Array.isArray(parsed.prefixes) ? parsed.prefixes.filter((p) => typeof p === 'string') : [],
+      // Operator-managed extension of the QUARANTINE tier. Reachable ONLY by
+      // the quarantine-reader sub-agent -- putting a domain here does not open
+      // it to the main agent, which is the whole point of the split.
+      quarantineDomains: Array.isArray(parsed.quarantine_domains)
+        ? parsed.quarantine_domains.filter((d) => typeof d === 'string')
+        : [],
+    }
+  } catch {
+    // Missing file or JSON parse error: treat as empty, never propagate.
+    return { domains: [], prefixes: [], quarantineDomains: [] }
+  }
+}
+
+// Pure decision, with the tier that decided it.
+//
+// `runtimeList` is the decoded store/egress-allowlist.json (or any equivalent object) and
+// `agentType` is the payload's `agent_type` -- empty for a main agent. Keeping file I/O out
+// of this function makes it fully unit-testable without touching the filesystem.
+//
+// The tier is returned because the quarantine tier is the security-relevant exception and
+// its grants are audited: a fetch nobody can see is a hole nobody can find.
+//
+// Domain matching uses URL-parsed hostname ONLY, not string-contains, to prevent
+// bypasses like `https://evil.com/?x=docs.anthropic.com` matching the domain
+// "docs.anthropic.com" via a simple includes() check.
+export function egressDecision(
+  toolName,
+  toolInput,
+  runtimeList = { domains: [], prefixes: [], quarantineDomains: [] },
+  agentType = '',
+) {
   const name = String(toolName ?? '')
   const isFirecrawl = name.startsWith(FIRECRAWL_PREFIX)
-  // Default-deny inside the Firecrawl namespace: a tool that is not one of the two URL-bearing ones
-  // cannot be checked against a hostname allowlist, so there is no version of "allowed" for it here.
-  if (isFirecrawl && !FIRECRAWL_URL_TOOLS.has(name)) return true
-  // Same default-deny, one level in: a permitted tool called with a parameter we have not cleared.
-  if (firecrawlDisallowedParams(name, toolInput).length > 0) return true
-  if (name !== 'WebFetch' && !isFirecrawl) return false
+
+  // Default-deny inside the Firecrawl namespace: a tool that is not one of the two URL-bearing
+  // ones cannot be checked against a hostname allowlist, so there is no version of "allowed" for
+  // it here -- not even for the quarantine-reader (its own `tools:` line never lists these).
+  if (isFirecrawl && !FIRECRAWL_URL_TOOLS.has(name)) {
+    return { blocked: true, tier: 'firecrawl-namespace-denied' }
+  }
+  // Same default-deny, one level in: a permitted Firecrawl tool called with a parameter we have
+  // not cleared (actions/skipTlsVerification/profile/proxy -- JS-exec/exfiltration risk, card
+  // 91c4a369). Checked before the host is even looked at: an approved host does not clear a
+  // disallowed parameter.
+  if (firecrawlDisallowedParams(name, toolInput).length > 0) {
+    return { blocked: true, tier: 'firecrawl-param-denied' }
+  }
+  if (name !== 'WebFetch' && !isFirecrawl) return { blocked: false, tier: 'not-webfetch' }
+
   const url = String(toolInput?.url ?? '')
   // A URL-bearing tool invoked WITHOUT a url is a call this gate cannot judge, so it is denied.
   // WebFetch keeps its historical behaviour (nothing to fetch, nothing to block) because a missing
   // url there is a malformed call the tool itself rejects; for Firecrawl the field is REQUIRED by
   // the schema, so its absence means the input is not what we think it is.
-  if (!url) return isFirecrawl
+  if (!url) return { blocked: isFirecrawl, tier: isFirecrawl ? 'firecrawl-missing-url' : 'no-url' }
 
   // 1. Built-in prefix check (startsWith is correct here: the prefix already
   //    includes the trailing slash so a prefix-extension attack is impossible,
   //    e.g. 'https://api.github.com.evil.com/' does not start with
   //    'https://api.github.com/').
-  if (ALLOWED_PREFIXES.some((prefix) => url.startsWith(prefix))) return false
+  if (ALLOWED_PREFIXES.some((prefix) => url.startsWith(prefix))) return { blocked: false, tier: 'builtin' }
 
   // 2. Runtime prefix check.
   const rtPrefixes = runtimeList.prefixes ?? []
-  if (rtPrefixes.some((p) => url.startsWith(p))) return false
+  if (rtPrefixes.some((p) => url.startsWith(p))) return { blocked: false, tier: 'runtime-prefix' }
 
   // 3. Runtime domain check: parse the URL to extract a verified hostname.
   //    URL parsing fails on non-URLs -> block (fail-safe).
@@ -228,20 +315,51 @@ export function isEgressBlocked(toolName, toolInput, runtimeList = { domains: []
       hostname = new URL(url).hostname
     } catch {
       // Unparseable URL: block, don't throw.
-      return true
+      return { blocked: true, tier: 'unparseable' }
     }
     // Match exact hostname OR any subdomain (host.endsWith('.' + domain)).
-    if (rtDomains.some((d) => hostname === d || hostname.endsWith('.' + d))) return false
+    if (rtDomains.some((d) => hostname === d || hostname.endsWith('.' + d))) return { blocked: false, tier: 'runtime-domain' }
   }
 
-  return true
+  // 4. Quarantine tier -- the ONLY tier a main agent cannot reach. Exact agent_type match
+  //    required (fail-closed: anything else falls through to the block below). Applies to
+  //    WebFetch and the two URL-bearing Firecrawl tools alike -- see header comment.
+  if (String(agentType ?? '') === QUARANTINE_AGENT_TYPE) {
+    if (matchesQuarantineDomain(url, runtimeList.quarantineDomains ?? [])) {
+      return { blocked: false, tier: 'quarantine' }
+    }
+  }
+
+  return { blocked: true, tier: 'none' }
 }
 
-function logBlocked(url, reason) {
+// Back-compatible boolean form.
+export function isEgressBlocked(toolName, toolInput, runtimeList, agentType) {
+  return egressDecision(toolName, toolInput, runtimeList, agentType).blocked
+}
+
+// The payload's top-level FIELD NAMES, sorted -- never a value.
+//
+// This exists to answer one open question with data instead of a guess: does
+// the PreToolUse payload carry anything that identifies the CALLER? The gate
+// decides on the URL (and, now, the tool namespace) alone, so a main agent and
+// a quarantine-reader sub-agent are indistinguishable to it on the URL axis --
+// which is why the caller-aware quarantine tier above is built on the
+// separately-verified `agent_type` field, not on this signature. Keys only, by
+// construction: a value could carry a url, a prompt, or a secret, and this log
+// is read casually. Nested objects contribute nothing but their own key.
+export function payloadKeySignature(payload) {
+  if (!payload || typeof payload !== 'object' || Array.isArray(payload)) return ''
+  return Object.keys(payload).sort().join(',')
+}
+
+function logLine(kind, url, detail, keys = '', agentType = '') {
   try {
     mkdirSync(join(REPO_ROOT, 'store'), { recursive: true })
     const ts = new Date().toISOString()
-    appendFileSync(EGRESS_BLOCK_LOG, `${ts} BLOCKED url="${url}" reason="${reason}"\n`, 'utf-8')
+    const keyPart = keys ? ` payload_keys="${keys}"` : ''
+    const agentPart = agentType ? ` agent_type="${agentType}"` : ''
+    appendFileSync(EGRESS_BLOCK_LOG, `${ts} ${kind} url="${url}" ${detail}${agentPart}${keyPart}\n`, 'utf-8')
   } catch {
     // Never let log failure cascade into blocking the agent process itself.
   }
@@ -300,17 +418,33 @@ if (isInvokedDirectly()) {
     allow() // malformed/empty input must never block the agent
   }
   const url = String(payload?.tool_input?.url ?? '')
+  const agentType = String(payload?.agent_type ?? '')
   const runtimeList = loadRuntimeAllowlist()
+
   // Which rule denied, before the generic one: a param denial can land on an APPROVED host, and
   // "not on egress allowlist" would then be a false explanation pointing at the wrong fix.
   const badParams = firecrawlDisallowedParams(payload?.tool_name, payload?.tool_input)
   if (badParams.length > 0) {
-    logBlocked(url, `disallowed firecrawl parameter: ${badParams.join(', ')}`)
+    logLine(
+      'BLOCKED',
+      url,
+      `reason="disallowed firecrawl parameter: ${badParams.join(', ')}"`,
+      payloadKeySignature(payload),
+      agentType,
+    )
     deny(PARAM_BLOCK_MESSAGE(badParams))
   }
-  if (isEgressBlocked(payload?.tool_name, payload?.tool_input, runtimeList)) {
-    logBlocked(url, 'not on egress allowlist')
+
+  const decision = egressDecision(payload?.tool_name, payload?.tool_input, runtimeList, agentType)
+  if (decision.blocked) {
+    logLine('BLOCKED', url, 'reason="not on egress allowlist"', payloadKeySignature(payload), agentType)
     deny(BLOCK_MESSAGE)
+  }
+  // Audited, not silent: the quarantine tier is the one grant a main agent cannot obtain, so
+  // every use of it (WebFetch or a Firecrawl scrape/map) leaves a line next to the denials. The
+  // other tiers are the ordinary allowlist and stay quiet.
+  if (decision.tier === 'quarantine') {
+    logLine('ALLOWED_QUARANTINE', url, 'reason="quarantine-reader tier"', '', agentType)
   }
   allow()
 }

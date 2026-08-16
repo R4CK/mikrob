@@ -107,6 +107,24 @@ const ACKNOWLEDGED_CONFLICTS: Readonly<Record<string, string>> = {
   // keep the fork version wholesale in all three hunks.
   'src/web/routes/kanban.ts':
     'keep the fork version wholesale in all three hunks -- upstream\'s dispatch text tells the agent to self-close to done (violates fork rule 4), and its /move handler lacks the fork-only newDevStopWouldBlock + landedGuardVerdict gates',
+  // Card 2e634e5c, fourth file. A genuine two-way merge, not a wholesale pick either direction:
+  // the fork owns Firecrawl namespace default-deny + FIRECRAWL_SCRAPE_ALLOWED_KEYS param-allowlist
+  // (card 91c4a369); upstream owns the tier-based egressDecision({blocked,tier}) shape, agentType
+  // parameter, QUARANTINE_DOMAINS + quarantine_domains runtime list, and ALLOWED_QUARANTINE audit
+  // logging. Taking upstream's egressDecision wholesale would reopen 91c4a369: its own function
+  // starts `if (toolName !== 'WebFetch') return {blocked:false, tier:'not-webfetch'}`, which makes
+  // every mcp__firecrawl__* call blocked:false immediately. Taking the fork's isEgressBlocked
+  // wholesale would lose the quarantine tier + audit logging entirely. Resolution: the Firecrawl
+  // namespace/param checks run FIRST, the not-webfetch early-return only after those, URL-based
+  // tiers next, and the quarantine tier LAST -- deliberately widened to cover the two URL-bearing
+  // Firecrawl tools too (not just WebFetch), because the quarantine-reader sub-agent's own `tools:`
+  // line lists firecrawl_scrape/firecrawl_map alongside WebFetch (verified in
+  // templates/sub-agents/quarantine-reader.md and every agents/*/.claude/agents/ copy) -- a tier
+  // that only widened WebFetch would leave the sub-agent's other declared tool stuck on the
+  // ordinary allowlist. Co-planned with Cybersec (card 2e634e5c); independently verified here
+  // (read both source files, confirmed the quarantine-reader tools: line, ran both test suites).
+  'scripts/hooks/egress-gate.mjs':
+    'merge both sides in one egressDecision() -- fork Firecrawl namespace-default-deny + param-allowlist (91c4a369) run BEFORE upstream\'s not-webfetch early-return (which would otherwise reopen 91c4a369), then upstream\'s tier-based decision + quarantine tier + audit logging, with the quarantine tier extended to the two URL-bearing Firecrawl tools',
 }
 
 function git(args: string[], cwd: string): string {
