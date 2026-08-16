@@ -875,6 +875,8 @@ window._i18n.en = {
   'migrate.step1.scan_btn':      'Scan',
   'migrate.step2.title':         '2. Results',
   'migrate.step2.run_btn':       'Start migration',
+  'migrate.select_all':          'Select all',
+  'migrate.deselect_all':        'Deselect all',
   'migrate.step3.title':         '3. Result',
   'migrate.btn.new':             'New migration',
 

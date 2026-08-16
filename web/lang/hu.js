@@ -1147,6 +1147,8 @@ window._i18n.hu = {
   'migrate.step1.scan_btn':      'Feltérképezés',
   'migrate.step2.title':         '2. Találatok',
   'migrate.step2.run_btn':       'Költöztetés indítása',
+  'migrate.select_all':          'Összes kijelöl',
+  'migrate.deselect_all':        'Összes töröl',
   'migrate.step3.title':         '3. Eredmény',
   'migrate.btn.new':             'Új költöztetés',
 

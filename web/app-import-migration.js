@@ -312,8 +312,8 @@ function renderMigrateFindings(data) {
   }
 }
 
-// Step 2: Import selected
-document.getElementById('migrateImportBtn').addEventListener('click', async () => {
+// Step 2: Import selected (button is migrateRunBtn in the HTML)
+document.getElementById('migrateRunBtn').addEventListener('click', async () => {
   const agentTarget = document.getElementById('migrateAgent').value
   const selected = Array.from(document.querySelectorAll('.migrate-chk:checked'))
     .map(c => migrateFindings[parseInt(c.dataset.idx)])
@@ -321,7 +321,7 @@ document.getElementById('migrateImportBtn').addEventListener('click', async () =
 
   if (!selected.length) { showToast(t('migrate.none_selected')); return }
 
-  const btn = document.getElementById('migrateImportBtn')
+  const btn = document.getElementById('migrateRunBtn')
   btn.disabled = true
   btn.querySelector('.btn-text').hidden = true
   btn.querySelector('.btn-loading').hidden = false
