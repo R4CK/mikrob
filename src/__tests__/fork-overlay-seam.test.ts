@@ -41,6 +41,15 @@ describe('fork overlay seam: the fork renderer left app.js', () => {
     expect(overlay.match(/function updatesRepoBlockHtml/g)).toHaveLength(1)
     expect(overlay).toContain("getElementById('updatesRepos')")
   })
+
+  // #963 (card ae0f2178): renderUpdatesVersion() is upstream's own function, defined
+  // once in app.js. The overlay must CALL it, not redefine it -- a redefinition here
+  // would reopen the exact three-way divergence this seam exists to avoid.
+  it('app.js still defines renderUpdatesVersion, and the overlay calls it rather than redefining it', () => {
+    expect(appJs).toContain('function renderUpdatesVersion(data)')
+    expect(overlay).not.toContain('function renderUpdatesVersion')
+    expect(overlay).toMatch(/\brenderUpdatesVersion\(data\)/)
+  })
 })
 
 describe('fork overlay seam: the override is wired', () => {

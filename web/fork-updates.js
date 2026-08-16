@@ -24,11 +24,13 @@
 // SCOPE. This is a move, not a rewrite: the three functions below are the fork's
 // existing code, unchanged except for the rename that makes the override explicit.
 // handleRepoInstallClick() deliberately stays in app.js -- it is fork-only, it does
-// not conflict, and moving it would be diff for its own sake. Two things upstream
-// has and the fork does not (renderUpdatesVersion in the header subtitle, and
-// window._updatesStatus set from loadUpdates) are NOT ported here on purpose: that
-// is a user-visible change and belongs on its own card, not inside a refactor whose
-// whole claim is that behaviour is identical.
+// not conflict, and moving it would be diff for its own sake. renderUpdatesVersion()
+// (#963, card ae0f2178) is now called here too -- it is upstream's own function,
+// defined in app.js and left untouched, so no code is duplicated. window._updatesStatus
+// is deliberately still not set from here: pollUpdatesBadge() in app.js already sets it
+// every 5 minutes independent of this override, so the one consumer that reads it
+// (wireBranchDriftBanner's dismiss handler) already has a fresh-enough value without
+// this function needing to set it too.
 
 // Render the changes list (release-grouped, else flat commits) for one repo.
 function updatesChangesHtml(repo) {
@@ -118,6 +120,7 @@ async function forkLoadUpdates() {
     if (!res.ok) throw new Error('HTTP ' + res.status)
     const data = await res.json()
     renderUpdatesBadge(data)
+    renderUpdatesVersion(data)
     renderBranchNotice(data)
     // Two independent checks live in data.repos. Fall back to the flat single
     // shape (older backend/cache) synthesised as one 'mikrob' block.
