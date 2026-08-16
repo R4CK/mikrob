@@ -18377,21 +18377,23 @@ async function fedRemoveAll() {
 }
 
 // --- Tailscale login + self connection info (card 9bf6a1e0) ---------------------------------
-// Contract drafted by backend on card b68ddae8 (2026-08-16, DRAFT -- not yet implemented):
+// Contract v2, drafted by backend on card b68ddae8 (2026-08-16, DRAFT -- not yet implemented).
+// v1 had a gap (POST /login's idempotent "already connected" branch returned no pollToken, so
+// there was no way to reach GET /status -- and therefore no systemId/baseUrl -- on that path,
+// which is also the COMMON path since most visits find an already-connected node). Flagged back
+// to backend rather than worked around with a guessed field; backend fixed the contract itself:
 //   POST /api/federation/tailscale/login
-//     -> { status: 'connected'|'needs_login', loginUrl?, pollToken? }
-//     IDEMPOTENT: an already-connected node gets { status: 'connected' } straight away, no new
-//     `tailscale up`. loginUrl/pollToken only come on needs_login.
+//     -> { status: 'connected'|'needs_login', pollToken, loginUrl? }
+//     pollToken ALWAYS comes back now, on both branches. loginUrl only on needs_login. `status`
+//     is informational (whether to show a login link), not the UI's branching signal -- pollToken
+//     presence is, and it is now unconditional.
 //   GET /api/federation/tailscale/status?pollToken=...
 //     -> { status: 'pending'|'connected'|'failed', systemId?, baseUrl?, error? }
-//     'connected' means the `tailscale serve --bg 3420` step already ran/was verified too.
-//
-// KNOWN GAP (flagged back to backend, not silently worked around): the idempotent "already
-// connected" branch of POST /login returns no pollToken, so there is no documented way to reach
-// GET /status -- and therefore no systemId/baseUrl -- on that path. Coded here as its own
-// 'connected-no-data' state (honest about not having the data) rather than guessing a field name
-// backend never committed to. If backend adds a pollToken to that branch too, this collapses into
-// the same poll path as needs_login.
+//     THE ONLY place systemId/baseUrl come from, on either branch -- even an already-connected
+//     node needs the `tailscale serve --bg 3420` check re-verified, which is where baseUrl comes
+//     from, so it is never instantly available either.
+// One poll path, two branches (whether a login link needs to be shown first) -- no more special
+// no-data state for the idempotent branch, because there is no longer a data-less branch.
 let _fedTailscaleState = { status: 'idle' }
 let _fedTailscaleLoginUrl = null
 let _fedTailscalePollTimer = null
@@ -18431,11 +18433,6 @@ function fedTailscaleRender() {
           <button type="button" class="btn-secondary btn-compact" data-copy="baseUrl">${t('federation.tailscale.copy_btn')}</button>
         </div>
       </div>`
-  } else if (s.status === 'connected-no-data') {
-    // The contract gap above -- connected, but nothing to copy yet.
-    body = `${title}
-      <p style="font-size:12px;color:var(--text-muted);min-width:120px">${t('federation.tailscale.system_id_label')}: <code>${escapeHtml(s.knownSystemId || '-')}</code></p>
-      <p style="font-size:12px;color:var(--text-muted)">${t('federation.tailscale.manual_hint')}</p>`
   } else if (s.status === 'pending') {
     body = `${title}
       <p role="status" aria-live="polite" style="font-size:13px">${t('federation.tailscale.pending')}</p>
@@ -18533,33 +18530,32 @@ async function fedTailscaleLogin() {
       fedTailscaleRender()
       return
     }
-    if (data.pollToken) {
-      const loginUrl = data.loginUrl || null
-      if (loginUrl && !fedTailscaleValidLoginUrl(loginUrl)) {
-        // Cybered NO-GO (HIGH): a login-intent flow must never navigate to an unvalidated URL --
-        // refuse outright rather than open it, regardless of what backend eventually sends.
-        _fedTailscaleLoginUrl = null
-        _fedTailscaleState = { status: 'error', error: t('federation.tailscale.error_generic') }
-        fedTailscaleRender()
-        return
-      }
-      _fedTailscaleLoginUrl = loginUrl
-      let popupBlocked = false
-      if (loginUrl) {
-        const win = window.open(loginUrl, '_blank', 'noopener')
-        if (!win) popupBlocked = true // browser blocked the automatic pop-up -- fallback button
-      }
-      _fedTailscaleState = { status: 'pending', popupBlocked }
-      fedTailscaleRender()
-      fedTailscalePoll(data.pollToken)
-    } else if (data.status === 'connected') {
-      // Contract gap (see comment above the state machine): nothing to poll for on this branch.
-      _fedTailscaleState = { status: 'connected-no-data', knownSystemId: fedPeersViewCache?.systemId || null }
-      fedTailscaleRender()
-    } else {
+    // Contract v2: pollToken is unconditional (both branches), but this stays a real check, not
+    // an assumption -- a contract saying "always" is not the same as a response that always does,
+    // and failing to the error state below costs nothing if it never actually triggers.
+    if (!data.pollToken) {
       _fedTailscaleState = { status: 'error', error: t('federation.tailscale.error_generic') }
       fedTailscaleRender()
+      return
     }
+    const loginUrl = data.loginUrl || null
+    if (loginUrl && !fedTailscaleValidLoginUrl(loginUrl)) {
+      // Cybered NO-GO (HIGH): a login-intent flow must never navigate to an unvalidated URL --
+      // refuse outright rather than open it, regardless of what backend eventually sends.
+      _fedTailscaleLoginUrl = null
+      _fedTailscaleState = { status: 'error', error: t('federation.tailscale.error_generic') }
+      fedTailscaleRender()
+      return
+    }
+    _fedTailscaleLoginUrl = loginUrl
+    let popupBlocked = false
+    if (loginUrl) {
+      const win = window.open(loginUrl, '_blank', 'noopener')
+      if (!win) popupBlocked = true // browser blocked the automatic pop-up -- fallback button
+    }
+    _fedTailscaleState = { status: 'pending', popupBlocked }
+    fedTailscaleRender()
+    fedTailscalePoll(data.pollToken)
   } catch {
     _fedTailscaleState = { status: 'error', error: t('federation.tailscale.error_generic') }
     fedTailscaleRender()

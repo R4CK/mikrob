@@ -50,14 +50,15 @@ describe('fedTailscaleLogin: POST /login and branch on pollToken presence', () =
     expect(body).toContain("method: 'POST'")
   })
 
-  it('branches on data.pollToken, NOT on data.status alone -- the idempotent "connected" branch may lack it', () => {
-    // Contract gap noted in the code: POST /login's already-connected response is documented as
-    // { status: 'connected' } with no pollToken, so there is nothing to poll GET /status with on
-    // that path. Branching on status alone would wrongly try to poll with an undefined token.
+  it('contract v2: pollToken is unconditional, but the code still checks rather than assuming it', () => {
+    // Backend fixed the v1 gap (Fron Ted flagged it): pollToken now comes back on BOTH branches
+    // of POST /login, so there is one poll path, not a special no-data branch for "already
+    // connected". Still guarded with a real check -- a contract saying "always" is not the same
+    // as a response that always does.
     const body = fnBody(APP, 'async function fedTailscaleLogin()')
-    expect(body).toContain('if (data.pollToken) {')
-    expect(body).toContain("} else if (data.status === 'connected') {")
-    expect(body).toContain("status: 'connected-no-data'")
+    expect(body).toContain('if (!data.pollToken) {')
+    expect(body).not.toContain('connected-no-data')
+    expect(body).not.toMatch(/else if \(data\.status === 'connected'\)/)
   })
 
   it('SECURITY (Cybered NO-GO, gate-sha 1c3b95a2, HIGH): the loginUrl is validated BEFORE the automatic window.open', () => {
@@ -162,10 +163,10 @@ describe('loadFederationPage: stale-pending recovery', () => {
 })
 
 describe('fedTailscaleRender: all states + copy-to-clipboard', () => {
-  it('covers connected, connected-no-data, pending, error, and idle', () => {
+  it('covers connected, pending, error, and idle -- no separate no-data state (contract v2)', () => {
     const body = fnBody(APP, 'function fedTailscaleRender()')
     expect(body).toContain("s.status === 'connected'")
-    expect(body).toContain("s.status === 'connected-no-data'")
+    expect(body).not.toContain('connected-no-data')
     expect(body).toContain("s.status === 'pending'")
     expect(body).toContain("s.status === 'error'")
   })
