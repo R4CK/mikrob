@@ -221,9 +221,31 @@ So the two rules stand together, and the second one is narrower than the first d
 > effect. It is necessary and it is not sufficient -- a restart onto a wrong matcher buys nothing,
 > which is exactly what happened here.
 
-The general lesson: `ensureEgressGate` returning `true`, the file showing the new matcher, and a
-green suite all describe DISK. The only measurement that speaks for the control is a call that
-actually comes back denied.
+**And a matcher fix is not deployed by landing it.** Between the fix and the proof, one restart
+UNDID it: the agent-start path rewrites `.claude/settings.json`, and it runs from `dist`, which still
+held the old constant. Measured at the time -- the three agents restarted at 07:03-07:04 fell back to
+the bare prefix while the twelve untouched ones kept the corrected matcher. So the full sequence for
+anything living in `agent-scaffold.ts` is: land it, rebuild `dist`, restart the dashboard service
+(the running process already has the old module loaded, so a rebuild alone changes nothing for it),
+and only then restart the agent. Until that is done, every agent restart re-opens the hole.
+
+**Proof, 2026-08-16 07:08, from a session started after all of that** -- four calls, both directions,
+because a matcher that denies everything would also produce a denial:
+
+| call | expected | result |
+|---|---|---|
+| `firecrawl_scrape` on an off-allowlist host | deny | **denied**, block log 63 -> 64, that exact URL |
+| `firecrawl_scrape` on `ingatlan.com` (allowlisted) | allow | **200**, no log line |
+| `firecrawl_search` (namespace default-deny, carries no URL) | deny | **denied**, log line 65 |
+| `firecrawl_map` on `ingatlan.com` (the other permitted tool) | allow | **3 links**, no log line |
+
+Minor, recorded rather than fixed: the `firecrawl_search` denial logs `url=""`, because that tool has
+no URL to log. The decision is right; the log line just does not say what was refused.
+
+The general lesson: `ensureEgressGate` returning `true`, the file showing the new matcher, a green
+suite, and a landed commit ALL describe something other than the running control. The only
+measurement that speaks for it is a call that actually comes back denied -- paired with one that
+comes back allowed, or "denied" only proves the gate is stuck shut.
 
 **Adding a host to the allowlist is a security decision, not a config detail** (Cybersec, same
 review). The capability is now bound to the egress allowlist, which is the only thing holding a
