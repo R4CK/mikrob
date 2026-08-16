@@ -15,7 +15,10 @@ import { join, dirname } from 'node:path'
 import { fileURLToPath } from 'node:url'
 
 const __dirname = dirname(fileURLToPath(import.meta.url))
-const APP = readFileSync(join(__dirname, '../../web/app.js'), 'utf-8')
+// Conversation modal was extracted to app-conversation.js (card b33fc5f7).
+// Reading the new module file; the stub comment left in app.js is intentional
+// and prevents old tests that still read app.js from false-passing.
+const APP = readFileSync(join(__dirname, '../../web/app-conversation.js'), 'utf-8')
 const HTML = readFileSync(join(__dirname, '../../web/index.html'), 'utf-8')
 const CSS = readFileSync(join(__dirname, '../../web/style.css'), 'utf-8')
 const HU = readFileSync(join(__dirname, '../../web/lang/hu.js'), 'utf-8')
