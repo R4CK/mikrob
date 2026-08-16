@@ -25,7 +25,8 @@ import { join } from 'node:path'
 
 const APP_CORE = readFileSync(join(__dirname, '..', '..', 'web', 'app.js'), 'utf-8')
 const APP_MESSAGES = readFileSync(join(__dirname, '..', '..', 'web', 'app-messages.js'), 'utf-8')
-const APP = APP_CORE + '\n' + APP_MESSAGES
+const APP_ONBOARDING = readFileSync(join(__dirname, '..', '..', 'web', 'app-onboarding.js'), 'utf-8')
+const APP = APP_CORE + '\n' + APP_MESSAGES + '\n' + APP_ONBOARDING
 
 /**
  * The wizard's step-4 pending loader, sliced to its ACTUAL end.

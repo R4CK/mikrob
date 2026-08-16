@@ -18,6 +18,7 @@ import { join } from 'node:path'
 // real: the slow path is exercised at runtime, not just pinned textually.
 
 const APP = readFileSync(join(__dirname, '..', '..', 'web', 'app.js'), 'utf-8')
+  + '\n' + readFileSync(join(__dirname, '..', '..', 'web', 'app-onboarding.js'), 'utf-8')
 
 const BEGIN = '// WIZFLOW809 BEGIN waitForChannelLive'
 const END = '// WIZFLOW809 END waitForChannelLive'

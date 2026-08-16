@@ -19,6 +19,7 @@ import { join } from 'node:path'
 
 const ONBOARDING = readFileSync(join(__dirname, '..', 'web', 'routes', 'onboarding.ts'), 'utf-8')
 const APP = readFileSync(join(__dirname, '..', '..', 'web', 'app.js'), 'utf-8')
+  + '\n' + readFileSync(join(__dirname, '..', '..', 'web', 'app-onboarding.js'), 'utf-8')
 
 // Bound channelConfigured() to its own body so the slack-gate assertion cannot
 // accidentally match an isManagedSettingsReady reference elsewhere in the file.
