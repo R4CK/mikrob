@@ -15,7 +15,9 @@ const APP_MESSAGES = readFileSync(join(__dirname, '../../web/app-messages.js'), 
 const APP_FEDERATION = readFileSync(join(__dirname, '../../web/app-federation.js'), 'utf-8')
 // Federation/federated-agent rendering moved to app-agents.js in slice 31.
 const APP_AGENTS = readFileSync(join(__dirname, '../../web/app-agents.js'), 'utf-8')
-const APP = APP_CORE + '\n' + APP_MESSAGES + '\n' + APP_FEDERATION + '\n' + APP_AGENTS
+// NAV_I18N (including nav.federation key) moved to app-i18n-nav.js in slice 36.
+const APP_I18N_NAV = readFileSync(join(__dirname, '../../web/app-i18n-nav.js'), 'utf-8')
+const APP = APP_CORE + '\n' + APP_MESSAGES + '\n' + APP_FEDERATION + '\n' + APP_AGENTS + '\n' + APP_I18N_NAV
 const HTML = readFileSync(join(__dirname, '../../web/index.html'), 'utf-8')
 const CSS = readFileSync(join(__dirname, '../../web/style.css'), 'utf-8')
 
