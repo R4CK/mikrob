@@ -103,6 +103,19 @@ Ezek a MikroB-fork saját fejlesztései a Marveen-bázison felül — főleg a *
 | Channel reply-guard | [docs/channel-reply-guard.md](docs/channel-reply-guard.md) |
 | Telegram haladásjelző | [docs/telegram-progress-indicator.md](docs/telegram-progress-indicator.md) |
 | Új asszisztens onboarding | [docs/onboarding-uj-asszisztens.md](docs/onboarding-uj-asszisztens.md) |
+| Konfiguráció-referencia | [docs/config-reference.md](docs/config-reference.md) |
+| Dashboard belépés — visszaút, vészhelyzeti reset | [docs/dashboard-auth-recovery.md](docs/dashboard-auth-recovery.md) |
+| Flotta migráció (export / import másik gépre) | [docs/flotta-migracio.md](docs/flotta-migracio.md) |
+| Google Docs helper | [docs/google-docs.md](docs/google-docs.md) |
+| Ötletláda | [docs/ideabox.md](docs/ideabox.md) |
+| Proaktív hírszerző (intel registry) | [docs/intel-registry.md](docs/intel-registry.md) |
+| Kutatás oldal | [docs/kutatas.md](docs/kutatas.md) |
+| Dashboard mobilon (Tailscale, PWA) | [docs/mobil-dashboard.md](docs/mobil-dashboard.md) |
+| Napló — Audit idővonal | [docs/naplo-audit.md](docs/naplo-audit.md) |
+| Tippek, trükkök | [docs/tippek-trukkok.md](docs/tippek-trukkok.md) |
+| Token Usage Monitor | [docs/token-usage.md](docs/token-usage.md) |
+| Hangüzenetek (per-agent voice) | [docs/voice.md](docs/voice.md) |
+| Archivált kártyák | [docs/archivalt-kartyak.md](docs/archivalt-kartyak.md) |
 
 > A fork emellett követi a felmenő Marveen kiadásait is (pl. **v1.19.0**: SSH Vault, owner-gated terminál-input, kanban kártya-esemény audit, dashboard auth-keményítés). Legutóbb integrálva: **v1.31.0** (2026-08-07, kártya `f5e4279b`) — 9 commit, `git merge upstream/main`, egyetlen tartalmi konfliktussal (`src/__tests__/setup/assert-not-live-install.ts`: mindkét oldal UGYANAZT a hibát javította, hogy a teszt-megtagadás ne `/tmp`-be küldje a futtatót; a fork `store/fleet-test.sh` remedyjét tartottuk meg, mert az többet tud egy csupasz worktree-nél, és upstream indoklását átvettük) plusz a szokásos `package-lock.json` (upstream oldalról regenerálva). **Mérve, nem feltételezve:** a merge által ELTÁVOLÍTOTT sorokat fájlonként visszaellenőriztem a merge-base ellen — mind a 34 eltávolított sor upstream SAJÁT régi kódja volt, fork-specifikus sor NEM veszett el. Új: telepítéskori Telegram bot-token próba-hívás, a foglalt token elutasítása mentéskor emberi remedyvel, a modell-feloldás egységesítése minden respawn-úton, macOS disk-space-reaper javítás. FORK-DIVERGENCIA, tudatosan megtartva: az upstream `DISTRIBUTION_DEFAULT_AGENT_MODEL` értéke `claude-opus-5[1m]`, a miénk `claude-opus-5` — a mi invariánsunk (`d041760b`, Peti 2026-08-06), hogy a distribution default EGYENLŐ a `DEFAULT_MODEL_CHAIN[0]`-val, különben egy új ágens első kvóta-revertje néma DOWNGRADE lenne; ráadásul az upstream lánc primary-je még `claude-opus-4-8[1m]`, amit Peti kivezetett a mi létránkból. Az upstream idevágó tesztjét a fork-invariánsra igazítottam (a konstans a lánc-primaryhez van kötve, nem literálhoz, hogy a kettő ne tudjon szétcsúszni). Előtte: **v1.30.3** (2026-08-07, kártya `12893509`) — 6 commit, egyetlen mechanikus lockfile-konfliktussal. Előtte: **v1.28.1** (2026-08-02, Peti jóváhagyás, fázis-kártya `97403f62`) — a napi Szotasz/marveen frissítés-ellenőrzés jelezte a 23-commit lemaradást. Módszer ezúttal ELTÉR a korábbi cherry-pick-mintától: teljes `git merge upstream/main` (nem egyenkénti cherry-pick), mert a `git merge-tree` előzetes ellenőrzés csak **4 konfliktust** mutatott, mind a már ismert megosztott fájlokban (`install-linux.sh`, `package-lock.json`, `scripts/channels.sh`, egy add/add teszt-ütközés) — a blanket merge itt biztonságos volt, mert a fork-divergencia pontosan behatárolható és minden konfliktust kézzel, a fork-érték megtartásával oldottam fel. 9 új commit: telepítő-őszinteség folytatása (heartbeat-riport mérésen alapul, nem feltételezésen), **apt-lock guard, ami néma gépeken ölte meg a telepítést**, egy később hozzáadott MCP-szerver mostantól eléri a már létező izolált config-direkeket, minden alap telepítés helyesen kap saját (nem rotálódó megosztott) hitelesítő adatot, restart-badge szöveg pontosítás. Konfliktus-feloldás: `install-linux.sh` — upstream hibakezelés-javítását (`if`/`else` néma-hiba helyett) vettem át, DE a fork `${WD_UNIT}.timer` sorát megtartottam az engedélyezési listában; `scripts/channels.sh` — a fork biztonsági javítását (token 0600 header-fájlban, nem argv-ban, `b267df80`) megtartottam upstream régebbi, sebezhető változata helyett; `package-lock.json` — upstream verzióból regenerálva (`npm install --package-lock-only`); egy teszt add/add ütközésnél a fork bash-verzió-toleránsabb assertion-jét tartottam meg. Teljes ellenőrzés: 274/274 teszt-fájl, 3775/3777 teszt zöld (2 skip), tsc + syntax-check tiszta, build+szolgáltatás-újraindítás+élő-ellenőrzés utólag. Előtte: **v1.28.0** (2026-08-01, kártya `3aa02ac6`) — merge-base diffből, egyenkénti `cherry-pick -x`-szel: 15 commit átvéve (telepítő-őszinteség: csak mért állítás a banner/ok-sorban; ágens-létrehozás: nem törli a könyvtárat placeholder-personalitynál + regressziós guard; **3 hook-security fix**: abszolút node-út a hook-parancsban [a bare `node` nvm alatt CSENDES gate-megkerülés volt], egy idézőjelezett hook-parancs-építő + escape-elt wired-check, és a hiányzó hook-interpreter mostantól HANGOSAN blokkol 127-es néma kilépés helyett; quarantine/agent-scaffold; MCP-szerver elér a meglévő izolált config-direkbe). **NEM átvéve, jelezve:** 3 `install-linux.sh` commit (valós fork-divergencia: a mi telepítőnk seed-fleet-agents/guard-hook/portability-sentinel réteget hordoz) (azóta **átvéve**, miután a blokkoló dashboard-munka commitolódott: `#822` placeholder-personality jelzés, `#837` restart-badge szöveg -- a fork local-LLM panelje sértetlen) + a release-rollup (duplikálna). Előtte: **v1.27.0** (2026-07-31, kártya `266d8248`) — merge-base diffből, egyenkénti `cherry-pick -x`-szel, sosem blanket merge-dzsel: worker-session halál-detektálás + naplózás (`worker-liveness.ts`, #801), az onboarding-varázsló a VALÓS agent-id-t oldja fel a függő párosítások előtt (#802), a telepítő a SZOLGÁLTATÁSOKNAK is ad auth-credentialt és **fail-closed** ha nincs (#799), a teljes lánc a `WEB_PORT`-ot követi a fix 3420 helyett (#800), a quarantine-reader fetch-allowlistje a tulajdonos egress-gate-jéből származik (#797), plusz egy dashboard-komment javítás (#805). A `v1.27.0` release-rollup commit (`489b35a`) szándékosan KIMARADT: ugyanezeket a változásokat csomagolja, átvétele duplikálna. Előtte: **v1.26.0** (2026-07) — a fork-divergencia megőrzésével átvéve: kiszervezett auth-gate (`resolveAuth`/`requiresAuth` — per-device dashboard-kulcsok + opcionális felhasználónév/jelszó böngésző-login, a Bearer-token út byte-azonos marad, a fork `/api/public-digest` unauth-kivétele megőrizve), oldalsáv-menü csoportosítás (a fork `Lokális LLM` menüpontja a RENDSZER csoportba fűzve), verziózott statikus asszetek cache-elhetősége, upstream-drift branch-figyelmeztetés a Frissítések oldalon, `remote-enroll` eszköz (device-SSH-kulcs onboarding), plusz telepítő/ütemező javítások (WSL home-clone, node@22 launchd-pin, apt-lock kivárás, token-usage költségtábla #737).
 
@@ -139,13 +152,17 @@ Ez a fork saját telepítendő — NEM a felmenő `Szotasz/marveen`.
 ```bash
 git clone https://github.com/R4CK/mikrob.git
 cd mikrob
-./install-linux.sh
+./install.sh
 ```
+
+Az `install.sh` egy OS-detect wrapper: nyelvet kérdez (Magyar/English, `MARVEEN_LANG`), majd az észlelt rendszer szerint tovább-indítja a valódi telepítőt (`install-macos.sh` Darwinon, `install-linux.sh` Linuxon). A telepítő végigvezet: függőségek, Claude Code bejelentkezés, Telegram bot, a bot/márka neve, szolgáltatások indítása. Frissítés a forkból: `./update.sh` (ff-only pull az `origin`-ról).
+
+Ha az OS-detektálást ki akarod kerülni, az OS-specifikus szkript közvetlenül is hívható (`./install-linux.sh` / `./install-macos.sh`) — funkcionálisan ugyanoda vezet, csak a nyelv-prompt és a wrapper-kényelem marad ki. **macOS-en NE hívd az `install-linux.sh`-t közvetlenül**: a két szkript ténylegesen eltérő (launchd vs. systemd guard-timerek), az `install.sh` ezért route-olja külön.
 
 Alapértelmezés szerint a dashboard a 3420-as porton indul (`http://localhost:3420`). Egyedi port beállításához:
 
 ```bash
-./install-linux.sh --port 3421   # vagy: WEB_PORT=3421 ./install-linux.sh
+./install-linux.sh --port 3421   # vagy: WEB_PORT=3421 ./install-linux.sh (install-macos.sh ugyanígy)
 ```
 
 ### Windows (WSL) — a fork elsődleges környezete
@@ -161,16 +178,6 @@ A telepítő beállítja a WSL-t (Ubuntu) és azon belül telepíti a rendszert.
 ```bash
 git clone https://github.com/R4CK/mikrob.git && cd mikrob && ./install-linux.sh
 ```
-
-### Linux / macOS
-
-```bash
-git clone https://github.com/R4CK/mikrob.git
-cd mikrob
-./install.sh
-```
-
-A telepítő végigvezet: függőségek, Claude Code bejelentkezés, Telegram bot, a bot/márka neve, szolgáltatások indítása. Frissítés a forkból: `./update.sh` (ff-only pull az `origin`-ról).
 
 ### Branding (env)
 
