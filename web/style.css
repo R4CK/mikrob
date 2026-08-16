@@ -8312,6 +8312,16 @@ body {
   border-color: var(--accent);
   background: var(--accent-soft);
 }
+.llm-model-row.not-benchmarked {
+  border-color: var(--warning, #e2a000);
+  border-style: dashed;
+}
+.llm-bench-hint {
+  font-size: 11px;
+  color: var(--warning, #e2a000);
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  margin-top: 3px;
+}
 .llm-model-info {
   display: flex;
   flex-direction: column;

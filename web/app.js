@@ -10562,8 +10562,21 @@ async function llmRefreshStatus() {
   const modelsEl = document.getElementById('llmModels')
   const runningEl = document.getElementById('llmRunning')
   try {
-    const res = await fetch('/api/local-llm/status')
-    const d = await res.json()
+    const [statusRes, catRes] = await Promise.all([
+      fetch('/api/local-llm/status'),
+      fetch('/api/local-llm/catalog').catch(() => null),
+    ])
+    const d = await statusRes.json()
+    // Build trusted-by-name lookup from catalog (card 3d923ef5: trusted = publisher claim from
+    // catalog, benchmarked = measured-on-this-machine from bench.sh -- two SEPARATE facts).
+    const trustedByName = new Map()
+    if (catRes && catRes.ok) {
+      const cat = await catRes.json().catch(() => null)
+      const catModels = cat && Array.isArray(cat.models) ? cat.models : []
+      for (const cm of catModels) {
+        if (cm.installRef) trustedByName.set(cm.installRef, !!cm.trusted)
+      }
+    }
 
     // Status tiles
     const tiles = []
@@ -10620,22 +10633,38 @@ async function llmRefreshStatus() {
     } else {
       modelsEl.innerHTML = llmAnimateBatch(models.map(m => {
         const active = m.name === d.active_model
-        // "Installed" and "benchmarked" are different claims (card d730070e): evalTps/benchmarked
-        // come from store/local-llm-bench.sh's own state file, merged into this response server-side
-        // (benchInfoFor), but nothing rendered them here -- the same "field exists, never shown" gap
-        // just fixed for the catalogue's tokensPerSecond (card 88ea5050), same contract: a measured
-        // number as-is, a missing measurement as its own explicit state, never 0 or omitted. Reuses
-        // the catalogue's tps i18n keys -- same fact, same wording, no need for a second copy.
+        // BENCH BADGE (card 3d923ef5, d730070e): measured on this hardware.
+        // evalTps is ALWAYS shown with benchCtx -- a tok/s figure without context size is not
+        // comparable between models or even between runs of the same model (larger ctx = slower).
         const tpsHtml = m.benchmarked && typeof m.evalTps === 'number'
-          ? `<span class="llm-rec-tps" title="${escapeHtml(t('localLlm.rec.tps_tip'))}">⚡ ${llmFmtCount(Math.round(m.evalTps))} tok/s</span>`
-          : `<span class="llm-rec-tps unmeasured" title="${escapeHtml(t('localLlm.rec.tps_unmeasured_tip'))}">${t('localLlm.rec.tps_unmeasured')}</span>`
-        return `<div class="llm-model-row${active ? ' active' : ''}">
+          ? (() => {
+              const ctx = typeof m.benchCtx === 'number' ? ` @ ${m.benchCtx}` : ''
+              const benchDate = m.benchmarkedAt ? new Date(m.benchmarkedAt).toLocaleDateString(dateLocale) : ''
+              const tip = benchDate ? t('localLlm.models.bench.tip', { date: benchDate }) : t('localLlm.rec.tps_tip')
+              return `<span class="llm-rec-tps" title="${escapeHtml(tip)}">⚡ ${llmFmtCount(Math.round(m.evalTps))} tok/s${escapeHtml(ctx)}</span>`
+            })()
+          : `<span class="llm-rec-tps unmeasured" title="${escapeHtml(t('localLlm.models.bench.unmeasured_tip'))}">${t('localLlm.rec.tps_unmeasured')}</span>`
+        // TRUST BADGE (card 3d923ef5): publisher claim from catalog, separate from bench.
+        // trustedByName may be empty (catalog unavailable) -- in that case the badge is omitted,
+        // not fabricated; a missing datum is never shown as trusted/unverified.
+        const trustHtml = trustedByName.has(m.name)
+          ? `<span class="llm-trust-badge ${trustedByName.get(m.name) ? 'trusted' : 'unverified'}" title="${escapeHtml(t(trustedByName.get(m.name) ? 'localLlm.rec.trust.trusted_tip' : 'localLlm.rec.trust.unverified_tip'))}">${t(trustedByName.get(m.name) ? 'localLlm.rec.trust.trusted' : 'localLlm.rec.trust.unverified')}</span>`
+          : ''
+        // "installed but not yet benchmarked" gets a distinct row class + inline hint (rule 12:
+        // actionable message, not silent). No UI button -- the only writer is store/local-llm-bench.sh.
+        const notBenched = !m.benchmarked
+        const benchHintHtml = notBenched
+          ? `<span class="llm-bench-hint">${t('localLlm.models.bench.unmeasured_hint')}</span>`
+          : ''
+        return `<div class="llm-model-row${active ? ' active' : ''}${notBenched && !active ? ' not-benchmarked' : ''}">
           <div class="llm-model-info">
             <span class="llm-model-name">${escapeHtml(m.name)}</span>
             <span class="llm-rec-meta">
               <span class="llm-model-size">${fmtBytes(m.size)}</span>
               ${tpsHtml}
+              ${trustHtml}
             </span>
+            ${benchHintHtml}
           </div>
           <div class="llm-model-actions">
             ${active
