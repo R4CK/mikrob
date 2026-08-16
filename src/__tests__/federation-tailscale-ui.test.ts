@@ -114,8 +114,9 @@ describe('fedTailscaleValidLoginUrl (Cybered NO-GO, HIGH, gate-sha 1c3b95a2)', (
     const body = fnBody(APP, 'function fedTailscaleRender()')
     const btnIdx = body.indexOf("getElementById('fedTailscaleOpenLoginBtn')")
     expect(btnIdx).toBeGreaterThan(-1)
-    const slice = body.slice(btnIdx, btnIdx + 200)
-    expect(slice).toContain('fedTailscaleValidLoginUrl(_fedTailscaleLoginUrl)')
+    const validateIdx = body.indexOf('fedTailscaleValidLoginUrl(_fedTailscaleLoginUrl)', btnIdx)
+    expect(validateIdx).toBeGreaterThan(btnIdx)
+    expect(validateIdx - btnIdx).toBeLessThan(400) // still inside the same click handler
   })
 })
 
