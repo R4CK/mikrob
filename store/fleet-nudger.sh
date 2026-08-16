@@ -197,13 +197,24 @@ NUDGE_GATE='SELF-ADVANCE (rule 11, NE varj MikroB-ra): ha nincs aktiv munkad, cu
 # copy of the rule here: `check` derives designation from the card itself (verified: it returns
 # not-designated for cybered on 165ff1af with no extra input).
 #
-# And explicitly: do NOT leave a skip comment. It was adopted as a workaround so the card would
-# carry a trace, but a comment bumps kanban_cards.updated_at (db.ts addKanbanComment does that
-# UPDATE outright), and updated_at is exactly the input to the no-change fingerprint above -- so
-# every skip comment invalidates the fingerprint and re-arms the full gate-nudge round it was
-# meant to stop. The trace is not needed either: not-designated is derived from the card
-# description, so the check answers it identically whether or not anyone commented.
-NUDGE_GATE="$NUDGE_GATE Ha MAGAD valasztasz kartyat (nem a lent megnevezettet), ELOSZOR futtasd ra: bash $ROOT/store/gate-dispatch-check.sh check <cardId> <a te agent-neved>. ADVISE-SKIP:not-designated -> NEM a te hataskorod, hagyd ki. NE irj rola skip-kommentet: a komment bumpolja a kartya updated_at-jet, ami a nudger no-change fingerprintjenek bemenete, tehat ujra-armozza az egesz gate-nudge kort. A check ugyanezt a valaszt adja komment nelkul is."
+# And explicitly: do NOT leave a skip comment FOR THE not-designated CASE. A comment bumps
+# kanban_cards.updated_at (db.ts addKanbanComment does that UPDATE outright), and updated_at is
+# exactly the input to the no-change fingerprint above -- so every skip comment invalidates the
+# fingerprint and re-arms the full gate-nudge round. Harmless to skip writing one here specifically
+# because not-designated is derived from the card's OWN labels/description, so `check` answers it
+# identically with or without a comment.
+#
+# THIS DOES NOT GENERALISE, and an agent over-applying it is a REAL measured incident (card
+# 4469f177, real card ea51e22a): QA2 found the card genuinely designated but blocked on something
+# external, deliberately wrote NO comment "so as not to re-arm the round" -- and got the exact
+# opposite of what it wanted. `_fp` is ONE SHARED hash over every gate-candidate card, not a
+# per-card one, so ANY OTHER waiting card changing still re-arms the whole round regardless of
+# whether this one got a comment. Once re-armed, gate-dispatch-check.sh re-decides THIS card fresh,
+# finds zero comments from this agent (mine=[]), and answers ALLOW:no-verdict again -- forever,
+# since nothing about the card itself ever changes. A comment is the ONLY thing that makes a verdict
+# stick across an unrelated re-arm (mine becomes non-empty -> ADVISE-SKIP:already-gated next time).
+# So: skip the comment ONLY for not-designated; for every other reason you cannot act, write one.
+NUDGE_GATE="$NUDGE_GATE Ha MAGAD valasztasz kartyat (nem a lent megnevezettet), ELOSZOR futtasd ra: bash $ROOT/store/gate-dispatch-check.sh check <cardId> <a te agent-neved>. ADVISE-SKIP:not-designated -> NEM a te hataskorod, hagyd ki, NE irj rola skip-kommentet (a designation a kartya cimkejebol/leirasabol szarmazik, komment nelkul is stabil). MINDEN MAS okbol (blokkolt fuggoseg, valamire vartok, nincs uj a mar-latotthoz kepest) amiert NEM tudsz zarni ra: EZEKNEL IRJ rovid <TE-NEVED> SKIP: <ok> kommentet -- ez az EGYETLEN modja, hogy a check tartosan felismerje 'mar megneztem', kulonben a kartya sajat allapota valtozatlan marad, de a megosztott gate-fingerprint BARMELY MASIK varakozo kartya valtozasara ujraarmozodik, es ugyanezt a mar-megvalaszolt kartyat vegtelenul ujra felajanlja (kartya 4469f177, ea51e22a merve: 5x azonos nudge)."
 
 # Delivery goes through the dashboard, NOT straight into the tmux pane (card 7560bb6a).
 #
