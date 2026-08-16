@@ -48,7 +48,10 @@ function problems(text: string): string[] {
 
   const preReset = at(/reset --hard\s*>/) // bare reset (no $TARGET arg) -- resets to the CURRENT commit
   const preClean = at(/clean -fdq -e node_modules\s*>/)
-  const checkout = at('checkout --detach')
+  // The EXECUTED checkout, not a mention of it in prose: this file's own explanatory comment above
+  // the fix contains the literal words "checkout --detach" too, and a plain string search would find
+  // that first and report every ordering backwards.
+  const checkout = at(/git -C "\$TEST_TREE" checkout --detach/)
 
   if (checkout < 0) found.push('this test is looking at the wrong file (no checkout in the update branch)')
   if (preReset < 0 || preReset > checkout) found.push('no reset --hard before the checkout')
@@ -59,7 +62,7 @@ function problems(text: string): string[] {
   // A checkout failure must show git's OWN reason, not just a static string: a bare "could not move"
   // gave the person debugging it (card c26a9064) nothing to act on beyond re-running by hand.
   if (!/checkout_err=.*2>&1/.test(branch)) found.push('checkout stderr is discarded, not captured')
-  if (!/\$checkout_err/.test(branch.slice(at('checkout --detach')))) {
+  if (checkout >= 0 && !/\$checkout_err/.test(branch.slice(checkout))) {
     found.push('the captured git error is never shown to the caller')
   }
 
