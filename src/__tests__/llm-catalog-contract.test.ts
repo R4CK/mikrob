@@ -58,6 +58,7 @@ function validDoc(): Record<string, unknown> {
         trustReason: 'allowlisted-publisher',
         installedAt: null,
         benchmarkedAt: null,
+        pinned: true,
       },
     ],
   }
