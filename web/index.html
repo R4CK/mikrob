@@ -3859,6 +3859,9 @@
     </div>
   </div>
 
+  <!-- app-memories.js must load BEFORE app.js: loadMemAgents() is called at init time
+       in app.js, so it must already be defined. (card 1ba4997b, slice 3/N) -->
+  <script src="/app-memories.js"></script>
   <script src="/app.js"></script>
   <!-- Modular slices (card b33fc5f7): sections extracted from app.js progressively.
        Each file is global-scoped and depends only on globals defined in app.js above.
