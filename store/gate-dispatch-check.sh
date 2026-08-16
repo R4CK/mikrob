@@ -282,7 +282,23 @@ def designated_from_labels(csv):
     return widen_qa(names) if names else None
 
 def designated_from_gate_line(text):
-    low = text.lower()
+    # DESIGNATION vs EXPLANATION (card 55af560d): a name-scan over the WHOLE line reads the
+    # explanatory parenthetical too, so a card that EXCLUDES a gate by NAMING it in its own
+    # exclusion reasoning -- "QA + Cybersec (... trust boundary, ezert Cybersec, nem Cybered)."
+    # -- woke the excluded gate anyway, because "Cybered" appears in the text. Measured on two
+    # live cards (241532d8, 35533cca): both name the excluded gate BY NAME while excluding it,
+    # which is the more carefully a card documents its own exclusion, the more certainly this
+    # bug wakes the gate it just excluded.
+    #
+    # The fix scans only the OWN designation clause of the gate line -- everything before the first "("
+    # or sentence-ending punctuation (. ! ?) -- not the whole line. A negation-word list
+    # ("nem", "not", "kimarad", ...) was considered and rejected: that is the same
+    # never-complete-vocabulary trap this fleet has hit before in other guards (see
+    # security-qualifier-vocab-lists-recur-incomplete), and it would need to grow every time a
+    # new phrasing appeared. Clause position is structural, not vocabulary, so it does not rot.
+    clause_end = re.search(r"[.(!?]", text)
+    clause = text[: clause_end.start()] if clause_end else text
+    low = clause.lower()
     names = set()
     if re.search(r"\bqa2\b", low): names.add("qa2")
     if re.search(r"\bqa\b", low): names.add("qa")
@@ -756,6 +772,22 @@ print(",".join(c.get("id") or "" for c in cards if isinstance(c, dict)))
     dd "designation: a QA2-only label also designates qa"      "ALLOW:no-verdict"      0 qa "qa2" ""
     # Unrecognized free text (no gate keyword at all) must not accidentally exclude everyone.
     dd "designation: unparseable gate-line -> no exclusion"    "ALLOW:no-verdict"      0 cybered "" "see the linked design doc"
+
+    # CLAUSE-SCOPED DESIGNATION (card 55af560d): the excluded gate is named BY NAME inside its
+    # own exclusion reasoning, which a whole-line scan reads as a designation. Real cases.
+    SELFTEST_JSON='[{"author":"backend","created_at":100,"content":"REVIEW"}]'
+    dd "designation: 241532d8-shape, excluded gate named in its own parenthetical reasoning -> still excluded" \
+       "ADVISE-SKIP:not-designated" 8 cybered "" \
+       "QA + Cybersec (a kartya uj UNAUTH statikus route-ot vezet be, ami fajlnevet vesz at az URL-bol -- trust boundary, ezert Cybersec, nem Cybered)."
+    dd "designation: 241532d8-shape, the ACTUALLY-designated gate is unaffected" \
+       "ALLOW:no-verdict" 0 cybersec "" \
+       "QA + Cybersec (a kartya uj UNAUTH statikus route-ot vezet be, ami fajlnevet vesz at az URL-bol -- trust boundary, ezert Cybersec, nem Cybered)."
+    dd "designation: 35533cca-shape, excluded gate named in a trailing exclusion sentence -> still excluded" \
+       "ADVISE-SKIP:not-designated" 8 cybersec "" \
+       "QA + Cybered (Cybered a 9f74a0da 8232-es kommentjeben EXPLICIT utokort kert magara az ELESITESRE -- a dry-run-ra kapott GO nem fedi az elo hatast). Cybersec kimarad: az elesites nem nyit uj tamadasi feluletet, a beadasi utat (POST /api/agents/<agent>/compact, panel-mutex, token headerfile-bol) mar lefedte a 9f74a0da-n."
+    dd "designation: 35533cca-shape, the ACTUALLY-designated gate is unaffected" \
+       "ALLOW:no-verdict" 0 cybered "" \
+       "QA + Cybered (Cybered a 9f74a0da 8232-es kommentjeben EXPLICIT utokort kert magara az ELESITESRE -- a dry-run-ra kapott GO nem fedi az elo hatast). Cybersec kimarad: az elesites nem nyit uj tamadasi feluletet, a beadasi utat (POST /api/agents/<agent>/compact, panel-mutex, token headerfile-bol) mar lefedte a 9f74a0da-n."
 
     # GATE_LINE EXTRACTION (card 84fd2839, Cybered's finding on 5bc10089): a description can carry
     # MORE THAN ONE "Gate: ..." line -- an earlier tier decision superseded by a later one, appended
