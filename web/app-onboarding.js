@@ -2,8 +2,10 @@
 // Globals from app.js: t, escapeHtml, mainAgentId, showSudoModal
 // Globals from app-messages.js: ensureMarveenLoaded
 // Globals from app-overview.js: initSidebarBrand
-// app-onboarding.js is loaded AFTER this file in index.html.
-// initOnboarding() is called from the Init block in app.js.
+// app-onboarding.js is loaded AFTER app.js in index.html.
+// initOnboarding() self-inits at the end of THIS file (not from app.js's
+// Init block -- calling it there ran before this file loaded, ReferenceError
+// on every page load, card 243de9b9).
 
 // Full-screen overlay shown when /api/onboarding/status reports the install
 // still needs setup (pre-install-now / configure-later flow). Steps 2-3 reuse
@@ -345,3 +347,14 @@ function wireOnboarding(step) {
     loadPending()
   }
 }
+
+// === Self-init (card 243de9b9) ===
+// Runs here, not from app.js's Init block -- app-onboarding.js loads AFTER
+// app.js, so calling this from app.js would ReferenceError on every page
+// load (the live regression Cybered/Cybersec caught). Matches the
+// self-init convention already used by app-overview.js's loadOverview().
+{
+  const onbClose = document.getElementById('onboardingClose')
+  if (onbClose) onbClose.addEventListener('click', dismissOnboarding)
+}
+initOnboarding()
