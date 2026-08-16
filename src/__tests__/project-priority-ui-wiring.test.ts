@@ -11,7 +11,10 @@ import { fileURLToPath } from 'node:url'
 const __dirname = dirname(fileURLToPath(import.meta.url))
 const APP_CORE    = readFileSync(join(__dirname, '../../web/app.js'),                  'utf-8')
 const APP_ARCHIVE = readFileSync(join(__dirname, '../../web/app-archive-timeline.js'), 'utf-8')
-const APP = APP_CORE + '\n' + APP_ARCHIVE
+// Kanban board code (incl. populatePriorityProjectFilter, priority select listener)
+// moved to app-kanban.js in modularisation slice 30.
+const APP_KANBAN  = readFileSync(join(__dirname, '../../web/app-kanban.js'),            'utf-8')
+const APP = APP_CORE + '\n' + APP_ARCHIVE + '\n' + APP_KANBAN
 const HTML = readFileSync(join(__dirname, '../../web/index.html'), 'utf-8')
 const CSS = readFileSync(join(__dirname, '../../web/style.css'), 'utf-8')
 const HU = readFileSync(join(__dirname, '../../web/lang/hu.js'), 'utf-8')
