@@ -12,7 +12,9 @@ import { join, dirname } from 'node:path'
 import { fileURLToPath } from 'node:url'
 
 const __dirname = dirname(fileURLToPath(import.meta.url))
-const APP = readFileSync(join(__dirname, '../../web/app.js'), 'utf-8')
+const APP_CORE = readFileSync(join(__dirname, '../../web/app.js'), 'utf-8')
+const LLM_MODULE = readFileSync(join(__dirname, '../../web/app-local-llm.js'), 'utf-8')
+const APP = APP_CORE + '\n' + LLM_MODULE
 
 function fnBody(source: string, startMarker: string): string {
   const start = source.indexOf(startMarker)

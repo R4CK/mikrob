@@ -73,7 +73,7 @@ describe('isValidCategoryName (path-traversal guard, card 18a0acb9)', () => {
 
 describe('dashboard category-row escapes the meta interpolation (stored-XSS guard, card 18a0acb9)', () => {
   it('web/app.js interpolates ${escapeHtml(meta)}, never a bare ${meta}', () => {
-    const appJs = readFileSync(join(STORE_DIR, '..', 'web', 'app.js'), 'utf8')
+    const appJs = readFileSync(join(STORE_DIR, '..', 'web', 'app-local-llm.js'), 'utf8')
     // The escaped form must be present...
     expect(appJs).toContain('llm-category-meta">${escapeHtml(meta)}')
     // ...and the unescaped form must be gone, so a future edit reverting it fails CI.
