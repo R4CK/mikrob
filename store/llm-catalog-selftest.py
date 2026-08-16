@@ -255,6 +255,108 @@ _bad["pinned"] = not _bad["pinned"]
 check("validate() catches a pinned flag that disagrees with its own parts", True,
       any("pinned" in e for e in cat.validate({**_env, "models": [_bad]})))
 
+# --- 10. Ollama-library provenance (card bb919fae) -----------------------------------------------
+# The fleet's draft/routing model comes from ollama.com/library, not hf.co -- a reviewed source this
+# file did not recognise at all until now. Built from a FIXTURE manifest+blob tree (never the real
+# ~/.ollama on the box running this), the same offline-determinism the HF fixtures above already give.
+print("\n-- Ollama-library provenance (card bb919fae) --")
+
+
+def write_ollama_fixture(root, name, tag, layers, blob_bytes):
+    """layers: [(mediaType, digest_hex, size)]. blob_bytes: {digest_hex: bytes} -- omit a digest to
+    simulate a blob that is catalogued but missing from disk."""
+    manifest_dir = os.path.join(root, "ollama", "manifests", "registry.ollama.ai", "library", name)
+    os.makedirs(manifest_dir, exist_ok=True)
+    blobs_dir = os.path.join(root, "ollama", "blobs")
+    os.makedirs(blobs_dir, exist_ok=True)
+    config_layer, real_layers = layers[0], layers[1:]
+    manifest = {
+        "schemaVersion": 2,
+        "config": {"mediaType": config_layer[0], "digest": "sha256:%s" % config_layer[1], "size": config_layer[2]},
+        "layers": [
+            {"mediaType": mt, "digest": "sha256:%s" % dg, "size": sz} for mt, dg, sz in real_layers
+        ],
+    }
+    with open(os.path.join(manifest_dir, tag), "w") as f:
+        json.dump(manifest, f)
+    for mt, dg, sz in layers:
+        if dg in blob_bytes:
+            with open(os.path.join(blobs_dir, "sha256-%s" % dg), "wb") as f:
+                f.write(blob_bytes[dg])
+
+
+DIGEST_MODEL = "1" * 64
+DIGEST_SYS = "2" * 64
+DIGEST_MISSING = "3" * 64
+LAYERS = [
+    ("application/vnd.docker.container.image.v1+json", "0" * 64, 10),
+    ("application/vnd.ollama.image.model", DIGEST_MODEL, 5 * 1024 * 1024),
+    ("application/vnd.ollama.image.system", DIGEST_SYS, 20),
+]
+tmp4 = tempfile.mkdtemp()
+write_ollama_fixture(
+    tmp4, "qwen2.5-coder", "7b-instruct-q4_K_M", LAYERS,
+    {"0" * 64: b"x" * 10, DIGEST_MODEL: b"y" * (5 * 1024 * 1024), DIGEST_SYS: b"z" * 20},
+)
+trusted_pubs = [p.lower() for p in cat.OLLAMA_LIBRARY_PUBLISHERS.values()]
+oentries = cat.ollama_library_entries(trusted_pubs, GPU6, fixture=tmp4)
+check("the reviewed model is discovered from the fixture tree", 1, len(oentries))
+if oentries:
+    oe = oentries[0]
+    check("installRef is the bare ollama tag, not an hf.co ref", "qwen2.5-coder:7b-instruct-q4_K_M", oe["installRef"])
+    check("repoOwner comes from the reviewed table", "Qwen", oe["repoOwner"])
+    check("trusted because 'qwen' is already an allowlisted publisher", True, oe["trusted"])
+    check("quant parsed from the tag suffix", "Q4_K_M", oe["quant"])
+    check("every present blob is a part", 3, len(oe["parts"]))
+    check("source is tagged for validate()'s branch", "ollama-library", oe["source"])
+    check("its own document satisfies the consumer contract", [],
+          cat.validate({"schemaVersion": 1, "generatedAt": "x", "source": "x", "warnings": [], "host": {}, "models": [oe]}))
+
+check("an untrusted (not in the reviewed table) publisher is never fabricated", True,
+      all(m["repoOwner"] in cat.OLLAMA_LIBRARY_PUBLISHERS.values() for m in oentries))
+
+# MUTATION: strip trust from the owner -- the entry itself must flip to untrusted, not stay pinned as
+# trusted-by-inertia (same class of control as the HF trusted-publisher check above).
+untrusted_result = cat.ollama_library_entries([], GPU6, fixture=tmp4)
+check("removing the publisher from trustedPublishers flips trusted to False", False,
+      untrusted_result[0]["trusted"] if untrusted_result else None)
+
+# A model NOT in OLLAMA_LIBRARY_PUBLISHERS must never be catalogued, even if a manifest for it exists
+# on disk -- this table is reviewed and explicit, not a scan of whatever the host happens to have.
+tmp5 = tempfile.mkdtemp()
+write_ollama_fixture(
+    tmp5, "llama3", "8b", LAYERS,
+    {"0" * 64: b"x" * 10, DIGEST_MODEL: b"y" * (5 * 1024 * 1024), DIGEST_SYS: b"z" * 20},
+)
+check("an un-reviewed Ollama-library model is never catalogued from disk alone", 0,
+      len(cat.ollama_library_entries(trusted_pubs, GPU6, fixture=tmp5)))
+
+# A blob the manifest names but that is NOT actually on disk must be DROPPED, not listed with a
+# digest nothing will ever match -- same "cannot compare against nothing" rule the hf.co path applies.
+tmp6 = tempfile.mkdtemp()
+LAYERS_MISSING = LAYERS + [("application/vnd.ollama.image.template", DIGEST_MISSING, 5)]
+write_ollama_fixture(
+    tmp6, "qwen2.5-coder", "7b-instruct-q4_K_M", LAYERS_MISSING,
+    {"0" * 64: b"x" * 10, DIGEST_MODEL: b"y" * (5 * 1024 * 1024), DIGEST_SYS: b"z" * 20},
+    # DIGEST_MISSING intentionally has no blob written -- the manifest names it, the disk does not have it.
+)
+missing_result = cat.ollama_library_entries(trusted_pubs, GPU6, fixture=tmp6)
+check("a manifest-named blob absent from disk is dropped, not fabricated as a part", True,
+      len(missing_result) == 1 and all(p["sha256"] != DIGEST_MISSING for p in missing_result[0]["parts"]))
+
+# validate() must reject a malformed ollama-library shape exactly as it rejects a malformed hf.co one.
+print("-- Ollama-library: validate() shape checks --")
+if oentries:
+    _base_env = {"schemaVersion": 1, "generatedAt": "x", "source": "x", "warnings": [], "host": {}}
+    _bad_ref = dict(oentries[0])
+    _bad_ref["installRef"] = "hf.co/qwen2.5-coder:7b-instruct-q4_K_M"  # an hf.co-shaped ref on an ollama-sourced entry
+    check("validate() rejects an hf.co-shaped installRef on an ollama-library entry", True,
+          any("ollama-library reference" in e for e in cat.validate({**_base_env, "models": [_bad_ref]})))
+    _bad_repo = dict(oentries[0])
+    _bad_repo["repo"] = "Qwen/qwen2.5-coder"  # a slash is the hf.co shape, not the flat library one
+    check("validate() rejects an owner/name repo on an ollama-library entry", True,
+          any("Ollama-library name" in e for e in cat.validate({**_base_env, "models": [_bad_repo]})))
+
 print()
 if fails:
     print("selftest: FAIL (%d)" % len(fails))

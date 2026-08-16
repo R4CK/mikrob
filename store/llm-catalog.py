@@ -85,6 +85,11 @@ COMPANION_RX = re.compile(r"(^|/)(mmproj|mmproj-model|clip|vision)[-_.]", re.I)
 # into an actual `ollama pull` re-checks the same shape before running it (src/web/routes/local-llm.ts).
 HF_REPO_RX = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]*/[A-Za-z0-9][A-Za-z0-9._-]*$")
 
+# Ollama's public library is flat-namespaced (registry.ollama.ai/library/<name>/<tag>) -- no
+# owner/name split the way an HF repo id has one. See OLLAMA_LIBRARY_PUBLISHERS below.
+OLLAMA_LIBRARY_NAME_RX = re.compile(r"^[a-z0-9][a-z0-9._-]*$")
+OLLAMA_TAG_RX = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]*$")
+
 
 def _get(url, fixture=None, timeout=30):
     """One JSON GET. With --fixture, read a file instead -- the selftest must not touch the network,
@@ -229,6 +234,144 @@ def tier_of(required, vram_total_mib, ram_total_mib, cpu_only):
     return "too-big"
 
 
+# --- Ollama-library provenance (card bb919fae, MikroB/Peti decision 2026-08-16) --------------------
+#
+# HuggingFace is not the only reviewed source. Peti deliberately runs the fleet's draft/routing model,
+# qwen2.5-coder:7b-instruct-q4_K_M, from Ollama's own official library (ollama.com/library) rather
+# than hf.co -- a reputable, curated distribution channel this file simply never recognised. Before
+# this the model showed owner=unverified with digest check not-possible: no catalogue entry existed
+# for it at all, so a blob swapped on disk would go unnoticed (Cybersec residual finding, card
+# d297f26f/eb843c46).
+#
+# EXPLICIT, REVIEWED, NOT DISCOVERED. The Ollama library has no owner/publisher field the way an HF
+# repo id does (models are flat-namespaced under registry.ollama.ai/library/<name>), so "who actually
+# publishes this" cannot be read off an API -- it is a human decision, same as every other entry in
+# llm-catalog-trust.json. This table names ONLY the models the fleet actually installs through this
+# channel; it is not a general Ollama-library scanner. Add an entry here (with a reason) the same way
+# a new HF publisher gets added to trustedPublishers -- a security-relevant, reviewed change.
+OLLAMA_LIBRARY_PUBLISHERS = {
+    # Qwen (Alibaba) publishes qwen2.5-coder upstream; Ollama's library mirrors/hosts the GGUF build
+    # under its own flat name. "qwen" is already a trustedPublisher (card 6f8f71fa's catalogue), so
+    # naming the real publisher here REUSES that existing decision instead of inventing a new one.
+    "qwen2.5-coder": "Qwen",
+}
+
+
+def ollama_blobs_dir():
+    # Same env override + default as the TS consumer (src/web/routes/local-llm.ts OLLAMA_BLOBS_DIR /
+    # store/first-run-llm.sh FIRST_RUN_BLOBS) -- one source of truth for where the blobs live.
+    return os.environ.get("FIRST_RUN_BLOBS", os.path.join(os.path.expanduser("~"), ".ollama", "models", "blobs"))
+
+
+def ollama_manifests_dir():
+    # Sibling of the blobs dir under the same "models" parent -- .../models/blobs and
+    # .../models/manifests/registry.ollama.ai/library are how ollama itself lays the tree out, so
+    # deriving one from the other keeps a single override point (FIRST_RUN_BLOBS) instead of two.
+    models_dir = os.path.dirname(ollama_blobs_dir())
+    return os.path.join(models_dir, "manifests", "registry.ollama.ai", "library")
+
+
+def ollama_tag_quant(tag):
+    """The quant suffix of an Ollama tag, e.g. '7b-instruct-q4_K_M' -> 'Q4_K_M'. Reuses
+    QUANT_QUALITY's own vocabulary (via quant_rank) so an ollama-sourced entry sorts and displays
+    exactly like an hf.co one when its quant is recognised."""
+    m = re.search(r"((?:IQ|Q)\d+[_A-Za-z0-9]*|f16|fp16|bf16)$", tag, re.I)
+    return m.group(1).upper() if m else tag.upper()
+
+
+def ollama_library_entries(trusted_pubs, gpu, fixture=None):
+    """Catalogue entries for locally-installed Ollama-library models with a reviewed publisher
+    (OLLAMA_LIBRARY_PUBLISHERS). Read straight from the on-disk manifest + blob store -- no network,
+    no `ollama` CLI dependency -- so this works the same whether build() is online or was reached
+    from --offline (retier() recomputes tier/requiredMib from the stored fileMib either way, exactly
+    as it already does for hf.co entries).
+
+    `fixture`, when given, reads from <fixture>/ollama/{manifests,blobs} instead of the real
+    ~/.ollama tree -- same reason build()'s HF calls take a fixture dir: this file's own selftest is
+    OFFLINE and deterministic by design, and reading the real host's Ollama install unconditionally
+    would make every build() call in that suite depend on whatever happens to be installed on the
+    machine running it."""
+    entries = []
+    if fixture is not None:
+        manifests_root = os.path.join(fixture, "ollama", "manifests", "registry.ollama.ai", "library")
+        blobs_dir = os.path.join(fixture, "ollama", "blobs")
+    else:
+        manifests_root = ollama_manifests_dir()
+        blobs_dir = ollama_blobs_dir()
+    for name, owner in OLLAMA_LIBRARY_PUBLISHERS.items():
+        model_dir = os.path.join(manifests_root, name)
+        if not os.path.isdir(model_dir):
+            continue
+        for tag in sorted(os.listdir(model_dir)):
+            manifest_path = os.path.join(model_dir, tag)
+            if not os.path.isfile(manifest_path):
+                continue
+            try:
+                with open(manifest_path) as f:
+                    manifest = json.load(f)
+            except Exception:
+                continue
+            cfg = manifest.get("config") or {}
+            layers = ([cfg] if cfg.get("digest") else []) + list(manifest.get("layers") or [])
+            parts, total_bytes = [], 0
+            for layer in layers:
+                digest = str(layer.get("digest") or "")
+                if not digest.startswith("sha256:"):
+                    continue
+                sha = digest.split(":", 1)[1]
+                blob_path = os.path.join(blobs_dir, "sha256-" + sha)
+                # A part not actually present on disk cannot be a verified part of THIS install, and
+                # listing it would give the digest check something to fail on that was never real to
+                # begin with -- dropped rather than recorded as missing.
+                if not os.path.isfile(blob_path):
+                    continue
+                media = str(layer.get("mediaType") or "").rsplit(".", 1)[-1] or "blob"
+                size = int(layer.get("size") or os.path.getsize(blob_path))
+                parts.append({"path": media, "sizeMib": int(size / (1024 * 1024)), "sha256": sha})
+                total_bytes += size
+            if not parts:
+                continue
+            file_mib = int(total_bytes / (1024 * 1024))
+            req = required_mib(file_mib)
+            tier = tier_of(req, gpu.get("vramTotalMib"), gpu.get("ramTotalMib"), gpu.get("cpuOnly", True))
+            # Same rule as the hf.co path: nothing offers a model this host cannot run.
+            if tier == "too-big":
+                continue
+            quant = ollama_tag_quant(tag)
+            trusted = owner.lower() in trusted_pubs
+            entries.append(
+                {
+                    "id": "ollama-library_%s:%s" % (name, tag.lower()),
+                    "repo": name,
+                    "repoOwner": owner,
+                    "displayName": "%s (%s, Ollama library)" % (name, tag),
+                    "quant": quant,
+                    "parts": parts,
+                    "partCount": len(parts),
+                    "pinned": all(p["sha256"] for p in parts),
+                    "fileMib": file_mib,
+                    "requiredMib": req,
+                    "kvCacheMib": int((DEFAULT_CTX / 1024.0) * KV_MIB_PER_1K_CTX),
+                    "contextTokens": DEFAULT_CTX,
+                    "tier": tier,
+                    "tokensPerSecond": None,  # NEVER predicted -- only a real bench fills this in.
+                    "downloads": None,  # the Ollama library API does not expose this figure.
+                    "gated": False,
+                    "installRef": "%s:%s" % (name, tag),
+                    "sizeOnDiskMib": file_mib,
+                    "trusted": trusted,
+                    "trustReason": "allowlisted-publisher" if trusted else "unverified",
+                    "installedAt": None,
+                    "benchmarkedAt": None,
+                    "notes": [],
+                    # Distinguishes this entry's shape from an hf.co one for validate() -- installRef
+                    # has no "hf.co/" prefix and `repo` is flat (no owner/name slash).
+                    "source": "ollama-library",
+                }
+            )
+    return entries
+
+
 def build(gpu, limit=20, fixture=None, keywords=None):
     trusted_pubs, relevant_families, relevance_kw = load_trust()
     kw = keywords or relevance_kw
@@ -330,6 +473,11 @@ def build(gpu, limit=20, fixture=None, keywords=None):
     # they are the same repo at the same tier. Cross-repo ordering is therefore untouched: this does
     # not let a niche model outrank a popular one, it only picks the better artefact of the model
     # already chosen.
+    #
+    # Ollama-library entries are appended here, AFTER discovery/relevance filtering and BEFORE the
+    # sort, so they participate in the same ordering as every hf.co entry (card bb919fae) instead of
+    # being bolted on as a separate, unsorted list.
+    models.extend(ollama_library_entries(trusted_pubs, gpu, fixture=fixture))
     models.sort(
         key=lambda m: (
             m["tier"] != "fits",
@@ -488,8 +636,26 @@ def validate(doc):
         # against len(parts)). A stored boolean that drifts from its parts is worse than no field.
         if bool(m.get("pinned")) != all(p.get("sha256") for p in parts):
             errs.append("%s pinned=%r does not match whether every part has a sha256" % (where, m.get("pinned")))
-        if not HF_REPO_RX.match(str(m.get("repo") or "")):
-            errs.append("%s repo %r is not a valid HF repo id" % (where, m.get("repo")))
+        # Ollama-library entries (card bb919fae) have a DIFFERENT valid shape: a flat name (no
+        # owner/name slash) and an installRef with no "hf.co/" prefix -- the library itself has no
+        # such prefix. Checked as its own branch rather than loosening the hf.co rule, so a malformed
+        # hf.co entry still fails exactly as before.
+        ref = str(m.get("installRef") or "")
+        repo = str(m.get("repo") or "")
+        if m.get("source") == "ollama-library":
+            if not OLLAMA_LIBRARY_NAME_RX.match(repo):
+                errs.append("%s repo %r is not a valid Ollama-library name" % (where, repo))
+            if ref.startswith("hf.co/") or ":" not in ref:
+                errs.append("%s installRef %r is not a valid ollama-library reference" % (where, ref))
+            else:
+                name, _, tag = ref.partition(":")
+                if name != repo or not OLLAMA_TAG_RX.match(tag):
+                    errs.append("%s installRef %r does not match repo:tag shape" % (where, ref))
+        else:
+            if not HF_REPO_RX.match(repo):
+                errs.append("%s repo %r is not a valid HF repo id" % (where, m.get("repo")))
+            if not ref.startswith("hf.co/") or ":" not in ref:
+                errs.append("%s installRef %r is not an installable reference" % (where, ref))
         if int(m.get("requiredMib") or 0) <= int(m.get("fileMib") or 0):
             errs.append("%s requiredMib must exceed fileMib (KV cache + overhead)" % where)
         if m.get("tier") not in ("fits", "partial"):
@@ -497,9 +663,6 @@ def validate(doc):
         tps = m.get("tokensPerSecond")
         if tps is not None and not isinstance(tps, (int, float)):
             errs.append("%s tokensPerSecond must be null or a number" % where)
-        ref = str(m.get("installRef") or "")
-        if not ref.startswith("hf.co/") or ":" not in ref:
-            errs.append("%s installRef %r is not an installable reference" % (where, ref))
     return errs
 
 
