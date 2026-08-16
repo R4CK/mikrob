@@ -401,9 +401,34 @@ describe('no shipped script, template or GENERATOR puts a Bearer token in curl a
     return lines.slice(from, to + 1)
   }
 
+  /**
+   * True iff the flagged line itself is inert -- a comment, a docstring line, or an HTML comment --
+   * never live code (card 782820be, Cybersec). Mirrors the executable-line test
+   * sync-agent-templates.sh already applies to its own rewrite scope
+   * (`not line.lstrip().startswith('#')`), generalised to the other comment shapes this corpus's
+   * three real markers actually sit on (a `#` line, a Python docstring opener, an HTML comment) plus
+   * `//` for the .ts files in scope, even though nothing uses it there yet.
+   */
+  function isCommentLine(line: string): boolean {
+    const t = line.trimStart()
+    return (
+      t.startsWith('#') ||
+      t.startsWith('//') ||
+      t.startsWith('"""') ||
+      t.startsWith("'''") ||
+      t.startsWith('<!--')
+    )
+  }
+
   function isDocumentedAntiPattern(source: string, startLine: number): boolean {
     if (fencedLines(source).has(startLine)) return false
-    const m = GUARD_ALLOW.exec(paragraphAround(source.split('\n'), startLine).join('\n'))
+    const lines = source.split('\n')
+    // The code-vs-prose gap (card 782820be): the marker+reason check alone said nothing about
+    // whether the FLAGGED occurrence itself is live code. A real `curl ... # guard-allow: ...`
+    // (marker trailing the offending line) or a marker on the line directly above with no blank
+    // line between it both satisfied the old check while the flagged line stayed fully executable.
+    if (!isCommentLine(lines[startLine - 1] ?? '')) return false
+    const m = GUARD_ALLOW.exec(paragraphAround(lines, startLine).join('\n'))
     return (m?.groups?.['reason'] ?? '').trim().length > 0
   }
 
@@ -537,6 +562,38 @@ describe('no shipped script, template or GENERATOR puts a Bearer token in curl a
     // fence and the leak are unrelated neighbours and the leak must still be reported.
     const doc = ['```bash', 'echo unrelated', '```', '', '# use the header instead', `# ${LEAK_LINE}`].join('\n')
     expect(exemptCount(doc)).toBe(0)
+  })
+
+  // ── code vs. prose (card 782820be, Cybersec) ────────────────────────────────────────────────
+  //
+  // The marker+reason check alone said nothing about whether the FLAGGED occurrence is live code.
+  // A real, executable curl with the marker trailing on its OWN line, or a marker on the line
+  // directly above with no blank line between, both satisfied the old rule while the curl itself
+  // stayed fully executable -- a live leak that types one comment to excuse itself.
+  it('a REAL curl carrying the marker on its OWN line is NOT exempt -- it is live code, not a comment', () => {
+    const doc = `${LEAK_LINE}  # guard-allow: documented-anti-pattern this is fine, trust me`
+    expect(exemptCount(doc)).toBe(0)
+  })
+
+  it('a REAL curl with the marker on the line directly above (no blank line) is NOT exempt', () => {
+    const doc = ['# guard-allow: documented-anti-pattern this is fine, trust me', LEAK_LINE].join('\n')
+    expect(exemptCount(doc)).toBe(0)
+  })
+
+  it('a marked docstring-opener line IS exempt (the real sync-agent-templates.sh shape)', () => {
+    // store/sync-agent-templates.sh:111-116: a Python docstring's FIRST line quotes the leak shape
+    // it rewrites, with the marker on the very next (still-docstring) line.
+    const doc = [
+      `    """${LEAK_LINE}`,
+      '    guard-allow: documented-anti-pattern the line above names the shape this function rewrites',
+      '    """',
+    ].join('\n')
+    expect(exemptCount(doc)).toBe(1)
+  })
+
+  it('a marked HTML-comment line IS exempt', () => {
+    const doc = [`<!-- ${LEAK_LINE}`, 'guard-allow: documented-anti-pattern shown for a docs reader -->'].join('\n')
+    expect(exemptCount(doc)).toBe(1)
   })
 
   it.each(cases)('$file: a path-embedded bot token is read from a curl config, not argv', ({ dir, file }) => {
