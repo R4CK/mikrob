@@ -464,14 +464,27 @@ const SHAPE_SIGNALS: ReadonlyArray<readonly [NonOffloadableCategory, RegExp]> = 
   //
   // The verb group was hand-listed (move|moves|moving|shift|...) and, like the OUTCOME family
   // before card 339d7d0b, missing the past participle -- "moved", "shifted", "relocated", "pushed"
-  // were all absent, so "The check was moved to the browser." stayed LOCAL. Card 0f1e9fa9 (MikroB):
-  // migrated to the SAME verbAlternation() generator (1)/(2)/(3) already use, zero new vocabulary.
+  // were all absent. Card 0f1e9fa9 (MikroB): migrated to the SAME verbAlternation() generator
+  // (1)/(2)/(3) already use, zero new vocabulary.
   [
     'security-decision',
     new RegExp(
       `\\b(?:${verbAlternation('move', 'shift', 'relocate', 'push')})\\b[^.]{0,45}` +
         `\\b(validation|validate|check|checks|authorization|authorisation|authz|auth|permission)\\w*\\b[^.]{0,35}` +
         `\\b(client|frontend|front-end|browser|ui)\\b`,
+    ),
+  ],
+  // (5b) the SAME sentence in the passive voice: "the check was moved to the browser". Measured
+  // while closing the participle gap above: the participle alone does NOT reach the card's own
+  // motivating example, because (5) is verb-then-noun and passive voice puts the guard noun FIRST
+  // ("the check was moved..." -- "check" precedes "moved", so nothing follows the verb within the
+  // window). Same shape as (1b)/(3b) -- a mirrored order, zero new vocabulary.
+  [
+    'security-decision',
+    new RegExp(
+      `\\b(validation|validate|check|checks|authorization|authorisation|authz|auth|permission)\\w*\\b[^.]{0,30}` +
+        `\\b(?:is|are|was|were|gets?|being)\\b[^.]{0,15}\\b(?:${verbAlternation('move', 'shift', 'relocate', 'push')})\\b` +
+        `[^.]{0,45}\\b(client|frontend|front-end|browser|ui)\\b`,
     ),
   ],
   // --- WIDENING family (card c1661fff, Cybered) -------------------------------------------------
@@ -483,14 +496,24 @@ const SHAPE_SIGNALS: ReadonlyArray<readonly [NonOffloadableCategory, RegExp]> = 
   // (6) an explicit widen/broaden/expand verb next to a scope-shaped noun.
   //
   // Same gap as (5): the hand-listed verb group had no past participle -- "widened", "broadened",
-  // "expanded" were all absent, so "The query was widened so a foreman sees all crews." (the exact
-  // card Cybered wrote this family for, c1661fff) stayed LOCAL. Migrated to verbAlternation() (card
-  // 0f1e9fa9, MikroB), zero new vocabulary.
+  // "expanded" were all absent. Migrated to verbAlternation() (card 0f1e9fa9, MikroB), zero new
+  // vocabulary.
   [
     'isolation',
     new RegExp(
       `\\b(?:${verbAlternation('widen', 'broaden', 'expand')})\\b[^.]{0,50}` +
         `\\b(quer(?:y|ies)|scope|filter|filtering|access|visibility|results?|rows?|records?|endpoint)\\b`,
+    ),
+  ],
+  // (6b) the SAME sentence in the passive voice: "the query was widened so a foreman sees all
+  // crews" -- the exact card this family exists for (c1661fff), and it stays LOCAL on the
+  // participle-only fix above for the same reason (5b) does: (6) is verb-then-noun, passive voice
+  // puts the scope noun FIRST. Same mirrored shape as (1b)/(3b)/(5b), zero new vocabulary.
+  [
+    'isolation',
+    new RegExp(
+      `\\b(quer(?:y|ies)|scope|filter|filtering|access|visibility|results?|rows?|records?|endpoint)\\b[^.]{0,30}` +
+        `\\b(?:is|are|was|were|gets?|being)\\b[^.]{0,15}\\b(?:${verbAlternation('widen', 'broaden', 'expand')})\\b`,
     ),
   ],
   // (7) every/all/any + a tenant-or-resource noun, qualified by "not just/only" (or its siblings)

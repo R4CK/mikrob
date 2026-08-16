@@ -8,12 +8,14 @@
 // verbAlternation() stems verbs) -- it is the same word-order gap (3b) closed for the ceasing-to-
 // apply family, applied to the granting family. Zero new vocabulary.
 //
-// (5)/(6) hand-listed verb groups missing the past participle. Same defect class as the pre-
-// 339d7d0b OUTCOME family: "move|moves|moving|shift|shifts|relocate|push|pushes" and "widen|widens|
-// widening|broaden|broadens|broadening|expand|expands|expanding" both omitted the participle
-// ("moved", "widened", ...), so "The check was moved to the browser." and "The query was widened so
-// a foreman sees all crews." (the exact card Cybered wrote family (6) for, c1661fff) stayed LOCAL.
-// Migrated both to the existing verbAlternation() generator that (1)/(2)/(3) already use.
+// (5)/(6) hand-listed verb groups missing the past participle, PLUS the same word-order gap as
+// (1b). The card's own diagnosis named only the missing participle ("moved", "widened", ...), and
+// migrating the verb group to verbAlternation() alone was measured here to be insufficient: (5)/(6)
+// are still verb-then-noun, and the card's own motivating examples -- "The check was moved to the
+// browser." and "The query was widened so a foreman sees all crews." (the exact card Cybered wrote
+// family (6) for, c1661fff) -- are passive, so the guard/scope noun precedes the verb and nothing
+// follows it within the window. Closed the same way as (1b)/(3b): a mirrored (5b)/(6b) rule,
+// noun-then-copula-then-verb, zero new vocabulary (reuses the same verbAlternation() call).
 //
 // NEUTRAL NOUNS ONLY. MikroB's own self-correction on the prior measurement: probing with
 // permission/validation/authorization words proves the KEYWORD BAG fires, not the SHAPE rule --
@@ -43,7 +45,7 @@ describe('(1b) grant-family passive mirror (card 0f1e9fa9)', () => {
   })
 })
 
-describe('(5) control-moved-to-client, participle closed (card 0f1e9fa9)', () => {
+describe('(5b) control-moved-to-client, passive mirror (card 0f1e9fa9)', () => {
   it('routes ONLINE with the past participle and a NEUTRAL guard noun ("check")', () => {
     expect(routeTask({ description: 'The check was moved to the browser.' }).route).toBe('online')
   })
@@ -57,7 +59,7 @@ describe('(5) control-moved-to-client, participle closed (card 0f1e9fa9)', () =>
   })
 })
 
-describe('(6) widening family, participle closed (card 0f1e9fa9, family from c1661fff)', () => {
+describe('(6b) widening family, passive mirror (card 0f1e9fa9, family from c1661fff)', () => {
   it('routes ONLINE with the past participle -- the exact card this family exists for', () => {
     expect(routeTask({ description: 'The query was widened so a foreman sees all crews.' }).route).toBe('online')
   })
@@ -74,7 +76,9 @@ describe('(6) widening family, participle closed (card 0f1e9fa9, family from c16
   })
 
   it('CONTROL: an ordinary business-expansion sentence with no scope noun stays LOCAL', () => {
-    expect(routeTask({ description: 'The company plans to expand into two new regions next year.' }).route).toBe('local')
+    // "company" is deliberately avoided here -- it is its own CATEGORY_SIGNALS keyword (isolation
+    // bag), so a sentence using it would pass for the wrong reason (keyword bag, not this rule).
+    expect(routeTask({ description: 'The bakery plans to expand into two new neighborhoods next year.' }).route).toBe('local')
   })
 })
 
