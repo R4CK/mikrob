@@ -13,7 +13,9 @@ const __dirname = dirname(fileURLToPath(import.meta.url))
 const APP_CORE = readFileSync(join(__dirname, '../../web/app.js'), 'utf-8')
 const APP_MESSAGES = readFileSync(join(__dirname, '../../web/app-messages.js'), 'utf-8')
 const APP_FEDERATION = readFileSync(join(__dirname, '../../web/app-federation.js'), 'utf-8')
-const APP = APP_CORE + '\n' + APP_MESSAGES + '\n' + APP_FEDERATION
+// Federation/federated-agent rendering moved to app-agents.js in slice 31.
+const APP_AGENTS = readFileSync(join(__dirname, '../../web/app-agents.js'), 'utf-8')
+const APP = APP_CORE + '\n' + APP_MESSAGES + '\n' + APP_FEDERATION + '\n' + APP_AGENTS
 const HTML = readFileSync(join(__dirname, '../../web/index.html'), 'utf-8')
 const CSS = readFileSync(join(__dirname, '../../web/style.css'), 'utf-8')
 

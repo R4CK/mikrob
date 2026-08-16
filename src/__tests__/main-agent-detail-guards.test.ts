@@ -8,7 +8,9 @@ import type { RouteContext } from '../web/routes/types.js'
 
 const __dirname = dirname(fileURLToPath(import.meta.url))
 const agentsSource = readFileSync(join(__dirname, '..', 'web', 'routes', 'agents.ts'), 'utf8')
+// openAgentDetail, populateDetailAvatarGrid moved to app-agent-detail.js in slice 32.
 const appSource = readFileSync(join(__dirname, '..', '..', 'web', 'app.js'), 'utf8')
+              + '\n' + readFileSync(join(__dirname, '..', '..', 'web', 'app-agent-detail.js'), 'utf8')
 
 function sourceBetween(source: string, startMarker: string, endMarker: string): string {
   const start = source.indexOf(startMarker)
