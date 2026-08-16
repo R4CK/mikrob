@@ -307,8 +307,30 @@ _queue_finish() { # $1=complete|fail
     -H "Content-Type: application/json" -d "$body" >/dev/null 2>&1 || true
 }
 
-RESP=$(flock -w "$GPU_LOCK_WAIT" "$GPU_LOCK" curl -fsS -m "$TIMEOUT" -X POST "$OLLAMA_HOST/api/generate" \
-  -H "Content-Type: application/json" -d "$REQ" 2>/dev/null) || {
+# INTERNAL SAFETY-NET TIMEOUT (card cea524b1): a CALLER wrapping this whole script in its own
+# `timeout N` is not reliable enforcement on its own. Measured directly: a bash process with an
+# EXIT trap installed (the header-file cleanup trap above) that is blocked in a foreground command
+# substitution can fail to act on the caller's SIGTERM until the blocked child finishes on its own --
+# reproduced with a hung curl behind flock, where an external `timeout 3` did not stop it and it ran
+# to curl's own -m budget instead. That left the ONLY real ceiling as GPU_LOCK_WAIT (600s) + TIMEOUT
+# (120s) = up to 720s, versus the 45s a caller like route-classify.sh actually expects -- the gap the
+# reported incident (20+ minute lock hold) fell into.
+#
+# `timeout -k` from a FRESH (non-bash) process is immune to that trap/wait interaction -- verified:
+# it killed a hung curl+flock chain at its deadline with zero stragglers, repeatedly. `-k 5` escalates
+# to SIGKILL 5s after the initial TERM, which cannot be deferred or ignored by anything downstream.
+# This bounds the worst case to a known, guaranteed number instead of leaving it fully open; it does
+# NOT replace a caller doing its own tighter budgeting (see route-classify.sh's env overrides).
+#
+# Guarded by `command -v`: `timeout` is not guaranteed on macOS (no hard new cross-platform
+# dependency, matching this file's own "nothing branches on OS" invariant) -- absent, it falls back
+# to the pre-existing behavior, no worse than before this fix.
+GEN_CMD=(flock -w "$GPU_LOCK_WAIT" "$GPU_LOCK" curl -fsS -m "$TIMEOUT" -X POST "$OLLAMA_HOST/api/generate" \
+  -H "Content-Type: application/json" -d "$REQ")
+if command -v timeout >/dev/null 2>&1; then
+  GEN_CMD=(timeout -k 5 "$(( GPU_LOCK_WAIT + TIMEOUT + 10 ))" "${GEN_CMD[@]}")
+fi
+RESP=$("${GEN_CMD[@]}" 2>/dev/null) || {
   log_usage err "$(_elapsed)"
   _queue_finish fail
   # distinguish model-missing from generic error

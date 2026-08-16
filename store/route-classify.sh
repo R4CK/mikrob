@@ -99,9 +99,20 @@ fi
 WINDOW="${ROUTE_CLASSIFY_WINDOW:-120}"
 STRIDE="${ROUTE_CLASSIFY_STRIDE:-60}"
 
+# Card cea524b1: this outer `timeout "$TIMEOUT"` alone is not reliable enforcement (measured --
+# local-llm.sh's own trap/command-substitution combo can defer SIGTERM delivery to the calling
+# bash), so without an explicit override local-llm.sh's own internal budget (GPU_LOCK_WAIT 600s +
+# its TIMEOUT 120s = up to 720s) is the real ceiling, not this $TIMEOUT (default 45s). That mismatch
+# is exactly what let two route-triage calls hold the GPU lock for 20+ minutes. Passed alongside
+# local-llm.sh's own new internal `timeout -k` safety net (belt AND suspenders, not a replacement for
+# it): a stage-1 classifier call is low-value if delayed, and a failed/timed-out call already falls
+# through to UNKNOWN, which is the safe direction (see file header) -- so failing fast here costs
+# nothing but a wasted local-model call, never a missed security decision.
+HALF=$(( TIMEOUT / 2 )); [ "$HALF" -ge 1 ] || HALF=1
+
 ask() { # $1 = text -> SECURITY | MECHANICAL | UNKNOWN
   local out
-  out="$(LOCAL_LLM_TEMPERATURE=0 LOCAL_LLM_SEED=0 \
+  out="$(LOCAL_LLM_TEMPERATURE=0 LOCAL_LLM_SEED=0 LOCAL_LLM_LOCK_WAIT="$HALF" LOCAL_LLM_TIMEOUT="$HALF" \
          timeout "$TIMEOUT" bash "$LLM" --task route-triage --caller route-classify --source routing \
           "$1" 2>/dev/null | tr -dc 'A-Za-z' | tr '[:lower:]' '[:upper:]')"
   case "$out" in
