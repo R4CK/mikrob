@@ -54,9 +54,9 @@ export function normalizeProjectName<T extends Record<string, unknown>>(data: T)
 // insensitively) -- this includes MAIN_AGENT_ID itself ("MikroB" folds to "mikrob", the same
 // identity, just case-drifted). A genuine non-agent label (OWNER_NAME "Peti", or any other
 // free-text author that names no known agents/<id>/ directory) passes through untouched.
-export function normalizeCommentAuthor(author: string): string {
+export function normalizeCommentAuthor(author: string, knownAgent: (name: string) => boolean = isKnownAgent): string {
   const lower = author.trim().toLowerCase()
-  return isKnownAgent(lower) ? lower : author
+  return knownAgent(lower) ? lower : author
 }
 
 // Weekly NEW-DEV stop enforcement (Peti 2026-08-01). The newDevStop threshold was COMPUTED and shown,
