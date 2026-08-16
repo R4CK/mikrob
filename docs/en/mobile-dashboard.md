@@ -14,6 +14,17 @@ The dashboard stays bound to localhost; Tailscale Serve only proxies from the ta
 
 ## Host setup (one-time)
 
+**Automatic path (recommended, since card b68ddae8).** The installer (`install-linux.sh` /
+`install-macos.sh`, card 0985ac83) optionally offers to install Tailscale -- you confirm that step
+(one question, because the browser-based sign-in flow cannot be automated safely from a
+non-interactive installer step). Signing in and starting the proxy itself is then handled from the
+dashboard: **Federation page → My connection info** section, the **"Sign in with Tailscale"** button.
+It starts `tailscale up`, opens the sign-in popup/link, and once connected automatically runs
+`tailscale serve --bg` and fills in the **System ID** + **Access address** fields -- hand those to the
+other system's admin for peer pairing. No terminal or commands needed.
+
+**Manual path (if you skipped Tailscale in the installer, or want the CLI for dev/fallback reasons).**
+
 1. Install Tailscale on the host and sign in with your account.
 2. Start the proxy:
    ```
@@ -35,7 +46,7 @@ The dashboard stays bound to localhost; Tailscale Serve only proxies from the ta
 ## Who does it work for?
 
 - The PWA (app icon, token-paste, mobile view) ships in every install by default.
-- Secure remote mobile access requires the Tailscale setup above on the host (not automatic). Without Tailscale, alternatives are same-LAN access or your own VPN/tunnel.
+- Secure remote mobile access requires the Tailscale setup above on the host -- a single click via the Federation page button (see above); you don't need to run the underlying commands (`tailscale up`, `tailscale serve --bg`) by hand. Without Tailscale, alternatives are same-LAN access or your own VPN/tunnel.
 
 ## Pitfalls
 

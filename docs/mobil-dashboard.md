@@ -14,6 +14,18 @@ A dashboard a localhostra kötve marad; a Tailscale Serve csak proxyzza a tailne
 
 ## Beállítás a gazdagépen (egyszeri)
 
+**Automatikus út (ajánlott, kártya b68ddae8 óta).** A telepítő (`install-linux.sh` / `install-macos.sh`,
+kártya 0985ac83) opcionálisan felajánlja a Tailscale telepítését -- ezt a lépést jóvá kell hagynod
+(egy kérdés, mert a bejelentkezés böngészős folyamata nem automatizálható biztonságosan egy
+non-interaktív telepítő-lépésből). A bejelentkezést magát és a proxy indítását utána a dashboardon,
+a **Föderáció oldal → Kapcsolódási adataim** szekció **"Bejelentkezés Tailscale-lel"** gombja végzi:
+elindítja a `tailscale up`-ot, felugró ablakban/linken megnyitja a bejelentkezést, majd sikeres
+csatlakozás után automatikusan lefuttatja a `tailscale serve --bg` lépést és kitölti a
+**Rendszer-azonosító** + **Elérési cím** mezőket -- ezeket kell átadnod a másik rendszer adminjának a
+társ-párosításhoz. Nem kell terminált nyitnod vagy parancsokat futtatnod.
+
+**Kézi út (ha a telepítőnél kihagytad a Tailscale-t, vagy fejlesztői/fallback okból CLI-t akarsz).**
+
 1. Telepítsd a Tailscale-t a gépre, és lépj be a fiókoddal.
 2. Indítsd el a proxyt:
    ```
@@ -37,7 +49,7 @@ A dashboard a localhostra kötve marad; a Tailscale Serve csak proxyzza a tailne
 - A PWA (app-ikon, token-beillesztő, mobil-nézet) MINDEN telepítésben benne van alapból.
 - A home-screen / app-ikon a beállított fő agent avatarját használja (ugyanaz a kép, mint a böngésző faviconja). Ha lecseréled az avatart a dashboardon, az ikon is frissül (a megszokott iOS törlés + újra hozzáadás után).
 - A felület tiszteletben tartja az iOS biztonságos területeit (notch, Dynamic Island, home indicator) álló és fekvő nézetben is; notch nélküli eszközön (Android, desktop) ez nem változtat semmin.
-- A biztonságos távoli mobil-elérés a fenti Tailscale-beállítást igényli a gazdagépen (nem automatikus). Tailscale nélkül alternatíva az azonos helyi hálózaton való elérés vagy saját VPN/tunnel.
+- A biztonságos távoli mobil-elérés a fenti Tailscale-beállítást igényli a gazdagépen -- ez a Föderáció-oldal gombjával egy kattintás (lásd fent), a mögötte futó parancsokat (`tailscale up`, `tailscale serve --bg`) nem kell kézzel kiadnod. Tailscale nélkül alternatíva az azonos helyi hálózaton való elérés vagy saját VPN/tunnel.
 
 ## Buktatók
 
