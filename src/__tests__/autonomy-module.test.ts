@@ -24,8 +24,8 @@ describe('autonomy modularisation: app-autonomy.js is the owner', () => {
     expect(MODULE).toContain('/api/autonomy')
   })
 
-  it('app-autonomy.js has autonomy level labels', () => {
-    expect(MODULE).toContain("'autonomy.level.1'")
+  it('app-autonomy.js has autonomy i18n keys', () => {
+    expect(MODULE).toContain("'autonomy.loading'")
   })
 
   it('app-autonomy.js saves via PUT to /api/autonomy', () => {
