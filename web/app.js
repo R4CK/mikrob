@@ -10643,8 +10643,16 @@ async function llmRefreshStatus() {
           </div>
         </div>`
       }).join(''), 'models', 'llm-model-row')
+      // Card 29b68fba (Cybersec LOW/INFO, a05c39c9 gate): this used to POST straight to
+      // /api/local-llm/model and just toast a raw 403 -- but that endpoint is the SAME
+      // trust-gated resource the Recommendations "Use" button hits (card fa8959cd/eb843c46's
+      // two-door fix made the decision one implementation either caller reaches), so an
+      // untrusted-publisher model already sitting in this list hit the confirm-required message
+      // with no control to type the confirmation into (rule 12). Reusing the existing
+      // llmActivateModelClick/openLlmTrustConfirm flow gives it the same modal the Recommendations
+      // section already has, instead of inventing a second copy of the same gate here.
       modelsEl.querySelectorAll('.llm-use-btn').forEach(b =>
-        b.addEventListener('click', () => llmSwapModel(b.dataset.model)))
+        b.addEventListener('click', () => llmActivateModelClick(b.dataset.model, b)))
       modelsEl.querySelectorAll('.llm-update-btn').forEach(b =>
         b.addEventListener('click', () => { document.getElementById('llmPullInput').value = b.dataset.model; llmStartPull(b.dataset.model) }))
     }
@@ -10664,6 +10672,11 @@ async function llmRefreshStatus() {
   }
 }
 
+// CALLER MUST ESCAPE (Cybersec LOW/INFO, card 29b68fba, a05c39c9 gate): this function does NOT
+// escape label/value/note/role -- every current caller already passes escapeHtml()'d or purely
+// static/numeric content, but nothing enforced that, so a future caller could silently open an
+// XSS hole by passing raw text through. Escape before calling this, not inside it (some callers
+// legitimately pass pre-built HTML, e.g. a nested <span>, so escaping here would double-encode).
 function llmTile(label, value, kind, note, role) {
   return `<div class="llm-tile ${kind}">
     <div class="llm-tile-label">${label}</div>
@@ -10932,23 +10945,6 @@ function llmSetupQueueFilter() {
   })
 }
 
-async function llmSwapModel(model) {
-  try {
-    const res = await fetch('/api/local-llm/model', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ model }),
-    })
-    const d = await res.json()
-    if (!res.ok) { showToast(d.error || t('localLlm.load_error')); return }
-    showToast(t('localLlm.models.swapped', { model }))
-    llmRefreshStatus()
-    llmRefreshRecs()
-  } catch {
-    showToast(t('localLlm.load_error'))
-  }
-}
-
 // --- GPU-filtered model catalogue (card 61a4a85f, EPIC ebc7b4dd T4) --------
 // Sourced from GET /api/local-llm/catalog (store/llm-catalog.py): real GPU/VRAM math, trust
 // labels (allowlisted-publisher vs unverified, card 87d7c86f), never a hardcoded/guessed
@@ -11169,6 +11165,10 @@ async function llmActivateModelClick(model, btn) {
   try {
     const { ok, status, data } = await llmPostActivateModel(model)
     if (ok) {
+      // Card 29b68fba: this function is now the single activation path for BOTH the installed-
+      // models "Használd" button and the Recommendations "Use" button -- the confirmation toast
+      // the former used to show is now here, once, for both entry points.
+      showToast(t('localLlm.models.swapped', { model }))
       await llmRefreshRecs()
       await llmRefreshStatus()
       return
