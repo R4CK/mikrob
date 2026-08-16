@@ -113,3 +113,11 @@ function populateAvatarGrid() {
 // so calling populateAvatarGrid() in app.js was a ReferenceError at page load).
 populateAvatarGrid()
 
+// === Avatar cache-busting epoch (slice 44, moved from top of app.js) ===
+// Avatar URLs are stable (server sends max-age + ETag) until an avatar changes in
+// THIS session, which bumps the epoch and re-busts every avatar URL rendered afterwards.
+// Exposed globally: _avatarEpoch, bumpAvatarEpoch(), avatarBust()
+let _avatarEpoch = 0
+function bumpAvatarEpoch() { _avatarEpoch = Date.now() }
+function avatarBust() { return _avatarEpoch ? `?t=${_avatarEpoch}` : '' }
+

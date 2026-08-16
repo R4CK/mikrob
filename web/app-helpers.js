@@ -40,3 +40,16 @@ const STATUS_COMPONENT_LABELS = {
   major_outage: () => t('status.comp.major_outage'),
   under_maintenance: () => t('status.comp.maintenance'),
 }
+
+// esc() -- compact HTML-escape for inline use in template literals.
+// Difference from escapeHtml(): only encodes & < > (via textContent->innerHTML),
+// which is sufficient for text-node contexts. escapeHtml() also encodes " and '
+// for attribute-value safety. Both are in this file so call sites can pick the
+// appropriate one. Moved here from app.js (slice 44).
+// Exposed globally: esc()
+function esc(s) {
+  if (!s) return ''
+  const d = document.createElement('div')
+  d.textContent = String(s)
+  return d.innerHTML
+}

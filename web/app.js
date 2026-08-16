@@ -1,12 +1,5 @@
-// === Avatar cache-busting epoch ===
-// Avatar URLs used to carry ?t=Date.now() on every render, which defeated the
-// browser cache and re-downloaded ~1MB per avatar on each rerender (brutal on
-// slow remote links). Instead the URLs are stable (server sends max-age +
-// ETag) until an avatar is actually changed in THIS session, which bumps the
-// epoch and re-busts every avatar URL rendered afterwards.
-let _avatarEpoch = 0
-function bumpAvatarEpoch() { _avatarEpoch = Date.now() }
-function avatarBust() { return _avatarEpoch ? `?t=${_avatarEpoch}` : '' }
+// === Avatar cache-busting epoch -- see web/app-elements.js ===
+// (_avatarEpoch, bumpAvatarEpoch, avatarBust moved to end of app-elements.js, slice 44.)
 
 // === i18n runtime ===
 // Priority: localStorage['marveen.lang'] > DASHBOARD_LANG (server default, read
@@ -697,16 +690,11 @@ document.getElementById('deepseekConfigLink')?.addEventListener('click', (e) => 
 // ============================================================
 // (Moved to app-recall.js as part of modularisation, card 48d891b4 / slice 8/N.
 //  app-recall.js is loaded AFTER this file in index.html.
-//  loadRecallPage() is only called from switchPage, never at init time.
-//  esc() helper stays here -- used by all modules loaded after app.js.)
+//  loadRecallPage() is only called from switchPage, never at init time.)
 /* STUB -- content removed */
 
-function esc(s) {
-  if (!s) return ''
-  const d = document.createElement('div')
-  d.textContent = String(s)
-  return d.innerHTML
-}
+// === esc() helper -- see web/app-helpers.js ===
+// (Moved to app-helpers.js, slice 44. app-helpers.js loads before app-recall.js and app-bg-tasks.js.)
 
 // ============================================================
 // === Background Tasks -- see web/app-bg-tasks.js ===
