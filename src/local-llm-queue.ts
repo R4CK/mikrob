@@ -170,13 +170,22 @@ export function complete(db: Database, id: number, result: string, now: number):
  * Record a failed run. Below MAX_ATTEMPTS the row goes back to `pending` for another pass; at the
  * cap it is parked as `failed` so it stops consuming GPU time -- the 3-strikes rule, enforced in the
  * queue rather than left to whoever happens to be reading the log.
+ *
+ * DIRECT-SYNC ROWS ALWAYS GO STRAIGHT TO `failed` (card e19e6d72): a `pending` row only ever leaves
+ * that state via claimNext(), and startDirect() never routes through claimNext() at all -- "the
+ * caller IS the worker", so nothing exists that will ever pick this row back up. Sending it to
+ * `pending` "for another pass" that can never happen orphans it there forever: 43 rows were found
+ * stuck exactly this way (error populated, attempts=1, status=pending, untouched since). The
+ * DIRECT_CALL_PLACEHOLDER prompt is the row's own structural marker for this, independent of
+ * whatever caller-supplied `source` string happens to be set.
  */
 export function fail(db: Database, id: number, error: string, now: number): QueueStatus {
-  const row = db.prepare('SELECT attempts FROM local_llm_queue WHERE id = ?').get(id) as
-    | { attempts: number }
+  const row = db.prepare('SELECT attempts, prompt FROM local_llm_queue WHERE id = ?').get(id) as
+    | { attempts: number; prompt: string }
     | undefined
   if (!row) return 'failed'
-  const next: QueueStatus = row.attempts >= MAX_ATTEMPTS ? 'failed' : 'pending'
+  const isDirectSync = row.prompt === DIRECT_CALL_PLACEHOLDER
+  const next: QueueStatus = isDirectSync || row.attempts >= MAX_ATTEMPTS ? 'failed' : 'pending'
   db.prepare(
     `UPDATE local_llm_queue SET status = ?, error = ?, finished_at = ? WHERE id = ?`,
   ).run(next, error.slice(0, 2000), next === 'failed' ? now : null, id)
@@ -190,21 +199,28 @@ export function fail(db: Database, id: number, error: string, now: number): Queu
  * `running` forever: the queue looks busy and that work is silently never done again. The attempts
  * counter was already incremented at claim time, so a crash-looping row still hits the cap instead
  * of being retried indefinitely.
+ *
+ * DIRECT-SYNC ROWS ALWAYS GO TO `failed` (card e19e6d72, same reasoning as fail() above): a
+ * requeued-to-pending direct-sync row has no claimNext() path back to `running`, so it would sit in
+ * `pending` forever -- this was the ACTUAL path the 43 stuck rows took (a route-classify.sh call
+ * timed out behind the GPU flock before it ever reached POST .../fail, so the row stayed `running`
+ * until a later reclaim sweep "requeued" it into permanent limbo).
  */
 export function reclaimStaleRunning(db: Database, staleMs: number, now: number): number {
   const cutoff = now - staleMs
   const stale = db
-    .prepare(`SELECT id, attempts FROM local_llm_queue WHERE status = 'running' AND started_at IS NOT NULL AND started_at < ?`)
-    .all(cutoff) as Array<{ id: number; attempts: number }>
+    .prepare(`SELECT id, attempts, prompt FROM local_llm_queue WHERE status = 'running' AND started_at IS NOT NULL AND started_at < ?`)
+    .all(cutoff) as Array<{ id: number; attempts: number; prompt: string }>
   const toPending = db.prepare(
     `UPDATE local_llm_queue SET status = 'pending', started_at = NULL, error = ? WHERE id = ?`,
   )
   const toFailed = db.prepare(
     `UPDATE local_llm_queue SET status = 'failed', error = ?, finished_at = ? WHERE id = ?`,
   )
-  const reclaim = db.transaction((rows: Array<{ id: number; attempts: number }>) => {
+  const reclaim = db.transaction((rows: Array<{ id: number; attempts: number; prompt: string }>) => {
     for (const r of rows) {
-      if (r.attempts >= MAX_ATTEMPTS) toFailed.run('abandoned: worker vanished while running', now, r.id)
+      const isDirectSync = r.prompt === DIRECT_CALL_PLACEHOLDER
+      if (isDirectSync || r.attempts >= MAX_ATTEMPTS) toFailed.run('abandoned: worker vanished while running', now, r.id)
       else toPending.run('requeued: worker vanished while running', r.id)
     }
   })

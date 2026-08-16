@@ -103,7 +103,7 @@ describe('startDirect (card 5dcd9bc8, direct-sync local-llm.sh self-registration
     expect(stats(db).running).toBe(2)
   })
 
-  it('complete()/fail() work on a direct row exactly like a claimed one (shared finish path)', () => {
+  it('complete() works on a direct row exactly like a claimed one (shared finish path)', () => {
     const id = startDirect(db, { agent: 'backend2', prompt: 'x' }, T0)
     complete(db, id, '', T0 + 500)
     const row = getById(db, id)!
@@ -111,11 +111,39 @@ describe('startDirect (card 5dcd9bc8, direct-sync local-llm.sh self-registration
     expect(row.finished_at).toBe(T0 + 500)
   })
 
-  it('reclaimStaleRunning treats a stuck direct row the same as a stuck claimed one', () => {
-    const id = startDirect(db, { agent: 'backend2', prompt: 'x' }, T0)
-    const n = reclaimStaleRunning(db, 1000, T0 + 5000)
-    expect(n).toBe(1)
-    expect(getById(db, id)!.status).toBe('pending')
+  // Card e19e6d72: fail()/reclaimStaleRunning DELIBERATELY do NOT treat a direct row like a claimed
+  // one -- a claimed row's "requeue to pending" only means something because claimNext() exists to
+  // pick it back up. startDirect() never routes through claimNext() at all ("the caller IS the
+  // worker"), so a direct row sent to `pending` has no path back to `running` ever again. 43 real
+  // rows were found stuck exactly this way: error populated, attempts=1 (< MAX_ATTEMPTS), status
+  // pending, untouched since. Both finish paths must fail a direct row OUTRIGHT instead.
+  describe('fail() and reclaimStaleRunning on a direct row go straight to `failed`, never `pending` (card e19e6d72)', () => {
+    it('fail() on a direct row is `failed` immediately, even on the FIRST attempt (well below MAX_ATTEMPTS)', () => {
+      const id = startDirect(db, { agent: 'backend2', prompt: 'x' }, T0)
+      expect(getById(db, id)!.attempts).toBe(1) // far below MAX_ATTEMPTS(3) -- the old bug's exact trigger
+      expect(fail(db, id, 'local-llm.sh call failed', T0 + 2)).toBe('failed')
+      const row = getById(db, id)!
+      expect(row.status).toBe('failed')
+      expect(row.error).toBe('local-llm.sh call failed')
+      expect(row.finished_at).toBe(T0 + 2)
+    })
+
+    it('reclaimStaleRunning on a stuck direct row is `failed` immediately, not requeued to an unreachable `pending`', () => {
+      const id = startDirect(db, { agent: 'backend2', prompt: 'x' }, T0)
+      const n = reclaimStaleRunning(db, 1000, T0 + 5000)
+      expect(n).toBe(1)
+      const row = getById(db, id)!
+      expect(row.status).toBe('failed')
+      expect(row.finished_at).toBe(T0 + 5000)
+    })
+
+    it('CONTROL: an ordinary enqueued/claimed row is UNAFFECTED -- still retries to pending below the cap', () => {
+      const id = enqueue(db, { agent: 'a', prompt: 'p' }, T0)
+      claimNext(db, T0 + 1)
+      expect(fail(db, id, 'model timeout', T0 + 2)).toBe('pending')
+      expect(getById(db, id)!.status).toBe('pending')
+      expect(claimNext(db, T0 + 3)!.id).toBe(id) // still claimable -- the retry path still works
+    })
   })
 })
 
