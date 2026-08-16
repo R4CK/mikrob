@@ -203,6 +203,7 @@ export async function tryHandleStatic(ctx: RouteContext, webDir: string): Promis
     return true
   }
   if (path === '/sw.js') { serveFile(req, res, join(webDir, 'sw.js')); return true }
+  if (path === '/sw-unregister.js') { serveFile(req, res, join(webDir, 'sw-unregister.js')); return true }
 
   // Fork overlay scripts (web/fork-*.js). The fork's convention is that new
   // fork-only frontend code lives in its own file loaded after app.js and

@@ -11,6 +11,7 @@ import { resolveAuth, requiresAuth, isFederationWireEndpoint, type AuthResult } 
 import { sweepExpiredSessions } from './web/auth-sessions.js'
 import { sweepExpiredDeviceKeys } from './web/auth-device-keys.js'
 import { isBlockedCrossOriginWrite, originMatchesServedHost } from './web/csrf-origin.js'
+import { CONTENT_SECURITY_POLICY } from './web/csp.js'
 import { json } from './web/http-helpers.js'
 import { detectLanIp } from './web/network-info.js'
 import { AGENTS_BASE_DIR, listAgentNames } from './web/agent-config.js'
@@ -118,6 +119,10 @@ export function startWebServer(port = 3420): http.Server {
     const url = new URL(req.url || '/', `http://localhost:${port}`)
     const path = url.pathname
     const method = req.method || 'GET'
+
+    // Set on every response, before any route writes headers (card bac41395). See
+    // src/web/csp.ts for the directive-by-directive reasoning.
+    res.setHeader('Content-Security-Policy', CONTENT_SECURITY_POLICY)
 
     const origin = req.headers.origin
     // Emit CORS headers for allowlisted origins AND for genuinely same-origin
