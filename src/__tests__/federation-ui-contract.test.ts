@@ -19,7 +19,9 @@ const APP_AGENTS = readFileSync(join(__dirname, '../../web/app-agents.js'), 'utf
 const APP_I18N_NAV = readFileSync(join(__dirname, '../../web/app-i18n-nav.js'), 'utf-8')
 // SIDEBAR_GROUPS (connections group etc.) moved to app-sidebar-groups.js in slice 37.
 const APP_SIDEBAR_GROUPS = readFileSync(join(__dirname, '../../web/app-sidebar-groups.js'), 'utf-8')
-const APP = APP_CORE + '\n' + APP_MESSAGES + '\n' + APP_FEDERATION + '\n' + APP_AGENTS + '\n' + APP_I18N_NAV + '\n' + APP_SIDEBAR_GROUPS
+// switchPage (incl. loadFederationPage call site) moved to app-page-switch.js in slice 39.
+const APP_PAGE_SWITCH = readFileSync(join(__dirname, '../../web/app-page-switch.js'), 'utf-8')
+const APP = APP_CORE + '\n' + APP_MESSAGES + '\n' + APP_FEDERATION + '\n' + APP_AGENTS + '\n' + APP_I18N_NAV + '\n' + APP_SIDEBAR_GROUPS + '\n' + APP_PAGE_SWITCH
 const HTML = readFileSync(join(__dirname, '../../web/index.html'), 'utf-8')
 const CSS = readFileSync(join(__dirname, '../../web/style.css'), 'utf-8')
 

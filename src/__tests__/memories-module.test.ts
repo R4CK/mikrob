@@ -10,7 +10,9 @@ import { join, dirname } from 'node:path'
 import { fileURLToPath } from 'node:url'
 
 const __dirname = dirname(fileURLToPath(import.meta.url))
-const APP     = readFileSync(join(__dirname, '../../web/app.js'), 'utf-8')
+// switchPage (incl. loadMemAgents/loadMemStats/loadMemories call sites) moved to app-page-switch.js in slice 39.
+const APP_PAGE_SWITCH = readFileSync(join(__dirname, '../../web/app-page-switch.js'), 'utf-8')
+const APP     = readFileSync(join(__dirname, '../../web/app.js'), 'utf-8') + '\n' + APP_PAGE_SWITCH
 const MODULE  = readFileSync(join(__dirname, '../../web/app-memories.js'), 'utf-8')
 const HTML    = readFileSync(join(__dirname, '../../web/index.html'), 'utf-8')
 

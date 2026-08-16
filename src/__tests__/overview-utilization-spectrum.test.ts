@@ -14,7 +14,9 @@ import { fileURLToPath } from 'node:url'
 const __dirname = dirname(fileURLToPath(import.meta.url))
 const APP_CORE     = readFileSync(join(__dirname, '../../web/app.js'),          'utf-8')
 const APP_OVERVIEW = readFileSync(join(__dirname, '../../web/app-overview.js'), 'utf-8')
-const APP = APP_CORE + '\n' + APP_OVERVIEW
+// switchPage (incl. stopOvwSpectrum call site) moved to app-page-switch.js in slice 39.
+const APP_PAGE_SWITCH = readFileSync(join(__dirname, '../../web/app-page-switch.js'), 'utf-8')
+const APP = APP_CORE + '\n' + APP_OVERVIEW + '\n' + APP_PAGE_SWITCH
 const CSS = readFileSync(join(__dirname, '../../web/style.css'), 'utf-8')
 const HTML = readFileSync(join(__dirname, '../../web/index.html'), 'utf-8')
 const HU = readFileSync(join(__dirname, '../../web/lang/hu.js'), 'utf-8')

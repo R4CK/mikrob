@@ -15,7 +15,9 @@ const APP_CORE  = readFileSync(join(__dirname, '../../web/app.js'), 'utf-8')
 const APP_APPROVALS = readFileSync(join(__dirname, '../../web/app-approvals.js'), 'utf-8')
 // NAV_I18N (including nav.approvals key) moved to app-i18n-nav.js in slice 36.
 const APP_I18N_NAV = readFileSync(join(__dirname, '../../web/app-i18n-nav.js'), 'utf-8')
-const APP  = APP_CORE + '\n' + APP_APPROVALS + '\n' + APP_I18N_NAV
+// switchPage (incl. loadApprovalsPage call site) moved to app-page-switch.js in slice 39.
+const APP_PAGE_SWITCH = readFileSync(join(__dirname, '../../web/app-page-switch.js'), 'utf-8')
+const APP  = APP_CORE + '\n' + APP_APPROVALS + '\n' + APP_I18N_NAV + '\n' + APP_PAGE_SWITCH
 const HTML = readFileSync(join(__dirname, '../../web/index.html'), 'utf-8')
 const CSS  = readFileSync(join(__dirname, '../../web/style.css'), 'utf-8')
 
