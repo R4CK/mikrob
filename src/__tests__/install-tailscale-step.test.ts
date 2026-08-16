@@ -8,7 +8,7 @@
 // reimplementation of it.
 import { describe, it, expect } from 'vitest'
 import { spawnSync } from 'node:child_process'
-import { mkdtempSync, mkdirSync, writeFileSync, chmodSync, readFileSync } from 'node:fs'
+import { mkdtempSync, mkdirSync, writeFileSync, chmodSync, readFileSync, symlinkSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join, dirname } from 'node:path'
 import { fileURLToPath } from 'node:url'
@@ -32,15 +32,37 @@ warn() { echo -e "  \${ORANGE}!\${NC} $*"; }
 source "$LANG_FILE_PATH"
 `
 
+// Coreutils the fake curl/sh/brew stubs need (cat, chmod) to build a simulated post-install
+// tailscale binary. NOT the full real PATH -- specifically NOT /usr/bin or /bin wholesale, whose
+// real `tailscale` would silently defeat the "not installed" scenarios this suite exists to
+// exercise. `cat > file <<EOF` still creates/truncates the target even if `cat` itself can't be
+// found (the redirection is set up by the shell before the command lookup), so a missing `cat`
+// used to fail SILENTLY -- an empty file, not an error -- rather than loudly.
+const COREUTILS_DIR = mkdtempSync(join(tmpdir(), 'tailscale-step-coreutils-'))
+for (const tool of ['cat', 'chmod']) {
+  const real = spawnSync('command', ['-v', tool], { encoding: 'utf-8', shell: '/bin/sh' }).stdout.trim()
+  if (real) symlinkSync(real, join(COREUTILS_DIR, tool))
+}
+
 function sandbox(stepSource: string, opts: { fakeTailscaleOnPath?: boolean; statusExitCode?: number } = {}) {
   const dir = mkdtempSync(join(tmpdir(), 'tailscale-step-'))
   const bin = join(dir, 'bin')
   mkdirSync(bin, { recursive: true })
 
+  // Every invocation of tailscale/sudo is appended (args included) to invocations.log, so a test
+  // can assert on what actually RAN, not on stray text in stdout (a command's own args don't get
+  // echoed to stdout unless the command itself prints them).
+  const invocationLog = join(dir, 'invocations.log')
+  writeFileSync(
+    join(bin, 'sudo'),
+    `#!/bin/bash\necho "sudo $*" >> "${invocationLog}"\n"$@"\n`,
+  )
+  chmodSync(join(bin, 'sudo'), 0o755)
+
   if (opts.fakeTailscaleOnPath) {
     writeFileSync(
       join(bin, 'tailscale'),
-      `#!/bin/bash\nif [ "$1" = "status" ]; then exit ${opts.statusExitCode ?? 0}; fi\nexit 0\n`,
+      `#!/bin/bash\necho "tailscale $*" >> "${invocationLog}"\nif [ "$1" = "status" ]; then exit ${opts.statusExitCode ?? 0}; fi\nexit 0\n`,
     )
     chmodSync(join(bin, 'tailscale'), 0o755)
   }
@@ -48,22 +70,40 @@ function sandbox(stepSource: string, opts: { fakeTailscaleOnPath?: boolean; stat
   const script = join(dir, 'run.sh')
   writeFileSync(script, SCAFFOLD + '\n' + stepSource + '\n')
   chmodSync(script, 0o755)
-  return { dir, bin, script }
+  return { dir, bin, script, invocationLog }
+}
+
+function invocations(logPath: string): string[] {
+  try {
+    return readFileSync(logPath, 'utf-8').trim().split('\n').filter(Boolean)
+  } catch {
+    return []
+  }
 }
 
 // Absolute path so spawnSync's own executable lookup doesn't depend on the scoped PATH below.
 const BASH = spawnSync('command', ['-v', 'bash'], { encoding: 'utf-8', shell: '/bin/sh' }).stdout.trim() || '/usr/bin/bash'
 
-function run(script: string, bin: string, opts: { stdin?: string; extraBin?: string } = {}) {
+function run(
+  script: string,
+  bin: string,
+  opts: { stdin?: string; extraBin?: string; extraEnv?: Record<string, string> } = {},
+) {
   // Deliberately NO /usr/bin or /bin here: this host has a real tailscale binary installed
   // system-wide, and letting it leak onto PATH would silently defeat the "not installed" cases.
   // bash's own needs (read, echo, source, printf, [[ ]]) are all builtins -- no external PATH
   // dependency for the sentinel-bounded step itself.
-  const path = [opts.extraBin, bin].filter(Boolean).join(':')
+  const path = [opts.extraBin, bin, COREUTILS_DIR].filter(Boolean).join(':')
   return spawnSync(BASH, [script], {
     encoding: 'utf-8',
     input: opts.stdin ?? '\n',
-    env: { PATH: path, HOME: process.env.HOME ?? '', LANG_FILE_PATH: LANG_FILE, MARVEEN_LANG: 'hu' },
+    env: {
+      PATH: path,
+      HOME: process.env.HOME ?? '',
+      LANG_FILE_PATH: LANG_FILE,
+      MARVEEN_LANG: 'hu',
+      ...opts.extraEnv,
+    },
   })
 }
 
@@ -98,22 +138,43 @@ describe.each([
   })
 
   it('not installed, user ACCEPTS, install succeeds -> success message, no forced login attempted', () => {
-    const { bin, script } = sandbox(stepSource, { fakeTailscaleOnPath: false })
-    // fake curl (linux path) always succeeds piping a no-op script; fake brew (macos path)
-    // always exits 0. Neither creates a real tailscale binary -- proves the step never
-    // shells out to `tailscale up`/`sudo` regardless of install outcome.
+    const { bin, script, invocationLog } = sandbox(stepSource, { fakeTailscaleOnPath: false })
+    // fake curl (linux path) always succeeds; fake brew (macos path) always exits 0. Critically,
+    // the tailscale binary does NOT exist on PATH until the fake `sh`/`brew` "installer" creates
+    // it as a side effect -- so `command -v tailscale` at the TOP of the step still correctly
+    // reports "not installed" and the accept-and-install branch actually runs (a pre-placed fake
+    // binary made an earlier version of this test pass vacuously via the already-installed
+    // branch, whose "mar telepitve" message also matches /telepitve/).
     const extraBinDir = mkdtempSync(join(tmpdir(), 'fake-tools-'))
     writeFileSync(join(extraBinDir, 'curl'), '#!/bin/bash\necho "exit 0"\n')
     chmodSync(join(extraBinDir, 'curl'), 0o755)
-    writeFileSync(join(extraBinDir, 'sh'), '#!/bin/bash\nexit 0\n')
+    const installedTailscaleStub = `#!/bin/bash
+echo "tailscale $*" >> "$INVOCATION_LOG"
+if [ "$1" = "status" ]; then exit 0; fi
+exit 0
+`
+    writeFileSync(
+      join(extraBinDir, 'sh'),
+      `#!/bin/bash\ncat > "$EXTRA_BIN_DIR/tailscale" <<'TS'\n${installedTailscaleStub}TS\nchmod +x "$EXTRA_BIN_DIR/tailscale"\nexit 0\n`,
+    )
     chmodSync(join(extraBinDir, 'sh'), 0o755)
-    writeFileSync(join(extraBinDir, 'brew'), '#!/bin/bash\nexit 0\n')
+    writeFileSync(
+      join(extraBinDir, 'brew'),
+      `#!/bin/bash\nif [ "$1" = "install" ]; then\ncat > "$EXTRA_BIN_DIR/tailscale" <<'TS'\n${installedTailscaleStub}TS\nchmod +x "$EXTRA_BIN_DIR/tailscale"\nfi\nexit 0\n`,
+    )
     chmodSync(join(extraBinDir, 'brew'), 0o755)
-    const r = run(script, bin, { stdin: `${acceptAnswer}\n`, extraBin: extraBinDir })
+    const r = run(script, bin, {
+      stdin: `${acceptAnswer}\n`,
+      extraBin: extraBinDir,
+      extraEnv: { EXTRA_BIN_DIR: extraBinDir, INVOCATION_LOG: invocationLog },
+    })
     expect(r.status, r.stderr).toBe(0)
+    expect(r.stdout).not.toMatch(/mar telepitve/)
     expect(r.stdout).toMatch(/telepitve/)
-    expect(r.stdout).not.toContain('tailscale up')
-    expect(r.stdout).not.toContain('sudo')
+    // `tailscale status` (a read-only check, printing the login hint) is expected; `tailscale up`
+    // and `sudo` (which would trigger/require a login) are not.
+    expect(invocations(invocationLog)).not.toContain('tailscale up')
+    expect(invocations(invocationLog).filter(l => l.startsWith('sudo'))).toEqual([])
   })
 
   it('not installed, user ACCEPTS, install FAILS -> non-fatal warn, script still exits 0', () => {
@@ -129,11 +190,11 @@ describe.each([
   })
 
   it('installed but NOT logged in -> points to the dashboard, does not invoke tailscale up itself', () => {
-    const { bin, script } = sandbox(stepSource, { fakeTailscaleOnPath: true, statusExitCode: 1 })
+    const { bin, script, invocationLog } = sandbox(stepSource, { fakeTailscaleOnPath: true, statusExitCode: 1 })
     const r = run(script, bin)
     expect(r.status, r.stderr).toBe(0)
     expect(r.stdout).toMatch(/Foderacio-oldalon/)
-    expect(r.stdout).not.toContain('tailscale up')
+    expect(invocations(invocationLog)).not.toContain('tailscale up')
   })
 
   it('installed AND already logged in -> no login hint printed', () => {
