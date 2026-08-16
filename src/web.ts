@@ -24,6 +24,10 @@ import { startScheduleRunner } from './web/schedule-runner.js'
 import { startChannelPluginMonitor } from './web/channel-monitor.js'
 import { startInboundProber } from './web/inbound-probe.js'
 import { startChannelHealthMonitor } from './web/channel-health-monitor.js'
+import { startUtilizationSampler } from './web/local-llm-utilization-history.js'
+import { gpuInfo } from './web/routes/local-llm.js'
+import { stats as queueStatsForSampler } from './local-llm-queue.js'
+import { getDb } from './db.js'
 import { startStuckInputWatcher } from './web/stuck-input-watcher.js'
 import { startInboxNudgeWatcher } from './web/inbox-nudge-watcher.js'
 import { startStuckToolCallWatcher } from './web/stuck-tool-call-watcher.js'
@@ -395,6 +399,22 @@ export function startWebServer(port = 3420): http.Server {
   const channelHealthInterval = webOnly ? undefined : startChannelHealthMonitor()
   if (!webOnly) logger.info('Channel MCP health monitor started (60s poll, 45s offset)')
 
+  // Local-LLM utilization waveform (card b6b1493d): a short in-memory rolling window that
+  // GET /api/local-llm/utilization-history serves. The readers are INJECTED here rather than
+  // imported by the history module, because routes/local-llm.ts imports that module for the
+  // endpoint and a two-way import would be a cycle.
+  //
+  // `gpuInfo()` can take up to 15s on a host with no GPU (three nvidia-smi candidates, 5s timeout
+  // each); the sampler has its own overlap guard and probe backoff for exactly that, which is why
+  // the expensive reader can be handed over as-is.
+  const utilizationSamplerInterval = webOnly
+    ? undefined
+    : startUtilizationSampler({
+        readGpu: () => gpuInfo(),
+        readActiveTasks: () => queueStatsForSampler(getDb()).running,
+      })
+  if (!webOnly) logger.info('Local-LLM utilization sampler started (3s poll, 10min window)')
+
   // CostOps: reflect the local config's fixed costs into the ledger once at boot + every
   // 10 minutes. Deliberately NOT done inside the GET /api/costs/summary handler -- a read
   // endpoint must not write (was flagged in review); this is the one place that does.
@@ -583,6 +603,7 @@ export function startWebServer(port = 3420): http.Server {
     workerLivenessCancelled = true
     if (workerLivenessInterval) clearInterval(workerLivenessInterval)
     clearInterval(channelHealthInterval)
+    if (utilizationSamplerInterval) clearInterval(utilizationSamplerInterval)
     if (costsSyncInterval) clearInterval(costsSyncInterval)
     clearInterval(stuckInputInterval)
     clearInterval(stuckToolCallInterval)

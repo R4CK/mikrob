@@ -23,6 +23,7 @@ import {
   statsByAgent as queueStatsByAgent,
   type QueueStatus,
 } from '../../local-llm-queue.js'
+import { getUtilizationSamples } from '../local-llm-utilization-history.js'
 
 /** A queue row still `running` after this long means its worker died: the 7B's slowest measured
  *  call is ~70s, so 10 minutes is far past any legitimate run. */
@@ -498,7 +499,12 @@ async function bridgeActive(): Promise<boolean> {
 
 // Optional GPU snapshot via nvidia-smi. Returns null when the tool is absent
 // (no GPU / not installed) so the UI can honestly say "no GPU data".
-async function gpuInfo(): Promise<null | { name: string; mem_used_mb: number; mem_total_mb: number; util_pct: number }> {
+//
+// EXPORTED for the utilization sampler (card b6b1493d), which injects it rather than importing this
+// module wholesale -- this file imports the sampler's reader below, and a two-way import would be a
+// cycle. Note for anyone wiring it somewhere else: this costs up to THREE nvidia-smi spawns with a
+// 5s timeout each, so ~15s on a host with no GPU. Do not call it on a per-request path.
+export async function gpuInfo(): Promise<null | { name: string; mem_used_mb: number; mem_total_mb: number; util_pct: number }> {
   // nvidia-smi is often NOT on the systemd service PATH; on WSL it lives at a
   // fixed absolute path. Try the known locations before giving up.
   const candidates = ['/usr/lib/wsl/lib/nvidia-smi', '/usr/bin/nvidia-smi', 'nvidia-smi']
@@ -879,6 +885,17 @@ export async function tryHandleLocalLlm(ctx: RouteContext): Promise<boolean> {
     } catch (err) {
       json(res, { error: err instanceof Error ? err.message : 'enqueue failed' }, 400)
     }
+    return true
+  }
+
+  // GET /api/local-llm/utilization-history -> the rolling window the live waveform draws
+  // (card b6b1493d). Read-only: the background sampler fills the buffer, this only hands it over,
+  // so the endpoint costs nothing beyond a copy and cannot itself spawn nvidia-smi.
+  //
+  // An EMPTY samples array is a normal answer, not an error: it is what the first seconds after a
+  // restart look like, and the FE has to render that state anyway.
+  if (path === '/api/local-llm/utilization-history' && method === 'GET') {
+    json(res, { samples: getUtilizationSamples() })
     return true
   }
 
