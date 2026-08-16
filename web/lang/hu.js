@@ -1011,7 +1011,7 @@ window._i18n.hu = {
   // --- Local LLM: async work queue (card 48aacf56 item 5) ---
   'localLlm.queue.title':        'Feladat-sor',
   'localLlm.queue.desc':         'Az aszinkron helyi-LLM feladatsor élő állapota: sorban álló, futó, kész és sikertelen draftok.',
-  'localLlm.queue.scope_hint':   'Ez a lista csak az aszinkron feladat-sort mutatja, egy szűk körben használt út -- a helyi-LLM offload TELJES aktivitását a fenti „Használat” szekció adja. Egy csendes feladat-sor nem jelenti azt, hogy az offload leállt.',
+  'localLlm.queue.scope_hint':   'A „Fut” szám mostantól a TÉNYLEGESEN folyamatban lévő helyi-LLM hívásokat mutatja (minden local-llm.sh/local-llm-rag.sh hívás regisztrálja magát, nem csak az aszinkron feladat-sor). A várakozó/kész/sikertelen számok viszont továbbra is csak a szűk körben használt aszinkron feladat-sort tükrözik -- a teljes historikus aktivitáshoz lásd a fenti „Használat” szekciót.',
   'localLlm.queue.tile.pending': 'Várakozó',
   'localLlm.queue.tile.running': 'Fut',
   'localLlm.queue.tile.done':    'Kész',

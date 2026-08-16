@@ -40,6 +40,14 @@ TIMEOUT="${LOCAL_LLM_TIMEOUT:-120}"
 GPU_LOCK="/tmp/local-llm-gpu.lock"
 GPU_LOCK_WAIT="${LOCAL_LLM_LOCK_WAIT:-600}"
 
+# Active-task registration (card 5dcd9bc8): best-effort, fail-open, never blocks/breaks the actual
+# model call if the dashboard is down or on a platform that doesn't run it (see DASH_TOKEN_FILE
+# check at the call site). Skipped entirely when QUEUE_MANAGED=1 (local-llm-worker.sh passes
+# --queue-managed): a worker-claimed call already has a real running row from claimNext(), so
+# self-registering here would double-count the same unit of work.
+DASH_API="http://127.0.0.1:${WEB_PORT:-3420}/api/local-llm/queue"
+DASH_TOKEN_FILE="${LOCAL_LLM_DASH_TOKEN_FILE:-$HERE/.dashboard-token}"
+
 # --- host-platform detection (card b097b578) -----------------------------------------------------
 # The Ollama HTTP API is identical on every platform, so ONLY the operator-facing "how do I start it"
 # hint differs. Detection is `uname -s` plus the WSL marker, and it is used for MESSAGES ONLY -- no
@@ -112,7 +120,7 @@ log_usage() { # $1=status(ok|err)  $2=elapsed_ms
       >> "$USAGE_LOG"; } 2>/dev/null || true
 }
 
-MODEL=""; SYSTEM=""; TASK=""; MODE="generate"; CALLER=""; SOURCE="bare"; LOG_TASK=""
+MODEL=""; SYSTEM=""; TASK=""; MODE="generate"; CALLER=""; SOURCE="bare"; LOG_TASK=""; QUEUE_MANAGED=0
 ARGS=()
 while [[ $# -gt 0 ]]; do
   case "$1" in
@@ -122,6 +130,7 @@ while [[ $# -gt 0 ]]; do
     --log-task) LOG_TASK="$2"; shift 2 ;;   # label the usage log only; no template, no gating
     --caller) CALLER="$2"; shift 2 ;;
     --source) SOURCE="$2"; shift 2 ;;
+    --queue-managed) QUEUE_MANAGED=1; shift ;;   # worker: skip self-registration, see DASH_API above
     --health) MODE="health"; shift ;;
     --list)   MODE="list"; shift ;;
     -h|--help) MODE="help"; shift ;;
@@ -259,9 +268,38 @@ _elapsed() { # -> elapsed milliseconds since START_MS
   if [[ "$START_MS" == 0 || "$e" == 0 ]]; then echo 0; else echo $(( e - START_MS )); fi
 }
 
+# Register as `running` BEFORE the flock attempt, not after acquiring it (card 5dcd9bc8 decision,
+# documented on the card): with a single GPU only one call ever actually generates at a time, so
+# gating registration on lock acquisition would leave the dashboard's active-task count stuck at
+# 0/1 under real concurrent load -- exactly the bug Peti reported. A call queued behind the lock is
+# still active work from the caller's point of view. Best-effort and silent: no token file, no
+# reachable dashboard, or any curl/parse failure just means QUEUE_ID stays empty and the call
+# proceeds exactly as before this card.
+QUEUE_ID=""
+if [[ "$QUEUE_MANAGED" != "1" && -r "$DASH_TOKEN_FILE" ]]; then
+  QUEUE_ID="$(CALLER="${CALLER:-direct}" TASK_LABEL="${LOG_TASK:-$TASK}" python3 -c '
+import json, os
+print(json.dumps({"agent": os.environ["CALLER"], "task_type": os.environ.get("TASK_LABEL") or None, "source": "direct-sync"}))
+' 2>/dev/null | curl -fsS -m 5 -X POST "$DASH_API/start" \
+      -H "Authorization: Bearer $(cat "$DASH_TOKEN_FILE" 2>/dev/null)" \
+      -H "Content-Type: application/json" --data-binary @- 2>/dev/null \
+      | python3 -c 'import json,sys
+try: print(json.load(sys.stdin).get("id") or "")
+except Exception: pass' 2>/dev/null || true)"
+fi
+_queue_finish() { # $1=complete|fail
+  [[ -z "$QUEUE_ID" ]] && return 0
+  local body
+  if [[ "$1" == complete ]]; then body='{"result":""}'; else body='{"error":"local-llm.sh call failed"}'; fi
+  curl -fsS -m 5 -X POST "$DASH_API/$QUEUE_ID/$1" \
+    -H "Authorization: Bearer $(cat "$DASH_TOKEN_FILE" 2>/dev/null)" \
+    -H "Content-Type: application/json" -d "$body" >/dev/null 2>&1 || true
+}
+
 RESP=$(flock -w "$GPU_LOCK_WAIT" "$GPU_LOCK" curl -fsS -m "$TIMEOUT" -X POST "$OLLAMA_HOST/api/generate" \
   -H "Content-Type: application/json" -d "$REQ" 2>/dev/null) || {
   log_usage err "$(_elapsed)"
+  _queue_finish fail
   # distinguish model-missing from generic error
   if ollama_up && ! curl -fsS -m 5 "$OLLAMA_HOST/api/tags" | grep -q "${MODEL%%:*}"; then
     die 3 "model '$MODEL' not pulled -- run: ollama pull $MODEL"
@@ -275,5 +313,6 @@ try:
 except Exception:
     print('0 0')" 2>/dev/null || echo "0 0")
 log_usage ok "$(_elapsed)" $_TOKS
+_queue_finish complete
 
 echo "$RESP" | python3 -c "import json,sys; d=json.load(sys.stdin); print(d.get('response','').rstrip()) if 'response' in d else sys.exit('local-llm: '+d.get('error','unknown error'))"

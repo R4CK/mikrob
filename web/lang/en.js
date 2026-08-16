@@ -775,7 +775,7 @@ window._i18n.en = {
   // --- Local LLM: async work queue (card 48aacf56 item 5) ---
   'localLlm.queue.title':        'Work queue',
   'localLlm.queue.desc':         'Live state of the async local-LLM work queue: pending, running, done and failed drafts.',
-  'localLlm.queue.scope_hint':   'This list only covers the async work queue, a narrowly-used path -- the FULL local-LLM offload activity is in the "Usage" section above. A quiet queue does not mean offload stopped.',
+  'localLlm.queue.scope_hint':   'The "Running" count now reflects REAL, currently in-flight local-LLM calls (every local-llm.sh/local-llm-rag.sh call registers itself, not just the async work queue). Pending/done/failed still only reflect the narrowly-used async work queue -- for the full historical picture see the "Usage" section above.',
   'localLlm.queue.tile.pending': 'Pending',
   'localLlm.queue.tile.running': 'Running',
   'localLlm.queue.tile.done':    'Done',

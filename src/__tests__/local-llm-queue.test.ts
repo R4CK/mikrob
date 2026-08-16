@@ -6,6 +6,8 @@ import Database from 'better-sqlite3'
 import type { Database as Db } from 'better-sqlite3'
 import {
   enqueue,
+  startDirect,
+  DIRECT_CALL_PLACEHOLDER,
   claimNext,
   complete,
   fail,
@@ -69,6 +71,51 @@ describe('enqueue', () => {
     const id = enqueue(db, { agent: 'qa', prompt: 'p', source: 'offload-dispatch' }, T0)
     expect(getById(db, id)!.status).toBe('pending')
     expect(getById(db, id)!.source).toBe('offload-dispatch')
+  })
+})
+
+describe('startDirect (card 5dcd9bc8, direct-sync local-llm.sh self-registration)', () => {
+  it('inserts the row as already running, with started_at set to now', () => {
+    const id = startDirect(db, { agent: 'backend2', prompt: 'ignored' }, T0)
+    const row = getById(db, id)!
+    expect(row.status).toBe('running')
+    expect(row.started_at).toBe(T0)
+    expect(row.attempts).toBe(1)
+  })
+
+  it('never stores the real prompt, regardless of what the caller passes', () => {
+    const id = startDirect(db, { agent: 'backend2', prompt: 'this must never be persisted' }, T0)
+    expect(getById(db, id)!.prompt).toBe(DIRECT_CALL_PLACEHOLDER)
+  })
+
+  it('defaults source to direct-sync, distinguishing it from an enqueued/claimed row', () => {
+    const id = startDirect(db, { agent: 'backend2', prompt: 'x' }, T0)
+    expect(getById(db, id)!.source).toBe('direct-sync')
+  })
+
+  it('rejects an empty agent', () => {
+    expect(() => startDirect(db, { agent: '  ', prompt: 'x' }, T0)).toThrow()
+  })
+
+  it('two concurrent direct calls both count as running -- the whole point of the card', () => {
+    startDirect(db, { agent: 'backend2', prompt: 'a' }, T0)
+    startDirect(db, { agent: 'fullstack', prompt: 'b' }, T0)
+    expect(stats(db).running).toBe(2)
+  })
+
+  it('complete()/fail() work on a direct row exactly like a claimed one (shared finish path)', () => {
+    const id = startDirect(db, { agent: 'backend2', prompt: 'x' }, T0)
+    complete(db, id, '', T0 + 500)
+    const row = getById(db, id)!
+    expect(row.status).toBe('done')
+    expect(row.finished_at).toBe(T0 + 500)
+  })
+
+  it('reclaimStaleRunning treats a stuck direct row the same as a stuck claimed one', () => {
+    const id = startDirect(db, { agent: 'backend2', prompt: 'x' }, T0)
+    const n = reclaimStaleRunning(db, 1000, T0 + 5000)
+    expect(n).toBe(1)
+    expect(getById(db, id)!.status).toBe('pending')
   })
 })
 

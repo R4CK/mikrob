@@ -81,11 +81,13 @@ drain_one() {
   # The prompt goes in on STDIN, never in argv: it is agent-supplied text of arbitrary length and
   # shape, and argv is both size-limited and visible in ps(1). local-llm.sh reads stdin exactly when
   # no positional prompt arg is given (verified in its arg handling) -- so we pass none.
+  # --queue-managed (card 5dcd9bc8): this row is already `running` from the claim above, so
+  # local-llm.sh must not ALSO register a direct-sync row for the same unit of work.
   local out rc
   if [ -n "$template" ]; then
-    out=$(printf '%s' "$prompt" | "$LLM" --task "$template" --caller "queue" 2>&1); rc=$?
+    out=$(printf '%s' "$prompt" | "$LLM" --task "$template" --caller "queue" --queue-managed 2>&1); rc=$?
   else
-    out=$(printf '%s' "$prompt" | "$LLM" --caller "queue" 2>&1); rc=$?
+    out=$(printf '%s' "$prompt" | "$LLM" --caller "queue" --queue-managed 2>&1); rc=$?
   fi
 
   if [ $rc -eq 0 ] && [ -n "$out" ]; then

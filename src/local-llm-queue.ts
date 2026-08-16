@@ -66,6 +66,43 @@ const PRIORITY_RANK: Record<QueuePriority, number> = {
  *  the wrong shape for the 7B and belongs to an online agent, not to a fourth retry. */
 export const MAX_ATTEMPTS = 3
 
+/** A direct-sync call's start registration never carries the real prompt (card 5dcd9bc8): unlike
+ *  an enqueued row, which exists so an agent can read the draft back later, a direct-sync row
+ *  exists ONLY so the dashboard's "active task" count reflects real concurrent activity. Storing
+ *  real prompt content on every single local-llm.sh invocation (not just the ones an agent
+ *  deliberately queues) would be a large, unnecessary expansion of what ends up in the DB. */
+export const DIRECT_CALL_PLACEHOLDER = '(direct call -- registered for concurrency tracking only, no content stored)'
+
+/**
+ * Register a direct/synchronous local-llm.sh call as already `running`, skipping the
+ * pending -> claimed handoff: the caller IS the worker, calling the model itself right after this
+ * returns, so there is nothing for claimNext() to hand out.
+ *
+ * started_at = now (not left null) so reclaimStaleRunning can find and clean up a row whose
+ * process died mid-call (killed script, WSL VM drop) exactly like a claimed row.
+ */
+export function startDirect(db: Database, input: EnqueueInput, now: number): number {
+  if (!input.agent.trim()) throw new Error('local-llm queue: agent is required')
+  const info = db
+    .prepare(
+      `INSERT INTO local_llm_queue (agent, card_id, task_type, template, prompt, context, priority, status, source, attempts, created_at, started_at)
+       VALUES (?, ?, ?, ?, ?, ?, ?, 'running', ?, 1, ?, ?)`,
+    )
+    .run(
+      input.agent.trim(),
+      input.cardId ?? null,
+      input.taskType ?? null,
+      input.template ?? null,
+      DIRECT_CALL_PLACEHOLDER,
+      input.context ?? null,
+      input.priority ?? 'normal',
+      input.source ?? 'direct-sync',
+      now,
+      now,
+    )
+  return Number(info.lastInsertRowid)
+}
+
 /** Enqueue one unit of work. Returns the row id immediately -- callers never block on the model. */
 export function enqueue(db: Database, input: EnqueueInput, now: number): number {
   const prompt = input.prompt.trim()

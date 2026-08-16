@@ -7,12 +7,13 @@ import { STORE_DIR } from '../../config.js'
 import { logger } from '../../logger.js'
 import { readBody, json } from '../http-helpers.js'
 import { atomicWriteFileSync } from '../atomic-write.js'
-import { decideModelTrust, confirmationMatches, relabelCatalogueTrust } from '../../local-llm-model-trust.js'
+import { decideModelTrust, relabelCatalogueTrust } from '../../local-llm-model-trust.js'
 import { readBenchState, benchInfoFor } from '../../local-llm-bench-state.js'
 import { getDb } from '../../db.js'
 import { pickTemplate } from '../../local-llm-template-picker.js'
 import {
   enqueue as enqueueLocalLlm,
+  startDirect as startDirectLocalLlm,
   claimNext as claimNextLocalLlm,
   complete as completeLocalLlm,
   fail as failLocalLlm,
@@ -26,8 +27,16 @@ import {
 import { getUtilizationSamples } from '../local-llm-utilization-history.js'
 
 /** A queue row still `running` after this long means its worker died: the 7B's slowest measured
- *  call is ~70s, so 10 minutes is far past any legitimate run. */
-const STALE_RUNNING_MS = 10 * 60 * 1000
+ *  call is ~70s, so 10 minutes used to be far past any legitimate run -- true for a WORKER-claimed
+ *  row, whose started_at is set right before it shells out. Card 5dcd9bc8 added a SECOND source of
+ *  `running` rows: a direct-sync local-llm.sh call registers itself BEFORE it even attempts the GPU
+ *  flock (store/local-llm.sh's GPU_LOCK_WAIT, default 600s), so its legitimate started_at-to-finish
+ *  span can reach GPU_LOCK_WAIT + TIMEOUT (default 120s) = 720s under real contention -- past the
+ *  old 10-minute threshold while the call is still genuinely alive. Reclaiming it early would flip
+ *  it back to `pending`, where local-llm-worker.sh's claimNext() could then hand a PLACEHOLDER row
+ *  (see DIRECT_CALL_PLACEHOLDER) to the model as if it were real work. 20 minutes keeps a
+ *  comfortable margin over the 720s default worst case for either row source. */
+const STALE_RUNNING_MS = 20 * 60 * 1000
 
 /** Upper bound on a queued prompt. Not the main defence (the caller is authenticated) -- it stops a
  *  runaway caller from parking megabytes in the queue and monopolising the single GPU slot. */
@@ -903,6 +912,46 @@ export async function tryHandleLocalLlm(ctx: RouteContext): Promise<boolean> {
       json(res, { id, status: 'pending', template, template_auto: templateAuto })
     } catch (err) {
       json(res, { error: err instanceof Error ? err.message : 'enqueue failed' }, 400)
+    }
+    return true
+  }
+
+  // POST /api/local-llm/queue/start -> a DIRECT/synchronous local-llm.sh call registers itself as
+  // already `running` (card 5dcd9bc8). This is NOT the async offload queue from above: it exists
+  // only so the dashboard's "active task" tile counts real in-flight generate calls, which the
+  // async queue's `running` status never reflected (real usage bypasses that queue entirely). No
+  // prompt/content travels in the body -- the row is written with a fixed placeholder
+  // (DIRECT_CALL_PLACEHOLDER) regardless of what a caller sends, so this endpoint cannot become a
+  // second place agent prompt content ends up stored.
+  if (path === '/api/local-llm/queue/start' && method === 'POST') {
+    const body = (await readBody(req)).toString()
+    let payload: Record<string, unknown>
+    try {
+      payload = JSON.parse(body || '{}') as Record<string, unknown>
+    } catch {
+      json(res, { error: 'invalid JSON body' }, 400)
+      return true
+    }
+    const agent = typeof payload['agent'] === 'string' ? payload['agent'].trim() : ''
+    if (!agent) {
+      json(res, { error: 'agent is required' }, 400)
+      return true
+    }
+    try {
+      const id = startDirectLocalLlm(
+        getDb(),
+        {
+          agent,
+          prompt: '',
+          cardId: typeof payload['card_id'] === 'string' ? payload['card_id'] : null,
+          taskType: typeof payload['task_type'] === 'string' ? payload['task_type'] : null,
+          source: typeof payload['source'] === 'string' ? payload['source'] : 'direct-sync',
+        },
+        Date.now(),
+      )
+      json(res, { id, status: 'running' })
+    } catch (err) {
+      json(res, { error: err instanceof Error ? err.message : 'start failed' }, 400)
     }
     return true
   }
