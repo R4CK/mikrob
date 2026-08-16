@@ -87,6 +87,14 @@ describe('overview spectrum: data source with graceful fallback', () => {
     expect(body).not.toMatch(/util:\s*Number\(s\.util_pct\)/)
   })
 
+  it('preserves the same null contract on the client-side fallback branch (Cybered LOW, card bddd07e4)', () => {
+    const body = fnBody(APP, 'async function ovwSpectrumPoll()')
+    expect(body).toContain("util: typeof d.gpu.util_pct === 'number' ? d.gpu.util_pct : null")
+    expect(body).toContain("memUsed: typeof d.gpu.mem_used_mb === 'number' ? d.gpu.mem_used_mb : null")
+    expect(body).toContain("memTotal: typeof d.gpu.mem_total_mb === 'number' ? d.gpu.mem_total_mb : null")
+    expect(body).not.toMatch(/util:\s*Number\(d\.gpu\.util_pct\)/)
+  })
+
   it('caps the client-side fallback buffer to the rolling window instead of growing unbounded', () => {
     const body = fnBody(APP, 'async function ovwSpectrumPoll()')
     expect(body).toContain('OVW_SPECTRUM_WINDOW_MS')

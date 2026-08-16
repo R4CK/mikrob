@@ -13495,7 +13495,17 @@ async function ovwSpectrumPoll() {
       const q = await queueRes.json()
       if (typeof q.running === 'number') tasks = q.running
     }
-    const sample = { ts: Date.now(), util: Number(d.gpu.util_pct) || 0, memUsed: d.gpu.mem_used_mb, memTotal: d.gpu.mem_total_mb, tasks }
+    // Same null-preserving rule as the server branch above (Cybered LOW, card bddd07e4): a
+    // coerced 0 here would draw the same false "idle" flat line the server side deliberately
+    // avoids -- this fallback path only runs when the server history hasn't answered yet, which
+    // is exactly when nobody else is watching for a wrong reading.
+    const sample = {
+      ts: Date.now(),
+      util: typeof d.gpu.util_pct === 'number' ? d.gpu.util_pct : null,
+      memUsed: typeof d.gpu.mem_used_mb === 'number' ? d.gpu.mem_used_mb : null,
+      memTotal: typeof d.gpu.mem_total_mb === 'number' ? d.gpu.mem_total_mb : null,
+      tasks,
+    }
     _ovwSpectrumSamples.push(sample)
     const cutoff = Date.now() - OVW_SPECTRUM_WINDOW_MS
     _ovwSpectrumSamples = _ovwSpectrumSamples.filter((s) => s.ts >= cutoff)
