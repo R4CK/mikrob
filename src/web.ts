@@ -25,8 +25,7 @@ import { startChannelPluginMonitor } from './web/channel-monitor.js'
 import { startInboundProber } from './web/inbound-probe.js'
 import { startChannelHealthMonitor } from './web/channel-health-monitor.js'
 import { startUtilizationSampler } from './web/local-llm-utilization-history.js'
-import { gpuInfo } from './web/routes/local-llm.js'
-import { stats as queueStatsForSampler } from './local-llm-queue.js'
+import { gpuInfo, isGpuLockHeld } from './web/routes/local-llm.js'
 import { getDb } from './db.js'
 import { startStuckInputWatcher } from './web/stuck-input-watcher.js'
 import { startInboxNudgeWatcher } from './web/inbox-nudge-watcher.js'
@@ -407,11 +406,16 @@ export function startWebServer(port = 3420): http.Server {
   // `gpuInfo()` can take up to 15s on a host with no GPU (three nvidia-smi candidates, 5s timeout
   // each); the sampler has its own overlap guard and probe backoff for exactly that, which is why
   // the expensive reader can be handed over as-is.
+  //
+  // readActiveTasks: card a265e48c -- what the "Aktív feladat" widget needs is whether the GPU
+  // flock is ACTUALLY held right now (0 or 1), not the queue's `status='running'` row count, which
+  // can sit above 1 under a parallel-dispatch burst (rows register before they acquire the lock, by
+  // design -- card 5dcd9bc8). isGpuLockHeld() probes that same flock non-blocking.
   const utilizationSamplerInterval = webOnly
     ? undefined
     : startUtilizationSampler({
         readGpu: () => gpuInfo(),
-        readActiveTasks: () => queueStatsForSampler(getDb()).running,
+        readActiveTasks: () => isGpuLockHeld().then((held) => (held ? 1 : 0)),
       })
   if (!webOnly) logger.info('Local-LLM utilization sampler started (3s poll, 10min window)')
 

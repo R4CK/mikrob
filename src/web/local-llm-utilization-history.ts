@@ -39,8 +39,10 @@ export interface UtilizationSample {
 export interface UtilizationSamplerDeps {
   /** The live GPU snapshot, or null when nvidia-smi is absent / failed. Must not throw. */
   readGpu: () => Promise<{ mem_used_mb: number; mem_total_mb: number; util_pct: number } | null>
-  /** How many queue rows are `running` right now. Must not throw. */
-  readActiveTasks: () => number
+  /** How many tasks are ACTUALLY running right now (card a265e48c: the GPU-flock probe is
+   *  inherently async; a sync stub still works fine since `await` on a plain number just resolves
+   *  to it). Must not throw. */
+  readActiveTasks: () => number | Promise<number>
   now?: () => number
 }
 
@@ -120,7 +122,7 @@ export function createUtilizationSampler(deps: UtilizationSamplerDeps): {
 
         let active = 0
         try {
-          active = deps.readActiveTasks()
+          active = await deps.readActiveTasks()
         } catch {
           active = 0
         }

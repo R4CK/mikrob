@@ -557,6 +557,26 @@ export async function gpuInfo(): Promise<null | { name: string; mem_used_mb: num
   return null
 }
 
+// card a265e48c: the "Aktív feladat" widget must show what is ACTUALLY running RIGHT NOW (0 or 1,
+// single-worker), not the queue's `status='running'` row count -- store/local-llm.sh (card 5dcd9bc8,
+// intentional) registers a row as running BEFORE it acquires the GPU flock, so a burst of parallel
+// dispatches sits "running" simultaneously while only one of them can actually hold the lock (a real
+// user saw this as "44"). Rather than touch that registration timing (built that way on purpose, so
+// the utilization tile does not flicker to 0/1 under load), this probes the SAME OS-level flock
+// store/local-llm.sh itself takes: `flock -n` tries to grab-and-immediately-release it non-blocking;
+// succeeding means nobody else holds it right now.
+const GPU_LOCK_PATH = '/tmp/local-llm-gpu.lock' // MUST match store/local-llm.sh's GPU_LOCK constant.
+
+/** True iff some process currently holds the GPU flock (single-worker: at most one ever does).
+ *  `lockPath` is injectable so a test can probe a throwaway file instead of the real GPU lock. */
+export async function isGpuLockHeld(lockPath: string = GPU_LOCK_PATH): Promise<boolean> {
+  const r = await runCmd('flock', ['-n', lockPath, '-c', 'true'], { timeoutMs: 2000 })
+  // code 0 = we acquired (and released) it ourselves -> nobody else had it -> NOT held.
+  // code 1 = flock declined (someone else holds it) -> held. Anything else (binary missing, a
+  // timeout that should never happen with -n, ...) fails SAFE as "not held", never a false-busy read.
+  return r.code === 1
+}
+
 // --- Pull job registry (in-memory; cap 1 concurrent pull) ------------------
 interface PullJob { id: string; model: string; done: boolean; ok: boolean; lastLine: string; error: string; startedAt: number }
 const pullJobs = new Map<string, PullJob>()
