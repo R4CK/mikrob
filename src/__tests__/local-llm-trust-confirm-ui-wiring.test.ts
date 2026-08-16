@@ -63,7 +63,11 @@ describe('trust-confirm modal shell (index.html)', () => {
 
 describe('llm-rec-use-btn routes through the trust gate (llmActivateModelClick)', () => {
   it('the use button click handler calls llmActivateModelClick, not an inline fetch', () => {
-    const body = fnBody(APP, 'el.querySelectorAll(\'.llm-rec-use-btn\')')
+    // Wiring moved into llmWireRecActionButtons (card 88ea5050): it now runs both after the
+    // initial grouped render AND after a per-group quant-variant swap, so it could not stay
+    // inline inside llmRefreshRecs without duplicating the listener setup per variant.
+    const body = fnBody(APP, 'function llmWireRecActionButtons(root)')
+    expect(body).toContain("root.querySelectorAll('.llm-rec-use-btn')")
     expect(body).toContain('llmActivateModelClick(b.dataset.model, b)')
   })
 

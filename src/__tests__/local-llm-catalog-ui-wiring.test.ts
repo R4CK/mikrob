@@ -108,9 +108,10 @@ describe('llmRefreshRecs (GET /api/local-llm/catalog)', () => {
 
 describe('llmRecGroupHtml / llmRecVariantBodyHtml (per-group card + variant swap)', () => {
   it('never truncates installRef -- the full string is both the pull target and the displayed ref', () => {
-    const body = fnBody(APP, 'function llmRecVariantBodyHtml(m)')
-    expect(body).toContain('data-model="${escapeHtml(m.installRef)}"')
-    expect(body).toContain('class="llm-rec-installref">${escapeHtml(m.installRef || \'\')}')
+    const actionBody = fnBody(APP, 'function llmRecActionHtml(m)')
+    expect(actionBody).toContain('data-model="${escapeHtml(m.installRef)}"')
+    const variantBody = fnBody(APP, 'function llmRecVariantBodyHtml(m)')
+    expect(variantBody).toContain('class="llm-rec-installref">${escapeHtml(m.installRef || \'\')}')
   })
 
   it('SECURITY: the digest shown is ONLY an 8-char prefix of parts[0].sha256, never the full hash or other fields', () => {
@@ -242,9 +243,14 @@ describe('model catalogue CSS', () => {
   })
 
   it('the entrance animation is disabled under prefers-reduced-motion', () => {
-    const idx = CSS.indexOf('@media (prefers-reduced-motion: reduce)')
-    expect(idx).toBeGreaterThan(-1)
-    const block = CSS.slice(idx, idx + 200)
+    // Scoped from OUR keyframe forward -- prefers-reduced-motion appears more than once in this
+    // stylesheet (e.g. the agent-card-running indicator), so an unscoped search would match
+    // whichever query comes first in the file, not necessarily ours.
+    const keyframeIdx = CSS.indexOf('@keyframes llm-rec-group-in')
+    expect(keyframeIdx).toBeGreaterThan(-1)
+    const mediaIdx = CSS.indexOf('@media (prefers-reduced-motion: reduce)', keyframeIdx)
+    expect(mediaIdx).toBeGreaterThan(-1)
+    const block = CSS.slice(mediaIdx, mediaIdx + 200)
     expect(block).toMatch(/\.llm-rec-group\s*\{\s*animation:\s*none/)
   })
 
