@@ -3882,5 +3882,6 @@
   <!-- Fork overlays, loaded after app.js and replacing globals it defined. Keep
        upstream-owned code in app.js untouched so upstream still merges cleanly. -->
   <script src="/fork-updates.js"></script>
+  <script src="/app-router.js"></script> <!-- slice 45: routeFromHash IIFE, loads last so DOMContentLoaded covers all modules -->
 </body>
 </html>

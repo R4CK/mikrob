@@ -767,28 +767,10 @@ document.getElementById('deepseekConfigLink')?.addEventListener('click', (e) => 
 //  app-federation.js is loaded AFTER this file in index.html.
 //  loadFederationPage() is only called from switchPage, never at init time.)
 /* STUB -- content removed */
-;(() => {
-  function routeFromHash() {
-    let pageId = decodeURIComponent((location.hash || '').replace(/^#/, ''))
-    if (!pageId) pageId = new URLSearchParams(window.location.search).get('page') || ''
-    // 'team' page is merged into 'agents' (org-chart view toggle).
-    if (pageId === 'team') { pageId = 'agents'; _agentsActiveView = 'tree' }
-    if (pageId && document.getElementById(pageId + 'Page')) switchPage(pageId)
-  }
-  window.addEventListener('hashchange', routeFromHash)
-  // Initial dispatch must wait until every later <script src="/app-*.js"> tag has
-  // executed -- switchPage() calls functions (stopAgentsBusyPoll, loadOverview,
-  // loadKanban, loadDocs, ...) that live in those files, which load AFTER this
-  // script. Calling routeFromHash() synchronously here ReferenceErrors on any
-  // direct-hash page load. DOMContentLoaded fires only once all synchronous
-  // scripts in the document have run, so it's the earliest safe point (live
-  // regression: stopAgentsBusyPoll not defined at switchPage, 2026-08-16).
-  if (document.readyState === 'loading') {
-    document.addEventListener('DOMContentLoaded', routeFromHash)
-  } else {
-    routeFromHash()
-  }
-})()
+// === Hash-based page router -- see web/app-router.js ===
+// (routeFromHash IIFE moved to app-router.js, slice 45.
+//  app-router.js is loaded LAST in index.html so DOMContentLoaded fires after
+//  all modules that switchPage() calls -- stopAgentsBusyPoll, loadOverview, etc.)
 
 // ============================================================
 // === Docs viewer + Research viewer + Mobile login -- see web/app-docs.js ===
