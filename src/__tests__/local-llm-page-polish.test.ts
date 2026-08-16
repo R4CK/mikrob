@@ -35,10 +35,12 @@ describe('installed-models throughput (card a05c39c9, d730070e fields)', () => {
     expect(body).not.toMatch(/evalTps \|\| 0/)
   })
 
-  it('reuses the catalogue section\'s tps i18n keys instead of a second copy of the same fact', () => {
+  it('reuses the catalogue section\'s tps i18n keys where the same fact applies; unmeasured hint is model-list-specific (card 3d923ef5)', () => {
     const body = fnBody(APP, 'async function llmRefreshStatus()')
     expect(body).toContain("t('localLlm.rec.tps_tip')")
-    expect(body).toContain("t('localLlm.rec.tps_unmeasured_tip')")
+    // card 3d923ef5: the unmeasured message now points to store/local-llm-bench.sh (actionable,
+    // rule 12), so it uses a dedicated key rather than the catalogue's generic version.
+    expect(body).toContain("t('localLlm.models.bench.unmeasured_tip')")
   })
 })
 
