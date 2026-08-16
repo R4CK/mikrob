@@ -7164,11 +7164,32 @@ const STATUS_COMPONENT_LABELS = {
 // ============================================================
 // === Updates page helpers -- see web/app-updates.js ===
 // ============================================================
-// (escapeHtmlUpdates, renderUpdatesBadge, renderBranchNotice, renderUpdatesVersion,
+// (escapeHtmlUpdates, renderUpdatesBadge, renderBranchNotice,
 //  renderDiagnoseOffer, runDiagnose, runUpdate, pollUpdateOutcome,
 //  wireBranchDriftBanner, pollUpdatesBadge, updatesCheckBtn/ApplyBtn listeners --
 //  all moved to app-updates.js as part of modularisation slice 25.)
-/* STUB -- helpers removed */
+/* STUB -- most helpers removed */
+
+// renderUpdatesVersion() stays: upstream function, fork-updates.js calls it.
+// Moving it to a module would reopen three-way divergence on upstream merges.
+// (fork-overlay-seam.test.ts pins this invariant.)
+function renderUpdatesVersion(data) {
+  const sub = document.getElementById('updatesSubtitle')
+  if (!sub) return
+  const ver = (data && typeof data.version === 'string') ? data.version.trim() : ''
+  const sha = ((data && data.current) || '').slice(0, 7)
+  const parts = []
+  if (ver) parts.push('v' + escapeHtmlUpdates(ver))
+  if (sha) parts.push(`<code>${escapeHtmlUpdates(sha)}</code>`)
+  if (parts.length === 0) {
+    // No version AND no SHA (no git checkout and unreadable package.json): fall
+    // back to the localized brand subtitle. Set as text (not innerHTML) so no
+    // stale markup lingers, and keep it localized on every render.
+    sub.textContent = t('updates.brand_subtitle')
+    return
+  }
+  sub.innerHTML = `${t('updates.current_label')} ${parts.join(' · ')}`
+}
 
 // loadUpdates() stays: fork-overlay seam (fork-updates.js overrides it at runtime).
 // handleRepoInstallClick / runRepoInstall / runRepoInstallWithStash: fork-only,

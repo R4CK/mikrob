@@ -28,10 +28,6 @@ describe('updates modularisation: app-updates.js is the owner', () => {
     expect(MODULE).toContain('function renderBranchNotice(status)')
   })
 
-  it('renderUpdatesVersion lives in app-updates.js', () => {
-    expect(MODULE).toContain('function renderUpdatesVersion(data)')
-  })
-
   it('renderDiagnoseOffer lives in app-updates.js', () => {
     expect(MODULE).toContain('async function renderDiagnoseOffer(')
   })
@@ -77,6 +73,10 @@ describe('updates modularisation: app.js keeps fork-seam + fork-only functions',
 
   it('renderUpdatesBadge is NOT defined in app.js (moved to module)', () => {
     expect(APP).not.toMatch(/^function renderUpdatesBadge\(/m)
+  })
+
+  it('renderUpdatesVersion IS still in app.js (upstream fn, fork-updates.js calls it)', () => {
+    expect(APP).toContain('function renderUpdatesVersion(data)')
   })
 
   it('stub comment is present in app.js', () => {

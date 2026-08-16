@@ -1,8 +1,9 @@
 // app-updates.js -- Updates page helpers (app.js modularisation slice 25).
-// Globals from app.js: t, showToast, loadUpdates (stays in app.js: fork-overlay seam)
+// Globals from app.js: t, showToast, loadUpdates (stays in app.js: fork-overlay seam),
+//   renderUpdatesVersion (stays in app.js: upstream function called by fork-updates.js)
 // Globals from here used by app-device-keys.js: wireBranchDriftBanner
 // Globals from here used by fork-updates.js: escapeHtmlUpdates, renderUpdatesBadge,
-//   renderBranchNotice, renderUpdatesVersion
+//   renderBranchNotice
 
 function escapeHtmlUpdates(s) {
   return String(s ?? '').replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]))
@@ -95,32 +96,6 @@ async function pollUpdatesBadge() {
     renderUpdatesBadge(data)
     updateBranchDriftUI(data)
   } catch {}
-}
-
-// Render the running instance's identity into the page-header subtitle -- the
-// same .subtitle slot every other page header uses, so it stays consistent with
-// the rest of the dashboard and is visible in ALL update states (up-to-date,
-// behind, error) because it lives in the header, not the state-specific summary.
-// The semver is primary; the 7-char commit SHA follows as secondary context
-// (e.g. "Jelenlegi: v1.32.1 · db1ed3f"). When the backend could not read a
-// version, the SHA stands alone -- we never fabricate a version. With neither
-// available, the static brand subtitle (rendered from data-i18n) is left as-is.
-function renderUpdatesVersion(data) {
-  const sub = document.getElementById('updatesSubtitle')
-  if (!sub) return
-  const ver = (data && typeof data.version === 'string') ? data.version.trim() : ''
-  const sha = ((data && data.current) || '').slice(0, 7)
-  const parts = []
-  if (ver) parts.push('v' + escapeHtmlUpdates(ver))
-  if (sha) parts.push(`<code>${escapeHtmlUpdates(sha)}</code>`)
-  if (parts.length === 0) {
-    // No version AND no SHA (no git checkout and unreadable package.json): fall
-    // back to the localized brand subtitle. Set as text (not innerHTML) so no
-    // stale markup lingers, and keep it localized on every render.
-    sub.textContent = t('updates.brand_subtitle')
-    return
-  }
-  sub.innerHTML = `${t('updates.current_label')} ${parts.join(' · ')}`
 }
 
 // Post-rollback diagnosis offer (PR-D). Reads /api/updates/status: if the last
