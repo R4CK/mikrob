@@ -13,6 +13,9 @@ import { fileURLToPath } from 'node:url'
 const __dirname = dirname(fileURLToPath(import.meta.url))
 const APP = readFileSync(join(__dirname, '../../web/app.js'), 'utf-8')
 const CSS = readFileSync(join(__dirname, '../../web/style.css'), 'utf-8')
+const HTML = readFileSync(join(__dirname, '../../web/index.html'), 'utf-8')
+const HU = readFileSync(join(__dirname, '../../web/lang/hu.js'), 'utf-8')
+const EN = readFileSync(join(__dirname, '../../web/lang/en.js'), 'utf-8')
 
 function fnBody(source: string, startMarker: string): string {
   const start = source.indexOf(startMarker)
@@ -117,5 +120,30 @@ describe('#localLlm page polish CSS (card a05c39c9)', () => {
     const mediaIdx = CSS.indexOf('@media (prefers-reduced-motion: reduce)', idx)
     const block = CSS.slice(mediaIdx, mediaIdx + 300)
     expect(block).toMatch(/\.llm-usage-bar-fill,\s*\.llm-usage-day-bar\s*\{\s*transition:\s*none/)
+  })
+})
+
+describe('Feladat-sor scope hint (card c4abd0f0, MikroB correction 2026-08-16)', () => {
+  // The queue widget (GET /api/local-llm/queue*) reads a narrow, rarely-used async job-queue
+  // table -- NOT the main offload path (which is usage-log based, see the "Használat" section).
+  // A quiet queue was misread as "offload stopped entirely" during a05c39c9's investigation;
+  // MikroB corrected it with a live measurement (41.6% local ratio that same day). This hint
+  // exists so the same misreading doesn't happen again from the UI alone.
+  it('the hint sits right after the queue description, inside the same section', () => {
+    const titleIdx = HTML.indexOf('data-i18n="localLlm.queue.title"')
+    const descIdx = HTML.indexOf('data-i18n="localLlm.queue.desc"', titleIdx)
+    const hintIdx = HTML.indexOf('data-i18n="localLlm.queue.scope_hint"', descIdx)
+    const tilesIdx = HTML.indexOf('id="llmQueueTiles"', hintIdx)
+    expect(descIdx).toBeGreaterThan(titleIdx)
+    expect(hintIdx).toBeGreaterThan(descIdx)
+    expect(tilesIdx).toBeGreaterThan(hintIdx)
+  })
+
+  it('exists in both languages and points at the Usage section for the full picture', () => {
+    expect(HU).toContain("'localLlm.queue.scope_hint':")
+    expect(EN).toContain("'localLlm.queue.scope_hint':")
+    const huIdx = HU.indexOf("'localLlm.queue.scope_hint':")
+    const huLine = HU.slice(huIdx, HU.indexOf('\n', huIdx))
+    expect(huLine).toMatch(/Használat/)
   })
 })
