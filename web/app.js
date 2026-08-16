@@ -2598,6 +2598,170 @@ async function showCardDetail(card) {
   }
 
   openModal(cardDetailOverlay)
+  // Inline diff-comment section (card c12abc67, pair-BE 906c130f).
+  void loadCardDiffComments(card.id)
+}
+
+// Inline diff-comment view (card c12abc67). API: GET /api/kanban/:id/diff-comments
+// Returns { diffs: [{sha, file, hunks: [{header, lines: [{type, number, content, comments: [{id, author, text}]}]}] }] }
+// 404 → section stays hidden (pair-BE 906c130f not yet built -- contract-first graceful fallback).
+async function loadCardDiffComments(cardId) {
+  const section = document.getElementById('cardDiffSection')
+  const body = document.getElementById('cardDiffBody')
+  if (!section || !body) return
+  section.hidden = true
+  body.innerHTML = `<p class="diff-loading">${escapeHtml(t('common.loading'))}</p>`
+  const token = localStorage.getItem('marveen-dashboard-token') || ''
+  try {
+    const r = await fetch(`/api/kanban/${encodeURIComponent(cardId)}/diff-comments`, {
+      headers: { 'Authorization': 'Bearer ' + token },
+    })
+    if (r.status === 404) { section.hidden = true; return }
+    if (!r.ok) throw new Error('HTTP ' + r.status)
+    const d = await r.json()
+    const diffs = Array.isArray(d.diffs) ? d.diffs : []
+    if (!diffs.length) {
+      body.innerHTML = `<p class="diff-empty">${escapeHtml(t('kanban.diff.empty'))}</p>`
+      section.hidden = false
+      wireCardDiffToggle(body)
+      return
+    }
+    body.innerHTML = diffs.map((fileDiff) => renderDiffFile(cardId, fileDiff)).join('')
+    section.hidden = false
+    wireCardDiffToggle(body)
+    wireDiffInteractions(cardId, body)
+  } catch {
+    body.innerHTML = `<p class="diff-error">${escapeHtml(t('kanban.diff.error'))}</p>`
+    section.hidden = false
+  }
+}
+
+function renderDiffFile(cardId, fileDiff) {
+  const sha = escapeHtml(fileDiff.sha || '')
+  const fileName = escapeHtml(fileDiff.file || '')
+  const hunks = Array.isArray(fileDiff.hunks) ? fileDiff.hunks : []
+  const linesHtml = hunks.map((hunk) => {
+    const headerHtml = hunk.header
+      ? `<div class="diff-hunk-header">${escapeHtml(hunk.header)}</div>`
+      : ''
+    const lines = Array.isArray(hunk.lines) ? hunk.lines : []
+    const linesHtml = lines.map((ln) => {
+      const typeClass = ln.type === 'added' ? 'diff-line-add' : ln.type === 'removed' ? 'diff-line-remove' : 'diff-line-context'
+      const prefix = ln.type === 'added' ? '+' : ln.type === 'removed' ? '-' : ' '
+      const comments = Array.isArray(ln.comments) ? ln.comments : []
+      const commentsHtml = comments.length
+        ? `<div class="diff-inline-comments">${comments.map((c) =>
+            `<div class="diff-inline-comment" data-comment-id="${escapeHtml(String(c.id))}">
+              <span class="diff-comment-author">${escapeHtml(c.author || '?')}</span>
+              <span class="diff-comment-text">${escapeHtml(c.text || '')}</span>
+              <button class="diff-comment-delete btn-danger btn-compact" data-comment-id="${escapeHtml(String(c.id))}" data-line="${escapeHtml(String(ln.number || 0))}" title="${escapeHtml(t('kanban.diff.delete_btn'))}">&times;</button>
+            </div>`
+          ).join('')}</div>`
+        : ''
+      const addFormHtml = `<div class="diff-add-form" hidden data-line="${escapeHtml(String(ln.number || 0))}" data-sha="${sha}" data-file="${fileName}">
+  <textarea placeholder="${escapeHtml(t('kanban.diff.add_comment_ph'))}" rows="2"></textarea>
+  <div class="diff-add-form-actions">
+    <button class="btn-primary btn-compact diff-submit-btn" data-i18n="kanban.diff.add_btn">${escapeHtml(t('kanban.diff.add_btn'))}</button>
+    <button class="btn-secondary btn-compact diff-cancel-btn" data-i18n="kanban.diff.cancel_btn">${escapeHtml(t('kanban.diff.cancel_btn'))}</button>
+  </div>
+</div>`
+      return `<div class="diff-line ${typeClass}" data-line="${escapeHtml(String(ln.number || 0))}">
+  <span class="diff-line-num">${escapeHtml(String(ln.number || ''))}</span>
+  <span class="diff-line-content">${prefix}${escapeHtml(ln.content || '')}</span>
+  <button class="diff-add-comment-btn" data-line="${escapeHtml(String(ln.number || 0))}" aria-label="${escapeHtml(t('kanban.diff.add_comment_ph'))}">+</button>
+</div>${commentsHtml}${addFormHtml}`
+    }).join('')
+    return headerHtml + linesHtml
+  }).join('')
+  return `<div class="diff-file">
+  <div class="diff-file-header">
+    <span class="diff-file-name">${fileName}</span>
+    <span class="diff-file-sha">${sha}</span>
+  </div>
+  <div class="diff-table">${linesHtml}</div>
+</div>`
+}
+
+function wireCardDiffToggle(body) {
+  const toggle = document.getElementById('cardDiffToggle')
+  if (!toggle) return
+  toggle.addEventListener('click', () => {
+    const expanded = toggle.getAttribute('aria-expanded') !== 'false'
+    toggle.setAttribute('aria-expanded', String(!expanded))
+    toggle.textContent = !expanded ? t('kanban.diff.collapse') : t('kanban.diff.expand')
+    body.hidden = !expanded
+  })
+}
+
+function wireDiffInteractions(cardId, container) {
+  // "+" buttons toggle the add-comment form for a given line
+  container.querySelectorAll('.diff-add-comment-btn').forEach((btn) => {
+    btn.addEventListener('click', () => {
+      const line = btn.dataset.line
+      const form = container.querySelector(`.diff-add-form[data-line="${line}"]`)
+      if (!form) return
+      const wasHidden = form.hidden
+      // Close all other forms first
+      container.querySelectorAll('.diff-add-form').forEach((f) => { f.hidden = true })
+      form.hidden = !wasHidden
+      if (!form.hidden) form.querySelector('textarea')?.focus()
+    })
+  })
+  // Cancel buttons
+  container.querySelectorAll('.diff-cancel-btn').forEach((btn) => {
+    btn.addEventListener('click', () => {
+      const form = btn.closest('.diff-add-form')
+      if (form) { form.hidden = true; const ta = form.querySelector('textarea'); if (ta) ta.value = '' }
+    })
+  })
+  // Submit buttons
+  container.querySelectorAll('.diff-submit-btn').forEach((btn) => {
+    btn.addEventListener('click', async () => {
+      const form = btn.closest('.diff-add-form')
+      if (!form) return
+      const text = form.querySelector('textarea')?.value?.trim() || ''
+      if (!text) return
+      const line = parseInt(form.dataset.line || '0', 10)
+      const sha = form.dataset.sha || ''
+      const file = form.dataset.file || ''
+      btn.disabled = true
+      try {
+        await addDiffComment(cardId, sha, file, line, text)
+        void loadCardDiffComments(cardId)
+      } catch {
+        showToast(t('kanban.diff.error'))
+        btn.disabled = false
+      }
+    })
+  })
+  // Delete buttons
+  container.querySelectorAll('.diff-comment-delete').forEach((btn) => {
+    btn.addEventListener('click', async () => {
+      if (!confirm(t('kanban.diff.delete_confirm'))) return
+      const commentId = btn.dataset.commentId
+      if (!commentId) return
+      const token = localStorage.getItem('marveen-dashboard-token') || ''
+      try {
+        await fetch(`/api/kanban/${encodeURIComponent(cardId)}/diff-comments/${encodeURIComponent(commentId)}`, {
+          method: 'DELETE',
+          headers: { 'Authorization': 'Bearer ' + token },
+        })
+        void loadCardDiffComments(cardId)
+      } catch {
+        showToast(t('kanban.diff.error'))
+      }
+    })
+  })
+}
+
+async function addDiffComment(cardId, sha, file, line, text) {
+  const token = localStorage.getItem('marveen-dashboard-token') || ''
+  const r = await fetch(`/api/kanban/${encodeURIComponent(cardId)}/diff-comments`, {
+    method: 'POST',
+    headers: { 'Authorization': 'Bearer ' + token, 'Content-Type': 'application/json' },
+    body: JSON.stringify({ sha, file, line, text, author: 'dashboard' }),
+  })
+  if (!r.ok) throw new Error('HTTP ' + r.status)
 }
 
 async function triggerBreakdown(card) {
