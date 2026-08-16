@@ -21,7 +21,9 @@ describe('agents-team modularisation: app-agents-team.js is the owner', () => {
   })
 
   it('_agentsActiveView state lives in app-agents-team.js', () => {
-    expect(MODULE).toContain("let _agentsActiveView = 'grid'")
+    // var (not let): must be on window so IIFE closures in other script tags can
+    // write and read the same binding (card 27637425, fixed let->var).
+    expect(MODULE).toContain("var _agentsActiveView = 'grid'")
   })
 
   it('_setAgentsView lives in app-agents-team.js', () => {
