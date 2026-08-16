@@ -201,7 +201,11 @@ function renderTeamGraph(container, data, opts = {}) {
 // === Agents page: grid / org-chart view toggle ===
 // Persists the chosen view for the session so navigating away and back keeps
 // the last selection. Defaults to 'grid'.
-let _agentsActiveView = 'grid'
+// var (not let): must be on window so IIFE closures in other script tags
+// (app-router.js, app-page-switch.js) can write it and read back the same binding.
+// A let here creates a lexical binding that an IIFE assignment in another
+// script can shadow with an implicit window.xxx instead of updating it.
+var _agentsActiveView = 'grid'
 
 function _setAgentsView(view) {
   _agentsActiveView = view
