@@ -44,6 +44,13 @@ export interface WeeklyLimitSnapshot {
   readonly source: 'manual' | 'oauth' | 'panel'
   /** The weekly (all-models) reset time as shown on the usage screen (e.g. 'Thu 3:59 PM'), or null. */
   readonly resetAt: string | null
+  /** Unix seconds since the CURRENT `resetAt` label took effect -- i.e. when it last actually
+   *  CHANGED across writes, not merely got re-confirmed by another probe cycle. `resetAt` is a
+   *  free-text label straight off the usage screen ('Thu 3:59 PM', 'Aug 20, 4pm (...)') with no
+   *  reliable single format to parse into an absolute time, so this reuses the official source
+   *  (a label change IS the weekly reset happening) instead of computing a second, independent
+   *  week boundary (card 87b2fef9). Null until the first snapshot with a known resetAt lands. */
+  readonly resetBoundarySetAt: number | null
   /** Optional operator note. */
   readonly note: string | null
   // --- Enriched /usage metrics (card a91c6039), all null when not captured. Additive: old
@@ -93,6 +100,7 @@ export function readWeeklySnapshot(path: string = SNAPSHOT_PATH): WeeklyLimitSna
       // any unknown/absent value falls back to the safe 'manual' default.
       source: s['source'] === 'oauth' ? 'oauth' : s['source'] === 'panel' ? 'panel' : 'manual',
       resetAt: typeof s['resetAt'] === 'string' ? (s['resetAt'] as string) : null,
+      resetBoundarySetAt: Number.isFinite(s['resetBoundarySetAt']) ? (s['resetBoundarySetAt'] as number) : null,
       note: typeof s['note'] === 'string' ? (s['note'] as string) : null,
       // Enriched fields: null when an older snapshot / manual entry omitted them.
       session: readMetric(s['session']),
@@ -141,11 +149,18 @@ export function writeWeeklySnapshot(
   }
   const source: WeeklyLimitSnapshot['source'] =
     input.source === 'panel' ? 'panel' : input.source === 'oauth' ? 'oauth' : 'manual'
+  const resetAt = trim(input.resetAt)
+  // The label changing value IS the weekly reset (see the field's own doc comment above) -- carry
+  // the boundary forward unchanged when the label is re-confirmed or absent this round, and only
+  // stamp a fresh `now` when it actually differs from what the previous snapshot had.
+  const prev = readWeeklySnapshot(path)
+  const resetBoundarySetAt = resetAt !== null && resetAt !== prev?.resetAt ? now : (prev?.resetBoundarySetAt ?? null)
   const snap: WeeklyLimitSnapshot = {
     pct: Math.round(pct * 10) / 10,
     setAt: now,
     source,
-    resetAt: trim(input.resetAt),
+    resetAt,
+    resetBoundarySetAt,
     note: trim(input.note),
     session: metric(input.session, 'session'),
     fable: metric(input.fable, 'fable'),

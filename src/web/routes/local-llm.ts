@@ -25,6 +25,7 @@ import {
   type QueueStatus,
 } from '../../local-llm-queue.js'
 import { getUtilizationSamples } from '../local-llm-utilization-history.js'
+import { readWeeklySnapshot } from '../../costops/weekly-limit.js'
 
 /** A queue row still `running` after this long means its worker died: the 7B's slowest measured
  *  call is ~70s, so 10 minutes used to be far past any legitimate run -- true for a WORKER-claimed
@@ -705,6 +706,16 @@ export function isRealCall(r: UsageRow): boolean {
   return r.caller !== 'ui-test'
 }
 
+// Fallback boundary for tokens_saved_since_weekly_reset when no /usage-panel snapshot has ever
+// been captured (card 87b2fef9): the most recent UTC Monday 00:00. Superseded the moment a real
+// snapshot exists -- its resetBoundarySetAt (costops/weekly-limit.ts) is the authoritative source.
+export function lastUtcMondaySec(nowSec: number): number {
+  const d = new Date(nowSec * 1000)
+  const daysSinceMonday = (d.getUTCDay() + 6) % 7 // getUTCDay: 0=Sun..6=Sat
+  const mondayUtc = Date.UTC(d.getUTCFullYear(), d.getUTCMonth(), d.getUTCDate() - daysSinceMonday, 0, 0, 0)
+  return Math.floor(mondayUtc / 1000)
+}
+
 function buildUsage() {
   const allRows = parseUsageRows(tailUsageLines())
   const rows = allRows.filter(isRealCall)
@@ -713,6 +724,11 @@ function buildUsage() {
   const today = budapestDate(nowSec)
   const days14 = lastDays(14, nowSec)
   const last7Set = new Set(days14.slice(-7))
+  // card 87b2fef9: the weekly-reset boundary, not a rolling 7 days -- the label's own change IS the
+  // reset (see resetBoundarySetAt's doc comment), so this reuses the official /usage snapshot rather
+  // than a second, independent week computation.
+  const weeklySnapshot = readWeeklySnapshot()
+  const resetBoundarySec = weeklySnapshot?.resetBoundarySetAt ?? lastUtcMondaySec(nowSec)
 
   const callerCounts = new Map<string, number>()
   const taskCounts = new Map<string, number>()
@@ -731,6 +747,7 @@ function buildUsage() {
   let tokensToday = 0
   let tokensWeek = 0
   let tokensTotal = 0
+  let tokensSinceWeeklyReset = 0
 
   for (const r of rows) {
     callerCounts.set(r.caller, (callerCounts.get(r.caller) || 0) + 1)
@@ -747,6 +764,7 @@ function buildUsage() {
       tokensTotal += tokens
       if (day === today) tokensToday += tokens
       if (last7Set.has(day)) tokensWeek += tokens
+      if (r.ts >= resetBoundarySec) tokensSinceWeeklyReset += tokens
     }
   }
 
@@ -774,6 +792,9 @@ function buildUsage() {
     tokens_saved_today: tokensToday,
     tokens_saved_week: tokensWeek,
     tokens_saved_total: tokensTotal,
+    // card 87b2fef9: what the FE dashboard widget should bind instead of tokens_saved_total -- pinned
+    // to the weekly-limit reset boundary (see resetBoundarySec above), not all-time or a rolling 7d.
+    tokens_saved_since_weekly_reset: tokensSinceWeeklyReset,
     ui_probes,
     by_caller,
     by_source: bySource,

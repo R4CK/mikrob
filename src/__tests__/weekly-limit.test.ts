@@ -31,6 +31,7 @@ describe('writeWeeklySnapshot / readWeeklySnapshot', () => {
       setAt: NOW,
       source: 'manual',
       resetAt: 'Thu 3:59 PM',
+      resetBoundarySetAt: NOW,
       note: 'Peti screenshot',
       session: null,
       fable: null,
@@ -79,6 +80,7 @@ describe('writeWeeklySnapshot / readWeeklySnapshot', () => {
       setAt: NOW,
       source: 'oauth',
       resetAt: 'Thu 3:59 PM',
+      resetBoundarySetAt: null,
       note: null,
       session: null,
       fable: null,
@@ -110,6 +112,7 @@ describe('enriched /usage snapshot (session / fable / promo)', () => {
       setAt: NOW,
       source: 'panel',
       resetAt: 'Fri 11:00 AM',
+      resetBoundarySetAt: NOW,
       note: null,
       session: { pct: 45, resetAt: 'Thu 3:59 PM' },
       fable: { pct: 20, resetAt: 'Fri 11:00 AM' },
@@ -156,5 +159,50 @@ describe('enriched /usage snapshot (session / fable / promo)', () => {
     const r = readWeeklySnapshot(p())
     expect(r?.session).toBeNull()
     expect(r?.fable).toBeNull()
+  })
+})
+
+// card 87b2fef9: resetBoundarySetAt tracks WHEN the current resetAt label took effect, so the
+// local-LLM "tokens saved" widget can sum only since the actual weekly reset instead of an
+// all-time total or an independent rolling window. The label is free text off the /usage screen
+// ('Thu 3:59 PM', 'Aug 20, 4pm (...)') with no single reliable format to parse into an absolute
+// time, so the boundary is derived from a LABEL CHANGE (an event we can detect exactly), not from
+// parsing the label's own text.
+describe('resetBoundarySetAt (weekly-reset boundary for the tokens-saved widget)', () => {
+  const LATER = NOW + 3600
+
+  it('the first-ever snapshot with a resetAt stamps the boundary at its own setAt', () => {
+    const w = writeWeeklySnapshot({ pct: 50, resetAt: 'Thu 3:59 PM' }, NOW, p())
+    expect(w.resetBoundarySetAt).toBe(NOW)
+  })
+
+  it('re-confirming the SAME resetAt label carries the original boundary forward, unchanged', () => {
+    writeWeeklySnapshot({ pct: 50, resetAt: 'Thu 3:59 PM' }, NOW, p())
+    const w2 = writeWeeklySnapshot({ pct: 55, resetAt: 'Thu 3:59 PM' }, LATER, p())
+    expect(w2.resetBoundarySetAt).toBe(NOW)
+  })
+
+  it('a DIFFERENT resetAt label (the actual weekly reset happening) stamps a fresh boundary', () => {
+    writeWeeklySnapshot({ pct: 99, resetAt: 'Thu 3:59 PM' }, NOW, p())
+    const w2 = writeWeeklySnapshot({ pct: 2, resetAt: 'Fri 11:00 AM' }, LATER, p())
+    expect(w2.resetBoundarySetAt).toBe(LATER)
+  })
+
+  it('a write with no resetAt at all carries the previous boundary forward untouched', () => {
+    writeWeeklySnapshot({ pct: 50, resetAt: 'Thu 3:59 PM' }, NOW, p())
+    const w2 = writeWeeklySnapshot({ pct: 55 }, LATER, p())
+    expect(w2.resetAt).toBeNull()
+    expect(w2.resetBoundarySetAt).toBe(NOW)
+  })
+
+  it('no resetAt ever recorded -> boundary stays null (caller falls back to its own default)', () => {
+    const w = writeWeeklySnapshot({ pct: 50 }, NOW, p())
+    expect(w.resetAt).toBeNull()
+    expect(w.resetBoundarySetAt).toBeNull()
+  })
+
+  it('reads an old snapshot with no resetBoundarySetAt field as null (backward-compatible)', () => {
+    writeFileSync(p(), JSON.stringify({ pct: 60, setAt: NOW, source: 'manual', resetAt: 'Thu 3:59 PM' }))
+    expect(readWeeklySnapshot(p())?.resetBoundarySetAt).toBeNull()
   })
 })

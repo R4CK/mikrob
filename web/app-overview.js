@@ -534,9 +534,11 @@ async function loadLocalLlmInfo() {
     // Not yet in the API response (waiting on card d08b98f4) -- honest placeholder, not 0.
     if (modelEl) modelEl.textContent = d.model || t('overview.quota.llm.pending')
     if (tokensEl) {
+      // card 87b2fef9: pinned to the weekly-reset boundary, not the all-time total -- resets
+      // together with the weekly Claude-usage limit instead of only ever growing.
       tokensEl.textContent =
-        typeof d.tokens_saved_total === 'number'
-          ? d.tokens_saved_total.toLocaleString(window._lang === 'hu' ? 'hu-HU' : 'en-US')
+        typeof d.tokens_saved_since_weekly_reset === 'number'
+          ? d.tokens_saved_since_weekly_reset.toLocaleString(window._lang === 'hu' ? 'hu-HU' : 'en-US')
           : t('overview.quota.llm.pending')
     }
   } catch {
