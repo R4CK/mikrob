@@ -8718,6 +8718,12 @@ body {
 #localLlmPage .btn-compact,
 #localLlmPage .btn-primary,
 #localLlmPage .btn-secondary { min-height: 44px; }
+/* Rule 13, scoped to the new controls only (card 9bf6a1e0) -- the rest of the Föderáció page's
+   compact buttons (reveal/rotate/edit/delete on peer cards) predate this and are unaffected, so
+   they stay unaltered rather than folding an unrelated fleet-wide fix into this card's diff. */
+#federationTailscale .btn-compact,
+#federationTailscale .btn-primary,
+#federationTailscale .btn-secondary { min-height: 44px; }
 @media (max-width: 640px) {
   .llm-model-row { align-items: flex-start; }
   .llm-model-actions { width: 100%; }

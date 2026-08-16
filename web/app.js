@@ -18084,6 +18084,14 @@ let fedPeersViewCache = null
 
 async function loadFederationPage() {
   wireFederationPage()
+  // A 'pending' state with no active poller (the poller stops itself when the page is hidden --
+  // see fedTailscalePoll) means the user navigated away mid-login and came back: there is nothing
+  // left driving that state to completion, so it would otherwise sit on "Csatlakozás
+  // folyamatban..." forever. Reset to idle so the login button is reachable again.
+  if (_fedTailscaleState.status === 'pending' && !_fedTailscalePollTimer) {
+    _fedTailscaleState = { status: 'idle' }
+  }
+  fedTailscaleRender() // renders whatever state is already known (idle on first visit)
   const statsEl = document.getElementById('federationStats')
   const masterEl = document.getElementById('federationMaster')
   const peersEl = document.getElementById('federationPeers')
@@ -18366,6 +18374,165 @@ async function fedRemoveAll() {
     showToast(t('federation.toast.removed'))
     loadFederationPage()
   } catch (err) { showToast(t('federation.toast.error', { msg: String(err.message || err) })) }
+}
+
+// --- Tailscale login + self connection info (card 9bf6a1e0) ---------------------------------
+// Contract drafted by backend on card b68ddae8 (2026-08-16, DRAFT -- not yet implemented):
+//   POST /api/federation/tailscale/login
+//     -> { status: 'connected'|'needs_login', loginUrl?, pollToken? }
+//     IDEMPOTENT: an already-connected node gets { status: 'connected' } straight away, no new
+//     `tailscale up`. loginUrl/pollToken only come on needs_login.
+//   GET /api/federation/tailscale/status?pollToken=...
+//     -> { status: 'pending'|'connected'|'failed', systemId?, baseUrl?, error? }
+//     'connected' means the `tailscale serve --bg 3420` step already ran/was verified too.
+//
+// KNOWN GAP (flagged back to backend, not silently worked around): the idempotent "already
+// connected" branch of POST /login returns no pollToken, so there is no documented way to reach
+// GET /status -- and therefore no systemId/baseUrl -- on that path. Coded here as its own
+// 'connected-no-data' state (honest about not having the data) rather than guessing a field name
+// backend never committed to. If backend adds a pollToken to that branch too, this collapses into
+// the same poll path as needs_login.
+let _fedTailscaleState = { status: 'idle' }
+let _fedTailscaleLoginUrl = null
+let _fedTailscalePollTimer = null
+let _fedTailscalePollAttempts = 0
+const FED_TAILSCALE_POLL_MAX_ATTEMPTS = 20 // 20 * 3s = 60s ceiling, then treat as a timeout
+
+function fedTailscaleRender() {
+  const el = document.getElementById('federationTailscale')
+  if (!el) return
+  const s = _fedTailscaleState
+  const title = `<h3 style="font-size:14px;font-weight:600;margin-bottom:6px">${t('federation.tailscale.title')}</h3>`
+  let body
+  if (s.status === 'connected') {
+    body = `${title}
+      <p style="font-size:12px;color:var(--text-muted);margin-bottom:10px">${t('federation.tailscale.hint')}</p>
+      <div style="display:flex;flex-direction:column;gap:8px">
+        <div style="display:flex;align-items:center;gap:8px;flex-wrap:wrap">
+          <span style="font-size:12px;color:var(--text-muted);min-width:120px">${t('federation.tailscale.system_id_label')}</span>
+          <code style="font-size:13px;word-break:break-all;flex:1">${escapeHtml(s.systemId || '-')}</code>
+          <button type="button" class="btn-secondary btn-compact" data-copy="systemId">${t('federation.tailscale.copy_btn')}</button>
+        </div>
+        <div style="display:flex;align-items:center;gap:8px;flex-wrap:wrap">
+          <span style="font-size:12px;color:var(--text-muted);min-width:120px">${t('federation.tailscale.base_url_label')}</span>
+          <code style="font-size:13px;word-break:break-all;flex:1">${escapeHtml(s.baseUrl || '-')}</code>
+          <button type="button" class="btn-secondary btn-compact" data-copy="baseUrl">${t('federation.tailscale.copy_btn')}</button>
+        </div>
+      </div>`
+  } else if (s.status === 'connected-no-data') {
+    // The contract gap above -- connected, but nothing to copy yet.
+    body = `${title}
+      <p style="font-size:12px;color:var(--text-muted);min-width:120px">${t('federation.tailscale.system_id_label')}: <code>${escapeHtml(s.knownSystemId || '-')}</code></p>
+      <p style="font-size:12px;color:var(--text-muted)">${t('federation.tailscale.manual_hint')}</p>`
+  } else if (s.status === 'pending') {
+    body = `${title}
+      <p role="status" aria-live="polite" style="font-size:13px">${t('federation.tailscale.pending')}</p>
+      ${s.popupBlocked ? `<p style="color:var(--accent);font-size:12px;margin-top:6px">${t('federation.tailscale.popup_blocked')}</p>
+        <button type="button" class="btn-primary btn-compact" id="fedTailscaleOpenLoginBtn">${t('federation.tailscale.open_login_btn')}</button>` : ''}`
+  } else if (s.status === 'error') {
+    body = `${title}
+      <p style="color:var(--danger);font-size:13px">${escapeHtml(s.error || t('federation.tailscale.error_generic'))}</p>
+      <button type="button" class="btn-secondary btn-compact" id="fedTailscaleLoginBtn">${t('federation.tailscale.retry_btn')}</button>
+      <p style="font-size:11px;color:var(--text-muted);margin-top:6px">${t('federation.tailscale.manual_hint')}</p>`
+  } else { // idle
+    body = `${title}
+      <p style="font-size:12px;color:var(--text-muted);margin-bottom:10px">${t('federation.tailscale.hint')}</p>
+      <button type="button" class="btn-primary btn-compact" id="fedTailscaleLoginBtn">${t('federation.tailscale.login_btn')}</button>
+      <p style="font-size:11px;color:var(--text-muted);margin-top:8px">${t('federation.tailscale.manual_hint')}</p>`
+  }
+  el.innerHTML = body
+  el.querySelectorAll('[data-copy]').forEach(btn => btn.addEventListener('click', () => {
+    const val = btn.dataset.copy === 'systemId' ? s.systemId : s.baseUrl
+    navigator.clipboard?.writeText(val || '').then(
+      () => showToast(t('federation.tailscale.copied')),
+      () => {},
+    )
+  }))
+  document.getElementById('fedTailscaleLoginBtn')?.addEventListener('click', fedTailscaleLogin)
+  document.getElementById('fedTailscaleOpenLoginBtn')?.addEventListener('click', () => {
+    if (_fedTailscaleLoginUrl) window.open(_fedTailscaleLoginUrl, '_blank', 'noopener')
+  })
+}
+
+function fedTailscaleStopPoll() {
+  if (_fedTailscalePollTimer) { clearInterval(_fedTailscalePollTimer); _fedTailscalePollTimer = null }
+}
+
+function fedTailscalePoll(pollToken) {
+  fedTailscaleStopPoll()
+  _fedTailscalePollAttempts = 0
+  const check = async () => {
+    const page = document.getElementById('federationPage')
+    if (!page || page.hidden) { fedTailscaleStopPoll(); return } // left the page -- stop polling
+    _fedTailscalePollAttempts++
+    if (_fedTailscalePollAttempts > FED_TAILSCALE_POLL_MAX_ATTEMPTS) {
+      fedTailscaleStopPoll()
+      _fedTailscaleState = { status: 'error', error: t('federation.tailscale.error_generic') }
+      fedTailscaleRender()
+      return
+    }
+    try {
+      const res = await fetch(`/api/federation/tailscale/status?pollToken=${encodeURIComponent(pollToken)}`)
+      const data = await res.json().catch(() => ({}))
+      if (!res.ok) {
+        fedTailscaleStopPoll()
+        _fedTailscaleState = { status: 'error', error: data.error || t('federation.tailscale.error_generic') }
+        fedTailscaleRender()
+        return
+      }
+      if (data.status === 'connected') {
+        fedTailscaleStopPoll()
+        _fedTailscaleState = { status: 'connected', systemId: data.systemId, baseUrl: data.baseUrl }
+        fedTailscaleRender()
+      } else if (data.status === 'failed') {
+        fedTailscaleStopPoll()
+        _fedTailscaleState = { status: 'error', error: data.error || t('federation.tailscale.error_generic') }
+        fedTailscaleRender()
+      }
+      // 'pending' -- keep polling, the visible state is already "pending", nothing to re-render.
+    } catch {
+      fedTailscaleStopPoll()
+      _fedTailscaleState = { status: 'error', error: t('federation.tailscale.error_generic') }
+      fedTailscaleRender()
+    }
+  }
+  check()
+  _fedTailscalePollTimer = setInterval(check, 3000)
+}
+
+async function fedTailscaleLogin() {
+  _fedTailscaleState = { status: 'pending', popupBlocked: false }
+  fedTailscaleRender()
+  try {
+    const res = await fetch('/api/federation/tailscale/login', { method: 'POST' })
+    const data = await res.json().catch(() => ({}))
+    if (!res.ok) {
+      _fedTailscaleState = { status: 'error', error: data.error || t('federation.tailscale.error_generic') }
+      fedTailscaleRender()
+      return
+    }
+    if (data.pollToken) {
+      _fedTailscaleLoginUrl = data.loginUrl || null
+      let popupBlocked = false
+      if (data.loginUrl) {
+        const win = window.open(data.loginUrl, '_blank', 'noopener')
+        if (!win) popupBlocked = true // browser blocked the automatic pop-up -- fallback button
+      }
+      _fedTailscaleState = { status: 'pending', popupBlocked }
+      fedTailscaleRender()
+      fedTailscalePoll(data.pollToken)
+    } else if (data.status === 'connected') {
+      // Contract gap (see comment above the state machine): nothing to poll for on this branch.
+      _fedTailscaleState = { status: 'connected-no-data', knownSystemId: fedPeersViewCache?.systemId || null }
+      fedTailscaleRender()
+    } else {
+      _fedTailscaleState = { status: 'error', error: t('federation.tailscale.error_generic') }
+      fedTailscaleRender()
+    }
+  } catch {
+    _fedTailscaleState = { status: 'error', error: t('federation.tailscale.error_generic') }
+    fedTailscaleRender()
+  }
 }
 
 function wireFederationPage() {

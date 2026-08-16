@@ -2448,6 +2448,11 @@
       </div>
       <div id="federationStats" style="display:flex;gap:12px;flex-wrap:wrap;margin-bottom:16px"></div>
       <div id="federationMaster" class="card" style="padding:14px 16px;margin-bottom:16px"></div>
+      <!-- Tailscale connection self-info (card 9bf6a1e0, contract on b68ddae8): the id/baseUrl the
+           user must hand to the OTHER system's admin during pairing (docs/federation.md "Párosítás
+           (a UI-ból)" step 1/2) -- previously only discoverable by running `tailscale serve status`
+           in a terminal (docs/mobil-dashboard.md). Rendered entirely by fedTailscaleRender(). -->
+      <div id="federationTailscale" class="card" style="padding:14px 16px;margin-bottom:16px"></div>
       <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:8px">
         <h3 style="font-size:15px;font-weight:600" data-i18n="federation.peers_title">Társrendszerek</h3>
         <button class="btn-primary btn-compact" id="federationAddPeerBtn" data-i18n="federation.btn.add_peer">+ Társ hozzáadása</button>
