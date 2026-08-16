@@ -426,12 +426,7 @@ try {
 //  resetWizard, updateWizardUI, create-agent submit handler
 //  -- all moved to app-wizard.js, slice 34.)
 /* STUB -- content removed */
-// === Toast ===
-function showToast(msg, duration = 3000) {
-  toast.textContent = msg
-  toast.classList.add('visible')
-  setTimeout(() => toast.classList.remove('visible'), duration)
-}
+// === Toast -- see web/app-helpers.js ===
 
 // ============================================================
 // === Agents API + HUD + Federated -- see web/app-agents.js ===
@@ -495,16 +490,7 @@ function showToast(msg, duration = 3000) {
 //  app-memories.js is loaded BEFORE this file in index.html so that
 //  loadMemAgents() is available when the init section calls it at startup.)
 
-// === SVG icons ===
-function pauseIcon() {
-  return '<svg width="14" height="14" viewBox="0 0 24 24" fill="currentColor"><rect x="6" y="4" width="4" height="16" rx="1"/><rect x="14" y="4" width="4" height="16" rx="1"/></svg>'
-}
-function playIcon() {
-  return '<svg width="14" height="14" viewBox="0 0 24 24" fill="currentColor"><polygon points="5 3 19 12 5 21 5 3"/></svg>'
-}
-function trashIcon() {
-  return '<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="3 6 5 6 21 6"/><path d="M19 6v14a2 2 0 01-2 2H7a2 2 0 01-2-2V6m3 0V4a2 2 0 012-2h4a2 2 0 012 2v2"/></svg>'
-}
+// === SVG icons -- see web/app-helpers.js ===
 
 // ============================================================
 // === Connectors -- see web/app-connectors.js ===
@@ -514,29 +500,7 @@ function trashIcon() {
 //  loadConnectors() is called from switchPage in app.js.
 //  app-connectors.js is loaded AFTER this file in index.html.)
 /* STUB -- content removed */
-// === Helpers ===
-function escapeHtml(str) {
-  const d = document.createElement('div')
-  d.textContent = str
-  // textContent->innerHTML escapes & < > but NOT quotes. Encode quotes too so
-  // the result is safe in ATTRIBUTE contexts as well as text nodes -- several
-  // renderers interpolate escapeHtml() output into data-*/title/value="..."
-  // attributes, where a surviving " would allow an attribute breakout.
-  return d.innerHTML.replace(/"/g, '&quot;').replace(/'/g, '&#39;')
-}
-
-// ============================================================
-// === Status ===
-// ============================================================
-
-// Statuspage component status -> short label for non-operational states.
-const STATUS_COMPONENT_LABELS = {
-  operational: () => t('status.comp.operational'),
-  degraded_performance: () => t('status.comp.degraded'),
-  partial_outage: () => t('status.comp.partial_outage'),
-  major_outage: () => t('status.comp.major_outage'),
-  under_maintenance: () => t('status.comp.maintenance'),
-}
+// === Helpers + Status labels -- see web/app-helpers.js ===
 
 // ============================================================
 // === Local LLM (Ollama offload) page -- see web/app-local-llm.js ===
