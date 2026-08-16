@@ -8558,18 +8558,20 @@ body {
   padding: 12px 14px;
   margin-bottom: 10px;
   background: var(--bg-card, var(--bg-secondary));
-  animation: llm-rec-group-in 0.28s ease-out backwards;
 }
-.llm-rec-group:nth-child(2) { animation-delay: 0.03s; }
-.llm-rec-group:nth-child(3) { animation-delay: 0.06s; }
-.llm-rec-group:nth-child(4) { animation-delay: 0.09s; }
-.llm-rec-group:nth-child(n+5) { animation-delay: 0.12s; }
+/* Peti feedback (2026-08-16, card a05c39c9): the per-card entrance animation "vibrál" -- this
+   list commonly has ~37 groups, and the old :nth-child(n+5) rule put every group from #5 onward
+   through opacity/transform in the SAME instant (one shared delay bucket for the entire tail of
+   the list), which is a pile-up of dozens of simultaneously-animating elements, not a cascade.
+   No entrance animation here anymore; the keyframe stays defined (used by the small tile grids
+   below, where the item count makes a stagger safe) and the "recommended" card still gets a
+   static (non-animated) accent border/glow as its visual cue. */
 @keyframes llm-rec-group-in {
   from { opacity: 0; transform: translateY(4px); }
   to { opacity: 1; transform: translateY(0); }
 }
 @media (prefers-reduced-motion: reduce) {
-  .llm-rec-group, .llm-anim-in { animation: none; }
+  .llm-anim-in { animation: none; }
   .llm-usage-bar-fill, .llm-usage-day-bar { transition: none; }
 }
 /* Card a05c39c9: the SAME entrance animation as .llm-rec-group above, reused for the rest of the

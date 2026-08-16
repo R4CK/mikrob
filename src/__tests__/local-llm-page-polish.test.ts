@@ -59,7 +59,7 @@ describe('llmAnimateBatch (once-only entrance animation on 5s-polled sections)',
     expect(body).toMatch(/\(\?=\["\\\\s\]\)/)
   })
 
-  it('is wired into every polled section with its own distinct key: status, models, usage, queue, categories', () => {
+  it('is wired into the small tile grids/lists: status, models, usage, queue', () => {
     const statusBody = fnBody(APP, 'async function llmRefreshStatus()')
     expect(statusBody).toContain("llmAnimateBatch(tiles.join(''), 'status', 'llm-tile')")
     expect(statusBody).toContain("'models', 'llm-model-row')")
@@ -69,9 +69,12 @@ describe('llmAnimateBatch (once-only entrance animation on 5s-polled sections)',
 
     const queueBody = fnBody(APP, 'async function llmRefreshQueue()')
     expect(queueBody).toContain("'queue', 'llm-tile')")
+  })
 
+  it('NOT wired into Categories (Peti feedback 2026-08-16: "vibrál") -- ~80 rows is too many for a per-row stagger', () => {
     const catBody = fnBody(APP, 'async function llmRefreshCategories()')
-    expect(catBody).toContain("'categories', 'llm-category-row')")
+    expect(catBody).not.toContain('llmAnimateBatch(')
+    expect(catBody).not.toContain('llm-anim-in')
   })
 })
 
@@ -98,13 +101,13 @@ describe('#localLlm page polish CSS (card a05c39c9)', () => {
     expect(CSS).toMatch(/\.llm-anim-in\s*\{\s*animation:\s*llm-rec-group-in/)
   })
 
-  it('the entrance class is disabled under prefers-reduced-motion, same guard as the recommendation cards', () => {
+  it('the entrance class is disabled under prefers-reduced-motion', () => {
     const idx = CSS.indexOf('@keyframes llm-rec-group-in')
     expect(idx).toBeGreaterThan(-1)
     const mediaIdx = CSS.indexOf('@media (prefers-reduced-motion: reduce)', idx)
     expect(mediaIdx).toBeGreaterThan(-1)
     const block = CSS.slice(mediaIdx, mediaIdx + 300)
-    expect(block).toMatch(/\.llm-rec-group,\s*\.llm-anim-in\s*\{\s*animation:\s*none/)
+    expect(block).toMatch(/\.llm-anim-in\s*\{\s*animation:\s*none/)
   })
 
   it('the usage bar-chart transitions are defined and disabled under prefers-reduced-motion', () => {

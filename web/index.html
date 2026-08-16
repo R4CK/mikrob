@@ -816,35 +816,15 @@
         </div>
       </div>
 
+      <!-- Section order (Peti, 2026-08-16, card a05c39c9): Status -> Offload-agresszivitás ->
+           Kategóriák -> Használat-mérték -> Feladatok és kártyák. Overrides the earlier layout;
+           each block's own content/ids/logic are unchanged, only their position moved. -->
+
       <!-- Status -->
       <div class="llm-section">
         <h2 class="llm-section-title" data-i18n="localLlm.status.title">Állapot</h2>
         <div class="llm-status-grid" id="llmStatusGrid">
           <div class="llm-loading" data-i18n="common.loading">Betöltés...</div>
-        </div>
-      </div>
-
-      <!-- Async work queue (card 48aacf56 item 5): pending/running/done/failed drafts, split off
-           item 4's auto-router so it would not block that gate. Backed by GET /api/local-llm/queue
-           (aggregate stats) and GET /api/local-llm/queue/list (recent rows). Row click opens the
-           detail modal (GET /api/local-llm/queue/<id>), which is the only place the prompt/result
-           text is fetched -- the list view is metadata-only by design (see local-llm-queue.ts). -->
-      <div class="llm-section">
-        <h2 class="llm-section-title" data-i18n="localLlm.queue.title">Feladat-sor</h2>
-        <p class="llm-offload-desc" data-i18n="localLlm.queue.desc">Az aszinkron helyi-LLM feladatsor élő állapota: sorban álló, futó, kész és sikertelen draftok.</p>
-        <div class="llm-status-grid" id="llmQueueTiles">
-          <div class="llm-loading" data-i18n="common.loading">Betöltés...</div>
-        </div>
-        <div class="llm-usage-block">
-          <h3 class="llm-usage-subtitle" data-i18n="localLlm.queue.recent">Legutóbbi tételek</h3>
-          <div class="llm-queue-filter" role="group" aria-label="Szűrés státusz szerint" data-i18n-aria-label="localLlm.queue.filter.aria">
-            <button type="button" class="llm-queue-filter-btn active" data-status="" data-i18n="localLlm.queue.filter.all">Mind</button>
-            <button type="button" class="llm-queue-filter-btn" data-status="pending" data-i18n="localLlm.queue.filter.pending">Várakozó</button>
-            <button type="button" class="llm-queue-filter-btn" data-status="running" data-i18n="localLlm.queue.filter.running">Fut</button>
-            <button type="button" class="llm-queue-filter-btn" data-status="done" data-i18n="localLlm.queue.filter.done">Kész</button>
-            <button type="button" class="llm-queue-filter-btn" data-status="failed" data-i18n="localLlm.queue.filter.failed">Sikertelen</button>
-          </div>
-          <div class="llm-usage-table-wrap" id="llmQueueRecent"></div>
         </div>
       </div>
 
@@ -942,6 +922,30 @@
         <div class="llm-usage-block">
           <h3 class="llm-usage-subtitle" data-i18n="localLlm.usage.recent">Legutóbbi hívások</h3>
           <div class="llm-usage-table-wrap" id="llmUsageRecent"></div>
+        </div>
+      </div>
+
+      <!-- Async work queue (card 48aacf56 item 5): pending/running/done/failed drafts, split off
+           item 4's auto-router so it would not block that gate. Backed by GET /api/local-llm/queue
+           (aggregate stats) and GET /api/local-llm/queue/list (recent rows). Row click opens the
+           detail modal (GET /api/local-llm/queue/<id>), which is the only place the prompt/result
+           text is fetched -- the list view is metadata-only by design (see local-llm-queue.ts). -->
+      <div class="llm-section">
+        <h2 class="llm-section-title" data-i18n="localLlm.queue.title">Feladat-sor</h2>
+        <p class="llm-offload-desc" data-i18n="localLlm.queue.desc">Az aszinkron helyi-LLM feladatsor élő állapota: sorban álló, futó, kész és sikertelen draftok.</p>
+        <div class="llm-status-grid" id="llmQueueTiles">
+          <div class="llm-loading" data-i18n="common.loading">Betöltés...</div>
+        </div>
+        <div class="llm-usage-block">
+          <h3 class="llm-usage-subtitle" data-i18n="localLlm.queue.recent">Legutóbbi tételek</h3>
+          <div class="llm-queue-filter" role="group" aria-label="Szűrés státusz szerint" data-i18n-aria-label="localLlm.queue.filter.aria">
+            <button type="button" class="llm-queue-filter-btn active" data-status="" data-i18n="localLlm.queue.filter.all">Mind</button>
+            <button type="button" class="llm-queue-filter-btn" data-status="pending" data-i18n="localLlm.queue.filter.pending">Várakozó</button>
+            <button type="button" class="llm-queue-filter-btn" data-status="running" data-i18n="localLlm.queue.filter.running">Fut</button>
+            <button type="button" class="llm-queue-filter-btn" data-status="done" data-i18n="localLlm.queue.filter.done">Kész</button>
+            <button type="button" class="llm-queue-filter-btn" data-status="failed" data-i18n="localLlm.queue.filter.failed">Sikertelen</button>
+          </div>
+          <div class="llm-usage-table-wrap" id="llmQueueRecent"></div>
         </div>
       </div>
 

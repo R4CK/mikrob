@@ -237,14 +237,26 @@ describe('model catalogue CSS', () => {
     expect(CSS).toContain('.llm-rec-warning {')
   })
 
-  it('defines the group card, the recommended-group accent, and the entrance animation (card 88ea5050)', () => {
+  it('defines the group card and the recommended-group accent -- a STATIC cue, not motion', () => {
     expect(CSS).toContain('.llm-rec-group {')
     expect(CSS).toContain('.llm-rec-group.recommended {')
     expect(CSS).toContain('.llm-rec-badge-star {')
-    expect(CSS).toMatch(/@keyframes llm-rec-group-in/)
   })
 
-  it('the entrance animation is disabled under prefers-reduced-motion', () => {
+  it('NO per-card entrance animation on .llm-rec-group (Peti feedback 2026-08-16: "vibrál")', () => {
+    // This list commonly has ~37 groups. The original per-card stagger put every group from #5
+    // onward through opacity/transform in the SAME shared delay bucket (:nth-child(n+5)) --
+    // dozens of elements animating at once, reported as visible jitter, not polish. The
+    // .llm-rec-group rule itself must carry no `animation` -- only .llm-anim-in (used on the
+    // small, <=5-item tile grids elsewhere on the page) may still use the shared keyframe.
+    const idx = CSS.indexOf('.llm-rec-group {')
+    expect(idx).toBeGreaterThan(-1)
+    const block = CSS.slice(idx, CSS.indexOf('}', idx) + 1)
+    expect(block).not.toMatch(/animation\s*:/)
+    expect(CSS).not.toMatch(/\.llm-rec-group:nth-child/)
+  })
+
+  it('the keyframe still exists (reused by .llm-anim-in) and is disabled under prefers-reduced-motion', () => {
     // Scoped from OUR keyframe forward -- prefers-reduced-motion appears more than once in this
     // stylesheet (e.g. the agent-card-running indicator), so an unscoped search would match
     // whichever query comes first in the file, not necessarily ours.
@@ -253,9 +265,7 @@ describe('model catalogue CSS', () => {
     const mediaIdx = CSS.indexOf('@media (prefers-reduced-motion: reduce)', keyframeIdx)
     expect(mediaIdx).toBeGreaterThan(-1)
     const block = CSS.slice(mediaIdx, mediaIdx + 200)
-    // Card a05c39c9 widened the selector to also cover .llm-anim-in (the same keyframe, reused
-    // for the rest of the #localLlm page) -- still one shared rule, not a second copy.
-    expect(block).toMatch(/\.llm-rec-group,\s*\.llm-anim-in\s*\{\s*animation:\s*none/)
+    expect(block).toMatch(/\.llm-anim-in\s*\{\s*animation:\s*none/)
   })
 
   it('the quant <select> keeps the 44px touch target (rule 13) by reusing the shared .llm-select base', () => {

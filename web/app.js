@@ -10440,7 +10440,7 @@ function llmSetupOffload() {
 // tick -- a CSS `animation` (unlike `transition`) restarts on every fresh element, so attaching it
 // unconditionally would flash the whole section on every single poll instead of just on arrival.
 // Tracked per section-key, consumed once.
-const _llmAnimDone = { status: false, queue: false, usage: false, categories: false, models: false }
+const _llmAnimDone = { status: false, queue: false, usage: false, models: false }
 function llmAnimCls(key) {
   return _llmAnimDone[key] ? '' : ' llm-anim-in'
 }
@@ -10493,7 +10493,13 @@ async function llmRefreshCategories() {
       listEl.innerHTML = `<div class="llm-empty">${t('localLlm.categories.empty')}</div>`
       return
     }
-    listEl.innerHTML = llmAnimateBatch(categories.map((c, i) => {
+    // Card a05c39c9 originally gave this an entrance animation too, but Peti reported it
+    // "vibrál" (visible jitter) -- this list commonly has ~80 rows, so even a staggered
+    // animation puts a large batch of elements through opacity/transform in the same handful
+    // of delay buckets at once, which is visual noise on a list this size, not polish. No
+    // animation here; kept for the small tile grids (Status/Usage/Queue, <=5 items) where a
+    // stagger genuinely reads as a reveal rather than a pile-up.
+    listEl.innerHTML = categories.map((c, i) => {
       const meta = c.count > 0
         ? t('localLlm.categories.meta_used', { count: c.count, when: llmFmtTime(c.lastTs) })
         : t('localLlm.categories.meta_unused')
@@ -10509,7 +10515,7 @@ async function llmRefreshCategories() {
           ${c.enabled ? t('localLlm.categories.on') : t('localLlm.categories.off')}
         </button>
       </div>`
-    }).join(''), 'categories', 'llm-category-row')
+    }).join('')
     listEl.querySelectorAll('.llm-category-toggle').forEach(btn =>
       btn.addEventListener('click', () => llmToggleCategory(btn.dataset.task, btn.dataset.enabled !== '1')))
     // Tap/click-to-open info tooltip (card 8b4ddcf0): hover alone would be invisible on touch/PWA.
