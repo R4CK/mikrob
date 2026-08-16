@@ -136,48 +136,41 @@ function extractGateShas(content: string): ReadonlySet<string> {
   return out
 }
 
-/** The PRIMARY round-boundary (Cybersec's suggested direction, round 1; corrected round 3 after
- *  their second HIGH NO-GO). "The current round" is whichever Gate-SHA was cited most recently on
- *  the card (by any author, REVIEW-worded or not). Anchoring to the actual commit identity, not to
- *  comment wording, closes the round-1 bypass: a builder hand-off with no literal "REVIEW" still
- *  moves the boundary, as long as it states the new Gate-SHA.
+/** The PRIMARY round-boundary (Cybersec's suggested direction, round 1; corrected round 3 and round
+ *  4 after their second and third HIGH NO-GO). "The current round" is defined by whichever Gate-SHA
+ *  was EVER introduced most recently on the card -- its own first-mention time is the round start.
+ *  Anchoring to the actual commit identity, not to comment wording, closes the round-1 bypass: a
+ *  builder hand-off with no literal "REVIEW" still moves the boundary, as long as it states the new
+ *  Gate-SHA.
  *
- *  ROUND-3 CORRECTION: the start is the LATEST of each cited sha's OWN earliest-introduction time,
- *  not the earliest comment sharing ANY of them. "Earliest shared comment" let an old, already-
- *  closed sha drag the boundary back to ITS first mention the moment a later comment cited it
- *  ALONGSIDE a genuinely new sha (a documented, supported shape: "Gate-SHA: <old>, <new>" citing a
- *  diff range across a fix) -- Cybersec's own probe: aaaaaaa1 first mentioned t=100, a real new
- *  round starts at bbbbbbb2 (first mentioned t=200), then QA cites "aaaaaaa1, bbbbbbb2" together at
- *  t=250 -- the old logic anchored on aaaaaaa1's t=100, making a Cybersec verdict for aaaaaaa1 from
- *  t=120 read as fresh for a round it never saw. Per-sha introduction time, then the LATEST of
- *  those among the cited set, means an old sha bundled into a later multi-sha citation cannot pull
- *  the boundary earlier than the newest sha in that same citation.
+ *  ROUND-4 CORRECTION: the boundary is `Math.max` over EVERY cited sha's own earliest-introduction
+ *  time, full stop -- not scoped to whichever single comment happens to be chronologically last.
+ *  Round 3 picked "the latest comment" first and only then looked at that ONE comment's own sha set;
+ *  that still broke when a LATER comment re-cited a single OLD, already-superseded sha on its own
+ *  (Cybersec's probe: aaaaaaa1 introduced t=100, a real new round starts at bbbbbbb2, introduced
+ *  t=200, QA verdicts bbbbbbb2 at t=220 -- then a t=300 comment, e.g. a retrospective "the regression
+ *  traces to aaaaaaa1", cites ONLY aaaaaaa1 again). Being chronologically last, that t=300 comment's
+ *  own sha set (`{aaaaaaa1}`) became `latestShas` under round 3's logic, pulling the boundary back to
+ *  aaaaaaa1's t=100 and making Cybersec's stale t=120 GO for aaaaaaa1 read as fresh again, even
+ *  though the real current round (bbbbbbb2) had already closed with its own fresh QA PASS. There is
+ *  no need to single out "the latest comment" at all: every sha's first-introduction time is already
+ *  fixed and comment-order-independent, so the round start is simply the latest of those times across
+ *  every sha the card has ever cited -- whichever sha that turns out to be is, by construction, the
+ *  most recently introduced one, regardless of which comment last happened to mention it.
  *
  *  Returns null when NOT ONE comment on the card ever used the Gate-SHA convention -- the caller
  *  falls back to {@link latestReviewAt} for that card, unchanged. */
 function currentRoundStartTs(comments: readonly Comment[]): number | null {
   const introducedAt = new Map<string, number>()
-  let latest: Comment | null = null
-  let latestShas: ReadonlySet<string> = new Set()
   for (const c of comments) {
     const shas = extractGateShas(c.content ?? '')
-    if (shas.size === 0) continue
     for (const s of shas) {
       const prior = introducedAt.get(s)
       if (prior === undefined || c.created_at < prior) introducedAt.set(s, c.created_at)
     }
-    if (!latest || c.created_at > latest.created_at) {
-      latest = c
-      latestShas = shas
-    }
   }
-  if (!latest) return null
-  let start = -Infinity
-  for (const s of latestShas) {
-    const t = introducedAt.get(s)
-    if (t !== undefined && t > start) start = t
-  }
-  return start
+  if (introducedAt.size === 0) return null
+  return Math.max(...introducedAt.values())
 }
 
 /** Does `agent` have a fresh (post-latest-REVIEW) verdict-shaped comment on this card? */
