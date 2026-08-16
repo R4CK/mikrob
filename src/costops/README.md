@@ -6,9 +6,11 @@ provider API calls, no secrets. Real amounts and account references live in a
 gitignored local config, never in the repo.
 
 This is the base slice: manual/fixed cost sources, a monthly summary with
-budget thresholds, and token-usage **volume** reporting (activity only, never
-priced). Provider collectors, provider-API imports, and token-cost pricing are
-intentionally out of scope here and land in follow-up changes.
+budget thresholds, and token-usage volume reporting, now paired with a static
+Anthropic-model USD cost **estimate** (card d2cfa818, see "Token-cost estimate"
+below). Provider collectors and provider-API imports (actual billing data, not
+a price-table estimate) are still intentionally out of scope and land in
+further follow-up changes.
 
 ## Data model
 
@@ -42,12 +44,35 @@ it never fabricates numbers and never blocks the rest of the app.
 ## API (Bearer-gated, read-only)
 
 - `GET /api/costs/summary` -- monthly spend, forecast, per-source and confidence
-  breakdown, budget status, and token-usage volume. On read it idempotently
-  reflects the config's fixed costs into the ledger (upsert by dedup_key).
+  breakdown, budget status, and token-usage volume plus a USD cost estimate
+  (`token_usage.estimated_cost_usd`). On read it idempotently reflects the
+  config's fixed costs into the ledger (upsert by dedup_key).
+- `GET /api/costs/token-cost?days=N` -- the same USD estimate broken down per
+  agent per day (default 30-day lookback).
 - `GET /api/costs/sources` -- active cost sources.
 - `GET /api/costs/budgets` -- configured budgets.
 
 No client writes, no LLM, no provider API, no secrets in any response.
+
+## Token-cost estimate (`model-pricing.ts`, card d2cfa818)
+
+`token_usage.estimated_cost_usd` (in the summary) and `GET /api/costs/token-cost`
+(per agent/day) multiply the existing token-usage **volume** rows by a static
+Anthropic list-price table (input/output $ per 1M tokens, cache-read at ~0.1x
+and cache-write at 1.25x the input rate assuming Claude Code's 5-minute TTL).
+Source: the `claude-api` reference skill, cached 2026-06-24.
+
+This is an **estimate**, not a bill, and deliberately stays out of the money
+ledger above:
+- It is USD; `current_spend`/`budget` are in the operator's own `config.currency`
+  (typically HUF) and mixing the two without a live FX rate would misstate both.
+- The price table is static (no live provider API, per this slice's own
+  guardrail) and needs a manual update when Anthropic's prices change --
+  notably Sonnet 5's intro price expires 2026-08-31.
+- `token_usage` rows written before the `model` column existed (or tagged
+  `<synthetic>`) have no known rate; those are excluded from
+  `estimated_cost_usd` and reported separately as `unpriced_calls`/
+  `unpriced_tokens` rather than silently priced at zero.
 
 ## Guardrails
 
@@ -55,8 +80,9 @@ No client writes, no LLM, no provider API, no secrets in any response.
   in-memory database.
 - Manual/fallback is the only cost source in this slice; the provider-derived
   path is empty and handled gracefully.
-- Token usage is reported as **volume only** and explicitly not priced; no money
-  is ever derived from tokens here.
+- Token usage is reported as volume plus a clearly-labelled, separately-tracked
+  USD estimate (see above); no token cost is ever folded into the money
+  ledger's `current_spend`/`forecast_month_end`/`budget`.
 - Additive schema (`CREATE TABLE IF NOT EXISTS`); with no CostOps config the rest
   of the app behaves exactly as before.
 

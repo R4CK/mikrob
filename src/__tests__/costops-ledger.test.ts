@@ -6,6 +6,7 @@ import {
   confidenceBucket,
   syncFixedCostsToLedger,
   getCostSummary,
+  getTokenCostByAgentDay,
 } from '../costops/ledger.js'
 import { validateConfig } from '../costops/config.js'
 import type { CostOpsConfig } from '../costops/config.js'
@@ -185,20 +186,68 @@ describe('costops ledger + summary', () => {
     expect(s.breakdown.estimate).toBe(1450)
   })
 
-  it('reports token_usage as VOLUME only, never priced', () => {
+  it('reports token_usage VOLUME, and an estimated_cost_usd kept out of the money ledger', () => {
     const db = getDb()
     const w = monthWindow(NOW)
-    const ins = db.prepare("INSERT INTO token_usage (agent,session_id,timestamp,input_tokens,output_tokens,cache_read_tokens,cache_creation_tokens) VALUES (?,?,?,?,?,?,?)")
-    ins.run('marveen', 's1', w.start + 100, 1000, 5000, 200, 50)
-    ins.run('qa', 's2', w.start + 200, 500, 2000, 0, 0)
-    ins.run('marveen', 's3', w.end + 100, 999, 999, 0, 0) // next month, excluded
+    const ins = db.prepare("INSERT INTO token_usage (agent,session_id,timestamp,input_tokens,output_tokens,cache_read_tokens,cache_creation_tokens,model) VALUES (?,?,?,?,?,?,?,?)")
+    ins.run('marveen', 's1', w.start + 100, 1000, 5000, 200, 50, 'claude-sonnet-5')
+    ins.run('qa', 's2', w.start + 200, 500, 2000, 0, 0, null) // unpriced: no model
+    ins.run('marveen', 's3', w.end + 100, 999, 999, 0, 0, 'claude-sonnet-5') // next month, excluded
     const s = getCostSummary(db, cfg({ fixed_costs: [] }), NOW)
     expect(s.token_usage.calls).toBe(2)
     expect(s.token_usage.agents).toBe(2)
     expect(s.token_usage.input_tokens).toBe(1500)
     expect(s.token_usage.output_tokens).toBe(7000)
-    expect(s.token_usage.note).toContain('not priced')
-    // token usage must NOT contribute to money
+    // 1000*2.0 + 5000*10.0 + 200*2.0*0.1 + 50*2.0*1.25 in $/1M -> (2000+50000+40+125)/1e6
+    // = 0.052165, rounded to 4dp (round4) -> 0.0522
+    expect(s.token_usage.estimated_cost_usd).toBe(0.0522)
+    expect(s.token_usage.unpriced_calls).toBe(1)
+    expect(s.token_usage.unpriced_tokens).toBe(2500) // qa's 500 input + 2000 output
+    // token usage must NOT contribute to the operator's own-currency money ledger
     expect(s.current_spend).toBe(0)
+  })
+})
+
+describe('costops token cost by agent/day', () => {
+  beforeEach(() => { initDatabase(':memory:') })
+
+  it('groups the USD estimate per agent per day, separating priced from unpriced rows', () => {
+    const db = getDb()
+    const day1 = Date.UTC(2026, 6, 15) / 1000
+    const day2 = Date.UTC(2026, 6, 16) / 1000
+    const ins = db.prepare("INSERT INTO token_usage (agent,session_id,timestamp,input_tokens,output_tokens,model) VALUES (?,?,?,?,?,?)")
+    ins.run('marveen', 's1', day1 + 100, 1000, 1000, 'claude-sonnet-5')
+    ins.run('marveen', 's2', day1 + 200, 1000, 1000, 'claude-opus-5') // same agent/day, different model
+    ins.run('qa', 's3', day2 + 100, 1000, 1000, 'claude-sonnet-5')
+    ins.run('qa', 's4', day2 + 200, 500, 500, null) // unpriced
+
+    const r = getTokenCostByAgentDay(db, day2 + 3600, { days: 30 })
+    const marveenDay1 = r.rows.find(x => x.agent === 'marveen' && x.day === '2026-07-15')!
+    // sonnet-5: (1000*2 + 1000*10)/1e6 = 0.012 ; opus-5: (1000*5 + 1000*25)/1e6 = 0.03
+    expect(marveenDay1.estimated_cost_usd).toBeCloseTo(0.042, 6)
+    expect(marveenDay1.priced_calls).toBe(2)
+    expect(marveenDay1.unpriced_calls).toBe(0)
+
+    const qaDay2 = r.rows.find(x => x.agent === 'qa' && x.day === '2026-07-16')!
+    expect(qaDay2.priced_calls).toBe(1)
+    expect(qaDay2.unpriced_calls).toBe(1)
+    expect(qaDay2.unpriced_tokens).toBe(1000) // 500 input + 500 output
+  })
+
+  it('respects the days lookback window', () => {
+    const db = getDb()
+    const now = Date.UTC(2026, 6, 20) / 1000
+    const old = now - 40 * 86400
+    db.prepare("INSERT INTO token_usage (agent,session_id,timestamp,input_tokens,output_tokens,model) VALUES (?,?,?,?,?,?)")
+      .run('marveen', 'old', old, 1000, 1000, 'claude-sonnet-5')
+    const r = getTokenCostByAgentDay(db, now, { days: 30 })
+    expect(r.rows).toHaveLength(0) // 40 days ago, outside a 30-day window
+    expect(r.since_days).toBe(30)
+  })
+
+  it('defaults to a 30-day window when days is omitted', () => {
+    const db = getDb()
+    const r = getTokenCostByAgentDay(db, NOW, {})
+    expect(r.since_days).toBe(30)
   })
 })

@@ -8,7 +8,7 @@ import { json, readBody } from '../http-helpers.js'
 import { logger } from '../../logger.js'
 import { getDb } from '../../db.js'
 import { loadCostopsConfig } from '../../costops/config.js'
-import { syncFixedCostsToLedger, getCostSummary, getCostSources } from '../../costops/ledger.js'
+import { syncFixedCostsToLedger, getCostSummary, getCostSources, getTokenCostByAgentDay } from '../../costops/ledger.js'
 import {
   readWeeklySnapshot,
   writeWeeklySnapshot,
@@ -105,6 +105,21 @@ export async function tryHandleCosts(ctx: RouteContext): Promise<boolean> {
     } catch (err) {
       logger.error({ err }, 'CostOps summary failed')
       json(res, { error: 'Cost summary failed' }, 500)
+    }
+    return true
+  }
+
+  // Per-agent/per-day token-cost estimate (card d2cfa818). ?days=N controls the lookback window
+  // (default 30); invalid/absent falls back inside getTokenCostByAgentDay.
+  if (path === '/api/costs/token-cost' && method === 'GET') {
+    try {
+      const daysParam = url.searchParams.get('days')
+      const days = daysParam ? parseInt(daysParam, 10) : undefined
+      const now = Math.floor(Date.now() / 1000)
+      json(res, getTokenCostByAgentDay(getDb(), now, { days }))
+    } catch (err) {
+      logger.error({ err }, 'CostOps token-cost breakdown failed')
+      json(res, { error: 'Token cost breakdown failed' }, 500)
     }
     return true
   }

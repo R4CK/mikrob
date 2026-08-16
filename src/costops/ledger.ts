@@ -9,6 +9,7 @@
 import type Database from 'better-sqlite3'
 import { createHash } from 'node:crypto'
 import type { CostOpsConfig, CostConfidence } from './config.js'
+import { estimateCostUsd } from './model-pricing.js'
 
 // ---- month math (UTC, deterministic given `now`) ---------------------------
 
@@ -152,6 +153,10 @@ export interface CostSummary {
     output_tokens: number
     cache_read_tokens: number
     cache_creation_tokens: number
+    // USD estimate (card d2cfa818), kept separate from current_spend/budget above (see note).
+    estimated_cost_usd: number
+    unpriced_calls: number
+    unpriced_tokens: number
   }
   data_freshness: number | null
   config_present: boolean
@@ -239,7 +244,7 @@ export function getCostSummary(
     }
   }
 
-  // token_usage: VOLUME/ACTIVITY only -- NOT priced in v0.1 (no model column).
+  // token_usage: VOLUME/ACTIVITY totals, unchanged shape from v0.1.
   const tu = db.prepare(`
     SELECT COUNT(*) as calls, COUNT(DISTINCT agent) as agents,
       COALESCE(SUM(input_tokens),0) as input_tokens,
@@ -250,6 +255,37 @@ export function getCostSummary(
   `).get({ start: win.start, end: win.end }) as {
     calls: number; agents: number; input_tokens: number; output_tokens: number
     cache_read_tokens: number; cache_creation_tokens: number
+  }
+
+  // Cost estimate (card d2cfa818): priced PER MODEL, not on the blended totals above --
+  // different models have different rates, so summing tokens across models before pricing would
+  // be wrong. A separate grouped query rather than reworking `tu` keeps the existing volume
+  // aggregation (and the tests pinned to it) untouched.
+  const tuByModel = db.prepare(`
+    SELECT model, COUNT(*) as calls,
+      COALESCE(SUM(input_tokens),0) as input_tokens,
+      COALESCE(SUM(output_tokens),0) as output_tokens,
+      COALESCE(SUM(cache_read_tokens),0) as cache_read_tokens,
+      COALESCE(SUM(cache_creation_tokens),0) as cache_creation_tokens,
+      COALESCE(SUM(thinking_tokens),0) as thinking_tokens
+    FROM token_usage WHERE timestamp >= @start AND timestamp < @end
+    GROUP BY model
+  `).all({ start: win.start, end: win.end }) as Array<{
+    model: string | null; calls: number; input_tokens: number; output_tokens: number
+    cache_read_tokens: number; cache_creation_tokens: number; thinking_tokens: number
+  }>
+
+  let estimatedCostUsd = 0
+  let unpricedCalls = 0
+  let unpricedTokens = 0
+  for (const r of tuByModel) {
+    const cost = estimateCostUsd(r.model, r)
+    if (cost === null) {
+      unpricedCalls += r.calls
+      unpricedTokens += r.input_tokens + r.output_tokens + r.cache_read_tokens + r.cache_creation_tokens + r.thinking_tokens
+    } else {
+      estimatedCostUsd += cost
+    }
   }
 
   return {
@@ -263,10 +299,11 @@ export function getCostSummary(
     breakdown: { fixed_manual: round2(breakdown.fixed_manual), provider: round2(breakdown.provider), estimate: round2(breakdown.estimate) },
     budget,
     token_usage: {
-      note: 'volume/activity only -- not priced in v0.1 (token_usage has no model column; token->cost mapping lands in v0.2 after model/session enrichment)',
+      note: 'estimated_cost_usd is a static Anthropic list-price USD estimate (see model-pricing.ts) -- kept separate from current_spend/budget above, which stay in the operator\'s own currency and never include it. Rows whose model is missing/unrecognized are excluded from the estimate and counted in unpriced_calls/unpriced_tokens instead of being silently priced at zero.',
       calls: tu.calls, agents: tu.agents,
       input_tokens: tu.input_tokens, output_tokens: tu.output_tokens,
       cache_read_tokens: tu.cache_read_tokens, cache_creation_tokens: tu.cache_creation_tokens,
+      estimated_cost_usd: round4(estimatedCostUsd), unpriced_calls: unpricedCalls, unpriced_tokens: unpricedTokens,
     },
     data_freshness: latestFreshness,
     config_present: opts.configExists ?? true,
@@ -277,6 +314,80 @@ export function getCostSummary(
 
 export function getCostSources(db: Database.Database): unknown[] {
   return db.prepare(`SELECT id, name, provider, source_type, currency, active, updated_at FROM cost_sources WHERE active = 1 ORDER BY name`).all()
+}
+
+export interface AgentDayCost {
+  agent: string
+  day: string // 'YYYY-MM-DD', UTC (SQLite date(timestamp,'unixepoch'))
+  estimated_cost_usd: number
+  priced_calls: number
+  unpriced_calls: number
+  unpriced_tokens: number
+}
+
+export interface TokenCostByAgentDay {
+  rows: AgentDayCost[]
+  since_days: number
+  pricing_note: string
+  generated_at: number
+}
+
+/**
+ * Cost-estimate breakdown per agent/per day (card d2cfa818's explicit ask). Same pricing
+ * mechanism as getCostSummary's token_usage.estimated_cost_usd, grouped finer -- priced PER
+ * (agent, day, model) row so mixed-model days are not blended before pricing.
+ */
+export function getTokenCostByAgentDay(
+  db: Database.Database,
+  now: number,
+  opts: { days?: number } = {},
+): TokenCostByAgentDay {
+  const days = opts.days && opts.days > 0 ? Math.floor(opts.days) : 30
+  const since = now - days * 86400
+
+  const raw = db.prepare(`
+    SELECT agent, date(timestamp, 'unixepoch') as day, model, COUNT(*) as calls,
+      COALESCE(SUM(input_tokens),0) as input_tokens,
+      COALESCE(SUM(output_tokens),0) as output_tokens,
+      COALESCE(SUM(cache_read_tokens),0) as cache_read_tokens,
+      COALESCE(SUM(cache_creation_tokens),0) as cache_creation_tokens,
+      COALESCE(SUM(thinking_tokens),0) as thinking_tokens
+    FROM token_usage WHERE timestamp >= @since
+    GROUP BY agent, day, model
+  `).all({ since }) as Array<{
+    agent: string; day: string; model: string | null; calls: number
+    input_tokens: number; output_tokens: number; cache_read_tokens: number
+    cache_creation_tokens: number; thinking_tokens: number
+  }>
+
+  const byAgentDay = new Map<string, AgentDayCost>()
+  for (const r of raw) {
+    const key = `${r.agent} ${r.day}`
+    let acc = byAgentDay.get(key)
+    if (!acc) {
+      acc = { agent: r.agent, day: r.day, estimated_cost_usd: 0, priced_calls: 0, unpriced_calls: 0, unpriced_tokens: 0 }
+      byAgentDay.set(key, acc)
+    }
+    const cost = estimateCostUsd(r.model, r)
+    if (cost === null) {
+      acc.unpriced_calls += r.calls
+      acc.unpriced_tokens += r.input_tokens + r.output_tokens + r.cache_read_tokens + r.cache_creation_tokens + r.thinking_tokens
+    } else {
+      acc.estimated_cost_usd += cost
+      acc.priced_calls += r.calls
+    }
+  }
+
+  const rows = [...byAgentDay.values()]
+    .map(r => ({ ...r, estimated_cost_usd: round4(r.estimated_cost_usd) }))
+    .sort((a, b) => (a.day !== b.day ? b.day.localeCompare(a.day) : b.estimated_cost_usd - a.estimated_cost_usd))
+
+  return {
+    rows,
+    since_days: days,
+    pricing_note: 'USD estimate from a static Anthropic list-price table (model-pricing.ts), not the live provider API; cache writes assumed at the 5-minute-TTL rate. Rows with a missing/unrecognized model are excluded here and counted in unpriced_calls/unpriced_tokens.',
+    generated_at: now,
+  }
 }
 
 function round2(n: number): number { return Math.round(n * 100) / 100 }

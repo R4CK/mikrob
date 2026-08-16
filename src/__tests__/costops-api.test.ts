@@ -44,11 +44,35 @@ describe('costops API (route smoke)', () => {
     // token usage reported as VOLUME
     expect(out.body.token_usage.input_tokens).toBe(1234)
     expect(out.body.token_usage.output_tokens).toBe(5678)
-    expect(out.body.token_usage.note).toContain('not priced')
+    // no model on the seeded row -> unpriced, not silently zero-cost
+    expect(out.body.token_usage.estimated_cost_usd).toBe(0)
+    expect(out.body.token_usage.unpriced_calls).toBe(1)
     // money never derived from tokens (config amounts are 0 placeholders)
     expect(typeof out.body.current_spend).toBe('number')
     // no secret / account id leaks into the response
     expect(JSON.stringify(out.body)).not.toMatch(/secret|api[_-]?key|password|token=/i)
+  })
+
+  it('GET /api/costs/token-cost returns a per-agent/per-day USD estimate (card d2cfa818)', async () => {
+    const now = Math.floor(Date.now() / 1000)
+    getDb().prepare("INSERT INTO token_usage (agent,session_id,timestamp,input_tokens,output_tokens,model) VALUES ('marveen','s',?,1000000,0,'claude-sonnet-5')").run(now)
+
+    const { ctx, out } = fakeCtx('/api/costs/token-cost')
+    expect(await tryHandleCosts(ctx)).toBe(true)
+    expect(out.status).toBe(200)
+    expect(out.body).toHaveProperty('rows')
+    expect(out.body).toHaveProperty('since_days', 30)
+    expect(Array.isArray(out.body.rows)).toBe(true)
+    const row = out.body.rows.find((r: { agent: string }) => r.agent === 'marveen')
+    expect(row.estimated_cost_usd).toBe(2.0) // 1,000,000 input tokens @ $2/MTok
+    // no secret / account id leaks
+    expect(JSON.stringify(out.body)).not.toMatch(/secret|api[_-]?key|password|token=/i)
+  })
+
+  it('GET /api/costs/token-cost?days=N honours the lookback window', async () => {
+    const { ctx, out } = fakeCtx('/api/costs/token-cost?days=7')
+    expect(await tryHandleCosts(ctx)).toBe(true)
+    expect(out.body.since_days).toBe(7)
   })
 
   it('GET /api/costs/sources returns an array', async () => {
