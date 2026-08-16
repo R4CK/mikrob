@@ -23,10 +23,13 @@
 #       -> "ADVISE-SKIP:already-gated:<ts>" exit 8  (the verdict is the newest word)
 #       -> "ADVISE-SKIP:no-review"          exit 8  (nothing was submitted for a gate to answer)
 #       -> "ADVISE-SKIP:not-designated"     exit 8  (the card names OTHER gates, not this one)
+#       -> "ADVISE-SKIP:done-or-archived"   exit 8  (the card itself is already done/archived)
 #   gate-dispatch-check.sh decide <agent>   -> same verdict, comments JSON on STDIN, no API call
 #       optional env: GATE_LABELS="qa,cybersec" (comma list of gate-agent names from the card's
 #       OWN kanban labels) and/or GATE_LINE="QA + Cybersec ..." (the card's free-text "Gate: ..."
-#       line, if any) -- see DESIGNATION below. Env, not CLI flags, so a caller never has to
+#       line, if any) -- see DESIGNATION below. Also CARD_STATUS="done" and/or CARD_ARCHIVED="1" if
+#       the caller has the card's own status to hand (see DONE/ARCHIVED below); `check` always has
+#       this, `decide` only if its caller passes it. Env, not CLI flags, so a caller never has to
 #       shell-quote free-text card content.
 #   gate-dispatch-check.sh selftest         -> offline self-test, no API calls, no side effects
 #
@@ -125,6 +128,18 @@ except Exception:
 cs = d if isinstance(d, list) else d.get("comments", [])
 if not isinstance(cs, list):
     print("ALLOW"); sys.exit(0)
+
+# DONE/ARCHIVED (Cybersec, card d6aa0135): `check` never asked the card its OWN status, only its
+# comments -- so a card that already landed is indistinguishable from one still waiting, and a
+# landing merge sha newer than the gated verdict shas is TRUE OF EVERY LANDED CARD, so the old
+# sha-difference logic below answered ALLOW:stale-verdict on it forever. Measured on the live board:
+# 2 of 6 closed cards (339cd617, 31e97fe7) got exactly that false ALLOW. Checked before anything
+# else, including the no-review branch, because "the card is already closed" is a stronger and more
+# specific answer than "you have not commented yet". Optional env, same fail-open stance as
+# GATE_LABELS/CARD_IDS: a caller (like `decide`, which takes no API call by contract) that has no
+# card metadata to hand just leaves this unset and gets the pre-existing behaviour.
+if os.environ.get("CARD_STATUS", "") == "done" or os.environ.get("CARD_ARCHIVED", ""):
+    print("ADVISE-SKIP:done-or-archived"); sys.exit(0)
 
 def ts(c):
     v = c.get("created_at")
@@ -440,6 +455,24 @@ for c in cards if isinstance(cards, list) else []:
 '
 }
 
+# Extracts a card's own status + archived-at flag, tab-separated, from the SAME bulk JSON already
+# fetched for GATE_LABELS/GATE_LINE (card d6aa0135) -- there is no single-card GET, and the bulk
+# list already truncates DONE cards (kanban-api-truncates-done-not-open), so this is best-effort:
+# a card that fell out of the truncated window is not found and this stays empty, same fail-open
+# direction as every other lookup here. It still catches the measured real cases (both were present
+# in the bulk response), which is strictly better than the zero coverage before this.
+_extract_status() { # $1 = cardId, stdin = /api/kanban JSON array
+  CID="$1" python3 -c '
+import json, os, sys
+try: cards = json.load(sys.stdin)
+except Exception: sys.exit(0)
+for c in cards if isinstance(cards, list) else []:
+    if c.get("id") == os.environ["CID"]:
+        print("%s\t%s" % (c.get("status") or "", "1" if c.get("archived_at") else ""))
+        break
+'
+}
+
 case "${1:-}" in
   check)
     CARD="${2:-}"; AGENT="${3:-}"
@@ -454,6 +487,11 @@ case "${1:-}" in
     CARD_JSON="$(_curl_get "/api/kanban" || true)"
     GATE_LABELS="$(_extract_gate_labels "$CARD" <<< "$CARD_JSON" 2>/dev/null || true)"
     GATE_LINE="$(_extract_gate_line "$CARD" <<< "$CARD_JSON" 2>/dev/null || true)"
+    # DONE/ARCHIVED (card d6aa0135): same bulk JSON, same fail-open stance -- a lookup miss (the
+    # card fell out of the truncated done-card window) just leaves both empty.
+    CARD_STATUS_LINE="$(_extract_status "$CARD" <<< "$CARD_JSON" 2>/dev/null || true)"
+    CARD_STATUS="${CARD_STATUS_LINE%%$'\t'*}"
+    CARD_ARCHIVED="${CARD_STATUS_LINE#*$'\t'}"
     # Every card id on the board, so sibling ids quoted in a comment are not read as commits
     # (card b60835e1). Same bulk JSON already in hand; failure leaves it empty (fail OPEN).
     CARD_IDS="$(printf '%s' "$CARD_JSON" | python3 -c '
@@ -462,7 +500,7 @@ try: cards = json.load(sys.stdin)
 except Exception: sys.exit(0)
 print(",".join(c.get("id") or "" for c in cards if isinstance(c, dict)))
 ' 2>/dev/null || true)"
-    verdict="$(printf '%s' "$body" | GATE_LABELS="$GATE_LABELS" GATE_LINE="$GATE_LINE" CID="$CARD" CARD_IDS="$CARD_IDS" _decide "$AGENT" || echo ALLOW)"
+    verdict="$(printf '%s' "$body" | GATE_LABELS="$GATE_LABELS" GATE_LINE="$GATE_LINE" CID="$CARD" CARD_IDS="$CARD_IDS" CARD_STATUS="$CARD_STATUS" CARD_ARCHIVED="$CARD_ARCHIVED" _decide "$AGENT" || echo ALLOW)"
     echo "$verdict"
     [[ "$verdict" == ADVISE-SKIP:* ]] && exit 8 || exit 0
     ;;
@@ -643,6 +681,26 @@ print(",".join(c.get("id") or "" for c in cards if isinstance(c, dict)))
     tc "sibling card ids are not commits" "ADVISE-SKIP:no-review" cybered "564df813,ac7d5530,90ad1000" <<< '[{"author":"teszter","created_at":100,"content":"E2E Sweep kesz. Erintett kartyak: 564df813, ac7d5530, 90ad1000."}]'
     tc "a real commit alongside sibling ids still counts" "ALLOW:no-verdict" cybered "564df813,ac7d5530" <<< '[{"author":"backend2","created_at":100,"content":"JAVITVA -- commit ac792b3b (a 564df813 es ac7d5530 kartyakat is erinti)"}]'
     tc "an unknown id stays a sha (partial board, fail-open)" "ALLOW:no-verdict" cybered "564df813" <<< '[{"author":"backend2","created_at":100,"content":"JAVITVA -- commit ac792b3b"}]'
+
+    # DONE/ARCHIVED (card d6aa0135, real incident: 339cd617/31e97fe7). The sha-difference rule below
+    # answers ALLOW:stale-verdict on EVERY landed card forever -- the landing merge sha is always
+    # newer than the gated verdict sha, that is what "landed" means. The card's own status must
+    # short-circuit before that logic ever runs.
+    tst() { # $1=label $2=expected-prefix $3=agent $4=CARD_STATUS $5=CARD_ARCHIVED, stdin=comments json
+      local got; got="$(CARD_STATUS="$4" CARD_ARCHIVED="$5" _decide "$3")"
+      if [[ "$got" == "$2"* ]]; then echo "  ok   $1 -> $got"
+      else echo "  FAIL $1 -> got '$got', expected '$2'*"; fail=1; fi
+    }
+    # The exact measured shape: a REVIEW, a verdict, and a later comment about the SAME landed commit
+    # -- without the status check this reads as new work forever.
+    tst "339cd617-shape: a done card does not re-arm despite a newer-looking comment" "ADVISE-SKIP:done-or-archived" cybersec "done" "" <<< '[{"author":"backend","created_at":100,"content":"REVIEW -- kesz, commit 11aa22bb"},{"author":"cybersec","created_at":200,"content":"CYBERSEC GO -- @ 11aa22bb"},{"author":"backend","created_at":300,"content":"Merge commit 33cc44dd landolt."}]'
+    tst "archived does not re-arm even when status alone would not say done" "ADVISE-SKIP:done-or-archived" cybersec "waiting" "1" <<< '[{"author":"backend","created_at":100,"content":"REVIEW"},{"author":"cybersec","created_at":200,"content":"GO"}]'
+    tst "waiting, not archived -> unaffected" "ALLOW:stale-verdict" cybersec "waiting" "" <<< '[{"author":"cybersec","created_at":200,"content":"NO-GO"},{"author":"backend2","created_at":300,"content":"REVIEW -- fixed"}]'
+    tst "empty CARD_STATUS (lookup miss, fail-open) -> unaffected" "ALLOW:stale-verdict" cybersec "" "" <<< '[{"author":"cybersec","created_at":200,"content":"NO-GO"},{"author":"backend2","created_at":300,"content":"REVIEW -- fixed"}]'
+    # Checked BEFORE no-review too: a done card with no submission at all must read as
+    # done-or-archived, the more specific answer, not the also-true-but-vaguer no-review.
+    tst "done card with no submission -> done-or-archived, not no-review" "ADVISE-SKIP:done-or-archived" cybersec "done" "" <<< '[]'
+
     # `decide` must be the same answer as the internal function, and must carry the exit code the
     # nudger branches on -- a subcommand that printed the right word with the wrong status would
     # make every card look like work.
@@ -718,6 +776,23 @@ print(",".join(c.get("id") or "" for c in cards if isinstance(c, dict)))
     # space not a newline. A line-start-anchored regex used to miss this entirely (empty GATE_LINE
     # -> no designation exclusion -> Cybersec nudged 8x on a QA-only card).
     e "mid-paragraph Gate: (no preceding newline)" "QA. (funkcionalis lefedettseg, nincs trust-boundary erintes)" c1 <<< '[{"id":"c1","description":"MemoryRouter routing context. Gate: QA. (funkcionalis lefedettseg, nincs trust-boundary erintes)"}]'
+
+    # _extract_status (card d6aa0135): the function `check` calls to answer "is this card already
+    # done/archived", exercised directly against a real bulk /api/kanban shape.
+    es() { # $1=label $2=expected-status $3=expected-archived $4=cardId, stdin=cards JSON array
+      local got got_status got_archived
+      got="$(_extract_status "$4")"
+      got_status="${got%%$'\t'*}"; got_archived="${got#*$'\t'}"
+      if [[ "$got_status" == "$2" && "$got_archived" == "$3" ]]; then
+        echo "  ok   $1 -> status='$got_status' archived='$got_archived'"
+      else
+        echo "  FAIL $1 -> got status='$got_status' archived='$got_archived', expected status='$2' archived='$3'"; fail=1
+      fi
+    }
+    es "a done card reports its status" "done" "" c1 <<< '[{"id":"c1","status":"done"}]'
+    es "an archived card also reports archived=1" "done" "1" c1 <<< '[{"id":"c1","status":"done","archived_at":1786000000}]'
+    es "a waiting card reports status, no archived flag" "waiting" "" c1 <<< '[{"id":"c1","status":"waiting"}]'
+    es "card id not found in the array -> both empty (fail-open)" "" "" c2 <<< '[{"id":"c1","status":"done"}]'
 
     [[ $fail -eq 0 ]] && { echo "selftest: PASS"; exit 0; } || { echo "selftest: FAIL"; exit 1; }
     ;;
