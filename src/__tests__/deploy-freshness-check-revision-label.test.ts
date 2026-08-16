@@ -81,3 +81,46 @@ describe('deploy-freshness-check.sh reports the baked commit-revision label (car
     expect(problems(mutated)).toContain('the FRESH detail line does not include both revision labels')
   })
 })
+
+// Card 9d13747b: the shared clone's LOCAL $BRANCH ref is never advanced by a landing --
+// cleancore-land.sh pushes straight to origin and never touches this checkout, so the local ref
+// can sit days behind. commit_epoch() used to read `$BRANCH` (the stale local ref), which measured
+// a false SMALL drift (57/61 minutes) while the real drift against origin/main was ~23 hours --
+// understating staleness is the dangerous direction here (a FRESH false negative hides a real
+// stale deploy from the heartbeat). Fixed by fetching origin/$BRANCH before reading it.
+describe('deploy-freshness-check.sh reads origin/$BRANCH, not the stale local ref (card 9d13747b)', () => {
+  const text = readFileSync(SCRIPT, 'utf-8')
+
+  function driftProblems(t: string): string[] {
+    const found: string[] = []
+    if (!/git -C "\$REPO" fetch origin "\$BRANCH"/.test(t)) {
+      found.push('no `git fetch origin "$BRANCH"` before the commit epoch is read')
+    }
+    const fetchIdx = t.indexOf('fetch origin')
+    const commitEpochIdx = t.indexOf('commit_epoch()')
+    if (fetchIdx === -1 || commitEpochIdx === -1 || fetchIdx > commitEpochIdx) {
+      found.push('the fetch does not run BEFORE commit_epoch() is defined/used')
+    }
+    if (!/commit_epoch\(\) \{ git -C "\$REPO" log -1 --format=%ct "origin\/\$BRANCH"/.test(t)) {
+      found.push('commit_epoch() reads "$BRANCH" (the stale local ref) instead of "origin/$BRANCH"')
+    }
+    return found
+  }
+
+  it('fetches origin/$BRANCH before measuring the commit epoch, and reads it from there', () => {
+    expect(driftProblems(text)).toEqual([])
+  })
+
+  it('CONTROL: reverting to the bare local $BRANCH ref is caught', () => {
+    const mutated = text
+      .replace(/\n# The shared clone's LOCAL[\s\S]*?fetch origin "\$BRANCH" --quiet[^\n]*\n\n/, '\n')
+      .replace(
+        'commit_epoch() { git -C "$REPO" log -1 --format=%ct "origin/$BRANCH" -- "$@" 2>/dev/null; }',
+        'commit_epoch() { git -C "$REPO" log -1 --format=%ct "$BRANCH" -- "$@" 2>/dev/null; }',
+      )
+    expect(mutated, 'the mutation did not apply').not.toBe(text)
+    expect(driftProblems(mutated)).toContain(
+      'commit_epoch() reads "$BRANCH" (the stale local ref) instead of "origin/$BRANCH"',
+    )
+  })
+})

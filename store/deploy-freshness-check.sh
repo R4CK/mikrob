@@ -29,8 +29,14 @@ SSH="ssh -i $SSH_KEY -o StrictHostKeyChecking=no -o ConnectTimeout=15 $VPS"
 
 [[ -d "$REPO/.git" ]] || { echo "ERROR:no-repo-at-$REPO"; exit 2; }
 
+# The shared clone's LOCAL $BRANCH ref is never advanced by a landing -- cleancore-land.sh pushes
+# straight to origin and never touches this checkout, so the local ref can sit weeks behind (card
+# 9d13747b: measured 52 commits / ~23h behind while this script reported a false 57/61-minute
+# drift). Fetch before reading it, and read origin/$BRANCH everywhere below, not $BRANCH.
+git -C "$REPO" fetch origin "$BRANCH" --quiet 2>/dev/null || { echo "ERROR:fetch-failed"; exit 2; }
+
 # newest commit epoch touching a path set (committed tree only, not working tree)
-commit_epoch() { git -C "$REPO" log -1 --format=%ct "$BRANCH" -- "$@" 2>/dev/null; }
+commit_epoch() { git -C "$REPO" log -1 --format=%ct "origin/$BRANCH" -- "$@" 2>/dev/null; }
 WEB_COMMIT=$(commit_epoch apps/web packages)
 API_COMMIT=$(commit_epoch apps/api packages)
 [[ -n "$WEB_COMMIT" && -n "$API_COMMIT" ]] || { echo "ERROR:git-log-failed"; exit 2; }
