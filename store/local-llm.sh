@@ -276,12 +276,23 @@ _elapsed() { # -> elapsed milliseconds since START_MS
 # reachable dashboard, or any curl/parse failure just means QUEUE_ID stays empty and the call
 # proceeds exactly as before this card.
 QUEUE_ID=""
+QUEUE_HDR_FILE=""
 if [[ "$QUEUE_MANAGED" != "1" && -r "$DASH_TOKEN_FILE" ]]; then
+  # 0600 temp header file, never the token on the curl command line: a Bearer header built with a
+  # direct command-substitution expansion is visible via /proc/<pid>/cmdline (world-readable, no
+  # hidepid here) the moment the shell expands it, before exec -- same pattern as
+  # local-llm-worker.sh and weekly-usage-panel-read.sh.
+  QUEUE_HDR_FILE="$(mktemp)" && chmod 600 "$QUEUE_HDR_FILE" \
+    && printf 'Authorization: Bearer %s\n' "$(cat "$DASH_TOKEN_FILE" 2>/dev/null)" > "$QUEUE_HDR_FILE" \
+    || QUEUE_HDR_FILE=""
+  trap '[[ -n "$QUEUE_HDR_FILE" ]] && rm -f "$QUEUE_HDR_FILE"' EXIT
+fi
+if [[ -n "$QUEUE_HDR_FILE" ]]; then
   QUEUE_ID="$(CALLER="${CALLER:-direct}" TASK_LABEL="${LOG_TASK:-$TASK}" python3 -c '
 import json, os
 print(json.dumps({"agent": os.environ["CALLER"], "task_type": os.environ.get("TASK_LABEL") or None, "source": "direct-sync"}))
 ' 2>/dev/null | curl -fsS -m 5 -X POST "$DASH_API/start" \
-      -H "Authorization: Bearer $(cat "$DASH_TOKEN_FILE" 2>/dev/null)" \
+      -H "@$QUEUE_HDR_FILE" \
       -H "Content-Type: application/json" --data-binary @- 2>/dev/null \
       | python3 -c 'import json,sys
 try: print(json.load(sys.stdin).get("id") or "")
@@ -292,7 +303,7 @@ _queue_finish() { # $1=complete|fail
   local body
   if [[ "$1" == complete ]]; then body='{"result":""}'; else body='{"error":"local-llm.sh call failed"}'; fi
   curl -fsS -m 5 -X POST "$DASH_API/$QUEUE_ID/$1" \
-    -H "Authorization: Bearer $(cat "$DASH_TOKEN_FILE" 2>/dev/null)" \
+    -H "@$QUEUE_HDR_FILE" \
     -H "Content-Type: application/json" -d "$body" >/dev/null 2>&1 || true
 }
 
