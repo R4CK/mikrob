@@ -88,6 +88,40 @@ A `CLAUDE.md` "Teljes funkciólista karbantartás" szabálya szerint: a kilenc a
 - **Frontend:** van — Áttekintés oldal (`overview`, heti-limit + modell-lépcső) + Költségek oldal (`costs`, havi $ ledger) + Lokális LLM oldal (`localLlm`).
 - **Hiányzó funkció:** nincs ismert hiány.
 
+## Szerepkörönkénti user story és user flow
+
+**Fontos, elöljáróban (a `src/web/auth-gate.ts` ellen ellenőrizve):** ennek a rendszernek nincs finomszemcsés, kódolt jogosultsági mátrixa a dashboard API-n — az `resolveAuth()` öt hitelesítési MÓDOT különböztet meg (Bearer dashboard-token / per-device kulcs / SSE-token / föderációs token / session-cookie), de a `kind: 'token'`, `kind: 'device'` és `kind: 'session'` UGYANAZT az API-hozzáférést kapja: bármelyik érvényes hitelesítés bármelyik `/api/*` végponthoz hozzáfér, nincs kódban ellenőrzött "csak a saját kártyáját módosíthatja" vagy "csak Peti törölhet" szabály. Az alábbi szerepek tehát **operatív/társadalmi megkülönböztetések** (ki mit csinál a flotta-workflow szerint, `CLAUDE.md`), NEM API-szinten kikényszerített jogosultsági szintek — az egyetlen KÓDBAN kikényszerített korlátozás a föderációs társ szűkítése (lásd lent). Ez maga is egy jelzett hiányosság, nem elhallgatva.
+
+### Peti (tulajdonos)
+- **User story:** Mint a rendszer tulajdonosa, szeretnék teljes rálátást és irányítást a flotta felett, Telegramon és böngészőből egyaránt, hogy bármikor beavatkozhassak.
+- **User flow:** Telegramon a saját fiókjából ír bármelyik ügynöknek (owner-csatorna, `chat_id: 0` a reply toolban) → a dashboardra Bearer-tokennel vagy saját jelszavas session-nel lép be → minden oldalt, minden API-t elér (a fenti bekezdés szerint nincs is kódolt korlátozás, ami ezt szűkítené) → Level-2 autonómia-kéréseket jóváhagy/elutasít (`/api/approvals`) → Vault-tartalmat, kanban force-close-t, rollback-öt csak ő indíthat élesben (`recovery-prev-version.sh --to <sha> --force` — ez emberi kéz, MikroB magától nem futtatja).
+- **Frontend:** van, teljes — minden oldal.
+- **Hiányzó funkció:** nincs (ő a legmagasabb jogú szerep operatívan, még ha kódban ez nincs is külön kikényszerítve).
+
+### MikroB (orchestrator ügynök)
+- **User story:** Mint MikroB, szeretnék koordinálni a flottát, dispatchelni a kártyákat, és csak akkor zavarni Petit, ha tényleg szükséges, hogy a munka önjáró maradjon.
+- **User flow:** Saját Telegram-csatornán fogadja Peti kéréseit → a kanbanon Fázis/Feladat/alfeladat bontást csinál, felelősöket rendel → figyeli a `waiting`+REVIEW kártyákat, a gate-verdikteket, és zárja a `done`-ra kész kártyákat (4-5. szabály) → a dashboardot ugyanazzal a Bearer-tokennel éri el, mint bárki más hitelesített fél (lásd fent — nincs neki külön "orchestrator" API-scope).
+- **Frontend:** van, teljes API-hozzáférés — de nincs a dashboardon egy dedikált "orchestrátor" nézet, ami KIFEJEZETTEN az ő dispatch-munkafolyamatát vizualizálná (pl. "kire vár most melyik kártya" egy nézetben); ezt jelenleg kanban-szűréssel + kártya-kommentekkel oldja meg.
+- **Hiányzó funkció:** dedikált orchestrátor-munkafelület (dispatch-sor, gate-státusz egy nézetben) — jelenleg a sima Kanban oldal szolgál erre, szűréssel.
+
+### Szerep-ügynök (backend, backend2, qa, qa2, cybersec, cybered, fron-ted, fron-teddy, fullstack, jogasz, marketing, penzugy, teszter, videooo)
+- **User story:** Mint egy szerep-ügynök, szeretném elvégezni a rám osztott kártyákat, és ha kész vagyok, a helyes gate-hez kerülni anélkül, hogy magam zárhatnám le a saját munkámat.
+- **User flow:** Inter-agent üzenetben vagy Telegramon kap dispatchet → a kanbanon a saját `assignee`-jű kártyáit veszi (API-szinten ugyanazt a Bearer-tokent használva, mint bárki — a "csak a sajátodhoz nyúlj" a `CLAUDE.md`-ben él, nem a kódban) → dolgozik → `waiting` + REVIEW komment, Gate-SHA sorral → a kijelölt gate(ek) (QA + kockázat szerint Cybersec/Cybered) ellenőrzik → MikroB zárja `done`-ra PASS/GO után.
+- **Frontend:** van, teljes API-hozzáférés (lásd a bevezető megjegyzést) — a dashboard nem korlátozza a nézetet a saját kártyáira, ő maga szűr rá.
+- **Hiányzó funkció:** nincs "csak a sajátom" nézet/szűrő alapértelmezetten a Kanban oldalon szerep-ügynök szemszögéből (mindenki mindent lát, ami helyes is lehet egy kis, bizalmi flottánál, de user-flow szempontból explicit hiány).
+
+### Föderációs társ (külső rendszer ügynöke)
+- **User story:** Mint egy másik MikroB-példány ügynöke, szeretnék egy jóindulatú, visszafordítható feladatot delegálni ennek a rendszernek egy szakértőjéhez, anélkül hogy hozzáférnék a rendszer belső adataihoz.
+- **User flow:** A saját rendszere elküldi a feladatot a `/api/federation/inbox` végpontra, föderációs tokennel hitelesítve (`identifyFederationCaller`) → a hídon átjut a célzott ügynökhöz, `<untrusted source="federation:...">` keretben (adatként kezelve, nem parancsként) → a célzott ügynök feldolgozza, választ küld ugyanazon a hídon (a kézbesítési prefix címére, nem a `source`-ra).
+- **Frontend:** NINCS — a föderációs társ nem kap dashboard-hozzáférést, nem lát semmilyen `/api/*` oldalt a kanban/memória/ügynökök közül. Ez KÓDBAN kikényszerített korlátozás (`isFederationWireEndpoint`): kizárólag a `/api/federation/manifest` GET és `/api/federation/inbox` POST érhető el föderációs tokennel, semmi más.
+- **Hiányzó funkció:** nincs — a szűk hozzáférés szándékos biztonsági határ, nem hiányosság.
+
+### Per-device kulcs (pl. mobil PWA, remote-enroll SSH-eszköz)
+- **User story:** Mint egy önálló eszköz (telefon, VPS), szeretnék a saját, visszavonható kulcsommal hozzáférni a dashboardhoz, hogy ne kelljen a fő Bearer-tokent megosztanom.
+- **User flow:** A device-kulcs a Csapat oldalon vagy a `remote-enroll` eszközzel jön létre → az eszköz `Authorization: Bearer <device-kulcs>` fejléccel hitelesít → `resolveDeviceKey()` felismeri → a token visszavonható eszközönként.
+- **Frontend:** van, teljes API-hozzáférés — a bevezető megjegyzés szerint a device-kulcs UGYANAZT a hozzáférést kapja, mint a fő dashboard-token, nincs szűkített device-scope.
+- **Hiányzó funkció:** device-szintű scope-szűkítés (pl. "ez a telefon csak olvashat, nem törölhet") jelenleg nincs — minden device-kulcs teljes hozzáférést ad, csak a REVOKE-álhatóság különbözteti meg a fő tokentől.
+
 ## Egyedi fork-fejlesztések (amiért külön fork)
 
 Ezek a MikroB-fork saját fejlesztései a Marveen-bázison felül — főleg a **flotta-workflow, a review-gate-ek és a platform-robusztusság** rétegében (a fleet-szabályok a `templates/CLAUDE.md.template`-be építve, `5d42edf`). A lista a **jelenlegi állapotot** írja le; a korábbi, azóta felülírt/megszűnt fejlesztéseket nem tartalmazza (a történeti részletek a git-log-ban élnek).
