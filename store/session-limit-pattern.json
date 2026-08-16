@@ -10,6 +10,7 @@
     "[0-9]+-hour limit reached",
     "wait for limit to reset",
     "stop and wait for limit",
-    "upgrade your plan"
+    "upgrade your plan",
+    "a phrase only the JSON has"
   ]
 }
