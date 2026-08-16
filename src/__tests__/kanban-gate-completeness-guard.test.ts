@@ -272,6 +272,40 @@ describe('gateCompletenessGuardVerdict', () => {
       expect(gateCompletenessGuardVerdict('c1', 'done', false).blocked).toBe(false)
     })
 
+    // Cybersec's round-3 NO-GO (HIGH, comment 13915): a later multi-sha citation bundling an OLD,
+    // already-closed sha together with a genuinely NEW one must not drag the round boundary back to
+    // the old sha's first mention -- the boundary is the LATEST of each cited sha's own earliest
+    // introduction, so an old sha riding along in a later diff-range citation cannot outrank the new
+    // one that actually started the round.
+    it("Cybersec's round-3 probe: a later 'Gate-SHA: old, new' citation must not resurrect an old, already-superseded verdict", () => {
+      card.description = 'Gate: QA + Cybersec'
+      comments = [
+        { author: 'backend2', content: 'REVIEW -- kesz\nGate-SHA: aaaaaaa1', created_at: 100 },
+        { author: 'cybersec', content: 'CYBERSEC GO @ old\nGate-SHA: aaaaaaa1', created_at: 120 },
+        { author: 'cybersec', content: 'CYBERSEC NO-GO @ old (unrelated later finding)\nGate-SHA: aaaaaaa1', created_at: 150 },
+        // A REAL round change, its own literal "REVIEW", a genuinely new sha.
+        { author: 'backend2', content: 'REVIEW -- kesz, uj commit\nGate-SHA: bbbbbbb2', created_at: 200 },
+        // QA cites the full diff range (old+new together) -- a documented, supported shape.
+        { author: 'qa', content: 'REVIEW: QA PASS\nGate-SHA: aaaaaaa1, bbbbbbb2', created_at: 250 },
+      ]
+      const v = gateCompletenessGuardVerdict('c1', 'done', false)
+      // Cybersec never verdicted bbbbbbb2 -- the t=120 GO (for aaaaaaa1 alone) must not count.
+      expect(v.blocked).toBe(true)
+      expect(v.message).toContain('Cybersec')
+    })
+
+    it('the SAME round-3 scenario, but Cybersec DOES verdict the multi-sha citation itself -> correctly unblocked', () => {
+      card.description = 'Gate: QA + Cybersec'
+      comments = [
+        { author: 'backend2', content: 'REVIEW -- kesz\nGate-SHA: aaaaaaa1', created_at: 100 },
+        { author: 'cybersec', content: 'CYBERSEC GO @ old\nGate-SHA: aaaaaaa1', created_at: 120 },
+        { author: 'backend2', content: 'REVIEW -- kesz, uj commit\nGate-SHA: bbbbbbb2', created_at: 200 },
+        { author: 'qa', content: 'REVIEW: QA PASS\nGate-SHA: aaaaaaa1, bbbbbbb2', created_at: 250 },
+        { author: 'cybersec', content: 'CYBERSEC GO\nGate-SHA: aaaaaaa1, bbbbbbb2', created_at: 260 },
+      ]
+      expect(gateCompletenessGuardVerdict('c1', 'done', false).blocked).toBe(false)
+    })
+
     it('no comment on the card EVER used the Gate-SHA convention -> falls back to the word/author heuristic unchanged', () => {
       card.description = 'Gate: QA + Cybersec + Cybered'
       comments = [

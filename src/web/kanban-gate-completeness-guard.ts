@@ -136,38 +136,46 @@ function extractGateShas(content: string): ReadonlySet<string> {
   return out
 }
 
-/** The PRIMARY round-boundary (Cybersec's suggested direction, adopted verbatim): "the current
- *  round" is whichever Gate-SHA was cited most recently on the card (by any author, REVIEW-worded
- *  or not), and it starts at the EARLIEST comment that also cites that same sha -- typically the
- *  builder's own hand-off, since a gate verdict restates the sha it already saw rather than
- *  introducing a new one. Anchoring to the actual commit identity, not to comment wording, closes
- *  the bypass: a builder hand-off with no literal "REVIEW" still moves the boundary, as long as it
- *  states the new Gate-SHA (which the fleet convention already asks every REVIEW to do).
+/** The PRIMARY round-boundary (Cybersec's suggested direction, round 1; corrected round 3 after
+ *  their second HIGH NO-GO). "The current round" is whichever Gate-SHA was cited most recently on
+ *  the card (by any author, REVIEW-worded or not). Anchoring to the actual commit identity, not to
+ *  comment wording, closes the round-1 bypass: a builder hand-off with no literal "REVIEW" still
+ *  moves the boundary, as long as it states the new Gate-SHA.
+ *
+ *  ROUND-3 CORRECTION: the start is the LATEST of each cited sha's OWN earliest-introduction time,
+ *  not the earliest comment sharing ANY of them. "Earliest shared comment" let an old, already-
+ *  closed sha drag the boundary back to ITS first mention the moment a later comment cited it
+ *  ALONGSIDE a genuinely new sha (a documented, supported shape: "Gate-SHA: <old>, <new>" citing a
+ *  diff range across a fix) -- Cybersec's own probe: aaaaaaa1 first mentioned t=100, a real new
+ *  round starts at bbbbbbb2 (first mentioned t=200), then QA cites "aaaaaaa1, bbbbbbb2" together at
+ *  t=250 -- the old logic anchored on aaaaaaa1's t=100, making a Cybersec verdict for aaaaaaa1 from
+ *  t=120 read as fresh for a round it never saw. Per-sha introduction time, then the LATEST of
+ *  those among the cited set, means an old sha bundled into a later multi-sha citation cannot pull
+ *  the boundary earlier than the newest sha in that same citation.
  *
  *  Returns null when NOT ONE comment on the card ever used the Gate-SHA convention -- the caller
  *  falls back to {@link latestReviewAt} for that card, unchanged. */
 function currentRoundStartTs(comments: readonly Comment[]): number | null {
+  const introducedAt = new Map<string, number>()
   let latest: Comment | null = null
   let latestShas: ReadonlySet<string> = new Set()
   for (const c of comments) {
     const shas = extractGateShas(c.content ?? '')
     if (shas.size === 0) continue
+    for (const s of shas) {
+      const prior = introducedAt.get(s)
+      if (prior === undefined || c.created_at < prior) introducedAt.set(s, c.created_at)
+    }
     if (!latest || c.created_at > latest.created_at) {
       latest = c
       latestShas = shas
     }
   }
   if (!latest) return null
-  let start = latest.created_at
-  for (const c of comments) {
-    if (c.created_at >= start) continue
-    const shas = extractGateShas(c.content ?? '')
-    for (const s of shas) {
-      if (latestShas.has(s)) {
-        start = c.created_at
-        break
-      }
-    }
+  let start = -Infinity
+  for (const s of latestShas) {
+    const t = introducedAt.get(s)
+    if (t !== undefined && t > start) start = t
   }
   return start
 }
