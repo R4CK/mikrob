@@ -12,8 +12,9 @@ import { dirname, join } from 'node:path'
 // their wiring at the four render sites, so any future refactor that strips them
 // fails CI instead of shipping the regression again.
 const __dirname = dirname(fileURLToPath(import.meta.url))
-const appJsPath = join(__dirname, '..', '..', 'web', 'app.js')
-const src = readFileSync(appJsPath, 'utf8')
+const APP_CORE = readFileSync(join(__dirname, '..', '..', 'web', 'app.js'), 'utf8')
+const APP_MESSAGES = readFileSync(join(__dirname, '..', '..', 'web', 'app-messages.js'), 'utf8')
+const src = APP_CORE + '\n' + APP_MESSAGES
 
 // Pull a top-level `function name(...) { ... }` body out of the source by brace
 // matching, so we can evaluate the real shipped helper (not a copy) in isolation.
