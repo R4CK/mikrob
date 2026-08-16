@@ -184,35 +184,46 @@ restart is the one currently missing.** The config rule first, because it is the
 > If the `firecrawl` server block is added to ANY other agent's `.mcp.json`, widen THAT agent's
 > matcher FIRST (`ensureEgressGate('<agent>')`), and only then add the server block.
 
-**A settings FILE is not the running configuration** (measured 2026-08-16, acceptance run of this
-card). The file side is clean: all 15 agents carry `WebFetch|mcp__firecrawl__`, one egress entry
-each, migrated by the dashboard's own startup loop (`src/web.ts:542` calls `ensureEgressGate` for
-every agent on every boot) at the 2026-08-15 11:19 restart. But a Claude Code session reads its hooks
-once, at session start, and the `backend` session that OWNS the firecrawl server has been running
-since 2026-08-13 21:00 -- before that migration. Inside it, three probes, minutes apart:
+**The gate for the Firecrawl tools was inert from the day it was added, and the matcher is why**
+(measured 2026-08-16, acceptance run of this card). Every agent's file carried
+`matcher: "WebFetch|mcp__firecrawl__"`, migrated by the dashboard's own startup loop
+(`src/web.ts:542` calls `ensureEgressGate` on every boot). Probes from a session started AFTER that
+migration:
 
 | probe | result |
 |---|---|
-| `firecrawl_scrape` on `example.com` (NOT on the allowlist) | **200 with content, no block-log line** |
+| `firecrawl_scrape` on an off-allowlist host | **200 with content, block log 61 -> 61** |
 | the identical payload piped to `scripts/hooks/egress-gate.mjs` by hand | `permissionDecision: "deny"`, logged |
-| `WebFetch` on `example.com` in the same session | **denied** by the same hook |
+| `WebFetch` on the same host, same session | **denied** by the same hook |
 
-The third probe is what makes the first conclusive: hooks ARE firing in this session, so the scrape
-was not an outage -- the session is enforcing the OLD `WebFetch`-only matcher it loaded on 08-13, and
-the firecrawl namespace is simply not in it. The code is right, the file is right, and the control is
-still not live where the capability is.
+The third probe is what makes the first conclusive: the hook fires, just not for that name. Claude
+Code matches the matcher against the WHOLE tool name, and `mcp__firecrawl__` names a tool that does
+not exist -- the real one is `mcp__firecrawl__firecrawl_scrape`. The CLI's own shipped hook docs say
+it by example: every namespace pattern there is written `mcp__.*`, `mcp__plugin_asana_.*`,
+`mcp__.*__delete.*`, never a bare prefix. Fixed to `WebFetch|mcp__firecrawl__.*`.
 
-So the restart order Cybersec called a crutch is not obsolete; it is the step that has not happened
-yet, and it cannot be skipped by measuring the file. The two rules stand together:
+**An earlier revision of this section blamed a stale session** -- the idea that the running agent had
+loaded the old matcher and needed a restart. The restart happened; nothing changed; that diagnosis
+was wrong. It is left named here rather than quietly deleted, because it is the more attractive
+explanation of the two and the next reader will reach for it first.
+
+**Why every test stayed green through all of it**, which outlives this card. The assertion modelled
+the matcher as `new RegExp(EGRESS_GATE_MATCHER)` -- unanchored -- so `mcp__firecrawl__` "matched"
+`mcp__firecrawl__firecrawl_scrape` in the test and matched nothing in the product. The test even
+carried a comment calling itself a proxy that a future reader should distrust first. It was right
+about that and shipped the bug anyway. Both proxies are anchored now, with a negative control so an
+over-wide `.*` cannot pass by firing the gate on every call in the fleet.
+
+So the two rules stand together, and the second one is narrower than the first draft claimed:
 
 > **Config order** protects a future scope widening (checkable against files at any time).
-> **A session restart of the agent that holds the server** is what makes any matcher change take
-> effect at all. Until it happens, that agent's firecrawl calls are ungated regardless of what the
-> file says.
+> **A session restart of the agent that holds the server** is what makes a matcher change take
+> effect. It is necessary and it is not sufficient -- a restart onto a wrong matcher buys nothing,
+> which is exactly what happened here.
 
-The general lesson is worth more than this card: `ensureEgressGate` returning `true` and the file
-showing the new matcher both describe DISK. The only measurement that speaks for the running process
-is an actual denied call from inside it.
+The general lesson: `ensureEgressGate` returning `true`, the file showing the new matcher, and a
+green suite all describe DISK. The only measurement that speaks for the control is a call that
+actually comes back denied.
 
 **Adding a host to the allowlist is a security decision, not a config detail** (Cybersec, same
 review). The capability is now bound to the egress allowlist, which is the only thing holding a
