@@ -240,18 +240,3 @@ export function parseTelegramToken(name: string): string | null {
   const match = content.match(/TELEGRAM_BOT_TOKEN=(.+)/)
   return match ? match[1].trim() : null
 }
-
-export async function sendMarveenAlert(text: string): Promise<void> {
-  try {
-    const envPath = join(PROJECT_ROOT, '.env')
-    const envContent = readFileOr(envPath, '')
-    const tokenMatch = envContent.match(/TELEGRAM_BOT_TOKEN=(.+)/)
-    const token = tokenMatch?.[1]?.trim()
-    if (!token) return
-    const chatId = resolveOwnerChatId()
-    if (!chatId) { logger.warn('Telegram send skipped: no owner chat on this install'); return }
-    await sendTelegramMessage(token, chatId, text)
-  } catch (err) {
-    logger.warn({ err }, 'Failed to send marveen plugin alert')
-  }
-}

@@ -295,12 +295,6 @@ async function checkAgent(name: string, nowMs: number, cfg: ModelFallbackConfig,
   }
 }
 
-/** The fleet's current weekly tier (0/1/2), for the read-only dashboard display. Held in memory and
- *  advanced by the sweep's hysteresis; used as the previous-tier seed when the display recomputes. */
-export function currentWeeklyTier(): number {
-  return weeklyTier
-}
-
 /**
  * The read-only per-agent tier state the dashboard renders (card 5d2002b5 redesign, point 4).
  * Recomputes the fleet tier from the live weekly % (seeded with the in-memory tier so the hysteresis

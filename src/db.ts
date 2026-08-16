@@ -1744,10 +1744,6 @@ export function getBackgroundTask(id: string): BackgroundTask | undefined {
   return db.prepare('SELECT * FROM background_tasks WHERE id = ?').get(id) as BackgroundTask | undefined
 }
 
-export function countRunningBackgroundTasks(agentId: string): number {
-  return (db.prepare("SELECT COUNT(*) as c FROM background_tasks WHERE agent_id = ? AND status = 'running'").get(agentId) as { c: number }).c
-}
-
 export function markOrphanedTasksFailed(): number {
   const now = Math.floor(Date.now() / 1000)
   const info = db.prepare("UPDATE background_tasks SET status = 'failed', finished_at = ?, output = '(orphaned on restart)' WHERE status = 'running'")
@@ -2989,38 +2985,6 @@ export function updateChannelRequestName(id: number, channelName: string): void 
   db.prepare('UPDATE pending_channel_requests SET channel_name = ? WHERE id = ?').run(channelName, id)
 }
 
-// --- Telegram History ---
-
-export function saveTelegramMessage(
-  chatId: string,
-  messageId: string,
-  direction: 'in' | 'out',
-  text: string,
-  userId?: string,
-  ts?: number,
-): void {
-  const now = ts ?? Math.floor(Date.now() / 1000)
-  db.prepare(
-    `INSERT OR IGNORE INTO telegram_history (chat_id, message_id, user_id, direction, text, ts)
-     VALUES (?, ?, ?, ?, ?, ?)`
-  ).run(chatId, messageId, userId ?? null, direction, text, now)
-}
-
-export interface TelegramHistoryRow {
-  id: number
-  chat_id: string
-  message_id: string
-  user_id: string | null
-  direction: 'in' | 'out'
-  text: string
-  ts: number
-}
-
-export function getTelegramHistory(chatId: string, limit: number = 50): TelegramHistoryRow[] {
-  return db.prepare(
-    'SELECT * FROM telegram_history WHERE chat_id = ? ORDER BY ts DESC LIMIT ?'
-  ).all(chatId, limit) as TelegramHistoryRow[]
-}
 
 // --- Idea Box ---
 
@@ -3350,10 +3314,6 @@ export function logStoreFileEvent(
   db.prepare(
     'INSERT INTO store_file_audit (rel_path, event_type, is_sensitive, file_size, agent, created_at) VALUES (?, ?, ?, ?, ?, ?)',
   ).run(relPath, eventType, isSensitive, fileSize, agent, now)
-}
-
-export function getRecentStoreFileEvents(limit = 200): StoreFileAuditRow[] {
-  return db.prepare('SELECT * FROM store_file_audit ORDER BY created_at DESC, id DESC LIMIT ?').all(limit) as StoreFileAuditRow[]
 }
 
 // --- Unified Audit Log Query ---

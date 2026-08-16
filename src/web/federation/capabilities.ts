@@ -67,10 +67,6 @@ export function _setCapabilityStoreDirForTest(dir: string): void {
   cache = null
 }
 
-export function _resetCapabilityCacheForTest(): void {
-  cache = null
-}
-
 export function readCapabilityCache(): CapabilityCache {
   if (cache !== null) return cache
   try {

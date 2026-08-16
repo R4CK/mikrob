@@ -25,14 +25,6 @@ export function readGateConfig(name: string): GateConfig {
   return name in raw ? normalizeGateConfig(raw[name]) : { ...DEFAULT_GATE_CONFIG }
 }
 
-export function writeGateConfig(name: string, cfg: unknown): GateConfig {
-  const normalized = normalizeGateConfig(cfg)
-  const raw = readConfigRaw()
-  raw[name] = normalized
-  atomicWriteFileSync(CONFIG_PATH, JSON.stringify(raw, null, 2))
-  return normalized
-}
-
 // ---- State (per-agent run-state: blocking streak tracking) ------------------
 
 export interface GateRunState {

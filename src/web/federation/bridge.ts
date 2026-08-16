@@ -20,7 +20,6 @@
 // Delivery semantics are send-then-mark: a crash between the peer's 202 and
 // markMessageDelivered re-sends on restart. The RECEIVER's ref-dedup absorbs
 // that (at-least-once + best-effort dedup); a durable dedup column is phase 2.
-import { logger } from '../../logger.js'
 import type { AgentMessage } from '../../db.js'
 import { getFederationConfig, FEDERATION_MIN_TOKEN_LENGTH, type FederationPeer } from './config.js'
 import { parseQualifiedId } from './address.js'
@@ -170,10 +169,4 @@ export async function sendFederatedMessage(
   }
   noteFailure(peer.id, now)
   return { kind: 'retry', error: `Peer '${peer.id}' error (${res.status}): ${truncate(bodyText)}` }
-}
-
-/** Structured-log helper: peer-controlled strings stay in the fields object,
- *  never interpolated into the msg string (log-forgery guard). */
-export function logFedOut(fields: Record<string, unknown>, msg: string): void {
-  logger.info({ fedOut: true, ...fields }, msg)
 }

@@ -25,16 +25,6 @@ function readRaw(): Record<string, unknown> {
   }
 }
 
-/** All explicitly-configured agents, normalized. */
-export function readAllContextGuardConfigs(): Record<string, ContextGuardConfig> {
-  const raw = readRaw()
-  const out: Record<string, ContextGuardConfig> = {}
-  for (const [name, cfg] of Object.entries(raw)) {
-    out[name] = normalizeContextGuardConfig(cfg)
-  }
-  return out
-}
-
 /** One agent's config, normalized; the DISABLED default when unset. */
 export function readContextGuardConfig(name: string): ContextGuardConfig {
   const raw = readRaw()

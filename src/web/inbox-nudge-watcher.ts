@@ -185,11 +185,6 @@ function resolveLang(): 'hu' | 'en' {
 
 let state: NudgeState = { ...INITIAL_NUDGE_STATE }
 
-/** Test seam. */
-export function _resetNudgeStateForTest(): void {
-  state = { ...INITIAL_NUDGE_STATE }
-}
-
 async function tick(): Promise<void> {
   // The whole body is fenced: sendPromptToSession/tmux helpers throw on tmux
   // failure, this is a setInterval callback (fired via a void wrapper), and an

@@ -23,16 +23,6 @@ function readRaw(): Record<string, unknown> {
   }
 }
 
-/** All configured agents, normalized. Agents with no entry are simply absent. */
-export function readAllAutoRestartConfigs(): Record<string, AutoRestartConfig> {
-  const raw = readRaw()
-  const out: Record<string, AutoRestartConfig> = {}
-  for (const [name, cfg] of Object.entries(raw)) {
-    out[name] = normalizeAutoRestartConfig(cfg)
-  }
-  return out
-}
-
 /** One agent's config, normalized; the disabled default when unset. */
 export function readAutoRestartConfig(name: string): AutoRestartConfig {
   const raw = readRaw()

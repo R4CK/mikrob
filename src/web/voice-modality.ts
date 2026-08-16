@@ -39,7 +39,3 @@ export function getLastInboundModality(
   }
   return entry.modality
 }
-
-export function clearLastInboundModality(agentId: string, chatId: string | number): void {
-  store.delete(key(agentId, chatId))
-}

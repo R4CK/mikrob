@@ -54,10 +54,6 @@ export function setStoreWriteActor(actor: string): void {
   currentWriteActor = actor
 }
 
-export function clearStoreWriteActor(): void {
-  currentWriteActor = null
-}
-
 // --- Known-files tracking for creation detection ---
 // Populated at watcher startup by scanning store/. A rename event for a path
 // NOT in this set where the file NOW EXISTS means a new file was created.

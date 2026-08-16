@@ -220,8 +220,3 @@ export async function maybeWakeSubAgentsForTelegram(now: number): Promise<void> 
     }
   }
 }
-
-// Test-only: reset the per-agent wake state between unit tests.
-export function _resetSubWakeStateForTest(): void {
-  _subWakeState.clear()
-}

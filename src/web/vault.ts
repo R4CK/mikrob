@@ -132,12 +132,3 @@ export function deleteSecret(id: string): boolean {
   writeVault(store)
   return true
 }
-
-export function getSecretsForEnv(envMap: Record<string, string>): Record<string, string> {
-  const result: Record<string, string> = {}
-  for (const [key, vaultId] of Object.entries(envMap)) {
-    const value = getSecret(vaultId)
-    if (value !== null) result[key] = value
-  }
-  return result
-}

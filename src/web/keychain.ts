@@ -33,16 +33,3 @@ export function keychainRetrieve(): string | null {
     return null
   }
 }
-
-export function keychainDelete(): boolean {
-  try {
-    execFileSync(SECURITY, [
-      'delete-generic-password',
-      '-s', SERVICE,
-      '-a', ACCOUNT,
-    ], { stdio: ['ignore', 'ignore', 'ignore'] })
-    return true
-  } catch {
-    return false
-  }
-}

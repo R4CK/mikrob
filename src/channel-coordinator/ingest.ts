@@ -170,10 +170,6 @@ export function markEventDelivered(eventId: number, agentMessageId: number): voi
   ).run(agentMessageId, now, eventId)
 }
 
-export function markEventFailed(eventId: number, error: string): void {
-  requireDb().prepare("UPDATE incoming_events SET status = 'failed', error = ? WHERE id = ?").run(error, eventId)
-}
-
 // No-message-loss replay. Returns events that still need to reach the main
 // agent, either because:
 //   (a) they were inserted but never handed off (coordinator crashed between

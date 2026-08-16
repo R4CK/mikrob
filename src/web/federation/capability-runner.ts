@@ -81,9 +81,3 @@ export function startCapabilitySummaryRunner(): NodeJS.Timeout {
   setTimeout(tick, CAPABILITY_RUNNER_INITIAL_DELAY_MS).unref()
   return setInterval(tick, CAPABILITY_RUNNER_INTERVAL_MS)
 }
-
-/** Test seam. */
-export function _capabilityRunnerTickForTest(): Promise<void> {
-  tick()
-  return inflight ?? Promise.resolve()
-}
