@@ -124,6 +124,38 @@ export async function tryHandleCosts(ctx: RouteContext): Promise<boolean> {
     return true
   }
 
+  // card f597369b: the overview "Token-cost" widget (card 01b51197) was built against this exact
+  // path/shape before the real backend (d2cfa818, above) landed under a DIFFERENT path with a
+  // DIFFERENT shape (per agent+day, snake_case, no token split) -- so the widget 404'd on every
+  // load. Rather than reshape the widget (and its whole string-contract test suite) to the raw
+  // per-day breakdown, this aggregates it into what the widget already expects: one row per agent.
+  if (path === '/api/costops/estimates' && method === 'GET') {
+    try {
+      const now = Math.floor(Date.now() / 1000)
+      const { rows, pricing_note } = getTokenCostByAgentDay(getDb(), now, {})
+      const byAgent = new Map<string, { agent: string; estimatedUsd: number; inputTokens: number; outputTokens: number }>()
+      for (const r of rows) {
+        let acc = byAgent.get(r.agent)
+        if (!acc) {
+          acc = { agent: r.agent, estimatedUsd: 0, inputTokens: 0, outputTokens: 0 }
+          byAgent.set(r.agent, acc)
+        }
+        acc.estimatedUsd += r.estimated_cost_usd
+        acc.inputTokens += r.input_tokens
+        acc.outputTokens += r.output_tokens
+      }
+      const estimates = [...byAgent.values()]
+        .map((e) => ({ ...e, estimatedUsd: Math.round(e.estimatedUsd * 10000) / 10000 }))
+        .sort((a, b) => b.estimatedUsd - a.estimatedUsd)
+      const totalEstimatedUsd = Math.round(estimates.reduce((sum, e) => sum + e.estimatedUsd, 0) * 10000) / 10000
+      json(res, { estimates, totalEstimatedUsd, note: pricing_note })
+    } catch (err) {
+      logger.error({ err }, 'CostOps estimates widget failed')
+      json(res, { error: 'Cost estimates failed' }, 500)
+    }
+    return true
+  }
+
   if (path === '/api/costs/sources' && method === 'GET') {
     try {
       json(res, getCostSources(getDb()))

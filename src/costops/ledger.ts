@@ -323,6 +323,12 @@ export interface AgentDayCost {
   priced_calls: number
   unpriced_calls: number
   unpriced_tokens: number
+  /** Card f597369b: input/output tokens across ALL calls in this (agent, day) group, priced or
+   *  not -- volume, not cost. Kept separate from unpriced_tokens (which lumps every token kind
+   *  together, priced calls excluded) so a consumer can show "how much traffic" independently of
+   *  "how much of it we could price". */
+  input_tokens: number
+  output_tokens: number
 }
 
 export interface TokenCostByAgentDay {
@@ -365,9 +371,14 @@ export function getTokenCostByAgentDay(
     const key = `${r.agent}|${r.day}`
     let acc = byAgentDay.get(key)
     if (!acc) {
-      acc = { agent: r.agent, day: r.day, estimated_cost_usd: 0, priced_calls: 0, unpriced_calls: 0, unpriced_tokens: 0 }
+      acc = {
+        agent: r.agent, day: r.day, estimated_cost_usd: 0, priced_calls: 0, unpriced_calls: 0,
+        unpriced_tokens: 0, input_tokens: 0, output_tokens: 0,
+      }
       byAgentDay.set(key, acc)
     }
+    acc.input_tokens += r.input_tokens
+    acc.output_tokens += r.output_tokens
     const cost = estimateCostUsd(r.model, r)
     if (cost === null) {
       acc.unpriced_calls += r.calls

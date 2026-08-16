@@ -169,14 +169,6 @@ async function refreshLastUpdateBadge() {
     renderLastUpdateBadge(null)
   }
 }
-try {
-  refreshLastUpdateBadge()
-} catch {
-  // A failure here (env-specific quirk, extension interference, etc.) must never
-  // block the auth/fetch-wrapping IIFE below -- that would silently break login
-  // for the whole page. The badge is cosmetic; the token flow is not.
-}
-
 (() => {
   const TOKEN_KEY = 'marveen-dashboard-token'
   const urlParams = new URLSearchParams(window.location.search)
@@ -374,6 +366,16 @@ try {
     setTimeout(() => input.focus(), 50)
   }
 })()
+
+// card f597369b: this used to run BEFORE the IIFE above patched window.fetch to attach the
+// Authorization header, so every page load's very first /api/status call went out unauthenticated
+// and 401'd (silently -- it also bypassed the 401 handler above, since that only wraps calls made
+// AFTER the patch). Cosmetic failure, but a console error on every load. Now runs after the patch.
+try {
+  refreshLastUpdateBadge()
+} catch {
+  // Still non-fatal: the badge is cosmetic, a failure here must never block anything else on the page.
+}
 
 // === Theme ===
 const html = document.documentElement

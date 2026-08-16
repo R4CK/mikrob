@@ -75,6 +75,46 @@ describe('costops API (route smoke)', () => {
     expect(out.body.since_days).toBe(7)
   })
 
+  // card f597369b: the overview widget (card 01b51197) called this exact path/shape and 404'd,
+  // because the real backend (d2cfa818, above) shipped under a different path with a different
+  // shape (per agent+day, snake_case). This aggregates the same data into what the widget expects.
+  describe('GET /api/costops/estimates (card f597369b, widget contract for card 01b51197)', () => {
+    it('aggregates per-agent across days into the shape the overview widget expects', async () => {
+      const now = Math.floor(Date.now() / 1000)
+      const db = getDb()
+      db.prepare("INSERT INTO token_usage (agent,session_id,timestamp,input_tokens,output_tokens,model) VALUES ('marveen','s1',?,1000000,0,'claude-sonnet-5')").run(now)
+      // A second day for the SAME agent -- must be SUMMED into one row, not left split by day.
+      db.prepare("INSERT INTO token_usage (agent,session_id,timestamp,input_tokens,output_tokens,model) VALUES ('marveen','s2',?,500000,0,'claude-sonnet-5')").run(now - 2 * 86400)
+      db.prepare("INSERT INTO token_usage (agent,session_id,timestamp,input_tokens,output_tokens,model) VALUES ('qa','s3',?,0,1000000,'claude-sonnet-5')").run(now)
+
+      const { ctx, out } = fakeCtx('/api/costops/estimates')
+      expect(await tryHandleCosts(ctx)).toBe(true)
+      expect(out.status).toBe(200)
+      expect(Array.isArray(out.body.estimates)).toBe(true)
+      expect(out.body.estimates).toHaveLength(2) // one row PER AGENT, not per agent-per-day
+
+      const marveen = out.body.estimates.find((e: { agent: string }) => e.agent === 'marveen')
+      expect(marveen.estimatedUsd).toBeCloseTo(3.0, 6) // (1,000,000 + 500,000) input @ $2/MTok
+      expect(marveen.inputTokens).toBe(1500000)
+      expect(marveen.outputTokens).toBe(0)
+
+      // sorted by cost descending -- the widget's proportional bar assumes the biggest is first.
+      expect(out.body.estimates[0].agent).toBe('marveen')
+      expect(typeof out.body.totalEstimatedUsd).toBe('number')
+      expect(out.body.totalEstimatedUsd).toBeGreaterThan(0)
+      expect(typeof out.body.note).toBe('string')
+      // no secret / account id leaks
+      expect(JSON.stringify(out.body)).not.toMatch(/secret|api[_-]?key|password|token=/i)
+    })
+
+    it('no usage rows at all -> empty estimates array, zero total (the widget renders its own empty state)', async () => {
+      const { ctx, out } = fakeCtx('/api/costops/estimates')
+      expect(await tryHandleCosts(ctx)).toBe(true)
+      expect(out.body.estimates).toEqual([])
+      expect(out.body.totalEstimatedUsd).toBe(0)
+    })
+  })
+
   it('GET /api/costs/sources returns an array', async () => {
     const { ctx, out } = fakeCtx('/api/costs/sources')
     expect(await tryHandleCosts(ctx)).toBe(true)

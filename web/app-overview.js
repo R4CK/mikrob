@@ -551,7 +551,8 @@ async function loadLocalLlmInfo() {
 }
 
 // Token-cost overview widget (card 01b51197).
-// Calls GET /api/costops/estimates; gracefully hidden on 404 (pair-BE d2cfa818 not yet landed).
+// Calls GET /api/costops/estimates (backend f597369b, aggregated from d2cfa818's per-day
+// breakdown). Still hides gracefully on 404 -- a defensive fallback, not the expected path anymore.
 async function loadCostEstimatesWidget() {
   const card = document.getElementById('ovwCostCard')
   const body = document.getElementById('ovwCostBody')
