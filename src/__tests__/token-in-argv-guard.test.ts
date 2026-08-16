@@ -420,14 +420,23 @@ describe('no shipped script, template or GENERATOR puts a Bearer token in curl a
     )
   }
 
-  function isDocumentedAntiPattern(source: string, startLine: number): boolean {
+  /**
+   * @param isMarkdown Markdown prose OUTSIDE a fence is never live code by construction -- the
+   *   `fencedLines` check above already separates "fenced = command, copy-pasted verbatim" from
+   *   "everything else = documentation", so the line-must-be-a-comment requirement below only
+   *   applies to corpora where the file itself IS the executable/source artifact (.sh/.py/.ts/…).
+   *   Applying it to markdown too broke a real exemption: leak-safe-secret-probe/SKILL.md teaches
+   *   the forbidden shape across TWO bullet-prose lines with an HTML-comment marker below them, and
+   *   a markdown bullet starts with `-`/`*`/plain text, never `#`.
+   */
+  function isDocumentedAntiPattern(source: string, startLine: number, isMarkdown: boolean): boolean {
     if (fencedLines(source).has(startLine)) return false
     const lines = source.split('\n')
     // The code-vs-prose gap (card 782820be): the marker+reason check alone said nothing about
     // whether the FLAGGED occurrence itself is live code. A real `curl ... # guard-allow: ...`
     // (marker trailing the offending line) or a marker on the line directly above with no blank
     // line between it both satisfied the old check while the flagged line stayed fully executable.
-    if (!isCommentLine(lines[startLine - 1] ?? '')) return false
+    if (!isMarkdown && !isCommentLine(lines[startLine - 1] ?? '')) return false
     const m = GUARD_ALLOW.exec(paragraphAround(lines, startLine).join('\n'))
     return (m?.groups?.['reason'] ?? '').trim().length > 0
   }
@@ -453,9 +462,10 @@ describe('no shipped script, template or GENERATOR puts a Bearer token in curl a
 
   it.each(cases)('$file: every curl reads its auth header from a file, never argv', ({ dir, file }) => {
     const source = readFileSync(join(dir, file), 'utf8')
+    const isMarkdown = file.endsWith('.md')
     const offenders = findCurlInvocations(source)
       .filter((c) => leaksTokenInArgv(c.text))
-      .filter((c) => !isDocumentedAntiPattern(source, c.startLine))
+      .filter((c) => !isDocumentedAntiPattern(source, c.startLine, isMarkdown))
     if (offenders.length > 0) {
       const detail = offenders.map((o) => `  line ${o.startLine}: ${o.text.trim().slice(0, 100)}`).join('\n')
       throw new Error(
@@ -478,8 +488,9 @@ describe('no shipped script, template or GENERATOR puts a Bearer token in curl a
   // to fix. The three CURL-shaped rules above DO run over src/ -- those inspect a command line.
   it.each(shellCases)('$file: no line builds a URL with a credential query parameter', ({ dir, file }) => {
     const source = readFileSync(join(dir, file), 'utf8')
+    const isMarkdown = file.endsWith('.md')
     const offenders = credentialUrlLines(source).filter(
-      (o) => !isDocumentedAntiPattern(source, o.startLine),
+      (o) => !isDocumentedAntiPattern(source, o.startLine, isMarkdown),
     )
     if (offenders.length > 0) {
       const detail = offenders.map((o) => `  line ${o.startLine}: ${o.text.trim().slice(0, 100)}`).join('\n')
@@ -514,10 +525,10 @@ describe('no shipped script, template or GENERATOR puts a Bearer token in curl a
   //
   // The offender line is identical in all four. Only the marker, the fence and the prose change.
   const LEAK_LINE = 'curl -s -H "Authorization: Bearer $TOK" "$DASH/api/x"'
-  const exemptCount = (doc: string) =>
+  const exemptCount = (doc: string, isMarkdown = false) =>
     findCurlInvocations(doc)
       .filter((c) => leaksTokenInArgv(c.text))
-      .filter((c) => isDocumentedAntiPattern(doc, c.startLine)).length
+      .filter((c) => isDocumentedAntiPattern(doc, c.startLine, isMarkdown)).length
 
   it('exemption: a marked prose occurrence IS exempt', () => {
     const doc = ['# guard-allow: documented-anti-pattern teaching the forbidden shape', `# ${LEAK_LINE}`].join('\n')
@@ -594,6 +605,38 @@ describe('no shipped script, template or GENERATOR puts a Bearer token in curl a
   it('a marked HTML-comment line IS exempt', () => {
     const doc = [`<!-- ${LEAK_LINE}`, 'guard-allow: documented-anti-pattern shown for a docs reader -->'].join('\n')
     expect(exemptCount(doc)).toBe(1)
+  })
+
+  it('markdown bullet prose (no comment prefix at all) IS exempt when isMarkdown=true -- the real leak-safe-secret-probe/SKILL.md shape', () => {
+    // agents/backend2/.claude/skills/leak-safe-secret-probe/SKILL.md:33-38: two forbidden examples
+    // as plain bullet-continuation TEXT (no `#`, no docstring, no HTML comment on the offending
+    // lines themselves), with the marker as an HTML comment BELOW them, before the safe fence. A
+    // markdown bullet is never live code outside a fence, so isMarkdown=true must not require the
+    // flagged line to look like a comment -- only that it is unfenced and the marker+reason exist
+    // in its paragraph. This is the regression this fix's own first draft caused and this test
+    // pins: requiring isCommentLine unconditionally broke this exact, real, legitimate exemption.
+    const doc = [
+      '- **In bash/curl, never on argv.** `curl "https://api/x?token=$SECRET"` or',
+      `  even \`${LEAK_LINE}\` puts the secret in`,
+      '  `/proc/<pid>/cmdline`. Feed curl a stdin config instead:',
+      '  <!-- guard-allow: documented-anti-pattern the shapes above are the forbidden forms this bullet',
+      '       exists to teach; both are inline prose, not runnable -->',
+      '  ```bash',
+      '  printf ... | curl -sS -K -',
+      '  ```',
+    ].join('\n')
+    expect(exemptCount(doc, true)).toBe(1)
+  })
+
+  it('the SAME markdown bullet prose is NOT exempt when isMarkdown=false -- proves the flag actually gates the check', () => {
+    const doc = [
+      '- **In bash/curl, never on argv.** `curl "https://api/x?token=$SECRET"` or',
+      `  even \`${LEAK_LINE}\` puts the secret in`,
+      '  `/proc/<pid>/cmdline`. Feed curl a stdin config instead:',
+      '  <!-- guard-allow: documented-anti-pattern the shapes above are the forbidden forms this bullet',
+      '       exists to teach; both are inline prose, not runnable -->',
+    ].join('\n')
+    expect(exemptCount(doc, false)).toBe(0)
   })
 
   it.each(cases)('$file: a path-embedded bot token is read from a curl config, not argv', ({ dir, file }) => {

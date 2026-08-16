@@ -535,14 +535,27 @@ async function llmRefreshUsage() {
   const tilesEl = document.getElementById('llmUsageTiles')
   if (!tilesEl) return
   try {
-    const res = await fetch('/api/local-llm/usage')
-    const d = await res.json()
+    // Parallel: usage stats + queue aggregate stats + today's activity rows
+    const [usageRes, qStatsRes, qListRes] = await Promise.all([
+      fetch('/api/local-llm/usage'),
+      fetch('/api/local-llm/queue'),
+      fetch('/api/local-llm/queue/list?limit=500'),
+    ])
+    const d = await usageRes.json()
+    const s = await qStatsRes.json()
+    const l = await qListRes.json()
 
-    // Headline stat tiles
+    // 8 stat tiles: 3 usage + 5 queue (Pending/Running/Done/Failed/Avg latency)
+    const latency = s.avgLatencyMs != null ? (Math.round(s.avgLatencyMs / 100) / 10) + 's' : '—'
     tilesEl.innerHTML = llmAnimateBatch([
       llmTile(t('localLlm.usage.total'), String(d.total || 0), 'ok'),
       llmTile(t('localLlm.usage.today'), String(d.today || 0), 'ok'),
       llmTile(t('localLlm.usage.last_7d'), String(d.last_7d || 0), 'ok'),
+      llmTile(t('localLlm.queue.tile.pending'), s.pending ?? 0, 'muted'),
+      llmTile(t('localLlm.queue.tile.running'), s.running ?? 0, 'ok'),
+      llmTile(t('localLlm.queue.tile.done'), s.done ?? 0, 'ok'),
+      llmTile(t('localLlm.queue.tile.failed'), s.failed ?? 0, (s.failed ?? 0) > 0 ? 'bad' : 'muted'),
+      llmTile(t('localLlm.queue.tile.latency'), latency, 'muted'),
     ].join(''), 'usage', 'llm-tile')
 
     // By agent -- horizontal bars, already sorted count-desc by the backend
@@ -607,32 +620,54 @@ async function llmRefreshUsage() {
       })
     }
 
-    // Recent calls table
+    // Unified activity list: queue/list rows, today only (FE daily window), max 35, 9 columns.
+    // source of truth is the queue DB (covers direct-sync + async; the old log-file "recent" is
+    // redundant now that every invocation lands in the queue table).
     const recEl = document.getElementById('llmUsageRecent')
     if (recEl) {
-      const recent = Array.isArray(d.recent) ? d.recent : []
-      if (recent.length === 0) {
-        recEl.innerHTML = `<div class="llm-empty">${t('localLlm.usage.none')}</div>`
+      const todayStart = new Date(); todayStart.setHours(0, 0, 0, 0)
+      const todayStartMs = todayStart.getTime()
+      let rows = Array.isArray(l.rows) ? l.rows : []
+      rows = rows.filter(r => r.created_at >= todayStartMs)
+      if (_llmQueueFilter) rows = rows.filter(r => r.status === _llmQueueFilter)
+      rows = rows.slice(0, 35)
+
+      if (rows.length === 0) {
+        recEl.innerHTML = `<div class="llm-empty">${t('localLlm.queue.none')}</div>`
       } else {
-        const body = recent.map(r => `<tr>
-          <td>${escapeHtml(llmFmtTime(r.ts))}</td>
-          <td>${escapeHtml(r.caller || '')}</td>
-          <td>${escapeHtml(r.task || '')}</td>
-          <td>${escapeHtml(r.source || '')}</td>
-          <td class="llm-usage-num">${Number.isFinite(r.ms) ? r.ms : 0}</td>
-          <td><span class="llm-usage-status ${r.status === 'err' ? 'err' : 'ok'}">${r.status === 'err' ? t('localLlm.usage.status_err') : t('localLlm.usage.status_ok')}</span></td>
-        </tr>`).join('')
+        const body = rows.map(r => {
+          const ms = (r.finished_at && r.started_at) ? (r.finished_at - r.started_at) : null
+          const canView = r.status === 'done' || r.status === 'failed'
+          const stateText = r.error ? `${r.attempts}x, err` : `${r.attempts}x`
+          return `<tr>
+            <td>${escapeHtml(llmFmtTime(Math.floor(r.created_at / 1000)))}</td>
+            <td>${escapeHtml(r.agent || '')}</td>
+            <td>${escapeHtml(r.source || '')}</td>
+            <td>${escapeHtml(r.template || r.task_type || '—')}</td>
+            <td>${escapeHtml(r.priority || '')}</td>
+            <td class="llm-usage-num">${ms !== null ? ms : '—'}</td>
+            <td><span class="llm-queue-status ${escapeHtml(r.status || '')}">${escapeHtml(llmQueueStatusLabel(r.status))}</span></td>
+            <td class="llm-usage-muted">${escapeHtml(stateText)}</td>
+            <td>${canView ? `<button type="button" class="btn-secondary btn-compact llm-queue-view-btn" data-id="${r.id}">${t('localLlm.queue.view_btn')}</button>` : '—'}</td>
+          </tr>`
+        }).join('')
         recEl.innerHTML = `<table class="llm-usage-table">
           <thead><tr>
-            <th>${t('localLlm.usage.col_time')}</th>
-            <th>${t('localLlm.usage.col_agent')}</th>
-            <th>${t('localLlm.usage.col_task')}</th>
-            <th>${t('localLlm.usage.col_source')}</th>
-            <th class="llm-usage-num">${t('localLlm.usage.col_ms')}</th>
-            <th>${t('localLlm.usage.col_status')}</th>
+            <th>${t('localLlm.queue.col_time')}</th>
+            <th>${t('localLlm.queue.col_agent')}</th>
+            <th>${t('localLlm.queue.col_source')}</th>
+            <th>${t('localLlm.queue.col_task')}</th>
+            <th>${t('localLlm.queue.col_priority')}</th>
+            <th class="llm-usage-num">${t('localLlm.queue.col_ms')}</th>
+            <th>${t('localLlm.queue.col_status')}</th>
+            <th>${t('localLlm.queue.col_state')}</th>
+            <th>${t('localLlm.queue.col_action')}</th>
           </tr></thead>
           <tbody>${body}</tbody>
         </table>`
+        recEl.querySelectorAll('.llm-queue-view-btn').forEach(btn => {
+          btn.addEventListener('click', () => llmQueueOpenDetail(Number(btn.dataset.id)))
+        })
       }
     }
   } catch {
@@ -657,65 +692,10 @@ function llmQueueStatusLabel(status) {
   return key ? t(key) : (status || '—')
 }
 
+// llmRefreshQueue is now a no-op: the queue tiles and activity list are rendered
+// by llmRefreshUsage (unified Aktivitás section, card 88c00f5e).
 async function llmRefreshQueue() {
-  const tilesEl = document.getElementById('llmQueueTiles')
-  const recEl = document.getElementById('llmQueueRecent')
-  if (!tilesEl && !recEl) return
-  try {
-    const listUrl = '/api/local-llm/queue/list' +
-      (_llmQueueFilter ? ('?status=' + encodeURIComponent(_llmQueueFilter)) : '')
-    const [statsRes, listRes] = await Promise.all([fetch('/api/local-llm/queue'), fetch(listUrl)])
-    const s = await statsRes.json()
-    const l = await listRes.json()
-    if (!statsRes.ok || !listRes.ok) throw new Error('queue load failed')
-
-    if (tilesEl) {
-      const latency = s.avgLatencyMs != null ? (Math.round(s.avgLatencyMs / 100) / 10) + 's' : '—'
-      tilesEl.innerHTML = llmAnimateBatch([
-        llmTile(t('localLlm.queue.tile.pending'), s.pending ?? 0, 'muted'),
-        llmTile(t('localLlm.queue.tile.running'), s.running ?? 0, 'ok'),
-        llmTile(t('localLlm.queue.tile.done'), s.done ?? 0, 'ok'),
-        llmTile(t('localLlm.queue.tile.failed'), s.failed ?? 0, (s.failed ?? 0) > 0 ? 'bad' : 'muted'),
-        llmTile(t('localLlm.queue.tile.latency'), latency, 'muted'),
-      ].join(''), 'queue', 'llm-tile')
-    }
-
-    if (recEl) {
-      const rows = Array.isArray(l.rows) ? l.rows : []
-      if (rows.length === 0) {
-        recEl.innerHTML = `<div class="llm-empty">${t('localLlm.queue.none')}</div>`
-      } else {
-        const body = rows.map(r => {
-          const taskLabel = r.template || r.task_type || '—'
-          const canView = r.status === 'done' || r.status === 'failed'
-          return `<tr>
-            <td>${escapeHtml(llmFmtTime(Math.floor(r.created_at / 1000)))}</td>
-            <td>${escapeHtml(r.agent || '')}</td>
-            <td>${escapeHtml(taskLabel)}</td>
-            <td>${escapeHtml(r.priority || '')}</td>
-            <td><span class="llm-queue-status ${escapeHtml(r.status || '')}">${escapeHtml(llmQueueStatusLabel(r.status))}</span></td>
-            <td>${canView ? `<button type="button" class="btn-secondary btn-compact llm-queue-view-btn" data-id="${r.id}">${t('localLlm.queue.view_btn')}</button>` : '—'}</td>
-          </tr>`
-        }).join('')
-        recEl.innerHTML = `<table class="llm-usage-table">
-          <thead><tr>
-            <th>${t('localLlm.queue.col_time')}</th>
-            <th>${t('localLlm.queue.col_agent')}</th>
-            <th>${t('localLlm.queue.col_task')}</th>
-            <th>${t('localLlm.queue.col_priority')}</th>
-            <th>${t('localLlm.queue.col_status')}</th>
-            <th>${t('localLlm.queue.col_action')}</th>
-          </tr></thead>
-          <tbody>${body}</tbody>
-        </table>`
-        recEl.querySelectorAll('.llm-queue-view-btn').forEach(btn => {
-          btn.addEventListener('click', () => llmQueueOpenDetail(Number(btn.dataset.id)))
-        })
-      }
-    }
-  } catch {
-    if (recEl) recEl.innerHTML = `<div class="llm-empty">${t('localLlm.queue.load_error')}</div>`
-  }
+  return llmRefreshUsage()
 }
 
 async function llmQueueOpenDetail(id) {

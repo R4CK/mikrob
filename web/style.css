@@ -8972,8 +8972,10 @@ body {
   color: var(--text-muted);
   white-space: nowrap;
 }
-/* Recent calls table */
+/* Recent calls / unified activity table */
 .llm-usage-table-wrap { overflow-x: auto; }
+.llm-activity-scroll { max-height: 640px; overflow-y: auto; }
+.llm-usage-muted { color: var(--text-muted); font-size: 12px; }
 .llm-usage-table {
   width: 100%;
   border-collapse: collapse;
