@@ -116,9 +116,11 @@ describe('conversation-session-list: loadOlderConversation passes sessionId', ()
 
 describe('conversation-session-list: session select change handler', () => {
   it('updates conversationCurrentSessionId on change', () => {
-    expect(APP).toContain('conversationSessionSelect')
-    const selIdx = APP.indexOf("getElementById('conversationSessionSelect')")
-    const handlerSlice = APP.slice(selIdx, selIdx + 400)
+    // The change listener is wired after all function definitions; find the
+    // addEventListener call site, not the const-sel inside loadConversationSessions.
+    const listenerIdx = APP.indexOf("getElementById('conversationSessionSelect')?.addEventListener('change'")
+    expect(listenerIdx).toBeGreaterThan(-1)
+    const handlerSlice = APP.slice(listenerIdx, listenerIdx + 400)
     expect(handlerSlice).toContain('conversationCurrentSessionId')
     expect(handlerSlice).toContain('loadConversation()')
   })
