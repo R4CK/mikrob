@@ -1466,7 +1466,18 @@ function esc(s) {
     if (pageId && document.getElementById(pageId + 'Page')) switchPage(pageId)
   }
   window.addEventListener('hashchange', routeFromHash)
-  routeFromHash()
+  // Initial dispatch must wait until every later <script src="/app-*.js"> tag has
+  // executed -- switchPage() calls functions (stopAgentsBusyPoll, loadOverview,
+  // loadKanban, loadDocs, ...) that live in those files, which load AFTER this
+  // script. Calling routeFromHash() synchronously here ReferenceErrors on any
+  // direct-hash page load. DOMContentLoaded fires only once all synchronous
+  // scripts in the document have run, so it's the earliest safe point (live
+  // regression: stopAgentsBusyPoll not defined at switchPage, 2026-08-16).
+  if (document.readyState === 'loading') {
+    document.addEventListener('DOMContentLoaded', routeFromHash)
+  } else {
+    routeFromHash()
+  }
 })()
 
 // ============================================================
