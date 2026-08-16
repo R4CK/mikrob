@@ -35,7 +35,26 @@ MEMINFO="${GPU_DETECT_MEMINFO:-/proc/meminfo}"
 # A probe emits ONE tab-separated record and nothing else:
 #   vendor \t name \t vramTotalMib \t vramFreeMib \t driver
 # Empty vramTotalMib means "this probe did not establish capability" -> keep going.
-emit() { printf '%s\t%s\t%s\t%s\t%s\n' "$1" "$2" "$3" "$4" "$5"; }
+#
+# THE SEPARATOR IS STRIPPED FROM THE FIELDS (card cf625ba9, Cybered's LOW on the fb66b856 gate).
+# A TAB inside a field shifts every later field left, and the reader takes the FIRST five parts --
+# so a device NAME containing a tab followed by digits lands those digits in the vramTotalMib slot.
+# Reproduced before fixing: a fake probe reporting `Fake GPU<TAB>9999, , ,` -- a card with NO memory
+# figures at all -- yielded `"vramTotalMib": 9999, "cpuOnly": false`. That is the one thing this
+# detector's own header says it never does, reached without touching the number fields at all.
+#
+# Stripping at the producer is the primary fix; the reader ALSO rejects a record that is not exactly
+# five fields (see the python below), because probe_rocm and probe_apple build their records in
+# python and never pass through here -- a fix that only hardened emit() would have left half the
+# probes exposed.
+emit() {
+  local f out=() a
+  for a in "$1" "$2" "$3" "$4" "$5"; do
+    f="${a//$'\t'/ }"; f="${f//$'\n'/ }"; f="${f//$'\r'/ }"
+    out+=("$f")
+  done
+  printf '%s\t%s\t%s\t%s\t%s\n' "${out[0]}" "${out[1]}" "${out[2]}" "${out[3]}" "${out[4]}"
+}
 
 # `nvidia-smi --query-gpu=...` in CSV, used for BOTH nvidia probes -- one parser, so the WSL and the
 # PATH branch can never drift apart in how they read the same output.
@@ -88,7 +107,10 @@ for card, vals in (d.items() if isinstance(d, dict) else []):
         tot_mib = int(int(str(total).strip()) / (1024 * 1024))
     except Exception:
         continue
-    print("amd\t%s\t%d\t\t" % (card, tot_mib))
+    # Same separator strip as emit() -- this record never passes through it (card cf625ba9). The
+    # card key comes from rocm-smi JSON, so it is external text like any other probe output.
+    safe = str(card).replace("\t", " ").replace("\n", " ").replace("\r", " ")
+    print("amd\t%s\t%d\t\t" % (safe, tot_mib))
     sys.exit(0)
 sys.exit(1)
 ' 2>/dev/null || return 1
@@ -115,7 +137,9 @@ for gpu in d.get("SPDisplaysDataType", []) or []:
     if not m:
         continue
     mib = int(m.group(1)) * (1024 if m.group(2).upper() == "GB" else 1)
-    print("apple\t%s\t%d\t\t" % (name, mib))
+    # Same separator strip as emit() -- see the amd probe above (card cf625ba9).
+    safe = str(name).replace("\t", " ").replace("\n", " ").replace("\r", " ")
+    print("apple\t%s\t%d\t\t" % (safe, mib))
     sys.exit(0)
 sys.exit(1)
 ' 2>/dev/null || return 1
@@ -188,8 +212,21 @@ out = {
     "cpuOnly": True,
     "ramTotalMib": int(ram) if ram.isdigit() else None,
 }
-if rec.strip():
-    parts = (rec.rstrip("\n").split("\t") + ["", "", "", "", ""])[:5]
+parts = rec.rstrip("\n").split("\t") if rec.strip() else []
+# FAIL CLOSED ON A MALFORMED RECORD (card cf625ba9). The old reader padded and then truncated to
+# five, which turns a field-count error into a SILENT re-interpretation: with six parts, the reader
+# read the second half of a tab-containing NAME as the VRAM total and reported it as capability.
+# Padding is what made the corruption invisible, so it is gone -- the record is exactly five fields
+# or it is not a record. Rejecting the whole record rather than one field is deliberate: once the
+# separator was crossed, no field can be trusted by position, vendor and name included.
+# (No apostrophes anywhere in this block: it lives inside a single-quoted shell string.)
+if len(parts) != 5:
+    parts = []
+    if os.environ.get("DETECTED_BY"):
+        # Name the probe that produced it. "malformed" with no origin is an investigation; this is
+        # one line of output, the same argument detectedBy itself exists for.
+        out["detectedBy"] = os.environ["DETECTED_BY"] + "-malformed-record"
+if parts:
     vendor, name, total, free, driver = parts
     out.update(
         vendor=vendor or "none",

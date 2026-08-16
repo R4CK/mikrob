@@ -114,6 +114,66 @@ name="$(echo "$out" | field name)"
 case "$name" in *"Fancy Card"*) echo "  ok   ...and the card name survived -> $name" ;;
   *) echo "  FAIL lspci name not carried -> '$name'"; fail=1 ;; esac
 
+# 6b. SEPARATOR INJECTION (card cf625ba9, Cybered LOW on the fb66b856 gate). The shell->python
+#     transport is TAB-separated, so a TAB inside the device NAME shifts every later field left and
+#     the reader used to take the first five parts -- landing the tail of the name in the
+#     vramTotalMib slot. Measured BEFORE the fix, this exact probe (a card reporting NO memory
+#     figures at all) produced `"vramTotalMib": 9999, "cpuOnly": false`: an invented number, which is
+#     the one thing this detector says it never does, reached without touching a number field.
+TABNAME=$(mkfake wsl-tabname "$(printf 'Fake GPU\t9999, , , ')" 0)
+out="$(run GPU_DETECT_WSL_NVIDIA_SMI="$TABNAME")"
+check "tab-in-name -> no invented total" "null" "$(echo "$out" | field vramTotalMib)"
+check "tab-in-name -> cpuOnly TRUE"      "True" "$(echo "$out" | python3 -c 'import json,sys;print(json.load(sys.stdin)["cpuOnly"])')"
+name="$(echo "$out" | field name)"
+case "$name" in
+  *"$(printf '\t')"*) echo "  FAIL tab-in-name -> the separator survived into the name: '$name'"; fail=1 ;;
+  *9999*)             echo "  ok   tab-in-name -> name kept, separator neutralised -> $name" ;;
+  *) echo "  FAIL tab-in-name -> name lost entirely -> '$name'"; fail=1 ;;
+esac
+
+# 6c. The same injection must not END the chain either. A shifted fragment that looks like a total
+#     used to satisfy the chain's own `cut -f3` test, so the loop broke early and a later probe that
+#     could really size the card never ran -- the corruption cost a correct answer, not just an
+#     incorrect one.
+out="$(run GPU_DETECT_WSL_NVIDIA_SMI="$TABNAME" GPU_DETECT_NVIDIA_SMI="$PATHNV")"
+check "tab-in-name -> chain continues"  "nvidia-smi" "$(echo "$out" | field detectedBy)"
+check "  ...and the REAL number is used" "12282"     "$(echo "$out" | field vramTotalMib)"
+
+# 6d. A NEWLINE in the name is the same class through a different character: it would split one
+#     record into two lines, and the reader would parse the first half as a whole record.
+NLNAME=$(mkfake wsl-nlname "$(printf 'Fake GPU\n4242, , , ')" 0)
+out="$(run GPU_DETECT_WSL_NVIDIA_SMI="$NLNAME")"
+check "newline-in-name -> no invented total" "null" "$(echo "$out" | field vramTotalMib)"
+
+# 6e. THE READER SIDE, tested directly. probe_rocm and probe_apple build their records in python and
+#     never pass through emit(), so hardening emit() alone would have left half the probes exposed.
+#     The reader therefore refuses any record that is not EXACTLY five fields. That branch cannot be
+#     reached through a probe any more (every producer now strips the separator), which is the point
+#     of defence in depth and also the reason it needs a direct test: an unreachable guard with no
+#     control is indistinguishable from a guard that does not work.
+#
+#     The reader is EXTRACTED FROM THE SHIPPED FILE rather than copied here -- a second copy would
+#     drift, and a drifted copy of a fail-closed check is worse than none.
+#     The extraction is anchored on the line that starts the reader and ends at the closing quote
+#     (\047), NOT at "the first short line" -- an earlier version of this control ended at the `}`
+#     that closes the output dict and silently tested a 15-line fragment. The completeness check
+#     below is there because of it: a partial extraction must fail loudly, not test half a reader.
+READER="$TMP/reader.py"
+awk '/^REC="\$REC" DETECTED_BY=/{grab=1; next} grab && $0 == "\047"{exit} grab{print}' "$DETECT" > "$READER"
+if ! grep -q 'vramTotalMib' "$READER" || ! grep -q 'malformed-record' "$READER"; then
+  echo "  FAIL could not extract the whole reader from $DETECT -- the anchor moved, this control is blind"; fail=1
+else
+  six="$(REC="$(printf 'nvidia\tFake GPU\t9999\t\t\t')" DETECTED_BY="wsl-nvidia-smi" RAM_MIB="1024" python3 "$READER")"
+  check "6-field record -> total rejected" "null" "$(echo "$six" | field vramTotalMib)"
+  check "6-field record -> vendor rejected too" "none" "$(echo "$six" | field vendor)"
+  check "6-field record -> names the culprit" "wsl-nvidia-smi-malformed-record" "$(echo "$six" | field detectedBy)"
+  # CONTROL: the same reader still accepts a well-formed five-field record. Without this, the two
+  # checks above would also pass if the reader rejected everything.
+  five="$(REC="$(printf 'nvidia\tReal GPU\t8192\t4096\t550')" DETECTED_BY="wsl-nvidia-smi" RAM_MIB="1024" python3 "$READER")"
+  check "5-field record -> still accepted" "8192" "$(echo "$five" | field vramTotalMib)"
+  check "5-field record -> detectedBy clean" "wsl-nvidia-smi" "$(echo "$five" | field detectedBy)"
+fi
+
 # 7. Output is always valid JSON, including on the all-absent path -- the installer parses it.
 if run | python3 -c 'import json,sys; json.load(sys.stdin)' 2>/dev/null; then echo "  ok   emits valid JSON even with no GPU"
 else echo "  FAIL invalid JSON on the no-GPU path"; fail=1; fi
