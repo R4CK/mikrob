@@ -84,6 +84,29 @@ const ACKNOWLEDGED_CONFLICTS: Readonly<Record<string, string>> = {
   // Resolution: keep BOTH blocks, either order -- union, not a pick.
   'src/db.ts':
     'keep both additive migrations -- the fork timestamp-integrity triggers + forced column, and the upstream kanban_cards_status_bumps_updated_at trigger -- neither side taken wholesale',
+  // Card 2e634e5c. Both sides independently fixed the SAME ghost-session bug (agent DELETE leaving
+  // an orphaned tmux session), but the fork's fix is strictly more correct: it AWAITS
+  // stopAgentProcess(), tracks the result, and logs on failure; upstream's is a floating (un-awaited)
+  // call to the same async function -- the exact race its own comment warns against ("must run while
+  // the dir still exists"), since rmSync(dir) right after can start before the un-awaited stop
+  // finishes reading the config. Measured 2026-08-16. Resolution: keep the fork's version wholesale,
+  // upstream adds nothing the fork lacks here.
+  'src/web/routes/agents.ts':
+    'keep the fork version wholesale -- it already awaits stopAgentProcess() and tracks/logs the result; upstream is an un-awaited (racy) reimplementation of the same fix',
+  // Card 2e634e5c, three hunks, all resolving the same direction. (1) The dispatch-instruction-text
+  // generator: upstream's variant tells the agent to move its OWN card straight to `"status":"done"`
+  // -- that is upstream's own (simpler) workflow, and directly contradicts this fork's core rule
+  // that a builder never self-closes to done (root CLAUDE.md rule 4); the fork's `"status":"waiting"`
+  // text is the one actually in force. (2)+(3) fireKanbanDispatch's `actor` param and the /move
+  // handler: the fork ALREADY implements upstream's stated goal (actor-based self-advance dispatch-
+  // echo suppression, see the unconflicted comment right after hunk 2) using `actor?: string`
+  // (matches the rest of the file's `typeof actor === 'string'` handling), and additionally carries
+  // TWO fork-only gates upstream's /move handler lacks entirely: newDevStopWouldBlock() (weekly-quota
+  // stop) and landedGuardVerdict() (blocks reopening a waiting-for-gate card without force=true) --
+  // taking upstream's handler wholesale would silently drop both. Measured 2026-08-16. Resolution:
+  // keep the fork version wholesale in all three hunks.
+  'src/web/routes/kanban.ts':
+    'keep the fork version wholesale in all three hunks -- upstream\'s dispatch text tells the agent to self-close to done (violates fork rule 4), and its /move handler lacks the fork-only newDevStopWouldBlock + landedGuardVerdict gates',
 }
 
 function git(args: string[], cwd: string): string {
