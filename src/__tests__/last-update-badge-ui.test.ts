@@ -9,7 +9,9 @@ import { join, dirname } from 'node:path'
 import { fileURLToPath } from 'node:url'
 
 const __dirname = dirname(fileURLToPath(import.meta.url))
-const APP = readFileSync(join(__dirname, '../../web/app.js'), 'utf-8')
+const APP_CORE = readFileSync(join(__dirname, '../../web/app.js'), 'utf-8')
+const APP_LAST_UPDATE = readFileSync(join(__dirname, '../../web/app-last-update.js'), 'utf-8')
+const APP = APP_CORE + '\n' + APP_LAST_UPDATE
 const HTML = readFileSync(join(__dirname, '../../web/index.html'), 'utf-8')
 const CSS = readFileSync(join(__dirname, '../../web/style.css'), 'utf-8')
 const HU = readFileSync(join(__dirname, '../../web/lang/hu.js'), 'utf-8')
