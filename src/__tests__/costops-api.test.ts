@@ -99,7 +99,8 @@ describe('costops API (route smoke)', () => {
       expect(marveen.outputTokens).toBe(0)
 
       // sorted by cost descending -- the widget's proportional bar assumes the biggest is first.
-      expect(out.body.estimates[0].agent).toBe('marveen')
+      // qa's 1M OUTPUT tokens ($10/MTok) cost more than marveen's 1.5M INPUT tokens ($2/MTok: $3).
+      expect(out.body.estimates[0].agent).toBe('qa')
       expect(typeof out.body.totalEstimatedUsd).toBe('number')
       expect(out.body.totalEstimatedUsd).toBeGreaterThan(0)
       expect(typeof out.body.note).toBe('string')
