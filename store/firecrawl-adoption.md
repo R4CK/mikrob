@@ -175,6 +175,51 @@ asking, so it cannot tell the sanctioned path from the direct one. That gap is s
 original (a scrape of an arbitrary host is now blocked outright) but it is real, and it is the reason
 outcome (a) is a rule people follow rather than a wall.
 
+### The durable rule: CONFIG order, not restart order (Cybersec, 2026-08-15)
+
+Cybersec asked for a CONFIG-order rule to REPLACE the restart-order one. Writing it down meant
+measuring it, and the measurement says the two are not alternatives: **both are required, and the
+restart is the one currently missing.** The config rule first, because it is the durable half:
+
+> If the `firecrawl` server block is added to ANY other agent's `.mcp.json`, widen THAT agent's
+> matcher FIRST (`ensureEgressGate('<agent>')`), and only then add the server block.
+
+**A settings FILE is not the running configuration** (measured 2026-08-16, acceptance run of this
+card). The file side is clean: all 15 agents carry `WebFetch|mcp__firecrawl__`, one egress entry
+each, migrated by the dashboard's own startup loop (`src/web.ts:542` calls `ensureEgressGate` for
+every agent on every boot) at the 2026-08-15 11:19 restart. But a Claude Code session reads its hooks
+once, at session start, and the `backend` session that OWNS the firecrawl server has been running
+since 2026-08-13 21:00 -- before that migration. Inside it, three probes, minutes apart:
+
+| probe | result |
+|---|---|
+| `firecrawl_scrape` on `example.com` (NOT on the allowlist) | **200 with content, no block-log line** |
+| the identical payload piped to `scripts/hooks/egress-gate.mjs` by hand | `permissionDecision: "deny"`, logged |
+| `WebFetch` on `example.com` in the same session | **denied** by the same hook |
+
+The third probe is what makes the first conclusive: hooks ARE firing in this session, so the scrape
+was not an outage -- the session is enforcing the OLD `WebFetch`-only matcher it loaded on 08-13, and
+the firecrawl namespace is simply not in it. The code is right, the file is right, and the control is
+still not live where the capability is.
+
+So the restart order Cybersec called a crutch is not obsolete; it is the step that has not happened
+yet, and it cannot be skipped by measuring the file. The two rules stand together:
+
+> **Config order** protects a future scope widening (checkable against files at any time).
+> **A session restart of the agent that holds the server** is what makes any matcher change take
+> effect at all. Until it happens, that agent's firecrawl calls are ungated regardless of what the
+> file says.
+
+The general lesson is worth more than this card: `ensureEgressGate` returning `true` and the file
+showing the new matcher both describe DISK. The only measurement that speaks for the running process
+is an actual denied call from inside it.
+
+**Adding a host to the allowlist is a security decision, not a config detail** (Cybersec, same
+review). The capability is now bound to the egress allowlist, which is the only thing holding a
+scrape to approved destinations. New hosts go in one at a time, with a stated reason -- not under the
+pressure of the first "it cannot reach the page" failure, which is exactly when the list looks like
+an obstacle rather than a control.
+
 **Blast radius (item 1) is answered by the scope Peti chose:** one agent's config holds the key, so a
 compromise of any other agent does not carry it. That is the smaller radius of the two options, and it
 was decided knowingly rather than by default.
@@ -195,6 +240,38 @@ this as "they cannot use it without the key".
 
 **Item 2 stands for the acceptance run:** the grep for the key's literal value covers `agents/**`, not
 only the session transcript.
+
+## Acceptance run, 2026-08-16 -- what it proved and what it disproved
+
+Run as step 5 of the procedure above, on the sanctioned path: `Agent({ subagent_type:
+"quarantine-reader", prompt: 'FETCH {"url":"https://ingatlan.com/lista/elado+lakas+budapest",
+"nonce":"8388b98554eb"}' })`, with the sub-agent told to use `firecrawl_scrape`.
+
+**The capability gap is closed.** Status 200, 25 476 characters of markdown, 20 listing links and the
+live result count -- content behind the JS render that `WebFetch` returns nothing useful for. The
+sub-agent returned the envelope shape it promises (`url,nonce,status,content,error`), unchanged.
+
+**The key does not leak.** The literal value appears in 0 files across `agents/**`, `store/**`, the
+root `.mcp.json`, `~/.claude/history.jsonl` and `~/.claude/agents` -- including the session
+transcripts under `agents/backend/.claude-config/`, which is item 2 of the three follow-ups. A
+negative control ran the identical command shape against a string that IS present and found it, so
+the zero is a measurement and not a broken grep. `store/vault.json` also holds no plaintext copy.
+
+**The wrap works, and it does not happen.** Feeding that exact envelope to the real
+`wrapUntrustedFetch()` produces `<untrusted source="web-fetch:https://ingatlan.com/lista/eladolakasbudapest"
+fetch-nonce="8388b98554eb">` with the body fully enclosed and 0 tag-breakout attempts in the scraped
+text. But grepping this session's own transcript: a distinctive listing string appears 3 times and
+**not one of those occurrences carries a `fetch-nonce=` tag**. The reason is structural rather than a
+slip -- `wrapUntrustedFetch` has ZERO production call sites (`wrapUntrusted`, its sibling, has nine),
+so nothing in the codebase is positioned to wrap an Agent-tool result; the caller here is a model,
+not a function. Scraped content therefore lands in the calling agent's context as raw tool output.
+
+That is a smaller gap than it sounds, and naming it correctly matters: the protection that IS real on
+this path is the sub-agent boundary -- the reader has no tools beyond fetching, cannot act on
+injected instructions, and hands back data. The `<untrusted>` tag was never the load-bearing part
+here; it is the part that would give an incident its nonce. Anyone planning to build an automated
+firecrawl path (a scheduled task, a dashboard feature) inherits the wrap obligation in CODE, where
+`wrapUntrustedFetch` finally gets its first caller.
 
 ## What is left once the key exists
 
