@@ -13374,6 +13374,7 @@ async function loadOverview() {
     void loadWeeklyThresholds()
     void loadModelTierConfig()
     void loadLocalLlmInfo()
+    void loadCostEstimatesWidget()
     startOvwSpectrum()
     const banner = document.getElementById('updateBanner')
     if (banner) {
@@ -13892,6 +13893,54 @@ async function loadLocalLlmInfo() {
     if (todayEl) todayEl.textContent = '—'
     if (weekEl) weekEl.textContent = '—'
     if (tokensEl) tokensEl.textContent = '—'
+  }
+}
+
+// Token-cost overview widget (card 01b51197).
+// Calls GET /api/costops/estimates; gracefully hidden on 404 (pair-BE d2cfa818 not yet landed).
+async function loadCostEstimatesWidget() {
+  const card = document.getElementById('ovwCostCard')
+  const body = document.getElementById('ovwCostBody')
+  const footer = document.getElementById('ovwCostFooter')
+  const totalEl = document.getElementById('ovwCostTotal')
+  const noteEl = document.getElementById('ovwCostNote')
+  if (!card || !body) return
+  const token = localStorage.getItem('marveen-dashboard-token') || ''
+  try {
+    const r = await fetch('/api/costops/estimates', {
+      headers: { 'Authorization': 'Bearer ' + token },
+    })
+    if (r.status === 404) { card.hidden = true; return }
+    if (!r.ok) throw new Error('HTTP ' + r.status)
+    const d = await r.json()
+    const estimates = Array.isArray(d.estimates) ? d.estimates : []
+    if (!estimates.length) {
+      body.innerHTML = `<p class="ovw-cost-empty">${escapeHtml(t('overview.cost.empty'))}</p>`
+      card.hidden = false
+      return
+    }
+    const maxUsd = Math.max(...estimates.map((e) => e.estimatedUsd || 0), 0.0001)
+    const rowsHtml = estimates.map((e) => {
+      const pct = Math.round(((e.estimatedUsd || 0) / maxUsd) * 100)
+      const inputK = ((e.inputTokens || 0) / 1000).toFixed(1)
+      const outputK = ((e.outputTokens || 0) / 1000).toFixed(1)
+      const usdStr = t('overview.cost.usd', { amount: (e.estimatedUsd || 0).toFixed(3) })
+      const tpsStr = t('overview.cost.row_tps', { inputK, outputK })
+      return `<div class="ovw-cost-row">
+  <span class="ovw-cost-agent" title="${escapeHtml(e.agent || '')}">${escapeHtml(e.agent || '?')}</span>
+  <div class="ovw-cost-bar-wrap"><div class="ovw-cost-bar" style="width:${pct}%"></div></div>
+  <span class="ovw-cost-amount">${escapeHtml(usdStr)}</span>
+  <span class="ovw-cost-tps">${escapeHtml(tpsStr)}</span>
+</div>`
+    }).join('')
+    body.innerHTML = `<div class="ovw-cost-rows">${rowsHtml}</div>`
+    if (totalEl) totalEl.textContent = t('overview.cost.usd', { amount: (d.totalEstimatedUsd || 0).toFixed(3) })
+    if (footer) footer.hidden = false
+    if (noteEl && d.note) { noteEl.textContent = t('overview.cost.note_disclaimer'); noteEl.hidden = false }
+    card.hidden = false
+  } catch {
+    body.innerHTML = `<p class="ovw-cost-error">${escapeHtml(t('overview.cost.error'))}</p>`
+    card.hidden = false
   }
 }
 

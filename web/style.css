@@ -1041,6 +1041,35 @@ main {
   .ovw-spectrum-readout { gap: 16px; }
 }
 
+/* Token-cost overview widget (card 01b51197) */
+.ovw-cost-card { margin-bottom: 20px; }
+.ovw-cost-loading { font-size: 13px; color: var(--text-muted); margin: 0; padding: 8px 0; }
+.ovw-cost-empty,
+.ovw-cost-error { font-size: 13px; margin: 0; padding: 8px 0; }
+.ovw-cost-empty[hidden],
+.ovw-cost-error[hidden],
+.ovw-cost-footer[hidden],
+.ovw-cost-note[hidden] { display: none; }
+.ovw-cost-error { color: var(--danger); }
+.ovw-cost-note { font-size: 11px; color: var(--text-muted); margin: 6px 0 0; }
+.ovw-cost-rows { display: flex; flex-direction: column; gap: 6px; margin: 4px 0 0; }
+.ovw-cost-row { display: flex; align-items: center; gap: 8px; }
+.ovw-cost-agent { font-size: 12px; color: var(--text-muted); min-width: 72px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.ovw-cost-bar-wrap { flex: 1; height: 6px; background: var(--border, #333); border-radius: 3px; overflow: hidden; }
+.ovw-cost-bar { height: 100%; border-radius: 3px; background: var(--accent, #4a9eff); transition: width 0.3s ease; }
+.ovw-cost-amount { font-size: 12px; font-variant-numeric: tabular-nums; min-width: 52px; text-align: right; color: var(--text); }
+.ovw-cost-tps { font-size: 10px; color: var(--text-muted); text-align: right; white-space: nowrap; }
+.ovw-cost-footer { display: flex; align-items: center; gap: 8px; margin-top: 10px; padding-top: 8px; border-top: 1px solid var(--border, #333); }
+.ovw-cost-total-label { font-size: 12px; color: var(--text-muted); }
+.ovw-cost-total-value { font-size: 14px; font-weight: 600; font-variant-numeric: tabular-nums; flex: 1; }
+.ovw-cost-detail-link { font-size: 12px; color: var(--accent, #4a9eff); text-decoration: none; white-space: nowrap; }
+.ovw-cost-detail-link:hover { text-decoration: underline; }
+@media (max-width: 480px) {
+  .ovw-cost-agent { min-width: 56px; }
+  .ovw-cost-amount { min-width: 44px; }
+  .ovw-cost-tps { display: none; }
+}
+
 .overview-team-graph {
   padding: 12px 0;
   gap: 14px;

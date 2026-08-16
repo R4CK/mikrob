@@ -532,6 +532,24 @@
           <div class="overview-activity" id="overviewActivity"></div>
         </div>
       </div>
+
+      <!-- Token-cost estimate widget (card 01b51197, pair-BE d2cfa818).
+           Hidden until loadCostEstimatesWidget() confirms the endpoint exists. -->
+      <div class="overview-card ovw-cost-card" id="ovwCostCard" hidden>
+        <div class="overview-card-head">
+          <h3 data-i18n="overview.cost.title">Becsült tokenköltség</h3>
+          <span class="overview-card-meta" id="ovwCostMeta" data-i18n="overview.cost.meta_today">mai nap</span>
+        </div>
+        <div id="ovwCostBody">
+          <p class="ovw-cost-loading" data-i18n="common.loading">Betöltés...</p>
+        </div>
+        <div class="ovw-cost-footer" id="ovwCostFooter" hidden>
+          <span class="ovw-cost-total-label" data-i18n="overview.cost.total">Összesen</span>
+          <span class="ovw-cost-total-value" id="ovwCostTotal">—</span>
+          <a href="#" class="ovw-cost-detail-link" data-page="costs" data-i18n="overview.cost.detail_link">Részletek →</a>
+        </div>
+        <p class="ovw-cost-note" id="ovwCostNote" hidden></p>
+      </div>
     </div>
 
     <!-- === Kanban Page === -->

@@ -2042,6 +2042,15 @@ window._i18n.en = {
   'overview.spectrum.gpu':        'GPU',
   'overview.spectrum.vram':       'VRAM',
   'overview.spectrum.tasks':      'Active tasks',
+  'overview.cost.title':          'Estimated token cost',
+  'overview.cost.meta_today':     'today',
+  'overview.cost.total':          'Total',
+  'overview.cost.detail_link':    'Details →',
+  'overview.cost.empty':          'No token usage data for today.',
+  'overview.cost.error':          'Cost estimate unavailable.',
+  'overview.cost.usd':            '${amount}',
+  'overview.cost.row_tps':        '{inputK}K in / {outputK}K out tokens',
+  'overview.cost.note_disclaimer':'Estimated: token volume × list price. Actual billing may differ.',
 
   // --- i18n finish (placeholders + inline-HTML) ---
   'connectors.cxhu.token_ph': 'connectors.hu token (from dashboard)',
