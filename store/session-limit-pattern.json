@@ -1,0 +1,15 @@
+{
+  "_comment": "Canonical Claude plan/session usage-limit banner phrase fragments (card 115c21e7). ERE-safe on purpose -- no \\d, no (?:...) -- so the same strings compile unchanged under bash `grep -E`, Python `re`, and JS/TS RegExp. Provenance: card f085fd44 (session-limit alternative from upstream aefa693; the /upgrade STARTUP HINT is deliberately EXCLUDED -- it matched Claude Code's '/upgrade to increase your usage limit.' hint shown in every fresh idle pane, a 2026-06-30 false positive) plus commit 5fccf4f9 (the interactive limit-modal's other two menu options, 'stop and wait for limit to reset' and 'upgrade your plan', added 2026-07-11). This is the physical source of truth for every consumer EXCEPT src/model-fallback.ts, which keeps its own literal copy (USAGE_LIMIT_FRAGMENTS) for a load-bearing zero-filesystem-dependency reason documented there -- src/__tests__/session-limit-pattern-consistency.test.ts pins the two equal instead. scripts/limit-monitor.sh appends its OWN additional alert-only fragments (rate_limit_error, 429, quota exceeded) on top of this core -- those are intentionally NOT here, because a generic transient rate-limit blip must never trigger a MODEL FALLBACK or a fleet quota-block decision (only a human-facing heads-up alert), a distinction src/model-fallback.ts's own tests pin explicitly.",
+  "fragments": [
+    "usage limit reached",
+    "reached your usage limit",
+    "hit (your|the) (session|usage) limit",
+    "approaching (your )?usage limit",
+    "usage limit (will )?reset",
+    "limit will reset at",
+    "[0-9]+-hour limit reached",
+    "wait for limit to reset",
+    "stop and wait for limit",
+    "upgrade your plan"
+  ]
+}

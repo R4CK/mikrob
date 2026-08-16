@@ -33,8 +33,9 @@ WEEKLY_STATE="$STORE/weekly-usage.json"
 # the dashboard's Claude Limit panel sliders, persisted here. Absent/corrupt
 # file -> the CLAUDE.md defaults below, never a script failure.
 THRESHOLD_CONFIG="$STORE/weekly-threshold-config.json"
-# Same limit phrasings as store/quota-check.sh / src/model-fallback.ts.
-RX='usage limit reached|reached your usage limit|hit (your|the) usage limit|approaching (your )?usage limit|usage limit (will )?reset|limit will reset at|[0-9]+-hour limit reached|wait for limit to reset|stop and wait for limit'
+# Canonical phrase source, shared with src/model-fallback.ts and 5 other scripts (card 115c21e7).
+. "$STORE/session-limit-pattern.sh"
+RX="$SESSION_LIMIT_RX"
 
 # --- editable thresholds (cards f3248478 + d08b98f4) --------------------------
 # Card d08b98f4 (Peti): the three DAY-DEPENDENT thresholds are gone. Two day-independent

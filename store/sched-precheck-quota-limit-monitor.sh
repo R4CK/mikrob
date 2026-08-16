@@ -19,8 +19,9 @@
 # stale-modal restart-probe) remains the source of truth for NEW vs CURRENT.
 set -uo pipefail
 
-# Keep in sync with quota-check.sh RX / src/model-fallback.ts.
-RX='usage limit reached|reached your usage limit|hit (your|the) usage limit|approaching (your )?usage limit|usage limit (will )?reset|limit will reset at|[0-9]+-hour limit reached|wait for limit to reset|stop and wait for limit|upgrade your plan'
+# Canonical phrase source, shared with src/model-fallback.ts and 5 other scripts (card 115c21e7).
+. "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/session-limit-pattern.sh"
+RX="$SESSION_LIMIT_RX"
 
 sessions=$(tmux ls -F '#{session_name}' 2>/dev/null | grep -E '^agent-|^mikrob-channels$' || true)
 for s in $sessions; do

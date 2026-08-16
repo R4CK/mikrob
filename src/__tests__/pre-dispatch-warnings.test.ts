@@ -16,7 +16,8 @@ import { join, dirname } from 'node:path'
 import { tmpdir } from 'node:os'
 import { fileURLToPath } from 'node:url'
 
-const REAL = join(dirname(fileURLToPath(import.meta.url)), '..', '..', 'store', 'pre-dispatch-check.sh')
+const STORE_DIR = join(dirname(fileURLToPath(import.meta.url)), '..', '..', 'store')
+const REAL = join(STORE_DIR, 'pre-dispatch-check.sh')
 
 let dir: string
 let script: string
@@ -26,6 +27,12 @@ beforeEach(() => {
   script = join(dir, 'pre-dispatch-check.sh')
   copyFileSync(REAL, script)
   chmodSync(script, 0o755)
+  // The script sources $STORE/session-limit-pattern.sh, where $STORE is its OWN dirname (card
+  // 115c21e7) -- since $0 resolves to this temp copy, the sibling must be copied alongside it too,
+  // the same way the fixture state files below are, or the script dies on `source` under
+  // `set -euo pipefail` before it ever reaches the logic under test.
+  copyFileSync(join(STORE_DIR, 'session-limit-pattern.sh'), join(dir, 'session-limit-pattern.sh'))
+  copyFileSync(join(STORE_DIR, 'session-limit-pattern.json'), join(dir, 'session-limit-pattern.json'))
 })
 afterEach(() => {
   rmSync(dir, { recursive: true, force: true })

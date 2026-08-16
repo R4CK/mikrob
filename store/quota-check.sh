@@ -22,11 +22,12 @@ STATE="$STORE/quota-monitor-state.json"
 COUNTDOWN="$STORE/quota-reset-countdown.json"
 TOKEN_FILE="$STORE/.dashboard-token"
 API="http://localhost:3420"
-# Same phrasings as src/model-fallback.ts + the interactive limit-PROMPT wording.
+# Canonical phrase source, shared with src/model-fallback.ts and 5 other scripts (card 115c21e7).
 # (The "/upgrade to increase your usage limit" STARTUP HINT is intentionally NOT
 # here -- it appears in every fresh idle session and caused a different false
 # positive in 2026-06-30.)
-RX='usage limit reached|reached your usage limit|hit (your|the) usage limit|approaching (your )?usage limit|usage limit (will )?reset|limit will reset at|[0-9]+-hour limit reached|wait for limit to reset|stop and wait for limit|upgrade your plan'
+. "$STORE/session-limit-pattern.sh"
+RX="$SESSION_LIMIT_RX"
 
 # SECURITY (Cybersec/gate-ops-scripts-token-in-argv, card edb7559f): the token must never be a curl
 # argv (/proc/<pid>/cmdline is world-readable). write_auth_header refreshes a private 0600 header file

@@ -212,8 +212,32 @@ const USAGE_LIMIT_BANNER_REGION_LINES = 15
 //   KEEP from the fork: the absence of "upgrade to increase your usage limit" (above).
 // The two changes are independent, which is why neither side's file can be taken wholesale: a
 // theirs-merge reintroduces the fleet-wide false positive, an ours-merge drops a real detection.
-const USAGE_LIMIT_RX =
-  /(usage limit reached|reached your usage limit|hit (?:your|the) (?:session|usage) limit|approaching (?:your )?usage limit|usage limit (?:will )?reset|limit will reset at|\d+-hour limit reached)/i
+//
+// CONSOLIDATION (card 115c21e7): this list used to be re-typed independently in 7 other files
+// (5 shell scripts + a Python bridge), and had drifted -- 3 phrasings from the interactive
+// limit-modal ("wait for limit to reset", "stop and wait for limit", "upgrade your plan", added
+// 2026-07-11 by commit 5fccf4f9 for the SAME modal's other menu options) existed only in the shell
+// side and were MISSING here, a real detection gap in this module's own path. This module cannot
+// read them from a shared file at runtime -- its own header states "every decision is still
+// unit-testable without a clock, tmux, or the filesystem", a load-bearing zero-fs-dependency
+// property this consolidation does not get to break. So this array stays the literal, in-memory
+// source of truth, and store/session-limit-pattern.json (read by the 6 non-TS consumers) is kept
+// equal to it by a dedicated consistency test (session-limit-pattern-consistency.test.ts) rather
+// than by a shared runtime read. ERE-safe on purpose (no \d, no (?:...)) so the exact same fragment
+// strings compile under bash `grep -E`, Python `re`, and this RegExp unchanged.
+export const USAGE_LIMIT_FRAGMENTS = [
+  'usage limit reached',
+  'reached your usage limit',
+  'hit (your|the) (session|usage) limit',
+  'approaching (your )?usage limit',
+  'usage limit (will )?reset',
+  'limit will reset at',
+  '[0-9]+-hour limit reached',
+  'wait for limit to reset',
+  'stop and wait for limit',
+  'upgrade your plan',
+]
+const USAGE_LIMIT_RX = new RegExp(`(${USAGE_LIMIT_FRAGMENTS.join('|')})`, 'i')
 
 /**
  * True when the live pane shows a Claude *plan usage-limit* banner (not a

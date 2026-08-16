@@ -61,9 +61,11 @@ HEARTBEAT_FILE = f"{STORE}/mikrob-alive.heartbeat"
 HEARTBEAT_STALE_SEC = 720   # 12 min: MikroB runs scheduled tasks every few min; a
                             # frozen (quota-stuck) session stops touching this file.
 
-LIMIT_RE = re.compile(
-    r"(usage limit reached|reached your usage limit|hit (?:your|the) usage limit"
-    r"|usage limit (?:will )?reset|limit will reset at|\d+-hour limit reached)", re.I)
+# Canonical phrase source, shared with src/model-fallback.ts and 5 other scripts (card 115c21e7).
+def _load_limit_pattern():
+    with open(f"{STORE}/session-limit-pattern.json") as f:
+        return "|".join(json.load(f)["fragments"])
+LIMIT_RE = re.compile(f"({_load_limit_pattern()})", re.I)
 
 POLL_HEALTHY_SEC = 45      # how often to check MikroB health when things are fine
 GETUPDATES_TIMEOUT = 25    # long-poll seconds during outage

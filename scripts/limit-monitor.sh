@@ -40,11 +40,21 @@ if [ -z "$CHAT_ID" ]; then
   exit 0
 fi
 
+# Canonical CORE phrase source, shared with src/model-fallback.ts and 5 other scripts (card
+# 115c21e7), PLUS this monitor's own wider net of extra alert-only signals -- rate_limit_error/429/
+# quota-exceeded/out-of-credits genuinely must NOT reach the core (those are transient-blip signals
+# that must never trigger a MODEL FALLBACK or a fleet dispatch HOLD, only this human-facing heads-up
+# alert), and "reached your (usage|plan|weekly) limit" / "your limit will reset" are wider variants
+# of the core phrasing this monitor keeps on purpose for earlier/broader warning coverage.
+. "$STORE/session-limit-pattern.sh"
+LIMIT_MONITOR_EXTRA_RX='reached your (usage|plan|weekly) limit|your limit will reset|rate_limit_error|429 too many requests|quota exceeded|out of (usage|credits)'
+CANDIDATE_RX="${SESSION_LIMIT_RX}|${LIMIT_MONITOR_EXTRA_RX}"
+
 # Collect candidate text: recent log lines + live tmux pane
 CANDIDATE="$(
   { tail -n 200 "$STORE/channels.log" "$STORE/channels.error.log" "$STORE/dashboard.log" 2>/dev/null;
     tmux capture-pane -t "$SESSION" -p 2>/dev/null;
-  } | grep -iE "usage limit reached|reached your (usage|plan|weekly) limit|your limit will reset|approaching your usage limit|rate_limit_error|429 too many requests|quota exceeded|out of (usage|credits)" \
+  } | grep -iE "$CANDIDATE_RX" \
     | grep -viE "rate.?limit.?error class|no rate|within limit|limit-monitor|LIMIT-FIGYELMEZT|email/nap|req/nap|/nap free|kérés/hó|/hó\b|approaching\.\*limit"
 )"
 

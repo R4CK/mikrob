@@ -11,6 +11,12 @@ set -u
 STORE="/home/neon/marveen/store"
 CD="$STORE/quota-reset-countdown.json"
 TOK="$(cat "$STORE/.dashboard-token" 2>/dev/null)"
+# Canonical phrase source, shared with src/model-fallback.ts and 5 other scripts (card 115c21e7).
+# Was a hand-typed 3-phrase subset before -- e.g. it never matched "hit your session limit"
+# (upstream aefa693) or "N-hour limit reached", so a stale modal in one of those exact shapes would
+# not get Escape+restarted here (the authoritative re-check below, quota-check.sh, still caught it
+# on its own full pattern -- but this pre-pass existed to do that promptly, not lag a cycle behind).
+. "$STORE/session-limit-pattern.sh"
 
 [ -f "$CD" ] || { echo "STATE:no-countdown"; exit 0; }
 
@@ -29,7 +35,7 @@ echo "STATE:due -- attempting resume"
 resumed=()
 for s in $(tmux ls -F '#{session_name}' 2>/dev/null | grep -E '^agent-'); do
   pane=$(tmux capture-pane -t "$s" -p -S -8 2>/dev/null)
-  if echo "$pane" | grep -qiE 'stop and wait for limit|usage limit reached|limit will reset'; then
+  if echo "$pane" | grep -qiE "$SESSION_LIMIT_RX"; then
     tmux send-keys -t "$s" Escape 2>/dev/null
     name="${s#agent-}"
     curl -s --max-time 15 -X POST "http://localhost:3420/api/agents/$name/start" -H @"$hdr_file" -d '{}' >/dev/null 2>&1
