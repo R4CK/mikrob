@@ -66,16 +66,18 @@ describe('llmAnimateBatch (once-only entrance animation on 5s-polled sections)',
     expect(body).toMatch(/\(\?=\["\\\\s\]\)/)
   })
 
-  it('is wired into the small tile grids/lists: status, models, usage, queue', () => {
+  it('is wired into the small tile grids/lists: status, models, usage+queue (unified)', () => {
     const statusBody = fnBody(APP, 'async function llmRefreshStatus()')
     expect(statusBody).toContain("llmAnimateBatch(tiles.join(''), 'status', 'llm-tile')")
     expect(statusBody).toContain("'models', 'llm-model-row')")
 
+    // After card 88c00f5e: queue tiles merged into llmRefreshUsage (8-tile unified block).
+    // llmRefreshQueue now delegates to llmRefreshUsage; the 'usage' key covers all 8 tiles.
     const usageBody = fnBody(APP, 'async function llmRefreshUsage()')
     expect(usageBody).toContain("'usage', 'llm-tile')")
 
     const queueBody = fnBody(APP, 'async function llmRefreshQueue()')
-    expect(queueBody).toContain("'queue', 'llm-tile')")
+    expect(queueBody).toContain('llmRefreshUsage()')
   })
 
   it('NOT wired into Categories (Peti feedback 2026-08-16: "vibrál") -- ~80 rows is too many for a per-row stagger', () => {
@@ -127,27 +129,17 @@ describe('#localLlm page polish CSS (card a05c39c9)', () => {
   })
 })
 
-describe('Feladat-sor scope hint (card c4abd0f0, MikroB correction 2026-08-16)', () => {
-  // The queue widget (GET /api/local-llm/queue*) reads a narrow, rarely-used async job-queue
-  // table -- NOT the main offload path (which is usage-log based, see the "Használat" section).
-  // A quiet queue was misread as "offload stopped entirely" during a05c39c9's investigation;
-  // MikroB corrected it with a live measurement (41.6% local ratio that same day). This hint
-  // exists so the same misreading doesn't happen again from the UI alone.
-  it('the hint sits right after the queue description, inside the same section', () => {
-    const titleIdx = HTML.indexOf('data-i18n="localLlm.queue.title"')
-    const descIdx = HTML.indexOf('data-i18n="localLlm.queue.desc"', titleIdx)
-    const hintIdx = HTML.indexOf('data-i18n="localLlm.queue.scope_hint"', descIdx)
-    const tilesIdx = HTML.indexOf('id="llmQueueTiles"', hintIdx)
-    expect(descIdx).toBeGreaterThan(titleIdx)
-    expect(hintIdx).toBeGreaterThan(descIdx)
-    expect(tilesIdx).toBeGreaterThan(hintIdx)
+describe('Aktivitás unified view (card 88c00f5e)', () => {
+  // Feladat-sor + Használat sections merged into a single Aktivitás block.
+  // The separate llmQueueTiles / scope_hint were removed; llmRefreshQueue delegates.
+  it('unified activity section present in HTML with filter row and scroll container', () => {
+    expect(HTML).toContain('class="llm-queue-filter"')
+    expect(HTML).toContain('llm-activity-scroll')
+    expect(HTML).toContain('id="llmUsageRecent"')
   })
 
-  it('exists in both languages and points at the Usage section for the full picture', () => {
-    expect(HU).toContain("'localLlm.queue.scope_hint':")
-    expect(EN).toContain("'localLlm.queue.scope_hint':")
-    const huIdx = HU.indexOf("'localLlm.queue.scope_hint':")
-    const huLine = HU.slice(huIdx, HU.indexOf('\n', huIdx))
-    expect(huLine).toMatch(/Használat/)
+  it('i18n title key updated to Aktivitás in both languages', () => {
+    expect(HU).toContain("'Aktivitás (mai nap)'")
+    expect(EN).toContain("'Activity (today)'")
   })
 })
