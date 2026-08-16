@@ -84,8 +84,44 @@ async function newestJsonl(dir: string): Promise<string | null> {
   return withMtime[0]!.f
 }
 
-const cache = new Map<string, { value: string | null; expiresAt: number }>()
 const TTL_MS = 3000
+
+/**
+ * Cache a `compute()` result for TTL_MS, keyed by `key` -- AND coalesce concurrent callers for the
+ * same key into the same in-flight read (card 9a2fd3f7, part 2). Async alone was not enough: a
+ * burst of N concurrent requests all miss the value cache in the same instant (none of them has
+ * finished long enough to populate it for the others), so all N independently re-open, re-stat, and
+ * re-read the identical file. Measured live after the async conversion: a 20-request burst against
+ * 6 running agents got WORSE (up to 17.35s), not better -- Node's libuv threadpool defaults to 4
+ * threads, and 20 x 6 x 2 (model + tokens) independent read sequences queue behind those 4 exactly
+ * like the requests used to queue behind the single JS thread. Coalescing collapses that fan-out
+ * back down to one read per (key) per TTL window, which is the actual number of distinct answers
+ * that exist.
+ */
+function coalesced<T>(
+  cacheMap: Map<string, { value: T; expiresAt: number }>,
+  inFlight: Map<string, Promise<T>>,
+  key: string,
+  compute: () => Promise<T>,
+): Promise<T> {
+  const cached = cacheMap.get(key)
+  if (cached && cached.expiresAt > Date.now()) return Promise.resolve(cached.value)
+  const pending = inFlight.get(key)
+  if (pending) return pending
+  const promise = compute()
+    .then((value) => {
+      cacheMap.set(key, { value, expiresAt: Date.now() + TTL_MS })
+      return value
+    })
+    .finally(() => {
+      inFlight.delete(key)
+    })
+  inFlight.set(key, promise)
+  return promise
+}
+
+const cache = new Map<string, { value: string | null; expiresAt: number }>()
+const modelInFlight = new Map<string, Promise<string | null>>()
 
 // Resolve the session-log directory Claude Code writes for a working dir.
 // Logs live under <config-root>/projects/<encoded-working-dir>/, where the
@@ -98,48 +134,41 @@ export function projectsDirFor(workingDir: string, configDir?: string, homeDirOv
   return join(base, 'projects', encoded)
 }
 
-export async function readActiveModelFromProjectDir(workingDir: string, sinceUnixSec?: number, configDir?: string): Promise<string | null> {
-  const now = Date.now()
+export function readActiveModelFromProjectDir(workingDir: string, sinceUnixSec?: number, configDir?: string): Promise<string | null> {
   const cacheKey = `${workingDir}:${sinceUnixSec ?? ''}:${configDir ?? ''}`
-  const cached = cache.get(cacheKey)
-  if (cached && cached.expiresAt > now) return cached.value
-  let value: string | null = null
-  try {
-    const dir = projectsDirFor(workingDir, configDir)
-    if (!existsSync(dir)) {
-      cache.set(cacheKey, { value: null, expiresAt: now + TTL_MS })
+  return coalesced(cache, modelInFlight, cacheKey, async () => {
+    try {
+      const dir = projectsDirFor(workingDir, configDir)
+      if (!existsSync(dir)) return null
+      const newest = await newestJsonl(dir)
+      if (newest === null) return null
+      const lines = await tailLinesFor(join(dir, newest))
+      for (let i = lines.length - 1; i >= 0; i--) {
+        const line = lines[i].trim()
+        if (!line) continue
+        try {
+          const entry = JSON.parse(line)
+          const msg = entry?.message
+          const model = msg?.model
+          if (typeof model !== 'string' || model.startsWith('<')) continue
+          if (sinceUnixSec !== undefined) {
+            const ts = entry?.timestamp
+            if (typeof ts !== 'string') continue
+            const lineUnix = Math.floor(new Date(ts).getTime() / 1000)
+            if (!Number.isFinite(lineUnix) || lineUnix < sinceUnixSec) continue
+          }
+          return model
+        } catch { /* skip malformed JSON line */ }
+      }
       return null
+    } catch {
+      return null // fall through, same as the old try/catch's outer swallow
     }
-    const newest = await newestJsonl(dir)
-    if (newest === null) {
-      cache.set(cacheKey, { value: null, expiresAt: now + TTL_MS })
-      return null
-    }
-    const lines = await tailLinesFor(join(dir, newest))
-    for (let i = lines.length - 1; i >= 0; i--) {
-      const line = lines[i].trim()
-      if (!line) continue
-      try {
-        const entry = JSON.parse(line)
-        const msg = entry?.message
-        const model = msg?.model
-        if (typeof model !== 'string' || model.startsWith('<')) continue
-        if (sinceUnixSec !== undefined) {
-          const ts = entry?.timestamp
-          if (typeof ts !== 'string') continue
-          const lineUnix = Math.floor(new Date(ts).getTime() / 1000)
-          if (!Number.isFinite(lineUnix) || lineUnix < sinceUnixSec) continue
-        }
-        value = model
-        break
-      } catch { /* skip malformed JSON line */ }
-    }
-  } catch { /* fall through */ }
-  cache.set(cacheKey, { value, expiresAt: now + TTL_MS })
-  return value
+  })
 }
 
 const ctxCache = new Map<string, { value: number | null; expiresAt: number }>()
+const ctxInFlight = new Map<string, Promise<number | null>>()
 
 // Current context size of the live session, in tokens. Claude Code records a
 // `usage` object on each assistant turn; the context that gets re-read every
@@ -149,35 +178,32 @@ const ctxCache = new Map<string, { value: number | null; expiresAt: number }>()
 // null when there is no transcript / no usage yet (fresh session). This is what
 // the dashboard surfaces so the operator can see a session growing heavy and
 // decide to restart it.
-export async function readContextTokensFromProjectDir(workingDir: string, configDir?: string): Promise<number | null> {
-  const now = Date.now()
+export function readContextTokensFromProjectDir(workingDir: string, configDir?: string): Promise<number | null> {
   const cacheKey = `${workingDir}:${configDir ?? ''}`
-  const cached = ctxCache.get(cacheKey)
-  if (cached && cached.expiresAt > now) return cached.value
-  let value: number | null = null
-  try {
-    const dir = projectsDirFor(workingDir, configDir)
-    if (existsSync(dir)) {
+  return coalesced(ctxCache, ctxInFlight, cacheKey, async () => {
+    try {
+      const dir = projectsDirFor(workingDir, configDir)
+      if (!existsSync(dir)) return null
       const newest = await newestJsonl(dir)
-      if (newest !== null) {
-        const lines = await tailLinesFor(join(dir, newest))
-        for (let i = lines.length - 1; i >= 0; i--) {
-          const line = lines[i].trim()
-          if (!line) continue
-          try {
-            const u = JSON.parse(line)?.message?.usage
-            if (u && typeof u === 'object') {
-              const inp = Number(u.input_tokens) || 0
-              const cr = Number(u.cache_read_input_tokens) || 0
-              const cc = Number(u.cache_creation_input_tokens) || 0
-              const total = inp + cr + cc
-              if (total > 0) { value = total; break }
-            }
-          } catch { /* skip malformed JSON line */ }
-        }
+      if (newest === null) return null
+      const lines = await tailLinesFor(join(dir, newest))
+      for (let i = lines.length - 1; i >= 0; i--) {
+        const line = lines[i].trim()
+        if (!line) continue
+        try {
+          const u = JSON.parse(line)?.message?.usage
+          if (u && typeof u === 'object') {
+            const inp = Number(u.input_tokens) || 0
+            const cr = Number(u.cache_read_input_tokens) || 0
+            const cc = Number(u.cache_creation_input_tokens) || 0
+            const total = inp + cr + cc
+            if (total > 0) return total
+          }
+        } catch { /* skip malformed JSON line */ }
       }
+      return null
+    } catch {
+      return null // fall through, same as the old try/catch's outer swallow
     }
-  } catch { /* fall through */ }
-  ctxCache.set(cacheKey, { value, expiresAt: now + TTL_MS })
-  return value
+  })
 }
