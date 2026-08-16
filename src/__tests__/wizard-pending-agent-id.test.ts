@@ -23,7 +23,9 @@ import { join } from 'node:path'
 // template invariants. What they lock is ORDER and PRESENCE, which is exactly
 // what a later refactor would silently drop.
 
-const APP = readFileSync(join(__dirname, '..', '..', 'web', 'app.js'), 'utf-8')
+const APP_CORE = readFileSync(join(__dirname, '..', '..', 'web', 'app.js'), 'utf-8')
+const APP_MESSAGES = readFileSync(join(__dirname, '..', '..', 'web', 'app-messages.js'), 'utf-8')
+const APP = APP_CORE + '\n' + APP_MESSAGES
 
 /**
  * The wizard's step-4 pending loader, sliced to its ACTUAL end.
