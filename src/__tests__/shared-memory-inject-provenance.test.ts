@@ -20,7 +20,8 @@
 // cross-process does not), while a python3 parent/child pair over loopback works reliably. That
 // asymmetry is an artifact of this sandbox's networking, not of the hook script under test.
 import { describe, it, expect, afterEach } from 'vitest'
-import { spawn, spawnSync, type ChildProcessWithoutNullStreams } from 'node:child_process'
+import { spawn, spawnSync, type ChildProcessByStdio } from 'node:child_process'
+import type { Readable } from 'node:stream'
 import { mkdtempSync, mkdirSync, writeFileSync, readFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join, dirname } from 'node:path'
@@ -189,7 +190,7 @@ function sandboxScript(scriptSource: string): string {
   return script
 }
 
-function startFixtureServer(payload: unknown): Promise<{ proc: ChildProcessWithoutNullStreams; port: number; responseFile: string }> {
+function startFixtureServer(payload: unknown): Promise<{ proc: ChildProcessByStdio<null, Readable, null>; port: number; responseFile: string }> {
   const dir = mkdtempSync(join(tmpdir(), 'shared-mem-fixture-'))
   const responseFile = join(dir, 'response.json')
   writeFileSync(responseFile, JSON.stringify(payload))
@@ -205,7 +206,7 @@ function startFixtureServer(payload: unknown): Promise<{ proc: ChildProcessWitho
   })
 }
 
-let liveProc: ChildProcessWithoutNullStreams | undefined
+let liveProc: ChildProcessByStdio<null, Readable, null> | undefined
 
 afterEach(() => {
   liveProc?.kill()
