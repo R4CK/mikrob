@@ -170,4 +170,59 @@ describe('gateCompletenessGuardVerdict', () => {
     comments = [{ author: 'qa', content: 'QA PASS', created_at: 200 }]
     expect(gateCompletenessGuardVerdict('c1', 'done', true, 'backend2').blocked).toBe(true)
   })
+
+  // Card 1da2367a, the b68ddae8 incident: a real 3-gate card was wrongly BLOCKED on close even
+  // though all three gates had genuinely, freshly verdicted -- only force:true+actor:'mikrob' got it
+  // through. Root cause: QA's own convention prefixes a verdict with "REVIEW: QA PASS/FAIL", the
+  // SAME word `latestReviewAt` looks for to find "the round just started". QA's comment landing
+  // chronologically AFTER Cybered's real GO made Cybered's verdict look like it predated the round.
+  describe('a GATE AGENT\'s own "REVIEW: ..."-prefixed verdict must not count as a new round-marker (card 1da2367a / b68ddae8)', () => {
+    it('reproduces b68ddae8 exactly: Cybered GO lands before QA\'s "REVIEW: QA PASS" -- both must still count', () => {
+      card.description = 'Gate: QA + Cybersec + Cybered'
+      comments = [
+        { author: 'backend', content: 'Gate-SHA: abc123\nREVIEW: kesz -- a leiras', created_at: 100 },
+        { author: 'cybered', content: 'CYBERED GO.\n\nGate-SHA: abc123', created_at: 200 },
+        { author: 'qa', content: 'REVIEW: QA PASS\nGate-SHA: abc123', created_at: 300 },
+        { author: 'cybersec', content: 'CYBERSEC GO -- ...\n\nGate-SHA: abc123', created_at: 400 },
+      ]
+      expect(gateCompletenessGuardVerdict('c1', 'done', false).blocked).toBe(false)
+    })
+
+    it('a QA verdict alone (no other round-marker) never blocks itself out of counting', () => {
+      card.description = 'Gate: QA + Cybersec'
+      comments = [
+        { author: 'qa', content: 'REVIEW: QA PASS', created_at: 100 },
+        { author: 'cybersec', content: 'CYBERSEC GO', created_at: 101 },
+      ]
+      expect(gateCompletenessGuardVerdict('c1', 'done', false).blocked).toBe(false)
+    })
+
+    it('CONTROL: a genuinely stale gate verdict is still caught -- the fix does not just disable staleness', () => {
+      card.description = 'Gate: QA + Cybersec'
+      comments = [
+        { author: 'cybersec', content: 'CYBERSEC NO-GO @ old sha', created_at: 100 },
+        { author: 'qa', content: 'REVIEW: QA PASS @ old sha', created_at: 101 },
+        // A genuine BUILDER round-marker after both old verdicts -- this one must still count.
+        { author: 'backend2', content: 'REVIEW -- fixed, new commit', created_at: 300 },
+      ]
+      const v = gateCompletenessGuardVerdict('c1', 'done', false)
+      expect(v.blocked).toBe(true)
+      expect(v.message).toContain('QA')
+      expect(v.message).toContain('Cybersec')
+    })
+  })
+
+  it('the Gate-SHA-first comment shape (REVIEW on line 2, not line 1) is recognised as a round-marker', () => {
+    card.description = 'Gate: QA + Cybersec'
+    comments = [
+      { author: 'cybersec', content: 'CYBERSEC NO-GO @ old sha', created_at: 100 },
+      { author: 'qa', content: 'QA PASS @ old sha', created_at: 101 },
+      // Gate-SHA on its OWN first line, "REVIEW" starts line 2 -- must still count as a fresh round.
+      { author: 'backend2', content: 'Gate-SHA: newsha123\nREVIEW: kesz -- fixed', created_at: 300 },
+    ]
+    const v = gateCompletenessGuardVerdict('c1', 'done', false)
+    expect(v.blocked).toBe(true) // the old verdicts are correctly stale against the new round
+    expect(v.message).toContain('QA')
+    expect(v.message).toContain('Cybersec')
+  })
 })

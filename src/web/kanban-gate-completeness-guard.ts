@@ -78,7 +78,18 @@ export function parseGateDesignation(gateLine: string): Set<GateAgent> | null {
 // matching inside "NO-GO"/"NO GO" -- a later "now fixed, GO" in the SAME comment still counts, only
 // the negated form does not.
 const VERDICT_RX = /\bPASS\b|\bSKIP\b|(?<!NO[- ])\bGO\b/i
-const REVIEW_RX = /^\s*REVIEW\b/i
+// `m` (multiline): a comment conventionally opens with `Gate-SHA: ...` on its OWN first line (root
+// CLAUDE.md rule 4b) and "REVIEW" on the line after it -- without `m`, `^` anchors to the absolute
+// start of the whole comment, so that (very common) shape never matched at all (card b68ddae8's own
+// completion comment, 13817, is exactly this shape).
+const REVIEW_RX = /^\s*REVIEW\b/im
+/** QA's own verdict convention prefixes with "REVIEW: QA PASS/FAIL" -- the SAME word builders use
+ *  to announce a new round. Counting a gate's own verdict comment as a round-marker made every
+ *  OTHER gate's verdict posted BEFORE it look stale, even when nothing had changed (card b68ddae8:
+ *  Cybered's GO landed before QA's "REVIEW: QA PASS", so QA's own comment "started a new round" a
+ *  moment after Cybered had already verdicted the SAME commit -- Cybered's real, fresh GO was
+ *  discarded as pre-round). Only a non-gate author (the builder, MikroB, ...) can open a new round. */
+const GATE_AGENT_NAMES: ReadonlySet<string> = new Set<GateAgent>(['qa', 'qa2', 'cybersec', 'cybered'])
 
 interface Comment {
   readonly author: string
@@ -92,7 +103,9 @@ interface Comment {
  *  rule gate-dispatch-check.sh already applies per-gate, generalised here to "every designated
  *  gate must have looked at the CURRENT round", not just the one a dispatch happened to target. */
 function latestReviewAt(comments: readonly Comment[]): number | null {
-  const stamps = comments.filter((c) => REVIEW_RX.test(c.content ?? '')).map((c) => c.created_at)
+  const stamps = comments
+    .filter((c) => REVIEW_RX.test(c.content ?? '') && !GATE_AGENT_NAMES.has((c.author ?? '').toLowerCase()))
+    .map((c) => c.created_at)
   return stamps.length ? Math.max(...stamps) : null
 }
 
