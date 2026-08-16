@@ -77,6 +77,14 @@ QUANT_RX = re.compile(r"[.\-_]((?:IQ|Q)\d+[_A-Za-z0-9]*|f16|fp16|bf16)(?=\.gguf$
 # would produce nothing runnable. A multimodal projector accompanies a model; it never replaces one.
 COMPANION_RX = re.compile(r"(^|/)(mmproj|mmproj-model|clip|vision)[-_.]", re.I)
 
+# The HF repo-id shape: owner/name, each segment starting alnum, then alnum/dot/dash/underscore.
+# `repo` comes RAW from the discovery API response and is embedded verbatim into `installRef`
+# ("hf.co/%s:%s") -- which is written to the on-disk cache and read back in --offline mode without
+# ever touching the network again, so a malformed value here survives past the moment it was fetched
+# (Cybered LOW-1, card d7220a73). Checked at catalogue-build time; the consumer that turns installRef
+# into an actual `ollama pull` re-checks the same shape before running it (src/web/routes/local-llm.ts).
+HF_REPO_RX = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]*/[A-Za-z0-9][A-Za-z0-9._-]*$")
+
 
 def _get(url, fixture=None, timeout=30):
     """One JSON GET. With --fixture, read a file instead -- the selftest must not touch the network,
@@ -240,6 +248,9 @@ def build(gpu, limit=20, fixture=None, keywords=None):
             if not repo or repo in seen:
                 continue
             seen.add(repo)
+            if not HF_REPO_RX.match(repo):
+                notes.append("dropped catalogue entry with a malformed repo id: %r" % repo)
+                continue
             # A gated repo needs a token the first-run flow does not have -- offering it would
             # produce an install that fails at the download, which is worse than not listing it.
             if m.get("gated") or m.get("private"):
@@ -276,6 +287,12 @@ def build(gpu, limit=20, fixture=None, keywords=None):
                         "quant": s["quant"],
                         "parts": s["parts"],
                         "partCount": len(s["parts"]),
+                        # DERIVED, not a principle left implicit: a set is pinned only when EVERY part
+                        # carries a digest. A consumer that checked just parts[0] would look identical
+                        # to one that checked them all when part 0 happens to be pinned and the rest
+                        # are not (Cybered LOW-2, card d7220a73) -- this field is the one true answer,
+                        # kept honest by validate() re-deriving and comparing it below.
+                        "pinned": all(p["sha256"] for p in s["parts"]),
                         "fileMib": file_mib,
                         "requiredMib": req,
                         "kvCacheMib": int((DEFAULT_CTX / 1024.0) * KV_MIB_PER_1K_CTX),
@@ -429,7 +446,7 @@ def fallback(gpu, why):
 REQUIRED_MODEL_FIELDS = (
     "id", "repo", "repoOwner", "quant", "parts", "partCount", "fileMib", "requiredMib",
     "kvCacheMib", "contextTokens", "tier", "tokensPerSecond", "installRef", "trusted",
-    "trustReason", "installedAt", "benchmarkedAt",
+    "trustReason", "installedAt", "benchmarkedAt", "pinned",
 )
 
 
@@ -466,6 +483,13 @@ def validate(doc):
             errs.append("%s fileMib %r is not the sum of its parts (%d)" % (where, m.get("fileMib"), summed))
         if any(not p.get("sha256") for p in parts):
             errs.append("%s has a part with no sha256 -- the set is not pinned" % where)
+        # `pinned` must be RE-DERIVED and compared, not merely present -- the same rule this file
+        # already applies to fileMib (checked against the sum of its parts) and partCount (checked
+        # against len(parts)). A stored boolean that drifts from its parts is worse than no field.
+        if bool(m.get("pinned")) != all(p.get("sha256") for p in parts):
+            errs.append("%s pinned=%r does not match whether every part has a sha256" % (where, m.get("pinned")))
+        if not HF_REPO_RX.match(str(m.get("repo") or "")):
+            errs.append("%s repo %r is not a valid HF repo id" % (where, m.get("repo")))
         if int(m.get("requiredMib") or 0) <= int(m.get("fileMib") or 0):
             errs.append("%s requiredMib must exceed fileMib (KV cache + overhead)" % where)
         if m.get("tier") not in ("fits", "partial"):

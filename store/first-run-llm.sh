@@ -428,8 +428,20 @@ for i,m in enumerate(d["models"][:5],1):
     # carry a top-level sha256, 435 of 435 carry parts) -- and when a part carries none, the line
     # SAYS so rather than leaving the reader to assume the digest was checked.
     parts = m.get("parts") or []
-    dig = (parts[0].get("sha256") or "") if parts else ""
-    dig = ("sha256 " + dig[:12] + (" (%d parts)" % len(parts) if len(parts) > 1 else "")) if dig else "no digest published"
+    # Cybered LOW-2 (card d7220a73): this used to read only parts[0].sha256, so a set that was
+    # pinned on part 0 and NOT on the rest printed "sha256 <hash> (N parts)" -- identical to a fully
+    # pinned entry. Re-derived from every part, the same rule store/llm-catalog.py's own `pinned`
+    # field and validate() now enforce, not trusted from a cached flag that could drift.
+    first_sha = (parts[0].get("sha256") or "") if parts else ""
+    pinned_count = sum(1 for p in parts if p.get("sha256"))
+    if not first_sha:
+        dig = "no digest published"
+    elif len(parts) == 1:
+        dig = "sha256 " + first_sha[:12]
+    elif pinned_count == len(parts):
+        dig = "sha256 %s (%d parts, all pinned)" % (first_sha[:12], len(parts))
+    else:
+        dig = "sha256 %s (%d/%d parts pinned -- INCOMPLETE)" % (first_sha[:12], pinned_count, len(parts))
     dl = m.get("downloads")
     dl = ("%d downloads" % dl) if isinstance(dl, int) else "download count unknown"
     print("      %s | %s" % (dl, dig))

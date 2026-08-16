@@ -195,6 +195,66 @@ check("within one repo the best quant leads", ["Q4_K_M", "Q3_K_M", "Q2_K"],
 # lose its place to a niche one with a fancier quant.
 check("  ...and the more popular REPO still leads", "B/y", _sorted[0]["repo"])
 
+# --- 8. Cybered LOW-1: a malformed repo id must not survive to the offline cache (card d7220a73) --
+print("\n-- Cybered LOW-1: repo shape --")
+check("a normal owner/repo passes", True, bool(cat.HF_REPO_RX.match("Qwen/Qwen2.5-Coder-7B-GGUF")))
+check("no slash is rejected", False, bool(cat.HF_REPO_RX.match("justarepo")))
+check("two slashes are rejected", False, bool(cat.HF_REPO_RX.match("a/b/c")))
+check("a segment starting with a dot is rejected", False, bool(cat.HF_REPO_RX.match("../etc")))
+check("an empty repo is rejected", False, bool(cat.HF_REPO_RX.match("")))
+
+# The malformed id must contain a relevance keyword ("coder") itself, so the ONLY thing that can
+# exclude it is the shape guard under test -- otherwise the ordinary relevance filter would drop it
+# too, and the control would pass even with the guard removed (checked with a mutation: it did).
+MALFORMED_REPO = ".hidden/coder-model"
+tmp2 = tempfile.mkdtemp()
+for term in ["coder", "code", "starcoder"]:
+    url = "%s/api/models?filter=gguf&search=%s&sort=downloads&direction=-1&limit=20" % (cat.HF, term)
+    with open(os.path.join(tmp2, fixture_name(url)), "w") as f:
+        json.dump(disco + [{"id": MALFORMED_REPO, "author": "Qwen", "downloads": 1, "gated": False}]
+                   if term == "coder" else [], f)
+for repo in ["Qwen/Test-Coder-GGUF", "shady/Test-Coder-GGUF", MALFORMED_REPO]:
+    url = "%s/api/models/%s/tree/main?recursive=true" % (cat.HF, repo)
+    with open(os.path.join(tmp2, fixture_name(url)), "w") as f:
+        json.dump(tree_dup, f)
+models2, notes2 = cat.build(GPU6, fixture=tmp2)
+check("the malformed repo id is dropped, not catalogued", False, MALFORMED_REPO in {m["repo"] for m in models2})
+check("its rejection is stated, not silent", True, any("malformed repo id" in n for n in notes2))
+
+# --- 9. Cybered LOW-2: pinned is DERIVED from every part, not just parts[0] (card d7220a73) --------
+print("\n-- Cybered LOW-2: pinned --")
+tree_partial = [gguf("m-q4-00001-of-00002.gguf", 3.72), gguf("m-q4-00002-of-00002.gguf", 0.64)]
+s = cat.quant_sets(tree_partial)
+one = list(s.values())[0]
+one["parts"][1]["sha256"] = None  # part 0 pinned, part 1 is not -- the exact shape LOW-2 named
+check("a set with one unpinned part is not fully pinned", False, all(p["sha256"] for p in one["parts"]))
+
+# THE control that would have caught the shipped bug: run it through the real build(), part 0 pinned
+# and part 1 NOT, and check the field build() actually WRITES -- not a hand-set dict. `models` from
+# section 5 is all single-part, so it cannot exercise this: part 0 IS every part there.
+tmp3 = tempfile.mkdtemp()
+for term in ["coder", "code", "starcoder"]:
+    url = "%s/api/models?filter=gguf&search=%s&sort=downloads&direction=-1&limit=20" % (cat.HF, term)
+    with open(os.path.join(tmp3, fixture_name(url)), "w") as f:
+        json.dump([{"id": "Qwen/Partial-Coder-GGUF", "author": "Qwen", "downloads": 1, "gated": False}]
+                   if term == "coder" else [], f)
+url = "%s/api/models/Qwen/Partial-Coder-GGUF/tree/main?recursive=true" % cat.HF
+with open(os.path.join(tmp3, fixture_name(url)), "w") as f:
+    json.dump([gguf("p-fp16-00001-of-00002.gguf", 2.0), gguf("p-fp16-00002-of-00002.gguf", 2.0, oid=None)], f)
+models3, _ = cat.build(GPU6, fixture=tmp3)
+check("build() produced exactly one partial-digest model", 1, len(models3))
+check("its pinned field is False -- part 0 alone must not read as pinned", False, models3[0]["pinned"])
+
+# `models` (section 5's e2e fixture build) is a real, fully-valid document -- reused here for the
+# validate()-agrees case, which the single-part shape above cannot exercise on its own.
+_env = {"schemaVersion": 1, "generatedAt": "x", "source": "x", "warnings": [], "host": {}, "models": models}
+check("a correctly-built catalogue's pinned fields all agree with their parts", [],
+      [e for e in cat.validate(_env) if "pinned" in e])
+_bad = dict(models[0])
+_bad["pinned"] = not _bad["pinned"]
+check("validate() catches a pinned flag that disagrees with its own parts", True,
+      any("pinned" in e for e in cat.validate({**_env, "models": [_bad]})))
+
 print()
 if fails:
     print("selftest: FAIL (%d)" % len(fails))

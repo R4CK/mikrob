@@ -365,6 +365,25 @@ function readOffloadConfig(): Record<string, unknown> {
 // name (repo/name:tag, digests, registry host). Anchored + length-capped so a
 // crafted value cannot smuggle shell metacharacters or an unbounded string.
 const MODEL_RE = /^[A-Za-z0-9._:/@-]{1,200}$/
+
+// Same shape store/llm-catalog.py's HF_REPO_RX enforces at catalogue-build time. MODEL_RE above is
+// deliberately loose (it also has to accept plain ollama tags like "qwen2.5-coder:7b"), so it alone
+// would still pass a malformed "hf.co/<repo>:<quant>" ref. The catalogue is a gitignored,
+// agent-writable file read back in --offline mode without ever touching the network again, so a
+// build-time check does not survive being written to disk -- the consumer that actually executes the
+// pull re-checks the embedded repo id here (Cybered LOW-1, card d7220a73).
+const HF_REPO_RE = /^[A-Za-z0-9][A-Za-z0-9._-]*\/[A-Za-z0-9][A-Za-z0-9._-]*$/
+
+// EXPORTED so the HF-repo-shape control (Cybered LOW-1, card d7220a73) can be unit-tested directly,
+// without spawning a real `ollama` process through the route.
+export function isValidPullTarget(model: string): boolean {
+  if (!MODEL_RE.test(model)) return false
+  if (!model.startsWith('hf.co/')) return true
+  const rest = model.slice('hf.co/'.length)
+  const repo = rest.includes(':') ? rest.slice(0, rest.lastIndexOf(':')) : rest
+  return HF_REPO_RE.test(repo)
+}
+
 const MAX_PROMPT_LEN = 4000
 const RUN_TIMEOUT_MS = 120_000
 
@@ -1346,7 +1365,9 @@ export async function tryHandleLocalLlm(ctx: RouteContext): Promise<boolean> {
   if (path === '/api/local-llm/pull' && method === 'POST') {
     let model = ''
     try { model = (JSON.parse((await readBody(req)).toString()).model || '').trim() } catch { /* bad json */ }
-    if (!MODEL_RE.test(model)) { json(res, { error: 'Érvénytelen modellnév.' }, 400); return true }
+    // This is the door that actually spawns `ollama pull`, so an `hf.co/` ref gets the stricter
+    // HF-repo-shape check on top of MODEL_RE's charset (see isValidPullTarget).
+    if (!isValidPullTarget(model)) { json(res, { error: 'Érvénytelen modellnév.' }, 400); return true }
     if (activePullId && !pullJobs.get(activePullId)?.done) {
       json(res, { error: 'Már fut egy letöltés. Várd meg, míg befejeződik.' }, 409)
       return true

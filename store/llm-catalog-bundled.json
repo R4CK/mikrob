@@ -36,7 +36,8 @@
    "trustReason": "allowlisted-publisher",
    "installedAt": null,
    "benchmarkedAt": null,
-   "notes": []
+   "notes": [],
+   "pinned": true
   },
   {
    "id": "qwen_qwen2.5-coder-7b-instruct-gguf:q2_k",
@@ -66,7 +67,8 @@
    "trustReason": "allowlisted-publisher",
    "installedAt": null,
    "benchmarkedAt": null,
-   "notes": []
+   "notes": [],
+   "pinned": true
   },
   {
    "id": "bartowski_dolphincoder-starcoder2-7b-gguf:q4_k_m",
@@ -96,7 +98,8 @@
    "trustReason": "allowlisted-publisher",
    "installedAt": null,
    "benchmarkedAt": null,
-   "notes": []
+   "notes": [],
+   "pinned": true
   },
   {
    "id": "qwen_qwen2.5-coder-14b-instruct-gguf:q4_k_m",
@@ -128,7 +131,8 @@
    "benchmarkedAt": null,
    "notes": [
     "some layers stay on CPU at this VRAM -- slower, still usable"
-   ]
+   ],
+   "pinned": true
   },
   {
    "id": "bartowski_starcoder2-15b-instruct-v0.1-gguf:q6_k",
@@ -160,7 +164,8 @@
    "benchmarkedAt": null,
    "notes": [
     "some layers stay on CPU at this VRAM -- slower, still usable"
-   ]
+   ],
+   "pinned": true
   }
  ],
  "warnings": [
