@@ -167,19 +167,18 @@ describe('llmRecGroupHtml / llmRecVariantBodyHtml (per-group card + variant swap
   })
 
   it('the use button routes through the explicit activation gate, not an inline fetch here', () => {
-    // The actual POST /api/local-llm/model call now lives in llmPostActivateModel, shared by
-    // the plain-click path and the publisher-trust confirm retry (card fa8959cd) -- see
-    // local-llm-trust-confirm-ui-wiring.test.ts for the full activation + trust-gate contract.
+    // The POST /api/local-llm/model call lives in llmActivateModelClick (d297f26f: the separate
+    // llmPostActivateModel helper was removed together with the trust-confirm gate; direct fetch).
     const body = fnBody(APP, 'function llmWireRecActionButtons(root)')
     expect(body).toContain('llmActivateModelClick(b.dataset.model, b)')
     expect(body).not.toMatch(/fetch\('\/api\/local-llm\/model'/)
   })
 
   it('activation is still its own explicit POST /api/local-llm/model -- a download never silently becomes active', () => {
-    const body = fnBody(APP, 'async function llmPostActivateModel(model, iTrust)')
+    const body = fnBody(APP, 'async function llmActivateModelClick(model, btn)')
     expect(body).toContain("fetch('/api/local-llm/model'")
     expect(body).toContain("method: 'POST'")
-    expect(body).toContain('JSON.stringify(iTrust ? { model, iTrust } : { model })')
+    expect(body).toContain("JSON.stringify({ model })")
   })
 
   it('swapping the quant <select> re-renders only that group\'s body from already-fetched data, no re-fetch', () => {
