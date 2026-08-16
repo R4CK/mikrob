@@ -430,8 +430,8 @@ for i,m in enumerate(d["models"][:5],1):
     parts = m.get("parts") or []
     # Cybered LOW-2 (card d7220a73): this used to read only parts[0].sha256, so a set that was
     # pinned on part 0 and NOT on the rest printed "sha256 <hash> (N parts)" -- identical to a fully
-    # pinned entry. Re-derived from every part, the same rule store/llm-catalog.py's own `pinned`
-    # field and validate() now enforce, not trusted from a cached flag that could drift.
+    # pinned entry. Re-derived from every part, the same rule the `pinned` field in
+    # store/llm-catalog.py and its validate() now enforce, not trusted from a cached flag that could drift.
     first_sha = (parts[0].get("sha256") or "") if parts else ""
     pinned_count = sum(1 for p in parts if p.get("sha256"))
     if not first_sha:

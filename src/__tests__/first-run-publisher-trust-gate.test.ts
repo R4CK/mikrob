@@ -25,6 +25,17 @@ const UNTRUSTED_REF = 'hf.co/Sketchy/Thing-GGUF:Q4_K_M'
 const OID_TRUSTED = `aaaa${'0'.repeat(56)}1111`
 const OID_UNTRUSTED = `bbbb${'0'.repeat(56)}2222`
 
+// FAST, SPECIFIC FAILURE FIRST. A single stray apostrophe inside the python3 -c '...' block this
+// script embeds closes bash's surrounding single quote early and the whole file fails to PARSE --
+// every case below then fails too, but as five loosely-related-looking assertion mismatches instead
+// of one "syntax error near unexpected token" (Cybersec, card d7220a73: exactly this happened from a
+// comment reading "store/llm-catalog.py's own", the same apostrophe-in-a-single-quoted-shell-string
+// class already pinned once this session in gpu-detect.sh). This check names the actual defect.
+it('store/first-run-llm.sh is syntactically valid bash', () => {
+  const r = spawnSync('bash', ['-n', join(ROOT, 'store', 'first-run-llm.sh')], { encoding: 'utf-8' })
+  expect(r.status, r.stderr).toBe(0)
+})
+
 let sandbox: string
 let server: ChildProcess
 let host: string
