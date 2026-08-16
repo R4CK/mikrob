@@ -17,7 +17,9 @@ const APP_FEDERATION = readFileSync(join(__dirname, '../../web/app-federation.js
 const APP_AGENTS = readFileSync(join(__dirname, '../../web/app-agents.js'), 'utf-8')
 // NAV_I18N (including nav.federation key) moved to app-i18n-nav.js in slice 36.
 const APP_I18N_NAV = readFileSync(join(__dirname, '../../web/app-i18n-nav.js'), 'utf-8')
-const APP = APP_CORE + '\n' + APP_MESSAGES + '\n' + APP_FEDERATION + '\n' + APP_AGENTS + '\n' + APP_I18N_NAV
+// SIDEBAR_GROUPS (connections group etc.) moved to app-sidebar-groups.js in slice 37.
+const APP_SIDEBAR_GROUPS = readFileSync(join(__dirname, '../../web/app-sidebar-groups.js'), 'utf-8')
+const APP = APP_CORE + '\n' + APP_MESSAGES + '\n' + APP_FEDERATION + '\n' + APP_AGENTS + '\n' + APP_I18N_NAV + '\n' + APP_SIDEBAR_GROUPS
 const HTML = readFileSync(join(__dirname, '../../web/index.html'), 'utf-8')
 const CSS = readFileSync(join(__dirname, '../../web/style.css'), 'utf-8')
 
