@@ -3,13 +3,13 @@
 // follow-up changes").
 //
 // Static, hand-maintained -- no live provider API call, matching every other guardrail in this
-// slice (pure SQL + arithmetic, no network, no secrets). Source: the claude-api reference skill's
-// model table (~/.claude/external/anthropics-skills/skills/claude-api/SKILL.md, cached 2026-06-24).
-// Sonnet 5's $2/$10 rate is INTRO PRICING, valid through 2026-08-31 -- after that it reverts to
-// $3/$15, and this table needs a manual update or every Sonnet-5 estimate from that date on
-// silently over-counts by 33-50%. There is no automated refresh; that is a deliberate v1
-// limitation (no live provider API, per this slice's own guardrail), not an oversight -- see the
-// README for the follow-up this leaves open.
+// slice (pure SQL + arithmetic, no network, no secrets). Source: the official pricing page
+// (https://platform.claude.com/docs/en/about-claude/pricing), reconciled 2026-08-16 (card 270e3ef4).
+// Sonnet 5 launched on $2/$10 INTRO pricing, originally due to revert to $3/$15 on 2026-09-01;
+// Anthropic has since cancelled that reversion, so $2/$10 is now the standing rate, not a
+// temporary one -- do not reintroduce a date-based flip back to $3/$15. There is no automated
+// refresh; a weekly scheduled-task reminder re-checks this table against the official page (card
+// 270e3ef4) since that is a deliberate v1 limitation (no live provider API), not an oversight.
 //
 // Cache economics (same skill, shared/prompt-caching.md): a cache READ costs ~0.1x the base input
 // price; a cache WRITE costs 1.25x (5-minute TTL) or 2x (1-hour TTL). Claude Code uses the
@@ -26,7 +26,7 @@ export const CACHE_READ_MULTIPLIER = 0.1
 export const CACHE_WRITE_MULTIPLIER = 1.25 // 5-minute TTL, Claude Code's default
 
 // Keyed by the BASE model id (date-suffix stripped, see stripDateSuffix) -- matches what this repo
-// actually records in token_usage.model. Cached 2026-06-24; Sonnet 5 intro price expires 2026-08-31.
+// actually records in token_usage.model. Reconciled against the official pricing page 2026-08-16.
 export const MODEL_PRICING: Readonly<Record<string, ModelRate>> = {
   'claude-fable-5': { inputPerMTok: 10.0, outputPerMTok: 50.0 },
   'claude-mythos-5': { inputPerMTok: 10.0, outputPerMTok: 50.0 },
@@ -34,7 +34,7 @@ export const MODEL_PRICING: Readonly<Record<string, ModelRate>> = {
   'claude-opus-4-8': { inputPerMTok: 5.0, outputPerMTok: 25.0 },
   'claude-opus-4-7': { inputPerMTok: 5.0, outputPerMTok: 25.0 },
   'claude-opus-4-6': { inputPerMTok: 5.0, outputPerMTok: 25.0 },
-  'claude-sonnet-5': { inputPerMTok: 2.0, outputPerMTok: 10.0 }, // intro price through 2026-08-31
+  'claude-sonnet-5': { inputPerMTok: 2.0, outputPerMTok: 10.0 }, // standing rate, not a temporary intro price
   'claude-sonnet-4-6': { inputPerMTok: 3.0, outputPerMTok: 15.0 },
   'claude-haiku-4-5': { inputPerMTok: 1.0, outputPerMTok: 5.0 },
 }

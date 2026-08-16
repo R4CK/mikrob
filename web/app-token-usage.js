@@ -21,20 +21,15 @@ let tuChartState = null
 // Fallback row is used when model is unknown or not yet captured.
 // cache-write is 1.25x input, cache-read is 0.1x input -- keep the derived
 // columns consistent with `in` when editing a row.
-// Sonnet 5 launched on introductory pricing (2 / 10) that ends 2026-08-31;
-// the standard rate (3 / 15) applies from 2026-09-01. Resolved by date at load
-// time instead of pinned to one of the two, so the table neither understates
-// spend today nor silently overstates it the morning the intro rate expires.
-const TU_SONNET5_INTRO_END = Date.parse('2026-09-01T00:00:00Z')
-const TU_SONNET5_PRICE = Date.now() < TU_SONNET5_INTRO_END
-  ? { in: 2.0, out: 10.0, cw: 2.50, cr: 0.20 }
-  : { in: 3.0, out: 15.0, cw: 3.75, cr: 0.30 }
+// Reconciled against the official pricing page 2026-08-16 (card 270e3ef4).
+// Sonnet 5 launched on $2/$10 pricing, originally due to revert to $3/$15 on
+// 2026-09-01; Anthropic has since cancelled that reversion, so $2/$10 is the
+// standing rate now, not a temporary one -- do NOT reintroduce a date-based
+// flip back to $3/$15.
+const TU_SONNET5_PRICE = { in: 2.0, out: 10.0, cw: 2.50, cr: 0.20 }
 
 const TU_MODEL_PRICING = {
-  // INFERRED, not from the published catalogue: Opus 5 is not listed in the
-  // model reference this table was checked against. The value follows the rest
-  // of the current Opus tier (4.6/4.7/4.8 at 5 / 25); treat it as an estimate
-  // until a published rate confirms it.
+  // Confirmed against the official pricing page 2026-08-16: same tier as 4.6/4.7/4.8 (5 / 25).
   'claude-opus-5':       { in: 5.0,   out: 25.0,  cw: 6.25,  cr: 0.50 },
   'claude-opus-4-8':     { in: 5.0,   out: 25.0,  cw: 6.25,  cr: 0.50 },
   'claude-opus-4-7':     { in: 5.0,   out: 25.0,  cw: 6.25,  cr: 0.50 },
