@@ -27,8 +27,8 @@
 // writeAgentSettingsFromProfile() (agent-scaffold.ts), guarded by
 // name !== MAIN_AGENT_ID, re-applied on every spawn (respawn-safe).
 
-import { readFileSync, realpathSync } from 'node:fs'
-import { fileURLToPath } from 'node:url'
+import { readFileSync } from 'node:fs'
+import { allow, deny, isInvokedDirectly } from './hook-lib.mjs'
 
 // Claude Code runtime self-pace / scheduling tools. A sub-agent has no
 // legitimate need to schedule its own future turns -- it is input-driven.
@@ -609,29 +609,9 @@ const GATE_MSG =
   'maradj idle a prompt-on -- a beerkezo uzenet majd ujrainditja a turn-t. SOHA ne valaszolj ' +
   'magadnak es SOHA ne dontsd el az operator helyett egy hozza intezett kerdest.'
 
-function allow() { process.exit(0) }
-
-function deny(reason) {
-  process.stdout.write(JSON.stringify({
-    hookSpecificOutput: {
-      hookEventName: 'PreToolUse',
-      permissionDecision: 'deny',
-      permissionDecisionReason: reason,
-    },
-  }))
-  process.exit(0)
-}
-
-function isInvokedDirectly() {
-  try {
-    const self = realpathSync(fileURLToPath(import.meta.url))
-    const entry = process.argv[1] ? realpathSync(process.argv[1]) : ''
-    return self === entry
-  } catch {
-    return false
-  }
-}
-if (isInvokedDirectly()) {
+// allow()/deny()/isInvokedDirectly() are shared with the other PreToolUse
+// gates -- see hook-lib.mjs.
+if (isInvokedDirectly(import.meta.url)) {
   let payload
   try {
     payload = JSON.parse(readFileSync(0, 'utf-8'))

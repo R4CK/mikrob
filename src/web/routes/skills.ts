@@ -1,4 +1,4 @@
-import { createReadStream, existsSync, readdirSync, mkdirSync, writeFileSync, unlinkSync, rmSync, statSync, lstatSync } from 'node:fs'
+import { createReadStream, existsSync, readdirSync, mkdirSync, writeFileSync, unlinkSync, rmSync, statSync } from 'node:fs'
 import { join, sep, basename } from 'node:path'
 import { homedir, tmpdir } from 'node:os'
 import { randomUUID } from 'node:crypto'
@@ -10,7 +10,7 @@ import { MAIN_AGENT_ID, PROJECT_ROOT } from '../../config.js'
 import { generateSkillMd } from '../agent-scaffold.js'
 import { parseMultipart } from '../multipart.js'
 import { readBody, json } from '../http-helpers.js'
-import { sanitizeSkillName, shellEscape } from '../sanitize.js'
+import { sanitizeSkillName, shellEscape, findSymlinkTaintedEntries } from '../sanitize.js'
 import type { RouteContext } from './types.js'
 
 function parseFrontmatterField(content: string, field: string): string {
@@ -422,24 +422,7 @@ export async function tryHandleSkills(ctx: RouteContext): Promise<boolean> {
       unlinkSync(tmpPath)
 
       const after = readdirSync(skillsDir).filter(f => !before.has(f))
-      const rejectSymlinks = (dir: string): boolean => {
-        for (const entry of readdirSync(dir)) {
-          const p = join(dir, entry)
-          const st = lstatSync(p)
-          if (st.isSymbolicLink()) return true
-          if (st.isDirectory() && rejectSymlinks(p)) return true
-        }
-        return false
-      }
-      const tainted: string[] = []
-      for (const f of after) {
-        const p = join(skillsDir, f)
-        try {
-          if (lstatSync(p).isSymbolicLink() || (statSync(p).isDirectory() && rejectSymlinks(p))) {
-            tainted.push(f)
-          }
-        } catch { /* ignored */ }
-      }
+      const tainted = findSymlinkTaintedEntries(skillsDir, after)
       if (tainted.length > 0) {
         for (const f of after) {
           try { rmSync(join(skillsDir, f), { recursive: true, force: true }) } catch { /* best effort */ }

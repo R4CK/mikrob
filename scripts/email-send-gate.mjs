@@ -15,9 +15,10 @@
 // writeAgentSettingsFromProfile() (agent-scaffold.ts), guarded by
 // name !== MAIN_AGENT_ID, and re-applied on every spawn (respawn-safe).
 
-import { readFileSync, realpathSync } from 'node:fs'
+import { readFileSync } from 'node:fs'
 import { fileURLToPath } from 'node:url'
 import { dirname, join } from 'node:path'
+import { allow, deny, isInvokedDirectly } from './hook-lib.mjs'
 
 // Bash command patterns that send mail. Read-only inspection of these tools
 // (e.g. cat'ing the send script) may be caught too -- acceptable: a sub-agent
@@ -115,35 +116,11 @@ export function readBrandEnv(readFile = (p) => readFileSync(p, 'utf-8')) {
   }
 }
 
-function allow() { process.exit(0) }
-
-function deny(reason) {
-  process.stdout.write(JSON.stringify({
-    hookSpecificOutput: {
-      hookEventName: 'PreToolUse',
-      permissionDecision: 'deny',
-      permissionDecisionReason: reason,
-    },
-  }))
-  process.exit(0)
-}
-
 // Run as the hook entrypoint only when invoked directly (not when imported by a
 // test). Reads the PreToolUse payload from stdin and emits a deny decision for
-// email-send tool calls. realpath both sides so a symlinked install path (the
-// hook command is an absolute path that may traverse a symlink, e.g. /tmp ->
-// /private/tmp on macOS, or a symlinked /home on Linux) still matches -- a raw
-// url-vs-argv compare would silently no-op the gate (a security bypass).
-function isInvokedDirectly() {
-  try {
-    const self = realpathSync(fileURLToPath(import.meta.url))
-    const entry = process.argv[1] ? realpathSync(process.argv[1]) : ''
-    return self === entry
-  } catch {
-    return false
-  }
-}
-if (isInvokedDirectly()) {
+// email-send tool calls. allow()/deny()/isInvokedDirectly() are shared with the
+// other PreToolUse gates -- see hook-lib.mjs.
+if (isInvokedDirectly(import.meta.url)) {
   let payload
   try {
     payload = JSON.parse(readFileSync(0, 'utf-8'))

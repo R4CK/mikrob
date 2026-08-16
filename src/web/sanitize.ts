@@ -1,4 +1,5 @@
-import { resolve, sep } from 'node:path'
+import { readdirSync, lstatSync, statSync } from 'node:fs'
+import { join, resolve, sep } from 'node:path'
 
 // NFD + combining-mark strip so Hungarian input like "etrendiro" decays
 // to "etrendiro" instead of silently losing every accented character
@@ -38,4 +39,33 @@ export function safeJoin(base: string, ...parts: string[]): string {
 
 export function shellEscape(s: string): string {
   return "'" + s.replace(/'/g, "'\\''") + "'"
+}
+
+// A symlink inside an extracted archive can point outside baseDir -- a skill file
+// import that follows it would read/write arbitrary paths. Rejects any entry that
+// is itself a symlink or contains one anywhere inside it (recursively), so a
+// partial fix in one caller can't leave the other with an unprotected copy (card
+// bb0ae7fa: this walk previously existed twice, byte-identical, in
+// routes/skills.ts and routes/agents-skills.ts).
+function containsSymlink(dir: string): boolean {
+  for (const entry of readdirSync(dir)) {
+    const p = join(dir, entry)
+    const st = lstatSync(p)
+    if (st.isSymbolicLink()) return true
+    if (st.isDirectory() && containsSymlink(p)) return true
+  }
+  return false
+}
+
+export function findSymlinkTaintedEntries(baseDir: string, entries: string[]): string[] {
+  const tainted: string[] = []
+  for (const entry of entries) {
+    const p = join(baseDir, entry)
+    try {
+      if (lstatSync(p).isSymbolicLink() || (statSync(p).isDirectory() && containsSymlink(p))) {
+        tainted.push(entry)
+      }
+    } catch { /* ignored */ }
+  }
+  return tainted
 }

@@ -1,4 +1,4 @@
-import { existsSync, readFileSync, readdirSync, mkdirSync, writeFileSync, unlinkSync, rmSync, statSync, lstatSync } from 'node:fs'
+import { existsSync, readFileSync, readdirSync, mkdirSync, writeFileSync, unlinkSync, rmSync, statSync } from 'node:fs'
 import { join } from 'node:path'
 import { homedir } from 'node:os'
 import { randomUUID } from 'node:crypto'
@@ -10,7 +10,7 @@ import { agentDir } from '../agent-config.js'
 import { generateSkillMd } from '../agent-scaffold.js'
 import { parseMultipart } from '../multipart.js'
 import { readBody, json } from '../http-helpers.js'
-import { sanitizeAgentName, sanitizeSkillName, safeJoin } from '../sanitize.js'
+import { sanitizeAgentName, sanitizeSkillName, safeJoin, findSymlinkTaintedEntries } from '../sanitize.js'
 import type { RouteContext } from './types.js'
 
 // Marveen's skills live at the global ~/.claude/skills/ path (shared with
@@ -99,24 +99,7 @@ export async function tryHandleAgentsSkills(ctx: RouteContext): Promise<boolean>
       unlinkSync(tmpPath)
 
       const after = readdirSync(skillsDir).filter((f) => !before.has(f))
-      const rejectSymlinks = (dir: string): boolean => {
-        for (const entry of readdirSync(dir)) {
-          const p = join(dir, entry)
-          const st = lstatSync(p)
-          if (st.isSymbolicLink()) return true
-          if (st.isDirectory() && rejectSymlinks(p)) return true
-        }
-        return false
-      }
-      const tainted: string[] = []
-      for (const f of after) {
-        const p = join(skillsDir, f)
-        try {
-          if (lstatSync(p).isSymbolicLink() || (statSync(p).isDirectory() && rejectSymlinks(p))) {
-            tainted.push(f)
-          }
-        } catch { /* ignored */ }
-      }
+      const tainted = findSymlinkTaintedEntries(skillsDir, after)
       if (tainted.length > 0) {
         for (const f of after) {
           try { rmSync(join(skillsDir, f), { recursive: true, force: true }) } catch { /* best effort */ }

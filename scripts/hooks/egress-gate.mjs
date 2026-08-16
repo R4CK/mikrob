@@ -85,9 +85,9 @@
 // line next to the denials -- the ordinary allowlist tiers stay quiet, same as before.
 
 import { readFileSync, appendFileSync, mkdirSync } from 'node:fs'
-import { realpathSync } from 'node:fs'
 import { fileURLToPath } from 'node:url'
 import { dirname, join } from 'node:path'
+import { allow, deny, isInvokedDirectly } from '../hook-lib.mjs'
 
 // Derive repo root from this script's location (scripts/hooks/egress-gate.mjs).
 const REPO_ROOT = join(dirname(fileURLToPath(import.meta.url)), '..', '..')
@@ -387,30 +387,10 @@ const PARAM_BLOCK_MESSAGE = (keys) =>
   `mezőkkel változatlanul működik. Ha egy ilyen mező tényleg kell, az BIZTONSÁGI döntés: ` +
   `a scripts/hooks/egress-gate.mjs FIRECRAWL_SCRAPE_ALLOWED_KEYS listájába indoklással kerül be.`
 
-function allow() { process.exit(0) }
+// allow()/deny()/isInvokedDirectly() are shared with the other PreToolUse
+// gates -- see hook-lib.mjs.
 
-function deny(reason) {
-  process.stdout.write(JSON.stringify({
-    hookSpecificOutput: {
-      hookEventName: 'PreToolUse',
-      permissionDecision: 'deny',
-      permissionDecisionReason: reason,
-    },
-  }))
-  process.exit(0)
-}
-
-function isInvokedDirectly() {
-  try {
-    const self = realpathSync(fileURLToPath(import.meta.url))
-    const entry = process.argv[1] ? realpathSync(process.argv[1]) : ''
-    return self === entry
-  } catch {
-    return false
-  }
-}
-
-if (isInvokedDirectly()) {
+if (isInvokedDirectly(import.meta.url)) {
   let payload
   try {
     payload = JSON.parse(readFileSync(0, 'utf-8'))
