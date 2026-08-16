@@ -1220,6 +1220,44 @@ if ! command -v ffmpeg &>/dev/null; then
 fi
 echo -e "$(_t macos.ffmpeg_done)"
 
+# TAILSCALE-STEP-BEGIN (kartya 0985ac83 -- sentinel a src/__tests__ standalone tesztjenek, ne torold)
+# --- Tailscale (opcionalis, kartya 0985ac83) ---
+#
+# Csak a binarist telepiti (brew), opt-in (alapertelmezett: nem) -- MAS mint a fenti Whisper-blokk,
+# ami feltetel nelkul probalkozik: a Tailscale itt SZANDEKOSAN explicit felhasznaloi beleegyezest
+# ker, mert a kartya sajat kovetelmenye (opt-in legyen, ne kotelezo lepes). A telepito SZANDEKOSAN
+# nem hivja meg a `sudo tailscale up`-ot: az interaktiv bongeszos bejelentkezest egy nem-interaktiv
+# shell-lepes nem tudja lekezelni, es a bejelentkezes+halozati-expozicio (tailscale serve) kulon,
+# gondosan kapuzott uton fut majd a Foderacio-oldalrol (kartya b68ddae8 -- Cybered altal explicit
+# megkovetelt step-up auth + URL-szures + auditnaplo ott, amit egy telepito-szkript nem tudna
+# reprodukalni). Az `&& rc=0 || rc=$?` mintat itt is a bash 3.2 ERR-trap-kviirk miatt tartjuk (lasd
+# a Whisper-blokk fenti kommentjet): egy OPCIONALIS fuggoseg soha nem szakithatja meg a telepitest.
+echo ""
+echo -e "  Tailscale telepites (tavoli Foderacio-hozzaferes, opcionalis)..."
+if command -v tailscale &>/dev/null; then
+  echo -e "  ${GREEN}✓${NC} tailscale mar telepitve"
+else
+  read -rp "$(_t prompt_tailscale)" DO_TAILSCALE
+  DO_TAILSCALE=${DO_TAILSCALE:-n}
+  if [[ "$DO_TAILSCALE" == "i" || "$DO_TAILSCALE" == "y" ]]; then
+    install_tailscale() { command -v brew &>/dev/null && brew install tailscale; }
+    TAILSCALE_RC=0
+    install_tailscale && rc=0 || rc=$?
+    TAILSCALE_RC=$rc
+    if [ "$TAILSCALE_RC" -eq 0 ]; then
+      echo -e "  ${GREEN}✓${NC} tailscale telepitve"
+    else
+      warn "tailscale telepites sikertelen (kezzel: brew install tailscale)"
+    fi
+  else
+    echo -e "  ${DIM}Kihagyva. Kesobb: brew install tailscale${NC}"
+  fi
+fi
+if command -v tailscale &>/dev/null && ! tailscale status &>/dev/null; then
+  echo -e "  ${DIM}Tailscale telepitve, de meg nincs bejelentkezve -- a Foderacio-oldalon (dashboard) egy gombbal befejezheted.${NC}"
+fi
+# TAILSCALE-STEP-END
+
 INSTALL_STEP="bumblebee"
 # Go + bumblebee (supply-chain scanner)
 echo ""

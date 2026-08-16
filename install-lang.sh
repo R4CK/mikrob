@@ -70,6 +70,8 @@ _t() {
     hu:prompt_migrate) echo "  Szeretnéd most futtatni a költöztetést? (i/n) [n]: " ;;
     en:prompt_whisper) echo "  Would you like to install Whisper? (y/n) [n]: " ;;
     hu:prompt_whisper) echo "  Szeretnéd telepíteni a Whisper-t? (i/n) [n]: " ;;
+    en:prompt_tailscale) echo "  Would you like to install Tailscale (for remote Federation access)? (y/n) [n]: " ;;
+    hu:prompt_tailscale) echo "  Szeretnéd telepíteni a Tailscale-t (távoli Föderáció-hozzáféréshez)? (i/n) [n]: " ;;
     en:prompt_swap) echo "  Create a 2 GB swap file? (y/n) [y]: " ;;
     hu:prompt_swap) echo "  Létrehozzak 2 GB swap fájlt? (i/n) [i]: " ;;
     en:prompt_vps_continue) echo "  Continue installation? (y/n) [y]: " ;;

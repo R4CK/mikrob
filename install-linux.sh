@@ -1599,6 +1599,36 @@ else
   fi
 fi
 
+# TAILSCALE-STEP-BEGIN (kartya 0985ac83 -- sentinel a src/__tests__ standalone tesztjenek, ne torold)
+# --- Tailscale (opcionalis, kartya 0985ac83) ---
+#
+# Csak a binarist telepiti, opt-in (alapertelmezett: nem), ugyanaz a minta mint a Whisper-nel
+# fentebb. A telepito SZANDEKOSAN nem hivja meg a `tailscale up`-ot: az interaktiv bongeszos
+# bejelentkezest egy nem-interaktiv shell-lepes nem tudja lekezelni (a `sudo tailscale up` a
+# jelszo-cache lejartakor egy hattere-inditott folyamatban lathatatlanul akadna el), es a
+# bejelentkezes+halozati-expozicio (tailscale serve) kulon, gondosan kapuzott uton fut majd a
+# Foderacio-oldalrol (kartya b68ddae8 -- Cybered altal explicit megkovetelt step-up auth +
+# URL-szures + auditnaplo ott, amit egy telepito-szkript nem tudna reprodukalni).
+echo ""
+echo -e "  Tailscale telepites (tavoli Foderacio-hozzaferes, opcionalis)..."
+if command -v tailscale &>/dev/null; then
+  ok "tailscale mar telepitve"
+else
+  read -rp "$(_t prompt_tailscale)" DO_TAILSCALE
+  DO_TAILSCALE=${DO_TAILSCALE:-n}
+  if [ "$DO_TAILSCALE" = "i" ]; then
+    curl -fsSL https://tailscale.com/install.sh | sh 2>/dev/null &&
+      ok "tailscale telepitve" ||
+      warn "tailscale telepites sikertelen (kezzel: curl -fsSL https://tailscale.com/install.sh | sh)"
+  else
+    echo -e "  ${DIM}Kihagyva. Kesobb: curl -fsSL https://tailscale.com/install.sh | sh${NC}"
+  fi
+fi
+if command -v tailscale &>/dev/null && ! tailscale status &>/dev/null; then
+  echo -e "  ${DIM}Tailscale telepitve, de meg nincs bejelentkezve -- a Foderacio-oldalon (dashboard) egy gombbal befejezheted.${NC}"
+fi
+# TAILSCALE-STEP-END
+
 INSTALL_STEP="bumblebee"
 # ─────────────────────────────────────────────
 # Go + bumblebee (supply-chain scanner)
