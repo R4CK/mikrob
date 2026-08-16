@@ -66,6 +66,27 @@ EOF
 )"
 ```
 
+### Step 6 -- push BEFORE posting REVIEW (marveen has no per-agent worktree, nothing else pushes for you)
+`git commit` alone leaves the change LOCAL ONLY. Unlike CleanCore (per-agent worktrees, landed via
+`cleancore-land.sh`), the marveen repo is a single shared checkout with no separate landing step --
+if you don't push, nobody does. A REVIEW comment naming a Gate-SHA before that SHA is pushed claims a
+state that isn't true yet: the card just says "landed", the commit sits local-only, and whoever
+gates it either can't find the SHA on origin or is silently reviewing local state that could vanish
+(card 2a3d06a6 -- a REVIEW claimed a commit had landed when it only existed locally; MikroB had to
+push it later, bundled with an unrelated commit that had piled up on top in the meantime).
+
+```bash
+git push
+```
+
+Then confirm it actually landed before writing REVIEW -- don't trust the push command's own exit
+code alone (a `[rejected]`/non-fast-forward can still exit non-zero loudly, but check anyway):
+```bash
+git rev-parse HEAD
+git rev-parse @{u}
+# The two SHAs must match. If they don't, the push did not land your commit -- do not post REVIEW yet.
+```
+
 ## Shared files (i18n, global.css, rbac.ts)
 Files edited by multiple agents simultaneously (e.g. all 7 locale JSONs, `global.css`,
 `rbac.ts`) are the highest contamination risk. See `[[shared-file-commit-entanglement]]`
@@ -91,11 +112,18 @@ Solution: if you share a file with another agent, SEQUENCE commits:
   a security-fix review claimed green based on the pre-commit run, but Cybersec's independent
   test on the actual commit found a real bypass the stale run never exercised). Correct order:
   commit first, THEN `store/fleet-test.sh --ref <the new SHA>` to verify what actually landed.
+- Committing is not landing (card 2a3d06a6). `git commit` never pushes on its own, and in the
+  marveen repo (no per-agent worktree, no landing script) nothing else will push for you -- a
+  REVIEW comment with a Gate-SHA that only exists locally is a false claim, even if you fully
+  intend to push it "in a minute". Push BEFORE writing REVIEW, not after.
 
 ## Ellenőrzés
 After commit, in this order (avoids the stale-HEAD test trap above):
 ```bash
 git show --stat HEAD                                    # file list must contain ONLY your changed files
 bash store/fleet-test.sh --ref $(git rev-parse HEAD)     # verifies the commit you just made, not stale HEAD
+git push                                                 # Step 6 -- do this BEFORE posting REVIEW
+git rev-parse HEAD; git rev-parse @{u}                   # must match, or REVIEW would claim a local-only state
 ```
-Any extra file in the first command = contamination, notify MikroB.
+Any extra file in the first command = contamination, notify MikroB. A mismatch in the last check =
+your commit is not on origin yet -- do not post REVIEW / move the card to `waiting` until it matches.
