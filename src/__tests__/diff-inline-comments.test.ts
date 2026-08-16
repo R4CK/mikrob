@@ -18,11 +18,13 @@ import { join, dirname } from 'node:path'
 import { fileURLToPath } from 'node:url'
 
 const __dirname = dirname(fileURLToPath(import.meta.url))
-const APP  = readFileSync(join(__dirname, '../../web/app.js'), 'utf-8')
-const HTML = readFileSync(join(__dirname, '../../web/index.html'), 'utf-8')
-const CSS  = readFileSync(join(__dirname, '../../web/style.css'), 'utf-8')
-const HU   = readFileSync(join(__dirname, '../../web/lang/hu.js'), 'utf-8')
-const EN   = readFileSync(join(__dirname, '../../web/lang/en.js'), 'utf-8')
+// Diff-comment functions moved to app-kanban.js in modularisation slice 30.
+const APP    = readFileSync(join(__dirname, '../../web/app.js'),        'utf-8')
+const KANBAN = readFileSync(join(__dirname, '../../web/app-kanban.js'), 'utf-8')
+const HTML   = readFileSync(join(__dirname, '../../web/index.html'),    'utf-8')
+const CSS    = readFileSync(join(__dirname, '../../web/style.css'),     'utf-8')
+const HU     = readFileSync(join(__dirname, '../../web/lang/hu.js'),    'utf-8')
+const EN     = readFileSync(join(__dirname, '../../web/lang/en.js'),    'utf-8')
 
 function fnBody(source: string, startMarker: string, maxLen = 8000): string {
   const start = source.indexOf(startMarker)
@@ -35,19 +37,19 @@ function fnBody(source: string, startMarker: string, maxLen = 8000): string {
 }
 
 describe('diff-inline-comments: loadCardDiffComments', () => {
-  it('function is defined in app.js', () => {
-    expect(APP).toContain('async function loadCardDiffComments(')
+  it('function is defined in app-kanban.js', () => {
+    expect(KANBAN).toContain('async function loadCardDiffComments(')
   })
 
   it('fetches /api/kanban/:id/diff-comments with auth token', () => {
-    const body = fnBody(APP, 'async function loadCardDiffComments(')
+    const body = fnBody(KANBAN, 'async function loadCardDiffComments(')
     expect(body).toContain('/api/kanban/')
     expect(body).toContain('/diff-comments')
     expect(body).toContain('Authorization')
   })
 
   it('hides section on 404 (graceful fallback)', () => {
-    const body = fnBody(APP, 'async function loadCardDiffComments(')
+    const body = fnBody(KANBAN, 'async function loadCardDiffComments(')
     expect(body).toContain('r.status === 404')
     const i = body.indexOf('r.status === 404')
     const slice = body.slice(i, i + 60)
@@ -55,102 +57,102 @@ describe('diff-inline-comments: loadCardDiffComments', () => {
   })
 
   it('renders .diff-empty when diffs array is empty', () => {
-    const body = fnBody(APP, 'async function loadCardDiffComments(')
+    const body = fnBody(KANBAN, 'async function loadCardDiffComments(')
     expect(body).toContain('diff-empty')
     expect(body).toContain("kanban.diff.empty")
   })
 
   it('renders .diff-error on fetch failure', () => {
-    const body = fnBody(APP, 'async function loadCardDiffComments(')
+    const body = fnBody(KANBAN, 'async function loadCardDiffComments(')
     expect(body).toContain('diff-error')
     expect(body).toContain("kanban.diff.error")
   })
 
   it('calls renderDiffFile for each file diff', () => {
-    const body = fnBody(APP, 'async function loadCardDiffComments(')
+    const body = fnBody(KANBAN, 'async function loadCardDiffComments(')
     expect(body).toContain('renderDiffFile')
   })
 
   it('calls wireCardDiffToggle after render', () => {
-    const body = fnBody(APP, 'async function loadCardDiffComments(')
+    const body = fnBody(KANBAN, 'async function loadCardDiffComments(')
     expect(body).toContain('wireCardDiffToggle')
   })
 
   it('calls wireDiffInteractions after render', () => {
-    const body = fnBody(APP, 'async function loadCardDiffComments(')
+    const body = fnBody(KANBAN, 'async function loadCardDiffComments(')
     expect(body).toContain('wireDiffInteractions')
   })
 })
 
 describe('diff-inline-comments: renderDiffFile', () => {
   it('function is defined', () => {
-    expect(APP).toContain('function renderDiffFile(')
+    expect(KANBAN).toContain('function renderDiffFile(')
   })
 
   it('renders .diff-file wrapper', () => {
-    const body = fnBody(APP, 'function renderDiffFile(')
+    const body = fnBody(KANBAN, 'function renderDiffFile(')
     expect(body).toContain('diff-file')
   })
 
   it('renders .diff-file-header with file name and sha', () => {
-    const body = fnBody(APP, 'function renderDiffFile(')
+    const body = fnBody(KANBAN, 'function renderDiffFile(')
     expect(body).toContain('diff-file-header')
     expect(body).toContain('diff-file-name')
     expect(body).toContain('diff-file-sha')
   })
 
   it('renders diff-line-add for added lines', () => {
-    const body = fnBody(APP, 'function renderDiffFile(')
+    const body = fnBody(KANBAN, 'function renderDiffFile(')
     expect(body).toContain('diff-line-add')
   })
 
   it('renders diff-line-remove for removed lines', () => {
-    const body = fnBody(APP, 'function renderDiffFile(')
+    const body = fnBody(KANBAN, 'function renderDiffFile(')
     expect(body).toContain('diff-line-remove')
   })
 
   it('renders diff-line-context for context lines', () => {
-    const body = fnBody(APP, 'function renderDiffFile(')
+    const body = fnBody(KANBAN, 'function renderDiffFile(')
     expect(body).toContain('diff-line-context')
   })
 
   it('renders .diff-add-comment-btn per line', () => {
-    const body = fnBody(APP, 'function renderDiffFile(')
+    const body = fnBody(KANBAN, 'function renderDiffFile(')
     expect(body).toContain('diff-add-comment-btn')
   })
 
   it('renders inline .diff-add-form per line (hidden by default)', () => {
-    const body = fnBody(APP, 'function renderDiffFile(')
+    const body = fnBody(KANBAN, 'function renderDiffFile(')
     expect(body).toContain('diff-add-form')
     expect(body).toContain('hidden')
   })
 
   it('renders existing inline comments in .diff-inline-comments', () => {
-    const body = fnBody(APP, 'function renderDiffFile(')
+    const body = fnBody(KANBAN, 'function renderDiffFile(')
     expect(body).toContain('diff-inline-comments')
     expect(body).toContain('diff-inline-comment')
     expect(body).toContain('diff-comment-delete')
   })
 
   it('renders hunk header', () => {
-    const body = fnBody(APP, 'function renderDiffFile(')
+    const body = fnBody(KANBAN, 'function renderDiffFile(')
     expect(body).toContain('diff-hunk-header')
   })
 })
 
 describe('diff-inline-comments: addDiffComment', () => {
   it('function is defined', () => {
-    expect(APP).toContain('async function addDiffComment(')
+    expect(KANBAN).toContain('async function addDiffComment(')
   })
 
   it('POSTs to /api/kanban/:id/diff-comments', () => {
-    const body = fnBody(APP, 'async function addDiffComment(')
+    const body = fnBody(KANBAN, 'async function addDiffComment(')
     expect(body).toContain("method: 'POST'")
     expect(body).toContain('/diff-comments')
   })
 
   it('sends sha, file, line, text, author in body', () => {
-    const body = fnBody(APP, 'async function addDiffComment(')
+    const body = fnBody(KANBAN, 'async function addDiffComment(')
     expect(body).toContain('sha')
     expect(body).toContain('file')
     expect(body).toContain('line')
@@ -161,31 +163,31 @@ describe('diff-inline-comments: addDiffComment', () => {
 
 describe('diff-inline-comments: wireDiffInteractions', () => {
   it('function is defined', () => {
-    expect(APP).toContain('function wireDiffInteractions(')
+    expect(KANBAN).toContain('function wireDiffInteractions(')
   })
 
   it('wires "+" buttons to toggle the add-comment form', () => {
-    const body = fnBody(APP, 'function wireDiffInteractions(')
+    const body = fnBody(KANBAN, 'function wireDiffInteractions(')
     expect(body).toContain('diff-add-comment-btn')
     expect(body).toContain('diff-add-form')
     expect(body).toContain('form.hidden')
   })
 
   it('wires cancel buttons to hide form and clear textarea', () => {
-    const body = fnBody(APP, 'function wireDiffInteractions(')
+    const body = fnBody(KANBAN, 'function wireDiffInteractions(')
     expect(body).toContain('diff-cancel-btn')
     expect(body).toContain('textarea')
   })
 
   it('wires submit buttons to call addDiffComment then reload', () => {
-    const body = fnBody(APP, 'function wireDiffInteractions(')
+    const body = fnBody(KANBAN, 'function wireDiffInteractions(')
     expect(body).toContain('diff-submit-btn')
     expect(body).toContain('addDiffComment')
     expect(body).toContain('loadCardDiffComments')
   })
 
   it('wires delete buttons to DELETE endpoint and reload', () => {
-    const body = fnBody(APP, 'function wireDiffInteractions(')
+    const body = fnBody(KANBAN, 'function wireDiffInteractions(')
     expect(body).toContain('diff-comment-delete')
     expect(body).toContain("method: 'DELETE'")
     expect(body).toContain('loadCardDiffComments')
@@ -194,7 +196,7 @@ describe('diff-inline-comments: wireDiffInteractions', () => {
 
 describe('diff-inline-comments: showCardDetail integration', () => {
   it('calls loadCardDiffComments on modal open', () => {
-    const body = fnBody(APP, 'async function showCardDetail(')
+    const body = fnBody(KANBAN, 'async function showCardDetail(')
     expect(body).toContain('loadCardDiffComments')
   })
 })
