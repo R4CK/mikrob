@@ -1,4 +1,5 @@
-// === Local LLM (Ollama offload) page -- extracted from app.js (card c4325698, slice 2/N) ===
+// web/app-local-llm.js -- Local LLM (Ollama offload) page module
+// Extracted from app.js as part of modularisation (card c4325698, slice 2/N).
 // Loaded after app.js in index.html. Globals resolved at call time:
 // t(), escapeHtml(), showToast(), openModal(), closeModal(), switchPage().
 // Exposes: loadLocalLlm(), stopLocalLlmPoll() (called from switchPage in app.js).
