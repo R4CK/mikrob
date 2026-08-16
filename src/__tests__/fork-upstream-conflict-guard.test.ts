@@ -75,6 +75,15 @@ const ACKNOWLEDGED_CONFLICTS: Readonly<Record<string, string>> = {
   // file diverges. Resolution: merge both imports onto one line, keep both bindings.
   'src/web/context-restart-gate-runner.ts':
     'merge both added imports onto one line (agentDir from the fork, readAgentClaudeConfigDir from upstream) -- no other conflict in the file',
+  // A single additive hunk (measured 2026-08-16, card 88505fb5), not a behavioural disagreement:
+  // both sides add an INDEPENDENT schema migration/trigger at the same insertion point inside
+  // ensureSchema(). Fork: the timestamp-integrity triggers (epoch validation + repair on
+  // kanban_cards/kanban_comments) plus the kanban_card_events.forced column migration. Upstream:
+  // the kanban_cards_status_bumps_updated_at self-healing trigger (keeps updated_at honest when a
+  // raw SQL UPDATE only touches status). Neither reads or overwrites anything the other writes.
+  // Resolution: keep BOTH blocks, either order -- union, not a pick.
+  'src/db.ts':
+    'keep both additive migrations -- the fork timestamp-integrity triggers + forced column, and the upstream kanban_cards_status_bumps_updated_at trigger -- neither side taken wholesale',
 }
 
 function git(args: string[], cwd: string): string {
