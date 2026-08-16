@@ -60,16 +60,59 @@ describe('fedTailscaleLogin: POST /login and branch on pollToken presence', () =
     expect(body).toContain("status: 'connected-no-data'")
   })
 
-  it('opens the login link and detects a blocked pop-up (window.open returning falsy)', () => {
+  it('SECURITY (Cybered NO-GO, gate-sha 1c3b95a2, HIGH): the loginUrl is validated BEFORE the automatic window.open', () => {
+    // A login-intent flow (the button literally says "sign in") that navigates to an unvalidated
+    // URL is a first-party phishing vector -- backend's promise to only ever send a validated
+    // https+tailscale.com URL lives in a still-DRAFT contract with no shipped code behind it yet.
+    // The validation call must appear, and the window.open for the automatic pop-up must be
+    // reached only through the branch that already passed it.
     const body = fnBody(APP, 'async function fedTailscaleLogin()')
-    expect(body).toContain("window.open(data.loginUrl, '_blank', 'noopener')")
+    const validateIdx = body.indexOf('fedTailscaleValidLoginUrl(loginUrl)')
+    const openIdx = body.indexOf("window.open(loginUrl, '_blank', 'noopener')")
+    expect(validateIdx).toBeGreaterThan(-1)
+    expect(openIdx).toBeGreaterThan(validateIdx)
+    // An invalid URL must refuse to open it (not fall through to opening it anyway).
+    expect(body).toContain('if (loginUrl && !fedTailscaleValidLoginUrl(loginUrl)) {')
+    const rejectBranch = body.slice(body.indexOf('if (loginUrl && !fedTailscaleValidLoginUrl(loginUrl)) {'), openIdx)
+    expect(rejectBranch).toContain('_fedTailscaleLoginUrl = null')
+    expect(rejectBranch).toContain('return')
+  })
+
+  it('detects a blocked pop-up (window.open returning falsy) only on the validated path', () => {
+    const body = fnBody(APP, 'async function fedTailscaleLogin()')
     expect(body).toContain('if (!win) popupBlocked = true')
   })
 
-  it('a failed POST shows the localized generic message, never a raw exception (rule 12)', () => {
+  it('a failed POST shows ONLY the localized generic message -- data.error never reaches state (Cybered MEDIUM)', () => {
+    // The contract's promise that `error` is always a curated, non-leaking string is not yet
+    // backed by shipped backend code (b68ddae8 is still DRAFT) -- a `data.error || t(...)`
+    // fallback would display whatever backend sends the moment it sends anything, trusting a
+    // control that does not exist yet. Assert the OPPOSITE of "the key exists somewhere":
+    // data.error must not reach _fedTailscaleState.error at all in this function.
     const body = fnBody(APP, 'async function fedTailscaleLogin()')
     expect(body).toContain("t('federation.tailscale.error_generic')")
     expect(body).not.toMatch(/err\.message/)
+    expect(body).not.toMatch(/error:\s*data\.error/)
+  })
+})
+
+describe('fedTailscaleValidLoginUrl (Cybered NO-GO, HIGH, gate-sha 1c3b95a2)', () => {
+  it('requires https and a tailscale.com host', () => {
+    const body = fnBody(APP, 'function fedTailscaleValidLoginUrl(url)')
+    expect(body).toContain("u.protocol === 'https:'")
+    expect(body).toMatch(/u\.hostname === 'login\.tailscale\.com' \|\| u\.hostname\.endsWith\('\.tailscale\.com'\)/)
+  })
+
+  it('a malformed URL is caught, not thrown -- new URL() throws on garbage input', () => {
+    const body = fnBody(APP, 'function fedTailscaleValidLoginUrl(url)')
+    expect(body).toMatch(/try\s*\{\s*u = new URL\(url\)\s*\}\s*catch\s*\{\s*return false\s*\}/)
+  })
+
+  it('the fallback "open login link" button re-validates independently -- a second call site, not a shared trust assumption', () => {
+    const body = fnBody(APP, 'function fedTailscaleRender()')
+    const btnIdx = body.indexOf('fedTailscaleOpenLoginBtn')
+    const slice = body.slice(btnIdx, btnIdx + 400)
+    expect(slice).toContain('fedTailscaleValidLoginUrl(_fedTailscaleLoginUrl)')
   })
 })
 
@@ -99,9 +142,10 @@ describe('fedTailscalePoll: GET /status polling', () => {
     expect(body).toMatch(/if \(!page \|\| page\.hidden\) \{ fedTailscaleStopPoll\(\); return \}/)
   })
 
-  it('a network failure during polling shows the localized message, not a raw exception (rule 12)', () => {
+  it('a network failure or a failed/error status shows ONLY the localized message -- data.error never reaches state (Cybered MEDIUM)', () => {
     const body = fnBody(APP, 'function fedTailscalePoll(pollToken)')
     expect(body).toContain("t('federation.tailscale.error_generic')")
+    expect(body).not.toMatch(/error:\s*data\.error/)
   })
 })
 

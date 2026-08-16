@@ -18398,6 +18398,18 @@ let _fedTailscalePollTimer = null
 let _fedTailscalePollAttempts = 0
 const FED_TAILSCALE_POLL_MAX_ATTEMPTS = 20 // 20 * 3s = 60s ceiling, then treat as a timeout
 
+// Cybered NO-GO (HIGH, card 9bf6a1e0, gate-sha 1c3b95a2): backend's promise to only ever send a
+// validated https+tailscale.com loginUrl lives in a DRAFT contract with no implementation yet --
+// "a control a not-yet-written function vouches for is not a control". The user opens this link
+// WITH THE INTENT of entering credentials (the button literally says "sign in"), so an unvalidated
+// URL here is a self-inflicted, first-party phishing vector regardless of what backend eventually
+// ships. Validated client-side too, independent of and in addition to backend's own filtering.
+function fedTailscaleValidLoginUrl(url) {
+  let u
+  try { u = new URL(url) } catch { return false }
+  return u.protocol === 'https:' && (u.hostname === 'login.tailscale.com' || u.hostname.endsWith('.tailscale.com'))
+}
+
 function fedTailscaleRender() {
   const el = document.getElementById('federationTailscale')
   if (!el) return
@@ -18450,7 +18462,12 @@ function fedTailscaleRender() {
   }))
   document.getElementById('fedTailscaleLoginBtn')?.addEventListener('click', fedTailscaleLogin)
   document.getElementById('fedTailscaleOpenLoginBtn')?.addEventListener('click', () => {
-    if (_fedTailscaleLoginUrl) window.open(_fedTailscaleLoginUrl, '_blank', 'noopener')
+    // Defense in depth: _fedTailscaleLoginUrl is only ever set after fedTailscaleValidLoginUrl
+    // passes (see fedTailscaleLogin), but this button is a second, independent call site -- it
+    // re-checks rather than trusting that invariant silently held.
+    if (_fedTailscaleLoginUrl && fedTailscaleValidLoginUrl(_fedTailscaleLoginUrl)) {
+      window.open(_fedTailscaleLoginUrl, '_blank', 'noopener')
+    }
   })
 }
 
@@ -18476,7 +18493,7 @@ function fedTailscalePoll(pollToken) {
       const data = await res.json().catch(() => ({}))
       if (!res.ok) {
         fedTailscaleStopPoll()
-        _fedTailscaleState = { status: 'error', error: data.error || t('federation.tailscale.error_generic') }
+        _fedTailscaleState = { status: 'error', error: t('federation.tailscale.error_generic') }
         fedTailscaleRender()
         return
       }
@@ -18486,7 +18503,7 @@ function fedTailscalePoll(pollToken) {
         fedTailscaleRender()
       } else if (data.status === 'failed') {
         fedTailscaleStopPoll()
-        _fedTailscaleState = { status: 'error', error: data.error || t('federation.tailscale.error_generic') }
+        _fedTailscaleState = { status: 'error', error: t('federation.tailscale.error_generic') }
         fedTailscaleRender()
       }
       // 'pending' -- keep polling, the visible state is already "pending", nothing to re-render.
@@ -18507,15 +18524,29 @@ async function fedTailscaleLogin() {
     const res = await fetch('/api/federation/tailscale/login', { method: 'POST' })
     const data = await res.json().catch(() => ({}))
     if (!res.ok) {
-      _fedTailscaleState = { status: 'error', error: data.error || t('federation.tailscale.error_generic') }
+      // Cybered MEDIUM (gate-sha 1c3b95a2): never render data.error raw. The contract behind it
+      // is still DRAFT -- backend's promise that `error` is always a curated, non-leaking string
+      // is not yet backed by shipped code, so trusting it now would be trusting a control that
+      // does not exist yet. Show the localized generic message until backend ships an errorCode
+      // the UI can map to a specific i18n key.
+      _fedTailscaleState = { status: 'error', error: t('federation.tailscale.error_generic') }
       fedTailscaleRender()
       return
     }
     if (data.pollToken) {
-      _fedTailscaleLoginUrl = data.loginUrl || null
+      const loginUrl = data.loginUrl || null
+      if (loginUrl && !fedTailscaleValidLoginUrl(loginUrl)) {
+        // Cybered NO-GO (HIGH): a login-intent flow must never navigate to an unvalidated URL --
+        // refuse outright rather than open it, regardless of what backend eventually sends.
+        _fedTailscaleLoginUrl = null
+        _fedTailscaleState = { status: 'error', error: t('federation.tailscale.error_generic') }
+        fedTailscaleRender()
+        return
+      }
+      _fedTailscaleLoginUrl = loginUrl
       let popupBlocked = false
-      if (data.loginUrl) {
-        const win = window.open(data.loginUrl, '_blank', 'noopener')
+      if (loginUrl) {
+        const win = window.open(loginUrl, '_blank', 'noopener')
         if (!win) popupBlocked = true // browser blocked the automatic pop-up -- fallback button
       }
       _fedTailscaleState = { status: 'pending', popupBlocked }
