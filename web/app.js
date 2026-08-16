@@ -89,7 +89,7 @@
 // (renderLastUpdateBadge, refreshLastUpdateBadge moved to app-last-update.js, slice 42.
 //  refreshLastUpdateBadge() init call also moved there -- runs after app.js completes,
 //  satisfying the card f597369b requirement of running after the auth IIFE patches fetch.)
-(() => {
+;(() => {
   const TOKEN_KEY = 'marveen-dashboard-token'
   const urlParams = new URLSearchParams(window.location.search)
   const urlToken = urlParams.get('token')
