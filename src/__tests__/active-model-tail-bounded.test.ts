@@ -57,16 +57,16 @@ afterAll(() => {
 })
 
 describe('the transcript readers are bounded to the tail', () => {
-  it('still finds the latest turn in an ordinary transcript (positive control)', () => {
+  it('still finds the latest turn in an ordinary transcript (positive control)', async () => {
     // Without this, every "not found" assertion below could be passing because the reader is broken.
     const { workdir, projectDir } = dirFor('small')
     const f = join(projectDir, 'small.jsonl')
     writeFileSync(f, [turn('claude-old-5'), filler(100), turn('claude-latest-5')].join('\n') + '\n')
-    expect(readActiveModelFromProjectDir(workdir, undefined, configRoot)).toBe('claude-latest-5')
-    expect(readContextTokensFromProjectDir(workdir, configRoot)).toBe(10)
+    expect(await readActiveModelFromProjectDir(workdir, undefined, configRoot)).toBe('claude-latest-5')
+    expect(await readContextTokensFromProjectDir(workdir, configRoot)).toBe(10)
   })
 
-  it('does NOT read past the tail window -- a turn 3 MB back is out of reach, on purpose', () => {
+  it('does NOT read past the tail window -- a turn 3 MB back is out of reach, on purpose', async () => {
     // The bound, stated as a behaviour rather than a promise. 3 MB of filler after the only real
     // turn puts it outside the 512 KB window; the old whole-file reader would have found it, which
     // is precisely the cost this card exists to remove.
@@ -74,11 +74,11 @@ describe('the transcript readers are bounded to the tail', () => {
     const f = join(projectDir, 'huge.jsonl')
     writeFileSync(f, turn('claude-way-back-5') + '\n')
     for (let i = 0; i < 30; i += 1) appendFileSync(f, filler(100_000) + '\n')
-    expect(readActiveModelFromProjectDir(workdir, undefined, configRoot)).toBeNull()
-    expect(readContextTokensFromProjectDir(workdir, configRoot)).toBeNull()
+    expect(await readActiveModelFromProjectDir(workdir, undefined, configRoot)).toBeNull()
+    expect(await readContextTokensFromProjectDir(workdir, configRoot)).toBeNull()
   })
 
-  it('finds a turn that IS inside the window, at the end of the same huge file', () => {
+  it('finds a turn that IS inside the window, at the end of the same huge file', async () => {
     // The other half: bounded must not mean blind. Appending a real turn to that same multi-megabyte
     // file makes it visible again, so the reader is reading the tail rather than giving up on size.
     const { workdir, projectDir } = dirFor('huge-then-fresh')
@@ -86,18 +86,18 @@ describe('the transcript readers are bounded to the tail', () => {
     writeFileSync(f, turn('claude-way-back-5') + '\n')
     for (let i = 0; i < 30; i += 1) appendFileSync(f, filler(100_000) + '\n')
     appendFileSync(f, turn('claude-fresh-5', 77) + '\n')
-    expect(readActiveModelFromProjectDir(workdir, undefined, configRoot)).toBe('claude-fresh-5')
-    expect(readContextTokensFromProjectDir(workdir, configRoot)).toBe(77)
+    expect(await readActiveModelFromProjectDir(workdir, undefined, configRoot)).toBe('claude-fresh-5')
+    expect(await readContextTokensFromProjectDir(workdir, configRoot)).toBe(77)
   })
 
-  it('widens the window ONCE when a single line is bigger than it', () => {
+  it('widens the window ONCE when a single line is bigger than it', async () => {
     // A tool result larger than 512 KB would otherwise leave the window with no complete line at
     // all, and the reader would answer null for a session that has a perfectly good turn just
     // behind it. One retry at 4 MB, then it gives up -- bounded either way, never the whole file.
     const { workdir, projectDir } = dirFor('wide-line')
     const f = join(projectDir, 'zwide.jsonl')
     writeFileSync(f, [turn('claude-behind-a-wall-5', 42), filler(700_000)].join('\n') + '\n')
-    expect(readActiveModelFromProjectDir(workdir, undefined, configRoot)).toBe('claude-behind-a-wall-5')
-    expect(readContextTokensFromProjectDir(workdir, configRoot)).toBe(42)
+    expect(await readActiveModelFromProjectDir(workdir, undefined, configRoot)).toBe('claude-behind-a-wall-5')
+    expect(await readContextTokensFromProjectDir(workdir, configRoot)).toBe(42)
   })
 })

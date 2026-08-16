@@ -379,7 +379,7 @@ async function checkAgent(name: string, nowMs: number): Promise<void> {
 
   const hardGuardPhase = getHardGuardPhase(name)
 
-  const contextTokens = readContextTokensFromProjectDir(workingDir)
+  const contextTokens = await readContextTokensFromProjectDir(workingDir)
 
   const dispatchedStats = (() => {
     try { return getDispatchedPendingStats(name, nowMs, cfg.staleCutoffMs) }

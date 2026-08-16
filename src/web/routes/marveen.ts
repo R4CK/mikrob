@@ -16,8 +16,8 @@ import { readActiveModelFromProjectDir, readContextTokensFromProjectDir } from '
 import { readAutoRestartConfig } from '../auto-restart-store.js'
 import type { RouteContext } from './types.js'
 
-function getActiveMarveenModel(): string {
-  return readActiveModelFromProjectDir(PROJECT_ROOT) ?? 'unknown'
+async function getActiveMarveenModel(): Promise<string> {
+  return (await readActiveModelFromProjectDir(PROJECT_ROOT)) ?? 'unknown'
 }
 
 // Pure identity-core of the /api/marveen payload: the brand-relevant fields the
@@ -69,6 +69,10 @@ export async function tryHandleMarveen(ctx: RouteContext, webDir: string): Promi
     // legacy backend), `agentId` = canonical MAIN_AGENT_ID so the dashboard can
     // hit /api/agents/<id>/skills for the main agent.
     const idCore = buildMarveenIdentityCore(currentBotName(), currentBrandName(), MAIN_AGENT_ID)
+    const [model, contextTokens] = await Promise.all([
+      getActiveMarveenModel(),
+      readContextTokensFromProjectDir(PROJECT_ROOT),
+    ])
     json(res, {
       ...idCore,
       // Configured owner display name (OWNER_NAME). The dashboard chat view uses
@@ -76,14 +80,14 @@ export async function tryHandleMarveen(ctx: RouteContext, webDir: string): Promi
       // literal, so a renamed install recognizes its real owner.
       ownerName: currentOwnerName(),
       description,
-      model: getActiveMarveenModel(),
+      model,
       tmuxSession: MAIN_CHANNELS_SESSION,
       running: true,
       // Auto-restart applies to the main channels session too; key it by the
       // orchestrator id (autoRestartId, part of idCore) so the UI PUTs to the
       // right store entry.
       autoRestart: readAutoRestartConfig(MAIN_AGENT_ID),
-      contextTokens: readContextTokensFromProjectDir(PROJECT_ROOT),
+      contextTokens,
       hasTelegram: tg.hasTelegram,
       hasDiscord: dc.hasDiscord,
       hasSlack: sl.hasSlack,

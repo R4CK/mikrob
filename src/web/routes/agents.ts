@@ -434,7 +434,7 @@ interface AgentDetail extends AgentSummary {
   hasApiKey: boolean
 }
 
-function getAgentSummary(name: string): AgentSummary {
+async function getAgentSummary(name: string): Promise<AgentSummary> {
   const dir = agentDir(name)
   const configRoot = agentConfigRoot(name)
   const claudeMd = readFileOr(join(configRoot, 'CLAUDE.md'), '')
@@ -464,6 +464,13 @@ function getAgentSummary(name: string): AgentSummary {
   // Reauth badge: only meaningful for a running session (a stopped agent has
   // no pane to inspect). One capture-pane per running agent on the list poll.
   const reauth = running ? detectReauthNeeded(capturePane(agentSessionName(name))) : { needsReauth: false }
+  const configDir = resolveAgentConfigDir(name).configDir ?? undefined
+  // Independent reads (different offsets into the same or different files) -- run concurrently
+  // rather than sequentially awaiting each (card 9a2fd3f7).
+  const [activeModel, contextTokens] = await Promise.all([
+    running ? readActiveModelFromProjectDir(dir, runningSince ?? undefined, configDir) : Promise.resolve(null),
+    running ? readContextTokensFromProjectDir(dir, configDir) : Promise.resolve(null),
+  ])
 
   return {
     name,
@@ -473,7 +480,7 @@ function getAgentSummary(name: string): AgentSummary {
     modelProfile: typeof agentModelConfig.modelProfile === 'string' ? agentModelConfig.modelProfile : null,
     modelSource: modelResolution.source,
     modelProfileError: modelResolution.error ?? null,
-    activeModel: running ? readActiveModelFromProjectDir(dir, runningSince ?? undefined, resolveAgentConfigDir(name).configDir ?? undefined) : null,
+    activeModel,
     runningSince,
     authMode: readAgentAuthMode(name),
     securityProfile: readAgentSecurityProfile(name),
@@ -492,16 +499,16 @@ function getAgentSummary(name: string): AgentSummary {
     session,
     hasAvatar: findAvatarForAgent(name) !== null,
     autoRestart: readAutoRestartConfig(name),
-    contextTokens: running ? readContextTokensFromProjectDir(dir, resolveAgentConfigDir(name).configDir ?? undefined) : null,
+    contextTokens,
     needsReauth: reauth.needsReauth,
     reauthReason: reauth.reason,
   }
 }
 
-function getAgentDetail(name: string): AgentDetail {
+async function getAgentDetail(name: string): Promise<AgentDetail> {
   const dir = agentDir(name)
   const configRoot = agentConfigRoot(name)
-  const summary = getAgentSummary(name)
+  const summary = await getAgentSummary(name)
   const claudeMd = readFileOr(join(configRoot, 'CLAUDE.md'), '')
   const soulMd = readFileOr(join(dir, 'SOUL.md'), '')
   const mcpJson = readFileOr(join(dir, '.mcp.json'), '{}')
@@ -531,8 +538,11 @@ function getAgentDetail(name: string): AgentDetail {
   }
 }
 
-function listAgentSummaries(): AgentSummary[] {
-  return listAgentNames().map(getAgentSummary)
+function listAgentSummaries(): Promise<AgentSummary[]> {
+  // Promise.all, not a sequential loop (card 9a2fd3f7): each getAgentSummary() now does
+  // non-blocking file I/O, so this fans the whole fleet out concurrently instead of
+  // awaiting one agent's transcript reads before starting the next.
+  return Promise.all(listAgentNames().map(getAgentSummary))
 }
 
 // Max inter-agent messages a single main-agent inbox drain returns. The rest
@@ -638,7 +648,7 @@ export async function tryHandleAgents(ctx: RouteContext, webDir: string): Promis
   }
 
   if (path === '/api/agents' && method === 'GET') {
-    jsonMaybeGzip(req, res, listAgentSummaries())
+    jsonMaybeGzip(req, res, await listAgentSummaries())
     return true
   }
 
@@ -784,14 +794,14 @@ export async function tryHandleAgents(ctx: RouteContext, webDir: string): Promis
     }
 
     const names = withoutMainAgent(listAgentNames())
-    const results = [MAIN_AGENT_ID, ...names].map(name => {
+    const results = await Promise.all([MAIN_AGENT_ID, ...names].map(async name => {
       const dir = agentDir(name)
       const claudeMd = readFileOr(join(dir, 'CLAUDE.md'), '')
       const personaPath = join(PROJECT_ROOT, 'personas', `${name}.md`)
       const personaMd = existsSync(personaPath) ? readFileSync(personaPath, 'utf-8') : ''
       const personaText = [claudeMd, personaMd].filter(Boolean).join('\n')
       const currentModel = readAgentModel(name)
-      const contextTokens = readContextTokensFromProjectDir(dir) ?? 0
+      const contextTokens = (await readContextTokensFromProjectDir(dir)) ?? 0
 
       const kanban = kanbanMap.get(name)
       const signals: AgentSignals = {
@@ -803,7 +813,7 @@ export async function tryHandleAgents(ctx: RouteContext, webDir: string): Promis
       }
 
       return suggestForAgent(name, currentModel, personaText, contextTokens, signals)
-    })
+    }))
     json(res, { results })
     return true
   }
@@ -1300,7 +1310,7 @@ export async function tryHandleAgents(ctx: RouteContext, webDir: string): Promis
   // GET /api/context-guard -- live guard status (phase + measured context pct)
   // for every agent, main included.
   if (path === '/api/context-guard' && method === 'GET') {
-    json(res, { ok: true, agents: getContextGuardStatus() })
+    json(res, { ok: true, agents: await getContextGuardStatus() })
     return true
   }
 
@@ -2027,7 +2037,7 @@ export async function tryHandleAgents(ctx: RouteContext, webDir: string): Promis
   if (agentMatch && method === 'GET') {
     const name = decodeURIComponent(agentMatch[1])
     if (!isKnownAgent(name)) { json(res, { error: 'Agent not found' }, 404); return true }
-    json(res, getAgentDetail(name))
+    json(res, await getAgentDetail(name))
     return true
   }
 

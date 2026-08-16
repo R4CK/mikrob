@@ -42,33 +42,41 @@ function workingDirFor(name: string): string {
   return name === MAIN_AGENT_ID ? PROJECT_ROOT : agentDir(name)
 }
 
-export function buildAgentHudRows(names: readonly string[]): AgentHudRow[] {
-  const rows: AgentHudRow[] = []
-  for (const agent of names) {
-    let workingDir: string
-    try {
-      workingDir = workingDirFor(agent)
-    } catch {
-      continue // a name agentDir() refuses is not an agent we report on
-    }
-    const configDir = agent === MAIN_AGENT_ID ? undefined : (readAgentClaudeConfigDir(agent) ?? undefined)
-    const signals = readHudSignalsFromProjectDir(workingDir, configDir)
-    rows.push({
-      agent,
-      contextTokens: readContextTokensFromProjectDir(workingDir, configDir),
-      activeModel: readActiveModelFromProjectDir(workingDir, undefined, configDir),
-      activeTool: signals.activeTool,
-      runningSubAgents: signals.runningSubAgents,
-      truncated: signals.truncated,
-    })
-  }
-  return rows
+export async function buildAgentHudRows(names: readonly string[]): Promise<AgentHudRow[]> {
+  // Fan out concurrently (card 9a2fd3f7): each agent's context/model reads are independent
+  // non-blocking file I/O, and a name agentDir() refuses is filtered out rather than aborting
+  // the rest.
+  const rows = await Promise.all(
+    names.map(async (agent) => {
+      let workingDir: string
+      try {
+        workingDir = workingDirFor(agent)
+      } catch {
+        return null // a name agentDir() refuses is not an agent we report on
+      }
+      const configDir = agent === MAIN_AGENT_ID ? undefined : (readAgentClaudeConfigDir(agent) ?? undefined)
+      const [signals, contextTokens, activeModel] = await Promise.all([
+        readHudSignalsFromProjectDir(workingDir, configDir),
+        readContextTokensFromProjectDir(workingDir, configDir),
+        readActiveModelFromProjectDir(workingDir, undefined, configDir),
+      ])
+      return {
+        agent,
+        contextTokens,
+        activeModel,
+        activeTool: signals.activeTool,
+        runningSubAgents: signals.runningSubAgents,
+        truncated: signals.truncated,
+      }
+    }),
+  )
+  return rows.filter((r): r is AgentHudRow => r !== null)
 }
 
-export function tryHandleAgentHud(ctx: RouteContext): boolean {
+export async function tryHandleAgentHud(ctx: RouteContext): Promise<boolean> {
   const { res, path, method } = ctx
   if (path !== '/api/agent-hud' || method !== 'GET') return false
   const names = [MAIN_AGENT_ID, ...listAgentNames().filter((n) => n !== MAIN_AGENT_ID)]
-  json(res, { agents: buildAgentHudRows(names) })
+  json(res, { agents: await buildAgentHudRows(names) })
   return true
 }

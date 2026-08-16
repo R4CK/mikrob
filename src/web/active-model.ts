@@ -1,4 +1,5 @@
-import { closeSync, existsSync, openSync, readSync, readdirSync, statSync } from 'node:fs'
+import { existsSync } from 'node:fs'
+import { open, readdir, stat } from 'node:fs/promises'
 import { join } from 'node:path'
 import { homedir } from 'node:os'
 
@@ -30,21 +31,31 @@ import { homedir } from 'node:os'
  * contain no matching turn reads as "no value", where the old code would have kept scanning back to
  * byte zero. For a live session that window is minutes of history; for an idle one the answer was
  * already stale.
+ *
+ * ASYNC, NOT SYNC (card 9a2fd3f7, Cybersec follow-up to d3dc35bf). The bounded window fixed the
+ * cost of a SINGLE call (28x faster), but every call was still `readSync`/`readdirSync`/`statSync`
+ * on the request-handling thread -- one running agent, one blocking read, and `getAgentSummary`
+ * makes two of these PER agent. Measured: a burst of 20 concurrent `GET /api/agents` (6 running
+ * agents) went back to 0.21-4.4s, and an unrelated `GET /api/memories` sent mid-burst blocked for
+ * 1.51s -- a synchronous call blocks the WHOLE event loop, not just its own route, so N callers
+ * queue behind each other's file I/O regardless of which endpoint they hit. `fs/promises` offloads
+ * the actual read to libuv's thread pool instead of the JS thread, so N concurrent reads run
+ * concurrently instead of serializing the entire server behind them.
  */
 const TAIL_WINDOW = 512 * 1024
 const TAIL_WINDOW_RETRY = 4 * 1024 * 1024
 
-function readTailLines(file: string, maxBytes: number): string[] {
-  const size = statSync(file).size
+async function readTailLines(file: string, maxBytes: number): Promise<string[]> {
+  const size = (await stat(file)).size
   const start = Math.max(0, size - maxBytes)
   const length = size - start
   if (length <= 0) return []
   const buf = Buffer.allocUnsafe(length)
-  const fd = openSync(file, 'r')
+  const handle = await open(file, 'r')
   try {
-    readSync(fd, buf, 0, length, start)
+    await handle.read(buf, 0, length, start)
   } finally {
-    closeSync(fd)
+    await handle.close()
   }
   const lines = buf.toString('utf-8').split('\n')
   // A window that does not start at byte 0 almost certainly begins mid-line; that fragment is not
@@ -55,10 +66,22 @@ function readTailLines(file: string, maxBytes: number): string[] {
 
 /** Tail lines, widening the window ONCE when the first one held no complete line (a single huge
  *  tool result can exceed it). Two bounded reads, never the whole file. */
-function tailLinesFor(file: string): string[] {
-  const first = readTailLines(file, TAIL_WINDOW)
+async function tailLinesFor(file: string): Promise<string[]> {
+  const first = await readTailLines(file, TAIL_WINDOW)
   if (first.some((l) => l.trim().length > 0)) return first
   return readTailLines(file, TAIL_WINDOW_RETRY)
+}
+
+/** The most-recently-modified `.jsonl` in `dir`, or null when there is none. The per-file `stat`
+ *  calls run concurrently (small, bounded fan-out: one session-log directory's file count). */
+async function newestJsonl(dir: string): Promise<string | null> {
+  const files = (await readdir(dir)).filter((f) => f.endsWith('.jsonl'))
+  if (files.length === 0) return null
+  const withMtime = await Promise.all(
+    files.map(async (f) => ({ f, mtime: (await stat(join(dir, f))).mtimeMs })),
+  )
+  withMtime.sort((a, b) => b.mtime - a.mtime)
+  return withMtime[0]!.f
 }
 
 const cache = new Map<string, { value: string | null; expiresAt: number }>()
@@ -75,7 +98,7 @@ export function projectsDirFor(workingDir: string, configDir?: string, homeDirOv
   return join(base, 'projects', encoded)
 }
 
-export function readActiveModelFromProjectDir(workingDir: string, sinceUnixSec?: number, configDir?: string): string | null {
+export async function readActiveModelFromProjectDir(workingDir: string, sinceUnixSec?: number, configDir?: string): Promise<string | null> {
   const now = Date.now()
   const cacheKey = `${workingDir}:${sinceUnixSec ?? ''}:${configDir ?? ''}`
   const cached = cache.get(cacheKey)
@@ -87,15 +110,12 @@ export function readActiveModelFromProjectDir(workingDir: string, sinceUnixSec?:
       cache.set(cacheKey, { value: null, expiresAt: now + TTL_MS })
       return null
     }
-    const jsonls = readdirSync(dir)
-      .filter(f => f.endsWith('.jsonl'))
-      .map(f => ({ f, mtime: statSync(join(dir, f)).mtimeMs }))
-      .sort((a, b) => b.mtime - a.mtime)
-    if (jsonls.length === 0) {
+    const newest = await newestJsonl(dir)
+    if (newest === null) {
       cache.set(cacheKey, { value: null, expiresAt: now + TTL_MS })
       return null
     }
-    const lines = tailLinesFor(join(dir, jsonls[0].f))
+    const lines = await tailLinesFor(join(dir, newest))
     for (let i = lines.length - 1; i >= 0; i--) {
       const line = lines[i].trim()
       if (!line) continue
@@ -129,7 +149,7 @@ const ctxCache = new Map<string, { value: number | null; expiresAt: number }>()
 // null when there is no transcript / no usage yet (fresh session). This is what
 // the dashboard surfaces so the operator can see a session growing heavy and
 // decide to restart it.
-export function readContextTokensFromProjectDir(workingDir: string, configDir?: string): number | null {
+export async function readContextTokensFromProjectDir(workingDir: string, configDir?: string): Promise<number | null> {
   const now = Date.now()
   const cacheKey = `${workingDir}:${configDir ?? ''}`
   const cached = ctxCache.get(cacheKey)
@@ -138,12 +158,9 @@ export function readContextTokensFromProjectDir(workingDir: string, configDir?: 
   try {
     const dir = projectsDirFor(workingDir, configDir)
     if (existsSync(dir)) {
-      const jsonls = readdirSync(dir)
-        .filter(f => f.endsWith('.jsonl'))
-        .map(f => ({ f, mtime: statSync(join(dir, f)).mtimeMs }))
-        .sort((a, b) => b.mtime - a.mtime)
-      if (jsonls.length > 0) {
-        const lines = tailLinesFor(join(dir, jsonls[0].f))
+      const newest = await newestJsonl(dir)
+      if (newest !== null) {
+        const lines = await tailLinesFor(join(dir, newest))
         for (let i = lines.length - 1; i >= 0; i--) {
           const line = lines[i].trim()
           if (!line) continue

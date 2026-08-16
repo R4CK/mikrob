@@ -32,8 +32,8 @@ describe('GET /api/agent-hud is behind the auth gate', () => {
 })
 
 describe('buildAgentHudRows -- degrades instead of throwing', () => {
-  it('returns a row with empty signals for an agent that has no transcript', () => {
-    const rows = buildAgentHudRows(['definitely-not-an-agent-e9504aba'])
+  it('returns a row with empty signals for an agent that has no transcript', async () => {
+    const rows = await buildAgentHudRows(['definitely-not-an-agent-e9504aba'])
     expect(rows).toHaveLength(1)
     expect(rows[0].agent).toBe('definitely-not-an-agent-e9504aba')
     expect(rows[0].activeTool).toBeNull()
@@ -41,18 +41,18 @@ describe('buildAgentHudRows -- degrades instead of throwing', () => {
     expect(rows[0].contextTokens).toBeNull()
   })
 
-  it('SKIPS a name the path helper refuses instead of throwing', () => {
+  it('SKIPS a name the path helper refuses instead of throwing', async () => {
     // agentDir() goes through safeJoin, which throws on a traversal component. A HUD
     // request must not 500 because one registry entry is malformed -- the other agents
     // still have to render. The `..` name is the shape safeJoin rejects.
-    const rows = buildAgentHudRows(['..', 'definitely-not-an-agent-e9504aba'])
+    const rows = await buildAgentHudRows(['..', 'definitely-not-an-agent-e9504aba'])
     expect(rows.map((r) => r.agent)).toEqual(['definitely-not-an-agent-e9504aba'])
   })
 
-  it('never emits a field beyond the derived contract', () => {
+  it('never emits a field beyond the derived contract', async () => {
     // The binding constraint on the card, asserted on the row SHAPE: a future field
     // that carried tool input or a transcript quote would show up here.
-    const rows = buildAgentHudRows(['definitely-not-an-agent-e9504aba'])
+    const rows = await buildAgentHudRows(['definitely-not-an-agent-e9504aba'])
     expect(Object.keys(rows[0]).sort()).toEqual([
       'activeModel',
       'activeTool',

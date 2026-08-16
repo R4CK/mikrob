@@ -122,17 +122,17 @@ export function resumePrompt(name: string, handoffPath: string, hadHandoff: bool
   )
 }
 
-function measurePct(name: string, cfgLimit: number | null): number | null {
+async function measurePct(name: string, cfgLimit: number | null): Promise<number | null> {
   const workingDir = workingDirFor(name)
   const configDir = name === MAIN_AGENT_ID ? undefined : (readAgentClaudeConfigDir(name) ?? undefined)
-  const tokens = readContextTokensFromProjectDir(workingDir, configDir)
+  const tokens = await readContextTokensFromProjectDir(workingDir, configDir)
   if (tokens === null || tokens <= 0) return null
   let limit: number
   if (cfgLimit) {
     limit = cfgLimit
   } else {
     const model = (name === MAIN_AGENT_ID
-      ? readActiveModelFromProjectDir(PROJECT_ROOT)
+      ? await readActiveModelFromProjectDir(PROJECT_ROOT)
       : readAgentModel(name)) ?? ''
     // Calibrate against the persisted per-(agent, model) maximum, not just
     // the live reading: a fresh post-restart session must not un-learn a
@@ -207,7 +207,7 @@ async function checkAgent(name: string, nowMs: number): Promise<void> {
     running,
     // The saturation net decides from the pane alone; only the proactive
     // tiers need the (transcript-reading) pct probe.
-    pct: running && needPct && cfg.enabled ? measurePct(name, cfg.limitTokens) : null,
+    pct: running && needPct && cfg.enabled ? await measurePct(name, cfg.limitTokens) : null,
     paneIdle: paneState === 'idle',
     paneBusy: paneState === 'busy',
     sessionReady,
@@ -307,25 +307,25 @@ async function checkAgent(name: string, nowMs: number): Promise<void> {
 }
 
 /** Live status for the dashboard/API. */
-export function getContextGuardStatus(): Array<{
+export async function getContextGuardStatus(): Promise<Array<{
   agent: string
   phase: string
   pct: number | null
   enabled: boolean
   saturationRestart: boolean
-}> {
+}>> {
   const names = [MAIN_AGENT_ID, ...listAgentNames()]
-  return names.map((name) => {
+  return Promise.all(names.map(async (name) => {
     const cfg = readContextGuardConfig(name)
     const remote = name !== MAIN_AGENT_ID && !!readAgentRemoteHost(name)
     return {
       agent: name,
       phase: guardStates.get(name)?.phase ?? 'idle',
-      pct: cfg.enabled && !remote ? measurePct(name, cfg.limitTokens) : null,
+      pct: cfg.enabled && !remote ? await measurePct(name, cfg.limitTokens) : null,
       enabled: cfg.enabled,
       saturationRestart: cfg.saturationRestart,
     }
-  })
+  }))
 }
 
 /**
