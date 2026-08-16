@@ -220,6 +220,61 @@ print(int(v) if isinstance(v, (int, float)) and not isinstance(v, bool) and v >=
 " "$1" "$2" 2>/dev/null || echo ERR
 }
 
+# Quarantine-counter helpers (card 208ad121). Defined here, ahead of the selftest block below, so
+# the selftest can exercise them the same way it exercises read_state/state_put/cooldown_stamp --
+# the WHY (this counter exists to survive a shared-cause corruption hitting BOTH the cooldown state
+# and this counter at once) is documented at the QUARANTINE TRIPWIRE comment further down, where the
+# counter is actually used.
+QUARANTINE_COUNT_FILE="${COMPACT_QUARANTINE_FILE:-$ROOT/store/.context-compact-quarantines}"
+
+# read_quarantine_count -> "OK <n>" or "ERR <reason>", same OK/ERR convention as read_state. An
+# absent file is a first run (0), not corruption. A PRESENT but unparseable file is now a FAULT, not
+# silently 0 -- the old `case ... *[!0-9]*) echo 0` treated a damaged counter exactly like a healthy
+# fresh one, which is the same fail-open shape the cooldown state itself had before Cybered's
+# comment 8232 fix.
+read_quarantine_count() {
+  python3 -c "
+import sys
+try:
+    with open(sys.argv[1]) as fh:
+        raw = fh.read().strip()
+except FileNotFoundError:
+    print('OK 0'); sys.exit(0)
+except Exception as exc:
+    print('ERR ' + str(exc).replace(chr(10), ' ')); sys.exit(0)
+print(('OK ' + raw) if raw.isdigit() else ('ERR not-a-non-negative-integer: ' + repr(raw)[:80]))
+" "$QUARANTINE_COUNT_FILE" 2>/dev/null || echo "ERR read_quarantine_count crashed"
+}
+
+# write_quarantine_count <n> -- ATOMIC: same tempfile-in-same-dir + fsync + os.replace + mode-
+# preservation pattern as state_put, for the same reason -- a truncating `echo N > file` can leave a
+# half-written (hence unparseable-next-read) file on a crash, which is exactly the damage this
+# tripwire exists to detect, so the tripwire's OWN write must not be able to cause it.
+write_quarantine_count() {
+  python3 - "$QUARANTINE_COUNT_FILE" "$1" <<'PY'
+import os, stat, sys, tempfile
+path, n = sys.argv[1], sys.argv[2]
+fd, tmp = tempfile.mkstemp(dir=os.path.dirname(path) or '.',
+                           prefix='.context-compact-quarantines.', suffix='.tmp')
+try:
+    with os.fdopen(fd, 'w') as fh:
+        fh.write(n)
+        fh.flush()
+        os.fsync(fh.fileno())
+    try:
+        os.chmod(tmp, stat.S_IMODE(os.stat(path).st_mode))
+    except OSError:
+        pass          # no existing file (first run) -> mkstemp's 0600 is the right default
+    os.replace(tmp, path)
+except BaseException:
+    try:
+        os.unlink(tmp)
+    except OSError:
+        pass
+    raise
+PY
+}
+
 if [ "${1:-}" = "--selftest" ]; then
   fails=0
   t() { # t <expect> <args...>
@@ -330,7 +385,36 @@ if [ "${1:-}" = "--selftest" ]; then
   # Outside the 2h window there is nothing to report -- an empty answer, not a stale one.
   s "nothing inside the window -> empty" "" "$(read_agent_ctx "$qdb" cybered "$((qnow + 100000))")"
 
-  [ "$fails" -eq 0 ] && { echo "selftest OK (36 cases)"; exit 0; } || { echo "selftest FAILED: $fails"; exit 1; }
+  # --- QUARANTINE COUNTER: fail-closed read + atomic write (card 208ad121, Cybered NO-GO finding 2) -
+  # Same OK/ERR convention and same atomicity discriminator as the cooldown state above, applied to
+  # the counter that exists specifically to survive a shared-cause corruption hitting BOTH files.
+  QUARANTINE_COUNT_FILE="$sttmp/quarantines"
+  s     "absent-counter-is-a-first-run-not-corruption" "OK 0" "$(read_quarantine_count)"
+  printf '3' > "$QUARANTINE_COUNT_FILE"
+  s     "valid-counter-parses"          "OK 3" "$(read_quarantine_count)"
+  printf 'soon'                       > "$QUARANTINE_COUNT_FILE"
+  s_err "non-numeric-counter-is-a-fault"                                      "$(read_quarantine_count)"
+  printf -- '-5'                      > "$QUARANTINE_COUNT_FILE"
+  s_err "negative-counter-is-a-fault"                                         "$(read_quarantine_count)"
+  : > "$QUARANTINE_COUNT_FILE"
+  s_err "empty-counter-is-a-fault"                                            "$(read_quarantine_count)"
+  rm -f "$QUARANTINE_COUNT_FILE"
+
+  write_quarantine_count 7
+  s "atomic-write-actually-landed-on-disk-too" "OK 7" "$(read_quarantine_count)"
+  s "atomic-write-leaves-no-temp-debris-either" "0" \
+    "$(find "$sttmp" -name '.context-compact-quarantines.*.tmp' | wc -l)"
+
+  if [ "$(id -u)" != "0" ]; then
+    printf '1' > "$QUARANTINE_COUNT_FILE"; chmod 400 "$QUARANTINE_COUNT_FILE"
+    write_quarantine_count 9 2>/dev/null
+    chmod 600 "$QUARANTINE_COUNT_FILE" 2>/dev/null
+    s "atomic-write-survives-a-read-only-counter-file" "OK 9" "$(read_quarantine_count)"
+  else
+    echo "NOTE: running as root, skipping the read-only-file atomicity case (counter)"
+  fi
+
+  [ "$fails" -eq 0 ] && { echo "selftest OK (43 cases)"; exit 0; } || { echo "selftest FAILED: $fails"; exit 1; }
 fi
 
 [ -r "$DB" ] || { echo "context-compact-monitor.sh: cannot read $DB" >&2; exit 3; }
@@ -359,11 +443,10 @@ fi
 # only current output is a line in the very log this card proves nobody read for 8 days. A control
 # whose failure is reported only into an unread log is decoration. From the SECOND consecutive
 # quarantine it messages MikroB directly.
-QUARANTINE_COUNT_FILE="${COMPACT_QUARANTINE_FILE:-$ROOT/store/.context-compact-quarantines}"
-quarantine_count() {
-  local n; n="$(cat "$QUARANTINE_COUNT_FILE" 2>/dev/null)"
-  case "$n" in (''|*[!0-9]*) echo 0 ;; (*) echo "$n" ;; esac
-}
+#
+# QUARANTINE_COUNT_FILE / read_quarantine_count / write_quarantine_count (card 208ad121, fail-closed
+# read + atomic write) are defined earlier in this file, alongside read_state/state_put/
+# cooldown_stamp, so the selftest block above can exercise them the same way.
 alert_mikrob() { # alert_mikrob <text>
   [ -n "$HDR_FILE" ] || { log "WARN: no dashboard token, cannot alert MikroB"; return; }
   python3 -c 'import json,sys; print(json.dumps({"from":"mikrob","to":"mikrob","content":sys.argv[1]}))' "$1" \
@@ -376,8 +459,11 @@ state_raw="$(read_state 2>&1)"
 if [ "${state_raw%% *}" = "OK" ]; then
   STATE_JSON="${state_raw#OK }"
   # A clean read ends the streak. Counting CONSECUTIVE quarantines is the point: one is an accident
-  # to recover from, a second in a row is somebody or something doing it repeatedly.
-  [ "$(quarantine_count)" = "0" ] || echo 0 > "$QUARANTINE_COUNT_FILE" 2>/dev/null || true
+  # to recover from, a second in a row is somebody or something doing it repeatedly. A corrupt
+  # counter observed HERE (during an otherwise-healthy round) is not on the critical escalation
+  # path, so it is simply healed back to a clean 0 along with a genuinely-nonzero one.
+  qc_raw="$(read_quarantine_count)"
+  [ "$qc_raw" = "OK 0" ] || write_quarantine_count 0
 else
   if [ "$DRY" = "1" ]; then
     # --dry-run promises no side effects, so it reports the damage instead of repairing it.
@@ -385,8 +471,18 @@ else
     exit 0
   fi
   log "SKIP RUN: cooldown state unreadable (${state_raw#ERR }) -- quarantining and stamping all targets"
-  QCOUNT=$(( $(quarantine_count) + 1 ))
-  echo "$QCOUNT" > "$QUARANTINE_COUNT_FILE" 2>/dev/null || true
+  # FAIL CLOSED, and closed here means the escalating direction, not 0: if the counter is ALSO
+  # unreadable in the same round the state went bad, that is exactly the shared-cause scenario this
+  # tripwire exists for (see the QUARANTINE TRIPWIRE note above) -- treat it as "at least once
+  # already" so this round's increment crosses the alert threshold, instead of restarting the streak
+  # at 0 and silently absorbing the very corruption it is supposed to catch.
+  qc_raw="$(read_quarantine_count)"
+  case "$qc_raw" in
+    "OK "*) prior="${qc_raw#OK }" ;;
+    *)      prior=1 ;;
+  esac
+  QCOUNT=$(( prior + 1 ))
+  write_quarantine_count "$QCOUNT"
   if [ "$QCOUNT" -ge 2 ]; then
     log "ALERT: ${QCOUNT} consecutive quarantines -- notifying MikroB"
     alert_mikrob "[context-compact-monitor] RIASZTAS: a cooldown-allapot ${QCOUNT}. alkalommal EGYMAS UTAN serult (${STATE}). Ez az ag SOHA nem legitim -- ezt a fajlt senki nem rontja el veletlenul. Amig ismetlodik, minden korben mind az ot cel-agens 'epp most compactolva' belyeget kap, tehat a compact-vedelem 45 percenkent ujra ki van kapcsolva. A serult peldanyok a $(dirname "$STATE") mappaban vannak .corrupt.<ts> neven, nezd meg oket. (Kartya 35533cca, Cybered 2. lelete.)"
