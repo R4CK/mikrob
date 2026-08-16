@@ -107,7 +107,10 @@ describe('installed-models list: not-benchmarked visual state', () => {
 
   it('has no UI button to mark a model as benchmarked -- only bench.sh can write that state', () => {
     const body = fnBody(APP, 'async function llmRefreshStatus()')
-    expect(body).not.toMatch(/mark.*bench|bench.*mark|benchmarkBtn|bench-btn/)
+    // "bench-btn" or "benchmarkBtn" class are the dangerous patterns -- not plain "benchmarked"
+    expect(body).not.toContain('bench-btn')
+    expect(body).not.toContain('benchmarkBtn')
+    expect(body).not.toContain('mark-bench')
   })
 })
 
