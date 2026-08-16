@@ -776,6 +776,19 @@ async function loadCostEstimatesWidget() {
   }
 })()
 
+// Wire the "Részletek →" link in the cost widget footer to navigate to the costs page.
+// The link uses data-page="costs" but is not a sidebar .sb-link, so it doesn't get
+// the generic nav-link handler -- wire it explicitly here.
+;(function wireCostDetailLink() {
+  const link = document.querySelector('.ovw-cost-detail-link[data-page]')
+  if (!link) return
+  link.addEventListener('click', (e) => {
+    e.preventDefault()
+    const pageId = link.dataset.page
+    if (pageId && typeof switchPage === 'function') switchPage(pageId)
+  })
+})()
+
 // Brand mark + product-brand chrome: pull the configured brand from
 // /api/marveen and apply it to the dashboard chrome (tab title, mobile topbar,
 // sidebar name, updates subtitle). brandName is the product/system name and is

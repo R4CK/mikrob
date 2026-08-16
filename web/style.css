@@ -1042,7 +1042,7 @@ main {
 }
 
 /* Token-cost overview widget (card 01b51197) */
-.ovw-cost-card { margin-bottom: 20px; }
+.ovw-cost-card { margin-top: 14px; margin-bottom: 20px; }
 .ovw-cost-loading { font-size: 13px; color: var(--text-muted); margin: 0; padding: 8px 0; }
 .ovw-cost-empty,
 .ovw-cost-error { font-size: 13px; margin: 0; padding: 8px 0; }
