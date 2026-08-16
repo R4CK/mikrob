@@ -19,6 +19,7 @@ import { listAgentNames, readAgentDisplayName, isKnownAgent } from '../agent-con
 import { isAgentRunning } from '../agent-process.js'
 import { readHardStop, isNewDevStartBlocked } from '../../costops/weekly-hard-stop.js'
 import { landedGuardVerdict } from '../kanban-landed-guard.js'
+import { gateCompletenessGuardVerdict } from '../kanban-gate-completeness-guard.js'
 
 // Card project-name drift (Peti 2026-08-08): `project` was free-text with no case-folding, so
 // "CleanCore" / "cleancore" / "MikroB" / "mikrob-infra" / "fleet-infra" / "marveen" / "Infra" all
@@ -390,6 +391,10 @@ export async function tryHandleKanban(ctx: RouteContext): Promise<boolean> {
       const v = await landedGuardVerdict(id, data.status, force === true, typeof actor === 'string' ? actor : undefined)
       if (v.blocked) { json(res, { error: v.message }, 409); return true }
     }
+    {
+      const v = gateCompletenessGuardVerdict(id, data.status, force === true, typeof actor === 'string' ? actor : undefined)
+      if (v.blocked) { json(res, { error: v.message }, 409); return true }
+    }
     if (updateKanbanCard(id, normalizeProjectName(data), { actor: typeof actor === 'string' ? actor : undefined, force: force === true })) {
       json(res, { ok: true }); return true
     }
@@ -425,6 +430,10 @@ export async function tryHandleKanban(ctx: RouteContext): Promise<boolean> {
     }
     {
       const v = await landedGuardVerdict(id, status, force === true, typeof actor === 'string' ? actor : undefined)
+      if (v.blocked) { json(res, { error: v.message }, 409); return true }
+    }
+    {
+      const v = gateCompletenessGuardVerdict(id, status, force === true, typeof actor === 'string' ? actor : undefined)
       if (v.blocked) { json(res, { error: v.message }, 409); return true }
     }
     if (moveKanbanCard(id, status, sort_order ?? 0, actor, force === true)) {
