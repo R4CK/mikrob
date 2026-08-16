@@ -109,9 +109,12 @@ describe('fedTailscaleValidLoginUrl (Cybered NO-GO, HIGH, gate-sha 1c3b95a2)', (
   })
 
   it('the fallback "open login link" button re-validates independently -- a second call site, not a shared trust assumption', () => {
+    // NOT the first occurrence (indexOf would land on the HTML template's id="..." attribute) --
+    // the actual event-listener wiring, further down in the same function.
     const body = fnBody(APP, 'function fedTailscaleRender()')
-    const btnIdx = body.indexOf('fedTailscaleOpenLoginBtn')
-    const slice = body.slice(btnIdx, btnIdx + 400)
+    const btnIdx = body.indexOf("getElementById('fedTailscaleOpenLoginBtn')")
+    expect(btnIdx).toBeGreaterThan(-1)
+    const slice = body.slice(btnIdx, btnIdx + 200)
     expect(slice).toContain('fedTailscaleValidLoginUrl(_fedTailscaleLoginUrl)')
   })
 })
