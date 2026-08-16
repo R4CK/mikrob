@@ -154,7 +154,10 @@ describe('PORTCHAIN1: the port chain follows WEB_PORT on a NON-default port', ()
   })
 
   it('web/app.js keeps its pre-fetch initial value (overwritten at boot)', () => {
-    const app = readFileSync(join(ROOT, 'web/app.js'), 'utf-8')
+    // __serverPort moved to app-schedules.js (modularisation slice 11 / card 0159301d)
+    const APP_CORE = readFileSync(join(ROOT, 'web/app.js'), 'utf-8')
+    const APP_SCHEDULES = readFileSync(join(ROOT, 'web/app-schedules.js'), 'utf-8')
+    const app = APP_CORE + '\n' + APP_SCHEDULES
     // measured: /api/network-info overwrites it, and the prompt uses the variable
     expect(app).toContain('let __serverPort = 3420')
     expect(app).toContain('if (info.port) __serverPort = info.port')
