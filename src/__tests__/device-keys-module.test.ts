@@ -7,9 +7,10 @@ import { join, dirname } from 'node:path'
 import { fileURLToPath } from 'node:url'
 
 const __dirname = dirname(fileURLToPath(import.meta.url))
-const APP = readFileSync(join(__dirname, '../../web/app.js'), 'utf-8')
-const MODULE = readFileSync(join(__dirname, '../../web/app-device-keys.js'), 'utf-8')
-const HTML = readFileSync(join(__dirname, '../../web/index.html'), 'utf-8')
+const APP             = readFileSync(join(__dirname, '../../web/app.js'),              'utf-8')
+const MODULE          = readFileSync(join(__dirname, '../../web/app-device-keys.js'),  'utf-8')
+const SETTINGS_AUTH   = readFileSync(join(__dirname, '../../web/app-settings-auth.js'), 'utf-8')
+const HTML            = readFileSync(join(__dirname, '../../web/index.html'),           'utf-8')
 
 describe('device-keys modularisation: app-device-keys.js is the owner', () => {
   it('loadSettings lives in app-device-keys.js', () => {
@@ -38,8 +39,8 @@ describe('device-keys modularisation: app.js delegates, does not define', () => 
     expect(APP).not.toMatch(/^async function loadSettings\(\)/m)
   })
 
-  it('app.js uses lambda for refreshSettingsBtn to defer loadSettings resolution', () => {
-    expect(APP).toContain("addEventListener('click', () => loadSettings())")
+  it('app-settings-auth.js uses lambda for refreshSettingsBtn to defer loadSettings resolution', () => {
+    expect(SETTINGS_AUTH).toContain("addEventListener('click', () => loadSettings())")
   })
 
   it('renderDeviceKeysSection is not defined in app.js', () => {
