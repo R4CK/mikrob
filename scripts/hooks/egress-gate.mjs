@@ -184,6 +184,15 @@ const FIRECRAWL_SCRAPE_ALLOWED_KEYS = new Set([
   'location', 'storeInCache', 'zeroDataRetention', 'lockdown',
 ])
 
+/** Keys the caller passed that the allowlist above does not clear. Exported so the CLI path can say
+ *  WHICH rule denied: without it a block-log line reads `url="<an approved host>" reason="not on
+ *  egress allowlist"`, which is false on its face and misleads exactly in the incident that matters
+ *  (Cybersec MEDIUM, card 91c4a369). Empty array = nothing to object to. */
+export function firecrawlDisallowedParams(toolName, toolInput) {
+  if (String(toolName ?? '') !== 'mcp__firecrawl__firecrawl_scrape') return []
+  return Object.keys(toolInput ?? {}).filter((k) => !FIRECRAWL_SCRAPE_ALLOWED_KEYS.has(k))
+}
+
 export function isEgressBlocked(toolName, toolInput, runtimeList = { domains: [], prefixes: [] }) {
   const name = String(toolName ?? '')
   const isFirecrawl = name.startsWith(FIRECRAWL_PREFIX)
@@ -191,10 +200,7 @@ export function isEgressBlocked(toolName, toolInput, runtimeList = { domains: []
   // cannot be checked against a hostname allowlist, so there is no version of "allowed" for it here.
   if (isFirecrawl && !FIRECRAWL_URL_TOOLS.has(name)) return true
   // Same default-deny, one level in: a permitted tool called with a parameter we have not cleared.
-  if (name === 'mcp__firecrawl__firecrawl_scrape') {
-    const extra = Object.keys(toolInput ?? {}).filter((k) => !FIRECRAWL_SCRAPE_ALLOWED_KEYS.has(k))
-    if (extra.length > 0) return true
-  }
+  if (firecrawlDisallowedParams(name, toolInput).length > 0) return true
   if (name !== 'WebFetch' && !isFirecrawl) return false
   const url = String(toolInput?.url ?? '')
   // A URL-bearing tool invoked WITHOUT a url is a call this gate cannot judge, so it is denied.
@@ -251,6 +257,18 @@ const BLOCK_MESSAGE =
   'store/egress-allowlist.json fájlhoz ({ "domains": ["example.com"] } vagy ' +
   '{ "prefixes": ["https://example.com/api/"] }), majd futtassa újra a WebFetch hívást.'
 
+/** The host was fine; the parameters were not. Says which one and what to do, because the generic
+ *  message above would send the reader off to edit the domain allowlist, which fixes nothing here. */
+const PARAM_BLOCK_MESSAGE = (keys) =>
+  `Egress TILTOTT (egress-gate hook): a hoszt rendben van, de a firecrawl_scrape hívás olyan ` +
+  `paramétert visz, ami nincs engedélyezve: ${keys.join(', ')}. ` +
+  `Ezek egy MÁSODIK kimenő csatornát nyitnának egy jóváhagyott hoszton keresztül (az actions[] ` +
+  `tömb executeJavascript/click akciói tetszőleges JS-t futtatnak és bárhová fetch-elhetnek), ` +
+  `vagy a kapcsolat védelmét gyengítenék (skipTlsVerification, proxy, profile). ` +
+  `TEENDŐ: hívd újra ezeket a mezőket ELHAGYVA -- a scrape url + formats + onlyMainContent stb. ` +
+  `mezőkkel változatlanul működik. Ha egy ilyen mező tényleg kell, az BIZTONSÁGI döntés: ` +
+  `a scripts/hooks/egress-gate.mjs FIRECRAWL_SCRAPE_ALLOWED_KEYS listájába indoklással kerül be.`
+
 function allow() { process.exit(0) }
 
 function deny(reason) {
@@ -283,6 +301,13 @@ if (isInvokedDirectly()) {
   }
   const url = String(payload?.tool_input?.url ?? '')
   const runtimeList = loadRuntimeAllowlist()
+  // Which rule denied, before the generic one: a param denial can land on an APPROVED host, and
+  // "not on egress allowlist" would then be a false explanation pointing at the wrong fix.
+  const badParams = firecrawlDisallowedParams(payload?.tool_name, payload?.tool_input)
+  if (badParams.length > 0) {
+    logBlocked(url, `disallowed firecrawl parameter: ${badParams.join(', ')}`)
+    deny(PARAM_BLOCK_MESSAGE(badParams))
+  }
   if (isEgressBlocked(payload?.tool_name, payload?.tool_input, runtimeList)) {
     logBlocked(url, 'not on egress allowlist')
     deny(BLOCK_MESSAGE)

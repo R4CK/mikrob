@@ -10,7 +10,7 @@ import { readFileSync, existsSync } from 'node:fs'
 import { join, dirname } from 'node:path'
 import { fileURLToPath } from 'node:url'
 // @ts-expect-error -- plain .mjs hook script, no types
-import { isEgressBlocked, loadRuntimeAllowlist } from '../../scripts/hooks/egress-gate.mjs'
+import { firecrawlDisallowedParams, isEgressBlocked, loadRuntimeAllowlist } from '../../scripts/hooks/egress-gate.mjs'
 import {
   injectEgressGate,
   ensureEgressGate,
@@ -222,6 +222,27 @@ describe('isEgressBlocked', () => {
       isEgressBlocked('mcp__firecrawl__firecrawl_map', { url: allowed, includeSubdomains: true }),
       'map must keep working unchanged',
     ).toBe(false)
+  })
+
+  it('a param denial NAMES the offending keys, so the log does not blame the host', () => {
+    // Cybersec MEDIUM on the same finding: once the allowlist denies, the block-log line shows an
+    // APPROVED url next to reason "not on egress allowlist", which is false on its face and sends
+    // the next reader to edit the domain list. Measured before the fix -- two live denials logged
+    // exactly that. The reason now comes from the keys.
+    const allowed = 'https://api.github.com/repos/x/y'
+    expect(
+      firecrawlDisallowedParams('mcp__firecrawl__firecrawl_scrape', {
+        url: allowed,
+        actions: [{ type: 'executeJavascript' }],
+        proxy: 'stealth',
+      }),
+    ).toEqual(['actions', 'proxy'])
+    // Empty for everything that has nothing to object to, or every denial would claim a param cause.
+    expect(firecrawlDisallowedParams('mcp__firecrawl__firecrawl_scrape', { url: allowed })).toEqual([])
+    expect(
+      firecrawlDisallowedParams('mcp__firecrawl__firecrawl_map', { url: allowed, limit: 3 }),
+    ).toEqual([])
+    expect(firecrawlDisallowedParams('WebFetch', { url: allowed })).toEqual([])
   })
 
   it('the hook is REGISTERED for the tools it now judges, not only for WebFetch', () => {
