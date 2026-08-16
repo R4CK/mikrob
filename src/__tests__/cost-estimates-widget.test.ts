@@ -127,11 +127,13 @@ describe('cost-estimates-widget: HTML', () => {
     expect(HTML).toContain('id="ovwCostTotal"')
   })
 
-  it('has detail link pointing to costs page (flow-connectivity)', () => {
-    expect(HTML).toContain('data-page="costs"')
-    const idx = HTML.indexOf('data-page="costs"')
-    const slice = HTML.slice(idx - 50, idx + 80)
-    expect(slice).toContain('overview.cost.detail_link')
+  it('has detail link pointing to costs page inside the widget (flow-connectivity)', () => {
+    // The widget card contains a "Details →" link with data-page="costs".
+    // Anchor on the widget element first to avoid matching the sidebar nav link.
+    const cardIdx = HTML.indexOf('id="ovwCostCard"')
+    const cardSlice = HTML.slice(cardIdx, cardIdx + 1000)
+    expect(cardSlice).toContain('data-page="costs"')
+    expect(cardSlice).toContain('overview.cost.detail_link')
   })
 
   it('has disclaimer note element', () => {
