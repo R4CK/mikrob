@@ -68,6 +68,13 @@ const ACKNOWLEDGED_CONFLICTS: Readonly<Record<string, string>> = {
   // version field. Resolution: keep the fork's aggregate structure, and port upstream's new
   // single-result features onto it one by one.
   'src/web/update-checker.ts': 'keep the fork aggregate shape, port upstream single-result features onto it',
+  // A one-line import conflict, not a behavioural one (measured 2026-08-16, card 78c14372): the fork
+  // added `agentDir` to the existing import from './agent-config.js' (workingDirFor() now goes
+  // through the sanitized helper instead of building its own path), and upstream independently added
+  // `readAgentClaudeConfigDir` to the SAME import line for an unrelated feature. Nothing else in the
+  // file diverges. Resolution: merge both imports onto one line, keep both bindings.
+  'src/web/context-restart-gate-runner.ts':
+    'merge both added imports onto one line (agentDir from the fork, readAgentClaudeConfigDir from upstream) -- no other conflict in the file',
 }
 
 function git(args: string[], cwd: string): string {
