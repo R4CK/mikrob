@@ -165,7 +165,7 @@ async function parseFileToChunks(file) {
 // Save
 memImportSaveBtn.addEventListener('click', async () => {
   if (!memImportFiles.length) {
-    showToast(t('mem.import.no_file'))
+    showToast(t('memories.toast.select_files'))
     return
   }
   const agentId = document.getElementById('memImportAgent').value
@@ -176,7 +176,7 @@ memImportSaveBtn.addEventListener('click', async () => {
   memImportSaveBtn.querySelector('.btn-loading').hidden = false
   memImportSaveBtn.disabled = true
   memImportProgress.hidden = false
-  memImportStatus.textContent = t('mem.import.parsing')
+  memImportStatus.textContent = t('memories.import.processing')
   memImportResult.hidden = true
 
   let totalChunks = 0
@@ -191,13 +191,13 @@ memImportSaveBtn.addEventListener('click', async () => {
   totalChunks = allChunks.length
 
   for (let i = 0; i < allChunks.length; i++) {
-    memImportStatus.textContent = `${t('mem.import.saving')} ${i + 1} / ${totalChunks}...`
+    memImportStatus.textContent = t('memories.import.importing', { n: i + 1 }) + ` / ${totalChunks}...`
     try {
       const res = await fetch('/api/memories', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
-          agent_id: agentId,
+          agent_id: agentId || undefined,
           content: allChunks[i],
           category: category,
           keywords: keywords || undefined,
@@ -218,7 +218,7 @@ memImportSaveBtn.addEventListener('click', async () => {
   memImportSaveBtn.disabled = false
   memImportStatus.textContent = ''
   memImportResult.hidden = false
-  memImportResult.innerHTML = `<div style="color:var(--success,#27ae60)">${t('mem.import.done')}: ${savedChunks} / ${totalChunks}</div>${failedChunks ? `<div style="color:var(--danger,#e74c3c)">${t('mem.import.failed')}: ${failedChunks}</div>` : ''}`
+  memImportResult.innerHTML = `<div style="color:var(--success,#27ae60)">${t('memories.toast.imported', { n: savedChunks })}</div>${failedChunks ? `<div style="color:var(--danger,#e74c3c)">${t('memories.toast.import_error')} (${failedChunks})</div>` : ''}`
 })
 
 // ============================================================
@@ -328,7 +328,7 @@ document.getElementById('migrateImportBtn').addEventListener('click', async () =
 
   try {
     const path = document.getElementById('migratePath').value.trim()
-    const res = await fetch('/api/migrate/import', {
+    const res = await fetch('/api/migrate/run', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ sourcePath: path, targetAgent: agentTarget, findings: selected }),
@@ -430,9 +430,9 @@ document.getElementById('fleetDryRunBtn').addEventListener('click', async () => 
 
     const el = document.getElementById('fleetDryRunResult')
     el.hidden = false
-    el.innerHTML = `<div style="color:var(--success,#27ae60);font-weight:600">${t('fleet.import.dry_run_ok')}: ${data.agents?.length || 0} ${t('fleet.import.agents')}</div>
+    el.innerHTML = `<div style="color:var(--success,#27ae60);font-weight:600">${t('fleet.import.dry_run_ok')}: ${data.wouldCreate?.agents?.length || 0} ${t('fleet.import.agents')}</div>
       ${(data.warnings || []).map(w => `<div style="color:var(--warn,#e0a800);font-size:13px">${escapeHtml(w)}</div>`).join('')}
-      <div style="margin-top:8px;font-size:13px;color:var(--text-muted)">${(data.agents || []).map(a => escapeHtml(a.name || a.agent_id || '')).join(', ')}</div>`
+      <div style="margin-top:8px;font-size:13px;color:var(--text-muted)">${(data.wouldCreate?.agents || []).map(a => escapeHtml(a)).join(', ')}</div>`
 
     document.getElementById('fleetApplyBtn').hidden = false
   } catch (err) {
@@ -446,6 +446,7 @@ document.getElementById('fleetDryRunBtn').addEventListener('click', async () => 
 
 document.getElementById('fleetApplyBtn').addEventListener('click', async () => {
   if (!fleetLastBody) return
+  if (!confirm(t('fleet.import.apply_confirm'))) return
   const btn = document.getElementById('fleetApplyBtn')
   const password = document.getElementById('fleetImportPassword').value.trim()
   btn.disabled = true
@@ -456,14 +457,15 @@ document.getElementById('fleetApplyBtn').addEventListener('click', async () => {
     const headers = { 'Content-Type': 'application/json' }
     if (password) headers['X-Vault-Password'] = password
 
-    const res = await fetch('/api/fleet/import', {
+    const res = await fetch('/api/fleet/import?apply=true', {
       method: 'POST',
       headers,
       body: fleetLastBody,
     })
     const data = await res.json()
     if (!res.ok) throw new Error(data.error || t('fleet.import.error'))
-    showToast(t('fleet.import.success') + ': ' + (data.imported || 0))
+    const agentCount = data.imported?.agents?.length || 0
+    showToast(t('fleet.import.success') + ': ' + agentCount)
     document.getElementById('fleetDryRunResult').hidden = true
     document.getElementById('fleetApplyBtn').hidden = true
     document.getElementById('fleetImportFile').value = ''
