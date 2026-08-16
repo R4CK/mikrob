@@ -52,7 +52,11 @@ function sandbox(stepSource: string, opts: { fakeTailscaleOnPath?: boolean; stat
 }
 
 function run(script: string, bin: string, opts: { stdin?: string; extraBin?: string } = {}) {
-  const path = [opts.extraBin, bin, '/usr/bin', '/bin'].filter(Boolean).join(':')
+  // Deliberately NO /usr/bin or /bin here: this host has a real tailscale binary installed
+  // system-wide, and letting it leak onto PATH would silently defeat the "not installed" cases.
+  // bash's own needs (read, echo, source, printf, [[ ]]) are all builtins -- no external PATH
+  // dependency for the sentinel-bounded step itself.
+  const path = [opts.extraBin, bin].filter(Boolean).join(':')
   return spawnSync('bash', [script], {
     encoding: 'utf-8',
     input: opts.stdin ?? '\n',
