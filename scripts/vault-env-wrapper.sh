@@ -33,6 +33,26 @@ if [ -n "$REFS" ]; then
   while IFS='=' read -r key value; do
     [ -n "$key" ] && export "$key"="$value"
   done <<< "$RESOLVED"
+
+  # Fail-closed check (card 42fadae5): vault-resolve.mjs silently drops any secret_id it
+  # can't find, so RESOLVED can come back with fewer names than REFS asked for. Exec-ing
+  # anyway leaves the literal "vault:<id>" string sitting in that env var, and it goes out
+  # over the network as a credential. Compare NAME sets only -- never values -- so the
+  # error path can name the variable + secret id without ever touching a resolved secret.
+  RESOLVED_NAMES=$(printf '%s' "$RESOLVED" | cut -d= -f1)
+  MISSING=""
+  while IFS='=' read -r req_var req_secret_id; do
+    [ -z "$req_var" ] && continue
+    if ! grep -qx "$req_var" <<< "$RESOLVED_NAMES"; then
+      MISSING="${MISSING}  ${req_var} (vault:${req_secret_id})"$'\n'
+    fi
+  done <<< "$REFS"
+
+  if [ -n "$MISSING" ]; then
+    echo "vault-env-wrapper: unresolved vault: reference(s), refusing to start:" >&2
+    printf '%s' "$MISSING" >&2
+    exit 1
+  fi
 fi
 
 exec "$@"
