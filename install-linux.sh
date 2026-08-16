@@ -1473,8 +1473,18 @@ if [ -d "$SEED_SKILLS_DIR" ]; then
       SEED_SKIP=$((SEED_SKIP + 1))
       continue
     fi
-    # Recursive copy so nested references/, scripts/, assets/, data/ ship too.
-    cp -r "${skill_dir%/}" "$SKILLS_DIR/"
+    # Copy from the GIT TREE, not the disk (card f39dd8fb). `cp -r` ships whatever is physically
+    # sitting under seed-skills/<skill>/, including untracked/gitignored debris -- a stray
+    # __pycache__/*.pyc baked in another machine's HOME path was the concrete find, and the repo
+    # guards (fleet-test.sh's checked-out worktree) never see it because they only ever look at the
+    # git tree. `git archive` makes "what ships" and "what the guards scan" the SAME set by
+    # construction. Falls back to the old recursive copy only if $INSTALL_DIR is not a git checkout
+    # (e.g. a hand-extracted tarball) -- rare, but an install must not hard-fail over it.
+    if git -C "$INSTALL_DIR" rev-parse --is-inside-work-tree >/dev/null 2>&1; then
+      git -C "$INSTALL_DIR" archive HEAD -- "seed-skills/$skill_name" | tar -x -C "$SKILLS_DIR" --strip-components=1
+    else
+      cp -r "${skill_dir%/}" "$SKILLS_DIR/"
+    fi
     # ...then render the identity placeholders, exactly as the scheduled-task seeding above does.
     # Without this the skills shipped their {{INSTALL_DIR}} LITERALLY: a live install here had
     # `{{INSTALL_DIR}}/store/local-llm-rag.sh` sitting in a command an agent is told to run (card

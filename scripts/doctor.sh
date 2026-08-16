@@ -273,6 +273,23 @@ else
   warn "store/sync-agent-templates.sh missing or not executable -- the installed tree is UNCHECKED"
 fi
 
+# --- seed-skills/: untracked files would ship verbatim on the next install (card f39dd8fb) ---
+# Same "detector needs a consumer where it can actually see the live tree" reasoning as the block
+# above: the repo guards only ever see a checked-out git ref (no untracked file can exist there by
+# construction), so this has to run here, against the real seed-skills/ on disk.
+echo ""
+echo -e "${BOLD}seed-skills/ -- untracked files that would ship verbatim${RESET}"
+if [ -x store/seed-skills-untracked-check.sh ]; then
+  if SEED_OUT="$(store/seed-skills-untracked-check.sh 2>&1)"; then
+    ok "$SEED_OUT"
+  else
+    fail "$(printf '%s\n' "$SEED_OUT" | head -1)"
+    printf '%s\n' "$SEED_OUT" | tail -n +2 | sed 's/^/    /'
+  fi
+else
+  warn "store/seed-skills-untracked-check.sh missing or not executable -- seed-skills/ is UNCHECKED"
+fi
+
 # --- Summary ---
 echo ""
 if [ "$FAIL" -eq 0 ]; then
