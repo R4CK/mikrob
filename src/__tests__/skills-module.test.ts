@@ -20,8 +20,8 @@ describe('skills modularisation: app-skills.js is the owner', () => {
     expect(MODULE).toContain('function deriveSkillCategory(')
   })
 
-  it('filterAndRenderSkills or renderSkillCard lives in app-skills.js', () => {
-    expect(MODULE.includes('function filterAndRenderSkills') || MODULE.includes('function renderSkillCard')).toBe(true)
+  it('renderGlobalSkills lives in app-skills.js', () => {
+    expect(MODULE).toContain('function renderGlobalSkills(')
   })
 
   it('globalSkills state lives in app-skills.js', () => {
