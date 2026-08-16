@@ -61,25 +61,28 @@ describe('self-pace-gate gateDecision', () => {
   // "at declared trivial difficulty" ("declared" starts with "dec"). Same bug class as the
   // >=80% collision above, one case per alternative so the whole list is covered, not just "dec".
   it('does NOT misfire "at" on prose starting with a day/month abbreviation (card eae5d6fd)', () => {
+    // Bare commands, matching QA's own repro ("the sentence's direct invocation") -- "at" must sit
+    // at a real segment start (^) for AT_INVOCATION to even be evaluated, which an echo-wrapped
+    // quoted string does not give it.
     for (const cmd of [
-      'echo "at declared trivial difficulty"',
-      'echo "at monitor the deploy for errors"',
-      'echo "at tuesdays we usually deploy"', // "tue"
-      'echo "at wednesday-shaped release cadence"', // "wed"
-      'echo "at thursdays only"', // "thu"
-      'echo "at friction points in the pipeline"', // "fri"
-      'echo "at satisfies the contract"', // "sat"
-      'echo "at sundries left in the cart"', // "sun"
-      'echo "at january-scale traffic"', // "jan"
-      'echo "at february release window"', // "feb"
-      'echo "at marginal cost"', // "mar"
-      'echo "at aprons for the kitchen"', // "apr"
-      'echo "at junction boxes"', // "jun"
-      'echo "at julienne the carrots"', // "jul"
-      'echo "at augmented reality demo"', // "aug"
-      'echo "at september-like traffic"', // "sep"
-      'echo "at octopus card top-up"', // "oct"
-      'echo "at november-shaped forecast"', // "nov"
+      'at declared trivial difficulty', // "dec"
+      'at monitor the deploy for errors', // "mon"
+      'at tuesdays we usually deploy', // "tue"
+      'at wednesday-shaped release cadence', // "wed"
+      'at thursdays only', // "thu"
+      'at friction points in the pipeline', // "fri"
+      'at satisfies the contract', // "sat"
+      'at sundries left in the cart', // "sun"
+      'at january-scale traffic', // "jan"
+      'at february release window', // "feb"
+      'at marginal cost', // "mar"
+      'at aprons for the kitchen', // "apr"
+      'at junction boxes', // "jun"
+      'at julienne the carrots', // "jul"
+      'at augmented reality demo', // "aug"
+      'at september-like traffic', // "sep"
+      'at octopus card top-up', // "oct"
+      'at november-shaped forecast', // "nov"
     ]) {
       expect(selfPaceDecision('Bash', { command: cmd }).deny).toBe(false)
     }
