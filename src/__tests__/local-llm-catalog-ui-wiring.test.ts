@@ -90,7 +90,9 @@ describe('llmRefreshRecs (GET /api/local-llm/catalog)', () => {
     const body = fnBody(APP, 'async function llmRefreshRecs()')
     const emptyBranch = body.slice(body.indexOf('if (models.length === 0) {'), body.indexOf("t('localLlm.rec.empty')"))
     expect(emptyBranch).toContain('warningsHtml')
-    expect(body).toContain('el.innerHTML = warningsHtml + _llmRecGroups.map(')
+    // Card 3ff05447 added unverifiedNoteHtml between warningsHtml and the group list -- still
+    // prepended, in the same order, not replacing the warnings banner.
+    expect(body).toContain('el.innerHTML = warningsHtml + unverifiedNoteHtml + _llmRecGroups.map(')
   })
 
   it('groups by repo, not one flat row per quant (card 88ea5050, Peti direktiva)', () => {

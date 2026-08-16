@@ -720,6 +720,8 @@ window._i18n.en = {
   'localLlm.rec.tps_tip':            'Generation throughput measured on this hardware',
   'localLlm.rec.tps_unmeasured':     'Speed: not measured',
   'localLlm.rec.tps_unmeasured_tip': 'No speed measurement exists for this model on this machine yet -- never shown as a guessed value.',
+  'localLlm.rec.unverified_note': '{count} models in this list come from publishers that are not on the reviewed list. They appear because within a size tier the reviewed publishers are listed first -- so nothing reviewed was left at that size, not because anyone vouched for them.',
+  'localLlm.rec.digest_missing': 'no digest published',
   'localLlm.trustConfirm.title':                  'Unapproved publisher',
   'localLlm.trustConfirm.submit_btn':             'Confirm',
   'localLlm.trustConfirm.input_label':            'Type the publisher name back (or the model tag if unknown) to confirm:',

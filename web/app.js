@@ -11005,6 +11005,12 @@ function llmRecVariantBodyHtml(m) {
   // still available where a real comparison happens (the trust-confirm modal, card fa8959cd);
   // shortening it here is a display convenience, not the verification surface.
   const digest = m.parts && m.parts[0] && m.parts[0].sha256 ? String(m.parts[0].sha256).slice(0, 8) : null
+  // Card 3ff05447: a missing digest was pure ABSENCE (the span simply didn't render), which reads
+  // identically to "nobody checked" -- there was no way to tell "no digest exists to show" from
+  // "we forgot to show it". Says so explicitly instead.
+  const digestHtml = digest
+    ? `<span class="llm-rec-digest" title="${escapeHtml(t('localLlm.rec.digest_tip'))}">${escapeHtml(digest)}</span>`
+    : `<span class="llm-rec-digest llm-rec-digest-missing">${escapeHtml(t('localLlm.rec.digest_missing'))}</span>`
   const note = Array.isArray(m.notes) && m.notes.length ? m.notes.join(' ') : ''
   return `<div class="llm-model-row llm-rec-row${isActive ? ' active' : ''}">
     <div class="llm-model-info">
@@ -11012,7 +11018,7 @@ function llmRecVariantBodyHtml(m) {
         <span class="llm-rec-params">${escapeHtml(m.quant || '')}</span>
         <span class="llm-model-size">${escapeHtml((m.fileMib != null ? (m.fileMib / 1024).toFixed(1) : '?') + ' GB')}</span>
         <span class="llm-fit-badge ${escapeHtml(m.tier || '')}">${t(fitKey)}</span>
-        ${digest ? `<span class="llm-rec-digest" title="${escapeHtml(t('localLlm.rec.digest_tip'))}">${escapeHtml(digest)}</span>` : ''}
+        ${digestHtml}
         ${llmRecTpsHtml(m)}
       </span>
       ${note ? `<span class="llm-rec-note">${escapeHtml(note)}</span>` : ''}
@@ -11113,7 +11119,19 @@ async function llmRefreshRecs() {
     _llmRecInstalledNames = new Set((statusRes && Array.isArray(statusRes.models) ? statusRes.models : []).map(m => m.name))
     _llmRecGroups = llmGroupRecModels(models)
 
-    el.innerHTML = warningsHtml + _llmRecGroups.map((variants, i) => llmRecGroupHtml(variants, i, i === 0)).join('')
+    // Card 3ff05447 (Cybered-derived): the sort already puts trusted publishers first WITHIN a
+    // size tier (see llm-catalog.py's own sort comment), so an untrusted GROUP appearing means
+    // nothing reviewed was left at that tier -- today that was only visible as an absence (the
+    // per-group "Nem ellenőrzött" badge), with no explanation of what the absence means. Counts
+    // the ACTUALLY RENDERED groups (not an assumed top-N -- this view has never sliced the list),
+    // so the number always matches what the operator can see. Omitted entirely when zero, so the
+    // line never becomes permanent decoration with no information value.
+    const unverifiedCount = _llmRecGroups.filter(variants => !variants[0].trusted).length
+    const unverifiedNoteHtml = unverifiedCount > 0
+      ? `<div class="llm-rec-unverified-note">${escapeHtml(t('localLlm.rec.unverified_note', { count: unverifiedCount }))}</div>`
+      : ''
+
+    el.innerHTML = warningsHtml + unverifiedNoteHtml + _llmRecGroups.map((variants, i) => llmRecGroupHtml(variants, i, i === 0)).join('')
     llmWireRecActionButtons(el)
     el.querySelectorAll('.llm-rec-variant-select').forEach(sel =>
       sel.addEventListener('change', () => llmRecSwapVariant(sel)))

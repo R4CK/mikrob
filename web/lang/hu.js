@@ -952,6 +952,8 @@ window._i18n.hu = {
   'localLlm.rec.tps_tip':            'Mért generálási sebesség ezen a hardveren',
   'localLlm.rec.tps_unmeasured':     'Sebesség: nem mért',
   'localLlm.rec.tps_unmeasured_tip': 'Ehhez a modellhez még nem történt sebességmérés ezen a gépen -- soha nem jelenik meg kitalált értékként.',
+  'localLlm.rec.unverified_note': 'A listában {count} olyan modell szerepel, amelynek a kiadója nincs a felülvizsgált listán. Azért látszanak, mert egy méret-kategórián belül az ellenőrzött kiadók kerülnek előre -- vagyis ebben a méretben nem maradt ellenőrzött, nem pedig azért, mert bárki jóváhagyta volna őket.',
+  'localLlm.rec.digest_missing': 'nincs közzétett digest',
   'localLlm.trustConfirm.title':                  'Nem jóváhagyott kiadó',
   'localLlm.trustConfirm.submit_btn':             'Megerősítés',
   'localLlm.trustConfirm.input_label':            'Írd be a kiadó nevét (ismeretlen kiadónál a modell tag-jét) a megerősítéshez:',

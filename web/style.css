@@ -8502,6 +8502,10 @@ body {
 .llm-rec-digest {
   font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
 }
+.llm-rec-digest-missing {
+  font-family: inherit;
+  font-style: italic;
+}
 .llm-rec-installref {
   font-size: 11px;
   color: var(--text-muted);
@@ -8522,6 +8526,18 @@ body {
   margin-bottom: 10px;
 }
 .llm-rec-stale-banner[hidden] { display: none; }
+/* Card 3ff05447: explains WHY unreviewed-publisher groups appear (a text sentence, not a
+   color-only cue -- rule 13, "ne csak színnel jelezzen"). Same info tone as the stale banner. */
+.llm-rec-unverified-note {
+  font-size: 12px;
+  color: var(--info);
+  background: var(--info-soft);
+  border: 1px solid var(--info);
+  border-radius: var(--radius-sm);
+  padding: 8px 12px;
+  margin-bottom: 10px;
+  line-height: 1.4;
+}
 .llm-rec-warnings { display: flex; flex-direction: column; gap: 6px; margin-bottom: 10px; }
 .llm-rec-warning {
   font-size: 12px;
