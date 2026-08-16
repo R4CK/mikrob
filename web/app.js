@@ -377,41 +377,7 @@ try {
   // Still non-fatal: the badge is cosmetic, a failure here must never block anything else on the page.
 }
 
-// === Theme ===
-const html = document.documentElement
-const themeToggle = document.getElementById('themeToggle')
-const savedTheme = localStorage.getItem('cc-theme')
-if (savedTheme) {
-  html.setAttribute('data-theme', savedTheme)
-} else if (window.matchMedia('(prefers-color-scheme: dark)').matches) {
-  html.setAttribute('data-theme', 'dark')
-}
-themeToggle.addEventListener('click', () => {
-  const next = html.getAttribute('data-theme') === 'dark' ? 'light' : 'dark'
-  html.setAttribute('data-theme', next)
-  localStorage.setItem('cc-theme', next)
-})
-
-// === Language toggle ===
-;(() => {
-  const btn = document.getElementById('langToggle')
-  if (!btn) return
-  function syncLangBtn() {
-    btn.textContent = (window._lang || 'hu').toUpperCase()
-  }
-  syncLangBtn()
-  btn.addEventListener('click', () => {
-    const next = (window._lang || 'hu') === 'hu' ? 'en' : 'hu'
-    window.setLang(next)
-    syncLangBtn()
-  })
-  // Keep button in sync when setLang is called from elsewhere (e.g. /api/settings async load).
-  const _origSetLang = window.setLang
-  window.setLang = function setLang(lang) {
-    _origSetLang(lang)
-    syncLangBtn()
-  }
-})()
+// === Theme + Language toggle -- see web/app-theme-lang.js ===
 
 
 // ============================================================
