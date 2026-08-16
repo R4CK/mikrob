@@ -1590,6 +1590,8 @@ window._i18n.hu = {
   'memories.import.file_label':   'Fájl (.md, .txt, .json)',
   'memories.import.drop_hint':    'Kattints vagy húzd ide a fájlokat',
   'memories.import.agent_label':  'Ügynök',
+  'memories.import.category_label': 'Kategória',
+  'memories.import.keywords_label': 'Kulcsszavak (opcionális)',
   'memories.import.status_processing': 'Feldolgozás...',
   'memories.import.importing':   '{n} chunk kategorizálása és importálása...',
   'memories.toast.imported':     '{n} emlék importálva',

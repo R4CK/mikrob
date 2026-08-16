@@ -1587,6 +1587,8 @@ window._i18n.en = {
   'memories.import.file_label':   'File (.md, .txt, .json)',
   'memories.import.drop_hint':    'Click or drag files here',
   'memories.import.agent_label':  'Agent',
+  'memories.import.category_label': 'Category',
+  'memories.import.keywords_label': 'Keywords (optional)',
   'memories.import.status_processing': 'Processing...',
   'memories.import.importing':   'Categorising and importing {n} chunks...',
   'memories.toast.imported':     '{n} memories imported',
