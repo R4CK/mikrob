@@ -1286,21 +1286,30 @@ export async function tryHandleLocalLlm(ctx: RouteContext): Promise<boolean> {
     return true
   }
 
-  // POST /api/local-llm/model  {model, iTrust?} -> swap active model
+  // POST /api/local-llm/model  {model} -> swap active model
   //
   // THIS IS THE SECOND DOOR ONTO store/local-llm-model, and until card eb843c46 it was the unguarded
   // one: the CLI path (store/first-run-llm.sh --use) refuses an unreviewed publisher and a digest
   // mismatch, while this endpoint checked the model NAME and whether ollama had the file, then
   // wrote. Same end state -- the model every agent's drafts come from -- under two different rule
-  // sets, which means the stricter set was advisory. Both doors now apply the same decision, from
-  // src/local-llm-model-trust.ts, so they cannot drift apart.
+  // sets, which means the stricter set was advisory. Both doors now apply the same TRUST decision,
+  // from src/local-llm-model-trust.ts, so they cannot drift apart.
+  //
+  // AN UNTRUSTED PUBLISHER CANNOT BE ACCEPTED THROUGH THIS DOOR AT ALL (card d297f26f, Cybersec
+  // residual finding on eb843c46, MikroB's decision). It used to accept an `iTrust` field and check
+  // it against `basis.confirmWith` -- but that value came back from THIS SAME response one request
+  // earlier, so "confirming" it was an unauthenticated echo: anything holding the dashboard token
+  // (every fleet agent) could clear it in two automated requests, no human ever reading the
+  // publisher/downloads/digest evidence the confirmation screen exists to show. The CLI's own
+  // `--i-trust` answer has the same shape, but reaching it requires actual shell access to the host,
+  // a materially stronger bar than "holds the dashboard token" -- so it stays the one channel that
+  // can honestly claim a human read the screen. This door now always refuses an untrusted publisher
+  // and points at the CLI instead of offering a weaker version of the same confirmation.
   if (path === '/api/local-llm/model' && method === 'POST') {
     let model = ''
-    let iTrust: string | undefined
     try {
       const body = JSON.parse((await readBody(req)).toString())
       model = (body.model || '').trim()
-      iTrust = typeof body.iTrust === 'string' ? body.iTrust : undefined
     } catch { /* bad json */ }
     if (!MODEL_RE.test(model)) { json(res, { error: 'Érvénytelen modellnév.' }, 400); return true }
     const tags = await ollama('/api/tags')
@@ -1325,15 +1334,14 @@ export async function tryHandleLocalLlm(ctx: RouteContext): Promise<boolean> {
       }, 409)
       return true
     }
-    if (!basis.trusted && !confirmationMatches(basis, iTrust)) {
-      // Everything the decision rests on goes back to the caller, so the confirmation screen can
-      // show it. A confirmation that displays only a name is a click-through, not a decision.
-      logger.warn({ model, owner: basis.owner }, 'local-llm: nem jóváhagyott kiadó, megerősítés nélkül elutasítva')
+    if (!basis.trusted) {
+      // No confirmation path here -- see the door-level comment above. The evidence still goes
+      // back to the caller so the dashboard can show WHY, and the exact CLI command an operator
+      // with real shell access would run, but nothing sent back to this endpoint can act on it.
+      logger.warn({ model, owner: basis.owner }, 'local-llm: nem jóváhagyott kiadó, a HTTP-út nem fogadja el')
       json(res, {
-        error: `Ez a modell nem jóváhagyott kiadótól származik (${basis.owner}), ezért nem lesz automatikusan a flotta alapértelmezett modellje. Nézd át a kiadót, a letöltésszámot és az ellenőrzőösszegeket, majd erősítsd meg a kiadó nevének megadásával.`,
+        error: `Ez a modell nem jóváhagyott kiadótól származik (${basis.owner}), ezért a dashboardról nem tehető a flotta alapértelmezett modelljévé. Nézd át a kiadót, a letöltésszámot és az ellenőrzőösszegeket, majd ha mégis ezt akarod, futtasd a szerveren: store/first-run-llm.sh --use ${model} --i-trust ${basis.confirmWith}`,
         code: 'publisher_not_trusted',
-        requiresConfirmation: true,
-        confirmWith: basis.confirmWith,
         basis: {
           model,
           owner: basis.owner,

@@ -8788,26 +8788,6 @@ body {
   .llm-rec-group-head { align-items: flex-start; }
   .llm-rec-variant-select { margin-left: 0; width: 100%; }
 }
-.llm-trust-confirm-list {
-  margin: 0;
-  display: grid;
-  grid-template-columns: auto 1fr;
-  gap: 6px 12px;
-  font-size: 13px;
-}
-.llm-trust-confirm-list dt { color: var(--text-muted); }
-.llm-trust-confirm-list dd { margin: 0; }
-.llm-trust-confirm-digest {
-  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
-  font-size: 11px;
-  overflow-wrap: anywhere;
-  color: var(--text);
-}
-/* No `display` here on purpose -- errEl is toggled via the `hidden` attribute in JS, and a
-   <p> defaults to display:block on its own, so setting one here would only risk re-creating
-   the [hidden]-vs-author-rule regression this codebase has hit twice already (agent-hud,
-   llm-rec-stale-banner). */
-.llm-trust-confirm-error { color: var(--danger); font-size: 12px; margin-top: 8px; }
 .llm-hf-title { margin-top: 20px; }
 .llm-hf-filters {
   display: flex;

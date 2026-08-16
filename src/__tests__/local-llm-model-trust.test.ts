@@ -31,7 +31,7 @@ vi.mock('../config.js', async (orig) => {
   return { ...actual, PROJECT_ROOT: tmpRoot, STORE_DIR: SANDBOX_STORE }
 })
 
-const { decideModelTrust, confirmationMatches } = await import('../local-llm-model-trust.js')
+const { decideModelTrust } = await import('../local-llm-model-trust.js')
 const { tryHandleLocalLlm } = await import('../web/routes/local-llm.js')
 
 const TRUSTED = 'hf.co/Qwen/Good-GGUF:Q4_K_M'
@@ -136,21 +136,17 @@ describe('decideModelTrust', () => {
     expect(decide(UNTRUSTED).digest).toBe('not-possible')
   })
 
-  it('no catalogue entry gates, and the confirmation answer is the model tag', () => {
+  it('no catalogue entry gates, and confirmWith (the CLI answer) is the model tag', () => {
     writeCache([])
     const b = decide(UNTRUSTED)
     expect(b.trusted).toBe(false)
     expect(b.owner).toBe('unverified')
     expect(b.confirmWith).toBe(UNTRUSTED)
-    expect(confirmationMatches(b, 'unverified')).toBe(false)
-    expect(confirmationMatches(b, UNTRUSTED)).toBe(true)
   })
 
-  it('the confirmation is a name, so case and padding do not matter', () => {
+  it('confirmWith is the publisher name for a catalogued-but-unlisted model', () => {
     const b = decide(UNTRUSTED)
-    expect(confirmationMatches(b, '  sKeTcHy ')).toBe(true)
-    expect(confirmationMatches(b, 'Qwen')).toBe(false)
-    expect(confirmationMatches(b, undefined)).toBe(false)
+    expect(b.confirmWith).toBe('Sketchy')
   })
 })
 
@@ -250,23 +246,33 @@ describe('POST /api/local-llm/model applies the same decision as the CLI door', 
     expect(existsSync(MODEL_FILE)).toBe(false)
   })
 
-  it('returns what the decision rests on, so a confirmation can show it', async () => {
+  it('returns what the decision rests on (and the CLI command to use instead), so the dashboard can show it', async () => {
     const r = await post({ model: UNTRUSTED })
-    expect(r.body.confirmWith).toBe('Sketchy')
     expect(r.body.basis.owner).toBe('Sketchy')
     expect(r.body.basis.downloads).toBe(12)
     // Full digest, not a prefix: a truncated one cannot be compared against anything.
     expect(r.body.basis.parts[0].sha256).toBe(OID_U)
+    // The CLI answer (confirmWith) is no longer a field this endpoint accepts back -- it is only
+    // surfaced in the error text, as the command an operator with real shell access would run.
+    expect(r.body.confirmWith).toBeUndefined()
+    expect(r.body.error).toContain('--i-trust Sketchy')
   })
 
-  it('accepts an untrusted publisher only when the caller names it back', async () => {
-    const wrong = await post({ model: UNTRUSTED, iTrust: 'Qwen' })
-    expect(wrong.status).toBe(403)
+  // Card d297f26f (Cybersec residual finding on eb843c46, MikroB's decision): an `iTrust` field
+  // that echoes back a value THIS SAME endpoint just handed out one response earlier is not a
+  // confirmation, it is an unauthenticated round-trip -- anything holding the dashboard token could
+  // clear it in two automated requests, no human ever reading the evidence. This door now refuses
+  // an untrusted publisher unconditionally; only the CLI (which needs real shell access) can accept
+  // one.
+  it('an untrusted publisher is refused whatever iTrust says, including the exact confirmWith answer', async () => {
+    // This endpoint no longer even reads the field -- the right answer, the wrong answer, and no
+    // answer at all must all end the same way.
+    for (const body of [{ model: UNTRUSTED }, { model: UNTRUSTED, iTrust: 'someone-else' }, { model: UNTRUSTED, iTrust: 'Sketchy' }]) {
+      const r = await post(body)
+      expect(r.status, JSON.stringify({ body, r })).toBe(403)
+      expect(r.body.code).toBe('publisher_not_trusted')
+    }
     expect(existsSync(MODEL_FILE)).toBe(false)
-
-    const right = await post({ model: UNTRUSTED, iTrust: 'sketchy' })
-    expect(right.status, JSON.stringify(right.body)).toBe(200)
-    expect(readFileSync(MODEL_FILE, 'utf-8').trim()).toBe(UNTRUSTED)
   })
 
   it('a digest mismatch cannot be confirmed away', async () => {

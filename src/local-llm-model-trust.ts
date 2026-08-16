@@ -132,9 +132,3 @@ export function relabelCatalogueTrust<T extends { models?: unknown[] }>(doc: T, 
   })
   return { ...doc, models }
 }
-
-/** Case-insensitive, trimmed: the answer is a name to be read off a screen, not a token. */
-export function confirmationMatches(basis: ModelTrustBasis, answer: string | undefined): boolean {
-  if (!answer) return false
-  return answer.trim().toLowerCase() === basis.confirmWith.trim().toLowerCase()
-}
