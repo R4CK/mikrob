@@ -8553,8 +8553,22 @@ body {
   to { opacity: 1; transform: translateY(0); }
 }
 @media (prefers-reduced-motion: reduce) {
-  .llm-rec-group { animation: none; }
+  .llm-rec-group, .llm-anim-in { animation: none; }
+  .llm-usage-bar-fill, .llm-usage-day-bar { transition: none; }
 }
+/* Card a05c39c9: the SAME entrance animation as .llm-rec-group above, reused for the rest of the
+   #localLlm page's tiles/rows -- but those sections poll every 5s (llmRefreshStatus/Queue/Usage,
+   see the setInterval in app.js) and fully replace their container's innerHTML each tick. A CSS
+   `animation` restarts on every freshly-inserted element, so this class is applied by app.js
+   (llmAnimateBatch) ONLY on the first render of a given section, never on the periodic re-renders
+   -- otherwise the whole section would flash on every poll instead of animating in once on arrival. */
+.llm-anim-in {
+  animation: llm-rec-group-in 0.25s ease-out backwards;
+}
+.llm-anim-in:nth-child(2) { animation-delay: 0.03s; }
+.llm-anim-in:nth-child(3) { animation-delay: 0.06s; }
+.llm-anim-in:nth-child(4) { animation-delay: 0.09s; }
+.llm-anim-in:nth-child(n+5) { animation-delay: 0.12s; }
 .llm-rec-group.recommended {
   border-color: var(--accent);
   box-shadow: 0 0 0 1px var(--accent), 0 4px 16px var(--accent-soft);
@@ -8744,6 +8758,7 @@ body {
   min-width: 3px;
   background: var(--accent);
   border-radius: 6px;
+  transition: width 0.5s cubic-bezier(0.16, 1, 0.3, 1);
 }
 .llm-usage-bar-count {
   font-size: 13px;
@@ -8794,6 +8809,7 @@ body {
   min-height: 2px;
   background: var(--accent);
   border-radius: 3px 3px 0 0;
+  transition: height 0.5s cubic-bezier(0.16, 1, 0.3, 1);
 }
 .llm-usage-day-bar.zero { background: var(--border); min-height: 2px; }
 .llm-usage-day-x {

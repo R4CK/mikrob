@@ -10435,6 +10435,19 @@ function llmSetupOffload() {
   llmLoadOffload()
 }
 
+// Card a05c39c9: an entrance animation is a nice touch ONCE, but llmRefreshStatus/Queue/Usage all
+// run on a 5s poll (see the setInterval below) and fully replace their container's innerHTML every
+// tick -- a CSS `animation` (unlike `transition`) restarts on every fresh element, so attaching it
+// unconditionally would flash the whole section on every single poll instead of just on arrival.
+// Tracked per section-key, consumed once.
+const _llmAnimDone = { status: false, queue: false, usage: false, categories: false, models: false }
+function llmAnimCls(key) {
+  return _llmAnimDone[key] ? '' : ' llm-anim-in'
+}
+function llmAnimMark(key) {
+  _llmAnimDone[key] = true
+}
+
 async function loadLocalLlm() {
   await llmRefreshStatus()
   await llmRefreshRecs()
@@ -10480,7 +10493,7 @@ async function llmRefreshCategories() {
       listEl.innerHTML = `<div class="llm-empty">${t('localLlm.categories.empty')}</div>`
       return
     }
-    listEl.innerHTML = categories.map((c, i) => {
+    listEl.innerHTML = llmAnimateBatch(categories.map((c, i) => {
       const meta = c.count > 0
         ? t('localLlm.categories.meta_used', { count: c.count, when: llmFmtTime(c.lastTs) })
         : t('localLlm.categories.meta_unused')
@@ -10496,7 +10509,7 @@ async function llmRefreshCategories() {
           ${c.enabled ? t('localLlm.categories.on') : t('localLlm.categories.off')}
         </button>
       </div>`
-    }).join('')
+    }).join(''), 'categories', 'llm-category-row')
     listEl.querySelectorAll('.llm-category-toggle').forEach(btn =>
       btn.addEventListener('click', () => llmToggleCategory(btn.dataset.task, btn.dataset.enabled !== '1')))
     // Tap/click-to-open info tooltip (card 8b4ddcf0): hover alone would be invisible on touch/PWA.
@@ -10588,7 +10601,7 @@ async function llmRefreshStatus() {
     } else {
       tiles.push(llmTile(t('localLlm.status.gpu'), t('localLlm.status.no_gpu'), 'muted'))
     }
-    grid.innerHTML = tiles.join('')
+    grid.innerHTML = llmAnimateBatch(tiles.join(''), 'status', 'llm-tile')
 
     // Models list
     const models = Array.isArray(d.models) ? d.models : []
@@ -10597,12 +10610,24 @@ async function llmRefreshStatus() {
     } else if (models.length === 0) {
       modelsEl.innerHTML = `<div class="llm-empty">${t('localLlm.models.empty')}</div>`
     } else {
-      modelsEl.innerHTML = models.map(m => {
+      modelsEl.innerHTML = llmAnimateBatch(models.map(m => {
         const active = m.name === d.active_model
+        // "Installed" and "benchmarked" are different claims (card d730070e): evalTps/benchmarked
+        // come from store/local-llm-bench.sh's own state file, merged into this response server-side
+        // (benchInfoFor), but nothing rendered them here -- the same "field exists, never shown" gap
+        // just fixed for the catalogue's tokensPerSecond (card 88ea5050), same contract: a measured
+        // number as-is, a missing measurement as its own explicit state, never 0 or omitted. Reuses
+        // the catalogue's tps i18n keys -- same fact, same wording, no need for a second copy.
+        const tpsHtml = m.benchmarked && typeof m.evalTps === 'number'
+          ? `<span class="llm-rec-tps" title="${escapeHtml(t('localLlm.rec.tps_tip'))}">⚡ ${llmFmtCount(Math.round(m.evalTps))} tok/s</span>`
+          : `<span class="llm-rec-tps unmeasured" title="${escapeHtml(t('localLlm.rec.tps_unmeasured_tip'))}">${t('localLlm.rec.tps_unmeasured')}</span>`
         return `<div class="llm-model-row${active ? ' active' : ''}">
           <div class="llm-model-info">
             <span class="llm-model-name">${escapeHtml(m.name)}</span>
-            <span class="llm-model-size">${fmtBytes(m.size)}</span>
+            <span class="llm-rec-meta">
+              <span class="llm-model-size">${fmtBytes(m.size)}</span>
+              ${tpsHtml}
+            </span>
           </div>
           <div class="llm-model-actions">
             ${active
@@ -10611,7 +10636,7 @@ async function llmRefreshStatus() {
             <button class="btn-secondary btn-compact llm-update-btn" data-model="${escapeHtml(m.name)}">${t('localLlm.models.update')}</button>
           </div>
         </div>`
-      }).join('')
+      }).join(''), 'models', 'llm-model-row')
       modelsEl.querySelectorAll('.llm-use-btn').forEach(b =>
         b.addEventListener('click', () => llmSwapModel(b.dataset.model)))
       modelsEl.querySelectorAll('.llm-update-btn').forEach(b =>
@@ -10642,6 +10667,19 @@ function llmTile(label, value, kind, note, role) {
   </div>`
 }
 
+// Applies the once-only entrance class to a batch of freshly-built `.llm-tile`/row HTML (see
+// llmAnimCls above) without threading an `animate` param through every individual tile-builder
+// call site. `cls` is the tile/row's own class name (e.g. "llm-tile", "llm-category-row").
+function llmAnimateBatch(html, key, cls) {
+  if (_llmAnimDone[key]) return html
+  llmAnimMark(key)
+  // Matched only when followed by `"` or whitespace -- some templates append a modifier suffix
+  // directly (e.g. `class="llm-category-row${enabled ? '' : ' disabled'}"`, no guaranteed space),
+  // so the match can't require a trailing space; but WITHOUT this boundary check, "llm-tile" would
+  // also match "llm-tile-label"/"llm-tile-value" and corrupt those class names.
+  return html.replace(new RegExp(`class="${cls}(?=["\\s])`, 'g'), `class="${cls} llm-anim-in`)
+}
+
 // Local (Europe/Budapest) short timestamp for the usage table.
 function llmFmtTime(epochSec) {
   if (!Number.isFinite(epochSec)) return '—'
@@ -10664,11 +10702,11 @@ async function llmRefreshUsage() {
     const d = await res.json()
 
     // Headline stat tiles
-    tilesEl.innerHTML = [
+    tilesEl.innerHTML = llmAnimateBatch([
       llmTile(t('localLlm.usage.total'), String(d.total || 0), 'ok'),
       llmTile(t('localLlm.usage.today'), String(d.today || 0), 'ok'),
       llmTile(t('localLlm.usage.last_7d'), String(d.last_7d || 0), 'ok'),
-    ].join('')
+    ].join(''), 'usage', 'llm-tile')
 
     // By agent -- horizontal bars, already sorted count-desc by the backend
     const callerEl = document.getElementById('llmUsageByCaller')
@@ -10683,8 +10721,15 @@ async function llmRefreshUsage() {
           <span class="llm-usage-bar-track"><span class="llm-usage-bar-fill" data-pct="${Math.round((c.count / max) * 100)}"></span></span>
           <span class="llm-usage-bar-count">${c.count}</span>
         </div>`).join('')
-        callerEl.querySelectorAll('.llm-usage-bar-fill').forEach(el =>
-          el.style.setProperty('--w', (el.dataset.pct || 0) + '%'))
+        // rAF-deferred, not set inline: the bars start at their CSS default (--w unset -> 0%,
+        // see .llm-usage-bar-fill), and setting the real value one frame later -- after that 0%
+        // state has actually painted -- is what makes the width `transition` (style.css) have a
+        // real before/after to animate between. Setting it in the same synchronous tick as the
+        // innerHTML write can get batched into a single paint with no visible motion.
+        requestAnimationFrame(() => {
+          callerEl.querySelectorAll('.llm-usage-bar-fill').forEach(el =>
+            el.style.setProperty('--w', (el.dataset.pct || 0) + '%'))
+        })
       }
     }
 
@@ -10717,8 +10762,12 @@ async function llmRefreshUsage() {
           <span class="llm-usage-day-x">${escapeHtml((x.date || '').slice(5))}</span>
         </div>`
       }).join('')
-      dayEl.querySelectorAll('.llm-usage-day-bar').forEach(el =>
-        el.style.setProperty('--h', (el.dataset.pct || 0) + '%'))
+      // Same rAF-deferral as the caller bars above, so the height `transition` has a real 0% ->
+      // target frame to animate across instead of painting straight to the final height.
+      requestAnimationFrame(() => {
+        dayEl.querySelectorAll('.llm-usage-day-bar').forEach(el =>
+          el.style.setProperty('--h', (el.dataset.pct || 0) + '%'))
+      })
     }
 
     // Recent calls table
@@ -10785,13 +10834,13 @@ async function llmRefreshQueue() {
 
     if (tilesEl) {
       const latency = s.avgLatencyMs != null ? (Math.round(s.avgLatencyMs / 100) / 10) + 's' : '—'
-      tilesEl.innerHTML = [
+      tilesEl.innerHTML = llmAnimateBatch([
         llmTile(t('localLlm.queue.tile.pending'), s.pending ?? 0, 'muted'),
         llmTile(t('localLlm.queue.tile.running'), s.running ?? 0, 'ok'),
         llmTile(t('localLlm.queue.tile.done'), s.done ?? 0, 'ok'),
         llmTile(t('localLlm.queue.tile.failed'), s.failed ?? 0, (s.failed ?? 0) > 0 ? 'bad' : 'muted'),
         llmTile(t('localLlm.queue.tile.latency'), latency, 'muted'),
-      ].join('')
+      ].join(''), 'queue', 'llm-tile')
     }
 
     if (recEl) {
