@@ -91,8 +91,22 @@ if [ ! -d "$TEST_TREE/.git" ] && [ ! -f "$TEST_TREE/.git" ]; then
 else
   # Reset rather than pull: this tree is a disposable mirror, never a place to author changes.
   # Anything left in it from a previous run is noise we WANT gone before measuring.
-  git -C "$TEST_TREE" checkout --detach "$TARGET" >/dev/null 2>&1 \
-    || die 3 "could not move $TEST_TREE to $TARGET"
+  #
+  # CLEAN BEFORE THE CHECKOUT TOO, not only after (card 1d2f4bfb). The suite mutates tracked files
+  # in this tree while it runs -- store/, .env -- the same paths the live-install guard exists to
+  # protect, just sandboxed here instead of refused. A run that gets KILLED mid-suite (an agent's
+  # background task cut off, the box restarting) leaves those mutations sitting uncommitted, and
+  # `git checkout --detach` REFUSES to switch commits when the target's version of a locally-modified
+  # file differs from HEAD's ("local changes would be overwritten"). That produced exactly this:
+  # "could not move ... to <sha>" with nothing lost (the mutations were disposable test-run noise,
+  # confirmed by hand, card c26a9064) but no clue from the message that this was the cause. Cleaning
+  # first means checkout is always switching a tree that is already known-clean, so it stops
+  # negotiating with leftover state instead of just failing on it.
+  git -C "$TEST_TREE" reset --hard >/dev/null 2>&1
+  git -C "$TEST_TREE" clean -fdq -e node_modules >/dev/null 2>&1
+  checkout_err="$(git -C "$TEST_TREE" checkout --detach "$TARGET" 2>&1)" || die 3 "could not move $TEST_TREE to $TARGET even after a reset+clean -- this is NOT the ordinary dirty-tree case (that one is handled above now). git says:
+$checkout_err
+Inspect by hand: git -C $TEST_TREE status"
   git -C "$TEST_TREE" reset --hard "$TARGET" >/dev/null 2>&1
   git -C "$TEST_TREE" clean -fdq -e node_modules >/dev/null 2>&1
 fi
