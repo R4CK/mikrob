@@ -92,7 +92,12 @@ const SCHED_BOUNDARY = '[;&|(`]'
 // a flag, an input redirect, or an at(1) TIMESPEC (which at(1) requires anyway,
 // so a real submit can never omit it). crontab/launchctl/systemd-run keep the
 // plain match: they are not English words, so prose cannot collide with them.
-const AT_INVOCATION = String.raw`(?=\s*$|\s+-|\s*<|\s+(?:now|noon|midnight|teatime|today|tomorrow|next\b|\+\s*\d|\d{1,2}:\d{2}|\d{3,4}\b|\d{1,2}\s*(?:am|pm)\b|\d{1,2}[./]\d{1,2}|(?:mon|tue|wed|thu|fri|sat|sun)|(?:jan|feb|mar|apr|may|jun|jul|aug|sep|oct|nov|dec)))`
+// Card eae5d6fd (QA, real repro): the day-of-week and month alternatives below had no trailing
+// boundary, unlike `next\b` right next to them -- so ANY English word starting with those 3
+// letters right after "at " false-denied, e.g. "at declared trivial difficulty" (declared ->
+// "dec"). Same bug class as the documented >=80% substring collision above. `\b` added after
+// both alternations, matching the convention `next\b` already uses in this same lookahead.
+const AT_INVOCATION = String.raw`(?=\s*$|\s+-|\s*<|\s+(?:now|noon|midnight|teatime|today|tomorrow|next\b|\+\s*\d|\d{1,2}:\d{2}|\d{3,4}\b|\d{1,2}\s*(?:am|pm)\b|\d{1,2}[./]\d{1,2}|(?:mon|tue|wed|thu|fri|sat|sun)\b|(?:jan|feb|mar|apr|may|jun|jul|aug|sep|oct|nov|dec)\b))`
 // `launchctl` needed the SAME narrowing, for a different reason than at/batch, and
 // the comment above ("not English words, so prose cannot collide") was measured
 // wrong on 2026-07-26 (found by Hacker). It is not an English word -- but the

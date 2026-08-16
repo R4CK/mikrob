@@ -55,6 +55,35 @@ describe('self-pace-gate gateDecision', () => {
       expect(selfPaceDecision('Bash', { command: body(line) }).deny).toBe(false)
     }
   })
+  // Regression (card eae5d6fd, QA repro): the day-of-week and month TIMESPEC alternatives in
+  // AT_INVOCATION had no trailing word boundary (unlike `next\b` right next to them), so any
+  // English word starting with those 3 letters right after "at " false-denied -- QA's repro was
+  // "at declared trivial difficulty" ("declared" starts with "dec"). Same bug class as the
+  // >=80% collision above, one case per alternative so the whole list is covered, not just "dec".
+  it('does NOT misfire "at" on prose starting with a day/month abbreviation (card eae5d6fd)', () => {
+    for (const cmd of [
+      'echo "at declared trivial difficulty"',
+      'echo "at monitor the deploy for errors"',
+      'echo "at tuesdays we usually deploy"', // "tue"
+      'echo "at wednesday-shaped release cadence"', // "wed"
+      'echo "at thursdays only"', // "thu"
+      'echo "at friction points in the pipeline"', // "fri"
+      'echo "at satisfies the contract"', // "sat"
+      'echo "at sundries left in the cart"', // "sun"
+      'echo "at january-scale traffic"', // "jan"
+      'echo "at february release window"', // "feb"
+      'echo "at marginal cost"', // "mar"
+      'echo "at aprons for the kitchen"', // "apr"
+      'echo "at junction boxes"', // "jun"
+      'echo "at julienne the carrots"', // "jul"
+      'echo "at augmented reality demo"', // "aug"
+      'echo "at september-like traffic"', // "sep"
+      'echo "at octopus card top-up"', // "oct"
+      'echo "at november-shaped forecast"', // "nov"
+    ]) {
+      expect(selfPaceDecision('Bash', { command: cmd }).deny).toBe(false)
+    }
+  })
   it('STILL denies a real at/batch submit (timespec, flag, redirect, bare batch)', () => {
     for (const cmd of [
       'at now + 1 minute',
@@ -65,6 +94,8 @@ describe('self-pace-gate gateDecision', () => {
       'batch < /tmp/x.sh',
       'echo hi ; at now + 5 min',
       '/usr/bin/at now',
+      'at mon', // real day-of-week TIMESPEC, boundary must not swallow this too
+      'at dec',
     ]) {
       expect(selfPaceDecision('Bash', { command: cmd }).deny).toBe(true)
     }
