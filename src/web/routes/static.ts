@@ -205,6 +205,23 @@ export async function tryHandleStatic(ctx: RouteContext, webDir: string): Promis
     return true
   }
 
+  // Modular app slices (web/app-*.js, card b33fc5f7 and onward). index.html grew a
+  // `<script src="/app-<slice>.js">` tag per slice, but this handler never grew a matching route --
+  // every slice 404'd, so the modularisation shipped as a broken dashboard (Peti's screenshot,
+  // card c4bbea06): a script-load error (`loadMemAgents is not defined`) that traced back to the
+  // file never arriving at all. Same shape as /fork- above (anchored name, no path separators, no
+  // dot inside the name part), NOT the same shape as /app.js: these are unversioned like fork-*.js,
+  // not cache-busted with ?v=mtime-size, so no cacheSeconds here either.
+  if (path.startsWith('/app-')) {
+    const slice = path.slice(1)
+    if (/^app-[a-z0-9-]+\.js$/.test(slice) && existsSync(join(webDir, slice))) {
+      serveFile(req, res, join(webDir, slice))
+      return true
+    }
+    res.writeHead(404); res.end()
+    return true
+  }
+
   if (path.startsWith('/lang/')) {
     const langFile = path.replace('/lang/', '')
     // Allowlist: only the two known language files (no path traversal).
