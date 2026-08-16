@@ -419,3 +419,69 @@ describe('the fleet\'s OTHER completion markers front-load too, not just REVIEW/
     expect(out[0]).toBe('2222222') // last-mention-wins path, same as any ordinary comment
   })
 })
+
+describe('A STATED "Gate-SHA:" LINE IS EXCLUSIVE (card 31eaa323, real incident a8b94a18)', () => {
+  it('REGRESSION (real incident a8b94a18): a "Gate-SHA:" first line beats an unrelated "commit X" named later in the same REVIEW\'s own prose', () => {
+    // Verbatim shape from the incident: the REVIEW's own first line stated the rule-4b Gate-SHA
+    // value, but its prose later mentioned an unrelated older card's commit in passing. Before this
+    // fix, EXPLICIT_LABEL matched the prose "commit 99d54d01" (tier 1) and outranked the stated
+    // Gate-SHA value, which fell to bare-hex (tier 3).
+    const out = run([
+      {
+        author: 'backend',
+        created_at: 100,
+        content:
+          'Gate-SHA: ed3b729e\n' +
+          'REVIEW -- kesz. Az elozo korrekcio (lasd meg a 165ff1af kartyan a commit 99d54d01-et, ' +
+          'ami egy masik problemat oldott meg) mar nem relevans ide. 41/41 zold.',
+      },
+    ])
+    expect(out[0]).toBe('ed3b729e')
+  })
+
+  it('a Gate-SHA line beats an EARLIER "Commit:" label too -- it is EXCLUSIVE, not just top-ranked', () => {
+    const out = run([
+      { created_at: 100, content: 'Commit: 9999999.\nGate-SHA: ed3b729e' },
+    ])
+    expect(out).toEqual(['ed3b729e'])
+  })
+
+  it('multiple shas on a Gate-SHA line (rule 4b\'s "several commits" form) pick the LAST, same convention as Commitok:', () => {
+    const out = run([{ created_at: 100, content: 'Gate-SHA: aaaaaaa, bbbbbbb' }])
+    expect(out[0]).toBe('bbbbbbb')
+  })
+
+  it('the same line also works inside a gate verdict comment (rule 4b: "ugyanez a sor a gate-verdiktben is elfer")', () => {
+    const out = run([
+      {
+        author: 'cybersec',
+        created_at: 100,
+        content: 'Gate-SHA: fea51c4\nCYBERSEC GO -- ellenoriztem, es kozben lattam a 6199f0b-t is a regi pretriage-ben.',
+      },
+    ])
+    expect(out[0]).toBe('fea51c4')
+  })
+
+  it('a MID-SENTENCE mention of "Gate-SHA:" (discussing the convention itself) does NOT count -- rule 4b relies on exactly this', () => {
+    const out = run([
+      {
+        created_at: 100,
+        content: 'A Gate-SHA: sor bevezetese ota konnyebb a dolgunk. Javitva: 2222222',
+      },
+    ])
+    expect(out[0]).toBe('2222222')
+  })
+
+  it('with NO Gate-SHA line present, behavior is unchanged from the existing tiers', () => {
+    const out = run([{ created_at: 100, content: 'REVIEW -- kesz, konyv 1111111-rol, @ 2222222' }])
+    expect(out[0]).toBe('2222222')
+  })
+
+  it('a Gate-SHA line in an OLDER comment still loses to a genuinely newer comment (recency still applies across comments)', () => {
+    const out = run([
+      { author: 'backend', created_at: 100, content: 'Gate-SHA: aaaaaaa\nREVIEW -- kesz.' },
+      { author: 'backend', created_at: 200, content: 'Javitva NO-GO utan -- Gate-SHA: bbbbbbb\nREVIEW -- kesz.' },
+    ])
+    expect(out[0]).toBe('bbbbbbb')
+  })
+})

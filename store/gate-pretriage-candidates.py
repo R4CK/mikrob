@@ -69,6 +69,21 @@ first) was named later in the very same sentence. Real incident (1f51f050): "com
 class -- the existing "last token in an explicit-label's own list wins" rule (see incident 5 above)
 then does the rest; no new ranking logic needed, just a wider list-separator.
 
+(7) THE STATED "Gate-SHA:" VALUE LOST TO A BARE PROSE MENTION (card 31eaa323, real incident a8b94a18).
+The fleet's rule 4b introduced a dedicated "Gate-SHA: <sha>" line, AT THE START OF A LINE, specifically
+so the reviewer never has to guess again -- the whole point is that it is a STATED value, not a
+heuristic. But this script never recognised "Gate-SHA:" as a label at all, so the sha on that line fell
+all the way to BARE_HEX (tier 3, weakest) while an unrelated "commit 99d54d01" named in the SAME
+comment's own prose (referring to a completely different, older card, 165ff1af) matched EXPLICIT_LABEL
+(tier 1) and outranked it -- the exact opposite of what the stated-value convention was introduced to
+guarantee, and a silent false-positive precisely because it LOOKS like the precise sha is being used.
+Fixed with GATE_SHA_LINE, a new tier 0 that outranks everything (including EXPLICIT_LABEL) and, per
+the card's own instruction, is EXCLUSIVE within a comment where it is present -- every other tier is
+skipped for that comment, not merely ranked below it, so a stray "commit X" elsewhere in the same
+REVIEW can never leak through. Anchored on `^` (with MULTILINE) so a mid-sentence discussion of the
+convention itself ("... a Gate-SHA sor ...") does not accidentally count -- exactly the property rule
+4b's own wording relies on ("igy lehet rola beszelni anelkul, hogy gate-et ebresztene").
+
 Also removed, both incident classes:
   - THE SCRIPT'S OWN OUTPUT. The pre-triage posts a comment naming the sha it triaged; left in the
     corpus that is one more vote for a stale answer on the next run. Excluded by AUTHOR
@@ -124,6 +139,15 @@ AT_MENTION = re.compile(r"@\s*`?([0-9a-f]{7,40})\b")
 # TIER 3 -- BARE_HEX: anything else. The weakest signal, used only when tiers 1-2 found nothing.
 BARE_HEX = re.compile(r"\b([0-9a-f]{7,40})\b")
 
+# TIER 0 -- GATE_SHA_LINE: the fleet's rule-4b "Gate-SHA: <sha>" line, anchored at the START of a
+# line (MULTILINE `^`) so a mid-sentence discussion of the convention never matches (see incident
+# class 7 above). Stronger than EXPLICIT_LABEL and, per the dispatching card, EXCLUSIVE within a
+# comment where it appears -- see candidates() below. Same list convention as EXPLICIT_LABEL (rule
+# 4b: "tobb commitnal `Gate-SHA: <sha>, <sha>`") -- last token in the line's own list wins.
+GATE_SHA_LINE = re.compile(
+    r"^\s*Gate-SHA:\s*((?:[0-9a-f]{7,40}[\s/,+]*)+)", re.IGNORECASE | re.MULTILINE
+)
+
 # The fleet's front-loaded, subject-naming comment shapes -- a REVIEW is only ONE of them. QA/Cybersec/
 # Cybered verdicts use the identical "<VERDICT> -- <card> @ `<sha>`" convention (card ce159d2b,
 # incident 57112049: "CYBERSEC GO -- 57112049 @ `fea51c4` ... nem a pretriage altal kiirt `6199f0b`-t"
@@ -156,6 +180,18 @@ FRONT_LOADED = re.compile(
 )
 
 
+def _gate_sha_line_shas(text):
+    """Resolved sha(s) from every rule-4b 'Gate-SHA:' line in the text, in the order the lines
+    appear -- each line resolved to the LAST sha in ITS OWN list, same convention as
+    _explicit_label_shas. Non-empty only when the comment actually contains such a line."""
+    out = []
+    for m in GATE_SHA_LINE.finditer(text):
+        tokens = SHA_TOKEN.findall(m.group(1))
+        if tokens:
+            out.append(tokens[-1])
+    return out
+
+
 def _explicit_label_shas(text):
     """One resolved sha per EXPLICIT_LABEL occurrence, in the order the labels appear in the
     text -- each occurrence already resolved to the LAST sha in ITS OWN list (card d9a57239's
@@ -169,12 +205,14 @@ def _explicit_label_shas(text):
 
 
 def candidates(rows, card_id="", marker=""):
-    """Yield candidate SHAs, newest comment first. Within one comment, three tiers apply in order
-    (explicit label > @-mention > bare hex -- see the tier comments above); within a front-loaded
-    comment (REVIEW, or a QA/Cybersec/Cybered verdict) the FIRST occurrence of a tier wins, within
-    any other comment the LAST occurrence wins. Tier 1 (explicit label) ALWAYS outranks tiers 2-3
-    regardless of front-loaded status or text position (card d9a57239) -- an explicit "Commit: X"
-    is a deliberate statement, not a hash mentioned in passing."""
+    """Yield candidate SHAs, newest comment first. If a comment contains a rule-4b "Gate-SHA:" line
+    (tier 0), that line is the EXCLUSIVE source for the comment (card 31eaa323) -- no other tier is
+    even consulted. Otherwise three tiers apply in order (explicit label > @-mention > bare hex --
+    see the tier comments above); within a front-loaded comment (REVIEW, or a QA/Cybersec/Cybered
+    verdict) the FIRST occurrence of a tier wins, within any other comment the LAST occurrence wins.
+    Tier 1 (explicit label) ALWAYS outranks tiers 2-3 regardless of front-loaded status or text
+    position (card d9a57239) -- an explicit "Commit: X" is a deliberate statement, not a hash
+    mentioned in passing."""
     del marker  # CLI-compat only (see module docstring) -- the exclusion below is author-only now.
     # Explicit sort; `created_at` missing sorts last (treated as oldest) rather than crashing.
     ordered = sorted(rows, key=lambda c: c.get("created_at") or 0, reverse=True)
@@ -187,17 +225,25 @@ def candidates(rows, card_id="", marker=""):
         text = c.get("content") or ""
         is_review = FRONT_LOADED.match(text.strip()) is not None
 
-        explicit = _explicit_label_shas(text)
-        at_mentions = AT_MENTION.findall(text) if is_review else []
-        weak = BARE_HEX.findall(text)
-        # A front-loaded comment states its answer up front -- first occurrence wins within a
-        # tier. Any other comment (a plain follow-up/self-correction) ends on its answer -- last
-        # occurrence wins. AT_MENTION is only ever consulted for front-loaded comments (see its
-        # own comment above), so it needs no separate branch here.
-        ordered_explicit = explicit if is_review else list(reversed(explicit))
-        ordered_weak = weak if is_review else list(reversed(weak))
+        # TIER 0 (card 31eaa323): a stated "Gate-SHA:" line is EXCLUSIVE for this comment -- every
+        # other tier is skipped entirely, not merely outranked, so a stray "commit X" elsewhere in
+        # the same comment's own prose can never leak through (the a8b94a18 incident).
+        gate_sha = _gate_sha_line_shas(text)
+        if gate_sha:
+            tier_candidates = gate_sha
+        else:
+            explicit = _explicit_label_shas(text)
+            at_mentions = AT_MENTION.findall(text) if is_review else []
+            weak = BARE_HEX.findall(text)
+            # A front-loaded comment states its answer up front -- first occurrence wins within a
+            # tier. Any other comment (a plain follow-up/self-correction) ends on its answer -- last
+            # occurrence wins. AT_MENTION is only ever consulted for front-loaded comments (see its
+            # own comment above), so it needs no separate branch here.
+            ordered_explicit = explicit if is_review else list(reversed(explicit))
+            ordered_weak = weak if is_review else list(reversed(weak))
+            tier_candidates = ordered_explicit + at_mentions + ordered_weak
 
-        for sha in ordered_explicit + at_mentions + ordered_weak:  # strongest tier first
+        for sha in tier_candidates:  # strongest tier first
             s = sha.lower()
             if s == card or s in seen:
                 continue
