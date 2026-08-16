@@ -40,6 +40,18 @@ vi.mock('../web/federation/onboarding.js', () => ({
   ensureFederationClaudeMdSection: () => ensureFederationClaudeMdSectionMock(),
 }))
 
+// Snapshotted at module load, before any test below can run -- the vi.mock above is already
+// registered at this point, so nothing in this file has had a chance to write to the real
+// CLAUDE.md yet. Card c93443dc: the canary used to assert the file never contains the literal
+// "MARVEEN-FEDERATION:POLICY" marker, which broke the day that section became a legitimate,
+// permanently-committed part of the real CLAUDE.md (the "Föderációs házirend" block) -- an
+// absence check can't tell "always been there" from "the mock leaked and wrote it". A byte-equal
+// snapshot can: it still catches the mock leaking (the marker would be newly APPENDED, changing
+// the file) or any other unrelated mutation (deletion, insertion elsewhere), while accepting
+// content that was already there before this suite ran, whatever it is.
+const CLAUDE_MD_PATH = join(PROJECT_ROOT, 'CLAUDE.md')
+const CLAUDE_MD_BEFORE_SUITE = readFileSync(CLAUDE_MD_PATH, 'utf-8')
+
 const TMP = mkdtempSync(join(tmpdir(), 'fed-lifecycle-test-'))
 const IN_TOKEN = 'a'.repeat(64)
 const OUT_TOKEN = 'b'.repeat(64)
@@ -338,7 +350,14 @@ describe('this suite does not write the repo it runs in (card a5b71f29)', () => 
   })
 
   it('the real project CLAUDE.md is untouched after every mutation test above has already run', () => {
-    const claudeMdPath = join(PROJECT_ROOT, 'CLAUDE.md')
-    expect(readFileSync(claudeMdPath, 'utf-8')).not.toContain('MARVEEN-FEDERATION:POLICY')
+    expect(readFileSync(CLAUDE_MD_PATH, 'utf-8')).toBe(CLAUDE_MD_BEFORE_SUITE)
+  })
+
+  it('...and the snapshot itself is not vacuous -- it does contain the legitimate policy marker', () => {
+    // Negative control for the assertion above: if the real CLAUDE.md stopped carrying the
+    // committed federation-policy section, the snapshot would go empty of it too and the previous
+    // test would pass FOR THE WRONG REASON (comparing two files that both lack the marker, rather
+    // than proving nothing new was appended). This pins the fixture's own precondition.
+    expect(CLAUDE_MD_BEFORE_SUITE).toContain('MARVEEN-FEDERATION:POLICY')
   })
 })
