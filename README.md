@@ -30,6 +30,64 @@ Ez a repo a **háttérszolgáltatásokat** adja; a Telegram-kommunikációt a Cl
 - **Vault**: MCP-titkok + SSH-kulcsok/szerverek titkosított kezelése (AES-256-GCM)
 - **Öntanulás**: az ügynökök skilleket írnak/patch-elnek a munkájukból (progressive disclosure)
 
+## Teljes funkciólista
+
+A `CLAUDE.md` "Teljes funkciólista karbantartás" szabálya szerint: a kilenc alaprendszer mindegyikéhez user story, tényleges user flow, frontend-státusz (konkrét dashboard-oldalra hivatkozva) és ismert-hiány jelölés. A dashboard-oldalak azonosítói (`data-page`) és a `web/index.html`/`web/app-sidebar-groups.js` tényleges menüszerkezete ellen ellenőrizve, nem feltételezve. Ahol egy user flow élő böngészős végigjárása erősebb bizonyíték lenne, azt jelöltem — ez a lista kódalapú audit, nem T Eszter-féle élő UI-bejárás.
+
+### 1. Memória-rendszer
+- **User story:** Mint Peti, szeretném, hogy MikroB emlékezzen a korábbi döntésekre és kontextusra anélkül, hogy mindent újra el kellene mondanom, hogy a beszélgetéseink folytatólagosak legyenek.
+- **User flow:** Az ügynök munka közben automatikusan ment emléket (hot/warm/cold/shared tier) → a dashboard **Memóriák** oldalán (`memories`) kulcsszó/kategória szerint kereshető, hibrid FTS5+vektor (RRF) találati sorrenddel → egy emlék szerkeszthető/törölhető a listából → a napi napló automatikusan összefoglalja a nap emlékeit, megtekinthető a **Napló** oldalon (`naplo`).
+- **Frontend:** van — Memóriák oldal (`memories`, a `knowledge` sidebar-csoportban) + Napló oldal (`naplo`, a `system` csoportban, ide olvadt be a korábbi külön Recall nézet).
+- **Hiányzó funkció:** nincs ismert hiány ezen az ellenőrzésen; élő UI-bejárással (T Eszter/QA) erősíthető meg a szerkesztés/törlés flow pontossága.
+
+### 2. Kanban tábla
+- **User story:** Mint Peti, szeretném látni és irányítani tudni, hogy a flotta melyik ügynöke min dolgozik éppen, hogy ne kelljen minden feladatot manuálisan követnem.
+- **User flow:** Kártya létrejön (Peti kérésére vagy AI auto-bontással) → felelős + prioritás + `[NN%]` haladás a címben → állapot-oszlopok között mozog (planned → in_progress → waiting → done) → swimlane/Gantt-nézet a **Kanban** oldalon (`kanban`, önálló, nem csoportosított sidebar-link, mindjárt az Áttekintés alatt) → kártya-esemény audit a **Napló** oldalon követhető.
+- **Frontend:** van — Kanban oldal (`kanban`), pinned top-level link.
+- **Hiányzó funkció:** nincs ismert hiány.
+
+### 3. Heartbeat + fokozatos autonómia
+- **User story:** Mint Peti, szeretném, hogy MikroB proaktívan ellenőrizze a háttérben a fontos dolgokat (naptár, email, kanban), de csak akkor szóljon, ha tényleg van tennivaló, és szintenként szabályozhassam, mennyit tehet egyedül.
+- **User flow:** Heartbeat-ütemezés létrehozása/szerkesztése az **Ütemezések** oldalon (`tasks`, "Heartbeat (csak ha fontos)" típus + sablon-választó) → a heartbeat lefut, csendben ellenőriz → csak fontos találatnál küld Telegram-üzenetet → az autonómia-szint kategóriánként állítható a **Beállítások** oldalon (`settings`, Autonómia-szekció, `app-autonomy.js`) → 1/2/3 szint (csak jelez / javasol+jóváhagyás / autonóm+jelent).
+- **Frontend:** részleges — a funkció két külön oldalra oszlik (Ütemezések a heartbeat-ütemezéshez, Beállítások az autonómia-szintekhez), nincs egy dedikált "Heartbeat" oldal ami a kettőt együtt mutatná.
+- **Hiányzó funkció:** egy összevont heartbeat-áttekintő nézet (utolsó futás, mit talált, mit jelzett) jelenleg nincs — a heartbeat-találatok a Telegram-üzenetekben/naplóban élnek, nincs dedikált dashboard-widget rájuk.
+
+### 4. Web dashboard (Mission Control)
+- **User story:** Mint Peti, szeretnék böngészőből egy helyen mindent látni és irányítani (memória, kanban, ügynökök, ütemezés, Vault), hogy ne kelljen mindent Telegramon keresztül intéznem.
+- **User flow:** Bejelentkezés (Bearer-token vagy per-device jelszó, `resolveAuth`/`requiresAuth`) → **Áttekintés** oldal (`overview`, pinned top-level, ez a landing) → oldalsáv 5 csoportba rendezve (Csapat, Tudás, Statisztika, Rendszer, Kapcsolatok) + 3 pinned link (Áttekintés, Kanban, Jóváhagyások) → mobilon PWA-ként telepíthető (lásd [docs/mobil-dashboard.md](docs/mobil-dashboard.md)).
+- **Frontend:** van — ez maga a frontend, http://localhost:3420.
+- **Hiányzó funkció:** nincs ismert hiány.
+
+### 5. Napi napló
+- **User story:** Mint Peti, szeretnék egy automatikus, olvasható összefoglalót kapni arról, mi történt aznap az ügynökökkel, hogy ne kelljen a nyers memória-bejegyzéseket egyenként átnéznem.
+- **User flow:** Ügynök munka közben appendeli a napi naplót (`POST /api/daily-log`) → a **Napló** oldalon (`naplo`) időrendben, forrás-fülek szerint szűrve (Összes / napi napló / beállítás-változás / ötletláda-státuszváltás / store-fájlesemény) megtekinthető.
+- **Frontend:** van — Napló oldal (`naplo`), a korábbi külön Recall nézet is ebbe olvadt.
+- **Hiányzó funkció:** nincs ismert hiány.
+
+### 6. Inter-agent kommunikáció
+- **User story:** Mint egy flotta-ügynök, szeretnék feladatot delegálni egy másik ügynöknek anélkül, hogy Petinek kellene közvetítenie, hogy a munka gyorsabban haladjon.
+- **User flow:** Ügynök `POST /api/messages`-t hív (`from`/`to`/`content`) → a célpont ügynök tmux session-jébe automatikusan beíródik `[Üzenet @küldő-től]:` formátumban → a célpont feldolgozza és a saját csatornáján válaszol → a teljes üzenetváltás megtekinthető az **Üzenetek** oldalon (`messages`, Csapat csoport).
+- **Frontend:** van — Üzenetek oldal (`messages`).
+- **Hiányzó funkció:** nincs ismert hiány.
+
+### 7. Föderáció
+- **User story:** Mint Peti, szeretném két önálló MikroB-példányt (pl. két gépen futó telepítést) össze tudni kötni, hogy az egyik ügynökei a másik szakértőit is elérhessék.
+- **User flow:** **Föderáció** oldal (`federation`, Kapcsolatok csoport) → "Kapcsolódási adataim" szekció: Tailscale-bejelentkezés egy gombbal (automatikusan futtatja a `tailscale up` + `tailscale serve --bg`-t, kitölti a Rendszer-azonosító + Elérési cím mezőket) → ezeket átadva a másik rendszer adminjának, társ-párosítás → utána `<rendszer>/<ügynök>` alakú címzéssel üzenet küldhető a társ ügynökeinek a megszokott üzenet-API-n.
+- **Frontend:** van — Föderáció oldal (`federation`).
+- **Hiányzó funkció:** nincs ismert hiány (a Tailscale-bekötés user flow-ja és biztonsági korlátai kártyákkal `0985ac83`/`b68ddae8` dokumentáltak, gate-elve).
+
+### 8. Skill-rendszer (öntanulás)
+- **User story:** Mint egy flotta-ügynök, szeretném, hogy a visszatérő, összetett feladatokból tanuljak, és a megoldást újrafelhasználható recept (skill) formájában elmentsem, hogy legközelebb ne kelljen újra kitalálnom.
+- **User flow:** Komplex feladat/hiba-recovery után az ügynök automatikusan `SKILL.md`-t ír (`~/.claude/skills/` globális vagy `agents/<ügynök>/.claude/skills/` egyéni) → progresszív betöltés (3 szint: név+leírás / teljes SKILL.md / segédfájlok) → a **Skillek** oldalon (`skills`, Tudás csoport) böngészhető, kereshető → egy napi ütemezett rutin (`skill-besorolas-napi`) besorolja az új skilleket közös vagy célzott-ügynök kategóriába.
+- **Frontend:** van — Skillek oldal (`skills`).
+- **Hiányzó funkció:** nincs ismert hiány.
+
+### 9. Kvóta-kezelés + lokális-LLM offload
+- **User story:** Mint Peti, szeretném látni, mennyi van hátra az 5 órás és heti Claude-keretből, és szeretném, hogy a flotta a mechanikus munkát automatikusan a helyi GPU-ra terelje, hogy ne fogyjon el a keret idő előtt.
+- **User flow:** **Áttekintés** oldalon (`overview`, a landing lap) — heti-limit % gauge, modell-lépcső panel (melyik ügynök melyik modellen fut, read-only), token-költség widget "Részletek →" linkkel → a link a **Költségek** oldalra (`costs`, Statisztika csoport) navigál, ahol a havi $ költség-főkönyv (jelenlegi költés, hónap-végi előrejelzés) látszik — ez a monthly CostOps-ledger, elkülönítve a heti Claude-limit %-tól → **Lokális LLM** oldal (`localLlm`, Rendszer csoport) — Ollama-státusz (modell/GPU/quota-bridge), modellcsere, Kategóriák-szekció (mely feladat-típusok mennek helyi modellre, élő be/ki kapcsolóval) → limit-elérésnél automatikus Telegram-figyelmeztetés + reset-countdown.
+- **Frontend:** van — Áttekintés oldal (`overview`, heti-limit + modell-lépcső) + Költségek oldal (`costs`, havi $ ledger) + Lokális LLM oldal (`localLlm`).
+- **Hiányzó funkció:** nincs ismert hiány.
+
 ## Egyedi fork-fejlesztések (amiért külön fork)
 
 Ezek a MikroB-fork saját fejlesztései a Marveen-bázison felül — főleg a **flotta-workflow, a review-gate-ek és a platform-robusztusság** rétegében (a fleet-szabályok a `templates/CLAUDE.md.template`-be építve, `5d42edf`). A lista a **jelenlegi állapotot** írja le; a korábbi, azóta felülírt/megszűnt fejlesztéseket nem tartalmazza (a történeti részletek a git-log-ban élnek).
