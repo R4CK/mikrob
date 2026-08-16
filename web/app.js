@@ -10934,16 +10934,28 @@ async function llmRefreshRecs() {
       }
     }
 
+    // The producer (llm-catalog.py + the route's own tiered fallback, card 4117f98e) can put
+    // specific, actionable reasons in warnings[] -- e.g. "this build cannot read the cached
+    // catalogue's schema, run ./update.sh" or "no GPU sized, filtering against system RAM". An
+    // empty models[] with a warning behind it is a DIFFERENT situation from a genuinely empty
+    // catalogue, and showing only the generic empty text hid that reason (Cybered finding,
+    // 4117f98e kovetkezmenye, card 335a6a62). Rendered the same way as per-model `notes` already
+    // are in this function: raw operator-facing text from the producer, not routed through i18n.
+    const warnings = Array.isArray(d.warnings) ? d.warnings : []
+    const warningsHtml = warnings.length
+      ? `<div class="llm-rec-warnings">${warnings.map(w => `<div class="llm-rec-warning">${escapeHtml(w)}</div>`).join('')}</div>`
+      : ''
+
     const models = Array.isArray(d.models) ? d.models : []
     if (models.length === 0) {
-      el.innerHTML = `<div class="llm-empty">${t('localLlm.rec.empty')}</div>`
+      el.innerHTML = warningsHtml + `<div class="llm-empty">${t('localLlm.rec.empty')}</div>`
       return
     }
 
     const activeModel = statusRes && statusRes.active_model
     const installedNames = new Set((statusRes && Array.isArray(statusRes.models) ? statusRes.models : []).map(m => m.name))
 
-    el.innerHTML = models.map(m => {
+    el.innerHTML = warningsHtml + models.map(m => {
       const fitKey = LLM_TIER_FIT_KEY[m.tier] || 'localLlm.rec.fit_fits'
       const isActive = m.installRef === activeModel
       const isInstalled = installedNames.has(m.installRef)

@@ -122,6 +122,24 @@ describe('llmRefreshRecs (GET /api/local-llm/catalog)', () => {
     expect(body).toContain("t('localLlm.rec.load_error')")
     expect(body).not.toMatch(/err\.message/)
   })
+
+  it('reads the catalogue envelope warnings[] instead of ignoring it (card 335a6a62, Cybered 4117f98e finding)', () => {
+    const body = fnBody(APP, 'async function llmRefreshRecs()')
+    expect(body).toContain('Array.isArray(d.warnings)')
+    expect(body).toContain('llm-rec-warnings')
+    expect(body).toContain('llm-rec-warning')
+  })
+
+  it('a specific warning (e.g. unsupported catalogue schema, run ./update.sh) shows even when models[] is empty', () => {
+    // Before this fix, models.length === 0 short-circuited straight to the generic empty text
+    // with no way for the operator to learn the catalogue was stale/unreadable rather than genuinely
+    // empty. warningsHtml must be prepended on BOTH branches (empty and populated).
+    const body = fnBody(APP, 'async function llmRefreshRecs()')
+    const emptyBranch = body.slice(body.indexOf('if (models.length === 0) {'), body.indexOf("t('localLlm.rec.empty')"))
+    expect(emptyBranch).toContain('warningsHtml')
+    const populatedIdx = body.indexOf('el.innerHTML = warningsHtml + models.map(')
+    expect(populatedIdx).toBeGreaterThan(-1)
+  })
 })
 
 describe('model catalogue i18n (HU+EN parity, rule 12)', () => {
@@ -162,5 +180,10 @@ describe('model catalogue CSS', () => {
     const block = CSS.slice(idx, CSS.indexOf('}', idx) + 1)
     expect(block).toMatch(/display\s*:\s*flex/)
     expect(CSS).toMatch(/\.llm-rec-stale-banner\[hidden\]\s*\{\s*display\s*:\s*none/)
+  })
+
+  it('defines the warnings banner, visually distinct from the stale banner (card 335a6a62)', () => {
+    expect(CSS).toContain('.llm-rec-warnings {')
+    expect(CSS).toContain('.llm-rec-warning {')
   })
 })
