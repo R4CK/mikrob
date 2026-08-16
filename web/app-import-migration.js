@@ -331,7 +331,7 @@ document.getElementById('migrateImportBtn').addEventListener('click', async () =
     const res = await fetch('/api/migrate/run', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ sourcePath: path, targetAgent: agentTarget, findings: selected }),
+      body: JSON.stringify({ sourcePath: path, agentId: agentTarget, findings: selected }),
     })
     const data = await res.json()
     if (!res.ok) throw new Error(data.error || 'Hiba')

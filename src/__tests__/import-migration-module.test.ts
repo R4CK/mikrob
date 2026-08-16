@@ -82,3 +82,14 @@ describe('import-migration modularisation: index.html wiring', () => {
     expect(forkIdx).toBeGreaterThan(importIdx)
   })
 })
+
+describe('Koltoztetes (migrateImportBtn) POST body field contract (Cybersec regression, card ac2bb3f3)', () => {
+  // The backend reads `agentId` (migrate.ts:93). Slice-19 introduced a field rename to
+  // `targetAgent`, silently routing every migration to MAIN_AGENT_ID regardless of dropdown.
+  // This test pins the correct field name so the contract cannot drift again undetected.
+  it('POST body sends agentId (not targetAgent) to match migrate.ts:93', () => {
+    // The handler must reference agentId: <value> in the JSON.stringify call for the migrate run
+    expect(MODULE).toContain("agentId: agentTarget")
+    expect(MODULE).not.toContain("targetAgent: agentTarget")
+  })
+})
