@@ -540,6 +540,23 @@ print(",".join(c.get("id") or "" for c in cards if isinstance(c, dict)))
     [[ "$verdict" == ADVISE-SKIP:* ]] && exit 8 || exit 0
     ;;
 
+  extract-gate-line)
+    # Card a8b94a18: this is the SINGLE SOURCE for the "Gate:" line extraction, so a caller that
+    # needs GATE_LINE ahead of a `decide` call (fleet-nudger.sh, which decides for 4 agents per
+    # card from one cached bulk fetch and cannot afford a `check`-style live fetch per agent) gets
+    # it from here instead of carrying its own copy of the regex. Before this subcommand existed,
+    # fleet-nudger.sh's Python re-implemented the exact same pattern independently, and the two
+    # copies had ALREADY drifted once (card 165ff1af: the nudger's copy kept a line-start anchor
+    # after check's copy dropped it, so a mid-paragraph "Gate:" silently woke Cybersec 6+ times
+    # before anyone noticed the two files disagreed). Fixing the regex text in both places again
+    # is not a structural fix -- the next edit to just one file reopens the same class of bug. A
+    # shared subcommand is: there is no second copy left to drift.
+    CARD="${2:-}"
+    [[ -n "$CARD" ]] || { echo "usage: $0 extract-gate-line <cardId>  (kanban JSON array on stdin)" >&2; exit 2; }
+    _extract_gate_line "$CARD"
+    exit 0
+    ;;
+
   selftest)
     fail=0
     # PREFIX matching, which is fine until two verdicts SHARE a prefix -- and since card f910eabd
@@ -834,6 +851,32 @@ print(",".join(c.get("id") or "" for c in cards if isinstance(c, dict)))
     # -> no designation exclusion -> Cybersec nudged 8x on a QA-only card).
     e "mid-paragraph Gate: (no preceding newline)" "QA. (funkcionalis lefedettseg, nincs trust-boundary erintes)" c1 <<< '[{"id":"c1","description":"MemoryRouter routing context. Gate: QA. (funkcionalis lefedettseg, nincs trust-boundary erintes)"}]'
 
+    # SINGLE-SOURCE SUBCOMMAND (card a8b94a18): exercises the actual `extract-gate-line` CLI path
+    # a caller like fleet-nudger.sh uses -- not `_extract_gate_line` called in-process like every
+    # `e` case above, but a real subprocess invocation of this script, so a wiring mistake in the
+    # case-statement branch itself (wrong var, missing exit, swallowed stdin) would show up here
+    # even though it never would in the in-process calls above.
+    ecmd() { # $1=label $2=expected-output $3=cardId, stdin=cards JSON array
+      local got
+      got="$(bash "$0" extract-gate-line "$3")"
+      if [[ "$got" == "$2" ]]; then echo "  ok   $1 -> '$got'"
+      else echo "  FAIL $1 -> got '$got', expected '$2'"; fail=1; fi
+    }
+    ecmd "extract-gate-line subcommand, single Gate: line" "QA + Cybersec" c1 <<< '[{"id":"c1","description":"Gate: QA + Cybersec"}]'
+    # Real incident, card a8b94a18 (2026-08-14): 51e8532e's Gate line names only QA + Cybersec,
+    # Cybered is not mentioned anywhere -- yet the nudger woke Cybered on it twice. The root cause
+    # was designated_from_gate_line's whole-line scan (fixed by card 55af560d, same session as this
+    # subcommand), not the extraction regex itself -- but pin the FULL real card text end to end
+    # here too, through the same subcommand fleet-nudger.sh now calls, so a future regression in
+    # either half of the pipeline is caught by the one case shaped like the actual incident.
+    ecmd "51e8532e-shape: extract-gate-line returns the real Gate line" \
+      "QA + Cybersec (ar-modositas penz-erinto muvelet; ha (c), akkor audit-naplo is kell hozza)" c1 <<< \
+      '[{"id":"c1","description":"Az efb16033-bol kihagyva.\n\nGate: QA + Cybersec (ar-modositas penz-erinto muvelet; ha (c), akkor audit-naplo is kell hozza)"}]'
+    dd "51e8532e-shape: cybered is excluded end to end (card a8b94a18)" "ADVISE-SKIP:not-designated" 8 cybered "" \
+      "QA + Cybersec (ar-modositas penz-erinto muvelet; ha (c), akkor audit-naplo is kell hozza)"
+    dd "51e8532e-shape: cybersec (the actually-designated gate) is unaffected" "ALLOW:no-verdict" 0 cybersec "" \
+      "QA + Cybersec (ar-modositas penz-erinto muvelet; ha (c), akkor audit-naplo is kell hozza)"
+
     # _extract_status (card d6aa0135): the function `check` calls to answer "is this card already
     # done/archived", exercised directly against a real bulk /api/kanban shape.
     es() { # $1=label $2=expected-status $3=expected-archived $4=cardId, stdin=cards JSON array
@@ -855,5 +898,5 @@ print(",".join(c.get("id") or "" for c in cards if isinstance(c, dict)))
     ;;
 
   *)
-    echo "usage: $0 {check <cardId> <agent>|selftest}" >&2; exit 2 ;;
+    echo "usage: $0 {check <cardId> <agent>|decide <agent>|extract-gate-line <cardId>|selftest}" >&2; exit 2 ;;
 esac

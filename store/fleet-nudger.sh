@@ -35,8 +35,13 @@ GATE="qa qa2 cybersec cybered"
 DRY_RUN=0
 [ "${1:-}" = "--dry-run" ] && DRY_RUN=1
 
+# One kanban snapshot, kept in a variable (not piped straight into python3 below) so the SAME raw
+# array can also feed gate-dispatch-check.sh's `extract-gate-line` subcommand per candidate card
+# further down -- card a8b94a18, see the GATE_LINE note there for why.
+KANBAN_JSON="$(curl -s -H @"$hdr_file" "$API" 2>/dev/null)"
+
 # One kanban snapshot -> per-agent work availability (JSON: {agent: has_work_bool}).
-WORK="$(curl -s -H @"$hdr_file" "$API" 2>/dev/null | python3 -c '
+WORK="$(printf '%s' "$KANBAN_JSON" | python3 -c '
 import json,sys
 try: cards=json.load(sys.stdin)
 except Exception: sys.exit(0)
@@ -399,8 +404,15 @@ meta = json.load(sys.stdin).get("_meta", {})
 cache = sys.argv[1]
 for cid, m in meta.items():
     with open(os.path.join(cache, cid + ".labels"), "w") as f: f.write(m.get("labels", ""))
-    with open(os.path.join(cache, cid + ".gateline"), "w") as f: f.write(m.get("gate_line", ""))
 ' "$CACHE" 2>/dev/null
+# GATE_LINE (card a8b94a18): sourced from gate-dispatch-check.sh's own `extract-gate-line`
+# subcommand instead of a second, independently-drifted regex copy in the Python block above --
+# see the subcommand's own comment in gate-dispatch-check.sh for the incident (card 165ff1af) this
+# replaces. Same raw $KANBAN_JSON fetched once at the top, no extra HTTP request; one extra `bash`
+# subprocess per candidate card, which is cheap next to the per-card comment fetch just below.
+for card in $CARDS; do
+  printf '%s' "$KANBAN_JSON" | bash "$CHECK" extract-gate-line "$card" > "$CACHE/$card.gateline" 2>/dev/null
+done
 GATE_WITH_WORK=""
 for a in $GATE; do
   has_work=0
