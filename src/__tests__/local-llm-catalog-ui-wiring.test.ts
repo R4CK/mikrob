@@ -65,53 +65,6 @@ describe('llmRefreshRecs (GET /api/local-llm/catalog)', () => {
     expect(body).toContain('staleBanner.hidden = true')
   })
 
-  it('never truncates installRef -- the full string is both the pull target and the displayed ref', () => {
-    const body = fnBody(APP, 'async function llmRefreshRecs()')
-    expect(body).toContain('data-model="${escapeHtml(m.installRef)}"')
-    expect(body).toContain('class="llm-rec-installref">${escapeHtml(m.installRef || \'\')}')
-  })
-
-  it('renders a trust badge from trusted/trustReason, distinct from the fit-tier badge', () => {
-    const body = fnBody(APP, 'async function llmRefreshRecs()')
-    expect(body).toMatch(/llm-trust-badge \$\{m\.trusted \? 'trusted' : 'unverified'\}/)
-    expect(body).toContain("t(m.trusted ? 'localLlm.rec.trust.trusted' : 'localLlm.rec.trust.unverified')")
-  })
-
-  it('SECURITY: the digest shown is ONLY an 8-char prefix of parts[0].sha256, never the full hash or other fields', () => {
-    const body = fnBody(APP, 'async function llmRefreshRecs()')
-    expect(body).toContain('m.parts[0].sha256).slice(0, 8)')
-  })
-
-  it('three distinct action states -- active (badge, no button) / installed-not-active (activate) / not installed (pull)', () => {
-    const body = fnBody(APP, 'async function llmRefreshRecs()')
-    expect(body).toContain('if (isActive) {')
-    expect(body).toContain("t('localLlm.models.active')")
-    expect(body).toContain('} else if (isInstalled) {')
-    expect(body).toContain('llm-rec-use-btn')
-    expect(body).toContain('llm-rec-pull-btn')
-  })
-
-  it('the pull button reuses the EXISTING llmStartPull (install-trigger + progress), not new machinery', () => {
-    const body = fnBody(APP, 'async function llmRefreshRecs()')
-    expect(body).toContain('llmStartPull(b.dataset.model)')
-  })
-
-  it('the use button routes through the explicit activation gate, not an inline fetch here', () => {
-    // The actual POST /api/local-llm/model call now lives in llmPostActivateModel, shared by
-    // the plain-click path and the publisher-trust confirm retry (card fa8959cd) -- see
-    // local-llm-trust-confirm-ui-wiring.test.ts for the full activation + trust-gate contract.
-    const body = fnBody(APP, 'async function llmRefreshRecs()')
-    expect(body).toContain('llmActivateModelClick(b.dataset.model, b)')
-    expect(body).not.toMatch(/fetch\('\/api\/local-llm\/model'/)
-  })
-
-  it('activation is still its own explicit POST /api/local-llm/model -- a download never silently becomes active', () => {
-    const body = fnBody(APP, 'async function llmPostActivateModel(model, iTrust)')
-    expect(body).toContain("fetch('/api/local-llm/model'")
-    expect(body).toContain("method: 'POST'")
-    expect(body).toContain('JSON.stringify(iTrust ? { model, iTrust } : { model })')
-  })
-
   it('an empty catalogue (0 models fitting this GPU) gets its own message, not the generic load-error text', () => {
     const body = fnBody(APP, 'async function llmRefreshRecs()')
     expect(body).toContain("t('localLlm.rec.empty')")
@@ -137,8 +90,100 @@ describe('llmRefreshRecs (GET /api/local-llm/catalog)', () => {
     const body = fnBody(APP, 'async function llmRefreshRecs()')
     const emptyBranch = body.slice(body.indexOf('if (models.length === 0) {'), body.indexOf("t('localLlm.rec.empty')"))
     expect(emptyBranch).toContain('warningsHtml')
-    const populatedIdx = body.indexOf('el.innerHTML = warningsHtml + models.map(')
-    expect(populatedIdx).toBeGreaterThan(-1)
+    expect(body).toContain('el.innerHTML = warningsHtml + _llmRecGroups.map(')
+  })
+
+  it('groups by repo, not one flat row per quant (card 88ea5050, Peti direktiva)', () => {
+    const body = fnBody(APP, 'async function llmRefreshRecs()')
+    expect(body).toContain('_llmRecGroups = llmGroupRecModels(models)')
+    const groupFn = fnBody(APP, 'function llmGroupRecModels(models)')
+    expect(groupFn).toContain('m.repo || m.id')
+  })
+
+  it('only the FIRST group (the sorted list\'s own top offer) is marked recommended', () => {
+    const body = fnBody(APP, 'async function llmRefreshRecs()')
+    expect(body).toMatch(/_llmRecGroups\.map\(\(variants, i\) => llmRecGroupHtml\(variants, i, i === 0\)\)/)
+  })
+})
+
+describe('llmRecGroupHtml / llmRecVariantBodyHtml (per-group card + variant swap)', () => {
+  it('never truncates installRef -- the full string is both the pull target and the displayed ref', () => {
+    const body = fnBody(APP, 'function llmRecVariantBodyHtml(m)')
+    expect(body).toContain('data-model="${escapeHtml(m.installRef)}"')
+    expect(body).toContain('class="llm-rec-installref">${escapeHtml(m.installRef || \'\')}')
+  })
+
+  it('SECURITY: the digest shown is ONLY an 8-char prefix of parts[0].sha256, never the full hash or other fields', () => {
+    const body = fnBody(APP, 'function llmRecVariantBodyHtml(m)')
+    expect(body).toContain('m.parts[0].sha256).slice(0, 8)')
+  })
+
+  it('shows measured throughput, or an explicit not-measured state -- never a guessed/zero value (card 88ea5050)', () => {
+    // tokensPerSecond did not render anywhere before this card (MikroB/backend2 finding). The
+    // producer's own contract (store/llm-catalog.py) is "null unless measured"; the UI must not
+    // collapse that null into 0 or omit the field.
+    const body = fnBody(APP, 'function llmRecTpsHtml(m)')
+    expect(body).toContain("typeof m.tokensPerSecond === 'number'")
+    expect(body).toContain("t('localLlm.rec.tps_unmeasured')")
+    expect(body).not.toMatch(/tokensPerSecond \|\| 0/)
+    const usedInBody = fnBody(APP, 'function llmRecVariantBodyHtml(m)')
+    expect(usedInBody).toContain('llmRecTpsHtml(m)')
+  })
+
+  it('three distinct action states -- active (badge, no button) / installed-not-active (activate) / not installed (pull)', () => {
+    const body = fnBody(APP, 'function llmRecActionHtml(m)')
+    expect(body).toContain('if (isActive) return')
+    expect(body).toContain("t('localLlm.models.active')")
+    expect(body).toContain('if (isInstalled) return')
+    expect(body).toContain('llm-rec-use-btn')
+    expect(body).toContain('llm-rec-pull-btn')
+  })
+
+  it('trust and download count are repo-level facts, shown once in the group header (not per variant)', () => {
+    const groupBody = fnBody(APP, 'function llmRecGroupHtml(variants, groupIdx, isTop)')
+    expect(groupBody).toMatch(/llm-trust-badge \$\{head\.trusted \? 'trusted' : 'unverified'\}/)
+    expect(groupBody).toContain("t(head.trusted ? 'localLlm.rec.trust.trusted' : 'localLlm.rec.trust.unverified')")
+    const variantBody = fnBody(APP, 'function llmRecVariantBodyHtml(m)')
+    expect(variantBody).not.toContain('llm-trust-badge')
+  })
+
+  it('the top group gets the recommended badge; a group with >1 variant gets a quant <select>', () => {
+    const body = fnBody(APP, 'function llmRecGroupHtml(variants, groupIdx, isTop)')
+    expect(body).toContain('isTop ?')
+    expect(body).toContain('llm-rec-badge-star')
+    expect(body).toContain("t('localLlm.rec.recommended')")
+    expect(body).toContain('variants.length > 1')
+    expect(body).toContain('llm-rec-variant-select')
+  })
+
+  it('the pull button reuses the EXISTING llmStartPull (install-trigger + progress), not new machinery', () => {
+    const body = fnBody(APP, 'function llmWireRecActionButtons(root)')
+    expect(body).toContain('llmStartPull(b.dataset.model)')
+  })
+
+  it('the use button routes through the explicit activation gate, not an inline fetch here', () => {
+    // The actual POST /api/local-llm/model call now lives in llmPostActivateModel, shared by
+    // the plain-click path and the publisher-trust confirm retry (card fa8959cd) -- see
+    // local-llm-trust-confirm-ui-wiring.test.ts for the full activation + trust-gate contract.
+    const body = fnBody(APP, 'function llmWireRecActionButtons(root)')
+    expect(body).toContain('llmActivateModelClick(b.dataset.model, b)')
+    expect(body).not.toMatch(/fetch\('\/api\/local-llm\/model'/)
+  })
+
+  it('activation is still its own explicit POST /api/local-llm/model -- a download never silently becomes active', () => {
+    const body = fnBody(APP, 'async function llmPostActivateModel(model, iTrust)')
+    expect(body).toContain("fetch('/api/local-llm/model'")
+    expect(body).toContain("method: 'POST'")
+    expect(body).toContain('JSON.stringify(iTrust ? { model, iTrust } : { model })')
+  })
+
+  it('swapping the quant <select> re-renders only that group\'s body from already-fetched data, no re-fetch', () => {
+    const body = fnBody(APP, 'function llmRecSwapVariant(selectEl)')
+    expect(body).not.toMatch(/fetch\(/)
+    expect(body).toContain('llmRecVariantBodyHtml(variant)')
+    expect(body).toContain('llmWireRecActionButtons(bodyEl)')
+    const wiring = fnBody(APP, 'async function llmRefreshRecs()')
+    expect(wiring).toContain("sel.addEventListener('change', () => llmRecSwapVariant(sel))")
   })
 })
 
@@ -149,6 +194,8 @@ describe('model catalogue i18n (HU+EN parity, rule 12)', () => {
     'localLlm.rec.activate_error', 'localLlm.rec.trust.trusted', 'localLlm.rec.trust.trusted_tip',
     'localLlm.rec.trust.unverified', 'localLlm.rec.trust.unverified_tip',
     'localLlm.rec.downloads_tip', 'localLlm.rec.digest_tip',
+    'localLlm.rec.recommended', 'localLlm.rec.recommended_tip', 'localLlm.rec.variant_select_aria',
+    'localLlm.rec.tps_tip', 'localLlm.rec.tps_unmeasured', 'localLlm.rec.tps_unmeasured_tip',
   ]
   it.each(KEYS)('%s exists in hu.js', (key) => {
     expect(HU).toContain(`'${key}':`)
@@ -185,5 +232,30 @@ describe('model catalogue CSS', () => {
   it('defines the warnings banner, visually distinct from the stale banner (card 335a6a62)', () => {
     expect(CSS).toContain('.llm-rec-warnings {')
     expect(CSS).toContain('.llm-rec-warning {')
+  })
+
+  it('defines the group card, the recommended-group accent, and the entrance animation (card 88ea5050)', () => {
+    expect(CSS).toContain('.llm-rec-group {')
+    expect(CSS).toContain('.llm-rec-group.recommended {')
+    expect(CSS).toContain('.llm-rec-badge-star {')
+    expect(CSS).toMatch(/@keyframes llm-rec-group-in/)
+  })
+
+  it('the entrance animation is disabled under prefers-reduced-motion', () => {
+    const idx = CSS.indexOf('@media (prefers-reduced-motion: reduce)')
+    expect(idx).toBeGreaterThan(-1)
+    const block = CSS.slice(idx, idx + 200)
+    expect(block).toMatch(/\.llm-rec-group\s*\{\s*animation:\s*none/)
+  })
+
+  it('the quant <select> keeps the 44px touch target (rule 13) by reusing the shared .llm-select base', () => {
+    expect(CSS).toContain('.llm-rec-variant-select')
+    const idx = CSS.indexOf('.llm-select {')
+    const block = CSS.slice(idx, idx + 200)
+    expect(block).toMatch(/min-height\s*:\s*44px/)
+  })
+
+  it('the active-model row keeps its accent treatment even nested inside a group card', () => {
+    expect(CSS).toContain('.llm-rec-group-body .llm-model-row.active {')
   })
 })

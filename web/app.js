@@ -10906,6 +10906,114 @@ function llmFmtVram(mib) {
   return (mib / 1024).toFixed(1).replace(/\.0$/, '') + ' GB'
 }
 
+// Family grouping (card 88ea5050, Peti direktiva 2026-08-14): the flat catalogue is one row per
+// QUANT, and a single HF repo commonly ships 10-20 of those (the real cache on this host: 448
+// rows across 37 repos). Grouped by `repo` -- already the exact granularity Peti asked for
+// ("Qwen2.5-Coder csalad egy csoport"), and the ONLY key that groups quants of the same model
+// without re-deriving it: downloads/trust are already repo-level facts (see the sort comment
+// above), so every variant in a group shares them and only quant/size/fit/digest/tokensPerSecond
+// vary per row. `_llmRecGroups` is kept module-scope so the variant <select> can re-render its
+// own group body without a re-fetch -- the data is already in hand.
+let _llmRecGroups = []
+let _llmRecActiveModel = null
+let _llmRecInstalledNames = new Set()
+
+function llmGroupRecModels(models) {
+  const order = []
+  const byRepo = new Map()
+  for (const m of models) {
+    const key = m.repo || m.id
+    if (!byRepo.has(key)) { byRepo.set(key, []); order.push(key) }
+    byRepo.get(key).push(m)
+  }
+  // Each group's variants arrive already sorted by the backend (fits > trusted > downloads >
+  // quant-quality, see llm-catalog.py) -- variants[0] is therefore that group's own best offer,
+  // used as the default selection and the source of the header's repo-level facts.
+  return order.map(key => byRepo.get(key))
+}
+
+function llmRecTpsHtml(m) {
+  // NEVER INVENTED (mirrors the producer's own contract, store/llm-catalog.py): a measured
+  // number is shown as-is, a missing measurement is its own explicit state -- never rendered as
+  // 0 or omitted (card 88ea5050, backend2/MikroB finding: this field did not appear at all).
+  return typeof m.tokensPerSecond === 'number'
+    ? `<span class="llm-rec-tps" title="${escapeHtml(t('localLlm.rec.tps_tip'))}">⚡ ${llmFmtCount(Math.round(m.tokensPerSecond))} tok/s</span>`
+    : `<span class="llm-rec-tps unmeasured" title="${escapeHtml(t('localLlm.rec.tps_unmeasured_tip'))}">${t('localLlm.rec.tps_unmeasured')}</span>`
+}
+
+function llmRecActionHtml(m) {
+  const isActive = m.installRef === _llmRecActiveModel
+  const isInstalled = _llmRecInstalledNames.has(m.installRef)
+  if (isActive) return `<span class="llm-badge-active">${t('localLlm.models.active')}</span>`
+  if (isInstalled) return `<button class="btn-secondary btn-compact llm-rec-use-btn" data-model="${escapeHtml(m.installRef)}">${t('localLlm.rec.use_btn')}</button>`
+  return `<button class="btn-secondary btn-compact llm-rec-pull-btn" data-model="${escapeHtml(m.installRef)}">${t('localLlm.rec.pull_btn')}</button>`
+}
+
+function llmRecVariantBodyHtml(m) {
+  const fitKey = LLM_TIER_FIT_KEY[m.tier] || 'localLlm.rec.fit_fits'
+  const isActive = m.installRef === _llmRecActiveModel
+  // SECURITY: only an 8-char prefix of the first part's digest is shown here -- the full value is
+  // still available where a real comparison happens (the trust-confirm modal, card fa8959cd);
+  // shortening it here is a display convenience, not the verification surface.
+  const digest = m.parts && m.parts[0] && m.parts[0].sha256 ? String(m.parts[0].sha256).slice(0, 8) : null
+  const note = Array.isArray(m.notes) && m.notes.length ? m.notes.join(' ') : ''
+  return `<div class="llm-model-row llm-rec-row${isActive ? ' active' : ''}">
+    <div class="llm-model-info">
+      <span class="llm-rec-meta">
+        <span class="llm-rec-params">${escapeHtml(m.quant || '')}</span>
+        <span class="llm-model-size">${escapeHtml((m.fileMib != null ? (m.fileMib / 1024).toFixed(1) : '?') + ' GB')}</span>
+        <span class="llm-fit-badge ${escapeHtml(m.tier || '')}">${t(fitKey)}</span>
+        ${digest ? `<span class="llm-rec-digest" title="${escapeHtml(t('localLlm.rec.digest_tip'))}">${escapeHtml(digest)}</span>` : ''}
+        ${llmRecTpsHtml(m)}
+      </span>
+      ${note ? `<span class="llm-rec-note">${escapeHtml(note)}</span>` : ''}
+      <span class="llm-rec-installref">${escapeHtml(m.installRef || '')}</span>
+    </div>
+    <div class="llm-model-actions">${llmRecActionHtml(m)}</div>
+  </div>`
+}
+
+function llmRecGroupHtml(variants, groupIdx, isTop) {
+  const head = variants[0]
+  const variantOptions = variants.map((v, i) =>
+    `<option value="${i}">${escapeHtml(v.quant || '?')} — ${escapeHtml((v.fileMib != null ? (v.fileMib / 1024).toFixed(1) : '?') + ' GB')} (${escapeHtml(t(LLM_TIER_FIT_KEY[v.tier] || 'localLlm.rec.fit_fits'))})</option>`
+  ).join('')
+  return `<div class="llm-rec-group${isTop ? ' recommended' : ''}" data-group-idx="${groupIdx}">
+    <div class="llm-rec-group-head">
+      ${isTop ? `<span class="llm-rec-badge-star" title="${escapeHtml(t('localLlm.rec.recommended_tip'))}">${t('localLlm.rec.recommended')}</span>` : ''}
+      <span class="llm-model-name">${escapeHtml(head.displayName || head.repo || head.id)}</span>
+      <span class="llm-trust-badge ${head.trusted ? 'trusted' : 'unverified'}" title="${escapeHtml(t(head.trusted ? 'localLlm.rec.trust.trusted_tip' : 'localLlm.rec.trust.unverified_tip'))}">${t(head.trusted ? 'localLlm.rec.trust.trusted' : 'localLlm.rec.trust.unverified')}</span>
+      ${typeof head.downloads === 'number' ? `<span class="llm-rec-downloads" title="${escapeHtml(t('localLlm.rec.downloads_tip'))}">↓ ${llmFmtCount(head.downloads)}</span>` : ''}
+      ${variants.length > 1
+        ? `<select class="llm-select llm-rec-variant-select" data-group-idx="${groupIdx}" aria-label="${escapeHtml(t('localLlm.rec.variant_select_aria', { name: head.displayName || head.repo }))}">${variantOptions}</select>`
+        : ''}
+    </div>
+    <div class="llm-rec-group-body">${llmRecVariantBodyHtml(head)}</div>
+  </div>`
+}
+
+function llmWireRecActionButtons(root) {
+  root.querySelectorAll('.llm-rec-pull-btn').forEach(b =>
+    b.addEventListener('click', () => {
+      const input = document.getElementById('llmPullInput')
+      if (input) input.value = b.dataset.model
+      llmStartPull(b.dataset.model)
+    }))
+  // "Use this" (card first-run-llm.sh philosophy: a finished download never silently becomes
+  // the fleet default -- activation is its own explicit, logged step).
+  root.querySelectorAll('.llm-rec-use-btn').forEach(b =>
+    b.addEventListener('click', () => llmActivateModelClick(b.dataset.model, b)))
+}
+
+function llmRecSwapVariant(selectEl) {
+  const group = _llmRecGroups[Number(selectEl.dataset.groupIdx)]
+  const variant = group && group[Number(selectEl.value)]
+  if (!variant) return
+  const bodyEl = selectEl.closest('.llm-rec-group').querySelector('.llm-rec-group-body')
+  bodyEl.innerHTML = llmRecVariantBodyHtml(variant)
+  llmWireRecActionButtons(bodyEl)
+}
+
 async function llmRefreshRecs() {
   const el = document.getElementById('llmRecs')
   const gpuHint = document.getElementById('llmRecsGpuHint')
@@ -10952,50 +11060,14 @@ async function llmRefreshRecs() {
       return
     }
 
-    const activeModel = statusRes && statusRes.active_model
-    const installedNames = new Set((statusRes && Array.isArray(statusRes.models) ? statusRes.models : []).map(m => m.name))
+    _llmRecActiveModel = statusRes && statusRes.active_model
+    _llmRecInstalledNames = new Set((statusRes && Array.isArray(statusRes.models) ? statusRes.models : []).map(m => m.name))
+    _llmRecGroups = llmGroupRecModels(models)
 
-    el.innerHTML = warningsHtml + models.map(m => {
-      const fitKey = LLM_TIER_FIT_KEY[m.tier] || 'localLlm.rec.fit_fits'
-      const isActive = m.installRef === activeModel
-      const isInstalled = installedNames.has(m.installRef)
-      const digest = m.parts && m.parts[0] && m.parts[0].sha256 ? String(m.parts[0].sha256).slice(0, 8) : null
-      const note = Array.isArray(m.notes) && m.notes.length ? m.notes.join(' ') : ''
-      let action
-      if (isActive) {
-        action = `<span class="llm-badge-active">${t('localLlm.models.active')}</span>`
-      } else if (isInstalled) {
-        action = `<button class="btn-secondary btn-compact llm-rec-use-btn" data-model="${escapeHtml(m.installRef)}">${t('localLlm.rec.use_btn')}</button>`
-      } else {
-        action = `<button class="btn-secondary btn-compact llm-rec-pull-btn" data-model="${escapeHtml(m.installRef)}">${t('localLlm.rec.pull_btn')}</button>`
-      }
-      return `<div class="llm-model-row llm-rec-row${isActive ? ' active' : ''}">
-        <div class="llm-model-info">
-          <span class="llm-model-name">${escapeHtml(m.displayName || m.repo || m.id)}</span>
-          <span class="llm-rec-meta">
-            <span class="llm-rec-params">${escapeHtml(m.quant || '')}</span>
-            <span class="llm-model-size">${escapeHtml((m.fileMib != null ? (m.fileMib / 1024).toFixed(1) : '?') + ' GB')}</span>
-            <span class="llm-fit-badge ${escapeHtml(m.tier || '')}">${t(fitKey)}</span>
-            <span class="llm-trust-badge ${m.trusted ? 'trusted' : 'unverified'}" title="${escapeHtml(t(m.trusted ? 'localLlm.rec.trust.trusted_tip' : 'localLlm.rec.trust.unverified_tip'))}">${t(m.trusted ? 'localLlm.rec.trust.trusted' : 'localLlm.rec.trust.unverified')}</span>
-            ${typeof m.downloads === 'number' ? `<span class="llm-rec-downloads" title="${escapeHtml(t('localLlm.rec.downloads_tip'))}">↓ ${llmFmtCount(m.downloads)}</span>` : ''}
-            ${digest ? `<span class="llm-rec-digest" title="${escapeHtml(t('localLlm.rec.digest_tip'))}">${escapeHtml(digest)}</span>` : ''}
-          </span>
-          ${note ? `<span class="llm-rec-note">${escapeHtml(note)}</span>` : ''}
-          <span class="llm-rec-installref">${escapeHtml(m.installRef || '')}</span>
-        </div>
-        <div class="llm-model-actions">${action}</div>
-      </div>`
-    }).join('')
-    el.querySelectorAll('.llm-rec-pull-btn').forEach(b =>
-      b.addEventListener('click', () => {
-        const input = document.getElementById('llmPullInput')
-        if (input) input.value = b.dataset.model
-        llmStartPull(b.dataset.model)
-      }))
-    // "Use this" (card first-run-llm.sh philosophy: a finished download never silently becomes
-    // the fleet default -- activation is its own explicit, logged step).
-    el.querySelectorAll('.llm-rec-use-btn').forEach(b =>
-      b.addEventListener('click', () => llmActivateModelClick(b.dataset.model, b)))
+    el.innerHTML = warningsHtml + _llmRecGroups.map((variants, i) => llmRecGroupHtml(variants, i, i === 0)).join('')
+    llmWireRecActionButtons(el)
+    el.querySelectorAll('.llm-rec-variant-select').forEach(sel =>
+      sel.addEventListener('change', () => llmRecSwapVariant(sel)))
   } catch {
     el.innerHTML = `<div class="llm-empty">${t('localLlm.rec.load_error')}</div>`
   }

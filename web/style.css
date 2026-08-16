@@ -8532,6 +8532,80 @@ body {
   padding: 8px 12px;
   line-height: 1.4;
 }
+
+/* --- Recommendation groups (card 88ea5050): one card per HF repo, quant variants collapsed
+   behind a dropdown instead of one flat row per quant (448 rows / 37 repos on the reference
+   host -- grouping is not decorative, it is the difference between usable and unusable). --- */
+.llm-rec-group {
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  padding: 12px 14px;
+  margin-bottom: 10px;
+  background: var(--bg-card, var(--bg-secondary));
+  animation: llm-rec-group-in 0.28s ease-out backwards;
+}
+.llm-rec-group:nth-child(2) { animation-delay: 0.03s; }
+.llm-rec-group:nth-child(3) { animation-delay: 0.06s; }
+.llm-rec-group:nth-child(4) { animation-delay: 0.09s; }
+.llm-rec-group:nth-child(n+5) { animation-delay: 0.12s; }
+@keyframes llm-rec-group-in {
+  from { opacity: 0; transform: translateY(4px); }
+  to { opacity: 1; transform: translateY(0); }
+}
+@media (prefers-reduced-motion: reduce) {
+  .llm-rec-group { animation: none; }
+}
+.llm-rec-group.recommended {
+  border-color: var(--accent);
+  box-shadow: 0 0 0 1px var(--accent), 0 4px 16px var(--accent-soft);
+}
+.llm-rec-group-head {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+  margin-bottom: 8px;
+}
+.llm-rec-badge-star {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  font-size: 11px;
+  font-weight: 700;
+  padding: 2px 8px;
+  border-radius: 999px;
+  color: #fff;
+  background: linear-gradient(135deg, var(--accent), var(--accent-hover, var(--accent)));
+  white-space: nowrap;
+}
+.llm-rec-badge-star::before { content: '★'; }
+.llm-rec-group-head .llm-model-name { font-size: 14px; }
+.llm-rec-variant-select {
+  margin-left: auto;
+  min-width: 0;
+  max-width: 100%;
+}
+.llm-rec-group-body .llm-model-row {
+  padding: 0;
+  border: none;
+  background: none;
+}
+.llm-rec-group-body .llm-model-row.active {
+  padding: 8px 10px;
+  border: 1px solid var(--accent);
+  border-radius: var(--radius-sm);
+  background: var(--accent-soft);
+}
+.llm-rec-tps {
+  font-size: 11px;
+  color: var(--text-muted);
+  white-space: nowrap;
+}
+.llm-rec-tps.unmeasured { font-style: italic; opacity: 0.75; }
+@media (max-width: 640px) {
+  .llm-rec-group-head { align-items: flex-start; }
+  .llm-rec-variant-select { margin-left: 0; width: 100%; }
+}
 .llm-trust-confirm-list {
   margin: 0;
   display: grid;
