@@ -25,8 +25,21 @@ What is left after normalising both is real, and it splits three ways:
   LIVE LOST content  the template has content the live copy dropped        -> needs a decision
   two-sided          each side has content the other lacks                 -> needs the skill's owner
 
+PLACEHOLDER-COUNT REGRESSION (added same day as bf67711e, card d4412070 follow-up). The classifier
+above has a blind spot BY CONSTRUCTION: it renders {{PLACEHOLDER}} before comparing, on purpose, so a
+correctly-rendered line never counts as drift. But that same rendering step makes a FLATTENED
+template -- one where a placeholder was overwritten with a literal value, e.g. by a careless whole-
+file copy from the live side -- look byte-identical to a correct render, and the tool reports
+"placeholder rendering only (correct)" for exactly the case that IS the corruption. Measured the day
+this was found: `seed-skills/embedded-pg-e2e-runner/SKILL.md` had its own {{INSTALL_DIR}} flattened
+to an absolute path by a whole-file copy, and this tool called it clean; two unrelated repo guards
+(template-identity-hygiene, seed-skill-placeholders) caught it, not this one. This section closes
+that gap the cheap way bf67711e's own follow-up suggested: count `{{[A-Z_]+}}` occurrences in each
+tracked template file and flag a DECREASE versus the last COMMITTED version of the same file -- a
+flatten always drops the count, a legitimate edit essentially never does by accident.
+
 Usage:
-  skill-drift-map.py                 summary counts
+  skill-drift-map.py                 summary counts (includes placeholder-count regressions)
   skill-drift-map.py --full          every file, grouped by verdict
   skill-drift-map.py --skill <name>  one skill, with the differing lines
 """
@@ -34,9 +47,12 @@ from __future__ import annotations
 
 import os
 import re
+import subprocess
 import sys
 from collections import Counter
 from pathlib import Path
+
+PLACEHOLDER_RX = re.compile(r'\{\{[A-Z_]+\}\}')
 
 INSTALL_DIR = Path(os.environ.get('INSTALL_DIR', '/home/neon/marveen'))
 LIVE = Path(os.environ.get('SKILLS_DIR', str(Path.home() / '.claude/skills')))
@@ -79,6 +95,51 @@ def trees() -> list[tuple[str, Path]]:
             if p.is_dir():
                 out.append((f'seed-fleet-agents/{agent.name}', p))
     return [(n, p) for n, p in out if p.is_dir()]
+
+
+def committed_text(path: Path) -> str | None:
+    """The last COMMITTED content of `path`, or None if it is untracked/new/not in a git repo.
+
+    Fail-open on purpose (matches this whole tool's advisory stance): a git failure here must never
+    crash a drift report, it just means that one file cannot be checked for regression.
+    """
+    try:
+        rel = path.relative_to(INSTALL_DIR)
+    except ValueError:
+        return None
+    try:
+        out = subprocess.run(
+            ['git', '-C', str(INSTALL_DIR), 'show', f'HEAD:{rel.as_posix()}'],
+            capture_output=True, timeout=10,
+        )
+    except (OSError, subprocess.TimeoutExpired):
+        return None
+    if out.returncode != 0:
+        return None
+    return out.stdout.decode('utf-8', 'replace')
+
+
+def placeholder_regressions() -> list[tuple[str, str, int, int]]:
+    """Every tracked template file whose {{PLACEHOLDER}} count DROPPED versus HEAD.
+
+    Returns (tree_name, relative-path-within-tree, old_count, new_count) tuples, worst first.
+    """
+    rows = []
+    for tree_name, tree in trees():
+        for f in sorted(tree.rglob('*')):
+            if not f.is_file():
+                continue
+            old_text = committed_text(f)
+            if old_text is None:
+                continue  # new/untracked file: nothing to regress FROM
+            old_count = len(PLACEHOLDER_RX.findall(old_text))
+            if old_count == 0:
+                continue  # never had a placeholder -- not this check's concern
+            new_count = len(PLACEHOLDER_RX.findall(f.read_text(encoding='utf-8', errors='replace')))
+            if new_count < old_count:
+                rows.append((tree_name, str(f.relative_to(tree)), old_count, new_count))
+    rows.sort(key=lambda r: r[3] - r[2])  # biggest drop first
+    return rows
 
 
 def render(raw: bytes) -> bytes:
@@ -158,6 +219,19 @@ def main(argv: list[str]) -> int:
     print('\nREAL DRIFT:')
     for k, v in Counter(r[3] for r in rows).most_common() or [('(none)', 0)]:
         print('  %4d  %s' % (v, k))
+
+    # PLACEHOLDER-COUNT REGRESSIONS -- printed unconditionally, not behind --full: this is the check
+    # that catches a flattened template BEFORE it ships, so it must not require someone to remember
+    # to ask for it (see the module docstring: this ran silently over a real corruption once already).
+    regressions = placeholder_regressions()
+    if want_skill:
+        regressions = [r for r in regressions if r[1].split('/', 1)[0] == want_skill]
+    print('\nPLACEHOLDER-COUNT REGRESSIONS vs HEAD (a template that lost {{PLACEHOLDER}}s -- likely flattened):')
+    if regressions:
+        for tree_name, rel, old_count, new_count in regressions:
+            print(f'  {tree_name}/{rel}: {old_count} -> {new_count}')
+    else:
+        print('  (none)')
 
     if want_skill:
         for tree_name, skill, rel, verdict, only_live, only_tpl in rows:

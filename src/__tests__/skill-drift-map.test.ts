@@ -12,12 +12,16 @@
 // So the load-bearing assertions here are the NEGATIVE ones: those two must NOT be reported as
 // drift. The tests RUN the tool against a synthetic pair of trees rather than reading its source --
 // the sibling secret-shape-scan test makes the same choice for the same reason.
-import { describe, it, expect, beforeAll, afterAll } from 'vitest'
+import { describe, it, expect, beforeAll, afterAll, beforeEach, afterEach } from 'vitest'
 import { execFileSync } from 'node:child_process'
 import { mkdtempSync, mkdirSync, writeFileSync, rmSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { REPO_ROOT } from './helpers/repo-location.js'
+
+function git(args: string[], cwd: string): void {
+  execFileSync('git', args, { cwd, stdio: 'pipe' })
+}
 
 const TOOL = join(REPO_ROOT, 'store/skill-drift-map.py')
 
@@ -112,5 +116,92 @@ describe('store/skill-drift-map.py', () => {
     const out = run(['--skill', 'agent-only-skill'])
     expect(out).toMatch(/1\s+template LAGS/)
     expect(out).toMatch(/seed-fleet-agents\/qa\/agent-only-skill/)
+  })
+})
+
+describe('placeholder-count regression (card d4412070, bf67711e follow-up: embedded-pg-e2e-runner incident)', () => {
+  // Each test gets its OWN fresh git repo -- these mutate committed state (add/commit), and sharing
+  // one repo across tests in sequence would make each test's outcome depend on execution order.
+  let gitRoot: string
+  let gitInstallDir: string
+  let gitLiveDir: string
+
+  beforeEach(() => {
+    gitRoot = mkdtempSync(join(tmpdir(), 'driftmap-git-'))
+    gitInstallDir = join(gitRoot, 'install')
+    gitLiveDir = join(gitRoot, 'live')
+    mkdirSync(join(gitInstallDir, 'seed-skills'), { recursive: true })
+    mkdirSync(gitLiveDir, { recursive: true })
+    writeFileSync(join(gitInstallDir, '.env'), 'OWNER_NAME=Peti\n')
+    git(['init', '-q'], gitInstallDir)
+    git(['config', 'user.email', 'test@test.local'], gitInstallDir)
+    git(['config', 'user.name', 'test'], gitInstallDir)
+  })
+
+  afterEach(() => {
+    rmSync(gitRoot, { recursive: true, force: true })
+  })
+
+  function commitAll(message: string): void {
+    git(['add', '-A'], gitInstallDir)
+    git(['commit', '-q', '-m', message], gitInstallDir)
+  }
+
+  function runGit(args: string[] = []): string {
+    return execFileSync('python3', [TOOL, ...args], {
+      encoding: 'utf8',
+      env: { ...process.env, INSTALL_DIR: gitInstallDir, SKILLS_DIR: gitLiveDir },
+    })
+  }
+
+  it('the incident itself: a whole-file copy that flattens a placeholder is caught', () => {
+    // Reproduces the actual bf67711e-day bug: {{INSTALL_DIR}} overwritten with a literal absolute
+    // path by careless whole-file copy. The main classifier alone would call this correct (it
+    // renders before comparing) -- this is the check that exists BECAUSE that happened for real.
+    const tplPath = join(gitInstallDir, 'seed-skills', 'embedded-pg-e2e-runner', 'SKILL.md')
+    mkdirSync(join(gitInstallDir, 'seed-skills', 'embedded-pg-e2e-runner'), { recursive: true })
+    writeFileSync(tplPath, 'run at {{INSTALL_DIR}}/store/x.sh with port {{WEB_PORT}}\n')
+    commitAll('initial')
+    writeFileSync(tplPath, `run at ${gitInstallDir}/store/x.sh with port 3420\n`)
+    const out = runGit()
+    expect(out).toMatch(/embedded-pg-e2e-runner\/SKILL\.md: 2 -> 0/)
+  })
+
+  it('an unrelated content edit that keeps both placeholders is NOT flagged', () => {
+    const tplPath = join(gitInstallDir, 'seed-skills', 'embedded-pg-e2e-runner', 'SKILL.md')
+    mkdirSync(join(gitInstallDir, 'seed-skills', 'embedded-pg-e2e-runner'), { recursive: true })
+    writeFileSync(tplPath, 'run at {{INSTALL_DIR}}/store/x.sh with port {{WEB_PORT}}\n')
+    commitAll('initial')
+    writeFileSync(tplPath, 'run at {{INSTALL_DIR}}/store/x.sh with port {{WEB_PORT}} -- extra line\n')
+    const out = runGit()
+    expect(out).toMatch(/PLACEHOLDER-COUNT REGRESSIONS[^\n]*\n\s+\(none\)/)
+  })
+
+  it('a brand-new untracked template file has nothing to regress FROM, so it is not flagged', () => {
+    // No initial commit at all here: the file is new relative to HEAD (there is no HEAD).
+    mkdirSync(join(gitInstallDir, 'seed-skills', 'new-skill'), { recursive: true })
+    writeFileSync(join(gitInstallDir, 'seed-skills', 'new-skill', 'SKILL.md'), 'no placeholders here\n')
+    const out = runGit()
+    expect(out).not.toMatch(/new-skill/)
+  })
+
+  it('--skill filters the regression list to just that skill', () => {
+    mkdirSync(join(gitInstallDir, 'seed-skills', 'embedded-pg-e2e-runner'), { recursive: true })
+    mkdirSync(join(gitInstallDir, 'seed-skills', 'other-skill'), { recursive: true })
+    writeFileSync(
+      join(gitInstallDir, 'seed-skills', 'embedded-pg-e2e-runner', 'SKILL.md'),
+      '{{INSTALL_DIR}} and {{WEB_PORT}}\n',
+    )
+    writeFileSync(join(gitInstallDir, 'seed-skills', 'other-skill', 'SKILL.md'), '{{INSTALL_DIR}}\n')
+    commitAll('initial')
+    // Flatten BOTH after the commit -- both are real regressions; --skill must show only one.
+    writeFileSync(
+      join(gitInstallDir, 'seed-skills', 'embedded-pg-e2e-runner', 'SKILL.md'),
+      'flattened, no placeholders left\n',
+    )
+    writeFileSync(join(gitInstallDir, 'seed-skills', 'other-skill', 'SKILL.md'), 'flattened too\n')
+    const out = runGit(['--skill', 'embedded-pg-e2e-runner'])
+    expect(out).toMatch(/embedded-pg-e2e-runner\/SKILL\.md/)
+    expect(out).not.toMatch(/other-skill/)
   })
 })
