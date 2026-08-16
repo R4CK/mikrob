@@ -167,7 +167,12 @@ beforeAll(async () => {
     res.writeHead(200, { 'Content-Type': 'application/json' })
     res.end(JSON.stringify(FIXTURE_MEMORIES))
   })
-  await new Promise<void>((resolve) => server.listen(0, '127.0.0.1', resolve))
+  // No explicit host: the script's own source hardcodes "localhost", which some sandboxes
+  // resolve to ::1 first -- binding only 127.0.0.1 here caused a 5s connect timeout (the
+  // real bug is a DNS/family mismatch between Node's http.Server and Python's urllib, not
+  // the script under test). Let Node bind the OS default (dual-stack on Linux) so both
+  // address families reach it.
+  await new Promise<void>((resolve) => server.listen(0, resolve))
   port = (server.address() as AddressInfo).port
 })
 
