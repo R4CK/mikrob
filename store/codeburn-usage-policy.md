@@ -20,6 +20,26 @@ the end).
 **Do not install `codeburn@latest`.** The audit's conclusions are about 0.9.20's source. A later
 version is unaudited code with network capability, and upgrading is a decision, not maintenance.
 
+## Model-price source is pinned, not the moving `main` branch (card 4543e8d8)
+
+CodeBurn fetches its model-price list from
+`raw.githubusercontent.com/BerriAI/litellm/main/model_prices_and_context_window.json`, cached 24h,
+with an embedded snapshot as an offline fallback -- not a functional bug on its own, but the same
+hazard class as the `bitnami/minio:latest` moving-CI-image fix: a mutable ref feeding data that cost
+decisions get made on. No env-var or config override exists for this URL (checked: 3 total
+`LITELLM_URL` references in `dist/main.js`, none reading `process.env`), so the only lever is
+patching the installed build artifact directly.
+
+`store/codeburn-litellm-ref-pin.sh` does that, idempotently, pinned to a specific commit
+(`0059b497f44d8ad2ab8dae5e17fbd8df0cfcdb11`, the latest commit touching that file as of 2026-08-16).
+Verified end-to-end: cleared `~/.cache/codeburn/litellm-pricing.json`, ran `codeburn models`, confirmed
+it fetched live through the pinned-sha URL and repopulated the cache (4116 priced models). **Because
+the patched file lives outside this git repo** (`~/.local/lib/node_modules/codeburn`, npm `--prefix`
+install), any reinstall resets it silently -- re-run the script after every `npm install -g --prefix
+~/.local codeburn@<version>`. Refreshing the pin itself is a deliberate decision (same policy as the
+version pin above): bump `PINNED_SHA` only after reviewing that commit's diff on the price file, never
+on a schedule.
+
 ## What it answers, and why it is not a quota-check replacement
 
 They answer different questions and neither can answer the other's:
@@ -103,6 +123,13 @@ them: no wildcard-bound listener exists on this box (`ss -ltn` shows only 127.0.
 
 Prefer those over bare `codeburn` / `codeburn web`: the bare command is the one that consults the
 always-share flag on startup.
+
+**On the NEXT version bump, re-check this, don't assume it still holds (card 4543e8d8, Cybered
+reminder).** "No preinstall/postinstall script" is true for 0.9.20 today -- it is the single largest
+npm-supply-chain risk class this package could carry, and a version bump is exactly the kind of change
+that could introduce one silently. Re-audit `package.json` scripts on every bump, not just the first
+install. Same bump also resets the `dist/main.js` litellm-ref patch above -- re-run
+`store/codeburn-litellm-ref-pin.sh` after reinstalling.
 
 ## One deliberate guard bypass, recorded
 
