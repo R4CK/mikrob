@@ -151,7 +151,15 @@ def ts(c):
 #    word, only 8 were submissions; the other 20 were verdicts by other agents quoting it
 #    ("QA PASS -- ...the REVIEW claim holds") or prose ("a te REVIEW-od utan"). A substring
 #    test re-arms on all of those, which is the fail-open direction but pure noise.
-review_rx = re.compile(r"^\s*(?:[#*>\-]*\s*)?REVIEW\b", re.M)
+#
+# SAME QUOTING HOLE AS gate_sha_rx HAD (card a45b1c71, the b60835e1 class recurring in a second
+# place): the character class below used to allow `>` -- the markdown blockquote marker, i.e. the
+# one prefix that means "I am QUOTING this, not submitting it" -- plus a bare leading `\s*` that
+# let an indented quote through too. Measured: "Idezem a kollegat:\n> REVIEW -- kesz" armed a gate
+# purely because the word appeared behind a `> `. Brought to the same shape gate_sha_rx already
+# has: no `>` in the prefix class, no leading whitespace before it, and matched against the
+# FENCE-STRIPPED text (see is_submission below) so a ```-fenced quote cannot arm it either.
+review_rx = re.compile(r"^(?:[#*\-]+[ \t]*)?REVIEW\b", re.M)
 
 # STRUCTURED FIELD (card f910eabd). Everything below this line is heuristics reading prose, and the
 # prose keeps winning: four documented false-positive classes on the same guesswork (REVIEW-prefix,
@@ -257,7 +265,10 @@ def is_submission(c):
     # prose rules because it is the only one that cannot be triggered by quoting.
     if structured_shas(text):
         return True
-    if review_rx.search(text):
+    # Fence-stripped for the same reason structured_shas() already is (card a45b1c71): a fenced
+    # quote containing a line that starts with REVIEW must not arm this any more than a `> `-quoted
+    # one does -- the prefix-class fix above only closes the un-fenced quote forms.
+    if review_rx.search(fence_rx.sub("", text)):
         return True
     if author in NON_SUBMITTERS:
         return False
@@ -614,6 +625,20 @@ print(",".join(c.get("id") or "" for c in cards if isinstance(c, dict)))
     t "list-marker declaration still arms"        "ADVISE-SKIP:already-gated" cybered <<< '[{"author":"backend2","created_at":100,"content":"REVIEW -- ac792b3b"},{"author":"cybered","created_at":200,"content":"CYBERED GO -- @ ac792b3b"},{"author":"backend2","created_at":300,"content":"- Gate-SHA: ac792b3b\nValasz: valtozatlan, a testver 63c4b270 landolt."}]'
     # Multiple shas on one line (a review that submits two commits together).
     t "two declared shas, one still new"          "ALLOW:stale-verdict" cybersec <<< '[{"author":"backend","created_at":100,"content":"REVIEW -- 6fd834e2"},{"author":"cybersec","created_at":200,"content":"Gate-SHA: 6fd834e2\nNO-GO"},{"author":"backend","created_at":300,"content":"Gate-SHA: 6fd834e2, 974509e3\nREVIEW -- fix + follow-up."}]'
+
+    # review_rx QUOTE FORMS (card a45b1c71 -- the b60835e1/25c0c64 class recurring in a second regex
+    # in this same file). The measured repro: "Idezem a kollegat:\n> REVIEW -- kesz" armed a gate
+    # purely because REVIEW appeared behind a `> ` quote marker. Same three forms as the Gate-SHA
+    # fix above, applied to the word itself this time.
+    t "markdown-quoted REVIEW does not arm"       "ADVISE-SKIP:already-gated" cybersec <<< '[{"author":"backend","created_at":100,"content":"REVIEW -- ac792b3b"},{"author":"cybersec","created_at":200,"content":"GO @ ac792b3b"},{"author":"cybered","created_at":300,"content":"Idezem a kollegat:\n> REVIEW -- kesz"}]'
+    t "indented REVIEW does not arm"              "ADVISE-SKIP:already-gated" cybersec <<< '[{"author":"backend","created_at":100,"content":"REVIEW -- ac792b3b"},{"author":"cybersec","created_at":200,"content":"GO @ ac792b3b"},{"author":"cybered","created_at":300,"content":"Idezem a kollegat:\n    REVIEW -- kesz"}]'
+    t "fenced REVIEW does not arm"                "ADVISE-SKIP:already-gated" cybersec <<< '[{"author":"backend","created_at":100,"content":"REVIEW -- ac792b3b"},{"author":"cybersec","created_at":200,"content":"GO @ ac792b3b"},{"author":"cybered","created_at":300,"content":"Idezem:\n```\nREVIEW -- kesz\n```\nennyi volt."}]'
+    # A list marker is formatting, not quoting -- consistent with the same rule for Gate-SHA above.
+    t "list-marker REVIEW still arms"             "ALLOW:stale-verdict" cybersec <<< '[{"author":"cybersec","created_at":200,"content":"GO"},{"author":"backend","created_at":300,"content":"- REVIEW -- kesz, commit abc1234"}]'
+    # ...and a REAL submission after a quoted false one must still arm -- the stricter match must
+    # not swallow genuine work just because a quote appears earlier in the same comment.
+    t "quoted then really submitted REVIEW -> arms" "ALLOW:stale-verdict" cybersec <<< '[{"author":"backend","created_at":100,"content":"REVIEW -- 6fd834e2"},{"author":"cybersec","created_at":200,"content":"NO-GO @ 6fd834e2"},{"author":"backend","created_at":300,"content":"Regi szoveg:\n> REVIEW -- 6fd834e2\nREVIEW -- 974509e3"}]'
+
     t "malformed json"                "ALLOW"              cybersec <<< 'not json'
     t "object-wrapped comments"       "ADVISE-SKIP:already-gated" cybersec <<< '{"comments":[{"author":"backend","created_at":100,"content":"REVIEW"},{"author":"cybersec","created_at":200,"content":"GO"}]}'
     # ts() robustness: a comment with no created_at must not crash the max(). Needs a REVIEW present
