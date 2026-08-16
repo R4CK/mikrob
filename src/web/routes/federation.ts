@@ -48,6 +48,7 @@ import { resetPeerBackoff } from '../federation/bridge.js'
 import { getFederationStatus, refreshFederationStatus, resetFederationPollerCache } from '../federation/poller.js'
 import { ensureFederationClaudeMdSection } from '../federation/onboarding.js'
 import { hardRestartMarveenChannels } from '../channel-monitor.js'
+import { startTailscaleLogin, getTailscaleLoginStatus } from '../federation/tailscale-login.js'
 import type { RouteContext } from './types.js'
 
 export const FEDERATION_VERSION = 1
@@ -358,6 +359,31 @@ export async function tryHandleFederation(ctx: RouteContext): Promise<boolean> {
 
   if (path === '/api/federation/peers' && method === 'GET') {
     json(res, peersView(getFederationConfig()))
+    return true
+  }
+
+  // Card b68ddae8: Tailscale login for the Foderacio-oldal "Bejelentkezes Tailscale-lel"
+  // button (frontend already built + GO'd, card 9bf6a1e0). Dashboard-token only -- NOT in
+  // the gate's federation-wire allowlist (isFederationWireEndpoint checks an exact 2-route
+  // list that does not include these paths). See src/web/federation/tailscale-login.ts for
+  // the full contract history and the security commitments made on this card.
+  if (path === '/api/federation/tailscale/login' && method === 'POST') {
+    // The built UI (web/app-federation.js fedTailscaleLogin) sends no request body at all --
+    // do NOT call readJsonBody here, it would 400 on the empty body before this ever runs.
+    const result = await startTailscaleLogin()
+    if ('error' in result) {
+      logger.warn({ fed: true, tailscaleLogin: true, errorCode: result.error }, 'federation: tailscale login start failed')
+      json(res, { status: 'failed', error: result.error }, 502)
+      return true
+    }
+    json(res, result)
+    return true
+  }
+
+  if (path === '/api/federation/tailscale/status' && method === 'GET') {
+    const pollToken = ctx.url.searchParams.get('pollToken')
+    if (!pollToken) { json(res, { error: 'pollToken required' }, 400); return true }
+    json(res, getTailscaleLoginStatus(pollToken))
     return true
   }
 
