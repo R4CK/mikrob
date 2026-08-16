@@ -66,6 +66,47 @@ describe('detectsUsageLimit', () => {
     expect(detectsUsageLimit('')).toBe(false)
     expect(detectsUsageLimit('   \n  ')).toBe(false)
   })
+
+  describe('shape guard (card 381b6f49): a live footer/busy chrome means healthy prose, not a real banner', () => {
+    it('does NOT match when the phrase co-occurs with the live idle footer', () => {
+      // A gate verdict, source comment, or card-text echo landing in the tail
+      // region of an otherwise HEALTHY, idle session -- the normal footer is
+      // still rendered underneath it.
+      const pane = [
+        'REVIEW: the detector matches "usage limit reached" in the tail region.',
+        'bypass permissions on (shift+tab to cycle)',
+      ].join('\n')
+      expect(detectsUsageLimit(pane)).toBe(false)
+    })
+
+    it('does NOT match when the phrase co-occurs with a live token-counter busy indicator', () => {
+      const pane = [
+        'Quoting the source comment: "reached your usage limit" is the trigger.',
+        'Thinking… (12s · ↓ 3.1k tokens · esc to interrupt)',
+      ].join('\n')
+      expect(detectsUsageLimit(pane)).toBe(false)
+    })
+
+    it('does NOT match when the phrase co-occurs with "esc to interrupt" alone', () => {
+      const pane = [
+        'the card says stop and wait for limit to reset before retrying',
+        'bypass permissions on · esc to interrupt',
+      ].join('\n')
+      expect(detectsUsageLimit(pane)).toBe(false)
+    })
+
+    it('still matches a real paused banner, which has no footer to co-occur with', () => {
+      // A genuine plan-limit pause replaces the footer with its own chrome
+      // (store/quota-check.sh header: a numbered "1. Stop and wait..." modal) --
+      // no idle footer, no busy indicator, ever renders alongside it.
+      const pane = [
+        'You have reached your usage limit. Try again later.',
+        '1. Stop and wait for limit to reset',
+        '2. Continue in a different session',
+      ].join('\n')
+      expect(detectsUsageLimit(pane)).toBe(true)
+    })
+  })
 })
 
 describe('nextFallbackModel', () => {

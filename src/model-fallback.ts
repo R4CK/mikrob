@@ -239,16 +239,51 @@ export const USAGE_LIMIT_FRAGMENTS = [
 ]
 const USAGE_LIMIT_RX = new RegExp(`(${USAGE_LIMIT_FRAGMENTS.join('|')})`, 'i')
 
+// SHAPE guard (card 381b6f49, Cybersec finding msg 14080/14088): a phrase match
+// alone also fires on a HEALTHY agent's own prose that happens to quote a
+// trigger phrase verbatim -- a gate verdict echoing the detector's own
+// documentation, a source comment pasted into a reply, a card description
+// read back. Those all render inside a session that is still alive, so the
+// live idle footer or a busy (mid-turn) indicator is STILL PRESENT in the same
+// tail region. A genuine plan-limit banner PAUSES the session and REPLACES the
+// footer with its own chrome (a numbered "1. Stop and wait..." choice per
+// store/quota-check.sh's header, commit 5fccf4f9) -- so neither is present.
+// Requiring their absence turns the raw phrase match into a real ALARM instead
+// of a keyword grep, without needing a captured real banner sample (none
+// exists in this repo -- see the 381b6f49 blocked-comment search) and without
+// growing a second guess-list (Cybersec explicitly ruled that out).
+//
+// Duplicated (NOT imported) from src/pane-state.ts's IDLE_FOOTER_RX / busy
+// signals -- MikroB decision 2026-08-16 (card 381b6f49, msg 13439): this
+// module's own header states zero fs/tmux/clock dependency, an architectural
+// boundary a SEC card does not get to quietly cross even though pane-state.ts
+// is equally dependency-free today. Kept in sync by hand; each duplicate line
+// names its pane-state.ts source so a future drift is a one-file grep away.
+//
+// Same shape as pane-state.ts IDLE_FOOTER_RX (mode name + "on" + shift+tab/·
+// hint, or the shortcuts hint).
+const LOCAL_IDLE_FOOTER_RX = /(?:[A-Za-z][\w-]* ){1,3}on(?: \(shift\+tab to cycle\)| · [^\n]*?(?:ctrl\+t|↓ to manage|← for agents))|\? for shortcuts/
+// Same shape as pane-state.ts's tokens-down-arrow busy signal, live only
+// during an in-flight turn.
+const LOCAL_BUSY_TOKENS_RX = /\(\s*\d+s\s*·\s*↓\s*\d/
+// Same shape as pane-state.ts's BUSY_ESC_TO_INTERRUPT_RX.
+const LOCAL_ESC_TO_INTERRUPT_RX = /\besc to interrupt\b/
+
 /**
  * True when the live pane shows a Claude *plan usage-limit* banner (not a
  * transient API 429). Pure + dependency-free. Restricted to the bottom region
- * so quoted text in scrollback or a reply body cannot trigger it.
+ * so quoted text in scrollback or a reply body cannot trigger it, and gated on
+ * the ABSENCE of the live idle footer / busy chrome so a healthy session that
+ * merely quotes the phrase (see the SHAPE guard comment above) does not.
  */
 export function detectsUsageLimit(pane: string): boolean {
   if (!pane || !pane.trim()) return false
   const lines = pane.split('\n')
   const region = lines.slice(-USAGE_LIMIT_BANNER_REGION_LINES).join('\n')
-  return USAGE_LIMIT_RX.test(region)
+  if (!USAGE_LIMIT_RX.test(region)) return false
+  if (LOCAL_BUSY_TOKENS_RX.test(region) || LOCAL_ESC_TO_INTERRUPT_RX.test(region)) return false
+  if (LOCAL_IDLE_FOOTER_RX.test(region)) return false
+  return true
 }
 
 /**
