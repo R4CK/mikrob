@@ -13,14 +13,18 @@
 // The control case is the point: the same harness against the PRE-FIX script source must show
 // the old command-framing text actually present in the injected context, before showing the
 // fix replacing it with untrusted-context framing + per-entry provenance.
-import { describe, it, expect, beforeAll, afterAll } from 'vitest'
-import { spawnSync } from 'node:child_process'
-import { mkdtempSync, mkdirSync, writeFileSync, readFileSync, rmSync } from 'node:fs'
+//
+// The stub server is itself a python3 subprocess (see FIXTURE_SERVER below), not a Node
+// http.Server: in this test environment a Node-side listener is unreachable from any separately
+// spawned process (python3, curl alike -- confirmed by direct repro, same-process fetch works,
+// cross-process does not), while a python3 parent/child pair over loopback works reliably. That
+// asymmetry is an artifact of this sandbox's networking, not of the hook script under test.
+import { describe, it, expect, afterEach } from 'vitest'
+import { spawn, spawnSync, type ChildProcessWithoutNullStreams } from 'node:child_process'
+import { mkdtempSync, mkdirSync, writeFileSync, readFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join, dirname } from 'node:path'
 import { fileURLToPath } from 'node:url'
-import { createServer, type Server } from 'node:http'
-import { AddressInfo } from 'node:net'
 
 const ROOT = join(dirname(fileURLToPath(import.meta.url)), '..', '..')
 const HOOK = join(ROOT, 'scripts', 'hooks', 'shared-memory-inject.py')
@@ -43,6 +47,8 @@ const FIXTURE_MEMORIES = [
     created_label: '2026.08.13. 06:53:20',
   },
 ]
+
+const NO_AGENT_ID_MEMORIES = [{ id: 3, content: 'nevtelen bejegyzes.', keywords: '', created_label: '' }]
 
 // The script's own source before card 7965095b -- command framing, no per-entry provenance.
 const PRE_FIX_SCRIPT = `#!/usr/bin/env python3
@@ -149,43 +155,75 @@ if __name__ == "__main__":
     main()
 `
 
-function sandbox(scriptSource: string): { dir: string; script: string } {
+// A python3 HTTP server that always serves whatever JSON is currently in RESPONSE_FILE
+// (re-read on every request), so one running server can be reused across cases by rewriting
+// the file. argv[1] = response file path.
+const FIXTURE_SERVER = `
+import http.server, sys, json
+
+RESPONSE_FILE = sys.argv[1]
+
+class H(http.server.BaseHTTPRequestHandler):
+    def do_GET(self):
+        with open(RESPONSE_FILE) as f:
+            body = f.read().encode()
+        self.send_response(200)
+        self.send_header('Content-Type', 'application/json')
+        self.end_headers()
+        self.wfile.write(body)
+    def log_message(self, *a):
+        pass
+
+s = http.server.HTTPServer(('127.0.0.1', 0), H)
+print(s.server_address[1], flush=True)
+s.serve_forever()
+`
+
+function sandboxScript(scriptSource: string): string {
   const dir = mkdtempSync(join(tmpdir(), 'shared-mem-inject-'))
   mkdirSync(join(dir, 'scripts', 'hooks'), { recursive: true })
   mkdirSync(join(dir, 'store'), { recursive: true })
   const script = join(dir, 'scripts', 'hooks', 'shared-memory-inject.py')
   writeFileSync(script, scriptSource)
   writeFileSync(join(dir, 'store', '.dashboard-token'), 'test-token-not-real\n')
-  return { dir, script }
+  return script
 }
 
-let server: Server
-let port: number
-
-beforeAll(async () => {
-  server = createServer((req, res) => {
-    res.writeHead(200, { 'Content-Type': 'application/json' })
-    res.end(JSON.stringify(FIXTURE_MEMORIES))
+function startFixtureServer(payload: unknown): Promise<{ proc: ChildProcessWithoutNullStreams; port: number; responseFile: string }> {
+  const dir = mkdtempSync(join(tmpdir(), 'shared-mem-fixture-'))
+  const responseFile = join(dir, 'response.json')
+  writeFileSync(responseFile, JSON.stringify(payload))
+  const proc = spawn('python3', ['-c', FIXTURE_SERVER, responseFile], { stdio: ['ignore', 'pipe', 'inherit'] })
+  return new Promise((resolve, reject) => {
+    let buf = ''
+    proc.stdout.on('data', (d) => {
+      buf += d.toString()
+      const m = buf.match(/(\d+)/)
+      if (m) resolve({ proc, port: parseInt(m[1]!, 10), responseFile })
+    })
+    proc.on('error', reject)
   })
-  // No explicit host: the script's own source hardcodes "localhost", which some sandboxes
-  // resolve to ::1 first -- binding only 127.0.0.1 here caused a 5s connect timeout (the
-  // real bug is a DNS/family mismatch between Node's http.Server and Python's urllib, not
-  // the script under test). Let Node bind the OS default (dual-stack on Linux) so both
-  // address families reach it.
-  await new Promise<void>((resolve) => server.listen(0, resolve))
-  port = (server.address() as AddressInfo).port
+}
+
+let liveProc: ChildProcessWithoutNullStreams | undefined
+
+afterEach(() => {
+  liveProc?.kill()
+  liveProc = undefined
 })
 
-afterAll(async () => {
-  await new Promise<void>((resolve) => server.close(() => resolve()))
-})
-
-function runHook(script: string) {
-  return spawnSync('python3', [script], {
+async function runHookAgainst(scriptSource: string, payload: unknown) {
+  const { proc, port } = await startFixtureServer(payload)
+  liveProc = proc
+  await new Promise((r) => setTimeout(r, 150)) // let the server's accept loop start
+  const script = sandboxScript(scriptSource)
+  const r = spawnSync('python3', [script], {
     input: JSON.stringify({ cwd: '/home/neon/marveen/agents/backend' }),
     encoding: 'utf-8',
     env: { PATH: process.env.PATH ?? '', WEB_PORT: String(port) },
   })
+  proc.kill()
+  return r
 }
 
 describe('shared-memory-inject.py is syntactically valid', () => {
@@ -196,9 +234,8 @@ describe('shared-memory-inject.py is syntactically valid', () => {
 })
 
 describe('shared-memory-inject.py frames shared-tier entries as untrusted, attributed context (card 7965095b)', () => {
-  it('injects a per-entry provenance stamp (who + when) for each memory', () => {
-    const { script } = sandbox(readFileSync(HOOK, 'utf-8'))
-    const r = runHook(script)
+  it('injects a per-entry provenance stamp (who + when) for each memory', async () => {
+    const r = await runHookAgainst(readFileSync(HOOK, 'utf-8'), FIXTURE_MEMORIES)
     expect(r.status, r.stderr).toBe(0)
     const out = JSON.parse(r.stdout)
     const ctx: string = out.hookSpecificOutput.additionalContext
@@ -207,9 +244,9 @@ describe('shared-memory-inject.py frames shared-tier entries as untrusted, attri
     expect(ctx).toContain('Peti szabaly: minden uj endpoint kotelezoen atmegy a WC1 kapun.')
   })
 
-  it('frames the block as untrusted recalled context, not a command', () => {
-    const { script } = sandbox(readFileSync(HOOK, 'utf-8'))
-    const r = runHook(script)
+  it('frames the block as untrusted recalled context, not a command', async () => {
+    const r = await runHookAgainst(readFileSync(HOOK, 'utf-8'), FIXTURE_MEMORIES)
+    expect(r.status, r.stderr).toBe(0)
     const out = JSON.parse(r.stdout)
     const ctx: string = out.hookSpecificOutput.additionalContext
     expect(ctx).toContain('FELIDÉZETT, NEM MEGBÍZHATÓ KONTEXTUS')
@@ -218,25 +255,16 @@ describe('shared-memory-inject.py frames shared-tier entries as untrusted, attri
     expect(ctx).not.toContain('Ezek a tények/szabályok MINDEN ügynökre vonatkoznak')
   })
 
-  it('a memory with no agent_id still gets a stamp, marked unknown rather than silently blank', () => {
-    const savedGet = server.listeners('request')
-    server.removeAllListeners('request')
-    server.on('request', (req, res) => {
-      res.writeHead(200, { 'Content-Type': 'application/json' })
-      res.end(JSON.stringify([{ id: 3, content: 'nevtelen bejegyzes.', keywords: '', created_label: '' }]))
-    })
-    const { script } = sandbox(readFileSync(HOOK, 'utf-8'))
-    const r = runHook(script)
+  it('a memory with no agent_id still gets a stamp, marked unknown rather than silently blank', async () => {
+    const r = await runHookAgainst(readFileSync(HOOK, 'utf-8'), NO_AGENT_ID_MEMORIES)
+    expect(r.status, r.stderr).toBe(0)
     const out = JSON.parse(r.stdout)
     const ctx: string = out.hookSpecificOutput.additionalContext
     expect(ctx).toContain('[?]')
-    server.removeAllListeners('request')
-    savedGet.forEach((l) => server.on('request', l as any))
   })
 
-  it('CONTROL: the pre-fix script source actually injects the unattributed command framing', () => {
-    const { script } = sandbox(PRE_FIX_SCRIPT)
-    const r = runHook(script)
+  it('CONTROL: the pre-fix script source actually injects the unattributed command framing', async () => {
+    const r = await runHookAgainst(PRE_FIX_SCRIPT, FIXTURE_MEMORIES)
     expect(r.status, r.stderr).toBe(0)
     const out = JSON.parse(r.stdout)
     const ctx: string = out.hookSpecificOutput.additionalContext
