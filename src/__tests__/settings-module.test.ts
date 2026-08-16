@@ -26,7 +26,7 @@ describe('settings modularisation: app-settings.js is the owner', () => {
   })
 
   it('model save button handler is in the module', () => {
-    expect(MODULE).toContain("saveModelBtn").and
+    expect(MODULE).toContain("saveModelBtn")
     expect(MODULE).toContain("/api/agents/")
   })
 
