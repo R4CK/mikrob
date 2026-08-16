@@ -37,7 +37,10 @@
 // required `url` (measured in the pinned firecrawl-mcp@3.24.0 dist:
 // `scrapeParamsSchema = z.object({ url: z.string().url(), ... })` and
 // `parameters: z.object({ url: z.string().url(), search?, sitemap?, ... })`),
-// so the SAME hostname rules apply to them unchanged.
+// so the SAME hostname rules apply to them. NOT "unchanged", which is what this
+// comment used to say: `url` turned out to be only one of the ways a scrape
+// reaches the network, and the hostname rules judge only that one. See
+// FIRECRAWL_SCRAPE_ALLOWED_KEYS below for the second channel and the fix.
 //
 // THE FIRECRAWL NAMESPACE IS DEFAULT-DENY, not an allowlist of two exceptions
 // bolted onto a default-allow. Everything under `mcp__firecrawl__` that is not
@@ -149,12 +152,49 @@ const FIRECRAWL_URL_TOOLS = new Set([
 ])
 const FIRECRAWL_PREFIX = 'mcp__firecrawl__'
 
+/** Parameters `firecrawl_scrape` may carry. ALLOWLIST, not a blacklist of the dangerous ones
+ *  (Cybersec HIGH on 97d0c7c7, card 91c4a369).
+ *
+ *  Judging only `url` was not enough: the same input carries `actions`, whose types include
+ *  `executeJavascript` with a free-text `script`. The package gates those behind
+ *  `SAFE_MODE = process.env.CLOUD_SERVICE === 'true'`, which we do not set, so the full list --
+ *  click, write, press, executeJavascript, generatePDF -- is live. A scrape of an ALLOWLISTED host
+ *  could therefore run arbitrary JS on the loaded page and `fetch()` anywhere, and `click` could
+ *  navigate off-domain for a later `scrape` action. None of it appears in `url`. Measured, no
+ *  network: both payloads were ALLOWED with zero block-log lines, alongside a positive control
+ *  (same url, no actions -> allow) and a negative one (off-allowlist url -> deny, +1 line).
+ *
+ *  That is worse than an ungated tool, because the deny path keeps working and the log reports a
+ *  clean day while the exfiltration rides a host the operator approved. It also goes through the
+ *  quarantine-reader boundary rather than around it: that boundary rests on the sub-agent holding
+ *  nothing but data-returning fetchers, and one of those fetchers contains an outbound primitive.
+ *
+ *  An ALLOWLIST rather than `delete input.actions` on purpose: a blacklist re-opens silently on the
+ *  next version that adds a field, while an unknown key here turns a schema addition into a red
+ *  gate. Pinning `firecrawl-mcp@3.24.0` is what keeps that from being noisy -- a new field can only
+ *  arrive with a deliberate version bump.
+ *
+ *  Omission is the deny: `actions`, `skipTlsVerification` (drops TLS verification on the target),
+ *  `profile` (carries a browser profile/cookies between scrapes) and `proxy` are all absent, and
+ *  none of them is needed for "JS-heavy structured scraping". Any of them can be added later, one
+ *  at a time, with a stated reason. */
+const FIRECRAWL_SCRAPE_ALLOWED_KEYS = new Set([
+  'url', 'formats', 'jsonOptions', 'queryOptions', 'onlyMainContent', 'redactPII',
+  'includeTags', 'excludeTags', 'waitFor', 'maxAge', 'removeBase64Images', 'mobile',
+  'location', 'storeInCache', 'zeroDataRetention', 'lockdown',
+])
+
 export function isEgressBlocked(toolName, toolInput, runtimeList = { domains: [], prefixes: [] }) {
   const name = String(toolName ?? '')
   const isFirecrawl = name.startsWith(FIRECRAWL_PREFIX)
   // Default-deny inside the Firecrawl namespace: a tool that is not one of the two URL-bearing ones
   // cannot be checked against a hostname allowlist, so there is no version of "allowed" for it here.
   if (isFirecrawl && !FIRECRAWL_URL_TOOLS.has(name)) return true
+  // Same default-deny, one level in: a permitted tool called with a parameter we have not cleared.
+  if (name === 'mcp__firecrawl__firecrawl_scrape') {
+    const extra = Object.keys(toolInput ?? {}).filter((k) => !FIRECRAWL_SCRAPE_ALLOWED_KEYS.has(k))
+    if (extra.length > 0) return true
+  }
   if (name !== 'WebFetch' && !isFirecrawl) return false
   const url = String(toolInput?.url ?? '')
   // A URL-bearing tool invoked WITHOUT a url is a call this gate cannot judge, so it is denied.
