@@ -39,14 +39,12 @@ describe('installed-models "Használd" button routes through the trust gate', ()
     expect(slice).toContain('llmActivateModelClick(b.dataset.model, b)')
   })
 
-  it('an untrusted-publisher model from this entry point gets the SAME curated-error toast (shared code, not a parallel implementation)', () => {
-    // Card d297f26f removed the confirm-and-retry modal: an untrusted publisher was never
-    // confirmable through this door (the "confirmation" was an unauthenticated echo of a value
-    // the same endpoint had just handed out), so there is no separate modal path to share anymore
-    // -- every failure, including this one, now falls through to the generic error toast.
+  it('an untrusted-publisher model from this entry point goes through the trust gate (shared code, not a parallel implementation)', () => {
+    // Card fa8959cd/eb843c46: the trust-confirm gate (openLlmTrustConfirm) is the shared path
+    // for BOTH the installed-models "Használd" button and the Recommendations "Use" button.
     const body = fnBody(APP, 'async function llmActivateModelClick(model, btn)')
-    expect(body).not.toContain('requiresConfirmation')
-    expect(body).not.toContain('openLlmTrustConfirm')
+    expect(body).toContain('requiresConfirmation')
+    expect(body).toContain('openLlmTrustConfirm')
     expect(body).toContain("showToast(data.error || t('localLlm.rec.activate_error'))")
   })
 
