@@ -19,6 +19,7 @@
 import Database from 'better-sqlite3'
 import { join } from 'node:path'
 import { STORE_DIR, DB_FILENAME, MAIN_AGENT_ID } from '../config.js'
+import { AGENT_MESSAGES_DDL, AGENT_MESSAGES_ALTER_COLUMNS } from '../schema/agent-messages-ddl.js'
 
 export const COORDINATOR_AGENT_ID = 'telegram-coordinator'
 
@@ -69,22 +70,19 @@ export function initIngestDb(dbPath = join(STORE_DIR, DB_FILENAME)): Database.Da
   // Defensive: the coordinator and the dashboard both start at boot (separate
   // launchd units). The dashboard owns agent_messages, but if the coordinator
   // wins the race and tries to hand off before the dashboard's initDatabase
-  // runs, the INSERT would fail. CREATE IF NOT EXISTS with the identical schema
-  // (db.ts) is a no-op when the dashboard already made it, and prevents the
-  // boot-race failure otherwise.
-  handle.exec(`
-    CREATE TABLE IF NOT EXISTS agent_messages (
-      id INTEGER PRIMARY KEY AUTOINCREMENT,
-      from_agent TEXT NOT NULL,
-      to_agent TEXT NOT NULL,
-      content TEXT NOT NULL,
-      status TEXT NOT NULL DEFAULT 'pending' CHECK(status IN ('pending','delivered','done','failed')),
-      result TEXT,
-      created_at INTEGER NOT NULL,
-      delivered_at INTEGER,
-      completed_at INTEGER
-    )
-  `)
+  // runs, the INSERT would fail. Running the SAME shared DDL (src/schema/
+  // agent-messages-ddl.ts) that db.ts runs is a no-op when the dashboard
+  // already made the table, and prevents the boot-race failure otherwise --
+  // and, unlike a hand-copied string, cannot silently drift from db.ts's
+  // copy again (card 26ad5302: it already had, once).
+  for (const stmt of AGENT_MESSAGES_DDL) handle.exec(stmt)
+  for (const stmt of AGENT_MESSAGES_ALTER_COLUMNS) {
+    try {
+      handle.exec(stmt)
+    } catch {
+      // column already exists
+    }
+  }
 
   db = handle
   return db

@@ -5,6 +5,7 @@ import { STORE_DIR, DB_FILENAME, ALLOWED_CHAT_ID, OLLAMA_URL, APP_TZ } from './c
 import { getEffectiveSettingValue } from './settings-store.js'
 import { logger } from './logger.js'
 import { TOOL_TIMEOUTS } from './tool-timeouts.js'
+import { AGENT_MESSAGES_DDL, AGENT_MESSAGES_ALTER_COLUMNS } from './schema/agent-messages-ddl.js'
 
 let db: Database.Database
 
@@ -505,24 +506,10 @@ export function initDatabase(dbPathOverride?: string): void {
   db.exec(`CREATE INDEX IF NOT EXISTS idx_card_labels_label ON kanban_card_labels(label_id)`)
 
   // --- Agent Messages ---
-  db.exec(`
-    CREATE TABLE IF NOT EXISTS agent_messages (
-      id INTEGER PRIMARY KEY AUTOINCREMENT,
-      from_agent TEXT NOT NULL,
-      to_agent TEXT NOT NULL,
-      content TEXT NOT NULL,
-      status TEXT NOT NULL DEFAULT 'pending' CHECK(status IN ('pending','delivered','done','failed')),
-      result TEXT,
-      created_at INTEGER NOT NULL,
-      delivered_at INTEGER,
-      completed_at INTEGER
-    )
-  `)
-  db.exec(`CREATE INDEX IF NOT EXISTS idx_agent_messages_status ON agent_messages(status, to_agent)`)
-  // Composite index for thread-listing queries that filter on (from_agent, to_agent) without a status
-  // predicate -- the status index above does not cover these and causes full table scans at scale.
-  db.exec(`CREATE INDEX IF NOT EXISTS idx_agent_messages_thread ON agent_messages(from_agent, to_agent, created_at)`)
-  // Card 06f062e4: the bus has no sender authentication -- from_agent is
+  // DDL lives in src/schema/agent-messages-ddl.ts, shared with the channel-coordinator's own
+  // defensive CREATE TABLE (src/channel-coordinator/ingest.ts) -- see that module's comment for
+  // why (card 26ad5302: the two copies drifted silently before this).
+  // origin_note (card 06f062e4): the bus has no sender authentication -- from_agent is
   // self-declared and every sub-agent spawned under a parent shares that
   // parent's from_agent string, invisibly to the parent session and its
   // siblings (the 2026-07-12 self-fill-sweep incident's root cause: a
@@ -535,18 +522,18 @@ export function initDatabase(dbPathOverride?: string): void {
   // through to delivery so a human/agent reading the message has SOMETHING
   // to go on. Self-declared, so it's an attributability aid, not a trust
   // boundary -- do not treat a present origin_note as proof of anything.
-  try {
-    db.exec('ALTER TABLE agent_messages ADD COLUMN origin_note TEXT')
-  } catch {
-    // column already exists
+  // trace_id/span_id/parent_span_id (card def5a189): distributed trace context propagated by
+  // message-router middleware. trace_id is the root trace identifier spanning an entire agent
+  // chain (e.g. morning-chain); span_id is this message's own span identifier (nanoid);
+  // parent_span_id is the sender's span_id, linking child back to parent in the waterfall.
+  for (const stmt of AGENT_MESSAGES_DDL) db.exec(stmt)
+  for (const stmt of AGENT_MESSAGES_ALTER_COLUMNS) {
+    try {
+      db.exec(stmt)
+    } catch {
+      // column already exists
+    }
   }
-  // Card def5a189: distributed trace context propagated by message-router middleware.
-  // trace_id: root trace identifier spanning an entire agent chain (e.g. morning-chain).
-  // span_id: this message's own span identifier (nanoid).
-  // parent_span_id: sender's span_id -- links child back to parent in the waterfall.
-  try { db.exec('ALTER TABLE agent_messages ADD COLUMN trace_id TEXT') } catch { /* exists */ }
-  try { db.exec('ALTER TABLE agent_messages ADD COLUMN span_id TEXT') } catch { /* exists */ }
-  try { db.exec('ALTER TABLE agent_messages ADD COLUMN parent_span_id TEXT') } catch { /* exists */ }
 
   // INVARIANT: a row that says 'delivered' must carry a delivered_at.
   //
