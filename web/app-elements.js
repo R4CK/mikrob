@@ -109,3 +109,7 @@ function populateAvatarGrid() {
   }
 }
 
+// init-time call: moved here from app.js (slice 38 fix -- app-elements.js loads after app.js,
+// so calling populateAvatarGrid() in app.js was a ReferenceError at page load).
+populateAvatarGrid()
+

@@ -751,7 +751,8 @@ async function runRepoInstallWithStash(repoKey, btn) {
 //  live regression Cybered/Cybersec caught, card 243de9b9).)
 /* STUB -- content removed */
 // === Init ===
-populateAvatarGrid()
+// populateAvatarGrid() -- moved to end of app-elements.js (slice 38 init-time fix:
+//   app-elements.js loads AFTER app.js, so the function is not yet defined here).
 loadMemAgents()
 // loadOverview() -- called by app-overview.js at load time (self-init, slice 16)
 // loadAvailableModels() -- moved to end of app-settings.js (slice 33 init replacement)
