@@ -35,14 +35,28 @@ WEB_COMMIT=$(commit_epoch apps/web packages)
 API_COMMIT=$(commit_epoch apps/api packages)
 [[ -n "$WEB_COMMIT" && -n "$API_COMMIT" ]] || { echo "ERROR:git-log-failed"; exit 2; }
 
-# live image build epoch
+# live image build epoch. NOTE (card 156c84d2): `.Created` is the timestamp of the image's TOP layer,
+# not "when did the last deploy run" -- if a rebuild's layers are byte-identical to a prior build
+# (nothing in the commit range touched what that layer copies), Docker reuses the cached layer AND its
+# original Created time, even though a fresh `docker compose up -d --build` just ran. Measured: card
+# af68e54d's freshness alert reported both images built 2026-08-07, while the containers actually
+# running (Up 39h) were from a 2026-08-12 redeploy -- no code affecting either image had changed in
+# between, so the rebuild fully cache-hit. Both Dockerfiles now take a GIT_SHA build ARG that
+# infra/deploy.sh sets to the current HEAD on every invocation (apps/api/Dockerfile since card
+# 95c93fc6, apps/web/Dockerfile added by this card) placed BEFORE their COPY layers, so a differing
+# commit always invalidates the cache forward and `.Created` reflects the true build time again. This
+# script does not need to change ITS comparison logic for that -- but it now ALSO reads the label
+# directly, for a detail line that answers "which commit is this, really" without SSHing by hand.
 image_epoch() { $SSH "docker image inspect $1 --format '{{.Created}}'" 2>/dev/null; }
+image_revision() { $SSH "docker image inspect $1 --format '{{index .Config.Labels \"org.opencontainers.image.revision\"}}'" 2>/dev/null; }
 WEB_BUILT_ISO=$(image_epoch cleancore-web:latest)
 API_BUILT_ISO=$(image_epoch cleancore-api:latest)
 [[ -n "$WEB_BUILT_ISO" && -n "$API_BUILT_ISO" ]] || { echo "ERROR:ssh-or-docker-unreachable"; exit 2; }
 WEB_BUILT=$(date -d "$WEB_BUILT_ISO" +%s 2>/dev/null)
 API_BUILT=$(date -d "$API_BUILT_ISO" +%s 2>/dev/null)
 [[ -n "$WEB_BUILT" && -n "$API_BUILT" ]] || { echo "ERROR:bad-image-date"; exit 2; }
+WEB_REV="$(image_revision cleancore-web:latest)"; WEB_REV="${WEB_REV:-unknown}"
+API_REV="$(image_revision cleancore-api:latest)"; API_REV="${API_REV:-unknown}"
 
 web_drift=$(( (WEB_COMMIT - WEB_BUILT) / 60 ))   # >0 => commit newer than image => stale
 api_drift=$(( (API_COMMIT - API_BUILT) / 60 ))
@@ -55,11 +69,11 @@ if (( api_drift > GRACE_MIN )); then stale=1; api_state="${api_drift}"; fi
 
 if (( stale == 1 )); then
   echo "STALE web=${web_state} api=${api_state}"
-  echo "detail: last FE commit $(date -d @"$WEB_COMMIT" '+%F %T') vs web image built $(date -d @"$WEB_BUILT" '+%F %T')"
-  echo "detail: last BE commit $(date -d @"$API_COMMIT" '+%F %T') vs api image built $(date -d @"$API_BUILT" '+%F %T')"
+  echo "detail: last FE commit $(date -d @"$WEB_COMMIT" '+%F %T') vs web image built $(date -d @"$WEB_BUILT" '+%F %T') (revision label: ${WEB_REV})"
+  echo "detail: last BE commit $(date -d @"$API_COMMIT" '+%F %T') vs api image built $(date -d @"$API_BUILT" '+%F %T') (revision label: ${API_REV})"
   echo "fix: rsync main -> VPS (env/ excluded) then infra/deploy.sh + web --no-cache rebuild"
   exit 1
 fi
 echo "FRESH"
-echo "detail: web image $((-web_drift))m ahead of last FE commit; api $((-api_drift))m ahead of last BE commit"
+echo "detail: web image $((-web_drift))m ahead of last FE commit (revision label: ${WEB_REV}); api $((-api_drift))m ahead of last BE commit (revision label: ${API_REV})"
 exit 0
