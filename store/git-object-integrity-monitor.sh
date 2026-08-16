@@ -59,6 +59,16 @@ PER_REPO_TIMEOUT="${OBJECT_FSCK_TIMEOUT:-900}"
 # per-repo loop, and on this drive walking the tree is itself slow (measured 2026-08-16: ~134s for
 # 15 repos under /mnt/h/LM_Studio_Workdir with node_modules pruned). Generous margin over that.
 DISCOVERY_TIMEOUT="${OBJECT_DISCOVERY_TIMEOUT:-600}"
+# Card fe2f71ca: on the fleet's busiest clone (90+ concurrent worktrees), Cybered proved on card
+# 34c4840e that a `git fsck` mid-fetch can see a ref before its tree is fully written and report
+# "missing tree X" for an object that resolves fine seconds later -- 7/7 observed cases had object
+# mtimes matching active fetch/merge traffic, and the SAME repo never reproduced the SAME missing
+# SHA twice. That is a STRUCTURAL discriminator (a half-written object can only ever look "missing",
+# never "garbage at end"/checksum-mismatch, which only real bitrot produces -- 2026-08-13). One retry
+# after a short pause turns that race from an immediate false alert into a quiet self-heal, without
+# weakening detection of an actually corrupt object (a different failure signature, or one that is
+# STILL missing on retry, alerts exactly as before).
+RETRY_DELAY="${OBJECT_FSCK_RETRY_DELAY:-10}"
 
 DRY=0
 case "${1:-}" in
@@ -78,6 +88,43 @@ say() { echo "$(date '+%Y-%m-%d %H:%M:%S') $*"; }
 # unreachable-object listing, which is normal history, not damage.
 check_repo() {
   timeout "$PER_REPO_TIMEOUT" git -C "$1" fsck --no-dangling --no-progress 2>&1
+}
+
+# is_missing_only_failure <fsck-output> -> true iff every non-blank line is a "missing X" line.
+# This is exactly the race signature (see RETRY_DELAY above): a half-written object is absent, not
+# invalid, so fsck can only ever say "missing", never "garbage"/"mismatch"/"invalid". Anything else
+# in the output (even one line) means this is not that race, and must not be retried.
+is_missing_only_failure() {
+  local out="$1" line
+  [ -n "$out" ] || return 1
+  while IFS= read -r line; do
+    [ -z "$line" ] && continue
+    case "$line" in
+      missing\ *) ;;
+      *) return 1 ;;
+    esac
+  done <<< "$out"
+  return 0
+}
+
+# check_repo_with_retry <repo-dir> [checker=check_repo] -> same contract as check_repo, but a
+# missing-only failure gets ONE re-check after RETRY_DELAY before being reported. `checker` is
+# swappable so the selftest can prove the retry/no-retry decision deterministically, without a real
+# timing race against a flaky mount.
+check_repo_with_retry() {
+  local repo="$1" checker="${2:-check_repo}" out out2
+  if out="$("$checker" "$repo")"; then
+    printf '%s' "$out"; return 0
+  fi
+  if is_missing_only_failure "$out"; then
+    sleep "$RETRY_DELAY"
+    if out2="$("$checker" "$repo")"; then
+      log "self-healed after ${RETRY_DELAY}s retry: $repo (was: $(printf '%s' "$out" | head -1))"
+      printf '%s' "$out2"; return 0
+    fi
+    out="$out2"
+  fi
+  printf '%s' "$out"; return 1
 }
 
 # find_repos <scan-root> -> one repo (working-tree) dir per line, ANY depth (card 34c4840e). The
@@ -186,7 +233,51 @@ PY
 $disc/top-level/marveen" "$found"
   rm -rf "$disc"
 
-  [ "$fails" -eq 0 ] && { echo "selftest OK (8 cases)"; exit 0; } || { echo "selftest FAILED: $fails"; exit 1; }
+  # --- RETRY-ON-RACE-SIGNATURE (card fe2f71ca) ----------------------------------------------------
+  # `checker` is swapped for a stub so these three cases are deterministic call-count assertions,
+  # not a real timing race against sleep/disk -- a race REPRODUCED by chance would be exactly the
+  # kind of flaky test this fleet has been burned by before.
+  RETRY_DELAY=0
+  calls_file="$(mktemp)"
+
+  # Case: fails once with a pure "missing" signature, then succeeds -- must be swallowed as clean,
+  # and the retry must actually have happened (proves this isn't just "always report clean").
+  echo 0 > "$calls_file"
+  self_heals_once() {
+    n="$(cat "$calls_file")"; n=$((n + 1)); echo "$n" > "$calls_file"
+    if [ "$n" -eq 1 ]; then echo "missing tree deadbeef"; return 1; fi
+    return 0
+  }
+  result="$(check_repo_with_retry "$t/healthy" self_heals_once > /dev/null 2>&1; echo $?)"
+  s "a missing-only failure that clears on retry is reported clean" "0" "$result"
+  s "...and the retry actually ran (checker called twice)" "2" "$(cat "$calls_file")"
+
+  # Case: still "missing" on the retry too -- this is a REAL persistent absence (or the race just
+  # didn't clear in time), and must still be reported corrupt, not silently swallowed forever.
+  echo 0 > "$calls_file"
+  still_missing() {
+    n="$(cat "$calls_file")"; n=$((n + 1)); echo "$n" > "$calls_file"
+    echo "missing blob deadbeef"; return 1
+  }
+  result="$(check_repo_with_retry "$t/healthy" still_missing > /dev/null 2>&1; echo $?)"
+  s "a missing-only failure that persists through the retry is still corrupt" "1" "$result"
+  s "...checked exactly twice, not retried forever" "2" "$(cat "$calls_file")"
+
+  # Case: a NON-missing signature (real corruption shape) must not be retried at all -- one call,
+  # immediate failure, same as before this card. Retrying a genuine corruption would only delay the
+  # alert, and (if it ever intermittently read differently) could risk masking it.
+  echo 0 > "$calls_file"
+  real_corruption() {
+    n="$(cat "$calls_file")"; n=$((n + 1)); echo "$n" > "$calls_file"
+    echo "garbage at end of loose object deadbeef"; return 1
+  }
+  result="$(check_repo_with_retry "$t/healthy" real_corruption > /dev/null 2>&1; echo $?)"
+  s "a non-missing (real corruption) signature is reported corrupt immediately" "1" "$result"
+  s "...and is NEVER retried (checked exactly once)" "1" "$(cat "$calls_file")"
+
+  rm -f "$calls_file"
+
+  [ "$fails" -eq 0 ] && { echo "selftest OK (11 cases)"; exit 0; } || { echo "selftest FAILED: $fails"; exit 1; }
 fi
 
 [ -d "$SCAN_ROOT" ] || { echo "git-object-integrity-monitor.sh: cannot read $SCAN_ROOT" >&2; exit 3; }
@@ -213,7 +304,7 @@ while IFS= read -r repo; do
   # card's own example, .../Mikrobi/marveen vs the top-level CleanCore/marveen-shaped clones), and a
   # bare basename would make an alert ambiguous about which one is actually corrupt.
   name="${repo#"$SCAN_ROOT"/}"
-  if out="$(check_repo "$repo")"; then
+  if out="$(check_repo_with_retry "$repo")"; then
     [ "$DRY" = "1" ] && say "ok   $name"
   else
     BAD_REPOS="$BAD_REPOS $name"
