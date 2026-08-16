@@ -87,39 +87,10 @@ function avatarBust() { return _avatarEpoch ? `?t=${_avatarEpoch}` : '' }
   }
 })()
 
-// === Dashboard auth bootstrap ===
-// Card 62631948/8ca8576: the server no longer prints a ?token= startup URL (that put a
-// root-equivalent credential in the service manager's log). A ?token= URL is still ACCEPTED
-// here for anyone holding an older link -- on first visit we pluck it out, store it in
-// localStorage, strip it from the visible URL, and inject it into every /api/* fetch as a
-// Bearer header. The normal path now is the paste overlay (see handleAuthFailure below),
-// fed from `cat store/.dashboard-token`.
-
-// The main (channels) agent's real id. The backend /api/marveen route returns
-// the configured MAIN_AGENT_ID (NOT the literal "marveen") in window._marveen;
-// use this everywhere an agent id is sent to /api/agents/... or compared to a
-// fleet name, so the dashboard works on non-"marveen" installs. Falls back to
-// "marveen" only before /api/marveen has resolved (or on a legacy backend).
-function mainAgentId() {
-  return window._marveen?.agentId || 'marveen'
-}
-
-// Agents currently being run as SUBAGENTS inside MikroB's session (published to
-// store/active-subagents.json, served at /subagent-state.json). Their cards get
-// a blue running-ring instead of green, so it is clear the work runs in MikroB's
-// session, not a separate one. Refreshed on a light interval.
-let activeSubagents = new Set()
-async function refreshSubagents() {
-  try {
-    const r = await fetch('/subagent-state.json', { cache: 'no-store' })
-    if (r.ok) {
-      const arr = await r.json()
-      activeSubagents = new Set(Array.isArray(arr) ? arr.map(String) : [])
-    }
-  } catch { /* keep last known */ }
-}
-refreshSubagents()
-setInterval(refreshSubagents, 5000);
+// === Dashboard auth bootstrap -- see web/app-auth-bootstrap.js ===
+// (mainAgentId, activeSubagents, refreshSubagents moved to app-auth-bootstrap.js, slice 43.
+//  Card 62631948/8ca8576: the auth IIFE below still handles ?token= URL handling and the
+//  paste overlay -- only the subagent-polling and mainAgentId helper moved out.)
 
 // === "Last updated" sidebar badge -- see web/app-last-update.js ===
 // (renderLastUpdateBadge, refreshLastUpdateBadge moved to app-last-update.js, slice 42.

@@ -3820,6 +3820,7 @@
        Each file is global-scoped and depends only on globals defined in app.js above.
        Load order must follow dependency order (callers before callees is fine for
        event-listener-based wiring; the global resolves at call time, not parse time). -->
+  <script src="/app-auth-bootstrap.js"></script> <!-- slice 43: mainAgentId + activeSubagents + refreshSubagents -->
   <script src="/app-last-update.js"></script> <!-- slice 42: Last updated sidebar badge -->
   <script src="/app-theme-lang.js"></script> <!-- slice 40: Theme + Language toggle -->
   <script src="/app-elements.js"></script>
