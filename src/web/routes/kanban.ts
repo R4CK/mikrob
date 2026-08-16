@@ -456,8 +456,30 @@ export async function tryHandleKanban(ctx: RouteContext): Promise<boolean> {
   const kanbanArchiveMatch = path.match(/^\/api\/kanban\/([^/]+)\/archive$/)
   if (kanbanArchiveMatch && method === 'POST') {
     const id = decodeURIComponent(kanbanArchiveMatch[1])
-    revertIdeaFromKanban(id)
-    if (archiveKanbanCard(id)) { json(res, { ok: true }); return true }
+    let force = false
+    try {
+      const body = await readBody(req)
+      if (body.length > 0) force = (JSON.parse(body.toString()) as Record<string, unknown>)?.['force'] === true
+    } catch { /* malformed body: force stays false, fail closed */ }
+    const result = archiveKanbanCard(id, { force })
+    // revertIdeaFromKanban only runs on an ACTUAL archive -- running it on a blocked attempt
+    // would unlink the idea from a card that is not actually archived (card 037277a0).
+    if (result.ok) {
+      revertIdeaFromKanban(id)
+      json(res, { ok: true })
+      return true
+    }
+    if (result.reason === 'open-children') {
+      json(
+        res,
+        {
+          error: `${result.openChildren.length} nyitott (nem done) gyerekkártya blokkolja az archiválást -- force:true kell hozzá`,
+          openChildren: result.openChildren,
+        },
+        409,
+      )
+      return true
+    }
     json(res, { error: 'Kártya nem található' }, 404)
     return true
   }

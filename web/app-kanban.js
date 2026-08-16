@@ -1608,7 +1608,18 @@ async function showCardDetail(card) {
   // Archive
   document.getElementById('cardArchiveBtn').onclick = async () => {
     try {
-      await fetch(`/api/kanban/${encodeURIComponent(card.id)}/archive`, { method: 'POST' })
+      let res = await fetch(`/api/kanban/${encodeURIComponent(card.id)}/archive`, { method: 'POST' })
+      if (res.status === 409) {
+        const data = await res.json().catch(() => ({}))
+        const n = Array.isArray(data.openChildren) ? data.openChildren.length : 0
+        if (!confirm(t('kanban.confirm.archive_open_children', { n }))) return
+        res = await fetch(`/api/kanban/${encodeURIComponent(card.id)}/archive`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ force: true }),
+        })
+      }
+      if (!res.ok) throw new Error('archive failed')
       closeModal(cardDetailOverlay)
       showToast(t('kanban.toast.card_archived'))
       loadKanban()

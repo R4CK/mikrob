@@ -315,6 +315,7 @@ window._i18n.hu = {
   'kanban.toast.subtask_error':  'Hiba az alfeladat létrehozásakor',
   'kanban.confirm.delete':       'Biztosan törlöd ezt a kártyát?',
   'kanban.confirm.archive':      'Archiválod ezt a kártyát?',
+  'kanban.confirm.archive_open_children': '{n} nyitott (nem kész) gyerekkártya tartozik ehhez -- ha archiválod, ezek egy archivált szülő alatt maradnak. Archiválod mégis?',
   'kanban.breakdown.running':    'Kész!',
   'kanban.breakdown.error':      'Hiba a kérdések generálásakor',
   'kanban.unassigned':           'Nincs hozzárendelve',

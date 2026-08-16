@@ -2068,9 +2068,24 @@ export function markKanbanCardDispatched(id: string): boolean {
   return db.prepare('UPDATE kanban_cards SET dispatched_at=? WHERE id=?').run(now, id).changes > 0
 }
 
-export function archiveKanbanCard(id: string): boolean {
+export type ArchiveKanbanCardResult =
+  | { ok: true }
+  | { ok: false; reason: 'not-found' }
+  | { ok: false; reason: 'open-children'; openChildren: string[] }
+
+// Card 037277a0 (onaudit finding 317b39f7): archiving used to ignore children entirely -- a
+// parent could be archived while non-done children still pointed parent_id at it, orphaning
+// them from every parent-based summary/dispatch view with no signal that it happened. Refuses
+// by default when open (non-done) children exist; `force` is the deliberate override (matches
+// the force+actor convention already used for card moves elsewhere in this file/route).
+export function archiveKanbanCard(id: string, opts?: { force?: boolean }): ArchiveKanbanCardResult {
+  const openChildren = getChildCards(id).filter(c => c.status !== 'done').map(c => c.id)
+  if (openChildren.length > 0 && !opts?.force) {
+    return { ok: false, reason: 'open-children', openChildren }
+  }
   const now = Math.floor(Date.now() / 1000)
-  return db.prepare('UPDATE kanban_cards SET archived_at=?, updated_at=? WHERE id=?').run(now, now, id).changes > 0
+  const changed = db.prepare('UPDATE kanban_cards SET archived_at=?, updated_at=? WHERE id=?').run(now, now, id).changes > 0
+  return changed ? { ok: true } : { ok: false, reason: 'not-found' }
 }
 
 export function unarchiveKanbanCard(id: string): boolean {

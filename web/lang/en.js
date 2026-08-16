@@ -315,6 +315,7 @@ window._i18n.en = {
   'kanban.toast.subtask_error':  'Error creating subtask',
   'kanban.confirm.delete':       'Delete this card?',
   'kanban.confirm.archive':      'Archive this card?',
+  'kanban.confirm.archive_open_children': '{n} open (not-done) child card(s) belong to this one -- archiving leaves them under an archived parent. Archive anyway?',
   'kanban.breakdown.running':    'Done!',
   'kanban.breakdown.error':      'Error generating breakdown',
   'kanban.unassigned':           'Unassigned',
