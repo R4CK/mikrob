@@ -25,7 +25,7 @@ describe('overview modularisation: app-overview.js is the owner', () => {
   })
 
   it('LLM spectrum canvas setup lives in app-overview.js', () => {
-    expect(MODULE).toContain('llmSpectrumCanvas')
+    expect(MODULE).toContain('ovwSpectrumCanvas')
   })
 
   it('formatRelative lives in app-overview.js', () => {
