@@ -38,3 +38,27 @@ describe('normalizeProjectName', () => {
       .toEqual({ title: 'Card', project: 'CleanCore', priority: 'high' })
   })
 })
+
+describe('normalizeProjectName -- "None" sentinel (card c9b0b0c4)', () => {
+  // The real incident: card a6101228 landed with project = the literal string "None" -- a Python
+  // caller's str(None) serialized straight into the JSON body. That string is truthy in JS, so
+  // `project ?? undefined` never caught it and it reached the DB as a non-NULL value that every
+  // `WHERE project IS NULL` filter and every project-grouped view then missed.
+  it('folds the literal string "None" onto real absence (null), not a canonical project', () => {
+    expect(normalizeProjectName({ project: 'None' })).toEqual({ project: null })
+    expect(normalizeProjectName({ project: 'none' })).toEqual({ project: null })
+    expect(normalizeProjectName({ project: 'NONE' })).toEqual({ project: null })
+  })
+
+  it('folds other common null-ish sentinels the same way', () => {
+    expect(normalizeProjectName({ project: 'null' })).toEqual({ project: null })
+    expect(normalizeProjectName({ project: 'undefined' })).toEqual({ project: null })
+    expect(normalizeProjectName({ project: '' })).toEqual({ project: null })
+    expect(normalizeProjectName({ project: '   ' })).toEqual({ project: null })
+  })
+
+  it('does NOT treat a real project literally named "None-something" as the sentinel', () => {
+    // Exact-match only, on the trimmed/lowercased whole value -- must not eat a substring.
+    expect(normalizeProjectName({ project: 'NoneSuch' })).toEqual({ project: 'NoneSuch' })
+  })
+})

@@ -15,7 +15,7 @@ import {
 } from '../../db.js'
 import { normalizeKanbanRefs } from '../kanban-ref-normalize.js'
 import { OWNER_NAME, BOT_NAME, MAIN_AGENT_ID, STORE_DIR, WEB_HOST, WEB_PORT, KANBAN_LABEL_COLORS } from '../../config.js'
-import { listAgentNames, readAgentDisplayName } from '../agent-config.js'
+import { listAgentNames, readAgentDisplayName, isKnownAgent } from '../agent-config.js'
 import { isAgentRunning } from '../agent-process.js'
 import { readHardStop, isNewDevStartBlocked } from '../../costops/weekly-hard-stop.js'
 import { landedGuardVerdict } from '../kanban-landed-guard.js'
@@ -32,12 +32,31 @@ const CANONICAL_PROJECTS: Record<string, string> = Object.fromEntries(
     ['MikroB', ['mikrob-infra', 'mikrob', 'fleet-infra', 'marveen', 'infra', 'mikrob-ops', 'marveen-infra']],
   ].flatMap(([canonical, variants]) => (variants as string[]).map((v) => [v, canonical as string])),
 )
+// Card c9b0b0c4: card a6101228 landed with project = the literal string "None" -- a Python
+// caller's str(None) leaking straight into a JSON field. That string is not falsy in JS, so it
+// survives `project ?? undefined` untouched and any `WHERE project IS NULL` filter misses it. Fold
+// the common "no value" sentinels a non-JS caller might send onto real absence, same as any other
+// project-name variant above.
+const NULLISH_PROJECT_SENTINELS = new Set(['none', 'null', 'undefined', ''])
 export function normalizeProjectName<T extends Record<string, unknown>>(data: T): T {
   if (typeof data.project === 'string') {
-    const canonical = CANONICAL_PROJECTS[data.project.trim().toLowerCase()]
+    const trimmedLower = data.project.trim().toLowerCase()
+    if (NULLISH_PROJECT_SENTINELS.has(trimmedLower)) return { ...data, project: null }
+    const canonical = CANONICAL_PROJECTS[trimmedLower]
     if (canonical) return { ...data, project: canonical }
   }
   return data
+}
+
+// Card c9b0b0c4: 45 of 884 comments from the "cybered" agent landed under "Cybered" -- same agent,
+// two case variants, so any per-agent gate stat undercounts it by 45. Fold a comment author onto
+// its canonical lowercase agent id ONLY when it actually names a known fleet agent (case-
+// insensitively) -- this includes MAIN_AGENT_ID itself ("MikroB" folds to "mikrob", the same
+// identity, just case-drifted). A genuine non-agent label (OWNER_NAME "Peti", or any other
+// free-text author that names no known agents/<id>/ directory) passes through untouched.
+export function normalizeCommentAuthor(author: string): string {
+  const lower = author.trim().toLowerCase()
+  return isKnownAgent(lower) ? lower : author
 }
 
 // Weekly NEW-DEV stop enforcement (Peti 2026-08-01). The newDevStop threshold was COMPUTED and shown,
@@ -472,7 +491,7 @@ export async function tryHandleKanban(ctx: RouteContext): Promise<boolean> {
     // to a real card into the human-facing `#<seq>` form before persistence
     // (#75 Cuzcoo dispatch). Random hex / non-matching tokens pass through.
     const normalizedContent = normalizeKanbanRefs(content, getKanbanSeqByIdPrefix)
-    json(res, addKanbanComment(cardId, author, normalizedContent))
+    json(res, addKanbanComment(cardId, normalizeCommentAuthor(author), normalizedContent))
     return true
   }
 
