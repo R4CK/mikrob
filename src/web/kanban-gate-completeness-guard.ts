@@ -101,12 +101,75 @@ interface Comment {
  *  predates the newest REVIEW answered an EARLIER round -- a fix can land after a NO-GO, and the
  *  old NO-GO must not keep counting as "Cybersec looked at this" for the new commit. Same freshness
  *  rule gate-dispatch-check.sh already applies per-gate, generalised here to "every designated
- *  gate must have looked at the CURRENT round", not just the one a dispatch happened to target. */
+ *  gate must have looked at the CURRENT round", not just the one a dispatch happened to target.
+ *
+ *  FALLBACK ONLY (Cybersec NO-GO on this card, HIGH): a round-boundary defined purely by "who wrote
+ *  a REVIEW-shaped comment" breaks the moment a builder hands off a new round WITHOUT the literal
+ *  word "REVIEW" (a terse status ping, an inter-agent message summarised into the comment, ...) --
+ *  nothing then marks the round change at all, and an OLD verdict for OLD code keeps reading as
+ *  fresh forever. currentRoundStartTs (below) anchors to the Gate-SHA identity instead, which is
+ *  immune to that gap; this function only runs when NO comment on the card ever used that
+ *  convention at all (the field stays optional, CLAUDE.md 4b). */
 function latestReviewAt(comments: readonly Comment[]): number | null {
   const stamps = comments
     .filter((c) => REVIEW_RX.test(c.content ?? '') && !GATE_AGENT_NAMES.has((c.author ?? '').toLowerCase()))
     .map((c) => c.created_at)
   return stamps.length ? Math.max(...stamps) : null
+}
+
+// `m`: a Gate-SHA line can sit on any line of a comment (CLAUDE.md 4b: "line-initial", not
+// necessarily comment-initial), same reasoning as REVIEW_RX above.
+const GATE_SHA_LINE_RX = /^\s*Gate-SHA\s*:\s*(.+)$/gim
+
+/** Every short-sha token declared on a Gate-SHA line in `content` (lowercased, deduped). A card can
+ *  legitimately cite more than one commit on one line ("Gate-SHA: e46f9968, 9e9a79bc"). */
+function extractGateShas(content: string): ReadonlySet<string> {
+  GATE_SHA_LINE_RX.lastIndex = 0
+  const out = new Set<string>()
+  let m: RegExpExecArray | null
+  while ((m = GATE_SHA_LINE_RX.exec(content)) !== null) {
+    for (const tok of (m[1] ?? '').split(',')) {
+      const sha = /^[0-9a-f]{6,40}/i.exec(tok.trim())?.[0]?.toLowerCase()
+      if (sha) out.add(sha)
+    }
+  }
+  return out
+}
+
+/** The PRIMARY round-boundary (Cybersec's suggested direction, adopted verbatim): "the current
+ *  round" is whichever Gate-SHA was cited most recently on the card (by any author, REVIEW-worded
+ *  or not), and it starts at the EARLIEST comment that also cites that same sha -- typically the
+ *  builder's own hand-off, since a gate verdict restates the sha it already saw rather than
+ *  introducing a new one. Anchoring to the actual commit identity, not to comment wording, closes
+ *  the bypass: a builder hand-off with no literal "REVIEW" still moves the boundary, as long as it
+ *  states the new Gate-SHA (which the fleet convention already asks every REVIEW to do).
+ *
+ *  Returns null when NOT ONE comment on the card ever used the Gate-SHA convention -- the caller
+ *  falls back to {@link latestReviewAt} for that card, unchanged. */
+function currentRoundStartTs(comments: readonly Comment[]): number | null {
+  let latest: Comment | null = null
+  let latestShas: ReadonlySet<string> = new Set()
+  for (const c of comments) {
+    const shas = extractGateShas(c.content ?? '')
+    if (shas.size === 0) continue
+    if (!latest || c.created_at > latest.created_at) {
+      latest = c
+      latestShas = shas
+    }
+  }
+  if (!latest) return null
+  let start = latest.created_at
+  for (const c of comments) {
+    if (c.created_at >= start) continue
+    const shas = extractGateShas(c.content ?? '')
+    for (const s of shas) {
+      if (latestShas.has(s)) {
+        start = c.created_at
+        break
+      }
+    }
+  }
+  return start
 }
 
 /** Does `agent` have a fresh (post-latest-REVIEW) verdict-shaped comment on this card? */
@@ -148,7 +211,9 @@ export function gateCompletenessGuardVerdict(cardId: string, nextStatus: unknown
   const designated = parseGateDesignation(gateLine)
   if (designated === null) return allowUnverified(cardId, 'gate-line-names-no-known-agent', { gateLine })
 
-  const sinceTs = latestReviewAt(comments)
+  // SHA-anchored round boundary first (closes the Cybersec NO-GO bypass); only when NOT ONE comment
+  // on the card ever cited a Gate-SHA does this fall back to the word/author-based heuristic.
+  const sinceTs = currentRoundStartTs(comments) ?? latestReviewAt(comments)
   // QA/QA2 are ONE requirement, not two (widenQa above is about not falsely EXCLUDING qa2 from
   // acting, not about requiring both). A Gate line naming only "QA" must not demand a qa2 verdict
   // that nothing ever asked for -- either one satisfies the QA-family requirement.

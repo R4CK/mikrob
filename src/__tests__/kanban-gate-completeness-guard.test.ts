@@ -225,4 +225,62 @@ describe('gateCompletenessGuardVerdict', () => {
     expect(v.message).toContain('QA')
     expect(v.message).toContain('Cybersec')
   })
+
+  // Card 1da2367a, Cybersec's HIGH-severity NO-GO on the author-exclusion fix above (their own
+  // adversarial probe, reproduced verbatim): the fix correctly closed b68ddae8 but was TOO WIDE --
+  // `latestReviewAt` only recognised a new round via a non-gate author's REVIEW-prefixed comment.
+  // A builder hand-off that skips the literal word "REVIEW" (a terse status ping, e.g.) left the
+  // round boundary unmoved entirely, so a stale verdict for OLD code kept reading as fresh forever.
+  describe('SHA-anchored round boundary (Cybersec NO-GO, card 1da2367a round 2): a round-marker with no literal "REVIEW" word still moves the boundary if it cites the new Gate-SHA', () => {
+    it("Cybersec's own probe: a stale GO for OLDSHA must not survive a NEWSHA hand-off that never says the word REVIEW", () => {
+      card.description = 'Gate: QA + Cybersec'
+      comments = [
+        { author: 'backend2', content: 'REVIEW -- kesz, sha=OLD\nGate-SHA: OLDSHA', created_at: 100 },
+        { author: 'cybersec', content: 'CYBERSEC GO @ OLD sha\nGate-SHA: OLDSHA', created_at: 200 },
+        { author: 'qa', content: 'REVIEW: QA FAIL @ OLD sha\nGate-SHA: OLDSHA', created_at: 300 },
+        // NO literal "REVIEW" anywhere in this comment -- the old author-exclusion-only fix missed
+        // this entirely and left sinceTs anchored at t=300, making Cybersec's t=200 GO look fresh.
+        { author: 'backend2', content: 'pushed a fix, ready for re-check\nGate-SHA: NEWSHA', created_at: 400 },
+        { author: 'qa', content: 'REVIEW: QA PASS @ NEW sha\nGate-SHA: NEWSHA', created_at: 500 },
+      ]
+      const v = gateCompletenessGuardVerdict('c1', 'done', false)
+      expect(v.blocked).toBe(true) // Cybersec never verdicted NEWSHA -- must stay blocked
+      expect(v.message).toContain('Cybersec')
+    })
+
+    it('the SAME scenario, but Cybersec DOES re-verdict on NEWSHA -> now correctly unblocked', () => {
+      card.description = 'Gate: QA + Cybersec'
+      comments = [
+        { author: 'backend2', content: 'REVIEW -- kesz, sha=OLD\nGate-SHA: OLDSHA', created_at: 100 },
+        { author: 'cybersec', content: 'CYBERSEC GO @ OLD sha\nGate-SHA: OLDSHA', created_at: 200 },
+        { author: 'qa', content: 'REVIEW: QA FAIL @ OLD sha\nGate-SHA: OLDSHA', created_at: 300 },
+        { author: 'backend2', content: 'pushed a fix, ready for re-check\nGate-SHA: NEWSHA', created_at: 400 },
+        { author: 'qa', content: 'REVIEW: QA PASS @ NEW sha\nGate-SHA: NEWSHA', created_at: 500 },
+        { author: 'cybersec', content: 'CYBERSEC GO @ NEW sha\nGate-SHA: NEWSHA', created_at: 600 },
+      ]
+      expect(gateCompletenessGuardVerdict('c1', 'done', false).blocked).toBe(false)
+    })
+
+    it('a multi-sha Gate-SHA line links a verdict to a round even when it cites only ONE of the shas', () => {
+      card.description = 'Gate: QA + Cybersec'
+      comments = [
+        { author: 'backend2', content: 'REVIEW -- kesz\nGate-SHA: shaA, shaB', created_at: 100 },
+        // Cybersec's own verdict restates only ONE of the two shas -- must still count as the round.
+        { author: 'cybersec', content: 'CYBERSEC GO\nGate-SHA: shaB', created_at: 200 },
+        { author: 'qa', content: 'REVIEW: QA PASS\nGate-SHA: shaA, shaB', created_at: 201 },
+      ]
+      expect(gateCompletenessGuardVerdict('c1', 'done', false).blocked).toBe(false)
+    })
+
+    it('no comment on the card EVER used the Gate-SHA convention -> falls back to the word/author heuristic unchanged', () => {
+      card.description = 'Gate: QA + Cybersec + Cybered'
+      comments = [
+        { author: 'backend2', content: 'REVIEW -- kesz', created_at: 100 },
+        { author: 'qa', content: 'QA PASS', created_at: 200 },
+        { author: 'cybersec', content: 'CYBERSEC GO', created_at: 201 },
+        { author: 'cybered', content: 'CYBERED GO', created_at: 202 },
+      ]
+      expect(gateCompletenessGuardVerdict('c1', 'done', false).blocked).toBe(false)
+    })
+  })
 })
