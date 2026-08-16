@@ -3,7 +3,7 @@ import { join } from 'node:path'
 import { execFileSync } from 'node:child_process'
 import { logger } from '../logger.js'
 import { MAIN_AGENT_ID, PROJECT_ROOT } from '../config.js'
-import { listAgentNames } from './agent-config.js'
+import { listAgentNames, agentDir } from './agent-config.js'
 import { agentSessionName, capturePane } from './agent-process.js'
 import { detectPaneState } from '../pane-state.js'
 import { detectsUsageLimit } from '../model-fallback.js'
@@ -90,8 +90,7 @@ function sessionFor(name: string): string {
 }
 
 function workingDirFor(name: string): string {
-  if (name === MAIN_AGENT_ID) return PROJECT_ROOT
-  return join(PROJECT_ROOT, 'agents', name)
+  return name === MAIN_AGENT_ID ? PROJECT_ROOT : agentDir(name)
 }
 
 function agentIdForLedger(name: string): string {
