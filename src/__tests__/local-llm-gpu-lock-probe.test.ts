@@ -13,8 +13,18 @@ import { isGpuLockHeld } from '../web/routes/local-llm.js'
 let dir: string
 let holder: ChildProcess | null = null
 
+function killHolder(): void {
+  if (!holder || holder.pid == null) return
+  // `flock <path> -c command` runs command via a `/bin/sh -c` CHILD, which inherits the locked fd
+  // by fork() -- killing only the flock PID leaves that shell (and its own sleep child) running and
+  // still holding the lock. `detached: true` below makes this PID its own process-group leader, so
+  // a negative PID kills the whole group in one signal.
+  try { process.kill(-holder.pid, 'SIGKILL') } catch { /* already gone */ }
+  holder = null
+}
+
 afterEach(() => {
-  if (holder) { try { holder.kill('SIGKILL') } catch { /* already gone */ } holder = null }
+  killHolder()
   if (dir) rmSync(dir, { recursive: true, force: true })
 })
 
@@ -22,7 +32,10 @@ afterEach(() => {
 // DIFFERENT process (matches the real scenario: local-llm.sh holds it, the web server asks).
 function holdLockInBackground(lockPath: string): Promise<void> {
   return new Promise((resolve, reject) => {
-    holder = spawn('flock', [lockPath, '-c', 'echo locked && sleep 10'], { stdio: ['ignore', 'pipe', 'ignore'] })
+    holder = spawn('flock', [lockPath, '-c', 'echo locked && sleep 10'], {
+      stdio: ['ignore', 'pipe', 'ignore'],
+      detached: true,
+    })
     holder.stdout!.once('data', () => resolve())
     holder.once('error', reject)
     setTimeout(() => reject(new Error('flock holder did not report locked in time')), 3000)
@@ -48,8 +61,7 @@ describe('isGpuLockHeld', () => {
     const lockPath = join(dir, 'gpu.lock')
     await holdLockInBackground(lockPath)
     await expect(isGpuLockHeld(lockPath)).resolves.toBe(true)
-    holder!.kill('SIGKILL')
-    holder = null
+    killHolder()
     // Releasing a killed flock holder's lock is immediate (kernel-level, on process exit) --
     // poll briefly rather than assume a fixed delay is enough.
     const deadline = Date.now() + 2000
