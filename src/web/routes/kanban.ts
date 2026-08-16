@@ -477,6 +477,21 @@ export async function tryHandleKanban(ctx: RouteContext): Promise<boolean> {
     return true
   }
 
+  // card ebf7d95c: the only way to read ONE card used to be GET /api/kanban and filtering the whole
+  // list client-side -- PUT/DELETE on this exact path already worked, so a 404 here read as "the
+  // card doesn't exist / a sync bug" rather than "this verb was never wired up", and repeatedly
+  // confused both Teszter and MikroB into the wrong diagnosis. Deliberately placed AFTER every
+  // other single-segment /api/kanban/<word> GET route above (archived, labels, assignees,
+  // heartbeat-summary): kanbanCardMatch's `([^/]+)` matches any one segment, including those literal
+  // words, so this must not shadow them -- an id can never collide with a route checked first.
+  if (kanbanCardMatch && method === 'GET') {
+    const id = decodeURIComponent(kanbanCardMatch[1])
+    const card = getKanbanCard(id)
+    if (!card) { json(res, { error: 'Kártya nem található' }, 404); return true }
+    json(res, card)
+    return true
+  }
+
   const kanbanUnarchiveMatch = path.match(/^\/api\/kanban\/([^/]+)\/unarchive$/)
   if (kanbanUnarchiveMatch && method === 'POST') {
     const id = decodeURIComponent(kanbanUnarchiveMatch[1])
