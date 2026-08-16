@@ -25,8 +25,14 @@ export async function tryHandleMessages(ctx: RouteContext): Promise<boolean> {
 
   if (path === '/api/messages' && method === 'POST') {
     const body = await readBody(req)
-    const { from, to, content, origin_note } = JSON.parse(body.toString()) as
-      { from: string; to: string; content: string; origin_note?: string }
+    let from: string, to: string, content: string, origin_note: string | undefined
+    try {
+      ;({ from, to, content, origin_note } = JSON.parse(body.toString()) as
+        { from: string; to: string; content: string; origin_note?: string })
+    } catch {
+      json(res, { error: 'Invalid JSON body' }, 400)
+      return true
+    }
     if (!from?.trim() || !to?.trim() || !content?.trim()) {
       json(res, { error: 'from, to, and content are required' }, 400)
       return true
@@ -209,7 +215,13 @@ export async function tryHandleMessages(ctx: RouteContext): Promise<boolean> {
   if (msgUpdateMatch && method === 'PUT') {
     const id = parseInt(msgUpdateMatch[1], 10)
     const body = await readBody(req)
-    const { status: newStatus, result } = JSON.parse(body.toString()) as { status: string; result?: string }
+    let newStatus: string, result: string | undefined
+    try {
+      ;({ status: newStatus, result } = JSON.parse(body.toString()) as { status: string; result?: string })
+    } catch {
+      json(res, { error: 'Invalid JSON body' }, 400)
+      return true
+    }
 
     let ok = false
     if (newStatus === 'done') ok = markMessageDone(id, result)
