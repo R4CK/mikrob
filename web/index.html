@@ -3865,6 +3865,7 @@
        Load order must follow dependency order (callers before callees is fine for
        event-listener-based wiring; the global resolves at call time, not parse time). -->
   <script src="/app-conversation.js"></script>
+  <script src="/app-local-llm.js"></script>
   <!-- Fork overlays, loaded after app.js and replacing globals it defined. Keep
        upstream-owned code in app.js untouched so upstream still merges cleanly. -->
   <script src="/fork-updates.js"></script>
