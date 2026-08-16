@@ -295,7 +295,10 @@ function ovwSpectrumDraw() {
 
 function startOvwSpectrum() {
   stopOvwSpectrum()
-  ovwSpectrumSetState('collecting')
+  // Only show the "collecting" empty state when there are no cached samples from a prior
+  // visit -- if samples exist the canvas already has data and showing the overlay causes
+  // a visible flash while the first poll round-trip completes.
+  if (_ovwSpectrumSamples.length < 2) ovwSpectrumSetState('collecting')
   ovwSpectrumPoll()
   _ovwSpectrumPollTimer = setInterval(() => {
     if (document.getElementById('overviewPage').hidden) { stopOvwSpectrum(); return }
