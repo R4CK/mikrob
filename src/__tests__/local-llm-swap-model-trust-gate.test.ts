@@ -39,12 +39,13 @@ describe('installed-models "Használd" button routes through the trust gate', ()
     expect(slice).toContain('llmActivateModelClick(b.dataset.model, b)')
   })
 
-  it('an untrusted-publisher model from this entry point goes through the trust gate (shared code, not a parallel implementation)', () => {
-    // Card fa8959cd/eb843c46: the trust-confirm gate (openLlmTrustConfirm) is the shared path
-    // for BOTH the installed-models "Használd" button and the Recommendations "Use" button.
+  it('an untrusted-publisher model from this entry point gets the same curated-error toast (no parallel trust-gate UI -- d297f26f decision: modal removed, backend enforces trust server-side)', () => {
+    // d297f26f: the trust-confirm modal was removed because the backend always rejects untrusted
+    // publishers with 403 regardless of iTrust -- showing a UI confirmation creates an unwinnable
+    // retry loop (rule 12 violation). The curated backend error string is shown directly.
     const body = fnBody(APP, 'async function llmActivateModelClick(model, btn)')
-    expect(body).toContain('requiresConfirmation')
-    expect(body).toContain('openLlmTrustConfirm')
+    expect(body).not.toContain('requiresConfirmation')
+    expect(body).not.toContain('openLlmTrustConfirm')
     expect(body).toContain("showToast(data.error || t('localLlm.rec.activate_error'))")
   })
 

@@ -960,44 +960,24 @@ async function llmRefreshRecs() {
   }
 }
 
-// --- Publisher-trust confirmation gate (card fa8959cd, backend gate eb843c46) ----------------
-// POST /api/local-llm/model 403s for an untrusted/unknown publisher with a structured basis
-// (owner, downloads, full digests) plus the exact string the operator must type back
-// (confirmWith). This mirrors store/first-run-llm.sh --i-trust: a confirmation that only shows
-// a name is a click-through, not a decision, so the modal renders the basis instead of a bare
-// "are you sure?".
-let _llmTrustConfirmCtx = null // { model, useBtn }
-
-async function llmPostActivateModel(model, iTrust) {
-  const res = await fetch('/api/local-llm/model', {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify(iTrust ? { model, iTrust } : { model }),
-  })
-  const data = await res.json().catch(() => ({}))
-  return { ok: res.ok, status: res.status, data }
-}
-
 async function llmActivateModelClick(model, btn) {
+  // Card 29b68fba: single activation path for both installed-models "Használd" and
+  // Recommendations "Use" button. Backend always enforces trust (no UI gate needed --
+  // the modal was removed: d297f26f decision, the iTrust field is not read server-side).
   btn.disabled = true
   try {
-    const { ok, status, data } = await llmPostActivateModel(model)
-    if (ok) {
-      // Card 29b68fba: this function is now the single activation path for BOTH the installed-
-      // models "Használd" button and the Recommendations "Use" button -- the confirmation toast
-      // the former used to show is now here, once, for both entry points.
+    const res = await fetch('/api/local-llm/model', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ model }),
+    })
+    const data = await res.json().catch(() => ({}))
+    if (res.ok) {
       showToast(t('localLlm.models.swapped', { model }))
       await llmRefreshRecs()
       await llmRefreshStatus()
       return
     }
-    if (status === 403 && data.code === 'publisher_not_trusted' && data.requiresConfirmation) {
-      openLlmTrustConfirm(model, data, btn)
-      return
-    }
-    // Every other failure (not installed, digest mismatch, ollama down, ...) has no confirmation
-    // path -- the backend error text is already a curated, specific Hungarian message, not a raw
-    // exception, so it is shown as-is (rule 12).
     btn.disabled = false
     showToast(data.error || t('localLlm.rec.activate_error'))
   } catch {
@@ -1006,89 +986,6 @@ async function llmActivateModelClick(model, btn) {
   }
 }
 
-function openLlmTrustConfirm(model, data, useBtn) {
-  _llmTrustConfirmCtx = { model, useBtn }
-  const basis = data.basis || {}
-  document.getElementById('llmTrustConfirmDesc').textContent = data.error || ''
-  const parts = Array.isArray(basis.parts) ? basis.parts : []
-  const digestsHtml = parts.length
-    ? parts.map((p) => `<div class="llm-trust-confirm-digest">${escapeHtml(p.sha256 || t('localLlm.trustConfirm.digest_missing'))}</div>`).join('')
-    : `<div class="llm-trust-confirm-digest">${t('localLlm.trustConfirm.digest_missing')}</div>`
-  document.getElementById('llmTrustConfirmBasis').innerHTML = `
-    <dl class="llm-trust-confirm-list">
-      <dt>${t('localLlm.trustConfirm.basis_owner')}</dt><dd>${escapeHtml(basis.owner || '?')}</dd>
-      <dt>${t('localLlm.trustConfirm.basis_downloads')}</dt><dd>${typeof basis.downloads === 'number' ? llmFmtCount(basis.downloads) : t('localLlm.trustConfirm.basis_downloads_unknown')}</dd>
-      <dt>${t('localLlm.trustConfirm.basis_parts', { count: basis.partCount ?? parts.length })}</dt><dd>${digestsHtml}</dd>
-    </dl>`
-  document.getElementById('llmTrustConfirmInputLabel').textContent = t('localLlm.trustConfirm.input_label')
-  const input = document.getElementById('llmTrustConfirmInput')
-  input.value = ''
-  const errEl = document.getElementById('llmTrustConfirmError')
-  errEl.hidden = true
-  errEl.textContent = ''
-  document.getElementById('llmTrustConfirmOverlay').hidden = false
-  setTimeout(() => input.focus(), 50)
-}
-
-function closeLlmTrustConfirm() {
-  document.getElementById('llmTrustConfirmOverlay').hidden = true
-  if (_llmTrustConfirmCtx && _llmTrustConfirmCtx.useBtn) _llmTrustConfirmCtx.useBtn.disabled = false
-  _llmTrustConfirmCtx = null
-}
-
-async function llmSubmitTrustConfirm() {
-  if (!_llmTrustConfirmCtx) return
-  const { model } = _llmTrustConfirmCtx
-  const input = document.getElementById('llmTrustConfirmInput')
-  const answer = input.value.trim()
-  const errEl = document.getElementById('llmTrustConfirmError')
-  if (!answer) {
-    errEl.textContent = t('localLlm.trustConfirm.empty_error')
-    errEl.hidden = false
-    return
-  }
-  const submitBtn = document.getElementById('llmTrustConfirmSubmit')
-  submitBtn.querySelector('.btn-text').hidden = true
-  submitBtn.querySelector('.btn-loading').hidden = false
-  submitBtn.disabled = true
-  try {
-    const { ok, status, data } = await llmPostActivateModel(model, answer)
-    if (ok) {
-      closeLlmTrustConfirm()
-      await llmRefreshRecs()
-      await llmRefreshStatus()
-      return
-    }
-    if (status === 403 && data.code === 'publisher_not_trusted') {
-      errEl.textContent = t('localLlm.trustConfirm.wrong_answer_error')
-      errEl.hidden = false
-      return
-    }
-    closeLlmTrustConfirm()
-    showToast(data.error || t('localLlm.rec.activate_error'))
-  } catch {
-    closeLlmTrustConfirm()
-    showToast(t('localLlm.rec.activate_error'))
-  } finally {
-    submitBtn.querySelector('.btn-text').hidden = false
-    submitBtn.querySelector('.btn-loading').hidden = true
-    submitBtn.disabled = false
-  }
-}
-
-;(function initLlmTrustConfirmModal() {
-  function cancel() { closeLlmTrustConfirm() }
-  document.addEventListener('DOMContentLoaded', () => {
-    document.getElementById('llmTrustConfirmSubmit').addEventListener('click', llmSubmitTrustConfirm)
-    document.getElementById('llmTrustConfirmClose').addEventListener('click', cancel)
-    document.getElementById('llmTrustConfirmCancel').addEventListener('click', cancel)
-    document.getElementById('llmTrustConfirmOverlay').addEventListener('click', (e) => { if (e.target === e.currentTarget) cancel() })
-    document.getElementById('llmTrustConfirmInput').addEventListener('keydown', (e) => { if (e.key === 'Enter') llmSubmitTrustConfirm() })
-    document.addEventListener('keydown', (e) => {
-      if (e.key === 'Escape' && !document.getElementById('llmTrustConfirmOverlay').hidden) cancel()
-    })
-  })
-})()
 
 // --- HuggingFace GGUF model search (Ollama-pullable) -----------------------
 function llmFmtCount(n) {
