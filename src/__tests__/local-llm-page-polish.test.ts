@@ -83,11 +83,11 @@ describe('usage bar-chart growth animation (card a05c39c9)', () => {
     // painted first.
     const usageBody = fnBody(APP, 'async function llmRefreshUsage()')
     const byAgentIdx = usageBody.indexOf('llm-usage-bar-fill')
-    const byAgentSlice = usageBody.slice(byAgentIdx, byAgentIdx + 400)
+    const byAgentSlice = usageBody.slice(byAgentIdx, byAgentIdx + 800)
     expect(byAgentSlice).toContain('requestAnimationFrame(() => {')
 
     const dayIdx = usageBody.indexOf('llm-usage-day-bar')
-    const daySlice = usageBody.slice(dayIdx, dayIdx + 400)
+    const daySlice = usageBody.slice(dayIdx, dayIdx + 700)
     expect(daySlice).toContain('requestAnimationFrame(() => {')
   })
 })

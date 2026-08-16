@@ -251,7 +251,9 @@ describe('model catalogue CSS', () => {
     const mediaIdx = CSS.indexOf('@media (prefers-reduced-motion: reduce)', keyframeIdx)
     expect(mediaIdx).toBeGreaterThan(-1)
     const block = CSS.slice(mediaIdx, mediaIdx + 200)
-    expect(block).toMatch(/\.llm-rec-group\s*\{\s*animation:\s*none/)
+    // Card a05c39c9 widened the selector to also cover .llm-anim-in (the same keyframe, reused
+    // for the rest of the #localLlm page) -- still one shared rule, not a second copy.
+    expect(block).toMatch(/\.llm-rec-group,\s*\.llm-anim-in\s*\{\s*animation:\s*none/)
   })
 
   it('the quant <select> keeps the 44px touch target (rule 13) by reusing the shared .llm-select base', () => {
