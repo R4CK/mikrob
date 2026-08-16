@@ -18207,6 +18207,9 @@ let conversationEntries = []
 let conversationAgentName = null
 let conversationHasOlder = false
 let conversationLoadingOlder = false
+// Session list (card 03d2ae9c): null = newest; string = specific sessionId
+let conversationCurrentSessionId = null
+let conversationSessions = []
 
 async function openConversationModal(agentName, displayName) {
   const overlay = document.getElementById('conversationOverlay')
@@ -18214,18 +18217,52 @@ async function openConversationModal(agentName, displayName) {
   const title = document.getElementById('conversationModalTitle')
   if (!overlay || !container) return
   conversationAgentName = agentName
+  conversationCurrentSessionId = null
+  conversationSessions = []
   title.textContent = t('conversation.title', { name: displayName || agentName })
   container.innerHTML = `<div class="conversation-empty">${t('conversation.loading')}</div>`
   openModal(overlay)
+  // Load session list first (non-blocking; falls back gracefully on 404)
+  await loadConversationSessions(agentName)
   await loadConversation()
 }
 
+async function loadConversationSessions(agentName) {
+  const row = document.getElementById('conversationSessionRow')
+  const sel = document.getElementById('conversationSessionSelect')
+  if (!row || !sel) return
+  const token = localStorage.getItem('marveen-dashboard-token') || ''
+  try {
+    const r = await fetch(`/api/agents/${encodeURIComponent(agentName)}/sessions`, {
+      headers: { 'Authorization': 'Bearer ' + token },
+    })
+    if (!r.ok) { row.hidden = true; return }
+    const d = await r.json()
+    const sessions = Array.isArray(d.sessions) ? d.sessions : []
+    conversationSessions = sessions
+    if (!sessions.length) { row.hidden = true; return }
+    // Populate: newest first option (default), then each historical session
+    const newestLabel = t('conversation.session_newest')
+    sel.innerHTML = `<option value="">${newestLabel}</option>` +
+      sessions.map((s) => {
+        const date = s.mtime ? new Date(s.mtime).toLocaleString('hu-HU', { month: '2-digit', day: '2-digit', hour: '2-digit', minute: '2-digit' }) : s.sessionId
+        const count = typeof s.entryCount === 'number' ? ` · ${t('conversation.session_entries', { count: s.entryCount })}` : ''
+        return `<option value="${escapeHtml(s.sessionId)}">${escapeHtml(date)}${escapeHtml(count)}</option>`
+      }).join('')
+    row.hidden = false
+  } catch {
+    row.hidden = true
+  }
+}
+
 // Latest page (offset=0); resets the loaded window.
+// When conversationCurrentSessionId is set, fetches that specific session.
 async function loadConversation() {
   const container = document.getElementById('conversationContainer')
   const token = localStorage.getItem('marveen-dashboard-token') || ''
   try {
-    const r = await fetch(`/api/agents/${encodeURIComponent(conversationAgentName)}/conversation?limit=${CONVERSATION_PAGE_SIZE}&offset=0`, {
+    const sessionParam = conversationCurrentSessionId ? `&sessionId=${encodeURIComponent(conversationCurrentSessionId)}` : ''
+    const r = await fetch(`/api/agents/${encodeURIComponent(conversationAgentName)}/conversation?limit=${CONVERSATION_PAGE_SIZE}&offset=0${sessionParam}`, {
       headers: { 'Authorization': 'Bearer ' + token },
     })
     const d = await r.json()
@@ -18249,7 +18286,8 @@ async function loadOlderConversation() {
   const token = localStorage.getItem('marveen-dashboard-token') || ''
   try {
     const offset = conversationEntries.length
-    const r = await fetch(`/api/agents/${encodeURIComponent(conversationAgentName)}/conversation?limit=${CONVERSATION_PAGE_SIZE}&offset=${offset}`, {
+    const sessionParam = conversationCurrentSessionId ? `&sessionId=${encodeURIComponent(conversationCurrentSessionId)}` : ''
+    const r = await fetch(`/api/agents/${encodeURIComponent(conversationAgentName)}/conversation?limit=${CONVERSATION_PAGE_SIZE}&offset=${offset}${sessionParam}`, {
       headers: { 'Authorization': 'Bearer ' + token },
     })
     const d = await r.json()
@@ -18327,6 +18365,12 @@ document.getElementById('conversationClose')?.addEventListener('click', () => {
 document.getElementById('conversationSearch')?.addEventListener('input', () => renderConversation())
 document.getElementById('conversationShowActions')?.addEventListener('change', () => renderConversation())
 document.getElementById('conversationRefresh')?.addEventListener('click', () => loadConversation())
+document.getElementById('conversationSessionSelect')?.addEventListener('change', (e) => {
+  conversationCurrentSessionId = e.target.value || null
+  const container = document.getElementById('conversationContainer')
+  if (container) container.innerHTML = `<div class="conversation-empty">${t('conversation.loading')}</div>`
+  loadConversation()
+})
 
 // === Federation page ===
 // State lets live BEFORE the router IIFE (top-level code runs in order; a

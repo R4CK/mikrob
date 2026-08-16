@@ -3802,6 +3802,10 @@
         <button class="modal-close" id="conversationClose">&times;</button>
       </div>
       <div class="conversation-toolbar">
+        <div id="conversationSessionRow" class="conversation-session-row" hidden>
+          <label for="conversationSessionSelect" class="conversation-session-label" data-i18n="conversation.session_label">Session:</label>
+          <select id="conversationSessionSelect" class="conversation-session-select" aria-label="Session kiválasztása"></select>
+        </div>
         <input type="text" id="conversationSearch" placeholder="Keresés a beszélgetésben…" data-i18n-placeholder="messages.conv.search_placeholder" autocomplete="off">
         <label class="conversation-filter"><input type="checkbox" id="conversationShowActions"> <span data-i18n="conversation.filter_label">Műveletek/jegyzetek mutatása</span></label>
         <button class="btn-secondary btn-compact" id="conversationRefresh" data-i18n="common.btn.refresh">Frissítés</button>
