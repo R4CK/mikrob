@@ -2031,6 +2031,13 @@ window._i18n.hu = {
   'overview.card.team':          'Csapat',
   'overview.card.activity':      'Aktivitás',
   'overview.meta.live':          'élő állapot',
+  'overview.spectrum.title':      'Helyi LLM kihasználtság',
+  'overview.spectrum.collecting': 'Adatgyűjtés folyamatban…',
+  'overview.spectrum.no_gpu':     'Nincs GPU-adat.',
+  'overview.spectrum.error':      'Nem sikerült betölteni a kihasználtsági adatokat.',
+  'overview.spectrum.gpu':        'GPU',
+  'overview.spectrum.vram':       'VRAM',
+  'overview.spectrum.tasks':      'Aktív feladat',
   // --- i18n finish (placeholders + inline-HTML) ---
   'connectors.cxhu.token_ph': 'connectors.hu token (dashboardról)',
   'ideas.modal.title_ph': 'Rövid, egyértelmű cím',

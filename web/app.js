@@ -438,6 +438,8 @@ function switchPage(pageId) {
   if (pageId !== 'agents') stopAgentsBusyPoll()
   // Kanban auto-refresh: start on enter, stop on leave.
   if (pageId !== 'kanban') stopKanbanRefresh()
+  // Overview's live utilization spectrum runs its own poll + rAF scroll loop; stop both on leave.
+  if (pageId !== 'overview') stopOvwSpectrum()
   if (pageId === 'overview') loadOverview()
   if (pageId === 'kanban') { if (typeof _initGanttViewSwitcher === 'function') _initGanttViewSwitcher(); loadKanban(); startKanbanRefresh() }
   if (pageId === 'tasks') loadSchedules()
@@ -13343,6 +13345,7 @@ async function loadOverview() {
     void loadWeeklyThresholds()
     void loadModelTierConfig()
     void loadLocalLlmInfo()
+    startOvwSpectrum()
     const banner = document.getElementById('updateBanner')
     if (banner) {
       const u = d.upstreamUpdate
@@ -13399,6 +13402,216 @@ async function loadOverview() {
   } catch (err) {
     document.getElementById('overviewActivity').innerHTML = '<div style="color:var(--text-muted);font-size:13px">' + t('overview.error', { msg: escapeHtml(String(err.message || err)) }) + '</div>'
   }
+}
+
+// ============================================================
+// === Overview: live local-LLM utilization spectrum (card cf61fcac, Peti kep-minta) ===
+// ============================================================
+// Continuously-scrolling waveform (canvas, decorative + aria-hidden) showing GPU util% over the
+// last few minutes, gradient dark-teal -> blue -> purple -> orange -> red left to right, with
+// vertical dashed segment dividers -- matches the reference image Peti sent on Telegram. The
+// canvas is never the only place the data lives: a parallel <dl> readout carries the same values
+// as real, screen-reader-readable text (aria-live), since the pixels alone would not be.
+//
+// Data source: prefers GET /api/local-llm/utilization-history (backend2, card b6b1493d) once it
+// ships -- richer, since it is populated server-side even before this page is opened. Until then
+// (or if it 404s), falls back to a client-side rolling buffer sampled from the existing
+// /api/local-llm/status + /api/local-llm/queue endpoints, so the widget is functional today and
+// upgrades itself silently the moment the real endpoint lands (no restart needed).
+const OVW_SPECTRUM_WINDOW_MS = 5 * 60 * 1000
+const OVW_SPECTRUM_POLL_MS = 5000
+const OVW_SPECTRUM_COLORS = ['#0d3b3e', '#2f6fed', '#8b5cf6', '#f0883e', '#e5484d']
+let _ovwSpectrumSamples = [] // {ts, util, memUsed, memTotal, tasks}
+let _ovwSpectrumPollTimer = null
+let _ovwSpectrumRafId = null
+let _ovwSpectrumUsesServerHistory = false
+
+function stopOvwSpectrum() {
+  if (_ovwSpectrumPollTimer) { clearInterval(_ovwSpectrumPollTimer); _ovwSpectrumPollTimer = null }
+  if (_ovwSpectrumRafId) { cancelAnimationFrame(_ovwSpectrumRafId); _ovwSpectrumRafId = null }
+}
+
+function ovwSpectrumSetState(state) {
+  const empty = document.getElementById('ovwSpectrumEmpty')
+  const error = document.getElementById('ovwSpectrumError')
+  if (!empty || !error) return
+  empty.hidden = state !== 'collecting' && state !== 'no_gpu'
+  error.hidden = state !== 'error'
+  if (state === 'collecting') empty.textContent = t('overview.spectrum.collecting')
+  if (state === 'no_gpu') empty.textContent = t('overview.spectrum.no_gpu')
+  if (state === 'error') error.textContent = t('overview.spectrum.error')
+}
+
+function ovwSpectrumUpdateReadout(sample) {
+  const gpuEl = document.getElementById('ovwSpectrumGpu')
+  const vramEl = document.getElementById('ovwSpectrumVram')
+  const tasksEl = document.getElementById('ovwSpectrumTasks')
+  if (!sample) return
+  if (gpuEl) gpuEl.textContent = typeof sample.util === 'number' ? `${Math.round(sample.util)}%` : '—'
+  if (vramEl) {
+    vramEl.textContent = (typeof sample.memUsed === 'number' && typeof sample.memTotal === 'number' && sample.memTotal > 0)
+      ? `${llmFmtVram(sample.memUsed)} / ${llmFmtVram(sample.memTotal)}`
+      : '—'
+  }
+  if (tasksEl) tasksEl.textContent = typeof sample.tasks === 'number' ? String(sample.tasks) : '—'
+}
+
+async function ovwSpectrumPoll() {
+  try {
+    const res = await fetch('/api/local-llm/utilization-history')
+    if (res.ok) {
+      const data = await res.json()
+      if (data && Array.isArray(data.samples)) {
+        _ovwSpectrumUsesServerHistory = true
+        // util_pct/mem_* are null when the GPU could not be read that tick (never 0 -- see
+        // local-llm-utilization-history.ts's own rule: a zero would draw a false "idle" flat line).
+        // Preserve the null so the draw step can render it as a real gap, not a fabricated reading.
+        _ovwSpectrumSamples = data.samples.map((s) => ({
+          ts: Number(s.ts) || 0,
+          util: typeof s.util_pct === 'number' ? s.util_pct : null,
+          memUsed: typeof s.mem_used_mb === 'number' ? s.mem_used_mb : null,
+          memTotal: typeof s.mem_total_mb === 'number' ? s.mem_total_mb : null,
+          tasks: typeof s.active_tasks === 'number' ? s.active_tasks : null,
+        }))
+        ovwSpectrumUpdateReadout(_ovwSpectrumSamples[_ovwSpectrumSamples.length - 1])
+        ovwSpectrumSetState(_ovwSpectrumSamples.length >= 2 ? 'data' : 'collecting')
+        return
+      }
+    }
+  } catch {}
+  // Server endpoint already established as the source of truth but hiccuped this one tick --
+  // keep the last-good frame rather than mixing in a differently-sampled client buffer.
+  if (_ovwSpectrumUsesServerHistory) return
+  try {
+    const [statusRes, queueRes] = await Promise.all([
+      fetch('/api/local-llm/status'),
+      fetch('/api/local-llm/queue'),
+    ])
+    if (!statusRes.ok) throw new Error('HTTP ' + statusRes.status)
+    const d = await statusRes.json()
+    if (!d.gpu) { ovwSpectrumSetState('no_gpu'); return }
+    let tasks = null
+    if (queueRes.ok) {
+      const q = await queueRes.json()
+      if (typeof q.running === 'number') tasks = q.running
+    }
+    const sample = { ts: Date.now(), util: Number(d.gpu.util_pct) || 0, memUsed: d.gpu.mem_used_mb, memTotal: d.gpu.mem_total_mb, tasks }
+    _ovwSpectrumSamples.push(sample)
+    const cutoff = Date.now() - OVW_SPECTRUM_WINDOW_MS
+    _ovwSpectrumSamples = _ovwSpectrumSamples.filter((s) => s.ts >= cutoff)
+    ovwSpectrumUpdateReadout(sample)
+    ovwSpectrumSetState(_ovwSpectrumSamples.length >= 2 ? 'data' : 'collecting')
+  } catch {
+    ovwSpectrumSetState('error')
+  }
+}
+
+function ovwSpectrumDraw() {
+  const page = document.getElementById('overviewPage')
+  if (!page || page.hidden) { _ovwSpectrumRafId = null; return }
+  const canvas = document.getElementById('ovwSpectrumCanvas')
+  if (canvas) {
+    const dpr = window.devicePixelRatio || 1
+    const rect = canvas.getBoundingClientRect()
+    const w = Math.max(1, Math.round(rect.width))
+    const h = Math.max(1, Math.round(rect.height)) || 120
+    if (canvas.width !== Math.round(w * dpr) || canvas.height !== Math.round(h * dpr)) {
+      canvas.width = Math.round(w * dpr)
+      canvas.height = Math.round(h * dpr)
+    }
+    const ctx = canvas.getContext('2d')
+    ctx.setTransform(dpr, 0, 0, dpr, 0, 0)
+    ctx.clearRect(0, 0, w, h)
+
+    if (_ovwSpectrumSamples.length >= 2) {
+      const now = Date.now()
+      const gradient = ctx.createLinearGradient(0, 0, w, 0)
+      gradient.addColorStop(0, OVW_SPECTRUM_COLORS[0])
+      gradient.addColorStop(0.25, OVW_SPECTRUM_COLORS[1])
+      gradient.addColorStop(0.5, OVW_SPECTRUM_COLORS[2])
+      gradient.addColorStop(0.75, OVW_SPECTRUM_COLORS[3])
+      gradient.addColorStop(1, OVW_SPECTRUM_COLORS[4])
+
+      ctx.strokeStyle = 'rgba(128,128,128,0.25)'
+      ctx.lineWidth = 1
+      ctx.setLineDash([3, 4])
+      const segments = Math.max(4, Math.round(w / 60))
+      for (let i = 1; i < segments; i++) {
+        const x = (w / segments) * i
+        ctx.beginPath()
+        ctx.moveTo(x, 0)
+        ctx.lineTo(x, h)
+        ctx.stroke()
+      }
+      ctx.setLineDash([])
+
+      // x = how long ago each sample was (scrolls left in real time between polls), y = util%.
+      // A null util (GPU unreadable that tick) is NEVER drawn at 0 -- that would read as "idle",
+      // a claim we did not measure (same rule the sampler itself states). It breaks the line into
+      // a real gap instead, by splitting into contiguous non-null runs and drawing each separately.
+      const raw = _ovwSpectrumSamples.map((s) => {
+        const age = now - s.ts
+        const x = w - (age / OVW_SPECTRUM_WINDOW_MS) * w
+        if (typeof s.util !== 'number' || x < -20 || x > w + 20) return null
+        const y = h - (Math.max(0, Math.min(100, s.util)) / 100) * (h - 8) - 4
+        return [x, y]
+      })
+      const runs = []
+      let cur = []
+      for (const p of raw) {
+        if (p === null) { if (cur.length) runs.push(cur); cur = [] }
+        else cur.push(p)
+      }
+      if (cur.length) runs.push(cur)
+
+      for (const points of runs) {
+        if (points.length < 2) continue
+        ctx.beginPath()
+        ctx.moveTo(points[0][0], h)
+        ctx.lineTo(points[0][0], points[0][1])
+        for (let i = 1; i < points.length; i++) {
+          const [px, py] = points[i - 1]
+          const [cx, cy] = points[i]
+          ctx.quadraticCurveTo(px, py, (px + cx) / 2, (py + cy) / 2)
+        }
+        ctx.lineTo(points[points.length - 1][0], points[points.length - 1][1])
+        ctx.lineTo(points[points.length - 1][0], h)
+        ctx.closePath()
+        ctx.globalAlpha = 0.28
+        ctx.fillStyle = gradient
+        ctx.fill()
+        ctx.globalAlpha = 1
+
+        ctx.beginPath()
+        ctx.moveTo(points[0][0], points[0][1])
+        for (let i = 1; i < points.length; i++) {
+          const [px, py] = points[i - 1]
+          const [cx, cy] = points[i]
+          ctx.quadraticCurveTo(px, py, (px + cx) / 2, (py + cy) / 2)
+        }
+        ctx.strokeStyle = gradient
+        ctx.lineWidth = 2
+        ctx.lineJoin = 'round'
+        ctx.stroke()
+      }
+    }
+  }
+
+  const reduceMotion = window.matchMedia && window.matchMedia('(prefers-reduced-motion: reduce)').matches
+  _ovwSpectrumRafId = reduceMotion ? null : requestAnimationFrame(ovwSpectrumDraw)
+}
+
+function startOvwSpectrum() {
+  stopOvwSpectrum()
+  ovwSpectrumSetState('collecting')
+  ovwSpectrumPoll()
+  _ovwSpectrumPollTimer = setInterval(() => {
+    if (document.getElementById('overviewPage').hidden) { stopOvwSpectrum(); return }
+    ovwSpectrumPoll()
+    // Reduced-motion: no rAF loop running, so redraw once per poll tick instead.
+    if (window.matchMedia && window.matchMedia('(prefers-reduced-motion: reduce)').matches) ovwSpectrumDraw()
+  }, OVW_SPECTRUM_POLL_MS)
+  ovwSpectrumDraw()
 }
 
 // Editable weekly new-dev-stop thresholds (card f3248478). Cached module-level so

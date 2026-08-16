@@ -2028,6 +2028,13 @@ window._i18n.en = {
   'overview.card.team':          'Team',
   'overview.card.activity':      'Activity',
   'overview.meta.live':          'live status',
+  'overview.spectrum.title':      'Local LLM utilization',
+  'overview.spectrum.collecting': 'Collecting data…',
+  'overview.spectrum.no_gpu':     'No GPU data.',
+  'overview.spectrum.error':      'Could not load utilization data.',
+  'overview.spectrum.gpu':        'GPU',
+  'overview.spectrum.vram':       'VRAM',
+  'overview.spectrum.tasks':      'Active tasks',
 
   // --- i18n finish (placeholders + inline-HTML) ---
   'connectors.cxhu.token_ph': 'connectors.hu token (from dashboard)',

@@ -485,6 +485,38 @@
           <div class="overview-stat-sub" id="statSkillsSub"></div>
         </div>
       </div>
+
+      <!-- Live local-LLM utilization spectrum (card cf61fcac, Peti kep-minta): continuously
+           scrolling waveform showing GPU util%/VRAM/active-tasks in real time. Populated by
+           ovwSpectrumPoll() in app.js -- prefers GET /api/local-llm/utilization-history (backend2,
+           card b6b1493d) once it ships, falls back to a local rolling buffer sampled from the
+           existing /api/local-llm/status + /queue endpoints until then. -->
+      <div class="overview-card ovw-spectrum-card" id="ovwSpectrumCard">
+        <div class="overview-card-head">
+          <h3 data-i18n="overview.spectrum.title">Helyi LLM kihasználtság</h3>
+          <span class="overview-card-meta" data-i18n="overview.meta.live">élő állapot</span>
+        </div>
+        <div class="ovw-spectrum-body">
+          <canvas id="ovwSpectrumCanvas" class="ovw-spectrum-canvas" height="120" aria-hidden="true"></canvas>
+          <p class="ovw-spectrum-empty" id="ovwSpectrumEmpty" hidden data-i18n="overview.spectrum.collecting">Adatgyűjtés folyamatban…</p>
+          <p class="ovw-spectrum-error" id="ovwSpectrumError" hidden role="alert"></p>
+          <dl class="ovw-spectrum-readout" id="ovwSpectrumReadout" aria-live="polite">
+            <div class="ovw-spectrum-readout-item">
+              <dt data-i18n="overview.spectrum.gpu">GPU</dt>
+              <dd id="ovwSpectrumGpu">—</dd>
+            </div>
+            <div class="ovw-spectrum-readout-item">
+              <dt data-i18n="overview.spectrum.vram">VRAM</dt>
+              <dd id="ovwSpectrumVram">—</dd>
+            </div>
+            <div class="ovw-spectrum-readout-item">
+              <dt data-i18n="overview.spectrum.tasks">Aktív feladat</dt>
+              <dd id="ovwSpectrumTasks">—</dd>
+            </div>
+          </dl>
+        </div>
+      </div>
+
       <div class="overview-grid">
         <div class="overview-card">
           <div class="overview-card-head">
