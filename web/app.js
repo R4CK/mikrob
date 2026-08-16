@@ -121,54 +121,10 @@ async function refreshSubagents() {
 refreshSubagents()
 setInterval(refreshSubagents, 5000);
 
-// === "Last updated" sidebar badge (card 77be6b51, pairing 0898db66) ========
-// Sourced from GET /api/status's lastUpdate field: {timestamp, toSha, version, source}.
-// Present in that response even when the status.claude.com proxy call fails (it's computed
-// before that call, see src/web/routes/status.ts) -- so a flaky external status feed can never
-// blank the badge. Fetched once on load: the underlying fact (when did THIS install last
-// update) changes on the order of days, not something worth a poll interval for.
-function renderLastUpdateBadge(lu) {
-  const textEl = document.getElementById('sidebarUpdateText')
-  const wrapEl = document.getElementById('sidebarUpdateBadge')
-  if (!textEl) return
-  if (!lu || !lu.timestamp) {
-    textEl.textContent = t('lastUpdate.unknown')
-    if (wrapEl) wrapEl.title = ''
-    return
-  }
-  let local
-  try {
-    local = new Date(lu.timestamp).toLocaleString([], {
-      timeZone: 'Europe/Budapest', year: 'numeric', month: '2-digit', day: '2-digit', hour: '2-digit', minute: '2-digit',
-    })
-  } catch {
-    textEl.textContent = t('lastUpdate.unknown')
-    if (wrapEl) wrapEl.title = ''
-    return
-  }
-  // source distinguishes a REAL recorded update (store/.update-history) from the built-commit
-  // fallback (dist/.built-commit mtime -- just "when was this build produced", which a rebuild
-  // with no version change also touches). Worded differently so the weaker signal never reads
-  // as a confirmed update.
-  const key = lu.source === 'update-history'
-    ? (lu.version ? 'lastUpdate.updated' : 'lastUpdate.updatedNoVersion')
-    : (lu.version ? 'lastUpdate.build' : 'lastUpdate.buildNoVersion')
-  textEl.textContent = t(key, { time: local, version: lu.version || '' })
-  if (wrapEl) {
-    wrapEl.title = lu.toSha ? t('lastUpdate.shaTitle', { sha: lu.toSha.slice(0, 12) }) : ''
-  }
-}
-
-async function refreshLastUpdateBadge() {
-  if (!document.getElementById('sidebarUpdateText')) return
-  try {
-    const res = await fetch('/api/status')
-    const data = await res.json()
-    renderLastUpdateBadge(data.lastUpdate)
-  } catch {
-    renderLastUpdateBadge(null)
-  }
-}
+// === "Last updated" sidebar badge -- see web/app-last-update.js ===
+// (renderLastUpdateBadge, refreshLastUpdateBadge moved to app-last-update.js, slice 42.
+//  refreshLastUpdateBadge() init call also moved there -- runs after app.js completes,
+//  satisfying the card f597369b requirement of running after the auth IIFE patches fetch.)
 (() => {
   const TOKEN_KEY = 'marveen-dashboard-token'
   const urlParams = new URLSearchParams(window.location.search)
@@ -367,15 +323,7 @@ async function refreshLastUpdateBadge() {
   }
 })()
 
-// card f597369b: this used to run BEFORE the IIFE above patched window.fetch to attach the
-// Authorization header, so every page load's very first /api/status call went out unauthenticated
-// and 401'd (silently -- it also bypassed the 401 handler above, since that only wraps calls made
-// AFTER the patch). Cosmetic failure, but a console error on every load. Now runs after the patch.
-try {
-  refreshLastUpdateBadge()
-} catch {
-  // Still non-fatal: the badge is cosmetic, a failure here must never block anything else on the page.
-}
+// refreshLastUpdateBadge() init call moved to end of app-last-update.js (slice 42).
 
 // === Theme + Language toggle -- see web/app-theme-lang.js ===
 

@@ -3820,6 +3820,7 @@
        Each file is global-scoped and depends only on globals defined in app.js above.
        Load order must follow dependency order (callers before callees is fine for
        event-listener-based wiring; the global resolves at call time, not parse time). -->
+  <script src="/app-last-update.js"></script> <!-- slice 42: Last updated sidebar badge -->
   <script src="/app-theme-lang.js"></script> <!-- slice 40: Theme + Language toggle -->
   <script src="/app-elements.js"></script>
   <script src="/app-helpers.js"></script>   <!-- slice 41: Toast, SVG icons, escapeHtml, STATUS labels -->
