@@ -414,6 +414,24 @@ export function initDatabase(dbPathOverride?: string): void {
   `)
   db.exec(`CREATE INDEX IF NOT EXISTS idx_kanban_comments_card ON kanban_comments(card_id)`)
 
+  // Line-level (diff) comments (card 906c130f, vibe-kanban idea 227f4cc1): today's gate
+  // verdicts/REVIEWs only live as free-text kanban_comments rows, with no link to a specific
+  // file+line in a specific commit's diff. This table adds that binding; adatmodel+API only here,
+  // rendering is the paired Fron Ted card's (c12abc67) job.
+  db.exec(`
+    CREATE TABLE IF NOT EXISTS kanban_line_comments (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      card_id TEXT NOT NULL,
+      sha TEXT NOT NULL,
+      file TEXT NOT NULL,
+      line INTEGER NOT NULL,
+      author TEXT NOT NULL,
+      content TEXT NOT NULL,
+      created_at INTEGER NOT NULL
+    )
+  `)
+  db.exec(`CREATE INDEX IF NOT EXISTS idx_kanban_line_comments_card_sha ON kanban_line_comments(card_id, sha)`)
+
   // Status-change audit trail: one row per real status transition so the board
   // can answer "who moved this card, when, from/to status". Written by
   // moveKanbanCard only when the status actually changes.
@@ -1856,6 +1874,17 @@ export interface KanbanComment {
   created_at: number
 }
 
+export interface KanbanLineComment {
+  id: number
+  card_id: string
+  sha: string
+  file: string
+  line: number
+  author: string
+  content: string
+  created_at: number
+}
+
 export function listKanbanCards(): KanbanCard[] {
   const archiveDays = Number(getEffectiveSettingValue('KANBAN_ARCHIVE_DONE_DAYS'))
   const archiveCutoff = Math.floor(Date.now() / 1000) - archiveDays * 86400
@@ -2162,6 +2191,7 @@ export function deleteKanbanCard(id: string): boolean {
   //   4. Delete the card itself.
   return db.transaction((cardId: string) => {
     db.prepare('DELETE FROM kanban_comments WHERE card_id = ?').run(cardId)
+    db.prepare('DELETE FROM kanban_line_comments WHERE card_id = ?').run(cardId)
     db.prepare('DELETE FROM kanban_card_labels WHERE card_id = ?').run(cardId)
     db.prepare('UPDATE kanban_cards SET parent_id = NULL WHERE parent_id = ?').run(cardId)
     return db.prepare('DELETE FROM kanban_cards WHERE id = ?').run(cardId).changes > 0
@@ -2170,6 +2200,35 @@ export function deleteKanbanCard(id: string): boolean {
 
 export function getKanbanComments(cardId: string): KanbanComment[] {
   return db.prepare('SELECT * FROM kanban_comments WHERE card_id = ? ORDER BY created_at ASC').all(cardId) as KanbanComment[]
+}
+
+export function addKanbanLineComment(
+  cardId: string,
+  sha: string,
+  file: string,
+  line: number,
+  author: string,
+  content: string,
+): KanbanLineComment {
+  const now = Math.floor(Date.now() / 1000)
+  const info = db.prepare(
+    'INSERT INTO kanban_line_comments (card_id, sha, file, line, author, content, created_at) VALUES (?, ?, ?, ?, ?, ?, ?)'
+  ).run(cardId, sha, file, line, author, content, now)
+  db.prepare('UPDATE kanban_cards SET updated_at = ? WHERE id = ?').run(now, cardId)
+  return { id: Number(info.lastInsertRowid), card_id: cardId, sha, file, line, author, content, created_at: now }
+}
+
+// `sha` narrows to one commit's diff (the common case: a gate reviewing one Gate-SHA); omitted
+// returns every line comment ever recorded on the card, across every sha it has been reviewed at.
+export function getKanbanLineComments(cardId: string, sha?: string): KanbanLineComment[] {
+  if (sha) {
+    return db.prepare(
+      'SELECT * FROM kanban_line_comments WHERE card_id = ? AND sha = ? ORDER BY created_at ASC'
+    ).all(cardId, sha) as KanbanLineComment[]
+  }
+  return db.prepare(
+    'SELECT * FROM kanban_line_comments WHERE card_id = ? ORDER BY created_at ASC'
+  ).all(cardId) as KanbanLineComment[]
 }
 
 export interface KanbanCardEvent {

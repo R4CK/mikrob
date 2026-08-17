@@ -4,6 +4,7 @@ import {
   listKanbanCards, createKanbanCard, updateKanbanCard,
   deleteKanbanCard, moveKanbanCard, archiveKanbanCard, unarchiveKanbanCard,
   getKanbanComments, addKanbanComment, getKanbanCardEvents, listKanbanProjects,
+  getKanbanLineComments, addKanbanLineComment,
   getKanbanCard, getChildCards, getDb,
   createAgentMessage, markKanbanCardDispatched,
   getKanbanSeqByIdPrefix,
@@ -538,6 +539,34 @@ export async function tryHandleKanban(ctx: RouteContext): Promise<boolean> {
     // (#75 Cuzcoo dispatch). Random hex / non-matching tokens pass through.
     const normalizedContent = normalizeKanbanRefs(content, getKanbanSeqByIdPrefix)
     json(res, addKanbanComment(cardId, normalizeCommentAuthor(author), normalizedContent))
+    return true
+  }
+
+  // Line-level (diff) comments (card 906c130f): a comment bound to one file+line of one commit's
+  // diff, distinct from the free-text card-level kanban_comments above. Adatmodel+API only --
+  // rendering is the paired Fron Ted card's (c12abc67) job.
+  const kanbanLineCommentsMatch = path.match(/^\/api\/kanban\/([^/]+)\/line-comments$/)
+  if (kanbanLineCommentsMatch && method === 'GET') {
+    const cardId = decodeURIComponent(kanbanLineCommentsMatch[1])
+    const sha = ctx.url.searchParams.get('sha') || undefined
+    json(res, getKanbanLineComments(cardId, sha))
+    return true
+  }
+  if (kanbanLineCommentsMatch && method === 'POST') {
+    const cardId = decodeURIComponent(kanbanLineCommentsMatch[1])
+    if (!getKanbanCard(cardId)) { json(res, { error: 'Kártya nem található' }, 404); return true }
+    const body = await readBody(req)
+    const { sha, file, line, author, content } = JSON.parse(body.toString())
+    if (!sha || !file || !author || !content) {
+      json(res, { error: 'sha, file, author és content kötelező' }, 400)
+      return true
+    }
+    if (!Number.isInteger(line) || line < 1) {
+      json(res, { error: 'line kötelező, pozitív egész szám' }, 400)
+      return true
+    }
+    const normalizedContent = normalizeKanbanRefs(content, getKanbanSeqByIdPrefix)
+    json(res, addKanbanLineComment(cardId, sha, file, line, normalizeCommentAuthor(author), normalizedContent))
     return true
   }
 
