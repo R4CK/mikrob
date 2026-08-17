@@ -3,7 +3,7 @@
 // makes it a real capability -- a row that escalates through the actual HTTP route ends up as a
 // real inter-agent message (agent_messages row) carrying the FULL original task (requirement 1),
 // addressed to the right target (the card's assignee, or MikroB when the row is not card-bound).
-import { describe, it, expect, beforeAll } from 'vitest'
+import { describe, it, expect, beforeEach } from 'vitest'
 import type http from 'node:http'
 import { Readable } from 'node:stream'
 import { initDatabase, getDb, createKanbanCard, getPendingMessages } from '../db.js'
@@ -57,7 +57,10 @@ async function enqueueAndDriveToCap(body: Record<string, unknown>): Promise<numb
   return id
 }
 
-beforeAll(() => {
+// A fresh in-memory DB per test (not beforeAll): these tests reason about exact attempt counts
+// across a multi-call sequence, so a leftover row from an earlier test winning a claim() race would
+// silently throw the arithmetic off, not just pollute an unrelated assertion.
+beforeEach(() => {
   initDatabase(':memory:')
 })
 
