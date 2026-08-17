@@ -68,6 +68,19 @@ _all_refs() { # $1 = repo, $2 = base-ref
     git -C "$repo" for-each-ref --format='%(refname:short)' refs/heads 2>/dev/null || true
   } | grep -vx "$base" | sort -u
 }
+# LOCAL-BRANCH POLLUTION IN A SHARED CLONE (card b60e6be2). refs/heads stays in scope on purpose --
+# removing it would reopen the exact gap this script exists to close (the custody-0082 collision that
+# motivated it lived ONLY as a local commit, see the header). But a shared clone where several agents
+# each keep their own feature/landing branches around accumulates STALE local refs from work that has
+# already landed (or been abandoned) by a different path -- e.g. `land/durable-batch-*`,
+# `landing/batch5b-*` -- and a COLLISION against one of those is not evidence of a real conflict, only
+# evidence that nobody deleted the branch. This script does not (and should not try to) guess
+# staleness: distinguishing "an abandoned local branch" from "a live one about to be pushed" from git
+# history alone is unreliable and a wrong guess would hide a real collision. Before treating a
+# COLLISION as real, check EACH claim's ref list in the message: a claim backed only by local refs
+# (no origin/* among them) is worth a `git log -1 --format=%cd <ref>`/`git branch -d <ref>` look before
+# escalating it, especially if the branch name matches an already-closed card. Periodic pruning of
+# merged/abandoned local branches in this shared clone reduces how often this fires on dead weight.
 
 _collect() { # $1 = repo, $2 = base -> the pending table on stdout
   local repo="$1" base="$2" ref basepaths
@@ -99,7 +112,19 @@ collisions = []
 for num in sorted(by_num):
     claims = by_num[num]
     if len(claims) > 1:                          # DIFFERENT content on one number
-        desc = "; ".join("%s (on %d ref%s)" % (p, len(r), "s" if len(r) > 1 else "") for p, r in claims.values())
+        # Card b60e6be2: the old message named only the PATH per claim, so two claims that
+        # happen to sit at the identical path (the common case -- same filename, different
+        # content on two branches) printed as "...path... (on N refs); ...path... (on M refs)",
+        # reading like a formatting bug (the same path twice) instead of two distinct versions.
+        # The blob hash IS the distinguishing fact, so it goes in the message, and the own ref
+        # list of each claim too -- a reader can now tell in one line whether a claim is origin-backed
+        # (pushed, real) or local-only (possibly a stale, already-superseded branch in this
+        # shared clone -- see the header note on local-branch pollution before treating a
+        # local-only claim as a live conflict).
+        desc = "; ".join(
+            "%s [blob %s] (on: %s)" % (p, h[:16], ", ".join(sorted(r)))
+            for h, (p, r) in claims.items()
+        )
         collisions.append(f"COLLISION: migration {num:04d} claimed by {len(claims)} different files -- {desc}")
 for c in collisions: print(c)
 pend = ", ".join(f"{n:04d}" for n in sorted(by_num)) or "(none)"
