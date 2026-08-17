@@ -260,6 +260,14 @@ def is_submission(c):
     if author == agent.lower():
         return False
     text = c.get("content") or ""
+    # NON_SUBMITTERS checked BEFORE any content signal (card 02be824f, Cybersec finding on
+    # 7405ca61): a gate agent OWN verdict comment legitimately declares Gate-SHA lines (it is
+    # naming the commits it reviewed), and the old order let that arm structured_shas() first,
+    # making one gate verdict look like a fresh submission to another gate -- a false
+    # ADVISE-SKIP:stale-verdict even though the verdict was current for the same HEAD. Identity is
+    # checked first because a gate agent can never be a submitter, whatever it writes.
+    if author in NON_SUBMITTERS:
+        return False
     # A declared Gate-SHA IS the submission signal (card f910eabd): whoever writes that line is
     # naming a commit for a gate to look at, which is the whole definition. Checked before the
     # prose rules because it is the only one that cannot be triggered by quoting.
@@ -270,8 +278,6 @@ def is_submission(c):
     # one does -- the prefix-class fix above only closes the un-fenced quote forms.
     if review_rx.search(fence_rx.sub("", text)):
         return True
-    if author in NON_SUBMITTERS:
-        return False
     return bool(extract_shas(text))
 
 review_comments = [c for c in cs if is_submission(c)]
@@ -726,6 +732,14 @@ print(",".join(c.get("id") or "" for c in cards if isinstance(c, dict)))
     t "gate-pretriage naming a sha is not a submission" "ADVISE-SKIP:no-review" cybersec <<< '[{"author":"gate-pretriage","created_at":100,"content":"GATE PRE-TRIAGE (mechanikus, verdict:null) @ 66f36444"}]'
     t "mikrob naming a sha is not a submission"        "ADVISE-SKIP:no-review" cybersec <<< '[{"author":"mikrob","created_at":100,"content":"TIER-DONTES valtozatlan: QA + Cybered. Friss commit 66f36444."}]'
     t "an engineering comment with no sha is not a submission" "ADVISE-SKIP:no-review" cybersec <<< '[{"author":"backend","created_at":100,"content":"Kerdes MikroB-nak: melyik migracios szamot vegyem?"}]'
+    # ANOTHER GATE own multi-sha verdict must not arm this gate either (card 02be824f, Cybersec
+    # finding on 7405ca61 real shape): a gate agent legitimately declares Gate-SHA with every
+    # commit it reviewed, and a structured_shas() hit used to arm is_submission() BEFORE the
+    # NON_SUBMITTERS check ran, so Cybersec listing three commits made QA own current PASS look
+    # stale to a later check. Same-side control right above ("another gate naming a sha") already
+    # covered the unstructured/prose case; this is the structured Gate-SHA-field case that the old
+    # order still let through.
+    t "another gate own Gate-SHA verdict (multi-sha, newer) does not re-arm a prior verdict" "ADVISE-SKIP:already-gated" qa <<< '[{"author":"backend","created_at":100,"content":"REVIEW -- kesz\nGate-SHA: 65b047aa"},{"author":"qa","created_at":200,"content":"QA PASS\nGate-SHA: 77f4e23d"},{"author":"cybersec","created_at":300,"content":"CYBERSEC GO\nGate-SHA: 65b047aa, 6ffb017d, 77f4e23d"}]'
 
     # SIBLING CARD IDS (card b60835e1, measured on the live board). Card ids are the same hex shape
     # as a short sha, and cards quote each other constantly -- one real E2E sweep comment named eight
