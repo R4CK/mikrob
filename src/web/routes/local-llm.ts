@@ -26,6 +26,7 @@ import {
   buildEscalationMessage,
   type QueueStatus,
 } from '../../local-llm-queue.js'
+import { routeTask } from '../../local-llm-router.js'
 import { getUtilizationSamples } from '../local-llm-utilization-history.js'
 import { readWeeklySnapshot } from '../../costops/weekly-limit.js'
 
@@ -931,6 +932,31 @@ export async function tryHandleLocalLlm(ctx: RouteContext): Promise<boolean> {
           error: `prompt too large (${prompt.length} chars, max ${MAX_QUEUE_PROMPT_BYTES}) -- split it into smaller sub-tasks`,
         },
         413,
+      )
+      return true
+    }
+    // Security-category gate (card 7405ca61): card-independence (card 28c92213/03fca184) widened
+    // this endpoint from "an already-vetted mechanical sub-task drafted at dispatch time" to "any
+    // task any agent chooses to submit". The synchronous local-llm-rag.sh --auto path already runs
+    // every prompt through this SAME routeTask() classifier before it ever reaches the 7B; the async
+    // worker (local-llm-worker.sh -> store/local-llm.sh) does not consult it at all -- it never has.
+    // Gating HERE, at the single enqueue choke-point every async caller funnels through (submit.sh,
+    // any future caller, this route itself), closes that gap once for the whole path instead of
+    // needing every future caller to remember to check. A vetoed category (authz/isolation/
+    // architecture/security-decision) is refused outright rather than silently queued for local
+    // drafting -- the caller does it online instead, exactly like the synchronous path already
+    // requires.
+    const routed = routeTask({ description: prompt })
+    if (routed.route === 'online') {
+      json(
+        res,
+        {
+          error: `this task belongs online, not on the local queue: ${routed.reason}`,
+          route: routed.route,
+          reason: routed.reason,
+          category: routed.category ?? null,
+        },
+        422,
       )
       return true
     }
