@@ -246,6 +246,34 @@ Ha azért akad el a munka, mert egy ügynök elérte az 5 órás Claude usage-li
 
 A MikroB rendszer az `./update.sh`-val frissül (git `pull --ff-only` + rebuild + service-restart). Két KÖTELEZŐ elv: (1) tracked fájlba tett lokális szerkesztés, ami ütközne a bejövő update-tel, SOHA nem marad uncommitolva -- commitold+pushold, vagy tartsd gitignored fájlban; (2) minden futtatható operatív script (`*.sh`, operatív `*.py`) VERZIÓKÖVETETT és pusholt, akkor is ha egyébként gitignored `store/`-ban él -- egy csak-lokális fix nincs mentve. Rollback: `store/.update-history` + `./recovery-prev-version.sh` (`--list`/`checkpoint`/`--to <sha>`/`--dry-run`/`--yes`) -- ÉLES rollbackot MikroB magától NE indítson (megölné a saját sessionjét), csak `--dry-run`/`--list`/`checkpoint`. Teljes mechanika: `update-safety` skill.
 
+## Marveen repo saját-branch fegyelme -- SZABÁLY (Peti 2026-08-17, kártya dc185b52)
+
+A marveen repo (ez a checkout) EGYETLEN megosztott working tree-t oszt meg AZ ÖSSZES ügynökkel --
+nincs per-agent worktree (azt a CleanCore már megoldotta, lásd `agent-worktree.sh`; itt tulsulyos
+lenne, MikroB plan-grilling komment 14270). Ehelyett KÖNNYŰ branch+merge minta: minden ügynök a
+SAJÁT `agent/<neve>/work` branch-én stage-el/commitol, SOHA nem közvetlenül `develop`-on -- ez zárja
+ki, hogy egy ügynök commitja egy MÁSIK ügynök stage-elt-de-commitolatlan fájljait elvigye (a
+`dc185b52` incidens: backend2 stage-elt fájljait QA commitja szippantotta be és pusholta, backend2
+sajat gate nelkul landolt).
+
+Kötelező lépések commit előtt/után ebben a repóban (a `shared-checkout-safe-commit` skill teljes
+eljárása, itt csak a vázlat):
+1. `bash store/agent-branch.sh <neved>` -- saját branch létrehozása/váltása/frissítése, MIELŐTT
+   bármit stage-elnél. Idempotens; PISZKOS working tree-nél IDEGEN branch-en refuse-ol (exit 3) --
+   ez a védelem maga, nem hiba, ne kerüld meg.
+2. Commit a saját branch-eden (szokásos safe-commit fegyelem: nincs `git add -A`, `git diff --staged`
+   ellenőrzés stb.).
+3. `bash store/agent-branch-land.sh <neved>` -- a saját branch-et `develop`-ba mergeli (seam-check
+   mindkét irányban), a MERGE EREDMÉNYÉN lefuttatja a `store/fleet-test.sh`-t, csak zöld esetén
+   pusholja `origin/develop`-ra. A visszaadott sha a Gate-SHA -- REVIEW előtt ez legyen meg, ne a
+   lokális branch-commit shája.
+
+MikroB-vezérelt periodikus háló (backstop, nem elsődleges út): `bash store/agent-branch-land.sh
+--all` végigsöpri az összes `agent/*/work` branch-et, amit a tulajdonos még nem landolt saját maga --
+ezt egy ütemezett feladat futtathatja, hasonlóan a `gate-reconciler`-hez. Egy agent branch-nek
+NINCS szüksége külön reset-re landolás után: a következő `agent-branch.sh` hívás magától
+fast-forwardolja, mert a branch tip már `origin/develop` őse.
+
 ## Ütemezett feladatok
 
 Az ütemezett feladatok a `~/.claude/scheduled-tasks/` mappában élnek, fájl-alapúak (SKILL.md + task-config.json). A schedule runner 60 másodpercenként ellenőrzi és a te tmux session-ödbe küldi a promptot.
