@@ -15,6 +15,7 @@ import { describe, it, expect } from 'vitest'
 import { existsSync, readFileSync, readdirSync } from 'node:fs'
 import { join, dirname, relative, sep } from 'node:path'
 import { fileURLToPath } from 'node:url'
+import { execFileSync } from 'node:child_process'
 
 const REPO_ROOT = join(dirname(fileURLToPath(import.meta.url)), '..', '..')
 const STORE_DIR = join(REPO_ROOT, 'store')
@@ -266,8 +267,30 @@ const SEED_AGENT_DOCS = scanTree(SEED_FLEET_AGENTS_DIR)
  *
  * Session transcripts under .claude-config/projects are not a concern here: they are .jsonl/.txt and
  * TEXT_FILE does not match them. Measured before relying on it -- 0 matching files under that path.
+ *
+ * WHICH agents/ -- REPO_ROOT is wrong when this file runs from fleet-test.sh's disposable worktree
+ * (card c20f9a41). That tree's own `agents/` is always absent (gitignored, so `git worktree add`
+ * never populates it), so every fleet-test.sh run -- the ONE sanctioned way to run this suite -- always
+ * hit the empty-list branch above and never generated a single installed-agent test case, regardless
+ * of what the REAL deployed agents actually contain. `git worktree list` answers this correctly from
+ * ANY worktree: its first entry is always the MAIN worktree, which is the live install with the real
+ * `agents/` tree, worktree or not. This is read-only (a directory listing), so it carries none of the
+ * mutation risk that keeps this suite out of the live install otherwise -- unlike node_modules, this
+ * scan target is never written to, here or in any other suite in this file.
  */
-const INSTALLED_AGENTS_DIR = join(REPO_ROOT, 'agents')
+function liveInstallRoot(): string {
+  try {
+    const out = execFileSync('git', ['worktree', 'list', '--porcelain'], { cwd: REPO_ROOT, encoding: 'utf-8' })
+    const first = out.split('\n').find((l) => l.startsWith('worktree '))
+    const path = first?.slice('worktree '.length).trim()
+    return path || REPO_ROOT
+  } catch {
+    // Not a git checkout, git unavailable, or a single-worktree repo (CI): REPO_ROOT is already
+    // correct in that case (a plain clone's own `agents/` IS the one to check, if any).
+    return REPO_ROOT
+  }
+}
+const INSTALLED_AGENTS_DIR = join(liveInstallRoot(), 'agents')
 const INSTALLED_AGENT_DOCS = existsSync(INSTALLED_AGENTS_DIR)
   ? scanTree(INSTALLED_AGENTS_DIR)
   : []
