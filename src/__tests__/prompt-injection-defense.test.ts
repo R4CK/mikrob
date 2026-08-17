@@ -245,6 +245,30 @@ describe('isEgressBlocked', () => {
     expect(firecrawlDisallowedParams('WebFetch', { url: allowed })).toEqual([])
   })
 
+  it('firecrawl_map gets its own allowlist too, not the scrape default-allow (card 4de3b4d4)', () => {
+    // Card 91c4a369 landed the allowlist for scrape only; map's schema-level `additionalProperties:
+    // false` is not this gate's business to rely on -- the point of a hook-layer allowlist is to not
+    // depend on the tool's own schema staying honest across a pinned-version bump. Nothing map
+    // carries today is dangerous (url/search/sitemap/includeSubdomains/ignoreQueryParameters/limit are
+    // all scalars), but an unknown key must still deny, on the same "an addition is a red gate, not a
+    // silent pass" reasoning as scrape.
+    const allowed = 'https://api.github.com/repos/x/y'
+    expect(
+      firecrawlDisallowedParams('mcp__firecrawl__firecrawl_map', { url: allowed, futureField: true }),
+    ).toEqual(['futureField'])
+    // Every currently-real field together must still clear cleanly.
+    expect(
+      firecrawlDisallowedParams('mcp__firecrawl__firecrawl_map', {
+        url: allowed,
+        search: 'x',
+        sitemap: 'only',
+        includeSubdomains: false,
+        ignoreQueryParameters: true,
+        limit: 10,
+      }),
+    ).toEqual([])
+  })
+
   it('the hook is REGISTERED for the tools it now judges, not only for WebFetch', () => {
     // The half that nearly shipped broken. Widening isEgressBlocked() changed nothing while the
     // PreToolUse matcher still said `WebFetch`: Claude Code would not invoke the hook for

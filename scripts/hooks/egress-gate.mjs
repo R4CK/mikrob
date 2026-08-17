@@ -230,13 +230,30 @@ const FIRECRAWL_SCRAPE_ALLOWED_KEYS = new Set([
   'location', 'storeInCache', 'zeroDataRetention', 'lockdown',
 ])
 
+/** Parameters `firecrawl_map` may carry (card 4de3b4d4, follow-up to 91c4a369). Same ALLOWLIST
+ *  reasoning as scrape above, even though every current field is inert -- url/search/sitemap/
+ *  includeSubdomains/ignoreQueryParameters/limit are all scalars, none carries an execution or
+ *  outbound-fetch primitive the way scrape's `actions` did. The allowlist exists for the SAME
+ *  reason scrape's does: an unknown key on a pinned-version bump turns into a red gate instead of
+ *  a silent default-allow, so a future field with real capability (an `actions`-shaped addition,
+ *  for instance) cannot ride through unnoticed the way scrape's did before 91c4a369. */
+const FIRECRAWL_MAP_ALLOWED_KEYS = new Set([
+  'url', 'search', 'sitemap', 'includeSubdomains', 'ignoreQueryParameters', 'limit',
+])
+
+const FIRECRAWL_ALLOWED_KEYS_BY_TOOL = {
+  'mcp__firecrawl__firecrawl_scrape': FIRECRAWL_SCRAPE_ALLOWED_KEYS,
+  'mcp__firecrawl__firecrawl_map': FIRECRAWL_MAP_ALLOWED_KEYS,
+}
+
 /** Keys the caller passed that the allowlist above does not clear. Exported so the CLI path can say
  *  WHICH rule denied: without it a block-log line reads `url="<an approved host>" reason="not on
  *  egress allowlist"`, which is false on its face and misleads exactly in the incident that matters
  *  (Cybersec MEDIUM, card 91c4a369). Empty array = nothing to object to. */
 export function firecrawlDisallowedParams(toolName, toolInput) {
-  if (String(toolName ?? '') !== 'mcp__firecrawl__firecrawl_scrape') return []
-  return Object.keys(toolInput ?? {}).filter((k) => !FIRECRAWL_SCRAPE_ALLOWED_KEYS.has(k))
+  const allowed = FIRECRAWL_ALLOWED_KEYS_BY_TOOL[String(toolName ?? '')]
+  if (!allowed) return []
+  return Object.keys(toolInput ?? {}).filter((k) => !allowed.has(k))
 }
 
 // Load the runtime allowlist from store/egress-allowlist.json.
@@ -385,16 +402,28 @@ const BLOCK_MESSAGE =
   '{ "prefixes": ["https://example.com/api/"] }), majd futtassa újra a WebFetch hívást.'
 
 /** The host was fine; the parameters were not. Says which one and what to do, because the generic
- *  message above would send the reader off to edit the domain allowlist, which fixes nothing here. */
-const PARAM_BLOCK_MESSAGE = (keys) =>
-  `Egress TILTOTT (egress-gate hook): a hoszt rendben van, de a firecrawl_scrape hívás olyan ` +
-  `paramétert visz, ami nincs engedélyezve: ${keys.join(', ')}. ` +
-  `Ezek egy MÁSODIK kimenő csatornát nyitnának egy jóváhagyott hoszton keresztül (az actions[] ` +
-  `tömb executeJavascript/click akciói tetszőleges JS-t futtatnak és bárhová fetch-elhetnek), ` +
-  `vagy a kapcsolat védelmét gyengítenék (skipTlsVerification, proxy, profile). ` +
-  `TEENDŐ: hívd újra ezeket a mezőket ELHAGYVA -- a scrape url + formats + onlyMainContent stb. ` +
-  `mezőkkel változatlanul működik. Ha egy ilyen mező tényleg kell, az BIZTONSÁGI döntés: ` +
-  `a scripts/hooks/egress-gate.mjs FIRECRAWL_SCRAPE_ALLOWED_KEYS listájába indoklással kerül be.`
+ *  message above would send the reader off to edit the domain allowlist, which fixes nothing here.
+ *  Tool-specific (card 4de3b4d4): the scrape-only danger explanation (executeJavascript/click) is
+ *  false for firecrawl_map, whose current fields are all inert scalars -- naming the wrong tool and
+ *  the wrong exploit in a denial message is its own kind of misleading. */
+const PARAM_BLOCK_MESSAGE = (toolName, keys) => {
+  const short = String(toolName ?? '').replace(FIRECRAWL_PREFIX, '')
+  const danger = short === 'firecrawl_scrape'
+    ? `Ezek egy MÁSODIK kimenő csatornát nyitnának egy jóváhagyott hoszton keresztül (az actions[] ` +
+      `tömb executeJavascript/click akciói tetszőleges JS-t futtatnak és bárhová fetch-elhetnek), ` +
+      `vagy a kapcsolat védelmét gyengítenék (skipTlsVerification, proxy, profile). `
+    : `Ma egyik ismert mező sem visz kimenő/végrehajtási képességet, de egy jövőbeli sématovábbítás ` +
+      `(pinnelt verzió-bővítés) csendben adhatna hozzá egy ilyet, és az allowlist híján ez a hívás ` +
+      `automatikusan átment volna. `
+  return (
+    `Egress TILTOTT (egress-gate hook): a hoszt rendben van, de a ${short} hívás olyan ` +
+    `paramétert visz, ami nincs engedélyezve: ${keys.join(', ')}. ` +
+    danger +
+    `TEENDŐ: hívd újra ezeket a mezőket ELHAGYVA. Ha egy ilyen mező tényleg kell, az BIZTONSÁGI ` +
+    `döntés: a scripts/hooks/egress-gate.mjs FIRECRAWL_${short === 'firecrawl_scrape' ? 'SCRAPE' : 'MAP'}_ALLOWED_KEYS ` +
+    `listájába indoklással kerül be.`
+  )
+}
 
 // allow()/deny()/isInvokedDirectly() are shared with the other PreToolUse
 // gates -- see hook-lib.mjs.
@@ -421,7 +450,7 @@ if (isInvokedDirectly(import.meta.url)) {
       payloadKeySignature(payload),
       agentType,
     )
-    deny(PARAM_BLOCK_MESSAGE(badParams))
+    deny(PARAM_BLOCK_MESSAGE(payload?.tool_name, badParams))
   }
 
   const decision = egressDecision(payload?.tool_name, payload?.tool_input, runtimeList, agentType)
