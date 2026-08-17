@@ -160,6 +160,11 @@ function renderStaticI18n() {
   document.querySelectorAll('[data-i18n-html]').forEach(el => {
     el.innerHTML = t(el.dataset.i18nHtml)
   })
+  // #updatesSubtitle opts out of the [data-i18n] sweep (renderUpdatesVersion owns
+  // it, see app.js). Re-apply from the cached status so a language switch
+  // re-localizes its "Current:" label immediately -- never leaving a clobbered/
+  // mixed header even if loadUpdates' refetch is slow or fails.
+  if (typeof renderUpdatesVersion === 'function') renderUpdatesVersion(window._updatesStatus)
   if (typeof applyOnboardingProviderTab === 'function') applyOnboardingProviderTab()
 }
 

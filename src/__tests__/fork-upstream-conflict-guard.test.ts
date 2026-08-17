@@ -38,7 +38,14 @@ const FETCH_TIMEOUT_MS = 20_000
 // derived) because "which files are fork-owned" is a human/architectural judgement, not something
 // git state can compute -- the guard's job is to check THESE specific files stay conflict-free, not
 // to discover the list.
-const GUARDED_FILES = ['web/app.js', 'web/lang/hu.js', 'web/lang/en.js', 'web/style.css'] as const
+//
+// web/app.js moved OUT of this list to ACKNOWLEDGED_CONFLICTS (card 2e634e5c, 2026-08-17): the
+// zero-conflict claim stopped holding once the fork's app.js modularisation (36 extracted
+// web/app-*.js slices, STUB markers left behind) landed on content upstream still edits inline.
+// See the ACKNOWLEDGED_CONFLICTS entry below for the measured resolution policy -- this is not a
+// regression, it is the expected cost of the extraction, same character as
+// src/web/update-checker.ts's entry.
+const GUARDED_FILES = ['web/lang/hu.js', 'web/lang/en.js', 'web/style.css'] as const
 
 // Files that DO conflict today, deliberately, and whose resolution rule is written down (card
 // f085fd44). This list is not a second copy of the one above: those files must never conflict,
@@ -125,6 +132,52 @@ const ACKNOWLEDGED_CONFLICTS: Readonly<Record<string, string>> = {
   // (read both source files, confirmed the quarantine-reader tools: line, ran both test suites).
   'scripts/hooks/egress-gate.mjs':
     'merge both sides in one egressDecision() -- fork Firecrawl namespace-default-deny + param-allowlist (91c4a369) run BEFORE upstream\'s not-webfetch early-return (which would otherwise reopen 91c4a369), then upstream\'s tier-based decision + quarantine tier + audit logging, with the quarantine tier extended to the two URL-bearing Firecrawl tools',
+  // The test file for the entry above, same relationship as model-fallback.ts/.test.ts: the fork
+  // added a case (card 5cd87b6f -- github.com/raw.githubusercontent.com reachable through the
+  // quarantine tier) at a spot where upstream's side adds nothing (measured 2026-08-17, real merge
+  // dry-run: the upstream half of the hunk is empty). Resolution: keep the fork's added case,
+  // nothing to take from upstream at this hunk.
+  'src/__tests__/egress-gate.test.ts':
+    'keep the fork-added github.com/raw.githubusercontent.com case (card 5cd87b6f) -- upstream side of this hunk is empty, nothing to merge in',
+  // Card 2e634e5c. NOT a disagreement -- upstream independently built the runner-side measurement
+  // wiring (configDirFor/measureContextTokens/measureIdleMs) that the fork's OWN idle-flush domain
+  // logic (src/context-guard.ts: idleFlushEnabled/idleFlushTokens, already shipped and tested) has
+  // been waiting for; the fork's context-guard-runner.ts never wired it up. Straight port, ONE real
+  // adaptation required: this fork's `readContextTokensFromProjectDir` is ASYNC (an fs/promises
+  // read, see active-model.ts), upstream's is sync -- upstream's measureContextTokens (and the
+  // shared configDirFor extracted alongside it) must be awaited, matching the fork's existing async
+  // measurePct, not copied verbatim as sync. Measured 2026-08-17 (real merge dry-run + read both
+  // active-model.ts versions to confirm the sync/async split; the two call sites needing an added
+  // `await` are already inside `async function checkAgent`, no further signature changes ripple).
+  // Resolution: keep the fork's async measurePct, adopt upstream's configDirFor/measureContextTokens
+  // (made async)/measureIdleMs verbatim otherwise, await the two new call sites.
+  'src/web/context-guard-runner.ts':
+    'keep the fork async measurePct/configDirFor; adopt upstream measureContextTokens+measureIdleMs to wire the fork\'s existing idleFlushEnabled domain logic, making measureContextTokens async (fork\'s readContextTokensFromProjectDir is async, upstream\'s is sync) and awaiting its two call sites in checkAgent',
+  // Card 2e634e5c, fifth file, the largest and the only one NOT fully hand-verified line-by-line --
+  // recorded as a POLICY, not a line-by-line merge, same character as the src/web/update-checker.ts
+  // entry above. web/app.js is a STUB scaffold: its content was extracted into 36 web/app-*.js
+  // slice files (modularisation slices 1-39-ish, see each slice's own "Moved to X as part of
+  // modularisation, slice N" header comment), all wired into index.html. Upstream never learned
+  // about the extraction and keeps editing the monolithic content inline, so any upstream commit
+  // touching an extracted region now conflicts against the STUB comment that replaced it.
+  // Measured 2026-08-17 on ONE representative hunk (the i18n-nav block, upstream lines merged
+  // against web/app-i18n-nav.js): the fork's slice was a near-total superset of upstream's block
+  // (plus fork-only additions -- local-llm nav entry) MINUS one real, missing behavior -- upstream
+  // had added a `renderUpdatesVersion(window._updatesStatus)` re-apply call inside
+  // renderStaticI18n() so a language switch immediately re-localizes the Updates page's cached
+  // "Current: vX.Y.Z" subtitle; the fork's extracted slice lacked it. Ported forward in this same
+  // commit (web/app-i18n-nav.js). The remaining ~11,000-line hunk (everything after the i18n-nav
+  // block) was NOT hand-audited -- doing so slice-by-slice is a real, separate undertaking, not a
+  // five-minute conflict-resolution note. Resolution POLICY until that audit happens: web/app.js's
+  // STUB scaffold + the 36 extracted slice files are authoritative; upstream's monolithic content
+  // in a conflicting region is superseded by the corresponding slice file and must NOT be taken
+  // wholesale -- diff the specific upstream hunk against its named slice file (per the STUB
+  // comment) and port only genuinely-new upstream behavior forward, the same discipline just
+  // proven on the i18n-nav hunk. A dedicated full-parity audit card (diff all 36 slices against
+  // upstream's still-monolithic app.js) is recommended but not opened here -- judgement call for
+  // MikroB, not unilaterally opened per the dedup rule.
+  'web/app.js':
+    'STUB scaffold + 36 extracted web/app-*.js slices are authoritative; a conflicting upstream hunk must be diffed against its named slice file and only genuinely-new upstream behavior ported forward, never taken wholesale -- proven on the i18n-nav hunk (found + fixed one real gap: missing renderUpdatesVersion re-apply on language switch), remaining ~11k lines not yet hand-audited slice-by-slice',
 }
 
 function git(args: string[], cwd: string): string {
