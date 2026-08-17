@@ -62,13 +62,29 @@ while [[ $# -gt 0 ]]; do
   esac
 done
 
-# Default: spans MORE than the old fixed pair -- a genuinely new knob (NUM_PARALLEL) and a second
-# KV-quantisation level (q4_0), not just flash-attention on/off.
+# Default: covers all 6 known OLLAMA_* tuning knobs (card bf8ae414, plan-grilling 14425):
+#   FLASH_ATTENTION, KV_CACHE_TYPE, NUM_PARALLEL (from original sweep), plus
+#   GPU_OVERHEAD, CONTEXT_LENGTH, MAX_QUEUE (new), plus LLAMA_ARG_FIT_TARGET (llama.cpp fit).
+#
+# GPU_OVERHEAD=0: Ollama reserves 0 bytes of VRAM for itself, leaving more for model layers.
+#   Default is hardware-specific (typically 100-300 MiB); 0 can push additional layers to GPU.
+# LLAMA_ARG_FIT_TARGET=0: llama.cpp auto-fit aims for 0 MiB free VRAM margin (pack maximally).
+#   Default keeps some margin; 0 is more aggressive but stable on a single-user host.
+# CONTEXT_LENGTH=8192: server-side default ctx allocation. Per `ollama serve --help`, this is
+#   the default "unless otherwise specified" -- the per-request num_ctx overrides it, so
+#   high-ctx benchmark points (16384/24576) still work; this mainly reduces upfront KV alloc.
+# MAX_QUEUE=1: minimal request queue. Does NOT affect tok/s (benchmark sends one request at a
+#   time); included to document that this knob is irrelevant for single-caller throughput.
 DEFAULT_CONFIGS='[
-  {"name": "baseline",            "env": {}},
-  {"name": "flash-q8",            "env": {"OLLAMA_FLASH_ATTENTION": "1", "OLLAMA_KV_CACHE_TYPE": "q8_0"}},
-  {"name": "flash-q4",            "env": {"OLLAMA_FLASH_ATTENTION": "1", "OLLAMA_KV_CACHE_TYPE": "q4_0"}},
-  {"name": "flash-q8-parallel1",  "env": {"OLLAMA_FLASH_ATTENTION": "1", "OLLAMA_KV_CACHE_TYPE": "q8_0", "OLLAMA_NUM_PARALLEL": "1"}}
+  {"name": "baseline",                  "env": {}},
+  {"name": "flash-q8",                  "env": {"OLLAMA_FLASH_ATTENTION": "1", "OLLAMA_KV_CACHE_TYPE": "q8_0"}},
+  {"name": "flash-q4",                  "env": {"OLLAMA_FLASH_ATTENTION": "1", "OLLAMA_KV_CACHE_TYPE": "q4_0"}},
+  {"name": "flash-q8-parallel1",        "env": {"OLLAMA_FLASH_ATTENTION": "1", "OLLAMA_KV_CACHE_TYPE": "q8_0", "OLLAMA_NUM_PARALLEL": "1"}},
+  {"name": "flash-q8-gpu0",             "env": {"OLLAMA_FLASH_ATTENTION": "1", "OLLAMA_KV_CACHE_TYPE": "q8_0", "OLLAMA_GPU_OVERHEAD": "0"}},
+  {"name": "flash-q8-fit0",             "env": {"OLLAMA_FLASH_ATTENTION": "1", "OLLAMA_KV_CACHE_TYPE": "q8_0", "LLAMA_ARG_FIT_TARGET": "0"}},
+  {"name": "flash-q8-ctx8k",            "env": {"OLLAMA_FLASH_ATTENTION": "1", "OLLAMA_KV_CACHE_TYPE": "q8_0", "OLLAMA_CONTEXT_LENGTH": "8192"}},
+  {"name": "flash-q8-queue1",           "env": {"OLLAMA_FLASH_ATTENTION": "1", "OLLAMA_KV_CACHE_TYPE": "q8_0", "OLLAMA_MAX_QUEUE": "1"}},
+  {"name": "flash-q8-gpu0-fit0-par1",   "env": {"OLLAMA_FLASH_ATTENTION": "1", "OLLAMA_KV_CACHE_TYPE": "q8_0", "OLLAMA_GPU_OVERHEAD": "0", "LLAMA_ARG_FIT_TARGET": "0", "OLLAMA_NUM_PARALLEL": "1"}}
 ]'
 if [[ -n "$CONFIGS_FILE" ]]; then
   [[ -r "$CONFIGS_FILE" ]] || { echo "local-llm-tune-sweep: cannot read --configs-file $CONFIGS_FILE" >&2; exit 2; }

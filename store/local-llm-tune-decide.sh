@@ -125,11 +125,18 @@ if [[ -n "$CONFIGS_FILE" ]]; then
   [[ -r "$CONFIGS_FILE" ]] || { echo "local-llm-tune-decide: cannot read --configs-file $CONFIGS_FILE" >&2; exit 2; }
   CONFIGS_JSON="$(cat "$CONFIGS_FILE")"
 else
+  # Mirror of local-llm-tune-sweep.sh DEFAULT_CONFIGS (card bf8ae414 -- keep in sync):
+  # all 6 OLLAMA_* knobs + LLAMA_ARG_FIT_TARGET covered.
   CONFIGS_JSON='[
-  {"name": "baseline",            "env": {}},
-  {"name": "flash-q8",            "env": {"OLLAMA_FLASH_ATTENTION": "1", "OLLAMA_KV_CACHE_TYPE": "q8_0"}},
-  {"name": "flash-q4",            "env": {"OLLAMA_FLASH_ATTENTION": "1", "OLLAMA_KV_CACHE_TYPE": "q4_0"}},
-  {"name": "flash-q8-parallel1",  "env": {"OLLAMA_FLASH_ATTENTION": "1", "OLLAMA_KV_CACHE_TYPE": "q8_0", "OLLAMA_NUM_PARALLEL": "1"}}
+  {"name": "baseline",                  "env": {}},
+  {"name": "flash-q8",                  "env": {"OLLAMA_FLASH_ATTENTION": "1", "OLLAMA_KV_CACHE_TYPE": "q8_0"}},
+  {"name": "flash-q4",                  "env": {"OLLAMA_FLASH_ATTENTION": "1", "OLLAMA_KV_CACHE_TYPE": "q4_0"}},
+  {"name": "flash-q8-parallel1",        "env": {"OLLAMA_FLASH_ATTENTION": "1", "OLLAMA_KV_CACHE_TYPE": "q8_0", "OLLAMA_NUM_PARALLEL": "1"}},
+  {"name": "flash-q8-gpu0",             "env": {"OLLAMA_FLASH_ATTENTION": "1", "OLLAMA_KV_CACHE_TYPE": "q8_0", "OLLAMA_GPU_OVERHEAD": "0"}},
+  {"name": "flash-q8-fit0",             "env": {"OLLAMA_FLASH_ATTENTION": "1", "OLLAMA_KV_CACHE_TYPE": "q8_0", "LLAMA_ARG_FIT_TARGET": "0"}},
+  {"name": "flash-q8-ctx8k",            "env": {"OLLAMA_FLASH_ATTENTION": "1", "OLLAMA_KV_CACHE_TYPE": "q8_0", "OLLAMA_CONTEXT_LENGTH": "8192"}},
+  {"name": "flash-q8-queue1",           "env": {"OLLAMA_FLASH_ATTENTION": "1", "OLLAMA_KV_CACHE_TYPE": "q8_0", "OLLAMA_MAX_QUEUE": "1"}},
+  {"name": "flash-q8-gpu0-fit0-par1",   "env": {"OLLAMA_FLASH_ATTENTION": "1", "OLLAMA_KV_CACHE_TYPE": "q8_0", "OLLAMA_GPU_OVERHEAD": "0", "LLAMA_ARG_FIT_TARGET": "0", "OLLAMA_NUM_PARALLEL": "1"}}
 ]'
 fi
 
