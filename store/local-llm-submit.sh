@@ -111,7 +111,14 @@ print(json.dumps({
 }))
 ')"
 
-RESP="$(curl -fsS -m 10 -X POST "$DASH_API" \
+# --fail-with-body (not plain -f): a routeTask rejection (422, category/reason in the JSON body,
+# card 7405ca61) is a REAL answer the caller needs to see, not a transport failure. Plain -f
+# discards the body on any non-2xx, so a 422 and an actually-unreachable dashboard looked
+# identical downstream -- the exit-7 branch below could only ever print an empty string (card
+# 581d35f8, Cybersec finding on 28c92213). --fail-with-body still exits non-zero on HTTP errors
+# (so the || true / empty-RESP "unreachable" path below still fires for a real connection
+# failure), it just no longer throws the body away first.
+RESP="$(curl --fail-with-body -sS -m 10 -X POST "$DASH_API" \
   -H "@$hdr_file" -H "Content-Type: application/json" \
   --data-binary "$BODY" 2>/dev/null || true)"
 
