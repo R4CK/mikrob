@@ -60,6 +60,8 @@ Only fetch URLs from these approved domains. Reject all others with `{ "error": 
 - `techcrunch.com`
 - `feeds.reuters.com`
 - `feeds.bbci.co.uk`
+- `github.com`
+- `raw.githubusercontent.com`
 
 For any other domain, return:
 ```json

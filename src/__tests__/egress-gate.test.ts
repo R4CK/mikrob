@@ -105,6 +105,14 @@ describe('the quarantine tier', () => {
     expect(isEgressBlocked('WebFetch', { url: 'https://feeds.example.org/rss' }, list, '')).toBe(true)
   })
 
+  it('reaches github.com and raw.githubusercontent.com -- the GitHub-first rule\'s own targets (card 5cd87b6f)', () => {
+    expect(isEgressBlocked('WebFetch', { url: 'https://github.com/anthropics/claude-code' }, EMPTY, QUARANTINE)).toBe(false)
+    expect(isEgressBlocked('WebFetch', { url: 'https://raw.githubusercontent.com/anthropics/claude-code/main/README.md' }, EMPTY, QUARANTINE)).toBe(false)
+    // Still only through the quarantine boundary, not opened to the main agent.
+    expect(isEgressBlocked('WebFetch', { url: 'https://github.com/anthropics/claude-code' }, EMPTY, '')).toBe(true)
+    expect(isEgressBlocked('WebFetch', { url: 'https://raw.githubusercontent.com/anthropics/claude-code/main/README.md' }, EMPTY, '')).toBe(true)
+  })
+
   it('reports the tier so the grant can be audited', () => {
     // A fetch nobody can see is a hole nobody can find: the entry point logs
     // an ALLOWED_QUARANTINE line off this tier.

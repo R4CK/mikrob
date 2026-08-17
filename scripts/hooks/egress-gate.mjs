@@ -160,6 +160,15 @@ const QUARANTINE_DOMAINS = [
   { domain: 'feeds.reuters.com' },
   { domain: 'feeds.bbci.co.uk' },
   { domain: 'www.reddit.com', path: (p) => p.endsWith('.rss') },
+  // Card 5cd87b6f (Cybersec): the GitHub-first workflow rule (root CLAUDE.md
+  // rule 10) sends every agent to github.com/raw.githubusercontent.com BEFORE
+  // building anything from scratch, but neither host was reachable through the
+  // quarantine boundary -- only api.github.com (the REST API, builtin tier)
+  // was. That structural gap steered agents toward a Bash `curl`/direct-fetch
+  // bypass instead, since the sanctioned quarantined path could not reach the
+  // one place the rule tells them to look first.
+  { domain: 'github.com' },
+  { domain: 'raw.githubusercontent.com' },
 ]
 
 function matchesQuarantineDomain(url, extraDomains = []) {
