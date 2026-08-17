@@ -206,16 +206,36 @@ itt írhatod meg.
 
 // Short-TTL caches so the synchronous, frequently-polled status endpoints
 // (`/api/agents` on load, `/api/agents/activity` every 3s) don't issue a fresh
-// blocking ssh call per remote agent per request. Only remote agents are cached;
-// local agents fetch fresh (sub-ms tmux). See remote-status-cache.ts.
+// blocking ssh/tmux call per agent per request. Remote agents use a longer TTL
+// (bounds the ssh round-trip cost). Local agents also need a cache, despite an
+// individual tmux call being sub-ms: under a concurrent burst (many agents x
+// many simultaneous requests), the local `execFileSync` calls stack up on the
+// single JS thread and stall the event loop for every route, not just this one
+// -- card 9a2fd3f7, Cybersec NO-GO (comment 14156): live burst repro measured
+// 18 execFileSync calls (14x list-sessions + 4x capture-pane) per request,
+// 20 concurrent requests, ~1.5s of pure synchronous tmux time, and a negative
+// control on an unrelated endpoint was NOT flat during the burst -- proof the
+// whole event loop stalled, not just this route. Local gets a short TTL so
+// start/stop still reflects promptly (no explicit invalidation, same
+// trade-off already accepted for remote agents). See remote-status-cache.ts.
 const remoteRunStateCache = new RemoteStatusCache<AgentRunState>(5000)
+const localRunStateCache = new RemoteStatusCache<AgentRunState>(2000)
 const remotePaneCache = new RemoteStatusCache<string | null>(3000)
+const localPaneCache = new RemoteStatusCache<string | null>(2000)
 
-// Resolve an agent's run state, cached for remote agents to avoid blocking on
-// ssh. `isRemote` is passed by the caller (it already read the remote config).
+// Resolve an agent's run state through a short-TTL cache -- always, local or
+// remote (card 9a2fd3f7). `isRemote` is passed by the caller (it already read
+// the remote config) and only selects which cache/TTL to use.
 function agentRunStateCached(name: string, isRemote: boolean): AgentRunState {
-  if (!isRemote) return agentRunState(name)
-  return remoteRunStateCache.getOrRefresh(name, Date.now(), () => agentRunState(name), 'unreachable')
+  const cache = isRemote ? remoteRunStateCache : localRunStateCache
+  return cache.getOrRefresh(name, Date.now(), () => agentRunState(name), 'unreachable')
+}
+
+// Resolve a running agent's tmux pane through the same short-TTL cache scheme
+// as agentRunStateCached, for the same burst-thundering-herd reason.
+function capturePaneCached(name: string, host: string | null): string | null {
+  const cache = host ? remotePaneCache : localPaneCache
+  return cache.getOrRefresh(name, Date.now(), () => capturePane(agentSessionName(name), host), null)
 }
 
 // Discord channel ids are snowflakes — base-10 numeric ids, 17 to 20 digits
@@ -462,8 +482,9 @@ async function getAgentSummary(name: string): Promise<AgentSummary> {
   const runningSince = running ? getAgentRunningSince(name) : null
 
   // Reauth badge: only meaningful for a running session (a stopped agent has
-  // no pane to inspect). One capture-pane per running agent on the list poll.
-  const reauth = running ? detectReauthNeeded(capturePane(agentSessionName(name))) : { needsReauth: false }
+  // no pane to inspect). One capture-pane per running agent on the list poll,
+  // cached (local and remote) for the same burst reason as agentRunStateCached.
+  const reauth = running ? detectReauthNeeded(capturePaneCached(name, remote.host ?? null)) : { needsReauth: false }
   const configDir = resolveAgentConfigDir(name).configDir ?? undefined
   // Independent reads (different offsets into the same or different files) -- run concurrently
   // rather than sequentially awaiting each (card 9a2fd3f7).
@@ -710,17 +731,14 @@ export async function tryHandleAgents(ctx: RouteContext, webDir: string): Promis
     }
 
     for (const name of withoutMainAgent(listAgentNames())) {
-      // Remote agents: resolve run state + pane through the short-TTL caches so
-      // this 3s-polled endpoint never blocks the event loop on an ssh timeout.
+      // Resolve run state + pane through the short-TTL caches (local and
+      // remote) so this 3s-polled endpoint never blocks the event loop, either
+      // on an ssh timeout or on a burst of local tmux execFileSync calls
+      // (card 9a2fd3f7).
       const host = readAgentRemoteHost(name)
       const runState = agentRunStateCached(name, host != null)
       const running = runState === 'running'
-      let pane: string | null = null
-      if (running) {
-        pane = host
-          ? remotePaneCache.getOrRefresh(name, Date.now(), () => capturePane(agentSessionName(name), host), null)
-          : capturePane(agentSessionName(name))
-      }
+      const pane = running ? capturePaneCached(name, host) : null
       const state = runState === 'unreachable' ? 'unreachable' : label(running, pane)
       entries.push({ name, isMain: false, running, state, mode: modeOf(running, pane), tail: tailOf(pane) })
     }
