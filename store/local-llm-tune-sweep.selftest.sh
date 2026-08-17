@@ -68,11 +68,11 @@ new_unit
 out3="$(OLLAMA_UNIT="$SB/ollama.service" LOCAL_LLM_GPU_LOCK_PATH="$SB/gpu.lock" bash "$SCRIPT" --dry-run 2>&1)"
 rc3=$?
 [[ "$rc3" -eq 0 ]] && ok "clean dry-run over all default configs exits 0" || bad "clean dry-run exits 0" "rc=$rc3: $out3"
-for cfg in baseline flash-q8 flash-q4 flash-q8-parallel1; do
+for cfg in baseline flash-q8 flash-q4 flash-q8-parallel1 flash-q8-gpu0 flash-q8-fit0 flash-q8-ctx8k flash-q8-queue1 flash-q8-gpu0-fit0-par1; do
   [[ "$out3" == *"config: $cfg"* ]] || bad "default configs include '$cfg'" "$out3"
 done
-[[ "$(echo "$out3" | grep -c '^--- config:')" -eq 4 ]] && ok "default config set has 4 entries (more than the old fixed pair)" \
-  || bad "default config set has 4 entries" "$out3"
+[[ "$(echo "$out3" | grep -c '^--- config:')" -eq 9 ]] && ok "default config set has 9 entries (all 6 OLLAMA_* knobs + LLAMA_ARG_FIT_TARGET covered)" \
+  || bad "default config set has 9 entries" "$out3"
 if diff -q "$SB/ollama.service" <(printf '%s' "$ORIG_UNIT") >/dev/null; then
   ok "unit restored byte-for-byte after a clean sweep"
 else
