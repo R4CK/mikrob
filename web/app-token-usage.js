@@ -21,27 +21,41 @@ let tuChartState = null
 // Fallback row is used when model is unknown or not yet captured.
 // cache-write is 1.25x input, cache-read is 0.1x input -- keep the derived
 // columns consistent with `in` when editing a row.
-// Reconciled against the official pricing page 2026-08-16 (card 270e3ef4).
+// Reconciled against the official pricing page 2026-08-17 (weekly scheduled-task check,
+// card 270e3ef4).
 // Sonnet 5 launched on $2/$10 pricing, originally due to revert to $3/$15 on
 // 2026-09-01; Anthropic has since cancelled that reversion, so $2/$10 is the
 // standing rate now, not a temporary one -- do NOT reintroduce a date-based
 // flip back to $3/$15.
 const TU_SONNET5_PRICE = { in: 2.0, out: 10.0, cw: 2.50, cr: 0.20 }
 
+// 2026-08-17 weekly check: 'claude-opus-4-5' had no explicit row, so the longest-prefix matcher
+// below fell through to 'claude-opus-4' (15/75) -- a real bug (Opus 4.5 actually bills at the
+// 4.6/4.7/4.8 tier, 5/25) that just had not fired yet because no opus-4-5 usage had been recorded.
+// 'claude-haiku-3-5' had the same shape of gap, falling through to `default` (3/15) instead of its
+// real 0.80/4. Both added below; explicit rows added for opus-4-1/sonnet-4 too even though the
+// existing fallback already priced them correctly (prefix match to 'claude-opus-4' /
+// coincidentally-equal `default`), so every row in this table is a confirmed key, not an
+// accidental fallthrough.
 const TU_MODEL_PRICING = {
-  // Confirmed against the official pricing page 2026-08-16: same tier as 4.6/4.7/4.8 (5 / 25).
+  // Confirmed against the official pricing page 2026-08-17: same tier as 4.6/4.7/4.8 (5 / 25).
   'claude-opus-5':       { in: 5.0,   out: 25.0,  cw: 6.25,  cr: 0.50 },
   'claude-opus-4-8':     { in: 5.0,   out: 25.0,  cw: 6.25,  cr: 0.50 },
   'claude-opus-4-7':     { in: 5.0,   out: 25.0,  cw: 6.25,  cr: 0.50 },
   'claude-opus-4-6':     { in: 5.0,   out: 25.0,  cw: 6.25,  cr: 0.50 },
-  // Opus 4.0 / 4.1 -- the last generation still on the old Opus pricing.
+  'claude-opus-4-5':     { in: 5.0,   out: 25.0,  cw: 6.25,  cr: 0.50 },
+  // Opus 4.0 / 4.1 -- the last generation still on the old Opus pricing (retired, still billable
+  // on Bedrock/Google Cloud).
+  'claude-opus-4-1':     { in: 15.0,  out: 75.0,  cw: 18.75, cr: 1.50 },
   'claude-opus-4':       { in: 15.0,  out: 75.0,  cw: 18.75, cr: 1.50 },
   'claude-sonnet-5':     TU_SONNET5_PRICE,
   'claude-sonnet-4-6':   { in: 3.0,   out: 15.0,  cw: 3.75,  cr: 0.30 },
   'claude-sonnet-4-5':   { in: 3.0,   out: 15.0,  cw: 3.75,  cr: 0.30 },
+  'claude-sonnet-4':     { in: 3.0,   out: 15.0,  cw: 3.75,  cr: 0.30 }, // retired, still billable on Bedrock/Google Cloud
   'claude-fable-5':      { in: 10.0,  out: 50.0,  cw: 12.50, cr: 1.00 },
   'claude-mythos-5':     { in: 10.0,  out: 50.0,  cw: 12.50, cr: 1.00 },
   'claude-haiku-4-5':    { in: 1.0,   out: 5.0,   cw: 1.25,  cr: 0.10 },
+  'claude-haiku-3-5':    { in: 0.80,  out: 4.0,   cw: 1.00,  cr: 0.08 }, // retired, still billable on Bedrock/Google Cloud
   default:               { in: 3.0,   out: 15.0,  cw: 3.75,  cr: 0.30 },
 }
 

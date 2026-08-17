@@ -4,7 +4,8 @@
 //
 // Static, hand-maintained -- no live provider API call, matching every other guardrail in this
 // slice (pure SQL + arithmetic, no network, no secrets). Source: the official pricing page
-// (https://platform.claude.com/docs/en/about-claude/pricing), reconciled 2026-08-16 (card 270e3ef4).
+// (https://platform.claude.com/docs/en/about-claude/pricing), reconciled 2026-08-17 (weekly
+// scheduled-task check, card 270e3ef4).
 // Sonnet 5 launched on $2/$10 INTRO pricing, originally due to revert to $3/$15 on 2026-09-01;
 // Anthropic has since cancelled that reversion, so $2/$10 is now the standing rate, not a
 // temporary one -- do not reintroduce a date-based flip back to $3/$15. There is no automated
@@ -26,7 +27,15 @@ export const CACHE_READ_MULTIPLIER = 0.1
 export const CACHE_WRITE_MULTIPLIER = 1.25 // 5-minute TTL, Claude Code's default
 
 // Keyed by the BASE model id (date-suffix stripped, see stripDateSuffix) -- matches what this repo
-// actually records in token_usage.model. Reconciled against the official pricing page 2026-08-16.
+// actually records in token_usage.model. Reconciled against the official pricing page 2026-08-17.
+//
+// Card 7405ca61's sibling weekly check (2026-08-17): the official page also lists Opus 4.5 and
+// several retired-but-still-billable models (Opus 4.1/4, Sonnet 4.5/4, Haiku 3.5, on Bedrock/Google
+// Cloud). None had appeared in token_usage yet, so this table was not YET wrong for anything
+// actually recorded -- but web/app-token-usage.js's prefix-matching table WAS already silently
+// mispricing Opus 4.5 (falling through to the Opus 4/4.1 rate, 15/75 instead of 5/25) had it ever
+// appeared. Added here too so a future estimateCostUsd() call resolves instead of returning null
+// (unpriced) the moment one of these shows up in real usage.
 export const MODEL_PRICING: Readonly<Record<string, ModelRate>> = {
   'claude-fable-5': { inputPerMTok: 10.0, outputPerMTok: 50.0 },
   'claude-mythos-5': { inputPerMTok: 10.0, outputPerMTok: 50.0 },
@@ -34,9 +43,15 @@ export const MODEL_PRICING: Readonly<Record<string, ModelRate>> = {
   'claude-opus-4-8': { inputPerMTok: 5.0, outputPerMTok: 25.0 },
   'claude-opus-4-7': { inputPerMTok: 5.0, outputPerMTok: 25.0 },
   'claude-opus-4-6': { inputPerMTok: 5.0, outputPerMTok: 25.0 },
+  'claude-opus-4-5': { inputPerMTok: 5.0, outputPerMTok: 25.0 },
+  'claude-opus-4-1': { inputPerMTok: 15.0, outputPerMTok: 75.0 }, // retired, still billable on Bedrock/Google Cloud
+  'claude-opus-4': { inputPerMTok: 15.0, outputPerMTok: 75.0 }, // retired, still billable on Google Cloud
   'claude-sonnet-5': { inputPerMTok: 2.0, outputPerMTok: 10.0 }, // standing rate, not a temporary intro price
   'claude-sonnet-4-6': { inputPerMTok: 3.0, outputPerMTok: 15.0 },
+  'claude-sonnet-4-5': { inputPerMTok: 3.0, outputPerMTok: 15.0 },
+  'claude-sonnet-4': { inputPerMTok: 3.0, outputPerMTok: 15.0 }, // retired, still billable on Bedrock/Google Cloud
   'claude-haiku-4-5': { inputPerMTok: 1.0, outputPerMTok: 5.0 },
+  'claude-haiku-3-5': { inputPerMTok: 0.80, outputPerMTok: 4.0 }, // retired, still billable on Bedrock/Google Cloud
 }
 
 /** Strips a trailing `-YYYYMMDD` snapshot suffix, e.g. 'claude-haiku-4-5-20251001' -> 'claude-haiku-4-5'. */

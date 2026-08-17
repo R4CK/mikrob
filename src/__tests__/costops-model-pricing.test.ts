@@ -90,4 +90,26 @@ describe('costops estimateCostUsd', () => {
       expect(rate.outputPerMTok, model).toBeGreaterThan(0)
     }
   })
+
+  // Weekly pricing-reconciliation check (card 270e3ef4), 2026-08-17 run: the official pricing page
+  // lists Opus 4.5 and several still-billable retired models (Opus 4.1/4, Sonnet 4, Haiku 3.5) this
+  // table did not carry yet. None had appeared in token_usage yet, so nothing was silently
+  // mispriced here (estimateCostUsd fails closed to null) -- but the SIBLING table in
+  // web/app-token-usage.js WAS already silently mispricing Opus 4.5 via prefix-fallthrough (see
+  // token-usage-pricing-fallthrough.test.ts). Pinned here so a future accidental removal of these
+  // rows is caught the moment real usage would otherwise start going unpriced/tracked as a gap.
+  it('resolves the models added in the 2026-08-17 reconciliation pass', () => {
+    const added = ['claude-opus-4-5', 'claude-opus-4-1', 'claude-opus-4', 'claude-sonnet-4-5', 'claude-sonnet-4', 'claude-haiku-3-5']
+    for (const model of added) {
+      const cost = estimateCostUsd(model, { input_tokens: 1000, output_tokens: 1000, cache_read_tokens: 0, cache_creation_tokens: 0, thinking_tokens: 0 })
+      expect(cost, `${model} should resolve to a known rate`).not.toBeNull()
+    }
+  })
+
+  it('Opus 4.5 is priced at its own tier (5/25), not the old Opus 4/4.1 tier (15/75)', () => {
+    const cost = estimateCostUsd('claude-opus-4-5', {
+      input_tokens: 1_000_000, output_tokens: 0, cache_read_tokens: 0, cache_creation_tokens: 0, thinking_tokens: 0,
+    })
+    expect(cost).toBe(5.0)
+  })
 })
