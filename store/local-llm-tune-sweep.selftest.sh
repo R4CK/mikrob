@@ -127,6 +127,91 @@ else
   bad "mid-sweep SIGTERM restores original unit content" "got: $(cat "$SB/ollama.service")"
 fi
 
+# --- 6. Cybersec NO-GO (comment 14379, card 711b696f): the RESTORE (safety-net) restart must wait
+# for the GPU lock exactly like the forward config-apply restart does. Check 5 above cannot catch
+# this -- DRY_RUN=1 skips the systemctl calls entirely, so a missing flock in restore_baseline() is
+# structurally invisible to it. This drives the REAL (non-dry-run) code path with a fake systemctl +
+# a fake bench script, so it needs no real GPU/ollama.
+#
+# NOTE ON METHOD: an earlier version of this check tried to force the race by sending the sweep a
+# real SIGTERM mid-bench. That is unreliable here: the sweep's main loop runs as the tail stage of a
+# multi-stage pipeline (`... | while ...; done`), and bash defers a pending trap until its OWN
+# foreground wait() returns -- which only happens once the WHOLE piped while-loop (every remaining
+# config) has finished on its own. A signal sent mid-loop does not cut that short; it just sits
+# pending until natural completion, which defeats the point of "mid-sweep". The race Cybersec found
+# does not need an artificial interruption to reproduce, though: restore_baseline() ALSO runs on
+# perfectly NORMAL completion (same EXIT trap), and by then the main loop has already released the
+# lock (it unlocks before invoking bench on the final config, and never re-locks afterward) -- so a
+# plain, uninterrupted single-config run already lands in the exact vulnerable window. This drives
+# that directly: start an independent lock holder the instant the final bench call begins, and check
+# that the restore's "systemctl restart" is only invoked after the holder releases. -----------------
+new_unit
+mkdir -p "$SB/bin6"
+SYSLOG="$SB/systemctl.log"
+: > "$SYSLOG"
+cat > "$SB/bin6/systemctl" <<EOF
+#!/usr/bin/env bash
+echo "\$(date +%s.%N) \$*" >> "$SYSLOG"
+case "\$*" in
+  *"is-active ollama"*) echo active; exit 0 ;;
+  *) exit 0 ;;
+esac
+EOF
+chmod +x "$SB/bin6/systemctl"
+STARTED_MARK="$SB/bench-started"
+cat > "$SB/bin6/fake-bench.sh" <<EOF
+#!/usr/bin/env bash
+echo "label,model,ctx,gpu_split,ctx_loaded,kv_mib,kv_type,load_ms,prompt_tps,eval_tps,ok"
+: > "$STARTED_MARK"
+sleep 1
+echo "fake,model,4096,-,-,-,-,-,-,-,ok"
+EOF
+chmod +x "$SB/bin6/fake-bench.sh"
+cat > "$SB/one-config.json" <<'JSON'
+[{"name": "solo", "env": {"OLLAMA_FLASH_ATTENTION": "1"}}]
+JSON
+
+LOCKFILE="$SB/gpu-restore-race.lock"
+PATH="$SB/bin6:$PATH" OLLAMA_UNIT="$SB/ollama.service" LOCAL_LLM_GPU_LOCK_PATH="$LOCKFILE" \
+  LOCAL_LLM_BENCH_SCRIPT="$SB/bin6/fake-bench.sh" LOCAL_LLM_LOCK_WAIT=30 \
+  bash "$SCRIPT" --configs-file "$SB/one-config.json" --ctx 4096 --repeat 1 > "$SB/race.log" 2>&1 &
+sweep_pid=$!
+
+# The instant the (only) config's bench call starts, the main loop has ALREADY released the lock
+# (it unlocks right before invoking bench, card d747d772's own design) and has no more configs left
+# -- this is precisely the "lock free, about to exit" window Cybersec's live probe found. Grab the
+# lock here to simulate a real local-llm.sh caller landing in it, and hold it well past how long the
+# fake bench + trailing shutdown takes, so the restore MUST either wait for us or (unfixed) barge in.
+for _i in $(seq 1 300); do
+  [[ -f "$STARTED_MARK" ]] && break
+  sleep 0.02
+done
+[[ -f "$STARTED_MARK" ]] || bad "fake bench started (test precondition)" "$(cat "$SB/race.log")"
+( exec 8>"$LOCKFILE"; flock 8; sleep 4; date +%s.%N > "$SB/holder-release.ts" ) &
+holder_pid=$!
+
+wait "$sweep_pid" 2>/dev/null
+wait "$holder_pid" 2>/dev/null
+
+restart_calls="$(grep -c "restart ollama" "$SYSLOG" || true)"
+if [[ "$restart_calls" -lt 2 ]]; then
+  bad "restore_baseline actually called systemctl restart (safety-net ran)" "only $restart_calls restart call(s) logged: $(cat "$SYSLOG")"
+else
+  ok "restore_baseline's systemctl restart ran (safety-net fired as expected)"
+fi
+
+if [[ -f "$SB/holder-release.ts" ]]; then
+  restore_ts="$(grep "restart ollama" "$SYSLOG" | tail -1 | awk '{print $1}')"
+  holder_ts="$(cat "$SB/holder-release.ts")"
+  if python3 -c "import sys; sys.exit(0 if float('$restore_ts') >= float('$holder_ts') else 1)"; then
+    ok "restore restart waited for the independent lock holder to release (no DoS on a live caller)"
+  else
+    bad "restore restart waited for the lock holder" "restore_ts=$restore_ts < holder_release_ts=$holder_ts -- restarted WHILE a real caller held the lock"
+  fi
+else
+  bad "holder release timestamp recorded (test infra)" "$(cat "$SB/race.log")"
+fi
+
 echo
 if [[ $fail -gt 0 ]]; then echo "$fail FAILED, $pass passed"; exit 1; fi
 echo "All $pass checks pass."
