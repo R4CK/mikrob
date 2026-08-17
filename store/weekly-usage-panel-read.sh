@@ -61,13 +61,30 @@ revive_pane() {
   fi
   tmux send-keys -t "$PANE" Enter 2>/dev/null; sleep 4
   # Logged in via refresh token when the welcome/prompt is up and no /login screen shows.
+  #
+  # POLL instead of a single check (card e1d71490). Measured 2026-08-16/17: both relogin
+  # failures landed on the FIRST heartbeat tick after a genuine Windows/WSL FULL shutdown
+  # (journalctl boot list: 7+ hours off overnight), never after a plain in-session restart
+  # -- and only 17 days into a refresh token the 2026-07-31 fix assumed would live to
+  # ~Aug 27, too early for a real TTL expiry to explain it. System clock was correctly
+  # RTC-set at boot (ruled out via dmesg/timedatectl), so the remaining, testable
+  # explanation is a COLD full-VM boot leaving network/DNS not yet ready inside the
+  # original fixed ~25s budget, since the fix was only ever tested against a tmux-kill in
+  # an already-running, network-warm WSL. This keeps trying for up to 90s before
+  # concluding the token itself is dead; a genuinely dead token still falls back to the
+  # Peti browser-OAuth flow, just up to ~65s later.
+  local waited=25
   cap="$(tmux capture-pane -t "$PANE" -p 2>/dev/null || true)"
-  if printf '%s' "$cap" | grep -qiE 'Welcome back|manual mode on|for shortcuts'; then
-    echo "revive: panel back up, Max-authed via refresh token (no Peti login needed)." >&2
-    return 0
-  fi
-  echo "revive: panel up but not authed (refresh token likely expired) -> Peti /login needed." >&2
-  return 1
+  while ! printf '%s' "$cap" | grep -qiE 'Welcome back|manual mode on|for shortcuts'; do
+    if [ "$waited" -ge 90 ]; then
+      echo "revive: panel up but not authed after ${waited}s (refresh token likely expired) -> Peti /login needed." >&2
+      return 1
+    fi
+    sleep 10; waited=$((waited + 10))
+    cap="$(tmux capture-pane -t "$PANE" -p 2>/dev/null || true)"
+  done
+  echo "revive: panel back up, Max-authed via refresh token (no Peti login needed, ${waited}s)." >&2
+  return 0
 }
 
 # 1) Panel must exist (dedicated Max-authed /usage panel). Auto-revive after reboot before failing.
