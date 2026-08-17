@@ -75,6 +75,26 @@ else
   echo "  [skip] WSL fixed-path branch -- /usr/lib/wsl/lib/nvidia-smi not present on this host"
 fi
 
+# --- 3b. the script's OWN COMPILED-IN default, with NO override at all (Cybersec NO-GO, comment
+# 14338): check #3 above always passes WSL2_NVIDIA_SMI_PATH explicitly, so it never exercises the
+# literal default baked into the script (line 44: `WSL2_NVIDIA_SMI_PATH="${WSL2_NVIDIA_SMI_PATH:-...}"`)
+# -- a future typo in that literal would go undetected by check #3 while still showing "7/7 green".
+# This drives the script with the env var completely UNSET, only PATH stripped of any real
+# nvidia-smi, so the fallback must resolve through the compiled-in default or fail. -------------------
+if [[ -x /usr/lib/wsl/lib/nvidia-smi ]]; then
+  out3b="$(PATH="/usr/bin:/bin" env -u WSL2_NVIDIA_SMI_PATH bash "$SCRIPT" 2>/dev/null)"
+  echo "$out3b" | python3 -c '
+import json, sys
+d = json.load(sys.stdin)
+assert d["gpu"]["backend"] == "cuda", d
+assert d["gpu"]["detection_method"] == "/usr/lib/wsl/lib/nvidia-smi", d
+' 2>/tmp/hwdetect-default.$$ && ok "compiled-in default WSL2 path (no override) finds the real GPU" \
+    || bad "compiled-in default WSL2 path (no override) finds the real GPU" "$(cat /tmp/hwdetect-default.$$)"
+  rm -f /tmp/hwdetect-default.$$
+else
+  echo "  [skip] compiled-in default path -- /usr/lib/wsl/lib/nvidia-smi not present on this host"
+fi
+
 # --- 4. no-GPU fallback: neither PATH nor the (overridden, nonexistent) fixed path resolve ---------
 out4="$(PATH="/usr/bin:/bin" WSL2_NVIDIA_SMI_PATH=/nonexistent/nvidia-smi bash "$SCRIPT" 2>/dev/null)"
 echo "$out4" | python3 -c '
