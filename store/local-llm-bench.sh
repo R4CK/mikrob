@@ -14,7 +14,7 @@
 #   load_ms        model load time (0 when already resident)
 #   prompt_tps     prompt-eval tokens/sec
 #   eval_tps       generation tokens/sec
-#   ok             whether the request succeeded at all
+#   ok             ok / FAIL / LOCKBUSY (GPU lock timed out -- not attempted, not a config failure)
 #
 # USAGE:
 #   local-llm-bench.sh [--model M] [--ctx 4096,8192,16384] [--label baseline] [--repeat 3]
@@ -22,10 +22,27 @@
 # effect being measured -- one run per config would let noise masquerade as a result.
 # Env knobs are read by the OLLAMA SERVER, not here -- set them in the service unit and restart
 # ollama, then re-run this with a different --label to get the comparison rows.
+#
+# CONTENTION: every generate call (unload + measured) is serialised through the same GPU flock that
+# local-llm.sh uses for real production calls (LOCAL_LLM_GPU_LOCK_PATH, default
+# /tmp/local-llm-gpu.lock) -- a busy lock shows up as an "ok=LOCKBUSY" CSV row, not a fake FAIL for
+# the config under test (card d747d772).
 
 set -uo pipefail
 
 HOST="${OLLAMA_HOST:-http://127.0.0.1:11434}"
+
+# CONTENTION GUARD (card d747d772, plan-grilling 14327 point 2): this used to curl the GPU directly,
+# unguarded, while local-llm.sh's real production calls already serialise through a flock on
+# GPU_LOCK -- so a benchmark run and a real call could hit the GPU at the same instant. That does not
+# just make numbers noisy (the old mitigation: "keep the best of --repeat runs"), it can unload a
+# model out from under someone else's in-flight generate (the "force a clean load" keep_alive:0 call
+# below). Fix: take the SAME lock, same path/env-var names as local-llm.sh, so a bench run and a real
+# call never overlap -- one flock, not two that could disagree.
+command -v flock >/dev/null 2>&1 || { echo "local-llm-bench: flock is required to serialise against real GPU calls (util-linux) -- refusing to run unlocked" >&2; exit 3; }
+GPU_LOCK="${LOCAL_LLM_GPU_LOCK_PATH:-/tmp/local-llm-gpu.lock}"
+GPU_LOCK_WAIT="${LOCAL_LLM_LOCK_WAIT:-600}"
+exec 9>"$GPU_LOCK" || { echo "local-llm-bench: cannot open GPU lock file $GPU_LOCK" >&2; exit 3; }
 
 STATE_FILE="${LOCAL_LLM_STATE_FILE:-$(dirname "${BASH_SOURCE[0]}")/local-llm-model-state.json}"
 BEST_TPS=0
@@ -127,6 +144,17 @@ echo "label,model,ctx,gpu_split,ctx_loaded,kv_mib,kv_type,load_ms,prompt_tps,eva
 IFS=',' read -ra CTXS <<< "$CTX_LIST"
 for ctx in "${CTXS[@]}"; do
  for _rep in $(seq 1 "$REPEAT"); do
+  # Hold the lock across BOTH the unload and the measured call, not just the second one -- otherwise
+  # a real call could slip in between "unload" and "measure" and this run would time a cold load that
+  # was actually caused by someone else's request, not by --ctx changing.
+  if ! flock -w "$GPU_LOCK_WAIT" 9; then
+    # Same distinction local-llm.sh makes: flock -w timing out means "GPU busy with someone else's
+    # call", not a generation failure -- a plain FAIL here would look like the config under test is
+    # broken when it was never even attempted.
+    echo "$LABEL,$MODEL,$ctx,-,-,-,-,-,-,-,LOCKBUSY"
+    continue
+  fi
+
   # Force a clean load so layer/KV numbers belong to THIS ctx, not a resident model.
   curl -fsS -m 20 -X POST "$HOST/api/generate" \
     -H 'Content-Type: application/json' \
@@ -143,6 +171,7 @@ print(json.dumps({
   "stream": False,
   "options": {"num_ctx": int(os.environ["CTX"]), "num_predict": 128, "temperature": 0},
 }))')" 2>/dev/null)
+  flock -u 9
 
   if [[ -z "$resp" ]]; then
     echo "$LABEL,$MODEL,$ctx,-,-,-,-,-,-,-,FAIL"
