@@ -23,11 +23,15 @@
 # an agent's own submission, so this is inspectable via /api/local-llm/queue/list if it ever
 # becomes a real problem in practice).
 #
-# SECURITY-CATEGORY ROUTING IS UNCHANGED (card 28c92213 alfeladat 3): this script only ENQUEUES --
-# it does not decide what the local model is trusted to run. The worker (local-llm-worker.sh)
-# and the router underneath it (routeTask --auto) still apply the same category-based
-# online/local decision as every other entry point; a security-decision-shaped prompt still goes
-# online regardless of which script submitted it.
+# SECURITY-CATEGORY ROUTING (card 28c92213 alfeladat 3 + card 7405ca61): this script only
+# ENQUEUES -- it does not decide what the local model is trusted to run. The enforcement point is
+# the enqueue API itself (POST /api/local-llm/queue in src/web/routes/local-llm.ts), which runs
+# every submitted prompt through routeTask() (src/local-llm-router.ts) before accepting it and
+# refuses a vetoed category (authz/isolation/architecture/security-decision) outright -- so every
+# caller of this endpoint gets the same gate regardless of which script submitted it, this one
+# included. (Card 7405ca61 found this gate did NOT exist yet when this script was first written --
+# the claim below was aspirational, not yet true; it now is, and it lives one layer below this
+# script rather than "in the worker" as originally described here.)
 #
 # USAGE:
 #   local-llm-submit.sh --agent <name> [--card-id <id>] [--task-type <t>] [--template <t>]
