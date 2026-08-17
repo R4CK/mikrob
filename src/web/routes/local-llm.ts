@@ -17,6 +17,8 @@ import {
   claimNext as claimNextLocalLlm,
   complete as completeLocalLlm,
   fail as failLocalLlm,
+  abstain as abstainLocalLlm,
+  verifyOutput,
   reclaimStaleRunning as reclaimStaleLocalLlm,
   getById as queueGetById,
   listRecent as queueListRecent,
@@ -1100,8 +1102,8 @@ export async function tryHandleLocalLlm(ctx: RouteContext): Promise<boolean> {
     return true
   }
 
-  // POST /api/local-llm/queue/<id>/complete | /fail -- worker result sinks.
-  const doneMatch = path.match(/^\/api\/local-llm\/queue\/(\d+)\/(complete|fail)$/)
+  // POST /api/local-llm/queue/<id>/complete | /fail | /abstain -- worker result sinks.
+  const doneMatch = path.match(/^\/api\/local-llm\/queue\/(\d+)\/(complete|fail|abstain)$/)
   if (doneMatch && method === 'POST') {
     const id = Number(doneMatch[1])
     const kind = doneMatch[2]
@@ -1118,12 +1120,28 @@ export async function tryHandleLocalLlm(ctx: RouteContext): Promise<boolean> {
       return true
     }
     if (kind === 'complete') {
-      completeLocalLlm(getDb(), id, String(payload['result'] ?? ''), Date.now())
-      json(res, { id, status: 'done' })
-    } else {
+      const result = String(payload['result'] ?? '')
+      // Independent verification (card ea931c14, komment 14138 requirement 1) BEFORE accepting the
+      // result as done -- a completion that fails this check is treated as a failed ATTEMPT, not a
+      // silent success, so it still counts toward the retry/escalation budget fail() already owns.
+      const verdict = verifyOutput(result)
+      if (!verdict.ok) {
+        const status = failLocalLlm(getDb(), id, `output verification failed: ${verdict.reason}`, Date.now())
+        if (status === 'escalated') notifyEscalation(id)
+        json(res, { id, status, verified: false, reason: verdict.reason })
+        return true
+      }
+      completeLocalLlm(getDb(), id, result, Date.now())
+      json(res, { id, status: 'done', verified: true })
+    } else if (kind === 'fail') {
       const status = failLocalLlm(getDb(), id, String(payload['error'] ?? 'unknown error'), Date.now())
       if (status === 'escalated') notifyEscalation(id)
       json(res, { id, status })
+    } else {
+      // abstain (card ea931c14, requirement 2): GPU-lock contention, not a real attempt -- does not
+      // touch the escalation path at all, so no notifyEscalation() call here.
+      abstainLocalLlm(getDb(), id)
+      json(res, { id, status: 'pending' })
     }
     return true
   }

@@ -96,6 +96,12 @@ import json,sys
 sys.stdout.write(json.dumps({"result": sys.stdin.read()}))
 ' | api POST "/local-llm/queue/$id/complete" body >/dev/null 2>&1
     log "done id=$id bytes=${#out}"
+  elif [ $rc -eq 6 ]; then
+    # GPU lock contention (card ea931c14): local-llm.sh never even started generating, so this is
+    # not a failed attempt -- abstain() reverts the attempts increment claim() already made instead
+    # of counting it toward the 3-strikes escalation budget.
+    api POST "/local-llm/queue/$id/abstain" >/dev/null 2>&1
+    log "abstain id=$id rc=$rc (gpu busy)"
   else
     printf '%s' "$out" | python3 -c '
 import json,sys

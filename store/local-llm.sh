@@ -24,7 +24,8 @@
 #   local-llm.sh --health                      # check Ollama + active model
 #   local-llm.sh --list                        # list locally available models
 #
-# Exit codes: 0 ok | 2 ollama down | 3 model missing | 4 bad usage | 5 api error
+# Exit codes: 0 ok | 2 ollama down | 3 model missing | 4 bad usage | 5 api error |
+#             6 gpu lock busy (contention, not a generation failure -- card ea931c14)
 # No secrets are embedded; this talks only to 127.0.0.1 Ollama.
 set -euo pipefail
 
@@ -37,7 +38,7 @@ TIMEOUT="${LOCAL_LLM_TIMEOUT:-120}"
 # kernel driver (dxgkrnl) crashed the whole VM under sustained/overlapping Ollama GPU load -- this
 # serializes generate calls system-wide so only one runs at a time, regardless of how many cards/
 # agents try to offload concurrently. Cheap insurance that holds even if a future driver regresses.
-GPU_LOCK="/tmp/local-llm-gpu.lock"
+GPU_LOCK="${LOCAL_LLM_GPU_LOCK_PATH:-/tmp/local-llm-gpu.lock}"
 GPU_LOCK_WAIT="${LOCAL_LLM_LOCK_WAIT:-600}"
 
 # Active-task registration (card 5dcd9bc8): best-effort, fail-open, never blocks/breaks the actual
@@ -331,8 +332,19 @@ if command -v timeout >/dev/null 2>&1; then
   GEN_CMD=(timeout -k 5 "$(( GPU_LOCK_WAIT + TIMEOUT + 10 ))" "${GEN_CMD[@]}")
 fi
 RESP=$("${GEN_CMD[@]}" 2>/dev/null) || {
+  gen_rc=$?
   log_usage err "$(_elapsed)"
   _queue_finish fail
+  # `flock -w N` exits 1, and ONLY 1, when it fails to acquire the lock within the wait -- it never
+  # execs the wrapped curl in that case, so this is reliably flock's own status, not curl's. curl
+  # itself (this fixed, well-formed invocation: static OLLAMA_HOST, fixed method/headers) never
+  # legitimately exits 1 -- that code is CURLE_UNSUPPORTED_PROTOCOL, which cannot occur here. So
+  # gen_rc=1 means "GPU busy with someone else's call", not "the model call failed" -- the local
+  # model never even started on this task (card ea931c14, plan-grilling requirement 2, MikroB
+  # komment 14138). The caller (local-llm-worker.sh) must not count this as a used attempt.
+  if [[ "$gen_rc" -eq 1 ]]; then
+    die 6 "gpu lock busy -- could not acquire within ${GPU_LOCK_WAIT}s (not a generation failure)"
+  fi
   # distinguish model-missing from generic error
   if ollama_up && ! curl -fsS -m 5 "$OLLAMA_HOST/api/tags" | grep -q "${MODEL%%:*}"; then
     die 3 "model '$MODEL' not pulled -- run: ollama pull $MODEL"

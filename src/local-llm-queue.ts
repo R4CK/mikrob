@@ -203,6 +203,25 @@ export function fail(db: Database, id: number, error: string, now: number): Queu
   return next
 }
 
+/**
+ * Undo a claim WITHOUT counting it as an attempt (card ea931c14, plan-grilling requirement 2,
+ * MikroB komment 14138: "GPU-kontencio miatti abstain nem szamithat probalkozaskent"). GPU-lock
+ * contention (local-llm.sh could not acquire the flock within GPU_LOCK_WAIT) means the local model
+ * never even STARTED on this task -- it is not the 7B failing at the work, it is the GPU being busy
+ * with someone else's call. claimNext() already incremented `attempts` at claim time (before the
+ * worker knows the outcome), so this reverts that increment rather than leaving it counted.
+ *
+ * Only valid from `running` (a row that was actually claimed); a no-op on any other status so a
+ * late/duplicate abstain call from a confused caller cannot resurrect an already-finished row.
+ */
+export function abstain(db: Database, id: number): void {
+  db.prepare(
+    `UPDATE local_llm_queue
+     SET status = 'pending', started_at = NULL, attempts = MAX(attempts - 1, 0), error = ?
+     WHERE id = ? AND status = 'running'`,
+  ).run('gpu busy -- requeued without counting as an attempt', id)
+}
+
 /** Return value of {@link reclaimStaleRunning}: the total rows recovered, plus which of those
  *  (if any) crossed MAX_ATTEMPTS and moved straight to `escalated` -- the caller (the queue-claim
  *  route) uses `escalatedIds` to fire the same online-agent notification fail() triggers, so a row
@@ -382,6 +401,51 @@ export function buildEscalationMessage(row: QueueRow): string {
     lines.push('', '--- Kontextus ---', row.context)
   }
   return lines.filter((l): l is string => l !== null).join('\n')
+}
+
+// --- Output verification (card ea931c14, plan-grilling requirement 1, MikroB komment 14138) -------
+//
+// "A sikeres/sikertelen eldontes NEM lehet a generalo (helyi 7B) modell sajat onertekelese." A
+// nonzero exit code from local-llm.sh already routes to fail() -- but rc=0 + non-empty text only
+// means the model returned SOMETHING, not that the something is usable. This is a SEPARATE,
+// independent gate the route layer runs before accepting a `complete`, catching the one failure
+// shape this repo has already measured and documented (local-llm-prompt-must-forbid-placeholders,
+// 2026-08-07): the 7B defaults to a "helpful outline" -- a signature plus a
+// `// implementation here`-style stub -- when a prompt does not forbid it explicitly enough, even
+// though the call itself succeeded and produced non-empty text.
+//
+// DELIBERATELY NOT an LLM judge (llm-classifier-in-a-control-path-must-be-temperature-zero,
+// local-llm-7b-difficulty-ceiling-benchmark): a second local-model call grading the first one is
+// just the SAME unreliable self-assessment problem one layer removed. This is a fixed, deterministic
+// pattern match against the ALREADY-DOCUMENTED failure shape -- no attempt to judge general code
+// quality or correctness, which stays the calling agent's job exactly as before (the result is still
+// a DRAFT the agent re-checks; this gate only catches the specific "not even an attempt" case).
+const PLACEHOLDER_MARKERS: readonly RegExp[] = [
+  /\bimplementation\s+(here|goes\s+here)\b/i,
+  /\byour\s+code\s+here\b/i,
+  /\btodo\b/i,
+  /\bfixme\b/i,
+  /\brest\s+of\s+(the\s+)?(function|code|implementation)\b/i,
+  /^\s*\.\.\.\s*$/m, // a line that is JUST an ellipsis stand-in for omitted content
+]
+
+export interface QueueVerifyResult {
+  readonly ok: boolean
+  readonly reason?: string
+}
+
+/** Independent, deterministic check of a local-LLM result before it is accepted as `done`. Does
+ *  NOT judge correctness -- only the specific, already-measured "stub instead of a real attempt"
+ *  shape (see the section header above). */
+export function verifyOutput(result: string): QueueVerifyResult {
+  const trimmed = result.trim()
+  if (!trimmed) return { ok: false, reason: 'empty output' }
+  for (const marker of PLACEHOLDER_MARKERS) {
+    if (marker.test(trimmed)) {
+      return { ok: false, reason: `placeholder marker matched: ${marker.source}` }
+    }
+  }
+  return { ok: true }
 }
 
 export { PRIORITY_RANK }

@@ -11,6 +11,8 @@ import {
   claimNext,
   complete,
   fail,
+  abstain,
+  verifyOutput,
   reclaimStaleRunning,
   getById,
   listRecent,
@@ -240,6 +242,104 @@ describe('complete / fail', () => {
     claimNext(db, T0 + 1)
     fail(db, id, 'x'.repeat(10_000), T0 + 2)
     expect((getById(db, id)!.error ?? '').length).toBeLessThanOrEqual(2000)
+  })
+})
+
+// Card ea931c14, plan-grilling requirement 2 (MikroB komment 14138): GPU-lock contention must not
+// count as a used attempt.
+describe('abstain (card ea931c14)', () => {
+  it('reverts the attempts increment claimNext() made and returns the row to pending', () => {
+    const id = enqueue(db, { agent: 'a', prompt: 'p' }, T0)
+    claimNext(db, T0 + 1)
+    expect(getById(db, id)!.attempts).toBe(1)
+    abstain(db, id)
+    const row = getById(db, id)!
+    expect(row.status).toBe('pending')
+    expect(row.attempts).toBe(0)
+    expect(row.started_at).toBeNull()
+  })
+
+  it('MUTATION-PROOF: three abstains in a row never reach the 3-strikes cap -- only real fail() calls count', () => {
+    const id = enqueue(db, { agent: 'a', prompt: 'p' }, T0)
+    for (let i = 0; i < MAX_ATTEMPTS + 5; i += 1) {
+      claimNext(db, T0 + i)
+      abstain(db, id)
+    }
+    // If abstain() secretly still counted as an attempt (e.g. a broken revert), this row would have
+    // been escalated by now -- it must still be plain pending, claimable forever.
+    expect(getById(db, id)!.status).toBe('pending')
+    expect(getById(db, id)!.attempts).toBe(0)
+    expect(claimNext(db, T0 + 999)!.id).toBe(id)
+  })
+
+  it('attempts never goes negative on a double-abstain of the same row', () => {
+    const id = enqueue(db, { agent: 'a', prompt: 'p' }, T0)
+    claimNext(db, T0 + 1)
+    abstain(db, id)
+    abstain(db, id) // second call finds status already 'pending', not 'running' -- must be a no-op
+    expect(getById(db, id)!.attempts).toBe(0)
+    expect(getById(db, id)!.status).toBe('pending')
+  })
+
+  it('is a no-op on a row that is not currently running (e.g. already done)', () => {
+    const id = enqueue(db, { agent: 'a', prompt: 'p' }, T0)
+    claimNext(db, T0 + 1)
+    complete(db, id, 'result', T0 + 2)
+    abstain(db, id)
+    const row = getById(db, id)!
+    expect(row.status).toBe('done')
+    expect(row.result).toBe('result')
+  })
+
+  it('interleaved with real failures: only the real fail() calls count toward escalation', () => {
+    const id = enqueue(db, { agent: 'a', prompt: 'p' }, T0)
+    claimNext(db, T0)
+    abstain(db, id) // gpu busy, does not count
+    claimNext(db, T0 + 1)
+    fail(db, id, 'real failure 1', T0 + 1) // attempts: 1
+    claimNext(db, T0 + 2)
+    abstain(db, id) // gpu busy again, does not count
+    claimNext(db, T0 + 3)
+    fail(db, id, 'real failure 2', T0 + 3) // attempts: 2
+    claimNext(db, T0 + 4)
+    expect(fail(db, id, 'real failure 3', T0 + 4)).toBe('escalated') // attempts: 3 = MAX_ATTEMPTS
+  })
+})
+
+// Card ea931c14, plan-grilling requirement 1 (MikroB komment 14138): the success/fail decision must
+// not be the generating model's own self-assessment. verifyOutput is the independent, deterministic
+// gate the route layer runs before accepting a `complete`.
+describe('verifyOutput (card ea931c14)', () => {
+  it('rejects empty output', () => {
+    expect(verifyOutput('')).toEqual({ ok: false, reason: 'empty output' })
+    expect(verifyOutput('   \n  ')).toEqual({ ok: false, reason: 'empty output' })
+  })
+
+  it('rejects the measured, documented 7B stub shape (local-llm-prompt-must-forbid-placeholders)', () => {
+    expect(
+      verifyOutput('function parseTtlMs(s) {\n  // Function implementation here\n}').ok,
+    ).toBe(false)
+    expect(verifyOutput('def foo():\n    # TODO\n    pass').ok).toBe(false)
+    expect(verifyOutput('// your code here').ok).toBe(false)
+    expect(verifyOutput('// FIXME: handle edge case').ok).toBe(false)
+    expect(verifyOutput('function f() {\n  ...\n}').ok).toBe(false)
+    expect(verifyOutput('// rest of the implementation follows the same pattern').ok).toBe(false)
+  })
+
+  it('accepts real, complete code with no placeholder markers', () => {
+    const real = `function parseTtlMs(s) {
+  const m = /^(\\d+)(ms|s|m)$/.exec(s)
+  if (!m) throw new Error('bad ttl')
+  const n = Number(m[1])
+  return m[2] === 'ms' ? n : m[2] === 's' ? n * 1000 : n * 60_000
+}`
+    expect(verifyOutput(real)).toEqual({ ok: true })
+  })
+
+  it('does not false-positive on legitimate code containing "to do" as prose, only the TODO marker word', () => {
+    // Guards against an overly broad regex -- this is real, complete code that happens to describe
+    // what a function does; it must not be rejected just because a marker-ish word appears loosely.
+    expect(verifyOutput('function nothingToDoHere() { return 1 }').ok).toBe(true)
   })
 })
 
