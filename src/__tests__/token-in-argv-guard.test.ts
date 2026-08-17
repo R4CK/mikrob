@@ -237,7 +237,13 @@ function scanDir(dir: string): string[] {
 // times per agent -- a file class the first extension list still missed for the same reason the
 // name list missed `references/*.md` (card 3a042d4c). The scanner is text-based, so an escaped
 // shell snippet inside a JSON string reads like any other line.
-const TEXT_FILE = /\.(md|sh|py|js|mjs|cjs|ts|json)$/
+//
+// `.template` (card 1a251ee5): templates/settings.json.template carries the exact same JSON-string
+// PreCompact prompt as the seeded/installed settings.json above, but under a `.json.template`
+// filename -- which this extension list did not match either, so widening the templates/ scan alone
+// (without this) would have added the directory and STILL silently skipped the one file the card was
+// about. No other tree currently ships a `.template` file (checked), so this is a pure addition.
+const TEXT_FILE = /\.(md|sh|py|js|mjs|cjs|ts|json|template)$/
 
 function scanTree(dir: string, base: string = dir): string[] {
   const out: string[] = []
