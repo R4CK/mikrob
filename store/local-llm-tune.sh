@@ -24,6 +24,17 @@
 # VRAM for a full offload, re-measure before assuming the same direction: q8_0 KV costs some
 # dequantisation work per token and is only a net win while VRAM is the binding constraint.
 #
+# GENERALISED TOOLCHAIN (card 1c542799): this script applies one hardcoded, host-specific config.
+# For new hardware or after a model change, use the full automated pipeline instead:
+#   store/local-llm-hwdetect.sh          -- detect GPU, VRAM, driver; write hw-profile JSON
+#   store/local-llm-bench.sh             -- measure baseline tok/s at one or more context sizes
+#   store/local-llm-tune-sweep.sh        -- sweep N named configs (flash-q8, flash-q4, ...) and record CSV
+#   store/local-llm-tune-decide.sh       -- read sweep CSV, auto-pick winner with 3 noise guards, apply
+#   store/local-llm-parallel-bench.sh    -- measure GPU-lock queue wait under N concurrent callers,
+#                                           and check whether a larger model fits in available VRAM
+# tune-decide is a strict superset of what this script does: same unit-file mechanism, same --check /
+# --revert safety net, but hardware-agnostic and regression-protected.
+#
 # USAGE: local-llm-tune.sh [--check] [--revert]
 #   (no args)  apply + daemon-reload + restart ollama
 #   --check    report what is currently set, change nothing (exit 0 tuned / 1 untuned)
