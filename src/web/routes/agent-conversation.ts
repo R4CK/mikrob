@@ -30,6 +30,18 @@ interface Entry {
 
 const MAX_TEXT = 6000
 const DEFAULT_LIMIT = 400
+// Bounds the statSync SWEEP itself, independent of the MAX_SESSIONS_LISTED output cap further
+// down (card b8549283, Cybersec follow-up on 77fd0f07's DoS fix): that fix capped the RESULT to
+// 50 entries, but still ran readdirSync + a synchronous statSync per file over the WHOLE
+// directory to determine which 50 were newest -- so the sweep cost stayed O(session-count)
+// regardless of the output cap. 5000 is well above any real agent's history measured live (2235
+// files, flat) so normal operation is unaffected; past the cap the excess files are dropped
+// before sorting (readdir order, not guaranteed mtime order), which only matters if a single
+// agent's session count grows by orders of magnitude -- an accepted trade-off, same shape as the
+// I/O cost it bounds. Overridable by env for tests only, same pattern as local-llm.ts's trust-file
+// constants -- production reads the real default, nothing here decides anything from an
+// environment variable that is absent in production.
+const MAX_FILES_STATTED = Number(process.env.SESSION_STAT_SWEEP_CAP) || 5000
 
 function workingDirFor(name: string): string {
   return isMainChannelsAgent(name) ? PROJECT_ROOT : agentDir(name)
@@ -47,6 +59,7 @@ function listSessionFiles(name: string): Array<{ file: string; sessionId: string
     if (!existsSync(dir)) return []
     return readdirSync(dir)
       .filter(f => f.endsWith('.jsonl'))
+      .slice(0, MAX_FILES_STATTED)
       .map(f => {
         const st = statSync(join(dir, f))
         return { file: join(dir, f), sessionId: f.replace(/\.jsonl$/, ''), mtime: st.mtimeMs, size: st.size }
