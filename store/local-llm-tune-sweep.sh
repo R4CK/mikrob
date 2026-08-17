@@ -37,7 +37,7 @@
 set -uo pipefail
 
 UNIT="${OLLAMA_UNIT:-$HOME/.config/systemd/user/ollama.service}"
-BENCH="$(dirname "${BASH_SOURCE[0]}")/local-llm-bench.sh"
+BENCH="${LOCAL_LLM_BENCH_SCRIPT:-$(dirname "${BASH_SOURCE[0]}")/local-llm-bench.sh}"
 MARKER='# --- local-llm-tune-sweep (card d747d772) ---'
 TUNE_MARKER='# --- local-llm-tune (card 7041c165) ---'   # local-llm-tune.sh's own block, stripped before each candidate
 
@@ -91,6 +91,16 @@ restore_baseline() {
   cp "$BASELINE" "$UNIT"
   rm -f "$BASELINE"
   if [[ "$DRY_RUN" != 1 ]]; then
+    # Cybersec NO-GO (comment 14379, card 711b696f): the forward config-apply restart takes this
+    # same lock (below, "flock -w ... 9"), but this restore restart used to skip it entirely -- for
+    # most of a sweep's runtime the lock IS free (released before each bench call, and between
+    # configs), and that is exactly the window a live probe proved this restart would fire in
+    # unguarded, silently killing a real caller's in-flight local-llm.sh generate. `|| true`: never
+    # let a stuck lock leave the safety net's own restore half-done -- GPU_LOCK_WAIT (default 600s)
+    # is already far longer than any real generate call, so the wait itself is not a new risk. Same
+    # fd 9 as the forward restart -- a self-held lock (this process already holding it) re-flocks
+    # immediately, no deadlock.
+    flock -w "$GPU_LOCK_WAIT" 9 || true
     systemctl --user daemon-reload 2>/dev/null || true
     systemctl --user restart ollama 2>/dev/null || true
   fi
