@@ -34,19 +34,41 @@ function workingDirFor(name: string): string {
   return isMainChannelsAgent(name) ? PROJECT_ROOT : agentDir(name)
 }
 
-function newestTranscript(name: string): string | null {
+function sessionsDirFor(name: string): string {
   const configDir = isMainChannelsAgent(name) ? undefined : (resolveAgentConfigDir(name).configDir ?? undefined)
-  const dir = projectsDirFor(workingDirFor(name), configDir)
+  return projectsDirFor(workingDirFor(name), configDir)
+}
+
+/** Every session transcript for `name`, newest first. */
+function listSessionFiles(name: string): Array<{ file: string; sessionId: string; mtime: number }> {
+  const dir = sessionsDirFor(name)
   try {
-    if (!existsSync(dir)) return null
-    const files = readdirSync(dir)
+    if (!existsSync(dir)) return []
+    return readdirSync(dir)
       .filter(f => f.endsWith('.jsonl'))
-      .map(f => ({ f, m: statSync(join(dir, f)).mtimeMs }))
-      .sort((a, b) => b.m - a.m)
-    return files.length ? join(dir, files[0].f) : null
+      .map(f => ({ file: join(dir, f), sessionId: f.replace(/\.jsonl$/, ''), mtime: statSync(join(dir, f)).mtimeMs }))
+      .sort((a, b) => b.mtime - a.mtime)
   } catch {
-    return null
+    return []
   }
+}
+
+function newestTranscript(name: string): string | null {
+  const files = listSessionFiles(name)
+  return files.length ? files[0].file : null
+}
+
+/**
+ * Resolve a specific session by id (card 77fd0f07, pair-FE 03d2ae9c: session dropdown lets an
+ * operator replay a PAST run, not just the newest). `sessionId` is user-supplied (query param) --
+ * matched against the directory's OWN listing rather than joined into a path, so an id that is not
+ * one of this agent's actual session files (traversal attempt, typo, stale id from a rotated
+ * session) resolves to null instead of ever touching an attacker-chosen path.
+ */
+function transcriptForSession(name: string, sessionId: string | null): string | null {
+  if (sessionId === null) return newestTranscript(name)
+  const files = listSessionFiles(name)
+  return files.find(f => f.sessionId === sessionId)?.file ?? null
 }
 
 const CHANNEL_RE = /<channel\b[^>]*>([\s\S]*?)<\/channel>/g
@@ -136,8 +158,30 @@ function buildTimeline(file: string): Entry[] {
   return entries
 }
 
+// GET /api/agents/:agent/sessions -- the session picker's data source (card
+// 77fd0f07, pair-FE 03d2ae9c). One entry per transcript file, newest first,
+// so the operator can pick a PAST run instead of only ever seeing the latest.
+async function tryHandleAgentSessions(ctx: RouteContext): Promise<boolean> {
+  const { res, path, method } = ctx
+  const match = path.match(/^\/api\/agents\/([^/]+)\/sessions$/)
+  if (!match || method !== 'GET') return false
+  const name = decodeURIComponent(match[1])
+  try {
+    const sessions = listSessionFiles(name).map((f) => ({
+      sessionId: f.sessionId,
+      mtime: f.mtime,
+      entryCount: buildTimeline(f.file).length,
+    }))
+    json(res, { agent: name, sessions })
+  } catch {
+    json(res, { error: 'A session-lista feldolgozása nem sikerült' }, 500)
+  }
+  return true
+}
+
 export async function tryHandleAgentConversation(ctx: RouteContext): Promise<boolean> {
   const { res, path, method, url } = ctx
+  if (await tryHandleAgentSessions(ctx)) return true
   const match = path.match(/^\/api\/agents\/([^/]+)\/conversation$/)
   if (!match || method !== 'GET') return false
   const name = decodeURIComponent(match[1])
@@ -149,8 +193,12 @@ export async function tryHandleAgentConversation(ctx: RouteContext): Promise<boo
   const limit = Number.isFinite(limitRaw) && limitRaw > 0 ? Math.min(limitRaw, 2000) : DEFAULT_LIMIT
   const offsetRaw = Number(url.searchParams.get('offset'))
   const offset = Number.isFinite(offsetRaw) && offsetRaw > 0 ? Math.floor(offsetRaw) : 0
+  // Session selection (card 77fd0f07, pair-FE 03d2ae9c): absent/empty means
+  // "newest", matching app-conversation.js's `conversationCurrentSessionId`
+  // null convention (it never sends the param when unset).
+  const sessionId = url.searchParams.get('sessionId') || null
 
-  const file = newestTranscript(name)
+  const file = transcriptForSession(name, sessionId)
   if (!file) { json(res, { agent: name, entries: [], total: 0, offset: 0, hasOlder: false, note: 'Nincs még beszélgetés-előzmény ehhez az agenthez.' }); return true }
   try {
     const all = buildTimeline(file)
