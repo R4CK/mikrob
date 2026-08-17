@@ -246,33 +246,42 @@ Ha azért akad el a munka, mert egy ügynök elérte az 5 órás Claude usage-li
 
 A MikroB rendszer az `./update.sh`-val frissül (git `pull --ff-only` + rebuild + service-restart). Két KÖTELEZŐ elv: (1) tracked fájlba tett lokális szerkesztés, ami ütközne a bejövő update-tel, SOHA nem marad uncommitolva -- commitold+pushold, vagy tartsd gitignored fájlban; (2) minden futtatható operatív script (`*.sh`, operatív `*.py`) VERZIÓKÖVETETT és pusholt, akkor is ha egyébként gitignored `store/`-ban él -- egy csak-lokális fix nincs mentve. Rollback: `store/.update-history` + `./recovery-prev-version.sh` (`--list`/`checkpoint`/`--to <sha>`/`--dry-run`/`--yes`) -- ÉLES rollbackot MikroB magától NE indítson (megölné a saját sessionjét), csak `--dry-run`/`--list`/`checkpoint`. Teljes mechanika: `update-safety` skill.
 
-## Marveen repo saját-branch fegyelme -- SZABÁLY (Peti 2026-08-17, kártya dc185b52)
+## Marveen repo saját-worktree fegyelme -- SZABÁLY (Peti 2026-08-17, kártya dc185b52)
 
-A marveen repo (ez a checkout) EGYETLEN megosztott working tree-t oszt meg AZ ÖSSZES ügynökkel --
-nincs per-agent worktree (azt a CleanCore már megoldotta, lásd `agent-worktree.sh`; itt tulsulyos
-lenne, MikroB plan-grilling komment 14270). Ehelyett KÖNNYŰ branch+merge minta: minden ügynök a
-SAJÁT `agent/<neve>/work` branch-én stage-el/commitol, SOHA nem közvetlenül `develop`-on -- ez zárja
-ki, hogy egy ügynök commitja egy MÁSIK ügynök stage-elt-de-commitolatlan fájljait elvigye (a
-`dc185b52` incidens: backend2 stage-elt fájljait QA commitja szippantotta be és pusholta, backend2
-sajat gate nelkul landolt).
+A marveen repo (ez a checkout) EGYETLEN megosztott working tree-t oszt meg AZ ÖSSZES ügynökkel volt --
+ez okozta a `dc185b52` incidenst (backend2 stage-elt fájljait QA commitja szippantotta be és
+pusholta, backend2 sajat gate nelkul landolt). Az ELSŐ próbált javítás (könnyű per-agent BRANCH a
+megosztott fán, `store/agent-branch.sh`) Cybersec élő reprodukcióval bizonyított NO-GO-t kapott
+(komment 14284): a branch-váltó `git checkout` a MEGOSZTOTT working tree-n futott, és egy MÁSIK,
+egyidejűleg sima Read/Edit/Write-tal dolgozó ügynök (nem maga hívta a scriptet) a checkout
+alatt/után a RÉGI, már beolvasott tartalom alapján visszaírt egy fájlt -- ez CSENDESEN, hibaüzenet
+nélkül felülírta egy másik ügynök MÁR COMMITOLT branch-tartalmát. Rosszabb mint az eredeti incidens
+(ott a tartalom megmaradt, csak rossz SHA alatt landolt -- itt csendben eltűnhet). MikroB
+visszavonta a plan-grilling döntést (komment 14285): **teljes per-agent worktree-izoláció kell,
+a CleanCore `agent-worktree.sh` mintájának általánosításával** -- ez STRUKTURÁLISAN zárja ki a
+versenyt (saját index, saját checkoutolt fájlok), nem fegyelemmel.
 
-Kötelező lépések commit előtt/után ebben a repóban (a `shared-checkout-safe-commit` skill teljes
-eljárása, itt csak a vázlat):
-1. `bash store/agent-branch.sh <neved>` -- saját branch létrehozása/váltása/frissítése, MIELŐTT
-   bármit stage-elnél. Idempotens; PISZKOS working tree-nél IDEGEN branch-en refuse-ol (exit 3) --
-   ez a védelem maga, nem hiba, ne kerüld meg.
-2. Commit a saját branch-eden (szokásos safe-commit fegyelem: nincs `git add -A`, `git diff --staged`
-   ellenőrzés stb.).
-3. `bash store/agent-branch-land.sh <neved>` -- a saját branch-et `develop`-ba mergeli (seam-check
-   mindkét irányban), a MERGE EREDMÉNYÉN lefuttatja a `store/fleet-test.sh`-t, csak zöld esetén
-   pusholja `origin/develop`-ra. A visszaadott sha a Gate-SHA -- REVIEW előtt ez legyen meg, ne a
-   lokális branch-commit shája.
+1. `bash store/agent-worktree-marveen.sh <neved>` -- saját worktree létrehozása/frissítése
+   (`/home/neon/marveen-agent-worktrees/<neved>`, branch `agent/<neved>/work`), idempotens. **A
+   TELJES munkamenetre érvényes, nem csak commit előtt**: az adott ponttól kezdve MINDEN
+   Read/Edit/Write/Bash, ami marveen-repo fájlt érint, ebben a könyvtárban történjen, nem
+   `/home/neon/marveen`-ben közvetlenül -- az útvonalat mindig a scripttől kérdezd le
+   (`--path`), sose írd be fixen.
+2. Commit a saját worktree-dben (szokásos safe-commit fegyelem is ráfér, bár a saját index miatt
+   már redundáns védelem: nincs `git add -A`, `git diff --staged` ellenőrzés stb.).
+3. `bash store/marveen-land.sh <neved>` -- a saját branch-et egy ELDOBHATÓ, KÜLÖN worktree-ben
+   mergeli `develop`-ba (seam-check mindkét irányban), a MERGE EREDMÉNYÉN lefuttatja a
+   `store/fleet-test.sh`-t, csak zöld esetén pusholja `origin/develop`-ra. A visszaadott sha a
+   Gate-SHA -- REVIEW előtt ez legyen meg, ne a lokális branch-commit shája. A saját worktree-d NEM
+   resetelődik automatikusan landolás után (mint a CleanCore landoló scriptje sem teszi) -- szinkronizáld
+   kézzel, ha akarod.
 
-MikroB-vezérelt periodikus háló (backstop, nem elsődleges út): `bash store/agent-branch-land.sh
---all` végigsöpri az összes `agent/*/work` branch-et, amit a tulajdonos még nem landolt saját maga --
-ezt egy ütemezett feladat futtathatja, hasonlóan a `gate-reconciler`-hez. Egy agent branch-nek
-NINCS szüksége külön reset-re landolás után: a következő `agent-branch.sh` hívás magától
-fast-forwardolja, mert a branch tip már `origin/develop` őse.
+MikroB-vezérelt periodikus háló (backstop, nem elsődleges út): `bash store/marveen-land.sh --all`
+végigsöpri az összes `agent/*/work` branch-et, amit a tulajdonos még nem landolt saját maga -- ezt
+egy ütemezett feladat futtathatja, hasonlóan a `gate-reconciler`-hez.
+
+**A `store/agent-branch.sh` és `store/agent-branch-land.sh` RETIRÁLVA (törölve) -- ne hivatkozz
+rájuk, ne próbáld újraéleszteni.**
 
 ## Ütemezett feladatok
 
