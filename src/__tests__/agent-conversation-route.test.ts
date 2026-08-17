@@ -42,12 +42,13 @@ function mkRes(): MockRes {
 
 async function call(path: string): Promise<{ status: number; json: Record<string, unknown> }> {
   const res = mkRes()
+  const url = new URL(`http://127.0.0.1:3420${path}`)
   const ctx: RouteContext = {
     req: {} as http.IncomingMessage,
     res: res as unknown as http.ServerResponse,
-    path,
+    path: url.pathname, // the real dispatcher (src/web.ts) sets ctx.path = url.pathname, query-free
     method: 'GET',
-    url: new URL(`http://127.0.0.1:3420${path}`),
+    url,
   }
   const handled = await tryHandleAgentConversation(ctx)
   expect(handled).toBe(true)
