@@ -16,6 +16,8 @@ import {
   listRecent,
   stats,
   statsByAgent,
+  resolveEscalationTarget,
+  buildEscalationMessage,
   MAX_ATTEMPTS,
 } from '../local-llm-queue.js'
 
@@ -33,7 +35,7 @@ function freshDb(): Db {
       prompt TEXT NOT NULL,
       context TEXT,
       priority TEXT NOT NULL DEFAULT 'normal' CHECK(priority IN ('low','normal','high','urgent')),
-      status TEXT NOT NULL DEFAULT 'pending' CHECK(status IN ('pending','running','done','failed')),
+      status TEXT NOT NULL DEFAULT 'pending' CHECK(status IN ('pending','running','done','failed','escalated')),
       source TEXT NOT NULL DEFAULT 'agent',
       attempts INTEGER NOT NULL DEFAULT 0,
       created_at INTEGER NOT NULL,
@@ -43,6 +45,9 @@ function freshDb(): Db {
       error TEXT
     )
   `)
+  // Minimal fixture so resolveEscalationTarget's card_id -> assignee lookup (card 03fca184) has a
+  // real table to query against, matching just enough of the production kanban_cards shape.
+  db.exec(`CREATE TABLE kanban_cards (id TEXT PRIMARY KEY, assignee TEXT)`)
   return db
 }
 
@@ -130,8 +135,9 @@ describe('startDirect (card 5dcd9bc8, direct-sync local-llm.sh self-registration
 
     it('reclaimStaleRunning on a stuck direct row is `failed` immediately, not requeued to an unreachable `pending`', () => {
       const id = startDirect(db, { agent: 'backend2', prompt: 'x' }, T0)
-      const n = reclaimStaleRunning(db, 1000, T0 + 5000)
-      expect(n).toBe(1)
+      const r = reclaimStaleRunning(db, 1000, T0 + 5000)
+      expect(r.reclaimed).toBe(1)
+      expect(r.escalatedIds).toEqual([]) // no real prompt to escalate (DIRECT_CALL_PLACEHOLDER)
       const row = getById(db, id)!
       expect(row.status).toBe('failed')
       expect(row.finished_at).toBe(T0 + 5000)
@@ -217,16 +223,16 @@ describe('complete / fail', () => {
     expect(claimNext(db, T0 + 3)!.id).toBe(id)
   })
 
-  it('parks the row as failed at the 3-strikes cap instead of burning more GPU time', () => {
+  it('escalates the row at the 3-strikes cap instead of parking it as failed (card 03fca184)', () => {
     const id = enqueue(db, { agent: 'a', prompt: 'p' }, T0)
     let last = ''
     for (let i = 0; i < MAX_ATTEMPTS; i += 1) {
       claimNext(db, T0 + i)
       last = fail(db, id, 'nope', T0 + i)
     }
-    expect(last).toBe('failed')
-    expect(getById(db, id)!.status).toBe('failed')
-    expect(claimNext(db, T0 + 99)).toBeNull() // no longer served
+    expect(last).toBe('escalated')
+    expect(getById(db, id)!.status).toBe('escalated')
+    expect(claimNext(db, T0 + 99)).toBeNull() // no longer served -- not pending, and never becomes pending again
   })
 
   it('truncates a huge error so one bad run cannot bloat the row', () => {
@@ -241,8 +247,9 @@ describe('reclaimStaleRunning (worker crash recovery)', () => {
   it('requeues a row whose worker vanished', () => {
     const id = enqueue(db, { agent: 'a', prompt: 'p' }, T0)
     claimNext(db, T0)
-    const n = reclaimStaleRunning(db, 60_000, T0 + 120_000)
-    expect(n).toBe(1)
+    const r = reclaimStaleRunning(db, 60_000, T0 + 120_000)
+    expect(r.reclaimed).toBe(1)
+    expect(r.escalatedIds).toEqual([])
     const row = getById(db, id)!
     expect(row.status).toBe('pending')
     expect(row.started_at).toBeNull()
@@ -252,27 +259,113 @@ describe('reclaimStaleRunning (worker crash recovery)', () => {
   it('leaves a FRESH running row alone (negative control -- must not steal live work)', () => {
     enqueue(db, { agent: 'a', prompt: 'p' }, T0)
     claimNext(db, T0 + 100_000)
-    expect(reclaimStaleRunning(db, 60_000, T0 + 120_000)).toBe(0)
+    expect(reclaimStaleRunning(db, 60_000, T0 + 120_000).reclaimed).toBe(0)
   })
 
-  it('abandons rather than requeues once the attempt cap is reached', () => {
+  it('escalates (does not requeue) once the attempt cap is reached (card 03fca184)', () => {
     const id = enqueue(db, { agent: 'a', prompt: 'p' }, T0)
     for (let i = 0; i < MAX_ATTEMPTS; i += 1) {
       claimNext(db, T0)
       if (i < MAX_ATTEMPTS - 1) fail(db, id, 'e', T0)
     }
     // last attempt left it running; the worker then vanished
-    const n = reclaimStaleRunning(db, 60_000, T0 + 999_999)
-    expect(n).toBe(1)
-    expect(getById(db, id)!.status).toBe('failed')
+    const r = reclaimStaleRunning(db, 60_000, T0 + 999_999)
+    expect(r.reclaimed).toBe(1)
+    expect(r.escalatedIds).toEqual([id])
+    expect(getById(db, id)!.status).toBe('escalated')
   })
 
   it('does not touch done rows', () => {
     const id = enqueue(db, { agent: 'a', prompt: 'p' }, T0)
     claimNext(db, T0)
     complete(db, id, 'r', T0 + 1)
-    expect(reclaimStaleRunning(db, 1, T0 + 999_999)).toBe(0)
+    expect(reclaimStaleRunning(db, 1, T0 + 999_999).reclaimed).toBe(0)
     expect(getById(db, id)!.status).toBe('done')
+  })
+})
+
+// Card 03fca184, plan-grilling verdict (MikroB, komment 14138): requirement 1 (full task content
+// must reach the online agent, not a bare failure signal) and requirement 2 (an escalated row can
+// never ping-pong back to the local model).
+describe('escalation (card 03fca184)', () => {
+  it('requirement 2 -- escalated is a TERMINAL state: no amount of further fail()/reclaim() calls revives it to pending', () => {
+    const id = enqueue(db, { agent: 'a', prompt: 'p' }, T0)
+    for (let i = 0; i < MAX_ATTEMPTS; i += 1) {
+      claimNext(db, T0 + i)
+      fail(db, id, 'nope', T0 + i)
+    }
+    expect(getById(db, id)!.status).toBe('escalated')
+    // Neither function has any code path that reads 'escalated' and writes 'pending' -- prove it
+    // behaviourally: calling either again must be a no-op on this row (it is not running, so
+    // reclaimStaleRunning's WHERE clause cannot touch it; fail() is never called on a non-running
+    // row in production, but even a defensive re-call must not resurrect it).
+    reclaimStaleRunning(db, 0, T0 + 999_999)
+    expect(getById(db, id)!.status).toBe('escalated')
+    expect(claimNext(db, T0 + 999_999)).toBeNull()
+  })
+
+  it('resolveEscalationTarget routes to the card\'s assignee when the row is card-bound', () => {
+    db.prepare('INSERT INTO kanban_cards (id, assignee) VALUES (?, ?)').run('card-1', 'cybersec')
+    const id = enqueue(db, { agent: 'a', prompt: 'p', cardId: 'card-1' }, T0)
+    const row = getById(db, id)!
+    expect(resolveEscalationTarget(db, row, 'mikrob')).toBe('cybersec')
+  })
+
+  it('resolveEscalationTarget falls back to the triage agent when there is no card_id', () => {
+    const id = enqueue(db, { agent: 'a', prompt: 'p' }, T0)
+    const row = getById(db, id)!
+    expect(resolveEscalationTarget(db, row, 'mikrob')).toBe('mikrob')
+  })
+
+  it('resolveEscalationTarget falls back to triage when the card exists but has no assignee', () => {
+    db.prepare('INSERT INTO kanban_cards (id, assignee) VALUES (?, ?)').run('card-2', null)
+    const id = enqueue(db, { agent: 'a', prompt: 'p', cardId: 'card-2' }, T0)
+    const row = getById(db, id)!
+    expect(resolveEscalationTarget(db, row, 'mikrob')).toBe('mikrob')
+  })
+
+  it('resolveEscalationTarget falls back to triage when card_id points at nothing real (deleted/typo)', () => {
+    const id = enqueue(db, { agent: 'a', prompt: 'p', cardId: 'no-such-card' }, T0)
+    const row = getById(db, id)!
+    expect(resolveEscalationTarget(db, row, 'mikrob')).toBe('mikrob')
+  })
+
+  it('requirement 1 -- buildEscalationMessage carries the FULL original task, not a bare failure signal', () => {
+    const id = enqueue(db, {
+      agent: 'backend', prompt: 'write a regex for ISO dates', context: 'must handle leap years',
+      cardId: 'card-3', taskType: 'code', template: 'ts-function', priority: 'high', source: 'agent',
+    }, T0)
+    claimNext(db, T0 + 1)
+    fail(db, id, 'model produced invalid syntax three times', T0 + 2)
+    const row = getById(db, id)!
+    const msg = buildEscalationMessage(row)
+    expect(msg).toContain('write a regex for ISO dates') // the real prompt, not just "it failed"
+    expect(msg).toContain('must handle leap years') // the real context
+    expect(msg).toContain('card-3')
+    expect(msg).toContain('code')
+    expect(msg).toContain('ts-function')
+    expect(msg).toContain('backend')
+    expect(msg).toContain('model produced invalid syntax three times')
+  })
+
+  it('buildEscalationMessage on a direct-sync row never claims to carry real content it does not have', () => {
+    // Direct-sync rows always fail outright (never escalate, see the describe block above) -- this
+    // pins that IF buildEscalationMessage were ever called on one by mistake, it would not silently
+    // present the placeholder as if it were the real task.
+    const id = startDirect(db, { agent: 'backend2', prompt: 'ignored' }, T0)
+    const row = getById(db, id)!
+    expect(buildEscalationMessage(row)).toContain(DIRECT_CALL_PLACEHOLDER)
+  })
+
+  it('stats() counts escalated separately from failed', () => {
+    const id = enqueue(db, { agent: 'a', prompt: 'p' }, T0)
+    for (let i = 0; i < MAX_ATTEMPTS; i += 1) {
+      claimNext(db, T0 + i)
+      fail(db, id, 'nope', T0 + i)
+    }
+    const s = stats(db)
+    expect(s.escalated).toBe(1)
+    expect(s.failed).toBe(0)
   })
 })
 

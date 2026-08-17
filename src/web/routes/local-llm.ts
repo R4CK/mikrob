@@ -3,13 +3,13 @@ import { readFileSync, existsSync, openSync, fstatSync, readSync, closeSync, rea
 import { join } from 'node:path'
 import { homedir } from 'node:os'
 import { randomUUID } from 'node:crypto'
-import { STORE_DIR } from '../../config.js'
+import { STORE_DIR, MAIN_AGENT_ID } from '../../config.js'
 import { logger } from '../../logger.js'
 import { readBody, json } from '../http-helpers.js'
 import { atomicWriteFileSync } from '../atomic-write.js'
 import { decideModelTrust, relabelCatalogueTrust } from '../../local-llm-model-trust.js'
 import { readBenchState, benchInfoFor } from '../../local-llm-bench-state.js'
-import { getDb } from '../../db.js'
+import { getDb, createAgentMessage } from '../../db.js'
 import { pickTemplate } from '../../local-llm-template-picker.js'
 import {
   enqueue as enqueueLocalLlm,
@@ -22,6 +22,8 @@ import {
   listRecent as queueListRecent,
   stats as queueStats,
   statsByAgent as queueStatsByAgent,
+  resolveEscalationTarget,
+  buildEscalationMessage,
   type QueueStatus,
 } from '../../local-llm-queue.js'
 import { getUtilizationSamples } from '../local-llm-utilization-history.js'
@@ -42,6 +44,24 @@ const STALE_RUNNING_MS = 20 * 60 * 1000
 /** Upper bound on a queued prompt. Not the main defence (the caller is authenticated) -- it stops a
  *  runaway caller from parking megabytes in the queue and monopolising the single GPU slot. */
 const MAX_QUEUE_PROMPT_BYTES = 100_000
+
+/**
+ * Fire the inter-agent notification for a row that just moved to `escalated` (card 03fca184). Never
+ * throws -- an escalation is best-effort on top of the state transition that already landed; a
+ * message-send failure must not make the fail()/reclaim() call itself look like it failed, same
+ * discipline as fireKanbanDispatch in routes/kanban.ts.
+ */
+function notifyEscalation(id: number): void {
+  try {
+    const row = queueGetById(getDb(), id)
+    if (!row || row.status !== 'escalated') return
+    const target = resolveEscalationTarget(getDb(), row, MAIN_AGENT_ID)
+    createAgentMessage(MAIN_AGENT_ID, target, buildEscalationMessage(row))
+    logger.info({ id, target }, 'Local-LLM queue row escalated to online agent')
+  } catch (err) {
+    logger.warn({ id, err }, 'Local-LLM queue escalation notify failed (state transition already landed)')
+  }
+}
 import {
   RAMP_FLOOR_AGGRESSIVENESS,
   rampAggressiveness,
@@ -1016,11 +1036,11 @@ export async function tryHandleLocalLlm(ctx: RouteContext): Promise<boolean> {
   }
 
   // GET /api/local-llm/queue/list?status=&limit= -> recent rows for the dashboard panel (card
-  // 48aacf56 item 5): pending/running/done/failed drafts with agent, task, timing. Checked BEFORE
-  // the /queue/<id> catch-all below, or "list" would parse as an invalid numeric id.
+  // 48aacf56 item 5): pending/running/done/failed/escalated drafts with agent, task, timing.
+  // Checked BEFORE the /queue/<id> catch-all below, or "list" would parse as an invalid numeric id.
   if (path === '/api/local-llm/queue/list' && method === 'GET') {
     const rawStatus = url.searchParams.get('status')
-    const VALID_STATUSES: readonly QueueStatus[] = ['pending', 'running', 'done', 'failed']
+    const VALID_STATUSES: readonly QueueStatus[] = ['pending', 'running', 'done', 'failed', 'escalated']
     if (rawStatus !== null && !(VALID_STATUSES as readonly string[]).includes(rawStatus)) {
       json(res, { error: `invalid status (want one of ${VALID_STATUSES.join(', ')})` }, 400)
       return true
@@ -1038,7 +1058,8 @@ export async function tryHandleLocalLlm(ctx: RouteContext): Promise<boolean> {
     // Reclaim first: a worker killed mid-run (service restart, OOM, the WSL VM dropping) leaves its
     // row `running` forever. Doing it here means recovery happens whenever a worker is alive,
     // without a second timer -- and a dead worker cannot clean up after itself by definition.
-    reclaimStaleLocalLlm(getDb(), STALE_RUNNING_MS, Date.now())
+    const reclaimed = reclaimStaleLocalLlm(getDb(), STALE_RUNNING_MS, Date.now())
+    for (const id of reclaimed.escalatedIds) notifyEscalation(id)
     const row = claimNextLocalLlm(getDb(), Date.now())
     json(res, row ?? {})
     return true
@@ -1066,6 +1087,7 @@ export async function tryHandleLocalLlm(ctx: RouteContext): Promise<boolean> {
       json(res, { id, status: 'done' })
     } else {
       const status = failLocalLlm(getDb(), id, String(payload['error'] ?? 'unknown error'), Date.now())
+      if (status === 'escalated') notifyEscalation(id)
       json(res, { id, status })
     }
     return true

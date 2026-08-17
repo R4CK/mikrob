@@ -20,7 +20,7 @@
 
 import type { Database } from 'better-sqlite3'
 
-export type QueueStatus = 'pending' | 'running' | 'done' | 'failed'
+export type QueueStatus = 'pending' | 'running' | 'done' | 'failed' | 'escalated'
 export type QueuePriority = 'low' | 'normal' | 'high' | 'urgent'
 
 export interface QueueRow {
@@ -168,16 +168,23 @@ export function complete(db: Database, id: number, result: string, now: number):
 
 /**
  * Record a failed run. Below MAX_ATTEMPTS the row goes back to `pending` for another pass; at the
- * cap it is parked as `failed` so it stops consuming GPU time -- the 3-strikes rule, enforced in the
- * queue rather than left to whoever happens to be reading the log.
+ * cap it moves to `escalated` (card 03fca184) -- the task is the wrong shape for the 7B and belongs
+ * to an online agent, not a fourth local retry. `escalated` is a TERMINAL state for this module: no
+ * function in this file ever transitions a row OUT of `escalated` back to `pending` -- the plan-
+ * grilling verdict's upper bound on the local<->escalate ping-pong (MikroB, komment 14138) is
+ * satisfied structurally, not by a counter that could be reset.
  *
- * DIRECT-SYNC ROWS ALWAYS GO STRAIGHT TO `failed` (card e19e6d72): a `pending` row only ever leaves
- * that state via claimNext(), and startDirect() never routes through claimNext() at all -- "the
- * caller IS the worker", so nothing exists that will ever pick this row back up. Sending it to
- * `pending` "for another pass" that can never happen orphans it there forever: 43 rows were found
- * stuck exactly this way (error populated, attempts=1, status=pending, untouched since). The
- * DIRECT_CALL_PLACEHOLDER prompt is the row's own structural marker for this, independent of
- * whatever caller-supplied `source` string happens to be set.
+ * DIRECT-SYNC ROWS ALWAYS GO STRAIGHT TO `failed`, never `escalated` (card e19e6d72 + card
+ * 03fca184): a `pending` row only ever leaves that state via claimNext(), and startDirect() never
+ * routes through claimNext() at all -- "the caller IS the worker", so nothing exists that will ever
+ * pick this row back up. Sending it to `pending` "for another pass" that can never happen orphans it
+ * there forever: 43 rows were found stuck exactly this way (error populated, attempts=1,
+ * status=pending, untouched since). Escalating it would be equally pointless: a direct-sync row's
+ * `prompt` is DIRECT_CALL_PLACEHOLDER, not the real task text (card 5dcd9bc8) -- there is no original
+ * content to hand an online agent, so escalation here would just be a content-free "it failed" ping,
+ * exactly what the plan-grilling verdict's requirement 1 rejects. The DIRECT_CALL_PLACEHOLDER prompt
+ * is the row's own structural marker for this, independent of whatever caller-supplied `source`
+ * string happens to be set.
  */
 export function fail(db: Database, id: number, error: string, now: number): QueueStatus {
   const row = db.prepare('SELECT attempts, prompt FROM local_llm_queue WHERE id = ?').get(id) as
@@ -185,28 +192,45 @@ export function fail(db: Database, id: number, error: string, now: number): Queu
     | undefined
   if (!row) return 'failed'
   const isDirectSync = row.prompt === DIRECT_CALL_PLACEHOLDER
-  const next: QueueStatus = isDirectSync || row.attempts >= MAX_ATTEMPTS ? 'failed' : 'pending'
+  const next: QueueStatus = isDirectSync
+    ? 'failed'
+    : row.attempts >= MAX_ATTEMPTS
+      ? 'escalated'
+      : 'pending'
   db.prepare(
     `UPDATE local_llm_queue SET status = ?, error = ?, finished_at = ? WHERE id = ?`,
-  ).run(next, error.slice(0, 2000), next === 'failed' ? now : null, id)
+  ).run(next, error.slice(0, 2000), next === 'pending' ? null : now, id)
   return next
 }
 
+/** Return value of {@link reclaimStaleRunning}: the total rows recovered, plus which of those
+ *  (if any) crossed MAX_ATTEMPTS and moved straight to `escalated` -- the caller (the queue-claim
+ *  route) uses `escalatedIds` to fire the same online-agent notification fail() triggers, so a row
+ *  that stalls out via a worker crash gets escalated exactly like one that stalls out via repeated
+ *  explicit failures. */
+export interface ReclaimResult {
+  readonly reclaimed: number
+  readonly escalatedIds: readonly number[]
+}
+
 /**
- * Return rows stuck in `running` past `staleMs` to `pending` (or `failed` at the attempt cap).
+ * Return rows stuck in `running` past `staleMs` to `pending` (or `escalated`/`failed` at the
+ * attempt cap -- see {@link fail} for the same escalated-vs-failed split and why it exists).
  *
  * Without this a worker killed mid-run (service restart, OOM, the WSL VM dropping) leaves its row
  * `running` forever: the queue looks busy and that work is silently never done again. The attempts
  * counter was already incremented at claim time, so a crash-looping row still hits the cap instead
  * of being retried indefinitely.
  *
- * DIRECT-SYNC ROWS ALWAYS GO TO `failed` (card e19e6d72, same reasoning as fail() above): a
- * requeued-to-pending direct-sync row has no claimNext() path back to `running`, so it would sit in
- * `pending` forever -- this was the ACTUAL path the 43 stuck rows took (a route-classify.sh call
- * timed out behind the GPU flock before it ever reached POST .../fail, so the row stayed `running`
- * until a later reclaim sweep "requeued" it into permanent limbo).
+ * DIRECT-SYNC ROWS ALWAYS GO TO `failed`, never `escalated` (card e19e6d72 + card 03fca184, same
+ * reasoning as fail() above): a requeued-to-pending direct-sync row has no claimNext() path back to
+ * `running`, so it would sit in `pending` forever -- this was the ACTUAL path the 43 stuck rows took
+ * (a route-classify.sh call timed out behind the GPU flock before it ever reached POST .../fail, so
+ * the row stayed `running` until a later reclaim sweep "requeued" it into permanent limbo). A
+ * direct-sync row also has no real prompt to hand an online agent (DIRECT_CALL_PLACEHOLDER), so
+ * escalating it would be a content-free ping -- same reasoning as fail().
  */
-export function reclaimStaleRunning(db: Database, staleMs: number, now: number): number {
+export function reclaimStaleRunning(db: Database, staleMs: number, now: number): ReclaimResult {
   const cutoff = now - staleMs
   const stale = db
     .prepare(`SELECT id, attempts, prompt FROM local_llm_queue WHERE status = 'running' AND started_at IS NOT NULL AND started_at < ?`)
@@ -217,15 +241,25 @@ export function reclaimStaleRunning(db: Database, staleMs: number, now: number):
   const toFailed = db.prepare(
     `UPDATE local_llm_queue SET status = 'failed', error = ?, finished_at = ? WHERE id = ?`,
   )
+  const toEscalated = db.prepare(
+    `UPDATE local_llm_queue SET status = 'escalated', error = ?, finished_at = ? WHERE id = ?`,
+  )
+  const escalatedIds: number[] = []
   const reclaim = db.transaction((rows: Array<{ id: number; attempts: number; prompt: string }>) => {
     for (const r of rows) {
       const isDirectSync = r.prompt === DIRECT_CALL_PLACEHOLDER
-      if (isDirectSync || r.attempts >= MAX_ATTEMPTS) toFailed.run('abandoned: worker vanished while running', now, r.id)
-      else toPending.run('requeued: worker vanished while running', r.id)
+      if (isDirectSync) {
+        toFailed.run('abandoned: worker vanished while running', now, r.id)
+      } else if (r.attempts >= MAX_ATTEMPTS) {
+        toEscalated.run('abandoned: worker vanished while running', now, r.id)
+        escalatedIds.push(r.id)
+      } else {
+        toPending.run('requeued: worker vanished while running', r.id)
+      }
     }
   })
   reclaim(stale)
-  return stale.length
+  return { reclaimed: stale.length, escalatedIds }
 }
 
 export function getById(db: Database, id: number): QueueRow | null {
@@ -258,6 +292,9 @@ export interface QueueStats {
   readonly running: number
   readonly done: number
   readonly failed: number
+  /** Rows that hit MAX_ATTEMPTS and were handed to an online agent (card 03fca184) -- kept
+   *  separate from `failed` because escalated work is not abandoned, it moved elsewhere. */
+  readonly escalated: number
   /** Mean wall-clock ms from started_at to finished_at over completed rows; null when none yet. */
   readonly avgLatencyMs: number | null
 }
@@ -279,6 +316,7 @@ export function stats(db: Database): QueueStats {
     running: by('running'),
     done: by('done'),
     failed: by('failed'),
+    escalated: by('escalated'),
     avgLatencyMs: lat?.avg == null ? null : Math.round(lat.avg),
   }
 }
@@ -296,6 +334,54 @@ export function statsByAgent(db: Database): Array<{ agent: string; pending: numb
        ORDER BY agent`,
     )
     .all() as Array<{ agent: string; pending: number; done: number; failed: number }>
+}
+
+// --- Escalation (card 03fca184) --------------------------------------------------------------
+//
+// A row that hit MAX_ATTEMPTS is now `escalated`, not silently `failed` -- but a status flip alone
+// is not the capability the card asked for: "Egy escalated tetel automatikusan kapjon egy megfelelo
+// online ugynokot: inter-agent uzenet ... ha a feladat kartyahoz kotott volt; ha nem, akkor MikroB-
+// hoz fusson be triage-ra." The two functions below are the pure halves of that (who to notify, what
+// to say) -- the actual send (createAgentMessage) lives in the route handler, which is the one place
+// in this codebase already allowed to do that I/O; this module stays DB-only per its own header.
+
+/** Who should receive the escalation: the assignee of the row's kanban card if it has one and is
+ *  currently assigned, otherwise `fallbackAgent` (the orchestrator, MikroB) for triage -- exactly
+ *  the two cases the card describes. A card_id that no longer resolves to a real card (deleted,
+ *  typo'd) also falls back to triage rather than silently dropping the escalation. */
+export function resolveEscalationTarget(db: Database, row: QueueRow, fallbackAgent: string): string {
+  if (!row.card_id) return fallbackAgent
+  const card = db.prepare('SELECT assignee FROM kanban_cards WHERE id = ?').get(row.card_id) as
+    | { assignee: string | null }
+    | undefined
+  return card?.assignee?.trim() || fallbackAgent
+}
+
+/**
+ * The escalation message body. Plan-grilling requirement 1 (MikroB, komment 14138): the online
+ * agent must get the FULL original task, not a "it failed" one-liner -- otherwise it starts exactly
+ * as blind as the local model did. Every field the row carries is included; `context` and `prompt`
+ * are NOT truncated here (queue rows are already capped at insert time, see MAX_QUEUE_PROMPT_BYTES
+ * in the route layer) because clipping the one thing this message exists to deliver would defeat it.
+ */
+export function buildEscalationMessage(row: QueueRow): string {
+  const lines = [
+    `[Local-LLM eszkalacio] A(z) #${row.id} sorbaallitott feladat ${row.attempts} sikertelen helyi (7B) probalkozas utan eszkalalva -- ez a task-tipus nem valo a helyi modellnek, online vegrehajtast igenyel.`,
+    '',
+    `Eredeti kero ugynok: ${row.agent}`,
+    row.card_id ? `Kartya: #${row.card_id}` : 'Kartya: nincs (fuggetlen feladat)',
+    row.task_type ? `Task-tipus: ${row.task_type}` : null,
+    row.template ? `Sablon: ${row.template}` : null,
+    `Forras: ${row.source}`,
+    row.error ? `Utolso hiba: ${row.error}` : null,
+    '',
+    '--- Eredeti feladat (teljes szoveg) ---',
+    row.prompt,
+  ]
+  if (row.context) {
+    lines.push('', '--- Kontextus ---', row.context)
+  }
+  return lines.filter((l): l is string => l !== null).join('\n')
 }
 
 export { PRIORITY_RANK }

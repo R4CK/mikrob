@@ -169,7 +169,7 @@ export function initDatabase(dbPathOverride?: string): void {
       prompt TEXT NOT NULL,
       context TEXT,
       priority TEXT NOT NULL DEFAULT 'normal' CHECK(priority IN ('low','normal','high','urgent')),
-      status TEXT NOT NULL DEFAULT 'pending' CHECK(status IN ('pending','running','done','failed')),
+      status TEXT NOT NULL DEFAULT 'pending' CHECK(status IN ('pending','running','done','failed','escalated')),
       source TEXT NOT NULL DEFAULT 'agent',
       attempts INTEGER NOT NULL DEFAULT 0,
       created_at INTEGER NOT NULL,
@@ -184,6 +184,46 @@ export function initDatabase(dbPathOverride?: string): void {
   db.exec(`CREATE INDEX IF NOT EXISTS idx_llmq_status_created ON local_llm_queue(status, created_at)`)
   db.exec(`CREATE INDEX IF NOT EXISTS idx_llmq_agent ON local_llm_queue(agent, created_at)`)
   db.exec(`CREATE INDEX IF NOT EXISTS idx_llmq_card ON local_llm_queue(card_id)`)
+  // Migration: add 'escalated' to local_llm_queue's status CHECK constraint (card 03fca184). SQLite
+  // can't ALTER a CHECK constraint, so recreate the table when the current schema doesn't yet
+  // include it -- same pattern as the kanban_cards 'testing'-status migration above. Idempotent on
+  // fresh DBs (CREATE TABLE above already includes 'escalated' for those).
+  try {
+    const llmqSchema = db.prepare("SELECT sql FROM sqlite_master WHERE type='table' AND name='local_llm_queue'").get() as { sql: string } | undefined
+    if (llmqSchema?.sql && !llmqSchema.sql.includes("'escalated'")) {
+      db.exec(`
+        CREATE TABLE local_llm_queue_new (
+          id INTEGER PRIMARY KEY AUTOINCREMENT,
+          agent TEXT NOT NULL,
+          card_id TEXT,
+          task_type TEXT,
+          template TEXT,
+          prompt TEXT NOT NULL,
+          context TEXT,
+          priority TEXT NOT NULL DEFAULT 'normal' CHECK(priority IN ('low','normal','high','urgent')),
+          status TEXT NOT NULL DEFAULT 'pending' CHECK(status IN ('pending','running','done','failed','escalated')),
+          source TEXT NOT NULL DEFAULT 'agent',
+          attempts INTEGER NOT NULL DEFAULT 0,
+          created_at INTEGER NOT NULL,
+          started_at INTEGER,
+          finished_at INTEGER,
+          result TEXT,
+          error TEXT
+        );
+        INSERT INTO local_llm_queue_new
+          SELECT id, agent, card_id, task_type, template, prompt, context, priority, status,
+                 source, attempts, created_at, started_at, finished_at, result, error
+          FROM local_llm_queue;
+        DROP TABLE local_llm_queue;
+        ALTER TABLE local_llm_queue_new RENAME TO local_llm_queue;
+      `)
+      db.exec(`CREATE INDEX IF NOT EXISTS idx_llmq_status_created ON local_llm_queue(status, created_at)`)
+      db.exec(`CREATE INDEX IF NOT EXISTS idx_llmq_agent ON local_llm_queue(agent, created_at)`)
+      db.exec(`CREATE INDEX IF NOT EXISTS idx_llmq_card ON local_llm_queue(card_id)`)
+    }
+  } catch (err) {
+    logger.warn({ err }, 'local_llm_queue escalated-status migration failed -- continuing')
+  }
 
   // --- Kanban ---
   db.exec(`
