@@ -22,6 +22,7 @@ const STORE_DIR = join(REPO_ROOT, 'store')
 const SCRIPTS_DIR = join(REPO_ROOT, 'scripts')
 const SEED_SKILLS_DIR = join(REPO_ROOT, 'seed-skills')
 const SEED_FLEET_AGENTS_DIR = join(REPO_ROOT, 'seed-fleet-agents')
+const TEMPLATES_DIR = join(REPO_ROOT, 'templates')
 const SEED_TASKS_DIR = join(REPO_ROOT, 'seed-scheduled-tasks')
 const SRC_DIR = join(REPO_ROOT, 'src')
 
@@ -252,6 +253,12 @@ const STORE_SCRIPTS = scanDir(STORE_DIR)
 const SCRIPTS_SCRIPTS = scanDir(SCRIPTS_DIR)
 const SEED_SKILL_DOCS = scanTree(SEED_SKILLS_DIR)
 const SEED_AGENT_DOCS = scanTree(SEED_FLEET_AGENTS_DIR)
+// Card 1a251ee5: templates/ (settings.json.template, CLAUDE.md.template, profiles/, sub-agents/,
+// scheduled-tasks/) was never in this scan at all -- a SEPARATE gap from seed-fleet-agents/ and
+// seed-skills/, both of which ARE scanned. That let templates/settings.json.template's PreCompact
+// hook prompt carry the Bearer-in-argv shape in three places, undetected, while every agent scaffolded
+// from it (and 6 already-running ones) inherited the leak.
+const TEMPLATE_DOCS = scanTree(TEMPLATES_DIR)
 
 /**
  * The INSTALLED side (card ec5173a5). Everything above guards what we SHIP; none of it can see what
@@ -341,6 +348,13 @@ describe('no shipped script, template or GENERATOR puts a Bearer token in curl a
       ).toBeGreaterThan(5)
     }
     expect(SEED_TASK_DOCS.filter((f) => f.endsWith('SKILL.md')).length).toBeGreaterThan(3)
+  })
+
+  it('scans templates/ (card 1a251ee5: settings.json.template shipped the leak, unscanned)', () => {
+    expect(TEMPLATE_DOCS.length).toBeGreaterThan(3)
+    expect(TEMPLATE_DOCS).toContain('settings.json.template')
+    // Recursive: profiles/, sub-agents/, scheduled-tasks/ are all subdirectories of templates/.
+    expect(TEMPLATE_DOCS.some((f) => f.startsWith(`sub-agents${sep}`))).toBe(true)
   })
 
   it('scans the generators themselves, not only what they emit', () => {
@@ -473,6 +487,7 @@ describe('no shipped script, template or GENERATOR puts a Bearer token in curl a
     ...SEED_SKILL_DOCS.map((file) => ({ dir: SEED_SKILLS_DIR, file })),
     ...SEED_AGENT_DOCS.map((file) => ({ dir: SEED_FLEET_AGENTS_DIR, file })),
     ...SEED_TASK_DOCS.map((file) => ({ dir: SEED_TASKS_DIR, file })),
+    ...TEMPLATE_DOCS.map((file) => ({ dir: TEMPLATES_DIR, file })),
     // The installed agents get the SAME scan as the templates they were copied from -- an empty list
     // when the tree is absent, which the coverage assertion above turns into a visible skip.
     ...INSTALLED_AGENT_DOCS.map((file) => ({ dir: INSTALLED_AGENTS_DIR, file })),
