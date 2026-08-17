@@ -26,7 +26,6 @@ import {
   buildEscalationMessage,
   type QueueStatus,
 } from '../../local-llm-queue.js'
-import { routeTask } from '../../local-llm-router.js'
 import { getUtilizationSamples } from '../local-llm-utilization-history.js'
 import { readWeeklySnapshot } from '../../costops/weekly-limit.js'
 
@@ -946,6 +945,16 @@ export async function tryHandleLocalLlm(ctx: RouteContext): Promise<boolean> {
     // architecture/security-decision) is refused outright rather than silently queued for local
     // drafting -- the caller does it online instead, exactly like the synchronous path already
     // requires.
+    //
+    // DYNAMIC IMPORT, NOT A STATIC ONE (measured, not stylistic): local-llm-router.ts imports
+    // CODING_DIFFICULTY_LEVELS/RELIABLE_CEILING/etc FROM this very file already (its own header
+    // comment: "Threshold logic is REUSED from ./web/routes/local-llm.js"). A static top-level
+    // import here closes that into a real circular dependency -- proven by running it: router.ts's
+    // module-top-level NEVER_OFFLOADABLE_LEVELS read CODING_DIFFICULTY_LEVELS as undefined mid-cycle
+    // and threw on load, taking every route in this file down with it. A dynamic import resolves
+    // after both modules have finished initializing, same reasoning local-llm-rag.sh already uses
+    // for this exact router import.
+    const { routeTask } = await import('../../local-llm-router.js')
     const routed = routeTask({ description: prompt })
     if (routed.route === 'online') {
       json(
