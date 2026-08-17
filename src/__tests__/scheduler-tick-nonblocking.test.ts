@@ -118,11 +118,53 @@ function backgroundRunnerFiles(): string[] {
  *  KNOWN_SYNC_ROUTES below. */
 const KNOWN_SYNC_RUNNERS = [
   'web.ts',
+  'web/agent-worker.ts',
   'web/auto-restart-runner.ts',
   'web/channel-monitor.ts',
+  'web/context-restart-gate-runner.ts',
   'web/stuck-tool-call-watcher.ts',
   'web/update-checker.ts',
 ] as const
+
+/**
+ * ALL files start-wired from web.ts (static `import { startX }` or the same lazy
+ * `import('./Y.js').then(m => { ... m.startX() ... })` form), with NO setInterval filter --
+ * card eabe6867 (Cybered): backgroundRunnerFiles() above silently drops any start-wired file
+ * that schedules itself WITHOUT setInterval (e.g. setTimeout recursion), and nothing tracked
+ * what that drop excluded. context-restart-gate-runner.ts fell exactly into that hole: it is
+ * start-wired from web.ts, calls execFileSync (tmux/ps) TODAY, uses setTimeout recursion
+ * instead of setInterval, and was invisible to every list in this suite -- not tickPathFiles,
+ * not backgroundRunnerFiles, not a route file. This derivation restores full web.ts coverage
+ * so the completeness test below can catch the next such file on arrival instead of by luck.
+ */
+function webStartWiredFiles(): string[] {
+  const files = new Set<string>()
+  const src = readFileSync(join(SRC, 'web.ts'), 'utf-8')
+  for (const line of src.split('\n')) {
+    const m = line.match(/^import\s*\{([^}]*)\}\s*from\s*'(\.\/[^']+)\.js'/)
+    if (m && /\bstart[A-Z]\w*/.test(m[1])) files.add(`web/${m[2].replace(/^\.\//, '')}.ts`)
+  }
+  const dynRe = /import\(['"](\.\/[^'"]+)\.js['"]\)/g
+  let dm: RegExpExecArray | null
+  while ((dm = dynRe.exec(src))) {
+    const window = src.slice(dm.index, dm.index + 400)
+    if (/\.\s*start[A-Z]\w*\s*\(/.test(window)) files.add(`web/${dm[1].replace(/^\.\//, '')}.ts`)
+  }
+  return [...files].sort()
+}
+
+/**
+ * Start-wired-from-web.ts files that schedule themselves WITHOUT their own setInterval, so
+ * backgroundRunnerFiles() never sees them -- pinned WITH a reason so the exclusion from that
+ * list is a reviewed decision, not a blind spot (card eabe6867).
+ *  - agent-worker.ts: worker-message-driven (per-session setTimeout recursion), already
+ *    documented above as a different risk shape than a live shared-loop timer.
+ *  - context-restart-gate-runner.ts: setTimeout recursion, not setInterval -- the exact gap
+ *    this card measured. Its execFileSync calls are reviewed the same as agent-process.ts's.
+ * Both already call a sync child API today, so both are also in KNOWN_SYNC_RUNNERS above; the
+ * check below is what stops a THIRD such file from landing unreviewed.
+ */
+const NO_OWN_INTERVAL_START_WIRED = ['web/agent-worker.ts', 'web/context-restart-gate-runner.ts'] as const
 
 /**
  * Every route handler, DERIVED from the directory (card 095edfec, Cybersec). A single inbound
@@ -299,5 +341,39 @@ const KNOWN_SYNC_TICK_FILES = ['agent-process.ts'] as const
     for (const f of KNOWN_SYNC_RUNNERS) {
       expect(runners, `${f} is pinned in KNOWN_SYNC_RUNNERS but is no longer derived as a background runner -- stale pin`).toContain(f)
     }
+  })
+
+  // Closes the gap card eabe6867 measured: every web.ts start*-wired file must be accounted
+  // for by EITHER having its own setInterval (backgroundRunnerFiles' normal sync-call
+  // enforcement) OR a named, reasoned pin here -- never by silently falling out of both.
+  it('every web.ts start-wired file is accounted for (own-interval or pinned exception) -- card eabe6867', () => {
+    const all = webStartWiredFiles()
+    const withOwnInterval = new Set(backgroundRunnerFiles())
+    const unaccounted = all.filter((f) => !withOwnInterval.has(f) && !(NO_OWN_INTERVAL_START_WIRED as readonly string[]).includes(f))
+    expect(
+      unaccounted,
+      `these web.ts start-wired files have neither their own setInterval nor a pinned exemption -- ` +
+        `a future synchronous child_process call here would be invisible to this whole suite:\n${unaccounted.join('\n')}`,
+    ).toEqual([])
+    for (const f of NO_OWN_INTERVAL_START_WIRED) {
+      expect(all, `${f} is pinned in NO_OWN_INTERVAL_START_WIRED but is no longer start-wired from web.ts -- stale pin`).toContain(f)
+      expect(
+        withOwnInterval.has(f),
+        `${f} now has its own setInterval and is already covered by backgroundRunnerFiles() -- remove it from this pin instead of double-listing`,
+      ).toBe(false)
+    }
+    // Derivation sanity: a broken import walk would yield an empty/tiny set and pass vacuously.
+    expect(all.length, 'the web.ts start-wired list collapsed -- the import derivation is broken').toBeGreaterThan(15)
+  })
+
+  it.each(NO_OWN_INTERVAL_START_WIRED)('%s (start-wired, no own interval) has no unreviewed synchronous child_process call', (file) => {
+    const code = codeOf(file, SRC)
+    const calledApis = SYNC_CHILD_APIS.filter((api) => new RegExp(`\\b${api}\\(`).test(code))
+    if (calledApis.length === 0) return
+    expect(
+      (KNOWN_SYNC_RUNNERS as readonly string[]).includes(file),
+      `${file} calls a synchronous child_process API (${calledApis.join(', ')}) and must be reviewed into ` +
+        `KNOWN_SYNC_RUNNERS, same as any other runner on the shared event loop`,
+    ).toBe(true)
   })
 })
