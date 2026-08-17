@@ -118,10 +118,8 @@ function backgroundRunnerFiles(): string[] {
  *  KNOWN_SYNC_ROUTES below. */
 const KNOWN_SYNC_RUNNERS = [
   'web.ts',
-  'web/agent-worker.ts',
   'web/auto-restart-runner.ts',
   'web/channel-monitor.ts',
-  'web/context-restart-gate-runner.ts',
   'web/stuck-tool-call-watcher.ts',
   'web/update-checker.ts',
 ] as const
@@ -142,13 +140,13 @@ function webStartWiredFiles(): string[] {
   const src = readFileSync(join(SRC, 'web.ts'), 'utf-8')
   for (const line of src.split('\n')) {
     const m = line.match(/^import\s*\{([^}]*)\}\s*from\s*'(\.\/[^']+)\.js'/)
-    if (m && /\bstart[A-Z]\w*/.test(m[1])) files.add(`web/${m[2].replace(/^\.\//, '')}.ts`)
+    if (m && /\bstart[A-Z]\w*/.test(m[1])) files.add(`${m[2].replace(/^\.\//, '')}.ts`)
   }
   const dynRe = /import\(['"](\.\/[^'"]+)\.js['"]\)/g
   let dm: RegExpExecArray | null
   while ((dm = dynRe.exec(src))) {
     const window = src.slice(dm.index, dm.index + 400)
-    if (/\.\s*start[A-Z]\w*\s*\(/.test(window)) files.add(`web/${dm[1].replace(/^\.\//, '')}.ts`)
+    if (/\.\s*start[A-Z]\w*\s*\(/.test(window)) files.add(`${dm[1].replace(/^\.\//, '')}.ts`)
   }
   return [...files].sort()
 }
@@ -161,10 +159,13 @@ function webStartWiredFiles(): string[] {
  *    documented above as a different risk shape than a live shared-loop timer.
  *  - context-restart-gate-runner.ts: setTimeout recursion, not setInterval -- the exact gap
  *    this card measured. Its execFileSync calls are reviewed the same as agent-process.ts's.
- * Both already call a sync child API today, so both are also in KNOWN_SYNC_RUNNERS above; the
- * check below is what stops a THIRD such file from landing unreviewed.
+ * Both already call a sync child API today (reviewed local/bounded tmux+ps calls, same stance
+ * as KNOWN_SYNC_RUNNERS/KNOWN_SYNC_ROUTES), tracked separately below rather than folded into
+ * KNOWN_SYNC_RUNNERS -- that list's own invariant (every entry has its OWN setInterval) would
+ * go stale for these two on purpose.
  */
 const NO_OWN_INTERVAL_START_WIRED = ['web/agent-worker.ts', 'web/context-restart-gate-runner.ts'] as const
+const NO_OWN_INTERVAL_SYNC_REVIEWED = ['web/agent-worker.ts', 'web/context-restart-gate-runner.ts'] as const
 
 /**
  * Every route handler, DERIVED from the directory (card 095edfec, Cybersec). A single inbound
@@ -371,9 +372,17 @@ const KNOWN_SYNC_TICK_FILES = ['agent-process.ts'] as const
     const calledApis = SYNC_CHILD_APIS.filter((api) => new RegExp(`\\b${api}\\(`).test(code))
     if (calledApis.length === 0) return
     expect(
-      (KNOWN_SYNC_RUNNERS as readonly string[]).includes(file),
+      (NO_OWN_INTERVAL_SYNC_REVIEWED as readonly string[]).includes(file),
       `${file} calls a synchronous child_process API (${calledApis.join(', ')}) and must be reviewed into ` +
-        `KNOWN_SYNC_RUNNERS, same as any other runner on the shared event loop`,
+        `NO_OWN_INTERVAL_SYNC_REVIEWED, same review stance as KNOWN_SYNC_RUNNERS`,
     ).toBe(true)
+  })
+
+  it('the no-own-interval sync-reviewed pin stays honest -- every entry really still calls a sync child', () => {
+    for (const f of NO_OWN_INTERVAL_SYNC_REVIEWED) {
+      const code = codeOf(f, SRC)
+      const stillCalls = SYNC_CHILD_APIS.some((api) => new RegExp(`\\b${api}\\(`).test(code))
+      expect(stillCalls, `${f} no longer calls a synchronous child_process API and should leave NO_OWN_INTERVAL_SYNC_REVIEWED`).toBe(true)
+    }
   })
 })
