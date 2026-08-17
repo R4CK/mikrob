@@ -1,4 +1,5 @@
-import { existsSync, readdirSync, readFileSync, statSync } from 'node:fs'
+import { existsSync, readdirSync, statSync } from 'node:fs'
+import { readFile } from 'node:fs/promises'
 import { join } from 'node:path'
 import { json } from '../http-helpers.js'
 import { agentDir } from '../agent-config.js'
@@ -40,13 +41,16 @@ function sessionsDirFor(name: string): string {
 }
 
 /** Every session transcript for `name`, newest first. */
-function listSessionFiles(name: string): Array<{ file: string; sessionId: string; mtime: number }> {
+function listSessionFiles(name: string): Array<{ file: string; sessionId: string; mtime: number; size: number }> {
   const dir = sessionsDirFor(name)
   try {
     if (!existsSync(dir)) return []
     return readdirSync(dir)
       .filter(f => f.endsWith('.jsonl'))
-      .map(f => ({ file: join(dir, f), sessionId: f.replace(/\.jsonl$/, ''), mtime: statSync(join(dir, f)).mtimeMs }))
+      .map(f => {
+        const st = statSync(join(dir, f))
+        return { file: join(dir, f), sessionId: f.replace(/\.jsonl$/, ''), mtime: st.mtimeMs, size: st.size }
+      })
       .sort((a, b) => b.mtime - a.mtime)
   } catch {
     return []
@@ -97,9 +101,13 @@ function actionLabel(name: string, input: Record<string, unknown>): string {
 }
 
 // Turn the newest transcript into a flat, chronological, readable timeline.
-function buildTimeline(file: string): Entry[] {
+// Async (fs/promises): a transcript can be large (card 77fd0f07, Cybersec
+// NO-GO comment 14132 -- this file family has had the sync-full-file-read
+// class fixed twice already, fb76229f/e016ca9f), so this offloads the read
+// to libuv's threadpool instead of blocking the single JS thread/event loop.
+async function buildTimeline(file: string): Promise<Entry[]> {
   const entries: Entry[] = []
-  const raw = readFileSync(file, 'utf-8').split('\n')
+  const raw = (await readFile(file, 'utf-8')).split('\n')
   for (const line of raw) {
     const t = line.trim()
     if (!t) continue
@@ -158,6 +166,33 @@ function buildTimeline(file: string): Entry[] {
   return entries
 }
 
+// The session picker only needs to show the recent past, not the entire
+// history (an active agent accumulates thousands of session files over
+// time). Capping bounds the LIST endpoint's worst-case cost to N files
+// regardless of total history size -- an old session beyond the cap is still
+// individually replayable via ?sessionId= (transcriptForSession is uncapped),
+// it just does not appear in the picker. Card 77fd0f07, Cybersec NO-GO
+// (comment 14132): the uncapped, uncached version measured at ~4.2s of
+// blocking full-file reads for one real agent's history (2238 files, 603MB).
+const MAX_SESSIONS_LISTED = 50
+
+// entryCount requires a full parse of the transcript file (buildTimeline),
+// which is the expensive part Cybersec's finding was about -- caching it by
+// (mtime, size) means a closed session (the overwhelming majority: mtime
+// only changes while a session is actively being appended to) is parsed at
+// most once, no matter how many times the list is requested. Combined with
+// the cap above, worst case is "at most MAX_SESSIONS_LISTED cold parses",
+// not "the agent's entire history".
+const entryCountCache = new Map<string, { mtime: number; size: number; count: number }>()
+
+async function entryCountCached(file: string, mtime: number, size: number): Promise<number> {
+  const hit = entryCountCache.get(file)
+  if (hit && hit.mtime === mtime && hit.size === size) return hit.count
+  const count = (await buildTimeline(file)).length
+  entryCountCache.set(file, { mtime, size, count })
+  return count
+}
+
 // GET /api/agents/:agent/sessions -- the session picker's data source (card
 // 77fd0f07, pair-FE 03d2ae9c). One entry per transcript file, newest first,
 // so the operator can pick a PAST run instead of only ever seeing the latest.
@@ -167,11 +202,15 @@ async function tryHandleAgentSessions(ctx: RouteContext): Promise<boolean> {
   if (!match || method !== 'GET') return false
   const name = decodeURIComponent(match[1])
   try {
-    const sessions = listSessionFiles(name).map((f) => ({
-      sessionId: f.sessionId,
-      mtime: f.mtime,
-      entryCount: buildTimeline(f.file).length,
-    }))
+    const sessions = await Promise.all(
+      listSessionFiles(name)
+        .slice(0, MAX_SESSIONS_LISTED)
+        .map(async (f) => ({
+          sessionId: f.sessionId,
+          mtime: f.mtime,
+          entryCount: await entryCountCached(f.file, f.mtime, f.size),
+        })),
+    )
     json(res, { agent: name, sessions })
   } catch {
     json(res, { error: 'A session-lista feldolgozása nem sikerült' }, 500)
@@ -201,7 +240,7 @@ export async function tryHandleAgentConversation(ctx: RouteContext): Promise<boo
   const file = transcriptForSession(name, sessionId)
   if (!file) { json(res, { agent: name, entries: [], total: 0, offset: 0, hasOlder: false, note: 'Nincs még beszélgetés-előzmény ehhez az agenthez.' }); return true }
   try {
-    const all = buildTimeline(file)
+    const all = await buildTimeline(file)
     const total = all.length
     const end = Math.max(0, total - offset)
     const start = Math.max(0, end - limit)

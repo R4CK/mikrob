@@ -3,7 +3,7 @@
 // session, not just the newest).
 import { describe, it, expect, vi, beforeAll, afterAll } from 'vitest'
 import type http from 'node:http'
-import { mkdtempSync, mkdirSync, writeFileSync, rmSync } from 'node:fs'
+import { mkdtempSync, mkdirSync, writeFileSync, rmSync, utimesSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { requiresAuth } from '../web/auth-gate.js'
@@ -129,5 +129,94 @@ describe('GET /api/agents/:agent/conversation with sessionId', () => {
     expect(json.entries).toEqual([])
     expect(json.total).toBe(0)
     expect(json.note).toBeTruthy()
+  })
+})
+
+// Card 77fd0f07, Cybersec NO-GO (comment 14132): the unbounded, uncached
+// version parsed every session file's FULL content just to report entryCount
+// -- measured at ~4.2s of blocking reads for one real agent's history (2238
+// files, 603MB). The fix caps the list and caches entryCount by (mtime,
+// size). These two describe blocks prove the fix's DoD, not just that
+// something changed.
+describe('GET /api/agents/:agent/sessions caps the list (Cybersec NO-GO 14132: no file-count limit was the vulnerability)', () => {
+  const CAP_AGENT = 'test-agent-77fd0f07-cap'
+  let capDir: string
+
+  beforeAll(() => {
+    const workingDir = agentDir(CAP_AGENT)
+    const encoded = workingDir.replace(/[/.]/g, '-')
+    capDir = join(configRoot, 'projects', encoded)
+    mkdirSync(capDir, { recursive: true })
+    // 55 sessions -- 5 more than the 50-item cap. Explicit staggered mtimes
+    // (not write order) so "newest N" is unambiguous and not a timing-flake.
+    const base = new Date('2026-01-01T00:00:00Z').getTime()
+    for (let i = 0; i < 55; i++) {
+      const file = join(capDir, `session-${String(i).padStart(3, '0')}.jsonl`)
+      writeFileSync(file, turn(`turn ${i}`, new Date(base + i * 1000).toISOString()) + '\n')
+      const mtime = new Date(base + i * 1000)
+      utimesSync(file, mtime, mtime) // session-054 is newest (highest i)
+    }
+  })
+
+  it('returns at most 50 sessions, the newest by mtime', async () => {
+    const { json } = await call(`/api/agents/${CAP_AGENT}/sessions`)
+    const sessions = json.sessions as Array<{ sessionId: string }>
+    expect(sessions.length).toBe(50)
+    // Newest 50 of 0..54 is 5..54 -- session-000..004 must be excluded.
+    const ids = sessions.map((s) => s.sessionId)
+    expect(ids).not.toContain('session-000')
+    expect(ids).not.toContain('session-004')
+    expect(ids).toContain('session-054')
+    expect(ids).toContain('session-005')
+  })
+
+  it('a session beyond the list cap is still individually replayable by sessionId', async () => {
+    const { json } = await call(`/api/agents/${CAP_AGENT}/conversation?sessionId=session-000`)
+    expect(json.sessionId).toBe('session-000')
+    expect(json.entries).toEqual([expect.objectContaining({ kind: 'note', text: 'turn 0' })])
+  })
+})
+
+describe('entryCount is cached by (mtime, size), not recomputed every request (Cybersec NO-GO 14132: no per-request cost bound was the vulnerability)', () => {
+  const CACHE_AGENT = 'test-agent-77fd0f07-cache'
+  let cacheDir: string
+  let file: string
+
+  beforeAll(() => {
+    const workingDir = agentDir(CACHE_AGENT)
+    const encoded = workingDir.replace(/[/.]/g, '-')
+    cacheDir = join(configRoot, 'projects', encoded)
+    mkdirSync(cacheDir, { recursive: true })
+    file = join(cacheDir, 'session-cache.jsonl')
+  })
+
+  it('an unchanged (mtime, size) key returns the previously-computed count even if the file content since changed', async () => {
+    const secondTurnLine = turn('second turn (should not be seen yet)', '2026-02-01T00:00:00Z')
+    const firstLine = turn('first turn', '2026-01-31T00:00:00Z')
+    // Same total byte length in both rounds (ASCII-only, utf-8 == byte-for-byte)
+    // so the cache key (mtime, size) is IDENTICAL across rounds -- isolates the
+    // test to "does mtime/size gate the recompute", not incidental size drift.
+    const round1 = firstLine + '\n' + 'X'.repeat(secondTurnLine.length) + '\n'
+    const round2 = firstLine + '\n' + secondTurnLine + '\n'
+    expect(round1.length).toBe(round2.length)
+
+    const fixedMtime = new Date('2026-02-02T00:00:00Z')
+    writeFileSync(file, round1)
+    utimesSync(file, fixedMtime, fixedMtime)
+    const first = await call(`/api/agents/${CACHE_AGENT}/sessions`)
+    expect((first.json.sessions as Array<{ entryCount: number }>)[0].entryCount).toBe(1)
+
+    // Overwrite with content that WOULD parse to 2 entries, but keep the same
+    // mtime+size -- the cache must serve the stale count, not reparse.
+    writeFileSync(file, round2)
+    utimesSync(file, fixedMtime, fixedMtime)
+    const second = await call(`/api/agents/${CACHE_AGENT}/sessions`)
+    expect((second.json.sessions as Array<{ entryCount: number }>)[0].entryCount).toBe(1)
+
+    // Now bump mtime with the same (2-entry) content -- cache must invalidate.
+    const bumpedMtime = new Date('2026-02-02T00:00:01Z')
+    utimesSync(file, bumpedMtime, bumpedMtime)
+    const third = await call(`/api/agents/${CACHE_AGENT}/sessions`)
+    expect((third.json.sessions as Array<{ entryCount: number }>)[0].entryCount).toBe(2)
   })
 })
