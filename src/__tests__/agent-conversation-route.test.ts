@@ -220,3 +220,50 @@ describe('entryCount is cached by (mtime, size), not recomputed every request (C
     expect((third.json.sessions as Array<{ entryCount: number }>)[0].entryCount).toBe(2)
   })
 })
+
+// Card b8549283, Cybersec follow-up on 77fd0f07: the fix above capped the OUTPUT to
+// MAX_SESSIONS_LISTED (50), but listSessionFiles() still ran statSync over the WHOLE directory
+// to determine which 50 were newest -- the sweep itself stayed uncapped. This proves the sweep
+// has its own, independent bound: with 10 real files and the sweep cap overridden down to 3
+// (well under both the file count AND the 50-item output cap), the endpoint returns at most 3.
+// The old code would return all 10 (10 < 50, so the output cap alone would not have caught it) --
+// this is the assertion that would fail without the fix, not just "still works".
+describe('the statSync sweep itself is capped, independent of the 50-item output cap (card b8549283)', () => {
+  const SWEEP_AGENT = 'test-agent-b8549283-sweep'
+  let sweepDir: string
+  let freshHandle: typeof import('../web/routes/agent-conversation.js').tryHandleAgentConversation
+
+  beforeAll(async () => {
+    const workingDir = agentDir(SWEEP_AGENT)
+    const encoded = workingDir.replace(/[/.]/g, '-')
+    sweepDir = join(configRoot, 'projects', encoded)
+    mkdirSync(sweepDir, { recursive: true })
+    for (let i = 0; i < 10; i++) {
+      writeFileSync(join(sweepDir, `session-${String(i).padStart(3, '0')}.jsonl`), turn(`turn ${i}`, '2026-01-01T00:00:00Z') + '\n')
+    }
+    process.env.SESSION_STAT_SWEEP_CAP = '3'
+    vi.resetModules()
+    ;({ tryHandleAgentConversation: freshHandle } = await import('../web/routes/agent-conversation.js'))
+  })
+
+  afterAll(() => {
+    delete process.env.SESSION_STAT_SWEEP_CAP
+  })
+
+  it('returns at most the sweep cap, not the full 10 files (which is still under the 50-item output cap)', async () => {
+    const res = mkRes()
+    const url = new URL(`http://127.0.0.1:3420/api/agents/${SWEEP_AGENT}/sessions`)
+    const ctx: RouteContext = {
+      req: {} as http.IncomingMessage,
+      res: res as unknown as http.ServerResponse,
+      path: url.pathname,
+      method: 'GET',
+      url,
+    }
+    const handled = await freshHandle(ctx)
+    expect(handled).toBe(true)
+    const json = JSON.parse(res.body || '{}')
+    const sessions = json.sessions as Array<{ sessionId: string }>
+    expect(sessions.length).toBeLessThanOrEqual(3)
+  })
+})
