@@ -81,6 +81,27 @@ BLOCKED_MARKERS = ('BLOKKOLVA', 'KOTOTT FELTETEL', 'kotott-blokk', 'kötött-blo
 # touching a real trust boundary, do NOT skip it; read the REVIEW before trusting the prefix.
 SECURITY_GATE_LOW_RISK_TITLE_PREFIXES = ('[OFFLOAD]',)
 
+# Declared gate-tier check (cybersec/cybered ONLY): most card descriptions end with an
+# explicit "Gate: QA" / "Gate: QA + Cybersec" / "Gate: QA + Cybersec + Cybered" line (Rule 4
+# risk-tiering, stated by the builder/MikroB). Measured 2026-08-17: 18/18 cards a raw cybered
+# scan flagged as "ungated" turned out to be QA-only or QA+Cybersec -- the scan doesn't check
+# the declared tier, so it burns a full card-read on every one just to confirm "not mine".
+# Fix: read the LAST "Gate:" mention in the description; if it names gates but NOT my own, skip
+# -- unless there is no "Gate:" mention at all, in which case fall through (surface it, read the
+# thread to decide). Last mention wins because scope can widen mid-thread (e.g. MikroB adds
+# Cybered later after a chained finding).
+# NOT anchored to line-start (77fd0f07 tanulság, 2026-08-17): some descriptions end the LAST
+# PARAGRAPH with "... szoveg. Gate: QA." on the same line as prose, not its own line -- a
+# `^\s*Gate:` MULTILINE anchor missed it entirely and let a QA-only card through the filter.
+GATE_DECL_RE = re.compile(r'Gate:\s*([^\n]+)', re.IGNORECASE)
+
+def declared_gate_excludes_me(description, my_gate):
+    if my_gate not in ('cybersec', 'cybered'): return False
+    matches = GATE_DECL_RE.findall(description or '')
+    if not matches: return False
+    declared = matches[-1].lower()
+    return my_gate not in declared
+
 def _marker_re(m):
     """Word-bounded where the marker begins/ends in a word character (card 3307b428, F2). A bare
     substring test made 'HOLD' fire inside 'placeholder', 'household', 'stronghold' -- and that
@@ -112,6 +133,8 @@ for c in all_cards:
     if c.get('status') not in ('waiting', 'in_progress'): continue
     title = c.get('title') or ''
     if MY_GATE in ('cybersec', 'cybered') and title.startswith(SECURITY_GATE_LOW_RISK_TITLE_PREFIXES):
+        continue
+    if declared_gate_excludes_me(c.get('description'), MY_GATE):
         continue
     cid = c['id']
     try:
@@ -228,6 +251,8 @@ for n in needs:
 - **`kotott-blokk` / `PETI DONTES` / `HOLD` marker (2026-07-31 tanulság, b92c10d4):** MikroB a bound-blockot NEM mindig a `KOTOTT FELTETEL` szöveggel írja -- a valós szövegezés gyakran `WAITING (kotott-blokk, Peti-dontes)` + `Addig ne churn-old`. A régi marker-lista csak a nagybetűs `KOTOTT FELTETEL`-t ismerte, ezért a scan gate-elhetőnek mutatta a Peti által HOLD-ra tett adopt-kártyát. Fix: `kotott-blokk`, `kötött-blokk`, `PETI DONTES`, `HOLD`, `ne churn-old` felvéve a `BLOCKED_MARKERS`-be. **Ha egy kártyán Cybersec már adott verdiktet ÉS MikroB utána HOLD-ra tette egy tulajdonosi döntés miatt, NE adj rá saját verdiktet** -- az nem hiányzó gate, hanem szándékos várakozás; a churn ilyenkor kvótaégés és zajt tesz a kártyára.
 - **`[OFFLOAD]` kártyák nem Cybersec/Cybered-kúszöbűek (2026-07-25 tanulság):** a fleet-infra local-LLM offload-preset kártyák (marveen repo, `store/local-llm-skills/*` sablonok, nincs endpoint/auth/trust-boundary) rendszeresen felszínre kerülnek a scanben, de a risk-tiering szabály szerint QA-only elég. `SECURITY_GATE_LOW_RISK_TITLE_PREFIXES` a fenti kódban ezt szűri Cybersec/Cybered scan esetén (QA/QA2 scan-t NEM érinti). Durva heurisztika (cím-prefix) -- ha egy OFFLOAD-kártya REVIEW-ja credentialt/külső hálózati hívást/valódi trust-boundaryt említ, OLVASD EL a REVIEW-t és NE hagyatkozz a prefixre.
 - **Redundáns REVIEW ugyanazon commiten (2026-07-24 tanulság):** A scan felszínre hozhat kártyákat ahol fron-ted/fron-teddy ÚJ REVIEW-t posztolt egy MÁR TELJESEN GATE-ELT commitra (pl. `fron-ted#4620 REVIEW: bug már ki van javítva -- commit dc074ab`). Ilyenkor a scan helyesen listázza (új REVIEW-id > utolsó verdict-id), DE: (a) ha a REVIEW-ban említett commit sha UGYANAZ mint amire a meglévő QA PASS szól, és (b) MikroB már DONE-kommentet adott -- NE gate-elj újra, csak posztolj rövid megjegyzést ("már gated @ sha, MikroB lezárhatja") és értesítsd MikroB-ot inter-agent üzenettel. Így a kártyák nem kerülnek ki a scanből (a scan helyesen jelzi a DONE-hiányt), de nem pazarolsz gate-munkát ismételt futtatásra. Valós esetek: 725d3bc9 (dc074ab), 5477ae68 (5986ccc), f1218257 (5986ccc).
+- **Nem-deklarált gate churn (2026-08-17 tanulság, cybered sweep):** egy nyers cybered-scan 18 "ungated" kártyát adott -- kártyánkénti manuális ellenőrzés után MIND a 18 QA-only vagy QA+Cybersec volt (a leírás végén kimondott `Gate: ...` sor szerint), egyik sem kért Cybered-et. A scan a REVIEW/verdikt-idézetekre néz, nem a deklarált gate-tierre, ezért minden ilyen kártyát teljes komment-thread-olvasásra kényszerít, csak hogy "nem az enyém" legyen a válasz. Fix: `declared_gate_excludes_me()` a fenti kódban -- a leírás UTOLSÓ `Gate:` említését nézi, és kihagyja a kártyát, ha az explicit deklaráció nem nevezi meg a saját gate-emet. Ha NINCS `Gate:` említés a leírásban, nem feltételez semmit -- simán felszínre hozza (a régi viselkedés). Ez a szűrő CSAK cybersec/cybered scan-nél fut (QA/QA2 minden kártyán gate-el, nekik nincs mit kiszűrni).
+- **`Gate:` sor-eleji horgony hamis negatívot adott (77fd0f07 tanulság, ugyanaz a kör):** az első verzió `^\s*Gate:` MULTILINE horgonnyal csak a SAJÁT SORÁN álló deklarációt fogta el. A 77fd0f07 kártya leírása a "Gate: QA." mondatot a bekezdés VÉGÉN, ugyanazon a soron zárta ("...idovonal-vegpontnak. Gate: QA."), ezért a horgonyos regex nem talált egyezést, és a kártya átcsúszott a szűrőn (QA-only lett volna, mégis felszínre került). Fix: a horgony levéve, `Gate:\s*([^\n]+)` bárhol a szövegben keres, csak sortörésig szedi a sort.
 
 ## Gate reconciliation (closeable cards)
 
