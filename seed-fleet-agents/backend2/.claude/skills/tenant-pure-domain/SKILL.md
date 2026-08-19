@@ -39,6 +39,28 @@ later. Every shipped piece followed this and passed QA + Cybersec gates.
 - Seen ports: `EvidenceHasher`/`CaptureHasher` (SHA-256), `MetadataSigner`,
   `QrRenderer`, `Presigner`/`PresignerBackend`, `ObjectStoreClient`,
   `MultipartBackend`, `Uploader`, `SyncPort`, `PendingStore<T>`.
+- **Cross-module authz checker ports (FORM-5 pattern):** When a domain must
+  authorize against another domain's data (e.g. form submission requires the
+  submitter to be assigned to the relevant job, but job assignment lives in a
+  different module), inject an authz-checker interface rather than importing the
+  other module directly. Example:
+  ```typescript
+  interface FormJobAssignmentChecker {
+    isAssignedToJob(tenantId: string, jobId: string, userId: string): Promise<boolean>
+  }
+  // In submitForm: if plan.jobId !== null, check BEFORE recording anything
+  if (plan.jobId !== null) {
+    const ok = checker && await checker.isAssignedToJob(tenantId, plan.jobId, ctx.userId)
+    if (!ok) throw new SubmitterNotAssigned(plan.jobId, ctx.userId)
+  }
+  // In-memory factory uses length-prefixed key: `${t.length}:${t}:${jobId}`
+  ```
+  The in-memory implementation uses **length-prefixed composite keys**
+  (`${tenantId.length}:${tenantId}:${jobId}` → Set of userIds) to prevent
+  cross-tenant key collision without a separator that could appear in the value.
+  The domain SEALS submitter identity: `submittedByUserId = ctx.userId` (never
+  a caller field), and includes it in any canonical/hash record so it's
+  tamper-evident.
 - Contract in the doc comment: deterministic, lowercase-hex, etc. The domain
   never imports `node:crypto`, `@aws-sdk/*`, `sharp`, `indexedDB`.
 - Validate inputs BEFORE calling the port; on a scope/permission failure, throw
@@ -197,6 +219,9 @@ every card against all three before you move it to `waiting`.
 - [ ] `prettier --write` clean on changed files.
 - [ ] `tenantId` from ctx (never body); `assertXAccessible` guard present + tested.
 - [ ] No `node:crypto`/SDK/IO import in the domain; the effectful dep is an injected port.
+- [ ] Cross-module authz checker: if `plan.jobId !== null` (or similar scope gate), checker is required AND checked BEFORE any write; fail-closed when checker absent or returns false.
+- [ ] In-memory composite keys length-prefixed (`${x.length}:${x}:${suffix}`) to prevent cross-tenant collision.
+- [ ] Submitter/actor identity sealed from `ctx.userId`, included in canonical/hash record (not a caller-supplied field).
 - [ ] Any new dep classified: workspace-dep committed by you; real npm-dep flagged (exact range + target + peer-compat) to the orchestrator, `pnpm-lock` untouched.
 - [ ] Only your files staged (no `git add -A`); Co-Authored-By trailer.
 - [ ] Card: REVIEW comment + `waiting`. Not `done` — QA PASS + Cybersec GO close it (author-cannot-verify: you never sign off your own build).
