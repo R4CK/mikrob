@@ -27,9 +27,7 @@ This contract is written INTO the paired cards (below) so BE and FE reference th
 When a user-facing feature card is created, MikroB immediately creates BOTH:
 - the **backend card** (implement the endpoint(s) per the contract), and
 - the paired **Fron Ted frontend card** (build the UI + user-flow per the contract),
-and dispatches them **simultaneously** to backend + fron-ted — not FE-after-BE. Both cards quote the same contract (§1) and cross-reference each other with a **stated, queryable line** (rule 8a), not prose alone: `Pair-FE: <card>` on the backend card, `Pair-BE: <card>` on the frontend card, filled in by MikroB at CREATION time. (Rule 8 makes the FE card automatic; this skill makes it *concurrent*; rule 8a makes the pairing *queryable*.)
-
-A fleet measurement (card d03b3eea, 2026-08-16) found the concurrency itself already works when a pair is created together (3/3 sampled pairs overlapped in build time) — the actual gap was that most pairs were linked only by a mention in the description text (11/14) rather than a structural, greppable field (10/29 even had `parent_id`), so compliance with rule 8 could not be queried, only estimated. The `Pair-FE:`/`Pair-BE:` line closes that gap; it does not change the timing guidance, which the measurement showed does not need fixing.
+and dispatches them **simultaneously** to backend + fron-ted — not FE-after-BE. Both cards quote the same contract (§1) and cross-reference each other. (Rule 8 makes the FE card automatic; this skill makes it *concurrent*.)
 
 ### 3. Frontend builds against a MOCK of the contract (does not wait for the backend)
 Fron Ted does NOT wait for the live endpoint. It:
@@ -62,9 +60,7 @@ If the contract must change mid-build, the BE and FE cards are updated in the **
 
 ## Pitfalls
 - **No contract, "we'll align later"** → the join breaks in integration; the whole parallelism collapses into rework. Contract first, always.
-- **FE waits for the BE** → sequential, not parallel; defeats the method. FE builds against the mock. (Measured to be rare once a pair is actually created together — the more common failure is the next one.)
-- **The pair is never created together** → a FEAT card ships BE-only, and the FE half only appears later as a follow-up card after a gate or a human notices — this reads as "sequential," but it is really a missing pairing step at dispatch time, not a timing violation once the pair exists. Fix at the source: MikroB creates both cards and both `Pair-*` lines in the same step (§2), not as a later patch.
-- **Pairing lives only in prose** → "see card X" in a description is not queryable at scale; a compliance sweep has to grep free text and estimate. Use the `Pair-FE:`/`Pair-BE:` line (§2) so it's a field, not a sentence.
+- **FE waits for the BE** → sequential, not parallel; defeats the method. FE builds against the mock.
 - **Mock drifts from the contract** → FE passes against a fantasy shape, fails at the real swap. The mock must be contract-shaped; when the contract changes, the mock changes.
 - **One side changes the contract silently** → the other goes stale. Contract changes move both cards (§5).
 - **Every new function spawns a new page** → nav bloat, orphan routes, users lost. Default to extending via an FSD slice; new route only for a distinct job (Part B).
@@ -73,7 +69,6 @@ If the contract must change mid-build, the BE and FE cards are updated in the **
 
 ## Verification (QA gate)
 - **Contract exists** and both cards reference the identical spec (endpoints, shapes, errors, authz).
-- **Pairing is a field, not a sentence:** the backend card carries `Pair-FE: <card>` and the frontend card carries `Pair-BE: <card>`, pointing at each other, filled in when the cards were created.
 - **Parallelism happened:** the FE was built against a mock (has all states/i18n/responsive) before/independent of the live BE — not bolted on after.
 - **Swap is real:** the FE now calls the real endpoint (no leftover mock/demo on non-network paths; rule-12 error states wired), verified end to end.
 - **Integration (rule 9):** every UI action hits the real function, shapes match, error/empty/permission paths render correctly, authz holds both directions (UI-hide + server-enforce).

@@ -57,9 +57,25 @@ def is_gate_review(cm):
     author = (cm.get('author') or '').lower().strip()
     # 'local-llm' = a local-model DRAFT, never a gate request (card 3307b428): the offload
     # script signs drafts with their own author instead of the orchestrator's name.
-    if author in ('mikrob', 'qa', 'qa2', 'local-llm'): return False
+    if author in ('qa', 'qa2', 'local-llm'): return False
     content = (cm.get('content') or '').strip()
     first_line = content.split('\n')[0].upper()
+    # MikroB is USUALLY the orchestrator (GATE-TIER, bound-block, close notes) -- those are NOT gate
+    # requests. BUT when MikroB does its OWN engineering work it posts a REVIEW asking the gates to
+    # verify it (rule 4: the author never gates their own work). That REVIEW is a real gate request and
+    # must NOT be filtered out just because the author is mikrob (card c615be6e 2026-08-01: a MikroB
+    # self-authored card sat un-QA'd because the old filter dropped every mikrob comment). Signal: a
+    # first line starting with REVIEW that also carries a self-work marker.
+    if author == 'mikrob':
+        SELF_WORK = ('SAJAT MUNKA', 'SAJÁT MUNKA', 'GATE KELL', 'EN NEM ZAROM', 'ÉN NEM ZÁROM',
+                     'NEM ZAROM A SAJAT', 'NEM ZÁROM A SAJÁT',
+                     # Explicit gate-request patterns (91b68885 tanulság 2026-08-02):
+                     # MikroB sometimes says "Kerlek QA" / "Kerlek Cybersec" / "gate-eld"
+                     # instead of "GATE KELL" -- these are unambiguous gate requests too.
+                     'KERLEK QA', 'KERLEK CYBERSEC', 'KERLEK CYBERED', 'KERLEK A GATE',
+                     'GATE-ELD', 'KEREM A QA', 'KEREM A CYBERSEC')
+        head = content[:500].upper()
+        return first_line.startswith('REVIEW') and any(m in head for m in SELF_WORK)
     # Structural: starts with REVIEW, or first 60 chars contain 'REVIEW:'
     return first_line.startswith('REVIEW') or 'REVIEW:' in content[:60].upper()
 
@@ -236,6 +252,7 @@ for n in needs:
 ```
 
 ## Buktatók
+- **MikroB-saját-munka REVIEW vakfolt (c615be6e tanulság, 2026-08-01 + 91b68885 2026-08-02):** az `is_gate_review` régen MINDEN mikrob-szerzőt kizárt (mert a mikrob-kommentek túlnyomó része orchestráció: GATE-TIER, bound-block, close). DE amikor MikroB maga FEJLESZT, a saját munkájára REVIEW-t posztol és külső gate-et kér (rule 4: a szerző nem gate-eli magát). Ez a REVIEW valós gate-kérés, de a régi szűrő eldobta -> egy MikroB-saját kártya (c615be6e, server-side newDevStop; majd 91b68885, +15 local-LLM kategória) gate nélkül ragadt `waiting`-ben, Cybersec-GO-val de QA nélkül. Fix (fent): ha `author == 'mikrob'` ÉS az első sor `REVIEW`-val kezdődik ÉS az első 300 char tartalmaz self-work markert (`sajat munka`/`gate KELL`/`en nem zarom`/`KERLEK QA`/`KERLEK CYBERSEC`/`GATE-ELD` stb.), akkor gate_review. A normál mikrob orchestráció-kommentek (nincs self-work marker) továbbra is kiszűrve. **91b68885 tanulság:** MikroB a gate-kérést "Kerlek QA (wire-up + teszt) es Cybersec..." formában írta -- ez nem szerepelt a SELF_WORK listában. Fix: `KERLEK QA`, `KERLEK CYBERSEC`, `KERLEK CYBERED`, `KERLEK A GATE`, `GATE-ELD`, `KEREM A QA`, `KEREM A CYBERSEC` felvéve; a head-ablak 120-ról 500 char-ra bővítve (91b68885-ben a "Kerlek QA" a 363. karakternél állt, 300-as ablak nem fogta el). Ha egy MikroB REVIEW mégis kiesik a scanből, direkten ellenőrizd: `api('/api/kanban/<id>/comments')` és a waiting kártyák listáját.
 - **NE `startswith('qa')`** -- `qa2` is illeszkedne rá. Használj `== 'qa'` pontosan.
 - **NE `'NO-GO' in content`** -- hamis FAIL-t ad GO-verdikten belüli "NO-GO" hivatkozásra. Mindig a **nyitósor regex** dönt.
 - **NE `gates_pass - gates_fail` set-különbség** -- az early NO-GO törli a later GO-t. Latest-verdict-per-gate logika kell: minden gate-nél az utolsó komment dönt.
@@ -249,10 +266,12 @@ for n in needs:
 - **DUPLIKATUM / KONSZOLIDALVA false-positive (2026-07-24 tanulság):** Ha MikroB `DUPLIKATUM -- lezárom` vagy `KONSZOLIDALVA` szöveggel zár egy kártyát (nem `DONE` szóval kezdve), a `startswith('DONE')` check nem kapta el -> a scan tévesen "ungated"-ként mutatta. Fix: `MIKROB_CLOSED_RE` regex a fenti kódban -- a `\b(DONE|CLOSE|DUPLIKATUM|KONSZOLIDALVA|LEZAROM|LEZÁRVA)\b` mintát az ELSŐ SOR-on keresd (nem a teljes tartalomban, hogy a f11d23eb false-positive ne ismétlődjön).
 - **"MIKROB CLOSE" (angol) egy RÉSZ-fázist zár, a kártya `status` marad `in_progress` (42bc566c tanulság, 2026-07-25):** egy epic/parent kártyán MikroB lezárhatja csak az ÉPPEN gate-elt fázist ("MIKROB CLOSE: Fázis-1 ... Fázis-2 a gyerek-kártyákon") anélkül, hogy a kártya API-státuszát `done`-ra váltaná -- a hátralévő scope gyerek-kártyákra költözött. A régi regex nem ismerte a "CLOSE" szót (csak DONE/DUPLIKATUM/KONSZOLIDALVA/LEZAROM/LEZÁRVA), ezért a scan tévesen ungated-ként mutatta a mar lezart Fazis-1 REVIEW-t egy `in_progress` allapotban maradt parent kartyan. Fix: "CLOSE" bekerult a MIKROB_CLOSED_RE-be. Ha a scan mégis egy epic/parent kártyát dob ki, ELSŐ lépésként olvasd végig a teljes komment-threadet -- egy korábbi MikroB-komment (bármilyen záró szóhasználattal) gyakran már lezárta a kérdéses REVIEW-t, és a maradék munka a gyerek-kártyákon fut.
 - **`kotott-blokk` / `PETI DONTES` / `HOLD` marker (2026-07-31 tanulság, b92c10d4):** MikroB a bound-blockot NEM mindig a `KOTOTT FELTETEL` szöveggel írja -- a valós szövegezés gyakran `WAITING (kotott-blokk, Peti-dontes)` + `Addig ne churn-old`. A régi marker-lista csak a nagybetűs `KOTOTT FELTETEL`-t ismerte, ezért a scan gate-elhetőnek mutatta a Peti által HOLD-ra tett adopt-kártyát. Fix: `kotott-blokk`, `kötött-blokk`, `PETI DONTES`, `HOLD`, `ne churn-old` felvéve a `BLOCKED_MARKERS`-be. **Ha egy kártyán Cybersec már adott verdiktet ÉS MikroB utána HOLD-ra tette egy tulajdonosi döntés miatt, NE adj rá saját verdiktet** -- az nem hiányzó gate, hanem szándékos várakozás; a churn ilyenkor kvótaégés és zajt tesz a kártyára.
+- **Nem-deklarált gate churn (2026-08-17 tanulság, cybered sweep):** egy nyers cybered-scan 18 "ungated" kártyát adott -- kártyánkénti manuális ellenőrzés mind QA-only vagy QA+Cybersec volt. Fix: a `declared_gate_excludes_me` filter a description `Gate:` sorát olvassa (az utolsó mention wins -- scope bővülhet thread közben), és ha deklaráltan nem a mi gate-ünk van ott, skip (API-komment lekérés nélkül). 18/18 false-positive megszűnt.
+- **`Gate:` sor-eleji horgony hamis negatívot adott (77fd0f07 tanulság, 2026-08-17):** az első verzió `^\s*Gate:` MULTILINE horgonnyal csak a saját sorát kereste, de egyes kártyák leírásában a `Gate:` sor a prózába volt folytatva ("... szoveg. Gate: QA." -- nem saját sor). Fix: MULTILINE horgony elhagyva, `GATE_DECL_RE = re.compile(r'Gate:\s*([^\n]+)', re.IGNORECASE)` bármely pozícióban keres.
 - **`[OFFLOAD]` kártyák nem Cybersec/Cybered-kúszöbűek (2026-07-25 tanulság):** a fleet-infra local-LLM offload-preset kártyák (marveen repo, `store/local-llm-skills/*` sablonok, nincs endpoint/auth/trust-boundary) rendszeresen felszínre kerülnek a scanben, de a risk-tiering szabály szerint QA-only elég. `SECURITY_GATE_LOW_RISK_TITLE_PREFIXES` a fenti kódban ezt szűri Cybersec/Cybered scan esetén (QA/QA2 scan-t NEM érinti). Durva heurisztika (cím-prefix) -- ha egy OFFLOAD-kártya REVIEW-ja credentialt/külső hálózati hívást/valódi trust-boundaryt említ, OLVASD EL a REVIEW-t és NE hagyatkozz a prefixre.
 - **Redundáns REVIEW ugyanazon commiten (2026-07-24 tanulság):** A scan felszínre hozhat kártyákat ahol fron-ted/fron-teddy ÚJ REVIEW-t posztolt egy MÁR TELJESEN GATE-ELT commitra (pl. `fron-ted#4620 REVIEW: bug már ki van javítva -- commit dc074ab`). Ilyenkor a scan helyesen listázza (új REVIEW-id > utolsó verdict-id), DE: (a) ha a REVIEW-ban említett commit sha UGYANAZ mint amire a meglévő QA PASS szól, és (b) MikroB már DONE-kommentet adott -- NE gate-elj újra, csak posztolj rövid megjegyzést ("már gated @ sha, MikroB lezárhatja") és értesítsd MikroB-ot inter-agent üzenettel. Így a kártyák nem kerülnek ki a scanből (a scan helyesen jelzi a DONE-hiányt), de nem pazarolsz gate-munkát ismételt futtatásra. Valós esetek: 725d3bc9 (dc074ab), 5477ae68 (5986ccc), f1218257 (5986ccc).
-- **Nem-deklarált gate churn (2026-08-17 tanulság, cybered sweep):** egy nyers cybered-scan 18 "ungated" kártyát adott -- kártyánkénti manuális ellenőrzés után MIND a 18 QA-only vagy QA+Cybersec volt (a leírás végén kimondott `Gate: ...` sor szerint), egyik sem kért Cybered-et. A scan a REVIEW/verdikt-idézetekre néz, nem a deklarált gate-tierre, ezért minden ilyen kártyát teljes komment-thread-olvasásra kényszerít, csak hogy "nem az enyém" legyen a válasz. Fix: `declared_gate_excludes_me()` a fenti kódban -- a leírás UTOLSÓ `Gate:` említését nézi, és kihagyja a kártyát, ha az explicit deklaráció nem nevezi meg a saját gate-emet. Ha NINCS `Gate:` említés a leírásban, nem feltételez semmit -- simán felszínre hozza (a régi viselkedés). Ez a szűrő CSAK cybersec/cybered scan-nél fut (QA/QA2 minden kártyán gate-el, nekik nincs mit kiszűrni).
-- **`Gate:` sor-eleji horgony hamis negatívot adott (77fd0f07 tanulság, ugyanaz a kör):** az első verzió `^\s*Gate:` MULTILINE horgonnyal csak a SAJÁT SORÁN álló deklarációt fogta el. A 77fd0f07 kártya leírása a "Gate: QA." mondatot a bekezdés VÉGÉN, ugyanazon a soron zárta ("...idovonal-vegpontnak. Gate: QA."), ezért a horgonyos regex nem talált egyezést, és a kártya átcsúszott a szűrőn (QA-only lett volna, mégis felszínre került). Fix: a horgony levéve, `Gate:\s*([^\n]+)` bárhol a szövegben keres, csak sortörésig szedi a sort.
+- **`npm run typecheck` WIP-interferencia (2026-07-31 tanulság, 82dac857):** A typecheck a WORKING TREE-t futtatja, nem a gate-elt commitot. Ha TS-hibát kapsz gate közben, MINDIG ellenőrizd: `git diff <gated-sha> -- <file>` -- ha a hiba a WIP diff-ben van (másik agent uncommitted kódja), az NEM a gated commit hibája. Ilyenkor: (a) a committed verziót ellenőrzöd (`git show <sha>:file | grep -n ...`), (b) a QA PASS/FAIL kommentben jelzed hogy a hiba WIP-tól jött + melyik kártyától.
+- **Closeable-scan false-positive: hiányzó kötelező gate (2026-07-31 tanulság, 82dac857):** A `all_gate_verdicts` csak a JELENLÉVŐ verdict-ek alapján ítél -- ha Cybersec nem adott formális verdiktet (csak "előzetes input" kommentet írt), a scan "closeable"-nak mutatja a kártyát ha QA PASS + Cybered GO van. DE: trust-boundary kártyán (új write path, tenant-scope, authz) Cybersec GO KÖTELEZŐ (rule 4). A closeable-scan csak MikroB-nak adott TÁJÉKOZTATÓ jelzés; a zárást MikroB végzi és ő ellenőrzi hogy minden kötelező gate jelen van.
 
 ## Gate reconciliation (closeable cards)
 
@@ -286,6 +305,26 @@ for c in all_cards:
     if g.get('qa2') == 'pass' and all(v == 'pass' for v in g.values()):
         closeable.append({'id': cid, 'status': c.get('status'), 'title': title[:60], 'gates': sorted(g)})
 ```
+
+## Másodlagos scan: "gate-pending" a kártya NEVÉBEN (0d08f623 minta, 2026-08-06)
+MikroB olykor a kártya NEVÉBE írja a gate-kérést (`BUILT-live, gate-pending`), nem
+posztol külön REVIEW kommentet. A fő scan kihagyja (csak nem-gate kommentre figyel).
+
+```sql
+SELECT c.id, c.title, c.status
+FROM kanban_cards c
+WHERE c.status NOT IN ('done','cancelled')
+  AND (UPPER(c.title) LIKE '%GATE-PENDING%' OR UPPER(c.title) LIKE '%BUILT-LIVE%')
+  AND c.id NOT IN (
+    SELECT DISTINCT card_id FROM kanban_comments
+    WHERE author = 'qa2'
+      AND (UPPER(content) LIKE '%QA2 PASS%' OR UPPER(content) LIKE '%QA2 FAIL%')
+  );
+```
+
+Ha megtalálod: nézd meg a MikroB kommentet (commit SHA), gate-eld.
+Megjegyzés: `planned -> waiting` move a POST /api/kanban/<id>/move API-n 409-et adhat;
+a QA2 PASS komment elég, MikroB zárja done-ba.
 
 ## Ellenőrzés
 - 0 ungated → semmi teendő, self-improve vagy vár
