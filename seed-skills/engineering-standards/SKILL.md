@@ -4,7 +4,7 @@ description: The fleet's synthesized engineering standard — 10 categories cove
 ---
 # Engineering Standards (a flotta mérnöki alapszabálya)
 
-a felhasználó 50 szabályának szintézise (deduplikálva, kategóriánként). Ez a KÖTELEZŐ baseline minden production kódra. Minden dev ügynök (és MikroB CTO-ként) ezt tartja. Lásd még: `project-workflow` (csapat-folyamat), `qa-test-strategy`, `legal-compliance-review`.
+Peti 50 szabályának szintézise (deduplikálva, kategóriánként). Ez a KÖTELEZŐ baseline minden production kódra. Minden dev ügynök (és MikroB CTO-ként) ezt tartja. Lásd még: `project-workflow` (csapat-folyamat), `qa-test-strategy`, `legal-compliance-review`.
 
 ## I. Architektúra és modularitás
 - **SRP:** egy modul/osztály/függvény = egy feladat. Ha "és"-sel írod le, bontsd szét.
@@ -112,6 +112,19 @@ valós multi-tenant RBAC-enforcement munkából desztillálva; alkalmazd MINDEN 
   (pl. `inviteMember`) csak tenant-context-tel enged: a platform-handler egy EXPLICIT,
   auditált szintetizált cél-tenant admin-contexten át hívja (dokumentált impersonation), nem
   bypass-szal. Minden privilegizált platform-művelet audit-trailt ír (Zero Trust).
+
+## XII. Auth UI: forward-oracle elkerülés (2026-07-16, 650f8eca Cybersec LOW)
+
+Az auth form SOHA ne olvasson specifikus hibajelzőket a szerver response body-jából, hogy a UI-ban különböző lockout-állapotokat jelenítsen meg (pl. `remaining_secs`, `locked`, `locked_long`, `locked_permanently`). Ez **forward oracle**: az attacker tesztelőkérésekből térképezi fel a fiók állapotát és a lockout-szintet.
+
+**Szabályok:**
+- Minden 401/4xx válasz az auth endpointon OPAQUE: a FE csak annyit tudhat, hogy "sikertelen".
+- Lockout-UX KIZÁRÓLAG kliens-oldali kísérletszámlálóval (pl. `failedAttempts >= 5`), NEM szerver-body olvasásból.
+- A "túl sok kísérlet" UI-t a FE saját állapota váltja ki -- a szerver lock kódjai NEM kerülnek a usernek.
+- A szerver oldalon viszont LEGYEN teljes lockout-logika (az opaque 401 mögött) -- a FE csak nem mutatja meg a részleteket.
+- Ha a szerver lock-kódokat küld (pl. `{ error: "locked_long", remaining_secs: 600 }`), a FE-nek NEM szabad ezt értelmezni.
+
+**Teszt:** minden lockout-kód (locked/locked_long/locked_permanently) ugyanolyan generikus `pw_error` alerten kell megjelenni -- a konkrét kód NEM vizsgálható a UI-ban.
 
 ## Források és frissesség (kemény szabály, minden ügynöknek)
 - **Csak elsődleges/hivatalos forrás:** gyártói dokumentáció, hivatalos repo/README, RFC, szabványügyi testület (ISO/W3C/IETF), jogszabály, hatósági oldal, peer-reviewed publikáció. Fórum/blog/SEO/aggregátor/AI-összefoglaló NEM forrás, hacsak a user kifejezetten nem azt kéri (és akkor is jelölöd).
