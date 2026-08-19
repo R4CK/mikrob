@@ -71,7 +71,7 @@ Amikor egy Feladatot alfeladat-kártyákra bontasz, és a B alfeladat a A alfela
 
 ## Tesztfuttatás -- CSAK a fleet teszt-worktree-ből (kártya 9070461f)
 
-A vitest suite **nem futtatható az élő installból** (`/home/neon/marveen`): hard failt dob, mert a
+A vitest suite **nem futtatható az élő installból** (`{{INSTALL_DIR}}`): hard failt dob, mert a
 suite a saját checkoutja alatt ír (`store/`, `.env`, `.claude/skills/`) -- 2026-07-27-én egy éles
 futás törölte a live `config-overrides.json`-t, 600->644-re írta az `.env`-et és valódi break-glass
 Telegram-riasztásokat küldött.
@@ -86,7 +86,7 @@ store/fleet-test.sh                      # teljes suite az állandó, nem-/tmp w
 store/fleet-test.sh src/__tests__/x.ts   # csak ezek (bármilyen vitest arg átmegy)
 store/fleet-test.sh --ref <sha>          # adott commit tesztelése
 ```
-A script idempotens: létrehozza egyszer a `/home/neon/marveen-test` worktree-t, utána újrahasznál,
+A script idempotens: létrehozza egyszer a `{{INSTALL_DIR}}-test` worktree-t, utána újrahasznál,
 a megadott commitra reseteli, és symlinkeli az élő `node_modules`-t (nincs második `npm ci`).
 Ne hozz ad-hoc temp worktree-t -- pont ezt váltja ki.
 
