@@ -95,11 +95,21 @@ A waiting+REVIEW kártyák keresése a self-advance loopban:
 
 **API status filter TÖRÖTT (2026-07-13 tanulság):** `GET /api/kanban?status=waiting` NEM szűr -- az összes nem-archivált kártyát visszaadja (kb. 250+), köztük done/in_progress/planned státuszúakat is. A valódi státuszt KIZÁRÓLAG SQLite-ból olvasd:
 ```bash
-sqlite3 /home/neon/marveen/store/claudeclaw.db \
-  "SELECT id, status FROM kanban_cards WHERE id='CARD_ID';"
+# a sqlite3 CLI NEM garantalt telepitve (lasd a fajl kesobbi, aktualis szekcioit) --
+# a beepitett python3 sqlite3 modul mindig elerheto:
+python3 -c "
+import sqlite3
+con = sqlite3.connect('{{INSTALL_DIR}}/store/claudeclaw.db')
+print(con.execute(\"SELECT id, status FROM kanban_cards WHERE id='CARD_ID'\").fetchall())
+"
 # vagy board scan:
-sqlite3 /home/neon/marveen/store/claudeclaw.db \
-  "SELECT id, priority, title FROM kanban_cards WHERE status='waiting' ORDER BY CASE priority WHEN 'urgent' THEN 1 WHEN 'high' THEN 2 ELSE 3 END;"
+python3 -c "
+import sqlite3
+con = sqlite3.connect('{{INSTALL_DIR}}/store/claudeclaw.db')
+order = \"CASE priority WHEN 'urgent' THEN 1 WHEN 'high' THEN 2 ELSE 3 END\"
+for row in con.execute(f\"SELECT id, priority, title FROM kanban_cards WHERE status='waiting' ORDER BY {order}\"):
+    print(row)
+"
 ```
 Az API scan hamis "waiting" kártyákat ad -- mindig SQLite-tel validáld a státuszt mielőtt gate-munkát kezdesz.
 
