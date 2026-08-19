@@ -73,9 +73,18 @@ revive_pane() {
   # an already-running, network-warm WSL. This keeps trying for up to 90s before
   # concluding the token itself is dead; a genuinely dead token still falls back to the
   # Peti browser-OAuth flow, just up to ~65s later.
+  # DETECTION-STRING DRIFT (2026-08-19): the original pattern (Welcome back / manual mode on /
+  # for shortcuts) was written against an older Claude Code CLI banner. v2.1.235 no longer prints
+  # any of those -- the ready prompt shows "Claude Max" (subscription tier) and "auto mode on"
+  # instead. The old pattern never matched, so every revive silently SUCCEEDED (verified live: the
+  # pane was authed and prompt-ready within seconds) but this loop still ran the full 90s and
+  # reported a false "refresh token likely expired", escalating to Peti for a needless manual
+  # login every single boot. Fix: match on the subscription-tier banner line (Claude Max/Pro/Team/
+  # Enterprise), which only renders after a real subscription auth, plus a loose "mode on" for the
+  # auto/manual toggle text -- alongside the original strings so an older CLI still matches too.
   local waited=25
   cap="$(tmux capture-pane -t "$PANE" -p 2>/dev/null || true)"
-  while ! printf '%s' "$cap" | grep -qiE 'Welcome back|manual mode on|for shortcuts'; do
+  while ! printf '%s' "$cap" | grep -qiE 'Welcome back|manual mode on|for shortcuts|Claude (Max|Pro|Team|Enterprise)|mode on'; do
     if [ "$waited" -ge 90 ]; then
       echo "revive: panel up but not authed after ${waited}s (refresh token likely expired) -> Peti /login needed." >&2
       return 1
