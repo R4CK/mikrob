@@ -160,13 +160,28 @@ function extractGateShas(content: string): ReadonlySet<string> {
  *
  *  Returns null when NOT ONE comment on the card ever used the Gate-SHA convention -- the caller
  *  falls back to {@link latestReviewAt} for that card, unchanged. */
+// SHORT-VS-FULL FORMAT (card 85c87024, real incident d4a2130d): two gates citing the SAME commit
+// in different Gate-SHA lengths -- QA's full 40-char form, Cybersec's short 8-char form -- used to
+// key `introducedAt` on the literal extracted string, so the two citations of one commit became
+// TWO map entries with two different introduction times. Math.max then picked whichever length
+// happened to be cited later, and the OTHER gate's genuinely-fresh verdict (posted before that
+// later citation) read as pre-round-boundary and therefore stale, blocking a close both gates had
+// actually already approved. A short-sha is by git convention a PREFIX of the full sha, so keying
+// on the first 6 hex chars (the shortest length extractGateShas ever accepts) collapses any two
+// representations of the same commit onto the same map entry regardless of which length each
+// comment happened to use.
+function shaGroupKey(sha: string): string {
+  return sha.slice(0, 6)
+}
+
 function currentRoundStartTs(comments: readonly Comment[]): number | null {
   const introducedAt = new Map<string, number>()
   for (const c of comments) {
     const shas = extractGateShas(c.content ?? '')
     for (const s of shas) {
-      const prior = introducedAt.get(s)
-      if (prior === undefined || c.created_at < prior) introducedAt.set(s, c.created_at)
+      const key = shaGroupKey(s)
+      const prior = introducedAt.get(key)
+      if (prior === undefined || c.created_at < prior) introducedAt.set(key, c.created_at)
     }
   }
   if (introducedAt.size === 0) return null
