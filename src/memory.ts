@@ -76,6 +76,11 @@ const SEMANTIC_PATTERN =
 // Skip: trivial messages not worth remembering
 const SKIP_PATTERN = /^(ok|igen|nem|koszi|kosz|hello|szia|hi|hey|thx|thanks|jo|oke|persze|rendben|ja|aha|\.+|!+|\?+)$/i
 
+// Per-entry content cap: prevents a single verbose memory from dominating the
+// injected context. Content beyond this limit is replaced with a count signal
+// so the reader knows more exists without the tokens being spent.
+export const MEMORY_CONTENT_MAX_CHARS = 400
+
 export async function buildMemoryContext(
   chatId: string,
   userMessage: string
@@ -99,7 +104,14 @@ export async function buildMemoryContext(
     touchMemory(m.id)
   }
 
-  const lines = combined.map((m) => `- ${m.content} (${m.sector})`)
+  const lines = combined.map((m) => {
+    const content =
+      m.content.length > MEMORY_CONTENT_MAX_CHARS
+        ? m.content.slice(0, MEMORY_CONTENT_MAX_CHARS) +
+          `…(+${m.content.length - MEMORY_CONTENT_MAX_CHARS} karakter)`
+        : m.content
+    return `- ${content} (${m.sector})`
+  })
   return `[Memoria kontextus]\n${lines.join('\n')}`
 }
 

@@ -79,10 +79,14 @@ def main():
 
     mems = data if isinstance(data, list) else data.get("memories", data.get("data", []))
 
+    MAX_CONTENT_CHARS = 400  # mirrors MEMORY_CONTENT_MAX_CHARS in src/memory.ts
     lines = []
     for m in (mems or []):
         c = (m.get("content") or "").strip()
         if c:
+            if len(c) > MAX_CONTENT_CHARS:
+                extra = len(c) - MAX_CONTENT_CHARS
+                c = c[:MAX_CONTENT_CHARS] + "…(+%d karakter)" % extra
             kw = (m.get("keywords") or "").strip()
             # Provenance (card 7965095b): who wrote this entry and when, so the
             # reader can see it is ANOTHER agent's recollection, not a system
