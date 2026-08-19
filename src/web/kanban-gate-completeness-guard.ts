@@ -166,26 +166,29 @@ function extractGateShas(content: string): ReadonlySet<string> {
 // TWO map entries with two different introduction times. Math.max then picked whichever length
 // happened to be cited later, and the OTHER gate's genuinely-fresh verdict (posted before that
 // later citation) read as pre-round-boundary and therefore stale, blocking a close both gates had
-// actually already approved. A short-sha is by git convention a PREFIX of the full sha, so keying
-// on the first 6 hex chars (the shortest length extractGateShas ever accepts) collapses any two
-// representations of the same commit onto the same map entry regardless of which length each
-// comment happened to use.
-function shaGroupKey(sha: string): string {
-  return sha.slice(0, 6)
-}
-
+// actually already approved. A short-sha is by git convention a PREFIX of the full sha: two
+// citations refer to the same commit when one sha is a prefix of the other, so we group by
+// prefix-containment, NOT by fixed truncation (which would collapse genuinely different commits
+// that happen to share the first N chars -- the CONTROL test in the test suite covers exactly that
+// failure mode).
 function currentRoundStartTs(comments: readonly Comment[]): number | null {
-  const introducedAt = new Map<string, number>()
+  // Pairs of (canonical sha, earliest introduction timestamp). "Canonical" prefers the longer
+  // (more specific) form; earlier timestamp wins.
+  const entries: Array<{ sha: string; ts: number }> = []
+
   for (const c of comments) {
-    const shas = extractGateShas(c.content ?? '')
-    for (const s of shas) {
-      const key = shaGroupKey(s)
-      const prior = introducedAt.get(key)
-      if (prior === undefined || c.created_at < prior) introducedAt.set(key, c.created_at)
+    for (const s of extractGateShas(c.content ?? '')) {
+      const idx = entries.findIndex((e) => s.startsWith(e.sha) || e.sha.startsWith(s))
+      if (idx === -1) {
+        entries.push({ sha: s, ts: c.created_at })
+      } else {
+        if (s.length > entries[idx].sha.length) entries[idx].sha = s
+        if (c.created_at < entries[idx].ts) entries[idx].ts = c.created_at
+      }
     }
   }
-  if (introducedAt.size === 0) return null
-  return Math.max(...introducedAt.values())
+  if (entries.length === 0) return null
+  return Math.max(...entries.map((e) => e.ts))
 }
 
 /** Does `agent` have a fresh (post-latest-REVIEW) verdict-shaped comment on this card? */
