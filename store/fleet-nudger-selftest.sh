@@ -141,11 +141,35 @@ ENG_PLANNED_MOVED = {
     'comments': {},
 }
 
+# ENG-ALWAYS precheck (msg 18241, 2026-08-20): fron-ted has exactly one card of its own, sitting in
+# waiting+REVIEW with no gate verdict yet -- the real shape of the incident (3 finished cards, all
+# still waiting on QA, 6 identical resends in a row). assignee is the only thing the _always_fp
+# fingerprint reads, so status does not matter for this fixture; what matters is that the card's
+# (id, updated_at) pair is stable across repeats of this SAME fixture and different when it moves.
+ENG_ALWAYS_ONE_CARD = {
+    'cards': [{'id': 'a1', 'status': 'waiting', 'title': 'fron-ted own card', 'assignee': 'fron-ted',
+               'updated_at': 500}],
+    'comments': {'a1': [{'author': 'fron-ted', 'created_at': 100, 'content': 'REVIEW -- kesz'}]},
+}
+
+# Same shape, but the card moved (a QA verdict landed, bumping updated_at) -- the fingerprint must
+# treat this as new work, not as the unchanged set the precheck exists to suppress.
+ENG_ALWAYS_CARD_VERDICT = {
+    'cards': [{'id': 'a1', 'status': 'waiting', 'title': 'fron-ted own card', 'assignee': 'fron-ted',
+               'updated_at': 600}],
+    'comments': {'a1': [
+        {'author': 'fron-ted', 'created_at': 100, 'content': 'REVIEW -- kesz'},
+        {'author': 'qa', 'created_at': 200, 'content': 'QA FAIL'},
+    ]},
+}
+
 FIX = {
     'all-answered': ALL_ANSWERED, 'one-open': ONE_OPEN, 'no-review': NO_REVIEW,
     'designated': DESIGNATED, 'labeled': LABELED, 'out-of-scope': OUT_OF_SCOPE,
     'eng-one-planned': ENG_ONE_PLANNED,
     'eng-planned-moved': ENG_PLANNED_MOVED,
+    'eng-always-one-card': ENG_ALWAYS_ONE_CARD,
+    'eng-always-card-verdict': ENG_ALWAYS_CARD_VERDICT,
 }[SCENARIO]
 
 
@@ -228,10 +252,54 @@ run_case no-review    38824 "c1" "GATE-TIER-MISSING"   # due at card open, not w
 # ENG-CONDITIONAL (MikroB decision, msg 9910, follow-up to card 14acfadd): backend/fullstack must
 # respect plan[a] the same way the gate loop respects designation -- "there is always a
 # sec-followup" was the same unconditional assumption the OLD gate predicate made. fron-ted/
-# fron-teddy stay unconditional on purpose (design-impl always has a next screen), so they are NOT
-# asserted here -- ENG-WORK only ever reports on the conditional pair.
+# fron-teddy ASSUME work by default (design-impl always has a next screen), but that assumption gets
+# its own precheck below (ENG-ALWAYS-WORK) rather than being asserted here -- this pair of runs is
+# ENG-WORK only, which only ever reports on the conditional pair.
 run_case eng-one-planned 38815 "backend"       "ENG-WORK"  # positive: only backend has a planned card
 run_case no-review       38816 ""              "ENG-WORK"  # negative: no planned card for either
+
+# ENG-ALWAYS precheck (msg 18241, 2026-08-20): fron-ted/fron-teddy's "always assume work" default
+# stopped meaning "never suppress" the moment their own backlog can genuinely run dry -- the real
+# incident was 6 identical resends to fron-ted while its 3 finished cards sat unchanged in
+# waiting+REVIEW. Three runs, one state file: fresh send, suppressed identical resend, and a real
+# verdict landing on the SAME card id (only updated_at moves) that must NOT be suppressed.
+ENG_ALWAYS_STATE_FILE="$TMP/eng-always-state.json"
+always_run() { # $1 = scenario, $2 = port -> sets ALWAYS_WORK / ALWAYS_UNCH
+  local pid
+  python3 "$TMP/fakeboard.py" "$1" "$2" &
+  pid=$!
+  for _ in $(seq 1 40); do curl -sf -o /dev/null "http://127.0.0.1:$2/api/kanban" && break; sleep 0.25; done
+  local out
+  out="$(DASH="http://127.0.0.1:$2" NUDGER_STATE_FILE="$ENG_ALWAYS_STATE_FILE" bash "$NUDGER" --dry-run 2>/dev/null)"
+  kill "$pid" 2>/dev/null; wait "$pid" 2>/dev/null
+  ALWAYS_WORK="$(echo "$out" | sed -n 's/^ENG-ALWAYS-WORK://p' | xargs)"
+  ALWAYS_UNCH="$(echo "$out" | sed -n 's/^ENG-ALWAYS-UNCHANGED://p' | xargs)"
+}
+
+# fron-teddy owns zero cards in every fixture here, so it is its OWN independent case: a constant,
+# non-empty fingerprint (hash of an empty set) that is new to a fresh state file on run 1 (nudged,
+# same as everyone's first-sight behaviour elsewhere in this file), then unchanged on every run after
+# since its own card set never moves. Asserted together with fron-ted, not filtered out, because that
+# independence -- one agent's fingerprint never flips because of another agent's card -- is exactly
+# what per-agent (not shared) state is for.
+always_run eng-always-one-card 38827
+if [ "$ALWAYS_WORK" = "fron-ted fron-teddy" ] && [ "$ALWAYS_UNCH" = "none" ]; then
+  echo "  ok   eng-always precheck run 1 (fresh state) -> nudged 'fron-ted fron-teddy', nothing suppressed"
+else echo "  FAIL eng-always precheck run 1 -> work='$ALWAYS_WORK' unchanged='$ALWAYS_UNCH', expected 'fron-ted fron-teddy' / 'none'"; fail=1; fi
+
+always_run eng-always-one-card 38828
+if [ "$ALWAYS_WORK" = "none" ] && [ "$ALWAYS_UNCH" = "fron-ted fron-teddy" ]; then
+  echo "  ok   eng-always precheck run 2 (identical board) -> suppressed, nudge NOT resent"
+else echo "  FAIL eng-always precheck run 2 -> work='$ALWAYS_WORK' unchanged='$ALWAYS_UNCH', expected 'none' / 'fron-ted fron-teddy'"; fail=1; fi
+
+# Load-bearing negative control: fron-teds card id moved (a verdict landed) -- fron-ted must resend
+# while fron-teddy (untouched, zero cards throughout) stays suppressed. Proves the fingerprint is
+# genuinely per-agent, not one shared hash that a change to ANY always-agent's cards would re-arm for
+# all of them (which is exactly the bug class bb1751f2 fixed for the gate branch).
+always_run eng-always-card-verdict 38829
+if [ "$ALWAYS_WORK" = "fron-ted" ] && [ "$ALWAYS_UNCH" = "fron-teddy" ]; then
+  echo "  ok   eng-always precheck run 3 (verdict landed, same card id) -> fron-ted resent, fron-teddy still suppressed"
+else echo "  FAIL eng-always precheck run 3 -> work='$ALWAYS_WORK' unchanged='$ALWAYS_UNCH', expected 'fron-ted' / 'fron-teddy'"; fail=1; fi
 
 # PROJECT DISPATCH PRIORITY (card 2d6587fe): PROJECT_PRIORITY_CONFIG override, same isolation
 # pattern as the rest of this file -- a throwaway file, never the live setting.
