@@ -6,6 +6,7 @@ import { createInterface } from 'node:readline'
 import { getDb } from '../db.js'
 import { logger } from '../logger.js'
 import { MAIN_AGENT_ID, PROJECT_ROOT } from '../config.js'
+import { estimateCostUsd, stripDateSuffix } from '../costops/model-pricing.js'
 
 const PROJECTS_DIR = join(homedir(), '.claude', 'projects')
 
@@ -339,6 +340,10 @@ export interface ModelDistEntry {
   totalOutput: number
   totalCacheRead: number
   totalCacheCreation: number
+  /** Backend-computed USD cost estimate from the single MODEL_PRICING source.
+   * Null when the model is unrecognized. Frontend must not maintain its own
+   * parallel pricing table for this endpoint (card 3789f5d6). */
+  estimated_cost_usd: number | null
 }
 
 export function getModelDistribution(from?: number, to?: number, agent?: string): ModelDistEntry[] {
@@ -367,7 +372,17 @@ export function getModelDistribution(from?: number, to?: number, agent?: string)
   sql += ' WHERE ' + conditions.join(' AND ')
   sql += ' GROUP BY model ORDER BY count DESC'
 
-  return db.prepare(sql).all(...params) as ModelDistEntry[]
+  const rows = db.prepare(sql).all(...params) as Omit<ModelDistEntry, 'estimated_cost_usd'>[]
+  return rows.map(r => ({
+    ...r,
+    estimated_cost_usd: estimateCostUsd(stripDateSuffix(r.model), {
+      input_tokens: r.totalInput,
+      output_tokens: r.totalOutput,
+      cache_read_tokens: r.totalCacheRead,
+      cache_creation_tokens: r.totalCacheCreation,
+      thinking_tokens: 0,
+    }),
+  }))
 }
 
 export interface ToolStatEntry {
