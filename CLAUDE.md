@@ -243,6 +243,12 @@ Minden git repóval rendelkező projekt README-jének "Complete feature list" (v
 
 **Felelős kijelölés:** a kezdeti feltöltést és a user flow-k hitelesítését az végezze, aki a funkciókat élőben, böngészőben végig tudja járni (pl. `teszter`/T Eszter), a frontend-hiány/funkció-hiány jelölés pedig a `user-flow-menu-design` skill logikáját kövesse (wired/needs-wiring/needs-build). Gate: QA (a lista teljessége és pontossága is finding-köteles, ugyanúgy mint a README-pontosság).
 
+## Döntésnapló + user manual -- SZABÁLY (Peti 2026-08-20, KÖTELEZŐ, MINDEN projektre)
+
+Minden git repóval rendelkező projekt gyökerében legyen egy `DECISIONS.md`: append-only, grep-elhető, dátumozott bejegyzés minden ÉRDEMI döntésről (Peti jóváhagyás/elutasítás, MikroB plan-grilling verdikt, architektúra-választás) -- a kanban-komment (SQLite-ban, nem grep-elhető) NEM elég önmagában. Formátum, desztillálási eljárás (90 napnál régebbi bejegyzés -> dátumozott archívum-fájlba, a hot/warm/cold memória-minta szerint): `project-decisions-log` skill.
+
+A README "Teljes funkciólista" szekciója (fenti szabály) marad az egyetlen forrás funkció/user story/user flow adatra -- ebből a `user-manual-assembler` skill állít össze egy olvasható, modul/funkció szerint csoportosított felhasználói kézikönyvet (`docs/USER-MANUAL.md`), **minden dokumentált flow-hoz kötelező automatizált teszt-lefedettség kereszt-ellenőrzéssel** (ez a 9. munkavégzési szabály flow-connectivity kiterjesztése: egy teszteletlen flow ugyanúgy hiányosság, mint egy be-nem-kötött funkció). A kézikönyv a README-ből LEVEZETETT termék, nem duplikálja azt.
+
 ## Kvóta-figyelmeztetés (5 órás limit) -- SZABÁLY
 
 Ha azért akad el a munka, mert egy ügynök elérte az 5 órás Claude usage-limitet, AZONNAL figyelmeztesd Petit Telegramon (melyik ügynök, reset-ig nem tud dolgozni). Automatizálva (`quota-limit-monitor`, 6 percenként). Limit-elérésnél automatikusan indul egy **5 óra 5 perces** reset-countdown + auto-resume (a banner a reset után is bent ragadhat, ezért NEM elég rá hagyatkozni -- ground-truth a `/status`). Heti "All models" sávnál DINAMIKUS új-fejlesztés-stop küszöb, a resetig hátralévő idő szerint: **>3 nap → 90%, <2 nap → 92%, <1 nap → 95%**. Küszöb felett: in-flight kártyák + gate-ek + zárás mehet, de ÚJ kódolás csak LOKÁLIS LLM-en draft-only (`local-llm-offload` skill), online visszaellenőrzés a resetig halasztva, draft SOHA nem megy DONE-ra ellenőrizetlenül. Pontos mechanika (script-nevek, JSON-fájlok, lépésről lépésre): `quota-management` skill.
