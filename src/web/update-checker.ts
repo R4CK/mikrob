@@ -158,9 +158,11 @@ async function fetchCompare(remote: string, base: string, head: string): Promise
   return null
 }
 
-// Matches a `chore(release): vX.Y.Z` subject and captures the version + the
-// human summary that follows a "--" / "—" separator (if any).
-const RELEASE_RE = /^chore\(release\):\s*(v\d+\.\d+\.\d+)\s*(?:--|—)?\s*(.*)$/
+// Matches a `chore(release): vX.Y.Z[+build-meta]` subject and captures the
+// version + the human summary that follows a "--" / "—" separator (if any).
+// Build-metadata (+mikrob.N) is part of the captured version group so the
+// full SemVer token is preserved, matching the package.json convention.
+const RELEASE_RE = /^chore\(release\):\s*(v\d+\.\d+\.\d+(?:[+][^\s]*)?)\s*(?:--|—)?\s*(.*)$/
 
 // Strip trailing git trailers (Co-Authored-By, Signed-off-by) and blank lines
 // from a release-commit body so only the human summary remains.
