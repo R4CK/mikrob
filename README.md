@@ -88,6 +88,24 @@ A `CLAUDE.md` "Teljes funkciólista karbantartás" szabálya szerint: a kilenc a
 - **Frontend:** van — Áttekintés oldal (`overview`, heti-limit + modell-lépcső) + Költségek oldal (`costs`, havi $ ledger) + Lokális LLM oldal (`localLlm`).
 - **Hiányzó funkció:** nincs ismert hiány.
 
+### 10. Jóváhagyások (Approvals)
+- **User story:** Mint Peti, szeretnék egy helyen látni azokat a Level-2 autonómia kéréséket, amelyekre várakozom, hogy másodlagos intézkedéseket tudj hozni.
+- **User flow:** Flotta-ügynök Level-2 autonómia döntéshez `POST /api/approvals`-t hív → az **Jóváhagyások** oldalon (`approvals`, top-level pinned link) listázódnak → Peti gombokkal jóváhagyja/elutasítja → az eredmény az eredeti kéréshez visszaküld.
+- **Frontend:** van — Jóváhagyások oldal (`approvals`), orphan wiring után csapat csoportban (2026-08-20).
+- **Hiányzó funkció:** nincs ismert hiány.
+
+### 11. Dokumentáció (Docs)
+- **User story:** Mint fejlesztő, szeretnék egyhelyen hozzáférni a projekt dokumentációjához (arquitectúra, config, API-refs) anélkül hogy a GitHub-ba kellene mennem.
+- **User flow:** Az **Dokumentáció** oldalon (`docs`, orphan wiring után tudás csoportban) a projekt-dokumentáció-index (README linkek, architecture, config-reference, API-docs) elérhető.
+- **Frontend:** van — Docs oldal (`docs`), dokumentáció-linkek és index-szekciók.
+- **Hiányzó funkció:** nincs ismert hiány.
+
+### 12. Lokális LLM konfigurálás (Local LLM)
+- **User story:** Mint MikroB, szeretnék a helyi GPU-s modellt menedzselni — mely modell aktív, mely feladat-típusok mennek ide, és milyen a kihasználtsága.
+- **User flow:** Az **Lokális LLM** oldalon (`localLlm`, orphan wiring után rendszer csoportban) — Ollama-státusz (modell/GPU/VRAM/kihasználtság), modellcsere (`ollama pull`), Kategóriák szekció (mely feladat-típusok offload-ra kerülnek, élő be/ki kapcsoló), Kvóta-bridge és GPU-lock státusz.
+- **Frontend:** van — Lokális LLM oldal (`localLlm`), Ollama-integráció, kategória-kezelés, mérések.
+- **Hiányzó funkció:** nincs ismert hiány.
+
 ## Szerepkörönkénti user story és user flow
 
 **Fontos, elöljáróban (a `src/web/auth-gate.ts` és `src/web/routes/auth.ts` ellen ellenőrizve):** ennek a rendszernek nincs finomszemcsés, kódolt jogosultsági mátrixa a dashboard API-n — az `resolveAuth()` öt hitelesítési MÓDOT különböztet meg (Bearer dashboard-token / per-device kulcs / SSE-token / föderációs token / session-cookie), és a `kind: 'token'`, `kind: 'device'` és `kind: 'session'` a legtöbb végponton (kanban, memória, ügynökök, vault) UGYANAZT az API-hozzáférést kapja: nincs kódban ellenőrzött "csak a saját kártyáját módosíthatja" vagy "csak Peti törölhet" szabály. Az alábbi szerepek tehát nagyrészt **operatív/társadalmi megkülönböztetések** (ki mit csinál a flotta-workflow szerint, `CLAUDE.md`), NEM API-szinten kikényszerített jogosultsági szintek. KÉT KÓDBAN kikényszerített korlátozás van ez alól kivétel: a föderációs társ szűkítése (lásd lent), ÉS a `kind: 'device'` kizárása a fiók-/kulcs-adminisztrációból — `USER_ADMIN_KINDS` és `DEVICE_KEY_ADMIN_KINDS` (`src/web/routes/auth.ts:108,113`) mindkettő csak `token`/`session` hitelesítést enged, `device`-et 7 végponton (usereklistázás/létrehozás/törlés, device-kulcsok listázás/létrehozás/törlés, jelszó-reset) explicit 403-mal (`FORBIDDEN_KIND`) utasít el — szándékosan, a kódban dokumentált indokkal: egy szivárgott device-kulcs ne tudjon további kulcsokat gyártva korlátlan hozzáférést szerezni. Ez maga is egy jelzett hiányosság, nem elhallgatva.
