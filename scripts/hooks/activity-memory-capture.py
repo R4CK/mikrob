@@ -82,6 +82,9 @@ _SECRET_PATTERNS = [
     re.compile(r'\b[0-9a-fA-F]{40,}\b'),
     # Long base64-only blobs >= 40 chars
     re.compile(r'(?<![A-Za-z0-9+/])[A-Za-z0-9+/]{40,}={0,2}(?![A-Za-z0-9+/=])'),
+    # DB connection string URI passwords: postgres://user:PASSWORD@host, mysql://, mongodb://, redis://
+    # Capture group 1 = the URI prefix up to and including ':', group 2 = password (replaced)
+    re.compile(r'(?i)((?:postgres(?:ql)?|mysql|mongodb(?:\+srv)?|redis)://[^:@\s]+:)([^@\s]{6,})(?=@)'),
 ]
 
 

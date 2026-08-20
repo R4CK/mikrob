@@ -130,6 +130,11 @@ export async function tryHandleMemories(ctx: RouteContext): Promise<boolean> {
     const tier = url.searchParams.get('tier') || url.searchParams.get('category') || ''
     const limit = Math.min(parseInt(url.searchParams.get('limit') || '50', 10), 200)
     const mode = url.searchParams.get('mode') || 'fts'
+    // Progressive retrieval (card 0c5423fc): truncate content at max_chars, append a fetch hint.
+    // Callers that need full content omit the param (default behaviour, backward-compatible).
+    // Non-interactive callers (heartbeat, orchestrator) should omit max_chars or pass a large value.
+    const maxCharsRaw = url.searchParams.get('max_chars')
+    const maxChars = maxCharsRaw !== null ? Math.max(50, parseInt(maxCharsRaw, 10) || 300) : null
 
     let results: Memory[]
     if (q && mode === 'hybrid') {
@@ -166,13 +171,37 @@ export async function tryHandleMemories(ctx: RouteContext): Promise<boolean> {
     // and defeat staleness detection.
     if (q && results.length) touchMemoriesAccessed(results.map(m => m.id))
 
-    const formatted = results.map(m => ({
-      ...m,
-      embedding: undefined,
-      created_label: new Date(m.created_at * 1000).toLocaleString('hu-HU', { timeZone: APP_TZ }),
-      accessed_label: new Date(m.accessed_at * 1000).toLocaleString('hu-HU', { timeZone: APP_TZ }),
-    }))
+    const formatted = results.map(m => {
+      let content = m.content
+      if (maxChars !== null && content.length > maxChars) {
+        const remaining = content.length - maxChars
+        content = content.slice(0, maxChars) + `...(${remaining} chars more, GET /api/memories/${m.id})`
+      }
+      return {
+        ...m,
+        content,
+        embedding: undefined,
+        created_label: new Date(m.created_at * 1000).toLocaleString('hu-HU', { timeZone: APP_TZ }),
+        accessed_label: new Date(m.accessed_at * 1000).toLocaleString('hu-HU', { timeZone: APP_TZ }),
+      }
+    })
     jsonMaybeGzip(req, res, formatted)
+    return true
+  }
+
+  // Single memory fetch -- returns full content regardless of max_chars (card 0c5423fc).
+  const memGetMatch = path.match(/^\/api\/memories\/(\d+)$/)
+  if (memGetMatch && method === 'GET') {
+    const id = parseInt(memGetMatch[1], 10)
+    const db2 = getDb()
+    const row = db2.prepare('SELECT * FROM memories WHERE id = ?').get(id) as Memory | undefined
+    if (!row) { json(res, { error: 'Memory not found' }, 404); return true }
+    json(res, {
+      ...row,
+      embedding: undefined,
+      created_label: new Date(row.created_at * 1000).toLocaleString('hu-HU', { timeZone: APP_TZ }),
+      accessed_label: new Date(row.accessed_at * 1000).toLocaleString('hu-HU', { timeZone: APP_TZ }),
+    })
     return true
   }
 
