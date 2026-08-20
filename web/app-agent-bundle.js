@@ -115,6 +115,42 @@ document.getElementById('saveAutoRestartBtn').addEventListener('click', async ()
   } catch { showToast(t('common.error_save')) }
 })
 
+document.getElementById('saveIdleFlushBtn').addEventListener('click', async () => {
+  if (!currentAgent) return
+  // Like auto-restart, this applies to the main session too, so role === 'main'
+  // is NOT skipped. The context-guard store is keyed by the same id.
+  const id = currentAgent.autoRestartId || currentAgent.name
+  // Send the WHOLE config, not just the three idle fields. The endpoint
+  // normalizes the body into a complete config, so a fragment would silently
+  // reset actPct/hardPct/saturationRestart/enabled to their defaults -- saving
+  // an idle-flush preference would disarm the wedge tiers on an agent that had
+  // them on. Re-read rather than trusting the cached detail: not every path
+  // that opens this pane populates contextGuard, and an empty object here is
+  // indistinguishable from a genuinely default config.
+  let current = {}
+  try {
+    const cur = await fetch(`/api/agents/${encodeURIComponent(id)}/context-guard`)
+    if (!cur.ok) throw new Error()
+    current = (await cur.json()).contextGuard || {}
+  } catch { showToast(t('common.error_save')); return }
+  const cfg = Object.assign({}, current, {
+    idleFlushEnabled: document.getElementById('ifEnabled').checked,
+    idleFlushTokens: Math.round(Number(document.getElementById('ifTokens').value) * 1000),
+    idleMinutes: Number(document.getElementById('ifMinutes').value),
+  })
+  try {
+    const res = await fetch(`/api/agents/${encodeURIComponent(id)}/context-guard`, {
+      method: 'PUT',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(cfg),
+    })
+    if (!res.ok) throw new Error()
+    const body = await res.json()
+    if (currentAgent) currentAgent.contextGuard = body.contextGuard
+    showToast(t('agents.toast.idle_flush_saved'))
+  } catch { showToast(t('common.error_save')) }
+})
+
 // ---- voice config UI -------------------------------------------------------
 
 async function loadVoiceConfig(agentName) {
