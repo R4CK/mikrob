@@ -99,6 +99,18 @@ interface LifecycleEntry {
   /** Stable options identity, so a {fresh:true} caller is not handed a {fresh:false} run. */
   readonly optsKey: string
   readonly promise: Promise<unknown>
+  /**
+   * When the wait this entry represents began, so a LATER caller can be given the REMAINING budget
+   * rather than a fresh one (card 185c0b63). Without it every joiner restarted the clock, which is
+   * how one wedged agent kept the scheduler at 180s+ ticks indefinitely instead of paying that cost
+   * once.
+   *
+   * MUTABLE, and that is the point: a QUEUED entry INHERITS its predecessor's stamp while it is
+   * still blocked on it, so a stuck head cannot be laundered into a fresh budget by alternating
+   * request kinds. The moment the predecessor settles and this entry's own work actually starts, the
+   * stamp resets to now -- an operation that finally gets to run deserves its whole budget.
+   */
+  startedAt: number
 }
 
 const lifecycleInFlight = new Map<string, LifecycleEntry>()
@@ -106,6 +118,72 @@ const lifecycleInFlight = new Map<string, LifecycleEntry>()
 /** Exported for tests: how many agents currently have an operation in flight. */
 export function lifecycleInFlightCount(): number {
   return lifecycleInFlight.size
+}
+
+/**
+ * How long a caller may WAIT on a lifecycle operation before it is told the operation is wedged.
+ *
+ * 180s = 1.5x the proven TICK_WATCHDOG_MS in message-router.ts, and that ratio is the reasoning: a
+ * restart is stop+start, two full sequences, where the router tick is one. The individual waits
+ * inside a start already have their own budgets (PANE_IDLE_WAIT_TIMEOUT_MS 12s, MODAL_DISMISS_DELAY_MS
+ * 8s, IDENTITY_SEND_DELAY_MS 5s, ...), so a legitimate slow remote restart lands far below this; the
+ * number exists for the case where something below never returns at all.
+ */
+export const LIFECYCLE_OP_TIMEOUT_MS = 180_000
+
+/** Thrown to the CALLER when a lifecycle operation has not settled within
+ *  {@link LIFECYCLE_OP_TIMEOUT_MS}. It does NOT mean the operation was cancelled -- nothing here can
+ *  cancel a tmux/ssh call already in flight -- only that waiting for it is over. */
+export class LifecycleOpTimeoutError extends Error {
+  constructor(
+    readonly agent: string,
+    readonly kind: string,
+    readonly waitedMs: number,
+  ) {
+    super(`lifecycle ${kind} for ${agent} did not settle within ${waitedMs}ms`)
+    this.name = 'LifecycleOpTimeoutError'
+  }
+}
+
+/**
+ * Bound the WAIT without releasing the MUTUAL EXCLUSION (card ec26c2f1, Cybersec on the bc898166
+ * gate).
+ *
+ * This is the whole design decision, so it is written down rather than left to be re-derived: on
+ * timeout the caller's promise REJECTS, but the in-flight entry STAYS. Deleting the entry would let
+ * a second tmux/ssh operation start on an agent whose first one is still running somewhere -- which
+ * is exactly the race the lock was built for after a Cybersec AND a Cybered NO-GO (card 74ba7c78).
+ * A stuck agent therefore becomes promptly-and-loudly un-restartable, instead of silently hanging
+ * every caller forever. Those are both bad; only the second one takes the whole scheduler with it.
+ */
+function withWaitTimeout<T>(
+  p: Promise<T>,
+  name: string,
+  kind: string,
+  budgetMs: number = LIFECYCLE_OP_TIMEOUT_MS,
+): Promise<T> {
+  return new Promise<T>((resolve, reject) => {
+    const timer = setTimeout(() => {
+      logger.warn(
+        { agent: name, kind, waitedMs: budgetMs },
+        'agent-process: lifecycle operation did not settle -- the caller is released, the per-agent lock is NOT (a wedged tmux/ssh call cannot be cancelled)',
+      )
+      reject(new LifecycleOpTimeoutError(name, kind, budgetMs))
+    }, budgetMs)
+    // Do not hold the event loop open just to enforce a timeout on an operation nobody is waiting
+    // for any more; the process must still be able to exit.
+    timer.unref?.()
+    p.then(
+      (v) => {
+        clearTimeout(timer)
+        resolve(v)
+      },
+      (e: unknown) => {
+        clearTimeout(timer)
+        reject(e instanceof Error ? e : new Error(String(e)))
+      },
+    )
+  })
 }
 
 /** Exported for tests ONLY so the behaviour below is proven on the real lock, not on a copy. */
@@ -117,6 +195,34 @@ export function withLifecycleLock<T>(
 ): Promise<T> {
   const running = lifecycleInFlight.get(name)
 
+  // ALREADY OVER BUDGET -> FAIL FAST, and do not touch the map (card 185c0b63).
+  //
+  // The previous shape gave every later caller a FRESH full budget for the SAME stuck operation, so
+  // a wedged agent was self-sustaining rather than self-limiting: the scheduler's retry loop calls
+  // this again on every 15s tick, each call joined the same dead operation and waited another 180s,
+  // and because the tick awaits its targets serially the effective tick period stayed at 180s+ for
+  // as long as the agent stayed wedged (two such agents compounded it). One wedged agent should cost
+  // the scheduler ONE timeout, not one per tick forever.
+  //
+  // Rejecting here changes NOTHING about the mutual exclusion -- the wedged entry stays in the map,
+  // exactly as card ec26c2f1 decided, so no second tmux/ssh call can start on this agent. The only
+  // thing that changes is how long a caller is made to wait to be told the same thing.
+  if (running !== undefined) {
+    const elapsed = Date.now() - running.startedAt
+    const remaining = LIFECYCLE_OP_TIMEOUT_MS - elapsed
+    if (remaining <= 0) {
+      logger.warn(
+        { agent: name, kind, elapsedMs: elapsed, runningKind: running.kind },
+        'agent-process: lifecycle request refused immediately -- an operation on this agent is already past its budget (the lock is still held; nothing was started)',
+      )
+      return Promise.reject(new LifecycleOpTimeoutError(name, kind, elapsed))
+    }
+    if (running.kind === kind && running.optsKey === optsKey) {
+      // A joiner waits out the REMAINder of the operation's budget, not a new full one.
+      return withWaitTimeout(running.promise as Promise<T>, name, kind, remaining)
+    }
+  }
+
   // COALESCE only an IDENTICAL request. Two callers who asked for the same thing can share one
   // answer; a caller who asked for something ELSE must get their own operation run. The first
   // version of this lock keyed on the agent alone, so a stop() arriving during a start() was handed
@@ -124,13 +230,14 @@ export function withLifecycleLock<T>(
   // the desired-state entry unconditionally, so the reconciler stopped bringing the agent back
   // while it was in fact still running. A control that reports success for work it did not do is
   // worse than the race it replaced (Cybersec + Cybered NO-GO).
-  if (running !== undefined && running.kind === kind && running.optsKey === optsKey) {
-    return running.promise as Promise<T>
-  }
-
   // A DIFFERENT request QUEUES behind the running one: still never two concurrent tmux operations
   // on one agent, but the stop actually stops -- just after the start finishes.
   const prev = running?.promise
+  // Inherit the blocked-since stamp from the entry we are queueing behind (see LifecycleEntry
+  // .startedAt). Without this, a caller that alternates kinds -- start, then stop, then start --
+  // creates a fresh entry each time and walks the deadline forward indefinitely, which is the same
+  // "every caller restarts the clock" defect this card removes from the joiner path.
+  const inheritedStartedAt = running?.startedAt ?? Date.now()
   const token = Symbol(name)
   const p: Promise<T> = (async () => {
     // The predecessor's failure belongs to ITS caller; it must not become ours.
@@ -140,6 +247,10 @@ export function withLifecycleLock<T>(
       } catch {
         /* not our result */
       }
+      // The predecessor is done and OUR work starts now, so the inherited stamp has served its
+      // purpose: from here this operation is entitled to a full budget of its own.
+      const mine = lifecycleInFlight.get(name)
+      if (mine?.token === token) mine.startedAt = Date.now()
     }
     try {
       return await op()
@@ -147,8 +258,12 @@ export function withLifecycleLock<T>(
       if (lifecycleInFlight.get(name)?.token === token) lifecycleInFlight.delete(name)
     }
   })()
-  lifecycleInFlight.set(name, { token, kind, optsKey, promise: p })
-  return p
+  lifecycleInFlight.set(name, { token, kind, optsKey, promise: p, startedAt: inheritedStartedAt })
+  // `p` is what the MAP holds and what a later queuer awaits, so it must never become an unhandled
+  // rejection just because the caller below gave up on the timeout. This handler exists only to mark
+  // it as observed; every real consumer still sees the rejection through its own `.then`.
+  p.catch(() => undefined)
+  return withWaitTimeout(p, name, kind)
 }
 
 import { CHANNEL_PLUGIN_IDS } from './plugin-ids.js'
@@ -605,7 +720,60 @@ function provisionIsolatedConfigDir(
       settings.enabledPlugins as Record<string, boolean> | undefined,
     )
     settings.enabledPlugins = scopedPlugins
-    writeFileSync(join(cfg, 'settings.json'), JSON.stringify(settings, null, 2) + '\n')
+    // Keys the isolated file already carries that the shared file never
+    // mentions must SURVIVE this rewrite. The rewrite runs on every main-agent
+    // start, so a straight copy silently drops agent-only configuration. That
+    // is how `statusLine` went missing three times (2026-07-28, 07-30, 08-03):
+    // it is configured for the main agent alone, the shared file never names
+    // it, and the symptom is invisible -- the agent starts fine, it just stops
+    // reporting context usage, so nothing alerts.
+    //
+    // Shared wins on conflict: for every key the shared file DOES define it
+    // stays the source of truth (that is the point of the copy). Target-only
+    // keys are purely additive, so this cannot resurrect a key the shared file
+    // deliberately changed.
+    //
+    // Scope: this is the shared provisioning core, so the change applies to
+    // EVERY isolated config dir -- the main agent's and each sub-agent's alike
+    // (ensureIsolatedChannelConfigDir and ensureMainAgentIsolatedConfigDir both
+    // land here). There is no pre-existing merge anywhere to be consistent
+    // with: before this commit every one of them was a pure copy.
+    //
+    // enabledPlugins is explicitly never inherited -- it is decided by the
+    // scope call above and must not survive from the dir's own older copy.
+    const ownSettingsPath = join(cfg, 'settings.json')
+    if (existsSync(ownSettingsPath)) {
+      try {
+        const own = JSON.parse(readFileSync(ownSettingsPath, 'utf-8')) as unknown
+        // A JSON array or `null` parses fine but is not a settings object;
+        // spreading one would invent numeric keys instead of failing.
+        if (isPlainObject(own)) {
+          const inherited: string[] = []
+          for (const [key, value] of Object.entries(own)) {
+            if (key !== 'enabledPlugins' && !(key in settings)) {
+              settings[key] = value
+              inherited.push(key)
+            }
+          }
+          // Additive merges must not be silent: the whole point of this block
+          // is that a key nobody can see is a key nobody can debug. Key NAMES
+          // only -- a settings.json may hold secrets, so values never land in
+          // the log.
+          if (inherited.length) {
+            logger.info({ name, path: ownSettingsPath, keys: inherited }, 'isolated-config: kept target-only settings keys')
+          }
+        }
+      } catch (err) {
+        // Deliberately loud: rewriting an unparseable own-settings file from
+        // the shared one is exactly the silent-loss shape this block fixes.
+        logger.warn({ err, name, path: ownSettingsPath }, 'isolated-config: unparseable own settings.json, rewriting from shared')
+      }
+    }
+    // Atomic: the file's CONTENT now depends on reading its own previous
+    // content back. A torn write would fail the parse on the next start, the
+    // code would fall back to the shared file, and that is precisely the
+    // key-loss this commit fixes.
+    writeJsonAtomic(ownSettingsPath, settings)
 
     // 3. Own plugins/ dir: symlink the heavy shared parts, own the install state.
     const pluginsDir = join(cfg, 'plugins')

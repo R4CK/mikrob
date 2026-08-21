@@ -10,11 +10,16 @@
 // The behaviour is proven on the LOCK itself and on the WIRING, because exercising the real
 // functions would drive tmux. That split is deliberate: a mock deep enough to fake tmux would be
 // asserting against my own model of tmux, not against the race.
-import { describe, it, expect, beforeEach } from 'vitest'
+import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest'
 import { readFileSync } from 'node:fs'
 import { join, dirname } from 'node:path'
 import { fileURLToPath } from 'node:url'
-import { lifecycleInFlightCount, withLifecycleLock } from '../web/agent-process.js'
+import {
+  LIFECYCLE_OP_TIMEOUT_MS,
+  LifecycleOpTimeoutError,
+  lifecycleInFlightCount,
+  withLifecycleLock,
+} from '../web/agent-process.js'
 
 const AGENT_PROCESS = join(dirname(fileURLToPath(import.meta.url)), '..', 'web', 'agent-process.ts')
 const src = readFileSync(AGENT_PROCESS, 'utf-8')
@@ -185,5 +190,297 @@ describe('the lifecycle entry points are actually wired through the guard', () =
     // Calling the public ones inside restart would return restart's own in-flight promise and hang.
     expect(src).toContain('await stopAgentProcessUnlocked(name)')
     expect(src).toContain('await startAgentProcessUnlocked(name, opts)')
+  })
+})
+
+// ── Card ec26c2f1 ─────────────────────────────────────────────────────────────────────────────
+// Cybersec on the bc898166 gate: the lock has no timeout, so a wedged lifecycle operation makes
+// every caller wait forever. Measured while fixing it, and WORSE than the card stated -- this is
+// not only a precondition for adopting upstream's tickRunning guard, it is live today:
+// schedule-runner.ts's runCheck() sets its own `tickRunning = true`, then awaits attemptFireTask
+// (lines 1244/1374), which awaits startAgentProcess -> withLifecycleLock. That guard has no stale
+// check, so one wedged operation latches it true permanently and the WHOLE scheduler stops firing,
+// with a logger.debug line as its only trace.
+//
+// The fix bounds the WAIT and deliberately does NOT release the mutual exclusion -- see the comment
+// on withWaitTimeout. These tests pin both halves, because getting only the first one right is how
+// the card 74ba7c78 race would come back.
+describe('a wedged lifecycle operation releases its CALLER but not its LOCK (card ec26c2f1)', () => {
+  beforeEach(() => {
+    seq += 1
+    vi.useFakeTimers()
+  })
+  afterEach(() => {
+    vi.useRealTimers()
+  })
+
+  /** An operation that never settles -- the measured shape of a hung tmux/ssh call. */
+  const wedged = () => new Promise<string>(() => {})
+
+  it('THE FIX: the caller is rejected instead of waiting forever', async () => {
+    const p = lock('wedge', wedged)
+    const assertion = expect(p).rejects.toBeInstanceOf(LifecycleOpTimeoutError)
+    await vi.advanceTimersByTimeAsync(LIFECYCLE_OP_TIMEOUT_MS + 1)
+    await assertion
+  })
+
+  it('the rejection names the agent and the kind, so a log line can be acted on (rule 12)', async () => {
+    const p = lock('named', wedged, 'restart', 'fresh=false')
+    const caught = p.then<LifecycleOpTimeoutError | null, LifecycleOpTimeoutError | null>(
+      () => null,
+      (e: unknown) => e as LifecycleOpTimeoutError
+    )
+    await vi.advanceTimersByTimeAsync(LIFECYCLE_OP_TIMEOUT_MS + 1)
+    const err = await caught
+    expect(err, 'the wedged call resolved instead of timing out').toBeInstanceOf(
+      LifecycleOpTimeoutError
+    )
+    expect(err?.agent).toContain('named')
+    expect(err?.kind).toBe('restart')
+    expect(err?.waitedMs).toBe(LIFECYCLE_OP_TIMEOUT_MS)
+  })
+
+  it('THE OTHER HALF: the per-agent lock is STILL HELD, so no second operation starts', async () => {
+    // Releasing the entry on timeout would be the easy version of this fix and would re-open the
+    // exact race two security gates were spent on (card 74ba7c78): a second tmux/ssh call on an
+    // agent whose first one is still running somewhere. Nothing here can cancel that first call.
+    const before = lifecycleInFlightCount()
+    const p = lock('held', wedged)
+    p.catch(() => undefined)
+    await vi.advanceTimersByTimeAsync(LIFECYCLE_OP_TIMEOUT_MS + 1)
+    expect(lifecycleInFlightCount()).toBe(before + 1)
+  })
+
+  it('a DIFFERENT request behind a wedged one is bounded too, and still does not run', async () => {
+    let ran = 0
+    const p1 = lock('queued', wedged, 'start', '')
+    p1.catch(() => undefined)
+    const p2 = lock(
+      'queued',
+      async () => {
+        ran += 1
+        return 'x'
+      },
+      'stop',
+      ''
+    )
+    const assertion = expect(p2).rejects.toBeInstanceOf(LifecycleOpTimeoutError)
+    await vi.advanceTimersByTimeAsync(LIFECYCLE_OP_TIMEOUT_MS + 1)
+    await assertion
+    expect(ran, 'the queued operation must NOT have run past the wedged holder').toBe(0)
+  })
+
+  it('a JOINER of a wedged operation is bounded too (joining is not a way back to waiting forever)', async () => {
+    const p1 = lock('join', wedged, 'start', '')
+    p1.catch(() => undefined)
+    const p2 = lock('join', wedged, 'start', '') // identical identity -> coalesces onto p1
+    const assertion = expect(p2).rejects.toBeInstanceOf(LifecycleOpTimeoutError)
+    await vi.advanceTimersByTimeAsync(LIFECYCLE_OP_TIMEOUT_MS + 1)
+    await assertion
+  })
+
+  it('BASELINE: an operation that finishes in time is untouched -- no timeout, entry released', async () => {
+    // Without this, a "fix" that rejected everything immediately would look identical to the one
+    // under test.
+    const before = lifecycleInFlightCount()
+    const p = lock('fast', async () => {
+      await tick(10)
+      return 'done'
+    })
+    await vi.advanceTimersByTimeAsync(20)
+    await expect(p).resolves.toBe('done')
+    expect(lifecycleInFlightCount()).toBe(before)
+  })
+
+  it('a normally-FAILING operation still surfaces ITS error, not a timeout', async () => {
+    const p = lock('boom', async () => {
+      throw new Error('tmux said no')
+    })
+    await expect(p).rejects.toThrow('tmux said no')
+  })
+
+  it('the timer does not hold the process open (unref) and is cleared on a normal finish', async () => {
+    // A per-call 180s timer that kept the event loop alive would turn every lifecycle call into a
+    // 3-minute exit delay. Asserted on the source because there is no observable handle for it.
+    expect(src).toContain('timer.unref?.()')
+    expect(src).toContain('clearTimeout(timer)')
+  })
+})
+
+// Card 185c0b63: card ec26c2f1 bounded each caller's wait, but every caller got a FRESH full budget
+// for the SAME stuck operation. The scheduler's retry loop calls back on every 15s tick and awaits
+// its targets serially, so one wedged agent kept paying 180s PER TICK instead of once -- the tick
+// period stayed at 180s+ for as long as the agent stayed wedged. These tests are about the COST of
+// a wedged agent over time, not about the single-caller behaviour the previous card already pinned.
+describe('a wedged agent costs ONE timeout, not one per caller (card 185c0b63)', () => {
+  beforeEach(() => {
+    seq += 1
+    vi.useFakeTimers()
+  })
+  afterEach(() => {
+    vi.useRealTimers()
+  })
+
+  const wedged = () => new Promise<string>(() => {})
+
+  /** Reject reason of `p`, or null if it resolved. Never leaves an unhandled rejection behind. */
+  const reason = (p: Promise<unknown>): Promise<LifecycleOpTimeoutError | null> =>
+    p.then<null, LifecycleOpTimeoutError | null>(
+      () => null,
+      (e: unknown) => e as LifecycleOpTimeoutError
+    )
+
+  it('THE FIX: a caller arriving after the budget is refused with NO further wait', async () => {
+    const first = lock('over', wedged)
+    first.catch(() => undefined)
+    await vi.advanceTimersByTimeAsync(LIFECYCLE_OP_TIMEOUT_MS + 1)
+
+    // Not one timer is advanced from here on. Before this card the call below would have sat for
+    // another full LIFECYCLE_OP_TIMEOUT_MS, which is precisely the per-tick cost being removed.
+    const err = await reason(lock('over', wedged))
+    expect(err, 'the late caller did not settle without advancing the clock').toBeInstanceOf(
+      LifecycleOpTimeoutError
+    )
+    expect(err?.waitedMs).toBeGreaterThanOrEqual(LIFECYCLE_OP_TIMEOUT_MS)
+  })
+
+  it('the retry loop pays that cost ONCE, not once per tick', async () => {
+    // The measured shape: schedule-runner re-enters for the same agent every tick and awaits it.
+    // Ten ticks after the budget is gone must cost zero additional waiting.
+    const first = lock('loop', wedged)
+    first.catch(() => undefined)
+    await vi.advanceTimersByTimeAsync(LIFECYCLE_OP_TIMEOUT_MS + 1)
+
+    const started = Date.now()
+    for (let i = 0; i < 10; i += 1) {
+      expect(await reason(lock('loop', wedged))).toBeInstanceOf(LifecycleOpTimeoutError)
+    }
+    expect(Date.now() - started, 'a refused call must not consume wall-clock budget').toBe(0)
+  })
+
+  it('a JOINER mid-flight gets the REMAINING budget, not a fresh one', async () => {
+    // The half a "reject immediately once expired" fix would miss: a caller that arrives at 3/4 of
+    // the budget must be released at the ORIGINAL deadline, not 180s after it joined.
+    const first = lock('remain', wedged)
+    first.catch(() => undefined)
+    const spent = LIFECYCLE_OP_TIMEOUT_MS * 0.75
+    await vi.advanceTimersByTimeAsync(spent)
+
+    const joiner = reason(lock('remain', wedged))
+    // One millisecond past the ORIGINAL deadline -- far short of a fresh budget from the join.
+    await vi.advanceTimersByTimeAsync(LIFECYCLE_OP_TIMEOUT_MS - spent + 1)
+    const err = await joiner
+    expect(err, 'the joiner outlived the original deadline -- it was given a fresh budget').toBeInstanceOf(
+      LifecycleOpTimeoutError
+    )
+    expect(err?.waitedMs, 'the joiner should wait only what was left').toBeLessThan(
+      LIFECYCLE_OP_TIMEOUT_MS
+    )
+  })
+
+  it('THE OTHER HALF, again: a refused caller does not release the lock or start anything', async () => {
+    // The refusal must stay a pure "no", or this card would re-open the race card 74ba7c78 closed.
+    const before = lifecycleInFlightCount()
+    const first = lock('nostart', wedged, 'start', '')
+    first.catch(() => undefined)
+    await vi.advanceTimersByTimeAsync(LIFECYCLE_OP_TIMEOUT_MS + 1)
+    expect(lifecycleInFlightCount()).toBe(before + 1)
+
+    let ran = 0
+    const second = lock(
+      'nostart',
+      async () => {
+        ran += 1
+        return 'x'
+      },
+      'stop',
+      ''
+    )
+    expect(await reason(second)).toBeInstanceOf(LifecycleOpTimeoutError)
+    expect(ran, 'a refused DIFFERENT request must not have run').toBe(0)
+    expect(lifecycleInFlightCount(), 'the wedged entry is still the one holding the agent').toBe(
+      before + 1
+    )
+  })
+
+  it('ALTERNATING KINDS cannot walk the deadline forward', async () => {
+    // The queue branch's own version of the same defect. A caller asking for something DIFFERENT
+    // queues behind the wedged one, and if that queued entry carried its OWN fresh stamp, anyone
+    // alternating start/stop/start would hand the agent a new 180s horizon on every request -- the
+    // joiner path fixed, the queue path still self-sustaining.
+    const first = lock('alt', wedged, 'start', '')
+    first.catch(() => undefined)
+    await vi.advanceTimersByTimeAsync(LIFECYCLE_OP_TIMEOUT_MS * 0.55)
+
+    const queued = lock('alt', wedged, 'stop', '') // different kind -> queues behind the wedged one
+    queued.catch(() => undefined)
+    await vi.advanceTimersByTimeAsync(LIFECYCLE_OP_TIMEOUT_MS * 0.5) // now past the ORIGINAL deadline
+
+    // No timer is advanced from here: the third caller must be refused on the spot.
+    expect(await reason(lock('alt', wedged, 'start', ''))).toBeInstanceOf(LifecycleOpTimeoutError)
+  })
+
+  it('...but a queued operation that actually RUNS gets its own full budget', async () => {
+    // The other side of inheriting the stamp: it must expire when it stops being true. A queued op
+    // whose predecessor finishes is a normal operation and must not start life pre-expired.
+    let release: (v: string) => void = () => {}
+    const head = lock('inherit', () => new Promise<string>((r) => (release = r)), 'start', '')
+    head.catch(() => undefined)
+    await vi.advanceTimersByTimeAsync(LIFECYCLE_OP_TIMEOUT_MS * 0.9)
+
+    let ran = 0
+    const queued = lock(
+      'inherit',
+      async () => {
+        ran += 1
+        await tick(LIFECYCLE_OP_TIMEOUT_MS * 0.5) // longer than what was left of the head's budget
+        return 'queued-done'
+      },
+      'stop',
+      ''
+    )
+    release('head-done')
+    await vi.advanceTimersByTimeAsync(LIFECYCLE_OP_TIMEOUT_MS * 0.6)
+    await expect(queued).resolves.toBe('queued-done')
+    expect(ran).toBe(1)
+  })
+
+  it('BASELINE: while the budget lasts, a joiner still gets the real answer', async () => {
+    // Without this, a fix that refused everything the moment an entry existed would pass every
+    // assertion above and quietly break normal coalescing.
+    let runs = 0
+    const slow = async (): Promise<string> => {
+      runs += 1
+      await tick(50)
+      return 'done'
+    }
+    const a = lock('ok', slow)
+    const b = lock('ok', slow)
+    await vi.advanceTimersByTimeAsync(60)
+    await expect(a).resolves.toBe('done')
+    await expect(b).resolves.toBe('done')
+    expect(runs, 'the two callers must still share ONE run').toBe(1)
+  })
+
+  it('a NEW operation is accepted once the wedged one finally settles', async () => {
+    // The refusal is tied to the stuck entry, not to the agent name: recovery must be automatic,
+    // otherwise this fix would make a recovered agent permanently un-startable.
+    let release: (v: string) => void = () => {}
+    const first = lock('recover', () => new Promise<string>((r) => (release = r)))
+    first.catch(() => undefined)
+    await vi.advanceTimersByTimeAsync(LIFECYCLE_OP_TIMEOUT_MS + 1)
+    expect(await reason(lock('recover', wedged))).toBeInstanceOf(LifecycleOpTimeoutError)
+
+    release('finally')
+    await vi.advanceTimersByTimeAsync(1)
+
+    let ran = 0
+    const after = lock('recover', async () => {
+      ran += 1
+      return 'fresh'
+    })
+    await vi.advanceTimersByTimeAsync(1)
+    await expect(after).resolves.toBe('fresh')
+    expect(ran).toBe(1)
   })
 })
