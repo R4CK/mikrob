@@ -263,6 +263,29 @@ const ACKNOWLEDGED_CONFLICTS: Readonly<Record<string, string>> = {
   // symlink-reject consolidation, card bb0ae7fa; upstream: shellEscape). Keep both bindings.
   'src/web/routes/agents-skills.ts':
     'union the import line (keep the fork findSymlinkTaintedEntries AND upstream shellEscape); on the unzip line keep the fork await execShellAsync and adopt upstream shellEscape(tmpPath)',
+  // ── Card be520693: upstream moved 37b23702 -> 704293f4 and brought two MORE files in ─────────
+  // Both are additive on both sides and neither is a disagreement -- measured in a throwaway
+  // worktree against the merge base, one conflict hunk each.
+  //
+  // One additive block per side at the same insertion point, reading and writing nothing the other
+  // touches. Fork: stripDataPayloads(), which blanks a curl -d/--data LITERAL payload BEFORE the
+  // send-pattern scan (card 132fc28c) -- without it a kanban comment whose PROSE discussed sending
+  // a registration e-mail was blocked as if it were an outbound send, i.e. the gate censored talk
+  // about the action instead of stopping the action. Upstream: MANAGE_EMAIL_SEND_OPS, the set of
+  // outbound-shaped operations of the multiplexed manage_email tool. Keep BOTH -- the fork's
+  // false-positive fix does not weaken upstream's new op coverage, and vice versa.
+  'scripts/email-send-gate.mjs':
+    'keep both additive blocks -- the fork stripDataPayloads() literal-payload blanking (card 132fc28c false-positive fix) AND upstream MANAGE_EMAIL_SEND_OPS; neither side taken wholesale',
+  // A one-line import conflict over TWO DIFFERENT gates, not one gate named twice -- checked, not
+  // assumed: the fork's EGRESS_GATE_MATCHER is 'WebFetch|mcp__firecrawl__.*' (the web-egress gate),
+  // upstream's EMAIL_GATE_MATCHER is 'Bash|.*send_email.*|.*manage_email.*' plus an
+  // emailGateMatcherStale() staleness check. Both belong in the merged tree.
+  // The union is SAFE because src/web/agent-scaffold.ts, which defines all three symbols, merges
+  // cleanly -- verified on the merge result, where EMAIL_GATE_MATCHER, emailGateMatcherStale and
+  // EGRESS_GATE_MATCHER are all present. Taking only the fork's import would drop upstream's new
+  // test block; taking only upstream's would drop the fork's egress-gate assertions.
+  'src/__tests__/hook-command-quoting.test.ts':
+    'union the import (fork EGRESS_GATE_MATCHER + upstream EMAIL_GATE_MATCHER/emailGateMatcherStale -- different gates) and keep both sides test blocks; agent-scaffold.ts merges cleanly and defines all three',
 }
 
 function git(args: string[], cwd: string): string {
