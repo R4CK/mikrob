@@ -99,6 +99,18 @@ interface LifecycleEntry {
   /** Stable options identity, so a {fresh:true} caller is not handed a {fresh:false} run. */
   readonly optsKey: string
   readonly promise: Promise<unknown>
+  /**
+   * When the wait this entry represents began, so a LATER caller can be given the REMAINING budget
+   * rather than a fresh one (card 185c0b63). Without it every joiner restarted the clock, which is
+   * how one wedged agent kept the scheduler at 180s+ ticks indefinitely instead of paying that cost
+   * once.
+   *
+   * MUTABLE, and that is the point: a QUEUED entry INHERITS its predecessor's stamp while it is
+   * still blocked on it, so a stuck head cannot be laundered into a fresh budget by alternating
+   * request kinds. The moment the predecessor settles and this entry's own work actually starts, the
+   * stamp resets to now -- an operation that finally gets to run deserves its whole budget.
+   */
+  startedAt: number
 }
 
 const lifecycleInFlight = new Map<string, LifecycleEntry>()
@@ -144,15 +156,20 @@ export class LifecycleOpTimeoutError extends Error {
  * A stuck agent therefore becomes promptly-and-loudly un-restartable, instead of silently hanging
  * every caller forever. Those are both bad; only the second one takes the whole scheduler with it.
  */
-function withWaitTimeout<T>(p: Promise<T>, name: string, kind: string): Promise<T> {
+function withWaitTimeout<T>(
+  p: Promise<T>,
+  name: string,
+  kind: string,
+  budgetMs: number = LIFECYCLE_OP_TIMEOUT_MS,
+): Promise<T> {
   return new Promise<T>((resolve, reject) => {
     const timer = setTimeout(() => {
       logger.warn(
-        { agent: name, kind, waitedMs: LIFECYCLE_OP_TIMEOUT_MS },
+        { agent: name, kind, waitedMs: budgetMs },
         'agent-process: lifecycle operation did not settle -- the caller is released, the per-agent lock is NOT (a wedged tmux/ssh call cannot be cancelled)',
       )
-      reject(new LifecycleOpTimeoutError(name, kind, LIFECYCLE_OP_TIMEOUT_MS))
-    }, LIFECYCLE_OP_TIMEOUT_MS)
+      reject(new LifecycleOpTimeoutError(name, kind, budgetMs))
+    }, budgetMs)
     // Do not hold the event loop open just to enforce a timeout on an operation nobody is waiting
     // for any more; the process must still be able to exit.
     timer.unref?.()
@@ -178,6 +195,34 @@ export function withLifecycleLock<T>(
 ): Promise<T> {
   const running = lifecycleInFlight.get(name)
 
+  // ALREADY OVER BUDGET -> FAIL FAST, and do not touch the map (card 185c0b63).
+  //
+  // The previous shape gave every later caller a FRESH full budget for the SAME stuck operation, so
+  // a wedged agent was self-sustaining rather than self-limiting: the scheduler's retry loop calls
+  // this again on every 15s tick, each call joined the same dead operation and waited another 180s,
+  // and because the tick awaits its targets serially the effective tick period stayed at 180s+ for
+  // as long as the agent stayed wedged (two such agents compounded it). One wedged agent should cost
+  // the scheduler ONE timeout, not one per tick forever.
+  //
+  // Rejecting here changes NOTHING about the mutual exclusion -- the wedged entry stays in the map,
+  // exactly as card ec26c2f1 decided, so no second tmux/ssh call can start on this agent. The only
+  // thing that changes is how long a caller is made to wait to be told the same thing.
+  if (running !== undefined) {
+    const elapsed = Date.now() - running.startedAt
+    const remaining = LIFECYCLE_OP_TIMEOUT_MS - elapsed
+    if (remaining <= 0) {
+      logger.warn(
+        { agent: name, kind, elapsedMs: elapsed, runningKind: running.kind },
+        'agent-process: lifecycle request refused immediately -- an operation on this agent is already past its budget (the lock is still held; nothing was started)',
+      )
+      return Promise.reject(new LifecycleOpTimeoutError(name, kind, elapsed))
+    }
+    if (running.kind === kind && running.optsKey === optsKey) {
+      // A joiner waits out the REMAINder of the operation's budget, not a new full one.
+      return withWaitTimeout(running.promise as Promise<T>, name, kind, remaining)
+    }
+  }
+
   // COALESCE only an IDENTICAL request. Two callers who asked for the same thing can share one
   // answer; a caller who asked for something ELSE must get their own operation run. The first
   // version of this lock keyed on the agent alone, so a stop() arriving during a start() was handed
@@ -185,15 +230,14 @@ export function withLifecycleLock<T>(
   // the desired-state entry unconditionally, so the reconciler stopped bringing the agent back
   // while it was in fact still running. A control that reports success for work it did not do is
   // worse than the race it replaced (Cybersec + Cybered NO-GO).
-  if (running !== undefined && running.kind === kind && running.optsKey === optsKey) {
-    // A joiner is bounded too: joining a wedged operation must not be a way back into the
-    // wait-forever behaviour this card removes.
-    return withWaitTimeout(running.promise as Promise<T>, name, kind)
-  }
-
   // A DIFFERENT request QUEUES behind the running one: still never two concurrent tmux operations
   // on one agent, but the stop actually stops -- just after the start finishes.
   const prev = running?.promise
+  // Inherit the blocked-since stamp from the entry we are queueing behind (see LifecycleEntry
+  // .startedAt). Without this, a caller that alternates kinds -- start, then stop, then start --
+  // creates a fresh entry each time and walks the deadline forward indefinitely, which is the same
+  // "every caller restarts the clock" defect this card removes from the joiner path.
+  const inheritedStartedAt = running?.startedAt ?? Date.now()
   const token = Symbol(name)
   const p: Promise<T> = (async () => {
     // The predecessor's failure belongs to ITS caller; it must not become ours.
@@ -203,6 +247,10 @@ export function withLifecycleLock<T>(
       } catch {
         /* not our result */
       }
+      // The predecessor is done and OUR work starts now, so the inherited stamp has served its
+      // purpose: from here this operation is entitled to a full budget of its own.
+      const mine = lifecycleInFlight.get(name)
+      if (mine?.token === token) mine.startedAt = Date.now()
     }
     try {
       return await op()
@@ -210,7 +258,7 @@ export function withLifecycleLock<T>(
       if (lifecycleInFlight.get(name)?.token === token) lifecycleInFlight.delete(name)
     }
   })()
-  lifecycleInFlight.set(name, { token, kind, optsKey, promise: p })
+  lifecycleInFlight.set(name, { token, kind, optsKey, promise: p, startedAt: inheritedStartedAt })
   // `p` is what the MAP holds and what a later queuer awaits, so it must never become an unhandled
   // rejection just because the caller below gave up on the timeout. This handler exists only to mark
   // it as observed; every real consumer still sees the rejection through its own `.then`.
