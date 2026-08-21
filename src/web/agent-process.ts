@@ -108,6 +108,67 @@ export function lifecycleInFlightCount(): number {
   return lifecycleInFlight.size
 }
 
+/**
+ * How long a caller may WAIT on a lifecycle operation before it is told the operation is wedged.
+ *
+ * 180s = 1.5x the proven TICK_WATCHDOG_MS in message-router.ts, and that ratio is the reasoning: a
+ * restart is stop+start, two full sequences, where the router tick is one. The individual waits
+ * inside a start already have their own budgets (PANE_IDLE_WAIT_TIMEOUT_MS 12s, MODAL_DISMISS_DELAY_MS
+ * 8s, IDENTITY_SEND_DELAY_MS 5s, ...), so a legitimate slow remote restart lands far below this; the
+ * number exists for the case where something below never returns at all.
+ */
+export const LIFECYCLE_OP_TIMEOUT_MS = 180_000
+
+/** Thrown to the CALLER when a lifecycle operation has not settled within
+ *  {@link LIFECYCLE_OP_TIMEOUT_MS}. It does NOT mean the operation was cancelled -- nothing here can
+ *  cancel a tmux/ssh call already in flight -- only that waiting for it is over. */
+export class LifecycleOpTimeoutError extends Error {
+  constructor(
+    readonly agent: string,
+    readonly kind: string,
+    readonly waitedMs: number,
+  ) {
+    super(`lifecycle ${kind} for ${agent} did not settle within ${waitedMs}ms`)
+    this.name = 'LifecycleOpTimeoutError'
+  }
+}
+
+/**
+ * Bound the WAIT without releasing the MUTUAL EXCLUSION (card ec26c2f1, Cybersec on the bc898166
+ * gate).
+ *
+ * This is the whole design decision, so it is written down rather than left to be re-derived: on
+ * timeout the caller's promise REJECTS, but the in-flight entry STAYS. Deleting the entry would let
+ * a second tmux/ssh operation start on an agent whose first one is still running somewhere -- which
+ * is exactly the race the lock was built for after a Cybersec AND a Cybered NO-GO (card 74ba7c78).
+ * A stuck agent therefore becomes promptly-and-loudly un-restartable, instead of silently hanging
+ * every caller forever. Those are both bad; only the second one takes the whole scheduler with it.
+ */
+function withWaitTimeout<T>(p: Promise<T>, name: string, kind: string): Promise<T> {
+  return new Promise<T>((resolve, reject) => {
+    const timer = setTimeout(() => {
+      logger.warn(
+        { agent: name, kind, waitedMs: LIFECYCLE_OP_TIMEOUT_MS },
+        'agent-process: lifecycle operation did not settle -- the caller is released, the per-agent lock is NOT (a wedged tmux/ssh call cannot be cancelled)',
+      )
+      reject(new LifecycleOpTimeoutError(name, kind, LIFECYCLE_OP_TIMEOUT_MS))
+    }, LIFECYCLE_OP_TIMEOUT_MS)
+    // Do not hold the event loop open just to enforce a timeout on an operation nobody is waiting
+    // for any more; the process must still be able to exit.
+    timer.unref?.()
+    p.then(
+      (v) => {
+        clearTimeout(timer)
+        resolve(v)
+      },
+      (e: unknown) => {
+        clearTimeout(timer)
+        reject(e instanceof Error ? e : new Error(String(e)))
+      },
+    )
+  })
+}
+
 /** Exported for tests ONLY so the behaviour below is proven on the real lock, not on a copy. */
 export function withLifecycleLock<T>(
   name: string,
@@ -125,7 +186,9 @@ export function withLifecycleLock<T>(
   // while it was in fact still running. A control that reports success for work it did not do is
   // worse than the race it replaced (Cybersec + Cybered NO-GO).
   if (running !== undefined && running.kind === kind && running.optsKey === optsKey) {
-    return running.promise as Promise<T>
+    // A joiner is bounded too: joining a wedged operation must not be a way back into the
+    // wait-forever behaviour this card removes.
+    return withWaitTimeout(running.promise as Promise<T>, name, kind)
   }
 
   // A DIFFERENT request QUEUES behind the running one: still never two concurrent tmux operations
@@ -148,7 +211,11 @@ export function withLifecycleLock<T>(
     }
   })()
   lifecycleInFlight.set(name, { token, kind, optsKey, promise: p })
-  return p
+  // `p` is what the MAP holds and what a later queuer awaits, so it must never become an unhandled
+  // rejection just because the caller below gave up on the timeout. This handler exists only to mark
+  // it as observed; every real consumer still sees the rejection through its own `.then`.
+  p.catch(() => undefined)
+  return withWaitTimeout(p, name, kind)
 }
 
 import { CHANNEL_PLUGIN_IDS } from './plugin-ids.js'
