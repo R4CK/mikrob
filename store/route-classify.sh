@@ -110,11 +110,21 @@ STRIDE="${ROUTE_CLASSIFY_STRIDE:-60}"
 # nothing but a wasted local-model call, never a missed security decision.
 HALF=$(( TIMEOUT / 2 )); [ "$HALF" -ge 1 ] || HALF=1
 
-ask() { # $1 = text -> SECURITY | MECHANICAL | UNKNOWN
-  local out
-  out="$(LOCAL_LLM_TEMPERATURE=0 LOCAL_LLM_SEED=0 LOCAL_LLM_LOCK_WAIT="$HALF" LOCAL_LLM_TIMEOUT="$HALF" \
+# Exit 6 is local-llm.sh's OWN name for "the GPU flock was still held when LOCK_WAIT ran out" -- it
+# says so explicitly and only ever uses it for that, never for a generation failure. Card 9874e359
+# needs that one status kept apart from every other way a call can come back empty, so the raw output
+# is captured on its own line instead of being piped straight into `tr`: a pipeline's `$?` is the
+# status of `tr`, which is always 0, and the distinction would be lost before it could be read.
+GPU_BUSY_RC=6
+
+ask() { # $1 = text -> SECURITY | MECHANICAL | UNKNOWN | BUSY
+  local raw rc out
+  raw="$(LOCAL_LLM_TEMPERATURE=0 LOCAL_LLM_SEED=0 LOCAL_LLM_LOCK_WAIT="$HALF" LOCAL_LLM_TIMEOUT="$HALF" \
          timeout "$TIMEOUT" bash "$LLM" --task route-triage --caller route-classify --source routing \
-          "$1" 2>/dev/null | tr -dc 'A-Za-z' | tr '[:lower:]' '[:upper:]')"
+          "$1" 2>/dev/null)"
+  rc=$?
+  [ "$rc" -eq "$GPU_BUSY_RC" ] && { echo BUSY; return 0; }
+  out="$(printf '%s' "$raw" | tr -dc 'A-Za-z' | tr '[:lower:]' '[:upper:]')"
   case "$out" in
     *SECURITY*)   echo SECURITY ;;
     *MECHANICAL*) echo MECHANICAL ;;
@@ -139,6 +149,7 @@ else:
 
 OUT=UNKNOWN
 CALLS=0
+PATH_TAKEN=windowed
 while IFS= read -r win; do
   [ -n "${win// }" ] || continue
   CALLS=$((CALLS + 1))
@@ -147,13 +158,30 @@ while IFS= read -r win; do
     # lower it. This is also what keeps the common security case from paying the full window cost.
     SECURITY)   OUT=SECURITY; break ;;
     MECHANICAL) [ "$OUT" = UNKNOWN ] && OUT=MECHANICAL ;;
+    # Card 9874e359: the GPU was busy, so the model never saw this window. Every REMAINING window
+    # would pay another full LOCK_WAIT to learn the same thing, and the answer would still be the
+    # UNKNOWN we already have -- measured on the live board, 17 contention episodes produced 107
+    # failed route-triage rows, 6.3 per episode and 29 in the worst one, each ~22s. Stopping here
+    # makes one contention episode cost ONE call instead of one per window.
+    #
+    # This does not weaken the control, and it is worth being exact about why. The caller only acts
+    # on SECURITY (local-llm-rag.sh:381); UNKNOWN leaves the deterministic verdict standing. Before
+    # this change a saturated GPU produced UNKNOWN after N*LOCK_WAIT seconds; after it, the SAME
+    # UNKNOWN arrives immediately. What is genuinely true either way -- and is NOT introduced here --
+    # is that a saturated GPU means the semantic classifier does not run, so a task the keyword rules
+    # called local stays local. That is a pre-existing property of the fail-safe direction.
+    BUSY)       PATH_TAKEN=gpu-busy; break ;;
     # UNKNOWN windows are simply not evidence either way. If EVERY window is UNKNOWN (no model,
     # timeout, unparseable) the result stays UNKNOWN and the caller keeps its own verdict.
     *)          : ;;
   esac
 done <<< "$WINDOWS"
 
-log_verdict "$OUT" windowed "$CALLS"
+# The abstain is written to the audit trail under its OWN path name, not folded into `windowed`:
+# this file's whole point (Cybered's third finding, see the header) is that a control which stopped
+# running must not look identical to one that ran and had no objection. "The GPU was busy" and "the
+# model answered nothing useful" are different operational facts and get different lines.
+log_verdict "$OUT" "$PATH_TAKEN" "$CALLS"
 
 case "$OUT" in
   *SECURITY*)   echo SECURITY ;;
