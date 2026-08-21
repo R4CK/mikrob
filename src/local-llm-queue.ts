@@ -186,6 +186,22 @@ export function complete(db: Database, id: number, result: string, now: number):
  * is the row's own structural marker for this, independent of whatever caller-supplied `source`
  * string happens to be set.
  */
+/**
+ * True iff row `id` is a DIRECT-SYNC self-registration rather than real queued work (card 41df5159).
+ *
+ * Uses the SAME structural marker fail() and reclaimStaleRunning() already use -- the
+ * DIRECT_CALL_PLACEHOLDER prompt -- deliberately NOT the caller-supplied `source` string, which any
+ * caller can set to anything and which therefore cannot carry a security- or correctness-relevant
+ * decision. A missing row answers false: an unknown id is not a direct-sync row, and the caller
+ * checks existence separately.
+ */
+export function isDirectSyncCall(db: Database, id: number): boolean {
+  const row = db.prepare('SELECT prompt FROM local_llm_queue WHERE id = ?').get(id) as
+    | { prompt: string }
+    | undefined
+  return row?.prompt === DIRECT_CALL_PLACEHOLDER
+}
+
 export function fail(db: Database, id: number, error: string, now: number): QueueStatus {
   const row = db.prepare('SELECT attempts, prompt FROM local_llm_queue WHERE id = ?').get(id) as
     | { attempts: number; prompt: string }
