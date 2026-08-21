@@ -216,6 +216,53 @@ const ACKNOWLEDGED_CONFLICTS: Readonly<Record<string, string>> = {
   // update the comment to mention both setup files.
   'vitest.config.ts':
     'keep fork agents/** exclusion + comment; adopt upstream assert-supported-node.ts in setupFiles (port the file from upstream) + updated comment listing both setup-file gates',
+  // ── Card bc898166: upstream 37b23702 "Fix/agent lifecycle async ordering" (#1014) ────────────
+  // Five files at once, because upstream shipped ONE PR that reworks the same area the fork already
+  // reworked -- convergent evolution, not a disagreement. Measured file by file against the merge
+  // base (ea7ed17c), not inferred from the PR title. NONE of the five belongs in GUARDED_FILES:
+  // that list means "must never conflict", and both sides are actively developing all five, so
+  // promising zero conflicts here would be a claim that fails on the next upstream release.
+  //
+  // THE LOAD-BEARING ONE. The fork made these three functions PRIVATE `*Unlocked` bodies and
+  // exports lock-wrapping versions instead (withLifecycleLock, card 74ba7c78 + 346edea2, after a
+  // Cybersec AND a Cybered NO-GO), so that restart composes stop+start INSIDE ONE lock keyed on the
+  // OPERATION. Upstream's PR makes the same three functions async and exports them DIRECTLY, with
+  // no lock at all -- so taking upstream's side on these three signature lines silently deletes the
+  // atomicity two security gates were spent on. Only the three signature lines conflict; upstream's
+  // body changes merge cleanly and are kept.
+  'src/web/agent-process.ts':
+    'keep the fork *Unlocked private bodies + withLifecycleLock wrappers on all three signature hunks (start/stop/restart) -- upstream exports the same functions unlocked, which would delete the card 74ba7c78 atomicity; upstream body changes outside those lines merge cleanly and are kept',
+  // Upstream adds a re-entrancy guard (`tickRunning`) around the sweep, for the exact reason the
+  // fork ALSO has: once checkAgent awaits a real restart instead of a blocking execSync('sleep N')
+  // (fork card 873c48df), a sweep can still be running when the next interval fires. Measured: the
+  // fork's sweep has NO overlap protection of any kind, so this is something upstream has and the
+  // fork lacks, not a duplicate. The fork's sweep BODY is unchanged inside upstream's try/finally.
+  'src/web/auto-restart-runner.ts':
+    'adopt upstream tickRunning re-entrancy guard (the fork sweep has no overlap protection and its restart path is equally async), keeping the fork sweep body verbatim inside the try/finally',
+  // Three hunks, and NOT all one direction -- the reason this entry is per-hunk rather than a side.
+  // (1)+(2) The fork's runner is a superset: a weekly-tier axis with durable-baseline bookkeeping
+  // (recordBaselineIfAbsent/clearBaseline, "cheaper tier wins" so a park/start cycle cannot undo a
+  // downgrade) and a parked-agent path upstream has no equivalent for; checkAgent's own parameter
+  // list differs accordingly. Upstream's simpler action.kind form would drop all of it.
+  // (3) is the SAME tickRunning guard as auto-restart-runner, and the same measurement applies.
+  'src/web/model-fallback-runner.ts':
+    'per hunk: keep the fork weekly-tier structure + durable-baseline bookkeeping + parked-agent path (hunks 1-2, upstream has no equivalent), and adopt upstream tickRunning re-entrancy guard (hunk 3) keeping the fork sweep body',
+  // Same one-line shape in both skills routes, and the same resolution. The fork made the unzip
+  // call ASYNC (execShellAsync) -- a fork-specific correctness property: a sync child on the request
+  // path blocks the event loop for every other agent. Upstream kept execSync but passes the path
+  // through shellEscape() instead of bare double quotes. Neither side is wholesale right: the fork
+  // must stay async, and upstream's escaping is strictly better hygiene -- the fork already calls
+  // shellEscape two lines away in the same file, so this line is an inconsistency, not a policy.
+  // (Measured: tmpPath is a server-side randomUUID() name, so today's fork line is not exploitable;
+  // the escaping is defence in depth, not an open hole being closed.)
+  'src/web/routes/skills.ts':
+    'keep the fork await execShellAsync (async, does not block the event loop) AND adopt upstream shellEscape(tmpPath) in place of bare double quotes -- never a wholesale side',
+  // Two hunks. The unzip line is identical to src/web/routes/skills.ts above, same rule. The import
+  // line is the shape already acknowledged for src/web/context-restart-gate-runner.ts: each side
+  // added a DIFFERENT binding to the same import (fork: findSymlinkTaintedEntries, from its
+  // symlink-reject consolidation, card bb0ae7fa; upstream: shellEscape). Keep both bindings.
+  'src/web/routes/agents-skills.ts':
+    'union the import line (keep the fork findSymlinkTaintedEntries AND upstream shellEscape); on the unzip line keep the fork await execShellAsync and adopt upstream shellEscape(tmpPath)',
 }
 
 function git(args: string[], cwd: string): string {
