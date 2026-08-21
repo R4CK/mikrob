@@ -218,9 +218,8 @@ export function withLifecycleLock<T>(
       return Promise.reject(new LifecycleOpTimeoutError(name, kind, elapsed))
     }
     if (running.kind === kind && running.optsKey === optsKey) {
-      // MUTATION (card 185c0b63 QA negative control, surgical): joiner gets a FRESH full budget
-      // again, but the over-budget immediate-reject branch above is left intact.
-      return withWaitTimeout(running.promise as Promise<T>, name, kind)
+      // A joiner waits out the REMAINder of the operation's budget, not a new full one.
+      return withWaitTimeout(running.promise as Promise<T>, name, kind, remaining)
     }
   }
 
@@ -238,7 +237,9 @@ export function withLifecycleLock<T>(
   // .startedAt). Without this, a caller that alternates kinds -- start, then stop, then start --
   // creates a fresh entry each time and walks the deadline forward indefinitely, which is the same
   // "every caller restarts the clock" defect this card removes from the joiner path.
-  const inheritedStartedAt = running?.startedAt ?? Date.now()
+  // MUTATION (card 185c0b63 QA negative control 2): a queued entry gets its OWN fresh stamp again,
+  // instead of inheriting the predecessor's.
+  const inheritedStartedAt = Date.now()
   const token = Symbol(name)
   const p: Promise<T> = (async () => {
     // The predecessor's failure belongs to ITS caller; it must not become ours.
