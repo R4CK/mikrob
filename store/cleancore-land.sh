@@ -262,7 +262,17 @@ fi
 
 if [ "$DRY" = "--dry-run" ]; then say "DRY-RUN: not pushing"; rm -f "${MERGE_ERR:-}" 2>/dev/null; exit 0; fi
 
-git -C "$WT" push origin HEAD:main >/dev/null 2>&1 || { echo "PUSH FAILED"; exit 4; }
+if ! git -C "$WT" push origin HEAD:main >/dev/null 2>&1; then
+  # A nonzero exit here does not always mean the remote rejected the push -- a dropped
+  # connection after the remote already accepted it looks identical locally. Verify
+  # against the remote before declaring failure, so a landed push is never reported as
+  # PUSH FAILED (which would prompt a needless, racy retry against a shared branch).
+  git -C "$MAIN" fetch origin --quiet
+  if ! git -C "$MAIN" merge-base --is-ancestor "$SHA" origin/main; then
+    echo "PUSH FAILED"; exit 4
+  fi
+  say "push exited nonzero but $GSHORT is already an ancestor of origin/main -- it landed, continuing"
+fi
 git -C "$MAIN" fetch origin --quiet
 if git -C "$MAIN" merge-base --is-ancestor "$SHA" origin/main; then
   MERGE="$(git -C "$WT" rev-parse --short HEAD)"
