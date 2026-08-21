@@ -556,13 +556,60 @@ export function resolveTaskTarget(
   return { session, host }
 }
 
+type FireOutcome = 'fired' | 'busy' | 'missing' | 'starting' | 'error' | 'mcp-missing' | 'first-run'
+
+/**
+ * Card e9d3cd12: ONE task must never end the tick.
+ *
+ * The PUBLIC name is the guarded one and the raw body is attemptFireTaskUnguarded, mirroring
+ * agent-process.ts's startAgentProcess / startAgentProcessUnlocked pair. A caller that reaches for
+ * the obvious name gets the protection; forgetting the wrapper is not a thing that can happen.
+ *
+ * Every caller below loops over tasks or agents, and an uncaught rejection from any of them aborts
+ * the whole loop -- so everything ordered AFTER the failure silently does not fire, and
+ * `lastCheckMs` never advances. That was reachable the moment card ec26c2f1 gave the lifecycle lock
+ * a wait budget (a wedged agent now REJECTS rather than hanging), but the shape is older than that
+ * one error type and is not specific to it: this backstop is about the loop, not about
+ * LifecycleOpTimeoutError.
+ *
+ * It is deliberately the SECOND line of defence. A failure whose meaning is known is mapped where it
+ * is known -- a lifecycle timeout becomes 'missing' inside attemptFireTaskUnguarded, next to the
+ * existing auto-start-failed branch it is indistinguishable from. Anything reaching here is by
+ * definition unexpected, so it becomes the generic 'error' the callers already handle (keep the
+ * retry row, alert when due) and the tick moves on to the next task.
+ *
+ * MEASURED, because a backstop that catches nothing is worse than none (it reads as protection).
+ * attemptFireTaskUnguarded already wraps its own body in try/catch -> 'error', so everything after
+ * that try opens is covered. What is NOT covered is the awaits BEFORE it: startAgentProcess (handled
+ * with a precise mapping inside it), isSessionReadyForPrompt, and checkTaskMcpRequirements. Those
+ * three are the reachable gap this wrapper exists for; the tests drive one of them directly rather
+ * than an in-body throw, which the pre-existing catch would swallow and make the test vacuous.
+ */
 async function attemptFireTask(
   task: ScheduledTask,
   agentName: string,
   now: number,
   preCheckPrefix?: string,
   lateCatchUpMs?: number,
-): Promise<'fired' | 'busy' | 'missing' | 'starting' | 'error' | 'mcp-missing' | 'first-run'> {
+): Promise<FireOutcome> {
+  try {
+    return await attemptFireTaskUnguarded(task, agentName, now, preCheckPrefix, lateCatchUpMs)
+  } catch (err) {
+    logger.error(
+      { task: task.name, agent: agentName, err },
+      'schedule-runner: task attempt threw -- treating as error and continuing with the next task, so one agent cannot stop the tick',
+    )
+    return 'error'
+  }
+}
+
+async function attemptFireTaskUnguarded(
+  task: ScheduledTask,
+  agentName: string,
+  now: number,
+  preCheckPrefix?: string,
+  lateCatchUpMs?: number,
+): Promise<FireOutcome> {
   const { session, host } = resolveTaskTarget(task, agentName)
 
   if (!sessionExistsOnHost(host, session)) {
@@ -575,7 +622,26 @@ async function attemptFireTask(
     // sends once Claude has booted (isSessionReadyForPrompt). host-aware:
     // startAgentProcess is itself remote-aware and launches over ssh when the
     // target agent is remote, so a missing remote session is auto-started too.
-    const start = await startAgentProcess(agentName)
+    // Card e9d3cd12. startAgentProcess can now REJECT as well as resolve {ok:false}: card ec26c2f1
+    // gave withLifecycleLock a wait budget, so a wedged agent produces a LifecycleOpTimeoutError
+    // instead of hanging forever. That was the right trade, but it moved the failure onto a channel
+    // this call never watched -- and an uncaught rejection here ends the whole tick, so every task
+    // ordered AFTER a stuck agent silently stops firing.
+    //
+    // The mapping is not a guess: "we could not get the session up" is exactly what the !start.ok
+    // branch below already calls 'missing', and the retry row + operator alert it drives are what a
+    // wedged agent should produce. Caught here rather than at the call sites because THIS is where
+    // that meaning is known; the call sites keep a separate backstop for anything else.
+    let start: { ok: boolean; error?: string }
+    try {
+      start = await startAgentProcess(agentName)
+    } catch (err) {
+      logger.warn(
+        { task: task.name, agent: agentName, session, err },
+        'Schedule target session missing and the auto-start did not settle within its budget -- treating as missing (the per-agent lifecycle lock is still held, so nothing was started twice)',
+      )
+      return 'missing'
+    }
     if (!start.ok) {
       // "already running" means it raced up between the check and here -- treat
       // as busy so the normal retry path delivers. Any other failure (config
