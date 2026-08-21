@@ -211,8 +211,33 @@ export async function maybeWakeSubAgentsForTelegram(now: number): Promise<void> 
         maxDebounceMs: SUB_TELEGRAM_WAKE_MAX_DEBOUNCE_MS,
       })) continue
 
-      sendPromptToSession(session, SUB_TELEGRAM_WAKE_NUDGE, host)
+      // Card df193354. Two separate defects lived on these three lines.
+      //
+      // (1) The call was not awaited, so a rejection escaped the try/catch right below and surfaced
+      // only at the global unhandledRejection handler -- with no agent or session in the message.
+      // ESLint's no-floating-promises flags it now; the fix is the await, not a `void`.
+      //
+      // (2) sendPromptToSession does not merely resolve or throw: it returns 'sent',
+      // 'aborted-busy' or 'skipped-locked'. Bumping `attempts` unconditionally therefore spent a
+      // waiting sub-agent's wake BUDGET on nudges that never reached its pane, which is the
+      // starvation the card describes -- await alone would not have fixed it.
+      //
+      // The two pieces of state answer different questions, so they move at different times:
+      //   lastWakeAt -- "when did we last TRY", the debounce/backoff input. Stamped BEFORE the send,
+      //     so a send that throws or is refused still rate-limits the next sweep instead of letting
+      //     a permanently locked pane be probed on every tick.
+      //   attempts   -- "how many nudges did this agent actually RECEIVE and ignore", the give-up
+      //     budget. Only a confirmed 'sent' is evidence of that.
+      // Accepted cost, stated rather than hidden: a pane that is always busy or locked is now
+      // retried indefinitely (bounded by the debounce) instead of giving up after MAX_ATTEMPTS.
+      // That is the direction the card asks for -- a real waiting agent must not be starved by
+      // nudges that were never delivered -- and the pre-gates above still keep it cheap.
       state.lastWakeAt = now
+      const outcome = await sendPromptToSession(session, SUB_TELEGRAM_WAKE_NUDGE, host)
+      if (outcome !== 'sent') {
+        logger.info({ agent: name, session, outcome }, 'telegram-inbox-wake: nudge not delivered, budget not consumed')
+        continue
+      }
       state.attempts += 1
       logger.info({ agent: name, session, ageMs: Math.round(inboxAgeMs), attempt: state.attempts }, 'telegram-inbox-wake: nudged idle sub-agent (pending inbox)')
     } catch (err) {
