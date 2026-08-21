@@ -207,20 +207,9 @@ export function withLifecycleLock<T>(
   // Rejecting here changes NOTHING about the mutual exclusion -- the wedged entry stays in the map,
   // exactly as card ec26c2f1 decided, so no second tmux/ssh call can start on this agent. The only
   // thing that changes is how long a caller is made to wait to be told the same thing.
-  if (running !== undefined) {
-    const elapsed = Date.now() - running.startedAt
-    const remaining = LIFECYCLE_OP_TIMEOUT_MS - elapsed
-    if (remaining <= 0) {
-      logger.warn(
-        { agent: name, kind, elapsedMs: elapsed, runningKind: running.kind },
-        'agent-process: lifecycle request refused immediately -- an operation on this agent is already past its budget (the lock is still held; nothing was started)',
-      )
-      return Promise.reject(new LifecycleOpTimeoutError(name, kind, elapsed))
-    }
-    if (running.kind === kind && running.optsKey === optsKey) {
-      // A joiner waits out the REMAINder of the operation's budget, not a new full one.
-      return withWaitTimeout(running.promise as Promise<T>, name, kind, remaining)
-    }
+  if (running !== undefined && running.kind === kind && running.optsKey === optsKey) {
+    // MUTATION (card 185c0b63 QA negative control): back to a FRESH full budget per joiner.
+    return withWaitTimeout(running.promise as Promise<T>, name, kind)
   }
 
   // COALESCE only an IDENTICAL request. Two callers who asked for the same thing can share one
