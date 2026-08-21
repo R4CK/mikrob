@@ -41,6 +41,24 @@ die() { echo "REFUSED: $2" >&2; exit "$1"; }
 # shellcheck source=./cleancore-tsc-lib.sh
 . "$(dirname "$0")/cleancore-tsc-lib.sh"
 
+# Pick the real branch out of `git branch -a --contains` output.
+#
+# WHY THIS IS NOT JUST `head -1`. That listing puts the CURRENT checkout first, and $MAIN lives in
+# detached HEAD permanently -- gates check it out to whatever sha they are reading. So whenever the
+# main clone is parked ON the gated sha, which is the normal state while a gate is reviewing it, the
+# first line is the pseudo-entry `* (HEAD detached at <sha>)`. It is not a branch, `rev-parse` on it
+# yields nothing, and the script then refused with the nonsense message "tip is  but the GATED sha
+# is <sha>" -- i.e. it rejected precisely the branches that were ready to land. Measured on card
+# 1e819a83. A branch name can never begin with `(` (git refuses to create one), so dropping lines
+# that do is exact, not a heuristic.
+pick_branch() {
+  sed 's/^[+*[:space:]]*//' \
+    | grep -v '^(' \
+    | grep -v '^remotes/origin/main$' \
+    | grep -v '^main$' \
+    | head -1
+}
+
 if [ "${1:-}" = "--selftest" ]; then
   fail=0; n=0
   t() { n=$((n+1)); [ "$2" = "$3" ] || { echo "  FAIL $1: got [$2] want [$3]"; fail=1; }; }
@@ -65,6 +83,18 @@ if [ "${1:-}" = "--selftest" ]; then
   t "a FIXED error does not read as new" \
     "$(comm -13 <(printf 'a: error TS1: x\nb: error TS2: y\n') <(printf 'a: error TS1: x\n') | wc -l)" \
     "0"
+  t "pick_branch skips the detached-HEAD pseudo-entry (card 1e819a83)" \
+    "$(printf '* (HEAD detached at 1a36a6d7)\n+ agent/backend/work\n' | pick_branch)" \
+    "agent/backend/work"
+  t "pick_branch still ignores main and origin/main" \
+    "$(printf '  main\n  remotes/origin/main\n+ agent/backend/work\n' | pick_branch)" \
+    "agent/backend/work"
+  t "pick_branch takes the checked-out branch when there IS one" \
+    "$(printf '* agent/backend/work\n  main\n' | pick_branch)" \
+    "agent/backend/work"
+  t "pick_branch yields nothing when only main contains the sha" \
+    "$(printf '* (HEAD detached at deadbeef)\n  main\n  remotes/origin/main\n' | pick_branch)" \
+    ""
   echo "selftest: $n case(s), $([ $fail -eq 0 ] && echo PASS || echo FAIL)"
   exit $fail
 fi
@@ -98,8 +128,7 @@ if git -C "$MAIN" merge-base --is-ancestor "$SHA" origin/main 2>/dev/null; then
 fi
 
 # The gated sha must BE the branch tip. If the branch moved on, the extra commits were never gated.
-BRANCH="$(git -C "$MAIN" branch -a --contains "$SHA" 2>/dev/null | sed 's/^[+* ]*//' \
-          | grep -v '^remotes/origin/main$' | grep -v '^main$' | head -1)"
+BRANCH="$(git -C "$MAIN" branch -a --contains "$SHA" 2>/dev/null | pick_branch)"
 [ -n "$BRANCH" ] || die 3 "no branch contains $SHA"
 TIP="$(git -C "$MAIN" rev-parse --short "$BRANCH" 2>/dev/null)"
 GSHORT="$(git -C "$MAIN" rev-parse --short "$SHA")"
