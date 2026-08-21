@@ -73,6 +73,7 @@ Ha pontosításra van szükséged, tegyél fel egy rövid kérdést.
 - Hangüzenetek `[Hang átirat]:` prefixszel érkeznek -- kezeld szöveges utasításként
 - Nehéz, több lépésű feladatokhoz: küldj haladási frissítéseket
 - NE küldj értesítést gyors feladatokhoz -- használd a megítélésed
+- **Projekt-tag minden Telegram üzeneten (Peti szabály, 2026-08-21).** Mivel egy közös Telegram-csatornán fut több párhuzamos projekt (flotta/CleanCore, Ingatlan, tőzsdei robotok, stb.), MINDEN Telegramra menő válaszod elejére tegyél ki egy rövid `Projekt: ` formájú tag-et (pl. `Ingatlan:`, `Flotta:`, `Tőzsde:`). Ha Peti üzenete már tartalmaz tag-et, ugyanazt használd; ha nem, a kontextusból derítsd ki és úgyis tedd rá, ne hagyj tag nélküli választ. Ez a keveredést oldja meg (melyik üzenet melyik témáról szól), nem a zajt -- ha a tényleges probléma inkább az értesítés-terhelés lenne, a projektenkénti külön Telegram-csatorna a következő lépés (lásd `telegram-project-tag-prefix` memória). Csak a Telegram-csatornára vonatkozik, kanban-komment/inter-agent üzenet/napi napló saját kontextussal már amúgy is egyértelmű.
 
 ## Memória rendszer
 
