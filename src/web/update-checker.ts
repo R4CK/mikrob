@@ -342,7 +342,7 @@ export async function refreshUpdateStatus(): Promise<AggregateUpdateStatus> {
 // local HEAD. Lets the dashboard show a "new version available" badge
 // without anyone having to SSH in and run update.sh.
 export function startUpdateChecker(): NodeJS.Timeout {
-  // First check shortly after startup; then every 15 minutes.
+  // First check shortly after startup; then every 6 hours (Peti 2026-08-21, was 15 minutes).
   setTimeout(() => { refreshUpdateStatus().catch(() => {}) }, 10_000)
-  return setInterval(() => { refreshUpdateStatus().catch(() => {}) }, 15 * 60_000)
+  return setInterval(() => { refreshUpdateStatus().catch(() => {}) }, 6 * 60 * 60_000)
 }
