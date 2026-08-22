@@ -286,6 +286,27 @@ const ACKNOWLEDGED_CONFLICTS: Readonly<Record<string, string>> = {
   // test block; taking only upstream's would drop the fork's egress-gate assertions.
   'src/__tests__/hook-command-quoting.test.ts':
     'union the import (fork EGRESS_GATE_MATCHER + upstream EMAIL_GATE_MATCHER/emailGateMatcherStale -- different gates) and keep both sides test blocks; agent-scaffold.ts merges cleanly and defines all three',
+  // -- Card 0ea89716: upstream 56af7a69 (the vitest+typecheck workflow, MARVCI822) ---------------
+  // ONE hunk, and the two sides are SEMANTICALLY THE SAME assertion -- measured in a throwaway
+  // worktree on the real merge, not inferred from the commit titles. Both accept exactly TRAP:5 or
+  // TRAP:6 (upstream's regex is anchored), and both sides wrote it for the SAME reason: WHICH line
+  // $LINENO blames when the ERR trap fires is bash-version dependent, so pinning one number makes
+  // the test a bash-release detector rather than an abort-really-happened guard.
+  //
+  // The fork got there first (card 3aa02ac6, commit 7b90f485), upstream independently on its first
+  // ubuntu CI run. So there is nothing to trade off in the CODE -- only the COMMENTS differ, and
+  // they are complementary: the fork's names the measured <=5.2 (blames the enclosing `fi`) vs 5.3
+  // (blames the failing command) split, upstream's names bash 3.2 / macOS, which is where the
+  // original installer incident happened and which the fork comment does not record.
+  //
+  // Resolution: keep the FORK's assertion -- identical behaviour, and `toContain` on the literal
+  // array prints the expected set on failure, where a regex prints only the pattern -- and fold
+  // upstream's bash 3.2 / macOS provenance into the fork's comment. Neither comment wholesale.
+  //
+  // Deliberately NOT GUARDED_FILES: this is not a fork-owned web file, and upstream is entitled to
+  // keep changing it. The rule for resolving it is what needed recording, not a ban on conflicting.
+  'src/__tests__/installer-start-and-fallback.test.ts':
+    'keep the fork assertion (expect([TRAP:5, TRAP:6]).toContain -- identical behaviour to upstream anchored regex, better failure output) and fold upstream bash 3.2 / macOS provenance into the fork comment; neither comment taken wholesale',
 }
 
 function git(args: string[], cwd: string): string {
