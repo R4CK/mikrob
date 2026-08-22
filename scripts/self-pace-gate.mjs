@@ -97,7 +97,24 @@ const SCHED_BOUNDARY = '[;&|(`]'
 // letters right after "at " false-denied, e.g. "at declared trivial difficulty" (declared ->
 // "dec"). Same bug class as the documented >=80% substring collision above. `\b` added after
 // both alternations, matching the convention `next\b` already uses in this same lookahead.
-const AT_INVOCATION = String.raw`(?=\s*$|\s+-|\s*<|\s+(?:now|noon|midnight|teatime|today|tomorrow|next\b|\+\s*\d|\d{1,2}:\d{2}|\d{3,4}\b|\d{1,2}\s*(?:am|pm)\b|\d{1,2}[./]\d{1,2}|(?:mon|tue|wed|thu|fri|sat|sun)\b|(?:jan|feb|mar|apr|may|jun|jul|aug|sep|oct|nov|dec)\b))`
+// QUOTE TOLERANCE, and the direction principle behind it (card 4fa31f31, Cybersec's live
+// finding). The shell removes quotes before it decides what the command word and its arguments
+// are, so `at "now + 5 minutes"` and `launchctl "submit" -l self` are the SAME invocations as the
+// unquoted forms. The two guards below are WHITELIST-shaped -- they positively enumerate what may
+// follow the binary -- and a quote is not in the enumeration, so the whole match failed and the
+// call was ALLOWED. That is the direction that makes a whitelist guard dangerous here: when the
+// enumeration is incomplete the branch PASSES THROUGH instead of denying.
+//
+// The other two scheduler binaries were measured UNAFFECTED by the same input, and the reason is
+// exactly this direction: SCHED_BARE_SHAPE below is a NEGATIVE lookahead ("deny unless an English
+// word follows"), so an unforeseen character such as a quote does not break it -- it still denies.
+// DIRECTION PRINCIPLE for any binary added here later: prefer the negative shape. If a positive
+// enumeration is genuinely needed, every character the shell strips before exec (quote, backslash,
+// $IFS) has to be tolerated explicitly, or it becomes a bypass.
+//
+// `["']*` rather than `["']?`: `at"" now` is also a working invocation, and a quantifier that
+// only allows one quote is the same incomplete-enumeration mistake one level down.
+const AT_INVOCATION = String.raw`(?=["']*\s*$|["']*\s+["']*-|["']*\s*<|["']*\s+["']*(?:now|noon|midnight|teatime|today|tomorrow|next\b|\+\s*\d|\d{1,2}:\d{2}|\d{3,4}\b|\d{1,2}\s*(?:am|pm)\b|\d{1,2}[./]\d{1,2}|(?:mon|tue|wed|thu|fri|sat|sun)\b|(?:jan|feb|mar|apr|may|jun|jul|aug|sep|oct|nov|dec)\b))`
 // `launchctl` needed the SAME narrowing, for a different reason than at/batch, and
 // the comment above ("not English words, so prose cannot collide") was measured
 // wrong on 2026-07-26 (found by Hacker). It is not an English word -- but the
@@ -115,14 +132,22 @@ const AT_INVOCATION = String.raw`(?=\s*$|\s+-|\s*<|\s+(?:now|noon|midnight|teati
 // label (`com.jarvis.channels`) and a path both fail that and pass through as
 // prose. End-of-segment and a flag stay DENIED -- a bare `launchctl` is
 // interactive, still a real vector.
-const LAUNCHCTL_SUBCOMMAND = String.raw`(?=\s*$|\s+-|\s+[a-z][a-z-]*(?:\s|$))`
+// Quote-tolerant on BOTH sides, and the two sides are needed for different reasons (card
+// 4fa31f31, Cybersec measured the asymmetry): a LEADING quote covers `launchctl "submit"`,
+// where the quote sits between the binary and the subcommand, and also `"launchctl" submit`,
+// where it sits right after the binary. A TRAILING one is needed because this alternative --
+// unlike the at(1) timespec list -- closes on a word BOUNDARY `(?:\s|$)`, and a closing quote
+// is neither. Fixing only the leading side leaves every quoted-subcommand form still passing.
+const LAUNCHCTL_SUBCOMMAND = String.raw`(?=["']*\s*$|["']*\s+["']*-|["']*\s+["']*[a-z][a-z-]*["']*(?:\s|$))`
 const SCHEDULER_RX = new RegExp(
   String.raw`(^|${SCHED_BOUNDARY}\s*)${SCHED_PREFIX}(?:(?:crontab|systemd-run)\b(?!-)(?!\s*=)|launchctl\b(?!-)(?!\s*=)${LAUNCHCTL_SUBCOMMAND}|(?:batch|at)\b(?!-)(?!\s*=)${AT_INVOCATION})`,
   'i',
 )
 // ...but allow a pure READ-listing of one's own schedule (parity with the store /
 // schedule-API read exemptions): crontab -l, launchctl list/print, atq.
-const SCHEDULER_READ_RX = new RegExp(String.raw`(^|${SCHED_BOUNDARY}\s*)${SCHED_PREFIX}(crontab\s+-l\b|launchctl\s+(?:list|print|dumpstate|blame|examine)\b|atq\b)`, 'i')
+// Quote-tolerant for the same reason the write guards are (card 4fa31f31): tightening the write
+// side alone would turn a quoted `launchctl "list"` -- a pure read -- into a false deny.
+const SCHEDULER_READ_RX = new RegExp(String.raw`(^|${SCHED_BOUNDARY}\s*)${SCHED_PREFIX}(crontab["']*\s+["']*-l\b|launchctl["']*\s+["']*(?:list|print|dumpstate|blame|examine)\b|atq\b)`, 'i')
 
 // UNANCHORED companion to SCHEDULER_RX (card 46c4ad4a, Cybered's finding on 4638c14c): the
 // anchored check above only sees segments AFTER maskInertLiterals blanks every heredoc body
@@ -174,14 +199,14 @@ const SCHEDULER_READ_RX = new RegExp(String.raw`(^|${SCHED_BOUNDARY}\s*)${SCHED_
 // This is the THIRD member of the same collision class in this file: ">= 80%" and the
 // "declared trivial difficulty" case are both already documented above. Each previous fix narrowed
 // WHAT may follow the word; this one removes the branch where NOTHING follows it.
-const AT_INVOCATION_UNANCHORED = String.raw`(?=\s+-|\s*<|\s+(?:now|noon|midnight|teatime|today|tomorrow|next\b|\+\s*\d|\d{1,2}:\d{2}|\d{3,4}\b|\d{1,2}\s*(?:am|pm)\b|\d{1,2}[./]\d{1,2}|(?:mon|tue|wed|thu|fri|sat|sun)\b|(?:jan|feb|mar|apr|may|jun|jul|aug|sep|oct|nov|dec)\b))`
+const AT_INVOCATION_UNANCHORED = String.raw`(?=["']*\s+["']*-|["']*\s*<|["']*\s+["']*(?:now|noon|midnight|teatime|today|tomorrow|next\b|\+\s*\d|\d{1,2}:\d{2}|\d{3,4}\b|\d{1,2}\s*(?:am|pm)\b|\d{1,2}[./]\d{1,2}|(?:mon|tue|wed|thu|fri|sat|sun)\b|(?:jan|feb|mar|apr|may|jun|jul|aug|sep|oct|nov|dec)\b))`
 const SCHED_BARE_SHAPE = String.raw`(?!\s+[a-z])`
 const UNANCHORED_SCHEDULER_RX = new RegExp(
   String.raw`\b(?:crontab|systemd-run)\b(?!-)(?!\s*=)${SCHED_BARE_SHAPE}|\blaunchctl\b(?!-)(?!\s*=)${LAUNCHCTL_SUBCOMMAND}|\bbatch\b(?!-)(?!\s*=)${AT_INVOCATION}|\bat\b(?!-)(?!\s*=)${AT_INVOCATION_UNANCHORED}`,
   'i',
 )
 const UNANCHORED_SCHEDULER_READ_RX = new RegExp(
-  String.raw`crontab\s+-l\b|launchctl\s+(?:list|print|dumpstate|blame|examine)\b|atq\b`,
+  String.raw`crontab["']*\s+["']*-l\b|launchctl["']*\s+["']*(?:list|print|dumpstate|blame|examine)\b|atq\b`,
   'i',
 )
 // Same pattern, global: used to REMOVE the read forms from a line before asking whether anything
