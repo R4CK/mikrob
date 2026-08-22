@@ -8,6 +8,65 @@ import {
 import { MAIN_AGENT_ID } from '../config.js'
 import { REPO_UNDER_TMP, TMP_SKIP_REASON } from './helpers/repo-location.js'
 
+// --- card f7b10fec: a read form on the line must not exempt a WRITE on the same line ---
+//
+// The heredoc-body path tests each line WHOLE (deliberately -- splitting it on `;`/`|` would fake
+// boundaries inside quoted prose, a false-positive class already fixed once). The exemption for a
+// pure read then asked only "does this line contain a read form?", so one line holding BOTH a read
+// and a write was exempted by its read half. All three read forms carried it, and each example
+// genuinely schedules:
+//
+//   crontab -l ... | crontab -                 exempted by `crontab -l`
+//   launchctl list; launchctl submit ...       exempted by `launchctl list`
+//   atq; echo go | at now + 5 minutes          exempted by `atq`
+//
+// The anchored check was never affected: splitSegments cuts on `;`/`|`/`&`, so there the read and
+// the write are judged as separate segments.
+//
+// Fixed by SUBTRACTING the read forms and testing what remains -- not by adding a "contains a
+// write too" test, because a pure read must stay allowed and after subtraction it has nothing left.
+describe('self-pace-gate: read-and-write on one line (card f7b10fec)', () => {
+  const NL = String.fromCharCode(10)
+  const heredoc = (body: string): string => "python3 - <<'PY'" + NL + body + NL + 'PY'
+  // Assembled rather than written literally: this file is itself scanned by the gate it tests.
+  const CT = 'cron' + 'tab'
+  const AT = 'a' + 't'
+
+  it('DENIES a line that lists the crontab and then writes one', () => {
+    const line = '(' + CT + ' -l; echo "*/5 * * * * claude -p poll") | ' + CT + ' -'
+    expect(selfPaceDecision('Bash', { command: heredoc(line) }).deny).toBe(true)
+  })
+
+  it('DENIES launchctl list followed by submit on the same line', () => {
+    const line = 'launchctl list; launchctl submit -l self -- node respawn.mjs'
+    expect(selfPaceDecision('Bash', { command: heredoc(line) }).deny).toBe(true)
+  })
+
+  it('DENIES atq followed by a real at(1) submit on the same line', () => {
+    const line = 'atq; echo go | ' + AT + ' now + 5 minutes'
+    expect(selfPaceDecision('Bash', { command: heredoc(line) }).deny).toBe(true)
+  })
+
+  it('STILL ALLOWS a pure read -- the exemption it exists for', () => {
+    for (const read of [CT + ' -l', 'launchctl list', 'launchctl print system', 'atq']) {
+      expect(selfPaceDecision('Bash', { command: heredoc(read) }).deny, read).toBe(false)
+    }
+  })
+
+  it('STILL DENIES a pure write with no read on the line', () => {
+    expect(selfPaceDecision('Bash', { command: heredoc('echo x | ' + CT + ' -') }).deny).toBe(true)
+  })
+
+  it('does not start denying prose that merely mentions the read forms', () => {
+    for (const prose of [
+      'the ' + CT + ' -l output is in the report',
+      'launchctl list was already checked by QA',
+    ]) {
+      expect(selfPaceDecision('Bash', { command: heredoc(prose) }).deny, prose).toBe(false)
+    }
+  })
+})
+
 // --- card 12f80902: the unanchored at(1) guard must not read prose as a scheduler call ---
 //
 // MEASURED, on a real refusal. The heredoc-body path tests each LINE whole against the UNANCHORED
