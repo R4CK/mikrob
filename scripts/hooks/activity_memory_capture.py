@@ -92,7 +92,11 @@ _SECRET_PATTERNS = [
     # activity-memory-capture.selftest.py is what makes that impossible to repeat: the original
     # change shipped with no test asserting the redaction it added, so nothing noticed it was
     # unreachable.
-    re.compile(r'(?i)((?:postgres(?:ql)?|mysql|mongodb(?:\+srv)?|redis)://[^:@\s]+:)([^@\s]{6,})(?=@)'),
+    # NO LENGTH FLOOR, unlike the heuristic patterns above (Cybersec, card 5472cfa9). Those guess
+    # ("a random 6+ char run is probably a secret"), so a floor is a sensible noise filter there.
+    # This one is POSITIONAL: whatever sits between `scheme://user:` and `@` is a password by
+    # definition, however short. `{6,}` made a 5-character password pass through in full.
+    re.compile(r'(?i)((?:postgres(?:ql)?|mysql|mongodb(?:\+srv)?|redis)://[^:@\s]+:)([^@\s]+)(?=@)'),
 ]
 
 
@@ -223,8 +227,22 @@ def _append_activity_log(agent_id: str, tool_name: str, summary: str) -> None:
             {'at': int(time.time()), 'tool': tool_name, 'summary': summary},
             ensure_ascii=False,
         )
-        with open(path, 'a', encoding='utf-8') as handle:
-            handle.write(line + '\n')
+        # 0600 EXPLICITLY, not whatever the umask leaves (Cybersec, card 5472cfa9). A plain
+        # open(path,'a') under the usual 0002 umask created this 0664, while its neighbours in
+        # store/ -- .dashboard-token, claudeclaw.db -- are 0600. This file is the destination the
+        # redactor protects, so it should not be the most readable thing in the directory.
+        # os.open applies the mode only when it CREATES the file, so an existing one is chmod-ed
+        # separately; both are best-effort and neither may block the agent.
+        fd = os.open(path, os.O_WRONLY | os.O_APPEND | os.O_CREAT, 0o600)
+        try:
+            os.write(fd, (line + '\n').encode('utf-8'))
+        finally:
+            os.close(fd)
+        try:
+            if (os.stat(path).st_mode & 0o777) != 0o600:
+                os.chmod(path, 0o600)
+        except OSError:
+            pass
     except Exception:
         pass  # a trace that cannot be written must never block the agent
 
@@ -259,9 +277,22 @@ def _command_verb(command: str) -> str:
 
 
 def _build_summary(tool_name: str, tool_input: dict, tool_response: dict) -> str:
-    """Build a short, redacted, human-readable summary."""
+    """Build a short, redacted, human-readable summary.
+
+    REDACTION HAPPENS FIRST, BEFORE ANY TRUNCATION -- and that ordering is the whole point
+    (Cybersec NO-GO, card 5472cfa9). The DB-URI pattern closes with a lookahead, `(...)(?=@)`, so
+    it only fires when the `@` is still present. Truncating first can cut BETWEEN the password and
+    its `@`, and then the pattern cannot match text that is, by then, a bare password at the end of
+    the line. Measured on the pre-fix code with a 14-character password: prefixes of 43..55 bytes
+    leaked 14 down to 2 characters of it, and at 43 the password survived IN FULL.
+
+    A truncation that runs before a redactor does not shorten the secret -- it removes the context
+    the redactor recognises it by. So every branch below redacts its raw input first and only then
+    cuts. main() redacts once more afterwards, which is a harmless second pass on already-redacted
+    text and keeps the fail-closed guarantee if a branch is ever added here without one.
+    """
     if tool_name in ('Bash', 'bash'):
-        command = str(tool_input.get('command', ''))
+        command = _redact(str(tool_input.get('command', '')))
         verb = _command_verb(command)
         # For git commit: grab the SHA from the response if available
         response_text = ''
@@ -275,13 +306,13 @@ def _build_summary(tool_name: str, tool_input: dict, tool_response: dict) -> str
         sha_note = f" -> {sha_match.group(1)[:12]}" if sha_match and 'git commit' in verb.lower() else ''
         return f"Bash: {verb}{sha_note}"
     if tool_name in ('Write', 'Edit', 'NotebookEdit'):
-        path = tool_input.get('file_path', tool_input.get('path', '?'))
-        return f"{tool_name}: {str(path)[:100]}"
+        path = _redact(str(tool_input.get('file_path', tool_input.get('path', '?'))))
+        return f"{tool_name}: {path[:100]}"
     if tool_name == 'Agent':
-        desc = str(tool_input.get('description', tool_input.get('prompt', '?')))[:80]
+        desc = _redact(str(tool_input.get('description', tool_input.get('prompt', '?'))))[:80]
         return f"Agent spawned: {desc}"
     if tool_name == 'Workflow':
-        desc = str(tool_input.get('description', tool_input.get('name', '?')))[:80]
+        desc = _redact(str(tool_input.get('description', tool_input.get('name', '?'))))[:80]
         return f"Workflow: {desc}"
     return f"{tool_name}: (no summary)"
 
