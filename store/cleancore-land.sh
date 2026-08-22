@@ -41,6 +41,44 @@ die() { echo "REFUSED: $2" >&2; exit "$1"; }
 # shellcheck source=./cleancore-tsc-lib.sh
 . "$(dirname "$0")/cleancore-tsc-lib.sh"
 
+# --- WHO ran this landing (card 7fe98031) -------------------------------------------------------
+#
+# THE PROBLEM THIS SOLVES. Every merge this script makes is authored as `backend <backend@marveen
+# .local>` -- a hardcoded identity on the commit line below, the same for whoever runs it. That is
+# fine for normal operation (the card assignee and the Gate-SHA line already say who owns the work),
+# but it actively MISLEADS a forensic question. It happened twice on 2026-08-21: MikroB asked "did
+# you run this landing, or someone else?", and backend suspected a third actor after finding an
+# unexpected working tree -- both investigations reached for the commit author, and the author would
+# have pointed at `backend`, who had done neither. A field that answers the wrong question
+# confidently is worse than an absent one.
+#
+# DERIVED, NOT DECLARED, on purpose: asking the caller to pass a name means the name is missing on
+# exactly the runs nobody thought about. The branch being landed is checked out in its owner's
+# worktree, and `git worktree list` maps branch -> path -> agent, so the answer is already in the
+# repo. LANDED_BY overrides it for the cases the mapping cannot see (a landing driven from a
+# throwaway tree, or a human).
+#
+# REQUIRES the path to sit under CLEANCORE_WORKTREES: the same clone also holds ~95 older per-card
+# worktrees under /home/neon/cc-*, whose basenames ("cc-appdburl") are not agent names, plus
+# `landing-*` scratch trees that are not agents either. Anything else answers `unknown` -- which is
+# the honest answer, and is printed rather than omitted so a reader can tell "not detectable" apart
+# from "this script is too old to record it".
+AGENT_WORKTREE_ROOT="${CLEANCORE_WORKTREES:-/mnt/h/LM_Studio_Workdir/CleanCore-worktrees}"
+
+landed_by_from_worktrees() {
+  local branch="$1" list="$2" root="${3:-$AGENT_WORKTREE_ROOT}" path name
+  path="$(printf '%s\n' "$list" | awk -v b="[$branch]" '$NF == b { $NF=""; $(NF)=""; print $1 }' | head -1)"
+  case "$path" in
+    "$root"/*) name="${path##*/}" ;;
+    *) echo unknown; return ;;
+  esac
+  case "$name" in
+    ''|landing-*|cc-land-*) echo unknown ;;
+    *[!a-z0-9-]*) echo unknown ;;
+    *) echo "$name" ;;
+  esac
+}
+
 # Pick the real branch out of `git branch -a --contains` output.
 #
 # WHY THIS IS NOT JUST `head -1`. That listing puts the CURRENT checkout first, and $MAIN lives in
@@ -83,6 +121,23 @@ if [ "${1:-}" = "--selftest" ]; then
   t "a FIXED error does not read as new" \
     "$(comm -13 <(printf 'a: error TS1: x\nb: error TS2: y\n') <(printf 'a: error TS1: x\n') | wc -l)" \
     "0"
+  # Landed-by derivation (card 7fe98031). The fixture is the real `git worktree list` shape.
+  WL="$(printf '%s\n' \
+    "/mnt/h/LM_Studio_Workdir/CleanCore                    2695a037 (detached HEAD)" \
+    "/home/neon/cc-appdburl                                a0e76a65 [fix/app-database-url-required-2f2a99b6]" \
+    "/mnt/h/LM_Studio_Workdir/CleanCore-worktrees/backend2 0dca79af [feat/platform-company-stepup-e0ef6202]" \
+    "/mnt/h/LM_Studio_Workdir/CleanCore-worktrees/landing-batch5 41e380ea [landing/batch7b]")"
+  R="/mnt/h/LM_Studio_Workdir/CleanCore-worktrees"
+  t "names the agent whose worktree holds the branch" \
+    "$(landed_by_from_worktrees 'feat/platform-company-stepup-e0ef6202' "$WL" "$R")" "backend2"
+  t "an OLD per-card worktree outside the agent root is not an agent" \
+    "$(landed_by_from_worktrees 'fix/app-database-url-required-2f2a99b6' "$WL" "$R")" "unknown"
+  t "a landing scratch tree is not an agent" \
+    "$(landed_by_from_worktrees 'landing/batch7b' "$WL" "$R")" "unknown"
+  t "a branch checked out nowhere is unknown, not empty" \
+    "$(landed_by_from_worktrees 'fix/not-checked-out' "$WL" "$R")" "unknown"
+  t "a branch name that is a PREFIX of another does not match it" \
+    "$(landed_by_from_worktrees 'landing/batch' "$WL" "$R")" "unknown"
   t "pick_branch skips the detached-HEAD pseudo-entry (card 1e819a83)" \
     "$(printf '* (HEAD detached at 1a36a6d7)\n+ agent/backend/work\n' | pick_branch)" \
     "agent/backend/work"
@@ -151,7 +206,9 @@ git -C "$MAIN" worktree add --detach -q "$WT" origin/main || die 3 "could not cr
 cleanup() { git -C "$MAIN" worktree remove --force "$WT" >/dev/null 2>&1; }
 trap cleanup EXIT
 
-MSG="merge: $BRANCH (card $CARD, gate-teljes @ $GSHORT)"
+LANDED_BY="${LANDED_BY:-$(landed_by_from_worktrees "$BRANCH" "$(git -C "$MAIN" worktree list 2>/dev/null)")}"
+say "landed-by: $LANDED_BY"
+MSG="$(printf 'merge: %s (card %s, gate-teljes @ %s)\n\nLanded-by: %s\n' "$BRANCH" "$CARD" "$GSHORT" "$LANDED_BY")"
 # Capture git's own diagnosis instead of discarding it: the first version sent both stdout and
 # stderr to /dev/null and printed a bare "CONFLICTS:" with an EMPTY file list -- which is what a
 # merge that failed for some OTHER reason looks like. The useful half was the part being thrown away.
