@@ -184,6 +184,9 @@ const UNANCHORED_SCHEDULER_READ_RX = new RegExp(
   String.raw`crontab\s+-l\b|launchctl\s+(?:list|print|dumpstate|blame|examine)\b|atq\b`,
   'i',
 )
+// Same pattern, global: used to REMOVE the read forms from a line before asking whether anything
+// schedule-WRITING is left. See the heredoc loop below for why matching is not enough.
+const UNANCHORED_SCHEDULER_READ_RX_G = new RegExp(UNANCHORED_SCHEDULER_READ_RX.source, 'gi')
 
 // The Claude self-schedule store. Blocked for WRITE on any route (a Bash write,
 // or the native Write/Edit/NotebookEdit tool); a read/grep is legit diagnostics.
@@ -620,7 +623,22 @@ export function gateDecision(toolName, toolInput) {
     for (const body of extractHeredocBodies(safeCommand)) {
       for (const line of body.split(/\r?\n/)) {
         const seg = line.trim()
-        if (UNANCHORED_SCHEDULER_RX.test(seg) && !UNANCHORED_SCHEDULER_READ_RX.test(seg)) return { deny: true }
+        // SUBTRACT the read forms, then ask whether a scheduler WRITE is still there (card
+        // f7b10fec). The previous shape asked "does this line contain a read?" and exempted the
+        // whole line if so -- but this loop tests each line WHOLE (deliberately: see the block
+        // comment above), so one line can hold both. Measured on the pre-fix file, all three
+        // read forms carried the same bypass:
+        //   `(crontab -l; echo "* * * * * ...") | crontab -`      -> exempted by `crontab -l`
+        //   `launchctl list; launchctl submit -l self -- ...`      -> exempted by `launchctl list`
+        //   `atq; echo go | at now + 5 minutes`                    -> exempted by `atq`
+        // Each one genuinely schedules, and each one passed. The anchored check is NOT affected:
+        // splitSegments cuts on `;`/`|`/`&`, so there the read and the write land in separate
+        // segments and the write is judged on its own.
+        //
+        // Subtraction, not a "does it also contain a write" test: a pure read must stay allowed,
+        // and after removing the reads a pure read line has nothing left to match.
+        const writeOnly = seg.replace(UNANCHORED_SCHEDULER_READ_RX_G, ' ')
+        if (UNANCHORED_SCHEDULER_RX.test(writeOnly)) return { deny: true }
       }
     }
   }

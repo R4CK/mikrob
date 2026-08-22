@@ -411,3 +411,54 @@ arra, hogy nem tágítottam-e mást is.
   szerintem sürgősebb, mint a fenti kettő).
 - A javítás a worktree-ben van; az ÉLES kapu (`/home/neon/marveen/scripts/`) a telepítés
   frissítéséig a régi marad, tehát a saját hívásaimra addig a régi szabály él.
+
+---
+
+## 2026-08-22 -- f7b10fec -- Egy soron belüli olvasás nem mentesítheti az ugyanott álló írást
+
+**Döntés.** A heredoc-törzs útján a self-pace kapu mostantól KIVONJA a sorból az olvasó alakokat, és
+azt kérdezi, maradt-e ütemező ÍRÁS. Korábban azt kérdezte, "tartalmaz-e a sor olvasó alakot?", és ha
+igen, az EGÉSZ sort mentesítette.
+
+**A megkerülés.** Ez a hurok minden sort EGÉSZBEN tesztel -- szándékosan, mert a `;`/`|` menti
+darabolás hamis határokat vág idézett prózában (egy már egyszer javított hamis-pozitív osztály). Egy
+sor tehát tartalmazhat olvasást ÉS írást is, és az olvasás mentesítette az írást.
+
+**Tágabb, mint amit a kártya leírt.** A kártya a `crontab` esetet nevezte meg (az én saját jelentésem
+alapján). Megmértem MIND A HÁROM olvasó alakot, és mindegyik ugyanezt hordozta -- mindhárom példa
+ténylegesen ütemez:
+
+    (crontab -l; echo "*/5 * * * * ...") | crontab -     a `crontab -l` mentesítette
+    launchctl list; launchctl submit -l self -- ...      a `launchctl list` mentesítette
+    atq; echo go | at now + 5 minutes                    az `atq` mentesítette
+
+A javítás mindhármat lefedi, mert a kivonás a közös mintán működik, nem bináriskénti külön ágon.
+
+**A horgonyzott ellenőrzés SOHA nem volt érintett**, és ezt megmértem, nem feltételeztem: a
+`splitSegments` vág `;`/`|`/`&` mentén, tehát ott az olvasás és az írás külön szegmensbe kerül, és az
+írást önmagában bírálja el. A javítás ezért kizárólag a horgonyzatlan heredoc-ágra kellett.
+
+**Kivonás, nem "tartalmaz-e írást is" teszt.** A tiszta olvasásnak továbbra is át kell mennie -- ez a
+mentesítés létezésének oka --, és kivonás után egy tiszta olvasó sorban nem marad semmi, amire
+illeszkedni lehetne. Egy "van-e benne írás is" feltétel ugyanezt adná, de két mintát kellene
+szinkronban tartani; a kivonás egyet használ.
+
+**Kétirányú negatív kontroll.** (1) Visszaállítva a régi logikát: a három megkerülés-teszt pirosodik.
+(2) Az olvasó-mentesítést teljesen elhagyva (túlkorrekció): a tiszta olvasások és a puszta említést
+tartalmazó próza pirosodik, plusz egy korábbi kártya (46c4ad4a) saját tesztje is. Egy biztonsági
+kontrollnál mindkét irány kell: az alul- és a túlkorrekció is hiba.
+
+**Konfliktus, kimondva.** Ez a kapu engem korlátoz. Ezúttal SZŰKÍTÉS irányba (a kapu szigorúbb lesz),
+tehát a kockázat nem az, hogy magamnak nyitok utat, hanem hogy hamis pozitívot okozok magamnak -- ez
+gyengébb érv, de a gate-verdiktet így is olyantól kérem, aki nem én vagyok.
+- **Egy saját hiba, amit a land-kapu fogott meg, nem én.** A teszt-fájlra lefuttattam egy
+  `prettier --write`-ot. A repo `.prettierignore`-ja KIMONDJA, hogy a fa szándékosan nincs
+  végig-prettier-formázva, és óv attól, hogy valaki "megjavítsa" -- én mégis megtettem egy fájlra.
+  Két következménye lett: (1) a formázó becsomagolta a többsoros importot, amivel a fölötte álló
+  `@ts-expect-error` már nem az import-specifikátorra vonatkozott, tehát a BUILD elhasalt
+  (TS2578 + TS7016); (2) ~84 sornyi, a munkámhoz nem tartozó formázási churn keletkezett, pontosan
+  az, amitől a `.prettierignore` óv. A `marveen-land.sh` visszautasította a landolást, és ez volt a
+  helyes viselkedés. Visszaállítottam a fájlt a develop-ról, és csak a saját blokkomat tettem
+  vissza: a diff most 59 beszúrás, 0 törlés. Tanulság: ebben a repóban a `prettier --write` nem
+  ártalmatlan takarítás, és egy pozícióhoz kötött direktíva-komment (`@ts-expect-error`) mellett
+  még kevésbé az.
