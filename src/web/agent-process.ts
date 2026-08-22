@@ -237,9 +237,7 @@ export function withLifecycleLock<T>(
   // .startedAt). Without this, a caller that alternates kinds -- start, then stop, then start --
   // creates a fresh entry each time and walks the deadline forward indefinitely, which is the same
   // "every caller restarts the clock" defect this card removes from the joiner path.
-  // MUTATION (card 185c0b63 QA negative control 2): a queued entry gets its OWN fresh stamp again,
-  // instead of inheriting the predecessor's.
-  const inheritedStartedAt = Date.now()
+  const inheritedStartedAt = running?.startedAt ?? Date.now()
   const token = Symbol(name)
   const p: Promise<T> = (async () => {
     // The predecessor's failure belongs to ITS caller; it must not become ours.
