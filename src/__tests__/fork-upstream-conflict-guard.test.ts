@@ -82,6 +82,28 @@ const ACKNOWLEDGED_CONFLICTS: Readonly<Record<string, string>> = {
   // file diverges. Resolution: merge both imports onto one line, keep both bindings.
   'src/web/context-restart-gate-runner.ts':
     'merge both added imports onto one line (agentDir from the fork, readAgentClaudeConfigDir from upstream) -- no other conflict in the file',
+  // The SAME one-line import class as the entry above, one file over (measured 2026-08-22 on
+  // upstream/develop 317937dc). Both sides appended a binding to the SAME import from
+  // './web/agent-scaffold.js': the fork's `ensureNpmProtectGuard`, upstream's
+  // `ensureSkillsPathTrapSection`. Nothing else in the 400-line file diverges, and neither name
+  // exists on the other side, so there is nothing to weigh. Resolution: keep both bindings on one
+  // line. Taking either side wholesale silently drops a guard or a warning nobody would miss until
+  // it failed to appear.
+  'src/web.ts':
+    'merge both added imports onto one line (ensureNpmProtectGuard from the fork, ensureSkillsPathTrapSection from upstream) -- no other conflict in the file',
+  // The call-site half of the same upstream change, and the same INDEPENDENT-ADDITIVE class as
+  // src/db.ts below rather than a disagreement (measured 2026-08-22). Two hunks, both caused by the
+  // two sides adding a DIFFERENT CLAUDE.md section-writer at the same insertion point, each with
+  // its own BEGIN/END markers and its own regex: the fork's `ensureLocalFirstSection` (the
+  // local-LLM-first standing reminder, card 3828a2b6) and upstream's `ensureSkillsPathTrapSection`
+  // (the `.claude-config/skills` symlink trap, SKILLUTCSAPDA822). They follow the same five-rule
+  // idempotency contract, write disjoint marker pairs, and neither reads or overwrites what the
+  // other writes -- both blocks can coexist in one CLAUDE.md, which is what an agent should get.
+  // Resolution: keep BOTH functions, either order -- union, not a pick -- and add both to the
+  // startAgentProcess() call chain. The second hunk is only the two functions' shared tail
+  // (read/replace-or-append/write); keeping both bodies gives each its own copy of it.
+  'src/web/agent-scaffold.ts':
+    'keep BOTH section-writers -- the fork ensureLocalFirstSection and the upstream ensureSkillsPathTrapSection -- and call both; neither side taken wholesale',
   // A single additive hunk (measured 2026-08-16, card 88505fb5), not a behavioural disagreement:
   // both sides add an INDEPENDENT schema migration/trigger at the same insertion point inside
   // ensureSchema(). Fork: the timestamp-integrity triggers (epoch validation + repair on
