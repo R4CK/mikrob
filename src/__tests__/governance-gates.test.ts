@@ -1,6 +1,6 @@
 import { describe, it, expect } from 'vitest'
 // @ts-expect-error -- plain .mjs hook script, no types
-import { gateDecision as selfPaceDecision, stripDataPayloads, stripGitCommitMessages, stripHeredocDataPayloads } from '../../scripts/self-pace-gate.mjs'
+import { gateDecision as selfPaceDecision, pairedSegments, stripDataPayloads, stripGitCommitMessages, stripHeredocDataPayloads } from '../../scripts/self-pace-gate.mjs'
 import {
   agentGetsGovernanceGates,
   injectSelfPaceGate,
@@ -152,11 +152,13 @@ describe('self-pace-gate: prose ending in the at(1) word (card 12f80902)', () =>
 // UNANCHORED (heredoc-body) path, which tests raw text and therefore sees the quotes. NOT
 // reproducible: the anchored `at "now + 5 minutes"` the card also names -- maskInertLiterals blanks
 // a quoted region to spaces of the SAME length before the anchored check runs, so the timespec
-// becomes trailing whitespace and AT_INVOCATION's end-of-segment branch denies it anyway. Still
-// open and deliberately NOT pinned by a test here: the anchored `launchctl "load" <path>` family,
-// where the same blanking hides the subcommand instead. That one is not fixable in these guards --
-// they never see the quote -- and it shares a root with a wider hole (a quoted BINARY name
-// disappears entirely from the anchored view), which needs its own card.
+// becomes trailing whitespace and AT_INVOCATION's end-of-segment branch denies it anyway. Left open
+// here and deliberately NOT pinned by a test: the anchored `launchctl "load" <path>` family, where
+// the same blanking hides the subcommand instead. That one is not fixable in these guards -- they
+// never see the quote -- and it shares a root with a wider hole (a quoted BINARY name disappears
+// entirely from the anchored view), which needed its own card. THAT CARD IS 4f32f1f9, at the end of
+// this file: both are closed there, by reading the word from the original text instead of widening
+// a guard that never sees it.
 describe('self-pace-gate: a quote must not exempt a scheduler call (card 4fa31f31)', () => {
   const NL = String.fromCharCode(10)
   const heredoc = (body: string): string => "python3 - <<'PY'" + NL + body + NL + 'PY'
@@ -940,5 +942,171 @@ describe('self-pace-gate: scheduler binaries hidden in a heredoc BODY (card 46c4
     // placed INSIDE a heredoc body as a quoted python string. The first fix for this card split
     // heredoc bodies with splitSegments too, which re-faked a boundary around "launchctl" here.
     expect(selfPaceDecision('Bash', { command: heredoc(`t = "${PATTERN}"`) }).deny).toBe(false)
+  })
+})
+
+// --- card 4f32f1f9: the shell expands a word BEFORE running it; this gate matched before ---
+//
+// ROOT CAUSE (Cybersec's finding, re-measured independently through the real gateDecision path
+// before any code was written). Every pattern in this gate matched the command as WRITTEN. bash
+// removes quotes, expands $IFS, unescapes backslashes and substitutes $'...' / ${x}, and only THEN
+// decides which binary to exec. So any of those placed INSIDE the binary name -- or between it and
+// its argument -- made a real, working invocation invisible to a pattern hunting for the literal
+// name. Eleven forms were measured; the ones below ran the scheduler and passed the gate.
+//
+// THE FIX IS A MODEL CHANGE, NOT ONE MORE TOLERATED CHARACTER. The three previous cards
+// (12f80902, eae5d6fd, 4fa31f31) each widened one branch by one character, and this card is the
+// evidence that that does not converge -- word expansion is not a character set. The gate now also
+// reads the word at each command position with the expansion APPROXIMATED, ADDITIVELY: alongside
+// the raw checks, never instead of them, so no existing denial rests on the approximation being
+// complete and a negative control can switch it off and watch these tests redden.
+//
+// MEASURED COST, on 1898 real fleet message/comment/log/memory lines containing a colliding word,
+// each run through the gate in the three shapes the fleet actually sends text in (bare command,
+// heredoc body, git commit body): ZERO denials lost, and in the two realistic shapes exactly four
+// lines newly denied -- all four being fleet messages that QUOTE these bypass strings while
+// discussing them. No prose class was newly caught: the check is anchored to a command position the
+// masked view already established, and every documented false positive in this file sits in
+// ARGUMENT position behind an `echo`/`grep` command word, where this check never looks.
+//
+// NOT CLOSED, ON PURPOSE (Cybersec's decision on this card, option (a)): a command substitution or
+// a bare parameter expansion standing in command-word position -- `$(echo at) now`, `${CMD} -r` --
+// cannot be named without executing it. It is deliberately NOT pinned by a test in EITHER
+// direction: asserting that it passes would nail the defect in place. The reasoning first offered
+// for accepting it, that the heredoc branch backstops it, was measured FALSE and is recorded as
+// such in DECISIONS.md so nobody builds on it.
+describe('self-pace-gate: word expansion must not hide an invocation (card 4f32f1f9)', () => {
+  const NL = String.fromCharCode(10)
+  const heredoc = (body: string): string => "python3 - <<'PY'" + NL + body + NL + 'PY'
+  // Assembled rather than written literally: this file is itself scanned by the gate it tests.
+  const AT = 'a' + 't'
+  const LC = 'launch' + 'ctl'
+  const CT = 'cron' + 'tab'
+  const SR = 'systemd' + '-run'
+  const DQ = String.fromCharCode(34)
+  const SQ = String.fromCharCode(39)
+  const BS = String.fromCharCode(92)
+
+  it('DENIES a quote inside the BINARY NAME (the name itself vanished from every view)', () => {
+    for (const cmd of [
+      'cr' + DQ + 'o' + DQ + 'ntab -r', // quote in the middle
+      'a' + DQ + DQ + 't now', // empty quote pair in the middle
+      DQ + 'a' + DQ + 't now', // quote pair at the front
+      DQ + CT + DQ + ' -r', // whole name quoted
+      DQ + AT + DQ + ' now',
+      DQ + SR + DQ + ' --on-active=5m x',
+      DQ + LC + DQ + ' submit -l self -- x',
+    ]) {
+      expect(selfPaceDecision('Bash', { command: cmd }).deny, cmd).toBe(true)
+    }
+  })
+
+  it('DENIES $IFS standing in for the space between the binary and its argument', () => {
+    for (const cmd of [AT + '$IFS' + DQ + 'now' + DQ, LC + '$IFS' + DQ + 'submit' + DQ + ' -l self -- x']) {
+      expect(selfPaceDecision('Bash', { command: cmd }).deny, cmd).toBe(true)
+    }
+  })
+
+  it('DENIES $-quoting, a parameter PREFIX and a backslash-escaped binary', () => {
+    for (const cmd of [
+      '$' + SQ + AT + SQ + ' now', // ANSI-C quoting: $'at'
+      '${x}' + AT + ' now', // an empty parameter JOINS what surrounds it
+      BS + AT + ' now',
+      BS + CT + ' -r',
+    ]) {
+      expect(selfPaceDecision('Bash', { command: cmd }).deny, cmd).toBe(true)
+    }
+  })
+
+  it('DENIES a quoted SUBCOMMAND and a quoted TIMESPEC', () => {
+    for (const cmd of [
+      LC + ' ' + DQ + 'load' + DQ + ' /tmp/x.plist',
+      LC + ' ' + DQ + 'bootstrap' + DQ + ' gui/501 x',
+      AT + ' n' + DQ + DQ + 'ow',
+    ]) {
+      expect(selfPaceDecision('Bash', { command: cmd }).deny, cmd).toBe(true)
+    }
+  })
+
+  // DELIBERATELY NOT THE FIRST LINE OF THE BODY. A single-line body is the wrong probe for this
+  // branch: maskInertLiterals blanks a body's newlines along with its text, so the segment that
+  // begins after the redirect line carries the body's FIRST line as its original text, and the
+  // anchored command-word check answers for it. A negative control that disabled this branch
+  // entirely stayed GREEN against a single-line body -- the test was measuring the other path. A
+  // later line is reachable only by the branch that scans every line, which is this one.
+  it('DENIES the same obfuscation on a LATER line of a heredoc BODY (the per-line branch)', () => {
+    for (const line of ['cr' + DQ + 'o' + DQ + 'ntab -r', AT + '$IFS' + DQ + 'now' + DQ, 'a' + DQ + DQ + 't now']) {
+      const body = 'import os' + NL + 'print(1)' + NL + line
+      expect(selfPaceDecision('Bash', { command: heredoc(body) }).deny, line).toBe(true)
+    }
+  })
+
+  // FOUND WHILE BUILDING THIS, not in the card: the masker gives up (returns null) when a
+  // double-quoted region can command-substitute, and the anchored check then falls back to the
+  // naive segments. That fallback is reachable ON PURPOSE by an author -- one harmless `"$(date)"`
+  // earlier in the line -- so if the new check ran only on resolved segments, appending that prefix
+  // would restore every bypass above. It runs on the fallback segments too, and this pins it.
+  it('DENIES an obfuscated call even when an earlier $(...) forces the masker to give up', () => {
+    for (const cmd of [
+      'echo ' + DQ + '$(date)' + DQ + ' ; cr' + DQ + 'o' + DQ + 'ntab -r',
+      'echo ' + DQ + '$(date)' + DQ + ' ; ' + DQ + AT + DQ + ' now',
+    ]) {
+      expect(selfPaceDecision('Bash', { command: cmd }).deny, cmd).toBe(true)
+    }
+  })
+
+  // The pair that shows the rule is about EXECUTABILITY, not about quoting. A segment that is
+  // quoted end to end names a binary literally called "at now" and schedules nothing, so it stays
+  // inert -- that is maskInertLiterals' whole purpose and this fix must not undo it. Move the
+  // closing quote one word left and it becomes a real at(1) call, and it is denied.
+  it('leaves a WHOLLY quoted segment inert, but denies a quoted BINARY with a live argument', () => {
+    expect(selfPaceDecision('Bash', { command: 'echo x ; ' + SQ + AT + ' now' + SQ }).deny).toBe(false)
+    expect(selfPaceDecision('Bash', { command: 'echo x ; ' + SQ + AT + SQ + ' now' }).deny).toBe(true)
+  })
+
+  it('does NOT deny the documented prose classes, which sit in argument position', () => {
+    for (const cmd of [
+      'echo ' + DQ + 'the ' + CT + ' entries need review' + DQ,
+      'echo ' + SQ + 'Minta: stop.sh | ' + LC + ' | com.janna.dashboard' + SQ,
+      AT + ' least 80% of the entries were checked',
+      AT + ' declared trivial difficulty',
+      'cat ~/.claude/memory/loop-stop-vs-truncation.md',
+    ]) {
+      expect(selfPaceDecision('Bash', { command: cmd }).deny, cmd).toBe(false)
+    }
+  })
+
+  it('does NOT deny legitimate command substitution, in either position', () => {
+    for (const cmd of ['ls $(which node)', 'echo $(which python3)', 'PATH=$(dirname $(which git)):$PATH ls', '$(npm bin)/eslint .']) {
+      expect(selfPaceDecision('Bash', { command: cmd }).deny, cmd).toBe(false)
+    }
+  })
+
+  it('keeps a pure READ allowed once expansion is approximated', () => {
+    for (const cmd of [CT + ' -l', LC + ' list', 'atq']) {
+      expect(selfPaceDecision('Bash', { command: cmd }).deny, cmd).toBe(false)
+    }
+  })
+
+  // ADDITIVITY, pinned. The expanded view of `crontab "foo"` is `crontab foo`, which the unanchored
+  // guard cannot tell from an English sentence -- so if the expanded text REPLACED the raw text
+  // here, this denial would silently disappear. It does not, because both are tested.
+  // THE ONE FAILURE THAT WOULD BE SILENT. The command-word check reads the ORIGINAL text at offsets
+  // the MASKED view chose, which is only valid while both views stay the same length. If a future
+  // change to either blanking function breaks that, pairedSegments returns null and the check
+  // quietly degrades to the naive segments -- strictly weaker, and NOTHING else in this suite would
+  // redden, because the naive path still denies the plain forms. So the alignment is pinned here
+  // directly, on a command that exercises every blanking branch at once.
+  it('keeps the masked and original views index-aligned (a silent fallback would weaken the check)', () => {
+    const cmd =
+      'echo ' + SQ + 'x; y' + SQ + ' ; python3 - <<' + SQ + 'PY' + SQ + NL + 'print(1)' + NL + 'PY' + NL + 'echo ' + DQ + 'done' + DQ
+    const pairs = pairedSegments(cmd) as Array<{ masked: string; raw: string }> | null
+    expect(pairs, 'the masker must resolve this command, not give up').not.toBeNull()
+    for (const p of pairs ?? []) expect(p.raw.length, JSON.stringify(p)).toBe(p.masked.length)
+  })
+
+  it('keeps a denial that ONLY the raw text produces (the expansion is additive, not a swap)', () => {
+    const body = 'import os' + NL + CT + ' ' + DQ + 'foo' + DQ
+    expect(selfPaceDecision('Bash', { command: heredoc(body) }).deny).toBe(true)
   })
 })
