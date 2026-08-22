@@ -777,6 +777,15 @@ export function gateDecision(toolName, toolInput) {
       // bypass is lost to it: each one leaves an unquoted character behind (`a""t now` masks to
       // `a   t now`, `"at" now` to `      now`), and `'at' now` -- which DOES run at(1) -- masks to
       // `     now`, so it is still examined.
+      //
+      // THE LIMIT OF THAT CLAIM, STATED (Cybersec G2, card 230e9884): it holds for ONE quoted run.
+      // From TWO adjacent runs it does not, and the gap is real rather than theoretical -- `'at'
+      // 'now'` and `'crontab' '-r'` mask to nothing but ONE space between two blanked regions, so
+      // the segment still trims to empty and is skipped here, while the shell strips each run
+      // separately and executes the command. Measured passing on the landed gate. It stays open
+      // deliberately for now: closing it means deciding what an all-quoted segment MEANS rather
+      // than widening a character class, which is 230e9884's job. Read the sentence above as "no
+      // measured SINGLE-RUN bypass", not as a general guarantee.
       if (pair.masked.trim() === '') continue
       const expanded = approximateWordExpansion(pair.raw)
       if (SCHEDULER_CMDWORD_RX.test(expanded) && !SCHEDULER_CMDWORD_READ_RX.test(expanded)) return { deny: true }
