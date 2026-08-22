@@ -135,6 +135,23 @@ if [[ -n "$mig" ]]; then
   done
 fi
 
+# --- 8. lockfile out of sync with a changed package.json ----------------------------------------
+# Recurring class, twice in one day (cards 8d673233 and af7441a3): a workspace dependency declared in
+# package.json with pnpm-lock.yaml not regenerated. Both passed every gate and both blocked the
+# deploy, because NO local check reads the lockfile -- tsc, vitest and the linters all resolve
+# through an already-installed node_modules, so the first clean install is at deploy time.
+#
+# Reported, never fatal, like every other finding here: this script is an input to a gate, and the
+# landing script is where the same check refuses. A harness fault (exit 3 -- no pnpm, network) is
+# deliberately NOT reported as a finding: "the toolchain is broken" is not a fact about this card.
+if echo "$CHANGED" | grep -qE '(^|/)package\.json$'; then
+  lf_out="$("$(dirname "$0")/lockfile-sync-check.sh" --repo "$REPO" --ref "$HEAD_REF" 2>&1)"
+  case $? in
+    1) add "fail" "lockfile-out-of-sync" "$(printf '%s' "$lf_out" | grep -iE 'were added|were removed|specifiers' | head -1 | sed 's/^ *//')" ;;
+    3) : ;; # harness fault -- say nothing rather than blame the card
+  esac
+fi
+
 # --- 7. type-check, scoped to the repo's own command --------------------------------------------
 TSC="unknown"
 # The repo's OWN tsc, by explicit path -- never `npx --no-install tsc` (card aae6632c). npx resolves
