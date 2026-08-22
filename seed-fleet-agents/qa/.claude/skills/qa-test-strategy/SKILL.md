@@ -84,6 +84,7 @@ printf 'Authorization: Bearer %s\n' "$TOKEN" \
 - [ ] Nem saját munkát ellenőrzöm (Rule 4)
 - [ ] A REVIEW hivatkozott sha-ja == a legújabb commit (nem stale)
 - [ ] tsc clean (vitest nem type-check-el, zöld teszt mellé mindig tsc)
+- [ ] Nem-kikényszerített doc-comment invariáns (Cybersec javaslat, 2026-08-21): ha egy komment, docstring vagy migrációs fejléc GARANCIÁT állít egy adatmezőre ("ide csak redaktált szöveg kerül", "csak valódi állapotváltásnál íródik", "csak szerver-oldali logoláshoz"), van-e a kód-útvonalon MELLETTE VAGY kikényszerítő hívás, VAGY teszt, ami pont ezt az invariánst állítja? Ha egyik sincs: FINDING, függetlenül attól, hogy a mai viselkedés helyes-e -- a komment ilyenkor a jövőbeli olvasót téveszti meg. Nyomon követés: sorold fel a mezőt ÍRÓ összes hívót (nem csak a nevesítettet), és mindegyikre kérdezd meg, hogy azon az ágon lefut-e a kikényszerítés.
 
 ## Atomic-fact buktató (magic-link tanulság)
 
@@ -129,6 +130,8 @@ minden atomja VERIFIED vagy UNTESTABLE (indokkal). -> `references/atomic-fact.md
 
 **Child table cross-tenant FK rés** (6af23cea, 2026-07-31): child RLS `tenant_id=GUC` csak a saját sort védi; a FK-ellenőrzés bypass-olja a parent RLS-t -> B insertalhat child sort idegen parent alá. Composite FK vagy app-réteg enforcement kell.
 -> `references/be-patterns.md` ## Migráció: child table cross-tenant FK rés
+
+**Nem-kikényszerített doc-comment invariáns** (Cybersec javaslat, 2026-08-21, három azonos minta egy napon belül): `transportCause` kommentje "szerver-oldali logoláshoz" -- semmi nem olvasta (81e2484f); `provisioning_started_at` kommentje "CSAK valódi állapotváltásnál" -- működő CAS nélkül (09b41866); `last_error` kommentje "kizárólag redaktált szöveg" -- redakció nélkül a persist-határon (460c1725). Mindháromnál a komment volt az EGYETLEN "védelem", nem egy tényleges kikényszerítő hívás vagy teszt. A kód ma helyesen viselkedhet -- ez nem menti fel: a komment akkor is FINDING, ha a jelenlegi hívók mind jól viselkednek, mert a jövőbeli olvasót a garancia-állítás téveszti meg egy új hívónál. Lásd fenti "Általános" checklist-pont.
 
 **Docs corpus scan timeout untracked fájloktól** (7e2f0a13, 2026-08-01): a `no-false-storage-claims.test.ts` docs corpus scan-je timeout-ra eshet, ha a docs/ mappában sok untracked (el nem kötelezett) fájl van (pl. stitch-gen HTML-ek). Ez NEM a szóban forgó kártya regressziója. Azonosítás: `git stash -u` (untracked-et is) -> teszt újrafuttatás -> ha most zöld -> pre-existing, a stash-elt fájlok okozták -> `git stash pop`. QA PASS adható NOTE-tal; külön bug-kártya a timeout emelésre.
 
