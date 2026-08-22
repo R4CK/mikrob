@@ -149,6 +149,52 @@ const SCHEDULER_RX = new RegExp(
 // side alone would turn a quoted `launchctl "list"` -- a pure read -- into a false deny.
 const SCHEDULER_READ_RX = new RegExp(String.raw`(^|${SCHED_BOUNDARY}\s*)${SCHED_PREFIX}(crontab["']*\s+["']*-l\b|launchctl["']*\s+["']*(?:list|print|dumpstate|blame|examine)\b|atq\b)`, 'i')
 
+// --- COMMAND-WORD MODEL (card 4f32f1f9) -------------------------------------------------------
+//
+// THE CLASS THIS CLOSES. Every pattern above matches the text BEFORE the shell expands it; the
+// shell runs the words AFTER expansion. So every construct the shell removes on the way -- a quote
+// INSIDE a word, $IFS, a backslash, $'...', ${x} -- hides an invocation from a pattern looking for
+// a literal binary name. Measured on the real gateDecision path (Cybersec's finding, re-measured
+// independently here): `cr"o"ntab -r`, `at$IFS"now"`, `$'at' now`, `${x}at now`, `"crontab" -r`,
+// `\at now`, `launchctl "load" x` and `at n""ow` each run the real binary and each passed.
+//
+// The three previous fixes in this file (12f80902, eae5d6fd, 4fa31f31) each tolerated ONE more
+// character in ONE more branch. That does not converge, because the shell's word expansion is not
+// a character set. This models the expansion instead -- approximately, and only far enough to name
+// the COMMAND WORD.
+//
+// WHY IT DOES NOT OPEN A FALSE-POSITIVE CLASS, and this is the load-bearing part: the
+// approximation removes quotes, and quotes are exactly what makes prose inert to the checks above.
+// So the normalised text is NEVER given a boundary anchor -- `^` only, i.e. a command position the
+// MASKED view already established, which prose cannot fake. Quoted text INSIDE a segment therefore
+// never reaches the position this looks at. Every documented false positive in this file (">= 80%",
+// the launchd job label, the bar-separated grep pattern, "at declared trivial difficulty") sits in
+// ARGUMENT position behind an `echo`/`grep` command word, so this check does not examine it at all
+// -- structurally, not by luck. It is also purely ADDITIVE: it runs alongside the raw checks and
+// can only ever deny more, so no existing denial depends on the approximation being complete.
+//
+// RESIDUAL, STATED RATHER THAN IMPLIED (Cybersec's decision on this card, option (a)): a command
+// SUBSTITUTION or a bare parameter EXPANSION standing in command-word position -- `$(echo at) now`,
+// `${CMD} -r` -- is NOT closed, and cannot be without running the substitution to learn the name.
+// The reasoning first offered for accepting it ("the heredoc branch backstops it") was MEASURED
+// FALSE and must not be repeated: `$(echo at) now` and `${CMD} -r` pass both branches, and the
+// shape that matters is a plain command, which the heredoc branch never scans at all. What this
+// gate defends is stated in the deny message and holds: a sub-agent must not CASUALLY self-pace,
+// and a deliberate evasion must not pass UNNOTICED. It is not a defence against a determined
+// evader, and widening it to attempt one was measured to cost legitimate forms (`$(npm bin)/eslint`
+// in command-word position, `ls $(which node)` in argument position) while `${CMD}` would still
+// pass -- a race that cannot be won by matching text.
+const SCHEDULER_CMDWORD_RX = new RegExp(
+  String.raw`^\s*${SCHED_PREFIX}(?:(?:crontab|systemd-run)\b(?!-)(?!\s*=)|launchctl\b(?!-)(?!\s*=)${LAUNCHCTL_SUBCOMMAND}|(?:batch|at)\b(?!-)(?!\s*=)${AT_INVOCATION})`,
+  'i',
+)
+// The read exemption needs no quote tolerance here: the expansion approximation already removed
+// the quotes this same text used to carry.
+const SCHEDULER_CMDWORD_READ_RX = new RegExp(
+  String.raw`^\s*${SCHED_PREFIX}(crontab\s+-l\b|launchctl\s+(?:list|print|dumpstate|blame|examine)\b|atq\b)`,
+  'i',
+)
+
 // UNANCHORED companion to SCHEDULER_RX (card 46c4ad4a, Cybered's finding on 4638c14c): the
 // anchored check above only sees segments AFTER maskInertLiterals blanks every heredoc body
 // entirely, so a crontab/launchctl/at/systemd-run/batch invocation hidden inside a heredoc -- the
@@ -576,6 +622,99 @@ export function normalizeShellEvasion(seg) {
     .replace(/\\(.)/g, '$1') // \X -> X (bash unescape of a backslash-escaped char)
 }
 
+// Approximate the shell's WORD EXPANSION far enough to name a command word (card 4f32f1f9). This
+// is deliberately not a tokenizer -- see this file's own note on why a full one is not warranted --
+// it resolves only the constructs measured to hide an invocation, and leaves alone the one that
+// cannot be resolved without executing it ($(...) / backticks, the stated residual).
+//
+// ORDER IS LOAD-BEARING, twice. $IFS is itself a parameter, so it has to become a SPACE before the
+// generic ${x} rule erases it (otherwise `at${IFS}now` collapses to the single word `atnow` and the
+// invocation disappears). And $'...' has to give up its content before the blanket quote removal
+// eats its quotes and leaves a stray `$` glued to the binary name.
+//
+// ${x} is erased rather than replaced with a space: the shell drops an unset/empty parameter and
+// JOINS what surrounds it, which is exactly how `${x}at now` runs at(1).
+//
+// This is a superset-of-truth transform -- it can turn text into an invocation that the shell would
+// not run (e.g. it cannot know `${x}` was non-empty). That is safe HERE only because every caller
+// uses it additively, next to the raw check, never instead of it.
+export function approximateWordExpansion(text) {
+  return String(text ?? '')
+    .replace(/\$\{IFS\}|\$IFS\b/g, ' ') // field separator -> the space it expands to
+    .replace(/\$'((?:[^'\\]|\\.)*)'/g, '$1') // ANSI-C quoting -> its content
+    .replace(/\$\{[A-Za-z_]\w*\}/g, '') // ${x} -> unknown; erased, so the surrounding word joins
+    .replace(/\\(.)/g, '$1') // \X -> X (bash unescape)
+    .replace(/['"]/g, '') // quote removal, which the shell performs before exec
+}
+
+// Pair every segment's MASKED view with the ORIGINAL text at the same offsets (card 4f32f1f9).
+//
+// The two views answer different halves of one question, and neither can answer both. The masked
+// view knows WHERE a command position is -- that is the whole point of maskInertLiterals, and prose
+// cannot fake one there. The original knows WHAT WORD sits at that position -- the masked view
+// blanked the quotes and with them the binary's own letters (`cr"o"ntab` reads as `cr ntab`).
+//
+// This works only because maskInertLiterals is LENGTH-PRESERVING over the line-continuation-
+// collapsed source: it blanks a region to exactly as many spaces as it removed. One index range
+// therefore describes both strings. The length equality is ASSERTED rather than assumed -- if a
+// future change to the masker breaks it, this returns null and the caller falls back, instead of
+// silently slicing the original at offsets that no longer line up.
+//
+// Returns null when the quoting could not be resolved at all (the masker's own fail-closed cases),
+// leaving the caller to decide; every caller here then scans the naive segments, i.e. strictly more
+// text, never less.
+// Blank every heredoc BODY, length-preservingly, leaving the redirect and the terminator in place
+// (card 4f32f1f9). Yet another narrowly-scoped heredoc walk, which this file already prefers over a
+// shared state machine several call sites would have to agree on.
+//
+// WHY THE COMMAND-WORD VIEW MUST NOT SEE A HEREDOC BODY -- measured, not assumed. maskInertLiterals
+// blanks a body but keeps the terminator word, and it blanks the body's newlines too, so the body
+// stops being a separator: the segment that begins after the redirect line is masked to
+// `             PY` -- which does NOT trim to empty, so the inert-segment skip does not catch it --
+// while its ORIGINAL text is the body's first line. The command-word check then read that line as
+// if it stood at a command position. It denied the right things for the wrong reason, and the proof
+// is that a negative control disabling the heredoc branch entirely stayed GREEN: the heredoc tests
+// were passing through the anchored path. Body lines belong to the heredoc branch, which scans
+// every line rather than only the first, so blanking them here loses no coverage and restores the
+// two checks to testing what they claim to test.
+export function blankHeredocBodies(src) {
+  let out = ''
+  let i = 0
+  while (i < src.length) {
+    const here = /^<<-?\s*(?:'([^']*)'|"([^"]*)"|([A-Za-z_]\w*))/.exec(src.slice(i))
+    if (!here) { out += src[i]; i++; continue }
+    const tag = here[1] ?? here[2] ?? here[3]
+    out += here[0]
+    i += here[0].length
+    const nl = src.indexOf('\n', i)
+    if (nl === -1) { out += src.slice(i); break }
+    out += src.slice(i, nl + 1)
+    i = nl + 1
+    const endRx = new RegExp(`^[ \\t]*${tag.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}[ \\t]*$`, 'm')
+    const rel = endRx.exec(src.slice(i))
+    if (!rel) { out += src.slice(i); break }
+    out += ' '.repeat(rel.index) + rel[0]
+    i += rel.index + rel[0].length
+  }
+  return out
+}
+
+export function pairedSegments(command) {
+  const collapsed = blankHeredocBodies(String(command ?? '').replace(/\\\r?\n/g, ' '))
+  const masked = maskInertLiterals(command)
+  if (masked == null || masked.length !== collapsed.length) return null
+  const pairs = []
+  const sep = /&&|\|\||[;&|]|\r?\n/g
+  let start = 0
+  let m
+  while ((m = sep.exec(masked)) !== null) {
+    pairs.push({ masked: masked.slice(start, m.index), raw: collapsed.slice(start, m.index) })
+    start = m.index + m[0].length
+  }
+  pairs.push({ masked: masked.slice(start), raw: collapsed.slice(start) })
+  return pairs
+}
+
 // Pure decision: does this tool call set up self-pace / self-injection?
 export function gateDecision(toolName, toolInput) {
   const name = String(toolName ?? '')
@@ -626,6 +765,22 @@ export function gateDecision(toolName, toolInput) {
       // scheduler binaries: deny the exec/submit forms, allow pure read-listing
       if (SCHEDULER_RX.test(seg) && !SCHEDULER_READ_RX.test(seg)) return { deny: true }
     }
+    // Command-word check (card 4f32f1f9), ADDITIVE to the raw scan above and using the same
+    // segment boundaries -- but reading the word from the ORIGINAL text with the shell's word
+    // expansion approximated, so a quote/$IFS/backslash INSIDE the binary name no longer hides it.
+    // Additive on purpose: it can only deny more, so nothing above depends on the approximation
+    // being complete, and a negative control can switch it off and watch the bypasses return.
+    for (const pair of pairedSegments(safeCommand) ?? naiveSegs.map((s) => ({ masked: s, raw: s }))) {
+      // A segment whose MASKED view is empty is inert text end to end -- a wholly quoted segment
+      // like `'at now'`, which names a binary literally called "at now" and schedules nothing.
+      // Skipping it is what keeps maskInertLiterals' quoted-prose fix intact here. No measured
+      // bypass is lost to it: each one leaves an unquoted character behind (`a""t now` masks to
+      // `a   t now`, `"at" now` to `      now`), and `'at' now` -- which DOES run at(1) -- masks to
+      // `     now`, so it is still examined.
+      if (pair.masked.trim() === '') continue
+      const expanded = approximateWordExpansion(pair.raw)
+      if (SCHEDULER_CMDWORD_RX.test(expanded) && !SCHEDULER_CMDWORD_READ_RX.test(expanded)) return { deny: true }
+    }
     // scheduler binaries hidden in a heredoc BODY (card 46c4ad4a): maskInertLiterals blanks
     // every heredoc body before the anchored check above ever sees it (by design, see its own
     // header comment), so this is the ONE place such a body is genuinely invisible. Scoped
@@ -664,6 +819,16 @@ export function gateDecision(toolName, toolInput) {
         // and after removing the reads a pure read line has nothing left to match.
         const writeOnly = seg.replace(UNANCHORED_SCHEDULER_READ_RX_G, ' ')
         if (UNANCHORED_SCHEDULER_RX.test(writeOnly)) return { deny: true }
+        // The same line with the shell's word expansion approximated (card 4f32f1f9). A quote
+        // inside the binary name (`cr"o"ntab -r`) or a `$IFS` between it and its argument hides the
+        // call from the raw match above -- measured passing on this branch, not only the anchored
+        // one. ADDITIVE, and that matters in this direction too: the raw test keeps its own
+        // coverage, so an accidental denial that only the RAW text produces is not traded away.
+        // (`crontab "foo"` is the concrete one: the quote defeats SCHED_BARE_SHAPE's
+        // English-sentence lookahead and the raw line denies, while the expanded `crontab foo` is
+        // indistinguishable from prose and would not.)
+        const expandedLine = approximateWordExpansion(seg).replace(UNANCHORED_SCHEDULER_READ_RX_G, ' ')
+        if (UNANCHORED_SCHEDULER_RX.test(expandedLine)) return { deny: true }
       }
     }
   }
