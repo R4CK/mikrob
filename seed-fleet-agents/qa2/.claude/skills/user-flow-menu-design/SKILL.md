@@ -176,6 +176,9 @@ Recommended order:
 - Generating before visual direction is chosen: inconsistent outputs, wasted iterations.
 - One prompt for multiple screens: Stitch conflates content; always one prompt = one screen.
 - Skipping system screens: empty/error/offline states are part of the product, not optional.
+- Long prompts timeout (>2 min): keep each prompt under ~150 words; if a generation times out, shorten the prompt and retry.
+- Parallel generation causes timeouts: run at most 2 concurrent; if one times out, retry individually.
+- Stitch output uses Tailwind CDN + Google Fonts: does NOT render inside Claude Artifact iframes (CSP blocks CDN). When adding stitch screens to a design gallery artifact, use the generated PNG (screenshot) embedded as a base64 data URI image, NOT the HTML as srcdoc. The HTML is useful for browsing locally only.
 
 ## V2 per-screen prompt structure (learned from a 77-screen SaaS V2)
 

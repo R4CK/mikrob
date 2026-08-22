@@ -21,8 +21,15 @@ describe('schedule-runner auto-starts a stopped agent for its scheduled task', (
   it('attemptFireTask can return a distinct "starting" state', () => {
     // The return union must carry 'starting' so the caller can tell an
     // auto-start apart from a genuine busy session.
-    const sig = SRC.slice(SRC.indexOf('function attemptFireTask'))
-    expect(sig.slice(0, 200)).toMatch(/'starting'/)
+    //
+    // Card e9d3cd12 moved the union into a named FireOutcome alias (both the guarded wrapper and
+    // the unguarded body return it), so reading the first 200 chars of the signature no longer
+    // sees the literal. Same property, now asserted where the union actually lives -- plus the
+    // link that makes it meaningful: the function really does return THAT alias.
+    const alias = SRC.slice(SRC.indexOf('type FireOutcome ='))
+    expect(alias.slice(0, 200)).toMatch(/'starting'/)
+    const body = SRC.slice(SRC.indexOf('function attemptFireTaskUnguarded('))
+    expect(body.slice(0, 300)).toMatch(/Promise<FireOutcome>/)
   })
 
   it('the missing-session branch auto-starts the agent instead of skipping', () => {
@@ -31,9 +38,15 @@ describe('schedule-runner auto-starts a stopped agent for its scheduled task', (
     expect(guardIdx).toBeGreaterThan(0)
     // Window covering the missing-session block (comment + code, before the
     // real busy-check). Must launch the agent and return the 'starting' state.
-    const missingBlock = SRC.slice(guardIdx, guardIdx + 1800)
+    //
+    // Widened from 1800 to 3000 (card e9d3cd12): the block itself grew by a try/catch that maps a
+    // REJECTING auto-start onto the same 'missing' verdict as a failing one. The assertions below
+    // are unchanged -- the window only has to still contain the block it was written for.
+    const missingBlock = SRC.slice(guardIdx, guardIdx + 3000)
     expect(missingBlock).toMatch(/startAgentProcess\(agentName\)/)
     expect(missingBlock).toMatch(/return 'starting'/)
+    // And the new branch is inside the same block, not bolted on somewhere else.
+    expect(missingBlock).toMatch(/catch \(err\)/)
   })
 
   it('the cron loop enqueues a retry for "starting" WITHOUT the skipIfBusy gate', () => {

@@ -17,15 +17,17 @@ const TU_COLORS = {
 let tuSelectedAgent = ''
 let tuChartState = null
 
-// Model pricing in USD per million tokens (input / output / cache-write / cache-read).
-// Fallback row is used when model is unknown or not yet captured.
-// cache-write is 1.25x input, cache-read is 0.1x input -- keep the derived
+// Model pricing table -- used ONLY for the per-agent summary-card perModel
+// cost estimate (renderTuSummary, /api/token-usage/summary endpoint).
+// The model-dist pie chart (renderTuModelDist) uses estimated_cost_usd from
+// the /api/token-usage/model-dist response -- the backend's single
+// src/costops/model-pricing.ts source (card 3789f5d6).
+// cache-write is 1.25x input, cache-read is 0.1x input -- keep derived
 // columns consistent with `in` when editing a row.
-// Reconciled against the official pricing page 2026-08-17 (weekly scheduled-task check,
+// Reconciled against the official pricing page 2026-08-17 (weekly check,
 // card 270e3ef4).
-// Sonnet 5 launched on $2/$10 pricing, originally due to revert to $3/$15 on
-// 2026-09-01; Anthropic has since cancelled that reversion, so $2/$10 is the
-// standing rate now, not a temporary one -- do NOT reintroduce a date-based
+// Sonnet 5 launched on $2/$10 pricing; Anthropic cancelled the planned
+// reversion -- $2/$10 is the standing rate, do NOT reintroduce a date-based
 // flip back to $3/$15.
 const TU_SONNET5_PRICE = { in: 2.0, out: 10.0, cw: 2.50, cr: 0.20 }
 
@@ -876,7 +878,11 @@ function renderTuModelDist(data) {
 
   let rows = data.map((d, i) => {
     const pct = total > 0 ? ((d.count / total) * 100).toFixed(1) : '0.0'
-    const costUSD = tuCalcCostUSD(d.totalInput, d.totalOutput, d.totalCacheRead, d.totalCacheCreation, d.model !== '(unknown)' ? d.model : null)
+    // Prefer the backend-computed cost (single source, card 3789f5d6); fall back
+    // to the FE table only when the field is absent (older server, unrecognized model).
+    const costUSD = d.estimated_cost_usd != null
+      ? d.estimated_cost_usd
+      : tuCalcCostUSD(d.totalInput, d.totalOutput, d.totalCacheRead, d.totalCacheCreation, d.model !== '(unknown)' ? d.model : null)
     return `<tr>
       <td style="${tdStyle}">
         <span style="display:inline-block;width:10px;height:10px;background:${tuGetModelColor(i)};border-radius:2px;margin-right:6px;vertical-align:middle"></span>

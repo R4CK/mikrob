@@ -150,7 +150,9 @@ export function kanbanMoveInstructions(id: string, target: string): string {
 // assigned agent once via the inter-agent message router (createAgentMessage),
 // which gives retry / dedup / trust-wrapping / busy-receiver handling for free.
 // dispatched_at is the once-only guard; errors never block the card move.
-function fireKanbanDispatch(id: string, actor?: string): void {
+// `actor` is the mover reported by the caller: an agent that moves its own card
+// to in_progress must not be woken with an assignment for work it just started.
+function fireKanbanDispatch(id: string, actor?: string | null): void {
   try {
     const card = getKanbanCard(id)
     if (!card || card.dispatched_at) return
@@ -169,6 +171,7 @@ function fireKanbanDispatch(id: string, actor?: string): void {
       mainAgentId: MAIN_AGENT_ID,
       agentNames: listAgentNames(),
       isRunning: isAgentRunning,
+      actor,
     })
     if (!target) return
     const desc = (card.description ?? '').trim()
@@ -438,7 +441,8 @@ export async function tryHandleKanban(ctx: RouteContext): Promise<boolean> {
       if (v.blocked) { json(res, { error: v.message }, 409); return true }
     }
     if (moveKanbanCard(id, status, sort_order ?? 0, actor, force === true)) {
-      // Wake the assigned agent once when the card enters in_progress.
+      // Wake the assigned agent once when the card enters in_progress -- unless
+      // that agent is the one who moved it (self-pickup needs no wake-up).
       if (status === 'in_progress') fireKanbanDispatch(id, actor)
       json(res, { ok: true })
       return true

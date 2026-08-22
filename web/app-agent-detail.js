@@ -90,6 +90,7 @@ async function openAgentDetail(agentName) {
 
   // Auto-restart settings + live context size
   setupAutoRestartUI(currentAgent)
+  setupIdleFlushUI(currentAgent)
 
   // Telegram tab
   updateChannelTab(currentAgent)

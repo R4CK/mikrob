@@ -24,10 +24,12 @@ printf 'Authorization: Bearer %s\n' "$TOK" > "$hdr_file"
 
 # Split by whether "always work" is actually true for that agent (MikroB decision, msg 9910,
 # follow-up to card 14acfadd). fron-ted/fron-teddy have their own always-available backlog (65
-# design-impl screens they can self-create from), so unconditional is correct for them. backend/
-# fullstack do not: "there is always a sec-followup" was the same kind of unconditional assumption
-# the OLD gate predicate made ("any waiting card exists"), and it has the same failure mode --
-# waking an idle agent that provably has nothing dispatched. plan[a] (below) is already computed
+# design-impl screens they can self-create from), so ASSUMING work is correct for them; they still get
+# the same per-agent no-change fingerprint precheck as everyone else below (msg 18241, 2026-08-20),
+# because the assumption stops holding the moment their own backlog runs dry. backend/fullstack never
+# had that assumption at all: "there is always a sec-followup" was the same kind of unconditional
+# assumption the OLD gate predicate made ("any waiting card exists"), and it has the same failure mode
+# -- waking an idle agent that provably has nothing dispatched. plan[a] (below) is already computed
 # from THIS SAME snapshot for exactly this purpose; the ENG loop just never read it.
 ENG_ALWAYS="fron-ted fron-teddy"
 ENG_CONDITIONAL="backend fullstack"
@@ -130,6 +132,26 @@ for a in eng:
                if c.get("status")=="planned" and "BLOKKOLT" not in (c.get("title") or "")
                and c.get("assignee")==a)
     eng_fp[a]=hashlib.sha256(repr(src).encode()).hexdigest()
+# PER-AGENT no-change fingerprint for the ALWAYS eng agents (fron-ted report msg 18241, 2026-08-20:
+# 6 identical unconditional sends in a row while fron-teds 3 finished cards sat untouched in
+# waiting+REVIEW). The ENG_ALWAYS branch below was built on the assumption "design-impl always has a
+# next screen", which was true when it was written but is not a standing invariant -- the moment an
+# agent genuinely runs dry (own backlog exhausted, everything self-created already sitting in
+# waiting+REVIEW for a gate), unconditional resend is the exact bb1751f2/4cdb7e31 failure mode again,
+# just on the one branch that was never given the fingerprint those two fixes gave everyone else.
+# NO APOSTROPHES in this block (card prose-comment-apostrophe-breaks-bash-single-quoted-heredoc): the
+# whole thing is one bash single-quoted python -c argument, so a stray apostrophe in a comment ends
+# the quoted string early and breaks the script with a bash syntax error, not a python one.
+# Fingerprint is over ALL of the agents OWN cards regardless of status (not just planned, unlike
+# eng_fp above) -- that is the set an ALWAYS agent self-advance loop actually reacts to: a new
+# planned card assigned to it, OR a gate verdict landing on one of its waiting+REVIEW cards, OR a
+# card of its own getting re-opened. Any of those changes the (id, updated_at) set and re-arms.
+eng_always = ["fron-ted", "fron-teddy"]  # keep in sync with ENG_ALWAYS in the bash below
+always_fp = {}
+for a in eng_always:
+    src = sorted((c.get("id"), c.get("updated_at")) for c in cards if c.get("assignee") == a)
+    always_fp[a] = hashlib.sha256(repr(src).encode()).hexdigest()
+out["_always_fp"] = always_fp
 out["_eng_fp"]=eng_fp
 print(json.dumps(out))
 ' 2>/dev/null)"
@@ -137,6 +159,7 @@ print(json.dumps(out))
 
 get() { echo "$WORK" | python3 -c "import json,sys;print(json.load(sys.stdin).get(sys.argv[1],False))" "$1" 2>/dev/null; }
 eng_fp() { echo "$WORK" | python3 -c "import json,sys;print(json.load(sys.stdin).get('_eng_fp',{}).get(sys.argv[1],''))" "$1" 2>/dev/null; }
+always_fp() { echo "$WORK" | python3 -c "import json,sys;print(json.load(sys.stdin).get('_always_fp',{}).get(sys.argv[1],''))" "$1" 2>/dev/null; }
 
 # Persisted no-change fingerprints (this script's own process never lives between cron runs).
 # Overridable so a selftest never touches the live state file.
@@ -268,8 +291,24 @@ nudge() { # session, message
         -X POST "$MSG_API" --data-binary @- 2>/dev/null || true
 }
 
-# fron-ted/fron-teddy: always nudge if idle -- design-impl always has a next screen to self-create.
+# fron-ted/fron-teddy: nudge if idle AND their own card set changed since the last nudge (msg 18241
+# precheck, see the _always_fp comment above). "design-impl always has a next screen" is the STARTING
+# assumption, not a guarantee the board always honours -- when it stops being true this precheck is
+# what stops the resend, exactly like ENG_CONDITIONAL/GATE below already do for the same failure mode.
+ENG_ALWAYS_WITH_WORK=""
+ENG_ALWAYS_UNCHANGED=""
 for a in $ENG_ALWAYS; do
+  fp="$(always_fp "$a")"
+  if [ -n "$fp" ] && [ "$fp" = "$(state_get "alwaysFp:$a")" ]; then
+    ENG_ALWAYS_UNCHANGED="$ENG_ALWAYS_UNCHANGED $a"
+    continue
+  fi
+  state_set "alwaysFp:$a" "$fp"
+  ENG_ALWAYS_WITH_WORK="$ENG_ALWAYS_WITH_WORK $a"
+done
+[ "$DRY_RUN" = "1" ] && echo "ENG-ALWAYS-WORK:${ENG_ALWAYS_WITH_WORK:- none}"
+[ "$DRY_RUN" = "1" ] && echo "ENG-ALWAYS-UNCHANGED:${ENG_ALWAYS_UNCHANGED:- none}"
+for a in $ENG_ALWAYS_WITH_WORK; do
   nudge "agent-$a" "$NUDGE_ENG"
 done
 # backend/fullstack: nudge ONLY if plan[a] says a non-blocked planned card is actually assigned to

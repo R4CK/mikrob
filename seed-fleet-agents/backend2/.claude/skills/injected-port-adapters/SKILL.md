@@ -109,7 +109,43 @@ survive contact with the outside world.
    the highest-value test — assert transient→throw, permanent→typed result);
    add one integration/sandbox test where a sandbox exists (Stripe test mode,
    VIES test VAT ids, NAV test environment).
-6. Wire the adapter into the composition root (DI) so handlers get the live port.
+6. Wire the adapter into the composition root (`main.ts` / DI root) so handlers
+   get the live port.
+
+   **Wiring is not done until it is COMMITTED.** After editing main.ts, verify
+   the adapter constructor call is actually in the committed tree — working-tree
+   changes are invisible to gate agents (they run `git show <sha>:file`, not the
+   filesystem):
+   ```bash
+   git show HEAD:apps/api/src/main.ts | grep -n 'MyAdapter\|createPgMyStore'
+   ```
+   If the line is missing, you forgot to `git add` + `git commit` main.ts.
+
+   **Optional PG-level deps must be explicitly passed, not silently omitted.**
+   Optional constructor params (`rawClient`, `purgeClient`, `rawPool`) do NOT
+   cause a TypeScript error when absent — `undefined` satisfies `SqlClient |
+   undefined`. Their absence silently degrades the adapter: a purge adapter with
+   no rawClient returns 0 rows every time (indistinguishable from "nothing to
+   purge"), a GDPR-retention script runs forever without deleting anything. List
+   every optional dep and confirm each one is wired:
+   ```bash
+   git show HEAD:apps/api/src/main.ts | grep -A 5 'createPgMyStore'
+   # Every parameter in the adapter's constructor signature must appear here.
+   ```
+
+   **Security invariants the adapter doc-comment promises must be enforced in
+   code.** A comment like "MUST connect as an owner role with BYPASSRLS" is not
+   enforcement — it is documentation. The adapter or its caller must verify the
+   invariant at runtime and fail loudly (exit/throw) if it is violated:
+   ```typescript
+   // BAD: comment-only, silent no-op if misconfigured
+   // "DATABASE_URL MUST be the owner connection"
+
+   // GOOD: runtime check, fail-closed
+   await assertBypassRlsOrExit(rawClient) // throws / exits if not BYPASSRLS
+   ```
+   If the invariant is structurally unenforceable at construction time, add it to
+   the adapter's pre-condition comment AND to the caller's startup check list.
 
 ## Verification checklist
 - [ ] Adapter is thin; no policy/validation duplicated from the domain.
@@ -119,3 +155,5 @@ survive contact with the outside world.
 - [ ] Idempotency key forwarded; money in domain-computed minor units.
 - [ ] SDK output validated to the port type; presign scope/TTL not widened.
 - [ ] SDK dep added to the adapter package only; domain stays dependency-free.
+- [ ] Wiring verified in **committed tree**: `git show HEAD:apps/api/src/main.ts | grep AdapterName` returns the constructor call. Every optional dep (rawClient, purgeClient) explicitly present.
+- [ ] Security invariants the doc-comment promises are **enforced in code** (runtime guard / fail-closed exit), not only documented in a comment.

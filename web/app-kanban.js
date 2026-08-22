@@ -5,6 +5,14 @@
 // === Kanban ===
 // ============================================================
 
+// Every move made from this dashboard is made by the human at the keyboard, so
+// each /move call names the owner as `actor`. That is what lets the backend tell
+// an assignment ("the owner dragged this onto you") apart from a self-pickup ("the
+// agent moved its own card"), and only wake the agent in the first case. Falls
+// back to undefined until /api/marveen has loaded -- an unnamed mover means the
+// backend dispatches as it always did, never the opposite.
+function kanbanMoveActor() { return window._marveen?.ownerName || undefined }
+
 let kanbanCards = []
 let kanbanAssignees = []
 let kanbanProjects = []
@@ -960,7 +968,7 @@ function wireKanbanColumnDnD(col) {
       await fetch(`/api/kanban/${encodeURIComponent(cardId)}/move`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ status: newStatus, sort_order: sortOrder }),
+        body: JSON.stringify({ status: newStatus, sort_order: sortOrder, actor: kanbanMoveActor() }),
       })
       loadKanban()
     } catch {
@@ -1126,7 +1134,7 @@ async function kanbanTouchEnd(e) {
     const r = await fetch(`/api/kanban/${encodeURIComponent(cardId)}/move`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ status: newStatus, sort_order: sortOrder }),
+      body: JSON.stringify({ status: newStatus, sort_order: sortOrder, actor: kanbanMoveActor() }),
     })
     if (!r.ok) throw new Error('move failed')
     loadKanban()
@@ -1426,7 +1434,7 @@ async function showCardDetail(card) {
         const r = await fetch(`/api/kanban/${encodeURIComponent(card.id)}/move`, {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ status: newVal, sort_order: 0 }),
+          body: JSON.stringify({ status: newVal, sort_order: 0, actor: kanbanMoveActor() }),
         })
         if (!r.ok) throw new Error('move failed')
         card.status = newVal
