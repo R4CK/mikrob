@@ -130,6 +130,112 @@ describe('self-pace-gate: prose ending in the at(1) word (card 12f80902)', () =>
   })
 })
 
+// --- card 4fa31f31: a quote must not exempt a scheduler invocation ---
+//
+// Cybersec's live finding. The shell strips quotes before it decides what the command word and its
+// arguments are, so `at "now + 5 minutes"` and `launchctl "submit" -l self` submit exactly what the
+// unquoted spellings submit. Both shape guards are WHITELIST-shaped -- they positively enumerate
+// what may follow the binary -- and a quote was not in the enumeration, so the whole match failed
+// and the call was ALLOWED. That is the failure DIRECTION that makes a positive enumeration
+// dangerous here: an unforeseen character passes through instead of denying.
+//
+// crontab and systemd-run were measured UNAFFECTED by the same inputs, and the reason is the
+// direction of their guard: SCHED_BARE_SHAPE is a NEGATIVE lookahead, so a character nobody
+// foresaw does not break it -- it still denies.
+//
+// THE TWO SIDES ARE NEEDED FOR DIFFERENT REASONS (Cybersec measured the asymmetry). A LEADING
+// quote is enough for at(1), whose guard closes on a timespec word. launchctl's alternative closes
+// on a word BOUNDARY, and a closing quote is not one -- so a leading-only fix leaves every
+// `launchctl "submit" ...` form still passing. The launchctl cases below are the ones that pin it.
+//
+// MEASURED SCOPE, and it differs from the card in both directions. Reachable and fixed here: the
+// UNANCHORED (heredoc-body) path, which tests raw text and therefore sees the quotes. NOT
+// reproducible: the anchored `at "now + 5 minutes"` the card also names -- maskInertLiterals blanks
+// a quoted region to spaces of the SAME length before the anchored check runs, so the timespec
+// becomes trailing whitespace and AT_INVOCATION's end-of-segment branch denies it anyway. Still
+// open and deliberately NOT pinned by a test here: the anchored `launchctl "load" <path>` family,
+// where the same blanking hides the subcommand instead. That one is not fixable in these guards --
+// they never see the quote -- and it shares a root with a wider hole (a quoted BINARY name
+// disappears entirely from the anchored view), which needs its own card.
+describe('self-pace-gate: a quote must not exempt a scheduler call (card 4fa31f31)', () => {
+  const NL = String.fromCharCode(10)
+  const heredoc = (body: string): string => "python3 - <<'PY'" + NL + body + NL + 'PY'
+  // Assembled rather than written literally: this file is itself scanned by the gate it tests.
+  const AT = 'a' + 't'
+  const BATCH = 'bat' + 'ch'
+  const LC = 'launch' + 'ctl'
+  const CT = 'cron' + 'tab'
+  const DQ = String.fromCharCode(34)
+  const SQ = String.fromCharCode(39)
+
+  it('DENIES at(1) with a double-quoted timespec', () => {
+    const line = AT + ' ' + DQ + 'now + 5 minutes' + DQ
+    expect(selfPaceDecision('Bash', { command: heredoc(line) }).deny).toBe(true)
+  })
+
+  it('DENIES at(1) with a single-quoted timespec', () => {
+    const line = AT + ' ' + SQ + 'now + 5 minutes' + SQ
+    expect(selfPaceDecision('Bash', { command: heredoc(line) }).deny).toBe(true)
+  })
+
+  it('DENIES at(1) when the BINARY carries the quotes, not the timespec', () => {
+    for (const line of [DQ + AT + DQ + ' now + 5 minutes', AT + DQ + DQ + ' now + 5 minutes']) {
+      expect(selfPaceDecision('Bash', { command: heredoc(line) }).deny, line).toBe(true)
+    }
+  })
+
+  it('DENIES batch(1) with a quoted flag and with a quoted binary', () => {
+    for (const line of [BATCH + ' ' + DQ + '-f' + DQ + ' job.sh', DQ + BATCH + DQ]) {
+      expect(selfPaceDecision('Bash', { command: heredoc(line) }).deny, line).toBe(true)
+    }
+  })
+
+  it('DENIES launchctl with a quoted subcommand -- the TRAILING-quote case', () => {
+    // A leading-only tolerance passes this one: the subcommand alternative closes on a word
+    // boundary, which the closing quote is not. This is the test that pins both sides.
+    for (const sub of ['submit', 'load', 'bootstrap', 'kickstart', 'start', 'enable', 'bootout']) {
+      const line = LC + ' ' + DQ + sub + DQ + ' -l self -- node respawn.mjs'
+      expect(selfPaceDecision('Bash', { command: heredoc(line) }).deny, line).toBe(true)
+    }
+  })
+
+  it('DENIES launchctl with a quoted subcommand followed by a path, not a flag', () => {
+    const line = LC + ' ' + SQ + 'load' + SQ + ' ~/Library/LaunchAgents/self.plist'
+    expect(selfPaceDecision('Bash', { command: heredoc(line) }).deny).toBe(true)
+  })
+
+  it('DENIES launchctl when the BINARY carries the quotes', () => {
+    const line = DQ + LC + DQ + ' submit -l self -- node respawn.mjs'
+    expect(selfPaceDecision('Bash', { command: heredoc(line) }).deny).toBe(true)
+  })
+
+  it('STILL ALLOWS a quoted pure READ -- tightening the write side must not deny a listing', () => {
+    // `crontab "-l"` was a FALSE DENY before this change: the write guard already matched it while
+    // the read exemption, quote-blind, did not. Both sides gained the same tolerance.
+    for (const read of [
+      LC + ' ' + DQ + 'list' + DQ,
+      LC + ' ' + SQ + 'print' + SQ + ' system',
+      CT + ' ' + DQ + '-l' + DQ,
+    ]) {
+      expect(selfPaceDecision('Bash', { command: heredoc(read) }).deny, read).toBe(false)
+    }
+  })
+
+  it('does not start denying prose that merely quotes these words', () => {
+    for (const prose of [
+      'the ' + DQ + AT + DQ + ' keyword needs no timespec',
+      AT + ' least 80% of the ' + DQ + 'entries' + DQ + ' were checked',
+      BATCH + ' ' + DQ + 'size' + DQ + ' is 50 in the report',
+    ]) {
+      expect(selfPaceDecision('Bash', { command: heredoc(prose) }).deny, prose).toBe(false)
+    }
+  })
+
+  it('keeps batch(1) denied on the end-of-segment shape (card 12f80902 must not regress)', () => {
+    expect(selfPaceDecision('Bash', { command: heredoc('echo x | ' + BATCH) }).deny).toBe(true)
+  })
+})
+
 // --- self-pace-gate: blocks the agent from scheduling its own future turns ---
 describe('self-pace-gate gateDecision', () => {
   it('denies the ScheduleWakeup runtime tool', () => {
