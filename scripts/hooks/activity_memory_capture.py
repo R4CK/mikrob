@@ -21,6 +21,7 @@ import os
 import re
 import sys
 import json
+import time
 import urllib.request
 
 # ---------------------------------------------------------------------------
@@ -120,18 +121,24 @@ _READ_ONLY_COMMANDS = re.compile(
     re.IGNORECASE | re.DOTALL,
 )
 
-# Bash commands that ARE state-changing and worth recording.
-_STATE_CHANGING = re.compile(
+# Bash commands worth a MEMORY row (card 34f1ca0c). Deliberately narrower than "state-changing":
+# a memory is something a later session should RECALL, and the hot tier's job is the active task and
+# pending decisions -- not a transcript. Everything else state-changing still gets recorded, but to
+# the local activity log instead of the searchable memory index (see _append_activity_log).
+#
+# WHAT CAME OUT, AND WHY. The two removed branches were `curl -X POST ... localhost` and
+# `printf ... curl ... localhost`. Those are this fleet's own API idiom -- every kanban comment,
+# every memory save, every inter-agent message -- so they fired constantly, and each one produced a
+# row saying a request was made to a system that ALREADY keeps the authoritative record (the kanban
+# card, the memory row, the message queue). Measured 2026-08-22: 109 of the hot tier's 145 rows were
+# this hook's output, and 463 auto-activity rows carried only 142 distinct summaries.
+_MEMORABLE = re.compile(
     r'(?:'
-    # git writes
+    # git writes -- a commit/push/merge is a durable event a later session asks about by name
     r'\bgit\s+(?:commit|push|merge|rebase|tag|reset|checkout\b(?!\s*--))\b'
-    # curl mutating calls to our own API (localhost or 127)
-    r'|curl\b.*-X\s*(?:POST|PUT|DELETE|PATCH).*(?:localhost|127\.0\.0\.1)'
-    # kanban / memory / message API calls via printf|curl idiom
-    r'|printf.*curl.*localhost'
-    # systemctl state changes
+    # systemctl state changes -- service up/down is real infrastructure state
     r'|\bsystemctl\s+(?:start|stop|restart|reload|enable|disable)\b'
-    # npm/pnpm install
+    # npm/pnpm install -- a dependency change outlives the session that made it
     r'|\b(?:npm|pnpm)\s+(?:install|ci|add|remove|uninstall)\b'
     r')',
     re.IGNORECASE | re.DOTALL,
@@ -145,27 +152,71 @@ _READ_ONLY_TOOLS = frozenset({
 })
 
 
-def _should_record(tool_name: str, tool_input: dict, tool_response: dict) -> bool:
-    """True iff this tool call is worth recording as an activity memory."""
+def _destination(tool_name: str, tool_input: dict, tool_response: dict) -> str | None:
+    """Where this tool call belongs: 'memory', 'log', or None (drop it).
+
+    ONE decision point, on purpose (card 34f1ca0c). The previous shape answered a single
+    yes/no question -- "record this?" -- and every yes went to the searchable memory index,
+    which is how routine API chatter ended up occupying most of the hot tier. Splitting the
+    answer keeps the record without paying the memory-index cost for it.
+    """
     if tool_name in _READ_ONLY_TOOLS:
-        return False
+        return None
     # Skip if the tool errored -- partial / failed actions are not evidence
     if isinstance(tool_response, dict) and tool_response.get('is_error'):
-        return False
+        return None
     if tool_name in ('Bash', 'bash'):
         command = str(tool_input.get('command', ''))
         if _READ_ONLY_COMMANDS.search(command):
-            return False
-        if _STATE_CHANGING.search(command):
-            return True
-        # Unknown bash command -- conservative default: skip (avoid zaj)
-        return False
-    # Other state-changing tools (Write, Edit, Agent, Workflow) -- capture lightly
+            return None
+        if _MEMORABLE.search(command):
+            return 'memory'
+        # Unknown/routine bash: keep the trace, but out of the memory index. backend's calls do
+        # NOT reach tool_call_log (measured 2026-08-22: that table holds mikrob's rows only), so
+        # dropping outright would lose the record rather than relocate it.
+        return 'log'
+    # A file edit's authoritative record is the diff, not a memory row. Keep the trace locally.
     if tool_name in ('Write', 'Edit', 'NotebookEdit'):
-        return True
+        return 'log'
+    # Delegation is low-volume and genuinely worth recalling -- who was asked to do what.
     if tool_name in ('Agent', 'Workflow'):
-        return True
-    return False
+        return 'memory'
+    return None
+
+
+# ---------------------------------------------------------------------------
+# Local activity log -- the non-searchable destination
+# ---------------------------------------------------------------------------
+
+# Bound: the log is a trace, not an archive. Past this the file is rotated to a single
+# `.1` sibling (overwritten), so the pair can never exceed roughly twice this.
+_ACTIVITY_LOG_MAX_BYTES = 5 * 1024 * 1024
+
+
+def _append_activity_log(agent_id: str, tool_name: str, summary: str) -> None:
+    """Append one REDACTED line to the agent's local activity log. Never raises.
+
+    Deliberately a plain JSONL file rather than a table: it must not be searchable and must
+    not be embedded -- those two costs are exactly what this card removed from the memory
+    index -- while staying greppable when someone is reconstructing what happened.
+    """
+    try:
+        directory = os.path.join(_project_root(), 'store', 'activity-log')
+        os.makedirs(directory, exist_ok=True)
+        path = os.path.join(directory, f'{agent_id}.jsonl')
+        try:
+            if os.path.getsize(path) > _ACTIVITY_LOG_MAX_BYTES:
+                os.replace(path, path + '.1')
+        except FileNotFoundError:
+            pass
+        line = json.dumps(
+            {'at': int(time.time()), 'tool': tool_name, 'summary': summary},
+            ensure_ascii=False,
+        )
+        with open(path, 'a', encoding='utf-8') as handle:
+            handle.write(line + '\n')
+    except Exception:
+        pass  # a trace that cannot be written must never block the agent
 
 
 # ---------------------------------------------------------------------------
@@ -191,7 +242,10 @@ def _command_verb(command: str) -> str:
     m = re.search(r'(?:npm|pnpm)\s+(install|ci|add|remove|uninstall)\b(?:\s+(\S+))?', command, re.IGNORECASE)
     if m:
         return f"{m.group(0)[:60]}"
-    return command[:80]
+    # Last resort: the command itself, WHITESPACE-COLLAPSED. A multi-line shell block cut at
+    # byte 80 is what produced the unreadable dumps this card is about, and embedded newlines in
+    # a one-line summary make it worse still, so the text is flattened before it is cut.
+    return ' '.join(command.split())[:80]
 
 
 def _build_summary(tool_name: str, tool_input: dict, tool_response: dict) -> str:
@@ -240,11 +294,8 @@ def main() -> None:
     if not tool_name:
         sys.exit(0)
 
-    if not _should_record(tool_name, tool_input, tool_response):
-        sys.exit(0)
-
-    token = _dashboard_token()
-    if not token:
+    destination = _destination(tool_name, tool_input, tool_response)
+    if destination is None:
         sys.exit(0)
 
     agent_id = _agent_id_from_cwd(cwd)
@@ -262,6 +313,17 @@ def main() -> None:
             summary = summary[:297] + '...'
     except Exception:
         sys.exit(0)  # fail-closed: skip rather than write unredacted content
+
+    # ROUTINE TRAFFIC STOPS HERE. The trace is kept, the memory index is not touched, and no
+    # token is needed -- which also means the common path no longer depends on the dashboard
+    # being up. Note this runs AFTER redaction, never on the raw command.
+    if destination == 'log':
+        _append_activity_log(agent_id, tool_name, summary)
+        sys.exit(0)
+
+    token = _dashboard_token()
+    if not token:
+        sys.exit(0)
 
     port = _web_port()
     body = json.dumps({

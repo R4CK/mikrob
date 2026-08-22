@@ -148,3 +148,58 @@ prompt + `failed` + a PONTOS hibauzenet), ezert a 141 `local-llm.sh call failed`
 `error` mezot ad vissza, a sor `done` marad, mikozben a hivo hibaval all le. Ez ugyanabba a
 "statisztika-pontossag" osztalyba tartozik, de mas ok, mas javitas es nem ez a kartya -- jelezve, nem
 csendben belesodorva (3. kodminosegi szabaly).
+
+---
+
+## 2026-08-22 -- 34f1ca0c -- Az activity-hook ket celpontja: emlekezet vs helyi napló
+
+**Döntés.** A `scripts/hooks/activity_memory_capture.py` PostToolUse-hook eddig egyetlen
+igen/nem kérdést tett fel ("rögzítsem?"), és minden igen a kereshető memória-indexbe ment. Ez
+mostantól HÁROM válasz: `memory`, `log` vagy eldobás. A memória-index csak azt kapja meg, amit egy
+későbbi munkamenet ténylegesen visszakeres (git commit/push/merge/rebase/tag, `systemctl`
+állapotváltás, csomag-telepítés, delegálás); minden más állapotváltó hívás a `store/activity-log/`
+alatti JSONL-fájlba kerül, ami nem kereshető és nem embeddelődik.
+
+**Miért.** Mérés 2026-08-22-én: a hot tier 145 sorából 109 ennek a hooknak a kimenete volt, és a
+463 auto-activity sor összesen 142 különböző szöveget hordozott. A `tool_call_log` táblán
+végzett A/B (2086 valós parancs) a régi és az új szűrővel:
+
+| | memória-sor | különböző | helyi napló |
+|---|---|---|---|
+| régi | 898 | 215 | -- |
+| új | 20 | 11 | 1640 |
+
+Vagyis a memória-indexbe írás 97,8%-kal csökken, miközben egyetlen hívás nyoma sem vész el. A
+kiszűrt tömeg 791 sora pontosan két alakzat volt: a flotta saját `curl -X POST ... localhost` és
+`printf ... curl ... localhost` API-idiómája -- olyan kérések, amelyek célrendszere (kanban,
+memories, üzenetsor) MÁR őrzi a hiteles rekordot.
+
+**Miért nem "csak dobjuk el őket".** Kézenfekvő lett volna a rutin hívásokat egyszerűen kihagyni,
+arra hivatkozva, hogy a `tool_call_log` úgyis mindent rögzít. Ezt megmértem, és NEM igaz: a
+`tool_call_log` 2086 sorának MINDEGYIKE a `mikrob` ügynöké, a `backend` egyetlen hívása sincs
+benne. Az eldobás tehát elveszítené a nyomot, nem áthelyezné.
+
+**Elvetett alternatívák.**
+
+- _Új SQLite-tábla a rutin hívásoknak._ Séma-változtatás és migráció egy olyan rekordért, amit
+  senki nem kérdez le strukturáltan; a JSONL greppelhető és nulla séma-teher.
+- _Periodikus takarítás, ami a duplikátumokat cold-ba mozgatja (a kártya harmadik javaslata)._ A
+  keletkezést nem akadályozza meg, csak utólag rendezget: az embedding-költséget és a keresés
+  hígulását már kifizettük, mire a takarítás lefut.
+- _Deduplikációs gyorsítótár a hookban._ A szűkítés után a memória-sorok ritkák (2086 hívásra 20),
+  tehát a duplikáció magától megszűnt -- egy külön állapot-fájl a hot path-on nem érte volna meg.
+
+**Következmények.**
+
+- A `store/activity-log/<agent>.jsonl` fájl 5 MB felett egyetlen `.1` testvérbe fordul át, tehát a
+  pár mérete korlátos. A `store/*` már gitignore-olt, a nyomvonal nem kerül a repóba.
+- A dashboard-token ellenőrzése a POST-ág elé került. A napló-ág így akkor is ír, ha a dashboard
+  nem fut -- korábban a token hiánya az egész hookot leállította volna.
+- A többsoros parancs összefoglalója mostantól összevont szóközökkel készül: egy 80 bájtnál
+  elvágott, sortöréseket tartalmazó nyers shell-blokk volt az olvashatatlan bejegyzések forrása.
+- SZÁNDÉKOSAN NEM ORVOSOLT, JELEZVE: (1) a `main()`-ben az `input_text` változó kiszámolódik, de
+  sehol nem használják -- korábbi holt kód, nem az én maradékom, ezért csak jelzem; (2) a hooknak
+  nincs említése a README-ben; (3) a `scripts/hooks/activity-memory-capture.py` (kötőjeles) egy nem
+  hívott másolat, amelybe a 0c5423fc kártya DB-URI redakciós javítása tévedésből landolt, miközben
+  az élesben futó aláhúzásos fájl a mai napig nem redaktál kapcsolati-string jelszót. Ez saját
+  döntést érdemel, MikroB-nak jelentve -- mérve: még semmi nem szivárgott ki (0 ilyen sor).
