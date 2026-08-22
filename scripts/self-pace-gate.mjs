@@ -149,9 +149,35 @@ const SCHEDULER_READ_RX = new RegExp(String.raw`(^|${SCHED_BOUNDARY}\s*)${SCHED_
 // whitespace, e.g. the adversarial `subprocess.run(["crontab","-r"])` shape -- Cybered's own
 // example for this exact card). A plain end-of-segment-or-flag guard would have missed that
 // python-list form entirely, since a `","` follows with no space and no leading `-`.
+// The UNANCHORED at(1)/batch(1) guard drops AT_INVOCATION's end-of-segment branch (card 12f80902,
+// Cybersec's corrected diagnosis). AT_INVOCATION's first alternative is `\s*$` -- "the token sits at
+// the end of the segment" -- which is sound for the ANCHORED check, where the word already had to
+// occupy a command-start position that prose essentially never occupies. Here there is no anchor:
+// every heredoc body LINE is tested whole, so any prose line that happens to END in that word
+// matched. Measured on a real blocked message: a Hungarian sentence whose verb-prefix was typed
+// without its accent fell at a line break, and an ordinary status report was refused as an attempt
+// to schedule a future turn.
+//
+// Dropping it costs no coverage. at(1) REQUIRES a timespec -- the bare binary with nothing after it
+// exits with a usage error and schedules nothing -- so the end-of-segment shape never described a
+// working invocation in the first place. Every shape that can actually submit a job is still
+// matched: a flag, an input redirect, or any of the timespec forms.
+//
+// ONLY at(1) LOSES THE BRANCH -- batch(1) KEEPS IT, and that distinction is load-bearing. at(1)
+// requires a timespec, so "nothing follows it" never described a working invocation. batch(1) takes
+// NO timespec: a bare `batch` reads commands from stdin and runs them when the load average allows,
+// so for batch the end-of-segment shape IS a working submit. Measured while building this fix --
+// applying the change to both binaries allowed `echo x | batch` inside a heredoc body, which the
+// previous version denied. The card's own wording ("delete the end-of-segment branch") would have
+// opened that hole; the two binaries are only spelled alike.
+//
+// This is the THIRD member of the same collision class in this file: ">= 80%" and the
+// "declared trivial difficulty" case are both already documented above. Each previous fix narrowed
+// WHAT may follow the word; this one removes the branch where NOTHING follows it.
+const AT_INVOCATION_UNANCHORED = String.raw`(?=\s+-|\s*<|\s+(?:now|noon|midnight|teatime|today|tomorrow|next\b|\+\s*\d|\d{1,2}:\d{2}|\d{3,4}\b|\d{1,2}\s*(?:am|pm)\b|\d{1,2}[./]\d{1,2}|(?:mon|tue|wed|thu|fri|sat|sun)\b|(?:jan|feb|mar|apr|may|jun|jul|aug|sep|oct|nov|dec)\b))`
 const SCHED_BARE_SHAPE = String.raw`(?!\s+[a-z])`
 const UNANCHORED_SCHEDULER_RX = new RegExp(
-  String.raw`\b(?:crontab|systemd-run)\b(?!-)(?!\s*=)${SCHED_BARE_SHAPE}|\blaunchctl\b(?!-)(?!\s*=)${LAUNCHCTL_SUBCOMMAND}|\b(?:batch|at)\b(?!-)(?!\s*=)${AT_INVOCATION}`,
+  String.raw`\b(?:crontab|systemd-run)\b(?!-)(?!\s*=)${SCHED_BARE_SHAPE}|\blaunchctl\b(?!-)(?!\s*=)${LAUNCHCTL_SUBCOMMAND}|\bbatch\b(?!-)(?!\s*=)${AT_INVOCATION}|\bat\b(?!-)(?!\s*=)${AT_INVOCATION_UNANCHORED}`,
   'i',
 )
 const UNANCHORED_SCHEDULER_READ_RX = new RegExp(

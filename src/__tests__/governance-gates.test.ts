@@ -8,6 +8,69 @@ import {
 import { MAIN_AGENT_ID } from '../config.js'
 import { REPO_UNDER_TMP, TMP_SKIP_REASON } from './helpers/repo-location.js'
 
+// --- card 12f80902: the unanchored at(1) guard must not read prose as a scheduler call ---
+//
+// MEASURED, on a real refusal. The heredoc-body path tests each LINE whole against the UNANCHORED
+// scheduler pattern, and that pattern reused AT_INVOCATION -- whose first alternative is `\s*$`,
+// "the token sits at the end of the segment". With no anchor in front of it, any prose line ENDING
+// in that word matched. A Hungarian status report whose verb-prefix was typed without its accent
+// hit exactly that at a line break, and an ordinary inter-agent message was refused as an attempt
+// to schedule a future turn.
+//
+// The branch protected nothing: at(1) requires a timespec, so "nothing follows it" was never a
+// working invocation.
+//
+// batch(1) IS DIFFERENT AND KEEPS THE BRANCH -- the distinction these tests exist to hold. batch
+// takes NO timespec: a bare `batch` reads commands from stdin and runs them when load permits, so
+// for batch the end-of-segment shape IS a working submit. Applying the fix to both binaries (the
+// literal reading of the card) allowed `echo x | batch` inside a heredoc, which the previous
+// version denied -- caught here before it shipped.
+describe('self-pace-gate: prose ending in the at(1) word (card 12f80902)', () => {
+  const NL = String.fromCharCode(10)
+  const heredoc = (body: string): string => "python3 - <<'PY'" + NL + body + NL + 'PY'
+  // Assembled, not written literally: this very file is scanned by the gate it tests.
+  const AT = 'a' + 't'
+
+  it('ALLOWS a prose line that merely ends in the word (the real refusal)', () => {
+    const line = 'mert a loadCalendarServiceAccountConfig-nak adodik ' + AT
+    expect(selfPaceDecision('Bash', { command: heredoc(line) }).deny).toBe(false)
+  })
+
+  it('ALLOWS the bare binary with nothing after it -- it cannot schedule anything', () => {
+    expect(selfPaceDecision('Bash', { command: heredoc(AT) }).deny).toBe(false)
+  })
+
+  it('STILL DENIES every shape that can actually submit a job', () => {
+    for (const cmd of [
+      'echo "claude -p go" | ' + AT + ' now + 5 minutes',
+      AT + ' -f /tmp/job.sh',
+      AT + ' < job.txt',
+      AT + ' 14:30',
+      AT + ' 1430',
+      AT + ' tomorrow',
+      AT + ' mon',
+      AT + ' dec',
+    ]) {
+      expect(selfPaceDecision('Bash', { command: heredoc(cmd) }).deny, cmd).toBe(true)
+    }
+  })
+
+  it('STILL DENIES a bare batch -- it needs no timespec, so end-of-segment IS an invocation', () => {
+    expect(selfPaceDecision('Bash', { command: heredoc('echo x | batch') }).deny).toBe(true)
+    expect(selfPaceDecision('Bash', { command: heredoc('batch') }).deny).toBe(true)
+  })
+
+  it('leaves the other scheduler binaries untouched', () => {
+    for (const cmd of [
+      'launchctl submit -l self -- node respawn.mjs',
+      'systemd-run --on-active=60 claude -p go',
+      'echo "*/5 * * * * claude -p poll" | crontab -',
+    ]) {
+      expect(selfPaceDecision('Bash', { command: heredoc(cmd) }).deny, cmd).toBe(true)
+    }
+  })
+})
+
 // --- self-pace-gate: blocks the agent from scheduling its own future turns ---
 describe('self-pace-gate gateDecision', () => {
   it('denies the ScheduleWakeup runtime tool', () => {
