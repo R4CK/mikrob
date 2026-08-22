@@ -1,5 +1,11 @@
 #!/usr/bin/env python3
-"""Selftest for activity-memory-capture.py -- verifies redaction and noise filter.
+"""Selftest for activity_memory_capture.py -- verifies redaction and noise filter.
+
+The module under test is the UNDERSCORE one, which is the file agents/*/.claude/settings.json
+wires into the PostToolUse hook. A hyphen-named near-twin used to sit beside it; card 0c5423fc's
+redaction fix landed in that twin, so it never reached the running code. The twin was deleted in
+card 5472cfa9, and src/__tests__/activity-hook-redaction.test.ts now runs this file on every
+suite run -- before that, nothing did.
 
 Card 4829ccff §3 (success criterion c): known secret-shaped fixtures ALL redacted;
 clean commands pass through unchanged.
@@ -18,7 +24,12 @@ import activity_memory_capture as amc  # noqa: E402 (same dir)
 FAILURES: list[str] = []
 
 
+CHECKS = 0
+
+
 def check(label: str, result: str, must_not_contain: list[str], must_contain: list[str] | None = None) -> None:
+    global CHECKS
+    CHECKS += 1
     for bad in must_not_contain:
         if bad in result:
             FAILURES.append(f'FAIL [{label}]: "{bad}" survived redaction in: {result!r}')
@@ -55,6 +66,24 @@ check('password-kv', r, ['super_secret_value_here'], ['[REDACTED]'])
 # JWT triple-dot
 r = amc._redact('token: eyJhbGc.eyJzdWIiOiJ1c2VyIn0.SflKxwRJSMeKKF2QT4fwpMeJf')
 check('jwt-triple', r, ['eyJhbGc.eyJzdWIiOiJ1c2VyIn0'], ['[REDACTED]'])
+
+# DB connection-string passwords (card 0c5423fc, ACTUALLY REACHED as of card 5472cfa9).
+# This fixture exists because the pattern above it shipped once with no test: it landed in the
+# sibling copy nothing executes, and for that whole time `amc` here -- the module the live hook
+# runs -- returned the password unchanged. A test that imports the WIRED module is what turns
+# "the fix was written" into "the fix runs".
+for scheme in ('postgres', 'postgresql', 'mysql', 'mongodb+srv', 'redis'):
+    r = amc._redact(f'psql {scheme}://admin:SuperSecret123@db.internal:5432/cleancore')
+    check(f'db-uri-{scheme}', r, ['SuperSecret123'], ['[REDACTED]', 'admin'])
+
+# ...and the URI must still be recognisable afterwards: redaction that eats the host too would
+# make the log useless without making it safer.
+r = amc._redact('DATABASE_URL=postgres://svc:hunter2hunter2@pg.prod.internal:6432/app')
+check('db-uri-keeps-context', r, ['hunter2hunter2'], ['pg.prod.internal'])
+
+# A URI with NO password must pass through untouched -- no false positive on an ordinary URL.
+r = amc._redact('curl https://cleancore.example.com/api/health')
+check('url-without-credential', r, ['[REDACTED]'], ['cleancore.example.com'])
 
 # Clean text: no redaction of ordinary content
 r = amc._redact('git commit -m "feat(api): add endpoint"')
@@ -198,5 +227,9 @@ if FAILURES:
         print(f, file=sys.stderr)
     sys.exit(1)
 
-print(f'OK: all {30 - len(FAILURES)} checks passed (0 failures)')
+# COUNTED, not asserted from memory (card 5472cfa9). This line used to read `30 - len(FAILURES)`,
+# a literal: it printed "30 checks passed" whatever the file actually contained, so adding or
+# deleting checks never changed the number. A self-test that misreports its own coverage is the
+# wrong thing to trust while auditing a redaction path.
+print(f'OK: all {CHECKS} redaction/filter checks + the inline assertions passed (0 failures)')
 sys.exit(0)

@@ -83,6 +83,16 @@ _SECRET_PATTERNS = [
     re.compile(r'\b[0-9a-fA-F]{40,}\b'),
     # Long base64-only blobs >= 40 chars
     re.compile(r'(?<![A-Za-z0-9+/])[A-Za-z0-9+/]{40,}={0,2}(?![A-Za-z0-9+/=])'),
+    # DB connection string URI passwords: postgres://user:PASSWORD@host, mysql://, mongodb://, redis://
+    # Capture group 1 = the URI prefix up to and including ':', group 2 = password (replaced).
+    #
+    # Card 5472cfa9: this pattern was WRITTEN by card 0c5423fc and landed in the sibling copy that
+    # nothing executes, so the live hook -- which runs on EVERY tool call and writes to the memories
+    # table -- did not redact connection-string passwords until now. The fixture in
+    # activity-memory-capture.selftest.py is what makes that impossible to repeat: the original
+    # change shipped with no test asserting the redaction it added, so nothing noticed it was
+    # unreachable.
+    re.compile(r'(?i)((?:postgres(?:ql)?|mysql|mongodb(?:\+srv)?|redis)://[^:@\s]+:)([^@\s]{6,})(?=@)'),
 ]
 
 

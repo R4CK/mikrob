@@ -254,3 +254,60 @@ kockázatos rész nagyobb volt, mint amit a kártya feltételezett.
 - A 226 meglévő hiba letakarítása külön feladat marad (típusonként bontva), ahogy a kártya is írja.
   A racsni ehhez ad kényszert: minden javítás után a baseline lejjebb vihető, és onnantól az a
   szigorúbb korlát él.
+
+---
+
+## 2026-08-22 -- 5472cfa9 -- A redakciós javítás az ÉLES fájlba, és a nem hívott iker törlése
+
+**Döntés.** A DB-kapcsolati string jelszavát redaktáló minta átkerült a ténylegesen futó
+`scripts/hooks/activity_memory_capture.py`-be; a nem hívott `activity-memory-capture.py` iker
+törölve; és a selftest -- amit addig SEMMI nem futtatott -- bekerült a vitest-suite-ba
+(`src/__tests__/activity-hook-redaction.test.ts`).
+
+**Miért nem elég a mintát átmásolni.** A 0c5423fc kártya ezt a mintát MÁR megírta, és `d64d4b28`
+committal a kötőjeles ikerbe landolta, amit semmi nem hív -- miközben a `settings.json:75` az
+aláhúzásosat drótozza a PostToolUse hookba. A kártya `done` lett. Élő bizonyíték a felfedezéskor:
+ugyanaz a string az ikernél `[REDACTED]`-re ment, az élesben futónál változatlan maradt.
+
+**Két független hiba állt egymás mellé**, és a másodikat tartom a súlyosabbnak:
+
+1. a javítás rossz fájlba került;
+2. a hozzá tartozó teszt-készletet (`activity-memory-capture.selftest.py`) **semmi nem futtatta** --
+   se a vitest-suite, se CI (a repóban nincs is `.github/workflows`).
+
+A (2) nélkül az (1) egy perc alatt kiderült volna. Ezért ez a kártya nem csak átmásolja a mintát,
+hanem a selftestet bedrótozza a suite-ba, és a redakciót az ÉLES modulon, abszolút útvonalról
+betöltve is állítja -- egy "kényelmi" importtal írt teszt pontosan azt a hibát nem fogta volna meg,
+ami itt történt.
+
+**Mérve, mielőtt riasztottam volna.** A `memories` táblában `://user:pass@` alakú sor összesen 2,
+ebből az activity-hooktól 0, DB-sémával 0 -- tehát LATENS rés volt, nem folyamatban lévő incidens.
+Ezt a besorolást a javítás előtt rögzítettem, nem utólag.
+
+**Mellékként javítva: a selftest hazudott a saját lefedettségéről.** A záró sora
+`f'OK: all {30 - len(FAILURES)} checks passed'` volt -- egy literál, ami 0 hiba esetén MINDIG
+"30"-at írt ki, függetlenül attól, hány ellenőrzés van a fájlban. A valódi szám **15**. Egy
+redakciós utat auditálva a legrosszabb dolog egy olyan harness, ami a saját fedezetét túlmondja,
+ezért most számolva jelenti; külön teszt tiltja a literál visszatérését.
+
+**Hatókör-eltérés, kimondva.** MikroB a 34f1ca0c hatókörében kérte ezt a lépést (msg 18980). Mire
+hozzáértem, a 34f1ca0c már `waiting` volt **QA PASS-szal** (komment 15137, Gate-SHA c7eb89d0). Egy
+új commit ott érvénytelenítette volna azt a verdiktet, ezért a munka a 0c5423fc-ből született
+5472cfa9 kártyára került -- ugyanaz a fájlcsalád, és a redakció átemelése amúgy is előfeltétele az
+iker törlésének (nem szabad törölni azt a fájlt, amiben egy javítás egyetlen példánya él).
+
+**Következmények.**
+
+- A `_redact` a mintát két csoporttal illeszti: az 1. csoport (URI-előtag) megmarad, a 2. (jelszó)
+  sosem kerül kiírásra -- a helyettesítés `group(1) + '[REDACTED]'`. Élő végponttól végpontig
+  ellenőrizve: `postgres://admin:[REDACTED]@db.internal:5432/cleancore`, a host megmarad.
+- Az e2e első kísérletem NEM bizonyított semmit: a `curl` ige illeszkedett, így az URI be sem
+  került az összefoglalóba. Megismételve olyan paranccsal, ahol a jelszó tényleg eljut a
+  redaktorig -- ez a mérés a bizonyíték, az első nem volt az.
+- A törlés seep-je hivatkozás szerint futott (a `module-deletion-sweep` skill szerint), a teljes
+  repóra, típusszűrés nélkül: 3 találat, mind prózában (két komment + egy DECISIONS-bejegyzés),
+  egyik sem hívás. A selftest docstringje a törölt fájlt nevezte meg -- javítva, mert különben
+  ugyanaz a doksi-hazugság-osztály maradt volna vissza.
+- A selftest fájlneve továbbra is kötőjeles (`activity-memory-capture.selftest.py`), pedig az
+  aláhúzásos modult teszteli. Szándékosan nem neveztem át: külön churn, és a docstring most
+  kimondja, melyik modult tölti be.
