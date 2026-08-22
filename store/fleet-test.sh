@@ -203,4 +203,31 @@ then
   } >&2
 fi
 
+# LINT RATCHET (card 8fb0aa44). ESLint landed with commit 9783a9d7 and nothing ever called it --
+# not this script, not `npm test` (only `vitest run`), and there is no .github/workflows. 226
+# errors accumulated unnoticed; the weekly audit counted 224 the day before, so the backlog was
+# provably still growing while nobody looked.
+#
+# It runs ONLY on a full run. The common call is a single test file that finishes in under a
+# second, and a 16s lint pass on top of that is a tax on the cheapest, most frequent use -- the
+# same reasoning the build marker above uses.
+#
+# It runs AFTER the suite because the suite is the primary signal: a reader should see the tests
+# before a style bound. But its failure is NOT swallowed -- a green suite with a new floating
+# promise must not land. See lint-ratchet.sh for why this is a ratchet and not `npm run lint`.
+# THE TEST TREE'S COPY, NOT $ROOT'S. $ROOT is the live install, which sits at whatever commit the
+# install happens to be on -- linting it would report on code this run is not testing, and would
+# pass or fail a gate on the wrong sha. $TEST_TREE is a hard checkout of TARGET, and the script
+# derives its own root from its own location, so invoking it there measures exactly what was just
+# tested. (Both the script and its baseline are force-added to git despite `store/*` being
+# ignored, per the ops-scripts rule -- otherwise neither would exist in this tree.)
+if [ ${#ARGS[@]} -eq 0 ] && [ -x "$TEST_TREE/store/lint-ratchet.sh" ]; then
+  echo >&2
+  "$TEST_TREE/store/lint-ratchet.sh" >&2
+  lint_status=$?
+  if [ "$lint_status" -ne 0 ] && [ "$status" -eq 0 ]; then
+    status="$lint_status"
+  fi
+fi
+
 exit "$status"
