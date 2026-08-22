@@ -9,6 +9,27 @@ description: Find and fix EN-copy violations in locale files (de/es/fr/it/pl). U
 - Parity test / CI fail: "EN-copy violation in de/es/fr/it/pl"
 - i18n fordítási sprint (df12479a-típusú kártyák)
 
+## Munkakönyvtár: a SAJÁT worktree-d, NEM a megosztott klón (kártya 973ed6eb)
+
+A CleanCore-t minden fejlesztő ügynök a saját git-worktree-jében szerkeszti; a megosztott klón
+CSAK fetch/landolás-alap, oda senki nem commitol. Ezért ez a skill sehol nem nevez fix útvonalat --
+az elején egyszer feloldod a sajátodat, és onnantól `$CC`-t (shellben) vagy `CC`-t (Pythonban)
+használsz:
+
+```bash
+CC="$(/home/neon/marveen/store/agent-worktree.sh <a te agent-neved> --path)"   # pl. backend, fullstack
+```
+
+```python
+import subprocess
+CC = subprocess.run(['/home/neon/marveen/store/agent-worktree.sh', '<a te agent-neved>', '--path'],
+                    capture_output=True, text=True).stdout.strip()
+```
+
+Ha csak ELLENŐRZŐL és nem írsz (pl. gate-ként nézed, mi landolt), a fő klón a helyes hivatkozás
+`${CLEANCORE_MAIN:-/mnt/h/LM_Studio_Workdir/CleanCore}` -- de ott ne commitolj, és NE dolgozz más
+ügynök worktree-jében.
+
 ## Procedure
 
 ### 1. Parity check futtatása (mit kell fordítani)
@@ -105,6 +126,25 @@ for lang in langs:
         print(f'  {k}: {v!r}')
 ```
 
+### 1b. Local-LLM draft offload (card 4245417b) -- OPCIONÁLIS, token-spórló
+
+A hiányzó kulcsok **mechanikus fordítás-draftját** add ki a lokális GPU-modellnek, ne égess
+online Claude-tokent rá. A `store/i18n-draft.sh` a SOURCE (EN) fájl VALÓS namespace-eiből
+(összes top-level kulcs, rekurzívan flattelve -- **nincs hardcode-olt namespace-allowlist**,
+így egy új namespace, pl. `vertical.*`, sosem csúszik át vakfoltként) kiszedi a célnyelvből
+HIÁNYZÓ kulcsokat, és a `local-llm.sh --task translate` preseten át mindegyikhez draftot kér:
+
+```bash
+# egy nyelvre, a repo tényleges messages-mappájával (NINCS hardcode-olt projekt-út):
+store/i18n-draft.sh --messages-dir <repo>/packages/i18n/messages --lang de --limit 40
+# -> <messages-dir>/de.draft.json (CSAK a hiányzó kulcsok, nyelvenként), a valós fájlt NEM írja
+```
+
+A `.draft.json` **DRAFT-only**: ember + i18n-gate ellenőrzi (ICU-placeholderek, LEGIT_SAME,
+kontextus), majd a lenti SINGLE-PROCESS mintával mergeled a valós locale-fájlba. A draft NEM
+megy közvetlenül élesbe. A placeholdereket (`{name}`, `{rate}`, `<b>..</b>`) a preset megőrzi,
+de a gate KÖTELEZŐEN visszaellenőrzi (lásd §QA gate: double-brace ICU).
+
 ### 2. Fordítás -- SINGLE PROCESS PATTERN (WSL2/NTFS kötelező!)
 
 **KRITIKUS:** WSL2-n a `/mnt/h/...` (NTFS 9P mount) caching miatt külön Python processzek elavult fájlt olvasnak. Mindig EGY processz tölt be mindent, módosít memóriában, és írja ki az összeset.
@@ -112,7 +152,7 @@ for lang in langs:
 ```python
 import json, pathlib
 
-BASE = pathlib.Path('/mnt/h/LM_Studio_Workdir/CleanCore/packages/i18n/messages')
+BASE = pathlib.Path(CC) / 'packages/i18n/messages'   # CC: a SAJÁT worktree-d, lásd fent
 langs = ['de','es','fr','it','pl']
 
 def sn(d, dotpath, value):
@@ -158,18 +198,20 @@ print('Done.')
 ### 3. Commit (namespace-enként vagy batch)
 
 ```bash
-cd /mnt/h/LM_Studio_Workdir/CleanCore
+cd "$(/home/neon/marveen/store/agent-worktree.sh <a te agent-neved> --path)"
 git add packages/i18n/messages/de.json packages/i18n/messages/es.json \
         packages/i18n/messages/fr.json packages/i18n/messages/it.json \
         packages/i18n/messages/pl.json
-# NE git add -A -- shared checkout, más ágensek is dolgozhatnak!
+# Explicit fájllista, ne `git add -A`: a saját worktree-d indexe már megvéd más ügynök
+# stage-elt munkájától, de a te SAJÁT szemetedet (build-artefakt, ideiglenes fájl) még mindig
+# beviheti egy -A.
 git commit -m "feat(i18n): <namespace> translations — de/es/fr/it/pl"
 ```
 
 ### 4. Teszt
 
 ```bash
-cd /mnt/h/LM_Studio_Workdir/CleanCore
+cd "$(/home/neon/marveen/store/agent-worktree.sh <a te agent-neved> --path)"
 npx vitest run apps/web/src/i18n-locale-guard.test.ts
 # 14/14 kell
 ```
@@ -225,7 +267,7 @@ Amikor új user-facing string kerül a kódba és az összes locale-ba egyszerre
 ```python
 import json, pathlib
 
-BASE = pathlib.Path('/mnt/h/LM_Studio_Workdir/CleanCore/packages/i18n/messages')
+BASE = pathlib.Path(CC) / 'packages/i18n/messages'   # CC: a SAJÁT worktree-d, lásd fent
 
 # Fordítások per locale
 NEW_KEYS = {

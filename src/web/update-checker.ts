@@ -1,4 +1,6 @@
 import { execFileSync } from 'node:child_process'
+import { readFileSync } from 'node:fs'
+import { join } from 'node:path'
 import { PROJECT_ROOT } from '../config.js'
 import { TOOL_TIMEOUTS } from '../tool-timeouts.js'
 
@@ -21,6 +23,11 @@ export interface UpdateRelease {
 
 export interface UpdateStatus {
   current: string
+  /** Semver of the running instance (package.json "version"), e.g. "1.32.1".
+   * Resolved live per request. Empty/absent when package.json is missing,
+   * unreadable, or malformed -- the UI then shows the SHA alone and NEVER a
+   * fabricated version. */
+  version?: string
   latest: string
   behind: number
   commits: UpdateCommit[]
@@ -80,10 +87,24 @@ let updateStatusCache: AggregateUpdateStatus = {
 }
 
 export function getUpdateStatus(): AggregateUpdateStatus {
-  // branch is resolved live (cheap local rev-parse): the cache may predate the
-  // first refresh cycle, and a checkout switch should be visible immediately.
+  // branch and version are resolved live (cheap local rev-parse / file read):
+  // the cache may predate the first refresh cycle, and a checkout switch or
+  // in-place version bump should be visible immediately.
   // (Fork: return the AggregateUpdateStatus so the per-repo `repos` block is kept.)
-  return { ...updateStatusCache, branch: trackedBranch() }
+  return { ...updateStatusCache, branch: trackedBranch(), version: currentVersion() }
+}
+
+// Semver of the running instance, read from package.json at PROJECT_ROOT. Returns
+// '' on ANY failure (missing / unreadable / malformed / no string "version"):
+// the caller must never display a fabricated version, so the field is simply
+// empty and the UI falls back to the commit SHA alone.
+export function currentVersion(root: string = PROJECT_ROOT): string {
+  try {
+    const pkg = JSON.parse(readFileSync(join(root, 'package.json'), 'utf-8'))
+    return typeof pkg?.version === 'string' ? pkg.version : ''
+  } catch {
+    return ''
+  }
 }
 
 export function currentGitHead(): string {
@@ -137,9 +158,11 @@ async function fetchCompare(remote: string, base: string, head: string): Promise
   return null
 }
 
-// Matches a `chore(release): vX.Y.Z` subject and captures the version + the
-// human summary that follows a "--" / "—" separator (if any).
-const RELEASE_RE = /^chore\(release\):\s*(v\d+\.\d+\.\d+)\s*(?:--|—)?\s*(.*)$/
+// Matches a `chore(release): vX.Y.Z[+build-meta]` subject and captures the
+// version + the human summary that follows a "--" / "—" separator (if any).
+// Build-metadata (+mikrob.N) is part of the captured version group so the
+// full SemVer token is preserved, matching the package.json convention.
+const RELEASE_RE = /^chore\(release\):\s*(v\d+\.\d+\.\d+(?:[+][^\s]*)?)\s*(?:--|—)?\s*(.*)$/
 
 // Strip trailing git trailers (Co-Authored-By, Signed-off-by) and blank lines
 // from a release-commit body so only the human summary remains.
@@ -319,7 +342,7 @@ export async function refreshUpdateStatus(): Promise<AggregateUpdateStatus> {
 // local HEAD. Lets the dashboard show a "new version available" badge
 // without anyone having to SSH in and run update.sh.
 export function startUpdateChecker(): NodeJS.Timeout {
-  // First check shortly after startup; then every 15 minutes.
+  // First check shortly after startup; then every 6 hours (Peti 2026-08-21, was 15 minutes).
   setTimeout(() => { refreshUpdateStatus().catch(() => {}) }, 10_000)
-  return setInterval(() => { refreshUpdateStatus().catch(() => {}) }, 15 * 60_000)
+  return setInterval(() => { refreshUpdateStatus().catch(() => {}) }, 6 * 60 * 60_000)
 }

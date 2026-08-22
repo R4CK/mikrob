@@ -19,6 +19,7 @@ import {
   fail as failLocalLlm,
   abstain as abstainLocalLlm,
   verifyOutput,
+  isDirectSyncCall,
   reclaimStaleRunning as reclaimStaleLocalLlm,
   getById as queueGetById,
   listRecent as queueListRecent,
@@ -1121,18 +1122,36 @@ export async function tryHandleLocalLlm(ctx: RouteContext): Promise<boolean> {
     }
     if (kind === 'complete') {
       const result = String(payload['result'] ?? '')
-      // Independent verification (card ea931c14, komment 14138 requirement 1) BEFORE accepting the
-      // result as done -- a completion that fails this check is treated as a failed ATTEMPT, not a
-      // silent success, so it still counts toward the retry/escalation budget fail() already owns.
-      const verdict = verifyOutput(result)
-      if (!verdict.ok) {
-        const status = failLocalLlm(getDb(), id, `output verification failed: ${verdict.reason}`, Date.now())
-        if (status === 'escalated') notifyEscalation(id)
-        json(res, { id, status, verified: false, reason: verdict.reason })
-        return true
+      // A DIRECT-SYNC row is a STATISTICS registration, not queued work (card 41df5159): local-llm.sh
+      // hands the model's answer straight back to its caller on stdout and posts an intentionally
+      // empty `{"result":""}` here purely to close the row. It therefore has no output to verify, and
+      // running the check on it marked EVERY successful direct call `failed` on the dashboard -- 460
+      // rows, all of them from calls that had actually succeeded (_queue_finish complete is only
+      // reached after the Ollama response returns; the failure path posts /fail instead). The
+      // verification (card ea931c14) stays exactly as it was for real WORKER results, which is what
+      // it was built for.
+      const statisticsOnly = isDirectSyncCall(getDb(), id)
+      if (!statisticsOnly) {
+        // Independent verification (card ea931c14, komment 14138 requirement 1) BEFORE accepting the
+        // result as done -- a completion that fails this check is treated as a failed ATTEMPT, not a
+        // silent success, so it still counts toward the retry/escalation budget fail() already owns.
+        const verdict = verifyOutput(result)
+        if (!verdict.ok) {
+          const status = failLocalLlm(getDb(), id, `output verification failed: ${verdict.reason}`, Date.now())
+          if (status === 'escalated') notifyEscalation(id)
+          json(res, { id, status, verified: false, reason: verdict.reason })
+          return true
+        }
       }
       completeLocalLlm(getDb(), id, result, Date.now())
-      json(res, { id, status: 'done', verified: true })
+      // `verified` reports what actually happened, not what would look tidy: a statistics row was
+      // never verified, and saying otherwise would make the field useless as evidence.
+      json(
+        res,
+        statisticsOnly
+          ? { id, status: 'done', verified: false, verificationSkipped: 'direct-sync' }
+          : { id, status: 'done', verified: true },
+      )
     } else if (kind === 'fail') {
       const status = failLocalLlm(getDb(), id, String(payload['error'] ?? 'unknown error'), Date.now())
       if (status === 'escalated') notifyEscalation(id)

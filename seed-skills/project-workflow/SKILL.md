@@ -1,11 +1,11 @@
 ---
 name: project-workflow
-description: The mandatory team workflow for any non-trivial project — Phase/Task/Subtask decomposition, Kanban ownership + progress %, 10-minute stuck detection, and author-cannot-verify sign-off. Use whenever the user assigns a multi-step project or feature to the fleet. Encodes the standing rules and the full agent team roster.
+description: The mandatory team workflow for any non-trivial project — Phase/Task/Subtask decomposition, Kanban ownership + progress %, 10-minute stuck detection, and author-cannot-verify sign-off. Use whenever Peti assigns a multi-step project or feature to the fleet. Encodes the standing rules and the full agent team roster.
 ---
 # Project Workflow (csapat-szabályok)
 
 ## Mikor használd
-Bármilyen nem-triviális feladatnál/projektnél, amit a felhasználó ad. Ezek KÖTELEZŐ szabályok, nem opcionálisak.
+Bármilyen nem-triviális feladatnál/projektnél, amit Peti ad. Ezek KÖTELEZŐ szabályok, nem opcionálisak.
 
 ## A 4 szabály
 1. **Felbontás Fázis -> Feladat -> alfeladat -> al-alfeladat (4+ szint).** Minden munkát LEGALÁBB négy szinten bontasz le, és az alfeladatokat tovább bontod konkrét lépésekre, ahányszor szükséges. A Kanbanon ez rekurzív parent/child kártyákkal valósul meg (`parent_id`): Fázis = top, Feladat = gyerek, alfeladat = unoka, al-alfeladat/lépés = dédunoka (mélyebben is, ha a feladat indokolja). Nagy/kockázatos alfeladatnál (pl. hash-lánc, offline-sync, provisioning, auth) a 4. szint kötelező.
@@ -19,14 +19,22 @@ Bármilyen nem-triviális feladatnál/projektnél, amit a felhasználó ad. Ezek
    - **Kuldoi oldal (automatikus, nem kell rá emlekezni):** a `POST /api/messages` a kuldes pillanataban hozzafuzi minden hivatkozott kartya `status`-at es `updated_at`-jat (`[card-state @send]` blokk). Ez SZERVER-oldalon tortenik, tehat egy elfelejtett kezi bekezdés nem hianyzik belole.
    - **Fogadoi oldal (ez a KOTELEZO szabaly):** barmely dispatch/nudge/re-dispatch feldolgozasanak ELSO lepese a kartya FRISS allapotanak lekerdezese (`GET /api/kanban` + szures id-re), MIELOTT barmilyen munka -- olvasas, epites, agent-inditas -- elkezdodne. Ha a stamp es a friss allapot elter, a friss nyer, es a dispatch elavult: ne epitsd ujra, hanem jelezd vissza.
    - A stamp HINT, nem engedely es nem zar. Nem helyettesiti az ujraolvasast: azert van, hogy az elavulas SZEMBETUNJON, ne azert, hogy megsporolja az ellenorzest.
-4. **Készterméket csak NEM a készítő ellenőrizhet — KOCKÁZAT-ALAPÚ gate-tiering (csapat-szabály 2026-07-05).** Minden kész kártyát MINIMUM 2 független ügynök ellenőriz; a készítő SOHA nem ellenőrzi a sajátját. A gate-pool 3 tagú: **QA** (funkcionális), **Cybersec** (per-finding, STRIDE/OWASP), **Cybered** (adverzariális kill-chain). MikroB TTE-feladata (állandó orchestrátor-kötelesség) kártyánként kiválasztani/váltogatni a gate-tagokat a kártya kockázata szerint:
+3c. **`FINDING:` komment egy hosszú/több-ülésű kártyán -- a terv túléli a kompaktálást (OthmanAdi/planning-with-files mintája, ADAPT 6/10).** A kártya címének `[NN%]`-je + leírása már a "task_plan.md" szerepét tölti be (rule 2), a komment-lista pedig a session-naplót (progress.md) -- ami hiányzott: egy "findings.md" jellegű, útközbeni jegyzet. Ha egy kártya több dispatch-echo-n/kompaktáláson át húzódik (a te saját sessioned is összefoglalódhat, mielőtt a kártya lezárul), a köztes felismeréseket (mért adat, kizárt hipotézis, gyökér-ok, döntés) ÍRD KI `FINDING: <egy-két mondat>` prefixű kommentbe AZONNAL, ne csak a végső REVIEW-ba gyűjtsd -- egy kompaktálás-utáni összefoglaló pontosan az ilyen köztes lépéseket veszítheti el, a kártya commentjei viszont nem. Egy frissen ébredt/másik ügynök a `GET /api/kanban/<id>/comments`-tel újraépítheti a trajektóriát a `FINDING:` prefixek mentén, ugyanúgy ahogy a `REVIEW:`/`SKIP:` prefix már ma is elsőosztályú marker (4. szabály). Nem kötelező minden kártyán -- csak ott, ahol a munka ténylegesen több lépésben/ülésben zajlik.
+4. **Készterméket csak NEM a készítő ellenőrizhet — KOCKÁZAT-ALAPÚ gate-tiering (Peti szabály 2026-07-05).** Minden kész kártyát MINIMUM 2 független ügynök ellenőriz; a készítő SOHA nem ellenőrzi a sajátját. A gate-pool 3 tagú: **QA** (funkcionális), **Cybersec** (per-finding, STRIDE/OWASP), **Cybered** (adverzariális kill-chain). MikroB TTE-feladata (állandó orchestrátor-kötelesség) kártyánként kiválasztani/váltogatni a gate-tagokat a kártya kockázata szerint:
    - **QA: MINDIG** (minden kártyán, ez az egyik a 2-ből). Nem alkudható.
    - **Cybersec:** ha a kártya trust-boundaryt érint — auth, publikus/unauth endpoint, RBAC, multi-tenant scope, pénz, PII, file-upload, superadmin, crypto. Tiszta belső domain-logikánál (nincs új támadási felület) helyette a másik gate-taggal rotál.
    - **Cybered:** magas-tétű kártyákra + release/mérföldkő előtt — publikus write path, auth/session, superadmin, internet-facing. Ekkor **mind a 3** fut.
    - **Alap eset (2 gate):** QA + a kockázatnak leginkább megfelelő biztonsági gate (Cybersec vagy Cybered), rotálva. **Magas-kockázat (3 gate):** QA + Cybersec + Cybered.
    A befejező ügynök `waiting` + "REVIEW" komment. DONE csak akkor, ha MINDEN kijelölt gate PASS/GO. Bármelyik bukása -> vissza `in_progress` reprodukálható jelentéssel. MikroB orchestrálja és a PASS-ok után zárja. A puszta zöld teszt NEM bizonyíték (magic-link 151/151 zöld + 2 MAJOR).
+   - **SKIP-marker konvenció (Cybered mintája, Peti jóváhagyva 2026-08-13):** ha egy gate-ügynök (QA/Cybersec/Cybered) egy `waiting`+REVIEW kártyát talál, ami a `Gate:` sor szerint NEM az ő hatáskörébe esik, írjon egy rövid `<AGENT> SKIP: nem az én hatáskorom` kommentet a kártyára (indoklással, pl. "nincs trust-boundary" vagy "nem a designalt gate"), UGYANÚGY ahogy a REVIEW-t is felismeri a self-advance-loop. Ez visszajelzi a self-advance mechanizmusnak, hogy a kártyát MÁR MEGNÉZTE, és nem próbálja újra minden ciklusban ugyanazt a nem-neki-szóló kártyát felvenni — enélkül a scan minden körben ugyanazon a kártyán akad el, és a nudger feleslegesen (token-égetve) ismétli a kört. Minden gate-ügynök (nem csak Cybered) kövesse ezt: a SKIP egy elsőosztályú, kereshető marker, ugyanolyan súlyú mint egy valódi verdikt a self-advance szempontjából, csak nem mozgatja a kártyát.
 5. **Fázis/szülő automatikus lezárása.** Ha egy szülő-kártya (fázis, feladat, alfeladat) MINDEN gyereke `done` és nincs több tennivaló, a szülőt is `done`-ra teszed. Minden gyerek-lezárás után ellenőrizd felfelé rekurzívan: ha az volt az utolsó nyitott elem, zárd a szülőt is.
-6. **Frontend-pairing (csapat-szabály 2026-07-05).** Minden USER-FACING feature/funkció (új feature, pl. versenytárs-elemzésből; VAGY user-facing viselkedést változtató bugfix) mellé MikroB AUTOMATIKUSAN létrehoz egy párosított **Fron Ted** frontend-kártyát (`@fron-ted`, a feature gyereke/testvére, backend kártyára hivatkozva). Két lépés: (1) user flow / IA a `user-flow-menu-design` skillel (hol él a navigációban, teljes journey, minden állapot); (2) frontend UI a `frontend-design-research` skillel, a backendhez drótozva + bekötve az app menü/navigációjába. A user flow-t Fron Ted maga generálja. QA a flow-teljességet + elérhetőséget is gate-eli. Tisztán belső/infra munkánál (adapter, migráció, type-fix -- nincs UI) NINCS pairing. Minden feature-dispatchnél és lezárásnál ellenőrizd: van-e a feature-nek Fron Ted frontend-kártyája; ha nincs, hozd létre.
+6. **Frontend-pairing (Peti szabály 2026-07-05).** Minden USER-FACING feature/funkció (új feature, pl. versenytárs-elemzésből; VAGY user-facing viselkedést változtató bugfix) mellé MikroB AUTOMATIKUSAN létrehoz egy párosított **Fron Ted** frontend-kártyát (`@fron-ted`, a feature gyereke/testvére, backend kártyára hivatkozva). Két lépés: (1) user flow / IA a `user-flow-menu-design` skillel (hol él a navigációban, teljes journey, minden állapot); (2) frontend UI a `frontend-design-research` skillel, a backendhez drótozva + bekötve az app menü/navigációjába. A user flow-t Fron Ted maga generálja. QA a flow-teljességet + elérhetőséget is gate-eli. Tisztán belső/infra munkánál (adapter, migráció, type-fix -- nincs UI) NINCS pairing. Minden feature-dispatchnél és lezárásnál ellenőrizd: van-e a feature-nek Fron Ted frontend-kártyája; ha nincs, hozd létre.
+6a. **A párosítás kimondott, lekérdezhető sor, nem próza (kártya d03b3eea mérése, 2026-08-16).** Mért adat: amikor a BE+FE pár EGYÜTT jön létre, a két oldal ténylegesen párhuzamosan épül (3/3 eset, 0,2-0,5 órás dispatch-átfedéssel) -- az időzítés tehát nem hibás. Ami hiányzik: 11/14 friss FE-kártyán a hivatkozás csak a leírás prózájában él, csak 10/29-nél van `parent_id` -- a szabály betartása NEM lekérdezhető, csak grep-elhető. A `Produces:`/`Consumes:` mintájára (lásd alább) a párosított kártyák leírásának elején kötelező: a backend kártyán `Pair-FE: <fron-ted kártya ID>`, a Fron Ted kártyán `Pair-BE: <backend kártya ID>`. MikroB tölti ki mindkettőt a kártyák LÉTREHOZÁSAKOR, egymásra mutatva -- nem utólag, nem az építő ügynökre bízva.
+
+## Alfeladat-kártyák közötti szerződés (obra/superpowers `writing-plans` mintája, ADAPT 4/10)
+Amikor egy Feladatot alfeladat-kártyákra bontasz, és a B alfeladat a A alfeladat kimenetére épül (függvény, típus, mezőnév), az A kártya leírásába/REVIEW-jébe kerüljön egy rövid **"Produces:"** sor a pontos szignatúrával (függvény/típusnév, paraméter- és visszatérési típus), a B kártya leírásába pedig egy **"Consumes:"** sor, ami erre hivatkozik. Enélkül a downstream kártya nem tudja, mire épít, és pont az a fajta csendes-drift alakulhat ki, ami a 33527dcd kártyán (spread-lauderolt kulcsok, deklarálva-de-nem-forwardolva) történt. Ez NEM külön dokumentum, csak egy-két sor a meglévő kártya-leírásban.
+
+**No-Placeholders a kártya-leírásokban és REVIEW-kommentekben:** ugyanezen minta alapján kerüld a "TBD", "hasonló mint a X kártya", "később finomítjuk", "megfelelő hibakezelés" típusú, tartalom nélküli megfogalmazásokat -- vagy írd le a tényleges értéket/kódot, vagy hagyd nyitva explicit kérdésként.
 
 ## Eljárás (új projekt indításakor)
 1. Hozz létre egy Fázis-szintű parent kártyát projektenként (assignee, `[0%]`).
@@ -60,6 +68,27 @@ Bármilyen nem-triviális feladatnál/projektnél, amit a felhasználó ad. Ezek
 - Beragadt kártya néma marad -> ezért kell az ütemezett monitor; ne csak manuálisra hagyatkozz.
 - Az assignee-nek futnia kell (tmux session), különben a dispatch nem ér célba.
 - **`[NN%]` PUT-frissítés NE clobberölje a címet (2026-07-02, saját hiba):** egyetlen kártyát a `GET /api/kanban/<id>` NEM ad vissza (nem-JSON) -> ha onnan olvasod a jelenlegi címet, üres string jön, és a `PUT {title: "..."}` FELÜLÍRJA az egész címet (elveszik a valós cím). Helyesen: a jelenlegi címet a `GET /api/kanban` LISTÁBÓL szűrd id-re (python), a régi `[NN%]`-t regexszel strippeld, tedd rá az újat, ÚGY PUT-old. Fail-safe: ha a base-cím üres, NE PUT-olj (különben clobber). A description-t nem érinti a title-PUT.
+
+## Tesztfuttatás -- CSAK a fleet teszt-worktree-ből (kártya 9070461f)
+
+A vitest suite **nem futtatható az élő installból** (`{{INSTALL_DIR}}`): hard failt dob, mert a
+suite a saját checkoutja alatt ír (`store/`, `.env`, `.claude/skills/`) -- 2026-07-27-én egy éles
+futás törölte a live `config-overrides.json`-t, 600->644-re írta az `.env`-et és valódi break-glass
+Telegram-riasztásokat küldött.
+
+A csábító megoldás (`/tmp` worktree) a MÁSIK csapda: onnan **7 teszt-fájl NÉMÁN SKIPPEL**, mert a
+hook-registration guard helyesen elutasítja a `/tmp`-gyökerű script-utakat. Egy "14 bukó teszt"
+baseline-t egyszer már minőségi hibaként követtünk, miközben 13 pusztán ez az artefakt volt.
+
+**Ezért egyetlen belépési pont van:**
+```bash
+store/fleet-test.sh                      # teljes suite az állandó, nem-/tmp worktree-ből
+store/fleet-test.sh src/__tests__/x.ts   # csak ezek (bármilyen vitest arg átmegy)
+store/fleet-test.sh --ref <sha>          # adott commit tesztelése
+```
+A script idempotens: létrehozza egyszer a `{{INSTALL_DIR}}-test` worktree-t, utána újrahasznál,
+a megadott commitra reseteli, és symlinkeli az élő `node_modules`-t (nincs második `npm ci`).
+Ne hozz ad-hoc temp worktree-t -- pont ezt váltja ki.
 
 ## Ellenőrzés
 - Minden aktív kártyán van assignee ÉS `[NN%]` a címben.

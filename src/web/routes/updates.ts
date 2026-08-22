@@ -5,8 +5,9 @@ import { join } from 'node:path'
 import type http from 'node:http'
 import { spawn, execFileSync } from 'node:child_process'
 import { execFileAsync } from '../exec-async.js'
-import { PROJECT_ROOT, STORE_DIR } from '../../config.js'
+import { PROJECT_ROOT, STORE_DIR, MAIN_AGENT_ID } from '../../config.js'
 import { logger } from '../../logger.js'
+import { createAgentMessage } from '../../db.js'
 import {
   getUpdateStatus, refreshUpdateStatus,
 } from '../update-checker.js'
@@ -591,6 +592,23 @@ export async function tryHandleUpdates(ctx: RouteContext): Promise<boolean> {
       if (!result.ok) {
         releaseLock()
         logger.warn({ reason: result.reason }, 'upstream merge failed')
+        // Peti directive 2026-08-21: a merge-conflict on this button used to leave nothing but a
+        // browser toast telling the OWNER to run git commands by hand -- but the merge (and its
+        // fork-owned-vs-upstream-owned conflict judgement calls) is the orchestrator's job, not
+        // Peti's. Page MAIN_AGENT_ID via the normal inter-agent inbox so it lands as an actionable
+        // message in the orchestrator's own session, same channel every dispatch already uses.
+        try {
+          createAgentMessage(
+            'system',
+            MAIN_AGENT_ID,
+            `Upstream merge ütközés a "Frissítés telepítése" gombnál (${result.reason}). ` +
+            'A merge megszakítva (mergeAbort), a tree tiszta. Ezt te oldd fel a szokásos eljárással ' +
+            '(git merge upstream/main, upstream-owned vs fork-owned fájlok szerint dönteni, teszt+build, commit, push), ' +
+            `ne Petit kérd meg rá. Hiba: ${result.message}`
+          )
+        } catch (err) {
+          logger.warn({ err }, 'failed to page orchestrator about upstream merge conflict (non-fatal)')
+        }
         json(res, { error: result.message, reason: result.reason }, result.reason === 'merge-conflict' ? 409 : 500)
         return true
       }

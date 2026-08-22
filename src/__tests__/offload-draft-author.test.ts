@@ -70,13 +70,18 @@ describe('gate sweeps -- a draft is neither a REVIEW nor an orchestrator directi
   })
 
   it('the reseed source of the gate-scan recipe deny-lists the draft author', () => {
-    expect(read(GATE_SCAN_SEED)).toContain(`'mikrob', 'qa', 'qa2', '${DRAFT_AUTHOR}'`)
+    // 'mikrob' left this flat tuple as of card af580149 (kanban-gate-scan.md rewrite): MikroB's
+    // OWN self-work REVIEWs must still reach a gate (rule 4, no self-review), so a blanket
+    // author=='mikrob' exclusion was replaced with a conditional self-work-marker check just below
+    // this line. DRAFT_AUTHOR ('local-llm') stays flatly excluded either way -- a draft is never a
+    // gate request, full stop, which is the one property this test owns.
+    expect(read(GATE_SCAN_SEED)).toContain(`'qa', 'qa2', '${DRAFT_AUTHOR}'`)
   })
 
   it('the installed per-agent copy has not drifted from it (skipped when absent, e.g. CI)', () => {
     const live = join(REPO_ROOT, GATE_SCAN_LIVE)
     if (!existsSync(live)) return
-    expect(readFileSync(live, 'utf8')).toContain(`'mikrob', 'qa', 'qa2', '${DRAFT_AUTHOR}'`)
+    expect(readFileSync(live, 'utf8')).toContain(`'qa', 'qa2', '${DRAFT_AUTHOR}'`)
   })
 })
 

@@ -25,6 +25,17 @@ describe('kanbanMoveInstructions', () => {
     expect(out).not.toContain('húzd "done"-ra')
   })
 
+  // Upstream ties the `actor` field to a "self-close to done, with actor" flow (kanbanMoveInstructions
+  // telling the agent to move done/in_progress with actor="cody"). Our fork's completion step is
+  // "waiting", not "done" -- self-close is the exact thing the first test above forbids -- so this
+  // function has no "done"/self-pickup-in_progress curl to name an actor on in the first place. The
+  // `actor` field itself is real and used (moveKanbanCard/fireKanbanDispatch's self-advance-echo
+  // suppression, see kanban.ts), just not through THIS instructional text's completion step.
+  it('does not instruct a self-close-to-done actor move (fork policy, not upstream\'s)', () => {
+    const out = kanbanMoveInstructions('abc123', 'cody')
+    expect(out).not.toContain('"status":"done","actor":"cody"')
+  })
+
   it('keeps the bearer token out of the message (reads it at run time)', () => {
     const out = kanbanMoveInstructions('abc123', 'cody')
     expect(out).toContain('$(cat ')

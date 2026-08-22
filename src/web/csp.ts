@@ -9,8 +9,12 @@
 //     inline style="" attributes across web/index.html with no build step to hash or nonce them;
 //     forcing that here would be a multi-hundred-line, constantly-drifting maintenance trap for a
 //     lower-severity vector (CSS injection) than the one script-src actually closes.
-//   - connect-src 'self': every fetch()/EventSource() in web/*.js targets a relative path (grep
-//     confirmed zero absolute-URL fetch calls); the SSE terminal stream is same-origin too.
+//   - connect-src 'self' + jsDelivr: every fetch()/EventSource() in web/*.js targets a relative
+//     path (grep confirmed zero absolute-URL fetch calls); the SSE terminal stream is same-origin
+//     too. jsDelivr is added ONLY so DevTools can fetch the .map files for the xterm/addon-fit
+//     bundles it's already allowed to execute (script-src) -- without it those sourcemap fetches
+//     get CSP-blocked and show as red console errors on every page load, even though nothing is
+//     actually broken. No new trust granted: this origin already runs arbitrary JS in the page.
 //   - frame-ancestors 'none': nothing embeds this dashboard in an iframe (grep: zero <iframe> in
 //     web/, no prior X-Frame-Options) -- free clickjacking protection, not asked for by the card
 //     but the standard reason CSP exists alongside script/style-src.
@@ -20,7 +24,7 @@ export const CONTENT_SECURITY_POLICY = [
   "style-src 'self' 'unsafe-inline' https://cdn.jsdelivr.net",
   "img-src 'self' data:",
   "font-src 'self' data:",
-  "connect-src 'self'",
+  "connect-src 'self' https://cdn.jsdelivr.net",
   "object-src 'none'",
   "base-uri 'self'",
   "frame-ancestors 'none'",

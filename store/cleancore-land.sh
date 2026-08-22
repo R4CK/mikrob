@@ -79,6 +79,24 @@ landed_by_from_worktrees() {
   esac
 }
 
+# Pick the real branch out of `git branch -a --contains` output.
+#
+# WHY THIS IS NOT JUST `head -1`. That listing puts the CURRENT checkout first, and $MAIN lives in
+# detached HEAD permanently -- gates check it out to whatever sha they are reading. So whenever the
+# main clone is parked ON the gated sha, which is the normal state while a gate is reviewing it, the
+# first line is the pseudo-entry `* (HEAD detached at <sha>)`. It is not a branch, `rev-parse` on it
+# yields nothing, and the script then refused with the nonsense message "tip is  but the GATED sha
+# is <sha>" -- i.e. it rejected precisely the branches that were ready to land. Measured on card
+# 1e819a83. A branch name can never begin with `(` (git refuses to create one), so dropping lines
+# that do is exact, not a heuristic.
+pick_branch() {
+  sed 's/^[+*[:space:]]*//' \
+    | grep -v '^(' \
+    | grep -v '^remotes/origin/main$' \
+    | grep -v '^main$' \
+    | head -1
+}
+
 if [ "${1:-}" = "--selftest" ]; then
   fail=0; n=0
   t() { n=$((n+1)); [ "$2" = "$3" ] || { echo "  FAIL $1: got [$2] want [$3]"; fail=1; }; }
@@ -120,6 +138,18 @@ if [ "${1:-}" = "--selftest" ]; then
     "$(landed_by_from_worktrees 'fix/not-checked-out' "$WL" "$R")" "unknown"
   t "a branch name that is a PREFIX of another does not match it" \
     "$(landed_by_from_worktrees 'landing/batch' "$WL" "$R")" "unknown"
+  t "pick_branch skips the detached-HEAD pseudo-entry (card 1e819a83)" \
+    "$(printf '* (HEAD detached at 1a36a6d7)\n+ agent/backend/work\n' | pick_branch)" \
+    "agent/backend/work"
+  t "pick_branch still ignores main and origin/main" \
+    "$(printf '  main\n  remotes/origin/main\n+ agent/backend/work\n' | pick_branch)" \
+    "agent/backend/work"
+  t "pick_branch takes the checked-out branch when there IS one" \
+    "$(printf '* agent/backend/work\n  main\n' | pick_branch)" \
+    "agent/backend/work"
+  t "pick_branch yields nothing when only main contains the sha" \
+    "$(printf '* (HEAD detached at deadbeef)\n  main\n  remotes/origin/main\n' | pick_branch)" \
+    ""
   echo "selftest: $n case(s), $([ $fail -eq 0 ] && echo PASS || echo FAIL)"
   exit $fail
 fi
@@ -153,8 +183,7 @@ if git -C "$MAIN" merge-base --is-ancestor "$SHA" origin/main 2>/dev/null; then
 fi
 
 # The gated sha must BE the branch tip. If the branch moved on, the extra commits were never gated.
-BRANCH="$(git -C "$MAIN" branch -a --contains "$SHA" 2>/dev/null | sed 's/^[+* ]*//' \
-          | grep -v '^remotes/origin/main$' | grep -v '^main$' | head -1)"
+BRANCH="$(git -C "$MAIN" branch -a --contains "$SHA" 2>/dev/null | pick_branch)"
 [ -n "$BRANCH" ] || die 3 "no branch contains $SHA"
 TIP="$(git -C "$MAIN" rev-parse --short "$BRANCH" 2>/dev/null)"
 GSHORT="$(git -C "$MAIN" rev-parse --short "$SHA")"
@@ -290,7 +319,17 @@ fi
 
 if [ "$DRY" = "--dry-run" ]; then say "DRY-RUN: not pushing"; rm -f "${MERGE_ERR:-}" 2>/dev/null; exit 0; fi
 
-git -C "$WT" push origin HEAD:main >/dev/null 2>&1 || { echo "PUSH FAILED"; exit 4; }
+if ! git -C "$WT" push origin HEAD:main >/dev/null 2>&1; then
+  # A nonzero exit here does not always mean the remote rejected the push -- a dropped
+  # connection after the remote already accepted it looks identical locally. Verify
+  # against the remote before declaring failure, so a landed push is never reported as
+  # PUSH FAILED (which would prompt a needless, racy retry against a shared branch).
+  git -C "$MAIN" fetch origin --quiet
+  if ! git -C "$MAIN" merge-base --is-ancestor "$SHA" origin/main; then
+    echo "PUSH FAILED"; exit 4
+  fi
+  say "push exited nonzero but $GSHORT is already an ancestor of origin/main -- it landed, continuing"
+fi
 git -C "$MAIN" fetch origin --quiet
 if git -C "$MAIN" merge-base --is-ancestor "$SHA" origin/main; then
   MERGE="$(git -C "$WT" rev-parse --short HEAD)"

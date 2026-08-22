@@ -30,6 +30,12 @@ describe('CONTENT_SECURITY_POLICY', () => {
     expect(styleSrc).toContain('https://cdn.jsdelivr.net')
   })
 
+  it('connect-src allows jsDelivr too, so DevTools can fetch the sourcemaps for the scripts it already runs', () => {
+    const connectSrc = CONTENT_SECURITY_POLICY.split('; ').find((d) => d.startsWith('connect-src'))
+    expect(connectSrc).toContain("'self'")
+    expect(connectSrc).toContain('https://cdn.jsdelivr.net')
+  })
+
   it('blocks framing (frame-ancestors none) -- nothing in web/ uses an iframe', () => {
     expect(CONTENT_SECURITY_POLICY).toContain("frame-ancestors 'none'")
   })

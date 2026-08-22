@@ -288,6 +288,10 @@ export function loadRuntimeAllowlist() {
 // The tier is returned because the quarantine tier is the security-relevant exception and
 // its grants are audited: a fetch nobody can see is a hole nobody can find.
 //
+// The tier is returned because the quarantine tier is the security-relevant
+// exception and its grants are audited: a fetch nobody can see is a hole
+// nobody can find.
+//
 // Domain matching uses URL-parsed hostname ONLY, not string-contains, to prevent
 // bypasses like `https://evil.com/?x=docs.anthropic.com` matching the domain
 // "docs.anthropic.com" via a simple includes() check.
@@ -379,6 +383,10 @@ export function payloadKeySignature(payload) {
   return Object.keys(payload).sort().join(',')
 }
 
+// `agentType` IS logged by value, unlike everything else in the payload. It is
+// an agent-type name from a fixed set -- not content, not a url, not a secret
+// -- and without it a denied sub-agent call cannot be told apart from a denied
+// main-agent one, which is exactly the distinction this log now exists to make.
 function logLine(kind, url, detail, keys = '', agentType = '') {
   try {
     mkdirSync(join(REPO_ROOT, 'store'), { recursive: true })

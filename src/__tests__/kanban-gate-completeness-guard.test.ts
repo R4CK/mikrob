@@ -338,6 +338,39 @@ describe('gateCompletenessGuardVerdict', () => {
       expect(gateCompletenessGuardVerdict('c1', 'done', false).blocked).toBe(false)
     })
 
+    // Real incident d4a2130d (card 85c87024): QA declared the full 40-char Gate-SHA, Cybersec
+    // declared the short 8-char form of the SAME commit, posted AFTER QA. Before the fix these
+    // were two different map keys, so the round boundary jumped to Cybersec's later citation and
+    // QA's earlier, genuinely-fresh PASS read as pre-round -- "QA verdikt hianyzik" on a card both
+    // gates had actually approved.
+    it('d4a2130d: QA (full-length Gate-SHA) and Cybersec (short-length, SAME commit, posted later) both count -- no false "missing verdict"', () => {
+      card.description = 'Gate: QA + Cybersec'
+      comments = [
+        { author: 'backend2', content: 'REVIEW -- kesz\nGate-SHA: 17ee54f587455ae34061d06b085fce15a022bd21', created_at: 100 },
+        { author: 'qa', content: 'REVIEW: QA PASS\nGate-SHA: 17ee54f587455ae34061d06b085fce15a022bd21', created_at: 200 },
+        { author: 'cybersec', content: 'CYBERSEC GO\nGate-SHA: 17ee54f5', created_at: 300 },
+      ]
+      expect(gateCompletenessGuardVerdict('c1', 'done', false).blocked).toBe(false)
+    })
+
+    // Negative control: a short sha that merely SHARES A PREFIX with an unrelated full sha must
+    // stay two distinct commits -- the fix groups by prefix identity (same commit, different
+    // citation length), not by "any two shas that happen to overlap in their first 6 chars".
+    it('CONTROL: two DIFFERENT commits that happen to share their first 6 hex chars are not collapsed into one round', () => {
+      card.description = 'Gate: QA + Cybersec'
+      comments = [
+        { author: 'backend2', content: 'REVIEW -- kesz\nGate-SHA: aaaaaa1111111111111111111111111111111111', created_at: 100 },
+        { author: 'cybersec', content: 'CYBERSEC GO @ old\nGate-SHA: aaaaaa1111111111111111111111111111111111', created_at: 120 },
+        // A genuinely different commit that only coincidentally shares the first 6 hex chars.
+        { author: 'backend2', content: 'REVIEW -- kesz, uj commit\nGate-SHA: aaaaaa2222222222222222222222222222222222', created_at: 200 },
+        { author: 'qa', content: 'REVIEW: QA PASS\nGate-SHA: aaaaaa2222222222222222222222222222222222', created_at: 220 },
+      ]
+      const v = gateCompletenessGuardVerdict('c1', 'done', false)
+      // Cybersec never verdicted the new commit -- must still block.
+      expect(v.blocked).toBe(true)
+      expect(v.message).toContain('Cybersec')
+    })
+
     it('no comment on the card EVER used the Gate-SHA convention -> falls back to the word/author heuristic unchanged', () => {
       card.description = 'Gate: QA + Cybersec + Cybered'
       comments = [

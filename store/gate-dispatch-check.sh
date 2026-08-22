@@ -195,6 +195,15 @@ review_rx = re.compile(r"^(?:[#*\-]+[ \t]*)?REVIEW\b", re.M)
 gate_sha_rx = re.compile(r"^(?:[-*#]+[ \t]*)?Gate-SHA:[ \t]*([0-9a-fA-F]{7,40}(?:[ \t]*[, ][ \t]*[0-9a-fA-F]{7,40})*)", re.M | re.I)
 fence_rx = re.compile(r"(```|~~~).*?(\1|\Z)", re.S)
 
+# INFO-ONLY (card a5732476, QA-measured on e00c12ad): a comment that merely NAMES an already-
+# reviewed sha in passing -- baseline CI data, a status recap -- falls through to the
+# extract_shas() scrape at the bottom of is_submission() and gets read as a fresh submission,
+# even though its author is not asking anyone to look at anything new. Same shape and same fix as
+# Gate-SHA above: a line-anchored field the AUTHOR states outright beats a heuristic guessing at
+# intent. Checked FIRST in is_submission(), before Gate-SHA/REVIEW/scrape, because "this is not a
+# submission" is a stronger and cheaper claim than any content signal that might otherwise fire.
+info_only_rx = re.compile(r"^(?:[-*#]+[ \t]*)?INFO-ONLY\b", re.M)
+
 def structured_shas(text):
     out = set()
     for m in gate_sha_rx.finditer(fence_rx.sub("", text or "")):
@@ -267,6 +276,11 @@ def is_submission(c):
     # ADVISE-SKIP:stale-verdict even though the verdict was current for the same HEAD. Identity is
     # checked first because a gate agent can never be a submitter, whatever it writes.
     if author in NON_SUBMITTERS:
+        return False
+    # INFO-ONLY beats every content signal below it, same reasoning as Gate-SHA: an explicit
+    # author declaration needs no guessing. Fence-stripped for the same quoting reason as
+    # review_rx (a fenced or `> `-quoted mention of the word must not arm this).
+    if info_only_rx.search(fence_rx.sub("", text)):
         return False
     # A declared Gate-SHA IS the submission signal (card f910eabd): whoever writes that line is
     # naming a commit for a gate to look at, which is the whole definition. Checked before the
@@ -796,6 +810,16 @@ print(",".join(c.get("id") or "" for c in cards if isinstance(c, dict)))
     d "decide: a re-request after QA PASS re-arms" "ALLOW:stale-verdict"       0 qa2
     SELFTEST_JSON='[{"author":"backend","created_at":100,"content":"REVIEW"},{"author":"qa","created_at":200,"content":"QA PASS -- commit abc1234"}]'
     d "decide: the QA-covers-qa2 exception is qa2-only" "ALLOW:no-verdict"     0 cybersec
+
+    # INFO-ONLY (card a5732476, e00c12ad-shape): a later comment carrying a stray hex-looking
+    # token that is NOT the gated commit -- a CI run id, a coverage hash, baseline data -- falls
+    # through to the extract_shas() scrape and re-arms the gate as if it named new work, unless
+    # its author declares it is not a submission. Same shape as the "stray hex token re-arms
+    # without the field" case above, but for INFO-ONLY instead of Gate-SHA.
+    SELFTEST_JSON='[{"author":"backend","created_at":100,"content":"REVIEW -- commit abc1234"},{"author":"qa","created_at":200,"content":"QA PASS -- commit abc1234"},{"author":"backend","created_at":300,"content":"baseline CI adat, mar lezart kerdeshez: futas-azonosito ffff9999"}]'
+    d "decide: an unmarked stray hex token still re-arms (unchanged, fail-open default)" "ALLOW:stale-verdict" 0 qa
+    SELFTEST_JSON='[{"author":"backend","created_at":100,"content":"REVIEW -- commit abc1234"},{"author":"qa","created_at":200,"content":"QA PASS -- commit abc1234"},{"author":"backend","created_at":300,"content":"INFO-ONLY: baseline CI adat, mar lezart kerdeshez, nem verdikt-keres. Futas-azonosito ffff9999"}]'
+    d "decide: the SAME stray token marked INFO-ONLY does not re-arm" "ADVISE-SKIP:already-gated" 8 qa
 
     # DESIGNATION (card 5bc10089). dd() is d() plus GATE_LABELS/GATE_LINE, since designation is
     # per-card context the plain d() has no way to pass.
