@@ -201,6 +201,29 @@ for m in $MIGS; do
 done
 [ -n "$MIGS" ] || say "no migrations in this branch"
 
+# Lockfile vs package.json, BEFORE the merge (card b8c1ff36). Two cards in one day declared a
+# workspace dependency and did not regenerate pnpm-lock.yaml; both passed every gate and both blocked
+# the deploy, because nothing in the gate path reads the lockfile -- tsc/vitest/linters all resolve
+# through an already-installed node_modules, so the first clean install happens at deploy time.
+#
+# REFUSES ONLY ON A REAL MISMATCH (exit 1). A harness fault (exit 3: no pnpm on PATH, network, a
+# store that cannot be read) does NOT refuse -- otherwise a broken toolchain quietly becomes a policy
+# that blocks every landing, which is a worse failure than the one being prevented. It is also
+# skipped outright when the branch touches no package.json, which is most of them.
+# The status is captured on its OWN line, never as `if ! cmd; then rc=$?`. Inside that branch `$?`
+# is the status of the `!` inversion (always 0), so the exit-1 refusal below would never have fired
+# and this guard would have been decorative -- measured, not guessed, before it shipped.
+LF_OUT="$("$(dirname "$0")/lockfile-sync-check.sh" --repo "$MAIN" --ref "$SHA" --base origin/main 2>&1)"
+LF_RC=$?
+if [ "$LF_RC" -eq 1 ]; then
+  printf '%s\n' "$LF_OUT" >&2
+  die 3 "pnpm-lock.yaml does not match this branch's package.json files -- regenerate the lockfile (pnpm install --lockfile-only) and re-gate; landing it would break the deploy"
+elif [ "$LF_RC" -ne 0 ]; then
+  say "lockfile check skipped (harness fault, not a verdict): $(printf '%s' "$LF_OUT" | head -1)"
+else
+  say "$(printf '%s' "$LF_OUT" | head -1)"
+fi
+
 rm -rf "$WT"
 git -C "$MAIN" worktree add --detach -q "$WT" origin/main || die 3 "could not create the landing worktree"
 cleanup() { git -C "$MAIN" worktree remove --force "$WT" >/dev/null 2>&1; }
