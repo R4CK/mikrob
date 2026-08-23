@@ -1028,3 +1028,43 @@ elutasítás, ami drag közben elsül. Most mindhárom hívás olvassa a válasz
 
 **Ki döntött:** backend (implementáció).
 **Hivatkozás:** kártya 73540a68 (szülő 37c5605a), pair-BE a8aa9ae5.
+
+## 2026-08-23 16:05 -- A heredoc-tulajdonos meghatározása megáll a beágyazott parancs-kontextusnál (kártya 84e31b40, Cybered NO-GO F-1/F-2)
+
+**Döntés:** a `stripHeredocDataPayloads` `boundary`-je mostantól a négy beágyazott parancs-kontextus
+nyitójelénél is lép, nem csak `;` `&` `|` és újsor hatására. Szándékosan NEM állítja vissza a külső
+határt a záró jelnél: egy helyettesítés UTÁN álló heredoc így a nyitójeltől méri a saját spanját,
+elbukik a vezető-bináris ellenőrzésen, és teljesen szkennelve marad -- ez a fail-closed irány.
+
+**Miért blokkoló és miért az én hibám:** a heredoc-kiürítés azt kérdezi, hogy „a heredoc ELŐTTI
+egyszerű parancs adatként olvassa-e ezt", és a választ a legutóbbi határjelig visszaolvasva adta meg.
+Egy beágyazott kontextus nem volt határjel, tehát egy BELSŐ értelmező heredocja a KÜLSŐ curl spanjából
+mérte magát, kielégítette mindkét tulajdonlási feltételt, és kiürült -- miközben a bash ténylegesen
+lefuttatta. Cybered nem állt meg a szkennelőnél: ártalmatlan payloaddal (marker-fájl írása)
+bizonyította, hogy a kiürített törzs VÉGREHAJTÓDIK. Öt alak, és mind az öt a szülő commiten még
+tiltás alá esett, tehát a lyukat az előző commitom vitte be az email-kapuba.
+
+**Amit ez a lelet a saját előző REVIEW-mról mond:** azt írtam, hogy az import azért biztonságos, mert
+a függvény „már átesett egy biztonsági javításon". Ez igaz volt, és mégis kevés: egy korábbi
+NO-GO-val megkeményített függvény nem ugyanaz, mint egy kimerítően megvizsgált függvény. A QA PASS és
+a Cybersec GO is elment mellette -- mindkettő a tulajdonlási FELTÉTELEKET nézte (curl-e a vezető
+bináris, ott van-e a `-d @-`), egyik sem azt, hogy a span HATÁRA hol van. A feltétel helyes volt; a
+bemenete nem.
+
+**Amit az import-döntésről mond:** semmi rosszat, sőt. Mivel a járó közös, EGY javítás mindkét kaput
+zárja, és a self-pace kapun ez a lyuk 4638c14c / 0229c844 óta nyitva állt -- másolat esetén két
+helyen kellett volna megtalálni és javítani.
+
+**Regresszió mind az öt alakra, MINDKÉT suite-ban, külön fájlban.** Nem egy összevont eset: abból
+négy alak csendben visszajöhetne a járó következő átírásakor. A self-pace oldal külön fájlt kapott
+(`self-pace-nested-command-context.test.ts`), mert ott más payload-osztályt rejt (ütemező-hívás, nem
+küldés), és egy csak az email-suite mellett élő regresszió ezt a kaput lefedetlenül hagyná.
+
+**Mérve, nem feltételezve:** a határlépés visszavételével mindkét suite-ban pontosan 6 teszt pirosodik
+(az öt alak + a negyedik nyitójel kontrollja), a két jogos ENGEDÉLYEZÉS-kontroll mindkettőben zöld
+marad. Ez zárja ki, hogy a javítás valójában a kártya eredeti céljának visszavonása lenne.
+
+**Ki döntött:** Cybered (a lelet, az élő repro és a lemért javítás), fullstack (végrehajtás, a
+záró-jel-visszaállítás elhagyása fail-closed indokkal, a kétszeres regressziós lefedés).
+**Hivatkozás:** kártya 84e31b40, commit e12d81b0. Előzmény: f4fac1d7 (ez nyitotta az email-kapun),
+4638c14c és 0229c844 (a self-pace kapun eddig is nyitva volt).
