@@ -2639,6 +2639,21 @@
           </div>
         </div>
 
+        <!-- Card dependencies (card 73540a68). Predecessors = what this card waits for;
+             successors = what waits for it. Separate from subtasks on purpose: parent/child is
+             containment, this is ordering. -->
+        <div id="cardDepsSection" style="display:none; margin-top:12px">
+          <h4 data-i18n="kanban.deps.predecessors_title">Függ ettől (predecessorok)</h4>
+          <div id="cardPredecessorsList" class="comments-list"></div>
+          <div class="form-row" style="gap:8px; align-items:center; margin-top:8px">
+            <input type="text" id="newDependencyQuery" list="cardDepCandidates" placeholder="Kártya keresése cím szerint..." data-i18n-placeholder="kanban.deps.search_placeholder" style="flex:1; padding:6px 10px; border-radius:6px; border:1px solid var(--border); background:var(--bg); color:var(--text); font-size:13px">
+            <datalist id="cardDepCandidates"></datalist>
+            <button class="btn-primary btn-compact" id="addDependencyBtn" data-i18n="kanban.deps.add_btn">Függőség hozzáadása</button>
+          </div>
+          <h4 style="margin-top:12px" data-i18n="kanban.deps.successors_title">Ezek függnek tőle (successorok)</h4>
+          <div id="cardSuccessorsList" class="comments-list"></div>
+        </div>
+
         <div id="cardChildrenSection" style="display:none; margin-top:12px">
           <h4 data-i18n="kanban.modal.subtasks_title">Subtask-ok</h4>
           <div id="cardChildrenList" class="comments-list"></div>

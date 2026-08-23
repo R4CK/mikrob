@@ -999,3 +999,32 @@ továbbítva jut előre. Obfuszkálás továbbra sem megengedett.
 opció biztonságos alakja: adat-heredoc igen, értelmező-heredoc nem).
 **Hivatkozás:** kártya 84e31b40, commit 038c57f0. Előzmény: 132fc28c (a soron belüli literál),
 4638c14c (a csali-lelet a self-pace kapun).
+## 2026-08-23 15:38 -- A blokkoló kártya prioritása ott állítható, ahol a blokk látszik (kártya 73540a68)
+
+**Döntés:** a kártya-modál két új szekciója (predecessorok / successorok) EGY `GET
+/api/kanban/:id/dependencies` hívásból renderel, teljes kártya-objektumokkal -- így egy öt élű
+kártya egy kérést indít, nem hatot. Az inline prioritás-select KIZÁRÓLAG a predecessor-sorokon van,
+és a MÁSIK kártya prioritását írja, a már létező `PUT /api/kanban/:id`-n keresztül. Nincs új mező és
+nincs új végpont.
+
+**Miért a predecessor-sorokon, és miért ez a feature lényege:** amikor egy kártya blokkolva van, a
+hasznos cselekvés nem a saját prioritásának állítása, hanem azé, ami útban van -- az pedig egy MÁSIK
+kártya, amit különben meg kell keresni a táblán, meg kell nyitni, és ott állítani. A blokk ott
+látszik, ahol a kártyát nézed; a gomb is oda való.
+
+**Az azonosító a hiteles, nem a cím.** A hozzáadás egy `datalist`-ből választ, és a listaelem
+`"<cím> [<id>]"` alakú; a gomb az `[id]`-t olvassa ki. Két kártyának lehet azonos címe, és egy
+cím-alapú egyeztetés némán a rosszhoz kötné a függőséget.
+
+**A 409 ELÉR A FELHASZNÁLÓIG, mégpedig azzal, hogy MELYIK kártya blokkol** (12. munkavégzési
+szabály). A `kanbanMoveErrorMessage()` a `code: 'dependency_blocked'` mezőre illeszt -- nem a
+hibaüzenet szövegére --, és a `blockedBy` címeit írja ki. Ez mindhárom mozgatási úton bekötve van.
+
+**Egy MEGLÉVŐ hibát is ez hozott felszínre, és javítva lett:** a HTML5 drag-and-drop drop-kezelője
+egyáltalán NEM nézte a választ (`await fetch(...)` `r.ok` ellenőrzés nélkül), tehát egy elutasított
+mozgatás némán újrarendert az RÉGI állapottal -- a felhasználónak ez UI-hibának látszik, nem
+elutasításnak. A guard nélkül ez évekig láthatatlan maradhatott volna, mert eddig alig volt olyan
+elutasítás, ami drag közben elsül. Most mindhárom hívás olvassa a választ.
+
+**Ki döntött:** backend (implementáció).
+**Hivatkozás:** kártya 73540a68 (szülő 37c5605a), pair-BE a8aa9ae5.
