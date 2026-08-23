@@ -28,9 +28,12 @@
 #                       sha is appended as the final argument. fleet-test.sh hardcodes the real repo
 #                       as ROOT, so an automated test of THIS script against a throwaway repo must
 #                       override this to a stub.
+#   MARVEEN_LAND_MAX_ATTEMPTS  default 3 -- how many full merge+verify+push attempts before giving
+#                       up on a repeatedly-raced push (card 65657bad).
 #
 # Exit: 0 landed (or dry-run clean, or nothing to land) | 2 bad usage | 3 refused a precondition
 #       | 4 merge/verify/push failed
+#       (5 is internal: land_one lost the push race; land_with_retry consumes it and never leaks it)
 set -uo pipefail
 
 MAIN="${MARVEEN_MAIN:-/home/neon/marveen}"
@@ -53,6 +56,7 @@ fi
 DEFAULT_BRANCH="$(g symbolic-ref --short refs/remotes/origin/HEAD 2>/dev/null | sed 's@^origin/@@')"
 [ -n "$DEFAULT_BRANCH" ] || DEFAULT_BRANCH="develop"
 TEST_CMD="${MARVEEN_LAND_TEST:-$MAIN/store/fleet-test.sh --ref}"
+MAX_ATTEMPTS="${MARVEEN_LAND_MAX_ATTEMPTS:-3}"
 
 land_one() {
   local agent="$1" dry="$2"
@@ -71,7 +75,11 @@ land_one() {
   local wt="/home/neon/marveen-land-${agent}-$$"
   rm -rf "$wt"
   g worktree add --detach -q "$wt" "origin/$DEFAULT_BRANCH" || die 3 "could not create the landing worktree for $agent"
-  cleanup() { g worktree remove --force "$wt" >/dev/null 2>&1; }
+  # `${wt:-}` and the explicit success, both deliberate (card 65657bad, caught by its own test): the
+  # RETURN trap set here also fires when land_with_retry returns, where `wt` is a dead local -- under
+  # `set -u` that aborted the whole script mid-landing. Nothing to remove is not a failure, either;
+  # a non-zero last command in a RETURN trap would poison the return code it is riding on.
+  cleanup() { [ -n "${wt:-}" ] && g worktree remove --force "$wt" >/dev/null 2>&1; return 0; }
   trap cleanup RETURN
 
   local msg="merge: $branch into $DEFAULT_BRANCH (marveen-land, base @ $(git -C "$wt" rev-parse --short HEAD))"
@@ -130,7 +138,23 @@ land_one() {
 
   if [ "$dry" = "1" ]; then say "$agent: DRY-RUN -- not pushing"; return 0; fi
 
-  git -C "$wt" push origin "HEAD:$DEFAULT_BRANCH" >/dev/null 2>&1 || { echo "$agent: PUSH FAILED"; return 4; }
+  # Card 65657bad: this used to be `>/dev/null 2>&1`, so PUSH FAILED never said why. On a fleet that
+  # lands often the usual cause is a LOST RACE -- another agent pushed during our merge+test window,
+  # leaving this push non-fast-forward -- which is not a fault at all. Indistinguishable from a real
+  # one (credentials, network, a rejecting hook) without git's own words, so two agents re-ran the
+  # whole landing by hand to find out. Print them.
+  local push_err
+  if ! push_err="$(git -C "$wt" push origin "HEAD:$DEFAULT_BRANCH" 2>&1)"; then
+    echo "$agent: PUSH FAILED -- git says:"; echo "$push_err" | sed 's/^/    /'
+    # A race is the one failure worth retrying, and only these exact markers identify it -- they are
+    # what git prints for a non-fast-forward. Matching a bare "rejected" would also catch a
+    # pre-receive hook REFUSING the push, which is a decision, not a race: retrying that burns
+    # another full merge+verify cycle and fails again for the same reason.
+    case "$push_err" in
+      *"(fetch first)"*|*"(non-fast-forward)"*) return 5 ;;
+    esac
+    return 4
+  fi
   g fetch -q origin "$DEFAULT_BRANCH"
   if g merge-base --is-ancestor "$merge_sha" "origin/$DEFAULT_BRANCH"; then
     # $branch itself is left untouched here on purpose: it is now an ancestor of origin/$DEFAULT_BRANCH,
@@ -152,6 +176,24 @@ land_one() {
   return 4
 }
 
+# A raced push is retried from the TOP, not by pushing again: the base moved, so the merge result
+# fleet-test approved no longer describes what would land. Re-merging and re-verifying is this
+# script's whole point -- pushing the already-tested merge onto a different base, or skipping the
+# re-test to save two minutes, would put code on develop that no fleet-test ever saw.
+land_with_retry() {
+  local agent="$1" dry="$2" attempt=1 rc
+  while :; do
+    land_one "$agent" "$dry"; rc=$?
+    [ "$rc" -eq 5 ] || return "$rc"
+    if [ "$attempt" -ge "$MAX_ATTEMPTS" ]; then
+      echo "$agent: REFUSED -- lost the push race $attempt time(s) in a row; origin/$DEFAULT_BRANCH keeps moving during the merge+test window. Nothing pushed; agent/${agent}/work is untouched."
+      return 4
+    fi
+    attempt=$((attempt+1))
+    say "$agent: another agent landed during the merge+test window -- re-merging onto the new origin/$DEFAULT_BRANCH and verifying again (attempt $attempt/$MAX_ATTEMPTS)"
+  done
+}
+
 DRY=0
 case "${2:-}" in --dry-run) DRY=1 ;; esac
 
@@ -161,13 +203,13 @@ case "${1:-}" in
     while IFS= read -r b; do
       [ -n "$b" ] || continue
       agent="${b#agent/}"; agent="${agent%/work}"
-      land_one "$agent" "$DRY" || overall=1
+      land_with_retry "$agent" "$DRY" || overall=1
     done < <(g for-each-ref --format='%(refname:short)' 'refs/heads/agent/*/work')
     exit $overall
     ;;
   '') die 2 "usage: marveen-land.sh <agent> [--dry-run] | marveen-land.sh --all [--dry-run]" ;;
   *)
-    land_one "$1" "$DRY"
+    land_with_retry "$1" "$DRY"
     exit $?
     ;;
 esac
