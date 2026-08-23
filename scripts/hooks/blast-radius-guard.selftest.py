@@ -33,7 +33,7 @@ def run(payload: dict, env_extra: dict | None = None) -> tuple[int, str]:
     return out.returncode, out.stderr
 
 
-def _fixture(root: Path) -> Path:
+def _fixture(root: Path, behind: int = 0, sha: str | None = None) -> Path:
     """A throwaway git repo with a hand-built graph: two files, both hubs.
 
     helper.ts and helper.test.ts each have 30 importers, so the ONLY thing that
@@ -51,6 +51,16 @@ def _fixture(root: Path) -> Path:
             "commit", "-qm", "fixture"), check=True)
     head = sp.run(("git", "-C", str(root), "rev-parse", "HEAD"),
                   capture_output=True, text=True, check=True).stdout.strip()
+    # Move HEAD on by `behind` commits AFTER recording the sha the graph will
+    # claim, so the fixture is stale by a known amount. Without this the
+    # staleness gate could only be tested when some real repo happened to be
+    # behind -- and the land scripts now refresh those, so it would almost never
+    # arm. A gate that only tests itself by luck is not tested.
+    for i in range(behind):
+        (root / "src" / f"later{i}.ts").write_text("export const y = 1\n", encoding="utf-8")
+        sp.run(("git", "-C", str(root), "add", "-A"), check=True)
+        sp.run(("git", "-C", str(root), "-c", "user.email=a@b", "-c", "user.name=t",
+                "commit", "-qm", f"later{i}"), check=True)
 
     db_dir = root / ".code-review-graph"
     db_dir.mkdir()
@@ -62,7 +72,7 @@ def _fixture(root: Path) -> Path:
         "CREATE TABLE flow_memberships(flow_id INTEGER, node_id INTEGER);"
         "CREATE TABLE metadata(key TEXT, value TEXT);"
     )
-    conn.execute("INSERT INTO metadata VALUES ('git_head_sha',?)", (head,))
+    conn.execute("INSERT INTO metadata VALUES ('git_head_sha',?)", (sha or head,))
     for i, name in enumerate(("helper.ts", "helper.test.ts")):
         tgt = str(root / "src" / name)
         conn.execute("INSERT INTO nodes VALUES (?,?)", (i, tgt))
@@ -74,31 +84,11 @@ def _fixture(root: Path) -> Path:
     return root
 
 
-def _behind_of(repo: Path) -> int | None:
-    """How many commits the graph for `repo` is behind that repo's HEAD."""
-    import sqlite3
-    sys.path.insert(0, str(ROOT / "store"))
-    import importlib.util
-    spec = importlib.util.spec_from_file_location(
-        "brc", ROOT / "store" / "blast-radius-check.py")
-    mod = importlib.util.module_from_spec(spec)   # type: ignore[arg-type]
-    spec.loader.exec_module(mod)                  # type: ignore[union-attr]
-    db = mod.graph_db_for(repo)
-    if not db.exists():
-        return None
-    conn = sqlite3.connect(f"file:{db}?mode=ro", uri=True)
-    try:
-        return mod.staleness(repo, mod.graph_meta(conn)).get("behind")
-    finally:
-        conn.close()
-
-
 def main() -> int:
     if not CC.exists():
         print("SKIP: CleanCore clone not present")
         return 0
     fails: list[str] = []
-    skipped: list[str] = []
 
     def check(name: str, cond: bool) -> None:
         if not cond:
@@ -150,26 +140,27 @@ def main() -> int:
         rc8, _ = edit(HUB, session="s6", extra={"BLAST_RADIUS_THRESHOLD": "100000"})
         check("threshold above every file disables blocking", rc8 == 0)
 
-        # Staleness gate, measured against a graph that IS behind. The marveen
-        # graph has sat unrefreshed since adoption day, so it is the natural
-        # fixture; the thresholds are derived from the live value rather than
-        # hardcoded, so a later refresh cannot turn this test vacuous.
-        stale_hub = Path("/home/neon/marveen/src/config.ts")
-        behind = _behind_of(Path("/home/neon/marveen"))
-        if behind is None or behind < 1 or not stale_hub.exists():
-            print("NOTE: staleness gate not exercised "
-                  f"(behind={behind}, fixture={stale_hub.exists()})")
-            skipped.append("staleness")
-        else:
-            rc9a, _ = edit(stale_hub, session="s7a",
-                           extra={"BLAST_RADIUS_MAX_BEHIND": str(behind - 1)})
-            check("a graph staler than the limit does not block", rc9a == 0)
-            rc9b, err9b = edit(stale_hub, session="s7b",
-                               extra={"BLAST_RADIUS_MAX_BEHIND": str(behind + 1)})
-            check("the same file DOES block once the graph counts as fresh enough",
-                  rc9b == 2)
-            check("so the silence above came from staleness, not from a low count",
-                  "importers: 1" in err9b)
+        # Staleness gate, on a fixture that is stale by construction (5 commits).
+        # Only the max-behind threshold differs between the two runs, so the
+        # difference in outcome can only come from the staleness check.
+        sfx = _fixture(Path(td) / "stale", behind=5)
+        rc9a, _ = edit(sfx / "src/helper.ts", session="s7a",
+                       extra={"BLAST_RADIUS_MAX_BEHIND": "4"})
+        check("a graph staler than the limit does not block", rc9a == 0)
+        rc9b, err9b = edit(sfx / "src/helper.ts", session="s7b",
+                           extra={"BLAST_RADIUS_MAX_BEHIND": "5"})
+        check("the same file DOES block once the graph counts as fresh enough",
+              rc9b == 2)
+        check("so the silence above came from staleness, not from a low count",
+              "importers: 30" in err9b)
+
+        # Freshness UNKNOWN, the other arm of the same gate: the graph records a
+        # sha this repo has never heard of (a pruned or rebased-away commit), so
+        # "how far behind" has no answer. Must fail open, not block on a number
+        # it cannot compute.
+        ufx = _fixture(Path(td) / "unknown", sha="0" * 40)
+        rc9c, _ = edit(ufx / "src/helper.ts", session="s7c")
+        check("an ungaugeable graph does not block", rc9c == 0)
 
         rc10, _ = edit(CC / "apps/api/src/does-not-exist.ts", session="s8")
         check("a file that does not exist yet is not blocked", rc10 == 0)
@@ -194,10 +185,9 @@ def main() -> int:
 
     for f in fails:
         print(f"FAIL: {f}")
-    total = 17 + (2 if Path("/mnt/h/LM_Studio_Workdir/CleanCore-worktrees/backend2/apps/api/src/pg-client.ts").exists() else 0)
-    total -= 3 * len(skipped)
+    total = 20 + (2 if Path("/mnt/h/LM_Studio_Workdir/CleanCore-worktrees/backend2/apps/api/src/pg-client.ts").exists() else 0)
     print(f"blast-radius-guard selftest: {total - len(fails)}/{total} passed"
-          + (f"  ({', '.join(skipped)} not exercised)" if skipped else ""))
+)
     return 1 if fails else 0
 
 
