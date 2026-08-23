@@ -1861,3 +1861,67 @@ sem hivatkozik a másikra, és a flotta `taskstate-replay`-e ugyanezt a problém
 (b) A `teach`, `to-questionnaire` és `grill-me` skillekre nem született verdikt: a `grill-me` a
 `grilling` rövidebb változata (a `plan-grilling` már fedi), a másik kettő nem esett a kártya
 felsorolásába.
+
+## 2026-08-23 -- e7510a83 -- Kanban-függőség jelöltek: egyik sem kerül be, és a licenc az elsődleges ok
+
+**A kártya célpontja elavult, ezt előre kimondom.** A kártya azt kéri, hogy a `saltbo/agent-kanban`
+ciklus-detektálási mintáját építsem be a "MÁR FOLYAMATBAN LÉVŐ" predecessor/successor kártyába
+(Fázis `37c5605a`, alfeladat `2bb82943`). Megmérve: **a teljes fázis `done`** -- mind a négy gyereke
+(`2bb82943`, `a8aa9ae5`, `73540a68`, `38788337`) lezárva. Az élő célpont a `d3f8d2c3` (`planned`,
+MEDIUM), ami pontosan a maradék ciklus-garanciáról szól.
+
+### Due diligence, mind az öt jelöltre (rule 10)
+
+| jelölt | licenc | csillag | utolsó push | verdikt |
+|---|---|---|---|---|
+| `saltbo/agent-kanban` | **FSL-1.1-ALv2** (source-available, NEM OSS) | 456 | 2026-08-22 (aktív) | **NEM átvéve -- licenc** |
+| `quentintou/agent-board` | MIT | 27 | 2026-02-05 | nem átvéve -- karbantartás |
+| `eyalzh/kanban-mcp` | MIT | 41 | 2025-07-13 | nem átvéve -- dormant |
+| `kanboard/kanboard` | MIT | 9816 | 2026-08-11 (aktív) | csak referencia (PHP), a kártya is így jelölte |
+| `davidcjw/agent-task-board` | MIT | 0 | 2026-07-06 | csak UX-referencia, a kártya is így jelölte |
+
+**1. döntés: a `saltbo/agent-kanban` kódjából SEMMIT nem veszünk át, és nem is olvasom végig
+átvételi szándékkal.** A kártya helyesen jelölte "NOASSERTION, TISZTÁZANDÓ elsőként" -- a tisztázás
+eredménye: a LICENSE fájl a **Functional Source License 1.1 (Apache 2.0 Future License)**. Ez
+source-available, nem nyílt forrású: minden felhasználást engedélyez, KIVÉVE a "Competing Use"-t,
+azaz olyan kereskedelmi terméket/szolgáltatást, ami a Szoftvert (vagy a licencadó abból épített más
+szolgáltatását) helyettesíti. Két évvel a kiadás után Apache 2.0-ra vált (ez a repó 2026-03-ban
+készült, tehát ~2028).
+
+**Miért NEM döntöm el magam, hogy ez ránk áll-e.** A licencadó terméke egy *agent task board*; a
+MikroB-kanban szintén egy agent task board, és a flotta kereskedelmi termékeket épít. Hogy a belső
+flotta-eszköz "Competing Use"-nak minősül-e, jogi megítélés, nem mérnöki -- a flottának `jogasz`
+ügynöke van pontosan erre. Addig a fegyelmezett álláspont: nem másolunk, nem vendorolunk, nem
+építünk belőle származékos művet. **Ez a rule 10 due diligence-ének első lába (licenc-kompatibilitás),
+és itt megbukott -- nem "elhanyagolható részlet".**
+
+**2. döntés: a `quentintou/agent-board` (MIT, DAG-függőségek) NEM kerül be, karbantartási okból.**
+A licenc rendben lenne, a leírása pontosan a mi problémánkat célozza (Kanban + DAG + audit trail).
+De: `created_at` 2026-02-04, `pushed_at` 2026-02-05 -- **egyetlen nap aktivitás, azóta 6,5 hónap
+csend**, 27 csillag. Egy egynapos, azóta nem karbantartott repó függőségként vagy mintaforrásként
+rosszabb, mint a saját, tesztelt kódunk. Az `eyalzh/kanban-mcp` ugyanígy: MIT, de 13 hónapja nem
+mozdult.
+
+**3. döntés (a lényegi mérnöki válasz): NINCS mit átvenni, mert a minta MÁR benne van.** A kártya
+azt feltételezi, hogy a ciklus-detektálás hiányzik vagy gyenge nálunk. Megmérve a `src/db.ts`-ben:
+az `addKanbanDependency` **tranzitív lezárást** számol (`predecessorClosure`, `WITH RECURSIVE ...
+UNION`), és elutasítja a self-élt, az ismeretlen kártyát, a duplikátumot és a ciklust -- a
+`path`-szal együtt. Ez a tankönyvi megoldás; egy külső minta ehhez nem adna hozzá.
+
+**A mérés, ami ezt konkréttá teszi** (in-memory SQLite, `c1->c2->c3->c1` MÁR BENT lévő ciklussal):
+
+    UNION      -> 0,0002 s alatt megáll, 3 sor (c1, c2, c3)
+    UNION ALL  -> NEM áll meg: 0,13 s alatt 200 000+ sor, és tovább termel
+
+Vagyis a "már bent lévő ciklus se fagyassza le a lekérdezést" tulajdonság **egyetlen szón múlik**, és
+a kód kommentje helyesen állítja. Amit a `d3f8d2c3` 2. pontja kifogásol, az igaz: ezt **teszt nem
+szegezi ki**, tehát egy jövőbeli "optimalizálás" `UNION ALL`-ra némán végtelen ciklust hozna. A fenti
+mérés készen áll ehhez a teszthez; **oda tartozik, nem ide** -- ez a kártya due diligence-kártya, a
+`d3f8d2c3` a javító kártya, és a kettőt összemosni pont az a duplikált munka, amit a 6b. szabály tilt.
+
+**Ki döntött:** MikroB (kártya + a szülő-epic), backend2 (licenc-tisztázás, karbantartási mérés,
+a ciklus-mérés, a nem-átvételi verdikt).
+**Hivatkozás:** kártya e7510a83 (szülő 40f92dd2). Kapcsolódó: 37c5605a fázis (done), d3f8d2c3 (nyitott).
+
+**Eszkalálva, NEM eldöntve:** a FSL-1.1 "Competing Use" kérdése a `jogasz` ügynökre tartozik. Amíg
+nincs jogi verdikt, a `saltbo/agent-kanban` **nem forrás** -- se kód, se vendorolás, se származékos mű.
