@@ -219,9 +219,31 @@ def graph_meta(conn: sqlite3.Connection) -> dict:
     return {r[0]: r[1] for r in conn.execute("SELECT key, value FROM metadata")}
 
 
+# The graph writes lowercase hex; anything else did not come from a healthy build.
+_SHA_RE = re.compile(r"[0-9a-f]{7,64}")
+
+
 def staleness(root: Path, meta: dict) -> dict:
     head = _git(str(root), "rev-parse", "HEAD") or ""
     recorded = meta.get("git_head_sha", "")
+    # SHAPE-CHECK BEFORE THE VALUE BECOMES A GIT ARGUMENT (Cybersec F-3a-BIS, card 398f351b).
+    # My first version of this check sat in the HOOK, AFTER this function had already returned --
+    # by which point `recorded` had been through `rev-list <recorded>..<head>` and the check gave
+    # zero protection. Cybersec measured that and was right. It belongs here, above the only two
+    # places the value is ever spent: this rev-list, and `refresh(root, st["graph_sha"])` in
+    # refresh_only(), which hands it to `code_review_graph update --base`.
+    #
+    # Not about the exit code -- an invalid value fail-opens either way. It is about OPTION
+    # POSITION: a value starting with "-" reaches git as a flag rather than a revision. Treated as
+    # ABSENT rather than as an error, which is the existing behaviour for a graph with no recorded
+    # sha and keeps every caller on one path.
+    #
+    # I first wrote that no test could tell the two placements apart, and left it uncovered rather
+    # than fake a covering test. That was the right call over faking it and the wrong call over
+    # trying harder: a PATH shim that logs git's argv DOES distinguish them, and the selftest now
+    # does exactly that -- moving this check back below the rev-list turns it red.
+    if recorded and not _SHA_RE.fullmatch(str(recorded)):
+        return {"known": False, "head": head, "graph_sha": "", "behind": None}
     if not head or not recorded:
         return {"known": False, "head": head, "graph_sha": recorded, "behind": None}
     if head == recorded:
@@ -352,9 +374,71 @@ def selftest() -> int:
         check("measure: self-edge excluded", r3["importers"] == 2)
         conn.close()
 
+    # staleness() shape-check (Cybersec F-3a-BIS). Observable, not vacuous: a malformed recorded
+    # sha comes back as ABSENT -- known False, graph_sha blanked, behind None -- while a
+    # well-formed one that simply is not in this repo comes back with behind None but the sha
+    # PRESERVED. The two differ in the returned dict, so the check cannot be deleted silently.
+    # What is NOT test-pinned, and is said rather than faked: that git never receives the value.
+    # That is structural -- the check sits three lines above the only rev-list in the function.
+    import tempfile as _tf
+    import subprocess as _sp
+    with _tf.TemporaryDirectory() as td:
+        r = Path(td)
+        _sp.run(("git", "init", "-q", str(r)), check=True)
+        (r / "a.txt").write_text("x", encoding="utf-8")
+        _sp.run(("git", "-C", str(r), "add", "-A"), check=True)
+        _sp.run(("git", "-C", str(r), "-c", "user.email=a@b", "-c", "user.name=t",
+                 "commit", "-qm", "f"), check=True)
+        head = _git(str(r), "rev-parse", "HEAD") or ""
+
+        st = staleness(r, {"git_head_sha": head})
+        check("staleness: the real head reads as current", st["behind"] == 0)
+
+        for bad in ("--not-a-sha", "-x", "HEAD", "ABCDEF0", "zz11aa22", "0" * 65, "../x", "abc"):
+            got = staleness(r, {"git_head_sha": bad})
+            ok = got["behind"] is None and got["graph_sha"] == "" and got["known"] is False
+            check(f"staleness: malformed recorded sha {bad!r} is treated as absent", ok)
+        # '0123456' IS well-formed (7 lowercase hex) -- it must NOT be blanked, only unresolvable.
+        good_absent = staleness(r, {"git_head_sha": "0" * 40})
+        check("staleness: a well-formed but unknown sha keeps its value",
+              good_absent["graph_sha"] == "0" * 40 and good_absent["behind"] is None)
+        check("staleness: an empty recorded sha stays the pre-existing absent case",
+              staleness(r, {"git_head_sha": ""})["graph_sha"] == "")
+
+        # THE PLACEMENT ITSELF, observed rather than asserted in prose. Every check above passes
+        # equally well with the shape-check moved BELOW the rev-list -- which is exactly the defect
+        # Cybersec found (F-3a-BIS) -- because the returned dict is identical either way. So this
+        # case watches the ACTUAL git invocations through a PATH shim and requires that the
+        # malformed value never appears in any of them.
+        shim_dir = r / "shim"
+        shim_dir.mkdir()
+        trace = r / "git-argv.log"
+        real_git = _sp.run(("bash", "-lc", "command -v git"), capture_output=True, text=True).stdout.strip()
+        (shim_dir / "git").write_text(
+            "#!/bin/sh\n"
+            f'printf \'%s\\n\' "$*" >> "{trace}"\n'
+            f'exec {real_git} "$@"\n', encoding="utf-8")
+        (shim_dir / "git").chmod(0o755)
+        probe = (
+            "import sys, json\n"
+            "sys.path.insert(0, %r)\n" % str(Path(__file__).resolve().parent) +
+            "import importlib.util\n"
+            "spec = importlib.util.spec_from_file_location('brc', %r)\n" % str(Path(__file__).resolve()) +
+            "m = importlib.util.module_from_spec(spec); spec.loader.exec_module(m)\n"
+            "from pathlib import Path as P\n"
+            "m.staleness(P(%r), {'git_head_sha': '--not-a-sha'})\n" % str(r)
+        )
+        env = dict(os.environ, PATH=f"{shim_dir}:{os.environ.get('PATH','')}")
+        _sp.run((sys.executable, "-c", probe), env=env, capture_output=True, text=True, timeout=60)
+        logged = trace.read_text(encoding="utf-8") if trace.exists() else ""
+        check("staleness: git IS invoked at all through the shim (else the next check is vacuous)",
+              "rev-parse" in logged)
+        check("staleness: the malformed value never reaches a git argv",
+              "--not-a-sha" not in logged)
+
     for f in failures:
         print(f"FAIL: {f}")
-    print(f"selftest: {13 - len(failures)}/13 passed")
+    print(f"selftest: {26 - len(failures)}/26 passed")
     return 1 if failures else 0
 
 

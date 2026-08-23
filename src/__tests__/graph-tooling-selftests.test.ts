@@ -53,7 +53,7 @@ function expectAllPassed(out: string, floor: number): void {
 describe('graph tooling: the selftests actually run in CI', () => {
   it('blast-radius measurement selftest passes', () => {
     const { code, out } = run('python3', [join(ROOT, 'store', 'blast-radius-check.py'), '--selftest'])
-    expectAllPassed(out, 13)
+    expectAllPassed(out, 26)
     expect(code).toBe(0)
   }, 300_000)
 
