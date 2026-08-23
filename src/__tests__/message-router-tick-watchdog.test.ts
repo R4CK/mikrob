@@ -58,7 +58,7 @@ vi.mock('../db.js', () => ({
   // vitest THROWS on an export this mock omits, and the throw lands inside the router's per-message
   // try/catch -- the message fails silently and nothing is delivered, which is how its absence
   // showed up here as "0 sends" rather than as a missing-export error.
-  getKanbanCardStateByIdPrefix: (..._a: unknown[]) => null,
+  getKanbanCardStateByIdPrefix: () => null,
   upsertOtelSpan: (..._a: unknown[]) => undefined,
   closeOtelSpan: (..._a: unknown[]) => false,
 }))
