@@ -230,4 +230,133 @@ describe('marveen-land.sh (card dc185b52)', () => {
     expect(r.status).toBe(0)
     expect(r.out).toContain('already fully landed')
   })
+
+  // ── Card 65657bad: a lost push race is not a failure ───────────────────────────────────────
+  // Measured on card 6cd3b6af: two consecutive PUSH FAILEDs, each because another agent landed
+  // during the ~2-minute merge+fleet-test window, so the push was no longer fast-forward. The
+  // script threw git's stderr away, so the message could not distinguish that from a real fault --
+  // I re-ran the whole landing by hand twice to find out which it was.
+  //
+  // These reproduce the RACE, not the error string: the verification stub itself pushes a competing
+  // commit to origin, which is exactly what a peer landing mid-test does.
+
+  /** A verification stub that succeeds, and on its FIRST run pushes a competing commit to origin --
+   *  the peer agent landing inside our merge+test window. Counts its own invocations so a test can
+   *  assert how many full attempts the script actually made. */
+  function writeRacingStub(opts: { racesOnRun: number }): { path: string; runs: () => number } {
+    const counter = join(dir, 'stub-runs')
+    const rival = join(dir, 'rival')
+    const p = join(dir, 'stub-race.sh')
+    writeFileSync(
+      p,
+      `#!/usr/bin/env bash\n` +
+        `n=$(( $(cat ${counter} 2>/dev/null || echo 0) + 1 )); echo "$n" > ${counter}\n` +
+        `if [ "$n" = "${opts.racesOnRun}" ]; then\n` +
+        `  rm -rf ${rival}\n` +
+        `  git clone -q --branch develop ${upstream} ${rival}\n` +
+        `  git -C ${rival} config user.email r@t.local; git -C ${rival} config user.name rival\n` +
+        `  echo rival > ${rival}/rival.txt\n` +
+        `  git -C ${rival} add rival.txt\n` +
+        `  git -C ${rival} commit -q -m "a peer agent lands during our fleet-test"\n` +
+        `  git -C ${rival} push -q origin HEAD:develop\n` +
+        `fi\n` +
+        `exit 0\n`,
+    )
+    chmodSync(p, 0o755)
+    return {
+      path: p,
+      runs: () => Number(execFileSync('cat', [counter], { encoding: 'utf-8' }).trim()),
+    }
+  }
+
+  it('THE RACE: a peer landing mid-test is retried and lands, instead of reporting a failure', async () => {
+    await commitInWorktree('backend', { 'backend-new.txt': 'x\n' })
+    const stub = writeRacingStub({ racesOnRun: 1 })
+
+    const r = await runLand(['backend'], stub.path)
+    expect(r.status, `landing did not recover from the race:\n${r.out}`).toBe(0)
+    expect(r.out).toContain('LANDED')
+    expect(r.out).toMatch(/another agent landed during the merge\+test window/)
+    // Two full attempts: the first lost the race, the second merged onto the new tip.
+    expect(stub.runs()).toBe(2)
+  })
+
+  it('the retry RE-VERIFIES: the second attempt merges the peer commit and tests THAT', async () => {
+    // The cheap wrong fix is to push the already-approved merge again onto the moved base, or to
+    // skip the re-test to save two minutes. Either would put a merge result on develop that no
+    // verification ever saw. Both commits must be present at the end.
+    await commitInWorktree('backend', { 'backend-new.txt': 'x\n' })
+    const stub = writeRacingStub({ racesOnRun: 1 })
+    await runLand(['backend'], stub.path)
+
+    const landed = git(main, 'ls-tree', '-r', '--name-only', 'origin/develop')
+    expect(landed).toContain('backend-new.txt')
+    expect(landed, "the peer's commit was overwritten rather than merged").toContain('rival.txt')
+  })
+
+  it('CONTROL: a push refused for a NON-race reason is reported, and not retried', async () => {
+    // Retrying a rejecting hook (or bad credentials) burns another full merge+verify cycle and
+    // fails again for the same reason. Only git's own non-fast-forward markers may trigger a retry.
+    const hook = join(upstream, 'hooks', 'pre-receive')
+    writeFileSync(hook, '#!/usr/bin/env bash\necho "policy: pushes are frozen" >&2\nexit 1\n')
+    chmodSync(hook, 0o755)
+    await commitInWorktree('backend', { 'backend-new.txt': 'x\n' })
+    const stub = writeRacingStub({ racesOnRun: 0 }) // never races; only counts runs
+
+    const r = await runLand(['backend'], stub.path)
+    expect(r.status).not.toBe(0)
+    expect(r.out).toContain('PUSH FAILED')
+    expect(stub.runs(), 'a non-race rejection was retried').toBe(1)
+  })
+
+  it('THE POINT OF THE CARD: the failure message carries git\'s own words', async () => {
+    // Without this the operator cannot tell a race from a real fault -- which is the whole finding.
+    const hook = join(upstream, 'hooks', 'pre-receive')
+    writeFileSync(hook, '#!/usr/bin/env bash\necho "policy: pushes are frozen" >&2\nexit 1\n')
+    chmodSync(hook, 0o755)
+    await commitInWorktree('backend', { 'backend-new.txt': 'x\n' })
+
+    const r = await runLand(['backend'], writeStub(0))
+    expect(r.out, 'the push error is still being swallowed').toContain('policy: pushes are frozen')
+  })
+
+  it('a repeatedly-raced push gives up after the attempt budget, and pushes nothing', async () => {
+    // Unbounded retry on a continuously-landing fleet would spin for ever, burning a full test run
+    // each time. racesOnRun:0 with a stub that races EVERY time is the pathological case.
+    await commitInWorktree('backend', { 'backend-new.txt': 'x\n' })
+    const counter = join(dir, 'stub-runs')
+    const rival = join(dir, 'rival')
+    const p = join(dir, 'stub-always-race.sh')
+    writeFileSync(
+      p,
+      `#!/usr/bin/env bash\n` +
+        `n=$(( $(cat ${counter} 2>/dev/null || echo 0) + 1 )); echo "$n" > ${counter}\n` +
+        `rm -rf ${rival}\n` +
+        `git clone -q --branch develop ${upstream} ${rival}\n` +
+        `git -C ${rival} config user.email r@t.local; git -C ${rival} config user.name rival\n` +
+        `echo "rival $n" > ${rival}/rival-$n.txt\n` +
+        `git -C ${rival} add rival-$n.txt\n` +
+        `git -C ${rival} commit -q -m "peer $n"\n` +
+        `git -C ${rival} push -q origin HEAD:develop\n` +
+        `exit 0\n`,
+    )
+    chmodSync(p, 0o755)
+
+    const r = await execFileP('bash', [LAND_SH, 'backend'], {
+      encoding: 'utf-8',
+      env: { ...process.env, MARVEEN_MAIN: main, MARVEEN_LAND_TEST: p, MARVEEN_LAND_MAX_ATTEMPTS: '2' },
+    }).then(
+      ({ stdout, stderr }) => ({ status: 0, out: stdout + stderr }),
+      (e: { code?: number; stdout?: string; stderr?: string }) => ({
+        status: e.code ?? -1,
+        out: (e.stdout ?? '') + (e.stderr ?? ''),
+      }),
+    )
+    expect(r.status).not.toBe(0)
+    expect(r.out).toContain('lost the push race')
+    expect(r.out).not.toContain('LANDED')
+    expect(Number(execFileSync('cat', [counter], { encoding: 'utf-8' }).trim())).toBe(2)
+    // The branch is untouched: nothing of ours reached origin.
+    expect(git(main, 'ls-tree', '-r', '--name-only', 'origin/develop')).not.toContain('backend-new.txt')
+  })
 })
