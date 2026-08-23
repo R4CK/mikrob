@@ -1660,3 +1660,36 @@ lelet + a mélység-kezelt brace-átugrás iránya), fullstack (a két javítás
 és a belőlük előjött B5/B6 alak).
 **Hivatkozás:** kártya 84e31b40, commit 851a4618. Előzmény: f7c1d07f (idézés-tudat), e5b2cd84 (vermes
 határ-visszaállítás), c17173fc, f4fac1d7.
+
+## 2026-08-23 -- noisy-command-guard: a mentesség szegmensenkénti, nem soronkénti (kártya 034594e6)
+
+Az előző kör (10a6c51f, kártya aa837c5b-hez kapcsolódóan) bevezette a `scripts/hooks/noisy-command-guard.py`
+hookot, ami install/build/teszt parancsokat a `scripts/noisy-run.sh` szűrőn keresztül terel. Két hiba
+derült ki, mindkettőt Cybersec találta ELLENŐRZÉS közben, nem eleve gyanús kódrészletként:
+
+1. A hook saját kiírt javaslata összetett parancsnál (`cd /x && npx vitest run ...`) csak az ELSŐ
+   részparancsot adta át a wrappernek -- a `&&` utáni rész, pont a zajos rész, a KÜLSŐ shellben futott
+   szűretlenül.
+2. A mentességi ellenőrzés (`if "noisy-run.sh" in raw`) a TELJES sor részstring-egyezése volt: bármi,
+   ami CSAK EMLÍTI a fájlnevet (egy echo, egy grep-argumentum, egy idézőjeles mondat, vagy épp a hook
+   saját javaslata), leszerelte a guardot a sor ÖSSZES többi parancsára. Élő repró: egy
+   `echo "... noisy-run.sh ..." && npx vitest run ...` sor átment, a vitest nyersen futott.
+
+Fix: szegmens-granularitású mentesség -- a sort egyszerű parancsokra bontja (`;` `&&` `||` `|` újsor,
+és a `$(` / backtick / `<(` nyitása, mert azok tartalmát a KÜLSŐ shell expandálja, tehát egy korábbi
+wrapper nem fedi őket), és csak azt a szegmenst hagyja ki, amelyik TÉNYLEG a wrapperrel kezdődik.
+Összetett parancsnál a javaslat `bash noisy-run.sh bash -c '<eredeti>'` alakban, egyetlen argumentumként
+utazik. Ellenőrizve: eredeti 24/24 selftest zöld, plusz Cybersec két adverzariális batteryje (11/11
+megkerülés+jogos-alak, 11/11 a saját fix ellen) zöld, plusz QA független 9-esetes batteryje (javítás
+előtti kódon 5/5 a várt bypass tényleg átment, javított kódon 9/9 a szándék szerint).
+
+**Strukturális megjegyzés a gate-folyamatról:** ez a kártya nem tudott a szokásos úton REVIEW-t kapni --
+a patchet Cybersec írta (gate-ügynök, sose lehet submitter), MikroB landolta (sose lehet submitter),
+tehát a `gate-dispatch-check.sh` NON_SUBMITTERS-szűrője mindkét szerzőt kizárta. QA és Cybered a
+kártya kommentjeiből (Cybersec saját SKIP-je a három kimondott korláttal + MikroB megjegyzése) dolgozott
+gate-bemenetként. Külön kártya nyílt (ec0e64b4) egy `Submitted-by:` sor bevezetésére erre az esetre.
+
+**Ki döntött:** Cybersec (lelet + patch, saját magát nem gate-elte), MikroB (landolás + élesítés,
+mert a szerző-kizárás miatt más nem tehette meg), QA (független 9-esetes battery, PASS).
+**Hivatkozás:** kártya 034594e6, commit 82068a3f. Előzmény: 10a6c51f (a hook első verziója), 73fff79b
+(a korábbi útvonal-hiba javítása ugyanezen a hookon).
