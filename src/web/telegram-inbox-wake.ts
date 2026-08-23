@@ -73,6 +73,9 @@ const SUB_TELEGRAM_WAKE_NUDGE =
 interface SubWakeState {
   lastWakeAt: number
   attempts: number
+  /** Nudges that were NOT delivered ('aborted-busy' / 'skipped-locked') since the last one that
+   *  was, and the only input to the backoff growth (card b2f13520). See wakeBackoffMs. */
+  undelivered: number
   inboxMtimeMs: number
 }
 const _subWakeState = new Map<string, SubWakeState>()
@@ -80,6 +83,18 @@ const _subWakeState = new Map<string, SubWakeState>()
 /**
  * Compute the effective backoff gap for the Nth wake attempt: base * 2^attempts,
  * capped at maxMs. attempts=0 -> base (unchanged first-retry behaviour). Pure.
+ *
+ * WHAT IT COUNTS CHANGED, AND WHY (card b2f13520, QA on the df193354 gate). df193354 correctly
+ * narrowed `attempts` to mean "nudges the agent actually RECEIVED and ignored", so a pane that is
+ * busy or locked no longer burns a waiting agent's give-up budget. But `attempts` was also the
+ * backoff input, so for a PERMANENTLY locked pane it stays 0 for ever and this returns the 60s
+ * floor for ever -- the escalation to the 30-minute cap became unreachable.
+ *
+ * That is not free. The backoff gate runs BEFORE the tmux probes, and
+ * isSessionReadyForPrompt costs a blocking sleep plus two capture-panes; at a fixed 60s floor a
+ * locked pane pays that every minute, per agent, indefinitely. Growing the gap is exactly the
+ * protection that bought, so the growth now reads a SEPARATE counter of undelivered nudges while
+ * the give-up budget keeps df193354's meaning. Two questions, two counters.
  */
 export function wakeBackoffMs(attempts: number, baseMs: number, maxMs: number): number {
   const grown = baseMs * Math.pow(2, Math.max(0, attempts))
@@ -115,17 +130,21 @@ export function shouldWakeForTelegramInbox(params: {
   minAgeMs: number
   debounceMs: number
   attempts?: number
+  /** Undelivered nudges, the BACKOFF input (card b2f13520). Defaults to `attempts` so every
+   *  existing caller and test keeps its current behaviour; only the live sweep passes both. */
+  backoffAttempts?: number
   maxAttempts?: number
   maxDebounceMs?: number
 }): boolean {
   const { inboxAgeMs, hasPending, now, lastWakeAt, sessionExists, sessionIdle, minAgeMs, debounceMs } = params
   const attempts = params.attempts ?? 0
+  const backoffAttempts = params.backoffAttempts ?? attempts
   const maxAttempts = params.maxAttempts ?? Infinity
   const maxDebounceMs = params.maxDebounceMs ?? Infinity
   if (!hasPending) return false
   if (inboxAgeMs <= minAgeMs) return false
   if (attempts >= maxAttempts) return false // budget exhausted for this backlog
-  if (now - lastWakeAt < wakeBackoffMs(attempts, debounceMs, maxDebounceMs)) return false
+  if (now - lastWakeAt < wakeBackoffMs(backoffAttempts, debounceMs, maxDebounceMs)) return false
   if (!sessionExists) return false
   if (!sessionIdle) return false
   return true
@@ -182,12 +201,14 @@ export async function maybeWakeSubAgentsForTelegram(now: number): Promise<void> 
       // attempt budget so a fresh message always earns a fresh round of nudges.
       let state = _subWakeState.get(name)
       if (!state || state.inboxMtimeMs !== mtimeMs) {
-        state = { lastWakeAt: state?.lastWakeAt ?? 0, attempts: 0, inboxMtimeMs: mtimeMs }
+        // A fresh backlog resets BOTH counters: a new message earns a prompt first try, not the
+        // long gap the previous stuck backlog had grown to.
+        state = { lastWakeAt: state?.lastWakeAt ?? 0, attempts: 0, undelivered: 0, inboxMtimeMs: mtimeMs }
         _subWakeState.set(name, state)
       }
       // Budget + backoff cheap gates (no tmux I/O yet).
       if (state.attempts >= SUB_TELEGRAM_WAKE_MAX_ATTEMPTS) continue
-      if (now - state.lastWakeAt < wakeBackoffMs(state.attempts, SUB_TELEGRAM_WAKE_DEBOUNCE_MS, SUB_TELEGRAM_WAKE_MAX_DEBOUNCE_MS)) continue
+      if (now - state.lastWakeAt < wakeBackoffMs(state.undelivered, SUB_TELEGRAM_WAKE_DEBOUNCE_MS, SUB_TELEGRAM_WAKE_MAX_DEBOUNCE_MS)) continue
 
       const host = readAgentRemoteHost(name)
       const session = agentSessionName(name)
@@ -207,6 +228,7 @@ export async function maybeWakeSubAgentsForTelegram(now: number): Promise<void> 
         minAgeMs: SUB_TELEGRAM_WAKE_MIN_AGE_MS,
         debounceMs: SUB_TELEGRAM_WAKE_DEBOUNCE_MS,
         attempts: state.attempts,
+        backoffAttempts: state.undelivered,
         maxAttempts: SUB_TELEGRAM_WAKE_MAX_ATTEMPTS,
         maxDebounceMs: SUB_TELEGRAM_WAKE_MAX_DEBOUNCE_MS,
       })) continue
@@ -228,16 +250,24 @@ export async function maybeWakeSubAgentsForTelegram(now: number): Promise<void> 
       //     a permanently locked pane be probed on every tick.
       //   attempts   -- "how many nudges did this agent actually RECEIVE and ignore", the give-up
       //     budget. Only a confirmed 'sent' is evidence of that.
+      //   undelivered -- "how many nudges in a row did NOT reach the pane", the backoff input
+      //     (card b2f13520). Separate from `attempts` because the two questions have different
+      //     answers for a locked pane: nothing was received, but something WAS tried.
       // Accepted cost, stated rather than hidden: a pane that is always busy or locked is now
-      // retried indefinitely (bounded by the debounce) instead of giving up after MAX_ATTEMPTS.
-      // That is the direction the card asks for -- a real waiting agent must not be starved by
-      // nudges that were never delivered -- and the pre-gates above still keep it cheap.
+      // retried indefinitely instead of giving up after MAX_ATTEMPTS. That is the direction the
+      // card asks for -- a real waiting agent must not be starved by nudges that were never
+      // delivered -- and the gap now grows to the 30-minute cap, so "indefinitely" is at a
+      // shrinking rate rather than once a minute for ever.
       state.lastWakeAt = now
       const outcome = await sendPromptToSession(session, SUB_TELEGRAM_WAKE_NUDGE, host)
       if (outcome !== 'sent') {
-        logger.info({ agent: name, session, outcome }, 'telegram-inbox-wake: nudge not delivered, budget not consumed')
+        // The budget still is not consumed (df193354) -- but the GAP grows, so a permanently
+        // locked pane walks out to the 30-minute cap instead of being probed every minute for ever.
+        state.undelivered += 1
+        logger.info({ agent: name, session, outcome, undelivered: state.undelivered }, 'telegram-inbox-wake: nudge not delivered, budget not consumed')
         continue
       }
+      state.undelivered = 0
       state.attempts += 1
       logger.info({ agent: name, session, ageMs: Math.round(inboxAgeMs), attempt: state.attempts }, 'telegram-inbox-wake: nudged idle sub-agent (pending inbox)')
     } catch (err) {
