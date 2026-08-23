@@ -1953,3 +1953,68 @@ nincs jogi verdikt, a `saltbo/agent-kanban` **nem forrás** -- se kód, se vendo
 
 **Ki döntött:** jogász (jogi értékelés + politika-javaslat); a végső rule 10 szöveg beillesztése MikroB/Peti felé eszkalálva.
 **Hivatkozás:** kártya e2610f91 (forrás: e7510a83, backend2 due diligence-e; Cybersec kiegészítése komment 15636/19744).
+
+## 2026-08-23 -- ef9a7bf1 -- Agent-memória jelöltek: egyik sem kerül be, de a mérés két saját hibát talált
+
+### Due diligence (rule 10)
+
+| jelölt | licenc | csillag | utolsó push | verdikt |
+|---|---|---|---|---|
+| `yoloshii/ClawMem` | MIT | 200 | 2026-08-18 (aktív) | **NEM** -- a fő képessége már megvan (felerészben) |
+| `axiomhq/agent-memory` | **NINCS (`license: null`)** | 6 | 2026-03-09 (5,5 hónap) | **NEM -- licenc** |
+
+**1. döntés: az `axiomhq/agent-memory` KIZÁRVA, licenc hiányában.** A GitHub API `license: null`-t ad
+rá: nincs licencfájl, tehát minden jog fenntartva -- se másolni, se módosítani, se terjeszteni nem
+szabad. Ez erősebb tiltás, mint az FSL az `e7510a83` kártyán, és megint a kártya által LEGINKÁBB
+áhított jelöltre esik (ezt jelölte "közeli előzmény a `/dream` skillünkhöz"). Két egymást követő
+adoptálási kártyán bukott el a legérdekesebb jelölt licencen: **ez már minta, nem véletlen** --
+érdemes a jelölt-listákra a licencet a csillagszám MELLÉ, előre felvenni.
+
+**2. döntés: a `ClawMem` NEM kerül be, mert a fő képessége már itt van -- felerészben.** MIT, 200
+csillag, öt napja pusholva: a licenc és a karbantartás is átmenne. A headline-je viszont a "hybrid
+RAG search", és ebből a kulcsszavas felet MÁR használjuk (`searchAgentMemories`: FTS5 `MATCH` +
+recency-újrarangsorolás + `LIKE`-fallback). Egy kész csomag átvétele azért, hogy megkapjuk, amink van,
+nem nyereség.
+
+### A mérés, ami ennél többet ért: két saját hiba
+
+**(a) A `memories.embedding` oszlop ÍRVA VAN, de SOHA NEM OLVASSUK.** Mérve: 1149 sorból **1126
+hordoz embeddinget** (98%), a `src/index.ts` indításkor backfillel, a fleet-import újra-embeddel --
+és a keresési út (`searchAgentMemories`) tisztán FTS + recency. A `/api/memories` válaszaiból az
+oszlop kifejezetten ki van törölve (`embedding: undefined`). Vagyis **egy vektor-keresési képesség
+teljesen fel van építve és nulla fogyasztója van** -- pontosan a szülő-epic (`3c9e22b1`)
+hibaosztálya, a memória-rendszeren belül, ahova ez a kártya nézni küldött. A ClawMem itt VALÓDI
+hiányra mutat rá: a hibrid keresés szemantikus fele.
+
+**(b) DE a sorrend fordítva helyes, és ezt is mérés mondja: előbb a korpusz, aztán a keresés.**
+A `backend` ügynök **670 memóriájából mind a 670 `auto_generated=1`, és 658 (98%) eszköz-napló**
+(`Bash:`/`Write:`/`Edit:` prefixű) -- összesen 12 prózai memóriája van. A teljes tár 1149 sorából 388
+eszköz-napló, és 454 sor pontos DUPLIKÁTUM (75 csoport; egyetlen azonos `Bash: ...` sor **45-ször**
+szerepel). A `hot` tier 176 sorából **174 eszköz-napló** -- az a tier, aminek a szabály szerint "ami
+MOST történik" a tartalma.
+
+A hatás közvetlenül mérve a keresésen: a `backend` memóriáira futtatott `git merge`, `worktree`,
+`commit` és `gate` lekérdezés **mind 100%-ban auto-activity sorokat adott vissza**. Az ügynök valódi,
+kézzel írt emlékei gyakorlatilag elérhetetlenek a saját keresésén át.
+
+És hogy ezt egy szemantikus keresés se javítaná meg: **a 658 eszköz-naplóból 636 hordoz embeddinget**,
+tehát pontosan ugyanúgy versenyezne egy vektor-keresésben, ahogy most az FTS-ben. **Egy jobb kereső
+egy 98%-ban zajos korpusz fölött a rossz felét optimalizálja.**
+
+**3. döntés: a javítás nem itt, és nem defrag-passzal.** A forrás a `4829ccff` kártya PostToolUse
+prototípusa (`scripts/hooks/activity_memory_capture.py`), ami szándékosan EGY ügynökre van kötve és
+`auto_generated=1`-gyel ír. Nem elszabadult író: pontosan azt csinálja, amire tervezték. Egy
+defrag/dedup pass (az `axiomhq` ötlete) a TÜNETET takarítaná, miközben az író tovább termel -- a
+`45×` duplikátum önmagában mutatja, milyen gyorsan. A helyes lépések sorrendje, a legolcsóbbal
+kezdve: (i) a keresés alapból ne adjon vissza `auto_generated=1` sorokat (a mező már ott van, csak
+nincs használva a `searchAgentMemories`-ben); (ii) a prototípus dedupláljon írás előtt; (iii) csak
+ezután érdemes a szemantikus keresési felet megépíteni az (a) pont embeddingjeire.
+
+**Ez a kártya nem javítja egyiket sem**: due-diligence kártya, a talált hibák pedig más kártyák
+hatókörébe esnek (a prototípus a `4829ccff`-é), és a keresési-szűrés + embedding-bekötés önálló
+kártyát érdemel saját gate-tel.
+
+**Ki döntött:** MikroB (kártya + szülő-epic), backend2 (licenc-mérés, a saját rendszer mérése, a
+sorrend levezetése, a nem-átvételi verdikt).
+**Hivatkozás:** kártya ef9a7bf1 (szülő 40f92dd2). Kapcsolódó: 4829ccff (a prototípus), 3c9e22b1
+(a "adoptált de használatlan" epic), e7510a83 (ugyanaz a licenc-minta).
