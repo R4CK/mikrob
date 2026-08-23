@@ -109,3 +109,81 @@ describe('what this fix does NOT claim (card 442f3289)', () => {
     expect(bash(`${AT} now + 5 minutes`)).toBe(true)
   })
 })
+
+describe('ONE command-position grammar, and BOTH branches must obey it (card 442f3289 round 2)', () => {
+  // Cybered NO-GO, and Cybersec revoking its own GO on the same finding. The first version of this
+  // card narrowed the heredoc branch from "the word anywhere on the line" to an explicit position
+  // list -- and the list was built from what the patch had thought about rather than from the
+  // shell's grammar, so it silently dropped positions the old match had been catching. Measured
+  // regression: a case arm, a brace group and a negation. Measured while fixing it: `while` and
+  // `until` too, and the ANCHORED branch was missing the case arm.
+  //
+  // The root cause was two lists describing one idea. They had diverged in BOTH directions -- each
+  // held positions the other lacked -- because every previous fix taught whichever list it was
+  // standing in front of. So the grammar is now one constant consumed by both branches, and this
+  // test is what keeps it that way: it drives the SAME position list through BOTH, so re-splitting
+  // the constants and teaching only one of them turns red here.
+  const CT = 'cron' + 'tab'
+  const runnable = (line: string): string => ["bash <<'XEOF'", line, 'XEOF'].join(NL)
+
+  const POSITIONS: Array<[string, (cmd: string) => string]> = [
+    ['line start', (c) => c],
+    ['after a semicolon', (c) => `echo hi; ${c}`],
+    ['after &&', (c) => `true && ${c}`],
+    ['after a pipe', (c) => `echo x | ${c}`],
+    ['inside a substitution', (c) => `X=$(${c})`],
+    ['after then', (c) => `if true; then ${c}; fi`],
+    ['after do', (c) => `for i in 1; do ${c}; done`],
+    ['after else', (c) => `if false; then :; else ${c}; fi`],
+    ['after elif', (c) => `if false; then :; elif true; then ${c}; fi`],
+    ['after while', (c) => `while ${c}; do :; done`],
+    ['after until', (c) => `until ${c}; do :; done`],
+    ['a CASE ARM', (c) => `case $x in y) ${c} ;; esac`],
+    ['a BRACE GROUP', (c) => `{ ${c}; }`],
+    ['a NEGATION', (c) => `! ${c}`],
+    ['behind sudo', (c) => `sudo ${c}`],
+    ['behind an assignment', (c) => `PATH=/bin ${c}`],
+  ]
+
+  it.each(POSITIONS)('the heredoc branch denies the English-word binary %s', (_name, shape) => {
+    // A body `bash` actually executes, which is where this branch is the only defence.
+    expect(bash(runnable(shape(`${AT} now + 5 minutes`)))).toBe(true)
+  })
+
+  it.each(POSITIONS)('the anchored branch denies the other binary %s', (_name, shape) => {
+    expect(bash(shape(`${CT} -`))).toBe(true)
+  })
+
+  it('THE CHOICE ON NEGATION, pinned: `!` counts as a command position', () => {
+    // Left open by MikroB after Cybered recommended fail-closed. It is in, because `! <binary>`
+    // really does run the binary. The cost is stated rather than discovered later: a prose line
+    // whose exclamation mark lands immediately before a time expression is denied. If that ever
+    // becomes a nuisance, this test is the record of what would be traded away.
+    expect(bash(runnable(`! ${AT} now + 5 minutes`))).toBe(true)
+    expect(bash(`! ${CT} -`)).toBe(true)
+  })
+
+  it('a QUOTE is deliberately NOT a command position -- the unwrapper reaches those precisely', () => {
+    // An earlier round put quotes in the class because `bash -c "<cmd>"` starts its command at the
+    // quote. That is a PROXY for "a shell runs this text"; card ec20dd23 replaced the proxy with
+    // the thing itself. Measured: with the quote gone every wrapper vector is still denied (see the
+    // wrapper suite), and two false positives it had cost are gone with it.
+    expect(bash(doc(`{"note":"${AT} 16:13 the pane was idle"}`))).toBe(false)
+    expect(bash(doc(`He wrote "${AT} 16:13 nothing ran" in the report.`))).toBe(false)
+    // ...while the real thing behind a quote is still denied, reached by extraction:
+    expect(bash(`bash -c "${AT} now + 5 minutes"`)).toBe(true)
+  })
+
+  it('a closing brace is deliberately NOT a command position', () => {
+    // bash needs a separator after `}`, so nothing starts a command there. Kept out on purpose:
+    // an alternative that can never be the one that matched is noise in a security pattern.
+    expect(bash(runnable(`echo done } ${AT} 16:13 was the time`))).toBe(false)
+  })
+
+  it('CONTROL: prose is still prose after all of this', () => {
+    // The whole point of the card. Widening the position list must not walk back the false-positive
+    // fix it was written for.
+    expect(bash(["cat > n <<'XEOF'", `The nudger found the pane ${AT} 16:13 and did nothing.`, 'XEOF'].join(NL))).toBe(false)
+    expect(bash(["cat > n <<'XEOF'", `The digest runs ${AT} noon for every tenant.`, 'XEOF'].join(NL))).toBe(false)
+  })
+})

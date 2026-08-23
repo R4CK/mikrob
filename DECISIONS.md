@@ -2028,6 +2028,14 @@ sorrend levezetése, a nem-átvételi verdikt).
 **Ki döntött:** Backend (implementáció), Cybersec élő lelete alapján (442f3289 gate).
 **Hivatkozás:** kártya ec20dd23.
 
+## 2026-08-23 22:10 -- Egy parancs-pozicio-nyelvtan, ket ag helyett (kartya 442f3289 2. kor)
+
+**Dontes:** a `SCHED_BOUNDARY` (horgonyzott ag) es a `LINE_CMD_POSITION` (heredoc-torzs ag) mostantol UGYANABBOL a `CMD_POSITION` konstansbol szarmazik. Tartalma: `; & | ( ) { !` backtick + az `if/then/else/elif/while/until/do` kulcsszavak. A `}` szandekosan kimarad (bash elvalasztot ker utana), es az IDEZOJEL is kimarad.
+**Miert (a ket lista):** ket lista irta le ugyanazt az egy fogalmat, es MINDKET iranyba eltertek -- mindegyikben volt olyan pozicio, ami a masikbol hianyzott, mert minden javitas azt a listat tanitotta meg, amelyik elott eppen allt. Mert eredmeny: hat hianyzo pozicio egyszerre (ot az egyik agon, egy a masikon). Ebbol ketto REGRESSZIO volt, amit en okoztam az elozo korben: a szukites egy olyan felsorolasra allt at, amit a patch-bol epitettem, nem a shell nyelvtanabol.
+**Miert nem idezojel:** az idezojel PROXY volt arra, hogy "egy shell futtatja ezt a szoveget". Az ec20dd23 kartya a proxyt lecserelte a tenyleges dologra (a `-c`/`eval` argumentum kicsomagolasa). Mindket iranyban megmerve: idezojel nelkul MINDEN wrapper-vektor tovabbra is tiltva (kicsomagolassal erve el), viszont ket fals pozitiv eltunik -- egy JSON-payload heredocban, aminek az erteke idopont-kifejezessel kezdodik, es egy azt idezo mondat. Cybersec az elozo koron ezt "uj fals pozitiv, de a helyes iranyba" neven jelezte; kiderult, hogy egyaltalan nem kellett elcserelni.
+**A `!` kerdese (MikroB nyitott dontese):** BENT van, fail-closed, Cybered javaslata szerint -- a `! <binaris>` tenylegesen futtatja a binarist. Ara egy olyan proza-sor, ahol a felkialtojel kozvetlenul egy idopont-kifejezes elott all; teszt szegezi ki a valasztast.
+**Ki dontott:** Backend (implementacio), Cybered NO-GO + Cybersec sajat GO-visszavonasa alapjan, MikroB egyesitesi keresere.
+**Hivatkozas:** kartya 442f3289 (2. kor), ec20dd23.
 ## 2026-08-23 22:25 -- A `case` mintavégződés `)`-je elválasztó, nem záró; és a parancsot megelőző kulcsszavak léptetik a határt (kártya 84e31b40, Cybersec F-8)
 
 **Döntés:** a `stripHeredocDataPayloads` járója követi a `case` NYELVTANT: (a) a mintát lezáró `)`

@@ -84,7 +84,56 @@ const SCHED_PREFIX = String.raw`(?:(?:[A-Za-z_]\w*=\S*|sudo|env|command|exec|nic
 // keyword sits exactly where a separator would and the shell runs what follows it as a command,
 // so it IS a command position -- the class simply did not say so. Same enumeration as
 // LINE_CMD_POSITION below, and for the same reason: an incomplete list of positions is a hole.
-const SCHED_BOUNDARY = String.raw`(?:[;&|(\`{!]|\b(?:if|then|else|elif|while|until|do)\b)`
+// --- ONE COMMAND-POSITION GRAMMAR, USED BY BOTH BRANCHES ---------------------------------------
+//
+// WHY THIS IS ONE CONSTANT (card 442f3289 round 2, Cybered NO-GO + Cybersec revoking its own GO).
+// There used to be two lists -- SCHED_BOUNDARY for the anchored scan and LINE_CMD_POSITION for the
+// heredoc-body scan -- both trying to describe the same thing: where a shell starts a command. They
+// DIVERGED IN BOTH DIRECTIONS. The anchored one had `{` `!` and if/while/until but no quotes and no
+// case-arm; the heredoc one had the quotes but no `{`, no `!`, no case-arm and only half the
+// keywords. Each fix taught one list and left the other, and the measured result was six gaps at
+// once: five real positions missing from one branch, one from the other.
+//
+// Two of those were a REGRESSION I introduced: the previous round narrowed the heredoc branch from
+// "anywhere on the line" to this grammar, and an incomplete grammar silently dropped positions the
+// unanchored match had been catching. That is the exact failure mode that round's own comment
+// warned about ("this denies LESS, so the enumeration must be COMPLETE rather than tolerant") --
+// written down, and then not lived up to, because the list was built from what the patch touched
+// instead of from the shell's grammar.
+//
+// So: one list, derived once, consumed twice. A position added here is added to both branches by
+// construction, which is the only version of this that stays true.
+//
+// WHAT IS IN IT, and each entry is a position bash genuinely runs a command from -- verified by
+// marker, not by reading:
+//   ;  &  |     separators (and && / || via `&` and `|`)
+//   (           subshell and $( ) substitution
+//   )           a case ARM: `case $x in y) <cmd> ;; esac`
+//   {           a brace group: `{ <cmd>; }`
+//   !           negation: `! <cmd>`
+//   `           legacy command substitution
+//   keywords    if / then / else / elif / while / until / do each introduce a command
+//
+// `}` is deliberately NOT here: bash needs a separator after it, so nothing starts a command there.
+//
+// A QUOTE IS DELIBERATELY NOT HERE EITHER, and the reason is worth keeping. An earlier round put
+// `"` and `'` in, reasoning that `bash -c "<cmd>"` starts its command exactly at the quote. True,
+// but it is a PROXY for "a shell runs this text", and card ec20dd23 replaced the proxy with the
+// thing itself: executableStrings extracts the argument of a `-c` shell / `eval` and the gate scans
+// it as its own command, where the binary sits at line start. Measured both ways -- with the quote
+// removed, every wrapper vector is still denied, reached by extraction instead of by guessing.
+//
+// Keeping it was not free: a quote is also how ordinary text quotes things. Measured false
+// positives it caused, both now gone -- a JSON payload in a heredoc whose value opens with a time
+// expression, and a sentence quoting one. Cybersec flagged the first while gating the previous
+// round (comment 15642) as "a new false positive, in the right direction"; it turns out it did not
+// have to be traded at all.
+// `!` IS here, as a deliberate fail-closed choice (Cybered's recommendation, MikroB's open
+// question): `! <scheduler>` really does run the scheduler, and the cost is a prose line whose
+// exclamation mark lands immediately before a time expression. Pinned by its own test so the choice
+// is visible rather than incidental.
+const CMD_POSITION = String.raw`(?:[;&|(){!\`]|\b(?:if|then|else|elif|while|until|do)\b)`
+const SCHED_BOUNDARY = CMD_POSITION
 // `at` and `batch` are also ordinary English words, and splitSegments splits on
 // NEWLINES -- so a PROSE line inside a multi-line commit body ("at least 80% of
 // entries", "batch size is 50") lands at a segment start and looked exactly like
@@ -276,15 +325,15 @@ const SCHED_BARE_SHAPE = String.raw`(?!\s+[a-z])`
 // inside the line.
 //
 // DIRECTION, per this file's own stated principle: this makes the branch deny LESS, so it is the
-// shape that can open a hole, and the enumeration below is what must be COMPLETE rather than
-// merely tolerant. It names every position from which a shell actually runs a word: line start,
-// after a separator or a subshell/substitution opener, after a quote (bash -c "<binary> ..." puts
-// the quote exactly where the command word begins), and after the shell keywords that introduce a
-// command. Each is measured in this card's battery. The scheduler binaries that are NOT English
-// words keep their unanchored match -- prose cannot collide with them, so they lose nothing.
+// shape that can open a hole, and the enumeration it uses must be COMPLETE rather than merely
+// tolerant. The first version of this was NOT -- it named the positions the patch had thought
+// about, and dropped the case-arm, brace-group, negation, `while` and `until` positions that the
+// old unanchored match had been catching. That is why the grammar now lives in ONE constant shared
+// with the anchored branch (see CMD_POSITION above) instead of being written out again here.
 // `(` in the class already covers a `$(` substitution opener -- `$(` cannot occur without it -- so
 // there is no separate alternative for it. Measured: adding one changed no verdict.
-const LINE_CMD_POSITION = String.raw`(?:^|[;&|(\`"']|\b(?:then|else|elif|do)\b)\s*`
+// Derived from the ONE grammar above -- see its header for why there is no second list here.
+const LINE_CMD_POSITION = String.raw`(?:^|${CMD_POSITION})\s*`
 const UNANCHORED_SCHEDULER_RX = new RegExp(
   String.raw`\b(?:crontab|systemd-run)\b(?!-)(?!\s*=)${SCHED_BARE_SHAPE}|\blaunchctl\b(?!-)(?!\s*=)${LAUNCHCTL_SUBCOMMAND}|${LINE_CMD_POSITION}${SCHED_PREFIX}batch\b(?!-)(?!\s*=)${AT_INVOCATION}|${LINE_CMD_POSITION}${SCHED_PREFIX}at\b(?!-)(?!\s*=)${AT_INVOCATION_UNANCHORED}`,
   'i',
