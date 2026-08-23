@@ -2241,6 +2241,26 @@ const AUDITED_CARD_FIELDS = [
 /** `sort_order` is deliberately NOT audited: a drag inside a column rewrites it on every card that
  *  shifted, so auditing it would bury the edits somebody actually wants to find under reordering
  *  noise. The question this table exists to answer is "who changed what this card SAYS". */
+/** How much of a changed value the trail keeps (card 7fd6dd23, Cybersec F-3).
+ *
+ *  `title` and `description` are free text, so without a cap this table would keep EVERY past
+ *  version of a long description for ever, and the endpoint hands them back. Two consequences the
+ *  parent card did not consider: unbounded growth, and text that an editor removed from a card
+ *  living on in the audit unless it is deleted in TWO places.
+ *
+ *  A cap, not a hash: a hash bounds the growth and destroys the only thing the row is for --
+ *  telling a reader WHAT it used to say. 500 characters answers "who put the [50%] there", which
+ *  is the question this table exists for, and a truncated tail is marked so nobody reads a cut
+ *  value as the whole one. The two-place-deletion point stays TRUE and is documented rather than
+ *  pretended away -- it is inherent to keeping any history at all. */
+export const FIELD_AUDIT_VALUE_MAX = 500
+
+function clipAuditValue(v: unknown): string | null {
+  if (v === null || v === undefined) return null
+  const s = String(v)
+  return s.length <= FIELD_AUDIT_VALUE_MAX ? s : `${s.slice(0, FIELD_AUDIT_VALUE_MAX)}…[levágva]`
+}
+
 function recordKanbanFieldChanges(
   id: string,
   before: KanbanCard,
@@ -2255,8 +2275,23 @@ function recordKanbanFieldChanges(
     const a = (before as unknown as Record<string, unknown>)[field]
     const b = (after as unknown as Record<string, unknown>)[field]
     if (a === b) continue
-    stmt.run(id, field, a === null || a === undefined ? null : String(a), b === null || b === undefined ? null : String(b), actor ?? null, nowMs)
+    stmt.run(id, field, clipAuditValue(a), clipAuditValue(b), actor ?? null, nowMs)
   }
+}
+
+/** One audited field change. Used by the paths that write a column with their own UPDATE and so
+ *  never pass through updateKanbanCard's comparison loop. */
+function recordKanbanFieldEvent(
+  cardId: string,
+  field: string,
+  oldValue: string | null,
+  newValue: string | null,
+  actor: string | undefined,
+  nowMs: number,
+): void {
+  db.prepare(
+    'INSERT INTO kanban_card_field_events (card_id, field, old_value, new_value, actor, created_at) VALUES (?, ?, ?, ?, ?, ?)',
+  ).run(cardId, field, clipAuditValue(oldValue), clipAuditValue(newValue), actor ?? null, nowMs)
 }
 
 export interface KanbanCardFieldEvent {
@@ -2330,19 +2365,28 @@ export type ArchiveKanbanCardResult =
 // them from every parent-based summary/dispatch view with no signal that it happened. Refuses
 // by default when open (non-done) children exist; `force` is the deliberate override (matches
 // the force+actor convention already used for card moves elsewhere in this file/route).
-export function archiveKanbanCard(id: string, opts?: { force?: boolean }): ArchiveKanbanCardResult {
+export function archiveKanbanCard(id: string, opts?: { force?: boolean; actor?: string }): ArchiveKanbanCardResult {
   const openChildren = getChildCards(id).filter(c => c.status !== 'done').map(c => c.id)
   if (openChildren.length > 0 && !opts?.force) {
     return { ok: false, reason: 'open-children', openChildren }
   }
   const now = Math.floor(Date.now() / 1000)
   const changed = db.prepare('UPDATE kanban_cards SET archived_at=?, updated_at=? WHERE id=?').run(now, now, id).changes > 0
+  // Card 7fd6dd23, Cybersec F-1: `archived_at` was DECLARED in the audited-field list and could
+  // never fire, because this function writes the column with its own UPDATE and nobody reaches it
+  // through updateKanbanCard. A declared-but-unreachable audit field claims coverage it does not
+  // have -- worse than an honest gap, because a reader stops looking. It writes its own row now,
+  // and takes an actor so the row can name somebody.
+  if (changed) recordKanbanFieldEvent(id, 'archived_at', null, String(now), opts?.actor, now)
   return changed ? { ok: true } : { ok: false, reason: 'not-found' }
 }
 
-export function unarchiveKanbanCard(id: string): boolean {
+export function unarchiveKanbanCard(id: string, opts?: { actor?: string }): boolean {
   const now = Math.floor(Date.now() / 1000)
-  return db.prepare('UPDATE kanban_cards SET archived_at=NULL, updated_at=? WHERE id=? AND archived_at IS NOT NULL').run(now, id).changes > 0
+  const prev = (db.prepare('SELECT archived_at FROM kanban_cards WHERE id=?').get(id) as { archived_at: number | null } | undefined)?.archived_at
+  const changed = db.prepare('UPDATE kanban_cards SET archived_at=NULL, updated_at=? WHERE id=? AND archived_at IS NOT NULL').run(now, id).changes > 0
+  if (changed) recordKanbanFieldEvent(id, 'archived_at', prev === null || prev === undefined ? null : String(prev), null, opts?.actor, now)
+  return changed
 }
 
 export interface ArchivedKanbanCard {
