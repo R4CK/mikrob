@@ -56,7 +56,7 @@ const GUARDED_FILES = ['web/lang/hu.js', 'web/lang/en.js', 'web/style.css'] as c
 // rather than four hand-picked files. Before this, a manual list of four could only ever see what
 // it already knew about: three files conflicted for weeks with nothing watching them, and the only
 // reason anyone noticed was a human running the dry-run by hand.
-const ACKNOWLEDGED_CONFLICTS: Readonly<Record<string, string>> = {
+const ACKNOWLEDGED_CONFLICTS = {
   // BEHAVIOUR-CRITICAL. The fork removed "upgrade to increase your usage limit" from the
   // usage-limit regex (2026-06-30: it matched Claude Code's /upgrade STARTUP HINT, so fresh agents
   // read as limited and got needlessly downgraded). Upstream still has that token AND added a real
@@ -67,14 +67,16 @@ const ACKNOWLEDGED_CONFLICTS: Readonly<Record<string, string>> = {
     'take upstream session-limit alternative, keep the fork /upgrade removal (never a wholesale side)',
   // The test file diverges with the module it tests: fork-only weekly-tier tests plus the pinned
   // resolution pair above. Resolution: keep both sides' cases, drop neither.
-  'src/__tests__/model-fallback.test.ts': 'union of both sides cases -- fork weekly-tier + upstream additions',
+  'src/__tests__/model-fallback.test.ts':
+    'union of both sides cases -- fork weekly-tier + upstream additions',
   // The fork restructured this file into a MULTI-REPO aggregate (marveen + mikrob blocks, per-repo
   // results in `repos`); upstream kept the single-result shape and is still adding features to it,
   // e.g. the running `version` in the Updates header (upstream aefa693). So it is not "fork parts
   // are additive" in either direction -- measured 2026-08-14, the fork side currently LACKS that
   // version field. Resolution: keep the fork's aggregate structure, and port upstream's new
   // single-result features onto it one by one.
-  'src/web/update-checker.ts': 'keep the fork aggregate shape, port upstream single-result features onto it',
+  'src/web/update-checker.ts':
+    'keep the fork aggregate shape, port upstream single-result features onto it',
   // A one-line import conflict, not a behavioural one (measured 2026-08-16, card 78c14372): the fork
   // added `agentDir` to the existing import from './agent-config.js' (workingDirFor() now goes
   // through the sanitized helper instead of building its own path), and upstream independently added
@@ -155,7 +157,7 @@ const ACKNOWLEDGED_CONFLICTS: Readonly<Record<string, string>> = {
   // taking upstream's handler wholesale would silently drop both. Measured 2026-08-16. Resolution:
   // keep the fork version wholesale in all three hunks.
   'src/web/routes/kanban.ts':
-    'keep the fork version wholesale in all three hunks -- upstream\'s dispatch text tells the agent to self-close to done (violates fork rule 4), and its /move handler lacks the fork-only newDevStopWouldBlock + landedGuardVerdict gates',
+    "keep the fork version wholesale in all three hunks -- upstream's dispatch text tells the agent to self-close to done (violates fork rule 4), and its /move handler lacks the fork-only newDevStopWouldBlock + landedGuardVerdict gates",
   // Card 2e634e5c, fourth file. A genuine two-way merge, not a wholesale pick either direction:
   // the fork owns Firecrawl namespace default-deny + FIRECRAWL_SCRAPE_ALLOWED_KEYS param-allowlist
   // (card 91c4a369); upstream owns the tier-based egressDecision({blocked,tier}) shape, agentType
@@ -173,7 +175,7 @@ const ACKNOWLEDGED_CONFLICTS: Readonly<Record<string, string>> = {
   // ordinary allowlist. Co-planned with Cybersec (card 2e634e5c); independently verified here
   // (read both source files, confirmed the quarantine-reader tools: line, ran both test suites).
   'scripts/hooks/egress-gate.mjs':
-    'merge both sides in one egressDecision() -- fork Firecrawl namespace-default-deny + param-allowlist (91c4a369) run BEFORE upstream\'s not-webfetch early-return (which would otherwise reopen 91c4a369), then upstream\'s tier-based decision + quarantine tier + audit logging, with the quarantine tier extended to the two URL-bearing Firecrawl tools',
+    "merge both sides in one egressDecision() -- fork Firecrawl namespace-default-deny + param-allowlist (91c4a369) run BEFORE upstream's not-webfetch early-return (which would otherwise reopen 91c4a369), then upstream's tier-based decision + quarantine tier + audit logging, with the quarantine tier extended to the two URL-bearing Firecrawl tools",
   // The test file for the entry above, same relationship as model-fallback.ts/.test.ts: the fork
   // added a case (card 5cd87b6f -- github.com/raw.githubusercontent.com reachable through the
   // quarantine tier) at a spot where upstream's side adds nothing (measured 2026-08-17, real merge
@@ -194,7 +196,7 @@ const ACKNOWLEDGED_CONFLICTS: Readonly<Record<string, string>> = {
   // Resolution: keep the fork's async measurePct, adopt upstream's configDirFor/measureContextTokens
   // (made async)/measureIdleMs verbatim otherwise, await the two new call sites.
   'src/web/context-guard-runner.ts':
-    'keep the fork async measurePct/configDirFor; adopt upstream measureContextTokens+measureIdleMs to wire the fork\'s existing idleFlushEnabled domain logic, making measureContextTokens async (fork\'s readContextTokensFromProjectDir is async, upstream\'s is sync) and awaiting its two call sites in checkAgent',
+    "keep the fork async measurePct/configDirFor; adopt upstream measureContextTokens+measureIdleMs to wire the fork's existing idleFlushEnabled domain logic, making measureContextTokens async (fork's readContextTokensFromProjectDir is async, upstream's is sync) and awaiting its two call sites in checkAgent",
   // Card 2e634e5c, fifth file, the largest and the only one NOT fully hand-verified line-by-line --
   // recorded as a POLICY, not a line-by-line merge, same character as the src/web/update-checker.ts
   // entry above. web/app.js is a STUB scaffold: its content was extracted into 36 web/app-*.js
@@ -233,7 +235,8 @@ const ACKNOWLEDGED_CONFLICTS: Readonly<Record<string, string>> = {
   // package set; upstream its own. Regenerated by `npm ci` from the fork's package.json.
   // Resolution: keep the fork's lockfile; upstream lockfile sections for packages not in the
   // fork's package.json are not applicable.
-  'package-lock.json': 'keep the fork lockfile canonical; regenerate from fork package.json via npm ci if ever needed',
+  'package-lock.json':
+    'keep the fork lockfile canonical; regenerate from fork package.json via npm ci if ever needed',
   // Fork changed three curl calls to the `printf | curl -H @-` token-argv-safe pattern (security
   // fix: token never appears in process argv). Upstream replaced the main kanban heartbeat curl
   // command with a Python one-liner (HBHEREDOC819/HBKANBANDRIFT819 incident hardening: no pipe,
@@ -349,6 +352,98 @@ const ACKNOWLEDGED_CONFLICTS: Readonly<Record<string, string>> = {
   // keep changing it. The rule for resolving it is what needed recording, not a ban on conflicting.
   'src/__tests__/installer-start-and-fallback.test.ts':
     'keep the fork assertion (expect([TRAP:5, TRAP:6]).toContain -- identical behaviour to upstream anchored regex, better failure output) and fold upstream bash 3.2 / macOS provenance into the fork comment; neither comment taken wholesale',
+} as const
+
+// THE UPSTREAM CONTENT EACH RULE ABOVE WAS DECIDED AGAINST (card a1d613e3, Cybersec msg 19105).
+//
+// THE DEFECT THIS CLOSES. The acknowledgement above is keyed on the FILE NAME and nothing else, so
+// it is permanent: once a path appears in it, ANY later conflict in that file -- a different hunk,
+// different semantics, a weakened assertion -- passes this guard silently, forever. That is not a
+// hypothetical. Card 0ea89716 chose the acknowledgement list OVER GUARDED_FILES precisely BECAUSE
+// "upstream legitimately keeps editing the file", so a future, different conflict there is the
+// stated PREMISE of the decision, not an edge case. And one of the exempted files,
+// src/__tests__/installer-start-and-fallback.test.ts, is itself a watchdog -- it measures that an
+// installer abort really happened. An upstream change that weakened it would have crossed a gate
+// whose only comment on the matter was "we already decided about this file".
+//
+// SO THE RULE IS BOUND TO CONTENT, NOT TO A NAME: the upstream-side blob sha the decision was read
+// against. Same file, same blob -> the decision still describes what is there, land on. Same file,
+// DIFFERENT blob -> the guard blocks again and asks for a fresh decision. The "decide once" benefit
+// survives (the identical conflict never stops a landing twice); the permanence does not.
+//
+// GRANULARITY, STATED HONESTLY: this is the whole FILE's blob, so it also trips on an upstream edit
+// that never touches the conflicting region. That over-triggering is deliberate and is the cheaper
+// error -- it costs one re-read of a file we already know is contentious, whereas under-triggering
+// is the defect being fixed here. It is also only ever evaluated for files that ACTUALLY conflict
+// in this run, so an upstream edit that resolves the conflict is silent.
+//
+// Typed as Record<keyof typeof ACKNOWLEDGED_CONFLICTS, string>: a rule without a recorded blob, or
+// a blob without a rule, is a COMPILE error rather than a silent gap between two lists.
+const ACKNOWLEDGED_UPSTREAM_BLOBS: Readonly<Record<keyof typeof ACKNOWLEDGED_CONFLICTS, string>> = {
+  'src/model-fallback.ts': 'd1ed3c18ba86badd1f72cf6fb28d1f3193974012',
+  'src/__tests__/model-fallback.test.ts': '38b6e76e9f5184a9ade636a057b79c4e522f1e3b',
+  'src/web/update-checker.ts': '24e46f990c7b0a5c8fa065d12ba1ee592b547691',
+  'src/web/context-restart-gate-runner.ts': 'aae818bb7ded38146343eb0a0748b83422d018ce',
+  'src/web.ts': 'd5d3679831052e7462509e991497a188b303ebd8',
+  'src/web/keychain.ts': '1e1730ee0d8f6b1d4b51c5c254f3fab56acfa376',
+  'src/web/agent-scaffold.ts': '8fa16bf5ba7e2818fbe96d91c4d3f1bc853e6be2',
+  'src/db.ts': '66381e77bdb6cce583bd3b397a3ae2202ae61e9e',
+  'src/web/routes/agents.ts': '7711d18a7752828a113f9389a2c3943e6b74ab0e',
+  'src/web/routes/kanban.ts': '5620fe397bdadad1a619408367a783d0470a13fe',
+  'scripts/hooks/egress-gate.mjs': '2493020d7374c7a275443ae96ff3f33cd1c23efb',
+  'src/__tests__/egress-gate.test.ts': 'c24ca54ffc49de70d602790fa1d6b80e3aea4156',
+  'src/web/context-guard-runner.ts': 'b17ba4f630dbba93cfd5520e3c37a854a5c80c81',
+  'web/app.js': '310cc72e99b75d10c463c411f7356c7e8ecd98de',
+  '.gitignore': '1e5adbb2332be0dbf5a710c1899e49305ccb318b',
+  'package-lock.json': '738952610de98fcaa2af4c7b59648a18a049a973',
+  'src/web/heartbeat-agent-scaffold.ts': '9da046f14c0702cd8b61e1a005717d0c3a61d198',
+  'src/web/schedule-runner.ts': '88423d5733eb20fb208e38551389d5b24e967b41',
+  'vitest.config.ts': '62d4ac7606cd719d40e07fc0d82c7f777dda0b30',
+  'src/web/agent-process.ts': 'bb28237a19c881551c8415ebeecd58fcaac01923',
+  'src/web/auto-restart-runner.ts': '40b83f7012812cc0bdf48f1e093dd8b8d6bb4db2',
+  'src/web/model-fallback-runner.ts': '681fcaefd6588fc2f6f3db880238b8288d1dcd15',
+  'src/web/routes/skills.ts': '34c1e440bd5009e79546d686ec9fbc481ba0af7e',
+  'src/web/routes/agents-skills.ts': '23a380b7d40b5cd70885d9205c6fb4cc1fe9dbfe',
+  'scripts/email-send-gate.mjs': 'abaaedc4d0e9f76fa159307659473ffaac306411',
+  'src/__tests__/hook-command-quoting.test.ts': '1048b1988e6c8554754900c62570d76d455f1057',
+  'src/__tests__/installer-start-and-fallback.test.ts': '9017ce4fcfe808b73fdcd1389ebf1c9eaf374f7e',
+}
+
+/** A conflict whose written rule was decided against DIFFERENT upstream content than what is
+ *  there now. Not "unwatched" -- somebody did look at this file -- but the thing they looked at
+ *  has moved, so the acknowledgement no longer says anything about today's conflict. */
+export interface StaleAcknowledgement {
+  readonly file: string
+  readonly recorded: string
+  readonly actual: string
+}
+
+/**
+ * Split a conflict set into the three verdicts. Pure and injectable (`blobOf`) ON PURPOSE: the
+ * live test around it only runs when the upstream remote is reachable, so without a seam the
+ * classification itself would be exercised on exactly the machines that can already do a real
+ * merge, and nowhere else. `blobOf` returns null when the path does not exist upstream (a
+ * delete/modify conflict), which is a STALE acknowledgement, not a pass.
+ */
+export function classifyConflicts(
+  conflicted: readonly string[],
+  blobOf: (file: string) => string | null
+): { guarded: string[]; unwatched: string[]; stale: StaleAcknowledgement[] } {
+  const guarded = conflicted.filter((f) => (GUARDED_FILES as readonly string[]).includes(f))
+  const acknowledged = conflicted.filter(
+    (f) =>
+      !guarded.includes(f) && Object.prototype.hasOwnProperty.call(ACKNOWLEDGED_UPSTREAM_BLOBS, f)
+  )
+  const unwatched = conflicted.filter((f) => !guarded.includes(f) && !acknowledged.includes(f))
+  const stale: StaleAcknowledgement[] = []
+  for (const file of acknowledged) {
+    const recorded = (ACKNOWLEDGED_UPSTREAM_BLOBS as Readonly<Record<string, string>>)[file]!
+    const actual = blobOf(file)
+    if (actual !== recorded) {
+      stale.push({ file, recorded, actual: actual ?? '(absent upstream)' })
+    }
+  }
+  return { guarded, unwatched, stale }
 }
 
 function git(args: string[], cwd: string): string {
@@ -427,7 +522,7 @@ describe('fork/upstream web-file merge-conflict guard (card 641aca3f)', () => {
         try {
           git(
             ['merge', '--no-commit', '--no-ff', `${UPSTREAM_REMOTE}/${UPSTREAM_BRANCH}`],
-            worktree,
+            worktree
           )
           // Clean merge, nothing conflicted anywhere.
         } catch {
@@ -443,15 +538,24 @@ describe('fork/upstream web-file merge-conflict guard (card 641aca3f)', () => {
           }
         }
 
-        const conflictedGuardedFiles = conflicted.filter((f) =>
-          (GUARDED_FILES as readonly string[]).includes(f),
-        )
+        // One classification for all three verdicts, from the same pure function the offline
+        // tests below exercise -- so what runs here is not a second, hand-inlined copy of the
+        // rules that could drift from the one that is actually unit-tested.
+        const verdict = classifyConflicts(conflicted, (f) => {
+          try {
+            return git(['rev-parse', `${UPSTREAM_REMOTE}/${UPSTREAM_BRANCH}:${f}`], worktree).trim()
+          } catch {
+            return null // deleted upstream -- a delete/modify conflict, not a match
+          }
+        })
+
+        const conflictedGuardedFiles = verdict.guarded
         expect(
           conflictedGuardedFiles,
           `upstream/develop now conflicts on fork-owned web file(s): ${conflictedGuardedFiles.join(', ')}. ` +
             'The "zero-conflict" claim in the README\'s "Upstream-owned vs fork-owned fájlok" section no ' +
             'longer holds -- re-run the card 641aca3f investigation (measure whether an overlay extraction ' +
-            'is now justified) before the next upstream integration.',
+            'is now justified) before the next upstream integration.'
         ).toEqual([])
 
         // The check the original guard could not make (card f085fd44). Watching four named files
@@ -459,18 +563,36 @@ describe('fork/upstream web-file merge-conflict guard (card 641aca3f)', () => {
         // -- had been conflicting with nothing watching, and were found only because a human ran
         // the dry-run by hand. So this asserts on the WHOLE conflict set: every conflicting file
         // must be one someone has already decided how to resolve.
-        const unwatched = conflicted.filter(
-          (f) =>
-            !(GUARDED_FILES as readonly string[]).includes(f) &&
-            !Object.prototype.hasOwnProperty.call(ACKNOWLEDGED_CONFLICTS, f),
-        )
+        const unwatched = verdict.unwatched
         expect(
           unwatched,
           `upstream/develop conflicts on file(s) nobody has decided how to resolve: ${unwatched.join(', ')}. ` +
             'Decide the rule NOW, while there is time to look at both sides, and record it in ' +
             'ACKNOWLEDGED_CONFLICTS above -- not during the merge, when the cheap move is to take one ' +
             'side wholesale. If the file is fork-owned and should never conflict, it belongs in ' +
-            'GUARDED_FILES instead.',
+            'GUARDED_FILES instead.'
+        ).toEqual([])
+
+        // THE ACKNOWLEDGEMENT MUST STILL DESCRIBE WHAT IS THERE (card a1d613e3). The two checks
+        // above only ask WHETHER a file was decided about; this one asks whether the decision was
+        // read against TODAY's upstream content. Without it the exemption is permanent: card
+        // 0ea89716 put installer-start-and-fallback.test.ts on the list precisely because upstream
+        // keeps editing it, so a LATER, different conflict there -- in a test whose whole job is to
+        // measure that an installer abort really happened -- would have crossed this gate in
+        // silence, on the strength of a decision about some other hunk.
+        expect(
+          verdict.stale,
+          'the upstream side of these acknowledged conflicts has CHANGED since the rule was ' +
+            'written, so the recorded resolution no longer describes the conflict it is exempting: ' +
+            verdict.stale
+              .map(
+                (s) =>
+                  `${s.file} (recorded ${s.recorded.slice(0, 12)}, now ${s.actual.slice(0, 12)})`
+              )
+              .join('; ') +
+            '. Read both sides again, update the rule in ACKNOWLEDGED_CONFLICTS if the resolution ' +
+            'changed, then record the new sha in ACKNOWLEDGED_UPSTREAM_BLOBS. `git rev-parse ' +
+            `${UPSTREAM_REMOTE}/${UPSTREAM_BRANCH}:<file>\` prints it.`
         ).toEqual([])
       } finally {
         try {
@@ -479,7 +601,7 @@ describe('fork/upstream web-file merge-conflict guard (card 641aca3f)', () => {
           rmSync(worktree, { recursive: true, force: true })
         }
       }
-    },
+    }
   )
 })
 
@@ -504,5 +626,66 @@ describe('metaAnnouncement (card d359535c: the skip state must be loud, not just
 
   it('the two states never produce the same test name (armed cannot masquerade as skipped or vice versa)', () => {
     expect(metaAnnouncement(true).name).not.toBe(metaAnnouncement(false).name)
+  })
+})
+
+// Offline half of card a1d613e3. The live guard above only runs where the upstream remote is
+// reachable, so without these the content-binding would be exercised nowhere else -- and the whole
+// finding was about a check that looked present and decided nothing.
+describe('classifyConflicts: an acknowledgement is bound to CONTENT, not to a file name (card a1d613e3)', () => {
+  // Cybersec's own example: a watchdog test that upstream keeps editing, exempted by name.
+  const WATCHDOG = 'src/__tests__/installer-start-and-fallback.test.ts'
+  const RECORDED = '9017ce4fcfe808b73fdcd1389ebf1c9eaf374f7e'
+
+  it('the fixture is a REAL entry, not a name that happens to look like one', () => {
+    // Without this, every case below could be measuring the "unwatched" path by accident: a typo in
+    // WATCHDOG would send it there and the stale cases would trivially "pass" for the wrong reason.
+    expect(Object.keys(ACKNOWLEDGED_UPSTREAM_BLOBS)).toContain(WATCHDOG)
+    expect(ACKNOWLEDGED_UPSTREAM_BLOBS[WATCHDOG]).toBe(RECORDED)
+  })
+
+  it('SAME file, SAME upstream blob -> still acknowledged, the landing is not stopped twice', () => {
+    const v = classifyConflicts([WATCHDOG], () => RECORDED)
+    expect(v.unwatched).toEqual([])
+    expect(v.stale).toEqual([])
+  })
+
+  it('THE DEFECT: same file, DIFFERENT upstream content -> blocks again instead of passing', () => {
+    // This is the case that used to be silent forever. The name was on the list, so the guard said
+    // nothing -- about a hunk nobody had ever looked at, in a test that measures whether an
+    // installer abort really happened.
+    const moved = 'ffffffffffffffffffffffffffffffffffffffff'
+    const v = classifyConflicts([WATCHDOG], () => moved)
+    expect(v.stale).toEqual([{ file: WATCHDOG, recorded: RECORDED, actual: moved }])
+    // Still not "unwatched" -- somebody DID decide about this file. The two verdicts are different
+    // questions and the messages a reader gets must not be interchangeable.
+    expect(v.unwatched).toEqual([])
+  })
+
+  it('a delete/modify conflict (gone upstream) is stale, not a pass', () => {
+    const v = classifyConflicts([WATCHDOG], () => null)
+    expect(v.stale).toEqual([{ file: WATCHDOG, recorded: RECORDED, actual: '(absent upstream)' }])
+  })
+
+  it('an undecided file is still UNWATCHED, and is never reported as stale', () => {
+    const v = classifyConflicts(['src/some/brand-new-file.ts'], () => 'whatever')
+    expect(v.unwatched).toEqual(['src/some/brand-new-file.ts'])
+    expect(v.stale).toEqual([])
+  })
+
+  it('a fork-owned GUARDED file is classified as guarded, not as undecided', () => {
+    const v = classifyConflicts([GUARDED_FILES[0]], () => 'whatever')
+    expect(v.guarded).toEqual([GUARDED_FILES[0]])
+    expect(v.unwatched).toEqual([])
+    expect(v.stale).toEqual([])
+  })
+
+  it('blobOf is consulted ONLY for acknowledged files -- no needless git call per conflict', () => {
+    const asked: string[] = []
+    classifyConflicts([WATCHDOG, 'src/some/brand-new-file.ts', GUARDED_FILES[0]], (f) => {
+      asked.push(f)
+      return RECORDED
+    })
+    expect(asked).toEqual([WATCHDOG])
   })
 })
