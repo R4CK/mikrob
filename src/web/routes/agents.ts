@@ -6,8 +6,9 @@ import { execFileAsync } from '../exec-async.js'
 import { logger } from '../../logger.js'
 import { isModelProfileId, MODEL_PROFILE_IDS } from '../../model-profiles.js'
 import { MAIN_AGENT_ID, currentBotName, PROJECT_ROOT } from '../../config.js'
-import { createAgentMessage, listPendingChannelRequests, updateChannelRequestStatus, getDb, claimPendingForAgent, markMessageFailed } from '../../db.js'
+import { createAgentMessage, listPendingChannelRequests, updateChannelRequestStatus, getDb, claimPendingForAgent, markMessageFailed, getKanbanCardStateByIdPrefix } from '../../db.js'
 import { classifyAgentMessage, wrapAgentMessageForDelivery } from '../agent-message-wrap.js'
+import { formatDeliveryStalenessNote } from '../kanban-state-stamp.js'
 import { ensureFederationClaudeMdSection } from '../federation/onboarding.js'
 import { atomicWriteFileSync } from '../atomic-write.js'
 import { CHANNEL_PLUGIN_IDS } from '../plugin-ids.js'
@@ -1887,6 +1888,7 @@ export async function tryHandleAgents(ctx: RouteContext, webDir: string): Promis
       return true
     }
     const claimed = claimPendingForAgent(name, INBOX_DRAIN_CAP)
+    const nowSec = Math.floor(Date.now() / 1000)
     const blocks: string[] = []
     for (const msg of claimed) {
       const cls = classifyAgentMessage(msg.from_agent, msg.to_agent)
@@ -1901,7 +1903,12 @@ export async function tryHandleAgents(ctx: RouteContext, webDir: string): Promis
         continue
       }
       const { prefix, wrapped } = wrapAgentMessageForDelivery(cls.category, cls.safeFrom, msg.from_agent, msg.content, msg.id, msg.origin_note)
-      blocks.push(prefix + wrapped)
+      // Card 9566a197: same delivery-time board re-check the router does. Wired in BOTH paths on
+      // purpose -- a control that lands in only one of two near-identical delivery paths is the
+      // classic way a fix reads as shipped while half the traffic never sees it. The main agent's
+      // waits are shorter than a busy sub-agent's, but a long turn produces the same stale stamp.
+      const staleNote = formatDeliveryStalenessNote(msg.content, getKanbanCardStateByIdPrefix, nowSec - msg.created_at)
+      blocks.push(prefix + wrapped + staleNote)
     }
     json(res, { count: blocks.length, text: blocks.join('\n\n') })
     return true

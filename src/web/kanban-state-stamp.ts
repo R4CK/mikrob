@@ -78,3 +78,78 @@ export function appendCardStateStamp(content: string, lookup: CardStateLookup): 
     `MIELOTT dolgozol rajta, olvasd ujra a kartyat:\n${lines.join('\n')}`
   )
 }
+
+// --- Delivery-time re-check (card 9566a197) ----------------------------------
+//
+// WHAT THE MEASUREMENT SAID, AND WHAT IT REFUTED. Card 9566a197 opened on the theory that dispatches
+// about already-closed cards come from the SENDER reading a stale/cached board. The queue disagrees.
+// Every stale dispatch in the 2026-08-22 incident carries a send-time stamp that was CORRECT when it
+// was written -- msg 19064 stamped `956fdaf5 status=in_progress updated_at=1787398822`, and that is
+// exactly what the board said at that moment. The card went `done` 35 minutes later. The message
+// reached backend's pane 153 minutes after it was written. Backend's whole afternoon looks like that
+// (msg 18976 onward: 25, 33, 66, 97, 108, 134, 153, 166, 183 minutes of queue wait), because
+// delivery only happens when the receiving pane is ready and each delivery costs a full turn.
+//
+// So the sender was never the problem. The stamp is a PHOTOGRAPH, and the failure is that nothing
+// re-reads the board between taking it and showing it -- a gap the send-time stamp's own header
+// comment predicted ("the recipient may not read it for minutes or hours") and could not close from
+// where it sits, because it runs in the POST path and the wait happens afterwards.
+//
+// WHY STATUS ONLY, NOT updated_at. A dispatch is made worthless by the card CHANGING COLUMN (done,
+// or reopened by someone else), not by its updated_at ticking. Comparing timestamps would fire on
+// every message MikroB sends right after moving a card -- the normal dispatch flow -- and a note that
+// fires on healthy traffic is one that gets skipped when it matters.
+//
+// STILL A HINT, NOT A GATE. Same standing as the send-time stamp: a sender can hand-write a stamp
+// block, so a "changed" line proves only that the CURRENT status differs from what the block claims.
+// The current status itself is read from the board here, so the note cannot invent a state a card is
+// not in. Nothing gates on it.
+
+/** Opens the delivery-time block. Distinct from CARD_STATE_MARKER so the send-time stamp's own
+ *  idempotency check never mistakes one for the other. */
+export const CARD_STATE_DELIVERY_MARKER = '[card-state @delivery]'
+
+/** One stamped line: leading whitespace, the id, status, updated_at -- the exact shape
+ *  appendCardStateStamp writes. */
+const STAMPED_LINE_RE = /^[ \t]+([a-f0-9]{8}) status=(\S+) updated_at=(\d+)[ \t]*$/gim
+
+/**
+ * Re-read the board for the cards a message was stamped with, and describe what MOVED while the
+ * message sat in the queue.
+ *
+ * Returns '' -- append nothing -- when the message carries no send-time stamp, when no stamped card
+ * resolves, or when every stamped card is still in the column it was stamped in. Never throws: a
+ * lookup failure is treated as "unchanged", because a decoration must not cost a delivery.
+ */
+export function formatDeliveryStalenessNote(
+  content: string,
+  lookup: CardStateLookup,
+  queuedSeconds: number,
+): string {
+  if (!content || !content.includes(CARD_STATE_MARKER)) return ''
+
+  const changed: string[] = []
+  const seen = new Set<string>()
+  for (const m of content.matchAll(STAMPED_LINE_RE)) {
+    const id = (m[1] ?? '').toLowerCase()
+    if (seen.has(id)) continue
+    seen.add(id)
+    const stampedStatus = m[2] ?? ''
+    let snap: CardStateSnapshot | null = null
+    try {
+      snap = lookup(id)
+    } catch {
+      snap = null // a decoration must never cost a message
+    }
+    if (snap === null || snap.status === stampedStatus) continue
+    changed.push(`  ${id}: ${stampedStatus} -> ${snap.status}`)
+  }
+  if (changed.length === 0) return ''
+
+  const waited = Math.max(0, Math.round(queuedSeconds / 60))
+  return (
+    `\n\n${CARD_STATE_DELIVERY_MARKER} ez az uzenet ${waited} percet allt a sorban, es azota ` +
+    `VALTOZOTT a tabla -- lehet hogy a dispatch mar nem aktualis:\n${changed.join('\n')}\n` +
+    `Olvasd ujra az erintett kartyakat, mielott barmit csinalsz.`
+  )
+}
