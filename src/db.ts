@@ -499,6 +499,39 @@ export function initDatabase(dbPathOverride?: string): void {
   `)
   db.exec(`CREATE INDEX IF NOT EXISTS idx_kanban_events_card ON kanban_card_events(card_id, created_at)`)
 
+  // --- Card dependencies: predecessor / successor edges (card 2bb82943) --------------------
+  //
+  // A DIRECTED edge that is deliberately SEPARATE from parent_id. parent_id is containment (a
+  // phase owns its tasks); this is ordering (this card cannot proceed until that one is done).
+  // The two answer different questions and a card can have both, so they must not share a column.
+  //
+  //   from_card_id = the card that is BLOCKED
+  //   to_card_id   = its PREDECESSOR, the card that must finish first
+  //
+  // A "successor" is the same row read from the other end -- one edge, two views, so there is no
+  // second table to keep in sync and no way for the two directions to disagree.
+  //
+  // THE FOREIGN KEYS ARE DOCUMENTATION, NOT ENFORCEMENT, and nothing may be built on them.
+  // better-sqlite3 leaves `PRAGMA foreign_keys` OFF per connection and this codebase never turns
+  // it on -- measured on the live database (`PRAGMA foreign_keys` -> 0), and there is not one
+  // ON DELETE CASCADE anywhere else in this schema for the same reason. So a card DELETE would
+  // leave dangling edges here unless something removes them explicitly; deleteKanbanCard does,
+  // inside the same transaction that already promotes orphaned children (see
+  // kanban-delete-fk.test.ts, which exists because exactly this class of bug was found live).
+  db.exec(`
+    CREATE TABLE IF NOT EXISTS kanban_dependencies (
+      from_card_id TEXT NOT NULL REFERENCES kanban_cards(id),
+      to_card_id   TEXT NOT NULL REFERENCES kanban_cards(id),
+      created_at   INTEGER NOT NULL,
+      PRIMARY KEY (from_card_id, to_card_id),
+      CHECK (from_card_id <> to_card_id)
+    )
+  `)
+  // The PRIMARY KEY already indexes (from_card_id, to_card_id) -- that covers "what blocks me".
+  // The reverse question ("what am I blocking") has no index without this one, and the status
+  // guard asks it on every close.
+  db.exec(`CREATE INDEX IF NOT EXISTS idx_kanban_deps_to ON kanban_dependencies(to_card_id)`)
+
   // --- Timestamp integrity (card a06314ea) ---------------------------------
   // Every timestamp in this schema is a UNIX EPOCH INTEGER, and every reader assumes it: the
   // stuck-card monitor and the re-dispatch guard both do epoch arithmetic. A row written with a
@@ -2259,14 +2292,117 @@ export function deleteKanbanCard(id: string): boolean {
   //      (better-sqlite3 default), but the dangling parent_id is still a
   //      data bug -- orphaned children do not appear under any parent and
   //      are invisible in hierarchy views.
-  //   4. Delete the card itself.
+  //   4. Delete every dependency edge touching this card, in BOTH directions
+  //      (card 2bb82943). The table declares REFERENCES but the pragma that
+  //      would enforce them is off, so ON DELETE CASCADE would do nothing --
+  //      the same reason step 3 exists. Deleting a card CUTS its edges, it
+  //      does not satisfy them: a successor that was blocked by this card
+  //      becomes unblocked because the requirement is gone, not met.
+  //   5. Delete the card itself.
   return db.transaction((cardId: string) => {
     db.prepare('DELETE FROM kanban_comments WHERE card_id = ?').run(cardId)
     db.prepare('DELETE FROM kanban_line_comments WHERE card_id = ?').run(cardId)
     db.prepare('DELETE FROM kanban_card_labels WHERE card_id = ?').run(cardId)
     db.prepare('UPDATE kanban_cards SET parent_id = NULL WHERE parent_id = ?').run(cardId)
+    db.prepare('DELETE FROM kanban_dependencies WHERE from_card_id = ? OR to_card_id = ?').run(cardId, cardId)
     return db.prepare('DELETE FROM kanban_cards WHERE id = ?').run(cardId).changes > 0
   })(id) as boolean
+}
+
+// --- Card dependencies (card 2bb82943) ------------------------------------------------------
+
+/** Why an edge was refused. `ok` carries no reason. */
+export type AddDependencyResult =
+  | { ok: true }
+  | { ok: false; reason: 'self' }
+  | { ok: false; reason: 'not-found'; missing: string }
+  | { ok: false; reason: 'cycle'; path: string[] }
+  | { ok: false; reason: 'duplicate' }
+
+/**
+ * Would adding `from -> to` ("from is blocked by to") close a loop? It does exactly when `from` is
+ * ALREADY reachable from `to` by following predecessors, i.e. to depends on ... depends on from.
+ *
+ * TRANSITIVE, not just the A<->B pair, and that is the point: a two-card check would let A->B,
+ * B->C, C->A through, and the result is worse than a rejected edge -- every card in the loop
+ * blocks every other one, so the status guard can never pass and only `force` gets anyone out.
+ * The recursion is bounded by UNION (not UNION ALL), which stops on a node already seen, so an
+ * ALREADY-cyclic table cannot hang this query either.
+ */
+function predecessorClosure(startId: string): string[] {
+  return (
+    db
+      .prepare(
+        `WITH RECURSIVE reach(id) AS (
+           SELECT to_card_id FROM kanban_dependencies WHERE from_card_id = ?
+           UNION
+           SELECT d.to_card_id FROM kanban_dependencies d JOIN reach r ON d.from_card_id = r.id
+         )
+         SELECT id FROM reach`,
+      )
+      .all(startId) as { id: string }[]
+  ).map((r) => r.id)
+}
+
+/** Add "fromCardId depends on toCardId". Refuses self-edges, unknown cards, duplicates and cycles. */
+export function addKanbanDependency(fromCardId: string, toCardId: string): AddDependencyResult {
+  if (fromCardId === toCardId) return { ok: false, reason: 'self' }
+  if (!getKanbanCard(fromCardId)) return { ok: false, reason: 'not-found', missing: fromCardId }
+  if (!getKanbanCard(toCardId)) return { ok: false, reason: 'not-found', missing: toCardId }
+  const closure = predecessorClosure(toCardId)
+  if (closure.includes(fromCardId)) return { ok: false, reason: 'cycle', path: closure }
+  const now = Math.floor(Date.now() / 1000)
+  const changes = db
+    .prepare('INSERT OR IGNORE INTO kanban_dependencies (from_card_id, to_card_id, created_at) VALUES (?, ?, ?)')
+    .run(fromCardId, toCardId, now).changes
+  return changes > 0 ? { ok: true } : { ok: false, reason: 'duplicate' }
+}
+
+export function removeKanbanDependency(fromCardId: string, toCardId: string): boolean {
+  return (
+    db
+      .prepare('DELETE FROM kanban_dependencies WHERE from_card_id = ? AND to_card_id = ?')
+      .run(fromCardId, toCardId).changes > 0
+  )
+}
+
+/** The cards THIS card is waiting for. */
+export function getKanbanPredecessors(cardId: string): KanbanCard[] {
+  return db
+    .prepare(
+      `SELECT c.* FROM kanban_dependencies d JOIN kanban_cards c ON c.id = d.to_card_id
+        WHERE d.from_card_id = ? ORDER BY c.status, c.sort_order ASC`,
+    )
+    .all(cardId) as KanbanCard[]
+}
+
+/** The cards waiting for THIS card. */
+export function getKanbanSuccessors(cardId: string): KanbanCard[] {
+  return db
+    .prepare(
+      `SELECT c.* FROM kanban_dependencies d JOIN kanban_cards c ON c.id = d.from_card_id
+        WHERE d.to_card_id = ? ORDER BY c.status, c.sort_order ASC`,
+    )
+    .all(cardId) as KanbanCard[]
+}
+
+/**
+ * The predecessors that are NOT satisfied yet -- the list the status guard refuses on, and the list
+ * the board shows as "blocked by".
+ *
+ * SATISFIED MEANS `status = 'done'`, AND NOTHING ELSE. The plan said "done OR archived", on the
+ * premise that archiving only ever happens to done cards. That premise holds for the AUTOMATIC
+ * sweep (db.ts: `UPDATE ... SET archived_at = ? WHERE status = 'done' AND ...`) but NOT for the
+ * manual one: archiveKanbanCard() checks only that the card's CHILDREN are done and never looks at
+ * the card's own status, so `POST /api/kanban/:id/archive` archives a `planned` leaf happily. Under
+ * "done OR archived" that single unauthenticated-by-force call would silently satisfy a dependency
+ * nobody finished -- a one-call bypass of this whole guard, with no force flag and no audit row.
+ *
+ * Reading `status` alone loses nothing the plan wanted: archiving does not change `status`, so an
+ * auto-archived predecessor still reads `done` here and still counts.
+ */
+export function getUnmetKanbanPredecessors(cardId: string): KanbanCard[] {
+  return getKanbanPredecessors(cardId).filter((c) => c.status !== 'done')
 }
 
 export function getKanbanComments(cardId: string): KanbanComment[] {
