@@ -144,3 +144,84 @@ describe('ANTI-VACUITY (card ec20dd23)', () => {
     expect(bash(`${CT} -l`)).toBe(false)
   })
 })
+
+describe('round 2: the three shapes both gates found still open (card ec20dd23)', () => {
+  // Cybersec NO-GO (33/35 closed, three open) and Cybered NO-GO (HIGH), independently. The case-arm
+  // finding they BOTH reported was already closed by the sibling card's unification between their
+  // measurement and this round; these are the rest.
+  const Q = String.fromCharCode(34)
+  const BS = String.fromCharCode(92)
+
+  describe('H-2: a shell fed its program on a HERE-STRING', () => {
+    // No `-c` anywhere, so neither the wrapper nor the eval matcher saw it, and the program never
+    // reaches argv -- but the shell runs it just the same.
+    it.each([
+      ['into bash', `bash <<< "${CT} -"`],
+      ['into sh', `sh <<< "${CT} -"`],
+      ['single-quoted body', `bash <<< '${CT} -'`],
+      ['via source /dev/stdin', `source /dev/stdin <<< "${CT} -"`],
+      ['via . /dev/stdin', `. /dev/stdin <<< "${CT} -"`],
+    ])('%s', (_name, cmd) => {
+      expect(bash(cmd)).toBe(true)
+    })
+
+    it('CONTROL: a here-string that runs nothing schedule-related is untouched', () => {
+      expect(bash('bash <<< "echo hello"')).toBe(false)
+    })
+  })
+
+  describe('F-2: options before -c', () => {
+    // The old option run knew only bare short flags, so anything longer walked past it. Each of
+    // these was measured executing the payload.
+    it.each([
+      ['a long option', `bash --norc -c "${CT} -"`],
+      ['another long option', `bash --noprofile -c "${CT} -"`],
+      ['a long option WITH an argument', `bash --rcfile /tmp/x -c "${CT} -"`],
+      ['a short option with an argument', `bash -O extglob -c "${CT} -"`],
+      ['several at once', `bash --norc --noprofile -O extglob -c "${CT} -"`],
+      ['an end-of-options marker AFTER -c', `sh -c -- "${CT} -"`],
+    ])('%s', (_name, cmd) => {
+      expect(bash(cmd)).toBe(true)
+    })
+
+    it('CONTROL: the option run must not swallow the -c itself', () => {
+      // The failure this guards is silent: if `-c` were consumed as just another option token, the
+      // matcher would find no program and every wrapper would read as harmless.
+      expect(bash(`bash -c "${CT} -"`)).toBe(true)
+      expect(bash('bash --norc -c "echo hello"')).toBe(false)
+    })
+  })
+
+  describe('H-3: a wrapper nested behind escaped quotes', () => {
+    it('three levels deep, each escaping the last', () => {
+      const cmd = `bash -c ${Q}bash -c ${BS}${Q}bash -c ${BS}${BS}${BS}${Q}${CT} -${BS}${BS}${BS}${Q}${BS}${Q}${Q}`
+      expect(bash(cmd)).toBe(true)
+    })
+
+    it('and to arbitrary depth, because the unwrapping undoes one level per round', () => {
+      // Measured 1..8. The stop-one-level-short failure was invisible at depth 1 and 2, which is
+      // why depth is walked here rather than sampled.
+      const nest = (n: number): string => {
+        let out = `${CT} -`
+        for (let i = 0; i < n; i += 1) out = `bash -c "${out.replace(/(["\\])/g, '\\$1')}"`
+        return out
+      }
+      for (let n = 1; n <= 6; n += 1) expect(bash(nest(n)), `depth ${n}`).toBe(true)
+    })
+
+    it('a SINGLE-quoted body is literal and must NOT be unescaped', () => {
+      // The shell does not process backslashes inside single quotes. Unescaping them anyway would
+      // invent a program the shell never runs -- a false positive built by the fix itself.
+      expect(bash(`bash -c 'echo ${BS}${Q}hello${BS}${Q}'`)).toBe(false)
+    })
+  })
+
+  it('NOT A DoS SURFACE: the added option run has nested quantifiers', () => {
+    // A governance gate that can be stalled is a way past it. Measured on the shapes that would
+    // trigger catastrophic backtracking if the quantifiers were badly nested.
+    const started = Date.now()
+    bash('bash' + ' --opt val'.repeat(2000) + ` -c "${CT} -"`)
+    bash('$('.repeat(500) + `${CT} -` + ')'.repeat(500))
+    expect(Date.now() - started).toBeLessThan(5_000)
+  })
+})

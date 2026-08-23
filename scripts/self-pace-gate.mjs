@@ -981,8 +981,38 @@ export function pairedSegments(command) {
 // materialise, because the extracted text is scanned by the SAME anchored checks: in
 // `bash -c "echo the <scheduler> entry"` the binary sits in argument position behind `echo`, which
 // those checks already ignore. Measured, not assumed.
-const SHELL_C_RX = /(?:^|[\s;&|(`])(?:sudo\s+|env\s+|command\s+|exec\s+)*(?:\S*\/)?(?:bash|sh|zsh|dash|ksh)\b(?:\s+-[a-zA-Z]+)*\s+-[a-zA-Z]*c\s+(?:'([^']*)'|"((?:\\.|[^"\\])*)"|(\S+))/g
-const EVAL_RX = /(?:^|[\s;&|(`])eval\s+(?:'([^']*)'|"((?:\\.|[^"\\])*)"|(\S+))/g
+// The wrapper grammar reads the SAME command-position constant as the other two branches (card
+// ec20dd23 round 2, MikroB asking for the third time). It is deliberately WIDER by one thing --
+// plain whitespace -- and that is not a second list: a `-c` shell can legitimately sit in another
+// command's argv (`xargs -I{} bash -c ...`), where no separator precedes it. Everything else it
+// knows about command position now arrives from CMD_POSITION, so a position added there is
+// inherited here instead of being remembered a third time.
+const WRAPPER_POSITION = String.raw`(?:^|\s|${CMD_POSITION})`
+// The option run before `-c`. Built from the SHAPE of an option rather than a list of them
+// (Cybered F-2): the old `(?:\s+-[a-zA-Z]+)*` knew only bare short flags, so `bash --norc -c`,
+// `--noprofile -c`, `--rcfile /tmp/x -c` and `-O extglob -c` all walked straight past it -- each
+// measured running the payload. An option token is anything starting with `-` or `+` that is NOT
+// itself the `-c` we are looking for, optionally followed by ONE non-option argument (`--rcfile
+// FILE`, `-O optname`). Negative shape on purpose, per this file's direction principle: an option
+// nobody thought of is still consumed, rather than ending the match and hiding the payload.
+const OPTION_RUN = String.raw`(?:\s+(?!-[a-zA-Z]*c\b)[-+]\S*(?:\s+(?![-+])\S+)?)*`
+// After `-c`, POSIX shells still accept a `--` end-of-options marker before the program string
+// (`sh -c -- "<prog>"`, measured running). Skipping it is what keeps the program in view.
+const POST_C = String.raw`(?:\s+--)?`
+const QUOTED_OR_WORD = String.raw`(?:'([^']*)'|"((?:\\.|[^"\\])*)"|(\S+))`
+const SHELL_NAME = String.raw`(?:\S*\/)?(?:bash|sh|zsh|dash|ksh)\b`
+const SHELL_C_RX = new RegExp(
+  `${WRAPPER_POSITION}(?:sudo\\s+|env\\s+|command\\s+|exec\\s+)*${SHELL_NAME}${OPTION_RUN}\\s+-[a-zA-Z]*c${POST_C}\\s+${QUOTED_OR_WORD}`,
+  'g',
+)
+const EVAL_RX = new RegExp(`${WRAPPER_POSITION}eval\\s+${QUOTED_OR_WORD}`, 'g')
+// A shell fed its program on a HERE-STRING (Cybersec H-2): `bash <<< "<prog>"`, and the same via
+// `source /dev/stdin <<< ...` / `. /dev/stdin <<< ...`. No `-c` anywhere, so neither of the two
+// above sees it, and the program never appears in argv -- but the shell runs it just the same.
+const HERESTRING_RX = new RegExp(
+  `${WRAPPER_POSITION}(?:sudo\\s+|env\\s+)*(?:${SHELL_NAME}|(?:source|\\.)\\s+\\/dev\\/stdin)[^|;&\\n]*?<<<\\s*${QUOTED_OR_WORD}`,
+  'g',
+)
 // A shell that takes its PROGRAM from stdin: a bare `| sh`, or xargs handing one a -c string.
 const STDIN_SHELL_RX = /\|\s*(?:sudo\s+|env\s+)*(?:\S*\/)?(?:bash|sh|zsh|dash|ksh)\b(?!\s*-[a-zA-Z]*c\b)|\bxargs\b[^|]*?(?:\S*\/)?(?:bash|sh|zsh|dash|ksh)\b/
 const QUOTED_LITERAL_RX = /'([^']*)'|"((?:\\.|[^"\\])*)"/g
@@ -994,11 +1024,16 @@ const QUOTED_LITERAL_RX = /'([^']*)'|"((?:\\.|[^"\\])*)"/g
 export function executableStrings(command) {
   const text = String(command ?? '')
   const out = []
-  for (const rx of [SHELL_C_RX, EVAL_RX]) {
+  for (const rx of [SHELL_C_RX, EVAL_RX, HERESTRING_RX]) {
     rx.lastIndex = 0
     let m
     while ((m = rx.exec(text)) !== null) {
-      const inner = m[1] ?? m[2] ?? m[3]
+      // m[2] is the DOUBLE-quoted body, where the shell has removed one level of backslash
+      // escaping before the inner shell ever sees it. Without undoing that, a wrapper nested three
+      // deep hands the next round `bash -c \"...\"` -- whose quotes no longer look like quotes to
+      // the matcher, so the recursion stops one level short of the payload (Cybersec H-3, measured
+      // running). Single-quoted bodies are literal and must NOT be unescaped.
+      const inner = m[2] !== undefined ? m[2].replace(/\\(["\\$`])/g, '$1') : (m[1] ?? m[3])
       if (inner && inner !== text) out.push(inner)
     }
   }
