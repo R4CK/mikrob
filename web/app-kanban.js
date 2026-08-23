@@ -872,9 +872,28 @@ function createCardEl(card, embeddedChildren = []) {
     embeddedHtml = `<div class="kanban-embedded-subtasks">${items}</div>`
   }
 
+  // BLOCKED BY A DEPENDENCY (card 37c5605a, Cybered F-1). The API has carried `blocked` since
+  // 38788337 and nothing rendered it: the only way to find out a card was blocked was to try to
+  // move it and read the toast. A state the server knows and the board hides is worse than no
+  // state at all -- somebody plans work around a card they cannot start.
+  //
+  // A missing predecessor (an edge pointing at a card that is gone) arrives here as status
+  // 'missing' and is called out separately, because "waiting for something that no longer exists"
+  // needs a human, not patience.
+  const blockers = Array.isArray(card.blockedBy) ? card.blockedBy : []
+  if (card.blocked) {
+    el.classList.add('kanban-card-blocked')
+    el.title = t('kanban.deps.blocked_tooltip', {
+      titles: blockers.map((b) => `${b.title} [${b.status}]`).join(', '),
+    })
+  }
+  const blockedIconHtml = card.blocked
+    ? `<span class="kanban-card-blocked-icon" aria-label="${escapeHtml(t('kanban.deps.blocked_aria'))}">${blockers.some((b) => b.status === 'missing') ? '⚠️' : '🔒'}</span>`
+    : ''
+
   el.innerHTML = `
     ${projectHtml}
-    <div class="kanban-card-title">${seqHtml}${escapeHtml(card.title)}</div>
+    <div class="kanban-card-title">${blockedIconHtml}${seqHtml}${escapeHtml(card.title)}</div>
     <div class="kanban-card-footer">${priorityBadgeHtml}${assigneeHtml}${dueHtml}</div>
     ${labelsHtml}
     <div class="kanban-card-actions">
