@@ -1786,3 +1786,78 @@ döntés, implementáció, mérések).
 `full-value-audit` párja) KIZÁROLAG a `~/.claude/skills/` alatt él, a repóban nincs követve -- tehát
 sem a seed-refresh nem éri el, sem egy újratelepítés nem őrzi meg. Nem szerkesztettem kézzel, mert
 egy verziókövetetlen fájlba tett javítás nincs mentve (update-safety szabály); külön kártya kell rá.
+
+## 2026-08-23 -- 1d4cdcaa -- Vendorolt skillek: kettő bedrótozva, kettő MikroB-only, három lezárva duplikátumként
+
+**A kártya premisszája RÉSZBEN hamis, és ez a legfontosabb lelet.** A kártya három vendorolt
+skill-csomagot ír le "nulla bizonyított használattal". Megmérve: a `mattpocock-productivity` pack
+`grilling` skillje **a flotta legtöbbet használt adoptált skillje** -- `plan-grilling` néven adaptálva
+(MIT, attribúcióval), a CLAUDE.md **1b. szabálya KÖTELEZŐVÉ teszi**, és 44 kanban-kártya hivatkozik rá.
+
+Ennél is hasznosabb, hogy a `project-workflow` skill 1b. pontja SZÓ SZERINT leírja ennek a kártyának
+a mintáját, már lefutva: *"a `plan-grilling` skill MÁR LÉTEZIK, de eddig senki nem hívta -- 0
+hivatkozás volt... a helyes lépés a MEGLÉVŐ bekötése, nem új review-lánc építése"*. Tehát a
+követendő eljárás nem az, hogy minden skillhez kitalálunk egy trigger-mondatot, hanem hogy
+skillenként eldöntjük: **bedrótozni egy KÖTELEZŐ folyamatba, vagy lezárni duplikátumként.**
+
+**A mérés, amire a döntések épülnek.** (a) Repo-hivatkozások: az öt `agent-skills` cherry-pick
+(`doubt-driven-development`, `context-engineering`, `interview-me`, `idea-refine`,
+`documentation-and-adrs`) és a `to-questionnaire` esetén az EGYETLEN hivatkozás az egész repóban a
+`store/watched-repos.json`, azaz maga az adoptálási registry. Nulla bekötés, nulla használat -- rájuk
+a premissza áll. (b) Ember-a-hurokban mérés: az `interview-me` 17 helyen mondja ki, hogy emberrel
+folytatott beszélgetés, az `idea-refine` az `AskUserQuestion` toolra épül.
+
+**1. döntés: `idea-refine` + `interview-me` BEDRÓTOZVA, de KIZÁRÓLAG MikroB-hoz (`project-workflow`
+1c. pont).** A benefit-hipotézis kimondva, mielőtt adoptálnám: az 1b. grilling KONVERGENS -- egy
+meglévő tervet támad, és sosem kérdezi meg, hogy jó tervet grillezünk-e. Alternatívát nem generál.
+Az `idea-refine` divergens fázisa pontosan ezt a hiányt tölti be, az `interview-me` pedig az
+alulspecifikált KÉRÉS esetét. A MikroB-only hatókör nem óvatosság, hanem a mérés következménye: egy
+mérnöki ügynöknek nincs kivel lefolytatnia az interjút, és ha megpróbálná, a saját találgatásait
+írná le a felhasználó válaszaként -- ami rosszabb, mint a kihagyás.
+
+**2. döntés: `documentation-and-adrs` LEZÁRVA duplikátumként.** A flotta ezt natívan és KÖTELEZŐEN
+megoldotta: `DECISIONS.md` minden repóban + `project-decisions-log` skill, a CLAUDE.md külön
+szekciójával. A skill ADR-sablonja (Status/Date/Context/Decision/Consequences) majdnem azonos a
+`DECISIONS.md` formátumával (Döntés/Miért/Elvetett alternatívák/Következmények), és a skill saját
+első szabálya is az, hogy *"Match the existing convention first"* -- ami itt a meglévő konvenció.
+Adoptálni annyi lenne, mint egy kötelező szabály mellé tenni egy második, nem kötelezőt.
+
+**3. döntés: `context-engineering` LEZÁRVA duplikátumként.** Rétegzett rules-fájlok és
+session-kontextus beállítása: a flottában ez a root + per-ügynök `CLAUDE.md`, a 14. szabály
+(`/clear` két munka között), a 75%-os tömörítési küszöb és a `taskstate-replay` -- mind konkrétabb és
+mind kötelező. Egy általános tanács-skill ezek mellett nem ad többletet.
+
+**4. döntés: `doubt-driven-development` NEM adoptálva, és kimondom, mi változtatna ezen.** A magja
+(friss kontextusú, adverzariális reviewer, mielőtt egy állítás megáll) a flottában MÁR él, csak
+másképp: a gate-rendszer (QA/Cybersec/Cybered független ügynökök, akik SOHA nem a sajátjukat
+ellenőrzik) plusz az 1b. grilling. Az egyetlen valódi többlet, amit a skill kínál, egy MÁS
+modellcsalád reviewerként -- a skill ezt `codex`/`gemini` CLI-vel oldaná meg, és **egyik sincs
+telepítve** (mérve: `command -v` üres). A flottának VAN Gemini kliense (`src/gemini-client.ts`), de az
+ma kvóta-fallback útvonal, nem review-eszköz: átirányítani külön döntés (költség, egress,
+kulcs-validáció). Ha valaki ezt megnyitja, ez a skill újra elővehető -- addig a gate-rendszer fedi.
+
+**5. döntés: `crafter-intent-layer` VALÓDI hiányt fed, de SAJÁT kártyát kap.** Hierarchikus
+`AGENTS.md`-fa egy kódbázisban: a flottának van root és per-ügynök `CLAUDE.md`-je, de a CleanCore
+~30 csomagjához NINCS per-modul kontextus. Ez mért fájdalom, nem elméleti: ezen a napon többször
+kellett újra levezetnem csomag-szintű tényeket (pl. hogy a `provisioning` `dependencies`-e üres).
+Egy `AGENTS.md`-fa megírása a CleanCore-hoz viszont önálló munka, és termék-fájlokat ír -- saját
+kártya, saját gate.
+
+**Amit NEM teljesítettem, és miért nem hamisítottam meg.** A kártya (3) pontja azt kéri, hogy ahol
+van reális közeljövői alkalom, ténylegesen hívjam meg a skillt bizonyítékként. Ez itt EGYETLEN skillre
+teljesíthető (`crafter-intent-layer`), és az is a saját kártyájára tartozik. A két MikroB-only skill
+meghívása számomra STRUKTURÁLISAN lehetetlen: mindkettő emberi választ vár, tehát egy "bizonyító"
+futtatás azt jelentené, hogy a felhasználó válaszait én találom ki -- pontosan az a vakuum-bizonyíték,
+amit a flotta máshol FAIL-nek minősít. A három lezárt skillnél a meghívás értelmetlen lenne.
+
+**Ki döntött:** MikroB (kártya + a szülő-epic), backend2 (a premissza-mérés, a hét verdikt, a
+MikroB-only hatókör levezetése, az 1c. pont).
+**Hivatkozás:** kártya 1d4cdcaa (szülő 3c9e22b1). Precedens: 1161c9ed (a `plan-grilling` bedrótozása
+ugyanezzel az eljárással).
+
+**Nyitott, ebben a kártyában NEM javított leletek:** (a) KÉT `handoff` skill létezik -- egy a
+`~/.claude/skills/handoff` alatt (2026-07-10) és egy a vendorolt packban, ELTÉRŐ tartalommal; egyik
+sem hivatkozik a másikra, és a flotta `taskstate-replay`-e ugyanezt a problémát oldja meg harmadszor.
+(b) A `teach`, `to-questionnaire` és `grill-me` skillekre nem született verdikt: a `grill-me` a
+`grilling` rövidebb változata (a `plan-grilling` már fedi), a másik kettő nem esett a kártya
+felsorolásába.
