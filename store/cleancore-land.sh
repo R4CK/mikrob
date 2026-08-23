@@ -363,6 +363,11 @@ if git -C "$MAIN" merge-base --is-ancestor "$SHA" origin/main; then
     cp "$MERGE_ERR" "$CACHE_DIR/base-$(git -C "$MAIN" rev-parse origin/main)-web$WANT_WEB.txt" 2>/dev/null
   fi
   rm -f "${MERGE_ERR:-}" 2>/dev/null
+  # Keep the blast-radius graph in step with the main clone. A stale graph makes
+  # the PreToolUse guard go silent (by design -- it must not report confident wrong
+  # numbers), so without this the check would rot back into the prose rule it
+  # replaced. Never fatal: a refresh problem must not fail a landing that passed.
+  "$(dirname "$0")/blast-radius-check.py" --refresh "$MAIN" 2>&1 | sed 's/^/  /' || true
   echo "LANDED $CARD: $GSHORT -> origin/main (merge $MERGE)"
   exit 0
 fi
