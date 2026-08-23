@@ -546,6 +546,21 @@ export function stripHeredocDataPayloads(command) {
   while (i < src.length) {
     const c = src[i]
     if (c === ';' || c === '&' || c === '|' || c === '\n') { out += c; i++; boundary = i; continue }
+    // A NESTED COMMAND CONTEXT ALSO STARTS A NEW SIMPLE COMMAND (card 84e31b40, Cybered NO-GO,
+    // HIGH). Stepping the boundary only on `;`/`&`/`|`/newline meant an inner command's heredoc
+    // still measured its span from the OUTER command's start -- so `curl ... -d @- "$(python3
+    // <<'PY' ... PY)"` passed both ownership checks (the span begins with curl and does contain
+    // `-d @-`) and the body was blanked, while bash genuinely RAN it as python3's program. Proven
+    // executing, not merely mis-parsed: the reported repro wrote a marker file from inside the
+    // blanked body. Five shapes were affected -- `$( )`, the same without a trailing outer
+    // heredoc, `<( )`, backticks, and `git commit -F -` with a nested interpreter heredoc.
+    //
+    // Note this deliberately does NOT restore the outer boundary at the closing `)`/backtick: a
+    // heredoc appearing AFTER a substitution then measures its span from the substitution opener,
+    // fails the leading-binary check, and is left fully scanned. That is the fail-closed
+    // direction -- the cost is a possible false-positive on an exotic shape, never a bypass.
+    const nested = /^(?:\$\(|`|<\(|>\()/.exec(src.slice(i))
+    if (nested) { out += nested[0]; i += nested[0].length; boundary = i; continue }
     const here = /^<<-?\s*(?:'([^']*)'|"([^"]*)"|([A-Za-z_]\w*))/.exec(src.slice(i))
     if (!here) { out += c; i++; continue }
     const span = src.slice(boundary, i)

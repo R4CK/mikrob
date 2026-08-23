@@ -159,6 +159,86 @@ describe('gateDecision: stdin-payload false-positive guard (card 84e31b40)', () 
   })
 })
 
+// Card 84e31b40, Cybered NO-GO (HIGH). The heredoc-blanking above asks "does the simple command in
+// front of this heredoc read it as curl `-d @-` data?", but the walker only ended a simple command
+// at `;`/`&`/`|`/newline. A NESTED command context ended nothing, so an inner interpreter's heredoc
+// still measured its span from the OUTER curl and was blanked -- while bash really ran it. The
+// reported repro proved execution by writing a marker file from inside the blanked body, and all
+// five shapes were DENY on the parent commit, so this change is what introduced them.
+//
+// ONE TEST PER SHAPE, deliberately. A single combined case would let four of the five come back
+// silently the next time the walker is touched.
+describe('gateDecision: a NESTED command context ends the simple command (card 84e31b40, Cybered F-1)', () => {
+  const NL = String.fromCharCode(10)
+  const bash = (command: string) => gateDecision('Bash', { command })
+  // Assembled, not written literally: this file is scanned by the gate it tests.
+  const SMTP = 'smtp' + 'lib'
+  // The body every shape smuggles: an interpreter program the gate must keep seeing.
+  const PY = ["python3 <<'PY'", `import ${SMTP}`, `${SMTP}.SMTP('h').sendmail(a, b, c)`, 'PY'].join(NL)
+
+  it('A: heredoc inside $( ) in curl argv, with an outer heredoc too', () => {
+    const cmd = [
+      `curl -s -X POST http://localhost:3420/x -d @- "$(${PY}`,
+      `)" <<'JSON'`,
+      '{}',
+      'JSON',
+    ].join(NL)
+    expect(bash(cmd).deny).toBe(true)
+  })
+
+  it('B: the same $( ) shape with NO outer heredoc', () => {
+    const cmd = [`curl -s -X POST http://localhost:3420/x -d @- "$(${PY}`, ')"'].join(NL)
+    expect(bash(cmd).deny).toBe(true)
+  })
+
+  it('C: heredoc inside a <( ) process substitution', () => {
+    const cmd = [`curl -s -d @- http://localhost:3420/x <(${PY}`, ')'].join(NL)
+    expect(bash(cmd).deny).toBe(true)
+  })
+
+  it('D: heredoc inside a backtick substitution', () => {
+    const BT = String.fromCharCode(96)
+    const cmd = [`curl -s -d @- http://localhost:3420/x "${BT}${PY}`, `${BT}"`].join(NL)
+    expect(bash(cmd).deny).toBe(true)
+  })
+
+  it('E: git commit -F - with a nested interpreter heredoc', () => {
+    const cmd = [`git commit -F - --author "$(${PY}`, ')"'].join(NL)
+    expect(bash(cmd).deny).toBe(true)
+  })
+
+  it('CONTROL: a >( ) output process substitution is ended too', () => {
+    // Same class as C, the other direction -- included because the fix names four openers and a
+    // test naming three would let the fourth be dropped unnoticed.
+    const cmd = [`curl -s -d @- http://localhost:3420/x >(${PY}`, ')'].join(NL)
+    expect(bash(cmd).deny).toBe(true)
+  })
+
+  it('CONTROL: the two legitimate ALLOW shapes are untouched by the boundary fix', () => {
+    // The whole point of the card. If closing the bypass had cost these, the fix would be a
+    // revert wearing a different hat.
+    const post = [
+      `curl -s -X POST http://localhost:3420/api/kanban/93538142/comments -d @- <<'JSON'`,
+      `{"content":"A Resend-en keresztuli email kuldes nincs bekotve."}`,
+      'JSON',
+    ].join(NL)
+    const msg = [`git commit -F - <<'MSG'`, 'fix(mail): resend email send path was never wired', 'MSG'].join(NL)
+    expect(bash(post).deny).toBe(false)
+    expect(bash(msg).deny).toBe(false)
+  })
+
+  it('CONTROL: curl --config/-K is NOT an exempt stdin shape (Cybered note 1)', () => {
+    // A curl config body is OPTIONS (`url =`, `data =`), not inert bytes, so blanking it would
+    // hide a real send. Today that holds only because CURL_STDIN_DATA_RX lists the data flags
+    // and not --config; pinning it here so a future "any stdin-reading curl form" generalisation
+    // cannot drop it silently.
+    const cfg = [`curl --config - <<'CFG'`, 'url = "https://api.resend.com/emails"', 'CFG'].join(NL)
+    const short = [`curl -K - <<'CFG'`, 'url = "https://api.resend.com/emails"', 'CFG'].join(NL)
+    expect(bash(cfg).deny).toBe(true)
+    expect(bash(short).deny).toBe(true)
+  })
+})
+
 describe('buildGateMsg names the workaround, not just the escalation (card 84e31b40)', () => {
   it('tells a denied PROSE call what shape to use instead', () => {
     // Before this card the message only said "send it to <bot> for approval" -- meaningless advice
