@@ -1932,3 +1932,13 @@ nincs jogi verdikt, a `saltbo/agent-kanban` **nem forrás** -- se kód, se vendo
 **Irány-kockázat, kimondva:** ez a változás KEVESEBBET tilt, tehát lyukat nyithat, nem zajt. Ezért a pozíció-felsorolásnak TELJESNEK kell lennie (nem csak tolerancia kérdése), és minden eleme külön mutatással mért. A maradék, tudatosan nyitva hagyott eset: egy próza-sor, ami MAGÁVAL a szóval és egy időponttal KEZDőDIK -- az struktúrálisan megkülönböztethetetlen egy valódi hívástól, ezért tilt marad, és teszt rögzíti, hogy ez ismert és nem „lefedett”.
 **Ki döntött:** Backend (implementáció), Cybersec/backend2/MikroB lelet-adatai alapján.
 **Hivatkozás:** kártya 442f3289.
+
+## 2026-08-23 21:30 -- A self-pace kapu megnézi, mit futtatna egy shell (kártya ec20dd23)
+
+**Döntés:** a `self-pace-gate.mjs` (1) parancs-pozíció-osztálya kiegészül a shell-kulcsszavakkal és a zárójel-csoporttal, (2) a `bash|sh|zsh|dash|ksh -c` és `eval` argumentumát, valamint stdin-ből programot olvasó fogyasztó (`| bash`, `xargs bash -c`) esetén az idézett literálokat kicsomagolja, és a TELJES meglévő ellenőrzést lefuttatja rajtuk (a `gateDecision` önmagát hívja rekurzívan, nem másolja a checkeket).
+**Miért:** a `maskInertLiterals` kiüríti az idézett részeket a horgonyzott vizsgálat előtt -- ez teszi a prózát inertté, és mindenhol máshol ez a helyes. De egy `bash -c` argumentum NEM inert: az MAGA a program. Vagyis pont az az egyetlen szerkezet, aminél az idézőjel azt jelenti, hogy „ezt futtasd", volt az, amibe a kapu nem nézett bele.
+**Irány:** ez a változás TÖBBET tilt, tehát a hibamódja nem lyuk, hanem akadállyá váló kapu. Ezért a jóhiszemű halmaz (olvasó forma, próza, grep, runbook-olvasás, commit-üzenet, wrapperen belüli próza) külön mérve és mutációval kikényszerítve -- a „mindig csomagold ki az idézett literálokat" mutáns 12 tesztet dönt.
+**Mért kiterjedés:** a jelentett 8 megkerülés mellé a fix közben további 14 azonos osztályú alak került elő (sh/zsh/dash -c, bash -lc, `| bash`, `| sh`, `xargs sh -c`, elif/while/until, zárójel-csoport, beágyazott wrapper). Mind a 23 zárva.
+**Testvér-kapu megmérve, NEM érintett:** az `email-send-gate.mjs` mind a négy próbát (csupasz, `bash -c`, `eval`, `then`-ág) helyesen tiltja, tehát nem kell rá külön kártya.
+**Ki döntött:** Backend (implementáció), Cybersec élő lelete alapján (442f3289 gate).
+**Hivatkozás:** kártya ec20dd23.
