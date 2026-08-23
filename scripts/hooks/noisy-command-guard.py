@@ -84,6 +84,39 @@ def _strip_quoted_literals(cmd):
     return _QUOTED_RX.sub(lambda m: "''" if m.group(0)[0] == "'" else '""', cmd)
 
 
+# A mention of the wrapper is NOT the same as the wrapper OWNING the command (Cybersec, 2026-08-23).
+# The old check was `if "noisy-run.sh" in raw` over the WHOLE line, so any line that merely named the
+# file -- an echo, a grep argument, a quoted sentence, or the guard's own printed suggestion in its
+# compound form -- disarmed the guard for every other command on that line. Exemption is now decided
+# per simple command. A nested context ($( ), backticks, <( )) starts a new segment on purpose: its
+# contents are expanded by the OUTER shell, so a wrapper earlier on the line does not cover them.
+_SEG_SPLIT_RX = re.compile(r"\|\||&&|\$\(|<\(|>\(|[;\n|&()`]")
+_WRAPPER_SEG_RX = re.compile(
+    r"^\s*" + _ENV_PREFIX + r"(?:sudo\s+)?(?:time\s+)?(?:(?:bash|sh|zsh)\s+)?\S*noisy-run\.sh\b"
+)
+
+
+def _segments(cmd):
+    return _SEG_SPLIT_RX.split(cmd)
+
+
+def _owned_by_wrapper(seg):
+    return _WRAPPER_SEG_RX.match(seg) is not None
+
+
+# noisy-run.sh execs its argv directly ("$@"), so it can only wrap ONE simple command. Pasting a
+# compound line after it hands the wrapper the first segment and leaves the rest -- the noisy part --
+# running raw in the outer shell (Cybersec, 2026-08-23: measured on this guard's own suggestion).
+# A command carrying shell metacharacters therefore has to travel as a single argument.
+_METACHAR_RX = re.compile(r"[|&;<>\n()`]|\$\(")
+
+
+def _suggest(here, raw):
+    if _METACHAR_RX.search(raw):
+        return f"bash {here}/noisy-run.sh bash -c '{raw.replace(chr(39), chr(39) + chr(92) + chr(39) + chr(39))}'"
+    return f"bash {here}/noisy-run.sh {raw}"
+
+
 def main():
     try:
         payload = json.load(sys.stdin)
@@ -98,28 +131,29 @@ def main():
     if not isinstance(raw, str) or not raw.strip():
         sys.exit(0)
 
-    # Already routed through the filter -- do not re-block its own invocation.
-    if "noisy-run.sh" in raw:
-        sys.exit(0)
-
     try:
         cmd = _strip_heredoc_bodies(raw)
         for variant in (_strip_quoted_literals(v) for v in _unwrapped_variants(cmd)):
-            if f"{ALLOW_ENV}=1" in variant:
-                sys.exit(0)
-            for rx in NOISY_PATTERNS:
-                if rx.search(variant):
-                    here = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-                    sys.stderr.write(
-                        "NOISY-COMMAND-GUARD: ez a parancs jellemzoen sok, keves informaciotartalmu "
-                        "kimenetet ad (install/build/teszt/progress-bar). Ne futtasd nyersen -- fusd "
-                        f"a szuron keresztul, ami csak a hiba/fail/warn sorokat es a vegso "
-                        f"osszefoglalot adja vissza, a teljes log egy fajlba megy:\n\n"
-                        f"  bash {here}/noisy-run.sh {raw}\n\n"
-                        f"Ha tenyleg a nyers, interlevelt kimenet kell (pl. build-hang debug), "
-                        f"egyszeri korre: {ALLOW_ENV}=1 {raw}"
-                    )
-                    sys.exit(2)
+            for seg in _segments(variant):
+                # Both escape hatches are per simple command, for the same reason: naming one
+                # somewhere else on the line says nothing about THIS command.
+                if _owned_by_wrapper(seg) or f"{ALLOW_ENV}=1" in seg:
+                    continue
+                for rx in NOISY_PATTERNS:
+                    if rx.search(seg):
+                        here = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+                        wrapped = _suggest(here, raw)
+                        sys.stderr.write(
+                            "NOISY-COMMAND-GUARD: ez a parancs jellemzoen sok, keves "
+                            "informaciotartalmu kimenetet ad (install/build/teszt/progress-bar). "
+                            "Ne futtasd nyersen -- fusd a szuron keresztul, ami csak a "
+                            "hiba/fail/warn sorokat es a vegso osszefoglalot adja vissza, a "
+                            "teljes log egy fajlba megy:\n\n"
+                            f"  {wrapped}\n\n"
+                            "Ha tenyleg a nyers, interlevelt kimenet kell (pl. build-hang "
+                            f"debug), egyszeri korre: {ALLOW_ENV}=1 {raw}"
+                        )
+                        sys.exit(2)
     except Exception:
         sys.exit(0)  # any guard error -> fail open
 
