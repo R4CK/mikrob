@@ -29,7 +29,6 @@ from __future__ import annotations
 import hashlib
 import json
 import os
-import re
 import sqlite3
 import sys
 import tempfile
@@ -140,16 +139,11 @@ def main() -> None:
 
         conn = sqlite3.connect(f"file:{db}?mode=ro", uri=True)
         meta = lib.graph_meta(conn)
+        # The recorded sha's shape is validated INSIDE staleness(), above the rev-list that spends
+        # it (Cybersec F-3a-BIS). It used to be checked here instead -- after that call had already
+        # run -- where it protected nothing. A malformed value comes back as behind=None and takes
+        # the fail-open arm below.
         st = lib.staleness(root, meta)
-        # The recorded sha comes out of a database and is interpolated into a git rev-list token
-        # (Cybersec F-3a). NOT about the exit code -- a bogus value already fail-opens one line
-        # below, and no test can tell the two apart, which is why there is none pretending to.
-        # It is about OPTION POSITION: a value starting with "-" reaches git as a flag rather than
-        # a revision, and DB-sourced text has no business being parsed as a git option. Defence in
-        # depth on a path that is argv (never shell), kept deliberately.
-        if not re.fullmatch(r"[0-9a-f]{7,64}", str(st.get("graph_sha") or "")):
-            conn.close()
-            sys.exit(0)
         behind = st.get("behind")
         if behind is None or behind > _max_behind():
             conn.close()
