@@ -1409,6 +1409,65 @@ felvetele az auditalt mezok koze -> 1 piros (pont az a teszt, ami a szandekos ki
 
 **Ki dontott:** backend (implementacio + a kulon-tabla es a `sort_order`-kihagyas dontese).
 **Hivatkozas:** kartya 51878c59, forras-lelet 8b925388 (komment 19660), incidens 8d673233.
+## 2026-08-23 19:55 -- A heredoc-tulajdonos járó a bash IDÉZÉSÉT követi, nem a zárójeleket számolja (kártya 84e31b40, Cybered NO-GO F-5)
+
+**Döntés:** a `stripHeredocDataPayloads` járója idézés-állapotot tart (`'...'`, `"..."`, `$'...'`,
+backslash-escape), a `$(( ))` aritmetikát egyben átugorja, és minden beágyazott kontextus-keret a
+határ MELLETT az idézés-állapotot is elmenti és visszaállítja. A puszta zárójel-számláló verem
+kikerült.
+
+**Miért:** a verem, ami az F-1-et és az F-2-t lezárta, zárójelet számolt. A bash nem ezt teszi: egy
+idézett `)` LITERÁL, és a `$(( ))` záró `))`-je semmilyen parancs-kontextust nem zár. Ahol a kettő
+eltér, a verem olyan keretet popol, amit a bash sosem nyitott -- a határ visszaesik a KÜLSŐ curl-re,
+miközben a heredoc még mindig a BELSŐ értelmezőé, és a törzs kiürül, mielőtt a szken látná.
+
+**Miért nem egzotikus:** egy idézett zárójel nem kicsavart alak. Egy regex, egy magyar mondat, egy
+`print('a)b')` mind tartalmaz egyet -- és a fenyegetés-modellben a parancsot a TÁMADÓ választja, tehát
+elég, hogy LÉTEZIK egy átmenő alak.
+
+**Mérés, 30 eset, mindkét kapun, minden alak amit a négy kör megnevezett + három saját:**
+
+| változat | rossz eset |
+|---|---|
+| szállított kód (e5b2cd84, verem zárójel-számlálással) | 5 |
+| idézés-tudatos járó (ez ment be) | 0 |
+
+Az öt rossz eset az e5b2cd84-en: idézőjeles `)` a belső argv-ben (N1, Cybered lelete), aritmetika a
+belső argv-ben (N2, Cybered lelete), egyszeres-idézőjeles `)` (N2b), helyettesítés `"..."`-en BELÜL
+nyitva idézett `)`-vel (N5), és backslash-escapelt `)` (N6). Az utolsó kettőt a mutáció-mérés hozta
+elő, nem gate-lelet volt -- lásd lent.
+
+**A mutáció-mérés HOZOTT KI két további alakot, nem csak igazolt.** Négy mutációt futtattam:
+
+| mutáció | piros teszt (a javítás előtti állapotban) |
+|---|---|
+| A: a záró `)` idézéstől függetlenül popol | 0 -> ez volt a jelzés |
+| B: a járó feje visszaállítva e5b2cd84-re | 9 |
+| C: az aritmetika-átugrás eltávolítva | 4 |
+| D: a backslash-escape eltávolítva | 0 -> ez volt a jelzés |
+
+Az A és a D mutáció TÚLÉLTE a teljes tesztkészletet. Ez nem azt jelentette, hogy az a két ág
+felesleges, hanem hogy nem volt rá esetem. Mindkettőhöz kerestem alakot, és mindkettő ÉLŐ megkerülés
+lett: az A-hoz az N5 (a keret `"` alatt nyílik, tehát a téves pop `"`-t állít vissza, az argumentum
+valódi záró idézőjele ezután NYITÓNAK olvasódik, és a heredoc idézetlenül, a külső curl határával
+landol), a D-hez az N6 (`a\)` a bashnek literál `a)`). Mindkettőt marker-fájllal futtattam le VALÓDI
+bashben, és mindkettő ALLOW az e5b2cd84-en. Miután bekerültek tesztként, az A mutáció 2, a D mutáció
+2 pirosat ad.
+
+**Az átvihető tanulság:** egy mutáció, ami TÚLÉL, nem a mutáció hibája. Vagy felesleges kód, vagy
+hiányzó teszt -- és ebben a két esetben a hiányzó teszt mögött egy-egy még nem ismert támadási alak
+állt. A mutáció-mérés itt nem az utolsó lépés volt (a teszt jóságának igazolása), hanem egy
+KERESŐESZKÖZ, ami két olyan alakot talált, amit négy kör alatt három gate nem.
+
+**Cybered nem-blokkoló NOTE-ja szállítva:** mindkét suite kapott egy GENERÁLT invariáns-tesztet
+(beágyazási forma x zavaró token kereszt-szorzat, 21 eset), ami nem alakot rögzít, hanem az elvet:
+egy heredoc törzse CSAK akkor ürülhet ki, ha a BIRTOKLÓ egyszerű parancs vezető binárisa curl/git.
+A következő alakot így nem kell kitalálni ahhoz, hogy megbukjon.
+
+**Ki döntött:** Cybered (a lelet, az élő mérés, és az invariáns-teszt ötlete), fullstack (az
+idézés-tudatos járó, a négy mutáció, és a belőlük előjött N5/N6 alak).
+**Hivatkozás:** kártya 84e31b40, commit ce40ccf0. Előzmény: e5b2cd84 (a vermes visszaállítás),
+c17173fc (a nyitó-csak javítás), f4fac1d7 (a járó bekötése az email-kapuba).
 
 ## 2026-08-23 19:57 -- Egy DEKLARALT, de elerhetetlen audit-mezo rosszabb, mint egy nyilt hiany (kártya 7fd6dd23)
 
