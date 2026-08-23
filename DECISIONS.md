@@ -1331,3 +1331,39 @@ korlátját: a literált szegezi ki, nem a jelentését.
 **Ki döntött:** Peti (jóváhagyás, a Fron Ted-eset alapján), MikroB (kártya), backend2 (a három rész
 szétválasztása, a négy fenti döntés, implementáció, mérések).
 **Hivatkozás:** kártya 1ce3fd90. Előzmény: `91c4a369` (elavult matcher = bekötöttnek látszik, nem fut).
+
+## 2026-08-23 19:34 -- A [50%] NEM az offload-scriptbol jott, es a cim-iras nem auditalt (kártya 8b925388)
+
+**A lelet strukturalis fele nem all, es ezt megmertem, mielott barmit javitottam volna.** A kartya
+szerint a draft-generalas "csendben atirja a kartya cim/szazalek mezojet". A teljes offload-ut
+HAROM HTTP-hivast tesz, es pontosan EGY ir: `POST /api/kanban/<id>/comments`. Nincs `PUT`, nincs
+`/move`, es nincs `title` mezo sehol -- sem az `offload-dispatch.sh`-ban, sem az
+`offload-batch-run.sh`-ban. A `8d673233`-ra kerult `[50%]` tehat MASHONNAN jott.
+
+**Ha "megjavitottam" volna a scriptet, egy no-op-ot szallitok, mikozben az igazi iro tovabb csinalja.**
+Ez ugyanaz a hibaosztaly, amit ma tobbszor is jeleztem masnal: a javitas oda kerul, ahol a hiba
+LATSZOTT, nem oda, ahol van.
+
+**AMIERT MEGSEM ATTRIBUALHATO: a cim-iras NEM HAGY AUDIT-SORT.** Az `updateKanbanCard` csak akkor ir
+a `kanban_card_events`-be, ha a STATUSZ valtozott (`if (changed && statusChanges)`). Egy cim-only
+modositas tehat nyomtalan -- se aktor, se idobelyeg. Ezert nem lehet ma megmondani, ki tette a
+`[50%]`-ot. Ez a valodi strukturalis res ebben az esetben, es nagyobb, mint amit a kartya leir:
+a cim hordozza a HALADAS-jelzot (`[NN%]`, 2. munkavegzesi szabaly), vagyis egy auditalatlan mezo
+hordoz egy allapot-jelentesu adatot.
+
+**Amit szallitottam:** a kartya CELJAT (a draft ne nyuljon a tablahoz) SZERKEZETIVE tettem. Ma a
+scriptek konstrukcio szerint teljesitik; egy teszt most kiszegezi, hogy az offload-uton az EGYETLEN
+mutalo hivas a komment-POST. Egy draft JAVASLAT -- egy javaslat, ami szerkeszti a tablat, mar nem
+javaslat.
+
+**Merve:** a kartya altal leirt PONTOS alakot (egy `PUT` a `title`-lel) beleirva a scriptbe, PONTOSAN
+ket teszt pirosodik. Anti-vakuitas kulon eset: a fajl egesze grep a script-szovegen, tehat ha egy
+atnevezes miatt a `curlCalls()` uresset adna, minden "nincs ilyen hivas" allitas zolden futna
+semmit nem merve -- ezert a legelso teszt a TALALATOKAT szegezi ki.
+
+**NYITVA, es MikroB donteset keri:** a cim-iras auditalasa (vagy a `[NN%]` kivetele a cimbol egy
+sajat, auditalt mezobe) kulon kartyat er. Nem nyitottam meg, mert a dedup-szabaly szerint elobb
+tisztazni kell, hogy a 8b925388 hatokorebe tartozik-e vagy uj.
+
+**Ki dontott:** backend (a meres es a szerkezeti kiszegezes), backend2 (az eredeti lelet).
+**Hivatkozas:** kartya 8b925388, incidens-kartya 8d673233 (komment 14896).
