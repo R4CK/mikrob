@@ -2132,3 +2132,70 @@ további alak és a kilenc mutáció).
 **DoS-felulet megmerve:** az uj beagyazott kvantorok nem hoznak visszalepes-robbanast (5000 opcio-token 1 ms, 2000 melyen agyazott behelyettesites 44 ms, 160k karakteres wrapper 131 ms).
 **Ki dontott:** Backend (implementacio), Cybersec + Cybered NO-GO-i alapjan, MikroB szerkezeti keresere.
 **Hivatkozas:** kartya ec20dd23 (2. kor), 442f3289.
+
+## 2026-08-23 -- 71188a2a -- Lokális-LLM routing jelöltek: nincs átvétel, és a kártya célpontja rossz rétegre mutat
+
+### Due diligence (rule 10) -- ezúttal EGYIK sem bukik licencen
+
+| jelölt | licenc | csillag | utolsó push | verdikt |
+|---|---|---|---|---|
+| `peva3/SmarterRouter` | MIT | 149 | 2026-05-10 (3,5 hónap) | **NEM** -- olyan problémát old meg, ami nekünk nincs |
+| `ypollak2/llm-router` | MIT | 73 | 2026-08-20 (aktív) | **NEM** -- a mi model-fallback rétegünkkel fed át, nem a routerrel |
+| `ulab-uiuc/LLMRouter` | MIT | 2503 | 2026-08-20 (aktív) | **NEM** -- MÁR értékelve és elvetve, lásd lent |
+| `llm-use/llm-use` | MIT | 56 | 2026-02-07 (6,5 hónap) | **NEM** -- orchestration-toolkit, nem a mi rétegünk |
+
+**1. lelet: az `ulab-uiuc/LLMRouter`-t MÁR értékeltük, és az indoklás a KÓDBAN áll.** A
+`src/local-llm-router.ts` fejléce tartalmaz egy rule-10 bekezdést, ami néven nevezi a
+WayfinderRoutert, az `ulab-uiuc/LLMRouter`-t és az NVIDIA-AI-Blueprints/llm-routert, és kimondja a
+verdiktet: *adapt + build* -- „mindhárom a várt VÁLASZMINŐSÉGRE routol, tanítóadatot/embeddinget/
+modellsúlyt igényel, és egyik sem kódol fail-closed, per-kategória biztonsági politikát a MI
+nehézségi taxonómiánk felett". Ez a kártya nem tudott róla. **Egy már meghozott adoptálási döntést
+újra elővenni akkor is költség, ha ugyanaz az eredmény** -- érdemes a jelölt-listákat a meglévő
+rule-10 megjegyzésekkel összevetni, mielőtt kártya lesz belőlük.
+
+**2. lelet (ez a lényegi): a kártya célpontja rossz rétegre mutat.** A kártya a
+„`src/local-llm-router.ts` VRAM-kontenció-problémájáról" beszél. A `routeTask` viszont **determinisztikus
+POLITIKAI osztályozó, ami SEMMILYEN futásidejű állapotot nem lát -- és ez szándékos**, a fájl saját
+szavaival: „DETERMINISTIC BY DESIGN ... never an LLM call". Nincs benne VRAM-kontenció-probléma;
+nincs benne VRAM egyáltalán, mert nem ütemező.
+
+A kontenció egy réteggel lejjebb, a `local-llm.sh`-ban él, és ott **már kezelve van**: minden GPU-munka
+egyetlen `flock` mögött sorosít (`/tmp/local-llm-gpu.lock`), 600 s várakozási plafonnal, és a
+lock-bukás SAJÁT kilépési kódot kap (6, „gpu lock busy -- not a generation failure"), hogy ne
+keveredjen egy generálási hibával.
+
+**3. lelet: megmérve, a kontenció ma NEM okoz bukást.** A `local_llm_queue` 1725 sora: 1422 kész,
+302 bukott (17,5%), 1 eszkalált. A bukások megoszlása:
+
+```
+local-llm.sh call failed                  165
+abandoned: worker vanished while running  128
+requeued: worker vanished while running     9
+gpu lock busy / exit 6                       0   <-- EGY SEM
+```
+
+**Nulla lock-busy bukás.** A flock nem elbukik, hanem vár és sikerül -- pontosan azt csinálja, amire
+való. A tényleges bukás-tömeg a **worker-életciklus**: 137 sor „a worker eltűnt futás közben", és
+napokra bontva ez ÁLLANDÓ (2026-08-23: 11, 08-22: 35, 08-21: 40, 08-20: 24, 08-16: 23), nem egyszeri
+incidens -- tehát nem a mai dxgkrnl-crashloop számlájára írható.
+
+**4. döntés: a `SmarterRouter` VRAM-logikája olyan problémát old meg, ami nekünk nincs.** Az ő
+VRAM-tudatossága TÖBB modell/backend közül választ aszerint, hogy mi fér a memóriába. Nálunk EGY 7B
+fut EGY GPU-n: nincs miből választani. A mi változónk nem a VRAM-fejtér, hanem a SORHOSSZ, és arra
+egy flock a helyes és legegyszerűbb válasz. Egy VRAM-tudatos gateway behozatala azt optimalizálná,
+ami nem bukik, miközben 137 sor a worker eltűnésétől hal meg.
+
+**5. döntés: a kontenció-tudatos routing mint ÖTLET reális, de rossz irányba fizet.** Fel lehetne
+venni a `routeTask`-ba, hogy mély sor esetén ONLINE-ra routoljon (a fail-closed iránnyal egyezik,
+tehát biztonságos). De: a sor pont akkor mély, amikor a flotta a legaktívabb -- és az online tokent
+pont akkor költené, amikor a kvóta-nyomás a legnagyobb, vagyis szembemenne azzal, amiért az offload
+egyáltalán létezik. Ez a kompromisszum kimondva legyen a táblán, ne egy kódban felfedezve; ma nem
+javaslom.
+
+**Amit MikroB-nak átadok kártya-jelöltként:** a 137 „vanished worker" sor. Az a mért defektus,
+nem a routing.
+
+**Ki döntött:** MikroB (kártya + szülő-epic), backend2 (a rétegtévesztés kimutatása, a queue-mérés,
+a négy verdikt).
+**Hivatkozás:** kártya 71188a2a (szülő 40f92dd2). Kapcsolódó: a31e8ddf (a router és a benne álló
+rule-10 döntés), 5dcd9bc8 / ea931c14 (a flock és a 6-os kilépési kód), llm-control-abstains-under-gpu-contention (memória).
