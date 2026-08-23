@@ -115,7 +115,7 @@ def main():
                         "kimenetet ad (install/build/teszt/progress-bar). Ne futtasd nyersen -- fusd "
                         f"a szuron keresztul, ami csak a hiba/fail/warn sorokat es a vegso "
                         f"osszefoglalot adja vissza, a teljes log egy fajlba megy:\n\n"
-                        f"  bash {here}/scripts/noisy-run.sh {raw}\n\n"
+                        f"  bash {here}/noisy-run.sh {raw}\n\n"
                         f"Ha tenyleg a nyers, interlevelt kimenet kell (pl. build-hang debug), "
                         f"egyszeri korre: {ALLOW_ENV}=1 {raw}"
                     )
