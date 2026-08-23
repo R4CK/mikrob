@@ -670,6 +670,23 @@ function skipParamExpansion(src, start) {
   return src.length
 }
 
+// `case`, `in` and `esac` are RESERVED WORDS, and a case PATTERN's `)` is a separator, not a
+// closer (Cybersec F-8). Recognition has to be strict rather than generous: over-recognising the
+// keyword is NOT fail-closed, because the pattern rule moves the boundary FORWARD, and an attacker
+// who gets a fake pattern recognised gets to choose where the next span starts. `python3 - $(: case
+// in x) curl -d @- <<'PY'` is a real bash command where `case` is an argument to `:` -- treating it
+// as the keyword would blank a body python3 owns. So the keyword counts only in COMMAND POSITION.
+const CASE_KEYWORD_RX = /^(?:case|in|esac)(?![\w-])/
+// Reserved words that may PRECEDE a command. Bash runs the word after them, so the simple command --
+// and therefore the span a heredoc is measured over -- starts past them. This is also what makes the
+// command-position test above work after `then`/`do`, and it removes a standing false positive:
+// `for f in a b; do curl ... -d @- <<'JSON'` measured its span from `do`, failed the leading-binary
+// check, and denied a legitimate payload. `for`/`select`/`case` are NOT here: the word after those is
+// a variable name or a subject, not a command.
+const CMD_PREFIX_KEYWORD_RX = /^(?:if|then|elif|else|while|until|do|time|!|\{)(?=\s|$)/
+// A word starts here only after whitespace, a separator, or an opener.
+const WORD_START_RX = /[\s;&|()`]/
+
 export function stripHeredocDataPayloads(command) {
   const src = String(command ?? '')
   let out = ''
@@ -684,6 +701,12 @@ export function stripHeredocDataPayloads(command) {
   // so the outer boundary and the outer quote have to be remembered, not recomputed. See the
   // findings below.
   const nestStack = []
+  // One entry per OPEN `case` statement, innermost last: `state` is where in the statement we are
+  // ('in' = the `case WORD` part, 'pattern' = a pattern is being read, 'body' = an arm body),
+  // `base` is the nesting depth the statement lives at (so a `;` or a `)` inside a `$( )` in an arm
+  // body cannot be mistaken for the arm's own), and `start` is where the current pattern began (so
+  // the `(` of the `(pattern)` form can be told from the `(` of an extglob `@(a|b)`).
+  const caseStack = []
   while (i < src.length) {
     const c = src[i]
     // A NESTED COMMAND CONTEXT STARTS A NEW SIMPLE COMMAND, AND ITS CLOSE ENDS IT. Three NO-GOs
@@ -740,6 +763,30 @@ export function stripHeredocDataPayloads(command) {
       if (c === '"') { out += c; i++; quote = '"'; continue }
       if (c === '$' && src[i + 1] === "'") { out += "$'"; i += 2; quote = "$'"; continue }
     }
+    // BASH GRAMMAR: RESERVED WORDS. `curl ... -d @- $(case x in x) python3 <<'PY' ... PY ;; esac)`
+    // had the case PATTERN's `)` pop the frame `$(` opened, handing the boundary back to the OUTER
+    // curl while bash gave the heredoc to python3 (Cybersec F-8) -- the same miscount as F-5/F-6/F-7,
+    // reached through a third construct, and measured executing from inside the blanked body.
+    // Measurement on top of the reported shape found four more live ones in the same family
+    // (alternation `a|x)`, extglob `@(a|x))`, a nested `case`, and a newline between `in` and the
+    // pattern), plus two that only reach the keyword through another reserved word (`then`, `do`).
+    if (quote === null && (i === 0 || WORD_START_RX.test(src[i - 1]))) {
+      const rest = src.slice(i)
+      const kw = CASE_KEYWORD_RX.exec(rest)
+      const ct = caseStack[caseStack.length - 1]
+      if (kw && kw[0] === 'in') {
+        // `in` closes the `case WORD` part. Gated on the state, not on position, so the `in` of a
+        // `for`/`select` header cannot start a pattern.
+        if (ct && ct.state === 'in') { ct.state = 'pattern'; ct.base = nestStack.length; ct.start = i + 2 }
+      } else if (src.slice(boundary, i).trim() === '') {
+        if (kw && kw[0] === 'case') caseStack.push({ state: 'in', base: nestStack.length, start: i })
+        else if (kw && kw[0] === 'esac') { if (caseStack.length) caseStack.pop() }
+        else {
+          const pre = CMD_PREFIX_KEYWORD_RX.exec(rest)
+          if (pre) boundary = i + pre[0].length
+        }
+      }
+    }
     // `$(( ... ))` is ARITHMETIC, not a command context. Consume it whole so its closing `))`
     // cannot pop a frame it never pushed (Cybered N2, Cybersec S1).
     if (c === '$' && src[i + 1] === '(' && src[i + 2] === '(') {
@@ -755,21 +802,43 @@ export function stripHeredocDataPayloads(command) {
     }
     // Command separators separate only OUTSIDE quotes -- a `;` or a newline inside "..." is text.
     if (quote === null && (c === ';' || c === '&' || c === '|' || c === '\n')) {
-      out += c; i++; boundary = i; continue
+      out += c; i++; boundary = i
+      // `;;`, `;&` and `;;&` end a case ARM, so what follows is a pattern again. Only at the case's
+      // OWN nesting depth: a `;` inside a `$( )` in the arm body belongs to that substitution, and
+      // treating it as an arm terminator would make the substitution's closing `)` look like a
+      // pattern terminator -- which would leave a legitimate `curl -H "X: $(case y in a) date; echo
+      // 1 ;; esac)" -d @- <<'JSON'` measuring its span from the wrong place.
+      const ct = caseStack[caseStack.length - 1]
+      if (c === ';' && ct && ct.state === 'body' && nestStack.length === ct.base) {
+        ct.state = 'pattern'; ct.start = i
+      }
+      continue
     }
     if (c === '`') {
       out += c; i++
       // One character, two meanings: it closes the context it opened, otherwise it opens one.
       const top = nestStack[nestStack.length - 1]
-      if (top && top.tick) { nestStack.pop(); boundary = top.at; quote = top.quote }
-      else { nestStack.push({ at: boundary, quote, tick: true }); boundary = i; quote = null }
+      if (top && top.tick) {
+        nestStack.pop(); boundary = top.at; quote = top.quote; caseStack.length = top.caseDepth
+      } else {
+        nestStack.push({ at: boundary, quote, tick: true, caseDepth: caseStack.length })
+        boundary = i; quote = null
+      }
       continue
     }
-    if (c === ')' && quote === null && nestStack.length && !nestStack[nestStack.length - 1].tick) {
-      out += c; i++
-      const frame = nestStack.pop()
-      boundary = frame.at; quote = frame.quote
-      continue
+    if (c === ')' && quote === null) {
+      const ct = caseStack[caseStack.length - 1]
+      // The `)` that ENDS A PATTERN closes nothing -- it separates the pattern from the arm body,
+      // which is a new simple command. Popping here is the F-8 bug.
+      if (ct && ct.state === 'pattern' && nestStack.length === ct.base) {
+        out += c; i++; ct.state = 'body'; boundary = i; continue
+      }
+      if (nestStack.length && !nestStack[nestStack.length - 1].tick) {
+        out += c; i++
+        const frame = nestStack.pop()
+        boundary = frame.at; quote = frame.quote; caseStack.length = frame.caseDepth
+        continue
+      }
     }
     // Process substitution does not happen inside double quotes; command substitution does. A BARE
     // `(` is a subshell -- a command context bash opens just like the others (Cybersec F-6): before
@@ -780,7 +849,15 @@ export function stripHeredocDataPayloads(command) {
     // and a balanced frame restores exactly the boundary it saved.
     const nested = (quote === '"' ? /^\$\(/ : /^(?:\$\(|<\(|>\(|\()/).exec(src.slice(i))
     if (nested) {
-      nestStack.push({ at: boundary, quote, tick: false })
+      const ct = caseStack[caseStack.length - 1]
+      // `case x in (a) ...` -- the `(` that OPENS a pattern is grammar, not a subshell, so it must
+      // not push a frame its `)` would then have to pop. Only the opener: an extglob `@(a|b)` INSIDE
+      // a pattern still balances as a frame, which is what keeps `@(a|x))` from losing one `)`.
+      if (nested[0] === '(' && ct && ct.state === 'pattern' && nestStack.length === ct.base &&
+          src.slice(ct.start, i).replace(/[;&\s]/g, '') === '') {
+        out += '('; i++; continue
+      }
+      nestStack.push({ at: boundary, quote, tick: false, caseDepth: caseStack.length })
       out += nested[0]; i += nested[0].length; boundary = i; quote = null
       continue
     }
