@@ -712,3 +712,35 @@ prompt-szöveget, tehát ugyanez a nulla jönne ki akkor is, ha a funkció végi
 
 **Ki döntött:** backend2 (terv + implementáció + mérés).
 **Hivatkozás:** kártya 44477615, commitok 74b53dc9, 9a72ad4c.
+
+## 2026-08-23 11:10 -- A sha alak-ellenőrzése oda kerül, ahol elköltik (kártya 398f351b, F-3a-BIS)
+
+**Döntés:** A gráf-adatbázisból olvasott `git_head_sha` alak-ellenőrzése a `staleness()` FÜGGVÉNYBE
+került, három sorral a függvény egyetlen `rev-list` hívása FÖLÉ -- nem a hookba, ahol az első
+verzióm volt.
+
+**Miért:** ahol eredetileg volt, **nulla védelmet adott**. A `staleness()` a
+`rev-list <recorded>..<head>`-et már lefuttatta, mire a hookban lévő ellenőrzés sorra került.
+Cybersec mérte meg (F-3a-BIS) és igaza volt. Az új hely egy MÁSODIK argv-nyelőt is fed, amit addig
+nem vettem számításba: a `refresh_only()` ugyanezt a shát adja tovább a
+`code_review_graph update --base <sha>`-nek.
+
+**Mit ér és mit NEM:** nem a kilépési kódot védi -- egy rossz alakú érték eggyel lejjebb amúgy is
+fail-open lesz. Az OPCIÓ-POZÍCIÓ miatt van: egy `-`-szal kezdődő érték a gitnek flagként érkezik, és
+DB-ből jövő szövegnek nincs keresnivalója git-opcióként. A rossz alakú érték HIÁNYZÓNAK számít (nem
+hibának), így minden hívó a már meglévő "nincs rögzített sha" ágra fut -- nem keletkezik új elágazás.
+
+**Önkorrekció, ami a döntés része:** először azt állítottam, hogy nincs olyan teszt, ami a két
+elhelyezést megkülönböztetné, és inkább lefedetlenül hagytam, mint hogy látszat-tesztet írjak. A
+"ne írj vákuum-tesztet" fele jó volt, a "nem lehet lefedni" fele TÉVES. Egy PATH-shim, ami naplózza
+a git argv-ját, pontosan megkülönbözteti: a selftest most ezalatt futtatja a `staleness()`-t és
+megköveteli, hogy a rossz alakú érték egyetlen git-hívásban se jelenjen meg. Az ellenőrzést
+visszatéve a `rev-list` alá a teszt pirosra vált (a QA gate ezt függetlenül újramérte: pontosan
+1 teszt pirosodik). Vákuum-kontroll is van benne, ha a shim kimarad a PATH-ból.
+
+**Az átvihető szabály:** ne írj látszat-tesztet, DE a "nem tesztelhető" is legyen MÉRVE, ne
+feltételezve.
+
+**Ki döntött:** Cybersec (a lelet és a javasolt két hely), backend2 (implementáció, a shim-alapú
+lefedés, önkorrekció). QA (FAIL a hiányzó döntésnapló-bejegyzésre -- ez a bejegyzés a válasz rá).
+**Hivatkozás:** kártya 398f351b, commit eba38634.
