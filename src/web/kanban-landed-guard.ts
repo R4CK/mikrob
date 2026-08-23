@@ -31,6 +31,7 @@
 // store/cleancore-landed-check.py; they are far too slow for a request path, so the block message
 // names that tool instead of pretending completeness.
 import { execFile } from 'node:child_process'
+import { isForceActor } from '../kanban-force-actors.js'
 import { existsSync } from 'node:fs'
 import { getKanbanCard, getKanbanComments } from '../db.js'
 import { PROJECT_ROOT } from '../config.js'
@@ -71,8 +72,6 @@ const PROJECT_REPOS: Readonly<Record<string, RepoTarget>> = {
   mikrob: MARVEEN,
 }
 
-/** Only agents allowed to close a card despite an unlanded commit. */
-const FORCE_ACTORS = new Set(['mikrob'])
 
 const SHA_RX = /\b[0-9a-f]{7,40}\b/g
 const MAX_CANDIDATES = 40
@@ -252,7 +251,7 @@ export async function landedGuardVerdict(
   actor?: string,
 ): Promise<LandedVerdict> {
   if (nextStatus !== 'done') return { blocked: false }
-  if (force && actor !== undefined && FORCE_ACTORS.has(actor)) return { blocked: false }
+  if (isForceActor(force, actor)) return { blocked: false }
 
   const card = getKanbanCard(cardId)
   const project = card?.project ?? ''

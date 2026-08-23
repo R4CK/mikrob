@@ -17,6 +17,7 @@ import {
   getKanbanSuccessors,
   getUnmetKanbanPredecessors,
 } from '../db.js'
+import { forceActors } from '../kanban-force-actors.js'
 
 beforeEach(() => {
   initDatabase(':memory:')
@@ -130,7 +131,7 @@ describe('"satisfied" means status=done -- and archiving is NOT a way around it'
   it('an open predecessor is unmet, a done one is not', () => {
     addKanbanDependency('a', 'b')
     expect(getUnmetKanbanPredecessors('a').map((c) => c.id)).toEqual(['b'])
-    updateKanbanCard('b', { status: 'done' }, { actor: 'test', force: true })
+    updateKanbanCard('b', { status: 'done' }, { actor: 'mikrob', force: true })
     expect(getUnmetKanbanPredecessors('a')).toEqual([])
   })
 
@@ -148,7 +149,7 @@ describe('"satisfied" means status=done -- and archiving is NOT a way around it'
     // The half of the plan's intent that was right: the nightly sweep archives done cards, and
     // archiving leaves `status` alone, so they keep satisfying their successors.
     addKanbanDependency('a', 'b')
-    updateKanbanCard('b', { status: 'done' }, { actor: 'test', force: true })
+    updateKanbanCard('b', { status: 'done' }, { actor: 'mikrob', force: true })
     expect(archiveKanbanCard('b')).toEqual({ ok: true })
     expect(getUnmetKanbanPredecessors('a')).toEqual([])
   })
@@ -169,7 +170,7 @@ describe('the status guard: an unmet predecessor blocks BOTH transitions (card a
   })
 
   it('waiting -> done is refused too -- the dependency must be MET, not merely started', () => {
-    moveKanbanCard('a', 'waiting', 0, 'someone', true)
+    moveKanbanCard('a', 'waiting', 0, 'mikrob', true)
     expect(moveKanbanCard('a', 'done', 0, 'someone')).toBe(false)
     expect(getKanbanCard('a')!.status).toBe('waiting')
   })
@@ -189,29 +190,43 @@ describe('the status guard: an unmet predecessor blocks BOTH transitions (card a
   it('a REORDER inside the same column is never blocked', () => {
     // moveKanbanCard is also the drag-and-drop path. Gating on the target status alone would make
     // a card that is ALREADY in_progress with an open predecessor immovable within its own column.
-    moveKanbanCard('a', 'in_progress', 0, 'someone', true) // forced in
+    moveKanbanCard('a', 'in_progress', 0, 'mikrob', true) // forced in
     expect(moveKanbanCard('a', 'in_progress', 99, 'someone')).toBe(true)
     expect(getKanbanCard('a')!.sort_order).toBe(99)
   })
 
   it('once the predecessor is done, the transition goes through unforced', () => {
-    updateKanbanCard('b', { status: 'done' }, { actor: 'test', force: true })
+    updateKanbanCard('b', { status: 'done' }, { actor: 'mikrob', force: true })
     expect(moveKanbanCard('a', 'in_progress', 0, 'someone')).toBe(true)
     expect(getKanbanCard('a')!.status).toBe('in_progress')
   })
 
-  it('force bypasses it AND the audit row records that it was forced', () => {
-    expect(moveKanbanCard('a', 'in_progress', 0, 'someone', true)).toBe(true)
+  it('THE HOLE CYBERSEC FOUND: force:true from an UNLISTED actor does NOT open the guard', () => {
+    // The card asked for "the EXISTING force-flag + actor pattern" and the first version shipped
+    // force alone. Every sibling guard on this state machine (landed, gate-completeness,
+    // newDevStop) requires an allowlisted actor with it -- and the one that once did not was
+    // abused (cards 31cc1cd4 / 874a9fb0 / 23594bbc). Measured before the fix: force:true with no
+    // actor returned TRUE and wrote actor=null, forced=1.
+    expect(moveKanbanCard('a', 'in_progress', 0, undefined, true)).toBe(false)
+    expect(moveKanbanCard('a', 'in_progress', 0, 'someone', true)).toBe(false)
+    expect(updateKanbanCard('a', { status: 'done' }, { actor: 'someone', force: true })).toBe(false)
+    expect(getKanbanCard('a')!.status).toBe('planned')
+  })
+
+  it('an ALLOWLISTED actor bypasses it, and the audit row records that it was forced', () => {
+    expect(forceActors()).toContain('mikrob') // the control: the fixture really is on the list
+    expect(moveKanbanCard('a', 'in_progress', 0, 'mikrob', true)).toBe(true)
     const ev = getKanbanCardEvents('a').at(-1)!
     expect(ev.to_status).toBe('in_progress')
+    expect(ev.actor).toBe('mikrob')
     expect(ev.forced).toBe(1) // a bypass that leaves no trace is not a bypass, it is a hole
   })
 
   it('an ORDINARY forced move is not recorded as an override', () => {
     // force:true is sent routinely by some clients. Recording every one of them as a guard
     // override would make the flag useless for finding the real ones.
-    updateKanbanCard('b', { status: 'done' }, { actor: 'test', force: true })
-    moveKanbanCard('a', 'in_progress', 0, 'someone', true)
+    updateKanbanCard('b', { status: 'done' }, { actor: 'mikrob', force: true })
+    moveKanbanCard('a', 'in_progress', 0, 'mikrob', true)
     expect(getKanbanCardEvents('a').at(-1)!.forced).toBe(0)
   })
 

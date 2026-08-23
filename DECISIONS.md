@@ -1028,3 +1028,38 @@ elutasítás, ami drag közben elsül. Most mindhárom hívás olvassa a válasz
 
 **Ki döntött:** backend (implementáció).
 **Hivatkozás:** kártya 73540a68 (szülő 37c5605a), pair-BE a8aa9ae5.
+
+## 2026-08-23 15:45 -- A force-bypass AKTOR-KAPUZOTT, és az allowlista egy helyen él (kártya a8aa9ae5, Cybersec F-1)
+
+**A hiba, amit szállítottam:** a függőség-kapu bypassa `force`-ra nézett és semmi másra. A kártya
+saját szövege ezt kérte: "a MÁR LÉTEZŐ force-flag+actor mintával" -- én a felét vettem át. Cybersec
+élő reprodukciója: `moveKanbanCard(..., force: true)` aktor NÉLKÜL -> `true`, és az audit-sor
+`actor=null, forced=1`. Vagyis a nyom, ami a bypasst utólag megmagyarázná, üresen maradt.
+
+**Miért MEDIUM-HIGH és nem stílus:** ugyanezen az állapotgépen mind a három testvér-kapu
+(landolás-kapu, gate-teljesség, newDevStop) aktor-kapuzott, és amelyik egyszer nem volt az, azt ki
+is használták -- kártyák 31cc1cd4 / 874a9fb0 / 23594bbc. Egy kapu, ami bárkinek nyílik `force:true`
+hatására, nem kapu, csak egy plusz mező a kérésben.
+
+**A javítás nem csak a mienk:** az allowlistából HÁROM privát másolat volt három fájlban
+(`new Set(['mikrob'])`), ami pontosan az az alak, ahol egy későbbi bővítés az egyik példányba
+landol, a másik kettő pedig megtartja a saját elképzelését. Ezért egy modul lett belőle
+(`src/kanban-force-actors.ts`, `isForceActor(force, actor)`), és MIND A HÁROM régi kapu is azt
+olvassa -- a saját tesztjeik változatlanul zöldek (92/92 a három suite-ban együtt).
+
+**A route-oldali 409 UGYANAZT a szabályt alkalmazza.** Ha a `dependencyBlockBody` továbbra is csak
+`force`-ot nézne, egy nem-allowlistás `force:true` itt átmenne, lejjebb pedig elbukna -- a hibaüzenet
+és a tényleges döntés nem mondhat mást.
+
+**Amit KI KELL MONDANI, és Cybersec is kimondta: ez nem hitelesítés.** Az `actor` önbevallás; a
+dashboard API egészében bearer-tokennel védett, de semmi nem köti a kérést ahhoz a névhez, amit a
+törzsébe ír. Ez tehát sebességkorlát, ami szándékossá és a naplóban megnevezetté teszi az átlépést,
+nem bizonyíték arról, ki tette. Ugyanez a korlát áll a három régebbi kapura is -- nem új gyengeség,
+és nem szabad erősebbnek leírni, mint amilyen.
+
+**Mérve:** a force-only alakra visszaállítva PONTOSAN az új teszt pirosodik. A teszt kontrollt is
+tartalmaz (`forceActors()` valóban tartalmazza a fixture aktort), különben az "elutasítja" ág attól
+is zöld lenne, hogy elgépeltem a nevet.
+
+**Ki döntött:** backend (javítás), Cybersec F-1 leletére.
+**Hivatkozás:** kártya a8aa9ae5.
