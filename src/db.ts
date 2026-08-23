@@ -500,6 +500,32 @@ export function initDatabase(dbPathOverride?: string): void {
   `)
   db.exec(`CREATE INDEX IF NOT EXISTS idx_kanban_events_card ON kanban_card_events(card_id, created_at)`)
 
+  // --- Non-status field changes (card 51878c59) --------------------------------------------
+  //
+  // kanban_card_events above records STATUS transitions and nothing else, so every other edit was
+  // traceless: no actor, no timestamp. That is not a cosmetic gap. The fleet keeps its PROGRESS
+  // marker in the card TITLE ([NN%], working rule 2), so the field that says how far along a piece
+  // of work is had no audit at all -- measured on card 8d673233, where a [50%] appeared, the board
+  // showed progress nobody had made, and afterwards NOBODY could say who wrote it.
+  //
+  // A SEPARATE TABLE, deliberately, rather than more rows in kanban_card_events. That table's rows
+  // mean "a status transition happened": `to_status` is NOT NULL, GET /api/kanban/:id/events hands
+  // them out as a transition list, and fleet-transfer dedups them on (card_id, created_at,
+  // to_status). A row carrying an unchanged status would be indistinguishable from a real move for
+  // every one of those readers. Keeping the two apart costs one table and breaks nothing.
+  db.exec(`
+    CREATE TABLE IF NOT EXISTS kanban_card_field_events (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      card_id TEXT NOT NULL,
+      field TEXT NOT NULL,
+      old_value TEXT,
+      new_value TEXT,
+      actor TEXT,
+      created_at INTEGER NOT NULL
+    )
+  `)
+  db.exec(`CREATE INDEX IF NOT EXISTS idx_kanban_field_events_card ON kanban_card_field_events(card_id, created_at)`)
+
   // --- Card dependencies: predecessor / successor edges (card 2bb82943) --------------------
   //
   // A DIRECTED edge that is deliberately SEPARATE from parent_id. parent_id is containment (a
@@ -2195,7 +2221,60 @@ export function updateKanbanCard(
       'INSERT INTO kanban_card_events (card_id, from_status, to_status, actor, created_at, forced) VALUES (?, ?, ?, ?, ?, ?)'
     ).run(id, card.status, f.status, opts?.actor ?? null, now, forcedFlag)
   }
+  if (changed) recordKanbanFieldChanges(id, card, f, opts?.actor, now)
   return changed
+}
+
+/** The fields whose changes are audited here. `status` is excluded because kanban_card_events
+ *  already owns it, and `updated_at` because it changes on every write and would say nothing. */
+const AUDITED_CARD_FIELDS = [
+  'title',
+  'description',
+  'assignee',
+  'priority',
+  'project',
+  'parent_id',
+  'due_date',
+  'archived_at',
+] as const
+
+/** `sort_order` is deliberately NOT audited: a drag inside a column rewrites it on every card that
+ *  shifted, so auditing it would bury the edits somebody actually wants to find under reordering
+ *  noise. The question this table exists to answer is "who changed what this card SAYS". */
+function recordKanbanFieldChanges(
+  id: string,
+  before: KanbanCard,
+  after: KanbanCard,
+  actor: string | undefined,
+  nowMs: number,
+): void {
+  const stmt = db.prepare(
+    'INSERT INTO kanban_card_field_events (card_id, field, old_value, new_value, actor, created_at) VALUES (?, ?, ?, ?, ?, ?)',
+  )
+  for (const field of AUDITED_CARD_FIELDS) {
+    const a = (before as unknown as Record<string, unknown>)[field]
+    const b = (after as unknown as Record<string, unknown>)[field]
+    if (a === b) continue
+    stmt.run(id, field, a === null || a === undefined ? null : String(a), b === null || b === undefined ? null : String(b), actor ?? null, nowMs)
+  }
+}
+
+export interface KanbanCardFieldEvent {
+  readonly id: number
+  readonly card_id: string
+  readonly field: string
+  readonly old_value: string | null
+  readonly new_value: string | null
+  readonly actor: string | null
+  readonly created_at: number
+}
+
+/** Who changed what on this card, oldest first. The consumer is whoever has to answer "where did
+ *  this come from" after the fact -- the question nobody could answer on 8d673233. */
+export function getKanbanCardFieldEvents(cardId: string): KanbanCardFieldEvent[] {
+  return db
+    .prepare('SELECT * FROM kanban_card_field_events WHERE card_id = ? ORDER BY created_at ASC, id ASC')
+    .all(cardId) as KanbanCardFieldEvent[]
 }
 
 export function getChildCards(parentId: string): KanbanCard[] {
