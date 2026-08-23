@@ -6,6 +6,8 @@
 // card ids, and must never cost a message when the lookup misbehaves. A stamp that is sometimes
 // absent is worse than none, because people stop looking for it.
 import { describe, it, expect } from 'vitest'
+import { readFileSync } from 'node:fs'
+import { join } from 'node:path'
 import {
   appendCardStateStamp,
   formatDeliveryStalenessNote,
@@ -205,5 +207,35 @@ describe('formatDeliveryStalenessNote (card 9566a197)', () => {
     expect(msg).toContain('12f80902 status=in_progress')
     expect(msg).not.toContain('956fdaf5 status=')
     expect(formatDeliveryStalenessNote(msg, live, 600)).toBe('')
+  })
+})
+
+// A pure function nobody calls is a decoration. There are exactly TWO delivery paths -- the router's
+// tmux push for sub-agents and the main agent's drain-inbox pull -- and the wrap module's own header
+// warns that anything landing in only one of them is a drift bug. These assert BOTH call the
+// re-check AND concatenate its result into the text that is actually delivered; a call whose return
+// value is dropped would satisfy a bare grep for the function name.
+describe('the delivery-time re-check is wired into BOTH delivery paths', () => {
+  const readSrc = (rel: string): string => readFileSync(join(process.cwd(), 'src', rel), 'utf8')
+
+  it('the router appends it to the injected prompt', () => {
+    const src = readSrc('web/message-router.ts')
+    expect(src).toContain('formatDeliveryStalenessNote(')
+    expect(src).toContain('sendPromptToSession(session, prefix + wrapped + staleNote, host)')
+  })
+
+  it('drain-inbox appends it to the block it returns', () => {
+    const src = readSrc('web/routes/agents.ts')
+    expect(src).toContain('formatDeliveryStalenessNote(')
+    expect(src).toContain('blocks.push(prefix + wrapped + staleNote)')
+  })
+
+  it('both paths append AFTER the wrapper, never inside the sender-attributed payload', () => {
+    // The note is the router's own text. Inside the wrapper it would read as part of what the
+    // sender wrote -- and for an untrusted sender that is precisely the framing the wrap module
+    // exists to keep straight.
+    for (const rel of ['web/message-router.ts', 'web/routes/agents.ts']) {
+      expect(readSrc(rel)).toContain('wrapped + staleNote')
+    }
   })
 })
