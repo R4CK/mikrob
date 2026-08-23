@@ -83,6 +83,44 @@ describe('the files the offload path resolves at runtime', () => {
     expect(statSync(p).mode & 0o111).toBeGreaterThan(0)
   })
 
+  // The hit/miss decision in local-llm-rag.sh, run for real (Cybersec F-1, card 44477615).
+  //
+  // That one line IS the fix that card shipped: `graphify explain` prints
+  // "No node matching '<x>' found." and STILL EXITS 0, so an exit-code test fed that sentence to
+  // the model labelled as deterministic code-graph knowledge. Cybersec pointed out the fix had no
+  // CI anchor -- both selftests are Python, neither touches this shell, so reverting it left 7/7
+  // green and nothing would have noticed the slide back.
+  //
+  // So: pull the predicate OUT of the script as written, and run it in bash against the two real
+  // graphify outputs. An exit-code-based revert makes the miss fixture pass the predicate and this
+  // test goes red. What it does NOT cover, said rather than implied: the rest of that script's
+  // flow. It covers the decision, which is the part that was wrong.
+  it('the graph hit/miss predicate accepts a real node and rejects a real miss', () => {
+    const src: string = require('node:fs').readFileSync(join(ROOT, 'store', 'local-llm-rag.sh'), 'utf-8')
+    // Everything between the `&&` and the `; then` of the graph-context guard.
+    const m = src.match(/GRAPH_EXPLAIN="\$\(([^\n]*)\)"[^\n]*\n\s*&&\s*([^\n]*?);\s*then/)
+    expect(m, 'could not find the graph-context guard in local-llm-rag.sh').not.toBeNull()
+    // The guard must still ASK graphify. Mutation-found gap: replacing the command with $(true)
+    // left the predicate intact, so a predicate-only test stayed green while the lookup was gone.
+    expect(m![1]).toContain('graphify.sh')
+    expect(m![1]).toContain('explain')
+    const predicate = m![2]
+    // Vacuity control: an empty or trivially-true predicate would pass both cases below.
+    expect(predicate.length).toBeGreaterThan(5)
+
+    // Verbatim graphify output, measured 2026-08-23 on the real marveen graph.
+    const HIT = 'Node: routeTask()\n  ID:        src_local_llm_router_routetask\n  Source:    src/local-llm-router.ts L863\n'
+    const MISS = "No node matching 'zzzNotAThing' found.\n"
+
+    const run = (explain: string): number => spawnSync('bash', ['-c',
+      `GRAPH_EXPLAIN=$(cat); ${predicate}`], { input: explain, encoding: 'utf-8' }).status ?? -1
+
+    expect(run(HIT)).toBe(0)
+    expect(run(MISS)).not.toBe(0)
+    // The miss is NON-EMPTY -- that is exactly why the old non-empty test passed it.
+    expect(MISS.trim().length).toBeGreaterThan(0)
+  })
+
   it('offload-dispatch.sh actually calls the resolver and emits both flags', () => {
     const src: string = require('node:fs').readFileSync(join(ROOT, 'store', 'offload-dispatch.sh'), 'utf-8')
     // Deliberately NOT `toContain('--graph-node')` on the whole file. Every one of these strings
