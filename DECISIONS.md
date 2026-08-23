@@ -1141,3 +1141,48 @@ a "whole cards" teszt piros. 5 új teszt, 29 a kártya-családban.
 
 **Ki döntött:** backend (implementáció), MikroB (a kártya céljának átírása a plan-grilling F-3 után).
 **Hivatkozás:** kártya 38788337 (szülő 37c5605a).
+
+## 2026-08-23 16:35 -- A beágyazott kontextus ZÁRÁSA a külső parancshoz tér vissza, nem a nyitójelhez (kártya 84e31b40, Cybersec NO-GO F-2)
+
+**Döntés:** a `stripHeredocDataPayloads` egy kis veremben megőrzi a külső határt a beágyazott
+kontextus nyitásakor, és a záráskor VISSZAÁLLÍTJA. Nem a javasolt egysoros változat (lépés a
+zárójeleknél) ment be -- azt lemértem, és cserét kér, nem javítást.
+
+**Miért volt hibás az előző körben kimondott indoklásom:** azt írtam, hogy a záró jelnél nem
+visszaállított határ „fail-closed, a költség egy esetleges fals-pozitív, sosem megkerülés". Ez nem
+áll. A span attól, hogy a helyettesítés nyitójától indul, nem bukik el automatikusan a
+vezető-bináris ellenőrzésen -- ÁTMEGY rajta, ha maga a helyettesítés curl-lel kezdődik. Cybersec ezt
+megmérte a szülőhöz képest: `$( )`, `<( )` és `>( )` mind ENGEDÉLYEZÉSRE fordult, a backtick pedig
+csak VÉLETLENÜL maradt tiltva (a záró backtick újra illeszkedik a nyitó mintára). A véletlen nem
+garancia, ezért a backtick-alak is kapott tesztet.
+
+**Miért nem a javasolt egysoros ment be:** lemértem, és valóban lezárja mind a négy inverziót. De
+két új problémát hoz. (1) `python3 $()curl -d @- <<'PY'`: a bash argv-je `[python3, curl, -d, @-]`,
+tehát a heredocot a python3 hajtja végre, miközben a `)` UTÁN induló span curl-lel kezdődik -- új
+megkerülés, ami a jelenlegi szállított kódban NINCS. (2) Egy hétköznapi jogos payload, aminek a
+parancsa csak TARTALMAZ egy helyettesítést (`curl -H "Authorization: Bearer $(cat tok)" -d @-
+<<'JSON'`), fals-pozitívvá válik -- vagyis pont azt hozza vissza egy gyakori alakra, amit ez a
+kártya megszüntetni jött.
+
+A vermes visszaállítás mindkét családot zárja, ÉS a jogos payloadot az engedélyezett oldalon tartja.
+
+**Mérés, 19 eset, minden alak amit a két gate megnevezett + a magam két próbája:**
+
+| változat | rossz eset |
+|---|---|
+| szállított kód (c17173fc) | 5 (INV-1..3, a beágyazott-helyettesítés alak, és a jogos payload) |
+| javasolt egysoros (lépés a zárónál) | 2 (a konkatenációs alak, és a jogos payload) |
+| vermes visszaállítás (ez ment be) | 0 |
+
+**Mutáció-mérés, mindkét suite-ban:** a vermes visszaállítás nyitó-csak változatra cserélve 9 teszt
+pirosodik; a javasolt egysorosra cserélve 3. Nem feltételezés: mindkét változatot lefuttattam.
+
+**Az átvihető tanulság, amit a saját hibámból írok le:** egy span-alapú „ki a tulajdonos" heurisztikánál
+a HATÁR ugyanolyan támadási felület, mint a FELTÉTEL. Az első körben a feltételt (curl-e a vezető
+bináris, ott van-e a `-d @-`) mindhárom gate megvizsgálta, a határt egyik sem -- és a határnak KÉT
+oldala van, amit külön kell végiggondolni: hol kezdődik egy beágyazott parancs, és hol ér véget.
+
+**Ki döntött:** Cybersec (a lelet, az élő mérés és az egysoros javaslat), fullstack (a vermes változat
+a javasolt egysoros helyett, mindkettő lemérve, plusz a két saját próba-alak).
+**Hivatkozás:** kártya 84e31b40, commit 4e58a8d4. Előzmény: c17173fc (a nyitó-csak javítás),
+f4fac1d7 (a heredoc-járó bekötése az email-kapuba).
