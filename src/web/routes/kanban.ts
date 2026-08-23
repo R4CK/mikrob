@@ -13,6 +13,8 @@ import {
   listArchivedKanbanCards,
   revertIdeaFromKanban,
   getHeartbeatKanbanSummary,
+  addKanbanDependency, removeKanbanDependency,
+  getKanbanPredecessors, getKanbanSuccessors, dependencyBlockers,
 } from '../../db.js'
 import { normalizeKanbanRefs } from '../kanban-ref-normalize.js'
 import { OWNER_NAME, BOT_NAME, MAIN_AGENT_ID, STORE_DIR, WEB_HOST, WEB_PORT, KANBAN_LABEL_COLORS } from '../../config.js'
@@ -209,6 +211,36 @@ export function filterValues(url: URL, name: string): Set<string> | null {
   return values.length === 0 ? null : new Set(values)
 }
 
+/**
+ * The 409 a blocked transition gets (card a8aa9ae5). MACHINE-READABLE, not just prose: the
+ * gate-reconciler has to tell "this card is waiting on another card" apart from every other refusal
+ * so it can annotate ONCE on the 4a(d) bound-block branch instead of retrying every five minutes
+ * for hours. A message it had to string-match would make that behaviour depend on wording.
+ *
+ * The enforcement itself is in moveKanbanCard/updateKanbanCard -- this only builds the reply, from
+ * the SAME predicate, so the two cannot disagree.
+ */
+function dependencyBlockBody(
+  id: string,
+  nextStatus: unknown,
+  force: boolean,
+): { blocked: boolean; body?: Record<string, unknown> } {
+  if (force || typeof nextStatus !== 'string') return { blocked: false }
+  const blockers = dependencyBlockers(id, nextStatus)
+  if (blockers.length === 0) return { blocked: false }
+  return {
+    blocked: true,
+    body: {
+      code: 'dependency_blocked',
+      error:
+        `${blockers.length} függőség még nincs kész, ezért a kártya nem léphet '${nextStatus}' állapotba: ` +
+        blockers.map((c) => `${c.id} (${c.status}) -- ${c.title}`).join('; ') +
+        '. Fejezd be azokat előbb, vagy küldd force: true értékkel, ha tudatosan lépsz át rajta.',
+      blockedBy: blockers.map((c) => ({ id: c.id, title: c.title, status: c.status, priority: c.priority })),
+    },
+  }
+}
+
 export async function tryHandleKanban(ctx: RouteContext): Promise<boolean> {
   const { req, res, path, method } = ctx
 
@@ -399,6 +431,10 @@ export async function tryHandleKanban(ctx: RouteContext): Promise<boolean> {
       const v = gateCompletenessGuardVerdict(id, data.status, force === true, typeof actor === 'string' ? actor : undefined)
       if (v.blocked) { json(res, { error: v.message }, 409); return true }
     }
+    {
+      const v = dependencyBlockBody(id, data.status, force === true)
+      if (v.blocked) { json(res, v.body!, 409); return true }
+    }
     if (updateKanbanCard(id, normalizeProjectName(data), { actor: typeof actor === 'string' ? actor : undefined, force: force === true })) {
       json(res, { ok: true }); return true
     }
@@ -439,6 +475,10 @@ export async function tryHandleKanban(ctx: RouteContext): Promise<boolean> {
     {
       const v = gateCompletenessGuardVerdict(id, status, force === true, typeof actor === 'string' ? actor : undefined)
       if (v.blocked) { json(res, { error: v.message }, 409); return true }
+    }
+    {
+      const v = dependencyBlockBody(id, status, force === true)
+      if (v.blocked) { json(res, v.body!, 409); return true }
     }
     if (moveKanbanCard(id, status, sort_order ?? 0, actor, force === true)) {
       // Wake the assigned agent once when the card enters in_progress -- unless
@@ -631,6 +671,44 @@ export async function tryHandleKanban(ctx: RouteContext): Promise<boolean> {
       return ids
     })()
     json(res, { ok: true, created })
+    return true
+  }
+
+  // --- Dependencies (card a8aa9ae5) -------------------------------------------------------
+  const depsMatch = path.match(/^\/api\/kanban\/([^/]+)\/dependencies$/)
+  if (depsMatch && method === 'GET') {
+    const id = decodeURIComponent(depsMatch[1]!)
+    if (!getKanbanCard(id)) { json(res, { error: 'Kártya nem található' }, 404); return true }
+    // WHOLE CARDS, not ids: the modal renders title + status + priority per row, and a second
+    // round-trip per edge would make an ordinary card open N+1 requests.
+    json(res, { predecessors: getKanbanPredecessors(id), successors: getKanbanSuccessors(id) })
+    return true
+  }
+  if (depsMatch && method === 'POST') {
+    const id = decodeURIComponent(depsMatch[1]!)
+    const body = await readBody(req)
+    const dependsOn = (JSON.parse(body.toString()) as Record<string, unknown>)?.['depends_on_id']
+    if (typeof dependsOn !== 'string' || dependsOn.length === 0) {
+      json(res, { error: 'depends_on_id kötelező' }, 400); return true
+    }
+    const r = addKanbanDependency(id, dependsOn)
+    if (r.ok) { json(res, { ok: true }); return true }
+    if (r.reason === 'not-found') { json(res, { error: `Nincs ilyen kártya: ${r.missing}` }, 404); return true }
+    if (r.reason === 'self') { json(res, { code: 'self_dependency', error: 'Egy kártya nem függhet önmagától' }, 409); return true }
+    if (r.reason === 'duplicate') { json(res, { code: 'duplicate_dependency', error: 'Ez a függőség már létezik' }, 409); return true }
+    json(res, {
+      code: 'dependency_cycle',
+      error: 'Ez az él kört zárna be: a másik kártya (közvetve) már ettől a kártyától függ. Egy körben minden kártya minden másikat blokkolja, tehát a státusz-kapu soha nem engedne át semmit.',
+      path: r.path,
+    }, 409)
+    return true
+  }
+  const depDeleteMatch = path.match(/^\/api\/kanban\/([^/]+)\/dependencies\/([^/]+)$/)
+  if (depDeleteMatch && method === 'DELETE') {
+    const id = decodeURIComponent(depDeleteMatch[1]!)
+    const dep = decodeURIComponent(depDeleteMatch[2]!)
+    if (removeKanbanDependency(id, dep)) { json(res, { ok: true }); return true }
+    json(res, { error: 'Nincs ilyen függőség' }, 404)
     return true
   }
 

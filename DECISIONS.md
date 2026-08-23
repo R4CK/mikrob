@@ -912,3 +912,46 @@ MUT-3 (a terv szerinti "done VAGY archivált") -> a bypass-teszt piros. 14 új t
 **Ki döntött:** backend (implementáció); a "done VAGY archivált" -> "done" szűkítés az én
 eltérésem a jóváhagyott tervtől, méréssel indokolva, MikroB jóváhagyására vár a review-ban.
 **Hivatkozás:** kártya 2bb82943 (szülő 37c5605a), plan-grilling verdikt: kártya-komment 15492.
+
+## 2026-08-23 15:30 -- A függőség-kapu a DB-írókban áll, nem a route-okban (kártya a8aa9ae5)
+
+**Döntés:** a státuszváltás-kapu a `moveKanbanCard`-ban és az `updateKanbanCard`-ban érvényesül, nem
+a HTTP-kezelőkben. A route-ok továbbra is építenek egy szép 409-et, de UGYANAZT a predikátumot
+(`dependencyBlockers`) hívják, amit az írók -- egy függvény, két fogyasztó, tehát nem tudnak
+elcsúszni egymástól.
+
+**Miért nem a route-okban:** HÁROM ajtó vezet státuszváltáshoz -- `PUT /api/kanban/:id`,
+`POST /api/kanban/:id/move`, és a `db.ts` SAJÁT, ütemezőből jövő `moveKanbanCard(...)` hívása. Egy
+route-szintű kapu ebből kettőt lát. A repo ezt már egyszer megtanulta: a landolás-kapu kommentje a
+route-okban szó szerint azt mondja, hogy "guarding one of two doors guards neither" (kártya
+9cc72f2c). A terv eredeti alakja ("guard a PUT-ban") ezt a hibát ismételte volna meg.
+
+**Mindkét irány kapuzott (`in_progress` ÉS `done`), a `waiting` NEM.** Peti szövege szerint a
+függőségnek a fejlesztés TELJESÜLÉSÉHEZ kell teljesülnie, nem csak az indításához. A `waiting`
+kihagyása viszont tudatos: egy építő ügynöknek mindig át kell tudnia adni a kész munkát egy
+kapunak -- a blokk a ZÁRÁSNÁL a helyes hely, nem az átadásnál.
+
+**A 409 GÉPI OLVASHATÓ (`code: 'dependency_blocked'` + `blockedBy` tömb), nem csak próza.** A
+`gate-reconciler` 5 percenként próbál zárni minden PASS-olt `waiting` kártyát; egy blokkolt kártya e
+nélkül óránként tizenkét sikertelen zárási kísérletet kapna. A kódból a reconciler fel tudja
+ismerni a 4a(d) "kötött-blokk" esetet és EGYSZER annotálni. Ha szövegre kellene illesztenie, a
+viselkedés a hibaüzenet megfogalmazásától függene.
+
+**A kapu VALÓDI átmenetre néz, nem a cél-státuszra önmagában.** A `moveKanbanCard` egyben a
+drag-and-drop útvonal is: ha a feltétel csak azt nézné, hogy a cél `in_progress`, akkor egy MÁR
+`in_progress` kártyát nyitott predecessorral soha nem lehetne a saját oszlopán belül átrendezni.
+Kiszegezve külön teszttel; a `prev !== status` feltétel elhagyása mutációként pirosítja.
+
+**A `force` megkerüli, ÉS az audit-sor rögzíti** (`kanban_card_events.forced = 1`) -- de csak akkor,
+ha a tranzakció TÉNYLEG a kapun ment át. Egy hétköznapi, rutinból `force: true`-t küldő kliens
+mozgása nem override, és nem is szabad annak látszania, különben a flag használhatatlan a valódi
+átlépések megtalálására. Ez ugyanaz a megkülönböztetés, amit a `reviewedCardBlocksInProgress`
+kapunál már meghoztak.
+
+**Mérve:** MUT-A (kapu csak a route-okban, a terv eredeti alakja) -> 2 piros; MUT-B (kapu kivéve az
+`updateKanbanCard`-ból) -> 1 piros; MUT-C (cél-státusz önmagában) -> a reorder-teszt piros. 9 új
+teszt a kapura, 23 összesen a kártya-családban.
+
+**Ki döntött:** backend (implementáció), a plan-grilling F-1 verdiktje szerint, amit MikroB
+változtatás nélkül elfogadott.
+**Hivatkozás:** kártya a8aa9ae5 (szülő 37c5605a), plan-grilling: 37c5605a komment 15492.
