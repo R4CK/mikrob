@@ -2122,3 +2122,13 @@ diligence-szel. Ez a bejegyzés a foltozó felét rögzíti; a migráció külö
 további alak és a kilenc mutáció).
 **Hivatkozás:** kártya 84e31b40, commit f6dfc18f + 1b73f1d5. Előzmény: 7be96d9a (csupasz `(`
 + `${ }`), f7c1d07f (idézés-tudat), e5b2cd84, c17173fc, f4fac1d7.
+
+## 2026-08-23 22:35 -- A wrapper-felismero is a kozos nyelvtanbol dolgozik, es harom uj alak zarva (kartya ec20dd23 2. kor)
+
+**Dontes:** (1) a `SHELL_C_RX`/`EVAL_RX`/`HERESTRING_RX` parancs-pozicioja a kozos `CMD_POSITION`-bol szarmazik (plusz sima szokoz, mert egy `-c` shell jogosan allhat egy masik parancs argv-jeben, pl. `xargs -I{} bash -c`) -- ezzel a nyelvtan HAROM helyett EGY helyen el, ahogy MikroB haromszor kerte. (2) A `-c` elotti opcio-futam ALAK szerint illeszkedik, nem lista szerint. (3) Uj here-string felismero. (4) A dupla-idezojeles torzs egy szint escape-elest visszabont a rekurzio elott.
+**Miert:** Cybersec (33/35 zarva, 3 nyitva) es Cybered (HIGH) fuggetlen NO-GO-i. A `-c` elotti opcio-futam csak csupasz rovid flageket ismert, ezert `bash --norc -c`, `--noprofile -c`, `--rcfile /tmp/x -c`, `-O extglob -c` es `sh -c --` mind atment -- mind mert, mind futott. A here-stringnel (`bash <<< "..."`) nincs `-c` sehol es a program sosem kerul argv-be. A haromszor agyazott wrapper escape-elt idezojelei miatt a rekurzio egy szinttel a payload elott allt meg.
+**Az opcio-futam NEGATIV alakja szandekos:** egy opcio-token az, ami `-`/`+` jellel kezdodik es NEM maga a keresett `-c` -- opcionalisan egy nem-opcio argumentummal. Igy egy olyan opcio, amire senki nem gondolt, tovabbra is elnyelodik, ahelyett hogy megszakitana az illesztest es elrejtene a payloadot (a fajl sajat irany-elve).
+**Amit a gate-ek merese ota mar zart:** a case-ag (H-1/F-1) a testver-kartya (442f3289 2. kor, 11a7698e) egyesitesevel MAR bezarult -- mindket gate `ab836eb1`-en mert, a fix kesobb landolt.
+**DoS-felulet megmerve:** az uj beagyazott kvantorok nem hoznak visszalepes-robbanast (5000 opcio-token 1 ms, 2000 melyen agyazott behelyettesites 44 ms, 160k karakteres wrapper 131 ms).
+**Ki dontott:** Backend (implementacio), Cybersec + Cybered NO-GO-i alapjan, MikroB szerkezeti keresere.
+**Hivatkozas:** kartya ec20dd23 (2. kor), 442f3289.
