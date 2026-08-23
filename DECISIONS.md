@@ -1547,6 +1547,52 @@ jogos adat-alakokat (`-d @-`, `git commit -F -`), hosszhelyesen.
 függvény-szintű kiszegezés a gate-szintű helyett, és a premissza helyesbítése).
 **Hivatkozás:** kártya 0ecff3ae, commit e48bff92. Előzmény: 84e31b40 (a járó és a lista mai alakja).
 
+## 2026-08-23 20:12 -- Ket kerdes, ket szamlalo: a backoff nem ugyanazt meri, mint a feladas-budget (kártya b2f13520)
+
+**A helyzet, amit a `df193354` HELYESEN allitott be, es amit nem szabad visszacsinalni:** az
+`attempts` azt jelenti, hogy "hany nudge-ot kapott MEG es hagyott figyelmen kivul az ugynok", ezert
+csak `outcome === 'sent'` noveli. E nelkul egy foglalt/zarolt pane elhasznalta egy VARAKOZO ugynok
+feladas-budgetjet olyan nudge-okkal, amik el sem jutottak a pane-ig.
+
+**A kovetkezmeny, amit QA megtalalt:** ugyanez az `attempts` volt a backoff bemenete is. Egy
+TARTOSAN zarolt pane-nel tehat orokre 0 marad, es a `wakeBackoffMs(0, 60mp, 30perc)` orokre a 60
+masodperces PADLOT adja -- a 30 perces plafonig valo eszkalacio elerhetetlenne valt.
+
+**Miert nem eleg egy sor dokumentacio (a kartya masik felkinalt opcioja):** a backoff-kapu a tmux-
+probak ELOTT fut, es az `isSessionReadyForPrompt` egy blokkolo alvasba plusz ket `capture-pane`-be
+kerul -- ezt a fajl sajat kommentje mondja ki, ezert futnak az olcso kapuk elobb. Rogzitett 60
+masodperces padlonal egy zarolt pane ezt PERCENKENT fizetteti ki, ugynokonkent, hataridotlenul. A
+gap novekedese pontosan ez ellen a koltseg ellen volt; a `df193354` javitas csendben kikapcsolta.
+Egy dokumentacios sor leirna a viselkedest, de nem allitana vissza a vedelmet.
+
+**A megoldas: KET SZAMLALO, mert ket kulonbozo kerdes van.**
+- `attempts` -- "hany nudge ERKEZETT MEG es maradt valasz nelkul": a feladas-budget. Valtozatlan.
+- `undelivered` -- "hany nudge NEM jutott el a pane-ig egymas utan": a backoff bemenete. Uj.
+
+Egy zarolt pane-re a ket valasz kulonbozo: semmi nem erkezett meg, DE tortent probalkozas. Egy
+szamlalo nem tud mindkettore valaszolni, es a `df193354` epp azert szukitette az egyiket, hogy a
+masikat ne rontsa el.
+
+A `shouldWakeForTelegramInbox` uj `backoffAttempts` parametere OPCIONALIS, es alapertelmezesben az
+`attempts`-re esik vissza -- minden meglevo hivo es teszt viselkedese valtozatlan; csak az elo sopres
+ad at mindkettot. Egy uj kotelezo parameter itt a hivok atirasat jelentette volna, semmi haszonert.
+
+**Friss bejovonel MINDKET szamlalo nullazodik:** egy uj uzenet azonnali probat erdemel, nem azt a
+hosszu gapet, amire az elozo beragadt backlog felnott.
+
+**Merve:** a backoff visszakotese az `attempts`-re (a javitas elotti allapot) -> a "THE DEFECT"
+teszt piros; a budget atkotese az `undelivered`-re (ami visszacsinalna a `df193354`-et) -> a
+budget-teszt piros. Plusz kontroll arra, hogy a `backoffAttempts` elhagyasa BETURE ugyanazt adja,
+mint a regi egy-szamlalos alak, es hogy a plafon tovabbra is plafon.
+
+**A LOKALIS DRAFTBOL SEMMIT NEM HASZNALTAM, es leirom miert:** egy nem letezo `PanelManager`
+osztalyt talalt ki, a leletet forditva ertette ("60 perc 30 helyett" -- valojaban 60 MASODPERC a 30
+PERC helyett), kitalalt egy 24 oras plafont, es a javasolt dokumentacioja az ELLENKEZOJET allitja
+annak, amit el akarunk erni. Nulla sor volt belole hasznalhato.
+
+**Ki dontott:** backend (implementacio + a ket-szamlalos irany a dokumentacios opcio helyett),
+QA (a lelet, a `df193354` kapu soran).
+**Hivatkozas:** kartya b2f13520, forras-kartya df193354.
 ## 2026-08-23 20:30 -- A járó bash-NYELVTANT is követ: csupasz `(` keretet nyit, `${ }` egyben átugorva (kártya 84e31b40, Cybersec F-6 + Cybered F-7)
 
 **Döntés:** a `stripHeredocDataPayloads` járójában (a) egy CSUPASZ `(` ugyanúgy keretet nyit, mint a
