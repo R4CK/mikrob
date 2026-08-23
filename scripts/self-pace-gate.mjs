@@ -77,7 +77,14 @@ const SCHED_PREFIX = String.raw`(?:(?:[A-Za-z_]\w*=\S*|sudo|env|command|exec|nic
 // (`X=$(crontab -)`) is caught, AND a backtick so a legacy `...` substitution
 // (`X=`crontab -r``) is caught too -- both run the enclosed command in a shell
 // context, so a scheduler binary immediately inside either is a real self-pace.
-const SCHED_BOUNDARY = '[;&|(`]'
+// Card ec20dd23 (Cybersec, live-measured on the installed binaries): this class named only the
+// punctuation separators, so every shell KEYWORD that introduces a command was a bypass --
+// `if true; then <binary> -; fi`, `for i in 1; do ... done`, and the `else` arm were reported;
+// `while`, `until`, `elif` and a brace group turned up in the same class while fixing it. A
+// keyword sits exactly where a separator would and the shell runs what follows it as a command,
+// so it IS a command position -- the class simply did not say so. Same enumeration as
+// LINE_CMD_POSITION below, and for the same reason: an incomplete list of positions is a hole.
+const SCHED_BOUNDARY = String.raw`(?:[;&|(\`{!]|\b(?:if|then|else|elif|while|until|do)\b)`
 // `at` and `batch` are also ordinary English words, and splitSegments splits on
 // NEWLINES -- so a PROSE line inside a multi-line commit body ("at least 80% of
 // entries", "batch size is 50") lands at a segment start and looked exactly like
@@ -900,6 +907,63 @@ export function pairedSegments(command) {
 }
 
 // Pure decision: does this tool call set up self-pace / self-injection?
+// --- STRINGS A SHELL WILL EXECUTE (card ec20dd23) ----------------------------------------------
+//
+// THE HOLE. maskInertLiterals blanks quoted regions before the anchored scan, and that is exactly
+// what makes prose inert -- load-bearing everywhere else in this file. But a quoted string handed
+// to `bash -c` / `sh -c` / `eval` is not inert: it IS the program. So the one construct whose
+// quotes mean "run this" was the one construct the gate refused to look inside, and
+// `bash -c "<scheduler> -"` passed while the identical bare command was denied.
+//
+// One step further out the same holds with a different trigger: `echo "<scheduler> -" | bash` and
+// `... | xargs bash -c` put the program in ANOTHER command's argv. There it is not the quoting that
+// matters but the CONSUMER -- a shell taking its program from stdin.
+//
+// Rather than teach each check about wrappers, this returns the extra command-strings a shell would
+// end up executing; gateDecision then runs its WHOLE existing scan over each. Recursing that way
+// rather than duplicating the checks is deliberate: a second copy of a security scan is how one of
+// them silently stops matching, which is the reason hook-lib.mjs exists. It is also the shape the
+// sibling hook scripts/hooks/noisy-command-guard.py already uses (_WRAPPER_RX +
+// _unwrapped_variants) -- ported, not reinvented.
+//
+// DIRECTION: this can only ever deny MORE, so nothing that is allowed today depends on the
+// extraction being complete, and an unforeseen wrapper shape leaves the gate exactly as strong as
+// it is now rather than weaker. The opposite risk -- prose inside a `-c` string -- does not
+// materialise, because the extracted text is scanned by the SAME anchored checks: in
+// `bash -c "echo the <scheduler> entry"` the binary sits in argument position behind `echo`, which
+// those checks already ignore. Measured, not assumed.
+const SHELL_C_RX = /(?:^|[\s;&|(`])(?:sudo\s+|env\s+|command\s+|exec\s+)*(?:\S*\/)?(?:bash|sh|zsh|dash|ksh)\b(?:\s+-[a-zA-Z]+)*\s+-[a-zA-Z]*c\s+(?:'([^']*)'|"((?:\\.|[^"\\])*)"|(\S+))/g
+const EVAL_RX = /(?:^|[\s;&|(`])eval\s+(?:'([^']*)'|"((?:\\.|[^"\\])*)"|(\S+))/g
+// A shell that takes its PROGRAM from stdin: a bare `| sh`, or xargs handing one a -c string.
+const STDIN_SHELL_RX = /\|\s*(?:sudo\s+|env\s+)*(?:\S*\/)?(?:bash|sh|zsh|dash|ksh)\b(?!\s*-[a-zA-Z]*c\b)|\bxargs\b[^|]*?(?:\S*\/)?(?:bash|sh|zsh|dash|ksh)\b/
+const QUOTED_LITERAL_RX = /'([^']*)'|"((?:\\.|[^"\\])*)"/g
+
+/** One level of "what would a shell run that is not this text itself": the argument of a `-c` shell
+ *  or of `eval`, and -- only when something in the pipeline runs a program from stdin -- the quoted
+ *  literals that would be fed to it. Every result is a proper substring of the input, so the caller
+ *  can recurse on them without a depth guard. */
+export function executableStrings(command) {
+  const text = String(command ?? '')
+  const out = []
+  for (const rx of [SHELL_C_RX, EVAL_RX]) {
+    rx.lastIndex = 0
+    let m
+    while ((m = rx.exec(text)) !== null) {
+      const inner = m[1] ?? m[2] ?? m[3]
+      if (inner && inner !== text) out.push(inner)
+    }
+  }
+  if (STDIN_SHELL_RX.test(text)) {
+    QUOTED_LITERAL_RX.lastIndex = 0
+    let q
+    while ((q = QUOTED_LITERAL_RX.exec(text)) !== null) {
+      const lit = q[1] ?? q[2]
+      if (lit && lit !== text) out.push(lit)
+    }
+  }
+  return out
+}
+
 export function gateDecision(toolName, toolInput) {
   const name = String(toolName ?? '')
   if (SELF_PACE_TOOLS.has(name)) return { deny: true }
@@ -909,6 +973,12 @@ export function gateDecision(toolName, toolInput) {
     if (SCHEDULE_STORE_RX.test(fp)) return { deny: true }
   }
   if (name === 'Bash') {
+    // Card ec20dd23: whatever a shell would execute out of a `-c` string, an `eval`, or a pipe into
+    // a stdin-reading shell gets the SAME scan as the command itself. Recursion terminates because
+    // every extracted string is a proper substring of its source.
+    for (const inner of executableStrings(String(toolInput?.command ?? ''))) {
+      if (gateDecision('Bash', { command: inner }).deny) return { deny: true }
+    }
     // Strip -d/--data payloads on the WHOLE command BEFORE splitting. A payload is
     // data, not an invocation; and since splitSegments is NOT quote-aware, a shell
     // separator (; && | &) INSIDE a dispatch body would otherwise orphan a fragment
