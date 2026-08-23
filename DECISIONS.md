@@ -634,3 +634,81 @@ utolsó blokkja.
 nézetben az idézett alparancs kiürül, így az olvasás-mentesség nem illeszkedik, az írás-őr viszont
 igen. Ez MEGELŐZI ezt a kártyát (a javítás előtti fájlon is reprodukáltam), és a javítása egy
 ütemező-ÍRÁS-tiltás lazítása lenne, ami saját mérést és Cybersec-döntést igényel.
+
+## 2026-08-23 09:20 -- Blast-radius ellenőrzés kikényszerítése hookkal (kártya 398f351b)
+
+**Döntés:** A CLAUDE.md kódminőségi 10. szabálya (hívói kör megnézése megosztott/core fájl
+szerkesztése előtt) kapott egy hívható belépési pontot (`store/blast-radius-check.py`) és egy
+PreToolUse guardot (`scripts/hooks/blast-radius-guard.py`), ami egy hub-fájl ELSŐ szerkesztését
+munkamenetenként EGYSZER blokkolja a mért sugárral, a következő próbálkozás átmegy.
+
+**Miért ez a szemantika, és nem más:** egy figyelmen kívül hagyható emlékeztető ugyanaz a próza
+maradna, amit a szabály ma is jelent; egy tartós blokk viszont az ügynök és a munkája közé állna.
+Az egyszeri blokk garantálja, hogy a sugarat LÁTTÁK, anélkül hogy a munkát megállítaná.
+
+**A konkrét paraméterek és az indoklásuk:**
+- **25 importálós küszöb** -- mérésből, nem ízlésből: a CleanCore-on a levél-komponensek 2-3
+  importálónál ülnek, a valódi hubok 40-520-nál. Env-ből felülírható (`BLAST_RADIUS_THRESHOLD`).
+- **Fail-open MINDENRE** (hiányzó gráf, nem parse-olt fájl, új fájl, hibás payload, kivétel) --
+  egy kódminőségi tanácsadó kontroll soha nem állíthatja meg a flottát. Kill switch:
+  `BLAST_RADIUS_GUARD=off`.
+- **200 commitnál elavultabb gráfnál HALLGAT** -- egy elavult gráf magabiztos rossz számot adna,
+  ami rosszabb, mint a csend.
+- **A gráfot a land-scriptek frissítik** push után. Ok: az eszköz eddig pontosan azért volt
+  használhatatlan, mert senki nem frissítette (a marveen-gráf 975 committal volt lemaradva).
+- **Bekötés a scaffoldból** (`injectBlastRadiusGuard` + boot-idejű `ensureBlastRadiusGuard`), nem
+  kézzel másolt JSON-blokkból: a 0fa54550 kártyán a kézzel másolt őr 13 ügynökből 5-nél hiányzott.
+
+**Cybersec-utókövetés (F-2, F-3a, ugyanezen a kártyán):** a marker-gyökér mostantól felhasználó-
+specifikus a platform temp-könyvtára alatt (a korábbi fix `/tmp/blast-radius-guard` megosztott és
+kiszámítható volt, tehát a kontroll csendben és tartósan kiüthető lett volna), és ha a guard nem
+tudja megjegyezni, hogy már mutatta a sugarat, ezt KIÍRJA ahelyett, hogy némán elhallgatna. A
+fail-open viselkedés szándékosan maradt: a kézenfekvő "hibánál blokkolj" egy írhatatlan könyvtárral
+minden szerkesztést örökre megállítana.
+
+**NYITOTT ZÁRÁSI FELTÉTEL (Cybersec F-1):** a kikényszerítés a mérés pillanatában 0/15 ügynökön
+aktív. A kód landolt, de az élő install munkafája régebbi shán áll, a `dist` elavult, és az
+`ensureBlastRadiusGuard` backfill KIZÁRÓLAG a szerver indulásakor fut. A kártya addig nem zárható,
+amíg ez nem 15:
+`grep -l "blast-radius-guard.py" ~/.claude/settings.json /home/neon/marveen/agents/*/.claude/settings.json | wc -l`
+Ez üzemeltetési lépés (pull + rebuild + dashboard-restart), MikroB/Peti döntése.
+
+**Mellékdöntés, ugyanebben a munkában:** a `fork-upstream-conflict-guard` pirosra váltott a
+`src/web/keychain.ts`-en, ami minden ügynök landolását blokkolta. Feloldási szabály rögzítve: az
+upstream 5 mp-es timeoutja + `keychainRetrieveStatus()` + `errSecItemNotFound`-kezelés ÁTVÉVE, a
+fork `keychainDelete()`-törlése MEGTARTVA (mérve: az upstreamen sincs produkciós hívója, csak egy
+teszt-mock). Egyik oldal sem egészben.
+
+**Ki döntött:** backend2 (terv + implementáció + mérés), QA (FAIL a hiányzó döntésnapló-bejegyzésre),
+Cybersec (GO a mechanizmusra, F-1 zárási feltétel, F-2/F-3a javítási javaslat).
+**Hivatkozás:** kártya 398f351b, commitok 76ebb7b2, 1cc63440.
+
+## 2026-08-23 09:55 -- A lokális modell kód-gráf kontextust kap dispatch-kor (kártya 44477615)
+
+**Döntés:** A `store/offload-dispatch.sh` mostantól kártyánként és alfeladatonként felold egy
+graphify kód-node-ot a kártya szövegéből, és átadja a `local-llm-rag.sh`-nak.
+
+**Miért kellett:** a `--graph-node` bekötés MÁR LÉTEZETT (kártya 3646bde7), csak senki nem hívta --
+a teljes repóban nulla hely adta át. Ez ugyanaz a "bekötött, de fogyasztó nélküli" hibaosztály,
+mint a lint-racsni előtti ESLint.
+
+**A node-feloldás PONTOS egyezést követel** (`store/graphify-resolve.py`), mert a graphify saját
+`explain`-je fuzzy: a `routeTas` előtag a `routeTask()`-ot adja vissza. Nyers próza átadása kitalált
+találatokat termelne, és azt hívnánk tudásnak. Két szűrő, mindkettő a 341 élő MikroB-kártyán mérve:
+csak `code` típusú node (nélküle a leggyakoribb találat a CLAUDE.md `MikroB` fejléc-node-ja volt,
+30 kártyán) és pontos kis/nagybetű (nélküle a `CleanCore` szó egy `CLEANCORE` konstansra illeszkedett,
+10 kártyán). Rangsor: függvény előbb, mint fájl.
+
+**Javított hiba:** a gráf-blokk a kilépési kódra épült, de a `graphify explain` találat NÉLKÜL is
+0-val lép ki és kiírja, hogy "No node matching" -- ez a mondat bekerült a modell kontextusába
+hiteles gráf-tudásként. Mostantól pozitív ellenőrzés kell (`^Node: ` sor).
+
+**Bizonyíték, hogy a kontextus tényleg eljut a modellhez:** az Ollama saját `prompt_eval_count`-ja,
+ugyanarra a feladatra, 1226 -> 1340 token gráf-node-dal.
+
+**Elvetett mérés (fontos, mert majdnem bizonyítékként használtam):** "az 1646 `local_llm_queue`
+sorból 0 hordoz gráf-kontextust" IGAZ, de VÁKUUM -- a direkt hívások egyáltalán nem tárolnak
+prompt-szöveget, tehát ugyanez a nulla jönne ki akkor is, ha a funkció végig működött volna.
+
+**Ki döntött:** backend2 (terv + implementáció + mérés).
+**Hivatkozás:** kártya 44477615, commitok 74b53dc9, 9a72ad4c.

@@ -37,9 +37,10 @@ function run(cmd: string, args: string[]): { code: number; out: string } {
  * goes red, because nothing announces it. Floors are the counts at the time each suite landed;
  * ADDING cases is free, removing them is a failure that names itself.
  *
- * The guard's floor is 20 rather than its current 22: two of its cases need a CleanCore agent
+ * The guard's floor is 25 rather than its current 27: two of its cases need a CleanCore agent
  * worktree that is not guaranteed to exist on every box, and a floor that depends on the
- * environment would be a flake, not a control.
+ * environment would be a flake, not a control. Raise the floor whenever cases are added, or the
+ * ratchet only ever protects the coverage that existed on day one.
  */
 function expectAllPassed(out: string, floor: number): void {
   expect(out).not.toContain('FAIL:')
@@ -58,7 +59,7 @@ describe('graph tooling: the selftests actually run in CI', () => {
 
   it('blast-radius PreToolUse guard selftest passes', () => {
     const { code, out } = run('python3', [join(ROOT, 'scripts', 'hooks', 'blast-radius-guard.selftest.py')])
-    expectAllPassed(out, 20)
+    expectAllPassed(out, 25)
     expect(code).toBe(0)
   }, 300_000)
 

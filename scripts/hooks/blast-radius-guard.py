@@ -29,15 +29,24 @@ from __future__ import annotations
 import hashlib
 import json
 import os
+import re
 import sqlite3
 import sys
+import tempfile
 from pathlib import Path
 
 # Resolved from THIS file so the hook and the measurement always come from the
 # same tree (shared clone in production, an agent worktree under selftest).
 STORE = Path(os.environ.get("BLAST_RADIUS_STORE")
              or (Path(__file__).resolve().parent.parent.parent / "store"))
-MARKER_ROOT = Path(os.environ.get("BLAST_RADIUS_MARKER_DIR", "/tmp/blast-radius-guard"))
+# Per-user, under the platform temp dir. The old default was a fixed, world-predictable
+# /tmp/blast-radius-guard shared by every account on the box (Cybersec F-2, card 398f351b): anyone
+# able to write there could pre-create the marker for a chosen hub file, or drop a plain FILE at the
+# root so every mkdir below fails -- and the guard would then go quiet everywhere, permanently and
+# without printing a thing. Reproduced live by Cybersec. Fail-open stays (see _already_shown); what
+# changes is that the degradation is no longer free to arrange and no longer silent.
+MARKER_ROOT = Path(os.environ.get("BLAST_RADIUS_MARKER_DIR")
+                   or Path(tempfile.gettempdir()) / f"blast-radius-guard-{os.getuid()}")
 SOURCE_EXT = {".ts", ".tsx", ".js", ".jsx", ".mjs", ".cjs", ".py", ".go", ".rs", ".java"}
 DEFAULT_MAX_BEHIND = 200
 
@@ -88,8 +97,14 @@ def _already_shown(session: str, root: Path, rel: str) -> bool:
     try:
         d.mkdir(parents=True, exist_ok=True)
         marker.write_text("", encoding="utf-8")
-    except Exception:
-        # Cannot remember -> do not block, or we would block every single edit.
+    except Exception as exc:
+        # Cannot remember -> do not block, or we would block EVERY edit forever, which is worse
+        # than not enforcing. But say so: a control that stops enforcing must not do it in silence
+        # (Cybersec F-2). One line, not a block, so it cannot be used to flood a session either.
+        sys.stderr.write(
+            f"BLAST-RADIUS-GUARD: nem tudom megjegyezni, hogy mar mutattam a sugarat "
+            f"({MARKER_ROOT}: {type(exc).__name__}) -- ez a szerkesztes ellenorzes NELKUL megy at. "
+            f"Javitas: torold vagy tedd irhatova ezt az utvonalat.\n")
         return True
     return False
 
@@ -126,6 +141,15 @@ def main() -> None:
         conn = sqlite3.connect(f"file:{db}?mode=ro", uri=True)
         meta = lib.graph_meta(conn)
         st = lib.staleness(root, meta)
+        # The recorded sha comes out of a database and is interpolated into a git rev-list token
+        # (Cybersec F-3a). NOT about the exit code -- a bogus value already fail-opens one line
+        # below, and no test can tell the two apart, which is why there is none pretending to.
+        # It is about OPTION POSITION: a value starting with "-" reaches git as a flag rather than
+        # a revision, and DB-sourced text has no business being parsed as a git option. Defence in
+        # depth on a path that is argv (never shell), kept deliberately.
+        if not re.fullmatch(r"[0-9a-f]{7,64}", str(st.get("graph_sha") or "")):
+            conn.close()
+            sys.exit(0)
         behind = st.get("behind")
         if behind is None or behind > _max_behind():
             conn.close()

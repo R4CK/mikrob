@@ -162,6 +162,37 @@ def main() -> int:
         rc9c, _ = edit(ufx / "src/helper.ts", session="s7c")
         check("an ungaugeable graph does not block", rc9c == 0)
 
+        # A recorded sha that cannot BE a sha (Cybersec F-3a). It reaches a git rev-list token, so
+        # a value of the wrong shape is refused before it gets there rather than fail-opening by
+        # accident further down.
+        bfx = _fixture(Path(td) / "badsha", sha="--not-a-sha")
+        rc9d, _ = edit(bfx / "src/helper.ts", session="s7d")
+        check("a malformed recorded sha does not block", rc9d == 0)
+
+        # Marker store unusable (Cybersec F-2, reproduced live by them): the guard must fail open
+        # AND SAY SO. Silent, permanent, arrangeable de-enforcement is the actual problem; being
+        # fail-open is the documented design.
+        broken = Path(td) / "markers-is-a-file"
+        broken.write_text("not a directory", encoding="utf-8")
+        rc9e, err9e = edit(HUB, session="s7e", extra={"BLAST_RADIUS_MARKER_DIR": str(broken)})
+        check("an unusable marker store does not block", rc9e == 0)
+        check("...and the guard says why instead of going quiet",
+              "nem tudom megjegyezni" in err9e)
+
+        # The DEFAULT marker root, which every other case here hides behind an override. The fix
+        # for F-2 lives in that default, so without this the whole suite stays green after a revert
+        # to the shared world-writable path (mutation-confirmed).
+        import re as _re
+        # CODE only. The comment above that default explains the old shared path BY NAME, so a
+        # substring check over the whole file fails on the explanation rather than on the code --
+        # the same trap this repo hit today in graph-tooling-selftests.test.ts.
+        src = "\n".join(l for l in HOOK.read_text(encoding="utf-8").splitlines()
+                         if not l.lstrip().startswith("#"))
+        check("the default marker root is not a fixed shared /tmp path",
+              "/tmp/blast-radius-guard" not in src)
+        check("the default marker root is per-user under the platform temp dir",
+              bool(_re.search(r"tempfile\.gettempdir\(\)[^\n]*getuid\(\)", src)))
+
         rc10, _ = edit(CC / "apps/api/src/does-not-exist.ts", session="s8")
         check("a file that does not exist yet is not blocked", rc10 == 0)
 
@@ -185,7 +216,7 @@ def main() -> int:
 
     for f in fails:
         print(f"FAIL: {f}")
-    total = 20 + (2 if Path("/mnt/h/LM_Studio_Workdir/CleanCore-worktrees/backend2/apps/api/src/pg-client.ts").exists() else 0)
+    total = 25 + (2 if Path("/mnt/h/LM_Studio_Workdir/CleanCore-worktrees/backend2/apps/api/src/pg-client.ts").exists() else 0)
     print(f"blast-radius-guard selftest: {total - len(fails)}/{total} passed"
 )
     return 1 if fails else 0
