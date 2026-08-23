@@ -1367,3 +1367,45 @@ tisztazni kell, hogy a 8b925388 hatokorebe tartozik-e vagy uj.
 
 **Ki dontott:** backend (a meres es a szerkezeti kiszegezes), backend2 (az eredeti lelet).
 **Hivatkozas:** kartya 8b925388, incidens-kartya 8d673233 (komment 14896).
+
+## 2026-08-23 19:43 -- A nem-statusz kartya-szerkesztes is auditalt, KULON tablaban (kártya 51878c59)
+
+**A res:** az `updateKanbanCard` CSAK statuszvaltaskor irt a `kanban_card_events`-be, tehat minden
+mas mezo-modositas nyomtalan volt -- se aktor, se idobelyeg. Ez nem kozmetikai hiany: a flotta a
+HALADAS-jelzot a kartya CIMEBEN tartja (`[NN%]`, 2. munkavegzesi szabaly), vagyis pont az a mezo
+volt auditalatlan, ami azt mondja meg, hol tart egy munka. A `8d673233`-on ez elsult: megjelent egy
+`[50%]`, a tabla haladast mutatott, amit senki nem csinalt, es utolag SENKI nem tudta megmondani ki
+irta (az `offload-dispatch.sh`-t fuggetlenul kizartuk, 8b925388).
+
+**(a) auditalas, NEM (b) a `[NN%]` kiemelese a cimbol.** A kartya mindket iranyt felkinalta. A (b)
+egy flotta-szintu, kimondott konvenciot irna at (2. szabaly: "a haladas a kartya CIMEBE tett `[NN%]`
+marker"), plusz minden cimet parse-olo kodot es minden ugynok szokasat -- ez a 5. kodminosegi
+szabaly teruletet (mukodo dolgot nem irunk at kerdes nelkul). Az (a) additiv, konvenciot nem valt,
+es pontosan a hianyzo kerdesre valaszol: KI es MIKOR.
+
+**KULON TABLA, nem tobb sor a `kanban_card_events`-ben -- ez a valodi dontes.** Megmertem a
+fogyasztokat: a `to_status` NOT NULL, a `GET /api/kanban/:id/events` tranzakcio-listakent adja ki
+oket, es a `fleet-transfer` a `(card_id, created_at, to_status)` harmason dedupal. Egy valtozatlan
+statuszt hordozo sor MINDHAROM olvaso szamara megkulonboztethetetlen lenne egy valodi mozgatastol.
+Egy tabla ara: nulla torott olvaso.
+
+**A `sort_order` SZANDEKOSAN nincs auditalva.** Egy oszlopon beluli huzas MINDEN elmozdult kartyara
+ujrairja, tehat az auditalasa pont azokat a szerkeszteseket temetne be atrendezesi zajba, amiket
+valaki keresni akar. A kerdes, amire ez a tabla valaszol: "ki valtoztatta meg, amit a kartya MOND".
+
+**Aktor nelkuli szerkeztes is sort kap, `actor = NULL`-lal.** Az `actor` onbevallas es opcionalis;
+a sor eldobasa visszaallitana pontosan azt a lyukat, amirol ez a kartya szol -- egy szerkesztes,
+ami megtortent es nem hagyott nyomot. A nevtelen nyom tobb, mint a semmi.
+
+**Fogyaszto:** `GET /api/kanban/:id/field-events`. KULON utvonal, ugyanabbol az okbol, amiert kulon
+tabla. Kimondom, hogy a FE ma EGYIKET SEM rendereli (a `/events` sem volt bekotve, ez nem az en
+valtoztatasom kovetkezmenye): a fogyaszto itt az a vizsgalodo -- ember vagy ugynok --, aki utolag
+felteszi a kerdest, amit a `8d673233`-on senki nem tudott megvalaszolni. Egy lekerdezheto sor
+onmagaban valasz; ez nem ugyanaz, mint egy detektor, aminek a kimenetet semmi nem olvassa.
+
+**Merve:** az audit-iras eltavolitasa (a kartya elotti allapot) -> 4 piros; a `sort_order`
+felvetele az auditalt mezok koze -> 1 piros (pont az a teszt, ami a szandekos kihagyast szegezi ki).
+8 uj teszt; a szomszedos suite-ok (fuggosegek, delete-FK) valtozatlanul zoldek, 46/46.
+
+**Ki dontott:** backend (implementacio + a kulon-tabla es a `sort_order`-kihagyas dontese).
+**Hivatkozas:** kartya 51878c59, forras-lelet 8b925388 (komment 19660), incidens 8d673233.

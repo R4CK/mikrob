@@ -3,7 +3,7 @@ import { join } from 'node:path'
 import {
   listKanbanCards, createKanbanCard, updateKanbanCard,
   deleteKanbanCard, moveKanbanCard, archiveKanbanCard, unarchiveKanbanCard,
-  getKanbanComments, addKanbanComment, getKanbanCardEvents, listKanbanProjects,
+  getKanbanComments, addKanbanComment, getKanbanCardEvents, getKanbanCardFieldEvents, listKanbanProjects,
   getKanbanLineComments, addKanbanLineComment,
   getKanbanCard, getChildCards, getDb,
   createAgentMessage, markKanbanCardDispatched,
@@ -635,6 +635,17 @@ export async function tryHandleKanban(ctx: RouteContext): Promise<boolean> {
     }
     const normalizedContent = normalizeKanbanRefs(content, getKanbanSeqByIdPrefix)
     json(res, addKanbanLineComment(cardId, sha, file, line, normalizeCommentAuthor(author), normalizedContent))
+    return true
+  }
+
+  // Card 51878c59: a SEPARATE route rather than folding these into /events, for the same reason
+  // they are a separate table -- /events returns a bare array of status transitions and a caller
+  // that suddenly found field edits in it would read them as moves.
+  const kanbanFieldEventsMatch = path.match(/^\/api\/kanban\/([^/]+)\/field-events$/)
+  if (kanbanFieldEventsMatch && method === 'GET') {
+    const cardId = decodeURIComponent(kanbanFieldEventsMatch[1]!)
+    if (!getKanbanCard(cardId)) { json(res, { error: 'Kártya nem található' }, 404); return true }
+    json(res, getKanbanCardFieldEvents(cardId))
     return true
   }
 
