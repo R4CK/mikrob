@@ -1425,5 +1425,5 @@ A következő alakot így nem kell kitalálni ahhoz, hogy megbukjon.
 
 **Ki döntött:** Cybered (a lelet, az élő mérés, és az invariáns-teszt ötlete), fullstack (az
 idézés-tudatos járó, a négy mutáció, és a belőlük előjött N5/N6 alak).
-**Hivatkozás:** kártya 84e31b40, commit b94c6f06. Előzmény: e5b2cd84 (a vermes visszaállítás),
+**Hivatkozás:** kártya 84e31b40, commit ce40ccf0. Előzmény: e5b2cd84 (a vermes visszaállítás),
 c17173fc (a nyitó-csak javítás), f4fac1d7 (a járó bekötése az email-kapuba).
