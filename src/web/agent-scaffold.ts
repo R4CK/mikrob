@@ -370,6 +370,7 @@ export function writeAgentSettingsFromProfile(name: string, profile: ProfileTemp
   injectEgressGate(existing)
   injectGitProtectGuard(existing)
   injectNpmProtectGuard(existing)
+  injectBlastRadiusGuard(existing)
   atomicWriteFileSync(settingsPath, JSON.stringify(existing, null, 2))
 }
 
@@ -503,6 +504,11 @@ export function injectEgressGate(existing: Record<string, unknown>): void {
 // have dropped it again -- and every NEWLY created agent would have started
 // unprotected. Protection that depends on someone remembering to copy a JSON
 // block is not protection; it belongs here, where every spawn re-applies it.
+// Exported so the wiring test and the backfill's staleness check compare against
+// ONE value; a matcher literal repeated in three places is how a widened matcher
+// reaches nobody.
+export const BLAST_RADIUS_GUARD_MATCHER = 'Edit|Write|MultiEdit'
+
 export function injectGitProtectGuard(existing: Record<string, unknown>): void {
   const hooks = (existing.hooks && typeof existing.hooks === 'object'
     ? existing.hooks
@@ -552,6 +558,69 @@ export function injectNpmProtectGuard(existing: Record<string, unknown>): void {
     ...prev.filter((e) => !JSON.stringify(e).includes('npm-protect-guard.py')),
     entry,
   ]
+}
+
+// Idempotently wire the blast-radius guard PreToolUse hook (card 398f351b).
+//
+// CLAUDE.md "Kodminosegi alapelvek" rule 10 has required an impact-radius check
+// before editing a widely-imported file since it was written, and named the tool
+// to use. It was never enforced, and the tool was measurably unused: on
+// 2026-08-23 this repo's code-review-graph was 975 commits stale (built on
+// adoption day, never refreshed) and CleanCore had no graph at all. A rule whose
+// only enforcement is that someone remembers it is prose.
+//
+// The guard blocks the FIRST edit of a hub file per session, prints the measured
+// caller set, and lets the retry through -- so the radius is guaranteed to have
+// been seen without standing between an agent and its work. Fail-open on a
+// missing graph, an unparsed file or any internal error.
+//
+// Matcher covers the native file tools, not Bash: unlike its git/npm siblings,
+// the thing being guarded here IS the Edit/Write call.
+export function injectBlastRadiusGuard(existing: Record<string, unknown>): void {
+  const hooks = (existing.hooks && typeof existing.hooks === 'object'
+    ? existing.hooks
+    : (existing.hooks = {})) as Record<string, unknown>
+  const command = `python3 "${join(PROJECT_ROOT, 'scripts', 'hooks', 'blast-radius-guard.py')}"`
+  if (isUnsafeHookCommand(command)) return
+  const entry = {
+    matcher: BLAST_RADIUS_GUARD_MATCHER,
+    hooks: [{ type: 'command', command, timeout: 20 }],
+  }
+  const prev = Array.isArray(hooks.PreToolUse) ? (hooks.PreToolUse as unknown[]) : []
+  hooks.PreToolUse = [
+    ...prev.filter((e) => !JSON.stringify(e).includes('blast-radius-guard.py')),
+    entry,
+  ]
+}
+
+// Boot-time backfill for the blast-radius guard, same reasoning as
+// ensureNpmProtectGuard: injectBlastRadiusGuard alone reaches an agent only when
+// its settings.json is regenerated, so a dashboard restart arms the whole fleet.
+// A stale MATCHER counts as not-wired (the egress-gate lesson, card 91c4a369):
+// referencing the script is not the same as running it on the calls that matter.
+export function ensureBlastRadiusGuard(name: string): boolean {
+  const settingsPath = agentSettingsPath(name)
+  let settings: Record<string, unknown> = {}
+  if (existsSync(settingsPath)) {
+    try { settings = JSON.parse(readFileSync(settingsPath, 'utf-8')) } catch { return false }
+  }
+  const command = `python3 "${join(PROJECT_ROOT, 'scripts', 'hooks', 'blast-radius-guard.py')}"`
+  const hooks = (settings.hooks && typeof settings.hooks === 'object')
+    ? settings.hooks as Record<string, unknown>
+    : {}
+  const ptu = Array.isArray(hooks.PreToolUse) ? hooks.PreToolUse as unknown[] : []
+  const ptuJson = JSON.stringify(ptu)
+  const matcherCurrent = ptu.some(
+    (e) => JSON.stringify(e).includes('blast-radius-guard.py') &&
+      (e as { matcher?: unknown })?.matcher === BLAST_RADIUS_GUARD_MATCHER,
+  )
+  if (ptuJson.includes('blast-radius-guard.py') && hookCommandWired(ptuJson, command) && matcherCurrent)
+    return false
+  if (isUnsafeHookCommand(command)) return false
+  injectBlastRadiusGuard(settings)
+  if (name !== MAIN_AGENT_ID) mkdirSync(join(agentDir(name), '.claude'), { recursive: true })
+  atomicWriteFileSync(settingsPath, JSON.stringify(settings, null, 2))
+  return true
 }
 
 // Idempotent migration: ensure every agent's settings.json carries the egress

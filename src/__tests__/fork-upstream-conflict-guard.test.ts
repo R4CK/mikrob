@@ -102,6 +102,26 @@ const ACKNOWLEDGED_CONFLICTS: Readonly<Record<string, string>> = {
   // Resolution: keep BOTH functions, either order -- union, not a pick -- and add both to the
   // startAgentProcess() call chain. The second hunk is only the two functions' shared tail
   // (read/replace-or-append/write); keeping both bodies gives each its own copy of it.
+  // NOT a fork-vs-upstream disagreement about the same code: the two sides changed
+  // DIFFERENT things in one file (measured 2026-08-23 against upstream/develop, merge-base
+  // ea7ed17c). Fork side: e48a6075 deleted keychainDelete() as verified-dead (card 9568c04b)
+  // and touched nothing else. Upstream side: a real availability/security fix -- a 5s timeout
+  // on every `security` call (a locked keychain pops a GUI prompt and blocks forever;
+  // VAULTKEY822 measured a 48-minute HTTP outage from exactly that) plus keychainRetrieveStatus(),
+  // which separates errSecItemNotFound ("the keychain answered, there is no key") from every
+  // other failure, so a locked keychain can no longer read as "no key" and trigger a silent key
+  // swap (VAULTUJKULCS822). Upstream also re-added keychainDelete() with the timeout.
+  // Measured on upstream/develop: keychainRetrieveStatus IS live (src/web/vault.ts:102), while
+  // keychainDelete has NO production caller there either -- its only reference is a mock stub in
+  // vault-master-key.test.ts, so the fork's dead-code finding still holds on both sides.
+  // Resolution: ADOPT the timeout + keychainRetrieveStatus + the errSecItemNotFound distinction,
+  // KEEP the fork's deletion of keychainDelete. Neither side wholesale: taking the fork's would
+  // drop a fix for a measured outage, taking upstream's would resurrect dead code the fork
+  // deliberately removed. If keychainDelete ever gains a real caller upstream, it comes back
+  // WITH that caller, not before. (The extra key in the upstream test's mock factory is
+  // harmless -- vi.mock does not check the factory against the real module's exports.)
+  'src/web/keychain.ts':
+    'adopt the upstream timeout + keychainRetrieveStatus + errSecItemNotFound handling, keep the fork deletion of the dead keychainDelete -- never a wholesale side',
   'src/web/agent-scaffold.ts':
     'keep BOTH section-writers -- the fork ensureLocalFirstSection and the upstream ensureSkillsPathTrapSection -- and call both; neither side taken wholesale',
   // A single additive hunk (measured 2026-08-16, card 88505fb5), not a behavioural disagreement:

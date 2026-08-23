@@ -137,6 +137,9 @@ land_one() {
     # so the agent's own next agent-worktree-marveen.sh top-up (or a plain `git pull --ff-only` inside
     # their persistent worktree) fast-forwards it there automatically. No reset attempted against a
     # branch that IS the agent's own currently-checked-out worktree.
+    # Same reason as in cleancore-land.sh: the blast-radius graph must follow HEAD,
+    # or the guard silently stops enforcing. Non-fatal by construction.
+    "$(dirname "$0")/blast-radius-check.py" --refresh "$MAIN" 2>&1 | sed 's/^/  /' || true
     echo "$agent: LANDED $branch -> origin/$DEFAULT_BRANCH ($(git -C "$wt" rev-parse --short HEAD))"
     return 0
   fi
