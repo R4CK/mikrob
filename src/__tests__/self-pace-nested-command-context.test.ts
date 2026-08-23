@@ -261,7 +261,23 @@ describe('self-pace-gate: the walker follows bash QUOTING, not parenthesis count
   // anyone having to think of it first.
   it('INVARIANT (generated): an interpreter-owned heredoc is never blanked, in any nesting form', () => {
     const OPENERS = ['$(', '<(', '>(']
-    const NOISE = ['"a)b"', "'a)b'", '$((1+1))', `'a${BT}b'`, '"a;b"', '"a|b"', '"a))b"']
+    const NOISE = [
+      '"a)b"',
+      "'a)b'",
+      '$((1+1))',
+      `'a${BT}b'`,
+      '"a;b"',
+      '"a|b"',
+      '"a))b"',
+      // F-6/F-7 constructs: a bare subshell and every parameter-expansion form that can carry a `)`
+      '$( (:) )',
+      '${x:-)}',
+      '${x/a/)}',
+      '${x:-$(true))}',
+      '${x:-${y:-)}}',
+      '${x:-${y:-a})}',
+      '${x:-$(echo a})}',
+    ]
     const failures: string[] = []
     for (const open of OPENERS) {
       for (const noise of NOISE) {
@@ -275,5 +291,119 @@ describe('self-pace-gate: the walker follows bash QUOTING, not parenthesis count
       }
     }
     expect(failures).toEqual([])
+  })
+})
+
+// Card 84e31b40, SIXTH round: two NO-GOs landing together on the same class from two gates.
+//
+//  * Cybersec (F-6): a BARE `(` is a subshell -- a command context bash opens exactly like `$(`.
+//    The walker did not push a frame for it, but its `)` popped one, so a subshell SPENT a frame it
+//    never opened and handed the boundary back to the outer curl:
+//        curl ... -d @- $(python3 - $( (:) ) <<'PY' ... PY )   -> allowed, and measured executing
+//
+//  * Cybered (F-7): a `${ ... }` PARAMETER EXPANSION may carry an unquoted `)` in its default or
+//    replacement part, which the walker read as a closer for the same reason:
+//        curl ... -d @- $(python3 - ${x:-)} <<'PY' ... PY )    -> allowed, and measured executing
+//
+// Round four gave the walker QUOTING awareness; these two say the same thing about GRAMMAR. So the
+// fix is symmetric with what round four did for `$(( ))`: a parameter expansion is consumed whole
+// (depth-handled, because `${x:-$(true))}` puts a real substitution inside the braces), and a bare
+// `(` opens a frame like every other command context. An unquoted `(` cannot be ordinary argument
+// text in bash, so opening a frame for it costs no legitimate shape -- the CONTROLS below hold that
+// claim to a measurement rather than an argument.
+describe('self-pace-gate: bash GRAMMAR, not just quoting -- bare subshell and parameter expansion (card 84e31b40, F-6/F-7)', () => {
+  const NL = String.fromCharCode(10)
+  const bash = (command: string) => gateDecision('Bash', { command })
+  const CT6 = 'cron' + 'tab'
+  const EVIL6 = ['import subprocess', `subprocess.run(['${CT6}', '-'])`].join(NL)
+  const LEGIT6 = `{"content":"a ${CT6} helyett a scheduler API-t hasznaljuk"}`
+
+  // A heredoc the INNER interpreter owns, reached through an argument of the inner command.
+  const innerArg = (arg: string): string =>
+    [`curl -s -d @- http://127.0.0.1:1/x $(python3 - ${arg} <<'PY'`, EVIL6, 'PY', ')'].join(NL)
+
+  it('R1: a bare subshell inside the inner substitution must not spend a frame', () => {
+    expect(bash(innerArg('$( (:) )')).deny).toBe(true)
+  })
+
+  it('R2: two bare subshells (the miscount compounds)', () => {
+    expect(bash(innerArg('$( (:) ) $( (:) )')).deny).toBe(true)
+  })
+
+  it('B1: ${x:-)} -- an unquoted ) in a default value', () => {
+    expect(bash(innerArg('${x:-)}')).deny).toBe(true)
+  })
+
+  it('B2: ${x/a/)} -- an unquoted ) in a pattern replacement', () => {
+    expect(bash(innerArg('${x/a/)}')).deny).toBe(true)
+  })
+
+  it('B3: ${x:-$(true))} -- a REAL substitution nested inside the braces', () => {
+    // The one that makes depth-handling load-bearing: the inner `$(true)` still has to be consumed
+    // as a unit while the brace's OWN `)` must pop nothing.
+    expect(bash(innerArg('${x:-$(true))}')).deny).toBe(true)
+  })
+
+  it('B4: ${x:-${y:-)}} -- a parameter expansion nested inside a parameter expansion', () => {
+    // Not reported by either gate; added because the depth counter is what the reported shapes
+    // exercise only one level of. Measured executing under real bash, and allowed before this fix.
+    expect(bash(innerArg('${x:-${y:-)}}')).deny).toBe(true)
+  })
+
+  it('B5: ${x:-${y:-a})} -- the ) sits AFTER the inner brace closes', () => {
+    // Found by mutation: dropping the brace DEPTH counter (stop at the first `}`) left every other
+    // case here green, because in those the `)` happens to sit inside the region a depth-blind scan
+    // still skips. Here it does not. Measured executing under real bash, and allowed by f7c1d07f.
+    expect(bash(innerArg('${x:-${y:-a})}')).deny).toBe(true)
+  })
+
+  it('B6: ${x:-$(echo a})} -- a } inside a substitution nested in the braces', () => {
+    // The other half of the same counter: without skipping the nested `$( )` as a unit, its literal
+    // `}` ends the brace scan early and the rest of the expansion is walked as ordinary text.
+    // Denied by f7c1d07f only by accident; pinned so the depth handling cannot be simplified away.
+    expect(bash(innerArg('${x:-$(echo a})}')).deny).toBe(true)
+  })
+
+  it('CONTROL: a QUOTED brace was already safe and stays safe', () => {
+    // Quoting awareness (round four) already stopped the `)` here, which is why the attack needs an
+    // UNQUOTED brace. Pinned so a future rewrite cannot lose the quoted half while fixing the other.
+    expect(bash(innerArg('"${x:-)}"')).deny).toBe(true)
+  })
+
+  it('CONTROL: a case statement is not a regression from the bare-( frame', () => {
+    // A case PATTERN ends in `)` with no opener at all, so it is the shape most likely to be
+    // disturbed by teaching the walker about `(`. Measured identical before and after.
+    const cmd = [
+      `curl -s -d @- http://127.0.0.1:1/x $(case y in a) :;; esac; python3 - <<'PY'`,
+      EVIL6,
+      'PY',
+      ')',
+    ].join(NL)
+    expect(bash(cmd).deny).toBe(true)
+  })
+
+  it('CONTROL: a legitimate call wrapped in a subshell still ALLOWs', () => {
+    const cmd = [`( curl -s -X POST http://localhost:3420/x -d @- <<'JSON'`, LEGIT6, 'JSON', ')'].join(NL)
+    expect(bash(cmd).deny).toBe(false)
+  })
+
+  it('CONTROL: a legitimate call whose header comes from ${VAR} still ALLOWs', () => {
+    const cmd = [
+      `curl -s -X POST http://localhost:3420/x -H "X-T: \${TOKEN:-none}" -d @- <<'JSON'`,
+      LEGIT6,
+      'JSON',
+    ].join(NL)
+    expect(bash(cmd).deny).toBe(false)
+  })
+
+  it('CONTROL: a legitimate call after an array assignment still ALLOWs', () => {
+    // `hdr=(...)` is the everyday bare-`(` that is NOT a subshell; it balances, so the frame it
+    // opens is the frame it closes.
+    const cmd = [
+      `hdr=(-H "X: 1"); curl -s -X POST http://localhost:3420/x "\${hdr[@]}" -d @- <<'JSON'`,
+      LEGIT6,
+      'JSON',
+    ].join(NL)
+    expect(bash(cmd).deny).toBe(false)
   })
 })

@@ -1593,3 +1593,70 @@ annak, amit el akarunk erni. Nulla sor volt belole hasznalhato.
 **Ki dontott:** backend (implementacio + a ket-szamlalos irany a dokumentacios opcio helyett),
 QA (a lelet, a `df193354` kapu soran).
 **Hivatkozas:** kartya b2f13520, forras-kartya df193354.
+## 2026-08-23 20:30 -- A járó bash-NYELVTANT is követ: csupasz `(` keretet nyit, `${ }` egyben átugorva (kártya 84e31b40, Cybersec F-6 + Cybered F-7)
+
+**Döntés:** a `stripHeredocDataPayloads` járójában (a) egy CSUPASZ `(` ugyanúgy keretet nyit, mint a
+`$(`/`<(`/`>(`/backtick, és (b) a `${ ... }` parameter expansion egyben átugorva, mélység-kezelten
+(beágyazott `${...}` és `$(...)` is), a `$(( ))` aritmetika mintájára.
+
+**Miért:** a negyedik kör IDÉZÉS-tudatot adott a járónak, ez a kettő ugyanezt mondja a NYELVTANRÓL.
+Mindkettő ugyanazt a keret-számolási hibát használja ki, csak más konstrukción:
+
+- **F-6 (Cybersec):** a bash egy csupasz `(`-nél is új parancs-kontextust nyit (subshell), a járó
+  viszont keretet nem nyitott rá, a `)`-jére viszont popolt -- vagyis egy subshell ELHASZNÁLT egy
+  keretet, amit sosem nyitott, és a határ visszaesett a külső curl-re.
+- **F-7 (Cybered):** egy `${ ... }` default/replace része idézetlenül tartalmazhat `)`-t
+  (`${x:-)}`, `${x/a/)}`), amit a járó nyers zárónak olvasott -- ugyanaz az eredmény.
+
+Mindkettőt marker-fájllal, valódi bashben futtatva jelentették; a beágyazott értelmező tényleg
+lefuttatta a "kiürített" törzset.
+
+**Miért nem elég egy `${x:-)}` egysoros patch (Cybered kifejezett kérése, mérve):** a `${x:-$(true))}`
+alakban egy VALÓDI belső helyettesítés van a brace-en belül -- azt továbbra is egységként kell
+kezelni, miközben a brace SAJÁT `)`-je nem popolhat. Ezért a brace-átugrás mélység-kezelt.
+
+**Miért nem drága a csupasz `(` keret:** idézetlen `(` a bashben nem lehet közönséges argumentum-szöveg
+(szintaktikai hiba), tehát minden valós előfordulása (subshell, tömb-hozzárendelés, függvény-fej)
+KIEGYENSÚLYOZOTT -- egy kiegyensúlyozott keret pontosan azt a határt állítja vissza, amit elmentett.
+Ezt kontrollok mérik, nem érvelés. Sőt: a mutáció-mérés szerint a csupasz-`(` keret egy FALS-POZITÍVOT
+is megszüntet (egy subshellbe csomagolt jogos hívás korábban DENY volt).
+
+**Mérés, 41 eset, mindkét kapun:**
+
+| változat | rossz eset |
+|---|---|
+| előző kör (f7c1d07f) | 6 (R1, R2, B1, B2, B3, B4) |
+| ez a változat | 0 |
+
+**Mutáció-mérés, és megint két ÚJ alakot hozott ki:**
+
+| mutáció | piros |
+|---|---|
+| MA: a csupasz `(` nem nyit keretet | 7 |
+| MB: a `${ }`-átugrás eltávolítva | 10 |
+| MC: a brace/beágyazott-`$( )` mélység-kezelés eltávolítva | 0 -> ez volt a jelzés, majd 6 |
+| MD: a `skipBalancedParens` nem kezel egyszeres idézőjelet | 0, és NEM találtam hozzá alakot |
+
+Az MC túlélte a teljes készletet, ezért alakot kerestem hozzá, és kettőt találtam, mindkettő ÉLŐ
+(marker-fájllal, valódi bashben lefuttatva): **B5** `${x:-${y:-a})}` -- a `)` a BELSŐ brace zárása
+UTÁN áll, tehát egy mélység-vak szken már nem ugorja át (az f7c1d07f-en is ALLOW volt, vagyis ez egy
+hetedik alak, amit egyik gate sem nevezett meg); **B6** `${x:-$(echo a})}` -- egy `}` a brace-en belüli
+helyettesítésben, ami egy mélység-vak szkent korán zárna. Mindkettő tesztben kiszegezve, utána az MC
+6 pirosat ad.
+
+**Az MD-t KIMONDOTTAN nyitva hagyom:** a `skipBalancedParens` egyszeres-idézőjel-kezelése nélkül a
+teljes készlet zöld marad, és a két alak, amit kifejezetten ellene konstruáltam
+(`${x:-$(echo 'a)}' )}`, `${x:-$(echo 'a)' )}`), MINDHÁROM változaton DENY. Nincs tehát bizonyítékom,
+hogy ez az ág teherhordó. Bent hagytam, mert a helper így egyezik a bash-sel (ugyanaz az elv, amit a
+negyedik kör lefektetett), de NEM írtam rá tesztet, amiről nem tudom megmutatni, hogy mér valamit --
+ez ugyanaz a vákuum-teszt-tilalom, amit a 0ecff3ae-n alkalmaztam. Ha egy gate talál rá alakot, jöhet
+a teszt.
+
+**Cybered kérése teljesítve:** a generált invariáns-teszt zavaró-token-halmaza bővült a `$( (:) )`
+subshell-lel és mind az öt brace-alakkal.
+
+**Ki döntött:** Cybersec (F-6 lelet + a csupasz-`(` token javaslata, saját méréssel), Cybered (F-7
+lelet + a mélység-kezelt brace-átugrás iránya), fullstack (a két javítás összevezetése, négy mutáció,
+és a belőlük előjött B5/B6 alak).
+**Hivatkozás:** kártya 84e31b40, commit 851a4618. Előzmény: f7c1d07f (idézés-tudat), e5b2cd84 (vermes
+határ-visszaállítás), c17173fc, f4fac1d7.

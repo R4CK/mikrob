@@ -538,6 +538,51 @@ const GIT_LEADING_RX = /^\s*(?:(?:[A-Za-z_]\w*=\S*|sudo|env|command|exec|nice|bu
 const GIT_MSG_SUBCMD_RX = /(?:^|\s)(?:commit|tag|notes)(?:\s|$)/i
 // -F-, -F -, --file -, --file=-
 const GIT_STDIN_MSG_RX = /(?:^|\s)(?:-F\s*-|--file(?:\s+|=)-)(?=\s|$)/
+// Skip a balanced parenthesised run starting AT `start` (which must index a `(`), returning the
+// index just past its matching `)`. Quoting is honoured, because a `)` inside '...' closes nothing.
+// Used by the two constructs the walker consumes WHOLE rather than treating as command contexts.
+function skipBalancedParens(src, start) {
+  let j = start
+  let depth = 0
+  while (j < src.length) {
+    const ch = src[j]
+    if (ch === '\\') { j += 2; continue }
+    if (ch === "'") { const k = src.indexOf("'", j + 1); j = k === -1 ? src.length : k + 1; continue }
+    if (ch === '(') { depth++; j++; continue }
+    if (ch === ')') { depth--; j++; if (depth === 0) return j; continue }
+    j++
+  }
+  return src.length
+}
+
+// Skip a `${ ... }` PARAMETER EXPANSION whole, returning the index just past its closing `}`.
+// Cybered's sixth-round finding: the walker gained quoting awareness but not bash-grammar awareness,
+// and a parameter expansion may carry an UNQUOTED `)` in its default or replacement part
+// (`${x:-)}`, `${x/a/)}`) -- which the walker then read as a closer and used to pop a frame bash
+// never opened, dropping the boundary back onto the outer curl. All three reported shapes were
+// measured executing from inside the blanked body.
+//
+// Nesting is depth-handled rather than "to the first `}`", because `${x:-$(true))}` puts a REAL
+// substitution inside the braces: that `$( )` still has to be consumed as a unit, while the brace's
+// OWN `)` must not pop anything. Ending this scan too LATE is fail-closed (a heredoc inside the
+// braces is then simply left scanned); ending too EARLY is the bug being fixed, so every construct
+// that can carry a `}` is skipped rather than counted through.
+function skipParamExpansion(src, start) {
+  let j = start + 2 // past `${`
+  let depth = 1
+  while (j < src.length) {
+    const ch = src[j]
+    if (ch === '\\') { j += 2; continue }
+    if (ch === "'") { const k = src.indexOf("'", j + 1); j = k === -1 ? src.length : k + 1; continue }
+    if (ch === '`') { const k = src.indexOf('`', j + 1); j = k === -1 ? src.length : k + 1; continue }
+    if (ch === '$' && src[j + 1] === '{') { depth++; j += 2; continue }
+    if (ch === '$' && src[j + 1] === '(') { j = skipBalancedParens(src, j + 1); continue }
+    if (ch === '}') { depth--; j++; if (depth === 0) return j; continue }
+    j++
+  }
+  return src.length
+}
+
 export function stripHeredocDataPayloads(command) {
   const src = String(command ?? '')
   let out = ''
@@ -611,13 +656,14 @@ export function stripHeredocDataPayloads(command) {
     // `$(( ... ))` is ARITHMETIC, not a command context. Consume it whole so its closing `))`
     // cannot pop a frame it never pushed (Cybered N2, Cybersec S1).
     if (c === '$' && src[i + 1] === '(' && src[i + 2] === '(') {
-      let depth = 0
-      let j = i + 1
-      while (j < src.length) {
-        if (src[j] === '(') depth++
-        else if (src[j] === ')') { depth--; if (depth === 0) { j++; break } }
-        j++
-      }
+      const j = skipBalancedParens(src, i + 1)
+      out += src.slice(i, j); i = j; continue
+    }
+    // `${ ... }` is a PARAMETER EXPANSION, not a command context either, and its default/replace
+    // part may carry an unquoted `)` (Cybered F-7). Consume it whole, at any quoting level -- it is
+    // a pure text skip, so it cannot move the boundary or the stack.
+    if (c === '$' && src[i + 1] === '{') {
+      const j = skipParamExpansion(src, i)
       out += src.slice(i, j); i = j; continue
     }
     // Command separators separate only OUTSIDE quotes -- a `;` or a newline inside "..." is text.
@@ -638,8 +684,14 @@ export function stripHeredocDataPayloads(command) {
       boundary = frame.at; quote = frame.quote
       continue
     }
-    // Process substitution does not happen inside double quotes; command substitution does.
-    const nested = (quote === '"' ? /^\$\(/ : /^(?:\$\(|<\(|>\()/).exec(src.slice(i))
+    // Process substitution does not happen inside double quotes; command substitution does. A BARE
+    // `(` is a subshell -- a command context bash opens just like the others (Cybersec F-6): before
+    // this, its `)` popped a frame it had never pushed, so `$(python3 - $( (:) ) <<'PY' ... PY )`
+    // handed the boundary back to the outer curl and blanked a body bash ran. Unquoted `(` cannot
+    // appear as ordinary argument text in bash (it is a syntax error), so opening a frame for it
+    // costs no legitimate shape: an array assignment, a function header and a subshell all balance,
+    // and a balanced frame restores exactly the boundary it saved.
+    const nested = (quote === '"' ? /^\$\(/ : /^(?:\$\(|<\(|>\(|\()/).exec(src.slice(i))
     if (nested) {
       nestStack.push({ at: boundary, quote, tick: false })
       out += nested[0]; i += nested[0].length; boundary = i; quote = null
