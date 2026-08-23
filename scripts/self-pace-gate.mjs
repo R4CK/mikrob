@@ -247,8 +247,39 @@ const SCHEDULER_CMDWORD_READ_RX = new RegExp(
 // WHAT may follow the word; this one removes the branch where NOTHING follows it.
 const AT_INVOCATION_UNANCHORED = String.raw`(?=["']*\s+["']*-|["']*\s*<|["']*\s+["']*(?:now|noon|midnight|teatime|today|tomorrow|next\b|\+\s*\d|\d{1,2}:\d{2}|\d{3,4}\b|\d{1,2}\s*(?:am|pm)\b|\d{1,2}[./]\d{1,2}|(?:mon|tue|wed|thu|fri|sat|sun)\b|(?:jan|feb|mar|apr|may|jun|jul|aug|sep|oct|nov|dec)\b))`
 const SCHED_BARE_SHAPE = String.raw`(?!\s+[a-z])`
+// COMMAND POSITION WITHIN ONE LINE -- the axis all previous fixes in this class missed
+// (card 442f3289). at(1) and batch(1) are ordinary English words, and in THIS regex, unlike the
+// anchored SCHEDULER_RX, the word alone matched them anywhere on a heredoc-body line. The only
+// thing separating prose from a denial was the lookahead at what FOLLOWS -- and what follows the
+// word in English prose about schedules and measurements is exactly what at(1) accepts as a
+// timespec: a clock time, a date, noon, today, a weekday name, a 3-4 digit number. Measured on the
+// pre-fix file, all of these ordinary sentences were denied inside a heredoc body:
+//     the nudger found the pane ... 16:13 and did nothing
+//     the call was retried ... 1200 ms and then gave up
+//     the last landing happened ... 5pm yesterday
+//     the digest runs ... noon for every tenant
+//     measured ... 08/14 on the shared clone
+//     the counter resets ... mon boundary
+//
+// So each earlier fix removed one alternative from that lookahead (0229c844, eae5d6fd, 46c4ad4a,
+// and the end-of-segment branch documented above), and the class kept regenerating -- because
+// "what may follow the word" is precisely where prose and at(1) genuinely overlap. Narrowing that
+// axis cannot converge. What prose does NOT have is command POSITION, which is where the anchored
+// branch has always got its safety; this gives the two English words the same requirement, applied
+// inside the line.
+//
+// DIRECTION, per this file's own stated principle: this makes the branch deny LESS, so it is the
+// shape that can open a hole, and the enumeration below is what must be COMPLETE rather than
+// merely tolerant. It names every position from which a shell actually runs a word: line start,
+// after a separator or a subshell/substitution opener, after a quote (bash -c "<binary> ..." puts
+// the quote exactly where the command word begins), and after the shell keywords that introduce a
+// command. Each is measured in this card's battery. The scheduler binaries that are NOT English
+// words keep their unanchored match -- prose cannot collide with them, so they lose nothing.
+// `(` in the class already covers a `$(` substitution opener -- `$(` cannot occur without it -- so
+// there is no separate alternative for it. Measured: adding one changed no verdict.
+const LINE_CMD_POSITION = String.raw`(?:^|[;&|(\`"']|\b(?:then|else|elif|do)\b)\s*`
 const UNANCHORED_SCHEDULER_RX = new RegExp(
-  String.raw`\b(?:crontab|systemd-run)\b(?!-)(?!\s*=)${SCHED_BARE_SHAPE}|\blaunchctl\b(?!-)(?!\s*=)${LAUNCHCTL_SUBCOMMAND}|\bbatch\b(?!-)(?!\s*=)${AT_INVOCATION}|\bat\b(?!-)(?!\s*=)${AT_INVOCATION_UNANCHORED}`,
+  String.raw`\b(?:crontab|systemd-run)\b(?!-)(?!\s*=)${SCHED_BARE_SHAPE}|\blaunchctl\b(?!-)(?!\s*=)${LAUNCHCTL_SUBCOMMAND}|${LINE_CMD_POSITION}${SCHED_PREFIX}batch\b(?!-)(?!\s*=)${AT_INVOCATION}|${LINE_CMD_POSITION}${SCHED_PREFIX}at\b(?!-)(?!\s*=)${AT_INVOCATION_UNANCHORED}`,
   'i',
 )
 const UNANCHORED_SCHEDULER_READ_RX = new RegExp(

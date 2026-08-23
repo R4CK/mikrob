@@ -1861,3 +1861,11 @@ sem hivatkozik a másikra, és a flotta `taskstate-replay`-e ugyanezt a problém
 (b) A `teach`, `to-questionnaire` és `grill-me` skillekre nem született verdikt: a `grill-me` a
 `grilling` rövidebb változata (a `plan-grilling` már fedi), a másik kettő nem esett a kártya
 felsorolásába.
+
+## 2026-08-23 21:10 -- A self-pace gate hamis pozitívjait parancs-pozícióval szűkítjük, nem további kivételekkel (kártya 442f3289)
+
+**Döntés:** a `self-pace-gate.mjs` horgonyzatlan heredoc-törzs-pásztázásában az `at`/`batch` két angol szó mostantól parancs-POZÍCIÓT igényel a soron belül (sor eleje, `;`/`&`/`|`/`(`/backtick, idézőjel, vagy `then`/`else`/`elif`/`do`). A többi scheduler-bináris változatlanul horgonyzatlan.
+**Miért:** ez a négyedik hamis pozitív ugyanabból az osztályból. A korábbi három javítás (0229c844, eae5d6fd, 46c4ad4a) mind azt szűkítette, MI KÖVETHETI a szót -- és pont ott van a tényleges átfedés: az at(1) időpont-nyelvtana (óra:perc, dátum, noon, today, hétköznap-rövidítés, 3-4 jegyű szám) SZÓ SZERINT az, amit egy ütemezésről vagy mérésről szóló magyar/angol mondat tartalmaz. Ez a tengely nem konvergál. A pozíció viszont olyan struktúra, amivel a próza nem rendelkezik -- a horgonyzott ág biztonsága is mindig ebből jött.
+**Irány-kockázat, kimondva:** ez a változás KEVESEBBET tilt, tehát lyukat nyithat, nem zajt. Ezért a pozíció-felsorolásnak TELJESNEK kell lennie (nem csak tolerancia kérdése), és minden eleme külön mutatással mért. A maradék, tudatosan nyitva hagyott eset: egy próza-sor, ami MAGÁVAL a szóval és egy időponttal KEZDőDIK -- az struktúrálisan megkülönböztethetetlen egy valódi hívástól, ezért tilt marad, és teszt rögzíti, hogy ez ismert és nem „lefedett”.
+**Ki döntött:** Backend (implementáció), Cybersec/backend2/MikroB lelet-adatai alapján.
+**Hivatkozás:** kártya 442f3289.
