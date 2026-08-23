@@ -121,6 +121,10 @@ export interface KanbanExport {
   cards: Record<string, unknown>[]
   comments: Record<string, unknown>[]
   cardEvents: Record<string, unknown>[]
+  /** Card 7fd6dd23, Cybersec F-2: without this the status history survives a transfer and the
+   *  field-level audit silently does not -- the restored board would look fully attributed while
+   *  every title/assignee/priority edit before the transfer had vanished. */
+  cardFieldEvents?: Record<string, unknown>[]
   labels: Record<string, unknown>[]
   cardLabels: Record<string, unknown>[]
 }
@@ -671,6 +675,7 @@ export function exportFleet(options: { vaultPassword?: string } = {}): ExportedF
     cards: db.prepare('SELECT * FROM kanban_cards').all() as Record<string, unknown>[],
     comments: db.prepare('SELECT * FROM kanban_comments').all() as Record<string, unknown>[],
     cardEvents: db.prepare('SELECT * FROM kanban_card_events').all() as Record<string, unknown>[],
+    cardFieldEvents: db.prepare('SELECT * FROM kanban_card_field_events').all() as Record<string, unknown>[],
     labels: db.prepare('SELECT * FROM labels').all() as Record<string, unknown>[],
     cardLabels: db.prepare('SELECT * FROM kanban_card_labels').all() as Record<string, unknown>[],
   }
@@ -1130,6 +1135,19 @@ export function importFleet(
           .get(e.card_id, e.created_at, e.to_status)) {
           db.prepare('INSERT INTO kanban_card_events (card_id, from_status, to_status, actor, created_at) VALUES (?, ?, ?, ?, ?)')
             .run(e.card_id, e.from_status ?? null, e.to_status, e.actor, e.created_at)
+        }
+      }
+
+      // kanban field events -- idempotent on (card_id, created_at, field), the same shape as the
+      // status events above. Optional in the payload: an export taken before this existed simply
+      // has no key, and must still import.
+      for (const ev of fleet.kanban?.cardFieldEvents ?? []) {
+        const e = ev as any
+        if (!e.card_id || !e.field) continue
+        if (!db.prepare('SELECT 1 FROM kanban_card_field_events WHERE card_id = ? AND created_at = ? AND field = ?')
+          .get(e.card_id, e.created_at, e.field)) {
+          db.prepare('INSERT INTO kanban_card_field_events (card_id, field, old_value, new_value, actor, created_at) VALUES (?, ?, ?, ?, ?, ?)')
+            .run(e.card_id, e.field, e.old_value ?? null, e.new_value ?? null, e.actor ?? null, e.created_at)
         }
       }
 

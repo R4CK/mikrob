@@ -520,11 +520,18 @@ export async function tryHandleKanban(ctx: RouteContext): Promise<boolean> {
   if (kanbanArchiveMatch && method === 'POST') {
     const id = decodeURIComponent(kanbanArchiveMatch[1])
     let force = false
+    let actor: string | undefined
     try {
       const body = await readBody(req)
-      if (body.length > 0) force = (JSON.parse(body.toString()) as Record<string, unknown>)?.['force'] === true
+      if (body.length > 0) {
+        const parsed = JSON.parse(body.toString()) as Record<string, unknown>
+        force = parsed?.['force'] === true
+        // Card 7fd6dd23: archiving is a real state change and its audit row should be able to name
+        // somebody. Optional and self-declared, like every other actor on this API.
+        if (typeof parsed?.['actor'] === 'string') actor = parsed['actor'] as string
+      }
     } catch { /* malformed body: force stays false, fail closed */ }
-    const result = archiveKanbanCard(id, { force })
+    const result = archiveKanbanCard(id, { force, ...(actor !== undefined ? { actor } : {}) })
     // revertIdeaFromKanban only runs on an ACTUAL archive -- running it on a blocked attempt
     // would unlink the idea from a card that is not actually archived (card 037277a0).
     if (result.ok) {
@@ -586,7 +593,15 @@ export async function tryHandleKanban(ctx: RouteContext): Promise<boolean> {
   const kanbanUnarchiveMatch = path.match(/^\/api\/kanban\/([^/]+)\/unarchive$/)
   if (kanbanUnarchiveMatch && method === 'POST') {
     const id = decodeURIComponent(kanbanUnarchiveMatch[1])
-    if (unarchiveKanbanCard(id)) { json(res, { ok: true }); return true }
+    let unarchiveActor: string | undefined
+    try {
+      const body = await readBody(req)
+      if (body.length > 0) {
+        const parsed = JSON.parse(body.toString()) as Record<string, unknown>
+        if (typeof parsed?.['actor'] === 'string') unarchiveActor = parsed['actor'] as string
+      }
+    } catch { /* no body / malformed: the row is still written, with a null actor */ }
+    if (unarchiveKanbanCard(id, unarchiveActor !== undefined ? { actor: unarchiveActor } : {})) { json(res, { ok: true }); return true }
     json(res, { error: 'Kártya nem található vagy nincs archiválva' }, 404)
     return true
   }
