@@ -8,6 +8,9 @@ import {
   deleteKanbanCard,
   updateKanbanCard,
   archiveKanbanCard,
+  moveKanbanCard,
+  getKanbanCard,
+  getKanbanCardEvents,
   addKanbanDependency,
   removeKanbanDependency,
   getKanbanPredecessors,
@@ -148,5 +151,71 @@ describe('"satisfied" means status=done -- and archiving is NOT a way around it'
     updateKanbanCard('b', { status: 'done' }, { actor: 'test', force: true })
     expect(archiveKanbanCard('b')).toEqual({ ok: true })
     expect(getUnmetKanbanPredecessors('a')).toEqual([])
+  })
+})
+
+describe('the status guard: an unmet predecessor blocks BOTH transitions (card a8aa9ae5)', () => {
+  // Enforced in the db writers, not the routes, because there are THREE doors into a status
+  // change -- PUT /api/kanban/:id, POST /api/kanban/:id/move, and db.ts's own scheduler call to
+  // moveKanbanCard. The repo already learned this once: the landed-guard comment in the routes
+  // says "guarding one of two doors guards neither".
+  beforeEach(() => {
+    addKanbanDependency('a', 'b') // b must finish before a
+  })
+
+  it('planned -> in_progress is refused while the predecessor is open', () => {
+    expect(moveKanbanCard('a', 'in_progress', 0, 'someone')).toBe(false)
+    expect(getKanbanCard('a')!.status).toBe('planned')
+  })
+
+  it('waiting -> done is refused too -- the dependency must be MET, not merely started', () => {
+    moveKanbanCard('a', 'waiting', 0, 'someone', true)
+    expect(moveKanbanCard('a', 'done', 0, 'someone')).toBe(false)
+    expect(getKanbanCard('a')!.status).toBe('waiting')
+  })
+
+  it('WAITING IS NOT GUARDED: a builder can always hand finished work to a gate', () => {
+    // Deliberate. Blocking `waiting` would stop a builder from submitting for review, which is not
+    // what a dependency means -- the block belongs at the close, not at the handover.
+    expect(moveKanbanCard('a', 'waiting', 0, 'someone')).toBe(true)
+    expect(getKanbanCard('a')!.status).toBe('waiting')
+  })
+
+  it('THE SAME GUARD ON THE OTHER WRITER: updateKanbanCard refuses it as well', () => {
+    expect(updateKanbanCard('a', { status: 'in_progress' }, { actor: 'someone' })).toBe(false)
+    expect(getKanbanCard('a')!.status).toBe('planned')
+  })
+
+  it('a REORDER inside the same column is never blocked', () => {
+    // moveKanbanCard is also the drag-and-drop path. Gating on the target status alone would make
+    // a card that is ALREADY in_progress with an open predecessor immovable within its own column.
+    moveKanbanCard('a', 'in_progress', 0, 'someone', true) // forced in
+    expect(moveKanbanCard('a', 'in_progress', 99, 'someone')).toBe(true)
+    expect(getKanbanCard('a')!.sort_order).toBe(99)
+  })
+
+  it('once the predecessor is done, the transition goes through unforced', () => {
+    updateKanbanCard('b', { status: 'done' }, { actor: 'test', force: true })
+    expect(moveKanbanCard('a', 'in_progress', 0, 'someone')).toBe(true)
+    expect(getKanbanCard('a')!.status).toBe('in_progress')
+  })
+
+  it('force bypasses it AND the audit row records that it was forced', () => {
+    expect(moveKanbanCard('a', 'in_progress', 0, 'someone', true)).toBe(true)
+    const ev = getKanbanCardEvents('a').at(-1)!
+    expect(ev.to_status).toBe('in_progress')
+    expect(ev.forced).toBe(1) // a bypass that leaves no trace is not a bypass, it is a hole
+  })
+
+  it('an ORDINARY forced move is not recorded as an override', () => {
+    // force:true is sent routinely by some clients. Recording every one of them as a guard
+    // override would make the flag useless for finding the real ones.
+    updateKanbanCard('b', { status: 'done' }, { actor: 'test', force: true })
+    moveKanbanCard('a', 'in_progress', 0, 'someone', true)
+    expect(getKanbanCardEvents('a').at(-1)!.forced).toBe(0)
+  })
+
+  it('a card with NO predecessors is unaffected', () => {
+    expect(moveKanbanCard('c', 'in_progress', 0, 'someone')).toBe(true)
   })
 })
