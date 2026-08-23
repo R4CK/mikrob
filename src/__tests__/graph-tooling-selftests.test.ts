@@ -68,6 +68,16 @@ describe('graph tooling: the selftests actually run in CI', () => {
     expectAllPassed(out, 27)
     expect(code).toBe(0)
   }, 300_000)
+
+  // Card 95f861f1, the repomix half of the same epic: adopted, wrapped, documented, and its output
+  // directory had not moved since adoption day. The coverage checker is what finally consumes a
+  // pack -- so its selftest runs here for the same reason the three above do. Shipping an un-run
+  // selftest ON THIS CARD would have been the exact defect the card was opened to fix.
+  it('audit pack-coverage selftest passes', () => {
+    const { code, out } = run('python3', [join(ROOT, 'store', 'audit-pack-coverage.py'), '--selftest'])
+    expectAllPassed(out, 25)
+    expect(code).toBe(0)
+  }, 300_000)
 })
 
 // The offload path imports the resolver by PATH at dispatch time; a rename or a lost exec bit makes
@@ -77,6 +87,7 @@ describe('the files the offload path resolves at runtime', () => {
     ['store/graphify-resolve.py'],
     ['store/blast-radius-check.py'],
     ['scripts/hooks/blast-radius-guard.py'],
+    ['store/audit-pack-coverage.py'],
   ])('%s exists and is executable', (rel) => {
     const p = join(ROOT, rel)
     expect(existsSync(p)).toBe(true)

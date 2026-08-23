@@ -18,6 +18,21 @@ The bar for calling an audit "done". Partial coverage is NOT a full-value audit 
 
 ## Procedure
 
+### 0. Pack the tree, and keep the manifest (card 95f861f1)
+Before inventorying anything, produce a mechanical manifest of what is actually in the repo:
+
+```
+store/repomix.sh pack <repo-path>      # -> gitignored pack .xml, secret-scanned by the wrapper
+```
+
+Two things come out of it that the inventory below needs. The **file manifest** is the ground truth
+for step 1's completeness check (step 8). The **token report** the pack prints (total files, total
+tokens, top files by token count) tells you where the mass of the codebase actually is, so the audit
+budget goes to the heavy modules rather than the alphabetically-first ones.
+
+Treat the pack as SENSITIVE: it is the whole repo in one file. It lands gitignored; never commit it,
+and never hand it to an external model without reading the wrapper's own limits first.
+
 ### 1. Full feature inventory (frontend + backend)
 - Enumerate and LIST every **frontend** element: each page/route, component, **every button**, link, form, field, menu item, modal, drawer, toast, table action, and each state (loading/empty/error/success). Every button and every function goes on the list with an ID.
 - Enumerate and LIST every **backend** function: each module, service, handler, use-case, background job/cron, queue consumer, webhook.
@@ -74,6 +89,26 @@ The bar for calling an audit "done". Partial coverage is NOT a full-value audit 
 
 ## Verification
 - The audit report lists the FULL inventory with each item marked PASS / FAIL / NOT-tested (+reason).
+- **No file went unmentioned -- checked, not asserted (card 95f861f1):**
+
+  ```
+  store/audit-pack-coverage.py <your-audit-report.md> --pack store/repomix-out/<name>-pack.xml
+  ```
+
+  It cross-checks the report against the step-0 pack manifest and exits non-zero, naming every
+  source file the report never mentions. Exit 1 = silent gaps found; exit 2 = it could not run
+  (missing pack, or a pack with no file entries -- which it refuses to treat as a pass, because an
+  empty manifest would make the check vacuous).
+
+  Each named file must then be either tested and listed, or listed explicitly as NOT tested + why.
+  A file whose basename is not unique in the tree (`index.ts`) must be given by FULL path -- the
+  checker deliberately refuses to count an ambiguous basename, so that auditing one `index.ts` does
+  not silently mark eleven others covered.
+
+  **What this proves and what it does not:** it proves no FILE was skipped silently. It does not
+  prove the inventory is complete inside a file -- a report can name a page and still miss three of
+  its buttons. It is the mechanical floor under "silent omission is forbidden", not a substitute for
+  reading the code.
 - Every role has a completed authz matrix (positive + negative).
 - Every found MAJOR/critical issue has a reproducible entry AND a kanban fix/optimization card.
 - All three gates signed off (QA PASS + Cybersec GO + Cybered GO) on the tested work.
