@@ -416,6 +416,12 @@ export interface StaleAcknowledgement {
   readonly file: string
   readonly recorded: string
   readonly actual: string
+  /** The rule that was written LAST time, carried into the failure message. A reader who is being
+   *  asked to decide again needs to see what the previous decision actually said -- otherwise the
+   *  gate blocks them and makes them go look it up, which is how a re-decision becomes a
+   *  rubber-stamp. It is also why ACKNOWLEDGED_CONFLICTS has a runtime consumer and not only a
+   *  type-level one. */
+  readonly rule: string
 }
 
 /**
@@ -440,7 +446,8 @@ export function classifyConflicts(
     const recorded = (ACKNOWLEDGED_UPSTREAM_BLOBS as Readonly<Record<string, string>>)[file]!
     const actual = blobOf(file)
     if (actual !== recorded) {
-      stale.push({ file, recorded, actual: actual ?? '(absent upstream)' })
+      const rule = (ACKNOWLEDGED_CONFLICTS as Readonly<Record<string, string>>)[file]!
+      stale.push({ file, recorded, actual: actual ?? '(absent upstream)', rule })
     }
   }
   return { guarded, unwatched, stale }
@@ -587,7 +594,8 @@ describe('fork/upstream web-file merge-conflict guard (card 641aca3f)', () => {
             verdict.stale
               .map(
                 (s) =>
-                  `${s.file} (recorded ${s.recorded.slice(0, 12)}, now ${s.actual.slice(0, 12)})`
+                  `${s.file} (recorded ${s.recorded.slice(0, 12)}, now ${s.actual.slice(0, 12)}) ` +
+                  `-- the rule written last time was: "${s.rule}"`
               )
               .join('; ') +
             '. Read both sides again, update the rule in ACKNOWLEDGED_CONFLICTS if the resolution ' +
@@ -656,7 +664,12 @@ describe('classifyConflicts: an acknowledgement is bound to CONTENT, not to a fi
     // installer abort really happened.
     const moved = 'ffffffffffffffffffffffffffffffffffffffff'
     const v = classifyConflicts([WATCHDOG], () => moved)
-    expect(v.stale).toEqual([{ file: WATCHDOG, recorded: RECORDED, actual: moved }])
+    expect(v.stale).toEqual([
+      { file: WATCHDOG, recorded: RECORDED, actual: moved, rule: ACKNOWLEDGED_CONFLICTS[WATCHDOG] },
+    ])
+    // The PREVIOUS rule travels with the finding. Blocking someone and making them go look up what
+    // they decided last time is how a re-decision turns into a rubber-stamp.
+    expect(v.stale[0]!.rule).toContain('TRAP:5')
     // Still not "unwatched" -- somebody DID decide about this file. The two verdicts are different
     // questions and the messages a reader gets must not be interchangeable.
     expect(v.unwatched).toEqual([])
@@ -664,7 +677,14 @@ describe('classifyConflicts: an acknowledgement is bound to CONTENT, not to a fi
 
   it('a delete/modify conflict (gone upstream) is stale, not a pass', () => {
     const v = classifyConflicts([WATCHDOG], () => null)
-    expect(v.stale).toEqual([{ file: WATCHDOG, recorded: RECORDED, actual: '(absent upstream)' }])
+    expect(v.stale).toEqual([
+      {
+        file: WATCHDOG,
+        recorded: RECORDED,
+        actual: '(absent upstream)',
+        rule: ACKNOWLEDGED_CONFLICTS[WATCHDOG],
+      },
+    ])
   })
 
   it('an undecided file is still UNWATCHED, and is never reported as stale', () => {
