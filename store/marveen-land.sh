@@ -140,6 +140,11 @@ land_one() {
     # Same reason as in cleancore-land.sh: the blast-radius graph must follow HEAD,
     # or the guard silently stops enforcing. Non-fatal by construction.
     "$(dirname "$0")/blast-radius-check.py" --refresh "$MAIN" 2>&1 | sed 's/^/  /' || true
+    # The graphify code-graph feeds the local model's RAG context at dispatch
+    # (card 44477615). It rotted the same way the blast-radius graph did -- built once
+    # on adoption day, then 24 days stale -- so it follows HEAD here too. Incremental
+    # (~13s on marveen) and non-fatal: a graph refresh must not fail a landing.
+    "$(dirname "$0")/graphify.sh" build "$MAIN" 2>&1 | tail -1 | sed 's/^/  graphify: /' || true
     echo "$agent: LANDED $branch -> origin/$DEFAULT_BRANCH ($(git -C "$wt" rev-parse --short HEAD))"
     return 0
   fi

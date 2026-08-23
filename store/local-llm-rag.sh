@@ -286,8 +286,15 @@ fi
 # a missing graph must never block a draft.
 if [[ -n "$GRAPH_NODE" ]]; then
   [[ -n "$GRAPH_REPO" ]] || GRAPH_REPO="$(pwd)"
+  # POSITIVE check on the output, not just the exit code (card 44477615). graphify's `explain`
+  # prints "No node matching '<x>' found." and STILL EXITS 0, so the old exit-code-plus-non-empty
+  # test treated a miss as a hit: that sentence went into the model's context under the "CODE GRAPH
+  # (deterministic AST)" heading, and the honest warning below never ran -- the exact opposite of
+  # what the comment above promises. Reproduced live on 2026-08-23 with --show-context. Never
+  # observed before because nothing in the repo passed --graph-node at all. A real answer always
+  # starts with a "Node: " line, so that is what we require.
   if GRAPH_EXPLAIN="$(bash "$HERE/graphify.sh" explain "$GRAPH_REPO" "$GRAPH_NODE" 2>/dev/null)" \
-     && [[ -n "${GRAPH_EXPLAIN// }" ]]; then
+     && grep -q '^Node: ' <<<"$GRAPH_EXPLAIN"; then
     CONTEXT="${CONTEXT:+$CONTEXT
 
 }CODE GRAPH (graphify, deterministic AST -- node, neighbours and relations):

@@ -368,6 +368,11 @@ if git -C "$MAIN" merge-base --is-ancestor "$SHA" origin/main; then
   # numbers), so without this the check would rot back into the prose rule it
   # replaced. Never fatal: a refresh problem must not fail a landing that passed.
   "$(dirname "$0")/blast-radius-check.py" --refresh "$MAIN" 2>&1 | sed 's/^/  /' || true
+  # The graphify code-graph feeds the local model's RAG context at dispatch
+  # (card 44477615). It rotted the same way the blast-radius graph did -- built once
+  # on adoption day, then 24 days stale -- so it follows HEAD here too. Incremental
+  # (~13s on marveen) and non-fatal: a graph refresh must not fail a landing.
+  "$(dirname "$0")/graphify.sh" build "$MAIN" 2>&1 | tail -1 | sed 's/^/  graphify: /' || true
   echo "LANDED $CARD: $GSHORT -> origin/main (merge $MERGE)"
   exit 0
 fi

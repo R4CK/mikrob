@@ -125,6 +125,52 @@ if lead:
 print(",".join(t for t in dict.fromkeys(tags) if t))' 2>/dev/null)"
 [[ -n "$TAGS" ]] && echo "offload-dispatch: card tags -> $TAGS" >&2
 
+# CODE-GRAPH CONTEXT (card 44477615). graphify was adopted as the local model's RAG source and then
+# never called. Measured 2026-08-23: NO caller anywhere in the repo passed --graph-node, the marveen
+# graph had sat unbuilt since 2026-07-30 (24 days), and CleanCore had no graphify graph at all. The
+# --graph-node plumbing in local-llm-rag.sh existed (card 3646bde7); what was missing is a caller.
+# This is that caller. (A tempting fourth measurement does NOT support the claim and was dropped:
+# "0 of 1646 local_llm_queue rows carry graph context" is true but vacuous -- direct calls store
+# "(direct call -- ... no content stored)" in `prompt`, so NO row carries any prompt text.)
+#
+# The node is RESOLVED, not guessed: graphify-resolve.py only accepts a token that EXACTLY names a
+# code node (graphify's own `explain` is fuzzy -- 'routeTas' returns routeTask() -- so matching is
+# decided here first). A card that names no code gets no graph context, which is the correct answer,
+# not a failure. Measured over the 341 live MikroB cards: 208 resolve, 84 of them to a function.
+#
+# Repo comes from the card's PROJECT field, a value someone already set -- not from parsing prose.
+RESOLVE="$HERE/graphify-resolve.py"
+PROJECT="$(printf '%s' "$J" | python3 -c 'import json,sys
+try: print(json.load(sys.stdin).get("project","") or "")
+except Exception: print("")' 2>/dev/null)"
+GRAPH_REPO=""
+case "$PROJECT" in
+  # The MAIN clone, not $HERE/.. -- an agent worktree lives NEXT TO the main clone and has no
+  # graphify-out/ of its own, so a worktree invocation would silently resolve to "no graph".
+  # Worktrees share the main clone's git common dir, so its parent is the main clone.
+  MikroB)    GRAPH_REPO="$(cd "$(git -C "$HERE" rev-parse --git-common-dir 2>/dev/null || echo .)/.." 2>/dev/null && pwd)" ;;
+  CleanCore) GRAPH_REPO="${CLEANCORE_MAIN:-/mnt/h/LM_Studio_Workdir/CleanCore}" ;;
+esac
+# No graph for this project, or none built yet -> no graph args at all. A missing graph must never
+# block a draft (same rule local-llm-rag.sh states for the node lookup itself).
+[[ -n "$GRAPH_REPO" && -f "$GRAPH_REPO/graphify-out/graph.json" ]] || GRAPH_REPO=""
+
+graph_args_for() {
+  # echoes nothing when the text names no node; caller reads it into an array
+  local node=""
+  [[ -n "$GRAPH_REPO" ]] || return 0
+  node="$(printf '%s' "$1" | timeout 30 python3 "$RESOLVE" "$GRAPH_REPO" --max 1 2>/dev/null | head -1)"
+  [[ -n "${node// }" ]] || return 0
+  printf '%s\n%s\n%s\n%s\n' --graph-repo "$GRAPH_REPO" --graph-node "$node"
+}
+
+CARD_GRAPH=(); mapfile -t CARD_GRAPH < <(graph_args_for "$TASK")
+if [[ ${#CARD_GRAPH[@]} -gt 0 ]]; then
+  echo "offload-dispatch: code-graph context -> ${CARD_GRAPH[3]} ($PROJECT)" >&2
+else
+  echo "offload-dispatch: no code-graph context (project='$PROJECT' names no known node)" >&2
+fi
+
 DRAFTS=""
 add_draft() { DRAFTS+="#### $1"$'\n'"$2"$'\n\n'; }
 
@@ -132,7 +178,8 @@ add_draft() { DRAFTS+="#### $1"$'\n'"$2"$'\n\n'; }
 # --log-task labels the usage log only -- it does NOT pick a template or change the prompt (card
 # ea3e4270). Without it every call on this path logged as `chat`, the default, so the offload metric
 # could not tell the fleet's main drafting route from a bare chat probe.
-WHOLE="$("$RAG" --auto --agent "$ASSIGNEE" --source dispatch-offload --log-task card-draft --tags "$TAGS" "$TASK" 2>/dev/null)"
+WHOLE="$("$RAG" --auto --agent "$ASSIGNEE" --source dispatch-offload --log-task card-draft --tags "$TAGS" \
+  ${CARD_GRAPH[@]+"${CARD_GRAPH[@]}"} "$TASK" 2>/dev/null)"
 rc=$?
 if [[ $rc -eq 0 && -n "${WHOLE// }" ]]; then
   add_draft "Teljes kartya (local draft)" "$WHOLE"
@@ -162,7 +209,12 @@ for s in out[:CAP]: print(s.replace(chr(10)," ").strip())
     # The card's tags go with its SUBTASKS too. This is the sharper half of the gap: a subtask is
     # routed on a bare sentence ("add a helper for X") with no card context at all, so a
     # security card's decomposed pieces had even less signal than the card itself.
-    D="$("$RAG" --auto --agent "$ASSIGNEE" --source dispatch-offload --log-task subtask-draft --tags "$TAGS" "$s" 2>/dev/null)"
+    # A subtask sentence is the sharper anchor when it names code of its own; when it does not,
+    # the card-level node still describes the same work.
+    SUB_GRAPH=(); mapfile -t SUB_GRAPH < <(graph_args_for "$s")
+    [[ ${#SUB_GRAPH[@]} -eq 0 ]] && SUB_GRAPH=(${CARD_GRAPH[@]+"${CARD_GRAPH[@]}"})
+    D="$("$RAG" --auto --agent "$ASSIGNEE" --source dispatch-offload --log-task subtask-draft --tags "$TAGS" \
+      ${SUB_GRAPH[@]+"${SUB_GRAPH[@]}"} "$s" 2>/dev/null)"
     [[ $? -eq 0 && -n "${D// }" ]] && add_draft "$s" "$D"
   done
 fi

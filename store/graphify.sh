@@ -27,6 +27,12 @@
 #   store/graphify.sh graph-path <repo-path>     # print graph.json path (for RAG context)
 #   store/graphify.sh doctor                     # version + pin check
 #
+# SEE ALSO: store/graphify-resolve.py <repo> --text "..." -- which nodes a piece of prose
+# actually NAMES. Reads graph.json directly (no CLI, no egress), so it is not gated here. Use it
+# before `explain` when the name comes from free text: `explain` is FUZZY (measured 2026-08-23,
+# 'routeTas' returns routeTask()) and a miss still exits 0, so feeding it unchecked prose invents
+# matches. The resolver decides membership exactly, then you explain a node known to exist.
+#
 # Output lands in <repo-path>/graphify-out/ (graphify's own default), which each repo gitignores.
 set -euo pipefail
 
