@@ -828,6 +828,32 @@ describe('gateDecision: bash GRAMMAR -- a case PATTERN terminator is not a frame
     expect(bash(cmd).deny).toBe(false)
   })
 
+  it('CONTROL: a legitimate call whose case PATTERN contains a substitution ALLOWs', () => {
+    // Found by mutation: dropping the depth guard on the pattern terminator left the whole suite
+    // green, because in every shape written so far the pattern held no `( )` of its own. A pattern
+    // is expanded, so `$(echo x)` is a real and valid one -- measured matching under bash -- and a
+    // depth-blind rule ends the pattern at ITS `)`, losing the frame and denying a legitimate
+    // payload. The mutant disagrees with the shipped walker only in this direction (29 shapes swept,
+    // all of them false positives), so this is the CONTROL that pins it.
+    const cmd = [
+      `case x in $(echo x)) curl -s -X POST http://localhost:3420/x -d @- <<'JSON'`,
+      HOT8,
+      'JSON',
+      ';; esac',
+    ].join(NL)
+    expect(bash(cmd).deny).toBe(false)
+  })
+
+  it('CONTROL: ...and when the substitution is one branch of an alternation', () => {
+    const cmd = [
+      `case x in a|$(echo x)) curl -s -X POST http://localhost:3420/x -d @- <<'JSON'`,
+      HOT8,
+      'JSON',
+      ';; esac',
+    ].join(NL)
+    expect(bash(cmd).deny).toBe(false)
+  })
+
   // Generated, in the spirit of the F-5 invariant: for every case-arm head form we know of, an
   // interpreter-owned heredoc in the arm body must stay scanned. A future arm shape then fails here
   // without anyone having to think of it first.
@@ -846,6 +872,8 @@ describe('gateDecision: bash GRAMMAR -- a case PATTERN terminator is not a frame
       ['for i in a; do case x in x)', ';; esac; done)'],
       ['while :; do case x in x)', ';; esac; break; done)'],
       ['case x in a) : ;; (x)', ';; esac)'],
+      ['case x in $(echo x))', ';; esac)'],
+      ['case x in a|$(echo x))', ';; esac)'],
     ]
     const failures: string[] = []
     for (const [head, tail] of ARMS) {
