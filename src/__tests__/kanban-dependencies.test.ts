@@ -17,6 +17,8 @@ import {
   getKanbanSuccessors,
   getUnmetKanbanPredecessors,
   getUnmetPredecessorsForAllCards,
+  getDb,
+  MISSING_PREDECESSOR_STATUS,
 } from '../db.js'
 import { forceActors } from '../kanban-force-actors.js'
 
@@ -280,5 +282,59 @@ describe('the board reports blocked cards without an N+1 (card 38788337)', () =>
     expect(blocker!.status).toBe('planned')
     // ...and the join column used for grouping must not leak into the card object.
     expect('blocked_id' in blocker!).toBe(false)
+  })
+})
+
+describe('a predecessor that cannot be resolved BLOCKS, it does not vanish (card 37c5605a, Cybered F-2)', () => {
+  /** Insert an edge the way a fleet agent does when it writes SQL directly: with foreign keys off,
+   *  the way the sqlite3 CLI and python's sqlite3 both default. That is not hypothetical here --
+   *  it is the same habit that made the timestamp-integrity triggers necessary. */
+  function danglingEdge(from: string, to: string) {
+    const db = getDb()
+    db.pragma('foreign_keys = OFF')
+    db.prepare('INSERT INTO kanban_dependencies (from_card_id, to_card_id, created_at) VALUES (?,?,?)').run(from, to, 1)
+    db.pragma('foreign_keys = ON')
+  }
+
+  it('THE FAIL-OPEN: an edge pointing at a card that is gone must not read as "nothing blocks you"', () => {
+    danglingEdge('a', 'ghost')
+    const preds = getKanbanPredecessors('a')
+    expect(preds).toHaveLength(1) // an INNER JOIN returned [] here -- silently unblocked
+    expect(preds[0]!.id).toBe('ghost')
+    expect(preds[0]!.status).toBe(MISSING_PREDECESSOR_STATUS)
+    expect(preds[0]!.title).toContain('ghost') // a human has to be able to go look
+  })
+
+  it('and it counts as UNMET, so the status guard still refuses', () => {
+    danglingEdge('a', 'ghost')
+    expect(getUnmetKanbanPredecessors('a').map((c) => c.id)).toEqual(['ghost'])
+    expect(moveKanbanCard('a', 'in_progress', 0, 'someone')).toBe(false)
+  })
+
+  it('the board reports it too, not only the per-card path', () => {
+    danglingEdge('a', 'ghost')
+    const m = getUnmetPredecessorsForAllCards()
+    expect(m.get('a')!.map((c) => c.id)).toEqual(['ghost'])
+    expect(m.get('a')![0]!.status).toBe(MISSING_PREDECESSOR_STATUS)
+  })
+
+  it('CONTROL: a resolvable predecessor is still reported normally, with its real title', () => {
+    // Without this the tests above would pass just as well on an implementation that called
+    // EVERY predecessor missing.
+    addKanbanDependency('a', 'b')
+    const preds = getKanbanPredecessors('a')
+    expect(preds.map((c) => c.id)).toEqual(['b'])
+    expect(preds[0]!.title).toBe('B')
+    expect(preds[0]!.status).toBe('planned')
+  })
+
+  it('CONTROL: deleting a card through the API path leaves NO edge behind at all', () => {
+    // Cybered measured this shape as leaving a dangling edge. Through deleteKanbanCard -- the
+    // production entry point -- both directions are cleared inside its transaction, so there is
+    // nothing left to dangle. The fail-closed read above is for rows written BEHIND that path.
+    addKanbanDependency('a', 'b') // b blocks a
+    expect(deleteKanbanCard('b')).toBe(true)
+    expect(getDb().prepare('SELECT COUNT(*) AS n FROM kanban_dependencies').get()).toEqual({ n: 0 })
+    expect(getKanbanPredecessors('a')).toEqual([])
   })
 })

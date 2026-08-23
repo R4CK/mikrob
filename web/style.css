@@ -9310,3 +9310,10 @@ body {
   vertical-align: middle;
 }
 
+
+/* A card held back by an unfinished dependency (card 37c5605a, Cybered F-1). Muted rather than
+   hidden: it is still real work, it just cannot start yet -- and the lock icon plus the tooltip
+   name what it is waiting for, so nobody has to try moving it to find out. */
+.kanban-card-blocked { opacity: 0.62; border-left: 3px solid var(--warning, #c08a2e); }
+.kanban-card-blocked .kanban-card-title { color: var(--text-muted); }
+.kanban-card-blocked-icon { margin-right: 4px; }

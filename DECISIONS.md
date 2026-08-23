@@ -1142,6 +1142,135 @@ a "whole cards" teszt piros. 5 új teszt, 29 a kártya-családban.
 **Ki döntött:** backend (implementáció), MikroB (a kártya céljának átírása a plan-grilling F-3 után).
 **Hivatkozás:** kártya 38788337 (szülő 37c5605a).
 
+
+## 2026-08-23 16:35 -- A beágyazott kontextus ZÁRÁSA a külső parancshoz tér vissza, nem a nyitójelhez (kártya 84e31b40, Cybersec NO-GO F-2)
+
+**Döntés:** a `stripHeredocDataPayloads` egy kis veremben megőrzi a külső határt a beágyazott
+kontextus nyitásakor, és a záráskor VISSZAÁLLÍTJA. Nem a javasolt egysoros változat (lépés a
+zárójeleknél) ment be -- azt lemértem, és cserét kér, nem javítást.
+
+**Miért volt hibás az előző körben kimondott indoklásom:** azt írtam, hogy a záró jelnél nem
+visszaállított határ „fail-closed, a költség egy esetleges fals-pozitív, sosem megkerülés". Ez nem
+áll. A span attól, hogy a helyettesítés nyitójától indul, nem bukik el automatikusan a
+vezető-bináris ellenőrzésen -- ÁTMEGY rajta, ha maga a helyettesítés curl-lel kezdődik. Cybersec ezt
+megmérte a szülőhöz képest: `$( )`, `<( )` és `>( )` mind ENGEDÉLYEZÉSRE fordult, a backtick pedig
+csak VÉLETLENÜL maradt tiltva (a záró backtick újra illeszkedik a nyitó mintára). A véletlen nem
+garancia, ezért a backtick-alak is kapott tesztet.
+
+**Miért nem a javasolt egysoros ment be:** lemértem, és valóban lezárja mind a négy inverziót. De
+két új problémát hoz. (1) `python3 $()curl -d @- <<'PY'`: a bash argv-je `[python3, curl, -d, @-]`,
+tehát a heredocot a python3 hajtja végre, miközben a `)` UTÁN induló span curl-lel kezdődik -- új
+megkerülés, ami a jelenlegi szállított kódban NINCS. (2) Egy hétköznapi jogos payload, aminek a
+parancsa csak TARTALMAZ egy helyettesítést (`curl -H "Authorization: Bearer $(cat tok)" -d @-
+<<'JSON'`), fals-pozitívvá válik -- vagyis pont azt hozza vissza egy gyakori alakra, amit ez a
+kártya megszüntetni jött.
+
+A vermes visszaállítás mindkét családot zárja, ÉS a jogos payloadot az engedélyezett oldalon tartja.
+
+**Mérés, 19 eset, minden alak amit a két gate megnevezett + a magam két próbája:**
+
+| változat | rossz eset |
+|---|---|
+| szállított kód (c17173fc) | 5 (INV-1..3, a beágyazott-helyettesítés alak, és a jogos payload) |
+| javasolt egysoros (lépés a zárónál) | 2 (a konkatenációs alak, és a jogos payload) |
+| vermes visszaállítás (ez ment be) | 0 |
+
+**Mutáció-mérés, mindkét suite-ban:** a vermes visszaállítás nyitó-csak változatra cserélve 9 teszt
+pirosodik; a javasolt egysorosra cserélve 3. Nem feltételezés: mindkét változatot lefuttattam.
+
+**Az átvihető tanulság, amit a saját hibámból írok le:** egy span-alapú „ki a tulajdonos" heurisztikánál
+a HATÁR ugyanolyan támadási felület, mint a FELTÉTEL. Az első körben a feltételt (curl-e a vezető
+bináris, ott van-e a `-d @-`) mindhárom gate megvizsgálta, a határt egyik sem -- és a határnak KÉT
+oldala van, amit külön kell végiggondolni: hol kezdődik egy beágyazott parancs, és hol ér véget.
+
+**Ki döntött:** Cybersec (a lelet, az élő mérés és az egysoros javaslat), fullstack (a vermes változat
+a javasolt egysoros helyett, mindkettő lemérve, plusz a két saját próba-alak).
+**Hivatkozás:** kártya 84e31b40, commit 4e58a8d4. Előzmény: c17173fc (a nyitó-csak javítás),
+f4fac1d7 (a heredoc-járó bekötése az email-kapuba).
+
+## 2026-08-23 16:16 -- A Gate:-sor zárójeles részeit TÖRÖLNI kell, nem vágni nála (kártya aa837c5b)
+
+**A hiba:** a `designated_from_gate_line` az ELSŐ nyitó zárójelig VÁGTA a sort, tehát egy több
+ügynököt megnevező sorban -- `Gate: QA (funkcionális...), Cybersec (trust-boundary...)` -- a második
+nevet eldobta, és a hozzá tartozó kaput `ADVISE-SKIP:not-designated`-nek jelentette. Ez a
+LEGROSSZABB verdikt erre a hibára: a `not-designated` az EGYETLEN eset, ahol a nudger skip-kommentet
+sem ír, tehát a kártya nyomtalanul esett volna ki a söprésből.
+
+**A javítás két lépés, ÉS A SORREND SZÁMÍT.** (1) A zárójeles részek TÖRLÉSE (legbelső előbb,
+amíg a szöveg változik -- a beágyazás így nem hagy törmeléket), majd (2) vágás a mondatvégi
+írásjelnél, változatlanul. Cybersec javaslata csak az (1) volt; a (2) elhagyása visszanyitná az
+`55af560d` MÁSIK alakját, ahol a kizárás TRAILING MONDAT és nem zárójel
+("QA + Cybered (...). Cybersec kimarad: ..."). A két fél együtt tartja mindkét esetet.
+
+**Miért nem szótár:** a negáció-szavas lista ("nem", "not", "kimarad") ugyanaz a
+soha-nem-teljes-szókincs csapda, amit ez a flotta más kapuknál már megjárt. A klauzula-pozíció
+szerkezeti, nem szókincs, tehát nem avul.
+
+**Mérve az ÖSSZES élő eseten, nem csak a hibáson.** A három illeszkedő kártya közül kettőnél a régi
+vágás HELYESEN döntött, és az új sem rontja el:
+
+    1e408bd7  RÉGI=[qa]           ÚJ=[qa]            változatlan  (a "Cybersec" a zárójelen BELÜL van)
+    d10e3e70  RÉGI=[qa,cybersec]  ÚJ=[qa,cybersec]   változatlan  (mindkét név a zárójel ELŐTT)
+    132a6cfb  RÉGI=[qa]           ÚJ=[qa,cybersec]   JAVÍTVA      (ez a defekt)
+
+Az 1e408bd7 külön értékes: ott a "Cybersec" szó a magyarázó zárójelen belül szerepel, és a
+törlés-alapú megoldás ugyanúgy figyelmen kívül hagyja, ahogy a vágás tette -- vagyis a javítás nem
+lazít, csak a zárójelen KÍVÜLI neveket nyeri vissza.
+
+**Az önteszt a bizonyíték, és bővült.** A meglévő `55af560d`-készlet változatlanul zöld (a
+`241532d8` és `35533cca` alakok, plusz az `51e8532e` BEÁGYAZOTT zárójeles sora, ami a ciklust is
+ellenőrzi). Öt új eset a defektre és a két fél kereszt-hatására. KONTROLL: a régi vágásra
+visszaállítva PONTOSAN a két "második nevet is megnevezi" eset pirosodik, a `55af560d`-készlet zöld
+marad -- tehát az új tesztek a javítást mérik, nem a harness-t.
+
+**Egy tanulság a szerkesztésről is:** a parser egy `python3 -c '...'` blokkban él, tehát APOSZTRÓF
+nem lehet benne. Az első kommentem `55af560d's`-t írt, és a `bash -n` azonnal elhasalt rajta -- a
+`hook-command-quoting` hibaosztály, csak most a saját kommentemben.
+
+**Ki döntött:** backend (implementáció + a sorrend-döntés), Cybersec (a lelet és a törlés-alapú irány).
+**Hivatkozás:** kártya aa837c5b, Cybersec msg 18949.
+
+## 2026-08-23 16:25 -- HELYESBÍTÉS: a foreign key ENFORCED az appban; és egy feloldhatatlan predecessor BLOKKOL (kártya 37c5605a, Cybered F-1/F-2)
+
+**ELŐSZÖR A SAJÁT TÉVEDÉSEM, mert két korábbi bejegyzés épült rá.** Azt írtam (2bb82943), hogy az
+`ON DELETE CASCADE` ebben az adatbázisban semmit nem csinál, mert a `PRAGMA foreign_keys` 0. A
+mérésem **rossz kliensen** készült: PYTHON `sqlite3`-mal, ami OFF-fal indul. A **better-sqlite3** --
+amit ez az alkalmazás ténylegesen használ -- **ON-nal**: mérve `1` mind a memóriabeli, mind az élő
+fájlon. Tehát az appon keresztül a `REFERENCES` IGENIS harap, és egy kártya törlése HIBÁVAL bukna,
+ha valami nem takarítaná el előbb az éleket. A kód nem változik ettől: a `deleteKanbanCard`
+tranzakción belüli, mindkét irányú takarítása pont ezért nem "öv és nadrágtartó", hanem az, ami a
+törlést egyáltalán lehetővé teszi. A kódban lévő komment javítva.
+
+**Cybered F-2 mechanizmusa NEM áll, a veszély viszont igen.** Lemértem a pontos alakot (él `s2->p2`,
+majd `p2` törlése) a PRODUKCIÓS belépési ponton, a `deleteKanbanCard`-on keresztül: **nulla** sor
+marad, mindkét irány takarítva. Amit Cybered mért, az a sqlite3 CLI-vel történt, ami megkerüli ezt
+az utat. DE a mögöttes aggodalom valós, és ezért javítottam: ha egy él MÉGIS danglinggé válik -- és
+ebben a flottában ez elérhető, mert az ügynökök közvetlenül írnak sqlite3 CLI-vel és pythonnal,
+mindkettő FK-OFF alapértelmezéssel, ugyanaz a szokás, ami a timestamp-integritás triggereket
+szükségessé tette --, akkor az `INNER JOIN` **eldobta** volna a sort, és a kártya "semmi nem
+blokkol"-ként olvasódott volna. Ez FAIL-OPEN.
+
+**A javítás: `LEFT JOIN` + explicit hiányzó-ág.** Egy feloldhatatlan predecessor `status: 'missing'`
+pszeudo-kártyaként jelenik meg, az azonosítójával a címben. ISMERETLEN ÁLLAPOT = BLOKKOL, mert a
+másik lehetőség egy néma feloldás, amit senki nem lát. A guard is refuse-ol rá, és a board is
+mutatja.
+
+**F-1: a `blocked` mezőnek nem volt fogyasztója.** A `38788337` óta az API vitte, és a FE sehol nem
+renderelte -- a felhasználó csak PRÓBÁLKOZÁSSAL tudta meg, hogy egy kártya blokkolt. Egy állapot,
+amit a szerver tud és a board elrejt, rosszabb, mint ha nem is lenne: valaki olyan kártya köré
+tervez munkát, amit el sem tud kezdeni. Most a kártya tompított (nem elrejtett -- ez valódi munka,
+csak még nem indítható), sárga bal szegéllyel, lakat-ikonnal és tooltipben a blokkolók címeivel. A
+hiányzó predecessor KÜLÖN ikont kap (⚠️), mert a "várok valamire, ami már nem létezik" emberi
+beavatkozást kér, nem türelmet.
+
+**Mérve:** az `INNER JOIN`-ra visszaállítva PONTOSAN a három fail-open teszt pirosodik; kontroll,
+hogy egy feloldható predecessor továbbra is a VALÓDI címével és státuszával jön (e nélkül egy
+"mindent hiányzónak nevező" implementáció is zöld lenne); és külön kontroll arra, hogy a produkciós
+törlés-út után NULLA él marad.
+
+**Ki döntött:** backend (implementáció + a saját FK-mérés helyesbítése), Cybered (mindkét lelet).
+**Hivatkozás:** kártya 37c5605a, gyermekei 2bb82943 / a8aa9ae5 / 73540a68 / 38788337.
+
 ## 2026-08-23 -- 1ce3fd90 -- Modell-lépcsőzés LEFELÉ friss sessiont indít, és ehhez előbb a replay-matchert kell kinyitni
 
 **A hiba, amit javít.** A `model-fallback-runner` minden modellváltásnál `--continue`-vel élesztette
