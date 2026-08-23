@@ -1693,3 +1693,96 @@ gate-bemenetként. Külön kártya nyílt (ec0e64b4) egy `Submitted-by:` sor bev
 mert a szerző-kizárás miatt más nem tehette meg), QA (független 9-esetes battery, PASS).
 **Hivatkozás:** kártya 034594e6, commit 82068a3f. Előzmény: 10a6c51f (a hook első verziója), 73fff79b
 (a korábbi útvonal-hiba javítása ugyanezen a hookon).
+
+## 2026-08-23 20:35 -- Az ismételt archiválás idempotens 200, nem 404 (kártya 394fb5ce)
+
+**Döntés:** A `POST /api/kanban/<id>/archive` mostantól `AND archived_at IS NULL` mellett ír, tehát
+egy már archivált kártyát NEM ír felül; a válasz ilyenkor `200 { ok: true, alreadyArchived: true }`,
+és a `revertIdeaFromKanban` nem fut újra. A db-réteg új `already-archived` okot ad vissza, ami nem
+keveredik a `not-found`-dal.
+**Miért:** a guard nélkül a második archiválás felülírta az EREDETI archiválási időbélyeget -- azt az
+egy tényt, amiért az oszlop létezik --, és egy második audit-sort írt `null -> T` alakban, vagyis
+azt állította, hogy a kártya előtte nem volt archiválva. A `not-found` válasz viszont egy létező
+kártyáról hazudna, és pont azt a téves diagnózis-kört indítaná el, amiről az ebf7d95c kártya szól.
+**Ki döntött:** Backend (implementáció), Cybersec L-1 lelete alapján (7fd6dd23 gate).
+**Hivatkozás:** kártya 394fb5ce.
+
+## 2026-08-23 20:35 -- A fleet-transfer esemény-import kulcsa a TELJES sor, multiplicitással (kártya 394fb5ce)
+
+**Döntés:** A kanban státusz- és mező-esemény import nem létezés-ellenőrzéssel dedupál, hanem a teljes
+sorra képzett kulccsal és darabszám-egyeztetéssel (`src/web/fleet-transfer-dedup.ts`).
+**Miért:** a régi kulcs (`card_id, created_at, field`, illetve `to_status`) nem egyedi a FORRÁS
+táblában sem: két azonos másodpercbe eső szerkesztés két valódi sor, amiből a második csendben
+kimaradt. A szélesebb kulcs önmagában nem elég -- egy létezés-ellenőrzés soha nem visz át második
+példányt --, ezért kell a darabszám-egyeztetés is; és a darabszám önmagában sem elég, mert egy
+azonos szűk kulcsú, de MÁS esemény elhasználja a párosítást. Mindkét felét külön mutáció méri.
+**Ki döntött:** Backend (implementáció), Cybersec L-3 lelete alapján (7fd6dd23 gate).
+**Hivatkozás:** kártya 394fb5ce.
+
+## 2026-08-23 -- 95f861f1 -- A repomix használati pontja a teljes értékű audit, és a pack manifesztje ELLENŐRIZ
+
+**A hiba, amit javít.** A repomix 2026-07-31-én adoptálva, gate-elt wrapperrel (`store/repomix.sh`,
+Cybersec feltételekkel), dokumentálva -- és a kimeneti könyvtár azóta nem mozdult: egyetlen 3,7 KB-os
+smoke pack, semmi más. Ez ugyanaz az osztály, mint a fogyasztó nélküli detektálás: a táblán
+képességnek látszik, a valóságban nem az. Ez a kártya a szülő-epic (`3c9e22b1`, „már adoptált, de
+használatlan eszközök valós bekötése", Peti kérése) egyik ága.
+
+**1. döntés: a bekötés célpontja a `full-value-audit` skill, két KÜLÖNBÖZŐ ponton.** A 0. lépés
+becsomagolja a fát (a token-riport megmondja, hol van a kódbázis tömege, tehát hova menjen az audit
+ideje), a Verification lépés pedig FELHASZNÁLJA a pack fájl-manifesztjét. A kettő közül a második a
+lényeg: egy pack legenerálása önmagában pont az a fajta „bekötés", ami után a kimenetet megint senki
+nem olvassa el.
+
+**2. döntés: a fogyasztó egy MÁR MEGLÉVŐ, de kikényszeríthetetlen szabály.** Mindkét audit-skill
+kimondja, hogy „Nothing is implicit... No silent gaps: if you did not test something, list it
+explicitly as NOT tested / why". Ez ma becsületalapú próza. A pack viszont MECHANIKUS, teljes
+manifeszt a fa minden forrásfájljáról -- a kettő együtt ellenőrizhetővé teszi a szabályt:
+`store/audit-pack-coverage.py` megnézi, hogy az audit-riport MINDEN becsomagolt fájlt megemlít-e, és
+exit 1-gyel felsorolja, amelyiket nem. Nem új szabályt vezet be, hanem egy meglévőt tesz mérhetővé.
+
+**3. döntés: kimondott KORLÁT a doksiban, a szkript fejlécében és a skillben is.** Azt bizonyítja,
+hogy egyetlen FÁJL sem maradt említetlen. Azt NEM, hogy a leltár a fájlon BELÜL teljes: egy riport
+megnevezheti a `PublicScanPage.tsx`-et és kihagyhat belőle három gombot. Ez a mechanikus padló a
+szabály alatt, nem a szabály maga. Azért kerül ki háromszor is, mert egy tévesen lezártnak hitt
+kontroll rosszabb, mint egy ismert réssel bíró -- ugyanaz az indoklás, amit a `repomix.sh` a saját
+titok-szkennelésére ír le.
+
+**4. döntés: nem-egyedi basename csak TELJES úttal számít lefedettnek.** Az `index.ts` a fa
+tucatnyi pontján létezik; ha a puszta basename számítana, EGY megauditált `index.ts` tizenegy másikat
+jelölne lefedettnek. Egy túl-jelentő lefedettség-ellenőrzés rosszabb, mint a semmi, mert a kimenetét
+bizonyítékként olvassák.
+
+**5. döntés: üres manifeszt exit 2, nem 0.** Rossz pack-útvonal, egy jövőbeli repomix átnevezett
+attribútuma vagy egy teljesen gitignorált alfa mind ide fut ki, és mindegyik „0 rés" választ adna --
+tiszta bizonyítvány semmiből. A setup-hibák szintén 2-vel térnek vissza, sosem 1-gyel: az 1 azt
+jelenti, hogy az ellenőrzés LEFUTOTT és réseket talált, és egy CI-hívó, ami a kettőt nem tudja
+megkülönböztetni, minden pirosat rés-listaként olvas.
+
+**Amit a SAJÁT selftestem talált, és amit szállítottam volna nélküle.** Az illesztés eredetileg
+`path in inventory` volt, nyers substring. A selftest `xmoney.ts does not cover money.ts` esete
+piros lett: egy riport, ami CSAK az `xmoney.ts`-t említi, lefedettnek jelölte volna a `money.ts`-t.
+Ugyanez a `money.ts` a `money.tsx`-en belül, ami ebben a fában a realisztikus változat. Pontosan az a
+kár, aminek a megelőzésére a szkript készült. Javítva: mindkét alak (teljes út és basename)
+határolt illesztést használ, és mindkét irány külön esetet kapott.
+
+**Mérés.** 25 selftest-eset (a `graph-tooling-selftests.test.ts`-be regisztrálva 25-ös padlóval,
+tehát CI-ben fut minden változásnál -- egy le-nem-futó selftest szállítása EZEN a kártyán maga lett
+volna a javítandó hiba). Négy valós futtatás: teljes leltár -> exit 0; részleges leltár -> exit 1, 12
+néven nevezett réssel; üres manifeszt -> exit 2; végponttól végpontig `--repo`-val, ami a gate-elt
+wrapperrel csomagol, majd fogyasztja a manifesztet -> exit 0.
+
+**Egy hiba, amit a worktree-fegyelem hozott elő.** A `build_pack` eredetileg a szkript melletti
+`repomix-out`-ból származtatta a pack útvonalát. A `repomix.sh` viszont ABSZOLÚT out-dirbe ír, tehát
+ez a fő klónban helyes és egy ügynök-worktree-ből CSENDBEN hibás lett volna. Most a wrapper SAJÁT
+„pack written to" sorából olvassa ki -- megkérdezni a szerszámot, hova tette, nem tud elsodródni
+attól, hogy hova tette.
+
+**Ki döntött:** MikroB (kártya + a szülő-epic), backend2 (a bekötési pont megválasztása, az öt fenti
+döntés, implementáció, mérések).
+**Hivatkozás:** kártya 95f861f1 (szülő 3c9e22b1). Előzmény: b41c3dd3 (a gate-elt wrapper), 2f781b49
+és ee01f7ce (a titok-szkennelés két megerősítése).
+
+**Nyitott lelet, NEM ebben a kártyában javítva:** a `full-audit-checklist` skill (magyar, a
+`full-value-audit` párja) KIZÁROLAG a `~/.claude/skills/` alatt él, a repóban nincs követve -- tehát
+sem a seed-refresh nem éri el, sem egy újratelepítés nem őrzi meg. Nem szerkesztettem kézzel, mert
+egy verziókövetetlen fájlba tett javítás nincs mentve (update-safety szabály); külön kártya kell rá.

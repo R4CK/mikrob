@@ -13,9 +13,12 @@ import { describe, it, expect, beforeEach } from 'vitest'
 import { readFileSync } from 'node:fs'
 import { join, dirname } from 'node:path'
 import { fileURLToPath } from 'node:url'
+import { Readable } from 'node:stream'
+import type http from 'node:http'
 import {
   initDatabase,
   createKanbanCard,
+  getKanbanCard,
   updateKanbanCard,
   moveKanbanCard,
   getKanbanCardEvents,
@@ -24,6 +27,22 @@ import {
   unarchiveKanbanCard,
   FIELD_AUDIT_VALUE_MAX,
 } from '../db.js'
+import { tryHandleKanban } from '../web/routes/kanban.js'
+import type { RouteContext } from '../web/routes/types.js'
+import {
+  newTransferRows, FIELD_EVENT_COLUMNS, STATUS_EVENT_COLUMNS,
+} from '../web/fleet-transfer-dedup.js'
+
+function fakeCtx(path: string, method: string, body?: unknown): { ctx: RouteContext; out: { status: number; body: any } } {
+  const out: { status: number; body: any } = { status: 0, body: null }
+  const res: any = {
+    writeHead(status: number) { out.status = status; return res },
+    end(chunk?: string) { if (chunk) out.body = JSON.parse(chunk) },
+  }
+  const req = Readable.from(body === undefined ? [] : [Buffer.from(JSON.stringify(body))]) as unknown as http.IncomingMessage
+  const url = new URL(`http://localhost:3420${path}`)
+  return { ctx: { req, res, path: url.pathname, method, url } as RouteContext, out }
+}
 
 beforeEach(() => {
   initDatabase(':memory:')
@@ -146,11 +165,10 @@ describe('the three follow-up findings on this trail (card 7fd6dd23, Cybersec)',
 })
 
 describe('F-2: a fleet transfer carries the field trail, not just the status one (card 7fd6dd23)', () => {
-  // A SHAPE test on the source, deliberately, and I say so rather than implying more: importFleet
-  // needs a live DB and filesystem, so the existing suite drives it with mocked modules and fixture
-  // payloads. What can be asserted cheaply and still means something is that both halves name the
-  // table -- an export that reads it and an import that writes it. Without both, a restored board
-  // would look fully attributed while every pre-transfer edit had silently vanished.
+  // A SHAPE test on the source for the two halves that need a live DB and filesystem to drive --
+  // importFleet is exercised by its own suite with mocked modules. What matters here is that the
+  // export READS the table and the payload key stays OPTIONAL; the import's dedup rule is tested
+  // for real below, against the extracted helper it now uses.
   const SRC = readFileSync(
     join(dirname(fileURLToPath(import.meta.url)), '..', 'web', 'fleet-transfer.ts'),
     'utf-8',
@@ -161,9 +179,8 @@ describe('F-2: a fleet transfer carries the field trail, not just the status one
     expect(exec).toMatch(/SELECT \* FROM kanban_card_field_events/)
   })
 
-  it('the import WRITES it, idempotently on (card_id, created_at, field)', () => {
+  it('the import WRITES it', () => {
     expect(exec).toMatch(/INSERT INTO kanban_card_field_events/)
-    expect(exec).toMatch(/SELECT 1 FROM kanban_card_field_events WHERE card_id = \? AND created_at = \? AND field = \?/)
   })
 
   it('the payload key is OPTIONAL, so an export taken before this existed still imports', () => {
@@ -171,5 +188,142 @@ describe('F-2: a fleet transfer carries the field trail, not just the status one
     // required, this change would break every stored export rather than extend it.
     expect(SRC).toMatch(/cardFieldEvents\?:/)
     expect(exec).toMatch(/fleet\.kanban\?\.cardFieldEvents \?\? \[\]/)
+  })
+})
+
+describe('L-1: archiving twice must not erase when it was archived (card 394fb5ce)', () => {
+  it('THE DEFECT: a second archive keeps the ORIGINAL timestamp instead of overwriting it', () => {
+    expect(archiveKanbanCard('c1', { actor: 'mikrob' })).toEqual({ ok: true })
+    const first = getKanbanCard('c1')!.archived_at
+    expect(first).toBeTruthy()
+
+    const again = archiveKanbanCard('c1', { actor: 'someone-else' })
+    expect(again).toEqual({ ok: false, reason: 'already-archived' })
+    expect(getKanbanCard('c1')!.archived_at).toBe(first)
+  })
+
+  it('THE DEFECT, audit half: it no longer claims a second time that the card was not archived', () => {
+    // Both rows used to read null -> T, so the trail asserted twice that the card had NOT been
+    // archived before -- while the second write was busy replacing the row that said when it was.
+    archiveKanbanCard('c1', { actor: 'mikrob' })
+    archiveKanbanCard('c1', { actor: 'someone-else' })
+    const rows = getKanbanCardFieldEvents('c1').filter((e) => e.field === 'archived_at')
+    expect(rows).toHaveLength(1)
+    expect(rows[0]!.actor).toBe('mikrob')
+  })
+
+  it('CONTROL: a genuinely missing card is still not-found, not already-archived', () => {
+    // The two answers must not collapse into one, or the fix would hide the real error case.
+    expect(archiveKanbanCard('no-such-card')).toEqual({ ok: false, reason: 'not-found' })
+  })
+
+  it('CONTROL: archive still WORKS, and archive -> unarchive -> archive gives a fresh timestamp', () => {
+    archiveKanbanCard('c1', { actor: 'mikrob' })
+    expect(unarchiveKanbanCard('c1', { actor: 'mikrob' })).toBe(true)
+    expect(getKanbanCard('c1')!.archived_at).toBeNull()
+    expect(archiveKanbanCard('c1', { actor: 'mikrob' })).toEqual({ ok: true })
+    expect(getKanbanCard('c1')!.archived_at).toBeTruthy()
+    expect(getKanbanCardFieldEvents('c1').filter((e) => e.field === 'archived_at')).toHaveLength(3)
+  })
+})
+
+describe('L-2: the ROUTE passes the actor through, and nothing else was testing that (card 394fb5ce)', () => {
+  // The db layer's actor handling is covered above. What was uncovered is the wiring: if the route
+  // stopped reading `actor` from the body, every archive made through the API would be logged with
+  // a null actor, the table would keep working, and no test would notice.
+  it('POST /archive names the actor from the body', async () => {
+    const { ctx, out } = await Promise.resolve(fakeCtx('/api/kanban/c1/archive', 'POST', { actor: 'mikrob' }))
+    expect(await tryHandleKanban(ctx)).toBe(true)
+    expect(out.status).toBe(200)
+    const rows = getKanbanCardFieldEvents('c1').filter((e) => e.field === 'archived_at')
+    expect(rows).toHaveLength(1)
+    expect(rows[0]!.actor).toBe('mikrob')
+  })
+
+  it('POST /unarchive names the actor from the body', async () => {
+    archiveKanbanCard('c1', { actor: 'mikrob' })
+    const { ctx, out } = fakeCtx('/api/kanban/c1/unarchive', 'POST', { actor: 'someone' })
+    expect(await tryHandleKanban(ctx)).toBe(true)
+    expect(out.status).toBe(200)
+    expect(getKanbanCardFieldEvents('c1').at(-1)!.actor).toBe('someone')
+  })
+
+  it('CONTROL: no body still writes the row, with an unnamed actor', async () => {
+    // Otherwise this pair could pass by dropping unattributed archives entirely, which is the hole
+    // card 7fd6dd23 closed.
+    const { ctx } = fakeCtx('/api/kanban/c1/archive', 'POST')
+    expect(await tryHandleKanban(ctx)).toBe(true)
+    const rows = getKanbanCardFieldEvents('c1').filter((e) => e.field === 'archived_at')
+    expect(rows).toHaveLength(1)
+    expect(rows[0]!.actor).toBeNull()
+  })
+
+  it('the route answers idempotently on a second archive instead of 404-ing about a card that exists', async () => {
+    archiveKanbanCard('c1', { actor: 'mikrob' })
+    const { ctx, out } = fakeCtx('/api/kanban/c1/archive', 'POST', { actor: 'mikrob' })
+    expect(await tryHandleKanban(ctx)).toBe(true)
+    expect(out.status).toBe(200)
+    expect(out.body).toEqual({ ok: true, alreadyArchived: true })
+  })
+})
+
+describe('L-3: a transfer must not merge two events that share a second (card 394fb5ce)', () => {
+  const rows = (...vals: Array<[string, string, string]>) =>
+    vals.map(([field, oldV, newV]) => ({
+      card_id: 'c1', field, old_value: oldV, new_value: newV, actor: 'mikrob', created_at: 1_000,
+    }))
+
+  it('THE DEFECT: two edits of the SAME field in the SAME second both cross', () => {
+    // The old key was (card_id, created_at, field) and an existence check. These two rows share it,
+    // so the second was skipped and the trail silently reported one edit where two happened.
+    const payload = rows(['title', 'A', 'B'], ['title', 'B', 'C'])
+    expect(newTransferRows(payload, [], FIELD_EVENT_COLUMNS)).toHaveLength(2)
+  })
+
+  it('IDEMPOTENCE: re-importing the same payload inserts nothing', () => {
+    const payload = rows(['title', 'A', 'B'], ['title', 'B', 'C'])
+    expect(newTransferRows(payload, payload, FIELD_EVENT_COLUMNS)).toEqual([])
+  })
+
+  it('a PARTIAL overlap carries only what is missing', () => {
+    const payload = rows(['title', 'A', 'B'], ['title', 'B', 'C'])
+    const fresh = newTransferRows(payload, [payload[0]!], FIELD_EVENT_COLUMNS)
+    expect(fresh).toHaveLength(1)
+    expect(fresh[0]!.old_value).toBe('B')
+  })
+
+  it('THE KEY WIDTH: a target row that shares the OLD narrow key must not consume a different event', () => {
+    // Measured, because the first version of this suite did not catch it: multiplicity ALONE fixes
+    // the reported defect, so narrowing the key back to (card_id, field, created_at) left every
+    // other test here green. It is not an equivalent change. Here the target already holds the
+    // SECOND edit; under the narrow key that one existing row is spent matching the FIRST payload
+    // row, so A -> B is dropped and B -> C is inserted a second time. The card loses an edit and
+    // gains a duplicate, which is the merge this fix is about, one step further along.
+    const payload = rows(['title', 'A', 'B'], ['title', 'B', 'C'])
+    const fresh = newTransferRows(payload, [payload[1]!], FIELD_EVENT_COLUMNS)
+    expect(fresh).toHaveLength(1)
+    expect(fresh[0]!.old_value).toBe('A')
+  })
+
+  it('MULTIPLICITY: two byte-identical source rows produce two target rows, not one', () => {
+    // A wider key alone would not fix this -- an existence check can never carry a second copy.
+    const dup = rows(['title', 'A', 'B'], ['title', 'A', 'B'])
+    expect(newTransferRows(dup, [], FIELD_EVENT_COLUMNS)).toHaveLength(2)
+    expect(newTransferRows(dup, [dup[0]!], FIELD_EVENT_COLUMNS)).toHaveLength(1)
+  })
+
+  it('a missing optional column reads the same as an explicit null, so a re-import is still a no-op', () => {
+    // The payload arrives from JSON (absent key -> undefined), the target from SQLite (NULL). If
+    // those compared unequal, every row with an empty actor would be re-inserted on every import.
+    const fromJson = [{ card_id: 'c1', field: 'title', old_value: null, new_value: 'B', created_at: 7 }]
+    const fromDb = [{ card_id: 'c1', field: 'title', old_value: null, new_value: 'B', actor: null, created_at: 7 }]
+    expect(newTransferRows(fromJson, fromDb, FIELD_EVENT_COLUMNS)).toEqual([])
+  })
+
+  it('the STATUS trail got the same rule -- it had the same key shape', () => {
+    const back = { card_id: 'c1', from_status: 'planned', to_status: 'in_progress', actor: 'mikrob', created_at: 5 }
+    const forth = { card_id: 'c1', from_status: 'in_progress', to_status: 'planned', actor: 'mikrob', created_at: 5 }
+    expect(newTransferRows([back, forth], [], STATUS_EVENT_COLUMNS)).toHaveLength(2)
+    expect(newTransferRows([back, forth], [back, forth], STATUS_EVENT_COLUMNS)).toEqual([])
   })
 })
