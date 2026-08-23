@@ -1103,3 +1103,41 @@ marad. Ez zárja ki, hogy a javítás valójában a kártya eredeti céljának v
 záró-jel-visszaállítás elhagyása fail-closed indokkal, a kétszeres regressziós lefedés).
 **Hivatkozás:** kártya 84e31b40, commit e12d81b0. Előzmény: f4fac1d7 (ez nyitotta az email-kapun),
 4638c14c és 0229c844 (a self-pace kapun eddig is nyitva volt).
+## 2026-08-23 15:55 -- A `blocked` SZÁRMAZTATOTT mező, egy lekérdezésből (kártya 38788337)
+
+**Döntés:** a `GET /api/kanban` és a `GET /api/kanban/:id` válasza egy `blocked: boolean` +
+`blockedBy: [{id,title,status}]` mezőt ad, KISZÁMÍTVA, nem tárolva.
+
+**Miért nem tárolt oszlop:** egy `blocked` flag a `kanban_cards`-on második igazságforrás lenne, ami
+abban a pillanatban elavul, amikor egy predecessor lezárul -- és a táblát nagyságrendekkel gyakrabban
+olvassuk, mint írjuk. Egy elavult flag itt rosszabb, mint a számítás ára: a board azt mutatná, hogy
+egy kártya blokkolt, miközben a kapu átengedi (vagy fordítva), és a felhasználó a kettő közül a
+rosszabbikat hinné el.
+
+**EGY lekérdezés, nem N+1.** A board a TELJES táblát adja vissza, tehát kártyánkénti kérdezés pár
+száz sornál egy N+1 lenne minden dashboard-poll-on. Ugyanaz az alak és ugyanaz az ok, amiért a
+lista-kezelő a címkéknél már a `getLabelsForAllCards` bulk-JOIN-t használja. A blokkolatlan kártyák
+egyszerűen HIÁNYOZNAK a map-ből -- a hívó a hiányzó kulcsot olvassa "nem blokkolt"-ként --, mert egy
+üres tömb tárolása több százszor semmit nem mond.
+
+**A két út UGYANAZT mondja.** A lista a bulk-lekérdezést használja, a `GET /:id` a per-kártya
+predikátumot. Külön teszt hasonlítja össze őket kártyánként: ha eltérhetnének, egy kártya a
+táblán blokkoltnak látszana és megnyitva szabadnak -- pont az a split-brain, amit egy származtatott
+mezőnek meg kell előznie.
+
+**A kártya EREDETI célja hibás premisszán állt, és MikroB át is írta.** Az eredeti szöveg a
+`src/kanban-dispatch.ts`-t célozta "ahol a legmagasabb prioritású dispatchelhető leaf kártyát
+választja" -- a fájl 89 soros, és azt dönti el, MELYIK ÜGYNÖKÖT ébresszük egy MÁR kiválasztott
+kártyához. A kártya-választás a `folyamatos-munka-orchestrator` PROMPTJA, nem kód. A valódi védelem
+az `a8aa9ae5` kapuja (blokkolt kártya nem mehet `in_progress`-be, bárki választotta); ez a kártya a
+UX-fele, és NEM szabad kapuként hivatkozni rá.
+
+**README:** a kanban API-t a README sehol nem dokumentálja (`grep "api/kanban"` -> 0 találat), tehát
+ott nem keletkezett hazugság; a fork-fejlesztések szekció viszont bővült a függőség-feature-rel.
+
+**Mérve:** a `status <> 'done'` szűrő kiiktatása -> a "done predecessor kiesik" teszt piros; a JOIN
+rossz végre kötése -> öt teszt piros; a csoportosító oszlop beszivárogtatása a kártya-objektumba ->
+a "whole cards" teszt piros. 5 új teszt, 29 a kártya-családban.
+
+**Ki döntött:** backend (implementáció), MikroB (a kártya céljának átírása a plan-grilling F-3 után).
+**Hivatkozás:** kártya 38788337 (szülő 37c5605a).
