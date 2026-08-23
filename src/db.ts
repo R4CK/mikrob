@@ -1,4 +1,5 @@
 import Database from 'better-sqlite3'
+import { isForceActor } from './kanban-force-actors.js'
 import { join } from 'node:path'
 import { existsSync, mkdirSync, readFileSync, renameSync, chmodSync, openSync, closeSync } from 'node:fs'
 import { STORE_DIR, DB_FILENAME, ALLOWED_CHAT_ID, OLLAMA_URL, APP_TZ } from './config.js'
@@ -2165,8 +2166,11 @@ export function updateKanbanCard(
   const blocked = statusChanges && reviewedCardBlocksInProgress(id, fields.status as string)
   if (blocked && !opts?.force) return false
   // Card a8aa9ae5: an unmet predecessor blocks the same two transitions here as everywhere else.
+  // Card a8aa9ae5 / Cybersec F-1: `force` alone is NOT the bypass -- the three sibling guards on
+  // this state machine all require an allowlisted actor with it, and the one place that did not
+  // (newDevStop, before 31cc1cd4) was abused. `force` without an actor is now just a refusal.
   const depBlocked = statusChanges && dependencyBlockers(id, fields.status as string).length > 0
-  if (depBlocked && !opts?.force) return false
+  if (depBlocked && !isForceActor(opts?.force === true, opts?.actor)) return false
   // `forced` records only whether THIS transition actually needed the reviewed-card-reopen
   // override -- an ordinary in_progress move that happens to carry `force:true` (e.g. an exempt
   // agent's client always sends it) is not itself a guard override and must not read as one; see
@@ -2204,7 +2208,9 @@ export function moveKanbanCard(id: string, status: KanbanCard['status'], sortOrd
   // also the reorder path, so an unchanged status must stay writable. Otherwise a card already in
   // in_progress with an open predecessor could never be dragged within its own column.
   const depBlocked = prev !== undefined && prev !== status && dependencyBlockers(id, status).length > 0
-  if (depBlocked && !force) return false
+  // Card a8aa9ae5 / Cybersec F-1: the bypass is force AND an allowlisted actor, like every sibling
+  // guard on this state machine. A bare force:true from an unnamed caller does not open it.
+  if (depBlocked && !isForceActor(force === true, actor)) return false
   const changed = db.prepare(
     'UPDATE kanban_cards SET status=?, sort_order=?, updated_at=? WHERE id=?'
   ).run(status, sortOrder, now, id).changes > 0

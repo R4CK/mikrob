@@ -24,6 +24,7 @@
 // Ported here verbatim rather than re-derived, so this guard inherits that hardening instead of
 // re-introducing the bug it fixed.
 import { getKanbanCard, getKanbanComments } from '../db.js'
+import { isForceActor } from '../kanban-force-actors.js'
 import { logger } from '../logger.js'
 import type { LandedVerdict } from './kanban-landed-guard.js'
 
@@ -31,7 +32,6 @@ export type GateAgent = 'qa' | 'qa2' | 'cybersec' | 'cybered'
 
 /** Only agents allowed to close a card despite a missing gate verdict -- same actor set as the
  *  landing guard, same reasoning: MikroB is the orchestrator with final call. */
-const FORCE_ACTORS = new Set(['mikrob'])
 
 const GATE_LINE_RX = /\bGate\s*:\s*(.+)$/gim
 
@@ -210,7 +210,7 @@ function allowUnverified(cardId: string, reason: string, extra: Record<string, u
  *  fresh PASS/GO/SKIP-shaped comment for the current round. */
 export function gateCompletenessGuardVerdict(cardId: string, nextStatus: unknown, force: boolean, actor?: string): LandedVerdict {
   if (nextStatus !== 'done') return { blocked: false }
-  if (force && actor !== undefined && FORCE_ACTORS.has(actor)) return { blocked: false }
+  if (isForceActor(force, actor)) return { blocked: false }
 
   let card: ReturnType<typeof getKanbanCard>
   let comments: Comment[]

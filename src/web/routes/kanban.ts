@@ -16,6 +16,7 @@ import {
   addKanbanDependency, removeKanbanDependency,
   getKanbanPredecessors, getKanbanSuccessors, dependencyBlockers,
 } from '../../db.js'
+import { isForceActor } from '../../kanban-force-actors.js'
 import { normalizeKanbanRefs } from '../kanban-ref-normalize.js'
 import { OWNER_NAME, BOT_NAME, MAIN_AGENT_ID, STORE_DIR, WEB_HOST, WEB_PORT, KANBAN_LABEL_COLORS } from '../../config.js'
 import { listAgentNames, readAgentDisplayName, isKnownAgent } from '../agent-config.js'
@@ -224,8 +225,12 @@ function dependencyBlockBody(
   id: string,
   nextStatus: unknown,
   force: boolean,
+  actor?: string,
 ): { blocked: boolean; body?: Record<string, unknown> } {
-  if (force || typeof nextStatus !== 'string') return { blocked: false }
+  // The SAME bypass rule the writers apply (card a8aa9ae5, Cybersec F-1): force plus an
+  // allowlisted actor. If this said only `force`, the 409 would disagree with the enforcement --
+  // a non-allowlisted force:true would get a 200-shaped path here and still be refused below.
+  if (isForceActor(force, actor) || typeof nextStatus !== 'string') return { blocked: false }
   const blockers = dependencyBlockers(id, nextStatus)
   if (blockers.length === 0) return { blocked: false }
   return {
@@ -432,7 +437,7 @@ export async function tryHandleKanban(ctx: RouteContext): Promise<boolean> {
       if (v.blocked) { json(res, { error: v.message }, 409); return true }
     }
     {
-      const v = dependencyBlockBody(id, data.status, force === true)
+      const v = dependencyBlockBody(id, data.status, force === true, typeof actor === 'string' ? actor : undefined)
       if (v.blocked) { json(res, v.body!, 409); return true }
     }
     if (updateKanbanCard(id, normalizeProjectName(data), { actor: typeof actor === 'string' ? actor : undefined, force: force === true })) {
@@ -477,7 +482,7 @@ export async function tryHandleKanban(ctx: RouteContext): Promise<boolean> {
       if (v.blocked) { json(res, { error: v.message }, 409); return true }
     }
     {
-      const v = dependencyBlockBody(id, status, force === true)
+      const v = dependencyBlockBody(id, status, force === true, typeof actor === 'string' ? actor : undefined)
       if (v.blocked) { json(res, v.body!, 409); return true }
     }
     if (moveKanbanCard(id, status, sort_order ?? 0, actor, force === true)) {
