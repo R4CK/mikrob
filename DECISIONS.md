@@ -2027,3 +2027,90 @@ sorrend levezetése, a nem-átvételi verdikt).
 **Testvér-kapu megmérve, NEM érintett:** az `email-send-gate.mjs` mind a négy próbát (csupasz, `bash -c`, `eval`, `then`-ág) helyesen tiltja, tehát nem kell rá külön kártya.
 **Ki döntött:** Backend (implementáció), Cybersec élő lelete alapján (442f3289 gate).
 **Hivatkozás:** kártya ec20dd23.
+
+## 2026-08-23 22:25 -- A `case` mintavégződés `)`-je elválasztó, nem záró; és a parancsot megelőző kulcsszavak léptetik a határt (kártya 84e31b40, Cybersec F-8)
+
+**Döntés:** a `stripHeredocDataPayloads` járója követi a `case` NYELVTANT: (a) a mintát lezáró `)`
+elválasztó, nem keret-záró; (b) a `case`/`esac` KIZÁRÓLAG parancs-pozícióban számít kulcsszónak,
+az `in` pedig csak nyitott `case` mellett; (c) a parancsot megelőző foglalt szavak
+(`if then elif else while until do time ! {`) előre léptetik a határt, ahelyett hogy a span
+részévé válnának; (d) a `(minta)` alak nyitó `(`-je nyelvtan, nem subshell, tehát keretet sem nyit.
+
+**Miért:** a `curl ... -d @- $(case x in x) python3 <<'PY' ... PY ;; esac)` alakban a bash a mintát
+zárja azzal a `)`-vel és a heredocot az ág belsejében lévő python3-nak adja; a járó záróként olvasta,
+popolta a `$(` keretét, és a spant a KÜLSŐ curl-től mérte. Ugyanaz a téves számolás, mint F-5
+(idézés), F-6 (csupasz subshell), F-7 (parameter expansion) -- negyedik konstrukción keresztül.
+Cybersec élő bashben, marker-fájllal bizonyította.
+
+**A család végigmérése négy TOVÁBBI élő alakot hozott** (mind marker-fájllal, valódi bashben futtatva):
+`a|x)` alternáció, `@(a|x))` extglob (akkor fut, ha az extglob már PARSE-időben be van kapcsolva --
+`eval`-lal, előtte `shopt -s extglob`, megmérve), beágyazott `case`, és újsor az `in` és a minta
+között. Plusz kettő, ami csak egy MÁSIK foglalt szón át éri el a kulcsszót: `then case`, `do case`.
+
+**Ez a kör abban tér el az előzőektől, hogy a NAGYVONALÚ felismerés NYITOTT volna egy megkerülést,
+nem zárt.** A minta-szabály ELŐRE lépteti a határt, tehát aki egy hamis `case`-t felismertet, az
+választja meg, hol kezdődik a következő span. A `python3 - $(: case in x) curl -d @- <<'PY'` valódi
+bash-parancs, amiben a `case` a `:` argumentuma -- kulcsszóként kezelve a járó a `curl`-re tolná a
+határt és kiürítene egy törzset, ami a python3-é. Ezért van a parancs-pozíció feltétel, és ezért
+léptetik a határt a parancsot megelőző foglalt szavak (enélkül a `then case` alakra a szabály
+csendben nem is alkalmazódna). K13/K14 szegezi ki az elsőt, a K16/K17 a másodikat.
+
+**Mellékesen két álló FALS-POZITÍVOT is megszüntet:** (1) `for f in a b; do curl ... -d @- <<'JSON'`
+eddig a `do`-tól mérte a spant, elbukott a vezető-bináris ellenőrzésen, és egy jogos payloadot
+tiltott; (2) ugyanez minden `case`-ágba tett jogos hívásra. A kártya CÍME pont ez a hibaosztály.
+
+**Mérés, 69 alak, MINDKÉT kapun:**
+
+| változat | rossz eset |
+|---|---|
+| előző kör (7be96d9a) | 11 (7 élő megkerülés + 4 fals pozitív) |
+| ez a változat | 0 |
+
+**Mutáció-mérés, kilenc ág, és megint kihozott egy fedetlen ágat:**
+
+| mutáció | piros |
+|---|---|
+| MA: nincs kulcsszó-felismerés | 13 |
+| MB: a mintavégződés megint popol (maga az F-8 hiba) | 14 |
+| MC: a `case`/`esac` bárhol számít, nem csak parancs-pozícióban | 2 |
+| MD: a megelőző foglalt szavak nem léptetik a határt | 4 |
+| ME: a `(minta)` nyitó `(`-je megint keretet nyit | 1 |
+| MH: a mintavégződés nem nézi a mélységet | 0 -> ez volt a jelzés, majd 2 |
+| MF: `;` bármely mélységben zárja az ágat | 0, egyenértékű (lásd lent) |
+| MG: keret-zárás nem állítja vissza a case-vermet | 0, egyenértékű (lásd lent) |
+| MI: az `in` nem rögzíti újra a mélységet | 0, egyenértékű (lásd lent) |
+
+Az MH túlélte az egész készletet, ezért differenciálisan végigsöpörtem 2541 generált alakot: 29
+eltérés, MIND fals-pozitív irányban, és a szétválasztó alak VALÓS, futó bash --
+`case x in $(echo x)) curl ... -d @- <<'JSON'` (a minta expandálódik, tehát egy `$( )` benne
+szabályos; `bash -n` + futtatás megerősítette, hogy illeszkedik). Egy mélység-vak szabály ANNAK a
+`)`-jénél zárná a mintát, elvesztené a keretet, és egy jogos payloadot tiltana. Kiszegezve két
+kontrollal, utána az MH 2 pirosat ad.
+
+**A három túlélő ágról KIMONDVA, mit mértem** (a hatodik kör MD-jével azonos fegyelem: bizonyíték
+nélkül nem állítom lezártnak, de itt van mérésem az EGYENÉRTÉKŰSÉG mellett is):
+
+- **MI** egyenértékű SZERKEZETILEG: a `case` és az `in` közötti mélység csak akkor térne el, ha
+  közben kiegyensúlyozatlan nyitó lenne, ami érvényes bashben lehetetlen. 2541 + 21 célzott alak: 0 eltérés.
+- **MG**-t csak ÉRVÉNYTELEN bash választja szét (`$(: ; case)`, `$(echo $(case) )` -- a csupasz `case`
+  szintaktikai hiba, `bash -n`-nel megmérve), és ott is fals-pozitív irányban. Érvényes bemeneten a
+  `esac` mindig az őt tartalmazó helyettesítésen BELÜL zár, tehát a verem-visszaállítás redundáns.
+- **MF** hatását az `esac` maszkolja: egy mélyebb `;` által tévesen 'pattern'-re állított állapot
+  csak egy base-mélységű `)`-nél számítana, oda viszont érvényes bashben előbb ér az `esac`, ami
+  kiveszi a case-bejegyzést. 2541 + 21 célzott alak: 0 eltérés.
+
+Egyikre sem írtam tesztet, amiről nem tudom megmutatni, hogy mér valamit -- ez ugyanaz a
+vákuum-teszt-tilalom, mint a 0ecff3ae-n és a hatodik kör MD-jénél.
+
+**K15 NEM lelet:** a `$(case x in x) : esac )` alak érvénytelen bash (`bash -n` szintaktikai hiba), az
+`esac` argumentumként nem zárja a case-t. A járó ALLOW-ja ott ártalmatlan, mert nem fut le semmi.
+
+**Cybersec strukturális javaslata (tree-sitter-bash vs. tovább-foltozás):** MikroB döntése (komment
+15603) a MOST-foltozás + külön kártyán futó tree-sitter-bash értékelés, GitHub-first due
+diligence-szel. Ez a bejegyzés a foltozó felét rögzíti; a migráció külön kártyán él.
+
+**Ki döntött:** Cybersec (F-8 lelet, javítási irány, strukturális javaslat), MikroB (a most-foltozás
++ párhuzamos tree-sitter kártya), fullstack (a végrehajtás, a parancs-pozíció szigorítás, a négy
+további alak és a kilenc mutáció).
+**Hivatkozás:** kártya 84e31b40, commit f6dfc18f + 1b73f1d5. Előzmény: 7be96d9a (csupasz `(`
++ `${ }`), f7c1d07f (idézés-tudat), e5b2cd84, c17173fc, f4fac1d7.
