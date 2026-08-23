@@ -1468,3 +1468,39 @@ A következő alakot így nem kell kitalálni ahhoz, hogy megbukjon.
 idézés-tudatos járó, a négy mutáció, és a belőlük előjött N5/N6 alak).
 **Hivatkozás:** kártya 84e31b40, commit ce40ccf0. Előzmény: e5b2cd84 (a vermes visszaállítás),
 c17173fc (a nyitó-csak javítás), f4fac1d7 (a járó bekötése az email-kapuba).
+
+## 2026-08-23 20:05 -- A biztonsagos-fogyaszto lista szukosseget a FUGGVENYEN kell kiszegezni, nem gate-enkent (kártya 0ecff3ae)
+
+**Döntés:** a `stripHeredocDataPayloads` biztonságos-fogyasztó listájának szűkösségét egy önálló
+teszt-fájl (`src/__tests__/stdin-consumer-list-narrowness.test.ts`) rögzíti, ami KÖZVETLENÜL a
+megosztott függvényre állít (kiürül-e a heredoc törzse), nem egy kapu verdiktjére. Az email-kapun
+külön, gate-szintű esetek is vannak (a valódi küldés `--config`/`-K` konfig-törzsben írva).
+
+**Miért nem gate-enként:** a kártya azt kérte, hogy a self-pace kapun is legyen erre eset. Lemértem:
+a self-pace kapu egy curl KONFIG-törzset MA SEM jelöl meg (a mintái argv-beli invokációt vagy
+HTTP-írást keresnek, egy `url = ...` sor egyik sem) -- tehát egy „a self-pace kapu továbbra is tilt"
+teszt zölden futna a lista módosításával ÉS anélkül is. Az VAKUUM teszt lenne, pont abból az
+osztályból, amit a flotta többször megmért már. A megosztott függvényre állítva viszont nem lehet
+vákuum, és MINDEN kaput fed, ami a járót importálja -- nem csak azt, amelyiknek a suite-jában
+véletlenül ott van az eset.
+
+**A kártya premisszájának egy pontja nem áll:** a leírás szerint a járó „importálva
+outgoing-copy-gate.py-ba is". Nincs így: a `scripts/hooks/outgoing-copy-gate.py` önálló Python hook,
+saját logikával, nem hívja a `stripHeredocDataPayloads`-ot (`grep` a fájlon: nulla találat). A lista
+két fogyasztója az `email-send-gate.mjs` és maga a `self-pace-gate.mjs`.
+
+**Mérés (a kártya által kért mutáció + két anti-vakuitás mutáció), a kapu-suite-okon:**
+
+| mutáció | piros a kártya ELŐTT | piros MOST |
+|---|---|---|
+| M1: `--config`/`-K` naiv felvétele a listára | 1 | 7 |
+| M2: a kiürítés feltétel nélküli | -- | 6 (az új fájlban) |
+| M3: a kiürítés soha nem fut | -- | 3 (az új fájlban) |
+
+Az M3 az anti-vakuitás iránya: ha a járó semmit nem ürítene ki, a „nem ürül ki" állítások zölden
+mérnének semmit -- ezért három eset kifejezetten azt szegezi ki, hogy a függvény VALÓBAN üríti a
+jogos adat-alakokat (`-d @-`, `git commit -F -`), hosszhelyesen.
+
+**Ki döntött:** Cybersec (a lelet és az élő támadás a 84e31b40 GO-verdiktjében), fullstack (a
+függvény-szintű kiszegezés a gate-szintű helyett, és a premissza helyesbítése).
+**Hivatkozás:** kártya 0ecff3ae, commit e48bff92. Előzmény: 84e31b40 (a járó és a lista mai alakja).
