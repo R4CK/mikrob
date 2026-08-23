@@ -2358,6 +2358,7 @@ export function markKanbanCardDispatched(id: string): boolean {
 export type ArchiveKanbanCardResult =
   | { ok: true }
   | { ok: false; reason: 'not-found' }
+  | { ok: false; reason: 'already-archived' }
   | { ok: false; reason: 'open-children'; openChildren: string[] }
 
 // Card 037277a0 (onaudit finding 317b39f7): archiving used to ignore children entirely -- a
@@ -2371,14 +2372,28 @@ export function archiveKanbanCard(id: string, opts?: { force?: boolean; actor?: 
     return { ok: false, reason: 'open-children', openChildren }
   }
   const now = Math.floor(Date.now() / 1000)
-  const changed = db.prepare('UPDATE kanban_cards SET archived_at=?, updated_at=? WHERE id=?').run(now, now, id).changes > 0
+  // `AND archived_at IS NULL` mirrors the sibling unarchive below (card 394fb5ce, Cybersec L-1).
+  // Without it, archiving an ALREADY archived card overwrote the original archival timestamp --
+  // the one fact the column exists to record -- and wrote a second audit row claiming null -> T,
+  // i.e. that the card had not been archived before. It had, and the row that said when was just
+  // replaced by the row denying it.
+  const changed = db.prepare('UPDATE kanban_cards SET archived_at=?, updated_at=? WHERE id=? AND archived_at IS NULL').run(now, now, id).changes > 0
   // Card 7fd6dd23, Cybersec F-1: `archived_at` was DECLARED in the audited-field list and could
   // never fire, because this function writes the column with its own UPDATE and nobody reaches it
   // through updateKanbanCard. A declared-but-unreachable audit field claims coverage it does not
   // have -- worse than an honest gap, because a reader stops looking. It writes its own row now,
   // and takes an actor so the row can name somebody.
-  if (changed) recordKanbanFieldEvent(id, 'archived_at', null, String(now), opts?.actor, now)
-  return changed ? { ok: true } : { ok: false, reason: 'not-found' }
+  if (changed) {
+    recordKanbanFieldEvent(id, 'archived_at', null, String(now), opts?.actor, now)
+    return { ok: true }
+  }
+  // Nothing changed, and the two reasons are not the same answer: reporting 'not-found' for a card
+  // that is sitting right there in the archive sends the reader looking for a sync bug (the exact
+  // wrong-diagnosis loop card ebf7d95c is about). The caller decides what an idempotent re-archive
+  // should mean; this only refuses to guess.
+  const row = db.prepare('SELECT archived_at FROM kanban_cards WHERE id=?').get(id) as { archived_at: number | null } | undefined
+  if (row === undefined) return { ok: false, reason: 'not-found' }
+  return { ok: false, reason: 'already-archived' }
 }
 
 export function unarchiveKanbanCard(id: string, opts?: { actor?: string }): boolean {

@@ -539,6 +539,15 @@ export async function tryHandleKanban(ctx: RouteContext): Promise<boolean> {
       json(res, { ok: true })
       return true
     }
+    // Card 394fb5ce, Cybersec L-1: an already-archived card is not an error and not a "not found".
+    // The archive UPDATE now refuses to touch it (so the original archival timestamp survives a
+    // second POST), and the endpoint answers idempotently rather than 404-ing about a card that
+    // plainly exists. `revertIdeaFromKanban` deliberately does NOT run: the first archive already
+    // did it, and this call archived nothing.
+    if (result.reason === 'already-archived') {
+      json(res, { ok: true, alreadyArchived: true })
+      return true
+    }
     if (result.reason === 'open-children') {
       json(
         res,

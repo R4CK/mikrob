@@ -24,6 +24,9 @@ import { SCHEDULED_TASKS_DIR } from './scheduled-tasks-io.js'
 import { getBindings } from './vault-bindings.js'
 import { getDb, backfillEmbeddings } from '../db.js'
 import { logger } from '../logger.js'
+import {
+  newTransferRows, STATUS_EVENT_COLUMNS, FIELD_EVENT_COLUMNS, type TransferRow,
+} from './fleet-transfer-dedup.js'
 
 // ---------------------------------------------------------------------------
 // Schema version -- bump when the JSON shape changes incompatibly.
@@ -1127,27 +1130,39 @@ export function importFleet(
         }
       }
 
-      // kanban card events -- idempotent on (card_id, created_at, to_status)
-      for (const ev of fleet.kanban?.cardEvents ?? []) {
-        const e = ev as any
-        if (!e.card_id || !e.to_status) continue
-        if (!db.prepare('SELECT 1 FROM kanban_card_events WHERE card_id = ? AND created_at = ? AND to_status = ?')
-          .get(e.card_id, e.created_at, e.to_status)) {
-          db.prepare('INSERT INTO kanban_card_events (card_id, from_status, to_status, actor, created_at) VALUES (?, ?, ?, ?, ?)')
-            .run(e.card_id, e.from_status ?? null, e.to_status, e.actor, e.created_at)
+      // kanban card events -- idempotent on the WHOLE row, matched by multiplicity (card 394fb5ce,
+      // Cybersec L-3). The old key (card_id, created_at, to_status) is NOT unique in the source
+      // table, so two real transitions sharing one second collapsed into one on import.
+      {
+        const rows = (fleet.kanban?.cardEvents ?? []).filter((ev) => {
+          const e = ev as any
+          return Boolean(e.card_id) && Boolean(e.to_status)
+        })
+        const existing = db
+          .prepare(`SELECT ${STATUS_EVENT_COLUMNS.join(', ')} FROM kanban_card_events`)
+          .all() as TransferRow[]
+        const stmt = db.prepare('INSERT INTO kanban_card_events (card_id, from_status, to_status, actor, created_at) VALUES (?, ?, ?, ?, ?)')
+        for (const ev of newTransferRows(rows as TransferRow[], existing, STATUS_EVENT_COLUMNS)) {
+          const e = ev as any
+          stmt.run(e.card_id, e.from_status ?? null, e.to_status, e.actor ?? null, e.created_at)
         }
       }
 
-      // kanban field events -- idempotent on (card_id, created_at, field), the same shape as the
-      // status events above. Optional in the payload: an export taken before this existed simply
-      // has no key, and must still import.
-      for (const ev of fleet.kanban?.cardFieldEvents ?? []) {
-        const e = ev as any
-        if (!e.card_id || !e.field) continue
-        if (!db.prepare('SELECT 1 FROM kanban_card_field_events WHERE card_id = ? AND created_at = ? AND field = ?')
-          .get(e.card_id, e.created_at, e.field)) {
-          db.prepare('INSERT INTO kanban_card_field_events (card_id, field, old_value, new_value, actor, created_at) VALUES (?, ?, ?, ?, ?, ?)')
-            .run(e.card_id, e.field, e.old_value ?? null, e.new_value ?? null, e.actor ?? null, e.created_at)
+      // kanban field events -- same rule as the status events above, and for the same reason: two
+      // edits of one field in the same second are two rows, not one. Optional in the payload: an
+      // export taken before this existed simply has no key, and must still import.
+      {
+        const rows = (fleet.kanban?.cardFieldEvents ?? []).filter((ev) => {
+          const e = ev as any
+          return Boolean(e.card_id) && Boolean(e.field)
+        })
+        const existing = db
+          .prepare(`SELECT ${FIELD_EVENT_COLUMNS.join(', ')} FROM kanban_card_field_events`)
+          .all() as TransferRow[]
+        const stmt = db.prepare('INSERT INTO kanban_card_field_events (card_id, field, old_value, new_value, actor, created_at) VALUES (?, ?, ?, ?, ?, ?)')
+        for (const ev of newTransferRows(rows as TransferRow[], existing, FIELD_EVENT_COLUMNS)) {
+          const e = ev as any
+          stmt.run(e.card_id, e.field, e.old_value ?? null, e.new_value ?? null, e.actor ?? null, e.created_at)
         }
       }
 
