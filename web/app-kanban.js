@@ -932,6 +932,27 @@ function createCardEl(card, embeddedChildren = []) {
 // 4 static flat-board columns at load time, and again for every swimlane
 // column-body created dynamically in renderSwimlaneBoard (those elements
 // don't exist yet when this module first runs).
+/**
+ * Turn a refused /move or PUT into something the user can act on (card 73540a68).
+ *
+ * A dependency block is the one refusal where the useful information is WHICH OTHER CARD is in the
+ * way -- a generic "move error" toast tells someone their drag failed and nothing about why or what
+ * to do. The backend sends `code: 'dependency_blocked'` and a `blockedBy` array precisely so this
+ * does not have to string-match a message.
+ */
+async function kanbanMoveErrorMessage(res) {
+  try {
+    const body = await res.json()
+    if (body && body.code === 'dependency_blocked' && Array.isArray(body.blockedBy)) {
+      return t('kanban.deps.blocked_toast', {
+        titles: body.blockedBy.map((c) => c.title).join(', '),
+      })
+    }
+    if (body && body.error) return body.error
+  } catch { /* no JSON body -- fall through to the generic message */ }
+  return t('kanban.toast.move_error')
+}
+
 function wireKanbanColumnDnD(col) {
   col.addEventListener('dragover', (e) => {
     e.preventDefault()
@@ -965,11 +986,14 @@ function wireKanbanColumnDnD(col) {
     let sortOrder = idx
 
     try {
-      await fetch(`/api/kanban/${encodeURIComponent(cardId)}/move`, {
+      const r = await fetch(`/api/kanban/${encodeURIComponent(cardId)}/move`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ status: newStatus, sort_order: sortOrder, actor: kanbanMoveActor() }),
       })
+      // This call used to ignore the response entirely: a refused move re-rendered the old board
+      // with no message at all, so a blocked drag looked like a UI glitch.
+      if (!r.ok) { showToast(await kanbanMoveErrorMessage(r)); loadKanban(); return }
       loadKanban()
     } catch {
       showToast(t('kanban.toast.move_error'))
@@ -1136,7 +1160,7 @@ async function kanbanTouchEnd(e) {
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ status: newStatus, sort_order: sortOrder, actor: kanbanMoveActor() }),
     })
-    if (!r.ok) throw new Error('move failed')
+    if (!r.ok) { showToast(await kanbanMoveErrorMessage(r)); loadKanban(); return }
     loadKanban()
   } catch {
     showToast(t('kanban.toast.move_error'))
@@ -1436,7 +1460,7 @@ async function showCardDetail(card) {
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({ status: newVal, sort_order: 0, actor: kanbanMoveActor() }),
         })
-        if (!r.ok) throw new Error('move failed')
+        if (!r.ok) { restore(current); showToast(await kanbanMoveErrorMessage(r)); return }
         card.status = newVal
         restore(newVal)
         showToast(t('kanban.toast.status_updated'))
@@ -1751,6 +1775,145 @@ async function showCardDetail(card) {
   openModal(cardDetailOverlay)
   // Inline diff-comment section (card c12abc67, pair-BE 906c130f).
   void loadCardDiffComments(card.id)
+  // Dependency lists (card 73540a68, pair-BE a8aa9ae5).
+  void loadCardDependencies(card)
+}
+
+// --- Card dependencies (card 73540a68) -------------------------------------------------------
+// Predecessors are what this card WAITS FOR; successors are what waits for it. Both come from one
+// GET, with whole card objects, so a card with five edges opens one request and not six.
+//
+// The priority select sits on the PREDECESSOR rows only, and that is the point of the feature:
+// when a card is blocked, the useful action is to raise the priority of the thing blocking it --
+// which is a different card than the one you have open. It writes through the SAME
+// PUT /api/kanban/:id the card's own priority field uses; no new endpoint, no new field.
+async function loadCardDependencies(card) {
+  const section = document.getElementById('cardDepsSection')
+  const predList = document.getElementById('cardPredecessorsList')
+  const succList = document.getElementById('cardSuccessorsList')
+  if (!section || !predList || !succList) return
+  let data
+  try {
+    const r = await fetch(`/api/kanban/${encodeURIComponent(card.id)}/dependencies`)
+    if (!r.ok) { section.style.display = 'none'; return }
+    data = await r.json()
+  } catch { section.style.display = 'none'; return }
+  section.style.display = ''
+  const statusShort = {
+    planned: t('kanban.status.planned'), in_progress: t('kanban.status.in_progress'),
+    testing: t('kanban.status.testing'), waiting: t('kanban.status.waiting_short'),
+    done: t('kanban.status.done'),
+  }
+
+  predList.innerHTML = ''
+  if ((data.predecessors || []).length === 0) {
+    const empty = document.createElement('div')
+    empty.style.cssText = 'color:var(--text-muted); font-size:0.9em'
+    empty.textContent = t('kanban.deps.no_predecessors')
+    predList.appendChild(empty)
+  }
+  for (const dep of data.predecessors || []) {
+    const row = document.createElement('div')
+    row.className = 'comment-item'
+    row.style.cssText = 'display:flex; justify-content:space-between; align-items:center; gap:8px'
+    const info = document.createElement('div')
+    info.style.cssText = 'flex:1; cursor:pointer'
+    // An unmet predecessor is the reason the card cannot move, so it is marked, not merely listed.
+    const blocking = dep.status !== 'done'
+    info.innerHTML = `<div><strong>${escapeHtml(dep.title)}</strong> <span style="color:var(--text-muted)">[${statusShort[dep.status] || dep.status}]</span>${blocking ? ` <span style="color:var(--danger, #c33)">${escapeHtml(t('kanban.deps.blocking'))}</span>` : ''}</div>`
+    info.onclick = () => { closeModal(cardDetailOverlay); showCardDetail(dep) }
+    row.appendChild(info)
+
+    const sel = document.createElement('select')
+    sel.style.flexShrink = '0'
+    for (const p of ['low', 'normal', 'high', 'urgent']) {
+      const o = document.createElement('option')
+      o.value = p
+      o.textContent = t(`kanban.priority.${p}`)
+      if (dep.priority === p) o.selected = true
+      sel.appendChild(o)
+    }
+    sel.onchange = async () => {
+      try {
+        const r = await fetch(`/api/kanban/${encodeURIComponent(dep.id)}`, {
+          method: 'PUT', headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ priority: sel.value, actor: 'dashboard' }),
+        })
+        if (!r.ok) { showToast(t('common.error_save')); return }
+        showToast(t('kanban.deps.priority_saved'))
+        loadKanban()
+      } catch { showToast(t('common.error_save')) }
+    }
+    row.appendChild(sel)
+
+    const del = document.createElement('button')
+    del.className = 'btn-danger btn-compact'
+    del.style.flexShrink = '0'
+    del.textContent = '×'
+    del.title = t('kanban.deps.remove_btn')
+    del.onclick = async () => {
+      try {
+        const r = await fetch(`/api/kanban/${encodeURIComponent(card.id)}/dependencies/${encodeURIComponent(dep.id)}`, { method: 'DELETE' })
+        if (!r.ok) { showToast(t('common.error_delete')); return }
+        showToast(t('kanban.deps.removed'))
+        void loadCardDependencies(card)
+        loadKanban()
+      } catch { showToast(t('common.error_delete')) }
+    }
+    row.appendChild(del)
+    predList.appendChild(row)
+  }
+
+  succList.innerHTML = ''
+  if ((data.successors || []).length === 0) {
+    const empty = document.createElement('div')
+    empty.style.cssText = 'color:var(--text-muted); font-size:0.9em'
+    empty.textContent = t('kanban.deps.no_successors')
+    succList.appendChild(empty)
+  }
+  for (const s of data.successors || []) {
+    const row = document.createElement('div')
+    row.className = 'comment-item'
+    row.style.cursor = 'pointer'
+    row.innerHTML = `<div><strong>${escapeHtml(s.title)}</strong> <span style="color:var(--text-muted)">[${statusShort[s.status] || s.status}]</span></div>`
+    row.onclick = () => { closeModal(cardDetailOverlay); showCardDetail(s) }
+    succList.appendChild(row)
+  }
+
+  // Add: type a title, pick from the datalist of open cards, press the button.
+  const query = document.getElementById('newDependencyQuery')
+  const candidates = document.getElementById('cardDepCandidates')
+  if (query && candidates) {
+    query.value = ''
+    candidates.innerHTML = ''
+    const taken = new Set((data.predecessors || []).map((d) => d.id))
+    for (const c of (kanbanCards || [])) {
+      if (c.id === card.id || taken.has(c.id)) continue
+      const o = document.createElement('option')
+      o.value = `${c.title} [${c.id}]`
+      candidates.appendChild(o)
+    }
+    const btn = document.getElementById('addDependencyBtn')
+    if (btn) {
+      btn.onclick = async () => {
+        // The id is the authority, not the title -- two cards may share a title, and the datalist
+        // value carries the id in brackets precisely so the choice is unambiguous.
+        const m = query.value.match(/\[([^\]]+)\]\s*$/)
+        if (!m) { showToast(t('kanban.deps.pick_from_list')); query.focus(); return }
+        try {
+          const r = await fetch(`/api/kanban/${encodeURIComponent(card.id)}/dependencies`, {
+            method: 'POST', headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ depends_on_id: m[1] }),
+          })
+          const body = await r.json().catch(() => ({}))
+          if (!r.ok) { showToast(body.error || t('common.error_save')); return }
+          showToast(t('kanban.deps.added'))
+          void loadCardDependencies(card)
+          loadKanban()
+        } catch { showToast(t('common.error_save')) }
+      }
+    }
+  }
 }
 
 // Inline diff-comment view (card c12abc67). API: GET /api/kanban/:id/diff-comments
