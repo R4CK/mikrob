@@ -1,6 +1,6 @@
 import { describe, it, expect } from 'vitest'
 // @ts-expect-error -- plain .mjs hook script, no types
-import { gateDecision } from '../../scripts/email-send-gate.mjs'
+import { gateDecision, buildGateMsg } from '../../scripts/email-send-gate.mjs'
 import { injectEmailSendGate, agentGetsEmailGate } from '../web/agent-scaffold.js'
 import { MAIN_AGENT_ID } from '../config.js'
 import { REPO_UNDER_TMP, TMP_SKIP_REASON } from './helpers/repo-location.js'
@@ -88,6 +88,93 @@ describe('gateDecision: data-payload false-positive guard (card 132fc28c)', () =
   it('a -d @file (file reference, no inline text) is untouched -- nothing to blank either way', () => {
     expect(gateDecision('Bash', { command: 'curl -s -X POST https://api.resend.com/emails -d @body.json' }).deny).toBe(true)
     expect(gateDecision('Bash', { command: 'curl -s -X POST http://localhost:3420/api/kanban/x/comments -d @comment.json' }).deny).toBe(false)
+  })
+})
+
+// Card 84e31b40, backend2's report from the 93538142 diagnosis. Card 132fc28c closed ONE shape of
+// the prose false-positive -- an inline `-d '<literal>'`. The same prose handed to the same curl
+// over STDIN (`-d @- <<'JSON'`) was still denied, so which of two equivalent shapes an agent picked
+// had become a security decision. Only the DATA-carrying heredoc is blanked; an interpreter heredoc
+// stays fully scanned, and the tests below are what hold that line.
+describe('gateDecision: stdin-payload false-positive guard (card 84e31b40)', () => {
+  const bash = (command: string) => gateDecision('Bash', { command })
+
+  it('ALLOWS a kanban-comment POST whose heredoc payload discusses sending email via Resend', () => {
+    const cmd = [
+      `curl -s -X POST http://localhost:3420/api/kanban/93538142/comments -H 'Content-Type: application/json' -d @- <<'JSON'`,
+      `{"author":"backend2","content":"A diagnozis szerint a Resend-en keresztuli email kuldes nincs bekotve."}`,
+      `JSON`,
+    ].join('\n')
+    expect(bash(cmd).deny).toBe(false)
+  })
+
+  it('ALLOWS a commit message written over stdin that describes the email-send finding', () => {
+    const cmd = [`git commit -F - <<'MSG'`, `fix(mail): resend email send path was never wired`, `MSG`].join('\n')
+    expect(bash(cmd).deny).toBe(false)
+  })
+
+  it('STILL denies a REAL send whose body arrives the SAME stdin way -- the host lives outside the body', () => {
+    const cmd = [
+      `curl -s -X POST https://api.resend.com/emails -d @- <<'JSON'`,
+      `{"to":"a@b.hu","subject":"x"}`,
+      `JSON`,
+    ].join('\n')
+    expect(bash(cmd).deny).toBe(true)
+  })
+
+  // THE LINE THAT MUST NOT MOVE. A heredoc feeding an INTERPRETER is executed, not transmitted,
+  // so a send hidden in its body is a real send. Blanking heredoc bodies in general -- the obvious
+  // reading of "extend the payload stripping to heredocs" -- would make every one of these pass.
+  it('STILL denies an SMTP send hidden in a python3 heredoc body', () => {
+    const cmd = [`python3 <<'PY'`, `import smtplib`, `smtplib.SMTP('localhost').sendmail(a, b, c)`, `PY`].join('\n')
+    expect(bash(cmd).deny).toBe(true)
+  })
+
+  it('STILL denies a provider-API send hidden in a node heredoc body', () => {
+    const cmd = [`node <<'JS'`, `await fetch('https://api.resend.com/emails', { method: 'POST' })`, `JS`].join('\n')
+    expect(bash(cmd).deny).toBe(true)
+  })
+
+  it('STILL denies the `-d @-` DECOY: the flag sits in an INTERPRETER argv, not curl\'s (card 4638c14c)', () => {
+    // The heredoc is python3's program. Keying on the flag shape alone would blank it and hide a
+    // real send; the imported walker pins the span's own leading binary to curl.
+    const cmd = [`python3 - -d @- <<'PY'`, `import smtplib`, `PY`].join('\n')
+    expect(bash(cmd).deny).toBe(true)
+  })
+
+  it('STILL denies an UNQUOTED-tag heredoc whose body can command-substitute', () => {
+    // Bash expands the body before curl ever sees it, so it is not provably inert data.
+    const cmd = [`curl -d @- http://localhost:3420/x <<JSON`, `{"x":"$(sendmail a@b.c)"}`, `JSON`].join('\n')
+    expect(bash(cmd).deny).toBe(true)
+  })
+
+  it('STILL denies a real send that merely SHARES a command with an innocent heredoc payload', () => {
+    const cmd = [
+      `curl -d @- http://localhost:3420/x <<'JSON'`,
+      `{"note":"resend the invoice email"}`,
+      `JSON`,
+      `sendmail user@host`,
+    ].join('\n')
+    expect(bash(cmd).deny).toBe(true)
+  })
+})
+
+describe('buildGateMsg names the workaround, not just the escalation (card 84e31b40)', () => {
+  it('tells a denied PROSE call what shape to use instead', () => {
+    // Before this card the message only said "send it to <bot> for approval" -- meaningless advice
+    // for a kanban comment, and the measured outcome was an agent that either gave up or started
+    // obfuscating the text. Obfuscation is the worse of the two, so the message must name the
+    // legitimate route.
+    const msg: string = buildGateMsg('Marveen', 'Szabolcs')
+    expect(msg).toContain('--data-binary @fajl')
+    expect(msg).toContain('git commit -F fajl')
+    expect(msg).toContain('ne obfuszkald')
+  })
+
+  it('the added guidance carries no brand/owner name, so a custom install stays clean', () => {
+    const msg: string = buildGateMsg('Nova', 'John')
+    expect(msg).not.toContain('Marveen')
+    expect(msg).not.toMatch(/Szab(olcs|i)/)
   })
 })
 

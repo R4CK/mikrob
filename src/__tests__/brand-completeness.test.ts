@@ -71,7 +71,13 @@ describe('buildGateMsg brands the email-gate deny message', () => {
       'Email-kuldes sub-agentkent tiltott (governance hard-gate). ' +
         'Kuldd a tervezett emailt (CIMZETT + TARGY + TELJES SZOVEG) Marveennek inter-agent uzenetben ' +
         'jovahagyasra; a kimeno emailt Marveen kuldi. Csak VERIFIKALT cimre (soha nem nevbol talalt cim). ' +
-        'Soha ne irj ala Szabolcs nevevel, es soha ne kerj penzt senki neveben.',
+        'Soha ne irj ala Szabolcs nevevel, es soha ne kerj penzt senki neveben. ' +
+        // Card 84e31b40: the escalation sentence alone was useless advice for a denied kanban
+        // comment, so the message now also names the legitimate file-reference shape.
+        'HA EZ NEM KULDES, HANEM PROZA (kanban-komment, riport, commit-uzenet, ami csak EMLITI az ' +
+        'email-kuldest): ne obfuszkald a szoveget es ne add fel -- ird a tartalmat fajlba (Write ' +
+        'tool), es add at FAJLHIVATKOZASKENT: `curl --data-binary @fajl` vagy `git commit -F fajl`. ' +
+        'A gate a fajlhivatkozast nem szkenneli, egy VALODI kuldes viszont igy is fennakad.',
     )
   })
 

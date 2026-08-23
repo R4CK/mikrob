@@ -19,6 +19,13 @@ import { readFileSync } from 'node:fs'
 import { fileURLToPath } from 'node:url'
 import { dirname, join } from 'node:path'
 import { allow, deny, isInvokedDirectly } from './hook-lib.mjs'
+// The heredoc walker is IMPORTED, not reimplemented (card 84e31b40). It is the same
+// parsing problem this gate faces, it is already hardened by a Cybersec NO-GO (card
+// 4638c14c: a decoy `-d @-` in ANOTHER binary's argv used to launder an interpreter
+// heredoc), and its safety argument transfers unchanged -- see the call site below.
+// A second copy of ~60 lines of security-critical shell parsing is the shape where a
+// fix lands in one twin and the other silently keeps the hole.
+import { stripHeredocDataPayloads } from './self-pace-gate.mjs'
 
 // Bash command patterns that send mail. Read-only inspection of these tools
 // (e.g. cat'ing the send script) may be caught too -- acceptable: a sub-agent
@@ -74,7 +81,23 @@ export function gateDecision(toolName, toolInput) {
   // server in a customer install -> the matcher + this both key on send_email).
   if (/send_email/i.test(name)) return { deny: true }
   if (name === 'Bash') {
-    const cmd = stripDataPayloads(String(toolInput?.command ?? ''))
+    // Two blanking passes, both DATA-ONLY (card 84e31b40). stripDataPayloads covers an
+    // inline `-d '<literal>'`; stripHeredocDataPayloads covers the same payload handed
+    // over stdin instead -- `curl ... -d @- <<'JSON'` and `git commit -F - <<'MSG'`.
+    // Which of the two shapes an agent happens to pick had become a security decision:
+    // identical prose passed one way and was denied the other, and the deny message
+    // named neither, so the agent either gave up or started obfuscating.
+    //
+    // WHY THIS OPENS NO HOLE, and what it deliberately does NOT do. It blanks a heredoc
+    // ONLY when that heredoc's own simple command is curl reading it as `-d @-` data (or
+    // git reading it as a commit message) -- bytes those binaries transmit or store and
+    // never execute. A heredoc feeding an INTERPRETER (`python3 <<'PY' ... smtplib ...`)
+    // is left fully scanned, because the interpreter really would run a send hidden
+    // there; that is the case the regression tests pin, alongside the `-d @-`-decoy one.
+    // A general "exempt heredoc bodies" rule -- the obvious reading of "extend
+    // stripDataPayloads to heredocs" -- WOULD open exactly that hole.
+    const raw = String(toolInput?.command ?? '')
+    const cmd = stripDataPayloads(stripHeredocDataPayloads(raw))
     if (SEND_PATTERNS.some((re) => re.test(cmd))) return { deny: true }
   }
   return { deny: false }
@@ -88,7 +111,11 @@ export function buildGateMsg(botName, ownerName) {
     'Email-kuldes sub-agentkent tiltott (governance hard-gate). ' +
     `Kuldd a tervezett emailt (CIMZETT + TARGY + TELJES SZOVEG) ${botName}nek inter-agent uzenetben ` +
     `jovahagyasra; a kimeno emailt ${botName} kuldi. Csak VERIFIKALT cimre (soha nem nevbol talalt cim). ` +
-    `Soha ne irj ala ${ownerName} nevevel, es soha ne kerj penzt senki neveben.`
+    `Soha ne irj ala ${ownerName} nevevel, es soha ne kerj penzt senki neveben. ` +
+    'HA EZ NEM KULDES, HANEM PROZA (kanban-komment, riport, commit-uzenet, ami csak EMLITI az ' +
+    'email-kuldest): ne obfuszkald a szoveget es ne add fel -- ird a tartalmat fajlba (Write ' +
+    'tool), es add at FAJLHIVATKOZASKENT: `curl --data-binary @fajl` vagy `git commit -F fajl`. ' +
+    'A gate a fajlhivatkozast nem szkenneli, egy VALODI kuldes viszont igy is fennakad.'
   )
 }
 
