@@ -1228,3 +1228,44 @@ nem lehet benne. Az első kommentem `55af560d's`-t írt, és a `bash -n` azonnal
 
 **Ki döntött:** backend (implementáció + a sorrend-döntés), Cybersec (a lelet és a törlés-alapú irány).
 **Hivatkozás:** kártya aa837c5b, Cybersec msg 18949.
+
+## 2026-08-23 16:25 -- HELYESBÍTÉS: a foreign key ENFORCED az appban; és egy feloldhatatlan predecessor BLOKKOL (kártya 37c5605a, Cybered F-1/F-2)
+
+**ELŐSZÖR A SAJÁT TÉVEDÉSEM, mert két korábbi bejegyzés épült rá.** Azt írtam (2bb82943), hogy az
+`ON DELETE CASCADE` ebben az adatbázisban semmit nem csinál, mert a `PRAGMA foreign_keys` 0. A
+mérésem **rossz kliensen** készült: PYTHON `sqlite3`-mal, ami OFF-fal indul. A **better-sqlite3** --
+amit ez az alkalmazás ténylegesen használ -- **ON-nal**: mérve `1` mind a memóriabeli, mind az élő
+fájlon. Tehát az appon keresztül a `REFERENCES` IGENIS harap, és egy kártya törlése HIBÁVAL bukna,
+ha valami nem takarítaná el előbb az éleket. A kód nem változik ettől: a `deleteKanbanCard`
+tranzakción belüli, mindkét irányú takarítása pont ezért nem "öv és nadrágtartó", hanem az, ami a
+törlést egyáltalán lehetővé teszi. A kódban lévő komment javítva.
+
+**Cybered F-2 mechanizmusa NEM áll, a veszély viszont igen.** Lemértem a pontos alakot (él `s2->p2`,
+majd `p2` törlése) a PRODUKCIÓS belépési ponton, a `deleteKanbanCard`-on keresztül: **nulla** sor
+marad, mindkét irány takarítva. Amit Cybered mért, az a sqlite3 CLI-vel történt, ami megkerüli ezt
+az utat. DE a mögöttes aggodalom valós, és ezért javítottam: ha egy él MÉGIS danglinggé válik -- és
+ebben a flottában ez elérhető, mert az ügynökök közvetlenül írnak sqlite3 CLI-vel és pythonnal,
+mindkettő FK-OFF alapértelmezéssel, ugyanaz a szokás, ami a timestamp-integritás triggereket
+szükségessé tette --, akkor az `INNER JOIN` **eldobta** volna a sort, és a kártya "semmi nem
+blokkol"-ként olvasódott volna. Ez FAIL-OPEN.
+
+**A javítás: `LEFT JOIN` + explicit hiányzó-ág.** Egy feloldhatatlan predecessor `status: 'missing'`
+pszeudo-kártyaként jelenik meg, az azonosítójával a címben. ISMERETLEN ÁLLAPOT = BLOKKOL, mert a
+másik lehetőség egy néma feloldás, amit senki nem lát. A guard is refuse-ol rá, és a board is
+mutatja.
+
+**F-1: a `blocked` mezőnek nem volt fogyasztója.** A `38788337` óta az API vitte, és a FE sehol nem
+renderelte -- a felhasználó csak PRÓBÁLKOZÁSSAL tudta meg, hogy egy kártya blokkolt. Egy állapot,
+amit a szerver tud és a board elrejt, rosszabb, mint ha nem is lenne: valaki olyan kártya köré
+tervez munkát, amit el sem tud kezdeni. Most a kártya tompított (nem elrejtett -- ez valódi munka,
+csak még nem indítható), sárga bal szegéllyel, lakat-ikonnal és tooltipben a blokkolók címeivel. A
+hiányzó predecessor KÜLÖN ikont kap (⚠️), mert a "várok valamire, ami már nem létezik" emberi
+beavatkozást kér, nem türelmet.
+
+**Mérve:** az `INNER JOIN`-ra visszaállítva PONTOSAN a három fail-open teszt pirosodik; kontroll,
+hogy egy feloldható predecessor továbbra is a VALÓDI címével és státuszával jön (e nélkül egy
+"mindent hiányzónak nevező" implementáció is zöld lenne); és külön kontroll arra, hogy a produkciós
+törlés-út után NULLA él marad.
+
+**Ki döntött:** backend (implementáció + a saját FK-mérés helyesbítése), Cybered (mindkét lelet).
+**Hivatkozás:** kártya 37c5605a, gyermekei 2bb82943 / a8aa9ae5 / 73540a68 / 38788337.

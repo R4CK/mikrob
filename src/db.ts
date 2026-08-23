@@ -512,13 +512,21 @@ export function initDatabase(dbPathOverride?: string): void {
   // A "successor" is the same row read from the other end -- one edge, two views, so there is no
   // second table to keep in sync and no way for the two directions to disagree.
   //
-  // THE FOREIGN KEYS ARE DOCUMENTATION, NOT ENFORCEMENT, and nothing may be built on them.
-  // better-sqlite3 leaves `PRAGMA foreign_keys` OFF per connection and this codebase never turns
-  // it on -- measured on the live database (`PRAGMA foreign_keys` -> 0), and there is not one
-  // ON DELETE CASCADE anywhere else in this schema for the same reason. So a card DELETE would
-  // leave dangling edges here unless something removes them explicitly; deleteKanbanCard does,
-  // inside the same transaction that already promotes orphaned children (see
-  // kanban-delete-fk.test.ts, which exists because exactly this class of bug was found live).
+  // THE FOREIGN KEYS ARE ENFORCED FOR THE APP, AND NOT FOR EVERY WRITER -- correcting my own
+  // earlier claim here (card 37c5605a, Cybered F-2). I first wrote that they were documentation
+  // only, on a `PRAGMA foreign_keys` -> 0 reading taken with PYTHON's sqlite3 client, which
+  // defaults to OFF. better-sqlite3 -- the client this application actually uses -- defaults to
+  // ON: measured 1 both in-process and on the live file. So through the app these REFERENCES do
+  // bite, and a card DELETE would FAIL rather than orphan an edge if nothing cleared it first.
+  //
+  // That is exactly why deleteKanbanCard removes these rows inside its own transaction BEFORE
+  // deleting the card, in both directions. It is not belt-and-braces: with FKs on it is what
+  // makes the delete possible at all.
+  //
+  // The reason a dangling row is still worth defending against: this fleet's agents write to the
+  // database DIRECTLY with the sqlite3 CLI and python, both of which default FKs OFF -- the same
+  // habit that made the timestamp-integrity triggers below necessary. A row inserted that way can
+  // point at a card that does not exist, so the read path must not treat it as absent.
   db.exec(`
     CREATE TABLE IF NOT EXISTS kanban_dependencies (
       from_card_id TEXT NOT NULL REFERENCES kanban_cards(id),
@@ -2398,14 +2406,46 @@ export function removeKanbanDependency(fromCardId: string, toCardId: string): bo
   )
 }
 
-/** The cards THIS card is waiting for. */
+/** The status a dangling edge reports. NOT a real card status -- it exists so a predecessor that
+ *  cannot be resolved is visibly unresolved rather than quietly absent. */
+export const MISSING_PREDECESSOR_STATUS = 'missing'
+
+/**
+ * A dependency row whose predecessor cannot be found (card 37c5605a, Cybered F-2).
+ *
+ * An INNER JOIN drops such a row, and dropping it is FAIL-OPEN: the edge still exists, the card is
+ * still marked as depending on something, and the guard would report "nothing blocks you". A
+ * predecessor we cannot resolve is an UNKNOWN state, and unknown must block -- the alternative is a
+ * silent unblock that nobody can see. Rendered with the id in the title so a human can go look.
+ */
+function missingPredecessor(id: string): KanbanCard {
+  return {
+    id,
+    title: `(hiányzó kártya: ${id})`,
+    status: MISSING_PREDECESSOR_STATUS,
+  } as unknown as KanbanCard
+}
+
+/** Drop the join-only `dep_id` column so it never travels out as part of a card object. Written
+ *  as a delete rather than a `{ dep_id: _unused, ...rest }` destructure because the lint rule here
+ *  counts that binding as unused however it is named. */
+function withoutDepId(row: Record<string, unknown>): KanbanCard {
+  const card = { ...row }
+  delete card['dep_id']
+  return card as unknown as KanbanCard
+}
+
+/** The cards THIS card is waiting for. A predecessor that no longer exists is reported as missing,
+ *  never omitted -- see missingPredecessor(). */
 export function getKanbanPredecessors(cardId: string): KanbanCard[] {
-  return db
+  const rows = db
     .prepare(
-      `SELECT c.* FROM kanban_dependencies d JOIN kanban_cards c ON c.id = d.to_card_id
+      `SELECT d.to_card_id AS dep_id, c.* FROM kanban_dependencies d
+         LEFT JOIN kanban_cards c ON c.id = d.to_card_id
         WHERE d.from_card_id = ? ORDER BY c.status, c.sort_order ASC`,
     )
-    .all(cardId) as KanbanCard[]
+    .all(cardId) as (Partial<KanbanCard> & { dep_id: string })[]
+  return rows.map((r) => (r.id === null || r.id === undefined ? missingPredecessor(r.dep_id) : withoutDepId(r)))
 }
 
 /** The cards waiting for THIS card. */
@@ -2450,21 +2490,25 @@ export function getUnmetKanbanPredecessors(cardId: string): KanbanCard[] {
  * a dependency nobody finished.
  */
 export function getUnmetPredecessorsForAllCards(): Map<string, KanbanCard[]> {
+  // LEFT JOIN and an explicit `c.id IS NULL` arm, for the reason spelled out on
+  // missingPredecessor(): an INNER JOIN would DROP an edge pointing at a card that is gone, which
+  // reads as "not blocked" -- fail-open. Unknown blocks.
   const rows = db
     .prepare(
-      `SELECT d.from_card_id AS blocked_id, c.*
+      `SELECT d.from_card_id AS blocked_id, d.to_card_id AS dep_id, c.*
          FROM kanban_dependencies d
-         JOIN kanban_cards c ON c.id = d.to_card_id
-        WHERE c.status <> 'done'
+         LEFT JOIN kanban_cards c ON c.id = d.to_card_id
+        WHERE c.id IS NULL OR c.status <> 'done'
         ORDER BY c.status, c.sort_order ASC`,
     )
-    .all() as (KanbanCard & { blocked_id: string })[]
+    .all() as (Partial<KanbanCard> & { blocked_id: string; dep_id: string })[]
   const out = new Map<string, KanbanCard[]>()
   for (const row of rows) {
-    const { blocked_id: blockedId, ...card } = row
+    const { blocked_id: blockedId, dep_id: depId, ...rest } = row
+    const card = rest.id === null || rest.id === undefined ? missingPredecessor(depId) : (rest as KanbanCard)
     const list = out.get(blockedId)
-    if (list) list.push(card as KanbanCard)
-    else out.set(blockedId, [card as KanbanCard])
+    if (list) list.push(card)
+    else out.set(blockedId, [card])
   }
   return out
 }

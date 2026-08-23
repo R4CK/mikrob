@@ -302,6 +302,8 @@ window._i18n.hu = {
   'kanban.diff.delete_confirm':       'Törlöd ezt a megjegyzést?',
   'kanban.modal.subtasks_title': 'Subtask-ok',
   'kanban.modal.archive_btn':    'Archiválás',
+  'kanban.deps.blocked_tooltip':    'Blokkolva -- előbb ezeknek kell elkészülniük: {titles}',
+  'kanban.deps.blocked_aria':       'Függőség miatt blokkolva',
   'kanban.deps.predecessors_title': 'Függ ettől (predecessorok)',
   'kanban.deps.successors_title':   'Ezek függnek tőle (successorok)',
   'kanban.deps.no_predecessors':    'Ez a kártya nem függ egyetlen másiktól sem.',

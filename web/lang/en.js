@@ -302,6 +302,8 @@ window._i18n.en = {
   'kanban.diff.delete_confirm':       'Delete this comment?',
   'kanban.modal.subtasks_title': 'Subtasks',
   'kanban.modal.archive_btn':    'Archive',
+  'kanban.deps.blocked_tooltip':    'Blocked -- these have to be finished first: {titles}',
+  'kanban.deps.blocked_aria':       'Blocked by a dependency',
   'kanban.deps.predecessors_title': 'Depends on (predecessors)',
   'kanban.deps.successors_title':   'Blocked by this (successors)',
   'kanban.deps.no_predecessors':    'This card does not depend on any other.',
