@@ -22,7 +22,7 @@
     ],
     "SessionStart": [
       {
-        "matcher": "compact|resume",
+        "matcher": "startup|resume|compact|clear",
         "hooks": [
           {
             "type": "command",

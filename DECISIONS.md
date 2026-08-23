@@ -1141,3 +1141,64 @@ a "whole cards" teszt piros. 5 új teszt, 29 a kártya-családban.
 
 **Ki döntött:** backend (implementáció), MikroB (a kártya céljának átírása a plan-grilling F-3 után).
 **Hivatkozás:** kártya 38788337 (szülő 37c5605a).
+
+## 2026-08-23 -- 1ce3fd90 -- Modell-lépcsőzés LEFELÉ friss sessiont indít, és ehhez előbb a replay-matchert kell kinyitni
+
+**A hiba, amit javít.** A `model-fallback-runner` minden modellváltásnál `--continue`-vel élesztette
+újra az ügynököt. Lefelé lépésnél ez azt jelenti, hogy a nagyobb modellen felhalmozott előzményt
+újra be kell tölteni egy KISEBB kontextusablakú modellbe, cache nélkül. Mérve Fron Teden: 593 843
+token Haikura váltva két egymást követő tömörítést kényszerített ki (52 s + 63 s), és a session
+utána is „Context limit reached" állapotban ragadt -- egyetlen értelmes választ sem adott. Az a
+mechanizmus, aminek dolgozni hagynia kellene az ügynököt, tette használhatatlanná.
+
+**1. döntés: a feltétel a LÉPÉS IRÁNYA, nem a kiváltó tengely.** A kártya a heti kvóta-lépcsőt írta
+le, de a banner-tengely (5 órás limit) ugyanazokon a modelleken lépked lefelé, ugyanazzal a
+felhalmozott kontextussal. Ha csak a heti ágra kötném, a testvér-útvonalon változatlanul élne
+ugyanaz a hiba -- ez a „javítás a nem használt ikerfájlba landolt" osztály. A `steppingDown`
+amúgy is ki volt már számolva a hívási helyen. FELFELÉ (revert) marad `--continue`: a nagyobb modell
+elbírja az előzményt, és ott a beszélgetés megőrzése érték.
+
+**2. döntés: a `taskstate-replay` matchere ELŐFELTÉTEL, nem ráadás.** Ez a kártya nem lett volna
+javítás nélküle. A hook `matcher`-e mind a 15 telepített `settings.json`-ben (14 ügynök + main)
+`compact|resume` volt, tehát egy FRISS session forrása (`startup`, illetve `/clear` után `clear`)
+el sem indította volna a hookot: a `fresh: true` csendben folytonosság-VESZTÉS lett volna, nem
+javítás. Mérve, nem feltételezve.
+
+Ez önmagában is egy már meglévő rés: a döntési fél (`REPLAY_SOURCES`) 2026-07-ben megkapta a
+`startup`-ot a crash-respawnok miatt, a KIVÁLTÓ fél nem -- vagyis a támogatás azóta minden
+hidegindításnál elérhetetlen volt. Pontosan a `91c4a369` (egress-gate) tanulsága: a szkriptre
+hivatkozni nem ugyanaz, mint lefuttatni azokon a hívásokon, amik számítanak.
+
+**3. döntés: a matcher és a `REPLAY_SOURCES` HALMAZ-AZONOSSÁGA tesztben áll, nem a két konkrét
+érték.** A hibaosztály az, hogy a két fél külön szerkeszthető; egy „tartalmazza-e a `clear`-t" teszt
+ugyanazt a driftet engedné legközelebb. Ezért a teszt a matcher `|`-ekre bontott ágait a
+`REPLAY_SOURCES` halmazzal veti össze, mindkét irányban. Ehhez a `REPLAY_SOURCES` exportálva lett --
+egy teszt-oldali MÁSOLAT pont az a második definíció, ami elsodródhat.
+
+**4. döntés: a boot-migráció WIDEN-ONLY, sosem hoz létre hookot.** A seed-sablonok írják a
+SessionStart-blokkot; egy injektor itt a UGYANANNAK a bejegyzésnek a második definíciója lenne,
+szabadon eltérhetve. Mérve: mind a 15 fájl HIVATKOZIK a szkriptre, csak a matcher volt elavult --
+tehát a szélesítés mindenkit elér, és nincs mit létrehozni. A seed-sablonok is frissültek (a
+migráció a MAI flottát javítja, a seed dönt arról, mivel indul a HOLNAP létrehozott ügynök; az egyik
+a másik nélkül épp ez a drift).
+
+**Amit tudatosan NEM tettem meg: a dashboard nem ír szintetikus task-state rekordot.** A kártya 1.
+pontja „rövid strukturális állapot-mentést" kért a váltás előtt. A lépcsőzés tipikusan akkor fut,
+amikor az ügynök limit miatt SZÜNETEL, tehát nem lehet megkérdezni; a dashboard viszont a rekordot
+kitöltve azt ÁLLÍTANÁ az injektált szövegben, hogy „folyamatban lévő feladat közben indultál újra" --
+egy állítást, amit nem tud alátámasztani, pont abban a pillanatban, amikor az ügynöknek nincs
+kontextusa ellenőrizni. A hiányzó láncszem amúgy sem a mentés volt, hanem a VISSZAJÁTSZÁS (2. pont);
+ami hitelesen ismert (nyitott `in_progress` kártya, a váltás oka), az a táblán van, és a flotta a
+11./14. szabály szerint amúgy is onnan veszi fel a fonalat.
+
+**Mérés.** Hat mutáció, mind pontosan azt pirosítja, aminek kell: a hívási hely vissza `fresh: false`-ra
+-> 1 teszt; a `restartFor` eldobja a flaget -> 1; `clear` ki a `REPLAY_SOURCES`-ból -> 4; a matcher-konstans
+vissza `compact|resume`-ra -> 19; a migráció no-op -> 2; a migráció LÉTREHOZ egy hiányzó bejegyzést
+(widen-only megsértése) -> 2; egy seed-sablon visszaállítása az elavult matcherre -> 1. Teljes suite:
+11 751 zöld. A wiring egyik felét (a hívási hely `{ fresh: steppingDown }`-t ad át) forrás-szintű
+állítás fedi, a `main-restart-platform.test.ts` bevált idiómája szerint, és a teszt maga KIMONDJA a
+korlátját: a literált szegezi ki, nem a jelentését.
+
+**Ki döntött:** Peti (jóváhagyás, a Fron Ted-eset alapján), MikroB (kártya), backend2 (a három rész
+szétválasztása, a négy fenti döntés, implementáció, mérések).
+**Hivatkozás:** kártya 1ce3fd90. Előzmény: `91c4a369` (elavult matcher = bekötöttnek látszik, nem fut).

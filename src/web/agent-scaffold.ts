@@ -623,6 +623,58 @@ export function ensureBlastRadiusGuard(name: string): boolean {
   return true
 }
 
+// The SessionStart sources the taskstate-replay hook must run on (card 1ce3fd90).
+//
+// The seed templates carried `compact|resume` on all 15 installs, measured. That was correct while
+// the only way to lose a conversation mid-task was a compaction or a resume. It stopped being
+// correct twice over, and both times only the DECIDING half moved:
+//
+//   - 'startup' was added to the dashboard's REPLAY_SOURCES in 2026-07 for crash/watchdog respawns,
+//     but not to this matcher -- so the hook never fired on a cold start and the support was
+//     unreachable.
+//   - 'clear' is what card 1ce3fd90 needs: CLAUDE.md rule 14 clears between cards, and the
+//     model-fallback runner now respawns a stepped-down agent FRESH. Without it, that fresh session
+//     would silently start with no task-state at all -- a continuity LOSS dressed as a fix.
+//
+// Kept identical to the matcher shared-memory-inject already uses, so the two SessionStart hooks
+// cannot drift apart on which starts count as "a session that needs its context back".
+export const TASKSTATE_REPLAY_MATCHER = 'startup|resume|compact|clear'
+
+// Boot-time matcher migration for the taskstate-replay SessionStart hook (card 1ce3fd90).
+//
+// Deliberately WIDEN-ONLY: it never creates the hook where none exists. Creation belongs to the seed
+// templates, which own the SessionStart block; measured on this install, all 15 settings.json files
+// (14 agents + main) already reference the script, so widening reaches everyone that has it and
+// inventing an entry would only add a second way for the two definitions to disagree.
+//
+// This exists because the seed change alone would reach only NEWLY created agents -- the exact drift
+// the egress-gate matcher hit (card 91c4a369): referencing the script is not the same as running it
+// on the starts that matter.
+export function ensureTaskstateReplayMatcher(name: string): boolean {
+  const settingsPath = agentSettingsPath(name)
+  if (!existsSync(settingsPath)) return false
+  let settings: Record<string, unknown> = {}
+  try { settings = JSON.parse(readFileSync(settingsPath, 'utf-8')) } catch { return false }
+  const hooks = (settings.hooks && typeof settings.hooks === 'object')
+    ? settings.hooks as Record<string, unknown>
+    : null
+  if (!hooks) return false
+  const entries = Array.isArray(hooks.SessionStart) ? hooks.SessionStart as unknown[] : []
+
+  let changed = false
+  for (const e of entries) {
+    if (!e || typeof e !== 'object') continue
+    if (!JSON.stringify(e).includes('taskstate-replay.py')) continue
+    const entry = e as { matcher?: unknown }
+    if (entry.matcher === TASKSTATE_REPLAY_MATCHER) continue
+    entry.matcher = TASKSTATE_REPLAY_MATCHER
+    changed = true
+  }
+  if (!changed) return false
+  atomicWriteFileSync(settingsPath, JSON.stringify(settings, null, 2))
+  return true
+}
+
 // Idempotent migration: ensure every agent's settings.json carries the egress
 // gate hook. Called at server startup (alongside ensureAgentStalenessHook) so
 // the hook is applied to both existing and newly-created agents without a full

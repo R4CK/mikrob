@@ -50,9 +50,10 @@ import { readHardStop } from '../costops/weekly-hard-stop.js'
 //
 // Per agent each tick: capture the pane, detect a plan usage-limit banner, ask
 // the pure decision function what to do, and -- only when the pane is idle --
-// rewrite the agent's model and respawn the session (keeping the conversation)
-// so the new model takes effect. A revert climbs back to the primary once the
-// agent has been limit-free past the configured window.
+// rewrite the agent's model and respawn the session so the new model takes
+// effect -- FRESH on a step down, --continue on a revert (see restartFor). A
+// revert climbs back to the primary once the agent has been limit-free past the
+// configured window.
 
 const INITIAL_DELAY_MS = 50_000
 const INTERVAL_MS = 60_000
@@ -104,11 +105,36 @@ function sessionFor(name: string): string {
   return name === MAIN_AGENT_ID ? MAIN_CHANNELS_SESSION : agentSessionName(name)
 }
 
-async function restartFor(name: string): Promise<void> {
+/**
+ * Respawn an agent so the model rewrite takes effect.
+ *
+ * `fresh` decides whether the OLD CONVERSATION comes along, and the two directions of the ladder
+ * want opposite answers (card 1ce3fd90, Peti 2026-08-23):
+ *
+ * - Step DOWN (fresh): the new model has a SMALLER context window than the one the conversation was
+ *   accumulated on, so --continue re-feeds the whole history into it, uncached. Measured on Fron Ted:
+ *   593 843 accumulated tokens switched to Haiku forced two back-to-back compactions (52s + 63s) and
+ *   the session stayed stuck at "Context limit reached" afterwards -- it never produced a single
+ *   usable answer. The step-down is precisely the case where carrying the conversation can make the
+ *   agent unusable, so it starts clean and picks the thread back up from the structured task-state
+ *   record (SessionStart taskstate-replay) plus the board.
+ * - Step UP / revert (continue): the bigger model can hold the history, and there the conversation is
+ *   worth keeping.
+ *
+ * Deliberately keyed on the DIRECTION, not on which axis triggered it. The card described the weekly
+ * quota ladder, but the banner axis (5h limit) steps down through the same models with the same
+ * accumulated context -- binding this to the weekly branch only would have left the identical defect
+ * live on the sibling path.
+ *
+ * Exported for the test: the only alternative was a source-level assertion, and this half of the
+ * change IS a behaviour (which flag reaches restartAgentProcess), so it gets a behavioural test.
+ */
+export async function restartFor(name: string, opts: { fresh: boolean }): Promise<void> {
   if (name === MAIN_AGENT_ID) {
     // A fresh main relaunch re-reads .claude/settings.json (and thus the new
     // model). channels.sh always starts fresh for main, so a conversation is
-    // not preserved here -- the model swap is what matters.
+    // not preserved here -- the model swap is what matters. `opts.fresh` is
+    // therefore not consulted: main has no --continue path to choose between.
     //
     // Was a hardcoded `/bin/launchctl kickstart` (macOS-only), so on Linux the
     // usage-limit fallback could never actually swap main's model: it threw
@@ -118,9 +144,7 @@ async function restartFor(name: string): Promise<void> {
     const res = hardRestartMarveenChannels()
     if (!res.ok) throw new Error(res.error ?? 'main channels hard restart failed')
   } else {
-    // 'continue' (fresh: false) re-spawns with --continue so the conversation
-    // survives the model swap.
-    await restartAgentProcess(name, { fresh: false })
+    await restartAgentProcess(name, { fresh: opts.fresh })
   }
 }
 
@@ -277,7 +301,8 @@ async function checkAgent(name: string, nowMs: number, cfg: ModelFallbackConfig,
     // this step is a weekly-driven step down (the banner axis has its own chain[0] home).
     if (steppingDown && agentTier > 0) recordBaselineIfAbsent(name, currentModel)
     writeModelFor(name, targetModel)
-    await restartFor(name)
+    // Step DOWN starts a FRESH session; a revert keeps the conversation. See restartFor.
+    await restartFor(name, { fresh: steppingDown })
     // downgradedAt drives the banner revert clock. Re-start it on each step DOWN, and once the agent
     // is back on its base (weekly home + banner clear), clear both the clock and the durable base.
     const homeAgain = agentTier === 0 && bannerDesired === 0

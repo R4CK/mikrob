@@ -37,7 +37,18 @@ export const TASKSTATE_TTL_MS = 12 * 60 * 60 * 1000
 // planned restart right after finishing work replays nothing (the record was
 // either consumed or is empty), and at worst a stale-but-unconsumed record
 // costs one short injected block that the agent can discard.
-const REPLAY_SOURCES = new Set(['compact', 'resume', 'startup'])
+//
+// 'clear' joined them on 2026-08-23 (card 1ce3fd90). A /clear is a DELIBERATE
+// context wipe, and the fleet now does it in two places where the work is NOT
+// finished: CLAUDE.md rule 14 (clear between two cards) and the model-fallback
+// runner, which from this card respawns a stepped-down agent FRESH instead of
+// with --continue. Both are the same shape as a compact -- the conversation is
+// gone, the task is not -- so withholding the record on 'clear' would have made
+// the fresh-session switch a continuity LOSS rather than a fix.
+// Exported so the hook-matcher test compares against THIS set rather than a second copy of it.
+// A copy is exactly how the two halves drifted apart twice: 'startup' was added here in 2026-07
+// and the matcher was left behind, making the support unreachable for a year of restarts.
+export const REPLAY_SOURCES = new Set(['compact', 'resume', 'startup', 'clear'])
 
 export interface AgentTaskState {
   agent: string
@@ -76,8 +87,10 @@ export function isEmptyTaskState(r: Pick<AgentTaskState, 'doneSteps' | 'alreadyD
 
 /**
  * Pure decision: should this record be re-injected at SessionStart?
- * Replays ONLY when: record exists, not yet consumed, source is compact|resume
- * (never cold startup), within TTL, and the record actually holds a task.
+ * Replays ONLY when: record exists, not yet consumed, source is one of
+ * REPLAY_SOURCES, within TTL, and the record actually holds a task.
+ * (The old "never cold startup" wording outlived its rule -- 'startup' was added
+ * in 2026-07, 'clear' in card 1ce3fd90; the set above is the one truth.)
  */
 export function shouldReplayTaskState(
   record: AgentTaskState | null,
