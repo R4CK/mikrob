@@ -38,8 +38,19 @@ describe('shouldReplayTaskState', () => {
   it('replays on startup too (crash respawn mid-task)', () => {
     expect(shouldReplayTaskState(rec(), 'startup', NOW + 1000)).toBe(true)
   })
+  // Card 1ce3fd90. This case used to read `'clear'` -- as an EXAMPLE of an unknown source, not
+  // because clear itself had to be refused. The property (an unrecognised source replays nothing)
+  // is unchanged and still pinned; only the example moved, because 'clear' is now a real source.
   it('does NOT replay an unknown source', () => {
-    expect(shouldReplayTaskState(rec(), 'clear', NOW + 1000)).toBe(false)
+    expect(shouldReplayTaskState(rec(), 'other', NOW + 1000)).toBe(false)
+    expect(shouldReplayTaskState(rec(), '', NOW + 1000)).toBe(false)
+  })
+  // A /clear wipes the conversation while the WORK continues: CLAUDE.md rule 14 clears between two
+  // cards, and the model-fallback runner now respawns a stepped-down agent fresh. Same shape as a
+  // compact, so the record has to survive it -- otherwise the fresh-session switch would trade a
+  // slow session for an amnesiac one.
+  it('replays on clear too (rule-14 clear, and the fresh model-step-down respawn)', () => {
+    expect(shouldReplayTaskState(rec(), 'clear', NOW + 1000)).toBe(true)
   })
   it('does NOT replay an empty record on startup either', () => {
     const empty = rec({ doneSteps: [], alreadyDelegated: [], nextAction: '', pendingDecision: '', summary: 'idle' })
