@@ -246,13 +246,21 @@ const ACKNOWLEDGED_CONFLICTS = {
   // OTHER curl calls in the file (the ones upstream did not replace with Python).
   'src/web/heartbeat-agent-scaffold.ts':
     'two-way merge: adopt upstream Python one-liner + HBHEREDOC819/HBKANBANDRIFT819 docs for kanban section; keep fork printf|curl token-argv-safe pattern for the remaining curl calls (quota park + inter-agent message section) that upstream did not touch',
-  // Fork made runPreCheck async (spawnSync → execFile) with improved timeout/SIGTERM detection
-  // via child.killed (card 68bfbff2). Upstream added SCHEDULE_JANITOR_PARKED_MIN_AGE_MS constant
-  // + quota gate imports + quota work-class types for scheduled tasks. Changes are in non-
-  // overlapping regions of the file. Resolution: keep both -- fork's async runPreCheck and
-  // upstream's quota-gate additions sit in separate hunks and can be merged cleanly.
+  // Re-read 2026-08-23 against upstream 9736ea67 (card 394fb5ce): the file moved on, so the rule
+  // below now describes TODAY's two hunks rather than the ones it was first written for. The
+  // SIGTERM/janitor hunks the previous text named have since merged cleanly and are gone; what
+  // conflicts now is:
+  //   1. runPreCheck's signature -- fork keeps it ASYNC (card 955f014e: it runs on the scheduler
+  //      tick, so a synchronous child freezes the event loop, HTTP server included), upstream is
+  //      still sync and adds quotaWorkClass() immediately above it. Non-overlapping intent: keep
+  //      the fork's async signature, adopt upstream's quotaWorkClass definition alongside it.
+  //   2. the auto-start call -- fork wraps startAgentProcess in try/catch (card e9d3cd12: it can
+  //      now REJECT, and an uncaught rejection ends the whole tick, silently stopping every task
+  //      ordered after a wedged agent), upstream still has the bare await. Keep the fork's.
+  // Upstream's new sawTurn / 'lost' watchdog in the same file merges CLEANLY and is adopted with
+  // no decision needed -- it is recorded here only so the next reader knows it was looked at.
   'src/web/schedule-runner.ts':
-    'two independent non-overlapping changes: keep fork async runPreCheck + child.killed SIGTERM fix; adopt upstream SCHEDULE_JANITOR_PARKED_MIN_AGE_MS + quota gate imports + quota work-class definitions',
+    'two independent non-overlapping changes: keep the fork async runPreCheck signature (955f014e) and the fork try/catch around startAgentProcess (e9d3cd12); adopt upstream quotaWorkClass() and the cleanly-merging sawTurn/lost watchdog',
   // Fork added agents/** to the exclude list (with explanatory comment: live-install agent SDK
   // tests would otherwise drown the real suite). Upstream added assert-supported-node.ts to
   // setupFiles and updated the comment above setupFiles to list both gates. Both changes are
@@ -397,7 +405,7 @@ const ACKNOWLEDGED_UPSTREAM_BLOBS: Readonly<Record<keyof typeof ACKNOWLEDGED_CON
   '.gitignore': '1e5adbb2332be0dbf5a710c1899e49305ccb318b',
   'package-lock.json': '738952610de98fcaa2af4c7b59648a18a049a973',
   'src/web/heartbeat-agent-scaffold.ts': '9da046f14c0702cd8b61e1a005717d0c3a61d198',
-  'src/web/schedule-runner.ts': '88423d5733eb20fb208e38551389d5b24e967b41',
+  'src/web/schedule-runner.ts': '9736ea6737757cc0155671dca3d9d2874b330885',
   'vitest.config.ts': '62d4ac7606cd719d40e07fc0d82c7f777dda0b30',
   'src/web/agent-process.ts': 'bb28237a19c881551c8415ebeecd58fcaac01923',
   'src/web/auto-restart-runner.ts': '40b83f7012812cc0bdf48f1e093dd8b8d6bb4db2',
