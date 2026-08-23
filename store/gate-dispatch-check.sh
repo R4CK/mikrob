@@ -321,13 +321,33 @@ def designated_from_gate_line(text):
     # which is the more carefully a card documents its own exclusion, the more certainly this
     # bug wakes the gate it just excluded.
     #
-    # The fix scans only the OWN designation clause of the gate line -- everything before the first "("
-    # or sentence-ending punctuation (. ! ?) -- not the whole line. A negation-word list
-    # ("nem", "not", "kimarad", ...) was considered and rejected: that is the same
-    # never-complete-vocabulary trap this fleet has hit before in other guards (see
-    # security-qualifier-vocab-lists-recur-incomplete), and it would need to grow every time a
-    # new phrasing appeared. Clause position is structural, not vocabulary, so it does not rot.
-    clause_end = re.search(r"[.(!?]", text)
+    # The fix scans only the OWN designation clause of the gate line, not the whole line. A
+    # negation-word list ("nem", "not", "kimarad", ...) was considered and rejected: that is the
+    # same never-complete-vocabulary trap this fleet has hit before in other guards (see
+    # security-qualifier-vocab-lists-recur-incomplete), and it would need to grow every time a new
+    # phrasing appeared. Clause position is structural, not vocabulary, so it does not rot.
+    #
+    # TWO STEPS, AND THE ORDER MATTERS (card aa837c5b, Cybersec msg 18949). The first version CUT
+    # the line at the first "(" as well, which threw away every name after it: a perfectly ordinary
+    # "Gate: QA (functional...), Cybersec (...)" designated only QA and reported Cybersec as
+    # not-designated -- the ONE verdict that leaves no skip comment behind, so a card waiting for a
+    # gate would drop out of the sweep with nothing to show for it.
+    #
+    #   1. REMOVE the parenthesised parts instead of truncating at them, innermost-first until the
+    #      text stops changing, so nesting cannot leave a stray fragment behind. This keeps names
+    #      that sit BETWEEN parentheticals while still dropping the explanatory prose inside them --
+    #      which is where the excluded gate of card 55af560d ("..., ezert Cybersec, nem Cybered") lives.
+    #   2. THEN cut at sentence-ending punctuation, exactly as before. Dropping this half would
+    #      reopen the OTHER shape from card 55af560d, where the exclusion is a TRAILING SENTENCE rather than a
+    #      parenthetical ("QA + Cybered (...). Cybersec kimarad: ..."). The proposal from Cybersec was the
+    #      paren removal alone; keeping the sentence cut is what makes both of those cases hold at
+    #      once, and the self-test below pins each of them.
+    for _ in range(8):
+        stripped = re.sub(r"\([^()]*\)", "", text)
+        if stripped == text:
+            break
+        text = stripped
+    clause_end = re.search(r"[.!?]", text)
     clause = text[: clause_end.start()] if clause_end else text
     low = clause.lower()
     names = set()
@@ -868,6 +888,30 @@ print(",".join(c.get("id") or "" for c in cards if isinstance(c, dict)))
     dd "designation: 35533cca-shape, the ACTUALLY-designated gate is unaffected" \
        "ALLOW:no-verdict" 0 cybered "" \
        "QA + Cybered (Cybered a 9f74a0da 8232-es kommentjeben EXPLICIT utokort kert magara az ELESITESRE -- a dry-run-ra kapott GO nem fedi az elo hatast). Cybersec kimarad: az elesites nem nyit uj tamadasi feluletet, a beadasi utat (POST /api/agents/<agent>/compact, panel-mutex, token headerfile-bol) mar lefedte a 9f74a0da-n."
+
+    # MULTI-AGENT GATE LINE (card aa837c5b, Cybersec msg 18949). Truncating at the first "(" threw
+    # away every name after it, so the SECOND designated gate read as not-designated -- and that is
+    # the one verdict which leaves no skip comment, so the card would vanish from the sweep with
+    # nothing to show. Both named gates must be designated, and an unnamed one must still not be.
+    SELFTEST_JSON='[{"author":"backend","created_at":100,"content":"REVIEW"}]'
+    dd "aa837c5b: multi-agent gate line designates the FIRST named gate" \
+       "ALLOW:no-verdict" 0 qa "" \
+       "QA (funkcionalis lefedettseg, regresszio), Cybersec (uj unauth endpoint, trust boundary)"
+    dd "aa837c5b: THE DEFECT -- it also designates the SECOND, after the first parenthetical" \
+       "ALLOW:no-verdict" 0 cybersec "" \
+       "QA (funkcionalis lefedettseg, regresszio), Cybersec (uj unauth endpoint, trust boundary)"
+    dd "aa837c5b: a gate named NOWHERE on that line is still excluded" \
+       "ADVISE-SKIP:not-designated" 8 cybered "" \
+       "QA (funkcionalis lefedettseg, regresszio), Cybersec (uj unauth endpoint, trust boundary)"
+    # The control that keeps the two halves of the fix honest: paren removal alone would reopen the
+    # trailing-sentence exclusion, and the sentence cut alone is the bug above. This line has BOTH
+    # shapes at once -- a name after a parenthetical, and an exclusion in a trailing sentence.
+    dd "aa837c5b: name after a parenthetical AND a trailing exclusion sentence, together" \
+       "ALLOW:no-verdict" 0 cybersec "" \
+       "QA (funkcionalis), Cybersec (trust boundary). Cybered kimarad: nincs publikus write path."
+    dd "aa837c5b: ...and the trailing-sentence exclusion still excludes" \
+       "ADVISE-SKIP:not-designated" 8 cybered "" \
+       "QA (funkcionalis), Cybersec (trust boundary). Cybered kimarad: nincs publikus write path."
 
     # GATE_LINE EXTRACTION (card 84fd2839, Cybered's finding on 5bc10089): a description can carry
     # MORE THAN ONE "Gate: ..." line -- an earlier tier decision superseded by a later one, appended
