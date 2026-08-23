@@ -6,9 +6,13 @@
 // card ids, and must never cost a message when the lookup misbehaves. A stamp that is sometimes
 // absent is worse than none, because people stop looking for it.
 import { describe, it, expect } from 'vitest'
+import { readFileSync } from 'node:fs'
+import { join } from 'node:path'
 import {
   appendCardStateStamp,
+  formatDeliveryStalenessNote,
   CARD_STATE_MARKER,
+  CARD_STATE_DELIVERY_MARKER,
   MAX_STAMPED_CARDS,
   type CardStateSnapshot,
 } from '../web/kanban-state-stamp.js'
@@ -110,5 +114,128 @@ describe('the stamp says what it is', () => {
     const out = appendCardStateStamp('45331a93', lookup)
     expect(out).toMatch(/olvasd ujra a kartyat/i)
     expect(out).toMatch(/a kuldes pillanataban/i)
+  })
+})
+
+// ---------------------------------------------------------------------------
+// Card 9566a197: delivery-time re-check. The card opened on the theory that the
+// SENDER reads a stale board; the queue data refuted it. Msg 19064's stamp was
+// correct when written -- the card moved to done 35 minutes later, and the
+// message reached its receiver 153 minutes after being written. The stamp is a
+// photograph; nothing re-read the board before showing it.
+// ---------------------------------------------------------------------------
+
+describe('formatDeliveryStalenessNote (card 9566a197)', () => {
+  const board: Record<string, CardStateSnapshot> = {
+    '956fdaf5': { id: '956fdaf5', status: 'done', updatedAt: 1787400927 },
+    '12f80902': { id: '12f80902', status: 'in_progress', updatedAt: 1787400000 },
+  }
+  const live = (p: string): CardStateSnapshot | null => board[p.toLowerCase()] ?? null
+
+  // The real shape: a send-time stamp produced by appendCardStateStamp itself,
+  // never a hand-written lookalike -- the two must not be allowed to drift.
+  const stampedFor = (body: string, snaps: Record<string, CardStateSnapshot>): string =>
+    appendCardStateStamp(body, (p) => snaps[p.toLowerCase()] ?? null)
+
+  it('reproduces the incident: a card stamped in_progress that is now done', () => {
+    const atSend = { '956fdaf5': { id: '956fdaf5', status: 'in_progress', updatedAt: 1787398822 } }
+    const msg = stampedFor('956fdaf5 visszanyitva in_progress-be, QA FAIL', atSend)
+    expect(msg).toContain(CARD_STATE_MARKER)
+
+    const note = formatDeliveryStalenessNote(msg, live, 153 * 60)
+    expect(note).toContain(CARD_STATE_DELIVERY_MARKER)
+    expect(note).toContain('956fdaf5: in_progress -> done')
+    expect(note).toContain('153 percet')
+  })
+
+  it('CONTROL: a card still in the column it was stamped in produces NO note', () => {
+    const atSend = { '12f80902': { id: '12f80902', status: 'in_progress', updatedAt: 1787399000 } }
+    const msg = stampedFor('12f80902 leirast javitottam', atSend)
+    expect(formatDeliveryStalenessNote(msg, live, 166 * 60)).toBe('')
+  })
+
+  it('updated_at churn alone is NOT staleness -- otherwise every healthy dispatch trips it', () => {
+    // MikroB moves a card, then dispatches: updated_at differs by seconds, the column does not.
+    const atSend = { '12f80902': { id: '12f80902', status: 'in_progress', updatedAt: 1 } }
+    const msg = stampedFor('12f80902 vidd', atSend)
+    expect(formatDeliveryStalenessNote(msg, live, 30)).toBe('')
+  })
+
+  it('a message with no send-time stamp is left alone', () => {
+    expect(formatDeliveryStalenessNote('956fdaf5 nezd meg', live, 9999)).toBe('')
+    expect(formatDeliveryStalenessNote('', live, 9999)).toBe('')
+  })
+
+  it('reports only the cards that moved, when a message stamped several', () => {
+    const atSend = {
+      '956fdaf5': { id: '956fdaf5', status: 'in_progress', updatedAt: 1 },
+      '12f80902': { id: '12f80902', status: 'in_progress', updatedAt: 1 },
+    }
+    const msg = stampedFor('956fdaf5 es 12f80902 is nalad van', atSend)
+    const note = formatDeliveryStalenessNote(msg, live, 600)
+    expect(note).toContain('956fdaf5: in_progress -> done')
+    expect(note).not.toContain('12f80902')
+  })
+
+  it('an unknown card (deleted/archived since) counts as unchanged, never as a crash', () => {
+    const atSend = { 'aaaaaaaa': { id: 'aaaaaaaa', status: 'in_progress', updatedAt: 1 } }
+    const msg = stampedFor('aaaaaaaa vidd', atSend)
+    expect(formatDeliveryStalenessNote(msg, live, 600)).toBe('')
+  })
+
+  it('a throwing lookup must not cost the delivery', () => {
+    const atSend = { '956fdaf5': { id: '956fdaf5', status: 'in_progress', updatedAt: 1 } }
+    const msg = stampedFor('956fdaf5 vidd', atSend)
+    const boom = (): CardStateSnapshot | null => {
+      throw new Error('db down')
+    }
+    expect(formatDeliveryStalenessNote(msg, boom, 600)).toBe('')
+  })
+
+  it('the two markers are distinct, so a delivery note never reads as a send-time stamp', () => {
+    // appendCardStateStamp uses CARD_STATE_MARKER as its own idempotency check; if the delivery
+    // marker collided with it, a re-sent message would silently lose its stamp.
+    expect(CARD_STATE_DELIVERY_MARKER).not.toBe(CARD_STATE_MARKER)
+    expect(CARD_STATE_DELIVERY_MARKER.includes(CARD_STATE_MARKER)).toBe(false)
+    expect(CARD_STATE_MARKER.includes(CARD_STATE_DELIVERY_MARKER)).toBe(false)
+  })
+
+  it('a card id in the BODY is not a stamped card -- only the stamp block is compared', () => {
+    // The body names 956fdaf5 (now done) but the stamp block only covers 12f80902 (unchanged).
+    const atSend = { '12f80902': { id: '12f80902', status: 'in_progress', updatedAt: 1 } }
+    const msg = stampedFor('12f80902 vidd; a 956fdaf5 mar lezarult, csak kontextus', atSend)
+    expect(msg).toContain('12f80902 status=in_progress')
+    expect(msg).not.toContain('956fdaf5 status=')
+    expect(formatDeliveryStalenessNote(msg, live, 600)).toBe('')
+  })
+})
+
+// A pure function nobody calls is a decoration. There are exactly TWO delivery paths -- the router's
+// tmux push for sub-agents and the main agent's drain-inbox pull -- and the wrap module's own header
+// warns that anything landing in only one of them is a drift bug. These assert BOTH call the
+// re-check AND concatenate its result into the text that is actually delivered; a call whose return
+// value is dropped would satisfy a bare grep for the function name.
+describe('the delivery-time re-check is wired into BOTH delivery paths', () => {
+  const readSrc = (rel: string): string => readFileSync(join(process.cwd(), 'src', rel), 'utf8')
+
+  it('the router appends it to the injected prompt', () => {
+    const src = readSrc('web/message-router.ts')
+    expect(src).toContain('formatDeliveryStalenessNote(')
+    expect(src).toContain('sendPromptToSession(session, prefix + wrapped + staleNote, host)')
+  })
+
+  it('drain-inbox appends it to the block it returns', () => {
+    const src = readSrc('web/routes/agents.ts')
+    expect(src).toContain('formatDeliveryStalenessNote(')
+    expect(src).toContain('blocks.push(prefix + wrapped + staleNote)')
+  })
+
+  it('both paths append AFTER the wrapper, never inside the sender-attributed payload', () => {
+    // The note is the router's own text. Inside the wrapper it would read as part of what the
+    // sender wrote -- and for an untrusted sender that is precisely the framing the wrap module
+    // exists to keep straight.
+    for (const rel of ['web/message-router.ts', 'web/routes/agents.ts']) {
+      expect(readSrc(rel)).toContain('wrapped + staleNote')
+    }
   })
 })

@@ -54,6 +54,11 @@ vi.mock('../db.js', () => ({
   markMessageDone: (..._a: unknown[]) => true,
   createAgentMessage: (...a: unknown[]) => mockCreateAgentMessage(...a),
   stampMessageTrace: (..._a: unknown[]) => false,
+  // Card 9566a197: the delivery path re-reads the board for the cards a message was stamped with.
+  // vitest THROWS on an export this mock omits, and the throw lands inside the router's per-message
+  // try/catch -- the message fails silently and nothing is delivered, which is how its absence
+  // showed up here as "0 sends" rather than as a missing-export error.
+  getKanbanCardStateByIdPrefix: () => null,
   upsertOtelSpan: (..._a: unknown[]) => undefined,
   closeOtelSpan: (..._a: unknown[]) => false,
 }))
