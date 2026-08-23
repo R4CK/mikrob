@@ -285,6 +285,57 @@ const TICK_WATCHDOG_MS = 120_000
 // Max messages drained per 5s tick; a larger backlog rolls to the next tick.
 export const MAX_MESSAGES_PER_TICK = 25
 
+// Letters that count as "inside a word" for the urgency-marker boundary check.
+// JS \b is ASCII-only, so `\bSURGOS\b` would happily match the tail of an
+// accented Hungarian word; spelling the class out keeps a marker a marker only
+// when it stands alone.
+const URGENCY_WORDISH = 'A-Za-z0-9\u00c1\u00c9\u00cd\u00d3\u00d6\u0150\u00da\u00dc\u0170\u00e1\u00e9\u00ed\u00f3\u00f6\u0151\u00fa\u00fc\u0171_'
+
+// UPPERCASE-only, deliberately: the fleet writes urgency tags and gate verdicts
+// in caps ("SURGOS", "QA FAIL", "CYBERSEC NO-GO"), while the same words in
+// ordinary prose ("this is urgent", "the build failed") are lowercase and must
+// NOT jump the queue. Case-insensitive matching here would elevate nearly every
+// message, which is the same as elevating none.
+const URGENCY_MARKER_RE = new RegExp(
+  `(?:^|[^${URGENCY_WORDISH}])(?:SURGOS|S\u00dcRG\u0150S|S\u00dcRGOS|SURG\u0150S|URGENT|CRITICAL|KRITIKUS|NO-GO|NO GO|FAIL)(?:[^${URGENCY_WORDISH}]|$)`,
+)
+
+/**
+ * Does this message deserve to go ahead of an older, ordinary one to the SAME
+ * receiver?
+ *
+ * Measured 2026-08-22 (card f951ec53, backend's report in msg 19164): five
+ * fresh messages -- two gate FAIL verdicts and one urgent security bug report
+ * from Cybersec -- sat `pending` for ~30 minutes while backend's pane received
+ * four OLDER dispatches about cards that had since been closed. Nothing was
+ * broken: the queue is strict FIFO end to end (getPendingMessages orders by
+ * created_at, selectFairBatch shifts each receiver's bucket from the front),
+ * and every delivery costs a full agent turn, so four worthless dispatches
+ * ahead of the urgent ones cost half an hour of head-of-line blocking.
+ * Delivery ORDER, in other words, never carried any notion of what the message
+ * was worth.
+ *
+ * Only the FIRST non-empty line is examined (capped like VERDICT_HEAD_RE's
+ * opening window in db.ts): fleet messages put the tag or verdict in their
+ * header, so a body that merely MENTIONS a FAIL ("the QA FAIL is fixed
+ * already") must not be promoted -- the same anchoring lesson card c4f2de32
+ * recorded for gate verdicts.
+ *
+ * Deliberately NOT anti-starvation-guarded. Promotion applies only WITHIN one
+ * receiver's bucket and preserves FIFO inside each class, so an ordinary
+ * message is deferred only for as long as that agent has genuinely urgent
+ * traffic queued -- gate FAILs and security reports are bursty by nature, and
+ * each one costs the receiver a turn, so the urgent class drains. A ceiling
+ * that let an OVERDUE ordinary message overtake an urgent one would reproduce
+ * exactly the bug this fixes (the stale dispatches in the incident were the
+ * OLDEST rows in the queue).
+ */
+export function isUrgentMessage(content: string): boolean {
+  const firstLine = (content ?? '').split('\n').find((l) => l.trim().length > 0)
+  if (!firstLine) return false
+  return URGENCY_MARKER_RE.test(firstLine.slice(0, 200))
+}
+
 /**
  * Pick up to `cap` messages from `sorted` (oldest-first, as returned by
  * getPendingMessages) FAIRLY across distinct receivers, instead of taking the
@@ -318,6 +369,18 @@ export function selectFairBatch(sorted: readonly AgentMessage[], cap: number): A
       order.push(m.to_agent)
     }
     bucket.push(m)
+  }
+  // Urgency beats age WITHIN a receiver's own bucket (see isUrgentMessage): a
+  // gate FAIL or a flagged-urgent report is delivered before ordinary older
+  // dispatches to the same agent. FIFO still holds inside each class, and the
+  // cross-receiver round-robin below is untouched -- that fairness fix solved a
+  // different problem (one busy agent starving every other receiver) and this
+  // must not weaken it.
+  for (const [agent, bucket] of byAgent) {
+    const urgent: AgentMessage[] = []
+    const ordinary: AgentMessage[] = []
+    for (const m of bucket) (isUrgentMessage(m.content) ? urgent : ordinary).push(m)
+    byAgent.set(agent, [...urgent, ...ordinary])
   }
   const selected: AgentMessage[] = []
   let progressed = true
