@@ -1409,3 +1409,46 @@ felvetele az auditalt mezok koze -> 1 piros (pont az a teszt, ami a szandekos ki
 
 **Ki dontott:** backend (implementacio + a kulon-tabla es a `sort_order`-kihagyas dontese).
 **Hivatkozas:** kartya 51878c59, forras-lelet 8b925388 (komment 19660), incidens 8d673233.
+
+## 2026-08-23 19:57 -- Egy DEKLARALT, de elerhetetlen audit-mezo rosszabb, mint egy nyilt hiany (kártya 7fd6dd23)
+
+**F-1 (a lenyeg).** Az `archived_at` BENNE volt az auditalt mezok listajaban, es SOHA nem sulhetett
+el: az `archiveKanbanCard` es az `unarchiveKanbanCard` a SAJAT `UPDATE`-jevel irja az oszlopot, tehat
+semmi nem jut el az `updateKanbanCard` osszehasonlito ciklusaig. Cybersec merte: archivalas utan
+NULLA sor mindket tablaban.
+
+Ez rosszabb, mint egy nyilt hiany. Egy hianyt eszrevesz, aki keresi; egy DEKLARALT mezo azt allitja,
+hogy le van fedve, es a kereso ember ABBAHAGYJA a keresest. Ugyanaz az alak, mint a "bekotott
+detektor fogyaszto nelkul", csak forditva: itt a fogyaszto megvan, a FORRAS hianyzik.
+
+**A javitas iranya: NEM a lista szukitese.** Cybersec mindket utat felkinalta (vagy az archivalas
+keruljon at az auditalt utra, vagy vegyuk ki a mezot a listabol). A kivetel megszuntetne a hamis
+allitast, de otthagyna az archivalast attribualatlanul -- pedig az archivalas VALODI allapot-valtas
+(leveszi a kartyat a tablarol). Ezert a ket fuggveny sajat sort ir, es kap egy opcionalis `actor`-t,
+amit a route atad. Additiv, szignaturat nem tor.
+
+**F-2.** A `fleet-transfer` nem ismerte az uj tablat: transfer/restore utan a statusz-tortenet
+megmaradt volna, a mezo-audit CSENDBEN eltunik -- a visszaallitott tabla teljesen attribualtnak
+LATSZANA, mikozben minden transzfer elotti szerkesztes elveszett. Export + idempotens import
+`(card_id, created_at, field)`-re. A payload-kulcs OPCIONALIS: egy korabban keszult export kulcs
+nelkul is importalhato marad, kulonben ez a valtoztatas nem bovitene, hanem TORNE minden meglevo
+mentest.
+
+**F-3: KORLAT, NEM HASH.** Az `old_value`/`new_value` a cim es a leiras TELJES korabbi szoveget
+tarolta, korlat es TTL nelkul, es a vegpont ki is adja. Ket kovetkezmeny: korlatlan novekedes, es
+egy leirasbol TOROLT szoveg tovabb el az auditban, amig ket helyen nem torlik. 500 karakteres korlat,
+lathato levagas-jelolessel. Hash helyett azert, mert a hash korlatozza a novekedest ES elpusztitja
+az egyetlen dolgot, amiert a sor letezik: hogy megmondja, MIT mondott korabban. A ket-helyen-torles
+tenye IGAZ marad, es le van irva, nem elmagyarazva -- barmilyen tortenet-megorzes velejaroja.
+
+**Merve:** az archivalasi audit-sor eltavolitasa (a javitas elotti allapot) -> 2 piros; a korlat
+eltavolitasa -> 1 piros. KONTROLL az F-1-re: egy ELUTASITOTT archivalas NEM ir sort (kulonben a
+trail kisérleteket rogzitene ugy, mintha megtortentek volna), es egy PONT a hatarnal levo ertek
+CSONKITATLANUL tarolodik (kulonben a korlat azt is levagna, ami belefer).
+
+**Amit kimondok az F-2-rol:** a hozza tartozo teszt a FORRAS ALAKJAT meri, nem egy vegponttol
+vegpontig futo transzfert -- az `importFleet` elo DB-t es fajlrendszert igenyel, ezert a meglevo
+suite is mockolt modulokkal hajtja. Ezt jelzem, nem hallgatom el.
+
+**Ki dontott:** backend (implementacio + az F-1 iranyanak valasztasa), Cybersec (harom lelet).
+**Hivatkozas:** kartya 7fd6dd23, szulo-lelet 51878c59.
