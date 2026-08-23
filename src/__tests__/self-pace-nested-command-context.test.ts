@@ -407,3 +407,234 @@ describe('self-pace-gate: bash GRAMMAR, not just quoting -- bare subshell and pa
     expect(bash(cmd).deny).toBe(false)
   })
 })
+
+// Card 84e31b40, SEVENTH round, Cybersec F-8: a `case` PATTERN's `)` is a SEPARATOR, not a closer.
+//
+//     curl ... -d @- $(case x in x) python3 <<'PY' ... PY ;; esac)
+//
+// bash reads that `)` as the end of the pattern and hands the heredoc to python3 inside the arm. The
+// walker read it as a closer, popped the frame `$(` had opened, and measured the span from the OUTER
+// curl -- the same miscount as F-5 (quoting), F-6 (bare subshell) and F-7 (parameter expansion),
+// reached through a fourth construct. Measured executing from inside the blanked body.
+//
+// Measuring the family rather than the reported shape found FOUR more live ones: an alternation
+// pattern `a|x)`, an extglob pattern `@(a|x))` (executes when extglob is on at PARSE time), a nested
+// `case`, and a newline between `in` and the pattern; plus two that only reach the keyword through
+// another reserved word (`then`, `do`).
+//
+// The fix is where this round differs from the previous ones: recognising the keyword LIBERALLY
+// would have introduced a bypass rather than closing one. The pattern rule moves the boundary
+// FORWARD, so whoever gets a fake `case` recognised gets to choose where the next span starts --
+// `python3 - $(: case in x) curl -d @- <<'PY'` is a real bash command where `case` is an argument to
+// `:`, and treating it as the keyword blanks a body python3 owns. So `case`/`esac` count only in
+// COMMAND POSITION, and the reserved words that may precede a command (`then`, `do`, `if`, ...)
+// advance the boundary instead of being counted as part of the command. That second half also
+// removes a standing false positive: `for f in a b; do curl ... -d @- <<'JSON'` measured its span
+// from `do` and denied a legitimate payload. K13/K14 hold the first claim; the CONTROLs hold the
+// second -- both to a measurement, not an argument.
+describe('self-pace-gate: bash GRAMMAR -- a case PATTERN terminator is not a frame closer (card 84e31b40, F-8)', () => {
+  const NL = String.fromCharCode(10)
+  const bash = (command: string) => gateDecision('Bash', { command })
+  const CT8 = 'cron' + 'tab'
+  const EVIL8 = ['import subprocess', `subprocess.run(['${CT8}', '-'])`].join(NL)
+  // Prose that WOULD trigger the gate if the heredoc body were not blanked.
+  const HOT8 = `{"content":"ne ${CT8} -e -t hivast irjunk, hanem a scheduler API-t"}`
+  // The inner interpreter sits in a case ARM BODY inside the outer curl's argv.
+  const caseArm = (head: string, tail: string): string =>
+    [`curl -s -X POST http://127.0.0.1:1/x -d @- $(${head} python3 <<'PY'`, EVIL8, 'PY', tail].join(NL)
+  // A legitimate call INSIDE a case arm, carrying prose that WOULD trigger if the body were not
+  // blanked -- so an ALLOW here is evidence of blanking, not of a harmless payload.
+  const legitArm = (head: string, tail: string): string =>
+    [`${head} curl -s -X POST http://localhost:3420/x -d @- <<'JSON'`, HOT8, 'JSON', tail].join(NL)
+
+  it('K1: a bare case pattern owns the arm body (the reported shape)', () => {
+    expect(bash(caseArm('case x in x)', ';; esac)')).deny).toBe(true)
+  })
+
+  it('K4: an alternation pattern a|x)', () => {
+    // Not reported. The `|` is a separator to the walker, so the pattern terminator arrives with the
+    // boundary already moved -- and it was still popping the frame. Measured executing.
+    expect(bash(caseArm('case x in a|x)', ';; esac)')).deny).toBe(true)
+  })
+
+  it('K5: an extglob pattern @(a|x))', () => {
+    // Not reported. TWO `)` in a row, only the second of which ends the pattern: the extglob `(` has
+    // to stay a frame while the pattern's own `)` does not pop one. Executes under a shell with
+    // extglob already on at parse time (measured through `eval` with `shopt -s extglob` set first).
+    expect(bash(caseArm('case x in @(a|x))', ';; esac)')).deny).toBe(true)
+  })
+
+  it('K6: a nested case, whose INNER arm owns the body', () => {
+    // Not reported. Two pattern terminators at the same nesting depth; a single flag instead of a
+    // stack loses the outer statement. Measured executing.
+    expect(bash(caseArm('case x in x) case y in y)', ';; esac ;; esac)')).deny).toBe(true)
+  })
+
+  it('K9: a newline between `in` and the pattern', () => {
+    // Not reported. The everyday multi-line layout -- and a newline is a separator, which is what
+    // made this one distinct from K1 for the walker. Measured executing.
+    expect(bash(caseArm('case x in' + NL + '  x)', ';; esac)')).deny).toBe(true)
+  })
+
+  it('K16: `then case` -- the keyword reached through another reserved word', () => {
+    // Not reported. This is the shape that decides whether the command-position test is enough on
+    // its own: without advancing the boundary past `then`, `case` is not in command position and the
+    // whole rule silently does not apply. Measured executing.
+    expect(bash(caseArm('if : ; then case x in x)', ';; esac; fi)')).deny).toBe(true)
+  })
+
+  it('K17: `do case` -- the same through a loop body', () => {
+    expect(bash(caseArm('for i in a; do case x in x)', ';; esac; done)')).deny).toBe(true)
+  })
+
+  it('K2: the parenthesised (pattern) form', () => {
+    // Closed since F-6 (the bare `(` opens a frame its `)` balances), and pinned here because the
+    // F-8 fix has to stop that `(` from opening a frame at ALL -- otherwise the pattern's `)` pops
+    // it and the arm body is measured from the wrong place again.
+    expect(bash(caseArm('case x in (x)', ';; esac)')).deny).toBe(true)
+  })
+
+  it('K3: a second arm reached through ;;', () => {
+    // Denied before this fix only because the `;;` had already moved the boundary. Pinned so the
+    // arm-terminator bookkeeping cannot regress it.
+    expect(bash(caseArm('case x in a) : ;; x)', ';; esac)')).deny).toBe(true)
+  })
+
+  it('K12: the (pattern) form reached through ;;', () => {
+    expect(bash(caseArm('case x in a) : ;; (x)', ';; esac)')).deny).toBe(true)
+  })
+
+  it('K13: `case`/`in` as ARGUMENTS, not keywords -- the bypass the fix itself could open', () => {
+    // `$(: case in x)` is a real bash command: `case` and `in` are arguments to `:`, the `)` really
+    // does close the substitution, and the heredoc really does belong to python3. A walker that
+    // recognised the keyword anywhere would move the boundary onto the `curl` and blank it. This is
+    // why recognition is gated on command position.
+    const cmd = [
+      `python3 - $(: case in x) curl -d @- http://localhost:9/x <<'PY'`,
+      EVIL8,
+      'PY',
+    ].join(NL)
+    expect(bash(cmd).deny).toBe(true)
+  })
+
+  it('K14: the same with echo in front', () => {
+    const cmd = [
+      `python3 - $(echo case in x) curl -d @- http://localhost:9/x <<'PY'`,
+      EVIL8,
+      'PY',
+    ].join(NL)
+    expect(bash(cmd).deny).toBe(true)
+  })
+
+  it('CONTROL: a legitimate call inside a case arm ALLOWs (false positive removed)', () => {
+    // Before this fix the span started at `case`, failed the leading-binary check, and the payload
+    // was scanned as if it were a command -- a legitimate comment denied. The FP0 baseline below
+    // proves the body is hot, so this ALLOW is blanking, not luck.
+    expect(bash(legitArm('case y in a)', ';; esac')).deny).toBe(false)
+  })
+
+  it('CONTROL: FP0 baseline -- the same payload outside any case is blanked', () => {
+    const cmd = [`curl -s -X POST http://localhost:3420/x -d @- <<'JSON'`, HOT8, 'JSON'].join(NL)
+    expect(bash(cmd).deny).toBe(false)
+  })
+
+  it('CONTROL: FP0 negative -- the same payload NOT on curl stdin is denied', () => {
+    // The anti-vacuity half: without the `-d @-` ownership there is no blanking, and the identical
+    // text denies. So the two CONTROLs above measure the blanking, not the payload.
+    const cmd = [`python3 - <<'JSON'`, HOT8, 'JSON'].join(NL)
+    expect(bash(cmd).deny).toBe(true)
+  })
+
+  it('CONTROL: a legitimate call in a (pattern)-form arm ALLOWs', () => {
+    expect(bash(legitArm('case y in (a)', ';; esac')).deny).toBe(false)
+  })
+
+  it('CONTROL: a legitimate call in the SECOND arm ALLOWs', () => {
+    expect(bash(legitArm('case y in b) : ;; a)', ';; esac')).deny).toBe(false)
+  })
+
+  it('CONTROL: a legitimate call in a for..in..do body ALLOWs (false positive removed)', () => {
+    expect(bash(legitArm('for f in a b; do', 'done')).deny).toBe(false)
+  })
+
+  it('CONTROL: a legitimate call after a COMPLETE case statement ALLOWs', () => {
+    expect(bash(legitArm('case y in a) : ;; esac;', '')).deny).toBe(false)
+  })
+
+  it('CONTROL: a legitimate call whose header substitution CONTAINS a case ALLOWs', () => {
+    // The `esac` has to put the walker back where it was: the substitution's own `)` must still pop
+    // the frame, or the outer curl loses its span and a legitimate payload is denied.
+    const cmd = [
+      `curl -s -H "X: $(case y in a) echo 1 ;; esac)" -X POST http://localhost:3420/x -d @- <<'JSON'`,
+      HOT8,
+      'JSON',
+    ].join(NL)
+    expect(bash(cmd).deny).toBe(false)
+  })
+
+  it('CONTROL: ...and when that arm body contains its own `;`', () => {
+    // The `;` inside the substitution belongs to it, not to the case arm. Counting it as an arm
+    // terminator makes the substitution's closing `)` look like a pattern terminator, which loses
+    // the outer curl's span.
+    const cmd = [
+      `curl -s -H "X: $(case y in a) date; echo 1 ;; esac)" -X POST http://localhost:3420/x -d @- <<'JSON'`,
+      HOT8,
+      'JSON',
+    ].join(NL)
+    expect(bash(cmd).deny).toBe(false)
+  })
+
+  it('CONTROL: a legitimate call whose case PATTERN contains a substitution ALLOWs', () => {
+    // Found by mutation: dropping the depth guard on the pattern terminator left the whole suite
+    // green, because in every shape written so far the pattern held no `( )` of its own. A pattern
+    // is expanded, so `$(echo x)` is a real and valid one -- measured matching under bash -- and a
+    // depth-blind rule ends the pattern at ITS `)`, losing the frame and denying a legitimate
+    // payload. The mutant disagrees with the shipped walker only in this direction (29 shapes swept,
+    // all of them false positives), so this is the CONTROL that pins it.
+    const cmd = [
+      `case x in $(echo x)) curl -s -X POST http://localhost:3420/x -d @- <<'JSON'`,
+      HOT8,
+      'JSON',
+      ';; esac',
+    ].join(NL)
+    expect(bash(cmd).deny).toBe(false)
+  })
+
+  it('CONTROL: ...and when the substitution is one branch of an alternation', () => {
+    const cmd = [
+      `case x in a|$(echo x)) curl -s -X POST http://localhost:3420/x -d @- <<'JSON'`,
+      HOT8,
+      'JSON',
+      ';; esac',
+    ].join(NL)
+    expect(bash(cmd).deny).toBe(false)
+  })
+
+  // Generated, in the spirit of the F-5 invariant: for every case-arm head form we know of, an
+  // interpreter-owned heredoc in the arm body must stay scanned. A future arm shape then fails here
+  // without anyone having to think of it first.
+  it('INVARIANT (generated): an interpreter-owned heredoc inside a case ARM is never blanked', () => {
+    const ARMS: Array<[string, string]> = [
+      ['case x in x)', ';; esac)'],
+      ['case x in (x)', ';; esac)'],
+      ['case x in a|x)', ';; esac)'],
+      ['case x in @(a|x))', ';; esac)'],
+      ['case x in a) : ;; x)', ';; esac)'],
+      ['case x in a) : ;& x)', ';; esac)'],
+      ['case x in a) : ;;& x)', ';; esac)'],
+      ['case x in' + NL + '  x)', ';; esac)'],
+      ['case x in x) case y in y)', ';; esac ;; esac)'],
+      ['if : ; then case x in x)', ';; esac; fi)'],
+      ['for i in a; do case x in x)', ';; esac; done)'],
+      ['while :; do case x in x)', ';; esac; break; done)'],
+      ['case x in a) : ;; (x)', ';; esac)'],
+      ['case x in $(echo x))', ';; esac)'],
+      ['case x in a|$(echo x))', ';; esac)'],
+    ]
+    const failures: string[] = []
+    for (const [head, tail] of ARMS) {
+      if (!bash(caseArm(head, tail)).deny) failures.push(head)
+    }
+    expect(failures).toEqual([])
+  })
+})
