@@ -2128,6 +2128,24 @@ export function reviewedCardBlocksInProgress(id: string, nextStatus: string): bo
 }
 
 /**
+ * The unmet predecessors that BLOCK a transition, or [] when it may proceed (card a8aa9ae5).
+ *
+ * ONE PREDICATE, EVERY WRITER. The enforcement lives in moveKanbanCard and updateKanbanCard rather
+ * than in the HTTP handlers, because there are THREE doors into a status change -- PUT
+ * /api/kanban/:id, POST /api/kanban/:id/move, and the scheduler's direct moveKanbanCard() call in
+ * this file -- and a route-level guard sees two of them. The routes still call this to build the
+ * 409 body; they get the same answer because it is the same function, not a second copy.
+ *
+ * BOTH DIRECTIONS ARE GUARDED (in_progress AND done), per Peti: the dependency has to be met for
+ * the work to be COMPLETED, not merely to be started. `waiting` is deliberately NOT guarded -- a
+ * builder must be able to hand finished work to a gate; the block lands at the close.
+ */
+export function dependencyBlockers(id: string, nextStatus: string): KanbanCard[] {
+  if (nextStatus !== 'in_progress' && nextStatus !== 'done') return []
+  return getUnmetKanbanPredecessors(id)
+}
+
+/**
  * Update a card's fields. A status change made THROUGH THIS PATH is audited like a move
  * ({@link moveKanbanCard}) instead of silently rewriting the column: an unaudited status write is
  * how a waiting+REVIEW card kept reappearing as in_progress with nothing in kanban_card_events to
@@ -2146,11 +2164,14 @@ export function updateKanbanCard(
   const statusChanges = fields.status !== undefined && fields.status !== card.status
   const blocked = statusChanges && reviewedCardBlocksInProgress(id, fields.status as string)
   if (blocked && !opts?.force) return false
+  // Card a8aa9ae5: an unmet predecessor blocks the same two transitions here as everywhere else.
+  const depBlocked = statusChanges && dependencyBlockers(id, fields.status as string).length > 0
+  if (depBlocked && !opts?.force) return false
   // `forced` records only whether THIS transition actually needed the reviewed-card-reopen
   // override -- an ordinary in_progress move that happens to carry `force:true` (e.g. an exempt
   // agent's client always sends it) is not itself a guard override and must not read as one; see
   // the sibling fix in moveKanbanCard (kanban-review-guard.test.ts pins the same contract there).
-  const forcedFlag = blocked ? 1 : 0
+  const forcedFlag = blocked || depBlocked ? 1 : 0
   const now = Math.floor(Date.now() / 1000)
   const f = { ...card, ...fields, updated_at: now }
   const changed = db.prepare(
@@ -2179,6 +2200,11 @@ export function moveKanbanCard(id: string, status: KanbanCard['status'], sortOrd
   // Read the previous status first so we only record an audit event on a real
   // status transition (not a pure sort_order reorder within the same column).
   const prev = (db.prepare('SELECT status FROM kanban_cards WHERE id=?').get(id) as { status: string } | undefined)?.status
+  // Card a8aa9ae5. Gated on a REAL transition, not on the target status alone: this function is
+  // also the reorder path, so an unchanged status must stay writable. Otherwise a card already in
+  // in_progress with an open predecessor could never be dragged within its own column.
+  const depBlocked = prev !== undefined && prev !== status && dependencyBlockers(id, status).length > 0
+  if (depBlocked && !force) return false
   const changed = db.prepare(
     'UPDATE kanban_cards SET status=?, sort_order=?, updated_at=? WHERE id=?'
   ).run(status, sortOrder, now, id).changes > 0
@@ -2189,7 +2215,7 @@ export function moveKanbanCard(id: string, status: KanbanCard['status'], sortOrd
     // that wants the newDevStop route-layer bypass in the audit trail records that separately.
     db.prepare(
       'INSERT INTO kanban_card_events (card_id, from_status, to_status, actor, created_at, forced) VALUES (?, ?, ?, ?, ?, ?)'
-    ).run(id, prev, status, actor ?? null, now, forcedOverride ? 1 : 0)
+    ).run(id, prev, status, actor ?? null, now, forcedOverride || depBlocked ? 1 : 0)
   }
   return changed
 }
