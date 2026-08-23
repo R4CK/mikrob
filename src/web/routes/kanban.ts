@@ -15,6 +15,7 @@ import {
   getHeartbeatKanbanSummary,
   addKanbanDependency, removeKanbanDependency,
   getKanbanPredecessors, getKanbanSuccessors, dependencyBlockers,
+  getUnmetPredecessorsForAllCards, getUnmetKanbanPredecessors,
 } from '../../db.js'
 import { isForceActor } from '../../kanban-force-actors.js'
 import { normalizeKanbanRefs } from '../kanban-ref-normalize.js'
@@ -254,7 +255,19 @@ export async function tryHandleKanban(ctx: RouteContext): Promise<boolean> {
     // instead of an N+1 per-card lookup, so the footer-pill UI gets
     // everything it needs in a single round trip.
     const labelsByCard = getLabelsForAllCards()
-    let cards = listKanbanCards().map((card) => ({ ...card, labels: labelsByCard.get(card.id) ?? [] }))
+    // Card 38788337: the same one-query-not-N+1 treatment for dependency state. `blocked` is
+    // DERIVED, never stored -- a stored flag would be a second source of truth that goes stale the
+    // moment a predecessor closes, and this board is polled far more often than it is edited.
+    const blockersByCard = getUnmetPredecessorsForAllCards()
+    let cards = listKanbanCards().map((card) => {
+      const blockers = blockersByCard.get(card.id) ?? []
+      return {
+        ...card,
+        labels: labelsByCard.get(card.id) ?? [],
+        blocked: blockers.length > 0,
+        blockedBy: blockers.map((c) => ({ id: c.id, title: c.title, status: c.status })),
+      }
+    })
     // Card 37ea2f96: `?status=` / `?assignee=` were ACCEPTED and ignored -- the endpoint returned all
     // 265 cards whatever was asked, so every caller (gates, scanners, the dashboard) filtered client
     // side and shipped the whole board over the wire each time. A parameter that looks like it works
@@ -560,7 +573,13 @@ export async function tryHandleKanban(ctx: RouteContext): Promise<boolean> {
     const id = decodeURIComponent(kanbanCardMatch[1])
     const card = getKanbanCard(id)
     if (!card) { json(res, { error: 'Kártya nem található' }, 404); return true }
-    json(res, card)
+    // Same derived fields as the list, so a caller that opened one card sees what the board shows.
+    const blockers = getUnmetKanbanPredecessors(id)
+    json(res, {
+      ...card,
+      blocked: blockers.length > 0,
+      blockedBy: blockers.map((c) => ({ id: c.id, title: c.title, status: c.status })),
+    })
     return true
   }
 

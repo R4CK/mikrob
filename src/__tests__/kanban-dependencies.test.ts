@@ -16,6 +16,7 @@ import {
   getKanbanPredecessors,
   getKanbanSuccessors,
   getUnmetKanbanPredecessors,
+  getUnmetPredecessorsForAllCards,
 } from '../db.js'
 import { forceActors } from '../kanban-force-actors.js'
 
@@ -232,5 +233,52 @@ describe('the status guard: an unmet predecessor blocks BOTH transitions (card a
 
   it('a card with NO predecessors is unaffected', () => {
     expect(moveKanbanCard('c', 'in_progress', 0, 'someone')).toBe(true)
+  })
+})
+
+describe('the board reports blocked cards without an N+1 (card 38788337)', () => {
+  it('a card with an open predecessor is marked, one without is not', () => {
+    addKanbanDependency('a', 'b')
+    const m = getUnmetPredecessorsForAllCards()
+    expect(m.get('a')!.map((c) => c.id)).toEqual(['b'])
+    expect(m.has('c')).toBe(false) // no edge at all -- absent, not an empty array
+    expect(m.has('b')).toBe(false)
+  })
+
+  it('EVERY unmet predecessor is listed, not just the first', () => {
+    addKanbanDependency('a', 'b')
+    addKanbanDependency('a', 'c')
+    expect(getUnmetPredecessorsForAllCards().get('a')!.map((c) => c.id).sort()).toEqual(['b', 'c'])
+  })
+
+  it('a DONE predecessor drops out, and the last one dropping unmarks the card', () => {
+    addKanbanDependency('a', 'b')
+    addKanbanDependency('a', 'c')
+    updateKanbanCard('b', { status: 'done' }, { actor: 'mikrob', force: true })
+    expect(getUnmetPredecessorsForAllCards().get('a')!.map((c) => c.id)).toEqual(['c'])
+    updateKanbanCard('c', { status: 'done' }, { actor: 'mikrob', force: true })
+    // Absent, not present-and-empty: the caller reads a missing key as "not blocked".
+    expect(getUnmetPredecessorsForAllCards().has('a')).toBe(false)
+  })
+
+  it('the bulk map agrees with the per-card predicate, card by card', () => {
+    // The two are separate queries -- the list endpoint uses the bulk one, GET /:id the single one.
+    // If they could disagree, a card would read blocked on the board and open unblocked, which is
+    // exactly the kind of split-brain a derived field is supposed to avoid.
+    addKanbanDependency('a', 'b')
+    addKanbanDependency('c', 'b')
+    const m = getUnmetPredecessorsForAllCards()
+    for (const id of ['a', 'b', 'c']) {
+      expect((m.get(id) ?? []).map((x) => x.id)).toEqual(getUnmetKanbanPredecessors(id).map((x) => x.id))
+    }
+  })
+
+  it('the rows carry whole cards, so the board can render a title without another request', () => {
+    addKanbanDependency('a', 'b')
+    const [blocker] = getUnmetPredecessorsForAllCards().get('a')!
+    expect(blocker!.title).toBe('B')
+    expect(blocker!.status).toBe('planned')
+    // ...and the join column used for grouping must not leak into the card object.
+    expect('blocked_id' in blocker!).toBe(false)
   })
 })

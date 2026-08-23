@@ -2437,6 +2437,38 @@ export function getUnmetKanbanPredecessors(cardId: string): KanbanCard[] {
   return getKanbanPredecessors(cardId).filter((c) => c.status !== 'done')
 }
 
+/**
+ * Every card's UNMET predecessors, in ONE query (card 38788337).
+ *
+ * The board list returns the whole board, so asking per card would be an N+1 over a few hundred
+ * rows on every dashboard poll. Same reason and same shape as getLabelsForAllCards, which the list
+ * handler already uses for exactly this. Cards with no unmet predecessor are simply absent from
+ * the map -- the caller treats a missing key as "not blocked".
+ *
+ * "Unmet" is `status <> 'done'`, the same rule getUnmetKanbanPredecessors applies, for the reason
+ * written there: archiving does not change `status`, and archiving a card is NOT a way to satisfy
+ * a dependency nobody finished.
+ */
+export function getUnmetPredecessorsForAllCards(): Map<string, KanbanCard[]> {
+  const rows = db
+    .prepare(
+      `SELECT d.from_card_id AS blocked_id, c.*
+         FROM kanban_dependencies d
+         JOIN kanban_cards c ON c.id = d.to_card_id
+        WHERE c.status <> 'done'
+        ORDER BY c.status, c.sort_order ASC`,
+    )
+    .all() as (KanbanCard & { blocked_id: string })[]
+  const out = new Map<string, KanbanCard[]>()
+  for (const row of rows) {
+    const { blocked_id: blockedId, ...card } = row
+    const list = out.get(blockedId)
+    if (list) list.push(card as KanbanCard)
+    else out.set(blockedId, [card as KanbanCard])
+  }
+  return out
+}
+
 export function getKanbanComments(cardId: string): KanbanComment[] {
   return db.prepare('SELECT * FROM kanban_comments WHERE card_id = ? ORDER BY created_at ASC').all(cardId) as KanbanComment[]
 }
