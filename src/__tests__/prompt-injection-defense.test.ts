@@ -10,7 +10,7 @@ import { readFileSync, existsSync } from 'node:fs'
 import { join, dirname } from 'node:path'
 import { fileURLToPath } from 'node:url'
 // @ts-expect-error -- plain .mjs hook script, no types
-import { firecrawlDisallowedParams, isEgressBlocked, loadRuntimeAllowlist } from '../../scripts/hooks/egress-gate.mjs'
+import { egressDecision, firecrawlDisallowedParams, isEgressBlocked, loadRuntimeAllowlist } from '../../scripts/hooks/egress-gate.mjs'
 import {
   injectEgressGate,
   ensureEgressGate,
@@ -23,6 +23,7 @@ import {
 } from '../prompt-safety.js'
 
 const REPO_ROOT = join(dirname(fileURLToPath(import.meta.url)), '..', '..')
+const EMPTY_RUNTIME = { domains: [], prefixes: [] }
 
 // ---------------------------------------------------------------------------
 // 1. Quarantine sub-agent definition
@@ -57,6 +58,10 @@ describe('quarantine-reader sub-agent definition', () => {
     'WebFetch',
     'mcp__firecrawl__firecrawl_scrape',
     'mcp__firecrawl__firecrawl_map',
+    // Card f0389e81 (Cybersec NO-GO): both context7 tools send free text to a fixed third-party
+    // backend and return unaudited documentation content, same shape as the two above.
+    'mcp__context7__resolve-library-id',
+    'mcp__context7__query-docs',
   ]
 
   it('grants exactly the reviewed read-only fetch tools, and nothing else', () => {
@@ -325,6 +330,65 @@ describe('isEgressBlocked', () => {
     // be swept into a deny that was reasoned about one specific server's 27 tools.
     expect(isEgressBlocked('mcp__firecrawler__scrape', { url: 'https://example.com' })).toBe(false)
     expect(isEgressBlocked('firecrawl_scrape', { url: 'https://example.com' })).toBe(false)
+  })
+
+  // ── the context7 MCP tools (card f0389e81, Cybersec NO-GO on the 8ee76373 gate) ──────────────
+  //
+  // context7 was adopted, wired into `.mcp.json`, and reviewed by QA -- but the matcher this hook
+  // fires on still said `WebFetch|mcp__firecrawl__.*`, so `mcp__context7__*` never reached the
+  // gate at all: exactly the "wired detection with no consumer" shape card 91c4a369 already
+  // documented once for Firecrawl, reopened on a new namespace. Unlike Firecrawl there is no `url`
+  // to check against a host allowlist -- the backend is one fixed domain -- so the tier here is
+  // pure agentType: denied outright for a main agent, open only for quarantine-reader.
+  it('the context7 namespace is denied outright for a main agent', () => {
+    for (const tool of [
+      'mcp__context7__resolve-library-id',
+      'mcp__context7__query-docs',
+    ]) {
+      expect(isEgressBlocked(tool, { query: 'how does useEffect cleanup work' })).toBe(true)
+      expect(isEgressBlocked(tool, { query: 'x' }, EMPTY_RUNTIME, '')).toBe(true)
+    }
+  })
+
+  it('opens ONLY for the quarantine-reader sub-agent, and reports its own tier', () => {
+    const decision = egressDecision(
+      'mcp__context7__query-docs',
+      { libraryId: '/vercel/next.js', query: 'app router streaming' },
+      EMPTY_RUNTIME,
+      'quarantine-reader',
+    )
+    expect(decision.blocked).toBe(false)
+    expect(decision.tier).toBe('quarantine-context7')
+  })
+
+  it('fails closed on anything that is not an exact agent_type match, same as the WebFetch tier', () => {
+    for (const bad of ['quarantine_reader', 'Quarantine-Reader', 'general-purpose', null, undefined, 42]) {
+      expect(
+        isEgressBlocked('mcp__context7__resolve-library-id', { query: 'x', libraryName: 'y' }, EMPTY_RUNTIME, bad as never),
+      ).toBe(true)
+    }
+  })
+
+  it('a runtime allowlist entry (domain or prefix) does not open the context7 namespace', () => {
+    // There is no URL on these calls for a domain/prefix rule to match against in the first
+    // place -- an operator adding mcp.context7.com to store/egress-allowlist.json must not be able
+    // to accidentally open this namespace to the main agent.
+    const rt = { domains: ['mcp.context7.com'], prefixes: ['https://mcp.context7.com/'] }
+    expect(isEgressBlocked('mcp__context7__query-docs', { libraryId: '/x/y', query: 'z' }, rt)).toBe(true)
+  })
+
+  it('a tool merely NAMED like context7 is not caught, and the prefix is exact', () => {
+    expect(isEgressBlocked('mcp__context7extra__query-docs', { query: 'x' })).toBe(false)
+    expect(isEgressBlocked('context7__query-docs', { query: 'x' })).toBe(false)
+  })
+
+  it('the hook is REGISTERED for mcp__context7__* too, not only Firecrawl and WebFetch', () => {
+    const re = new RegExp(`^(?:${EGRESS_GATE_MATCHER})$`)
+    for (const tool of ['mcp__context7__resolve-library-id', 'mcp__context7__query-docs']) {
+      expect(re.test(tool), `${tool} would never reach the gate`).toBe(true)
+    }
+    // Widening must not accidentally sweep in an unrelated namespace merely sharing the `mcp__` root.
+    expect(re.test('mcp__playwright__browser_navigate')).toBe(false)
   })
 
   it('allows GitHub API', () => {

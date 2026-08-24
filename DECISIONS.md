@@ -2804,3 +2804,52 @@ kártya leírása szerint is következő kör -- nem ebben a menetben.
 **Ki döntött:** backend2 (due diligence, `.mcp.json` bekötés, README fork-diff bejegyzés).
 
 **Hivatkozás:** kártya `f0389e81`.
+
+
+## 2026-08-24 -- f0389e81 -- Cybersec NO-GO javítva: context7 MCP-tools bekötve az egress-gate-be
+
+**Előzmény:** ugyanaznap korábban felvett context7 MCP-szerver (lásd fenti bejegyzés) a Cybersec
+gate-en NO-GO-t kapott (Gate-SHA 8ee76373, komment 15832). A due diligence maga rendben volt --
+a lelet az, hogy a `.mcp.json`-be felvett két context7-tool (`resolve-library-id`, `query-docs`)
+NEM került bele a `scripts/hooks/egress-gate.mjs` PreToolUse hook matcherébe
+(`WebFetch|mcp__firecrawl__.*`), tehát bármelyik ágens közvetlenül, a `quarantine-reader`
+sub-ágens megkerülésével tetszőleges szabad szöveget küldhetett volna a harmadik feles
+context7-backendnek, és a visszakapott, nem auditálható dokumentáció-tartalmat közvetlenül,
+`wrapUntrustedFetch()` nélkül kapta volna meg a saját kontextusába -- ugyanaz a hibaosztály, amit
+a fájl már egyszer lezárt a Firecrawl-nál (kártya 91c4a369), csak egy új testvér-névtéren nyílt
+újra.
+
+**Függetlenül újramérve, nem csak a Cybersec-lelet elfogadva:** a Firecrawl-mintájához hasonlóan
+letöltöttem és kicsomagoltam a pinnelt `@upstash/context7-mcp@4.0.3` npm-csomagot, és a
+`dist/index.js`-ben megnéztem mindkét tool tényleges Zod-sémáját. Eredmény: `resolve-library-id`
+`{query, libraryName}`, `query-docs` `{libraryId, query}` -- mindkét mező szabad string,
+`readOnlyHint: true`/`destructiveHint: false`, nincs url/action/exec mező. Ez megerősítette a
+Cybersec állítását, DE azt is jelenti, hogy -- a Firecrawllal ellentétben -- nincs második
+kimenő csatorna, amit paraméter-allowlistelni kellene: a helyes javítás a Cybersec által is
+javasolt TISZTA agentType-alapú tier, nem egy URL/paraméter-alapú szabály.
+
+**Javítás (3 fájl, egy kártyára):**
+1. `scripts/hooks/egress-gate.mjs`: új `CONTEXT7_PREFIX` konstans + `egressDecision()`-ben egy
+   új, korai default-deny ág a `mcp__context7__*` névtérre -- csak `agentType === 'quarantine-reader'`
+   esetén enged át (fail-closed: hiányzó/ismeretlen agentType = blokk), a már meglévő
+   WebFetch/Firecrawl-karantén-tier mintáját követve.
+2. `src/web/agent-scaffold.ts`: `EGRESS_GATE_MATCHER` kibővítve `mcp__context7__.*`-gal -- e nélkül
+   az (1) pontbeli logika sose futna le, mert Claude Code sose hívná meg a hookot erre a névtérre
+   (ugyanaz a "wired detection with no consumer" hiba-osztály, amit a Firecrawl-widening már
+   dokumentált). A migrációs logika (`ensureEgressGate`) már létező stale-matcher-detekciója
+   automatikusan újravezeti minden élő ágens settings.json-ját a következő MikroB-szerver-indításnál,
+   külön migrációs kód nélkül.
+3. `templates/sub-agents/quarantine-reader.md`: a két context7-tool felvétele a `tools:` sorba +
+   új `DOCS` protokoll-ág (a `resolve-library-id` -> `query-docs` hívási sorrenddel), a meglévő
+   `FETCH` protokoll mellett.
+
+**Tesztek:** új describe-blokk a `prompt-injection-defense.test.ts`-ben (6 új teszt: névtér-denial,
+karantén-tier-nyitás + tier-riport, fail-closed agentType-lista, runtime-allowlist nem nyitja meg,
+prefix-pontosság, matcher-regisztráció), plusz az `ALLOWED_TOOLS` egzakt-halmaz teszt kibővítve a
+két új tool-lal.
+
+**Ki döntött:** Cybersec (a lelet, a javaslat iránya), backend2 (független újramérés a pinnelt
+csomagon, implementáció, tesztek).
+
+**Hivatkozás:** kártya `f0389e81`, Gate-SHA `8ee76373` (NO-GO), kártya `91c4a369` (a már egyszer
+lezárt, analóg Firecrawl-hibaosztály).

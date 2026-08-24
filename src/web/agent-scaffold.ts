@@ -458,8 +458,13 @@ export function injectSelfPaceGate(existing: Record<string, unknown>): void {
  *  off-allowlist host returned 200 with content and appended no line to the block log, while
  *  `WebFetch` to the same host from the same session was denied by this very hook. The official
  *  hook docs shipped with the CLI say the same thing by example -- every namespace pattern there is
- *  written `mcp__.*`, `mcp__plugin_asana_.*`, `mcp__.*__delete.*`, never a bare prefix. */
-export const EGRESS_GATE_MATCHER = 'WebFetch|mcp__firecrawl__.*'
+ *  written `mcp__.*`, `mcp__plugin_asana_.*`, `mcp__.*__delete.*`, never a bare prefix.
+ *
+ *  `mcp__context7__.*` was added on card f0389e81 (Cybersec NO-GO): adopting the context7 MCP
+ *  server without widening this matcher repeated the exact "wired detection with no consumer"
+ *  gap the Firecrawl widening above was written to close -- the decision logic in egress-gate.mjs
+ *  already judges the namespace, but nothing invoked it until the matcher named it too. */
+export const EGRESS_GATE_MATCHER = 'WebFetch|mcp__firecrawl__.*|mcp__context7__.*'
 
 export function injectEgressGate(existing: Record<string, unknown>): void {
   const hooks = (existing.hooks && typeof existing.hooks === 'object'
