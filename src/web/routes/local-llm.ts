@@ -94,6 +94,14 @@ const MODEL_FILE = join(STORE_DIR, 'local-llm-model')
 // It never receives code/task dispatches. Exposed in the status response so the
 // dashboard can show both roles clearly and avoid the "nomic gets tasks too?" confusion.
 const EMBED_MODEL = 'nomic-embed-text'
+// Ollama's /api/tags always reports the resolved name with its tag (e.g. "nomic-embed-text:latest"),
+// even when the model was configured/referenced without one -- a bare comparison against a tagless
+// name then reports "not pulled" for a model that is actually present.
+function modelNameMatches(catalogName: string, configuredName: string): boolean {
+  if (catalogName === configuredName) return true
+  const bare = configuredName.includes(':') ? configuredName : `${configuredName}:latest`
+  return catalogName === bare
+}
 const RAG_SCRIPT = join(STORE_DIR, 'local-llm-rag.sh')
 // Card 0c054ebf: the --task preset templates ARE the category list -- this directory is the single
 // source of truth (readdirSync below), never a hand-maintained UI array that could drift from what
@@ -1209,9 +1217,9 @@ export async function tryHandleLocalLlm(ctx: RouteContext): Promise<boolean> {
     json(res, {
       ollama_up: ollamaUp,
       active_model: active,
-      active_present: models.some((m: any) => m.name === active),
+      active_present: ollamaUp ? models.some((m: any) => modelNameMatches(m.name, active)) : null,
       embed_model: EMBED_MODEL,
-      embed_present: models.some((m: any) => m.name === EMBED_MODEL),
+      embed_present: ollamaUp ? models.some((m: any) => modelNameMatches(m.name, EMBED_MODEL)) : null,
       models,
       running,
       bridge_active: bridge,

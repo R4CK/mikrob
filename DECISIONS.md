@@ -2229,3 +2229,39 @@ nem a routing.
 a négy verdikt).
 **Hivatkozás:** kártya 71188a2a (szülő 40f92dd2). Kapcsolódó: a31e8ddf (a router és a benne álló
 rule-10 döntés), 5dcd9bc8 / ea931c14 (a flock és a 6-os kilépési kód), llm-control-abstains-under-gpu-contention (memória).
+
+## 2026-08-24 06:45 -- tree-sitter-bash átvétele a self-pace kapu határfelismerőjének (kártya f16b3165)
+
+**Döntés:** ADOPT (10. szabály, GitHub-first) -- a `scripts/self-pace-gate.mjs` kézzel írt
+bash-járója helyett a `tree-sitter-bash` nyelvtan válaszolja meg a heredoc-tulajdonos kérdést, egy
+új `scripts/bash-ast.mjs` modulban. Feature-flag (`SELF_PACE_AST`) mögött, dark-launch alapértelmezéssel:
+a régi járó dönt, az új csak árnyékban fut és az eltéréseket logolja. A `tree-sitter` OPCIONÁLIS
+függőség marad, tehát a landolás önmagában nem változtat viselkedést.
+
+**Miért:** hét egymást követő review-kör (A-F, X1-X6, N1-N6, S1-S6, R1-R2, B1-B6, K1) mindegyike új
+megkerülési osztályt termelt, mert egy szöveg-heurisztika próbálja utolérni a bash teljes nyelvtanát;
+hat alak (`(( ))`, `select`, `[[ ]]`, `coproc`, `function f()`, `extglob`) egyáltalán nem volt lefedve.
+Due diligence mérve: minden érintett csomag MIT, tree-sitter szervezet, nulla GitHub advisory npm és
+pip ökoszisztémában, prebuilt binárisok. A 20 esetes nyelvtani batérián 20/20 helyes tulajdonos
+`bash -n` földi igazsággal, és a hét kör teljes felhalmozott batériája (455 teszt) zölden fut az
+AST-tel VEZETVE is.
+
+**Hatókör-szűkítés a plan-grilling verdikthez képest (komment 15683 -> 15687):** a verdikt terhelés-hordozó
+feltételezése az volt, hogy ez két kötés-integráció (Node + Python), és a fő kockázat a kettő eltérése.
+Mérve nem áll: `email-send-gate` `.mjs`, nem `.py`, és importálja a walkert a self-pace-gate-ből;
+`noisy-command-guard.py` a saját doksija szerint fail-open seatbelt, nem biztonsági határ. A flottában
+PONTOSAN EGY fail-closed bash-határelemző van, és az Node -- ezért egy kötésre szűkítve a megnevezett
+kockázat nem keletkezik meg. A paritás-mérés ettől függetlenül lefutott: a két kötés kimenete bájtra azonos.
+
+**Két mért kikötés, ami a kódot alakította:** (1) a tree-sitter PARSER nem DoS-felület (50 000 szintű
+beágyazás 58 ms, lineáris), de a naiv REKURZÍV fabejárás ~5000 szint felett csendben `null`-ra degradál,
+ezért a bejárás kötelezően iteratív; (2) a tulajdonos-spant NEM szabad a csomópont gyerekeiből
+újraépíteni: `git commit -F - <<'EOF'` esetén a puszta `-` argumentum EGYETLEN csomópontban sem szerepel
+(a `command` [0,13]-nál végződik, a redirect [16,33]-nál kezdődik), és a szövegből újraépített span
+elvesztette, ami három legitim `git commit -F -` payloadot DENY-ra fordított. Ezért a modul csak
+kezdőindexet ad, a szeletelés az eredeti forrásból történik.
+
+**Ki döntött:** MikroB (plan-grilling GO-WITH-CHANGES, komment 15683), backend (due diligence, hatókör-szűkítés,
+implementáció). A hatókör-szűkítés MikroB felé jelezve (üzenet 19829).
+
+**Hivatkozás:** kártya f16b3165, kártya-komment 15687 (due diligence), előzmény 84e31b40 / 442f3289 / ec20dd23.

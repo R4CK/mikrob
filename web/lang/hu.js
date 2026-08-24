@@ -919,6 +919,7 @@ window._i18n.hu = {
   'localLlm.status.down':        'Nem elérhető',
   'localLlm.status.active_model': 'Aktív modell',
   'localLlm.status.not_pulled':  'Nincs letöltve',
+  'localLlm.status.unknown_ollama_down': 'Ismeretlen (Ollama nem elérhető)',
   'localLlm.status.code_model':       'Kód/offload modell',
   'localLlm.status.code_model_role':  'Kódírás, draft-generálás (fleet offload)',
   'localLlm.status.embed_model':      'Embedding modell',
