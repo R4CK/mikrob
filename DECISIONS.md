@@ -2318,3 +2318,73 @@ egzakt, 7 mutáns mind megölve.
 döntései, a saját javítás adverzariális megmérése), MikroB (visszaadás in_progress-be, sorrendezés).
 
 **Hivatkozás:** kártya ec20dd23 (3. kör), Gate-SHA e08e191a, kártya-komment 15689. Testvér: 442f3289.
+
+## 2026-08-24 -- self-pace/email heredoc-ownership walker: mit jelent a "command position" (kártya 84e31b40, 9. kör)
+
+**Döntés (fullstack, Cybered NO-GO nyomán):** a "mi állhat egy egyszerű parancs eleje és maga a
+parancs között" kérdésre **egy** lista van a kódban, és az a bash nyelvtanából származik, nem abból,
+amit az éppen aktuális hibajelentés megnevezett.
+
+**Miért merült fel.** A 7. kör (22e215e4) helyesen tette SZIGORÚVÁ a `case` felismerést: a
+minta-szabály ELŐRE mozdítja a boundary-t, tehát egy hamisítható kulcsszó azt engedné meg a
+támadónak, hogy ő válassza meg, hol kezdődik a következő parancs. A command position viszont egy
+puszta kulcsszó-listával dőlt el, amiből hiányzott a `coproc` és a `function NAME`. Cybered mindkettőt
+élő bypassként bizonyította marker-fájllal: mögöttük a `case` nem ismerődött fel, a minta `)`-e
+visszapoppolta a `$(` nyitotta frame-et, és a span a KÜLSŐ `curl -d @-`-ra esett -- egy olyan heredoc
+kifehéredett, amit bash valójában a python3-nak ad.
+
+**Amit a mérés a jelentésen felül hozott.** A családot mérve, nem a két bejelentett alakot, még
+**tíz** élő bypass jött elő (mind valós bash, mind marker-fájllal bizonyítva végrehajtódik):
+a POSIX `f() { ... }` alak (rosszabb a `function` alaknál: a `(` frame-et nyit, aminek a `)`-e a
+boundary-t a NÉV ELÉ teszi vissza), a `time -p` és `time --` (a nyelvtan `time [-p] [--]`, a listán
+csak a csupasz `time` volt), a `coproc { `, a `coproc NÉV { `, és a láncok, amik egy második
+foglalt szón keresztül érik el a kulcsszót.
+
+**Ugyanez a változtatás szünteti meg a tükörképét, a HAMIS POZITÍVOKAT** -- azt a hibaosztályt,
+amiről a kártya címe szól: egy jogos `curl -d @- <<'JSON'` függvénytörzsben, `coproc` mögött vagy
+`time -p` mögött DENY-t kapott, mert a span rossz helyről indult.
+
+**A javítás saját kockázata, kimondva.** Ez a felismerés ELŐRE mozdítja a boundary-t, tehát minden
+tagja arra a pozícióra van rögzítve, ahol tényleg kulcsszó. A két tag, ami egy KÖVETKEZŐ SZÓT is
+elnyelhet, a bash saját szabályát követi: a `coproc NÉV` csak ÖSSZETETT parancs előtt név (a
+`coproc python3 curl -d @- <<'PY'` EGYSZERŰ parancs, tehát bash a `python3`-at veszi parancsszónak --
+ha névként nyelnénk el, a span a mögötte álló curl-re esne, és ÚJ bypasst nyitnánk), a `function NÉV`
+és a POSIX `NÉV ()` pedig megköveteli, hogy az összetett parancs nyitója tényleg ott legyen.
+
+**Mutációs teszt talált egy hibát a saját javításomban.** Az első változat az összetett parancs
+nyitó-halmazát a két alakból vette, amit az ember tényleg ír (`{` és `(`), nem a nyelvtanból. A
+mutáció azonnal szétválasztotta: az `f() case x in x) ... esac` és a `function f case ... esac`
+érvényes függvénydefiníciók, amiknek a TÖRZSE maga a case -- mindkettő élő bypass maradt, mindkettő
+bizonyítottan végrehajtódik. A nyitó-halmaz most a `shell_command` produkcióból van, tagonként
+`bash -n`-nel validálva, és EGY helyen definiálva, mert a három használati helye ugyanaz az egy
+gondolat.
+
+**Amit szándékosan NEM vettem be.** A `sudo`, `command`, `exec`, `env`, `nice`, egy `FOO=1`
+értékadás és egy bevezető átirányítás mind szintaktikai HIBA egy összetett parancs előtt (mérve,
+`bash -n`), ugyanígy a `coproc coproc` és a beágyazott `function`. Egy ALLOW olyan sztringre, amit a
+bash nem is hajlandó értelmezni, nem bypass.
+
+**Ekvivalens mutánsok, kimondva (nem lezártnak állítva).** Hét mutáns túlélte a tesztkészletet:
+a `(`, `[[`, `if`, `while`, `until`, `for`, `select` eltávolítása a nyitó-listából, a `coproc`
+szóhatár-őre, és a két nyitó-lookahead elhagyása. Mindegyikre 11232 generált alakon, `bash -n`
+validálással **0** eltérés jött ki -- mert mindegyik olyan úton éri el a belső parancsot, ami a
+boundary-t amúgy is visszaállítja (a `(` saját frame-et nyit; a ciklusok/elágazások saját `; do` /
+`; then`-nel jönnek; a `[[ ]]` nem tartalmazhat heredocot). Ugyanaz a sweep 65 / 26 / 42 eltérést
+talál, ha a `case`, a `{` vagy a teljes `coproc` ág esik ki, tehát nem "vak" sweepről van szó. Ezért
+NEM írtam rájuk tesztet: nem írok olyan tesztet, amiről nem tudom megmutatni, hogy mér valamit. A
+tagok a listában maradnak, mert a nyelvtan produkciója az igazság, és a listát arra szűkíteni, amire
+a walker MA rászorul, pontosan az a hiba, amiből ez a kör származik.
+
+**Mérés (mindkét gate-en, a walker közös):**
+- 44 alak (11 regressziós a 7. körből, 10 új, 1 nem-kulcsszó kontroll) evil és jogos irányban:
+  24 rossz a 22e215e4-en, 0 utána.
+- 16 elemű fix-kockázati készlet, mind valós bash, 0 rossz -- benne a `coproc EGYSZERŰ` éllel és két
+  anti-vakság kontrollal, amik ugyanazt a prózát `-d @-` nélkül DENY-olják.
+- 130 elemű invariáns (prefix x case-alak), 0 rossz; a 22e215e4-en 39 rossz.
+- 3542 alakú sweep a prefix-lánc x case-alak téren, minden ALLOW-ra `bash -n` + marker-végrehajtás:
+  452 élő bypass a 22e215e4-en, 0 utána.
+- 17 mutáció, 10 megölve, 7 mérten ekvivalens (fent).
+
+**Nyitva hagyva, szándékosan:** a `tree-sitter-bash` kiváltás külön kártyán fut (MikroB döntése,
+15603-as komment); ez a kör a walkert javítja, nem előzi meg a migrációt. Az `bash-ast.mjs`
+dark-launch (f16b3165) változatlan: a walker hajtja a viselkedést, amíg `SELF_PACE_AST=on` nincs.
