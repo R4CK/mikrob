@@ -2562,3 +2562,57 @@ kezeli, a fail-open alapdöntés a gyökér.
 nyelvtanból, a javítások, a prefix-lelet saját megtalálása az új kritériummal), MikroB (visszaadás).
 
 **Hivatkozás:** kártya f16b3165 (2. kör), Gate-SHA ceed282d, kártya-komment 15741.
+
+
+## 2026-08-24 -- A NÉV nem karakter-osztály, hanem bash SZÓ: szkennerre cserélve (kártya 84e31b40, 11. kör)
+
+**Döntés (fullstack, Cybersec NO-GO nyomán):** a walker NÉV-slotja (mindkét függvénydefiníciós alak
+és a `coproc`) többé nem reguláris kifejezés-osztály, hanem egy `scanBashWord` szkenner, ami a fájlban
+MÁR MEGLÉVŐ, mélység-helyes olvasókat (`skipBalancedParens`, `skipParamExpansion`) használja.
+
+**Miért.** Ez a mező három egymást követő körben volt hibás, mindig MÁS tengelyen: előbb csak
+azonosító (10. kör: `deploy-prod` és további 24 élő alak), aztán a metakarakter-halmaz (`f{g`), aztán
+az idézés (`coproc f""`). Az ok nem az volt, hogy rosszul válogattam a karaktereket, hanem hogy egy
+bash SZÓ nem karakter-osztály: futamok sorozata, és négy futam NESTEL -- `$( )`, `${ }`, `$(( ))`,
+backtick. Amíg osztályként írom, minden kör egy újabb karaktert tesz hozzá, és a következő gate egy
+újabbat talál.
+
+**A jelentett 4 helyett 10 élő alak.** Cybersec négyet mért (`coproc f$(y)` és `` coproc f`g` ``,
+brace és bare-case törzzsel). A teret végigmérve tíz élő, végrehajtott alak jött ki, és ezek közül
+HAT elérhetetlen bármilyen egyszintű regexnek: `f$(y $(z))`, `f$(echo $(echo))`, `` f$(echo `g`) ``,
+`` f`echo $(y)` ``, `f${u:-$(y)}`, `f$((0))`. A javasolt (A) javítás (`\$\([^()]*\)`) tehát négyet
+zárt volna a tízből -- ezért nem azt vettem át. Ez ugyanaz a minta, mint a 10. körben: a javasolt
+javítás is állítás, a saját batériával kell megmérni.
+
+**Mért aszimmetria, ami a döntést alátámasztja:** a `coproc` a nevét EXPANZIÓ és idézőjel-eltávolítás
+UTÁN validálja (`coproc f$(true) { ... }` -> `f` nevű coproc, `declare -p f`-fel igazolva), a
+függvény-alakok viszont NEM expandálnak (`f$(true)() { ... }` -> „not a valid identifier"). A szkennert
+mégis mindhárom pozíció osztja: egy slot, egy olvasó. Egy olyan szó elnyelése, amit a bash utána
+elutasít, semmibe nem kerül -- az a parancs le sem fut, tehát nincs mit kifehéríteni.
+
+**Cybersec javított egy HIBÁS INDOKOMAT is, és ez fontosabb, mint a lelet.** A 10. köri kommentem azt
+állította, hogy egy páratlan idézőjel elnyelése „a walkert idézőjelen kívül hagyná, miközben a bash
+stringen belül van". A hívási hely szerint ez nem így működik: `boundary = ...` KIZÁRÓLAG a boundary-t
+mozgatja, az `i`-t nem, tehát a fő ciklus továbbra is végigjárja a lenyelt szöveget és rendesen vezeti
+a `quote`/nest állapotot. Deszinkronizáció nem keletkezhet; a valódi, kisebb kockázat az, hogy a
+boundary egy idézett futam KÖZEPÉRE kerül. A konzervatív viselkedés jó maradt, de a rossz indok
+tartotta kint a backtickot a névből -- vagyis pontosan ez a hibás indok termelte a mostani leletet.
+A tesztek kommentje javítva (`N-R4`), nem csak a kódé.
+
+**Mérés (mindkét kapun, a walker közös; a számok a Gate-SHA-ból kicsomagolt kódon):**
+- 16 nevű mélység-próba x 2 törzs-alak, mind `bash -n`-nel validálva és markerrel futtatva:
+  10 élő -> 0.
+- 52 nevű karakter-tér x 3 alak: 0 élő, és most már 0 ALLOW is érvényes bash-en (a korábban maradt
+  `$(y)` inert ALLOW is eltűnt).
+- 20 elemű fix-kockázati készlet, 44 alak, 130 elemű invariáns: mind 0 rossz.
+- 31892 alakú sweep: 0 residual bypass.
+- 10 mutáció a szkennerre, 6 megölve.
+
+**Túlélő mutánsok, kimondva.** Négy: az egyszeres idézet olvasásának elhagyása (P4), a lezáratlan
+backtick „nyeld a végéig" viselkedése (P6), a POSIX alak `()`-követelményének elhagyása (P9), és a
+compound-nyitó követelmény elhagyása a függvény-ágakon (P10). 624 generált alakon: P4-nél 18 eltérés,
+de EGYIK SEM fut le; P6/P9/P10-nél nulla eltérés. Szerkezeti indok is van rá, nem csak szám: egy
+egyszeres idézetbe zárt metakarakter után a név már nem azonosító, tehát inert; egy lezáratlan
+backtick érvénytelen bash; a `foo { case ... }` és a `foo case ... esac` (parens nélkül) szintén
+érvénytelen bash. Egyikre sem írtam tesztet. Ha valaki talál élő, végrehajtott szétválasztó alakot,
+jön rá a teszt.

