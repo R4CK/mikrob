@@ -469,3 +469,61 @@ describe('round 4: ANSI-C escape obfuscation (QA FAIL on 223ac1f8)', () => {
     expect(Date.now() - t0).toBeLessThan(2000)
   })
 })
+
+describe('round 5: ANSI-C decoding on the stdin-shell branch (Cybersec NO-GO on 44cda339)', () => {
+  // Round 4 taught unquoteWord to decode `$'...'`, and three of executableStrings' four extraction
+  // paths (SHELL_C_RX, EVAL_RX, HERESTRING_RX) go through it. The fourth -- the quoted-literal scan
+  // that only runs when STDIN_SHELL_RX matches (a bare `| bash`, `xargs ... bash -c`, or a process
+  // substitution standing in for the script file) -- read literals with its own regex,
+  // QUOTED_LITERAL_RX, which never knew about `$'...'` at all: `bash <(echo $'\\x63rontab -')` and
+  // `echo $'\\x63rontab -' | bash` reached the real binary while the scan saw only the raw, still
+  // encoded text. Cybersec proved it live on the installed crontab/systemd-run binaries.
+  const D = String.fromCharCode(36)
+  const BS = String.fromCharCode(92)
+  const hex = (s: string): string => `${BS}x${s.charCodeAt(0).toString(16)}${s.slice(1)}`
+  const oct = (s: string): string => `${BS}${s.charCodeAt(0).toString(8)}${s.slice(1)}`
+  const ansi = (payload: string): string => `${D}'${payload}'`
+
+  it.each([
+    ['process substitution, hex-encoded', `bash <(echo ${ansi(hex(`${CT} -`))})`],
+    ['process substitution, octal-encoded', `bash <(echo ${ansi(oct(`${CT} -`))})`],
+    ['process substitution with < <( ) form', `bash < <(echo ${ansi(hex(`${CT} -`))})`],
+    ['bare pipe into a shell', `echo ${ansi(hex(`${CT} -`))} | bash`],
+    ['xargs handing a shell its -c argument', `echo ${ansi(hex(`${CT} -`))} | xargs bash -c`],
+    ['ANSI-C with no escapes at all (still decoded, not just the encoded cases)', `echo ${ansi(`${CT} -`)} | bash`],
+    ['the non-English-word binary', `echo ${ansi(hex(`${SR} --on-active=60 /bin/true`))} | bash`],
+  ])('denies %s', (_name, cmd) => {
+    expect(bash(cmd)).toBe(true)
+  })
+
+  it.each([
+    ['plain quoting on the same branch stays denied (control, not a vacuous battery)', `echo '${CT} -' | bash`],
+    ['locale quoting on the same branch: literal text still matches as written', `bash <(echo ${D}"${CT} -")`],
+    ['ANSI-C spelling a neutral program', `echo ${ansi(hex('echo hi'))} | bash`],
+    ['prose piped to a non-shell reader is untouched', `echo ${ansi(hex('hello there'))} | cat`],
+  ])('%s', (_name, cmd) => {
+    // The locale case is deliberately NOT a false-positive check: `$"..."` decodes nothing, so its
+    // body is the plain literal text -- denying it is correct, matching unquoteWord's own handling.
+    if (_name.startsWith('plain quoting') || _name.startsWith('locale quoting')) {
+      expect(bash(cmd)).toBe(true)
+    } else {
+      expect(bash(cmd)).toBe(false)
+    }
+  })
+
+  it('decodes on this branch byte-for-byte the way readAnsiC already does elsewhere (no second decoder)', () => {
+    const extracted = executableStrings(`echo ${ansi(hex(`${CT} -`))} | bash`) as string[]
+    expect(extracted).toContain(`${CT} -`)
+  })
+
+  it('a long run of ANSI-C pieces on this branch does not backtrack forever', () => {
+    // The same ambiguity round 4 had to rule out for unquoteWord (`$'a'` matchable two ways) applies
+    // here too, since QUOTED_LITERAL_RX now has both a `$'` alternative and a bare `'...'`
+    // alternative: manually advancing lastIndex past readAnsiC's return point is what keeps them from
+    // overlapping. 20000 repeats must stay fast, not merely correct.
+    const cmd = `echo ${ansi('a').repeat(20000)} | bash(`
+    const t0 = Date.now()
+    bash(cmd)
+    expect(Date.now() - t0).toBeLessThan(2000)
+  })
+})

@@ -178,11 +178,22 @@ const SELF_PACE_BASH_PATTERNS = [
 // unexamined -- the governance control bypassed by input size alone.
 //
 // NOTHING IS LOST BY THE NARROWER CLASS, measured rather than assumed: `| ; & < > ( )` cannot
-// appear in an unquoted command path in bash -- they are separators. On every shape where the two
-// forms differ, both still FIND the shell; the bounded one merely starts the match after the
-// separator, which is where the command actually begins (`/tmp/a|b/bash` -> `b/bash`). So detection
-// is unchanged and the span is more accurate.
-const PATH_PREFIX = String.raw`(?:[^\s|;&<>()]*\/)?`
+// appear UNESCAPED in an unquoted command path in bash -- they are separators. On every shape where
+// the two forms differ, both still FIND the shell; the bounded one merely starts the match after
+// the separator, which is where the command actually begins (`/tmp/a|b/bash` -> `b/bash`). So
+// detection is unchanged and the span is more accurate.
+//
+// ESCAPED, THOUGH, THOSE SAME CHARACTERS ARE ORDINARY WORD CHARACTERS -- Cybered NO-GO, card
+// fa5ef179 round 3, live-executed: `\<` and `\>` inside an unquoted word are the literal characters
+// `<`/`>`, not redirection, so `bash -c '/tmp/a\<b/crontab -r'` runs the binary in a directory named
+// with an escaped `<`, and the first draft of the bounded class -- a plain negated char class with
+// no escape awareness -- named the shell but stopped scanning right at the escaped separator and
+// missed it. Same lesson this file already documents for scanBashWord: a bash WORD is a sequence of
+// runs, not a character class. `(?:\\.|[^...])*` is that same idiom applied here: an escaped pair
+// consumes two characters as one unit before the negated class gets another turn, so a `\<`/`\>`
+// can no longer look like a boundary. It still cannot reopen the quadratic the class exists to
+// avoid, because it advances by whole pairs rather than backtracking character-by-character.
+const PATH_PREFIX = String.raw`(?:(?:\\.|[^\s|;&<>()])*\/)?`
 
 const SCHED_PREFIX = String.raw`(?:(?:[A-Za-z_]\w*=\S*|sudo|env|command|exec|nice|builtin|time)\s+)*${PATH_PREFIX}`
 // The command-boundary anchor includes `(` so a $(...) command substitution
@@ -1605,7 +1616,17 @@ const STDIN_SHELL_RX = new RegExp(
     String.raw`|\bxargs\b[^|]*?${PATH_PREFIX}(?:bash|sh|zsh|dash|ksh)\b` +
     `|${PROC_SUB_SHELL}`,
 )
-const QUOTED_LITERAL_RX = /'([^']*)'|"((?:\\.|[^"\\])*)"/g
+// `$'...'` gets its own alternative rather than a fourth capture group (Cybersec, card ec20dd23
+// round 5, live repro): of the four extraction paths in executableStrings, three go through
+// unquoteWord -- which already decodes ANSI-C escapes (round 4) -- but this one reads quoted
+// literals directly, so `bash <(echo $'\x63rontab -')` and `echo $'\x63rontab -' | bash` reached
+// the shell's real argument while the scan only ever saw the raw, still-escaped text. The `$'`
+// marker is matched as its own alternative and its body decoded with readAnsiC -- the SAME
+// function unquoteWord already calls, not a second decoder, per this file's own standing lesson
+// that duplicated grammar knowledge is where the two copies drift apart. `$"..."` (locale form)
+// needs no change here: its body already falls through to the plain `"..."` alternative below,
+// exactly as unquoteWord leaves it literal.
+const QUOTED_LITERAL_RX = /\$'|'([^']*)'|"((?:\\.|[^"\\])*)"/g
 
 /** One level of "what would a shell run that is not this text itself": the argument of a `-c` shell
  *  or of `eval`, and -- only when something in the pipeline runs a program from stdin -- the quoted
@@ -1631,6 +1652,12 @@ export function executableStrings(command) {
     QUOTED_LITERAL_RX.lastIndex = 0
     let q
     while ((q = QUOTED_LITERAL_RX.exec(text)) !== null) {
+      if (q[0] === "$'") {
+        const [lit, next] = readAnsiC(text, QUOTED_LITERAL_RX.lastIndex)
+        QUOTED_LITERAL_RX.lastIndex = next
+        if (lit && lit !== text) out.push(lit)
+        continue
+      }
       const lit = q[1] ?? q[2]
       if (lit && lit !== text) out.push(lit)
     }
