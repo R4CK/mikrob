@@ -115,6 +115,20 @@ def _redact(text: str) -> str:
     return text
 
 
+def _tool_input_carries_secret(tool_input: dict) -> bool:
+    """True if a field _build_summary does NOT look at (an Edit's new_string, a Write's
+    content, ...) carries a secret shape. _build_summary only redacts the specific fields each
+    tool type inspects (a Bash command, a file_path, ...); this is the wider, defense-in-depth
+    check over the whole tool_input.
+
+    No truncation before redacting -- the exact ordering bug card 5472cfa9 fixed elsewhere in
+    this file. Card 8a18fd61 (Cybersec): this used to be a computed-and-discarded value with a
+    comment claiming a "double-check" that did not exist -- made real here.
+    """
+    raw = json.dumps(tool_input, ensure_ascii=False)
+    return _redact(raw) != raw
+
+
 # ---------------------------------------------------------------------------
 # Noise filter -- deterministic, no LLM
 # ---------------------------------------------------------------------------
@@ -348,8 +362,13 @@ def main() -> None:
     try:
         summary_raw = _build_summary(tool_name, tool_input, tool_response)
         summary = _redact(summary_raw)
-        # Double-check: full tool_input text also scanned for secrets that slipped through
-        input_text = _redact(json.dumps(tool_input, ensure_ascii=False)[:600])
+        # Card 8a18fd61 (Cybersec): a field _build_summary does not inspect (an Edit's
+        # new_string, a Write's content, ...) could carry a secret shape past both the summary
+        # and this check -- skip the entry rather than write a summary that looks clean
+        # (fail-closed, same guarantee as every other guard here). See
+        # _tool_input_carries_secret's docstring for why this used to be a no-op.
+        if _tool_input_carries_secret(tool_input):
+            sys.exit(0)
         if len(summary) > 300:
             summary = summary[:297] + '...'
     except Exception:
