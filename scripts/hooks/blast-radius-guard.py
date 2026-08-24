@@ -152,7 +152,11 @@ def main() -> None:
         conn.close()
 
         thr = lib.threshold()
-        if not res["in_graph"] or res["importers"] < thr:
+        # Card 3f61b2ab: a file on the explicit always-hub allowlist fires
+        # regardless of its measured importer count or graph presence -- see
+        # ALWAYS_HUB_FILES in blast-radius-check.py for why a numeric threshold
+        # alone is fragile for a file whose sensitivity does not track its count.
+        if not lib.is_forced_hub(rel) and (not res["in_graph"] or res["importers"] < thr):
             sys.exit(0)
         if _already_shown(str(payload.get("session_id") or ""), root, rel):
             sys.exit(0)

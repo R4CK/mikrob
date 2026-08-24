@@ -47,6 +47,21 @@ CRG_PYTHON = "/home/neon/.local/share/pipx/venvs/code-review-graph/bin/python"
 # pages sit at 2-3, real hubs at 40-500. Override with BLAST_RADIUS_THRESHOLD.
 DEFAULT_THRESHOLD = 25
 
+# Card 3f61b2ab: src/web/agent-scaffold.ts (the basis many agent types are built
+# on) measured at 23 importers -- 2 UNDER the threshold above, so the guard would
+# not have fired on it. A count-based threshold is inherently fragile for a file
+# whose sensitivity has nothing to do with how many files happen to import it
+# TODAY: the count drifts with unrelated commits and can dip below the line at
+# any time. Rather than lower the global threshold (which would over-trigger on
+# every other file newly crossing a lowered bar, an unrelated side effect), this
+# is an explicit, name-based override: a file listed here is ALWAYS treated as
+# shared/core, independent of its measured importer count. Extend with
+# BLAST_RADIUS_ALWAYS_HUB (comma-separated, repo-relative paths, appended to the
+# built-in set below).
+ALWAYS_HUB_FILES = {
+    "src/web/agent-scaffold.ts",
+}
+
 _BARREL_RE = re.compile(r"""^\s*export\s+(?:\*|\{[^}]*\})\s+from\s+['"](\.[^'"]+)['"]""", re.M)
 
 
@@ -280,12 +295,24 @@ def threshold() -> int:
     return DEFAULT_THRESHOLD
 
 
+def is_forced_hub(rel: str) -> bool:
+    """True if `rel` (repo-relative) is on the explicit always-hub allowlist,
+    regardless of its measured importer count -- see ALWAYS_HUB_FILES above."""
+    extra = {
+        p.strip() for p in os.environ.get("BLAST_RADIUS_ALWAYS_HUB", "").split(",") if p.strip()
+    }
+    return rel in ALWAYS_HUB_FILES or rel in extra
+
+
 # --------------------------------------------------------------------------
 # rendering
 # --------------------------------------------------------------------------
 def render(result: dict, thr: int) -> str:
     lines = []
-    tag = "SHARED/CORE" if result["importers"] >= thr else "local"
+    forced = is_forced_hub(result["file"])
+    tag = "SHARED/CORE" if (result["importers"] >= thr or forced) else "local"
+    if forced:
+        tag += " (forced -- explicit allowlist, card 3f61b2ab)"
     lines.append(f"  {result['file']}  [{tag}]")
     if not result["in_graph"]:
         lines.append("    not in the graph (new file, or not parsed) -- no radius to report")
