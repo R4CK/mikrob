@@ -3064,3 +3064,40 @@ biztonságot a megelőző `waitFor`/`getAllByRole` állítja már elő ugyanúgy
 **Ki döntött:** backend2 (kártya 3303e9d6, Cybersec eredeti lelete a f951ec53 gate közben).
 
 **Hivatkozás:** kártya `3303e9d6`. Előzmény: `f951ec53` (a promótált sürgős-elsőbbség eredeti bevezetése).
+
+
+## 2026-08-24 -- redispatch-guard.sh: a cap-check megelőzi a backoff-ellenőrzést (86dfba39)
+
+**Mi történt:** MikroB saját lelete (2026-08-24, Peti direkt visszajelzése: "két kártya 5 órát áll,
+miért nem szóltál"). A `check` parancs régi sorrendjében a (4) backoff-ablak ellenőrzése ELŐBB
+futott, mint az (5) hard cap (count>=MAX_REDISPATCH) ellenőrzése. Mivel a backoff BASE_BACKOFF*2^count
+(600s alapértékkel, count=3-nál már 4800s=80perc), a HARMADIK nudge után a kártya azonnal egy 80
+perces backoff-ba lépett, és EBBEN AZ ÁLLAPOTBAN a backoff-ellenőrzés MINDIG korábban DENY:backoff-ot
+adott vissza, mint hogy elérte volna a cap-check-et -- a tényleges Peti-riasztás csak azután sült el,
+hogy ez az utolsó (leghosszabb) backoff-ablak is lejárt. Két, már régóta (5+ óra) álló kártyánál
+(ec20dd23, fa5ef179) ez kb 49 perces plusz késleltetéshez vezetett.
+
+**A fix:** a `check` parancs (3)-(6) lépéseit (busy / cap / backoff / allow) egy új, tiszta
+`_decide_active()` függvénybe emeltem ki, amiben a cap-ellenőrzés MOST a backoff-ellenőrzés ELŐTT
+fut. A `check` ág mostantól ezt a függvényt hívja és a visszaadott döntés szerint ágaz -- a kimeneti
+szövegek (DENY:agent-busy, DENY:cap-reached(N), DENY:backoff(Ns), ALLOW) változatlanok, csak a
+DÖNTÉS SORRENDJE változott.
+
+**Miért külön függvényként:** a hiba kizárólag a KÉT FELTÉTEL SORRENDJÉRŐL szól -- ha a teszt csak
+kézzel újraimplementálná ugyanazt a logikát (ahogy a fájl korábbi selftest-esetei is tették), a teszt
+nem a VALÓDI kódot próbálná, hanem saját magát. A külön függvény azt teszi lehetővé, hogy a selftest
+a tényleges döntés-utat hívja meg.
+
+**Tesztek:** `store/redispatch-guard.sh selftest`, új eset: count=3 (=MAX_REDISPATCH), csak 10
+másodperc telt el egy 4800s-os ablakból -- elvárt eredmény `cap-reached`, NEM `backoff:...`. Két
+kontroll-eset is: count=2 (cap alatt) ugyanabban a helyzetben helyesen backoff-ot ad, és busy=1
+mindig megelőzi mindkét másik ágat. Mind a 6 selftest-eset zöld.
+
+**Mutációs önellenőrzés:** a `_decide_active()`-ban visszaállítottam az eredeti sorrendet (backoff
+előbb, mint cap) -- a selftest PONTOSAN a bejelentett tünetet reprodukálta (`backoff:4790` a várt
+`cap-reached` helyett a cap-teszt esetben), a másik két kontroll-eset változatlanul zöld maradt.
+A fix visszaállítása után újra minden zöld.
+
+**Ki döntött:** backend2 (kártya 86dfba39, MikroB saját lelete).
+
+**Hivatkozás:** kártya `86dfba39`. Érintett fájl: `store/redispatch-guard.sh`.
