@@ -132,10 +132,15 @@ describe('ONE command-position grammar, and BOTH branches must obey it (card 442
     ['after &&', (c) => `true && ${c}`],
     ['after a pipe', (c) => `echo x | ${c}`],
     ['inside a substitution', (c) => `X=$(${c})`],
+    ['after if', (c) => `if ${c}; then :; fi`],
     ['after then', (c) => `if true; then ${c}; fi`],
     ['after do', (c) => `for i in 1; do ${c}; done`],
     ['after else', (c) => `if false; then :; else ${c}; fi`],
-    ['after elif', (c) => `if false; then :; elif true; then ${c}; fi`],
+    // The `elif` row used to read `elif true; then ${c}` -- which places the command after the
+    // SECOND `then`, so it re-measured `then` and never exercised `elif` at all (Cybersec F-2).
+    // `if` had no row whatsoever. Both keywords are in CMD_POSITION and both were already denied
+    // by the code; the gap was here, in what the table proves.
+    ['after elif', (c) => `if false; then :; elif ${c}; then :; fi`],
     ['after while', (c) => `while ${c}; do :; done`],
     ['after until', (c) => `until ${c}; do :; done`],
     ['a CASE ARM', (c) => `case $x in y) ${c} ;; esac`],
@@ -166,12 +171,73 @@ describe('ONE command-position grammar, and BOTH branches must obey it (card 442
   it('a QUOTE is deliberately NOT a command position -- the unwrapper reaches those precisely', () => {
     // An earlier round put quotes in the class because `bash -c "<cmd>"` starts its command at the
     // quote. That is a PROXY for "a shell runs this text"; card ec20dd23 replaced the proxy with
-    // the thing itself. Measured: with the quote gone every wrapper vector is still denied (see the
-    // wrapper suite), and two false positives it had cost are gone with it.
+    // the thing itself.
+    //
+    // THIS COMMENT USED TO OVERCLAIM, and the correction is the point of round 3. It said "with the
+    // quote gone every wrapper vector is still denied" -- true of the patch's own five wrapper
+    // shapes, false as a statement about how a shell can receive a program. Cybersec (comment
+    // 15685) measured five shapes the quote HAD covered and extraction did not, two of them still
+    // live-executable on the develop head at the time. A security file's comment that calls an
+    // unmeasured claim "measured" becomes the next round's evidence, which is why it blocked.
+    //
+    // The scoped claim, re-measured on this head now that ec20dd23 covers here-strings and process
+    // substitution: across every route by which a shell receives a program, the verdict is the same
+    // with the quote in the class and out of it. The routes are enumerated in the test below rather
+    // than summarised, so "every" means a list someone can check.
     expect(bash(doc(`{"note":"${AT} 16:13 the pane was idle"}`))).toBe(false)
     expect(bash(doc(`He wrote "${AT} 16:13 nothing ran" in the report.`))).toBe(false)
     // ...while the real thing behind a quote is still denied, reached by extraction:
     expect(bash(`bash -c "${AT} now + 5 minutes"`)).toBe(true)
+  })
+
+  describe('the routes the quote used to cover are covered by EXTRACTION now (card 442f3289 F-1)', () => {
+    // Enumerated, not summarised. Cybersec's NO-GO was that the file asserted a general property
+    // from a five-item list; the answer is to make the list the assertion. Every entry is a way a
+    // shell receives a program WITHOUT the binary standing at a command position in the outer text
+    // -- i.e. exactly what the quote in CMD_POSITION used to catch by proxy.
+    const P = `${AT} now + 5 minutes`
+    const ROUTES: Array<[string, string]> = [
+      ['-c shell', `bash -c "${P}"`],
+      ['-c shell, single-quoted', `sh -c '${P}'`],
+      ['eval', `eval "${P}"`],
+      ['here-string', `sh <<< "${P}"`],
+      ['here-string, single-quoted', `sh <<< '${P}'`],
+      ['here-string into a -s shell', `bash -s <<< "${P}"`],
+      ['process substitution', `sh <(echo "${P}")`],
+      ['process substitution, redirected', `sh < <(echo "${P}")`],
+      ['pipe into a shell', `echo "${P}" | bash`],
+      ['xargs into a -c shell', `echo x | xargs -I{} bash -c "${P}"`],
+      ['nested -c', `bash -c "bash -c '${P}'"`],
+    ]
+
+    it.each(ROUTES)('denied at the top level: %s', (_name, cmd) => {
+      expect(bash(cmd)).toBe(true)
+    })
+
+    it.each(ROUTES)('denied inside a heredoc body bash executes: %s', (_name, cmd) => {
+      // The heredoc branch is where the quote's removal was alleged to cost protection, so the
+      // same enumeration is re-run there rather than assumed to follow.
+      expect(bash(runnable(cmd))).toBe(true)
+    })
+
+    it('KNOWN RESIDUALS, named so the claim above is not read as broader than it is', () => {
+      // These are allowed with the quote in the class AND out of it -- the quote never covered
+      // them, so its removal takes nothing away. Naming them is the difference between a scoped
+      // claim and the overclaim that blocked this card.
+      expect(bash(`python3 -c "import os; os.system('${P}')"`)).toBe(false)
+      expect(bash(`script -qec "${P}" /dev/null`)).toBe(false)
+      expect(bash(`bash -c "$(echo ${P})"`)).toBe(false)
+    })
+  })
+
+  it('THE COST OF `)` AS A COMMAND POSITION, pinned (Cybersec F-3)', () => {
+    // `)` has to be a command position: a case arm and a closing subshell both really do put a
+    // command after it. The price is prose -- an ordinary parenthetical followed by a time
+    // expression is denied inside a heredoc body. Cybersec asked for this to be a stated, tested
+    // cost rather than something discovered later, the same treatment the `!` choice gets above.
+    expect(bash(runnable(`the run finished (see note) ${AT} 16:13 sharp`))).toBe(true)
+    // ...and the thing it is there for:
+    expect(bash(runnable(`case $x in y) ${AT} now + 5 minutes ;; esac`))).toBe(true)
   })
 
   it('a closing brace is deliberately NOT a command position', () => {
