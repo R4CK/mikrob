@@ -801,46 +801,113 @@ const CASE_KEYWORD_RX = /^(?:case|in|esac)(?![\w-])/
 // the list anyway: it is the grammar's production, and trimming it to whatever the walker happens to
 // need today is how the round-9 finding got in.
 const COMPOUND_OPENER = String.raw`(?:\{|\(|\[\[|(?:case|if|while|until|for|select)(?![\w-]))`
-// A function NAME, for BOTH definition syntaxes. One constant, because one concept: the round-10
-// NO-GO is precisely what happens when the same idea is spelled out twice -- the `function` branch
-// carried a wide class, the POSIX `NAME ()` branch a narrow `[A-Za-z_]\w*`, and 25 valid function
-// names fell in the gap. `deploy-prod`, `sync.db` and `a:b` are not exotic; all three were measured
-// executing from inside a blanked body.
+// The NAME slot -- for both function-definition syntaxes and for `coproc`.
 //
-// The class is bash's own definition of a WORD: a run of characters that are not METACHARACTERS
-// (whitespace, `|`, `&`, `;`, `(`, `)`, `<`, `>`) together with BALANCED quoted segments. Three
-// things fall out of it that a hand-picked class kept getting wrong:
+// This started as a character class and was wrong three rounds running, each time on a different
+// axis: identifier-only (round 10, `deploy-prod` and 24 others live), then the metacharacter set
+// (`f{g`), then quoting (`coproc f""`). The reason it kept being wrong is that a bash WORD is not a
+// character class at all. It is a sequence of runs, and four of those runs NEST: `$( )`, `${ }`,
+// `$(( ))` and backticks. Cybersec reported 4 live shapes here; measuring the space found 10, and 6
+// of them -- `f$(y $(z))`, `f$(echo $(echo))`, `` f$(echo `g`) ``, `` f`echo $(y)` ``, `f${u:-$(y)}`,
+// `f$((0))` -- are out of reach of ANY single-level regex, which is what a wider character class
+// would have been.
 //
-//   * `{` and `}` are NOT metacharacters -- they are reserved words only when they stand alone -- so
-//     `f{g` is a legal function name. The wide class this round was asked to COPY excluded them, and
-//     `f{g() { ... }` was live on BOTH branches. Copying would have closed 23 of the 25; deriving
-//     from the metacharacter set closes all 25.
-//   * A quoted segment is part of the word, and quote removal happens before bash sees the name, so
-//     `coproc f"" { ... }` defines a coproc called `f`. Matching only the unquoted run left that live.
-//   * The segments must be BALANCED, and not merely allowed: this rule moves `boundary` but never
-//     touches the walker's `quote` state, so a match that swallowed an unbalanced quote would leave
-//     the walker unquoted while bash is inside a string -- a worse desynchronisation than the gap it
-//     would close. A backtick is deliberately still excluded: it opens a command context, and not
-//     matching there simply leaves the boundary where it was.
-const FUNCTION_NAME = String.raw`(?:[^\s|&;()<>'"\`]|'[^']*'|"[^"]*")+`
+// So it is a scanner, reusing the depth-correct helpers this file already has for exactly these
+// constructs. Ending the scan too LATE is the fail-closed direction here (the boundary lands further
+// into the command, so the span starts at something that is not the outer curl); ending too EARLY is
+// the bug, because the boundary then never leaves the NAME and the `case` behind it stops counting
+// as command position.
+//
+// WHY THE NAME MATTERS AT ALL, given bash rejects most of these as identifiers: `coproc` validates
+// its NAME after EXPANSION and quote removal, so `coproc f$(y) { ... }` really does start a coproc
+// called `f`. The function forms do not expand (`f$(y)() { ... }` is "not a valid identifier"), but
+// they share the scanner anyway -- one slot, one reader. Consuming a word bash then rejects costs
+// nothing: that command does not run, so there is no payload to blank.
+function scanBashWord(src, start) {
+  let j = start
+  while (j < src.length) {
+    const c = src[j]
+    if (c === '\\') { j += 2; continue }
+    if (c === "'") { const k = src.indexOf("'", j + 1); if (k === -1) return -1; j = k + 1; continue }
+    if (c === '"') {
+      j++
+      while (j < src.length && src[j] !== '"') j += src[j] === '\\' ? 2 : 1
+      if (j >= src.length) return -1
+      j++
+      continue
+    }
+    if (c === '`') { const k = src.indexOf('`', j + 1); if (k === -1) return -1; j = k + 1; continue }
+    // `$((`, `$(` and `${` all nest, and all three already have a depth-correct reader here.
+    if (c === '$' && src[j + 1] === '(') { j = skipBalancedParens(src, j + 1); continue }
+    if (c === '$' && src[j + 1] === '{') { j = skipParamExpansion(src, j); continue }
+    // Bash METACHARACTERS are the only characters that end a word. `{` and `}` are not among them --
+    // they are reserved words only when they stand alone -- which is why `f{g` is a legal name.
+    if (c === ' ' || c === '\t' || c === '\n' || c === '|' || c === '&' || c === ';' ||
+        c === '(' || c === ')' || c === '<' || c === '>') break
+    j++
+  }
+  return j > start ? j : -1
+}
 const CMD_PREFIX_KEYWORD_RX = new RegExp(
   '^(?:' +
     String.raw`(?:if|then|elif|else|while|until|do|!|\{)(?=\s|$)` +
     String.raw`|time(?:[ \t]+-p)?(?:[ \t]+--)?(?=\s|$)` +
-    // The coproc NAME uses the SAME class, and the first draft of this round got that wrong. The
-    // reasoning was "a coproc NAME becomes a shell VARIABLE, so it must be an identifier" -- true of
-    // the name bash ends up with, false of the TEXT standing there. Bash validates the name AFTER
-    // expansion and quote removal, so `coproc f$g { ... }` (with `g` unset) makes a coproc called
-    // `f`, and `coproc f\g { ... }` one called `fg`; both are live, executing bypasses against a
-    // walker that matches the literal `[A-Za-z_]\w*`. Mutation testing separated them -- reading the
-    // code again would not have. What keeps this branch honest is NOT a narrow class but the
-    // COMPOUND_OPENER lookahead: `coproc python3 curl -d @- <<'PY'` is a SIMPLE command, `curl` is
-    // not an opener, so no name is consumed and python3 stays the command word (pinned by L-R4/L-R5).
-    String.raw`|coproc(?:[ \t]+${FUNCTION_NAME}(?=[ \t]+${COMPOUND_OPENER}))?(?=\s|$)` +
-    String.raw`|function[ \t]+${FUNCTION_NAME}[ \t]*(?:\(\)[ \t]*)?(?=${COMPOUND_OPENER})` +
-    String.raw`|${FUNCTION_NAME}[ \t]*\(\)[ \t]*(?=${COMPOUND_OPENER})` +
+    String.raw`|coproc(?=\s|$)` +
     ')',
 )
+const COMPOUND_OPENER_RX = new RegExp('^' + COMPOUND_OPENER)
+const WS_RX = /^[ \t]*/
+
+// How far past `src[i]` the CURRENT simple command's prefix reaches, or -1 for "no prefix here".
+// Three of the forms take a NAME, and a NAME needs the scanner rather than a class -- see above.
+function matchCmdPrefix(src, i) {
+  const rest = src.slice(i)
+  const kw = CMD_PREFIX_KEYWORD_RX.exec(rest)
+  if (kw) {
+    let end = i + kw[0].length
+    // `coproc [NAME] command`. The NAME is a name only when a COMPOUND command follows it: in
+    // `coproc python3 curl -d @- <<'PY'` the command is SIMPLE, so bash takes `python3` as the
+    // command word, and consuming it would hand the span to the curl standing behind it.
+    if (kw[0] === 'coproc') {
+      const ws = WS_RX.exec(src.slice(end))[0].length
+      const w = ws > 0 ? scanBashWord(src, end + ws) : -1
+      if (w !== -1) {
+        const ws2 = WS_RX.exec(src.slice(w))[0].length
+        if (ws2 > 0 && COMPOUND_OPENER_RX.test(src.slice(w + ws2))) end = w
+      }
+    }
+    return end
+  }
+  // `function NAME [()] compound-command`
+  const fkw = /^function[ \t]+/.exec(rest)
+  if (fkw) {
+    const w = scanBashWord(src, i + fkw[0].length)
+    if (w !== -1) {
+      const after = withOptionalEmptyParens(src, w)
+      if (after !== -1) return after
+    }
+    return -1
+  }
+  // The POSIX `NAME () compound-command` form, with no `function` keyword.
+  const w = scanBashWord(src, i)
+  if (w !== -1 && w > i) {
+    const after = withOptionalEmptyParens(src, w, true)
+    if (after !== -1) return after
+  }
+  return -1
+}
+
+// Past optional whitespace, an optional `()`, and more whitespace -- provided a compound-command
+// opener really stands there. `requireParens` is what separates the POSIX form (where the `()` IS
+// the syntax) from the `function` keyword form (where it is decoration).
+function withOptionalEmptyParens(src, j, requireParens = false) {
+  let k = j + WS_RX.exec(src.slice(j))[0].length
+  let sawParens = false
+  if (src[k] === '(' && src[k + 1] === ')') { k += 2; sawParens = true }
+  if (requireParens && !sawParens) return -1
+  k += WS_RX.exec(src.slice(k))[0].length
+  return COMPOUND_OPENER_RX.test(src.slice(k)) ? k : -1
+}
 // A word starts here only after whitespace, a separator, or an opener.
 const WORD_START_RX = /[\s;&|()`]/
 
@@ -943,8 +1010,8 @@ export function stripHeredocDataPayloads(command) {
         if (kw && kw[0] === 'case') caseStack.push({ state: 'in', base: nestStack.length, start: i })
         else if (kw && kw[0] === 'esac') { if (caseStack.length) caseStack.pop() }
         else {
-          const pre = CMD_PREFIX_KEYWORD_RX.exec(rest)
-          if (pre) boundary = i + pre[0].length
+          const pre = matchCmdPrefix(src, i)
+          if (pre !== -1) boundary = pre
         }
       }
     }
