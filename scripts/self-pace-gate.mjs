@@ -27,7 +27,7 @@
 // writeAgentSettingsFromProfile() (agent-scaffold.ts), guarded by
 // name !== MAIN_AGENT_ID, re-applied on every spawn (respawn-safe).
 
-import { readFileSync, appendFileSync } from 'node:fs'
+import { readFileSync, appendFileSync, statSync } from 'node:fs'
 import { createHash } from 'node:crypto'
 import { fileURLToPath } from 'node:url'
 import { dirname, join } from 'node:path'
@@ -41,6 +41,19 @@ import { heredocOwnerSpans } from './bash-ast.mjs'
 //   'on'                -- the AST answer decides where it has one (walker still covers null).
 //   'off'               -- do not parse at all; byte-for-byte today's behaviour.
 // Rollback is an env var, not a revert.
+//
+// WHAT LICENSES THE CUTOVER TO 'on' -- corrected, because the first answer was wrong in a way that
+// mattered (Cybersec F-2, card f16b3165). The shipped criterion was "run shadow until the
+// divergence log shows zero disagreements". That is structurally blind to a false NEGATIVE: the
+// attacker chooses the shape, and none of the fourteen compound-redirect bypasses F-1 found occurs
+// in good-faith fleet traffic. A week of empty log would have delivered exactly the confidence
+// needed to enable them.
+//
+// Dark launch is the right instrument for FALSE POSITIVES -- it genuinely caught a `git commit -F -`
+// regression before it shipped -- and the wrong instrument for false negatives. So the criterion is:
+// the ADVERSARIAL battery in src/__tests__/bash-ast-boundary.test.ts is green with SELF_PACE_AST=on,
+// which is an executable assertion rather than a claim about a log. The divergence log keeps its
+// job, which is watching for availability regressions in real traffic.
 //
 // READ PER CALL, not captured at module load. In production each hook invocation is a fresh
 // process, so either would do -- but a load-time constant cannot be exercised by a test that flips
@@ -62,18 +75,49 @@ const AST_DIVERGENCE_LOG =
 // file would turn a diagnostic into a credential sink -- the exact trade the fleet's redaction
 // rules exist to prevent. A digest identifies a recurring case across runs, and the leading WORD of
 // each side names the disagreement class (`curl` vs `python3`), which is what a fix needs.
+//
+// THE INTENT ABOVE WAS RIGHT AND THE FIRST IMPLEMENTATION STILL LEAKED (Cybersec F-3, card
+// f16b3165). "The leading word" is not the binary when the command carries an inline environment
+// assignment -- and CURL_LEADING_RX itself lists `[A-Za-z_]\w*=\S*` as an allowed leading form, so
+// `DASHBOARD_TOKEN=<secret> curl -d @- ...` put the secret VALUE in the log as the head. Measured
+// with a synthetic value. Leading assignments are therefore reduced to their NAME, and only the
+// first non-assignment word is reported.
+const ASSIGNMENT_WORD_RX = /^([A-Za-z_]\w*)=/
+const AST_LOG_MAX_BYTES = 1_048_576
+
+export function divergenceHead(span) {
+  for (const word of String(span ?? '').trim().split(/\s+/)) {
+    if (!word) continue
+    const assigned = ASSIGNMENT_WORD_RX.exec(word)
+    // `NAME=` keeps the diagnostic (which variable prefixed the command) and drops the value.
+    if (assigned) return `${assigned[1]}=`
+    return word.slice(0, 32)
+  }
+  return ''
+}
+
 function recordAstDivergence(src, walkerSpan, astSpan, walkerSays, astSays) {
   try {
-    const head = (s) => (String(s).trim().split(/\s+/)[0] ?? '').slice(0, 32)
+    // An attacker can manufacture divergences at will, so the log is capped rather than unbounded.
+    // Dropping records is the right failure here: this is a dark-launch diagnostic, not an audit
+    // trail, and it must never be the reason a disk fills.
+    try {
+      if (statSync(AST_DIVERGENCE_LOG).size > AST_LOG_MAX_BYTES) return
+    } catch {
+      // no log yet -- nothing to cap
+    }
     appendFileSync(
       AST_DIVERGENCE_LOG,
       JSON.stringify({
         at: new Date().toISOString(),
         digest: createHash('sha256').update(src).digest('hex').slice(0, 16),
         bytes: src.length,
-        walker: { head: head(walkerSpan), exempt: walkerSays },
-        ast: { head: head(astSpan), exempt: astSays },
-      }) + '\n'
+        walker: { head: divergenceHead(walkerSpan), exempt: walkerSays },
+        ast: { head: divergenceHead(astSpan), exempt: astSays },
+      }) + '\n',
+      // Mode applies at CREATION only; without it the fleet's 0002 umask made this 0664, i.e.
+      // group-writable and world-readable for a file whose whole purpose is to be conservative.
+      { mode: 0o600 }
     )
   } catch {
     // A logging failure must never change a gate decision, and must never wedge a Bash call.
