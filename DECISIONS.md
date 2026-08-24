@@ -3101,3 +3101,41 @@ A fix visszaállítása után újra minden zöld.
 **Ki döntött:** backend2 (kártya 86dfba39, MikroB saját lelete).
 
 **Hivatkozás:** kártya `86dfba39`. Érintett fájl: `store/redispatch-guard.sh`.
+
+
+## 2026-08-24 -- biztonsági/pentest eszköz jelöltek due diligence-e (441337bf)
+
+**Mi történt:** a kártya 5 jelöltjét (snyk/agent-scan, NeoTheCapt/RedteamAgent, usestrix/strix,
+GH05TCREW/pentestagent, bhavsec/autopentest-ai) vizsgáltam át, KIZÁRÓLAG olvasás-alapon
+(GitHub API metaadat + LICENSE-fájl, quarantine-reader ügynökön át) -- semmit nem telepítettem
+vagy futtattam, különösen nem a négy aktív pentest-keretrendszert.
+
+**Plan-grilling (a Skill tool nem találta a `plan-grilling` nevet, a SKILL.md-t közvetlenül
+olvastam és kézzel futtattam le a procedúrát):** verdikt GO-WITH-CHANGES. A legvalószínűbb
+buktató -- véletlenül FUTTATNI valamelyik ajánlott keretrendszert "csak hogy lássam mit tud" --
+ellen a változtatás: kizárólag olvasás-alapú kutatás ebben a körben, egyik jelölt sem lett
+telepítve/futtatva, és minden négy támadó eszköz jelentésében explicit állítva, hogy
+"nem futtatva, nem telepítve -- Cybersec/Cybered jóváhagyására vár".
+
+**Eredmény jelentésenként:**
+- snyk/agent-scan: valós, aktív (2953 csillag, Apache-2.0, ma pusholva), önvédelmi célú
+  (AI-agent/MCP/skill biztonsági szkenner), pontosan a flotta NULLA lefedettségű részére.
+  JAVASLAT: ADOPT. Megjegyzés: a LICENSE fájl "Invariant Labs AG"-t nevez meg copyright-ként,
+  nem a Snyk szervezetet -- valószínűleg felvásárolt projekt megtartott attribúciója
+  (Apache-2.0 ezt megengedi), nem blokkoló, de Cybersecnek érdemes újraolvasnia.
+- NeoTheCapt/RedteamAgent: valós repó, DE a GitHub API `"license": null`-t ad -- NINCS
+  licencfájl, tehát alapértelmezésben minden jog fenntartva a szerzőnél. JAVASLAT: REJECT,
+  függetlenül a biztonsági kockázattól, hacsak a szerző explicit engedélyt nem ad.
+- usestrix/strix: valós, kiemelkedően aktív (57715 csillag, Apache-2.0, ma frissült, saját
+  szervezet + domain). A legerősebb technikai/közösségi jelölt a négy aktív eszköz között.
+  JAVASLAT: Cybersec/Cybered döntésére vár, technikailag a legjobb első jelölt.
+- GH05TCREW/pentestagent: valós, aktív (MIT licenc, kb. 2994 csillag, 602 fork, ma frissült),
+  CVE-alapozott RAG megközelítés. JAVASLAT: Cybersec/Cybered döntésére vár, jó másodlagos jelölt.
+- bhavsec/autopentest-ai: valós repó, DE `pushed_at` 2026-02-22 -- kb. fél éve nincs kódváltozás,
+  a kártya saját karbantartottsági aggálya megerősítve mérve. JAVASLAT: REJECT / alacsony
+  prioritás.
+
+**Ki döntött:** backend2 (kártya 441337bf, due diligence -- a végső adoptálási GO/NO-GO
+kizárólag Cybersec/Cybered joga, ahogy a kártya előre rögzítette).
+
+**Hivatkozás:** kártya `441337bf`, szülő-fázis `40f92dd2`.
