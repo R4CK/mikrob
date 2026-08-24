@@ -1637,13 +1637,28 @@ const PROC_SUB_SHELL = String.raw`${WRAPPER_POSITION}(?:sudo\s+|env\s+)*${SHELL_
 // place. Its consumable characters (everything but `\s|;&<>()\\`, plus an escaped-any-char via
 // `\\.`) are already a subset of what the plain filler `[^|]` accepts -- with the single exception
 // of an escaped pipe (`\|`), which the filler's `[^|]` alone can never cross. So PATH_PREFIX's own
-// nested attempt-and-backtrack cycle is folded into ONE disjoint filler that keeps the `\\.` escape
-// route (so `\|` is still crossed, preserving the one real capability PATH_PREFIX added) while
-// routing every backslash through it exclusively (`[^|\\]` excludes backslash from the single-char
-// alternative) -- the same disjoint-alternation shape already proven safe for PATH_PREFIX itself
-// (ae6e80ea). This removes the separate optional group entirely, so there is nothing left for the
-// engine to retry at each outer position: measured back to O(n) (n=1000000 -> 7ms).
-const XARGS_FILLER = String.raw`(?:\\.|[^|\\])*?`
+// nested attempt-and-backtrack cycle is folded into ONE disjoint filler.
+//
+// ROUND 6 (Cybered, same card, live NO-GO): the first cut of that fold routed EVERY backslash
+// through `\\.` exclusively (`[^|\\]` excluded backslash from the single-char side), pairing it
+// with whatever followed. bash/sh/zsh/dash/ksh all end in the two literal characters `s`,`h` --
+// so a backslash placed directly before that `s` (`ba\sh`, `\sh`, `z\sh`, `da\sh`, `k\sh`) got
+// force-paired with the `s` as one `\\.` atom, consuming the very character the shell-name
+// alternation needed next, with no other path back to a match. Cybered proved this is not a
+// theoretical regex artifact: `bash -c 'echo ba\sh'` prints `bash` (the shell drops a backslash
+// before a non-special char during word expansion), so the string a policy-shaped `deny` had to
+// catch and the string bash actually runs were identical -- and the fix above turned that `deny`
+// into a silent `allow`. The fold's premise was still right (PATH_PREFIX's charset, minus the
+// escape, is a subset of `[^|]`); it was scoped one notch too wide. Only an ACTUALLY escaped pipe
+// (`\|`) needs the 2-char atom -- that is the one sequence `[^|]` alone can never cross. Every
+// other character, including a bare backslash, now goes through the plain single-char class, so a
+// backslash is free to leave the very next character (the `s` of a shell name) available to the
+// next alternative -- restoring the OLD behavior for that boundary while keeping the escaped-pipe
+// crossing PATH_PREFIX used to provide. This is still the same disjoint-alternation shape already
+// proven safe for PATH_PREFIX (ae6e80ea): the two alternatives never compete for the same
+// character, so there is nothing for the engine to retry at each outer position -- still O(n)
+// (n=1000000 -> see stdin-shell-rx-xargs-quadratic.test.ts).
+const XARGS_FILLER = String.raw`(?:\\\||[^|])*?`
 const STDIN_SHELL_RX = new RegExp(
   String.raw`\|\s*(?:sudo\s+|env\s+)*${PATH_PREFIX}(?:bash|sh|zsh|dash|ksh)\b(?!\s*-[a-zA-Z]*c\b)` +
     String.raw`|\bxargs\b${XARGS_FILLER}(?:bash|sh|zsh|dash|ksh)\b` +
