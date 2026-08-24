@@ -2164,20 +2164,50 @@ egyetlen `flock` mögött sorosít (`/tmp/local-llm-gpu.lock`), 600 s várakozá
 lock-bukás SAJÁT kilépési kódot kap (6, „gpu lock busy -- not a generation failure"), hogy ne
 keveredjen egy generálási hibával.
 
-**3. lelet: megmérve, a kontenció ma NEM okoz bukást.** A `local_llm_queue` 1725 sora: 1422 kész,
-302 bukott (17,5%), 1 eszkalált. A bukások megoszlása:
+**3. lelet (JAVÍTVA a Cybersec F-1 után, 2026-08-24): a kontencióról ma NEM lehet a queue-ból mérni,
+mert egyik kódút sem írja be „lock busy"-ként.** Ez a szakasz eredetileg azt állította, hogy
+„megmérve, a kontenció ma nem okoz bukást", és bizonyítékként a `local_llm_queue` egyetlen sorára
+hivatkozott (`gpu lock busy / exit 6 -> 0`). Az a szám VAKUUM: nulla lenne akkor is, ha soha nincs
+kontenció, és akkor is, ha folyamatosan van. Miért:
+
+- **Közvetlen út** (`store/local-llm.sh:335-346`): a hiba-ág `log_usage err` + `_queue_finish fail`
+  párossal INDUL, és csak ezután válik szét a kilépési kód szerint (`gen_rc -eq 1` -> `die 6`). A
+  `_queue_finish fail` viszont mindig ugyanazt az egy stringet írja: `local-llm.sh call failed`. Egy
+  lock-busy tehát pontosan úgy néz ki a sorban, mint bármely más bukás; a `log_usage` is csak `err`-t
+  ír, kilépési kódot nem.
+- **Worker út** (`store/local-llm-worker.sh:99-104`): ott az `rc -eq 6` ág `abstain`-t hív, a sor
+  VISSZAMEGY `pending`-be, sosem lesz `failed`. Ez szándékos és helyes (nem számít bele a 3-csapás
+  eszkalációs budgetbe), de azt is jelenti, hogy a worker úton egy lock-busy nyomtalan marad.
+
+A `local_llm_queue` 1725 sora ettől függetlenül igaz: 1422 kész, 302 bukott (17,5%), 1 eszkalált. A
+bukások megoszlása viszont így olvasandó:
 
 ```
-local-llm.sh call failed                  165
+local-llm.sh call failed                  165   <- ebben BENNE van a lock-busy is, ha volt
 abandoned: worker vanished while running  128
 requeued: worker vanished while running     9
-gpu lock busy / exit 6                       0   <-- EGY SEM
+(nincs "gpu lock busy" kategória -- egyik kódút sem ír ilyet a sorba)
 ```
 
-**Nulla lock-busy bukás.** A flock nem elbukik, hanem vár és sikerül -- pontosan azt csinálja, amire
-való. A tényleges bukás-tömeg a **worker-életciklus**: 137 sor „a worker eltűnt futás közben", és
-napokra bontva ez ÁLLANDÓ (2026-08-23: 11, 08-22: 35, 08-21: 40, 08-20: 24, 08-16: 23), nem egyszeri
-incidens -- tehát nem a mai dxgkrnl-crashloop számlájára írható.
+**Amit a mérés VALÓBAN alátámaszt.** A `store/local-llm-usage.log` 4926 sorából 237 az `err`. Ebből
+175 a `route-classify`, ami a repóban az EGYETLEN hívó, ami lerövidíti a várakozást
+(`LOCAL_LLM_LOCK_WAIT="$HALF" LOCAL_LLM_TIMEOUT="$HALF"`, HALF = TIMEOUT/2 = 22 s) -- és mind a 175
+sor 22,058-23,354 s (medián 22,075 s), vagyis pontosan a küszöbön ül. Ott a lock-plafon ÉS a
+generálási timeout ugyanaz a szám, tehát a kettő megkülönböztethetetlen: ezekről egyik irányba sincs
+bizonyíték. A maradék 62 sor viszont az alapértelmezett 600 s-os lock-wait-tel futott, és köztük a
+leghosszabb hibás hívás is csak 359,7 s. Mivel a `flock -w 600` definíció szerint csak a TELJES
+várakozás letelte után bukik, 600 s alatt lock-busy nem lehet: **ennél a 62 hívásnál tényleg nem a
+kontenció ölt; a többiről ma nem lehet nyilatkozni egyik irányba sem.**
+
+A bukás-tömeg viszont változatlanul a **worker-életciklus**: 137 sor „a worker eltűnt futás közben"
+(128 abandoned + 9 requeued), és napokra bontva ez ÁLLANDÓ (2026-08-23: 11, 08-22: 35, 08-21: 40,
+08-20: 24, 08-16: 23), nem egyszeri incidens -- tehát nem a mai dxgkrnl-crashloop számlájára írható.
+
+**Következmény (követő kártya-jelölt, Cybersec F-2):** a kontenciót a rendszer futásidőben helyesen
+ismeri fel és fail-closed módon kezeli (`route-classify.sh` külön `BUSY` státusza, a worker
+`abstain`-je), de sehol nem PERZISZTÁLJA. Ezért a következő ilyen döntés is érvelhető lesz, nem
+mérhető. Egy sornyi javítás elég hozzá: a `log_usage` kapjon `busy` státuszt `err` helyett, ha a
+kilépési kód 6 (vagy a queue kapjon elkülönített `contention` számlálót).
 
 **4. döntés: a `SmarterRouter` VRAM-logikája olyan problémát old meg, ami nekünk nincs.** Az ő
 VRAM-tudatossága TÖBB modell/backend közül választ aszerint, hogy mi fér a memóriába. Nálunk EGY 7B
@@ -2235,6 +2265,59 @@ kezdőindexet ad, a szeletelés az eredeti forrásból történik.
 implementáció). A hatókör-szűkítés MikroB felé jelezve (üzenet 19829).
 
 **Hivatkozás:** kártya f16b3165, kártya-komment 15687 (due diligence), előzmény 84e31b40 / 442f3289 / ec20dd23.
+
+## 2026-08-24 09:00 -- self-pace kapu 3. kör: process substitution, szó-grammatika, here-string kitöltő (kártya ec20dd23)
+
+**Döntés:** Cybersec NO-GO-ja (Gate-SHA e08e191a) elfogadva és mind a három lelet zárva, a javasolt
+irányban de NEM a javasolt regexekkel: a process-substitution ág a MEGLÉVŐ `WRAPPER_POSITION`-ból
+épül, nem egy negyedik kézzel írt parancspozíció-listából, és a here-string kitöltő `&`-engedélye
+lookbehinddel (`&(?<=>&)`) készült, nem `\d*>&\d*`-gal.
+
+**Miért így:** a javasolt `(?:^|[\s;&|(\`])...` egy NEGYEDIK példánya lett volna ugyanannak a
+pozíció-nyelvtannak, amit a 2. kör épp egy helyre vont össze -- a fájl saját, dokumentált
+hibaosztálya, hogy két lista egy ötletre mindkét irányban elszivárog. A `\d*>&\d*` pedig átfedésben
+van a `[^|;&\n]`-nel a `>` és a számjegyek felett, azaz két úton illeszthető ugyanaz a szöveg egy lusta
+kvantoron belül -- pontosan így épül egy visszalépés-robbanás. A lookbehind-változat két diszjunkt
+alternatívát ad.
+
+**A saját javításom megmérése ugyanazzal a batériával, mint a leletet (és amit ez kimutatott):** az
+első szó-grammatikám a kézenfekvő `(?:QUOTED|BARE+)+` volt, és HATÁROZATLAN IDEIG PÖRGÖTT `bash -c` +
+30 000 csupasz karakteren, ami sosem ér el elfogadó szóhatárt -- két szomszédos csupasz futam mindig
+újraosztható, tehát a motor a bukás előtt minden partíciót végigpróbál. Egy hookban, ami MINDEN
+Bash-híváskor fut, ez szolgáltatásmegtagadás: a javításom 14 alakot zárt volna és egy lyukat nyitott.
+A 2. kör DoS-számai ezt nem fedték (azok egy hosszú OPCIÓ-futamot mértek, más kvantor). A nyelvtan
+most úgy szól, ahogy a bash olvassa a szót -- váltakozó csupasz és idézett futamok, két csupasz futam
+között KÖTELEZŐ idézett darabbal --, így a partíció egyértelmű. Utána: minden eset <= 81 ms, 160 kB-os
+bemenettel is.
+
+**Két saját hiba, amit a mérés fogott meg, nem a gate:**
+1. A DoS-javítás után `${BARE_PIECE}?` alakot írtam, ami `+?`-t ad, azaz LUSTA plusz és nem opcionális
+   -- a DoS eltűnt és tíz alak csendben visszanyílt; egyedül a korrektségi batéria vette észre.
+2. Átvettem a gate azon állítását, hogy a szóhatár-lookahead az, ami az összefűzött alakokat zárja, és
+   erre írtam tesztet. Egy mutáns, ami TÖRLI a lookaheadet, TÚLÉLTE. Megmérve: ebben a
+   megfogalmazásban nem a lookahead zárja az összefűzést (a váltakozó futam maga zárja), a lookahead
+   attól tartja vissza a kaput, hogy olyan szóra is illeszkedjen, ami nem ér el valódi határt. Az így
+   átengedett három alak `bash -n` szerint SZINTAKTIKAI HIBA, tehát nem hajtódik végre -- a lookahead
+   megtartása nem nyit megkerülést. A hibás tesztet kimondottan javítottam, nem csendben.
+
+**Egy lefedettségi hiány, amit Cybersec túlélő mutánsa (M5) mutatott meg:** a csupasz-szavas
+here-string törzs (`bash <<< crontab`) helyesen működött, de nem volt kiszegezve. Pin hozzáadva.
+
+**Egy nem-diszkrimináló kontrollom:** a „bare `&` ne nyeljen el egy háttér-jobot" tesztem
+`sleep 1 & bash <<< "echo hi"` volt, amit a bare-`&`-t engedő mutáns TÚLÉLT (a shell-név és a `<<<`
+ugyanazon oldalán áll). A szétválasztó alak `bash job & cat <<< "<bináris> -"`: `bash -n` szerint
+érvényes bash, és a `cat <<<` csak KIÍRJA a bemenetét (közvetlenül ellenőrizve), tehát a tiltása
+fals pozitív lenne. Kontroll kicserélve.
+
+**Bizonyíték:** 14/14 nyitott alak zárva, 15/15 jóhiszemű kontroll átmegy, 292 alakos elő/utó
+összehasonlítás **0 új megkerüléssel** (a 42 új tiltás mind valódi scheduler-hívás), helyes
+ágyazás-mélység 1-8 mind tilt fals pozitív nélkül, 12101 teszt zöld (35 új), tsc 0, lint-paritás
+egzakt, 7 mutáns mind megölve.
+
+**Ki döntött:** Cybersec (leletek + mért javítási irány), backend (implementáció, a regex-alak
+döntései, a saját javítás adverzariális megmérése), MikroB (visszaadás in_progress-be, sorrendezés).
+
+**Hivatkozás:** kártya ec20dd23 (3. kör), Gate-SHA e08e191a, kártya-komment 15689. Testvér: 442f3289.
 
 ## 2026-08-24 -- self-pace/email heredoc-ownership walker: mit jelent a "command position" (kártya 84e31b40, 9. kör)
 
