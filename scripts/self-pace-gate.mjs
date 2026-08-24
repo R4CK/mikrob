@@ -166,12 +166,38 @@ const SCHED_PREFIX = String.raw`(?:(?:[A-Za-z_]\w*=\S*|sudo|env|command|exec|nic
 //
 // `}` is deliberately NOT here: bash needs a separator after it, so nothing starts a command there.
 //
+// `)` IS here, and it is not free -- stated as a trade rather than found later (Cybersec F-3 on
+// card 442f3289). It has to be here because a case arm (`case $x in y) <cmd> ;;`) and a closing
+// subshell both really do put a command after it. The cost is prose: an ordinary parenthetical
+// followed by a time expression -- "the run finished (see note) <binary> 16:13 sharp" -- is denied
+// in a heredoc body. Measured, and pinned by its own test so the choice stays visible, exactly as
+// the `!` choice below is.
+//
 // A QUOTE IS DELIBERATELY NOT HERE EITHER, and the reason is worth keeping. An earlier round put
 // `"` and `'` in, reasoning that `bash -c "<cmd>"` starts its command exactly at the quote. True,
 // but it is a PROXY for "a shell runs this text", and card ec20dd23 replaced the proxy with the
-// thing itself: executableStrings extracts the argument of a `-c` shell / `eval` and the gate scans
-// it as its own command, where the binary sits at line start. Measured both ways -- with the quote
-// removed, every wrapper vector is still denied, reached by extraction instead of by guessing.
+// thing itself: executableStrings extracts what a shell would execute and the gate scans that as
+// its own command, where the binary sits at line start.
+//
+// WHAT THE MEASUREMENT ACTUALLY SAYS -- stated exactly, because the previous wording did not.
+// It used to read "every wrapper vector is still denied". Cybersec's NO-GO on this card (comment
+// 15685) showed that sentence was true only of the PATCH'S OWN five wrapper shapes and false as a
+// statement about how a shell can receive a program at all: at the time, extraction did not cover
+// here-strings or process substitution, while the quote in this class had covered them. Two of
+// those five shapes were still live-executable on the develop head when they measured.
+//
+// So the claim is now scoped to what was re-measured on THIS head (card 442f3289 round 3), after
+// ec20dd23 extended extraction to here-strings and process substitution. Across 21 shapes, with
+// the quote in this class versus out of it, the verdicts are identical for every route by which a
+// shell receives a program -- `-c`, `eval`, here-string (both quotings), process substitution
+// (`<( )` and `< <( )`), a pipe into a shell, xargs, and a nested `-c`, each also measured buried
+// in a heredoc body that bash executes. ZERO of them lose a denial when the quote comes out, and
+// four prose false positives are bought back by removing it.
+//
+// AND THE LIMIT OF THAT CLAIM, named rather than implied: three routes are ALLOWED either way, so
+// the quote never protected them and removing it takes nothing -- `python3 -c`, `script -qec`, and
+// a program produced by a runtime substitution. Those are the file's standing known residuals; the
+// sentence above is not a statement about them.
 //
 // Keeping it was not free: a quote is also how ordinary text quotes things. Measured false
 // positives it caused, both now gone -- a JSON payload in a heredoc whose value opens with a time

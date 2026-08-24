@@ -2388,3 +2388,52 @@ a walker MA rászorul, pontosan az a hiba, amiből ez a kör származik.
 **Nyitva hagyva, szándékosan:** a `tree-sitter-bash` kiváltás külön kártyán fut (MikroB döntése,
 15603-as komment); ez a kör a walkert javítja, nem előzi meg a migrációt. Az `bash-ast.mjs`
 dark-launch (f16b3165) változatlan: a walker hajtja a viselkedést, amíg `SELF_PACE_AST=on` nincs.
+
+## 2026-08-24 12:00 -- self-pace kapu: egy MÉRTNEK nevezett, de hamis állítás javítása (kártya 442f3289, 3. kör)
+
+**Döntés:** Cybersec NO-GO-ja (Gate-SHA 11a7698e) elfogadva. A blokkoló nem kódhiba volt, hanem egy
+DOKUMENTÁCIÓS állítás egy biztonsági fájlban: a komment és a teszt azt rögzítette „mérve"-ként, hogy
+az idézőjel eltávolítása után minden wrapper-vektor tiltva marad. Ez a patch saját öt alakjára volt
+igaz, és hamis arra, ahogy egy shell egyáltalán kaphat programot. Az idézőjel BENT MARAD a kivett
+állapotban (nem tettem vissza), de az állítás mostantól szűkített és felsorolással bizonyított.
+
+**Miért ez blokkoló, pedig „csak komment":** egy biztonsági fájl kommentje a következő kör
+bizonyítéka. Ha egy nem mért állítás „mért"-ként áll ott, a következő ügynök arra épít. Cybersec öt
+olyan alakot mért meg, amit az idézőjel FEDETT és a kicsomagolás nem, kettőt közülük élesben
+futtatva a develop fején. Az állítás javítása tehát valódi biztonsági munka, nem szövegezés.
+
+**A javítás sorrendje (MikroB rendezése, Cybersec (i) útja):** előbb az `ec20dd23` 3. köre
+kiterjesztette a program-forrás kicsomagolást a here-stringre és a process substitutionre -- ez a
+HELYES réteg, a proxy helyett a tényleges dolog --, és csak utána mértem újra ezt a kört. Az öt alak
+mind TILT most, heredoc-törzsben is.
+
+**Az új mérés, ami az állítást alátámasztja:** 21 alak, az idézőjellel a `CMD_POSITION`-ben ÉS
+nélküle, ugyanazon a fejen. Minden program-forrás útvonalon azonos a verdikt (nulla elveszett
+tiltás), és négy próza-fals-pozitív jön vissza az eltávolítással. A teszt mostantól FELSOROLJA az
+útvonalakat ahelyett, hogy összefoglalná -- pontosan azért, mert az eredeti hiba egy ötelemű
+listából vont le általános tulajdonságot. A három ismert maradék (`python3 -c`, `script -qec`,
+futásidejű `$( )`) kimondva szerepel: ezeket az idézőjel sem fedte, tehát az eltávolítása nem vesz
+el tőlük semmit.
+
+**F-2 (a teszt-tábla, ami sosem mérte amit állított):** a `POSITIONS` `elif` sora
+`elif true; then <cmd>` alakú volt, azaz a parancsot a MÁSODIK `then` után helyezte -- újramérte a
+`then`-t, és sosem gyakorolta az `elif`-et; `if` sor pedig egyáltalán nem létezett. A kód mindkét
+pozíciót helyesen tiltotta, a hiány a tesztben volt. Bizonyítva, nem feltételezve: az `elif`
+elvétele a nyelvtanból a RÉGI sorral ZÖLDEN marad (a mutáns túlél), a javított sorral PIROS.
+
+**F-3 (a `)` ára, kimondott cserévé téve):** a `)` azért kell a pozíció-osztályba, mert egy case-ág
+és egy záró subshell tényleg parancsot indít utána. Az ára próza: egy zárójeles közbevetés után álló
+időpont (`a futás véget ért (lásd jegyzet) <bináris> 16:13 pontban`) tiltódik heredoc-törzsben.
+Mostantól saját tesztje szegezi ki, ugyanúgy ahogy a `!` választásé -- Cybersec kérése szerint
+kimondott, tesztelt költség, nem később felfedezett meglepetés.
+
+**Bizonyíték:** 94 teszt zöld ebben a fájlban (26 új), 5 mutáns mind megölve (`if` elvétele,
+`elif` elvétele, `)` elvétele, az idézőjel VISSZATÉTELE, a here-string-kicsomagolás kikapcsolása),
+tsc 0, `no-unsafe-argument` 101 (alapvonal 102). A forrás-diff KOMMENT-ONLY, viselkedés-változás
+nélkül -- külön ellenőrizve.
+
+**Ki döntött:** Cybersec (a hamis állítás kimutatása, a mért alaklista), backend (az újramérés, a
+szűkített állítás megfogalmazása, a teszt-hiányok javítása), MikroB (sorrendezés a testvér-kártyával).
+
+**Hivatkozás:** kártya 442f3289 (3. kör), Gate-SHA 11a7698e, kártya-komment 15685. Testvér: ec20dd23
+(223ac1f8), ami az F-1 helyes rétegét zárta.
