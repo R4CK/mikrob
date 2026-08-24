@@ -3260,3 +3260,40 @@ MikroB/Peti dönt.
 
 **Hivatkozás:** kártya `b4a7c9c3` (szülő) és gyerekei `7dc12e55`, `51400b45`, `330c7916`,
 `0ef1b657`, `cc43528b`, `36329ea3`. Előzmény: `441337bf` (due diligence gate).
+
+
+## 2026-08-24 -- anthropic-mcp-builder + anthropic-webapp-testing tényleges bekötése (kártya f5eda0be)
+
+**Mi történt:** a `3c9e22b1` Fázis ("már adoptált, de használatlan eszközök valós bekötése", Peti
+kérése 2026-08-23) utolsó nyitott gyereke. Két Anthropic-skill (`example-skills:mcp-builder`,
+`example-skills:webapp-testing`) nulla használati bizonyítékkal az adoptálás óta.
+
+**webapp-testing -- ténylegesen bekötve:**
+1. Felvéve QA `Core skilljeid` listájára (`seed-fleet-agents/qa/CLAUDE.md`), rövid leírással és
+   hivatkozással erre a kártyára -- ez a durábilis, verziókövetett hely, NEM a gitignored
+   `agents/qa/CLAUDE.md` futásidejű másolat (az a seedből generálódik, QA következő
+   session-indításakor/scaffold-frissítésekor veszi fel).
+2. VALÓS bizonyíték a használatra: a skill saját `scripts/with_server.py` segédjével és egy
+   Playwright-szkripttel ténylegesen leteszteltem a CleanCore `apps/web` landing oldalát (egy már
+   futó dev-szerver ellen, port 5173, screenshot + DOM-vizsgálat + console-hiba-gyűjtés a
+   reconnaissance-then-action minta szerint). Az első futás Chromium-verzió-eltérés miatt hibázott
+   (`playwright install chromium` megoldotta), a második sikeres volt.
+3. **Mellékes, valódi lelet** (bizonyíték arra, hogy a tool tényleg ér valamit, nem csak "lefut"):
+   ~20 CSP-sértés a konzolban -- a landing oldal inline style-jait a `default-src 'self'`
+   (nincs külön `style-src`) csendben blokkolja. Külön kártyára véve (`706ad126`,
+   `fron-ted`-nek, QA+Cybersec gate), NEM ezen a kártyán javítva -- ez hatókörön kívüli lenne.
+
+**mcp-builder -- NEM erőltetve, dokumentálva (a kártya saját megengedett kimenete):**
+végignéztem a teljes `planned`+`in_progress`+`waiting` táblát -- egyetlen kártya sem igényel új,
+saját MCP-szerver építését jelen pillanatban. A kártya szövege explicit megengedi ezt a kimenetet
+("ha nincs közelben, dokumentáld és hagyd nyitva"): kitalálni egy MCP-szervert csak azért, hogy a
+skill "használva" legyen, sértené a kódminőségi alapelvek 2. pontját (nincs spekulatív munka).
+Nyitva marad: a `example-skills:mcp-builder` skill a következő valós MCP-szerver-építési igénynél
+használandó (backend/backend2, bárki felveszi a feladatot).
+
+**Tesztek:** a webapp-teszt éles Playwright-futtatás volt, nem mock -- lásd fent. Kódváltozás csak
+a `seed-fleet-agents/qa/CLAUDE.md` core-skill listájában, fleet-test-re nincs hatással (nem TS/JS).
+
+**Ki döntött:** backend2 (kártya f5eda0be, MikroB dispatch a 3c9e22b1 Fázis alatt).
+
+**Hivatkozás:** kártya `f5eda0be` (ez), szülő `3c9e22b1`. Kapcsolódó új kártya: `706ad126` (CSP-lelet).
