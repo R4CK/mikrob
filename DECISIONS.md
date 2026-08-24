@@ -3139,3 +3139,34 @@ telepítve/futtatva, és minden négy támadó eszköz jelentésében explicit �
 kizárólag Cybersec/Cybered joga, ahogy a kártya előre rögzítette).
 
 **Hivatkozás:** kártya `441337bf`, szülő-fázis `40f92dd2`.
+
+
+## 2026-08-24 -- teszt-minőség jelöltek due diligence-e (13083b74)
+
+**Mi történt:** a kártya 2 jelöltjét vizsgáltam át, kizárólag olvasás-alapon (GitHub API metaadat
++ repó-tartalom, quarantine-reader ügynökön át) -- semmit nem telepítettem vagy futtattam.
+
+**Mutahunter (codeintegrity-ai/mutahunter):** valós, 299 csillag, Python, AGPL-3.0 licenc.
+`pushed_at` 2025-04-17 -- kb. 16 hónapja nincs tényleges kódváltozás (az `updated_at`
+2026-08-17 csak felszínes metaadat-érintés). Ez a saját "zöld suite, de nem fedi a változott
+ágat" hibaosztályunk (lásd testing-traps memória-téma) strukturális ellenszere lehetne, DE az
+AGPL-3.0 (erős copyleft, de valódi OSS, más eset mint a root CLAUDE.md 10. szabályának
+source-available carve-outja) és a karbantartási rés miatt jogász + Cybersec jóváhagyás kell,
+mielőtt a QA gate-checklistbe kerülne. Megjegyzés: az AGPL hálózati-copyleft klauzulája
+jellemzően csak módosított/terjesztett/hálózaton szolgáltatott derivált munkára aktiválódik --
+egy önálló CI-eszközként futtatott, nem módosított, nem terjesztett használat esetén ez
+alacsonyabb kockázatú, de ez nem helyettesíti a jogász-jóváhagyást.
+
+**dotnet/skills, code-testing-generator (Microsoft):** valós, nagyon aktív (5239 csillag, MIT
+licenc, ma pusholva). A `code-testing-generator` egy valódi, belső orchestrator ágens a
+`plugins/dotnet-test/agents/` alatt, a publikus `code-testing-agent` skill részeként, Research-
+Plan-Implement (RPI) pipeline-nal, ahogy a kártya leírja. A kártya által hivatkozott "92.1% vs
+78.9%" önbevallott eredményszám A REPÓBAN SEHOL nem található (README, SKILL.md, minden elérhető
+agent-fájl, docs átvizsgálva) -- valószínűleg külső bejelentésből származik, nem igazolható a
+repóból. MIT licenc miatt jogi akadály nincs, de MÁS célú eszköz (teszt-generálás, nem mutációs
+teszt), nem helyettesíti a Mutahuntert.
+
+**Ki döntött:** backend2 (kártya 13083b74, due diligence -- a végső gate-checklistbe kötés
+QA/Cybersec döntésére vár).
+
+**Hivatkozás:** kártya `13083b74`, szülő-fázis `40f92dd2`.
