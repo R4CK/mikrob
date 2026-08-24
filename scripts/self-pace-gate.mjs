@@ -1389,7 +1389,20 @@ const POST_C = String.raw`(?:\s+--)?`
 // runs -- with the quoted piece MANDATORY between two bare runs. Adjacent BAREs then cannot exist,
 // the partition is unique, and there is nothing to backtrack over. `$` is kept out of BARE when a
 // quote follows it for the same reason: otherwise `$'...'` could be split two ways.
-const Q_PIECE = String.raw`\$?'[^']*'|\$?"(?:\\.|[^"\\])*"`
+// The ANSI-C alternative comes FIRST and allows `\'`: inside `$'...'` an escaped quote does not
+// end the string, so the plain `'[^']*'` alternative would stop at it and truncate the word --
+// measured against real bash, which yields `a'b` for `$'a\\'b'` while the old pattern extracted
+// nothing at all. The two inner alternatives are disjoint (one starts with a backslash, the
+// other excludes it), so this adds no ambiguity for the engine to backtrack over.
+//
+// AND THE PLAIN ALTERNATIVE LOST ITS `\$?` FOR THE SAME REASON. With both `\$'...'` and
+// `\$?'...'` present, `$'a'` matched TWO ways, and a long run of them followed by a character
+// that fails the word boundary backtracked forever -- measured: 20 000 pieces did not finish,
+// while every other pathological body stayed under 160 ms. That is the identical mistake this
+// pattern was rewritten to remove one round earlier, reintroduced by adding an overlapping
+// alternative. `$'...'` now belongs solely to the ANSI-C branch and `'...'` solely to the
+// plain one, so the partition stays unique.
+const Q_PIECE = String.raw`\$'(?:\\.|[^'\\])*'|'[^']*'|\$?"(?:\\.|[^"\\])*"`
 // Quantified with `*`, NOT written as `+` and then made optional at the use site: `${X}?` where X
 // already ends in `+` yields `+?`, a LAZY plus rather than an optional one, which silently stops the
 // run after one character. That mistake cost a full measurement cycle here -- the DoS was fixed and
@@ -1400,14 +1413,103 @@ const QUOTED_OR_WORD =
 
 // Undo shell quoting across a whole word, concatenating the pieces the way bash does. Returns the
 // text the inner shell actually receives, which is what the gate then scans.
+// Decode an ANSI-C (`$'...'`) body starting at `start` (just past the opening quote), returning
+// [decodedText, indexPastClosingQuote].
+//
+// FIDELITY MATTERS IN BOTH DIRECTIONS. Under-decoding leaves a bypass -- that is the bug being
+// fixed. Over-decoding invents characters bash never produces and could manufacture a binary name
+// out of benign text, i.e. a false positive. Every rule below was checked against real bash output,
+// including the one people forget: an UNRECOGNISED escape keeps its backslash (`$'\z'` is `\z`,
+// not `z`).
+//
+// `\'` is why this cannot reuse the plain single-quote branch: inside ANSI-C an escaped quote does
+// not end the string, so scanning to the next `'` would stop early and truncate the payload.
+const ANSI_SIMPLE = { a: '\x07', b: '\b', e: '\x1b', E: '\x1b', f: '\f', n: '\n', r: '\r', t: '\t', v: '\v', '\\': '\\', "'": "'", '"': '"', '?': '?' }
+
+// STICKY, and matched against the WHOLE string with lastIndex -- never against a fresh slice.
+// The first version called src.slice(i) once per character and ran five regexes on the result,
+// which is quadratic in the body length: a 40 000-escape body did not finish. That is the same
+// mistake this file already recorded once (a fix that closes a bypass while opening a DoS in a hook
+// that runs on every Bash call), so it is worth the extra care rather than the extra allocation.
+const ANSI_HEX = /\\x([0-9a-fA-F]{1,2})/y
+const ANSI_U16 = /\\u([0-9a-fA-F]{1,4})/y
+const ANSI_U32 = /\\U([0-9a-fA-F]{1,8})/y
+const ANSI_CTRL = /\\c(.)/y
+const ANSI_OCT = /\\([0-7]{1,3})/y
+
+function stickyAt(rx, src, i) {
+  rx.lastIndex = i
+  return rx.exec(src)
+}
+
+function readAnsiC(src, start) {
+  let out = ''
+  let i = start
+  while (i < src.length) {
+    const c = src[i]
+    if (c === "'") return [out, i + 1]
+    if (c !== '\\') { out += c; i++; continue }
+    const e = src[i + 1]
+    if (e === undefined) { out += c; i++; continue }
+    if (e in ANSI_SIMPLE) { out += ANSI_SIMPLE[e]; i += 2; continue }
+    let m = stickyAt(ANSI_HEX, src, i)
+    if (m) { out += String.fromCharCode(parseInt(m[1], 16)); i += m[0].length; continue }
+    m = stickyAt(ANSI_U16, src, i)
+    if (m) { out += String.fromCodePoint(parseInt(m[1], 16)); i += m[0].length; continue }
+    m = stickyAt(ANSI_U32, src, i)
+    if (m) {
+      const cp = parseInt(m[1], 16)
+      // Above the Unicode maximum bash emits nothing usable; skipping is the conservative read.
+      out += cp <= 0x10ffff ? String.fromCodePoint(cp) : ''
+      i += m[0].length
+      continue
+    }
+    m = stickyAt(ANSI_CTRL, src, i)
+    if (m) { out += String.fromCharCode(m[1].toUpperCase().charCodeAt(0) ^ 0x40); i += m[0].length; continue }
+    m = stickyAt(ANSI_OCT, src, i)
+    if (m) {
+      const code = parseInt(m[1], 8) & 0xff
+      // A NUL TRUNCATES the argument -- measured: `bash -c $'ec\0ho NULTEST'` reports
+      // `ec: command not found`, it does not join the halves. Emitting the NUL and continuing would
+      // splice `cron` and `tab` into a name bash never runs (a false positive), and dropping it
+      // silently would do the same. Truncating matches bash and stays correct in both directions:
+      // `$'<binary>\0 -'` still exposes the binary, because the truncation happens after it.
+      if (code === 0) { const q = src.indexOf("'", i); return [out, q === -1 ? src.length : q + 1] }
+      out += String.fromCharCode(code)
+      i += m[0].length
+      continue
+    }
+    // Unrecognised: bash keeps the backslash AND the character.
+    out += c + e
+    i += 2
+  }
+  return [out, i] // unterminated -- treat the rest as body
+}
+
 function unquoteWord(word) {
   const src = String(word ?? '')
   let out = ''
   let i = 0
   while (i < src.length) {
-    // `$'...'` (ANSI-C) and `$"..."` (locale) differ from the plain forms only in ways that cannot
-    // hide a binary name, so the `$` is simply dropped and the quote handled below.
-    if (src[i] === '$' && (src[i + 1] === "'" || src[i + 1] === '"')) { i++; continue }
+    // `$'...'` IS DIFFERENT FROM EVERY OTHER QUOTING FORM, and an earlier version of this comment
+    // asserted the opposite -- it said ANSI-C and locale quoting "differ from the plain forms only
+    // in ways that cannot hide a binary name". That claim was wrong and QA proved it with live bash
+    // (card ec20dd23 round 4): `$'...'` is the ONE bash quoting form that performs real escape
+    // decoding, so `bash -c $'\x63rontab -'` runs the binary while the literal name never appears
+    // in the text the anchored checks scan. Twelve shapes measured open -- hex, octal, \u, \U,
+    // every-character-encoded, mid-word, and the same on the here-string, eval and sh -c branches.
+    //
+    // Ground-truthed before fixing: `$'\x74ouch'` yields `touch`, while `$"\x74ouch"` and
+    // `'\x74ouch'` both stay literal. So the decoding belongs HERE and must NOT be applied to the
+    // locale form -- `$"..."` performs a gettext lookup and otherwise follows double-quote rules.
+    if (src[i] === '$' && src[i + 1] === "'") {
+      const [text, next] = readAnsiC(src, i + 2)
+      out += text
+      i = next
+      continue
+    }
+    // Locale form: the `$` is decoration, the body follows ordinary double-quote rules.
+    if (src[i] === '$' && src[i + 1] === '"') { i++; continue }
     if (src[i] === "'") {
       const j = src.indexOf("'", i + 1)
       if (j === -1) { out += src.slice(i + 1); break }

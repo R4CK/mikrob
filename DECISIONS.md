@@ -2616,3 +2616,49 @@ egyszeres idézetbe zárt metakarakter után a név már nem azonosító, tehát
 backtick érvénytelen bash; a `foo { case ... }` és a `foo case ... esac` (parens nélkül) szintén
 érvénytelen bash. Egyikre sem írtam tesztet. Ha valaki talál élő, végrehajtott szétválasztó alakot,
 jön rá a teszt.
+## 2026-08-24 13:00 -- ANSI-C escape-obfuszkáció: egy általam kódba írt hamis állítás mögötti élő megkerülés (kártya ec20dd23, 4. kör)
+
+**Döntés:** QA FAIL-je (Gate-SHA 223ac1f8) elfogadva. A 3. körben írt `unquoteWord` kommentje azt
+állította, hogy az ANSI-C és a lokale idézés „csak olyan módokon tér el a sima alakoktól, amik nem
+tudnak binárisnevet elrejteni". Ez TÉVEDÉS volt, és nem csak dokumentációs: a kód is eszerint
+viselkedett, tehát a hamis állítás egy élő megkerülést takart.
+
+**Miért:** a `$'...'` az EGYETLEN bash-idézési forma, ami valódi escape-dekódolást végez. A kód a
+`$` eldobása után egyenesen a sima egyszeres-idézőjeles ágra esett („single quotes are literal --
+never unescape here"), tehát sosem dekódolt. Így `bash -c $'\x63rontab -'` lefut, miközben a
+tiltott név SOHA nem jelenik meg abban a szövegben, amit a horgonyzott ellenőrzések látnak. QA élő
+bash-végrehajtással bizonyította (marker-fájl), én pedig 12 alakot mértem nyitva a jelentett 5 mellé:
+hex, oktális, `\u`, `\U`, minden-karakter-kódolva, szó közepén, plusz here-string, `eval` és `sh -c`
+ágon, ágyazva, és ANSI-C darab másik idézett darabbal összefűzve.
+
+**Hatókör, kimondva:** a javítás KIZÁRÓLAG a `$'...'` ágra vonatkozik. A lokale formát (`$"..."`)
+külön ellenőriztem valódi bash-sel: NEM dekódol (`$"\x74ouch"` literál marad), tehát ott a jelenlegi
+„dobd el a `$`-t" logika helyes, és a dekódolás kiterjesztése oda FALS POZITÍVOT gyártana -- olyan
+parancsot tiltana, amit a bash sosem futtat. Ezt külön mutáns szegezi ki.
+
+**A dekóder hűsége MÉRVE, nem feltételezve:** 38 escape-alakot hasonlítottam a VALÓDI bash
+kimenetéhez (bájt-szinten, `od`-val, hogy a vezérlőkarakterek is pontosan egyezzenek): 0 eltérés.
+A mérés két olyan esetet talált, amit magamtól elrontottam volna: (1) egy ISMERETLEN escape megtartja
+a backslash-t (`$'\z'` → `\z`, nem `z`); (2) a NUL CSONKOLJA az argumentumot -- mérve
+`bash -c $'ec\0ho X'` → `ec: command not found`, tehát NEM fűzi össze a két felet. A NUL-t kibocsátva
+és folytatva a `cron` és `tab` feleket összefűztem volna egy névvé, amit a bash sosem futtat.
+
+**Két SAJÁT regresszió a javítás közben, mindkettőt a saját mérésem fogta meg:**
+1. Az első dekóder minden karakternél `src.slice(i)`-t hívott és öt regexet futtatott rá -- kvadratikus,
+   40 000 escape-es törzsön nem futott le. Átírva ragadós (sticky) regexekre, szeletelés nélkül.
+2. Az ANSI-C alternatíva HOZZÁADÁSA a szó-nyelvtanhoz újra kétértelművé tette a mintát: a meglévő
+   `\$?'[^']*'` ág is elfogadta a `$'...'`-t, tehát ugyanaz a szöveg KÉT úton illeszkedett, és egy
+   hosszú futam a szóhatáron megbukva soha nem ért véget. Ez PONTOSAN ugyanaz a hibaosztály, amit
+   egy körrel korábban ebből a mintából eltávolítottam -- egy átfedő alternatíva hozzáadásával
+   visszahoztam. Javítva: a `$'...'` kizárólag az ANSI-C ágé, a `'...'` kizárólag a simáé.
+
+**Bizonyíték:** 12/12 megkerülés zárva, 5/5 jóhiszemű kontroll változatlanul átmegy, 38/38 escape-alak
+bájtra egyezik a valódi bash-sel, patologikus bemenetek mind <= 162 ms (a mixed eset a javítás előtt
+nem futott le, utána 39 ms), 112 teszt zöld ebben a fájlban (92 → 112, +20), teljes suite 12255 zöld /
+0 bukás, tsc 0, `no-unsafe-argument` 101 (alapvonal 102), 7 mutáns mind megölve (köztük a
+lokale-túl-dekódolás és a kétértelműség-visszahozás).
+
+**Ki döntött:** QA (a lelet, élő bash-bizonyítékkal, a hatókör helyes elhatárolásával), backend
+(reprodukció 12 alakra, a dekóder, a differenciál-hűségmérés, a két saját regresszió megtalálása).
+
+**Hivatkozás:** kártya ec20dd23 (4. kör), Gate-SHA 223ac1f8, kártya-komment 15760.
