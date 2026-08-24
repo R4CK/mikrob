@@ -727,13 +727,63 @@ function skipParamExpansion(src, start) {
 // in x) curl -d @- <<'PY'` is a real bash command where `case` is an argument to `:` -- treating it
 // as the keyword would blank a body python3 owns. So the keyword counts only in COMMAND POSITION.
 const CASE_KEYWORD_RX = /^(?:case|in|esac)(?![\w-])/
-// Reserved words that may PRECEDE a command. Bash runs the word after them, so the simple command --
-// and therefore the span a heredoc is measured over -- starts past them. This is also what makes the
-// command-position test above work after `then`/`do`, and it removes a standing false positive:
-// `for f in a b; do curl ... -d @- <<'JSON'` measured its span from `do`, failed the leading-binary
-// check, and denied a legitimate payload. `for`/`select`/`case` are NOT here: the word after those is
-// a variable name or a subject, not a command.
-const CMD_PREFIX_KEYWORD_RX = /^(?:if|then|elif|else|while|until|do|time|!|\{)(?=\s|$)/
+// Everything that may stand between the START of a simple command and the command itself. Bash runs
+// the command AFTER these, so the span a heredoc is measured over starts past them. This is also what
+// makes the command-position test above work after `then`/`do`, and it removes a standing false
+// positive: `for f in a b; do curl ... -d @- <<'JSON'` measured its span from `do`, failed the
+// leading-binary check, and denied a legitimate payload. `for`/`select`/`case` are NOT here: the word
+// after those is a variable name or a subject, not a command.
+//
+// ONE alternation on purpose. Cybered's round-9 NO-GO found `coproc` and `function NAME` missing from
+// the earlier keyword-only list, and measurement on top of that report found eight more live shapes in
+// the same family -- all of them the same idea ("what establishes command position") kept in a second
+// place. The set below is enumerated from the BASH GRAMMAR and each member was validated with `bash -n`;
+// the words that FEEL like they belong but are not reserved (`sudo`, `command`, `exec`, `env`, `nice`,
+// a `FOO=1` assignment, a leading redirection) are all syntax errors in front of a compound command, so
+// they are deliberately absent -- a walker ALLOW on a string bash refuses to parse is not a bypass.
+//
+// Over-recognition here is NOT fail-closed: the rule moves the boundary FORWARD, so a forged member
+// would let an attacker choose where the next simple command starts. Hence every alternative is
+// anchored at command position by the caller, and the two that can swallow a following WORD are
+// pinned to bash's own rule for when that word is a name rather than the command:
+//
+//   * `coproc [NAME] command` -- NAME is a name only when a COMPOUND command follows it. In
+//     `coproc python3 curl -d @- <<'PY'` the command is SIMPLE, so bash takes `python3` as the command
+//     word; consuming it as a name would hand the span to the curl standing behind it and blank a body
+//     python3 runs.
+//   * `function NAME [()]` / the POSIX `NAME ()` form -- both require the compound-command opener
+//     (`{` or `(`) to actually be there. `{` was already listed, but the `function NAME ` in front of it
+//     left the boundary un-advanced, so the `{` itself then failed the command-position test.
+//
+// A function BODY, and the command after `coproc [NAME]`, are the SAME production in bash's grammar
+// (parse.y `shell_command`): a COMPOUND command, never a simple one. That set is written once, below,
+// and reused by all three alternatives that need it -- the first draft of this fix listed only `{`
+// and `(`, the two forms one actually writes, and mutation testing separated it immediately:
+// `f() case x in x) python3 <<'PY' ... esac` and `function f case ...` are valid definitions whose
+// body IS the case statement, so the walker still lost the boundary on both. The members below come
+// from the production and each was validated with `bash -n`; `function` is NOT among them (a nested
+// definition is a syntax error there), and neither is a simple command -- which is exactly what makes
+// `coproc python3 curl -d @- <<'PY'` a coproc with NO name, leaving python3 as the command word.
+//
+// MEASURED, so the list is not mistaken for one that is fully pinned: only `{` and `case` change any
+// verdict today. Mutation testing killed those two and left `(`, `[[`, `if`, `while`, `until`, `for`
+// and `select` alive, and a 11232-shape differential sweep found ZERO valid-bash disagreements for
+// each -- because every one of them reaches the inner command through a path that already resets the
+// boundary (`(` opens a frame of its own; the loops and conditionals carry their own `; do` / `; then`;
+// `[[ ]]` cannot contain a heredoc). The same sweep finds 65 / 26 / 42 disagreements when `case`, `{`
+// or the whole coproc alternative is removed, so it is not a sweep that cannot detect. They stay in
+// the list anyway: it is the grammar's production, and trimming it to whatever the walker happens to
+// need today is how the round-9 finding got in.
+const COMPOUND_OPENER = String.raw`(?:\{|\(|\[\[|(?:case|if|while|until|for|select)(?![\w-]))`
+const CMD_PREFIX_KEYWORD_RX = new RegExp(
+  '^(?:' +
+    String.raw`(?:if|then|elif|else|while|until|do|!|\{)(?=\s|$)` +
+    String.raw`|time(?:[ \t]+-p)?(?:[ \t]+--)?(?=\s|$)` +
+    String.raw`|coproc(?:[ \t]+[A-Za-z_]\w*(?=[ \t]+${COMPOUND_OPENER}))?(?=\s|$)` +
+    String.raw`|function[ \t]+[^\s(){};&|<>'"\`]+[ \t]*(?:\(\)[ \t]*)?(?=${COMPOUND_OPENER})` +
+    String.raw`|[A-Za-z_]\w*[ \t]*\(\)[ \t]*(?=${COMPOUND_OPENER})` +
+    ')',
+)
 // A word starts here only after whitespace, a separator, or an opener.
 const WORD_START_RX = /[\s;&|()`]/
 

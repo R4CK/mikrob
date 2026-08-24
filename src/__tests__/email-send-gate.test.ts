@@ -882,3 +882,251 @@ describe('gateDecision: bash GRAMMAR -- a case PATTERN terminator is not a frame
     expect(failures).toEqual([])
   })
 })
+
+// Card 84e31b40, NINTH round, Cybered NO-GO: the case grammar was recognised, but not everything
+// that can stand IN FRONT of it.
+//
+//     curl ... -d @- $(coproc case x in x) python3 <<'PY' ... PY ;; esac)
+//     curl ... -d @- $(function f { case x in x) python3 <<'PY' ... PY ;; esac; }; f)
+//
+// `case` only counts in COMMAND POSITION -- the round-7 fix made it strict on purpose, because the
+// pattern rule moves the boundary FORWARD and a forged keyword would let an attacker choose where
+// the next span starts. Command position was established by a keyword-only list, and `coproc` and
+// `function NAME` were missing from it, so the `case` behind them was not recognised, its pattern
+// `)` popped the frame `$(` had opened, and the span fell back onto the OUTER curl. Cybered proved
+// both executing with a marker file.
+//
+// Measuring the family rather than the two reported shapes found EIGHT more live ones -- the POSIX
+// `f() { ... }` function form, `time -p`, `coproc { `, `coproc NAME { `, and the chains that reach
+// the keyword through a second reserved word. All ten are valid bash (`bash -n`) with the blanked
+// body proven executing. A 3542-shape sweep of the prefix-chain x case-form space finds 452 live
+// bypasses at the previous SHA and 0 after this change.
+//
+// The fix keeps ONE list for the one idea ("what establishes command position"), because two lists
+// for one idea diverge in both directions -- that divergence is precisely this finding. The two
+// members that can swallow a following WORD are pinned to bash's own rule: `coproc NAME` is a name
+// only before a COMPOUND command (`coproc python3 curl -d @- <<'PY'` is a SIMPLE command, so bash
+// takes `python3` as the command word and consuming it would hand the span to the curl behind it),
+// and `function NAME` / `NAME ()` require the compound opener to actually be there. The words that
+// FEEL like they belong -- `sudo`, `command`, `exec`, `env`, `nice`, a `FOO=1` assignment, a leading
+// redirection -- are syntax errors in front of a compound command and are deliberately absent.
+describe('email-send-gate: bash GRAMMAR -- what establishes COMMAND POSITION (card 84e31b40, F-9)', () => {
+  const NL = String.fromCharCode(10)
+  const bash = (command: string) => gateDecision('Bash', { command })
+  const SMTP9 = 'smtp' + 'lib'
+  const SEND9 = 'send' + 'mail'
+  const EVIL9 = ['import ' + SMTP9, SMTP9 + '.SMTP' + '("localhost").' + SEND9 + '("a","b","c")'].join(NL)
+  // Prose that WOULD trigger the gate if the heredoc body were not blanked.
+  const HOT9 = `{"content":"a ${SMTP9} helyett a support-mail utat hasznaljuk"}`
+  // The inner interpreter sits behind a prefix the walker has to see through.
+  const armed = (head: string, tail: string): string =>
+    [`curl -s -X POST http://127.0.0.1:1/x -d @- $(${head} python3 <<'PY'`, EVIL9, 'PY', tail].join(NL)
+  // A LEGITIMATE call behind the same prefix, carrying prose that WOULD trigger the gate if the body
+  // were not blanked -- so an ALLOW here is evidence of blanking, not of a harmless payload.
+  const legit = (head: string, tail: string): string =>
+    [`${head} curl -s -X POST http://localhost:3420/x -d @- <<'JSON'`, HOT9, 'JSON', tail].join(NL)
+
+  it('L1: `coproc` before the case (reported)', () => {
+    expect(bash(armed('coproc case x in x)', ';; esac)')).deny).toBe(true)
+  })
+
+  it('L2: `coproc NAME` before the case (reported)', () => {
+    // The NAME form. Recognising `coproc` alone is not enough: the NAME would then stand between the
+    // boundary and the `case`, and the command-position test would fail on it.
+    expect(bash(armed('coproc CO case x in x)', ';; esac)')).deny).toBe(true)
+  })
+
+  it('L3: `function NAME {` before the case (reported)', () => {
+    // `{` was already a prefix keyword; the `function f ` in front of it left the boundary
+    // un-advanced, so the `{` itself failed the command-position test.
+    expect(bash(armed('function f { case x in x)', ';; esac; }; f)')).deny).toBe(true)
+  })
+
+  it('L4: `function NAME ()` with the redundant parens', () => {
+    expect(bash(armed('function f () { case x in x)', ';; esac; }; f)')).deny).toBe(true)
+  })
+
+  it('L5: the POSIX `NAME ()` function form, with no `function` keyword', () => {
+    // Not reported. Worse than the `function` form: the `(` opens a frame and its `)` closes it, so
+    // the boundary lands back BEFORE the name and the `{` fails the command-position test anyway.
+    expect(bash(armed('f() { case x in x)', ';; esac; }; f)')).deny).toBe(true)
+  })
+
+  it('L6: `time -p` -- the option, not just the keyword', () => {
+    // Not reported. `time` was on the list, but only bare: `time [-p] [--]` is the actual grammar,
+    // and the option left a word between the boundary and the `case`.
+    expect(bash(armed('time -p case x in x)', ';; esac)')).deny).toBe(true)
+  })
+
+  it('L7: `coproc {` -- coproc with a group body', () => {
+    expect(bash(armed('coproc { case x in x)', ';; esac; })')).deny).toBe(true)
+  })
+
+  it('L8: `coproc NAME {` -- the form where NAME really IS a name', () => {
+    // This is the one shape where consuming the word after `coproc` is CORRECT, because a compound
+    // command follows it. L-R4 below pins the case where it is not.
+    expect(bash(armed('coproc CO { case x in x)', ';; esac; })')).deny).toBe(true)
+  })
+
+  it('L9: a chain -- `function NAME {` then `coproc`', () => {
+    expect(bash(armed('function f { coproc case x in x)', ';; esac; }; f)')).deny).toBe(true)
+  })
+
+  it('L10: reached through another reserved word -- `then coproc`', () => {
+    expect(bash(armed('if :; then coproc case x in x)', ';; esac; fi)')).deny).toBe(true)
+  })
+
+  it('L11: the POSIX form whose BODY IS the case statement -- no braces at all', () => {
+    // Not reported, and not in the first draft of this fix either: mutation testing separated it.
+    // A function body is a `shell_command` in bash's grammar, so `f() case x in x) ... esac` is a
+    // complete definition with no `{`. Drawing the opener set from the two forms one actually WRITES
+    // (`{` and `(`) instead of from the production left this live. Measured executing.
+    expect(bash(armed('f() case x in x)', ';; esac; f)')).deny).toBe(true)
+  })
+
+  it('L12: the same, with the `function` keyword', () => {
+    expect(bash(armed('function f case x in x)', ';; esac; f)')).deny).toBe(true)
+  })
+
+  it('L13: every other compound-command body, per bash parse.y', () => {
+    // if / while / until / for / select / subshell. These already denied before this change, because
+    // their own `then`/`do` re-establishes command position -- they are here as the regression guard
+    // for the shared opener list, so shrinking it cannot silently take them with it.
+    const BODIES: [string, string][] = [
+      ['f() if :; then case x in x)', ';; esac; fi; f)'],
+      ['f() while :; do case x in x)', ';; esac; break; done; f)'],
+      ['f() until false; do case x in x)', ';; esac; break; done; f)'],
+      ['f() for q in a; do case x in x)', ';; esac; done; f)'],
+      ['f() ( case x in x)', ';; esac ); f)'],
+      ['function f until false; do case x in x)', ';; esac; break; done; f)'],
+    ]
+    const failures: string[] = []
+    for (const [head, tail] of BODIES) {
+      if (!bash(armed(head, tail)).deny) failures.push(head)
+    }
+    expect(failures).toEqual([])
+  })
+
+  // --- the FALSE POSITIVES the same change removes ------------------------------------------
+  // Every one of these is a legitimate payload that the previous walker DENIED, because the span was
+  // measured from the wrong place. They are the bug class in this card's title, not a bonus.
+
+  it('CONTROL: a legitimate call behind `coproc` is allowed', () => {
+    expect(bash(legit('coproc', '')).deny).toBe(false)
+  })
+
+  it('CONTROL: a legitimate call inside a POSIX function body is allowed', () => {
+    expect(bash(legit('f() {', '}; f')).deny).toBe(false)
+  })
+
+  it('CONTROL: a legitimate call behind `time -p` is allowed', () => {
+    expect(bash(legit('time -p', '')).deny).toBe(false)
+  })
+
+  it('CONTROL: a legitimate call inside a `function NAME {` body is allowed', () => {
+    expect(bash(legit('function f {', '}; f')).deny).toBe(false)
+  })
+
+  it('ANTI-VACUITY: the same prose behind `coproc` WITHOUT `-d @-` still denies', () => {
+    // Without this, the CONTROLs above would pass on a walker that blanks nothing at all: they would
+    // be measuring an innocuous body rather than the blanking.
+    const cmd = [`coproc python3 - <<'JSON'`, HOT9, 'JSON'].join(NL)
+    expect(bash(cmd).deny).toBe(true)
+  })
+
+  it('ANTI-VACUITY: the same prose in a POSIX function body WITHOUT `-d @-` still denies', () => {
+    const cmd = [`f() { python3 - <<'JSON'`, HOT9, 'JSON', '}; f'].join(NL)
+    expect(bash(cmd).deny).toBe(true)
+  })
+
+  // --- the FIX's OWN risk. A proposed fix is a claim too --------------------------------------
+  // Recognising these words moves the boundary FORWARD, so every one of them has to be pinned to the
+  // position where it is genuinely the keyword. All four below are valid bash in which it is not.
+
+  it('L-R1: `coproc` as an ARGUMENT must not move the boundary', () => {
+    const cmd = [`python3 - coproc curl -d @- <<'PY'`, EVIL9, 'PY'].join(NL)
+    expect(bash(cmd).deny).toBe(true)
+  })
+
+  it('L-R2: `function` as an ARGUMENT must not move the boundary', () => {
+    const cmd = [`python3 - function curl -d @- <<'PY'`, EVIL9, 'PY'].join(NL)
+    expect(bash(cmd).deny).toBe(true)
+  })
+
+  it('L-R3: `time -p` as ARGUMENTS must not move the boundary', () => {
+    const cmd = [`python3 - time -p curl -d @- <<'PY'`, EVIL9, 'PY'].join(NL)
+    expect(bash(cmd).deny).toBe(true)
+  })
+
+  it('L-R4: after `coproc`, a SIMPLE command means the next word is the COMMAND, not a NAME', () => {
+    // bash's own rule, and the sharpest edge on this fix: in `coproc python3 curl -d @- <<'PY'` the
+    // command is simple, so `python3` is the command word and owns the heredoc. Consuming it as a
+    // coproc NAME would put the span on the curl standing behind it and blank a body python3 runs --
+    // a bypass INTRODUCED by the fix.
+    const cmd = [
+      `curl -s http://127.0.0.1:1/x -d @- $(coproc python3 curl -d @- <<'PY'`,
+      EVIL9,
+      'PY',
+      ')',
+    ].join(NL)
+    expect(bash(cmd).deny).toBe(true)
+  })
+
+  it('L-R5: the same, with a word that LOOKS like a coproc NAME in front of it', () => {
+    const cmd = [
+      `curl -s http://127.0.0.1:1/x -d @- $(coproc CO python3 curl -d @- <<'PY'`,
+      EVIL9,
+      'PY',
+      ')',
+    ].join(NL)
+    expect(bash(cmd).deny).toBe(true)
+  })
+
+  it('INVARIANT: every command-position prefix in the bash grammar, before every case form', () => {
+    // Generated rather than listed: the previous round proved that a hand-written list drawn from the
+    // patch misses whatever the patch did not happen to mention. Each PREFIX below was validated with
+    // `bash -n`; each is a place bash starts a new simple command.
+    const PREFIXES: [string, string][] = [
+      ['coproc ', ''],
+      ['coproc CO ', ''],
+      ['coproc { ', '; }'],
+      ['coproc CO { ', '; }'],
+      ['function f { ', '; }'],
+      ['function f () { ', '; }'],
+      ['f() { ', '; }'],
+      ['f () { ', '; }'],
+      ['f() ( ', ' )'],
+      ['time ', ''],
+      ['time -p ', ''],
+      ['time -- ', ''],
+      ['time -p -- ', ''],
+      ['! ', ''],
+      ['{ ', '; }'],
+      ['if :; then ', '; fi'],
+      ['while :; do ', '; break; done'],
+      ['until false; do ', '; break; done'],
+      ['for q in a; do ', '; done'],
+      ['select q in a; do ', '; break; done'],
+      ['time coproc ', ''],
+      ['function f { coproc ', '; }'],
+      ['f() case x in x) :;; esac; f; ', ''],
+      ['function f case x in x) :;; esac; f; ', ''],
+      ['coproc CO [[ -n x ]]; ', ''],
+      ['coproc CO if :; then :; fi; ', ''],
+    ]
+    const FORMS: [string, string][] = [
+      ['case x in x)', ';; esac'],
+      ['case x in a|x)', ';; esac'],
+      ['case x in (x)', ';; esac'],
+      ['case x in y) :;; x)', ';; esac'],
+      ['case x in $(echo x))', ';; esac'],
+    ]
+    const failures: string[] = []
+    for (const [open, close] of PREFIXES) {
+      for (const [head, tail] of FORMS) {
+        if (!bash(armed(open + head, tail + close + ')')).deny) failures.push(open + head)
+      }
+    }
+    expect(failures).toEqual([])
+  })
+})
