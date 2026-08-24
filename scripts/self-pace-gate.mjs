@@ -845,13 +845,44 @@ const CASE_KEYWORD_RX = /^(?:case|in|esac)(?![\w-])/
 // the list anyway: it is the grammar's production, and trimming it to whatever the walker happens to
 // need today is how the round-9 finding got in.
 const COMPOUND_OPENER = String.raw`(?:\{|\(|\[\[|(?:case|if|while|until|for|select)(?![\w-]))`
+// A function NAME, for BOTH definition syntaxes. One constant, because one concept: the round-10
+// NO-GO is precisely what happens when the same idea is spelled out twice -- the `function` branch
+// carried a wide class, the POSIX `NAME ()` branch a narrow `[A-Za-z_]\w*`, and 25 valid function
+// names fell in the gap. `deploy-prod`, `sync.db` and `a:b` are not exotic; all three were measured
+// executing from inside a blanked body.
+//
+// The class is bash's own definition of a WORD: a run of characters that are not METACHARACTERS
+// (whitespace, `|`, `&`, `;`, `(`, `)`, `<`, `>`) together with BALANCED quoted segments. Three
+// things fall out of it that a hand-picked class kept getting wrong:
+//
+//   * `{` and `}` are NOT metacharacters -- they are reserved words only when they stand alone -- so
+//     `f{g` is a legal function name. The wide class this round was asked to COPY excluded them, and
+//     `f{g() { ... }` was live on BOTH branches. Copying would have closed 23 of the 25; deriving
+//     from the metacharacter set closes all 25.
+//   * A quoted segment is part of the word, and quote removal happens before bash sees the name, so
+//     `coproc f"" { ... }` defines a coproc called `f`. Matching only the unquoted run left that live.
+//   * The segments must be BALANCED, and not merely allowed: this rule moves `boundary` but never
+//     touches the walker's `quote` state, so a match that swallowed an unbalanced quote would leave
+//     the walker unquoted while bash is inside a string -- a worse desynchronisation than the gap it
+//     would close. A backtick is deliberately still excluded: it opens a command context, and not
+//     matching there simply leaves the boundary where it was.
+const FUNCTION_NAME = String.raw`(?:[^\s|&;()<>'"\`]|'[^']*'|"[^"]*")+`
 const CMD_PREFIX_KEYWORD_RX = new RegExp(
   '^(?:' +
     String.raw`(?:if|then|elif|else|while|until|do|!|\{)(?=\s|$)` +
     String.raw`|time(?:[ \t]+-p)?(?:[ \t]+--)?(?=\s|$)` +
-    String.raw`|coproc(?:[ \t]+[A-Za-z_]\w*(?=[ \t]+${COMPOUND_OPENER}))?(?=\s|$)` +
-    String.raw`|function[ \t]+[^\s(){};&|<>'"\`]+[ \t]*(?:\(\)[ \t]*)?(?=${COMPOUND_OPENER})` +
-    String.raw`|[A-Za-z_]\w*[ \t]*\(\)[ \t]*(?=${COMPOUND_OPENER})` +
+    // The coproc NAME uses the SAME class, and the first draft of this round got that wrong. The
+    // reasoning was "a coproc NAME becomes a shell VARIABLE, so it must be an identifier" -- true of
+    // the name bash ends up with, false of the TEXT standing there. Bash validates the name AFTER
+    // expansion and quote removal, so `coproc f$g { ... }` (with `g` unset) makes a coproc called
+    // `f`, and `coproc f\g { ... }` one called `fg`; both are live, executing bypasses against a
+    // walker that matches the literal `[A-Za-z_]\w*`. Mutation testing separated them -- reading the
+    // code again would not have. What keeps this branch honest is NOT a narrow class but the
+    // COMPOUND_OPENER lookahead: `coproc python3 curl -d @- <<'PY'` is a SIMPLE command, `curl` is
+    // not an opener, so no name is consumed and python3 stays the command word (pinned by L-R4/L-R5).
+    String.raw`|coproc(?:[ \t]+${FUNCTION_NAME}(?=[ \t]+${COMPOUND_OPENER}))?(?=\s|$)` +
+    String.raw`|function[ \t]+${FUNCTION_NAME}[ \t]*(?:\(\)[ \t]*)?(?=${COMPOUND_OPENER})` +
+    String.raw`|${FUNCTION_NAME}[ \t]*\(\)[ \t]*(?=${COMPOUND_OPENER})` +
     ')',
 )
 // A word starts here only after whitespace, a separator, or an opener.

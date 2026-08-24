@@ -885,3 +885,200 @@ describe('self-pace-gate: bash GRAMMAR -- what establishes COMMAND POSITION (car
     expect(failures).toEqual([])
   })
 })
+
+// Card 84e31b40, TENTH round, Cybersec NO-GO: ONE concept, TWO character classes.
+//
+//     deploy-prod() { case x in x) python3 <<'PY' ... PY ;; esac; }; deploy-prod
+//
+// The round-9 fix recognised both function-definition syntaxes, but spelled the NAME twice: the
+// `function NAME` branch carried a wide class, the POSIX `NAME ()` branch a narrow `[A-Za-z_]\w*`.
+// Every function name that falls in the gap -- and `deploy-prod`, `sync.db`, `a:b` are ordinary
+// fleet names, not exotica -- left the boundary unmoved, so the `case` behind it was not recognised
+// in command position, its pattern `)` popped the frame `$(` had opened, and the span fell back onto
+// the OUTER `curl -d @-`. Cybersec measured 21 executing; a character-space sweep (names generated
+// from bash's word grammar rather than from either regex) found 25.
+//
+// THE FIX IS THE SHARED CONSTANT, NOT THE COPY. Copying the wide class into the second place is how
+// the two diverged; `FUNCTION_NAME` is now consumed by both branches, so they cannot drift again.
+// And copying would have been wrong on its own terms: `{` and `}` are NOT bash metacharacters (they
+// are reserved words only when they stand alone), so `f{g` is a legal function name that the wide
+// class ALSO missed -- measured executing on BOTH branches. Deriving the class from the metacharacter
+// set closes 25 of 25; copying would have closed 23.
+//
+// The `coproc NAME` branch deliberately keeps the NARROW class: that name becomes a shell VARIABLE,
+// and `coproc deploy-prod { ... }` passes `bash -n` but bash refuses it at RUNTIME, so the body never
+// runs. Two concepts, two classes -- measured, not assumed.
+describe('self-pace-gate: ONE concept, ONE character class -- the function NAME (card 84e31b40, F-1 round 10)', () => {
+  const NL = String.fromCharCode(10)
+  const bash = (command: string) => gateDecision('Bash', { command })
+  const CT10 = 'cron' + 'tab'
+  const EVIL10 = ['import subprocess', `subprocess.run(['${CT10}', '-'])`].join(NL)
+  const HOT10 = `{"content":"ne ${CT10} -e -t hivast irjunk, hanem a scheduler API-t"}`
+  // A function whose BODY owns the heredoc, and which is CALLED -- an uncalled definition runs
+  // nothing, so a test built on one would pass against a walker that blanks everything.
+  const fn = (head: string, tail: string): string =>
+    [`curl -s -X POST http://127.0.0.1:1/x -d @- $(${head} python3 <<'PY'`, EVIL10, 'PY', tail].join(NL)
+  const legitFn = (head: string, tail: string): string =>
+    [`${head} curl -s -X POST http://localhost:3420/x -d @- <<'JSON'`, HOT10, 'JSON', tail].join(NL)
+
+  it('N1: an ordinary hyphenated fleet name -- deploy-prod', () => {
+    expect(bash(fn('deploy-prod() { case x in x)', ';; esac; }; deploy-prod)')).deny).toBe(true)
+  })
+
+  it('N2: a dotted name -- sync.db', () => {
+    expect(bash(fn('sync.db() { case x in x)', ';; esac; }; sync.db)')).deny).toBe(true)
+  })
+
+  it('N3: a colon name -- a:b', () => {
+    expect(bash(fn('a:b() { case x in x)', ';; esac; }; a:b)')).deny).toBe(true)
+  })
+
+  it('N4: a name that cannot be a variable at all -- 1f', () => {
+    expect(bash(fn('1f() { case x in x)', ';; esac; }; 1f)')).deny).toBe(true)
+  })
+
+  it('N5: a name that looks like an option -- -x', () => {
+    expect(bash(fn('-x() { case x in x)', ';; esac; }; -x)')).deny).toBe(true)
+  })
+
+  it('N6: a BRACE in the name -- f{g, which the wide class missed too', () => {
+    // Not in the NO-GO, and the reason the reported one-line fix was not enough: `{` and `}` are not
+    // bash metacharacters, so this is a legal function name that BOTH branches let through. Measured
+    // executing on both.
+    expect(bash(fn('f{g() { case x in x)', ';; esac; }; f{g)')).deny).toBe(true)
+  })
+
+  it('N7: the same brace name on the `function` branch', () => {
+    expect(bash(fn('function f{g { case x in x)', ';; esac; }; f{g)')).deny).toBe(true)
+  })
+
+  it('N8: the wide name on the `function` branch, with the redundant parens', () => {
+    expect(bash(fn('function deploy-prod () { case x in x)', ';; esac; }; deploy-prod)')).deny).toBe(true)
+  })
+
+  it('N9: the wide name with a subshell body', () => {
+    expect(bash(fn('sync.db() ( case x in x)', ';; esac ); sync.db)')).deny).toBe(true)
+  })
+
+  it('N10: the wide name with the body that IS the case statement', () => {
+    expect(bash(fn('deploy-prod() case x in x)', ';; esac; deploy-prod)')).deny).toBe(true)
+  })
+
+  // --- the FALSE POSITIVES the same change removes ------------------------------------------
+
+  it('CONTROL: a legitimate call inside a deploy-prod() body is allowed', () => {
+    expect(bash(legitFn('deploy-prod() {', '}; deploy-prod')).deny).toBe(false)
+  })
+
+  it('CONTROL: the same inside a dotted name', () => {
+    expect(bash(legitFn('sync.db() {', '}; sync.db')).deny).toBe(false)
+  })
+
+  it('ANTI-VACUITY: the same prose in a deploy-prod() body WITHOUT `-d @-` still denies', () => {
+    const cmd = [`deploy-prod() { python3 - <<'JSON'`, HOT10, 'JSON', '}; deploy-prod'].join(NL)
+    expect(bash(cmd).deny).toBe(true)
+  })
+
+  // --- the FIX's OWN risk: widening moves the boundary FORWARD in more places -----------------
+
+  it('N-R1: a wide name as an ARGUMENT must not move the boundary', () => {
+    const cmd = [`python3 - deploy-prod curl -d @- <<'PY'`, EVIL10, 'PY'].join(NL)
+    expect(bash(cmd).deny).toBe(true)
+  })
+
+  it('N11: a coproc NAME that only becomes an identifier AFTER expansion -- f$g', () => {
+    // Mutation testing found this, not review. The first draft kept the coproc NAME narrow, on the
+    // reasoning that the name becomes a shell VARIABLE and so must be an identifier. True of the name
+    // bash ends up with, false of the TEXT standing there: bash validates AFTER expansion and quote
+    // removal, so with `g` unset this defines a coproc called `f`. Measured executing.
+    expect(bash(fn('coproc f$g { case x in x)', ';; esac; }; wait)')).deny).toBe(true)
+  })
+
+  it('N12: the same through quote removal -- f\\g', () => {
+    expect(bash(fn('coproc f\\g { case x in x)', ';; esac; }; wait)')).deny).toBe(true)
+  })
+
+  it('N13: a name whose quoted segment disappears at quote removal -- coproc f""', () => {
+    // Also mutation testing, not review. A bash WORD is unquoted characters AND balanced quoted
+    // segments, and quote removal happens before bash sees the name, so this defines a coproc called
+    // `f`. Matching only the unquoted run left it live and executing.
+    expect(bash(fn('coproc f"" { case x in x)', ';; esac; }; wait)')).deny).toBe(true)
+  })
+
+  it("N14: the same with single quotes -- coproc f''", () => {
+    expect(bash(fn("coproc f'' { case x in x)", ';; esac; }; wait)')).deny).toBe(true)
+  })
+
+  it('N-R4: an UNBALANCED quote in the name must not be consumed', () => {
+    // The sharpest edge on admitting quotes at all: this rule moves `boundary` but never touches the
+    // walker's `quote` state, so a match that swallowed a lone `"` would leave the walker unquoted
+    // while bash is inside a string -- a worse desynchronisation than the gap it closes. Only
+    // BALANCED segments are part of the class, which is also what bash's word grammar says.
+    const cmd = [
+      `curl -s http://127.0.0.1:1/x -d @- $(f"()" () { python3 - curl -d @- <<'PY'`,
+      EVIL10,
+      'PY',
+      '}; f"()" )',
+    ].join(NL)
+    expect(bash(cmd).deny).toBe(true)
+  })
+
+  it('CONTROL: a legitimate call in a function whose name carries a quoted segment', () => {
+    const cmd = [
+      `f"a"() { curl -s http://localhost:3420/x -d @- <<'JSON'`,
+      HOT10,
+      'JSON',
+      '}; f"a"',
+    ].join(NL)
+    expect(bash(cmd).deny).toBe(false)
+  })
+
+  it('N-R2: after `coproc`, a SIMPLE command still means the next word is the COMMAND', () => {
+    // What keeps the coproc branch honest is the COMPOUND_OPENER lookahead, NOT a narrow name class.
+    // `curl` is not an opener, so no name is consumed here and python3 stays the command word --
+    // consuming it would put the span on the curl behind it and open a bypass.
+    const cmd = [
+      `curl -s http://127.0.0.1:1/x -d @- $(coproc deploy-prod curl -d @- <<'PY'`,
+      EVIL10,
+      'PY',
+      ')',
+    ].join(NL)
+    expect(bash(cmd).deny).toBe(true)
+  })
+
+  it('N-R3: the name must not swallow the compound opener it is followed by', () => {
+    const cmd = [
+      `curl -s http://127.0.0.1:1/x -d @- $(f{g() { python3 - curl -d @- <<'PY'`,
+      EVIL10,
+      'PY',
+      '}; f{g)',
+    ].join(NL)
+    expect(bash(cmd).deny).toBe(true)
+  })
+
+  it('INVARIANT: the name space is generated from bash WORD grammar, not from the regex', () => {
+    // The round-9 sweep used the single name `f` -- a member of the class it was meant to test -- so
+    // its "0 residual bypasses" measured the patch rather than bash. That is the finding this block
+    // exists for, so the names here come from the character space instead.
+    const NAMES = [
+      'f', '_f', 'F_1', 'deploy-prod', 'sync.db', 'a:b', 'f-g', 'f.g', '1f', 'f!', 'f#g', 'f%',
+      'f+', 'f,g', 'f/g', 'f@', 'f^', 'f~', '-x', '--x', 'f*', 'f?', 'f:', '.f', '!f', 'f{g', 'f}g',
+      'f$g', 'f\\\\g', 'f""', "f''",
+    ]
+    const FORMS = (n: string): [string, string][] => [
+      [`${n}() { case x in x)`, `;; esac; }; ${n})`],
+      [`${n} () { case x in x)`, `;; esac; }; ${n})`],
+      [`function ${n} { case x in x)`, `;; esac; }; ${n})`],
+      [`function ${n} () { case x in x)`, `;; esac; }; ${n})`],
+      [`${n}() case x in x)`, `;; esac; ${n})`],
+      [`coproc ${n} { case x in x)`, ';; esac; }; wait)'],
+    ]
+    const failures: string[] = []
+    for (const n of NAMES) {
+      for (const [head, tail] of FORMS(n)) {
+        if (!bash(fn(head, tail)).deny) failures.push(head)
+      }
+    }
+    expect(failures).toEqual([])
+  })
+})

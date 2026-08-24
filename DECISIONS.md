@@ -2438,6 +2438,65 @@ szűkített állítás megfogalmazása, a teszt-hiányok javítása), MikroB (so
 **Hivatkozás:** kártya 442f3289 (3. kör), Gate-SHA 11a7698e, kártya-komment 15685. Testvér: ec20dd23
 (223ac1f8), ami az F-1 helyes rétegét zárta.
 
+## 2026-08-24 -- Egy fogalom, egy karakter-osztály: a függvénynév (kártya 84e31b40, 10. kör)
+
+**Döntés (fullstack, Cybersec NO-GO nyomán):** a walkerben a NÉV-pozíció mind a három ágon (POSIX
+`NÉV ()`, `function NÉV`, `coproc NÉV`) UGYANAZT a `FUNCTION_NAME` konstanst használja, és az a bash
+szó-nyelvtanából van levezetve, nem kézzel válogatva. A három ág közti valódi különbséget nem a
+karakter-osztály hordozza, hanem a `COMPOUND_OPENER` lookahead.
+
+**Miért merült fel.** A 9. kör mindkét függvénydefiníciós szintaxist felismerte, de a NEVET KÉTSZER
+írta le: a `function NÉV` ág egy tág osztályt kapott, a POSIX `NÉV ()` ág egy szűk `[A-Za-z_]\w*`-ot.
+Minden név, ami a résbe esett, mozdulatlanul hagyta a boundary-t, tehát a mögötte álló `case` nem
+ismerődött fel command-pozícióban, a minta `)`-e visszapoppolta a `$(` nyitotta frame-et, és a span a
+KÜLSŐ `curl -d @-`-ra esett. A `deploy-prod`, `sync.db`, `a:b` hétköznapi flotta-függvénynevek.
+Cybersec 21 végrehajtott megkerülést mért; a saját, karakter-térből generált mérésem 25-öt.
+
+**A javítás a KÖZÖS KONSTANS, nem a másolat.** A tág osztály bemásolása a második helyre pontosan az,
+ahogy a kettő eredetileg szétcsúszott. Ráadásul önmagában is hibás lett volna: a `{` és `}` NEM bash
+metakarakter (csak akkor foglalt szó, ha önmagában áll), tehát az `f{g` érvényes függvénynév, amit a
+TÁG osztály is elszalasztott -- mindkét ágon, bizonyítottan végrehajtva. A metakarakter-halmazból
+levezetve 25/25 zárul; a javasolt egysoros 23-at zárt volna.
+
+**Három saját hiba, amit a mutációs teszt talált, nem az újraolvasás.**
+1. A `coproc NÉV` ágat először szűken hagytam, azzal az indoklással, hogy az a név shell VÁLTOZÓ lesz,
+   tehát azonosítónak kell lennie. Ez igaz arra a névre, amit a bash a végén kap, és HAMIS az ott álló
+   SZÖVEGRE: a bash a nevet EXPANZIÓ és idézőjel-eltávolítás UTÁN validálja. A `coproc f$g { ... }`
+   (üres `g`) egy `f` nevű coprocot csinál, a `coproc f\g { ... }` egy `fg` nevűt -- mindkettő élő,
+   végrehajtott megkerülés volt a literálra illesztő walker ellen. Mérve: `declare -p f` / `declare -p fg`.
+2. Ugyanez az idézőjel-eltávolításon át: a `coproc f"" { ... }` szintén `f` nevű coprocot csinál. Egy
+   bash SZÓ nem csak a nem-idézett futam, hanem nem-idézett karakterek ÉS KIEGYENSÚLYOZOTT idézett
+   szakaszok sorozata -- az osztály most ezt mondja ki.
+3. A kiegyensúlyozottság nem esztétika: ez a szabály a `boundary`-t mozgatja, de a walker `quote`
+   állapotához NEM nyúl. Egy PÁRATLAN idézőjelet elnyelő illesztés a walkert idézőjelen kívül hagyná,
+   miközben a bash stringen belül van -- rosszabb deszinkronizáció, mint a rés, amit betömne. A
+   visszaidéző (backtick) ezért továbbra is kimarad: parancs-kontextust nyit.
+
+**A saját mérésem hibája, amit Cybersec joggal kifogásolt, javítva.** A 9. köri 3542 alakú sweep az
+egyetlen `f` nevet használta -- annak az osztálynak a tagját, amit tesztelnie kellett volna --, tehát a
+"0 residual bypass" a patchről szólt, nem a bashről. A sweep neveit most a karakter-tér adja. Javítás
+közben a saját harnessemben egy MÁSODIK hibát is találtam: a függvény-alakok DEFINIÁLTAK egy függvényt
+és sosem HÍVTÁK meg, tehát a törzs nem futott, a marker nem jelent meg, és a sweep 9203 ALLOW mellett
+0 "megkerülést" jelentett -- vak zöld pontosan a vizsgált családra. Hívással: 7000 élő megkerülés a
+9afad4aa-n, 0 utána.
+
+**Mérés (mindkét kapun, a walker közös):**
+- 52 nevű karakter-tér x 3 alak, mindegyik `bash -n`-nel validálva és markerrel FUTTATVA:
+  POSIX 25 -> 0, `function` 2 -> 0, `coproc` 4 -> 0 élő megkerülés.
+- 20 elemű fix-kockázati készlet mindkét kapun, 0 rossz: tömb-értékadás alak (`arr=() { ... }` --
+  mérve érvénytelen bash), a nevet elnyelő nyitó, argumentum-pozíció, coproc-ág átszivárgás, a
+  páratlan idézőjel deszinkronizációs veszélye, plusz anti-vakság kontrollok.
+- 7-9. köri batériák változatlanul: 44 alak, 16 elemű kockázati készlet, 130 elemű invariáns, 0 rossz.
+- 31892 alakú sweep (a javított, hívást is tartalmazó harness): 7000 -> 0.
+- 11 mutáció, 9 megölve.
+
+**Túlélő mutánsok, kimondva (nem lezártnak állítva).** Kettő: az osztály metakaraktereket is elnyel
+(MC), illetve PÁRATLAN idézőjelet is megenged (MI). Mindkettőre 448 generált alak, `bash -n`
+validálással: 0 olyan eltérés, ahol a törzs TÉNYLEGESEN lefut (a nem-futó eltérések a szigorúbb,
+DENY-irányban vannak). Kontrollként ugyanaz a hunt 59 végrehajtott eltérést talál a szűk osztályra
+visszaálló mutánsnál, tehát nem vak. Az `N-R4` teszt a páratlan-idézőjel esetet DOKUMENTÁLJA és egy
+valós DENY-t rögzít, de NEM választja szét az MI mutánst -- ezt kimondom, hogy senki ne higgye
+lefedettnek. Ha valaki talál élő, végrehajtott szétválasztó alakot, jön rá a teszt.
 ## 2026-08-24 12:30 -- tree-sitter dark-launch 2. kör: egy általam szállított megkerülés és a rossz cutover-kritérium (kártya f16b3165)
 
 **Döntés:** Cybersec NO-GO-ja (Gate-SHA ceed282d) elfogadva, mind az öt lelet javítva. A kártya
