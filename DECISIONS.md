@@ -2235,3 +2235,56 @@ kezdőindexet ad, a szeletelés az eredeti forrásból történik.
 implementáció). A hatókör-szűkítés MikroB felé jelezve (üzenet 19829).
 
 **Hivatkozás:** kártya f16b3165, kártya-komment 15687 (due diligence), előzmény 84e31b40 / 442f3289 / ec20dd23.
+
+## 2026-08-24 09:00 -- self-pace kapu 3. kör: process substitution, szó-grammatika, here-string kitöltő (kártya ec20dd23)
+
+**Döntés:** Cybersec NO-GO-ja (Gate-SHA e08e191a) elfogadva és mind a három lelet zárva, a javasolt
+irányban de NEM a javasolt regexekkel: a process-substitution ág a MEGLÉVŐ `WRAPPER_POSITION`-ból
+épül, nem egy negyedik kézzel írt parancspozíció-listából, és a here-string kitöltő `&`-engedélye
+lookbehinddel (`&(?<=>&)`) készült, nem `\d*>&\d*`-gal.
+
+**Miért így:** a javasolt `(?:^|[\s;&|(\`])...` egy NEGYEDIK példánya lett volna ugyanannak a
+pozíció-nyelvtannak, amit a 2. kör épp egy helyre vont össze -- a fájl saját, dokumentált
+hibaosztálya, hogy két lista egy ötletre mindkét irányban elszivárog. A `\d*>&\d*` pedig átfedésben
+van a `[^|;&\n]`-nel a `>` és a számjegyek felett, azaz két úton illeszthető ugyanaz a szöveg egy lusta
+kvantoron belül -- pontosan így épül egy visszalépés-robbanás. A lookbehind-változat két diszjunkt
+alternatívát ad.
+
+**A saját javításom megmérése ugyanazzal a batériával, mint a leletet (és amit ez kimutatott):** az
+első szó-grammatikám a kézenfekvő `(?:QUOTED|BARE+)+` volt, és HATÁROZATLAN IDEIG PÖRGÖTT `bash -c` +
+30 000 csupasz karakteren, ami sosem ér el elfogadó szóhatárt -- két szomszédos csupasz futam mindig
+újraosztható, tehát a motor a bukás előtt minden partíciót végigpróbál. Egy hookban, ami MINDEN
+Bash-híváskor fut, ez szolgáltatásmegtagadás: a javításom 14 alakot zárt volna és egy lyukat nyitott.
+A 2. kör DoS-számai ezt nem fedték (azok egy hosszú OPCIÓ-futamot mértek, más kvantor). A nyelvtan
+most úgy szól, ahogy a bash olvassa a szót -- váltakozó csupasz és idézett futamok, két csupasz futam
+között KÖTELEZŐ idézett darabbal --, így a partíció egyértelmű. Utána: minden eset <= 81 ms, 160 kB-os
+bemenettel is.
+
+**Két saját hiba, amit a mérés fogott meg, nem a gate:**
+1. A DoS-javítás után `${BARE_PIECE}?` alakot írtam, ami `+?`-t ad, azaz LUSTA plusz és nem opcionális
+   -- a DoS eltűnt és tíz alak csendben visszanyílt; egyedül a korrektségi batéria vette észre.
+2. Átvettem a gate azon állítását, hogy a szóhatár-lookahead az, ami az összefűzött alakokat zárja, és
+   erre írtam tesztet. Egy mutáns, ami TÖRLI a lookaheadet, TÚLÉLTE. Megmérve: ebben a
+   megfogalmazásban nem a lookahead zárja az összefűzést (a váltakozó futam maga zárja), a lookahead
+   attól tartja vissza a kaput, hogy olyan szóra is illeszkedjen, ami nem ér el valódi határt. Az így
+   átengedett három alak `bash -n` szerint SZINTAKTIKAI HIBA, tehát nem hajtódik végre -- a lookahead
+   megtartása nem nyit megkerülést. A hibás tesztet kimondottan javítottam, nem csendben.
+
+**Egy lefedettségi hiány, amit Cybersec túlélő mutánsa (M5) mutatott meg:** a csupasz-szavas
+here-string törzs (`bash <<< crontab`) helyesen működött, de nem volt kiszegezve. Pin hozzáadva.
+
+**Egy nem-diszkrimináló kontrollom:** a „bare `&` ne nyeljen el egy háttér-jobot" tesztem
+`sleep 1 & bash <<< "echo hi"` volt, amit a bare-`&`-t engedő mutáns TÚLÉLT (a shell-név és a `<<<`
+ugyanazon oldalán áll). A szétválasztó alak `bash job & cat <<< "<bináris> -"`: `bash -n` szerint
+érvényes bash, és a `cat <<<` csak KIÍRJA a bemenetét (közvetlenül ellenőrizve), tehát a tiltása
+fals pozitív lenne. Kontroll kicserélve.
+
+**Bizonyíték:** 14/14 nyitott alak zárva, 15/15 jóhiszemű kontroll átmegy, 292 alakos elő/utó
+összehasonlítás **0 új megkerüléssel** (a 42 új tiltás mind valódi scheduler-hívás), helyes
+ágyazás-mélység 1-8 mind tilt fals pozitív nélkül, 12101 teszt zöld (35 új), tsc 0, lint-paritás
+egzakt, 7 mutáns mind megölve.
+
+**Ki döntött:** Cybersec (leletek + mért javítási irány), backend (implementáció, a regex-alak
+döntései, a saját javítás adverzariális megmérése), MikroB (visszaadás in_progress-be, sorrendezés).
+
+**Hivatkozás:** kártya ec20dd23 (3. kör), Gate-SHA e08e191a, kártya-komment 15689. Testvér: 442f3289.
