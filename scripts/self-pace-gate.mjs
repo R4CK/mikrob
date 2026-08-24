@@ -27,8 +27,58 @@
 // writeAgentSettingsFromProfile() (agent-scaffold.ts), guarded by
 // name !== MAIN_AGENT_ID, re-applied on every spawn (respawn-safe).
 
-import { readFileSync } from 'node:fs'
+import { readFileSync, appendFileSync } from 'node:fs'
+import { createHash } from 'node:crypto'
+import { fileURLToPath } from 'node:url'
+import { dirname, join } from 'node:path'
 import { allow, deny, isInvokedDirectly } from './hook-lib.mjs'
+import { heredocOwnerSpans } from './bash-ast.mjs'
+
+// AST CUTOVER FLAG (card f16b3165, plan-grilling change 3 -- feature flag, not a direct swap).
+//   'shadow' (default) -- run both recognisers, record disagreements, let the WALKER decide.
+//                         Costs nothing until the optional tree-sitter dependency is installed:
+//                         heredocOwnerSpans returns null and the comparison is skipped.
+//   'on'                -- the AST answer decides where it has one (walker still covers null).
+//   'off'               -- do not parse at all; byte-for-byte today's behaviour.
+// Rollback is an env var, not a revert.
+//
+// READ PER CALL, not captured at module load. In production each hook invocation is a fresh
+// process, so either would do -- but a load-time constant cannot be exercised by a test that flips
+// the variable, and a "shadow mode changes nothing" assertion written against one would compare
+// shadow with shadow and pass no matter what the flag did. The cost is one env lookup per command.
+function astMode() {
+  const v = String(process.env.SELF_PACE_AST ?? '').trim().toLowerCase()
+  return v === 'on' || v === 'off' ? v : 'shadow'
+}
+
+const AST_DIVERGENCE_LOG =
+  process.env.SELF_PACE_AST_LOG ??
+  join(dirname(dirname(fileURLToPath(import.meta.url))), 'store', 'ast-divergence.log')
+
+// Record a walker/AST disagreement for the dark-launch review.
+//
+// DELIBERATELY SHAPE-ONLY, NEVER THE COMMAND TEXT. Agent commands routinely carry bearer tokens
+// (`printf 'Authorization: Bearer %s' ... | curl -H @-`), so writing `src` or either span to a log
+// file would turn a diagnostic into a credential sink -- the exact trade the fleet's redaction
+// rules exist to prevent. A digest identifies a recurring case across runs, and the leading WORD of
+// each side names the disagreement class (`curl` vs `python3`), which is what a fix needs.
+function recordAstDivergence(src, walkerSpan, astSpan, walkerSays, astSays) {
+  try {
+    const head = (s) => (String(s).trim().split(/\s+/)[0] ?? '').slice(0, 32)
+    appendFileSync(
+      AST_DIVERGENCE_LOG,
+      JSON.stringify({
+        at: new Date().toISOString(),
+        digest: createHash('sha256').update(src).digest('hex').slice(0, 16),
+        bytes: src.length,
+        walker: { head: head(walkerSpan), exempt: walkerSays },
+        ast: { head: head(astSpan), exempt: astSays },
+      }) + '\n'
+    )
+  } catch {
+    // A logging failure must never change a gate decision, and must never wedge a Bash call.
+  }
+}
 
 // Claude Code runtime self-pace / scheduling tools. A sub-agent has no
 // legitimate need to schedule its own future turns -- it is input-driven.
@@ -689,6 +739,10 @@ const WORD_START_RX = /[\s;&|()`]/
 
 export function stripHeredocDataPayloads(command) {
   const src = String(command ?? '')
+  // Computed ONCE per call, not per heredoc: the parse is the expensive half (~8 ms p50 over the
+  // current gate) and the answer covers every heredoc in the command at once.
+  const mode = astMode()
+  const astSpans = mode === 'off' ? null : heredocOwnerSpans(src)
   let out = ''
   let i = 0
   let boundary = 0 // index where the CURRENT simple command started
@@ -866,10 +920,29 @@ export function stripHeredocDataPayloads(command) {
       quote === null ? /^<<-?\s*(?:'([^']*)'|"([^"]*)"|([A-Za-z_]\w*))/.exec(src.slice(i)) : null
     if (!here) { out += c; i++; continue }
     const span = src.slice(boundary, i)
-    const feedsCurlStdin = CURL_LEADING_RX.test(span) && CURL_STDIN_DATA_RX.test(span)
-    const feedsGitMessageStdin =
-      GIT_LEADING_RX.test(span) && GIT_MSG_SUBCMD_RX.test(span) && GIT_STDIN_MSG_RX.test(span)
-    const feedsStdinData = feedsCurlStdin || feedsGitMessageStdin
+    // DARK LAUNCH (card f16b3165, plan-grilling change 3). `span` above is this walker's answer to
+    // "which simple command owns this heredoc"; astSpans holds tree-sitter-bash's answer to the
+    // same question. Both are computed, the two DECISIONS are compared, and any disagreement is
+    // recorded -- but the walker still drives behaviour unless SELF_PACE_AST=on. The ownership
+    // CHECKS below are shared by both paths and are not touched: only the span they read changes.
+    // The AST supplies only the BOUNDARY; the span is sliced from the same source, the same way,
+    // so both recognisers hand the checks below identical units.
+    const astBoundary = astSpans === null ? undefined : astSpans.get(i)
+    const astSpan = astBoundary === undefined ? null : src.slice(astBoundary, i)
+    const decide = (s) => {
+      const curl = CURL_LEADING_RX.test(s) && CURL_STDIN_DATA_RX.test(s)
+      const git = GIT_LEADING_RX.test(s) && GIT_MSG_SUBCMD_RX.test(s) && GIT_STDIN_MSG_RX.test(s)
+      return curl || git
+    }
+    const walkerSays = decide(span)
+    // An absent key is a real answer from a successful parse ("no heredoc owner here"), which for
+    // these checks is indistinguishable from an empty span -- both decide false.
+    const astSays = astSpans === null ? null : decide(astSpan ?? '')
+    if (astSays !== null && astSays !== walkerSays) recordAstDivergence(src, span, astSpan ?? '', walkerSays, astSays)
+    // Fail-closed cutover: the AST answer is only allowed to drive when it EXISTS. A null (absent
+    // dependency, oversized input, parse error) keeps the current behaviour rather than defaulting
+    // to "not an exempt payload", which would turn every parser hiccup into a false deny.
+    const feedsStdinData = mode === 'on' && astSays !== null ? astSays : walkerSays
     const tag = here[1] ?? here[2] ?? here[3]
     const quotedTag = here[1] != null || here[2] != null
     out += here[0]
