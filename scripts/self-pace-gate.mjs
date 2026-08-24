@@ -1149,7 +1149,75 @@ const OPTION_RUN = String.raw`(?:\s+(?!-[a-zA-Z]*c\b)[-+]\S*(?:\s+(?![-+])\S+)?)
 // After `-c`, POSIX shells still accept a `--` end-of-options marker before the program string
 // (`sh -c -- "<prog>"`, measured running). Skipping it is what keeps the program in view.
 const POST_C = String.raw`(?:\s+--)?`
-const QUOTED_OR_WORD = String.raw`(?:'([^']*)'|"((?:\\.|[^"\\])*)"|(\S+))`
+// THE PROGRAM ARGUMENT IS A SHELL WORD, NOT ONE QUOTED PIECE (Cybersec F-2, round 3, every shape
+// below measured executing). The previous `(?:'([^']*)'|"((?:\\.|[^"\\])*)"|(\S+))` assumed the
+// program is either a single quoted string or a bare word. bash disagrees twice over: it JOINS
+// ADJACENT pieces into one word, and it has two more quoting forms. So `bash -c "cron""tab -"`
+// handed the matcher `cron`, `bash -c $'crontab -'` handed it `$'crontab`, and both walked.
+//
+// A word is therefore a RUN of pieces, and the run must be followed by a real word boundary. The
+// lookahead is the load-bearing half, and it is easy to get wrong: without it the run happily stops
+// after the first piece, which is exactly the `"cron"` failure again -- adding the run alternative
+// ALONE does not close these shapes. Measured both ways before and after.
+// THE SHAPE OF THIS PATTERN IS A DoS FIX, NOT A STYLE CHOICE. The first version was the obvious
+// `(?:QUOTED|BARE+)+`, and I measured it hanging INDEFINITELY on `bash -c ` + 30 000 bare
+// characters that never reach an accepting word boundary: two adjacent BARE runs can always be
+// re-split, so the engine retries every partition of the run before failing. That is a denial of
+// service in a hook that runs on every Bash call -- my own fix would have opened a hole while
+// closing fourteen. (The round-2 DoS numbers did not cover it: they exercised a long OPTION run,
+// which is a different quantifier.)
+//
+// So the grammar is written the way bash actually reads a word -- alternating bare runs and quoted
+// runs -- with the quoted piece MANDATORY between two bare runs. Adjacent BAREs then cannot exist,
+// the partition is unique, and there is nothing to backtrack over. `$` is kept out of BARE when a
+// quote follows it for the same reason: otherwise `$'...'` could be split two ways.
+const Q_PIECE = String.raw`\$?'[^']*'|\$?"(?:\\.|[^"\\])*"`
+// Quantified with `*`, NOT written as `+` and then made optional at the use site: `${X}?` where X
+// already ends in `+` yields `+?`, a LAZY plus rather than an optional one, which silently stops the
+// run after one character. That mistake cost a full measurement cycle here -- the DoS was fixed and
+// ten shapes quietly reopened, with the correctness battery the only thing that noticed.
+const BARE_RUN = String.raw`(?:[^\s'"|;&<>()$]|\$(?!['"]))*`
+const QUOTED_OR_WORD =
+  String.raw`(?=[^\s|;&<>)])(${BARE_RUN}(?:(?:${Q_PIECE})${BARE_RUN})*)(?=[\s|;&<>)]|$)`
+
+// Undo shell quoting across a whole word, concatenating the pieces the way bash does. Returns the
+// text the inner shell actually receives, which is what the gate then scans.
+function unquoteWord(word) {
+  const src = String(word ?? '')
+  let out = ''
+  let i = 0
+  while (i < src.length) {
+    // `$'...'` (ANSI-C) and `$"..."` (locale) differ from the plain forms only in ways that cannot
+    // hide a binary name, so the `$` is simply dropped and the quote handled below.
+    if (src[i] === '$' && (src[i + 1] === "'" || src[i + 1] === '"')) { i++; continue }
+    if (src[i] === "'") {
+      const j = src.indexOf("'", i + 1)
+      if (j === -1) { out += src.slice(i + 1); break }
+      out += src.slice(i + 1, j) // single quotes are literal -- never unescape here
+      i = j + 1
+      continue
+    }
+    if (src[i] === '"') {
+      let j = i + 1
+      let body = ''
+      while (j < src.length && src[j] !== '"') {
+        if (src[j] === '\\') { body += src.slice(j, j + 2); j += 2; continue }
+        body += src[j]; j++
+      }
+      // The OUTER shell already removed one level of escaping before the inner shell sees it
+      // (Cybersec H-3): without undoing it, a wrapper nested three deep stops one level short of
+      // the payload. Single-quoted bodies above must NOT get this treatment.
+      out += body.replace(/\\(["\\$`])/g, '$1')
+      i = j + 1
+      continue
+    }
+    const bare = /^[^\s'"|;&<>()]+/.exec(src.slice(i))
+    if (!bare) break
+    out += bare[0]
+    i += bare[0].length
+  }
+  return out
+}
 const SHELL_NAME = String.raw`(?:\S*\/)?(?:bash|sh|zsh|dash|ksh)\b`
 const SHELL_C_RX = new RegExp(
   `${WRAPPER_POSITION}(?:sudo\\s+|env\\s+|command\\s+|exec\\s+)*${SHELL_NAME}${OPTION_RUN}\\s+-[a-zA-Z]*c${POST_C}\\s+${QUOTED_OR_WORD}`,
@@ -1159,12 +1227,40 @@ const EVAL_RX = new RegExp(`${WRAPPER_POSITION}eval\\s+${QUOTED_OR_WORD}`, 'g')
 // A shell fed its program on a HERE-STRING (Cybersec H-2): `bash <<< "<prog>"`, and the same via
 // `source /dev/stdin <<< ...` / `. /dev/stdin <<< ...`. No `-c` anywhere, so neither of the two
 // above sees it, and the program never appears in argv -- but the shell runs it just the same.
+// The filler between the shell name and `<<<` must tolerate a REDIRECTION (Cybersec F-3): the old
+// `[^|;&\n]*?` excluded `&`, so the single most ordinary redirection in the world --
+// `bash 2>&1 <<< "<prog>"` -- was not recognised while bash ran it. `bash 2>/dev/null <<< ...`
+// (no `&`) was already caught, which is what made the gap look like a shape rather than a class.
+//
+// A BARE `&` still ends the filler: only an `&` PRECEDED BY `>` is admitted. Written as a lookbehind
+// rather than as `\d*>&\d*` on purpose -- that form overlaps `[^|;&\n]` on the `>` and the digits,
+// giving the engine two ways to match the same characters inside a lazy quantifier, which is how
+// backtracking blowups are built. Here the two alternatives are disjoint by construction: the first
+// can never match `&`, the second matches nothing else.
+const HERESTRING_FILLER = String.raw`(?:[^|;&\n]|&(?<=>&))*?`
 const HERESTRING_RX = new RegExp(
-  `${WRAPPER_POSITION}(?:sudo\\s+|env\\s+)*(?:${SHELL_NAME}|(?:source|\\.)\\s+\\/dev\\/stdin)[^|;&\\n]*?<<<\\s*${QUOTED_OR_WORD}`,
+  `${WRAPPER_POSITION}(?:sudo\\s+|env\\s+)*(?:${SHELL_NAME}|(?:source|\\.)\\s+\\/dev\\/stdin)${HERESTRING_FILLER}<<<\\s*${QUOTED_OR_WORD}`,
   'g',
 )
-// A shell that takes its PROGRAM from stdin: a bare `| sh`, or xargs handing one a -c string.
-const STDIN_SHELL_RX = /\|\s*(?:sudo\s+|env\s+)*(?:\S*\/)?(?:bash|sh|zsh|dash|ksh)\b(?!\s*-[a-zA-Z]*c\b)|\bxargs\b[^|]*?(?:\S*\/)?(?:bash|sh|zsh|dash|ksh)\b/
+// A shell that takes its PROGRAM from stdin rather than from argv: a bare `| sh`, xargs handing one
+// a -c string, or -- Cybersec F-1, round 3 -- a PROCESS SUBSTITUTION standing in for the script
+// file (`bash <(echo '<prog>')`, `bash < <(echo '<prog>')`, both measured executing).
+//
+// This is the same situation the `| bash` branch already handles, reached by a third route, so it
+// gets the same treatment rather than a new one: when a shell is not given its program in argv, every
+// quoted literal in the command becomes suspect and is scanned. It is deliberately NOT a fourth
+// hand-written command-position list -- it reuses WRAPPER_POSITION, so a position added to
+// CMD_POSITION is inherited here too instead of being remembered in one more place. That is the
+// standing lesson from this file's own history: two lists for one idea diverge in both directions.
+//
+// Extra weight on this one: the sibling card 442f3289 removed the quote from its position grammar
+// citing precisely this handling, so leaving the hole open would have cost two cards' protection.
+const PROC_SUB_SHELL = String.raw`${WRAPPER_POSITION}(?:sudo\s+|env\s+)*${SHELL_NAME}${HERESTRING_FILLER}<\(`
+const STDIN_SHELL_RX = new RegExp(
+  String.raw`\|\s*(?:sudo\s+|env\s+)*(?:\S*\/)?(?:bash|sh|zsh|dash|ksh)\b(?!\s*-[a-zA-Z]*c\b)` +
+    String.raw`|\bxargs\b[^|]*?(?:\S*\/)?(?:bash|sh|zsh|dash|ksh)\b` +
+    `|${PROC_SUB_SHELL}`,
+)
 const QUOTED_LITERAL_RX = /'([^']*)'|"((?:\\.|[^"\\])*)"/g
 
 /** One level of "what would a shell run that is not this text itself": the argument of a `-c` shell
@@ -1178,12 +1274,12 @@ export function executableStrings(command) {
     rx.lastIndex = 0
     let m
     while ((m = rx.exec(text)) !== null) {
-      // m[2] is the DOUBLE-quoted body, where the shell has removed one level of backslash
-      // escaping before the inner shell ever sees it. Without undoing that, a wrapper nested three
-      // deep hands the next round `bash -c \"...\"` -- whose quotes no longer look like quotes to
-      // the matcher, so the recursion stops one level short of the payload (Cybersec H-3, measured
-      // running). Single-quoted bodies are literal and must NOT be unescaped.
-      const inner = m[2] !== undefined ? m[2].replace(/\\(["\\$`])/g, '$1') : (m[1] ?? m[3])
+      // m[1] is now the WHOLE shell word (a run of adjacent quoted/bare pieces), so the quoting is
+      // undone by unquoteWord rather than by picking one of three alternative groups -- that
+      // three-group form is what let `"cron""tab -"` and `$'crontab -'` through (Cybersec F-2).
+      // The per-piece rules (double-quoted bodies unescaped one level, single-quoted left literal)
+      // live in unquoteWord and are unchanged in effect.
+      const inner = unquoteWord(m[1])
       if (inner && inner !== text) out.push(inner)
     }
   }
