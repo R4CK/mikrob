@@ -3,8 +3,17 @@
 comment with no cybersec verdict after it. Lives in store/ so a scratchpad wipe
 does not lose it (store/ is gitignored; ops scripts are the tracked exception)."""
 import json
+import os
 import re
+import sys
 import urllib.request
+
+# Shared recognition rules, so a fix lands on BOTH scanners instead of whichever one someone had
+# open (card 3477c793). Explicit path insert: this runs as a script from cron/agents with an
+# arbitrary cwd, so the implicit "script's own directory" entry cannot be relied on when it is
+# invoked as `python3 /abs/path/store/cybersec-gate-scan.py`.
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+from gate_scan_lib import declared_gate_excludes_me, verdict_body  # noqa: E402
 
 TOKEN = open('/home/neon/marveen/store/.dashboard-token').read().strip()
 
@@ -43,9 +52,19 @@ def is_review(c):
 
 
 def is_cybersec_verdict(c):
+    """A cybersec-authored comment that OPENS as a cybersec statement about the card.
+
+    Deliberately broader than "GO/NO-GO": a `CYBERSEC SKIP` / `CYBERSEC NOTE` is also me having
+    looked, and re-surfacing such a card every sweep is the churn this scanner exists to avoid.
+
+    The opener is read through `verdict_body`, which steps over a leading `Gate-SHA:` header.
+    Measured board-wide: 42 already-landed gate verdicts (mine, QA's and Cybered's) put that header
+    on line 1, and the old strict line-1 test could not see any of them -- so cards that HAD a
+    verdict kept coming back as ungated, costing a full comment read every round.
+    """
     if not (c.get('author') or '').lower().startswith('cybersec'):
         return False
-    return (c.get('content') or '').lstrip().upper().startswith('CYBERSEC')
+    return verdict_body(c.get('content')).upper().startswith('CYBERSEC')
 
 
 TIER_OUT_PHRASES = (
@@ -161,10 +180,18 @@ def main():
     cards = [c for c in get('/api/kanban') if c.get('status') in ('waiting', 'in_progress')]
     out = []
     skipped_low_risk = []
+    tiered_out_cards = []
     for card in cards:
         cid = card.get('id')
         if (card.get('title') or '').startswith(LOW_RISK_TITLE_PREFIXES):
             skipped_low_risk.append(cid)
+            continue
+        # The card's own declared tier, BEFORE spending a comment fetch on it (card 3477c793).
+        # MikroB owns risk-tiering; when the description already says "Gate: QA", reading the whole
+        # comment thread only to conclude "not mine" is pure quota. Absence of a Gate: line falls
+        # through on purpose -- see the helper.
+        if declared_gate_excludes_me(card.get('description'), 'cybersec'):
+            tiered_out_cards.append(cid)
             continue
         try:
             comments = sorted(get(f'/api/kanban/{cid}/comments'),
@@ -195,6 +222,8 @@ def main():
     # sweep reads as "nothing to gate" when it means "I chose not to look".
     if skipped_low_risk:
         print(f'Skipped (low-risk title prefix, QA-only tier): {", ".join(skipped_low_risk)}')
+    if tiered_out_cards:
+        print(f'Skipped (declared Gate: does not name cybersec): {", ".join(tiered_out_cards)}')
     print(f'Ungated (cybersec): {len(out)}')
     for card, review in out:
         print(f"{card.get('id')} | {card.get('title')} | assignee={card.get('assignee')} "

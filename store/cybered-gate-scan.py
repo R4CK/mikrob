@@ -2,7 +2,12 @@
 """Cybered self-advance sweep: waiting/in_progress cards with a structural REVIEW and no
 CYBERED verdict newer than that REVIEW. Adapted from the kanban-gate-scan skill (whose
 last_verdict_id block is QA-specific)."""
-import urllib.request, json, re
+import urllib.request, json, re, os, sys
+
+# Shared recognition rules -- one definition for both gate scanners (card 3477c793). Explicit path
+# insert because this runs from cron/agents with an arbitrary cwd.
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+from gate_scan_lib import declared_gate_excludes_me, verdict_body  # noqa: E402
 
 TOKEN = open('/home/neon/marveen/store/.dashboard-token').read().strip()
 BASE = 'http://localhost:3420'
@@ -79,12 +84,18 @@ def mikrob_closes(content):
 all_cards = api('/api/kanban')
 if isinstance(all_cards, dict): all_cards = all_cards.get('cards', all_cards)
 
-needs, gated_by_me = [], 0
+needs, gated_by_me, tiered_out_cards = [], 0, []
 for c in all_cards:
     if not isinstance(c, dict): continue
     if c.get('status') not in ('waiting', 'in_progress'): continue
     title = c.get('title') or ''
     if title.startswith(SECURITY_GATE_LOW_RISK_TITLE_PREFIXES): continue
+    # The card's own declared tier, BEFORE spending a comment fetch (card 3477c793). This filter was
+    # documented in the kanban-gate-scan skill after 18/18 measured false positives on a raw cybered
+    # sweep, and never reached this script.
+    if declared_gate_excludes_me(c.get('description'), MY_GATE):
+        tiered_out_cards.append(c['id'])
+        continue
     cid = c['id']
     try: comments = api(f'/api/kanban/{cid}/comments')
     except Exception: continue
@@ -95,9 +106,12 @@ for c in all_cards:
     last_review_id = max(cm['id'] for cm in gate_reviews)
 
     # MY verdict (cybered) newer than the last REVIEW -> already gated by me.
+    # Read through `verdict_body`: a leading `Gate-SHA:` header is a structural line, not the
+    # verdict. 42 already-landed verdicts board-wide are written that way and were invisible to the
+    # strict line-1 test, so cards that HAD been gated kept coming back (card 3477c793).
     my_last = max((cm['id'] for cm in comments
                    if (cm.get('author') or '').lower().strip() == MY_GATE
-                   and MY_VERDICT_RE.match((cm.get('content') or '').strip())), default=-1)
+                   and MY_VERDICT_RE.match(verdict_body(cm.get('content')))), default=-1)
     if my_last >= last_review_id:
         gated_by_me += 1
         continue
@@ -112,7 +126,7 @@ for c in all_cards:
         a = (cm.get('author') or '').lower().strip()
         g = 'qa' if a == 'qa' else 'qa2' if a == 'qa2' else 'cybersec' if a.startswith('cybersec') else None
         if not g: continue
-        first = (cm.get('content') or '').strip().split('\n')[0]
+        first = verdict_body(cm.get('content')).split('\n')[0]
         if FAIL_RE.match(first): others[g] = 'fail'
         elif PASS_RE.match(first): others[g] = 'pass'
 
@@ -124,6 +138,10 @@ for c in all_cards:
                   'review': (rev.get('content') or '')[:400] if rev else ''})
 
 needs.sort(key=lambda x: x['created_at'])
+# Never let a coverage reduction be silent: a skipped card must be visible, or the sweep reads as
+# "nothing to gate" when it means "I chose not to look".
+if tiered_out_cards:
+    print(f'Skipped (declared Gate: does not name cybered): {", ".join(tiered_out_cards)}')
 print(f"Ungated by cybered: {len(needs)}   (already gated by me: {gated_by_me})")
 for n in needs:
     print(f"\n[{n['status']}][{n['id']}] ({n['project']}/{n['assignee']}) {n['title']}")

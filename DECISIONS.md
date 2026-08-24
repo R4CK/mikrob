@@ -2662,3 +2662,60 @@ lokale-túl-dekódolás és a kétértelműség-visszahozás).
 (reprodukció 12 alakra, a dekóder, a differenciál-hűségmérés, a két saját regresszió megtalálása).
 
 **Hivatkozás:** kártya ec20dd23 (4. kör), Gate-SHA 223ac1f8, kártya-komment 15760.
+
+## 2026-08-24 -- 3477c793 -- A gate-szkennerek felismerése: KIMONDOTT strukturális sort lépünk át, nem "az első két sort"
+
+**Két hiba, egy kártya, mindkettő ugyanabból az okból: egy gondolat két helyen élt.**
+
+**1. A verdikt-felismerés.** A `cybersec-gate-scan.py` és a `cybered-gate-scan.py` a komment ELSŐ
+sorát nézte. A 4b. szabály viszont csak annyit mondott, hogy a `Gate-SHA:` sor SOR ELEJÉN álljon --
+nem azt, hogy a verdikt-szó legyen az első sor --, ezért több gate-ügynök a `Gate-SHA:`-val kezdte.
+Tábla-szintű mérés (2026-08-24, 300 gate-szerzőjű komment horgonyzott verdikt-szóval):
+
+```
+254  a verdikt-szó már az 1. sorban          -- előtte is, utána is felismerve
+ 42  CSAK Gate-SHA:/üres sor előzi meg       -- ezt a javítás visszanyeri
+  4  szabad PRÓZA előzi meg                  -- SZÁNDÉKOSAN nem ismerjük fel
+```
+
+**A döntés: NEM "az első két sor", hanem "lépd át a KIMONDOTT strukturális sort".** A kártya az
+előbbit javasolta; mérés után a szűkebbet választottam. Egy tetszőleges szöveget megengedő szabály
+visszanyitná azt a hamis-pozitív osztályt, amiről mindkét szkenner saját kommentje már figyelmeztet
+(egy idézett „REVIEW"/„DONE" mondat közben valódinak olvasva), és 4 esetet venne meg minden olyan
+próza-komment árán, ami a második sorában említ egy gate-szót. 46-ból 42 visszanyerése egy olyan
+szabállyal, ami nem tud félresülni, a jobb csere -- a 4 kimaradó eset a `verdict_body` docstringjében
+NÉVVEL szerepel, nem hallgatólagosan elkerekítve.
+
+Mérve a javítás után: **42 visszanyerve, 0 elveszítve** (a régi szabály egyetlen felismerését sem
+rontja el). A visszanyertek többsége QA-verdikt, nem az enyém -- a hiba nem Cybersec-specifikus volt.
+
+**2. A `declared_gate_excludes_me` szűrő.** A `kanban-gate-scan` skill 2026-08-17 óta DOKUMENTÁLJA
+(18/18 mért hamis pozitív egy nyers cybered-sweepen), a két tényleges script viszont sosem kapta meg:
+`grep -c declared_gate_excludes_me` -> 0 és 0. Következmény: minden self-advance kör lekérte a
+QA-only kártyák TELJES komment-szálát is, csak hogy arra jusson, „nem az enyém". Mérve élesben:
+cybersec 2 -> **0** ungated (5 kártya kihagyva), cybered 6 -> **2** ungated (10 kártya kihagyva).
+
+**Ezért lett belőle KÖZÖS MODUL (`store/gate_scan_lib.py`), nem két másolat.** Pontosan ez a kártya
+tanulsága: a skill leírta, a scriptek nem kapták meg. Egy definíció, két fogyasztó -- különben a
+következő javítás megint csak arra a felére kerül rá, amelyik éppen nyitva volt.
+
+**A kihagyás LÁTHATÓ marad.** Mindkét szkenner kiírja, mely kártyákat hagyott ki és miért; egy néma
+lefedettség-csökkentés úgy olvasódna, hogy „nincs mit gate-elni", holott azt jelenti, „úgy döntöttem,
+nem nézek oda".
+
+**Amit MÉRTEM, de NEM javítottam ebben a kártyában (hatókör):** a fel nem ismert kommentek között 62
+olyan van, ami valódi verdikt, csak MÁS SZÓHASZNÁLATTAL (`QA GATE: PASS` 38, `QA VERDICT: PASS` 21,
+`CYBERSEC GATE: GO` 3). Ez pozíció helyett SZÓKINCS-kérdés, más gate verdikt-nyelvét érinti, és a
+`PASS_RE`/`FAIL_RE` ma csak tájékoztató oszlopot tölt, döntést nem hoz. Külön kártya, MikroB dönti el.
+
+**Bizonyíték:** 28 kontroll (`store/gate-scan-selftest.py`, offline, hálózat nélkül), köztük 3
+anti-vakság kontroll, ami a JAVÍTÁS ELŐTTI szabályt is végrehajtja -- e nélkül az egész készlet egy
+no-opon is zöld lenne. 6 mutáns, mind megölve (a fejléc-átlépés eltávolítása, „bármelyik első sor"
+túl-lazítás, a `Gate:`-nélküli kártya fail-closed rossz iránya, első-vs-utolsó `Gate:` említés, a
+fejléc-regex érték-követelménye, kis/nagybetű-érzékennyé tett gate-név).
+
+**Ki döntött:** Cybersec (mindkét lelet mérése, a szűkebb szabály választása mérés után, az
+implementáció), MikroB (a kártya kiosztása és a 4c. szabály a másik oldalról).
+
+**Hivatkozás:** kártya 3477c793. Előzmény: a 4c. szabály (CLAUDE.md, 2c2c9935), kártya-kommentek
+15741/15747/15753 (a lelet keletkezése), `kanban-gate-scan` skill 2026-08-17-i tanulsága.
