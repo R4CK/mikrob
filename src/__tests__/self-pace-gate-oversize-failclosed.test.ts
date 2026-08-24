@@ -128,3 +128,43 @@ describe('the path-prefix narrowing changed performance, NOT detection', () => {
     expect(decide(cmd).deny).toBe(false)
   })
 })
+
+describe('an escaped separator in a path is a literal character, not a boundary (Cybered NO-GO, round 3)', () => {
+  // The narrowed class from the describe block above was a plain negated char class, with no
+  // escape awareness: `[^\s|;&<>()]*`. Inside an unquoted bash word, though, `\<` and `\>` (and the
+  // rest) ARE ordinary characters, not separators -- the backslash consumes them. Cybered proved it
+  // live: `bash -c '/tmp/a\<b/crontab -r'` runs the binary from a directory literally named `a<b`,
+  // while the plain char class stopped scanning right at the escaped `<` and named an earlier,
+  // curl/git-shaped sibling as the owner instead -- exactly the class this file's own comment above
+  // said could not happen ("cannot appear ... in an unquoted command path"), true only for the
+  // unescaped form.
+  const SCHED_BIN = SCHED.split(' ')[0]
+
+  it.each([
+    ['escaped <', `/tmp/a\\<b/${SCHED_BIN} -r`],
+    ['escaped >', `/tmp/a\\>b/${SCHED_BIN} -r`],
+    ['escaped < before a shell name (bash -c)', `/tmp/a\\<b/bash -c "${SCHED}"`],
+    ['escaped < before a shell name (pipe)', `echo "${SCHED}" | /tmp/a\\<b/bash`],
+  ])('still denies: %s', (_name, cmd) => {
+    expect(decide(cmd).deny).toBe(true)
+  })
+
+  it('control: a plain path with a literal X in the same position is unaffected', () => {
+    expect(decide(`/tmp/aXb/${SCHED_BIN} -r`).deny).toBe(true)
+  })
+
+  it('control: an escaped separator in a NEUTRAL path stays allowed', () => {
+    expect(decide('/tmp/a\\<b/echo -r').deny).toBe(false)
+  })
+
+  it('the escape-aware class does not reopen the quadratic it was built to close', () => {
+    // `(?:\\.|[^...])*` consumes an escaped pair as one unit rather than backtracking into it, so a
+    // long escape-free run still matches in one pass -- the original attack shape (no backslashes at
+    // all) must stay linear.
+    const filler = ':|'.repeat(65000)
+    const cmd = filler + ':;' + SCHED
+    const t0 = Date.now()
+    expect(decide(cmd).deny).toBe(true)
+    expect(Date.now() - t0).toBeLessThan(5000)
+  })
+})
