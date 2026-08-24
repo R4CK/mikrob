@@ -297,15 +297,17 @@ body {
 }
 .sidebar-footer {
   padding-top: 12px;
-  border-top: 1px solid var(--border);
   display: flex;
   justify-content: flex-start;
 }
-/* Card 77be6b51: "last updated" badge, pinned above the icon-button footer row. */
+/* Card 77be6b51: "last updated" badge, pinned above the icon-button footer row.
+ * No border-top of its own -- .sidebar-docs above it already opens this pinned
+ * bottom cluster with one, and .sidebar-footer below it is part of the same
+ * cluster. Three consecutive border-tops here rendered as three stray divider
+ * lines with no visible content between them (Peti screenshot, 2026-08-24). */
 .sidebar-update-badge {
   padding-top: 10px;
   margin-top: 6px;
-  border-top: 1px solid var(--border);
   font-size: 11px;
   color: var(--text-muted);
   line-height: 1.4;
