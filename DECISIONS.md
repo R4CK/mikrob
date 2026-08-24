@@ -2924,3 +2924,36 @@ a 10. oszlopot (`eval_duration_ms=26`) a usage-logba.
 és a megvalósítás).
 
 **Hivatkozás:** kártya `b21deb9a`.
+
+## 2026-08-24 18:00 -- fleet-test.sh flotta-szintű blokk javítása: elavult hardcodolt importer-szám a blast-radius-guard selftestben
+
+**Probléma:** a `b21deb9a` landolása közben (fentebb) a `fleet-test.sh` determinisztikusan bukott
+(nem lock-torlódás, uncontended futáson is), mert
+`src/__tests__/graph-tooling-selftests.test.ts` a `scripts/hooks/blast-radius-guard.selftest.py`-t
+futtatja, ami a HUB fájlra (CleanCore `apps/api/src/pg-client.ts`) egy PONTOS `"importers: 17"`
+substringet várt a guard blokk-üzenetében. A CleanCore élő fejlesztése miatt a tényleges
+importer-szám azóta 173-ról 181-re nőtt -- a substring már nem egyezett, a teszt bukott, és mivel
+ez a `fleet-test.sh`, azaz MINDEN ügynök landolásának előfeltétele, ez a flotta egészét blokkolta
+(nem csak a sajátomat).
+
+**Diagnózis:** függetlenül megerősítve (`python3 store/blast-radius-check.py .../pg-client.ts` ->
+181) és MikroB is megerősítette ugyanezt. Ugyanaz a hibaosztály, mint a korábbi
+graf-staleness leletek: egy PONT-hoz kötött assert egy eleven, folyamatosan növekvő értéken
+(a CleanCore import-gráfja) idővel mindig elromlik.
+
+**Döntés:** a két érintett assertet (`blast-radius-guard.selftest.py` 109. és 215. sor) PONTOS
+substring helyett STRUKTURÁLIS regex-mintára (`importers: \d+`) cseréltem -- a teszt attól még
+ellenőrzi, hogy a guard tényleges, mért számot ír ki (nem 0-t, nem üres stringet), csak nem köti
+egy adott pillanat pontos értékéhez. A fixture-alapú asszerciók (`"importers: 30"`, a teszt saját
+maga építette hermetikus gráfon) ÉRINTETLENEK maradtak -- azok nem a CleanCore-hoz kötöttek, nem
+avulnak el. A HUB/LEAF konstansok melletti kommentek is frissültek, hogy ne kódoljanak be egy
+pillanatnyi mért számot jövőbeli félreértés forrásaként.
+
+**Hatás:** `python3 scripts/hooks/blast-radius-guard.selftest.py` most 27/27-et ad (előtte 25/27),
+a `graph-tooling-selftests.test.ts` teljes szvitje zöld. Ezután a `b21deb9a` és minden más
+függőben lévő flotta-landolás újra próbálható.
+
+**Ki döntött:** backend2 (a blokk leletezése, MikroB felkérésére a javítás -- mivel backend2 volt
+épp blokkolva általa és már mindent tudott a jelenségről).
+
+**Hivatkozás:** kártya `bba2b3b0`.
