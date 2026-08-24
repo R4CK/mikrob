@@ -2769,3 +2769,38 @@ implementáció), MikroB (a kártya kiosztása és a 4c. szabály a másik oldal
 
 **Hivatkozás:** kártya 3477c793. Előzmény: a 4c. szabály (CLAUDE.md, 2c2c9935), kártya-kommentek
 15741/15747/15753 (a lelet keletkezése), `kanban-gate-scan` skill 2026-08-17-i tanulsága.
+
+## 2026-08-24 -- f0389e81 -- context7 MCP-szerver felvéve, GitHub-first due diligence után, API-kulcs nélkül
+
+**1. Due diligence eredmény: ADOPT.** A `f0389e81` kártya jelöltjei közül a `upstash/context7`-et
+vettem elsőnek sorra, a kártya kiemelt jelölésének megfelelően. Mért tények (2026-08-24, friss
+lekérdezés `api.github.com` + `registry.npmjs.org` + `api.osv.dev` ellen, nem korábbi kutatás
+memóriából): 61 142 csillag, MIT licenc mind a repón, mind az `@upstash/context7-mcp` npm-csomagon
+(jelenlegi verzió 4.0.3), nem archivált, utolsó push a lekérdezés napján, 0 GitHub security advisory,
+0 OSV-találat a csomagra. Karbantartottság és licenc alapján megfelel a CLAUDE.md 10. szabályának
+(GitHub-first) -- nincs ok saját MCP-klienst írni, amikor a hivatalos csomag aktívan karbantartott és
+tiszta licencű.
+
+**2. Zárt forráskódú backend, csak a kliens nyílt -- kimondva, nem elhallgatva.** A repó README
+`Disclaimer` szakasza explicit kimondja: a tényleges dokumentáció-szolgáltatás (API backend, parsing
+engine, crawling engine) PRIVÁT, nincs a repóban. Ami MIT alatt van, az kizárólag az MCP-szerver
+kliensoldali kódja. Ez nem blokkolja az adoptálást (a kliens az, amit futtatunk, és az MIT), de a due
+diligence-nek ezt külön ki kellett mondania -- a puszta "a repó MIT" állítás félrevezető lenne.
+
+**3. API-kulcs NÉLKÜL indul, tudatosan.** A csomag README-je szerint az API-kulcs "recommended" a
+magasabb rate-limithez, nem kötelező az alapműködéshez. A kulcs beszerzése (`npx ctx7 setup` vagy
+context7.com/dashboard) OAuth-alapú fiókregisztrációt igényel egy külső SaaS-nál -- ez visszafordítha-
+tatlan külső művelet, és az `autonomy-config.json` egyik kategóriájába sem esik egyértelműen (a
+legközelebbi analógok, `external_message`/`permission_change`, mindketten level 1-en zárva vannak).
+Ezért a `.mcp.json`-ben csak `type: "http"` + `url` szerepel, `headers`/`Authorization` NÉLKÜL --
+amint Peti létrehoz egy kulcsot, a fejléc `${CONTEXT7_API_KEY}` env-var-expanzióval pótolható (Claude
+Code a `.mcp.json` string-értékeiben, `headers` mezőn belül is expandál -- ellenőrizve a hivatalos
+dokumentáció ellen, nem feltételezve).
+
+**Amit NEM csináltam ebben a kártyában (hatókör):** a többi jelölt (`github-mcp-server`,
+`best-of-mcp-servers`, `modelcontextprotocol/servers`, `awesome-claude-skills`) due diligence-e a
+kártya leírása szerint is következő kör -- nem ebben a menetben.
+
+**Ki döntött:** backend2 (due diligence, `.mcp.json` bekötés, README fork-diff bejegyzés).
+
+**Hivatkozás:** kártya `f0389e81`.
