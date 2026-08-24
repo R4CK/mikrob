@@ -1623,9 +1623,30 @@ const HERESTRING_RX = new RegExp(
 // Extra weight on this one: the sibling card 442f3289 removed the quote from its position grammar
 // citing precisely this handling, so leaving the hole open would have cost two cards' protection.
 const PROC_SUB_SHELL = String.raw`${WRAPPER_POSITION}(?:sudo\s+|env\s+)*${SHELL_NAME}${HERESTRING_FILLER}<\(`
+// The xargs branch used to run `[^|]*?${PATH_PREFIX}` -- an unbounded lazy filler immediately
+// followed by PATH_PREFIX's own independently-backtracking optional group. On a long run with no
+// `/` (so PATH_PREFIX's group can never close), PATH_PREFIX fails at EVERY one of the ~n positions
+// the filler tries, each failure itself costing O(remaining length) to determine -- O(n^2) total
+// (card ccc2c742, backend measured n=100000 -> 8.7s through the real gateDecision() entry point,
+// within MAX_COMMAND_BYTES=1MB). Wrapping PATH_PREFIX atomically does NOT fix this (measured,
+// unchanged): atomicity only avoids re-trying an already-successful match, not the cost of a single
+// failed scan. Flipping the filler from lazy to greedy does not fix it either -- it only relocates
+// the same quadratic cost to a different adversarial shape (shell name mid-string, long trailing
+// non-pipe text after it), which was measured to reproduce the identical blowup.
+// The actual fix: for a `.test()`-only boolean check, PATH_PREFIX is redundant here in the first
+// place. Its consumable characters (everything but `\s|;&<>()\\`, plus an escaped-any-char via
+// `\\.`) are already a subset of what the plain filler `[^|]` accepts -- with the single exception
+// of an escaped pipe (`\|`), which the filler's `[^|]` alone can never cross. So PATH_PREFIX's own
+// nested attempt-and-backtrack cycle is folded into ONE disjoint filler that keeps the `\\.` escape
+// route (so `\|` is still crossed, preserving the one real capability PATH_PREFIX added) while
+// routing every backslash through it exclusively (`[^|\\]` excludes backslash from the single-char
+// alternative) -- the same disjoint-alternation shape already proven safe for PATH_PREFIX itself
+// (ae6e80ea). This removes the separate optional group entirely, so there is nothing left for the
+// engine to retry at each outer position: measured back to O(n) (n=1000000 -> 7ms).
+const XARGS_FILLER = String.raw`(?:\\.|[^|\\])*?`
 const STDIN_SHELL_RX = new RegExp(
   String.raw`\|\s*(?:sudo\s+|env\s+)*${PATH_PREFIX}(?:bash|sh|zsh|dash|ksh)\b(?!\s*-[a-zA-Z]*c\b)` +
-    String.raw`|\bxargs\b[^|]*?${PATH_PREFIX}(?:bash|sh|zsh|dash|ksh)\b` +
+    String.raw`|\bxargs\b${XARGS_FILLER}(?:bash|sh|zsh|dash|ksh)\b` +
     `|${PROC_SUB_SHELL}`,
 )
 // `$'...'` gets its own alternative rather than a fourth capture group (Cybersec, card ec20dd23
