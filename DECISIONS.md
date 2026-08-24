@@ -2992,3 +2992,39 @@ javítása -- ezt a REVIEW-kommentben és MikroB felé is explicit kimondom.
 **Ki döntött:** backend2 (kártya a2d8eab1, MikroB dispatch).
 
 **Hivatkozás:** kártya `a2d8eab1`.
+
+
+## 2026-08-24 -- apps/superadmin bekötve a CleanCore land-lánc typecheck-projektjei köze (be30a5f7)
+
+**Mi történt:** a `store/cleancore-tsc-lib.sh`-ban élő `TSC_PROJECTS` lista (`cleancore-land.sh` és
+`cleancore-pregate.sh` közös forrása) korábban NEM tartalmazta `apps/superadmin/tsconfig.json`-t --
+a superadmin app typecheckje soha nem futott a land-gate alatt, csak kézzel. A kártya `be30a5f7`
+másik fele (a fő CleanCore-oldali fix: `apps/superadmin/vitest.gate.config.ts` új projekt a `.tsx`
+tesztek lefedésére) mellett ez a hiányzó darab is a kártya scope-ja: "kösd be az apps/superadmin-t a
+land-lánc typecheck-projektjei közé".
+
+**Döntés:** `apps/superadmin/tsconfig.json` felvéve a `TSC_PROJECTS` listára, a meglévő
+`apps/api/tsconfig.json` mintáját követve (root-relatív `-p` út, `tsc` a repo gyökeréről hívva) -- NEM
+az `apps/web`-hez hasonló, feltételes/lassú útvonalra, mert mérve kb. 15 másodperc (`time tsc --noEmit
+-p apps/superadmin/tsconfig.json` a repo gyökeréről), szemben az `apps/web` "percekig tartó" jelzésével.
+`link_node_modules` (maxdepth 4-es symlink-kereséssel) már eleve eléri `apps/superadmin/node_modules`-t,
+nem kellett hozzá külön kezelés.
+
+**Sorrend, ami miatt ez KÜLÖN commitban él a marveen repóban, nem a CleanCore branch-ben:** a
+`cleancore-tsc-lib.sh` a marveen repo `store/`-jában él (a flotta saját tooling-ja), NEM a CleanCore
+repóban -- a CleanCore-oldali fix (vitest config + a 9 típushiba javítása) egy másik commit/branch,
+`fix/superadmin-tsx-gate-coverage-be30a5f7` a CleanCore worktree-ben, saját landolással.
+
+**A 9 típushiba maga:** mind ugyanaz az alak -- `noUncheckedIndexedAccess` miatt egy
+`screen.getAllByRole(...)[N]` indexelt elérés típusa `HTMLElement | undefined`, de
+`userEvent.click`/hasonló `Element`-et vár. A kódbázisban már van bevett minta erre
+(`apps/web/src/features/billing/SuperadminPricingAdmin.test.tsx`: `[0]!` nem-null asszerció) --
+ugyanezt alkalmaztam mind a 9 helyen (`PlanPricingPage.test.tsx`, `PlatformConfigPage.test.tsx` 6
+hely, `TenantDetailPage.test.tsx` 2 hely). Nem hibakezelés vagy típus-lazítás, a futásidejű
+biztonságot a megelőző `waitFor`/`getAllByRole` állítja már elő ugyanúgy, mint az `apps/web` mintában.
+
+**Hatás:** `npx tsc --noEmit -p apps/superadmin/tsconfig.json` a 9 hibáról 0-ra, exit code 0.
+
+**Ki döntött:** backend2 (kártya be30a5f7, MikroB dispatch).
+
+**Hivatkozás:** kártya `be30a5f7`.

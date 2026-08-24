@@ -8,9 +8,11 @@
 
 TSC_TIMEOUT="${TSC_TIMEOUT:-900}"
 
-# The four fast projects the root `typecheck` script runs, in its order. apps/web is separate and
-# deliberately conditional -- it is minutes slow.
-TSC_PROJECTS="tsconfig.json packages/control-plane/tsconfig.test.json packages/modules/workforce/tsconfig.test.json apps/api/tsconfig.json"
+# The fast projects the root `typecheck` script runs, in its order. apps/web is separate and
+# deliberately conditional -- it is minutes slow. apps/superadmin measured ~15s (card be30a5f7,
+# added after 9 pre-existing errors there were fixed and it had never been gated at all before) --
+# fast enough for this bucket, not the apps/web one.
+TSC_PROJECTS="tsconfig.json packages/control-plane/tsconfig.test.json packages/modules/workforce/tsconfig.test.json apps/api/tsconfig.json apps/superadmin/tsconfig.json"
 
 # NEVER call `npm run typecheck` from a worktree. Its last step is
 # `pnpm --filter @cleancore/web typecheck`, and pnpm's dep-status check shells out to `pnpm install`,
