@@ -25,8 +25,9 @@
 // The log is separate from the main Marveen log so operators can grep it
 // independently: `tail -f store/egress-blocked.log`
 //
-// Scope: this guard covers the Claude Code WebFetch tool AND the Firecrawl MCP fetch
-// tools (card 91c4a369, Cybersec blocking precondition 4). It does NOT intercept
+// Scope: this guard covers the Claude Code WebFetch tool, the Firecrawl MCP fetch
+// tools (card 91c4a369, Cybersec blocking precondition 4), and the context7 MCP
+// documentation-lookup tools (card f0389e81 gate finding). It does NOT intercept
 // WebSearch or curl/Bash network calls; those channels are out of scope for this hook
 // mechanism and require separate controls if needed.
 //
@@ -83,6 +84,21 @@
 // AUDITED, NOT SILENT. The quarantine tier is the one grant a main agent cannot obtain,
 // so every use of it (WebFetch or a Firecrawl scrape/map) leaves an ALLOWED_QUARANTINE
 // line next to the denials -- the ordinary allowlist tiers stay quiet, same as before.
+//
+// WHY CONTEXT7 IS HERE. Adding the context7 MCP server (card f0389e81) opened a sibling gap to
+// the one this file already closed once for Firecrawl (card 91c4a369): a new MCP namespace with
+// unwrapped-external-content tools does not inherit this gate's protection just by being added --
+// only a matcher/decision update does that. Measured directly in the pinned @upstash/context7-mcp
+// dist (4.0.3): both tools it exposes, `resolve-library-id` ({query, libraryName}) and
+// `query-docs` ({libraryId, query}), take only free-text strings, are annotated
+// `readOnlyHint: true`/`destructiveHint: false`, and carry no url/action/exec field -- so unlike
+// Firecrawl's `firecrawl_scrape` there is no second channel to param-allowlist here. But `query`
+// is free text sent to a single, FIXED third-party backend (mcp.context7.com), and the
+// "documentation" text that comes back is exactly the shape WebFetch/Firecrawl already guard:
+// unaudited external content landing straight in the caller's context. Since the domain is fixed
+// rather than caller-supplied, a host allowlist has nothing to check -- the correct tier is the
+// pure agentType one already built for the quarantine boundary: default-deny for a main agent,
+// open only for quarantine-reader.
 
 import { readFileSync, appendFileSync, mkdirSync } from 'node:fs'
 import { fileURLToPath } from 'node:url'
@@ -197,6 +213,13 @@ const FIRECRAWL_URL_TOOLS = new Set([
   'mcp__firecrawl__firecrawl_map',
 ])
 const FIRECRAWL_PREFIX = 'mcp__firecrawl__'
+
+/** The context7 MCP namespace (card f0389e81 gate finding). Both tools it exposes send
+ *  caller-supplied free text to a single, fixed third-party backend and return unaudited
+ *  external content directly into the caller's context -- gated by agentType alone (see the
+ *  header's "WHY CONTEXT7 IS HERE"), not by a host allowlist, because the domain is fixed rather
+ *  than a per-call parameter. */
+const CONTEXT7_PREFIX = 'mcp__context7__'
 
 /** Parameters `firecrawl_scrape` may carry. ALLOWLIST, not a blacklist of the dangerous ones
  *  (Cybersec HIGH on 97d0c7c7, card 91c4a369).
@@ -317,6 +340,15 @@ export function egressDecision(
   if (firecrawlDisallowedParams(name, toolInput).length > 0) {
     return { blocked: true, tier: 'firecrawl-param-denied' }
   }
+  // Context7 MCP tools: pure agentType tier, no URL/param check (see header "WHY CONTEXT7 IS
+  // HERE"). A main agent is denied outright; only the quarantine-reader sub-agent may call either
+  // tool. Fail-closed, same as the WebFetch/Firecrawl quarantine tier below: a missing or unknown
+  // agentType blocks.
+  if (name.startsWith(CONTEXT7_PREFIX)) {
+    if (String(agentType ?? '') === QUARANTINE_AGENT_TYPE) return { blocked: false, tier: 'quarantine-context7' }
+    return { blocked: true, tier: 'context7-namespace-denied' }
+  }
+
   if (name !== 'WebFetch' && !isFirecrawl) return { blocked: false, tier: 'not-webfetch' }
 
   const url = String(toolInput?.url ?? '')
