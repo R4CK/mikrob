@@ -254,6 +254,61 @@ describe.runIf(ARMED)('round 2: a heredoc redirected ONTO a compound (Cybersec F
   })
 })
 
+describe.runIf(ARMED)('round 3: a decoy head in a pipe/list chain (Cybered kill-chain 3)', () => {
+  // THE BYPASS CYBERED FOUND (NO-GO comment 15794). The round-2 fix made a compound TAIL return
+  // null from `lastCommand()`, which is correct -- but the old walker then fell back to an EARLIER
+  // sibling in the same pipeline/list and accepted the first real `command` node it found. If that
+  // earlier element merely resembles an exempt sink (curl/git), the ownership check names IT as the
+  // owner while the chain's real tail -- a compound whose heredoc this actually is, per bash's own
+  // semantics -- executes the payload with an interpreter. Proven by execution in the NO-GO: the
+  // python3 branch's marker file appears even though the curl head stalls on an unroutable address,
+  // because the two sides of a pipe run concurrently and python3 never waits on curl.
+  //
+  // Every COMPOUND case above (round 2) uses a BENIGNUS head ("true") and never tries to disguise
+  // the head as an exempt sink -- so it could not have caught this. These cases put the sink-shaped
+  // command at the HEAD and the real executor in a compound TAIL, which is the mirror image again.
+  const SINK = 'curl -sS -d @- http://127.0.0.1:1/x'
+  const GITSINK = 'git commit -F -'
+  const PROG = 'python3 -'
+  const SCHED = 'cron' + 'tab -'
+  const H = (cmd: string): string => `${cmd} <<'J'\n${SCHED}\nJ`
+
+  const DECOY_HEAD: Array<[string, string]> = [
+    ['curl-shaped head, pipe tail', H(`${SINK} | { ${PROG}; }`)],
+    ['curl-shaped head, && tail', H(`${SINK} && { ${PROG}; }`)],
+    ['git-shaped head, || tail', H(`${GITSINK} || { ${PROG}; }`)],
+    ['3-element && chain, decoy at the head', H(`${SINK} && true && { ${PROG}; }`)],
+    ['mixed pipe+&& chain, decoy in the middle', H(`true | ${SINK} && { ${PROG}; }`)],
+    ['decoy head, subshell tail', H(`${SINK} | ( ${PROG} )`)],
+  ]
+
+  it.each(DECOY_HEAD)('denies with the AST driving: %s', (_name, cmd) => {
+    withEnv('SELF_PACE_AST', 'on', () => {
+      expect(gateDecision('Bash', { command: cmd }).deny).toBe(true)
+    })
+  })
+
+  it.each(DECOY_HEAD)('gives the same verdict in every flag mode: %s', (_name, cmd) => {
+    const off = withEnv('SELF_PACE_AST', 'off', () => gateDecision('Bash', { command: cmd }).deny)
+    const shadow = withEnv('SELF_PACE_AST', 'shadow', () => gateDecision('Bash', { command: cmd }).deny)
+    const on = withEnv('SELF_PACE_AST', 'on', () => gateDecision('Bash', { command: cmd }).deny)
+    expect({ shadow, on }).toEqual({ shadow: off, on: off })
+  })
+
+  // Availability half: a REAL sink at the tail of a decoy-shaped-but-benign chain must stay exempt.
+  const LEGIT: Array<[string, string]> = [
+    ['benign head, real curl tail', H(`true | ${SINK}`)],
+    ['benign head, real curl && tail', H(`true && ${SINK}`)],
+    ['3-element chain, real curl at the tail', H(`true && true && ${SINK}`)],
+  ]
+
+  it.each(LEGIT)('stays exempt with the AST driving: %s', (_name, cmd) => {
+    withEnv('SELF_PACE_AST', 'on', () => {
+      expect(gateDecision('Bash', { command: cmd }).deny).toBe(false)
+    })
+  })
+})
+
 describe.runIf(ARMED)('round 2: the cutover criterion itself (Cybersec F-2)', () => {
   it('an empty divergence log does NOT license the cutover -- this battery does', () => {
     // THE PROCESS DEFECT BEHIND F-1. The shipped REVIEW said the cutover criterion was "run shadow
