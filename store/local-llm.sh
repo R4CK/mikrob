@@ -106,7 +106,7 @@ ollama_up() { curl -fsS -m 5 "$OLLAMA_HOST/api/tags" >/dev/null 2>&1; }
 # Usage metering (fail-open, metadata only -- NEVER the prompt/content).
 # One TSV line per real model invocation: epoch \t caller \t task \t model \t ms \t status
 USAGE_LOG="$HERE/local-llm-usage.log"
-log_usage() { # $1=status(ok|err)  $2=elapsed_ms
+log_usage() { # $1=status(ok|err)  $2=elapsed_ms  $3=eval_count  $4=prompt_eval_count  $5=eval_duration_ms
   # Strip TAB/NEWLINE from free-text fields so a caller/task/source value can never
   # inject extra TSV columns or fake rows (metric-integrity hardening; Cybersec LOW).
   # LOG_TASK is the label ONLY (card ea3e4270). --task also picks a prompt template and is subject to
@@ -116,8 +116,13 @@ log_usage() { # $1=status(ok|err)  $2=elapsed_ms
   # real drafting work), so "the share of task=code" measured who typed a flag, not what ran.
   local c="${CALLER:-direct}" t="${LOG_TASK:-${TASK:-chat}}" s="${SOURCE:-bare}" m="$MODEL"
   c="${c//[$'\t\n']/_}"; t="${t//[$'\t\n']/_}"; s="${s//[$'\t\n']/_}"; m="${m//[$'\t\n']/_}"
-  { printf '%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\n' \
-      "$(date +%s 2>/dev/null || echo 0)" "$c" "$t" "$m" "${2:-0}" "$1" "$s" "${3:-0}" "${4:-0}" \
+  # Column 10 (eval_duration_ms, card b21deb9a) is Ollama's OWN measured generation time, separate
+  # from column 5 ($2, wall time): $2 also counts GPU-lock queueing (up to GPU_LOCK_WAIT seconds),
+  # so deriving tokens/s from it would understate real throughput under contention. A row written
+  # before this column existed has no field 10 at all; the reader (parseUsageRows) treats that the
+  # same as 0, i.e. "speed unknown", never a guess.
+  { printf '%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\n' \
+      "$(date +%s 2>/dev/null || echo 0)" "$c" "$t" "$m" "${2:-0}" "$1" "$s" "${3:-0}" "${4:-0}" "${5:-0}" \
       >> "$USAGE_LOG"; } 2>/dev/null || true
 }
 
@@ -351,12 +356,17 @@ RESP=$("${GEN_CMD[@]}" 2>/dev/null) || {
   fi
   die 5 "ollama api error (timeout ${TIMEOUT}s or server error)"
 }
-# Exact local token accounting (Ollama returns eval_count=out, prompt_eval_count=in).
+# Exact local token accounting (Ollama returns eval_count=out, prompt_eval_count=in) plus
+# eval_duration (ns, generation-only time -- excludes prompt processing and GPU-lock wait), the
+# same figure LM Studio/llama.cpp's own "[generation: ... speed=N tokens/s]" log line is computed
+# from (card b21deb9a). Converted to whole ms here so the ledger stays integer-only like every
+# other numeric column; the dashboard divides eval_count by this to get tokens/s.
 _TOKS=$(echo "$RESP" | python3 -c "import json,sys
 try:
-    d=json.load(sys.stdin); print(int(d.get('eval_count',0)), int(d.get('prompt_eval_count',0)))
+    d=json.load(sys.stdin)
+    print(int(d.get('eval_count',0)), int(d.get('prompt_eval_count',0)), round(d.get('eval_duration',0)/1e6))
 except Exception:
-    print('0 0')" 2>/dev/null || echo "0 0")
+    print('0 0 0')" 2>/dev/null || echo "0 0 0")
 log_usage ok "$(_elapsed)" $_TOKS
 _queue_finish complete
 

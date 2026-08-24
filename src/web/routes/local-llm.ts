@@ -661,6 +661,10 @@ export interface UsageRow {
   evalTokens: number
   /** Input tokens the local model reported (Ollama `prompt_eval_count`, TSV col 9). */
   promptTokens: number
+  /** Ollama's own generation-only duration in ms (`eval_duration`, TSV col 10, card b21deb9a) --
+   *  excludes prompt processing and GPU-lock queueing, unlike `ms` above. 0 for a row written
+   *  before this column existed, meaning "speed unknown", never a guess. */
+  evalDurationMs: number
 }
 
 // Read at most `maxLines` from the END of the ledger, bounded to `maxBytes` of
@@ -709,6 +713,7 @@ export function parseUsageRows(lines: string[]): UsageRow[] {
     rows.push({
       evalTokens: nonNegInt(p[7]),
       promptTokens: nonNegInt(p[8]),
+      evalDurationMs: nonNegInt(p[9]),
       ts,
       caller: (p[1] || 'direct').trim() || 'direct',
       task: (p[2] || 'chat').trim() || 'chat',
@@ -721,6 +726,45 @@ export function parseUsageRows(lines: string[]): UsageRow[] {
     })
   }
   return rows
+}
+
+/** What the "Utolsó generálás" dashboard row shows (card b21deb9a): the LM Studio/llama.cpp
+ *  server console prints a `[generation: prompt=N tokens, output=M tokens, speed=X tokens/s]` line
+ *  plus a peak-VRAM line after every completion; this is the same shape sourced from data the fleet
+ *  already has, rather than tailing a log file the actual server (Ollama, confirmed live on this
+ *  host) does not write in that format. `tokensPerSec` is null when the row predates the
+ *  eval_duration column or reports zero duration -- never a divide-by-zero guess. */
+export interface LastGenerationStats {
+  ts: number
+  model: string
+  promptTokens: number
+  outputTokens: number
+  tokensPerSec: number | null
+  vramBytes: number | null
+}
+
+/** Scans from the newest row backward for the last COMPLETED real generation (ok status, actual
+ *  output tokens) -- a UI probe or a failed call never happened as far as this row is concerned.
+ *  `psModels` is Ollama's live `/api/ps` model list (or null if Ollama could not be reached); its
+ *  `size_vram` for the matching model is the closest live equivalent to LM Studio's "peak allocated
+ *  VRAM" line -- null when the model has since been unloaded (Ollama's idle TTL), which is an
+ *  honest "unknown now", not a stale number from the time of generation. */
+export function lastGenerationStats(
+  rows: readonly UsageRow[],
+  psModels: ReadonlyArray<{ name?: unknown; size_vram?: unknown }> | null,
+): LastGenerationStats | null {
+  for (let i = rows.length - 1; i >= 0; i--) {
+    const r = rows[i]!
+    if (!isRealCall(r) || r.status !== 'ok' || r.evalTokens <= 0) continue
+    const tokensPerSec = r.evalDurationMs > 0 ? r.evalTokens / (r.evalDurationMs / 1000) : null
+    let vramBytes: number | null = null
+    if (Array.isArray(psModels)) {
+      const hit = psModels.find((m) => typeof m.name === 'string' && m.name && modelNameMatches(m.name, r.model))
+      if (hit && typeof hit.size_vram === 'number') vramBytes = hit.size_vram
+    }
+    return { ts: r.ts, model: r.model, promptTokens: r.promptTokens, outputTokens: r.evalTokens, tokensPerSec, vramBytes }
+  }
+  return null
 }
 
 // Calendar date (YYYY-MM-DD) of a UTC epoch in Europe/Budapest local time.
@@ -1071,6 +1115,22 @@ export async function tryHandleLocalLlm(ctx: RouteContext): Promise<boolean> {
   // restart look like, and the FE has to render that state anyway.
   if (path === '/api/local-llm/utilization-history' && method === 'GET') {
     json(res, { samples: getUtilizationSamples() })
+    return true
+  }
+
+  // GET /api/local-llm/last-generation -> prompt/output tokens + tokens/s + VRAM for the most
+  // recent COMPLETED real generation (card b21deb9a, Peti Telegram-kérés 2026-08-21): the
+  // dashboard-visible equivalent of the LM Studio/llama.cpp console's
+  // `[generation: prompt=N tokens, output=M tokens, speed=X tokens/s]` + peak-VRAM lines, sourced
+  // from data local-llm.sh already logs (eval_count/prompt_eval_count/eval_duration) plus a live
+  // /api/ps VRAM lookup, rather than tailing a log file the actual server on this host does not
+  // write in that literal format. All fields are null (never a raw error) when no real generation
+  // has happened yet -- the normal state right after a fresh install.
+  if (path === '/api/local-llm/last-generation' && method === 'GET') {
+    const rows = parseUsageRows(tailUsageLines())
+    const ps = await ollama('/api/ps')
+    const stats = lastGenerationStats(rows, Array.isArray(ps?.models) ? ps.models : null)
+    json(res, stats ?? { ts: null, model: null, promptTokens: null, outputTokens: null, tokensPerSec: null, vramBytes: null })
     return true
   }
 

@@ -2853,3 +2853,74 @@ csomagon, implementáció, tesztek).
 
 **Hivatkozás:** kártya `f0389e81`, Gate-SHA `8ee76373` (NO-GO), kártya `91c4a369` (a már egyszer
 lezárt, analóg Firecrawl-hibaosztály).
+
+## 2026-08-24 -- b21deb9a -- Helyi LLM generálás-statisztika (tokens/s, VRAM) a dashboardon, mérés alapján, nem a szöveges log feltételezéséből
+
+**Előzmény:** Peti kérése (Telegram, kép-melléklet, 2026-08-21): a dashboard "Helyi LLM
+kihasználtság" szekciója az Aktív Feladat sor után jelenítse meg azt az adatot, amit a képen
+látott -- egy `[generation: prompt=16 tokens, output=47 tokens, speed=9.97 tokens/s]` és egy
+`[generation peak allocated VRAM: 3.42 GiB]` alakú log-sor, a helyi LM Studio/llama.cpp szerver
+saját konzoljából.
+
+**Mérés a feltételezés helyett:** a kártya explicit lépésként kérte a naplófájl/elérési út
+azonosítását -- ez élő ellenőrzést igényelt, nem a leírás elfogadását. A flotta ténylegesen futó
+helyi LLM-je (`systemctl --user status ollama`) Ollama, ami belül llama-servert futtat; a
+`journalctl --user -u ollama` teljes előzményében NULLA `[generation:` mintájú sor van, és egy élő
+`/api/generate` hívás közben megfigyelt tényleges log-formátum egészen más (`slot print_timing: ...
+prompt eval time = ... eval time = ... tokens per second`), bracket-es "generation:" sor nélkül és
+VRAM-sor nélkül. A screenshoton látott PONTOS formátum tehát nem ennek a szervernek a saját
+naplója -- feltehetően egy másik (LM Studio-alapú) felállásból származik, amit ez a flotta jelenleg
+nem futtat.
+
+**Döntés:** ahelyett hogy egy soha nem látott log-formátumot próbáltunk volna újra-előállítani vagy
+egy nem létező fájlt tail-elni, a TÉNYLEGESEN élő rendszer már strukturáltan hordozza ugyanazt az
+adatot: Ollama `/api/generate` JSON-válasza tartalmazza a `prompt_eval_count`/`eval_count`
+token-számokat ÉS az `eval_duration` (ns) generálás-only időt (mérve: 36 prompt token, 3 output
+token, 52.226 ms eval_duration egy valós hívásnál) -- ez pontosan az a szám, amiből LM Studio saját
+"speed" mezője is számolódik, csak nanoszekundum-pontossággal, log-parse nélkül. A VRAM-hoz az
+Ollama `/api/ps` végpont `size_vram` mezője (mérve: 4638040390 byte egy betöltött 7B modellnél) a
+legközelebbi élő megfelelő -- a jelenleg betöltött modell tényleges VRAM-lábnyoma, nem egy
+naplóból visszafejtett szám. Ez a mérnöki-alapelvek 10. szabályának (GitHub-first / ne találd fel
+újra) és a "cél-vezérelt végrehajtás" elvnek (4. szabály) a következménye: a screenshot a CÉLT
+mondta ki (tokens/s + VRAM az Aktív Feladat után), nem a MEGVALÓSÍTÁS módját, és egy már meglévő,
+strukturált, verzionált API megbízhatóbb forrás egy szöveges log-formátum feltételezésénél, amiről
+kiderült, hogy ezen a gépen nem is létezik.
+
+**Fontos pontosság-részlet:** a tokens/s-t a `local-llm.sh` már meglévő wall-clock `ms` oszlopából
+(usage-log 5. mező) számolni HIBÁS lenne, mert az a GPU-lock várakozást (akár 600 mp) is
+tartalmazza -- egy lock-torlódás alatt lefutott hívás így hamisan alacsony sebességet mutatna. Ezért
+a `local-llm.sh` egy ÚJ, 10. TSV-oszlopot ír (`eval_duration_ms`, Ollama saját mérése), és a
+sebesség ebből számolódik.
+
+**Megvalósítás (6 fájl):**
+1. `store/local-llm.sh`: a `log_usage()` egy 5. opcionális argumentumot kap
+   (`eval_duration_ms`, TSV oszlop 10); a `--api/generate` válasz python-parszolása kiegészítve
+   `eval_duration`-nel (ns -> ms konverzió). Visszamenőleg kompatibilis: egy régi, 9-oszlopos sor
+   0-ként olvasódik (lásd `parseUsageRows`), ami "sebesség ismeretlen"-t jelent, nem hamis nullát.
+2. `src/web/routes/local-llm.ts`: `UsageRow` kiegészítve `evalDurationMs`-szel; új exportált,
+   tiszta `lastGenerationStats(rows, psModels)` függvény (a legutóbbi VALÓDI, sikeres, tényleges
+   kimenettel járó hívást keresi visszafelé, UI-probe-okat és hibás hívásokat kihagyva); új
+   `GET /api/local-llm/last-generation` végpont, ami a usage-ledger farkát és egy élő `/api/ps`
+   VRAM-lekérdezést kombinál. Minden mező `null`, ha még nem történt valódi generálás (soha nem
+   nyers hiba -- 12. szabály).
+3. `web/index.html`: új `dt`/`dd` sor "Utolsó generálás" címkével, közvetlenül az "Aktív feladat"
+   sor UTÁN, ugyanabban a `ovwSpectrumReadout` `<dl>`-ben (kártya konkrét kérése).
+4. `web/app-overview.js`: új `ovwSpectrumPollLastGen()`, ugyanazon az 5 mp-es időzítőn fut mint a
+   meglévő hullámforma-poll, de KÜLÖN hívásként (nem beolvasztva `ovwSpectrumPoll()`-ba), hogy az
+   egyik adatforrás kiesése ne törölje a másik már jó olvasatát.
+5. `web/lang/hu.js` + `web/lang/en.js`: `overview.spectrum.last_gen` kulcs mindkét nyelven.
+
+**Tesztek:** új `local-llm-last-generation.test.ts` (8 teszt: `eval_duration_ms`-oszlop olvasása,
+visszamenőleges kompatibilitás, sebesség eval_duration-ből -- NEM wall-clock ms-ből -- számolva
+egy konkrét, torlódást szimuláló esettel, null sebesség 0 eval_duration-nél, null eredmény ha
+soha nem volt valódi generálás, a legfrissebb sikeres hívás kiválasztása egy későbbi hibás hívás
+mellett, VRAM-illesztés `/api/ps` alapján, null VRAM ha a modell már nincs betöltve); az
+`overview-utilization-spectrum.test.ts` kibővítve 5 új teszttel (sor-elhelyezés a DL-ben, a poll
+végpont, a "—" placeholder tényleges generálás hiányában, hibakezelés, kettős hívás init+tick-nél).
+Élőben is ellenőrizve: egy tényleges `store/local-llm.sh` hívás a futó Ollama ellen helyesen írta
+a 10. oszlopot (`eval_duration_ms=26`) a usage-logba.
+
+**Ki döntött:** backend2 (a kártya vizsgálata, a log-formátum élő ellenőrzése, a tervezési döntés
+és a megvalósítás).
+
+**Hivatkozás:** kártya `b21deb9a`.
