@@ -15,7 +15,7 @@ import { CONTENT_SECURITY_POLICY } from './web/csp.js'
 import { json } from './web/http-helpers.js'
 import { detectLanIp } from './web/network-info.js'
 import { AGENTS_BASE_DIR, listAgentNames } from './web/agent-config.js'
-import { ensureAgentHooks, ensureAgentStalenessHook, ensureEgressGate, ensureNpmProtectGuard, ensureBlastRadiusGuard, ensureTaskstateReplayMatcher, ensureGovernanceGateCommands, ensureQuarantineReader, ensureDefaultScheduledTasks, agentSettingsPath, ensureAutonomySection } from './web/agent-scaffold.js'
+import { ensureAgentHooks, ensureAgentStalenessHook, ensureEgressGate, ensureNpmProtectGuard, ensureBlastRadiusGuard, ensurePentestToolInstallGuard, ensureTaskstateReplayMatcher, ensureGovernanceGateCommands, ensureQuarantineReader, ensureDefaultScheduledTasks, agentSettingsPath, ensureAutonomySection } from './web/agent-scaffold.js'
 import { shouldRegisterHooks, pruneStaleHooksFromSettingsFile } from './web/hook-registration-guard.js'
 import { refreshMarveenBotUsername } from './web/telegram.js'
 import { startMessageRouter } from './web/message-router.js'
@@ -561,6 +561,7 @@ export function startWebServer(port = 3420): http.Server {
       const govPatched: string[] = []
       const npmGuardPatched: string[] = []
       const blastGuardPatched: string[] = []
+      const pentestGuardPatched: string[] = []
       const taskstateMatcherPatched: string[] = []
       const pruned: string[] = []
       // Include the main agent (MAIN_AGENT_ID) so the voice hook is also seeded
@@ -575,6 +576,7 @@ export function startWebServer(port = 3420): http.Server {
         if (ensureEgressGate(agentName)) egressPatched.push(agentName)
         if (ensureNpmProtectGuard(agentName)) npmGuardPatched.push(agentName)
         if (ensureBlastRadiusGuard(agentName)) blastGuardPatched.push(agentName)
+        if (ensurePentestToolInstallGuard(agentName)) pentestGuardPatched.push(agentName)
         if (ensureTaskstateReplayMatcher(agentName)) taskstateMatcherPatched.push(agentName)
         if (ensureGovernanceGateCommands(agentName)) govPatched.push(agentName)
         ensureQuarantineReader(agentName)
@@ -582,6 +584,7 @@ export function startWebServer(port = 3420): http.Server {
       if (pruned.length) logger.info({ pruned }, 'Stale hook entries pruned from agent settings.json')
       if (npmGuardPatched.length) logger.info({ patched: npmGuardPatched }, 'npm-protect guard backfilled into agent settings.json')
       if (blastGuardPatched.length) logger.info({ patched: blastGuardPatched }, 'blast-radius guard backfilled into agent settings.json')
+      if (pentestGuardPatched.length) logger.info({ patched: pentestGuardPatched }, 'pentest-tool-install guard backfilled into agent settings.json')
       if (taskstateMatcherPatched.length) logger.info({ patched: taskstateMatcherPatched }, 'taskstate-replay SessionStart matcher widened in agent settings.json')
       if (patched.length) logger.info({ patched }, 'PreCompact hook backfilled into agent settings.json')
       if (stalePatched.length) logger.info({ patched: stalePatched }, 'staleness-guard UserPromptSubmit hook backfilled into agent settings.json')

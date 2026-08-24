@@ -745,6 +745,52 @@ export function ensureNpmProtectGuard(name: string): boolean {
   return true
 }
 
+// Idempotently wire the pentest-tool-install-guard PreToolUse hook (card b4a7c9c3,
+// structural precondition 5, following from the due-diligence gate comments on card 441337bf):
+// blocks the strix.ai curl|bash installer that Cybersec and Cybered's usestrix/strix adoption
+// GO was conditioned on never running -- see the guard script's own header for the full rationale.
+// Same reasoning and shape as its git/npm siblings above: a Bash-matched guard hand-copied into
+// some settings.json files protects an arbitrary subset, and a respawn drops the hand-added block.
+export function injectPentestToolInstallGuard(existing: Record<string, unknown>): void {
+  const hooks = (existing.hooks && typeof existing.hooks === 'object'
+    ? existing.hooks
+    : (existing.hooks = {})) as Record<string, unknown>
+  const command = `python3 "${join(PROJECT_ROOT, 'scripts', 'hooks', 'pentest-tool-install-guard.py')}"`
+  if (isUnsafeHookCommand(command)) return
+  const entry = {
+    matcher: 'Bash',
+    hooks: [{ type: 'command', command, timeout: 10 }],
+  }
+  const prev = Array.isArray(hooks.PreToolUse) ? (hooks.PreToolUse as unknown[]) : []
+  hooks.PreToolUse = [
+    ...prev.filter((e) => !JSON.stringify(e).includes('pentest-tool-install-guard.py')),
+    entry,
+  ]
+}
+
+// Boot-time backfill for the pentest-tool-install guard, same reasoning as
+// ensureNpmProtectGuard: injectPentestToolInstallGuard alone reaches an agent only when its
+// settings.json is regenerated, so a dashboard restart arms the whole fleet at once.
+export function ensurePentestToolInstallGuard(name: string): boolean {
+  const settingsPath = agentSettingsPath(name)
+  let settings: Record<string, unknown> = {}
+  if (existsSync(settingsPath)) {
+    try { settings = JSON.parse(readFileSync(settingsPath, 'utf-8')) } catch { return false }
+  }
+  const command = `python3 "${join(PROJECT_ROOT, 'scripts', 'hooks', 'pentest-tool-install-guard.py')}"`
+  const hooks = (settings.hooks && typeof settings.hooks === 'object')
+    ? settings.hooks as Record<string, unknown>
+    : {}
+  const ptu = Array.isArray(hooks.PreToolUse) ? hooks.PreToolUse as unknown[] : []
+  const ptuJson = JSON.stringify(ptu)
+  if (ptuJson.includes('pentest-tool-install-guard.py') && hookCommandWired(ptuJson, command)) return false
+  if (isUnsafeHookCommand(command)) return false
+  injectPentestToolInstallGuard(settings)
+  if (name !== MAIN_AGENT_ID) mkdirSync(join(agentDir(name), '.claude'), { recursive: true })
+  atomicWriteFileSync(settingsPath, JSON.stringify(settings, null, 2))
+  return true
+}
+
 // The domains the owner added for this install, from the egress allowlist.
 // That file is the owner's gate for outbound calls; the reader's own list used
 // to be a SECOND list of the same decision, kept by hand, and the two drifted:
