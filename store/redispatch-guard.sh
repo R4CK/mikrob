@@ -25,8 +25,10 @@
 #   2. progress since last check               -> DENY:progress     (reset counter; it's alive)
 #      (card.updated_at advanced, OR a new commit landed on the tracked branch)
 #   3. agent tmux panel is BUSY                 -> DENY:agent-busy   (never queue on a worker)
-#   4. within backoff window                    -> DENY:backoff:<s>  (base 600s * 2^count)
-#   5. hard cap reached (count >= MAX)          -> DENY:cap-reached  (escalate to Peti ONCE)
+#   4. hard cap reached (count >= MAX)          -> DENY:cap-reached  (escalate to Peti ONCE)
+#      (checked BEFORE backoff, card 86dfba39: a cap already reached must escalate right away,
+#       not sit out one more -- and by construction the LONGEST -- backoff window first)
+#   5. within backoff window                    -> DENY:backoff:<s>  (base 600s * 2^count)
 #   6. otherwise                                -> ALLOW             (count++, stamp ts)
 #
 # SECURITY (gate-ops-scripts-token-in-argv): the dashboard bearer token is passed to curl
@@ -128,6 +130,25 @@ os.replace(tmp,path)
 PY
 }
 
+# Card 86dfba39: the cap check MUST win over the backoff check even when the current
+# (longest) backoff window has not elapsed yet. Extracted to its own pure function so the
+# selftest can exercise the REAL decision, not a hand-copied re-implementation of it -- the
+# bug this fixes is entirely about the ORDER of these two conditions, so the test has to run
+# the same two conditions in the same order the real `check` command does.
+# $1=count $2=last_ts $3=now $4=busy(0/1) -> prints one of:
+#   agent-busy | cap-reached | backoff:<remaining-seconds> | allow
+_decide_active() {
+  local count="$1" last_ts="$2" now="$3" busy="$4" interval elapsed
+  if [ "$busy" = "1" ]; then echo "agent-busy"; return; fi
+  # cap FIRST: once count has already reached MAX_REDISPATCH, escalate immediately instead of
+  # waiting out one more (and by construction the LONGEST) backoff window before noticing.
+  if [ "$count" -ge "$MAX_REDISPATCH" ]; then echo "cap-reached"; return; fi
+  interval=$(( BASE_BACKOFF * (1 << count) ))
+  elapsed=$(( now - last_ts ))
+  if [ "$elapsed" -lt "$interval" ]; then echo "backoff:$(( interval - elapsed ))"; return; fi
+  echo "allow"
+}
+
 _escalate_once() { # $1 cardId $2 count -- record a cap-reached escalation if not already present
   python3 - "$ESCAL" "$1" "$2" "$(now_ts)" <<'PY'
 import json,sys,os,tempfile
@@ -170,29 +191,23 @@ case "$MODE" in
       echo "DENY:first-seen-baseline"; exit 8
     fi
 
-    # (3) agent actively working -> never queue a nudge on it
-    if _agent_busy "$AGENT"; then
-      # refresh last_ts so backoff timer tracks real quiet time, keep count
-      _ledger_set "$CARD" "$count" "$ts" "$upd"
-      echo "DENY:agent-busy"; exit 8
-    fi
-
-    # (4) backoff window
-    interval=$(( BASE_BACKOFF * (1 << count) ))
-    elapsed=$(( ts - last_ts ))
-    if [ "$elapsed" -lt "$interval" ]; then
-      echo "DENY:backoff($(( interval - elapsed ))s)"; exit 8
-    fi
-
-    # (5) hard cap -> escalate once, stop looping
-    if [ "$count" -ge "$MAX_REDISPATCH" ]; then
-      _escalate_once "$CARD" "$count"
-      echo "DENY:cap-reached($count)"; exit 8
-    fi
-
-    # (6) ALLOW
-    _ledger_set "$CARD" "$(( count + 1 ))" "$ts" "$upd"
-    echo "ALLOW"; exit 0
+    # (3) busy, (4) cap, (5) backoff -- see _decide_active for why cap is checked before backoff
+    busy=0; _agent_busy "$AGENT" && busy=1
+    decision="$(_decide_active "$count" "$last_ts" "$ts" "$busy")"
+    case "$decision" in
+      agent-busy)
+        # refresh last_ts so backoff timer tracks real quiet time, keep count
+        _ledger_set "$CARD" "$count" "$ts" "$upd"
+        echo "DENY:agent-busy"; exit 8 ;;
+      cap-reached)
+        _escalate_once "$CARD" "$count"
+        echo "DENY:cap-reached($count)"; exit 8 ;;
+      backoff:*)
+        echo "DENY:backoff(${decision#backoff:}s)"; exit 8 ;;
+      allow)
+        _ledger_set "$CARD" "$(( count + 1 ))" "$ts" "$upd"
+        echo "ALLOW"; exit 0 ;;
+    esac
     ;;
 
   reset)
@@ -244,6 +259,16 @@ PY
     [ "$n" = "1" ] || { echo "FAIL escalate-once n=$n"; fails=$((fails+1)); }
     # 5) backoff math: count=2 -> interval 2400s
     intv=$(( BASE_BACKOFF * (1 << 2) )); [ "$intv" -eq 2400 ] || { echo "FAIL backoff-math $intv"; fails=$((fails+1)); }
+    # 6) card 86dfba39: cap MUST win over backoff even while the current backoff window has
+    # not elapsed -- calls the REAL decision function, not a re-implementation of it.
+    out="$(_decide_active 3 990 1000 0)"  # count==MAX_REDISPATCH, only 10s elapsed of a 4800s window
+    [ "$out" = "cap-reached" ] || { echo "FAIL cap-before-backoff: $out"; fails=$((fails+1)); }
+    # CONTROL: below the cap, the same still-open window correctly denies on backoff, not cap.
+    out="$(_decide_active 2 990 1000 0)"  # count==2 < MAX_REDISPATCH, interval 2400s, elapsed 10s
+    [ "$out" = "backoff:2390" ] || { echo "FAIL backoff-control: $out"; fails=$((fails+1)); }
+    # CONTROL: busy still wins over both, unconditionally
+    out="$(_decide_active 3 990 1000 1)"
+    [ "$out" = "agent-busy" ] || { echo "FAIL busy-control: $out"; fails=$((fails+1)); }
     rm -rf "$tmpdir"
     if [ "$fails" -eq 0 ]; then echo "SELFTEST: PASS"; exit 0; else echo "SELFTEST: FAIL ($fails)"; exit 1; fi
     ;;
