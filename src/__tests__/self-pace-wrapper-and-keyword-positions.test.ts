@@ -27,6 +27,7 @@
 //
 // Names are assembled from parts: this file is itself scanned by the gate it tests.
 import { describe, it, expect } from 'vitest'
+import { execFileSync } from 'node:child_process'
 // @ts-expect-error -- plain .mjs hook script, no types
 import { gateDecision, executableStrings } from '../../scripts/self-pace-gate.mjs'
 
@@ -384,5 +385,87 @@ describe('round 3: the three shapes Cybersec found still open (card ec20dd23)', 
       expect(bash(`${CT} -`)).toBe(true)
       expect(bash(`${CT} -l`)).toBe(false)
     })
+  })
+})
+
+describe('round 4: ANSI-C escape obfuscation (QA FAIL on 223ac1f8)', () => {
+  // MY OWN FALSE CLAIM, and the bug it hid. The round-3 unquoteWord carried a comment asserting that
+  // ANSI-C and locale quoting "differ from the plain forms only in ways that cannot hide a binary
+  // name". `$'...'` is in fact the ONE bash quoting form that performs real escape decoding, so
+  // `bash -c $'\\x63rontab -'` runs the binary while the literal name never appears in the text the
+  // anchored checks scan. QA proved it with live bash; I reproduced twelve shapes, seven more than
+  // were reported.
+  const D = String.fromCharCode(36)
+  const BS = String.fromCharCode(92)
+  const hex = (s: string): string => `${BS}x${s.charCodeAt(0).toString(16)}${s.slice(1)}`
+  const oct = (s: string): string => `${BS}${s.charCodeAt(0).toString(8)}${s.slice(1)}`
+  const uni = (s: string): string => `${BS}u${s.charCodeAt(0).toString(16).padStart(4, '0')}${s.slice(1)}`
+  const bigU = (s: string): string => `${BS}U${s.charCodeAt(0).toString(16).padStart(8, '0')}${s.slice(1)}`
+  const allHex = (s: string): string => [...s].map((c) => `${BS}x${c.charCodeAt(0).toString(16)}`).join('')
+  const ansi = (payload: string): string => `${D}'${payload}'`
+
+  it.each([
+    ['hex-encoded first character', `bash -c ${ansi(hex(`${CT} -`))}`],
+    ['octal-encoded first character', `bash -c ${ansi(oct(`${CT} -`))}`],
+    ['\\u-encoded first character', `bash -c ${ansi(uni(`${CT} -`))}`],
+    ['\\U-encoded first character', `bash -c ${ansi(bigU(`${CT} -`))}`],
+    ['every character hex-encoded', `bash -c ${ansi(allHex(`${CT} -`))}`],
+    ['hex-encoded mid-word', `bash -c ${ansi(`cr${BS}x6fntab -`)}`],
+    ['on the here-string branch', `bash <<< ${ansi(hex(`${CT} -`))}`],
+    ['on the eval branch', `eval ${ansi(hex(`${CT} -`))}`],
+    ['on the sh -c branch', `sh -c ${ansi(hex(`${CT} -`))}`],
+    ['the non-English-word binary', `bash -c ${ansi(hex(`${SR} --on-active=60 /bin/true`))}`],
+    ['nested inside another wrapper', `bash -c "bash -c ${ansi(hex(`${CT} -`))}"`],
+    ['ANSI-C piece concatenated with another', `bash -c ${ansi(hex('cron'))}${D}'tab -'`],
+  ])('denies %s', (_name, cmd) => {
+    expect(bash(cmd)).toBe(true)
+  })
+
+  it.each([
+    ['locale quoting, which bash does NOT decode', `bash -c ${D}"${BS}x63rontab -"`],
+    ['plain single quotes, which are literal', `bash -c '${BS}x63rontab -'`],
+    ['ANSI-C spelling a neutral binary', `bash -c ${ansi(hex('echo hi'))}`],
+    ['ANSI-C newline in a neutral program', `bash -c ${D}'echo hi${BS}nthere'`],
+    ['prose mentioning an escape', `echo "the ${BS}x74 escape means t"`],
+  ])('CONTROL stays allowed: %s', (_name, cmd) => {
+    expect(bash(cmd)).toBe(false)
+  })
+
+  it('the LOCALE form is deliberately left literal, because bash leaves it literal', () => {
+    // Checked against real bash: $'\\x74ouch' -> touch, while $"\\x74ouch" and '\\x74ouch' stay as
+    // written. Decoding the locale form would deny a command bash never runs -- a false positive
+    // manufactured by over-correcting. The scope of the fix is exactly one quoting form.
+    const out = execFileSync('bash', ['-c', `printf '%s' ${D}"${BS}x74ouch"`], { encoding: 'utf-8' })
+    expect(out).toBe(`${BS}x74ouch`)
+  })
+
+  it('decodes byte-for-byte the way bash does, including the cases people get wrong', () => {
+    // A decoder that is merely "close" is a bug in both directions: under-decoding leaves the
+    // bypass, over-decoding invents characters bash never produces. Compared against the only
+    // authority that counts. Note \\z keeps its backslash and \\0 TRUNCATES the argument -- measured,
+    // `bash -c $'ec\\0ho X'` reports `ec: command not found` rather than joining the halves.
+    const cases = ['touch', `${BS}x74ouch`, `${BS}164ouch`, `${BS}u0074ouch`, `${BS}z`, `a${BS}tb`, `a${BS}'b`, `${BS}cA`]
+    for (const body of cases) {
+      const expected = execFileSync('bash', ['-c', `printf '%s' ${D}'${body}' | od -An -tx1 | tr -d ' \\n'`], {
+        encoding: 'utf-8',
+      }).trim()
+      // executableStrings comes from an untyped .mjs hook script; name the shape once so the
+      // comparison below stays type-checked instead of spreading `any` into it.
+      const extracted = executableStrings(`bash -c ${D}'${body}'`) as string[]
+      const got: string = extracted[0] ?? ''
+      expect(Buffer.from(got, 'utf-8').toString('hex'), `body ${JSON.stringify(body)}`).toBe(expected)
+    }
+  })
+
+  it('a long run of ANSI-C pieces does not backtrack forever (my own regression, twice)', () => {
+    // Adding the ANSI-C alternative to the word grammar made `$'a'` matchable TWO ways, because the
+    // pre-existing alternative already accepted an optional `$`. A long run of them followed by a
+    // character that fails the word boundary then never finished -- the identical ambiguity this
+    // pattern had been rewritten to remove one round earlier. `$'...'` now belongs solely to the
+    // ANSI-C branch, `'...'` solely to the plain one.
+    const cmd = `bash -c ${`${D}'a'`.repeat(20000)}(`
+    const t0 = Date.now()
+    bash(cmd)
+    expect(Date.now() - t0).toBeLessThan(2000)
   })
 })
