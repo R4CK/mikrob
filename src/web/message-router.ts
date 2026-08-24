@@ -378,10 +378,24 @@ export function selectFairBatch(sorted: readonly AgentMessage[], cap: number): A
   // cross-receiver round-robin below is untouched -- that fairness fix solved a
   // different problem (one busy agent starving every other receiver) and this
   // must not weaken it.
+  //
+  // Card 3303e9d6 (Cybersec, gate f951ec53): isUrgentMessage runs on the RAW
+  // sender content, before wrapAgentMessageForDelivery's trust framing exists.
+  // Without a source check, a FEDERATED (by definition untrusted) peer's own
+  // message body could open with "URGENT:" and jump a real agent's queue ahead
+  // of genuine flotta dispatches. classifyAgentMessage is the same
+  // pure/cheap classifier already paid for once per message at delivery time
+  // (line below, via wrapAgentMessageForDelivery) -- calling it here too, on
+  // the DB-stored from_agent/to_agent (not attacker-editable at this point),
+  // restricts promotion to sources the fleet already treats as trustworthy.
   for (const [agent, bucket] of byAgent) {
     const urgent: AgentMessage[] = []
     const ordinary: AgentMessage[] = []
-    for (const m of bucket) (isUrgentMessage(m.content) ? urgent : ordinary).push(m)
+    for (const m of bucket) {
+      const cls = classifyAgentMessage(m.from_agent, m.to_agent)
+      const promotable = cls?.category === 'trusted-peer' || cls?.category === 'channel-inbound'
+      ;(promotable && isUrgentMessage(m.content) ? urgent : ordinary).push(m)
+    }
     byAgent.set(agent, [...urgent, ...ordinary])
   }
   const selected: AgentMessage[] = []

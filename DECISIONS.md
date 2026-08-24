@@ -3047,3 +3047,20 @@ biztonságot a megelőző `waitFor`/`getAllByRole` állítja már elő ugyanúgy
 **Ki döntött:** backend2 (kártya 5b4cca21, Cybersec eredeti lelete a 132a6cfb gate-en).
 
 **Hivatkozás:** kártya `5b4cca21`. Előzmény: `132a6cfb` (komment 15118, Cybersec lelete). Kapcsolódó memória: `marveen-gate-shas-are-merges-diff-the-branch-side`, `a-merge-has-two-diffs-and-the-other-parent-is-the-telling-one`.
+
+
+## 2026-08-24 -- selectFairBatch: az URGENT/SÜRGŐS elsőbbség csak megbízható forrásra jár (3303e9d6)
+
+**Mi történt:** Cybersec élő lelete (f951ec53 gate közben, nem hivatalos verdikt): az `isUrgentMessage()` a NYERS küldő-tartalmon fut, MIELŐTT a `wrapAgentMessageForDelivery()` bizalmi keretezése megtörténne. A `selectFairBatch()` ezt használta fel a sorrend-elsőbbségre (kártya f951ec53 korábbi javítása), forrás-ellenőrzés nélkül. Egy FEDERÁLT (definíció szerint NEM megbízható) társ saját üzenetében "URGENT:" első sorral elsőbbséget szerezhetett volna a sorban a valódi flotta-dispatchek előtt. Mivel akkor (2026-08-23) az `/api/federation/directory` nulla konfigurált társat mutatott, a hiba LAPPANGÓ volt -- éles felülettel csak az első társ csatlakozásakor vált volna azzá.
+
+**A fix:** `selectFairBatch()` a bucket-szétválasztásnál már nem csak `isUrgentMessage(m.content)`-et nézi, hanem `classifyAgentMessage(m.from_agent, m.to_agent)` kategóriáját is: `promotable = category === 'trusted-peer' || category === 'channel-inbound'`, és csak `promotable && isUrgentMessage(...)` esetén kerül a sürgős kosárba. A `classifyAgentMessage` ugyanaz a tiszta, olcsó klasszifikáló, amit a router már amúgy is lefuttat egyszer kézbesítéskor (message-router.ts:814 környékén) -- ugyanazon a DB-tárolt (a küldés pillanatában rögzített, nem utólag szerkeszthető) `from_agent`/`to_agent` páron, csak MOST a sorrend-döntéshez is.
+
+**Miért nem regresszió a korábbi (f951ec53) fixre:** a klasszifikáció csak a FORRÁS bizalmi szintjét szűkíti, a tartalom-alapú urgency-felismerést nem gyengíti trusted-peer/channel-inbound üzeneteknél -- a gate FAIL / SÜRGŐS / CYBERSEC NO-GO jelzések a flotta saját ügynökei között (a többség) változatlanul elsőbbséget kapnak. Csak a föderált/nem-megbízható forrású "urgent" állítás veszti el az elsőbbséget.
+
+**Tesztek:** `src/__tests__/message-router-fair-batch.test.ts`, új `describe('selectFairBatch urgency promotion is source-gated (card 3303e9d6)')` blokk, 3 eset: federált küldő nem tud előre-sorolni, nem-megbízható helyi küldő nem tud előre-sorolni, KONTROLL -- valódi trusted-peer továbbra is előre-sorol. `classifyAgentMessage` mockolva (a valódi isKnownAgent/team-fájl FS-ellenőrzések nem ennek a tesztnek a tárgya, és a teszt-folyamat MAIN_AGENT_ID-jétől függenének). 19/19 zöld.
+
+**Mutációs önellenőrzés:** a fixet ideiglenesen visszaállítottam az eredeti (forrás-független) viselkedésre, a két új "nem promotable" teszt PIROSRA váltott (a föderált/nem-megbízható üzenet előre-sorolódott), a KONTROLL teszt zöld maradt -- a változtatás pontosan a bejelentett hibaosztályt fedi, mást nem érint.
+
+**Ki döntött:** backend2 (kártya 3303e9d6, Cybersec eredeti lelete a f951ec53 gate közben).
+
+**Hivatkozás:** kártya `3303e9d6`. Előzmény: `f951ec53` (a promótált sürgős-elsőbbség eredeti bevezetése).

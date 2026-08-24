@@ -10,7 +10,27 @@
 // slots were re-selected forever -- every other agent's messages, however
 // new, never even reached isSessionReadyForPrompt.
 
-import { describe, it, expect } from 'vitest'
+import { describe, it, expect, vi } from 'vitest'
+
+// Card 3303e9d6: selectFairBatch now gates urgency-promotion on the sender's
+// classified trust category (see the describe block below), not just content.
+// The real classifyAgentMessage does live isKnownAgent/team-file filesystem
+// checks that are irrelevant to THIS test file's concern (fair-batch ordering
+// logic) and depend on MAIN_AGENT_ID/agent-directory state the test process
+// doesn't control -- mock it to a simple, test-controllable rule instead, the
+// same pattern message-router-tick-cap.test.ts already uses for the same module.
+vi.mock('../web/agent-message-wrap.js', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('../web/agent-message-wrap.js')>()
+  return {
+    ...actual,
+    classifyAgentMessage: (from: string) => {
+      if (from === 'stranger') return { category: 'untrusted' as const, safeFrom: from }
+      if (from.includes('/')) return { category: 'federated' as const, safeFrom: from }
+      return { category: 'trusted-peer' as const, safeFrom: from }
+    },
+  }
+})
+
 import { selectFairBatch, isUrgentMessage, MAX_MESSAGES_PER_TICK } from '../web/message-router.js'
 import type { AgentMessage } from '../db.js'
 
@@ -221,5 +241,45 @@ describe('selectFairBatch urgency ordering (card f951ec53)', () => {
       makeMsg('backend', 3, 700, 'QA FAIL -- c'),
     ]
     expect(selectFairBatch(sorted, MAX_MESSAGES_PER_TICK).map((m) => m.id)).toEqual([1, 2, 3])
+  })
+})
+
+// ---------------------------------------------------------------------------
+// Card 3303e9d6: Cybersec's live finding on gate f951ec53's own fix -- isUrgentMessage
+// runs on the RAW sender content, before wrapAgentMessageForDelivery's trust
+// framing exists. Without a source check, a FEDERATED (by definition untrusted)
+// peer could open its own message body with "URGENT:" and jump a real agent's
+// queue ahead of genuine flotta dispatches. The fix restricts promotion to
+// classifyAgentMessage categories the fleet already treats as trustworthy
+// (trusted-peer, channel-inbound).
+// ---------------------------------------------------------------------------
+
+describe('selectFairBatch urgency promotion is source-gated (card 3303e9d6)', () => {
+  it('a federated (untrusted) sender cannot spoof urgency to jump an older trusted message', () => {
+    const sorted = [
+      makeMsg('backend', 1, 900, 'regular older dispatch'), // trusted-peer (default from_agent)
+      { ...makeMsg('backend', 2, 60, 'URGENT: fake priority claim'), from_agent: 'othersystem/peer' }, // federated
+    ]
+    const fair = selectFairBatch(sorted, MAX_MESSAGES_PER_TICK)
+    // No promotion: strict FIFO, exactly as if neither message were "urgent".
+    expect(fair.map((m) => m.id)).toEqual([1, 2])
+  })
+
+  it('an untrusted local sender cannot promote either', () => {
+    const sorted = [
+      makeMsg('backend', 1, 900, 'regular older dispatch'),
+      { ...makeMsg('backend', 2, 60, 'CRITICAL: spoofed'), from_agent: 'stranger' }, // untrusted
+    ]
+    const fair = selectFairBatch(sorted, MAX_MESSAGES_PER_TICK)
+    expect(fair.map((m) => m.id)).toEqual([1, 2])
+  })
+
+  it('CONTROL: a genuine trusted-peer sender is still promoted -- the original f951ec53 fix is unaffected', () => {
+    const sorted = [
+      makeMsg('backend', 1, 900, 'regular older dispatch'), // trusted-peer
+      makeMsg('backend', 2, 60, 'CYBERSEC NO-GO -- exploit found'), // trusted-peer
+    ]
+    const fair = selectFairBatch(sorted, MAX_MESSAGES_PER_TICK)
+    expect(fair.map((m) => m.id)).toEqual([2, 1])
   })
 })
