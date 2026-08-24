@@ -1206,20 +1206,28 @@ export async function tryHandleLocalLlm(ctx: RouteContext): Promise<boolean> {
     // unable to distinguish a measured model from one downloaded a minute ago -- and this card
     // exists because "the download finished" is not evidence it produces usable code.
     const benchState = readBenchState(LLM_BENCH_STATE_FILE)
-    const models = (tags?.models || []).map((m: any) => ({
-      name: m.name,
-      size: m.size ?? 0,
-      installedAt: typeof m.modified_at === 'string' ? m.modified_at : null,
-      ...benchInfoFor(benchState, m.name),
-    }))
+    // `name` is narrowed to a string ONCE, here, rather than at each use: `tags` comes back from
+    // ollama as `any`, so every later `m.name` was an unsafe argument into a string parameter --
+    // three of them, two added by the status-tile fix (9e54fa61) that tripped the lint ratchet.
+    const rawModels = (Array.isArray(tags?.models) ? tags.models : []) as unknown[]
+    const models = rawModels.map((raw) => {
+      const m = raw as { name?: unknown; size?: unknown; modified_at?: unknown }
+      const name = typeof m.name === 'string' ? m.name : ''
+      return {
+        name,
+        size: m.size ?? 0,
+        installedAt: typeof m.modified_at === 'string' ? m.modified_at : null,
+        ...benchInfoFor(benchState, name),
+      }
+    })
     const running = ps?.models || []
     const active = readActiveModel()
     json(res, {
       ollama_up: ollamaUp,
       active_model: active,
-      active_present: ollamaUp ? models.some((m: any) => modelNameMatches(m.name, active)) : null,
+      active_present: ollamaUp ? models.some((m) => modelNameMatches(m.name, active)) : null,
       embed_model: EMBED_MODEL,
-      embed_present: ollamaUp ? models.some((m: any) => modelNameMatches(m.name, EMBED_MODEL)) : null,
+      embed_present: ollamaUp ? models.some((m) => modelNameMatches(m.name, EMBED_MODEL)) : null,
       models,
       running,
       bridge_active: bridge,
