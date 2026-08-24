@@ -222,7 +222,31 @@ const SELF_PACE_BASH_PATTERNS = [
 // character (checked before narrowing this), and the bare `|` the scan now stops in front of is
 // still its own independent anchor for the surrounding regex to retry from -- verified empirically
 // (path-prefix-escaped-pipe-quadratic.test.ts), not assumed.
-const PATH_PREFIX = String.raw`(?:(?:\\[^|]|[^\s|;&<>()\\])*\/)?`
+//
+// ROUND 3 (Cybersec NO-GO, card 39cc3460 round 2): round 2 above excluded only `|` from both
+// alternatives, because that was the one anchor character the round's own repro used. But
+// WRAPPER_POSITION/CMD_POSITION (defined further down, and hoisted into CMD_POSITION_CHARS just
+// below so this constant can be BUILT FROM it instead of duplicating it) treats SEVEN OTHER
+// characters (`;` `&` `(` `)` `{` `!` a backtick) as equally valid command-position anchors --
+// every one of them gives the identical O(n^2): a dense run of the escaped pair (`\;\;\;...` etc.)
+// yields ~n anchor positions, and at each one PATH_PREFIX's escape-tolerant alternative still
+// happily consumed the rest of the run looking for `/`, exactly the round-2 bug with a different
+// character. Cybersec measured all seven live through gateDecision(): n=32000 pairs (64 KB, far
+// below MAX_COMMAND_BYTES) took up to 13.3s on `;`/`&`/`(`/`)`/`{`/`!`/backtick -- already past the
+// hook's own 10s timeout, which the file's own header documents as fail-open (the caller treats a
+// timed-out hook as non-blocking). Narrowing only `|` was the same mistake this file's own standing
+// lesson warns against: enumerating from the one reported repro instead of from the grammar that
+// produced it -- here, literally CMD_POSITION's own character class.
+// Two exclusion sets now both derive from CMD_POSITION_CHARS: the escape-tolerant alternative
+// (`\\[^...]`) so an escaped anchor character stops the scan instead of being consumed as an
+// ordinary path character, AND the plain literal alternative (`[^\s...]`) -- because `{`, `!` and
+// backtick were ALSO anchors CMD_POSITION recognizes UNescaped, and the old literal-char class did
+// not exclude them either, so a bare (non-backslash) run of any of those three was an equally live
+// route to the same blowup that the round-2 fix never touched. `<` `>` stay excluded too (never
+// part of CMD_POSITION, but excluded here since round 1 -- an unescaped redirection operator is
+// never a legitimate path character either).
+const CMD_POSITION_CHARS = ';&|(){!`'
+const PATH_PREFIX = String.raw`(?:(?:\\[^${CMD_POSITION_CHARS}]|[^\s${CMD_POSITION_CHARS}<>\\])*\/)?`
 
 const SCHED_PREFIX = String.raw`(?:(?:[A-Za-z_]\w*=\S*|sudo|env|command|exec|nice|builtin|time)\s+)*${PATH_PREFIX}`
 // The command-boundary anchor includes `(` so a $(...) command substitution
@@ -310,7 +334,10 @@ const SCHED_PREFIX = String.raw`(?:(?:[A-Za-z_]\w*=\S*|sudo|env|command|exec|nic
 // question): `! <scheduler>` really does run the scheduler, and the cost is a prose line whose
 // exclamation mark lands immediately before a time expression. Pinned by its own test so the choice
 // is visible rather than incidental.
-const CMD_POSITION = String.raw`(?:[;&|(){!\`]|\b(?:if|then|else|elif|while|until|do)\b)`
+// The character class is CMD_POSITION_CHARS (hoisted above PATH_PREFIX, card 39cc3460 round 2):
+// one list, consumed here AND by PATH_PREFIX's exclusion sets, so a future addition to this class
+// is inherited by PATH_PREFIX by construction instead of needing a second, easily-forgotten edit.
+const CMD_POSITION = String.raw`(?:[${CMD_POSITION_CHARS}]|\b(?:if|then|else|elif|while|until|do)\b)`
 const SCHED_BOUNDARY = CMD_POSITION
 // `at` and `batch` are also ordinary English words, and splitSegments splits on
 // NEWLINES -- so a PROSE line inside a multi-line commit body ("at least 80% of
