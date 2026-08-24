@@ -2662,3 +2662,53 @@ lokale-túl-dekódolás és a kétértelműség-visszahozás).
 (reprodukció 12 alakra, a dekóder, a differenciál-hűségmérés, a két saját regresszió megtalálása).
 
 **Hivatkozás:** kártya ec20dd23 (4. kör), Gate-SHA 223ac1f8, kártya-komment 15760.
+
+## 2026-08-24 13:30 -- A governance-kapu megkerülhető volt a bemenet MÉRETÉVEL (kártya fa5ef179)
+
+**Döntés:** két külön dolgot javítottam, és a különbség szándékos. (1) A KIVÁLTÓ OK: egy véletlen
+kvadratikus alak az útvonal-előtag regexben, ami a bypasst okozta -- ennek eltávolítása zárja be a
+lyukat. (2) EGY BACKSTOP: fail-closed méret-plafon, hogy ha egy jövőbeli minta újra
+felerősítést hozna, korlátozott legyen amit a támadó beadhat.
+
+**A lelet (Cybersec, az f16b3165 gate-köréből, helyesen pre-existingként elhatárolva):** a kapu
+HELYES DENY-t ad, csak nem ér oda a határidő előtt. 96 KB inert kitöltés = 10,36 s, 130 KB = 19,54 s,
+a regisztrált hook-timeout 10 s, és a hívó a timeoutot NEM-blokkolóként kezeli (QA külön
+megerősítette). Tehát elég nagy, ártalmatlannak látszó kitöltéssel a valódi payload
+FAIL-OPEN ALLOW-t kap, ELLENŐRZÉS NÉLKÜL.
+
+**A profilozás egyetlen függvényt nevezett meg, nem szórt költséget:** 32 KB-on a 2023 ms-ból 1895 ms
+az `executableStrings`. És nem a rekurzió: a függvény NULLA sztringet nyer ki ezen a bemeneten,
+mégis 1385 ms-ot tölt -- tehát maguk a regexek lépnek vissza. Tovább szűkítve: a `(?:\S*\/)?`
+útvonal-előtag. Izolált mérés a két alakról: a jelenlegi 8 KB-on 36 ms / 64 KB-on 2304 ms (pontosan
+4x duplázásonként), a határolt `(?:[^\s|;&<>()]*\/)?` MINDEN méreten 0 ms.
+
+**Miért nem veszít semmit a szűkítés (mérve, nem feltételezve):** a `| ; & < > ( )` karakterek nem
+szerepelhetnek idézetlen parancs-útvonalban a bashben -- elválasztók. Minden alakon, ahol a két
+forma eltér, MINDKETTŐ megtalálja a shellt; a határolt csak az elválasztó UTÁN kezdi az illesztést,
+ami pontosan ott van, ahol a parancs valójában kezdődik (`/tmp/a|b/bash` → `b/bash`). 180 alakos
+elő/utó összehasonlítás: NULLA verdikt-változás mindkét irányban, tehát ez tisztán teljesítmény-javítás.
+
+**Eredmény:** 96 KB: 10,36 s → 85 ms (122x). 130 KB: 19,54 s → 96 ms (203x). Lineáris marad 520 KB-ig
+(360 ms).
+
+**A backstop, és miért fail-closed:** 1 MiB-os plafon, BÁJTBAN mérve (nem `String.length`-ben: egy
+nem-ASCII parancs a háromszorosa lehet). Ami túl nagy ahhoz, hogy átvizsgáljuk, azt TILTJUK -- pont
+az ellentéte annak, amit a timeout ma csinál. A küszöb a mért ütemből jön (~0,7 ms/KB), tehát még egy
+hipotetikus 10x-es regresszió is bőven a 10 s-os határidőn belül marad; a valódi ügynök-parancsok
+nagyságrendekkel kisebbek. A tiltás SAJÁT, akcióra vezető üzenetet kap (12. szabály): a self-pace
+üzenet itt félrevezető lenne, hiszen a parancsot sosem vizsgáltuk ütemezésre -- a méretéért utasítottuk
+el.
+
+**Ami NEM ezen a kártyán dől el:** hogy egy timeoutolt governance-hook egyáltalán FAIL-OPEN legyen-e.
+Ez flotta-szintű viselkedés-változás (egy lassú hook megállítaná a munkát), tehát Peti/MikroB döntése.
+Jelezve; a méret-plafon a TÜNETET kezeli, a fail-open a GYÖKÉR. Ezek a tesztek szándékosan NEM
+feltételezik, hogy ez megváltozik.
+
+**Bizonyíték:** 18 új teszt zöld, 180 alakos elő/utó sweep 0 verdikt-változással, a támadási alak
+mindkét jelentett méreten TILT és 2 s alatt végez, a skálázás lineáris (duplázás < 3x munka), az ÉLŐ
+hook borítékja `deny` az akcióra vezető üzenettel, teljes suite zöld, tsc 0.
+
+**Ki döntött:** Cybersec (a lelet és a mérés), backend (a kiváltó ok megtalálása, a határolt
+`PATH_PREFIX`, a backstop), MikroB (kártya-nyitás, sorrendezés).
+
+**Hivatkozás:** kártya fa5ef179, forrás-lelet az f16b3165 Cybersec-kommentjében (15741, F-6).
