@@ -10,10 +10,15 @@
 // contract in that state (every call returns null, the walker's behaviour is untouched, the gate
 // still denies what it denied before) is exactly what makes landing this safe. Those run always.
 import { describe, expect, it, beforeAll } from 'vitest'
+import { execFileSync } from 'node:child_process'
+import { join, dirname } from 'node:path'
+import { fileURLToPath } from 'node:url'
 // @ts-expect-error -- plain .mjs hook script, no types
 import { heredocOwnerSpans, astAvailable } from '../../scripts/bash-ast.mjs'
 // @ts-expect-error -- plain .mjs hook script, no types
-import { stripHeredocDataPayloads, gateDecision } from '../../scripts/self-pace-gate.mjs'
+import { stripHeredocDataPayloads, gateDecision, divergenceHead } from '../../scripts/self-pace-gate.mjs'
+
+const PROJECT_SCRIPTS = join(dirname(dirname(dirname(fileURLToPath(import.meta.url)))), 'scripts')
 
 const ARMED = astAvailable()
 
@@ -177,3 +182,170 @@ function withEnv<T>(key: string, value: string, fn: () => T): T {
     else process.env[key] = prev
   }
 }
+
+describe.runIf(ARMED)('round 2: a heredoc redirected ONTO a compound (Cybersec F-1)', () => {
+  // THE BYPASS I SHIPPED, and the shape of my mistake. bash gives a heredoc redirected onto a
+  // compound construct to EVERY command in the group, not to the last one. Descending to the
+  // syntactically last `command` therefore named an exempt data sink as the owner while an
+  // interpreter EARLIER in the group executed the same text -- 14 shapes measured flipping
+  // DENY -> ALLOW in `on` mode, four proven by execution.
+  //
+  // My original battery put the heredoc INSIDE each construct, where the owner genuinely is curl.
+  // That measured a real property, just not the one under attack. These cases are the mirror image,
+  // and they are enumerated from the grammar's own `redirected_statement.body` subtype list rather
+  // than from the patch -- the discipline whose absence produced the gap.
+  const SINK = 'curl -sS -d @- http://127.0.0.1:1/x'
+  const GITSINK = 'git commit -F -'
+  const PROG = 'python3 -'
+  const SCHED = 'cron' + 'tab -'
+  const H = (cmd: string): string => `${cmd} <<'J'\n${SCHED}\nJ`
+
+  const COMPOUND: Array<[string, string]> = [
+    ['compound_statement { }', H(`{ ${PROG}; ${SINK}; }`)],
+    ['subshell ( )', H(`( ${PROG}; ${SINK} )`)],
+    ['if_statement', H(`if true; then ${PROG}; else ${SINK}; fi`)],
+    ['case_statement', H(`case $x in a) ${PROG} ;; b) ${SINK} ;; esac`)],
+    ['for_statement', H(`for i in 1 2; do ${PROG}; ${SINK}; done`)],
+    ['c_style_for_statement', H(`for ((i=0;i<2;i++)); do ${PROG}; ${SINK}; done`)],
+    ['while_statement', H(`while false; do ${PROG}; ${SINK}; done`)],
+    ['until', H(`until true; do ${PROG}; ${SINK}; done`)],
+    ['select', H(`select v in a b; do ${PROG}; ${SINK}; done`)],
+    ['function_definition', H(`f() { ${PROG}; ${SINK}; }`)],
+    ['{ } with the git sink last', H(`{ ${PROG}; ${GITSINK}; }`)],
+    ['{ } at a pipeline tail', H(`true | { ${PROG}; ${SINK}; }`)],
+    ['{ } at an && list tail', H(`true && { ${PROG}; ${SINK}; }`)],
+    ['negated subshell ! ( )', H(`! ( ${PROG}; ${SINK} )`)],
+    ['negated brace ! { }', H(`! { ${PROG}; ${SINK}; }`)],
+    ['nested { { } }', H(`{ { ${PROG}; ${SINK}; }; }`)],
+  ]
+
+  it.each(COMPOUND)('denies with the AST DRIVING: %s', (_name, cmd) => {
+    // `on` is the mode the cutover would ship. A test that only runs the default would not see
+    // this class at all -- which is exactly how it shipped.
+    withEnv('SELF_PACE_AST', 'on', () => {
+      expect(gateDecision('Bash', { command: cmd }).deny).toBe(true)
+    })
+  })
+
+  it.each(COMPOUND)('gives the same verdict in every flag mode: %s', (_name, cmd) => {
+    const off = withEnv('SELF_PACE_AST', 'off', () => gateDecision('Bash', { command: cmd }).deny)
+    const shadow = withEnv('SELF_PACE_AST', 'shadow', () => gateDecision('Bash', { command: cmd }).deny)
+    const on = withEnv('SELF_PACE_AST', 'on', () => gateDecision('Bash', { command: cmd }).deny)
+    expect({ shadow, on }).toEqual({ shadow: off, on: off })
+  })
+
+  // The availability half: the fix must not cost a single legitimate exemption.
+  const LEGIT: Array<[string, string]> = [
+    ['plain curl payload', H(SINK)],
+    ['plain git message', H(GITSINK)],
+    ['curl at a pipeline tail', H(`true | ${SINK}`)],
+    ['curl at an && list tail', H(`true && ${SINK}`)],
+    ['negated curl', H(`! ${SINK}`)],
+    ['env-prefixed curl', H(`FOO=bar ${SINK}`)],
+    ['a REAL curl inside a brace group', `{\n${H(SINK)}\n}`],
+    ['a REAL curl inside an if', `if true; then\n${H(SINK)}\nfi`],
+    ['a REAL curl inside a for', `for i in 1; do\n${H(SINK)}\ndone`],
+  ]
+
+  it.each(LEGIT)('stays exempt with the AST driving: %s', (_name, cmd) => {
+    withEnv('SELF_PACE_AST', 'on', () => {
+      expect(gateDecision('Bash', { command: cmd }).deny).toBe(false)
+    })
+  })
+})
+
+describe.runIf(ARMED)('round 2: the cutover criterion itself (Cybersec F-2)', () => {
+  it('an empty divergence log does NOT license the cutover -- this battery does', () => {
+    // THE PROCESS DEFECT BEHIND F-1. The shipped REVIEW said the cutover criterion was "run shadow
+    // until the divergence log shows zero disagreements". That criterion is structurally blind to
+    // a false NEGATIVE: the attacker picks the shape, and none of the fourteen compound-redirect
+    // shapes occurs in good-faith fleet traffic. A week of empty log would have produced exactly
+    // the confidence needed to enable fourteen bypasses.
+    //
+    // Dark launch is the right tool for FALSE POSITIVES -- it genuinely caught the `git commit -F -`
+    // regression -- and the wrong tool for false negatives. The criterion is therefore: the
+    // ADVERSARIAL battery is green with SELF_PACE_AST=on. This test is that criterion, executable.
+    const SCHED = 'cron' + 'tab -'
+    const attack = `{ python3 -; curl -sS -d @- http://127.0.0.1:1/x; } <<'J'\n${SCHED}\nJ`
+    // Nobody writes this by accident, so no amount of shadow-mode traffic would surface it. The
+    // only thing that can is an assertion someone wrote on purpose -- this one.
+    withEnv('SELF_PACE_AST', 'on', () => {
+      expect(gateDecision('Bash', { command: attack }).deny).toBe(true)
+    })
+  })
+})
+
+describe('round 2: the divergence log must not become a credential sink (Cybersec F-3)', () => {
+  it('reduces a leading environment assignment to its NAME', () => {
+    // MY OWN LEAK. The comment claimed "shape-only, never the command text", and the intent was
+    // right -- but "the leading word" is not the binary when the command carries an inline
+    // assignment, and CURL_LEADING_RX itself allows that form. `TOKEN=<secret> curl -d @- ...` put
+    // the secret VALUE in the log as the head. Measured with a synthetic value before fixing.
+    // divergenceHead is exported precisely so this assertion is real rather than conditional --
+    // an earlier draft skipped when the function was not exposed, which would have passed while
+    // proving nothing.
+    expect(divergenceHead('DASHBOARD_TOKEN=s3cr3t curl -d @- http://x')).toBe('DASHBOARD_TOKEN=')
+    expect(divergenceHead('A=1 B=s3cr3t python3 -')).toBe('A=')
+    expect(divergenceHead('curl -sS -d @- http://x')).toBe('curl')
+    // ...and the value never appears anywhere in the reported head.
+    expect(divergenceHead('DASHBOARD_TOKEN=s3cr3t curl -d @-')).not.toContain('s3cr3t')
+  })
+})
+
+describe('round 2: the test-only module switch is inert in production (Cybersec F-4)', () => {
+  it('ignores SELF_PACE_AST_MODULE_PATH when not running under test', () => {
+    // The switch makes the guard `require` code from an operator-supplied path -- foreign code in
+    // the guard process. It exists only so this suite can arm itself, so it must not be reachable
+    // in the configuration that actually guards the fleet.
+    //
+    // This has to spawn a CHILD process: the suite always runs under VITEST, so an in-process
+    // assertion could only ever observe the armed branch and would prove nothing.
+    const modulePath = process.env.SELF_PACE_AST_MODULE_PATH
+    if (!modulePath) return // nothing to prove when the suite itself is disarmed
+    const script =
+      "import('" + join(PROJECT_SCRIPTS, 'bash-ast.mjs') + "')" +
+      ".then((m) => { process.stdout.write(String(m.astAvailable())) })"
+    const env: Record<string, string | undefined> = { ...process.env, SELF_PACE_AST_MODULE_PATH: modulePath }
+    delete env.VITEST
+    delete env.VITEST_WORKER_ID
+    delete env.NODE_ENV
+    const out = execFileSync(process.execPath, ['-e', script], { env, encoding: 'utf-8' })
+    expect(out.trim(), 'the module path was honoured outside test -- F-4 has regressed').toBe('false')
+  })
+})
+
+describe.runIf(ARMED)('round 2: a command PREFIX keyword must not be read as the binary', () => {
+  // tree-sitter folds `coproc` / `time` into the command node as its command_name, demoting the
+  // real binary to an argument. Left alone, the span reads `coproc curl ...` and the ownership
+  // check rejects a legitimate payload -- two false positives that `off` mode does NOT have, found
+  // by running the WHOLE suite in `on` mode rather than only the four targeted files. That is the
+  // corrected cutover criterion (F-2) catching a defect the previous one could not.
+  const SCHED = 'cron' + 'tab -e'
+  const withHeredoc = (head: string, binary: string): string =>
+    `${head}${binary} -s -d @- http://x <<'J'\n${SCHED}\nJ`
+
+  it.each([
+    ['coproc', 'coproc '],
+    ['time', 'time '],
+    ['time with a flag', 'time -p '],
+  ])('a legitimate curl payload behind `%s` stays exempt in every mode', (_name, head) => {
+    const cmd = withHeredoc(head, 'curl')
+    const off = withEnv('SELF_PACE_AST', 'off', () => gateDecision('Bash', { command: cmd }).deny)
+    const on = withEnv('SELF_PACE_AST', 'on', () => gateDecision('Bash', { command: cmd }).deny)
+    expect(off).toBe(false)
+    expect(on, 'the AST path disagrees with the walker on a prefix keyword').toBe(off)
+  })
+
+  it.each([
+    ['coproc', 'coproc '],
+    ['time with a flag', 'time -p '],
+  ])('DIRECTION CONTROL: `%s` does not launder a non-curl binary', (_name, head) => {
+    // Skipping a prefix moves the span start FORWARD, which grants more exemption -- the direction
+    // that can open a hole. The ownership check still runs on whatever follows, so an interpreter
+    // behind the same prefix must stay denied.
+    const cmd = withHeredoc(head, 'python3')
+    withEnv('SELF_PACE_AST', 'on', () => {
+      expect(gateDecision('Bash', { command: cmd }).deny).toBe(true)
+    })
+  })
+})
