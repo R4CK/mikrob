@@ -2164,20 +2164,50 @@ egyetlen `flock` mögött sorosít (`/tmp/local-llm-gpu.lock`), 600 s várakozá
 lock-bukás SAJÁT kilépési kódot kap (6, „gpu lock busy -- not a generation failure"), hogy ne
 keveredjen egy generálási hibával.
 
-**3. lelet: megmérve, a kontenció ma NEM okoz bukást.** A `local_llm_queue` 1725 sora: 1422 kész,
-302 bukott (17,5%), 1 eszkalált. A bukások megoszlása:
+**3. lelet (JAVÍTVA a Cybersec F-1 után, 2026-08-24): a kontencióról ma NEM lehet a queue-ból mérni,
+mert egyik kódút sem írja be „lock busy"-ként.** Ez a szakasz eredetileg azt állította, hogy
+„megmérve, a kontenció ma nem okoz bukást", és bizonyítékként a `local_llm_queue` egyetlen sorára
+hivatkozott (`gpu lock busy / exit 6 -> 0`). Az a szám VAKUUM: nulla lenne akkor is, ha soha nincs
+kontenció, és akkor is, ha folyamatosan van. Miért:
+
+- **Közvetlen út** (`store/local-llm.sh:335-346`): a hiba-ág `log_usage err` + `_queue_finish fail`
+  párossal INDUL, és csak ezután válik szét a kilépési kód szerint (`gen_rc -eq 1` -> `die 6`). A
+  `_queue_finish fail` viszont mindig ugyanazt az egy stringet írja: `local-llm.sh call failed`. Egy
+  lock-busy tehát pontosan úgy néz ki a sorban, mint bármely más bukás; a `log_usage` is csak `err`-t
+  ír, kilépési kódot nem.
+- **Worker út** (`store/local-llm-worker.sh:99-104`): ott az `rc -eq 6` ág `abstain`-t hív, a sor
+  VISSZAMEGY `pending`-be, sosem lesz `failed`. Ez szándékos és helyes (nem számít bele a 3-csapás
+  eszkalációs budgetbe), de azt is jelenti, hogy a worker úton egy lock-busy nyomtalan marad.
+
+A `local_llm_queue` 1725 sora ettől függetlenül igaz: 1422 kész, 302 bukott (17,5%), 1 eszkalált. A
+bukások megoszlása viszont így olvasandó:
 
 ```
-local-llm.sh call failed                  165
+local-llm.sh call failed                  165   <- ebben BENNE van a lock-busy is, ha volt
 abandoned: worker vanished while running  128
 requeued: worker vanished while running     9
-gpu lock busy / exit 6                       0   <-- EGY SEM
+(nincs "gpu lock busy" kategória -- egyik kódút sem ír ilyet a sorba)
 ```
 
-**Nulla lock-busy bukás.** A flock nem elbukik, hanem vár és sikerül -- pontosan azt csinálja, amire
-való. A tényleges bukás-tömeg a **worker-életciklus**: 137 sor „a worker eltűnt futás közben", és
-napokra bontva ez ÁLLANDÓ (2026-08-23: 11, 08-22: 35, 08-21: 40, 08-20: 24, 08-16: 23), nem egyszeri
-incidens -- tehát nem a mai dxgkrnl-crashloop számlájára írható.
+**Amit a mérés VALÓBAN alátámaszt.** A `store/local-llm-usage.log` 4926 sorából 237 az `err`. Ebből
+175 a `route-classify`, ami a repóban az EGYETLEN hívó, ami lerövidíti a várakozást
+(`LOCAL_LLM_LOCK_WAIT="$HALF" LOCAL_LLM_TIMEOUT="$HALF"`, HALF = TIMEOUT/2 = 22 s) -- és mind a 175
+sor 22,058-23,354 s (medián 22,075 s), vagyis pontosan a küszöbön ül. Ott a lock-plafon ÉS a
+generálási timeout ugyanaz a szám, tehát a kettő megkülönböztethetetlen: ezekről egyik irányba sincs
+bizonyíték. A maradék 62 sor viszont az alapértelmezett 600 s-os lock-wait-tel futott, és köztük a
+leghosszabb hibás hívás is csak 359,7 s. Mivel a `flock -w 600` definíció szerint csak a TELJES
+várakozás letelte után bukik, 600 s alatt lock-busy nem lehet: **ennél a 62 hívásnál tényleg nem a
+kontenció ölt; a többiről ma nem lehet nyilatkozni egyik irányba sem.**
+
+A bukás-tömeg viszont változatlanul a **worker-életciklus**: 137 sor „a worker eltűnt futás közben"
+(128 abandoned + 9 requeued), és napokra bontva ez ÁLLANDÓ (2026-08-23: 11, 08-22: 35, 08-21: 40,
+08-20: 24, 08-16: 23), nem egyszeri incidens -- tehát nem a mai dxgkrnl-crashloop számlájára írható.
+
+**Következmény (követő kártya-jelölt, Cybersec F-2):** a kontenciót a rendszer futásidőben helyesen
+ismeri fel és fail-closed módon kezeli (`route-classify.sh` külön `BUSY` státusza, a worker
+`abstain`-je), de sehol nem PERZISZTÁLJA. Ezért a következő ilyen döntés is érvelhető lesz, nem
+mérhető. Egy sornyi javítás elég hozzá: a `log_usage` kapjon `busy` státuszt `err` helyett, ha a
+kilépési kód 6 (vagy a queue kapjon elkülönített `contention` számlálót).
 
 **4. döntés: a `SmarterRouter` VRAM-logikája olyan problémát old meg, ami nekünk nincs.** Az ő
 VRAM-tudatossága TÖBB modell/backend közül választ aszerint, hogy mi fér a memóriába. Nálunk EGY 7B
