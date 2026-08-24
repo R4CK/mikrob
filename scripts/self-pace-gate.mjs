@@ -191,9 +191,21 @@ const SELF_PACE_BASH_PATTERNS = [
 // missed it. Same lesson this file already documents for scanBashWord: a bash WORD is a sequence of
 // runs, not a character class. `(?:\\.|[^...])*` is that same idiom applied here: an escaped pair
 // consumes two characters as one unit before the negated class gets another turn, so a `\<`/`\>`
-// can no longer look like a boundary. It still cannot reopen the quadratic the class exists to
-// avoid, because it advances by whole pairs rather than backtracking character-by-character.
-const PATH_PREFIX = String.raw`(?:(?:\\.|[^\s|;&<>()])*\/)?`
+// can no longer look like a boundary.
+//
+// MY OWN REGRESSION, caught before landing (card ec20dd23/fa5ef179 land attempt, 2026-08-24): the
+// negated class must ALSO exclude the backslash itself, or the two alternatives overlap on every
+// literal `\` -- `\\.` can consume it paired with the next character, or the class can consume it
+// alone and let the star continue. That is the identical ambiguous-star shape this file's other
+// escape-aware patterns are written to avoid (see the double-quote body a few hundred lines down:
+// `(?:\\.|[^"\\])*`, which DOES exclude the backslash). Without it, a run of consecutive backslashes
+// with no `\/` ever following -- exactly what deep `bash -c "..."` nesting produces once each level
+// escapes the last -- makes the engine try every partition of the run before giving up empty, which
+// is exponential in the run length. MEASURED: HERESTRING_RX.test() on a 6-deep nested wrapper (183
+// chars, ~30 consecutive backslashes near the payload) never returned; the fix below returns in 0ms
+// on the same input, with no change to any matched/non-matched outcome (checked against plain,
+// absolute, and relative paths, and the escaped-separator shape fa5ef179 was fixed for).
+const PATH_PREFIX = String.raw`(?:(?:\\.|[^\s|;&<>()\\])*\/)?`
 
 const SCHED_PREFIX = String.raw`(?:(?:[A-Za-z_]\w*=\S*|sudo|env|command|exec|nice|builtin|time)\s+)*${PATH_PREFIX}`
 // The command-boundary anchor includes `(` so a $(...) command substitution
