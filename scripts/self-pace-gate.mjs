@@ -166,7 +166,25 @@ const SELF_PACE_BASH_PATTERNS = [
 // `PATH=/bin crontab -` are all caught. Trailing \b(?!-) so it never fires on
 // "netstat" / "crontab-helper.sh"; (?!\s*=) so a bare NAME=value assignment
 // (`at=$(...)`) is not mistaken for the `at` binary.
-const SCHED_PREFIX = String.raw`(?:(?:[A-Za-z_]\w*=\S*|sudo|env|command|exec|nice|builtin|time)\s+)*(?:\S*/)?`
+// A leading PATH on a command word (`/usr/local/bin/bash`, `./tools/sh`). Written with a BOUNDED
+// character class, not `\S*`, and that is a security fix rather than a tidy-up (card fa5ef179).
+//
+// `(?:\S*\/)?` is unanchored and greedy over "any non-space", so on input that contains NO spaces --
+// `:|:|:|...` is the measured example -- it scans to the end of the string at EVERY start position
+// looking for a `/`, then backtracks. That is O(n^2): measured 36 ms at 8 KB, 2304 ms at 64 KB,
+// exactly 4x per doubling, while the bounded form is 0 ms at every size. Since the hook is
+// registered with `timeout: 10` and the caller treats a timeout as NON-blocking, a large enough
+// inert filler pushed the whole gate past its deadline and the real payload was allowed
+// unexamined -- the governance control bypassed by input size alone.
+//
+// NOTHING IS LOST BY THE NARROWER CLASS, measured rather than assumed: `| ; & < > ( )` cannot
+// appear in an unquoted command path in bash -- they are separators. On every shape where the two
+// forms differ, both still FIND the shell; the bounded one merely starts the match after the
+// separator, which is where the command actually begins (`/tmp/a|b/bash` -> `b/bash`). So detection
+// is unchanged and the span is more accurate.
+const PATH_PREFIX = String.raw`(?:[^\s|;&<>()]*\/)?`
+
+const SCHED_PREFIX = String.raw`(?:(?:[A-Za-z_]\w*=\S*|sudo|env|command|exec|nice|builtin|time)\s+)*${PATH_PREFIX}`
 // The command-boundary anchor includes `(` so a $(...) command substitution
 // (`X=$(crontab -)`) is caught, AND a backtick so a legacy `...` substitution
 // (`X=`crontab -r``) is caught too -- both run the enclosed command in a shell
@@ -723,7 +741,10 @@ export function stripDataPayloads(seg) {
 // count); `feedsCurlStdin` requires BOTH the leading-curl match AND the flag shape,
 // so a decoy `-d @-` sitting in some OTHER binary's own argv can no longer curl-y
 // launder a heredoc it does not read as its data.
-const CURL_LEADING_RX = /^\s*(?:(?:[A-Za-z_]\w*=\S*|sudo|env|command|exec|nice|builtin|time)\s+)*(?:\S*\/)?curl\b/i
+const CURL_LEADING_RX = new RegExp(
+  String.raw`^\s*(?:(?:[A-Za-z_]\w*=\S*|sudo|env|command|exec|nice|builtin|time)\s+)*${PATH_PREFIX}curl\b`,
+  'i',
+)
 const CURL_STDIN_DATA_RX = /(?:^|\s)(?:-d|--data(?:-(?:raw|binary|ascii))?)(?:\s+|=)@-(?=\s|$)/i
 // SECOND STDIN-DATA SHAPE: `git commit -F -` (card 0229c844). Same class as curl's `-d @-`, found
 // the same way -- twice, mid-report: a commit message that DESCRIBED a scheduling primitive was
@@ -738,7 +759,10 @@ const CURL_STDIN_DATA_RX = /(?:^|\s)(?:-d|--data(?:-(?:raw|binary|ascii))?)(?:\s
 // must be git (a decoy `-F -` in some other argv launders nothing, per Cybersec's 4638c14c
 // finding), the subcommand must be one that takes a message file, and an unquoted tag whose body
 // can command-substitute is left intact because bash expands it before git ever sees it.
-const GIT_LEADING_RX = /^\s*(?:(?:[A-Za-z_]\w*=\S*|sudo|env|command|exec|nice|builtin|time)\s+)*(?:\S*\/)?git\b/i
+const GIT_LEADING_RX = new RegExp(
+  String.raw`^\s*(?:(?:[A-Za-z_]\w*=\S*|sudo|env|command|exec|nice|builtin|time)\s+)*${PATH_PREFIX}git\b`,
+  'i',
+)
 // commit/tag/notes are the subcommands that read a message from a file; `-F` means something else
 // entirely elsewhere in git (e.g. `git branch -F` does not exist, but `git grep -F` is fixed-string
 // matching), so the subcommand check is what keeps this from becoming a general `-F -` exemption.
@@ -1538,7 +1562,7 @@ function unquoteWord(word) {
   }
   return out
 }
-const SHELL_NAME = String.raw`(?:\S*\/)?(?:bash|sh|zsh|dash|ksh)\b`
+const SHELL_NAME = String.raw`${PATH_PREFIX}(?:bash|sh|zsh|dash|ksh)\b`
 const SHELL_C_RX = new RegExp(
   `${WRAPPER_POSITION}(?:sudo\\s+|env\\s+|command\\s+|exec\\s+)*${SHELL_NAME}${OPTION_RUN}\\s+-[a-zA-Z]*c${POST_C}\\s+${QUOTED_OR_WORD}`,
   'g',
@@ -1577,8 +1601,8 @@ const HERESTRING_RX = new RegExp(
 // citing precisely this handling, so leaving the hole open would have cost two cards' protection.
 const PROC_SUB_SHELL = String.raw`${WRAPPER_POSITION}(?:sudo\s+|env\s+)*${SHELL_NAME}${HERESTRING_FILLER}<\(`
 const STDIN_SHELL_RX = new RegExp(
-  String.raw`\|\s*(?:sudo\s+|env\s+)*(?:\S*\/)?(?:bash|sh|zsh|dash|ksh)\b(?!\s*-[a-zA-Z]*c\b)` +
-    String.raw`|\bxargs\b[^|]*?(?:\S*\/)?(?:bash|sh|zsh|dash|ksh)\b` +
+  String.raw`\|\s*(?:sudo\s+|env\s+)*${PATH_PREFIX}(?:bash|sh|zsh|dash|ksh)\b(?!\s*-[a-zA-Z]*c\b)` +
+    String.raw`|\bxargs\b[^|]*?${PATH_PREFIX}(?:bash|sh|zsh|dash|ksh)\b` +
     `|${PROC_SUB_SHELL}`,
 )
 const QUOTED_LITERAL_RX = /'([^']*)'|"((?:\\.|[^"\\])*)"/g
@@ -1614,9 +1638,35 @@ export function executableStrings(command) {
   return out
 }
 
+// A hard ceiling on how much text the gate will examine, ABOVE WHICH IT DENIES (card fa5ef179).
+//
+// This is a backstop, not the fix. The measured bypass was an accidental quadratic in the path
+// prefix (see PATH_PREFIX): a 96 KB inert filler took 10.36 s, past the hook's registered
+// `timeout: 10`, and the caller treats a timed-out hook as non-blocking -- so the payload was
+// allowed unexamined. That amplification is gone; the same input is now 85 ms and the curve is
+// linear out to 520 KB.
+//
+// The ceiling exists because "no amplification today" is not "no amplification ever". If some
+// future pattern reintroduces one, this bounds what an attacker may feed it. FAIL-CLOSED is the
+// whole point: a command too large to examine is refused rather than waved through, which is the
+// opposite of what the timeout does.
+//
+// 1 MiB is chosen from the measured rate (~0.7 ms/KB), so even a hypothetical 10x regression stays
+// inside the 10 s deadline. Real agent commands are orders of magnitude smaller -- a Bash call
+// carrying a megabyte of text is anomalous in its own right -- so the ceiling costs nothing that
+// legitimately happens, and a caller who genuinely needs to move that much data has file
+// redirection and stdin.
+const MAX_COMMAND_BYTES = 1048576
+
 export function gateDecision(toolName, toolInput) {
   const name = String(toolName ?? '')
   if (SELF_PACE_TOOLS.has(name)) return { deny: true }
+  // Measured on the BYTE length, not String.length: a non-ASCII command can be up to three times
+  // its UTF-16 length in bytes, and the thing being bounded is work over bytes.
+  const rawCommand = name === 'Bash' ? String(toolInput?.command ?? '') : ''
+  if (rawCommand && Buffer.byteLength(rawCommand, 'utf8') > MAX_COMMAND_BYTES) {
+    return { deny: true, reason: 'oversized' }
+  }
   // Native file tools writing the self-schedule store would bypass any Bash regex.
   if (name === 'Write' || name === 'Edit' || name === 'NotebookEdit') {
     const fp = String(toolInput?.file_path ?? toolInput?.notebook_path ?? '')
@@ -1756,6 +1806,14 @@ const GATE_MSG =
   'maradj idle a prompt-on -- a beerkezo uzenet majd ujrainditja a turn-t. SOHA ne valaszolj ' +
   'magadnak es SOHA ne dontsd el az operator helyett egy hozza intezett kerdest.'
 
+const OVERSIZE_MSG =
+  'Tul nagy parancs (governance hard-gate, fail-closed). A kapu legfeljebb 1 MiB parancsszoveget ' +
+  'vizsgal at; ezen felul NEM engedi at ellenorizetlenul, hanem tiltja -- kulonben eleg lenne ' +
+  'eleg nagy bemenettel tulfutni a hook hataridejen, es a kapu megkerulheto lenne. ' +
+  'Mit tegyel: ne a parancssorban vidd az adatot. Ird fajlba es hivatkozz ra (`< fajl`, ' +
+  '`-d @fajl`, heredoc), vagy bontsd tobb hivasra. Ha tenyleg egyetlen, egy megabajtnal nagyobb ' +
+  'parancsra van szukseged, az operator dontese -- szolj neki, ne kerulgesd.'
+
 // allow()/deny()/isInvokedDirectly() are shared with the other PreToolUse
 // gates -- see hook-lib.mjs.
 if (isInvokedDirectly(import.meta.url)) {
@@ -1765,7 +1823,10 @@ if (isInvokedDirectly(import.meta.url)) {
   } catch {
     allow() // malformed/empty input must never break the agent's tool calls
   }
-  const { deny: shouldDeny } = gateDecision(payload?.tool_name, payload?.tool_input)
-  if (shouldDeny) deny(GATE_MSG)
+  const { deny: shouldDeny, reason } = gateDecision(payload?.tool_name, payload?.tool_input)
+  // A refusal has to say what actually happened. The self-pace message would be baffling here --
+  // the command was never examined for scheduling at all, it was refused for its size -- and a
+  // message that misdescribes the cause sends the reader looking for the wrong bug.
+  if (shouldDeny) deny(reason === 'oversized' ? OVERSIZE_MSG : GATE_MSG)
   allow()
 }
