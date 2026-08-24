@@ -54,6 +54,13 @@ const UP_WAIT_FOR_URL_MS = 10_000
 // user to complete the browser auth before giving up (tailscale's own default is
 // "block forever", which would leak a child process on an abandoned login).
 const UP_BUDGET = '10m'
+const UP_BUDGET_MS = 10 * 60 * 1000
+// Backstop for a `tailscale up` that does not honour its own --timeout (hung CLI, wedged
+// network stack, or a build that ignores the flag): kill the whole process GROUP past this,
+// same pattern execFileAsync uses and for the same reason (a lone child.kill only reaches the
+// direct child; up can leave helpers behind). Without this, startTailscaleUp's own promise
+// still resolves on time via earlyTimer, but the real OS process can outlive it indefinitely.
+const UP_HARD_KILL_MS = UP_BUDGET_MS + 30_000
 
 export type TailscaleLoginErrorCode =
   | 'not_installed'
@@ -184,7 +191,9 @@ function startTailscaleUp(token: string): Promise<{ loginUrl: string | null }> {
     let settledEarly = false
     let child: ReturnType<typeof spawn>
     try {
-      child = spawn(tailscaleBin(), ['up', `--timeout=${UP_BUDGET}`], { stdio: ['ignore', 'pipe', 'pipe'] })
+      // detached: true so the child gets its own process GROUP -- required for the hard-kill
+      // backstop below to reach helpers `up` may itself spawn, not just the direct child.
+      child = spawn(tailscaleBin(), ['up', `--timeout=${UP_BUDGET}`], { stdio: ['ignore', 'pipe', 'pipe'], detached: true })
     } catch {
       pollState.set(token, { status: 'failed', baseUrl: null, error: 'not_installed', createdAt: Date.now() })
       resolveEarly({ loginUrl: null })
@@ -223,9 +232,21 @@ function startTailscaleUp(token: string): Promise<{ loginUrl: string | null }> {
     }, UP_WAIT_FOR_URL_MS)
     earlyTimer.unref?.()
 
+    const hardKillTimer = setTimeout(() => {
+      if (child.pid == null) return
+      try {
+        process.kill(-child.pid, 'SIGKILL')
+      } catch {
+        try { child.kill('SIGKILL') } catch { /* nothing left to kill */ }
+      }
+      logger.warn({ upBudgetMs: UP_BUDGET_MS }, 'tailscale up outlived its own --timeout; process group killed')
+    }, UP_HARD_KILL_MS)
+    hardKillTimer.unref?.()
+
     child.on('error', () => {
       inFlightToken = null
       inFlightLoginUrl = null
+      clearTimeout(hardKillTimer)
       pollState.set(token, { status: 'failed', baseUrl: null, error: 'not_installed', createdAt: Date.now() })
       if (!settledEarly) {
         settledEarly = true
@@ -236,6 +257,7 @@ function startTailscaleUp(token: string): Promise<{ loginUrl: string | null }> {
     child.on('exit', (code) => {
       inFlightToken = null
       inFlightLoginUrl = null
+      clearTimeout(hardKillTimer)
       // No point holding the caller open for the rest of UP_WAIT_FOR_URL_MS once the child
       // has already exited without ever printing a URL -- there is nothing left to wait for.
       if (!settledEarly) {

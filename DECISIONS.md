@@ -2957,3 +2957,38 @@ függőben lévő flotta-landolás újra próbálható.
 épp blokkolva általa és már mindent tudott a jelenségről).
 
 **Hivatkozás:** kártya `bba2b3b0`.
+
+## 2026-08-24 18:25 -- tailscale-login.test.ts akadás (a2d8eab1): gyökér-ok nem reprodukálható, defenzív keményítés landolva
+
+2026-08-24 17:15-17:50 és később 17:52-18:11 között kétszer, két FÜGGETLEN alkalommal akadt el a
+`src/web/federation/tailscale-login.test.ts` egy `fleet-test.sh` futásban (MikroB, ill. saját magam
+által megfigyelve) -- első alkalommal 34+ percig egy vitest worker 100% CPU-n pergett rajta, minden
+más worker idle volt közben (nem I/O-várakozás, aktív számítás jele); a `marveen-test.lock` megosztott,
+így ez BÁRMELY másik ügynök landolását blokkolja (saját landolásomat kétszer is REFUSED-ra vitte).
+
+**Vizsgálat:** végigolvastam a tesztfájlt és a `tailscale-login.ts` forrást -- minden poll-ciklus a
+tesztekben már eleve retry-számmal korlátozott (max 50×20ms), nincs bennük szó szerinti végtelen
+ciklus. Az egyetlen strukturális hiányosság, amit találtam: a `startTailscaleUp` maga spawnolt
+gyermek-folyamatának (a `tailscale up` hívás) NINCS kemény timeout/kill-védelme -- ellentétben az
+`execFileAsync`-kel (aminek pont ez a dokumentált célja, ld. a fájl saját kommentje a process-group
+kill-ről), itt a `earlyTimer` csak a PROMISE-t oldja fel korán, a valódi OS-folyamatot soha nem öli
+meg, akármeddig fut.
+
+**Reprodukálási kísérlet:** 232 futtatás összesen -- 40 szekvenciális + 96 párhuzamos (12 egyidejű
+példány × 8 kör, mesterséges CPU-kontenció a valós flotta-terhelés szimulálására) a fix ELŐTT, majd
+újabb 96 párhuzamos a fix UTÁN -- egyetlen egyszer sem akadt el. A gyökér-ok emiatt NEM igazolt, csak
+gyanított; a jelenség nyilvánvalóan valamilyen finomabb verseny-feltételt igényel, amit izolált
+futtatással (akár mesterséges kontencióval is) nem sikerült előidézni.
+
+**Döntés:** a talált strukturális hiányosságot (nincs kemény kill a `tailscale up` gyermek-folyamatra)
+mindenképp megjavítottam -- ez önmagában is valódi robusztussági rés (egy éles, ténylegesen elakadt
+`tailscale up` a hálózati stack hibája miatt korlátlanul futva maradhatna), függetlenül attól, hogy ez
+okozza-e a megfigyelt teszt-akadást. `detached: true` + process-group SIGKILL hozzáadva `UP_BUDGET_MS
++ 30s` után, ugyanazt a mintát követve mint `execFileAsync`. NEM állítom, hogy ez a tényleges gyökér-ok
+javítása -- ezt a REVIEW-kommentben és MikroB felé is explicit kimondom.
+
+**Hatás:** `npx tsc --noEmit` tiszta, `npx eslint` tiszta, a teszt 25/25 zöld a fix után is (508ms).
+
+**Ki döntött:** backend2 (kártya a2d8eab1, MikroB dispatch).
+
+**Hivatkozás:** kártya `a2d8eab1`.
