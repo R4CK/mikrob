@@ -120,16 +120,23 @@ function eachNode(root, visit) {
 // the difference; enumerating from my own patch is what produced the gap.
 const LIST_LIKE_BODY = new Set(['pipeline', 'list', 'negated_command'])
 
+// ONLY the last named child, never a fallback to an earlier sibling (Cybered kill-chain 3 on
+// card f16b3165, round 3, NO-GO comment 15794). The previous version walked the pipeline/list
+// children back-to-front and accepted the first non-null `lastCommand()` result -- so when the
+// chain's real tail is a compound (correctly returns null per the fix above), it stepped BACK
+// to an earlier element and named THAT the owner. In `curl -d @- ... | { python3 -; } <<'J'` the
+// heredoc body is the pipeline TAIL's stdin (the python3 group), not the curl head's -- proven by
+// execution (the marker file the python3 branch writes appears even though curl stalls). If the
+// head merely resembles an exempt sink (curl/git), the ownership check ALLOWs a span whose real
+// executor is an interpreter later in the same chain. Descending only into the last element and
+// returning null when IT doesn't resolve keeps the fail-closed contract: no owner named means the
+// caller scans the body instead of exempting it.
 function lastCommand(node) {
   if (!node) return null
   if (node.type === 'command') return node
   if (!LIST_LIKE_BODY.has(node.type)) return null
-  const kids = node.children
-  for (let k = kids.length - 1; k >= 0; k--) {
-    const found = lastCommand(kids[k])
-    if (found) return found
-  }
-  return null
+  const kids = node.namedChildren
+  return lastCommand(kids[kids.length - 1] ?? null)
 }
 
 function ownerOf(node) {
