@@ -1,3 +1,13 @@
+// ROUND 6 (Cybered NO-GO, live on this same card): the first fix folded PATH_PREFIX into the filler
+// by routing every backslash through `\\.` (backslash + whatever follows, paired). All five shell
+// names end in the two literal characters `s`,`h`, so a backslash placed directly before that `s`
+// (`ba\sh`, `\sh`, `z\sh`, `da\sh`, `k\sh`) got force-paired with the `s`, consuming the character
+// the shell-name alternation needed next -- a silent ALLOW where the old code correctly DENYed.
+// Cybered proved bash itself resolves `ba\sh` to `bash` during word expansion (own repro:
+// `bash -c 'echo ba\sh'` prints `bash`), so this is a real, trivially-usable bypass, not a regex
+// artifact. The `MUST_DENY_BACKSLASH_BEFORE_SH` block below is that boundary, one case per shell
+// name plus the piped variant Cybered also demonstrated.
+//
 // Card ccc2c742: STDIN_SHELL_RX's xargs branch --
 // `\bxargs\b[^|]*?${PATH_PREFIX}(?:bash|sh|zsh|dash|ksh)\b` -- runs in O(n^2) on a long run of
 // characters PATH_PREFIX can never close (no `/`), because the unbounded lazy filler `[^|]*?`
@@ -57,6 +67,28 @@ describe('STDIN_SHELL_RX xargs branch: must keep denying (card ccc2c742 fix accu
 
   it.each(MUST_DENY)('%s', (_name, cmd) => {
     expect(bash(cmd)).toBe(true)
+  })
+
+  // Round 6 boundary (Cybered): a backslash placed directly before the closing `s` of the shell
+  // name's trailing `sh` -- the exact character bash itself drops during word expansion. One case
+  // per named shell (all five end in `sh`), plus the piped variant.
+  const MUST_DENY_BACKSLASH_BEFORE_SH: Array<[string, string]> = [
+    ['backslash before sh: bare "sh"', `echo "${CT} -" | xargs \\sh -c "id"`],
+    ['backslash before sh: "bash"', `echo "${CT} -" | xargs ba\\sh -c "id"`],
+    ['backslash before sh: "zsh"', `echo "${CT} -" | xargs z\\sh -c "id"`],
+    ['backslash before sh: "dash"', `echo "${CT} -" | xargs da\\sh -c "id"`],
+    ['backslash before sh: "ksh"', `echo "${CT} -" | xargs k\\sh -c "id"`],
+    ['backslash before sh, piped variant (Cybered repro)', `echo "${CT} -" | xargs ba\\sh -c "id"`],
+  ]
+
+  it.each(MUST_DENY_BACKSLASH_BEFORE_SH)('%s', (_name, cmd) => {
+    expect(bash(cmd)).toBe(true)
+  })
+
+  // The escaped-pipe crossing PATH_PREFIX used to provide must still work -- this is the one real
+  // capability the fold has to preserve, and the only case the 2-char `\\|` atom exists for.
+  it('escaped pipe before the shell name is still crossed (not treated as a real delimiter)', () => {
+    expect(bash(`echo "${CT} -" | xargs echo a\\|b bash -c "id"`)).toBe(true)
   })
 })
 
