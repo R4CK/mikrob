@@ -2497,6 +2497,72 @@ DENY-irányban vannak). Kontrollként ugyanaz a hunt 59 végrehajtott eltérést
 visszaálló mutánsnál, tehát nem vak. Az `N-R4` teszt a páratlan-idézőjel esetet DOKUMENTÁLJA és egy
 valós DENY-t rögzít, de NEM választja szét az MI mutánst -- ezt kimondom, hogy senki ne higgye
 lefedettnek. Ha valaki talál élő, végrehajtott szétválasztó alakot, jön rá a teszt.
+## 2026-08-24 12:30 -- tree-sitter dark-launch 2. kör: egy általam szállított megkerülés és a rossz cutover-kritérium (kártya f16b3165)
+
+**Döntés:** Cybersec NO-GO-ja (Gate-SHA ceed282d) elfogadva, mind az öt lelet javítva. A kártya
+alapdöntései (ADOPT, egy kötés, szűk lekérdezés, iteratív bejárás, null-szerződés, index-alapú span,
+dark-launch) VÁLTOZATLANOK -- azokon Cybersec sem vitatkozott. A javítás a felismerő EGY szabálya és
+a kimondott cutover-kritérium.
+
+**F-1 (HIGH, a blokkoló, az én hibám):** ha a heredoc egy ÖSSZETETT konstrukcióra van RÁirányítva,
+bash a törzset a csoport MINDEN parancsának stdinjeként adja oda, nem az utolsóénak. A
+`lastCommand()` a szintaktikailag utolsó parancsig ereszkedett, így egy mentesített data-sinket
+nevezett tulajdonosnak, miközben egy KORÁBBI interpreter ugyanazt a szöveget végrehajtotta.
+Sajátmagam reprodukáltam a nyelvtan `redirected_statement.body` altípus-listájából (18 altípus,
+ebből 4 lista-szerű): 14 alak fordult DENY→ALLOW `on` módban. Javítás: leszállás csak
+`pipeline`/`list`/`negated_command` alatt; minden más összetett törzsnél nincs vélemény, ami a
+meglévő szerződés szerint fail-closed.
+
+**Miért nem fogta meg a saját batériám:** a heredocot a konstrukción BELÜLRE tettem
+(`{ curl -d @- <<J ... J }`), ahol a tulajdonos tényleg a curl és a válasz helyes. A támadási felület
+ennek a TÜKÖRKÉPE. A batéria valós tulajdonságot mért, csak nem azt, ami támadható -- ugyanaz a
+hibaosztály, amit ez a flotta már dokumentált: az esetlistát a NYELVTANBÓL kell építeni, nem a saját
+patchből.
+
+**F-2 (MEDIUM, a folyamati hiba a hiba mögött):** a REVIEW-ban kimondott cutover-kritérium az volt,
+hogy „shadow módban gyűlik a divergencia-log, és nulla eltérés után jöhet az `on`". Ez
+SZERKEZETILEG vak a hamis NEGATÍVRA: az alakot a támadó választja, és a 14 megkerülés egyike sem
+fordul elő jóhiszemű flotta-forgalomban. Egy heti üres log pontosan azt a magabiztosságot adta volna,
+ami után a cutover 14 megkerülést élesít. A dark-launch a FALS POZITÍVOKRA jó eszköz (és ott bizonyított
+is: a `git commit -F -` regressziót tényleg az fogta meg), a false negatívokra nem. Az új kritérium:
+az adverzariális batéria zöld `SELF_PACE_AST=on` módban -- futtatható állítás, nem log-megfigyelés.
+
+**Az új kritérium azonnal talált két fals pozitívot, amit a régi nem:** a teljes suite `on` módban
+(nem csak a négy célzott fájl) megbukott a `coproc` és `time -p` kontrollokon. Ok: a nyelvtan ezeket
+a prefix-kulcsszavakat a parancs NEVÉNEK veszi, a valódi binárist argumentummá fokozva, így a span a
+kulcsszónál kezdődött és a tulajdonos-ellenőrzés egy jogos payloadot utasított el. A span mostantól a
+valódi binárisnál kezdődik. Irány-ellenőrzés kimondva: a span-kezdet ELŐRE mozgatása több mentességet
+ad, tehát ez a veszélyes irány -- de az ellenőrzés a prefix UTÁNI szövegen fut, így
+`coproc python3 - <<J` továbbra is tilt (mérve).
+
+**F-3 (MEDIUM, credential-szivárgás, szintén az enyém):** a divergencia-log kommentje azt állította,
+„shape-only, soha a parancsszöveget" -- a szándék jó volt, a megvalósítás szivárgott. A „vezető szó"
+nem a bináris, ha a parancs inline környezeti hozzárendelést hordoz, és a `CURL_LEADING_RX` maga
+engedi ezt az alakot: `TOKEN=<titok> curl -d @- ...` a titok ÉRTÉKÉT írta a logba. Javítva: a vezető
+hozzárendelés a NEVÉRE csonkolódik, a fájl `0600`-zal jön létre (a flotta 0002-es umaskjával eddig
+0664 volt), és van méret-plafon (a divergenciát a támadó tetszőleges számban gyártja).
+
+**F-4/F-5 (LOW):** a teszt-only `SELF_PACE_AST_MODULE_PATH` kapcsoló -- ami idegen kódot `require`-el
+a guard processzébe -- mostantól csak teszt alatt érvényes, élesben inert (külön teszt szegezi ki, ami
+GYEREKFOLYAMATOT indít, mert a suite maga mindig VITEST alatt fut, tehát in-process nem lenne
+bizonyítható). A `MAX_INPUT_BYTES` átnevezve `MAX_INPUT_UNITS`-ra: `String.length`-et mér, nem bájtot.
+
+**Bizonyíték:** 14/14 megkerülés zárva, 9/9 legitim mentesség változatlan, teljes suite **az AST-tel
+VEZETVE** 12267 zöld / 0 bukás, függőség nélkül (ahogy landol) 12184 zöld / 0 bukás, tsc 0,
+`no-unsafe-argument` 101 (alapvonal 102), 5 mutáns mind megölve (a szállított hiba visszaállítása
+29 tesztet dönt).
+
+**Nyitva marad, MÁS kártyára (Cybersec F-6, HIGH, PRE-EXISTING):** a `gateDecision` szuperlineáris,
+és ~96 KB-os bemenettel a 10 s-os hook-timeout + fail-open miatt a TELJES governance-kapu megkerülhető
+MA is. Nem ezé a kártyáé (a kártya ~15%-ot tesz hozzá a görbéhez, és a függőség nincs telepítve).
+MikroB-nak jelezve (üzenet 19908) külön kártyára, azzal a megjegyzéssel, hogy a méret-plafon a tünetet
+kezeli, a fail-open alapdöntés a gyökér.
+
+**Ki döntött:** Cybersec (mind az öt lelet, végrehajtási bizonyítékkal), backend (önálló reprodukció a
+nyelvtanból, a javítások, a prefix-lelet saját megtalálása az új kritériummal), MikroB (visszaadás).
+
+**Hivatkozás:** kártya f16b3165 (2. kör), Gate-SHA ceed282d, kártya-komment 15741.
+
 
 ## 2026-08-24 -- A NÉV nem karakter-osztály, hanem bash SZÓ: szkennerre cserélve (kártya 84e31b40, 11. kör)
 

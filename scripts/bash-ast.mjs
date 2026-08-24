@@ -35,11 +35,16 @@ import { createRequire } from 'node:module'
 
 const require = createRequire(import.meta.url)
 
-// Over this many bytes we decline rather than parse. Measured: 1 MB of words parses in 1.35 s and
+// Over this size we decline rather than parse. Measured: 1 MB of words parses in 1.35 s and
 // 100 000 heredocs (3 MB) in 2.79 s -- survivable, but a PreToolUse hook runs on every single Bash
 // call and its registration allows 10 s total. Real agent commands are orders of magnitude under
 // this, so the cap costs nothing legitimate and bounds the worst case to a few ms.
-const MAX_INPUT_BYTES = 131072
+//
+// Named for UTF-16 units, which is what `String.length` counts, because that is what it measures
+// (Cybersec F-5). The old name said BYTES and a non-ASCII command can be up to three times its
+// length in UTF-8, so the effective cap was tighter than the name promised -- conservative, never a
+// bypass, but a name that lies is how the next reader gets it wrong.
+const MAX_INPUT_UNITS = 131072
 
 // Resolved once per process. `undefined` = not tried yet, `null` = unavailable (and we stay
 // unavailable rather than retrying a failing require on every call).
@@ -49,11 +54,21 @@ let parserCache
 // touches package-lock.json, which no agent may stage. Until an operator installs it in the main
 // clone, every call here returns null and self-pace-gate.mjs behaves exactly as it does now --
 // so landing this file changes nothing until someone deliberately enables it.
-// SELF_PACE_AST_MODULE_PATH points at an alternative install (used by the test suite).
+//
+// SELF_PACE_AST_MODULE_PATH points at an alternative install, and it is HONOURED ONLY UNDER TEST
+// (Cybersec F-4). It makes the guard `require` code from an operator-supplied path, i.e. run
+// foreign code inside the guard process. Anyone who can set the hook's environment could already
+// disable the hook outright, so this was never privilege escalation -- but a switch that exists
+// purely so the suite can arm itself should not be reachable in the configuration that actually
+// guards the fleet. Under production it is ignored and resolution falls back to a normal require.
+function underTest() {
+  return process.env.VITEST !== undefined || process.env.NODE_ENV === 'test'
+}
+
 function getParser() {
   if (parserCache !== undefined) return parserCache
   try {
-    const base = process.env.SELF_PACE_AST_MODULE_PATH
+    const base = underTest() ? process.env.SELF_PACE_AST_MODULE_PATH : undefined
     const resolve = base ? createRequire(`${base.replace(/\/$/, '')}/noop.cjs`) : require
     const Parser = resolve('tree-sitter')
     const Bash = resolve('tree-sitter-bash')
@@ -78,12 +93,37 @@ function eachNode(root, visit) {
   return true
 }
 
-// A heredoc attached to a pipeline or an AND/OR list belongs to that list's LAST simple command:
-// in `true | curl -d @- <<'J'` and `[[ -f x ]] && curl -d @- <<'J'` the body is curl's, not the
-// head's. Taking the first command here was a real bug in the prototype, caught by the battery.
+// Node types whose LAST element really is the one the heredoc belongs to. A heredoc on a pipeline
+// or an AND/OR list feeds that list's final simple command: in `true | curl -d @- <<'J'` and
+// `[[ -f x ]] && curl -d @- <<'J'` the body is curl's, not the head's.
+//
+// EVERYTHING ELSE IS DELIBERATELY NOT HERE, and this is the fix for a real bypass I shipped
+// (Cybersec F-1 on card f16b3165, 14 shapes measured flipping DENY -> ALLOW, four of them proven
+// by execution). When a heredoc is redirected ONTO A COMPOUND construct --
+// `{ python3 -; curl -d @- ...; } <<'J'`, and the same for ( ), if, case, for, ((;;)), while,
+// until, select and a function body -- bash gives that body as stdin to EVERY command in the
+// group, not to the last one. Descending to the syntactically last `command` therefore names an
+// exempt data sink as the owner while an INTERPRETER earlier in the group executes the very same
+// text. Returning null instead leaves no entry in the map, which the caller's existing contract
+// treats as "not an exempt payload" -- the body gets scanned. Fail-closed, and it costs nothing
+// legitimate: a genuine `curl -d @-` INSIDE such a construct carries its own heredoc and is
+// reached as a plain `command`, not through this descent.
+//
+// `negated_command` has to stay in the list: `! curl -d @- <<'J'` is still curl's heredoc, and
+// dropping it turns the shipped negation case red. Measured, not assumed.
+//
+// WHY MY OWN BATTERY MISSED IT, worth keeping: it put the heredoc INSIDE each construct
+// (`{ curl -d @- <<'J' ... J }`), where the owner genuinely IS curl and the answer was right. The
+// attack surface is the mirror image -- the heredoc redirected onto the construct. The battery
+// measured a real property, just not the one under attack. Enumerating the shapes from the
+// grammar's own `redirected_statement.body` subtype list (18 of them, 4 list-like) is what makes
+// the difference; enumerating from my own patch is what produced the gap.
+const LIST_LIKE_BODY = new Set(['pipeline', 'list', 'negated_command'])
+
 function lastCommand(node) {
   if (!node) return null
   if (node.type === 'command') return node
+  if (!LIST_LIKE_BODY.has(node.type)) return null
   const kids = node.children
   for (let k = kids.length - 1; k >= 0; k--) {
     const found = lastCommand(kids[k])
@@ -98,6 +138,35 @@ function ownerOf(node) {
     if (n.type === 'command') return n
   }
   return null
+}
+
+// Keywords bash treats as a PREFIX to a command, which tree-sitter folds into the command node as
+// its `command_name` with the real binary demoted to an argument -- `coproc curl ...` parses with
+// command_name `coproc` and `curl` as a plain word, and `time -p curl ...` likewise.
+//
+// The span must start at the REAL binary, or the ownership checks see `coproc curl` / `time -p curl`
+// and reject a legitimate payload. The hand-written walker already skips these (its
+// CMD_PREFIX_KEYWORD_RX lists `time`), so without this the two paths disagree and enabling the AST
+// would introduce two false positives that `off` mode does not have -- measured, on the `coproc` and
+// `time -p` controls in self-pace-nested-command-context.test.ts.
+//
+// DIRECTION CHECK, because moving a span start FORWARD grants more exemption and that is the
+// direction that can open a hole: the ownership checks still run on whatever follows, so
+// `coproc python3 - <<'J'` yields the span `python3 -`, fails the leading-binary test, and is denied
+// exactly as before. Only the prefix is skipped, never the binary.
+const PREFIX_KEYWORDS = new Set(['time', 'coproc'])
+
+function commandStart(cmd) {
+  const kids = cmd.children
+  const name = kids[0]
+  if (!name || !PREFIX_KEYWORDS.has(name.text)) return cmd.startIndex
+  // Past the keyword, and past any options belonging to it (`time -p`).
+  for (let k = 1; k < kids.length; k++) {
+    const t = kids[k].text
+    if (t.startsWith('-') || t.startsWith('+')) continue
+    return kids[k].startIndex
+  }
+  return cmd.startIndex
 }
 
 /**
@@ -120,7 +189,7 @@ function ownerOf(node) {
  */
 export function heredocOwnerSpans(command) {
   const src = String(command ?? '')
-  if (src.length > MAX_INPUT_BYTES) return null
+  if (src.length > MAX_INPUT_UNITS) return null
   const parser = getParser()
   if (!parser) return null
   try {
@@ -139,7 +208,7 @@ export function heredocOwnerSpans(command) {
       if (opIdx === -1) return
       const owner = ownerOf(n)
       if (!owner) return
-      spans.set(opIdx, owner.startIndex)
+      spans.set(opIdx, commandStart(owner))
     })
     return spans
   } catch {
