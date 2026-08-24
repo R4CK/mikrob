@@ -205,7 +205,24 @@ const SELF_PACE_BASH_PATTERNS = [
 // chars, ~30 consecutive backslashes near the payload) never returned; the fix below returns in 0ms
 // on the same input, with no change to any matched/non-matched outcome (checked against plain,
 // absolute, and relative paths, and the escaped-separator shape fa5ef179 was fixed for).
-const PATH_PREFIX = String.raw`(?:(?:\\.|[^\s|;&<>()\\])*\/)?`
+//
+// ROUND 2 (Cybersec, card 39cc3460, found while running ccc2c742's own mandatory 5-regex sweep):
+// `\\.` still consumed an ESCAPED PIPE (`\|`) as an ordinary path character. That matters because
+// CMD_POSITION (used by WRAPPER_POSITION) and STDIN_SHELL_RX's pipe branch both treat a bare `|`
+// as its own valid anchor -- so a run of escaped-pipe pairs (`\|\|\|...`) gives ~n such anchor
+// positions in the SAME input. At every one of them, PATH_PREFIX's `\\.` happily consumes the rest
+// of the run (it is nothing but more `\|` pairs, each matching `\\.`), finds no closing `/`, and
+// backtracks the whole way back out -- O(remaining length) for ONE anchor attempt, times ~n anchor
+// attempts, is O(n^2) again, just reached through the anchor density rather than through an
+// external lazy filler. Measured (Cybersec, through the real gateDecision()): n=16000 pairs ->
+// 1679ms, clean n^2 scaling. `\\.` narrows to `\\[^|]`: escaping a pipe specifically is no longer
+// "just another path character", so PATH_PREFIX's optional group stops there instead of consuming
+// it -- the same disjoint-alternation shape as ROUND 1 above and as XARGS_FILLER (ccc2c742 round
+// 6), narrowed one notch further. No existing test exercises an escaped pipe as a deliberate path
+// character (checked before narrowing this), and the bare `|` the scan now stops in front of is
+// still its own independent anchor for the surrounding regex to retry from -- verified empirically
+// (path-prefix-escaped-pipe-quadratic.test.ts), not assumed.
+const PATH_PREFIX = String.raw`(?:(?:\\[^|]|[^\s|;&<>()\\])*\/)?`
 
 const SCHED_PREFIX = String.raw`(?:(?:[A-Za-z_]\w*=\S*|sudo|env|command|exec|nice|builtin|time)\s+)*${PATH_PREFIX}`
 // The command-boundary anchor includes `(` so a $(...) command substitution
