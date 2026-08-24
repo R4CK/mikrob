@@ -5,7 +5,7 @@
 // from data local-llm.sh already writes into the usage ledger (column 10, eval_duration_ms) plus a
 // live /api/ps VRAM lookup.
 import { describe, it, expect } from 'vitest'
-import { lastGenerationStats, parseUsageRows, type UsageRow } from '../web/routes/local-llm.js'
+import { lastGenerationStats, parseUsageRows } from '../web/routes/local-llm.js'
 
 /** A ledger line exactly as store/local-llm.sh log_usage now writes it (10 columns). */
 const line = (o: Partial<{

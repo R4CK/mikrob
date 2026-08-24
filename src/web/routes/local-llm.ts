@@ -758,7 +758,7 @@ export function lastGenerationStats(
     if (!isRealCall(r) || r.status !== 'ok' || r.evalTokens <= 0) continue
     const tokensPerSec = r.evalDurationMs > 0 ? r.evalTokens / (r.evalDurationMs / 1000) : null
     let vramBytes: number | null = null
-    if (Array.isArray(psModels)) {
+    if (psModels) {
       const hit = psModels.find((m) => typeof m.name === 'string' && m.name && modelNameMatches(m.name, r.model))
       if (hit && typeof hit.size_vram === 'number') vramBytes = hit.size_vram
     }
@@ -1128,8 +1128,11 @@ export async function tryHandleLocalLlm(ctx: RouteContext): Promise<boolean> {
   // has happened yet -- the normal state right after a fresh install.
   if (path === '/api/local-llm/last-generation' && method === 'GET') {
     const rows = parseUsageRows(tailUsageLines())
-    const ps = await ollama('/api/ps')
-    const stats = lastGenerationStats(rows, Array.isArray(ps?.models) ? ps.models : null)
+    const ps: unknown = await ollama('/api/ps')
+    const psModels = ps && typeof ps === 'object' && Array.isArray((ps as { models?: unknown }).models)
+      ? (ps as { models: ReadonlyArray<{ name?: unknown; size_vram?: unknown }> }).models
+      : null
+    const stats = lastGenerationStats(rows, psModels)
     json(res, stats ?? { ts: null, model: null, promptTokens: null, outputTokens: null, tokensPerSec: null, vramBytes: null })
     return true
   }
