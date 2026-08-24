@@ -378,10 +378,12 @@ async function llmRefreshStatus() {
     tiles.push(llmTile(
       t('localLlm.status.code_model'),
       d.active_model ? escapeHtml(d.active_model) : '—',
-      d.active_model ? (d.active_present ? 'ok' : 'warn') : 'muted',
-      d.active_model && !d.active_present
+      d.active_model ? (d.active_present === false ? 'warn' : (d.active_present === null ? 'muted' : 'ok')) : 'muted',
+      d.active_model && d.active_present === false
         ? t('localLlm.status.not_pulled')
-        : (codeRunning ? t('localLlm.status.in_vram') : (d.active_model ? t('localLlm.status.not_in_vram') : '')),
+        : (d.active_model && d.active_present === null
+          ? t('localLlm.status.unknown_ollama_down')
+          : (codeRunning ? t('localLlm.status.in_vram') : (d.active_model ? t('localLlm.status.not_in_vram') : ''))),
       t('localLlm.status.code_model_role'),
     ))
     // Embedding model tile (nomic-embed-text — memory/RAG only, never gets code tasks)
@@ -389,10 +391,12 @@ async function llmRefreshStatus() {
     tiles.push(llmTile(
       t('localLlm.status.embed_model'),
       d.embed_model ? escapeHtml(d.embed_model) : '—',
-      d.embed_model ? (d.embed_present ? 'ok' : 'warn') : 'muted',
-      d.embed_model && !d.embed_present
+      d.embed_model ? (d.embed_present === false ? 'warn' : (d.embed_present === null ? 'muted' : 'ok')) : 'muted',
+      d.embed_model && d.embed_present === false
         ? t('localLlm.status.not_pulled')
-        : (embedRunning ? t('localLlm.status.in_vram') : (d.embed_model ? t('localLlm.status.not_in_vram') : '')),
+        : (d.embed_model && d.embed_present === null
+          ? t('localLlm.status.unknown_ollama_down')
+          : (embedRunning ? t('localLlm.status.in_vram') : (d.embed_model ? t('localLlm.status.not_in_vram') : ''))),
       t('localLlm.status.embed_model_role'),
     ))
     tiles.push(llmTile(

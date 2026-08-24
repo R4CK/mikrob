@@ -676,6 +676,7 @@ window._i18n.en = {
   'localLlm.status.down':        'Unavailable',
   'localLlm.status.active_model': 'Active model',
   'localLlm.status.not_pulled':  'Not pulled',
+  'localLlm.status.unknown_ollama_down': 'Unknown (Ollama unavailable)',
   'localLlm.status.code_model':       'Code/offload model',
   'localLlm.status.code_model_role':  'Code generation, draft offload (fleet)',
   'localLlm.status.embed_model':      'Embedding model',
