@@ -50,7 +50,7 @@ def _fixture(root: Path, behind: int = 0, sha: str | None = None) -> Path:
     import sqlite3
     import subprocess as sp
     (root / "src").mkdir(parents=True)
-    for name in ("helper.ts", "helper.test.ts"):
+    for name in ("helper.ts", "helper.test.ts", "rare.ts"):
         (root / "src" / name).write_text("export const x = 1\n", encoding="utf-8")
     sp.run(("git", "init", "-q", str(root)), check=True)
     sp.run(("git", "-C", str(root), "add", "-A"), check=True)
@@ -86,6 +86,13 @@ def _fixture(root: Path, behind: int = 0, sha: str | None = None) -> Path:
         for j in range(30):
             src = str(root / "src" / f"c{i}_{j}.ts")
             conn.execute("INSERT INTO edges VALUES ('IMPORTS_FROM',?,?,?)", (src, tgt, src))
+    # rare.ts: well under any threshold used in this file -- the fixture for
+    # card 3f61b2ab's forced-hub allowlist, which must fire on a LOW count.
+    rare_tgt = str(root / "src" / "rare.ts")
+    conn.execute("INSERT INTO nodes VALUES (?,?)", (99, rare_tgt))
+    for j in range(3):
+        src = str(root / "src" / f"rare_c{j}.ts")
+        conn.execute("INSERT INTO edges VALUES ('IMPORTS_FROM',?,?,?)", (src, rare_tgt, src))
     conn.commit()
     conn.close()
     return root
@@ -137,6 +144,20 @@ def main() -> int:
         check("its non-test sibling in the same fixture IS blocked", rc5b == 2)
         check("so the silence above came from the test-file rule",
               "importers: 30" in err5b)
+
+        # Card 3f61b2ab: forced-hub allowlist overrides a LOW measured count.
+        # rare.ts has 3 importers -- well under the default threshold (25) and
+        # under s3/s3b's fixture threshold too, so without the override it must
+        # pass silently (control), and WITH it, it must block.
+        rc_ctrl, err_ctrl = edit(fx / "src/rare.ts", session="s3c")
+        check("a low-importer file passes without the forced-hub override", rc_ctrl == 0)
+        rc_forced, err_forced = edit(
+            fx / "src/rare.ts", session="s3d",
+            extra={"BLAST_RADIUS_ALWAYS_HUB": "src/rare.ts"},
+        )
+        check("the SAME low-importer file blocks once forced via env override", rc_forced == 2)
+        check("the forced block still names the file", "rare.ts" in err_forced)
+        check("the forced block's tag says why", "forced" in err_forced)
 
         rc6, _ = edit(HUB, session="s4", tool="Read")
         check("a non-editing tool is ignored", rc6 == 0)
@@ -222,7 +243,7 @@ def main() -> int:
 
     for f in fails:
         print(f"FAIL: {f}")
-    total = 25 + (2 if Path("/mnt/h/LM_Studio_Workdir/CleanCore-worktrees/backend2/apps/api/src/pg-client.ts").exists() else 0)
+    total = 29 + (2 if Path("/mnt/h/LM_Studio_Workdir/CleanCore-worktrees/backend2/apps/api/src/pg-client.ts").exists() else 0)
     print(f"blast-radius-guard selftest: {total - len(fails)}/{total} passed"
 )
     return 1 if fails else 0

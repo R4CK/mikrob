@@ -3170,3 +3170,43 @@ teszt), nem helyettesíti a Mutahuntert.
 QA/Cybersec döntésére vár).
 
 **Hivatkozás:** kártya `13083b74`, szülő-fázis `40f92dd2`.
+
+
+## 2026-08-24 -- blast-radius guard: explicit forced-hub allowlist a küszöb-hézagra (3f61b2ab)
+
+**Mi történt:** saját megfigyelésem (398f351b review közben, msg 19271): `src/web/agent-scaffold.ts`
+(sok ügynök-típus alapja) 23 importálót mért, éppen a blast-radius guard 25-ös küszöbe ALATT --
+tehát a guard NEM figyelmeztetett volna a szerkesztésekor, pedig ez a flotta egyik legérzékenyebb
+megosztott fájlja. A mostani mérésnél a szám már pontosan 25 (a küszöbön), ami magától megoldódott
+volna, DE ez pont a probléma szemléltetése: egy szám-alapú küszöb egy alapjában fontos fájl körül
+bármikor visszaeshet, ahogy nő/csökken az importálók száma a kódbázis természetes fejlődésével.
+
+**Vizsgálat (a kártya 1. lépése):** a küszöb-logika STATIKUS, nem élő -- a `code-review-graph`
+adatbázisból olvas (`store/blast-radius-check.py:measure()`), amit a `marveen-land.sh` és a
+`store/blast-radius-check.py --refresh` frissít inkrementálisan. A guard maga fail-open, ha a
+graf `BLAST_RADIUS_MAX_BEHIND` (alapérték 200) commitnál régebbi.
+
+**A döntés (a kártya 2. lépése):** NEM a globális küszöb csökkentése (az minden más fájlra is
+kihatna, amik ma jogosan a küszöb alatt vannak -- mellékhatás, nem célzott javítás), hanem egy
+explicit, NÉV-alapú `ALWAYS_HUB_FILES` allowlist a `store/blast-radius-check.py`-ban, amit egy
+`is_forced_hub(rel)` függvény néz ki (env-bővíthető: `BLAST_RADIUS_ALWAYS_HUB`, vesszővel
+elválasztott repó-relatív útvonalak). A `src/web/agent-scaffold.ts` mostantól MINDIG SHARED/CORE-
+nak számít, a mért importáló-számtól függetlenül. A `scripts/hooks/blast-radius-guard.py` gate-je
+ezt nézi meg a küszöb-összehasonlítás ELŐTT.
+
+**Dokumentálva (a kártya 3. lépése):** a döntés indoklása a `ALWAYS_HUB_FILES` konstans fölötti
+kommentben áll (store/blast-radius-check.py), a guard-hook saját kommentje pedig ide hivatkozik.
+
+**Tesztek:** `scripts/hooks/blast-radius-guard.selftest.py` új fixture-fájl (`rare.ts`, 3 importáló,
+jóval a küszöb alatt) + 3 új eset: kontroll (override nélkül nem blokkol), forced (env override-dal
+blokkol), és hogy a jelentés megnevezi a fájlt és a "forced" jelölést. 31/31 zöld. A
+`store/blast-radius-check.py --selftest` (26/26) és `src/__tests__/blast-radius-guard-wiring.test.ts`
+(12/12) is zöld, nincs regresszió.
+
+**Mutációs önellenőrzés:** a guard-hook `is_forced_hub()` ellenőrzését ideiglenesen kivettem --
+pontosan a 3 új eset váltott pirosra (a régi viselkedés visszatért: a forced fájl megint nem
+blokkolt), minden más teszt zöld maradt. A fix visszaállítása után újra minden zöld.
+
+**Ki döntött:** backend2 (kártya 3f61b2ab, saját korábbi megfigyelés).
+
+**Hivatkozás:** kártya `3f61b2ab`. Előzmény: `398f351b` (a guard eredeti bevezetése).
