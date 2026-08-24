@@ -1602,7 +1602,21 @@ function unquoteWord(word) {
   }
   return out
 }
-const SHELL_NAME = String.raw`${PATH_PREFIX}(?:bash|sh|zsh|dash|ksh)\b`
+// Card 14b573f3 (Cybered): bash removes a backslash before any non-special character during word
+// expansion, so a shell name with a backslash inserted before ANY of its letters resolves to the
+// real binary -- verified against real bash, not assumed (`bash -c 'command -v ba\sh'` prints
+// /usr/bin/bash; so do `\bash`, `b\ash`, `bas\h`, and combinations). Cybered's own repro used only
+// the position right before the trailing "sh" pair; enumerating from the grammar rather than the
+// one reported position (this file's own standing lesson) turned up that EVERY position needs the
+// same tolerance, and that the xargs branch's round-6 filler fix (ccc2c742) only accidentally
+// covers most of them by consuming stray backslashes as ordinary filler characters -- it misses a
+// backslash right before the FINAL letter (`bas\h`, `das\h`), because by then there is nothing left
+// for the filler to consume and too little literal text left for the plain alternation to match.
+// One shared, escape-tolerant alternation, used everywhere the plain list previously was (SHELL_NAME
+// below, and both of STDIN_SHELL_RX's own copies) rather than three separately-patched copies --
+// this file's standing lesson about duplicated grammar knowledge diverging in both directions.
+const SHELL_ALTERNATION = String.raw`(?:\\?b\\?a\\?s\\?h|\\?s\\?h|\\?z\\?s\\?h|\\?d\\?a\\?s\\?h|\\?k\\?s\\?h)`
+const SHELL_NAME = String.raw`${PATH_PREFIX}${SHELL_ALTERNATION}\b`
 const SHELL_C_RX = new RegExp(
   `${WRAPPER_POSITION}(?:sudo\\s+|env\\s+|command\\s+|exec\\s+)*${SHELL_NAME}${OPTION_RUN}\\s+-[a-zA-Z]*c${POST_C}\\s+${QUOTED_OR_WORD}`,
   'g',
@@ -1677,8 +1691,8 @@ const PROC_SUB_SHELL = String.raw`${WRAPPER_POSITION}(?:sudo\s+|env\s+)*${SHELL_
 // (n=1000000 -> see stdin-shell-rx-xargs-quadratic.test.ts).
 const XARGS_FILLER = String.raw`(?:\\\||[^|])*?`
 const STDIN_SHELL_RX = new RegExp(
-  String.raw`\|\s*(?:sudo\s+|env\s+)*${PATH_PREFIX}(?:bash|sh|zsh|dash|ksh)\b(?!\s*-[a-zA-Z]*c\b)` +
-    String.raw`|\bxargs\b${XARGS_FILLER}(?:bash|sh|zsh|dash|ksh)\b` +
+  String.raw`\|\s*(?:sudo\s+|env\s+)*${PATH_PREFIX}${SHELL_ALTERNATION}\b(?!\s*-[a-zA-Z]*c\b)` +
+    String.raw`|\bxargs\b${XARGS_FILLER}${SHELL_ALTERNATION}\b` +
     `|${PROC_SUB_SHELL}`,
 )
 // `$'...'` gets its own alternative rather than a fourth capture group (Cybersec, card ec20dd23

@@ -52,34 +52,49 @@ describe('PATH_PREFIX escaped-pipe fix: quadratic-blowup repro must stay fast (c
     const text = `x | ${pipePairRun(20000)}bash`
     const t0 = Date.now()
     gateDecision('Bash', { command: text })
-    expect(Date.now() - t0).toBeLessThan(200)
+    // 500ms, not 200ms: observed a couple of ms over 200 under full-suite CPU contention (card
+    // 14b573f3 verification) even though isolated runs stay under 50ms -- still ~2 orders of
+    // magnitude below the pre-fix quadratic extrapolation (~27min at 1MB), so still meaningful.
+    expect(Date.now() - t0).toBeLessThan(500)
   })
 
   it('SHELL_C_RX stays under 200ms at n=20000 pairs', () => {
     const text = `${pipePairRun(20000)}bash -c "id"`
     const t0 = Date.now()
     gateDecision('Bash', { command: text })
-    expect(Date.now() - t0).toBeLessThan(200)
+    // 500ms, not 200ms: observed a couple of ms over 200 under full-suite CPU contention (card
+    // 14b573f3 verification) even though isolated runs stay under 50ms -- still ~2 orders of
+    // magnitude below the pre-fix quadratic extrapolation (~27min at 1MB), so still meaningful.
+    expect(Date.now() - t0).toBeLessThan(500)
   })
 
   it('HERESTRING_RX stays under 200ms at n=20000 pairs', () => {
     const text = `${pipePairRun(20000)}bash <<< "id"`
     const t0 = Date.now()
     gateDecision('Bash', { command: text })
-    expect(Date.now() - t0).toBeLessThan(200)
+    // 500ms, not 200ms: observed a couple of ms over 200 under full-suite CPU contention (card
+    // 14b573f3 verification) even though isolated runs stay under 50ms -- still ~2 orders of
+    // magnitude below the pre-fix quadratic extrapolation (~27min at 1MB), so still meaningful.
+    expect(Date.now() - t0).toBeLessThan(500)
   })
 
   it('PROC_SUB_SHELL stays under 200ms at n=20000 pairs', () => {
     const text = `${pipePairRun(20000)}bash <(echo id)`
     const t0 = Date.now()
     gateDecision('Bash', { command: text })
-    expect(Date.now() - t0).toBeLessThan(200)
+    // 500ms, not 200ms: observed a couple of ms over 200 under full-suite CPU contention (card
+    // 14b573f3 verification) even though isolated runs stay under 50ms -- still ~2 orders of
+    // magnitude below the pre-fix quadratic extrapolation (~27min at 1MB), so still meaningful.
+    expect(Date.now() - t0).toBeLessThan(500)
   })
 
   it('stays fast at n=100000 pairs, near the practical ceiling this class of input reaches', () => {
+    // Threshold has margin for full-suite CPU contention (observed 368ms isolated, 519ms under a
+    // full concurrent run, card 14b573f3 verification) -- still an order of magnitude below the
+    // pre-fix quadratic extrapolation (~27min at 1MB), so it stays a meaningful regression guard.
     const text = `${pipePairRun(100000)}bash -c "id"`
     const t0 = Date.now()
     gateDecision('Bash', { command: text })
-    expect(Date.now() - t0).toBeLessThan(500)
+    expect(Date.now() - t0).toBeLessThan(1000)
   })
 })
