@@ -95,6 +95,31 @@ r = amc._redact(f'commit {short_sha}')
 check('short-sha-not-redacted', r, [], [short_sha])
 
 # ---------------------------------------------------------------------------
+# Card 8a18fd61: _tool_input_carries_secret -- the wider check over the WHOLE tool_input,
+# catching a secret in a field _build_summary does not inspect for that tool type.
+# ---------------------------------------------------------------------------
+
+# An Edit's new_string is not one of the fields _build_summary looks at (only file_path) --
+# a secret placed there must still be caught by the wider check.
+if not amc._tool_input_carries_secret({
+    'file_path': '/tmp/x.env',
+    'old_string': 'X=1',
+    'new_string': 'API_KEY=ghp_AAABBBCCCDDDEEEFFFGGGHHH',
+}):
+    FAILURES.append('FAIL [wider-check]: secret in an Edit new_string was not caught')
+
+# A Write's content is likewise not inspected by _build_summary.
+if not amc._tool_input_carries_secret({
+    'file_path': '/tmp/x.env',
+    'content': 'password=super_secret_value_here',
+}):
+    FAILURES.append('FAIL [wider-check]: secret in a Write content was not caught')
+
+# Clean tool_input must not false-positive.
+if amc._tool_input_carries_secret({'file_path': '/tmp/x.env', 'content': 'hello world'}):
+    FAILURES.append('FAIL [wider-check]: clean tool_input flagged as carrying a secret')
+
+# ---------------------------------------------------------------------------
 # Noise filter fixtures
 # ---------------------------------------------------------------------------
 
