@@ -2076,6 +2076,7 @@ window._i18n.hu = {
   'overview.spectrum.gpu':        'GPU',
   'overview.spectrum.vram':       'VRAM',
   'overview.spectrum.tasks':      'Aktív feladat',
+  'overview.spectrum.last_gen':   'Utolsó generálás',
   'overview.cost.title':          'Becsült tokenköltség',
   'overview.cost.meta_today':     'mai nap',
   'overview.cost.total':          'Összesen',

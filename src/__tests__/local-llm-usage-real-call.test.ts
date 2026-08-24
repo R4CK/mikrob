@@ -11,6 +11,7 @@ const row = (source: string, caller = 'backend'): UsageRow => ({
   source,
   evalTokens: 0,
   promptTokens: 0,
+  evalDurationMs: 0,
 })
 
 describe('isRealCall', () => {

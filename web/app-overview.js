@@ -293,6 +293,28 @@ function ovwSpectrumDraw() {
   _ovwSpectrumRafId = reduceMotion ? null : requestAnimationFrame(ovwSpectrumDraw)
 }
 
+// Last-generation stats readout (card b21deb9a): prompt/output tokens, tokens/s and VRAM for the
+// most recent COMPLETED real local-LLM call, from GET /api/local-llm/last-generation. Polled
+// alongside the waveform (same interval) rather than folded into ovwSpectrumPoll() itself -- it is
+// a different data source (the usage ledger + a live /api/ps lookup, not the rolling sampler) with
+// its own independent "nothing yet" state, and keeping it separate avoids one endpoint's outage
+// blanking the other's already-good reading.
+async function ovwSpectrumPollLastGen() {
+  const el = document.getElementById('ovwSpectrumLastGen')
+  if (!el) return
+  try {
+    const res = await fetch('/api/local-llm/last-generation')
+    if (!res.ok) throw new Error('HTTP ' + res.status)
+    const d = await res.json()
+    if (d.promptTokens == null || d.outputTokens == null) { el.textContent = '—'; return }
+    const speed = typeof d.tokensPerSec === 'number' ? `${d.tokensPerSec.toFixed(2)} tok/s` : '—'
+    const vram = typeof d.vramBytes === 'number' ? llmFmtVram(d.vramBytes / (1024 * 1024)) : null
+    el.textContent = `${d.promptTokens}→${d.outputTokens} tok · ${speed}` + (vram ? ` · ${vram}` : '')
+  } catch {
+    el.textContent = '—'
+  }
+}
+
 function startOvwSpectrum() {
   stopOvwSpectrum()
   // Only show the "collecting" empty state when there are no cached samples from a prior
@@ -300,9 +322,11 @@ function startOvwSpectrum() {
   // a visible flash while the first poll round-trip completes.
   if (_ovwSpectrumSamples.length < 2) ovwSpectrumSetState('collecting')
   ovwSpectrumPoll()
+  void ovwSpectrumPollLastGen()
   _ovwSpectrumPollTimer = setInterval(() => {
     if (document.getElementById('overviewPage').hidden) { stopOvwSpectrum(); return }
     ovwSpectrumPoll()
+    void ovwSpectrumPollLastGen()
     // Reduced-motion: no rAF loop running, so redraw once per poll tick instead.
     if (window.matchMedia && window.matchMedia('(prefers-reduced-motion: reduce)').matches) ovwSpectrumDraw()
   }, OVW_SPECTRUM_POLL_MS)

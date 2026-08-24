@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import json
 import os
+import re
 import subprocess
 import sys
 import tempfile
@@ -18,8 +19,14 @@ HOOK = Path(__file__).resolve().parent / "blast-radius-guard.py"
 ROOT = Path(__file__).resolve().parent.parent.parent
 CC = Path("/mnt/h/LM_Studio_Workdir/CleanCore")
 
-HUB = CC / "apps/api/src/pg-client.ts"       # 173 importers, measured
-LEAF = CC / "apps/web/src/features/public-scan/PublicScanPage.tsx"  # 2 importers
+# Importer counts below are NOT asserted exactly anywhere in this file: CleanCore is under
+# active, live development, so any fixed count measured today is stale by construction the
+# next time someone adds an import elsewhere in that repo (card bba2b3b0, 2026-08-24 -- a
+# hardcoded "importers: 173" substring check broke fleet-test.sh for every agent once the
+# real count moved to 181). Assertions against HUB below check the STRUCTURE of the guard's
+# report (a file name + some number), never a specific value.
+HUB = CC / "apps/api/src/pg-client.ts"       # a hub file, importer count grows over time
+LEAF = CC / "apps/web/src/features/public-scan/PublicScanPage.tsx"  # a leaf, low importer count
 
 
 def run(payload: dict, env_extra: dict | None = None) -> tuple[int, str]:
@@ -106,7 +113,7 @@ def main() -> int:
         rc, err = edit(HUB)
         check("hub file is blocked on first edit", rc == 2)
         check("the block names the file", "pg-client.ts" in err)
-        check("the block shows a measured importer count", "importers: 17" in err)
+        check("the block shows a measured importer count", bool(re.search(r"importers: \d+", err)))
 
         rc2, _ = edit(HUB)
         check("second edit of the same file passes", rc2 == 0)
@@ -182,7 +189,6 @@ def main() -> int:
         # The DEFAULT marker root, which every other case here hides behind an override. The fix
         # for F-2 lives in that default, so without this the whole suite stays green after a revert
         # to the shared world-writable path (mutation-confirmed).
-        import re as _re
         # CODE only. The comment above that default explains the old shared path BY NAME, so a
         # substring check over the whole file fails on the explanation rather than on the code --
         # the same trap this repo hit today in graph-tooling-selftests.test.ts.
@@ -191,7 +197,7 @@ def main() -> int:
         check("the default marker root is not a fixed shared /tmp path",
               "/tmp/blast-radius-guard" not in src)
         check("the default marker root is per-user under the platform temp dir",
-              bool(_re.search(r"tempfile\.gettempdir\(\)[^\n]*getuid\(\)", src)))
+              bool(re.search(r"tempfile\.gettempdir\(\)[^\n]*getuid\(\)", src)))
 
         rc10, _ = edit(CC / "apps/api/src/does-not-exist.ts", session="s8")
         check("a file that does not exist yet is not blocked", rc10 == 0)
@@ -212,7 +218,7 @@ def main() -> int:
         if wt.exists():
             rc14, err14 = edit(wt, session="s11")
             check("an agent worktree path is blocked as well", rc14 == 2)
-            check("the worktree report carries the real count", "importers: 17" in err14)
+            check("the worktree report carries the real count", bool(re.search(r"importers: \d+", err14)))
 
     for f in fails:
         print(f"FAIL: {f}")

@@ -502,6 +502,14 @@
               <dt data-i18n="overview.spectrum.tasks">Aktív feladat</dt>
               <dd id="ovwSpectrumTasks">—</dd>
             </div>
+            <!-- Last-generation stats (card b21deb9a, Peti kep-melleklet 2026-08-21): the
+                 dashboard-visible equivalent of the LM Studio/llama.cpp console's
+                 "[generation: prompt=N tokens, output=M tokens, speed=X tokens/s]" + peak-VRAM
+                 lines. Populated by ovwSpectrumPollLastGen() in app-overview.js. -->
+            <div class="ovw-spectrum-readout-item">
+              <dt data-i18n="overview.spectrum.last_gen">Utolsó generálás</dt>
+              <dd id="ovwSpectrumLastGen">—</dd>
+            </div>
           </dl>
         </div>
       </div>

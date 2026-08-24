@@ -2073,6 +2073,7 @@ window._i18n.en = {
   'overview.spectrum.gpu':        'GPU',
   'overview.spectrum.vram':       'VRAM',
   'overview.spectrum.tasks':      'Active tasks',
+  'overview.spectrum.last_gen':   'Last generation',
   'overview.cost.title':          'Estimated token cost',
   'overview.cost.meta_today':     'today',
   'overview.cost.total':          'Total',

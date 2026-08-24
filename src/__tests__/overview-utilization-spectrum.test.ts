@@ -172,3 +172,41 @@ describe('overview spectrum: responsive + i18n', () => {
     }
   })
 })
+
+// Last-generation row (card b21deb9a, Peti kep-melleklet 2026-08-21): prompt/output tokens,
+// tokens/s and VRAM for the most recent completed real generation, placed after "Aktív feladat" in
+// the same readout <dl> -- the dashboard-visible equivalent of the LM Studio/llama.cpp console's
+// "[generation: prompt=N tokens, output=M tokens, speed=X tokens/s]" + peak-VRAM lines.
+describe('overview spectrum: last-generation row', () => {
+  it('sits inside the readout <dl>, after the Aktív feladat row', () => {
+    const readoutIdx = HTML.indexOf('id="ovwSpectrumReadout"')
+    const closeIdx = HTML.indexOf('</dl>', readoutIdx)
+    const tasksIdx = HTML.indexOf('id="ovwSpectrumTasks"')
+    const lastGenIdx = HTML.indexOf('id="ovwSpectrumLastGen"')
+    expect(tasksIdx).toBeGreaterThan(readoutIdx)
+    expect(lastGenIdx).toBeGreaterThan(tasksIdx)
+    expect(lastGenIdx).toBeLessThan(closeIdx)
+  })
+
+  it('polls GET /api/local-llm/last-generation', () => {
+    const body = fnBody(APP, 'async function ovwSpectrumPollLastGen()')
+    expect(body).toContain("fetch('/api/local-llm/last-generation')")
+  })
+
+  it('shows the placeholder dash instead of "0→0 tok" when nothing has generated yet (rule 12: no fabricated reading)', () => {
+    const body = fnBody(APP, 'async function ovwSpectrumPollLastGen()')
+    expect(body).toContain('d.promptTokens == null || d.outputTokens == null')
+    expect(body).toMatch(/el\.textContent\s*=\s*.—.\s*;\s*return/)
+  })
+
+  it('never shows a raw error to the user on fetch failure (rule 12)', () => {
+    const body = fnBody(APP, 'async function ovwSpectrumPollLastGen()')
+    expect(body).toMatch(/catch\s*\{\s*el\.textContent\s*=\s*.—./)
+  })
+
+  it('is polled both on initial load and on every waveform tick', () => {
+    const body = fnBody(APP, 'function startOvwSpectrum()')
+    const calls = body.match(/ovwSpectrumPollLastGen\(\)/g) || []
+    expect(calls.length).toBe(2)
+  })
+})
