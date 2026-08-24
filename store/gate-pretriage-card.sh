@@ -51,6 +51,43 @@ ensure_auth_header() {
   printf 'Authorization: Bearer %s\n' "$(cat "$TOKEN_FILE")" > "$hdr_file"
 }
 
+# For a MERGE commit (2+ parents), diffing against the first parent (this script's own `<sha>~1`
+# convention) silently assumes trunk always sits in parent-slot 1. It does for a standard land
+# (marveen-land.sh / cleancore-land.sh check out origin/<trunk> and merge the agent branch IN, so
+# parent 1 IS trunk-before-the-merge) -- but an agent's own ad-hoc "resolve a conflict by merging
+# origin/<trunk> into my OWN branch mid-landing" puts trunk in parent 2 instead. Measured live (card
+# 5b4cca21, Cybersec's finding on commit 2c56d300, card 132a6cfb comment 15118): the pre-triage
+# reported apps/api backend files that belonged to an ENTIRELY DIFFERENT card, because parent 1 there
+# was Fron Ted's own branch tip, not trunk -- whoever trusted that file list was reviewing someone
+# else's code.
+#
+# `git merge-base <sha> origin/<trunk>` finds whichever parent already sits on trunk's history, in
+# EITHER parent slot, with no assumption about parent order -- this is the exact method Cybersec used
+# by hand to get the correct 5-file list in that finding. Two things keep it from making the COMMON
+# case worse (the regression [[marveen-gate-shas-are-merges-diff-the-branch-side]] warns about -- an
+# older base sweeps in whatever ELSE landed on trunk between the branch's fork point and its own
+# merge):
+#   1. Trunk here only ever fast-forwards (never rebased), so this merge-base is the SAME answer at
+#      merge time and at any later query time -- it is not "whatever trunk happens to be today".
+#   2. A standard land's own merge commit becomes trunk's new tip immediately on push, so for that
+#      case `merge-base(sha, origin/trunk)` degenerates to `sha` itself (an empty diff) the moment it
+#      lands -- caught below and treated as "could not use this method", falling back to the exact
+#      `sha~1` this script always used, so the common case is UNCHANGED by this fix.
+merge_diff_base() {
+  local repo="$1" sha="$2" trunk parents mb full
+  parents="$(git -C "$repo" log -1 --pretty=%P "$sha" 2>/dev/null)"
+  if [ "$(printf '%s' "$parents" | wc -w)" -lt 2 ]; then
+    printf '%s~1\n' "$sha"; return 0
+  fi
+  case "$repo" in
+    "$CLEANCORE_REPO") trunk="origin/main" ;;
+    *) trunk="origin/develop" ;;
+  esac
+  mb="$(git -C "$repo" merge-base "$sha" "$trunk" 2>/dev/null)" || mb=""
+  full="$(git -C "$repo" rev-parse "$sha" 2>/dev/null)"
+  if [ -n "$mb" ] && [ "$mb" != "$full" ]; then printf '%s\n' "$mb"; else printf '%s~1\n' "$sha"; fi
+}
+
 # Build the INPUT comment body for repo+sha. Prints the body; returns 3 (benign skip) if the commit is
 # not present or the pre-triage cannot run. The body deliberately contains NO PASS/FAIL/GO/NO-GO word.
 # `title` (optional, may be "") drives the SELF-CHECK below -- card ce159d2b, incident 6199f0b: a
@@ -60,10 +97,11 @@ ensure_auth_header() {
 # comment, not a second commit-selector -- it runs AFTER selection, on whatever commit was already
 # resolved, and only ever adds a warning LINE; it never blocks or changes SHA/exit code.
 build_body() {
-  local repo="$1" sha="$2" title="${3:-}" json
+  local repo="$1" sha="$2" title="${3:-}" json base
   [[ -d "$repo/.git" ]] || return 3
   git -C "$repo" cat-file -e "${sha}^{commit}" 2>/dev/null || return 3
-  json="$(bash "$PRETRIAGE" --repo "$repo" --base "${sha}~1" --head "$sha" --json 2>/dev/null)" || return 3
+  base="$(merge_diff_base "$repo" "$sha")"
+  json="$(bash "$PRETRIAGE" --repo "$repo" --base "$base" --head "$sha" --json 2>/dev/null)" || return 3
   MARKER="$MARKER" SHA="$sha" REPO="$repo" PT_JSON="$json" TITLE="$title" python3 <<'PY'
 import json, os, re
 d = json.loads(os.environ["PT_JSON"])

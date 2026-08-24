@@ -3028,3 +3028,22 @@ biztonságot a megelőző `waitFor`/`getAllByRole` állítja már elő ugyanúgy
 **Ki döntött:** backend2 (kártya be30a5f7, MikroB dispatch).
 
 **Hivatkozás:** kártya `be30a5f7`.
+
+
+## 2026-08-24 -- gate-pretriage-card.sh: merge-commit fájllista a HELYES szülőhöz mérve (5b4cca21)
+
+**Mi történt:** Cybersec élő leletet talált (kártya 132a6cfb, komment 15118): a gate-pretriage mechanikus fájllistája a `2c56d300` merge-commitra az `e0ef6202` (egy MÁSIK kártya) backend-fájljait sorolta fel, egyetlen FE-fájl nélkül, holott a kártya FE-változtatás volt. Ok: `2c56d300` egy MERGE-commit (szülők: `93040766` = Fron Ted saját ágának korábbi csúcsa, `cd1b1229` = a BE-kártya már landolt merge-e), és a script mindig az ELSŐ szülőhöz (`sha~1`) mért diffet -- ez a MÁSIK szülő (a trunk) által hozott tartalmat mutatta, nem a kártya saját munkáját.
+
+**Miért nem egyszerű a fix:** a `[[marveen-gate-shas-are-merges-diff-the-branch-side]]` memória szerint az ELSŐ szülőhöz mért diff a STANDARD landolásnál (marveen-land.sh/cleancore-land.sh: trunk kicsekkolva, ág belemergelve -- szülő1=trunk, szülő2=ág) helyes, és `merge-base(szülő1, szülő2)` használata blindly VISSZAHOZNÁ a `[[a-merge-has-two-diffs-and-the-other-parent-is-the-telling-one]]` által is leírt hibaosztályt: ha trunk a kártya elágazása óta mozgott (más ügynökök közben landoltak), a merge-base régebbi pontra mutat, és a diff BESZIPPANTJA a köztes, nem-idetartozó landolásokat is. A tényleges hiba oka más: `2c56d300` NEM a standard landoló szkript sajét merge-e volt, hanem Fron Ted saját, ad-hoc konfliktus-feloldó merge-e (a saját águkba mergelték bele origin/main-t landolás közben) -- ebben a topológiában a trunk a MÁSODIK szülőben ül, nem az elsőben.
+
+**A fix:** `merge_diff_base()` új függvény -- csak MERGE-commitra (2+ szülő) tér el a régi `sha~1`-től. `git merge-base <sha> origin/<trunk>`-ot számol (CleanCore-nál `origin/main`, marveennél `origin/develop`), ami MELYIK szülő-pozícióban is ül a trunk, azt megtalálja -- pontosan azt a módszert, amit Cybersec kézzel már validált (`git merge-base 2c56d300 origin/main` = `cd1b1229`, ez adta a helyes 5-fájlos listát). Két védelem tartja a fixet biztonságosnak a gyakori (standard) esetre:
+1. Trunk itt csak fast-forwardol (soha nem rebase-elődik), tehát ez a merge-base UGYANAZT adja most, mint landoláskor -- nem "amilyen trunk ma épp".
+2. Egy standard landolás saját merge-commitja push után AZONNAL trunk csúcsa lesz, tehát `merge-base(sha, origin/trunk)` ilyenkor `sha`-ra degenerálódik (üres diff) -- ezt a kód elkapja és visszaesik a régi `sha~1`-re, tehát a gyakori eset VÁLTOZATLAN marad.
+
+**Mutációs önellenőrzés:** a fixet szándékosan visszaállítottam `sha~1`-re, és a `reversed topology` teszt PIROSRA váltott (`other-card-file.ts`-t jelentett `card-file.ts` helyett) -- pontosan a bejelentett hibaosztály. Visszaállítva a fix után zöld.
+
+**Hatás:** `src/__tests__/gate-pretriage-card.test.ts` 25/25 zöld (3 új teszt: fordított topológia -- a hiba reprodukciója és javítása; standard topológia -- nincs regresszió; degenerált eset -- helyes visszaesés).
+
+**Ki döntött:** backend2 (kártya 5b4cca21, Cybersec eredeti lelete a 132a6cfb gate-en).
+
+**Hivatkozás:** kártya `5b4cca21`. Előzmény: `132a6cfb` (komment 15118, Cybersec lelete). Kapcsolódó memória: `marveen-gate-shas-are-merges-diff-the-branch-side`, `a-merge-has-two-diffs-and-the-other-parent-is-the-telling-one`.

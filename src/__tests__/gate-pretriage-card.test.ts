@@ -177,6 +177,85 @@ describe('the [FE]-label-vs-backend-file mechanical warning (card c92c2142)', ()
   })
 })
 
+// Card 5b4cca21, Cybersec's live finding on commit 2c56d300 (card 132a6cfb comment 15118): a MERGE
+// commit's first parent is not always trunk. The standard land (marveen-land.sh / cleancore-land.sh)
+// checks out trunk and merges the agent branch IN, so parent 1 IS trunk -- but an agent's own ad-hoc
+// "sync my branch against origin/<trunk> mid-landing" puts trunk in parent 2 instead, and diffing
+// against parent 1 there shows what trunk brought (someone else's already-landed card), not what this
+// branch itself contributed. These tests build both merge topologies directly and diff the resolved
+// commit through the SAME `--repo/--sha/--dry-run` offline core the wiring uses, so the fix is pinned
+// against the real script, not a reimplementation of it.
+describe('merge-commit diff base (card 5b4cca21)', () => {
+  it('reversed topology (trunk is parent 2): reports THIS card\'s own file, not the other card trunk brought in', () => {
+    const t0 = execFileSync('git', ['rev-parse', 'HEAD'], { cwd: repo, encoding: 'utf-8' }).trim() // the seed commit, the fork point
+
+    // "other card" lands on trunk first.
+    writeFileSync(join(repo, 'other-card-file.ts'), 'export const other = 1\n')
+    git('add', 'other-card-file.ts')
+    git('commit', '-q', '-m', 'other card lands on trunk')
+    git('branch', '-f', 'origin/develop', 'HEAD') // fake trunk ref (no real remote in a throwaway repo)
+
+    // This card's own branch, forked BEFORE the other card landed.
+    git('checkout', '-q', '-b', 'agent-branch', t0)
+    writeFileSync(join(repo, 'card-file.ts'), 'export const mine = 1\n')
+    git('add', 'card-file.ts')
+    git('commit', '-q', '-m', 'this card\'s own work')
+
+    // Ad-hoc sync merge: pull trunk INTO the agent's own branch mid-landing (parent 1 = agent branch,
+    // parent 2 = trunk) -- the reversed-from-standard topology that broke pre-triage.
+    git('merge', '-q', '--no-ff', 'origin/develop', '-m', 'sync with trunk')
+    const sha = execFileSync('git', ['rev-parse', 'HEAD'], { cwd: repo, encoding: 'utf-8' }).trim()
+
+    const body = execFileSync('bash', [SCRIPT, '--repo', repo, '--sha', sha, '--dry-run'], {
+      encoding: 'utf-8',
+      stdio: 'pipe',
+    })
+    expect(body).toContain('card-file.ts')
+    expect(body).not.toContain('other-card-file.ts')
+  })
+
+  it('standard topology (trunk is parent 1): unaffected -- still reports the branch\'s own file', () => {
+    git('branch', 'origin/develop', 'HEAD') // trunk ref at the fork point, unmoved
+
+    git('checkout', '-q', '-b', 'feature', 'HEAD')
+    writeFileSync(join(repo, 'card-file.ts'), 'export const mine = 1\n')
+    git('add', 'card-file.ts')
+    git('commit', '-q', '-m', 'card work')
+    const featureSha = execFileSync('git', ['rev-parse', 'HEAD'], { cwd: repo, encoding: 'utf-8' }).trim()
+
+    git('checkout', '-q', '-b', 'trunk-work', 'origin/develop')
+    git('merge', '-q', '--no-ff', featureSha, '-m', 'land feature') // parent1=trunk, parent2=feature
+    const sha = execFileSync('git', ['rev-parse', 'HEAD'], { cwd: repo, encoding: 'utf-8' }).trim()
+
+    const body = execFileSync('bash', [SCRIPT, '--repo', repo, '--sha', sha, '--dry-run'], {
+      encoding: 'utf-8',
+      stdio: 'pipe',
+    })
+    expect(body).toContain('card-file.ts')
+  })
+
+  it('degenerate case (trunk already advanced to the reviewed sha itself): falls back to the parent-1 diff instead of an empty one', () => {
+    git('branch', 'origin/develop', 'HEAD')
+
+    git('checkout', '-q', '-b', 'feature2', 'HEAD')
+    writeFileSync(join(repo, 'card-file2.ts'), 'export const mine = 2\n')
+    git('add', 'card-file2.ts')
+    git('commit', '-q', '-m', 'card work 2')
+    const featureSha = execFileSync('git', ['rev-parse', 'HEAD'], { cwd: repo, encoding: 'utf-8' }).trim()
+
+    git('checkout', '-q', '-b', 'trunk-work2', 'origin/develop')
+    git('merge', '-q', '--no-ff', featureSha, '-m', 'land feature 2')
+    const sha = execFileSync('git', ['rev-parse', 'HEAD'], { cwd: repo, encoding: 'utf-8' }).trim()
+    git('branch', '-f', 'origin/develop', sha) // simulate: trunk was just pushed to this exact sha
+
+    const body = execFileSync('bash', [SCRIPT, '--repo', repo, '--sha', sha, '--dry-run'], {
+      encoding: 'utf-8',
+      stdio: 'pipe',
+    })
+    expect(body).toContain('card-file2.ts')
+  })
+})
+
 describe('offline-core guards', () => {
   it('a commit that does not exist is a benign SKIP, not an error', () => {
     const out = execFileSync(
