@@ -202,7 +202,28 @@ fence_rx = re.compile(r"(```|~~~).*?(\1|\Z)", re.S)
 # Gate-SHA above: a line-anchored field the AUTHOR states outright beats a heuristic guessing at
 # intent. Checked FIRST in is_submission(), before Gate-SHA/REVIEW/scrape, because "this is not a
 # submission" is a stronger and cheaper claim than any content signal that might otherwise fire.
-info_only_rx = re.compile(r"^(?:[-*#]+[ \t]*)?INFO-ONLY\b", re.M)
+#
+# ANCHORED TO THE COMMENT ITSELF, not any line in it (card 9f99e5b8, found independently by backend
+# and Cybersec): the marker means "this WHOLE COMMENT is not a submission", which only makes sense
+# stated at the very start -- but `re.M` plus `.search()` let it fire from ANYWHERE, including a
+# real REVIEW that just quotes or explains the convention mid-comment (even as a list item, e.g.
+# "- INFO-ONLY: ..."). That reading is the dangerous direction: unlike a Gate-SHA mismatch (which
+# only costs a wasted re-gate), a false INFO-ONLY silences a gate on a genuine submission. No live
+# incident yet (5 historical mentions, all already on the first line), but the exposure is real and
+# the fix costs nothing measured against them (see the selftest pins below). `re.M` dropped -- the
+# pattern is now matched with `.match()` against the first NON-EMPTY line of the comment only (see
+# is_submission below), never `.search()` against the whole body.
+info_only_rx = re.compile(r"^(?:[-*#]+[ \t]*)?INFO-ONLY\b")
+
+def leading_line(text):
+    """The first NON-EMPTY line of `text` -- the anchor for a comment-level declaration like
+    INFO-ONLY, whose meaning ("this whole comment is not a submission") only holds stated at the
+    very start. A leading blank line (a common paste artifact) does not defeat it; a marker that
+    shows up on the SECOND real line or later is not a declaration, it is prose about one."""
+    for line in (text or "").split("\n"):
+        if line.strip():
+            return line
+    return ""
 
 def structured_shas(text):
     out = set()
@@ -279,8 +300,13 @@ def is_submission(c):
         return False
     # INFO-ONLY beats every content signal below it, same reasoning as Gate-SHA: an explicit
     # author declaration needs no guessing. Fence-stripped for the same quoting reason as
-    # review_rx (a fenced or `> `-quoted mention of the word must not arm this).
-    if info_only_rx.search(fence_rx.sub("", text)):
+    # review_rx (a fenced or `> `-quoted mention of the word must not arm this). MATCHED AGAINST
+    # THE FIRST NON-EMPTY LINE ONLY (card 9f99e5b8) -- not searched across the whole comment -- so a
+    # real REVIEW that merely quotes or explains the convention further down (even as a list item)
+    # cannot silence itself. A comment beginning with a fenced block that CONTAINS the marker still
+    # does not count: the fence is stripped first, so the marker is judged against whatever real
+    # text comes first, exactly like every other quoting protection in this file.
+    if info_only_rx.match(leading_line(fence_rx.sub("", text))):
         return False
     # A declared Gate-SHA IS the submission signal (card f910eabd): whoever writes that line is
     # naming a commit for a gate to look at, which is the whole definition. Checked before the
@@ -882,6 +908,24 @@ print(",".join(c.get("id") or "" for c in cards if isinstance(c, dict)))
     d "decide: an unmarked stray hex token still re-arms (unchanged, fail-open default)" "ALLOW:stale-verdict" 0 qa
     SELFTEST_JSON='[{"author":"backend","created_at":100,"content":"REVIEW -- commit abc1234"},{"author":"qa","created_at":200,"content":"QA PASS -- commit abc1234"},{"author":"backend","created_at":300,"content":"INFO-ONLY: baseline CI adat, mar lezart kerdeshez, nem verdikt-keres. Futas-azonosito ffff9999"}]'
     d "decide: the SAME stray token marked INFO-ONLY does not re-arm" "ADVISE-SKIP:already-gated" 8 qa
+
+    # ANCHORED TO THE FIRST LINE ONLY (card 9f99e5b8, found independently by backend and Cybersec):
+    # the marker used to fire from ANYWHERE in the comment (`re.M` + `.search()`), so a genuine
+    # REVIEW that merely explains or quotes the convention further down -- even as a list item --
+    # silenced itself. This is the dangerous direction (a real submission going unseen), unlike a
+    # false ARM which just costs a wasted look.
+    t "INFO-ONLY on a LATER line (explaining the convention) does NOT silence a real REVIEW" "ALLOW:no-verdict" cybersec <<< '[{"author":"backend2","created_at":100,"content":"REVIEW -- kesz, commit ac792b3b.\nINFO-ONLY: ez csak pelda arra, hogyan kell jelolni egy tenyleg info-only kommentet."}]'
+    t "INFO-ONLY as a later list item still does NOT silence" "ALLOW:no-verdict" cybersec <<< '[{"author":"backend2","created_at":100,"content":"Frissites a kartyahoz, uj commit 974509e3.\n- INFO-ONLY: ez csak egy pelda a szabalyra, nem sajat allitas."}]'
+    # REGRESSION: a genuine INFO-ONLY comment on its OWN first line is unaffected by the anchor --
+    # same fixture as the pinned case right above, re-asserted directly against is_submission.
+    t "a genuine INFO-ONLY comment (first line) is still not a submission" "ADVISE-SKIP:no-review" cybersec <<< '[{"author":"backend","created_at":100,"content":"INFO-ONLY: baseline CI adat, futas-azonosito ffff9999"}]'
+    # A leading BLANK line (a common paste artifact) must not defeat the anchor -- the declaration is
+    # still the first REAL content in the comment, just not on line 1 literally.
+    t "a leading blank line before INFO-ONLY still counts as the first line" "ADVISE-SKIP:no-review" cybersec <<< '[{"author":"backend","created_at":100,"content":"\nINFO-ONLY: baseline CI adat, futas-azonosito ffff9999"}]'
+    # A fenced block containing the marker as its very first line, ahead of the REAL comment text,
+    # must not swallow the real REVIEW that follows -- same quoting protection review_rx/gate_sha_rx
+    # already have, now exercised for INFO-ONLY too.
+    t "a fenced INFO-ONLY ahead of a real REVIEW does not silence it" "ALLOW:no-verdict" cybersec <<< '[{"author":"backend2","created_at":100,"content":"```\nINFO-ONLY: pelda a formatumra\n```\nREVIEW -- kesz, commit ac792b3b."}]'
 
     # DESIGNATION (card 5bc10089). dd() is d() plus GATE_LABELS/GATE_LINE, since designation is
     # per-card context the plain d() has no way to pass.
