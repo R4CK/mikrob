@@ -958,9 +958,29 @@ const COMPOUND_OPENER = String.raw`(?:\{|\(|\[\[|(?:case|if|while|until|for|sele
 // called `f`. The function forms do not expand (`f$(y)() { ... }` is "not a valid identifier"), but
 // they share the scanner anyway -- one slot, one reader. Consuming a word bash then rejects costs
 // nothing: that command does not run, so there is no payload to blank.
+//
+// Card 1fec67e9 (backend, live-profiled with --prof, not just theorized -- an earlier draft of this
+// fix targeted the wrong line entirely): a dense run of literal backticks makes THIS function the
+// O(n^2) driver of stripHeredocDataPayloads's DoS. Backtick is not a word terminator (by design, for
+// the six nested shapes documented above), so the `c === '`'` branch below just keeps pairing
+// backticks and continuing the loop -- for a run of n adjacent backticks it walks to the end of the
+// WHOLE remaining run. matchCmdPrefix (the caller) gets invoked at roughly every other position
+// across that same run (an artifact of the boundary push/pop ping-pong in stripHeredocDataPayloads,
+// untouched by this fix), so the same near-full-length scan repeats ~n/2 times -- O(n^2) total.
+// Profiled: n=32000 backticks, scanBashWord/matchCmdPrefix were >40% of total ticks.
+//
+// SCAN_BASH_WORD_MAX_LEN bounds a single call's work to a constant, which is what actually closes
+// the DoS (O(n) calls x O(1) capped cost = O(n), not O(n) x O(n)). Chosen generously against the six
+// real shapes this scanner exists for (all under 30 chars: `f$(y $(z))`, `` f`echo $(y)` ``, etc.) --
+// no legitimate bash function/coproc NAME is anywhere near 1024 chars, so the cap changes the answer
+// for exactly zero shapes bash itself could execute. Past the cap this returns -1 same as an
+// unterminated quote/backtick a few lines below -- the file's own established "no answer" value for
+// "this cannot be resolved as a word", not a new failure mode.
+const SCAN_BASH_WORD_MAX_LEN = 1024
 function scanBashWord(src, start) {
   let j = start
   while (j < src.length) {
+    if (j - start > SCAN_BASH_WORD_MAX_LEN) return -1
     const c = src[j]
     if (c === '\\') { j += 2; continue }
     if (c === "'") { const k = src.indexOf("'", j + 1); if (k === -1) return -1; j = k + 1; continue }
