@@ -63,6 +63,12 @@ sync_live_install() {
   fi
 }
 
+# try_append_union (card cbb66abf): the ONE conflict shape (both sides purely append to
+# DECISIONS.md) this script auto-resolves, shared verbatim with cleancore-land.sh so the narrow
+# precondition and the header-count check cannot drift between the two copies.
+# shellcheck source=./decisions-append-union.sh
+. "$(dirname "$0")/decisions-append-union.sh"
+
 if [ "${1:-}" = "--selftest" ]; then
   fail=0; n=0
   t() { n=$((n+1)); [ "$2" = "$3" ] || { echo "  FAIL $1: got [$2] want [$3]"; fail=1; }; }
@@ -109,13 +115,23 @@ land_one() {
   if ! merge_err="$(git -C "$wt" -c user.email=mikrob@marveen.local -c user.name=mikrob \
                     merge --no-ff "$branch" -m "$msg" 2>&1)"; then
     local conflicted; conflicted="$(git -C "$wt" diff --name-only --diff-filter=U)"
-    if [ -n "$conflicted" ]; then
+    # NARROW AUTO-UNION (card cbb66abf): only when DECISIONS.md is the SOLE conflicted file, and
+    # only when try_append_union structurally confirms both sides purely appended -- see
+    # decisions-append-union.sh for the full precondition and why it is safe to complete the merge
+    # rather than abort it here. Everything else falls through to the unchanged refusal below.
+    if [ "$conflicted" = "DECISIONS.md" ] && try_append_union "$wt" "DECISIONS.md"; then
+      say "$agent: DECISIONS.md: both sides purely appended -- auto-unioned, header count verified"
+      git -C "$wt" -c user.email=mikrob@marveen.local -c user.name=mikrob commit --no-edit -q \
+        || { echo "$agent: auto-unioned DECISIONS.md but the merge commit itself failed"; return 4; }
+    elif [ -n "$conflicted" ]; then
       echo "$agent: CONFLICTS in:"; echo "$conflicted" | sed 's/^/    /'
+      git -C "$wt" merge --abort 2>/dev/null
+      return 4
     else
       echo "$agent: MERGE FAILED (not a content conflict) -- git says:"; echo "$merge_err" | sed 's/^/    /'
+      git -C "$wt" merge --abort 2>/dev/null
+      return 4
     fi
-    git -C "$wt" merge --abort 2>/dev/null
-    return 4
   fi
   local merge_sha; merge_sha="$(git -C "$wt" rev-parse HEAD)"
   say "$agent: merged --no-ff, no conflicts ($(git -C "$wt" diff --name-only "$base_sha..HEAD" | wc -l) file(s) changed since $DEFAULT_BRANCH base)"
