@@ -26,6 +26,7 @@ import { readHardStop, isNewDevStartBlocked } from '../../costops/weekly-hard-st
 import { landedGuardVerdict } from '../kanban-landed-guard.js'
 import { gateCompletenessGuardVerdict } from '../kanban-gate-completeness-guard.js'
 import { dedupPrefilterDescriptionUpdate } from '../kanban-dedup-prefilter-guard.js'
+import { clearBeforeDispatchIfSwitching } from '../kanban-dispatch-clear-guard.js'
 
 // Card project-name drift (Peti 2026-08-08): `project` was free-text with no case-folding, so
 // "CleanCore" / "cleancore" / "MikroB" / "mikrob-infra" / "fleet-infra" / "marveen" / "Infra" all
@@ -157,7 +158,7 @@ export function kanbanMoveInstructions(id: string, target: string): string {
 // dispatched_at is the once-only guard; errors never block the card move.
 // `actor` is the mover reported by the caller: an agent that moves its own card
 // to in_progress must not be woken with an assignment for work it just started.
-function fireKanbanDispatch(id: string, actor?: string | null): void {
+async function fireKanbanDispatch(id: string, actor?: string | null): Promise<void> {
   try {
     const card = getKanbanCard(id)
     if (!card || card.dispatched_at) return
@@ -179,6 +180,18 @@ function fireKanbanDispatch(id: string, actor?: string | null): void {
       actor,
     })
     if (!target) return
+    // Card 900178fa: /clear the target's pane FIRST when this is a genuine card switch (not a
+    // re-dispatch of the same card after a gate FAIL), and WAIT for that attempt to settle before
+    // enqueueing the card-content message below -- fireKanbanDispatch itself is called
+    // fire-and-forget by its caller (moving the card already returned its HTTP response), so
+    // awaiting here costs nothing external, but ordering it the other way around risks the
+    // message-router delivering the new task BEFORE this direct send gets to clear the pane,
+    // wiping the very instructions it just delivered.
+    try {
+      await clearBeforeDispatchIfSwitching(target, id)
+    } catch (err) {
+      logger.warn({ err, id, target }, 'Kanban dispatch: /clear-before-switch failed (dispatch continues)')
+    }
     const desc = (card.description ?? '').trim()
     const content = `[Kanban feladat #${id}]: ${card.title}${desc ? ' — ' + desc : ''}\n\n${kanbanMoveInstructions(id, target)}`
     createAgentMessage(MAIN_AGENT_ID, target, content)
@@ -511,7 +524,9 @@ export async function tryHandleKanban(ctx: RouteContext): Promise<boolean> {
     if (moveKanbanCard(id, status, sort_order ?? 0, actor, force === true)) {
       // Wake the assigned agent once when the card enters in_progress -- unless
       // that agent is the one who moved it (self-pickup needs no wake-up).
-      if (status === 'in_progress') fireKanbanDispatch(id, actor)
+      // Fire-and-forget: fireKanbanDispatch's own try/catch means this never rejects, and
+      // awaiting it here would hold the HTTP response on a pane-idle wait (card 900178fa).
+      if (status === 'in_progress') void fireKanbanDispatch(id, actor)
       json(res, { ok: true })
       return true
     }
