@@ -415,6 +415,30 @@ review_shas = shas_of(newest_review)
 # an unknown the two error directions are not equal. A spurious re-arm is cheap and self-correcting: a
 # gate looks, sees nothing new, moves on. A missed gate is SILENT, which is the exact failure this card
 # exists to remove. The measured 26-pair problem contains no tie at all, so `<` costs nothing there.
+#
+# DECLARED-SHA OVERRIDES TIMESTAMP (Cybersec finding 093a9914, 2026-08-23): the rule above answers
+# purely from WHEN the two comments were posted, not what they are ABOUT. A verdict can be posted
+# LATER than a submission by clock time while still being about an OLDER, already-superseded
+# commit -- e.g. a gate answering a prior submission while a fresh one lands, then posting after
+# it. The real pair: backend declared Gate-SHA: 86aef9f8 (comment 15455); the Cybersec GO, posted
+# with a LATER timestamp (comment 15457), declared Gate-SHA: 83fcafab, an EARLIER commit --
+# content-wise stale, but the pure timestamp rule below read it as the newest word and silenced
+# the dispatch. MikroB only caught it because of a manual re-dispatch, not because this script did.
+#
+# Fires ONLY when BOTH sides carry an explicit `Gate-SHA:` declaration (never the extract_shas()
+# prose scrape) -- that is what keeps this safe next to card d9ce20f5 right below, whose whole point
+# was that an OLDER review naming an uncovered sha must NOT re-arm when NEITHER side declares
+# anything (the scrape alone is too imprecise to trust over a timestamp there). A declared field
+# needs no such caution: its author said outright what it is about, symmetrically on both sides,
+# same reasoning as the rest of the Gate-SHA convention above -- it REPLACES the guess, it does not
+# just narrow it.
+_newest_mine_declared = structured_shas(newest_mine.get("content") or "")
+_newest_review_declared = structured_shas(newest_review.get("content") or "")
+if _newest_mine_declared and _newest_review_declared:
+    if not any(r.startswith(m) or m.startswith(r) for r in _newest_review_declared for m in _newest_mine_declared):
+        print("ALLOW:stale-verdict")
+        sys.exit(0)
+
 if last_review < last_mine:
     print(f"ADVISE-SKIP:already-gated:{int(last_mine)}")
     sys.exit(0)
@@ -682,6 +706,15 @@ print(",".join(c.get("id") or "" for c in cards if isinstance(c, dict)))
     t "list-marker declaration still arms"        "ADVISE-SKIP:already-gated" cybered <<< '[{"author":"backend2","created_at":100,"content":"REVIEW -- ac792b3b"},{"author":"cybered","created_at":200,"content":"CYBERED GO -- @ ac792b3b"},{"author":"backend2","created_at":300,"content":"- Gate-SHA: ac792b3b\nValasz: valtozatlan, a testver 63c4b270 landolt."}]'
     # Multiple shas on one line (a review that submits two commits together).
     t "two declared shas, one still new"          "ALLOW:stale-verdict" cybersec <<< '[{"author":"backend","created_at":100,"content":"REVIEW -- 6fd834e2"},{"author":"cybersec","created_at":200,"content":"Gate-SHA: 6fd834e2\nNO-GO"},{"author":"backend","created_at":300,"content":"Gate-SHA: 6fd834e2, 974509e3\nREVIEW -- fix + follow-up."}]'
+    # DECLARED-SHA OVERRIDES TIMESTAMP (card e461cfb7, Cybersec finding 093a9914). The real pair:
+    # backend declared Gate-SHA: 86aef9f8 first; Cybersec's GO landed with a LATER timestamp but
+    # declared Gate-SHA: 83fcafab, an EARLIER, unrelated commit -- content-wise stale despite being
+    # the chronologically newest comment. The pure timestamp rule alone answers already-gated here;
+    # this is exactly the false negative the card reports.
+    t "093a9914 real incident: later verdict declares an OLDER sha -- must re-arm" "ALLOW:stale-verdict" cybersec <<< '[{"author":"backend","created_at":15455,"content":"REVIEW -- kesz\nGate-SHA: 86aef9f8"},{"author":"cybersec","created_at":15457,"content":"CYBERSEC GO\nGate-SHA: 83fcafab"}]'
+    # Regression control: when the two DECLARED shas actually agree, a later verdict timestamp must
+    # still skip as before -- the fix compares content, it must not just re-arm on timestamp order.
+    t "declared shas MATCH despite the later verdict timestamp -- stays already-gated" "ADVISE-SKIP:already-gated" cybersec <<< '[{"author":"backend","created_at":100,"content":"REVIEW -- kesz\nGate-SHA: 86aef9f8"},{"author":"cybersec","created_at":200,"content":"CYBERSEC GO\nGate-SHA: 86aef9f8"}]'
 
     # review_rx QUOTE FORMS (card a45b1c71 -- the b60835e1/25c0c64 class recurring in a second regex
     # in this same file). The measured repro: "Idezem a kollegat:\n> REVIEW -- kesz" armed a gate
@@ -773,7 +806,16 @@ print(",".join(c.get("id") or "" for c in cards if isinstance(c, dict)))
     # stale to a later check. Same-side control right above ("another gate naming a sha") already
     # covered the unstructured/prose case; this is the structured Gate-SHA-field case that the old
     # order still let through.
-    t "another gate own Gate-SHA verdict (multi-sha, newer) does not re-arm a prior verdict" "ADVISE-SKIP:already-gated" qa <<< '[{"author":"backend","created_at":100,"content":"REVIEW -- kesz\nGate-SHA: 65b047aa"},{"author":"qa","created_at":200,"content":"QA PASS\nGate-SHA: 77f4e23d"},{"author":"cybersec","created_at":300,"content":"CYBERSEC GO\nGate-SHA: 65b047aa, 6ffb017d, 77f4e23d"}]'
+    #
+    # QA own declared set widened to include backend own sha (card e461cfb7 fix): the fixture used to
+    # leave QA PASS declaring ONLY 77f4e23d while backend REVIEW declared ONLY 65b047aa -- an
+    # accidental mismatch this test never meant to exercise. Once the declared-sha-overrides-
+    # timestamp check (093a9914, right above the SHA CHECK block) started comparing what the two
+    # sides actually declare, that mismatch correctly read as a real coverage gap and flipped this
+    # test red. The fixture is tightened so QA own declaration is internally consistent with what it
+    # is supposed to have reviewed, which is what this test's OWN premise already assumed; the
+    # NON_SUBMITTERS-ordering question it exists to pin is untouched by this.
+    t "another gate own Gate-SHA verdict (multi-sha, newer) does not re-arm a prior verdict" "ADVISE-SKIP:already-gated" qa <<< '[{"author":"backend","created_at":100,"content":"REVIEW -- kesz\nGate-SHA: 65b047aa"},{"author":"qa","created_at":200,"content":"QA PASS\nGate-SHA: 65b047aa, 77f4e23d"},{"author":"cybersec","created_at":300,"content":"CYBERSEC GO\nGate-SHA: 65b047aa, 6ffb017d, 77f4e23d"}]'
 
     # SIBLING CARD IDS (card b60835e1, measured on the live board). Card ids are the same hex shape
     # as a short sha, and cards quote each other constantly -- one real E2E sweep comment named eight
