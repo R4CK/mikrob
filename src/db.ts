@@ -2046,6 +2046,14 @@ export function getKanbanCard(id: string): KanbanCard | undefined {
   return db.prepare('SELECT rowid AS seq, * FROM kanban_cards WHERE id = ?').get(id) as KanbanCard | undefined
 }
 
+/** All non-archived in_progress cards for one assignee. Card 900178fa: used to tell a genuine
+ *  card SWITCH apart from a re-dispatch of the same card (caller excludes the card in question). */
+export function getInProgressCardsForAssignee(assignee: string): KanbanCard[] {
+  return db
+    .prepare("SELECT rowid AS seq, * FROM kanban_cards WHERE archived_at IS NULL AND status = 'in_progress' AND assignee = ?")
+    .all(assignee) as KanbanCard[]
+}
+
 export function createKanbanCard(card: {
   id: string
   title: string
