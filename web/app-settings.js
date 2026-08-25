@@ -5,22 +5,36 @@
 // Exposed globally: loadAvailableModels(), loadOllamaModels()
 //   -- loadAvailableModels() called from openMarveenDetail (app-agents.js) and from
 //      wizard logic in app.js; also called at module load-time (end of this file, init replacement)
+//   -- loadOllamaModels() called from resetWizard (app-wizard.js) and at module load-time
 
 // === Settings save buttons ===
 async function loadOllamaModels() {
-  const group = document.getElementById('ollamaModelGroup')
-  if (!group) return
-  group.innerHTML = ''
+  // Two optgroups: one in the agent edit panel, one in the new-agent wizard.
+  // getElementById returns a single node, so the earlier single-group version
+  // could only ever reach the edit panel -- the wizard had no local-model option.
+  const groups = [
+    document.getElementById('ollamaModelGroup'),
+    document.getElementById('agentModelOllamaGroup'),
+  ]
+  let models = []
   try {
     const res = await fetch('/api/ollama/models')
-    const models = await res.json()
+    if (res.ok) models = await res.json()
+  } catch { /* Ollama not reachable -- fall through with an empty list */ }
+  if (!Array.isArray(models)) models = []
+  for (const group of groups) {
+    if (!group) continue
+    group.innerHTML = ''
+    // Hide rather than show an empty group, matching loadAvailableModels().
+    if (models.length === 0) { group.style.display = 'none'; continue }
+    group.style.display = ''
     for (const m of models) {
       const opt = document.createElement('option')
       opt.value = m.name
       opt.textContent = `${m.name} (${m.size})`
       group.appendChild(opt)
     }
-  } catch { /* Ollama not available */ }
+  }
 }
 
 // Populates the DeepSeek optgroups in both the wizard and the agent edit
@@ -411,3 +425,4 @@ document.getElementById('analyzeAllModelsBtn').addEventListener('click', async (
 
 // Init: populate available models on page load (replaces the init-time call in app.js).
 loadAvailableModels()
+loadOllamaModels()
