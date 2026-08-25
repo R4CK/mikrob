@@ -3297,3 +3297,15 @@ a `seed-fleet-agents/qa/CLAUDE.md` core-skill listájában, fleet-test-re nincs 
 **Ki döntött:** backend2 (kártya f5eda0be, MikroB dispatch a 3c9e22b1 Fázis alatt).
 
 **Hivatkozás:** kártya `f5eda0be` (ez), szülő `3c9e22b1`. Kapcsolódó új kártya: `706ad126` (CSP-lelet).
+
+## 2026-08-25 -- Pontosítás a 12783b1e verziószámláló-szabályhoz: X.Y.Z TÉNYLEGESEN kövesse az upstreamet minden sync-mergenél
+
+**Döntés:** A 2026-08-20-i `12783b1e` bejegyzés szövege ("X.Y.Z az upstream Szotasz/marveen verzió... Upstream-sync után (új X.Y.Z) a számláló 1-re áll vissza") változatlanul érvényes és MEGERŐSÍTVE: a `package.json` `version` mezőjének `X.Y.Z` része minden upstream-sync merge-nél frissüljön a ténylegesen belehúzott upstream verzióra, `+mikrob.1` szuffixszel. A számláló csak akkor 1, ha ÚJ X.Y.Z-re lépünk; egyébként fork-saját landolásnál nő.
+
+**Miért ez a bejegyzés:** a c7f0d394 fleet-wide landolás-blokk feloldása közben (2026-08-25 este) két ügynök egymástól függetlenül eltérően értelmezte ugyanezt a szabályt ugyanarra a bumpra (upstream 1.33.0 -> 1.34.0): backend a dokumentált szöveg szerint az X.Y.Z átvételét javasolta (`1.34.0+mikrob.1`), backend2 landolt döntése viszont a fork saját `1.33.0+mikrob.1`-jét hagyta változatlanul, és ez a változat landolt előbb (Fron Ted átfogó javításába építve). A tényleges `package.json` `version` mezője ezért MOST `1.33.0+mikrob.1`, ELTÉR a dokumentált szabálytól. Ez nem új policy-döntés, hanem a MÁR MEGLÉVŐ szabály helyreállítása -- lásd [[a-decisions-correction-goes-as-a-new-dated-entry]].
+
+**Végrehajtás:** külön kártya nyitva a `package.json` tényleges frissítésére (`1.34.0+mikrob.1`-re) + a `fork-upstream-conflict-guard.test.ts` megfelelő `ACKNOWLEDGED_CONFLICTS`/`ACKNOWLEDGED_UPSTREAM_BLOBS` bejegyzésének összhangba hozására ezzel a döntéssel.
+
+**Ki döntött:** MikroB (a 12783b1e eredeti szövegének szó szerinti újraolvasása alapján; nem új döntés, a meglévő szabály egyértelműsítése egy megfigyelt kétértelmű végrehajtás után).
+
+**Hivatkozás:** kártya `12783b1e` (eredeti szabály), `c7f0d394` (a blokk, ami alatt a kétértelműség felmerült), backend INFO-üzenete (2026-08-25 22:xx).
