@@ -360,14 +360,6 @@ const ACKNOWLEDGED_CONFLICTS = {
   // keep changing it. The rule for resolving it is what needed recording, not a ban on conflicting.
   'src/__tests__/installer-start-and-fallback.test.ts':
     'keep the fork assertion (expect([TRAP:5, TRAP:6]).toContain -- identical behaviour to upstream anchored regex, better failure output) and fold upstream bash 3.2 / macOS provenance into the fork comment; neither comment taken wholesale',
-  // Single-hunk conflict, the `version` field only (measured 2026-08-25: nothing else in the file
-  // diverges). Not a disagreement -- the fork's OWN pre-existing rule already answers it (card
-  // 12783b1e, DECISIONS.md 2026-08-20): `X.Y.Z+mikrob.N`, X.Y.Z tracks upstream, N resets to 1 on
-  // every upstream-sync bump of X.Y.Z. Upstream moved X.Y.Z from 1.33.0 to 1.34.0 here -- a real
-  // sync bump, not a fork-own landing -- so this is that reset firing for the first time, not a new
-  // policy decision. Deliberately NOT GUARDED_FILES: upstream is entitled to keep bumping X.Y.Z, and
-  // the rule needs recording once per bump, same character as installer-start-and-fallback above.
-  'package.json': 'take upstream X.Y.Z (1.34.0) with the suffix reset to +mikrob.1 per the fork versioning rule (card 12783b1e) -- never take upstream wholesale, since that would drop the +mikrob.N convention entirely',
 } as const
 
 // THE UPSTREAM CONTENT EACH RULE ABOVE WAS DECIDED AGAINST (card a1d613e3, Cybersec msg 19105).
@@ -423,7 +415,6 @@ const ACKNOWLEDGED_UPSTREAM_BLOBS: Readonly<Record<keyof typeof ACKNOWLEDGED_CON
   'scripts/email-send-gate.mjs': 'abaaedc4d0e9f76fa159307659473ffaac306411',
   'src/__tests__/hook-command-quoting.test.ts': '1048b1988e6c8554754900c62570d76d455f1057',
   'src/__tests__/installer-start-and-fallback.test.ts': '9017ce4fcfe808b73fdcd1389ebf1c9eaf374f7e',
-  'package.json': 'f811a32f9b4ba4eb5d83960578a550e516392eee',
 }
 
 /** A conflict whose written rule was decided against DIFFERENT upstream content than what is
