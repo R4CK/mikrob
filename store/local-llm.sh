@@ -106,7 +106,7 @@ ollama_up() { curl -fsS -m 5 "$OLLAMA_HOST/api/tags" >/dev/null 2>&1; }
 # Usage metering (fail-open, metadata only -- NEVER the prompt/content).
 # One TSV line per real model invocation: epoch \t caller \t task \t model \t ms \t status
 USAGE_LOG="$HERE/local-llm-usage.log"
-log_usage() { # $1=status(ok|err)  $2=elapsed_ms  $3=eval_count  $4=prompt_eval_count  $5=eval_duration_ms
+log_usage() { # $1=status(ok|err|busy)  $2=elapsed_ms  $3=eval_count  $4=prompt_eval_count  $5=eval_duration_ms
   # Strip TAB/NEWLINE from free-text fields so a caller/task/source value can never
   # inject extra TSV columns or fake rows (metric-integrity hardening; Cybersec LOW).
   # LOG_TASK is the label ONLY (card ea3e4270). --task also picks a prompt template and is subject to
@@ -338,7 +338,12 @@ if command -v timeout >/dev/null 2>&1; then
 fi
 RESP=$("${GEN_CMD[@]}" 2>/dev/null) || {
   gen_rc=$?
-  log_usage err "$(_elapsed)"
+  # 'busy', not 'err' (card b8fff0fe, Cybersec finding on 71188a2a): gen_rc=1 means the GPU lock was
+  # contended, not that generation failed -- see the flock-exit-code note just below, which this
+  # reuses the SAME condition from rather than re-deriving it. Before this, every busy-vs-real-error
+  # row logged identically, so the log itself could never answer "how often does contention happen",
+  # the exact question 71188a2a asked and could not.
+  log_usage "$([[ "$gen_rc" -eq 1 ]] && echo busy || echo err)" "$(_elapsed)"
   _queue_finish fail
   # `flock -w N` exits 1, and ONLY 1, when it fails to acquire the lock within the wait -- it never
   # execs the wrapped curl in that case, so this is reliably flock's own status, not curl's. curl
