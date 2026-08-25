@@ -4,9 +4,10 @@
 Covers the two measured bugs:
   1. A missing/malformed name-rules file must still fail-closed on a REAL send, but a
      PRESENT, VALID file that deliberately declares zero bad-name patterns must not.
-  2. SEND_CMD must not arm on prose that merely mentions an email vendor's domain (a
-     kanban/inter-agent message, not an actual HTTP call) -- URL-anchored now, not a bare
-     substring match.
+  2. The send-detector must not arm on prose that merely mentions an email vendor's domain (a
+     kanban/inter-agent message, not an actual HTTP call). Fixed by adopting upstream's own
+     `is_send_invocation()` (KAPUHATOKOR822) wholesale rather than shipping a narrower
+     fork-local patch -- upstream had independently solved this exact class of false positive.
 
 Each case runs the hook as a real subprocess (a fresh Python process per case, since
 BAD_NAME is computed at module-import time from the OUTGOING_COPY_GATE_RULES env var), so
@@ -153,19 +154,20 @@ def main():
             rules_path=empty_rules,
         )
         case(
-            "bare domain with NO scheme (unusual form) is the documented residual gap -- ALLOWs",
+            "bare domain with NO scheme still catches, via upstream's is_send_invocation "
+            "(closes the gap this fork's own first-draft URL-anchoring patch would have left)",
             'curl -s api.resend.com/emails -d \'{"to":"x@y.com"}\' --body "' + BROKEN_HU + '"',
-            ALLOW,
+            BLOCK,
             rules_path=empty_rules,
         )
         case(
-            "other SEND_CMD alternatives (send.py) are unaffected by the URL-anchoring change",
+            "other send alternatives still work through is_send_invocation",
             'support-mail/send.py --to test@example.com --body "' + BROKEN_HU + '"',
             BLOCK,
             rules_path=empty_rules,
         )
         case(
-            "sendmail invocation is unaffected by the URL-anchoring change",
+            "the sendmail alternative still works through is_send_invocation",
             'sendmail -t --to test@example.com <<\'EOF\'\n' + BROKEN_HU + '\nEOF',
             BLOCK,
             rules_path=empty_rules,
