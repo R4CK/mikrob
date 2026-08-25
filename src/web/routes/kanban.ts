@@ -494,8 +494,20 @@ export async function tryHandleKanban(ctx: RouteContext): Promise<boolean> {
 
   if (kanbanCardMatch && method === 'DELETE') {
     const id = decodeURIComponent(kanbanCardMatch[1])
+    // Optional body, same `actor` convention as POST /move -- card d3f8d2c3: a deletion that
+    // unblocks a successor is now audited (kanban_card_field_events), and an unattributed row
+    // answers "who" no better than none at all. A DELETE with no body (most callers today) still
+    // works: an empty buffer parses to no actor, matching the pre-existing behaviour exactly.
+    const rawBody = (await readBody(req)).toString()
+    let actor: string | undefined
+    if (rawBody.trim()) {
+      try {
+        const parsed = JSON.parse(rawBody)
+        if (typeof parsed?.actor === 'string') actor = parsed.actor
+      } catch { /* malformed body on an otherwise-valid DELETE must not block the deletion */ }
+    }
     revertIdeaFromKanban(id)
-    if (deleteKanbanCard(id)) { json(res, { ok: true }); return true }
+    if (deleteKanbanCard(id, actor)) { json(res, { ok: true }); return true }
     json(res, { error: 'Kártya nem található' }, 404)
     return true
   }

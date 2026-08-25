@@ -2465,7 +2465,7 @@ export function listKanbanProjects(): string[] {
   return rows.map(r => r.project)
 }
 
-export function deleteKanbanCard(id: string): boolean {
+export function deleteKanbanCard(id: string, actor?: string): boolean {
   // Wrapped in a transaction to ensure atomicity: all mutations succeed
   // together or none of them do. Steps in FK-safe order:
   //   1. Delete comments that reference this card (FK: kanban_comments.card_id).
@@ -2474,25 +2474,43 @@ export function deleteKanbanCard(id: string): boolean {
   //   3. Null-out child cards that reference this card as their parent
   //      (FK: kanban_cards.parent_id). Setting parent_id = NULL keeps the
   //      children alive as root-level cards rather than leaving them with a
-  //      dangling reference. FK enforcement is currently OFF by default
-  //      (better-sqlite3 default), but the dangling parent_id is still a
-  //      data bug -- orphaned children do not appear under any parent and
+  //      dangling reference. kanban_cards.parent_id carries no REFERENCES
+  //      clause at all (unlike kanban_dependencies below), so this step is not
+  //      about FK enforcement either way -- the dangling parent_id is a data
+  //      bug regardless: orphaned children do not appear under any parent and
   //      are invisible in hierarchy views.
   //   4. Delete every dependency edge touching this card, in BOTH directions
-  //      (card 2bb82943). The table declares REFERENCES but the pragma that
-  //      would enforce them is off, so ON DELETE CASCADE would do nothing --
-  //      the same reason step 3 exists. Deleting a card CUTS its edges, it
-  //      does not satisfy them: a successor that was blocked by this card
-  //      becomes unblocked because the requirement is gone, not met.
+  //      (card 2bb82943), AND audit every successor it unblocks (card
+  //      d3f8d2c3, Cybered): a successor that was blocked by this card
+  //      becomes unblocked because the requirement is GONE, not because it
+  //      was met, and that silent unblock deserves the same kind of audit
+  //      trail a `force` bypass already gets -- see recordKanbanFieldEvent
+  //      below. FK enforcement on kanban_dependencies IS on for this app's
+  //      own better-sqlite3 connection (measured 1, corrected 2026-08-23 --
+  //      see the CREATE TABLE comment above), so this DELETE is not optional
+  //      belt-and-braces: without it, deleting a card with a live edge would
+  //      fail outright. A dangling edge is still reachable, though, from an
+  //      agent writing SQL directly with FKs off (sqlite3 CLI/python default).
   //   5. Delete the card itself.
-  return db.transaction((cardId: string) => {
+  return db.transaction((cardId: string, deleteActor: string | undefined, nowMs: number) => {
     db.prepare('DELETE FROM kanban_comments WHERE card_id = ?').run(cardId)
     db.prepare('DELETE FROM kanban_line_comments WHERE card_id = ?').run(cardId)
     db.prepare('DELETE FROM kanban_card_labels WHERE card_id = ?').run(cardId)
     db.prepare('UPDATE kanban_cards SET parent_id = NULL WHERE parent_id = ?').run(cardId)
+    // AUDIT the unblock BEFORE cutting the edges (card d3f8d2c3, Cybered): a `force` bypass of the
+    // dependency guard writes an audited row (kanban_card_events.forced); deleting the predecessor
+    // achieved the SAME outcome -- the successor proceeds without its requirement being met -- with
+    // NOTHING recorded on either card. One row per successor this deletion unblocks, so a later
+    // reader of getKanbanCardFieldEvents(successorId) can see WHY it stopped being blocked.
+    const successors = db
+      .prepare('SELECT from_card_id AS id FROM kanban_dependencies WHERE to_card_id = ?')
+      .all(cardId) as { id: string }[]
+    for (const { id: successorId } of successors) {
+      recordKanbanFieldEvent(successorId, 'predecessor_removed', cardId, null, deleteActor, nowMs)
+    }
     db.prepare('DELETE FROM kanban_dependencies WHERE from_card_id = ? OR to_card_id = ?').run(cardId, cardId)
     return db.prepare('DELETE FROM kanban_cards WHERE id = ?').run(cardId).changes > 0
-  })(id) as boolean
+  })(id, actor, Math.floor(Date.now() / 1000)) as boolean
 }
 
 // --- Card dependencies (card 2bb82943) ------------------------------------------------------

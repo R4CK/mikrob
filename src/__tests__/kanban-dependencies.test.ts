@@ -11,6 +11,7 @@ import {
   moveKanbanCard,
   getKanbanCard,
   getKanbanCardEvents,
+  getKanbanCardFieldEvents,
   addKanbanDependency,
   removeKanbanDependency,
   getKanbanPredecessors,
@@ -115,10 +116,14 @@ describe('deleting a card CUTS its edges (there is no working ON DELETE CASCADE 
   })
 
   it('THE DANGLING-ROW BUG: no edge may survive pointing at a card that is gone', () => {
-    // PRAGMA foreign_keys is OFF (better-sqlite3 default, and this codebase never enables it --
-    // measured 0 on the live DB), so the table's REFERENCES clauses enforce nothing. Without the
-    // explicit DELETE in deleteKanbanCard's transaction these rows would simply stay, and a
-    // successor would keep reading a predecessor that no longer exists.
+    // CORRECTED (card 37c5605a, Cybered F-2; card d3f8d2c3 point 3 re-checked it here too): the
+    // FIRST measurement of PRAGMA foreign_keys was taken with Python's sqlite3 client, which
+    // defaults OFF -- this app's actual client, better-sqlite3, defaults ON (measured 1, both
+    // in-process and on the live file). So through the app the REFERENCES clause DOES bite, and
+    // deleting a card with a live edge would fail outright without the explicit DELETE below --
+    // this is not belt-and-braces, it is what makes the delete possible at all. A dangling row is
+    // still reachable from an agent writing SQL directly (sqlite3 CLI/python default OFF), which
+    // is exactly the scenario `danglingEdge()` further down in this file simulates.
     addKanbanDependency('a', 'b')
     deleteKanbanCard('b')
     // The JOIN would hide a dangling row, so ask the successor side too -- both must be empty.
@@ -127,6 +132,83 @@ describe('deleting a card CUTS its edges (there is no working ON DELETE CASCADE 
     // And a fresh card reusing that id must NOT inherit the old edge.
     createKanbanCard({ id: 'b', title: 'B again' })
     expect(getKanbanSuccessors('b')).toEqual([])
+  })
+
+  it('THE SILENT UNBLOCK (card d3f8d2c3, Cybered point 1): deleting a predecessor now audits the successor it frees', () => {
+    // A `force` bypass of the dependency guard writes an audited kanban_card_events row. Deleting
+    // the predecessor reaches the SAME outcome -- the successor proceeds without its requirement
+    // being met -- through a completely different, unaudited path: no force flag, no actor
+    // required, nothing on either card. Measured before this fix: zero rows in
+    // kanban_card_field_events after the delete.
+    addKanbanDependency('a', 'b') // b blocks a
+    expect(deleteKanbanCard('b', 'someone')).toBe(true)
+    const events = getKanbanCardFieldEvents('a')
+    expect(events).toHaveLength(1)
+    expect(events[0]).toMatchObject({
+      field: 'predecessor_removed',
+      old_value: 'b',
+      new_value: null,
+      actor: 'someone',
+    })
+  })
+
+  it('the audit fires once PER successor the deletion unblocks, not just the first', () => {
+    addKanbanDependency('a', 'c') // c blocks a
+    addKanbanDependency('b', 'c') // c blocks b too
+    deleteKanbanCard('c', 'someone')
+    expect(getKanbanCardFieldEvents('a')).toHaveLength(1)
+    expect(getKanbanCardFieldEvents('b')).toHaveLength(1)
+  })
+
+  it('an actor-less deletion (the pre-existing DELETE contract, no body) still audits -- actor is simply null', () => {
+    addKanbanDependency('a', 'b')
+    deleteKanbanCard('b') // no actor argument, matching every caller before this card
+    const events = getKanbanCardFieldEvents('a')
+    expect(events).toHaveLength(1)
+    expect(events[0]!.actor).toBeNull()
+  })
+
+  it('CONTROL: deleting a card with no successors writes no audit row at all', () => {
+    addKanbanDependency('a', 'b') // a depends on b -- b has no successors of ITS OWN
+    deleteKanbanCard('a', 'someone')
+    expect(getKanbanCardFieldEvents('a')).toEqual([])
+    expect(getKanbanCardFieldEvents('b')).toEqual([])
+  })
+})
+
+describe('a cycle inserted from OUTSIDE the app does not hang the closing query (card d3f8d2c3, Cybered point 2)', () => {
+  /** Insert an edge bypassing addKanbanDependency's own cycle guard entirely -- the same direct-SQL
+   *  threat model as danglingEdge() further down (an agent writing sqlite3 CLI/python directly). */
+  function directEdge(from: string, to: string) {
+    getDb().prepare('INSERT INTO kanban_dependencies (from_card_id, to_card_id, created_at) VALUES (?,?,?)').run(from, to, 1)
+  }
+
+  it('WITH RECURSIVE ... UNION terminates on an already-cyclic table instead of hanging forever', () => {
+    // a -> b -> c -> a, written directly: the app's own guard would have refused the third edge,
+    // but a table that got there some other way is exactly the case the UNION dedup (not UNION
+    // ALL) exists to survive -- unasserted anywhere until this card.
+    directEdge('a', 'b')
+    directEdge('b', 'c')
+    directEdge('c', 'a')
+    createKanbanCard({ id: 'd', title: 'D' })
+    // addKanbanDependency('d', 'a') walks predecessorClosure('a'), which chases the cycle -- if the
+    // UNION did not dedup on the repeated node, this call would never return and the test would
+    // time out rather than fail cleanly. The explicit bound documents the intent either way.
+    const start = Date.now()
+    const result = addKanbanDependency('d', 'a')
+    expect(Date.now() - start).toBeLessThan(1000)
+    expect(result).toEqual({ ok: true }) // d is not part of the a/b/c cycle -- this edge is legal
+  })
+
+  it('CONTROL: an edge that would join the external cycle from inside it is still rejected', () => {
+    directEdge('a', 'b')
+    directEdge('b', 'c')
+    directEdge('c', 'a')
+    // a's closure already contains b (via c -> a -> b), so a -> b would close a loop the guard
+    // must catch even though the EXISTING cycle was never built through the guarded path at all.
+    const r = addKanbanDependency('a', 'b')
+    expect(r.ok).toBe(false)
+    expect(r).toMatchObject({ reason: 'cycle' })
   })
 })
 
