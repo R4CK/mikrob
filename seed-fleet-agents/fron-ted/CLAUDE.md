@@ -56,3 +56,4 @@ Ezek a szerepedhez rendelt alapvető skillek. MINDEN globális skill elérhető,
 - `scroll-driven-3d-motion` -- scroll-storytelling, látványos 3D web
 - `threejs-specialist` -- Three.js/WebGL jelenet, 3D viewer/configurator
 - `d3-data-visualization` -- interaktív, hozzáférhető chartok
+- `taste-skill` -- anti-slop vizuális design-ítélet; 60-checkpoint pre-flight landing page, portfólió, redesign és érdemi új feature UI esetén; NEM: dashboard, adattábla, triviális komponens-tweak
