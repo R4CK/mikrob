@@ -393,6 +393,23 @@ const ACKNOWLEDGED_CONFLICTS = {
   // keep changing it. The rule for resolving it is what needed recording, not a ban on conflicting.
   'src/__tests__/installer-start-and-fallback.test.ts':
     'keep the fork assertion (expect([TRAP:5, TRAP:6]).toContain -- identical behaviour to upstream anchored regex, better failure output) and fold upstream bash 3.2 / macOS provenance into the fork comment; neither comment taken wholesale',
+  // Card 3ec64c96 (2026-08-25): the fork independently patched the same send-detector class of
+  // false positive upstream had already fixed (KAPUHATOKOR822, upstream's own four-false-positive
+  // afternoon, measured 2026-08-22) -- upstream's is_send_invocation() is a position-aware,
+  // shlex-tokenized detector that went through multiple adversarial hardening rounds and handles
+  // cases the fork's own first-draft URL-anchoring patch did not (a schemeless domain, wrapper
+  // shells, interpreter -c/-e code strings). Rather than ship the narrower fork-local patch, this
+  // ADOPTED upstream's is_send_invocation() section VERBATIM (a fork-only attribution comment sits
+  // just before it, which is why the region still diffs byte-for-byte against upstream -- see the
+  // note in the file itself). The fork ALSO carries its own, separate load_bad_name() sentinel fix
+  // (NO_BAD_NAME_PATTERNS, distinguishing "rules file missing/broken" from "rules file present but
+  // deliberately empty"), which upstream does not have and does not touch. Resolution: keep the
+  // fork's file wholesale (it is a strict superset: upstream's detector unchanged in substance,
+  // plus the fork's own sentinel fix and attribution comment) -- if upstream's is_send_invocation
+  // changes again, replace the fork's copy of that section with the new upstream version and leave
+  // the sentinel fix and the attribution comment untouched.
+  'scripts/hooks/outgoing-copy-gate.py':
+    "keep the fork file wholesale -- it already carries upstream's is_send_invocation() verbatim (adopted for card 3ec64c96) plus the fork's own separate load_bad_name() sentinel fix upstream lacks; if upstream's detector changes again, re-adopt that section only, leaving the sentinel fix and attribution comment untouched",
 } as const
 
 // THE UPSTREAM CONTENT EACH RULE ABOVE WAS DECIDED AGAINST (card a1d613e3, Cybersec msg 19105).
@@ -449,6 +466,7 @@ const ACKNOWLEDGED_UPSTREAM_BLOBS: Readonly<Record<keyof typeof ACKNOWLEDGED_CON
   'scripts/email-send-gate.mjs': 'abaaedc4d0e9f76fa159307659473ffaac306411',
   'src/__tests__/hook-command-quoting.test.ts': '1048b1988e6c8554754900c62570d76d455f1057',
   'src/__tests__/installer-start-and-fallback.test.ts': '9017ce4fcfe808b73fdcd1389ebf1c9eaf374f7e',
+  'scripts/hooks/outgoing-copy-gate.py': '8c879e96083dbf9d5eaee54a47df4421ba1bba4d',
 }
 
 /** A conflict whose written rule was decided against DIFFERENT upstream content than what is
