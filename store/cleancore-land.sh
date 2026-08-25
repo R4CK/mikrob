@@ -40,6 +40,11 @@ die() { echo "REFUSED: $2" >&2; exit "$1"; }
 # ONE place, so a trap fixed here is not left standing in the pre-gate sentinel that shares them.
 # shellcheck source=./cleancore-tsc-lib.sh
 . "$(dirname "$0")/cleancore-tsc-lib.sh"
+# try_append_union (card cbb66abf): the ONE conflict shape (both sides purely append to
+# DECISIONS.md) this script auto-resolves, shared verbatim with marveen-land.sh so the narrow
+# precondition and the header-count check cannot drift between the two copies.
+# shellcheck source=./decisions-append-union.sh
+. "$(dirname "$0")/decisions-append-union.sh"
 
 # --- WHO ran this landing (card 7fe98031) -------------------------------------------------------
 #
@@ -238,13 +243,24 @@ MSG="$(printf 'merge: %s (card %s, gate-teljes @ %s)\n\nLanded-by: %s\n' "$BRANC
 if ! merge_err="$(git -C "$WT" -c user.email=backend@marveen.local -c user.name=backend \
                   merge --no-ff "$SHA" -m "$MSG" 2>&1)"; then
   conflicted="$(git -C "$WT" diff --name-only --diff-filter=U)"
-  if [ -n "$conflicted" ]; then
+  # NARROW AUTO-UNION (card cbb66abf): only when DECISIONS.md is the SOLE conflicted file, and only
+  # when try_append_union structurally confirms both sides purely appended -- see
+  # decisions-append-union.sh for the full precondition and why it is safe to complete the merge
+  # rather than abort it here. Everything else (a wider conflict, or a DECISIONS.md conflict that
+  # touches an existing line) falls through to the unchanged refusal below.
+  if [ "$conflicted" = "DECISIONS.md" ] && try_append_union "$WT" "DECISIONS.md"; then
+    say "DECISIONS.md: both sides purely appended -- auto-unioned, header count verified"
+    git -C "$WT" -c user.email=backend@marveen.local -c user.name=backend commit --no-edit -q \
+      || die 4 "auto-unioned DECISIONS.md but the merge commit itself failed"
+  elif [ -n "$conflicted" ]; then
     echo "CONFLICTS in:"; echo "$conflicted" | sed 's/^/    /'
+    git -C "$WT" merge --abort 2>/dev/null
+    exit 4
   else
     echo "MERGE FAILED (not a content conflict) -- git says:"; echo "$merge_err" | sed 's/^/    /'
+    git -C "$WT" merge --abort 2>/dev/null
+    exit 4
   fi
-  git -C "$WT" merge --abort 2>/dev/null
-  exit 4
 fi
 say "merged --no-ff, no conflicts ($(git -C "$WT" diff --name-only "$BASE..HEAD" | wc -l) files)"
 
