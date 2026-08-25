@@ -25,6 +25,7 @@ import { isAgentRunning } from '../agent-process.js'
 import { readHardStop, isNewDevStartBlocked } from '../../costops/weekly-hard-stop.js'
 import { landedGuardVerdict } from '../kanban-landed-guard.js'
 import { gateCompletenessGuardVerdict } from '../kanban-gate-completeness-guard.js'
+import { dedupPrefilterDescriptionUpdate } from '../kanban-dedup-prefilter-guard.js'
 
 // Card project-name drift (Peti 2026-08-08): `project` was free-text with no case-folding, so
 // "CleanCore" / "cleancore" / "MikroB" / "mikrob-infra" / "fleet-infra" / "marveen" / "Infra" all
@@ -424,7 +425,16 @@ export async function tryHandleKanban(ctx: RouteContext): Promise<boolean> {
       }
     }
     const id = randomUUID().slice(0, 8)
-    createKanbanCard({ id, ...normalizeProjectName(data) })
+    const normalized = normalizeProjectName(data)
+    createKanbanCard({ id, ...normalized })
+    // Card 4bade960: run the dedup pre-filter on EVERY new card (rule 6b was previously enforced
+    // only by agent discipline before opening a card, and by the >2-day dispatch filter for cards
+    // already open). One extra async spawn per card create, awaited before responding -- same
+    // pattern as the other guards on this route, and card creation is not a hot path.
+    const withDedupNote = await dedupPrefilterDescriptionUpdate(id, String(normalized.description ?? ''))
+    if (withDedupNote !== null) {
+      updateKanbanCard(id, { description: withDedupNote }, { actor: 'dedup-prefilter-guard' })
+    }
     json(res, { ok: true, id })
     return true
   }
