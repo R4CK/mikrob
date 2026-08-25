@@ -38,8 +38,18 @@ import sys
 # inspection of the send scripts (acceptable for a sub-agent deny), while this
 # one must only fire on an actual send, or it would block the main agent from
 # reading its own tooling. Hence the recipient-argument requirement below.
+#
+# api.resend.com is URL-ANCHORED (`https?://` immediately before it), not a bare substring
+# match (card 3ec64c96, MikroB's own measured false positive): an inter-agent kanban message
+# that merely DESCRIBED a test requirement ("real api.resend.com send must still be blocked")
+# tripped this pattern on its own prose, and HAS_RECIPIENT then matched the message's unrelated
+# JSON routing field ("to":"mikrob"), together misreading a POST to the fleet's own dashboard API
+# as a candidate email send. A real send always invokes the vendor's HTTP API by URL; prose about
+# the vendor never carries the scheme prefix. The other alternatives here are COMMAND/TOOL names
+# (send.py, sendmail, msmtp, swaks), not domains, and were not part of the measured incident --
+# left unanchored on purpose rather than guessing at a fix for a class that was not observed.
 SEND_CMD = re.compile(
-    r"(support-mail/send\.py|\bsend\.py\b|graph-mail[^\n]*\bsend\b|api\.resend\.com"
+    r"(support-mail/send\.py|\bsend\.py\b|graph-mail[^\n]*\bsend\b|https?://[^\s'\"]*api\.resend\.com"
     r"|\bsendmail\b|\bmsmtp\b|\bswaks\b)",
     re.I,
 )
@@ -186,16 +196,41 @@ _LOCAL_RULES = os.environ.get(
 )
 
 
+class _NoBadNamePatterns:
+    """Sentinel returned by load_bad_name() when the rules file is PRESENT and VALID but
+    declares zero patterns (card 3ec64c96): a deliberate "nothing known yet" configuration,
+    distinct from `None` (file missing/unreadable/malformed -- the check apparatus itself is
+    broken). `is None` at every call site still means "broken", so this sentinel must never
+    equal None while still behaving like "nothing to flag" wherever it is used as a matcher.
+    """
+
+    def search(self, _text):
+        return None
+
+
+NO_BAD_NAME_PATTERNS = _NoBadNamePatterns()
+
+
 def load_bad_name():
     try:
         with open(_LOCAL_RULES, encoding="utf-8") as fh:
-            pats = json.load(fh).get("bad_name_patterns") or []
-        if pats:
-            return re.compile("|".join(pats))
+            data = json.load(fh)
     except OSError:
-        pass
+        return _log_missing_rules()
     except Exception:
-        pass
+        return _log_missing_rules()
+    # The key itself must be PRESENT -- a file missing this key entirely is malformed (someone
+    # wrote the wrong shape), not a deliberate "zero patterns" declaration, so it still fails
+    # closed like a missing file. Only an EXPLICIT `"bad_name_patterns": []` counts as intentional.
+    if "bad_name_patterns" not in data:
+        return _log_missing_rules()
+    pats = data.get("bad_name_patterns") or []
+    if pats:
+        return re.compile("|".join(pats))
+    return NO_BAD_NAME_PATTERNS
+
+
+def _log_missing_rules():
     try:
         log_path = os.path.join(os.path.dirname(_LOCAL_RULES), "outgoing-copy-gate.log")
         with open(log_path, "a", encoding="utf-8") as fh:
