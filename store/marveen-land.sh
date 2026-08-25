@@ -41,6 +41,28 @@ say() { echo "  $*"; }
 die() { echo "REFUSED: $2" >&2; exit "$1"; }
 g() { git -C "$MAIN" "$@"; }
 
+# card 02f462e1: a landing pushes from a DISPOSABLE worktree (land_one's $wt) that shares $MAIN's
+# .git, so `g fetch` above already refreshed $MAIN's origin/$DEFAULT_BRANCH ref -- but $MAIN's own
+# CHECKED-OUT branch and working-tree files do not follow along on their own. Left alone, that is
+# exactly the gap the card measured: 3 unrelated cards landed clean on one day while the live
+# install (MikroB's own running checkout) kept serving the pre-landing code/scripts, until someone
+# fetched + fast-forwarded it BY HAND. This is a plain `merge --ff-only` and NOTHING else: no
+# rebuild, no service restart -- those remain ./update.sh + Peti's approval (a separate, deliberate
+# gate). --ff-only is the whole safety story: it can only ever fast-forward or refuse, never force,
+# so a dirty/diverged $MAIN is left untouched and reported, not overridden.
+sync_live_install() {
+  local current
+  current="$(git -C "$MAIN" symbolic-ref --short -q HEAD 2>/dev/null || true)"
+  # Not on the tracked branch (detached, or mid manual work on something else) -- nothing to sync,
+  # and merging origin/$DEFAULT_BRANCH into an unrelated checkout would not even make sense.
+  [ "$current" = "$DEFAULT_BRANCH" ] || return 0
+  if git -C "$MAIN" merge --ff-only -q "origin/$DEFAULT_BRANCH" 2>/dev/null; then
+    say "live install ($MAIN) fast-forwarded to origin/$DEFAULT_BRANCH"
+  else
+    say "live install ($MAIN) NOT fast-forwarded (dirty tree or diverged) -- sync it by hand, tell MikroB"
+  fi
+}
+
 if [ "${1:-}" = "--selftest" ]; then
   fail=0; n=0
   t() { n=$((n+1)); [ "$2" = "$3" ] || { echo "  FAIL $1: got [$2] want [$3]"; fail=1; }; }
@@ -169,6 +191,7 @@ land_one() {
     # on adoption day, then 24 days stale -- so it follows HEAD here too. Incremental
     # (~13s on marveen) and non-fatal: a graph refresh must not fail a landing.
     "$(dirname "$0")/graphify.sh" build "$MAIN" 2>&1 | tail -1 | sed 's/^/  graphify: /' || true
+    sync_live_install
     echo "$agent: LANDED $branch -> origin/$DEFAULT_BRANCH ($(git -C "$wt" rev-parse --short HEAD))"
     return 0
   fi
