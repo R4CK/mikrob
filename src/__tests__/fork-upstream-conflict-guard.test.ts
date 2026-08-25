@@ -91,8 +91,13 @@ const ACKNOWLEDGED_CONFLICTS = {
   // exists on the other side, so there is nothing to weigh. Resolution: keep both bindings on one
   // line. Taking either side wholesale silently drops a guard or a warning nobody would miss until
   // it failed to appear.
+  // Re-read 2026-08-25 (card 9ef96512, blob 79ba29b7): upstream now also imports
+  // watchEgressAllowlistForReaderRender and wires a call in the same hookDecision.register
+  // branch (EGRESSRENDER824). Import line conflict grows: fork adds ensureNpmProtectGuard,
+  // upstream now adds ensureSkillsPathTrapSection + watchEgressAllowlistForReaderRender.
+  // Adopt the watcher call alongside the merged import.
   'src/web.ts':
-    'merge both added imports onto one line (ensureNpmProtectGuard from the fork, ensureSkillsPathTrapSection from upstream) -- no other conflict in the file',
+    'merge import line (ensureNpmProtectGuard from fork + ensureSkillsPathTrapSection + watchEgressAllowlistForReaderRender from upstream, all on one line) and adopt upstream watchEgressAllowlistForReaderRender call inside hookDecision.register branch (EGRESSRENDER824) -- no other conflict in the file',
   // The call-site half of the same upstream change, and the same INDEPENDENT-ADDITIVE class as
   // src/db.ts below rather than a disagreement (measured 2026-08-22). Two hunks, both caused by the
   // two sides adding a DIFFERENT CLAUDE.md section-writer at the same insertion point, each with
@@ -124,8 +129,17 @@ const ACKNOWLEDGED_CONFLICTS = {
   // harmless -- vi.mock does not check the factory against the real module's exports.)
   'src/web/keychain.ts':
     'adopt the upstream timeout + keychainRetrieveStatus + errSecItemNotFound handling, keep the fork deletion of the dead keychainDelete -- never a wholesale side',
+  // Re-read 2026-08-25 (card 9ef96512, blob 3082c145): upstream grew significantly --
+  // kanban-write gate (agentGetsKanbanWriteGate/injectKanbanWriteGate, heartbeat-only),
+  // quarantineReader refactor to project scope (EGRESSRENDER824: main-agent reader now in
+  // PROJECT_ROOT/.claude/agents for live-reload on spawn, not ~/.claude/agents), legacy cleanup,
+  // and watchEgressAllowlistForReaderRender (file-watcher re-renders reader prompt on
+  // egress-allowlist.json change). All additive. Section-writer rule still applies for the
+  // ensureLocalFirstSection / ensureSkillsPathTrapSection conflict. Extend to ADOPT the
+  // kanban-write gate, quarantineReader project-scope refactor, and watcher from upstream
+  // alongside the fork's section-writer, neither side taken wholesale.
   'src/web/agent-scaffold.ts':
-    'keep BOTH section-writers -- the fork ensureLocalFirstSection and the upstream ensureSkillsPathTrapSection -- and call both; neither side taken wholesale',
+    'keep BOTH section-writers (fork ensureLocalFirstSection + upstream ensureSkillsPathTrapSection), AND adopt upstream kanban-write gate (agentGetsKanbanWriteGate/injectKanbanWriteGate), quarantineReader project-scope refactor (EGRESSRENDER824), and watchEgressAllowlistForReaderRender -- all additive, none taken wholesale',
   // A single additive hunk (measured 2026-08-16, card 88505fb5), not a behavioural disagreement:
   // both sides add an INDEPENDENT schema migration/trigger at the same insertion point inside
   // ensureSchema(). Fork: the timestamp-integrity triggers (epoch validation + repair on
@@ -174,6 +188,8 @@ const ACKNOWLEDGED_CONFLICTS = {
   // that only widened WebFetch would leave the sub-agent's other declared tool stuck on the
   // ordinary allowlist. Co-planned with Cybersec (card 2e634e5c); independently verified here
   // (read both source files, confirmed the quarantine-reader tools: line, ran both test suites).
+  // Re-read 2026-08-25 (card 9ef96512, blob 229076d5): upstream only added a comment explaining
+  // EGRESSRENDER824 grant latency (no structural/logic change). Merge strategy unchanged.
   'scripts/hooks/egress-gate.mjs':
     "merge both sides in one egressDecision() -- fork Firecrawl namespace-default-deny + param-allowlist (91c4a369) run BEFORE upstream's not-webfetch early-return (which would otherwise reopen 91c4a369), then upstream's tier-based decision + quarantine tier + audit logging, with the quarantine tier extended to the two URL-bearing Firecrawl tools",
   // The test file for the entry above, same relationship as model-fallback.ts/.test.ts: the fork
@@ -221,7 +237,7 @@ const ACKNOWLEDGED_CONFLICTS = {
   // upstream's still-monolithic app.js) is recommended but not opened here -- judgement call for
   // MikroB, not unilaterally opened per the dedup rule.
   'web/app.js':
-    'STUB scaffold + 36 extracted web/app-*.js slices are authoritative; a conflicting upstream hunk must be diffed against its named slice file and only genuinely-new upstream behavior ported forward, never taken wholesale -- proven on the i18n-nav hunk (found + fixed one real gap: missing renderUpdatesVersion re-apply on language switch), remaining ~11k lines not yet hand-audited slice-by-slice',
+    'STUB scaffold + 36 extracted web/app-*.js slices are authoritative; a conflicting upstream hunk must be diffed against its named slice file and only genuinely-new upstream behavior ported forward, never taken wholesale -- proven on the i18n-nav hunk (found + fixed one real gap: missing renderUpdatesVersion re-apply on language switch). Re-audited 2026-08-25 (card 9ef96512, blob c8c11f94): 3 upstream hunks, all in the loadOllamaModels / resetWizard / startup-init region (app-settings.js). Ported: (1) loadOllamaModels refactored to populate both optgroups (ollamaModelGroup edit-panel + agentModelOllamaGroup wizard -- wizard was missing local-model option entirely); (2) agentModelOllamaGroup added to wizard HTML (index.html); (3) resetWizard() now calls loadOllamaModels() (app-wizard.js); (4) loadOllamaModels() added to startup init (app-settings.js). No behavioral gap found in any other region. Remaining ~11k lines (other regions) not yet hand-audited slice-by-slice.',
   // Two independent additive hunks with no behavioral overlap. Fork adds: HEARTBEAT.md ignore,
   // Ingatlan/ runtime data exclusions, and per-extension keep-tracked exceptions for operational
   // scripts (store/*.sh, store/*.py, store/stitch-tools/gen.mjs) by switching store/ → store/*
@@ -231,6 +247,15 @@ const ACKNOWLEDGED_CONFLICTS = {
   // supersedes upstream's bare store/ line), and append upstream's evidence/transcript ignores.
   '.gitignore':
     'union of both additive sides: keep fork store/* + !store/*.sh/py/stitch negation structure + Ingatlan/ + HEARTBEAT.md, AND append upstream EVIDGUARD818 evidence/transcript/session-capture ignores -- both sides add to non-overlapping regions',
+  // The fork's package.json is a strict superset of upstream's: it adds react/react-dom/recharts
+  // (superadmin SPA), google-auth-library (Google auth), vite/ESLint toolchain, a newer Claude
+  // Agent SDK (^0.3.224 vs upstream ^0.2.116), and overrides for hono/fast-uri/body-parser.
+  // Upstream bumped the version to 1.34.0 and removed the preinstall + lint scripts.
+  // Resolution: keep the fork's package.json canonical -- upstream's slimmer set is a subset of
+  // what the fork ships. Version bumps for shared packages (pino, better-sqlite3, claude-agent-sdk)
+  // require evaluation before adoption, not automatic take-theirs. Measured 2026-08-25 (card 9ef96512).
+  'package.json':
+    'keep the fork package.json canonical -- it is a superset of upstream (react/recharts/vite/eslint/google-auth/newer claude-agent-sdk/overrides); upstream version bumps for shared deps need case-by-case evaluation before adoption',
   // Lock-file conflict from independently added/updated dependencies. The fork manages its own
   // package set; upstream its own. Regenerated by `npm ci` from the fork's package.json.
   // Resolution: keep the fork's lockfile; upstream lockfile sections for packages not in the
@@ -244,8 +269,16 @@ const ACKNOWLEDGED_CONFLICTS = {
   // partially-overlapping lines. Resolution: adopt upstream's Python one-liner + all accompanying
   // incident documentation for the kanban section; keep the fork's printf|curl pattern for the
   // OTHER curl calls in the file (the ones upstream did not replace with Python).
+  // Re-read 2026-08-25 (card 9ef96512, blob 26c691e5): upstream replaced the Python one-liner
+  // with a heartbeat-metrics.sh script call (HBMEMBLIND819 third contract -- a fixed, on-disk
+  // instrument with COUNTS/URGENT/WAITING/SCHEDULES/TASK_RUNS_1H output lines). Also imports
+  // HEARTBEAT_AGENT_ID from config (replacing 'heartbeat' literal) and adds HeartbeatIdentity.metricsScript field.
+  // Resolution: adopt upstream's metrics-script approach (metricsScript field, bash invocation,
+  // updated format section referencing COUNTS verbatim) for the kanban reporting block;
+  // keep the fork's printf|curl token-argv-safe pattern for the remaining curl calls
+  // (quota park + inter-agent message section) that upstream did not touch.
   'src/web/heartbeat-agent-scaffold.ts':
-    'two-way merge: adopt upstream Python one-liner + HBHEREDOC819/HBKANBANDRIFT819 docs for kanban section; keep fork printf|curl token-argv-safe pattern for the remaining curl calls (quota park + inter-agent message section) that upstream did not touch',
+    'two-way merge: adopt upstream metrics-script approach (HBMEMBLIND819 third contract -- bash heartbeat-metrics.sh, HeartbeatIdentity.metricsScript, HEARTBEAT_AGENT_ID import, updated report format using COUNTS/URGENT/WAITING/SCHEDULES/TASK_RUNS_1H lines verbatim) for the kanban section; keep fork printf|curl token-argv-safe pattern for the remaining curl calls (quota park + inter-agent message) that upstream did not touch',
   // Re-read 2026-08-23 against upstream 9736ea67 (card 394fb5ce): the file moved on, so the rule
   // below now describes TODAY's two hunks rather than the ones it was first written for. The
   // SIGTERM/janitor hunks the previous text named have since merged cleanly and are gone; what
@@ -392,19 +425,20 @@ const ACKNOWLEDGED_UPSTREAM_BLOBS: Readonly<Record<keyof typeof ACKNOWLEDGED_CON
   'src/__tests__/model-fallback.test.ts': '38b6e76e9f5184a9ade636a057b79c4e522f1e3b',
   'src/web/update-checker.ts': '24e46f990c7b0a5c8fa065d12ba1ee592b547691',
   'src/web/context-restart-gate-runner.ts': 'aae818bb7ded38146343eb0a0748b83422d018ce',
-  'src/web.ts': 'd5d3679831052e7462509e991497a188b303ebd8',
+  'src/web.ts': '79ba29b713a7db18136e33e5f0c5686fb7fda1ca',
   'src/web/keychain.ts': '1e1730ee0d8f6b1d4b51c5c254f3fab56acfa376',
-  'src/web/agent-scaffold.ts': '8fa16bf5ba7e2818fbe96d91c4d3f1bc853e6be2',
+  'src/web/agent-scaffold.ts': '3082c145b46770b40d586f2266a3446d6a28b826',
   'src/db.ts': '66381e77bdb6cce583bd3b397a3ae2202ae61e9e',
   'src/web/routes/agents.ts': '7711d18a7752828a113f9389a2c3943e6b74ab0e',
   'src/web/routes/kanban.ts': '5620fe397bdadad1a619408367a783d0470a13fe',
-  'scripts/hooks/egress-gate.mjs': '2493020d7374c7a275443ae96ff3f33cd1c23efb',
+  'scripts/hooks/egress-gate.mjs': '229076d5812e7d50a188ca07b43a87fb6239b233',
   'src/__tests__/egress-gate.test.ts': 'c24ca54ffc49de70d602790fa1d6b80e3aea4156',
   'src/web/context-guard-runner.ts': 'b17ba4f630dbba93cfd5520e3c37a854a5c80c81',
-  'web/app.js': '310cc72e99b75d10c463c411f7356c7e8ecd98de',
+  'web/app.js': 'c8c11f94ac1007da3ce29f5cbbd4ab84a75a8701',
   '.gitignore': '1e5adbb2332be0dbf5a710c1899e49305ccb318b',
-  'package-lock.json': '738952610de98fcaa2af4c7b59648a18a049a973',
-  'src/web/heartbeat-agent-scaffold.ts': '9da046f14c0702cd8b61e1a005717d0c3a61d198',
+  'package.json': 'f811a32f9b4ba4eb5d83960578a550e516392eee',
+  'package-lock.json': 'b053f0942f36d3cb19a44a6d3d752933c5ee7f6c',
+  'src/web/heartbeat-agent-scaffold.ts': '26c691e53e1283d4cee2543e53f26532b0a9c06c',
   'src/web/schedule-runner.ts': '9736ea6737757cc0155671dca3d9d2874b330885',
   'vitest.config.ts': '62d4ac7606cd719d40e07fc0d82c7f777dda0b30',
   'src/web/agent-process.ts': 'bb28237a19c881551c8415ebeecd58fcaac01923',

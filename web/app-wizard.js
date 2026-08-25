@@ -2,7 +2,7 @@
 // Globals from app.js: t, showToast, escapeHtml, openModal, closeModal, agentDetailOverlay
 // Globals from app-agents.js: loadAgents
 // Globals from app-agent-detail.js: openAgentDetail, switchAgentTab
-// Globals from app-settings.js: loadAvailableModels
+// Globals from app-settings.js: loadAvailableModels, loadOllamaModels
 // (No functions exposed globally -- all wired via event listeners in this module)
 
 let cachedProfiles = null
@@ -112,6 +112,7 @@ function resetWizard() {
   agentDesc.value = ''
   agentModel.value = 'inherit'
   loadAvailableModels()
+  loadOllamaModels()
   selectedAvatar = null
   selectedAvatarFile = null
   document.querySelectorAll('#avatarGrid .avatar-grid-item').forEach(i => i.classList.remove('selected'))
