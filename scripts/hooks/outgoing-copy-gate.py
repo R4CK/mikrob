@@ -432,6 +432,18 @@ TAG = re.compile(r"<[^>]+>")
 #   - a MONDATKOZI nagybetus szo azonosito/tulajdonnev -> kimarad; mondat
 #     elejen (. ! ? : ujsor vagy lista-jel utan) a nagybetu normal proza,
 #     ott tovabbra is vizsgaljuk.
+#
+# Cybersec elo reprodukalt bypass-a (2026-08-26, fbb36b41 gate, GATEKOTOJEL817
+# regresszio): a fenti "mondatkozi nagybetus szo = azonosito" szabaly TUL TAG
+# volt -- BARMELY nagybetuvel kezdodo, mondat kozepen allo magyar szot kimart,
+# nem csak a valodi azonositokat. `audit('Sziasztok, a Keszen allo Uzenet mar
+# elment, minden Kerdes megoldva.')` -> [] volt, pedig harom valodi ekezet-
+# hiba van benne (Keszen/Uzenet/Kerdes mind a szotarban). Javitas: a kihagyas
+# MOSTANTOL csak akkor jar, ha a kisbetus alak SZEREPEL az IDENTIFIER_ALLOWLIST-
+# ben (ismert, korabban valodi hamis-pozitivkent jelentkezett azonosito/
+# tulajdonnev) -- nem minden nagybetus mondatkozi szora. Uj azonosito csak
+# szandekos bovitessel kerulhet ide, nem automatikusan.
+IDENTIFIER_ALLOWLIST = {"video", "drive"}
 HYPHEN_WORD = re.compile(r"[a-záéíóöőúüűA-ZÁÉÍÓÖŐÚÜŰ]+(?:-[a-záéíóöőúüűA-ZÁÉÍÓÖŐÚÜŰ]+)*")
 
 
@@ -457,7 +469,8 @@ def accent_check_tokens(prose: str):
     out = []
     for m in HYPHEN_WORD.finditer(prose):
         tok = m.group(0)
-        if "-" not in tok and tok[0].isupper() and not _at_sentence_start(prose, m.start()):
+        if ("-" not in tok and tok[0].isupper() and not _at_sentence_start(prose, m.start())
+                and tok.lower() in IDENTIFIER_ALLOWLIST):
             continue
         out.append((tok.lower(), m.start()))
     return out

@@ -61,4 +61,15 @@ describe('outgoing-copy gate tokenization: prose vs identifier (GATEKOTOJEL817/G
     // Neighbours on both sides and an @<pos> marker.
     expect(probs[0]).toMatch(/"\.\.\.[^"]*a video nagyon[^"]*\.\.\." @\d+/)
   })
+
+  it('REGRESSION (Cybersec, 2026-08-26, fbb36b41 gate): mid-sentence capitalized ORDINARY Hungarian words are NOT identifiers and must still fail', () => {
+    // The skip-rule must be scoped to IDENTIFIER_ALLOWLIST, not "any capitalized
+    // mid-sentence word" -- live reproduced bypass: this used to return [].
+    // "Uzenet" is not itself an ACCENTLESS-dictionary entry, so only the two
+    // dictionary hits (keszen, kerdes) are expected to surface.
+    const probs = auditAccent('Sziasztok, a Keszen allo Uzenet mar elment, minden Kerdes megoldva.')
+    expect(probs.length).toBe(1)
+    expect(probs.some((p) => p.includes('keszen -> készen'))).toBe(true)
+    expect(probs.some((p) => p.includes('kerdes -> kérdés'))).toBe(true)
+  })
 })
