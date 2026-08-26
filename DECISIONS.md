@@ -3392,3 +3392,33 @@ debounce + PSI-tengely onmagaban is triggerelhet + ADMIT/HOLD kapu kulon tesztel
 tervezesi kockazatokat, uj plan-grilling nem volt szukseges az implementaciohoz).
 
 **Hivatkozas:** kartya 2597e3b7 (parent: ced63f7f, fazis: 19f3bbb5), elozo alfeladat 5574aeb2/2d27d8a1.
+
+## 2026-08-26 -- edd8b398 -- Load-guard systemd timer (7mp ciklus), meglevo installer bovitve
+
+**Dontes.** `store/load-guard-daemon.sh` (fut load-guard-eval.sh-t, csak ALLAPOT-VALTOZASKOR ir
+store/load-guard.log-ba -- 7mp-es ciklusnal minden tick logolasa elarasztana a fajlt) + a MEGLEVO
+`scripts/install-guard-timers.sh` write_service/write_timer sablonjaival egy uj `load-guard`
+bejegyzes (7mp OnUnitActiveSec, journal-mod, mert a script sajat maga dontii el mikor ir a
+log-fajlba). NEM uj installer-script -- a mar letezo, idempotens sablon bovitve, mint a masik negy
+guard (channel-watchdog, stuck-modal-guard, disk-space-guard, token-health-guard).
+
+**Talalt buktato, elkerulve.** Az installer futtatasat ELOSZOR a SAJAT worktree-mben probaltam --
+ez a `INSTALL_DIR` erteket a worktree-re allitotta volna be, es a rendert unit `ExecStart` egy
+SZEMELYES, eldobhato konyvtarra mutatott volna. Landolas UTAN, a live install (`/home/neon/marveen`)
+konyvtarabol futtatva helyes.
+
+**Miert.** A card sajat szovege szerint a heartbeat ~10 perces cron-ciklusa tul lassu lenne egy
+load-tuskehez (mire a heartbeat eszlelne, a HARD/CRITICAL sajat sustained_seconds ablaka -- 20/30mp
+-- mar reg lejart volna); ezert onallo, szoros ciklusu systemd timer kell, nem a heartbeat-be
+epitve.
+
+**Konzekvencia.** Uj fajl: store/load-guard-daemon.sh. Modositott: scripts/install-guard-timers.sh
+(uj load-guard bejegyzes + enable-loop bovitese). 3 uj teszt (nincs-valtozas -> nincs log-sor,
+tobb egymas-utani nem-megerositett tick -> nincs log-sor, megerositett atmenet -> pontosan EGY
+log-sor). 101 store/*.sh szkript a szintaxis-sweepben (volt 100). tsc tiszta, lint-ratchet
+valtozatlan.
+
+**Ki dontott:** backend (kartya edd8b398, a fazis 19f3bbb5 plan-grilling verdiktje mar lefedte a
+tervezesi kockazatokat).
+
+**Hivatkozas:** kartya edd8b398 (parent: ced63f7f, fazis: 19f3bbb5), utolso alfeladat Feladat 1-ben.

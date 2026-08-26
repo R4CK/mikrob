@@ -15,6 +15,11 @@
 #                                      swallows inbound Telegram.
 #   mikrob-disk-space-guard  (1 min) : reap scratch + alert before root fs fills
 #                                      (a full disk wedges the whole session).
+#   mikrob-load-guard        (7 sec) : PSI/loadavg admission-brake tick (card
+#                                      edd8b398) -- NOT dashboard-independence
+#                                      motivated like the three above, just
+#                                      needs a much faster cadence than a
+#                                      heartbeat cron tick can give it.
 #
 # Surgical by design: recovery respawns only the affected component. Restarting
 # the WSL VM is deliberately NOT done here -- it would SIGKILL all fleet agents
@@ -90,6 +95,16 @@ write_timer   disk-space-guard  "Run the MikroB disk-space guard every minute"  
 write_service token-health-guard "MikroB bot-token health guard (getMe probe -> alert on a revoked/expired token)" token-health-guard.sh log
 write_timer   token-health-guard "Run the MikroB bot-token health guard every 15 minutes"                          5min 15min
 
+# Card edd8b398 (load-brake phase 19f3bbb5, Feladat 1's systemd wiring): a load spike needs a much
+# faster cadence than the other guards above, so it gets its own tighter timer. The script lives in
+# store/ (with the rest of the load-guard family), not scripts/ like the others -- write_service
+# hardcodes an scripts/$script ExecStart, so the "../store/..." relative hop reaches it without
+# changing that shared helper's assumption for every other entry in this file. journal, not log
+# mode: the script does its own selective append to store/load-guard.log (only on a state CHANGE,
+# card's own request), so mirroring every 7s tick's stdout into a second file would defeat that.
+write_service load-guard "MikroB load-guard tick (PSI/loadavg admission-brake state machine)" ../store/load-guard-daemon.sh journal
+write_timer   load-guard "Run the MikroB load-guard tick every 7 seconds"                      15s  7s
+
 echo "Rendered guard-timer units for MAIN_AGENT_ID=$MAIN_AGENT_ID into $UNIT_DIR"
 
 # Enable only if a working user systemd is present. During a fresh headless /
@@ -98,7 +113,7 @@ echo "Rendered guard-timer units for MAIN_AGENT_ID=$MAIN_AGENT_ID into $UNIT_DIR
 # user session exists. Never hard-fail the caller (install-linux.sh) over this.
 if pidof systemd >/dev/null 2>&1 && systemctl --user status >/dev/null 2>&1; then
   systemctl --user daemon-reload || true
-  for t in channel-watchdog stuck-modal-guard disk-space-guard token-health-guard; do
+  for t in channel-watchdog stuck-modal-guard disk-space-guard token-health-guard load-guard; do
     systemctl --user enable --now "${MAIN_AGENT_ID}-${t}.timer" || echo "  warn: could not enable ${MAIN_AGENT_ID}-${t}.timer"
   done
   echo "Enabled guard timers:"

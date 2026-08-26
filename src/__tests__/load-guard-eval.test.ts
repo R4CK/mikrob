@@ -13,6 +13,7 @@ import { fileURLToPath } from 'node:url'
 const STORE = join(dirname(fileURLToPath(import.meta.url)), '..', '..', 'store')
 const EVAL_SCRIPT = join(STORE, 'load-guard-eval.sh')
 const CHECK_SCRIPT = join(STORE, 'load-guard-check.sh')
+const DAEMON_SCRIPT = join(STORE, 'load-guard-daemon.sh')
 
 const CONFIG = {
   watch: { loadavg_ratio: 0.85, psi_some_avg10: 30, action: 'log_only' },
@@ -245,4 +246,61 @@ describe('load-guard-eval: PSI axis alone can trigger a tier, independent of loa
     expect(r.state).toBe('soft')
     expect(r.action).toBe('stop_new_dispatch')
   })
+})
+
+describe('load-guard-daemon.sh: logs ONLY on a state change (card edd8b398)', () => {
+  let logPath: string
+
+  beforeEach(() => {
+    logPath = join(dir, 'load-guard.log')
+  })
+
+  function tickAt(ratio: number, at: number): void {
+    execFileSync('bash', [
+      DAEMON_SCRIPT,
+      '--config',
+      configPath,
+      '--state',
+      statePath,
+      '--metrics-json',
+      metricsAtRatio(ratio),
+      '--now',
+      String(at),
+      '--log',
+      logPath,
+    ])
+  }
+
+  it('a resting tick with nothing changing writes NOTHING to the log', () => {
+    tickAt(0.3, NOW)
+    expect(existsSyncSafe(logPath)).toBe(false)
+  })
+
+  it('a spike that never gets confirmed (never sustained) also writes nothing', () => {
+    tickAt(1.05, NOW)
+    tickAt(1.05, NOW + 10) // still under soft's 30s debounce
+    expect(existsSyncSafe(logPath)).toBe(false)
+  })
+
+  it('a confirmed transition appends exactly ONE line, not one per tick', () => {
+    tickAt(1.05, NOW)
+    tickAt(1.05, NOW + 10)
+    tickAt(1.05, NOW + 20)
+    tickAt(1.05, NOW + 31) // confirms here
+    tickAt(1.05, NOW + 40) // already soft -- no further change, no further line
+
+    const lines = readFileSync(logPath, 'utf-8').trim().split('\n')
+    expect(lines).toHaveLength(1)
+    expect(lines[0]).toContain('"state": "soft"')
+    expect(lines[0]).toContain('"changed": true')
+  })
+
+  function existsSyncSafe(p: string): boolean {
+    try {
+      readFileSync(p)
+      return true
+    } catch {
+      return false
+    }
+  }
 })
