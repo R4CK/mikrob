@@ -13,6 +13,7 @@ import { fileURLToPath } from 'node:url'
 
 const STORE = join(dirname(fileURLToPath(import.meta.url)), '..', '..', 'store')
 const APPLY_SCRIPT = join(STORE, 'load-guard-cgroup-apply.sh')
+const TARGET_SCRIPT = join(STORE, 'load-guard-cgroup-target.sh')
 
 let dir: string
 let statePath: string
@@ -133,5 +134,40 @@ describe('load-guard-cgroup-apply: CONTROL -- critical tier alone (sigstop layer
     const r = run('sigstop_freeze', { target: 'fullstack', scope: scopeX })
     expect(r.throttled).toBeNull()
     expect(cpuMax(scopeX)).toBeNull()
+  })
+})
+
+// load-guard-cgroup-target.sh: is_excluded() alone, via the --test-excluded hook (Cybersec NO-GO,
+// card d7a28a0a). The "agent-*" tmux-session pre-filter in the real discovery loop means the old
+// `[[ "$s" == mikrob* ]]` branch could never fire on a real candidate -- MikroB's actual
+// session-naming convention (mikrob-channels/...) never reaches is_excluded() at all, since it
+// never matches "agent-*" in the first place. Real protection today comes only from the earlier
+// filter, not from this function -- these cases pin the function's OWN behavior so a future
+// consistency refactor (all fleet sessions under "agent-<name>", MikroB included) cannot silently
+// stop being excluded here, regardless of what the outer filter does.
+function isExcluded(session: string): boolean {
+  return execFileSync('bash', [TARGET_SCRIPT, '--test-excluded', session]).toString().trim() === 'yes'
+}
+
+describe('load-guard-cgroup-target: is_excluded() protects MikroB under either naming convention', () => {
+  it('excludes the current mikrob-* session convention', () => {
+    expect(isExcluded('mikrob-channels')).toBe(true)
+  })
+
+  it('excludes a hypothetical future agent-mikrob* session convention', () => {
+    expect(isExcluded('agent-mikrob')).toBe(true)
+    expect(isExcluded('agent-mikrob-channels')).toBe(true)
+  })
+
+  it('excludes the gate pool, including qa2', () => {
+    expect(isExcluded('agent-qa')).toBe(true)
+    expect(isExcluded('agent-qa2')).toBe(true)
+    expect(isExcluded('agent-cybersec')).toBe(true)
+    expect(isExcluded('agent-cybered')).toBe(true)
+  })
+
+  it('does not exclude an ordinary engineer agent', () => {
+    expect(isExcluded('agent-backend')).toBe(false)
+    expect(isExcluded('agent-fullstack')).toBe(false)
   })
 })
