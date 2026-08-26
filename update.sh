@@ -581,12 +581,17 @@ if [ -f "$INSTALL_DIR/.env" ]; then
 fi
 SCHED_CHAT_ID="${SCHED_CHAT_ID:-0}"
 
+# {{PROJECT_ROOT}} is the node seeder's alias for {{INSTALL_DIR}}
+# (substituteTemplatePlaceholders) -- without it here, any shipped task using
+# that form (ledger-live-drain does) hash-mismatches every rendered historical
+# version and is permanently classified "touched", so it never refreshes.
 render_seed_template() {
   sed -e "s/{{MAIN_AGENT_ID}}/${MAIN_AGENT_ID:-}/g" \
       -e "s/{{BOT_NAME}}/${BOT_NAME:-}/g" \
       -e "s/{{OWNER_NAME}}/${OWNER_NAME:-}/g" \
       -e "s|{{INSTALL_DIR}}|${INSTALL_DIR}|g" \
       -e "s/{{CHAT_ID}}/${SCHED_CHAT_ID:-0}/g" \
+      -e "s|{{PROJECT_ROOT}}|${INSTALL_DIR}|g" \
       -e "s/{{WEB_PORT}}/${WEB_PORT:-3420}/g"
 }
 
@@ -1018,6 +1023,7 @@ if [ -d "$SEED_SCHED_DIR" ]; then
             -e "s/{{BOT_NAME}}/$BOT_NAME/g" \
             -e "s/{{OWNER_NAME}}/$OWNER_NAME/g" \
             -e "s|{{INSTALL_DIR}}|$INSTALL_DIR|g" \
+            -e "s|{{PROJECT_ROOT}}|$INSTALL_DIR|g" \
             -e "s/{{CHAT_ID}}/${SCHED_CHAT_ID:-0}/g" \
             -e "s/{{WEB_PORT}}/${WEB_PORT:-3420}/g" \
             "$f" > "$target/$(basename "$f")"
