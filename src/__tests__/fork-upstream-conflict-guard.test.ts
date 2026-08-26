@@ -432,8 +432,24 @@ const ACKNOWLEDGED_CONFLICTS = {
   // plus the fork's own sentinel fix and attribution comment) -- if upstream's is_send_invocation
   // changes again, replace the fork's copy of that section with the new upstream version and leave
   // the sentinel fix and the attribution comment untouched.
+  //
+  // 2026-08-26 re-adopt (RESENDGATE826, upstream #1092, card 9e92e94c dispatch): upstream refined
+  // is_send_invocation's curl/wget branch from hostname-only matching to METHOD-aware matching (a
+  // read-only GET to api.resend.com, e.g. a domain-verification check, no longer trips the gate;
+  // POST/PUT/an unrecognisable method still does, fail-closed on ambiguity). Grafted ONLY that
+  // addition (_curl_resend_verdict + _CURL_BODY_OPTS/_SAFE_METHODS, plus the one-line call-site
+  // change) into the fork's file, verified against the file's own 13-case selftest
+  // (scripts/hooks/outgoing-copy-gate.selftest.py) -- 13/13 green, including a case for the new
+  // GET-passes/POST-still-blocks behavior. Did NOT re-adopt upstream's OTHER change in this same
+  // commit: a rewritten accent-tokenizer (HYPHEN_WORD/_at_sentence_start/accent_check_tokens,
+  // sentence-start-capitalization-aware) that upstream built independently of the fork's own
+  // technical-token-masking tokenizer (WORD/TECHNICAL/strip_technical, masks URLs/emails/
+  // snake_case/file-slugs before the accent check). These are two DIFFERENT, not-drop-in-
+  // compatible fixes for overlapping false-positive classes -- reconciling them (ideally keep
+  // both: mask technical tokens AND respect sentence-start capitalization) needs its own review,
+  // not a rushed graft inside an unrelated blocking-fix. Left as-is; card opened to track it.
   'scripts/hooks/outgoing-copy-gate.py':
-    "keep the fork file wholesale -- it already carries upstream's is_send_invocation() verbatim (adopted for card 3ec64c96) plus the fork's own separate load_bad_name() sentinel fix upstream lacks; if upstream's detector changes again, re-adopt that section only, leaving the sentinel fix and attribution comment untouched",
+    "keep the fork file wholesale -- it already carries upstream's is_send_invocation() verbatim (adopted for card 3ec64c96) plus the fork's own separate load_bad_name() sentinel fix upstream lacks; RESENDGATE826 (2026-08-26) re-adopted into is_send_invocation only, selftest 13/13 green; the fork's separate accent-tokenizer (WORD/TECHNICAL/strip_technical) still diverges from upstream's newer HYPHEN_WORD/accent_check_tokens and is NOT reconciled here -- see the block comment above and the follow-up card",
   // Fork changed the message-body curl call to --data-urlencode (card b43d6dfd security fix --
   // an `&` in the message must not start a new form param / override parse_mode). Upstream
   // independently made delivery HONEST (NOTIFYVAK826): capture the response, require both a
@@ -464,7 +480,19 @@ const ACKNOWLEDGED_CONFLICTS = {
   // already contains upstream's two additions ("usage limit reached", "approaching ... usage
   // limit"), so nothing is lost either way. Resolution: keep the fork's canonical-source
   // sourcing + its own wider extra-signal regex, graft upstream's honest-send + stamp-dedupe-
-  // only-on-success onto the alert block. host-restart-watchdog.sh: the fork's prior-shutdown
+  // only-on-success onto the alert block.
+  // 2026-08-26 re-adopt (MD5SUMHIANY826, card 9e92e94c dispatch): upstream replaced the bare
+  // `md5sum | awk` dedupe hash with a new shared scripts/lib/content-hash.sh (dedupe_check),
+  // fixing a real bug -- md5sum does not exist on macOS, so the old pipeline silently produced an
+  // EMPTY hash there, and two empty hashes compare equal, so every alert read as "already sent"
+  // and was swallowed. The new helper tries md5sum/md5/shasum/cksum in order and fails OPEN
+  // (alerts anyway, no stamp) only if none exist. Grafted both hunks verbatim: the content-hash.sh
+  // sourcing + case-based dedupe check, and the empty-hash-does-not-stamp write. Added the new
+  // scripts/lib/content-hash.sh file (upstream's, unmodified) and the matching
+  // stageTree() staging line in send-honesty-sweep.test.ts (see that file's own entry below) --
+  // the fork's canonical-regex sourcing (line above this hunk) is untouched, unaffected by this
+  // change. Verified: bash -n both scripts, tsc clean, send-honesty-sweep.test.ts 11/11 green.
+  // host-restart-watchdog.sh: the fork's prior-shutdown
   // cause classifier (classify_shutdown_from_log/prev_boot_log, card RELIA-A) is fork-only and
   // upstream never had it -- keep it wholesale, graft upstream's HOSTWD_PROC_STAT test hook and
   // stamp-baseline-only-on-confirmed-delivery around it.
@@ -504,7 +532,14 @@ const ACKNOWLEDGED_CONFLICTS = {
   // unrelated to what the suite is testing). Resolution: keep upstream's file
   // verbatim plus that one staging addition; if upstream's suite grows new
   // describe blocks, add them alongside, do not drop the staging addition.
-  'src/__tests__/send-honesty-sweep.test.ts': "upstream file verbatim + the fork's session-limit-pattern.sh/.json staging addition in stageTree() for limit-monitor.sh's fork-only dependency",
+  // 2026-08-26 re-adopt (MD5SUMHIANY826, card 9e92e94c dispatch): upstream added its own
+  // stageTree() line staging scripts/lib/content-hash.sh (limit-monitor.sh's new dedupe
+  // dependency, see that file's entry above) -- an independent-additive change alongside the
+  // fork's own session-limit-pattern.sh/.json staging line, same class as other additive hunks in
+  // this map. Kept both; import line also gained upstream's `platform` from node:os (currently
+  // unused in this file -- upstream's own addition, adopted verbatim, not the fork's to prune).
+  // 11/11 tests green.
+  'src/__tests__/send-honesty-sweep.test.ts': "upstream file verbatim + the fork's session-limit-pattern.sh/.json staging addition in stageTree() for limit-monitor.sh's fork-only dependency; 2026-08-26 additive-both with upstream's own content-hash.sh staging line + platform import (MD5SUMHIANY826)",
   // NOTIFYVAKSWEEP826 closing round (#1088, measured live 2026-08-26, card 367c23a9). Two
   // identical hunks (main-agent-on-shared-config guard alerts). Real merge-tree dry run confirms
   // the fork's -H @"$_hdr_file" security fix (card b267df80: 0600 temp header file instead of a
@@ -581,11 +616,11 @@ const ACKNOWLEDGED_UPSTREAM_BLOBS: Readonly<Record<keyof typeof ACKNOWLEDGED_CON
   'scripts/email-send-gate.mjs': 'abaaedc4d0e9f76fa159307659473ffaac306411',
   'src/__tests__/hook-command-quoting.test.ts': '1048b1988e6c8554754900c62570d76d455f1057',
   'src/__tests__/installer-start-and-fallback.test.ts': '9017ce4fcfe808b73fdcd1389ebf1c9eaf374f7e',
-  'scripts/hooks/outgoing-copy-gate.py': 'cd51631d01de4aa84776a3ad5ff8d8f6a85aa167',
+  'scripts/hooks/outgoing-copy-gate.py': '35fcabdb8d09eb491c16599f7c7a57a8f3723eac',
   'scripts/notify.sh': '5477e66ecad5cca6425a535de0d16fce0e3eca28',
   'scripts/disk-space-guard.sh': 'd3f693c01d607952a8165cc4d8106024008f22e4',
   'scripts/unit-fail-notify.sh': 'ada00f95a7b3665feac1305bb5287698b81839de',
-  'scripts/limit-monitor.sh': '5b50c084ca4a21a35b7abae70e943a8b1483d6c3',
+  'scripts/limit-monitor.sh': '61c0d229af89a02ec949651888a5aee13b863ab2',
   'scripts/host-restart-watchdog.sh': '07948350e336ec02d58d952df016ab6b07d7d052',
   'src/__tests__/notify-delivery-honesty.test.ts': '06f96abf8c49fb07b8bbf570c8ca895fe6f23ee9',
   // Upstream deleted this file (delete/modify conflict against the fork's still-modified copy) --
@@ -599,7 +634,7 @@ const ACKNOWLEDGED_UPSTREAM_BLOBS: Readonly<Record<keyof typeof ACKNOWLEDGED_CON
   'scripts/github-pr-monitor.sh': '545425b675857bcbdab5018dbcbb42dca1722416',
   'scripts/set-bot-menu.sh': 'b45aca69c59f9b69748592df70d0a9ea77189206',
   'scripts/stuck-modal-guard.sh': '5bf19fc208ac41c204ae007189553efcb1d2790d',
-  'src/__tests__/send-honesty-sweep.test.ts': '62a398ede06fee9c694a9419f0984b681aedc0e1',
+  'src/__tests__/send-honesty-sweep.test.ts': 'afc17a2222a86a7645343f837618ebe74516dacc',
   'scripts/channels.sh': '440c177464c2bcf2d090f8958373b94e011e9f62',
   'update.sh': 'de0cad0164f4473d1cd1bd65dd019ae9465e4fe3',
 }

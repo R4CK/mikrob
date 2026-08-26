@@ -1,7 +1,7 @@
 import { describe, it, expect, beforeEach, afterEach } from 'vitest'
 import { spawnSync } from 'node:child_process'
 import { mkdtempSync, mkdirSync, rmSync, writeFileSync, chmodSync, existsSync, readFileSync, cpSync } from 'node:fs'
-import { tmpdir } from 'node:os'
+import { tmpdir, platform } from 'node:os'
 import { join } from 'node:path'
 
 // NOTIFYVAKSWEEP826 round 1: the sweep measured 13 Telegram/dashboard senders
@@ -41,6 +41,8 @@ function stageTree(scriptNames: string[]): { root: string; bin: string } {
   // missing SESSION_LIMIT_RX, unrelated to what this suite is actually testing.
   cpSync(join(ROOT, 'store', 'session-limit-pattern.sh'), join(stage, 'store', 'session-limit-pattern.sh'))
   cpSync(join(ROOT, 'store', 'session-limit-pattern.json'), join(stage, 'store', 'session-limit-pattern.json'))
+  // limit-monitor's dedupe hash comes from the shared helper (MD5SUMHIANY826).
+  cpSync(join(ROOT, 'scripts', 'lib', 'content-hash.sh'), join(scripts, 'lib', 'content-hash.sh'))
   const bin = join(stage, 'bin')
   mkdirSync(bin, { recursive: true })
   writeFileSync(join(bin, 'curl'),
