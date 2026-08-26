@@ -202,6 +202,30 @@ s = amc._build_summary('Write', {'file_path': '/home/neon/marveen/scripts/hooks/
 if 'Write' not in s:
     FAILURES.append(f'FAIL [summary]: Write not in summary: {s!r}')
 
+# Card 5a056db8: a heredoc-fed quiet commit must summarize the REAL message, not the constant
+# flags/opening-marker text -- two different messages through this shape must not collide.
+HEREDOC_A = "git commit -q -F - <<'HEREDOC'\nfix(agent): quota resync at 08:12\nHEREDOC"
+HEREDOC_B = "git commit -q -F - <<'HEREDOC'\nfix(agent): another totally different message\nHEREDOC"
+s_a = amc._build_summary('Bash', {'command': HEREDOC_A}, {})
+s_b = amc._build_summary('Bash', {'command': HEREDOC_B}, {})
+if s_a == s_b:
+    FAILURES.append(f'FAIL [summary]: two distinct heredoc commits produced the same summary: {s_a!r}')
+if 'quota resync' not in s_a:
+    FAILURES.append(f'FAIL [summary]: heredoc commit message not captured: {s_a!r}')
+if '\n' in s_a or '\n' in s_b:
+    FAILURES.append(f'FAIL [summary]: newline survived into a heredoc-commit summary: {s_a!r} / {s_b!r}')
+
+# The `-m "$(cat <<'TAG' ... TAG)"` command-substitution form is the SAME shape backend's own
+# commits use in this session -- must also resolve to the real message, not the "-m \"$(cat" flags.
+CMDSUB = (
+    'git commit -m "$(cat <<\'EOF\'\n'
+    'feat(legal): add CLEANCORE_CONTACT_EMAIL as the 10th platform company field\n'
+    'EOF\n)"'
+)
+s_cmdsub = amc._build_summary('Bash', {'command': CMDSUB}, {})
+if 'CLEANCORE_CONTACT_EMAIL' not in s_cmdsub:
+    FAILURES.append(f'FAIL [summary]: command-substitution heredoc message not captured: {s_cmdsub!r}')
+
 # ---------------------------------------------------------------------------
 # Card 34f1ca0c -- the noise this hook used to write into the hot tier
 # ---------------------------------------------------------------------------

@@ -351,6 +351,18 @@ def _record_memdedup(agent_id: str, summary: str, now_ts: int) -> None:
 def _command_verb(command: str) -> str:
     """Extract the first meaningful verb/subcommand from a bash command."""
     command = command.strip()
+    # git commit fed via a heredoc (`-F - <<'TAG'` or `-m "$(cat <<'TAG' ... TAG)"`). The plain
+    # branch below is a same-line match (no re.DOTALL), so on these forms it captures only the
+    # constant flags/opening-marker text ("-q -F - <<'TAG'"), never the actual message a few lines
+    # down -- every quiet commit then produced the identical summary row (card 5a056db8: 140
+    # exact-duplicate hot/warm rows in one day). Pull the real message out of the heredoc body.
+    heredoc_m = re.search(
+        r'\bgit\s+commit\b.*?<<-?\s*[\'"]?(\w+)[\'"]?.*?\n(.*?)\n[ \t]*\1\b',
+        command, re.IGNORECASE | re.DOTALL,
+    )
+    if heredoc_m:
+        body = ' '.join(heredoc_m.group(2).split())
+        return f"git commit {body[:60]}" if body else 'git commit'
     # git commit -> "git commit <sha-or-msg snippet>"
     m = re.search(r'\bgit\s+(commit|push|merge|rebase|tag|reset)\b(?:\s+(.{0,60}))?', command, re.IGNORECASE)
     if m:
