@@ -1133,18 +1133,29 @@ export function importFleet(
       // kanban card events -- idempotent on the WHOLE row, matched by multiplicity (card 394fb5ce,
       // Cybersec L-3). The old key (card_id, created_at, to_status) is NOT unique in the source
       // table, so two real transitions sharing one second collapsed into one on import.
+      //
+      // `forced` (card 11213a5b, Cybersec 394fb5ce follow-up): distinguishes a coerced state
+      // transition (reviewed-card-reopen override, dependency-blocked bypass) from an ordinary one
+      // -- indistinguishable after the fact without it, which is exactly the situation right after
+      // a transfer/restore. Normalised to 0/1 (never left undefined) BEFORE the dedup key is built,
+      // so it matches the target table's NOT NULL DEFAULT 0 column and an older payload that
+      // predates this field (absent -> treated as 0, the same value a pre-migration row has)
+      // dedupes correctly against rows already imported before this field existed.
       {
         const rows = (fleet.kanban?.cardEvents ?? []).filter((ev) => {
           const e = ev as any
           return Boolean(e.card_id) && Boolean(e.to_status)
+        }).map((ev) => {
+          const e = ev as any
+          return { ...e, forced: e.forced ? 1 : 0 }
         })
         const existing = db
           .prepare(`SELECT ${STATUS_EVENT_COLUMNS.join(', ')} FROM kanban_card_events`)
           .all() as TransferRow[]
-        const stmt = db.prepare('INSERT INTO kanban_card_events (card_id, from_status, to_status, actor, created_at) VALUES (?, ?, ?, ?, ?)')
+        const stmt = db.prepare('INSERT INTO kanban_card_events (card_id, from_status, to_status, actor, created_at, forced) VALUES (?, ?, ?, ?, ?, ?)')
         for (const ev of newTransferRows(rows as TransferRow[], existing, STATUS_EVENT_COLUMNS)) {
           const e = ev as any
-          stmt.run(e.card_id, e.from_status ?? null, e.to_status, e.actor ?? null, e.created_at)
+          stmt.run(e.card_id, e.from_status ?? null, e.to_status, e.actor ?? null, e.created_at, e.forced)
         }
       }
 

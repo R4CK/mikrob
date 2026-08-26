@@ -326,4 +326,34 @@ describe('L-3: a transfer must not merge two events that share a second (card 39
     expect(newTransferRows([back, forth], [], STATUS_EVENT_COLUMNS)).toHaveLength(2)
     expect(newTransferRows([back, forth], [back, forth], STATUS_EVENT_COLUMNS)).toEqual([])
   })
+
+  it('FORCED (card 11213a5b): two otherwise-identical transitions that differ only in forced stay distinct', () => {
+    // Before the fix, `forced` was not in STATUS_EVENT_COLUMNS -- these two rows shared every
+    // column the key looked at and collapsed into one on import (multiplicity alone would not
+    // have caught this: it is a KEY WIDTH gap, same class as the field-trail one above).
+    const ordinary = { card_id: 'c1', from_status: 'planned', to_status: 'in_progress', actor: 'mikrob', created_at: 5, forced: 0 }
+    const forced = { card_id: 'c1', from_status: 'planned', to_status: 'in_progress', actor: 'mikrob', created_at: 5, forced: 1 }
+    expect(newTransferRows([ordinary, forced], [], STATUS_EVENT_COLUMNS)).toHaveLength(2)
+    expect(newTransferRows([ordinary, forced], [ordinary, forced], STATUS_EVENT_COLUMNS)).toEqual([])
+    // one already present, only the other is new
+    expect(newTransferRows([ordinary, forced], [ordinary], STATUS_EVENT_COLUMNS)).toEqual([forced])
+  })
+})
+
+describe('the status trail import writes forced, not just the wide dedup key (card 11213a5b)', () => {
+  // Shape test on the source, same pattern as F-2 above: the SQL and the payload normalisation
+  // that live inside importFleet need a real DB+fs harness this file does not drive; what matters
+  // here is that the INSERT actually carries the column the wider key now compares.
+  const SRC = readFileSync(
+    join(dirname(fileURLToPath(import.meta.url)), '..', 'web', 'fleet-transfer.ts'),
+    'utf-8',
+  )
+
+  it('the import INSERT carries the forced column', () => {
+    expect(SRC).toMatch(/INSERT INTO kanban_card_events \(card_id, from_status, to_status, actor, created_at, forced\)/)
+  })
+
+  it('an older payload row with no forced key normalises to 0, not undefined -- matches the target column\'s NOT NULL DEFAULT 0', () => {
+    expect(SRC).toMatch(/forced: e\.forced \? 1 : 0/)
+  })
 })

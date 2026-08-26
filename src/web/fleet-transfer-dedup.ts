@@ -24,7 +24,7 @@ export function transferRowKey(row: TransferRow, columns: readonly string[]): st
   return JSON.stringify(columns.map((c) => row[c] ?? null))
 }
 
-export const STATUS_EVENT_COLUMNS = ['card_id', 'from_status', 'to_status', 'actor', 'created_at'] as const
+export const STATUS_EVENT_COLUMNS = ['card_id', 'from_status', 'to_status', 'actor', 'created_at', 'forced'] as const
 export const FIELD_EVENT_COLUMNS = ['card_id', 'field', 'old_value', 'new_value', 'actor', 'created_at'] as const
 
 /** The payload rows that the target does not already hold, counting duplicates on both sides.
