@@ -434,7 +434,8 @@ const ACKNOWLEDGED_CONFLICTS = {
   // scoped to the reported bypass; a candidate for a future round. Resolution unchanged: keep the
   // fork file wholesale (still a strict superset on the sentinel fix), same policy as before.
   'scripts/hooks/outgoing-copy-gate.py':
-    "keep the fork file wholesale -- it already carries upstream's is_send_invocation() verbatim (adopted for card 3ec64c96) plus the fork's own separate load_bad_name() sentinel fix upstream lacks (and appears to have reverted on its own side); if upstream's detector changes again, re-adopt that section only, leaving the sentinel fix and attribution comment untouched. Upstream's new fail-closed __main__ wrapper is a candidate for future adoption, not yet taken.",
+    "keep the fork file wholesale -- it already carries upstream's is_send_invocation() verbatim (adopted for card 3ec64c96) plus the fork's own separate load_bad_name() sentinel fix upstream lacks (and appears to have reverted on its own side); if upstream's detector changes again, re-adopt that section only, leaving the sentinel fix and attribution comment untouched. Upstream's new fail-closed __main__ wrapper is a candidate for future adoption, not yet taken." +
+    " Round 10 (2026-08-26, card fbb36b41, QA stale-blob catch cd51631d01de..4deba6bb7214): adopted two more upstream fixes verbatim. (1) RESENDGATE826 -- _curl_resend_verdict() narrows the resend-target curl/wget match from method-blind to method-aware: a read-only GET/HEAD domain-verification query (no body) now passes, only an actual send (non-safe method, or an implicit-POST body flag) still blocks; an undecidable method (variable, --config, truncated flag) stays fail-closed ('unknown' != 'read'). Grafted at the same call site the fork already carries upstream's is_send_invocation() from, no fork logic touched. (2) DIGIT-HYPHEN SUFFIX in accent_check_tokens(): a Hungarian numeric suffix glued to a number (429-es, 403-as, 2026-os) is no longer misread as a bare word needing an accent check -- ported with the fork's IDENTIFIER_ALLOWLIST skip-block kept intact and untouched (the two skips are independent 'continue' branches, order does not matter). Comment text kept in the fork's established Hungarian-prose convention for this file rather than copied English verbatim -- functionally identical to upstream's.",
   // New conflict surfaced 2026-08-26 (card 72f5f13b F4 gate, NOTIFYVAK826, upstream advanced
   // past the merge point mid-integration): fork changed the message-body curl call to
   // --data-urlencode (card b43d6dfd security fix -- an `&` in the message must not start a
@@ -568,7 +569,7 @@ const ACKNOWLEDGED_UPSTREAM_BLOBS: Readonly<Record<keyof typeof ACKNOWLEDGED_CON
   'scripts/email-send-gate.mjs': 'abaaedc4d0e9f76fa159307659473ffaac306411',
   'src/__tests__/hook-command-quoting.test.ts': '1048b1988e6c8554754900c62570d76d455f1057',
   'src/__tests__/installer-start-and-fallback.test.ts': '9017ce4fcfe808b73fdcd1389ebf1c9eaf374f7e',
-  'scripts/hooks/outgoing-copy-gate.py': 'cd51631d01de4aa84776a3ad5ff8d8f6a85aa167',
+  'scripts/hooks/outgoing-copy-gate.py': '4deba6bb7214c3a619f34541e915eae5ea91a019',
   'scripts/notify.sh': '5477e66ecad5cca6425a535de0d16fce0e3eca28',
   'scripts/lib/send-telegram.sh': '293aecf24507b6d56bda99e5a4ff937e1491ab97',
   'scripts/disk-space-guard.sh': 'd3f693c01d607952a8165cc4d8106024008f22e4',

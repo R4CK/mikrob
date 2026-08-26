@@ -179,6 +179,48 @@ def main():
             rules_path=empty_rules,
         )
 
+        # --- RESENDGATE826: method-aware resend-target verdict (round 10, card fbb36b41) ---
+        case(
+            "RESENDGATE826: read-only GET domain-verification query passes (no body, safe method)",
+            'curl -s -X GET https://api.resend.com/domains -H "Authorization: Bearer $KEY"',
+            ALLOW,
+            rules_path=empty_rules,
+        )
+        case(
+            "RESENDGATE826: GET explicitly forced but a body flag is still present -> send, BLOCK",
+            "curl -s -X GET https://api.resend.com/domains -d 'foo=bar'",
+            BLOCK,
+            rules_path=empty_rules,
+        )
+        case(
+            "RESENDGATE826: undecidable method (shell variable) stays fail-closed BLOCK",
+            'curl -s -X $METHOD https://api.resend.com/domains',
+            BLOCK,
+            rules_path=empty_rules,
+        )
+        case(
+            "RESENDGATE826: implicit POST via -d with no -X is still a send, BLOCK",
+            'curl -s https://api.resend.com/emails -d \'{"to":"x@y.com"}\'',
+            BLOCK,
+            rules_path=empty_rules,
+        )
+
+        # --- DIGIT-HYPHEN SUFFIX: numeric Hungarian suffix is not a prose word (round 10) ---
+        case(
+            "DIGIT-HYPHEN SUFFIX: '429-es'/'403-as' do not false-positive as unaccented words",
+            REAL_SEND.format(
+                body="Szia, 429-es vagy 403-as hibát kaptunk, köszönöm a türelmet."
+            ),
+            ALLOW,
+            rules_path=empty_rules,
+        )
+        case(
+            "DIGIT-HYPHEN SUFFIX does not mask a REAL accent error elsewhere in the same body",
+            REAL_SEND.format(body="Szia, 429-es hiba volt, koszonom a turelmet."),
+            BLOCK,
+            rules_path=empty_rules,
+        )
+
     if failures:
         print(f"\n{len(failures)} FAILED")
         for label, expected, got, stderr in failures:
