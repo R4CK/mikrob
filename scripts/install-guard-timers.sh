@@ -25,6 +25,12 @@
 #                                      item 6) -- it used to silently sit down for
 #                                      hours with only a quiet dashboard tile to show
 #                                      for it.
+#   mikrob-build-freshness-guard (5 min) : alert (direct Bot API) when dist/ falls
+#                                      behind a landed src/ change (card 77075367) --
+#                                      a gated security fix sat inactive for ~1h with
+#                                      nothing but a human's own live retest to catch it.
+#                                      Never rebuilds or restarts anything itself; that
+#                                      stays ./update.sh's confirmed gate.
 #
 # Surgical by design: recovery respawns only the affected component. Restarting
 # the WSL VM is deliberately NOT done here -- it would SIGKILL all fleet agents
@@ -103,6 +109,9 @@ write_timer   token-health-guard "Run the MikroB bot-token health guard every 15
 write_service ollama-down-guard "MikroB Ollama-down guard (local-LLM up/down probe -> alert on outage)" ollama-down-guard.sh journal
 write_timer   ollama-down-guard "Run the MikroB Ollama-down guard every 5 minutes"                                 90s  5min
 
+write_service build-freshness-guard "MikroB build-freshness guard (dist/ vs landed src/ -> alert on stale build)" build-freshness-guard.sh journal
+write_timer   build-freshness-guard "Run the MikroB build-freshness guard every 5 minutes"                                     90s  5min
+
 # Card edd8b398 (load-brake phase 19f3bbb5, Feladat 1's systemd wiring): a load spike needs a much
 # faster cadence than the other guards above, so it gets its own tighter timer. The script lives in
 # store/ (with the rest of the load-guard family), not scripts/ like the others -- write_service
@@ -121,7 +130,7 @@ echo "Rendered guard-timer units for MAIN_AGENT_ID=$MAIN_AGENT_ID into $UNIT_DIR
 # user session exists. Never hard-fail the caller (install-linux.sh) over this.
 if pidof systemd >/dev/null 2>&1 && systemctl --user status >/dev/null 2>&1; then
   systemctl --user daemon-reload || true
-  for t in channel-watchdog stuck-modal-guard disk-space-guard token-health-guard load-guard ollama-down-guard; do
+  for t in channel-watchdog stuck-modal-guard disk-space-guard token-health-guard load-guard ollama-down-guard build-freshness-guard; do
     systemctl --user enable --now "${MAIN_AGENT_ID}-${t}.timer" || echo "  warn: could not enable ${MAIN_AGENT_ID}-${t}.timer"
   done
   echo "Enabled guard timers:"

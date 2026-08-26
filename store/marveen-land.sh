@@ -233,6 +233,15 @@ land_one() {
     # (~13s on marveen) and non-fatal: a graph refresh must not fail a landing.
     "$(dirname "$0")/graphify.sh" build "$MAIN" 2>&1 | tail -1 | sed 's/^/  graphify: /' || true
     sync_live_install
+    # Card 77075367: a src/-touching land does NOT rebuild dist/ or restart mikrob-channels/
+    # mikrob-dashboard (deliberately -- see this function's header comment, restart stays a
+    # separate, confirmed gate). That silence is exactly what let a landed, gated security fix
+    # (f0389e81) sit inactive for ~1h until Cybersec's own retest caught it. This is not the
+    # rebuild -- it is making the gap VISIBLE at the one moment someone is already watching
+    # this output. scripts/build-freshness-guard.sh backstops it if nobody is.
+    if git -C "$wt" diff --name-only "$base_sha..$merge_sha" -- src/ | grep -q .; then
+      say "$agent: WARNING -- this land touches src/. dist/ is now STALE: mikrob-channels and mikrob-dashboard keep serving the OLD build until someone runs ./update.sh (or npm run build + a confirmed restart)."
+    fi
     echo "$agent: LANDED $branch -> origin/$DEFAULT_BRANCH ($(git -C "$wt" rev-parse --short HEAD))"
     return 0
   fi
