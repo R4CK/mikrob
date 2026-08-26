@@ -416,6 +416,20 @@ const ACKNOWLEDGED_CONFLICTS = {
   // the sentinel fix and the attribution comment untouched.
   'scripts/hooks/outgoing-copy-gate.py':
     "keep the fork file wholesale -- it already carries upstream's is_send_invocation() verbatim (adopted for card 3ec64c96) plus the fork's own separate load_bad_name() sentinel fix upstream lacks; if upstream's detector changes again, re-adopt that section only, leaving the sentinel fix and attribution comment untouched",
+  // New conflict surfaced 2026-08-26 (card 72f5f13b F4 gate, NOTIFYVAK826, upstream advanced
+  // past the merge point mid-integration): fork changed the message-body curl call to
+  // --data-urlencode (card b43d6dfd security fix -- an `&` in the message must not start a
+  // new form param / override parse_mode). Upstream independently made delivery HONEST
+  // (NOTIFYVAK826): capture the response, require both a clean curl exit AND the Bot API's
+  // own "ok":true before reporting success, since this script is the fleet's FALLBACK channel
+  // used exactly when the primary Telegram plugin is already down -- a swallowed failure here
+  // is indistinguishable from silence. Upstream also gated the tmux sender-detection behind
+  // `[ -n "${TMUX:-}" ]` so a detached caller (cron/systemd) never mislabels a system alert as
+  // coming from an arbitrary agent. Resolution: keep BOTH -- the fork's --data-urlencode call
+  // wrapped in upstream's RESPONSE/CURL_EXIT/ok:true honesty check, token masked in error
+  // output, plus upstream's TMUX-guarded sender detection.
+  'scripts/notify.sh':
+    "keep both: fork's --data-urlencode message body (card b43d6dfd) wrapped in upstream's RESPONSE capture + curl-exit + ok:true honesty check (NOTIFYVAK826), token masked in error output; plus upstream's TMUX-guarded sender detection",
 } as const
 
 // THE UPSTREAM CONTENT EACH RULE ABOVE WAS DECIDED AGAINST (card a1d613e3, Cybersec msg 19105).
@@ -473,6 +487,7 @@ const ACKNOWLEDGED_UPSTREAM_BLOBS: Readonly<Record<keyof typeof ACKNOWLEDGED_CON
   'src/__tests__/hook-command-quoting.test.ts': '1048b1988e6c8554754900c62570d76d455f1057',
   'src/__tests__/installer-start-and-fallback.test.ts': '9017ce4fcfe808b73fdcd1389ebf1c9eaf374f7e',
   'scripts/hooks/outgoing-copy-gate.py': '8c879e96083dbf9d5eaee54a47df4421ba1bba4d',
+  'scripts/notify.sh': 'b3b4b06b6cb5004b7f754558f9da98b3085765b6',
 }
 
 /** A conflict whose written rule was decided against DIFFERENT upstream content than what is
