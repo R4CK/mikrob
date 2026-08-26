@@ -135,10 +135,18 @@ _SAFE_METHODS = {"GET", "HEAD"}
 
 
 def _curl_resend_verdict(rest):
-    """'read' | 'send' | 'unknown' -- unknown a hivo oldalon fail-closed."""
+    """'read' | 'send' | 'unknown' -- unknown a hivo oldalon fail-closed.
+
+    Cybersec NO-GO (fbb36b41 round 11): a korabbi valtozat a -G/--get flag jelenletet a
+    has_body jelzes FELULBIRALASAKENT kezelte -- de a `curl -G -d ...` egy dokumentalt
+    curl-trukk, ami a -d/--data-urlencode altal adott adatot query-string parameterkent
+    csatolja az URL-hez es GET-kent kuldi: a tartalom (cimzett/targy/torzs) EKKOR IS
+    eljut a celhoz, csak a HTTP-metodus mas. A -G ezert MAR NEM tud egy torzs-kuldest
+    olvassa-kent aluminositani -- a torzs-jelenlet onmagaban donto, fuggetlenul a
+    metodustol.
+    """
     method = None
     has_body = False
-    get_forced = False
     i, n = 0, len(rest)
     while i < n:
         t = rest[i]
@@ -153,10 +161,6 @@ def _curl_resend_verdict(rest):
             if not m.isalpha():
                 return "unknown"
             method = m.upper()
-            i += 1
-            continue
-        if t in ("-G", "--get"):
-            get_forced = True
             i += 1
             continue
         if t in ("-K", "--config"):
@@ -183,8 +187,6 @@ def _curl_resend_verdict(rest):
                     i += 1
             elif "d" in letters or "F" in letters or "T" in letters:
                 has_body = True
-            elif "G" in letters:
-                get_forced = True
             elif "K" in letters:
                 return "unknown"
             i += 1
@@ -192,9 +194,9 @@ def _curl_resend_verdict(rest):
         i += 1
     if method is not None and method not in _SAFE_METHODS:
         return "send"
-    if has_body and not get_forced:
-        # implicit POST (curl -d/-F/--json/-T alapertelmezese), vagy egy
-        # gyanus "GET torzzsel" alak -- mindketto kuldeskent kezelve
+    if has_body:
+        # torzs jelen van, akar POST-kent kuldve, akar -G altal query-stringgé alakitva --
+        # mindket alakban tartalom megy a celhoz, tehat kuldeskent kezeljuk
         return "send"
     return "read"
 
@@ -552,6 +554,20 @@ assert not _overlap, (
 del _overlap
 HYPHEN_WORD = re.compile(r"[a-záéíóöőúüűA-ZÁÉÍÓÖŐÚÜŰ]+(?:-[a-záéíóöőúüűA-ZÁÉÍÓÖŐÚÜŰ]+)*")
 
+# DIGIT-HYPHEN SUFFIX allowlist (Cybersec NO-GO, fbb36b41 round 11): a bevezeto valtozat
+# a szamjegy-kotojel elotag utani szot FELTETEL NELKUL kihagyta -- de a HYPHEN_WORD
+# tetszoleges hosszu/alaku szot illeszt ott, nem csak a szandekolt rovid szamnevi
+# toldalekot. `5-keszen` -> a 'keszen' (valodi ekezethiba) NEM jelent meg a talalatok
+# kozott. Ugyanaz a hibaosztaly, mint az IDENTIFIER_ALLOWLIST-nel fentebb (round 7/8):
+# a kihagyas MOSTANTOL csak egy zart, ismert-rovid szamnevi-toldalek halmazra vonatkozik,
+# nem tetszoleges digit-kotojel-utani szora.
+DIGIT_HYPHEN_SUFFIX_ALLOWLIST = {"es", "as", "os", "ös"}
+assert all(len(w) <= 3 for w in DIGIT_HYPHEN_SUFFIX_ALLOWLIST), (
+    "outgoing-copy-gate: DIGIT_HYPHEN_SUFFIX_ALLOWLIST csak rovid szamnevi toldalekot "
+    "tartalmazhat (Cybersec lelet, fbb36b41 round 11) -- egy hosszabb bejegyzes ujra "
+    "kinyitna a bejelentett bypasst."
+)
+
 
 def _at_sentence_start(text: str, idx: int) -> bool:
     i = idx - 1
@@ -581,7 +597,10 @@ def accent_check_tokens(prose: str):
         # olvasodna. Ezek nem mondatbeli szavak, nincs ekezetuk.
         # (2026-08-21: a kapu blokkolt egy helyes "429-es vagy 403-as" uzenetet.
         # A GATEKOTOJEL817 a betu-kotojel-betu alakot fedte, ezt nem.)
-        if m.start() >= 2 and prose[m.start() - 1] == "-" and prose[m.start() - 2].isdigit():
+        # Round 11 szukites: csak a DIGIT_HYPHEN_SUFFIX_ALLOWLIST-ben szereplo rovid
+        # toldalek marad ki, nem barmilyen szamjegy-kotojel utani szo (lasd fent).
+        if (m.start() >= 2 and prose[m.start() - 1] == "-" and prose[m.start() - 2].isdigit()
+                and tok.lower() in DIGIT_HYPHEN_SUFFIX_ALLOWLIST):
             continue
         if ("-" not in tok and tok[0].isupper() and not _at_sentence_start(prose, m.start())
                 and tok.lower() in IDENTIFIER_ALLOWLIST):

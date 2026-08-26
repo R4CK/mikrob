@@ -221,6 +221,33 @@ def main():
             rules_path=empty_rules,
         )
 
+        # --- Cybersec round 11 NO-GO: two REAL bypasses in the round-10 fixes ---
+        case(
+            "RESENDGATE826 r11: -G + --data-urlencode is a real send (query-string exfil trick), BLOCK",
+            "curl -s -G https://api.resend.com/emails "
+            "--data-urlencode 'to=client@example.com' --data-urlencode 'subject=hi'",
+            BLOCK,
+            rules_path=empty_rules,
+        )
+        case(
+            "RESENDGATE826 r11: -G alone (no body) is still a legitimate read, ALLOW",
+            "curl -s -G https://api.resend.com/domains -H \"Authorization: Bearer $KEY\"",
+            ALLOW,
+            rules_path=empty_rules,
+        )
+        case(
+            "DIGIT-HYPHEN SUFFIX r11: a multi-letter REAL word glued after digit-hyphen is still caught",
+            REAL_SEND.format(body="A dokumentum 5-keszen van, kuldheted."),
+            BLOCK,
+            rules_path=empty_rules,
+        )
+        case(
+            "DIGIT-HYPHEN SUFFIX r11: second reproduction, same shape, still caught",
+            REAL_SEND.format(body="Az uzenet 1-keszen elment mar."),
+            BLOCK,
+            rules_path=empty_rules,
+        )
+
     if failures:
         print(f"\n{len(failures)} FAILED")
         for label, expected, got, stderr in failures:
