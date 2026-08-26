@@ -719,6 +719,7 @@ async function loadReposPage() {
         // Real install date = adoptedAt (registry reviewed_at); vendoredDate is the upstream
         // COMMIT date (wrong meaning) and is null for pipx installs -> only a last-resort fallback.
         installedAt: r.adoptedAt || r.vendoredDate || null,
+        lastCheckedAt: r.lastCheckedAt || null,
         kind: r.kind,
         behind: r.behind || 0,
         reviewRequired: !!r.reviewRequired,
@@ -796,8 +797,14 @@ function renderReposGrid(repos) {
       const installBadge = r.installed
         ? `<span class="repo-card-badge repo-card-badge-ok" title="${escapeHtml(t('repos.installed_title'))}">✓ ${escapeHtml(t('repos.installed'))}${r.adoption === 'pipx' ? ` (pipx${ver})` : ''}</span>`
         : `<span class="repo-card-badge" title="${escapeHtml(t('repos.not_installed_title'))}">${escapeHtml(t('repos.not_installed'))}</span>`
+      // Last-checked date (card 9e92e94c): only the daily-synced vendored clones write this
+      // (external-repos-sync.sh's write_back), so pipx/rules-folded adoptions have none -- omit
+      // the row for those rather than show a misleading blank date.
+      const checkedRow = r.lastCheckedAt
+        ? `<span class="repo-card-date">${escapeHtml(t('repos.last_checked_at'))}: ${new Date(r.lastCheckedAt).toLocaleDateString(dateLocale)}</span>`
+        : ''
       card.innerHTML = header +
-        `<div class="repo-card-meta"><span class="repo-card-badge repo-card-badge-kind">${kind}</span>${installBadge}<span class="repo-card-badge">${escapeHtml(t('repos.badge.adopted'))}</span>${behind}<span class="repo-card-date">${escapeHtml(t('repos.installed_at'))}: ${date}</span></div>${warnRow}`
+        `<div class="repo-card-meta"><span class="repo-card-badge repo-card-badge-kind">${kind}</span>${installBadge}<span class="repo-card-badge">${escapeHtml(t('repos.badge.adopted'))}</span>${behind}<span class="repo-card-date">${escapeHtml(t('repos.installed_at'))}: ${date}</span>${checkedRow}</div>${warnRow}`
       gridEl.appendChild(card)
       continue
     }

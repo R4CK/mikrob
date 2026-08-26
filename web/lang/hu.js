@@ -1971,6 +1971,7 @@ window._i18n.hu = {
   'repos.not_installed':         'nincs telepítve',
   'repos.not_installed_title':   'A registryben szerepel, de a helyi telepítés nem található',
   'repos.installed_at':          'Telepítve',
+  'repos.last_checked_at':       'Utolsó ellenőrzés',
   'repos.btn.update':            'Frissítés',
   'repos.btn.delete':            'Törlés',
   'repos.updating':              'Frissítés...',

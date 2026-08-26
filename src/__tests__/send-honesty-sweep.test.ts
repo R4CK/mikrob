@@ -41,6 +41,8 @@ function stageTree(scriptNames: string[]): { root: string; bin: string } {
   // missing SESSION_LIMIT_RX, unrelated to what this suite is actually testing.
   cpSync(join(ROOT, 'store', 'session-limit-pattern.sh'), join(stage, 'store', 'session-limit-pattern.sh'))
   cpSync(join(ROOT, 'store', 'session-limit-pattern.json'), join(stage, 'store', 'session-limit-pattern.json'))
+  // limit-monitor's dedupe hash comes from the shared helper (MD5SUMHIANY826).
+  cpSync(join(ROOT, 'scripts', 'lib', 'content-hash.sh'), join(scripts, 'lib', 'content-hash.sh'))
   const bin = join(stage, 'bin')
   mkdirSync(bin, { recursive: true })
   writeFileSync(join(bin, 'curl'),
