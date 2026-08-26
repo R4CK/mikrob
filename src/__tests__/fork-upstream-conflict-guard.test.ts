@@ -479,6 +479,14 @@ const ACKNOWLEDGED_CONFLICTS = {
   'scripts/github-pr-monitor.sh': 'adopt upstream wholesale -- honest-send-via-lib + snapshot-not-persisted-on-failed-alert + an unrelated REPO-parsing regex fix (ERE has no lazy quantifier), no fork-specific logic in this file',
   'scripts/set-bot-menu.sh': 'adopt upstream wholesale -- honest telegram_api_call() replaces a silent fire-and-forget curl for setMyCommands, no fork-specific logic in this file',
   'scripts/stuck-modal-guard.sh': 'adopt upstream wholesale -- honest-send-via-lib + backoff-stamp-only-on-success, no fork-specific logic in this file',
+  // The fork's ONLY addition to this upstream test file: stageTree() also copies
+  // store/session-limit-pattern.sh + .json into the staged tree (see the
+  // scripts/limit-monitor.sh entry above -- that fork-only sourcing needs the
+  // canonical file present or `set -u` kills the whole staged script run,
+  // unrelated to what the suite is testing). Resolution: keep upstream's file
+  // verbatim plus that one staging addition; if upstream's suite grows new
+  // describe blocks, add them alongside, do not drop the staging addition.
+  'src/__tests__/send-honesty-sweep.test.ts': "upstream file verbatim + the fork's session-limit-pattern.sh/.json staging addition in stageTree() for limit-monitor.sh's fork-only dependency",
 } as const
 
 // THE UPSTREAM CONTENT EACH RULE ABOVE WAS DECIDED AGAINST (card a1d613e3, Cybersec msg 19105).
@@ -553,6 +561,7 @@ const ACKNOWLEDGED_UPSTREAM_BLOBS: Readonly<Record<keyof typeof ACKNOWLEDGED_CON
   'scripts/github-pr-monitor.sh': '545425b675857bcbdab5018dbcbb42dca1722416',
   'scripts/set-bot-menu.sh': 'b45aca69c59f9b69748592df70d0a9ea77189206',
   'scripts/stuck-modal-guard.sh': '5bf19fc208ac41c204ae007189553efcb1d2790d',
+  'src/__tests__/send-honesty-sweep.test.ts': '62a398ede06fee9c694a9419f0984b681aedc0e1',
 }
 
 /** A conflict whose written rule was decided against DIFFERENT upstream content than what is
