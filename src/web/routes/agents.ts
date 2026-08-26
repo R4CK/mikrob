@@ -107,7 +107,6 @@ import {
   agentSessionName,
   sendPromptToSession,
   capturePane,
-  delay,
 } from '../agent-process.js'
 import { addDesiredAgent, removeDesiredAgent } from '../agent-desired-state.js'
 import { RemoteStatusCache } from '../remote-status-cache.js'
