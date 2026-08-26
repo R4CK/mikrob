@@ -33,8 +33,35 @@ log() { echo "[$(ts)] $*" >>"$LOG"; }
 # it appears on the abnormal paths too (kill, set -e, unhandled error). `--status` reads
 # it back and IS the health check: fast, foreground, and its exit code is real.
 BATCH_END_STATUS="aborted"
+ATTEMPTED=0
 DRAFTED=0
-emit_end_line() { log "batch END status=${BATCH_END_STATUS} drafted=${DRAFTED}"; }
+emit_end_line() { log "batch END status=${BATCH_END_STATUS} attempted=${ATTEMPTED} drafted=${DRAFTED}"; }
+
+# Candidate selection/ordering/BLOKKOLT-filter logic (card 3e094b1e, alfeladat f8c72a5a), shared
+# verbatim between the real run (fed from curl) and --test-select (fed from stdin) so a test can
+# never drift from what actually runs. See the comment at its real call site below for WHY planned
+# is ordered mechanical-first instead of urgent-first.
+SELECT_PY='
+import json,sys
+URGENCY={"urgent":0,"high":1,"normal":2,"low":3}
+MECHANICAL_FIRST={"low":0,"normal":1,"high":2,"urgent":3}
+cards=json.load(sys.stdin)
+sel=[c for c in cards if c.get("status") in ("in_progress","planned") and "BLOKKOLT" not in (c.get("title") or "")]
+def rank(c):
+    if c.get("status")=="in_progress":
+        return (0, URGENCY.get(c.get("priority"),9))
+    return (1, MECHANICAL_FIRST.get(c.get("priority"),9))
+sel.sort(key=rank)
+for c in sel: print(c["id"])
+'
+
+# --- test-select mode ----------------------------------------------------------------------------
+# Usage: offload-batch-run.sh --test-select   (reads a JSON kanban-card array on stdin, prints the
+# selected+ordered card ids) -- exercises the exact selection logic with no tmux/curl/kanban I/O.
+if [[ "${1:-}" == "--test-select" ]]; then
+  python3 -c "$SELECT_PY"
+  exit 0
+fi
 
 # --- status mode -------------------------------------------------------------
 # Usage: offload-batch-run.sh --status [--max-age-hours N]   (default 26h: a nightly
@@ -88,35 +115,53 @@ if [[ -z "$TOK" ]]; then BATCH_END_STATUS="no-token"; log "no dashboard token; a
 hdr_file="$(mktemp)"; chmod 600 "$hdr_file"
 printf 'Authorization: Bearer %s\n' "$TOK" > "$hdr_file"
 
-# candidate cards: all in_progress + planned, ordered in_progress-first then by priority.
+# candidate cards: all in_progress + planned, ordered in_progress-first (urgent-first within that
+# bucket -- active work benefits from immediate draft help regardless of complexity), THEN planned
+# cards ordered MECHANICAL-FIRST (low priority first), not urgent-first.
+#
+# WHY planned is reversed (audit finding, card 3e094b1e, alfeladat f8c72a5a): CAP counts ATTEMPTS,
+# and a real run measured 69 candidates with CAP=20 producing ZERO drafts -- the cap was entirely
+# consumed by URGENT/HIGH planned cards, which are typically multi-file/architectural and fail the
+# router's local-eligibility check, before the loop ever reached a genuinely mechanical LOW card. A
+# live manual run of the same pipeline on a LOW card excluded from that night's top-20 (6dad1830,
+# a one-line test timeout bump) routed local and drafted successfully in seconds -- the router and
+# the model both work fine, the candidate ORDER was just aimed at the cards least likely to succeed.
+# Reversing planned-order does not change in_progress semantics and does not touch the router.
+#
+# BLOKKOLT-* cards are also excluded from candidates (same fleet-wide convention as
+# store/fleet-nudger.sh): a card explicitly parked pending a decision cannot be worked on regardless
+# of what a local draft says, so drafting one only spends CAP budget on a card nobody will read yet.
+#
 # We skip any card that already has a LOCAL-LLM DRAFT comment (offload-dispatch re-checks
 # too, but filtering here avoids spinning the model up for nothing).
-mapfile -t CARDS < <(
-  curl -s -H @"$hdr_file" "$DASH/api/kanban" | python3 -c "
-import json,sys
-order={'urgent':0,'high':1,'normal':2,'low':3}
-cards=json.load(sys.stdin)
-sel=[c for c in cards if c.get('status') in ('in_progress','planned')]
-sel.sort(key=lambda c:(0 if c.get('status')=='in_progress' else 1, order.get(c.get('priority'),9)))
-for c in sel: print(c['id'])
-"
-)
+mapfile -t CARDS < <(curl -s -H @"$hdr_file" "$DASH/api/kanban" | python3 -c "$SELECT_PY")
 
 log "batch start: ${#CARDS[@]} candidate cards, cap $CAP"
-done=0
+attempted=0
+drafted=0
 for id in "${CARDS[@]}"; do
-  (( done >= CAP )) && { log "cap $CAP reached; stopping"; break; }
+  (( attempted >= CAP )) && { log "cap $CAP reached; stopping"; break; }
   # skip if already drafted
   has=$(curl -s -H @"$hdr_file" "$DASH/api/kanban/$id/comments" \
         | python3 -c "import json,sys; d=json.load(sys.stdin); print('Y' if any('LOCAL-LLM DRAFT' in (c.get('content') or '') for c in d) else 'N')" 2>/dev/null || echo Y)
   [[ "$has" == "Y" ]] && continue
   log "offload -> card $id"
-  bash "$HERE/offload-dispatch.sh" "$id" >>"$LOG" 2>&1 || log "  dispatch non-zero for $id (best-effort)"
-  done=$(( done + 1 ))
+  # "attempted" counts every dispatch call (what CAP bounds, for runtime); "drafted" counts only
+  # the ones that actually posted a draft (offload-dispatch.sh exits 0 either way, so the earlier
+  # version's "$done cards drafted" line was counting attempts and calling them drafts -- a run
+  # that drafted zero cards logged "20 cards drafted this run", which is what surfaced this bug).
+  out="$(bash "$HERE/offload-dispatch.sh" "$id" 2>&1)"; rc=$?
+  printf '%s\n' "$out" >>"$LOG"
+  [[ $rc -ne 0 ]] && log "  dispatch non-zero for $id (best-effort)"
+  attempted=$(( attempted + 1 ))
+  if printf '%s' "$out" | grep -q -- '-> posted local draft(s)'; then
+    drafted=$(( drafted + 1 ))
+  fi
 done
 
-DRAFTED="$done"
+ATTEMPTED="$attempted"
+DRAFTED="$drafted"
 BATCH_END_STATUS="ok"
-log "batch done: $done cards drafted this run"
-echo "OK drafted=$done"
+log "batch done: attempted=$attempted drafted=$drafted this run"
+echo "OK attempted=$attempted drafted=$drafted"
 exit 0

@@ -3765,3 +3765,34 @@ reprodukálta (`agent-mikrob`/`agent-mikrob-channels` NEM lett kizárva a javít
 teszt-hook + 4 új automatizált teszt (`load-guard-cgroup.test.ts`), ami pontosan ezt a bemenetet
 fedi le -- eddig a valós tmux/kanban discovery egyáltalán nem volt tesztelve (a teszt fájl saját
 fejléce is kimondta ezt), ez zárja azt a rést is. 14/14 teszt zöld, tsc tiszta.
+
+## 2026-08-26 -- 3e094b1e/386d4613 -- Local-LLM offload-batch: mechanikus-első sorrend + BLOKKOLT-szűrés
+
+**Mit döntöttünk:** `store/offload-batch-run.sh` jelölt-kiválasztása eddig `in_progress`-first,
+majd `urgent>high>normal>low` sorrendben állt a `planned` kártyákra is, `CAP=20`-szal korlátozva a
+próbálkozások (nem a sikeres draftok!) számát. Ez a `planned` kártyák körében MINDIG a legkevésbé
+lokál-eligible (URGENT/HIGH, jellemzően architekturális) kártyákat próbálja ki előbb, mielőtt egy
+tényleg mechanikus LOW kártyához érne. Élő mérés (3e094b1e audit, alfeladat f8c72a5a): a mai
+06:15-ös batch 69 jelöltből 20-at próbált (a CAP-ig), MIND a 20 "no local-eligible parts" -- ZÉRÓ
+draft. Ugyanakkor egy kézi próba egy, a 20-as körből kimaradt LOW kártyán (6dad1830, egyszerű
+timeout-emelés) másodpercek alatt sikeres helyi draftot adott -- a router és a modell működik, csak
+a próbálkozási SORREND célozta rosszul.
+
+**Mit változtattunk (`386d4613`, sebészi):**
+- a `planned` kártyák rendezése mostantól MECHANIKUS-ELSŐ (low elsőként), NEM urgent-first --
+  az `in_progress` kártyák sorrendje változatlan (urgent-first, az aktív munka azonnali draft-
+  segítséget érdemel a komplexitástól függetlenül);
+- `BLOKKOLT-*` címkéjű kártyák kizárva a jelöltekből (ugyanaz a konvenció mint `store/fleet-nudger.sh`-ban)
+  -- egy párkolt kártyát ma senki nem tud felhasználni, a CAP-ból elvett hely felesleges;
+  - `ATTEMPTED`/`DRAFTED` szétválasztva: a régi `"$done cards drafted"` sor valójában a
+  PRÓBÁLKOZÁSOK számát írta ki draft-ként (a mai 0-draftos éjszaka is "20 cards drafted"-et logolt) --
+  most a napló `attempted=N drafted=M` formában mondja ki mindkettőt, a `--status` visszamenőleg
+  kompatibilis marad (a `drafted=` kulcs a sor VÉGÉN maradt).
+- új `--test-select` CLI-hook + a valós és a teszt út UGYANAZT a `SELECT_PY` változót futtatja
+  (nincs duplikált/eltérő logika) + 5 új teszt (`offload-batch-select.test.ts`), ami a mért
+  éhezési forgatókönyvet is reprodukálja (25 urgent + 1 low planned kártya -> a low megy elsőnek).
+
+**Ki döntött:** backend (kártya 3e094b1e, Peti sürgős kérése 2026-08-24, alfeladat 386d4613).
+
+**Hivatkozás:** kártya 3e094b1e (parent), 386d4613 (a refaktor-alfeladat), f8c72a5a (a mérés-alfeladat,
+ahol a talalat szuletett).
