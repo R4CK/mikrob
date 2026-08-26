@@ -130,9 +130,15 @@ function sendsRawFormValue(invocation: string): boolean {
   return /(^|\s)-d\s+"?(text|chat_id)=[^"']*\$/m.test(invocation)
 }
 
+const SCRIPTS_LIB_DIR = join(SCRIPTS_DIR, 'lib')
+
 const CASES = [
   ...readdirSync(STORE_DIR).filter((f) => f.endsWith('.sh')).map((file) => ({ dir: STORE_DIR, file })),
   ...readdirSync(SCRIPTS_DIR).filter((f) => f.endsWith('.sh')).map((file) => ({ dir: SCRIPTS_DIR, file })),
+  // scripts/lib/send-telegram.sh (NOTIFYVAKSWEEP826): the actual curl call that used to live
+  // inline in notify.sh now lives here, and every other honest sender delegates to it -- the
+  // corpus scan must reach into scripts/lib/ or the one file that matters most goes unscanned.
+  ...readdirSync(SCRIPTS_LIB_DIR).filter((f) => f.endsWith('.sh')).map((file) => ({ dir: SCRIPTS_LIB_DIR, file })),
 ]
 
 describe('CORPUS: no script sends a Telegram message body through bare -d', () => {
@@ -153,10 +159,13 @@ describe('CORPUS: no script sends a Telegram message body through bare -d', () =
     }
   })
 
-  it('notify.sh specifically uses --data-urlencode for text (the card b43d6dfd fix)', () => {
+  it('notify.sh delegates delivery to the shared honest-send library, which uses --data-urlencode for text (card b43d6dfd, superseded by NOTIFYVAKSWEEP826)', () => {
     const src = readFileSync(join(SCRIPTS_DIR, 'notify.sh'), 'utf8')
-    expect(src).toMatch(/--data-urlencode\s+"text=\$\{MESSAGE\}"/)
+    expect(src).toMatch(/send_telegram_message\s+"\$TOKEN"\s+"\$CHAT_ID"\s+"\$MESSAGE"/)
     expect(src).not.toMatch(/(^|\s)-d\s+"text=/m)
+    const lib = readFileSync(join(SCRIPTS_LIB_DIR, 'send-telegram.sh'), 'utf8')
+    expect(lib).toMatch(/--data-urlencode\s+"text=\$\{text\}"/)
+    expect(lib).not.toMatch(/(^|\s)-d\s+"text=/m)
   })
 })
 
