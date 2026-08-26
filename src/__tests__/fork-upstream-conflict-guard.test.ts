@@ -57,6 +57,17 @@ const GUARDED_FILES = ['web/lang/hu.js', 'web/lang/en.js', 'web/style.css'] as c
 // it already knew about: three files conflicted for weeks with nothing watching them, and the only
 // reason anyone noticed was a human running the dry-run by hand.
 const ACKNOWLEDGED_CONFLICTS = {
+  // New conflict (measured 2026-08-26, card b4a7c9c3-adjacent unblock, not caused by that card's
+  // own diff): upstream added two new exports to this file -- OPEN_QUESTION_DEFERRAL_CAP_MS and
+  // deferralOverride() -- at a point where the fork side of the hunk is EMPTY (the fork's
+  // restartBlockedBy() has no successor in this file yet). This is the SAME open-question-deferral
+  // feature the src/web/auto-restart-runner.ts entry below already documents as "adopted, purely
+  // additive, no fork-side conflict" (re-read 2026-08-26) -- that entry's decision already covers
+  // this file's content, it just never got its own key here because src/auto-restart.ts itself had
+  // not started conflicting yet. Resolution: adopt both new exports verbatim, nothing to merge
+  // against on the fork side.
+  'src/auto-restart.ts':
+    'adopt upstream OPEN_QUESTION_DEFERRAL_CAP_MS + deferralOverride() verbatim -- fork side of the hunk is empty, and this is the same open-question-deferral feature already adopted per the src/web/auto-restart-runner.ts entry',
   // BEHAVIOUR-CRITICAL. The fork removed "upgrade to increase your usage limit" from the
   // usage-limit regex (2026-06-30: it matched Claude Code's /upgrade STARTUP HINT, so fresh agents
   // read as limited and got needlessly downgraded). Upstream still has that token AND added a real
@@ -348,7 +359,7 @@ const ACKNOWLEDGED_CONFLICTS = {
   // fork's sweep has NO overlap protection of any kind, so this is something upstream has and the
   // fork lacks, not a duplicate. The fork's sweep BODY is unchanged inside upstream's try/finally.
   'src/web/auto-restart-runner.ts':
-    "adopt upstream tickRunning re-entrancy guard (the fork sweep has no overlap protection and its restart path is equally async), keeping the fork sweep body verbatim inside the try/finally. Re-read 2026-08-26: upstream also added open-question deferral (restartBlockedBy in src/auto-restart.ts + hasOpenInboundQuestion check) so a due restart never swallows a pending owner exchange -- adopted, purely additive, no fork-side conflict.",
+    "adopt upstream tickRunning re-entrancy guard (the fork sweep has no overlap protection and its restart path is equally async), keeping the fork sweep body verbatim inside the try/finally. Re-read 2026-08-26: upstream also added open-question deferral (restartBlockedBy in src/auto-restart.ts + hasOpenInboundQuestion check) so a due restart never swallows a pending owner exchange -- adopted, purely additive, no fork-side conflict. Re-read again 2026-08-26 (unblocking a backend2 landing): upstream now wires the ACTUAL deferralOverride()/OPEN_QUESTION_DEFERRAL_CAP_MS call (openQuestionDeferrals streak map, cap-override logging) on top of the restartBlockedBy check already acknowledged above -- still purely additive on top of the fork's existing tickRunning guard and sweep body, nothing removed or contradicted on the fork side. Not yet applied to live develop (same deferred-pending-reconciliation character as the other large runner files in this map); resolution unchanged, blob bumped to record the re-read.",
   // Three hunks, and NOT all one direction -- the reason this entry is per-hunk rather than a side.
   // (1)+(2) The fork's runner is a superset: a weekly-tier axis with durable-baseline bookkeeping
   // (recordBaselineIfAbsent/clearBaseline, "cheaper tier wins" so a park/start cycle cannot undo a
@@ -448,8 +459,15 @@ const ACKNOWLEDGED_CONFLICTS = {
   // compatible fixes for overlapping false-positive classes -- reconciling them (ideally keep
   // both: mask technical tokens AND respect sentence-start capitalization) needs its own review,
   // not a rushed graft inside an unrelated blocking-fix. Left as-is; card opened to track it.
+  // Re-read 2026-08-26 (unblocking a backend2 landing, unrelated to that card's own diff): upstream
+  // moved again, but ONLY inside accent_check_tokens -- a digit-hyphen-suffix carve-out ("429-es",
+  // "403-as", "2026-os" no longer misread as a missing-accent word, since HYPHEN_WORD only excluded
+  // letter-hyphen-letter forms before). The fork does not call accent_check_tokens at all (it still
+  // runs its own WORD/TECHNICAL/strip_technical tokenizer, unreconciled per the paragraph above), so
+  // this hunk lands entirely inside code the fork's own accent check never executes. Does not change
+  // the resolution -- still deferred to the same follow-up card, blob bumped to record the re-read.
   'scripts/hooks/outgoing-copy-gate.py':
-    "keep the fork file wholesale -- it already carries upstream's is_send_invocation() verbatim (adopted for card 3ec64c96) plus the fork's own separate load_bad_name() sentinel fix upstream lacks; RESENDGATE826 (2026-08-26) re-adopted into is_send_invocation only, selftest 13/13 green; the fork's separate accent-tokenizer (WORD/TECHNICAL/strip_technical) still diverges from upstream's newer HYPHEN_WORD/accent_check_tokens and is NOT reconciled here -- see the block comment above and the follow-up card",
+    "keep the fork file wholesale -- it already carries upstream's is_send_invocation() verbatim (adopted for card 3ec64c96) plus the fork's own separate load_bad_name() sentinel fix upstream lacks; RESENDGATE826 (2026-08-26) re-adopted into is_send_invocation only, selftest 13/13 green; the fork's separate accent-tokenizer (WORD/TECHNICAL/strip_technical) still diverges from upstream's newer HYPHEN_WORD/accent_check_tokens and is NOT reconciled here -- see the block comment above and the follow-up card. Re-read 2026-08-26: upstream's newest hunk (digit-hyphen-suffix carve-out, e.g. '429-es') is inside accent_check_tokens, which the fork never calls -- no change to the resolution.",
   // Fork changed the message-body curl call to --data-urlencode (card b43d6dfd security fix --
   // an `&` in the message must not start a new form param / override parse_mode). Upstream
   // independently made delivery HONEST (NOTIFYVAK826): capture the response, require both a
@@ -602,6 +620,7 @@ const ACKNOWLEDGED_CONFLICTS = {
 // Typed as Record<keyof typeof ACKNOWLEDGED_CONFLICTS, string>: a rule without a recorded blob, or
 // a blob without a rule, is a COMPILE error rather than a silent gap between two lists.
 const ACKNOWLEDGED_UPSTREAM_BLOBS: Readonly<Record<keyof typeof ACKNOWLEDGED_CONFLICTS, string>> = {
+  'src/auto-restart.ts': 'a1f2d75ed063a78eb5be23acb2c4138ca14fff19',
   'src/model-fallback.ts': 'd1ed3c18ba86badd1f72cf6fb28d1f3193974012',
   'src/__tests__/model-fallback.test.ts': '38b6e76e9f5184a9ade636a057b79c4e522f1e3b',
   'src/web/update-checker.ts': '24e46f990c7b0a5c8fa065d12ba1ee592b547691',
@@ -623,14 +642,14 @@ const ACKNOWLEDGED_UPSTREAM_BLOBS: Readonly<Record<keyof typeof ACKNOWLEDGED_CON
   'src/web/schedule-runner.ts': '9736ea6737757cc0155671dca3d9d2874b330885',
   'vitest.config.ts': '62d4ac7606cd719d40e07fc0d82c7f777dda0b30',
   'src/web/agent-process.ts': 'bb28237a19c881551c8415ebeecd58fcaac01923',
-  'src/web/auto-restart-runner.ts': 'bc738bbbdd1bc4ed335029d856cc2089c8029a39',
+  'src/web/auto-restart-runner.ts': '044dde0ad94f5a57ff8e611656f288b25fecdaff',
   'src/web/model-fallback-runner.ts': '681fcaefd6588fc2f6f3db880238b8288d1dcd15',
   'src/web/routes/skills.ts': '34c1e440bd5009e79546d686ec9fbc481ba0af7e',
   'src/web/routes/agents-skills.ts': '23a380b7d40b5cd70885d9205c6fb4cc1fe9dbfe',
   'scripts/email-send-gate.mjs': 'abaaedc4d0e9f76fa159307659473ffaac306411',
   'src/__tests__/hook-command-quoting.test.ts': '1048b1988e6c8554754900c62570d76d455f1057',
   'src/__tests__/installer-start-and-fallback.test.ts': '9017ce4fcfe808b73fdcd1389ebf1c9eaf374f7e',
-  'scripts/hooks/outgoing-copy-gate.py': '35fcabdb8d09eb491c16599f7c7a57a8f3723eac',
+  'scripts/hooks/outgoing-copy-gate.py': '4deba6bb7214c3a619f34541e915eae5ea91a019',
   'scripts/notify.sh': '5477e66ecad5cca6425a535de0d16fce0e3eca28',
   'scripts/disk-space-guard.sh': 'd3f693c01d607952a8165cc4d8106024008f22e4',
   'scripts/unit-fail-notify.sh': 'ada00f95a7b3665feac1305bb5287698b81839de',
