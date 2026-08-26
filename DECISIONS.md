@@ -3796,3 +3796,28 @@ a próbálkozási SORREND célozta rosszul.
 
 **Hivatkozás:** kártya 3e094b1e (parent), 386d4613 (a refaktor-alfeladat), f8c72a5a (a mérés-alfeladat,
 ahol a talalat szuletett).
+
+## 2026-08-26 -- 3e094b1e/896dfffc -- Ollama-down guard: azonnali Telegram-riasztás kiesésnél
+
+**Mit döntöttünk:** a mai kiesés (00:07-04:52 CEST) órákig ismeretlen maradt, mert az `ollama_up`
+állapot kizárólag a dashboard-csempén látszott -- senki nem lett figyelmeztetve. Új, önálló
+systemd --user timer (`scripts/ollama-down-guard.sh`, 5 percenként), a meglévő
+`scripts/disk-space-guard.sh` mintáját követve pontosan: DIREKT Bot API riasztás (nem függ az
+in-session MCP plugintól), csak MEGERŐSÍTETT kézbesítés után íródik ki a cooldown-bélyeg (1 óránként
+legfeljebb egy riasztás, amíg le van állva), és a felépülés törli a bélyeget (a következő kiesés
+azonnal újra riaszt, nem a régi cooldown-ablakon belül marad csendben). Az `ollama_up()` a
+`store/local-llm.sh` saját függvényét tükrözi (ugyanaz a `curl .../api/tags` ellenőrzés), nem
+`source`-olva onnan, mert az a szkript nem source-biztos (egy valódi generálást futtatna le).
+
+**Ki döntött:** backend (kártya 3e094b1e, alfeladat 896dfffc, Peti sürgős kérése 2026-08-24, item 6).
+
+**Aktiválás:** `scripts/install-guard-timers.sh`-be bekötve (`ollama-down-guard`, a token-health-guard
+minta szerint) -- az ÉLES aktiváláshoz a landolás UTÁN az élő telepítésből (nem a worktree-ből)
+újra kell futtatni, ugyanúgy mint a d7a28a0a kártya `--cgroup` flagjénél (a git pull önmagában nem
+frissíti a systemd unit-fájlokat).
+
+**Tesztek:** 10 új (`scripts/__tests__/ollama-down-guard.test.sh`, ugyanaz a bash-natív minta mint
+`disk-space-guard.test.sh` -- ez a szkript-osztály nincs a vitest fleet-test.sh alatt, kézzel futtatva
+lett ellenőrizve, a meglévő testvér-guardok konvenciója szerint).
+
+**Hivatkozás:** kártya 3e094b1e (parent), 896dfffc (ez az alfeladat).
