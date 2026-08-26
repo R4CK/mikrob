@@ -34,6 +34,8 @@ function stageTree(scriptNames: string[]): { root: string; bin: string } {
   mkdirSync(join(stage, 'store'), { recursive: true })
   for (const s of scriptNames) cpSync(join(ROOT, 'scripts', s), join(scripts, s))
   cpSync(join(ROOT, 'scripts', 'lib', 'send-telegram.sh'), join(scripts, 'lib', 'send-telegram.sh'))
+  // limit-monitor's dedupe hash comes from the shared helper (MD5SUMHIANY826).
+  cpSync(join(ROOT, 'scripts', 'lib', 'content-hash.sh'), join(scripts, 'lib', 'content-hash.sh'))
   // Fork-only dependency (card 115c21e7): limit-monitor.sh sources the canonical
   // usage-limit regex from $STORE/session-limit-pattern.sh instead of inlining its
   // own pattern. Stage it alongside the other store files so the staged tree
