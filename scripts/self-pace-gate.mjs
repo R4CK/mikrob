@@ -408,7 +408,23 @@ const SCHEDULER_RX = new RegExp(
 // schedule-API read exemptions): crontab -l, launchctl list/print, atq.
 // Quote-tolerant for the same reason the write guards are (card 4fa31f31): tightening the write
 // side alone would turn a quoted `launchctl "list"` -- a pure read -- into a false deny.
-const SCHEDULER_READ_RX = new RegExp(String.raw`(^|${SCHED_BOUNDARY}\s*)${SCHED_PREFIX}(crontab["']*\s+["']*-l\b|launchctl["']*\s+["']*(?:list|print|dumpstate|blame|examine)\b|atq\b)`, 'i')
+//
+// CRONTAB_NO_WRITE_FLAG_FOLLOWS (card f35b8d92, Cybersec HIGH): `-l\b` alone is a PREFIX match --
+// it says nothing about what follows. crontab(1) (cronie source, Cybersec's own read of it) parses
+// its flags with getopt in a chain where every flag OVERWRITES the same mode variable and the LAST
+// one wins -- so `crontab -l -r` (or the combined-cluster form `-lr`) genuinely DELETES the
+// crontab, not lists it, and "starts with -l" is not "is a read". Requires no `-r`/`-e`/`-i`
+// (remove/edit/interactive-remove -- crontab's own write-shaped flags, alone or combined in a
+// getopt cluster like `-er`) anywhere before the next real command boundary (`;`/`&`/`|`/backtick/
+// newline) -- bounded there so this cannot reach past the CURRENT invocation into an unrelated
+// later command on the same line (`crontab -l; rm -rf /` must still read "-l" as a real, unrelated
+// read, not treat "rm -rf /" as if it were more crontab flags). Scoped to crontab only: launchctl's
+// read subcommands (list/print/...) are a single POSITIONAL argv[1], not a getopt flag chain --
+// `launchctl list load` passes "load" as an ARGUMENT to `list`, it does not invoke `load` as a
+// second operation -- and `atq` takes no mode-flipping flag at all, so neither shares this
+// mechanism.
+const CRONTAB_NO_WRITE_FLAG_FOLLOWS = String.raw`(?![^;&|\`\n]*-[a-z]*[rei][a-z]*\b)`
+const SCHEDULER_READ_RX = new RegExp(String.raw`(^|${SCHED_BOUNDARY}\s*)${SCHED_PREFIX}(crontab["']*\s+["']*-l\b${CRONTAB_NO_WRITE_FLAG_FOLLOWS}|launchctl["']*\s+["']*(?:list|print|dumpstate|blame|examine)\b|atq\b)`, 'i')
 
 // --- COMMAND-WORD MODEL (card 4f32f1f9) -------------------------------------------------------
 //
@@ -452,7 +468,7 @@ const SCHEDULER_CMDWORD_RX = new RegExp(
 // The read exemption needs no quote tolerance here: the expansion approximation already removed
 // the quotes this same text used to carry.
 const SCHEDULER_CMDWORD_READ_RX = new RegExp(
-  String.raw`^\s*${SCHED_PREFIX}(crontab\s+-l\b|launchctl\s+(?:list|print|dumpstate|blame|examine)\b|atq\b)`,
+  String.raw`^\s*${SCHED_PREFIX}(crontab\s+-l\b${CRONTAB_NO_WRITE_FLAG_FOLLOWS}|launchctl\s+(?:list|print|dumpstate|blame|examine)\b|atq\b)`,
   'i',
 )
 
@@ -544,7 +560,7 @@ const UNANCHORED_SCHEDULER_RX = new RegExp(
   'i',
 )
 const UNANCHORED_SCHEDULER_READ_RX = new RegExp(
-  String.raw`crontab["']*\s+["']*-l\b|launchctl["']*\s+["']*(?:list|print|dumpstate|blame|examine)\b|atq\b`,
+  String.raw`crontab["']*\s+["']*-l\b${CRONTAB_NO_WRITE_FLAG_FOLLOWS}|launchctl["']*\s+["']*(?:list|print|dumpstate|blame|examine)\b|atq\b`,
   'i',
 )
 // Same pattern, global: used to REMOVE the read forms from a line before asking whether anything
