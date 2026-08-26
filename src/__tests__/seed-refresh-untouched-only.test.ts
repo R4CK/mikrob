@@ -324,7 +324,7 @@ describe('seed_copy_try_merge: a clean 3-way merge reaches a fix a whole-file ha
       // back into the seed.
       const operatorCopy = f.v1.replace(/\n$/, '') + '\n<!-- kesz-jelzes-marker -->\n'
       writeFileSync(join(dir, 'SKILL.md'), operatorCopy)
-      const r = runRefresh(f.install, f.home)
+      runRefresh(f.install, f.home)
       const result = readFileSync(join(dir, 'SKILL.md'), 'utf-8')
       expect(result).toContain('- step 2.5 (dependency_blocked check)')
       expect(result).toContain('<!-- kesz-jelzes-marker -->')
