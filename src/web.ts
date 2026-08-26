@@ -30,6 +30,7 @@ import { gpuInfo, isGpuLockHeld } from './web/routes/local-llm.js'
 import { getDb } from './db.js'
 import { startStuckInputWatcher } from './web/stuck-input-watcher.js'
 import { startInboxNudgeWatcher } from './web/inbox-nudge-watcher.js'
+import { startSelfAdvanceClearWatcher } from './web/self-advance-clear-watcher.js'
 import { startStuckToolCallWatcher } from './web/stuck-tool-call-watcher.js'
 import { startReauthHealer } from './web/reauth-healer.js'
 import { startAutoRestartRunner } from './web/auto-restart-runner.js'
@@ -441,6 +442,9 @@ export function startWebServer(port = 3420): http.Server {
   const inboxNudgeInterval = webOnly ? undefined : startInboxNudgeWatcher()
   if (!webOnly) logger.info('Inbox nudge watcher started (20s poll, 55s offset)')
 
+  const selfAdvanceClearInterval = webOnly ? undefined : startSelfAdvanceClearWatcher()
+  if (!webOnly) logger.info('Self-advance clear watcher started (20s poll)')
+
   const reauthHealerInterval = webOnly ? undefined : startReauthHealer()
   if (!webOnly && reauthHealerInterval) logger.info('Reauth healer started (3min poll, 90s offset)')
 
@@ -628,6 +632,7 @@ export function startWebServer(port = 3420): http.Server {
     clearInterval(stuckInputInterval)
     clearInterval(stuckToolCallInterval)
     if (inboxNudgeInterval) clearInterval(inboxNudgeInterval)
+    if (selfAdvanceClearInterval) clearInterval(selfAdvanceClearInterval)
     if (reauthHealerInterval) clearInterval(reauthHealerInterval)
     clearInterval(autoRestartInterval)
     clearInterval(modelFallbackInterval)

@@ -87,3 +87,14 @@ export function isSelfAdvanceMove(
   const b = (actor ?? '').trim().toLowerCase()
   return a !== '' && b !== '' && a === b
 }
+
+/**
+ * True when a self-advance move to `newCardId` is a genuine card SWITCH for this actor -- it
+ * previously moved a DIFFERENT card to in_progress (`priorCardId`), not this same one reopened
+ * after a gate FAIL (card 5003f37e, the self-advance half of 900178fa). `priorCardId` is null for a
+ * first-ever pickup (never a switch). The caller supplies `priorCardId` (db.priorInProgressCardForActor)
+ * so this stays pure and unit-testable without a database.
+ */
+export function isGenuineSelfAdvanceSwitch(priorCardId: string | null, newCardId: string): boolean {
+  return priorCardId !== null && priorCardId !== newCardId
+}

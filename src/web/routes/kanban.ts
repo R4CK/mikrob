@@ -16,6 +16,7 @@ import {
   addKanbanDependency, removeKanbanDependency,
   getKanbanPredecessors, getKanbanSuccessors, dependencyBlockers,
   getUnmetPredecessorsForAllCards, getUnmetKanbanPredecessors,
+  priorInProgressCardForActor, setPendingSelfAdvanceClear,
 } from '../../db.js'
 import { isForceActor } from '../../kanban-force-actors.js'
 import { normalizeKanbanRefs } from '../kanban-ref-normalize.js'
@@ -90,7 +91,7 @@ function newDevStopWouldBlock(id: string, nextStatus: unknown, force: boolean, a
 }
 const NEW_DEV_STOP_MESSAGE =
   'Heti "új fejlesztés leáll" küszöb átlépve: egy planned kártya nem mehet in_progress-be VAGY egyenesen waiting-be sem (új fejlesztés indítása) a heti resetig. In-flight és gate-munka továbbra is mehet (waiting -> in_progress); tudatos felülíráshoz MikroB force: true-val nyithatja meg.'
-import { resolveKanbanDispatchTarget, isSelfAdvanceMove } from '../../kanban-dispatch.js'
+import { resolveKanbanDispatchTarget, isSelfAdvanceMove, isGenuineSelfAdvanceSwitch } from '../../kanban-dispatch.js'
 import { generateBreakdown } from '../llm-breakdown.js'
 import { logger } from '../../logger.js'
 import { readBody, json, jsonMaybeGzip } from '../http-helpers.js'
@@ -168,6 +169,15 @@ async function fireKanbanDispatch(id: string, actor?: string | null): Promise<vo
     // auto-dispatch fires either) and send nothing. A missing/other actor still dispatches normally.
     if (isSelfAdvanceMove(card.assignee, actor)) {
       markKanbanCardDispatched(id)
+      // Card 5003f37e: the dispatch echo above is correctly suppressed, but that must not also
+      // suppress /clear-before-switch -- self-advance needs it too, just delivered differently (see
+      // the agent_pending_clear schema comment in db.ts for why this only RECORDS the debt here
+      // instead of sending /clear synchronously).
+      const prior = priorInProgressCardForActor(actor as string)
+      if (isGenuineSelfAdvanceSwitch(prior, id)) {
+        setPendingSelfAdvanceClear(actor as string, id, Date.now())
+        logger.info({ id, actor, prior }, 'Kanban self-advance: genuine card switch, /clear queued for next idle window')
+      }
       logger.info({ id, actor, assignee: card.assignee }, 'Kanban self-advance: dispatch echo suppressed')
       return
     }
