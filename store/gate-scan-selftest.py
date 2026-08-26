@@ -11,7 +11,7 @@ import os
 import sys
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
-from gate_scan_lib import declared_gate_excludes_me, verdict_body  # noqa: E402
+from gate_scan_lib import PASS_RE, FAIL_RE, declared_gate_excludes_me, verdict_body  # noqa: E402
 
 FAILS = []
 
@@ -103,6 +103,33 @@ check('Gate: continued in PROSE on the same line (lesson 77fd0f07)',
       declared_gate_excludes_me('... hosszu szoveg vege. Gate: QA.', 'cybersec'), True)
 check('case-insensitive gate name',
       declared_gate_excludes_me('Gate: qa + CYBERSEC', 'cybersec'), False)
+
+# ------------------------------------------------------------- PASS_RE/FAIL_RE vocabulary (171422d2)
+# The 62-board-wide measured synonym shapes (2026-08-24), plus the base forms both scanners already
+# recognized, kept here so a future refactor cannot silently narrow the vocabulary back down.
+check('base form: QA PASS', bool(PASS_RE.match('QA PASS -- everything green')), True)
+check('base form: QA2 PASS', bool(PASS_RE.match('QA2 PASS')), True)
+check('base form: CYBERSEC GO', bool(PASS_RE.match('CYBERSEC GO')), True)
+check('base form: CYBERED GO', bool(PASS_RE.match('CYBERED GO')), True)
+check('base form: CYBERED FULL-CARD GO', bool(PASS_RE.match('CYBERED FULL-CARD GO')), True)
+check('base form: QA FAIL', bool(FAIL_RE.match('QA FAIL')), True)
+check('base form: CYBERSEC NO-GO', bool(FAIL_RE.match('CYBERSEC NO-GO')), True)
+check('base form: CYBERED NO-GO', bool(FAIL_RE.match('CYBERED NO-GO')), True)
+check('measured synonym: QA GATE: PASS (38 board-wide)', bool(PASS_RE.match('QA GATE: PASS')), True)
+check('measured synonym: QA2 GATE: PASS', bool(PASS_RE.match('QA2 GATE: PASS')), True)
+check('measured synonym: QA VERDICT: PASS (21 board-wide)', bool(PASS_RE.match('QA VERDICT: PASS')), True)
+check('measured synonym: CYBERSEC GATE: GO (3 board-wide)', bool(PASS_RE.match('CYBERSEC GATE: GO')), True)
+check('measured synonym, FAIL side: QA GATE: FAIL', bool(FAIL_RE.match('QA GATE: FAIL')), True)
+check('measured synonym, FAIL side: QA VERDICT: FAIL', bool(FAIL_RE.match('QA VERDICT: FAIL')), True)
+check('measured synonym, FAIL side: CYBERSEC GATE: NO-GO', bool(FAIL_RE.match('CYBERSEC GATE: NO-GO')), True)
+check('CONTROL: an unmeasured CYBERED GATE: GO form is NOT added speculatively',
+      bool(PASS_RE.match('CYBERED GATE: GO')), False)
+check('CONTROL: PASS_RE does not also match a FAIL comment',
+      bool(PASS_RE.match('QA GATE: FAIL')), False)
+check('CONTROL: FAIL_RE does not also match a PASS comment',
+      bool(FAIL_RE.match('QA VERDICT: PASS')), False)
+check('CONTROL: prose mentioning GATE/VERDICT without the verdict word is not a match',
+      bool(PASS_RE.match('QA GATE: still running, no verdict yet')), False)
 
 print()
 if FAILS:
