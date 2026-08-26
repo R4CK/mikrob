@@ -68,6 +68,8 @@ sync_live_install() {
 # precondition and the header-count check cannot drift between the two copies.
 # shellcheck source=./decisions-append-union.sh
 . "$(dirname "$0")/decisions-append-union.sh"
+# shellcheck source=./bump-fork-version.sh
+. "$(dirname "$0")/bump-fork-version.sh"
 
 if [ "${1:-}" = "--selftest" ]; then
   fail=0; n=0
@@ -165,6 +167,29 @@ land_one() {
     say "$agent: seam: $(echo "$overlap" | wc -l) shared file(s) checked in both directions, clean"
   else
     say "$agent: seam: no file touched by both sides"
+  fi
+
+  # Fork-own version bump (DECISIONS.md 2026-08-20/25, automated 2026-08-26 per Peti request):
+  # every fork-own landing bumps package.json's +mikrob.N build-metadata, keeping package-lock.json's
+  # own version fields in sync too. Skipped on --dry-run (nothing gets pushed, so nothing to bump).
+  # NON-FATAL by construction, same as the blast-radius/graphify steps further down this function:
+  # this script's job is landing CODE safely, and a version-metadata hiccup must never be the reason
+  # a real fork commit fails to land. On failure the merge lands with its N unbumped -- annoying, not
+  # dangerous -- and the next successful landing's fresh re-read simply bumps from whatever N is
+  # actually on disk.
+  if [ "$dry" != "1" ]; then
+    if new_ver="$(bump_fork_version "$wt" 2>&1)"; then
+      git -C "$wt" add package.json package-lock.json 2>/dev/null
+      if git -C "$wt" -c user.email=mikrob@marveen.local -c user.name=mikrob \
+            commit -q -m "chore(version): bump to $new_ver (marveen-land, $agent)"; then
+        merge_sha="$(git -C "$wt" rev-parse HEAD)"
+        say "$agent: version bumped to $new_ver"
+      else
+        say "$agent: version bump produced no changes to commit -- left as-is"
+      fi
+    else
+      say "$agent: version bump skipped ($new_ver) -- landing continues unbumped"
+    fi
   fi
 
   # shellcheck disable=SC2086 -- TEST_CMD is an intentional word-split command prefix (script + flags)
