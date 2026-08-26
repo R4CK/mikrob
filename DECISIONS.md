@@ -4287,3 +4287,39 @@ self-pace-gate + governance-gates tesztcsaládon. tsc tiszta.
 **Ki döntött:** backend (kártya f35b8d92, Cybersec saját lelete alapján).
 **Hivatkozás:** kártya f35b8d92, előzmény: kártya 40704cb1/230e9884 (a gate-kör, amiben a lelet
 született).
+
+## 2026-08-27 01:43 -- kártya 5b91c7de: outgoing-copy-gate.py tokenizer-egyesítés MÁR MEGTÖRTÉNT (dedup/stale-close)
+
+**Mit találtam.** A kártya azt írta elő, hogy a fork saját (`strip_technical`/`TECHNICAL` --
+URL/email/kód-span/snake_case/fájlnév-domain/útvonal maszkolása) és az upstream újabb
+(`HYPHEN_WORD`/`_at_sentence_start`/`accent_check_tokens` -- kötőjeles idegen-szó-alak +
+mondatkezdő-nagybetű felismerés) ekezet-tokenizálóját kell egyesíteni, mert a "jelenlegi allapot
+(12fcda43 commit)" állítólag csak a fork sajátját tartotta meg. ELLENŐRIZTEM a tényleges,
+jelenlegi kódot (nem a kártya prózáját fogadtam el): `scripts/hooks/outgoing-copy-gate.py`-ban
+MINDKÉT tokenizáló jelen van, ÉS MÁR ÖSSZEKAPCSOLVA az `audit()` függvényben (`prose =
+strip_technical(plain)`, majd `tok_pos = accent_check_tokens(prose)` -- a fork maszkolása fut
+ELŐSZÖR, az upstream-eredetű tokenizáló a MÁR-MASZKOLT szövegen).
+
+**Mikor és hogyan történt.** `git log` szerint a `d9bb515b` commit ("tokenize prose vs identifier
+-- whole hyphenated forms, skip mid-sentence capitals, context in findings (GATEKOTOJEL817,
+GATEHYPH816)") vezette be ezt az egyesítést, MÉG A KÁRTYA LÉTREHOZÁSA ELŐTT vagy azzal egyidőben --
+ellenőrizve: `d9bb515b` a jelenlegi `origin/develop` HEAD (`03208f33`) őse
+(`git merge-base --is-ancestor` PASS). Utána a `8e8e00e1`/`4269543a` commitok (round 10/11,
+RESENDGATE826 + DIGIT-HYPHEN SUFFIX) TOVÁBB KEMÉNYÍTETTÉK ugyanezt a MÁR EGYESÍTETT
+implementációt, nem egy külön, egyesítetlen ágon.
+
+**Ellenőrizve, nem csak feltételezve.** `outgoing-copy-gate.selftest.py`: 23/23 zöld.
+`outgoing-copy-gate-tokens.test.ts` + `outgoing-copy-gate-scope.test.ts`: 29/29 zöld. Mindkettő a
+JELENLEGI, MÁR EGYESÍTETT kódot futtatja, nem egy hipotetikus régi állapotot.
+
+**Döntés: NEM írok új kódot erre a kártyára.** A kártya saját premisze ("nincs osszeegyeztetve")
+STALE volt a felvétel pillanatában is, vagy a felvétel és a dispatch közt landolt a megoldás egy
+másik integrációs munkával (F5 cutover / fbb41b41 round 10-11) egyidőben -- akárhogy is, a leírt
+probléma MA nem áll fenn. Új kódot írni ide FELESLEGES MUNKA lenne, és KOCKÁZATOS is: egy már
+négyszer (round 7/8/10/11) élesben tesztelt, gate-elt, security-kritikus fájl "javítása" egy MÁR
+NEM létező hiányosságra csak új regressziós kockázatot vinne be haszon nélkül.
+
+**Ki döntött:** backend (kártya 5b91c7de, a jelenlegi kód közvetlen ellenőrzése alapján, nem a
+kártya prózája alapján).
+**Hivatkozás:** kártya 5b91c7de, a tényleges egyesítést hozó kártya/commit: d9bb515b (GATEKOTOJEL817
++ GATEHYPH816), további keményítés: fbb36b41 round 10 (8e8e00e1) + round 11 (4269543a).
