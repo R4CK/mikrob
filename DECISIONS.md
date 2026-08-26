@@ -3357,3 +3357,38 @@ a `seed-fleet-agents/qa/CLAUDE.md` core-skill listájában, fleet-test-re nincs 
 **Ki döntött:** backend (kártya `4ba71429`, plan-grilling verdikt a kártya kommentjében, MikroB eredeti dispatch alapján, önjáró self-advance, 2 napnál régebbi kártya).
 
 **Hivatkozás:** kártya `4ba71429`. Kapcsolódó tanulság: [[a-seed-refresh-only-heals-byte-identical-copies]] (memória).
+
+## 2026-08-26 -- 2597e3b7 -- Load-guard hiszterezis-allapotgep + felvetel-fek bekotese (load-brake fazis, Feladat 1)
+
+**Dontes.** A load-brake fazis (19f3bbb5, Peti altal jovahagyott URGENT terv, plan-grilling verdikt
+a fazis-kartyan) Feladat 1-jenek hatralevo resze: `store/load-guard-eval.sh` (config+metrika ->
+hiszterezis-debounce-olt WATCH/SOFT/HARD/CRITICAL allapot, `store/load-guard-state.json`-ba irva) +
+`store/load-guard-check.sh` (vekony ADMIT/HOLD kapu callereknek, exit koddal). A hiszterezis
+kettiranyu: felfele ES lefele is a cel-tier sajat `sustained_seconds`-jenek (config, alap 30mp)
+kell stabilan fennallnia, mielott a megerositett allapot valtozik -- egy maganyos zajos mereses
+sosem billenti at.
+
+A `heartbeat-consolidated` (C szekcio, ELOKESZITES 5. pont + uj 2e lepes) es a `folyamatos-munka-
+orchestrator` seed egyarant bekotve: HOLD eseten a 4. lepes nem dispatchel uj planned kartyat,
+ugyanugy mint a mar letezo `newDevStopActive` (2d) mechanizmus, de kulon jelzovel a logban.
+
+**Mellekesen talalt es javitott hiba.** A Feladat 1 elozo alfeladata (5574aeb2/2d27d8a1, mar
+`done`) `store/load-guard-config.json`-t szallitott, de az sose kerult verziokezelesbe -- a blanket
+`store/*` gitignore elnyelte, nem volt ra kulon `!store/*.json` negacio. Csak ebben a worktree-ben
+letezett lemezen. Javitva ugyanebben a munkaban (`.gitignore` + a config commitolva).
+
+**Miert.** Cel: gepterheles alatt a flotta NE dobja el a mar futo munkat, hanem fokozatosan
+vegye vissza az UJ munka felvetelet -- Feladat 1 a legalacsonyabb kockazatu reteg (csak
+megfigyeles + admission-brake, semmi mar-futo folyamatot nem erint). A megerositett-allapot
+tervezes (nem egyetlen mereses) a card sajat szovege szerinti explicit kovetelmeny ("ne
+villogjon").
+
+**Konzekvencia.** Uj fajlok: `store/load-guard-eval.sh`, `store/load-guard-check.sh`,
+`src/__tests__/load-guard-eval.test.ts` (13 teszt, hiszterezis mindket iranyban + tier-specifikus
+debounce + PSI-tengely onmagaban is triggerelhet + ADMIT/HOLD kapu kulon tesztelve). 113/113 zold
+(load-guard + shell-syntax-sweep egyutt), tsc tiszta, lint-ratchet valtozatlan (231 lelet).
+
+**Ki dontott:** backend (kartya 2597e3b7, a fazis 19f3bbb5 plan-grilling verdiktje mar lefedte a
+tervezesi kockazatokat, uj plan-grilling nem volt szukseges az implementaciohoz).
+
+**Hivatkozas:** kartya 2597e3b7 (parent: ced63f7f, fazis: 19f3bbb5), elozo alfeladat 5574aeb2/2d27d8a1.
