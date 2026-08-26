@@ -3422,3 +3422,28 @@ valtozatlan.
 tervezesi kockazatokat).
 
 **Hivatkozas:** kartya edd8b398 (parent: ced63f7f, fazis: 19f3bbb5), utolso alfeladat Feladat 1-ben.
+
+## 2026-08-26 -- ec0e64b4 -- gate-dispatch-check.sh: Submitted-by override a NON_SUBMITTERS holtpont ellen
+
+**Dontes.** Uj strukturalt mezo `store/gate-dispatch-check.sh`-ban: `Submitted-by: <agent>` egy
+komment barmely (nem idezett/fence-elt) soraban a kommentet SUBMISSION-nak szamitja, MEG AKKOR IS,
+ha a tenyleges komment-szerzo NON_SUBMITTER (gate-ugynok vagy mikrob). Csak a mezo JELENLETE
+szamit, nem az ertek ellenorzese. A `_decide()`-ban a mezo-check az identitas-check UTAN (a sajat-
+maganak-nem-armozhat szabaly valtozatlan), DE a NON_SUBMITTERS-kizaras ELOTT fut -- csak MENTHET
+egy komментet, sose fojthat el egyet.
+
+**Miert.** Valos incidens, kartya 034594e6: Cybersec irta a patchet, mikrob (assignee) postolta a
+landolasi kommentet -- MINDKET lehetseges szerzo NON_SUBMITTER, tehat a regi szabaly szerint SOHA
+egyetlen komment sem szamithatott volna submissionnak azon a kartyan, orokre ADVISE-SKIP:no-review-
+n ragadva, akarmi is landolt valojaban. Cybersec sajat javaslata (msg 19692).
+
+**Konzekvencia.** 6 uj selftest eset (real-shape 034594e6 + regresszios kontroll a mezo NELKUL +
+gate-sajat-komment eset + fence/quote-vedelem ketszer + sajat-maganak-nem-armozhat kontroll).
+119/119 selftest zold (volt 113). tsc tiszta, lint-ratchet valtozatlan, store-shell-scripts-sweep
+101/101. A meglevo fleet-nudger-gate-skip-comment-scope.test.ts es kanban-gate-completeness-guard.test.ts
+is zold marad (36/36), tehat a mas fajlok integracioja erintetlen.
+
+**Ki dontott:** backend (kartya ec0e64b4, Cybersec javaslata alapjan, trivialis/jol-korulhatarolt
+fix -- plan-grilling nem volt szukseges).
+
+**Hivatkozas:** kartya ec0e64b4, forras-incidens 034594e6, korabbi rokon vedelem 02be824f/7405ca61.

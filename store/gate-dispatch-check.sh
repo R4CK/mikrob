@@ -44,6 +44,12 @@
 # guesswork for the comment that carries it. It is OPTIONAL and stays optional -- no line means the
 # old heuristics run unchanged, which is what every card written before this convention relies on.
 #
+# A SECOND declared line (card ec0e64b4) rescues the opposite failure: `Submitted-by: <agent>`,
+# present anywhere in a comment, counts that comment as a submission EVEN IF its actual author is a
+# NON_SUBMITTER (a gate identity or mikrob) -- see is_submission() below for why that identity
+# exclusion can otherwise make a card permanently un-reviewable when every comment on it happens to
+# be posted by a non-submitter identity.
+#
 # `decide` exists for a caller that must ask about MANY (card, agent) pairs at once -- the fleet
 # nudger asks 4 gate agents about every non-blocked waiting card. Going through `check` would refetch
 # the same card's comments once per agent; `decide` lets the caller fetch each card once and ask four
@@ -215,6 +221,32 @@ fence_rx = re.compile(r"(```|~~~).*?(\1|\Z)", re.S)
 # is_submission below), never `.search()` against the whole body.
 info_only_rx = re.compile(r"^(?:[-*#]+[ \t]*)?INFO-ONLY\b")
 
+# SUBMITTED-BY OVERRIDE (card ec0e64b4, Cybersec proposal msg 19692). NON_SUBMITTERS exists so a
+# gate own verdict can never look like a submission to another gate -- but that same identity
+# check makes a card permanently un-reviewable when EVERY comment on it happens to be authored by
+# a NON_SUBMITTER. Real incident, card 034594e6: Cybersec wrote the patch, but the landing comment
+# was posted by mikrob (the assignee) -- both plausible authors are NON_SUBMITTERS, so no comment
+# on that card could EVER count as a submission and it sat at ADVISE-SKIP:no-review forever, no
+# matter what actually landed.
+#
+# Fix, same shape as Gate-SHA/INFO-ONLY: a line the AUTHOR states outright beats identity-based
+# guessing. `Submitted-by: <agent>` on its own line means "this comment reports work submitted by
+# <agent>, regardless of who is typing it" -- and unlike Gate-SHA (which legitimately appears in
+# EVERY gate verdict, since a gate always names what it reviewed), a gate has no reason to ever
+# write "Submitted-by:" in its own PASS/FAIL/GO/NO-GO verdict. The mere presence of the field is
+# therefore a much stronger, deliberate signal than Gate-SHA has -- nothing accidentally produces it.
+#
+# NOT a bypass of the self-check right above (`author == agent.lower()`): that answers a different
+# question ("is the agent being ASKED the same one who just wrote this"), and a Submitted-by line
+# does not change who wrote the comment. Checked strictly AFTER that, strictly BEFORE the
+# NON_SUBMITTERS identity check, so it can only ever ADD a submission NON_SUBMITTERS would
+# otherwise have hidden -- it can never suppress one.
+#
+# Same quoting protections as Gate-SHA/REVIEW (fence-stripped, no `>`/leading-whitespace in the
+# prefix class, anchored to column 0): a gate quoting the convention while explaining it, or
+# quoting another agent comment inside its own verdict, must not manufacture a phantom override.
+submitted_by_rx = re.compile(r"^(?:[-*#]+[ \t]*)?Submitted-by:[ \t]*(\S+)", re.M | re.I)
+
 def leading_line(text):
     """The first NON-EMPTY line of `text` -- the anchor for a comment-level declaration like
     INFO-ONLY, whose meaning ("this whole comment is not a submission") only holds stated at the
@@ -290,6 +322,12 @@ def is_submission(c):
     if author == agent.lower():
         return False
     text = c.get("content") or ""
+    # SUBMITTED-BY OVERRIDE (card ec0e64b4): checked before the identity exclusion below, so it can
+    # only ever RESCUE a comment NON_SUBMITTERS would otherwise hide, never arm one on its own --
+    # its own presence is the deliberate signal, see the field definition above for why a gate
+    # verdict cannot produce this by accident the way it can a Gate-SHA line.
+    if submitted_by_rx.search(fence_rx.sub("", text)):
+        return True
     # NON_SUBMITTERS checked BEFORE any content signal (card 02be824f, Cybersec finding on
     # 7405ca61): a gate agent OWN verdict comment legitimately declares Gate-SHA lines (it is
     # naming the commits it reviewed), and the old order let that arm structured_shas() first,
@@ -842,6 +880,25 @@ print(",".join(c.get("id") or "" for c in cards if isinstance(c, dict)))
     # is supposed to have reviewed, which is what this test's OWN premise already assumed; the
     # NON_SUBMITTERS-ordering question it exists to pin is untouched by this.
     t "another gate own Gate-SHA verdict (multi-sha, newer) does not re-arm a prior verdict" "ADVISE-SKIP:already-gated" qa <<< '[{"author":"backend","created_at":100,"content":"REVIEW -- kesz\nGate-SHA: 65b047aa"},{"author":"qa","created_at":200,"content":"QA PASS\nGate-SHA: 65b047aa, 77f4e23d"},{"author":"cybersec","created_at":300,"content":"CYBERSEC GO\nGate-SHA: 65b047aa, 6ffb017d, 77f4e23d"}]'
+
+    # SUBMITTED-BY OVERRIDE (card ec0e64b4). Real shape: 034594e6, where Cybersec wrote the patch
+    # and mikrob (the assignee) posted the landing comment -- both NON_SUBMITTERS, so nothing on
+    # that card could ever count as a submission under the old rule.
+    t "034594e6 real shape: mikrob landing comment with Submitted-by counts" "ALLOW:no-verdict" cybersec <<< '[{"author":"mikrob","created_at":100,"content":"Landolva.\nSubmitted-by: cybersec\nGate-SHA: 415967c0"}]'
+    # REGRESSION CONTROL: the SAME comment WITHOUT the field must stay excluded -- proves the field
+    # is what changed the answer, not some other difference in the fixture.
+    t "...and without the field the same shape stays excluded" "ADVISE-SKIP:no-review" cybersec <<< '[{"author":"mikrob","created_at":100,"content":"Landolva.\nGate-SHA: 415967c0"}]'
+    # A gate own comment (not just mikrob) is rescued the same way -- the field does not care WHICH
+    # non-submitter identity is typing.
+    t "a gate own comment with Submitted-by also counts" "ALLOW:no-verdict" qa <<< '[{"author":"cybered","created_at":100,"content":"En irtam a patchet, backend nem tudott vele foglalkozni.\nSubmitted-by: backend"}]'
+    # QUOTING PROTECTION, same shape as Gate-SHA/REVIEW: a gate explaining or quoting the convention
+    # inside its own verdict must not manufacture a phantom override.
+    t "a fenced Submitted-by does not arm" "ADVISE-SKIP:already-gated" cybersec <<< '[{"author":"backend","created_at":100,"content":"REVIEW -- ac792b3b"},{"author":"cybersec","created_at":200,"content":"GO @ ac792b3b"},{"author":"cybered","created_at":300,"content":"Pelda:\n```\nSubmitted-by: backend\n```\nennyi volt."}]'
+    t "a markdown-quoted Submitted-by does not arm" "ADVISE-SKIP:already-gated" cybersec <<< '[{"author":"backend","created_at":100,"content":"REVIEW -- ac792b3b"},{"author":"cybersec","created_at":200,"content":"GO @ ac792b3b"},{"author":"cybered","created_at":300,"content":"Idezem:\n> Submitted-by: backend\nennyi volt."}]'
+    # The self-check still wins: an agent asking about ITSELF cannot be armed by its own comment,
+    # Submitted-by or not -- a different question than identity exclusion (who wrote it, not
+    # whether the writer's ROLE can submit), and the field does not touch it.
+    t "Submitted-by does not defeat the self-check" "ADVISE-SKIP:no-review" cybersec <<< '[{"author":"cybersec","created_at":100,"content":"Sajat magamnak irom.\nSubmitted-by: backend"}]'
 
     # SIBLING CARD IDS (card b60835e1, measured on the live board). Card ids are the same hex shape
     # as a short sha, and cards quote each other constantly -- one real E2E sweep comment named eight
