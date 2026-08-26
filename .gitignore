@@ -45,6 +45,12 @@ Ingatlan/token*
 # the pre-consolidation drift. Named, not a blanket *.json rule, so runtime state under store/
 # (quota-monitor-state.json, weekly-usage.json, ...) stays ignored.
 !store/session-limit-pattern.json
+# Canonical, hand-maintained load-guard thresholds (WATCH/SOFT/HARD/CRITICAL, card 2d27d8a1) --
+# not runtime state, same reasoning as watched-repos.json/session-limit-pattern.json above: it was
+# gitignored by the blanket store/* rule and never committed despite 2d27d8a1 being marked done,
+# so it existed only in this one worktree (found while resuming the load-brake phase 19f3bbb5,
+# card ced63f7f).
+!store/load-guard-config.json
 !store/stitch-tools/fetch-pngs.mjs
 !store/stitch-tools/package.json
 # Gate-sweep scanners are operational scripts (named, not a blanket *.py rule,
