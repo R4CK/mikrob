@@ -31,13 +31,28 @@ EXCLUDED_SESSIONS=(agent-qa agent-qa2 agent-cybersec agent-cybered)
 
 is_excluded() {
   local s="$1"
-  [[ "$s" == mikrob* ]] && return 0
+  # Both forms checked: the current MikroB session-naming convention (mikrob-channels/
+  # mikrob-worker/...) never matches the caller's "agent-*" pre-filter, so THAT branch alone
+  # is dead code today -- it protects nothing on its own, it only reads as if it does (Cybersec
+  # NO-GO, card d7a28a0a: real, reproducible today only by accident of naming, not by this
+  # check). The agent-mikrob* branch is the one that actually fires on any candidate that
+  # reaches this function, and is what keeps MikroB excluded if a future session-naming
+  # consistency pass ever puts MikroB under the same agent-<name> convention as everyone else.
+  [[ "$s" == mikrob* || "$s" == agent-mikrob* ]] && return 0
   local e
   for e in "${EXCLUDED_SESSIONS[@]}"; do
     [ "$s" = "$e" ] && return 0
   done
   return 1
 }
+
+# Test-only hook (Cybersec NO-GO, card d7a28a0a): exercises is_excluded() alone, before any real
+# tmux/kanban discovery runs, so the exclusion logic itself is covered by an automated test instead
+# of relying on the live naming convention accidentally protecting MikroB.
+if [ "${1:-}" = "--test-excluded" ]; then
+  is_excluded "${2:-}" && echo yes || echo no
+  exit 0
+fi
 
 scope_for_pid() {
   local pid="$1" f

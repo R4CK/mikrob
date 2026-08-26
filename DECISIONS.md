@@ -3753,3 +3753,15 @@ változatlanul zöld. tsc tiszta.
 tervezési kockázatokat, KOCKÁZAT #4-et ez a kártya volt hivatva lezárni).
 
 **Hivatkozás:** kártya d7a28a0a (parent: 19f3bbb5, függőség: ced63f7f/Feladat 1, már done).
+
+**2026-08-26, utólagos javítás (Cybersec NO-GO, Gate-SHA 97634d17, komment 16566):** a
+`load-guard-cgroup-target.sh` `is_excluded()`-jében a `mikrob*` glob HOLT KÓD volt: a hívó
+felfedező hurok már `[[ "$session" == agent-* ]]`-ra szűr, MikroB tényleges tmux-session-nevei
+(`mikrob-channels`/`mikrob-worker`/...) pedig SOHA nem `agent-` prefixűek, tehát ilyen bemenet
+sosem éri el az `is_excluded()`-en belüli `mikrob*` ágat -- élesben a védelem csak VÉLETLENÜL
+működött, a jelenlegi elnevezési konvenció miatt, nem a kimondott biztosíték miatt. Cybersec élőben
+reprodukálta (`agent-mikrob`/`agent-mikrob-channels` NEM lett kizárva a javítás előtt). Javítás:
+`is_excluded()` mostantól `mikrob* VAGY agent-mikrob*`-ot is néz, plusz egy `--test-excluded`
+teszt-hook + 4 új automatizált teszt (`load-guard-cgroup.test.ts`), ami pontosan ezt a bemenetet
+fedi le -- eddig a valós tmux/kanban discovery egyáltalán nem volt tesztelve (a teszt fájl saját
+fejléce is kimondta ezt), ez zárja azt a rést is. 14/14 teszt zöld, tsc tiszta.
