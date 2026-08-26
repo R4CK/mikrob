@@ -25,5 +25,9 @@
   "cgroup_throttle": {
     "enabled": true,
     "quota_pct": 25
+  },
+  "sigstop_freeze": {
+    "enabled": true,
+    "max_freeze_seconds": 90
   }
 }
