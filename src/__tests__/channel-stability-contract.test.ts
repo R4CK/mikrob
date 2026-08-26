@@ -88,6 +88,24 @@ describe('P1#4 — DISABLE_AUTOUPDATER=1 on the sub-agent spawn path', () => {
   })
 })
 
+describe('P1#5 — CLAUDE_CODE_DISABLE_FEEDBACK_SURVEY=1 on every agent spawn path (card 268b257a)', () => {
+  // The CLI's own "How is Claude doing this session?" survey can open mid-session (observed
+  // repeatedly after a 529 Overloaded API error) and blocks all inbound traffic (scheduled
+  // tasks, inter-agent messages, Telegram) until someone manually tmux-send-keys a '0' into the
+  // pane. The env var gates the survey's entire eligibility check in the CLI itself, so setting
+  // it structurally prevents the dialog from ever opening -- no watcher/dismiss script needed.
+  it('agent-process.ts spawn command disables the feedback survey', () => {
+    expect(read('src/web/agent-process.ts')).toMatch(/CLAUDE_CODE_DISABLE_FEEDBACK_SURVEY=1/)
+  })
+
+  it('is exported ahead of the claude binary invocation in the launch command', () => {
+    const src = read('src/web/agent-process.ts')
+    const cmdLine = src.split('\n').find((l) => l.includes('const cmd = `export PATH='))
+    expect(cmdLine).toBeDefined()
+    expect(cmdLine).toMatch(/feedbackSurveyEnv/)
+  })
+})
+
 describe('P2#4 — independent systemd-timer watchdog', () => {
   const sh = read('scripts/channel-watchdog.sh')
   const timer = read('scripts/systemd/channel-watchdog.timer')
