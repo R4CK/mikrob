@@ -138,8 +138,20 @@ PY
 # _decide_active below -- so the selftest exercises the REAL check, not a re-typed copy of it.
 # Missing/unreadable/malformed file -> not paused (fail-open here on purpose: a broken bookkeeping
 # file must never permanently block every nudge in the fleet, it can only ever narrow a window).
+#
+# STALENESS (Cybersec NO-GO + QA FAIL, Gate-SHA fce0df4e): membership alone is not enough -- if
+# load-guard-bookkeeping.sh itself stops running, the file keeps saying "paused" forever, and this
+# check (plus stuck-card-monitor's own copy) would silently protect a card from BOTH of the
+# fleet's loop-closing safety nets indefinitely. An entry's "last_seen" is refreshed every tick the
+# agent is STILL paused (see load-guard-bookkeeping.sh); if it has not moved in
+# LOAD_PAUSED_MAX_STALE_S, treat the agent as NOT paused -- bookkeeping is dead, this is a stale
+# corpse, not a live pause. An entry with no "last_seen" at all (an older-format file from before
+# this fix) is treated as fresh -- fail toward the PRIOR behavior on that one transition tick, not
+# toward a surprise mass un-pause the moment this code deploys.
+LOAD_PAUSED_MAX_STALE_S="${LOAD_PAUSED_MAX_STALE_S:-300}"
+
 _is_load_paused() {
-  local agent="$1"
+  local agent="$1" now="${2:-$(date +%s)}"
   [ -f "$LOAD_PAUSED" ] || return 1
   python3 -c "
 import json, sys
@@ -147,8 +159,16 @@ try:
     d = json.load(open(sys.argv[1]))
 except Exception:
     sys.exit(1)
-sys.exit(0 if sys.argv[2] in d else 1)
-" "$LOAD_PAUSED" "$agent" 2>/dev/null
+entry = d.get(sys.argv[2])
+if entry is None:
+    sys.exit(1)
+last_seen = entry.get('last_seen')
+if last_seen is None:
+    sys.exit(0)
+now = int(sys.argv[3])
+max_stale = int(sys.argv[4])
+sys.exit(0 if (now - last_seen) < max_stale else 1)
+" "$LOAD_PAUSED" "$agent" "$now" "$LOAD_PAUSED_MAX_STALE_S" 2>/dev/null
 }
 
 # Card 86dfba39: the cap check MUST win over the backoff check even when the current
@@ -305,6 +325,16 @@ PY
     _is_load_paused fullstack && { echo "FAIL load-paused: fullstack should NOT be paused"; fails=$((fails+1)); }
     rm -f "$LOAD_PAUSED"
     _is_load_paused backend && { echo "FAIL load-paused: missing file must fail-open (not paused)"; fails=$((fails+1)); }
+    # 8) Cybersec NO-GO + QA FAIL (Gate-SHA fce0df4e): last_seen staleness. A file bookkeeping is
+    # still actively rewriting (last_seen close to now) keeps the agent paused no matter how long
+    # ago the pause STARTED (since) -- a legitimate long cgroup_throttle has no forced release.
+    echo '{"backend": {"since": 1000, "mechanism": "cgroup_throttle", "last_seen": 9700}}' > "$LOAD_PAUSED"
+    _is_load_paused backend 9710 || { echo "FAIL load-paused stale: fresh last_seen (10s old) wrongly not-paused"; fails=$((fails+1)); }
+    # A file bookkeeping has STOPPED rewriting (last_seen frozen, now far past it) must fail open --
+    # this is the exact gap: an abandoned entry must stop blocking the fleet's safety nets.
+    _is_load_paused backend 10100 && { echo "FAIL load-paused stale: 400s-stale last_seen still reported paused"; fails=$((fails+1)); }
+    # Right at the boundary: exactly max_stale (300s) is no longer "< max_stale" -> not paused.
+    _is_load_paused backend 10000 && { echo "FAIL load-paused stale: exactly-300s-old last_seen still reported paused"; fails=$((fails+1)); }
     rm -rf "$tmpdir"
     if [ "$fails" -eq 0 ]; then echo "SELFTEST: PASS"; exit 0; else echo "SELFTEST: FAIL ($fails)"; exit 1; fi
     ;;

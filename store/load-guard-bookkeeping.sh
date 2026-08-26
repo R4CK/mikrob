@@ -9,6 +9,18 @@
 # _is_load_paused() and the stuck-card-monitor scheduled task both consult, so a throttled/frozen
 # agent's own in_progress card is never mistaken for stuck or nudged mid-pause.
 #
+# STALENESS (card 1128002b follow-up, Cybersec NO-GO + QA FAIL on Gate-SHA fce0df4e): if THIS
+# script stops running (the same eval.sh chain failure already NO-GO'd on card 2bfbf805, or a
+# disk-full/permission fault of its own), the file simply stops being rewritten and keeps
+# whatever it last said forever -- and both consumers checked plain membership, so a paused
+# agent from hours ago stayed permanently invisible to the fleet's two loop-closing safety nets
+# (redispatch-guard's nudge gate, stuck-card-monitor's 10-minute restart). Every entry now also
+# carries "last_seen" (refreshed on EVERY tick this agent is still paused, unlike "since" which
+# stays fixed for the whole pause) so a consumer can tell "still genuinely paused" apart from
+# "bookkeeping died, this is a stale corpse" without capping how LONG a legitimate pause may run
+# (cgroup_throttle has no forced release, unlike sigstop_freeze's 90s -- capping on "since" alone
+# would have falsely un-paused a real, ongoing throttle).
+#
 # On every PAUSE-START/RESUME transition: posts an INFO-ONLY PAUSED-LOAD / RESUMED-LOAD kanban
 # comment on the agent's in_progress card (routine -- log/comment only, never Telegram on its
 # own; INFO-ONLY so store/gate-dispatch-check.sh never mistakes it for a review, see that
@@ -82,11 +94,14 @@ for agent, mechs in mechanisms.items():
     mech_str = "+".join(mechs)
     if agent in prev_paused:
         # Continuing pause (even across a mechanism hand-off): keep the ORIGINAL since/card_id,
-        # just refresh which mechanism(s) currently hold it.
-        new_paused[agent] = {**prev_paused[agent], "mechanism": mech_str}
+        # just refresh which mechanism(s) currently hold it AND last_seen (this tick proves
+        # bookkeeping is still alive -- unlike "since", which must NOT move, "last_seen" moves
+        # every tick on purpose: it is the staleness signal that Cybersec and QA asked for on
+        # card fce0df4e, distinct from "how long has this pause been running").
+        new_paused[agent] = {**prev_paused[agent], "mechanism": mech_str, "last_seen": now}
     else:
         starts.append(agent)
-        new_paused[agent] = {"mechanism": mech_str, "since": now, "card_id": None}
+        new_paused[agent] = {"mechanism": mech_str, "since": now, "card_id": None, "last_seen": now}
 
 for agent in prev_paused:
     if agent not in mechanisms:
