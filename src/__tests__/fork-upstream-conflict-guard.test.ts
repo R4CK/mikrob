@@ -470,7 +470,17 @@ const ACKNOWLEDGED_CONFLICTS = {
   // stamp-baseline-only-on-confirmed-delivery around it.
   'scripts/disk-space-guard.sh': 'adopt upstream wholesale -- honest-send-via-lib replaces an unchecked inline curl, no fork-specific logic in this file',
   'scripts/unit-fail-notify.sh': 'adopt upstream wholesale -- honest-send-via-lib replaces an unchecked inline curl (best-effort exit-0 contract unchanged), no fork-specific logic in this file',
-  'scripts/limit-monitor.sh': "keep the fork's session-limit-pattern.sh sourcing (canonical regex, card 115c21e7) + its own extra-signal regex, graft upstream's honest-send-via-lib + stamp-dedupe-hash-only-on-confirmed-success onto the alert block",
+  // Re-read 2026-08-26 (unblocking backend2's b4a7c9c3 landing): upstream moved again
+  // (MD5SUMHIANY826). The bare `md5sum | awk` dedupe pipeline yielded an EMPTY hash on any host
+  // without md5sum (macOS, and some minimal service PATHs), and two empty hashes compare equal --
+  // so the dedupe silently swallowed every alert on those hosts. Upstream replaced it with the new
+  // shared scripts/lib/content-hash.sh (dedupe_check: exit 0 new / 1 unchanged / 2 hashing
+  // unavailable, fail-OPEN on 2 -- a duplicate alert beats a swallowed one) and stopped stamping
+  // the state file when the hash comes back empty. Resolution unchanged in kind, widened in scope:
+  // keep the fork's canonical-source sourcing + its own wider extra-signal regex, graft upstream's
+  // honest-send-via-lib + the new content-hash.sh dedupe_check (replacing the bare md5sum call) +
+  // stamp-only-on-confirmed-success-with-a-nonempty-hash onto the alert block.
+  'scripts/limit-monitor.sh': "keep the fork's session-limit-pattern.sh sourcing (canonical regex, card 115c21e7) + its own extra-signal regex, graft upstream's honest-send-via-lib + the content-hash.sh dedupe_check helper (MD5SUMHIANY826, replaces the bare md5sum call, fails open on no hashing tool) + stamp-dedupe-hash-only-on-confirmed-success-with-a-nonempty-hash onto the alert block",
   'scripts/host-restart-watchdog.sh': "keep the fork's prior-shutdown cause classifier wholesale (classify_shutdown_from_log/prev_boot_log/HOST_RESTART_WATCHDOG_LIB test hook, card RELIA-A, upstream never had it), graft upstream's HOSTWD_PROC_STAT test hook + honest-send-via-lib + stamp-btime-baseline-only-on-confirmed-delivery",
   'src/__tests__/notify-delivery-honesty.test.ts': 'adopt upstream wholesale -- trivial test-scaffolding update to stage the new scripts/lib/send-telegram.sh alongside notify.sh',
   // NOT an upstream conflict -- upstream deleted this file outright when notify.sh stopped
@@ -504,6 +514,11 @@ const ACKNOWLEDGED_CONFLICTS = {
   // unrelated to what the suite is testing). Resolution: keep upstream's file
   // verbatim plus that one staging addition; if upstream's suite grows new
   // describe blocks, add them alongside, do not drop the staging addition.
+  // Re-read 2026-08-26 (same MD5SUMHIANY826 sweep as the scripts/limit-monitor.sh entry above):
+  // upstream's stageTree() grew one more staging line, copying the new scripts/lib/content-hash.sh
+  // into the staged tree (limit-monitor's dedupe now depends on it, same `set -u` reason as the
+  // fork's own session-limit-pattern.sh line). Not a disagreement -- the resolution rule itself is
+  // unchanged: still upstream verbatim plus the fork's one extra staging line.
   'src/__tests__/send-honesty-sweep.test.ts': "upstream file verbatim + the fork's session-limit-pattern.sh/.json staging addition in stageTree() for limit-monitor.sh's fork-only dependency",
   // NOTIFYVAKSWEEP826 closing round (#1088, measured live 2026-08-26, card 367c23a9). Two
   // identical hunks (main-agent-on-shared-config guard alerts). Real merge-tree dry run confirms
@@ -585,7 +600,7 @@ const ACKNOWLEDGED_UPSTREAM_BLOBS: Readonly<Record<keyof typeof ACKNOWLEDGED_CON
   'scripts/notify.sh': '5477e66ecad5cca6425a535de0d16fce0e3eca28',
   'scripts/disk-space-guard.sh': 'd3f693c01d607952a8165cc4d8106024008f22e4',
   'scripts/unit-fail-notify.sh': 'ada00f95a7b3665feac1305bb5287698b81839de',
-  'scripts/limit-monitor.sh': '5b50c084ca4a21a35b7abae70e943a8b1483d6c3',
+  'scripts/limit-monitor.sh': '61c0d229af89a02ec949651888a5aee13b863ab2',
   'scripts/host-restart-watchdog.sh': '07948350e336ec02d58d952df016ab6b07d7d052',
   'src/__tests__/notify-delivery-honesty.test.ts': '06f96abf8c49fb07b8bbf570c8ca895fe6f23ee9',
   // Upstream deleted this file (delete/modify conflict against the fork's still-modified copy) --
@@ -599,7 +614,7 @@ const ACKNOWLEDGED_UPSTREAM_BLOBS: Readonly<Record<keyof typeof ACKNOWLEDGED_CON
   'scripts/github-pr-monitor.sh': '545425b675857bcbdab5018dbcbb42dca1722416',
   'scripts/set-bot-menu.sh': 'b45aca69c59f9b69748592df70d0a9ea77189206',
   'scripts/stuck-modal-guard.sh': '5bf19fc208ac41c204ae007189553efcb1d2790d',
-  'src/__tests__/send-honesty-sweep.test.ts': '62a398ede06fee9c694a9419f0984b681aedc0e1',
+  'src/__tests__/send-honesty-sweep.test.ts': 'afc17a2222a86a7645343f837618ebe74516dacc',
   'scripts/channels.sh': '440c177464c2bcf2d090f8958373b94e011e9f62',
   'update.sh': 'de0cad0164f4473d1cd1bd65dd019ae9465e4fe3',
 }
