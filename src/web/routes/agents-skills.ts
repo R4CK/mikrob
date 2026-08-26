@@ -10,7 +10,7 @@ import { agentDir } from '../agent-config.js'
 import { generateSkillMd } from '../agent-scaffold.js'
 import { parseMultipart } from '../multipart.js'
 import { readBody, json } from '../http-helpers.js'
-import { sanitizeAgentName, sanitizeSkillName, safeJoin, findSymlinkTaintedEntries } from '../sanitize.js'
+import { sanitizeAgentName, sanitizeSkillName, safeJoin, findSymlinkTaintedEntries, shellEscape } from '../sanitize.js'
 import type { RouteContext } from './types.js'
 
 // Marveen's skills live at the global ~/.claude/skills/ path (shared with
@@ -86,7 +86,7 @@ export async function tryHandleAgentsSkills(ctx: RouteContext): Promise<boolean>
     const before = new Set(readdirSync(skillsDir))
     try {
       writeFileSync(tmpPath, file.data)
-      const listOutput = await execShellAsync(`unzip -Z1 "${tmpPath}" 2>&1`, { timeoutMs: 5000 })
+      const listOutput = await execShellAsync(`unzip -Z1 ${shellEscape(tmpPath)} 2>&1`, { timeoutMs: 5000 })
       const entries = listOutput.split('\n').map((l) => l.trim()).filter(Boolean)
       for (const entry of entries) {
         if (entry.includes('..') || entry.startsWith('/') || /^[a-zA-Z]:[\\/]/.test(entry)) {

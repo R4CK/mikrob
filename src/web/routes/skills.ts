@@ -395,7 +395,7 @@ export async function tryHandleSkills(ctx: RouteContext): Promise<boolean> {
     const before = new Set(readdirSync(skillsDir))
     try {
       writeFileSync(tmpPath, file.data)
-      const listOutput = await execShellAsync(`unzip -Z1 "${tmpPath}" 2>&1`, { timeoutMs: 5000 })
+      const listOutput = await execShellAsync(`unzip -Z1 ${shellEscape(tmpPath)} 2>&1`, { timeoutMs: 5000 })
       const entries = listOutput.split('\n').map(l => l.trim()).filter(Boolean)
       for (const entry of entries) {
         if (entry.includes('..') || entry.startsWith('/') || /^[a-zA-Z]:[\\/]/.test(entry)) {

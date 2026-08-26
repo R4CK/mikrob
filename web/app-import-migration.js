@@ -102,7 +102,7 @@ document.getElementById('memImportOpenBtn').addEventListener('click', () => {
 
 // Close import modal
 document.getElementById('memImportClose').addEventListener('click', () => closeModal(memImportOverlay))
-memImportOverlay.addEventListener('click', (e) => { if (e.target === memImportOverlay) closeModal(memImportOverlay) })
+attachOverlayCloseGuard(memImportOverlay)
 
 // File area click -> trigger file input
 memImportFileArea.addEventListener('click', () => memImportFileInput.click())

@@ -1146,7 +1146,13 @@ export async function tryHandleAgents(ctx: RouteContext, webDir: string): Promis
             // was `execSync('sleep 2')`: a whole process spawned just to wait, blocking
             // the event loop for two seconds. A timer does the same thing for free.
             await new Promise((r) => setTimeout(r, 2000))
-            gcRestarted = (await startAgentProcess(name)).ok
+            // 'Agent is already running' here means the 60s reconcile sweep
+            // raced us in the stop..start gap and started the agent with the
+            // NEW config (written above, before the stop) -- the end state is
+            // exactly what a restart promises, only the starter differs
+            // (PR1014KONFIG821).
+            const gcStartRes = await startAgentProcess(name)
+            gcRestarted = gcStartRes.ok || gcStartRes.error === 'Agent is already running'
           }
         }
       }
@@ -1246,7 +1252,10 @@ export async function tryHandleAgents(ctx: RouteContext, webDir: string): Promis
           // event loop for two seconds (card 89d0bfde).
           await new Promise((r) => setTimeout(r, 2000))
           const startRes = await startAgentProcess(name)
-          restarted = startRes.ok
+          // Same reconcile-race as the GC branch above: an 'already running'
+          // start after our own stop means the agent IS up with the new
+          // provider config (PR1014KONFIG821).
+          restarted = startRes.ok || startRes.error === 'Agent is already running'
         }
       }
     }
@@ -1863,9 +1872,16 @@ export async function tryHandleAgents(ctx: RouteContext, webDir: string): Promis
       json(res, { error: 'Main agent lifecycle is service-managed; use /api/marveen/restart for recovery' }, 400)
       return true
     }
-    const result = await stopAgentProcess(name)
-    // Explicit stop clears intent so the monitor will not resurrect it.
+    // Explicit stop clears intent so the monitor will not resurrect it -- and
+    // it must happen BEFORE the stop yields. stopAgentProcess() now awaits ~2s
+    // while the session settles; in that window the agent is already dead but
+    // would still be listed as desired, so reconcileDesiredAgents() (every 60s,
+    // looking for exactly "desired but not running") can restart it. The stop
+    // then returns ok while the agent is back up and no longer desired -- a
+    // live session nothing will ever reap, after the operator was told it
+    // stopped. Unconditional, as before: a failed stop still clears intent.
     removeDesiredAgent(name)
+    const result = await stopAgentProcess(name)
     if (result.ok) { json(res, { ok: true }); return true }
     json(res, { error: result.error }, 400)
     return true
@@ -2204,22 +2220,38 @@ export async function tryHandleAgents(ctx: RouteContext, webDir: string): Promis
     const name = decodeURIComponent(agentMatch[1])
     const dir = agentDir(name)
     if (!existsSync(dir)) { json(res, { error: 'Agent not found' }, 404); return true }
-    // STOP THE LIVE SESSION FIRST (card 82762751, Cybered's finding). rmSync alone left the tmux
-    // session running as a GHOST: it keeps burning quota and holding any channel credential, and
-    // it is invisible everywhere in the dashboard once the directory is gone --
-    // listAgentNames() (agent-config.ts) is built from the directory, and the only OTHER
-    // enumeration (background-tasks.ts) only looks at bg-* tasks, not agent sessions. The start
-    // path also 404s afterward ('Agent not found'), so the only way back was the stop path, and
-    // only if the operator already knew the name to target.
+    // Clear the desired run-state FIRST, before anything yields (upstream's
+    // fix, adopted -- card 72f5f13b merge). Deleting an agent is at least as
+    // strong a statement of intent as stopping one, so it must clear the state
+    // the same way /stop does: without this the name outlives its directory in
+    // agents-desired.json, the reconciler keeps trying to start something that
+    // no longer exists (a permanent error-level line for a machine behaving
+    // correctly), and -- the sharper hazard -- re-creating an agent with the
+    // same name later starts it immediately, unasked.
     //
-    // Best-effort, not a hard gate: rejecting the delete with a 409 while the session is running
-    // was the other option on the table, but the existing frontend delete button (web/app.js)
-    // never checks the response status -- it always shows "deleted" regardless, so a 409 would
-    // fail the delete while telling the operator it succeeded. The comment already on this
-    // handler makes the same call for removeDesiredAgent below ("deleting is AT LEAST as strong a
-    // statement of intent as stopping"), so stop-then-delete is the consistent reading, not a new
-    // policy. A stop failure does not block the delete -- it is worth knowing about, since a
-    // failed stop immediately followed by a successful delete is exactly how the ghost forms.
+    // The ordering is load-bearing, not cosmetic. stopAgentProcess() awaits
+    // (it used to block the event loop with execSync('sleep 2')), so the ~2s it
+    // spends settling is a window in which other work runs. The agent is
+    // already dead in that window but would still be listed as desired, and
+    // channel-monitor's reconcileDesiredAgents() sweep -- which fires every 60s
+    // looking for exactly "desired but not running" -- would start it back up.
+    // The rmSync below would then delete the directory out from under a live
+    // session, producing precisely the orphan-ghost this handler exists to
+    // prevent. Clearing intent up front makes the agent invisible to the
+    // reconciler for the whole teardown -- this is why the fork's OWN prior
+    // order (stop, then rmSync, then removeDesiredAgent LAST) still had the
+    // race: clearing intent AFTER the stop's await window leaves that window
+    // open.
+    removeDesiredAgent(name)
+    // STOP THE LIVE SESSION (card 82762751, Cybered's finding), tracked and
+    // logged on failure (fork addition, kept): rmSync alone left the tmux
+    // session running as a GHOST -- it keeps burning quota and holding any
+    // channel credential, and it is invisible everywhere in the dashboard once
+    // the directory is gone. Best-effort, not a hard gate: a stop failure does
+    // not block the delete, but is worth knowing about, since a failed stop
+    // immediately followed by a successful delete is exactly how the ghost
+    // forms. stopAgentProcess() reads config from the dir (remote host, channel
+    // provider) for its orphan reap, so it must run while the dir still exists.
     let stoppedRunningAgent = false
     if (isAgentRunning(name)) {
       const stopRes = await stopAgentProcess(name)
@@ -2230,14 +2262,6 @@ export async function tryHandleAgents(ctx: RouteContext, webDir: string): Promis
     }
     rmSync(dir, { recursive: true, force: true })
     cleanupTeamReferences(name)
-    // Deleting an agent is at least as strong a statement of intent as stopping
-    // one, so it must clear the desired run-state the same way /stop does.
-    // Without this the name outlives its directory in agents-desired.json, and
-    // the reconciler keeps trying to start something that no longer exists --
-    // a permanent error-level log line for a machine that is behaving
-    // correctly. The sharper hazard is later: create an agent with the same
-    // name again and the stale entry starts it immediately, unasked.
-    removeDesiredAgent(name)
     json(res, { ok: true, stoppedRunningAgent })
     return true
   }

@@ -68,7 +68,7 @@ document.querySelectorAll('.catalog-filter-btn').forEach(btn => {
 
 // Catalog install modal
 document.getElementById('catalogInstallClose').addEventListener('click', () => closeModal(catalogInstallOverlay))
-catalogInstallOverlay.addEventListener('click', (e) => { if (e.target === catalogInstallOverlay) closeModal(catalogInstallOverlay) })
+attachOverlayCloseGuard(catalogInstallOverlay)
 
 async function loadCatalog() {
   const grid = document.getElementById('catalogGrid')
@@ -249,8 +249,8 @@ document.getElementById('addConnectorBtn').addEventListener('click', () => {
 })
 document.getElementById('connectorModalClose').addEventListener('click', () => closeModal(connectorModalOverlay))
 document.getElementById('connectorDetailClose').addEventListener('click', () => closeModal(connectorDetailOverlay))
-connectorModalOverlay.addEventListener('click', (e) => { if (e.target === connectorModalOverlay) closeModal(connectorModalOverlay) })
-connectorDetailOverlay.addEventListener('click', (e) => { if (e.target === connectorDetailOverlay) closeModal(connectorDetailOverlay) })
+attachOverlayCloseGuard(connectorModalOverlay)
+attachOverlayCloseGuard(connectorDetailOverlay)
 
 // Type toggle
 document.getElementById('connectorType').addEventListener('change', () => {

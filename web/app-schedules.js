@@ -32,7 +32,7 @@ document.getElementById('addScheduleBtn').addEventListener('click', () => {
   })
 })
 document.getElementById('scheduleModalClose').addEventListener('click', () => closeModal(scheduleModalOverlay))
-scheduleModalOverlay.addEventListener('click', (e) => { if (e.target === scheduleModalOverlay) closeModal(scheduleModalOverlay) })
+attachOverlayCloseGuard(scheduleModalOverlay)
 
 // Frequency change handler
 // Type toggle (task vs heartbeat)
@@ -471,7 +471,7 @@ function renderScheduleList(tasks) {
 
 const scheduleRunHistoryOverlay = document.getElementById('scheduleRunHistoryOverlay')
 document.getElementById('scheduleRunHistoryClose').addEventListener('click', () => closeModal(scheduleRunHistoryOverlay))
-scheduleRunHistoryOverlay.addEventListener('click', (e) => { if (e.target === scheduleRunHistoryOverlay) closeModal(scheduleRunHistoryOverlay) })
+attachOverlayCloseGuard(scheduleRunHistoryOverlay)
 
 const RUN_STATUS_LABEL = {
   fired: () => t('tasks.run_status.fired'),

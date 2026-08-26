@@ -223,7 +223,7 @@
       if (backBtn) backBtn.addEventListener('click', () => switchPage('kanban'))
       const adOverlay = document.getElementById('archivedDetailOverlay')
       document.getElementById('archivedDetailClose').addEventListener('click', () => closeModal(adOverlay))
-      adOverlay.addEventListener('click', e => { if (e.target === adOverlay) closeModal(adOverlay) })
+      attachOverlayCloseGuard(adOverlay)
     }
     populateArchivedProjects()
     doArchivedSearch()

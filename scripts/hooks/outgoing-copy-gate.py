@@ -135,10 +135,18 @@ _SAFE_METHODS = {"GET", "HEAD"}
 
 
 def _curl_resend_verdict(rest):
-    """'read' | 'send' | 'unknown' -- unknown a hivo oldalon fail-closed."""
+    """'read' | 'send' | 'unknown' -- unknown a hivo oldalon fail-closed.
+
+    Cybersec NO-GO (fbb36b41 round 11): a korabbi valtozat a -G/--get flag jelenletet a
+    has_body jelzes FELULBIRALASAKENT kezelte -- de a `curl -G -d ...` egy dokumentalt
+    curl-trukk, ami a -d/--data-urlencode altal adott adatot query-string parameterkent
+    csatolja az URL-hez es GET-kent kuldi: a tartalom (cimzett/targy/torzs) EKKOR IS
+    eljut a celhoz, csak a HTTP-metodus mas. A -G ezert MAR NEM tud egy torzs-kuldest
+    olvassa-kent aluminositani -- a torzs-jelenlet onmagaban donto, fuggetlenul a
+    metodustol.
+    """
     method = None
     has_body = False
-    get_forced = False
     i, n = 0, len(rest)
     while i < n:
         t = rest[i]
@@ -153,10 +161,6 @@ def _curl_resend_verdict(rest):
             if not m.isalpha():
                 return "unknown"
             method = m.upper()
-            i += 1
-            continue
-        if t in ("-G", "--get"):
-            get_forced = True
             i += 1
             continue
         if t in ("-K", "--config"):
@@ -183,8 +187,6 @@ def _curl_resend_verdict(rest):
                     i += 1
             elif "d" in letters or "F" in letters or "T" in letters:
                 has_body = True
-            elif "G" in letters:
-                get_forced = True
             elif "K" in letters:
                 return "unknown"
             i += 1
@@ -192,11 +194,12 @@ def _curl_resend_verdict(rest):
         i += 1
     if method is not None and method not in _SAFE_METHODS:
         return "send"
-    if has_body and not get_forced:
-        # implicit POST (curl -d/-F/--json/-T alapertelmezese), vagy egy
-        # gyanus "GET torzzsel" alak -- mindketto kuldeskent kezelve
+    if has_body:
+        # torzs jelen van, akar POST-kent kuldve, akar -G altal query-stringgé alakitva --
+        # mindket alakban tartalom megy a celhoz, tehat kuldeskent kezeljuk
         return "send"
     return "read"
+
 # A tovabbi kuldes-jellegu literalok, amikre a parse-hiba eseten (es CSAK
 # akkor) konzervativan visszaesunk -- lasd is_send_invocation vegen.
 _FALLBACK_LITERALS = re.compile(
@@ -502,8 +505,118 @@ def _name_correction() -> str:
 
 BAD_NAME = load_bad_name()
 ACCENTED = set("áéíóöőúüűÁÉÍÓÖŐÚÜŰ")
-WORD = re.compile(r"[a-záéíóöőúüűA-ZÁÉÍÓÖŐÚÜŰ]+")
 TAG = re.compile(r"<[^>]+>")
+
+# GATEKOTOJEL817 + GATEHYPH816 (2026-08-19 este, ket hamis pozitiv elo
+# gazda-beszelgetesben, ot perc alatt): a kapu nem tett kulonbseget PROZA es
+# AZONOSITO kozott. (1) `Drive-ot` -- az idegen tulajdonnevhez a magyar
+# toldalek kotojellel kapcsolodik (ez a HELYES iras), de a betu-only WORD
+# tokenizalo a kotojelnel vagott, es a maradek `ot` darabot onallo magyar
+# szonak nezte (ot -> öt). (2) `Video atalakitas` -- egy Drive-mappa NEVE a
+# szovegben: mondatkozi nagybetus szo, azonosito, nem proza. A javitas a
+# TOKENIZALAS, nem a szotar (szo-kivetel a valodi hibakat is atengedne):
+#   - kotojeles alaknal a TELJES szoalak vizsgalando (a `drive-ot` egeszkent
+#     nincs a szotarban -> atmegy; az onallo `ot` prozaban tovabbra is bukik);
+#   - a MONDATKOZI nagybetus szo azonosito/tulajdonnev -> kimarad; mondat
+#     elejen (. ! ? : ujsor vagy lista-jel utan) a nagybetu normal proza,
+#     ott tovabbra is vizsgaljuk.
+#
+# Cybersec elo reprodukalt bypass-a (2026-08-26, fbb36b41 gate, GATEKOTOJEL817
+# regresszio): a fenti "mondatkozi nagybetus szo = azonosito" szabaly TUL TAG
+# volt -- BARMELY nagybetuvel kezdodo, mondat kozepen allo magyar szot kimart,
+# nem csak a valodi azonositokat. `audit('Sziasztok, a Keszen allo Uzenet mar
+# elment, minden Kerdes megoldva.')` -> [] volt, pedig harom valodi ekezet-
+# hiba van benne (Keszen/Uzenet/Kerdes mind a szotarban). Javitas: a kihagyas
+# MOSTANTOL csak akkor jar, ha a kisbetus alak SZEREPEL az IDENTIFIER_ALLOWLIST-
+# ben (ismert, korabban valodi hamis-pozitivkent jelentkezett azonosito/
+# tulajdonnev) -- nem minden nagybetus mondatkozi szora. Uj azonosito csak
+# szandekos bovitessel kerulhet ide, nem automatikusan.
+#
+# Cybersec masodik korulasa (2026-08-26, ugyanaz a gate, round 8): a "video"
+# bejegyzes MAGA IS szerepelt az ACCENTLESS szotarban (video -> videó) -- egy
+# szo nem lehet EGYSZERRE "mindig javitando magyar szo" ES "azonositokent
+# kihagyando", ez ugyanaz a hibaosztaly szukebb korben. `audit('...uj Video
+# amit kertetek...')` nem kapta el, pedig valodi hiba. KIVETEL: "video" innen
+# torolve (a Drive-mappa NEVKENT hivatkozott "Video atalakitas" forma mostantol
+# ismet elakad -- ez SZANDEKOSAN a biztonsagosabb irany: egy hamis-pozitiv
+# azonosito-hivatkozas emberi felulvizsgalatot igenyel, egy csendben atengedett
+# valodi ekezethiba nem javithato utolag). STRUKTURALIS VEDELEM: az assert
+# lent megakadalyozza, hogy ez a hibaosztaly egy jovobeli bovitessel csendben
+# visszaterjen -- ha valaki ACCENTLESS-ben mar szereplo szot venne fel ide,
+# a modul betoltese azonnal elszall, nem egy elo reprodukcio talalja meg.
+IDENTIFIER_ALLOWLIST = {"drive"}
+_overlap = IDENTIFIER_ALLOWLIST & set(ACCENTLESS)
+assert not _overlap, (
+    f"outgoing-copy-gate: IDENTIFIER_ALLOWLIST es ACCENTLESS metszik egymast ({_overlap}) -- "
+    "egy szo nem lehet egyszerre 'mindig javitando' es 'azonositokent kihagyando' "
+    "(Cybersec lelet, fbb36b41 round 8)."
+)
+del _overlap
+HYPHEN_WORD = re.compile(r"[a-záéíóöőúüűA-ZÁÉÍÓÖŐÚÜŰ]+(?:-[a-záéíóöőúüűA-ZÁÉÍÓÖŐÚÜŰ]+)*")
+
+# DIGIT-HYPHEN SUFFIX allowlist (Cybersec NO-GO, fbb36b41 round 11): a bevezeto valtozat
+# a szamjegy-kotojel elotag utani szot FELTETEL NELKUL kihagyta -- de a HYPHEN_WORD
+# tetszoleges hosszu/alaku szot illeszt ott, nem csak a szandekolt rovid szamnevi
+# toldalekot. `5-keszen` -> a 'keszen' (valodi ekezethiba) NEM jelent meg a talalatok
+# kozott. Ugyanaz a hibaosztaly, mint az IDENTIFIER_ALLOWLIST-nel fentebb (round 7/8):
+# a kihagyas MOSTANTOL csak egy zart, ismert-rovid szamnevi-toldalek halmazra vonatkozik,
+# nem tetszoleges digit-kotojel-utani szora.
+DIGIT_HYPHEN_SUFFIX_ALLOWLIST = {"es", "as", "os", "ös"}
+assert all(len(w) <= 3 for w in DIGIT_HYPHEN_SUFFIX_ALLOWLIST), (
+    "outgoing-copy-gate: DIGIT_HYPHEN_SUFFIX_ALLOWLIST csak rovid szamnevi toldalekot "
+    "tartalmazhat (Cybersec lelet, fbb36b41 round 11) -- egy hosszabb bejegyzes ujra "
+    "kinyitna a bejelentett bypasst."
+)
+
+
+def _at_sentence_start(text: str, idx: int) -> bool:
+    i = idx - 1
+    while i >= 0 and text[i] in " \t\"'([{":
+        i -= 1
+    if i < 0:
+        return True
+    ch = text[i]
+    if ch in ".!?:\n":
+        return True
+    if ch in "-*•":
+        j = i - 1
+        while j >= 0 and text[j] in " \t":
+            j -= 1
+        return j < 0 or text[j] == "\n"
+    return False
+
+
+def accent_check_tokens(prose: str):
+    """(lowercase alak, kezdo-pozicio) parok az ekezet-vizsgalathoz."""
+    out = []
+    for m in HYPHEN_WORD.finditer(prose):
+        tok = m.group(0)
+        # DIGIT-HYPHEN SUFFIX (429-es, 403-as, 2026-os, 3420-as). A HYPHEN_WORD
+        # csak betuket enged a kotojel korul, ezert egy szamhoz tapadt magyar
+        # toldalek onallo szonak latszik -- es az "es" ekezet-nelkuli "és"-kent
+        # olvasodna. Ezek nem mondatbeli szavak, nincs ekezetuk.
+        # (2026-08-21: a kapu blokkolt egy helyes "429-es vagy 403-as" uzenetet.
+        # A GATEKOTOJEL817 a betu-kotojel-betu alakot fedte, ezt nem.)
+        # Round 11 szukites: csak a DIGIT_HYPHEN_SUFFIX_ALLOWLIST-ben szereplo rovid
+        # toldalek marad ki, nem barmilyen szamjegy-kotojel utani szo (lasd fent).
+        if (m.start() >= 2 and prose[m.start() - 1] == "-" and prose[m.start() - 2].isdigit()
+                and tok.lower() in DIGIT_HYPHEN_SUFFIX_ALLOWLIST):
+            continue
+        if ("-" not in tok and tok[0].isupper() and not _at_sentence_start(prose, m.start())
+                and tok.lower() in IDENTIFIER_ALLOWLIST):
+            continue
+        out.append((tok.lower(), m.start()))
+    return out
+
+
+def _hit_context(prose: str, pos: int, length: int) -> str:
+    """A talalat elotti/utani 3-3 szo + karakter-pozicio (GATEHYPH816 (B):
+    elo beszelgetes kozben ne kelljen greppelni, melyik szorol van szo)."""
+    before = prose[:pos].split()[-3:]
+    token = prose[pos:pos + length]
+    after = prose[pos + length:].split()[:3]
+    frag = " ".join(before + [token] + after)
+    return f'"...{frag}..." @{pos}'
 
 
 # Technikai tokenek maszkolasa AZ EKEZET-ELLENORZES ELOTT. Merve 2026-08-13, a
@@ -698,7 +811,8 @@ def audit(text: str):
             f"VEGYES IRASRENDSZERU SZO (homoglifa), {len(mixed)} db: {shown}{more}. "
             "Latin szoba keveredett nem-latin betu: olvasva lathatatlan, de a keresest/grepet neman eltori."
         )
-    words = [w.lower() for w in WORD.findall(prose)]
+    tok_pos = accent_check_tokens(prose)
+    words = [w for w, _ in tok_pos]
     if is_hungarian(plain) or accentless_evidence(words):
         hits = sorted({w for w in words if w in ACCENTLESS})
         # Az aranyot is a prozan merjuk: a technikai tokenekben nincs ekezet, tehat
@@ -707,7 +821,14 @@ def audit(text: str):
         acc = sum(1 for ch in prose if ch in ACCENTED)
         ratio = (acc / letters) if letters else 0.0
         if hits:
-            shown = ", ".join(f"{h} -> {ACCENTLESS[h]}" for h in hits[:12])
+            first_pos = {}
+            for w, p in tok_pos:
+                if w in ACCENTLESS and w not in first_pos:
+                    first_pos[w] = p
+            shown = ", ".join(
+                f"{h} -> {ACCENTLESS[h]} ({_hit_context(prose, first_pos[h], len(h))})"
+                for h in hits[:12]
+            )
             more = f" (+{len(hits) - 12} tovabbi)" if len(hits) > 12 else ""
             problems.append(f"HIANYZO EKEZETEK, {len(hits)} szo: {shown}{more}")
         elif letters > 200 and ratio < 0.01:
