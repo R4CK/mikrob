@@ -4022,3 +4022,46 @@ verdiktje mar lefedte a tervezesi kockazatokat).
 tsc tiszta.
 
 **Hivatkozás:** kártya 2bfbf805, Cybersec NO-GO komment (Gate-SHA a68c5ce8).
+
+## 2026-08-27 00:26 -- ensure-native-modules.sh: hangos riasztás stray pnpm-nyomokra
+
+**Mit döntöttünk.** `scripts/ensure-native-modules.sh` (ExecStartPre a dashboard/channels
+szolgáltatásokon, minden induláskor fut) mostantól a natív-binding-ellenőrzés MELLETT,
+ATTÓL FÜGGETLENÜL is megnézi, van-e stray pnpm-nyom a projekt gyökerében
+(`pnpm-lock.yaml` és/vagy `node_modules/.pnpm`) -- ez az egyetlen npm-only repóban (kártya
+0b0e6e24) csak akkor keletkezhet, ha valaki tévedésből `pnpm install`-t futtatott. Ha talál,
+direkt Bot API-n hangosan riaszt (`disk-space-guard.sh` mintája: megerősített-kézbesítés-utáni
+cooldown, max óránként egyszer) -- NEM töröl automatikusan, a takarítás emberi/MikroB döntés
+marad.
+
+**Miért.** A meglévő `scripts/assert-npm-package-manager.mjs` `preinstall`-őr csak egy AKTÍV
+pnpm-installt fog el (a 0b0e6e24 crash-loopot ez okozta hangosan). Ha a stray telepítés MÁR
+megtörtént és senki nem vette észre azonnal, `ensure-native-modules.sh` addigi viselkedése ezt
+elfedte: a better-sqlite3 natív binding rebuild-je gyakran simán lefutott a pnpm-nyomok mellett
+is, tehát NULLA látható tünet volt (nincs crash-loop). MikroB saját leletét (2026-08-24) csak egy
+véletlen `git status` fedte fel a megosztott fő klónban. Egy csendben "megjavított" foreign
+package-manager-átvétel önmagában is riasztás-köteles esemény, nem csak a rebuild sikere/bukása.
+
+**Élő megerősítés e kártya munkája közben.** A saját worktree `node_modules`-a a megosztott fő
+klónba (`/home/neon/marveen`) mutató symlink -- az új guard ELSŐ valódi futtatásakor (nem a
+tesztekben, hanem a repo saját fáján) TÉNYLEGESEN talált egy MÉG MINDIG jelenlévő
+`node_modules/.pnpm/` könyvtárat a fő klónban (mtime 2026-08-24, ugyanaznap mint a kártya
+felvétele -- tehát ugyanaz az esemény, sosem takarítva ki). A `pnpm-lock.yaml` addigra már
+eltűnt, de a `.pnpm/` alkönyvtár nem, és `npm install` sem futott utána a fa helyreállítására.
+Ez azt jelenti, hogy a fő klón `node_modules`-a a kártya felvétele óta 3 napig részlegesen
+pnpm-eredetű maradt, észrevétlenül. NEM töröltem/telepítettem újra saját magamtól -- egy
+megosztott, éles, más ügynökök worktree-jei által is symlinkelt fa átírása kockázatos,
+visszafordítási-óvatosságot igénylő lépés, ezt MikroB/Peti döntésére hagyom (lásd az inter-agent
+jelzést a REVIEW mellett).
+
+**Ki döntött:** backend (kártya d0126d79, MikroB saját 2026-08-24-i lelete alapján felvéve).
+
+**Konzekvencia.** Módosított: `scripts/ensure-native-modules.sh` (`has_stray_pnpm_artifacts` +
+`check_stray_pnpm` + `alert_owner`, `disk-space-guard.sh` mintájára, test hookokkal). Új:
+`scripts/__tests__/ensure-native-modules.test.sh` (9 bash-natív teszt: tiszta repó no-op, mindkét
+tell-tale artifact alert-et vált ki, cooldown, takarítás-utáni no-op, hiányzó state-dir). tsc
+tiszta (a script bash, nincs TS-érintettsége, de a repo egészére lefutott a check). NYITOTT
+TOVÁBBI LÉPÉS (nem ennek a kártyának a scope-ja): a fő klón `node_modules/.pnpm/`-jának tényleges
+eltávolítása + `npm install` a helyreállításhoz -- ezt MikroB/Peti hagyja jóvá és futtatja.
+
+**Hivatkozás:** kártya d0126d79.
