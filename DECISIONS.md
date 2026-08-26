@@ -4202,3 +4202,50 @@ plan-grilling-előírása szerint eljárva).
 **Hivatkozás:** kártya 1a609c01, előzmény: kártya 39cc3460 (a DoS-fix + a jelen maradvány saját
 felfedezésének helye, round 3), `path-prefix-cmd-position-anchors-quadratic.test.ts` (a korábbi
 "documented gap" teszt, ami most lezárva).
+
+## 2026-08-27 01:26 -- activity_memory_capture.py token/JWT redakció: \b-fuggo prefix-illesztes javitva (kártya 2102fe6a)
+
+**Mit döntöttünk.** `_SECRET_PATTERNS`-ben a GitHub/Anthropic/Slack-stílusú token-előtag minta és a
+JWT triple-dot minta LEVÁLASZTOTTA a `\b` szóhatár-követelményt (mindkét oldalról, a JWT esetén).
+Előbb: `\b(ghp_|...)...`, `\bey...\b`. Utána: `(ghp_|...)...`, `ey...` (nincs horgony).
+
+**Miért.** Cybersec lelete (2102fe6a, a d47455bf DB-URI-javítás rokon, de SÚLYOSABB kővetkezménye,
+ugyanaz a fájl/kontroll). A `\b` szóhatár egy `\w`/nem-`\w` átmenetet követel közvetlenül a minta
+előtt -- ha egy 40+ karakteres, AZONOS karakterosztályú (alfanumerikus) futam KÖZVETLENÜL, elválasztó
+NÉLKÜL áll a titok előtt (a d47455bf-ben már megismert "glued" alak), nincs ilyen átmenet, tehát a
+minta EGYÁLTALÁN nem illeszkedik. A hex/base64-blob minták (amik KÉSŐBB futnak a listában) ezután
+találnak egy alfanumerikus futamot, de az előtag SAJÁT elválasztója (`_` vagy `-`) NINCS a
+base64/hex ábécében, tehát a blob-minta PONT OTT megszakad -- csak az előtag pár betűje tűnik el,
+a TELJES titok-test (a token/JWT valódi, véletlenszerű része) VÁLTOZATLANUL BENNMARAD. Ez SÚLYOSABB
+mint a DB-URI eset (ott a jelszó nulla karaktere sem szivárgott) -- itt a titok GYAKORLATILAG
+TELJES EGÉSZÉBEN szivárog, csak egy jólismert, publikus, 5-9 lehetőségből trivi álisan
+visszafejthető előtag hiányzik. A JWT-nél MÉG ROSSZABB: egyik blob-minta sem menti meg még
+részlegesen sem (a JWT-szegmensek base64URL ábécét használnak, `_`/`-`-sal, nem a blob-minták
+`+`/`/`-jével, és egy valódi szegmens gyakorlatilag sosem csupa-hex).
+
+**Miért NEM sorrend-probléma, mint a d47455bf-nél.** A d47455bf DB-URI-javítás egy SORREND-hiba
+volt (az anchorolt minta a blob-minták UTÁN futott -- megoldás: előre hozni). Itt a token-előtag
+minta MÁR ELSŐ a listában -- a hiba maga a `\b` FELTÉTEL, nem a pozíció. A javítás ezért nem
+átrendezés, hanem a `\b` eltávolítása MINDKÉT mintából.
+
+**Ellenőrizve.** 9 új teszt-eset (mind a 9 támogatott előtag, "glued" alakban, valós titok-testtel,
+nem placeholderrel) + 2 új JWT teszt (vezető ÉS követő glue, mindkét irány) --
+`activity-memory-capture.selftest.py`-ban, a `db-uri-*-glued-*` minta pontos ismétlése. NEGATÍV
+KONTROLL: 4 jóhiszemű mondat (benne "ey"-t tartalmazó szavak: "they", "obeyed", "monkey", rövid
+"sk-"/"gh-" töredékek) -- egyik sem redaktálódik hamisan, mert a TELJES minta (nem csak az előtag)
+igényel egy hosszú, szomszédos alfanumerikus futamot, ami prózában nem fordul elő. 35/35 zöld a
+teljes selftest-en (előtte 20, +15 új), 24/24 zöld a vitest-wrapperen
+(`activity-hook-redaction.test.ts`). Python syntax + tsc tiszta.
+
+**Mellékhatás, tudatosan elfogadva (nem hiba).** A "glued" esetben a korábban megőrzött, olvasható
+előtag (pl. "ghp_") MOST a blob-minta által is elnyelődhet (mert a token-előtag minta már
+redaktálta a titok-testet, de az előtag betűi VISSZAMARADNAK sima szövegként a glue-futam mellett,
+amit a KÉSŐBB futó blob-minta összefésül a szomszédos futammal) -- az eredmény
+`[REDACTED]_[REDACTED]` az elváart `ghp_[REDACTED]` helyett. Ez BIZTONSÁGI szempontból NEM
+regresszió (több redaktálódik, nem kevesebb), csak kozmetikai, és KIZÁRÓLAG a mesterséges
+"glued" (adverzariális) esetben jelentkezik -- normál, nem-glued bemenetnél az előtag változatlanul
+látható marad (a meglévő `github-token`/`anthropic-key` tesztek ezt továbbra is igazolják).
+
+**Ki döntött:** backend (kártya 2102fe6a, Cybersec saját lelete alapján).
+**Hivatkozás:** kártya 2102fe6a, előzmény: kártya d47455bf (a rokon DB-URI-fix, más gyökér-ok:
+sorrend, nem `\b`), kártya 5472cfa9 (a redakciós kontroll eredeti bekötése).

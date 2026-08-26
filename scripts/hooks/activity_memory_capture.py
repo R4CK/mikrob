@@ -83,10 +83,33 @@ _SECRET_PATTERNS = [
     re.compile(r'(?i)(bearer\s+)[A-Za-z0-9+/=_\-\.]{8,}'),
     # key=value / key: value secret-shaped pairs
     re.compile(r'(?i)((?:token|secret|password|api[_\-]?key|apikey|auth|credential|private[_\-]?key)\s*[=:]\s*)[^\s,\'";&|]{6,}'),
-    # GitHub / Anthropic / OpenAI / Slack style prefixed tokens
-    re.compile(r'\b(ghp_|ghc_|gho_|ghu_|ghs_|sk-|sk-ant-|xoxb-|xoxp-)[A-Za-z0-9_\-]{10,}'),
-    # JWT-shaped triple-dot strings (header.payload.signature)
-    re.compile(r'\bey[A-Za-z0-9_\-]{10,}\.[A-Za-z0-9_\-]{10,}\.[A-Za-z0-9_\-]{10,}\b'),
+    # GitHub / Anthropic / OpenAI / Slack style prefixed tokens.
+    #
+    # Card 2102fe6a (Cybersec, follow-up to d47455bf's DB-URI fix, same file/control): the leading
+    # `\b` used to require a word/non-word transition immediately before the prefix. When a 40+ char
+    # run of the SAME character class (alnum) sits directly against the prefix with no separator --
+    # the identical "glued" shape d47455bf fixed for DB-URI passwords -- there is no such transition
+    # (`\w` next to `\w`), so this pattern never matches at all. The blob patterns below then run and
+    # find a base64/hex-alphabet run, but `_`/`-` are outside the base64/hex charset, so a blob match
+    # stops right at the prefix's OWN separator (e.g. the `_` in `ghp_`) -- redacting only the first
+    # few letters of the prefix and leaving the ENTIRE secret body plaintext (WORSE than the DB-URI
+    # case: there the leaked span was zero characters of the password; here it is effectively the
+    # whole key, minus a well-known 3-9-char public prefix an attacker can just enumerate). Fixed the
+    # same way d47455bf fixed the DB-URI case in spirit, but the mechanism here is different: that
+    # fix was an ORDERING problem (anchored pattern needed to run before the blob patterns); this is
+    # the `\b` ITSELF being the broken condition, so dropping it (not reordering, this pattern is
+    # already first) lets the prefix match regardless of what precedes it, redacting prefix+secret as
+    # ONE span before any blob pattern gets a turn -- the leftover glue run (still 40+ chars on its
+    # own) is then caught by the blob pattern in its own right, exactly as intended.
+    re.compile(r'(ghp_|ghc_|gho_|ghu_|ghs_|sk-|sk-ant-|xoxb-|xoxp-)[A-Za-z0-9_\-]{10,}'),
+    # JWT-shaped triple-dot strings (header.payload.signature). Same fix, same reason: a leading
+    # `\b` failed to match when glued to a preceding 40+ char run, and here NEITHER blob pattern
+    # rescues any part of it (JWT segments use the base64URL alphabet -- `_`/`-`, not `+`/`/` -- so
+    # the base64 blob pattern's charset does not match a JWT segment at all, and a real segment is
+    # essentially never all-hex) -- worse than the token-prefix case, where the blob pattern at
+    # least caught the glue run itself. The trailing `\b` is dropped too, for the mirror case (a
+    # JWT glued to a FOLLOWING word-character run).
+    re.compile(r'ey[A-Za-z0-9_\-]{10,}\.[A-Za-z0-9_\-]{10,}\.[A-Za-z0-9_\-]{10,}'),
     # DB connection string URI passwords: postgres://user:PASSWORD@host, mysql://, mongodb://, redis://
     # Capture group 1 = the URI prefix up to and including ':', group 2 = password (replaced).
     #
