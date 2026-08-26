@@ -1593,11 +1593,21 @@ async function startAgentProcessUnlocked(name: string, opts: { fresh?: boolean }
     // through. Agents launch from a deliberately pinned install, so the updater
     // must never move it out from under a live process.
     const autoUpdaterEnv = 'export DISABLE_AUTOUPDATER=1 && '
+    // Disable Claude Code's own "How is Claude doing this session?" feedback survey. It can pop
+    // up mid-session (observed repeatedly after a 529 Overloaded API error) and, unlike the
+    // restart-time survey/resume modals scheduleIdentitySetup already dismisses, nothing in this
+    // fleet was watching for it: it sat blocking every inbound message (scheduled tasks,
+    // inter-agent messages, Peti's own Telegram traffic) until MikroB manually tmux-send-keys'd a
+    // '0' (Dismiss) into the pane. Verified present and load-bearing in the pinned CLI build
+    // (`strings` on the installed 2.1.246 binary): `if(mt.CLAUDE_CODE_DISABLE_FEEDBACK_SURVEY)
+    // return!1` gates the survey's entire eligibility check, so setting it structurally prevents
+    // the dialog from ever opening -- no watcher/dismiss script needed (card 268b257a).
+    const feedbackSurveyEnv = 'export CLAUDE_CODE_DISABLE_FEEDBACK_SURVEY=1 && '
     // shSingleQuote(model) (card b7fa5281): the model is POSIX single-quote ESCAPED, which both keeps
     // values like `claude-opus-4-8[1m]` (1M-context suffix) from being glob-expanded AND makes a `'`
     // in the value inert rather than a quote-break -> command injection. Same escape at the three
     // ANTHROPIC_MODEL env sites above.
-    const cmd = `export PATH="/opt/homebrew/bin:$HOME/.bun/bin:/usr/local/bin:/usr/bin:/bin:$PATH" && ${unsetTokens} && ${autoUpdaterEnv}${promptSuggestionEnv}${mcpEnv}${channelSetup}${apiKeyEnv}${claudeConfigEnv}${oauthTokenEnv}${ollamaEnv}${deepseekEnv}${openrouterEnv}cd "${dir}" && ${claudeBin()} ${continueFlag}${skipFlag}--model ${shSingleQuote(model)} ${channelFlag}`.trimEnd()
+    const cmd = `export PATH="/opt/homebrew/bin:$HOME/.bun/bin:/usr/local/bin:/usr/bin:/bin:$PATH" && ${unsetTokens} && ${autoUpdaterEnv}${promptSuggestionEnv}${feedbackSurveyEnv}${mcpEnv}${channelSetup}${apiKeyEnv}${claudeConfigEnv}${oauthTokenEnv}${ollamaEnv}${deepseekEnv}${openrouterEnv}cd "${dir}" && ${claudeBin()} ${continueFlag}${skipFlag}--model ${shSingleQuote(model)} ${channelFlag}`.trimEnd()
     runTmux(null, ['new-session', '-d', '-s', session, cmd], { timeout: 10000 })
 
     logger.info({ name, session, channelDir: agentChannelDir }, 'Agent tmux session started')

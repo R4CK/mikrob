@@ -3637,3 +3637,40 @@ uzenetet adja vissza; mindket eset newline-mentes egysoros kimenetet is ellenori
 kartyasitva Peti kerésere).
 **Hivatkozas:** kartya 5a056db8, elozo fix: 34f1ca0c. Erintett fajlok:
 `scripts/hooks/activity_memory_capture.py`, `scripts/hooks/activity-memory-capture.selftest.py`.
+
+## 2026-08-26 -- 268b257a -- "How is Claude doing?" felmérés strukturálisan kikapcsolva minden ágens-spawnon
+
+**Probléma:** a Claude Code CLI saját, session-közbeni "How is Claude doing this session?"
+visszajelző-dialógusa (1: Bad, 2: Fine, 3: Good, 0: Dismiss) 2026-08-26-án 7+ alkalommal jelent
+meg backend és backend2 tmux-paneljén, ismételten egy 529 Overloaded API-hiba után, és NEM lépett
+tovább magától -- addig nem dolgozta fel az új inbound üzeneteket (ütemezett feladat, inter-agent
+üzenet, Telegram-forgalom), amíg MikroB kézzel be nem küldte a '0' billentyűt tmux send-keys-szel.
+A meglévő `scheduleIdentitySetup` (agent-process.ts) csak a RESTART-utáni resume/survey-modalt
+dismisszelte egy 8 másodperces késleltetett próbával -- a MID-SESSION, 529-triggerelt
+felugrásra semmi nem figyelt.
+
+**Vizsgálat:** a kártya két irányt javasolt -- (1) settings/env kapcsoló keresése a felmérés
+kikapcsolására, (2) ha nincs, egy tmux-panelfigyelő watcher-script, ami a mintát felismerve
+automatikusan '0'-t küld. A pinned CLI-bináris (`~/.local/share/claude/versions/2.1.246`)
+`strings`-elésével MEGTALÁLTAM a valós kapcsolót: `if(mt.CLAUDE_CODE_DISABLE_FEEDBACK_SURVEY)
+return!1` az egész felmérés-eligibility-ellenőrzést (`de(...)` eligibility-függvény) rövidre
+zárja -- a `mt` objektum ugyanaz a minta, amit más dokumentált `CLAUDE_CODE_*` env-kapcsolók is
+használnak (pl. `CLAUDE_AFK_TIMEOUT_MS`, `CLAUDE_CODE_DISABLE_TERMINAL_TITLE`), tehát ez egy
+valós, hivatalos env-kapcsoló, nem talált string.
+
+**Döntés:** az 1. irányt választottam a 2. helyett -- egy env-var export az ágens tmux-spawn
+parancsba (`src/web/agent-process.ts`, ugyanabban a mintában mint a már meglévő
+`DISABLE_AUTOUPDATER=1`/`CLAUDE_CODE_ENABLE_PROMPT_SUGGESTION=false`), NEM egy külön
+watcher-script. Strukturálisan jobb: a dialógus SOHA nem nyílik meg (sem restart-kor, sem
+mid-session, sem semmilyen jövőbeli trigger-mintánál), tehát a `scheduleIdentitySetup`
+resume-modal-dismiss ága is feleslegessé válik erre a konkrét felmérésre nézve (érintetlenül
+hagyva, mert más resume-modalokat is kezel).
+
+**Ellenőrzés:** 2 új teszt (`channel-stability-contract.test.ts`, "P1#5"), mind a
+`channel-deafness-recovery.test.ts` ordering-asszerciói (`MCP_SERVER_CONNECTION_BATCH_SIZE`
+pozíció a `--channels` előtt) zöldek maradtak az új env-export beszúrása után, tsc tiszta.
+
+**Ki döntött:** backend (kártya 268b257a, Peti kérésére 2026-08-24-i Telegram-jelzésből
+kártyásítva).
+**Hivatkozás:** kártya 268b257a. Érintett fájlok: `src/web/agent-process.ts`,
+`src/__tests__/channel-stability-contract.test.ts`.
