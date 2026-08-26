@@ -4249,3 +4249,41 @@ látható marad (a meglévő `github-token`/`anthropic-key` tesztek ezt továbbr
 **Ki döntött:** backend (kártya 2102fe6a, Cybersec saját lelete alapján).
 **Hivatkozás:** kártya 2102fe6a, előzmény: kártya d47455bf (a rokon DB-URI-fix, más gyökér-ok:
 sorrend, nem `\b`), kártya 5472cfa9 (a redakciós kontroll eredeti bekötése).
+
+## 2026-08-27 01:35 -- crontab -l flag-lánc bypass zárva (kártya f35b8d92)
+
+**Mit döntöttünk.** `SCHEDULER_READ_RX`/`SCHEDULER_CMDWORD_READ_RX`/`UNANCHORED_SCHEDULER_READ_RX`
+(mindhárom, self-pace-gate.mjs) `-l\b` PREFIX-egyezését egy határolt negatív lookahead
+(`CRONTAB_NO_WRITE_FLAG_FOLLOWS`) egészíti ki: nem elég hogy a szegmens `crontab -l`-lel KEZDŐDIK,
+a következő valódi parancshatárig (`;`/`&`/`|`/backtick/újsor) nem következhet `-r`/`-e`/`-i`
+(törlés/szerkesztés/interaktív-törlés), önmagában vagy getopt-klaszterben (`-er`).
+
+**Miért.** Cybersec HIGH lelete (f35b8d92, msg 20542, fuggetlenul ellenorizve): a crontab(1) (cronie
+forrás) getopt-lánca minden zászlót UGYANABBA a mód-változóba ír, az UTOLSÓ zászló nyer -- tehát
+`crontab -l -r` a valóságban TÖRLI a crontabot, nem listázza. A régi `-l\b` prefix-minta ezt
+"olvasásnak" jelölte (a `\b` csak azt követeli meg, hogy "l" után szóhatár legyen, arról semmit nem
+mond mi jön utána), ami mindhárom fogyasztó-útvonalon (anchored SCHEDULER_RX pár, CMDWORD, a
+heredoc-soronkénti subtract-és-teszt) átengedte a bypasst -- élőben megmérve mindháromra.
+
+**Miért kizárólag crontab.** A launchctl olvasó-alakjai (list/print/dumpstate/blame/examine)
+egyetlen POZICIONÁLIS argv[1]-ek, nem getopt-lánc -- `launchctl list load` a "load"-ot a `list`
+ARGUMENTUMAKÉNT kapja, nem hívja második műveletként. Az `atq` egyáltalán nem vesz fel mód-váltó
+zászlót. Egyik sem osztja a crontab "utolsó zászló nyer" mechanizmusát, tehát egyik sem kapta meg
+ugyanazt a védelmet -- indokolva a kódban is.
+
+**Tudott, kártya-scope-on kívüli, NEM ÚJ jelenség (megjegyezve, nem javítva):**
+`crontab -u alice -l` (felhasználó ELŐBB, mint az `-l`) hamisan denies -- ez MÁR a javítás ELŐTT is
+így volt (ellenőrizve git-stash-elt eredeti fájllal), mert a READ-minta `crontab` UTÁN közvetlenül
+várja a `-l`-t, nem enged elé más flaget. Nem ennek a kártyának a hatóköre (a kártya kizárólag a
+"mi KÖVETI a -l-t" kérdésről szól, nem "mi ELŐZI meg"), ezért szándékosan NEM nyúltam hozzá --
+JELEZVE, nem elrejtve, a sebészi-változtatás elv szerint.
+
+**Konzekvencia.** Módosított: `scripts/self-pace-gate.mjs` (új `CRONTAB_NO_WRITE_FLAG_FOLLOWS`
+konstans, alkalmazva mindhárom READ-mintán). Új: `src/__tests__/crontab-read-flag-chaining.test.ts`
+(16 teszt: 5 veszélyes kombináció denies, 5 genuin-olvasás allow marad, 3 sibling-forma
+[launchctl/atq] érintetlen, 3 a három fogyasztó-útvonal mindegyikére). 746+ zöld a teljes
+self-pace-gate + governance-gates tesztcsaládon. tsc tiszta.
+
+**Ki döntött:** backend (kártya f35b8d92, Cybersec saját lelete alapján).
+**Hivatkozás:** kártya f35b8d92, előzmény: kártya 40704cb1/230e9884 (a gate-kör, amiben a lelet
+született).
