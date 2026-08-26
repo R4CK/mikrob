@@ -102,7 +102,7 @@ write_timer   token-health-guard "Run the MikroB bot-token health guard every 15
 # changing that shared helper's assumption for every other entry in this file. journal, not log
 # mode: the script does its own selective append to store/load-guard.log (only on a state CHANGE,
 # card's own request), so mirroring every 7s tick's stdout into a second file would defeat that.
-write_service load-guard "MikroB load-guard tick (PSI/loadavg admission-brake state machine)" ../store/load-guard-daemon.sh journal
+write_service load-guard "MikroB load-guard tick (PSI/loadavg admission-brake state machine)" "../store/load-guard-daemon.sh --cgroup" journal
 write_timer   load-guard "Run the MikroB load-guard tick every 7 seconds"                      15s  7s
 
 echo "Rendered guard-timer units for MAIN_AGENT_ID=$MAIN_AGENT_ID into $UNIT_DIR"

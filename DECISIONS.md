@@ -3704,3 +3704,52 @@ verziója már automatikusan bumpolódik.
 (tervezés: hova kössem be, mikor legyen fatal/non-fatal, package-lock.json együtt-szinkronizálás).
 **Hivatkozás:** kártya `667307a2`, kapcsolódó korábbi szabály `12783b1e`. Commit: `ea8b9b95`
 (bevezető, a régi koddal landolva), ez a bejegyzés (első landolás az ÚJ automatikával).
+
+## 2026-08-26 -- d7a28a0a -- Load-guard cgroup cpu.max fékezés (load-brake fázis, Feladat 2)
+
+**Döntés.** A `hard` állapot `cgroup_throttle` akcióját (eddig csak logolva, sose fogyasztva) ténylegesen
+kiszolgáló réteg: `store/load-guard-cgroup-target.sh` (valós forrás: futó `agent-*` tmux-session ->
+cgroup-scope feloldás + kanban-prioritás lekérdezés a célválasztáshoz, nem tesztelt közvetlenül --
+ugyanaz a szerep mint `load-guard-read.sh`-nak) + `store/load-guard-cgroup-apply.sh` (tiszta
+döntési/cpu.max-író réteg, teljes tesztlefedettséggel, `--target-json` injektálva -- ugyanaz a
+szerep mint `load-guard-eval.sh`-nak) + `store/load-guard-cgroup.sh` (vékony összekötő, önjavító
+cpu-delegáció-bekapcsolással). `store/load-guard-daemon.sh` egy ÚJ, alapból KIKAPCSOLT `--cgroup`
+flaget kapott (csak akkor hívja a fenti láncot, ha explicit átadva) -- kizárólag azért, hogy a
+MEGLÉVŐ, zöld Feladat 1 daemon-tesztek egy karakterrel se változzanak (nulla regressziós kockázat);
+élesben a flaget `scripts/install-guard-timers.sh` ExecStart-ja adja át.
+
+**KOCKÁZAT #4 (a fázis-kártya plan-grilling verdiktjének nyitott pontja) MÉRVE, LEZÁRVA.** A cgroup
+v2 `cpu` kontroller ezen a WSL2 gépen NEM volt delegálva `app.slice` alá (`cgroup.subtree_control`
+csak `memory pids`-t tartalmazott ott) -- de egy sima felhasználói (uid 1000) `echo +cpu >
+.../app.slice/cgroup.subtree_control` írás SIKERESEN bekapcsolta, utána minden `tmux-spawn-*.scope`
+(egy-egy ügynök tmux-panelje) megkapta a `cpu.max` fájlt. A `load-guard-cgroup.sh` ezt minden tickben
+önjavítóan újra-ellenőrzi (idempotens, sose fatal), mert a delegáció egy újrainduló user-session után
+elveszhet.
+
+**Kizárás KÓD-SZINTEN hardkódolva** (`load-guard-cgroup-target.sh` `EXCLUDED_SESSIONS` tömb + `mikrob*`
+prefix-egyezés), a fázis-kártya KOCKÁZAT #2 mitigációja szerint NEM konfigurálható: `agent-qa`,
+`agent-cybersec`, `agent-cybered` + minden `mikrob*` session. **Eltérés a kártya szó szerinti
+szövegétől, explicit felszínre hozva:** a kártya prózája csak `qa`-t nevez meg, `qa2`-t nem -- a
+`agent-qa2` mégis bekerült a kizárásba, mert a root CLAUDE.md 4/6a szabálya a QA-t és QA2-t
+egyenrangú gate-tagként kezeli (terheléskiegyenlítés ugyanazon jogkörrel). Gate ellenőrizze ezt a
+döntést, nem hallgatólagos.
+
+**Célválasztás:** a futó, nem-kizárt `agent-*` session-ök közül az, akinek a `in_progress` kanban
+kártyája a legalacsonyabb prioritású (nincs aktív kártya < low < normal < high < urgent);
+degraded-mód (kanban API elérhetetlen) esetén ábécé-sorrend első futó jelöltje, `"degraded": true`
+jelzéssel -- nincs kitalált, kérés nélküli role-rangsor.
+
+**Kill-switch** (KOCKÁZAT #3 mitigáció): `load-guard-config.json` `cgroup_throttle.enabled` (alap
+`true`); `false`-ra állítva a legközelebbi tick azonnal felold minden aktív fékezést.
+
+**Konzekvencia.** Új fájlok: `store/load-guard-cgroup-target.sh`, `store/load-guard-cgroup-apply.sh`,
+`store/load-guard-cgroup.sh`, `src/__tests__/load-guard-cgroup.test.ts` (10 teszt: alkalmazás,
+feloldás, célváltás, kill-switch, `sigstop_freeze`-nél sincs fékezés-kontroll). Módosított:
+`store/load-guard-config.json` (`cgroup_throttle` blokk), `store/load-guard-daemon.sh` (`--cgroup`
+flag), `scripts/install-guard-timers.sh` (ExecStart bővítve). A meglévő 16 Feladat-1 teszt
+változatlanul zöld. tsc tiszta.
+
+**Ki döntött:** backend (kártya d7a28a0a, a fázis 19f3bbb5 plan-grilling verdiktje már lefedte a
+tervezési kockázatokat, KOCKÁZAT #4-et ez a kártya volt hivatva lezárni).
+
+**Hivatkozás:** kártya d7a28a0a (parent: 19f3bbb5, függőség: ced63f7f/Feladat 1, már done).
