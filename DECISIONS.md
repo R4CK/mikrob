@@ -3309,3 +3309,19 @@ a `seed-fleet-agents/qa/CLAUDE.md` core-skill listájában, fleet-test-re nincs 
 **Ki döntött:** MikroB (a 12783b1e eredeti szövegének szó szerinti újraolvasása alapján; nem új döntés, a meglévő szabály egyértelműsítése egy megfigyelt kétértelmű végrehajtás után).
 
 **Hivatkozás:** kártya `12783b1e` (eredeti szabály), `c7f0d394` (a blokk, ami alatt a kétértelműség felmerült), backend INFO-üzenete (2026-08-25 22:xx).
+
+## 2026-08-26 -- Ingatlan ingest-szerver: systemd user unit a perzisztenciahoz (kártya 489dae5f)
+
+**Mi történt:** az Ingatlan ingest-szerver (`npm run ingest`, port 8787, `/mnt/h/LM_Studio_Workdir/Ingatlan`) kizárólag kézzel indított folyamatként futott, semmilyen újraindítási mechanizmus nélkül. A 2026-08-22 esti géprestart kiölte, és 2026-08-21 óta kb. 2 napig egyetlen új adat sem gyűlt -- a napi emlékeztető rendben kiment, Peti nyitogatta a linkeket, csak nem volt mit fogadja. MikroB 09:37-kor ideiglenesen (`nohup ... &`) újraindította, de ez a mérés idejére (2026-08-26 10:20) ismét leállt.
+
+**Döntés:** `~/.config/systemd/user/ingatlan-ingest.service` -- ugyanaz a minta mint a `mikrob-channels.service`/`mikrob-dashboard.service` (`Type=simple`, `Restart=always`, `RestartSec=10`, `WantedBy=default.target`), tehát boot-kor automatikusan indul (a `Linger=yes` már be volt kapcsolva a felhasználón, ellenőrizve) és összeomlás után 10 mp-en belül újraindul. `RequiresMountsFor=/mnt/h/LM_Studio_Workdir/Ingatlan` hozzáadva, mert ez drvfs (Windows-meghajtó) mount, nem a WSL saját gyökér fs-e -- explicit megvárja a mountot ahelyett hogy a WSL automount-tal versenyezne.
+
+**Elutasított alternatíva:** pm2 vagy cron `@reboot` -- nem vezettem be új függőséget/mechanizmust, amikor a flotta már bizonyítottan működő, karbantartott mintája (systemd user unit) közvetlenül alkalmazható volt.
+
+**Végrehajtás:** verziókövetett sablon (placeholder útvonalakkal, a `disk-space-guard.service` mintáját követve) `scripts/systemd/ingatlan-ingest.service`; a ténylegesen telepített példány `~/.config/systemd/user/ingatlan-ingest.service` (nem verziókövetett, gépi konfig, ahogy a többi mikrob-* unit sem az).
+
+**Tesztek:** élő teszt, nem csak feltételezés. `systemctl --user enable --now` után a szerver felállt (port 8787 `ss`-sel és `curl`-lal is igazolva). Ezután a teljes folyamatfát `kill -9`-eltem -- 10 mp-en belül (a kártya kritériuma: 1 percen belül) systemd új PID-del újraindította, a port ismét elérhető volt válaszoló HTTP-vel. `systemctl --user is-enabled` -> `enabled`, `loginctl show-user neon` -> `Linger=yes` (boot-kori automatikus indítás garantált).
+
+**Ki döntött:** backend (kártya 489dae5f, MikroB gyökér-ok azonosítása alapján, Peti közvetlen panaszára válaszul -- lásd `live-config-outranks-a-remembered-instruction`: a `[[ingatlan-project-location]]` memória korábbi "kézzel indítva, szándékosan" jegyzete elavult ehhez a döntéshez képest, a kártya friss, Peti-panaszra épülő MikroB-döntés).
+
+**Hivatkozás:** kártya `489dae5f`.

@@ -134,6 +134,16 @@ describe('statusForRepo -- upstream-behind detection against a real repo', () =>
     expect(s.repo).not.toContain('p@')
   })
 
+  it('surfaces last_checked_at as lastCheckedAt (card be7a69c3)', () => {
+    const s = statusForRepo(cfg({ last_sha: firstSha, last_checked_at: '2026-08-26' }))
+    expect(s.lastCheckedAt).toBe('2026-08-26')
+  })
+
+  it('lastCheckedAt is null, not undefined or empty string, when the registry never recorded a check', () => {
+    const s = statusForRepo(cfg({ last_sha: firstSha }))
+    expect(s.lastCheckedAt).toBeNull()
+  })
+
   it('NO-FETCH: the endpoint does not advance the local refs (read-only by design)', () => {
     const before = g(clone, ['rev-parse', 'refs/remotes/origin/main'])
     // Add a THIRD upstream commit that the clone has NOT fetched.

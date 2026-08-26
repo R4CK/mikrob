@@ -19,8 +19,9 @@ const git = (...args: string[]): void => {
 }
 
 /** Commit `files` and return the pre-triage INPUT comment body the wiring would post for that commit.
- *  `title` (optional) exercises the card-title-vs-changed-files self-check (card ce159d2b). */
-function commitAndBody(files: Record<string, string>, title?: string): string {
+ *  `title` (optional) exercises the card-title-vs-changed-files self-check (card ce159d2b).
+ *  `desc` (optional) exercises the missing-DECISIONS.md nudge (card 78f85eb1). */
+function commitAndBody(files: Record<string, string>, title?: string, desc?: string): string {
   for (const [rel, body] of Object.entries(files)) {
     const abs = join(repo, rel)
     mkdirSync(dirname(abs), { recursive: true })
@@ -31,6 +32,7 @@ function commitAndBody(files: Record<string, string>, title?: string): string {
   const sha = execFileSync('git', ['rev-parse', 'HEAD'], { cwd: repo, encoding: 'utf-8' }).trim()
   const args = [SCRIPT, '--repo', repo, '--sha', sha, '--dry-run']
   if (title !== undefined) args.push('--title', title)
+  if (desc !== undefined) args.push('--desc', desc)
   return execFileSync('bash', args, { encoding: 'utf-8', stdio: 'pipe' })
 }
 
@@ -174,6 +176,58 @@ describe('the [FE]-label-vs-backend-file mechanical warning (card c92c2142)', ()
   it('no title given (offline manual use) -- the check is skipped, not a false warning', () => {
     const body = commitAndBody({ 'src/webapp/static-server.ts': 'export const x = 1\n' })
     expect(body).not.toContain('FIGYELEM -- FE-CIMKE VS BACKEND-FAJL')
+  })
+})
+
+// Card 78f85eb1: three cards in a row (fed9409f, ced9ce80, 398f351b) failed QA solely for a missing
+// DECISIONS.md entry, even though the code itself was pass-ready every time -- a missing
+// definition-of-done step, not three independent oversights. Nudge only, same contract as the other
+// checks: never blocks or changes the resolved commit.
+describe('the missing-DECISIONS.md nudge (card 78f85eb1)', () => {
+  it('warns when the title reads as an architecture decision and DECISIONS.md is untouched', () => {
+    const body = commitAndBody(
+      { 'src/auth.ts': 'export const x = 1\n' },
+      '[CleanCore][BE][SEC] Architektura-dontes: uj auth-ut bevezetese',
+    )
+    expect(body).toContain('FIGYELEM -- HIANYZO DECISIONS.md')
+  })
+
+  it('warns when the DESCRIPTION (not the title) mentions PLAN-GRILLING and DECISIONS.md is untouched', () => {
+    const body = commitAndBody(
+      { 'src/auth.ts': 'export const x = 1\n' },
+      '[CleanCore][BE] Uj auth-ut',
+      'A PLAN-GRILLING verdikt alapjan bevezetjuk az uj folyamatot.',
+    )
+    expect(body).toContain('FIGYELEM -- HIANYZO DECISIONS.md')
+  })
+
+  it('matches the correctly-accented Hungarian form too (architektúra-döntés)', () => {
+    const body = commitAndBody(
+      { 'src/auth.ts': 'export const x = 1\n' },
+      '[CleanCore][BE] architektúra-döntés az uj auth-utrol',
+    )
+    expect(body).toContain('FIGYELEM -- HIANYZO DECISIONS.md')
+  })
+
+  it('stays quiet when DECISIONS.md IS part of the diff', () => {
+    const body = commitAndBody(
+      { 'src/auth.ts': 'export const x = 1\n', 'DECISIONS.md': '## entry\n' },
+      '[CleanCore][BE][SEC] Architektura-dontes: uj auth-ut bevezetese',
+    )
+    expect(body).not.toContain('FIGYELEM -- HIANYZO DECISIONS.md')
+  })
+
+  it('stays quiet for an ordinary card with no architecture/plan-grilling wording', () => {
+    const body = commitAndBody(
+      { 'src/auth.ts': 'export const x = 1\n' },
+      '[CleanCore][BE] fix off-by-one in pagination',
+    )
+    expect(body).not.toContain('FIGYELEM -- HIANYZO DECISIONS.md')
+  })
+
+  it('no title/desc given (offline manual use) -- the check is skipped, not a false warning', () => {
+    const body = commitAndBody({ 'src/auth.ts': 'export const x = 1\n' })
+    expect(body).not.toContain('FIGYELEM -- HIANYZO DECISIONS.md')
   })
 })
 

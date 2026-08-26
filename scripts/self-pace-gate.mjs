@@ -1867,10 +1867,33 @@ export function gateDecision(toolName, toolInput) {
     // segment START -- so it is the one a fake segment boundary can mislead, and
     // the only one that gets quote-aware segments. Null (unresolvable quoting)
     // falls back to the naive split, i.e. to scanning strictly more.
-    const masked = maskInertLiterals(safeCommand)
-    for (const seg of (masked == null ? naiveSegs : splitSegments(masked))) {
-      // scheduler binaries: deny the exec/submit forms, allow pure read-listing
-      if (SCHEDULER_RX.test(seg) && !SCHEDULER_READ_RX.test(seg)) return { deny: true }
+    //
+    // The READ exemption is tested against BOTH the masked segment AND its RAW
+    // (unmasked) counterpart (card 40704cb1, backend's own finding, msg 19221:
+    // `crontab "-l"` and `launchctl "list"` -- both pure reads -- were denied).
+    // maskInertLiterals blanks a quoted argument to spaces, quotes included, so a
+    // QUOTED read flag/subcommand ("-l" / "list") disappears entirely before
+    // SCHEDULER_READ_RX ever runs against the masked text -- which defeats the
+    // quote-tolerance that regex was explicitly built with (card 4fa31f31's own
+    // header: "launchctl 'submit'"/"'launchctl' submit" are the SAME invocation as
+    // the unquoted form). Left as `crontab`/`launchctl` alone on the masked
+    // segment, the WRITE check still matches (the bare crontab branch has no
+    // shape guard, and a bare launchctl is deliberately treated as a real
+    // interactive vector), so the exemption never got a chance to fire.
+    //
+    // The WRITE check (SCHEDULER_RX) itself stays on the masked text only, same
+    // as before: that is what keeps a quoted PROSE mention of "crontab" /
+    // "launchctl" from tripping it in the first place, so this raw-text fallback
+    // is only ever consulted once a write already matched -- pairedSegments is
+    // the same {masked, raw} pairing the command-word check below already uses.
+    for (const pair of pairedSegments(safeCommand) ?? naiveSegs.map((s) => ({ masked: s, raw: s }))) {
+      if (
+        SCHEDULER_RX.test(pair.masked) &&
+        !SCHEDULER_READ_RX.test(pair.masked) &&
+        !SCHEDULER_READ_RX.test(pair.raw)
+      ) {
+        return { deny: true }
+      }
     }
     // Command-word check (card 4f32f1f9), ADDITIVE to the raw scan above and using the same
     // segment boundaries -- but reading the word from the ORIGINAL text with the shell's word
@@ -1881,19 +1904,21 @@ export function gateDecision(toolName, toolInput) {
       // A segment whose MASKED view is empty is inert text end to end -- a wholly quoted segment
       // like `'at now'`, which names a binary literally called "at now" and schedules nothing.
       // Skipping it is what keeps maskInertLiterals' quoted-prose fix intact here. No measured
-      // bypass is lost to it: each one leaves an unquoted character behind (`a""t now` masks to
-      // `a   t now`, `"at" now` to `      now`), and `'at' now` -- which DOES run at(1) -- masks to
-      // `     now`, so it is still examined.
+      // bypass is lost to it for a SINGLE quoted run: `a""t now` masks to `a   t now`, `"at" now`
+      // to `      now`, and `'at' now` -- which DOES run at(1) -- masks to `     now`, so each is
+      // still examined.
       //
-      // THE LIMIT OF THAT CLAIM, STATED (Cybersec G2, card 230e9884): it holds for ONE quoted run.
-      // From TWO adjacent runs it does not, and the gap is real rather than theoretical -- `'at'
-      // 'now'` and `'crontab' '-r'` mask to nothing but ONE space between two blanked regions, so
-      // the segment still trims to empty and is skipped here, while the shell strips each run
-      // separately and executes the command. Measured passing on the landed gate. It stays open
-      // deliberately for now: closing it means deciding what an all-quoted segment MEANS rather
-      // than widening a character class, which is 230e9884's job. Read the sentence above as "no
-      // measured SINGLE-RUN bypass", not as a general guarantee.
-      if (pair.masked.trim() === '') continue
+      // TWO OR MORE quoted runs is a DIFFERENT case (Cybersec G2, card 230e9884, fixed here): `'at'
+      // 'now'` and `'crontab' '-r'` mask to nothing but a SPACE between the two blanked regions, so
+      // the segment still trims to empty and was skipped -- while the shell strips each run
+      // separately and executes the command. Measured passing on the pre-fix gate. The distinction
+      // is not "is the masked view empty" but "how many separately-quoted runs produced that empty
+      // view": one run genuinely can be a binary named "at now"; two or more runs is indistinguishable
+      // from a real multi-token invocation with every token quoted, so it must NOT be skipped.
+      // Cybersec's own measurement (governance battery 142/142 green, 0 new false positive / 0 lost
+      // denial on the prose battery) is reused verbatim below.
+      const quotedRuns = (pair.raw.match(/'[^']*'|"[^"]*"/g) ?? []).length
+      if (pair.masked.trim() === '' && quotedRuns <= 1) continue
       const expanded = approximateWordExpansion(pair.raw)
       if (SCHEDULER_CMDWORD_RX.test(expanded) && !SCHEDULER_CMDWORD_READ_RX.test(expanded)) return { deny: true }
     }

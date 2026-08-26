@@ -22,13 +22,14 @@ MARKER="GATE PRE-TRIAGE (mechanikus, verdict:null)"
 CLEANCORE_REPO="/mnt/h/LM_Studio_Workdir/CleanCore"
 MIKROB_REPO="/home/neon/marveen"
 
-CARD=""; REPO=""; SHA=""; DRYRUN=0; TITLE=""
+CARD=""; REPO=""; SHA=""; DRYRUN=0; TITLE=""; DESC=""
 while [[ $# -gt 0 ]]; do
   case "$1" in
     --dry-run) DRYRUN=1; shift ;;
     --repo) REPO="${2:-}"; shift 2 ;;
     --sha) SHA="${2:-}"; shift 2 ;;
     --title) TITLE="${2:-}"; shift 2 ;;
+    --desc) DESC="${2:-}"; shift 2 ;;
     --*) echo "gate-pretriage-card: unknown arg '$1'" >&2; exit 2 ;;
     *) CARD="$1"; shift ;;
   esac
@@ -97,12 +98,12 @@ merge_diff_base() {
 # comment, not a second commit-selector -- it runs AFTER selection, on whatever commit was already
 # resolved, and only ever adds a warning LINE; it never blocks or changes SHA/exit code.
 build_body() {
-  local repo="$1" sha="$2" title="${3:-}" json base
+  local repo="$1" sha="$2" title="${3:-}" desc="${4:-}" json base
   [[ -d "$repo/.git" ]] || return 3
   git -C "$repo" cat-file -e "${sha}^{commit}" 2>/dev/null || return 3
   base="$(merge_diff_base "$repo" "$sha")"
   json="$(bash "$PRETRIAGE" --repo "$repo" --base "$base" --head "$sha" --json 2>/dev/null)" || return 3
-  MARKER="$MARKER" SHA="$sha" REPO="$repo" PT_JSON="$json" TITLE="$title" python3 <<'PY'
+  MARKER="$MARKER" SHA="$sha" REPO="$repo" PT_JSON="$json" TITLE="$title" DESC="$desc" python3 <<'PY'
 import json, os, re
 d = json.loads(os.environ["PT_JSON"])
 repo = os.path.basename(os.environ["REPO"].rstrip("/"))
@@ -156,6 +157,27 @@ if re.search(r"\[FE\]", title, re.IGNORECASE) and any(BACKEND_FILE_RX.search(f) 
         "trust-boundary, ha valojaban van)."
     )
 
+# MISSING DECISIONS.md NUDGE (card 78f85eb1): three cards in a row (fed9409f, ced9ce80, 398f351b)
+# failed QA SOLELY for a missing DECISIONS.md entry, even though the code itself was pass-ready each
+# time -- a missing definition-of-done step, not three independent oversights. Full automatic
+# enforcement is not realistic (not every card needs an entry), so this is the cheaper option the
+# card itself names: if the card's own title/description reads as an architecture-decision/
+# plan-grilling card and the diff does not touch DECISIONS.md, warn the gate BEFORE it reviews,
+# instead of the gate discovering it three cards later. A nudge only, same contract as the checks
+# above: it never blocks or changes the resolved commit.
+def _strip_accents(s: str) -> str:
+    return s.translate(str.maketrans("áéíóöőúüű", "aeiooouuu"))
+
+DECISIONS_TRIGGER_RX = re.compile(r"plan-grilling|architektura[\w-]*dontes|architecture decision", re.IGNORECASE)
+decisions_haystack = _strip_accents(f"{title}\n{os.environ.get('DESC', '')}".lower())
+touches_decisions = any(f.rstrip("/").rsplit("/", 1)[-1] == "DECISIONS.md" for f in changed)
+if DECISIONS_TRIGGER_RX.search(decisions_haystack) and not touches_decisions:
+    out.append(
+        "[FIGYELEM -- HIANYZO DECISIONS.md] a kartya cime/leirasa architektura-dontesre/"
+        "plan-grillingre utal, de a valtozott fajlok kozott nincs DECISIONS.md -- ELLENORIZD, hogy "
+        "a dontes dokumentalva van-e, mielott QA-n bukna emiatt (kartya 78f85eb1)."
+    )
+
 fs = d.get("findings") or []
 if not fs:
     out.append("Mechanikus lelet: nincs (az olcso csapdak tisztak -- ez NEM jelenti, hogy a kartya jo).")
@@ -170,7 +192,7 @@ PY
 # ---- Offline core mode (tests / manual): --repo + --sha + --dry-run, no API. ----
 if [[ -n "$REPO" && -n "$SHA" ]]; then
   [[ $DRYRUN -eq 1 ]] || { echo "gate-pretriage-card: --repo/--sha is offline mode, requires --dry-run" >&2; exit 2; }
-  if body="$(build_body "$REPO" "$SHA" "$TITLE")"; then printf '%s\n' "$body"; else echo "SKIP: commit $SHA not in $REPO (or pre-triage failed)"; fi
+  if body="$(build_body "$REPO" "$SHA" "$TITLE" "$DESC")"; then printf '%s\n' "$body"; else echo "SKIP: commit $SHA not in $REPO (or pre-triage failed)"; fi
   exit 0
 fi
 
@@ -190,6 +212,10 @@ title="$(printf '%s' "$board" | CARD="$CARD" python3 -c '
 import json, sys, os
 d = json.load(sys.stdin); rows = d if isinstance(d, list) else d.get("cards", d.get("data", []))
 print(next((c.get("title") or "" for c in rows if c.get("id") == os.environ["CARD"]), ""))' 2>/dev/null || true)"
+description="$(printf '%s' "$board" | CARD="$CARD" python3 -c '
+import json, sys, os
+d = json.load(sys.stdin); rows = d if isinstance(d, list) else d.get("cards", d.get("data", []))
+print(next((c.get("description") or "" for c in rows if c.get("id") == os.environ["CARD"]), ""))' 2>/dev/null || true)"
 
 # CANDIDATE commits from the comments, newest first (cards d7ac3470 + 34e7285e). A card id is ALSO
 # an 8-hex token, so a regex alone cannot tell a short SHA from a card id -- the disambiguation is
@@ -228,7 +254,7 @@ if [[ -n "$already_posted" ]]; then
   echo "SKIP: pre-triage for $sha already on $CARD"; exit 0
 fi
 
-body="$(build_body "$repo" "$sha" "$title")" || { echo "SKIP: pre-triage could not run for $sha"; exit 0; }
+body="$(build_body "$repo" "$sha" "$title" "$description")" || { echo "SKIP: pre-triage could not run for $sha"; exit 0; }
 if [[ $DRYRUN -eq 1 ]]; then printf '%s\n' "$body"; exit 0; fi
 
 # Post as its own author so the comment is unmistakably pre-triage INPUT, not a gate verdict.
