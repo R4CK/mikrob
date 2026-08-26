@@ -1,6 +1,6 @@
 import { describe, it, expect } from 'vitest'
 import { execFileSync } from 'node:child_process'
-import { readFileSync, writeFileSync, mkdirSync, mkdtempSync, rmSync, existsSync } from 'node:fs'
+import { readFileSync, writeFileSync, mkdirSync, mkdtempSync, rmSync, existsSync, readdirSync } from 'node:fs'
 import { join } from 'node:path'
 import { tmpdir } from 'node:os'
 
@@ -30,7 +30,13 @@ function sliceShellFn(src: string, name: string): string {
   return src.slice(start, end + 2)
 }
 
-const FUNCS = ['render_seed_template', 'seed_copy_is_untouched', 'refresh_untouched_seeds', 'run_seed_refresh']
+const FUNCS = [
+  'render_seed_template',
+  'seed_copy_is_untouched',
+  'seed_copy_try_merge',
+  'refresh_untouched_seeds',
+  'run_seed_refresh',
+]
   .map((n) => sliceShellFn(UPDATE, n))
   .join('\n')
 
@@ -246,6 +252,141 @@ describe('seed refresh touches only provably untouched copies', () => {
       const second = runRefresh(f.install, f.home)
       expect(readFileSync(join(dir, 'SKILL.md'), 'utf-8')).toBe(after1)
       expect(second.out).not.toMatch(/frissitve: [1-9]/)
+    } finally {
+      rmSync(f.base, { recursive: true, force: true })
+    }
+  })
+})
+
+// Card 4ba71429: seed_copy_is_untouched requires the WHOLE file to be byte-identical to something
+// shipped, so ONE unrelated operator edit anywhere in a real, multi-line scheduled-task SKILL.md
+// freezes EVERY future seed-side fix to that file forever -- measured live twice (gate-reconciler,
+// heartbeat-consolidated): MikroB had to hand-sync a genuine seed fix (a dependency_blocked bullet)
+// into both files because the operator had also touched an unrelated line (chat_id, a completion
+// marker). These tests reproduce that shape directly: a multi-line file, the seed fix and the
+// operator's own edit in DIFFERENT, well-separated regions.
+function makeMultilineFixture() {
+  const base = mkdtempSync(join(tmpdir(), 'seedmerge-'))
+  const install = join(base, 'install')
+  const home = join(base, 'home')
+  mkdirSync(join(install, 'seed-scheduled-tasks', 'demo-task'), { recursive: true })
+  mkdirSync(join(home, '.claude', 'scheduled-tasks'), { recursive: true })
+  writeFileSync(join(install, '.env'), 'MAIN_AGENT_ID=marveen\nBOT_NAME=Marveen\nOWNER_NAME=Szabolcs\nWEB_PORT=3420\n')
+
+  git(install, ['init', '-q'])
+  git(install, ['config', 'user.email', 'test@example.invalid'])
+  git(install, ['config', 'user.name', 'test'])
+
+  const task = join(install, 'seed-scheduled-tasks', 'demo-task', 'SKILL.md')
+  const v1 = ['# Task X', '- step 1', '- step 2', '- step 3', 'chat_id: {{CHAT_ID}}', ''].join('\n')
+  // v2: a genuine seed-side fix, a NEW bullet -- the shape of the real dependency_blocked addition.
+  const v2 = ['# Task X', '- step 1', '- step 2', '- step 2.5 (dependency_blocked check)', '- step 3', 'chat_id: {{CHAT_ID}}', ''].join(
+    '\n',
+  )
+  writeFileSync(task, v1)
+  git(install, ['add', 'seed-scheduled-tasks/demo-task/SKILL.md'])
+  git(install, ['commit', '-q', '-m', 'v1'])
+  writeFileSync(task, v2)
+  git(install, ['add', 'seed-scheduled-tasks/demo-task/SKILL.md'])
+  git(install, ['commit', '-q', '-m', 'v2'])
+  return { base, install, home, v1, v2 }
+}
+
+describe('seed_copy_try_merge: a clean 3-way merge reaches a fix a whole-file hash never could (card 4ba71429)', () => {
+  it('the real incident shape: operator edited the chat_id line, seed independently added a new bullet -- both survive', () => {
+    const f = makeMultilineFixture()
+    try {
+      const dir = join(f.home, '.claude', 'scheduled-tasks', 'demo-task')
+      mkdirSync(dir, { recursive: true })
+      // Operator's live copy: v1 rendered, but with the chat_id line hand-edited (the exact
+      // MikroB-reported divergence source #2) -- untouched by the seed's own bullet-list fix.
+      const operatorCopy = f.v1.replace('chat_id: {{CHAT_ID}}', 'chat_id: 555444333')
+      writeFileSync(join(dir, 'SKILL.md'), operatorCopy)
+      const r = runRefresh(f.install, f.home)
+      expect(r.code).toBe(0)
+      const result = readFileSync(join(dir, 'SKILL.md'), 'utf-8')
+      // The new seed bullet reached the file...
+      expect(result).toContain('- step 2.5 (dependency_blocked check)')
+      // ...AND the operator's own edit was not silently discarded.
+      expect(result).toContain('chat_id: 555444333')
+      expect(r.out).toMatch(/osszefesulve/)
+    } finally {
+      rmSync(f.base, { recursive: true, force: true })
+    }
+  })
+
+  it('the other real shape: operator appended a completion-marker line at the END, seed added a bullet in the MIDDLE -- both survive', () => {
+    const f = makeMultilineFixture()
+    try {
+      const dir = join(f.home, '.claude', 'scheduled-tasks', 'demo-task')
+      mkdirSync(dir, { recursive: true })
+      // MikroB-reported divergence source #1: an appended marker the operator added, never fed
+      // back into the seed.
+      const operatorCopy = f.v1.replace(/\n$/, '') + '\n<!-- kesz-jelzes-marker -->\n'
+      writeFileSync(join(dir, 'SKILL.md'), operatorCopy)
+      runRefresh(f.install, f.home)
+      const result = readFileSync(join(dir, 'SKILL.md'), 'utf-8')
+      expect(result).toContain('- step 2.5 (dependency_blocked check)')
+      expect(result).toContain('<!-- kesz-jelzes-marker -->')
+    } finally {
+      rmSync(f.base, { recursive: true, force: true })
+    }
+  })
+
+  it('writes a timestamped .bak of the pre-merge content before applying a clean merge', () => {
+    const f = makeMultilineFixture()
+    try {
+      const dir = join(f.home, '.claude', 'scheduled-tasks', 'demo-task')
+      mkdirSync(dir, { recursive: true })
+      const operatorCopy = f.v1.replace('chat_id: {{CHAT_ID}}', 'chat_id: 555444333')
+      writeFileSync(join(dir, 'SKILL.md'), operatorCopy)
+      runRefresh(f.install, f.home)
+      const backups = readdirSync(dir).filter((n: string) => n.includes('.seedbak.'))
+      expect(backups.length).toBe(1)
+      expect(readFileSync(join(dir, backups[0]), 'utf-8')).toBe(operatorCopy)
+    } finally {
+      rmSync(f.base, { recursive: true, force: true })
+    }
+  })
+
+  it('a GENUINE conflict (both sides edit the SAME bullet) is left completely untouched, no partial merge', () => {
+    const f = makeMultilineFixture()
+    try {
+      const dir = join(f.home, '.claude', 'scheduled-tasks', 'demo-task')
+      mkdirSync(dir, { recursive: true })
+      // Operator rewrote the EXACT line the seed's v2 also changes ("- step 3" region is untouched
+      // in v2, so instead collide on the SAME line v2 touches: reuse "- step 2" -> operator rewords it).
+      const operatorCopy = f.v1.replace('- step 2', '- step 2 (operator reworded this exact step)')
+      writeFileSync(join(dir, 'SKILL.md'), operatorCopy)
+      const r = runRefresh(f.install, f.home)
+      expect(r.code).toBe(0)
+      // Left byte-for-byte alone -- the core safety property this whole mechanism exists for.
+      expect(readFileSync(join(dir, 'SKILL.md'), 'utf-8')).toBe(operatorCopy)
+      expect(r.out).not.toMatch(/osszefesulve: [1-9]/)
+    } finally {
+      rmSync(f.base, { recursive: true, force: true })
+    }
+  })
+
+  it('task-config.json (non-.md) is NOT merge-attempted -- stays under the plain whole-file gate', () => {
+    const f = makeMultilineFixture()
+    try {
+      const configSrc = join(f.install, 'seed-scheduled-tasks', 'demo-task', 'task-config.json')
+      writeFileSync(configSrc, '{\n  "enabled": true,\n  "schedule": "0 8 * * *"\n}\n')
+      git(f.install, ['add', 'seed-scheduled-tasks/demo-task/task-config.json'])
+      git(f.install, ['commit', '-q', '-m', 'add config'])
+      writeFileSync(configSrc, '{\n  "enabled": true,\n  "schedule": "*/30 * * * *"\n}\n')
+      git(f.install, ['add', 'seed-scheduled-tasks/demo-task/task-config.json'])
+      git(f.install, ['commit', '-q', '-m', 'change schedule'])
+
+      const dir = join(f.home, '.claude', 'scheduled-tasks', 'demo-task')
+      mkdirSync(dir, { recursive: true })
+      const operatorConfig = '{\n  "enabled": false,\n  "schedule": "0 8 * * *"\n}\n'
+      writeFileSync(join(dir, 'task-config.json'), operatorConfig)
+      runRefresh(f.install, f.home)
+      // Byte-for-byte alone, even though a line-based merge WOULD succeed cleanly here (different
+      // lines) -- JSON stays out of scope for this card, a distinct structural risk profile.
+      expect(readFileSync(join(dir, 'task-config.json'), 'utf-8')).toBe(operatorConfig)
     } finally {
       rmSync(f.base, { recursive: true, force: true })
     }

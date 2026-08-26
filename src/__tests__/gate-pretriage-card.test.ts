@@ -20,8 +20,15 @@ const git = (...args: string[]): void => {
 
 /** Commit `files` and return the pre-triage INPUT comment body the wiring would post for that commit.
  *  `title` (optional) exercises the card-title-vs-changed-files self-check (card ce159d2b).
- *  `desc` (optional) exercises the missing-DECISIONS.md nudge (card 78f85eb1). */
-function commitAndBody(files: Record<string, string>, title?: string, desc?: string): string {
+ *  `desc` (optional) exercises the missing-DECISIONS.md nudge (card 78f85eb1).
+ *  `peerGateSha` (optional) exercises the stale-Pair-FE/Pair-BE-Gate-SHA nudge (card 367c23a9) --
+ *  stands in for what card-mode would have resolved live by following a Pair-FE:/Pair-BE: line. */
+function commitAndBody(
+  files: Record<string, string>,
+  title?: string,
+  desc?: string,
+  peerGateSha?: string,
+): string {
   for (const [rel, body] of Object.entries(files)) {
     const abs = join(repo, rel)
     mkdirSync(dirname(abs), { recursive: true })
@@ -33,6 +40,7 @@ function commitAndBody(files: Record<string, string>, title?: string, desc?: str
   const args = [SCRIPT, '--repo', repo, '--sha', sha, '--dry-run']
   if (title !== undefined) args.push('--title', title)
   if (desc !== undefined) args.push('--desc', desc)
+  if (peerGateSha !== undefined) args.push('--peer-gate-sha', peerGateSha)
   return execFileSync('bash', args, { encoding: 'utf-8', stdio: 'pipe' })
 }
 
@@ -228,6 +236,59 @@ describe('the missing-DECISIONS.md nudge (card 78f85eb1)', () => {
   it('no title/desc given (offline manual use) -- the check is skipped, not a false warning', () => {
     const body = commitAndBody({ 'src/auth.ts': 'export const x = 1\n' })
     expect(body).not.toContain('FIGYELEM -- HIANYZO DECISIONS.md')
+  })
+})
+
+describe('the stale Pair-FE/Pair-BE Gate-SHA nudge (card 367c23a9)', () => {
+  it('warns when the embedded Gate-SHA no longer matches the peer card\'s latest one', () => {
+    const body = commitAndBody(
+      { 'src/x.ts': 'export const x = 1\n' },
+      '[Fron Ted][FE] repo-card new row',
+      'Pair-BE: abcdef01\nA BE resz landolt.\nGate-SHA: 1111111',
+      '2222222',
+    )
+    expect(body).toContain('FIGYELEM -- ELAVULT PAIR GATE-SHA')
+    expect(body).toContain('1111111')
+    expect(body).toContain('2222222')
+  })
+
+  it('stays quiet when the embedded Gate-SHA still matches the peer\'s latest one', () => {
+    const body = commitAndBody(
+      { 'src/x.ts': 'export const x = 1\n' },
+      '[Fron Ted][FE] repo-card new row',
+      'Pair-BE: abcdef01\nGate-SHA: 1111111',
+      '1111111',
+    )
+    expect(body).not.toContain('FIGYELEM -- ELAVULT PAIR GATE-SHA')
+  })
+
+  it('stays quiet when the peer sha is a longer, still-matching prefix (short vs. full sha)', () => {
+    const body = commitAndBody(
+      { 'src/x.ts': 'export const x = 1\n' },
+      '[Fron Ted][FE] repo-card new row',
+      'Pair-BE: abcdef01\nGate-SHA: 1111111',
+      '11111117890abc',
+    )
+    expect(body).not.toContain('FIGYELEM -- ELAVULT PAIR GATE-SHA')
+  })
+
+  it('stays quiet when the description has no embedded Gate-SHA to compare', () => {
+    const body = commitAndBody(
+      { 'src/x.ts': 'export const x = 1\n' },
+      '[Fron Ted][FE] repo-card new row',
+      'Pair-BE: abcdef01\nNincs meg landolva BE oldalon.',
+      '2222222',
+    )
+    expect(body).not.toContain('FIGYELEM -- ELAVULT PAIR GATE-SHA')
+  })
+
+  it('stays quiet when no peer Gate-SHA was resolved (offline manual use, or no Pair-* line)', () => {
+    const body = commitAndBody(
+      { 'src/x.ts': 'export const x = 1\n' },
+      '[Fron Ted][FE] repo-card new row',
+      'Gate-SHA: 1111111',
+    )
+    expect(body).not.toContain('FIGYELEM -- ELAVULT PAIR GATE-SHA')
   })
 })
 

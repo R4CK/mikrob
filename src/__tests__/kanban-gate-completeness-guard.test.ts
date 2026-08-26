@@ -382,4 +382,42 @@ describe('gateCompletenessGuardVerdict', () => {
       expect(gateCompletenessGuardVerdict('c1', 'done', false).blocked).toBe(false)
     })
   })
+
+  // Real incident on d0b4f003 (card 367c23a9): three gate agents cited the SAME round's Gate-SHA
+  // in three different shapes on one line. QA's PASS read as stale ("QA verdikt hianyzik") because
+  // Cybersec's "+"-joined citation silently lost its second sha to the old comma-anchored
+  // extraction, mis-anchoring the round boundary to a citation of an EARLIER sha instead.
+  // MikroB had to force:true past this false positive.
+  describe('three different Gate-SHA line SHAPES for the same round (card 367c23a9, real incident d0b4f003)', () => {
+    it('a "+"-joined multi-sha citation ("old + new (...)") must not lose the NEW sha or misattribute the OLD one', () => {
+      card.description = 'Gate: QA + Cybersec + Cybered'
+      comments = [
+        { author: 'fron-ted', content: 'REVIEW\nGate-SHA: bc7ceddc (landolt merge f3380837, seam OK)', created_at: 100 },
+        { author: 'qa', content: 'QA PASS\nGate-SHA: bc7ceddc (a sajat munka merge-je: f3380837, alap dc7a6451)', created_at: 200 },
+        // Cybersec's shape is the one that broke the old extraction: a "+"-joined pair, THEN a
+        // trailing comma-separated "landolt <sha>" clause -- neither the second "+"-sha nor the
+        // trailing clause's sha were readable under the old first-token-per-comma-segment rule.
+        { author: 'cybersec', content: 'CYBERSEC GO\nGate-SHA: dc7a6451 + bc7ceddc (a kartya sajat munkaja), landolt f3380837', created_at: 300 },
+        { author: 'cybered', content: 'CYBERED GO\nGate-SHA: bc7ceddc (landolt merge f3380837)', created_at: 400 },
+      ]
+      const v = gateCompletenessGuardVerdict('c1', 'done', false)
+      // Every designated gate DID verdict this exact round -- must not block.
+      expect(v.blocked).toBe(false)
+    })
+
+    it('CONTROL: the same "+"-joined shape genuinely citing a NEWER sha still moves the round boundary forward', () => {
+      card.description = 'Gate: QA + Cybersec'
+      comments = [
+        { author: 'backend2', content: 'REVIEW -- kesz\nGate-SHA: aaaaaaa1', created_at: 100 },
+        { author: 'cybersec', content: 'CYBERSEC GO\nGate-SHA: aaaaaaa1', created_at: 120 },
+        // A real new round, cited only via the "+"-joined shape -- must still register bbbbbbb2.
+        { author: 'backend2', content: 'REVIEW -- kesz, uj commit\nGate-SHA: aaaaaaa1 + bbbbbbb2 (delta)', created_at: 200 },
+        { author: 'qa', content: 'REVIEW: QA PASS\nGate-SHA: bbbbbbb2', created_at: 220 },
+      ]
+      const v = gateCompletenessGuardVerdict('c1', 'done', false)
+      // Cybersec never verdicted bbbbbbb2 -- must still block.
+      expect(v.blocked).toBe(true)
+      expect(v.message).toContain('Cybersec')
+    })
+  })
 })

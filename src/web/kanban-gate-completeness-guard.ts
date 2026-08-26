@@ -121,17 +121,31 @@ function latestReviewAt(comments: readonly Comment[]): number | null {
 // necessarily comment-initial), same reasoning as REVIEW_RX above.
 const GATE_SHA_LINE_RX = /^\s*Gate-SHA\s*:\s*(.+)$/gim
 
+// Card 367c23a9, real incident on d0b4f003: three gate agents cited the SAME round's Gate-SHA in
+// three different shapes on one line -- "bc7ceddc (a sajat munka merge-je: f3380837, alap
+// dc7a6451)", "dc7a6451 + bc7ceddc (a kartya sajat munkaja), landolt f3380837", "bc7ceddc
+// (landolt merge f3380837)". The old extraction only trusted the FIRST hex run at the very START
+// of each comma-separated segment, so a "+"-joined citation (Cybersec's shape) lost its second
+// sha entirely, and a trailing "landolt <sha>" clause (present in all three) was never read at
+// all. That silently attributed Cybersec's comment to the WRONG (earlier) sha, pulled the round
+// boundary later than QA's genuinely-fresh verdict, and produced "QA verdikt hianyzik" on a card
+// QA had already passed -- MikroB had to force:true past it. A Gate-SHA line's value is short and
+// already scoped to this one declared field (not free-flowing prose), so trusting every
+// word-bounded hex run on it -- any separator, any surrounding parenthetical -- is the same class
+// of widening kanban-landed-guard.ts already applies to a WHOLE comment body, just narrower.
+const GATE_SHA_TOKEN_RX = /\b[0-9a-f]{6,40}\b/gi
+
 /** Every short-sha token declared on a Gate-SHA line in `content` (lowercased, deduped). A card can
- *  legitimately cite more than one commit on one line ("Gate-SHA: e46f9968, 9e9a79bc"). */
+ *  legitimately cite more than one commit on one line, in any separator shape ("Gate-SHA: e46f9968,
+ *  9e9a79bc", "Gate-SHA: e46f9968 + 9e9a79bc (...)", "Gate-SHA: e46f9968 (landolt 9e9a79bc)"). */
 function extractGateShas(content: string): ReadonlySet<string> {
   GATE_SHA_LINE_RX.lastIndex = 0
   const out = new Set<string>()
   let m: RegExpExecArray | null
   while ((m = GATE_SHA_LINE_RX.exec(content)) !== null) {
-    for (const tok of (m[1] ?? '').split(',')) {
-      const sha = /^[0-9a-f]{6,40}/i.exec(tok.trim())?.[0]?.toLowerCase()
-      if (sha) out.add(sha)
-    }
+    GATE_SHA_TOKEN_RX.lastIndex = 0
+    let tm: RegExpExecArray | null
+    while ((tm = GATE_SHA_TOKEN_RX.exec(m[1] ?? '')) !== null) out.add(tm[0].toLowerCase())
   }
   return out
 }

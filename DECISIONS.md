@@ -3325,3 +3325,35 @@ a `seed-fleet-agents/qa/CLAUDE.md` core-skill listájában, fleet-test-re nincs 
 **Ki döntött:** backend (kártya 489dae5f, MikroB gyökér-ok azonosítása alapján, Peti közvetlen panaszára válaszul -- lásd `live-config-outranks-a-remembered-instruction`: a `[[ingatlan-project-location]]` memória korábbi "kézzel indítva, szándékosan" jegyzete elavult ehhez a döntéshez képest, a kártya friss, Peti-panaszra épülő MikroB-döntés).
 
 **Hivatkozás:** kártya `489dae5f`.
+
+## 2026-08-26 -- Pair-FE/Pair-BE beégetett Gate-SHA elavulás: strukturális nudge, nem fegyelmi szabály (kártya 367c23a9)
+
+**Mi történt:** a `fed9409f`/`d0b4f003` pár kapcsán (backend saját megfigyelése, msg 19372) felmerült, hogy ha egy Pair-FE/Pair-BE kártya leírása beéget egy konkrét `Gate-SHA:` sort a másik oldal akkori állapotára hivatkozva, ez a hivatkozás csendben elavulhat, ha a párkártya utána tovább változik (új commit, re-landolás) -- a táblán semmi nem jelzi ezt.
+
+**Döntés:** a kódminőségi alapelvek 6. pontja (strukturális védelem a fegyelem helyett) szerint jártam el, ugyanabban a szellemben mint a `78f85eb1` DECISIONS.md-nudge: a `gate-pretriage-card.sh`-t bővítettem egy új, kizárólag nudge-jellegű ellenőrzéssel (sosem blokkol, sosem változtatja a felismert commitot). Card-módban a szkript a kártya leírásában talált `Pair-FE:`/`Pair-BE:` sor alapján lekéri a párkártya legfrissebb `Gate-SHA:` kommentjét, és ezt hasonlítja össze a SAJÁT leírásba beégetett `Gate-SHA:` értékkel -- eltérésnél figyelmeztet. A tényleges hálózati feloldás (élő API-hívás a párkártyára) csak card-módban fut, nem tesztelt egység -- a szöveges összehasonlítás maga (build_body pythonja) egy új `--peer-gate-sha` kapcsolóval offline is hívható, így determinisztikusan tesztelhető, ugyanaz a minta mint a `--title`/`--desc` kapcsolóknál.
+
+**Elutasított alternatíva:** tisztán fegyelmi szabály ("a párkártyát érintő változtatáskor mindig frissítsd a másik oldal hivatkozását is") -- a kártya saját szövege is felveti mindkét opciót, de a 6. alapelv explicit prioritást ad a strukturális megoldásnak, ha az ésszerű költséggel megépíthető, és itt az volt (a meglévő pre-triage-infrastruktúra közvetlenül bővíthető).
+
+**Tesztek:** 5 új teszt (eltérés figyelmeztet, egyezés csendben marad, rövidebb/prefix-egyező sha csendben marad, nincs beégetett Gate-SHA a leírásban -> csendben marad, nincs feloldott peer-sha -> csendben marad). 36/36 zöld a teljes fájlban.
+
+**Ki döntött:** backend (kártya `367c23a9`, MikroB eredeti "gondold át" megfigyelése alapján, önjáró self-advance dispatch, 2 napnál régebbi kártya előreléptetve a 6b. szabály szerint).
+
+**Hivatkozás:** kártya `367c23a9`. Kapcsolódó minta: `78f85eb1` (missing-DECISIONS.md nudge, ugyanaz a fájl, ugyanaz a "nudge, nem block" szerződés).
+
+## 2026-08-26 -- Seed-vs-live SKILL.md csapda: 3-way szöveges merge fallback, PLAN-GRILLING után (kártya 4ba71429)
+
+**Mi történt:** `update.sh` `seed_copy_is_untouched()` függvénye a TELJES fájlt hasonlítja bájtra pontosan egy korábban kiadott seed-verzióhoz -- ha az operátor BÁRHOL egyetlen sort is szerkesztett (pl. `chat_id` érték, egy hozzáfűzött megjegyzés), a fájl örökre "operátor-módosítottnak" számít, és egy jogos seed-oldali javítás (pl. a `dependency_blocked` bullet) SOHA nem jut el hozzá. Élőben kétszer mérve (`gate-reconciler`, `heartbeat-consolidated`): MikroB kézzel szinkronizálta mindkettőt, mert a strukturális védelem hiányzott.
+
+**Döntés (PLAN-GRILLING VERDIKT, GO-WITH-CHANGES, teljes szöveg a kártya kommentjében):** `seed_copy_try_merge()` új fallback -- amikor a teljes-fájl-egyezés megbukik, `git merge-file`-alapú 3-way szöveges merge próbálkozik (base = egy korábbi kiadott verzió, ours = telepített fájl, theirs = jelenlegi seed), CSAK `.md` fájlokra (a `task-config.json` strukturált konfig KIMARAD, más kockázati profil). Az írás KIZÁRÓLAG akkor történik, ha a merge NULLA konfliktussal sikerül -- bármilyen konfliktus vagy hiányzó `git merge-file` esetén a fájl változatlan marad, ugyanaz a konzervatív viselkedés mint korábban. Írás előtt időbélyegzett `.bak` másolat készül.
+
+**KRITIKUS IMPLEMENTÁCIÓS CSAPDA, amit a tesztelés fogott meg (nem a grillezés):** az első implementáció a `git log` által visszaadott LEGÚJABB historikus blob-bal próbálkozott ELŐSZÖR bázisként -- ez viszont DEFINÍCIÓ SZERINT megegyezik a jelenlegi seed-tartalommal (`theirs`-szel), mert a legutóbbi commit, ami az adott útvonalat érintette, pont a jelenlegi állapotra állította. Egy `base == theirs` merge mindig trivialisan "sikeres" (0 konfliktus), DE semmit nem változtat -- az eredmény pontosan `ours` marad, a javítás SOHA nem jut el a fájlhoz, miközben a kód `SEED_REFRESH_MERGED`-ként könyveli el (hamis siker). Élőben reprodukálva egy valósághű, több soros fixture-rel (nem a teszt-fájl apró 1-soros verzióival, amik véletlenül NEM buktatták le a hibát -- lásd lent). Javítás: minden jelölt bázis hash-ét összevetjük `theirs` hash-ével, és ha egyezik, átugorjuk -- a keresés így egy VALÓDI, korábbi állapotot talál bázisként.
+
+**Miért nem buktatta le ezt a meglévő tesztkészlet:** a `seed-refresh-untouched-only.test.ts` meglévő fixture-jei 1 soros fájlok (`"v1 shipped\n"` stb.), ahol egy operátor-szerkesztés és egy seed-javítás szomszédos sorokon él -- ezekre a `git merge-file` maga is konfliktust jelez (a diff3-algoritmus szomszédos beszúrás/törlés esetén konzervatívan konfliktusnak veszi), így a régi "SOHA nem ír felül" tesztek véletlenül zölden maradtak a hibás implementáción is. A valós incidens (hosszabb, több szakaszos SKILL.md, a szerkesztés és a javítás EGYMÁSTÓL TÁVOL) más útvonalon futott át a kódon, és csak egy realisztikus, több soros, ténylegesen-elkülönített-szerkesztésű fixture-rel derült ki a hiba -- élő, kézzel futtatott reprodukcióval, nem csak a vitest-tel.
+
+**Tesztek:** a meglévő `seed-refresh-untouched-only.test.ts`-t bővítettem (nem írtam át egyetlen meglévő asszerciót sem -- mind a 13 eredeti teszt változatlanul zöld marad, mert a valódi konfliktus-védelem sértetlen). 5 új teszt: (1) a KÉT valós incidens alakja (chat_id-szerkesztés + bullet-hozzáadás; hozzáfűzött marker + bullet-hozzáadás) -- mindkét oldal megmarad; (2) `.bak` mentés ellenőrzése; (3) valódi, ugyanazon sort érintő konfliktus -- a fájl bájtra pontosan érintetlen marad; (4) `task-config.json` (nem `.md`) kimarad a merge-ből, a régi szabály alatt marad. 18/18 zöld. tsc tiszta.
+
+**Határolás:** a Cybered által jelzett "két élő másolat ugyanahhoz a logikához" (gate-reconciler vs heartbeat-consolidated duplikáció) KÜLÖN probléma, nem ebben a kártyában oldva meg -- nem az én döntésem, melyik másolat az elsődleges, ezt külön jeleztem MikroB-nak.
+
+**Ki döntött:** backend (kártya `4ba71429`, plan-grilling verdikt a kártya kommentjében, MikroB eredeti dispatch alapján, önjáró self-advance, 2 napnál régebbi kártya).
+
+**Hivatkozás:** kártya `4ba71429`. Kapcsolódó tanulság: [[a-seed-refresh-only-heals-byte-identical-copies]] (memória).
