@@ -1867,10 +1867,33 @@ export function gateDecision(toolName, toolInput) {
     // segment START -- so it is the one a fake segment boundary can mislead, and
     // the only one that gets quote-aware segments. Null (unresolvable quoting)
     // falls back to the naive split, i.e. to scanning strictly more.
-    const masked = maskInertLiterals(safeCommand)
-    for (const seg of (masked == null ? naiveSegs : splitSegments(masked))) {
-      // scheduler binaries: deny the exec/submit forms, allow pure read-listing
-      if (SCHEDULER_RX.test(seg) && !SCHEDULER_READ_RX.test(seg)) return { deny: true }
+    //
+    // The READ exemption is tested against BOTH the masked segment AND its RAW
+    // (unmasked) counterpart (card 40704cb1, backend's own finding, msg 19221:
+    // `crontab "-l"` and `launchctl "list"` -- both pure reads -- were denied).
+    // maskInertLiterals blanks a quoted argument to spaces, quotes included, so a
+    // QUOTED read flag/subcommand ("-l" / "list") disappears entirely before
+    // SCHEDULER_READ_RX ever runs against the masked text -- which defeats the
+    // quote-tolerance that regex was explicitly built with (card 4fa31f31's own
+    // header: "launchctl 'submit'"/"'launchctl' submit" are the SAME invocation as
+    // the unquoted form). Left as `crontab`/`launchctl` alone on the masked
+    // segment, the WRITE check still matches (the bare crontab branch has no
+    // shape guard, and a bare launchctl is deliberately treated as a real
+    // interactive vector), so the exemption never got a chance to fire.
+    //
+    // The WRITE check (SCHEDULER_RX) itself stays on the masked text only, same
+    // as before: that is what keeps a quoted PROSE mention of "crontab" /
+    // "launchctl" from tripping it in the first place, so this raw-text fallback
+    // is only ever consulted once a write already matched -- pairedSegments is
+    // the same {masked, raw} pairing the command-word check below already uses.
+    for (const pair of pairedSegments(safeCommand) ?? naiveSegs.map((s) => ({ masked: s, raw: s }))) {
+      if (
+        SCHEDULER_RX.test(pair.masked) &&
+        !SCHEDULER_READ_RX.test(pair.masked) &&
+        !SCHEDULER_READ_RX.test(pair.raw)
+      ) {
+        return { deny: true }
+      }
     }
     // Command-word check (card 4f32f1f9), ADDITIVE to the raw scan above and using the same
     // segment boundaries -- but reading the word from the ORIGINAL text with the shell's word

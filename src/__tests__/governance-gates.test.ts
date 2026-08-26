@@ -499,6 +499,24 @@ describe('self-pace-gate compound-command false-positives', () => {
     expect(selfPaceDecision('Bash', { command: 'crontab -r' }).deny).toBe(true)
     expect(selfPaceDecision('Bash', { command: 'launchctl submit -l self -- node x.mjs' }).deny).toBe(true)
   })
+  // Backend's own finding (msg 19221, card 40704cb1): a QUOTED read flag/subcommand was denied even
+  // though SCHEDULER_READ_RX is explicitly quote-tolerant (card 4fa31f31). maskInertLiterals blanks
+  // a quoted argument to spaces -- quotes included -- BEFORE the read-exemption regex ever saw it,
+  // so `crontab "-l"` left only bare `crontab` on the masked text, which the WRITE check (no shape
+  // guard on the crontab branch) still matched, while the READ check had nothing left to match.
+  it('ALLOWS a QUOTED read flag/subcommand (crontab "-l" / launchctl "list")', () => {
+    expect(selfPaceDecision('Bash', { command: 'crontab "-l"' }).deny).toBe(false)
+    expect(selfPaceDecision('Bash', { command: "crontab '-l'" }).deny).toBe(false)
+    expect(selfPaceDecision('Bash', { command: 'launchctl "list"' }).deny).toBe(false)
+    expect(selfPaceDecision('Bash', { command: "launchctl 'list'" }).deny).toBe(false)
+    expect(selfPaceDecision('Bash', { command: '"crontab" -l' }).deny).toBe(false)
+  })
+  it('STILL denies a QUOTED scheduler WRITE form (the raw-text exemption fallback does not loosen this)', () => {
+    expect(selfPaceDecision('Bash', { command: 'crontab "-r"' }).deny).toBe(true)
+    expect(selfPaceDecision('Bash', { command: "crontab '-r'" }).deny).toBe(true)
+    expect(selfPaceDecision('Bash', { command: 'launchctl "submit" -l self' }).deny).toBe(true)
+    expect(selfPaceDecision('Bash', { command: "launchctl 'load' x.plist" }).deny).toBe(true)
+  })
   // Measured false positive, 2026-07-26 (found by Hacker): the heartbeats ORDER every
   // agent to report `launchctl list | grep com.jarvis.channels` output, so a launchd
   // job LABEL shows up in prose constantly. splitSegments splits on `;`, which put
