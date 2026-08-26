@@ -3528,3 +3528,56 @@ dokumentalja mostantol -- ez zarja le, hogy a harmadik mechanizmus miert marad m
 **Hivatkozas:** kartya 0becf86c, elozo lelet: 1d4cdcaa reviewje (fenti bejegyzes ugyanebben a
 fajlban). Erintett fajlok: `seed-skills/fleet-handoff/SKILL.md` (atnevezve `seed-skills/handoff/`-bol),
 `ATTRIBUTIONS.md`.
+
+## 2026-08-26 -- 25c35be7 -- 5 vendorolt skill VENDORED.md-je potolva, egy valos szunet-fut hivatkozas javitva
+
+**F-1 (Cybersec, 1d4cdcaa gate, komment 19738):** ot vendorolt skillnek (idea-refine, interview-me,
+documentation-and-adrs, doubt-driven-development, context-engineering) nem volt VENDORED.md-je.
+Mind az addyosmani/agent-skills repobol jott (`store/adopted/addyosmani__agent-skills`, korabban
+csak fetch-elve, kulon watch-clone volt mar). A `store/vendor-skill.sh`-t futtattam mind az 5-re;
+negynel (idea-refine, interview-me, documentation-and-adrs, context-engineering) a telepitett
+tartalom bajt-azonos volt a klon aktualis csucsaval (`5a5ea45e`), tehat oda pinneltem.
+
+**doubt-driven-development kulon eset.** A diff kimutatta: a telepitett SKILL.md ELTER a klon
+csucsatol -- pontosan az upstream `91d4d07` ("fix(skills): resolve references/ links from the
+skill directory") commit altal erintett ket sorban. A telepitett valtozat a REGEBBI, `references/orchestration-patterns.md`
+(sajat-relativ) format hasznalja; a csucs a `../../references/orchestration-patterns.md` (ket
+szinttel feljebb mutato) format -- ami CSAK az upstream repo sajat elrendezeseben oldodik fel
+(`references/` a repo gyokeren, `skills/<nev>/` alatta ket szinttel). A mi lapositott
+`~/.claude/skills/<nev>/` telepitesunk egyiket sem elegiti ki onmagaban. Ezert:
+- pinneltem az ELSO commitra, ami a skillt bevezette upstream (`7829ffd9`, 2026-07-26) -- ez
+  EGYEZIK a mar telepitett tartalommal, tehat oszinte pin, nem talalgatas;
+- helyileg bemasoltam a hianyzo `references/orchestration-patterns.md` fajlt a skill sajat
+  `references/` alkonyvtaraba, igy a sajat-relativ hivatkozas (a pinnelt commit sajat formaja)
+  tenylegesen felold valamit a lemezen -- korabban egyik forma sem oldott fel semmit.
+- ez egy DOKUMENTALT kivetel a "VENDORED = ne szerkeszd" szabaly alol (a VENDORED.md sajat
+  "Usage restriction" mezojebe irva), mert a re-vendor parancs a csucsra allna vissza es a
+  hivatkozas ismet torne -- ezt a `store/vendor-skill.sh` sajat generalt "Re-vendor" blokkja is
+  most mar `--ref`/`--note` nelkul irna ki (lasd lejjebb, ezt is javitottam).
+
+**F-2 (Cybersec):** `idea-refine/SKILL.md` 22. sora `bash skills/idea-refine/scripts/idea-refine.sh`-t
+hivott -- ez az upstream MONOREPO gyoker-relativ utja, nalunk (lapositott telepites) nem letezik
+igy. A script maga trivialis (`mkdir -p docs/ideas`), ezert Cybersec ket opciot ajanlott: abszolut
+ut VAGY a sor torlese. Abszolut utat valasztottam (`$HOME/.claude/skills/idea-refine/scripts/idea-refine.sh`),
+mert megtartja a mukodo kenyelmi funkciot ahelyett hogy torolne -- kezzel futtatva ellenorizve
+mukodik (`docs/ideas` letrejott, JSON-status visszaadva). Ugyanugy dokumentalva a VENDORED.md
+"Usage restriction" mezojeben (ez a sor minden jovobeli re-vendor utan ujra-patch-elendo).
+
+**Melleklelet, `store/vendor-skill.sh` sajat hibaja.** Mikozben a doubt-driven-development pin
+`--ref`/`--note` ertekeit ellenoriztem, kiderult: a script generalta "Re-vendor" blokk SOHA nem
+irta ki a `--ref`/`--note`-ot akkor sem, ha meg voltak adva -- egy naiv masolt-beillesztett
+ujra-futtatas csendben a CSUCSRA allt volna vissza, pont azt a pinnelt/dokumentalt allapotot
+torolve, amit epp az elobb rogzitettem. Javitva: a heredoc sablon most mar `${REF:+ --ref
+$REF}${NOTE:+ --note \"$NOTE\"}`-t is beleszamolja. Kozben egy masodik, buvos bash-buktatot is
+talaltam: `${NOTE:+ --note "$NOTE"}` (escapelt idezojel nelkul) egy heredocban a `"..."` idezojeleket
+NEM literalisan adja ki -- a `${VAR:+szo}` parameter-kiterjesztes maga is dupla-idezett kontextusnak
+szamit, tehat a beagyazott `"` karaktereket a bash levagja, nem irja ki. Csak `\"$NOTE\"` (escapelt)
+adja ki a szo szerinti idezojeleket. Ujra-futtatva a doubt-driven-development pin-parancsot a
+javitott scripttel igazolva: a kiirt "Re-vendor" sor most mar masolhato-futtathato allapotban all.
+
+`src/__tests__/store-shell-scripts-syntax-sweep.test.ts`: 101/101 zold a javitas utan.
+
+**Ki dontott:** backend (kartya 25c35be7, Cybersec F-1/F-2 leletenek vegrehajtasa; a
+`vendor-skill.sh` re-vendor-parancs hianya es az idezojel-buktato sajat, a munka kozben talalt
+lelet, kozvetlenul ugyanahhoz a valtoztatashoz kapcsolodik).
+**Hivatkozas:** kartya 25c35be7, elozo lelet forrasa: 1d4cdcaa gate, komment 19738.
