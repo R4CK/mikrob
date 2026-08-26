@@ -22,7 +22,7 @@ MARKER="GATE PRE-TRIAGE (mechanikus, verdict:null)"
 CLEANCORE_REPO="/mnt/h/LM_Studio_Workdir/CleanCore"
 MIKROB_REPO="/home/neon/marveen"
 
-CARD=""; REPO=""; SHA=""; DRYRUN=0; TITLE=""; DESC=""
+CARD=""; REPO=""; SHA=""; DRYRUN=0; TITLE=""; DESC=""; PEER_SHA=""
 while [[ $# -gt 0 ]]; do
   case "$1" in
     --dry-run) DRYRUN=1; shift ;;
@@ -30,6 +30,7 @@ while [[ $# -gt 0 ]]; do
     --sha) SHA="${2:-}"; shift 2 ;;
     --title) TITLE="${2:-}"; shift 2 ;;
     --desc) DESC="${2:-}"; shift 2 ;;
+    --peer-gate-sha) PEER_SHA="${2:-}"; shift 2 ;;
     --*) echo "gate-pretriage-card: unknown arg '$1'" >&2; exit 2 ;;
     *) CARD="$1"; shift ;;
   esac
@@ -98,12 +99,12 @@ merge_diff_base() {
 # comment, not a second commit-selector -- it runs AFTER selection, on whatever commit was already
 # resolved, and only ever adds a warning LINE; it never blocks or changes SHA/exit code.
 build_body() {
-  local repo="$1" sha="$2" title="${3:-}" desc="${4:-}" json base
+  local repo="$1" sha="$2" title="${3:-}" desc="${4:-}" peer_sha="${5:-}" json base
   [[ -d "$repo/.git" ]] || return 3
   git -C "$repo" cat-file -e "${sha}^{commit}" 2>/dev/null || return 3
   base="$(merge_diff_base "$repo" "$sha")"
   json="$(bash "$PRETRIAGE" --repo "$repo" --base "$base" --head "$sha" --json 2>/dev/null)" || return 3
-  MARKER="$MARKER" SHA="$sha" REPO="$repo" PT_JSON="$json" TITLE="$title" DESC="$desc" python3 <<'PY'
+  MARKER="$MARKER" SHA="$sha" REPO="$repo" PT_JSON="$json" TITLE="$title" DESC="$desc" PEER_GATE_SHA="$peer_sha" python3 <<'PY'
 import json, os, re
 d = json.loads(os.environ["PT_JSON"])
 repo = os.path.basename(os.environ["REPO"].rstrip("/"))
@@ -178,6 +179,26 @@ if DECISIONS_TRIGGER_RX.search(decisions_haystack) and not touches_decisions:
         "a dontes dokumentalva van-e, mielott QA-n bukna emiatt (kartya 78f85eb1)."
     )
 
+# STALE PAIR-FE/PAIR-BE GATE-SHA NUDGE (card 367c23a9): a Pair-FE/Pair-BE card can embed the OTHER
+# side's Gate-SHA in its own description as context ("BE resz landolt <sha> alatt") -- if the paired
+# card keeps moving (new commits, a re-land) after that, the embedded value goes stale silently: the
+# FE agent builds against an outdated contract with no signal on the board that anything changed.
+# PEER_GATE_SHA (resolved live, in card-mode only, by following this card's own Pair-FE:/Pair-BE:
+# line to the peer card and reading its LATEST Gate-SHA comment) is the ground truth to compare
+# against; this stays a nudge, never a block, same contract as every other check in this file.
+embedded_sha_m = re.search(r"Gate-SHA:\s*([0-9a-f]{6,40})", os.environ.get("DESC", ""), re.IGNORECASE)
+peer_sha = os.environ.get("PEER_GATE_SHA", "").strip().lower()
+if embedded_sha_m and peer_sha:
+    embedded_sha = embedded_sha_m.group(1).lower()
+    shortest = min(len(embedded_sha), len(peer_sha))
+    if embedded_sha[:shortest] != peer_sha[:shortest]:
+        out.append(
+            "[FIGYELEM -- ELAVULT PAIR GATE-SHA] a kartya leirasaba beegetett Gate-SHA "
+            f"({embedded_sha}) nem egyezik a par-kartya JELENLEGI legfrissebb Gate-SHA-javal "
+            f"({peer_sha}) -- ELLENORIZD, hogy a hivatkozott kontraktus meg aktualis-e, mielott "
+            "erre epitve reviewolsz (kartya 367c23a9)."
+        )
+
 fs = d.get("findings") or []
 if not fs:
     out.append("Mechanikus lelet: nincs (az olcso csapdak tisztak -- ez NEM jelenti, hogy a kartya jo).")
@@ -192,7 +213,7 @@ PY
 # ---- Offline core mode (tests / manual): --repo + --sha + --dry-run, no API. ----
 if [[ -n "$REPO" && -n "$SHA" ]]; then
   [[ $DRYRUN -eq 1 ]] || { echo "gate-pretriage-card: --repo/--sha is offline mode, requires --dry-run" >&2; exit 2; }
-  if body="$(build_body "$REPO" "$SHA" "$TITLE" "$DESC")"; then printf '%s\n' "$body"; else echo "SKIP: commit $SHA not in $REPO (or pre-triage failed)"; fi
+  if body="$(build_body "$REPO" "$SHA" "$TITLE" "$DESC" "$PEER_SHA")"; then printf '%s\n' "$body"; else echo "SKIP: commit $SHA not in $REPO (or pre-triage failed)"; fi
   exit 0
 fi
 
@@ -254,7 +275,30 @@ if [[ -n "$already_posted" ]]; then
   echo "SKIP: pre-triage for $sha already on $CARD"; exit 0
 fi
 
-body="$(build_body "$repo" "$sha" "$title" "$description")" || { echo "SKIP: pre-triage could not run for $sha"; exit 0; }
+# PAIR-FE/PAIR-BE PEER RESOLUTION (card 367c23a9): only in card-mode, since it needs a live fetch of
+# the OTHER card. Follows this card's own Pair-FE:/Pair-BE: line to the peer, reads the peer's LATEST
+# Gate-SHA comment (last one wins, same convention as gate verdicts), and hands it to build_body for
+# the offline, testable string comparison against whatever Gate-SHA this card's own description embeds.
+peer_id="$(printf '%s' "$description" | grep -oE 'Pair-(FE|BE):[[:space:]]*[A-Za-z0-9]+' | head -1 | grep -oE '[A-Za-z0-9]+$' || true)"
+peer_sha=""
+if [[ -n "$peer_id" ]]; then
+  peer_comments="$(curl -s -H @"$hdr_file" "$DASH/api/kanban/$peer_id/comments" 2>/dev/null || true)"
+  if [[ -n "$peer_comments" ]]; then
+    peer_sha="$(COMMENTS="$peer_comments" python3 -c '
+import json, os, re
+d = json.loads(os.environ["COMMENTS"]); rows = d if isinstance(d, list) else d.get("comments", [])
+rows = sorted(rows, key=lambda c: c.get("created_at") or c.get("id") or 0)
+found = ""
+for c in rows:
+    m = re.search(r"Gate-SHA:\s*([0-9a-f]{6,40})", c.get("content") or "", re.IGNORECASE)
+    if m:
+        found = m.group(1)
+print(found)
+' 2>/dev/null || true)"
+  fi
+fi
+
+body="$(build_body "$repo" "$sha" "$title" "$description" "$peer_sha")" || { echo "SKIP: pre-triage could not run for $sha"; exit 0; }
 if [[ $DRYRUN -eq 1 ]]; then printf '%s\n' "$body"; exit 0; fi
 
 # Post as its own author so the comment is unmistakably pre-triage INPUT, not a gate verdict.

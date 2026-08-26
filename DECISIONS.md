@@ -3325,3 +3325,17 @@ a `seed-fleet-agents/qa/CLAUDE.md` core-skill listájában, fleet-test-re nincs 
 **Ki döntött:** backend (kártya 489dae5f, MikroB gyökér-ok azonosítása alapján, Peti közvetlen panaszára válaszul -- lásd `live-config-outranks-a-remembered-instruction`: a `[[ingatlan-project-location]]` memória korábbi "kézzel indítva, szándékosan" jegyzete elavult ehhez a döntéshez képest, a kártya friss, Peti-panaszra épülő MikroB-döntés).
 
 **Hivatkozás:** kártya `489dae5f`.
+
+## 2026-08-26 -- Pair-FE/Pair-BE beégetett Gate-SHA elavulás: strukturális nudge, nem fegyelmi szabály (kártya 367c23a9)
+
+**Mi történt:** a `fed9409f`/`d0b4f003` pár kapcsán (backend saját megfigyelése, msg 19372) felmerült, hogy ha egy Pair-FE/Pair-BE kártya leírása beéget egy konkrét `Gate-SHA:` sort a másik oldal akkori állapotára hivatkozva, ez a hivatkozás csendben elavulhat, ha a párkártya utána tovább változik (új commit, re-landolás) -- a táblán semmi nem jelzi ezt.
+
+**Döntés:** a kódminőségi alapelvek 6. pontja (strukturális védelem a fegyelem helyett) szerint jártam el, ugyanabban a szellemben mint a `78f85eb1` DECISIONS.md-nudge: a `gate-pretriage-card.sh`-t bővítettem egy új, kizárólag nudge-jellegű ellenőrzéssel (sosem blokkol, sosem változtatja a felismert commitot). Card-módban a szkript a kártya leírásában talált `Pair-FE:`/`Pair-BE:` sor alapján lekéri a párkártya legfrissebb `Gate-SHA:` kommentjét, és ezt hasonlítja össze a SAJÁT leírásba beégetett `Gate-SHA:` értékkel -- eltérésnél figyelmeztet. A tényleges hálózati feloldás (élő API-hívás a párkártyára) csak card-módban fut, nem tesztelt egység -- a szöveges összehasonlítás maga (build_body pythonja) egy új `--peer-gate-sha` kapcsolóval offline is hívható, így determinisztikusan tesztelhető, ugyanaz a minta mint a `--title`/`--desc` kapcsolóknál.
+
+**Elutasított alternatíva:** tisztán fegyelmi szabály ("a párkártyát érintő változtatáskor mindig frissítsd a másik oldal hivatkozását is") -- a kártya saját szövege is felveti mindkét opciót, de a 6. alapelv explicit prioritást ad a strukturális megoldásnak, ha az ésszerű költséggel megépíthető, és itt az volt (a meglévő pre-triage-infrastruktúra közvetlenül bővíthető).
+
+**Tesztek:** 5 új teszt (eltérés figyelmeztet, egyezés csendben marad, rövidebb/prefix-egyező sha csendben marad, nincs beégetett Gate-SHA a leírásban -> csendben marad, nincs feloldott peer-sha -> csendben marad). 36/36 zöld a teljes fájlban.
+
+**Ki döntött:** backend (kártya `367c23a9`, MikroB eredeti "gondold át" megfigyelése alapján, önjáró self-advance dispatch, 2 napnál régebbi kártya előreléptetve a 6b. szabály szerint).
+
+**Hivatkozás:** kártya `367c23a9`. Kapcsolódó minta: `78f85eb1` (missing-DECISIONS.md nudge, ugyanaz a fájl, ugyanaz a "nudge, nem block" szerződés).
