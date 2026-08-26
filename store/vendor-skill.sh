@@ -120,7 +120,7 @@ ${NOTE:+> **Usage restriction:** $NOTE}
 ## Re-vendor
 
 \`\`\`
-store/vendor-skill.sh --repo $REPO --name $NAME${SUBDIR:+ --subdir $SUBDIR}
+store/vendor-skill.sh --repo $REPO --name $NAME${SUBDIR:+ --subdir $SUBDIR}${REF:+ --ref $REF}${NOTE:+ --note \"$NOTE\"}
 \`\`\`
 
 Upstream changes are DETECTED + FLAGGED by store/git-repo-watcher.sh; they are never auto-applied
