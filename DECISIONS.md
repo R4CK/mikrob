@@ -3864,3 +3864,60 @@ aktiváláshoz a landolás UTÁN az élő telepítésből újra kell futtatni, u
 `ollama-down-guard`-nál.
 
 **Hivatkozás:** kártya 77075367.
+
+## 2026-08-26 -- 2bfbf805 -- Load-guard SIGSTOP/SIGCONT veszfagyasztás (load-brake fázis, Feladat 3)
+
+**Döntés.** A `critical` állapot `sigstop_freeze` akcióját (eddig csak logolva/CONTROL-tesztelve
+mint "nem csinál semmit", lásd load-guard-cgroup.test.ts sajat CONTROL esete) ténylegesen
+kiszolgáló réteg: `store/load-guard-sigstop-target.sh` (valós forrás: futó `agent-*` tmux-session ->
+pane pid + kanban-prioritás, ugyanaz a szerep mint `load-guard-cgroup-target.sh`-nak, DE a
+kiválasztás rang+körforgás-logikája -- nem csak a valós tmux/kanban felfedezés -- kiemelve
+`SELECT_PY`-ba és `--test-select`-tel tesztelve, mert az már valódi eldönthető logika, nem
+felfedezés) + `store/load-guard-sigstop-apply.sh` (tiszta döntési/jel-küldő réteg, valós spawnolt
+folyamatokkal tesztelve) + `store/load-guard-sigstop.sh` (vékony összekötő -- cgroup-delegációhoz
+hasonló önjavítás itt nem kell, sima szignál egy már saját tulajdonú pid-re).
+
+**Kizárás megosztva, nem duplikálva.** `is_excluded()` kiemelve `store/load-guard-cgroup-target.sh`-
+ból egy közös `store/load-guard-excluded.sh`-ba, amit mindkét fékezés-mechanizmus forrás
+(`source`)-ol. Két külön másolat pont azt a driftet nyitná meg, amit a kizárás meg akar
+akadályozni -- ha valaki a jövőben csak az egyik példányt bővíti egy új gate-taggal, a másik
+mechanizmus némán védtelen maradna rá.
+
+**Körforgás, NEM ábécésorrend** (a kártya saját szövege, tudatos eltérés a Feladat 2 mintájától:
+"korforgasos celpont-valasztas a tobbi kozott"). A rangsorolás (legalacsonyabb `in_progress`
+prioritás nyer, nincs-kártya a low alatt rangsorol) változatlan Feladat 2-től, csak a HOLTVERSENYEN
+BELÜLI kiválasztás körforgásos: egy kis állapotfájlban megőrzött "utoljára választott" mutató után
+következő jelölt nyer, körbefordulva. Egyetlen jogosult jelöltnél elfajul "mindig ugyanaz"-zá --
+elkerülhetetlen, nem hiba.
+
+**MAX 90 MÁSODPERCES KÉNYSZER-FELOLDÁS** (a kártya saját szövege, Peti által már jóváhagyott
+hálózati timeout tradeoff): minden tick ELSŐ, feltétel nélküli ellenőrzése -- egy fagyasztott pid,
+aminek a `max_freeze_seconds` (config, alap 90) lejárt, AZONNAL felold, még ha az akció ezen a
+ticken is `sigstop_freeze` maradna. Ez a tick nem fagyaszt újra; a KÖVETKEZŐ tick dönt frissen (a
+körforgás így legalább egy tick szünetet ad, és holtverseny esetén el is mozdulhat egy másik
+jelöltre).
+
+**Önvédelem (védelem-mélységben).** A jel-küldő réteg SOHA nem jelez pid 0-nak, 1-nek, vagy a saját
+process-ének, függetlenül attól, mit állít egy target-json -- a valódi kizárás a célválasztásban él,
+ez csak egy olcsó, megéri-e biztosíték, mert az apply-réteget a saját tesztje is közvetlenül,
+injektált target-json-nal hívja (ugyanúgy mint a cgroup-apply.sh sajátja).
+
+**Kill-switch:** `load-guard-config.json` `sigstop_freeze.enabled` (alap `true`); `false`-ra
+állítva a legközelebbi tick azonnal felold minden aktív fagyasztást.
+
+**Konzekvencia.** Új fájlok: `store/load-guard-excluded.sh`, `store/load-guard-sigstop-target.sh`,
+`store/load-guard-sigstop-apply.sh`, `store/load-guard-sigstop.sh`,
+`src/__tests__/load-guard-sigstop.test.ts` (18 teszt: alkalmazás, feloldás, célváltás, kill-switch,
+a 90s kényszer-feloldás, önvédelem pid 0/1 ellen, rang+körforgás célválasztás). Módosított:
+`store/load-guard-cgroup-target.sh` (is_excluded kiemelve), `store/load-guard-config.json`
+(`sigstop_freeze` blokk), `store/load-guard-daemon.sh` (`--sigstop` flag, `--cgroup`-tól
+független), `scripts/install-guard-timers.sh` (ExecStart `--cgroup --sigstop`-ra bővítve). A
+meglévő 30 load-guard teszt (eval + cgroup) változatlanul zöld -- a cgroup CONTROL teszt, ami
+szerint `sigstop_freeze` önmagában nem érinti a cpu.max-ot, továbbra is érvényes (külön
+mechanizmus). tsc tiszta.
+
+**Ki döntött:** backend (kártya 2bfbf805, a fázis 19f3bbb5 plan-grilling verdiktje már lefedte a
+tervezési kockázatokat, új plan-grilling nem volt szükséges -- a max-90s tradeoff már Peti által
+jóváhagyva a kártya szövegében).
+
+**Hivatkozás:** kártya 2bfbf805 (parent: 19f3bbb5, függőség: d7a28a0a/Feladat 2, már done).
