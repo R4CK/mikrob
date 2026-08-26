@@ -1752,6 +1752,39 @@ const STDIN_SHELL_RX = new RegExp(
     String.raw`|\bxargs\b${XARGS_FILLER}${SHELL_ALTERNATION}\b` +
     `|${PROC_SUB_SHELL}`,
 )
+// ROUND 4 (card 1a609c01, Cybersec): the pipe branch above anchors on a single LITERAL `\|`, with
+// no alternative retry position -- unlike PROC_SUB_SHELL (and SHELL_C_RX/HERESTRING_RX elsewhere
+// in this file), which use WRAPPER_POSITION and can retry from ANY CMD_POSITION_CHARS occurrence,
+// including the bare character round 3's own DoS fix (PATH_PREFIX's `\\[^${CMD_POSITION_CHARS}]`)
+// deliberately leaves behind when it stops at an ESCAPED one. A single fixed anchor has no such
+// fallback: for `some\;dir/bash` after a real pipe, PATH_PREFIX correctly stops at the escaped
+// `;` (that is the round-3 DoS fix working as intended), and -- because there is no OTHER `|` to
+// retry the pipe-branch's own anchor from -- the whole alternative silently fails. Live-measured,
+// all seven round-3 anchors (`;` `&` `(` `)` `{` `!` a backtick), 7/7 bypass with a real dangerous
+// payload piped to a bare (non `-c`) shell.
+//
+// FIX: an INDEPENDENT second existence check, not a rewrite of the pipe branch itself -- a bare
+// `|` occurs SOMEWHERE in the text, AND (a completely separate scan, no shared backtracking state
+// with the first) a bare shell name occurs in ANY WRAPPER_POSITION-recognised command position.
+// Reuses WRAPPER_POSITION (the SAME already-proven retry mechanism PROC_SUB_SHELL/SHELL_C_RX rely
+// on) instead of inventing a new one, and keeps the two checks independent -- two plain,
+// non-backtracking O(n) scans ANDed as booleans -- specifically so this does not reintroduce the
+// lazy-filler-plus-backtracking shape rounds 1-3 spent three rounds closing (a single combined
+// regex trying to require "a pipe, THEN eventually a WRAPPER_POSITION anchor, THEN a shell name"
+// would need an unbounded filler between the pipe and the retry anchor -- exactly the shape that
+// already produced O(n^2) here twice). Deliberately broader than the exact reported shape (it does
+// not require the pipe and the shell name to be adjacent, or even related) -- safe because the
+// actual DENY decision still depends on a quoted literal SEPARATELY matching a recognised
+// dangerous pattern; this only widens when literal-extraction is attempted, never widens what
+// counts as dangerous once extracted. Verified (not assumed): 7/7 previously-bypassed shapes now
+// caught with a real dangerous inner payload (not a placeholder -- card 39cc3460's own standing
+// lesson), the full pre-existing self-pace-gate test family (543+ tests) stays green, and a
+// 32000-pair adversarial stress on this exact new construct stays under the same time budget the
+// sibling quadratic tests already enforce.
+const HAS_PIPE_RX = /\|/
+const WRAPPER_POSITION_BARE_SHELL_RX = new RegExp(
+  String.raw`${WRAPPER_POSITION}(?:sudo\s+|env\s+)*${PATH_PREFIX}${SHELL_ALTERNATION}\b(?!\s*-[a-zA-Z]*c\b)`,
+)
 // `$'...'` gets its own alternative rather than a fourth capture group (Cybersec, card ec20dd23
 // round 5, live repro): of the four extraction paths in executableStrings, three go through
 // unquoteWord -- which already decodes ANSI-C escapes (round 4) -- but this one reads quoted
@@ -1784,7 +1817,7 @@ export function executableStrings(command) {
       if (inner && inner !== text) out.push(inner)
     }
   }
-  if (STDIN_SHELL_RX.test(text)) {
+  if (STDIN_SHELL_RX.test(text) || (HAS_PIPE_RX.test(text) && WRAPPER_POSITION_BARE_SHELL_RX.test(text))) {
     QUOTED_LITERAL_RX.lastIndex = 0
     let q
     while ((q = QUOTED_LITERAL_RX.exec(text)) !== null) {

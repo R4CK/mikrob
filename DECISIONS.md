@@ -4146,3 +4146,59 @@ self-pace-gate-oversize-failclosed, scan-bash-word-backtick-quadratic, az új f�
 dedup-ellenőrzési utasítása szerint eljárva).
 **Hivatkozás:** kártya 5c9c15c0, előzmény: kártya ec20dd23 (a rokon, de FÜGGETLEN kódhelyen már
 javított escape-vakság), kártya 84e31b40 (a záró Cybered-kör, ahol a lelet született).
+
+## 2026-08-27 01:16 -- STDIN_SHELL_RX pipe-ág escapelt-horgony bypass zárva, plan-grilling utáni (kártya 1a609c01)
+
+**Plan-grilling (a kártya saját, kötelező előírása -- self-pace-gate.mjs architekturális, tobbszor
+regresszalt fajl, 1b. munkavegzesi szabaly szerint).** A `~/.claude/skills/plan-grilling` skill nem
+volt betöltve ebben a session-ben (Skill tool "Unknown skill" hibát adott) -- a SKILL.md-t közvetlen
+fájlolvasással követtem, a procedúra 8 tengelye szerint magam grilleztem a tervet, mielőtt kódot
+írtam volna. Eredmény alább, a skill saját Output-formátuma szerint.
+
+**(a) Load-bearing feltevések, ellenőrizve.** (1) A pipe-ág literál `\|` horgonya nem retry-olható
+máshonnan -- VERIFIKÁLVA élő regex-teszttel (különálló szkript, PATH_PREFIX önmagában `null`-t ad
+`some\;dir/bash`-re, de `WRAPPER_POSITION`-nel párosítva a `;` karakternél sikeres retry-t talál).
+(2) A bypass ma tényleg 7/7 -- VERIFIKÁLVA `gateDecision()`-on át mind a 7 horgonyra, valódi
+veszélyes payloaddal (nem placeholderrel, a 39cc3460 saját tanulsága szerint). (3) A `-c` forma
+(WRAPPER_POSITION-alapú ág) NEM sérült ugyanerre a mintára -- VERIFIKÁLVA (mind a 7 horgony
+`deny=true` marad `-c` formában).
+
+**(b) Megoldatlan ágak / elfogadott kockázatok.** A round-3 SZÁNDÉKOSAN elvetette a pipe-ág
+horgonyának teljes WRAPPER_POSITION-re bővítését, mert az eldobná a "pipe után" követelményt
+("new false-positive surface, needs its own threat-model pass"). A választott megoldás EZT a
+konkrét aggályt kezeli: NEM a pipe-ág horgonyát írja át, hanem egy FÜGGETLEN, második
+létezés-ellenőrzést ad hozzá (`HAS_PIPE_RX` ÉS `WRAPPER_POSITION_BARE_SHELL_RX`, külön scan, nem
+egy kombinált regex retry-vel/fillerrel) -- tágabb a jelentett pontos alaknál (a pipe és a
+shell-név nem kell szomszédos legyen), ELFOGADOTT kockázat: ez GYAKRABBAN futtatja le az idézett
+literál-kicsomagolást jóhiszemű pipe+shell-név-tartalmú parancsokon (pl. `ps aux | grep bash`) --
+DE a végső DENY döntés VÁLTOZATLANUL egy idézett literál veszélyes mintára illeszkedésétől függ,
+tehát ez a szélesítés soha nem okoz ÚJ hamis DENY-t, csak több (ártalmatlan) kicsomagolási
+kísérletet. VERIFIKÁLVA 11 realisztikus jóhiszemű pipe+shell-név-parancson (mind allow marad).
+
+**(c) Verdikt: GO-WITH-CHANGES -> megvalósítva.** Az eredeti, naiv "csak cseréld le a horgonyt
+WRAPPER_POSITION-re" ötlet (amit a round-3 kifejezetten elvetett) NEM a végleges alak -- a
+független-kettős-ellenőrzés a "change" ami a GO-t lehetővé tette: megtartja a "pipe kell valahol"
+szemantikát, mégis megkapja a retry-képességet.
+
+**(d) A legvalószínűbb bukási mód + mitigáció.** Egy KOMBINÁLT (nem független) regex, ami a pipe
+és a WRAPPER_POSITION-horgony közé egy korlátlan fillert tenne, ÚJRA bevezetné pontosan azt a
+négyzetes DoS-t, amit a fájl 1-3. köre háromszor zárt be. Mitigáció: a két ellenőrzés SZIGORÚAN
+FÜGGETLEN (két külön, nem-backtracking O(n) scan, ÉS-elve mint boolean), verifikálva egy új
+négyzetes-stressz teszttel (16000-100000 pár, mindkét irányban -- csupasz shell-név nélküli tiszta
+pipe-futam is), 500ms alatt.
+
+**Megvalósítás.** `scripts/self-pace-gate.mjs`: új `HAS_PIPE_RX` (`/\|/`) + új
+`WRAPPER_POSITION_BARE_SHELL_RX` (a meglévő `WRAPPER_POSITION`+`PATH_PREFIX`+`SHELL_ALTERNATION`
+építőkockákból, semmi új nem-bizonyított konstrukció). `executableStrings()`-ben a trigger-feltétel
+`STDIN_SHELL_RX.test(text) || (HAS_PIPE_RX.test(text) && WRAPPER_POSITION_BARE_SHELL_RX.test(text))`.
+
+**Konzekvencia.** Módosított: `scripts/self-pace-gate.mjs`,
+`src/__tests__/path-prefix-cmd-position-anchors-quadratic.test.ts` (a korábbi "documented gap"
+blokk lezárva `deny=true`-ra állítva, 11 új jóhiszemű-kontroll teszt, 8 új négyzetes-stressz
+teszt). 730+ zöld a teljes self-pace-gate tesztcsaládon (14 fájl). tsc tiszta.
+
+**Ki döntött:** backend (kártya 1a609c01, Cybersec saját lelete alapján, a kártya saját
+plan-grilling-előírása szerint eljárva).
+**Hivatkozás:** kártya 1a609c01, előzmény: kártya 39cc3460 (a DoS-fix + a jelen maradvány saját
+felfedezésének helye, round 3), `path-prefix-cmd-position-anchors-quadratic.test.ts` (a korábbi
+"documented gap" teszt, ami most lezárva).
