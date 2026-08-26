@@ -1,0 +1,25 @@
+{
+  "reference_nproc": 12,
+  "watch": {
+    "loadavg_ratio": 0.85,
+    "psi_some_avg10": 30,
+    "action": "log_only"
+  },
+  "soft": {
+    "loadavg_ratio": 1.0,
+    "psi_some_avg10": 45,
+    "action": "stop_new_dispatch"
+  },
+  "hard": {
+    "loadavg_ratio": 1.3,
+    "psi_some_avg10": 60,
+    "sustained_seconds": 20,
+    "action": "cgroup_throttle"
+  },
+  "critical": {
+    "loadavg_ratio": 1.6,
+    "psi_some_avg10": 75,
+    "sustained_seconds": 30,
+    "action": "sigstop_freeze"
+  }
+}
