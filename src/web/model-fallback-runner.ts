@@ -358,29 +358,44 @@ export function readFleetTierState(): {
 }
 
 export function startModelFallbackRunner(): NodeJS.Timeout {
+  let tickRunning = false
   async function sweep() {
-    const cfg = readModelFallbackConfig()
-    if (!cfg.enabled && !cfg.weeklyTierEnabled) {
-      if (downgradedAt.size > 0) downgradedAt.clear() // re-seed cleanly if re-enabled
-      weeklyTier = 0
+    // Re-entrancy guard: checkAgent/restartFor now await a real
+    // restartAgentProcess (no longer a blocking execSync('sleep N')), so a
+    // sweep with a restart in flight can still be running when the next
+    // interval fires. Skip an overlapping tick; the next tick re-evaluates
+    // every agent, so nothing is missed.
+    if (tickRunning) {
+      logger.debug('model-fallback: previous sweep still running, skipping this tick')
       return
     }
-    const now = Date.now()
-    // Recompute the fleet weekly tier from the live weekly % (refreshed every
-    // ~30 min by store/weekly-usage-panel-read.sh -> weekly-hard-stop.json, the
-    // single weekly-% cadence). A negative/unknown % holds the last tier.
-    if (cfg.weeklyTierEnabled) {
-      const percent = readHardStop().percent
-      if (percent >= 0) weeklyTier = weeklyTierIndex(percent, cfg, weeklyTier)
-    } else {
-      weeklyTier = 0
-    }
-    const weeklyIdx = weeklyTier
-    try { await checkAgent(MAIN_AGENT_ID, now, cfg, weeklyIdx) }
-    catch (err) { logger.debug({ err }, 'model-fallback: main check error') }
-    for (const name of listAgentNames()) {
-      try { await checkAgent(name, now, cfg, weeklyIdx) }
-      catch (err) { logger.debug({ err, agent: name }, 'model-fallback: agent check error') }
+    tickRunning = true
+    try {
+      const cfg = readModelFallbackConfig()
+      if (!cfg.enabled && !cfg.weeklyTierEnabled) {
+        if (downgradedAt.size > 0) downgradedAt.clear() // re-seed cleanly if re-enabled
+        weeklyTier = 0
+        return
+      }
+      const now = Date.now()
+      // Recompute the fleet weekly tier from the live weekly % (refreshed every
+      // ~30 min by store/weekly-usage-panel-read.sh -> weekly-hard-stop.json, the
+      // single weekly-% cadence). A negative/unknown % holds the last tier.
+      if (cfg.weeklyTierEnabled) {
+        const percent = readHardStop().percent
+        if (percent >= 0) weeklyTier = weeklyTierIndex(percent, cfg, weeklyTier)
+      } else {
+        weeklyTier = 0
+      }
+      const weeklyIdx = weeklyTier
+      try { await checkAgent(MAIN_AGENT_ID, now, cfg, weeklyIdx) }
+      catch (err) { logger.debug({ err }, 'model-fallback: main check error') }
+      for (const name of listAgentNames()) {
+        try { await checkAgent(name, now, cfg, weeklyIdx) }
+        catch (err) { logger.debug({ err, agent: name }, 'model-fallback: agent check error') }
+      }
+    } finally {
+      tickRunning = false
     }
   }
   setTimeout(sweep, INITIAL_DELAY_MS)

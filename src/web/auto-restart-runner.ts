@@ -147,11 +147,26 @@ async function checkAgent(name: string, nowMs: number): Promise<void> {
 }
 
 export function startAutoRestartRunner(): NodeJS.Timeout {
+  let tickRunning = false
   async function sweep() {
-    const now = Date.now()
-    try { await checkAgent(MAIN_AGENT_ID, now) } catch (err) { logger.debug({ err }, 'auto-restart: main check error') }
-    for (const name of listAgentNames()) {
-      try { await checkAgent(name, now) } catch (err) { logger.debug({ err, agent: name }, 'auto-restart: agent check error') }
+    // Re-entrancy guard: checkAgent/performRestart now await a real
+    // restartAgentProcess (no longer a blocking execSync('sleep N')), so a
+    // sweep with a restart in flight can still be running when the next
+    // interval fires. Skip an overlapping tick; the next tick re-evaluates
+    // every agent, so nothing is missed.
+    if (tickRunning) {
+      logger.debug('auto-restart: previous sweep still running, skipping this tick')
+      return
+    }
+    tickRunning = true
+    try {
+      const now = Date.now()
+      try { await checkAgent(MAIN_AGENT_ID, now) } catch (err) { logger.debug({ err }, 'auto-restart: main check error') }
+      for (const name of listAgentNames()) {
+        try { await checkAgent(name, now) } catch (err) { logger.debug({ err, agent: name }, 'auto-restart: agent check error') }
+      }
+    } finally {
+      tickRunning = false
     }
   }
   setTimeout(sweep, INITIAL_DELAY_MS)

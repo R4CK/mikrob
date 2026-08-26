@@ -4,6 +4,31 @@
 // Globals used at call time (defined in app.js): t, escapeHtml, openModal, closeModal,
 //   showToast, mainAgentId -- all defined before the app.js init section that calls loadMemAgents().
 
+// Shared overlay-close-guard helpers (upstream fix, ported card 72f5f13b): live here,
+// topically unrelated to memories, ONLY because this is the first script index.html loads
+// -- every overlay across every later-loading slice (kanban, wizard, agent-detail,
+// connectors, memories itself) calls attachOverlayCloseGuard() at its own top level, so the
+// definition must execute before all of them. Data-loss bug reported 2026-08-19: clicking a
+// modal's backdrop closed it UNCONDITIONALLY, silently discarding typed input. Fix: empty
+// form -> backdrop click closes freely; form has typed input -> confirm() gates the close.
+function overlayHasUnsavedInput(overlay) {
+  const fields = overlay.querySelectorAll(
+    'input[type="text"]:not([list]), input[type="date"], input[type="email"], input[type="url"], textarea',
+  )
+  for (const f of fields) {
+    if (f.offsetParent !== null && f.value && f.value.trim()) return true
+  }
+  return false
+}
+
+function attachOverlayCloseGuard(overlay) {
+  overlay.addEventListener('click', (e) => {
+    if (e.target !== overlay) return
+    if (overlayHasUnsavedInput(overlay) && !confirm('Van be nem mentett szöveg -- biztosan bezárod mentés nélkül?')) return
+    closeModal(overlay)
+  })
+}
+
 // ============================================================
 // === Memories (Tier System + Daily Log) ===
 // ============================================================
@@ -99,7 +124,7 @@ document.getElementById('memAddBtn').addEventListener('click', () => {
 
 // Close memory modal
 document.getElementById('memModalClose').addEventListener('click', () => closeModal(memModalOverlay))
-memModalOverlay.addEventListener('click', (e) => { if (e.target === memModalOverlay) closeModal(memModalOverlay) })
+attachOverlayCloseGuard(memModalOverlay)
 
 // Save memory (create or edit)
 document.getElementById('saveMemBtn').addEventListener('click', async () => {

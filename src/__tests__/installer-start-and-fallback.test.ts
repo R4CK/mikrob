@@ -115,10 +115,12 @@ describe('the ERR-trap abort is real (guards the premise of the tests above)', (
   // that lives on line 644.
   it('an unguarded capture aborts (bash may blame the command or the enclosing `fi`)', () => {
     const r = runScriptFile([...TRAP, 'if [ -n "x" ]; then', '  out="$(false)"', 'fi', 'echo REACHED'])
-    // WHICH line $LINENO reports is bash-version dependent: <=5.2 blames the enclosing `fi` (line 6,
-    // the behaviour this test was written against, and the reason the installer reported 658 for a
-    // command on 644); 5.3 blames the failing command itself (line 5). The GUARD here is that the
-    // abort is real -- the trap fires, the script stops, `REACHED` never prints -- so the assertion
+    // WHICH line $LINENO reports is bash-version dependent: bash 3.2 (macOS
+    // /bin/bash, where the installer incident happened) and bash <=5.2 blame
+    // the enclosing `fi` (line 6, the reason the installer reported 658 for a
+    // command on 644); bash 5.3 / Linux CI (MARVCI822) attribute the failing
+    // command itself (line 5). The GUARD here is that the abort is real -- the
+    // trap fires, the script stops, `REACHED` never prints -- so the assertion
     // accepts both rather than pinning one bash release.
     expect(['TRAP:5', 'TRAP:6']).toContain(r.out)
     expect(r.out).not.toContain('REACHED')

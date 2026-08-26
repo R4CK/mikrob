@@ -15,7 +15,7 @@ import { CONTENT_SECURITY_POLICY } from './web/csp.js'
 import { json } from './web/http-helpers.js'
 import { detectLanIp } from './web/network-info.js'
 import { AGENTS_BASE_DIR, listAgentNames } from './web/agent-config.js'
-import { ensureAgentHooks, ensureAgentStalenessHook, ensureEgressGate, ensureNpmProtectGuard, ensureBlastRadiusGuard, ensurePentestToolInstallGuard, ensureTaskstateReplayMatcher, ensureGovernanceGateCommands, ensureQuarantineReader, ensureDefaultScheduledTasks, agentSettingsPath, ensureAutonomySection } from './web/agent-scaffold.js'
+import { ensureAgentHooks, ensureAgentStalenessHook, ensureEgressGate, ensureNpmProtectGuard, ensureBlastRadiusGuard, ensurePentestToolInstallGuard, ensureTaskstateReplayMatcher, ensureGovernanceGateCommands, ensureQuarantineReader, watchEgressAllowlistForReaderRender, ensureDefaultScheduledTasks, agentSettingsPath, ensureAutonomySection, ensureSkillsPathTrapSection } from './web/agent-scaffold.js'
 import { shouldRegisterHooks, pruneStaleHooksFromSettingsFile } from './web/hook-registration-guard.js'
 import { refreshMarveenBotUsername } from './web/telegram.js'
 import { startMessageRouter } from './web/message-router.js'
@@ -543,6 +543,7 @@ export function startWebServer(port = 3420): http.Server {
   if (!webOnly) {
     ensureFederationClaudeMdSection()
     ensureAutonomySection(MAIN_AGENT_ID)
+    ensureSkillsPathTrapSection(MAIN_AGENT_ID)
   }
 
   // Backfill the PreCompact hook into existing agents' settings.json so the
@@ -585,6 +586,15 @@ export function startWebServer(port = 3420): http.Server {
         if (ensureGovernanceGateCommands(agentName)) govPatched.push(agentName)
         ensureQuarantineReader(agentName)
       }
+      // EGRESSRENDER824: a grant added to store/egress-allowlist.json must
+      // reach the reader PROMPT copies without waiting for the next boot --
+      // the egress-gate hook reads the JSON live, the prompt copies do not.
+      // DELIBERATELY inside the hookDecision.register branch: a worktree /
+      // sandbox instance must not start re-rendering the shared agent
+      // definitions any more than it may register hooks -- the same isolation
+      // rule that guards the settings writes above guards this watcher.
+      watchEgressAllowlistForReaderRender(listAgentNames, (agents) =>
+        logger.info({ agents }, 'quarantine-reader definitions re-rendered after egress-allowlist.json change'))
       if (pruned.length) logger.info({ pruned }, 'Stale hook entries pruned from agent settings.json')
       if (npmGuardPatched.length) logger.info({ patched: npmGuardPatched }, 'npm-protect guard backfilled into agent settings.json')
       if (blastGuardPatched.length) logger.info({ patched: blastGuardPatched }, 'blast-radius guard backfilled into agent settings.json')

@@ -68,8 +68,8 @@ const columns = document.querySelectorAll('.kanban-col-body')
 // Modal wiring
 document.getElementById('cardModalClose').addEventListener('click', () => closeModal(cardModalOverlay))
 document.getElementById('cardDetailClose').addEventListener('click', () => closeModal(cardDetailOverlay))
-cardModalOverlay.addEventListener('click', (e) => { if (e.target === cardModalOverlay) closeModal(cardModalOverlay) })
-cardDetailOverlay.addEventListener('click', (e) => { if (e.target === cardDetailOverlay) closeModal(cardDetailOverlay) })
+attachOverlayCloseGuard(cardModalOverlay)
+attachOverlayCloseGuard(cardDetailOverlay)
 
 // Add card buttons per column
 document.querySelectorAll('.kanban-add-btn').forEach((btn) => {

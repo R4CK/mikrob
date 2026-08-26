@@ -76,9 +76,9 @@ document.getElementById('skillModalClose').addEventListener('click', () => close
 document.getElementById('llmQueueDetailClose').addEventListener('click', () => closeModal(llmQueueDetailOverlay))
 
 // Click-outside-to-close
-agentWizardOverlay.addEventListener('click', (e) => { if (e.target === agentWizardOverlay) closeModal(agentWizardOverlay) })
-agentDetailOverlay.addEventListener('click', (e) => { if (e.target === agentDetailOverlay) closeModal(agentDetailOverlay) })
-skillModalOverlay.addEventListener('click', (e) => { if (e.target === skillModalOverlay) closeModal(skillModalOverlay) })
+attachOverlayCloseGuard(agentWizardOverlay)
+attachOverlayCloseGuard(agentDetailOverlay)
+attachOverlayCloseGuard(skillModalOverlay)
 llmQueueDetailOverlay.addEventListener('click', (e) => { if (e.target === llmQueueDetailOverlay) closeModal(llmQueueDetailOverlay) })
 
 // Close all modals on Escape
