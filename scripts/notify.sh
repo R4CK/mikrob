@@ -38,7 +38,17 @@ fi
 # reader can see who it came from. Distribution-safe: the main agent id is read
 # from .env (default marveen), no hardcoded names.
 SENDER=""
-SESS=$(tmux display-message -p '#S' 2>/dev/null)
+# Only ask tmux who we are when we are actually INSIDE a tmux pane. Detached
+# callers -- cron, systemd, a plain ssh shell -- have no session, but
+# `tmux display-message -p '#S'` still answers happily with whatever session the
+# server most recently touched. That mislabels a cron- or systemd-fired system
+# alert as coming from an arbitrary agent, which is worse than no attribution: it
+# points the reader at an uninvolved agent while a system alert is in flight.
+# No pane -> no claim about the sender; the message goes out as the main agent.
+SESS=""
+if [ -n "${TMUX:-}" ]; then
+  SESS=$(tmux display-message -p '#S' 2>/dev/null)
+fi
 case "$SESS" in
   agent-*)
     SENDER="${SESS#agent-}"
@@ -74,10 +84,33 @@ fi
 # is silently dropped from `text`, and it can even override a later field such as parse_mode.
 # --data-urlencode percent-encodes the value, so the whole message arrives intact. Behaviour
 # is identical for ordinary ASCII messages, so every existing caller is unaffected.
-printf 'url = "https://api.telegram.org/bot%s/sendMessage"\n' "$TOKEN" \
-  | curl -s -X POST -K - \
+#
+# Delivery must be HONEST (NOTIFYVAK826): this script is the fleet's FALLBACK
+# channel, used exactly when the primary Telegram plugin is already down. A
+# swallowed curl failure here reported success while nothing was delivered --
+# indistinguishable, from the owner's side, from "nothing happened". Success
+# therefore requires BOTH a clean curl exit AND the Bot API's own "ok":true
+# (an HTTP 200 with ok:false -- bad chat_id, parse error -- exits 0 in curl).
+RESPONSE=$(printf 'url = "https://api.telegram.org/bot%s/sendMessage"\n' "$TOKEN" \
+  | curl -sS -X POST -K - \
   --data-urlencode "chat_id=${CHAT_ID}" \
   --data-urlencode "text=${MESSAGE}" \
-  --data-urlencode "parse_mode=HTML" > /dev/null
+  --data-urlencode "parse_mode=HTML" 2>&1)
+CURL_EXIT=$?
+# Never echo the bot token: some curl errors quote the request URL.
+RESPONSE="${RESPONSE//${TOKEN}/<token>}"
 
-echo "Ertesites elkuldve."
+if [ $CURL_EXIT -ne 0 ]; then
+  echo "Hiba: ertesites kuldese sikertelen (curl exit ${CURL_EXIT}): ${RESPONSE}" >&2
+  exit 1
+fi
+
+case "$RESPONSE" in
+  *'"ok":true'*)
+    echo "Ertesites elkuldve."
+    ;;
+  *)
+    echo "Hiba: a Telegram API elutasitotta az ertesitest: ${RESPONSE}" >&2
+    exit 1
+    ;;
+esac

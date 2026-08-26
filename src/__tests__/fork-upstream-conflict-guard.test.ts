@@ -139,7 +139,7 @@ const ACKNOWLEDGED_CONFLICTS = {
   // kanban-write gate, quarantineReader project-scope refactor, and watcher from upstream
   // alongside the fork's section-writer, neither side taken wholesale.
   'src/web/agent-scaffold.ts':
-    'keep BOTH section-writers (fork ensureLocalFirstSection + upstream ensureSkillsPathTrapSection), AND adopt upstream kanban-write gate (agentGetsKanbanWriteGate/injectKanbanWriteGate), quarantineReader project-scope refactor (EGRESSRENDER824), and watchEgressAllowlistForReaderRender -- all additive, none taken wholesale',
+    "keep BOTH section-writers (fork ensureLocalFirstSection + upstream ensureSkillsPathTrapSection), AND adopt upstream kanban-write gate (agentGetsKanbanWriteGate/injectKanbanWriteGate), quarantineReader project-scope refactor (EGRESSRENDER824), and watchEgressAllowlistForReaderRender -- all additive, none taken wholesale. Re-read 2026-08-26 (card 72f5f13b, unblocking fbb36b41/489dae5f landings): upstream moved AGAIN since this rule was written (added findDuplicateJsonKeys dup-key detection in ensureAgentHooks, HEARTBEAT_AGENT_ID import, EMAIL_GATE_MATCHER/emailGateMatcherStale export) -- 22 diff hunks total against a 1600-line security-critical file (fleet-wide hook wiring: git-protect/npm-protect/blast-radius/pentest-install guards live here). NOT safe to hand-merge under time pressure just to unblock a landing. The fork's own guards (git-protect/npm-protect/blast-radius/pentest-install, unchanged in this diff) remain authoritative and untouched on live develop. Full reconciliation of ALL upstream additions (this round's + the previously-acknowledged kanban-write-gate round) is done and build+test-verified in the disposable card-72f5f13b merge worktree, pending the Peti-supervised F5 cutover (card 5c134edf) -- that is where this file's real sync lands, not a piecemeal live-develop patch.",
   // A single additive hunk (measured 2026-08-16, card 88505fb5), not a behavioural disagreement:
   // both sides add an INDEPENDENT schema migration/trigger at the same insertion point inside
   // ensureSchema(). Fork: the timestamp-integrity triggers (epoch validation + repair on
@@ -330,7 +330,7 @@ const ACKNOWLEDGED_CONFLICTS = {
   // fork's sweep has NO overlap protection of any kind, so this is something upstream has and the
   // fork lacks, not a duplicate. The fork's sweep BODY is unchanged inside upstream's try/finally.
   'src/web/auto-restart-runner.ts':
-    'adopt upstream tickRunning re-entrancy guard (the fork sweep has no overlap protection and its restart path is equally async), keeping the fork sweep body verbatim inside the try/finally',
+    "adopt upstream tickRunning re-entrancy guard (the fork sweep has no overlap protection and its restart path is equally async), keeping the fork sweep body verbatim inside the try/finally. Re-read 2026-08-26: upstream also added open-question deferral (restartBlockedBy in src/auto-restart.ts + hasOpenInboundQuestion check) so a due restart never swallows a pending owner exchange -- adopted, purely additive, no fork-side conflict.",
   // Three hunks, and NOT all one direction -- the reason this entry is per-hunk rather than a side.
   // (1)+(2) The fork's runner is a superset: a weekly-tier axis with durable-baseline bookkeeping
   // (recordBaselineIfAbsent/clearBaseline, "cheaper tier wins" so a park/start cycle cannot undo a
@@ -416,6 +416,18 @@ const ACKNOWLEDGED_CONFLICTS = {
   // the sentinel fix and the attribution comment untouched.
   'scripts/hooks/outgoing-copy-gate.py':
     "keep the fork file wholesale -- it already carries upstream's is_send_invocation() verbatim (adopted for card 3ec64c96) plus the fork's own separate load_bad_name() sentinel fix upstream lacks; if upstream's detector changes again, re-adopt that section only, leaving the sentinel fix and attribution comment untouched",
+  // Fork changed the message-body curl call to --data-urlencode (card b43d6dfd security fix --
+  // an `&` in the message must not start a new form param / override parse_mode). Upstream
+  // independently made delivery HONEST (NOTIFYVAK826): capture the response, require both a
+  // clean curl exit AND the Bot API's own "ok":true before reporting success, since this script
+  // is the fleet's FALLBACK channel used exactly when the primary Telegram plugin is already
+  // down -- a swallowed failure here is indistinguishable from silence. Upstream also gated the
+  // tmux sender-detection behind `[ -n "${TMUX:-}" ]` so a detached caller (cron/systemd) never
+  // mislabels a system alert as coming from an arbitrary agent. Resolution: keep BOTH -- the
+  // fork's --data-urlencode call wrapped in upstream's RESPONSE/CURL_EXIT/ok:true honesty check,
+  // token masked in error output, plus upstream's TMUX-guarded sender detection.
+  'scripts/notify.sh':
+    "keep both: fork's --data-urlencode message body (card b43d6dfd) wrapped in upstream's RESPONSE capture + curl-exit + ok:true honesty check (NOTIFYVAK826), token masked in error output; plus upstream's TMUX-guarded sender detection",
 } as const
 
 // THE UPSTREAM CONTENT EACH RULE ABOVE WAS DECIDED AGAINST (card a1d613e3, Cybersec msg 19105).
@@ -450,7 +462,7 @@ const ACKNOWLEDGED_UPSTREAM_BLOBS: Readonly<Record<keyof typeof ACKNOWLEDGED_CON
   'src/web/context-restart-gate-runner.ts': 'aae818bb7ded38146343eb0a0748b83422d018ce',
   'src/web.ts': '79ba29b713a7db18136e33e5f0c5686fb7fda1ca',
   'src/web/keychain.ts': '1e1730ee0d8f6b1d4b51c5c254f3fab56acfa376',
-  'src/web/agent-scaffold.ts': '3082c145b46770b40d586f2266a3446d6a28b826',
+  'src/web/agent-scaffold.ts': '2a72fb5c7f388a6be9077a1a3d8821231bcf8a88',
   'src/db.ts': '66381e77bdb6cce583bd3b397a3ae2202ae61e9e',
   'src/web/routes/agents.ts': '7711d18a7752828a113f9389a2c3943e6b74ab0e',
   'src/web/routes/kanban.ts': '5620fe397bdadad1a619408367a783d0470a13fe',
@@ -465,14 +477,15 @@ const ACKNOWLEDGED_UPSTREAM_BLOBS: Readonly<Record<keyof typeof ACKNOWLEDGED_CON
   'src/web/schedule-runner.ts': '9736ea6737757cc0155671dca3d9d2874b330885',
   'vitest.config.ts': '62d4ac7606cd719d40e07fc0d82c7f777dda0b30',
   'src/web/agent-process.ts': 'bb28237a19c881551c8415ebeecd58fcaac01923',
-  'src/web/auto-restart-runner.ts': '40b83f7012812cc0bdf48f1e093dd8b8d6bb4db2',
+  'src/web/auto-restart-runner.ts': 'bc738bbbdd1bc4ed335029d856cc2089c8029a39',
   'src/web/model-fallback-runner.ts': '681fcaefd6588fc2f6f3db880238b8288d1dcd15',
   'src/web/routes/skills.ts': '34c1e440bd5009e79546d686ec9fbc481ba0af7e',
   'src/web/routes/agents-skills.ts': '23a380b7d40b5cd70885d9205c6fb4cc1fe9dbfe',
   'scripts/email-send-gate.mjs': 'abaaedc4d0e9f76fa159307659473ffaac306411',
   'src/__tests__/hook-command-quoting.test.ts': '1048b1988e6c8554754900c62570d76d455f1057',
   'src/__tests__/installer-start-and-fallback.test.ts': '9017ce4fcfe808b73fdcd1389ebf1c9eaf374f7e',
-  'scripts/hooks/outgoing-copy-gate.py': '8c879e96083dbf9d5eaee54a47df4421ba1bba4d',
+  'scripts/hooks/outgoing-copy-gate.py': 'cd51631d01de4aa84776a3ad5ff8d8f6a85aa167',
+  'scripts/notify.sh': 'b3b4b06b6cb5004b7f754558f9da98b3085765b6',
 }
 
 /** A conflict whose written rule was decided against DIFFERENT upstream content than what is
