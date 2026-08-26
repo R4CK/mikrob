@@ -16,7 +16,7 @@ A Marveen saját licensze: [LICENSE](./LICENSE) (MIT).
 ### Zhutov skill csomag (handoff / retrospective / skill-management)
 - **Forrás**: https://artemxtech.substack.com/p/3-claude-code-skills-that-make-claude
 - **Szerző**: Artem Zhutov
-- **Hol a Marveen-ben**: `seed-skills/handoff/`, `seed-skills/retrospective/`, `seed-skills/skill-management/`
+- **Hol a Marveen-ben**: `seed-skills/fleet-handoff/` (2026-08-26-ig `seed-skills/handoff/`, atnevezve nev-utkozes miatt a vendorolt mattpocock-productivity/handoff-fal, lasd DECISIONS.md), `seed-skills/retrospective/`, `seed-skills/skill-management/`
 - **Mit csinál nálunk**: a skill-csontváz a Marveen flotta-architektúrájára adaptálva. Az 5-szekciós handoff struktúra (Goal, Current Progress, What Worked, What Didn't Work, Next Steps), a sub-agent retrospective minta, és a skill-rot életciklus-kezelés koncepció mind Zhutov csomagjából származik. A megvalósítás TypeScript-ben újraírva, integrálva a Marveen checkpoint, DREAM, memória és inter-agent message rendszereivel.
 
 ### printing-press (agent-CLI generátor)
@@ -36,7 +36,7 @@ A Marveen saját licensze: [LICENSE](./LICENSE) (MIT).
 
 ### Matt Pocock -- "/handoff is my new favourite skill"
 - **Forrás**: https://youtu.be/dtAJ2dOd3ko
-- **Hol a Marveen-ben**: a "purpose" argumentum mint kötelező paraméter a `/handoff`-on, és a cross-agent portable design (hogy egy HANDOFF.md működjön Claude Code, Codex, Copilot CLI stb. között) Matt videós design-javaslataiból átvéve.
+- **Hol a Marveen-ben**: a "purpose" argumentum mint kötelező paraméter a `/fleet-handoff`-on, és a cross-agent portable design (hogy egy HANDOFF.md működjön Claude Code, Codex, Copilot CLI stb. között) Matt videós design-javaslataiból átvéve.
 
 ---
 

@@ -3492,3 +3492,39 @@ plan-grilling nem volt szukseges: sajat --selftest-tel fedett, egykonyvtaras bas
 architekturai dontes).
 
 **Hivatkozas:** kartya 87e5ad4d, a hiba forrasa `store/cleancore-tsc-lib.sh` `link_node_modules`.
+
+## 2026-08-26 -- 0becf86c -- ket handoff skill + taskstate-replay: nev-utkozes megszuntetve, a harmadik mechanizmus dokumentalva
+
+**Elozmeny:** backend2 mar leszurte 2026-08-23-an (kartya 1d4cdcaa reviewje, DECISIONS.md fenti
+bejegyzese "Nyitott, ebben a kartyaban NEM javitott leletek" resze), hogy ket `handoff` nevu skill
+letezik ELTERO tartalommal, es a `taskstate-replay` harmadszor oldja meg ugyanazt a problemat --
+sajat kartyara hagyva. Ez az a kartya (0becf86c).
+
+**Meres:** `~/.claude/skills/handoff/SKILL.md` (fleet-sajat, `seed-skills/handoff`-bol telepitve,
+2026-07-10 ota, kanban/memoria/napi-naplo API-hoz kotve) es `~/.claude/skills/mattpocock-productivity/handoff/SKILL.md`
+(vendorolt, 2026-08-08, generikus, nincs flotta-integracio, OS temp dirbe ir) mindket frontmatter-je
+`name: handoff` -- valodi nev-utkozes, nem csak tartalmi eltero. A vendorolt masolat `VENDORED.md`-je
+explicit tiltja a helyi szerkesztest ("Local edits are lost on the next re-vendor"), es a
+`vendor-skill.sh`-nak nincs per-sub-skill kizaras mechanizmusa (a teljes `mattpocock/skills/skills/productivity`
+alkonyvtar egyben kerul at minden re-vendornel) -- tehat a vendorolt oldal NEM javithato es NEM
+kizarhato, csak a sajat oldal.
+
+**Dontes:** a fleet-sajat skillt atneveztem `handoff` -> `fleet-handoff`-ra (`seed-skills/fleet-handoff/`,
+`name: fleet-handoff`, trigger `/fleet-handoff`), mert ez a sajat, verziokezelt oldal, ahol a nev
+megvaltoztatasa strukturalisan (nem fegyelemmel) szunteti meg az utkozest -- fuggetlenul attol, hogy
+a Skill-tool nev-felbontasa a ket globalis `handoff` bejegyzes kozott ambiguan viselkedne-e vagy sem
+(ezt eleve nem erdemes tesztelni elo flotta-sessionon). A vendorolt masolat valtozatlan marad,
+kanonikus a `fleet-handoff` marad az egyetlen szandekosan hasznalt kezi handoff-mechanizmus.
+
+A `taskstate-replay` (`scripts/hooks/taskstate-replay.py` + `src/web/agent-taskstate.ts`) NEM
+duplikatum, es NEM szunt meg: fundamentalisan mas mechanizmus mas problemara -- automatikus
+PreCompact-iras/SessionStart-injektalas hook-par, UGYANAZON agent-identitas kompakt/respawn utani
+amneziaja ellen, kezi trigger es `purpose` nelkul. A `fleet-handoff` viszont kezi, `purpose`-vezerelt,
+MAS session/agent fele valo delegalasra valo. A ket mechanizmus kapcsolatat es kulonbseget a
+`fleet-handoff/SKILL.md` uj "Relation to other persistence mechanisms" tablaja + magyarazo bekezdese
+dokumentalja mostantol -- ez zarja le, hogy a harmadik mechanizmus miert marad meg valtozatlanul.
+
+**Ki dontott:** backend (kartya 0becf86c, a mar 2026-08-23-an leszurt lelet vegrehajtasa).
+**Hivatkozas:** kartya 0becf86c, elozo lelet: 1d4cdcaa reviewje (fenti bejegyzes ugyanebben a
+fajlban). Erintett fajlok: `seed-skills/fleet-handoff/SKILL.md` (atnevezve `seed-skills/handoff/`-bol),
+`ATTRIBUTIONS.md`.
