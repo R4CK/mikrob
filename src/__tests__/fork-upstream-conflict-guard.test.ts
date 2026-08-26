@@ -514,6 +514,17 @@ const ACKNOWLEDGED_CONFLICTS = {
   // -o/-w status capture + case-on-2xx honesty check, keep removing the temp header file.
   'scripts/channels.sh':
     'keep the fork\'s -H @"$_hdr_file" 0600-temp-file security pattern (card b267df80) unchanged, append upstream\'s HTTP-status-capture honest-delivery check (NOTIFYVAKSWEEP826) on both guard-alert call sites',
+  // Card 4ba71429 (backend, 2026-08-26): independent-additive, same class as the src/web.ts and
+  // src/web/heartbeat-agent-scaffold.ts import-line conflicts above. Both sides added a
+  // DIFFERENT template placeholder substitution to the SAME sed chain in render_seed_template():
+  // fork's {{CHAT_ID}} (needed by 4 fleet-orchestration prompts, see the SCHED_CHAT_ID comment
+  // above this function) and upstream's {{PROJECT_ROOT}} (the node seeder's alias for
+  // {{INSTALL_DIR}} -- ledger-live-drain uses that form, and without it the historical-blob
+  // match never fires, so that task is permanently classified "touched" and never refreshes).
+  // Real merge-tree dry run confirms a single hunk, nothing else in the function diverges.
+  // Resolution: keep both -e lines, either order.
+  'update.sh':
+    'independent-additive: keep both sed -e lines in render_seed_template() -- {{CHAT_ID}} from the fork (4 fleet-orchestration prompts) and {{PROJECT_ROOT}} from upstream (ledger-live-drain, node-seeder alias for {{INSTALL_DIR}})',
 } as const
 
 // THE UPSTREAM CONTENT EACH RULE ABOVE WAS DECIDED AGAINST (card a1d613e3, Cybersec msg 19105).
@@ -590,6 +601,7 @@ const ACKNOWLEDGED_UPSTREAM_BLOBS: Readonly<Record<keyof typeof ACKNOWLEDGED_CON
   'scripts/stuck-modal-guard.sh': '5bf19fc208ac41c204ae007189553efcb1d2790d',
   'src/__tests__/send-honesty-sweep.test.ts': '62a398ede06fee9c694a9419f0984b681aedc0e1',
   'scripts/channels.sh': '440c177464c2bcf2d090f8958373b94e011e9f62',
+  'update.sh': 'de0cad0164f4473d1cd1bd65dd019ae9465e4fe3',
 }
 
 /** A conflict whose written rule was decided against DIFFERENT upstream content than what is

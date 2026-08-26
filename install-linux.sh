@@ -1285,6 +1285,7 @@ if [ -d "$SCHED_TPL_DIR" ]; then
           -e "s/{{BOT_NAME}}/$BOT_NAME/g" \
           -e "s/{{OWNER_NAME}}/$OWNER_NAME/g" \
           -e "s|{{INSTALL_DIR}}|$INSTALL_DIR|g" \
+          -e "s|{{PROJECT_ROOT}}|$INSTALL_DIR|g" \
           -e "s/{{CHAT_ID}}/${CHAT_ID:-0}/g" \
           -e "s/{{WEB_PORT}}/${WEB_PORT:-3420}/g" \
           "$f" > "$target/$(basename "$f")"
@@ -1317,6 +1318,7 @@ if [ -d "$SEED_SCHED_DIR" ]; then
           -e "s/{{BOT_NAME}}/$BOT_NAME/g" \
           -e "s/{{OWNER_NAME}}/$OWNER_NAME/g" \
           -e "s|{{INSTALL_DIR}}|$INSTALL_DIR|g" \
+          -e "s|{{PROJECT_ROOT}}|$INSTALL_DIR|g" \
           -e "s/{{CHAT_ID}}/${CHAT_ID:-0}/g" \
           -e "s/{{WEB_PORT}}/${WEB_PORT:-3420}/g" \
           "$f" > "$target/$(basename "$f")"
