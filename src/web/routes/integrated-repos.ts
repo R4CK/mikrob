@@ -67,6 +67,12 @@ export interface IntegratedRepoConfig {
   /** Date the repo was adopted/installed into the fleet (YYYY-MM-DD). The real "install date"
    *  the UI shows -- distinct from vendoredDate, which is the upstream COMMIT date. */
   reviewed_at?: string
+  /** Date this entry's last_sha was last verified against the actual repo (YYYY-MM-DD).
+   *  Written automatically by store/external-repos-sync.sh's pull() (card 307abedd) for the
+   *  11 daily-synced repos; hand-written by store/git-repo-watcher.sh's own closing step for
+   *  the rest. Distinct from reviewed_at (the one-time adoption date) and vendoredDate (the
+   *  vendored COMMIT's own date) -- this is "when did anyone last look", not "what's running". */
+  last_checked_at?: string
   note?: string
 }
 
@@ -100,6 +106,9 @@ export interface IntegratedRepoStatus {
   /** Adoption/install date (YYYY-MM-DD) -- the real install date the UI shows, not the
    *  upstream commit date. Null when the registry entry has no recorded reviewed_at. */
   adoptedAt: string | null
+  /** When this entry's last_sha was last verified (YYYY-MM-DD). Null when never checked --
+   *  the UI shows a placeholder rather than a stale/misleading date in that case. */
+  lastCheckedAt: string | null
   /** True when the repo is actually INSTALLED: a git checkout exists, OR it is a
    *  version/pipx adoption with a recorded pinned version. A pipx adoption legitimately has
    *  cloned=false yet IS installed -- so `cloned` alone must not read as "not installed". */
@@ -177,6 +186,7 @@ export function statusForRepo(cfg: IntegratedRepoConfig): IntegratedRepoStatus {
     pinnedVersion: cfg.pinned_version ? String(cfg.pinned_version) : null,
     description: String(cfg.description || cfg.note || ''),
     adoptedAt: cfg.reviewed_at ? String(cfg.reviewed_at) : null,
+    lastCheckedAt: cfg.last_checked_at ? String(cfg.last_checked_at) : null,
     installed: false,
     vendoredSha: null,
     vendoredShort: null,
