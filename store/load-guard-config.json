@@ -21,5 +21,9 @@
     "psi_some_avg10": 75,
     "sustained_seconds": 30,
     "action": "sigstop_freeze"
+  },
+  "cgroup_throttle": {
+    "enabled": true,
+    "quota_pct": 25
   }
 }
