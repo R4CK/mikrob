@@ -335,7 +335,7 @@ describe('no shipped script, template or GENERATOR puts a Bearer token in curl a
     expect(SEED_SKILL_DOCS.length).toBeGreaterThan(30)
     // The five templates Cybersec named must be IN the corpus, by name -- a recursive walk that
     // silently stopped at the first level would still satisfy a bare count.
-    for (const skill of ['dream', 'handoff', 'retrospective', 'approval-request-handling', 'ai-fleet-project-execution']) {
+    for (const skill of ['dream', 'fleet-handoff', 'retrospective', 'approval-request-handling', 'ai-fleet-project-execution']) {
       expect(SEED_SKILL_DOCS).toContain(join(skill, 'SKILL.md'))
     }
     // M1: a `references/*.md` is neither SKILL.md nor *.sh, and the live skill tree proves that

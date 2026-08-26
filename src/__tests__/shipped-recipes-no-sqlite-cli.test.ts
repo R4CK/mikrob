@@ -67,7 +67,7 @@ describe('shipped recipes only use binaries the installer guarantees', () => {
 
   it('the two fixed recipes go through the dashboard API instead', () => {
     const audit = readFileSync(join(ROOT, 'seed-scheduled-tasks', 'kanban-audit', 'SKILL.md'), 'utf-8')
-    const handoff = readFileSync(join(ROOT, 'seed-skills', 'handoff', 'SKILL.md'), 'utf-8')
+    const handoff = readFileSync(join(ROOT, 'seed-skills', 'fleet-handoff', 'SKILL.md'), 'utf-8')
     expect(audit).toContain('/api/kanban')
     expect(audit).toMatch(/python3/)
     expect(handoff).toContain('/api/kanban')
@@ -75,7 +75,7 @@ describe('shipped recipes only use binaries the installer guarantees', () => {
   })
 
   it('the recipes resolve the port instead of hardcoding 3420', () => {
-    const handoff = readFileSync(join(ROOT, 'seed-skills', 'handoff', 'SKILL.md'), 'utf-8')
+    const handoff = readFileSync(join(ROOT, 'seed-skills', 'fleet-handoff', 'SKILL.md'), 'utf-8')
     const audit = readFileSync(join(ROOT, 'seed-scheduled-tasks', 'kanban-audit', 'SKILL.md'), 'utf-8')
     for (const src of [handoff, audit]) {
       expect(src).toMatch(/WEB_PORT=/)

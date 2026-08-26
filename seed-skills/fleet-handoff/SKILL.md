@@ -1,16 +1,23 @@
 ---
-name: handoff
-description: Generate a HANDOFF.md context transfer document for session continuity. Use when switching sessions, handing off to another agent, or preserving complex task context before a context window reset. Trigger on "/handoff" command or "handoff:" prefix in inter-agent messages.
+name: fleet-handoff
+description: Generate a HANDOFF.md context transfer document for session continuity, pulling live kanban/memory/log data from the fleet dashboard API. Use when switching sessions, handing off to another agent, or preserving complex task context before a context window reset. Trigger on "/fleet-handoff" command or "handoff:" prefix in inter-agent messages.
 ---
 
-# Handoff -- Session Context Transfer
+# Fleet Handoff -- Session Context Transfer
+
+Renamed from `handoff` -> `fleet-handoff` (card 0becf86c, 2026-08-26): a vendored third-party pack
+(`~/.claude/skills/mattpocock-productivity/handoff`) ships its OWN skill also named `handoff`, with
+different content (no fleet API integration, writes to OS temp dir instead of the project root).
+That vendored copy is pristine on re-vendor (see its `VENDORED.md` -- local edits are lost), so the
+name collision had to be resolved on OUR side. This skill is the fleet-integrated one: it pulls live
+kanban/memory/daily-log data via the dashboard API, which the vendored generic skill does not.
 
 ## When to use
 
 - You are about to hit context limits and need to preserve task state
 - A task needs to continue in a fresh session (yours or another agent's)
 - Inter-agent delegation of a complex, multi-step task
-- User explicitly says `/handoff` or asks to "save context for later"
+- User explicitly says `/fleet-handoff` or asks to "save context for later"
 - Before a `/checkpoint` when the task is too complex for 3-5 bullet points
 
 ## Arguments
@@ -22,9 +29,9 @@ description: Generate a HANDOFF.md context transfer document for session continu
 | `output` | no | File path override (default: project root `HANDOFF.md`) |
 
 Examples:
-- `/handoff purpose="Continue the Pipedrive connector PR review and address CI failures"`
-- `/handoff purpose="Finish the scheduler forceSend implementation" target=dev2`
-- `/handoff purpose="Debug the auth redirect loop" output=/tmp/handoff-auth.md`
+- `/fleet-handoff purpose="Continue the Pipedrive connector PR review and address CI failures"`
+- `/fleet-handoff purpose="Finish the scheduler forceSend implementation" target=dev2`
+- `/fleet-handoff purpose="Debug the auth redirect loop" output=/tmp/handoff-auth.md`
 
 ## Procedure
 
@@ -151,5 +158,17 @@ Report to the user/caller:
 | warm memory | Stable project context | Source: includes relevant warm context |
 | kanban | Task tracking | Source: includes assigned/active cards |
 | daily log | Chronological record | Source: includes today's log entries |
+| taskstate-replay | Post-compact/respawn resume, SAME agent identity | Not a source, not a duplicate -- a different mechanism for a different problem, see below |
 
 The handoff READS from these systems but does not REPLACE them. After a handoff, the receiving session should still check the live state of kanban/memory -- the handoff is a starting-context accelerator, not the source of truth.
+
+**Why this is not the same thing as `taskstate-replay`** (`scripts/hooks/taskstate-replay.py` +
+`src/web/agent-taskstate.ts`): that mechanism is a fully AUTOMATIC PreCompact-write /
+SessionStart-inject hook pair -- no manual invocation, no `purpose` argument, no cross-agent
+delivery. It exists to stop a SINGLE agent from waking up amnesic after its own in-place compact or
+a respawn. This skill is the opposite shape: manually triggered, carries an explicit `purpose`, and
+is the mechanism for handing work to a DIFFERENT session or a DIFFERENT agent (or preserving it
+somewhere a human/agent will deliberately go looking, e.g. a HANDOFF.md). Same underlying worry
+(context does not survive a boundary) does not mean the same problem -- automatic same-identity
+resume and manual cross-identity delegation need different tools, and neither can quietly replace
+the other. Decided 2026-08-26, card 0becf86c -- see `DECISIONS.md`.
