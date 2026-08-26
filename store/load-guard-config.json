@@ -29,5 +29,10 @@
   "sigstop_freeze": {
     "enabled": true,
     "max_freeze_seconds": 90
+  },
+  "bookkeeping": {
+    "alert_repeat_threshold": 2,
+    "alert_window_seconds": 3600,
+    "alert_cooldown_seconds": 3600
   }
 }

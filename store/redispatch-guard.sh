@@ -22,6 +22,8 @@
 #
 # DECISION ORDER in `check` (first match wins):
 #   1. card not in_progress/waiting            -> DENY:not-active   (nothing to nudge)
+#   1b. agent currently load-paused (card 1128002b, load-guard-bookkeeping.sh) -> DENY:load-paused
+#       (cgroup-throttled or SIGSTOP-frozen; deliberately not running, ledger untouched)
 #   2. progress since last check               -> DENY:progress     (reset counter; it's alive)
 #      (card.updated_at advanced, OR a new commit landed on the tracked branch)
 #   3. agent tmux panel is BUSY                 -> DENY:agent-busy   (never queue on a worker)
@@ -41,6 +43,7 @@ DASH="http://localhost:3420"
 TOKEN_FILE="${STORE}/.dashboard-token"
 LEDGER="${STORE}/redispatch-ledger.json"
 ESCAL="${STORE}/stuck-escalations.json"
+LOAD_PAUSED="${STORE}/load-paused-agents.json"
 BASE_BACKOFF=600      # seconds; interval = BASE * 2^count
 MAX_REDISPATCH=3      # hard cap on auto re-dispatches per card before escalating
 
@@ -130,6 +133,24 @@ os.replace(tmp,path)
 PY
 }
 
+# Card 1128002b: is $1 (agent short name) currently a key in load-paused-agents.json
+# (load-guard-bookkeeping.sh's marker)? Extracted to its own function, same reasoning as
+# _decide_active below -- so the selftest exercises the REAL check, not a re-typed copy of it.
+# Missing/unreadable/malformed file -> not paused (fail-open here on purpose: a broken bookkeeping
+# file must never permanently block every nudge in the fleet, it can only ever narrow a window).
+_is_load_paused() {
+  local agent="$1"
+  [ -f "$LOAD_PAUSED" ] || return 1
+  python3 -c "
+import json, sys
+try:
+    d = json.load(open(sys.argv[1]))
+except Exception:
+    sys.exit(1)
+sys.exit(0 if sys.argv[2] in d else 1)
+" "$LOAD_PAUSED" "$agent" 2>/dev/null
+}
+
 # Card 86dfba39: the cap check MUST win over the backoff check even when the current
 # (longest) backoff window has not elapsed yet. Extracted to its own pure function so the
 # selftest can exercise the REAL decision, not a hand-copied re-implementation of it -- the
@@ -176,6 +197,13 @@ case "$MODE" in
     upd="$(printf '%s' "$fields" | cut -f2)"
     upd="${upd%%.*}"; [ -n "$upd" ] || upd=0
     case "$status" in in_progress|waiting) : ;; *) echo "DENY:not-active($status)"; exit 8 ;; esac
+
+    # Card 1128002b (Feladat 4 of the load-brake phase 19f3bbb5): an agent CURRENTLY load-paused
+    # (cgroup-throttled or SIGSTOP-frozen, see load-guard-bookkeeping.sh) is not stuck -- it is
+    # deliberately not running. Nudging it would queue a message the frozen/throttled process
+    # cannot see yet; touching the ledger below would also unfairly burn the backoff/cap budget
+    # for time the agent was never actually idle. Checked BEFORE any ledger read/write.
+    if _is_load_paused "$AGENT"; then echo "DENY:load-paused"; exit 8; fi
 
     IFS=$'\t' read -r count last_ts last_upd <<<"$(_ledger_get "$CARD")"
     ts="$(now_ts)"
@@ -234,7 +262,7 @@ PY
     ;;
 
   selftest)
-    tmpdir="$(mktemp -d)"; LEDGER="$tmpdir/led.json"; ESCAL="$tmpdir/esc.json"; fails=0
+    tmpdir="$(mktemp -d)"; LEDGER="$tmpdir/led.json"; ESCAL="$tmpdir/esc.json"; LOAD_PAUSED="$tmpdir/paused.json"; fails=0
     # stub card fields + agent-busy for deterministic testing
     _card_fields() { printf 'in_progress\t%s\tbackend\n' "${STUB_UPD:-1000}"; }
     _agent_busy() { [ "${STUB_BUSY:-0}" = "1" ]; }
@@ -269,6 +297,14 @@ PY
     # CONTROL: busy still wins over both, unconditionally
     out="$(_decide_active 3 990 1000 1)"
     [ "$out" = "agent-busy" ] || { echo "FAIL busy-control: $out"; fails=$((fails+1)); }
+    # 7) card 1128002b: _is_load_paused, the REAL function the check block calls
+    echo '{}' > "$LOAD_PAUSED"
+    _is_load_paused backend && { echo "FAIL load-paused: empty file falsely paused"; fails=$((fails+1)); }
+    echo '{"backend": {"card_id": "C1", "since": 1000, "mechanism": "sigstop_freeze"}}' > "$LOAD_PAUSED"
+    _is_load_paused backend || { echo "FAIL load-paused: should be paused"; fails=$((fails+1)); }
+    _is_load_paused fullstack && { echo "FAIL load-paused: fullstack should NOT be paused"; fails=$((fails+1)); }
+    rm -f "$LOAD_PAUSED"
+    _is_load_paused backend && { echo "FAIL load-paused: missing file must fail-open (not paused)"; fails=$((fails+1)); }
     rm -rf "$tmpdir"
     if [ "$fails" -eq 0 ]; then echo "SELFTEST: PASS"; exit 0; else echo "SELFTEST: FAIL ($fails)"; exit 1; fi
     ;;

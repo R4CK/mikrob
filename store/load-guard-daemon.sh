@@ -23,6 +23,13 @@
 # never breaks the lower tiers). "critical" only fires once "hard" (cgroup_throttle) has already
 # been sustained and load STILL climbed past it, so --cgroup and --sigstop are meant to run
 # together in production, not as alternatives.
+#
+# --bookkeeping (card 1128002b, Feladat 4 of 19f3bbb5): same opt-in shape again, runs LAST (after
+# --cgroup/--sigstop, best-effort) so it reads this tick's freshly-written throttle/freeze state,
+# not last tick's. Maintains store/load-paused-agents.json (consulted by store/redispatch-guard.sh
+# and the stuck-card-monitor scheduled task so a paused agent's card is never mistaken for stuck),
+# posts PAUSED-LOAD/RESUMED-LOAD kanban comments on transitions, and alerts Telegram only for
+# repeated pausing of the same agent -- see load-guard-bookkeeping.sh's own header for the detail.
 set -euo pipefail
 
 INSTALL_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
@@ -30,12 +37,14 @@ LOG="$INSTALL_DIR/store/load-guard.log"
 EVAL_ARGS=()
 CGROUP=0
 SIGSTOP=0
+BOOKKEEPING=0
 
 while [ $# -gt 0 ]; do
   case "$1" in
     --log) LOG="$2"; shift 2 ;;
     --cgroup) CGROUP=1; shift ;;
     --sigstop) SIGSTOP=1; shift ;;
+    --bookkeeping) BOOKKEEPING=1; shift ;;
     --config|--state|--metrics-json|--now) EVAL_ARGS+=("$1" "$2"); shift 2 ;;
     *) echo "load-guard-daemon.sh: unknown arg: $1" >&2; exit 2 ;;
   esac
@@ -57,4 +66,8 @@ fi
 
 if [ "$SIGSTOP" = "1" ]; then
   "$INSTALL_DIR/store/load-guard-sigstop.sh" --action "$ACTION" || true
+fi
+
+if [ "$BOOKKEEPING" = "1" ]; then
+  "$INSTALL_DIR/store/load-guard-bookkeeping.sh" || true
 fi
