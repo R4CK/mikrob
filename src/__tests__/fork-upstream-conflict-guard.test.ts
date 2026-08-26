@@ -96,8 +96,18 @@ const ACKNOWLEDGED_CONFLICTS = {
   // branch (EGRESSRENDER824). Import line conflict grows: fork adds ensureNpmProtectGuard,
   // upstream now adds ensureSkillsPathTrapSection + watchEgressAllowlistForReaderRender.
   // Adopt the watcher call alongside the merged import.
+  // Re-read 2026-08-26 (card 367c23a9, unblocking backend's unrelated landing): upstream moved
+  // AGAIN (added listAllAgentNames to the agent-config import too). Real merge-tree dry run
+  // confirms this is STILL a single-hunk import-line conflict, nothing else in the file diverges
+  // -- but the target symbols (ensureSkillsPathTrapSection, watchEgressAllowlistForReaderRender)
+  // do not exist yet in the fork's own agent-scaffold.ts (verified: zero occurrences on live
+  // develop). That file's reconciliation is the same one already deferred to the Peti-supervised
+  // F5 cutover (see the src/web/agent-scaffold.ts entry below) -- this import line is coupled to
+  // it and cannot be resolved in isolation without importing symbols that do not exist. Blob
+  // bumped to record today's re-read; the resolution itself (merge both import lines, adopt the
+  // watcher call) is unchanged and stays pending F5, same as agent-scaffold.ts.
   'src/web.ts':
-    'merge import line (ensureNpmProtectGuard from fork + ensureSkillsPathTrapSection + watchEgressAllowlistForReaderRender from upstream, all on one line) and adopt upstream watchEgressAllowlistForReaderRender call inside hookDecision.register branch (EGRESSRENDER824) -- no other conflict in the file',
+    'merge import line (ensureNpmProtectGuard from fork + ensureSkillsPathTrapSection + watchEgressAllowlistForReaderRender + listAllAgentNames from upstream, all on one line) and adopt upstream watchEgressAllowlistForReaderRender call inside hookDecision.register branch (EGRESSRENDER824) -- coupled to the agent-scaffold.ts reconciliation, deferred to F5 same as that file, not yet applied to live develop',
   // The call-site half of the same upstream change, and the same INDEPENDENT-ADDITIVE class as
   // src/db.ts below rather than a disagreement (measured 2026-08-22). Two hunks, both caused by the
   // two sides adding a DIFFERENT CLAUDE.md section-writer at the same insertion point, each with
@@ -283,8 +293,16 @@ const ACKNOWLEDGED_CONFLICTS = {
   // updated format section referencing COUNTS verbatim) for the kanban reporting block;
   // keep the fork's printf|curl token-argv-safe pattern for the remaining curl calls
   // (quota park + inter-agent message section) that upstream did not touch.
+  // Re-read 2026-08-26 (card 367c23a9, unblocking backend's unrelated landing): upstream moved
+  // again (blob bb4a7bc7). Verified the metricsScript adoption decided above was NEVER actually
+  // applied to live develop's heartbeat-agent-scaffold.ts (zero occurrences of metricsScript /
+  // HEARTBEAT_AGENT_ID / heartbeat-metrics.sh, checked directly) -- a real feature adoption
+  // (new script + identity field + report-format rewrite), not a trivial import merge, and
+  // exactly the class of change already deferred to the Peti-supervised F5 cutover for
+  // agent-scaffold.ts. Blob bumped to record today's re-read; resolution unchanged, stays
+  // pending F5.
   'src/web/heartbeat-agent-scaffold.ts':
-    'two-way merge: adopt upstream metrics-script approach (HBMEMBLIND819 third contract -- bash heartbeat-metrics.sh, HeartbeatIdentity.metricsScript, HEARTBEAT_AGENT_ID import, updated report format using COUNTS/URGENT/WAITING/SCHEDULES/TASK_RUNS_1H lines verbatim) for the kanban section; keep fork printf|curl token-argv-safe pattern for the remaining curl calls (quota park + inter-agent message) that upstream did not touch',
+    'two-way merge: adopt upstream metrics-script approach (HBMEMBLIND819 third contract -- bash heartbeat-metrics.sh, HeartbeatIdentity.metricsScript, HEARTBEAT_AGENT_ID import, updated report format using COUNTS/URGENT/WAITING/SCHEDULES/TASK_RUNS_1H lines verbatim) for the kanban section; keep fork printf|curl token-argv-safe pattern for the remaining curl calls (quota park + inter-agent message) that upstream did not touch -- NOT yet applied to live develop, deferred to F5 same as agent-scaffold.ts',
   // Re-read 2026-08-23 against upstream 9736ea67 (card 394fb5ce): the file moved on, so the rule
   // below now describes TODAY's two hunks rather than the ones it was first written for. The
   // SIGTERM/janitor hunks the previous text named have since merged cleanly and are gone; what
@@ -487,6 +505,15 @@ const ACKNOWLEDGED_CONFLICTS = {
   // verbatim plus that one staging addition; if upstream's suite grows new
   // describe blocks, add them alongside, do not drop the staging addition.
   'src/__tests__/send-honesty-sweep.test.ts': "upstream file verbatim + the fork's session-limit-pattern.sh/.json staging addition in stageTree() for limit-monitor.sh's fork-only dependency",
+  // NOTIFYVAKSWEEP826 closing round (#1088, measured live 2026-08-26, card 367c23a9). Two
+  // identical hunks (main-agent-on-shared-config guard alerts). Real merge-tree dry run confirms
+  // the fork's -H @"$_hdr_file" security fix (card b267df80: 0600 temp header file instead of a
+  // curl argv, since /proc/<pid>/cmdline is world-readable) is UNCHANGED context on both sides,
+  // not part of the conflict -- upstream only adds HTTP-status capture for honest delivery
+  // logging on top of it. Resolution: keep the fork's header-file curl call, append upstream's
+  // -o/-w status capture + case-on-2xx honesty check, keep removing the temp header file.
+  'scripts/channels.sh':
+    'keep the fork\'s -H @"$_hdr_file" 0600-temp-file security pattern (card b267df80) unchanged, append upstream\'s HTTP-status-capture honest-delivery check (NOTIFYVAKSWEEP826) on both guard-alert call sites',
 } as const
 
 // THE UPSTREAM CONTENT EACH RULE ABOVE WAS DECIDED AGAINST (card a1d613e3, Cybersec msg 19105).
@@ -519,7 +546,7 @@ const ACKNOWLEDGED_UPSTREAM_BLOBS: Readonly<Record<keyof typeof ACKNOWLEDGED_CON
   'src/__tests__/model-fallback.test.ts': '38b6e76e9f5184a9ade636a057b79c4e522f1e3b',
   'src/web/update-checker.ts': '24e46f990c7b0a5c8fa065d12ba1ee592b547691',
   'src/web/context-restart-gate-runner.ts': 'aae818bb7ded38146343eb0a0748b83422d018ce',
-  'src/web.ts': '79ba29b713a7db18136e33e5f0c5686fb7fda1ca',
+  'src/web.ts': '67695fc52c4a2e802b9ca79edda0649f1d802d33',
   'src/web/keychain.ts': '1e1730ee0d8f6b1d4b51c5c254f3fab56acfa376',
   'src/web/agent-scaffold.ts': '2a72fb5c7f388a6be9077a1a3d8821231bcf8a88',
   'src/db.ts': '66381e77bdb6cce583bd3b397a3ae2202ae61e9e',
@@ -532,7 +559,7 @@ const ACKNOWLEDGED_UPSTREAM_BLOBS: Readonly<Record<keyof typeof ACKNOWLEDGED_CON
   '.gitignore': '1e5adbb2332be0dbf5a710c1899e49305ccb318b',
   'package.json': 'bbb946b636ac92c4e69abd4d62d4762c35105347',
   'package-lock.json': 'a3e12f8a7eb91de9556b3b84acf928c1c22cfcef',
-  'src/web/heartbeat-agent-scaffold.ts': '26c691e53e1283d4cee2543e53f26532b0a9c06c',
+  'src/web/heartbeat-agent-scaffold.ts': 'bb4a7bc74200725e8c257f7d835b082ed6f12047',
   'src/web/schedule-runner.ts': '9736ea6737757cc0155671dca3d9d2874b330885',
   'vitest.config.ts': '62d4ac7606cd719d40e07fc0d82c7f777dda0b30',
   'src/web/agent-process.ts': 'bb28237a19c881551c8415ebeecd58fcaac01923',
@@ -562,6 +589,7 @@ const ACKNOWLEDGED_UPSTREAM_BLOBS: Readonly<Record<keyof typeof ACKNOWLEDGED_CON
   'scripts/set-bot-menu.sh': 'b45aca69c59f9b69748592df70d0a9ea77189206',
   'scripts/stuck-modal-guard.sh': '5bf19fc208ac41c204ae007189553efcb1d2790d',
   'src/__tests__/send-honesty-sweep.test.ts': '62a398ede06fee9c694a9419f0984b681aedc0e1',
+  'scripts/channels.sh': '440c177464c2bcf2d090f8958373b94e011e9f62',
 }
 
 /** A conflict whose written rule was decided against DIFFERENT upstream content than what is
