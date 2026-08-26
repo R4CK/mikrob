@@ -498,7 +498,17 @@ const ACKNOWLEDGED_CONFLICTS = {
   // stamp-baseline-only-on-confirmed-delivery around it.
   'scripts/disk-space-guard.sh': 'adopt upstream wholesale -- honest-send-via-lib replaces an unchecked inline curl, no fork-specific logic in this file',
   'scripts/unit-fail-notify.sh': 'adopt upstream wholesale -- honest-send-via-lib replaces an unchecked inline curl (best-effort exit-0 contract unchanged), no fork-specific logic in this file',
-  'scripts/limit-monitor.sh': "keep the fork's session-limit-pattern.sh sourcing (canonical regex, card 115c21e7) + its own extra-signal regex, graft upstream's honest-send-via-lib + stamp-dedupe-hash-only-on-confirmed-success onto the alert block",
+  // Re-read 2026-08-26 (unblocking backend2's b4a7c9c3 landing): upstream moved again
+  // (MD5SUMHIANY826). The bare `md5sum | awk` dedupe pipeline yielded an EMPTY hash on any host
+  // without md5sum (macOS, and some minimal service PATHs), and two empty hashes compare equal --
+  // so the dedupe silently swallowed every alert on those hosts. Upstream replaced it with the new
+  // shared scripts/lib/content-hash.sh (dedupe_check: exit 0 new / 1 unchanged / 2 hashing
+  // unavailable, fail-OPEN on 2 -- a duplicate alert beats a swallowed one) and stopped stamping
+  // the state file when the hash comes back empty. Resolution unchanged in kind, widened in scope:
+  // keep the fork's canonical-source sourcing + its own wider extra-signal regex, graft upstream's
+  // honest-send-via-lib + the new content-hash.sh dedupe_check (replacing the bare md5sum call) +
+  // stamp-only-on-confirmed-success-with-a-nonempty-hash onto the alert block.
+  'scripts/limit-monitor.sh': "keep the fork's session-limit-pattern.sh sourcing (canonical regex, card 115c21e7) + its own extra-signal regex, graft upstream's honest-send-via-lib + the content-hash.sh dedupe_check helper (MD5SUMHIANY826, replaces the bare md5sum call, fails open on no hashing tool) + stamp-dedupe-hash-only-on-confirmed-success-with-a-nonempty-hash onto the alert block",
   'scripts/host-restart-watchdog.sh': "keep the fork's prior-shutdown cause classifier wholesale (classify_shutdown_from_log/prev_boot_log/HOST_RESTART_WATCHDOG_LIB test hook, card RELIA-A, upstream never had it), graft upstream's HOSTWD_PROC_STAT test hook + honest-send-via-lib + stamp-btime-baseline-only-on-confirmed-delivery",
   'src/__tests__/notify-delivery-honesty.test.ts': 'adopt upstream wholesale -- trivial test-scaffolding update to stage the new scripts/lib/send-telegram.sh alongside notify.sh',
   // NOT an upstream conflict -- upstream deleted this file outright when notify.sh stopped
@@ -532,14 +542,18 @@ const ACKNOWLEDGED_CONFLICTS = {
   // unrelated to what the suite is testing). Resolution: keep upstream's file
   // verbatim plus that one staging addition; if upstream's suite grows new
   // describe blocks, add them alongside, do not drop the staging addition.
-  // 2026-08-26 re-adopt (MD5SUMHIANY826, card 9e92e94c dispatch): upstream added its own
-  // stageTree() line staging scripts/lib/content-hash.sh (limit-monitor.sh's new dedupe
-  // dependency, see that file's entry above) -- an independent-additive change alongside the
-  // fork's own session-limit-pattern.sh/.json staging line, same class as other additive hunks in
-  // this map. Kept both; import line also gained upstream's `platform` from node:os (currently
-  // unused in this file -- upstream's own addition, adopted verbatim, not the fork's to prune).
-  // 11/11 tests green.
-  'src/__tests__/send-honesty-sweep.test.ts': "upstream file verbatim + the fork's session-limit-pattern.sh/.json staging addition in stageTree() for limit-monitor.sh's fork-only dependency; 2026-08-26 additive-both with upstream's own content-hash.sh staging line + platform import (MD5SUMHIANY826)",
+  // Re-read 2026-08-26 (same MD5SUMHIANY826 sweep as the scripts/limit-monitor.sh entry above).
+  // NOTE (backend, same date): an earlier land of this reconciliation (by backend2, unblocking
+  // their b4a7c9c3) updated ONLY this rule text + the recorded blob sha below, without actually
+  // adding the content-hash.sh staging line to the file -- so develop briefly carried a guard
+  // that reported "reconciled" while scripts/limit-monitor.sh, scripts/lib/content-hash.sh and
+  // this file's own stageTree() were still the pre-upstream content (the guard checks that a
+  // blob was READ and a resolution recorded, not that the resolution was actually applied -- a
+  // real gap, not a false alarm). This land actually adds the staging line. Upstream's diff at
+  // this blob also imports `platform` from node:os alongside it, unused in this file as of this
+  // commit -- lint-ratchet (@typescript-eslint/no-unused-vars) refuses a new finding, so NOT
+  // adopted; re-add it if/when upstream's own later commit actually uses it here.
+  'src/__tests__/send-honesty-sweep.test.ts': "upstream file verbatim + the fork's session-limit-pattern.sh/.json staging addition in stageTree() for limit-monitor.sh's fork-only dependency; 2026-08-26 additive with upstream's own content-hash.sh staging line (MD5SUMHIANY826); upstream's accompanying `platform` import left OUT, unused-in-this-file (lint-ratchet)",
   // NOTIFYVAKSWEEP826 closing round (#1088, measured live 2026-08-26, card 367c23a9). Two
   // identical hunks (main-agent-on-shared-config guard alerts). Real merge-tree dry run confirms
   // the fork's -H @"$_hdr_file" security fix (card b267df80: 0600 temp header file instead of a
