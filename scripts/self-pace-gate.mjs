@@ -983,6 +983,16 @@ function scanBashWord(src, start) {
     if (j - start > SCAN_BASH_WORD_MAX_LEN) return -1
     const c = src[j]
     if (c === '\\') { j += 2; continue }
+    // ANSI-C $'...' (card 5c9c15c0, Cybered 84e31b40 round 11): a plain `indexOf("'", ...)` below
+    // stops at the FIRST apostrophe, including an ESCAPED one (\') -- wrong only for this form,
+    // where bash treats \' as a literal quote inside the string, not the terminator. Not exploitable
+    // today (every NAME position this function is called for rejects an apostrophe outright before
+    // the body ever runs, so a real `$'...'` word can never reach here as a NAME) -- fixed anyway for
+    // the same reason ec20dd23 fixed the QUOTED_LITERAL_RX/unquoteWord copy of this exact blindness:
+    // consistency now is cheaper than a live repro later. Reuses readAnsiC (the ONE decoder this file
+    // already has) purely for its end-of-string index -- the decoded text itself is not needed here,
+    // scanBashWord only ever returns a span.
+    if (c === '$' && src[j + 1] === "'") { j = readAnsiC(src, j + 2)[1]; continue }
     if (c === "'") { const k = src.indexOf("'", j + 1); if (k === -1) return -1; j = k + 1; continue }
     if (c === '"') {
       j++

@@ -4104,3 +4104,45 @@ a teljes load-guard tesztcsaládon, redispatch-guard selftest PASS, tsc tiszta.
 **Ki döntött:** backend (kártya 1128002b, Cybersec + QA NO-GO/FAIL alapján).
 **Hivatkozás:** kártya 1128002b, Gate-SHA fce0df4e (a Cybersec NO-GO és QA FAIL komment), előzmény:
 kártya 2bfbf805 (a rokon eval-hiba-lánc, ami a jelen hiányosságot is okozza).
+
+## 2026-08-27 01:04 -- scanBashWord ANSI-C $'...' escape-vakság javítva (kártya 5c9c15c0)
+
+**Mit döntöttünk.** `scripts/self-pace-gate.mjs` `scanBashWord()`-je mostantól felismeri a `$'...'`
+(ANSI-C) idézési formát: ha egy `$` karaktert `'` követ, a span-számítás `readAnsiC()`-et hívja (a
+fájl EGYETLEN ANSI-C dekódere, amit `unquoteWord`/`QUOTED_LITERAL_RX` is használ) a záró idézőjel
+POZÍCIÓJÁNAK meghatározásához -- nem egy második dekódert ír. Korábban a sima `indexOf("'", ...)`
+minden apostrófnál megállt, ESCAPELTNÉL is, tehát egy `$'AB\'CD'` alakú NAME-et túl röviden mért
+volna fel.
+
+**Miért.** Cybered lelete (84e31b40 záró GO kör, 2026-08-24, 11. kör): ugyanaz a hibaosztály, mint
+amit `ec20dd23` már javított (`unquoteWord`/`QUOTED_LITERAL_RX`-en), de `scanBashWord()`-ben --
+FÜGGETLEN kódhely, a kártya saját, kötelező ELSŐ lépése szerint ellenőriztem: `scanBashWord` SOHA
+nem hívja a `readAnsiC`/`unquoteWord`/`QUOTED_LITERAL_RX` gépezetet, tehát `ec20dd23` fixe ezt a
+helyet nem fedi -- NEM dedup-zárható, önálló javítás kellett.
+
+**MA NEM KIHASZNÁLHATÓ, empirikusan is megmérve (nem csak a kártya állítása alapján elfogadva).**
+Három crafted bemenet (`coproc $'AB\'CD' { crontab -r; }`, `function $'AB\'CD' { crontab -r; }` és
+a jóhiszemű kontroll) `gateDecision()`-jét lefuttattam MIND a javítás ELŐTTI (git stash-elt eredeti
+fájl), MIND az UTÁNI verzióval -- a `deny` eredmény MINDKÉT esetben azonos (DENY a veszélyes
+törzsre, ALLOW a jóhiszemű kontrollra). Nincs élő A/B-különbség: egy másik, független detektor már
+elkapja a veszélyes törzset a NAME-span helyességétől függetlenül, és bash maga elutasít egy
+apostrófot tartalmazó NAME-et coproc/function/POSIX pozícióban, mielőtt bármi lefutna -- pontosan
+ahogy a kártya saját, három-fuggetlen-vegrehajtasi-teszttel alátámasztott állítása mondja.
+
+**Miért javítottuk akkor is.** Konzisztencia: ugyanaz az elv, ami miatt `ec20dd23` a saját másolatát
+javította -- egy escape-vak span-számítás egy NAME-scannerben rossz szomszédság, még ha ma nincs is
+rajta keresztül élő kihasználás; egy jövőbeli, e scannerre épülő új hívó vagy egy jövőbeli bash-
+viselkedés-változás bármikor élővé tehetné.
+
+**Konzekvencia.** Módosított: `scripts/self-pace-gate.mjs` (`scanBashWord` új `$'` ág). Új:
+`src/__tests__/scan-bash-word-ansi-c-quote.test.ts` (7 teszt: 3 meglévő NAME-alak regressziója,
+1 sima idézőjeles kontroll, 2 escapelt-apostrófos ANSI-C NAME veszélyes törzzsel, 1 jóhiszemű
+escapelt-apostrófos ANSI-C NAME kontroll). 543+171 zöld a teljes self-pace-gate tesztcsaládon
+(governance-gates, bash-ast-boundary, hook-command-quoting, path-prefix-*, stdin-*,
+self-pace-nested-command-context, self-pace-wrapper-and-keyword-positions,
+self-pace-gate-oversize-failclosed, scan-bash-word-backtick-quadratic, az új fájl). tsc tiszta.
+
+**Ki döntött:** backend (kártya 5c9c15c0, Cybered 84e31b40 lelete alapján, a kártya saját
+dedup-ellenőrzési utasítása szerint eljárva).
+**Hivatkozás:** kártya 5c9c15c0, előzmény: kártya ec20dd23 (a rokon, de FÜGGETLEN kódhelyen már
+javított escape-vakság), kártya 84e31b40 (a záró Cybered-kör, ahol a lelet született).
