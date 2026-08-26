@@ -3821,3 +3821,46 @@ frissíti a systemd unit-fájlokat).
 lett ellenőrizve, a meglévő testvér-guardok konvenciója szerint).
 
 **Hivatkozás:** kártya 3e094b1e (parent), 896dfffc (ez az alfeladat).
+
+## 2026-08-26 -- 77075367 -- Stale-dist gap: landoláskori WARNING + build-freshness riasztó guard, NEM auto-rebuild/restart
+
+**Döntés.** A `store/marveen-land.sh` szándékos tervezési döntése (a script saját fejléc-kommentje
+szerint) hogy egy landolás soha nem épít újra és soha nem indít újra semmit -- ez marad az
+`./update.sh` + Peti jóváhagyás külön, tudatos kapuja. Ez a döntés önmagában helyes maradt, DE a
+kártya egy valós következményt mért: `f0389e81` (egy gate-elt, kész biztonsági javítás) landolt, de
+kb 1 óráig senki nem tudta, hogy a futó `mikrob-channels`/`mikrob-dashboard` még a régi buildet
+szolgálja ki -- csak Cybersec saját, magánjellegű élő újratesztje buktatta le. A hiányzó darab tehát
+nem az újraépítés hiánya volt (az szándékos), hanem hogy a RÉS néma maradt.
+
+**Miért NEM auto-rebuild/restart.** (1) A `mikrob-channels` szolgáltatás a Petivel folyó AKTUÁLIS
+beszélgetést hordozza -- egy autonóm újraindítás elveszítheti a kapcsolatot úgy, hogy a hiba
+jelzésére használt csatorna maga hallgat el (kötött szabály, lásd memória:
+never-restart-own-channel-without-confirmation). (2) Ez összhangban áll `marveen-land.sh` saját,
+már meglévő tervezési döntésével is. Ezért a fix STRUKTURÁLIS LÁTHATÓSÁG, nem automatikus javítás.
+
+**Megvalósítás.** Két darab, egyik sem épít újra és egyik sem indít újra semmit:
+1. `store/marveen-land.sh`: `land_one` a sikeres landolás kimenetén egy WARNING sort ír, ha a landolt
+   diff `src/`-t érint -- pont akkor, amikor egy ügynök/ember már úgyis nézi a kimenetet.
+2. `scripts/build-freshness-guard.sh` (új, 5 perces systemd timer, a `disk-space-guard.sh`/
+   `ollama-down-guard.sh` mintáját követve: direkt Bot API, csak megerősített kézbesítés után íródik
+   a cooldown-bélyeg, a felépülés törli a bélyeget): a legfrissebb `src/`-t érintő commit ideje
+   (`git log`, NEM fájl-mtime) a `dist/*.js` legfrissebb mtime-jával összevetve, 5 perces build-idő
+   türelmi ablakkal a hamis riasztás ellen.
+
+**Élő mérés bevezetéskor.** `BUILD_GUARD_REPO_DIR=/home/neon/marveen` ellen futtatva a guard
+valódi ~75 perces elavulást talált az éles telepítésen -- ez maga is a kártya problémáját igazolja.
+Nem javítottam magától (az élő telepítés újraépítése/újraindítása Peti/MikroB döntése), csak
+jelezve.
+
+**Ki döntött:** backend (kártya 77075367, Cybersec 2026-08-24-i élő ujratesztjenek kovetkezmenye).
+
+**Tesztek:** 19/19 zöld (`src/__tests__/agent-worktree-marveen.test.ts`, 2 új eset a
+marveen-land.sh WARNING sorára + egy `commitInWorktree` beágyazott-útvonal javítás, ami ezekhez
+kellett), 12/12 zöld (`scripts/__tests__/build-freshness-guard.test.sh`, új, bash-natív, a
+testvér-guardok konvenciója szerint kézzel futtatva). tsc --noEmit tiszta.
+
+**Aktiválás:** `scripts/install-guard-timers.sh`-be bekötve (`build-freshness-guard`) -- az ÉLES
+aktiváláshoz a landolás UTÁN az élő telepítésből újra kell futtatni, ugyanúgy mint az
+`ollama-down-guard`-nál.
+
+**Hivatkozás:** kártya 77075367.

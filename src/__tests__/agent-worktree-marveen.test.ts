@@ -150,6 +150,7 @@ describe('marveen-land.sh (card dc185b52)', () => {
     gitOk(tree, 'config', 'user.email', `${agent}@t.local`)
     gitOk(tree, 'config', 'user.name', agent)
     for (const [name, content] of Object.entries(files)) {
+      mkdirSync(dirname(join(tree, name)), { recursive: true })
       writeFileSync(join(tree, name), content)
     }
     gitOk(tree, 'add', ...Object.keys(files))
@@ -229,6 +230,28 @@ describe('marveen-land.sh (card dc185b52)', () => {
     const r = await runLand(['backend'], writeStub(0))
     expect(r.status).toBe(0)
     expect(r.out).toContain('already fully landed')
+  })
+
+  // ── Card 77075367: a src/-touching land is not a silent stale-dist gap ─────────────────────
+  // A landed src/ change does not rebuild dist/ or restart mikrob-channels/mikrob-dashboard
+  // (deliberately -- see land_one's header comment). f0389e81 landed a gated security fix that sat
+  // inactive for ~1h because nothing said so. This does not rebuild anything; it only asserts the
+  // land now SAYS so, at the one moment someone is already watching the output.
+
+  it('warns when the landed change touches src/', async () => {
+    await commitInWorktree('backend', { 'src/new-thing.ts': 'export const x = 1\n' })
+    const r = await runLand(['backend'], writeStub(0))
+    expect(r.status).toBe(0)
+    expect(r.out).toContain('WARNING')
+    expect(r.out).toContain('src/')
+    expect(r.out).toContain('./update.sh')
+  })
+
+  it('does NOT warn when the landed change stays outside src/', async () => {
+    await commitInWorktree('backend', { 'store/new-thing.sh': '#!/usr/bin/env bash\n' })
+    const r = await runLand(['backend'], writeStub(0))
+    expect(r.status).toBe(0)
+    expect(r.out).not.toContain('WARNING')
   })
 
   // ── Card 65657bad: a lost push race is not a failure ───────────────────────────────────────
