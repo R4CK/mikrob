@@ -79,10 +79,6 @@ _SECRET_PATTERNS = [
     re.compile(r'\b(ghp_|ghc_|gho_|ghu_|ghs_|sk-|sk-ant-|xoxb-|xoxp-)[A-Za-z0-9_\-]{10,}'),
     # JWT-shaped triple-dot strings (header.payload.signature)
     re.compile(r'\bey[A-Za-z0-9_\-]{10,}\.[A-Za-z0-9_\-]{10,}\.[A-Za-z0-9_\-]{10,}\b'),
-    # Long hex blobs >= 40 chars (SHA-family hashes, raw tokens)
-    re.compile(r'\b[0-9a-fA-F]{40,}\b'),
-    # Long base64-only blobs >= 40 chars
-    re.compile(r'(?<![A-Za-z0-9+/])[A-Za-z0-9+/]{40,}={0,2}(?![A-Za-z0-9+/=])'),
     # DB connection string URI passwords: postgres://user:PASSWORD@host, mysql://, mongodb://, redis://
     # Capture group 1 = the URI prefix up to and including ':', group 2 = password (replaced).
     #
@@ -96,7 +92,21 @@ _SECRET_PATTERNS = [
     # ("a random 6+ char run is probably a secret"), so a floor is a sensible noise filter there.
     # This one is POSITIONAL: whatever sits between `scheme://user:` and `@` is a password by
     # definition, however short. `{6,}` made a 5-character password pass through in full.
+    #
+    # Card d47455bf (Cybersec finding 5472cfa9 GO, follow-up): this pattern MUST run BEFORE the
+    # hex/base64 blob patterns below, not after. Both blob patterns are unanchored and greedy: a
+    # 40+ char run of the same character class sitting immediately before this URI with no
+    # separator merges with the scheme keyword itself (e.g. "postgres" is all base64-alphabet
+    # chars) into one combined match, which the blob pattern then redacts whole -- deleting the
+    # literal "postgres"/"mysql"/... keyword this pattern anchors on. With the keyword gone, this
+    # pattern can no longer match at all, and the password that follows survives in full. Running
+    # this pattern first redacts the password while the keyword is still intact; the blob patterns
+    # then see already-redacted text and have nothing left to swallow.
     re.compile(r'(?i)((?:postgres(?:ql)?|mysql|mongodb(?:\+srv)?|redis)://[^:@\s]+:)([^@\s]+)(?=@)'),
+    # Long hex blobs >= 40 chars (SHA-family hashes, raw tokens)
+    re.compile(r'\b[0-9a-fA-F]{40,}\b'),
+    # Long base64-only blobs >= 40 chars
+    re.compile(r'(?<![A-Za-z0-9+/])[A-Za-z0-9+/]{40,}={0,2}(?![A-Za-z0-9+/=])'),
 ]
 
 

@@ -85,6 +85,17 @@ check('db-uri-keeps-context', r, ['hunter2hunter2'], ['pg.prod.internal'])
 r = amc._redact('curl https://cleancore.example.com/api/health')
 check('url-without-credential', r, ['[REDACTED]'], ['cleancore.example.com'])
 
+# Card d47455bf (Cybersec finding 5472cfa9 GO, follow-up): a 40+ char run of the same character
+# class glued directly onto the URI scheme keyword, with NO separator, used to be swallowed whole
+# by the hex/base64 blob patterns BEFORE the DB-URI pattern got a chance to run -- deleting the
+# literal "postgres"/"mysql"/... keyword the anchored pattern matches on, so it never fired and the
+# password after it survived untouched. Fixed by moving the DB-URI pattern ahead of the blob
+# patterns in _SECRET_PATTERNS. All 5 supported schemes must still redact the password here.
+for scheme in ('postgres', 'postgresql', 'mysql', 'mongodb+srv', 'redis'):
+    glued = 'x' * 40 + f'{scheme}://admin:SuperSecret123@db.internal:5432/cleancore'
+    r = amc._redact(glued)
+    check(f'db-uri-{scheme}-glued-blob-does-not-swallow-scheme', r, ['SuperSecret123'], ['[REDACTED]', 'admin'])
+
 # Clean text: no redaction of ordinary content
 r = amc._redact('git commit -m "feat(api): add endpoint"')
 check('clean-git-commit', r, ['[REDACTED]'], ['git commit'])
