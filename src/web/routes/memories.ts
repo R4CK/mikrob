@@ -3,6 +3,7 @@ import {
   hybridSearch, backfillEmbeddings, clearMemoryCache,
   searchMemories, getMemoriesForChat, getDb, touchMemoriesAccessed,
   saveFailedEpisode, listFailedEpisodes, auditMemoryRecall,
+  excludeToolLogShapeSql,
   type Memory,
 } from '../../db.js'
 import { MAIN_AGENT_ID, ALLOWED_CHAT_ID, OLLAMA_URL, APP_TZ } from '../../config.js'
@@ -142,9 +143,15 @@ export async function tryHandleMemories(ctx: RouteContext): Promise<boolean> {
     } else if (q && agentId) {
       results = searchAgentMemories(agentId, q, limit)
       if (results.length === 0) {
+        // Same content-shape exclusion as searchAgentMemories itself (card 3bcc1242 part 1) --
+        // this is its own fallback for the identical agent-scoped search, not a different
+        // feature, so it must not reopen the gap the primary query just closed.
         const db2 = getDb()
-        results = db2.prepare("SELECT * FROM memories WHERE (agent_id = ? OR category = 'shared') AND (content LIKE ? OR keywords LIKE ?) ORDER BY accessed_at DESC LIMIT ?")
-          .all(agentId, `%${q}%`, `%${q}%`, limit) as Memory[]
+        const shapeFilter = excludeToolLogShapeSql()
+        results = db2.prepare(
+          `SELECT * FROM memories WHERE (agent_id = ? OR category = 'shared') AND (content LIKE ? OR keywords LIKE ?)
+           AND (${shapeFilter.sql}) ORDER BY accessed_at DESC LIMIT ?`
+        ).all(agentId, `%${q}%`, `%${q}%`, ...shapeFilter.params, limit) as Memory[]
       }
     } else if (q) {
       results = searchMemories(q, ALLOWED_CHAT_ID, limit)

@@ -255,6 +255,70 @@ finally:
     amc._project_root = _real_root  # type: ignore[assignment]
 
 # ---------------------------------------------------------------------------
+# Card 3bcc1242 part 2: dedup-before-write on the memory-index path (NOT the log above, which
+# stays a raw, non-deduplicated trace by design).
+# ---------------------------------------------------------------------------
+
+try:
+    with tempfile.TemporaryDirectory() as _tmp:
+        amc._project_root = lambda: _tmp  # type: ignore[assignment]
+
+        # A brand-new summary is never a duplicate.
+        if amc._is_recent_duplicate('backend', 'Bash: git commit foo', 1_000_000):
+            FAILURES.append('FAIL [memdedup]: a never-seen summary was reported as a duplicate')
+
+        # Record it, then the SAME summary shortly after IS a duplicate...
+        amc._record_memdedup('backend', 'Bash: git commit foo', 1_000_000)
+        if not amc._is_recent_duplicate('backend', 'Bash: git commit foo', 1_000_100):
+            FAILURES.append('FAIL [memdedup]: an identical summary inside the window was not caught')
+
+        # ...but a DIFFERENT summary is not affected by it.
+        if amc._is_recent_duplicate('backend', 'Bash: git commit bar', 1_000_100):
+            FAILURES.append('FAIL [memdedup]: a different summary was wrongly flagged as a duplicate')
+
+        # ...and a DIFFERENT agent's dedup state is independent (separate file per agent_id).
+        if amc._is_recent_duplicate('cybersec', 'Bash: git commit foo', 1_000_100):
+            FAILURES.append('FAIL [memdedup]: dedup state leaked across agents')
+
+        # Past the window, the same summary is fresh again -- a genuinely later recurrence of the
+        # same action must still earn its own row, not be silently eaten forever.
+        far_future = 1_000_000 + amc._MEMDEDUP_WINDOW_SECONDS + 1
+        if amc._is_recent_duplicate('backend', 'Bash: git commit foo', far_future):
+            FAILURES.append('FAIL [memdedup]: a summary outside the window was still reported as a duplicate')
+finally:
+    amc._project_root = _real_root  # type: ignore[assignment]
+
+# Fail OPEN: an unreadable dedup-state file (as opposed to merely-absent, the case above) must
+# never be treated as "everything is a duplicate" -- that would silently drop genuine entries.
+try:
+    with tempfile.TemporaryDirectory() as _tmp:
+        amc._project_root = lambda: _tmp  # type: ignore[assignment]
+        _bad_path = amc._memdedup_path('backend')
+        os.makedirs(os.path.dirname(_bad_path), exist_ok=True)
+        with open(_bad_path, 'w') as f:
+            f.write('{not valid json')
+        if amc._is_recent_duplicate('backend', 'anything', 2_000_000):
+            FAILURES.append('FAIL [memdedup]: a corrupt state file was treated as fail-CLOSED (dropped a genuine entry)')
+finally:
+    amc._project_root = _real_root  # type: ignore[assignment]
+
+# The state file must be capped, not grow without bound -- same reasoning as the activity log.
+try:
+    with tempfile.TemporaryDirectory() as _tmp:
+        amc._project_root = lambda: _tmp  # type: ignore[assignment]
+        for i in range(amc._MEMDEDUP_MAX_ENTRIES + 50):
+            amc._record_memdedup('backend', f'summary-{i}', 3_000_000 + i)
+        with open(amc._memdedup_path('backend')) as f:
+            _stored = json.load(f)
+        if len(_stored) > amc._MEMDEDUP_MAX_ENTRIES:
+            FAILURES.append(f'FAIL [memdedup]: state file grew past the cap: {len(_stored)} entries')
+        # The MOST RECENT entry must survive the prune (oldest-evicted, not newest).
+        if f'summary-{amc._MEMDEDUP_MAX_ENTRIES + 49}' not in _stored:
+            FAILURES.append('FAIL [memdedup]: the prune evicted the newest entry instead of the oldest')
+finally:
+    amc._project_root = _real_root  # type: ignore[assignment]
+
+# ---------------------------------------------------------------------------
 # Report
 # ---------------------------------------------------------------------------
 

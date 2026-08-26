@@ -1579,21 +1579,46 @@ export function getAgentMemories(agentId: string, limit: number = 20, category?:
   return result
 }
 
+// Content-SHAPE prefixes the activity_memory_capture.py PostToolUse hook writes (card 3bcc1242
+// part 1). Deliberately NOT keyed off `auto_generated` -- that flag also marks 475 hand-written
+// fleet memories (the whole shared tier, most of warm), so filtering on it would make those
+// invisible/effectively-deleted from search with no error to signal it. The SHAPE is what
+// actually distinguishes a raw tool-call trace from a written-down memory, regardless of how the
+// row got there. Measured live: 844 of 858 backend auto_generated rows (98%) start with one of
+// these exact prefixes.
+export const TOOL_LOG_CONTENT_PREFIXES = [
+  'Bash: ', 'Write: ', 'Edit: ', 'Read: ', 'NotebookEdit: ', 'Agent spawned: ', 'Workflow: ',
+] as const
+
+/** `AND`-able SQL fragment (one `NOT LIKE ?` per prefix) plus its bind params, in order. Applied
+ *  INSIDE the query (not as a post-filter) so RECENCY_OVERSAMPLE's candidate pool is already
+ *  clean -- a post-filter on an oversampled batch would starve results on a corpus that is
+ *  mostly tool-log noise (measured: 77-98% for a heavy tool-using agent). */
+export function excludeToolLogShapeSql(): { sql: string; params: string[] } {
+  return {
+    sql: TOOL_LOG_CONTENT_PREFIXES.map(() => 'm.content NOT LIKE ?').join(' AND '),
+    params: TOOL_LOG_CONTENT_PREFIXES.map((p) => `${p}%`),
+  }
+}
+
 export function searchAgentMemories(agentId: string, query: string, limit: number = 10): Memory[] {
   const terms = buildFtsMatchExpression(query)
   if (!terms) return []
+  const shapeFilter = excludeToolLogShapeSql()
   try {
     const candidates = db.prepare(
       `SELECT m.*, f.rank AS rank FROM memories m
        JOIN memories_fts f ON m.id = f.rowid
        WHERE f.memories_fts MATCH ? AND (m.agent_id = ? OR m.category = 'shared')
+         AND (${shapeFilter.sql})
        ORDER BY rank LIMIT ?`
-    ).all(terms, agentId, limit * RECENCY_OVERSAMPLE) as (Memory & { rank: number })[]
+    ).all(terms, agentId, ...shapeFilter.params, limit * RECENCY_OVERSAMPLE) as (Memory & { rank: number })[]
     return withoutRank(reRankByRecency(candidates, limit)) as Memory[]
   } catch {
     return db.prepare(
-      "SELECT * FROM memories WHERE (agent_id = ? OR category = 'shared') AND (content LIKE ? OR keywords LIKE ?) ORDER BY accessed_at DESC LIMIT ?"
-    ).all(agentId, `%${query}%`, `%${query}%`, limit) as Memory[]
+      `SELECT * FROM memories WHERE (agent_id = ? OR category = 'shared') AND (content LIKE ? OR keywords LIKE ?)
+       AND (${shapeFilter.sql}) ORDER BY accessed_at DESC LIMIT ?`
+    ).all(agentId, `%${query}%`, `%${query}%`, ...shapeFilter.params, limit) as Memory[]
   }
 }
 

@@ -10,6 +10,14 @@ Design rules (enforced here, not aspirationally):
   3. NO LLM IN THE HOT PATH: all filtering and redaction is deterministic regex.
   4. auto_generated=1 + keywords "auto-activity" -- never overlaps with PreCompact warm/cold.
   5. Never blocks the agent (sys.exit(0) on any error).
+  6. DEDUP BEFORE WRITE (card 3bcc1242 part 2): card 34f1ca0c already narrowed WHICH commands
+     reach the memory index (_MEMORABLE), but never stopped the SAME qualifying command from being
+     written again every time it recurs. Measured live, post-34f1ca0c: 858 backend auto_generated
+     rows, 665 of them (77%) sitting in 90 exact-duplicate-content groups -- e.g. 45 identical
+     "Bash: git commit -m ..." rows in one sitting. An identical summary within the dedup window is
+     skipped; the FIRST occurrence in the window is still recorded, so nothing genuinely new is ever
+     dropped. This is a hygiene control, not a secrecy one -- it fails OPEN (treats an unreadable
+     dedup-state file as "not a duplicate") rather than fail-closed like the redaction path above.
 
 Success criteria (card 4829ccff §5):
   (a) hook fires reliably on every tool call -- measurable via /api/tool-log (already logged there).
@@ -272,6 +280,71 @@ def _append_activity_log(agent_id: str, tool_name: str, summary: str) -> None:
 
 
 # ---------------------------------------------------------------------------
+# Memory-index dedup (card 3bcc1242 part 2) -- SEPARATE from the activity log above:
+# the log is a raw, non-deduplicated trace by design (its own docstring: "a trace, not an
+# archive"). This only guards the searchable `memories` table writes.
+# ---------------------------------------------------------------------------
+
+# How long an identical summary suppresses a repeat write. Long enough to catch a burst of
+# identical calls within one sitting (the measured pattern: dozens of identical rows minutes
+# apart); short enough that the SAME action recurring on a genuinely later, unrelated occasion
+# (e.g. "systemctl restart mikrob-channels" days apart) still earns its own memory row.
+_MEMDEDUP_WINDOW_SECONDS = int(os.environ.get('ACTIVITY_MEMDEDUP_WINDOW_SECONDS', '3600'))
+# Bound on the dedup-state file itself, same reasoning as _ACTIVITY_LOG_MAX_BYTES: a state file
+# that grows without limit is its own small version of the problem this card fixes.
+_MEMDEDUP_MAX_ENTRIES = 200
+
+
+def _memdedup_path(agent_id: str) -> str:
+    return os.path.join(_project_root(), 'store', 'activity-log', f'{agent_id}.memdedup.json')
+
+
+def _is_recent_duplicate(agent_id: str, summary: str, now_ts: int) -> bool:
+    """True if this EXACT summary was already written to the memory index for this agent within
+    the dedup window. Fails OPEN (returns False, i.e. "not a duplicate") on any read/parse error --
+    this is a hygiene control, not the secrecy path above, so an unreadable state file must cost at
+    most a stray duplicate row, never a silently dropped genuine entry."""
+    try:
+        with open(_memdedup_path(agent_id)) as f:
+            seen = json.load(f)
+        last_ts = seen.get(summary)
+        return last_ts is not None and (now_ts - last_ts) < _MEMDEDUP_WINDOW_SECONDS
+    except Exception:
+        return False
+
+
+def _record_memdedup(agent_id: str, summary: str, now_ts: int) -> None:
+    """Best-effort write of the dedup state; never raises. Called ONLY after a successful POST --
+    recording an attempt that never actually reached the memories table would suppress the real
+    write on a later retry, turning a transient failure into a silent, permanent loss."""
+    try:
+        path = _memdedup_path(agent_id)
+        try:
+            with open(path) as f:
+                seen = json.load(f)
+        except Exception:
+            seen = {}
+        seen[summary] = now_ts
+        # Prune stale entries first (their window already lapsed), then cap by count if still
+        # over -- oldest-timestamp entries evicted first.
+        seen = {k: v for k, v in seen.items() if now_ts - v < _MEMDEDUP_WINDOW_SECONDS}
+        if len(seen) > _MEMDEDUP_MAX_ENTRIES:
+            for k in sorted(seen, key=seen.get)[: len(seen) - _MEMDEDUP_MAX_ENTRIES]:
+                del seen[k]
+        os.makedirs(os.path.dirname(path), exist_ok=True)
+        tmp = path + '.tmp'
+        with open(tmp, 'w') as f:
+            json.dump(seen, f)
+        os.replace(tmp, path)
+        try:
+            os.chmod(path, 0o600)
+        except OSError:
+            pass
+    except Exception:
+        pass
+
+
+# ---------------------------------------------------------------------------
 # Summary builder
 # ---------------------------------------------------------------------------
 
@@ -391,6 +464,12 @@ def main() -> None:
         _append_activity_log(agent_id, tool_name, summary)
         sys.exit(0)
 
+    now_ts = int(time.time())
+    # DEDUP BEFORE WRITE (card 3bcc1242 part 2): an identical summary within the window is
+    # dropped here -- BEFORE the token/network work below, not as an afterthought.
+    if _is_recent_duplicate(agent_id, summary, now_ts):
+        sys.exit(0)
+
     token = _dashboard_token()
     if not token:
         sys.exit(0)
@@ -419,6 +498,9 @@ def main() -> None:
             ),
             timeout=3,
         )
+        # Recorded ONLY on success -- see _record_memdedup's own docstring for why a failed
+        # attempt must never suppress a later, genuinely-first write of the same summary.
+        _record_memdedup(agent_id, summary, now_ts)
     except Exception:
         pass  # never block the agent
 
