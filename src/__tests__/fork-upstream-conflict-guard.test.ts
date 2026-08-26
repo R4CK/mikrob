@@ -25,7 +25,7 @@
 // reason out loud" discipline as REPO_UNDER_TMP-gated suites (see helpers/repo-location.ts).
 import { describe, it, expect } from 'vitest'
 import { execFileSync } from 'node:child_process'
-import { mkdtempSync, rmSync } from 'node:fs'
+import { mkdtempSync, readFileSync, rmSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { REPO_ROOT } from './helpers/repo-location.js'
@@ -519,6 +519,50 @@ export function classifyConflicts(
   return { guarded, unwatched, stale }
 }
 
+// Card 1e8111a3. Cybersec measured 8 unwatched-conflict occurrences where the failure message told
+// the reader WHAT to do (decide a rule, record it in ACKNOWLEDGED_CONFLICTS/_BLOBS) but not HOW --
+// every occurrence required hand-typing the file path and running `git rev-parse` to get the blob
+// sha the message already had access to. These two functions build that entry instead of describing
+// it, so the failure message becomes paste-and-edit rather than a from-scratch chore.
+
+/** Pull the `<<<<<<<`/`=======`/`>>>>>>>` conflict hunks out of a merged file's raw content, so an
+ *  unwatched-conflict message can show both sides without a second git invocation per file. Returns
+ *  '' if the content has no conflict markers (e.g. git produced a binary "conflict" it cannot mark
+ *  inline) -- the ready-to-paste entry below still works without it. */
+export function extractConflictHunks(content: string, maxChars = 2000): string {
+  const hunks: string[] = []
+  let current: string[] | null = null
+  for (const line of content.split('\n')) {
+    if (line.startsWith('<<<<<<<')) {
+      current = [line]
+      continue
+    }
+    if (current) {
+      current.push(line)
+      if (line.startsWith('>>>>>>>')) {
+        hunks.push(current.join('\n'))
+        current = null
+      }
+    }
+  }
+  const joined = hunks.join('\n...\n')
+  return joined.length > maxChars ? `${joined.slice(0, maxChars)}\n... (truncated)` : joined
+}
+
+/** The ACKNOWLEDGED_CONFLICTS + ACKNOWLEDGED_UPSTREAM_BLOBS entry for a brand-new unwatched
+ *  conflict, pre-filled with the one value this guard can supply with certainty (the upstream blob
+ *  the decision would be read against). The resolution text stays a TODO on purpose -- which side to
+ *  keep is human judgement, never derived. */
+export function readyToPasteEntry(file: string, upstreamBlob: string | null): string {
+  const blobLine = upstreamBlob ?? '(absent upstream -- delete/modify conflict, no blob to pin)'
+  return (
+    `  '${file}':\n` +
+    `    'TODO -- decide what to keep from each side',\n` +
+    `  // ACKNOWLEDGED_UPSTREAM_BLOBS:\n` +
+    `  '${file}': '${blobLine}',`
+  )
+}
+
 function git(args: string[], cwd: string): string {
   return execFileSync('git', args, { cwd, encoding: 'utf-8', timeout: FETCH_TIMEOUT_MS })
 }
@@ -592,6 +636,7 @@ describe('fork/upstream web-file merge-conflict guard (card 641aca3f)', () => {
         git(['worktree', 'add', '--quiet', '--detach', worktree, 'HEAD'], REPO_ROOT)
 
         let conflicted: string[] = []
+        const conflictHunks: Record<string, string> = {}
         try {
           git(
             ['merge', '--no-commit', '--no-ff', `${UPSTREAM_REMOTE}/${UPSTREAM_BRANCH}`],
@@ -603,6 +648,17 @@ describe('fork/upstream web-file merge-conflict guard (card 641aca3f)', () => {
             .split('\n')
             .map((l) => l.trim())
             .filter(Boolean)
+          // Grab both sides' conflict markers WHILE the working tree still has them -- `merge
+          // --abort` below wipes this, so it is now or never (card 1e8111a3, ready-to-paste
+          // failure message).
+          for (const f of conflicted) {
+            try {
+              conflictHunks[f] = extractConflictHunks(readFileSync(join(worktree, f), 'utf-8'))
+            } catch {
+              // Binary file, or otherwise unreadable as text -- the ready-to-paste entry below
+              // still works without a hunk snippet.
+            }
+          }
         } finally {
           try {
             git(['merge', '--abort'], worktree)
@@ -611,16 +667,18 @@ describe('fork/upstream web-file merge-conflict guard (card 641aca3f)', () => {
           }
         }
 
-        // One classification for all three verdicts, from the same pure function the offline
-        // tests below exercise -- so what runs here is not a second, hand-inlined copy of the
-        // rules that could drift from the one that is actually unit-tested.
-        const verdict = classifyConflicts(conflicted, (f) => {
+        const blobOf = (f: string): string | null => {
           try {
             return git(['rev-parse', `${UPSTREAM_REMOTE}/${UPSTREAM_BRANCH}:${f}`], worktree).trim()
           } catch {
             return null // deleted upstream -- a delete/modify conflict, not a match
           }
-        })
+        }
+
+        // One classification for all three verdicts, from the same pure function the offline
+        // tests below exercise -- so what runs here is not a second, hand-inlined copy of the
+        // rules that could drift from the one that is actually unit-tested.
+        const verdict = classifyConflicts(conflicted, blobOf)
 
         const conflictedGuardedFiles = verdict.guarded
         expect(
@@ -637,13 +695,25 @@ describe('fork/upstream web-file merge-conflict guard (card 641aca3f)', () => {
         // the dry-run by hand. So this asserts on the WHOLE conflict set: every conflicting file
         // must be one someone has already decided how to resolve.
         const unwatched = verdict.unwatched
+        // Card 1e8111a3: the entry below, not just the instruction to write one. blobOf() is the
+        // same closure classifyConflicts already consulted for acknowledged files -- calling it
+        // again here for unwatched ones costs one more `git rev-parse` per file, paid only on the
+        // failure path.
+        const unwatchedGuidance = unwatched
+          .map(
+            (f) =>
+              `\n--- ${f} ---\n` +
+              readyToPasteEntry(f, blobOf(f)) +
+              (conflictHunks[f] ? `\n\n  both sides' conflicting hunk(s):\n${conflictHunks[f]}` : '')
+          )
+          .join('\n')
         expect(
           unwatched,
           `upstream/develop conflicts on file(s) nobody has decided how to resolve: ${unwatched.join(', ')}. ` +
             'Decide the rule NOW, while there is time to look at both sides, and record it in ' +
             'ACKNOWLEDGED_CONFLICTS above -- not during the merge, when the cheap move is to take one ' +
             'side wholesale. If the file is fork-owned and should never conflict, it belongs in ' +
-            'GUARDED_FILES instead.'
+            `GUARDED_FILES instead. Ready-to-paste entries:${unwatchedGuidance}`
         ).toEqual([])
 
         // THE ACKNOWLEDGEMENT MUST STILL DESCRIBE WHAT IS THERE (card a1d613e3). The two checks
@@ -773,5 +843,75 @@ describe('classifyConflicts: an acknowledgement is bound to CONTENT, not to a fi
       return RECORDED
     })
     expect(asked).toEqual([WATCHDOG])
+  })
+})
+
+// Offline unit tests for the two card-1e8111a3 helpers -- no network, no worktree, so the format of
+// the ready-to-paste entry is pinned even on a machine where `upstream` is unreachable.
+describe('readyToPasteEntry + extractConflictHunks (card 1e8111a3: hand a paste-ready entry, not just an instruction)', () => {
+  it('readyToPasteEntry embeds the file path and the resolved upstream blob', () => {
+    const entry = readyToPasteEntry('src/some/brand-new-file.ts', 'deadbeef00000000000000000000000000000000')
+    expect(entry).toContain("'src/some/brand-new-file.ts'")
+    expect(entry).toContain('deadbeef00000000000000000000000000000000')
+    expect(entry).toContain('ACKNOWLEDGED_UPSTREAM_BLOBS')
+    // The resolution itself is never guessed -- it is human judgement.
+    expect(entry).toContain('TODO')
+  })
+
+  it('readyToPasteEntry states a delete/modify conflict plainly when there is no blob', () => {
+    const entry = readyToPasteEntry('src/some/deleted-upstream.ts', null)
+    expect(entry).toContain('absent upstream')
+    expect(entry).not.toContain('null')
+  })
+
+  it('extractConflictHunks pulls out exactly the marked region, not the whole file', () => {
+    const content = [
+      'line before',
+      '<<<<<<< HEAD',
+      'fork version',
+      '=======',
+      'upstream version',
+      '>>>>>>> upstream/develop',
+      'line after',
+    ].join('\n')
+    const hunk = extractConflictHunks(content)
+    expect(hunk).toContain('fork version')
+    expect(hunk).toContain('upstream version')
+    expect(hunk).not.toContain('line before')
+    expect(hunk).not.toContain('line after')
+  })
+
+  it('extractConflictHunks joins multiple hunks in the same file', () => {
+    const content = [
+      '<<<<<<< HEAD',
+      'a-fork',
+      '=======',
+      'a-upstream',
+      '>>>>>>> upstream/develop',
+      'unrelated middle',
+      '<<<<<<< HEAD',
+      'b-fork',
+      '=======',
+      'b-upstream',
+      '>>>>>>> upstream/develop',
+    ].join('\n')
+    const hunk = extractConflictHunks(content)
+    expect(hunk).toContain('a-fork')
+    expect(hunk).toContain('b-upstream')
+    expect(hunk).not.toContain('unrelated middle')
+  })
+
+  it('extractConflictHunks returns empty for content with no markers (e.g. a binary conflict)', () => {
+    expect(extractConflictHunks('just some ordinary file content\n')).toBe('')
+  })
+
+  it('extractConflictHunks truncates a hunk larger than the given cap', () => {
+    const bigLine = 'x'.repeat(5000)
+    const content = ['<<<<<<< HEAD', bigLine, '=======', 'short', '>>>>>>> upstream/develop'].join(
+      '\n'
+    )
+    const hunk = extractConflictHunks(content, 200)
+    expect(hunk.length).toBeLessThan(250)
+    expect(hunk).toContain('truncated')
   })
 })
