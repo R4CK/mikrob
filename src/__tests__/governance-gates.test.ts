@@ -236,6 +236,30 @@ describe('self-pace-gate: a quote must not exempt a scheduler call (card 4fa31f3
   it('keeps batch(1) denied on the end-of-segment shape (card 12f80902 must not regress)', () => {
     expect(selfPaceDecision('Bash', { command: heredoc('echo x | ' + BATCH) }).deny).toBe(true)
   })
+
+  // Cybersec G2 (card 230e9884): when EVERY word of a segment is separately quoted, both the
+  // masked and raw views trimmed to a single space -- `'crontab' '-r'` and `'at' 'now'` masked to
+  // nothing but the gap between the two blanked runs, so the CMDWORD check's own
+  // `pair.masked.trim() === ''` skip (meant for a single quoted word naming a nonexistent binary,
+  // e.g. `'at now'`) also swallowed a genuine two-token invocation with every token quoted. The
+  // fix only skips when at most ONE quoted run produced the empty view.
+  it('DENIES a scheduler WRITE where every word is separately quoted (card 230e9884)', () => {
+    for (const line of [
+      DQ + CT + DQ + ' ' + DQ + '-r' + DQ,
+      SQ + AT + SQ + ' ' + SQ + 'now' + SQ,
+      DQ + LC + DQ + ' ' + DQ + 'load' + DQ + ' x.plist',
+    ]) {
+      expect(selfPaceDecision('Bash', { command: line }).deny, line).toBe(true)
+    }
+  })
+  it('STILL ALLOWS a genuinely inert single quoted-word segment (no regression from the G2 fix)', () => {
+    expect(selfPaceDecision('Bash', { command: SQ + AT + ' now' + SQ }).deny).toBe(false)
+  })
+  it('STILL ALLOWS a fully-quoted scheduler READ (every word quoted, still a pure read)', () => {
+    for (const line of [DQ + CT + DQ + ' ' + DQ + '-l' + DQ, SQ + LC + SQ + ' ' + SQ + 'list' + SQ]) {
+      expect(selfPaceDecision('Bash', { command: line }).deny, line).toBe(false)
+    }
+  })
 })
 
 // --- self-pace-gate: blocks the agent from scheduling its own future turns ---
