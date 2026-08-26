@@ -3921,3 +3921,55 @@ tervezési kockázatokat, új plan-grilling nem volt szükséges -- a max-90s tr
 jóváhagyva a kártya szövegében).
 
 **Hivatkozás:** kártya 2bfbf805 (parent: 19f3bbb5, függőség: d7a28a0a/Feladat 2, már done).
+
+## 2026-08-26 -- 1128002b -- Load-guard bookkeeping + stuck/redispatch integráció + ismétlődés-riasztás (Feladat 4, fázis zárása)
+
+**Döntés.** A load-brake fázis (19f3bbb5) utolsó darabja: egy cgroup-fékezett vagy SIGSTOP-
+fagyasztott ügynök `in_progress` kártyája addig ugyanugy nezett ki, mint egy valóban beragadt --
+a `stuck-card-monitor` és `store/redispatch-guard.sh` nem tudta megkülönböztetni "szándékosan
+szüneteltetve terhelés miatt"-ot "halott"-tól, tehát egy fagyasztott ügynök kártyáját elméletileg
+re-dispatchelhette/nudge-olhatta volna a fagyasztás alatt.
+
+**Megvalósítás.** `store/load-guard-bookkeeping.sh`: tiszta JSON diff/döntési réteg
+(`--test-compute`, ugyanaz a minta mint `load-guard-sigstop-target.sh` `--test-select`-je) --
+beolvassa mindkét mechanizmus állapotfájlját (`load-guard-cgroup-state.json`,
+`load-guard-sigstop-state.json`), diffeli az előző tick pillanatképéhez, és
+`store/load-paused-agents.json`-t ír -- ez az EGYETLEN marker-fájl, amit mindkét integrációs pont
+figyel. Egy mechanizmus-váltás fagyasztás közben (cgroup_throttle eszkalál sigstop_freeze-re) a
+FOLYTATÁSA a szünetnek, nem egy resume+újra-pause -- a `card_id`/`since` megmarad az eredeti
+pause-kezdéskor rögzített értéken.
+
+**Minden valós pause-start/resume-nál:** INFO-ONLY `PAUSED-LOAD`/`RESUMED-LOAD` kanban-komment az
+ügynök `in_progress` kártyáján (INFO-ONLY, hogy `store/gate-dispatch-check.sh` sose nézze
+review-nak, lásd az `info-only-prefix-for-non-review-card-comments` memória-konvenció). Rutin
+pause/resume CSAK log/komment -- Telegram KIZÁRÓLAG ismétlődő fagyasztásnál megy (ugyanaz az
+ügynök >= `alert_repeat_threshold` [alap 2] alkalommal egy gördülő `alert_window_seconds` [alap
+3600] ablakban), `alert_cooldown_seconds` (alap 3600) cooldown-nal, megerősített-kézbesítés-utáni
+bélyeggel -- ugyanaz a minta mint `disk-space-guard.sh`/`ollama-down-guard.sh`.
+
+**Integráció:**
+- `store/redispatch-guard.sh`: új `_is_load_paused()` (saját selftest-esetekkel), a `check`
+  parancs ELSŐ ellenőrzése, MÉG a ledger olvasása/írása előtt -- `DENY:load-paused`. Strukturális
+  csomópont: minden monitor, ami nudge-ol/re-dispatchel, már most is ezen az egy ellenőrzésen
+  megy át (a script saját fejléce dokumentálja: channel-watchdog, fleet-nudger, gate-reconciler,
+  folyamatos-munka), tehát ez MINDEGYIKÜKET védi, nem csak a stuck-card-monitor-t.
+- `seed-scheduled-tasks/stuck-card-monitor/SKILL.md`: a beragadás-detektáló szűrő maga is kizárja a
+  load-paused ügynökök kártyáit (ugyanaz az alak mint a meglévő `active-subagents.json` kizárás).
+
+`store/load-guard-daemon.sh`: új `--bookkeeping` flag (ugyanaz az opt-in alak mint `--cgroup`/
+`--sigstop`), UTOLSÓKÉNT fut, hogy a tick FRISSEN írt állapotát olvassa, ne a megelőző tickét.
+`scripts/install-guard-timers.sh`: ExecStart mostantól `--cgroup --sigstop --bookkeeping`.
+
+**Konzekvencia.** Új fájlok: `store/load-guard-bookkeeping.sh`,
+`src/__tests__/load-guard-bookkeeping.test.ts` (14 teszt: pause-start, folytatás vs. újra-pause,
+mechanizmus-váltás, resume, gördülő ablak + küszöb, hibatűrés). Módosított:
+`store/redispatch-guard.sh` (`_is_load_paused` + 4 selftest-eset), `seed-scheduled-tasks/
+stuck-card-monitor/SKILL.md`, `store/load-guard-daemon.sh` (`--bookkeeping` flag),
+`store/load-guard-config.json` (`bookkeeping` blokk), `scripts/install-guard-timers.sh`. A meglévő
+30 load-guard teszt + a redispatch-guard selftest változatlanul zöld. tsc tiszta.
+
+**Ki döntött:** backend (kártya 1128002b, a fázis 19f3bbb5 plan-grilling verdiktje már lefedte a
+tervezési kockázatokat; ez a kártya a fázis ZÁRÓ darabja -- Feladat 1-4 mind `done`).
+
+**Hivatkozás:** kártya 1128002b (parent: 19f3bbb5), függőség: d7a28a0a/Feladat 2 és 2bfbf805/
+Feladat 3, mindkettő már done.
