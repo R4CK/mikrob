@@ -426,8 +426,67 @@ const ACKNOWLEDGED_CONFLICTS = {
   // mislabels a system alert as coming from an arbitrary agent. Resolution: keep BOTH -- the
   // fork's --data-urlencode call wrapped in upstream's RESPONSE/CURL_EXIT/ok:true honesty check,
   // token masked in error output, plus upstream's TMUX-guarded sender detection.
+  // Upstream refactored again (NOTIFYVAKSWEEP826, #1084): the RESPONSE/CURL_EXIT/ok:true honesty
+  // check moved out of notify.sh into a new shared library, scripts/lib/send-telegram.sh
+  // (send_telegram_message TOKEN CHAT_ID TEXT [extra curl args]), because 13 fleet scripts sent to
+  // the Bot API and only notify.sh checked the outcome. notify.sh now sources the lib and calls
+  // send_telegram_message with --data-urlencode "parse_mode=HTML" as an extra arg -- this is a
+  // strict superset of the fork's prior --data-urlencode body fix (card b43d6dfd): the lib's own
+  // --data-urlencode "text=..." already carries it. Resolution: adopt upstream's notify.sh
+  // wholesale (it fully subsumes the fork's b43d6dfd fix and the fork's own TMUX-guarded
+  // sender-attribution block, which upstream carries unchanged) plus the new lib file.
   'scripts/notify.sh':
-    "keep both: fork's --data-urlencode message body (card b43d6dfd) wrapped in upstream's RESPONSE capture + curl-exit + ok:true honesty check (NOTIFYVAK826), token masked in error output; plus upstream's TMUX-guarded sender detection",
+    "adopt upstream wholesale -- the new scripts/lib/send-telegram.sh shared honesty-check subsumes the fork's b43d6dfd --data-urlencode fix, and upstream's file keeps the fork's TMUX-guarded sender-attribution block unchanged",
+  // Same NOTIFYVAKSWEEP826 sweep, ripple into 4 callers. disk-space-guard.sh and
+  // unit-fail-notify.sh: pure adoption, upstream's honest-send-via-lib replaces an unchecked
+  // inline curl with no fork-specific logic lost. limit-monitor.sh: the fork sources
+  // store/session-limit-pattern.sh for the CANONICAL usage-limit regex shared with
+  // src/model-fallback.ts and 5 other scripts (card 115c21e7) -- upstream does not have that file
+  // and inlined its own (narrower) pattern instead. Verified 2026-08-26: the canonical JSON
+  // already contains upstream's two additions ("usage limit reached", "approaching ... usage
+  // limit"), so nothing is lost either way. Resolution: keep the fork's canonical-source
+  // sourcing + its own wider extra-signal regex, graft upstream's honest-send + stamp-dedupe-
+  // only-on-success onto the alert block. host-restart-watchdog.sh: the fork's prior-shutdown
+  // cause classifier (classify_shutdown_from_log/prev_boot_log, card RELIA-A) is fork-only and
+  // upstream never had it -- keep it wholesale, graft upstream's HOSTWD_PROC_STAT test hook and
+  // stamp-baseline-only-on-confirmed-delivery around it.
+  'scripts/disk-space-guard.sh': 'adopt upstream wholesale -- honest-send-via-lib replaces an unchecked inline curl, no fork-specific logic in this file',
+  'scripts/unit-fail-notify.sh': 'adopt upstream wholesale -- honest-send-via-lib replaces an unchecked inline curl (best-effort exit-0 contract unchanged), no fork-specific logic in this file',
+  'scripts/limit-monitor.sh': "keep the fork's session-limit-pattern.sh sourcing (canonical regex, card 115c21e7) + its own extra-signal regex, graft upstream's honest-send-via-lib + stamp-dedupe-hash-only-on-confirmed-success onto the alert block",
+  'scripts/host-restart-watchdog.sh': "keep the fork's prior-shutdown cause classifier wholesale (classify_shutdown_from_log/prev_boot_log/HOST_RESTART_WATCHDOG_LIB test hook, card RELIA-A, upstream never had it), graft upstream's HOSTWD_PROC_STAT test hook + honest-send-via-lib + stamp-btime-baseline-only-on-confirmed-delivery",
+  'src/__tests__/notify-delivery-honesty.test.ts': 'adopt upstream wholesale -- trivial test-scaffolding update to stage the new scripts/lib/send-telegram.sh alongside notify.sh',
+  // NOT an upstream conflict -- upstream deleted this file outright when notify.sh stopped
+  // inlining its curl call (NOTIFYVAKSWEEP826). It is the fork's OWN corpus-wide security guard
+  // (card b43d6dfd): it scans every scripts/*.sh + store/*.sh for a bare `-d "text=$VAR"` that
+  // would silently truncate a Telegram message on "&". Deleting it outright (matching upstream)
+  // would have been a real regression -- the guard has no equivalent in upstream's replacement
+  // tests, which only behaviourally exercise 5 specific scripts (send-honesty-sweep.test.ts), not
+  // a corpus-wide static scan. Kept, with the CASES list extended into scripts/lib/ (where the
+  // curl call now actually lives) and the notify.sh-specific assertion updated to check the
+  // delegation to send_telegram_message() plus the library's own --data-urlencode usage.
+  'src/__tests__/telegram-urlencode-guard.test.ts':
+    "fork-owned corpus guard (card b43d6dfd), NOT deleted -- extended CASES into scripts/lib/ and updated the notify.sh-specific assertion for the NOTIFYVAKSWEEP826 lib delegation",
+  // Round 2 of the same NOTIFYVAKSWEEP826 sweep (upstream #1086), landed while round 1 was still
+  // being reconciled here -- measured live, 2026-08-26. Four more callers converted to the shared
+  // lib, plus the lib itself grew telegram_api_call() (a method-agnostic sibling of
+  // send_telegram_message for non-sendMessage calls like setMyCommands). All four adopted
+  // wholesale: no fork-specific logic lost in any of them (verified against the full diff, not
+  // just the honest-send hunk) -- github-pr-monitor.sh also carries an unrelated, independently
+  // legitimate regex fix (ERE has no lazy quantifier, so the old REPO-parsing sed kept a
+  // trailing ".git").
+  'scripts/lib/send-telegram.sh': 'adopt upstream wholesale (round 2: adds telegram_api_call, the method-agnostic sibling send_telegram_message now calls)',
+  'scripts/fleet-memory-gate.sh': 'adopt upstream wholesale -- honest-send-via-lib + cooldown-stamp-only-on-success, no fork-specific logic in this file',
+  'scripts/github-pr-monitor.sh': 'adopt upstream wholesale -- honest-send-via-lib + snapshot-not-persisted-on-failed-alert + an unrelated REPO-parsing regex fix (ERE has no lazy quantifier), no fork-specific logic in this file',
+  'scripts/set-bot-menu.sh': 'adopt upstream wholesale -- honest telegram_api_call() replaces a silent fire-and-forget curl for setMyCommands, no fork-specific logic in this file',
+  'scripts/stuck-modal-guard.sh': 'adopt upstream wholesale -- honest-send-via-lib + backoff-stamp-only-on-success, no fork-specific logic in this file',
+  // The fork's ONLY addition to this upstream test file: stageTree() also copies
+  // store/session-limit-pattern.sh + .json into the staged tree (see the
+  // scripts/limit-monitor.sh entry above -- that fork-only sourcing needs the
+  // canonical file present or `set -u` kills the whole staged script run,
+  // unrelated to what the suite is testing). Resolution: keep upstream's file
+  // verbatim plus that one staging addition; if upstream's suite grows new
+  // describe blocks, add them alongside, do not drop the staging addition.
+  'src/__tests__/send-honesty-sweep.test.ts': "upstream file verbatim + the fork's session-limit-pattern.sh/.json staging addition in stageTree() for limit-monitor.sh's fork-only dependency",
 } as const
 
 // THE UPSTREAM CONTENT EACH RULE ABOVE WAS DECIDED AGAINST (card a1d613e3, Cybersec msg 19105).
@@ -485,7 +544,24 @@ const ACKNOWLEDGED_UPSTREAM_BLOBS: Readonly<Record<keyof typeof ACKNOWLEDGED_CON
   'src/__tests__/hook-command-quoting.test.ts': '1048b1988e6c8554754900c62570d76d455f1057',
   'src/__tests__/installer-start-and-fallback.test.ts': '9017ce4fcfe808b73fdcd1389ebf1c9eaf374f7e',
   'scripts/hooks/outgoing-copy-gate.py': 'cd51631d01de4aa84776a3ad5ff8d8f6a85aa167',
-  'scripts/notify.sh': 'b3b4b06b6cb5004b7f754558f9da98b3085765b6',
+  'scripts/notify.sh': '5477e66ecad5cca6425a535de0d16fce0e3eca28',
+  'scripts/disk-space-guard.sh': 'd3f693c01d607952a8165cc4d8106024008f22e4',
+  'scripts/unit-fail-notify.sh': 'ada00f95a7b3665feac1305bb5287698b81839de',
+  'scripts/limit-monitor.sh': '5b50c084ca4a21a35b7abae70e943a8b1483d6c3',
+  'scripts/host-restart-watchdog.sh': '07948350e336ec02d58d952df016ab6b07d7d052',
+  'src/__tests__/notify-delivery-honesty.test.ts': '06f96abf8c49fb07b8bbf570c8ca895fe6f23ee9',
+  // Upstream deleted this file (delete/modify conflict against the fork's still-modified copy) --
+  // there is no upstream blob to pin. This is the documented sentinel for that case (see
+  // readyToPasteEntry's blobLine fallback below): if upstream's side of the pair ever changes
+  // (e.g. a file with this path reappears upstream), the guard trips again and this needs a fresh
+  // decision rather than silently comparing against a phantom blob.
+  'src/__tests__/telegram-urlencode-guard.test.ts': '(absent upstream -- delete/modify conflict, no blob to pin)',
+  'scripts/lib/send-telegram.sh': '293aecf24507b6d56bda99e5a4ff937e1491ab97',
+  'scripts/fleet-memory-gate.sh': 'ce2e49d6460c56cc49c7637dc0073d0172d5520f',
+  'scripts/github-pr-monitor.sh': '545425b675857bcbdab5018dbcbb42dca1722416',
+  'scripts/set-bot-menu.sh': 'b45aca69c59f9b69748592df70d0a9ea77189206',
+  'scripts/stuck-modal-guard.sh': '5bf19fc208ac41c204ae007189553efcb1d2790d',
+  'src/__tests__/send-honesty-sweep.test.ts': '62a398ede06fee9c694a9419f0984b681aedc0e1',
 }
 
 /** A conflict whose written rule was decided against DIFFERENT upstream content than what is
