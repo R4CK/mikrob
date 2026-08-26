@@ -3581,3 +3581,29 @@ javitott scripttel igazolva: a kiirt "Re-vendor" sor most mar masolhato-futtatha
 `vendor-skill.sh` re-vendor-parancs hianya es az idezojel-buktato sajat, a munka kozben talalt
 lelet, kozvetlenul ugyanahhoz a valtoztatashoz kapcsolodik).
 **Hivatkozas:** kartya 25c35be7, elozo lelet forrasa: 1d4cdcaa gate, komment 19738.
+
+## 2026-08-26 -- 9fcc6391 -- Due-diligence jelolt-tablazat: a licenc most mar dokumentaltan az elso ertekelt oszlop
+
+**Elozmeny.** backend2 ket egymast koveto adoptalasi kartyan (`e7510a83`, `ef9a7bf1`, mindketto
+2026-08-23, fenti bejegyzesek ugyanebben a fajlban) mérte: a legjobb jelolt mindket alkalommal a
+licencen bukott el, MIUTAN mar erdemi ertekelesi munkat fektettek bele. A tenylegesen keszult
+tablazatokban (mindket bejegyzesben ellenoriztem) a `licenc` oszlop mar most is kozvetlenul a
+jelolt-nev utan all, csillag ELOTT -- a hiba tehat nem a konkret tablazat oszlop-sorrendje volt,
+hanem hogy ez sehol nem volt LEIRVA, kikényszerítendő konvenciokent: egy jovobeli agens ujra
+felfedezhette volna a hibat, mert semmilyen skill nem rogzitette a mintat.
+
+**Kereses:** vegignéztem az osszes ~/.claude/skills/*/SKILL.md-t "csillag"/"jelölt"/"due diligence"
+kulcsszora -- SEHOL nem talaltam meglevo jelolt-osszehasonlito tablazat-sablont. A `fork-adopt-investigation`
+skill (a legkozelebbi talalat, root CLAUDE.md rule 10 hivatkozza) 6. lepese csak prozaban sorolta
+fel a due-diligence szempontokat, tablazat-sablon nelkul.
+
+**Dontes:** a `fork-adopt-investigation/SKILL.md` 6. lepeset kibovitettem egy konkret markdown
+tablazat-sablonnal (`jelölt | licenc | csillag | utolsó push | verdikt`, ebben a sorrendben), plusz
+egy uj Pitfalls-tetel ("License-last trap"), mindketto kifejezetten a licencet teszi az ELSO
+ertekelt oszlopa, a csillag/karbantartas ele -- igy egy inkompatibilis jelolt mar a tablazat
+kitoltesenek elejen kiesik, mielott erdemi (vagy meg rosszabb: integracios) munka menne bele.
+Hivatkozva `e7510a83`/`ef9a7bf1` mert konkret, ismetelt precedens.
+
+**Ki dontott:** backend (kartya 9fcc6391, backend2 2026-08-23-i megfigyelesenek vegrehajtasa).
+**Hivatkozas:** kartya 9fcc6391, elozo lelet: `ef9a7bf1` reviewje (fenti bejegyzes ugyanebben a
+fajlban). Erintett fajl: `seed-skills/fork-adopt-investigation/SKILL.md`.
