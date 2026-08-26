@@ -96,6 +96,46 @@ for scheme in ('postgres', 'postgresql', 'mysql', 'mongodb+srv', 'redis'):
     r = amc._redact(glued)
     check(f'db-uri-{scheme}-glued-blob-does-not-swallow-scheme', r, ['SuperSecret123'], ['[REDACTED]', 'admin'])
 
+# Card 2102fe6a (Cybersec, follow-up to d47455bf, SAME file/control, WORSE outcome): the token-prefix
+# patterns anchored on a leading `\b`, which fails when the prefix is glued (no separator) to a
+# preceding 40+ char alnum run -- the identical shape d47455bf fixed for DB-URI passwords, but here
+# the blob patterns only rescue the prefix's first few letters (stopping at the `_`/`-` separator,
+# which is outside the base64/hex charset), leaving the ENTIRE secret body plaintext. Fixed by
+# dropping the leading `\b` (this pattern is already first in the list, so no reordering needed,
+# unlike the DB-URI fix -- the `\b` itself was the broken condition). All 9 supported prefixes.
+for prefix in ('ghp_', 'ghc_', 'gho_', 'ghu_', 'ghs_', 'sk-', 'sk-ant-', 'xoxb-', 'xoxp-'):
+    secret_body = 'S3cr3tSuffixValue1234567890'
+    glued = 'q' * 40 + prefix + secret_body + ' end'
+    r = amc._redact(glued)
+    check(f'token-prefix-{prefix}-glued-does-not-leak-secret-body', r, [secret_body], ['[REDACTED]'])
+
+# Same fix, JWT pattern: a leading `\b` failed the same way when glued to a preceding run, and here
+# NEITHER blob pattern rescues any part of it (JWT segments use base64URL `_`/`-`, not the blob
+# patterns' `+`/`/`, and a real segment is essentially never all-hex) -- both leading- and
+# trailing-glued shapes covered, since the trailing `\b` was dropped too.
+jwt_header = 'eyJhbGciOiJIUzI1NiJ9'
+jwt_payload = 'eyJzdWIiOiJ1c2VyIn0'
+jwt_sig = 'SflKxwRJSMeKKF2QT4fwpMeJf'
+jwt = f'{jwt_header}.{jwt_payload}.{jwt_sig}'
+r = amc._redact('q' * 40 + jwt + ' end')
+check('jwt-leading-glue-does-not-leak-any-segment', r, [jwt_header, jwt_payload, jwt_sig], ['[REDACTED]'])
+r = amc._redact('start ' + jwt + 'q' * 40)
+check('jwt-trailing-glue-does-not-leak-any-segment', r, [jwt_header, jwt_payload, jwt_sig], ['[REDACTED]'])
+
+# Negative control: dropping the leading `\b` from the token-prefix and JWT patterns must NOT
+# introduce new false positives on ordinary prose. "ey" (the JWT pattern's own opener) is a common
+# English substring ("they", "obey", "monkey"); "sk-" and "gh" fragments are similarly short. None
+# of these sentences contain a REAL secret shape (no long adjacent alnum run, no two literal dots
+# each followed by 10+ alnum chars), so none should be touched.
+for sentence in (
+    'they obeyed the monkey and went home',
+    'the gh-pages branch needs a rebuild',
+    'sk-8 was the old skate deck model number',
+    'review the ghost-town level design doc',
+):
+    r = amc._redact(sentence)
+    check(f'prose-not-falsely-redacted: {sentence!r}', r, ['[REDACTED]'], [sentence])
+
 # Clean text: no redaction of ordinary content
 r = amc._redact('git commit -m "feat(api): add endpoint"')
 check('clean-git-commit', r, ['[REDACTED]'], ['git commit'])
