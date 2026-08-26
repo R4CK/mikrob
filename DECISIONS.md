@@ -3447,3 +3447,48 @@ is zold marad (36/36), tehat a mas fajlok integracioja erintetlen.
 fix -- plan-grilling nem volt szukseges).
 
 **Hivatkozas:** kartya ec0e64b4, forras-incidens 034594e6, korabbi rokon vedelem 02be824f/7405ca61.
+
+## 2026-08-26 -- cleancore-tsc-lib.sh link_node_modules: nested pnpm workspace-symlink stale-read hiba
+
+**Dontes:** javitottam a `link_node_modules` fuggvenyt (`store/cleancore-tsc-lib.sh`, a
+`cleancore-land.sh` ES a `cleancore-pregate.sh` kozos meresi konyvtara). A regi valtozat egy TELJES
+node_modules konyvtart szimlinkelt at a foklonbol (MAIN) a landolo worktree-be egyetlen szimlinkkel.
+Ez ELTOR minden BENNE elo pnpm workspace-szimlinket (pl. node_modules/@cleancore/core -> relativ
+../../../packages/core): egy relativ szimlink a SAJAT FIZIKAI helyehez kepest oldodik fel, nem
+ahhoz kepest ahogy elertek -- es mivel a teljes konyvtar csak at van linkelve, a FIZIKAI hely
+tovabbra is MAIN, tehat a beagyazott workspace-szimlink MAIN regi (nem a landolt merge-eredmeny)
+masolatara mutat. Az uj valtozat egy szinttel beljebb megy: minden kozonseges bejegyzest tovabbra
+is egyenkent szimlinkel MAIN-bol (nincs viselkedes-valtozas), de a `@cleancore/*` scope-olt
+bejegyzeseket ujracelozza a worktree SAJAT masolatara, ha az letezik ott.
+
+**Miert.** Elo incidens, kartya 87e5ad4d: a `hasForbiddenIdentityChars` export hozzaadasa
+`packages/core/src/text-guard.ts`-hez REFUSED typecheck-et kapott a `cleancore-land.sh`-tol
+("has no exported member"), pedig a merge-eredmeny valojaban tartalmazta az exportot -- kezi
+reprodukcio `--traceResolution`-nel bizonyitotta, hogy az `apps/superadmin/tsconfig.json` (aminek
+nincs `@cleancore/core` paths-bejegyzese) a `packages/control-plane/node_modules/@cleancore/core`
+beagyazott pnpm-szimlinken keresztul MAIN regi `packages/core/src/index.ts`-jet olvasta, nem a
+worktree merge-eredmenyet. Ez NEM az en valtoztatasom hibaja volt, hanem a meresi infra sajat
+hibaja -- barmelyik jovobeli valtoztatas packages/core (vagy barmely tobbi @cleancore/* csomag)
+exportjain HAMIS REFUSED-ot (uj export hozzaadasakor) VAGY -- rosszabb esetben -- HAMIS PASS-t
+(export eltavolitasakor/torzitasakor, ha a regi MAIN-beli valtozat veletlenul meg mindig
+"kompatibilis") kaphatott volna, amig egy pont eppen az `apps/superadmin` projekten (vagy barmely
+mas, `@cleancore/core` paths-mappalas nelkuli projekten) mult.
+
+**Konzekvencia.** Uj `--selftest` blokk kozvetlenul a `cleancore-tsc-lib.sh`-ban (korabban
+egyaltalan nem volt tesztelve ez a fuggveny): 4 eset, valodi ideiglenes fajlrendszer-fixturaval
+(nem csak string-osszehasonlitas) -- worktree-erintett workspace-csomag a WORKTREE masolatat
+olvassa, worktree-erintetlen csomag tovabbra is MAIN-re esik vissza, kozonseges fuggoseg
+valtozatlanul plain passthrough szimlink, es a "linked N node_modules" szamlalo-uzenet
+valtozatlan. `cleancore-land.sh --selftest` 16/16 zold, `cleancore-pregate.sh --selftest` 5/5
+zold. Kezi ujra-reprodukcio a valos 87e5ad4d merge-en (`d2119b9d` + `origin/main`) a javitassal:
+mind az 5 TSC_PROJECTS projekt (`tsconfig.json`, `packages/control-plane/tsconfig.test.json`,
+`packages/modules/workforce/tsconfig.test.json`, `apps/api/tsconfig.json`,
+`apps/superadmin/tsconfig.json`) tisztan lefut, beleertve a korabban hamisan REFUSED-ot ado
+`apps/superadmin`-t is.
+
+**Ki dontott:** backend (kartya 87e5ad4d sajat landolasa kozben talalt, jol korulhatarolt,
+tesztelheto infra-hiba -- a `Submitted-by:` fixhez hasonloan (kartya ec0e64b4) direkt javitva,
+plan-grilling nem volt szukseges: sajat --selftest-tel fedett, egykonyvtaras bash-fuggveny, nem
+architekturai dontes).
+
+**Hivatkozas:** kartya 87e5ad4d, a hiba forrasa `store/cleancore-tsc-lib.sh` `link_node_modules`.
