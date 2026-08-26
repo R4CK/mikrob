@@ -1968,6 +1968,7 @@ window._i18n.en = {
   'repos.not_installed':         'not installed',
   'repos.not_installed_title':   'Listed in the registry, but the local install was not found',
   'repos.installed_at':          'Installed',
+  'repos.last_checked_at':       'Last checked',
   'repos.btn.update':            'Update',
   'repos.btn.delete':            'Delete',
   'repos.updating':              'Updating...',
