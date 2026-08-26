@@ -443,7 +443,27 @@ TAG = re.compile(r"<[^>]+>")
 # ben (ismert, korabban valodi hamis-pozitivkent jelentkezett azonosito/
 # tulajdonnev) -- nem minden nagybetus mondatkozi szora. Uj azonosito csak
 # szandekos bovitessel kerulhet ide, nem automatikusan.
-IDENTIFIER_ALLOWLIST = {"video", "drive"}
+#
+# Cybersec masodik korulasa (2026-08-26, ugyanaz a gate, round 8): a "video"
+# bejegyzes MAGA IS szerepelt az ACCENTLESS szotarban (video -> videó) -- egy
+# szo nem lehet EGYSZERRE "mindig javitando magyar szo" ES "azonositokent
+# kihagyando", ez ugyanaz a hibaosztaly szukebb korben. `audit('...uj Video
+# amit kertetek...')` nem kapta el, pedig valodi hiba. KIVETEL: "video" innen
+# torolve (a Drive-mappa NEVKENT hivatkozott "Video atalakitas" forma mostantol
+# ismet elakad -- ez SZANDEKOSAN a biztonsagosabb irany: egy hamis-pozitiv
+# azonosito-hivatkozas emberi felulvizsgalatot igenyel, egy csendben atengedett
+# valodi ekezethiba nem javithato utolag). STRUKTURALIS VEDELEM: az assert
+# lent megakadalyozza, hogy ez a hibaosztaly egy jovobeli bovitessel csendben
+# visszaterjen -- ha valaki ACCENTLESS-ben mar szereplo szot venne fel ide,
+# a modul betoltese azonnal elszall, nem egy elo reprodukcio talalja meg.
+IDENTIFIER_ALLOWLIST = {"drive"}
+_overlap = IDENTIFIER_ALLOWLIST & set(ACCENTLESS)
+assert not _overlap, (
+    f"outgoing-copy-gate: IDENTIFIER_ALLOWLIST es ACCENTLESS metszik egymast ({_overlap}) -- "
+    "egy szo nem lehet egyszerre 'mindig javitando' es 'azonositokent kihagyando' "
+    "(Cybersec lelet, fbb36b41 round 8)."
+)
+del _overlap
 HYPHEN_WORD = re.compile(r"[a-záéíóöőúüűA-ZÁÉÍÓÖŐÚÜŰ]+(?:-[a-záéíóöőúüűA-ZÁÉÍÓÖŐÚÜŰ]+)*")
 
 

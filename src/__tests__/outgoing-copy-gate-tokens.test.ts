@@ -34,8 +34,21 @@ describe('outgoing-copy gate tokenization: prose vs identifier (GATEKOTOJEL817/G
   })
 
   it('a quoted identifier (mid-sentence capitalized folder name) passes', () => {
-    // The second real blocked sentence: a Drive folder called "Video atalakitas".
-    expect(auditAccent('A neve Video átalakítás, ott találod, hogy már ne kelljen külön keresni.')).toEqual([])
+    // Cybersec round 8 (2026-08-26, fbb36b41 gate): "video" was removed from
+    // IDENTIFIER_ALLOWLIST because it also lives in ACCENTLESS (a word cannot
+    // be both "always needs correcting" and "always skip as an identifier") --
+    // see the module-load assert. "drive" has no such conflict and remains.
+    expect(auditAccent('A mappa neve Drive biztonsági mentés, ott találod, hogy már ne kelljen külön keresni.')).toEqual([])
+  })
+
+  it('REGRESSION (Cybersec, 2026-08-26, fbb36b41 gate, round 8): "Video" mid-sentence capitalized is no longer exempt -- it collided with the ACCENTLESS dictionary entry', () => {
+    // The original GATEKOTOJEL817 "Video atalakitas" false positive is a KNOWN,
+    // ACCEPTED regression: an identifier reference to a real folder literally
+    // named "Video ..." now needs quoting/hyphenation by the human to pass --
+    // deliberately, because the alternative silently swallowed real errors.
+    const probs = auditAccent('Szia, a Video nagyon jól sikerült, köszönöm, hogy átküldted.')
+    expect(probs.length).toBe(1)
+    expect(probs[0]).toContain('video -> videó')
   })
 
   it('lowercase prose "video" still fails -- the fix must not widen into a whitelist', () => {
