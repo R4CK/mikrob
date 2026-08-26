@@ -98,6 +98,12 @@ describe('local-llm.sh generate-call timeout safety net (card cea524b1)', () => 
     )
   }, 40_000)
 
+  // Card 8a6de2ee: this call goes through the real, shared, unparameterized global GPU lock
+  // (baseEnv() never overrides LOCAL_LLM_GPU_LOCK_PATH here) with LOCAL_LLM_LOCK_WAIT=30 -- under
+  // genuine fleet contention (another concurrent local-llm.sh call elsewhere holding that same
+  // lock) this can legitimately take longer than vitest's default 5000ms while still finishing well
+  // inside its own configured 30s patience. Same class of gap as
+  // local-llm-sh-active-task-registration.test.ts's TEST_TIMEOUT_MS fix, applied here too.
   it('does not regress the already-working normal-call path (no hang, real response)', async () => {
     const okServer = createServer((req, res) => {
       if (req.url === '/api/tags') {
@@ -124,7 +130,7 @@ describe('local-llm.sh generate-call timeout safety net (card cea524b1)', () => 
     } finally {
       await new Promise((resolve) => okServer.close(resolve))
     }
-  })
+  }, 35_000)
 
   it('GEN_CMD wraps the generate call with an internal `timeout -k`, guarded by `command -v`', () => {
     // Structural pin: proves the mechanism this card relies on is actually present in the script,

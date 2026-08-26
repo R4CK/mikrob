@@ -15,7 +15,7 @@ import { CONTENT_SECURITY_POLICY } from './web/csp.js'
 import { json } from './web/http-helpers.js'
 import { detectLanIp } from './web/network-info.js'
 import { AGENTS_BASE_DIR, listAgentNames } from './web/agent-config.js'
-import { ensureAgentHooks, ensureAgentStalenessHook, ensureEgressGate, ensureNpmProtectGuard, ensureBlastRadiusGuard, ensureTaskstateReplayMatcher, ensureGovernanceGateCommands, ensureQuarantineReader, ensureDefaultScheduledTasks, agentSettingsPath, ensureAutonomySection } from './web/agent-scaffold.js'
+import { ensureAgentHooks, ensureAgentStalenessHook, ensureEgressGate, ensureNpmProtectGuard, ensureBlastRadiusGuard, ensurePentestToolInstallGuard, ensureTaskstateReplayMatcher, ensureGovernanceGateCommands, ensureQuarantineReader, ensureDefaultScheduledTasks, agentSettingsPath, ensureAutonomySection } from './web/agent-scaffold.js'
 import { shouldRegisterHooks, pruneStaleHooksFromSettingsFile } from './web/hook-registration-guard.js'
 import { refreshMarveenBotUsername } from './web/telegram.js'
 import { startMessageRouter } from './web/message-router.js'
@@ -30,6 +30,7 @@ import { gpuInfo, isGpuLockHeld } from './web/routes/local-llm.js'
 import { getDb } from './db.js'
 import { startStuckInputWatcher } from './web/stuck-input-watcher.js'
 import { startInboxNudgeWatcher } from './web/inbox-nudge-watcher.js'
+import { startSelfAdvanceClearWatcher } from './web/self-advance-clear-watcher.js'
 import { startStuckToolCallWatcher } from './web/stuck-tool-call-watcher.js'
 import { startReauthHealer } from './web/reauth-healer.js'
 import { startAutoRestartRunner } from './web/auto-restart-runner.js'
@@ -441,6 +442,9 @@ export function startWebServer(port = 3420): http.Server {
   const inboxNudgeInterval = webOnly ? undefined : startInboxNudgeWatcher()
   if (!webOnly) logger.info('Inbox nudge watcher started (20s poll, 55s offset)')
 
+  const selfAdvanceClearInterval = webOnly ? undefined : startSelfAdvanceClearWatcher()
+  if (!webOnly) logger.info('Self-advance clear watcher started (20s poll)')
+
   const reauthHealerInterval = webOnly ? undefined : startReauthHealer()
   if (!webOnly && reauthHealerInterval) logger.info('Reauth healer started (3min poll, 90s offset)')
 
@@ -561,6 +565,7 @@ export function startWebServer(port = 3420): http.Server {
       const govPatched: string[] = []
       const npmGuardPatched: string[] = []
       const blastGuardPatched: string[] = []
+      const pentestGuardPatched: string[] = []
       const taskstateMatcherPatched: string[] = []
       const pruned: string[] = []
       // Include the main agent (MAIN_AGENT_ID) so the voice hook is also seeded
@@ -575,6 +580,7 @@ export function startWebServer(port = 3420): http.Server {
         if (ensureEgressGate(agentName)) egressPatched.push(agentName)
         if (ensureNpmProtectGuard(agentName)) npmGuardPatched.push(agentName)
         if (ensureBlastRadiusGuard(agentName)) blastGuardPatched.push(agentName)
+        if (ensurePentestToolInstallGuard(agentName)) pentestGuardPatched.push(agentName)
         if (ensureTaskstateReplayMatcher(agentName)) taskstateMatcherPatched.push(agentName)
         if (ensureGovernanceGateCommands(agentName)) govPatched.push(agentName)
         ensureQuarantineReader(agentName)
@@ -582,6 +588,7 @@ export function startWebServer(port = 3420): http.Server {
       if (pruned.length) logger.info({ pruned }, 'Stale hook entries pruned from agent settings.json')
       if (npmGuardPatched.length) logger.info({ patched: npmGuardPatched }, 'npm-protect guard backfilled into agent settings.json')
       if (blastGuardPatched.length) logger.info({ patched: blastGuardPatched }, 'blast-radius guard backfilled into agent settings.json')
+      if (pentestGuardPatched.length) logger.info({ patched: pentestGuardPatched }, 'pentest-tool-install guard backfilled into agent settings.json')
       if (taskstateMatcherPatched.length) logger.info({ patched: taskstateMatcherPatched }, 'taskstate-replay SessionStart matcher widened in agent settings.json')
       if (patched.length) logger.info({ patched }, 'PreCompact hook backfilled into agent settings.json')
       if (stalePatched.length) logger.info({ patched: stalePatched }, 'staleness-guard UserPromptSubmit hook backfilled into agent settings.json')
@@ -625,6 +632,7 @@ export function startWebServer(port = 3420): http.Server {
     clearInterval(stuckInputInterval)
     clearInterval(stuckToolCallInterval)
     if (inboxNudgeInterval) clearInterval(inboxNudgeInterval)
+    if (selfAdvanceClearInterval) clearInterval(selfAdvanceClearInterval)
     if (reauthHealerInterval) clearInterval(reauthHealerInterval)
     clearInterval(autoRestartInterval)
     clearInterval(modelFallbackInterval)

@@ -16,6 +16,7 @@ import {
   addKanbanDependency, removeKanbanDependency,
   getKanbanPredecessors, getKanbanSuccessors, dependencyBlockers,
   getUnmetPredecessorsForAllCards, getUnmetKanbanPredecessors,
+  priorInProgressCardForActor, setPendingSelfAdvanceClear,
 } from '../../db.js'
 import { isForceActor } from '../../kanban-force-actors.js'
 import { normalizeKanbanRefs } from '../kanban-ref-normalize.js'
@@ -25,6 +26,8 @@ import { isAgentRunning } from '../agent-process.js'
 import { readHardStop, isNewDevStartBlocked } from '../../costops/weekly-hard-stop.js'
 import { landedGuardVerdict } from '../kanban-landed-guard.js'
 import { gateCompletenessGuardVerdict } from '../kanban-gate-completeness-guard.js'
+import { dedupPrefilterDescriptionUpdate } from '../kanban-dedup-prefilter-guard.js'
+import { clearBeforeDispatchIfSwitching } from '../kanban-dispatch-clear-guard.js'
 
 // Card project-name drift (Peti 2026-08-08): `project` was free-text with no case-folding, so
 // "CleanCore" / "cleancore" / "MikroB" / "mikrob-infra" / "fleet-infra" / "marveen" / "Infra" all
@@ -88,7 +91,7 @@ function newDevStopWouldBlock(id: string, nextStatus: unknown, force: boolean, a
 }
 const NEW_DEV_STOP_MESSAGE =
   'Heti "új fejlesztés leáll" küszöb átlépve: egy planned kártya nem mehet in_progress-be VAGY egyenesen waiting-be sem (új fejlesztés indítása) a heti resetig. In-flight és gate-munka továbbra is mehet (waiting -> in_progress); tudatos felülíráshoz MikroB force: true-val nyithatja meg.'
-import { resolveKanbanDispatchTarget, isSelfAdvanceMove } from '../../kanban-dispatch.js'
+import { resolveKanbanDispatchTarget, isSelfAdvanceMove, isGenuineSelfAdvanceSwitch } from '../../kanban-dispatch.js'
 import { generateBreakdown } from '../llm-breakdown.js'
 import { logger } from '../../logger.js'
 import { readBody, json, jsonMaybeGzip } from '../http-helpers.js'
@@ -156,7 +159,7 @@ export function kanbanMoveInstructions(id: string, target: string): string {
 // dispatched_at is the once-only guard; errors never block the card move.
 // `actor` is the mover reported by the caller: an agent that moves its own card
 // to in_progress must not be woken with an assignment for work it just started.
-function fireKanbanDispatch(id: string, actor?: string | null): void {
+async function fireKanbanDispatch(id: string, actor?: string | null): Promise<void> {
   try {
     const card = getKanbanCard(id)
     if (!card || card.dispatched_at) return
@@ -166,6 +169,15 @@ function fireKanbanDispatch(id: string, actor?: string | null): void {
     // auto-dispatch fires either) and send nothing. A missing/other actor still dispatches normally.
     if (isSelfAdvanceMove(card.assignee, actor)) {
       markKanbanCardDispatched(id)
+      // Card 5003f37e: the dispatch echo above is correctly suppressed, but that must not also
+      // suppress /clear-before-switch -- self-advance needs it too, just delivered differently (see
+      // the agent_pending_clear schema comment in db.ts for why this only RECORDS the debt here
+      // instead of sending /clear synchronously).
+      const prior = priorInProgressCardForActor(actor as string)
+      if (isGenuineSelfAdvanceSwitch(prior, id)) {
+        setPendingSelfAdvanceClear(actor as string, id, Date.now())
+        logger.info({ id, actor, prior }, 'Kanban self-advance: genuine card switch, /clear queued for next idle window')
+      }
       logger.info({ id, actor, assignee: card.assignee }, 'Kanban self-advance: dispatch echo suppressed')
       return
     }
@@ -178,6 +190,18 @@ function fireKanbanDispatch(id: string, actor?: string | null): void {
       actor,
     })
     if (!target) return
+    // Card 900178fa: /clear the target's pane FIRST when this is a genuine card switch (not a
+    // re-dispatch of the same card after a gate FAIL), and WAIT for that attempt to settle before
+    // enqueueing the card-content message below -- fireKanbanDispatch itself is called
+    // fire-and-forget by its caller (moving the card already returned its HTTP response), so
+    // awaiting here costs nothing external, but ordering it the other way around risks the
+    // message-router delivering the new task BEFORE this direct send gets to clear the pane,
+    // wiping the very instructions it just delivered.
+    try {
+      await clearBeforeDispatchIfSwitching(target, id)
+    } catch (err) {
+      logger.warn({ err, id, target }, 'Kanban dispatch: /clear-before-switch failed (dispatch continues)')
+    }
     const desc = (card.description ?? '').trim()
     const content = `[Kanban feladat #${id}]: ${card.title}${desc ? ' — ' + desc : ''}\n\n${kanbanMoveInstructions(id, target)}`
     createAgentMessage(MAIN_AGENT_ID, target, content)
@@ -424,7 +448,16 @@ export async function tryHandleKanban(ctx: RouteContext): Promise<boolean> {
       }
     }
     const id = randomUUID().slice(0, 8)
-    createKanbanCard({ id, ...normalizeProjectName(data) })
+    const normalized = normalizeProjectName(data)
+    createKanbanCard({ id, ...normalized })
+    // Card 4bade960: run the dedup pre-filter on EVERY new card (rule 6b was previously enforced
+    // only by agent discipline before opening a card, and by the >2-day dispatch filter for cards
+    // already open). One extra async spawn per card create, awaited before responding -- same
+    // pattern as the other guards on this route, and card creation is not a hot path.
+    const withDedupNote = await dedupPrefilterDescriptionUpdate(id, String(normalized.description ?? ''))
+    if (withDedupNote !== null) {
+      updateKanbanCard(id, { description: withDedupNote }, { actor: 'dedup-prefilter-guard' })
+    }
     json(res, { ok: true, id })
     return true
   }
@@ -471,8 +504,20 @@ export async function tryHandleKanban(ctx: RouteContext): Promise<boolean> {
 
   if (kanbanCardMatch && method === 'DELETE') {
     const id = decodeURIComponent(kanbanCardMatch[1])
+    // Optional body, same `actor` convention as POST /move -- card d3f8d2c3: a deletion that
+    // unblocks a successor is now audited (kanban_card_field_events), and an unattributed row
+    // answers "who" no better than none at all. A DELETE with no body (most callers today) still
+    // works: an empty buffer parses to no actor, matching the pre-existing behaviour exactly.
+    const rawBody = (await readBody(req)).toString()
+    let actor: string | undefined
+    if (rawBody.trim()) {
+      try {
+        const parsed = JSON.parse(rawBody)
+        if (typeof parsed?.actor === 'string') actor = parsed.actor
+      } catch { /* malformed body on an otherwise-valid DELETE must not block the deletion */ }
+    }
     revertIdeaFromKanban(id)
-    if (deleteKanbanCard(id)) { json(res, { ok: true }); return true }
+    if (deleteKanbanCard(id, actor)) { json(res, { ok: true }); return true }
     json(res, { error: 'Kártya nem található' }, 404)
     return true
   }
@@ -501,7 +546,9 @@ export async function tryHandleKanban(ctx: RouteContext): Promise<boolean> {
     if (moveKanbanCard(id, status, sort_order ?? 0, actor, force === true)) {
       // Wake the assigned agent once when the card enters in_progress -- unless
       // that agent is the one who moved it (self-pickup needs no wake-up).
-      if (status === 'in_progress') fireKanbanDispatch(id, actor)
+      // Fire-and-forget: fireKanbanDispatch's own try/catch means this never rejects, and
+      // awaiting it here would hold the HTTP response on a pane-idle wait (card 900178fa).
+      if (status === 'in_progress') void fireKanbanDispatch(id, actor)
       json(res, { ok: true })
       return true
     }

@@ -3210,3 +3210,102 @@ blokkolt), minden más teszt zöld maradt. A fix visszaállítása után újra m
 **Ki döntött:** backend2 (kártya 3f61b2ab, saját korábbi megfigyelés).
 
 **Hivatkozás:** kártya `3f61b2ab`. Előzmény: `398f351b` (a guard eredeti bevezetése).
+
+
+## 2026-08-24 -- strukturális előfeltételek offenzív pentest-eszközök élesítése előtt (b4a7c9c3)
+
+**Mi történt:** Cybered leletéből (441337bf gate, komment 15949) kiindulva MikroB dispatchelt egy
+külön kártyát: a snyk/agent-scan, usestrix/strix és GH05TCREW/pentestagent együttes adoptálása
+kill-chain szempontból új támadási felület a saját flottánkban, ha bármelyik kompromittálódik.
+Hat kötelező strukturális előfeltétel a TÉNYLEGES éles futtatás előtt: hálózati egress-allowlist,
+dedikált LLM-kulcs, decoy célpont, strix Docker-image digest-pinning, curl|bash installer tiltása,
+snyk/agent-scan hálózat-izolált tesztje.
+
+**A felbontás:** hat gyerek-kártya (alfeladat szint), mindegyik egy előfeltétel, a projekt-workflow
+1. szabálya szerint.
+
+**Az építés (5 a 6-ból kész+tesztelve, 1 eszkalálva):**
+1. Hálózati egress-allowlist: `store/pentest-tool-egress-proxy.py` (allowlist-only HTTP CONNECT
+   proxy) + `store/pentest-tool-runner.sh` (wrapper, HTTP_PROXY-t állítja, jelenti a tiltott
+   kísérleteket). Élőben tesztelve: engedélyezett host átmegy, tiltott host 403+log.
+2. Dedikált LLM-kulcs: `store/pentest-tool-key-check.sh` fail-closed ellenőrzés (hiányzó VAGY a
+   megosztott hitelesítővel egyező kulcs -> FAIL). A TÉNYLEGES kulcs kiadása operátori akció --
+   ezt nem lehetett itt lezárni, MikroB-hoz eszkalálva, a kártya rá van tolva.
+3. Decoy célpont: `store/pentest-tool-decoy-target.py`, csak localhost, négy szándékos
+   sebezhetőség (XSS, SQLi, no-auth admin), X-Decoy fejléc + banner.
+4. strix Docker-image pinning: a strix ténylegesen Dockert használ (settings.py,
+   `ghcr.io/usestrix/strix-sandbox:1.3.0`, mutable tag). A digestet a GHCR registry API-ból
+   mértem: `sha256:f6906c31...c4331`. `store/pentest-tool-strix-image-pin.py` a pinnelt
+   referenciát adja, `--verify` drift-et jelez anélkül, hogy csendben újrapinnelné.
+5. curl|bash installer tiltása: `scripts/hooks/pentest-tool-install-guard.py`, bedrótozva a
+   scaffoldba (`injectPentestToolInstallGuard`/`ensurePentestToolInstallGuard`, a git/npm-protect
+   guard mintája), 16/16 selftest, mutációs önellenőrzés zöld.
+6. snyk/agent-scan hálózat-izolált teszt: `store/pentest-tool-netiso-test.sh` (`unshare --net`
+   összehasonlítás). TÉNYLEGES futtatás a valós eszközzel (venv, decoy MCP-config, `--no-skills`,
+   elutasított consent): azonos kimenet/exit-kód hálózattal és nélküle -- ez az invokációs alak
+   nem tett hálózati hívást. Nyitva maradó kérdés: `--dangerously-run-mcp-servers` és a
+   skills-szkennelés NEM lett tesztelve, ezekre a kockázat továbbra is "ismeretlen".
+
+**Mellékes leletek Cybersecnek/Cybered-nek:** a strix sandbox image build-oldali alapja
+`kalilinux/kali-rolling:latest` (ellátási-lánc megjegyzés); a snyk-agent-scan `--no-bootstrap`
+kapcsolója a mai verzióban dokumentáltan no-op ("does not change behavior") -- nem derül ki
+ebből, hogy a régi bootstrap-POST-viselkedés megszűnt-e, vagy feltétel nélkülivé vált.
+
+**Tesztek:** teljes vitest suite (500 fájl, 12383 teszt) zöld, tsc tiszta, minden új script ÉLŐ
+funkcionális teszttel igazolva (nem csak mock). A guard mutációs önellenőrzése: a kockázat-check
+kikapcsolása után pontosan a 9 block-eset váltott pirosra, minden allow-eset zöld maradt.
+
+**Ki döntött:** backend2 (kártya b4a7c9c3, MikroB dispatch alapján), a dedikált kulcs kérdésében
+MikroB/Peti dönt.
+
+**Hivatkozás:** kártya `b4a7c9c3` (szülő) és gyerekei `7dc12e55`, `51400b45`, `330c7916`,
+`0ef1b657`, `cc43528b`, `36329ea3`. Előzmény: `441337bf` (due diligence gate).
+
+
+## 2026-08-24 -- anthropic-mcp-builder + anthropic-webapp-testing tényleges bekötése (kártya f5eda0be)
+
+**Mi történt:** a `3c9e22b1` Fázis ("már adoptált, de használatlan eszközök valós bekötése", Peti
+kérése 2026-08-23) utolsó nyitott gyereke. Két Anthropic-skill (`example-skills:mcp-builder`,
+`example-skills:webapp-testing`) nulla használati bizonyítékkal az adoptálás óta.
+
+**webapp-testing -- ténylegesen bekötve:**
+1. Felvéve QA `Core skilljeid` listájára (`seed-fleet-agents/qa/CLAUDE.md`), rövid leírással és
+   hivatkozással erre a kártyára -- ez a durábilis, verziókövetett hely, NEM a gitignored
+   `agents/qa/CLAUDE.md` futásidejű másolat (az a seedből generálódik, QA következő
+   session-indításakor/scaffold-frissítésekor veszi fel).
+2. VALÓS bizonyíték a használatra: a skill saját `scripts/with_server.py` segédjével és egy
+   Playwright-szkripttel ténylegesen leteszteltem a CleanCore `apps/web` landing oldalát (egy már
+   futó dev-szerver ellen, port 5173, screenshot + DOM-vizsgálat + console-hiba-gyűjtés a
+   reconnaissance-then-action minta szerint). Az első futás Chromium-verzió-eltérés miatt hibázott
+   (`playwright install chromium` megoldotta), a második sikeres volt.
+3. **Mellékes, valódi lelet** (bizonyíték arra, hogy a tool tényleg ér valamit, nem csak "lefut"):
+   ~20 CSP-sértés a konzolban -- a landing oldal inline style-jait a `default-src 'self'`
+   (nincs külön `style-src`) csendben blokkolja. Külön kártyára véve (`706ad126`,
+   `fron-ted`-nek, QA+Cybersec gate), NEM ezen a kártyán javítva -- ez hatókörön kívüli lenne.
+
+**mcp-builder -- NEM erőltetve, dokumentálva (a kártya saját megengedett kimenete):**
+végignéztem a teljes `planned`+`in_progress`+`waiting` táblát -- egyetlen kártya sem igényel új,
+saját MCP-szerver építését jelen pillanatban. A kártya szövege explicit megengedi ezt a kimenetet
+("ha nincs közelben, dokumentáld és hagyd nyitva"): kitalálni egy MCP-szervert csak azért, hogy a
+skill "használva" legyen, sértené a kódminőségi alapelvek 2. pontját (nincs spekulatív munka).
+Nyitva marad: a `example-skills:mcp-builder` skill a következő valós MCP-szerver-építési igénynél
+használandó (backend/backend2, bárki felveszi a feladatot).
+
+**Tesztek:** a webapp-teszt éles Playwright-futtatás volt, nem mock -- lásd fent. Kódváltozás csak
+a `seed-fleet-agents/qa/CLAUDE.md` core-skill listájában, fleet-test-re nincs hatással (nem TS/JS).
+
+**Ki döntött:** backend2 (kártya f5eda0be, MikroB dispatch a 3c9e22b1 Fázis alatt).
+
+**Hivatkozás:** kártya `f5eda0be` (ez), szülő `3c9e22b1`. Kapcsolódó új kártya: `706ad126` (CSP-lelet).
+
+## 2026-08-25 -- Pontosítás a 12783b1e verziószámláló-szabályhoz: X.Y.Z TÉNYLEGESEN kövesse az upstreamet minden sync-mergenél
+
+**Döntés:** A 2026-08-20-i `12783b1e` bejegyzés szövege ("X.Y.Z az upstream Szotasz/marveen verzió... Upstream-sync után (új X.Y.Z) a számláló 1-re áll vissza") változatlanul érvényes és MEGERŐSÍTVE: a `package.json` `version` mezőjének `X.Y.Z` része minden upstream-sync merge-nél frissüljön a ténylegesen belehúzott upstream verzióra, `+mikrob.1` szuffixszel. A számláló csak akkor 1, ha ÚJ X.Y.Z-re lépünk; egyébként fork-saját landolásnál nő.
+
+**Miért ez a bejegyzés:** a c7f0d394 fleet-wide landolás-blokk feloldása közben (2026-08-25 este) két ügynök egymástól függetlenül eltérően értelmezte ugyanezt a szabályt ugyanarra a bumpra (upstream 1.33.0 -> 1.34.0): backend a dokumentált szöveg szerint az X.Y.Z átvételét javasolta (`1.34.0+mikrob.1`), backend2 landolt döntése viszont a fork saját `1.33.0+mikrob.1`-jét hagyta változatlanul, és ez a változat landolt előbb (Fron Ted átfogó javításába építve). A tényleges `package.json` `version` mezője ezért MOST `1.33.0+mikrob.1`, ELTÉR a dokumentált szabálytól. Ez nem új policy-döntés, hanem a MÁR MEGLÉVŐ szabály helyreállítása -- lásd [[a-decisions-correction-goes-as-a-new-dated-entry]].
+
+**Végrehajtás:** külön kártya nyitva a `package.json` tényleges frissítésére (`1.34.0+mikrob.1`-re) + a `fork-upstream-conflict-guard.test.ts` megfelelő `ACKNOWLEDGED_CONFLICTS`/`ACKNOWLEDGED_UPSTREAM_BLOBS` bejegyzésének összhangba hozására ezzel a döntéssel.
+
+**Ki döntött:** MikroB (a 12783b1e eredeti szövegének szó szerinti újraolvasása alapján; nem új döntés, a meglévő szabály egyértelműsítése egy megfigyelt kétértelmű végrehajtás után).
+
+**Hivatkozás:** kártya `12783b1e` (eredeti szabály), `c7f0d394` (a blokk, ami alatt a kétértelműség felmerült), backend INFO-üzenete (2026-08-25 22:xx).

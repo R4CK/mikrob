@@ -202,7 +202,28 @@ fence_rx = re.compile(r"(```|~~~).*?(\1|\Z)", re.S)
 # Gate-SHA above: a line-anchored field the AUTHOR states outright beats a heuristic guessing at
 # intent. Checked FIRST in is_submission(), before Gate-SHA/REVIEW/scrape, because "this is not a
 # submission" is a stronger and cheaper claim than any content signal that might otherwise fire.
-info_only_rx = re.compile(r"^(?:[-*#]+[ \t]*)?INFO-ONLY\b", re.M)
+#
+# ANCHORED TO THE COMMENT ITSELF, not any line in it (card 9f99e5b8, found independently by backend
+# and Cybersec): the marker means "this WHOLE COMMENT is not a submission", which only makes sense
+# stated at the very start -- but `re.M` plus `.search()` let it fire from ANYWHERE, including a
+# real REVIEW that just quotes or explains the convention mid-comment (even as a list item, e.g.
+# "- INFO-ONLY: ..."). That reading is the dangerous direction: unlike a Gate-SHA mismatch (which
+# only costs a wasted re-gate), a false INFO-ONLY silences a gate on a genuine submission. No live
+# incident yet (5 historical mentions, all already on the first line), but the exposure is real and
+# the fix costs nothing measured against them (see the selftest pins below). `re.M` dropped -- the
+# pattern is now matched with `.match()` against the first NON-EMPTY line of the comment only (see
+# is_submission below), never `.search()` against the whole body.
+info_only_rx = re.compile(r"^(?:[-*#]+[ \t]*)?INFO-ONLY\b")
+
+def leading_line(text):
+    """The first NON-EMPTY line of `text` -- the anchor for a comment-level declaration like
+    INFO-ONLY, whose meaning ("this whole comment is not a submission") only holds stated at the
+    very start. A leading blank line (a common paste artifact) does not defeat it; a marker that
+    shows up on the SECOND real line or later is not a declaration, it is prose about one."""
+    for line in (text or "").split("\n"):
+        if line.strip():
+            return line
+    return ""
 
 def structured_shas(text):
     out = set()
@@ -279,8 +300,13 @@ def is_submission(c):
         return False
     # INFO-ONLY beats every content signal below it, same reasoning as Gate-SHA: an explicit
     # author declaration needs no guessing. Fence-stripped for the same quoting reason as
-    # review_rx (a fenced or `> `-quoted mention of the word must not arm this).
-    if info_only_rx.search(fence_rx.sub("", text)):
+    # review_rx (a fenced or `> `-quoted mention of the word must not arm this). MATCHED AGAINST
+    # THE FIRST NON-EMPTY LINE ONLY (card 9f99e5b8) -- not searched across the whole comment -- so a
+    # real REVIEW that merely quotes or explains the convention further down (even as a list item)
+    # cannot silence itself. A comment beginning with a fenced block that CONTAINS the marker still
+    # does not count: the fence is stripped first, so the marker is judged against whatever real
+    # text comes first, exactly like every other quoting protection in this file.
+    if info_only_rx.match(leading_line(fence_rx.sub("", text))):
         return False
     # A declared Gate-SHA IS the submission signal (card f910eabd): whoever writes that line is
     # naming a commit for a gate to look at, which is the whole definition. Checked before the
@@ -415,6 +441,30 @@ review_shas = shas_of(newest_review)
 # an unknown the two error directions are not equal. A spurious re-arm is cheap and self-correcting: a
 # gate looks, sees nothing new, moves on. A missed gate is SILENT, which is the exact failure this card
 # exists to remove. The measured 26-pair problem contains no tie at all, so `<` costs nothing there.
+#
+# DECLARED-SHA OVERRIDES TIMESTAMP (Cybersec finding 093a9914, 2026-08-23): the rule above answers
+# purely from WHEN the two comments were posted, not what they are ABOUT. A verdict can be posted
+# LATER than a submission by clock time while still being about an OLDER, already-superseded
+# commit -- e.g. a gate answering a prior submission while a fresh one lands, then posting after
+# it. The real pair: backend declared Gate-SHA: 86aef9f8 (comment 15455); the Cybersec GO, posted
+# with a LATER timestamp (comment 15457), declared Gate-SHA: 83fcafab, an EARLIER commit --
+# content-wise stale, but the pure timestamp rule below read it as the newest word and silenced
+# the dispatch. MikroB only caught it because of a manual re-dispatch, not because this script did.
+#
+# Fires ONLY when BOTH sides carry an explicit `Gate-SHA:` declaration (never the extract_shas()
+# prose scrape) -- that is what keeps this safe next to card d9ce20f5 right below, whose whole point
+# was that an OLDER review naming an uncovered sha must NOT re-arm when NEITHER side declares
+# anything (the scrape alone is too imprecise to trust over a timestamp there). A declared field
+# needs no such caution: its author said outright what it is about, symmetrically on both sides,
+# same reasoning as the rest of the Gate-SHA convention above -- it REPLACES the guess, it does not
+# just narrow it.
+_newest_mine_declared = structured_shas(newest_mine.get("content") or "")
+_newest_review_declared = structured_shas(newest_review.get("content") or "")
+if _newest_mine_declared and _newest_review_declared:
+    if not any(r.startswith(m) or m.startswith(r) for r in _newest_review_declared for m in _newest_mine_declared):
+        print("ALLOW:stale-verdict")
+        sys.exit(0)
+
 if last_review < last_mine:
     print(f"ADVISE-SKIP:already-gated:{int(last_mine)}")
     sys.exit(0)
@@ -682,6 +732,15 @@ print(",".join(c.get("id") or "" for c in cards if isinstance(c, dict)))
     t "list-marker declaration still arms"        "ADVISE-SKIP:already-gated" cybered <<< '[{"author":"backend2","created_at":100,"content":"REVIEW -- ac792b3b"},{"author":"cybered","created_at":200,"content":"CYBERED GO -- @ ac792b3b"},{"author":"backend2","created_at":300,"content":"- Gate-SHA: ac792b3b\nValasz: valtozatlan, a testver 63c4b270 landolt."}]'
     # Multiple shas on one line (a review that submits two commits together).
     t "two declared shas, one still new"          "ALLOW:stale-verdict" cybersec <<< '[{"author":"backend","created_at":100,"content":"REVIEW -- 6fd834e2"},{"author":"cybersec","created_at":200,"content":"Gate-SHA: 6fd834e2\nNO-GO"},{"author":"backend","created_at":300,"content":"Gate-SHA: 6fd834e2, 974509e3\nREVIEW -- fix + follow-up."}]'
+    # DECLARED-SHA OVERRIDES TIMESTAMP (card e461cfb7, Cybersec finding 093a9914). The real pair:
+    # backend declared Gate-SHA: 86aef9f8 first; Cybersec's GO landed with a LATER timestamp but
+    # declared Gate-SHA: 83fcafab, an EARLIER, unrelated commit -- content-wise stale despite being
+    # the chronologically newest comment. The pure timestamp rule alone answers already-gated here;
+    # this is exactly the false negative the card reports.
+    t "093a9914 real incident: later verdict declares an OLDER sha -- must re-arm" "ALLOW:stale-verdict" cybersec <<< '[{"author":"backend","created_at":15455,"content":"REVIEW -- kesz\nGate-SHA: 86aef9f8"},{"author":"cybersec","created_at":15457,"content":"CYBERSEC GO\nGate-SHA: 83fcafab"}]'
+    # Regression control: when the two DECLARED shas actually agree, a later verdict timestamp must
+    # still skip as before -- the fix compares content, it must not just re-arm on timestamp order.
+    t "declared shas MATCH despite the later verdict timestamp -- stays already-gated" "ADVISE-SKIP:already-gated" cybersec <<< '[{"author":"backend","created_at":100,"content":"REVIEW -- kesz\nGate-SHA: 86aef9f8"},{"author":"cybersec","created_at":200,"content":"CYBERSEC GO\nGate-SHA: 86aef9f8"}]'
 
     # review_rx QUOTE FORMS (card a45b1c71 -- the b60835e1/25c0c64 class recurring in a second regex
     # in this same file). The measured repro: "Idezem a kollegat:\n> REVIEW -- kesz" armed a gate
@@ -773,7 +832,16 @@ print(",".join(c.get("id") or "" for c in cards if isinstance(c, dict)))
     # stale to a later check. Same-side control right above ("another gate naming a sha") already
     # covered the unstructured/prose case; this is the structured Gate-SHA-field case that the old
     # order still let through.
-    t "another gate own Gate-SHA verdict (multi-sha, newer) does not re-arm a prior verdict" "ADVISE-SKIP:already-gated" qa <<< '[{"author":"backend","created_at":100,"content":"REVIEW -- kesz\nGate-SHA: 65b047aa"},{"author":"qa","created_at":200,"content":"QA PASS\nGate-SHA: 77f4e23d"},{"author":"cybersec","created_at":300,"content":"CYBERSEC GO\nGate-SHA: 65b047aa, 6ffb017d, 77f4e23d"}]'
+    #
+    # QA own declared set widened to include backend own sha (card e461cfb7 fix): the fixture used to
+    # leave QA PASS declaring ONLY 77f4e23d while backend REVIEW declared ONLY 65b047aa -- an
+    # accidental mismatch this test never meant to exercise. Once the declared-sha-overrides-
+    # timestamp check (093a9914, right above the SHA CHECK block) started comparing what the two
+    # sides actually declare, that mismatch correctly read as a real coverage gap and flipped this
+    # test red. The fixture is tightened so QA own declaration is internally consistent with what it
+    # is supposed to have reviewed, which is what this test's OWN premise already assumed; the
+    # NON_SUBMITTERS-ordering question it exists to pin is untouched by this.
+    t "another gate own Gate-SHA verdict (multi-sha, newer) does not re-arm a prior verdict" "ADVISE-SKIP:already-gated" qa <<< '[{"author":"backend","created_at":100,"content":"REVIEW -- kesz\nGate-SHA: 65b047aa"},{"author":"qa","created_at":200,"content":"QA PASS\nGate-SHA: 65b047aa, 77f4e23d"},{"author":"cybersec","created_at":300,"content":"CYBERSEC GO\nGate-SHA: 65b047aa, 6ffb017d, 77f4e23d"}]'
 
     # SIBLING CARD IDS (card b60835e1, measured on the live board). Card ids are the same hex shape
     # as a short sha, and cards quote each other constantly -- one real E2E sweep comment named eight
@@ -840,6 +908,24 @@ print(",".join(c.get("id") or "" for c in cards if isinstance(c, dict)))
     d "decide: an unmarked stray hex token still re-arms (unchanged, fail-open default)" "ALLOW:stale-verdict" 0 qa
     SELFTEST_JSON='[{"author":"backend","created_at":100,"content":"REVIEW -- commit abc1234"},{"author":"qa","created_at":200,"content":"QA PASS -- commit abc1234"},{"author":"backend","created_at":300,"content":"INFO-ONLY: baseline CI adat, mar lezart kerdeshez, nem verdikt-keres. Futas-azonosito ffff9999"}]'
     d "decide: the SAME stray token marked INFO-ONLY does not re-arm" "ADVISE-SKIP:already-gated" 8 qa
+
+    # ANCHORED TO THE FIRST LINE ONLY (card 9f99e5b8, found independently by backend and Cybersec):
+    # the marker used to fire from ANYWHERE in the comment (`re.M` + `.search()`), so a genuine
+    # REVIEW that merely explains or quotes the convention further down -- even as a list item --
+    # silenced itself. This is the dangerous direction (a real submission going unseen), unlike a
+    # false ARM which just costs a wasted look.
+    t "INFO-ONLY on a LATER line (explaining the convention) does NOT silence a real REVIEW" "ALLOW:no-verdict" cybersec <<< '[{"author":"backend2","created_at":100,"content":"REVIEW -- kesz, commit ac792b3b.\nINFO-ONLY: ez csak pelda arra, hogyan kell jelolni egy tenyleg info-only kommentet."}]'
+    t "INFO-ONLY as a later list item still does NOT silence" "ALLOW:no-verdict" cybersec <<< '[{"author":"backend2","created_at":100,"content":"Frissites a kartyahoz, uj commit 974509e3.\n- INFO-ONLY: ez csak egy pelda a szabalyra, nem sajat allitas."}]'
+    # REGRESSION: a genuine INFO-ONLY comment on its OWN first line is unaffected by the anchor --
+    # same fixture as the pinned case right above, re-asserted directly against is_submission.
+    t "a genuine INFO-ONLY comment (first line) is still not a submission" "ADVISE-SKIP:no-review" cybersec <<< '[{"author":"backend","created_at":100,"content":"INFO-ONLY: baseline CI adat, futas-azonosito ffff9999"}]'
+    # A leading BLANK line (a common paste artifact) must not defeat the anchor -- the declaration is
+    # still the first REAL content in the comment, just not on line 1 literally.
+    t "a leading blank line before INFO-ONLY still counts as the first line" "ADVISE-SKIP:no-review" cybersec <<< '[{"author":"backend","created_at":100,"content":"\nINFO-ONLY: baseline CI adat, futas-azonosito ffff9999"}]'
+    # A fenced block containing the marker as its very first line, ahead of the REAL comment text,
+    # must not swallow the real REVIEW that follows -- same quoting protection review_rx/gate_sha_rx
+    # already have, now exercised for INFO-ONLY too.
+    t "a fenced INFO-ONLY ahead of a real REVIEW does not silence it" "ALLOW:no-verdict" cybersec <<< '[{"author":"backend2","created_at":100,"content":"```\nINFO-ONLY: pelda a formatumra\n```\nREVIEW -- kesz, commit ac792b3b."}]'
 
     # DESIGNATION (card 5bc10089). dd() is d() plus GATE_LABELS/GATE_LINE, since designation is
     # per-card context the plain d() has no way to pass.

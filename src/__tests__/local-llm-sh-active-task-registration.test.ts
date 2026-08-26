@@ -5,12 +5,17 @@
 //
 // Behavioural, like local-llm-sh-task-allowlist.test.ts: runs the REAL script against fake Ollama
 // and fake dashboard HTTP servers on localhost, so the actual wiring (not a source-text guess) is
-// what's under test. LOCAL_LLM_LOCK_WAIT is kept short: the GPU flock path (/tmp/local-llm-gpu.lock)
-// is intentionally the real, global, unparameterized lock the whole fleet shares (see local-llm.sh's
-// own comment on GPU_LOCK) -- these fake calls resolve in milliseconds, so any real contention from
-// a concurrent fleet agent clears fast; the bound just keeps a genuinely stuck test from hanging.
+// what's under test. baseEnv() below leaves the GPU flock path at its default
+// (/tmp/local-llm-gpu.lock) -- intentionally the real, global, unparameterized lock the whole fleet
+// shares (see local-llm.sh's own comment on GPU_LOCK). These fake calls resolve in milliseconds, but
+// the LOCK ITSELF is real and shared: card 8a6de2ee measured these tests timing out at ~5009ms under
+// genuine fleet contention (a concurrent fleet agent's own local-llm.sh call holding that same global
+// lock), while isolated runs were 8/8 green. LOCAL_LLM_LOCK_WAIT=60 below is intentional patience for
+// exactly that -- but vitest's own default 5000ms per-test timeout was SHORTER than that patience
+// budget, so it fired first. TEST_TIMEOUT_MS (below) fixes that; the last test in this file proves it
+// against a real (throwaway, non-shared) lock held for longer than vitest's old 5000ms default.
 import { describe, it, expect, beforeAll, afterAll, beforeEach } from 'vitest'
-import { execFile } from 'node:child_process'
+import { execFile, spawn, type ChildProcess } from 'node:child_process'
 import { promisify } from 'node:util'
 import { createServer } from 'node:http'
 import type { Server } from 'node:http'
@@ -108,6 +113,16 @@ function baseEnv(overrides: Record<string, string> = {}) {
 
 const execFileP = promisify(execFile)
 
+// Card 8a6de2ee: measured timing out at exactly ~5009ms under real fleet contention (isolated runs:
+// 8/8 green) -- vitest's default 5000ms per-test timeout is SHORTER than LOCAL_LLM_LOCK_WAIT=60
+// above, so a genuinely real, machine-wide wait on the shared /tmp/local-llm-gpu.lock (another
+// concurrent local-llm.sh invocation elsewhere on the fleet, e.g. the heartbeat offload-sweep or
+// another suite's own local-llm tests) killed the test before the script's OWN configured patience
+// budget could resolve it. Every test below runs the real script through that same global lock, so
+// all four get the same margin: comfortably past LOCAL_LLM_LOCK_WAIT, not just the two that were
+// caught failing this way.
+const TEST_TIMEOUT_MS = 65_000
+
 // MUST be async execFile, not execFileSync: execFileSync blocks Node's event loop for the whole
 // child run, and the fake Ollama/dashboard servers above are handlers on THIS SAME event loop --
 // with a sync exec the child's curl calls back into this process and gets zero bytes until the
@@ -141,7 +156,7 @@ describe('local-llm.sh active-task registration (card 5dcd9bc8)', () => {
     const finishes = dashCalls.filter((c) => /\/api\/local-llm\/queue\/\d+\/(complete|fail)$/.test(c.path))
     expect(finishes).toHaveLength(1)
     expect(finishes[0]!.path).toMatch(/\/complete$/)
-  })
+  }, TEST_TIMEOUT_MS)
 
   it('marks the row failed when the model call itself fails', async () => {
     ollamaGenerateFails = true
@@ -153,7 +168,7 @@ describe('local-llm.sh active-task registration (card 5dcd9bc8)', () => {
     const finishes = dashCalls.filter((c) => /\/api\/local-llm\/queue\/\d+\/(complete|fail)$/.test(c.path))
     expect(finishes).toHaveLength(1)
     expect(finishes[0]!.path).toMatch(/\/fail$/)
-  })
+  }, TEST_TIMEOUT_MS)
 
   it('--queue-managed (the worker path) registers NOTHING -- the claimed row already exists', async () => {
     const r = await run(
@@ -162,7 +177,7 @@ describe('local-llm.sh active-task registration (card 5dcd9bc8)', () => {
     )
     expect(r.status).toBe(0)
     expect(dashCalls).toHaveLength(0)
-  })
+  }, TEST_TIMEOUT_MS)
 
   it('a missing dashboard token degrades silently -- the model call still succeeds', async () => {
     const r = await run(
@@ -172,5 +187,29 @@ describe('local-llm.sh active-task registration (card 5dcd9bc8)', () => {
     expect(r.status).toBe(0)
     expect(r.stdout.trim()).toBe('hi')
     expect(dashCalls).toHaveLength(0)
-  })
+  }, TEST_TIMEOUT_MS)
+
+  // Proves TEST_TIMEOUT_MS is doing real work, not just a bigger number picked on faith. Uses a
+  // THROWAWAY lock file (LOCAL_LLM_GPU_LOCK_PATH override), never the real shared
+  // /tmp/local-llm-gpu.lock -- holding the real one for this test would itself contend with any
+  // other concurrent fleet agent's genuine local-llm.sh call, the exact problem this fix is about.
+  it('survives a real GPU-lock wait LONGER than vitest\'s old 5000ms default, via the raised timeout', async () => {
+    const lockPath = join(tmpDir, 'gpu-contention.lock')
+    // 7s: longer than vitest's old 5000ms default (this would have failed pre-fix), comfortably
+    // inside LOCAL_LLM_LOCK_WAIT=60 and TEST_TIMEOUT_MS=65000.
+    const holder: ChildProcess = spawn('flock', [lockPath, 'sleep', '7'], { stdio: 'ignore' })
+    try {
+      await new Promise((r) => setTimeout(r, 200)) // let the holder actually acquire first
+      const r = await run(
+        ['--model', 'test-model', '--caller', 'test-agent', 'hello'],
+        baseEnv({ LOCAL_LLM_GPU_LOCK_PATH: lockPath }),
+      )
+      expect(r.status).toBe(0)
+      expect(r.stdout.trim()).toBe('hi')
+      const finishes = dashCalls.filter((c) => /\/api\/local-llm\/queue\/\d+\/(complete|fail)$/.test(c.path))
+      expect(finishes[0]!.path).toMatch(/\/complete$/)
+    } finally {
+      holder.kill()
+    }
+  }, TEST_TIMEOUT_MS)
 })

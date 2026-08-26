@@ -52,3 +52,4 @@ Ezek a szerepedhez rendelt alapvető skillek. MINDEN globális skill elérhető,
 - `sp-systematic-debugging` -- gyökér-ok elemzés
 - `engineering-standards` -- a baseline, amihez mérsz
 - `project-workflow` -- csapat-workflow, gate-ek
+- `example-skills:webapp-testing` -- Playwright-alapú éles böngésző-teszt egy futó webapp ellen (screenshot, DOM-vizsgálat, console-hiba-felderítés); HASZNÁLD, ha egy kártya kész-jelentése user-facing frontendet érint -- ne csak a kódot olvasd, tényleges böngészőben kattints végig rajta (kártya 3c9e22b1/f5eda0be, 2026-08-24: backend2 valós próbafuttatása a CleanCore landing oldalán ~20 CSP-inline-style hibát talált, amit kód-olvasással nem vettünk volna észre)
