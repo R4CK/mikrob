@@ -581,12 +581,17 @@ if [ -f "$INSTALL_DIR/.env" ]; then
 fi
 SCHED_CHAT_ID="${SCHED_CHAT_ID:-0}"
 
+# {{PROJECT_ROOT}} is the node seeder's alias for {{INSTALL_DIR}}
+# (substituteTemplatePlaceholders) -- without it here, any shipped task using
+# that form (ledger-live-drain does) hash-mismatches every rendered historical
+# version and is permanently classified "touched", so it never refreshes.
 render_seed_template() {
   sed -e "s/{{MAIN_AGENT_ID}}/${MAIN_AGENT_ID:-}/g" \
       -e "s/{{BOT_NAME}}/${BOT_NAME:-}/g" \
       -e "s/{{OWNER_NAME}}/${OWNER_NAME:-}/g" \
       -e "s|{{INSTALL_DIR}}|${INSTALL_DIR}|g" \
       -e "s/{{CHAT_ID}}/${SCHED_CHAT_ID:-0}/g" \
+      -e "s|{{PROJECT_ROOT}}|${INSTALL_DIR}|g" \
       -e "s/{{WEB_PORT}}/${WEB_PORT:-3420}/g"
 }
 
@@ -624,6 +629,82 @@ seed_copy_is_untouched() {
   return 1
 }
 
+# Card 4ba71429: seed_copy_is_untouched requires the WHOLE file to be byte-identical to something we
+# shipped, so a single unrelated operator edit anywhere in a scheduled-task SKILL.md freezes EVERY
+# future seed-side fix to that path forever -- measured live twice (gate-reconciler, heartbeat-
+# consolidated), both had to be hand-synced by MikroB because a real fix (the dependency_blocked
+# bullet) could not reach a file the operator had also touched elsewhere (a chat_id line, a marker).
+#
+# This is a FALLBACK, tried only after seed_copy_is_untouched has already failed: a plain three-way
+# text merge (git merge-file), base = a historical shipped blob (same newest-first, 25-deep search
+# seed_copy_is_untouched already does), ours = the installed file, theirs = the CURRENT shipped
+# version. Applied ONLY when git merge-file reports ZERO conflicts for some base -- an operator edit
+# and a seed fix in different regions of the file merge cleanly and both survive; a same-region
+# collision is a real conflict, and on ANY conflict (or if git merge-file is unavailable at all) this
+# changes NOTHING, same fully-conservative behaviour as before this existed. The first clean base
+# wins (newest tried first): a wrong, too-old base tends to produce MORE apparent conflict, which
+# falls to the safe (untouched) branch, not a silent bad merge -- the risk runs the safe direction.
+#
+# Markdown only (.md) on purpose: task-config.json's line-based diff is not a safe proxy for its
+# structured meaning (the SAME setting can move to a different line on re-serialisation without
+# actually changing), so JSON config stays under the plain whole-file gate -- a distinct risk profile,
+# deliberately out of scope here.
+#
+# A timestamped .bak is written before any merge is applied -- the live file lives only on the
+# operator's disk (not itself git-tracked), so this is the undo path if a merge ever needs reverting
+# by hand.
+seed_copy_try_merge() {
+  installed="$1"; rel="$2"; mode="${3:-verbatim}"
+  case "$installed" in
+    *.md) ;;
+    *) return 1 ;;
+  esac
+  command -v git >/dev/null 2>&1 || return 1
+  git merge-file --help >/dev/null 2>&1 || return 1
+  [ -f "$installed" ] || return 1
+  src="$INSTALL_DIR/$rel"
+  [ -f "$src" ] || return 1
+
+  theirs_tmp="$(mktemp)"
+  if [ "$mode" = "template" ]; then
+    render_seed_template <"$src" >"$theirs_tmp"
+  else
+    cat "$src" >"$theirs_tmp"
+  fi
+  theirs_hash="$(shasum -a 256 <"$theirs_tmp" | awk '{print $1}')"
+
+  merged=1
+  for blob in $(git -C "$INSTALL_DIR" log --format=%H -n 25 -- "$rel" 2>/dev/null); do
+    base_tmp="$(mktemp)"
+    if [ "$mode" = "template" ]; then
+      git -C "$INSTALL_DIR" show "$blob:$rel" 2>/dev/null | render_seed_template >"$base_tmp"
+    else
+      git -C "$INSTALL_DIR" show "$blob:$rel" 2>/dev/null >"$base_tmp"
+    fi
+    [ -s "$base_tmp" ] || { rm -f "$base_tmp"; continue; }
+    # A base identical to the CURRENT seed content (typically the newest historical blob, which by
+    # definition of `git log -- path` set the file to its current state) merges trivially -- theirs
+    # has "changed nothing" relative to that base, so the result is just ours, unchanged. That is a
+    # real success by git merge-file's own definition, but it accomplishes nothing: the fix never
+    # gets applied, and the loop would stop having done no useful work. Skip straight past it to a
+    # genuinely older base that can actually express the seed's own change.
+    base_hash="$(shasum -a 256 <"$base_tmp" | awk '{print $1}')"
+    [ "$base_hash" = "$theirs_hash" ] && { rm -f "$base_tmp"; continue; }
+    ours_tmp="$(mktemp)"
+    cp "$installed" "$ours_tmp"
+    if git merge-file -q "$ours_tmp" "$base_tmp" "$theirs_tmp" >/dev/null 2>&1; then
+      cp "$installed" "$installed.seedbak.$(date +%s)" 2>/dev/null || true
+      mv "$ours_tmp" "$installed"
+      rm -f "$base_tmp"
+      merged=0
+      break
+    fi
+    rm -f "$ours_tmp" "$base_tmp"
+  done
+  rm -f "$theirs_tmp"
+  return "$merged"
+}
+
 # Refresh one seeded directory tree. $1 = repo source dir (relative), $2 = target
 # root, $3 = verbatim|template.
 refresh_untouched_seeds() {
@@ -658,6 +739,8 @@ refresh_untouched_seeds() {
           cp "$f" "$installed"
         fi
         SEED_REFRESH_UPDATED=$((SEED_REFRESH_UPDATED + 1))
+      elif seed_copy_try_merge "$installed" "$rel" "$mode"; then
+        SEED_REFRESH_MERGED=$((SEED_REFRESH_MERGED + 1))
       else
         SEED_REFRESH_KEPT=$((SEED_REFRESH_KEPT + 1))
       fi
@@ -672,6 +755,7 @@ run_seed_refresh() {
   # else (a test harness found exactly that).
   SEED_REFRESH_UPDATED="${SEED_REFRESH_UPDATED:-0}"
   SEED_REFRESH_KEPT="${SEED_REFRESH_KEPT:-0}"
+  SEED_REFRESH_MERGED="${SEED_REFRESH_MERGED:-0}"
   # .env values feed the template rendering; without MAIN_AGENT_ID a rendered
   # comparison would be meaningless, so templated tasks are skipped then.
   if [ -f "$INSTALL_DIR/.env" ]; then
@@ -688,8 +772,8 @@ run_seed_refresh() {
   if [ -n "${MAIN_AGENT_ID:-}" ]; then
     refresh_untouched_seeds "seed-scheduled-tasks" "$HOME/.claude/scheduled-tasks" "template"
   fi
-  if [ "$SEED_REFRESH_UPDATED" -gt 0 ]; then
-    echo -e "  ${GREEN}✓${NC} Szallitott skill/feladat frissitve: ${SEED_REFRESH_UPDATED} (erintetlen masolat); megtartva: ${SEED_REFRESH_KEPT} (helyben modositott)"
+  if [ "$SEED_REFRESH_UPDATED" -gt 0 ] || [ "$SEED_REFRESH_MERGED" -gt 0 ]; then
+    echo -e "  ${GREEN}✓${NC} Szallitott skill/feladat frissitve: ${SEED_REFRESH_UPDATED} (erintetlen masolat), ${SEED_REFRESH_MERGED} (osszefesulve helyi szerkesztessel); megtartva: ${SEED_REFRESH_KEPT} (konfliktus vagy nem osszefesulheto)"
   fi
   return 0
 }
@@ -1018,6 +1102,7 @@ if [ -d "$SEED_SCHED_DIR" ]; then
             -e "s/{{BOT_NAME}}/$BOT_NAME/g" \
             -e "s/{{OWNER_NAME}}/$OWNER_NAME/g" \
             -e "s|{{INSTALL_DIR}}|$INSTALL_DIR|g" \
+            -e "s|{{PROJECT_ROOT}}|$INSTALL_DIR|g" \
             -e "s/{{CHAT_ID}}/${SCHED_CHAT_ID:-0}/g" \
             -e "s/{{WEB_PORT}}/${WEB_PORT:-3420}/g" \
             "$f" > "$target/$(basename "$f")"

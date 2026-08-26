@@ -170,10 +170,19 @@ ALERT_TO="${MARVEEN_GUARD_ALERT_TO:-marveen}"
 hdr_file="$(mktemp)"; chmod 600 "$hdr_file"
 trap 'rm -f "$hdr_file"' EXIT
 printf 'Authorization: Bearer %s\n' "$(cat "$TOKEN_FILE")" > "$hdr_file"
-curl -s -m 5 -X POST "$ORIGIN/api/messages" \
+# Honest delivery (NOTIFYVAKSWEEP826): the alert POST used to be fire-and-
+# forget -- a failed send left the branch-switch alert lost with no trace.
+# The hook stays exit-0 (a guard must not break git), but a delivery failure
+# is now loud on the git command's own output.
+GUARD_HTTP="$(curl -s -m 5 -X POST "$ORIGIN/api/messages" \
   -H @"$hdr_file" \
   -H "Content-Type: application/json" \
-  -d "{\"from\":\"marveen\",\"to\":\"$ALERT_TO\",\"content\":\"[PROD-FA ORSEG, post-checkout hook] Fa: $TOPLEVEL -- agat valtott a(z) $BRANCH agra. (Ha ez az utvonal nem a telepites fo faja, ez PROBA, nem eles riasztas.) AUTO-VISSZAALLITAS: $REVERTED. Commitot a pre-commit hook blokkol; szandekos valtashoz MARVEEN_PROD_CHECKOUT_OK=1.\"}" >/dev/null 2>&1 || true
+  -o /dev/null -w '%{http_code}' \
+  -d "{\"from\":\"marveen\",\"to\":\"$ALERT_TO\",\"content\":\"[PROD-FA ORSEG, post-checkout hook] Fa: $TOPLEVEL -- agat valtott a(z) $BRANCH agra. (Ha ez az utvonal nem a telepites fo faja, ez PROBA, nem eles riasztas.) AUTO-VISSZAALLITAS: $REVERTED. Commitot a pre-commit hook blokkol; szandekos valtashoz MARVEEN_PROD_CHECKOUT_OK=1.\"}" 2>/dev/null)" || GUARD_HTTP="000"
+case "$GUARD_HTTP" in
+  2*) : ;;
+  *) echo "[prod-tree-guard] FIGYELEM: a branch-valtas riasztas NEM ert celba (HTTP ${GUARD_HTTP:-000}) -- a koordinator nem tud a valtasrol" >&2 ;;
+esac
 exit 0
 EOF
 chmod +x "$HOOK_DIR/post-checkout"

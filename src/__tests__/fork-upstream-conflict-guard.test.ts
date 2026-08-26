@@ -96,8 +96,17 @@ const ACKNOWLEDGED_CONFLICTS = {
   // branch (EGRESSRENDER824). Import line conflict grows: fork adds ensureNpmProtectGuard,
   // upstream now adds ensureSkillsPathTrapSection + watchEgressAllowlistForReaderRender.
   // Adopt the watcher call alongside the merged import.
+  // Re-read 2026-08-26 (card fbb36b41): upstream added listAllAgentNames to the same
+  // agent-config import (HBGATEWIRE826 -- hidden/technical agents were skipping
+  // hook-seeding because the hook-seed loop used listAgentNames, which filters
+  // .hidden-from-dashboard; heartbeat-worker then ran with zero dashboard-side
+  // hooks). listAgentNames stays imported too -- a SEPARATE, unrelated call
+  // (watchEgressAllowlistForReaderRender) still legitimately wants the
+  // dashboard-visible-only list. Adopted: merged import with BOTH names, swapped
+  // only the hook-seed loop's call site to listAllAgentNames(). Still a single
+  // hunk, no other conflict in the file.
   'src/web.ts':
-    'merge import line (ensureNpmProtectGuard from fork + ensureSkillsPathTrapSection + watchEgressAllowlistForReaderRender from upstream, all on one line) and adopt upstream watchEgressAllowlistForReaderRender call inside hookDecision.register branch (EGRESSRENDER824) -- no other conflict in the file',
+    'merge import line (ensureNpmProtectGuard from fork + ensureSkillsPathTrapSection + watchEgressAllowlistForReaderRender + listAllAgentNames from upstream, all on one line, keep listAgentNames too), adopt upstream watchEgressAllowlistForReaderRender call (EGRESSRENDER824) and the hook-seed loop\'s listAllAgentNames call-site swap (HBGATEWIRE826) -- no other conflict in the file',
   // The call-site half of the same upstream change, and the same INDEPENDENT-ADDITIVE class as
   // src/db.ts below rather than a disagreement (measured 2026-08-22). Two hunks, both caused by the
   // two sides adding a DIFFERENT CLAUDE.md section-writer at the same insertion point, each with
@@ -466,6 +475,29 @@ const ACKNOWLEDGED_CONFLICTS = {
   // The fork's ONLY addition to this upstream test file: stageTree() also copies
   // store/session-limit-pattern.sh + .json for limit-monitor.sh's fork-only dependency.
   'src/__tests__/send-honesty-sweep.test.ts': "upstream file verbatim + the fork's session-limit-pattern.sh/.json staging addition in stageTree() for limit-monitor.sh's fork-only dependency",
+  // Round 4 closing sweep (#1088, measured 2026-08-26, card fbb36b41). Two identical hunks
+  // (main-agent-on-shared-config guard alerts). Real merge-tree dry run confirms the fork's
+  // -H @"$_hdr_file" security fix (card b267df80) is UNCHANGED context on both sides, not part of
+  // the conflict -- upstream only adds HTTP-status capture for honest delivery logging on top of
+  // it. Resolution: keep the fork's header-file curl call, append upstream's status capture.
+  'scripts/channels.sh':
+    'keep the fork\'s -H @"$_hdr_file" 0600-temp-file security pattern (card b267df80) unchanged, append upstream\'s HTTP-status-capture honest-delivery check (NOTIFYVAKSWEEP826) on both guard-alert call sites',
+  // Independent-additive, same class as the src/web.ts import-line conflicts: fork's {{CHAT_ID}}
+  // and upstream's {{PROJECT_ROOT}} both added to the SAME sed chain in render_seed_template().
+  // Keep both. (Also required adding {{PROJECT_ROOT}} to install-linux.sh/install-macos.sh's own
+  // seed-scheduled-tasks loops to satisfy the fork's own seed-render-parity guard, card d041760b --
+  // done alongside this fix, see update.sh/install-*.sh diffs.)
+  'update.sh':
+    'independent-additive: keep both sed -e lines in render_seed_template() -- {{CHAT_ID}} from the fork (4 fleet-orchestration prompts) and {{PROJECT_ROOT}} from upstream (ledger-live-drain, node-seeder alias for {{INSTALL_DIR}})',
+  // A REAL security-regression risk unlike the two files above: THIS conflict hunk has the fork's
+  // -H @"$hdr_file" 0600-temp-file call INSIDE the conflicting region (not shared context), and
+  // upstream's replacement uses a bare `-H "Authorization: Bearer $(cat "$TOKEN_FILE")"` --
+  // exactly the token-in-argv vulnerability (/proc/<pid>/cmdline is world-readable) the fork's own
+  // comment warns about. Taking upstream wholesale here would have been a real regression.
+  // Resolution: keep the fork's hdr_file call, graft upstream's GUARD_HTTP status-capture +
+  // stderr-on-non-2xx logging on top (same NOTIFYVAKSWEEP826 pattern as channels.sh).
+  'scripts/install-prod-tree-guard-hook.sh':
+    'keep the fork\'s -H @"$hdr_file" 0600-temp-file security pattern (upstream\'s replacement would have leaked the token via curl argv), graft upstream\'s GUARD_HTTP status-capture + non-2xx stderr logging (NOTIFYVAKSWEEP826) on top',
 } as const
 
 // THE UPSTREAM CONTENT EACH RULE ABOVE WAS DECIDED AGAINST (card a1d613e3, Cybersec msg 19105).
@@ -498,7 +530,7 @@ const ACKNOWLEDGED_UPSTREAM_BLOBS: Readonly<Record<keyof typeof ACKNOWLEDGED_CON
   'src/__tests__/model-fallback.test.ts': '38b6e76e9f5184a9ade636a057b79c4e522f1e3b',
   'src/web/update-checker.ts': '24e46f990c7b0a5c8fa065d12ba1ee592b547691',
   'src/web/context-restart-gate-runner.ts': 'aae818bb7ded38146343eb0a0748b83422d018ce',
-  'src/web.ts': '79ba29b713a7db18136e33e5f0c5686fb7fda1ca',
+  'src/web.ts': '67695fc52c4a2e802b9ca79edda0649f1d802d33',
   'src/web/keychain.ts': '1e1730ee0d8f6b1d4b51c5c254f3fab56acfa376',
   'src/web/agent-scaffold.ts': '3082c145b46770b40d586f2266a3446d6a28b826',
   'src/db.ts': '66381e77bdb6cce583bd3b397a3ae2202ae61e9e',
@@ -536,6 +568,9 @@ const ACKNOWLEDGED_UPSTREAM_BLOBS: Readonly<Record<keyof typeof ACKNOWLEDGED_CON
   'src/__tests__/notify-delivery-honesty.test.ts': '06f96abf8c49fb07b8bbf570c8ca895fe6f23ee9',
   'src/__tests__/telegram-urlencode-guard.test.ts': '(absent upstream -- delete/modify conflict, no blob to pin)',
   'src/__tests__/send-honesty-sweep.test.ts': '62a398ede06fee9c694a9419f0984b681aedc0e1',
+  'scripts/channels.sh': '440c177464c2bcf2d090f8958373b94e011e9f62',
+  'update.sh': 'de0cad0164f4473d1cd1bd65dd019ae9465e4fe3',
+  'scripts/install-prod-tree-guard-hook.sh': '9647c9658a5e6352ae0bae57842590a1c2d6e30c',
 }
 
 /** A conflict whose written rule was decided against DIFFERENT upstream content than what is
