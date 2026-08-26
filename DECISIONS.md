@@ -3973,3 +3973,52 @@ tervezési kockázatokat; ez a kártya a fázis ZÁRÓ darabja -- Feladat 1-4 mi
 
 **Hivatkozás:** kártya 1128002b (parent: 19f3bbb5), függőség: d7a28a0a/Feladat 2 és 2bfbf805/
 Feladat 3, mindkettő már done.
+
+## 2026-08-27 -- 2bfbf805 -- Cybersec NO-GO: a 90s kenyszer-feloldas nem volt fuggetlen a daemon eval-lepesenek sikeressegetol
+
+**Dontes.** Cybersec NO-GO-t adott a 2bfbf805 (SIGSTOP-fagyasztas) elesitesere (Gate-SHA a68c5ce8):
+`set -euo pipefail` alatt egy sikertelen `load-guard-eval.sh` (pl. serult
+`load-guard-config.json` -- UGYANAZ a fajl, amit a --sigstop sajat kill-switch-e is minden ticken
+olvas) a teljes `load-guard-daemon.sh`-t leallitotta MIELOTT az elerte volna a mar `|| true`-val
+vedett --cgroup/--sigstop hivasokat. Kovetkezmeny: ha a critical tier mar aktiv volt (egy folyamat
+mar fagyasztva) ES a daemon EZEN a ponton kezdett tartosan hibazni, a fagyasztott folyamat a 90
+masodperces hatarido utan IS fagyasztva maradt volna -- KOZVETLENUL ellentmondva a kartya sajat,
+Peti altal mar jovahagyott igereterenek ("a feloldas fuggetlen a terhelestol").
+
+**Javitas (sebeszi, egy sor).** `RESULT=$(load-guard-eval.sh ...)` sikertelenseg eseten biztonsagos
+`{"action": "log_only", ...}` alapertelmezesre esik vissza a script leallitasa helyett. Ez
+ONMAGABAN eleg: `load-guard-sigstop-apply.sh` `desired_agent`-je CSAK `action=="sigstop_freeze"`
+eseten allit be celpontot, tehat barmilyen mas action (log_only is jo) MINDEN kovetkezo tick
+azonnal felszabaditja a regi fagyasztott pid-et -- a 90s-es kenyszer-feloldas agra sincs hozza
+szukseg, mert a "prev_pid != desired_pid" ag mar onmagaban felold. Az apply-reteg maga
+VALTOZATLAN maradt.
+
+**Mellekesen talalt masodik hiba (sajat lelet, nem Cybersec talalta).** A javitas tesztelese
+kozben kiderult: `store/load-guard-sigstop.sh`, `-sigstop-target.sh`, `-sigstop-apply.sh` es
+`-bookkeeping.sh` MIND 100644 modban lettek commitolva (nem futtathato!). A daemon EZEKET
+KOZVETLENUL hivja (nem `bash script.sh`-val), es a hivasok `|| true`-val vedettek -- tehat a
+Permission denied (exit 126) hiba CSENDBEN elnyelodott minden eles ticken azota, hogy landoltak.
+Az "elso tick status=0/SUCCESS" elenorzeseim (mindket korabbi REVIEW-ban) ezert FELREVEZETOEK
+voltak: a daemon SCRIPT sikeresen lefutott, de a --sigstop/--bookkeeping reteg valojaban SOHA nem
+futott le ezalatt.
+
+**Strukturalis vedelem (uj teszt, CleanCore-bol atemelve).** `src/__tests__/
+shebang-files-executable.test.ts` -- CleanCore kartya 95e73c8e mintaja szerint: minden `#!`-lel
+kezdodo, git-kovetett fajlnak `100755`-nek kell lennie, levezetve a git-indexbol, nem
+kezzel-karbantartott listabol. A KERESES kiterjesztese felfedett MEG 78 MEGLEVO, korabbi
+serulest a teljes repoban (hookok, guardok, support-mail szkriptek, seed-skillek) -- mind
+javitva EGYSZERRE (`git update-index --chmod=+x` + valos `chmod +x`, mert `core.fileMode=true`
+ebben a worktree-ben, tehat a lemez-mod is szamit, nem csak az index -- MAS mint a CleanCore
+DrvFs-mountja, ahol csak az index szamit). Zero regresszios kockazat: a chmod +x szigoruan
+additiv, egy `bash script.sh` hivot nem erint, csak egy torott kozvetlen hivast javit.
+
+**Ki döntött:** backend (kártya 2bfbf805, Cybersec NO-GO cimzese, a fazis 19f3bbb5 plan-grilling
+verdiktje mar lefedte a tervezesi kockazatokat).
+
+**Konzekvencia.** Modositott: `store/load-guard-daemon.sh` (eval-fallback),
+`src/__tests__/load-guard-eval.test.ts` (3 uj teszt, valos spawnolt folyamattal). Uj:
+`src/__tests__/shebang-files-executable.test.ts` (3 teszt). Mod-bit javitva 83 fajlon (5 sajat +
+78 meglevo). Meglevo 16 load-guard-eval teszt + 178 celzott teszt osszesen valtozatlanul zold.
+tsc tiszta.
+
+**Hivatkozás:** kártya 2bfbf805, Cybersec NO-GO komment (Gate-SHA a68c5ce8).

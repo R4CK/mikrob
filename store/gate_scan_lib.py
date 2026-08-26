@@ -56,6 +56,30 @@ def verdict_body(content):
 GATE_DECL_RX = re.compile(r'Gate:\s*([^\n]+)', re.IGNORECASE)
 
 
+# Verdict-word vocabulary (card 171422d2, Cybersec measurement 2026-08-24, 3477c793 kore).
+# Was two private copies (cybered-gate-scan.py had one, cybersec-gate-scan.py had none) -- exactly
+# the "one idea, two places" defect class this module exists to close, so it lives HERE now, not in
+# a scanner. Board-wide sweep of 300 gate-authored verdict comments found 62 written in a synonym
+# shape the old vocabulary never matched: "QA GATE: PASS" (38), "QA VERDICT: PASS" (21),
+# "CYBERSEC GATE: GO" (3). VOCABULARY WIDENING ONLY -- these are the exact three measured shapes,
+# nothing speculative added for symmetry (e.g. no unmeasured "CYBERED GATE: GO" form). Both regexes
+# are read-only, informational-display consumers today (cybered-gate-scan.py's risk-tiering
+# context column); turning a match into an actual gating DECISION is explicitly out of this card's
+# scope until that use is separately reviewed for safety.
+PASS_RE = re.compile(
+    r'^(QA2?\s+(?:(?:GATE|VERDICT)\s*:\s*)?PASS'
+    r'|CYBERSEC\s+(?:GATE\s*:\s*)?GO'
+    r'|CYBERED\s+(?:FULL-CARD\s+)?GO)',
+    re.IGNORECASE,
+)
+FAIL_RE = re.compile(
+    r'^(QA2?\s+(?:(?:GATE|VERDICT)\s*:\s*)?FAIL'
+    r'|CYBERSEC\s+(?:GATE\s*:\s*)?NO-GO'
+    r'|CYBERED\s+NO-GO)',
+    re.IGNORECASE,
+)
+
+
 def declared_gate_excludes_me(description, my_gate):
     """True when the card's own description names its gates and MINE is not among them.
 

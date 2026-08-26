@@ -7,7 +7,7 @@ import urllib.request, json, re, os, sys
 # Shared recognition rules -- one definition for both gate scanners (card 3477c793). Explicit path
 # insert because this runs from cron/agents with an arbitrary cwd.
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
-from gate_scan_lib import declared_gate_excludes_me, verdict_body  # noqa: E402
+from gate_scan_lib import PASS_RE, FAIL_RE, declared_gate_excludes_me, verdict_body  # noqa: E402
 
 TOKEN = open('/home/neon/marveen/store/.dashboard-token').read().strip()
 BASE = 'http://localhost:3420'
@@ -17,9 +17,6 @@ def api(path):
     req = urllib.request.Request(f'{BASE}{path}', headers=headers)
     with urllib.request.urlopen(req) as r:
         return json.load(r)
-
-PASS_RE = re.compile(r'^(QA2?\s+PASS|CYBERSEC\s+GO|CYBERED\s+(FULL-CARD\s+)?GO)', re.IGNORECASE)
-FAIL_RE = re.compile(r'^(QA2?\s+FAIL|CYBERSEC\s+NO-GO|CYBERED\s+NO-GO)', re.IGNORECASE)
 # My own verdict opener, in any of the shapes I have used (incl. "GO (feltetelekkel)").
 # TIER-DÖNTÉS counts too: an explicit "this card is below my tier, and here is why" is a HANDLED
 # card, not an ungated one. DUPLIKATUM(-ZARAS) counts too: an explicit "already covered by card X,

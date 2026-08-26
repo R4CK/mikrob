@@ -52,7 +52,20 @@ done
 
 ts() { date '+%Y-%m-%d %H:%M:%S'; }
 
-RESULT=$("$INSTALL_DIR/store/load-guard-eval.sh" "${EVAL_ARGS[@]}")
+# Cybersec NO-GO (card 2bfbf805, Gate-SHA a68c5ce8): under `set -e`, a failing load-guard-eval.sh
+# (e.g. a corrupted/half-written load-guard-config.json -- the SAME file --sigstop's own kill-switch
+# reads every tick) used to kill this script BEFORE it ever reached --cgroup/--sigstop below, even
+# though those calls are already `|| true`-protected. That meant a persistently-failing eval step
+# could leave a SIGSTOP-frozen process frozen past its own 90s cap -- the daemon just stopped
+# ticking, so the cap-check code inside load-guard-sigstop-apply.sh never got to run at all. This
+# degrades to the SAFEST action (log_only) instead of dying, which is enough on its own: any action
+# other than "sigstop_freeze"/"cgroup_throttle" already RELEASES a held pid/scope on the very next
+# tick (load-guard-sigstop-apply.sh's own "prev_pid != desired_pid" branch), independent of whether
+# 90s have actually elapsed -- restoring the "release is independent of load" guarantee the card
+# already promised, without needing eval.sh itself to succeed.
+if ! RESULT=$("$INSTALL_DIR/store/load-guard-eval.sh" "${EVAL_ARGS[@]}"); then
+  RESULT='{"changed": false, "action": "log_only", "state": "watch", "since": 0}'
+fi
 CHANGED=$(printf '%s' "$RESULT" | python3 -c "import json,sys; print(json.load(sys.stdin)['changed'])")
 ACTION=$(printf '%s' "$RESULT" | python3 -c "import json,sys; print(json.load(sys.stdin)['action'])")
 

@@ -7,7 +7,7 @@ import { afterEach, beforeEach, describe, expect, it } from 'vitest'
 import { mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join, dirname } from 'node:path'
-import { execFileSync } from 'node:child_process'
+import { execFileSync, spawn } from 'node:child_process'
 import { fileURLToPath } from 'node:url'
 
 const STORE = join(dirname(fileURLToPath(import.meta.url)), '..', '..', 'store')
@@ -303,4 +303,109 @@ describe('load-guard-daemon.sh: logs ONLY on a state change (card edd8b398)', ()
       return false
     }
   }
+})
+
+// Cybersec NO-GO (card 2bfbf805, Gate-SHA a68c5ce8): under `set -e`, a failing load-guard-eval.sh
+// (e.g. a corrupted load-guard-config.json) used to kill load-guard-daemon.sh BEFORE it ever
+// reached --cgroup/--sigstop -- so a SIGSTOP-frozen process could stay frozen past its own 90s cap
+// if the eval step started failing persistently while the freeze was active. The fix degrades to a
+// safe log_only action instead of dying; this reproduces the exact failure Cybersec described
+// (malformed config crashes load-guard-eval.sh's own unprotected json.load) and proves a real
+// frozen process is still released.
+describe('load-guard-daemon.sh: a failing eval step degrades to log_only, does not kill the tick', () => {
+  const SIGSTOP_APPLY = join(STORE, 'load-guard-sigstop-apply.sh')
+  // load-guard-daemon.sh does NOT forward --state/--config to --cgroup/--sigstop (only to
+  // load-guard-eval.sh -- production always targets the real store/ files for those, on purpose,
+  // since that's what the systemd timer's own instance also reads/writes). So proving the daemon
+  // ACTUALLY releases a frozen pid through --sigstop means using this worktree's real
+  // load-guard-sigstop-state.json, not a throwaway path -- cleaned up before and after regardless
+  // of outcome. This never touches the LIVE marveen install, only this worktree's own store/.
+  const REAL_SIGSTOP_STATE = join(STORE, 'load-guard-sigstop-state.json')
+  let corruptEvalConfigPath: string
+  const children: ReturnType<typeof spawn>[] = []
+
+  beforeEach(() => {
+    corruptEvalConfigPath = join(dir, 'corrupt-eval-config.json')
+    writeFileSync(corruptEvalConfigPath, 'this is not valid json {{{')
+    rmSync(REAL_SIGSTOP_STATE, { force: true })
+  })
+
+  afterEach(() => {
+    for (const c of children) {
+      if (c.pid) {
+        try {
+          process.kill(c.pid, 'SIGCONT')
+        } catch {
+          /* already gone */
+        }
+        try {
+          process.kill(c.pid, 'SIGKILL')
+        } catch {
+          /* already gone */
+        }
+      }
+    }
+    rmSync(REAL_SIGSTOP_STATE, { force: true })
+  })
+
+  function spawnSleeper(): number {
+    const c = spawn('sleep', ['300'])
+    children.push(c)
+    if (!c.pid) throw new Error('failed to spawn the throwaway sleep child')
+    return c.pid
+  }
+
+  function procState(pid: number): string {
+    return execFileSync('ps', ['-o', 'stat=', '-p', String(pid)]).toString().trim()
+  }
+
+  it('load-guard-eval.sh itself actually fails on this malformed config (the premise of the repro)', () => {
+    expect(() =>
+      execFileSync('bash', [EVAL_SCRIPT, '--config', corruptEvalConfigPath, '--state', statePath]),
+    ).toThrow()
+  })
+
+  it('the daemon tick still exits 0 with a broken eval config, instead of dying before --sigstop runs', () => {
+    expect(() =>
+      execFileSync('bash', [
+        DAEMON_SCRIPT,
+        '--config',
+        corruptEvalConfigPath,
+        '--state',
+        statePath,
+        '--sigstop',
+      ]),
+    ).not.toThrow()
+  })
+
+  it('a frozen process is released even while the eval config stays broken (the actual guarantee restored)', () => {
+    const pid = spawnSleeper()
+    // Simulate a prior tick that froze this pid, using the SAME state file (real production path)
+    // load-guard-sigstop.sh itself will use when the daemon below calls it.
+    execFileSync('bash', [
+      SIGSTOP_APPLY,
+      '--action',
+      'sigstop_freeze',
+      '--target-json',
+      JSON.stringify({ target: 'test-agent', pid }),
+      '--state',
+      REAL_SIGSTOP_STATE,
+      '--now',
+      '1000',
+    ])
+    expect(procState(pid)).toMatch(/^T/)
+
+    // The daemon's OWN eval step is broken -- degrades to log_only, still calls --sigstop, which
+    // releases the pid (any action other than sigstop_freeze releases, independent of the 90s cap).
+    execFileSync('bash', [
+      DAEMON_SCRIPT,
+      '--config',
+      corruptEvalConfigPath,
+      '--state',
+      statePath,
+      '--sigstop',
+    ])
+
+    expect(procState(pid)).not.toMatch(/^T/)
+  })
 })
