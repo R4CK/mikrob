@@ -3674,3 +3674,33 @@ pozíció a `--channels` előtt) zöldek maradtak az új env-export beszúrása 
 kártyásítva).
 **Hivatkozás:** kártya 268b257a. Érintett fájlok: `src/web/agent-process.ts`,
 `src/__tests__/channel-stability-contract.test.ts`.
+
+## 2026-08-26 -- 12783b1e verziószámláló automatizálva: minden marveen-land.sh landolás bumpolja
+
+**Döntés:** Peti kérésére (Telegram, 2026-08-26 18:22 "Frissítéskor emeled a verzió számot?", 18:26
+"Automatizáld és landoláskor legyen automatikus. Válaszd ki a megfelelő megoldást erre!") a
+`package.json` `X.Y.Z+mikrob.N` számlálója mostantól AUTOMATIKUSAN nő minden `marveen-land.sh`
+landoláskor, kézi lépés nélkül. Új `store/bump-fork-version.sh` (önálló, `--selftest`-elhető,
+`decisions-append-union.sh` mintájára), bekötve `marveen-land.sh` `land_one()`-be a seam-check után,
+`fleet-test` előtt, csak nem `--dry-run` esetén. NON-FATAL by construction (mint a
+blast-radius/graphify hívások): egy verzió-bump hiba SOHA nem állíthatja meg egy valódi landolást.
+A `package-lock.json` root-verzióját (top-level + `packages[""].version`) is együtt szinkronizálja
+`X.Y.Z`-re, szuffix nélkül -- ez a már meglévő `package-lock.json`-konvenciót követi, nem új döntés
+(mellékesen orvosolja azt is, hogy `package-lock.json` a mai napig `1.33.0`-n állt, míg
+`package.json` már `1.34.0`-n).
+
+**Miért ez a lépés, nem csak dokumentáció:** a kézi folyamat (12783b1e eredeti szövege,
+"Jelenleg kézi folyamat") a gyakorlatban NEM működött -- mérve 2026-08-26: `1.34.0+mikrob.1`
+változatlan maradt egy egész napnyi fork-saját landolás alatt (tucatnyi kártya), miközben Peti a
+dashboardon még a `v1.33.0+mikrob.1`-et látta 08-25 20:45-ös frissítési időbélyeggel.
+
+**Bootstrap-rés (dokumentálva, nem hiba):** az AUTOMATIZÁCIÓT bevezető landolás saját magát a RÉGI
+(bump nélküli) kóddal landolta -- egy futó bash-folyamat a `land_one()` függvényt indításkor tölti
+be, nem a menet közben mergelt worktree-ből. A KÖVETKEZŐ landolás (ez a bejegyzés) már az ÚJ kódot
+futtatja, és ez maga a bizonyíték: e commit landolásakor a `package.json`/`package-lock.json`
+verziója már automatikusan bumpolódik.
+
+**Ki döntött:** Peti (automatizálás jóváhagyása + a megoldás kiválasztásának delegálása) + MikroB
+(tervezés: hova kössem be, mikor legyen fatal/non-fatal, package-lock.json együtt-szinkronizálás).
+**Hivatkozás:** kártya `667307a2`, kapcsolódó korábbi szabály `12783b1e`. Commit: `ea8b9b95`
+(bevezető, a régi koddal landolva), ez a bejegyzés (első landolás az ÚJ automatikával).
