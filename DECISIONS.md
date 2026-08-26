@@ -3607,3 +3607,33 @@ Hivatkozva `e7510a83`/`ef9a7bf1` mert konkret, ismetelt precedens.
 **Ki dontott:** backend (kartya 9fcc6391, backend2 2026-08-23-i megfigyelesenek vegrehajtasa).
 **Hivatkozas:** kartya 9fcc6391, elozo lelet: `ef9a7bf1` reviewje (fenti bejegyzes ugyanebben a
 fajlban). Erintett fajl: `seed-skills/fork-adopt-investigation/SKILL.md`.
+
+## 2026-08-26 -- 5a056db8 -- activity-log hook: heredoc-commit dedup a valos uzenetbol, nem a konstans flag-sorbol
+
+**Problema:** a `_command_verb()` "git commit" aga csak az EGY SORNYI szoveget nezte a "commit" utan
+(`re.search` DOTALL nelkul), tehat `git commit -q -F - <<'TAG'` (mikrob sajat quiet-commit mintaja)
+vagy `git commit -m "$(cat <<'TAG' ...)"` (backend sajat, ebben a sessionben is hasznalt mintaja)
+eseten a talalat mindig a NYITO heredoc-sor volt ("-q -F - <<'TAG'"), sosem a nehany sorral lejjebb
+allo tenyleges commit-uzenet. Mivel ez a szoveg minden ilyen commitnal AZONOS, minden ilyen commit
+byte-azonos osszefoglalo-sort irt a hot/warm memoriaba. A `-q` a git sajat SHA-kiirasat is elnyomja,
+tehat a mar meglevo SHA-utotag (response_text-bol regex) sem potolta a kulonbseget. Merve (Dream
+Engine, 2026-08-24 06:15): a fix (34f1ca0c, 2026-08-22) landolasa OTA 175 uj, es egyetlen napon 140
+pontosan-duplikalt hot/warm sor keletkezett, mind ebbol a mintabol.
+
+**Dontes:** a masodik javaslat (destination='log') helyett a GYOKER-okot javitottam: uj regex
+(`re.DOTALL`) a "git commit" agban, ami a heredoc NYITO markeret felismeri es a ZARO tag-ig tartó
+BODY-t vonja ki (whitespace-osszecsukva, 60 karakterre vagva) -- ez mindket elofordulo alakra
+(`-F - <<TAG`, `-m "$(cat <<TAG ...)"`) mukodik, es a valodi, egyedi commit-uzenet kerul az
+osszefoglaloba a konstans flag-sor helyett. Ez erdemben jobb mint a log-ra terelés: a
+kereshetoseg megmarad (egy kesobbi session tenylegesen visszakeresheti a commitot a sajat
+uzenete alapjan), nem csak eltunik a dupla-sor tunet.
+
+**Ellenorzes:** 2 uj selftest-eset (`activity-memory-capture.selftest.py`) -- ket kulonbozo
+heredoc-uzenet nem termelhet azonos osszefoglalot, es a `-m "$(cat <<TAG ...)"` alak is a valodi
+uzenetet adja vissza; mindket eset newline-mentes egysoros kimenetet is ellenoriz. 20/20 selftest
++ 24/24 `activity-hook-redaction.test.ts` zold.
+
+**Ki dontott:** backend (kartya 5a056db8, Dream Engine 2026-08-24 06:15-os javaslatabol
+kartyasitva Peti kerésere).
+**Hivatkozas:** kartya 5a056db8, elozo fix: 34f1ca0c. Erintett fajlok:
+`scripts/hooks/activity_memory_capture.py`, `scripts/hooks/activity-memory-capture.selftest.py`.
