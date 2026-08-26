@@ -1,0 +1,30 @@
+# NOTE: replace /path/to/Ingatlan (project checkout, no git -- see ingatlan-project-location
+# memory, it deliberately lives outside the marveen repo) and /home/USER (home) with your values
+# before installing to ~/.config/systemd/user/.
+#
+# Card 489dae5f: the ingest server (npm run ingest, port 8787) had no persistence mechanism at
+# all -- a WSL/host restart silently killed it and no new listing data was collected until someone
+# noticed and started it by hand again (it went unnoticed for ~2 days on 2026-08-21..23).
+[Unit]
+Description=Ingatlan ingest server (card 489dae5f -- survives WSL/machine restart)
+After=network.target
+StartLimitIntervalSec=300
+StartLimitBurst=5
+
+[Service]
+Type=simple
+WorkingDirectory=/path/to/Ingatlan
+# /path/to/Ingatlan lives on a drvfs (Windows-drive) mount, not the WSL root fs -- wait for it to
+# actually be mounted rather than racing WSL's automount at boot.
+RequiresMountsFor=/path/to/Ingatlan
+ExecStart=/usr/bin/npm run ingest
+Restart=always
+RestartSec=10
+StandardOutput=append:/path/to/Ingatlan/data/ingest.log
+StandardError=append:/path/to/Ingatlan/data/ingest.error.log
+Environment=PATH=/home/USER/.local/bin:/home/USER/.bun/bin:/usr/local/bin:/usr/bin:/bin
+Environment=HOME=/home/USER
+Environment=TZ=Europe/Budapest
+
+[Install]
+WantedBy=default.target
