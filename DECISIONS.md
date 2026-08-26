@@ -4065,3 +4065,42 @@ TOVÁBBI LÉPÉS (nem ennek a kártyának a scope-ja): a fő klón `node_modules
 eltávolítása + `npm install` a helyreállításhoz -- ezt MikroB/Peti hagyja jóvá és futtatja.
 
 **Hivatkozás:** kártya d0126d79.
+
+## 2026-08-27 00:50 -- load-paused-agents.json staleness-védelem (Cybersec NO-GO + QA FAIL, fce0df4e)
+
+**Mit döntöttünk.** `store/load-guard-bookkeeping.sh` minden `load-paused-agents.json` bejegyzésbe
+`last_seen`-t is ír (minden ticken frissül, amíg a pause fennáll -- szemben a `since`-szel, ami az
+EREDETI kezdet óta rögzített marad). `store/redispatch-guard.sh` `_is_load_paused()`-ja és a
+`stuck-card-monitor` SKILL.md saját Python-szűrője mostantól a puszta tagság MELLETT azt is nézi,
+hogy a `last_seen` 300 másodpercnél nem régebbi -- ha régebbi, a bejegyzés NEM számít kizártnak
+többé, a normál stuck-card/nudge kezelés érvényesül rá.
+
+**Miért.** Cybersec NO-GO + QA FAIL (Gate-SHA fce0df4e, mindkettő függetlenül ugyanarra a
+hiányosságra jutott): ha `load-guard-bookkeeping.sh` maga áll le (ugyanaz az eval-hiba-lánc, amit a
+2bfbf805 NO-GO már feltárt -- lásd a `load-guard-daemon.sh` eval-fallback bejegyzést), a
+`load-paused-agents.json` egyszerűen abbahagyja a frissítést és megtartja az UTOLSÓ ismert
+bejegyzést a végtelenségig. Mind `redispatch-guard.sh`, mind a `stuck-card-monitor` csak tagságot
+(`agent in paused`) nézett, sosem a bejegyzés korát -- egy elavult bejegyzés ezért a flotta KÉT
+hurokzáró biztonsági hálóját (nudge-gate + 10 perces beragadás-újraindítás) is korlátlan ideig
+vakon hagyta volna, nem csak a korábban becsült ~10-15 percig.
+
+**Miért NEM `since`-alapú a korlát** (a gate-ek szó szerinti javaslatától eltérő, szándékos döntés,
+dokumentálva a saját indoklással a `load-guard-bookkeeping.sh` fejlécében is): a `since` a pause
+EREDETI kezdetét rögzíti, változatlanul, amíg a pause folytatódik. A `cgroup_throttle`-nak NINCS
+kényszer-feloldása (szemben a `sigstop_freeze` 90s-es limitjével) -- egy valódi, tartósan magas
+terhelés alatt egy ügynök jogosan maradhat fékezve 15 percnél tovább is. Egy `since`-alapú korlát
+ezt a LEGITIM, folyamatban lévő fékezést tévesen szüntette volna meg, pont azt a biztonsági hálót
+gyengítve, amit védeni próbál. A `last_seen` ehelyett azt méri, amit valóban mérni kell: fut-e még
+a bookkeeping folyamat, nem azt, hogy mióta tart a fékezés.
+
+**Konzekvencia.** Módosított: `store/load-guard-bookkeeping.sh` (`last_seen` mező),
+`store/redispatch-guard.sh` (`_is_load_paused()` staleness-ellenőrzés + 3 új selftest-eset),
+`seed-scheduled-tasks/stuck-card-monitor/SKILL.md` (a Python-szűrő staleness-ellenőrzése).
+`src/__tests__/load-guard-bookkeeping.test.ts`: 3 új teszt (`last_seen` új induláskor, folytatódó
+pause-nál, mechanizmus-váltásnál). Régi formátumú (last_seen nélküli) bejegyzés fail-open marad
+(friss/kizártnak számít) -- nincs meglepetésszerű tömeges fel-oldás a fix élesítésekor. 66/66 zöld
+a teljes load-guard tesztcsaládon, redispatch-guard selftest PASS, tsc tiszta.
+
+**Ki döntött:** backend (kártya 1128002b, Cybersec + QA NO-GO/FAIL alapján).
+**Hivatkozás:** kártya 1128002b, Gate-SHA fce0df4e (a Cybersec NO-GO és QA FAIL komment), előzmény:
+kártya 2bfbf805 (a rokon eval-hiba-lánc, ami a jelen hiányosságot is okozza).

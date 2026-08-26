@@ -13,13 +13,13 @@ const SCRIPT = join(dirname(fileURLToPath(import.meta.url)), '..', '..', 'store'
 function compute(
   cgroup: { throttled: string | null },
   sigstop: { frozen: string | null },
-  prevPaused: Record<string, { mechanism: string; since: number; card_id: string | null }>,
+  prevPaused: Record<string, { mechanism: string; since: number; card_id: string | null; last_seen?: number }>,
   prevEvents: Record<string, number[]>,
   now: number,
   threshold = 2,
   window = 3600,
 ): {
-  paused: Record<string, { mechanism: string; since: number; card_id: string | null }>
+  paused: Record<string, { mechanism: string; since: number; card_id: string | null; last_seen: number }>
   events: Record<string, number[]>
   starts: string[]
   ends: Array<{ agent: string; card_id: string | null }>
@@ -47,6 +47,7 @@ describe('load-guard-bookkeeping --test-compute: pause-start transitions', () =>
     expect(r.paused.fullstack.mechanism).toBe('sigstop_freeze')
     expect(r.paused.fullstack.card_id).toBeNull() // filled in by the real wrapper, not compute
     expect(r.events.fullstack).toEqual([1000])
+    expect(r.paused.fullstack.last_seen).toBe(1000) // Cybersec/QA fce0df4e: staleness signal
   })
 
   it('cgroup_throttle alone is also a start, tagged with its own mechanism name', () => {
@@ -70,6 +71,7 @@ describe('load-guard-bookkeeping --test-compute: continuation is NOT a re-start'
     expect(r.ends).toEqual([])
     expect(r.paused.fullstack.since).toBe(1000) // ORIGINAL since preserved, not bumped to 1010
     expect(r.paused.fullstack.card_id).toBe('C1') // preserved, not re-queried
+    expect(r.paused.fullstack.last_seen).toBe(1010) // unlike since, last_seen DOES move every tick
   })
 
   it('a mechanism hand-off mid-pause (cgroup -> sigstop) is still a continuation, not a re-start', () => {
@@ -78,6 +80,16 @@ describe('load-guard-bookkeeping --test-compute: continuation is NOT a re-start'
     expect(r.starts).toEqual([])
     expect(r.paused.fullstack.mechanism).toBe('sigstop_freeze') // mechanism DOES update
     expect(r.paused.fullstack.since).toBe(900) // since does NOT reset on hand-off
+    expect(r.paused.fullstack.last_seen).toBe(1000) // last_seen refreshes even across a hand-off
+  })
+
+  it('a bookkeeping gap (many ticks missed) still refreshes last_seen the moment it runs again', () => {
+    // The whole point of last_seen: it reflects THIS tick, not a running average or a missed-tick
+    // count. Simulates bookkeeping resuming long after prev_paused was last written.
+    const prev = { fullstack: { mechanism: 'sigstop_freeze', since: 1000, card_id: 'C1', last_seen: 1010 } }
+    const r = compute({ throttled: null }, { frozen: 'fullstack' }, prev, { fullstack: [1000] }, 5000)
+    expect(r.paused.fullstack.since).toBe(1000)
+    expect(r.paused.fullstack.last_seen).toBe(5000)
   })
 })
 
