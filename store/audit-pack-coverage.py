@@ -91,7 +91,7 @@ def build_pack(repo: str) -> str:
 
 
 def _named(needle: str, inventory: str) -> bool:
-    """`needle` appears in `inventory` as a whole filename, not as part of a longer one.
+    r"""`needle` appears in `inventory` as a whole filename, not as part of a longer one.
 
     A PLAIN SUBSTRING TEST IS WRONG HERE, and my own selftest caught it doing exactly the damage
     this script exists to prevent: `money.ts` is a substring of `xmoney.ts`, so a report that
@@ -101,8 +101,17 @@ def _named(needle: str, inventory: str) -> bool:
 
     So both ends are bounded: nothing filename-ish may sit immediately before or after the match.
     A trailing `.` is allowed (a sentence can end on the name), which is why the right-hand class is
-    word-characters and `-` rather than `\b`."""
-    return re.search(rf"(?<![\w/.-]){re.escape(needle)}(?![\w-])", inventory) is not None
+    word-characters and `-` rather than `\b`.
+
+    Card c93b42a8 (Cybersec 95f861f1): the right-hand bound alone let a SIBLING FILE'S EXTENSION
+    read as coverage -- "src/index.ts.bak" or "src/index.ts.map" both matched needle "src/index.ts"
+    unbounded, because a `.` satisfies neither `\w` nor `-`. A naive fix (moving the `.` into the
+    lookahead class) was measured to cost 2 real cases (a sentence ending "src/index.ts." would then
+    fail the lookahead too). The asymmetric fix instead: still allow a bare trailing `.`, but refuse
+    one immediately followed by ANOTHER word character -- that shape is a file extension
+    (.bak/.map/.snap/.example), never a real sentence terminator (those end in end-of-string,
+    whitespace, a comma, or a closing punctuation mark, none of which are `\w`)."""
+    return re.search(rf"(?<![\w/.-]){re.escape(needle)}(?![\w-])(?!\.\w)", inventory) is not None
 
 
 def mentioned(path: str, inventory: str, ambiguous_basenames: set[str]) -> bool:
@@ -288,6 +297,18 @@ def _selftest() -> int:
     check("Page.tsx does not cover Page.ts", code, 1)
     code, _ = run("- src/money.ts.\n", ["src/money.ts"])
     check("a name ending a sentence still counts", code, 0)
+
+    # --- card c93b42a8: a sibling file's EXTENSION must not read as coverage of the real file ---
+    code, _ = run("- Reviewed src/index.ts.bak\n", ["src/index.ts"])
+    check("a .bak sibling does not cover the real file", code, 1)
+    code, _ = run("- src/index.ts.map was regenerated\n", ["src/index.ts"])
+    check("a .map sibling does not cover the real file", code, 1)
+    # CONTROL: the fix must not regress the ordinary sentence-terminal `.` case above, nor these
+    # other real, non-extension continuations right after the name.
+    code, _ = run("- see src/index.ts, tested\n", ["src/index.ts"])
+    check("a comma-terminated mention still counts", code, 0)
+    code, _ = run("- see `src/index.ts` tested\n", ["src/index.ts"])
+    check("a backtick-terminated mention still counts", code, 0)
 
     # --- an explicit NOT-tested listing is coverage: that is the rule, not a loophole ---
     code, _ = run("- src/a.ts -- NOT tested (config only, no runtime behaviour)\n", ["src/a.ts"])
