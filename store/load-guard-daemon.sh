@@ -16,17 +16,26 @@
 # not a bash-level default specifically so the EXISTING Feladat-1 daemon tests (which call this
 # script without --cgroup) stay byte-identical -- zero regression risk. Production turns it on via
 # scripts/install-guard-timers.sh's ExecStart, not this script's default.
+#
+# --sigstop (card 2bfbf805, Feladat 3 of 19f3bbb5): same opt-in shape as --cgroup, independent
+# flag -- either can run without the other. Every tick also calls load-guard-sigstop.sh with the
+# tick's own action, best-effort (`|| true`, same reasoning as --cgroup: a signal-layer failure
+# never breaks the lower tiers). "critical" only fires once "hard" (cgroup_throttle) has already
+# been sustained and load STILL climbed past it, so --cgroup and --sigstop are meant to run
+# together in production, not as alternatives.
 set -euo pipefail
 
 INSTALL_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 LOG="$INSTALL_DIR/store/load-guard.log"
 EVAL_ARGS=()
 CGROUP=0
+SIGSTOP=0
 
 while [ $# -gt 0 ]; do
   case "$1" in
     --log) LOG="$2"; shift 2 ;;
     --cgroup) CGROUP=1; shift ;;
+    --sigstop) SIGSTOP=1; shift ;;
     --config|--state|--metrics-json|--now) EVAL_ARGS+=("$1" "$2"); shift 2 ;;
     *) echo "load-guard-daemon.sh: unknown arg: $1" >&2; exit 2 ;;
   esac
@@ -44,4 +53,8 @@ fi
 
 if [ "$CGROUP" = "1" ]; then
   "$INSTALL_DIR/store/load-guard-cgroup.sh" --action "$ACTION" || true
+fi
+
+if [ "$SIGSTOP" = "1" ]; then
+  "$INSTALL_DIR/store/load-guard-sigstop.sh" --action "$ACTION" || true
 fi
