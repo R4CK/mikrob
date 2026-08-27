@@ -52,13 +52,28 @@ describe('the reported bypass: a large inert filler must not outrun the hook dea
     expect(elapsed, `took ${elapsed}ms; the hook timeout is 10000ms and the caller fails OPEN`).toBeLessThan(5000)
   })
 
+  // card ea7e0492: a single Date.now() sample is noisy under scheduler/GC jitter (observed flaky in
+  // the full fleet-test run, stable in isolation, reproduced here under artificial CPU contention).
+  // Measuring all trials of one size, then all of the other, is not enough: a contention burst that
+  // happens to land during the second size's whole phase inflates every one of its trials while the
+  // first size's trials (measured earlier) dodge it -- a differential, not just per-sample, bias.
+  // INTERLEAVING each small/large pair keeps both sizes exposed to the same moment-to-moment load, so
+  // a transient burst skews one paired round, not one size's entire measurement window; taking the
+  // min across rounds then discards that round without dragging the other size's minimum down with it.
+  const measureInterleaved = (small: string, large: string, rounds = 15): { ms1: number; ms2: number } => {
+    let bestSmall = Infinity
+    let bestLarge = Infinity
+    for (let i = 0; i < rounds; i++) {
+      let t = Date.now(); decide(small); bestSmall = Math.min(bestSmall, Date.now() - t)
+      t = Date.now(); decide(large); bestLarge = Math.min(bestLarge, Date.now() - t)
+    }
+    return { ms1: Math.max(1, bestSmall), ms2: Math.max(1, bestLarge) }
+  }
+
   it('scales roughly LINEARLY, which is the property that actually prevents the bypass', () => {
     // A time bound alone can be met by a fast machine while the shape is still quadratic. Doubling
     // the input must not quadruple the work: measured 4x per doubling before the fix, ~2x after.
-    const small = attack(16000)
-    const large = attack(32000)
-    const t1 = Date.now(); decide(small); const ms1 = Math.max(1, Date.now() - t1)
-    const t2 = Date.now(); decide(large); const ms2 = Math.max(1, Date.now() - t2)
+    const { ms1, ms2 } = measureInterleaved(attack(16000), attack(32000))
     expect(ms2 / ms1, `doubling the input multiplied the work by ${(ms2 / ms1).toFixed(1)}x`).toBeLessThan(3)
   })
 })
