@@ -108,3 +108,68 @@ describe('heredocIsStdinDataSink: a decoy `-d @-` cannot launder a real stdin-co
     expect(emailGate('Bash', { command: withHeredoc('-d @-') }).deny).toBe(false)
   })
 })
+
+// ROUND 2 (QA FAIL on the round-1 fix, same card 0f7f7fe9). The round-1 CURL_CONFIG_STDIN_RX only
+// matched `-K`/`--config` with a SEPARATOR (space or `=`) before the trailing `-`. Real curl 8.18.0
+// also accepts the getopt-style ATTACHED short-option form with no separator at all -- `-K-` -- and
+// QA measured `curl -K- < file` behaving IDENTICALLY to `curl -K - < file`. Re-deriving the fix from
+// curl's actual short-option grammar (rather than re-testing only the reported shape) additionally
+// surfaced flag CLUSTERING: curl merges boolean short flags onto the same token as a value-taking one
+// (`-sK-` behaves exactly like `-s -K -`), which a bare `-K-` match anchored only at a preceding space
+// does not catch. Both are pinned here from the grammar, not from the patch, per the lesson in
+// `build-an-enumeration-from-the-grammar-not-from-the-patch`.
+const ATTACHED_CONFIG_CONSUMERS = ['-K-', '-sK-', '-svK-']
+
+// Forms curl actually REJECTS (confirmed with the real binary: `--config-` -> "option --config-: is
+// unknown"; `-K=-` -> tries to open a literal file named `=-` and errors). Neither is a live stdin
+// consumer, so neither belongs in ATTACHED_CONFIG_CONSUMERS. Whether the regex happens to match one
+// of them is not a safety question either way, because the underlying curl call errors out before it
+// ever sends anything -- there is no live payload to protect against. `-K=-` DOES match (matched
+// already pre-round-2, unchanged here) so its body stays visible/denied; `--config-` does NOT match
+// (also unchanged) so it is treated the same as plain `-d @-` and allowed -- both are asserted below
+// exactly to pin that neither shape regressed, not because "allowed" is the safety-relevant outcome.
+
+describe('heredocIsStdinDataSink: attached/clustered short-option `-K` forms (card 0f7f7fe9, round 2)', () => {
+  it.each(ATTACHED_CONFIG_CONSUMERS)(
+    'does NOT blank a heredoc body when `curl -d @- %s` is present (attached/clustered -K)',
+    (flag) => {
+      const out = stripHeredocDataPayloads(withHeredoc(`-d @- ${flag}`))
+      for (const line of SEND_CONFIG.split(NL)) expect(out).toContain(line)
+    },
+  )
+
+  it.each(ATTACHED_CONFIG_CONSUMERS)('email-send-gate DENIES a real send decoyed as `curl -d @- %s`', (flag) => {
+    expect(emailGate('Bash', { command: withHeredoc(`-d @- ${flag}`) }).deny).toBe(true)
+  })
+
+  it.each(ATTACHED_CONFIG_CONSUMERS)('same DENY holds with the flags reversed (`curl %s -d @-`)', (flag) => {
+    expect(emailGate('Bash', { command: withHeredoc(`${flag} -d @-`) }).deny).toBe(true)
+  })
+
+  it("CONTROL: `-K=-` (invalid curl syntax, but still matches the shape) keeps denying, unchanged", () => {
+    expect(emailGate('Bash', { command: withHeredoc('-d @- -K=-') }).deny).toBe(true)
+  })
+
+  it("CONTROL: `--config-` (invalid curl syntax, no separator, no clustering equivalent) stays " +
+    "allowed exactly as before round 2 -- harmless because the real curl call errors ('option " +
+    "--config-: is unknown') before it can ever send, so there is no live payload here to protect", () => {
+    expect(emailGate('Bash', { command: withHeredoc('-d @- --config-') }).deny).toBe(false)
+  })
+
+  it('CONTROL: attached `-d@-` (no separator) is not itself a new hole -- it is simply never recognized ' +
+    'as the safe-data shape, so the body stays visible and the send is still caught', () => {
+    expect(emailGate('Bash', { command: withHeredoc('-d@-') }).deny).toBe(true)
+    expect(emailGate('Bash', { command: withHeredoc('-d@- -K -') }).deny).toBe(true)
+    expect(emailGate('Bash', { command: withHeredoc('-d@- -K-') }).deny).toBe(true)
+  })
+
+  it('CONTROL: plain `-d @-` with no config flag at all stays allowed after the round-2 widening', () => {
+    expect(emailGate('Bash', { command: withHeredoc('-d @-') }).deny).toBe(false)
+  })
+
+  it('CONTROL: round-1 separated/`=` forms still deny (no regression from the round-2 rewrite)', () => {
+    for (const flags of DECOY_PLUS_CONFIG) {
+      expect(emailGate('Bash', { command: withHeredoc(flags) }).deny).toBe(true)
+    }
+  })
+})
