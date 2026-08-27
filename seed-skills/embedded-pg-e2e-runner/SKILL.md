@@ -9,6 +9,37 @@ description: Run RLS / PG-dependent e2e tests on WSL2 without Docker using embed
 - `PG_E2E_URL` env var kell a teszthez, de nincs futó Postgres-példány
 - CleanCore `rls-*.e2e.test.ts` fájlok futtatása
 
+## WHICH repo root -- BUILDER szerep vs GATE szerep (kártya 843abd91, Cybersec NO-GO)
+
+Ez a skill mindkét szerepnek szól, de a checkout NEM ugyanaz -- ugyanaz a hibaosztály, amit a
+`cybered-gate-pattern` skill "WHICH repo root" szakasza már kijavított (backend `CleanCore-worktrees/backend`
+worktree-je csendben detached HEAD-re váltott 709aa3db-re, közvetlenül e0a4bb3a landolása után):
+
+- **BUILDER** (a kártya felelőse, a SAJÁT worktree-jében dolgozik): `CC` a saját worktree útvonala --
+  `CC="$({{INSTALL_DIR}}/store/agent-worktree.sh <a te agent-neved> --path)"`.
+- **GATE** (QA/Cybersec/Cybered, MÁS ügynök SHA-pinnelt kódját ellenőrzi élőben): **SOHA**
+  `agent-worktree.sh <assignee> --path` -- az a KÁRTYA TULAJDONOSÁNAK élő, nem-commitolt fáját
+  jelenti; egy oda checkoutolt SHA csendben elviheti a working tree-t más ügynök munkája közben.
+  Használj eldobható, process-szkópú worktree-t a megosztott fő klónról:
+
+```bash
+CC_MAIN="${CLEANCORE_MAIN:-/mnt/h/LM_Studio_Workdir/CleanCore}"
+WT="$HOME/<szerep>-gate-<sha>-$$"
+git -C "$CC_MAIN" worktree add --detach "$WT" <sha>
+ln -s "$CC_MAIN/node_modules" "$WT/node_modules"
+CC="$WT" node --experimental-vm-modules run-e2e.mjs
+# eltávolítás VÉGÉN, csak ha a path tényleg a fenti eldobható-scratch mintát követi --
+# egy rossz path itt worktree remove --force alatt nem-commitolt munkát törölne, nem
+# csak detached HEAD-et hagyna (ami visszaállítható lenne):
+case "$WT" in
+  "$HOME"/*-gate-*-[0-9]*) git -C "$CC_MAIN" worktree remove --force "$WT" ;;
+  *) echo "refusing to remove: $WT does not match the disposable-scratch naming pattern" >&2; exit 1 ;;
+esac
+```
+
+A `CC` env var **kötelező** -- a runner lent FAIL CLOSED-ra vált, ha nincs beállítva (nem esik vissza
+csendben a megosztott fő klónra).
+
 ## A működő runner script
 
 ```js
@@ -22,9 +53,20 @@ import { createRequire } from 'node:module'
 const require = createRequire(import.meta.url)
 
 // A FŐ klón node_modules-át címezzük, nem a worktree-ét (kártya 973ed6eb): a telepítés OTT
-// történik, a worktree-k node_modules-a oda mutató SYMLINK. A TESZT viszont a saját
-// worktree-dben fut -- lásd a cwd-t lentebb.
+// történik, a worktree-k node_modules-a oda mutató SYMLINK. A TESZT viszont a `CC`-ben
+// megnevezett checkoutban fut -- lásd a "WHICH repo root" szakaszt fentebb és a cwd-t lentebb.
 const CC_MAIN = process.env.CLEANCORE_MAIN || '/mnt/h/LM_Studio_Workdir/CleanCore'
+
+// FAIL CLOSED: nincs csendes visszaesés a megosztott fő klónra és nincs implicit "a saját
+// worktree-m" feltételezés sem -- a hívónak KI KELL MONDANIA melyik checkoutban fut (lásd fent).
+const CC = process.env.CC
+if (!CC) {
+  throw new Error(
+    'CC env var not set -- refusing to fall back to CC_MAIN or any implicit worktree. ' +
+    'BUILDER: CC="$(store/agent-worktree.sh <neved> --path)". ' +
+    'GATE: eldobható, process-szkópú worktree a megosztott klónról -- SOSE agent-worktree.sh <assignee> --path.'
+  )
+}
 
 // CJS/ESM mismatch: embedded-postgres exports CJS default, use createRequire + .default
 const { default: EmbeddedPostgres } = require(
@@ -60,9 +102,7 @@ try {
   execSync(
     'npx vitest run apps/api/src/rls-chat.e2e.test.ts --no-file-parallelism',
     {
-      // A SAJÁT worktree-d, sosem a megosztott klón:
-      //   CC="$({{INSTALL_DIR}}/store/agent-worktree.sh <a te agent-neved> --path)"
-      cwd: process.env.CC || CC_MAIN,
+      cwd: CC,   // lásd fent: FAIL CLOSED, nincs CC_MAIN fallback
       env: { ...process.env, PG_E2E_URL, LD_LIBRARY_PATH: libPath },
       stdio: 'inherit',   // inherit: stdout/stderr -> terminal, nem pufferelt
     }
@@ -130,10 +170,11 @@ $CLEANCORE_MAIN/node_modules/.pnpm/embedded-postgres@18.4.0-beta.17/node_modules
 ```
 
 ### 6. Worktree vs. main repo: migration-tartalom eltérhet
-Ha a gatelendő commit egy FEATURE BRANCEN él (nem a main repo HEAD-en), a worktree
-(`$HOME/qa-<cardid>`) más migráció-fájlokat tartalmazhat mint a main CleanCore checkout.
+Ha a gatelendő commit egy FEATURE BRANCEN él (nem a main repo HEAD-en), a checkout
+(`CC`/`$WT`, lásd a "WHICH repo root" szakaszt fentebb) más migráció-fájlokat tartalmazhat mint
+a main CleanCore checkout.
 Ellenőrzés: `git -C "${CLEANCORE_MAIN:-/mnt/h/LM_Studio_Workdir/CleanCore}" merge-base --is-ancestor <sha> HEAD`
-Ha a commit NEM ős: a migrációkat a WORKTREE-ből kell futtatni, nem a main repóból.
+Ha a commit NEM ős: a migrációkat a `CC`/`$WT` checkoutból kell futtatni, nem a main repóból.
 
 ```js
 // ROSSZ (main CleanCore checkout, hiányozhat pl. 0089_worm_trigger.sql)
