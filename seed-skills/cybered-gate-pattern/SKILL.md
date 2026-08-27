@@ -219,7 +219,25 @@ Kill-chain 3 ([name]): PASS/INFO - [evidence]
 
 For a deploy-critical RLS PG-adapter card (tenant/owner/crew isolation), the migration + adapter code review is necessary but NOT sufficient — the decisive proof is the RLS policy ENFORCING live against the exact threat (a compromised non-superuser app-role). The card's e2e is env-gated on `PG_E2E_URL` and self-bootstraps its schema (applies the prereq migrations + creates roles in `beforeAll`). Spin up an embedded PG18 yourself and run it — do not rubber-stamp the backend's "7/7" claim.
 
-Runner (from the repo root; the module resolves there):
+**WHICH repo root (card 843abd91): NEVER your own `CleanCore-worktrees/<you>` in place, and NEVER
+`store/agent-worktree.sh <assignee> --path`.** The second one resolves the CARD OWNER's own live,
+uncommitted working tree (backend's, if you are gating backend's card) — checking out the gate sha
+there detaches HEAD out from under whatever they are mid-editing, silently, with no error to either
+side (this is the exact shape measured on backend's worktree right after e0a4bb3a's gate: HEAD went
+from `agent/backend/work` to a detached `709aa3db`, and it was not backend's own action). Use a
+throwaway, process-scoped worktree off the shared clone instead — same shape as
+`store/cleancore-pregate.sh` — and remove it when done:
+```bash
+CC_MAIN="${CLEANCORE_MAIN:-/mnt/h/LM_Studio_Workdir/CleanCore}"
+WT="$HOME/cybered-gate-<sha>-$$"
+git -C "$CC_MAIN" worktree add --detach "$WT" <sha>
+ln -s "$CC_MAIN/node_modules" "$WT/node_modules"   # + per-package links if the suite needs them
+cd "$WT"
+# ... run the runner below from $WT ...
+cd - >/dev/null; git -C "$CC_MAIN" worktree remove --force "$WT"
+```
+
+Runner (run from `$WT` above, never from an agent's own worktree; the module resolves there):
 ```js
 // rls-e2e-runner.mjs
 import EmbeddedPostgres from 'embedded-postgres'
