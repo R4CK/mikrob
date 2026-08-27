@@ -41,7 +41,12 @@ telegram_api_call() {
   fi
 
   local response curl_exit
-  response=$(curl -sS -m 15 "https://api.telegram.org/bot${token}/${method}" "$@" 2>&1)
+  # SECURITY (card 8418b098): the token never touches argv/ps -- fed to curl
+  # via a -K config file over stdin (only the URL line carries it), matching
+  # store/roll-forward-oneshot.sh's notify() and
+  # scripts/dashboard-watchdog.sh's notify_peti().
+  response=$(printf 'url = "https://api.telegram.org/bot%s/%s"\n' "$token" "$method" \
+    | curl -sS -m 15 -K - "$@" 2>&1)
   curl_exit=$?
   # Never let the token reach a log/journal: redact before any echo.
   response="${response//${token}/<token>}"
