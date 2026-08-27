@@ -136,16 +136,16 @@ describe('seed template placeholders are all substituted by every seeder', () =>
       expect(assign).toBeLessThan(firstUse)
     })
 
-    it('the four fleet tasks that use {{CHAT_ID}} are still the known set', () => {
-      // If a fifth task starts using it, this test should make someone look rather than silently
-      // widen the blast radius of any future regression.
+    it('the fleet tasks that use {{CHAT_ID}} are still the known set', () => {
+      // If a new task starts using it, this test should make someone look rather than silently
+      // widen the blast radius of any future regression. Card f2a14f91 (2026-08-27): the three
+      // separate gate-reconciler/folyamatos-munka-orchestrator/stuck-card-monitor seeds were
+      // retired in favor of the single heartbeat-consolidated seed that already covers them.
       const users = readdirSync(SEED_DIR).filter((task) => {
         const f = join(SEED_DIR, task, 'SKILL.md')
         return existsSync(f) && readFileSync(f, 'utf-8').includes('{{CHAT_ID}}')
       })
-      expect(users.sort()).toEqual(
-        ['fleet-nudger', 'folyamatos-munka-orchestrator', 'gate-reconciler', 'stuck-card-monitor'].sort(),
-      )
+      expect(users.sort()).toEqual(['fleet-nudger', 'heartbeat-consolidated'].sort())
     })
   })
 })
