@@ -12,7 +12,7 @@ const seed = (task: string) =>
   readFileSync(join(REPO_ROOT, 'seed-scheduled-tasks', task, 'SKILL.md'), 'utf8')
 
 describe('newDevStop-aware parking is instructed in the seed prompts (card e3b3b79f)', () => {
-  for (const task of ['fleet-nudger', 'folyamatos-munka-orchestrator']) {
+  for (const task of ['fleet-nudger', 'heartbeat-consolidated']) {
     it(`${task}: parks the idle engineering agent under newDevStopActive`, () => {
       const src = seed(task)
       // The trigger and the action must both be present...

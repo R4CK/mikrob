@@ -1,0 +1,10 @@
+{
+  "schedule": "*/10 * * * *",
+  "agent": "{{MAIN_AGENT_ID}}",
+  "enabled": true,
+  "type": "heartbeat",
+  "skipIfBusy": false,
+  "forceSend": false,
+  "description": "Osszevont: offload-sweep + gate-reconciler + folyamatos-munka-orchestrator + stuck-card-monitor egy korben, megosztott elokeszitessel (kartya 63fcbea4, Peti kerese 2026-08-22). A regi 4 kulon feladat 2026-08-27-tol kikapcsolva (kartya f2a14f91) -- a probaidoszak lezarult, ez az egyetlen elo forras.",
+  "createdAt": 1787418986
+}
