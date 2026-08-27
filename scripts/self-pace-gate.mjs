@@ -844,7 +844,21 @@ const CURL_STDIN_DATA_RX = /(?:^|\s)(?:-d|--data(?:-(?:raw|binary|ascii))?)(?:\s
 // through a second REAL flag on the correctly-identified curl binary, not a decoy binary. Fix: the
 // curl branch also requires the ABSENCE of a stdin-fed config flag -- the same `-K -`/`--config -`/
 // `--config=-` shape OPTION_CONSUMERS already pins as "reads OPTIONS, not data" in that test file.
-const CURL_CONFIG_STDIN_RX = /(?:^|\s)(?:-K|--config)(?:\s+|=)-(?=\s|$)/i
+//
+// ROUND 2 (QA FAIL on the round-1 fix, same card 0f7f7fe9): the round-1 regex only matched `-K`/
+// `--config` with a SEPARATOR (space or `=`) before the trailing `-`. curl's getopt-style short
+// option syntax also accepts an ATTACHED value with NO separator at all -- `-K-` -- and real curl
+// 8.18.0 confirms `curl -K- < file` and `curl -K - < file` are IDENTICAL (both read config
+// directives from stdin); QA proved `curl -d @- -K- <<'CFG'` still passed as allow. Re-deriving
+// from curl's actual short-option grammar (not just the one reported shape) surfaced a second,
+// same-class hole while building the fix: curl also clusters boolean short flags onto the same
+// token as a value-taking one (`-sK-` behaves exactly like `-s -K -`), which a bare `-K-` match
+// (anchored to start only at a preceding space) does not catch either. Both are closed here in one
+// pass so a third round doesn't have to rediscover the same grammar. `--config-` (no separator) and
+// `-K=-` are confirmed NOT valid curl syntax (curl errors before reading anything) -- deliberately
+// left unmatched/matched respectively per the measurements in this card's test file, since a
+// non-match here only means "stays scanned as ordinary content," never "treated as safe."
+const CURL_CONFIG_STDIN_RX = /(?:^|\s)(?:-[A-Za-z]*K-|-K(?:\s+|=)-|--config(?:\s+|=)-)(?=\s|$)/i
 // SECOND STDIN-DATA SHAPE: `git commit -F -` (card 0229c844). Same class as curl's `-d @-`, found
 // the same way -- twice, mid-report: a commit message that DESCRIBED a scheduling primitive was
 // denied, while the identical text passed once written to a file and given as `-F <file>`. Which
