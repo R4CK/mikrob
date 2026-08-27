@@ -85,3 +85,26 @@ describe('email-send-gate: an options-in-the-body consumer still sees the send (
     expect(bash(withHeredoc('-d @-')).deny).toBe(false)
   })
 })
+
+// Card 0f7f7fe9 (Cybersec INFO on c7401c5f, comment #16876): a DECOY `-d @-` sitting ALONGSIDE a real
+// `-K -`/`--config -` on the SAME curl invocation used to fool `heredocIsStdinDataSink` -- the literal
+// text `-d @-` matched CURL_STDIN_DATA_RX, so the body was blanked even though curl's actual stdin
+// consumer here is `--config`/`-K`, which reads the body as OPTIONS (url=/request=/data=), not as an
+// inert data payload. Pre-fix this measured deny:false on a live resend.com send. The two-flag
+// combinations below are every ordering OPTION_CONSUMERS-with-a-decoy can be spelled.
+const DECOY_PLUS_CONFIG = ['-d @- -K -', '-K - -d @-', '-d @- --config -', '--config=- -d @-']
+
+describe('heredocIsStdinDataSink: a decoy `-d @-` cannot launder a real stdin-config flag (card 0f7f7fe9)', () => {
+  it.each(DECOY_PLUS_CONFIG)('does NOT blank a heredoc body when `curl %s` is present', (flags) => {
+    const out = stripHeredocDataPayloads(withHeredoc(flags))
+    for (const line of SEND_CONFIG.split(NL)) expect(out).toContain(line)
+  })
+
+  it.each(DECOY_PLUS_CONFIG)('email-send-gate DENIES a real send decoyed as `curl %s`', (flags) => {
+    expect(emailGate('Bash', { command: withHeredoc(flags) }).deny).toBe(true)
+  })
+
+  it('CONTROL: plain `-d @-` with no config flag stays allowed -- the decoy check must not overreach', () => {
+    expect(emailGate('Bash', { command: withHeredoc('-d @-') }).deny).toBe(false)
+  })
+})
