@@ -829,6 +829,22 @@ export const CURL_LEADING_RX = new RegExp(
   'i',
 )
 const CURL_STDIN_DATA_RX = /(?:^|\s)(?:-d|--data(?:-(?:raw|binary|ascii))?)(?:\s+|=)@-(?=\s|$)/i
+// DECOY-ALONGSIDE-REAL-FLAG BYPASS (card 0f7f7fe9, Cybersec INFO on c7401c5f comment #16876):
+// CURL_STDIN_DATA_RX only asks "does `-d @-`/`--data... @-` appear ANYWHERE in the owner span" --
+// it says nothing about whether that flag is the ONE that actually consumes the heredoc's stdin.
+// `curl -d @- -K - <<'CFG' ... CFG` matches it (the literal text `-d @-` is right there), but curl
+// parses `-K`/`--config` and consumes stdin as CONFIG DIRECTIVES (url=/request=/data=@file -- a
+// complete outbound send curl assembles itself, exactly the SEND_CONFIG shape
+// stdin-consumer-list-narrowness.test.ts already proved dangerous for `-K -` ALONE, card 0ecff3ae)
+// before it ever reaches the deferred `-d @-` data-read -- so the REAL consumer of the body is the
+// config parser, not the harmless data flag whose presence is being read as proof of safety. Measured
+// live: `curl -d @- -K - <<'CFG'` with a `url = "https://api.resend.com/emails" / data = "{}"` body
+// blanked the body and passed both email-send-gate.mjs and self-pace-gate.mjs as allow. Same class as
+// 4638c14c (a flag SHAPE match standing in for "this command is safe"), just reachable this time
+// through a second REAL flag on the correctly-identified curl binary, not a decoy binary. Fix: the
+// curl branch also requires the ABSENCE of a stdin-fed config flag -- the same `-K -`/`--config -`/
+// `--config=-` shape OPTION_CONSUMERS already pins as "reads OPTIONS, not data" in that test file.
+const CURL_CONFIG_STDIN_RX = /(?:^|\s)(?:-K|--config)(?:\s+|=)-(?=\s|$)/i
 // SECOND STDIN-DATA SHAPE: `git commit -F -` (card 0229c844). Same class as curl's `-d @-`, found
 // the same way -- twice, mid-report: a commit message that DESCRIBED a scheduling primitive was
 // denied, while the identical text passed once written to a file and given as `-F <file>`. Which
@@ -858,9 +874,15 @@ const GIT_STDIN_MSG_RX = /(?:^|\s)(?:-F\s*-|--file(?:\s+|=)-)(?=\s|$)/
 // owner span without redefining curl's/git's stdin-data shape a second time. True only for curl's
 // OWN `-d @-`/`--data-binary @-`-shaped stdin read or git's OWN `commit|tag|notes -F -` message
 // read -- the two shapes that are proven to never execute what they are given, see the CURL_LEADING_RX
-// and GIT_LEADING_RX headers above for the incidents that pinned each guard individually.
+// and GIT_LEADING_RX headers above for the incidents that pinned each guard individually. The curl
+// branch also requires the ABSENCE of `-K -`/`--config -`/`--config=-` (CURL_CONFIG_STDIN_RX, card
+// 0f7f7fe9) -- a `-d @-` shape match proves nothing about who actually reads the heredoc's stdin when
+// a real stdin-config flag sits in the same span; see that regex's header for the measured bypass.
 export function heredocIsStdinDataSink(ownerSpan) {
-  const curl = CURL_LEADING_RX.test(ownerSpan) && CURL_STDIN_DATA_RX.test(ownerSpan)
+  const curl =
+    CURL_LEADING_RX.test(ownerSpan) &&
+    CURL_STDIN_DATA_RX.test(ownerSpan) &&
+    !CURL_CONFIG_STDIN_RX.test(ownerSpan)
   const git =
     GIT_LEADING_RX.test(ownerSpan) && GIT_MSG_SUBCMD_RX.test(ownerSpan) && GIT_STDIN_MSG_RX.test(ownerSpan)
   return curl || git
