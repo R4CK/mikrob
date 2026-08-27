@@ -74,6 +74,15 @@ const PROJECT_REPOS: Readonly<Record<string, RepoTarget>> = {
 
 
 const SHA_RX = /\b[0-9a-f]{7,40}\b/g
+// Card b7c68890: a card whose comments carry an explicit `Gate-SHA:` line (root CLAUDE.md 4b/4c --
+// the SAME convention the gate-verdict scanners key on) is DECLARING which commit its gate verdict
+// covers. The generic sweep below still runs, but on a heavily-commented card the MAX_CANDIDATES cap
+// could be reached from earlier, noisier comments (kanban/card ids, "see also <sha>") before the loop
+// ever reached the later comment naming the real, landed Gate-SHA -- so the declared sha never made
+// it into the candidate set at all, and the guard blocked on stale early tokens like a raw branch tip.
+// Collecting declared Gate-SHA tokens FIRST, from every non-generated comment, before the generic
+// sweep spends any of the cap, means a declared sha can never be crowded out by prose noise.
+const GATE_SHA_LINE_RX = /^\s*Gate-SHA:\s*(.+)$/gim
 const MAX_CANDIDATES = 40
 const GIT_TIMEOUT_MS = 8000
 
@@ -140,18 +149,32 @@ function git(repo: string, args: string[], stdin?: string): Promise<{ ok: boolea
  * invents its own findings is one people learn to force past.
  */
 async function claimedCommits(cardId: string, repo: string): Promise<Claimed> {
-  const candidates: string[] = []
+  const nonGenerated: string[] = []
   let skippedGenerated = 0
   for (const c of getKanbanComments(cardId)) {
     if (GENERATED_COMMENT_AUTHORS.has(c.author ?? '')) {
       skippedGenerated += 1
       continue
     }
-    for (const m of (c.content ?? '').match(SHA_RX) ?? []) {
-      if (!candidates.includes(m)) candidates.push(m)
-      if (candidates.length >= MAX_CANDIDATES) break
+    nonGenerated.push(c.content ?? '')
+  }
+
+  const candidates: string[] = []
+  // Pass 1: every explicitly declared Gate-SHA, from every comment, ahead of the generic sweep so it
+  // can never be pushed out of the cap by earlier noise.
+  for (const content of nonGenerated) {
+    for (const line of content.matchAll(GATE_SHA_LINE_RX)) {
+      for (const m of (line[1] ?? '').match(SHA_RX) ?? []) {
+        if (!candidates.includes(m)) candidates.push(m)
+      }
     }
-    if (candidates.length >= MAX_CANDIDATES) break
+  }
+  // Pass 2: the existing generic hex sweep, filling whatever budget pass 1 left.
+  outer: for (const content of nonGenerated) {
+    for (const m of content.match(SHA_RX) ?? []) {
+      if (!candidates.includes(m)) candidates.push(m)
+      if (candidates.length >= MAX_CANDIDATES) break outer
+    }
   }
   if (candidates.length === 0) return { commits: [], named: 0, skippedGenerated }
 

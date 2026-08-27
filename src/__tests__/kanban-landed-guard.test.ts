@@ -337,6 +337,41 @@ describe('the guard does not stall the single-threaded server (Cybersec NO-GO on
   })
 })
 
+describe('a declared Gate-SHA cannot be crowded out of the cap by earlier noise (card b7c68890)', () => {
+  // Live bug: a heavily-commented card blocked on a stale early branch tip (SHA_A, quoted in an
+  // early comment) even though its actual Gate-SHA (SHA_B, in a LATER comment's QA verdict) HAD
+  // landed on origin/main -- because 39 earlier, noisier comments each contributed a hex-looking
+  // token and filled MAX_CANDIDATES before the loop ever reached the comment naming SHA_B.
+  it('still finds a later comment\'s declared Gate-SHA even after 39 earlier comments exhaust the cap', async () => {
+    const noisyComments = Array.from({ length: 39 }, (_, i) => ({
+      content: `see also card ${i.toString(16).padStart(7, '0')} and commit deadbe${i.toString(16).padStart(2, '0')}`,
+    }))
+    comments = [
+      { content: `first attempt, branch tip ${SHA_A}` },
+      ...noisyComments,
+      { author: 'qa', content: `QA PASS\nGate-SHA: ${SHA_B}` },
+    ]
+    onMain = new Set([SHA_B]) // SHA_A never landed; only the declared Gate-SHA did.
+    const v = await landedGuardVerdict('c1', 'done', false, 'backend2')
+    expect(v.blocked).toBe(false)
+  })
+
+  it('collects MULTIPLE comma-separated shas off one Gate-SHA line', async () => {
+    comments = [{ author: 'qa', content: `QA PASS\nGate-SHA: ${SHA_A}, ${SHA_B}` }]
+    onMain = new Set([SHA_B])
+    expect((await landedGuardVerdict('c1', 'done', false, 'backend2')).blocked).toBe(false)
+  })
+
+  it('does not treat a Gate-SHA mentioned mid-sentence (not at line start) as declared -- still caught by the generic sweep', async () => {
+    // Per root CLAUDE.md 4b: only a line STARTING with "Gate-SHA:" counts as declared. Mid-sentence
+    // mentions are not a false negative here though -- the generic sweep still finds the token, this
+    // just is not the priority path being tested.
+    comments = [{ content: `the Gate-SHA: ${SHA_A} line was quoted mid-sentence` }]
+    onMain = new Set([SHA_A])
+    expect((await landedGuardVerdict('c1', 'done', false, 'backend2')).blocked).toBe(false)
+  })
+})
+
 describe('marveen own cards are covered too, on ITS ref (cards 84091afd + Cybersec NO-GO)', () => {
   // marveen integrates on develop and has NO origin/main. Every assertion here runs with only
   // origin/develop existing, so asking for the wrong ref fails instead of passing quietly.
