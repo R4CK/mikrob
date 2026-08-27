@@ -15,16 +15,12 @@ import { gateDecision } from '../../scripts/email-send-gate.mjs'
 // mistakes act outward, so REAL send attempts must keep failing -- the
 // positive controls below are the acceptance bar, not decor.
 //
-// SKIPPED (card 72f5f13b merge decision, follow-up card c7401c5f): gateDecision
-// for Bash intentionally kept the fork's legacy SEND_PATTERNS content-scan
-// instead of switching to isSendInvocation() -- switching broke 26 of the
-// fork's own ~150 adversarial heredoc-ownership cases (a real deny-bypass),
-// while keeping the legacy scan only produces these false-positive-reduction
-// misses (over-blocking harmless content), never a missed real send. See
-// scripts/email-send-gate.mjs's gateDecision comment for the full trade-off.
-// Re-enable once c7401c5f generalizes heredocOwnerSpans to compose with
-// isSendInvocation instead of forcing an either/or choice.
-describe.skip('gateDecision Bash: content about mail no longer denies (the measured FP classes)', () => {
+// Card 72f5f13b merge decision, resolved by card c7401c5f: gateDecision for Bash now runs
+// isSendInvocation() composed with heredocFeedsSend() (self-pace-gate.mjs's heredocOwnerRecords,
+// the same hardened ownership walker the fork's ~150 adversarial heredoc-ownership cases exercise,
+// generalized to classify an INTERPRETER owner) instead of the legacy SEND_PATTERNS content-scan.
+// See scripts/email-send-gate.mjs's gateDecision comment for the full trade-off.
+describe('gateDecision Bash: content about mail no longer denies (the measured FP classes)', () => {
   const bash = (command: string) => gateDecision('Bash', { command })
 
   it('a git commit whose MESSAGE names the mailer binaries passes', () => {
@@ -78,14 +74,14 @@ describe('gateDecision Bash: POSITIVE CONTROLS -- real send attempts still deny 
     expect(bash(`node -e "require('./src/graph-mail.js').sendMail({to:'a@b.hu'})"`).deny).toBe(true)
   })
 
-  it.skip('naive exec-shape in interpreter code denies; exec alone or mailer-name alone does not (msg 14298)', () => {
+  it('naive exec-shape in interpreter code denies; exec alone or mailer-name alone does not (msg 14298)', () => {
     expect(bash(`python3 -c "import subprocess; subprocess.run(['sendmail','-t','a@b.hu'])"`).deny).toBe(true)
     expect(bash(`node -e "require('child_process').execSync('msmtp a@b.hu < /tmp/m.txt')"`).deny).toBe(true)
     expect(bash(`python3 -c "import subprocess; subprocess.run(['ls','-la'])"`).deny).toBe(false)
     expect(bash(`python3 -c "print('a sendmail utvonala regen mas volt')"`).deny).toBe(false)
   })
 
-  it.skip('heredoc stripping is ORDER-INDEPENDENT: marker-first file-writes stay content, heredoc-FED senders still deny (round 3)', () => {
+  it('heredoc stripping is ORDER-INDEPENDENT: marker-first file-writes stay content, heredoc-FED senders still deny (round 3)', () => {
     expect(bash(`cat <<'EOF' > /tmp/notes.md\nsendmail --to x@y.hu is how the legacy path worked\nEOF`).deny).toBe(false)
     expect(bash(`sendmail -t a@b.hu <<'EOF'\ntorzs sora\nEOF`).deny).toBe(true)
   })
