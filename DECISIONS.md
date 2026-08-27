@@ -4323,3 +4323,50 @@ NEM létező hiányosságra csak új regressziós kockázatot vinne be haszon n�
 kártya prózája alapján).
 **Hivatkozás:** kártya 5b91c7de, a tényleges egyesítést hozó kártya/commit: d9bb515b (GATEKOTOJEL817
 + GATEHYPH816), további keményítés: fbb36b41 round 10 (8e8e00e1) + round 11 (4269543a).
+
+## 2026-08-27 19:36 -- kártya c7401c5f: email-send-gate.mjs pozíció-alapú detektor elfogadott vakfoltja (fejléc-korrekció, Cybersec M-1)
+
+**Mit korrigáltam.** A `scripts/email-send-gate.mjs` fejléce (és a SEND_PATTERNS/isSendInvocation
+kommentjei) korábban "on unparseable input the gate behaves exactly as before, never weaker"
+formában fogalmaztak -- ez a mondat SZŰKEN, csak a nem-tokenizálható bemenet fallback-ágára igaz,
+de a fájl egészére könnyű ráolvasni (Cybersec NO-GO, kártya c7401c5f, komment #16876, M-1 lelet:
+"a REVIEW sem a QA nem számszerűsítette" a pozíció-alapú váltás tényleges biztonsági
+gyengülését). A fejléc most explicit kimondja, mi az, amit a pozíció-alapú (token-hely szerinti)
+elemzés ELVILEG nem tud látni, és hogy ez a régi, tartalom-alapú SEND_PATTERNS-scanhez képest
+valódi lazítás -- nem ennek a kártyának (c7401c5f, heredoc-tulajdonos-felismerés összekapcsolása)
+a hibája, hanem a KORÁBBI, SUBGATEPOZ822 kártyával bevezetett pozíció-alapú váltásé, amit eddig
+senki nem mondott ki írásban a fájlban vagy itt.
+
+**Mi gyengült konkrétan (Cybersec méréssel igazolta, régi=DENY, új=allow):**
+1. Változóból feloldott argv0: `X=sendmail; $X user@host < body`
+2. Eval-lel futtatott string: `eval "sendmail user@host"`
+3. Shellbe csövezett printf: `printf 'sendmail a@b' | bash`
+
+Mindhárom azért csúszik át, mert a pozíció-alapú elemző a parancs SAJÁT tokenjeiből dönt (melyik
+program hol áll), nem szimulál változó-feloldást vagy eval-tartalmat -- ez ugyanaz a korlát, amit
+a fájl "STATED LIMIT" bekezdése (msg 14298) már kimondott az interpreter-kódra ("static analysis
+of arbitrary interpreter code is undecidable"), csak eddig nem volt összekötve a pozíció-alapú
+SUBGATEPOZ822-váltással.
+
+**Miért elfogadott, nem hiba.** (a) A pozíció-alapú váltás (SUBGATEPOZ822, 2026-08-22) ÖNMAGÁBAN,
+JELEN kártya előtt landolt, mert a régi tartalom-scan mérhetően blokkolta a mail-gate SAJÁT
+fejlesztését (ugyanaznap 8 hamis pozitív, köztük a fix commit-üzenete és a kártya-kommentje) --
+ez a kártya (c7401c5f) csak a heredoc-résen zár be egy MÁSIK, korábban külön nyitva hagyott
+lyukat, nem ez okozza az 1-3. pontot. (b) Mindhárom megkerülési alak SZÁNDÉKOS kijátszást igényel
+(változó indirekció, eval, pipe-építés), nem véletlen küldést -- a gate STATED LIMIT-je már eleve
+csak a véletlen esetre vállal garanciát ("Our sub-agents are not adversaries; if that assumption
+ever changes, this gate is the wrong tool"). (c) A csere ára (a pozíció-alapú detektor) mérhetően
+kisebb hamis-pozitív terhet jelent, mint amennyi biztonsági fedezetet elveszít ezekre a
+determinált-kijátszási alakokra -- ez a klasszikus "hard gate a véletlen ellen, nem a szándékos
+ellen" tervezési döntés, amit a fájl már korábban kimondott, csak nem ezekre a konkrét alakokra.
+
+**Nem ehhez a kártyához tartozik:** a `curl-anything -d @- <<'EOF'` decoy (bináris NÉV-prefix
+laza CURL_LEADING_RX-en át, pre-existing mindkét verzióban, ugyanaz az alak mint a korábbi
+4638c14c NO-GO, csak a bináris nevén keresztül) -- külön kártyát kap, mert a self-pace-gate.mjs-t
+is érinti.
+
+**Ki döntött:** MikroB (kártya c7401c5f, Cybersec M-1 lelete alapján, komment #16876) -- a
+kockázat-elfogadás maga NEM új itt (a SUBGATEPOZ822 váltással már megtörtént), csak a fájl saját
+állítása lett pontosítva, hogy a valóságot tükrözze.
+**Hivatkozás:** kártya c7401c5f, komment #16876 (Cybersec NO-GO), content-commit: lásd Gate-SHA a
+kártya REVIEW-kommentjében.

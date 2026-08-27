@@ -91,3 +91,93 @@ describe('gateDecision Bash: POSITIVE CONTROLS -- real send attempts still deny 
     expect(bash(`echo "unbalanced quote, harmless text`).deny).toBe(false)
   })
 })
+
+// Cybersec NO-GO, card c7401c5f, comment #16876: the two heredoc-owner allowlist regexes
+// (HEREDOC_INERT_CONSUMER_RX, HEREDOC_INTERPRETER_RX) terminated with a bare `\b`, which is
+// satisfied the instant a listed name is a PREFIX of a longer identifier -- so `cat-relay`,
+// `gh-copilot`, `node.exe`, etc. matched too, landing on an allowlist that either skips scanning
+// the heredoc body entirely (inert list) or scans it with the narrower interpreter-only check
+// (interpreter list) instead of the full SEND_PATTERNS scan an unrecognised binary gets. Fixed by
+// replacing the trailing `\b` with a true end-of-token lookahead. Battery below reproduces
+// Cybersec's exact differential-tested cases (42bfd8b9 vs 312dc04f, then re-verified against the
+// fix).
+describe('gateDecision Bash: heredoc-owner allowlist prefix bypass (Cybersec NO-GO #16876, B-1)', () => {
+  const bash = (command: string) => gateDecision('Bash', { command })
+
+  it('inert-list prefix bypass: a binary whose name merely STARTS WITH cat/gh now stays scanned and denies', () => {
+    expect(bash(`cat-relay <<'EOF'\nsendmail a@b.hu\nEOF`).deny).toBe(true)
+    expect(bash(`cat.sh <<'EOF'\nsendmail a@b.hu\nEOF`).deny).toBe(true)
+    expect(bash(`cat.pl <<'EOF'\nsendmail a@b.hu\nEOF`).deny).toBe(true)
+    expect(bash(`gh-copilot <<'EOF'\nsendmail a@b.hu\nEOF`).deny).toBe(true)
+    expect(bash(`gh-anything <<'EOF'\nsendmail a@b.hu\nEOF`).deny).toBe(true)
+    expect(bash(`gh.sh <<'EOF'\nsendmail a@b.hu\nEOF`).deny).toBe(true)
+    expect(bash(`./cat-relay <<'EOF'\nsendmail a@b.hu\nEOF`).deny).toBe(true)
+    expect(bash(`sudo cat-relay <<'EOF'\nsendmail a@b.hu\nEOF`).deny).toBe(true)
+  })
+
+  it('interpreter-list prefix bypass: a binary whose name merely STARTS WITH node/sh/bun/python/npx/tsx now stays fully scanned and denies', () => {
+    expect(bash(`node-relay <<'EOF'\nsendmail a@b.hu\nEOF`).deny).toBe(true)
+    expect(bash(`node.exe <<'EOF'\nsendmail a@b.hu\nEOF`).deny).toBe(true)
+    expect(bash(`sh-relay <<'EOF'\nsendmail a@b.hu\nEOF`).deny).toBe(true)
+    expect(bash(`sh.evil <<'EOF'\nsendmail a@b.hu\nEOF`).deny).toBe(true)
+    expect(bash(`bun-relay <<'EOF'\nsendmail a@b.hu\nEOF`).deny).toBe(true)
+    expect(bash(`python-relay <<'EOF'\nsendmail a@b.hu\nEOF`).deny).toBe(true)
+    expect(bash(`npx-relay <<'EOF'\nsendmail a@b.hu\nEOF`).deny).toBe(true)
+    expect(bash(`tsx-relay <<'EOF'\nsendmail a@b.hu\nEOF`).deny).toBe(true)
+    expect(bash(`/usr/local/bin/node-relay <<'EOF'\nsendmail a@b.hu\nEOF`).deny).toBe(true)
+  })
+
+  it('controls: a genuinely unknown argv0, and a name with no real word-boundary transition, stay denied (unchanged by the fix)', () => {
+    expect(bash(`zzqq <<'EOF'\nsendmail a@b.hu\nEOF`).deny).toBe(true)
+    expect(bash(`catfish <<'EOF'\nsendmail a@b.hu\nEOF`).deny).toBe(true)
+    expect(bash(`cat_relay <<'EOF'\nsendmail a@b.hu\nEOF`).deny).toBe(true)
+  })
+
+  it('controls: the OLDER curl/git allowlists were already correctly strict (their own required data-sink shape masks the shared \\b prefix laxity) -- unaffected by this fix, still deny', () => {
+    expect(bash(`git-anything <<'EOF'\nsendmail a@b.hu\nEOF`).deny).toBe(true)
+    expect(bash(`curl-anything <<'EOF'\nsendmail a@b.hu\nEOF`).deny).toBe(true)
+  })
+
+  it('legitimate cases keep passing: real cat/gh and real interpreters (incl. version suffixes) with harmless heredoc bodies', () => {
+    expect(bash(`cat <<'EOF'\nnothing interesting here\nEOF`).deny).toBe(false)
+    expect(bash(`sudo cat <<'EOF'\nnothing interesting here\nEOF`).deny).toBe(false)
+    expect(bash(`/bin/cat <<'EOF'\nnothing interesting here\nEOF`).deny).toBe(false)
+    expect(bash(`gh <<'EOF'\nnothing interesting here\nEOF`).deny).toBe(false)
+    // node20 / python3.11: version-suffixed interpreter names now correctly recognised, so a
+    // heredoc that only MENTIONS "sendmail" in a harmless string does not false-deny (it gets the
+    // narrower code-shaped check, same as plain `node`/`python3` already did) -- a separate,
+    // Cybersec-measured win over the old regex, which never matched these at all and fell back to
+    // the broad SEND_PATTERNS substring scan.
+    expect(bash(`node20 <<'JS'\nconsole.log('the sendmail path used to be different')\nJS`).deny).toBe(false)
+    expect(bash(`python3.11 <<'PY'\nprint('python3 ... send.py --to a@b.hu is legacy docs text')\nPY`).deny).toBe(false)
+    expect(bash(`env python3 <<'PY'\nprint('hello')\nPY`).deny).toBe(false)
+    expect(bash(`npx <<'EOF'\nnothing interesting here\nEOF`).deny).toBe(false)
+    expect(bash(`bash <<'EOF'\nnothing interesting here\nEOF`).deny).toBe(false)
+  })
+
+  it('interpreters (incl. version suffixes) still deny a genuine code-shaped send in the heredoc body', () => {
+    expect(bash(`node20 <<'JS'\nrequire('./src/graph-mail.js').sendMail({to:'a@b.hu'})\nJS`).deny).toBe(true)
+    expect(bash(`python3.11 <<'PY'\nimport smtplib\nsmtplib.SMTP('smtp.x.hu')\nPY`).deny).toBe(true)
+  })
+})
+
+// Cybersec NO-GO, card c7401c5f, comment #16876, B-2: extractSubstitutions' $(...) depth counter
+// tracked backslash-escapes and single-quotes but not double-quotes, so a `)` INSIDE a
+// double-quoted string closed the substitution early -- anything in the raw command AFTER that
+// paren never got recursed into by substitutionSends(). Fixed by mirroring the existing
+// single-quote branch for `"`.
+describe('gateDecision Bash: extractSubstitutions double-quote depth bypass (Cybersec NO-GO #16876, B-2)', () => {
+  const bash = (command: string) => gateDecision('Bash', { command })
+
+  it('a `)` inside a double-quoted string no longer truncates the substitution before a real sender', () => {
+    expect(bash(`echo "$(echo "a)b"; sendmail a@b.hu)"`).deny).toBe(true)
+  })
+
+  it('control: the same shape without the embedded paren already denied (unaffected baseline)', () => {
+    expect(bash(`echo "$(echo "ab"; sendmail a@b.hu)"`).deny).toBe(true)
+  })
+
+  it('control: the sender BEFORE the embedded paren already denied (unaffected baseline)', () => {
+    expect(bash(`echo "$(sendmail a@b.hu; echo "a)b")"`).deny).toBe(true)
+  })
+})

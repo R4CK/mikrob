@@ -15,6 +15,27 @@
 // string) and claims no more. Our sub-agents are not adversaries; if that
 // assumption ever changes, this gate is the wrong tool.
 //
+// POSITION-BASED ANALYSIS BLIND SPOT (Cybersec M-1, card c7401c5f, comment #16876, 2026-08-27):
+// isSendInvocation() below decides from a command's TOKEN POSITIONS (which program is invoked,
+// where), not from tracing what a value ultimately resolves to. That is a known, accepted
+// weakening versus the OLD unconditional content-scan (SEND_PATTERNS matched anywhere in the
+// string) for three shapes, none introduced by this file's current composition -- all inherited
+// from the earlier SUBGATEPOZ822 switch to position analysis and merely made visible/measured here:
+//   1. A variable-resolved argv0:      X=sendmail; $X user@host < body
+//   2. An eval'd string:               eval "sendmail user@host"
+//   3. printf piped into a shell:      printf 'sendmail a@b' | bash
+// All three are DENY under the old content-scan and allow here, because nothing in the command's
+// own tokens names the sender directly -- resolving them needs actual variable/eval simulation,
+// which this gate does not do (see the STATED LIMIT below: static analysis of arbitrary code is
+// undecidable). This is why the elsewhere-stated "the gate behaves exactly as before, never
+// weaker" claim (SEND_PATTERNS comment, and isSendInvocation's own unparseable-fallback comment)
+// is true ONLY on those two specific paths -- the SEND_PATTERNS fallback for unparseable input,
+// and the fallback used when a command cannot be tokenized -- and must NOT be read as a claim
+// about this file's overall posture. Accepted because: the position-based switch removed a much
+// larger, measured false-positive cost (see SUBGATEPOZ822 below) and these three shapes require
+// deliberate evasion, not an accidental send -- consistent with the STATED LIMIT already below.
+// Recorded in DECISIONS.md per project convention.
+//
 // Why a hook and not a permissions deny-list: permissive security profiles
 // launch Claude Code with --dangerously-skip-permissions, which BYPASSES the
 // settings.json allow/deny list. A PreToolUse hook runs regardless of
@@ -153,13 +174,27 @@ const heredocScriptSends = (body) =>
 //     gets the full legacy SEND_PATTERNS scan, same as the content-scan this composition replaces --
 //     there is no interpreter-vs-content distinction to draw for an owner this gate cannot identify
 //     as code-executing in the first place.
+// End-of-token assertion, NOT `\b`: `\b` only requires a word/non-word transition, so it is satisfied
+// the instant a listed name is a PREFIX of a longer identifier (`cat-relay`, `gh-copilot`, `node.exe`
+// all match `\b` right after `cat`/`gh`/`node`). Cybersec NO-GO on card c7401c5f (comment #16876,
+// differential battery vs commit 42bfd8b9): 6 inert-list + 10 interpreter-list false ALLOWs measured
+// this way, including the entire `gh-<name>` class (the OFFICIAL GitHub CLI extension-naming
+// convention -- `gh extension install owner/gh-foo` installs a directly-executable third-party binary
+// literally named `gh-foo`). The lookahead below requires the match to end at end-of-string or a real
+// shell metacharacter/whitespace -- i.e. the recognised name must be a COMPLETE shell token, exactly
+// the discipline CURL_LEADING_RX/GIT_LEADING_RX (self-pace-gate.mjs) already apply with `\b` for names
+// that never take a numeric/dotted suffix; these two names do (`node20`, `python3.11`), so the
+// interpreter alternation also gets an explicit optional version suffix instead of relying on `\b`.
+const HEREDOC_TOKEN_END = String.raw`(?=$|[\s<>|&;])`
 const HEREDOC_INTERPRETER_RX = new RegExp(
   String.raw`^\s*(?:(?:[A-Za-z_]\w*=\S*|sudo|env|command|exec|nice|builtin|time)\s+)*(?:[./][\w./-]*/)?` +
-    String.raw`(python3?|node|tsx|ts-node|deno|bun|npx|sh|bash|zsh|dash)\b`,
+    String.raw`(?:python(?:\d+(?:\.\d+)*)?|node(?:\d+)?|tsx|ts-node|deno|bun|npx|sh|bash|zsh|dash)` +
+    HEREDOC_TOKEN_END,
   'i',
 )
 const HEREDOC_INERT_CONSUMER_RX = new RegExp(
-  String.raw`^\s*(?:(?:[A-Za-z_]\w*=\S*|sudo|env|command|exec|nice|builtin|time)\s+)*(?:[./][\w./-]*/)?(cat|gh)\b`,
+  String.raw`^\s*(?:(?:[A-Za-z_]\w*=\S*|sudo|env|command|exec|nice|builtin|time)\s+)*(?:[./][\w./-]*/)?(?:cat|gh)` +
+    HEREDOC_TOKEN_END,
   'i',
 )
 
@@ -212,6 +247,12 @@ function extractSubstitutions(cmd) {
       while (j < src.length && depth > 0) {
         if (src[j] === '\\') { j += 2; continue }
         if (src[j] === "'") { const k = src.indexOf("'", j + 1); j = k === -1 ? src.length : k + 1; continue }
+        // BLOCKING (Cybersec NO-GO, card c7401c5f, comment #16876): a `)` inside a double-quoted
+        // string was counted as depth-closing, so `echo "$(echo "a)b"; sendmail a@b)"` prematurely
+        // ended the substitution at the `)` inside the nested "a)b" literal -- everything AFTER it
+        // (the real sender) never got recursed into by substitutionSends(). Same fix shape as the
+        // single-quote branch immediately above: inside a double-quoted run, `(`/`)` are not depth.
+        if (src[j] === '"') { const k = src.indexOf('"', j + 1); j = k === -1 ? src.length : k + 1; continue }
         if (src[j] === '(') depth++
         else if (src[j] === ')') depth--
         j++
