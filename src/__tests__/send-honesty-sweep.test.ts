@@ -106,6 +106,11 @@ describe('send-telegram.sh library contract', () => {
     expect(r.stderr).toContain('empty token')
     expect(curlWasInvoked()).toBe(false)
   })
+  it('bot token NOT in curl argv (card 8418b098: -K stdin, not URL-in-argv)', () => {
+    driver(`send_telegram_message "${FAKE_TOKEN}" 42 "hello"`)
+    expect(curlWasInvoked()).toBe(true)
+    expect(readFileSync(join(stage, 'curl-argv.log'), 'utf8')).not.toContain(FAKE_TOKEN)
+  })
 })
 
 // ---- unit-fail-notify.sh ---------------------------------------------------
