@@ -11,9 +11,19 @@ import { defineConfig, configDefaults } from 'vitest/config'
 // suite once per agent (thousands of duplicate, unrunnable live.test.ts
 // files with no DB/creds), drowning any real signal. Excluded so the suite
 // stays meaningful if ever run outside the mandated worktree.
+//
+// store/adopted/**/evals/fixtures/** (card 931126b4): an adopted external
+// skill set's eval fixtures, named *.test.js by that project's own
+// convention -- not vitest tests. Collecting them fails file-level (no
+// module scope, or no test suite found), noisy on any untargeted `vitest run`.
 export default defineConfig({
   test: {
-    exclude: [...configDefaults.exclude, 'tests/smoke/**', 'agents/**'],
+    exclude: [
+      ...configDefaults.exclude,
+      'tests/smoke/**',
+      'agents/**',
+      'store/adopted/**/evals/fixtures/**',
+    ],
     // Hard gates, run in every worker before any test module is imported:
     //  - assert-not-live-install: refuse to run inside a live install (see that
     //    setup file's header for the 2026-07-27 incident it prevents).
