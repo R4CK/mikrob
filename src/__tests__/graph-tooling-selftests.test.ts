@@ -141,8 +141,10 @@ describe('the files the offload path resolves at runtime', () => {
     const code = src.split('\n').filter((l) => !l.trimStart().startsWith('#')).join('\n')
     expect(code).toMatch(/python3 "\$RESOLVE"/)
     expect(code).toMatch(/printf[^\n]*--graph-repo[^\n]*--graph-node/)
-    // ...and that the pair is actually handed to the RAG wrapper, not just built.
-    expect(code).toMatch(/CARD_GRAPH\[@\]/)
-    expect(code).toMatch(/SUB_GRAPH\[@\]/)
+    // ...and that the pair is actually handed to the RAG wrapper, not just built. Card 1bf37a35
+    // collapsed the old two call sites (whole-card vs a synthetic local-model subtask breakdown)
+    // into one try_leaf() used uniformly for both "the card is itself a leaf" and "a real kanban
+    // leaf descendant" -- one array populated by graph_args_for now, not two differently-named ones.
+    expect(code).toMatch(/\bgraph\[@\]/)
   })
 })

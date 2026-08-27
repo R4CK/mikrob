@@ -52,11 +52,18 @@ describe('the offload path writes COMMENTS and nothing else (card 8b925388)', ()
     }
   })
 
-  it('the ONLY mutating call in the whole path is the draft comment', () => {
+  it('every mutating call in the whole path is a comment POST -- never a card-record write', () => {
+    // Card 1bf37a35 added a second call site (a one-time "local offload exhausted" notice) next to
+    // the original draft comment, and both now target the LEAF card actually being drafted -- which
+    // can differ from the top-level $CARD once real kanban children are involved -- rather than
+    // always literally $CARD. The count is no longer pinned at exactly one; the invariant that
+    // actually matters (every mutating call is a comment POST, never a PUT/move/title write) still is.
     const mutating = SCRIPTS.flatMap(curlCalls).filter((c) => /-X\s+(POST|PUT|PATCH|DELETE)/.test(c))
-    expect(mutating).toHaveLength(1)
-    expect(mutating[0]).toMatch(/-X\s+POST/)
-    expect(mutating[0]).toMatch(/\/api\/kanban\/\$CARD\/comments/)
+    expect(mutating.length).toBeGreaterThan(0)
+    for (const call of mutating) {
+      expect(call).toMatch(/-X\s+POST/)
+      expect(call).toMatch(/\/api\/kanban\/\$[A-Za-z_][A-Za-z0-9_]*\/comments/)
+    }
   })
 
   it('the draft comment is LABELLED as a draft, so a reader cannot mistake it for a decision', () => {
