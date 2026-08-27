@@ -138,7 +138,7 @@ kanban_file="$(mktemp)"
 trap 'rm -f "$hdr_file" "$kanban_file"' EXIT
 if [ "$CANDIDATES_JSON" != "[]" ] && [ -r "$TOKEN_FILE" ]; then
   printf 'Authorization: Bearer %s\n' "$(cat "$TOKEN_FILE")" > "$hdr_file"
-  curl -sf -H @"$hdr_file" "$DASH/api/kanban" -o "$kanban_file" 2>/dev/null || true
+  curl -sf --max-time 10 -H @"$hdr_file" "$DASH/api/kanban" -o "$kanban_file" 2>/dev/null || true
 fi
 
 prev_pick=""

@@ -178,10 +178,10 @@ hdr_file="$(mktemp)"; chmod 600 "$hdr_file"
 trap 'rm -f "$hdr_file"' EXIT
 printf 'Authorization: Bearer %s\n' "$(cat "$TOKEN_FILE" 2>/dev/null)" > "$hdr_file"
 
-_kanban_get() { curl -sf -H @"$hdr_file" "$DASH/api/kanban" 2>/dev/null || echo '[]'; }
+_kanban_get() { curl -sf --max-time 10 -H @"$hdr_file" "$DASH/api/kanban" 2>/dev/null || echo '[]'; }
 _post_comment() { # $1 cardId $2 text
   [ -n "$1" ] && [ "$1" != "null" ] || return 0
-  curl -sf -H @"$hdr_file" -X POST "$DASH/api/kanban/$1/comments" -H 'Content-Type: application/json' \
+  curl -sf --max-time 10 -H @"$hdr_file" -X POST "$DASH/api/kanban/$1/comments" -H 'Content-Type: application/json' \
     -d "$(python3 -c 'import json,sys; print(json.dumps({"author":"backend","content":sys.argv[1]}))' "$2")" \
     >/dev/null 2>&1 || true
 }
