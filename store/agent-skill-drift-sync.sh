@@ -109,12 +109,23 @@ classify_copy() {
     return
   fi
 
+  blobtmp="$(mktemp)"
   for blob in $(git -C "$ROOT" log --format=%H -n "$HIST_CAP" -- "$rel" 2>/dev/null); do
-    rendered="$(git -C "$ROOT" show "$blob:$rel" 2>/dev/null | render_seed_template | _hash)"
-    if [ "$cur" = "$rendered" ]; then echo "stale"; return; fi
-    raw="$(git -C "$ROOT" show "$blob:$rel" 2>/dev/null | _hash)"
-    if [ "$cur" = "$raw" ]; then echo "stale"; return; fi
+    # A `git show` that ERRORS (e.g. this historical commit deleted the file) produces empty
+    # stdout -- indistinguishable from a genuinely empty live file if we just hash whatever came
+    # out of the pipe (both hash to the empty-string sha256). Capture to a temp file and check
+    # the exit status explicitly; only a successful `git show` counts as real content to compare
+    # against. Using a temp file (not a `content="$(...)"` capture) also avoids stripping
+    # trailing newlines, which would otherwise corrupt the hash of real content.
+    if ! git -C "$ROOT" show "$blob:$rel" >"$blobtmp" 2>/dev/null; then
+      continue
+    fi
+    rendered="$(render_seed_template <"$blobtmp" | _hash)"
+    if [ "$cur" = "$rendered" ]; then rm -f "$blobtmp"; echo "stale"; return; fi
+    raw="$(_hash <"$blobtmp")"
+    if [ "$cur" = "$raw" ]; then rm -f "$blobtmp"; echo "stale"; return; fi
   done
+  rm -f "$blobtmp"
   echo "diverged"
 }
 
@@ -160,9 +171,28 @@ run_scan() {
           STALE_LIST="${STALE_LIST}${agent}/${skill}\n"
           agent_lines="${agent_lines}  STALE     ${skill} -- byte-identical to a shipped-but-superseded version, safe to re-sync\n"
           if [ "$APPLY" -eq 1 ]; then
+            # TOCTOU guard: re-hash the live file immediately before the mv and compare against
+            # the hash classify_copy just judged safe. If something else wrote to this live
+            # per-agent skill file in the window between classification and now, the file no
+            # longer matches what we decided was safe to overwrite -- skip it and say so,
+            # instead of silently clobbering (or silently dropping) a concurrent local edit.
+            classify_hash="$(_hash <"$installed" 2>/dev/null)"
+            # Test-only hook: a no-op in every real invocation (the env var is never set outside
+            # selftest). Lets selftest deterministically simulate a concurrent write landing in
+            # the classify->mv window, instead of relying on a flaky sleep-based race.
+            if [ -n "${AGENT_SKILL_DRIFT_TEST_RACE_HOOK:-}" ]; then "$AGENT_SKILL_DRIFT_TEST_RACE_HOOK" "$installed"; fi
             tmp="$installed.$$.tmp"
-            if render_seed_template <"$ROOT/$rel" >"$tmp" && mv "$tmp" "$installed"; then
-              agent_lines="${agent_lines}            -> synced\n"
+            if render_seed_template <"$ROOT/$rel" >"$tmp"; then
+              live_hash="$(_hash <"$installed" 2>/dev/null)"
+              if [ "$live_hash" != "$classify_hash" ]; then
+                rm -f "$tmp"
+                agent_lines="${agent_lines}            -> SKIPPED, file changed between classify and sync (concurrent write) -- re-run to re-check\n"
+              elif mv "$tmp" "$installed"; then
+                agent_lines="${agent_lines}            -> synced\n"
+              else
+                rm -f "$tmp"
+                agent_lines="${agent_lines}            -> SYNC FAILED (left untouched)\n"
+              fi
             else
               rm -f "$tmp"
               agent_lines="${agent_lines}            -> SYNC FAILED (left untouched)\n"
@@ -274,6 +304,60 @@ if [[ "$MODE" == selftest ]]; then
   out2="$(run --telegram --agent agentA)"
   echo "$out2" | grep -q 'diverged=0' && echo "  ok   --agent filter excludes other agents' findings" \
     || { echo "  FAIL --agent filter did not narrow the scan"; fail=1; }
+
+  # --- PART 2 regression: git-show ERROR vs a genuinely-empty file must not collapse to the same
+  # signal. History: add -> DELETE -> re-add. On the delete commit `git show` errors (empty
+  # stdout); a live copy that is genuinely 0 bytes hashes the same as that error output. Before
+  # the fix this misclassified the empty live file as "stale" (safe to sync) when it actually
+  # just means the classifier failed to read a real historical version.
+  mkdir -p "$tmp/root/seed-skills/gone-skill"
+  printf 'FIRST VERSION\n' > "$tmp/root/seed-skills/gone-skill/SKILL.md"
+  git -C "$tmp/root" add -A && git -C "$tmp/root" commit -q -m "gone-skill add"
+  git -C "$tmp/root" rm -q seed-skills/gone-skill/SKILL.md
+  git -C "$tmp/root" commit -q -m "gone-skill delete"
+  mkdir -p "$tmp/root/seed-skills/gone-skill"   # git rm cleans up the now-empty directory too
+  printf 'THIRD VERSION\n' > "$tmp/root/seed-skills/gone-skill/SKILL.md"
+  git -C "$tmp/root" add -A && git -C "$tmp/root" commit -q -m "gone-skill re-add"
+
+  mkdir -p "$tmp/root/agents/agentE/.claude/skills/gone-skill"
+  : > "$tmp/root/agents/agentE/.claude/skills/gone-skill/SKILL.md"   # genuinely empty, 0 bytes
+
+  out4="$(run --telegram --agent agentE --skill gone-skill --apply)"
+  echo "$out4" | grep -q 'current=0 stale=0 diverged=1' \
+    && echo "  ok   empty live file against add/DELETE/re-add history classifies as diverged, not stale" \
+    || { echo "  FAIL empty-file/deleted-commit ambiguity misclassified:"; echo "$out4"; fail=1; }
+  [ ! -s "$tmp/root/agents/agentE/.claude/skills/gone-skill/SKILL.md" ] \
+    && echo "  ok   --apply left the empty agentE copy untouched (0 bytes)" \
+    || { echo "  FAIL --apply wrote to a diverged copy that should never be touched"; fail=1; }
+
+  # --- PART 3 regression: TOCTOU between classify and mv. Simulate a concurrent local write
+  # landing in the classify->mv window via the test-only race hook; the sync must detect the
+  # mismatch, skip the mv, and report it -- never silently overwrite, never silently drop it.
+  mkdir -p "$tmp/root/agents/agentF/.claude/skills/demo-skill"
+  printf 'OLD VERSION\ninstall dir: %s\nagent: selftest\n' "$tmp/root" > "$tmp/root/agents/agentF/.claude/skills/demo-skill/SKILL.md"
+  f_target="$tmp/root/agents/agentF/.claude/skills/demo-skill/SKILL.md"
+
+  race_hook="$tmp/race_hook.sh"
+  cat > "$race_hook" <<'HOOK'
+#!/usr/bin/env bash
+# match by glob, not exact string -- the caller's $installed path can carry an extra "/" (from
+# the trailing-slash glob it's built from), which would defeat an exact-path comparison.
+case "$1" in
+  */agentF/*/demo-skill/*SKILL.md)
+    printf 'CONCURRENT LOCAL EDIT, MUST SURVIVE\n' > "$1"
+    ;;
+esac
+HOOK
+  chmod +x "$race_hook"
+
+  out5="$(AGENT_SKILL_DRIFT_ROOT="$tmp/root" AGENT_SKILL_DRIFT_TEST_RACE_HOOK="$race_hook" \
+          bash "${BASH_SOURCE[0]}" --apply --agent agentF)"
+  echo "$out5" | grep -q 'SKIPPED, file changed between classify and sync' \
+    && echo "  ok   TOCTOU race detected and sync skipped, reported" \
+    || { echo "  FAIL TOCTOU race not detected/reported:"; echo "$out5"; fail=1; }
+  [ "$(cat "$f_target")" = "CONCURRENT LOCAL EDIT, MUST SURVIVE" ] \
+    && echo "  ok   concurrent local edit survived (not overwritten by the sync)" \
+    || { echo "  FAIL concurrent local edit was lost -- TOCTOU not closed"; fail=1; }
 
   [ $fail -eq 0 ] && { echo 'selftest: PASS'; exit 0; } || { echo 'selftest: FAIL'; exit 1; }
 fi
