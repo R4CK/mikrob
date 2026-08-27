@@ -28,13 +28,18 @@ import { readFileSync } from 'node:fs'
 import { fileURLToPath } from 'node:url'
 import { dirname, join } from 'node:path'
 import { allow, deny, isInvokedDirectly } from './hook-lib.mjs'
-// The heredoc walker is IMPORTED, not reimplemented (card 84e31b40). It is the same
-// parsing problem this gate faces, it is already hardened by a Cybersec NO-GO (card
-// 4638c14c: a decoy `-d @-` in ANOTHER binary's argv used to launder an interpreter
-// heredoc), and its safety argument transfers unchanged -- see the call site below.
-// A second copy of ~60 lines of security-critical shell parsing is the shape where a
+// The heredoc walker is IMPORTED, not reimplemented (card 84e31b40, generalized by card c7401c5f
+// via heredocOwnerRecords). It is the same parsing problem this gate faces, it is already hardened
+// by a Cybersec NO-GO (card 4638c14c: a decoy `-d @-` in ANOTHER binary's argv used to launder an
+// interpreter heredoc), and its safety argument transfers unchanged -- see the heredoc composition
+// section below. A second copy of ~60 lines of security-critical shell parsing is the shape where a
 // fix lands in one twin and the other silently keeps the hole.
-import { stripHeredocDataPayloads } from './self-pace-gate.mjs'
+import {
+  heredocOwnerRecords,
+  heredocIsStdinDataSink,
+  CURL_LEADING_RX,
+  GIT_LEADING_RX,
+} from './self-pace-gate.mjs'
 
 // Bash command patterns that send mail. SUBGATEPOZ822 (2026-08-22): these are
 // no longer the primary trigger -- they matched CONTENT anywhere in the
@@ -65,30 +70,6 @@ const SEND_PATTERNS = [
   /\bgraph-mail\b[^\n]*\bsend\b/i,
   /\bsendMail\s*\(/i,
 ]
-
-// Blank a curl -d/--data LITERAL payload before the SEND_PATTERNS scan (card 132fc28c,
-// incident msg 8641): a kanban-comment POST to localhost:3420/api/kanban -- an unrelated
-// endpoint, not an email API -- carried prose discussing whether the PRODUCT should send a
-// registration activation email; that prose mentioned "Resend" (the email-provider name)
-// near "email"/"send" and matched the RESEND_RX below, blocking a comment post as if it were
-// an actual outbound send. The gate exists to stop the ACTION (a real email-API/SMTP call),
-// not to censor text that happens to discuss email. A `-d @file`/`--data-binary @file`
-// argument (a file reference, no inline text) is untouched -- there is nothing to blank, and
-// this is exactly the shape the existing api.resend.com regression test already uses, so a
-// REAL send to that host stays caught either way. Same literal-only quote handling as
-// self-pace-gate.mjs's stripDataPayloads (single-quoted, ANSI-C $'...', double-quoted
-// WITHOUT $(...)/backtick -- a substitutable double-quoted payload is left intact so a real
-// substitution is not hidden from the scan).
-function stripDataPayloads(cmd) {
-  return String(cmd ?? '').replace(
-    /((?:^|\s)(?:-d|--data(?:-(?:raw|binary|ascii|urlencode))?)(?:\s+|=))('[^']*'|\$'(?:[^'\\]|\\.)*'|"(?:[^"\\]|\\.)*")/gi,
-    (full, flag, arg) => {
-      const dq = arg.startsWith('"')
-      if (dq && (arg.includes('$(') || arg.includes('`'))) return full // may substitute -> keep
-      return flag + (dq ? '""' : "''") // literal payload -> blank the content
-    },
-  )
-}
 
 // --- command-position analysis (SUBGATEPOZ822) ------------------------------
 // Ported from scripts/hooks/outgoing-copy-gate.py (KAPUHATOKOR822, PR #1042,
@@ -122,6 +103,132 @@ const CODE_SEND = /\bsmtplib\b|SMTP\s*\(|\bsendMail\s*\(|\bsendEmail\b|\bmail\.s
 const CODE_EXECISH = /\bsubprocess\b|os\.system|\bpopen\b|child_process|\bexec[A-Za-z]*\s*\(|\bspawn[A-Za-z]*\s*\(/i
 const CODE_SENDER_LIT = /sendmail|msmtp|swaks|send\.py/i
 const codeStringSends = (code) => CODE_SEND.test(code) || (CODE_EXECISH.test(code) && CODE_SENDER_LIT.test(code))
+// A bare network call verb (`fetch(`, `axios.post(`, ...) is not enough on its own -- same reasoning
+// as CODE_EXECISH/CODE_SENDER_LIT above (msg 14298): a call verb AND a known provider host together
+// is what a real provider-API send looks like from JS/Python with no smtplib/sendMail() wrapper
+// (card c7401c5f, closing the gap RESEND_TARGET already covers for curl argv position but not for a
+// heredoc-fed script's own body).
+const CODE_NETWORK_CALL = /\bfetch\s*\(|\baxios\b[^\n]*\(|\brequests\.(?:post|get)\s*\(|\burlopen\s*\(|\bXMLHttpRequest\b/i
+const CODE_PROVIDER_HOST = /api\.resend\.com/i
+const heredocScriptSends = (body) =>
+  codeStringSends(body) || (CODE_NETWORK_CALL.test(body) && CODE_PROVIDER_HOST.test(body))
+
+// --- heredoc composition (card c7401c5f) ------------------------------------
+// isSendInvocation's own tokenizer (segmentsTokens, below) strips EVERY heredoc body wholesale via
+// HEREDOC_RE before tokenizing -- necessary, because a heredoc body is not shell syntax and would
+// desync the tokenizer, but it also means a heredoc feeding an INTERPRETER's stdin as its script
+// (`python3 <<'PY' ... smtplib ... PY`, no -c/-e) goes completely unscanned by position analysis
+// alone. This closes that gap by composing with the SAME hardened ownership walker
+// self-pace-gate.mjs's stripHeredocDataPayloads already exercises through ~150 adversarial cases
+// (heredocOwnerRecords, card c7401c5f) -- not a second parser -- to find which heredocs are owned by
+// what, and applies a scan policy over the owner span rather than a blank/keep decision.
+//
+// DEFAULT IS SCAN, same as the legacy content-scan this replaces: an owner span this gate cannot
+// positively prove inert stays scanned. That default matters for a shape stripHeredocDataPayloads's
+// own curl/git-only exemption never had to answer -- an UNRECOGNISED leading word standing in front
+// of the real interpreter (`coproc CO python3 curl -d @- <<'PY'`, F-9's L-R5; `coproc deploy-prod
+// curl -d @- <<'PY'`, F-1-round-10's N-R2) is not curl, not git, and its own argv[0] is not a known
+// interpreter either -- but bash still hands the heredoc to that exact simple command, and this gate
+// cannot prove "CO"/"deploy-prod" do not exist and are not going to relay it somewhere dangerous.
+// Only two things are carved OUT of that default:
+//   1. curl/git in their proven-safe stdin shape (heredocIsStdinDataSink) -- MEASURED to never
+//      execute what they are given (curl transmits `-d` as HTTP bytes, git stores `-F` as a
+//      message). Everything else curl/git-LEADING (e.g. `curl --config -`, which reads the body as
+//      OPTIONS it then acts on) is NOT this shape and stays scanned.
+//   2. A narrow, explicit allowlist of consumers proven to never execute OR act on what they read
+//      (HEREDOC_INERT_CONSUMER_RX below) -- `cat <<EOF > file` (copies bytes, never runs them),
+//      `gh <<EOF` (issue/PR body text, never code). This is what removes the false positives this
+//      card exists to remove; an unrecognised binary is NOT on this list and stays scanned, same
+//      discipline as heredocIsStdinDataSink's own deliberately narrow list (see
+//      stdin-consumer-list-narrowness.test.ts's header).
+//
+// A SCANNED heredoc then gets one of two checks, not the same one for both, because they answer
+// different questions:
+//   - Owner is a genuine interpreter, recognised DIRECTLY in leading position (HEREDOC_INTERPRETER_RX
+//     anchored) -- it executes the body as CODE, so the narrower code-shaped check applies
+//     (heredocScriptSends, shared with -c/-e above): this is what keeps a heredoc that only MENTIONS
+//     a sender in a string/comment from false-denying (the conformance suite's fp-python-heredoc
+//     case: `python3 - <<'PYEOF'` whose body is `print('python3 ... send.py --to a@b.hu')`).
+//   - Everything else that stays scanned (curl-non-exempt, git-non-exempt, an unrecognised argv[0])
+//     gets the full legacy SEND_PATTERNS scan, same as the content-scan this composition replaces --
+//     there is no interpreter-vs-content distinction to draw for an owner this gate cannot identify
+//     as code-executing in the first place.
+const HEREDOC_INTERPRETER_RX = new RegExp(
+  String.raw`^\s*(?:(?:[A-Za-z_]\w*=\S*|sudo|env|command|exec|nice|builtin|time)\s+)*(?:[./][\w./-]*/)?` +
+    String.raw`(python3?|node|tsx|ts-node|deno|bun|npx|sh|bash|zsh|dash)\b`,
+  'i',
+)
+const HEREDOC_INERT_CONSUMER_RX = new RegExp(
+  String.raw`^\s*(?:(?:[A-Za-z_]\w*=\S*|sudo|env|command|exec|nice|builtin|time)\s+)*(?:[./][\w./-]*/)?(cat|gh)\b`,
+  'i',
+)
+
+function heredocOwnerNeedsScan(ownerSpan) {
+  if (CURL_LEADING_RX.test(ownerSpan) || GIT_LEADING_RX.test(ownerSpan)) {
+    return !heredocIsStdinDataSink(ownerSpan)
+  }
+  return !HEREDOC_INERT_CONSUMER_RX.test(ownerSpan)
+}
+
+function heredocBodyMatchesSend(ownerSpan, body) {
+  if (HEREDOC_INTERPRETER_RX.test(ownerSpan)) return heredocScriptSends(body)
+  return SEND_PATTERNS.some((re) => re.test(body))
+}
+
+function heredocFeedsSend(cmd) {
+  return heredocOwnerRecords(cmd).some(
+    (r) => heredocOwnerNeedsScan(r.ownerSpan) && heredocBodyMatchesSend(r.ownerSpan, r.body),
+  )
+}
+
+// Bash performs $(...) / backtick command substitution BEFORE the enclosing program ever sees the
+// argument -- so a `-d` payload or an unquoted-tag heredoc body that merely LOOKS like inert data can
+// still hide a real invocation (card 84e31b40's own reasoning: `curl -d "$(sendmail user@host)" url`
+// really does invoke sendmail, regardless of what curl does with the substituted result). Extracted
+// and recursed through isSendInvocation, the same treatment -c/-e code strings and wrapper-shell -c
+// arguments already get above, just reached through a different bash construct. Deliberately kept
+// OUT of segmentsTokens/maskSubshellMarkers (shared, parity-tested against outgoing-copy-gate.py's
+// twin via send-invocation-conformance.test.ts) rather than folded in there -- no case in the shared
+// conformance list exercises a substitution, so this stays a gateDecision-level composition, not a
+// change to the cross-language contract.
+function extractSubstitutions(cmd) {
+  const src = String(cmd ?? '')
+  const out = []
+  let i = 0
+  while (i < src.length) {
+    const ch = src[i]
+    if (ch === '\\') { i += 2; continue }
+    if (ch === "'") { const j = src.indexOf("'", i + 1); i = j === -1 ? src.length : j + 1; continue }
+    if (ch === '`') {
+      const j = src.indexOf('`', i + 1)
+      if (j === -1) break
+      out.push(src.slice(i + 1, j))
+      i = j + 1
+      continue
+    }
+    if (ch === '$' && src[i + 1] === '(') {
+      let depth = 1
+      let j = i + 2
+      while (j < src.length && depth > 0) {
+        if (src[j] === '\\') { j += 2; continue }
+        if (src[j] === "'") { const k = src.indexOf("'", j + 1); j = k === -1 ? src.length : k + 1; continue }
+        if (src[j] === '(') depth++
+        else if (src[j] === ')') depth--
+        j++
+      }
+      out.push(src.slice(i + 2, depth === 0 ? j - 1 : j))
+      i = j
+      continue
+    }
+    i++
+  }
+  return out
+}
+
+function substitutionSends(cmd, depth) {
+  if (depth >= 3) return false
+  return extractSubstitutions(cmd).some((inner) => isSendInvocation(inner, depth + 1))
+}
 
 // Unquoted newline / backtick / `$(` become segment separators; quoted text is
 // untouched (it is content). Tracks quote state by hand -- no shell involved.
@@ -214,7 +321,14 @@ export function isSendInvocation(cmd, depth = 0) {
     // this path the gate is exactly as strict as before -- never weaker.
     return SEND_PATTERNS.some((re) => re.test(cmd))
   }
-  return segments.some((toks) => segmentIsSend(toks, depth))
+  // heredocFeedsSend and substitutionSends both run over the RAW cmd (heredoc bodies and
+  // $(...)/backtick content intact), independently of the position-based segments above (which
+  // never see inside a heredoc body, and never expand a substitution -- see each helper's header).
+  return (
+    segments.some((toks) => segmentIsSend(toks, depth)) ||
+    heredocFeedsSend(cmd) ||
+    substitutionSends(cmd, depth)
+  )
 }
 
 // Outbound-shaped operations of the multiplexed manage_email tool. Each of
@@ -248,27 +362,22 @@ export function gateDecision(toolName, toolInput) {
     return { deny: true, kind: 'draft-required' }
   }
   if (name === 'Bash') {
-    // NOT switched to upstream's isSendInvocation() here (card 72f5f13b merge decision,
-    // recorded for MikroB/Peti review -- see the merge report). isSendInvocation is kept,
-    // exported, and cross-tested against outgoing-copy-gate.py's twin (see
-    // send-invocation-conformance.test.ts) because it is a genuinely more precise,
-    // position-aware detector. But its heredoc handling (HEREDOC_RE inside segmentsTokens)
-    // discards EVERY heredoc body before tokenizing, including one feeding an INTERPRETER
-    // (`python3 <<'PY' ... smtplib.SMTP(...) ... PY`) -- a real send this fork's OWN
-    // extensively adversarially-hardened suite (email-send-gate.test.ts, card 84e31b40,
-    // ~150 cases covering nested substitutions/quoting/case-statement heredoc ownership)
-    // requires to still deny. Closing that gap needs the SAME hardened ownership walker
-    // those 150 cases already exercise (self-pace-gate.mjs's stripHeredocDataPayloads /
-    // bash-ast.mjs's heredocOwnerSpans) generalized to identify an INTERPRETER owner, not
-    // just curl/git -- a scoped refactor of a separate, shared, security-critical file,
-    // out of scope for a merge-conflict resolution. A hand-rolled regex replacement was
-    // tried and measured: it satisfied upstream's new false-positive tests but broke 26 of
-    // the fork's own adversarial cases (nested $()/<()/>()/backticks, case-statement
-    // pattern terminators, quoting edge cases) -- strictly worse for a hard-deny gate.
-    // Kept the fork's original, fully-covered (151/151 green) legacy scan wholesale instead.
-    const raw = String(toolInput?.command ?? '')
-    const cmd = stripDataPayloads(stripHeredocDataPayloads(raw))
-    if (SEND_PATTERNS.some((re) => re.test(cmd))) return { deny: true }
+    // Card 72f5f13b merge decision -> resolved by card c7401c5f. Upstream's isSendInvocation() is
+    // a genuinely more precise, position-aware detector (cross-tested against outgoing-copy-gate.py's
+    // twin, see send-invocation-conformance.test.ts) and reduces real false positives (a git commit
+    // message or a kanban-comment payload that merely NAMES a mailer no longer denies). But wiring it
+    // in as a naive swap for the fork's legacy SEND_PATTERNS content-scan was a REPLACEMENT, not a
+    // COMPOSITION: its heredoc handling (HEREDOC_RE inside segmentsTokens) discards EVERY heredoc body
+    // before tokenizing, including one feeding an INTERPRETER (`python3 <<'PY' ... smtplib.SMTP(...)
+    // ... PY`) -- a real send this fork's OWN extensively adversarially-hardened suite
+    // (email-send-gate.test.ts, card 84e31b40, ~150 cases covering nested substitutions/quoting/
+    // case-statement heredoc ownership) requires to still deny. isSendInvocation now composes with
+    // that same ownership answer instead (heredocFeedsSend above, built on self-pace-gate.mjs's
+    // heredocOwnerRecords -- the SAME hardened walker those 150 cases exercise, generalized to
+    // classify an INTERPRETER owner rather than reimplemented) so this call is now the position-based
+    // detector ALONE, with the heredoc-code-execution gap closed by composition rather than left open
+    // or patched with a second, conflicting regex pass.
+    if (isSendInvocation(String(toolInput?.command ?? ''))) return { deny: true }
   }
   return { deny: false }
 }

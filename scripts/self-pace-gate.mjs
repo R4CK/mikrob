@@ -824,7 +824,7 @@ export function stripDataPayloads(seg) {
 // count); `feedsCurlStdin` requires BOTH the leading-curl match AND the flag shape,
 // so a decoy `-d @-` sitting in some OTHER binary's own argv can no longer curl-y
 // launder a heredoc it does not read as its data.
-const CURL_LEADING_RX = new RegExp(
+export const CURL_LEADING_RX = new RegExp(
   String.raw`^\s*(?:(?:[A-Za-z_]\w*=\S*|sudo|env|command|exec|nice|builtin|time)\s+)*${PATH_PREFIX}curl\b`,
   'i',
 )
@@ -842,7 +842,7 @@ const CURL_STDIN_DATA_RX = /(?:^|\s)(?:-d|--data(?:-(?:raw|binary|ascii))?)(?:\s
 // must be git (a decoy `-F -` in some other argv launders nothing, per Cybersec's 4638c14c
 // finding), the subcommand must be one that takes a message file, and an unquoted tag whose body
 // can command-substitute is left intact because bash expands it before git ever sees it.
-const GIT_LEADING_RX = new RegExp(
+export const GIT_LEADING_RX = new RegExp(
   String.raw`^\s*(?:(?:[A-Za-z_]\w*=\S*|sudo|env|command|exec|nice|builtin|time)\s+)*${PATH_PREFIX}git\b`,
   'i',
 )
@@ -852,6 +852,19 @@ const GIT_LEADING_RX = new RegExp(
 const GIT_MSG_SUBCMD_RX = /(?:^|\s)(?:commit|tag|notes)(?:\s|$)/i
 // -F-, -F -, --file -, --file=-
 const GIT_STDIN_MSG_RX = /(?:^|\s)(?:-F\s*-|--file(?:\s+|=)-)(?=\s|$)/
+
+// The SAME two-shape exemption stripHeredocDataPayloads's callback decides with, extracted so a
+// second consumer (email-send-gate.mjs, card c7401c5f) can ask the identical question about an
+// owner span without redefining curl's/git's stdin-data shape a second time. True only for curl's
+// OWN `-d @-`/`--data-binary @-`-shaped stdin read or git's OWN `commit|tag|notes -F -` message
+// read -- the two shapes that are proven to never execute what they are given, see the CURL_LEADING_RX
+// and GIT_LEADING_RX headers above for the incidents that pinned each guard individually.
+export function heredocIsStdinDataSink(ownerSpan) {
+  const curl = CURL_LEADING_RX.test(ownerSpan) && CURL_STDIN_DATA_RX.test(ownerSpan)
+  const git =
+    GIT_LEADING_RX.test(ownerSpan) && GIT_MSG_SUBCMD_RX.test(ownerSpan) && GIT_STDIN_MSG_RX.test(ownerSpan)
+  return curl || git
+}
 // Skip a balanced parenthesised run starting AT `start` (which must index a `(`), returning the
 // index just past its matching `)`. Quoting is honoured, because a `)` inside '...' closes nothing.
 // Used by the two constructs the walker consumes WHOLE rather than treating as command contexts.
@@ -1092,12 +1105,23 @@ function withOptionalEmptyParens(src, j, requireParens = false) {
 // A word starts here only after whitespace, a separator, or an opener.
 const WORD_START_RX = /[\s;&|()`]/
 
-export function stripHeredocDataPayloads(command) {
+// Card c7401c5f: the OWNERSHIP walk below (quote/nesting/case-statement aware -- the state machine
+// stripHeredocDataPayloads has exercised through ~150 adversarial cases) used to be inlined into
+// stripHeredocDataPayloads itself, hard-wired to a curl/git-only exemption decision. Extracted here
+// so the SAME walk can answer a second, differently-scoped question (email-send-gate.mjs: "which
+// heredocs feed an INTERPRETER") without a second copy of the parser -- the anti-duplication rule
+// this file already states for `extractHeredocBodies`/`blankHeredocBodies` cuts the other way for
+// THIS walk specifically, because those two are deliberately naive (no nesting/case tracking) while
+// this one is the hardened one every consumer actually needs. `onHeredoc(record)` is called once per
+// heredoc, in source order, with `{ atIndex, ownerSpan, body, quotedTag, substitutable }` --
+// `atIndex` is the index of the heredoc's own `<<` token (the same unit bash-ast.mjs's
+// heredocOwnerSpans keys its Map by), `ownerSpan` is this walker's answer for "which simple command
+// owns it" (`src.slice(boundary, atIndex)`), and the rest mirror what stripHeredocDataPayloads always
+// computed inline. The callback returns `true` to blank the body in `out` (length-preserving, spaces)
+// or `false` to leave it verbatim -- stripHeredocDataPayloads's own callback reproduces its previous
+// inline decision EXACTLY, so this extraction changes nothing about its behaviour or output.
+function heredocWalk(command, onHeredoc) {
   const src = String(command ?? '')
-  // Computed ONCE per call, not per heredoc: the parse is the expensive half (~8 ms p50 over the
-  // current gate) and the answer covers every heredoc in the command at once.
-  const mode = astMode()
-  const astSpans = mode === 'off' ? null : heredocOwnerSpans(src)
   let out = ''
   let i = 0
   let boundary = 0 // index where the CURRENT simple command started
@@ -1275,29 +1299,7 @@ export function stripHeredocDataPayloads(command) {
       quote === null ? /^<<-?\s*(?:'([^']*)'|"([^"]*)"|([A-Za-z_]\w*))/.exec(src.slice(i)) : null
     if (!here) { out += c; i++; continue }
     const span = src.slice(boundary, i)
-    // DARK LAUNCH (card f16b3165, plan-grilling change 3). `span` above is this walker's answer to
-    // "which simple command owns this heredoc"; astSpans holds tree-sitter-bash's answer to the
-    // same question. Both are computed, the two DECISIONS are compared, and any disagreement is
-    // recorded -- but the walker still drives behaviour unless SELF_PACE_AST=on. The ownership
-    // CHECKS below are shared by both paths and are not touched: only the span they read changes.
-    // The AST supplies only the BOUNDARY; the span is sliced from the same source, the same way,
-    // so both recognisers hand the checks below identical units.
-    const astBoundary = astSpans === null ? undefined : astSpans.get(i)
-    const astSpan = astBoundary === undefined ? null : src.slice(astBoundary, i)
-    const decide = (s) => {
-      const curl = CURL_LEADING_RX.test(s) && CURL_STDIN_DATA_RX.test(s)
-      const git = GIT_LEADING_RX.test(s) && GIT_MSG_SUBCMD_RX.test(s) && GIT_STDIN_MSG_RX.test(s)
-      return curl || git
-    }
-    const walkerSays = decide(span)
-    // An absent key is a real answer from a successful parse ("no heredoc owner here"), which for
-    // these checks is indistinguishable from an empty span -- both decide false.
-    const astSays = astSpans === null ? null : decide(astSpan ?? '')
-    if (astSays !== null && astSays !== walkerSays) recordAstDivergence(src, span, astSpan ?? '', walkerSays, astSays)
-    // Fail-closed cutover: the AST answer is only allowed to drive when it EXISTS. A null (absent
-    // dependency, oversized input, parse error) keeps the current behaviour rather than defaulting
-    // to "not an exempt payload", which would turn every parser hiccup into a false deny.
-    const feedsStdinData = mode === 'on' && astSays !== null ? astSays : walkerSays
+    const atIndex = i
     const tag = here[1] ?? here[2] ?? here[3]
     const quotedTag = here[1] != null || here[2] != null
     out += here[0]
@@ -1314,13 +1316,60 @@ export function stripHeredocDataPayloads(command) {
     // sees it, so a real command could run there regardless of curl's own semantics --
     // same fail-closed rule maskInertLiterals uses, for the same reason.
     const substitutable = !quotedTag && /\$\(|`/.test(body)
-    if (feedsStdinData && !substitutable) out += ' '.repeat(body.length)
+    const blank = onHeredoc({ atIndex, ownerSpan: span, body, quotedTag, substitutable })
+    if (blank) out += ' '.repeat(body.length)
     else out += body
     out += rel[0]
     i += rel.index + rel[0].length
     boundary = i
   }
   return out
+}
+
+export function stripHeredocDataPayloads(command) {
+  const src = String(command ?? '')
+  // Computed ONCE per call, not per heredoc: the parse is the expensive half (~8 ms p50 over the
+  // current gate) and the answer covers every heredoc in the command at once.
+  const mode = astMode()
+  const astSpans = mode === 'off' ? null : heredocOwnerSpans(src)
+  return heredocWalk(src, ({ atIndex, ownerSpan, substitutable }) => {
+    // DARK LAUNCH (card f16b3165, plan-grilling change 3). `ownerSpan` is the walker's answer to
+    // "which simple command owns this heredoc"; astSpans holds tree-sitter-bash's answer to the
+    // same question. Both are computed, the two DECISIONS are compared, and any disagreement is
+    // recorded -- but the walker still drives behaviour unless SELF_PACE_AST=on. The ownership
+    // CHECKS below are shared by both paths and are not touched: only the span they read changes.
+    // The AST supplies only the BOUNDARY; the span is sliced from the same source, the same way,
+    // so both recognisers hand the checks below identical units.
+    const astBoundary = astSpans === null ? undefined : astSpans.get(atIndex)
+    const astSpan = astBoundary === undefined ? null : src.slice(astBoundary, atIndex)
+    const walkerSays = heredocIsStdinDataSink(ownerSpan)
+    // An absent key is a real answer from a successful parse ("no heredoc owner here"), which for
+    // these checks is indistinguishable from an empty span -- both decide false.
+    const astSays = astSpans === null ? null : heredocIsStdinDataSink(astSpan ?? '')
+    if (astSays !== null && astSays !== walkerSays) {
+      recordAstDivergence(src, ownerSpan, astSpan ?? '', walkerSays, astSays)
+    }
+    // Fail-closed cutover: the AST answer is only allowed to drive when it EXISTS. A null (absent
+    // dependency, oversized input, parse error) keeps the current behaviour rather than defaulting
+    // to "not an exempt payload", which would turn every parser hiccup into a false deny.
+    const feedsStdinData = mode === 'on' && astSays !== null ? astSays : walkerSays
+    return feedsStdinData && !substitutable
+  })
+}
+
+// The general-purpose form of the same walk (card c7401c5f): every heredoc's owner span and body,
+// with NO blank/keep decision baked in -- unlike stripHeredocDataPayloads, this never mutates the
+// command text, it only reports. email-send-gate.mjs uses this to find heredocs owned by an
+// INTERPRETER (a heredoc HEREDOC_RE necessarily strips before tokenizing in isSendInvocation, since
+// a heredoc body is not shell syntax) and scan just those bodies -- a different consumer of the same
+// ownership answer, not a second parser.
+export function heredocOwnerRecords(command) {
+  const records = []
+  heredocWalk(command, (record) => {
+    records.push(record)
+    return false // this consumer never blanks -- it only wants to see every record
+  })
+  return records
 }
 
 // Blank out git commit/tag/stash -m/--message LITERAL text before self-pace
