@@ -37,16 +37,33 @@ describe('store/offload-dispatch.sh -- a local draft is never signed as the orch
     expect(DISPATCH).toContain(`DRAFT_AUTHOR="${DRAFT_AUTHOR}"`)
   })
 
+  // Card 1bf37a35 added a second comment-POST call site (a one-time "local offload exhausted"
+  // notice next to the draft comment), and both now target the LEAF card being drafted via a
+  // $leaf_id variable rather than always literally $CARD -- so a fixed-string slice from
+  // '/api/kanban/$CARD/comments' no longer finds either call. Extract every comment-POST call
+  // instead (mirrors offload-dispatch-card-writes.test.ts's curlCalls()) and check ALL of them.
+  function commentPostCalls(): string[] {
+    return DISPATCH
+      .replace(/\\\n/g, ' ')
+      .split('\n')
+      .filter((l) => !/^\s*#/.test(l))
+      .filter((l) => /\bcurl\b/.test(l) && /\/api\/kanban\/.*\/comments/.test(l))
+  }
+
   it('does NOT hardcode any author in the comment POST payload', () => {
     // The regression is a literal author sneaking back into the JSON body.
-    const post = DISPATCH.slice(DISPATCH.indexOf('/api/kanban/$CARD/comments'))
-    expect(post).toContain('"author":sys.argv[1]')
-    expect(post).not.toMatch(/"author"\s*:\s*"[^"]+"/)
+    const posts = commentPostCalls()
+    expect(posts.length).toBeGreaterThan(0)
+    for (const post of posts) {
+      expect(post).toContain('"author":sys.argv[1]')
+      expect(post).not.toMatch(/"author"\s*:\s*"[^"]+"/)
+    }
   })
 
   it('never posts as mikrob -- the whole point of the card', () => {
-    const post = DISPATCH.slice(DISPATCH.indexOf('/api/kanban/$CARD/comments'))
-    expect(post).not.toContain('"mikrob"')
+    for (const post of commentPostCalls()) {
+      expect(post).not.toContain('"mikrob"')
+    }
   })
 
   it('does not pick a draft author that PREFIX-matches an agent identity', () => {
