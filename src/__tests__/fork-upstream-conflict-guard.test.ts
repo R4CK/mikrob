@@ -92,13 +92,23 @@ const ACKNOWLEDGED_CONFLICTS = {
   // single-result features onto it one by one.
   'src/web/update-checker.ts':
     'keep the fork aggregate shape, port upstream single-result features onto it',
-  // A one-line import conflict, not a behavioural one (measured 2026-08-16, card 78c14372): the fork
-  // added `agentDir` to the existing import from './agent-config.js' (workingDirFor() now goes
-  // through the sanitized helper instead of building its own path), and upstream independently added
-  // `readAgentClaudeConfigDir` to the SAME import line for an unrelated feature. Nothing else in the
-  // file diverges. Resolution: merge both imports onto one line, keep both bindings.
+  // ORIGINAL entry (2026-08-16, card 78c14372) merged `agentDir` (fork) + `readAgentClaudeConfigDir`
+  // (upstream) onto one import line. RE-MEASURED 2026-09-01 (heartbeat reconciliation): upstream
+  // replaced its own `readAgentClaudeConfigDir` with `resolveAgentConfigDirForRead` (new module,
+  // ./claude-plans.js) -- confirmed by reading configDirFor()'s own comment in the merged body
+  // (line ~143): the old helper returned a stale transcript on an auto-provisioned agent dir
+  // instead of null, "worse than the null this comment warns about, because the gate then believes
+  // it can see". `readAgentClaudeConfigDir` has zero remaining call sites in this file (grep
+  // confirms) -- dead after the replacement. Upstream also added `sendPromptToSession` to the
+  // agent-process.js import, used at the (unconflicted, auto-merged) wake-delivery call site
+  // ~line 571. `agentDir` (fork) is still used (line ~130) and stays. Resolution: three import
+  // lines -- `{ listAgentNames, agentDir } from './agent-config.js'`,
+  // `{ resolveAgentConfigDirForRead } from './claude-plans.js'`,
+  // `{ agentSessionName, capturePane, sendPromptToSession } from './agent-process.js'` -- drop
+  // `readAgentClaudeConfigDir` (dead, superseded), adopt both new upstream imports (their usage
+  // sites already merged in clean, this was only ever the import line colliding).
   'src/web/context-restart-gate-runner.ts':
-    'merge both added imports onto one line (agentDir from the fork, readAgentClaudeConfigDir from upstream) -- no other conflict in the file',
+    "three import lines: { listAgentNames, agentDir } from './agent-config.js' (fork's agentDir stays, still used), { resolveAgentConfigDirForRead } from './claude-plans.js' (upstream, replaces the now-dead readAgentClaudeConfigDir -- fixed a stale-transcript bug), { agentSessionName, capturePane, sendPromptToSession } from './agent-process.js' (upstream's sendPromptToSession, used at the wake-delivery call site) -- drop readAgentClaudeConfigDir entirely, zero remaining call sites",
   // The SAME one-line import class as the entry above, one file over (measured 2026-08-22 on
   // upstream/develop 317937dc). Both sides appended a binding to the SAME import from
   // './web/agent-scaffold.js': the fork's `ensureNpmProtectGuard`, upstream's
@@ -164,15 +174,20 @@ const ACKNOWLEDGED_CONFLICTS = {
   // alongside the fork's section-writer, neither side taken wholesale.
   'src/web/agent-scaffold.ts':
     "keep BOTH section-writers (fork ensureLocalFirstSection + upstream ensureSkillsPathTrapSection), AND adopt upstream kanban-write gate (agentGetsKanbanWriteGate/injectKanbanWriteGate), quarantineReader project-scope refactor (EGRESSRENDER824), and watchEgressAllowlistForReaderRender -- all additive, none taken wholesale. Re-read 2026-08-26 (card 72f5f13b, unblocking fbb36b41/489dae5f landings): upstream moved AGAIN since this rule was written (added findDuplicateJsonKeys dup-key detection in ensureAgentHooks, HEARTBEAT_AGENT_ID import, EMAIL_GATE_MATCHER/emailGateMatcherStale export) -- 22 diff hunks total against a 1600-line security-critical file (fleet-wide hook wiring: git-protect/npm-protect/blast-radius/pentest-install guards live here). NOT safe to hand-merge under time pressure just to unblock a landing. The fork's own guards (git-protect/npm-protect/blast-radius/pentest-install, unchanged in this diff) remain authoritative and untouched on live develop. Full reconciliation of ALL upstream additions (this round's + the previously-acknowledged kanban-write-gate round) is done and build+test-verified in the disposable card-72f5f13b merge worktree, pending the Peti-supervised F5 cutover (card 5c134edf) -- that is where this file's real sync lands, not a piecemeal live-develop patch.",
-  // A single additive hunk (measured 2026-08-16, card 88505fb5), not a behavioural disagreement:
-  // both sides add an INDEPENDENT schema migration/trigger at the same insertion point inside
-  // ensureSchema(). Fork: the timestamp-integrity triggers (epoch validation + repair on
-  // kanban_cards/kanban_comments) plus the kanban_card_events.forced column migration. Upstream:
-  // the kanban_cards_status_bumps_updated_at self-healing trigger (keeps updated_at honest when a
-  // raw SQL UPDATE only touches status). Neither reads or overwrites anything the other writes.
-  // Resolution: keep BOTH blocks, either order -- union, not a pick.
+  // ORIGINAL entry (2026-08-16, card 88505fb5) described a schema-migration/trigger hunk in
+  // ensureSchema() -- that hunk no longer conflicts (both sides' migrations merged clean since).
+  // RE-MEASURED 2026-09-01 (heartbeat reconciliation): the file conflicts again, but at a totally
+  // different spot -- moveKanbanCard(), and it is a comment-only collision, zero code divergence.
+  // Fork's comment documents `depBlocked`/`isForceActor` (card a8aa9ae5, the dependency-block +
+  // force-actor guard) immediately above it. Upstream's comment documents the `dispatched_at=NULL`
+  // clear-on-non-in_progress-move -- but that SQL branch is UNCHANGED, shared ancestor code a few
+  // lines below the conflict marker, already identical on both sides; upstream is just adding
+  // documentation for behavior the fork already has, not proposing new behavior. Resolution: keep
+  // the fork's comment (it explains code that follows inside the marker) AND append upstream's
+  // comment right before the `db.prepare(status === 'in_progress' ? ... : ...)` line it describes
+  // -- both coexist, no functional change either way.
   'src/db.ts':
-    'keep both additive migrations -- the fork timestamp-integrity triggers + forced column, and the upstream kanban_cards_status_bumps_updated_at trigger -- neither side taken wholesale',
+    "comment-only collision at moveKanbanCard(), zero code divergence -- keep fork's depBlocked/isForceActor comment (a8aa9ae5) AND append upstream's dispatched_at=NULL clear-on-move comment just above the db.prepare() branch it documents (that SQL is already identical/shared on both sides)",
   // Card 2e634e5c. Both sides independently fixed the SAME ghost-session bug (agent DELETE leaving
   // an orphaned tmux session), but the fork's fix is strictly more correct: it AWAITS
   // stopAgentProcess(), tracks the result, and logs on failure; upstream's is a floating (un-awaited)
@@ -619,11 +634,11 @@ const ACKNOWLEDGED_UPSTREAM_BLOBS: Readonly<Record<keyof typeof ACKNOWLEDGED_CON
   'src/model-fallback.ts': 'd1ed3c18ba86badd1f72cf6fb28d1f3193974012',
   'src/__tests__/model-fallback.test.ts': '38b6e76e9f5184a9ade636a057b79c4e522f1e3b',
   'src/web/update-checker.ts': '24e46f990c7b0a5c8fa065d12ba1ee592b547691',
-  'src/web/context-restart-gate-runner.ts': 'aae818bb7ded38146343eb0a0748b83422d018ce',
+  'src/web/context-restart-gate-runner.ts': '3ba2520de47c80732da9e89cfd5023cd1c02d442',
   'src/web.ts': '67695fc52c4a2e802b9ca79edda0649f1d802d33',
   'src/web/keychain.ts': '1e1730ee0d8f6b1d4b51c5c254f3fab56acfa376',
   'src/web/agent-scaffold.ts': '2a72fb5c7f388a6be9077a1a3d8821231bcf8a88',
-  'src/db.ts': '66381e77bdb6cce583bd3b397a3ae2202ae61e9e',
+  'src/db.ts': '9a9dc8394559ed0a3e08f1d3a2846778270c419f',
   'src/web/routes/agents.ts': '7711d18a7752828a113f9389a2c3943e6b74ab0e',
   'src/web/routes/kanban.ts': '5620fe397bdadad1a619408367a783d0470a13fe',
   'scripts/hooks/egress-gate.mjs': '229076d5812e7d50a188ca07b43a87fb6239b233',
@@ -636,8 +651,8 @@ const ACKNOWLEDGED_UPSTREAM_BLOBS: Readonly<Record<keyof typeof ACKNOWLEDGED_CON
   'src/web/token-usage.ts': 'ee32eb840710ba5ff38dd5830d14a2fa68e42767',
   'src/__tests__/schedule-runner-autostart.test.ts': '678cbb42e4447b206598bfbb9bc271602a3f896b',
   '.gitignore': '1e5adbb2332be0dbf5a710c1899e49305ccb318b',
-  'package.json': 'bbb946b636ac92c4e69abd4d62d4762c35105347',
-  'package-lock.json': 'a3e12f8a7eb91de9556b3b84acf928c1c22cfcef',
+  'package.json': '031fc59039e3081034cf870745202076818b1bff',
+  'package-lock.json': 'f4f25dd6896d5a4f80c13df1b056b632f86f37e6',
   'src/web/heartbeat-agent-scaffold.ts': 'bb4a7bc74200725e8c257f7d835b082ed6f12047',
   'src/web/schedule-runner.ts': '9736ea6737757cc0155671dca3d9d2874b330885',
   'vitest.config.ts': '62d4ac7606cd719d40e07fc0d82c7f777dda0b30',
@@ -670,7 +685,7 @@ const ACKNOWLEDGED_UPSTREAM_BLOBS: Readonly<Record<keyof typeof ACKNOWLEDGED_CON
   'scripts/set-bot-menu.sh': 'b45aca69c59f9b69748592df70d0a9ea77189206',
   'scripts/stuck-modal-guard.sh': '5bf19fc208ac41c204ae007189553efcb1d2790d',
   'src/__tests__/send-honesty-sweep.test.ts': 'afc17a2222a86a7645343f837618ebe74516dacc',
-  'scripts/channels.sh': '440c177464c2bcf2d090f8958373b94e011e9f62',
+  'scripts/channels.sh': 'a550d6852ebc9fb2f17b53c6e857ff5a4f0c6e67',
   'update.sh': 'de0cad0164f4473d1cd1bd65dd019ae9465e4fe3',
   'scripts/install-prod-tree-guard-hook.sh': '9647c9658a5e6352ae0bae57842590a1c2d6e30c',
 }
