@@ -130,8 +130,17 @@ const ACKNOWLEDGED_CONFLICTS = {
   // dashboard-visible-only list. Adopted: merged import with BOTH names, swapped
   // only the hook-seed loop's call site to listAllAgentNames(). Still a single
   // hunk, no other conflict in the file. Landed via the F5 cutover merge (72f5f13b).
+  // Re-read 2026-09-01 (heartbeat reconciliation, blob moved to 42406c87): upstream added ONE more
+  // import to the same merged line -- ensureAgentProvenanceHook -- plus a cosmetic comment-casing
+  // hunk (upstream: "listALLAgentNames", fork: "listAllAgentNames"; camelCase is the real symbol
+  // name, kept as-is). Verified the new import's call-site (`agent-scaffold.ts` line ~523) is NOT a
+  // fork call-site at all today (grep: fork src/web.ts never calls it) and merges CLEANLY on its own
+  // (not one of this file's two conflict hunks) -- so adopting the import is the only change this
+  // hunk needs. Checked what it does: an idempotent per-agent hook installer (settings.json
+  // UserPromptSubmit, guarded by isUnsafeHookCommand, same shape as the fork's own
+  // ensureNpmProtectGuard/ensureBlastRadiusGuard installers) -- additive, no fork-side conflict.
   'src/web.ts':
-    'merge import line (ensureNpmProtectGuard from fork + ensureSkillsPathTrapSection + watchEgressAllowlistForReaderRender + listAllAgentNames from upstream, all on one line, keep listAgentNames too), adopt upstream watchEgressAllowlistForReaderRender call (EGRESSRENDER824) and the hook-seed loop\'s listAllAgentNames call-site swap (HBGATEWIRE826) -- no other conflict in the file',
+    'merge import line (ensureNpmProtectGuard from fork + ensureSkillsPathTrapSection + watchEgressAllowlistForReaderRender + listAllAgentNames + ensureAgentProvenanceHook from upstream, all on one line, keep listAgentNames too), adopt upstream watchEgressAllowlistForReaderRender call (EGRESSRENDER824), the hook-seed loop\'s listAllAgentNames call-site swap (HBGATEWIRE826), and the new ensureAgentProvenanceHook import (its call-site auto-merges cleanly, verified additive/idempotent) -- keep fork\'s "listAllAgentNames" comment casing, no other conflict in the file',
   // The call-site half of the same upstream change, and the same INDEPENDENT-ADDITIVE class as
   // src/db.ts below rather than a disagreement (measured 2026-08-22). Two hunks, both caused by the
   // two sides adding a DIFFERENT CLAUDE.md section-writer at the same insertion point, each with
@@ -416,8 +425,30 @@ const ACKNOWLEDGED_CONFLICTS = {
   // no lock at all -- so taking upstream's side on these three signature lines silently deletes the
   // atomicity two security gates were spent on. Only the three signature lines conflict; upstream's
   // body changes merge cleanly and are kept.
+  // RE-READ 2026-09-01 (heartbeat reconciliation, blob moved to 3dc78cdf): the withLifecycleLock
+  // conflict this rule used to describe is GONE -- verified the fork's *Unlocked private bodies +
+  // withLifecycleLock wrappers (card 74ba7c78) are still intact in the current file (grep, all 3
+  // call sites present), so that hunk landed correctly in a past cycle and is simply no longer part
+  // of today's conflict. Three DIFFERENT hunks conflict now, all genuinely additive on both sides:
+  // (1) ISOLATED_CONFIG_SKIP set -- fork skips 'skills' (Peti 2026-08-03, per-agent curated skill
+  //     set) and upstream separately skips 'projects' (memory-store symlink collision fix); the two
+  //     rationales are orthogonal directory names, union both.
+  // (2) provider-env building -- upstream refactored the inline ollama/deepseek/openrouter
+  //     export-string building into a shared resolveProviderEnv() (agent-process.ts, tested in
+  //     agent-provider-env.test.ts). Verified line-by-line: it reproduces the fork's exact
+  //     ollama/deepseek/openrouter export strings byte-for-byte (SAME shSingleQuote sink-escaping,
+  //     card b7fa5281, cited verbatim in both), and ADDS a fourth provider (minimax, with its own
+  //     documented context-window workaround) -- net additive, safe to adopt wholesale.
+  // (3) cmd assembly -- upstream adds a `umask 002` prefix and routes the tmux call through
+  //     agentTmuxTarget(name)/startTarget instead of a bare `null` host, unlocking per-user/remote
+  //     agent hosting. Verified BOTH are no-ops for every agent as configured today:
+  //     agentTmuxTarget() returns {host:null, runAsUser:null} unless an agent's OWN config sets a
+  //     remote host or runAsUser (none do), and upstream's own doc comment states
+  //     "host=null is byte-identical to the prior direct local tmux call" -- so adopting this is
+  //     zero behavior change today and opt-in infrastructure for later, not a live architecture
+  //     switch that needs a decision now.
   'src/web/agent-process.ts':
-    'keep the fork *Unlocked private bodies + withLifecycleLock wrappers on all three signature hunks (start/stop/restart) -- upstream exports the same functions unlocked, which would delete the card 74ba7c78 atomicity; upstream body changes outside those lines merge cleanly and are kept',
+    'union all three: (1) ISOLATED_CONFIG_SKIP keeps BOTH \'skills\' (fork) and \'projects\' (upstream) entries; (2) adopt upstream\'s resolveProviderEnv() refactor wholesale (verified byte-identical output for ollama/deepseek/openrouter incl. the b7fa5281 shSingleQuote fix, plus adds minimax); (3) adopt upstream\'s umask 002 + agentTmuxTarget(name)/startTarget cmd-assembly change wholesale (verified no-op for any agent without remote/runAsUser config, per upstream\'s own "byte-identical to the prior direct local tmux call" doc comment) -- the fork\'s *Unlocked/withLifecycleLock split (card 74ba7c78) is UNRELATED to this hunk set and already correctly merged, do not touch it',
   // Upstream adds a re-entrancy guard (`tickRunning`) around the sweep, for the exact reason the
   // fork ALSO has: once checkAgent awaits a real restart instead of a blocking execSync('sleep N')
   // (fork card 873c48df), a sweep can still be running when the next interval fires. Measured: the
@@ -635,7 +666,7 @@ const ACKNOWLEDGED_UPSTREAM_BLOBS: Readonly<Record<keyof typeof ACKNOWLEDGED_CON
   'src/__tests__/model-fallback.test.ts': '38b6e76e9f5184a9ade636a057b79c4e522f1e3b',
   'src/web/update-checker.ts': '24e46f990c7b0a5c8fa065d12ba1ee592b547691',
   'src/web/context-restart-gate-runner.ts': '3ba2520de47c80732da9e89cfd5023cd1c02d442',
-  'src/web.ts': '67695fc52c4a2e802b9ca79edda0649f1d802d33',
+  'src/web.ts': '42406c87b5bbc3e45cfc827025cdcd3dabe6d366',
   'src/web/keychain.ts': '1e1730ee0d8f6b1d4b51c5c254f3fab56acfa376',
   'src/web/agent-scaffold.ts': '2a72fb5c7f388a6be9077a1a3d8821231bcf8a88',
   'src/db.ts': '9a9dc8394559ed0a3e08f1d3a2846778270c419f',
@@ -656,7 +687,7 @@ const ACKNOWLEDGED_UPSTREAM_BLOBS: Readonly<Record<keyof typeof ACKNOWLEDGED_CON
   'src/web/heartbeat-agent-scaffold.ts': 'bb4a7bc74200725e8c257f7d835b082ed6f12047',
   'src/web/schedule-runner.ts': '9736ea6737757cc0155671dca3d9d2874b330885',
   'vitest.config.ts': '62d4ac7606cd719d40e07fc0d82c7f777dda0b30',
-  'src/web/agent-process.ts': 'bb28237a19c881551c8415ebeecd58fcaac01923',
+  'src/web/agent-process.ts': '3dc78cdf1f08797793b37c7b02e25773c04e5295',
   'src/web/auto-restart-runner.ts': '044dde0ad94f5a57ff8e611656f288b25fecdaff',
   'src/web/model-fallback-runner.ts': '681fcaefd6588fc2f6f3db880238b8288d1dcd15',
   'src/web/routes/skills.ts': '34c1e440bd5009e79546d686ec9fbc481ba0af7e',
