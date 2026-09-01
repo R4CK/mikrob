@@ -266,4 +266,15 @@ describe('heredocIsStdinDataSink: locale-quoted `$"..."` `-K`/`--config` forms (
   it('CONTROL: plain `-d @-` with no config flag at all stays allowed after the round-4 widening', () => {
     expect(emailGate('Bash', { command: withHeredoc('-d @-') }).deny).toBe(false)
   })
+
+  // MUTATION-KILLING (Cybersec r4 GO, I-1): the round-4 test set above pins that the `$"..."`
+  // branch exists, not that it skips the RIGHT number of characters. `i += 1` (skip just the `$`,
+  // let the existing `"` branch parse the body) vs a mutated `i += 2` (also skip the opening `"`,
+  // so the body is copied as literal text INCLUDING everything up to and past the real closing
+  // quote) is invisible to every case above -- all of them still deny either way. This flag
+  // ('-'$"K" '-') is the one shape that tells the two apart: correct code sees -K -, the
+  // off-by-one variant does not. Measured: 735 live bypasses open under the mutant.
+  it('MUTATION-KILLING: `\'-\'$"K" \'-\'` denies -- distinguishes correct `$"` char-skip count from an off-by-one', () => {
+    expect(emailGate('Bash', { command: withHeredoc(`-d @- '-'$"K" '-'`) }).deny).toBe(true)
+  })
 })
