@@ -873,7 +873,10 @@ const CURL_CONFIG_STDIN_RX = /(?:^|\s)(?:-[A-Za-z]*K-|-K(?:\s+|=)-|--config(?:\s
 // the flag is checked on the raw span AND on a de-quoted view of the same span, so no future spelling
 // of "the same bytes, minus shell quoting" needs its own round. `dequoteCurlSpan` below undoes single
 // quotes, double quotes, `$'...'` (via the SAME `readAnsiC` decoder `unquoteWord` already uses -- not
-// a second decoder) and a bare backslash-escape, exactly the way bash's own word expansion would.
+// a second decoder), `$"..."` (locale-quoting, bash manual 3.1.2.5 -- Cybersec r4 NO-GO: this round's
+// own "the four mechanisms" framing missed this fifth one, and `curl -d @- $"-K" -` bypassed to
+// allow:true pre-fix, 56/245 grammar-derived cases, all this one mechanism, 0 others) and a bare
+// backslash-escape, exactly the way bash's own word expansion would.
 //
 // SCOPED ON PURPOSE: this only widens the CONFIG-FLAG check (the one axis a decoy attacker benefits
 // from hiding). `CURL_LEADING_RX` and `CURL_STDIN_DATA_RX` are left reading the raw span -- an
@@ -917,6 +920,10 @@ function dequoteCurlSpan(span) {
       i = next
       continue
     }
+    // `$"..."` (locale-quoting): same body-parsing rules as a plain `"..."` (bash strips the `$`
+    // and translates the string at runtime, but the byte content curl/git ultimately see is
+    // identical) -- skip just the `$` and let the existing `"` branch below do the rest.
+    if (c === '$' && src[i + 1] === '"') { i += 1; continue }
     if (c === '"') {
       let j = i + 1
       let body = ''

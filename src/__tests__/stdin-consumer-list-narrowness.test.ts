@@ -223,3 +223,47 @@ describe('heredocIsStdinDataSink: shell-quoted/escaped `-K`/`--config` forms (ca
     expect(emailGate('Bash', { command: withHeredoc('-d @-') }).deny).toBe(false)
   })
 })
+
+// ROUND 4 (Cybersec NO-GO on the round-3 fix, same card 0f7f7fe9). Round 3's dequoteCurlSpan handled
+// three of bash's shell-quote-removal mechanisms (single quotes, double quotes, `$'...'` ANSI-C
+// quoting) but missed the fourth: `$"..."` LOCALE quoting (bash manual 3.1.2.5). Cybersec measured
+// 245 quoting shapes generated from the grammar (not the patch), all verified with real bash: 56
+// bypassed pre-fix, all 56 the SAME single mechanism, zero others. `curl -d @- $"-K" -` denied
+// end-to-end with a real resend.com send-config heredoc pre-fix; fix is one line (skip the `$` before
+// an existing `"` branch, same body-parsing rules as plain double-quoting).
+const LOCALE_QUOTED_CONFIG_CONSUMERS = [`$"-K" -`, `--$"config" -`, `-s$"K"-`]
+
+describe('heredocIsStdinDataSink: locale-quoted `$"..."` `-K`/`--config` forms (card 0f7f7fe9, round 4)', () => {
+  it.each(LOCALE_QUOTED_CONFIG_CONSUMERS)(
+    'does NOT blank a heredoc body when `curl -d @- %s` is present (locale-quoted -K)',
+    (flag) => {
+      const out = stripHeredocDataPayloads(withHeredoc(`-d @- ${flag}`))
+      for (const line of SEND_CONFIG.split(NL)) expect(out).toContain(line)
+    },
+  )
+
+  it.each(LOCALE_QUOTED_CONFIG_CONSUMERS)('email-send-gate DENIES a real send decoyed as `curl -d @- %s`', (flag) => {
+    expect(emailGate('Bash', { command: withHeredoc(`-d @- ${flag}`) }).deny).toBe(true)
+  })
+
+  it('CONTROL: a real, non-stdin `-K` config file with a locale-quoted path stays allowed', () => {
+    expect(emailGate('Bash', { command: withHeredoc(`-d @- -K$"/etc/curlrc"`) }).deny).toBe(false)
+  })
+
+  it('CONTROL: locale-quoting UNRELATED text (a URL, no config flag anywhere) does not create a false deny', () => {
+    expect(emailGate('Bash', { command: withHeredoc(`-d @- $"https://example.com/x"`) }).deny).toBe(false)
+  })
+
+  it('CONTROL: all round-1/2/3 forms still deny -- no regression from the round-4 widening', () => {
+    for (const flags of [...DECOY_PLUS_CONFIG, ...ATTACHED_CONFIG_CONSUMERS.map((f) => `-d @- ${f}`)]) {
+      expect(emailGate('Bash', { command: withHeredoc(flags) }).deny).toBe(true)
+    }
+    for (const flag of QUOTED_CONFIG_CONSUMERS) {
+      expect(emailGate('Bash', { command: withHeredoc(`-d @- ${flag}`) }).deny).toBe(true)
+    }
+  })
+
+  it('CONTROL: plain `-d @-` with no config flag at all stays allowed after the round-4 widening', () => {
+    expect(emailGate('Bash', { command: withHeredoc('-d @-') }).deny).toBe(false)
+  })
+})
