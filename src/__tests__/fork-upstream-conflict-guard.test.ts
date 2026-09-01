@@ -45,7 +45,11 @@ const FETCH_TIMEOUT_MS = 20_000
 // See the ACKNOWLEDGED_CONFLICTS entry below for the measured resolution policy -- this is not a
 // regression, it is the expected cost of the extraction, same character as
 // src/web/update-checker.ts's entry.
-const GUARDED_FILES = ['web/lang/hu.js', 'web/lang/en.js', 'web/style.css'] as const
+//
+// web/style.css moved OUT to ACKNOWLEDGED_CONFLICTS too (measured 2026-09-01, heartbeat
+// reconciliation ahead of card 0f7f7fe9's land): same pattern as web/app.js, one insertion point.
+// See the ACKNOWLEDGED_CONFLICTS entry below.
+const GUARDED_FILES = ['web/lang/hu.js', 'web/lang/en.js'] as const
 
 // Files that DO conflict today, deliberately, and whose resolution rule is written down (card
 // f085fd44). This list is not a second copy of the one above: those files must never conflict,
@@ -267,6 +271,53 @@ const ACKNOWLEDGED_CONFLICTS = {
   // supersedes upstream's bare store/ line), and append upstream's evidence/transcript ignores.
   '.gitignore':
     'union of both additive sides: keep fork store/* + !store/*.sh/py/stitch negation structure + Ingatlan/ + HEARTBEAT.md, AND append upstream EVIDGUARD818 evidence/transcript/session-capture ignores -- both sides add to non-overlapping regions',
+  // Measured 2026-09-01, heartbeat reconciliation ahead of card 0f7f7fe9's land: single hunk, both
+  // sides purely additive at the same insertion point in the file, zero semantic overlap. Fork adds
+  // .agent-hud* rules (per-agent live HUD: context-pct + active-model, kanban f07c5b7c). Upstream
+  // adds .agent-ctx-badge rules (context-window-used badge on the Agents grid card, tiers mirror
+  // context-guard's actPct/hardPct). Different class names, different features, neither references
+  // or overrides the other. Resolution: keep BOTH blocks verbatim, in either order -- not a
+  // wholesale-one-side pick, same "two independent additive hunks" character as the .gitignore
+  // entry above, just CSS instead of ignore-patterns.
+  'web/style.css':
+    'two independent additive hunks, no overlap: keep fork .agent-hud* rules AND upstream .agent-ctx-badge rules verbatim, both blocks, either order',
+  // Measured 2026-09-01, same heartbeat reconciliation. Both sides independently arrived at the
+  // IDENTICAL functional value (REPLAY_SOURCES = new Set(['compact', 'resume', 'startup', 'clear']))
+  // via separate reasoning chains (fork: rule-14 /clear between cards + model-fallback step-down
+  // respawn; upstream: context-restart gate's own /clear). Not a real conflict -- only the export
+  // keyword and the comment differ. Resolution: keep the fork's `export const` (the hook-matcher
+  // test imports it, per its own comment) and the fork's comment (documents the fork-specific
+  // rule-14/respawn callers upstream's comment does not mention); the set literal itself is
+  // byte-identical either way.
+  'src/web/agent-taskstate.ts':
+    "both sides converge on the same REPLAY_SOURCES set; keep fork's `export const` + fork comment (upstream's unexported const would break the fork's hook-matcher import), set contents identical",
+  // Same underlying convergence as src/web/agent-taskstate.ts above, in the paired test file: both
+  // add a `replays on clear too` case with the same assertion, different comment/test-name framing.
+  // Resolution: keep the fork's version (references CLAUDE.md rule 14 + the model-fallback respawn,
+  // both fork-specific), drop upstream's duplicate case -- not a wholesale-theirs, a same-assertion
+  // dedup.
+  'src/__tests__/agent-taskstate.test.ts':
+    "duplicate `replays on clear too` case on both sides (same assertion, different framing) -- keep fork's version (cites CLAUDE.md rule 14 + model-fallback respawn), drop upstream's duplicate",
+  // Two additive, non-overlapping import blocks -- same character as the .gitignore/web/style.css
+  // entries above. Fork imports estimateCostUsd/stripDateSuffix from model-pricing.js; upstream
+  // imports listAgentNames from agent-config.js and resolveAgentConfigDirForRead from
+  // claude-plans.js. No name collision between the two sets. Resolution: keep all three imports
+  // (fork's two + upstream's two, five total), reconfirm no name/behavior collision against the
+  // actual merged file body at real-merge time (this entry only clears the import-line hunk, not a
+  // full-file audit).
+  'src/web/token-usage.ts':
+    "additive, non-colliding imports on both sides -- keep fork's estimateCostUsd/stripDateSuffix (model-pricing.js) AND upstream's listAgentNames (agent-config.js) + resolveAgentConfigDirForRead (claude-plans.js), all four together",
+  // Test-fixture window-size conflict, NOT a source conflict: src/web/schedule-runner.ts itself
+  // merges clean (both sides' additions land in different spots of the same guardIdx block), only
+  // this pinned slice-window assertion collides because fork and upstream each widened the SAME
+  // line for a different reason -- fork to 3000 (try/catch REJECTING-verdict mapping, card
+  // e9d3cd12), upstream to 2800 (main-agent guard ahead of this block). Resolution POLICY, not a
+  // verified number: take the wider of the two (3000) as the floor, but RE-MEASURE against the
+  // actual merged guardIdx block at real-merge time -- since schedule-runner.ts gains BOTH
+  // additions at once, the true minimum window may need to exceed 3000, not just default to
+  // whichever side happened to ask for more.
+  'src/__tests__/schedule-runner-autostart.test.ts':
+    'window-size fixture only, source merges clean -- use 3000 (the wider of fork/upstream) as a floor, but re-measure the real merged guardIdx block size at merge time since both additions land together',
   // The fork's package.json is a strict superset of upstream's: it adds react/react-dom/recharts
   // (superadmin SPA), google-auth-library (Google auth), vite/ESLint toolchain, a newer Claude
   // Agent SDK (^0.3.224 vs upstream ^0.2.116), and overrides for hono/fast-uri/body-parser.
@@ -579,6 +630,11 @@ const ACKNOWLEDGED_UPSTREAM_BLOBS: Readonly<Record<keyof typeof ACKNOWLEDGED_CON
   'src/__tests__/egress-gate.test.ts': 'c24ca54ffc49de70d602790fa1d6b80e3aea4156',
   'src/web/context-guard-runner.ts': 'b17ba4f630dbba93cfd5520e3c37a854a5c80c81',
   'web/app.js': 'c8c11f94ac1007da3ce29f5cbbd4ab84a75a8701',
+  'web/style.css': 'b774ccb836f07ca78c300077302834a80cd12edb',
+  'src/web/agent-taskstate.ts': '625d03282bb75b554ce23822f67cc4e51b0706c1',
+  'src/__tests__/agent-taskstate.test.ts': '82dc411aa813d66c0800e7f8007dfdcd2a42e43f',
+  'src/web/token-usage.ts': 'ee32eb840710ba5ff38dd5830d14a2fa68e42767',
+  'src/__tests__/schedule-runner-autostart.test.ts': '678cbb42e4447b206598bfbb9bc271602a3f896b',
   '.gitignore': '1e5adbb2332be0dbf5a710c1899e49305ccb318b',
   'package.json': 'bbb946b636ac92c4e69abd4d62d4762c35105347',
   'package-lock.json': 'a3e12f8a7eb91de9556b3b84acf928c1c22cfcef',
