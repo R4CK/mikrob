@@ -173,3 +173,53 @@ describe('heredocIsStdinDataSink: attached/clustered short-option `-K` forms (ca
     }
   })
 })
+
+// ROUND 3 (Cybered NO-GO on the round-2 fix, same card 0f7f7fe9, comment #16926). Rounds 1-2 closed
+// curl's own getopt grammar (attached/clustered/separated/`=`), but CURL_CONFIG_STDIN_RX runs on the
+// RAW owner-span text -- before shell quote-removal. Live-confirmed with real curl 8.18.0: shell
+// quoting or backslash-escaping around the flag changes nothing about which argv curl actually
+// receives, so all five shapes below resolve to the identical, already-denied `-K -` argv while the
+// RAW text no longer matches the regex. Pinned from the grammar (bash quote-removal has exactly four
+// mechanisms: single quotes, double quotes, `$'...'`, and a bare backslash-escape), not from the one
+// reported shape, per this file's own standing lesson.
+const QUOTED_CONFIG_CONSUMERS = ['"-K" -', '-"K" -', "'-K' -", '--"config" -', '\\-K -']
+
+describe('heredocIsStdinDataSink: shell-quoted/escaped `-K`/`--config` forms (card 0f7f7fe9, round 3)', () => {
+  it.each(QUOTED_CONFIG_CONSUMERS)(
+    'does NOT blank a heredoc body when `curl -d @- %s` is present (quoted/escaped -K)',
+    (flag) => {
+      const out = stripHeredocDataPayloads(withHeredoc(`-d @- ${flag}`))
+      for (const line of SEND_CONFIG.split(NL)) expect(out).toContain(line)
+    },
+  )
+
+  it.each(QUOTED_CONFIG_CONSUMERS)('email-send-gate DENIES a real send decoyed as `curl -d @- %s`', (flag) => {
+    expect(emailGate('Bash', { command: withHeredoc(`-d @- ${flag}`) }).deny).toBe(true)
+  })
+
+  it('same DENY holds for a quoted+clustered form (`-s"K"-`, not individually reported but implied ' +
+    'by the same grammar: quoting can wrap any single character of a clustered short-option run)', () => {
+    expect(emailGate('Bash', { command: withHeredoc('-d @- -s"K"-') }).deny).toBe(true)
+  })
+
+  it('CONTROL: quoting UNRELATED text (a URL, no config flag anywhere) does not create a false deny', () => {
+    expect(emailGate('Bash', { command: withHeredoc('-d @- "https://example.com/x"') }).deny).toBe(false)
+  })
+
+  it('ACCEPTED TRADE-OFF, pinned deliberately (same direction as the pre-existing `-oK-` false ' +
+    'positive): de-quoting an UNRELATED quoted argument that merely CONTAINS the text `-K -` (e.g. a ' +
+    'quoted header value) also stops the blank -- over-caution, not a bypass, since the body just ' +
+    'stays scanned instead of being silently exempted', () => {
+    expect(emailGate('Bash', { command: withHeredoc('-d @- -H "X-Debug: -K -"') }).deny).toBe(true)
+  })
+
+  it('CONTROL: all round-1/round-2 (unquoted) forms still deny -- no regression from the de-quoted check', () => {
+    for (const flags of [...DECOY_PLUS_CONFIG, ...ATTACHED_CONFIG_CONSUMERS.map((f) => `-d @- ${f}`)]) {
+      expect(emailGate('Bash', { command: withHeredoc(flags) }).deny).toBe(true)
+    }
+  })
+
+  it('CONTROL: plain `-d @-` with no config flag at all stays allowed after the round-3 widening', () => {
+    expect(emailGate('Bash', { command: withHeredoc('-d @-') }).deny).toBe(false)
+  })
+})

@@ -859,6 +859,80 @@ const CURL_STDIN_DATA_RX = /(?:^|\s)(?:-d|--data(?:-(?:raw|binary|ascii))?)(?:\s
 // left unmatched/matched respectively per the measurements in this card's test file, since a
 // non-match here only means "stays scanned as ordinary content," never "treated as safe."
 const CURL_CONFIG_STDIN_RX = /(?:^|\s)(?:-[A-Za-z]*K-|-K(?:\s+|=)-|--config(?:\s+|=)-)(?=\s|$)/i
+// ROUND 3 (Cybered NO-GO, same card 0f7f7fe9): rounds 1-2 closed curl's OWN getopt grammar (attached,
+// clustered, separated, `=`) but CURL_CONFIG_STDIN_RX still runs on the RAW owner-span text, before
+// shell quote-removal. Any quoting or backslash-escaping around the flag survives byte-for-byte in
+// that raw text and breaks the regex while curl (which sees the argv AFTER the shell removes it)
+// still reads stdin as config. Live-confirmed with real curl 8.18.0: `"-K" -`, `-"K" -`, `'-K' -`,
+// `--"config" -` and `\-K -` all resolve to the identical argv as the already-closed `-K -`, and
+// `heredocIsStdinDataSink` returned true (safe to blank) on every one of them pre-fix -- an end-to-end
+// gateDecision() on a real api.resend.com send-config heredoc came back allow:true through each.
+//
+// Per this file's own standing lesson (`build-an-enumeration-from-the-grammar-not-from-the-patch`),
+// the fix is not a sixth regex alternative for a sixth quoting spelling -- it is closing the AXIS:
+// the flag is checked on the raw span AND on a de-quoted view of the same span, so no future spelling
+// of "the same bytes, minus shell quoting" needs its own round. `dequoteCurlSpan` below undoes single
+// quotes, double quotes, `$'...'` (via the SAME `readAnsiC` decoder `unquoteWord` already uses -- not
+// a second decoder) and a bare backslash-escape, exactly the way bash's own word expansion would.
+//
+// SCOPED ON PURPOSE: this only widens the CONFIG-FLAG check (the one axis a decoy attacker benefits
+// from hiding). `CURL_LEADING_RX` and `CURL_STDIN_DATA_RX` are left reading the raw span -- an
+// attacker who quotes the curl binary name or the `-d @-` decoy only defeats their OWN exemption
+// (the heredoc stays scanned either way), so there is no bypass incentive on those two axes and no
+// reason to touch code this file's history says stays safer the less it moves per round.
+//
+// ACCEPTED TRADE-OFF, same direction as the pre-existing `-oK-` false positive QA already pinned:
+// de-quoting can also unwrap an UNRELATED quoted argument that merely CONTAINS the text `-K -` (e.g.
+// a quoted header value), causing a legitimate `-d @-` send to stay scanned instead of being blanked.
+// That is over-caution, not a bypass -- the body still gets scanned normally, nothing is silently
+// allowed -- and is pinned as a test below so it stays a deliberate choice rather than a surprise.
+//
+// OUT OF SCOPE, NOT TOUCHED: `GIT_STDIN_MSG_RX` (`-F -`/`--file -`) reads the same kind of raw span
+// and is plausibly reachable by the identical quoting trick (`git commit "-F" -`) -- flagged in this
+// card's REVIEW as a follow-up, not fixed here, because Cybered's NO-GO and this round's live repro
+// are both curl-only and a git-side change would be unreviewed scope creep in a security-critical file.
+function dequoteCurlSpan(span) {
+  const src = String(span ?? '')
+  let out = ''
+  let i = 0
+  while (i < src.length) {
+    const c = src[i]
+    if (c === '\\') {
+      const n = src[i + 1]
+      if (n === undefined) { out += c; i++; continue }
+      out += n
+      i += 2
+      continue
+    }
+    if (c === "'") {
+      const j = src.indexOf("'", i + 1)
+      if (j === -1) { out += src.slice(i + 1); break }
+      out += src.slice(i + 1, j)
+      i = j + 1
+      continue
+    }
+    if (c === '$' && src[i + 1] === "'") {
+      const [text, next] = readAnsiC(src, i + 2)
+      out += text
+      i = next
+      continue
+    }
+    if (c === '"') {
+      let j = i + 1
+      let body = ''
+      while (j < src.length && src[j] !== '"') {
+        if (src[j] === '\\') { body += src[j + 1] ?? ''; j += 2; continue }
+        body += src[j]; j++
+      }
+      out += body
+      i = j + 1
+      continue
+    }
+    out += c
+    i++
+  }
+  return out
+}
 // SECOND STDIN-DATA SHAPE: `git commit -F -` (card 0229c844). Same class as curl's `-d @-`, found
 // the same way -- twice, mid-report: a commit message that DESCRIBED a scheduling primitive was
 // denied, while the identical text passed once written to a file and given as `-F <file>`. Which
@@ -892,11 +966,14 @@ const GIT_STDIN_MSG_RX = /(?:^|\s)(?:-F\s*-|--file(?:\s+|=)-)(?=\s|$)/
 // branch also requires the ABSENCE of `-K -`/`--config -`/`--config=-` (CURL_CONFIG_STDIN_RX, card
 // 0f7f7fe9) -- a `-d @-` shape match proves nothing about who actually reads the heredoc's stdin when
 // a real stdin-config flag sits in the same span; see that regex's header for the measured bypass.
+// The config check runs on BOTH the raw span and its de-quoted view (`dequoteCurlSpan`, round 3,
+// same card) -- see that function's header for why only this one axis needs it.
 export function heredocIsStdinDataSink(ownerSpan) {
   const curl =
     CURL_LEADING_RX.test(ownerSpan) &&
     CURL_STDIN_DATA_RX.test(ownerSpan) &&
-    !CURL_CONFIG_STDIN_RX.test(ownerSpan)
+    !CURL_CONFIG_STDIN_RX.test(ownerSpan) &&
+    !CURL_CONFIG_STDIN_RX.test(dequoteCurlSpan(ownerSpan))
   const git =
     GIT_LEADING_RX.test(ownerSpan) && GIT_MSG_SUBCMD_RX.test(ownerSpan) && GIT_STDIN_MSG_RX.test(ownerSpan)
   return curl || git
