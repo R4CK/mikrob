@@ -211,7 +211,8 @@ const ACKNOWLEDGED_CONFLICTS = {
   // comment right before the `db.prepare(status === 'in_progress' ? ... : ...)` line it describes
   // -- both coexist, no functional change either way.
   'src/db.ts':
-    "comment-only collision at moveKanbanCard(), zero code divergence -- keep fork's depBlocked/isForceActor comment (a8aa9ae5) AND append upstream's dispatched_at=NULL clear-on-move comment just above the db.prepare() branch it documents (that SQL is already identical/shared on both sides)",
+    "comment-only collision at moveKanbanCard(), zero code divergence -- keep fork's depBlocked/isForceActor comment (a8aa9ae5) AND append upstream's dispatched_at=NULL clear-on-move comment just above the db.prepare() branch it documents (that SQL is already identical/shared on both sides)." +
+    " Re-measured 2026-09-02 (MikroB landing-block, QA stale-blob catch 9a9dc8394559..59fbb9d1d82b): upstream moved again, but entirely elsewhere in the file (EMAILKAPU901 PR2 -- content_hash/consumed_at columns and plumbing on the approvals table, a one-shot-consumption anchor for its email-approval gate). Zero overlap with moveKanbanCard(); resolution at the actual conflict point is unchanged.",
   // Card 2e634e5c. Both sides independently fixed the SAME ghost-session bug (agent DELETE leaving
   // an orphaned tmux session), but the fork's fix is strictly more correct: it AWAITS
   // stopAgentProcess(), tracks the result, and logs on failure; upstream's is a floating (un-awaited)
@@ -578,7 +579,8 @@ const ACKNOWLEDGED_CONFLICTS = {
   'scripts/hooks/outgoing-copy-gate.py':
     "keep the fork file wholesale -- it already carries upstream's is_send_invocation() verbatim (adopted for card 3ec64c96) plus the fork's own separate load_bad_name() sentinel fix upstream lacks (and appears to have reverted on its own side); if upstream's detector changes again, re-adopt that section only, leaving the sentinel fix and attribution comment untouched. Upstream's new fail-closed __main__ wrapper is a candidate for future adoption, not yet taken." +
     " Round 10 (2026-08-26, card fbb36b41, QA stale-blob catch cd51631d01de..4deba6bb7214): adopted two more upstream fixes verbatim. (1) RESENDGATE826 -- _curl_resend_verdict() narrows the resend-target curl/wget match from method-blind to method-aware: a read-only GET/HEAD domain-verification query (no body) now passes, only an actual send (non-safe method, or an implicit-POST body flag) still blocks; an undecidable method (variable, --config, truncated flag) stays fail-closed ('unknown' != 'read'). Grafted at the same call site the fork already carries upstream's is_send_invocation() from, no fork logic touched. (2) DIGIT-HYPHEN SUFFIX in accent_check_tokens(): a Hungarian numeric suffix glued to a number (429-es, 403-as, 2026-os) is no longer misread as a bare word needing an accent check -- ported with the fork's IDENTIFIER_ALLOWLIST skip-block kept intact and untouched (the two skips are independent 'continue' branches, order does not matter). Comment text kept in the fork's established Hungarian-prose convention for this file rather than copied English verbatim -- functionally identical to upstream's." +
-    " Round 11 (2026-08-26, Cybersec NO-GO comment 16540): round 10's two ports each had a real, live-reproduced bypass. (1) RESENDGATE826: `curl -G -d ...` (a documented curl trick moving -d's payload into the query string and sending GET) let get_forced override has_body, so a full send slipped through as 'read' -- fixed by deleting the get_forced exception entirely, has_body alone now decides. (2) DIGIT-HYPHEN SUFFIX: the skip had no shape/length bound, so ANY word after a digit-hyphen vanished from the accent check (`5-keszen` lost a real accent error), not just the intended short numeral suffix -- fixed with a closed DIGIT_HYPHEN_SUFFIX_ALLOWLIST ({es,as,os,ös}), same allowlist-plus-assert shape as IDENTIFIER_ALLOWLIST. Both verified against Cybersec's own live reproductions; 24/24 selftest green. This F5 merge lands round 11 onto live develop, superseding the round-10-only commit 12fcda43 that had landed there directly, independently of this branch, before this merge.",
+    " Round 11 (2026-08-26, Cybersec NO-GO comment 16540): round 10's two ports each had a real, live-reproduced bypass. (1) RESENDGATE826: `curl -G -d ...` (a documented curl trick moving -d's payload into the query string and sending GET) let get_forced override has_body, so a full send slipped through as 'read' -- fixed by deleting the get_forced exception entirely, has_body alone now decides. (2) DIGIT-HYPHEN SUFFIX: the skip had no shape/length bound, so ANY word after a digit-hyphen vanished from the accent check (`5-keszen` lost a real accent error), not just the intended short numeral suffix -- fixed with a closed DIGIT_HYPHEN_SUFFIX_ALLOWLIST ({es,as,os,ös}), same allowlist-plus-assert shape as IDENTIFIER_ALLOWLIST. Both verified against Cybersec's own live reproductions; 24/24 selftest green. This F5 merge lands round 11 onto live develop, superseding the round-10-only commit 12fcda43 that had landed there directly, independently of this branch, before this merge." +
+    " Round 12 (2026-09-02, MikroB landing-block, QA stale-blob catch 4deba6bb7214..c724df596611): upstream refactored (EMAILKAPU901 PR1) -- collect_bash_body()/collect_mcp_body() moved VERBATIM out to a new sibling module scripts/hooks/email_extract.py (a level-2 approval gate elsewhere now hashes the same letter this gate audits, so upstream wants exactly one extraction implementation, parity-pinned by its own test), imported behind a guarded try/except that fails CLOSED for the email path (stub returns an unreadable-reason, same as today's unreadable branch) if the import breaks, and leaves telegram (which never calls these) untouched. NOT adopted this round: the fork's file still has the inline functions verbatim (recorded resolution unchanged, still a strict superset via the sentinel fix), so this round is acknowledge-only. The extraction-module split is a real, reasonable refactor and a candidate for a future round -- but splitting a security-audited function across a new file is exactly the kind of change that wants its own dedicated review (parity test included), not a rider on an unrelated landing-unblock.",
   // New conflict surfaced 2026-08-26 (card 72f5f13b F4 gate, NOTIFYVAK826, upstream advanced
   // past the merge point mid-integration): fork changed the message-body curl call to
   // --data-urlencode (card b43d6dfd security fix -- an `&` in the message must not start a
@@ -649,7 +651,7 @@ const ACKNOWLEDGED_CONFLICTS = {
   // seed-render-parity guard, card d041760b -- done alongside this fix, see update.sh/install-*.sh
   // diffs.)
   'update.sh':
-    'independent-additive: keep both sed -e lines in render_seed_template() -- {{CHAT_ID}} from the fork (4 fleet-orchestration prompts) and {{PROJECT_ROOT}} from upstream (ledger-live-drain, node-seeder alias for {{INSTALL_DIR}})',
+    "independent-additive: keep both sed -e lines in render_seed_template() -- {{CHAT_ID}} from the fork (4 fleet-orchestration prompts) and {{PROJECT_ROOT}} from upstream (ledger-live-drain, node-seeder alias for {{INSTALL_DIR}}). SECOND hunk added 2026-09-02 (Cybersec/MikroB, card 9dc0fba8's landing-block triage): upstream fixed the ahead-vs-diverged bug in the AHEAD-detect block (d9cfd076, refuse only when AHEAD AND BEHIND, not ahead alone) -- ported that BEHIND-aware check into the fork's `else` branch of the POST_MERGE_MODE conditional, the POST_MERGE_MODE if-branch itself is untouched (that special-case already has its own reasoning for skipping the check entirely)",
   // A REAL security-regression risk unlike the two files above: THIS conflict hunk has the fork's
   // -H @"$hdr_file" 0600-temp-file call INSIDE the conflicting region (not shared context), and
   // upstream's replacement uses a bare `-H "Authorization: Bearer $(cat "$TOKEN_FILE")"` --
@@ -659,6 +661,22 @@ const ACKNOWLEDGED_CONFLICTS = {
   // stderr-on-non-2xx logging on top (same NOTIFYVAKSWEEP826 pattern as channels.sh).
   'scripts/install-prod-tree-guard-hook.sh':
     'keep the fork\'s -H @"$hdr_file" 0600-temp-file security pattern (upstream\'s replacement would have leaked the token via curl argv), graft upstream\'s GUARD_HTTP status-capture + non-2xx stderr logging (NOTIFYVAKSWEEP826) on top',
+  // Card 9dc0fba8, Cybersec measured + MikroB decided 2026-09-02: upstream rewrote its silent
+  // Ollama-install step (OLLAMA_URL precedence, probe, embedding-pull, PR merged as c23fde9a). The
+  // fork does NOT have that step -- Peti's directive (2026-08-13, EPIC ebc7b4dd, see the header of
+  // store/first-run-llm.sh) intentionally removed the silent pre-install: the runtime is now
+  // offered-never-silent, the embedding model is a separate automatic dependency, and the coding
+  // model comes from an explicit user-picked catalogue. Upstream's rewrite improves a step that no
+  // longer exists on this side, so there is nothing to graft. Resolution: keep the fork version
+  // wholesale.
+  'install-linux.sh':
+    "keep the fork version wholesale -- upstream's OLLAMA_URL precedence/probe/embedding-pull rewrite (c23fde9a) targets the silent auto-install step Peti's 2026-08-13 directive (EPIC ebc7b4dd) intentionally removed; nothing to graft, the step is gone on this side",
+  // Card 9dc0fba8, same decision: this is a modify/delete conflict, not content -- the fork DELETED
+  // this test file entirely (it asserted behavior of the removed silent-install step), upstream
+  // MODIFIED it. Resurrecting a deleted test for a feature this fork intentionally does not have
+  // would be wrong regardless of what upstream's edit says. Resolution: keep the deletion.
+  'src/__tests__/installer-ollama-nonfatal.test.ts':
+    'keep the deletion -- this test covers the silent Ollama pre-install step Peti\'s 2026-08-13 directive (EPIC ebc7b4dd) removed from the fork; upstream modified rather than deleted it because upstream never removed that step, but the fork has no code left for this test to exercise',
 } as const
 
 // THE UPSTREAM CONTENT EACH RULE ABOVE WAS DECIDED AGAINST (card a1d613e3, Cybersec msg 19105).
@@ -697,7 +715,7 @@ const ACKNOWLEDGED_UPSTREAM_BLOBS: Readonly<Record<keyof typeof ACKNOWLEDGED_CON
   'src/web.ts': '42406c87b5bbc3e45cfc827025cdcd3dabe6d366',
   'src/web/keychain.ts': '1e1730ee0d8f6b1d4b51c5c254f3fab56acfa376',
   'src/web/agent-scaffold.ts': '2a72fb5c7f388a6be9077a1a3d8821231bcf8a88',
-  'src/db.ts': '9a9dc8394559ed0a3e08f1d3a2846778270c419f',
+  'src/db.ts': '59fbb9d1d82b6c2296c8a22ec79e69b96a4a25b0',
   'src/web/routes/agents.ts': '7711d18a7752828a113f9389a2c3943e6b74ab0e',
   'src/web/routes/kanban.ts': '00ec734f520d42d1a88d835fb13dffca93c6d839',
   'scripts/hooks/egress-gate.mjs': '229076d5812e7d50a188ca07b43a87fb6239b233',
@@ -723,7 +741,7 @@ const ACKNOWLEDGED_UPSTREAM_BLOBS: Readonly<Record<keyof typeof ACKNOWLEDGED_CON
   'scripts/email-send-gate.mjs': 'abaaedc4d0e9f76fa159307659473ffaac306411',
   'src/__tests__/hook-command-quoting.test.ts': '1048b1988e6c8554754900c62570d76d455f1057',
   'src/__tests__/installer-start-and-fallback.test.ts': '9017ce4fcfe808b73fdcd1389ebf1c9eaf374f7e',
-  'scripts/hooks/outgoing-copy-gate.py': '4deba6bb7214c3a619f34541e915eae5ea91a019',
+  'scripts/hooks/outgoing-copy-gate.py': 'c724df5966115a4c45444e25785257af1040185b',
   'scripts/notify.sh': '5477e66ecad5cca6425a535de0d16fce0e3eca28',
   'scripts/lib/send-telegram.sh': '293aecf24507b6d56bda99e5a4ff937e1491ab97',
   'scripts/disk-space-guard.sh': 'd3f693c01d607952a8165cc4d8106024008f22e4',
@@ -745,8 +763,10 @@ const ACKNOWLEDGED_UPSTREAM_BLOBS: Readonly<Record<keyof typeof ACKNOWLEDGED_CON
   'scripts/stuck-modal-guard.sh': '5bf19fc208ac41c204ae007189553efcb1d2790d',
   'src/__tests__/send-honesty-sweep.test.ts': 'afc17a2222a86a7645343f837618ebe74516dacc',
   'scripts/channels.sh': 'a550d6852ebc9fb2f17b53c6e857ff5a4f0c6e67',
-  'update.sh': 'de0cad0164f4473d1cd1bd65dd019ae9465e4fe3',
+  'update.sh': 'abca56b71701073b5ce0c604037fb47766739193',
   'scripts/install-prod-tree-guard-hook.sh': '9647c9658a5e6352ae0bae57842590a1c2d6e30c',
+  'install-linux.sh': '7d3b28627498961356de361caca4915743e0323e',
+  'src/__tests__/installer-ollama-nonfatal.test.ts': '7467d0dc6674099a5af6b65d4388d18ff1f99f78',
 }
 
 /** A conflict whose written rule was decided against DIFFERENT upstream content than what is

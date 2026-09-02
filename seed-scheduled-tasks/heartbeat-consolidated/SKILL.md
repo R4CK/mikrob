@@ -48,6 +48,14 @@ printf 'Authorization: Bearer %s\n' "$(cat {{INSTALL_DIR}}/store/.dashboard-toke
 Minden beragadt (>10 perc nem mozdult, es NEM aktiv subagent-e) kartyanal: nezd meg a blokkot, es inditsd ujra -- re-dispatch az assignee-nek inter-agent uzenettel/subagenttel, vagy vedd at/ruhazd at. Ha egy >40 perces kartya aktiv subagent-e volt, valoszinuleg meghalt: tisztitsd ki az active-subagents.json-bol es re-dispatch. Ha nincs beragadt kartya, maradj csendben.
 Buktato (2026-08-13, kartya 2d2d74b3/ad78347c): a SZULO-kartyak (amikre masik kartya parent_id-je mutat) updated_at-je term. szerint nem mozdul -- ki vannak zarva a listabol.
 
+AUTOMATIKUS TESTVER-UGYNOK ATADAS 60 PERC UTAN (Peti szabaly 2026-09-02, Telegram): ha egy beragadt kartya (a fenti listaban `mins`>=60) felelose olyan szerepben van, aminek VAN azonos-kepessegu testver-ugynoke (ma: backend<->backend2, qa<->qa2, fron-ted<->fron-teddy; jovobeli testver-parok -- pl. cybersec2/cybered2 -- ugyanigy szamitanak, amint letrejonnek), a re-dispatch NE ugyanarra az ugynokre menjen vissza, hanem AUTOMATIKUSAN a testverre ruhazd at:
+  (a) PUT /api/kanban/<id> {"assignee":"<testver>"} -- ird at a felelost.
+  (b) Ha a testver nem fut: POST /api/agents/<testver>/start.
+  (c) Dispatcheld neki inter-agent uzenettel a kartya teljes friss allapotat + a blokk pontos okat (masold at amit az eredeti dispatchben latsz -- a testver nulla kontextusrol indul).
+  (d) Hagyj egy rovid kommentet a kartyan: "AtVALTAS <regi> -> <uj> (Peti 60-perces szabaly, X perc utan nem mozdult)".
+  (e) bash {{INSTALL_DIR}}/store/redispatch-guard.sh reset <cardId> -- uj felelos = friss baseline, ne oroklodjon a regi ugynok backoff-szamlaloja.
+Ha NINCS testver-ugynok a szerepnek (pl. fullstack, teszter, videooo, jogasz, marketing, penzugy egyedulallo -- csak akkor szamit testvernek ha tenyleg ugyanazt a feladat-tipust tudja elvegezni), a regi viselkedes marad: re-dispatch ugyanannak az ugynoknek, vagy {{MAIN_AGENT_ID}} veszi at. A KOZOS TOKEN-VEDELEM GUARD (lent) a testver-atadas ELOTT is fut -- ha a jelenlegi felelosre DENY:agent-busy jon (tenyleg dolgozik, csak lassu a kartya), NE valts testverre, hagyd dolgozni; a testver-atadas kizarolag a valodi >60 perces nem-mozdulasra vonatkozik, nem az eleve elfoglalt-de-elo ugynokre.
+
 === KOZOS TOKEN-VEDELEM GUARD (Peti 2026-07-30, KOTELEZO -- vonatkozik B, C, D szekciora) ===
 MIELOTT barmely agentet megloksz VAGY egy kartyat re-dispatchelsz/nudge-olsz, futtasd:
   bash {{INSTALL_DIR}}/store/redispatch-guard.sh check <cardId> <agent>
