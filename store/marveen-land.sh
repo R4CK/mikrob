@@ -6,6 +6,10 @@
 # store/agent-worktree-marveen.sh, and never the shared main checkout), verify the MERGE RESULT, push
 # only on green.
 #
+# Before landing, check what else rides along: `git log --oneline origin/develop..<gate-sha>`.
+# If it holds more than this card's own commits, cherry-pick instead of merging the branch --
+# see store/landing-cherry-pick-vs-branch-merge.md.
+#
 # This script's core mechanics were already present, unchanged, in the now-retired
 # store/agent-branch-land.sh and were explicitly confirmed safe by Cybersec's NO-GO review on
 # card dc185b52 (komment 14284: "store/agent-branch-land.sh SOHA nem erinti a megosztott
