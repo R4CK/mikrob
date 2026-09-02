@@ -594,6 +594,70 @@ export function initDatabase(dbPathOverride?: string): void {
   // guard asks it on every close.
   db.exec(`CREATE INDEX IF NOT EXISTS idx_kanban_deps_to ON kanban_dependencies(to_card_id)`)
 
+  // --- Typed relation graph (card 9d7a247a, Fazis fe3eff9f) -----------------
+  // A POLYMORPHIC edge table: "this card touched that file", "this decision belongs to that card",
+  // "this card was gated at that sha". The fleet already writes these facts as structured text in
+  // card comments (Gate-SHA:, Pair-FE:/Pair-BE:, parent_id), so the backfill (card 6cd61430) can
+  // extract them -- no new tagging burden on the building agents.
+  //
+  // NO `REFERENCES` ON EITHER SIDE, deliberately, and it is not a relaxation. `to_id` may be a file
+  // path or a commit sha, which cannot reference kanban_cards(id); a foreign key that only holds
+  // for some rows is not a foreign key. The same posture the kanban_dependencies comment above
+  // takes therefore applies here with no escape hatch: a reader must treat a dangling id as a
+  // dangling id, not as "absent". deleteKanbanCard sweeps the card-side rows for that reason --
+  // for data hygiene, since there is no FK to force it.
+  //
+  // `blocks` IS EXCLUDED, and that is the load-bearing constraint of the table. Blocking already
+  // has kanban_dependencies, which the card-close guard reads on EVERY close. A `blocks` row
+  // written here would be invisible to that guard: it would look like a blocker and block nothing.
+  // It is a denial of ONE value rather than an allow-list, so the extraction pass can introduce a
+  // new relation_type without a schema change -- only the real collision is closed.
+  //
+  // BY TRIGGER, NOT BY CHECK, and the difference is not stylistic: `INSERT OR IGNORE` -- the form
+  // that makes the backfill re-runnable, two paragraphs down -- SILENTLY SKIPS a row that violates
+  // a CHECK. Measured, not assumed: a CHECK-guarded insert of 'blocks' under OR IGNORE exits 0 and
+  // writes nothing, while a trigger's RAISE(ABORT) still aborts (sqlite 19). A CHECK here would
+  // therefore have told the backfill author that a blocks edge had been recorded. Same reasoning,
+  // same mechanism as the epoch guards below (card a06314ea). The other constraints stay declared
+  // (NOT NULL, PRIMARY KEY) because under OR IGNORE they mean exactly what the caller wants -- skip
+  // this row -- and the caller can see it in the returned `changes` count.
+  //
+  // The PRIMARY KEY is what makes the backfill RE-RUNNABLE: with INSERT OR IGNORE, running it twice
+  // is a no-op instead of doubling every row. Putting that guarantee in the schema rather than in
+  // the script means "the backfill does not duplicate" stops depending on the script's discipline.
+  // `source` (e.g. 'backfill-v1' / 'live' / 'manual') is the other half of that: a bad extraction is
+  // undone with DELETE WHERE source = ..., surgically, without dropping the table.
+  db.exec(`
+    CREATE TABLE IF NOT EXISTS kanban_relations (
+      from_type     TEXT NOT NULL,
+      from_id       TEXT NOT NULL,
+      to_type       TEXT NOT NULL,
+      to_id         TEXT NOT NULL,
+      relation_type TEXT NOT NULL,
+      source        TEXT NOT NULL,
+      created_at    INTEGER NOT NULL,
+      PRIMARY KEY (from_type, from_id, to_type, to_id, relation_type)
+    )
+  `)
+  // The PRIMARY KEY indexes the from-side prefix, which answers "what does card X touch". The
+  // query endpoint's OTHER question -- "which cards touched file Y" -- reads the to-side, and has
+  // no index without this one.
+  db.exec(
+    `CREATE INDEX IF NOT EXISTS idx_kanban_relations_to ON kanban_relations(to_type, to_id, relation_type)`,
+  )
+  // Both directions of the denial: an UPDATE could otherwise land a 'blocks' edge that the INSERT
+  // guard refused, by writing an allowed type first and renaming it after.
+  for (const when of ['INSERT', 'UPDATE OF relation_type'] as const) {
+    db.exec(`
+      CREATE TRIGGER IF NOT EXISTS trg_kanban_relations_no_blocks_${when.split(' ')[0]!.toLowerCase()}
+      BEFORE ${when} ON kanban_relations
+      WHEN NEW.relation_type = 'blocks'
+      BEGIN
+        SELECT RAISE(ABORT, 'kanban_relations does not carry "blocks" -- blocking edges live in kanban_dependencies, which the card-close guard reads');
+      END;
+    `)
+  }
+
   // --- Timestamp integrity (card a06314ea) ---------------------------------
   // Every timestamp in this schema is a UNIX EPOCH INTEGER, and every reader assumes it: the
   // stuck-card monitor and the re-dispatch guard both do epoch arithmetic. A row written with a
@@ -619,6 +683,9 @@ export function initDatabase(dbPathOverride?: string): void {
     ['kanban_cards', 'created_at'],
     ['kanban_cards', 'updated_at'],
     ['kanban_comments', 'created_at'],
+    // Card 9d7a247a: the new relation table joins the same guard. It needs no entry in the repair
+    // UPDATE above -- it is created empty in this same function, so it has no legacy rows to fix.
+    ['kanban_relations', 'created_at'],
   ] as const) {
     db.exec(`
       CREATE TRIGGER IF NOT EXISTS trg_${table}_${column}_epoch_insert
@@ -2667,6 +2734,16 @@ export function deleteKanbanCard(id: string, actor?: string): boolean {
       recordKanbanFieldEvent(successorId, 'predecessor_removed', cardId, null, deleteActor, nowMs)
     }
     db.prepare('DELETE FROM kanban_dependencies WHERE from_card_id = ? OR to_card_id = ?').run(cardId, cardId)
+    // Card 9d7a247a: relation edges on BOTH sides, but only where the END IS A CARD -- a row whose
+    // other end is a file path or a sha is not this card's to delete, and card ids are short hex,
+    // so a bare id comparison would collide with one. kanban_relations carries no
+    // REFERENCES (see its CREATE TABLE), so nothing forces this: without it the relation query
+    // endpoint would serve edges pointing at a card that no longer exists.
+    db
+      .prepare(
+        "DELETE FROM kanban_relations WHERE (from_type = 'card' AND from_id = ?) OR (to_type = 'card' AND to_id = ?)",
+      )
+      .run(cardId, cardId)
     return db.prepare('DELETE FROM kanban_cards WHERE id = ?').run(cardId).changes > 0
   })(id, actor, Math.floor(Date.now() / 1000)) as boolean
 }

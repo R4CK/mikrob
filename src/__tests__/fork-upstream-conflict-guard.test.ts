@@ -641,7 +641,8 @@ const ACKNOWLEDGED_CONFLICTS = {
   // the conflict -- upstream only adds HTTP-status capture for honest delivery logging on top of
   // it. Resolution: keep the fork's header-file curl call, append upstream's status capture.
   'scripts/channels.sh':
-    'keep the fork\'s -H @"$_hdr_file" 0600-temp-file security pattern (card b267df80) unchanged, append upstream\'s HTTP-status-capture honest-delivery check (NOTIFYVAKSWEEP826) on both guard-alert call sites',
+    'keep the fork\'s -H @"$_hdr_file" 0600-temp-file security pattern (card b267df80) unchanged, append upstream\'s HTTP-status-capture honest-delivery check (NOTIFYVAKSWEEP826) on both guard-alert call sites' +
+    ' Re-measured 2026-09-02 (backend, card 9d7a247a landing-block, a550d6852ebc..f1c6939e42b1): upstream moved in three hunks, ALL outside the recorded conflict -- it centralises Claude Code installing/updating (DISABLE_AUTOUPDATER on every host, a single serialized claude_install/self-heal point, and the tmux set-environment -g that makes launch order irrelevant), after two concurrent per-session auto-updaters wiped the shared global install. The recorded conflict sits at the two guard-alert POSTs (lines 501-537 of the old blob); the changed hunks are at 366-378, 381-387 and 650-656. Zero hits on _hdr_file, guard alert, NOTIFYVAKSWEEP or Authorization in the whole diff. Resolution at the conflict points unchanged; blob bumped. Whether the fork ADOPTS upstream\'s serialized installer is a separate question for the next upstream merge, not a conflict resolution.',
   // Independent-additive, same class as the src/web.ts import-line conflicts: fork's {{CHAT_ID}}
   // and upstream's {{PROJECT_ROOT}} both added to the SAME sed chain in render_seed_template().
   // {{PROJECT_ROOT}} is the node seeder's alias for {{INSTALL_DIR}} -- ledger-live-drain uses that
@@ -762,7 +763,7 @@ const ACKNOWLEDGED_UPSTREAM_BLOBS: Readonly<Record<keyof typeof ACKNOWLEDGED_CON
   'scripts/set-bot-menu.sh': 'b45aca69c59f9b69748592df70d0a9ea77189206',
   'scripts/stuck-modal-guard.sh': '5bf19fc208ac41c204ae007189553efcb1d2790d',
   'src/__tests__/send-honesty-sweep.test.ts': 'afc17a2222a86a7645343f837618ebe74516dacc',
-  'scripts/channels.sh': 'a550d6852ebc9fb2f17b53c6e857ff5a4f0c6e67',
+  'scripts/channels.sh': 'f1c6939e42b1c6cbc013a377eb244c33a58deec6',
   'update.sh': 'abca56b71701073b5ce0c604037fb47766739193',
   'scripts/install-prod-tree-guard-hook.sh': '9647c9658a5e6352ae0bae57842590a1c2d6e30c',
   'install-linux.sh': '21f10d99336757c0a1416b6e20297b1d3cda42cd',
