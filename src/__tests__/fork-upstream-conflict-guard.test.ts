@@ -649,7 +649,7 @@ const ACKNOWLEDGED_CONFLICTS = {
   // seed-render-parity guard, card d041760b -- done alongside this fix, see update.sh/install-*.sh
   // diffs.)
   'update.sh':
-    'independent-additive: keep both sed -e lines in render_seed_template() -- {{CHAT_ID}} from the fork (4 fleet-orchestration prompts) and {{PROJECT_ROOT}} from upstream (ledger-live-drain, node-seeder alias for {{INSTALL_DIR}})',
+    "independent-additive: keep both sed -e lines in render_seed_template() -- {{CHAT_ID}} from the fork (4 fleet-orchestration prompts) and {{PROJECT_ROOT}} from upstream (ledger-live-drain, node-seeder alias for {{INSTALL_DIR}}). SECOND hunk added 2026-09-02 (Cybersec/MikroB, card 9dc0fba8's landing-block triage): upstream fixed the ahead-vs-diverged bug in the AHEAD-detect block (d9cfd076, refuse only when AHEAD AND BEHIND, not ahead alone) -- ported that BEHIND-aware check into the fork's `else` branch of the POST_MERGE_MODE conditional, the POST_MERGE_MODE if-branch itself is untouched (that special-case already has its own reasoning for skipping the check entirely)",
   // A REAL security-regression risk unlike the two files above: THIS conflict hunk has the fork's
   // -H @"$hdr_file" 0600-temp-file call INSIDE the conflicting region (not shared context), and
   // upstream's replacement uses a bare `-H "Authorization: Bearer $(cat "$TOKEN_FILE")"` --
@@ -761,7 +761,7 @@ const ACKNOWLEDGED_UPSTREAM_BLOBS: Readonly<Record<keyof typeof ACKNOWLEDGED_CON
   'scripts/stuck-modal-guard.sh': '5bf19fc208ac41c204ae007189553efcb1d2790d',
   'src/__tests__/send-honesty-sweep.test.ts': 'afc17a2222a86a7645343f837618ebe74516dacc',
   'scripts/channels.sh': 'a550d6852ebc9fb2f17b53c6e857ff5a4f0c6e67',
-  'update.sh': 'de0cad0164f4473d1cd1bd65dd019ae9465e4fe3',
+  'update.sh': 'abca56b71701073b5ce0c604037fb47766739193',
   'scripts/install-prod-tree-guard-hook.sh': '9647c9658a5e6352ae0bae57842590a1c2d6e30c',
   'install-linux.sh': '7d3b28627498961356de361caca4915743e0323e',
   'src/__tests__/installer-ollama-nonfatal.test.ts': '7467d0dc6674099a5af6b65d4388d18ff1f99f78',
