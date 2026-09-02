@@ -145,7 +145,33 @@ while [[ $# -gt 0 ]]; do
   esac
 done
 
-[[ -z "$MODEL" ]] && MODEL="$(read_model)"
+
+# PER-TASK MODEL ROUTING (card baf1b1b0, Peti kerese 2026-09-02): explicit --model always wins
+# (checked first, below); otherwise, if --task names a template with an entry in
+# local-llm-model-routing.json's "overrides", that model is used INSTEAD of the plain default --
+# today this exists so the ~4 templates that require actual Hungarian output (grep -l -i
+# 'hungarian\|magyar' store/local-llm-skills/*.txt) can route to a different local model than the
+# fast default. Fails OPEN to read_model()'s default on ANY problem (missing file, bad JSON, no
+# --task, no matching entry) -- same philosophy as the disabledCategories check below: a routing
+# config is an opt-in override, never a new way for the primary call path to break.
+route_model_for_task() {
+  local task="$1" cfg="$HERE/local-llm-model-routing.json"
+  [[ -z "$task" || ! -f "$cfg" ]] && return 0
+  TASK="$task" CFG="$cfg" python3 -c '
+import json, os
+try:
+    with open(os.environ["CFG"]) as f:
+        cfg = json.load(f)
+    m = (cfg.get("overrides") or {}).get(os.environ["TASK"])
+    if m: print(m)
+except Exception:
+    pass
+' 2>/dev/null
+}
+if [[ -z "$MODEL" ]]; then
+  ROUTED="$(route_model_for_task "$TASK")"
+  if [[ -n "$ROUTED" ]]; then MODEL="$ROUTED"; else MODEL="$(read_model)"; fi
+fi
 
 if [[ "$MODE" == "help" ]]; then
   sed -n '2,30p' "${BASH_SOURCE[0]}" | sed 's/^# \{0,1\}//'
@@ -236,7 +262,14 @@ ollama_up || die 2 "ollama down at $OLLAMA_HOST [$LOCAL_LLM_PLATFORM] -- $(ollam
 # changes no existing behaviour.
 REQ=$(SYSTEM="$SYSTEM" MODEL="$MODEL" PROMPT="$PROMPT" python3 -c '
 import json,os
-d={"model":os.environ["MODEL"],"prompt":os.environ["PROMPT"],"stream":False}
+# think:false (card baf1b1b0): unconditional, every call. Verified harmless on a non-reasoning
+# model (qwen2.5-coder ignores the field, plain curl test 2026-09-02) -- Ollama accepts "think" as
+# a generic top-level generate param regardless of whether the loaded model supports reasoning, so
+# this needs no per-model list and stays correct automatically if a future model IS a reasoner. A
+# reasoning model left at its default emits an unbounded <think>...</think> block before the real
+# answer, which breaks every one of the ~80 skill templates that promise "output ONLY X" (measured
+# on bigatuna/Qwen3.5-9b-Sushi-Coder-RL, card 4dee0c4a) -- this is the fix for that class of bug.
+d={"model":os.environ["MODEL"],"prompt":os.environ["PROMPT"],"stream":False,"think":False}
 s=os.environ.get("SYSTEM","")
 if s: d["system"]=s
 opts={}
