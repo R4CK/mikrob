@@ -4647,3 +4647,48 @@ egy `.backup`-másolaton, második futás 0 beszúrás / 0 törlés.
 **Ki döntött:** backend (plan-grilling, kártya-komment 18064), a kártya szövegétől eltérő pontokat
 kimondva. MikroB nyitotta a kártyát a `6cd61430` mérése alapján (msg 21262).
 **Hivatkozás:** kártya `1f1e3ae4`, Fázis `fe3eff9f`, előzmény `6cd61430`, séma `9d7a247a`.
+
+## 2026-09-02 -- baf1b1b0 -- Két helyi modell egy pipeline-ban: routing-config, nem modell-csere
+
+**Döntés:** a jelenlegi (`qwen2.5-coder:7b`) és egy második, Qwen3.8-alapú desztilláció
+(`empero-ai/Qwen3.8-9B-Distill-GGUF`) EGYÜTT marad, nem csere. A választás feladat-tipus szerint,
+nem operátor-döntés minden hívásnál: `store/local-llm-model-routing.json` egy statikus `--task ->
+model` felülírás-térkép, amit a `local-llm.sh` csak akkor alkalmaz, ha a hívó NEM adott explicit
+`--model`-t. A `store/local-llm-model` fájl marad az EGYETLEN alapértelmezés-forrás mindenre, amit a
+routing nem nevesít.
+
+**Miért nem külön "aktív modell" mező vagy dashboard-kapcsoló minden híváshoz:** a hívó (helyi
+offload-worker, agent) sose dönt live-ban modell-preferenciáról, csak `--task` nevet ad át (ami már
+ma is a kontraktus). A routing-config tehát a MEGLÉVŐ kontraktusra épül, nem ad új felületet a
+hívóknak -- kevesebb hely a hibázásra.
+
+**Miért csak 4 sablon route-olva a jelölt 80-ból:** mérve (kártya 4dee0c4a), a második modell
+lassabb és kis kontextusnál sem fér el mindig 100%-ban a VRAM-ban (8192 ctx-nél 12/88% CPU/GPU
+split). A négy sablon, ami a saját szövegében kifejezetten magyar kimenetet kér
+(board-reconcile/morning-brief/daily-log/tg-draft), az egyetlen mért osztály, ahol a minőségi
+előny (tényleges magyar váltás, helyes számolás, nincs gondolatjel) meghaladja a sebességi
+hátrányt -- a másik 76 sablon marad a gyors alapértelmezésen.
+
+**think:false feltétel nélkül, nem modell-lista alapján:** curl-lal igazolva, hogy egy nem-reasoning
+modellen (a mai alapértelmezett) a mező no-op -- nincs hibaüzenet, nincs válaszváltozás. Ezért egy
+karbantartandó "melyik modell reasoning" lista helyett a kapcsoló minden híváson megy, és egy
+jövőbeli reasoning-modell automatikusan helyesen viselkedik, kód nélkül.
+
+**Plan-grilling kihagyva, kimondva:** additív/visszafele-kompatibilis változtatás (routing
+opcionális felülírás, alapértelmezés változatlan; think:false igazoltan ártalmatlan; a
+tiltás-mechanizmus, ha lesz, fail-closed vilagos hibával áll meg, nem csendes fallback-kel), nincs
+uj tamadasi felulet, a hívó-lánc (`local-llm-worker.sh -> local-llm.sh`) feltérképezve.
+
+**Kiadó-bizalom az install-flow-ban nem kap kivételt:** az `empero-ai` kiadó nincs a
+`store/llm-catalog-trust.json` megbízható-listáján. Ahelyett hogy ezt a fájlt egyedül bővíteném
+(biztonsági döntés, Cybersecnek kell átnéznie), a `store/first-run-llm.sh` új lépése ugyanazon a
+kézzel begépelt, naplózott megerősítésen megy át, mint a `--use` gate bármelyik nem listázott
+kiadónál -- `--yes` alatt sosem települ automatikusan.
+
+**Landolás blokkolva (nem e kártya hibája):** a `marveen-land.sh` sajat fleet-test köre elbukott egy
+független, régóta ismert tételen (`fork-upstream-conflict-guard.test.ts`, két elavult rögzített
+upstream-blob: `src/model-fallback.ts`, `src/web/token-usage.ts`) -- lásd kártya `f4442719`. A kód
+itt commitolva, tesztelve, a worktree-ben vár, amíg az felold.
+
+**Ki döntött:** MikroB (Peti kérése, Telegram msg 6113/6116/6120, 2026-09-02).
+**Hivatkozás:** kártya `baf1b1b0` (Fázis `2ebe24b2`), előzmény `4dee0c4a` (modell-összehasonlítás).
