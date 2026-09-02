@@ -2772,7 +2772,11 @@ export function deleteKanbanCard(id: string, actor?: string): boolean {
 /** Write extracted edges. INSERT OR IGNORE, so re-running is a no-op rather than a duplicate --
  *  the guarantee sits in the table's 5-part PRIMARY KEY (card 9d7a247a), not in a caller's care.
  *  Returns how many rows were actually new. */
-function writeRelationEdges(edges: readonly RelationEdge[], now: number): number {
+function writeRelationEdges(
+  edges: readonly RelationEdge[],
+  now: number,
+  source: string = MARKER_SOURCE,
+): number {
   if (edges.length === 0) return 0
   const stmt = db.prepare(
     `INSERT OR IGNORE INTO kanban_relations
@@ -2781,7 +2785,7 @@ function writeRelationEdges(edges: readonly RelationEdge[], now: number): number
   )
   let inserted = 0
   for (const e of edges) {
-    inserted += stmt.run(e.from_type, e.from_id, e.to_type, e.to_id, e.relation_type, MARKER_SOURCE, now)
+    inserted += stmt.run(e.from_type, e.from_id, e.to_type, e.to_id, e.relation_type, source, now)
       .changes
   }
   return inserted
@@ -2846,7 +2850,6 @@ export interface ReconcileRelationsReport {
  * card text.
  */
 export function reconcileKanbanRelations(opts?: { apply?: boolean }): ReconcileRelationsReport {
-  const apply = opts?.apply === true
   const cards = db
     .prepare('SELECT id, description, parent_id FROM kanban_cards')
     .all() as RelationSourceCard[]
@@ -2857,6 +2860,32 @@ export function reconcileKanbanRelations(opts?: { apply?: boolean }): ReconcileR
   const wanted: RelationEdge[] = []
   for (const card of cards) wanted.push(...cardEdges(card))
   for (const c of comments) wanted.push(...commentEdges(c.card_id, c.content))
+
+  return {
+    ...reconcileRelationSource(MARKER_SOURCE, wanted, opts),
+    scannedCards: cards.length,
+    scannedComments: comments.length,
+  }
+}
+
+/**
+ * The reconcile itself, for ONE `source` tag: make the table's rows under that tag equal `wanted`.
+ * Insert what is missing, DELETE what the caller no longer states, touch nothing under any other
+ * source.
+ *
+ * Split out of reconcileKanbanRelations (card 1f1e3ae4) because the git-derived sweep needs the
+ * exact same insert-and-delete mechanics under its own tag. Two copies of "reconcile a source"
+ * would be two chances to get the delete predicate subtly different -- and the delete side is the
+ * half that can lose data.
+ *
+ * The caller may pass duplicates; they are collapsed here on the table's PRIMARY KEY identity.
+ */
+export function reconcileRelationSource(
+  source: string,
+  wanted: readonly RelationEdge[],
+  opts?: { apply?: boolean },
+): Omit<ReconcileRelationsReport, 'scannedCards' | 'scannedComments'> {
+  const apply = opts?.apply === true
   const deduped = dedupeEdges(wanted)
   const wantedKeys = new Set(deduped.map(edgeKey))
 
@@ -2865,7 +2894,7 @@ export function reconcileKanbanRelations(opts?: { apply?: boolean }): ReconcileR
       `SELECT from_type, from_id, to_type, to_id, relation_type
          FROM kanban_relations WHERE source = ?`,
     )
-    .all(MARKER_SOURCE) as RelationEdge[]
+    .all(source) as RelationEdge[]
   const existingKeys = new Set(existing.map(edgeKey))
   const missing = deduped.filter((e) => !existingKeys.has(edgeKey(e)))
   const stale = existing.filter((e) => !wantedKeys.has(edgeKey(e)))
@@ -2873,26 +2902,38 @@ export function reconcileKanbanRelations(opts?: { apply?: boolean }): ReconcileR
   if (apply && (missing.length > 0 || stale.length > 0)) {
     const now = Math.floor(Date.now() / 1000)
     db.transaction(() => {
-      writeRelationEdges(missing, now)
+      writeRelationEdges(missing, now, source)
       const del = db.prepare(
         `DELETE FROM kanban_relations
           WHERE source = ? AND from_type = ? AND from_id = ? AND to_type = ? AND to_id = ?
             AND relation_type = ?`,
       )
       for (const e of stale) {
-        del.run(MARKER_SOURCE, e.from_type, e.from_id, e.to_type, e.to_id, e.relation_type)
+        del.run(source, e.from_type, e.from_id, e.to_type, e.to_id, e.relation_type)
       }
     })()
   }
 
   return {
-    scannedCards: cards.length,
-    scannedComments: comments.length,
     edges: deduped.length,
     missing: missing.length,
     stale: stale.length,
     applied: apply,
   }
+}
+
+/** Every distinct sha the marker extraction currently points a `gate-sha` edge at -- the input the
+ *  git sweep (card 1f1e3ae4) resolves to files. Read from the TABLE rather than re-parsed from the
+ *  comments, so the two hops are keyed on exactly the same strings and the join cannot miss. */
+export function gateShaTargets(): string[] {
+  return (
+    db
+      .prepare(
+        `SELECT DISTINCT to_id FROM kanban_relations
+          WHERE relation_type = 'gate-sha' AND to_type = 'sha' ORDER BY to_id`,
+      )
+      .all() as { to_id: string }[]
+  ).map((r) => r.to_id)
 }
 
 // --- Card dependencies (card 2bb82943) ------------------------------------------------------
