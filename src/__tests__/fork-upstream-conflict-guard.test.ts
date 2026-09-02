@@ -61,6 +61,21 @@ const GUARDED_FILES = ['web/lang/hu.js', 'web/lang/en.js'] as const
 // it already knew about: three files conflicted for weeks with nothing watching them, and the only
 // reason anyone noticed was a human running the dry-run by hand.
 const ACKNOWLEDGED_CONFLICTS = {
+  // Card 684dda18, self-created 2026-09-02: adopting upstream's resolveKanbanDispatch()
+  // (session-down is no longer a silent no-op) appended the fork's own isSelfAdvanceMove/
+  // isGenuineSelfAdvanceSwitch below it -- the fork's file is now a strict superset of upstream's
+  // (verified: diffing the shared prefix shows zero divergence, the only delta is the fork-only
+  // tail). Resolution: keep the fork version wholesale, it already contains everything upstream
+  // has plus the fork-only additions.
+  'src/kanban-dispatch.ts':
+    "keep the fork version wholesale -- it is upstream's resolveKanbanDispatch verbatim plus the fork-only isSelfAdvanceMove/isGenuineSelfAdvanceSwitch appended after, zero divergence on the shared part",
+  // Card 684dda18, self-created 2026-09-02 (add/add): ported this test file from upstream
+  // (kanban-dispatch-rearm.test.ts) to cover the db.ts dispatched_at re-arm fix, adapting ONE case
+  // to pass force:true on a waiting->in_progress reopen -- the fork's own reviewedCardBlocksInProgress
+  // gate (card c4f2de32) blocks that transition without a gate-verdict comment, which upstream has
+  // no equivalent of. Everything else is byte-identical to upstream's version.
+  'src/__tests__/kanban-dispatch-rearm.test.ts':
+    "keep the fork version wholesale -- identical to upstream except the one move() call the fork's reviewedCardBlocksInProgress gate (card c4f2de32) requires force:true on",
   // New conflict (measured 2026-08-26, card b4a7c9c3-adjacent unblock, not caused by that card's
   // own diff): upstream added two new exports to this file -- OPEN_QUESTION_DEFERRAL_CAP_MS and
   // deferralOverride() -- at a point where the fork side of the hunk is EMPTY (the fork's
@@ -296,7 +311,7 @@ const ACKNOWLEDGED_CONFLICTS = {
   // upstream's still-monolithic app.js) is recommended but not opened here -- judgement call for
   // MikroB, not unilaterally opened per the dedup rule.
   'web/app.js':
-    'STUB scaffold + 36 extracted web/app-*.js slices are authoritative; a conflicting upstream hunk must be diffed against its named slice file and only genuinely-new upstream behavior ported forward, never taken wholesale -- proven on the i18n-nav hunk (found + fixed one real gap: missing renderUpdatesVersion re-apply on language switch). Re-audited 2026-08-25 (card 9ef96512, blob c8c11f94): 3 upstream hunks, all in the loadOllamaModels / resetWizard / startup-init region (app-settings.js). Ported: (1) loadOllamaModels refactored to populate both optgroups (ollamaModelGroup edit-panel + agentModelOllamaGroup wizard -- wizard was missing local-model option entirely); (2) agentModelOllamaGroup added to wizard HTML (index.html); (3) resetWizard() now calls loadOllamaModels() (app-wizard.js); (4) loadOllamaModels() added to startup init (app-settings.js). No behavioral gap found in any other region. Remaining ~11k lines (other regions) not yet hand-audited slice-by-slice.',
+    'STUB scaffold + 36 extracted web/app-*.js slices are authoritative; a conflicting upstream hunk must be diffed against its named slice file and only genuinely-new upstream behavior ported forward, never taken wholesale -- proven on the i18n-nav hunk (found + fixed one real gap: missing renderUpdatesVersion re-apply on language switch). Re-audited 2026-08-25 (card 9ef96512, blob c8c11f94): 3 upstream hunks, all in the loadOllamaModels / resetWizard / startup-init region (app-settings.js). Ported: (1) loadOllamaModels refactored to populate both optgroups (ollamaModelGroup edit-panel + agentModelOllamaGroup wizard -- wizard was missing local-model option entirely); (2) agentModelOllamaGroup added to wizard HTML (index.html); (3) resetWizard() now calls loadOllamaModels() (app-wizard.js); (4) loadOllamaModels() added to startup init (app-settings.js). No behavioral gap found in any other region. Re-audited 2026-09-02 (card 684dda18, blob e8c74d15): upstream diff since c8c11f94 has 3 hunks -- (1) activity-badge "thinking orb" spinner for state===working (app-activity.js): NOT a gap, the fork already signals "working" via a different mechanism (activity-badge.act-working has its own "breathing" pulse animation in style.css, card predates this) -- adding the orb on top would double-animate the same signal, skipped as redundant. (2) /api/context-guard-fed static badge on Agents-grid cards (app-agents.js): NOT a gap, the fork already has a strictly superior LIVE-POLLED per-agent context HUD (agentHudBlockHtml + GET /api/agent-hud poll, card e9504aba) with a bar + percentage + color tiers, upstream\'s is a page-load-only static badge -- fork mechanism supersedes it. (3) MiniMax direct-API model option (loadAvailableModels, mirrors the existing DeepSeek pattern, gated behind MINIMAX_API_KEY): a genuinely NEW, not-yet-adopted upstream feature needing a backend port too (src/web/routes/agents.ts models endpoint) -- this is an ADOPTION decision, not a passive conflict resolution, so it is NOT folded in here; opened as its own low-priority follow-up card (48565f81) for Peti to decide on. No further behavioral gap found in this increment. Remaining ~11k lines (other regions, prior to c8c11f94) still not yet hand-audited slice-by-slice.',
   // Two independent additive hunks with no behavioral overlap. Fork adds: HEARTBEAT.md ignore,
   // Ingatlan/ runtime data exclusions, and per-extension keep-tracked exceptions for operational
   // scripts (store/*.sh, store/*.py, store/stitch-tools/gen.mjs) by switching store/ → store/*
@@ -672,6 +687,8 @@ const ACKNOWLEDGED_CONFLICTS = {
 // Typed as Record<keyof typeof ACKNOWLEDGED_CONFLICTS, string>: a rule without a recorded blob, or
 // a blob without a rule, is a COMPILE error rather than a silent gap between two lists.
 const ACKNOWLEDGED_UPSTREAM_BLOBS: Readonly<Record<keyof typeof ACKNOWLEDGED_CONFLICTS, string>> = {
+  'src/kanban-dispatch.ts': '7fffc38f78b99573fb88fd797ac67b3593ffb872',
+  'src/__tests__/kanban-dispatch-rearm.test.ts': 'd9a186a0af48c44c14299c284dbe0caf45d8feaa',
   'src/auto-restart.ts': 'a1f2d75ed063a78eb5be23acb2c4138ca14fff19',
   'src/model-fallback.ts': 'd1ed3c18ba86badd1f72cf6fb28d1f3193974012',
   'src/__tests__/model-fallback.test.ts': '38b6e76e9f5184a9ade636a057b79c4e522f1e3b',
@@ -686,7 +703,7 @@ const ACKNOWLEDGED_UPSTREAM_BLOBS: Readonly<Record<keyof typeof ACKNOWLEDGED_CON
   'scripts/hooks/egress-gate.mjs': '229076d5812e7d50a188ca07b43a87fb6239b233',
   'src/__tests__/egress-gate.test.ts': 'c24ca54ffc49de70d602790fa1d6b80e3aea4156',
   'src/web/context-guard-runner.ts': 'b17ba4f630dbba93cfd5520e3c37a854a5c80c81',
-  'web/app.js': 'c8c11f94ac1007da3ce29f5cbbd4ab84a75a8701',
+  'web/app.js': 'e8c74d15bbb930ca7fff43139b868b0e638e7a11',
   'web/style.css': 'b774ccb836f07ca78c300077302834a80cd12edb',
   'src/web/agent-taskstate.ts': '625d03282bb75b554ce23822f67cc4e51b0706c1',
   'src/__tests__/agent-taskstate.test.ts': '82dc411aa813d66c0800e7f8007dfdcd2a42e43f',
