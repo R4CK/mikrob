@@ -78,6 +78,8 @@ _MUTATING = {
 }
 
 _ENV_ASSIGN_RX = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*=")
+# The escape hatch, only in its declared inline form at the start of a statement.
+_ALLOW_PREFIX_RX = re.compile(r"(?:^|[\n;&|(])\s*" + ALLOW_ENV + r"=\S+\s+\S")
 # A token we cannot resolve statically (still unexpanded at hook time).
 _UNRESOLVED_RX = re.compile(r"[$`*?\[]")
 
@@ -108,16 +110,24 @@ def is_mutating(stmt):
 
 
 def path_tokens(stmt):
+    """Every non-flag word, with whether it is still unresolvable.
+
+    It used to yield ONLY words that literally spelled `node_modules/<x>` -- and that was the
+    hole Cybered measured (8 shapes, card 9dc0fba8 round 2). The kernel does not read the word,
+    it reads the word JOINED TO THE CWD, so `cd "$WT/apps/web/node_modules" && rm @cleancore/i18n`
+    never even reached the check: the incriminating component was in the cwd, not in the token.
+    Whether a token is about a node_modules is decided AFTER resolution now, not by its spelling.
+    """
     try:
         words = shlex.split(stmt, comments=True)
     except ValueError:
         words = stmt.split()
+    first = True
     for w in words:
-        if w.startswith("-"):
+        if w.startswith("-") or _ENV_ASSIGN_RX.match(w):
             continue
-        # A node_modules COMPONENT with something after it: `.../node_modules/@scope/pkg`.
-        # A bare `.../node_modules` (removing or creating the link itself) is legitimate setup.
-        if not re.search(r"(?:^|/)node_modules/[^/]", w):
+        if first:  # the verb itself is not a path
+            first = False
             continue
         yield w, bool(_UNRESOLVED_RX.search(w))
 
@@ -125,30 +135,51 @@ def path_tokens(stmt):
 # A leading literal `cd <dir>` retargets everything after it. Same shape as npm-protect-guard.py's
 # _CD_RX, deliberately: the two guards answer the same "which directory is this really about"
 # question and should not drift into two different answers.
-_CD_RX = re.compile(r"(?:^|[\n;&|(])\s*cd\s+([^\s;&|]+)")
+# Every directory change, in order -- `cd` AND `pushd`. Taking only the FIRST `cd` was two of
+# Cybered's eight bypasses (`cd /tmp && cd $WT && rm ...`, and `pushd $WT && rm ...`).
+_CD_RX = re.compile(r"(?:^|[\n;&|(])\s*(?:cd|pushd)\s+([^\s;&|]+)")
 
 
 def effective_cwd(command, payload_cwd):
-    """(cwd, resolvable). The directory a relative path in `command` is resolved against: a leading
-    literal `cd` wins over the tool call's cwd. A `cd` whose target still holds an unexpanded $VAR
-    (or a backtick/glob) makes later relative paths uncheckable -- reported, never guessed at."""
+    """(cwd, resolvable, mentions_node_modules). Where a relative path in `command` actually lands: the tool call's cwd,
+    then EVERY `cd`/`pushd` applied in order. A hop whose target still holds an unexpanded $VAR
+    makes everything after it uncheckable -- reported, never guessed at."""
     base = payload_cwd or os.getcwd()
-    m = _CD_RX.search(command)
-    if not m:
-        return base, True
-    target = os.path.expanduser(m.group(1).strip("\"'"))
-    if _UNRESOLVED_RX.search(target):
-        return base, False
-    return (target if os.path.isabs(target) else os.path.join(base, target)), True
+    mentions_nm = _under_node_modules(base)
+    for m in _CD_RX.finditer(command):
+        target = os.path.expanduser(m.group(1).strip("\"'"))
+        mentions_nm = mentions_nm or "node_modules" in target
+        if not target or target == "-":
+            return base, False, mentions_nm  # `cd -` needs history we do not have
+        if _UNRESOLVED_RX.search(target):
+            return base, False, mentions_nm
+        base = target if os.path.isabs(target) else os.path.join(base, target)
+    return base, True, _under_node_modules(base) or mentions_nm
+
+
+def _under_node_modules(path):
+    return "node_modules" in path.split(os.sep)
 
 
 def escapes(path, cwd):
-    """(literal_parent, real_parent) when the parent directory resolves elsewhere, else None.
-    `path` is resolved against `cwd` (the CALLER's), never against the guard process's own."""
-    joined = os.path.join(cwd, path.rstrip("/"))
-    parent = os.path.dirname(os.path.normpath(joined))
+    """(literal_parent, real_parent) when this write lands somewhere other than where it reads,
+    AND a node_modules is involved -- else None.
+
+    Both halves are decided on the RESOLVED path, never on the spelling: `path` is joined to the
+    caller's `cwd` first, so a node_modules component hiding in the cwd counts exactly as much as
+    one typed in the argument. A bare `.../node_modules` (creating or removing the link itself) is
+    legitimate setup and is left alone.
+    """
+    joined = os.path.normpath(os.path.join(cwd, path.rstrip("/")))
+    if os.path.basename(joined) == "node_modules":
+        return None
+    parent = os.path.dirname(joined)
     real = os.path.realpath(parent)
-    return None if real == parent else (parent, real)
+    if real == parent:
+        return None
+    if not (_under_node_modules(parent) or _under_node_modules(real)):
+        return None
+    return (parent, real)
 
 
 def main():
@@ -159,14 +190,17 @@ def main():
     if payload.get("tool_name") != "Bash":
         sys.exit(0)
     command = (payload.get("tool_input") or {}).get("command") or ""
-    if not command or ALLOW_ENV in command:
+    # The hatch must be an ENV ASSIGNMENT AT THE FRONT, not the string appearing anywhere: a
+    # command that merely mentions the name (a grep under scripts/, then `;` and the write) used to
+    # disarm the guard entirely (Cybered B8, measured -- rc=0 and the link gone).
+    if not command or _ALLOW_PREFIX_RX.search(command):
         sys.exit(0)
 
     try:
         # The caller's directory, not this process's (QA finding, card 9dc0fba8): a relative path
         # resolved against the wrong base lands on a path that does not exist, whose realpath
         # equals itself -- which reads as "no escape" and waves the incident straight through.
-        cwd, cwd_known = effective_cwd(command, payload.get("cwd"))
+        cwd, cwd_known, cwd_in_nm = effective_cwd(command, payload.get("cwd"))
         for stmt in statements(command):
             if not is_mutating(stmt):
                 continue
@@ -176,10 +210,23 @@ def main():
                 if not unresolved and not os.path.isabs(token) and not cwd_known:
                     unresolved = True
                 if unresolved:
-                    # Case B: cannot be checked, so it is not allowed. Only a PACKAGE ENTRY
-                    # (node_modules/pkg or node_modules/@scope/pkg) counts -- a deeper path into a
-                    # package's own files, or the bare link itself, is not this failure's shape.
-                    if not re.search(r"(?:^|/)node_modules/(?:@[^/\s]+/)?[^/\s]+/?$", token):
+                    # CASE B, deliberately WIDER than in round 1 (my call on Cybered's open
+                    # question, card 9dc0fba8): it used to fire only on a package ENTRY, so
+                    # `echo x > "$WT/apps/web/node_modules/@cleancore/i18n/package.json"` walked
+                    # through -- and that one does not dangle a link, it silently REWRITES a source
+                    # file in the shared clone. No error, no red test (the vitest alias reads the
+                    # worktree's own copy), visible only in vite dev/build. A silent shared-tree
+                    # tamper is worse than an outage, so "cannot check" now means "do not write"
+                    # for ANY path under a node_modules, however deep.
+                    mentions = "node_modules" in token or (
+                        cwd_in_nm and not os.path.isabs(token)
+                    )
+                    # The BARE link itself stays legitimate setup, exactly as in escapes(): the
+                    # gate-worktree scripts create and replace `<tree>/<pkg>/node_modules` all day
+                    # and must not need the hatch to do it.
+                    if token.rstrip("/").split("/")[-1] == "node_modules":
+                        mentions = False
+                    if not mentions:
                         continue
                     sys.stderr.write(
                         "BLOCKED: this write targets an entry inside a node_modules by a path "

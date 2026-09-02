@@ -97,8 +97,12 @@ def main():
              not blocked('rm -rf "$WT/$d/node_modules"'), ""),
             ("reading through a variable path is allowed",
              not blocked('grep -rn foo "$WT/apps/web/node_modules/@cleancore/i18n"'), ""),
-            ("a deep path inside a package is not this shape",
-             not blocked('cp x "$WT/apps/web/node_modules/@cleancore/i18n/messages/hu.json"'), ""),
+            # DECIDED (Cybered left this to me, card 9dc0fba8 round 2): case B now covers deep
+            # paths too. B6b writes a SOURCE FILE inside the shared clone rather than dangling a
+            # link -- silent, no red test, visible only in vite dev/build. "Cannot check" must mean
+            # "do not write" for anything under a node_modules.
+            ("a deep path inside a package IS blocked now (B6b, semantics tightened on purpose)",
+             blocked('cp x "$WT/apps/web/node_modules/@cleancore/i18n/messages/hu.json"'), ""),
             # --- QA finding, card 9dc0fba8 round 1: the same incident written RELATIVELY.
             # The first version resolved relative paths against the GUARD process's cwd, so these
             # landed on a non-existent path whose realpath equals itself -- "no escape", waved
@@ -114,6 +118,36 @@ def main():
              not blocked("ln -s ../../../packages/i18n apps/web/node_modules/@cleancore/i18n", good), ""),
             ("CONTROL: relative READ in the escaping tree is still allowed",
              not blocked("cat apps/web/node_modules/@cleancore/i18n", wt), ""),
+            # --- Cybered's eight measured bypasses (card 9dc0fba8 round 2). Every one of these
+            # ACTUALLY rewrote the shared clone in their fixture while the guard answered rc=0,
+            # because the old code filtered the WRITTEN token instead of the RESOLVED path: the
+            # incriminating `node_modules` component was sitting in the cwd, not in the argument.
+            ("B1  cd INTO the symlinked node_modules, then rm+ln by bare name",
+             blocked(f"cd {wt}/apps/web/node_modules && rm @cleancore/i18n && "
+                     f"ln -s {wt}/packages/i18n @cleancore/i18n"), ""),
+            ("B2  cd one level deeper (@cleancore), rm by bare name",
+             blocked(f"cd {wt}/apps/web/node_modules/@cleancore && rm i18n"), ""),
+            ("B12 no cd at all -- the SESSION's cwd is already inside the symlinked node_modules",
+             blocked("rm @cleancore/i18n", f"{wt}/apps/web/node_modules"), ""),
+            ("B9  trailing slash on the cd target",
+             blocked(f"cd {wt}/apps/web/node_modules/ && rm @cleancore/i18n"), ""),
+            ("B3  double slash in the path (the old `[^/]` pattern did not match)",
+             blocked(f"rm {wt}/apps/web/node_modules//@cleancore/i18n"), ""),
+            ("B4  cd chain -- only the FIRST cd used to be read",
+             blocked(f"cd /tmp && cd {wt} && rm apps/web/node_modules/@cleancore/i18n"), ""),
+            ("B5  pushd instead of cd",
+             blocked(f"pushd {wt} >/dev/null && rm apps/web/node_modules/@cleancore/i18n"), ""),
+            ("B6b deep write INSIDE a package -- silent shared-tree tamper, no dangling link",
+             blocked(f"echo x > {wt}/apps/web/node_modules/@cleancore/i18n/package.json"), ""),
+            ("B8  the hatch must be an env assignment, not the mere mention of its name",
+             blocked(f"grep -rn MARVEEN_ALLOW_SYMLINK_NM scripts/ ; rm {wt_link}"), ""),
+            # --- the controls must survive all of the above ---
+            ("CONTROL: cd into a REAL node_modules and write there is allowed",
+             not blocked(f"cd {good}/apps/web/node_modules && ln -s {good}/packages/i18n @cleancore/i18n"), ""),
+            ("CONTROL: cd into the escaping tree and READ is allowed",
+             not blocked(f"cd {wt}/apps/web/node_modules && cat @cleancore/i18n"), ""),
+            ("CONTROL: an ordinary write outside any node_modules is untouched",
+             not blocked(f"cd {wt} && rm packages/i18n/messages/hu.json"), ""),
             ("escape hatch honoured",
              not blocked(f"MARVEEN_ALLOW_SYMLINK_NM=1 ln -s {wt}/packages/i18n {wt_link}"), ""),
             ("non-Bash tool ignored",
