@@ -9,6 +9,12 @@ import { TOOL_TIMEOUTS } from './tool-timeouts.js'
 import { AGENT_MESSAGES_DDL, AGENT_MESSAGES_ALTER_COLUMNS } from './schema/agent-messages-ddl.js'
 import {
   MARKER_SOURCE,
+  NODE_CARD,
+  NODE_FILE,
+  NODE_SHA,
+  REL_GATE_SHA,
+  REL_TOUCHES_FILE,
+  parseQualifiedPath,
   cardEdges,
   commentEdges,
   dedupeEdges,
@@ -2930,10 +2936,217 @@ export function gateShaTargets(): string[] {
     db
       .prepare(
         `SELECT DISTINCT to_id FROM kanban_relations
-          WHERE relation_type = 'gate-sha' AND to_type = 'sha' ORDER BY to_id`,
+          WHERE relation_type = ? AND to_type = ? ORDER BY to_id`,
       )
-      .all() as { to_id: string }[]
+      .all(REL_GATE_SHA, NODE_SHA) as { to_id: string }[]
   ).map((r) => r.to_id)
+}
+
+// --- Relation queries (card 69396b63, FELADAT 3/4) ------------------------------------------
+//
+// The READ side of kanban_relations. Three questions, and the third is why this is not a single
+// row filter: "which cards touched file X" is TWO hops (card -gate-sha-> sha -touches-file-> file),
+// so a caller given only a row filter would fetch the shas and then issue one request per sha --
+// the N+1 this file already refuses elsewhere, against 4919 file edges.
+
+/** The columns a caller may filter on. An ALLOWLIST because the name reaches the SQL as a COLUMN,
+ *  where a placeholder cannot stand in for it -- and because a filter that is accepted and then
+ *  ignored is the defect card 37ea2f96 documented (the caller trusts it and reads the wrong set).
+ *  Values are always bound, never interpolated. */
+export const RELATION_FILTER_COLUMNS = [
+  'from_type',
+  'from_id',
+  'to_type',
+  'to_id',
+  'relation_type',
+  'source',
+] as const
+export type RelationFilterColumn = (typeof RELATION_FILTER_COLUMNS)[number]
+
+export interface RelationRow extends RelationEdge {
+  readonly source: string
+  readonly created_at: number
+}
+
+export interface RelationQuery {
+  readonly filters?: Partial<Record<RelationFilterColumn, readonly string[]>>
+  readonly limit: number
+  readonly offset: number
+}
+
+export interface RelationQueryResult {
+  /** The count BEFORE limit/offset -- what the filter actually matches. */
+  readonly total: number
+  readonly limit: number
+  readonly offset: number
+  readonly edges: RelationRow[]
+}
+
+/** Rows matching the filters, bounded. `total` is the unbounded count, so a caller can tell "this
+ *  is everything" apart from "this is the first page" without a second request. */
+export function queryKanbanRelations(q: RelationQuery): RelationQueryResult {
+  const where: string[] = []
+  const params: string[] = []
+  for (const column of RELATION_FILTER_COLUMNS) {
+    const values = q.filters?.[column]
+    if (!values || values.length === 0) continue
+    where.push(`${column} IN (${values.map(() => '?').join(', ')})`)
+    params.push(...values)
+  }
+  const clause = where.length > 0 ? ` WHERE ${where.join(' AND ')}` : ''
+  const total = (
+    db.prepare(`SELECT COUNT(*) AS n FROM kanban_relations${clause}`).get(...params) as { n: number }
+  ).n
+  // ORDER BY the PRIMARY KEY prefix: a stable total order, so `offset` pages over a fixed sequence
+  // rather than whatever order the planner happens to produce for a given filter.
+  const edges = db
+    .prepare(
+      `SELECT from_type, from_id, to_type, to_id, relation_type, source, created_at
+         FROM kanban_relations${clause}
+        ORDER BY from_type, from_id, to_type, to_id, relation_type
+        LIMIT ? OFFSET ?`,
+    )
+    .all(...params, q.limit, q.offset) as RelationRow[]
+  return { total, limit: q.limit, offset: q.offset, edges }
+}
+
+export interface CardTouchingFile {
+  readonly id: string
+  /** Null when the edge names a card the board no longer holds. Reported rather than dropped:
+   *  deleteKanbanCard sweeps card-ended edges (card 9d7a247a), so a null here is a real anomaly
+   *  worth seeing, and silently filtering it would hide it. */
+  readonly title: string | null
+  readonly status: string | null
+  readonly assignee: string | null
+  readonly project: string | null
+  /** The gate-shas of THIS card that touch the file, as stated. */
+  readonly shas: string[]
+}
+
+export interface CardsTouchingFileResult {
+  readonly file: string
+  readonly shaCount: number
+  readonly cardCount: number
+  readonly cards: CardTouchingFile[]
+}
+
+/** Which cards touched a file -- the question the whole relation layer exists to answer.
+ *
+ *  `file` is the REPO-QUALIFIED id ("marveen:src/db.ts"), because both repos have a README.md and
+ *  a package.json -- a bare path would fuse two projects' cards into one answer.
+ *
+ *  ON THE PLAN, measured rather than assumed (8284 live edges, 2026-09-02): SQLite serves this from
+ *  the PRIMARY KEY's covering index in both loops -- NOT from idx_kanban_relations_to, even though
+ *  the file hop matches that index's three columns exactly. The reason is that the join also needs
+ *  `from_id`, which that index does not carry, so the PK index wins on coverage. Left alone at
+ *  0.6 ms/query: forcing the other order with CROSS JOIN was MEASURED at 3.3 ms, five times worse,
+ *  so the planner's choice is the right one and an index hint here would be a pessimisation. */
+export function cardsTouchingFile(file: string): CardsTouchingFileResult {
+  const rows = db
+    .prepare(
+      `SELECT gate.from_id AS card_id, touch.from_id AS sha,
+              c.title AS title, c.status AS status, c.assignee AS assignee, c.project AS project
+         FROM kanban_relations touch
+         JOIN kanban_relations gate
+           ON gate.to_type = ? AND gate.to_id = touch.from_id
+          AND gate.relation_type = ? AND gate.from_type = ?
+    LEFT JOIN kanban_cards c ON c.id = gate.from_id
+        WHERE touch.to_type = ? AND touch.to_id = ? AND touch.relation_type = ?
+          AND touch.from_type = ?
+        ORDER BY gate.from_id, touch.from_id`,
+    )
+    .all(NODE_SHA, REL_GATE_SHA, NODE_CARD, NODE_FILE, file, REL_TOUCHES_FILE, NODE_SHA) as {
+    card_id: string
+    sha: string
+    title: string | null
+    status: string | null
+    assignee: string | null
+    project: string | null
+  }[]
+
+  const byCard = new Map<string, CardTouchingFile & { shas: string[] }>()
+  const shas = new Set<string>()
+  for (const r of rows) {
+    shas.add(r.sha)
+    let card = byCard.get(r.card_id)
+    if (!card) {
+      card = {
+        id: r.card_id,
+        title: r.title,
+        status: r.status,
+        assignee: r.assignee,
+        project: r.project,
+        shas: [],
+      }
+      byCard.set(r.card_id, card)
+    }
+    if (!card.shas.includes(r.sha)) card.shas.push(r.sha)
+  }
+  const cards = [...byCard.values()]
+  return { file, shaCount: shas.size, cardCount: cards.length, cards }
+}
+
+export interface FileTouchedByCard {
+  /** The stored, repo-qualified id -- what a follow-up query on this endpoint takes back. */
+  readonly id: string
+  readonly repo: string | null
+  readonly path: string
+  readonly shas: string[]
+}
+
+export interface FilesTouchedByCardResult {
+  readonly card: string
+  readonly shaCount: number
+  readonly fileCount: number
+  /** Every sha the card states, INCLUDING ones that resolved to no file (a sha git could not find,
+   *  or one whose commit touched nothing this sweep saw). Without them a card whose shas are all
+   *  unresolvable is indistinguishable from a card that states none. */
+  readonly shas: string[]
+  readonly files: FileTouchedByCard[]
+}
+
+/** Which files a card touched, through the shas its comments stated. The mirror of
+ *  {@link cardsTouchingFile}, and the same measured plan: the PK covering index on both loops,
+ *  1.7 ms for the busiest card on the board today (27 files). */
+export function filesTouchedByCard(cardId: string): FilesTouchedByCardResult {
+  const stated = (
+    db
+      .prepare(
+        `SELECT DISTINCT to_id FROM kanban_relations
+          WHERE from_type = ? AND from_id = ? AND relation_type = ? AND to_type = ?
+          ORDER BY to_id`,
+      )
+      .all(NODE_CARD, cardId, REL_GATE_SHA, NODE_SHA) as { to_id: string }[]
+  ).map((r) => r.to_id)
+
+  const rows = db
+    .prepare(
+      `SELECT touch.to_id AS file, gate.to_id AS sha
+         FROM kanban_relations gate
+         JOIN kanban_relations touch
+           ON touch.from_type = ? AND touch.from_id = gate.to_id AND touch.relation_type = ?
+          AND touch.to_type = ?
+        WHERE gate.from_type = ? AND gate.from_id = ? AND gate.relation_type = ?
+          AND gate.to_type = ?
+        ORDER BY touch.to_id, gate.to_id`,
+    )
+    .all(NODE_SHA, REL_TOUCHES_FILE, NODE_FILE, NODE_CARD, cardId, REL_GATE_SHA, NODE_SHA) as {
+    file: string
+    sha: string
+  }[]
+
+  const byFile = new Map<string, FileTouchedByCard & { shas: string[] }>()
+  for (const r of rows) {
+    let file = byFile.get(r.file)
+    if (!file) {
+      const { repo, path } = parseQualifiedPath(r.file)
+      file = { id: r.file, repo, path, shas: [] }
+      byFile.set(r.file, file)
+    }
+    if (!file.shas.includes(r.sha)) file.shas.push(r.sha)
+  }
+  const files = [...byFile.values()]
+  return { card: cardId, shaCount: stated.length, fileCount: files.length, shas: stated, files }
 }
 
 // --- Card dependencies (card 2bb82943) ------------------------------------------------------

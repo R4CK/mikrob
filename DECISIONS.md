@@ -4692,3 +4692,50 @@ itt commitolva, tesztelve, a worktree-ben vár, amíg az felold.
 
 **Ki döntött:** MikroB (Peti kérése, Telegram msg 6113/6116/6120, 2026-09-02).
 **Hivatkozás:** kártya `baf1b1b0` (Fázis `2ebe24b2`), előzmény `4dee0c4a` (modell-összehasonlítás).
+
+## 2026-09-02 -- 69396b63 -- A reláció-lekérdező API négy döntése: három végpont, fail-closed paraméter, közös szótár, index-hint nélkül
+
+**Kontextus.** A Fázis (`fe3eff9f`) FELADAT 3/4-e: lekérdező végpont a `kanban_relations` táblára.
+A kártya egyetlen alakot javasolt (`/api/kanban/relations?to_type=file&to_id=<út>`).
+
+**1. Három végpont, nem egy.** A javasolt sor-szűrés megmarad, de ÖNMAGÁBAN nem válaszolja meg a
+Fázis saját fő kérdését. A gráf ott két ugrás (`kártya -gate-sha-> sha -touches-file-> fájl`), tehát
+egy `to_type=file` szűrés SHÁKAT ad vissza, nem kártyákat, és a hívónak shánként kellene
+visszakérdeznie -- N+1 a 4919 fájl-élen, pont az a minta, amit a `db.ts` máshol már elutasít. Ezért
+a kétugrásos irány kap saját végpontot mindkét irányba (`/relations/cards?file=`,
+`/relations/files?card=`). Elvetett alternatíva: egyetlen végpont `mode=` kapcsolóval -- ugyanaz a
+két lekérdezés, csak a hívó oldalán elrejtve, és a válasz alakja úgyis eltér.
+
+**2. Ismeretlen query-paraméter 400, nem néma figyelmen kívül hagyás.** A `37ea2f96` precedense
+(elfogadott-és-figyelmen-kívül-hagyott `?status=`) itt súlyosabb: ennek a végpontnak a TELJES
+feladata a "mely kártyák érintették X-et" kérdés, tehát egy elgépelt `?fromid=` a szűretlen egész
+táblát adná vissza 200-zal, amit a hívó úgy olvas, hogy "ezek érintették X-et". Rossz válasz jó
+válasz képében. A `limit` viszont NEM utasít el a maximum felett, hanem CSONKÍT: a hívó "mindent"
+kért, megkapja amit a végpont kiszolgál, és a `total`-ból látja, mi maradt ki. A `limit=0` ezzel
+szemben elutasítás, mert az nem "mindent", hanem egy értelmetlen lap.
+
+**3. A reláció-szótár a TISZTA modulba került.** A `db.ts` szerkezetileg nem importálhatja a
+`kanban-relations-git.ts`-t (az shellel hív gitet, és a kérés-útvonaltól való távoltartása maga a
+védelem), viszont pont az általa írt `touches-file`/`file` stringekre kell joinolnia. Két külön
+fájlban kimondott string-pár, ami némán üres választ ad, ha elcsúszik: a nulla él
+megkülönböztethetetlen attól, hogy a kártya tényleg nem ért fájlt. Ezért a `REL_*`/`NODE_*`
+konstansok a tiszta `kanban-relations.ts`-ben élnek, onnan használja MINDKÉT író és az olvasó is,
+és teszt köti, hogy a producerek pontosan ezeket bocsátják ki.
+
+**4. Nincs index-hint, és a komment a MÉRT tervet írja le.** Az első kommentváltozatom azt
+állította, hogy mindkét ugrás a fordított irányra készült `idx_kanban_relations_to`-t olvassa.
+`EXPLAIN QUERY PLAN` a 8284 élen: nem azt olvassa, hanem a PRIMARY KEY covering indexét (a fordított
+index nem hordozza a joinhoz kellő `from_id`-t). A "helyes" sorrend `CROSS JOIN`-nal kikényszerítve
+MÉRTEN 3,3 ms, szemben a planner 0,6 ms-ával -- ötször rosszabb. Így a kód marad hint nélkül, a
+komment pedig a mérést mondja. Egy dokumentált, de hamis terv-állítás ugyanolyan doksi-drift, mint
+egy elavult README.
+
+**Járulékos:** az olyan él, ami már nem létező kártyát nevez meg, `null` mezőkkel JELENTVE jön
+vissza, nem kiszűrve. A `deleteKanbanCard` takarítja a kártya-oldali éleket, tehát egy ilyen sor
+valódi anomália; a néma kiszűrése elrejtené.
+
+**Tesztelve:** 38 eset, plusz egy MUTÁCIÓS söprés a saját join-omon (6 mutáció: mindkét ugrás
+`relation_type`-ja, a távoli vég node-típusa, az irány) -- mind a 6 pirosra vált, kontroll zölden.
+A fixture szándékosan tartalmaz csali éleket (másik repó azonos útvonalú fájlja, rossz
+`relation_type`, fordított irány), mert egy csak-helyes-sorokat tartalmazó fixture bármelyik
+predikátum törlésével is átmenne.

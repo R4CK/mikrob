@@ -11,6 +11,7 @@
 import { execFileSync } from 'node:child_process'
 import { PROJECT_ROOT } from './config.js'
 import type { RelationEdge } from './kanban-relations.js'
+import { NODE_FILE, NODE_REPO, NODE_SHA, REL_RESOLVED_IN, REL_TOUCHES_FILE } from './kanban-relations.js'
 
 /** The `source` tag every edge below is written under. Its own tag, separate from 'marker-v1':
  *  these edges are derived from GIT, not from card text, so they must reconcile (and be undone)
@@ -205,11 +206,11 @@ export function gitSweepEdges(shas: readonly string[], repos = defaultRepos()): 
   for (const r of resolutions.values()) {
     byLocation[r.location] = (byLocation[r.location] ?? 0) + 1
     edges.push({
-      from_type: 'sha',
+      from_type: NODE_SHA,
       from_id: r.sha,
-      to_type: 'repo',
+      to_type: NODE_REPO,
       to_id: r.location,
-      relation_type: 'resolved-in',
+      relation_type: REL_RESOLVED_IN,
     })
   }
 
@@ -228,11 +229,11 @@ export function gitSweepEdges(shas: readonly string[], repos = defaultRepos()): 
     for (const r of inRepo) {
       for (const path of listing.get(r.full!) ?? []) {
         edges.push({
-          from_type: 'sha',
+          from_type: NODE_SHA,
           from_id: r.sha,
-          to_type: 'file',
+          to_type: NODE_FILE,
           to_id: qualifyPath(repo.name, path),
-          relation_type: 'touches-file',
+          relation_type: REL_TOUCHES_FILE,
         })
       }
     }

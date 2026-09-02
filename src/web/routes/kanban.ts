@@ -20,6 +20,8 @@ import {
   countNewHotMemories,
   countPlannedKanbanCards,
   getDbFileSizeMb,
+  queryKanbanRelations, cardsTouchingFile, filesTouchedByCard,
+  RELATION_FILTER_COLUMNS, type RelationFilterColumn, type RelationQuery,
 } from '../../db.js'
 import { isForceActor } from '../../kanban-force-actors.js'
 import { normalizeKanbanRefs } from '../kanban-ref-normalize.js'
@@ -282,6 +284,81 @@ export function filterValues(url: URL, name: string): Set<string> | null {
     .map((v) => v.trim())
     .filter((v) => v.length > 0)
   return values.length === 0 ? null : new Set(values)
+}
+
+/** Paging bounds for GET /api/kanban/relations (card 69396b63). A default at all, because the
+ *  table holds 8284 edges today and a bare GET must not be a full dump; a MAX because `?limit=1e9`
+ *  would be the same dump with an extra step. Above the max is CLAMPED rather than refused -- the
+ *  caller asked for "everything" and gets as much as this endpoint serves, with `total` telling
+ *  them what they did not get. */
+export const RELATION_LIMIT_DEFAULT = 500
+export const RELATION_LIMIT_MAX = 5000
+
+/** Base-10 integer or nothing. `Number()` is deliberately not `parseInt`: parseInt('5abc') is 5,
+ *  so a typo'd bound would silently become a different bound. */
+function wholeNumber(raw: string): number | null {
+  const trimmed = raw.trim()
+  if (!/^[0-9]+$/.test(trimmed)) return null
+  const n = Number(trimmed)
+  return Number.isSafeInteger(n) ? n : null
+}
+
+/**
+ * Query string -> a relation query, or a refusal. PURE and exported so the fail-closed behaviour
+ * is testable without HTTP.
+ *
+ * AN UNKNOWN PARAMETER IS A 400, not a shrug. Card 37ea2f96 is the precedent and the reason: this
+ * endpoint's whole job is answering "which cards touched X", so a caller who typos `?fromid=` and
+ * gets 200 with the WHOLE unfiltered table reads it as "these cards touched X" -- a wrong answer
+ * that looks like a right one. Refusing names the mistake at the only moment it is cheap.
+ */
+export function parseRelationQuery(
+  url: URL,
+): { ok: true; query: RelationQuery } | { ok: false; error: string } {
+  const accepted = new Set<string>([...RELATION_FILTER_COLUMNS, 'limit', 'offset'])
+  const unknown = [...new Set([...url.searchParams.keys()].filter((k) => !accepted.has(k)))]
+  if (unknown.length > 0) {
+    return {
+      ok: false,
+      error:
+        `Ismeretlen query-paraméter: ${unknown.join(', ')}. ` +
+        `Elfogadott paraméterek: ${[...accepted].join(', ')}.`,
+    }
+  }
+
+  const filters: Partial<Record<RelationFilterColumn, string[]>> = {}
+  for (const column of RELATION_FILTER_COLUMNS) {
+    const values = filterValues(url, column)
+    if (values) filters[column] = [...values]
+  }
+
+  const rawLimit = url.searchParams.get('limit')
+  let limit = RELATION_LIMIT_DEFAULT
+  if (rawLimit !== null) {
+    const parsed = wholeNumber(rawLimit)
+    if (parsed === null || parsed < 1) {
+      return { ok: false, error: `A 'limit' pozitív egész szám legyen, ez érkezett: '${rawLimit}'.` }
+    }
+    limit = Math.min(parsed, RELATION_LIMIT_MAX)
+  }
+
+  const rawOffset = url.searchParams.get('offset')
+  let offset = 0
+  if (rawOffset !== null) {
+    const parsed = wholeNumber(rawOffset)
+    if (parsed === null) {
+      return {
+        ok: false,
+        error: `Az 'offset' nemnegatív egész szám legyen, ez érkezett: '${rawOffset}'.`,
+      }
+    }
+    offset = parsed
+  }
+
+  const query: RelationQuery = Object.keys(filters).length > 0
+    ? { filters, limit, offset }
+    : { limit, offset }
+  return { ok: true, query }
 }
 
 /**
@@ -563,6 +640,36 @@ export async function tryHandleKanban(ctx: RouteContext): Promise<boolean> {
       updateKanbanCard(id, { description: withDedupNote }, { actor: 'dedup-prefilter-guard' })
     }
     json(res, { ok: true, id })
+    return true
+  }
+
+  // Relation queries (card 69396b63, FELADAT 3/4). REGISTERED BEFORE kanbanCardMatch ON PURPOSE:
+  // that matcher's `([^/]+)` swallows any single segment, so a `/api/kanban/relations` checked
+  // after it would be answered as "no card with id 'relations'" -- the exact shadowing card
+  // ebf7d95c documents for /archived and /labels. The test file pins both directions.
+  if (path === '/api/kanban/relations' && method === 'GET') {
+    const parsed = parseRelationQuery(ctx.url)
+    if (!parsed.ok) { json(res, { error: parsed.error }, 400); return true }
+    jsonMaybeGzip(req, res, queryKanbanRelations(parsed.query))
+    return true
+  }
+
+  // The two-hop answers. The PATH names what comes back, the PARAMETER names the anchor, so the
+  // two cannot be read the wrong way round.
+  if (path === '/api/kanban/relations/cards' && method === 'GET') {
+    const file = (ctx.url.searchParams.get('file') || '').trim()
+    if (!file) {
+      json(res, { error: "Kötelező paraméter: ?file=<repo:path> (pl. 'marveen:src/db.ts')." }, 400)
+      return true
+    }
+    jsonMaybeGzip(req, res, cardsTouchingFile(file))
+    return true
+  }
+
+  if (path === '/api/kanban/relations/files' && method === 'GET') {
+    const card = (ctx.url.searchParams.get('card') || '').trim()
+    if (!card) { json(res, { error: 'Kötelező paraméter: ?card=<kártya id>.' }, 400); return true }
+    jsonMaybeGzip(req, res, filesTouchedByCard(card))
     return true
   }
 
