@@ -4527,3 +4527,66 @@ rossz backfillt von vissza, nem adatvesztést -- a tábla üresen jön vissza.
 
 **Ki döntött:** backend (plan-grilling verdikt a kártyán, komment 18023). **Hivatkozás:** kártya
 `9d7a247a`, Fázis `fe3eff9f`.
+
+## 2026-09-02 -- 6cd61430 -- A reláció-kinyerés négy döntése: a `blockedBy` forrás kiesik, a `Pair-*` horgony nem soreleji, a sweep reconcile, egy `source` címke
+
+**Kontextus.** A Fázis (`fe3eff9f`) kulcs-felismerése az volt, hogy a flotta MÁR használ strukturált
+szöveges jelöléseket, tehát a reláció-réteget fel lehet tölteni belőlük extra tagging-teher nélkül.
+Ez a kártya a kinyerést szállítja: `src/kanban-relations.ts` (tiszta, IO-mentes parser),
+`scripts/kanban-relations-backfill.ts` (reconcile CLI, dry-run az alapértelmezés), és három élő hook
+(`createKanbanCard`, `updateKanbanCard`, `addKanbanComment`). Minden alábbi döntés a KORPUSZBÓL
+mérve (2680 kártya, 18054 komment), nem a kártyaszövegből levezetve.
+
+**1. A kártya által megnevezett `blockedBy` forrás KIESIK, három független okból.** Nincs ilyen
+jelölés: a 17 előfordulás (3 leírás + 14 komment) MIND próza az API egy SZÁRMAZTATOTT válaszmezőjéről
+-- a `38788337` kártya saját szövege definiálja így ("egy szarmaztatott `blocked: boolean` mezo (+
+opcionalisan `blockedBy: [{id,title,status}]`)"). A valódi tároló a `kanban_dependencies`, egy
+tipizált reláció-tábla valódi idegen kulcsokkal. És egy ide írt él `relation_type='blocks'` lenne,
+amit a `9d7a247a` séma triggere szándékosan visszautasít, mert a kártyazárás-őr a másik táblát
+olvassa -- egy `depends-on` álnév pontosan ezt a hibát hozná vissza egy szinonimával később. A
+döntés tehát nem scope-vágás kényelemből: a forrás nem létezik, és ha létezne, a séma tiltaná.
+
+**2. A `Pair-FE:`/`Pair-BE:` horgony CÍMKE + HEX, nem soreleji -- a 8a. szabály szövege ellenére.**
+A 8a. "a leírás ELSŐ néhány sorában" fogalmaz, ami a `Gate-SHA` soreleji horgonyának átvételét
+sugallja. Mérve: a 104 Pair-t hordozó kártyából 2 VALÓDI párosítás sor közepén áll, más próza után
+(`37e30adb`: "Peti GO (8779c351 epic, 2026-08-20). Pair-FE: 7a1a8aec"; `17d8865f`: "Fazis: bc465e33.
+Pair-BE: d8d55452") -- soreleji horgony ezeket elveszti. Csupasz címke-horgony viszont behúzza a
+konvencióról BESZÉLŐ kártyákat (`fe3eff9f`, `6cd61430`, `3bd18e70`). A kettőspont után KÖZVETLENÜL
+követelt hex-token mindkettőt megoldja, és ráadásul kizárja a 40+ prózai "nincs pár" értéket
+(`n/a`, `-`, `nincs (frontend-only)`, `N/A (infra refactor)`), amit egy "a sor maradéka" parser
+élként rögzített volna. Ellenőrzés a teljes korpuszon: 37 pár-él, MIND létező kártyára mutat, nulla
+lógó azonosító. A `Gate-SHA` horgonya viszont MARAD soreleji: a 4b. szabály kimondottan azért írja
+elő, hogy a konvencióról lehessen beszélni gate-ébresztés nélkül (2397 soreleji vs 95 prózai
+említés). Két szabály, két horgony, mindkettő méréssel indokolva.
+
+**3. A sweep RECONCILE, nem backfill: beszúr ÉS töröl.** Egy csak-beszúró pass két valós hibát nem
+tud kezelni. SORREND: ha a pár-kártya a másik UTÁN jön létre, az élt egy egyszeri hook örökre
+elveszti. SZERKESZTÉS: egy javított elgépelés vagy egy átszülőzés után a régi él bent ragad az új
+mellett. Ez utóbbi az egyetlen ok, amiért a `parent_id` egyáltalán materializálható ide (különben
+pontosan az az "elavuló második másolat" hibaosztály lenne, amit az 1. pont elutasít): a reconcile
+után a származtatott másolat nem tud egy sweepnél tovább eltérni az oszloptól.
+
+**4. EGY `source` címke (`marker-v1`), nem `backfill-v1`/`live`/`manual`.** A séma kommentje három
+példát vetett fel. Ha az élő út és a sweep KÜLÖNBÖZŐ címkét ír, a "töröld, amit a korpusz már nem
+mond" lépés nem fogalmazható meg egy feltétellel. Egy címkével az invariáns egy sor (a
+`source='marker-v1'` sorok halmaza = a korpuszból kinyert élek halmaza), és a visszavonás is:
+`DELETE FROM kanban_relations WHERE source = 'marker-v1'` -- idegen `source`-ú kézi sort nem érint.
+
+**Járulékos döntés: az élő hook SOHA nem buktathatja el a saját írását.** A `blocks` trigger
+`RAISE(ABORT)`-ja az `addKanbanComment` tranzakciójában magát a kommentet vinné el. A kinyerő sosem
+gyárt `blocks`-ot, tehát ez az osztály elleni védelem, nem a példány elleni. Az aszimmetria dönt: a
+`kanban_relations` származtatott index, amit a reconcile nulláról újraszámol (egy kiesett él magától
+gyógyul), a REVIEW-komment viszont nem gyógyul, és a teljes gate-folyamat azon fut. Naplózva megy,
+nem némán.
+
+**Hatókörön kívül, jelezve:** a `touches-file` él (sha -> fájl). A Fázis fő kérdése ("mely kártyák
+érintettek X fájlt") ezt igényli, de ez a kártya csak a jelöléseket nevezi meg. Megmérve reális:
+az 1069 különböző Gate-SHA-ból 1064 feloldható lokálisan (569 marveen, 495 CleanCore). Külön kártyát
+igényel a `69396b63` (lekérdező végpont) ELŐTT, és git-IO lévén csak sweepbe mehet, sose az élő hookba.
+
+**Élesben:** a backfill lefutott a produkciós DB-n, 2277 él (1196 `gate-sha`, 1044 `child-of`,
+19 `pair-fe`, 18 `pair-be`), előtte azonos kimenettel igazolva egy `.backup`-másolaton, és a második
+futás 0 beszúrás / 0 törlés (idempotens).
+
+**Ki döntött:** backend (plan-grilling, kártya-komment 18054), a kártya szövegétől eltérő pontokat
+kimondva. **Hivatkozás:** kártya `6cd61430`, Fázis `fe3eff9f`, séma-kártya `9d7a247a`.
