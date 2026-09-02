@@ -9,8 +9,8 @@
  * fleet runs scripts straight out of card text. Same posture as store/kanban-relations-rollback.sh.
  *
  * PASS --db, OR RUN IT FROM THE MAIN CHECKOUT. Without --db the path comes from STORE_DIR, which
- * is derived from the project root of the CWD -- so running this from an agent worktree opens (and
- * CREATES) an empty store/claudeclaw.db there and cheerfully reports "0 cards, 0 comments". Hit
+ * hangs off PROJECT_ROOT (= the checkout this module was LOADED from, `__dirname/..`) -- so running
+ * this from an agent worktree opens (and CREATES) an empty store/claudeclaw.db there and cheerfully reports "0 cards, 0 comments". Hit
  * while building this, which is why the report leads with the scanned counts: a run against the
  * wrong database is visible in its first line rather than in its silence.
  *
@@ -27,7 +27,7 @@ if (argv.includes('--help') || argv.includes('-h')) {
       'kanban-relations-backfill -- reconcile the marker-derived edges in kanban_relations.',
       '',
       '  --yes         apply the changes (default: dry run, nothing is written)',
-      '  --db <path>   database to open (default: the store DB of the CWD project root --',
+      '  --db <path>   database to open (default: the store DB of THIS checkout --',
       '                pass this explicitly when running from an agent worktree)',
       '  --help        this text',
       '',

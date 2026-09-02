@@ -4590,3 +4590,60 @@ futás 0 beszúrás / 0 törlés (idempotens).
 
 **Ki döntött:** backend (plan-grilling, kártya-komment 18054), a kártya szövegétől eltérő pontokat
 kimondva. **Hivatkozás:** kártya `6cd61430`, Fázis `fe3eff9f`, séma-kártya `9d7a247a`.
+
+## 2026-09-02 -- 1f1e3ae4 -- A sha->fájl feloldás négy döntése: a merge-csapda, a repo-kvalifikált útvonal, a kimondott-sha kulcs, a fail-closed egyértelműség
+
+**Kontextus.** A `6cd61430` szállította a jelölés-alapú éleket, de a Fázis (`fe3eff9f`) fő kérdése
+("mely kártyák érintettek X fájlt") azzal még nem volt megválaszolható: a relációk Gate-SHA-kra
+mutatnak, sha->fájl leképezés nélkül. MikroB ezt a kártyát a lekérdező végpont (`69396b63`) ELÉ
+ékelte, a `6cd61430` REVIEW-jában jelzett mérés alapján. Minden alábbi szám a jelenlegi
+`kanban_relations` tartalmán (1069 különböző `gate-sha` cél) és a két élő repón mérve.
+
+**1. A kártya által javasolt parancs maga a hiba: `git show --name-only` egy MERGE-ön NULLA fájlt ad.**
+A `git show` merge commiton KOMBINÁLT diffet (`--cc`) ad, ami tiszta merge-nél üres. Mérve a
+`b44bd8e2`-n (az előző kártya saját landolása): `git show --name-only --format=` -> **0 sor**, míg
+`git diff --name-only b44bd8e2^1 b44bd8e2` -> 6 fájl. Ez azért teherhordó, mert a marveen
+Gate-SHA-k túlnyomórészt `marveen-land` MERGE commitok: a naiv olvasat a marveen-oldal nagy részére
+csendben üres fájllistát gyártott volna, és sikeres sweepnek látszott volna. A használt alak:
+`git show --name-only -m --first-parent --format=...` -- merge-re és nem-merge-re egyaránt az
+ág-oldali listát adja, egyetlen batch-elt folyamatban. Ezt NEGATÍV KONTROLL is őrzi: a teszt épít
+egy valódi repót valódi merge committal, és külön ellenőrzi, hogy a naiv parancs ott TÉNYLEG üreset
+ad -- ha ez valaha megváltozik, a flag-kombináció indoklása is elesik, és látszani fog.
+
+**2. A `to_id` repo-kvalifikált (`marveen:src/db.ts`), nem csupasz útvonal.** Mindkét repóban van
+`README.md`, `DECISIONS.md`, `package.json`, `src/`. A mérés szerint pont ezek a leggyakrabban
+érintett fájlok (`cleancore:DECISIONS.md` 178 sha, `marveen:DECISIONS.md` 99), tehát csupasz
+útvonallal a két repó kártyái egyetlen hamis "fájl" alatt olvadtak volna össze -- pontosan azon a
+lekérdezésen, amiért az egész réteg épül.
+
+**3. A `from_id` a KIMONDOTT (rövidített) sha, nem a teljes.** Mérve: az 569 marveen rövidítés
+**542 különböző teljes commitra** oldódik fel. A `gate-sha` élek a kimondott alakot hordozzák, tehát
+a `touches-file` élnek is azt kell; teljes-sha kulccsal a `kártya -> sha -> fájl` join némán nem
+találna. A teljes sha csak belső feloldó kulcs, sose él-kulcs.
+
+**4. Az egyértelműség hiánya fail-closed, a fel-nem-oldható sha viszont EXPLICIT sor.** Ma 0 sha
+oldódik fel mindkét repóban és egyetlen git-szintű `ambiguous` sincs -- a design mégsem épít erre.
+Kétrepós vagy `ambiguous` találat esetén NINCS fájl-él, csak `resolved-in ambiguous` jelölés: egy
+kártya EGY commitra volt gate-elve, mindkét jelölt fájljainak rögzítése olyan változtatásokat
+állítana, amiket a kártya sose tett. A fel-nem-oldható 5 sha (`0c8f5f2`, `132fc28c`, `1b6f5e6e`,
+`3c1a53e`, `9f0a86390d`) pedig `resolved-in none` sort kap, nem hiányzó sort: a hiányzó sor nem
+különböztethető meg a "még sose sweepeltük"-től, márpedig a kártya kifejezetten kéri a megjelölést.
+Újrafuttatásnál a reconcile magától átbillenti a jelölést, ha egy sha később mégis landol.
+
+**Járulékos: a git-IO szerkezetileg kizárva a kérés-útvonalból.** A `db.ts` SOSE importálja a
+`kanban-relations-git.ts`-t; csak a sweep script importálja mindkettőt. Nem komment kéri, hogy
+vigyázzunk: a szolgáltatás egyszerűen nem éri el a modult. Miért számít: egy mért sweep ~28 mp, és
+ennek majdnem az egésze a CleanCore-fél a `/mnt/h` drvfs mounton, nem a git. Batch-elés nélkül
+rosszabb lenne: sha-nkénti `git cat-file -e` 2,3 mp/repó, egyetlen `--batch-check` 0,07 mp.
+
+**Járulékos: a reconcile magja `source`-onként kiemelve.** A `6cd61430` beszúr-és-töröl mechanikája
+`reconcileRelationSource(source, wanted)` lett, amit a `marker-v1` és a `git-v1` egyaránt hív. Két
+másolat két esély lett volna arra, hogy a TÖRLŐ predikátum finoman eltérjen -- az a fél, ami adatot
+tud veszíteni.
+
+**Élesben:** 5988 él (4919 `touches-file` + 1069 `resolved-in`), előtte azonos kimenettel igazolva
+egy `.backup`-másolaton, második futás 0 beszúrás / 0 törlés.
+
+**Ki döntött:** backend (plan-grilling, kártya-komment 18064), a kártya szövegétől eltérő pontokat
+kimondva. MikroB nyitotta a kártyát a `6cd61430` mérése alapján (msg 21262).
+**Hivatkozás:** kártya `1f1e3ae4`, Fázis `fe3eff9f`, előzmény `6cd61430`, séma `9d7a247a`.
