@@ -195,11 +195,23 @@ GSHORT="$(git -C "$MAIN" rev-parse --short "$SHA")"
 [ "$TIP" = "$GSHORT" ] || die 3 "branch $BRANCH tip is $TIP but the GATED sha is $GSHORT -- the extra commits are ungated"
 say "branch $BRANCH, tip == gated sha ($GSHORT)"
 
-# Migration numbers, against the CURRENT main.
+# Migration numbers, against the CURRENT main. Three-dot diff picks ONE merge-base; under a
+# criss-cross history (two unrelated merge-bases, git warns "multiple merge bases") it can pick a
+# base that lacks a file the branch actually inherited via the OTHER base, making an unchanged
+# migration look "new" and collide with itself on main (card TBD, measured 2026-09-02: 82423624 vs
+# origin/main, migration 0148 identical byte-for-byte on both sides, chosen base a5787b90 lacked it
+# while the other real merge-base d45d4935 had it). A same-number match is only a REAL collision
+# when the two files differ; identical content means the branch already has main's own migration,
+# not a competing one.
 MIGS="$(git -C "$MAIN" diff --name-only "origin/main...$SHA" | grep 'migrations/' || true)"
 for m in $MIGS; do
   n="$(basename "$m" | cut -d_ -f1)"
-  if git -C "$MAIN" ls-tree --name-only origin/main packages/control-plane/migrations/ | grep -q "/${n}_"; then
+  existing="$(git -C "$MAIN" ls-tree --name-only origin/main packages/control-plane/migrations/ | grep "/${n}_" || true)"
+  if [ -n "$existing" ]; then
+    if [ "$(git -C "$MAIN" rev-parse "origin/main:$existing")" = "$(git -C "$MAIN" rev-parse "$SHA:$m")" ]; then
+      say "migration $(basename "$m") -- number $n already on main, IDENTICAL content (criss-cross merge-base false match), not a collision"
+      continue
+    fi
     die 3 "migration number $n is ALREADY TAKEN on origin/main -- renumber on the branch first"
   fi
   say "migration $(basename "$m") -- number $n free on main"
