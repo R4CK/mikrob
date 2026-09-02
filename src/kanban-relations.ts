@@ -42,6 +42,40 @@ export interface RelationEdge {
  *  which leaves any hand-inserted row under another tag untouched. */
 export const MARKER_SOURCE = 'marker-v1'
 
+/** The relation_type vocabulary, in ONE place because a writer and a reader that disagree about
+ *  the string produce an EMPTY answer rather than an error -- a query for 'gate_sha' against rows
+ *  written as 'gate-sha' returns zero edges and reads exactly like "this card has no shas".
+ *
+ *  The two git-derived types live here too, even though kanban-relations-git.ts is what emits
+ *  them. That module already takes its RelationEdge type from this one, and the reader that needs
+ *  the strings (db.ts, card 69396b63) MUST NOT import it -- it shells out to git and is kept off
+ *  the request path by construction (see that file's header). A shared pure vocabulary is how both
+ *  sides name the same edge without db.ts reaching into the git module. */
+export const REL_GATE_SHA = 'gate-sha'
+export const REL_PAIR_FE = 'pair-fe'
+export const REL_PAIR_BE = 'pair-be'
+export const REL_CHILD_OF = 'child-of'
+export const REL_TOUCHES_FILE = 'touches-file'
+export const REL_RESOLVED_IN = 'resolved-in'
+
+/** The node types those edges use, for the same reason. */
+export const NODE_CARD = 'card'
+export const NODE_SHA = 'sha'
+export const NODE_FILE = 'file'
+export const NODE_REPO = 'repo'
+
+/** Split the `to_id` of a `file` node back into its repo and path halves -- the inverse of
+ *  kanban-relations-git.ts's qualifyPath, kept here because db.ts must not import that module.
+ *
+ *  Only the FIRST colon separates: a path may contain one, and splitting on the last would move
+ *  part of the directory into the repo name. A value with NO colon is not repo-qualified (nothing
+ *  writes such a row today), and comes back with a null repo rather than a guessed one. */
+export function parseQualifiedPath(fileId: string): { repo: string | null; path: string } {
+  const sep = fileId.indexOf(':')
+  if (sep <= 0) return { repo: null, path: fileId }
+  return { repo: fileId.slice(0, sep), path: fileId.slice(sep + 1) }
+}
+
 /** Rule 4b's `Gate-SHA:` line, ANCHORED AT THE START OF A LINE.
  *
  *  Taken from store/gate-pretriage-candidates.py (GATE_SHA_LINE), not re-derived: that pattern is
@@ -106,11 +140,11 @@ export function commentEdges(cardId: string, content: string): RelationEdge[] {
   for (const sha of gateShasIn(content)) {
     if (sha === cardId.toLowerCase()) continue
     edges.push({
-      from_type: 'card',
+      from_type: NODE_CARD,
       from_id: cardId,
-      to_type: 'sha',
+      to_type: NODE_SHA,
       to_id: sha,
-      relation_type: 'gate-sha',
+      relation_type: REL_GATE_SHA,
     })
   }
   return edges
@@ -143,21 +177,21 @@ export function cardEdges(card: RelationSourceCard): RelationEdge[] {
     const target = m[2]!.toLowerCase()
     if (target === id.toLowerCase()) continue
     edges.push({
-      from_type: 'card',
+      from_type: NODE_CARD,
       from_id: id,
-      to_type: 'card',
+      to_type: NODE_CARD,
       to_id: target,
-      relation_type: m[1]!.toLowerCase() === 'fe' ? 'pair-fe' : 'pair-be',
+      relation_type: m[1]!.toLowerCase() === 'fe' ? REL_PAIR_FE : REL_PAIR_BE,
     })
   }
   const parent = (card.parent_id || '').trim()
   if (parent && parent.toLowerCase() !== id.toLowerCase()) {
     edges.push({
-      from_type: 'card',
+      from_type: NODE_CARD,
       from_id: id,
-      to_type: 'card',
+      to_type: NODE_CARD,
       to_id: parent,
-      relation_type: 'child-of',
+      relation_type: REL_CHILD_OF,
     })
   }
   return edges
