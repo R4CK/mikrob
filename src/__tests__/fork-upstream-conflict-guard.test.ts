@@ -726,7 +726,10 @@ const ACKNOWLEDGED_UPSTREAM_BLOBS: Readonly<Record<keyof typeof ACKNOWLEDGED_CON
   'web/style.css': 'b774ccb836f07ca78c300077302834a80cd12edb',
   'src/web/agent-taskstate.ts': '625d03282bb75b554ce23822f67cc4e51b0706c1',
   'src/__tests__/agent-taskstate.test.ts': '82dc411aa813d66c0800e7f8007dfdcd2a42e43f',
-  'src/web/token-usage.ts': 'ee32eb840710ba5ff38dd5830d14a2fa68e42767',
+  // 2026-09-02 (fron-ted, landing 5dd4a211): upstream moved 346fa637 -- body-only change in
+  // correlateWithKanban() (skips parent cards via NOT EXISTS + comment), import hunk untouched,
+  // the four-imports rule above still holds; additive, no collision with the fork's edits.
+  'src/web/token-usage.ts': '346fa63739d85f7af55b06d9359f4ec82db00f3e',
   'src/__tests__/schedule-runner-autostart.test.ts': '678cbb42e4447b206598bfbb9bc271602a3f896b',
   '.gitignore': '1e5adbb2332be0dbf5a710c1899e49305ccb318b',
   'package.json': '031fc59039e3081034cf870745202076818b1bff',
