@@ -16,12 +16,16 @@ import tempfile
 GUARD = os.path.join(os.path.dirname(os.path.abspath(__file__)), "symlinked-node-modules-guard.py")
 
 
-def run(command):
+def run(command, cwd=None):
+    payload = {"tool_name": "Bash", "tool_input": {"command": command}}
+    if cwd is not None:
+        payload["cwd"] = cwd
     p = subprocess.run(
         [sys.executable, GUARD],
-        input=json.dumps({"tool_name": "Bash", "tool_input": {"command": command}}),
+        input=json.dumps(payload),
         capture_output=True,
         text=True,
+        cwd=tempfile.gettempdir(),  # never the fixture: a relative path must not resolve by luck
     )
     return p.returncode, p.stderr
 
@@ -63,7 +67,7 @@ def main():
         os.remove(wt_link)
         os.symlink("../../../../packages/i18n", shared_link) if not os.path.lexists(shared_link) else None
 
-        blocked = lambda c: run(c)[0] == 2
+        blocked = lambda c, cwd=None: run(c, cwd)[0] == 2
         cases += [
             ("QA's exact ln -s is blocked", blocked(f"ln -s {wt}/packages/i18n {wt_link}"), ""),
             ("QA's exact rm is blocked", blocked(f"rm {wt_link}"), ""),
@@ -95,6 +99,21 @@ def main():
              not blocked('grep -rn foo "$WT/apps/web/node_modules/@cleancore/i18n"'), ""),
             ("a deep path inside a package is not this shape",
              not blocked('cp x "$WT/apps/web/node_modules/@cleancore/i18n/messages/hu.json"'), ""),
+            # --- QA finding, card 9dc0fba8 round 1: the same incident written RELATIVELY.
+            # The first version resolved relative paths against the GUARD process's cwd, so these
+            # landed on a non-existent path whose realpath equals itself -- "no escape", waved
+            # through. The tool call's cwd is the authority.
+            ("QA repro: relative path + the worktree as payload cwd is blocked",
+             blocked("rm apps/web/node_modules/@cleancore/i18n && "
+                     f"ln -s {wt}/packages/i18n apps/web/node_modules/@cleancore/i18n", wt), ""),
+            ("relative path under a literal `cd` into the worktree is blocked (cd beats payload cwd)",
+             blocked(f"cd {wt} && rm apps/web/node_modules/@cleancore/i18n", lab), ""),
+            ("relative path after a `cd` to a VARIABLE dir cannot be placed -> case B, blocked",
+             blocked('cd "$WT" && rm apps/web/node_modules/@cleancore/i18n', lab), ""),
+            ("CONTROL: the same relative write in a REAL node_modules is allowed",
+             not blocked("ln -s ../../../packages/i18n apps/web/node_modules/@cleancore/i18n", good), ""),
+            ("CONTROL: relative READ in the escaping tree is still allowed",
+             not blocked("cat apps/web/node_modules/@cleancore/i18n", wt), ""),
             ("escape hatch honoured",
              not blocked(f"MARVEEN_ALLOW_SYMLINK_NM=1 ln -s {wt}/packages/i18n {wt_link}"), ""),
             ("non-Bash tool ignored",

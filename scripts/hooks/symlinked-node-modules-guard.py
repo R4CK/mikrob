@@ -43,6 +43,15 @@ A symlink carries no useful mode of its own on Linux (chmod follows it), so "chm
 no-op. Making the shared node_modules read-only would also block the legitimate installs the main
 clone must keep doing. Refusing the escaping WRITE is the narrow control; the broad ones are not.
 
+RELATIVE PATHS ARE RESOLVED AGAINST THE CALLER'S cwd, not the guard's (QA finding on card
+9dc0fba8, round 1). The first version called os.path.abspath(), which resolves against the GUARD
+process's own cwd -- so `cd "$WT" && rm apps/web/node_modules/@cleancore/i18n` (the same incident,
+written relatively, and the shape this fleet actually uses) resolved to a path that does not exist,
+whose realpath equals itself, and the escape check answered "no escape". The tool call's `cwd` field
+is the authority, exactly as npm-protect-guard.py already used it; a leading literal `cd <dir>` in
+the command overrides it, and a `cd` to an UNRESOLVABLE target (an unexpanded $VAR) makes every
+later relative node_modules path uncheckable -- which is case B, fail closed, not a free pass.
+
 NOT A SECURITY BOUNDARY. Like its siblings this inspects the command STRING: it does not survive
 variable indirection ($d/node_modules where d is computed at runtime), a script written to a file
 and then executed, or nested wrappers. It is a seatbelt against the exact tired-agent mistake above.
@@ -113,9 +122,31 @@ def path_tokens(stmt):
         yield w, bool(_UNRESOLVED_RX.search(w))
 
 
-def escapes(path):
-    """(literal_parent, real_parent) when the parent directory resolves elsewhere, else None."""
-    parent = os.path.dirname(os.path.abspath(path.rstrip("/")))
+# A leading literal `cd <dir>` retargets everything after it. Same shape as npm-protect-guard.py's
+# _CD_RX, deliberately: the two guards answer the same "which directory is this really about"
+# question and should not drift into two different answers.
+_CD_RX = re.compile(r"(?:^|[\n;&|(])\s*cd\s+([^\s;&|]+)")
+
+
+def effective_cwd(command, payload_cwd):
+    """(cwd, resolvable). The directory a relative path in `command` is resolved against: a leading
+    literal `cd` wins over the tool call's cwd. A `cd` whose target still holds an unexpanded $VAR
+    (or a backtick/glob) makes later relative paths uncheckable -- reported, never guessed at."""
+    base = payload_cwd or os.getcwd()
+    m = _CD_RX.search(command)
+    if not m:
+        return base, True
+    target = os.path.expanduser(m.group(1).strip("\"'"))
+    if _UNRESOLVED_RX.search(target):
+        return base, False
+    return (target if os.path.isabs(target) else os.path.join(base, target)), True
+
+
+def escapes(path, cwd):
+    """(literal_parent, real_parent) when the parent directory resolves elsewhere, else None.
+    `path` is resolved against `cwd` (the CALLER's), never against the guard process's own."""
+    joined = os.path.join(cwd, path.rstrip("/"))
+    parent = os.path.dirname(os.path.normpath(joined))
     real = os.path.realpath(parent)
     return None if real == parent else (parent, real)
 
@@ -132,10 +163,18 @@ def main():
         sys.exit(0)
 
     try:
+        # The caller's directory, not this process's (QA finding, card 9dc0fba8): a relative path
+        # resolved against the wrong base lands on a path that does not exist, whose realpath
+        # equals itself -- which reads as "no escape" and waves the incident straight through.
+        cwd, cwd_known = effective_cwd(command, payload.get("cwd"))
         for stmt in statements(command):
             if not is_mutating(stmt):
                 continue
             for token, unresolved in path_tokens(stmt):
+                # A relative path we cannot place (the command cd-ed somewhere only a variable
+                # names) is case B for the same reason an unexpanded path is: unknown destination.
+                if not unresolved and not os.path.isabs(token) and not cwd_known:
+                    unresolved = True
                 if unresolved:
                     # Case B: cannot be checked, so it is not allowed. Only a PACKAGE ENTRY
                     # (node_modules/pkg or node_modules/@scope/pkg) counts -- a deeper path into a
@@ -143,8 +182,9 @@ def main():
                     if not re.search(r"(?:^|/)node_modules/(?:@[^/\s]+/)?[^/\s]+/?$", token):
                         continue
                     sys.stderr.write(
-                        "BLOCKED: this write targets an entry inside a node_modules through an "
-                        "unexpanded variable, so where it actually lands cannot be checked.\n\n"
+                        "BLOCKED: this write targets an entry inside a node_modules by a path "
+                        "whose destination cannot be checked (an unexpanded variable, or a "
+                        "relative path after a `cd` to a variable directory).\n\n"
                         f"  you typed : {token}\n\n"
                         "Card 9dc0fba8: a gate worktree ran exactly this shape twice. Both times the "
                         "path read local and the write landed in the SHARED clone, because the "
@@ -163,7 +203,7 @@ def main():
                         f"Deliberate one-off: prefix the command with {ALLOW_ENV}=1\n"
                     )
                     sys.exit(2)
-                hit = escapes(token)
+                hit = escapes(token, cwd)
                 if not hit:
                     continue
                 literal, real = hit

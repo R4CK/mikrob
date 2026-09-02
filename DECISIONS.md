@@ -4398,3 +4398,29 @@ külön kártyán -- a guard addig is fedi.
 **Ki döntött:** Cybersec (kártya 9dc0fba8, MikroB dispatch). **Hivatkozás:** kártya 9dc0fba8;
 guard `scripts/hooks/symlinked-node-modules-guard.py` (19 selftest-eset valódi fixture-rel, az
 incidens reprodukálásával), script `store/cc-gate-worktree.sh`, skill `gate-worktree-pattern`.
+
+## 2026-09-02 (javítás) -- A symlink-guard a HÍVÓ cwd-jét használja, nem a sajátját (kártya 9dc0fba8, QA 1. körös FAIL)
+
+**Mi volt hibás:** a `scripts/hooks/symlinked-node-modules-guard.py` első verziója
+`os.path.abspath()`-tal oldotta fel a relatív útvonalakat, ami a GUARD saját process-cwd-jéhez
+képest old fel. Egy `cd "$WT" && rm apps/web/node_modules/@cleancore/i18n` alak -- ugyanaz az
+incidens, csak relatívan írva, és ez a flotta tényleges szokása -- így egy nem létező útvonalra
+futott ki, aminek a `realpath`-ja önmagával egyezik, tehát a szökés-ellenőrzés "nincs szökés"-t
+válaszolt és átengedte. QA reprodukálta élőben.
+
+**Miért nem vettem észre:** a testvér `npm-protect-guard.py` MÁR használja a `payload.get("cwd")`
+mezőt (165. sor), az enyém nem olvasta egyszer sem. Pontosan az a hibaosztály, amit ugyanezen a
+kártyán a másik oldalról leírtam: egy másolt modul átveszi az ALAKOT, de nem a kontrollt. A saját
+guardom ugyanabba futott bele.
+
+**A javítás:** `effective_cwd(command, payload_cwd)` -- a hívó cwd-je az alap, egy vezető literál
+`cd <dir>` felülírja; ha a `cd` célja feloldhatatlan (`$VAR`), akkor a UTÁNA jövő relatív
+node_modules-utak nem ellenőrizhetők, tehát a B-eset (fail-closed) érvényes rájuk, nem szabad
+átengedés. Az `escapes()` mostantól ehhez a cwd-hez old fel.
+
+**Bizonyíték, hogy a teszt nem vákuum:** az öt új selftest-esetet lefuttattam a JAVÍTÁS ELŐTTI
+guarddal is (a régi bájtok `git show HEAD:`-ből, a selftest mellé másolva a helyes fájlnévvel):
+a három blokkoló eset PIROS, a két KONTROLL (valódi node_modules-ba írás, illetve olvasás)
+ZÖLD -- tehát az új esetek tényleg a javítást rögzítik, és nem "mostantól minden blokkol".
+
+**Ki döntött:** Cybersec (a javítás), QA (a lelet, komment 17557). **Hivatkozás:** kártya 9dc0fba8.
