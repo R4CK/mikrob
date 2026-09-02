@@ -25,6 +25,12 @@
 #  * DETACHED landing worktree from origin/main -- never the main clone's working tree (nobody
 #    commits there) and never the agent's own branch.
 #
+# WHAT THIS SCRIPT DOES NOT CHECK: it enforces that the gated sha IS the branch tip, but it
+# never looks DOWNWARDS -- nothing inspects what sits between origin/main and that sha. A
+# branch carrying an earlier card's ungated commits passes every check here and lands them
+# too. Run `git log --oneline origin/main..<gate-sha>` first; if it holds more than this
+# card's own commits, cherry-pick instead of merging. See store/landing-cherry-pick-vs-branch-merge.md.
+#
 # Usage:  cleancore-land.sh <cardId> <gated-sha> [--dry-run] [--allow-main-loss] [--skip-typecheck]
 #         cleancore-land.sh --selftest
 # Exit: 0 landed (or dry-run clean) | 2 bad usage | 3 refused a precondition | 4 merge/push failed
