@@ -94,7 +94,7 @@ function newDevStopWouldBlock(id: string, nextStatus: unknown, force: boolean, a
 }
 const NEW_DEV_STOP_MESSAGE =
   'Heti "új fejlesztés leáll" küszöb átlépve: egy planned kártya nem mehet in_progress-be VAGY egyenesen waiting-be sem (új fejlesztés indítása) a heti resetig. In-flight és gate-munka továbbra is mehet (waiting -> in_progress); tudatos felülíráshoz MikroB force: true-val nyithatja meg.'
-import { resolveKanbanDispatchTarget, isSelfAdvanceMove, isGenuineSelfAdvanceSwitch } from '../../kanban-dispatch.js'
+import { resolveKanbanDispatch, isSelfAdvanceMove, isGenuineSelfAdvanceSwitch } from '../../kanban-dispatch.js'
 import { generateBreakdown } from '../llm-breakdown.js'
 import { logger } from '../../logger.js'
 import { readBody, json, jsonMaybeGzip } from '../http-helpers.js'
@@ -184,7 +184,7 @@ async function fireKanbanDispatch(id: string, actor?: string | null): Promise<vo
       logger.info({ id, actor, assignee: card.assignee }, 'Kanban self-advance: dispatch echo suppressed')
       return
     }
-    const target = resolveKanbanDispatchTarget(card.assignee, {
+    const decision = resolveKanbanDispatch(card.assignee, {
       ownerName: OWNER_NAME,
       botName: BOT_NAME,
       mainAgentId: MAIN_AGENT_ID,
@@ -192,7 +192,14 @@ async function fireKanbanDispatch(id: string, actor?: string | null): Promise<vo
       isRunning: isAgentRunning,
       actor,
     })
-    if (!target) return
+    const target = decision.target
+    if (!target) {
+      // 'not-dispatchable' (no/unknown assignee, human owner) and 'self-move'
+      // are DELIBERATE no-dispatch cases -- staying quiet is correct, and
+      // alerting on them would bury the one case that matters.
+      if (decision.reason === 'session-down') reportUndeliveredDispatch(id, decision.unreachable ?? String(card.assignee))
+      return
+    }
     // Card 900178fa: /clear the target's pane FIRST when this is a genuine card switch (not a
     // re-dispatch of the same card after a gate FAIL), and WAIT for that attempt to settle before
     // enqueueing the card-content message below -- fireKanbanDispatch itself is called
@@ -212,6 +219,43 @@ async function fireKanbanDispatch(id: string, actor?: string | null): Promise<vo
     logger.info({ id, target, assignee: card.assignee }, 'Kanban in_progress dispatch fired')
   } catch (err) {
     logger.warn({ err, id }, 'Kanban dispatch failed (card move still succeeded)')
+    reportUndeliveredDispatch(id, 'a kiosztás hibára futott')
+  }
+}
+
+// A card that reached in_progress without its assignee being woken must never
+// stay silent: the board shows it running, status-driven monitoring skips on
+// exactly that status, and the false in_progress SUSTAINS ITSELF -- a single
+// missed dispatch can hold a card open for hours behind a green log. So the
+// failure is written where both readers look: a comment on
+// the card (the board) and a notice in the main agent's inbox (the delegator,
+// who triages and can put the card back).
+//
+// Best-effort by construction: this runs inside the move request, and the move
+// itself has already succeeded. A throw here (db locked, inbox write failing)
+// must not turn a completed move into a 500, so it is swallowed after a log --
+// the same contract as the dispatch it reports on.
+function reportUndeliveredDispatch(id: string, unreachable: string): void {
+  logger.warn({ id, unreachable }, 'Kanban card is in_progress but its assignee was NOT woken')
+  try {
+    addKanbanComment(
+      id,
+      'system',
+      `A kártya in_progress lett, de a kiosztott ügynök (${unreachable}) NEM kapott üzenetet -- a session nem fut, vagy a kiosztás hibára futott. ` +
+      'A kártya NEM fut: tedd vissza planned-re, vagy indítsd el az ügynököt és húzd újra in_progress-re.',
+    )
+  } catch (err) {
+    logger.warn({ err, id }, 'Undelivered-dispatch card comment failed')
+  }
+  try {
+    createAgentMessage(
+      'system',
+      MAIN_AGENT_ID,
+      `[kanban-dispatch] A(z) #${id} kártya in_progress lett, de a kiosztott ügynök (${unreachable}) NEM kapott üzenetet. ` +
+      'A tábla futónak mutatja, közben senki nem dolgozik rajta. Tedd vissza planned-re, vagy indítsd el az ügynököt és aktiváld újra.',
+    )
+  } catch (err) {
+    logger.warn({ err, id }, 'Undelivered-dispatch inbox notice failed')
   }
 }
 

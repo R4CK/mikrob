@@ -45,7 +45,11 @@ const FETCH_TIMEOUT_MS = 20_000
 // See the ACKNOWLEDGED_CONFLICTS entry below for the measured resolution policy -- this is not a
 // regression, it is the expected cost of the extraction, same character as
 // src/web/update-checker.ts's entry.
-const GUARDED_FILES = ['web/lang/hu.js', 'web/lang/en.js', 'web/style.css'] as const
+//
+// web/style.css moved OUT to ACKNOWLEDGED_CONFLICTS too (measured 2026-09-01, heartbeat
+// reconciliation ahead of card 0f7f7fe9's land): same pattern as web/app.js, one insertion point.
+// See the ACKNOWLEDGED_CONFLICTS entry below.
+const GUARDED_FILES = ['web/lang/hu.js', 'web/lang/en.js'] as const
 
 // Files that DO conflict today, deliberately, and whose resolution rule is written down (card
 // f085fd44). This list is not a second copy of the one above: those files must never conflict,
@@ -57,6 +61,21 @@ const GUARDED_FILES = ['web/lang/hu.js', 'web/lang/en.js', 'web/style.css'] as c
 // it already knew about: three files conflicted for weeks with nothing watching them, and the only
 // reason anyone noticed was a human running the dry-run by hand.
 const ACKNOWLEDGED_CONFLICTS = {
+  // Card 684dda18, self-created 2026-09-02: adopting upstream's resolveKanbanDispatch()
+  // (session-down is no longer a silent no-op) appended the fork's own isSelfAdvanceMove/
+  // isGenuineSelfAdvanceSwitch below it -- the fork's file is now a strict superset of upstream's
+  // (verified: diffing the shared prefix shows zero divergence, the only delta is the fork-only
+  // tail). Resolution: keep the fork version wholesale, it already contains everything upstream
+  // has plus the fork-only additions.
+  'src/kanban-dispatch.ts':
+    "keep the fork version wholesale -- it is upstream's resolveKanbanDispatch verbatim plus the fork-only isSelfAdvanceMove/isGenuineSelfAdvanceSwitch appended after, zero divergence on the shared part",
+  // Card 684dda18, self-created 2026-09-02 (add/add): ported this test file from upstream
+  // (kanban-dispatch-rearm.test.ts) to cover the db.ts dispatched_at re-arm fix, adapting ONE case
+  // to pass force:true on a waiting->in_progress reopen -- the fork's own reviewedCardBlocksInProgress
+  // gate (card c4f2de32) blocks that transition without a gate-verdict comment, which upstream has
+  // no equivalent of. Everything else is byte-identical to upstream's version.
+  'src/__tests__/kanban-dispatch-rearm.test.ts':
+    "keep the fork version wholesale -- identical to upstream except the one move() call the fork's reviewedCardBlocksInProgress gate (card c4f2de32) requires force:true on",
   // New conflict (measured 2026-08-26, card b4a7c9c3-adjacent unblock, not caused by that card's
   // own diff): upstream added two new exports to this file -- OPEN_QUESTION_DEFERRAL_CAP_MS and
   // deferralOverride() -- at a point where the fork side of the hunk is EMPTY (the fork's
@@ -88,13 +107,23 @@ const ACKNOWLEDGED_CONFLICTS = {
   // single-result features onto it one by one.
   'src/web/update-checker.ts':
     'keep the fork aggregate shape, port upstream single-result features onto it',
-  // A one-line import conflict, not a behavioural one (measured 2026-08-16, card 78c14372): the fork
-  // added `agentDir` to the existing import from './agent-config.js' (workingDirFor() now goes
-  // through the sanitized helper instead of building its own path), and upstream independently added
-  // `readAgentClaudeConfigDir` to the SAME import line for an unrelated feature. Nothing else in the
-  // file diverges. Resolution: merge both imports onto one line, keep both bindings.
+  // ORIGINAL entry (2026-08-16, card 78c14372) merged `agentDir` (fork) + `readAgentClaudeConfigDir`
+  // (upstream) onto one import line. RE-MEASURED 2026-09-01 (heartbeat reconciliation): upstream
+  // replaced its own `readAgentClaudeConfigDir` with `resolveAgentConfigDirForRead` (new module,
+  // ./claude-plans.js) -- confirmed by reading configDirFor()'s own comment in the merged body
+  // (line ~143): the old helper returned a stale transcript on an auto-provisioned agent dir
+  // instead of null, "worse than the null this comment warns about, because the gate then believes
+  // it can see". `readAgentClaudeConfigDir` has zero remaining call sites in this file (grep
+  // confirms) -- dead after the replacement. Upstream also added `sendPromptToSession` to the
+  // agent-process.js import, used at the (unconflicted, auto-merged) wake-delivery call site
+  // ~line 571. `agentDir` (fork) is still used (line ~130) and stays. Resolution: three import
+  // lines -- `{ listAgentNames, agentDir } from './agent-config.js'`,
+  // `{ resolveAgentConfigDirForRead } from './claude-plans.js'`,
+  // `{ agentSessionName, capturePane, sendPromptToSession } from './agent-process.js'` -- drop
+  // `readAgentClaudeConfigDir` (dead, superseded), adopt both new upstream imports (their usage
+  // sites already merged in clean, this was only ever the import line colliding).
   'src/web/context-restart-gate-runner.ts':
-    'merge both added imports onto one line (agentDir from the fork, readAgentClaudeConfigDir from upstream) -- no other conflict in the file',
+    "three import lines: { listAgentNames, agentDir } from './agent-config.js' (fork's agentDir stays, still used), { resolveAgentConfigDirForRead } from './claude-plans.js' (upstream, replaces the now-dead readAgentClaudeConfigDir -- fixed a stale-transcript bug), { agentSessionName, capturePane, sendPromptToSession } from './agent-process.js' (upstream's sendPromptToSession, used at the wake-delivery call site) -- drop readAgentClaudeConfigDir entirely, zero remaining call sites",
   // The SAME one-line import class as the entry above, one file over (measured 2026-08-22 on
   // upstream/develop 317937dc). Both sides appended a binding to the SAME import from
   // './web/agent-scaffold.js': the fork's `ensureNpmProtectGuard`, upstream's
@@ -116,8 +145,17 @@ const ACKNOWLEDGED_CONFLICTS = {
   // dashboard-visible-only list. Adopted: merged import with BOTH names, swapped
   // only the hook-seed loop's call site to listAllAgentNames(). Still a single
   // hunk, no other conflict in the file. Landed via the F5 cutover merge (72f5f13b).
+  // Re-read 2026-09-01 (heartbeat reconciliation, blob moved to 42406c87): upstream added ONE more
+  // import to the same merged line -- ensureAgentProvenanceHook -- plus a cosmetic comment-casing
+  // hunk (upstream: "listALLAgentNames", fork: "listAllAgentNames"; camelCase is the real symbol
+  // name, kept as-is). Verified the new import's call-site (`agent-scaffold.ts` line ~523) is NOT a
+  // fork call-site at all today (grep: fork src/web.ts never calls it) and merges CLEANLY on its own
+  // (not one of this file's two conflict hunks) -- so adopting the import is the only change this
+  // hunk needs. Checked what it does: an idempotent per-agent hook installer (settings.json
+  // UserPromptSubmit, guarded by isUnsafeHookCommand, same shape as the fork's own
+  // ensureNpmProtectGuard/ensureBlastRadiusGuard installers) -- additive, no fork-side conflict.
   'src/web.ts':
-    'merge import line (ensureNpmProtectGuard from fork + ensureSkillsPathTrapSection + watchEgressAllowlistForReaderRender + listAllAgentNames from upstream, all on one line, keep listAgentNames too), adopt upstream watchEgressAllowlistForReaderRender call (EGRESSRENDER824) and the hook-seed loop\'s listAllAgentNames call-site swap (HBGATEWIRE826) -- no other conflict in the file',
+    'merge import line (ensureNpmProtectGuard from fork + ensureSkillsPathTrapSection + watchEgressAllowlistForReaderRender + listAllAgentNames + ensureAgentProvenanceHook from upstream, all on one line, keep listAgentNames too), adopt upstream watchEgressAllowlistForReaderRender call (EGRESSRENDER824), the hook-seed loop\'s listAllAgentNames call-site swap (HBGATEWIRE826), and the new ensureAgentProvenanceHook import (its call-site auto-merges cleanly, verified additive/idempotent) -- keep fork\'s "listAllAgentNames" comment casing, no other conflict in the file',
   // The call-site half of the same upstream change, and the same INDEPENDENT-ADDITIVE class as
   // src/db.ts below rather than a disagreement (measured 2026-08-22). Two hunks, both caused by the
   // two sides adding a DIFFERENT CLAUDE.md section-writer at the same insertion point, each with
@@ -160,15 +198,20 @@ const ACKNOWLEDGED_CONFLICTS = {
   // alongside the fork's section-writer, neither side taken wholesale.
   'src/web/agent-scaffold.ts':
     "keep BOTH section-writers (fork ensureLocalFirstSection + upstream ensureSkillsPathTrapSection), AND adopt upstream kanban-write gate (agentGetsKanbanWriteGate/injectKanbanWriteGate), quarantineReader project-scope refactor (EGRESSRENDER824), and watchEgressAllowlistForReaderRender -- all additive, none taken wholesale. Re-read 2026-08-26 (card 72f5f13b, unblocking fbb36b41/489dae5f landings): upstream moved AGAIN since this rule was written (added findDuplicateJsonKeys dup-key detection in ensureAgentHooks, HEARTBEAT_AGENT_ID import, EMAIL_GATE_MATCHER/emailGateMatcherStale export) -- 22 diff hunks total against a 1600-line security-critical file (fleet-wide hook wiring: git-protect/npm-protect/blast-radius/pentest-install guards live here). NOT safe to hand-merge under time pressure just to unblock a landing. The fork's own guards (git-protect/npm-protect/blast-radius/pentest-install, unchanged in this diff) remain authoritative and untouched on live develop. Full reconciliation of ALL upstream additions (this round's + the previously-acknowledged kanban-write-gate round) is done and build+test-verified in the disposable card-72f5f13b merge worktree, pending the Peti-supervised F5 cutover (card 5c134edf) -- that is where this file's real sync lands, not a piecemeal live-develop patch.",
-  // A single additive hunk (measured 2026-08-16, card 88505fb5), not a behavioural disagreement:
-  // both sides add an INDEPENDENT schema migration/trigger at the same insertion point inside
-  // ensureSchema(). Fork: the timestamp-integrity triggers (epoch validation + repair on
-  // kanban_cards/kanban_comments) plus the kanban_card_events.forced column migration. Upstream:
-  // the kanban_cards_status_bumps_updated_at self-healing trigger (keeps updated_at honest when a
-  // raw SQL UPDATE only touches status). Neither reads or overwrites anything the other writes.
-  // Resolution: keep BOTH blocks, either order -- union, not a pick.
+  // ORIGINAL entry (2026-08-16, card 88505fb5) described a schema-migration/trigger hunk in
+  // ensureSchema() -- that hunk no longer conflicts (both sides' migrations merged clean since).
+  // RE-MEASURED 2026-09-01 (heartbeat reconciliation): the file conflicts again, but at a totally
+  // different spot -- moveKanbanCard(), and it is a comment-only collision, zero code divergence.
+  // Fork's comment documents `depBlocked`/`isForceActor` (card a8aa9ae5, the dependency-block +
+  // force-actor guard) immediately above it. Upstream's comment documents the `dispatched_at=NULL`
+  // clear-on-non-in_progress-move -- but that SQL branch is UNCHANGED, shared ancestor code a few
+  // lines below the conflict marker, already identical on both sides; upstream is just adding
+  // documentation for behavior the fork already has, not proposing new behavior. Resolution: keep
+  // the fork's comment (it explains code that follows inside the marker) AND append upstream's
+  // comment right before the `db.prepare(status === 'in_progress' ? ... : ...)` line it describes
+  // -- both coexist, no functional change either way.
   'src/db.ts':
-    'keep both additive migrations -- the fork timestamp-integrity triggers + forced column, and the upstream kanban_cards_status_bumps_updated_at trigger -- neither side taken wholesale',
+    "comment-only collision at moveKanbanCard(), zero code divergence -- keep fork's depBlocked/isForceActor comment (a8aa9ae5) AND append upstream's dispatched_at=NULL clear-on-move comment just above the db.prepare() branch it documents (that SQL is already identical/shared on both sides)",
   // Card 2e634e5c. Both sides independently fixed the SAME ghost-session bug (agent DELETE leaving
   // an orphaned tmux session), but the fork's fix is strictly more correct: it AWAITS
   // stopAgentProcess(), tracks the result, and logs on failure; upstream's is a floating (un-awaited)
@@ -178,20 +221,31 @@ const ACKNOWLEDGED_CONFLICTS = {
   // upstream adds nothing the fork lacks here.
   'src/web/routes/agents.ts':
     'keep the fork version wholesale -- it already awaits stopAgentProcess() and tracks/logs the result; upstream is an un-awaited (racy) reimplementation of the same fix',
-  // Card 2e634e5c, three hunks, all resolving the same direction. (1) The dispatch-instruction-text
-  // generator: upstream's variant tells the agent to move its OWN card straight to `"status":"done"`
-  // -- that is upstream's own (simpler) workflow, and directly contradicts this fork's core rule
-  // that a builder never self-closes to done (root CLAUDE.md rule 4); the fork's `"status":"waiting"`
-  // text is the one actually in force. (2)+(3) fireKanbanDispatch's `actor` param and the /move
-  // handler: the fork ALREADY implements upstream's stated goal (actor-based self-advance dispatch-
-  // echo suppression, see the unconflicted comment right after hunk 2) using `actor?: string`
-  // (matches the rest of the file's `typeof actor === 'string'` handling), and additionally carries
-  // TWO fork-only gates upstream's /move handler lacks entirely: newDevStopWouldBlock() (weekly-quota
-  // stop) and landedGuardVerdict() (blocks reopening a waiting-for-gate card without force=true) --
-  // taking upstream's handler wholesale would silently drop both. Measured 2026-08-16. Resolution:
-  // keep the fork version wholesale in all three hunks.
+  // Card 2e634e5c, re-measured 2026-09-02 (card 684dda18): the dispatch-instruction-text generator
+  // hunk still resolves the same direction as before (upstream's variant tells the agent to move its
+  // OWN card straight to `"status":"done"`, which contradicts fork rule 4 that a builder never
+  // self-closes to done -- keep the fork's `"status":"waiting"` text). The OTHER two hunks are now a
+  // genuine two-way merge, not a wholesale fork pick: upstream refactored
+  // resolveKanbanDispatchTarget() into resolveKanbanDispatch(), which surfaces a 'session-down'
+  // reason instead of silently dropping the dispatch when the assignee's tmux session is not
+  // running, paired with a new reportUndeliveredDispatch() that leaves a card comment + pings
+  // MAIN_AGENT_ID. That is a real reliability fix (a down session used to hold a card in_progress
+  // forever with zero signal -- exactly the class of stuck-card this fork's own gate-reconciler
+  // heartbeat has to work around by polling) and does not touch the fork-only self-advance dispatch-
+  // echo suppression (isSelfAdvanceMove/isGenuineSelfAdvanceSwitch, which returns before ever
+  // reaching resolveKanbanDispatch) or the newDevStopWouldBlock/landedGuardVerdict gates in the
+  // /move handler (neither lives inside this function, unaffected). Resolution: adopt
+  // resolveKanbanDispatch + reportUndeliveredDispatch verbatim, keep the fork's self-advance block
+  // and /clear-before-switch call wholesale, catch-block also reports undelivered on dispatch error.
+  // src/kanban-dispatch.ts auto-merges with zero conflict (upstream's insertion and the fork's
+  // isSelfAdvanceMove/isGenuineSelfAdvanceSwitch appendix sit in non-overlapping regions) so it is
+  // not itself a guarded/acknowledged file. Also ported upstream's src/db.ts companion fix (see that
+  // entry above) and its two new contract tests (kanban-dispatch-rearm.test.ts,
+  // kanban-dispatch-silent-noop.test.ts), adapting one rearm-test case to pass `force: true` on the
+  // reopen -- reopening a `waiting` card without a verdict is blocked by the fork-only
+  // reviewedCardBlocksInProgress() gate (card c4f2de32), which upstream has no equivalent of.
   'src/web/routes/kanban.ts':
-    "keep the fork version wholesale in all three hunks -- upstream's dispatch text tells the agent to self-close to done (violates fork rule 4), and its /move handler lacks the fork-only newDevStopWouldBlock + landedGuardVerdict gates",
+    "dispatch-text hunk: keep the fork's waiting-text wholesale (fork rule 4, no self-close-to-done). Other two hunks: adopt upstream's resolveKanbanDispatch + reportUndeliveredDispatch (session-down is no longer a silent no-op), keep the fork's self-advance suppression + /clear-before-switch wholesale alongside it -- non-overlapping concerns, not a fork-vs-upstream pick",
   // Card 2e634e5c, fourth file. A genuine two-way merge, not a wholesale pick either direction:
   // the fork owns Firecrawl namespace default-deny + FIRECRAWL_SCRAPE_ALLOWED_KEYS param-allowlist
   // (card 91c4a369); upstream owns the tier-based egressDecision({blocked,tier}) shape, agentType
@@ -257,7 +311,7 @@ const ACKNOWLEDGED_CONFLICTS = {
   // upstream's still-monolithic app.js) is recommended but not opened here -- judgement call for
   // MikroB, not unilaterally opened per the dedup rule.
   'web/app.js':
-    'STUB scaffold + 36 extracted web/app-*.js slices are authoritative; a conflicting upstream hunk must be diffed against its named slice file and only genuinely-new upstream behavior ported forward, never taken wholesale -- proven on the i18n-nav hunk (found + fixed one real gap: missing renderUpdatesVersion re-apply on language switch). Re-audited 2026-08-25 (card 9ef96512, blob c8c11f94): 3 upstream hunks, all in the loadOllamaModels / resetWizard / startup-init region (app-settings.js). Ported: (1) loadOllamaModels refactored to populate both optgroups (ollamaModelGroup edit-panel + agentModelOllamaGroup wizard -- wizard was missing local-model option entirely); (2) agentModelOllamaGroup added to wizard HTML (index.html); (3) resetWizard() now calls loadOllamaModels() (app-wizard.js); (4) loadOllamaModels() added to startup init (app-settings.js). No behavioral gap found in any other region. Remaining ~11k lines (other regions) not yet hand-audited slice-by-slice.',
+    'STUB scaffold + 36 extracted web/app-*.js slices are authoritative; a conflicting upstream hunk must be diffed against its named slice file and only genuinely-new upstream behavior ported forward, never taken wholesale -- proven on the i18n-nav hunk (found + fixed one real gap: missing renderUpdatesVersion re-apply on language switch). Re-audited 2026-08-25 (card 9ef96512, blob c8c11f94): 3 upstream hunks, all in the loadOllamaModels / resetWizard / startup-init region (app-settings.js). Ported: (1) loadOllamaModels refactored to populate both optgroups (ollamaModelGroup edit-panel + agentModelOllamaGroup wizard -- wizard was missing local-model option entirely); (2) agentModelOllamaGroup added to wizard HTML (index.html); (3) resetWizard() now calls loadOllamaModels() (app-wizard.js); (4) loadOllamaModels() added to startup init (app-settings.js). No behavioral gap found in any other region. Re-audited 2026-09-02 (card 684dda18, blob e8c74d15): upstream diff since c8c11f94 has 3 hunks -- (1) activity-badge "thinking orb" spinner for state===working (app-activity.js): NOT a gap, the fork already signals "working" via a different mechanism (activity-badge.act-working has its own "breathing" pulse animation in style.css, card predates this) -- adding the orb on top would double-animate the same signal, skipped as redundant. (2) /api/context-guard-fed static badge on Agents-grid cards (app-agents.js): NOT a gap, the fork already has a strictly superior LIVE-POLLED per-agent context HUD (agentHudBlockHtml + GET /api/agent-hud poll, card e9504aba) with a bar + percentage + color tiers, upstream\'s is a page-load-only static badge -- fork mechanism supersedes it. (3) MiniMax direct-API model option (loadAvailableModels, mirrors the existing DeepSeek pattern, gated behind MINIMAX_API_KEY): a genuinely NEW, not-yet-adopted upstream feature needing a backend port too (src/web/routes/agents.ts models endpoint) -- this is an ADOPTION decision, not a passive conflict resolution, so it is NOT folded in here; opened as its own low-priority follow-up card (48565f81) for Peti to decide on. No further behavioral gap found in this increment. Remaining ~11k lines (other regions, prior to c8c11f94) still not yet hand-audited slice-by-slice.',
   // Two independent additive hunks with no behavioral overlap. Fork adds: HEARTBEAT.md ignore,
   // Ingatlan/ runtime data exclusions, and per-extension keep-tracked exceptions for operational
   // scripts (store/*.sh, store/*.py, store/stitch-tools/gen.mjs) by switching store/ → store/*
@@ -267,6 +321,53 @@ const ACKNOWLEDGED_CONFLICTS = {
   // supersedes upstream's bare store/ line), and append upstream's evidence/transcript ignores.
   '.gitignore':
     'union of both additive sides: keep fork store/* + !store/*.sh/py/stitch negation structure + Ingatlan/ + HEARTBEAT.md, AND append upstream EVIDGUARD818 evidence/transcript/session-capture ignores -- both sides add to non-overlapping regions',
+  // Measured 2026-09-01, heartbeat reconciliation ahead of card 0f7f7fe9's land: single hunk, both
+  // sides purely additive at the same insertion point in the file, zero semantic overlap. Fork adds
+  // .agent-hud* rules (per-agent live HUD: context-pct + active-model, kanban f07c5b7c). Upstream
+  // adds .agent-ctx-badge rules (context-window-used badge on the Agents grid card, tiers mirror
+  // context-guard's actPct/hardPct). Different class names, different features, neither references
+  // or overrides the other. Resolution: keep BOTH blocks verbatim, in either order -- not a
+  // wholesale-one-side pick, same "two independent additive hunks" character as the .gitignore
+  // entry above, just CSS instead of ignore-patterns.
+  'web/style.css':
+    'two independent additive hunks, no overlap: keep fork .agent-hud* rules AND upstream .agent-ctx-badge rules verbatim, both blocks, either order',
+  // Measured 2026-09-01, same heartbeat reconciliation. Both sides independently arrived at the
+  // IDENTICAL functional value (REPLAY_SOURCES = new Set(['compact', 'resume', 'startup', 'clear']))
+  // via separate reasoning chains (fork: rule-14 /clear between cards + model-fallback step-down
+  // respawn; upstream: context-restart gate's own /clear). Not a real conflict -- only the export
+  // keyword and the comment differ. Resolution: keep the fork's `export const` (the hook-matcher
+  // test imports it, per its own comment) and the fork's comment (documents the fork-specific
+  // rule-14/respawn callers upstream's comment does not mention); the set literal itself is
+  // byte-identical either way.
+  'src/web/agent-taskstate.ts':
+    "both sides converge on the same REPLAY_SOURCES set; keep fork's `export const` + fork comment (upstream's unexported const would break the fork's hook-matcher import), set contents identical",
+  // Same underlying convergence as src/web/agent-taskstate.ts above, in the paired test file: both
+  // add a `replays on clear too` case with the same assertion, different comment/test-name framing.
+  // Resolution: keep the fork's version (references CLAUDE.md rule 14 + the model-fallback respawn,
+  // both fork-specific), drop upstream's duplicate case -- not a wholesale-theirs, a same-assertion
+  // dedup.
+  'src/__tests__/agent-taskstate.test.ts':
+    "duplicate `replays on clear too` case on both sides (same assertion, different framing) -- keep fork's version (cites CLAUDE.md rule 14 + model-fallback respawn), drop upstream's duplicate",
+  // Two additive, non-overlapping import blocks -- same character as the .gitignore/web/style.css
+  // entries above. Fork imports estimateCostUsd/stripDateSuffix from model-pricing.js; upstream
+  // imports listAgentNames from agent-config.js and resolveAgentConfigDirForRead from
+  // claude-plans.js. No name collision between the two sets. Resolution: keep all three imports
+  // (fork's two + upstream's two, five total), reconfirm no name/behavior collision against the
+  // actual merged file body at real-merge time (this entry only clears the import-line hunk, not a
+  // full-file audit).
+  'src/web/token-usage.ts':
+    "additive, non-colliding imports on both sides -- keep fork's estimateCostUsd/stripDateSuffix (model-pricing.js) AND upstream's listAgentNames (agent-config.js) + resolveAgentConfigDirForRead (claude-plans.js), all four together",
+  // Test-fixture window-size conflict, NOT a source conflict: src/web/schedule-runner.ts itself
+  // merges clean (both sides' additions land in different spots of the same guardIdx block), only
+  // this pinned slice-window assertion collides because fork and upstream each widened the SAME
+  // line for a different reason -- fork to 3000 (try/catch REJECTING-verdict mapping, card
+  // e9d3cd12), upstream to 2800 (main-agent guard ahead of this block). Resolution POLICY, not a
+  // verified number: take the wider of the two (3000) as the floor, but RE-MEASURE against the
+  // actual merged guardIdx block at real-merge time -- since schedule-runner.ts gains BOTH
+  // additions at once, the true minimum window may need to exceed 3000, not just default to
+  // whichever side happened to ask for more.
+  'src/__tests__/schedule-runner-autostart.test.ts':
+    'window-size fixture only, source merges clean -- use 3000 (the wider of fork/upstream) as a floor, but re-measure the real merged guardIdx block size at merge time since both additions land together',
   // The fork's package.json is a strict superset of upstream's: it adds react/react-dom/recharts
   // (superadmin SPA), google-auth-library (Google auth), vite/ESLint toolchain, a newer Claude
   // Agent SDK (^0.3.224 vs upstream ^0.2.116), and overrides for hono/fast-uri/body-parser.
@@ -350,8 +451,30 @@ const ACKNOWLEDGED_CONFLICTS = {
   // no lock at all -- so taking upstream's side on these three signature lines silently deletes the
   // atomicity two security gates were spent on. Only the three signature lines conflict; upstream's
   // body changes merge cleanly and are kept.
+  // RE-READ 2026-09-01 (heartbeat reconciliation, blob moved to 3dc78cdf): the withLifecycleLock
+  // conflict this rule used to describe is GONE -- verified the fork's *Unlocked private bodies +
+  // withLifecycleLock wrappers (card 74ba7c78) are still intact in the current file (grep, all 3
+  // call sites present), so that hunk landed correctly in a past cycle and is simply no longer part
+  // of today's conflict. Three DIFFERENT hunks conflict now, all genuinely additive on both sides:
+  // (1) ISOLATED_CONFIG_SKIP set -- fork skips 'skills' (Peti 2026-08-03, per-agent curated skill
+  //     set) and upstream separately skips 'projects' (memory-store symlink collision fix); the two
+  //     rationales are orthogonal directory names, union both.
+  // (2) provider-env building -- upstream refactored the inline ollama/deepseek/openrouter
+  //     export-string building into a shared resolveProviderEnv() (agent-process.ts, tested in
+  //     agent-provider-env.test.ts). Verified line-by-line: it reproduces the fork's exact
+  //     ollama/deepseek/openrouter export strings byte-for-byte (SAME shSingleQuote sink-escaping,
+  //     card b7fa5281, cited verbatim in both), and ADDS a fourth provider (minimax, with its own
+  //     documented context-window workaround) -- net additive, safe to adopt wholesale.
+  // (3) cmd assembly -- upstream adds a `umask 002` prefix and routes the tmux call through
+  //     agentTmuxTarget(name)/startTarget instead of a bare `null` host, unlocking per-user/remote
+  //     agent hosting. Verified BOTH are no-ops for every agent as configured today:
+  //     agentTmuxTarget() returns {host:null, runAsUser:null} unless an agent's OWN config sets a
+  //     remote host or runAsUser (none do), and upstream's own doc comment states
+  //     "host=null is byte-identical to the prior direct local tmux call" -- so adopting this is
+  //     zero behavior change today and opt-in infrastructure for later, not a live architecture
+  //     switch that needs a decision now.
   'src/web/agent-process.ts':
-    'keep the fork *Unlocked private bodies + withLifecycleLock wrappers on all three signature hunks (start/stop/restart) -- upstream exports the same functions unlocked, which would delete the card 74ba7c78 atomicity; upstream body changes outside those lines merge cleanly and are kept',
+    'union all three: (1) ISOLATED_CONFIG_SKIP keeps BOTH \'skills\' (fork) and \'projects\' (upstream) entries; (2) adopt upstream\'s resolveProviderEnv() refactor wholesale (verified byte-identical output for ollama/deepseek/openrouter incl. the b7fa5281 shSingleQuote fix, plus adds minimax); (3) adopt upstream\'s umask 002 + agentTmuxTarget(name)/startTarget cmd-assembly change wholesale (verified no-op for any agent without remote/runAsUser config, per upstream\'s own "byte-identical to the prior direct local tmux call" doc comment) -- the fork\'s *Unlocked/withLifecycleLock split (card 74ba7c78) is UNRELATED to this hunk set and already correctly merged, do not touch it',
   // Upstream adds a re-entrancy guard (`tickRunning`) around the sweep, for the exact reason the
   // fork ALSO has: once checkAgent awaits a real restart instead of a blocking execSync('sleep N')
   // (fork card 873c48df), a sweep can still be running when the next interval fires. Measured: the
@@ -564,28 +687,35 @@ const ACKNOWLEDGED_CONFLICTS = {
 // Typed as Record<keyof typeof ACKNOWLEDGED_CONFLICTS, string>: a rule without a recorded blob, or
 // a blob without a rule, is a COMPILE error rather than a silent gap between two lists.
 const ACKNOWLEDGED_UPSTREAM_BLOBS: Readonly<Record<keyof typeof ACKNOWLEDGED_CONFLICTS, string>> = {
+  'src/kanban-dispatch.ts': '7fffc38f78b99573fb88fd797ac67b3593ffb872',
+  'src/__tests__/kanban-dispatch-rearm.test.ts': 'd9a186a0af48c44c14299c284dbe0caf45d8feaa',
   'src/auto-restart.ts': 'a1f2d75ed063a78eb5be23acb2c4138ca14fff19',
   'src/model-fallback.ts': 'd1ed3c18ba86badd1f72cf6fb28d1f3193974012',
   'src/__tests__/model-fallback.test.ts': '38b6e76e9f5184a9ade636a057b79c4e522f1e3b',
   'src/web/update-checker.ts': '24e46f990c7b0a5c8fa065d12ba1ee592b547691',
-  'src/web/context-restart-gate-runner.ts': 'aae818bb7ded38146343eb0a0748b83422d018ce',
-  'src/web.ts': '67695fc52c4a2e802b9ca79edda0649f1d802d33',
+  'src/web/context-restart-gate-runner.ts': '3ba2520de47c80732da9e89cfd5023cd1c02d442',
+  'src/web.ts': '42406c87b5bbc3e45cfc827025cdcd3dabe6d366',
   'src/web/keychain.ts': '1e1730ee0d8f6b1d4b51c5c254f3fab56acfa376',
   'src/web/agent-scaffold.ts': '2a72fb5c7f388a6be9077a1a3d8821231bcf8a88',
-  'src/db.ts': '66381e77bdb6cce583bd3b397a3ae2202ae61e9e',
+  'src/db.ts': '9a9dc8394559ed0a3e08f1d3a2846778270c419f',
   'src/web/routes/agents.ts': '7711d18a7752828a113f9389a2c3943e6b74ab0e',
-  'src/web/routes/kanban.ts': '5620fe397bdadad1a619408367a783d0470a13fe',
+  'src/web/routes/kanban.ts': '00ec734f520d42d1a88d835fb13dffca93c6d839',
   'scripts/hooks/egress-gate.mjs': '229076d5812e7d50a188ca07b43a87fb6239b233',
   'src/__tests__/egress-gate.test.ts': 'c24ca54ffc49de70d602790fa1d6b80e3aea4156',
   'src/web/context-guard-runner.ts': 'b17ba4f630dbba93cfd5520e3c37a854a5c80c81',
-  'web/app.js': 'c8c11f94ac1007da3ce29f5cbbd4ab84a75a8701',
+  'web/app.js': 'e8c74d15bbb930ca7fff43139b868b0e638e7a11',
+  'web/style.css': 'b774ccb836f07ca78c300077302834a80cd12edb',
+  'src/web/agent-taskstate.ts': '625d03282bb75b554ce23822f67cc4e51b0706c1',
+  'src/__tests__/agent-taskstate.test.ts': '82dc411aa813d66c0800e7f8007dfdcd2a42e43f',
+  'src/web/token-usage.ts': 'ee32eb840710ba5ff38dd5830d14a2fa68e42767',
+  'src/__tests__/schedule-runner-autostart.test.ts': '678cbb42e4447b206598bfbb9bc271602a3f896b',
   '.gitignore': '1e5adbb2332be0dbf5a710c1899e49305ccb318b',
-  'package.json': 'bbb946b636ac92c4e69abd4d62d4762c35105347',
-  'package-lock.json': 'a3e12f8a7eb91de9556b3b84acf928c1c22cfcef',
+  'package.json': '031fc59039e3081034cf870745202076818b1bff',
+  'package-lock.json': 'f4f25dd6896d5a4f80c13df1b056b632f86f37e6',
   'src/web/heartbeat-agent-scaffold.ts': 'bb4a7bc74200725e8c257f7d835b082ed6f12047',
   'src/web/schedule-runner.ts': '9736ea6737757cc0155671dca3d9d2874b330885',
   'vitest.config.ts': '62d4ac7606cd719d40e07fc0d82c7f777dda0b30',
-  'src/web/agent-process.ts': 'bb28237a19c881551c8415ebeecd58fcaac01923',
+  'src/web/agent-process.ts': '3dc78cdf1f08797793b37c7b02e25773c04e5295',
   'src/web/auto-restart-runner.ts': '044dde0ad94f5a57ff8e611656f288b25fecdaff',
   'src/web/model-fallback-runner.ts': '681fcaefd6588fc2f6f3db880238b8288d1dcd15',
   'src/web/routes/skills.ts': '34c1e440bd5009e79546d686ec9fbc481ba0af7e',
@@ -614,7 +744,7 @@ const ACKNOWLEDGED_UPSTREAM_BLOBS: Readonly<Record<keyof typeof ACKNOWLEDGED_CON
   'scripts/set-bot-menu.sh': 'b45aca69c59f9b69748592df70d0a9ea77189206',
   'scripts/stuck-modal-guard.sh': '5bf19fc208ac41c204ae007189553efcb1d2790d',
   'src/__tests__/send-honesty-sweep.test.ts': 'afc17a2222a86a7645343f837618ebe74516dacc',
-  'scripts/channels.sh': '440c177464c2bcf2d090f8958373b94e011e9f62',
+  'scripts/channels.sh': 'a550d6852ebc9fb2f17b53c6e857ff5a4f0c6e67',
   'update.sh': 'de0cad0164f4473d1cd1bd65dd019ae9465e4fe3',
   'scripts/install-prod-tree-guard-hook.sh': '9647c9658a5e6352ae0bae57842590a1c2d6e30c',
 }

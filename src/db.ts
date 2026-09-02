@@ -2491,8 +2491,16 @@ export function moveKanbanCard(id: string, status: KanbanCard['status'], sortOrd
   // Card a8aa9ae5 / Cybersec F-1: the bypass is force AND an allowlisted actor, like every sibling
   // guard on this state machine. A bare force:true from an unnamed caller does not open it.
   if (depBlocked && !isForceActor(force === true, actor)) return false
+  // dispatched_at guards ONE in_progress spell (one activation -> one wake-up message), it is not a
+  // permanent tombstone. Nothing used to clear it, so a card pulled to in_progress and put BACK
+  // (planned/waiting) burned its dispatch forever: the board showed it alive while the next pull
+  // woke nobody. Clearing it on every move that does not land in in_progress re-arms the next
+  // activation -- and heals a row already stuck this way, since the clear does not depend on the
+  // previous status.
   const changed = db.prepare(
-    'UPDATE kanban_cards SET status=?, sort_order=?, updated_at=? WHERE id=?'
+    status === 'in_progress'
+      ? 'UPDATE kanban_cards SET status=?, sort_order=?, updated_at=? WHERE id=?'
+      : 'UPDATE kanban_cards SET status=?, sort_order=?, updated_at=?, dispatched_at=NULL WHERE id=?'
   ).run(status, sortOrder, now, id).changes > 0
   if (changed && prev !== undefined && prev !== status) {
     // `forced` records only whether THIS transition actually needed the reviewed-card-reopen

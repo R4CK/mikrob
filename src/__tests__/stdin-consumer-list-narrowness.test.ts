@@ -173,3 +173,108 @@ describe('heredocIsStdinDataSink: attached/clustered short-option `-K` forms (ca
     }
   })
 })
+
+// ROUND 3 (Cybered NO-GO on the round-2 fix, same card 0f7f7fe9, comment #16926). Rounds 1-2 closed
+// curl's own getopt grammar (attached/clustered/separated/`=`), but CURL_CONFIG_STDIN_RX runs on the
+// RAW owner-span text -- before shell quote-removal. Live-confirmed with real curl 8.18.0: shell
+// quoting or backslash-escaping around the flag changes nothing about which argv curl actually
+// receives, so all five shapes below resolve to the identical, already-denied `-K -` argv while the
+// RAW text no longer matches the regex. Pinned from the grammar (bash quote-removal has exactly four
+// mechanisms: single quotes, double quotes, `$'...'`, and a bare backslash-escape), not from the one
+// reported shape, per this file's own standing lesson.
+const QUOTED_CONFIG_CONSUMERS = ['"-K" -', '-"K" -', "'-K' -", '--"config" -', '\\-K -']
+
+describe('heredocIsStdinDataSink: shell-quoted/escaped `-K`/`--config` forms (card 0f7f7fe9, round 3)', () => {
+  it.each(QUOTED_CONFIG_CONSUMERS)(
+    'does NOT blank a heredoc body when `curl -d @- %s` is present (quoted/escaped -K)',
+    (flag) => {
+      const out = stripHeredocDataPayloads(withHeredoc(`-d @- ${flag}`))
+      for (const line of SEND_CONFIG.split(NL)) expect(out).toContain(line)
+    },
+  )
+
+  it.each(QUOTED_CONFIG_CONSUMERS)('email-send-gate DENIES a real send decoyed as `curl -d @- %s`', (flag) => {
+    expect(emailGate('Bash', { command: withHeredoc(`-d @- ${flag}`) }).deny).toBe(true)
+  })
+
+  it('same DENY holds for a quoted+clustered form (`-s"K"-`, not individually reported but implied ' +
+    'by the same grammar: quoting can wrap any single character of a clustered short-option run)', () => {
+    expect(emailGate('Bash', { command: withHeredoc('-d @- -s"K"-') }).deny).toBe(true)
+  })
+
+  it('CONTROL: quoting UNRELATED text (a URL, no config flag anywhere) does not create a false deny', () => {
+    expect(emailGate('Bash', { command: withHeredoc('-d @- "https://example.com/x"') }).deny).toBe(false)
+  })
+
+  it('ACCEPTED TRADE-OFF, pinned deliberately (same direction as the pre-existing `-oK-` false ' +
+    'positive): de-quoting an UNRELATED quoted argument that merely CONTAINS the text `-K -` (e.g. a ' +
+    'quoted header value) also stops the blank -- over-caution, not a bypass, since the body just ' +
+    'stays scanned instead of being silently exempted', () => {
+    expect(emailGate('Bash', { command: withHeredoc('-d @- -H "X-Debug: -K -"') }).deny).toBe(true)
+  })
+
+  it('CONTROL: all round-1/round-2 (unquoted) forms still deny -- no regression from the de-quoted check', () => {
+    for (const flags of [...DECOY_PLUS_CONFIG, ...ATTACHED_CONFIG_CONSUMERS.map((f) => `-d @- ${f}`)]) {
+      expect(emailGate('Bash', { command: withHeredoc(flags) }).deny).toBe(true)
+    }
+  })
+
+  it('CONTROL: plain `-d @-` with no config flag at all stays allowed after the round-3 widening', () => {
+    expect(emailGate('Bash', { command: withHeredoc('-d @-') }).deny).toBe(false)
+  })
+})
+
+// ROUND 4 (Cybersec NO-GO on the round-3 fix, same card 0f7f7fe9). Round 3's dequoteCurlSpan handled
+// three of bash's shell-quote-removal mechanisms (single quotes, double quotes, `$'...'` ANSI-C
+// quoting) but missed the fourth: `$"..."` LOCALE quoting (bash manual 3.1.2.5). Cybersec measured
+// 245 quoting shapes generated from the grammar (not the patch), all verified with real bash: 56
+// bypassed pre-fix, all 56 the SAME single mechanism, zero others. `curl -d @- $"-K" -` denied
+// end-to-end with a real resend.com send-config heredoc pre-fix; fix is one line (skip the `$` before
+// an existing `"` branch, same body-parsing rules as plain double-quoting).
+const LOCALE_QUOTED_CONFIG_CONSUMERS = [`$"-K" -`, `--$"config" -`, `-s$"K"-`]
+
+describe('heredocIsStdinDataSink: locale-quoted `$"..."` `-K`/`--config` forms (card 0f7f7fe9, round 4)', () => {
+  it.each(LOCALE_QUOTED_CONFIG_CONSUMERS)(
+    'does NOT blank a heredoc body when `curl -d @- %s` is present (locale-quoted -K)',
+    (flag) => {
+      const out = stripHeredocDataPayloads(withHeredoc(`-d @- ${flag}`))
+      for (const line of SEND_CONFIG.split(NL)) expect(out).toContain(line)
+    },
+  )
+
+  it.each(LOCALE_QUOTED_CONFIG_CONSUMERS)('email-send-gate DENIES a real send decoyed as `curl -d @- %s`', (flag) => {
+    expect(emailGate('Bash', { command: withHeredoc(`-d @- ${flag}`) }).deny).toBe(true)
+  })
+
+  it('CONTROL: a real, non-stdin `-K` config file with a locale-quoted path stays allowed', () => {
+    expect(emailGate('Bash', { command: withHeredoc(`-d @- -K$"/etc/curlrc"`) }).deny).toBe(false)
+  })
+
+  it('CONTROL: locale-quoting UNRELATED text (a URL, no config flag anywhere) does not create a false deny', () => {
+    expect(emailGate('Bash', { command: withHeredoc(`-d @- $"https://example.com/x"`) }).deny).toBe(false)
+  })
+
+  it('CONTROL: all round-1/2/3 forms still deny -- no regression from the round-4 widening', () => {
+    for (const flags of [...DECOY_PLUS_CONFIG, ...ATTACHED_CONFIG_CONSUMERS.map((f) => `-d @- ${f}`)]) {
+      expect(emailGate('Bash', { command: withHeredoc(flags) }).deny).toBe(true)
+    }
+    for (const flag of QUOTED_CONFIG_CONSUMERS) {
+      expect(emailGate('Bash', { command: withHeredoc(`-d @- ${flag}`) }).deny).toBe(true)
+    }
+  })
+
+  it('CONTROL: plain `-d @-` with no config flag at all stays allowed after the round-4 widening', () => {
+    expect(emailGate('Bash', { command: withHeredoc('-d @-') }).deny).toBe(false)
+  })
+
+  // MUTATION-KILLING (Cybersec r4 GO, I-1): the round-4 test set above pins that the `$"..."`
+  // branch exists, not that it skips the RIGHT number of characters. `i += 1` (skip just the `$`,
+  // let the existing `"` branch parse the body) vs a mutated `i += 2` (also skip the opening `"`,
+  // so the body is copied as literal text INCLUDING everything up to and past the real closing
+  // quote) is invisible to every case above -- all of them still deny either way. This flag
+  // ('-'$"K" '-') is the one shape that tells the two apart: correct code sees -K -, the
+  // off-by-one variant does not. Measured: 735 live bypasses open under the mutant.
+  it('MUTATION-KILLING: `\'-\'$"K" \'-\'` denies -- distinguishes correct `$"` char-skip count from an off-by-one', () => {
+    expect(emailGate('Bash', { command: withHeredoc(`-d @- '-'$"K" '-'`) }).deny).toBe(true)
+  })
+})
