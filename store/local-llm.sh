@@ -173,6 +173,54 @@ if [[ -z "$MODEL" ]]; then
   if [[ -n "$ROUTED" ]]; then MODEL="$ROUTED"; else MODEL="$(read_model)"; fi
 fi
 
+# PER-MODEL KILL SWITCH (card 5d151091, pair-FE 5dd4a211). Peti switches a model off from the
+# dashboard (Lokális LLM -> modell sor kapcsolója), which writes store/local-llm-model-disabled.json;
+# this is where that becomes enforcement. Deliberately the LAST step of model selection -- after an
+# explicit --model, after the per-task routing override, after the default -- so no path can reach
+# the model around it.
+#
+# It STOPS, it does not substitute. A silent fallback to another model is exactly the fail-open this
+# card exists to prevent: the caller would get a draft from a model the operator switched off and
+# have no way to know. Exit 9 is the fleet's established "this task belongs online" code (the same
+# one a disabled --task category returns), so local-llm-rag.sh and the queue worker already route the
+# caller back to online Claude without a new convention.
+#
+# Fail direction: NO file means nothing was ever disabled (the normal state) and the call proceeds. A
+# file that exists but cannot be parsed is state we cannot determine, so it also routes online, loudly
+# -- naming the file, because the only way to produce one is to hand-edit it (the API writes atomically).
+model_switch_state() {
+  MODEL="$1" CFG="$HERE/local-llm-model-disabled.json" python3 -c '
+import json, os
+name = os.environ["MODEL"]
+canon = name if ":" in name else name + ":latest"
+cfg = os.environ["CFG"]
+if not os.path.exists(cfg):
+    print("OK")
+else:
+    try:
+        with open(cfg) as f:
+            doc = json.load(f)
+        models = doc["disabledModels"]
+        if not isinstance(models, dict):
+            raise ValueError("disabledModels is not an object")
+        keys = {(k if ":" in k else k + ":latest") for k in models}
+        print("DISABLED" if canon in keys else "OK")
+    except Exception:
+        print("UNREADABLE")
+' 2>/dev/null || echo "UNREADABLE"
+}
+
+if [[ "$MODE" == "generate" ]]; then
+  case "$(model_switch_state "$MODEL")" in
+    DISABLED)
+      echo "local-llm: model '$MODEL' is DISABLED from the dashboard (Lokális LLM -> a modell sorának kapcsolója) -- this call belongs online. Enable it there, or pass --model with an enabled model." >&2
+      exit 9 ;;
+    UNREADABLE)
+      echo "local-llm: cannot read $HERE/local-llm-model-disabled.json, so it is unknown whether '$MODEL' is disabled -- routing this call online. Fix or delete that file." >&2
+      exit 9 ;;
+  esac
+fi
+
 if [[ "$MODE" == "help" ]]; then
   sed -n '2,30p' "${BASH_SOURCE[0]}" | sed 's/^# \{0,1\}//'
   exit 0

@@ -1,3 +1,4 @@
+import type * as http from 'node:http'
 import { spawn, execFile } from 'node:child_process'
 import { readFileSync, existsSync, openSync, fstatSync, readSync, closeSync, readdirSync } from 'node:fs'
 import { join } from 'node:path'
@@ -9,6 +10,13 @@ import { readBody, json } from '../http-helpers.js'
 import { atomicWriteFileSync } from '../atomic-write.js'
 import { decideModelTrust, relabelCatalogueTrust } from '../../local-llm-model-trust.js'
 import { readBenchState, benchInfoFor } from '../../local-llm-bench-state.js'
+import {
+  canonicalModelName,
+  isModelDisabled,
+  readDisabledModels,
+  serializeDisabledModels,
+  type DisabledModels,
+} from '../../local-llm-model-disabled.js'
 import { getDb, createAgentMessage } from '../../db.js'
 import { pickTemplate } from '../../local-llm-template-picker.js'
 import {
@@ -128,6 +136,9 @@ const LLM_CATALOG_CACHE_FILE = join(STORE_DIR, 'llm-catalog-cache.json')
 const LLM_CATALOG_TRUST_FILE = join(STORE_DIR, 'llm-catalog-trust.json')
 // Written ONLY by store/local-llm-bench.sh, on a run that actually succeeded.
 const LLM_BENCH_STATE_FILE = join(STORE_DIR, 'local-llm-model-state.json')
+// Per-model operator kill switch (card 5d151091). Read by this module AND by store/local-llm.sh --
+// see src/local-llm-model-disabled.ts for the document shape and the fail direction.
+const MODEL_DISABLED_FILE = join(STORE_DIR, 'local-llm-model-disabled.json')
 // The one catalogue schema this build knows how to read (card 4117f98e). It is compared, not
 // assumed: a document from another version may have moved the very fields read below.
 const CATALOG_SCHEMA_VERSION = 1
@@ -550,6 +561,53 @@ function readActiveModel(): string {
     if (existsSync(MODEL_FILE)) return readFileSync(MODEL_FILE, 'utf-8').trim()
   } catch { /* fall through */ }
   return ''
+}
+
+/** One row of GET /api/local-llm/models, and the `model` echoed by the enable/disable POST. Both
+ *  come from here so the two shapes cannot drift (the FE keys on `name`/`enabled`/`disabledAt`). */
+interface ModelFlagRow {
+  name: string
+  sizeBytes: number
+  enabled: boolean
+  active: boolean
+  installed: boolean
+  benchmark: { tokPerSec: number | null; measuredAt: number } | null
+  disabledAt: number | null
+}
+
+function describeModelFlags(
+  name: string,
+  sizeBytes: number,
+  installed: boolean,
+  disabled: DisabledModels,
+  benchState: ReturnType<typeof readBenchState>,
+  active: string,
+): ModelFlagRow {
+  const off = isModelDisabled(disabled, name)
+  const info = benchInfoFor(benchState, name)
+  // The contract carries epoch-ms; readBenchState keeps the ISO string the benchmark script wrote.
+  // An unparseable timestamp reports "no measurement" rather than a NaN the FE would have to guard.
+  const measuredAt = info.benchmarkedAt ? Date.parse(info.benchmarkedAt) : Number.NaN
+  return {
+    name,
+    sizeBytes,
+    enabled: !off,
+    active: installed && active !== '' && modelNameMatches(name, active),
+    installed,
+    benchmark: Number.isFinite(measuredAt) ? { tokPerSec: info.evalTps, measuredAt } : null,
+    disabledAt: off ? (disabled.get(canonicalModelName(name)) ?? 0) : null,
+  }
+}
+
+/** Shared answer for "the disabled-model file exists but cannot be read" (see the module's
+ *  fail-direction note). Never reported as "nothing is disabled": that would silently re-enable a
+ *  model the operator switched off. The message names the file so it is actionable (rule 12). */
+function disabledStateUnreadable(res: http.ServerResponse, err: unknown): void {
+  logger.error({ err, file: MODEL_DISABLED_FILE }, 'local-llm: modell tiltási állapot olvashatatlan')
+  json(res, {
+    error: 'disabled_state_unreadable',
+    message: `A modellek tiltási állapota nem olvasható (${MODEL_DISABLED_FILE}). Javítsd vagy töröld a fájlt, majd frissíts.`,
+  }, 503)
 }
 
 async function bridgeActive(): Promise<boolean> {
@@ -1549,6 +1607,118 @@ export async function tryHandleLocalLlm(ctx: RouteContext): Promise<boolean> {
     return true
   }
 
+  // --- Per-model operator kill switch (card 5d151091, pair-FE 5dd4a211) ---------------------
+  //
+  // GET  /api/local-llm/models                         -> every installed model + its on/off state
+  // POST /api/local-llm/models/<name>/enable|disable    -> flip ONE model's state
+  //
+  // Peti must be able to switch off a single local model by hand (misbehaving output, or it does not
+  // fit the 6 GB card) without uninstalling it. State lives in store/local-llm-model-disabled.json;
+  // the SAME file is read as the last step of model selection in store/local-llm.sh, so the switch is
+  // enforcement, not decoration -- and by the activate door below, so a disabled model cannot be made
+  // the fleet default either.
+  //
+  // Single-model mutate (not a full-list replace), like the categories POST: two tabs toggling two
+  // different models cannot silently drop each other's change.
+  if (path === '/api/local-llm/models' && method === 'GET') {
+    let disabled: DisabledModels
+    try {
+      disabled = readDisabledModels(MODEL_DISABLED_FILE)
+    } catch (err) {
+      disabledStateUnreadable(res, err)
+      return true
+    }
+    const tags = await ollama('/api/tags')
+    // Fail-closed, deliberately: without the catalogue this endpoint cannot say which models exist,
+    // and answering with an empty list would render the page as "no model is switched off" -- a
+    // statement about state we could not read. The FE treats a non-200 as "no switches at all".
+    if (tags === null) {
+      json(res, { error: 'ollama_down', message: 'Az Ollama nem érhető el, ezért a modellek tiltási állapota nem olvasható.' }, 503)
+      return true
+    }
+    const benchState = readBenchState(LLM_BENCH_STATE_FILE)
+    const active = readActiveModel()
+    const rawModels = (Array.isArray(tags?.models) ? tags.models : []) as unknown[]
+    const models = rawModels.map((raw) => {
+      const m = raw as { name?: unknown; size?: unknown }
+      const name = typeof m.name === 'string' ? m.name : ''
+      return describeModelFlags(name, typeof m.size === 'number' ? m.size : 0, true, disabled, benchState, active)
+    })
+    // A model can be switched off and LATER removed from ollama; its entry then describes state that
+    // nothing else on the page can show. Listing it as installed:false is what makes that recoverable
+    // (the enable branch below accepts a name it can still find here), instead of a stuck row of JSON
+    // nobody can see.
+    const present = new Set(models.map((m) => canonicalModelName(m.name)))
+    for (const [name, at] of disabled) {
+      if (present.has(name)) continue
+      models.push({ name, sizeBytes: 0, enabled: false, active: false, installed: false, benchmark: null, disabledAt: at })
+    }
+    json(res, { models })
+    return true
+  }
+
+  const modelToggle = /^\/api\/local-llm\/models\/(.+)\/(enable|disable)$/.exec(path)
+  if (modelToggle && method === 'POST') {
+    let name = ''
+    try {
+      // url.pathname keeps the FE's encodeURIComponent escaping (a tag's ':' arrives as %3A), so the
+      // segment is decoded here -- inside a try, because a lone '%' makes decodeURIComponent throw.
+      name = decodeURIComponent(modelToggle[1]).trim()
+    } catch {
+      json(res, { error: 'invalid_model', message: 'Érvénytelen modellnév a kérés útvonalában.' }, 400)
+      return true
+    }
+    if (!MODEL_RE.test(name)) {
+      json(res, { error: 'invalid_model', message: 'Érvénytelen modellnév.' }, 400)
+      return true
+    }
+    let disabled: DisabledModels
+    try {
+      disabled = readDisabledModels(MODEL_DISABLED_FILE)
+    } catch (err) {
+      disabledStateUnreadable(res, err)
+      return true
+    }
+    const enable = modelToggle[2] === 'enable'
+    const tags = await ollama('/api/tags')
+    if (tags === null) {
+      json(res, { error: 'ollama_down', message: 'Az Ollama nem érhető el, ezért a modell tiltása most nem módosítható.' }, 503)
+      return true
+    }
+    const rawModels = (Array.isArray(tags?.models) ? tags.models : []) as unknown[]
+    const installedRow = rawModels
+      .map((raw) => raw as { name?: unknown; size?: unknown })
+      .find((m) => typeof m.name === 'string' && m.name !== '' && modelNameMatches(m.name, name))
+    const installedName = typeof installedRow?.name === 'string' ? installedRow.name : ''
+    const installedSize = typeof installedRow?.size === 'number' ? installedRow.size : 0
+    const key = canonicalModelName(installedName || name)
+    // Unknown AND not already in the file -> 404. The second half of that condition is what lets an
+    // operator clear a switch left behind by a model that has since been removed from ollama; a plain
+    // "must be installed" rule would make such an entry permanent and unreachable.
+    if (!installedName && !disabled.has(key)) {
+      json(res, { error: 'unknown_model', message: `Ismeretlen modell: "${name}".` }, 404)
+      return true
+    }
+    // Idempotent both ways. Re-disabling keeps the ORIGINAL disabledAt: the operator's question is
+    // "since when has this been off", and a repeated click (or a second tab) must not reset that.
+    if (enable) disabled.delete(key)
+    else if (!disabled.has(key)) disabled.set(key, Date.now())
+    try {
+      atomicWriteFileSync(MODEL_DISABLED_FILE, serializeDisabledModels(disabled))
+    } catch (err) {
+      logger.error({ err, model: key }, 'local-llm: modell tiltási állapot mentése sikertelen')
+      json(res, { error: 'write_failed', message: 'A modell állapotának mentése nem sikerült, próbáld újra.' }, 500)
+      return true
+    }
+    logger.info({ model: key, enabled: enable }, 'local-llm: modell tiltási állapot módosítva')
+    const benchState = readBenchState(LLM_BENCH_STATE_FILE)
+    json(res, {
+      ok: true,
+      model: describeModelFlags(installedName || name, installedSize, !!installedName, disabled, benchState, readActiveModel()),
+    })
+    return true
+  }
+
   // POST /api/local-llm/model  {model} -> swap active model
   //
   // THIS IS THE SECOND DOOR ONTO store/local-llm-model, and until card eb843c46 it was the unguarded
@@ -1579,6 +1749,24 @@ export async function tryHandleLocalLlm(ctx: RouteContext): Promise<boolean> {
     if (tags === null) { json(res, { error: 'Az Ollama nem elérhető.' }, 503); return true }
     const present = (tags.models || []).some((m: any) => m.name === model)
     if (!present) { json(res, { error: 'Ez a modell nincs letöltve. Előbb húzd le (pull).' }, 409); return true }
+
+    // Card 5d151091: a model the operator switched off must not become the fleet default through
+    // this door either. The dashboard already hides the "Use" button for a disabled model, but a UI
+    // that hides a control is not a rule -- this endpoint is reachable by every fleet agent holding
+    // the dashboard token, so the switch is enforced where the write happens. An unreadable state
+    // file refuses too (fail-closed): "cannot tell" is not "allowed".
+    try {
+      if (isModelDisabled(readDisabledModels(MODEL_DISABLED_FILE), model)) {
+        json(res, {
+          error: `Ez a modell le van tiltva a Lokális LLM oldalon, ezért nem tehető aktívvá. Előbb engedélyezd, majd próbáld újra.`,
+          code: 'model_disabled',
+        }, 409)
+        return true
+      }
+    } catch (err) {
+      disabledStateUnreadable(res, err)
+      return true
+    }
 
     const basis = decideModelTrust({
       model,
