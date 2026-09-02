@@ -212,7 +212,7 @@ const ACKNOWLEDGED_CONFLICTS = {
   // -- both coexist, no functional change either way.
   'src/db.ts':
     "comment-only collision at moveKanbanCard(), zero code divergence -- keep fork's depBlocked/isForceActor comment (a8aa9ae5) AND append upstream's dispatched_at=NULL clear-on-move comment just above the db.prepare() branch it documents (that SQL is already identical/shared on both sides)." +
-    " Re-measured 2026-09-02 (MikroB landing-block, QA stale-blob catch 9a9dc8394559..59fbb9d1d82b): upstream moved again, but entirely elsewhere in the file (EMAILKAPU901 PR2 -- content_hash/consumed_at columns and plumbing on the approvals table, a one-shot-consumption anchor for its email-approval gate). Zero overlap with moveKanbanCard(); resolution at the actual conflict point is unchanged.",
+    " Re-measured 2026-09-02 (MikroB landing-block, QA stale-blob catch 9a9dc8394559..59fbb9d1d82b): upstream moved again, but entirely elsewhere in the file (EMAILKAPU901 PR2 -- content_hash/consumed_at columns and plumbing on the approvals table, a one-shot-consumption anchor for its email-approval gate). Zero overlap with moveKanbanCard(); resolution at the actual conflict point is unchanged. Re-measured AGAIN 2026-09-02 (Cybersec, card 9dc0fba8 landing-block, 59fbb9d1d82b..d15ec3aba7a1): upstream moved once more and again elsewhere -- updateKanbanCard() now writes a kanban_card_events row on a real status transition and takes an `actor` argument. The only occurrence of moveKanbanCard in that diff is inside a NEW COMMENT (\'audited exactly like one made through moveKanbanCard\'), not at the conflict point. Resolution unchanged; blob bumped.",
   // Card 2e634e5c. Both sides independently fixed the SAME ghost-session bug (agent DELETE leaving
   // an orphaned tmux session), but the fork's fix is strictly more correct: it AWAITS
   // stopAgentProcess(), tracks the result, and logs on failure; upstream's is a floating (un-awaited)
@@ -246,7 +246,7 @@ const ACKNOWLEDGED_CONFLICTS = {
   // reopen -- reopening a `waiting` card without a verdict is blocked by the fork-only
   // reviewedCardBlocksInProgress() gate (card c4f2de32), which upstream has no equivalent of.
   'src/web/routes/kanban.ts':
-    "dispatch-text hunk: keep the fork's waiting-text wholesale (fork rule 4, no self-close-to-done). Other two hunks: adopt upstream's resolveKanbanDispatch + reportUndeliveredDispatch (session-down is no longer a silent no-op), keep the fork's self-advance suppression + /clear-before-switch wholesale alongside it -- non-overlapping concerns, not a fork-vs-upstream pick",
+    "dispatch-text hunk: keep the fork's waiting-text wholesale (fork rule 4, no self-close-to-done). Other two hunks: adopt upstream's resolveKanbanDispatch + reportUndeliveredDispatch (session-down is no longer a silent no-op), keep the fork's self-advance suppression + /clear-before-switch wholesale alongside it -- non-overlapping concerns, not a fork-vs-upstream pick. Re-measured 2026-09-02 (Cybersec, card 9dc0fba8 landing-block, 00ec734f520d..89423d29b8af): upstream moved, entirely outside all three recorded hunks -- it fixed the POST handler so a caller-supplied card id wins in the row AND in the response (it used to store the supplied id and echo the generated one, HTTP 200 pointing at a card that does not exist), and it lifts `actor` out of the field set for db.ts\'s new audit event. Zero hits on resolveKanbanDispatch, reportUndeliveredDispatch, the waiting-text hunk, the self-advance suppression or the /clear-before-switch block. Resolution at the conflict points unchanged; blob bumped.",
   // Card 2e634e5c, fourth file. A genuine two-way merge, not a wholesale pick either direction:
   // the fork owns Firecrawl namespace default-deny + FIRECRAWL_SCRAPE_ALLOWED_KEYS param-allowlist
   // (card 91c4a369); upstream owns the tier-based egressDecision({blocked,tier}) shape, agentType
@@ -715,9 +715,9 @@ const ACKNOWLEDGED_UPSTREAM_BLOBS: Readonly<Record<keyof typeof ACKNOWLEDGED_CON
   'src/web.ts': '42406c87b5bbc3e45cfc827025cdcd3dabe6d366',
   'src/web/keychain.ts': '1e1730ee0d8f6b1d4b51c5c254f3fab56acfa376',
   'src/web/agent-scaffold.ts': '2a72fb5c7f388a6be9077a1a3d8821231bcf8a88',
-  'src/db.ts': '59fbb9d1d82b6c2296c8a22ec79e69b96a4a25b0',
+  'src/db.ts': 'd15ec3aba7a10903f9094360888b8e0f0e8018d7',
   'src/web/routes/agents.ts': '7711d18a7752828a113f9389a2c3943e6b74ab0e',
-  'src/web/routes/kanban.ts': '00ec734f520d42d1a88d835fb13dffca93c6d839',
+  'src/web/routes/kanban.ts': '89423d29b8af3e949cb520eefc8f5a0d03ff380c',
   'scripts/hooks/egress-gate.mjs': '229076d5812e7d50a188ca07b43a87fb6239b233',
   'src/__tests__/egress-gate.test.ts': 'c24ca54ffc49de70d602790fa1d6b80e3aea4156',
   'src/web/context-guard-runner.ts': 'b17ba4f630dbba93cfd5520e3c37a854a5c80c81',
