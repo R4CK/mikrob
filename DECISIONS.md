@@ -4370,3 +4370,57 @@ kockázat-elfogadás maga NEM új itt (a SUBGATEPOZ822 váltással már megtört
 állítása lett pontosítva, hogy a valóságot tükrözze.
 **Hivatkozás:** kártya c7401c5f, komment #16876 (Cybersec NO-GO), content-commit: lásd Gate-SHA a
 kártya REVIEW-kommentjében.
+
+
+## 2026-09-02 -- A megosztott klón node_modules-át védő kontroll a symlink-átlépő ÍRÁS, nem a telepítő-ige (kártya 9dc0fba8)
+
+**Döntés:** a 2026-09-02-i 38 perces kiesés (QA gate-worktree átírta a megosztott CleanCore-klón
+`@cleancore/i18n` workspace-linkjét) javítása NEM a "ne fusson installer worktree-ből" szabály
+szigorítása, hanem két új réteg: (1) egy PreToolUse guard, ami azt kérdezi, hogy a leírt útvonal
+ott van-e, ahová a kernel ténylegesen ír; (2) egy rögzített gate-worktree script, ami a worktree-nek
+VALÓDI `node_modules` könyvtárat ad, elemenkénti symlinkekkel.
+
+**Miért nem a szabály szigorítása:** a tényleges parancs `rm <egy fájl>` + `ln -s` volt, egyik sem
+telepítő; a meglévő `npm-protect-guard.py` helyesen nem szólalt meg. A `chmod` a symlinken Linuxon
+no-op (követi a linket), a megosztott node_modules read-only-ra állítása pedig a fő klón jogos
+installjait is blokkolná. A megkülönböztető tulajdonság se nem az ige, se nem a könyvtár: az, hogy
+az útvonal átlép-e egy symlinket.
+
+**Fail-closed kiegészítés:** ha az útvonal feloldatlan `$VAR`-t tartalmaz, a guard blokkol, mert
+akkor nem ellenőrizhető, hová ír. Ez nem elméleti: az incidenst okozó blokk 32 perccel később
+pontosan ebben az alakban futott újra.
+
+**Amit szándékosan NEM tettünk meg:** a `store/agent-worktree.sh` (minden ügynök élő worktree-je)
+ugyanezt a könyvtár-symlink alakot használja, és a saját fejléce már 2026-08-14 óta dokumentálja
+ezt a hibaosztályt. Az átállítása minden ügynök élő fáját érintené, ezért MikroB/Peti döntése,
+külön kártyán -- a guard addig is fedi.
+
+**Ki döntött:** Cybersec (kártya 9dc0fba8, MikroB dispatch). **Hivatkozás:** kártya 9dc0fba8;
+guard `scripts/hooks/symlinked-node-modules-guard.py` (19 selftest-eset valódi fixture-rel, az
+incidens reprodukálásával), script `store/cc-gate-worktree.sh`, skill `gate-worktree-pattern`.
+
+## 2026-09-02 (javítás) -- A symlink-guard a HÍVÓ cwd-jét használja, nem a sajátját (kártya 9dc0fba8, QA 1. körös FAIL)
+
+**Mi volt hibás:** a `scripts/hooks/symlinked-node-modules-guard.py` első verziója
+`os.path.abspath()`-tal oldotta fel a relatív útvonalakat, ami a GUARD saját process-cwd-jéhez
+képest old fel. Egy `cd "$WT" && rm apps/web/node_modules/@cleancore/i18n` alak -- ugyanaz az
+incidens, csak relatívan írva, és ez a flotta tényleges szokása -- így egy nem létező útvonalra
+futott ki, aminek a `realpath`-ja önmagával egyezik, tehát a szökés-ellenőrzés "nincs szökés"-t
+válaszolt és átengedte. QA reprodukálta élőben.
+
+**Miért nem vettem észre:** a testvér `npm-protect-guard.py` MÁR használja a `payload.get("cwd")`
+mezőt (165. sor), az enyém nem olvasta egyszer sem. Pontosan az a hibaosztály, amit ugyanezen a
+kártyán a másik oldalról leírtam: egy másolt modul átveszi az ALAKOT, de nem a kontrollt. A saját
+guardom ugyanabba futott bele.
+
+**A javítás:** `effective_cwd(command, payload_cwd)` -- a hívó cwd-je az alap, egy vezető literál
+`cd <dir>` felülírja; ha a `cd` célja feloldhatatlan (`$VAR`), akkor a UTÁNA jövő relatív
+node_modules-utak nem ellenőrizhetők, tehát a B-eset (fail-closed) érvényes rájuk, nem szabad
+átengedés. Az `escapes()` mostantól ehhez a cwd-hez old fel.
+
+**Bizonyíték, hogy a teszt nem vákuum:** az öt új selftest-esetet lefuttattam a JAVÍTÁS ELŐTTI
+guarddal is (a régi bájtok `git show HEAD:`-ből, a selftest mellé másolva a helyes fájlnévvel):
+a három blokkoló eset PIROS, a két KONTROLL (valódi node_modules-ba írás, illetve olvasás)
+ZÖLD -- tehát az új esetek tényleg a javítást rögzítik, és nem "mostantól minden blokkol".
+
+**Ki döntött:** Cybersec (a javítás), QA (a lelet, komment 17557). **Hivatkozás:** kártya 9dc0fba8.

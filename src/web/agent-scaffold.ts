@@ -371,6 +371,7 @@ export function writeAgentSettingsFromProfile(name: string, profile: ProfileTemp
   injectEgressGate(existing)
   injectGitProtectGuard(existing)
   injectNpmProtectGuard(existing)
+  injectSymlinkedNodeModulesGuard(existing)
   injectBlastRadiusGuard(existing)
   atomicWriteFileSync(settingsPath, JSON.stringify(existing, null, 2))
 }
@@ -619,6 +620,65 @@ export function injectNpmProtectGuard(existing: Record<string, unknown>): void {
     ...prev.filter((e) => !JSON.stringify(e).includes('npm-protect-guard.py')),
     entry,
   ]
+}
+
+// Idempotently wire the symlinked-node-modules guard PreToolUse hook (card 9dc0fba8).
+//
+// Its npm sibling above blocks the INSTALLER verbs and `rm -rf node_modules`. The
+// 2026-09-02 outage used neither: a gate worktree ran a plain `rm <one file>` and
+// an `ln -s`, both naming paths under its OWN worktree. But that worktree's
+// apps/web/node_modules was itself a DIRECTORY SYMLINK into the shared CleanCore
+// clone, so the kernel resolved both writes there and rewrote the shared
+// @cleancore/i18n link to an absolute path inside the worktree. When the worktree
+// was removed 20 minutes later the link dangled and every agent's vite/vitest
+// answered "Failed to resolve import @cleancore/i18n" for 38 minutes. The same
+// block ran again 32 minutes later, so it had to be repaired twice.
+//
+// The property that catches it is neither the verb nor the directory: it is
+// whether the path the agent typed is the path the kernel writes to. See the
+// guard script's own header. Wired for every agent, main included, for the same
+// reason as its siblings -- a guard hand-copied into N settings.json files
+// protects an arbitrary subset (card 0fa54550: 5 of 13 agents silently unguarded).
+export function injectSymlinkedNodeModulesGuard(existing: Record<string, unknown>): void {
+  const hooks = (existing.hooks && typeof existing.hooks === 'object'
+    ? existing.hooks
+    : (existing.hooks = {})) as Record<string, unknown>
+  const command = `python3 "${join(PROJECT_ROOT, 'scripts', 'hooks', 'symlinked-node-modules-guard.py')}"`
+  if (isUnsafeHookCommand(command)) return
+  const entry = {
+    matcher: 'Bash',
+    hooks: [{ type: 'command', command, timeout: 10 }],
+  }
+  const prev = Array.isArray(hooks.PreToolUse) ? (hooks.PreToolUse as unknown[]) : []
+  hooks.PreToolUse = [
+    ...prev.filter((e) => !JSON.stringify(e).includes('symlinked-node-modules-guard.py')),
+    entry,
+  ]
+}
+
+// Same reasoning as ensureNpmProtectGuard: the inject* above reaches an agent only
+// when its settings.json is REGENERATED, i.e. on the next spawn. This incident
+// already recurred once within the same hour, so waiting for respawns is too slow;
+// this runs in the startup migration loop so one dashboard restart arms the fleet.
+// Returns true when it actually changed a file.
+export function ensureSymlinkedNodeModulesGuard(name: string): boolean {
+  const settingsPath = agentSettingsPath(name)
+  let settings: Record<string, unknown> = {}
+  if (existsSync(settingsPath)) {
+    try { settings = JSON.parse(readFileSync(settingsPath, 'utf-8')) } catch { return false }
+  }
+  const command = `python3 "${join(PROJECT_ROOT, 'scripts', 'hooks', 'symlinked-node-modules-guard.py')}"`
+  const hooks = (settings.hooks && typeof settings.hooks === 'object')
+    ? settings.hooks as Record<string, unknown>
+    : {}
+  const ptu = Array.isArray(hooks.PreToolUse) ? hooks.PreToolUse as unknown[] : []
+  const ptuJson = JSON.stringify(ptu)
+  if (ptuJson.includes('symlinked-node-modules-guard.py') && hookCommandWired(ptuJson, command)) return false
+  if (isUnsafeHookCommand(command)) return false
+  injectSymlinkedNodeModulesGuard(settings)
+  if (name !== MAIN_AGENT_ID) mkdirSync(join(agentDir(name), '.claude'), { recursive: true })
+  atomicWriteFileSync(settingsPath, JSON.stringify(settings, null, 2))
+  return true
 }
 
 // Idempotently wire the blast-radius guard PreToolUse hook (card 398f351b).
