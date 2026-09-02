@@ -4739,3 +4739,21 @@ valódi anomália; a néma kiszűrése elrejtené.
 A fixture szándékosan tartalmaz csali éleket (másik repó azonos útvonalú fájlja, rossz
 `relation_type`, fordított irány), mert egy csak-helyes-sorokat tartalmazó fixture bármelyik
 predikátum törlésével is átmenne.
+
+## 2026-09-02 23:45 -- A modell kill switch fail-iránya: a hiányzó és az olvashatatlan állapotfájl NEM ugyanaz
+
+**Döntés:** a `store/local-llm-model-disabled.json` (kártya `5d151091`) olvasásánál a HIÁNYZÓ fájl
+azt jelenti, hogy semmi nincs letiltva (ez a normál kiindulási állapot, a hívás mehet), a LÉTEZŐ de
+nem értelmezhető fájl viszont NEM: az meghatározhatatlan állapot, amire mindkét fogyasztó
+fail-closed választ ad -- a HTTP-oldal 503 + a fájl nevét tartalmazó üzenet, a shell-oldal `exit 9`
+(„ez a feladat online"). A letiltott modellre a `store/local-llm.sh` MEGÁLL, nem cserél csendben
+másik modellre.
+**Miért:** a csendes modellcsere pontosan az a fail-open osztály, ami miatt a kapcsoló létezik -- a
+hívó egy olyan modelltől kapna draftot, amit az operátor kikapcsolt, és nem lenne honnan megtudnia.
+Az „olvashatatlan fájl = semmi nincs tiltva" válasz ugyanezt csinálná, csak egy szinttel feljebb.
+Az `exit 9` a flotta MÁR meglévő „ez online-ra való" kódja (a letiltott `--task` kategória is ezt
+adja), tehát a visszaesés nem igényel új konvenciót a hívóknál.
+**Ki döntött:** backend (implementáció); a kártya szövege Peti kérése alapján explicit kizárta a
+csendes fallbacket.
+**Hivatkozás:** kártya `5d151091`, pair-FE `5dd4a211`, `src/local-llm-model-disabled.ts`.
+
