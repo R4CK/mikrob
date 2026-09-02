@@ -94,11 +94,11 @@ const ACKNOWLEDGED_CONFLICTS = {
   // /upgrade removal. Neither side's file may be taken wholesale -- see the pinned pair in
   // model-fallback.test.ts ("keeps BOTH halves of the fork/upstream resolution at once").
   'src/model-fallback.ts':
-    'take upstream session-limit alternative, keep the fork /upgrade removal (never a wholesale side)',
+    'take upstream session-limit alternative, keep the fork /upgrade removal (never a wholesale side) Round 2 (2026-09-02, fron-ted, landing 5dd4a211, d1ed3c18ba86..93ea8f17a6c9): upstream widened the same regex with the weekly/session wordings measured 2026-08-18 (reached your weekly limit, approaching ... weekly limit, (weekly|session) limit reached) -- adopt those alternatives too; the /upgrade token is STILL present upstream and STILL dropped here. Same principle: union of detections minus the startup-hint false positive.',
   // The test file diverges with the module it tests: fork-only weekly-tier tests plus the pinned
   // resolution pair above. Resolution: keep both sides' cases, drop neither.
   'src/__tests__/model-fallback.test.ts':
-    'union of both sides cases -- fork weekly-tier + upstream additions',
+    'union of both sides cases -- fork weekly-tier + upstream additions Round 2 (2026-09-02, 38b6e76e9f51..09bc3bf772d1): upstream added one case for the weekly/session wordings; union unchanged, keep it with the fork cases.',
   // The fork restructured this file into a MULTI-REPO aggregate (marveen + mikrob blocks, per-repo
   // results in `repos`); upstream kept the single-result shape and is still adding features to it,
   // e.g. the running `version` in the Updates header (upstream aefa693). So it is not "fork parts
@@ -212,7 +212,7 @@ const ACKNOWLEDGED_CONFLICTS = {
   // -- both coexist, no functional change either way.
   'src/db.ts':
     "comment-only collision at moveKanbanCard(), zero code divergence -- keep fork's depBlocked/isForceActor comment (a8aa9ae5) AND append upstream's dispatched_at=NULL clear-on-move comment just above the db.prepare() branch it documents (that SQL is already identical/shared on both sides)." +
-    " Re-measured 2026-09-02 (MikroB landing-block, QA stale-blob catch 9a9dc8394559..59fbb9d1d82b): upstream moved again, but entirely elsewhere in the file (EMAILKAPU901 PR2 -- content_hash/consumed_at columns and plumbing on the approvals table, a one-shot-consumption anchor for its email-approval gate). Zero overlap with moveKanbanCard(); resolution at the actual conflict point is unchanged. Re-measured AGAIN 2026-09-02 (Cybersec, card 9dc0fba8 landing-block, 59fbb9d1d82b..d15ec3aba7a1): upstream moved once more and again elsewhere -- updateKanbanCard() now writes a kanban_card_events row on a real status transition and takes an `actor` argument. The only occurrence of moveKanbanCard in that diff is inside a NEW COMMENT (\'audited exactly like one made through moveKanbanCard\'), not at the conflict point. Resolution unchanged; blob bumped.",
+    " Re-measured 2026-09-02 (MikroB landing-block, QA stale-blob catch 9a9dc8394559..59fbb9d1d82b): upstream moved again, but entirely elsewhere in the file (EMAILKAPU901 PR2 -- content_hash/consumed_at columns and plumbing on the approvals table, a one-shot-consumption anchor for its email-approval gate). Zero overlap with moveKanbanCard(); resolution at the actual conflict point is unchanged. Re-measured AGAIN 2026-09-02 (Cybersec, card 9dc0fba8 landing-block, 59fbb9d1d82b..d15ec3aba7a1): upstream moved once more and again elsewhere -- updateKanbanCard() now writes a kanban_card_events row on a real status transition and takes an `actor` argument. The only occurrence of moveKanbanCard in that diff is inside a NEW COMMENT (\'audited exactly like one made through moveKanbanCard\'), not at the conflict point. Resolution unchanged; blob bumped. Re-measured a THIRD time 2026-09-02 (fron-ted, landing 5dd4a211, d15ec3aba7a1..61dc38447a22): upstream added touchAncestorChain() (parent updated_at bubbling from createKanbanCard/updateKanbanCard, cycle/depth guarded) -- additive, elsewhere in the file, no line of moveKanbanCard() touched. Resolution unchanged; blob bumped.",
   // Card 2e634e5c. Both sides independently fixed the SAME ghost-session bug (agent DELETE leaving
   // an orphaned tmux session), but the fork's fix is strictly more correct: it AWAITS
   // stopAgentProcess(), tracks the result, and logs on failure; upstream's is a floating (un-awaited)
@@ -612,7 +612,7 @@ const ACKNOWLEDGED_CONFLICTS = {
   'scripts/lib/send-telegram.sh': 'adopt upstream wholesale (round 2 adds telegram_api_call, the method-agnostic sibling send_telegram_message now calls)',
   'scripts/disk-space-guard.sh': 'adopt upstream wholesale -- honest-send-via-lib replaces an unchecked inline curl, no fork-specific logic in this file',
   'scripts/unit-fail-notify.sh': 'adopt upstream wholesale -- honest-send-via-lib replaces an unchecked inline curl (best-effort exit-0 contract unchanged), no fork-specific logic in this file',
-  'scripts/limit-monitor.sh': "keep the fork's session-limit-pattern.sh sourcing (canonical regex, card 115c21e7) + its own extra-signal regex, graft upstream's honest-send-via-lib + stamp-dedupe-hash-only-on-confirmed-success onto the alert block. Round 2 (MD5SUMHIANY826, QA fbb36b41 round-8 stale-blob catch): upstream replaced the bare `md5sum | awk` dedupe hash (empty string on macOS, silently swallowing every alert) with the shared scripts/lib/content-hash.sh dedupe_check() -- fail-open on no hashing tool, no stamp written on an empty hash. Grafted onto the same alert block, fork logic unchanged.",
+  'scripts/limit-monitor.sh': "keep the fork's session-limit-pattern.sh sourcing (canonical regex, card 115c21e7) + its own extra-signal regex, graft upstream's honest-send-via-lib + stamp-dedupe-hash-only-on-confirmed-success onto the alert block. Round 2 (MD5SUMHIANY826, QA fbb36b41 round-8 stale-blob catch): upstream replaced the bare `md5sum | awk` dedupe hash (empty string on macOS, silently swallowing every alert) with the shared scripts/lib/content-hash.sh dedupe_check() -- fail-open on no hashing tool, no stamp written on an empty hash. Grafted onto the same alert block, fork logic unchanged. Round 3 (2026-09-02, fron-ted, landing 5dd4a211, 61c0d229af89..8a34f0936860): upstream added a MEASURED quota path (scripts/lib/quota-check.py over .claude-rate-limits.json, warn at 90%, stale-skip) ahead of the text scan, a send_alert() wrapper over scripts/lib/send-telegram.sh, and a fleet-wide pane scan. Resolution principle unchanged -- fork logic stays; graft ONLY the honest-send wrapper (already the recorded rule). The measured-quota path is deliberately NOT grafted: the fork already alerts from its own quota monitor (store/quota-check.sh + quota-bridge), a second measured alerter would double-notify Peti. If MikroB wants the upstream measured path instead, that is a separate decision, not this ack.",
   'scripts/lib/content-hash.sh': 'adopt upstream wholesale -- brand-new shared hashing helper (MD5SUMHIANY826), no fork-specific logic to preserve',
   'src/__tests__/content-hash.test.ts': "adopt upstream wholesale -- upstream's own unit test for the new content-hash.sh, no fork-specific logic to preserve",
   'scripts/host-restart-watchdog.sh': "keep the fork's prior-shutdown cause classifier wholesale (classify_shutdown_from_log/prev_boot_log/HOST_RESTART_WATCHDOG_LIB test hook, card RELIA-A, upstream never had it), graft upstream's HOSTWD_PROC_STAT test hook + honest-send-via-lib + stamp-btime-baseline-only-on-confirmed-delivery",
@@ -709,14 +709,14 @@ const ACKNOWLEDGED_UPSTREAM_BLOBS: Readonly<Record<keyof typeof ACKNOWLEDGED_CON
   'src/kanban-dispatch.ts': '7fffc38f78b99573fb88fd797ac67b3593ffb872',
   'src/__tests__/kanban-dispatch-rearm.test.ts': 'd9a186a0af48c44c14299c284dbe0caf45d8feaa',
   'src/auto-restart.ts': 'a1f2d75ed063a78eb5be23acb2c4138ca14fff19',
-  'src/model-fallback.ts': 'd1ed3c18ba86badd1f72cf6fb28d1f3193974012',
-  'src/__tests__/model-fallback.test.ts': '38b6e76e9f5184a9ade636a057b79c4e522f1e3b',
+  'src/model-fallback.ts': '93ea8f17a6c9608003f047c1c9b5f8defe0f1da8',
+  'src/__tests__/model-fallback.test.ts': '09bc3bf772d195be0980f4bec929eed4ecfadc67',
   'src/web/update-checker.ts': '24e46f990c7b0a5c8fa065d12ba1ee592b547691',
   'src/web/context-restart-gate-runner.ts': '3ba2520de47c80732da9e89cfd5023cd1c02d442',
   'src/web.ts': '42406c87b5bbc3e45cfc827025cdcd3dabe6d366',
   'src/web/keychain.ts': '1e1730ee0d8f6b1d4b51c5c254f3fab56acfa376',
   'src/web/agent-scaffold.ts': '2a72fb5c7f388a6be9077a1a3d8821231bcf8a88',
-  'src/db.ts': 'd15ec3aba7a10903f9094360888b8e0f0e8018d7',
+  'src/db.ts': '61dc38447a22b629ca46033f35dc5544cbda9810',
   'src/web/routes/agents.ts': '7711d18a7752828a113f9389a2c3943e6b74ab0e',
   'src/web/routes/kanban.ts': '89423d29b8af3e949cb520eefc8f5a0d03ff380c',
   'scripts/hooks/egress-gate.mjs': '229076d5812e7d50a188ca07b43a87fb6239b233',
@@ -750,7 +750,7 @@ const ACKNOWLEDGED_UPSTREAM_BLOBS: Readonly<Record<keyof typeof ACKNOWLEDGED_CON
   'scripts/lib/send-telegram.sh': '293aecf24507b6d56bda99e5a4ff937e1491ab97',
   'scripts/disk-space-guard.sh': 'd3f693c01d607952a8165cc4d8106024008f22e4',
   'scripts/unit-fail-notify.sh': 'ada00f95a7b3665feac1305bb5287698b81839de',
-  'scripts/limit-monitor.sh': '61c0d229af89a02ec949651888a5aee13b863ab2',
+  'scripts/limit-monitor.sh': '8a34f09368608f221ee4d32f6cb5cfd5070ec45b',
   'scripts/lib/content-hash.sh': 'a2fc1103d635bd7602229447cb299f4540cd3d22',
   'src/__tests__/content-hash.test.ts': '57cbbd6ffa36d800c3c9b9e8649acba17b960949',
   'scripts/host-restart-watchdog.sh': '07948350e336ec02d58d952df016ab6b07d7d052',
