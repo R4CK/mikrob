@@ -4483,3 +4483,47 @@ A `install-macos.sh` NEM hordozza ezt a mintát (megnéztem), tehát ott nincs m
 
 **Ki döntött:** MikroB (msg 21206), Cybersec mérése alapján. **Hivatkozás:** kártya 9dc0fba8;
 `ACKNOWLEDGED_UPSTREAM_BLOBS['install-linux.sh']` 7d3b2862 -> 21f10d99.
+
+## 2026-09-02 -- 9d7a247a -- A `kanban_relations` séma három döntése: nincs FK, a `blocks` triggerrel tiltott, a rollback script és nem down-fájl
+
+**Kontextus.** A Fázis (`fe3eff9f`, Peti kérése) egy tartós, típusos reláció-réteget kér a kártyák
+fölé: melyik kártya melyik fájlt érintette, melyik döntéshez tartozik, melyik shán volt gate-elve.
+Ez a kártya csak a sémát szállítja; a kinyerés (`6cd61430`), a végpont (`69396b63`) és a
+dashboard-réteg külön kártyák.
+
+**1. Nincs `REFERENCES` egyik oszlopon sem.** A tábla polimorf: a `to_id` lehet fájl-útvonal vagy
+commit-sha, ami nem hivatkozhat `kanban_cards(id)`-ra. Egy csak néha érvényes idegen kulcs nem
+idegen kulcs. Következmény, kimondva: a lógó azonosító lehetséges, tehát az olvasó nem kezelheti
+"nincs"-ként (ugyanaz a testtartás, amit a `kanban_dependencies` kommentje már felvesz). Cserébe a
+`deleteKanbanCard` a saját tranzakciójában takarítja a kártya-oldali éleket MINDKÉT irányban --
+nem FK-kényszer miatt (nincs), hanem hogy a lekérdező végpont ne szolgáljon ki törölt kártyára
+mutató élt. A takarítás TÍPUS-kvalifikált (`from_type = 'card'`), különben egy azonos szövegű
+fájl-útvonalat is elvinne; a kártya-ID-k rövid hexek, ez valós ütközés-alak.
+
+_Elvetve:_ FK a `from_id`-n, `to_id` nélkül. Aszimmetrikus, félrevezető, és a takarítást akkor sem
+spórolná meg.
+
+**2. A `blocks` reláció-típust TRIGGER tiltja, nem CHECK.** A blokkolás már a `kanban_dependencies`
+táblában él, amit a kártyazárás-őr MINDEN záráskor olvas; egy ide írt `blocks` él láthatatlan lenne
+neki (blokkolónak látszik, nem blokkol). Az első séma-verzió ezt `CHECK (relation_type <> 'blocks')`
+-szal oldotta meg, és a teszt megbukott rajta: **az `INSERT OR IGNORE` NÉMÁN átugorja a CHECK-et
+sértő sort** (mérve külön sqlite-on: exit 0, nulla sor), viszont egy trigger `RAISE(ABORT)`-ja
+átmegy az `OR IGNORE`-on (sqlite hiba 19). Mivel épp az `INSERT OR IGNORE` az a forma, amitől a
+backfill újrafuttatható, a CHECK pont a fő írási úton lett volna néma. A trigger insert- ÉS
+update-oldalon is áll, különben egy engedett típus utólag átnevezhető lenne. Ugyanaz a mechanizmus
+és ugyanaz az indok, mint az epoch-időbélyeg őröknél (`a06314ea`): az ügynökök a sqlite3 CLI-vel
+és pythonnal közvetlenül írnak a DB-be, ahol a TypeScript-oldali fegyelem nem ér el.
+
+_Megtartva CHECK helyett deklaratívan:_ a `NOT NULL` és a `PRIMARY KEY`, mert azoknál az `OR IGNORE`
+viselkedése (sor kihagyása) pont az, amit a hívó akar, és a visszaadott `changes` számból látja is.
+
+**3. A "rollback script" itt egy futtatható DROP-út, nem down-migráció.** A marveenben nincs
+számozott migrációs keretrendszer: az egész séma az `src/db.ts` `initDatabase()` idempotens DDL-
+blokkja, ami minden szolgáltatás-induláskor lefut. Nincs tehát hova down-fájlt írni. A 11.
+kódminőségi elv így teljesül: `store/kanban-relations-rollback.sh` (alapértelmezésben dry-run,
+`--yes` a valódi DROP) eldobja a táblát, az indexet és a triggereket, az `initDatabase()` pedig
+üresen visszaadja. Ez FUTTATVA van a tesztben, nem feltételezve. Kimondva, mert nem mindegy: ez egy
+rossz backfillt von vissza, nem adatvesztést -- a tábla üresen jön vissza.
+
+**Ki döntött:** backend (plan-grilling verdikt a kártyán, komment 18023). **Hivatkozás:** kártya
+`9d7a247a`, Fázis `fe3eff9f`.
