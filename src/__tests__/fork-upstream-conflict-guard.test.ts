@@ -670,7 +670,7 @@ const ACKNOWLEDGED_CONFLICTS = {
   // longer exists on this side, so there is nothing to graft. Resolution: keep the fork version
   // wholesale.
   'install-linux.sh':
-    "keep the fork version wholesale -- upstream's OLLAMA_URL precedence/probe/embedding-pull rewrite (c23fde9a) targets the silent auto-install step Peti's 2026-08-13 directive (EPIC ebc7b4dd) intentionally removed; nothing to graft, the step is gone on this side",
+    "GRAFT, not wholesale (updated 2026-09-02, card 9dc0fba8, MikroB approval): the Ollama half is unchanged -- upstream's OLLAMA_URL precedence/probe/embedding-pull rewrite still targets the silent auto-install step Peti's 2026-08-13 directive (EPIC ebc7b4dd) removed, so there is still nothing to graft THERE. But upstream then changed a DIFFERENT part of the same file, and that part applies here: the Telegram-pairing liveness check now asks three ways (user unit / system unit / channels.pid + kill -0) instead of `systemctl --user is-active` alone, because the installer's own no-systemd branch starts the bridge with nohup and the old check then called it 'not started', skipped pairing and left ALLOWED_CHAT_ID=0. Upstream's own comment names our platform: \"WSL is a documented supported platform and has no systemd user session by default, so this is not an exotic shape.\" This fork runs on WSL and has that same nohup fallback, so the fix is adopted (_bridge_is_up + the more precise failure message) while the fork's Ollama removal stays",
   // Card 9dc0fba8, same decision: this is a modify/delete conflict, not content -- the fork DELETED
   // this test file entirely (it asserted behavior of the removed silent-install step), upstream
   // MODIFIED it. Resurrecting a deleted test for a feature this fork intentionally does not have
@@ -765,7 +765,7 @@ const ACKNOWLEDGED_UPSTREAM_BLOBS: Readonly<Record<keyof typeof ACKNOWLEDGED_CON
   'scripts/channels.sh': 'a550d6852ebc9fb2f17b53c6e857ff5a4f0c6e67',
   'update.sh': 'abca56b71701073b5ce0c604037fb47766739193',
   'scripts/install-prod-tree-guard-hook.sh': '9647c9658a5e6352ae0bae57842590a1c2d6e30c',
-  'install-linux.sh': '7d3b28627498961356de361caca4915743e0323e',
+  'install-linux.sh': '21f10d99336757c0a1416b6e20297b1d3cda42cd',
   'src/__tests__/installer-ollama-nonfatal.test.ts': '7467d0dc6674099a5af6b65d4388d18ff1f99f78',
 }
 

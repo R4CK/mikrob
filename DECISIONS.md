@@ -4462,3 +4462,24 @@ különbség a szigorítás.)
 
 **Ki döntött:** Cybered (a lelet és a fix iránya, komment 17646), Cybersec (a B-eset szigorítása).
 **Hivatkozás:** kártya 9dc0fba8.
+
+## 2026-09-02 -- install-linux.sh: GRAFT, nem "keep wholesale" (kártya 9dc0fba8, MikroB jóváhagyás)
+
+**Mi változott a döntésen:** a korábbi bejegyzés szerint az `install-linux.sh`-nál a fork verzióját
+tartjuk meg EGÉSZBEN, mert upstream csak az Ollama-blokkot írta át, ami ebben a forkban nem létezik.
+Ez a fele változatlanul áll. De upstream azóta a fájl EGY MÁSIK részét is módosította, és az ide
+tartozik: a Telegram-párosítás liveness-ellenőrzése.
+
+**A mérés:** a fork installere a systemd nélküli ágon `nohup`-pal indítja a bridge-et és `channels.pid`-et
+ír (install-linux.sh, a fenti indítás-blokk), a párosítás viszont csak `systemctl --user is-active`-et
+kérdezett. Vagyis a saját maga által elindított bridge-et "nem indult el"-nek nevezte, kihagyta a
+párosítást és `ALLOWED_CHAT_ID=0`-val hagyta ott az installt. Upstream saját kommentje szó szerint
+a mi platformunkat nevezi meg: "WSL is a documented supported platform and has no systemd user session
+by default, so this is not an exotic shape." Ez a flotta épp WSL-en fut és épp ezt a bridge-et használja.
+
+**A döntés:** átvesszük az upstream `_bridge_is_up()` helperjét (user unit / system unit /
+`channels.pid` + `kill -0`) és a pontosabb hibaüzenetet; a fork Ollama-eltávolítása változatlan.
+A `install-macos.sh` NEM hordozza ezt a mintát (megnéztem), tehát ott nincs mit graftolni.
+
+**Ki döntött:** MikroB (msg 21206), Cybersec mérése alapján. **Hivatkozás:** kártya 9dc0fba8;
+`ACKNOWLEDGED_UPSTREAM_BLOBS['install-linux.sh']` 7d3b2862 -> 21f10d99.

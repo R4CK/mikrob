@@ -2098,11 +2098,39 @@ if [ "$CHANNEL_PROVIDER" = "telegram" ] && [ -n "$BOT_TOKEN" ]; then
 
   ACCESS_FILE="$CHANNEL_DIR/access.json"
 
+  # Fut-e egyaltalan a Telegram bridge?
+  #
+  # GRAFT upstream-bol (kartya 9dc0fba8, MikroB jovahagyasa). A puszta
+  # `systemctl --user is-active` egy SZUKEBB kerdesre valaszol, mint amire itt
+  # szukseg van -- "letezik-e es fut-e systemd USER unit" --, es a ket valasz
+  # pont azokon a hostokon ter el, amiket a fenti inditas mar kezel: ott a
+  # `pidof systemd` / `systemctl --user` bukasa NEM hiba, az installer
+  # kozvetlen nohup-ra esik vissza es ki is irja, hogy fut. Ezutan viszont ez
+  # az ellenorzes "nem indult el"-nek nevezte azt a bridge-et, amit epp o
+  # inditott el, kihagyta a parositast, es ALLOWED_CHAT_ID=0-val hagyta ott az
+  # installt. Upstream sajat indoklasa szo szerint minket nevez meg:
+  #   "WSL is a documented supported platform and has no systemd user session
+  #    by default, so this is not an exotic shape."
+  # Ez a flotta EPP WSL-en fut es EPP ezt a bridge-et hasznalja, tehat a
+  # javitas itt nem elmeleti.
+  #
+  # Ugyanaz a harom kerdes, amit a start.sh/stop.sh mar megkulonboztet:
+  # user unit, system unit, kozvetlen inditas.
+  _bridge_is_up() {
+    systemctl --user is-active --quiet "${CHAN_UNIT}" 2>/dev/null && return 0
+    systemctl is-active --quiet "${CHAN_UNIT}" 2>/dev/null && return 0
+    # A pidfile, amit a start.sh a systemd nelkuli agan ir. A `kill -0` csak
+    # letezest vizsgal, jelzest nem kuld.
+    local _pid
+    _pid="$(cat "$INSTALL_DIR/store/channels.pid" 2>/dev/null)" || return 1
+    [ -n "$_pid" ] && kill -0 "$_pid" 2>/dev/null
+  }
+
   # Megvarjuk amig a channels service tenyleg valaszol (max 15 mp)
   echo -e "  Varakozas a Telegram bridge elindulasara..."
   BRIDGE_OK=false
   for i in $(seq 1 15); do
-    if systemctl --user is-active --quiet "${CHAN_UNIT}" 2>/dev/null; then
+    if _bridge_is_up; then
       BRIDGE_OK=true
       break
     fi
@@ -2110,9 +2138,10 @@ if [ "$CHANNEL_PROVIDER" = "telegram" ] && [ -n "$BOT_TOKEN" ]; then
   done
 
   if [ "$BRIDGE_OK" = "false" ]; then
-    warn "A ${CHAN_UNIT} service nem indult el. Parositas kihagyva."
-    echo -e "  ${DIM}Ellenorizd: journalctl --user -u ${CHAN_UNIT} -n 30${NC}"
-    echo -e "  ${DIM}Kesobb: systemctl --user start ${CHAN_UNIT}, majd irj a botodnak${NC}"
+    warn "A Telegram bridge nem indult el. Parositas kihagyva."
+    echo -e "  ${DIM}systemd-vel:  journalctl --user -u ${CHAN_UNIT} -n 30${NC}"
+    echo -e "  ${DIM}anelkul:      tail -n 30 $INSTALL_DIR/store/channels.log${NC}"
+    echo -e "  ${DIM}Kesobb: ./scripts/start.sh, majd irj a botodnak${NC}"
   else
     ok "Telegram bridge fut"
     echo ""
