@@ -659,6 +659,22 @@ const ACKNOWLEDGED_CONFLICTS = {
   // stderr-on-non-2xx logging on top (same NOTIFYVAKSWEEP826 pattern as channels.sh).
   'scripts/install-prod-tree-guard-hook.sh':
     'keep the fork\'s -H @"$hdr_file" 0600-temp-file security pattern (upstream\'s replacement would have leaked the token via curl argv), graft upstream\'s GUARD_HTTP status-capture + non-2xx stderr logging (NOTIFYVAKSWEEP826) on top',
+  // Card 9dc0fba8, Cybersec measured + MikroB decided 2026-09-02: upstream rewrote its silent
+  // Ollama-install step (OLLAMA_URL precedence, probe, embedding-pull, PR merged as c23fde9a). The
+  // fork does NOT have that step -- Peti's directive (2026-08-13, EPIC ebc7b4dd, see the header of
+  // store/first-run-llm.sh) intentionally removed the silent pre-install: the runtime is now
+  // offered-never-silent, the embedding model is a separate automatic dependency, and the coding
+  // model comes from an explicit user-picked catalogue. Upstream's rewrite improves a step that no
+  // longer exists on this side, so there is nothing to graft. Resolution: keep the fork version
+  // wholesale.
+  'install-linux.sh':
+    "keep the fork version wholesale -- upstream's OLLAMA_URL precedence/probe/embedding-pull rewrite (c23fde9a) targets the silent auto-install step Peti's 2026-08-13 directive (EPIC ebc7b4dd) intentionally removed; nothing to graft, the step is gone on this side",
+  // Card 9dc0fba8, same decision: this is a modify/delete conflict, not content -- the fork DELETED
+  // this test file entirely (it asserted behavior of the removed silent-install step), upstream
+  // MODIFIED it. Resurrecting a deleted test for a feature this fork intentionally does not have
+  // would be wrong regardless of what upstream's edit says. Resolution: keep the deletion.
+  'src/__tests__/installer-ollama-nonfatal.test.ts':
+    'keep the deletion -- this test covers the silent Ollama pre-install step Peti\'s 2026-08-13 directive (EPIC ebc7b4dd) removed from the fork; upstream modified rather than deleted it because upstream never removed that step, but the fork has no code left for this test to exercise',
 } as const
 
 // THE UPSTREAM CONTENT EACH RULE ABOVE WAS DECIDED AGAINST (card a1d613e3, Cybersec msg 19105).
@@ -747,6 +763,8 @@ const ACKNOWLEDGED_UPSTREAM_BLOBS: Readonly<Record<keyof typeof ACKNOWLEDGED_CON
   'scripts/channels.sh': 'a550d6852ebc9fb2f17b53c6e857ff5a4f0c6e67',
   'update.sh': 'de0cad0164f4473d1cd1bd65dd019ae9465e4fe3',
   'scripts/install-prod-tree-guard-hook.sh': '9647c9658a5e6352ae0bae57842590a1c2d6e30c',
+  'install-linux.sh': '7d3b28627498961356de361caca4915743e0323e',
+  'src/__tests__/installer-ollama-nonfatal.test.ts': '7467d0dc6674099a5af6b65d4388d18ff1f99f78',
 }
 
 /** A conflict whose written rule was decided against DIFFERENT upstream content than what is
