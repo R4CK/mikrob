@@ -7,6 +7,15 @@ import { getEffectiveSettingValue } from './settings-store.js'
 import { logger } from './logger.js'
 import { TOOL_TIMEOUTS } from './tool-timeouts.js'
 import { AGENT_MESSAGES_DDL, AGENT_MESSAGES_ALTER_COLUMNS } from './schema/agent-messages-ddl.js'
+import {
+  MARKER_SOURCE,
+  cardEdges,
+  commentEdges,
+  dedupeEdges,
+  edgeKey,
+  type RelationEdge,
+  type RelationSourceCard,
+} from './kanban-relations.js'
 
 let db: Database.Database
 // The path the CURRENT handle was opened on (null for ':memory:'). Kept so
@@ -2297,6 +2306,8 @@ export function createKanbanCard(card: {
     card.assignee ?? null, card.priority ?? 'normal',
     card.project ?? null, card.parent_id ?? null, card.due_date ?? null, sortOrder, now, now
   )
+  // Card 6cd61430: a new card can already state its pair and its parent.
+  noteRelations(cardEdges({ id: card.id, description: card.description, parent_id: card.parent_id }))
 }
 
 /**
@@ -2447,6 +2458,10 @@ export function updateKanbanCard(
     ).run(id, card.status, f.status, opts?.actor ?? null, now, forcedFlag)
   }
   if (changed) recordKanbanFieldChanges(id, card, f, opts?.actor, now)
+  // Card 6cd61430: an edit can ADD a Pair-* line or a parent. It can also REMOVE one, and this
+  // insert-only path cannot see that -- reconcileKanbanRelations() is what deletes the stale edge,
+  // which is why the sweep is a reconcile and not a backfill.
+  if (changed) noteRelations(cardEdges({ id, description: f.description, parent_id: f.parent_id }))
   return changed
 }
 
@@ -2748,6 +2763,138 @@ export function deleteKanbanCard(id: string, actor?: string): boolean {
   })(id, actor, Math.floor(Date.now() / 1000)) as boolean
 }
 
+// --- Relation extraction (card 6cd61430) ----------------------------------------------------
+//
+// The write side of kanban_relations for everything derived from the fleet's existing markers.
+// The rules themselves live in kanban-relations.ts and are pure; this file only decides WHEN they
+// run and what happens when they fail.
+
+/** Write extracted edges. INSERT OR IGNORE, so re-running is a no-op rather than a duplicate --
+ *  the guarantee sits in the table's 5-part PRIMARY KEY (card 9d7a247a), not in a caller's care.
+ *  Returns how many rows were actually new. */
+function writeRelationEdges(edges: readonly RelationEdge[], now: number): number {
+  if (edges.length === 0) return 0
+  const stmt = db.prepare(
+    `INSERT OR IGNORE INTO kanban_relations
+       (from_type, from_id, to_type, to_id, relation_type, source, created_at)
+     VALUES (?, ?, ?, ?, ?, ?, ?)`,
+  )
+  let inserted = 0
+  for (const e of edges) {
+    inserted += stmt.run(e.from_type, e.from_id, e.to_type, e.to_id, e.relation_type, MARKER_SOURCE, now)
+      .changes
+  }
+  return inserted
+}
+
+/**
+ * The live half of "folyamatos beszuras": run the extractor after a card or comment is written.
+ *
+ * ISOLATED FROM ITS CALLER ON PURPOSE, and this is the one judgement call in the file worth
+ * arguing. kanban_relations carries a trigger that ABORTS on relation_type 'blocks' (card
+ * 9d7a247a) -- a RAISE(ABORT) raised inside addKanbanComment's write would take the COMMENT down
+ * with it. The extractor never emits 'blocks', so this should never fire; the isolation is for the
+ * class, not the instance. The asymmetry decides it: kanban_relations is a DERIVED index that
+ * reconcileKanbanRelations() recomputes from scratch, so a dropped edge heals on the next sweep,
+ * while a refused REVIEW comment does not heal at all and the fleet's whole gate flow runs on
+ * those comments. Logged at warn, never swallowed silently.
+ */
+function noteRelations(edges: readonly RelationEdge[]): void {
+  try {
+    writeRelationEdges(dedupeEdges(edges), Math.floor(Date.now() / 1000))
+  } catch (err) {
+    logger.warn({ err }, 'kanban_relations: live extraction failed (the reconcile sweep will heal it)')
+  }
+}
+
+export interface ReconcileRelationsReport {
+  readonly scannedCards: number
+  readonly scannedComments: number
+  /** Distinct edges the corpus states right now. */
+  readonly edges: number
+  /** Edges the corpus states that the table does not hold yet. */
+  readonly missing: number
+  /** `source='marker-v1'` rows the corpus no longer states. */
+  readonly stale: number
+  /** Whether the two counts above were actually written. False on a dry run.
+   *
+   *  The counts are reported EITHER WAY, deliberately: a dry run whose report reads 0/0 because
+   *  nothing was written tells the operator nothing about what --yes would do, which is the only
+   *  question a dry run exists to answer. */
+  readonly applied: boolean
+}
+
+/**
+ * Full recompute of every `source='marker-v1'` edge: insert what the corpus states and is missing,
+ * DELETE what the table holds and the corpus no longer states.
+ *
+ * A RECONCILE RATHER THAN A BACKFILL, for two failures an insert-only pass cannot reach, neither
+ * of them hypothetical:
+ *   - ORDER. Rule 8a has the backend card name its `Pair-FE:` partner, and the two cards are
+ *     opened together -- but nothing guarantees the partner exists when the first one is written.
+ *     A one-shot live hook that only fires on write would miss that edge permanently.
+ *   - EDITS. Correct a mistyped `Pair-FE:`, or re-parent a card, and the insert-only pass adds the
+ *     new edge and leaves the old one next to it. `parent_id` is materialised here precisely
+ *     because this sweep makes that safe: the derived copy cannot drift from the column for longer
+ *     than one sweep.
+ *
+ * Only `source='marker-v1'` rows are considered on the delete side, so a hand-inserted edge under
+ * any other source is never touched by this.
+ *
+ * `apply: false` computes and reports without writing -- the default for the CLI, because a tool
+ * that deletes rows on a bare invocation is a foot-gun in a fleet where agents run scripts out of
+ * card text.
+ */
+export function reconcileKanbanRelations(opts?: { apply?: boolean }): ReconcileRelationsReport {
+  const apply = opts?.apply === true
+  const cards = db
+    .prepare('SELECT id, description, parent_id FROM kanban_cards')
+    .all() as RelationSourceCard[]
+  const comments = db
+    .prepare('SELECT card_id, content FROM kanban_comments')
+    .all() as { card_id: string; content: string }[]
+
+  const wanted: RelationEdge[] = []
+  for (const card of cards) wanted.push(...cardEdges(card))
+  for (const c of comments) wanted.push(...commentEdges(c.card_id, c.content))
+  const deduped = dedupeEdges(wanted)
+  const wantedKeys = new Set(deduped.map(edgeKey))
+
+  const existing = db
+    .prepare(
+      `SELECT from_type, from_id, to_type, to_id, relation_type
+         FROM kanban_relations WHERE source = ?`,
+    )
+    .all(MARKER_SOURCE) as RelationEdge[]
+  const existingKeys = new Set(existing.map(edgeKey))
+  const missing = deduped.filter((e) => !existingKeys.has(edgeKey(e)))
+  const stale = existing.filter((e) => !wantedKeys.has(edgeKey(e)))
+
+  if (apply && (missing.length > 0 || stale.length > 0)) {
+    const now = Math.floor(Date.now() / 1000)
+    db.transaction(() => {
+      writeRelationEdges(missing, now)
+      const del = db.prepare(
+        `DELETE FROM kanban_relations
+          WHERE source = ? AND from_type = ? AND from_id = ? AND to_type = ? AND to_id = ?
+            AND relation_type = ?`,
+      )
+      for (const e of stale) {
+        del.run(MARKER_SOURCE, e.from_type, e.from_id, e.to_type, e.to_id, e.relation_type)
+      }
+    })()
+  }
+
+  return {
+    scannedCards: cards.length,
+    scannedComments: comments.length,
+    edges: deduped.length,
+    missing: missing.length,
+    stale: stale.length,
+    applied: apply,
+  }
+}
+
 // --- Card dependencies (card 2bb82943) ------------------------------------------------------
 
 /** Why an edge was refused. `ok` carries no reason. */
@@ -3024,6 +3171,10 @@ export function addKanbanComment(cardId: string, author: string, content: string
     'INSERT INTO kanban_comments (card_id, author, content, created_at) VALUES (?, ?, ?, ?)'
   ).run(cardId, author, content, now)
   db.prepare('UPDATE kanban_cards SET updated_at = ? WHERE id = ?').run(now, cardId)
+  // Card 6cd61430: the REVIEW comment carrying `Gate-SHA:` is the fleet's most common marker, and
+  // it arrives here. noteRelations cannot fail this write -- see its own comment for why that
+  // isolation is deliberate rather than defensive.
+  noteRelations(commentEdges(cardId, content))
   return { id: Number(info.lastInsertRowid), card_id: cardId, author, content, created_at: now }
 }
 
