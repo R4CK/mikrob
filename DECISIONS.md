@@ -4370,3 +4370,31 @@ kockázat-elfogadás maga NEM új itt (a SUBGATEPOZ822 váltással már megtört
 állítása lett pontosítva, hogy a valóságot tükrözze.
 **Hivatkozás:** kártya c7401c5f, komment #16876 (Cybersec NO-GO), content-commit: lásd Gate-SHA a
 kártya REVIEW-kommentjében.
+
+
+## 2026-09-02 -- A megosztott klón node_modules-át védő kontroll a symlink-átlépő ÍRÁS, nem a telepítő-ige (kártya 9dc0fba8)
+
+**Döntés:** a 2026-09-02-i 38 perces kiesés (QA gate-worktree átírta a megosztott CleanCore-klón
+`@cleancore/i18n` workspace-linkjét) javítása NEM a "ne fusson installer worktree-ből" szabály
+szigorítása, hanem két új réteg: (1) egy PreToolUse guard, ami azt kérdezi, hogy a leírt útvonal
+ott van-e, ahová a kernel ténylegesen ír; (2) egy rögzített gate-worktree script, ami a worktree-nek
+VALÓDI `node_modules` könyvtárat ad, elemenkénti symlinkekkel.
+
+**Miért nem a szabály szigorítása:** a tényleges parancs `rm <egy fájl>` + `ln -s` volt, egyik sem
+telepítő; a meglévő `npm-protect-guard.py` helyesen nem szólalt meg. A `chmod` a symlinken Linuxon
+no-op (követi a linket), a megosztott node_modules read-only-ra állítása pedig a fő klón jogos
+installjait is blokkolná. A megkülönböztető tulajdonság se nem az ige, se nem a könyvtár: az, hogy
+az útvonal átlép-e egy symlinket.
+
+**Fail-closed kiegészítés:** ha az útvonal feloldatlan `$VAR`-t tartalmaz, a guard blokkol, mert
+akkor nem ellenőrizhető, hová ír. Ez nem elméleti: az incidenst okozó blokk 32 perccel később
+pontosan ebben az alakban futott újra.
+
+**Amit szándékosan NEM tettünk meg:** a `store/agent-worktree.sh` (minden ügynök élő worktree-je)
+ugyanezt a könyvtár-symlink alakot használja, és a saját fejléce már 2026-08-14 óta dokumentálja
+ezt a hibaosztályt. Az átállítása minden ügynök élő fáját érintené, ezért MikroB/Peti döntése,
+külön kártyán -- a guard addig is fedi.
+
+**Ki döntött:** Cybersec (kártya 9dc0fba8, MikroB dispatch). **Hivatkozás:** kártya 9dc0fba8;
+guard `scripts/hooks/symlinked-node-modules-guard.py` (19 selftest-eset valódi fixture-rel, az
+incidens reprodukálásával), script `store/cc-gate-worktree.sh`, skill `gate-worktree-pattern`.
