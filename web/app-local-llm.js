@@ -345,6 +345,53 @@ async function llmToggleCategory(task, enabled) {
   }
 }
 
+// --- Per-model enable/disable switches (card 5dd4a211, pair-BE 5d151091) --------------------
+// Contract: GET /api/local-llm/models -> { models: [{ name, sizeBytes, enabled, active?,
+// benchmark|null, disabledAt? }] }; POST /api/local-llm/models/<name>/enable|disable ->
+// { ok, model }. Built contract-first: while the backend is not landed the GET answers 404 and
+// the switches are simply not rendered (the rest of the models list is unaffected).
+let _llmModelFlags = null // Map<name, { enabled, disabledAt }> | null when the API is absent
+
+async function llmLoadModelFlags() {
+  try {
+    const res = await fetch('/api/local-llm/models')
+    if (res.status === 404) { _llmModelFlags = null; return null }
+    if (!res.ok) throw new Error('HTTP ' + res.status)
+    const d = await res.json()
+    const list = Array.isArray(d.models) ? d.models : []
+    const map = new Map()
+    for (const m of list) {
+      if (m && typeof m.name === 'string') map.set(m.name, { enabled: m.enabled !== false, disabledAt: m.disabledAt ?? null })
+    }
+    _llmModelFlags = map
+    return map
+  } catch {
+    // Rule 12: a failed flag read must not hide the models list; the switches are omitted and
+    // the operator sees the toast, not a silent "everything enabled" guess.
+    showToast(t('localLlm.models.toggle.load_error'), 'error')
+    _llmModelFlags = null
+    return null
+  }
+}
+
+function llmModelDisabled(name) {
+  const f = _llmModelFlags && _llmModelFlags.get(name)
+  return !!(f && f.enabled === false)
+}
+
+async function llmToggleModel(name, enable, btn) {
+  if (btn) { btn.disabled = true; btn.setAttribute('aria-busy', 'true') }
+  try {
+    const res = await fetch('/api/local-llm/models/' + encodeURIComponent(name) + (enable ? '/enable' : '/disable'), { method: 'POST' })
+    if (!res.ok) throw new Error('HTTP ' + res.status)
+    showToast(t(enable ? 'localLlm.models.toggle.saved_on' : 'localLlm.models.toggle.saved_off', { model: name }), 'success')
+    await llmRefreshStatus()
+  } catch {
+    showToast(t('localLlm.models.toggle.error'), 'error')
+    if (btn) { btn.disabled = false; btn.removeAttribute('aria-busy') }
+  }
+}
+
 async function llmRefreshStatus() {
   const grid = document.getElementById('llmStatusGrid')
   const modelsEl = document.getElementById('llmModels')
@@ -353,6 +400,7 @@ async function llmRefreshStatus() {
     const [statusRes, catRes] = await Promise.all([
       fetch('/api/local-llm/status'),
       fetch('/api/local-llm/catalog').catch(() => null),
+      llmLoadModelFlags(),
     ])
     const d = await statusRes.json()
     // Build trusted-by-name lookup from catalog (card 3d923ef5: trusted = publisher claim from
@@ -375,15 +423,20 @@ async function llmRefreshStatus() {
     ))
     // Code/offload model tile (qwen2.5-coder or whatever is active)
     const codeRunning = (Array.isArray(d.running) ? d.running : []).find(r => r.name === d.active_model || r.model === d.active_model)
+    // Card 5dd4a211: a routed model that the operator switched OFF is the case Peti must see at a
+    // glance -- the tile turns warn and says so, instead of a green "in VRAM" that lies about use.
+    const activeDisabled = !!d.active_model && llmModelDisabled(d.active_model)
     tiles.push(llmTile(
       t('localLlm.status.code_model'),
       d.active_model ? escapeHtml(d.active_model) : '—',
-      d.active_model ? (d.active_present === false ? 'warn' : (d.active_present === null ? 'muted' : 'ok')) : 'muted',
-      d.active_model && d.active_present === false
-        ? t('localLlm.status.not_pulled')
-        : (d.active_model && d.active_present === null
-          ? t('localLlm.status.unknown_ollama_down')
-          : (codeRunning ? t('localLlm.status.in_vram') : (d.active_model ? t('localLlm.status.not_in_vram') : ''))),
+      activeDisabled ? 'warn' : (d.active_model ? (d.active_present === false ? 'warn' : (d.active_present === null ? 'muted' : 'ok')) : 'muted'),
+      activeDisabled
+        ? t('localLlm.status.active_disabled')
+        : (d.active_model && d.active_present === false
+          ? t('localLlm.status.not_pulled')
+          : (d.active_model && d.active_present === null
+            ? t('localLlm.status.unknown_ollama_down')
+            : (codeRunning ? t('localLlm.status.in_vram') : (d.active_model ? t('localLlm.status.not_in_vram') : '')))),
       t('localLlm.status.code_model_role'),
     ))
     // Embedding model tile (nomic-embed-text — memory/RAG only, never gets code tasks)
@@ -448,9 +501,18 @@ async function llmRefreshStatus() {
         const benchHintHtml = notBenched
           ? `<span class="llm-bench-hint">${t('localLlm.models.bench.unmeasured_hint')}</span>`
           : ''
-        return `<div class="llm-model-row${active ? ' active' : ''}${notBenched && !active ? ' not-benchmarked' : ''}">
+        // Card 5dd4a211: operator switch per model. Rendered only when the flags API answered
+        // (contract-first: absent backend -> no switch, never a fabricated "enabled").
+        const hasFlags = _llmModelFlags !== null
+        const disabled = hasFlags && llmModelDisabled(m.name)
+        const disabledBadge = disabled ? `<span class="llm-badge-disabled">${t('localLlm.models.disabled_badge')}</span>` : ''
+        const toggleHtml = hasFlags
+          ? `<button type="button" class="llm-model-toggle ${disabled ? 'off' : 'on'}" data-model="${escapeHtml(m.name)}" data-enable="${disabled ? '1' : '0'}" aria-pressed="${disabled ? 'false' : 'true'}" title="${escapeHtml(t(disabled ? 'localLlm.models.toggle.enable_tip' : 'localLlm.models.toggle.disable_tip'))}">${t(disabled ? 'localLlm.models.toggle.enable' : 'localLlm.models.toggle.disable')}</button>`
+          : ''
+        return `<div class="llm-model-row${active ? ' active' : ''}${notBenched && !active ? ' not-benchmarked' : ''}${disabled ? ' disabled' : ''}" data-model-row="${escapeHtml(m.name)}">
           <div class="llm-model-info">
             <span class="llm-model-name">${escapeHtml(m.name)}</span>
+            ${disabledBadge}
             <span class="llm-rec-meta">
               <span class="llm-model-size">${fmtBytes(m.size)}</span>
               ${tpsHtml}
@@ -459,13 +521,16 @@ async function llmRefreshStatus() {
             ${benchHintHtml}
           </div>
           <div class="llm-model-actions">
+            ${toggleHtml}
             ${active
               ? `<span class="llm-badge-active">${t('localLlm.models.active')}</span>`
-              : `<button class="btn-secondary btn-compact llm-use-btn" data-model="${escapeHtml(m.name)}">${t('localLlm.models.use')}</button>`}
+              : `<button class="btn-secondary btn-compact llm-use-btn" data-model="${escapeHtml(m.name)}"${disabled ? ` disabled title="${escapeHtml(t('localLlm.models.toggle.use_blocked'))}"` : ''}>${t('localLlm.models.use')}</button>`}
             <button class="btn-secondary btn-compact llm-update-btn" data-model="${escapeHtml(m.name)}">${t('localLlm.models.update')}</button>
           </div>
         </div>`
       }).join(''), 'models', 'llm-model-row')
+      modelsEl.querySelectorAll('.llm-model-toggle').forEach(b =>
+        b.addEventListener('click', () => llmToggleModel(b.dataset.model, b.dataset.enable === '1', b)))
       // Card 29b68fba (Cybersec LOW/INFO, a05c39c9 gate): this used to POST straight to
       // /api/local-llm/model and just toast a raw 403 -- but that endpoint is the SAME
       // trust-gated resource the Recommendations "Use" button hits (card fa8959cd/eb843c46's

@@ -8406,6 +8406,53 @@ body {
   border-color: var(--warning, #e2a000);
   border-style: dashed;
 }
+/* Card 5dd4a211: operator-disabled model -- greyed, dotted, and named as such */
+.llm-model-row.disabled {
+  opacity: 0.6;
+  border-style: dotted;
+}
+.llm-badge-disabled {
+  display: inline-block;
+  margin-left: 6px;
+  padding: 1px 8px;
+  border-radius: 999px;
+  font-size: 11px;
+  font-weight: 600;
+  color: var(--text-muted);
+  background: color-mix(in srgb, var(--text-muted) 14%, var(--bg-card));
+}
+.llm-model-toggle {
+  min-height: 44px;
+  min-width: 44px;
+  padding: 0 12px;
+  border: 1px solid var(--border);
+  border-radius: 999px;
+  background: var(--bg-card);
+  color: var(--text);
+  font: inherit;
+  font-size: 12px;
+  font-weight: 600;
+  cursor: pointer;
+}
+.llm-model-toggle.on {
+  border-color: var(--success);
+  color: var(--success);
+  background: color-mix(in srgb, var(--success) 12%, var(--bg-card));
+}
+.llm-model-toggle.off {
+  border-color: var(--danger);
+  color: var(--danger);
+}
+.llm-model-toggle:hover { filter: brightness(1.1); }
+.llm-model-toggle:disabled { opacity: 0.55; cursor: wait; }
+.llm-model-toggle:focus-visible {
+  outline: 2px solid var(--accent, #6366f1);
+  outline-offset: 2px;
+}
+@media (max-width: 480px) {
+  .llm-model-row .llm-model-actions { width: 100%; }
+  .llm-model-toggle { flex: 1 1 auto; }
+}
 .llm-bench-hint {
   font-size: 11px;
   color: var(--warning, #e2a000);
