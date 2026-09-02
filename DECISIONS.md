@@ -4424,3 +4424,41 @@ a három blokkoló eset PIROS, a két KONTROLL (valódi node_modules-ba írás, 
 ZÖLD -- tehát az új esetek tényleg a javítást rögzítik, és nem "mostantól minden blokkol".
 
 **Ki döntött:** Cybersec (a javítás), QA (a lelet, komment 17557). **Hivatkozás:** kártya 9dc0fba8.
+
+## 2026-09-02 (2. javítás) -- A symlink-guard a FELOLDOTT útvonalból dönt, nem a leírt sztringből (kártya 9dc0fba8, Cybered NO-GO)
+
+**Mi volt hibás:** a guard `path_tokens()`-e csak azt a tokent adta tovább, amiben LITERÁLISAN ott
+volt a `node_modules/<valami>`. A kernel viszont nem a leírt szót olvassa, hanem a szót a cwd-hez
+ILLESZTVE -- tehát ha a `node_modules` komponens a cwd-be csúszott, a guard el sem indult. Cybered
+nyolc alakot mért, mindegyik TÉNYLEGESEN átírta a megosztott klónt, guard rc=0:
+`cd $WT/apps/web/node_modules && rm @cleancore/i18n`, egy szinttel mélyebbről ugyanez, cd nélkül
+(a session cwd-je már ott volt), záró perjel, dupla perjel, `cd`-lánc (csak az elsőt néztem),
+`pushd` (nem volt a mintában), és egy mély írás egy csomagon BELÜL.
+
+**A legrosszabb a mély írás (B6b):** nem lógó linket csinál, hanem CSENDESEN átírja a megosztott
+klón tartalmát. Nincs hibaüzenet, és teszt sem pirosodik -- a vitest alias miatt a tesztek a saját
+worktree forrását olvassák, tehát a megosztott fa mérgezése pont a teszteken nem látszik.
+
+**A javítás (Cybered prototípusának irányát követve, három függvény):**
+- `path_tokens()`: nem a betűkre szűr; minden nem-kapcsoló tokent visszaad.
+- `escapes()`: a FELOLDÁS után dönt, és csak akkor szólal meg, ha a literális szülő és a realpath
+  eltér ÉS valamelyikük egy `node_modules` komponens alatt van. A puszta `<fa>/<pkg>/node_modules`
+  (magának a linknek a létrehozása/törlése) továbbra is legitim setup.
+- `effective_cwd()`: MINDEN `cd`-t és `pushd`-ot sorra vesz, nem csak az elsőt.
+- Plusz a hatch (`MARVEEN_ALLOW_SYMLINK_NM`) csak SOR ELEJI env-hozzárendelésként számít -- eddig a
+  puszta említése (pl. egy grep, majd `;` után az írás) kikapcsolta a guardot.
+
+**A nyitva hagyott döntés, amit Cybered rám bízott -- SZIGORÍTOK.** A B-eset eddig csak
+csomag-BEJEGYZÉSRE tüzelt, a mély utakat kihagyta. Mostantól bármely `node_modules` alatti,
+nem-ellenőrizhető útvonalra tüzel: egy csendes shared-tree tamper rosszabb, mint egy üzemzavar,
+tehát a "nem tudom ellenőrizni" jelentése "ne írj". A megfelelő selftest-eset megfordítva, kimondott
+indoklással.
+
+**Bizonyíték:** 36/36 zöld a javított guardon (a nyolc alak + a hatch-szigorítás + öt kontroll).
+A LANDOLT (javítás előtti) guarddal futtatva ugyanez a selftest 27/36: kilenc eset PIROS, mind az öt
+kontroll ZÖLD. Tehát az új esetek a javítást rögzítik, nem "mostantól minden blokkol". (Egy
+pontosítás: a B6b LITERÁLIS alakját a landolt guard már fogta -- a `$VAR`-os alakját nem; ez a
+különbség a szigorítás.)
+
+**Ki döntött:** Cybered (a lelet és a fix iránya, komment 17646), Cybersec (a B-eset szigorítása).
+**Hivatkozás:** kártya 9dc0fba8.
