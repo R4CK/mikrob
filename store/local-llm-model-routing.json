@@ -1,0 +1,9 @@
+{
+  "_comment": "Card baf1b1b0 (Peti kerese, Telegram msg 6113/6116, 2026-09-02). Per-task local-model override: a store/local-llm-model fajlban levo default MINDIG ervenyben marad minden --task-ra, amit itt nem sorolunk fel. Csak azok a sablonok kerulnek ide, amik a sajat template-jukben KIFEJEZETTEN magyar kimenetet kernek (grep -l -i 'hungarian\\|magyar' store/local-llm-skills/*.txt), mert a meresek szerint (kartya 4dee0c4a) ez az a sablonosztaly, ahol a Qwen3.8-desztillacio mert elonye (tenylegesen magyarra valt, helyesen szamol, nincs gondolatjel) tobbet er a nyers sebessegnel. Minden mas sablon a gyors default modellen marad.",
+  "overrides": {
+    "board-reconcile": "hf.co/empero-ai/Qwen3.8-9B-Distill-GGUF:Q4_K_M",
+    "morning-brief": "hf.co/empero-ai/Qwen3.8-9B-Distill-GGUF:Q4_K_M",
+    "daily-log": "hf.co/empero-ai/Qwen3.8-9B-Distill-GGUF:Q4_K_M",
+    "tg-draft": "hf.co/empero-ai/Qwen3.8-9B-Distill-GGUF:Q4_K_M"
+  }
+}

@@ -59,6 +59,10 @@ status() {
   say "embedding model:        $( [ "$(have_model "$EMBED_MODEL")" = yes ] && echo present || echo MISSING ) ($EMBED_MODEL)"
   if [ -s "$MODEL_FILE" ]; then say "coding model in use:    $(tr -d '[:space:]' < "$MODEL_FILE")"
   else say "coding model in use:    none configured"; fi
+  # card baf1b1b0: a second, task-routed model, checked directly against Ollama (never in
+  # $MODEL_FILE -- it is a routing override, not the default) so --status reports reality even if
+  # store/local-llm-model-routing.json were ever missing or stale.
+  say "HU specialist model:    $( [ "$(have_model "hf.co/empero-ai/Qwen3.8-9B-Distill-GGUF:Q4_K_M")" = yes ] && echo present || echo "not installed" )"
 }
 
 [ "${1:-}" = "--status" ] && { status; exit 0; }
@@ -325,14 +329,16 @@ fi
 
 # --- 3. coding model: OFFERED, from the VRAM-filtered catalogue -----------------------------------
 say ""
+PRIMARY_ALREADY_SET=0
 if [ -s "$MODEL_FILE" ]; then
+  PRIMARY_ALREADY_SET=1
   say "A coding model is already configured: $(tr -d '[:space:]' < "$MODEL_FILE")"
   # Point at the verb that actually works. Saying "re-run this script" would be a dead instruction:
-  # with a model configured we exit right here and never reach the catalogue.
+  # with a model configured, the catalogue below is never reached.
   say "To change it:  $OLLAMA_BIN pull <tag>   then   store/first-run-llm.sh --use <tag>"
   say "To see what else fits this machine:  python3 store/llm-catalog.py"
-  exit 0
 fi
+if [ "$PRIMARY_ALREADY_SET" = "0" ]; then
 
 say "Choosing a coding model. Reading your GPU..."
 GPU_JSON="$(bash "$HERE/gpu-detect.sh" 2>/dev/null)"
@@ -466,4 +472,88 @@ say "    $OLLAMA_BIN pull hf.co/<publisher>/<repo>:<quant>"
 say "  Then make it the fleet default -- a SEPARATE, deliberate step:"
 say "    store/first-run-llm.sh --use <model-tag>"
 log "catalog: offered $COUNT models, none installed"
+fi
+# ^ closes: if [ "$PRIMARY_ALREADY_SET" = "0" ]
+
+# --- 4. Hungarian-output specialist model: a SECOND, task-routed model, OFFERED separately ---------
+# (Peti kerese, Telegram 2026-09-02, kartya baf1b1b0). Reaches here REGARDLESS of whether step 3 ran
+# the catalogue or short-circuited on an already-configured primary model -- unlike the primary
+# model, this one is not "the" default, it is a per-task ROUTING override (already wired into
+# store/local-llm-model-routing.json for the 4 templates that require actual Hungarian output), so
+# whether the primary is already set has no bearing on whether this is worth offering.
+SPECIALIST_MODEL="hf.co/empero-ai/Qwen3.8-9B-Distill-GGUF:Q4_K_M"
+SPECIALIST_PUBLISHER="empero-ai"
+say ""
+say "Second, OPTIONAL local model: a Hungarian-output specialist"
+say "-------------------------------------------------------------"
+say "  Two roles, two models -- you can install one or both:"
+say "    1) PRIMARY (this script's section 3, or already configured above): fast, general coding"
+say "       and mechanical tasks -- the default for everything unless overridden below."
+say "    2) SPECIALIST ($SPECIALIST_MODEL): slower, but measurably follows a Hungarian-output"
+say "       instruction where the primary model does not (card 4dee0c4a). Routed automatically,"
+say "       only for the ~4 templates that explicitly require Hungarian text -- kanban board"
+say "       summaries, the daily log, and Telegram drafts. Every other task keeps using the"
+say "       primary model; this is an addition, not a replacement."
+if [ "$(have_model "$SPECIALIST_MODEL")" = "yes" ]; then
+  say "  Already installed."
+  log "specialist model: already present ($SPECIALIST_MODEL)"
+elif ask "  Install the specialist model too (~5.8 GB download)?"; then
+  # UNTRUSTED-PUBLISHER CONFIRMATION, same philosophy as the --use gate above (card eb843c46): this
+  # publisher is not on store/llm-catalog-trust.json's reviewed list, and adding it there is a
+  # security decision for Cybersec, not something this script grants itself. There is also no
+  # catalogue entry for this specific model (it is not from the VRAM-filtered catalogue, it is a
+  # named reference this fleet measured and chose), so no digest-parts comparison is possible either
+  # -- both facts are stated plainly rather than glossed over.
+  IS_TRUSTED="no"
+  if [ -f "$HERE/llm-catalog-trust.json" ]; then
+    IS_TRUSTED="$(python3 -c '
+import json, sys
+try:
+    pubs = {str(p).strip().lower() for p in json.load(open(sys.argv[1])).get("trustedPublishers", [])}
+except Exception:
+    pubs = set()
+print("yes" if sys.argv[2].strip().lower() in pubs else "no")
+' "$HERE/llm-catalog-trust.json" "$SPECIALIST_PUBLISHER" 2>/dev/null || echo no)"
+  fi
+  PROCEED=1
+  if [ "$IS_TRUSTED" != "yes" ]; then
+    say ""
+    say "  UNTRUSTED PUBLISHER -- '$SPECIALIST_PUBLISHER' is not on the reviewed-publisher list"
+    say "    (store/llm-catalog-trust.json -> trustedPublishers). No catalogue digest exists for"
+    say "    this model either, so its provenance rests on this fleet's own measurement (card"
+    say "    4dee0c4a: license Apache 2.0, tested output, no digest verification performed)."
+    say "    This model would answer real drafting tasks for the fleet, so the call is yours."
+    if [ "$ASSUME_YES" = "1" ]; then
+      say "  --yes was passed, which only covers runtime + embedding -- an untrusted-publisher model"
+      say "  is never installed non-interactively. Skipping; re-run interactively to install it."
+      log "specialist model: skipped (untrusted publisher, --yes cannot confirm it)"
+      PROCEED=0
+    else
+      read -r -p "  Type the model tag back to confirm ($SPECIALIST_MODEL): " CONFIRM_TAG </dev/tty || CONFIRM_TAG=""
+      if [ "$CONFIRM_TAG" != "$SPECIALIST_MODEL" ]; then
+        say "  Not installed (typed value did not match)."
+        log "specialist model: declined (untrusted publisher, confirmation mismatch)"
+        PROCEED=0
+      else
+        log "specialist model: untrusted publisher ACCEPTED (publisher $SPECIALIST_PUBLISHER, explicit typed confirmation)"
+      fi
+    fi
+  fi
+  if [ "$PROCEED" = "1" ]; then
+    log "specialist model pull: starting $SPECIALIST_MODEL"
+    if "$OLLAMA_BIN" pull "$SPECIALIST_MODEL" >/dev/null 2>&1; then
+      log "specialist model pull: ok"
+      say "  done. Routed automatically for board-reconcile, morning-brief, daily-log and tg-draft"
+      say "  (store/local-llm-model-routing.json) -- no further setup needed."
+    else
+      log "specialist model pull: FAILED"
+      say "  Could not fetch it. Retry any time: $OLLAMA_BIN pull $SPECIALIST_MODEL"
+    fi
+  fi
+else
+  say "  Skipped. The routing config already points those 4 templates at this model, so they will"
+  say "  fail with a clear \"model not pulled\" error until it is installed -- install it any time:"
+  say "    $OLLAMA_BIN pull $SPECIALIST_MODEL"
+  log "specialist model: declined"
+fi
 exit 0
