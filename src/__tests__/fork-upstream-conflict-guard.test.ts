@@ -206,20 +206,31 @@ const ACKNOWLEDGED_CONFLICTS = {
   // upstream adds nothing the fork lacks here.
   'src/web/routes/agents.ts':
     'keep the fork version wholesale -- it already awaits stopAgentProcess() and tracks/logs the result; upstream is an un-awaited (racy) reimplementation of the same fix',
-  // Card 2e634e5c, three hunks, all resolving the same direction. (1) The dispatch-instruction-text
-  // generator: upstream's variant tells the agent to move its OWN card straight to `"status":"done"`
-  // -- that is upstream's own (simpler) workflow, and directly contradicts this fork's core rule
-  // that a builder never self-closes to done (root CLAUDE.md rule 4); the fork's `"status":"waiting"`
-  // text is the one actually in force. (2)+(3) fireKanbanDispatch's `actor` param and the /move
-  // handler: the fork ALREADY implements upstream's stated goal (actor-based self-advance dispatch-
-  // echo suppression, see the unconflicted comment right after hunk 2) using `actor?: string`
-  // (matches the rest of the file's `typeof actor === 'string'` handling), and additionally carries
-  // TWO fork-only gates upstream's /move handler lacks entirely: newDevStopWouldBlock() (weekly-quota
-  // stop) and landedGuardVerdict() (blocks reopening a waiting-for-gate card without force=true) --
-  // taking upstream's handler wholesale would silently drop both. Measured 2026-08-16. Resolution:
-  // keep the fork version wholesale in all three hunks.
+  // Card 2e634e5c, re-measured 2026-09-02 (card 684dda18): the dispatch-instruction-text generator
+  // hunk still resolves the same direction as before (upstream's variant tells the agent to move its
+  // OWN card straight to `"status":"done"`, which contradicts fork rule 4 that a builder never
+  // self-closes to done -- keep the fork's `"status":"waiting"` text). The OTHER two hunks are now a
+  // genuine two-way merge, not a wholesale fork pick: upstream refactored
+  // resolveKanbanDispatchTarget() into resolveKanbanDispatch(), which surfaces a 'session-down'
+  // reason instead of silently dropping the dispatch when the assignee's tmux session is not
+  // running, paired with a new reportUndeliveredDispatch() that leaves a card comment + pings
+  // MAIN_AGENT_ID. That is a real reliability fix (a down session used to hold a card in_progress
+  // forever with zero signal -- exactly the class of stuck-card this fork's own gate-reconciler
+  // heartbeat has to work around by polling) and does not touch the fork-only self-advance dispatch-
+  // echo suppression (isSelfAdvanceMove/isGenuineSelfAdvanceSwitch, which returns before ever
+  // reaching resolveKanbanDispatch) or the newDevStopWouldBlock/landedGuardVerdict gates in the
+  // /move handler (neither lives inside this function, unaffected). Resolution: adopt
+  // resolveKanbanDispatch + reportUndeliveredDispatch verbatim, keep the fork's self-advance block
+  // and /clear-before-switch call wholesale, catch-block also reports undelivered on dispatch error.
+  // src/kanban-dispatch.ts auto-merges with zero conflict (upstream's insertion and the fork's
+  // isSelfAdvanceMove/isGenuineSelfAdvanceSwitch appendix sit in non-overlapping regions) so it is
+  // not itself a guarded/acknowledged file. Also ported upstream's src/db.ts companion fix (see that
+  // entry above) and its two new contract tests (kanban-dispatch-rearm.test.ts,
+  // kanban-dispatch-silent-noop.test.ts), adapting one rearm-test case to pass `force: true` on the
+  // reopen -- reopening a `waiting` card without a verdict is blocked by the fork-only
+  // reviewedCardBlocksInProgress() gate (card c4f2de32), which upstream has no equivalent of.
   'src/web/routes/kanban.ts':
-    "keep the fork version wholesale in all three hunks -- upstream's dispatch text tells the agent to self-close to done (violates fork rule 4), and its /move handler lacks the fork-only newDevStopWouldBlock + landedGuardVerdict gates",
+    "dispatch-text hunk: keep the fork's waiting-text wholesale (fork rule 4, no self-close-to-done). Other two hunks: adopt upstream's resolveKanbanDispatch + reportUndeliveredDispatch (session-down is no longer a silent no-op), keep the fork's self-advance suppression + /clear-before-switch wholesale alongside it -- non-overlapping concerns, not a fork-vs-upstream pick",
   // Card 2e634e5c, fourth file. A genuine two-way merge, not a wholesale pick either direction:
   // the fork owns Firecrawl namespace default-deny + FIRECRAWL_SCRAPE_ALLOWED_KEYS param-allowlist
   // (card 91c4a369); upstream owns the tier-based egressDecision({blocked,tier}) shape, agentType
@@ -671,7 +682,7 @@ const ACKNOWLEDGED_UPSTREAM_BLOBS: Readonly<Record<keyof typeof ACKNOWLEDGED_CON
   'src/web/agent-scaffold.ts': '2a72fb5c7f388a6be9077a1a3d8821231bcf8a88',
   'src/db.ts': '9a9dc8394559ed0a3e08f1d3a2846778270c419f',
   'src/web/routes/agents.ts': '7711d18a7752828a113f9389a2c3943e6b74ab0e',
-  'src/web/routes/kanban.ts': '5620fe397bdadad1a619408367a783d0470a13fe',
+  'src/web/routes/kanban.ts': '00ec734f520d42d1a88d835fb13dffca93c6d839',
   'scripts/hooks/egress-gate.mjs': '229076d5812e7d50a188ca07b43a87fb6239b233',
   'src/__tests__/egress-gate.test.ts': 'c24ca54ffc49de70d602790fa1d6b80e3aea4156',
   'src/web/context-guard-runner.ts': 'b17ba4f630dbba93cfd5520e3c37a854a5c80c81',
