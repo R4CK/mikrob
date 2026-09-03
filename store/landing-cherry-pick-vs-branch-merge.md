@@ -6,14 +6,17 @@ gated or not.
 
 ## What the lander already checks, and what it does not
 
+As of card dfff9b37 both landers check this themselves -- see "Built" below. The rest of this file
+explains what they check, and the cherry-pick recipe they cannot perform for you.
+
 `cleancore-land.sh` refuses if the gated SHA is not the branch **tip**
 (it dies with `branch ... tip is ... but the GATED sha is ... -- the extra commits are ungated`).
 That closes
 one half of the problem: a branch that moved on after its verdicts cannot be landed at its
 tip.
 
-It does **not** look **downwards**. Nothing checks what sits between `origin/main` and the
-gated SHA. So the case it cannot see is the one that actually happens: the gated SHA *is*
+It did **not** look **downwards** until card dfff9b37. Nothing checked what sat between
+`origin/main` and the gated SHA. So the case it could not see was the one that actually happens: the gated SHA *is*
 the tip, and underneath it sit other cards' commits that were never gated — because the
 agent finished a card, self-advanced, and kept building on the same branch.
 
@@ -71,13 +74,37 @@ B was reviewed at — the commit the verdict names stops existing. Say this at v
 not at landing time. The usual resolution is to cherry-pick B and land it independently,
 since B's content rarely depends on A's.
 
-## Possible next step (not built)
+## Built (card dfff9b37) -- the landers now ask this for you
 
-The downward check is mechanical, so it does not have to stay a habit: the lander could list
-`origin/main..$SHA` and refuse, or at least warn, when it holds commits whose messages name a
-different card than the one being landed. That would make this file redundant, which is the
-right outcome for any rule that currently depends on somebody remembering it. Not done here
-because the lander is live, shared, and changing it deserves its own card and gate.
+The downward check is no longer a habit this file has to remind anyone of. Both landers read the
+range themselves and print what rides along, grouped by the card each commit names:
+
+```bash
+cleancore-land.sh <cardId> <sha>          # REFUSES when a commit names a DIFFERENT card
+marveen-land.sh <agent>                   # REPORTS the same listing
+marveen-land.sh <agent> --card <id>       # ...and refuses, once you claim a card
+```
+
+Escape hatch, kill switch, and the reasoning behind every judgement call live in
+`store/landing-downward-check.sh` (shared verbatim by both landers so they cannot drift):
+
+- `--allow-stacked <cardId>[,<cardId>...]` -- take the foreign cards ON PURPOSE. It requires you to
+  NAME them; there is deliberately no blanket `--force`.
+- `LANDING_DOWNWARD_CHECK=off` -- turn the check off entirely, without a commit.
+- A commit naming **no** card is not judged, only listed. Measured: 5 of CleanCore's last 40
+  non-merge commits and the majority of marveen's carry no card reference, so fail-closed there
+  would have fired on the guard's own blind spot rather than on the defect.
+- The unit of judgement is the **commit**, not the card id: `1a61865f` is one commit reading
+  `(card e90505bb / 96ff46d4)` and belongs to both.
+
+**What this file is still for.** The check tells you a foreign card is in the range; it does not
+cherry-pick for you. The recipe below -- the fresh branch, and the three-step re-gating that carries
+the verdict across the new sha -- is the part that stays manual. So is the consequence at the end,
+which the landers cannot see at all.
+
+Replayed over the last 14 landings in each repo before it was trusted: it would have refused 5 of
+14 on CleanCore (one of them `13a73c82`, carrying `d284193f` -- literally one of the three cases
+below) and 1 of 14 on marveen. The rest passed untouched.
 
 ## Why this file exists
 

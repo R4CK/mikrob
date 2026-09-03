@@ -6,9 +6,16 @@
 # store/agent-worktree-marveen.sh, and never the shared main checkout), verify the MERGE RESULT, push
 # only on green.
 #
-# Before landing, check what else rides along: `git log --oneline origin/develop..<gate-sha>`.
-# If it holds more than this card's own commits, cherry-pick instead of merging the branch --
-# see store/landing-cherry-pick-vs-branch-merge.md.
+# WHAT ELSE RIDES ALONG (card dfff9b37). This used to be a note telling you to run
+# `git log --oneline origin/develop..<gate-sha>` yourself. It is now measured by the script: every
+# landing PRINTS the commits in that range grouped by the card they name, and the ones naming no
+# card at all. It only REFUSES when you name the card you are landing (`--card <id>`) and somebody
+# else's card is in there -- because a marveen landing legitimately carries several cards (measured
+# over 14 landings; MikroB's `--all` sweep does exactly that on purpose), so a blanket refusal here
+# would stop the normal path, not the defect. cleancore-land.sh, which is always called with one
+# card, refuses by default. Shared code, different default; the reasoning is in
+# store/landing-downward-check.sh, the cherry-pick recipe in
+# store/landing-cherry-pick-vs-branch-merge.md.
 #
 # This script's core mechanics were already present, unchanged, in the now-retired
 # store/agent-branch-land.sh and were explicitly confirmed safe by Cybersec's NO-GO review on
@@ -21,7 +28,10 @@
 # checkout on shared ground.
 #
 # Usage:
-#   marveen-land.sh <agent> [--dry-run]   # land one agent's worktree branch
+#   marveen-land.sh <agent> [--dry-run] [--card <id>] [--allow-stacked <id>[,<id>...]]
+#                                         # land one agent's worktree branch. --card turns the
+#                                         # downward report into a refusal; --allow-stacked names
+#                                         # the foreign cards you are taking on purpose.
 #   marveen-land.sh --all [--dry-run]     # land every agent/*/work branch with unmerged work,
 #                                         # sequentially (never concurrent -- shared object store)
 #   marveen-land.sh --selftest
@@ -34,6 +44,7 @@
 #                       override this to a stub.
 #   MARVEEN_LAND_MAX_ATTEMPTS  default 3 -- how many full merge+verify+push attempts before giving
 #                       up on a repeatedly-raced push (card 65657bad).
+#   LANDING_DOWNWARD_CHECK=off  disables the downward range check entirely (card dfff9b37).
 #
 # Exit: 0 landed (or dry-run clean, or nothing to land) | 2 bad usage | 3 refused a precondition
 #       | 4 merge/verify/push failed
@@ -74,6 +85,12 @@ sync_live_install() {
 . "$(dirname "$0")/decisions-append-union.sh"
 # shellcheck source=./bump-fork-version.sh
 . "$(dirname "$0")/bump-fork-version.sh"
+# downward_check (card dfff9b37): what ELSE rides along in origin/develop..<branch>. Shared verbatim
+# with cleancore-land.sh. REPORTS here by default and refuses only under --card <id> -- the reason
+# is measured and written out in landing-downward-check.sh's header (marveen lands whole agent
+# branches, gate-AFTER-landing, and multi-card landings are the normal case, not the anomaly).
+# shellcheck source=./landing-downward-check.sh
+. "$(dirname "$0")/landing-downward-check.sh"
 
 if [ "${1:-}" = "--selftest" ]; then
   fail=0; n=0
@@ -82,6 +99,9 @@ if [ "${1:-}" = "--selftest" ]; then
   t "extracts agent name from a work branch" "$(agent_of 'agent/backend/work')" "backend"
   t "rejects a non-agent branch" "$(agent_of 'develop')" ""
   t "rejects an agent branch with the wrong suffix" "$(agent_of 'agent/backend/scratch')" ""
+  # Downward range check (card dfff9b37) -- the cases live in the shared lib so the two landers
+  # cannot end up testing different things about the same code.
+  downward_selftest_cases
   echo "selftest: $n case(s), $([ $fail -eq 0 ] && echo PASS || echo FAIL)"
   exit $fail
 fi
@@ -115,6 +135,16 @@ land_one() {
   # a non-zero last command in a RETURN trap would poison the return code it is riding on.
   cleanup() { [ -n "${wt:-}" ] && g worktree remove --force "$wt" >/dev/null 2>&1; return 0; }
   trap cleanup RETURN
+
+  # What ELSE rides along (card dfff9b37). Runs BEFORE the merge, so a refusal costs nothing and a
+  # report is on screen at the one moment somebody is watching this landing. Merges dropped -- see
+  # decision 3 in landing-downward-check.sh.
+  local down_log
+  down_log="$(g log --no-merges --format='%h%x09%s' "origin/$DEFAULT_BRANCH..$branch")"
+  downward_check "$down_log" "$LAND_CARD" "$ALLOW_STACKED" "$([ -n "$LAND_CARD" ] && echo 1 || echo 0)" "$agent" || {
+    echo "$agent: REFUSED -- commits belonging to OTHER cards are in $branch. Nothing merged, nothing pushed."
+    return 4
+  }
 
   local msg="merge: $branch into $DEFAULT_BRANCH (marveen-land, base @ $(git -C "$wt" rev-parse --short HEAD))"
   local merge_err
@@ -271,10 +301,28 @@ land_with_retry() {
   done
 }
 
-DRY=0
-case "${2:-}" in --dry-run) DRY=1 ;; esac
+DRY=0; LAND_CARD=""; ALLOW_STACKED=""
+TARGET="${1:-}"; [ $# -gt 0 ] && shift
+while [ $# -gt 0 ]; do
+  case "$1" in
+    --dry-run) DRY=1 ;;
+    # Naming the card turns the downward report into a refusal (card dfff9b37). Without it marveen
+    # only reports: a whole-branch landing legitimately carries several cards, see the shared lib.
+    --card) shift; [ $# -gt 0 ] || die 2 "--card needs a card id"; LAND_CARD="$1" ;;
+    --card=*) LAND_CARD="${1#--card=}" ;;
+    # Not a --force: the operator NAMES the foreign cards they are taking on purpose.
+    --allow-stacked) shift; [ $# -gt 0 ] || die 2 "--allow-stacked needs a card id list"; ALLOW_STACKED="$1" ;;
+    --allow-stacked=*) ALLOW_STACKED="${1#--allow-stacked=}" ;;
+    *) die 2 "unknown option: $1" ;;
+  esac
+  shift
+done
+# --card names ONE card, so it cannot mean anything across a sweep of every agent's branch.
+if [ "$TARGET" = "--all" ] && [ -n "$LAND_CARD" ]; then
+  die 2 "--card cannot be combined with --all -- a sweep lands many agents' branches, not one card"
+fi
 
-case "${1:-}" in
+case "$TARGET" in
   --all)
     overall=0
     while IFS= read -r b; do
@@ -284,9 +332,9 @@ case "${1:-}" in
     done < <(g for-each-ref --format='%(refname:short)' 'refs/heads/agent/*/work')
     exit $overall
     ;;
-  '') die 2 "usage: marveen-land.sh <agent> [--dry-run] | marveen-land.sh --all [--dry-run]" ;;
+  '') die 2 "usage: marveen-land.sh <agent> [--dry-run] [--card <id>] [--allow-stacked <id>[,<id>...]] | marveen-land.sh --all [--dry-run]" ;;
   *)
-    land_with_retry "$1" "$DRY"
+    land_with_retry "$TARGET" "$DRY"
     exit $?
     ;;
 esac
