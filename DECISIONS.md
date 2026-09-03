@@ -4799,3 +4799,35 @@ Visszajátszva a 14-14 utolsó valós landoláson: CleanCore 5 elutasítás (kö
 `d284193f`-et viszi -- pontosan a dokumentált hibaeset), marveen 1. A nagy, szándékos batch-
 landolások (`abdd3853`: 16 idegen commit, 12 kártya) `--allow-stacked`-et igényelnek -- ez a
 tudatos megnevezés ára, nem hiba.
+
+
+## 2026-09-03 -- Kanban-relációk réteg a memória-gráfon: híd, rejtett SHA, kapacitás-korlátok (kártya 3bd18e70, Fron Ted)
+
+**Döntés.** A FELADAT 4/4 a meglévő memória-oldali Canvas-gráfot bővíti egy kapcsolható réteggel,
+nem nyit új oldalt (a kártya előírása). Négy tervezési döntés, amit a kód nem mond ki magától:
+
+1. *A két réteg hídja az emlék szövegében/kulcsszavaiban említett 8 hexes kártya-azonosító.* A
+   `kanban_relations` táblában nincs `memory` csomópont-típus, és a memóriák sem hordoznak
+   kártya-mezőt; a flotta gyakorlata viszont az, hogy a kártya-ID-t a szövegbe írja. Mérés az élő
+   DB-n: 200 emlékből 87 említ 8 hexes tokent (219 különbözőt). A token csak akkor számít
+   kártyának, ha a `from_type=card` élhalmazban szerepel -- egy reláció nélküli kártyára amúgy sem
+   volna mit rajzolni, és így nem kell 219 darab `GET /api/kanban/<id>` kört futtatni az
+   érvényesítéshez.
+2. *SHA és repó csomópont nincs a rétegen.* A kártya→fájl kapcsolat a FELADAT 3 két-ugrásos
+   `relations/files?card=` végpontján át jön, horgony-kártyánként egy kéréssel (6 párhuzamosan).
+   Elvetett alternatíva: a teljes `touches-file` élhalmaz (2181 él, ~300 KB) lehúzása és
+   kliens-oldali join -- a tábla méretével skálázódna, nem a nézettel, és pont azt az N+1-et
+   helyettesítené kliens-oldali szűréssel, amit a backend a végponttal már megoldott.
+3. *Felülről korlátozott kapacitás:* 50 horgony (említés-szám szerint), 110 típusos csomópont
+   (1 ugrás szomszéd: szülő/gyerek/pár/döntés), 12 fájl kártyánként, 120 fájl összesen (a több
+   kártya által megosztott fájl előrébb). A meglévő szimuláció O(n²) taszítást számol; 200 emlék +
+   ~230 reláció-csomópont még interaktív, a korlát nélküli változat nem volna az.
+4. *`decision` csomópont típus-generikusan, üres válasz nélkül.* A backend REVIEW-ja kimondta, hogy
+   döntés-él ma nincs a táblában. A réteg minden nem-`sha` `to_type`-ot csomópontként kezel, a
+   `decision` saját színt/alakot kapott (hatszög), a jelmagyarázat-chipje pedig rejtve marad, amíg
+   a darabszám nulla -- nem gyártunk hamis döntés-csomópontot.
+
+**Lokális LLM.** A két tiszta segédfüggvényt a `local-llm-rag.sh`-nak adtam ki; a router
+`online`-ra sorolta (tévesen „security-decision"), az advisory draft pedig rossz mezőneveket,
+JSON-stringes éleket és fordított rendezést tartalmazott -- eldobva, kézzel megírva. Ez a skill
+saját szabálya szerint helyes kimenet, nem hiba.

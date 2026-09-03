@@ -65,6 +65,8 @@ Mielőtt a Claude Code kontextusablaka tömörítődik, a `PreCompact` hook átn
 
 A dashboard memória-oldalán force-directed (HTML5 Canvas) gráf: zoom/pan, keresés-highlight, kattintásra kibontható panel, a kulcsszó-kapcsolatokat mutatja ágensek közt. A régi, embedding nélküli emlékek automatikusan (és `POST /api/memories/backfill`-lel manuálisan) kapnak vektort.
 
+**Kanban-relációk réteg (kapcsolható, kártya `3bd18e70`).** A gráf bal felső „Kanban-relációk" gombja egy második réteget kapcsol a memória-gráfra a `kanban_relations` táblából (`GET /api/kanban/relations`, `GET /api/kanban/relations/files?card=`): kártya (lekerekített négyzet), fájl (rombusz) és döntés (hatszög) csomópontok, típus szerint színezett, szaggatott élek (`child-of`, `pair-fe`/`pair-be`, `touches-file`). A két réteg hídja az emlék szövegében/kulcsszavaiban említett 8 hexes kártya-azonosító (pontozott `mention` él). A SHA- és repó-csomópontok szándékosan rejtve maradnak, a kártya→fájl kapcsolatot a két-ugrásos végpont oldja fel. Kártya-csomópontra kattintva a panel lekéri a címet/státuszt/felelőst, és egy gombbal a kanban-táblán nyitja meg; fájl-csomópontnál az érintő kártyák listája ugrásként szolgál. A réteg típus-generikus: amint `decision` élek kerülnek a táblába, kód-módosítás nélkül megjelennek. Betöltés/üres/hiba/offline állapot a gomb melletti státusz-sávban, újra-gombbal; a kapcsoló állása viewer-oldalon (localStorage) megmarad.
+
 ### API
 
 ```bash

@@ -123,7 +123,7 @@ const ACKNOWLEDGED_CONFLICTS = {
   // `readAgentClaudeConfigDir` (dead, superseded), adopt both new upstream imports (their usage
   // sites already merged in clean, this was only ever the import line colliding).
   'src/web/context-restart-gate-runner.ts':
-    "three import lines: { listAgentNames, agentDir } from './agent-config.js' (fork's agentDir stays, still used), { resolveAgentConfigDirForRead } from './claude-plans.js' (upstream, replaces the now-dead readAgentClaudeConfigDir -- fixed a stale-transcript bug), { agentSessionName, capturePane, sendPromptToSession } from './agent-process.js' (upstream's sendPromptToSession, used at the wake-delivery call site) -- drop readAgentClaudeConfigDir entirely, zero remaining call sites",
+    "three import lines: { listAgentNames, agentDir } from './agent-config.js' (fork's agentDir stays, still used), { resolveAgentConfigDirForRead } from './claude-plans.js' (upstream, replaces the now-dead readAgentClaudeConfigDir -- fixed a stale-transcript bug), { agentSessionName, capturePane, sendPromptToSession } from './agent-process.js' (upstream's sendPromptToSession, used at the wake-delivery call site) -- drop readAgentClaudeConfigDir entirely, zero remaining call sites Re-read 2026-09-03 (card 3bd18e70, blob 268fc2e6): upstream replaced sendPromptToSession with sendSystemDirective from './system-directive.js' at the wake-delivery call site (GUARDHITELES903); that import line and the call site sit outside the conflict hunk and auto-merge, so the only conflicting hunk is still the agent-config/claude-plans import pair -- resolve as above, drop readAgentClaudeConfigDir.",
   // The SAME one-line import class as the entry above, one file over (measured 2026-08-22 on
   // upstream/develop 317937dc). Both sides appended a binding to the SAME import from
   // './web/agent-scaffold.js': the fork's `ensureNpmProtectGuard`, upstream's
@@ -155,7 +155,7 @@ const ACKNOWLEDGED_CONFLICTS = {
   // UserPromptSubmit, guarded by isUnsafeHookCommand, same shape as the fork's own
   // ensureNpmProtectGuard/ensureBlastRadiusGuard installers) -- additive, no fork-side conflict.
   'src/web.ts':
-    'merge import line (ensureNpmProtectGuard from fork + ensureSkillsPathTrapSection + watchEgressAllowlistForReaderRender + listAllAgentNames + ensureAgentProvenanceHook from upstream, all on one line, keep listAgentNames too), adopt upstream watchEgressAllowlistForReaderRender call (EGRESSRENDER824), the hook-seed loop\'s listAllAgentNames call-site swap (HBGATEWIRE826), and the new ensureAgentProvenanceHook import (its call-site auto-merges cleanly, verified additive/idempotent) -- keep fork\'s "listAllAgentNames" comment casing, no other conflict in the file',
+    'merge import line (ensureNpmProtectGuard from fork + ensureSkillsPathTrapSection + watchEgressAllowlistForReaderRender + listAllAgentNames + ensureAgentProvenanceHook from upstream, all on one line, keep listAgentNames too), adopt upstream watchEgressAllowlistForReaderRender call (EGRESSRENDER824), the hook-seed loop\'s listAllAgentNames call-site swap (HBGATEWIRE826), and the new ensureAgentProvenanceHook import (its call-site auto-merges cleanly, verified additive/idempotent) -- keep fork\'s "listAllAgentNames" comment casing, no other conflict in the file Re-read 2026-09-03 (card 3bd18e70, blob 6ed7224c): upstream added ensureSystemDirectiveAuthSection to the same agent-scaffold import (GUARDHITELES903) -- merge it onto the one import line too; its ensureSystemDirectiveAuthSection(MAIN_AGENT_ID) call, the new tryHandleHeartbeat import and its route-chain call are additive and auto-merge. Same conflict, one more name.',
   // The call-site half of the same upstream change, and the same INDEPENDENT-ADDITIVE class as
   // src/db.ts below rather than a disagreement (measured 2026-08-22). Two hunks, both caused by the
   // two sides adding a DIFFERENT CLAUDE.md section-writer at the same insertion point, each with
@@ -475,7 +475,7 @@ const ACKNOWLEDGED_CONFLICTS = {
   //     zero behavior change today and opt-in infrastructure for later, not a live architecture
   //     switch that needs a decision now.
   'src/web/agent-process.ts':
-    'union all three: (1) ISOLATED_CONFIG_SKIP keeps BOTH \'skills\' (fork) and \'projects\' (upstream) entries; (2) adopt upstream\'s resolveProviderEnv() refactor wholesale (verified byte-identical output for ollama/deepseek/openrouter incl. the b7fa5281 shSingleQuote fix, plus adds minimax); (3) adopt upstream\'s umask 002 + agentTmuxTarget(name)/startTarget cmd-assembly change wholesale (verified no-op for any agent without remote/runAsUser config, per upstream\'s own "byte-identical to the prior direct local tmux call" doc comment) -- the fork\'s *Unlocked/withLifecycleLock split (card 74ba7c78) is UNRELATED to this hunk set and already correctly merged, do not touch it',
+    'union all three: (1) ISOLATED_CONFIG_SKIP keeps BOTH \'skills\' (fork) and \'projects\' (upstream) entries; (2) adopt upstream\'s resolveProviderEnv() refactor wholesale (verified byte-identical output for ollama/deepseek/openrouter incl. the b7fa5281 shSingleQuote fix, plus adds minimax); (3) adopt upstream\'s umask 002 + agentTmuxTarget(name)/startTarget cmd-assembly change wholesale (verified no-op for any agent without remote/runAsUser config, per upstream\'s own "byte-identical to the prior direct local tmux call" doc comment) -- the fork\'s *Unlocked/withLifecycleLock split (card 74ba7c78) is UNRELATED to this hunk set and already correctly merged, do not touch it (4) Re-read 2026-09-03 (card 3bd18e70, blob 4c439228): the agent-scaffold import line now conflicts too -- union the fork ensureLocalFirstSection with upstream ensureSystemDirectiveAuthSection (GUARDHITELES903) on one line; the ensureSystemDirectiveAuthSection(name) call in startAgentProcess auto-merges (additive).',
   // Upstream adds a re-entrancy guard (`tickRunning`) around the sweep, for the exact reason the
   // fork ALSO has: once checkAgent awaits a real restart instead of a blocking execSync('sleep N')
   // (fork card 873c48df), a sweep can still be running when the next interval fires. Measured: the
@@ -712,8 +712,8 @@ const ACKNOWLEDGED_UPSTREAM_BLOBS: Readonly<Record<keyof typeof ACKNOWLEDGED_CON
   'src/model-fallback.ts': '93ea8f17a6c9608003f047c1c9b5f8defe0f1da8',
   'src/__tests__/model-fallback.test.ts': '09bc3bf772d195be0980f4bec929eed4ecfadc67',
   'src/web/update-checker.ts': '24e46f990c7b0a5c8fa065d12ba1ee592b547691',
-  'src/web/context-restart-gate-runner.ts': '3ba2520de47c80732da9e89cfd5023cd1c02d442',
-  'src/web.ts': '42406c87b5bbc3e45cfc827025cdcd3dabe6d366',
+  'src/web/context-restart-gate-runner.ts': '268fc2e659fa8210c2b67c1df64e4006c2e727af',
+  'src/web.ts': '6ed7224c0882fb4007c29739676a62f70648e0c7',
   'src/web/keychain.ts': '1e1730ee0d8f6b1d4b51c5c254f3fab56acfa376',
   'src/web/agent-scaffold.ts': '2a72fb5c7f388a6be9077a1a3d8821231bcf8a88',
   'src/db.ts': '61dc38447a22b629ca46033f35dc5544cbda9810',
@@ -737,7 +737,7 @@ const ACKNOWLEDGED_UPSTREAM_BLOBS: Readonly<Record<keyof typeof ACKNOWLEDGED_CON
   'src/web/heartbeat-agent-scaffold.ts': 'bb4a7bc74200725e8c257f7d835b082ed6f12047',
   'src/web/schedule-runner.ts': '9736ea6737757cc0155671dca3d9d2874b330885',
   'vitest.config.ts': '62d4ac7606cd719d40e07fc0d82c7f777dda0b30',
-  'src/web/agent-process.ts': '3dc78cdf1f08797793b37c7b02e25773c04e5295',
+  'src/web/agent-process.ts': '4c43922809b22bab6113c830dd2bee20bd475ab0',
   'src/web/auto-restart-runner.ts': '044dde0ad94f5a57ff8e611656f288b25fecdaff',
   'src/web/model-fallback-runner.ts': '681fcaefd6588fc2f6f3db880238b8288d1dcd15',
   'src/web/routes/skills.ts': '34c1e440bd5009e79546d686ec9fbc481ba0af7e',

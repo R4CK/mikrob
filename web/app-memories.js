@@ -327,6 +327,460 @@ const GRAPH_TIER_BG = {
   shared: 'rgba(176, 160, 64, 0.06)',
 }
 
+// === Kanban relation layer (card 3bd18e70, phase fe3eff9f) ===
+// A toggleable overlay on the memory graph, fed by the kanban_relations table
+// through the FELADAT 3 contract (GET /api/kanban/relations, /relations/files?card=).
+// Bridge between the two layers: an 8-hex card id mentioned in a memory's
+// content or keywords. sha/repo nodes are hidden on purpose (card -> file is
+// resolved server-side by the 2-hop endpoint). The layer is type-generic: any
+// non-sha node type the API emits (card, decision, ...) renders without code
+// changes; `decision` has its own colour/shape ready for when the edges exist.
+const GRAPH_REL_STORAGE_KEY = 'cc-mem-graph-rel-layer'
+const GRAPH_REL_CAPS = { maxAnchors: 50, maxCards: 110, maxFilesPerCard: 12, maxFiles: 120 }
+const GRAPH_REL_PAGE_LIMIT = 5000
+const GRAPH_REL_FILES_BATCH = 6
+const GRAPH_REL_ID_RE = /\b[0-9a-f]{8}\b/gi
+const GRAPH_REL_COLORS = { card: '#7c5cbf', file: '#2f9e8f', decision: '#c98a1b', other: '#87867f' }
+const GRAPH_REL_EDGE_COLORS = {
+  'child-of': '#7c5cbf',
+  'pair-fe': '#d97757',
+  'pair-be': '#d97757',
+  'touches-file': '#2f9e8f',
+  'mention': '#87867f',
+}
+let graphRelLayerOn = false
+try { graphRelLayerOn = localStorage.getItem(GRAPH_REL_STORAGE_KEY) === '1' } catch {}
+let graphRelLoadSeq = 0
+let graphLastMemories = []
+const graphRelCardMetaCache = new Map()
+
+// Pure: Map<cardId, number of memories mentioning it>, restricted to knownCardIds.
+function graphRelExtractCardRefs(memories, knownCardIds) {
+  const refs = new Map()
+  for (const mem of memories || []) {
+    const text = `${mem.content || ''} ${mem.keywords || ''}`
+    const seen = new Set()
+    for (const m of text.matchAll(GRAPH_REL_ID_RE)) {
+      const id = m[0].toLowerCase()
+      if (seen.has(id) || !knownCardIds.has(id)) continue
+      seen.add(id)
+      refs.set(id, (refs.get(id) || 0) + 1)
+    }
+  }
+  return refs
+}
+
+// Pure: most-mentioned first, id ascending as tiebreak, capped.
+function graphRelPickAnchors(refs, maxAnchors) {
+  return [...refs.entries()]
+    .sort((a, b) => b[1] - a[1] || (a[0] < b[0] ? -1 : a[0] > b[0] ? 1 : 0))
+    .slice(0, maxAnchors)
+    .map(([id, mentions]) => ({ id, mentions }))
+}
+
+// Pure: anchors + their 1-hop typed neighbours + capped files -> { nodes, files, edges }.
+// Node keys are `${type}:${id}`; edges reference those keys.
+function graphRelBuildLayer(anchors, relEdges, filesByCard, caps) {
+  const key = (type, id) => `${type}:${id}`
+  const nodes = new Map()
+  for (const a of anchors) nodes.set(key('card', a.id), { kind: 'card', id: a.id, mentions: a.mentions, anchor: true })
+  const anchorKeys = new Set(nodes.keys())
+  for (const e of relEdges) {
+    const fk = key(e.from_type, e.from_id)
+    const tk = key(e.to_type, e.to_id)
+    const fromAnchor = anchorKeys.has(fk)
+    const toAnchor = anchorKeys.has(tk)
+    if (fromAnchor === toAnchor) continue
+    const otherKey = fromAnchor ? tk : fk
+    if (nodes.has(otherKey) || nodes.size >= caps.maxCards) continue
+    nodes.set(otherKey, {
+      kind: fromAnchor ? e.to_type : e.from_type,
+      id: fromAnchor ? e.to_id : e.from_id,
+      mentions: 0,
+      anchor: false,
+    })
+  }
+  const edges = []
+  const edgeKeys = new Set()
+  const pushEdge = (from, to, type) => {
+    const k = JSON.stringify([from, to, type])
+    if (edgeKeys.has(k)) return
+    edgeKeys.add(k)
+    edges.push({ from, to, type })
+  }
+  for (const e of relEdges) {
+    const fk = key(e.from_type, e.from_id)
+    const tk = key(e.to_type, e.to_id)
+    if (nodes.has(fk) && nodes.has(tk)) pushEdge(fk, tk, e.relation_type)
+  }
+  const files = new Map()
+  for (const a of anchors) {
+    const list = (filesByCard.get(a.id) || []).slice()
+      .sort((x, y) => ((y.shas || []).length - (x.shas || []).length) || (x.path < y.path ? -1 : x.path > y.path ? 1 : 0))
+      .slice(0, caps.maxFilesPerCard)
+    for (const f of list) {
+      if (!files.has(f.id)) files.set(f.id, { id: f.id, repo: f.repo, path: f.path, cardIds: [] })
+      files.get(f.id).cardIds.push(a.id)
+    }
+  }
+  const keptFiles = [...files.values()]
+    .sort((x, y) => (y.cardIds.length - x.cardIds.length) || (x.id < y.id ? -1 : x.id > y.id ? 1 : 0))
+    .slice(0, caps.maxFiles)
+  for (const f of keptFiles) for (const cid of f.cardIds) pushEdge(key('card', cid), key('file', f.id), 'touches-file')
+  return { nodes: [...nodes.values()], files: keptFiles, edges }
+}
+
+// Pages through GET /api/kanban/relations until `total` is reached.
+async function graphRelFetchEdges(query) {
+  const all = []
+  let offset = 0
+  for (;;) {
+    const params = new URLSearchParams(query)
+    params.set('limit', String(GRAPH_REL_PAGE_LIMIT))
+    params.set('offset', String(offset))
+    const res = await fetch(`/api/kanban/relations?${params}`)
+    if (!res.ok) throw new Error(`relations HTTP ${res.status}`)
+    const data = await res.json()
+    const edges = Array.isArray(data.edges) ? data.edges : []
+    all.push(...edges)
+    offset += edges.length
+    if (edges.length === 0 || offset >= (Number(data.total) || 0)) break
+  }
+  return all
+}
+
+// GET /api/kanban/relations/files?card= for each anchor, a few in parallel.
+// One failed card is skipped (logged); all of them failing is an error.
+async function graphRelFetchFiles(cardIds) {
+  const out = new Map()
+  let failures = 0
+  for (let i = 0; i < cardIds.length; i += GRAPH_REL_FILES_BATCH) {
+    const batch = cardIds.slice(i, i + GRAPH_REL_FILES_BATCH)
+    await Promise.all(batch.map(async (id) => {
+      try {
+        const res = await fetch(`/api/kanban/relations/files?card=${encodeURIComponent(id)}`)
+        if (!res.ok) throw new Error(`files HTTP ${res.status}`)
+        const data = await res.json()
+        out.set(id, Array.isArray(data.files) ? data.files : [])
+      } catch (err) {
+        failures++
+        console.error('Relation files load error:', id, err)
+      }
+    }))
+  }
+  if (cardIds.length > 0 && failures === cardIds.length) throw new Error('all relation file lookups failed')
+  return out
+}
+
+async function loadRelationLayer(memories) {
+  const seq = ++graphRelLoadSeq
+  setRelationLayerStatus('loading')
+  try {
+    const raw = await graphRelFetchEdges({ from_type: 'card' })
+    if (seq !== graphRelLoadSeq) return
+    const knownCardIds = new Set()
+    const relEdges = []
+    for (const e of raw) {
+      if (e.from_type === 'card') knownCardIds.add(e.from_id)
+      if (e.to_type === 'card') knownCardIds.add(e.to_id)
+      if (e.to_type !== 'sha') relEdges.push(e)
+    }
+    const refs = graphRelExtractCardRefs(memories, knownCardIds)
+    if (refs.size === 0) {
+      setRelationLayerStatus('empty')
+      return
+    }
+    const anchors = graphRelPickAnchors(refs, GRAPH_REL_CAPS.maxAnchors)
+    const filesByCard = await graphRelFetchFiles(anchors.map(a => a.id))
+    if (seq !== graphRelLoadSeq) return
+    const layer = graphRelBuildLayer(anchors, relEdges, filesByCard, GRAPH_REL_CAPS)
+    const counts = mergeRelationLayerIntoGraph(layer)
+    setRelationLayerStatus('ready', counts)
+    startGraphSimulation()
+  } catch (err) {
+    if (seq !== graphRelLoadSeq) return
+    console.error('Relation layer load error:', err)
+    setRelationLayerStatus(navigator.onLine === false ? 'offline' : 'error')
+  }
+}
+
+// Appends the layer's nodes/edges to graphNodes/graphEdges and draws the
+// memory -> card `mention` bridge edges. Returns per-kind node counts.
+function mergeRelationLayerIntoGraph(layer) {
+  const w = graphCanvas.width / (window.devicePixelRatio || 1)
+  const h = graphCanvas.height / (window.devicePixelRatio || 1)
+  const indexByKey = new Map()
+  const counts = { card: 0, file: 0, decision: 0, other: 0 }
+  const place = () => ({
+    x: w / 2 + (Math.random() - 0.5) * w * 0.6,
+    y: h / 2 + (Math.random() - 0.5) * h * 0.6,
+    vx: 0,
+    vy: 0,
+    connectionCount: 0,
+    tier: null,
+    agent: '',
+    keywords: [],
+    mem: null,
+    searchMatch: true,
+  })
+  const addNode = (k, node) => {
+    indexByKey.set(k, graphNodes.length)
+    graphNodes.push(node)
+  }
+  for (const n of layer.nodes) {
+    const kind = GRAPH_REL_COLORS[n.kind] ? n.kind : 'other'
+    counts[kind]++
+    addNode(`${n.kind}:${n.id}`, {
+      ...place(),
+      id: `${n.kind}:${n.id}`,
+      kind,
+      relType: n.kind,
+      relId: n.id,
+      label: kind === 'card' ? `#${n.id}` : String(n.id).slice(0, 25),
+      radius: n.anchor ? 8 : 6,
+      mentions: n.mentions,
+      anchor: !!n.anchor,
+      title: '',
+    })
+  }
+  for (const f of layer.files) {
+    counts.file++
+    const base = f.path.split('/').pop() || f.path
+    addNode(`file:${f.id}`, {
+      ...place(),
+      id: `file:${f.id}`,
+      kind: 'file',
+      relType: 'file',
+      relId: f.id,
+      repo: f.repo,
+      path: f.path,
+      cardIds: f.cardIds,
+      label: base.length > 25 ? base.slice(0, 24) + '…' : base,
+      radius: 5 + Math.min(f.cardIds.length, 4),
+      mentions: 0,
+      anchor: false,
+    })
+  }
+  for (const e of layer.edges) {
+    const s = indexByKey.get(e.from)
+    const t = indexByKey.get(e.to)
+    if (s == null || t == null) continue
+    graphEdges.push({ source: s, target: t, strength: 1, rel: e.type })
+    graphNodes[s].connectionCount++
+    graphNodes[t].connectionCount++
+  }
+  for (let i = 0; i < graphNodes.length; i++) {
+    const n = graphNodes[i]
+    if (n.kind !== 'mem') continue
+    const text = `${n.mem.content || ''} ${n.mem.keywords || ''}`
+    const seen = new Set()
+    for (const m of text.matchAll(GRAPH_REL_ID_RE)) {
+      const id = m[0].toLowerCase()
+      if (seen.has(id)) continue
+      seen.add(id)
+      const t = indexByKey.get(`card:${id}`)
+      if (t == null) continue
+      graphEdges.push({ source: i, target: t, strength: 1.2, rel: 'mention' })
+      n.connectionCount++
+      graphNodes[t].connectionCount++
+    }
+  }
+  return counts
+}
+
+function graphRelKindLabel(kind) {
+  return (kind === 'card' || kind === 'file' || kind === 'decision') ? t(`memories.graph.rel.${kind}`) : String(kind)
+}
+
+// Node outline by kind: memory = circle, card = rounded square, file = diamond,
+// decision = hexagon, anything else = circle.
+function graphNodeShapePath(ctx, node, r) {
+  if (node.kind === 'card') {
+    graphRoundRect(ctx, node.x - r, node.y - r, r * 2, r * 2, Math.max(2, r * 0.35))
+    return
+  }
+  ctx.beginPath()
+  if (node.kind === 'file') {
+    ctx.moveTo(node.x, node.y - r)
+    ctx.lineTo(node.x + r, node.y)
+    ctx.lineTo(node.x, node.y + r)
+    ctx.lineTo(node.x - r, node.y)
+    ctx.closePath()
+    return
+  }
+  if (node.kind === 'decision') {
+    for (let i = 0; i < 6; i++) {
+      const ang = Math.PI / 3 * i - Math.PI / 6
+      const px = node.x + r * Math.cos(ang)
+      const py = node.y + r * Math.sin(ang)
+      if (i === 0) ctx.moveTo(px, py); else ctx.lineTo(px, py)
+    }
+    ctx.closePath()
+    return
+  }
+  ctx.arc(node.x, node.y, r, 0, Math.PI * 2)
+}
+
+function graphPanelElement() {
+  let panel = document.getElementById('graphPanel')
+  if (!panel) {
+    panel = document.createElement('div')
+    panel.id = 'graphPanel'
+    panel.className = 'graph-panel'
+    document.getElementById('memGraphView').appendChild(panel)
+  }
+  return panel
+}
+
+function showRelationPanel(node) {
+  const panel = graphPanelElement()
+  let body = ''
+  if (node.kind === 'file') {
+    body = `
+      <div class="graph-panel-content graph-panel-path">${escapeHtml(node.path)}</div>
+      <div class="graph-panel-meta">
+        <div class="graph-panel-date">${escapeHtml(t('memories.graph.rel.touched_by', { n: node.cardIds.length }))}</div>
+        <div class="graph-panel-keywords">${node.cardIds.map(id => `<button type="button" class="mem-keyword-tag graph-rel-jump" data-jump="card:${escapeHtml(id)}">#${escapeHtml(id)}</button>`).join('')}</div>
+      </div>`
+  } else if (node.kind === 'card') {
+    body = `
+      <div class="graph-panel-content" id="graphRelCardBody"><span class="graph-rel-muted">${escapeHtml(t('memories.graph.rel.loading'))}</span></div>
+      <div class="graph-panel-meta">
+        ${node.mentions ? `<div class="graph-panel-date">${escapeHtml(t('memories.graph.rel.mentions', { n: node.mentions }))}</div>` : ''}
+        <div id="graphRelCardActions"></div>
+      </div>`
+  } else {
+    body = `<div class="graph-panel-content">${escapeHtml(String(node.relId))}</div>`
+  }
+  panel.innerHTML = `
+    <div class="graph-panel-header">
+      <span class="badge graph-rel-badge" data-kind="${escapeHtml(node.kind)}">${escapeHtml(graphRelKindLabel(node.relType))}</span>
+      <code class="graph-panel-relid">${escapeHtml(String(node.relId))}</code>
+      <button class="graph-panel-close" id="graphPanelCloseBtn" aria-label="${escapeHtml(t('memories.graph.rel.close'))}">&times;</button>
+    </div>
+    ${body}
+  `
+  panel.hidden = false
+  document.getElementById('graphPanelCloseBtn').addEventListener('click', () => {
+    graphSelectedNode = null
+    panel.hidden = true
+    renderGraph()
+  })
+  panel.querySelectorAll('.graph-rel-jump').forEach(btn => btn.addEventListener('click', () => {
+    const target = graphNodes.find(n => n.id === btn.dataset.jump)
+    if (!target) return
+    graphSelectedNode = target
+    showGraphPanel(target)
+    renderGraph()
+  }))
+  if (node.kind === 'card') fillRelationCardPanel(node)
+}
+
+async function fillRelationCardPanel(node) {
+  const body = document.getElementById('graphRelCardBody')
+  const actions = document.getElementById('graphRelCardActions')
+  if (!body || !actions) return
+  let meta = graphRelCardMetaCache.get(node.relId)
+  if (!meta) {
+    try {
+      const res = await fetch(`/api/kanban/${encodeURIComponent(node.relId)}`)
+      if (res.status === 404) meta = { missing: true }
+      else if (!res.ok) throw new Error(`card HTTP ${res.status}`)
+      else meta = { card: await res.json() }
+      graphRelCardMetaCache.set(node.relId, meta)
+    } catch (err) {
+      console.error('Relation card load error:', node.relId, err)
+      if (graphSelectedNode !== node) return
+      body.innerHTML = `<span class="graph-rel-error">${escapeHtml(t('memories.graph.rel.card_load_error'))}</span>`
+      actions.innerHTML = `<button type="button" class="btn-secondary graph-rel-action" id="graphRelCardRetry">${escapeHtml(t('memories.graph.rel.retry'))}</button>`
+      document.getElementById('graphRelCardRetry').addEventListener('click', () => fillRelationCardPanel(node))
+      return
+    }
+  }
+  if (graphSelectedNode !== node) return
+  if (meta.missing) {
+    body.innerHTML = `<span class="graph-rel-muted">${escapeHtml(t('memories.graph.rel.card_missing'))}</span>`
+    actions.innerHTML = ''
+    return
+  }
+  const card = meta.card
+  node.title = card.title || ''
+  const statusKey = `kanban.status.${card.status}`
+  body.innerHTML = `
+    <div class="graph-rel-card-title">${escapeHtml(card.title || '')}</div>
+    <div class="graph-rel-card-meta">
+      <span class="graph-rel-status" data-status="${escapeHtml(card.status || '')}">${escapeHtml(t(statusKey))}</span>
+      ${card.assignee ? `<span class="graph-panel-agent">${escapeHtml(card.assignee)}</span>` : ''}
+      ${card.project ? `<span class="graph-rel-muted">${escapeHtml(card.project)}</span>` : ''}
+    </div>`
+  actions.innerHTML = `<button type="button" class="btn-secondary graph-rel-action" id="graphRelOpenCard">${escapeHtml(t('memories.graph.rel.open_card'))}</button>`
+  document.getElementById('graphRelOpenCard').addEventListener('click', () => {
+    if (typeof switchPage !== 'function' || typeof showCardDetail !== 'function') return
+    switchPage('kanban')
+    showCardDetail(card)
+  })
+}
+
+function setRelationLayerStatus(state, counts) {
+  const toggle = document.getElementById('graphRelToggle')
+  const legend = document.getElementById('graphRelLegend')
+  const status = document.getElementById('graphRelStatus')
+  if (!toggle || !legend || !status) return
+  toggle.setAttribute('aria-pressed', graphRelLayerOn ? 'true' : 'false')
+  toggle.classList.toggle('is-loading', state === 'loading')
+  legend.hidden = state !== 'ready'
+  if (state === 'ready' && counts) {
+    for (const kind of ['card', 'file', 'decision', 'other']) {
+      const chip = legend.querySelector(`[data-kind="${kind}"]`)
+      if (!chip) continue
+      chip.querySelector('b').textContent = String(counts[kind] || 0)
+      chip.hidden = (kind === 'decision' || kind === 'other') && !counts[kind]
+    }
+  }
+  const showsMessage = state === 'loading' || state === 'empty' || state === 'error' || state === 'offline'
+  status.hidden = !showsMessage
+  status.classList.toggle('is-error', state === 'error' || state === 'offline')
+  status.innerHTML = ''
+  if (!showsMessage) return
+  const msg = document.createElement('span')
+  msg.textContent = t(`memories.graph.rel.${state}`)
+  status.appendChild(msg)
+  if (state === 'error' || state === 'offline') {
+    const retry = document.createElement('button')
+    retry.type = 'button'
+    retry.className = 'graph-layer-retry'
+    retry.textContent = t('memories.graph.rel.retry')
+    retry.addEventListener('click', () => loadRelationLayer(graphLastMemories))
+    status.appendChild(retry)
+  }
+}
+
+function setRelationLayerOn(on) {
+  graphRelLayerOn = !!on
+  try { localStorage.setItem(GRAPH_REL_STORAGE_KEY, graphRelLayerOn ? '1' : '0') } catch {}
+  if (graphLastMemories.length === 0) {
+    setRelationLayerStatus('off')
+    return
+  }
+  if (graphRelLayerOn) {
+    loadRelationLayer(graphLastMemories)
+    return
+  }
+  graphRelLoadSeq++
+  graphSelectedNode = null
+  hideGraphPanel()
+  buildGraph(graphLastMemories)
+  startGraphSimulation()
+  setRelationLayerStatus('off')
+}
+
+;(function initRelationLayerControls() {
+  const toggle = document.getElementById('graphRelToggle')
+  if (!toggle) return
+  toggle.setAttribute('aria-pressed', graphRelLayerOn ? 'true' : 'false')
+  toggle.addEventListener('click', () => setRelationLayerOn(!graphRelLayerOn))
+})()
+
 function screenToWorld(sx, sy) {
   return { x: (sx - graphPanX) / graphZoom, y: (sy - graphPanY) / graphZoom }
 }
@@ -349,6 +803,9 @@ async function loadMemoryGraph() {
     if (!memories || memories.length === 0) {
       emptyEl.hidden = false
       document.getElementById('memGraphCanvas').hidden = true
+      graphLastMemories = []
+      graphRelLoadSeq++
+      setRelationLayerStatus('off')
       return
     }
     emptyEl.hidden = true
@@ -363,6 +820,9 @@ async function loadMemoryGraph() {
 
     buildGraph(memories)
     startGraphSimulation()
+    graphLastMemories = memories
+    if (graphRelLayerOn) loadRelationLayer(memories)
+    else setRelationLayerStatus('off')
   } catch (err) {
     console.error('Gráf betöltés hiba:', err)
   }
@@ -398,6 +858,7 @@ function buildGraph(memories) {
       vy: 0,
       radius: 6,
       connectionCount: 0,
+      kind: 'mem',
       label: label,
       tier: mem.tier || mem.category || 'warm',
       agent: mem.agent_id || mainAgentId(),
@@ -455,6 +916,7 @@ function simulateGraphStep(damping) {
 
   const tierCenters = {}
   for (const node of nodes) {
+    if (node.kind !== 'mem') continue
     if (!tierCenters[node.tier]) tierCenters[node.tier] = { x: 0, y: 0, count: 0 }
     tierCenters[node.tier].x += node.x
     tierCenters[node.tier].y += node.y
@@ -465,6 +927,7 @@ function simulateGraphStep(damping) {
     tierCenters[tier].y /= tierCenters[tier].count
   }
   for (const node of nodes) {
+    if (node.kind !== 'mem') continue
     const tc = tierCenters[node.tier]
     if (tc) {
       node.vx += (tc.x - node.x) * 0.0005
@@ -597,6 +1060,7 @@ function renderGraph() {
   // === Tier cluster backgrounds ===
   const tierGroups = {}
   for (const node of graphNodes) {
+    if (node.kind !== 'mem') continue
     if (!tierGroups[node.tier]) tierGroups[node.tier] = []
     tierGroups[node.tier].push(node)
   }
@@ -650,9 +1114,12 @@ function renderGraph() {
     // Subtle pulse/breathe animation
     const pulse = 0.85 + 0.15 * Math.sin(time * 1.5 + edge.source * 0.3 + edge.target * 0.7)
 
+    const relColor = edge.rel ? (GRAPH_REL_EDGE_COLORS[edge.rel] || GRAPH_REL_COLORS.other) : null
+    ctx.setLineDash(edge.rel === 'mention' ? [2, 4] : (edge.rel ? [5, 3] : []))
+
     ctx.lineWidth = isActiveEdge ? baseWidth * 1.8 : baseWidth * pulse
-    ctx.strokeStyle = isActiveEdge ? GRAPH_TIER_COLORS[a === activeNode ? a.tier : b.tier] || borderColor : borderColor
-    ctx.globalAlpha = searchFaded ? 0.05 : (isActiveEdge ? 0.7 : (0.15 + Math.min(edge.strength * 0.1, 0.3)) * pulse)
+    ctx.strokeStyle = relColor || (isActiveEdge ? GRAPH_TIER_COLORS[a === activeNode ? a.tier : b.tier] || borderColor : borderColor)
+    ctx.globalAlpha = searchFaded ? 0.05 : (isActiveEdge ? 0.8 : (relColor ? 0.35 * pulse : (0.15 + Math.min(edge.strength * 0.1, 0.3)) * pulse))
 
     // Bezier curve: midpoint offset perpendicular to the line
     const mx = (a.x + b.x) / 2
@@ -670,6 +1137,7 @@ function renderGraph() {
     ctx.quadraticCurveTo(cpx, cpy, b.x, b.y)
     ctx.stroke()
   }
+  ctx.setLineDash([])
   ctx.globalAlpha = 1
 
   // === Draw nodes ===
@@ -677,7 +1145,9 @@ function renderGraph() {
 
   for (let ni = 0; ni < graphNodes.length; ni++) {
     const node = graphNodes[ni]
-    const color = GRAPH_TIER_COLORS[node.tier] || '#d97757'
+    const color = node.kind === 'mem'
+      ? (GRAPH_TIER_COLORS[node.tier] || '#d97757')
+      : (GRAPH_REL_COLORS[node.kind] || GRAPH_REL_COLORS.other)
     const isHover = node === graphHover
     const isSelected = node === graphSelectedNode
     const isConnected = connectedToActive.has(ni)
@@ -705,11 +1175,10 @@ function renderGraph() {
 
     const r = isHover ? node.radius + 3 : (isSelected ? node.radius + 2 : node.radius)
 
-    // Node fill
+    // Node fill (shape by kind: memory circle, card square, file diamond, decision hexagon)
     ctx.fillStyle = color
     ctx.globalAlpha = nodeAlpha
-    ctx.beginPath()
-    ctx.arc(node.x, node.y, r, 0, Math.PI * 2)
+    graphNodeShapePath(ctx, node, r)
     ctx.fill()
 
     // Subtle border ring for selected
@@ -717,8 +1186,7 @@ function renderGraph() {
       ctx.strokeStyle = color
       ctx.lineWidth = 2
       ctx.globalAlpha = 0.6
-      ctx.beginPath()
-      ctx.arc(node.x, node.y, r + 4, 0, Math.PI * 2)
+      graphNodeShapePath(ctx, node, r + 4)
       ctx.stroke()
     }
 
@@ -758,9 +1226,14 @@ function renderGraph() {
   if (graphHover && !graphSelectedNode) {
     const node = graphHover
     const tLabels = { hot: 'Hot', warm: 'Warm', cold: 'Cold', shared: 'Shared' }
-    const text = `${tLabels[node.tier] || node.tier} | ${node.agent}`
-    const kw = node.keywords.length > 0 ? node.keywords.join(', ') : ''
-    const conns = `${Math.round(node.connectionCount)} connections`
+    let text = `${tLabels[node.tier] || node.tier} | ${node.agent}`
+    let kw = node.keywords.length > 0 ? node.keywords.join(', ') : ''
+    let conns = `${Math.round(node.connectionCount)} connections`
+    if (node.kind !== 'mem') {
+      text = `${graphRelKindLabel(node.relType)} | ${node.kind === 'file' ? node.repo : node.relId}`
+      conns = t('memories.graph.rel.connections', { n: Math.round(node.connectionCount) })
+      kw = node.kind === 'file' ? node.path : (node.title || (node.mentions ? t('memories.graph.rel.mentions', { n: node.mentions }) : ''))
+    }
 
     ctx.font = 'bold 11px -apple-system, sans-serif'
     const tw = Math.max(ctx.measureText(text).width, kw ? ctx.measureText(kw).width : 0, ctx.measureText(conns).width) + 24
@@ -811,6 +1284,7 @@ function graphRoundRect(ctx, x, y, w, h, r) {
 
 // === Graph detail panel ===
 function showGraphPanel(node) {
+  if (node.kind !== 'mem') return showRelationPanel(node)
   let panel = document.getElementById('graphPanel')
   if (!panel) {
     panel = document.createElement('div')
@@ -862,6 +1336,8 @@ function updateGraphSearch() {
   for (const node of graphNodes) {
     if (!q) {
       node.searchMatch = true
+    } else if (node.kind !== 'mem') {
+      node.searchMatch = `${node.relId} ${node.label} ${node.path || ''} ${node.title || ''}`.toLowerCase().includes(q)
     } else {
       const content = (node.mem.content || '').toLowerCase()
       const kws = node.keywords.join(' ').toLowerCase()
