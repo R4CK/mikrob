@@ -60,9 +60,25 @@
 # blocks every landing, so it must be switchable off without a commit.
 
 # Card ids referenced by ONE commit subject, one per line, lowercased. See decision 2 above.
+#
+# THE SEPARATOR CLASS IS `[/,]`, NOT JUST `/` (card 6500e1d3, Cybersec L1 off the dfff9b37 gate
+# round). The repetition group used to accept only the slash form, so `cards A, B, C` yielded
+# ONLY A -- and landing B or C then failed as a foreign card, a false refusal on a perfectly
+# good landing. Re-measured independently before changing it: 1200 real subjects from EACH of
+# marveen and CleanCore (2400 total), 13 subjects change their answer, and every one of the 14
+# newly-caught ids was CONFIRMED to be a real kanban card by asking the board -- not inferred
+# from its shape. Zero false detections.
+#
+# THE COST, STATED RATHER THAN DISCOVERED LATER: a comma is far commoner in prose than a slash,
+# so this widens the surface on which an 8-hex token that is NOT a card (a commit sha, or a word
+# spelled only with a-f) gets read as one. The class is not new -- the slash form always had it
+# -- and it stays anchored to the `card`/`cards` keyword, so a bare hex elsewhere in the subject
+# is still ignored (its own selftest case below). On the 2400 measured subjects the cost was
+# zero. A false POSITIVE here costs one `--allow-stacked` argument; the false NEGATIVE it
+# replaces cost a refused landing on a correct branch.
 cards_in_subject() {
   printf '%s\n' "${1:-}" \
-    | grep -oiE '\bcards?[[:space:]]+[0-9a-f]{8}\b([[:space:]]*/[[:space:]]*[0-9a-f]{8}\b)*' \
+    | grep -oiE '\bcards?[[:space:]]+[0-9a-f]{8}\b([[:space:]]*[/,][[:space:]]*[0-9a-f]{8}\b)*' \
     | grep -oiE '\b[0-9a-f]{8}\b' \
     | tr 'A-F' 'a-f'
 }
@@ -197,6 +213,32 @@ downward_selftest_cases() {
     "$(cards_in_subject 'docs: proto (card e90505bb / 96ff46d4)' | tr '\n' ' ')" "e90505bb 96ff46d4 "
   t "anchored: bare hex without the word 'card' is not a ref" \
     "$(cards_in_subject 'fix: Discard deadbeef leftovers')" ""
+
+  # Card 6500e1d3. The COMMA form is what real subjects actually use -- the slash form is the rarer
+  # one -- and until this landed the group accepted only `/`, so B and C fell off and landing either
+  # of them was refused as foreign. All four shapes below are copied from real history (marveen and
+  # CleanCore), not invented, and every id in them was confirmed against the live board.
+  t "the comma form names both cards (the L1 false negative)" \
+    "$(cards_in_subject 'fix(self-pace-gate): close two live NO-GO bypasses (cards fa5ef179, ec20dd23)' | tr '\n' ' ')" \
+    "fa5ef179 ec20dd23 "
+  t "three comma-separated cards all survive" \
+    "$(cards_in_subject 'docs(readme): HU user stories for D+E+F (cards 4548a102, b4f08fda, 6916170f)' | tr '\n' ' ')" \
+    "4548a102 b4f08fda 6916170f "
+  t "SINGULAR 'card' with a trailing comma-listed id still names both" \
+    "$(cards_in_subject 'feat(api): wire attestationRequests to its PG adapter (card c3201ba7, ad78347c epic)' | tr '\n' ' ')" \
+    "c3201ba7 ad78347c "
+  t "the slash form did not regress" \
+    "$(cards_in_subject 'docs: proto (card e90505bb / 96ff46d4)' | tr '\n' ' ')" "e90505bb 96ff46d4 "
+
+  # The BOUNDARY, pinned on purpose rather than left for someone to trip over. Widening the separator
+  # to a comma also widens what can follow one: an 8-hex token after `card <id>,` IS taken as a card,
+  # because a subject line carries nothing that could tell a card id from a commit sha. Measured cost
+  # on 2400 real subjects: zero. If this ever fires wrongly it costs one --allow-stacked argument,
+  # whereas the false negative it replaces cost a refused landing on a correct branch.
+  t "KNOWN LIMIT: a hex-shaped token after the comma is read as a card" \
+    "$(cards_in_subject 'fix(x): thing (card 11111111, deadbeef)' | tr '\n' ' ')" "11111111 deadbeef "
+  t "...but the anchor still holds -- hex NOT after card/cards is ignored" \
+    "$(cards_in_subject 'fix(x): thing (card 11111111) and deadbeef elsewhere' | tr '\n' ' ')" "11111111 "
 
   L="$(printf 'aaa1111\tfeat: own (card 11111111)\n')"
   t "clean range -- only this card's commit -- passes" "$(rc_of "$L" 11111111)" "0"
