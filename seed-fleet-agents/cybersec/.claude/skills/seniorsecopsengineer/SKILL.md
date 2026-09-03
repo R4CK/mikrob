@@ -17,12 +17,38 @@ A complete Security Operations toolkit that scans source code for vulnerabilitie
 - Triaging a newly-disclosed CVE or running an incident-response procedure
 - Any mention of OWASP Top 10, secure coding, or secret scanning
 
+## Preconditions -- what actually exists on this machine (measured 2026-09-03, card 7f27417e)
+
+Check before you promise a scan. Two of the things this skill names are NOT here, and a skill that
+instructs a command which does not exist produces a confident report of nothing.
+
+- **The three scanners are NOT in this skill's directory.** `find` over the skill folder returns
+  SKILL.md and nothing else, so the relative `scripts/...` paths in step 2 resolve to nothing. They
+  DO exist upstream, in the repo this skill was adapted from:
+  `~/.claude/external/claude-skills-alirezarezvani/engineering-team/skills/senior-secops/scripts/`
+  (`security_scanner.py`, `vulnerability_assessor.py`, `compliance_checker.py`). Running them from
+  there, or copying them in, is a deliberate step and goes through `skill-security-auditor` FIRST --
+  external scripts do not enter `~/.claude/skills/` unvetted.
+- **`trufflehog` and `gitleaks` are not installed** (`command -v` finds neither; 17 security tools
+  checked, none present). They appear in this skill's trigger list, which is fine -- but do not tell
+  a felhasználó a secret scan ran. Installing trufflehog into CI is card 436ae640; until that lands,
+  secret scanning here is manual review, not a tool.
+- **What IS available right now:** `npm audit` / `pnpm audit` for dependency CVEs, and the fleet's
+  own skills -- `white-hat-security-testing`, `defensive-security-analysis`, `supplychainsecurity`,
+  `threat-modeling`, `cloud-container-security`.
+
+State which of these you used. "No findings" from a scanner that never ran is the worst output this
+skill can produce.
+
 ## Instructions
 1. **Scope first.** Confirm the target path and what the user wants: code scan, dependency assessment, compliance check, or a full audit.
-2. **Run the scanners** from the `scripts/` directory:
-   - `python scripts/security_scanner.py <target> --severity <level>` — code vulns
-   - `python scripts/vulnerability_assessor.py <target> --severity <level>` — dependency CVEs
-   - `python scripts/compliance_checker.py <target> --framework <fw>` — compliance controls
+2. **Check that a scanner exists before you cite it** (see Preconditions). The three scripts are
+   not shipped with this skill; resolve them first, and only then run:
+   - `python <scripts>/security_scanner.py <target> --severity <level>` — code vulns
+   - `python <scripts>/vulnerability_assessor.py <target> --severity <level>` — dependency CVEs
+   - `python <scripts>/compliance_checker.py <target> --framework <fw>` — compliance controls
+   If they cannot be resolved and vetted, say so and fall back to `npm audit`/`pnpm audit` plus the
+   skills named in Preconditions -- never report a clean scan you did not run.
 3. **Respect exit codes as gates.** `0` = clean, `1` = high-severity findings, `2` = critical. STOP and surface critical findings (exit code 2) before continuing any workflow.
 4. **Full audit order:** code scan → dependency assessment → compliance check → JSON reports. Do not proceed past a critical finding.
 5. **Prioritize by CVSS + exposure.** Critical (9.0+, internet-facing) → 24h; High (7.0–8.9) → 7d; Medium (4.0–6.9) → 30d; Low (<4.0) → 90d.
@@ -41,11 +67,11 @@ A complete Security Operations toolkit that scans source code for vulnerabilitie
 
 **Example 1**
 - Input (a felhasználó): "Nézd át ezt a projektet, van-e benne hardcoded secret vagy SQL injection."
-- Output: Run `python scripts/security_scanner.py . --severity medium`. Report: "3 finding — 1 CRITICAL (hardcoded AWS key `config.py:12`), 2 HIGH (SQL string concat `db.py:44,58`). Exit code 2 — javítsd a critical-t először: mozgasd a kulcsot `os.environ`-ba, a lekérdezéseket paraméterezd. Re-scan után 0-t kell adjon."
+- Output: Resolve the scanner first (Preconditions), then run `python <scripts>/security_scanner.py . --severity medium`. Report: "3 finding — 1 CRITICAL (hardcoded AWS key `config.py:12`), 2 HIGH (SQL string concat `db.py:44,58`). Exit code 2 — javítsd a critical-t először: mozgasd a kulcsot `os.environ`-ba, a lekérdezéseket paraméterezd. Re-scan után 0-t kell adjon."
 
 **Example 2**
 - Input (a felhasználó): "Készíts SOC 2 compliance riportot a repóról."
-- Output: Run `python scripts/compliance_checker.py . --framework soc2 --json --output compliance.json`. Report: "SOC 2 score: 72% (non-compliant). Failing: CC6 no MFA on admin, CC7 audit logging incomplete. Riport: `compliance.json`. 90%+ kell a compliant besoroláshoz."
+- Output: Resolve the scanner first (Preconditions), then run `python <scripts>/compliance_checker.py . --framework soc2 --json --output compliance.json`. Report: "SOC 2 score: 72% (non-compliant). Failing: CC6 no MFA on admin, CC7 audit logging incomplete. Riport: `compliance.json`. 90%+ kell a compliant besoroláshoz."
 
 ## Language rules
 - Speak Hungarian with a felhasználó (the user) — explanations, summaries, recommendations.
@@ -59,3 +85,5 @@ A complete Security Operations toolkit that scans source code for vulnerabilitie
 - Don't treat this as a substitute for manual pen-testing; escalate deep testing to `white-hat-security-testing`.
 - Avoid running scanners against targets the user hasn't authorized — this skill is for the team's own codebase.
 - Don't hardcode remediation advice; base severity and deadlines on the actual CVSS score and exposure.
+- Never report a scanner's verdict without having run it -- if the script or tool is missing, that is
+  the finding, not a clean result.
