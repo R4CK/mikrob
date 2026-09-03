@@ -135,7 +135,34 @@ const GATE_SHA_LINE_RX = /^\s*Gate-SHA\s*:\s*(.+)$/gim
 // of widening kanban-landed-guard.ts already applies to a WHOLE comment body, just narrower.
 const GATE_SHA_TOKEN_RX = /\b[0-9a-f]{6,40}\b/gi
 
-/** Every short-sha token declared on a Gate-SHA line in `content` (lowercased, deduped). A card can
+// Card 4ae2d3f5, real incident on 5a50bc69: a `status:done` PUT answered 409 "QA verdikt hianyzik"
+// while BOTH a QA PASS and a CYBERSEC GO existed, correctly shaped, for the SAME Gate-SHA.
+//
+// The cause is the interaction between card 367c23a9's (correct) widening and one very common
+// citation habit in this fleet. Cybersec's line was
+//     Gate-SHA: 5f7abb6c (szulo 9f0f75ef, ugyanaz a backend-ag)
+// where `9f0f75ef` is the PARENT commit, named as CONTEXT -- not a second commit this round was
+// gated on. Every hex run on the line counts as a cited sha, so `9f0f75ef` became one; its FIRST
+// mention on the card is that Cybersec comment, which is later than QA's genuinely-fresh PASS; and
+// `currentRoundStartTs` takes Math.max over first-mention times, so the round boundary jumped
+// forward to the Cybersec comment and invalidated the QA PASS that belonged to the very same round.
+//
+// A PARENT REFERENCE IS AN ANCESTOR BY DEFINITION -- older code, never the round's own subject. So
+// only tokens introduced by a parent-marker word are dropped, and only that OCCURRENCE of them: the
+// same sha cited bare elsewhere on the card still counts, and every shape card 367c23a9 fixed is
+// untouched, because none of them use a parent marker. In particular `alap <sha>` ("base") and
+// `landolt <sha>` ("landed") stay INCLUDED -- narrowing to "everything before the parenthesis", the
+// other obvious repair, would have reopened 367c23a9's incident wholesale.
+// NO TRAILING `\b` AFTER THE MARKER, and that is not an oversight: JavaScript's `\b` is
+// ASCII-only, so after the accented `szülő` (the `ő` is not an ASCII word character) it would
+// require a word/non-word transition that never happens before a space -- the accented spelling,
+// which is the correct Hungarian one and the one CLAUDE.md mandates in prose, would silently never
+// match. A required separator (`[\s:]+`) does the same job for every spelling and additionally
+// stops `parentab12cd` from reading as marker + sha.
+const PARENT_MARKED_SHA_RX = /\b(?:szulo|szülő|parent)[\s:]+[0-9a-f]{6,40}\b/gi
+
+/** Every short-sha token declared on a Gate-SHA line in `content` (lowercased, deduped), EXCEPT the
+ *  ones introduced as a parent/ancestor reference (see {@link PARENT_MARKED_SHA_RX}). A card can
  *  legitimately cite more than one commit on one line, in any separator shape ("Gate-SHA: e46f9968,
  *  9e9a79bc", "Gate-SHA: e46f9968 + 9e9a79bc (...)", "Gate-SHA: e46f9968 (landolt 9e9a79bc)"). */
 function extractGateShas(content: string): ReadonlySet<string> {
@@ -143,9 +170,13 @@ function extractGateShas(content: string): ReadonlySet<string> {
   const out = new Set<string>()
   let m: RegExpExecArray | null
   while ((m = GATE_SHA_LINE_RX.exec(content)) !== null) {
+    // Blank the parent-marked runs rather than filtering the extracted VALUES: the same sha may
+    // legitimately appear bare on another line (or another comment) as the round's real subject,
+    // and dropping it by value would silently discard that citation too.
+    const line = (m[1] ?? '').replace(PARENT_MARKED_SHA_RX, (run) => ' '.repeat(run.length))
     GATE_SHA_TOKEN_RX.lastIndex = 0
     let tm: RegExpExecArray | null
-    while ((tm = GATE_SHA_TOKEN_RX.exec(m[1] ?? '')) !== null) out.add(tm[0].toLowerCase())
+    while ((tm = GATE_SHA_TOKEN_RX.exec(line)) !== null) out.add(tm[0].toLowerCase())
   }
   return out
 }

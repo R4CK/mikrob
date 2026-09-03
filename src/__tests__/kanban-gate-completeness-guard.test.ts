@@ -383,6 +383,86 @@ describe('gateCompletenessGuardVerdict', () => {
     })
   })
 
+  // Real incident on 5a50bc69 (card 4ae2d3f5): a status:done PUT answered 409 "QA verdikt hianyzik"
+  // while BOTH gates had already passed the SAME Gate-SHA, correctly shaped. Cybersec's line named
+  // the PARENT commit as context -- "Gate-SHA: 5f7abb6c (szulo 9f0f75ef, ...)" -- and every hex run
+  // on a Gate-SHA line counts as a cited sha, so the parent became one; its first mention is that
+  // late Cybersec comment, and Math.max over first-mention times therefore dragged the round
+  // boundary past QA's genuinely-fresh PASS.
+  describe('a parenthetical PARENT reference must not move the round boundary (card 4ae2d3f5)', () => {
+    it('the measured 5a50bc69 shape: QA PASS then a Cybersec GO citing the PARENT -> unblocked', () => {
+      card.description = 'Gate: QA + Cybersec'
+      comments = [
+        { author: 'backend', content: 'REVIEW: kesz\nGate-SHA: 5f7abb6c', created_at: 100 },
+        { author: 'qa', content: 'REVIEW: QA PASS\nGate-SHA: 5f7abb6c', created_at: 200 },
+        {
+          author: 'cybersec',
+          content: 'CYBERSEC GO\nGate-SHA: 5f7abb6c (szulo 9f0f75ef, ugyanaz a backend-ag)',
+          created_at: 300,
+        },
+      ]
+      // Before this card: 9f0f75ef counted as a cited sha whose first mention is t=300, so the
+      // round boundary moved there and QA's t=200 PASS -- for the very same commit -- read as
+      // stale. MikroB had to close 5a50bc69 with force:true.
+      expect(gateCompletenessGuardVerdict('c1', 'done', false).blocked).toBe(false)
+    })
+
+    it('accented "szulo" with an accent, English "parent" and a colon form are all recognised', () => {
+      for (const marker of ['sz\u00fcl\u0151', 'parent', 'szulo:']) {
+        card.description = 'Gate: QA + Cybersec'
+        comments = [
+          { author: 'backend', content: 'REVIEW: kesz\nGate-SHA: 5f7abb6c', created_at: 100 },
+          { author: 'qa', content: 'REVIEW: QA PASS\nGate-SHA: 5f7abb6c', created_at: 200 },
+          {
+            author: 'cybersec',
+            content: 'CYBERSEC GO\nGate-SHA: 5f7abb6c (' + marker + ' 9f0f75ef)',
+            created_at: 300,
+          },
+        ]
+        expect(gateCompletenessGuardVerdict('c1', 'done', false).blocked).toBe(false)
+      }
+    })
+
+    it('CONTROL: an UNMARKED sha in the same parenthetical shape STILL moves the boundary', () => {
+      // Without this control, the blunt repair the card first suggested -- ignore everything after
+      // the "(" -- would also pass, and that one reopens card 367c23a9's incident wholesale
+      // ("landolt <sha>" and "alap <sha>" are genuine co-citations and must keep counting).
+      card.description = 'Gate: QA + Cybersec'
+      comments = [
+        { author: 'backend', content: 'REVIEW: kesz\nGate-SHA: 5f7abb6c', created_at: 100 },
+        { author: 'qa', content: 'REVIEW: QA PASS\nGate-SHA: 5f7abb6c', created_at: 200 },
+        {
+          author: 'cybersec',
+          content: 'CYBERSEC GO\nGate-SHA: 5f7abb6c (landolt 9f0f75ef)',
+          created_at: 300,
+        },
+      ]
+      // 9f0f75ef is unmarked and first appears at t=300, so that IS the round start and QA's
+      // t=200 PASS is genuinely stale.
+      const v = gateCompletenessGuardVerdict('c1', 'done', false)
+      expect(v.blocked).toBe(true)
+      expect(v.message).toContain('QA')
+    })
+
+    it('CONTROL: the exclusion is per OCCURRENCE -- a bare later citation still opens a round', () => {
+      // Dropping the sha by VALUE would silence a genuine later round that happens to be gated on
+      // the commit an earlier comment once called a parent.
+      card.description = 'Gate: QA + Cybersec'
+      comments = [
+        {
+          author: 'backend',
+          content: 'REVIEW: kesz\nGate-SHA: 5f7abb6c (szulo 9f0f75ef)',
+          created_at: 100,
+        },
+        { author: 'qa', content: 'REVIEW: QA PASS\nGate-SHA: 5f7abb6c', created_at: 200 },
+        { author: 'backend', content: 'REVIEW: ujra\nGate-SHA: 9f0f75ef', created_at: 300 },
+        { author: 'cybersec', content: 'CYBERSEC GO\nGate-SHA: 9f0f75ef', created_at: 400 },
+      ]
+      // The bare t=300 citation starts a new round, so QA's t=200 PASS is correctly stale.
+      expect(gateCompletenessGuardVerdict('c1', 'done', false).blocked).toBe(true)
+    })
+  })
+
   // Real incident on d0b4f003 (card 367c23a9): three gate agents cited the SAME round's Gate-SHA
   // in three different shapes on one line. QA's PASS read as stale ("QA verdikt hianyzik") because
   // Cybersec's "+"-joined citation silently lost its second sha to the old comma-anchored
