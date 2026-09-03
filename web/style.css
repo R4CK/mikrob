@@ -1073,6 +1073,126 @@ main {
   .ovw-cost-tps { display: none; }
 }
 
+/* Local-LLM model-distribution swimlane (card d6ecb003, pair-BE 2ffc0a96, Peti design-ref
+   store/design-refs/local-llm-swimlane-mockup-2026-09-03.jpg): one lane per model actually
+   active in the window, tasks as colored blocks positioned by real start-time/duration. */
+.ovw-llmdist-card { margin-top: 14px; margin-bottom: 20px; }
+.ovw-llmdist-loading,
+.ovw-llmdist-empty,
+.ovw-llmdist-error { font-size: 13px; color: var(--text-muted); margin: 0; padding: 8px 0; }
+.ovw-llmdist-error { color: var(--danger); }
+.ovw-llmdist-kpis {
+  display: grid;
+  grid-template-columns: repeat(5, 1fr);
+  gap: 10px;
+  margin-bottom: 16px;
+}
+.ovw-llmdist-kpi {
+  padding: 10px 12px;
+  border: 1px solid var(--border, #333);
+  border-radius: var(--radius-sm);
+  background: var(--bg);
+}
+.ovw-llmdist-kpi-label {
+  font-size: 11px;
+  color: var(--text-muted);
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  margin: 0 0 4px;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.ovw-llmdist-kpi-value {
+  font-size: 18px;
+  font-weight: 600;
+  color: var(--text);
+  font-variant-numeric: tabular-nums;
+}
+.ovw-llmdist-lanes { display: flex; flex-direction: column; gap: 10px; }
+.ovw-llmdist-lane { display: flex; align-items: center; gap: 10px; }
+.ovw-llmdist-lane-label {
+  width: 96px;
+  flex: 0 0 auto;
+  font-size: 12px;
+  color: var(--text-muted);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.ovw-llmdist-lane-track {
+  position: relative;
+  flex: 1;
+  height: 30px;
+  background: var(--bg);
+  border-radius: var(--radius-sm);
+  overflow: hidden;
+}
+.ovw-llmdist-block {
+  position: absolute;
+  top: 3px;
+  bottom: 3px;
+  min-width: 10px;
+  border-radius: 4px;
+  border: none;
+  padding: 0 6px;
+  font-size: 10px;
+  line-height: 24px;
+  color: #0b0b0f;
+  font-weight: 600;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  cursor: default;
+  text-align: left;
+}
+.ovw-llmdist-block:hover,
+.ovw-llmdist-block:focus-visible {
+  outline: 2px solid var(--text);
+  outline-offset: 1px;
+  z-index: 2;
+}
+.ovw-llmdist-block[data-status="err"] { outline: 2px solid var(--danger); }
+.ovw-llmdist-axis {
+  display: flex;
+  justify-content: space-between;
+  margin: 6px 0 14px;
+  padding-left: 106px;
+}
+.ovw-llmdist-axis span { font-size: 10px; color: var(--text-muted); font-variant-numeric: tabular-nums; }
+.ovw-llmdist-legend {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 10px 16px;
+  margin-top: 4px;
+  font-size: 11px;
+  color: var(--text-muted);
+}
+.ovw-llmdist-legend-item { display: flex; align-items: center; gap: 5px; }
+.ovw-llmdist-legend-swatch { width: 10px; height: 10px; border-radius: 3px; flex: 0 0 auto; }
+.ovw-llmdist-tooltip {
+  position: fixed;
+  z-index: 50;
+  max-width: 260px;
+  padding: 10px 12px;
+  border: 1px solid var(--border, #333);
+  border-radius: var(--radius-sm);
+  background: var(--bg-card);
+  box-shadow: 0 8px 24px rgba(0, 0, 0, 0.4);
+  font-size: 12px;
+  color: var(--text);
+  pointer-events: none;
+}
+.ovw-llmdist-tooltip[hidden] { display: none; }
+.ovw-llmdist-tooltip-title { font-weight: 600; margin-bottom: 4px; }
+.ovw-llmdist-tooltip-row { display: flex; justify-content: space-between; gap: 12px; color: var(--text-muted); }
+.ovw-llmdist-tooltip-row span:last-child { color: var(--text); font-variant-numeric: tabular-nums; }
+@media (max-width: 640px) {
+  .ovw-llmdist-kpis { grid-template-columns: repeat(2, 1fr); }
+  .ovw-llmdist-lane-label { width: 64px; }
+  .ovw-llmdist-axis { padding-left: 74px; }
+}
+
 .overview-team-graph {
   padding: 12px 0;
   gap: 14px;
