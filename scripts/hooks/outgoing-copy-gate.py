@@ -32,6 +32,7 @@ import json
 import os
 import re
 import sys
+import time
 
 # ADOPTED FROM UPSTREAM VERBATIM (card 3ec64c96, 2026-08-25): upstream independently built
 # this exact same class of fix (KAPUHATOKOR822, its own four-false-positive incident,
@@ -442,10 +443,71 @@ EM_DASH = "—"
 # NOT silent: every run appends a loud line to the gate log, because a
 # protection whose absence is invisible only protects until someone touches
 # the tree. File shape: {"bad_name_patterns": ["<python-regex>", ...]}
-_LOCAL_RULES = os.environ.get(
-    "OUTGOING_COPY_GATE_RULES",
-    os.path.join(os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))),
-                 "store", "outgoing-copy-gate-rules.json"),
+# WHERE the rules file lives -- card 934dc104, and this is the whole point of that card.
+# The default USED to be resolved relative to THIS SCRIPT, and the fleet has 12 checkouts of
+# the script (one per agent worktree) but exactly ONE rules file (the main clone's; it is
+# gitignored AND 0600, so it never travels to a worktree and never will). Same gate, opposite
+# posture, decided by who happened to call it: from the main root the name check passed
+# silently, from any worktree the email path died fail-closed on a config it could never
+# receive. Two agents measuring the same question got opposite, both-correct answers.
+#
+# Resolution order, and each step earns its place:
+#   1. OUTGOING_COPY_GATE_RULES  -- unchanged escape hatch, still wins.
+#   2. THIS checkout's own store/ file IF IT EXISTS -- so nothing that works today changes,
+#      and a deliberate per-checkout override stays possible.
+#   3. the MAIN clone's store/ file -- what a worktree now gets, instead of a dead path.
+#   4. this checkout's path anyway -- so a genuinely absent file is still named sanely in
+#      the error message.
+_RULES_BASENAME = "outgoing-copy-gate-rules.json"
+
+
+def _main_clone_root(checkout):
+    """Main clone root for a git WORKTREE checkout, or "" when this is not one.
+
+    A worktree's `.git` is a FILE holding `gitdir: <main>/.git/worktrees/<name>`; the main
+    clone's root is the parent of that `.git` directory. Parsed by hand rather than shelling
+    out to `git rev-parse --git-common-dir`, deliberately: this module is imported on EVERY
+    Bash tool call of every agent, so a subprocess per call is a real cost for what is one
+    small file read. Returns "" on anything unexpected -- an unreadable pointer must degrade
+    to the old script-relative answer, never raise inside a hook.
+    """
+    try:
+        with open(os.path.join(checkout, ".git"), encoding="utf-8") as fh:
+            head = fh.read(4096)
+    except OSError:
+        return ""  # a DIRECTORY (main clone) or absent -- nothing to redirect to
+    if not head.startswith("gitdir:"):
+        return ""
+    gitdir = head.split(":", 1)[1].strip()
+    marker = os.sep + "worktrees" + os.sep
+    idx = gitdir.find(marker)
+    if idx < 0:
+        return ""
+    common = gitdir[:idx]  # <main>/.git
+    if os.path.basename(common) != ".git":
+        return ""
+    return os.path.dirname(common)
+
+
+def resolve_rules_path(script_dir, env_value=None):
+    """Rules-file path that does NOT depend on which checkout invoked the gate."""
+    if env_value:
+        return env_value
+    checkout = os.path.dirname(os.path.dirname(script_dir))  # <checkout>/scripts/hooks -> <checkout>
+    local = os.path.join(checkout, "store", _RULES_BASENAME)
+    if os.path.exists(local):
+        return local
+    main_root = _main_clone_root(checkout)
+    if main_root:
+        shared = os.path.join(main_root, "store", _RULES_BASENAME)
+        if os.path.exists(shared):
+            return shared
+    return local
+
+
+_LOCAL_RULES = resolve_rules_path(
+    os.path.dirname(os.path.abspath(__file__)),
+    os.environ.get("OUTGOING_COPY_GATE_RULES"),
 )
 
 
@@ -503,7 +565,65 @@ def _name_correction() -> str:
         return ""
 
 
+# THREE states, and until card 934dc104 only TWO of them were ever visible. load_bad_name()
+# already distinguished them (card 3ec64c96 added the sentinel), but every call site asks
+# `is None`, so "deliberately zero patterns" and "healthy with patterns" ran the same silent
+# branch: a name filter with nothing to match on looked exactly like a working one.
+STATE_ACTIVE = "active"    # file present, valid, >=1 pattern -- the check really checks
+STATE_EMPTY = "empty"      # file present, valid, ZERO patterns -- deliberate, but inert
+STATE_BROKEN = "broken"    # missing / unreadable / malformed -- the apparatus itself is down
+
+
+def bad_name_state(value):
+    """Classify what load_bad_name() returned. Pure, so the three states are assertable."""
+    if value is None:
+        return STATE_BROKEN
+    if value is NO_BAD_NAME_PATTERNS:
+        return STATE_EMPTY
+    return STATE_ACTIVE
+
+
+_EMPTY_WARN_STAMP = ".outgoing-copy-gate-empty-warned"
+_EMPTY_WARN_INTERVAL_S = 6 * 3600
+
+
+def _log_empty_rules(now=None, interval=_EMPTY_WARN_INTERVAL_S):
+    """One visible line for the DELIBERATELY-EMPTY state. Returns True if it wrote.
+
+    RATE-LIMITED by a stamp file, and that is not premature caution: this module is imported
+    on every Bash tool call, and the unconditional missing-file line is precisely what grew
+    store/outgoing-copy-gate.log to 2 MB before the sentinel landed. A signal that costs a
+    log line per shell command gets the gate switched off, which protects nothing.
+
+    Deliberately NOT a per-send systemMessage: that would fire on every single outgoing
+    Telegram message of the busiest channel in the fleet. The on-demand, checkout-independent
+    readout is `outgoing-copy-gate.py --status`; this line is the passive breadcrumb.
+    """
+    store_dir = os.path.dirname(_LOCAL_RULES)
+    stamp = os.path.join(store_dir, _EMPTY_WARN_STAMP)
+    now = time.time() if now is None else now
+    try:
+        if now - os.path.getmtime(stamp) < interval:
+            return False
+    except OSError:
+        pass  # no stamp yet (or unreadable) -- treat as due
+    try:
+        with open(os.path.join(store_dir, "outgoing-copy-gate.log"), "a", encoding="utf-8") as fh:
+            fh.write(f"outgoing-copy-gate: NEV-SZABALY SZANDEKOSAN URES ({_LOCAL_RULES}, "
+                     "bad_name_patterns: 0) -- a fajl ep, de a nev-ellenorzesnek NINCS mire "
+                     "illeszkednie; a tobbi ellenorzes (ekezet, em dash, homoglifa) fut. "
+                     "Posztura-kiiras: scripts/hooks/outgoing-copy-gate.py --status\n")
+        with open(stamp, "w", encoding="utf-8") as fh:
+            fh.write("")
+    except OSError:
+        return False
+    return True
+
+
 BAD_NAME = load_bad_name()
+BAD_NAME_STATE = bad_name_state(BAD_NAME)
+if BAD_NAME_STATE == STATE_EMPTY:
+    _log_empty_rules()
 ACCENTED = set("áéíóöőúüűÁÉÍÓÖŐÚÜŰ")
 TAG = re.compile(r"<[^>]+>")
 
@@ -839,6 +959,60 @@ def audit(text: str):
     return problems
 
 
+def _pattern_count():
+    """How MANY name patterns are configured. The count only -- never the patterns.
+
+    GATEPERSIST816: the rules file is 0600 and names a private third party. A posture
+    report has to be safe to paste into a card or a chat, so this is the one number it
+    is allowed to know about the contents.
+    """
+    try:
+        with open(_LOCAL_RULES, encoding="utf-8") as fh:
+            return len(json.load(fh).get("bad_name_patterns") or [])
+    except Exception:
+        return 0
+
+
+def status_report():
+    """The gate's own posture, in words, from wherever it is invoked (card 934dc104).
+
+    The finding that opened that card was not a broken check -- it was that nobody could
+    ANSWER the question. Two agents measured the same gate from two checkouts and got
+    opposite, both-correct answers, because the answer depended on the caller. This prints
+    the answer, and prints WHICH file it read, so the next person does not have to infer it.
+    """
+    script_dir = os.path.dirname(os.path.abspath(__file__))
+    checkout = os.path.dirname(os.path.dirname(script_dir))
+    main_root = _main_clone_root(checkout)
+    if main_root:
+        where = u"worktree (%s), fő klón: %s" % (checkout, main_root)
+    else:
+        where = u"fő klón (%s)" % checkout
+    if os.environ.get("OUTGOING_COPY_GATE_RULES"):
+        where += u" [OUTGOING_COPY_GATE_RULES felülírja az útvonalat]"
+    verdict = {
+        STATE_ACTIVE: u"ACTIVE -- %d minta betöltve, a névellenőrzés valóban ellenőriz" % _pattern_count(),
+        STATE_EMPTY: u"EMPTY -- a fájl ép, de NULLA minta van benne: a névellenőrzés "
+                     u"szándékosan hatástalan (a többi ellenőrzés fut)",
+        STATE_BROKEN: u"BROKEN -- a fájl hiányzik, olvashatatlan vagy rossz alakú: "
+                      u"a névellenőrzés nem tud lefutni",
+    }[BAD_NAME_STATE]
+    email = u"TILT (fail-closed)" if BAD_NAME_STATE == STATE_BROKEN else u"átenged"
+    telegram = (u"átenged + systemMessage figyelmeztetés" if BAD_NAME_STATE == STATE_BROKEN
+                else u"átenged")
+    return u"\n".join([
+        u"outgoing-copy-gate posztúra",
+        u"  hívó checkout : " + where,
+        u"  szabályfájl   : " + _LOCAL_RULES,
+        u"  létezik       : " + (u"igen" if os.path.exists(_LOCAL_RULES) else u"NEM"),
+        u"  állapot       : " + verdict,
+        u"  email-ág      : " + email,
+        u"  telegram-ág   : " + telegram,
+        u"  megjegyzés    : a minták TARTALMÁT ez a kiírás soha nem mutatja "
+        u"(a fájl 0600, magánszemély nevét tartalmazza).",
+    ])
+
+
 def main():
     try:
         payload = json.load(sys.stdin)
@@ -899,4 +1073,9 @@ def main():
 
 
 if __name__ == "__main__":
+    # --status is a READ-ONLY posture readout, not a hook path: PreToolUse never passes
+    # argv, so this cannot collide with the gate's real job.
+    if len(sys.argv) > 1 and sys.argv[1] == "--status":
+        print(status_report())
+        sys.exit(0)
     main()
