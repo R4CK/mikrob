@@ -1115,6 +1115,19 @@
       <!-- Graph view -->
       <div class="mem-graph-view" id="memGraphView" hidden>
         <canvas id="memGraphCanvas"></canvas>
+        <div class="graph-toolbar" id="memGraphToolbar">
+          <button type="button" class="graph-layer-toggle" id="graphRelToggle" aria-pressed="false">
+            <span class="graph-layer-toggle-dot" aria-hidden="true"></span>
+            <span data-i18n="memories.graph.rel.toggle">Kanban-relációk</span>
+          </button>
+          <div class="graph-layer-legend" id="graphRelLegend" hidden>
+            <span class="graph-legend-chip" data-kind="card"><i aria-hidden="true"></i><span data-i18n="memories.graph.rel.card">Kártya</span> <b>0</b></span>
+            <span class="graph-legend-chip" data-kind="file"><i aria-hidden="true"></i><span data-i18n="memories.graph.rel.file">Fájl</span> <b>0</b></span>
+            <span class="graph-legend-chip" data-kind="decision" hidden><i aria-hidden="true"></i><span data-i18n="memories.graph.rel.decision">Döntés</span> <b>0</b></span>
+            <span class="graph-legend-chip" data-kind="other" hidden><i aria-hidden="true"></i><span data-i18n="memories.graph.rel.other">Egyéb</span> <b>0</b></span>
+          </div>
+          <div class="graph-layer-status" id="graphRelStatus" role="status" aria-live="polite" hidden></div>
+        </div>
         <div class="graph-empty" id="graphEmpty" hidden>
           <p data-i18n="memories.graph_empty">Nincs elég emlék a gráf megjelenítéshez</p>
         </div>
