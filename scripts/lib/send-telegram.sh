@@ -45,10 +45,8 @@ telegram_api_call() {
   # /proc/<pid>/cmdline -- so the URL goes through -K (config from stdin), never argv.
   # Everything else ("$@": --data-urlencode chat_id/text, extra flags) stays normal argv,
   # it carries no secret.
-  response=$(curl -sS -m 15 -K - "$@" <<CURLCFG 2>&1
-url = "https://api.telegram.org/bot${token}/${method}"
-CURLCFG
-)
+  response=$(printf 'url = "https://api.telegram.org/bot%s/%s"\n' "$token" "$method" \
+    | curl -sS -m 15 -K - "$@" 2>&1)
   curl_exit=$?
   # Never let the token reach a log/journal: redact before any echo.
   response="${response//${token}/<token>}"

@@ -4757,3 +4757,85 @@ adja), tehát a visszaesés nem igényel új konvenciót a hívóknál.
 csendes fallbacket.
 **Hivatkozás:** kártya `5d151091`, pair-FE `5dd4a211`, `src/local-llm-model-disabled.ts`.
 
+## 2026-09-03 -- dfff9b37 -- A landolók lefelé irányú ellenőrzése: bizonyítékra fail-closed, a hiányára hangos
+
+**Döntés.** Mindkét landoló (`store/cleancore-land.sh`, `store/marveen-land.sh`) beolvassa az
+`origin/main..<sha>` (illetve `origin/develop..<ág>`) tartományt egy közös könyvtárból
+(`store/landing-downward-check.sh`), és kártyánként csoportosítva kiírja, mi utazik a landolással.
+A `cleancore-land.sh` ELUTASÍT, ha egy commit MÁSIK kártyát nevez meg; a `marveen-land.sh` alapból
+csak JELENT, és a `--card <id>` teszi elutasítássá.
+
+**Miért.** A meglévő tip-ellenőrzés csak a felfelé irányt zárta le. A lefelé irányt semmi nem
+nézte, ezért a ténylegesen előforduló eset -- a gate-elt sha AZ a tip, alatta egy korábbi kártya
+gate-eletlen commitjai, mert az ügynök self-advance-elt ugyanazon az ágon -- minden ellenőrzésen
+átment. 2026-09-02-án egy nap alatt háromszor fordult elő ugyanazon az ágon (19c4684a, d284193f,
+45b29528); egyszer sem veszett el semmi, mert HÁROMSZOR emberi éberségen múlt.
+
+**Három ítélet, amit a kártya rám bízott, és a mérés, ami eldöntötte.**
+
+1. *A kártya-hivatkozás nélküli commit SEMLEGES, nem gyanús.* A kártya fail-closed-ot javasolt.
+   Mérés: a CleanCore utolsó 40 nem-merge commitjából 35 hordoz `card <id>`-t, 5 nem; a marveenen a
+   hivatkozás nélküli commit a TÖBBSÉG. Fail-closed itt egy dokumentációs szokásból csinálna
+   landolási kaput, és a guard túlnyomórészt a SAJÁT VAKFOLTJÁRA sülne el. Egy folyton tévesen
+   riasztó guardra reflexből rákerül az escape hatch, és onnantól a valódi esetet sem fogja meg.
+   Ezért: elutasítás csak POZITÍV bizonyítékra, de a be nem sorolható commitok MINDEN futásnál,
+   névvel kiíródnak.
+2. *Az ítélet egysége a COMMIT, nem a kártya-ID.* A valós landolás-történet visszajátszása közben
+   derült ki: a CleanCore `1a61865f` EGY commit, `(card e90505bb / 96ff46d4)` tárgysorral, tehát
+   jogosan MINDKÉT kártyáé. ID-nkénti pontozással a 96ff46d4 "idegen kártyának" számított volna egy
+   tökéletesen helyes landolás közben.
+3. *A marveen JELENT, nem utasít el.* A marveen egész ügynök-ágat landol, és a visszaadott sha MAGA
+   a Gate-SHA -- ott a gate a landolás UTÁN van, tehát nincs "gate-elt sha", amire kulcsolódjon.
+   Mérés: alapértelmezett elutasítással a 14 utolsó marveen landolásból 10 bukott volna el; a
+   `--card`-dal megnevezett esetben 1.
+
+**Elvetett alternatíva.** Ugyanaz az elutasítás mindkét landolóban, alapból. Ez a kártya saját 4.
+csapdája (túl szigorú guard = flotta-szintű leállás), és nem elméletben: a mérés szerint a marveen
+landolások többségét megállította volna.
+
+**Következmények.** `--allow-stacked <id>[,<id>...]` escape hatch, ami MEGNEVEZTETI az idegen
+kártyákat (nincs vak `--force`); `LANDING_DOWNWARD_CHECK=off` kikapcsoló commit nélkül.
+Visszajátszva a 14-14 utolsó valós landoláson: CleanCore 5 elutasítás (közte a `13a73c82`, ami a
+`d284193f`-et viszi -- pontosan a dokumentált hibaeset), marveen 1. A nagy, szándékos batch-
+landolások (`abdd3853`: 16 idegen commit, 12 kártya) `--allow-stacked`-et igényelnek -- ez a
+tudatos megnevezés ára, nem hiba.
+
+## 2026-09-03 07:01 -- upstream `load_bad_name()` fail-open változtatás NEM átvéve (kártya dfff9b37 mellékszála)
+
+**Döntés.** Munka közben upstream átírta a `scripts/hooks/outgoing-copy-gate.py`
+`load_bad_name()`-jét (`c724df596611..d35afdd048eb`): hiányzó/üres szabályfájl esetén az
+email-ág mostantól fail-OPEN. A flotta EZT NEM vette át -- a saját `outgoing-copy-gate.py`
+email-ága marad fail-closed (`BAD_NAME is None` -> elutasít), a szigorúbb oldalon hagyva a
+kaput.
+
+**Miért.** Ez biztonsági posztúra-váltás, nem sima bugfix -- upstream a hiányzó szabályfájlt
+"engedj át mindent" alapállapotra cserélte, mi "tiltsd le mindent, amíg nincs explicit
+szabály" mellett maradunk. Ez konzisztens a repó összes többi fail-open/fail-closed döntésével
+(lásd fent, blast-radius-check.py fail-open kivétel VS a governance-kapuk fail-closed
+alapállása) -- ahol a kockázat oldala (kimenő adat, nem csak belső riasztás) egyértelműen a
+szigorúbb alapállást indokolja.
+
+**Következmény, HELYESBÍTVE (Cybersec mérése, 2026-09-03 07:35, dfff9b37 gate-kör L5 lelete).**
+Az itt eredetileg leírt "fail-closed + üres szabály = minden kimenő levél elakad" állítás
+TÉVES volt, konkrét kódméréssel megcáfolva. A `load_bad_name()` MEGKÜLÖNBÖZTETI a hiányzó
+kulcsot (fail-closed, `None`) az explicit `"bad_name_patterns": []`-től (a `_NoBadNamePatterns`
+sentinel, kártya 3ec64c96 -- NEM `None`). A `store/outgoing-copy-gate-rules.json` a valós
+gyökérön (`/home/neon/marveen`) a kulcsot ÜRES LISTÁVAL tartalmazza, tehát a sentinel-ágra fut:
+a névellenőrzés CSENDESEN, FIGYELMEZTETÉS NÉLKÜL nem talál semmit -- a kimenő levél NEM akad
+el, csak a névszűrés hatástalan. Ez rosszabb, mint amit eredetileg leírtunk: nem egy látható
+akadály, hanem egy néma, aktiválatlan védelem.
+
+Emellett a posztúra CHECKOUT-FÜGGŐ: worktree-ből hívva (a szabályfájl gitignored+0600, sosem
+kerül worktree-be) a fájl HIÁNYZIK, ott a régi, valódi fail-closed ág fut (`None`, blokkol +
+logol). Ugyanaz a kapu tehát ellentétes posztúrát vesz fel aszerint, melyik checkout hívja --
+ez önmagában mérnöki kérdés (nem Peti-döntés), külön kártyán követve.
+
+**Teendő, Peti döntésére vár:** a `bad_name_patterns` feltöltése tényleges mintákkal (jelenleg
+NULLA aktív névszűrés van élesben a fő gyökéren), vagy a jelenlegi üres állapot tudatos
+megerősítése. Külön kártyán nyilvántartva (MikroB, "outgoing-copy-gate-rules.json ures
+bad_name_patterns").
+
+**Ki jelezte.** Cybersec (a leletet találta és a jegyzetet írta, `store/landing-cherry-pick-
+vs-branch-merge.md` mellett; a helyesbítést is Cybersec mérte a dfff9b37 gate-körben), backend2
+(dfff9b37-on dolgozva ütközött bele elsőként, maga NEM nyúlt a szabályfájlhoz -- az 0600,
+magánszemély nevét tartalmazza).
