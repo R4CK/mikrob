@@ -431,6 +431,7 @@ async function llmRefreshStatus() {
         const tpsHtml = m.benchmarked && typeof m.evalTps === 'number'
           ? (() => {
               const ctx = typeof m.benchCtx === 'number' ? ` @ ${m.benchCtx}` : ''
+              const dateLocale = window._lang === 'en' ? 'en-US' : 'hu-HU'
               const benchDate = m.benchmarkedAt ? new Date(m.benchmarkedAt).toLocaleDateString(dateLocale) : ''
               const tip = benchDate ? t('localLlm.models.bench.tip', { date: benchDate }) : t('localLlm.rec.tps_tip')
               return `<span class="llm-rec-tps" title="${escapeHtml(tip)}">⚡ ${llmFmtCount(Math.round(m.evalTps))} tok/s${escapeHtml(ctx)}</span>`
