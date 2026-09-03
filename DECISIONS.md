@@ -4937,3 +4937,54 @@ cső-alakjára módosult (nincs kérés-törzs, tehát a `-H @-` nem eszi meg). 
 (`guard-allow`) helyett a magyarázó komment lett átfogalmazva, hogy ne idézze a tiltott alakot --
 a kivétel maga is elavulhat, a szerkezeti tiltás nem. Így a fork KÉT ponton tér el az upstream
 átvételtől: a fenntartott-küldő őr és ez.
+
+## 2026-09-03 21:35 -- Helyi-LLM modell-elosztas swimlane: adat-vegpont kontraktusa (2ffc0a96)
+
+**Döntés:** `GET /api/local-llm/model-usage-buckets?hours=6` NEM 5 perces bucketeket ad (ahogy a
+kártya CÍME mondja), hanem NYERS per-feladat sorokat modellenként csoportosítva, plusz egy KPI
+blokkot. Peti későbbi pontosítása (kártya-komment 18774, design-referenciával) swimlane-t kér, ahol
+minden feladat a saját kezdő-időpontjában és időtartamával jelenik meg -- ehhez bucket-összeg
+használhatatlan. A `bucket_minutes` paraméter ezért nincs. A kontraktust Fron Teddy javasolta
+(komment 18874), a backend hat ponton javította és MINDKÉT irányban rögzítette, MIELŐTT bármelyik
+oldal épített (8b. szabály; kártya-komment 19021 + inter-agent üzenet 22019).
+
+**A hat javítás közül kettő helyességi, nem ízlés:**
+
+1. **A ledger 1. oszlopa a BEFEJEZÉS ideje, nem a kezdésé.** Mérve a logot ÍRÓ kódban
+   (`store/local-llm.sh`): `START_MS` a hívás elején, a `$(date +%s)` viszont a `log_usage`-ben, a
+   hívás UTÁN fut. Ezért `startMs = ts*1000 - durationMs`, és a válasz `startMs`-t ÉS `endMs`-t is
+   ad, hogy a frontendnek ne kelljen levezetnie. Naiv `startMs = ts*1000` mellett minden swimlane-sáv
+   a saját hosszával jobbra csúszna -- az élő logban van 86 másodperces feladat, ott ez azonnal
+   látható hiba. A `ts` másodperc-felbontású, a `durationMs` ezredmásodperc, tehát a `startMs`
+   +/-1 mp-en belül pontos; ez ki van mondva a kontraktusban.
+2. **`tokensPerSec` típusa `number | null`, soha nem 0.** Az `err` és `busy` sorok token-oszlopai
+   0-k (a `log_usage` ilyenkor token-argumentumok nélkül hívódik), a régi sorokban pedig nincs is
+   10. oszlop. Egy 0 a grafikonon valódi "0 token/s" mérésként jelenne meg. A szomszédos
+   `last-generation` végpont (b21deb9a kártya) már ezt az elvet követi -- ugyanaz maradt.
+
+**A további négy:** mindkét latency megy (`durationMs` = wall-idő, ez a sáv szélessége, GPU-lock
+várakozással együtt; `evalDurationMs` = tiszta generálási idő, ebből számol a tokens/s -- Peti 18774
+explicit mindkettőt kérte); a UI-próbák kiszűrve a meglévő `isRealCall`-lal; a `busy` (GPU-lock
+torlódás) NEM számít bele az `errorRatePct`-be, külön `busyCount`-ként megy, mert különben egy
+terhelés-csúcs hibás rendszernek látszana; a feladat-`id` `${ts}-${index}`, mert másodperc-felbontás
+mellett a sorok rendszeresen egybeesnek (a `route-classify` hívó sűrűn tüzel).
+
+**`truncated` mező, és amit NEM állít:** a ledger-tail korlátos (5000 sor). A mező CSAK akkor igaz,
+ha a tail elérte a sor-korlátot ÉS az így elért legrégebbi sor is az ablakon belülre esik. A két
+tény összevonása hamis pozitív lenne: "a legrégebbi sorom frissebb az ablaknál" egy fiatal vagy
+frissen rotált lognál a NORMÁLIS állapot, ahol semmi nem hiányzik.
+
+**Nem épült új parser:** a `src/web/routes/local-llm.ts` már tartalmaz tesztelt `parseUsageRows`-t és
+korlátozott `tailUsageLines`-t, az aggregáció ezekre ül (10. szabály).
+
+**Mért állapot a bevezetéskor:** az élő logban az utolsó 6 órában 25 sor van, MIND egyetlen modell
+(`qwen2.5-coder:7b-instruct-q4_K_M`), 21 ok / 4 err, ebből 19 a `route-classify` hívótól. A
+routing-config másik modelljének (`hf.co/empero-ai/Qwen3.8-9B-Distill-GGUF`) továbbra is nulla
+forgalma van -- pontosan az, amit a kártya STATUS QUO-ja írt. A frontend tehát élesben most egy
+sávot rajzol; ez a "csak a ténylegesen aktív modellek szerepeljenek" követelmény helyes viselkedése,
+nem hiba, és Fron Teddy előre megkapta.
+
+**Ki döntött:** backend (mérés + a hat javítás), Fron Teddy (a kontraktus alapalakja), Peti (a
+swimlane-követelmény és a KPI-lista).
+**Hivatkozás:** kártya `2ffc0a96` (Pair-FE: `d6ecb003`); `src/web/routes/local-llm.ts`
+(`buildModelUsageSwimlane` + a route), `src/__tests__/local-llm-model-usage-swimlane.test.ts`.
