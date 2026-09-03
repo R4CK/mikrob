@@ -199,7 +199,8 @@ const ACKNOWLEDGED_CONFLICTS = {
   // kanban-write gate, quarantineReader project-scope refactor, and watcher from upstream
   // alongside the fork's section-writer, neither side taken wholesale.
   'src/web/agent-scaffold.ts':
-    "keep BOTH section-writers (fork ensureLocalFirstSection + upstream ensureSkillsPathTrapSection), AND adopt upstream kanban-write gate (agentGetsKanbanWriteGate/injectKanbanWriteGate), quarantineReader project-scope refactor (EGRESSRENDER824), and watchEgressAllowlistForReaderRender -- all additive, none taken wholesale. Re-read 2026-08-26 (card 72f5f13b, unblocking fbb36b41/489dae5f landings): upstream moved AGAIN since this rule was written (added findDuplicateJsonKeys dup-key detection in ensureAgentHooks, HEARTBEAT_AGENT_ID import, EMAIL_GATE_MATCHER/emailGateMatcherStale export) -- 22 diff hunks total against a 1600-line security-critical file (fleet-wide hook wiring: git-protect/npm-protect/blast-radius/pentest-install guards live here). NOT safe to hand-merge under time pressure just to unblock a landing. The fork's own guards (git-protect/npm-protect/blast-radius/pentest-install, unchanged in this diff) remain authoritative and untouched on live develop. Full reconciliation of ALL upstream additions (this round's + the previously-acknowledged kanban-write-gate round) is done and build+test-verified in the disposable card-72f5f13b merge worktree, pending the Peti-supervised F5 cutover (card 5c134edf) -- that is where this file's real sync lands, not a piecemeal live-develop patch.",
+    "keep BOTH section-writers (fork ensureLocalFirstSection + upstream ensureSkillsPathTrapSection), AND adopt upstream kanban-write gate (agentGetsKanbanWriteGate/injectKanbanWriteGate), quarantineReader project-scope refactor (EGRESSRENDER824), and watchEgressAllowlistForReaderRender -- all additive, none taken wholesale. Re-read 2026-08-26 (card 72f5f13b, unblocking fbb36b41/489dae5f landings): upstream moved AGAIN since this rule was written (added findDuplicateJsonKeys dup-key detection in ensureAgentHooks, HEARTBEAT_AGENT_ID import, EMAIL_GATE_MATCHER/emailGateMatcherStale export) -- 22 diff hunks total against a 1600-line security-critical file (fleet-wide hook wiring: git-protect/npm-protect/blast-radius/pentest-install guards live here). NOT safe to hand-merge under time pressure just to unblock a landing. The fork's own guards (git-protect/npm-protect/blast-radius/pentest-install, unchanged in this diff) remain authoritative and untouched on live develop. Full reconciliation of ALL upstream additions (this round's + the previously-acknowledged kanban-write-gate round) is done and build+test-verified in the disposable card-72f5f13b merge worktree, pending the Peti-supervised F5 cutover (card 5c134edf) -- that is where this file's real sync lands, not a piecemeal live-develop patch." +
+    "Re-measured 2026-09-03 (backend2, card 6500e1d3 landing-block, 2a72fb5c7f38..936cdac15d5c): upstream threaded a new AGENT_API_ORIGIN through resolveDashboardOrigin, giving it a third parameter and the precedence AGENT_API_ORIGIN > DASHBOARD_PUBLIC_URL > localhost. Its reason is measured, not stylistic: on a single-host install behind hairpin NAT the public name resolved but its 443 was unreachable FROM THE HOST, so 73 generated curl examples across 18 agent CLAUDE.md files pointed at a dead address and returned curl exit 7 -- nothing the agent could even surface. An empty AGENT_API_ORIGIN keeps the old behaviour byte-for-byte. None of it touches the section-writers, the kanban-write gate or the quarantineReader scope that this rule decides. Resolution unchanged; blob bumped. The 'not safe to hand-merge under time pressure' warning above STILL STANDS and is not weakened by this bump.",
   // ORIGINAL entry (2026-08-16, card 88505fb5) described a schema-migration/trigger hunk in
   // ensureSchema() -- that hunk no longer conflicts (both sides' migrations merged clean since).
   // RE-MEASURED 2026-09-01 (heartbeat reconciliation): the file conflicts again, but at a totally
@@ -291,7 +292,8 @@ const ACKNOWLEDGED_CONFLICTS = {
   // Resolution: keep the fork's async measurePct, adopt upstream's configDirFor/measureContextTokens
   // (made async)/measureIdleMs verbatim otherwise, await the two new call sites.
   'src/web/context-guard-runner.ts':
-    "keep the fork async measurePct/configDirFor; adopt upstream measureContextTokens+measureIdleMs to wire the fork's existing idleFlushEnabled domain logic, making measureContextTokens async (fork's readContextTokensFromProjectDir is async, upstream's is sync) and awaiting its two call sites in checkAgent",
+    "keep the fork async measurePct/configDirFor; adopt upstream measureContextTokens+measureIdleMs to wire the fork's existing idleFlushEnabled domain logic, making measureContextTokens async (fork's readContextTokensFromProjectDir is async, upstream's is sync) and awaiting its two call sites in checkAgent" +
+    " SHARPENED 2026-09-03 (backend2, card 6500e1d3 landing-block, b17ba4f630db..2876a41d1fb2) -- NOT a plain blob bump: upstream moved AT one of the two points this rule names. configDirFor() now calls resolveAgentConfigDirForRead() instead of readAgentClaudeConfigDir(), because an agent whose config dir was auto-provisioned by the launcher has no field to read and the old call silently returned the host default, i.e. ANOTHER agent's absence. That is a real bug fix and it does not conflict with 'keep the fork's async configDirFor': the two sides change different things about the same function, so keep the fork's async shape and adopt upstream's resolver INSIDE it. Second upstream change, additive and to be adopted: the request-handoff branch of checkAgent now goes through sendSystemDirective instead of a bare sendPromptToSession (GUARDHITELES903) -- a message telling an agent to drop work and stop is indistinguishable from a prompt injection without a queue anchor, and an agent correctly refused one on 2026-09-03.",
   // Card 2e634e5c, fifth file, the largest and the only one NOT fully hand-verified line-by-line --
   // recorded as a POLICY, not a line-by-line merge, same character as the src/web/update-checker.ts
   // entry above. web/app.js is a STUB scaffold: its content was extracted into 36 web/app-*.js
@@ -378,6 +380,17 @@ const ACKNOWLEDGED_CONFLICTS = {
     "countNewerMessagesFromSameSender import + the 7th `freshness` argument into " +
     "wrapAgentMessageForDelivery (rendered inside the sender line). Different signals, different " +
     "positions, no symbol collision -- taking either side wholesale silently drops a shipped feature",
+  // Card 6500e1d3 landing. ONE hunk, both sides purely additive at the SAME insertion point and for
+  // unrelated reasons. Fork: quarantine a stray store/update-health-watchdog.sh through
+  // rollback-guard.sh (card 980454f7) -- the leftover that re-armed the auto-rollback loop which
+  // walked the live install back 529 commits on 2026-08-06. Upstream: echo a timestamp header,
+  // because store/boot.log is appended across reboots and without a date it cannot tell 'started
+  // once' from 'started twice'. No shared symbol, no ordering dependency between them.
+  'scripts/start.sh':
+    'additive on both sides, keep BOTH: the fork rollback-guard --quarantine-stray block (card ' +
+    '980454f7) AND upstream\'s boot.log timestamp echo. Put the timestamp FIRST -- it is a run ' +
+    'header and the guard writes its own prefixed lines under it -- but the order is cosmetic; ' +
+    'taking either side wholesale silently drops a shipped behaviour',
   'src/web/token-usage.ts':
     "additive, non-colliding imports on both sides -- keep fork's estimateCostUsd/stripDateSuffix (model-pricing.js) AND upstream's listAgentNames (agent-config.js) + resolveAgentConfigDirForRead (claude-plans.js), all four together",
   // Test-fixture window-size conflict, NOT a source conflict: src/web/schedule-runner.ts itself
@@ -436,7 +449,8 @@ const ACKNOWLEDGED_CONFLICTS = {
   // agent-scaffold.ts. Blob bumped to record today's re-read; resolution unchanged, stays
   // pending F5.
   'src/web/heartbeat-agent-scaffold.ts':
-    'two-way merge: adopt upstream metrics-script approach (HBMEMBLIND819 third contract -- bash heartbeat-metrics.sh, HeartbeatIdentity.metricsScript, HEARTBEAT_AGENT_ID import, updated report format using COUNTS/URGENT/WAITING/SCHEDULES/TASK_RUNS_1H lines verbatim) for the kanban section; keep fork printf|curl token-argv-safe pattern for the remaining curl calls (quota park + inter-agent message) that upstream did not touch -- NOT yet applied to live develop, deferred to F5 same as agent-scaffold.ts',
+    'two-way merge: adopt upstream metrics-script approach (HBMEMBLIND819 third contract -- bash heartbeat-metrics.sh, HeartbeatIdentity.metricsScript, HEARTBEAT_AGENT_ID import, updated report format using COUNTS/URGENT/WAITING/SCHEDULES/TASK_RUNS_1H lines verbatim) for the kanban section; keep fork printf|curl token-argv-safe pattern for the remaining curl calls (quota park + inter-agent message) that upstream did not touch -- NOT yet applied to live develop, deferred to F5 same as agent-scaffold.ts' +
+    "Re-measured 2026-09-03 (backend2, card 6500e1d3 landing-block, bb4a7bc74200..ad28ed576466): upstream threaded the same AGENT_API_ORIGIN into currentHeartbeatIdentity's resolveDashboardOrigin call, and REWROTE the 'Collect the four data sources' prose plus the calendar wording (now HEARTBEAT_CALENDAR_ID rather than 'whatever account the MCP server is authenticated as'). The metrics-script contract this rule adopts is untouched, and so is the fork's printf|curl token-argv-safe pattern it keeps. NOTE for whoever executes the merge: this rule says to take upstream's report format 'verbatim' -- that word now refers to TODAY's block, not the one it was written against, so copy from this blob rather than from memory.",
   // Re-read 2026-08-23 against upstream 9736ea67 (card 394fb5ce): the file moved on, so the rule
   // below now describes TODAY's two hunks rather than the ones it was first written for. The
   // SIGTERM/janitor hunks the previous text named have since merged cleanly and are gone; what
@@ -451,7 +465,8 @@ const ACKNOWLEDGED_CONFLICTS = {
   // Upstream's new sawTurn / 'lost' watchdog in the same file merges CLEANLY and is adopted with
   // no decision needed -- it is recorded here only so the next reader knows it was looked at.
   'src/web/schedule-runner.ts':
-    'two independent non-overlapping changes: keep the fork async runPreCheck signature (955f014e) and the fork try/catch around startAgentProcess (e9d3cd12); adopt upstream quotaWorkClass() and the cleanly-merging sawTurn/lost watchdog',
+    'two independent non-overlapping changes: keep the fork async runPreCheck signature (955f014e) and the fork try/catch around startAgentProcess (e9d3cd12); adopt upstream quotaWorkClass() and the cleanly-merging sawTurn/lost watchdog' +
+    "Re-measured 2026-09-03 (backend2, card 6500e1d3 landing-block, 9736ea673775..a7c10a08f1fa): upstream added a desktop-lock gate (decideDesktopGate/readDesktopLock/recordDesktopSkip), owner-escalation for pending retries (markPendingTaskRetryOwnerAlert + OWNER_ESCALATION_EXTRA_MS, classifyTelegramSendError generalised to classifySendError), and channel-provider imports. All of it is elsewhere in the file; the fork's async runPreCheck signature and its try/catch around startAgentProcess -- the two things this rule decides -- are untouched. Resolution unchanged; blob bumped.",
   // Fork added agents/** to the exclude list (with explanatory comment: live-install agent SDK
   // tests would otherwise drown the real suite). Upstream added assert-supported-node.ts to
   // setupFiles and updated the comment above setupFiles to list both gates. Both changes are
@@ -739,13 +754,13 @@ const ACKNOWLEDGED_UPSTREAM_BLOBS: Readonly<Record<keyof typeof ACKNOWLEDGED_CON
   'src/web/context-restart-gate-runner.ts': '268fc2e659fa8210c2b67c1df64e4006c2e727af',
   'src/web.ts': 'a515f9c8750b2aeece08eb66034f466e6d8a7732',
   'src/web/keychain.ts': '1e1730ee0d8f6b1d4b51c5c254f3fab56acfa376',
-  'src/web/agent-scaffold.ts': '2a72fb5c7f388a6be9077a1a3d8821231bcf8a88',
+  'src/web/agent-scaffold.ts': '936cdac15d5c59305cdff4e7659ec95e95d86f2a',
   'src/db.ts': '6a71eab9ab67a2c0e17dd086ee319be80a0bb284',
   'src/web/routes/agents.ts': '4b7a61e33448134091ae6a9175857a4027bdab28',
   'src/web/routes/kanban.ts': '89423d29b8af3e949cb520eefc8f5a0d03ff380c',
   'scripts/hooks/egress-gate.mjs': '229076d5812e7d50a188ca07b43a87fb6239b233',
   'src/__tests__/egress-gate.test.ts': 'c24ca54ffc49de70d602790fa1d6b80e3aea4156',
-  'src/web/context-guard-runner.ts': 'b17ba4f630dbba93cfd5520e3c37a854a5c80c81',
+  'src/web/context-guard-runner.ts': '2876a41d1fb283e5591dec8666b67734b2b52b53',
   'web/app.js': 'e8c74d15bbb930ca7fff43139b868b0e638e7a11',
   'web/style.css': 'b774ccb836f07ca78c300077302834a80cd12edb',
   'src/web/agent-taskstate.ts': '625d03282bb75b554ce23822f67cc4e51b0706c1',
@@ -754,13 +769,14 @@ const ACKNOWLEDGED_UPSTREAM_BLOBS: Readonly<Record<keyof typeof ACKNOWLEDGED_CON
   // correlateWithKanban() (skips parent cards via NOT EXISTS + comment), import hunk untouched,
   // the four-imports rule above still holds; additive, no collision with the fork's edits.
   'src/web/message-router.ts': 'ac55c39b847d2ebbea43ab83cd449a1b774f73ca',
+  'scripts/start.sh': '5ddd9df0c82471ff51efd542c72693033e462988',
   'src/web/token-usage.ts': '346fa63739d85f7af55b06d9359f4ec82db00f3e',
   'src/__tests__/schedule-runner-autostart.test.ts': '678cbb42e4447b206598bfbb9bc271602a3f896b',
   '.gitignore': '1e5adbb2332be0dbf5a710c1899e49305ccb318b',
   'package.json': '031fc59039e3081034cf870745202076818b1bff',
   'package-lock.json': 'f4f25dd6896d5a4f80c13df1b056b632f86f37e6',
-  'src/web/heartbeat-agent-scaffold.ts': 'bb4a7bc74200725e8c257f7d835b082ed6f12047',
-  'src/web/schedule-runner.ts': '9736ea6737757cc0155671dca3d9d2874b330885',
+  'src/web/heartbeat-agent-scaffold.ts': 'ad28ed576466d9a591209c501ced06998ec1a505',
+  'src/web/schedule-runner.ts': 'a7c10a08f1fac72f1401ec53eb415fcd2aee2e24',
   'vitest.config.ts': '62d4ac7606cd719d40e07fc0d82c7f777dda0b30',
   'src/web/agent-process.ts': '45e20624c63fdb4377943aede3cf4fc0d46b3319',
   'src/web/auto-restart-runner.ts': '044dde0ad94f5a57ff8e611656f288b25fecdaff',
