@@ -380,17 +380,42 @@ const ACKNOWLEDGED_CONFLICTS = {
     "countNewerMessagesFromSameSender import + the 7th `freshness` argument into " +
     "wrapAgentMessageForDelivery (rendered inside the sender line). Different signals, different " +
     "positions, no symbol collision -- taking either side wholesale silently drops a shipped feature",
-  // Card 6500e1d3 landing. ONE hunk, both sides purely additive at the SAME insertion point and for
-  // unrelated reasons. Fork: quarantine a stray store/update-health-watchdog.sh through
-  // rollback-guard.sh (card 980454f7) -- the leftover that re-armed the auto-rollback loop which
-  // walked the live install back 529 commits on 2026-08-06. Upstream: echo a timestamp header,
-  // because store/boot.log is appended across reboots and without a date it cannot tell 'started
-  // once' from 'started twice'. No shared symbol, no ordering dependency between them.
+  // Card 206ab192 (URGENT: this file being undecided blocked EVERY marveen landing). The CONFLICT is
+  // one hunk -- fork's rollback-guard quarantine block (card 980454f7, the leftover that re-armed the
+  // loop which walked the live install back 529 commits) vs upstream's boot.log timestamp header --
+  // but resolving only that would miss the actual question, so it was measured properly:
+  //
+  // OUR Linux branch is BYTE-IDENTICAL to the merge base. The fork's only divergence in this file is
+  // the quarantine block, which sits before the OS dispatch and touches nothing upstream changed.
+  // Upstream took the file 89 -> 175 lines with work that is squarely OUR problem, not generic:
+  //   - a flock + pidfile IDEMPOTENT launch, because on WSL two autostart hooks reach this script on
+  //     the same boot (wsl.conf [boot] and a Windows ONLOGON task) and the loser used to start a
+  //     SECOND channels.sh polling the SAME bot token -- incoming messages split between two pollers
+  //     with no error anywhere. This fleet runs on WSL2.
+  //   - system-scope units tried BEFORE `systemctl --user`, because as root the user call fails and
+  //     the script fell through to nohup, putting a second dashboard next to the system-unit one
+  //     (EADDRINUSE crash loop).
+  //
+  // SO THE DECISION IS ADOPT -- but start.sh and stop.sh are ONE PROTOCOL and must move together.
+  // start.sh's new _service_live() decides 'already running' from the PIDFILE, and that is only sound
+  // because upstream also made stop.sh remove the pidfile ONLY AFTER the process is confirmed gone
+  // (the other half of 9d3b77f4, 43 insertions in scripts/stop.sh). OUR stop.sh is still the merge-base
+  // version: it does `kill` and then `rm -f` the pidfile immediately, without waiting for exit. Taking
+  // start.sh alone would therefore hand the new liveness check a pidfile that is already gone while the
+  // old process is still winding down -- the update finalizer runs stop.sh then start.sh back to back,
+  // which is exactly the sequence upstream's comment says it fixed. scripts/stop.sh does NOT conflict
+  // (our side is unmodified), so nothing forces it to be looked at -- which is precisely why it is
+  // named here.
   'scripts/start.sh':
-    'additive on both sides, keep BOTH: the fork rollback-guard --quarantine-stray block (card ' +
-    '980454f7) AND upstream\'s boot.log timestamp echo. Put the timestamp FIRST -- it is a run ' +
-    'header and the guard writes its own prefixed lines under it -- but the order is cosmetic; ' +
-    'taking either side wholesale silently drops a shipped behaviour',
+    'ADOPT upstream wholesale for the OS-dispatch region (our Linux branch is byte-identical to the ' +
+    'merge base, so this is a clean take, not authorship): the flock+pidfile idempotent launch, the ' +
+    'system-scope-units-first branch, and the boot.log timestamp header. KEEP the fork rollback-guard ' +
+    '--quarantine-stray block (card 980454f7), which sits before the OS dispatch and overlaps nothing. ' +
+    'MANDATORY PAIR: adopt scripts/stop.sh from the same upstream commit (9d3b77f4) IN THE SAME ' +
+    'CHANGE -- start.sh decides "already running" from the pidfile, which is only sound once stop.sh ' +
+    'removes that pidfile after confirming exit; our stop.sh still unlinks it immediately after kill. ' +
+    'stop.sh does not conflict, so nothing else will force it to be looked at. Adopting start.sh ' +
+    'alone is WORSE than adopting neither',
   'src/web/token-usage.ts':
     "additive, non-colliding imports on both sides -- keep fork's estimateCostUsd/stripDateSuffix (model-pricing.js) AND upstream's listAgentNames (agent-config.js) + resolveAgentConfigDirForRead (claude-plans.js), all four together",
   // Test-fixture window-size conflict, NOT a source conflict: src/web/schedule-runner.ts itself
