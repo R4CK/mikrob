@@ -34,7 +34,10 @@ vi.mock('../db.js', () => ({
   insertPendingTaskRetryIfNew: vi.fn(),
   markPendingTaskRetryAlert: vi.fn(() => false),
   clearPendingTaskRetryAlert: vi.fn(),
+  markPendingTaskRetryOwnerAlert: vi.fn(() => false),
+  clearPendingTaskRetryOwnerAlert: vi.fn(),
   markScheduledTaskKanbanWaiting: vi.fn(),
+  createAgentMessage: vi.fn(),
 }))
 vi.mock('../web/telegram.js', () => ({
   sendTelegramMessage: vi.fn(async () => {}),
@@ -54,6 +57,7 @@ vi.mock('../web/agent-process.js', () => ({
   capturePane: () => null,
   sendEnterToSession: vi.fn(),
   clearStaleParkedInput: vi.fn(() => false),
+  resolveAgentProvider: () => 'telegram',
 }))
 
 function task(name: string, agent: string): ScheduledTask {

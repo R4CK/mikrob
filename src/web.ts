@@ -15,7 +15,7 @@ import { CONTENT_SECURITY_POLICY } from './web/csp.js'
 import { json } from './web/http-helpers.js'
 import { detectLanIp } from './web/network-info.js'
 import { AGENTS_BASE_DIR, listAgentNames, listAllAgentNames } from './web/agent-config.js'
-import { ensureAgentHooks, ensureAgentStalenessHook, ensureEgressGate, ensureNpmProtectGuard, ensureBlastRadiusGuard, ensurePentestToolInstallGuard, ensureSymlinkedNodeModulesGuard, ensureTaskstateReplayMatcher, ensureGovernanceGateCommands, ensureQuarantineReader, watchEgressAllowlistForReaderRender, ensureDefaultScheduledTasks, agentSettingsPath, ensureAutonomySection, ensureSkillsPathTrapSection } from './web/agent-scaffold.js'
+import { ensureAgentHooks, ensureAgentStalenessHook, ensureAgentProvenanceHook, ensureEgressGate, ensureNpmProtectGuard, ensureBlastRadiusGuard, ensurePentestToolInstallGuard, ensureSymlinkedNodeModulesGuard, ensureTaskstateReplayMatcher, ensureGovernanceGateCommands, ensureQuarantineReader, watchEgressAllowlistForReaderRender, ensureDefaultScheduledTasks, agentSettingsPath, ensureAutonomySection, ensureSkillsPathTrapSection } from './web/agent-scaffold.js'
 import { shouldRegisterHooks, pruneStaleHooksFromSettingsFile } from './web/hook-registration-guard.js'
 import { refreshMarveenBotUsername } from './web/telegram.js'
 import { startMessageRouter } from './web/message-router.js'
@@ -562,6 +562,7 @@ export function startWebServer(port = 3420): http.Server {
     try {
       const patched: string[] = []
       const stalePatched: string[] = []
+      const provPatched: string[] = []
       const egressPatched: string[] = []
       const govPatched: string[] = []
       const npmGuardPatched: string[] = []
@@ -586,6 +587,7 @@ export function startWebServer(port = 3420): http.Server {
         pruned.push(...pruneStaleHooksFromSettingsFile(agentSettingsPath(agentName)))
         if (ensureAgentHooks(agentName)) patched.push(agentName)
         if (ensureAgentStalenessHook(agentName)) stalePatched.push(agentName)
+        if (ensureAgentProvenanceHook(agentName)) provPatched.push(agentName)
         if (ensureEgressGate(agentName)) egressPatched.push(agentName)
         if (ensureNpmProtectGuard(agentName)) npmGuardPatched.push(agentName)
         if (ensureBlastRadiusGuard(agentName)) blastGuardPatched.push(agentName)
@@ -612,6 +614,7 @@ export function startWebServer(port = 3420): http.Server {
       if (taskstateMatcherPatched.length) logger.info({ patched: taskstateMatcherPatched }, 'taskstate-replay SessionStart matcher widened in agent settings.json')
       if (patched.length) logger.info({ patched }, 'PreCompact hook backfilled into agent settings.json')
       if (stalePatched.length) logger.info({ patched: stalePatched }, 'staleness-guard UserPromptSubmit hook backfilled into agent settings.json')
+      if (provPatched.length) logger.info({ patched: provPatched }, 'provenance-gate UserPromptSubmit hook backfilled into agent settings.json')
       if (egressPatched.length) logger.info({ patched: egressPatched }, 'egress-gate WebFetch hook backfilled into agent settings.json')
       if (govPatched.length) logger.info({ patched: govPatched }, 'governance gate hook commands upgraded to absolute node path in agent settings.json')
     } catch (err) {

@@ -314,6 +314,11 @@
 // (Moved to app-activity.js as part of modularisation, slice 35.
 //  app-activity.js is loaded AFTER this file in index.html.
 //  startActivityPoll/stopActivityPoll called from switchPage; no init-time calls here.)
+// Re-audited 2026-09-02 (card 684dda18, blob e8c74d15): upstream's inline version here adds a
+// "thinking orb" spinner for state===working -- NOT a gap, app-activity.js already has its own
+// activity-badge.act-working "breathing" pulse animation for the same signal (style.css); adding
+// the orb on top would double-animate. Skipped as redundant, per the fork's own slice-authority
+// policy (see the STUB comment / ACKNOWLEDGED_CONFLICTS entry for web/app.js).
 /* STUB -- content removed */
 
 // ============================================================
@@ -324,6 +329,11 @@
 //  Card detail, Breakdown modal -- all moved to app-kanban.js, slice 30.
 //  loadKanban() is called from switchPage and startKanbanRefresh() in app.js.
 //  app-kanban.js is loaded AFTER this file in index.html.)
+// Merge note (2026-09-03, card f4442719): upstream's inline monolithic version of this section
+// (~4900 lines) was NOT hand-audited against app-kanban.js for this merge -- per this file's own
+// STUB/slice-authority policy, taking it wholesale would be wrong, but a genuine line-by-line
+// parity diff is the separate, dedicated audit card this policy already calls for and explicitly
+// defers (see the ACKNOWLEDGED_CONFLICTS entry above). Kept the fork's STUB; the audit remains open.
 /* STUB -- content removed */
 
 // ============================================================

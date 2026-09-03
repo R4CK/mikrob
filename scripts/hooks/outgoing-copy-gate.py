@@ -848,6 +848,18 @@ def main():
     tool = str(payload.get("tool_name") or "")
     tool_input = payload.get("tool_input") or {}
 
+    is_relevant = bool(re.search(r"telegram.*__reply$", tool, re.I)) or bool(re.search(r"send_email", tool, re.I)) or tool == "Bash"
+    # A non-dict tool_input (e.g. a list) used to crash collect_mcp_body/collect_bash_body's
+    # .get() calls with an uncaught AttributeError -- exit 1, which for a PreToolUse GATE is
+    # non-blocking (the send ran unchecked). Same fail-closed stance as an unreadable body below.
+    # Scoped to tools this gate actually inspects -- an irrelevant tool call with a malformed
+    # tool_input is not this gate's concern and still falls through to the plain exit(0) below.
+    if is_relevant and not isinstance(tool_input, dict):
+        sys.stderr.write(
+            "KIMENO-SZOVEG KAPU: TILTVA -- a tool_input nem szotar alaku, nem tudom megvizsgalni.\n"
+        )
+        sys.exit(2)
+
     if re.search(r"telegram.*__reply$", tool, re.I):
         telegram_gate(tool_input)  # exits; never falls through
     if re.search(r"send_email", tool, re.I):

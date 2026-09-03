@@ -40,9 +40,11 @@ describe('schedule-runner auto-starts a stopped agent for its scheduled task', (
     // real busy-check). Must launch the agent and return the 'starting' state.
     //
     // Widened from 1800 to 3000 (card e9d3cd12): the block itself grew by a try/catch that maps a
-    // REJECTING auto-start onto the same 'missing' verdict as a failing one. The assertions below
-    // are unchanged -- the window only has to still contain the block it was written for.
-    const missingBlock = SRC.slice(guardIdx, guardIdx + 3000)
+    // REJECTING auto-start onto the same 'missing' verdict as a failing one. Upstream separately
+    // widened to 2800 because the main-agent guard (schedule-runner-main-agent-missing.test.ts) now
+    // sits ahead of this code in the same block -- both additions land together in the real merged
+    // file, so the window has to cover both, not just whichever side asked for more.
+    const missingBlock = SRC.slice(guardIdx, guardIdx + 3400)
     expect(missingBlock).toMatch(/startAgentProcess\(agentName\)/)
     expect(missingBlock).toMatch(/return 'starting'/)
     // And the new branch is inside the same block, not bolted on somewhere else.
@@ -70,7 +72,8 @@ describe('schedule-runner auto-starts a stopped agent for its scheduled task', (
 
   it('documents WHY (daily batch agent), not just what', () => {
     const guardIdx = SRC.indexOf('if (!sessionExistsOnHost(')
-    const rationale = SRC.slice(guardIdx, guardIdx + 900)
+    // Widened from 900 for the same reason as above.
+    const rationale = SRC.slice(guardIdx, guardIdx + 1900)
     expect(rationale).toMatch(/auto-start|batch agent|digest/i)
     expect(rationale).toMatch(/skipIfBusy/i)
   })

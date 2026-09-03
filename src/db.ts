@@ -970,6 +970,11 @@ export function initDatabase(dbPathOverride?: string): void {
     )
   `)
   db.exec(`CREATE INDEX IF NOT EXISTS idx_pending_retries_first_attempt ON pending_task_retries(first_attempt)`)
+  // Stage-2 escalation stamp (direct-to-owner channel alert), added
+  // alongside the two-stage escalation redesign. Mirrors alert_sent_at
+  // exactly (claim-before-send guard, cleared on delivery failure), just for
+  // the later, bigger threshold.
+  try { db.exec('ALTER TABLE pending_task_retries ADD COLUMN owner_alert_sent_at INTEGER') } catch { /* already exists */ }
 
   db.exec(`
     CREATE TABLE IF NOT EXISTS background_tasks (
@@ -1260,6 +1265,14 @@ export function initDatabase(dbPathOverride?: string): void {
   `)
   db.exec(`CREATE INDEX IF NOT EXISTS idx_approvals_status ON approvals(status, requested_at)`)
   db.exec(`CREATE INDEX IF NOT EXISTS idx_approvals_agent ON approvals(agent_id, requested_at)`)
+  // EMAILKAPU901 PR2: content-hash anchor + one-shot consumption. content_hash
+  // pins an approval to the EXACT letter (sha256 over to+cc+subject+body,
+  // computed by scripts/hooks/email-approval-gate.py); consumed_at is flipped
+  // atomically by the gate on the first allowed send, so an approval can never
+  // authorize two sends.
+  try { db.exec('ALTER TABLE approvals ADD COLUMN content_hash TEXT') } catch { /* already exists */ }
+  try { db.exec('ALTER TABLE approvals ADD COLUMN consumed_at INTEGER') } catch { /* already exists */ }
+  db.exec(`CREATE INDEX IF NOT EXISTS idx_approvals_hash ON approvals(content_hash)`)
 
   // --- Dashboard browser login (OPTIONAL; the bearer token stays primary) ---
   // Zero rows here = exactly the token-only behavior. A row is created only when
@@ -2286,6 +2299,64 @@ export function clearPendingSelfAdvanceClear(agentId: string, cardId: string): b
   return db.prepare('DELETE FROM agent_pending_clear WHERE agent_id = ? AND card_id = ?').run(agentId, cardId).changes > 0
 }
 
+// A szülő-kártya updated_at-je a SZÁLRÓL szól, nem csak magáról a kártyáról.
+//
+// WHY. The stuck-card detector selects `status='in_progress' AND updated_at < last_audit_at`.
+// A parent's updated_at used to move only when the parent row itself was written, so a thread
+// whose work happens on its subcards looked frozen: three consecutive audits (2026-08-14 08:00,
+// 08-14 16:00, 08-15 08:00) flagged the same card while the work was visibly moving underneath it.
+// The damage is not the noise but the numbing: once "artefact" is the standing answer for a card,
+// a REAL stall on that card reads as an artefact too.
+//
+// WHAT THIS CHANGES ABOUT THE DATA. After this, a parent's updated_at means "something happened on
+// this THREAD", not "this card was written". Every reader of that column inherits the new meaning;
+// the ones that existed when this landed are listed in the card (68763e8f) and in
+// correlateWithKanban(), which had to be taught the difference.
+//
+// WHAT IS DELIBERATELY NOT HERE, AND HOW FAR THAT HOLDS. Archive, unarchive and delete do NOT
+// bubble up: those tidy a thread rather than advance it, and a parent that looks "active" because
+// a subcard was filed away is the same false signal in a new costume. Left out on purpose, not
+// forgotten -- but only for the three dedicated functions (archiveKanbanCard, unarchiveKanbanCard,
+// deleteKanbanCard), which is what the test asserts.
+//
+// It does NOT hold at the HTTP boundary. PUT /api/kanban/:id hands the raw JSON body to
+// updateKanbanCard() with no field whitelist (routes/kanban.ts), so an `archived_at` arriving that
+// way travels the bubbling path like any other field -- and this is live, not theoretical:
+// web/app.js sends whole `{...card}` objects on the assignee and parent edits, so editing an
+// already-archived card stamps its parent today. The fix belongs to the endpoint rather than here
+// (card 531c6500, field whitelist on the write routes); when it lands, this second half goes.
+const ANCESTOR_DEPTH_LIMIT = 16
+
+// Stamps `now` on every ancestor starting at `parentId`, walking upward.
+//
+// NOT a `while (parent)` loop, and the reason is a second, still-missing check: nothing guards
+// kanban_cards.parent_id against a cycle -- updateKanbanCard() writes whatever it is handed, so
+// A -> B -> A is constructible through the public API. A plain walk would spin forever inside a
+// write path. The visited set makes the cycle terminate and the depth cap catches a chain that
+// grew past anything we would call a hierarchy. Both are loud, because either one means the
+// parent_id data is broken and something else needs fixing.
+function touchAncestorChain(parentId: string | null | undefined, now: number, startedAt: string): void {
+  if (!parentId) return // root card: the common case, and it costs nothing
+  const readParent = db.prepare('SELECT parent_id FROM kanban_cards WHERE id = ?')
+  const stamp = db.prepare('UPDATE kanban_cards SET updated_at = ? WHERE id = ?')
+  const seen = new Set<string>([startedAt])
+  let current: string | null = parentId
+  let depth = 0
+  while (current) {
+    if (seen.has(current)) {
+      console.warn(`[kanban] parent_id cycle at ${current} (from ${startedAt}) -- ancestor stamping stopped`)
+      return
+    }
+    if (++depth > ANCESTOR_DEPTH_LIMIT) {
+      console.warn(`[kanban] parent chain deeper than ${ANCESTOR_DEPTH_LIMIT} from ${startedAt} -- ancestor stamping stopped`)
+      return
+    }
+    seen.add(current)
+    stamp.run(now, current)
+    current = (readParent.get(current) as { parent_id: string | null } | undefined)?.parent_id ?? null
+  }
+}
+
 export function createKanbanCard(card: {
   id: string
   title: string
@@ -2314,6 +2385,8 @@ export function createKanbanCard(card: {
   )
   // Card 6cd61430: a new card can already state its pair and its parent.
   noteRelations(cardEdges({ id: card.id, description: card.description, parent_id: card.parent_id }))
+  // Filing a new subcard is work on the thread.
+  touchAncestorChain(card.parent_id, now, card.id)
 }
 
 /**
@@ -2458,6 +2531,13 @@ export function updateKanbanCard(
     `UPDATE kanban_cards SET title=?, description=?, status=?, assignee=?, priority=?, project=?, parent_id=?, due_date=?, sort_order=?, updated_at=?, archived_at=?
      WHERE id=?`
   ).run(f.title, f.description, f.status, f.assignee, f.priority, f.project, f.parent_id, f.due_date, f.sort_order, f.updated_at, f.archived_at, id).changes > 0
+  if (changed) {
+    touchAncestorChain(f.parent_id, now, id)
+    // Re-parenting is activity on BOTH threads: the old one lost a card, the new one gained it.
+    // Stamping only the new parent would leave the old one looking frozen -- the very bug this
+    // function is fixing, just rarer and therefore harder to notice.
+    if (card.parent_id && card.parent_id !== f.parent_id) touchAncestorChain(card.parent_id, now, id)
+  }
   if (changed && statusChanges) {
     db.prepare(
       'INSERT INTO kanban_card_events (card_id, from_status, to_status, actor, created_at, forced) VALUES (?, ?, ?, ?, ?, ?)'
@@ -2571,7 +2651,12 @@ export function moveKanbanCard(id: string, status: KanbanCard['status'], sortOrd
   if (forcedOverride && !force) return false
   // Read the previous status first so we only record an audit event on a real
   // status transition (not a pure sort_order reorder within the same column).
-  const prev = (db.prepare('SELECT status FROM kanban_cards WHERE id=?').get(id) as { status: string } | undefined)?.status
+  // parent_id comes along in the same read: the ancestor chain has to be stamped too, and this
+  // path (drag / status change) is the most common subcard event there is -- an subcard moved to
+  // done. Leaving it out would make the false alarm rarer instead of gone.
+  const row = db.prepare('SELECT status, parent_id FROM kanban_cards WHERE id=?').get(id) as
+    { status: string; parent_id: string | null } | undefined
+  const prev = row?.status
   // Card a8aa9ae5. Gated on a REAL transition, not on the target status alone: this function is
   // also the reorder path, so an unchanged status must stay writable. Otherwise a card already in
   // in_progress with an open predecessor could never be dragged within its own column.
@@ -2579,17 +2664,19 @@ export function moveKanbanCard(id: string, status: KanbanCard['status'], sortOrd
   // Card a8aa9ae5 / Cybersec F-1: the bypass is force AND an allowlisted actor, like every sibling
   // guard on this state machine. A bare force:true from an unnamed caller does not open it.
   if (depBlocked && !isForceActor(force === true, actor)) return false
-  // dispatched_at guards ONE in_progress spell (one activation -> one wake-up message), it is not a
-  // permanent tombstone. Nothing used to clear it, so a card pulled to in_progress and put BACK
-  // (planned/waiting) burned its dispatch forever: the board showed it alive while the next pull
-  // woke nobody. Clearing it on every move that does not land in in_progress re-arms the next
-  // activation -- and heals a row already stuck this way, since the clear does not depend on the
-  // previous status.
+  // dispatched_at guards ONE in_progress spell (one activation -> one wake-up
+  // message), it is not a permanent tombstone. Nothing used to clear it, so a
+  // card pulled to in_progress and put BACK burned its dispatch forever: the
+  // board showed it alive while the next pull woke nobody. Clearing it on
+  // every move that does not land in in_progress re-arms the next activation --
+  // and heals a row already stuck this way, since the clear does not depend on
+  // the previous status.
   const changed = db.prepare(
     status === 'in_progress'
       ? 'UPDATE kanban_cards SET status=?, sort_order=?, updated_at=? WHERE id=?'
       : 'UPDATE kanban_cards SET status=?, sort_order=?, updated_at=?, dispatched_at=NULL WHERE id=?'
   ).run(status, sortOrder, now, id).changes > 0
+  if (changed) touchAncestorChain(row?.parent_id, now, id)
   if (changed && prev !== undefined && prev !== status) {
     // `forced` records only whether THIS transition actually needed the reviewed-card-reopen
     // override -- an ordinary move that happens to carry `force:true` (e.g. an exempt agent's
@@ -3429,6 +3516,9 @@ export function addKanbanComment(cardId: string, author: string, content: string
   // it arrives here. noteRelations cannot fail this write -- see its own comment for why that
   // isolation is deliberate rather than defensive.
   noteRelations(commentEdges(cardId, content))
+  const parentId = (db.prepare('SELECT parent_id FROM kanban_cards WHERE id = ?').get(cardId) as
+    { parent_id: string | null } | undefined)?.parent_id
+  touchAncestorChain(parentId, now, cardId)
   return { id: Number(info.lastInsertRowid), card_id: cardId, author, content, created_at: now }
 }
 
@@ -3846,6 +3936,12 @@ export interface DispatchedPendingStats {
  * a busy agent permanently ineligible for a soft restart -- on 2026-08-12 the
  * gate reported 11 blocking messages for the main agent and several were its
  * own acknowledgements.
+ *
+ * Self-addressed rows are excluded for the same reason, one level in: an alert
+ * the agent writes to itself is not delegated work and can never come back and
+ * clear. Counting them deadlocked the gate against its own persistent-block
+ * alert -- blocked, alert, pending count 1, still blocked, and the alert re-sent
+ * every alert interval. Measured live on 2026-08-11.
  */
 export const COMPLETION_REPORT_PREFIX = '[Eredmény]'
 
@@ -3858,16 +3954,19 @@ export function getDispatchedPendingStats(
   // Bound parameter, not interpolation: the prefix contains no LIKE wildcards
   // today, but a future edit adding one would silently widen the exclusion.
   const ackPattern = `${COMPLETION_REPORT_PREFIX}%`
+  // Kept as one fragment so the live and stale halves can never drift apart.
+  const OUTSTANDING_WORK =
+    `from_agent = ? AND to_agent != from_agent
+       AND status IN ('pending','delivered')
+       AND content NOT LIKE ?`
   const liveRow = db.prepare(
     `SELECT COUNT(*) AS cnt FROM agent_messages
-       WHERE from_agent = ? AND status IN ('pending','delivered')
-         AND content NOT LIKE ?
+       WHERE ${OUTSTANDING_WORK}
          AND CAST(created_at AS INTEGER) > ?`,
   ).get(fromAgent, ackPattern, cutoffEpoch) as { cnt: number }
   const staleRow = db.prepare(
     `SELECT COUNT(*) AS cnt FROM agent_messages
-       WHERE from_agent = ? AND status IN ('pending','delivered')
-         AND content NOT LIKE ?
+       WHERE ${OUTSTANDING_WORK}
          AND CAST(created_at AS INTEGER) <= ?`,
   ).get(fromAgent, ackPattern, cutoffEpoch) as { cnt: number }
   return {
@@ -4031,6 +4130,7 @@ export interface PendingTaskRetryRow {
   attempt_count: number
   last_reason: string | null
   alert_sent_at: number | null
+  owner_alert_sent_at: number | null
 }
 
 /**
@@ -4123,6 +4223,19 @@ export function markPendingTaskRetryAlert(taskName: string, agentName: string, t
   return db
     .prepare('UPDATE pending_task_retries SET alert_sent_at = ? WHERE task_name = ? AND agent_name = ? AND alert_sent_at IS NULL')
     .run(ts, taskName, agentName).changes > 0
+}
+
+/** Stage-2 (direct-to-owner) mirror of markPendingTaskRetryAlert / clearPendingTaskRetryAlert. */
+export function markPendingTaskRetryOwnerAlert(taskName: string, agentName: string, ts: number): boolean {
+  return db
+    .prepare('UPDATE pending_task_retries SET owner_alert_sent_at = ? WHERE task_name = ? AND agent_name = ? AND owner_alert_sent_at IS NULL')
+    .run(ts, taskName, agentName).changes > 0
+}
+
+export function clearPendingTaskRetryOwnerAlert(taskName: string, agentName: string): boolean {
+  return db
+    .prepare('UPDATE pending_task_retries SET owner_alert_sent_at = NULL WHERE task_name = ? AND agent_name = ?')
+    .run(taskName, agentName).changes > 0
 }
 
 // --- Vector Search (Ollama + nomic-embed-text) ---
@@ -4841,6 +4954,8 @@ export interface Approval {
   requested_at: number
   resolved_at: number | null
   resolved_by: string | null
+  content_hash: string | null
+  consumed_at: number | null
 }
 
 export function createApproval(params: {
@@ -4850,11 +4965,12 @@ export function createApproval(params: {
   action_description: string
   action_payload?: string | null
   timeout_at?: number | null
+  content_hash?: string | null
 }): Approval {
   const now = Math.floor(Date.now() / 1000)
   db.prepare(`
-    INSERT INTO approvals (id, agent_id, category, action_description, action_payload, timeout_at, requested_at)
-    VALUES (?, ?, ?, ?, ?, ?, ?)
+    INSERT INTO approvals (id, agent_id, category, action_description, action_payload, timeout_at, requested_at, content_hash)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?)
   `).run(
     params.id,
     params.agent_id,
@@ -4863,6 +4979,7 @@ export function createApproval(params: {
     params.action_payload ?? null,
     params.timeout_at ?? null,
     now,
+    params.content_hash ?? null,
   )
   return {
     id: params.id,
@@ -4876,6 +4993,8 @@ export function createApproval(params: {
     requested_at: now,
     resolved_at: null,
     resolved_by: null,
+    content_hash: params.content_hash ?? null,
+    consumed_at: null,
   }
 }
 

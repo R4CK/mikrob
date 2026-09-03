@@ -227,12 +227,13 @@ const USAGE_LIMIT_BANNER_REGION_LINES = 15
 // strings compile under bash `grep -E`, Python `re`, and this RegExp unchanged.
 export const USAGE_LIMIT_FRAGMENTS = [
   'usage limit reached',
-  'reached your usage limit',
+  'reached your (usage|weekly) limit',
   'hit (your|the) (session|usage) limit',
-  'approaching (your )?usage limit',
+  'approaching (your )?(\\w+ )?(usage|weekly) limit',
   'usage limit (will )?reset',
   'limit will reset at',
   '[0-9]+-hour limit reached',
+  '(weekly|session) limit reached',
   'wait for limit to reset',
   'stop and wait for limit',
   'upgrade your plan',

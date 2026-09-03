@@ -100,7 +100,7 @@ describe('P1#5 — CLAUDE_CODE_DISABLE_FEEDBACK_SURVEY=1 on every agent spawn pa
 
   it('is exported ahead of the claude binary invocation in the launch command', () => {
     const src = read('src/web/agent-process.ts')
-    const cmdLine = src.split('\n').find((l) => l.includes('const cmd = `export PATH='))
+    const cmdLine = src.split('\n').find((l) => l.includes('const cmd = ') && l.includes('export PATH='))
     expect(cmdLine).toBeDefined()
     expect(cmdLine).toMatch(/feedbackSurveyEnv/)
   })
