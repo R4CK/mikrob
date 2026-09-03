@@ -25,14 +25,19 @@
 #  * DETACHED landing worktree from origin/main -- never the main clone's working tree (nobody
 #    commits there) and never the agent's own branch.
 #
-# WHAT THIS SCRIPT DOES NOT CHECK: it enforces that the gated sha IS the branch tip, but it
-# never looks DOWNWARDS -- nothing inspects what sits between origin/main and that sha. A
-# branch carrying an earlier card's ungated commits passes every check here and lands them
-# too. Run `git log --oneline origin/main..<gate-sha>` first; if it holds more than this
-# card's own commits, cherry-pick instead of merging. See store/landing-cherry-pick-vs-branch-merge.md.
+#  * DOWNWARD RANGE (card dfff9b37). The tip check above closes only the upward half. Nothing used
+#    to inspect what sits BETWEEN origin/main and the gated sha, so a branch carrying an earlier
+#    card's ungated commits passed every check here and landed them too -- three times in one day on
+#    one branch (19c4684a, d284193f, 45b29528), each caught by a human asking in time. Now the range
+#    is read and a commit naming a DIFFERENT card refuses the landing; `--allow-stacked <ids>` takes
+#    them on purpose. Card-less commits are listed, never judged -- see landing-downward-check.sh
+#    for the measurement behind that, and store/landing-cherry-pick-vs-branch-merge.md for the
+#    cherry-pick recipe when it fires.
 #
 # Usage:  cleancore-land.sh <cardId> <gated-sha> [--dry-run] [--allow-main-loss] [--skip-typecheck]
+#                                                [--allow-stacked <cardId>[,<cardId>...]]
 #         cleancore-land.sh --selftest
+# Env:    LANDING_DOWNWARD_CHECK=off  disables the downward range check entirely.
 # Exit: 0 landed (or dry-run clean) | 2 bad usage | 3 refused a precondition | 4 merge/push failed
 set -uo pipefail
 
@@ -51,6 +56,10 @@ die() { echo "REFUSED: $2" >&2; exit "$1"; }
 # precondition and the header-count check cannot drift between the two copies.
 # shellcheck source=./decisions-append-union.sh
 . "$(dirname "$0")/decisions-append-union.sh"
+# downward_check (card dfff9b37): what ELSE rides along below the gated sha. Shared verbatim with
+# marveen-land.sh -- same reason as above, a duplicated landing precondition drifts.
+# shellcheck source=./landing-downward-check.sh
+. "$(dirname "$0")/landing-downward-check.sh"
 
 # --- WHO ran this landing (card 7fe98031) -------------------------------------------------------
 #
@@ -161,20 +170,29 @@ if [ "${1:-}" = "--selftest" ]; then
   t "pick_branch yields nothing when only main contains the sha" \
     "$(printf '* (HEAD detached at deadbeef)\n  main\n  remotes/origin/main\n' | pick_branch)" \
     ""
+  # Downward range check (card dfff9b37) -- the cases live in the shared lib so the two landers
+  # cannot end up testing different things about the same code.
+  downward_selftest_cases
   echo "selftest: $n case(s), $([ $fail -eq 0 ] && echo PASS || echo FAIL)"
   exit $fail
 fi
 
 CARD="${1:-}"; SHA="${2:-}"; shift 2 2>/dev/null
-[ -n "$CARD" ] && [ -n "$SHA" ] || { echo "usage: cleancore-land.sh <cardId> <gated-sha> [--dry-run] [--allow-main-loss] [--skip-typecheck]" >&2; exit 2; }
-DRY=""; ALLOW_MAIN_LOSS=0; SKIP_TSC=0
-for a in "$@"; do
-  case "$a" in
+[ -n "$CARD" ] && [ -n "$SHA" ] || { echo "usage: cleancore-land.sh <cardId> <gated-sha> [--dry-run] [--allow-main-loss] [--skip-typecheck] [--allow-stacked <cardId>[,<cardId>...]]" >&2; exit 2; }
+DRY=""; ALLOW_MAIN_LOSS=0; SKIP_TSC=0; ALLOW_STACKED=""
+while [ $# -gt 0 ]; do
+  case "$1" in
     --dry-run) DRY="--dry-run" ;;
     --allow-main-loss) ALLOW_MAIN_LOSS=1 ;;
     --skip-typecheck) SKIP_TSC=1 ;;
-    *) echo "unknown option: $a" >&2; exit 2 ;;
+    # Deliberately NOT a --force: the operator has to NAME the foreign cards they are taking on
+    # purpose (card dfff9b37, trap 4). A blanket override would be reached for reflexively and the
+    # guard would stop meaning anything.
+    --allow-stacked) shift; [ $# -gt 0 ] || { echo "--allow-stacked needs a card id list" >&2; exit 2; }; ALLOW_STACKED="$1" ;;
+    --allow-stacked=*) ALLOW_STACKED="${1#--allow-stacked=}" ;;
+    *) echo "unknown option: $1" >&2; exit 2 ;;
   esac
+  shift
 done
 # $$ makes the path private to this process. QA2's finding on card 67beaf74 was against the pre-gate,
 # but the defect is the shape, not the script: a deterministic worktree path means a second run's
@@ -200,6 +218,14 @@ TIP="$(git -C "$MAIN" rev-parse --short "$BRANCH" 2>/dev/null)"
 GSHORT="$(git -C "$MAIN" rev-parse --short "$SHA")"
 [ "$TIP" = "$GSHORT" ] || die 3 "branch $BRANCH tip is $TIP but the GATED sha is $GSHORT -- the extra commits are ungated"
 say "branch $BRANCH, tip == gated sha ($GSHORT)"
+
+# ...and now DOWNWARDS (card dfff9b37). The tip check above closes "the branch moved on after its
+# verdicts"; this one closes the half nobody was looking at -- an EARLIER card's ungated commits
+# sitting UNDER the gated sha, because the agent self-advanced onto the same branch. Merges are
+# dropped: see decision 3 in landing-downward-check.sh for why that is exactly the right cut.
+DOWN_LOG="$(git -C "$MAIN" log --no-merges --format='%h%x09%s' "origin/main..$SHA")"
+downward_check "$DOWN_LOG" "$CARD" "$ALLOW_STACKED" 1 "downward" \
+  || die 3 "commits belonging to OTHER cards sit between origin/main and $GSHORT -- they were never gated for this landing"
 
 # Migration numbers, against the CURRENT main. Three-dot diff picks ONE merge-base; under a
 # criss-cross history (two unrelated merge-bases, git warns "multiple merge bases") it can pick a

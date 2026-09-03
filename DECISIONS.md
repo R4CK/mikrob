@@ -4757,3 +4757,45 @@ adja), tehát a visszaesés nem igényel új konvenciót a hívóknál.
 csendes fallbacket.
 **Hivatkozás:** kártya `5d151091`, pair-FE `5dd4a211`, `src/local-llm-model-disabled.ts`.
 
+## 2026-09-03 -- dfff9b37 -- A landolók lefelé irányú ellenőrzése: bizonyítékra fail-closed, a hiányára hangos
+
+**Döntés.** Mindkét landoló (`store/cleancore-land.sh`, `store/marveen-land.sh`) beolvassa az
+`origin/main..<sha>` (illetve `origin/develop..<ág>`) tartományt egy közös könyvtárból
+(`store/landing-downward-check.sh`), és kártyánként csoportosítva kiírja, mi utazik a landolással.
+A `cleancore-land.sh` ELUTASÍT, ha egy commit MÁSIK kártyát nevez meg; a `marveen-land.sh` alapból
+csak JELENT, és a `--card <id>` teszi elutasítássá.
+
+**Miért.** A meglévő tip-ellenőrzés csak a felfelé irányt zárta le. A lefelé irányt semmi nem
+nézte, ezért a ténylegesen előforduló eset -- a gate-elt sha AZ a tip, alatta egy korábbi kártya
+gate-eletlen commitjai, mert az ügynök self-advance-elt ugyanazon az ágon -- minden ellenőrzésen
+átment. 2026-09-02-án egy nap alatt háromszor fordult elő ugyanazon az ágon (19c4684a, d284193f,
+45b29528); egyszer sem veszett el semmi, mert HÁROMSZOR emberi éberségen múlt.
+
+**Három ítélet, amit a kártya rám bízott, és a mérés, ami eldöntötte.**
+
+1. *A kártya-hivatkozás nélküli commit SEMLEGES, nem gyanús.* A kártya fail-closed-ot javasolt.
+   Mérés: a CleanCore utolsó 40 nem-merge commitjából 35 hordoz `card <id>`-t, 5 nem; a marveenen a
+   hivatkozás nélküli commit a TÖBBSÉG. Fail-closed itt egy dokumentációs szokásból csinálna
+   landolási kaput, és a guard túlnyomórészt a SAJÁT VAKFOLTJÁRA sülne el. Egy folyton tévesen
+   riasztó guardra reflexből rákerül az escape hatch, és onnantól a valódi esetet sem fogja meg.
+   Ezért: elutasítás csak POZITÍV bizonyítékra, de a be nem sorolható commitok MINDEN futásnál,
+   névvel kiíródnak.
+2. *Az ítélet egysége a COMMIT, nem a kártya-ID.* A valós landolás-történet visszajátszása közben
+   derült ki: a CleanCore `1a61865f` EGY commit, `(card e90505bb / 96ff46d4)` tárgysorral, tehát
+   jogosan MINDKÉT kártyáé. ID-nkénti pontozással a 96ff46d4 "idegen kártyának" számított volna egy
+   tökéletesen helyes landolás közben.
+3. *A marveen JELENT, nem utasít el.* A marveen egész ügynök-ágat landol, és a visszaadott sha MAGA
+   a Gate-SHA -- ott a gate a landolás UTÁN van, tehát nincs "gate-elt sha", amire kulcsolódjon.
+   Mérés: alapértelmezett elutasítással a 14 utolsó marveen landolásból 10 bukott volna el; a
+   `--card`-dal megnevezett esetben 1.
+
+**Elvetett alternatíva.** Ugyanaz az elutasítás mindkét landolóban, alapból. Ez a kártya saját 4.
+csapdája (túl szigorú guard = flotta-szintű leállás), és nem elméletben: a mérés szerint a marveen
+landolások többségét megállította volna.
+
+**Következmények.** `--allow-stacked <id>[,<id>...]` escape hatch, ami MEGNEVEZTETI az idegen
+kártyákat (nincs vak `--force`); `LANDING_DOWNWARD_CHECK=off` kikapcsoló commit nélkül.
+Visszajátszva a 14-14 utolsó valós landoláson: CleanCore 5 elutasítás (közte a `13a73c82`, ami a
+`d284193f`-et viszi -- pontosan a dokumentált hibaeset), marveen 1. A nagy, szándékos batch-
+landolások (`abdd3853`: 16 idegen commit, 12 kártya) `--allow-stacked`-et igényelnek -- ez a
+tudatos megnevezés ára, nem hiba.
