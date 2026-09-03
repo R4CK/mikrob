@@ -4831,3 +4831,52 @@ nem nyit új oldalt (a kártya előírása). Négy tervezési döntés, amit a k
 `online`-ra sorolta (tévesen „security-decision"), az advisory draft pedig rossz mezőneveket,
 JSON-stringes éleket és fordított rendezést tartalmazott -- eldobva, kézzel megírva. Ez a skill
 saját szabálya szerint helyes kimenet, nem hiba.
+
+## 2026-09-03 14:30 -- kártya 934dc104: a kimenő-szöveg kapu szabályfájl-útja checkout-független lett
+
+**Döntés:** a `scripts/hooks/outgoing-copy-gate.py` szabályfájl-útja többé nem a szkript helyéhez
+képest oldódik fel. Új sorrend: `OUTGOING_COPY_GATE_RULES` env -> a hívó checkout saját
+`store/outgoing-copy-gate-rules.json`-ja, HA létezik -> a fő klón ugyanezen fájlja (a worktree
+`.git` mutatófájljából olvasva) -> végül a hívó checkout útja. Emellett a betöltő három állapota
+(`ACTIVE`/`EMPTY`/`BROKEN`) kimondott lett, a szándékosan üres eset kap egy rate-limitelt log-sort,
+és van egy `--status` posztúra-kiírás.
+
+**Miért:** a flottának 12 szkript-példánya van (ügynökönként egy worktree) és egy szabályfájlja
+(gitignored + 0600, sosem utazik). Ugyanaz a kapu ezért ellentétes posztúrát vett fel aszerint,
+melyik checkout hívta: a fő gyökérből némán átengedett, minden worktree-ből fail-closed lett az
+email-ág -- egy olyan konfig hiánya miatt, amit az a checkout soha nem is kaphatott meg. A védelem
+és a zaj fordítva volt elosztva, és két ügynök ugyanarra a kérdésre ellentétes, mindkettő HELYES
+választ adott (ez mérhető volt: a dfff9b37 gate-kör REVIEW-ja fail-closed-ot jelentett, a Cybersec-
+mérés néma átengedést). Mérve, nem feltételezve: a javítás előtt a worktree-példány `exit 2`-t
+adott az email-payloadra, utána `exit 0`-t, azonos payloadon, azonos szabályfájlból.
+
+**Mérlegelt alternatívák:** (a) minden worktree kapjon SAJÁT szabályfájlt a
+`agent-worktree-marveen.sh`-ból -- elvetve, mert a fájl 0600 és magánszemély nevét tartalmazza, 12
+másolat 12-szeres kitettség és 12 szinkronban tartandó példány; (b) fix abszolút alapértelmezés
+(`/home/neon/marveen/store/...`) -- elvetve, mert a distribution-hardcode szabályba ütközik (egy
+ügyfél-install más gyökéren él); (c) `git rev-parse --git-common-dir` subprocess -- elvetve, mert a
+modul MINDEN Bash tool-híváskor importálódik, és egy folyamat-indítás hívásonként valós ár egy
+fájlolvasásnyi kérdésért.
+
+**Vállalt kompromisszum, hogy ne kelljen kitalálni:** a szándékosan üres állapot NEM kap per-üzenet
+`systemMessage`-et, csak 6 óránként egy log-sort plusz a `--status` kiírást. Egy üzenetenkénti
+figyelmeztetés a flotta legforgalmasabb csatornáján minden egyes kimenő üzenetre kigyulladna, és a
+tapasztalat szerint egy ilyen kapu ilyenkor lekapcsolódik. Ha ez kevésnek bizonyul, a
+`systemMessage` egy sor.
+
+**Ki döntött:** backend2 (implementáció-szintű döntések), MikroB dispatch alapján; a lelet
+Cybersecé (dfff9b37 gate-kör, L5).
+
+**NEM ebben a kártyában, szándékosan:** a role-ügynökök generált hook-készlete nem tartalmazza a
+kaput (mérve: mind a 14 ügynök `.claude/settings.json`-ja és `.claude-config/settings.json`-ja
+nélküle van), tehát a szöveg-ellenőrzés az ő Telegram-válaszaikon nem fut. Az EMAIL-oldal itt
+szándékos és fedett: az `email-send-gate.mjs` minden nem-fő ügynöknek keményen tiltja a küldést
+(`agentGetsEmailGate(name) === name !== MAIN_AGENT_ID`), tehát nincs mit ellenőrizni. A TELEGRAM-
+oldal viszont valódi, eddig dokumentálatlan hatókör-korlát. A bekapcsolása 14 ügynök minden Bash-
+hívására és minden válaszára kiterjedő, `exit 2`-vel blokkolni képes viselkedésváltás -- 1b. és 9.
+szabály szerint plan-grillinget és saját gate-et érdemel, nem egy útvonal-javítás mellékhatását.
+Külön kártya nyílt rá.
+
+**Hivatkozás:** kártya `934dc104`, `src/__tests__/outgoing-copy-gate-rules-path.test.ts` (13 teszt,
+mindhárom állapot MINDKÉT hívási ponton kipinnelve), kapcsolódó: `36a456e3` (legyenek-e minták --
+Peti döntésére vár), `3ec64c96` (a sentinel eredete), `dfff9b37` (a gate-kör).
