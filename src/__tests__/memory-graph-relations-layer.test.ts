@@ -62,7 +62,6 @@ beforeAll(() => {
     ${parts.join('\n')}
     return { graphRelExtractCardRefs, graphRelPickAnchors, graphRelBuildLayer }
   `
-  // eslint-disable-next-line @typescript-eslint/no-implied-eval
   helpers = new Function(body)() as Helpers
 })
 

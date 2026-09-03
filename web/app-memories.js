@@ -403,7 +403,7 @@ function graphRelBuildLayer(anchors, relEdges, filesByCard, caps) {
   const edges = []
   const edgeKeys = new Set()
   const pushEdge = (from, to, type) => {
-    const k = `${from} ${to} ${type}`
+    const k = JSON.stringify([from, to, type])
     if (edgeKeys.has(k)) return
     edgeKeys.add(k)
     edges.push({ from, to, type })
