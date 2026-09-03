@@ -702,6 +702,30 @@ const ACKNOWLEDGED_CONFLICTS = {
   // would be wrong regardless of what upstream's edit says. Resolution: keep the deletion.
   'src/__tests__/installer-ollama-nonfatal.test.ts':
     'keep the deletion -- this test covers the silent Ollama pre-install step Peti\'s 2026-08-13 directive (EPIC ebc7b4dd) removed from the fork; upstream modified rather than deleted it because upstream never removed that step, but the fork has no code left for this test to exercise',
+  // Card ab4c85f2, 2026-09-03: this fork adopted upstream's GUARDHITELES903
+  // authenticated-directive mechanism. Upstream ships both halves; this fork had
+  // NEITHER, so the adoption touches an upstream-owned module, an upstream-owned
+  // test, and a long-diverged fork file. Three conflicts, three different rules.
+  //
+  // Deliberately NOT GUARDED_FILES for any of them: upstream owns this feature
+  // and is entitled to keep improving it. We want its future changes, not a
+  // permanent exemption from reading them.
+  'src/web/system-directive.ts':
+    "take upstream's version wholesale, then re-apply ONE hunk: the fork imports SYSTEM_DIRECTIVE_SENDER from './system-directive-id.js' (a const-only module) and re-exports it, where upstream declares it inline. The fork needs the shared const because routes/messages.ts guards on it, and a request-path file must not import this tmux-side module. Nothing else in the file is intentionally fork-divergent -- if the diff shows more, upstream changed the logic and that change is wanted",
+  // The fork's copy is upstream's file plus fork-owned additions AND one
+  // deliberately INVERTED assertion, so a wholesale take in either direction is
+  // wrong here.
+  'src/__tests__/system-directive-auth-section.test.ts':
+    "merge, do not take a side: keep upstream's new/changed cases, and keep the fork's three additions -- the 'two halves must ship together' describe block (wiring tripwire this fork needs and upstream does not), the token-not-in-argv assertion, and the INVERTED [CONTEXT-RESTART-GATE] case. Upstream asserts that prefix is IN scope; here it is OUT, because this fork's restart gate sends createAgentMessage(agent -> coordinator) alerts, not directives to the recipient. Never take upstream's in-scope assertion without ALSO adopting upstream's gate wake nudge -- the fork test asserts context-restart-gate-runner.ts contains no sendSystemDirective precisely so that pair cannot drift",
+  // Add/add on the same call site: both sides independently routed the
+  // channels-recovery memory-save through sendSystemDirective. The semantics are
+  // identical; only the import placement and a fork comment differ.
+  // Adopted from upstream and kept as close to it as the fork's tooling allows:
+  // the ONLY divergence is the mock signature, forced by lint, not by taste.
+  'src/__tests__/system-directive.test.ts':
+    "take upstream's version wholesale, then re-apply ONE hunk: the sendPromptToSession mock's call signature lives in vi.fn's generic (type SendPrompt) instead of upstream's four underscore-prefixed parameters. This fork's eslint sets @typescript-eslint/no-unused-vars to a bare 'error' with no argsIgnorePattern, so upstream's shape is four findings and lint-ratchet refuses the landing. Purely mechanical -- the assertions and the cases are upstream's; if the diff shows anything beyond that signature line, upstream changed the tests and those changes are wanted",
+  'src/web/channel-monitor.ts':
+    "both sides made the SAME change to triggerMarveenMemorySave (bare sendPromptToSession -> sendSystemDirective(MAIN_AGENT_ID, MAIN_CHANNELS_SESSION, prompt)), so take either for that hunk -- they are semantically equal. Everything ELSE in this file is long-standing fork divergence unrelated to this card (lazy bin resolver vs upstream's eager resolveFromPath consts, and upstream's STUCKINPUT827 injected-prompt-registry work): resolve those on their own merits, they are not part of the ab4c85f2 decision",
 } as const
 
 // THE UPSTREAM CONTENT EACH RULE ABOVE WAS DECIDED AGAINST (card a1d613e3, Cybersec msg 19105).
@@ -796,6 +820,11 @@ const ACKNOWLEDGED_UPSTREAM_BLOBS: Readonly<Record<keyof typeof ACKNOWLEDGED_CON
   'scripts/install-prod-tree-guard-hook.sh': '9647c9658a5e6352ae0bae57842590a1c2d6e30c',
   'install-linux.sh': '21f10d99336757c0a1416b6e20297b1d3cda42cd',
   'src/__tests__/installer-ollama-nonfatal.test.ts': '7467d0dc6674099a5af6b65d4388d18ff1f99f78',
+  // Card ab4c85f2, 2026-09-03 (adopting GUARDHITELES903 into a fork that had neither half).
+  'src/web/system-directive.ts': '7b69015ec8f1942349f9f912bfda228fb01ee771',
+  'src/__tests__/system-directive.test.ts': '08409868f5f889240baceba1c4a240ac17d2c138',
+  'src/__tests__/system-directive-auth-section.test.ts': '80d65e4651601d320447bf188d53548a5ef5f8ba',
+  'src/web/channel-monitor.ts': 'd1c642f669ff2a28b6eec79bbf503365c9ac1b08',
 }
 
 /** A conflict whose written rule was decided against DIFFERENT upstream content than what is

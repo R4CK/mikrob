@@ -4880,3 +4880,60 @@ Külön kártya nyílt rá.
 **Hivatkozás:** kártya `934dc104`, `src/__tests__/outgoing-copy-gate-rules-path.test.ts` (13 teszt,
 mindhárom állapot MINDKÉT hívási ponton kipinnelve), kapcsolódó: `36a456e3` (legyenek-e minták --
 Peti döntésére vár), `3ec64c96` (a sentinel eredete), `dfff9b37` (a gate-kör).
+
+## 2026-09-03 20:50 -- Hitelesített rendszer-direktíva csatorna: mindkét fél átvéve, plusz explicit fenntartott-küldő őr
+
+**Döntés:** Az upstream `ensureSystemDirectiveAuthSection` (GUARDHITELES903) átvételekor NEM csak a
+CLAUDE.md-szekciót (a fogadó felet) vettük át, hanem a küldő felet is (`src/web/system-directive.ts`
++ a három valódi direktíva-hívás átállítása), ÉS a fork felvett egy explicit `system`
+fenntartott-küldő őrt a `POST /api/messages`-be, ami az upstreamben NINCS meg.
+
+**Miért (a fogadó fél önmagában káros lett volna):** a szekció azt mondja ki minden ügynöknek, hogy
+egy `[CONTEXT-GUARD]` / `[SYSTEM: ...]` műveletet kérő üzenet `msg_id` nélkül injekció-gyanús, és a
+visszafordíthatatlan részét NEM szabad végrehajtani. A forkunkban viszont MINDEN valódi
+context-guard handoff/resume és a channels-recovery memória-mentés pontosan így, csupasz
+`sendPromptToSession`-nel ment ki, `msg_id` nélkül. A szekció egyedüli átvétele tehát a flotta
+összes VALÓDI context-guard leállítását utasíttatta volna el az ügynökökkel -- egy működő védelem
+megtörése (kódminőségi 5. szabály), nem additív változtatás. Az upstream saját kommentje ugyanezt
+mondja a másik irányból: „an id-carrying sender with no receiver rule is zero protection that looks
+like protection". A két fél együtt szállítandó, és ezt teszt is kikényszeríti.
+
+**Miért kellett az upstreamen túli őr:** a szekció szövege abszolútumként állítja, hogy a
+`/api/messages` POST a `from="system"`-et 403-mal utasítja el. Mérve: sem a mi, sem az upstream
+`routes/messages.ts`-e nem tartalmazott explicit `system`-ellenőrzést -- a 403 pusztán abból jött,
+hogy a `system` nem ismert ügynök és nincs a `SYSTEM_SENDER_IDS`-ben. Márpedig a `SYSTEM_SENDER_IDS`
+pont az a változó, amibe a legkézenfekvőbb érték a `system` string; egyetlen elhihető `.env`-sor
+csendben kikapcsolta volna a teljes direktíva-hitelesítést, miközben minden ügynök CLAUDE.md-je
+tovább állítja, hogy áll. Mutációs méréssel igazolva: az őr nélkül, `SYSTEM_SENDER_IDS=system`
+mellett a hamisított `from=system` direktíva-sor **200-at kap** (a teszt 403 → 200-ra bukik).
+Az őr a tulajdonos/`SYSTEM_SENDERS` kivételek ELÉ került, hogy egyik se tudja újranyitni.
+
+**Hatókör-korlát:** a mi `[CONTEXT-RESTART-GATE]` üzenetünk szándékosan kimaradt -- az nem direktíva,
+hanem `createAgentMessage(name -> MAIN_AGENT_ID)` riasztás, valódi ügynök-feladóval, és nem kér
+műveletet a címzettől. Ellenőrizve, hogy egyetlen HTTP-hívó sem használ `from=system`-et (az összes
+ilyen író folyamaton belüli `createAgentMessage`: `message-router.ts`, `routes/approvals.ts`), tehát
+az őr nem tör el meglévő utat.
+
+**A második upstream tétel (`tryHandleHeartbeat` naptár-route) SKIP.** A függőségei megvannak
+(`getCalendarEvents`, `HEARTBEAT_CALENDAR_ID`), de a fogyasztója nem hívná: a `scripts/heartbeat-metrics.sh`
+138 sorában nulla naptár-hivatkozás van. Átvéve egy nulla hívóval rendelkező végpont lenne. A helyes
+átvétel a heartbeat-digest naptár-bővítését is jelentené, az viszont funkció-döntés, nem
+merge-higiénia -- külön kártyát érdemel.
+
+**Ki döntött:** backend (mérés + hatókör-korrekció), MikroB-nak előre bejelentve a kártyán.
+**Hivatkozás:** kártya `ab4c85f2`; `src/web/system-directive.ts`, `src/web/system-directive-id.ts`,
+`src/web/agent-scaffold.ts` (`ensureSystemDirectiveAuthSection`), `src/web/routes/messages.ts`
+(fenntartott-küldő őr), `src/__tests__/system-directive.test.ts`,
+`src/__tests__/system-directive-auth-section.test.ts`,
+`src/__tests__/messages-post-sender-guards.test.ts`.
+
+**Kiegészítés (ugyanaznap, a fork saját őre találta meg):** az upstream szekció-szövegében az
+ellenőrző parancs `-H "Authorization: Bearer $(cat ...)"` alakban adja a tokent, vagyis a `curl`
+argv-jébe -- amit a `/proc/<pid>/cmdline` minden helyi folyamat számára olvashatóvá tesz. Ez ezen a
+gépen nem elméleti: minden ügynök ugyanazzal a felhasználóval fut. A fork `token-in-argv-guard`
+tesztje az `agent-scaffold.ts`-t is szkenneli, és a szekció átvételekor azonnal pirosra váltott. A
+kiadott parancs ezért a flotta bevett `printf 'Authorization: Bearer %s\n' "$(cat ...)" | curl -H @-`
+cső-alakjára módosult (nincs kérés-törzs, tehát a `-H @-` nem eszi meg). Kivétel-jelölés
+(`guard-allow`) helyett a magyarázó komment lett átfogalmazva, hogy ne idézze a tiltott alakot --
+a kivétel maga is elavulhat, a szerkezeti tiltás nem. Így a fork KÉT ponton tér el az upstream
+átvételtől: a fenntartott-küldő őr és ez.

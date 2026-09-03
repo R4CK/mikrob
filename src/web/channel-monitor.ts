@@ -29,6 +29,7 @@ import {
   answerFirstRunGates,
   shSingleQuote,
 } from './agent-process.js'
+import { sendSystemDirective } from './system-directive.js'
 import { withSessionSendLock } from './session-send-lock.js'
 import { reapChannelOrphans, reapDetachedChannelClaudes, collectPollerEvidence } from './channel-poller-reap.js'
 import { probeTelegramConflict } from './channel-conflict-probe.js'
@@ -523,7 +524,11 @@ async function triggerMarveenMemorySave(): Promise<void> {
     'Ha kesz vagy, irj egy rovid napi naplo bejegyzest is a /api/daily-log-ra. Utana eleg.',
   ].join(' ')
   try {
-    await sendPromptToSession(MAIN_CHANNELS_SESSION, prompt)
+    // Action-requesting (save your memory, a hard restart is 60s out), so it
+    // goes through the authenticated-directive primitive rather than a bare
+    // pane injection. The other sendPromptToSession calls in this module
+    // deliver recorded/observed text, not system orders, and stay as they are.
+    await sendSystemDirective(MAIN_AGENT_ID, MAIN_CHANNELS_SESSION, prompt)
     logger.info(`${BOT_NAME} memory-save prompt dispatched before hard restart`)
   } catch (err) {
     logger.warn({ err }, `Failed to dispatch ${BOT_NAME} memory-save prompt`)
