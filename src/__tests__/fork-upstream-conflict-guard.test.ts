@@ -80,6 +80,23 @@ const MIGRATED_FROM_GUARDED = [
 // it already knew about: three files conflicted for weeks with nothing watching them, and the only
 // reason anyone noticed was a human running the dry-run by hand.
 const ACKNOWLEDGED_CONFLICTS = {
+  // Card 2a653b4b, self-created 2026-09-04. Converting the module-level `const TMUX =
+  // resolveFromPath('tmux')` to a lazy resolver collided with upstream, which had already deleted
+  // that const -- and gone FURTHER than this card asks: upstream routes every tmux call through
+  // `tmuxInvocationFor` (agent-process.ts) because an agent owning its own OS user runs its own tmux
+  // server, so a cross-user connection is refused and the bare binary made /keys and /login answer
+  // 500 for exactly the agents most likely to need one. Upstream measured that twice on this install
+  // (2026-08-26, 2026-08-27).
+  //
+  // Resolution: TAKE UPSTREAM WHOLESALE for this file -- it removes the eager const (this card's
+  // goal) AND fixes a bug the fork still has. NOT adopted here on purpose: `tmuxInvocationFor` does
+  // not exist in the fork at all, so adopting it means pulling from agent-process.ts, whose upstream
+  // reconciliation is deliberately deferred (card e80c011a -- 22 hunks on a 1600-line
+  // security-critical file, explicitly not to be hand-merged under time pressure). Until that lands,
+  // the fork's lazy resolver is the INTERIM fix: strictly better than the import-time throw it
+  // replaced, strictly worse than upstream's. Do not resolve this by keeping the fork side.
+  'src/web/routes/agent-terminal.ts':
+    "take UPSTREAM wholesale -- it deletes the eager TMUX const AND routes through tmuxInvocationFor, which fixes the own-OS-user tmux-server 500s the fork still has; the fork's lazy resolver is only an interim fix until agent-process.ts is reconciled (card e80c011a)",
   // Card 684dda18, self-created 2026-09-02: adopting upstream's resolveKanbanDispatch()
   // (session-down is no longer a silent no-op) appended the fork's own isSelfAdvanceMove/
   // isGenuineSelfAdvanceSwitch below it -- the fork's file is now a strict superset of upstream's
@@ -898,6 +915,7 @@ const ACKNOWLEDGED_CONFLICTS = {
 // Typed as Record<keyof typeof ACKNOWLEDGED_CONFLICTS, string>: a rule without a recorded blob, or
 // a blob without a rule, is a COMPILE error rather than a silent gap between two lists.
 const ACKNOWLEDGED_UPSTREAM_BLOBS: Readonly<Record<keyof typeof ACKNOWLEDGED_CONFLICTS, string>> = {
+  'src/web/routes/agent-terminal.ts': 'cf57ba1065272a7bde9723865d5709faaf05ed21',
   'src/kanban-dispatch.ts': '7fffc38f78b99573fb88fd797ac67b3593ffb872',
   'src/__tests__/kanban-dispatch-rearm.test.ts': 'd9a186a0af48c44c14299c284dbe0caf45d8feaa',
   'src/auto-restart.ts': 'a1f2d75ed063a78eb5be23acb2c4138ca14fff19',
