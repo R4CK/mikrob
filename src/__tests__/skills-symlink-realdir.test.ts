@@ -49,6 +49,25 @@ describe('skills symlink -> real directory converter (card 7d2ebd24)', () => {
     expect(src).not.toMatch(/rm\s+.*"\$link\/"/)
   })
 
+  // The conversion is only durable if the thing that CREATED the symlinks stops recreating them.
+  // external-repos-sync.sh relinks every superpowers skill with `ln -sfn`, which replaces a symlink
+  // but against a real directory drops a stray link INSIDE it and still reports success (measured).
+  // Unguarded, the first sync after the conversion would have re-pointed all 14 at the vendored
+  // checkout and undone the card.
+  it('the sync script skips fork-owned REAL directories instead of relinking them', () => {
+    const sync = readFileSync(join(STORE, 'external-repos-sync.sh'), 'utf-8')
+    const guardAt = sync.indexOf('[ -d "$dest" ] && [ ! -L "$dest" ]')
+    const linkAt = sync.indexOf('ln -sfn "$s" "$dest"')
+    expect(
+      guardAt,
+      'external-repos-sync.sh no longer skips real directories -- the next sync would relink all ' +
+        'of them back into the vendored checkout and undo card 7d2ebd24',
+    ).toBeGreaterThan(-1)
+    expect(linkAt).toBeGreaterThan(-1)
+    expect(guardAt, 'the real-dir guard must come BEFORE the ln, or it cannot prevent anything')
+      .toBeLessThan(linkAt)
+  })
+
   it('verifies the staged copy against the source BEFORE touching the link', () => {
     const src = readFileSync(SCRIPT, 'utf-8')
     const verifyAt = src.indexOf('hash_tree "$target"')

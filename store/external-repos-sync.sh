@@ -114,12 +114,30 @@ for r in awesome-claude-skills claude-agent-sdk superpowers Skill_Seekers loki-m
 #    upstream updates automatically. Drop stale sp-* links first.
 find "$SKILLS" -maxdepth 1 -type l -name 'sp-*' -delete 2>/dev/null
 if [ -d "$EXT/superpowers/skills" ]; then
+  kept_real=0
   for s in "$EXT/superpowers/skills"/*/; do
     [ -f "$s/SKILL.md" ] || continue
     n=$(basename "$s")
-    ln -sfn "$s" "$SKILLS/sp-$n"
+    dest="$SKILLS/sp-$n"
+    # Card 7d2ebd24: these entries are REAL DIRECTORIES now, not links. Two reasons this must skip
+    # them rather than relink:
+    #
+    #   1. `ln -sfn <target> <real dir>` does not replace the directory -- it drops a stray symlink
+    #      INSIDE it (measured: sp-brainstorming/brainstorming), and `ln` reports success. Running
+    #      this unchanged would have quietly polluted all 14.
+    #   2. A real directory is the FORK's own copy. Three of them carry fork-written content that
+    #      does not exist upstream (70 lines, card 4a3c75a5). Relinking would put the read path back
+    #      behind the vendored checkout, which is exactly what 7d2ebd24 removed.
+    #
+    # Taking a vendor update into one of these is a deliberate merge into seed-skills/, never an
+    # automatic copy -- see docs/fork-additions-to-vendored-skills.md.
+    if [ -d "$dest" ] && [ ! -L "$dest" ]; then
+      kept_real=$((kept_real + 1))
+      continue
+    fi
+    ln -sfn "$s" "$dest"
   done
-  echo "linked superpowers skills: $(find "$EXT/superpowers/skills" -name SKILL.md | wc -l)"
+  echo "linked superpowers skills: $(find "$EXT/superpowers/skills" -name SKILL.md | wc -l) (kept $kept_real fork-owned real dir(s) untouched)"
 fi
 
 # 3) Regen the skill index so the new skills are discoverable.

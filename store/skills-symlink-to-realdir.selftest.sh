@@ -95,6 +95,35 @@ SKILLS_DIR="$R4/skills" bash "$SCRIPT" --check >/dev/null 2>&1
 chk "--check leaves every symlink a symlink" \
     "$(find "$R4/skills" -maxdepth 1 -type l | wc -l | tr -d ' ')" "2"
 
+# --- the SYNC script must not relink what this script converted -------------------------------
+# external-repos-sync.sh recreates these entries with `ln -sfn`. That flag replaces a SYMLINK
+# destination, but against a REAL DIRECTORY it drops a stray link INSIDE it and still reports
+# success -- so without a guard the first sync after the conversion silently pollutes all 14 and
+# puts the read path back behind the vendored checkout. This runs the guard's own condition.
+R5="$TMP/synclink"
+mkdir -p "$R5/vendor/brainstorming" "$R5/skills/sp-brainstorming"
+printf 'vendor\n' > "$R5/vendor/brainstorming/SKILL.md"
+printf 'fork copy\n' > "$R5/skills/sp-brainstorming/SKILL.md"
+
+# unguarded, for the record: this is what the sync did before the guard
+ln -sfn "$R5/vendor/brainstorming" "$R5/skills/sp-brainstorming"
+chk "UNGUARDED ln -sfn pollutes a real dir (the bug being prevented)" \
+    "$([ -L "$R5/skills/sp-brainstorming/brainstorming" ] && echo polluted || echo clean)" "polluted"
+rm -f "$R5/skills/sp-brainstorming/brainstorming"
+
+# guarded: the same condition the sync script now applies
+dest="$R5/skills/sp-brainstorming"
+if [ -d "$dest" ] && [ ! -L "$dest" ]; then :; else ln -sfn "$R5/vendor/brainstorming" "$dest"; fi
+chk "the guard leaves the fork-owned real dir alone" \
+    "$([ -L "$R5/skills/sp-brainstorming/brainstorming" ] && echo polluted || echo clean)" "clean"
+chk "...and its fork content is intact" "$(cat "$dest/SKILL.md")" "fork copy"
+
+# and it must still link a skill that has NO real dir yet
+dest2="$R5/skills/sp-newskill"
+if [ -d "$dest2" ] && [ ! -L "$dest2" ]; then :; else ln -sfn "$R5/vendor/brainstorming" "$dest2"; fi
+chk "a skill with no real dir is still linked normally" \
+    "$([ -L "$dest2" ] && echo linked || echo missing)" "linked"
+
 echo
 if [ "$fail" -eq 0 ]; then echo "selftest: $n case(s), PASS"; exit 0; fi
 echo "selftest: $n case(s), $fail FAILED"; exit 1
