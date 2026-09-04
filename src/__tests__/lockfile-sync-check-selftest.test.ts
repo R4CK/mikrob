@@ -40,3 +40,50 @@ describe('lockfile-sync-check.sh selftest', () => {
     expect(src).toContain('this repo does not use pnpm')
   })
 })
+
+// The npm sibling (card c3f052ad). Same contract, same reason to run its selftest here: its
+// verdict makes marveen-land.sh REFUSE a landing, and gate-pretriage report a [fail].
+const NPM_SCRIPT = join(REPO_ROOT, 'store', 'npm-lockfile-sync-check.sh')
+
+describe('npm-lockfile-sync-check.sh selftest', () => {
+  it('the script exists and is executable', () => {
+    expect(existsSync(NPM_SCRIPT)).toBe(true)
+  })
+
+  it('its selftest passes, and reports a COUNTED number of cases', () => {
+    const out = execFileSync('bash', [NPM_SCRIPT, '--selftest'], { encoding: 'utf-8' })
+    expect(out).toMatch(/selftest: [1-9]\d* case\(s\), PASS/)
+  })
+
+  it('keeps the same three-way verdict distinction as its pnpm sibling', () => {
+    const src = execFileSync('cat', [NPM_SCRIPT], { encoding: 'utf-8' })
+    expect(src).toContain('OUT OF SYNC')
+    expect(src).toContain('HARNESS FAULT')
+    expect(src).toContain('not applicable')
+  })
+
+  // THE FALSE POSITIVE THIS MUST NEVER GROW. marveen-land.sh bumps package.json to
+  // X.Y.Z+mikrob.N on every landing while bump-fork-version.sh deliberately keeps the lockfile at
+  // plain X.Y.Z. Comparing version fields would recreate the every-landing [fail] that card
+  // fe06da0c removed -- so the check compares dependency blocks ONLY, and says so.
+  it('never compares the version fields -- that skew is by design, not drift', () => {
+    const src = execFileSync('cat', [NPM_SCRIPT], { encoding: 'utf-8' })
+    expect(src).toContain('version` FIELDS ARE NEVER COMPARED')
+    // And the selftest carries the case, not just the comment.
+    expect(src).toContain('mikrob.57')
+  })
+
+  // Both callers must treat the exit codes the way the contract says: refuse on 1, never on 3.
+  it('marveen-land.sh refuses on 1 and only warns on 3', () => {
+    const land = execFileSync('cat', [join(REPO_ROOT, 'store', 'marveen-land.sh')], { encoding: 'utf-8' })
+    expect(land).toContain('npm-lockfile-sync-check.sh')
+    expect(land).toContain('REFUSED -- package-lock.json does not match package.json')
+    expect(land).toContain('harness fault, not a verdict')
+  })
+
+  it('gate-pretriage.sh asks the npm question too, not only the pnpm one', () => {
+    const pre = execFileSync('cat', [join(REPO_ROOT, 'store', 'gate-pretriage.sh')], { encoding: 'utf-8' })
+    expect(pre).toContain('npm-lockfile-sync-check.sh')
+    expect(pre).toContain('npm-lockfile-out-of-sync')
+  })
+})

@@ -5438,3 +5438,46 @@ fleet-script vagy CLAUDE.md sem használja rutinszerűen (Cybersec mérése).
 
 **Hivatkozás:** kártya `26863263` (a `9c664b88` gate-jének mellékleletéből);
 `scripts/hooks/cd-chain-guard.py`, `scripts/hooks/cd-chain-guard.selftest.py` (49 eset).
+
+## 2026-09-04 08:35 -- npm lockfile-drift ellenőrzés a marveenre (a fe06da0c-n nyitva hagyott lyuk)
+
+**Döntés:** Új `store/npm-lockfile-sync-check.sh`, bekötve a `marveen-land.sh`-ba (elutasít 1-en,
+sosem 3-on) és a `gate-pretriage.sh` 8b. szekciójába. A pnpm-testvér szerződését követi:
+0 = szinkronban vagy nem alkalmazható, 1 = OUT OF SYNC, 2 = használati hiba, 3 = harness-hiba.
+
+**Miért:** a `fe06da0c` megszüntette a hamis `[fail]`-t (a pnpm-only check `ERR_PNPM_NO_LOCKFILE`-t
+jelentett driftnek egy npm-repóban), de ezzel a marveen ELLENŐRZÉS NÉLKÜL maradt: egy valódi drift
+-- függőség deklarálva a `package.json`-ban a lockfile újragenerálása nélkül -- ma sem bukna ki a
+deploy előtt. Ez pontosan az az incidens-osztály (kétszer egy napon, `8d673233` és `af7441a3`),
+amiért a pnpm-check egyáltalán megszületett. Egy zaj-javítás, ami lyukat hagy, félkész.
+
+**Miért strukturális összehasonlítás és nem `npm ci`:** az `npm ci` a registry ellen old fel, tehát
+hálózat kellene hozzá minden landoláskor, és olyan okokból bukna, amik nem a kártyáról szóló tények
+-- épp az, amit ez a script-család a 3-as kilépőkóddal elutasít. A `lockfileVersion: 3` amúgy is
+feleslegessé teszi: a `packages[""]` a gyökér `package.json` függőség-blokkjainak MÁSOLATÁT hordozza,
+tehát a drift tiszta adat-kérdés, offline és determinisztikusan válaszolható.
+
+**Amit szándékosan NEM hasonlít: a `version` mezőket.** A `marveen-land.sh` minden landoláskor
+`X.Y.Z+mikrob.N`-re bumpolja a `package.json`-t, miközben a `bump-fork-version.sh` a lockfile-t
+szándékosan sima `X.Y.Z`-n tartja (npm ott a toldalék nélküli alakot várja). A verziók
+összehasonlítása pontosan azt a minden-landolásos hamis `[fail]`-t hozná vissza, amit a `fe06da0c`
+most szüntetett meg. Ezt selftest-eset ÉS vitest-assertion is rögzíti, hogy egy jövőbeli
+"javítás" ne tudja csendben visszahozni.
+
+**Egy hiba, amit az ELSŐ ÉLES FUTÁS talált meg (és a selftest nem):** a két dokumentumot először
+környezeti változóban adtam át a python-résznek. A marveen `package-lock.json`-ja ~480 bejegyzés,
+és ez `Argument list too long` (E2BIG) hibát adott -- 126-os kilépőkód, ami se nem verdikt, se nem
+a script dokumentált kódja. A selftest azért nem látta, mert minden fixture-je három soros literál.
+A dokumentumok most FÁJLBAN utaznak, és bekerült egy realisztikusan nagy lockfile-t használó eset.
+Ugyanaz a tanulság, mint a `cd-chain-guard`-nál: egy ellenőrzés eseteit a VALÓS korpuszból is kell
+meríteni, nem csak abból, amit ellenőrizni akar.
+
+**Bizonyíték (end-to-end, valódi git-repón):** függőség hozzáadva a lockfile nélkül -> OUT OF SYNC,
+megnevezve a csomagot; lockfile újragenerálva -> OK; a marveen verzió-eltérés (`+mikrob.57` vs sima)
+-> OK, nem drift; manifestet nem érintő commit `--base`-szel -> nem alkalmazható. Élesben:
+marveen develop -> `OK -- 21 declared dependencies match`, CleanCore -> `not applicable`.
+
+**Ki döntött:** backend (a lelet a `fe06da0c`-n, a terv és a végrehajtás), MikroB (kártya).
+
+**Hivatkozás:** kártya `c3f052ad` (a `fe06da0c` komment 19169-ből); `store/npm-lockfile-sync-check.sh`,
+`store/marveen-land.sh`, `store/gate-pretriage.sh`, `src/__tests__/lockfile-sync-check-selftest.test.ts`.

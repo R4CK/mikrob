@@ -152,6 +152,18 @@ if echo "$CHANGED" | grep -qE '(^|/)package\.json$'; then
   esac
 fi
 
+# --- 8b. the SAME question for npm repos (card c3f052ad) ----------------------------------------
+# Section 8 above is pnpm-only. On marveen -- an npm repo -- it answered "not applicable" after card
+# fe06da0c, which removed a false [fail] but left the real question unasked. Same contract, same
+# three-way exit handling: a harness fault is not a finding about this card.
+if echo "$CHANGED" | grep -qE '(^|/)package\.json$'; then
+  npm_lf_out="$("$(dirname "$0")/npm-lockfile-sync-check.sh" --repo "$REPO" --ref "$HEAD_REF" 2>&1)"
+  case $? in
+    1) add "fail" "npm-lockfile-out-of-sync" "$(printf '%s' "$npm_lf_out" | grep -iE 'were added|were removed|specifiers differ' | head -1 | sed 's/^ *//')" ;;
+    3) : ;; # harness fault -- say nothing rather than blame the card
+  esac
+fi
+
 # --- 7. type-check, scoped to the repo's own command --------------------------------------------
 TSC="unknown"
 # The repo's OWN tsc, by explicit path -- never `npx --no-install tsc` (card aae6632c). npx resolves
