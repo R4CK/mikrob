@@ -5164,7 +5164,6 @@ ellenőrzés-sor) mindegyike bukik a guard-teszten, az alapvonal 40/40 zöld.
 **Hivatkozás:** kártya `92a4c2e7`; `web/app-repo-freshness.js`, `web/app-connectors.js`,
 `web/fork-updates.js`, `src/__tests__/repo-freshness-ui.test.ts`.
 
-
 ## 2026-09-04 07:15 -- A `GET /api/messages/:id` végpont pótlása: a direktíva-recept saját ellenőrző lépése 404-et adott
 
 **Döntés:** Átvettük az upstream `GET /api/messages/:id` route-ját (öt sor, a `getAgentMessage()`
@@ -5201,3 +5200,29 @@ hogy a `93e55311`-en már meglévő Cybersec GO ne váljon érvénytelenné).
 
 **Hivatkozás:** kártya `22e4c0d9` (eredeti: `ab4c85f2`); `src/web/routes/messages.ts`,
 `src/__tests__/directive-recipe-endpoint-exists.test.ts`.
+
+## 2026-09-04 09:20 -- 184dc8d7: teljes repó-tábla a Frissítések oldalon, a review-jegyzet mező hiányával kimondva (Fron Ted)
+
+**Előzmény:** ugyanaz a Peti-észrevétel, mint a 92a4c2e7 (11 perc különbséggel nyílt a két kártya).
+Dedup-kérdésre MikroB (komment 19110) FE-only körre szűkítette: teljes repó-lista + enabled/adoption
+oszlop + review-jegyzet-jelző, a meglévő `GET /api/integrated-repos`-ból; az élő `git ls-remote`
+elvetve (a watcher heartbeat már frissíti a `last_sha`-t, új hálózati felület felesleges).
+
+**Mért ellentmondás a döntés 3. pontjában:** a végpont `description` mezője `cfg.description || cfg.note`
+(`src/web/routes/integrated-repos.ts`), és a registry MIND a 37 bejegyzésén van `description`
+(egysoros leírás), így a `note` (35 bejegyzés, 3-11 KB-os review-láncok) SOHA nincs a válaszban.
+Élőben ellenőrizve (mattpocock-productivity: API-description = a magyar egysoros; a
+„VENDORED 2026-07-30 (card f64fe6e1)..." note hiányzik).
+
+**Döntés:** (1) A tábla a hat mért oszloppal épül; a review-jegyzet oszlop KONTRAKTUS-ALAPÚ: csak akkor
+renderelődik, ha `typeof r.note === 'string'` legalább egy soron -- hiányzó mező = nincs oszlop, nem
+„nincs jegyzet" (12. szabály, ne hazudjunk állapotot; 5aba993d tanulsága: halott jelzőt nem hagyunk
+hátra). (2) A `note` egyetlen read-only mezőként való kitétele a válaszba (`note: String(cfg.note || '')`)
+MikroB GO/NO-GO-jára vár (üzenet 22132); ha GO, a FE változtatás nélkül megjeleníti. (3) Sorrend
+figyelem-elsőbbségi: lemaradt (commit-szám csökkenő), nem mérhető, naprakész; név szerint csoporton
+belül; tiszta, tesztelt függvény (`sortReposForFreshnessTable`). (4) A korábbi „lemaradtak névsora"
+lista a táblába olvadt (ugyanaz az információ, egy helyen).
+
+**Ki döntött:** MikroB (szűkítés, ls-remote elvetése), Fron Ted (a note-mező hiányának kezelése, sorrend).
+**Hivatkozás:** kártya `184dc8d7` (rokon: `92a4c2e7`); `web/fork-updates.js`, `web/app-repo-freshness.js`,
+`src/__tests__/repo-freshness-ui.test.ts`.

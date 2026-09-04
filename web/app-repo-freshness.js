@@ -48,5 +48,23 @@ function summarizeRepoFreshness(repos) {
   return s
 }
 
+// Row order for the Updates page table (card 184dc8d7): what needs attention first --
+// behind (most commits first), then not-measurable, then up to date; name within a group.
+// Pure and stable: returns a new array, never mutates the input.
+const FRESHNESS_RANK = { behind: 0, unknown: 1, up_to_date: 2 }
+function sortReposForFreshnessTable(repos) {
+  return (repos || []).slice().sort((a, b) => {
+    const sa = repoFreshnessState(a)
+    const sb = repoFreshnessState(b)
+    if (sa !== sb) return FRESHNESS_RANK[sa] - FRESHNESS_RANK[sb]
+    if (sa === 'behind') {
+      const d = (Number(b.behind) || 0) - (Number(a.behind) || 0)
+      if (d !== 0) return d
+    }
+    return String(a.name || '').localeCompare(String(b.name || ''))
+  })
+}
+
 window.repoFreshnessState = repoFreshnessState
 window.summarizeRepoFreshness = summarizeRepoFreshness
+window.sortReposForFreshnessTable = sortReposForFreshnessTable
