@@ -46,55 +46,88 @@ describe('PATH_PREFIX escaped-pipe fix: must keep denying (card 39cc3460 fix acc
 })
 
 describe('PATH_PREFIX escaped-pipe fix: quadratic-blowup repro must stay fast (card 39cc3460)', () => {
-  // The exact adversarial shape from the finding: dense escaped-pipe pairs (no real `/`, so
-  // PATH_PREFIX's optional group can never close) feeding all four affected constructs.
-  it('STDIN_SHELL_RX pipe branch stays under 200ms at n=20000 pairs (pre-fix measured: ~700ms at n=20000, ~27min extrapolated at 1MB)', () => {
-    const text = `x | ${pipePairRun(20000)}bash`
-    const t0 = Date.now()
-    gateDecision('Bash', { command: text })
-    // 500ms, not 200ms: observed a couple of ms over 200 under full-suite CPU contention (card
-    // 14b573f3 verification) even though isolated runs stay under 50ms -- still ~2 orders of
-    // magnitude below the pre-fix quadratic extrapolation (~27min at 1MB), so still meaningful.
-    expect(Date.now() - t0).toBeLessThan(500)
-  })
+  // MEASURED AS A RATIO, NOT AS A WALL-CLOCK BUDGET (card 3208a968).
+  //
+  // These five checks used to assert an absolute millisecond budget, and that budget failed under
+  // machine load while the code was perfectly fine. The history is in this file: the threshold had
+  // already been raised once, 200ms -> 500ms, for exactly that reason. On 2026-09-04 it failed
+  // again at 525ms and REFUSED a landing whose diff was a Python hook and some string constants --
+  // nothing this file even loads. Isolated, the same suite passed 11/11 immediately after.
+  //
+  // Raising the number a third time would buy another few weeks. The real problem is the metric: a
+  // wall clock measures the MACHINE, and this fleet runs 15 agents whose loadavg swings between 8
+  // and 35. What the card 39cc3460 fix actually claims is a COMPLEXITY property -- that these four
+  // constructs stopped being O(n^2) -- and complexity is a ratio, which cancels the machine out.
+  //
+  // So: measure the same construct at n and 4n. Linear costs ~4x, quadratic ~16x. The threshold
+  // sits at 8, the midpoint in log space, so it takes a 2x error in either direction to flip --
+  // and load scales BOTH measurements together, which is precisely why the ratio survives it.
+  //
+  // Measured on this machine at loadavg 19.6, the shape the old budget could not tolerate:
+  //     n=  5000   9.55ms      n= 20000  35.62ms
+  //     n= 10000  19.31ms      n= 40000  70.71ms
+  //     n= 80000 148.57ms   -> 4x input, 4.17x time. Quadratic would be 16x.
+  const N = 10000
+  const M = 4 * N
+  const ROUNDS = 3
+  // Quadratic = 16x, linear = 4x. 8 is the log-space midpoint of the two.
+  const MAX_RATIO = 8
+  // A second, deliberately absurd absolute backstop. The ratio catches a return to O(n^2); it does
+  // NOT catch something that stays linear but becomes 100x slower per character. This does, and it
+  // cannot flake: measured ~19ms, refused at 10s, a 500x margin. That is the same reasoning that
+  // makes the DECISIONS.md size case safe, and the opposite of the 525-vs-500 margin that failed.
+  const ABSURD_MS = 10_000
 
-  it('SHELL_C_RX stays under 200ms at n=20000 pairs', () => {
-    const text = `${pipePairRun(20000)}bash -c "id"`
-    const t0 = Date.now()
-    gateDecision('Bash', { command: text })
-    // 500ms, not 200ms: observed a couple of ms over 200 under full-suite CPU contention (card
-    // 14b573f3 verification) even though isolated runs stay under 50ms -- still ~2 orders of
-    // magnitude below the pre-fix quadratic extrapolation (~27min at 1MB), so still meaningful.
-    expect(Date.now() - t0).toBeLessThan(500)
-  })
+  const timeOnce = (command: string): number => {
+    const t0 = process.hrtime.bigint()
+    gateDecision('Bash', { command })
+    return Number(process.hrtime.bigint() - t0) / 1e6
+  }
 
-  it('HERESTRING_RX stays under 200ms at n=20000 pairs', () => {
-    const text = `${pipePairRun(20000)}bash <<< "id"`
-    const t0 = Date.now()
-    gateDecision('Bash', { command: text })
-    // 500ms, not 200ms: observed a couple of ms over 200 under full-suite CPU contention (card
-    // 14b573f3 verification) even though isolated runs stay under 50ms -- still ~2 orders of
-    // magnitude below the pre-fix quadratic extrapolation (~27min at 1MB), so still meaningful.
-    expect(Date.now() - t0).toBeLessThan(500)
-  })
+  /**
+   * Interleaved, minimum-of-rounds. Interleaved because a load spike between two sequential
+   * measurements would otherwise land on only one of them and skew the ratio; minimum because the
+   * least-contended sample is the one closest to the code's own cost, where a mean drags in
+   * whatever else the machine was doing.
+   */
+  const growthRatio = (build: (n: number) => string): { ratio: number; small: number; large: number } => {
+    let small = Infinity
+    let large = Infinity
+    for (let r = 0; r < ROUNDS; r++) {
+      small = Math.min(small, timeOnce(build(N)))
+      large = Math.min(large, timeOnce(build(M)))
+    }
+    return { ratio: large / small, small, large }
+  }
 
-  it('PROC_SUB_SHELL stays under 200ms at n=20000 pairs', () => {
-    const text = `${pipePairRun(20000)}bash <(echo id)`
-    const t0 = Date.now()
-    gateDecision('Bash', { command: text })
-    // 500ms, not 200ms: observed a couple of ms over 200 under full-suite CPU contention (card
-    // 14b573f3 verification) even though isolated runs stay under 50ms -- still ~2 orders of
-    // magnitude below the pre-fix quadratic extrapolation (~27min at 1MB), so still meaningful.
-    expect(Date.now() - t0).toBeLessThan(500)
+  const CONSTRUCTS: Array<[string, (n: number) => string]> = [
+    ['STDIN_SHELL_RX pipe branch', (n) => `x | ${pipePairRun(n)}bash`],
+    ['SHELL_C_RX', (n) => `${pipePairRun(n)}bash -c "id"`],
+    ['HERESTRING_RX', (n) => `${pipePairRun(n)}bash <<< "id"`],
+    ['PROC_SUB_SHELL', (n) => `${pipePairRun(n)}bash <(echo id)`],
+  ]
+
+  it.each(CONSTRUCTS)('%s grows LINEARLY with input, not quadratically', (_name, build) => {
+    const { ratio, small, large } = growthRatio(build)
+    // The numbers go in the message, so a failure says whether it is a complexity regression or
+    // just a slow machine -- the question the old absolute budget could never answer.
+    expect(
+      ratio,
+      `n=${N} took ${small.toFixed(1)}ms, n=${M} took ${large.toFixed(1)}ms -> ${ratio.toFixed(2)}x. ` +
+        `Linear is ~4x, quadratic ~16x; over ${MAX_RATIO}x means the O(n^2) backtracking is back.`,
+    ).toBeLessThan(MAX_RATIO)
+    expect(
+      small,
+      `n=${N} took ${small.toFixed(1)}ms, which is absurd for this input even on a loaded machine ` +
+        `(measured ~19ms). The growth may still be linear, so the ratio above cannot see this.`,
+    ).toBeLessThan(ABSURD_MS)
   })
 
   it('stays fast at n=100000 pairs, near the practical ceiling this class of input reaches', () => {
-    // Threshold has margin for full-suite CPU contention (observed 368ms isolated, 519ms under a
-    // full concurrent run, card 14b573f3 verification) -- still an order of magnitude below the
-    // pre-fix quadratic extrapolation (~27min at 1MB), so it stays a meaningful regression guard.
-    const text = `${pipePairRun(100000)}bash -c "id"`
+    // Kept as a size check rather than a speed check: the point is that the practical ceiling is
+    // reachable at all. Budget is the absurd one, for the same reason as above -- measured ~185ms.
     const t0 = Date.now()
-    gateDecision('Bash', { command: text })
-    expect(Date.now() - t0).toBeLessThan(1000)
+    gateDecision('Bash', { command: `${pipePairRun(100000)}bash -c "id"` })
+    expect(Date.now() - t0).toBeLessThan(ABSURD_MS)
   })
 })
