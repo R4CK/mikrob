@@ -86,12 +86,12 @@ describe('ensureSystemDirectiveAuthSection', () => {
     expect(out.indexOf(MARKER_BEGIN)).toBe(out.lastIndexOf(MARKER_BEGIN))
   })
 
-  it('writes the MAIN agent rule into PROJECT_ROOT/CLAUDE.md', () => {
-    writeFileSync(join(tmpRoot, 'CLAUDE.md'), '# Main\n', 'utf-8')
+  it('no-ops for the MAIN agent -- PROJECT_ROOT/CLAUDE.md is git-tracked, a runtime write there would fight --ff-only (card 2dd28b5d/99fccbcf)', () => {
+    const before = '# Main\n'
+    writeFileSync(join(tmpRoot, 'CLAUDE.md'), before, 'utf-8')
     ensureSystemDirectiveAuthSection('main-agent')
     const out = readFileSync(join(tmpRoot, 'CLAUDE.md'), 'utf-8')
-    expect(out).toContain(MARKER_BEGIN)
-    expect(out).toContain('to_agent="main-agent"')
+    expect(out).toBe(before)
   })
 
   it('skips silently when no CLAUDE.md exists', () => {
