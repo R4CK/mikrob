@@ -6261,3 +6261,34 @@ hibáját is elrejti.** Nem volt hibás, amíg nem futott.
 A javítás nem lazítás: a case most a Traceback-et nézi (az a crash), ÉS azt, hogy hiányzó config
 mellett ne szivárogjon ki a fake modell (az a routing). Mindkettő a routingról szól, és egyik sem
 függ attól, hogy van-e letöltött modell.
+
+## 2026-09-04 -- 99fccbcf -- A munkafa-frissesség kereséshez: eszköz, nem blokkoló hook
+
+**Döntés:** a „grep az élő telepítésen hamis nullát adhat” hibaosztályra NEM épült blokkoló
+PreToolUse hook. Helyette egy hívható, csak-olvasó eszköz készült (`store/live-tree-freshness.sh`),
+ami kimondja a fa lemaradását, és a keresést a refen futtatja a munkafa helyett.
+
+**Miért:** a hook eseteit a valódi parancs-korpuszból mértem, nem a fenyegetésmodellből. 20 óra
+alatt 4121 Bash-hívásból **15** volt rekurzív keresés az élő checkouton, mind egyetlen ügynöktől,
+és mind `store/` alatti fájl/log keresése -- egyetlen forrás-létezés kérdés sem. Natív Grep/Glob
+hívás ugyanarra az útvonalra: **0**. Egy guard ott napi ~15 hamis pozitívot termelt volna, és a
+valódi esetet (egy `grep -rl` egy 12 committal lemaradt fán) nem fogta volna meg.
+
+**A kitettség viszont valós, és ezt is mértem.** A `marveen-land.sh` a 02f462e1 óta minden
+landolás után előrehúzza az élő checkoutot, de a közvetlenül pusholó kézi landolás nem hívja meg.
+A 142 ablakon mérve: medián 16,4 perc / 3 commit lemaradás, de **22 ablak egy óránál hosszabb** és
+**26 ablakban 5+ commitot** nem látott a fa. 2026-09-04-en önmagában 17, 16, 15, 12 és 12 commitos
+ablakok. A saját hamis nullám egy 12 commit / 60 perces ablakba esett.
+
+**Egy mérés menet közben megfordított egy állításomat.** Azt írtam a script fejlécébe, hogy a
+rossz ref némán, exit 1-gyel tér vissza, tehát megkülönböztethetetlen az őszinte „nincs
+találat”-tól. Ez hamis: a rossz ref hangos (`fatal: unable to resolve revision`, exit 128).
+A ténylegesen néma alak a rossz PATHSPEC (`git grep <minta> <jó-ref> -- nincs/ilyen.ts` -> üres
+kimenet, exit 1), ami egy átnevezett vagy fejből gépelt útvonalnál a valószínűbb hiba. Az eszköz
+ezért mindkettőt külön állapotra képezi le, és a pathspec-ágat a mérés után kapta meg.
+
+**Ki döntött:** backend2 (mérés + döntés), a kártyát MikroB nyitotta backend2 operatív jelzésére.
+
+**Ami NYITVA maradt, MikroB döntése:** (a) az élő checkout periodikus előrehúzása, hogy a kézi
+landolás utáni ablak is bezáruljon -- ez az élő telepítést érinti időzítve, ezért nem egyoldalú
+lépés; (b) a keresési fegyelem fleet-szintű kimondása a root CLAUDE.md-ben.
