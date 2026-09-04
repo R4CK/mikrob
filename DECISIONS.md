@@ -5414,3 +5414,27 @@ a cél szerinti újra-felsorolás).
 
 **Hivatkozás:** kártya `b46a4b7e` (QA FAIL komment), `src/web/fleet-transfer.ts`,
 `src/__tests__/fleet-transfer.test.ts` (4 új eset, köztük a nem-vakusság kontroll).
+
+## 2026-09-04 08:30 -- `rg`/`ag`/`ack` alapból rekurzív: a flag-alapú felismerés rájuk nem működhet
+
+**Döntés:** Külön `_RECURSES_BY_DEFAULT = {rg, ripgrep, ag, ack}` halmaz, ami FLAGTŐL FÜGGETLENÜL
+rekurzívnak minősít, a meglévő flag-alapú ág ELŐTT.
+
+**Miért (Cybersec, kártya 26863263):** ezek a keresők flag NÉLKÜL is a CWD-t járják be -- nem kell
+`-r`. A guard viszont a `_PATTERN_FIRST` ágba sorolta őket (két operandus kell), a rekurzió-teszt
+pedig flaget keresett, amiből nincs -- így egyetlen operandussal (a mintával) átcsúsztak. Mérve:
+`cd /abs && rg foo` az eredeti guardon BLOCK volt, az operandus-szabálytól kezdve PASS.
+
+**A tanulság, ami a harmadik kör után már kirajzolódik:** ennél a guardnál minden hiba ugyanabból
+jött -- a parancs VISELKEDÉSÉT a parancs SZÖVEGÉBŐL próbáltam kiolvasni. A `-rn` esetén a flag
+sorrendjéből, itt a flag LÉTÉBŐL. Ahol a viselkedés a parancs alapértelmezése, ott nincs mit
+kiolvasni: a tudás csak a parancs NEVÉHEZ köthető, listaként. A `sed -r` (kiterjesztett regex) és az
+`rg` (alapból rekurzív) ugyanannak az éremnek a két oldala: mindkettőnél a név dönt, nem a flag.
+
+**Kockázat-szint:** MEDIUM, nem HIGH -- az `rg` telepítve van a gépen, de jelenleg egyetlen
+fleet-script vagy CLAUDE.md sem használja rutinszerűen (Cybersec mérése).
+
+**Ki döntött:** Cybersec (a lelet és a javaslat), backend (végrehajtás).
+
+**Hivatkozás:** kártya `26863263` (a `9c664b88` gate-jének mellékleletéből);
+`scripts/hooks/cd-chain-guard.py`, `scripts/hooks/cd-chain-guard.selftest.py` (49 eset).

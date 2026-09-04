@@ -131,6 +131,12 @@ _PATTERN_FLAG_RX = re.compile(r"(?:^|\s)-[a-zA-Z]*[ef](?:\s|=)")
 # blocked it -- a false positive in both directions of this fix, measured by Cybersec. Scoping
 # closes the grep hole and removes the sed false positive in one change.
 _RECURSION_CAPABLE = {"grep", "egrep", "fgrep", "rg", "ripgrep", "ag", "ack"}
+# ...and these RECURSE WITH NO FLAG AT ALL (Cybersec, card 26863263). `rg foo` walks the CWD; so do
+# `ag` and `ack`. They sit in _PATTERN_FIRST, so the operand rule wanted a second operand, and the
+# flag-based recursion test found no flag to match -- one operand (the pattern) and they sailed
+# through. Measured: `cd /abs && rg foo` was BLOCK on the original guard, PASS from the operand
+# rule onwards. Their default IS the recursion, so no flag can be the signal; membership is.
+_RECURSES_BY_DEFAULT = {"rg", "ripgrep", "ag", "ack"}
 _RECURSIVE_RX = re.compile(r"(?:^|\s)-[a-zA-Z]*[rR][a-zA-Z]*(?:\s|$)|(?:^|\s)--recursive\b")
 _OPERAND_RX = re.compile(r"""(?:^|\s)(?!-)("(?:[^"\\]|\\.)*"|'[^']*'|\S+)""")
 
@@ -145,6 +151,8 @@ def _has_path_operand(seg, name):
     this guard exists to prevent. That over-match is exactly the "fleet-wide nuisance" the scope
     note warns about, so it is fixed where the scope is decided.
     """
+    if name in _RECURSES_BY_DEFAULT:
+        return True
     if name in _RECURSION_CAPABLE and _RECURSIVE_RX.search(seg):
         return True
     body = seg.split(None, 1)
