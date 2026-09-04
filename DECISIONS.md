@@ -5627,3 +5627,36 @@ egyetlen valódi képesség sem tűnt el.
 **Ki döntött:** Peti (formátum), fullstack (végrehajtás).
 **Hivatkozás:** kártya `3eb0bbfc`; a `CLAUDE.md` "README karbantartás" szabály fork-fejlesztések
 pontja rögzíti a formátumot.
+
+## 2026-09-04 11:25 -- Ügynök-worktree `node_modules`: valódi könyvtár, nem szimlink a megosztott fára (kártya 0b23ec28)
+
+**Döntés:** Az ügynök-worktree-k `node_modules`-a a megosztott fő klónra mutató KÖNYVTÁR-szimlink
+helyett valódi, saját könyvtár lesz, a fő klónból másolva (`cp -a`, nem `cp -al`). Marveen-en ez
+egyelőre OPT-IN (`MARVEEN_WORKTREE_REAL_DEPS=1`), worktree-nként bevezetve; a lassú másoló lépés
+külön szkriptbe került (`store/agent-worktree-deps.sh`), hogy egy „biztosítsd, hogy megvan" hívás
+ne timeoutoljon. A `store/cc-gate-worktree.sh` `.vite` bejegyzése szintén valódi, üres könyvtár lett.
+
+**Miért:** A 9dc0fba8 incidens gyökér-oka az volt, hogy a könyvtár-szimlink mellett a
+`symlinked-node-modules-guard.py` az EGYETLEN kontroll. Cybered éke ezt kimérte:
+`cd $WT/apps/web/node_modules && rm -rf ../src` a MEGOSZTOTT klón forrását törli, guard rc=0 --
+a `..` kilép a `node_modules` hatóköréből, mert a guard lexikálisan gyűjt, a kernel viszont a
+szimlinkelt cwd-ből fizikailag old fel.
+
+A plan-grilling hozadéka egy HAMIS load-bearing feltevés kizárása volt: a kézenfekvő „legyen valódi
+könyvtár, benne BEJEGYZÉSENKÉNTI szimlink" javítás NEM zárja a hibaosztályt, csak mélyebbre tolja --
+`cd node_modules/<csomag> && rm -rf ../../src` ugyanúgy kilép, és 318 bejegyzés 318 ajtót jelent.
+Az egyetlen szerkezeti zárás a valódi, saját fa. A helyfoglalás nem akadály (mérve: 990M
+worktree-nként marveen-en, 918G szabad a `/home`-on). Másolás és nem újratelepítés, mert a
+worktree-nek azt a függőség-állapotot kell tartania, amiről leágazott; hardlink (`cp -al`) pedig
+megosztaná az inode-ot, vagyis épp a megosztott írható talajt tartaná életben.
+
+**Következmény a szabályszövegre:** a flotta-szintű „függőség-telepítő SOHA nem futhat worktree-ből"
+tilalom marveen-en megfordul azokra a worktree-kre, amik átálltak -- a `CLAUDE.md` ugyanebben a
+munkában frissült, nem külön követő kártyán, hogy a szabály és a valóság ne váljon szét.
+
+**Ki döntött:** MikroB (verdikt: GO-WITH-CHANGES, komment 19318), backend2 plan-grillingje alapján
+(komment 19316). Cybersec GO és QA saját kanári-méréssel, mindkét irányban reprodukálva.
+
+**Hivatkozás:** kártya `0b23ec28`, commit `b98bfaea`; `store/agent-worktree-deps.sh`,
+`store/agent-worktree-marveen.sh`, `store/cc-gate-worktree.sh`, `src/__tests__/agent-worktree-deps.test.ts`;
+előzmény: 9dc0fba8 incidens és a `symlinked-node-modules-guard.py`.
