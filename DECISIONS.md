@@ -6114,3 +6114,46 @@ sávokat.
 **Ki döntött:** Peti (kérés) + Fullstack (megvalósítási döntések: inaktív sáv alakja, sorrend,
 roster-forrás, a nem-elérhető Ollama kezelése).
 **Hivatkozás:** kártya 21950f77.
+
+---
+
+## 2026-09-04 -- 711a7e57 -- A selftestek felfedezéssel futnak, nem kézzel írt wrapperenként
+
+**Döntés.** Egyetlen teszt-fájl (`src/__tests__/store-selftests-all-run.test.ts`) felderíti a
+`store/*.selftest.sh` glob-ot, és mindegyiket lefuttatja, `it.each`-csel külön jelentve. Nem nyolc
+kézzel írt wrapper.
+
+**Miért.** Mérve ezen a repón: 13 selftestből **nyolcra semmi nem hivatkozott**, tehát soha nem
+futottak -- megírt, commitolt, zöldnek LÁTSZÓ ellenőrzések, amelyek egyszer sem hajtódtak végre. A
+kártya nyolc wrappert kért; az megjavította volna ezt a nyolcat, és **árván hagyta volna a
+kilencediket**, amint valaki hozzáadja. A kártya saját szövege nevezi meg a valódi okot: "nincs
+auto-felfedezés, minden selftest külön vitest-fájlt igényel". Ezért a felfedezés az ok javítása, a
+nyolc wrapper a tüneté.
+
+**Az állapotuk, mielőtt bármit írtam:** mind a nyolc árva **átment** (89 ellenőrzés összesen). A
+kártya számolt régi, valós bukásokkal; nem volt. Ez jó hír, de nem teszi feleslegessé a bekötést --
+attól, hogy ma zöldek, holnap egy szerkesztés csendben elronthatja őket, és senki nem venné észre.
+
+**Nem-vákuum, mert egy "PASS" önmagában nem bizonyíték.** A wrapper NEM azt nézi, hogy a script
+exit 0-val tért vissza, hanem hogy **nem nulla** esetszámot jelentett, a három használatban lévő
+riport-alak valamelyikében. Egy selftest, aminek minden esete kimaradt vagy a ciklusa be sem lépett,
+tökéletesen boldog összefoglalót ír nulla munkáról. Mutációval igazolva: `All 0 checks pass.` -> FAIL,
+felismerhetetlen alak -> FAIL, elrontott glob -> FAIL, létező célt vesztett kizárás -> FAIL.
+
+**Egy kizárás, indokkal: `local-llm-model-routing`.** A selftest saját kommentje mondja ki, hogy
+kicseréli a `store/local-llm-model-routing.json`-t, és "this IS the file the running fleet uses". A
+`trap cleanup EXIT` normál kilépésre és szokásos jelekre visszaállítja -- **SIGKILL-re nem**, és ez a
+suite landoláskor fut, a landolásokat pedig megölik (ugyanezen a napon egy saját teljes futásomat
+ölte meg egy session-határ). Egy megölt futás 18 ügynök routing-configját hagyná egy nem létező
+modellre mutató hamis fájlon. Kézzel futtatva átmegy (5/5) -- **a BEKÖTÉS nem biztonságos, nem a
+script.**
+
+A javítás egy sor a `local-llm.sh`-ban (`cfg="${LOCAL_LLM_MODEL_ROUTING_FILE:-$HERE/...}"`), ami után
+a selftest ideiglenes fájlra mutathat és csatlakozhat. Az viszont egy ÉLŐ flotta-scriptet szerkeszt,
+ami külön döntés a bekötéstől, ezért nincs ide belegyúrva.
+
+**Költség, mérve:** 62,5 s ez a fájl, ~77 s mind a 13 sorosan. A vitest a FÁJLOKAT futtatja
+párhuzamosan, tehát egy ~80-100 s-os suite-ban ez nagyrészt elrejtőzik. A már bekötött ötöt
+szándékosan ÚJRA futtatja: a "ki köti be máshol" nyilvántartás pontosan az a könyvelés, ami elavul,
+és a saját teszt-fájljuk amúgy is más invariánsokat állít (a skills-symlink például az `rm`-`mv`
+sorrendet), tehát nem redundáns.
