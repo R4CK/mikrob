@@ -106,3 +106,60 @@ describe('safety: the picker can only ever name a real, allowlisted template', (
     }
   })
 })
+
+describe('the two triage taxonomies do not steal each other (card 002120b1)', () => {
+  // MEASURED, which is how this was found: `pickTemplate('triage this email')` returned
+  // 'msg-triage'. The two templates emit DIFFERENT JSON taxonomies -- triage gives
+  // spam|promo|personal|work|urgent, msg-triage gives gate-verdict|dispatch-request|reconcile|
+  // question|status|noise. So an email triaged by the wrong one comes back as confidently wrong
+  // structured output in a valid-looking shape: the caller cannot see it took the wrong contract.
+  // That is strictly worse than returning null, which is why this pair needed splitting rather
+  // than reordering.
+  it('an EMAIL triage request gets the email classifier', () => {
+    expect(pickTemplate('triage this email from a customer')).toBe('triage')
+    expect(pickTemplate('please triage the inbox for me')).toBe('triage')
+  })
+
+  it('an INTER-AGENT triage request gets the fleet classifier', () => {
+    expect(pickTemplate('triage this inter-agent message')).toBe('msg-triage')
+    expect(pickTemplate('triage the inbound agent message')).toBe('msg-triage')
+    expect(pickTemplate('classify these messages for me')).toBe('msg-triage')
+  })
+
+  it('the split does not depend on rule ORDER -- the two patterns are disjoint', () => {
+    // Measured by swapping the two rules in RULES: all cases here stay green, because neither
+    // pattern matches the other's phrasing. Worth pinning, because "first match wins" makes rule
+    // order load-bearing elsewhere in this file, and a reader could reasonably assume it is here
+    // too and 'fix' a future bug by reordering.
+    expect(pickTemplate('triage this email from a customer')).toBe('triage')
+    expect(pickTemplate('triage this inter-agent message')).toBe('msg-triage')
+  })
+
+  it('an UNQUALIFIED triage request matches NEITHER -- a coin flip is not a match', () => {
+    // This file's own doctrine: anything vague falls through to null rather than guessing. Here the
+    // guess would be between two incompatible output contracts, so null is the only honest answer.
+    expect(pickTemplate('triage this for me please')).toBeNull()
+  })
+})
+
+describe('changelog and release-notes are different documents (card 002120b1)', () => {
+  it('a CHANGELOG request no longer routes to release-notes', () => {
+    // release-notes used to own /\bchangelog entry\b/, so the phrase that most plainly names the
+    // changelog template returned a different one: user-facing New/Improved/Fixed prose instead of
+    // Keep a Changelog Added/Changed/Fixed/Removed/Deprecated/Security groups.
+    expect(pickTemplate('write a changelog entry for these changes')).toBe('changelog')
+    expect(pickTemplate('generate a changelog for the release')).toBe('changelog')
+  })
+
+  it('a RELEASE NOTES request still routes to release-notes', () => {
+    expect(pickTemplate('write release notes for v2')).toBe('release-notes')
+  })
+
+  it('a PR description is reachable at all -- it used to return null', () => {
+    // pr-body.txt shipped on disk but was absent from KNOWN_TEMPLATES, so the picker could never
+    // select it however the request was phrased.
+    expect(pickTemplate('write a PR description for these commits')).toBe('pr-body')
+    expect(pickTemplate('draft the pull-request body')).toBe('pr-body')
+  })
+})
+

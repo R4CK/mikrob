@@ -42,6 +42,9 @@ export const KNOWN_TEMPLATES = [
   'code-explain',
   'edge-cases',
   'release-notes',
+  'changelog',
+  'pr-body',
+  'triage',
 ] as const
 
 export type TemplateName = (typeof KNOWN_TEMPLATES)[number]
@@ -62,7 +65,14 @@ const RULES: readonly Rule[] = [
   { template: 'regex', patterns: [/\bregexp?\b/i, /\bregular expression\b/i, /\bregulari[sz] kifejez/i] },
   { template: 'sql-migration', patterns: [/\bmigration\b.*\bsql\b/i, /\bsql\b.*\bmigration\b/i, /\balter table\b/i, /\bmigraci[oó]\b.*\bsql\b/i] },
   { template: 'commit-msg', patterns: [/\bcommit (message|msg)\b/i, /\bcommit-?[uü]zenet\b/i] },
-  { template: 'release-notes', patterns: [/\brelease notes?\b/i, /\bchangelog entry\b/i, /\bkiad[aá]si jegyzet/i] },
+  // `changelog entry` deliberately NOT here any more (card 002120b1): it used to route to this
+  // template, whose contract is USER-facing New/Improved/Fixed prose, while the changelog
+  // template it names produces Keep a Changelog groups (Added/Changed/Fixed/Removed/
+  // Deprecated/Security). Two different documents, and the phrase names the other one. This
+  // file's own header says a wrong template is worse than no template; that was an instance.
+  { template: 'changelog', patterns: [/\bchangelog\b/i, /\bv[aá]ltoz[aá]si napl[oó]/i] },
+  { template: 'release-notes', patterns: [/\brelease notes?\b/i, /\bkiad[aá]si jegyzet/i] },
+  { template: 'pr-body', patterns: [/\bpr (description|body)\b/i, /\bpull[- ]request (description|body)\b/i] },
   { template: 'docstring', patterns: [/\bdocstring\b/i, /\bjsdoc\b/i, /\bdoc comment\b/i] },
   { template: 'yaml-config', patterns: [/\byaml\b/i] },
   { template: 'json-transform', patterns: [/\bjson\b.*\b(transform|convert|reshape|map)\b/i, /\btransform\b.*\bjson\b/i] },
@@ -80,7 +90,18 @@ const RULES: readonly Rule[] = [
   { template: 'translate', patterns: [/\btranslate\b/i, /\bford[ií]tsd\b/i, /\bford[ií]t[aá]s\b/i] },
   { template: 'keywords', patterns: [/\bkeywords?\b/i, /\bkulcssz[oó]/i, /\bextract tags?\b/i] },
   { template: 'summarize', patterns: [/\bsummar(y|ise|ize)\b/i, /\b[oö]sszefoglal/i] },
-  { template: 'msg-triage', patterns: [/\btriage\b/i, /\bclassif(y|ication)\b.*\bmessages?\b/i] },
+  // TWO triage templates with DIFFERENT output taxonomies: `triage` classifies email
+  // (spam|promo|personal|work|urgent), `msg-triage` classifies inter-agent traffic
+  // (gate-verdict|dispatch-request|reconcile|question|status|noise). msg-triage used to own a
+  // bare /\btriage\b/, so "triage this email" returned the FLEET classifier -- a confidently
+  // wrong answer in a valid-looking JSON shape, which is worse than no answer because the
+  // caller has no way to see it took the wrong taxonomy (card 002120b1, measured).
+  //
+  // An UNQUALIFIED "triage this" now matches neither, on this file's own stated doctrine:
+  // anything vague falls through to null rather than guessing. Here the guess is not merely
+  // vague, it is a coin flip between two incompatible output contracts.
+  { template: 'triage', patterns: [/\b(e-?mail|mail|inbox|lev[eé]l)\b[^.]{0,40}\btriage\b/i, /\btriage\b[^.]{0,40}\b(e-?mail|mail|inbox|lev[eé]l)\b/i] },
+  { template: 'msg-triage', patterns: [/\b(inter-?agent|agent|fleet|inbound|[uü]zenet)\b[^.]{0,40}\btriage\b/i, /\btriage\b[^.]{0,40}\b(messages?|msg|[uü]zenet)\b/i, /\bclassif(y|ication)\b.*\bmessages?\b/i] },
 
   // Product / planning shapes.
   { template: 'user-story', patterns: [/\buser stor(y|ies)\b/i, /\bfelhaszn[aá]l[oó]i t[oö]rt[eé]net/i] },
