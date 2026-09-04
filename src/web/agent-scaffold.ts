@@ -20,7 +20,29 @@ import { SYSTEM_DIRECTIVE_SENDER } from './system-directive-id.js'
 // back to localhost for single-host installs. Exported so heartbeat-agent-
 // scaffold and tests can import the same logic without duplicating it.
 export function resolveDashboardOrigin(publicUrl: string, port: number | string, agentApiOrigin = ''): string {
-  return (agentApiOrigin || publicUrl || `http://localhost:${port}`).replace(/\/$/, '')
+  const fallback = `http://localhost:${port}`
+  // THE UNION, deliberately, and neither side alone is right (card ec7bdad8 merge).
+  // From THIS branch: the third parameter, upstream's agentApiOrigin, which wins when set.
+  // From develop: card 1075d0e4's validation, which this branch's version did not have because it
+  // was written before that fix landed. Taking my side wholesale would have REVERTED a shipped
+  // security fix -- the same trap Cybersec caught one card over on e80c011a, where I had already
+  // done exactly that once. The new parameter is validated too: it is another config-sourced
+  // string reaching the same sink, so exempting it would reopen the hole through the new door.
+  const candidate = (agentApiOrigin || publicUrl || fallback).replace(/\/$/, '')
+  // Card 1075d0e4 (Cybersec, second round): this value is a config string with no validation, and it
+  // is interpolated into the curl RECIPES written into every agent's CLAUDE.md. Those are prompt
+  // text rather than the launch command, so the chain is one step longer than the vault-key one --
+  // an agent has to run the documented snippet -- but agents run these recipes routinely and by
+  // design, so `http://x;<command>;#` would execute in the agent's shell.
+  //
+  // Restricted to a plain http(s) ORIGIN. Anything else falls back rather than being escaped: a
+  // misconfigured origin should make the recipes point somewhere harmless, not smuggle shell.
+  // A PATH PREFIX IS A SUPPORTED DEPLOYMENT, not an anomaly: operators host the dashboard under
+  // a sub-path behind a reverse proxy (k3s), and agent-scaffold-dashboard-origin.test.ts has
+  // pinned that since before this card.
+  return /^https?:\/\/[A-Za-z0-9._-]+(?::\d{1,5})?(?:\/[A-Za-z0-9._~\/-]*)?$/.test(candidate)
+    ? candidate
+    : fallback
 }
 
 // Resolved once at module load; DASHBOARD_PUBLIC_URL requires a restart

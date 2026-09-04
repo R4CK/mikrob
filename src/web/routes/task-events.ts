@@ -16,7 +16,10 @@
 // WHY blockCoverage IS PART OF THE CONTRACT AND NOT A FOOTNOTE. Measured on live data while writing
 // this: only local-LLM tasks record both a start and an end, so only the "local" lane can draw
 // blocks. Online-model work has token counts but no per-task duration stored anywhere -- otel_spans
-// looks like the source and is not (9229 rows, 12 closed, zero attributes; see db.ts). A timeline
+// looks like the source and is not: it measures inter-agent send->deliver latency, not task work,
+// and its `operation` column holds only a sender->recipient pair with no category (card dbc0b4bf
+// closed the spans at delivery; that changed the durations from absent to real, not their meaning
+// -- see db.ts). A timeline
 // that assumed every model had blocks would render empty lanes and read as a bug rather than as the
 // honest state, so the endpoint says which lanes it can actually fill.
 import { getTaskEvents, getTaskSummary } from '../../db.js'

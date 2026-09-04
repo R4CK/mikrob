@@ -2302,6 +2302,53 @@ export function clearPendingSelfAdvanceClear(agentId: string, cardId: string): b
   return db.prepare('DELETE FROM agent_pending_clear WHERE agent_id = ? AND card_id = ?').run(agentId, cardId).changes > 0
 }
 
+/** How far up a parent chain one stamp will walk. The fleet's own decomposition rule is four levels
+ *  (Phase -> Task -> subtask -> step); 16 is slack, not a target, and the limit exists so a malformed
+ *  chain cannot spin. */
+const ANCESTOR_DEPTH_LIMIT = 16
+
+/**
+ * Stamp `updated_at` up the whole parent chain (adopted from upstream, card 4b03a88d).
+ *
+ * WHY THE FORK NEEDS THIS, measured on the live board while taking this card: phase card 607254fb
+ * read as 4.7 HOURS stale while one of its children had been touched 1 minute earlier and another 11
+ * minutes earlier. That is not cosmetic -- working rule 3 detects a stuck card from `updated_at`, and
+ * the orchestrator acted on exactly this reading, judging the lane idle while it was mid-task. A
+ * parent whose children are moving is not stale, and until now nothing said so.
+ *
+ * Cycle- and depth-guarded: `parent_id` is editable through the API, so a looping or runaway chain is
+ * reachable input rather than a theoretical worry. Both cases stop and warn instead of throwing -- a
+ * bad edge must not take down the write that triggered the stamp.
+ */
+function touchAncestorChain(parentId: string | null | undefined, now: number, startedAt: string): void {
+  if (!parentId) return // root card: the common case, and it costs nothing
+  const readParent = db.prepare('SELECT parent_id FROM kanban_cards WHERE id = ?')
+  const stamp = db.prepare('UPDATE kanban_cards SET updated_at = ? WHERE id = ?')
+  const seen = new Set<string>([startedAt])
+  let current: string | null = parentId
+  let depth = 0
+  while (current) {
+    if (seen.has(current)) {
+      logger.warn({ cycleAt: current, from: startedAt }, 'kanban: parent_id cycle -- ancestor stamping stopped')
+      return
+    }
+    if (++depth > ANCESTOR_DEPTH_LIMIT) {
+      logger.warn({ from: startedAt, limit: ANCESTOR_DEPTH_LIMIT }, 'kanban: parent chain too deep -- ancestor stamping stopped')
+      return
+    }
+    seen.add(current)
+    stamp.run(now, current)
+    current = (readParent.get(current) as { parent_id: string | null } | undefined)?.parent_id ?? null
+  }
+}
+
+/** Look the card's parent up and stamp from there -- for call sites that already wrote the card row
+ *  and do not otherwise need its parent_id. */
+function touchAncestorsOf(cardId: string, now: number): void {
+  const row = db.prepare('SELECT parent_id FROM kanban_cards WHERE id=?').get(cardId) as { parent_id: string | null } | undefined
+  touchAncestorChain(row?.parent_id, now, cardId)
+}
+
 export function createKanbanCard(card: {
   id: string
   title: string
@@ -2328,6 +2375,7 @@ export function createKanbanCard(card: {
     card.assignee ?? null, card.priority ?? 'normal',
     card.project ?? null, card.parent_id ?? null, card.due_date ?? null, sortOrder, now, now
   )
+  touchAncestorChain(card.parent_id, now, card.id)
   // Card 6cd61430: a new card can already state its pair and its parent.
   noteRelations(cardEdges({ id: card.id, description: card.description, parent_id: card.parent_id }))
 }
@@ -2479,6 +2527,12 @@ export function updateKanbanCard(
       'INSERT INTO kanban_card_events (card_id, from_status, to_status, actor, created_at, forced) VALUES (?, ?, ?, ?, ?, ?)'
     ).run(id, card.status, f.status, opts?.actor ?? null, now, forcedFlag)
   }
+  if (changed) {
+    touchAncestorChain(f.parent_id, now, id)
+    // A re-parent leaves the OLD chain stale too: that subtree just lost a child, which is a change
+    // to it even though no row beneath it was written.
+    if (card.parent_id && card.parent_id !== f.parent_id) touchAncestorChain(card.parent_id, now, id)
+  }
   if (changed) recordKanbanFieldChanges(id, card, f, opts?.actor, now)
   // Card 6cd61430: an edit can ADD a Pair-* line or a parent. It can also REMOVE one, and this
   // insert-only path cannot see that -- reconcileKanbanRelations() is what deletes the stale edge,
@@ -2615,6 +2669,7 @@ export function moveKanbanCard(id: string, status: KanbanCard['status'], sortOrd
       'INSERT INTO kanban_card_events (card_id, from_status, to_status, actor, created_at, forced) VALUES (?, ?, ?, ?, ?, ?)'
     ).run(id, prev, status, actor ?? null, now, forcedOverride || depBlocked ? 1 : 0)
   }
+  if (changed) touchAncestorsOf(id, now)
   return changed
 }
 
@@ -3346,6 +3401,7 @@ export function addKanbanLineComment(
     'INSERT INTO kanban_line_comments (card_id, sha, file, line, author, content, created_at) VALUES (?, ?, ?, ?, ?, ?, ?)'
   ).run(cardId, sha, file, line, author, content, now)
   db.prepare('UPDATE kanban_cards SET updated_at = ? WHERE id = ?').run(now, cardId)
+  touchAncestorsOf(cardId, now)
   return { id: Number(info.lastInsertRowid), card_id: cardId, sha, file, line, author, content, created_at: now }
 }
 
@@ -3441,6 +3497,7 @@ export function addKanbanComment(cardId: string, author: string, content: string
     'INSERT INTO kanban_comments (card_id, author, content, created_at) VALUES (?, ?, ?, ?)'
   ).run(cardId, author, content, now)
   db.prepare('UPDATE kanban_cards SET updated_at = ? WHERE id = ?').run(now, cardId)
+  touchAncestorsOf(cardId, now)
   // Card 6cd61430: the REVIEW comment carrying `Gate-SHA:` is the fleet's most common marker, and
   // it arrives here. noteRelations cannot fail this write -- see its own comment for why that
   // isolation is deliberate rather than defensive.
@@ -3766,10 +3823,20 @@ export function getPendingBacklogByAgent(): AgentBacklog[] {
 //   otel_spans       9229 rows, but only 12 CLOSED (0.13%) and ZERO attributes
 //   task_runs       22076 rows, but (name, agent, ts) only -- a firing, not a span
 //
-// otel_spans looks like the right source and is not: `operation` only ever holds `sender->recipient`
-// for inter-agent messages, finishSpan is effectively never called, so 9217 rows sit in 'running'
-// forever with no end_ms. It carries no duration, no category and no attributes -- see the card's
-// REVIEW; fixing that is its own defect, not this endpoint's job.
+// otel_spans looked like the right source and was not: `operation` only ever holds
+// `sender->recipient` for inter-agent messages, and at the time of measurement 9217 of 9229 rows
+// sat in 'running' forever with no end_ms, carrying no duration, no category and no attributes.
+//
+// That was card dbc0b4bf, and it is now fixed at the source: the router closes each span when the
+// message is DELIVERED, which is the operation the span opens and what this table's own header
+// calls it (inter-agent latency). Note what the defect actually was -- the close path was never
+// broken. Of the 12 traced messages that ever reached a terminal status, 12 had closed spans.
+// Tracing and completion were on disjoint populations: nothing marks a tmux-injected message done,
+// because there is no completion signal to observe.
+//
+// It still does not serve THIS endpoint. A send->deliver latency is not a task duration, and the
+// `operation` column still holds only a sender->recipient pair, with no category. The timeline
+// below is unchanged; this note is here so the next reader does not re-derive the same dead end.
 //
 // So the timeline is served from what actually holds the data, and the shape below is deliberately
 // honest about the seam: local tasks HAVE real start/end blocks, online-model work has token counts
@@ -3896,7 +3963,7 @@ export function getTaskSummary(fromMs: number, toMs: number): TaskSummary {
     avgDurationMs: weightedN > 0 ? Math.round(weighted / weightedN) : null,
     blockCoverage: {
       lanes: ['local'],
-      note: 'Only local-LLM tasks record start and end, so only the "local" lane can draw timeline blocks. Online-model work is counted and its tokens summed, but no per-task duration is stored anywhere in this database (otel_spans records starts and is effectively never closed).',
+      note: 'Only local-LLM tasks record start and end, so only the "local" lane can draw timeline blocks. Online-model work is counted and its tokens summed, but no per-task duration is stored anywhere in this database (otel_spans measures inter-agent send->deliver latency, not task work).',
     },
   }
 }
@@ -5170,6 +5237,27 @@ export function upsertOtelSpan(span: Omit<OtelSpan, 'end_ms' | 'status'> & { end
 export function closeOtelSpan(traceId: string, spanId: string, endMs: number, status: OtelSpan['status']): boolean {
   return db.prepare(`
     UPDATE otel_spans SET end_ms = ?, status = ? WHERE trace_id = ? AND span_id = ?
+  `).run(endMs, status, traceId, spanId).changes > 0
+}
+
+/**
+ * Close a span only if it is still open -- FIRST terminal event wins.
+ *
+ * Card dbc0b4bf. These spans are opened by the message router and measure the one thing this
+ * table's own header calls it: inter-agent latency, send -> delivered. A message can ALSO be marked
+ * done later via PUT /api/messages/:id, and closing again there would silently overwrite a measured
+ * latency with a work duration -- two different quantities in one column, indistinguishable
+ * afterwards. Whichever terminal event happens first is the one the span was measuring.
+ *
+ * Deliberately NOT a change to closeOtelSpan above: routes/spans.ts uses that function's return
+ * value to detect "span does not exist yet" and falls back to an upsert-close, so making it
+ * first-writer-wins there would send an already-closed span down the not-found path and rewrite it
+ * anyway. External reporters keep the old, unconditional semantics.
+ */
+export function closeOtelSpanIfOpen(traceId: string, spanId: string, endMs: number, status: OtelSpan['status']): boolean {
+  return db.prepare(`
+    UPDATE otel_spans SET end_ms = ?, status = ?
+    WHERE trace_id = ? AND span_id = ? AND end_ms IS NULL
   `).run(endMs, status, traceId, spanId).changes > 0
 }
 

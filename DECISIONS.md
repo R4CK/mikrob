@@ -6114,3 +6114,150 @@ sávokat.
 **Ki döntött:** Peti (kérés) + Fullstack (megvalósítási döntések: inaktív sáv alakja, sorrend,
 roster-forrás, a nem-elérhető Ollama kezelése).
 **Hivatkozás:** kártya 21950f77.
+
+## 2026-09-04 18:40 -- BRIDGEHU813 átvéve, a hozzá tartozó böngésző-suite tudatosan nem
+
+**Döntés:** Az upstream `1df099be` (#1170, BRIDGEHU813) párosítási hibaüzenet-fordítását átvettük
+a forkba (kártya `73cf0a22`), a hozzá tartozó Playwright-suite-ot (`tests/browser/**`,
+`playwright.browser.config.ts`, `browser-verify` script, és a csak ezeket kiszolgáló
+`vitest.config.ts` kizárás) viszont NEM.
+
+**Miért az átvétel:** a párosítási panel magyar volt mindenhol, kivéve azt az egy sort, amit a
+felhasználó hiba esetén elolvas -- ott a szerver angol mondata jelent meg nyersen. Ez a
+CLAUDE.md 12. szabályába ütközik (beszédes, i18n-kulcsból jövő hibaüzenet). Az upstream megoldása a
+helyes irányú: a stabil `code` mezőre fordít, nem a mondatra, és ismeretlen kódnál visszaesik a
+szerver saját mondatára, tehát egy később hozzáadott szerver-hiba angolul jelenik meg, nem üres
+sorként vagy nyers kulcsként.
+
+**Miért nem a böngésző-suite:** a flotta kapuja (`store/fleet-test.sh`) vitestet futtat, és
+egyáltalán nem hív Playwrightot. Egy átvett böngésző-suite tehát olyan suite lenne, amit senki nem
+futtat -- egy nem futó teszt lefedettségnek olvasódik, miközben semmit nem őriz.
+
+**Ami emiatt NEM maradhatott el:** az upstream böngésző-tesztje pinneli a BEKÖTÉST, vagyis azt,
+hogy a hibaág ténylegesen MEGHÍVJA a fordítót. Ezt a garanciát nem ejtettük, hanem áthelyeztük: az
+átvett unit-teszt közvetlenül állítja, és mérve bukik, ha a hívási pontot visszaállítjuk. Enélkül a
+fájl összes többi állítása zöld maradna, miközben a felhasználó újra angolul látná a hibát -- pont
+az a hiba, amit ez a kártya javít.
+
+**Újranyitandó, ha:** a flotta kapuja valaha kap egy Playwright-lépcsőt. Akkor a suite átvétele
+önálló döntés, nem automatikus következmény.
+
+---
+
+## 2026-09-04 -- 711a7e57 -- A selftestek felfedezéssel futnak, nem kézzel írt wrapperenként
+
+**Döntés.** Egyetlen teszt-fájl (`src/__tests__/store-selftests-all-run.test.ts`) felderíti a
+`store/*.selftest.sh` glob-ot, és mindegyiket lefuttatja, `it.each`-csel külön jelentve. Nem nyolc
+kézzel írt wrapper.
+
+**Miért.** Mérve ezen a repón: 13 selftestből **nyolcra semmi nem hivatkozott**, tehát soha nem
+futottak -- megírt, commitolt, zöldnek LÁTSZÓ ellenőrzések, amelyek egyszer sem hajtódtak végre. A
+kártya nyolc wrappert kért; az megjavította volna ezt a nyolcat, és **árván hagyta volna a
+kilencediket**, amint valaki hozzáadja. A kártya saját szövege nevezi meg a valódi okot: "nincs
+auto-felfedezés, minden selftest külön vitest-fájlt igényel". Ezért a felfedezés az ok javítása, a
+nyolc wrapper a tüneté.
+
+**Az állapotuk, mielőtt bármit írtam:** mind a nyolc árva **átment** (89 ellenőrzés összesen). A
+kártya számolt régi, valós bukásokkal; nem volt. Ez jó hír, de nem teszi feleslegessé a bekötést --
+attól, hogy ma zöldek, holnap egy szerkesztés csendben elronthatja őket, és senki nem venné észre.
+
+**Nem-vákuum, mert egy "PASS" önmagában nem bizonyíték.** A wrapper NEM azt nézi, hogy a script
+exit 0-val tért vissza, hanem hogy **nem nulla** esetszámot jelentett, a három használatban lévő
+riport-alak valamelyikében. Egy selftest, aminek minden esete kimaradt vagy a ciklusa be sem lépett,
+tökéletesen boldog összefoglalót ír nulla munkáról. Mutációval igazolva: `All 0 checks pass.` -> FAIL,
+felismerhetetlen alak -> FAIL, elrontott glob -> FAIL, létező célt vesztett kizárás -> FAIL.
+
+**Egy kizárás, indokkal: `local-llm-model-routing`.** A selftest saját kommentje mondja ki, hogy
+kicseréli a `store/local-llm-model-routing.json`-t, és "this IS the file the running fleet uses". A
+`trap cleanup EXIT` normál kilépésre és szokásos jelekre visszaállítja -- **SIGKILL-re nem**, és ez a
+suite landoláskor fut, a landolásokat pedig megölik (ugyanezen a napon egy saját teljes futásomat
+ölte meg egy session-határ). Egy megölt futás 18 ügynök routing-configját hagyná egy nem létező
+modellre mutató hamis fájlon. Kézzel futtatva átmegy (5/5) -- **a BEKÖTÉS nem biztonságos, nem a
+script.**
+
+A javítás egy sor a `local-llm.sh`-ban (`cfg="${LOCAL_LLM_MODEL_ROUTING_FILE:-$HERE/...}"`), ami után
+a selftest ideiglenes fájlra mutathat és csatlakozhat. Az viszont egy ÉLŐ flotta-scriptet szerkeszt,
+ami külön döntés a bekötéstől, ezért nincs ide belegyúrva.
+
+**Költség, mérve:** 62,5 s ez a fájl, ~77 s mind a 13 sorosan. A vitest a FÁJLOKAT futtatja
+párhuzamosan, tehát egy ~80-100 s-os suite-ban ez nagyrészt elrejtőzik. A már bekötött ötöt
+szándékosan ÚJRA futtatja: a "ki köti be máshol" nyilvántartás pontosan az a könyvelés, ami elavul,
+és a saját teszt-fájljuk amúgy is más invariánsokat állít (a skills-symlink például az `rm`-`mv`
+sorrendet), tehát nem redundáns.
+
+---
+
+## 2026-09-04 -- e96b06e7 -- Helyi JSON-kivonatoló a dashboard API-hoz, nem külső tömörítő
+
+**Döntés.** Egy stdlib-only Python szkript (`store/dash.py`) sűríti a gyakori dashboard-API
+válaszokat: `card`, `comments`, `board`, `agents`, `queue`, plus egy `get` menekülőút. Nulla új
+függőség, nulla új kimenő útvonal -- localhost, a már meglévő tokennel.
+
+**Miért nem külső eszköz.** Ez a 241dbf87 (headroom) kiértékelés lelete volt: a `noisy-run.sh`
+SOR-alapú szűrése JSON-válaszon semmit nem ér, mert az egész válasz egy sor. A headroom pont ezt a
+rést töltené be -- de az értéke egy olyan pozícióból jött (minden LLM-hívás előtt), amit egy
+kényelmi funkcióért nem adunk oda. Egy ~200 soros helyi szkript ugyanazt a rést zárja, a mi
+API-alakunkra szabva.
+
+**Mérve, nem feltételezve:** a `GET /api/kanban` 242 kártyát ad vissza, egyenként 18 mezővel,
+minden teljes `description`-nel. Nyersen olvashatatlan; kézzel kivonatolva naponta többször
+újra van találva.
+
+**Az auth szándékosan bent van.** A megszokott alak
+`printf 'Authorization: Bearer %s\n' "$(cat store/.dashboard-token)" | curl -H @- ...`, és a
+hibamódja néma: a `-H @-` elfogyasztja a stdint, így minden olyan kérés, ami testet is csövez, ÜRESET
+küld, a szerver pedig 200-at ad a semmire. Ezt az egész hibaosztályt megszünteti olvasásokra.
+
+**A token soha nem íródik ki**, és ezt a selftest a HIBA-ágon állítja -- ott szokott egy érték
+kicsúszni, mert a hibaszöveg sietve készül.
+
+**Minden rövidítés jelölt.** `...(+N)`, számmal: egy csupasz `...` a olvasót találgatni hagyja, hogy
+a levágott rész számított-e; a szám elég ahhoz, hogy eldöntse, elmenjen-e elolvasni.
+
+**Egy valós hiba, amit az élő próba fogott meg:** a token a gitignorált `store/`-ban él, tehát csak a
+FŐ checkoutban létezik -- minden ügynök viszont a saját worktree-jéből fut, ahol nincs. Az első éles
+hívás pontosan így bukott el. A feloldás most: `DASH_TOKEN_FILE` > a szkript könyvtára > a `git
+rev-parse --git-common-dir`-ből származtatott fő checkout. Hordozható, nem beégetett `/home` út.
+
+**Hurokzárás:** a selftestjét a 711a7e57-en épített felfedezés-wrapper AUTOMATIKUSAN bekötötte,
+nulla szerkesztéssel (14 -> 15 teszt). Ez a legjobb bizonyíték arra, hogy ott a felfedezés volt a
+helyes választás nyolc kézzel írt wrapper helyett: a következő selftest magától bekötődött.
+
+---
+
+## 2026-09-04 -- 89f4c28d -- A routing-selftest hermetikus lett, és ezzel bekötődött
+
+**Döntés.** A `local-llm.sh` mostantól honorálja a `LOCAL_LLM_MODEL_ROUTING_FILE` env-változót
+(`cfg="${LOCAL_LLM_MODEL_ROUTING_FILE:-$HERE/local-llm-model-routing.json}"`), a selftest ideiglenes
+fájlra mutat, és a `store-selftests-all-run` kizárás-listája **üres lett**.
+
+**Miért kellett.** A selftest korábban kicserélte a `store/local-llm-model-routing.json`-t -- a saját
+kommentje szerint "this IS the file the running fleet uses" -- és `trap cleanup EXIT`-tel állította
+vissza. A trap **SIGKILL-re nem fut le**, ez a suite pedig landoláskor fut, a landolásokat pedig
+megölik. Egy megölt futás 18 ügynök routing-configját hagyta volna egy nem létező modellre mutató
+hamis fájlon. Ezért volt kizárva a 711a7e57-en, és ezért nem volt szabad csak úgy bekötni.
+
+**Visszafelé kompatibilis.** A változó nélkül a viselkedés byte-azonos a korábbival: ez egy út arra,
+hogy máshová mutassunk, nem új alapértelmezés.
+
+**Bizonyítva, nem állítva:** a selftest futása előtt és után az élő `/home/neon/marveen/store/`-beli
+config sha256-ja **azonos** (`bc1994fb…`), és a worktree-belié is. Még a mutációs futás sem nyúlt
+hozzá. A kizárás megszűnése után a felfedezés-wrapper 15 -> 16 tesztre nőtt.
+
+**Az override teherhordó, nem dekoráció:** visszaállítva a beégetett útra a selftest elbukik (4/1).
+
+**ÉS AMIT A BEKÖTÉS AZONNAL FELSZÍNRE HOZOTT -- ez a kártya legérdekesebb része.** Az 5. eset
+("missing routing config fails open") a `no model configured` szöveget is bukásnak vette. Ez két
+független dolgot mos össze: a hiányzó ROUTING configot (amiről a case szól) és az üres MODEL
+ÁLLAPOT-KÖNYVTÁRAT (egészen más). A `src/__tests__/setup/isolate-local-llm-state.ts` minden
+vitest-futásnál friss temp könyvtárra állítja a `LOCAL_LLM_STATE_DIR`-t -- pontosan azért, hogy a
+tesztek ne nyúljanak a flotta LLM-állapotához --, tehát a suite-on belül a "no model configured" a
+HELYES válasz, és a case elbukott rajta. Kézzel futtatva sosem bukott, mert ott van konfigurált
+modell.
+
+Ez pontosan az a hibaosztály, amiért ez a kártya-család létezik: **egy nem futó ellenőrzés a saját
+hibáját is elrejti.** Nem volt hibás, amíg nem futott.
+
+A javítás nem lazítás: a case most a Traceback-et nézi (az a crash), ÉS azt, hogy hiányzó config
+mellett ne szivárogjon ki a fake modell (az a routing). Mindkettő a routingról szól, és egyik sem
+függ attól, hogy van-e letöltött modell.

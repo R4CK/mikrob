@@ -508,7 +508,7 @@ const ACKNOWLEDGED_CONFLICTS = {
     'alone is WORSE than adopting neither',
   'src/web/token-usage.ts':
     "additive, non-colliding imports on both sides -- keep fork's estimateCostUsd/stripDateSuffix (model-pricing.js) AND upstream's listAgentNames (agent-config.js) + resolveAgentConfigDirForRead (claude-plans.js), all four together. DONE 2026-09-04 (card f27c999b, B-wave 4/6): all four imports present, and upstream's isolated-config-dir discovery loop in discoverAgentSources adopted with it. Measured first -- it does not currently bite here, because provisioning symlinks agents/<name>/.claude-config/projects back to ~/.claude/projects, so both roots are one tree; what it buys is independence from that provisioning detail, and the UNIQUE INDEX + INSERT OR IGNORE makes the overlap a no-op. " +
-    "DELIBERATELY NOT ADOPTED from the same diff: upstream's `AND NOT EXISTS (child.parent_id = ...)` filter in correlateWithKanban, which skips PARENT cards. Its stated premise is that touchAncestorChain() stamps a parent with the SAME updated_at as the child that caused it, so a tie misattributes the token rows. This fork has NO touchAncestorChain -- checked: the only occurrence of that name in the repo is inside this map, describing upstream's addition, and db.ts walks no parent chain. Here a parent's updated_at means the parent itself was edited, so the filter would DISCARD correct attribution rather than fix a wrong one. REVISIT IF the fork ever adopts ancestor stamping: at that moment this filter becomes right, and this note is the trigger.",
+    "ADOPTED 2026-09-04 (card 607254fb, B-wave step 1) -- upstream's `AND NOT EXISTS (child.parent_id = ...)` filter in correlateWithKanban, which skips PARENT cards. THIS CLAUSE PREVIOUSLY READ 'DELIBERATELY NOT ADOPTED', on the stated ground that this fork had NO touchAncestorChain. That ground is gone: card 4b03a88d adopted ancestor stamping (db.ts touchAncestorChain, four call sites), and the filter came with it -- exactly the condition the old clause named as its own trigger ('REVISIT IF the fork ever adopts ancestor stamping: at that moment this filter becomes right, and this note is the trigger'). The trigger fired; this is the revision it asked for. Both halves are present on develop and must stay together: the filter is only correct BECAUSE a parent now carries its child's updated_at, so removing ancestor stamping without removing the filter would start discarding correct attribution. WHY THIS WENT STALE, which matters more than the entry itself: ACKNOWLEDGED_UPSTREAM_BLOBS pins each rule to an UPSTREAM blob, so a re-measure round bumps the pin whenever UPSTREAM moves. Nothing pins the FORK side, and this note went wrong because WE moved -- the pin was fresh the whole time it was asserting a fact about our own tree that had stopped being true. A stale exemption is worse than a missing entry: a missing one gets noticed at the next conflict, while this one would have told the next merger, with a '-- checked', to delete a filter that is now correct.",
   // Test-fixture window-size conflict, NOT a source conflict: src/web/schedule-runner.ts itself
   // merges clean (both sides' additions land in different spots of the same guardIdx block), only
   // this pinned slice-window assertion collides because fork and upstream each widened the SAME
@@ -884,11 +884,37 @@ const ACKNOWLEDGED_CONFLICTS = {
     "documented the same way. There is NO semantic decision here: if this file ever conflicts on " +
     "something other than adjacent comment prose, that is a different question and needs its own " +
     "entry rather than this one being stretched to cover it.",
+  // Card 73cf0a22 (the BRIDGEHU813 adoption itself). Add/add: upstream created this file in
+  // 1df099be and the fork adopted it in the same shape, so there is no merge base for it and
+  // git shows every fork edit as a conflict. Both differences are structural, not drift, and
+  // neither will ever go away on its own -- which is why this is a written rule rather than a
+  // one-off resolution.
+  'src/__tests__/bridge-pairing-i18n.test.ts':
+    "KEEP THE FORK'S SIDE for exactly two things, take upstream's for everything else. (1) The " +
+    "file it reads is web/app-settings-auth.js, not web/app.js -- this fork extracted the auth " +
+    "panel into that slice, and this file's own web/app.js rule already says an upstream app.js " +
+    "hunk is diffed against the named slice. Taking upstream's path here would make the suite " +
+    "read a file that no longer contains the function; the `start > -1` assertion is what would " +
+    "report it, so the failure would at least be loud. (2) The fork-only test 'the error branch " +
+    "actually CALLS it'. Upstream pins the wiring with tests/browser/**, which this fork " +
+    "deliberately did not adopt (the fleet gate runs vitest and never invokes playwright), so " +
+    "dropping this test in a merge would silently give up the one guarantee that the translator " +
+    "is reached at all -- every other assertion in the file stays green with the call site " +
+    "reverted. Measured on adoption: reverting it fails this test and only this test. " +
+    "EVERYTHING ELSE -- new codes, new cases, changed expectations -- take from upstream on its " +
+    "merits: the coverage test RUNS the real validators, so upstream adding a pairing error " +
+    "shows up here as a missing hu/en key rather than as silently absent coverage.",
   'web/lang/en.js':
     "keep BOTH key blocks -- this is a union, not a pick. MEASURED 2026-09-04 at the key level, not " +
     "the line level: 1590 keys at the merge base, the fork ADDED 516 (the outgoing-copy gate's " +
     "names.* rules UI, card 98dbbcc9, among others), upstream ADDED 27 (auth.bridge.err.*, " +
     "BRIDGEHU813 #1170), the two sets COLLIDE ON ZERO KEYS, and NEITHER SIDE REMOVED ANY. The " +
+    "CORRECTION 2026-09-04 (card 73cf0a22): that 27 is 26. The upstream hunk adds 29 lines, three " +
+    "of which are its comment header, and upstream's own commit message says 26. The union rule is " +
+    "unaffected -- it turns on the collision count, not on the size of either side -- but the figure " +
+    "is now measured rather than eyeballed. Those 26 keys are ALSO ON THE FORK SIDE as of that " +
+    "card, byte-identical to upstream's, so they are common content now, not an upstream-only " +
+    "addition waiting to be merged. " +
     "conflict is textual, not semantic: both appended at the same tail. Same shape and same " +
     "resolution as web/style.css. " +
     "OVERLAY EXTRACTION CONSIDERED AND DECLINED, which is what the guard's failure message asks for: " +
@@ -919,7 +945,8 @@ const ACKNOWLEDGED_CONFLICTS = {
     "so code-quality rule 5 makes it Peti's call. This entry only records that the merge does not " +
     "decide it by default.",
   'web/lang/hu.js':
-    "same as web/lang/en.js, measured identically (1590 base, +516 fork, +27 upstream, 0 collisions, " +
+    "same as web/lang/en.js, measured identically (1590 base, +516 fork, +27 upstream -- 26, see " +
+    "the en.js entry's 2026-09-04 correction, and both sides carry those keys now, 0 collisions, " +
     "0 removals on either side). The two locale files are edited in lockstep by both sides, so a " +
     "resolution that applied to one and not the other would leave the pair out of sync -- which the " +
     "i18n parity test would then report as a fork defect rather than as half a merge. " +
@@ -1024,6 +1051,22 @@ const ACKNOWLEDGED_UPSTREAM_BLOBS: Readonly<Record<keyof typeof ACKNOWLEDGED_CON
   // translation, and it has neither playwright.browser.config.ts nor tests/browser/**. So BRIDGEHU813
   // is a real, applicable adoption decision -- and it is taken on its own card, NOT folded into this
   // pin refresh. A feature adoption hidden inside a blob bump is exactly what this map exists to stop.
+  //
+  // ADOPTED 2026-09-04 on that separate card (73cf0a22), so the paragraph above is the record of what
+  // was true at the pin refresh, not a description of today. Taken: the server-side stable `code`
+  // (src/remote-enroll-core.ts, src/web/bridge-enroll.ts, src/web/routes/security.ts -- all three
+  // were byte-identical to upstream's parent, so they now equal upstream's post-image exactly and
+  // conflict on nothing), the 26 auth.bridge.err.* keys in both locales, and bridgeEnrollErrorText()
+  // into web/app-settings-auth.js, which is the slice this file's own app.js rule names.
+  //
+  // NOT taken, and this is the deliberate half: playwright.browser.config.ts, tests/browser/**, the
+  // `browser-verify` script, and the vitest.config.ts exclusion that exists only to serve them. The
+  // fleet gate (store/fleet-test.sh) runs vitest and never invokes playwright, so an adopted browser
+  // suite would be a suite nobody runs -- and an unrun suite reads as coverage while guarding
+  // nothing. The guarantee it carries upstream (that the error branch actually CALLS the translator)
+  // was NOT dropped with it: it is asserted directly in the adopted unit test, and that assertion
+  // was measured to fail when the call site is reverted. Revisit if the fleet gate grows a
+  // playwright stage.
   'web/app.js': '102cd90154b20f3064740f29f72461d686a75ab9',
   'web/style.css': 'a7fc0f2baf1989fc5ecd2cd8c78f86c6104b55da',
   'src/web/agent-taskstate.ts': '625d03282bb75b554ce23822f67cc4e51b0706c1',
@@ -1083,6 +1126,7 @@ const ACKNOWLEDGED_UPSTREAM_BLOBS: Readonly<Record<keyof typeof ACKNOWLEDGED_CON
   'src/web/routes/messages.ts': '98710db9e171616e0600061eec649542e779506a',
   // Card 368b77f7, 2026-09-04.
   'src/config.ts': '02c6ff722fe731e1ea6c1e4180b82f379ce8e622',
+  'src/__tests__/bridge-pairing-i18n.test.ts': '5da8970e4ff27f4d9b1fef46b179ed26e9063ea0',
   'web/lang/en.js': '702bdb0730c92a8d3201e1618cf508d9559ac4ab',
   'web/lang/hu.js': '5a1ba1741d5a704bc298f00d5a0f4550b1a2a1b3',
   // Card 272361eb, 2026-09-04 (B-wave 3/6).

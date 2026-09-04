@@ -252,8 +252,15 @@ done
 # fast default. Fails OPEN to read_model()'s default on ANY problem (missing file, bad JSON, no
 # --task, no matching entry) -- same philosophy as the disabledCategories check below: a routing
 # config is an opt-in override, never a new way for the primary call path to break.
+# The config path is overridable so a test can point at its own file (card 89f4c28d). Before this,
+# the only way to exercise routing was to SWAP THE LIVE CONFIG out and back -- and its selftest said
+# so: "this IS the file the running fleet uses". A cleanup trap restored it on a normal exit but not
+# on SIGKILL, and the suite that would run it executes during landings, which do get killed. That
+# left a path where 18 agents' routing config stays replaced by a file naming a nonexistent model.
+# Unset, the behaviour is byte-identical to before -- this adds a way to point elsewhere, never a
+# new default.
 route_model_for_task() {
-  local task="$1" cfg="$HERE/local-llm-model-routing.json"
+  local task="$1" cfg="${LOCAL_LLM_MODEL_ROUTING_FILE:-$HERE/local-llm-model-routing.json}"
   [[ -z "$task" || ! -f "$cfg" ]] && return 0
   TASK="$task" CFG="$cfg" python3 -c '
 import json, os
