@@ -39,7 +39,7 @@
 
 import { execFileSync } from 'node:child_process'
 import { logger } from '../logger.js'
-import { resolveFromPath } from '../platform.js'
+import { makeLazyBinResolver } from '../platform.js'
 import { PROJECT_ROOT } from '../config.js'
 import { capturePane } from './agent-process.js'
 import { readTranscriptMtimeFromProjectDir } from './active-model.js'
@@ -54,7 +54,7 @@ import {
   type StuckToolCallThresholds,
 } from '../pane-state.js'
 
-const TMUX = resolveFromPath('tmux')
+const tmuxBin = makeLazyBinResolver('tmux')
 
 // CPU-profile guard (#248): the genuine wedge is a render loop blocked on stdio
 // -- CPU collapses to ~0.3% (IO-wait). A frozen "Worked for Ns" counter on a
@@ -116,7 +116,7 @@ export function verdictStaleByTranscript(
 // wedge from a process actively burning CPU.
 function sampleMainClaudeCpuPercent(session: string): number | null {
   try {
-    const panePid = execFileSync(TMUX, ['list-panes', '-t', session, '-F', '#{pane_pid}'], { timeout: 3000, encoding: 'utf-8' })
+    const panePid = execFileSync(tmuxBin(), ['list-panes', '-t', session, '-F', '#{pane_pid}'], { timeout: 3000, encoding: 'utf-8' })
       .split('\n')[0]?.trim()
     if (!panePid || !/^\d+$/.test(panePid)) return null
     const out = execFileSync('/bin/ps', ['-o', '%cpu=', '-p', panePid], { timeout: 3000, encoding: 'utf-8' }).trim()
