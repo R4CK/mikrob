@@ -64,6 +64,29 @@ t "unknown scheme (also the exit-1 hazard)" refuse "xyzzy://127.0.0.1:11434"
 t "file:// scheme"                          refuse "file:///etc/passwd"
 t "0.0.0.0 is not provably loopback"        refuse "http://0.0.0.0:11434"
 
+# --- card ae373c8b: the AUTHORITY ends at the first of / ? or # -------------------------------
+# Cybersec found this on the 0d2be5e5 gate. The predicate dropped the path and the query but NOT the
+# fragment, so `http://host.invalid#@127.0.0.1/` still held `host.invalid#@127.0.0.1` when the
+# userinfo strip ran -- and that strip takes everything after the LAST @, promoting a hostile host
+# to "loopback". Measured with `curl -v`: that URL really resolves host.invalid. The fragment is
+# client-side and never reaches the wire, so the gate's verdict and curl's destination disagreed
+# precisely where it matters.
+#
+# It was also the QUIET direction, which is what made it worth a card rather than a footnote: the
+# log printed "(loopback, non-default)" -- the reassuring line -- instead of the loud WARNING the
+# deliberate escape hatch prints.
+t "fragment smuggling: the real host is before the #"   refuse "http://host.invalid#@127.0.0.1/"
+t "...same with no trailing path"                       refuse "http://evil.example.com#@127.0.0.1"
+t "...and with text between the # and the @"            refuse "http://evil.example.com#foo@127.0.0.1"
+t "a fragment on an otherwise LOOPBACK url is still fine" allow "http://127.0.0.1:11434#notes"
+
+# THE CASE THAT MUST NOT BE "FIXED" LATER. A backslash looks like the same trick and is not:
+# `curl -v` on this resolves 127.0.0.1, because curl reads the backslash as part of the USERINFO,
+# not as an authority terminator. Refusing it would block a URL that genuinely reaches loopback.
+# The rule this pins: what counts as the authority is whatever CURL does, since curl makes the
+# connection -- not what a URL spec says in the abstract.
+t "a BACKSLASH is userinfo to curl, so this really is loopback" allow "http://evil.example.com\\@127.0.0.1"
+
 # --- the opt-in escape, which must work AND be loud -------------------------------------------
 t "an explicit opt-in allows a remote host" allow "http://10.0.0.5:11434" "LOCAL_LLM_ALLOW_REMOTE_HOST=1"
 

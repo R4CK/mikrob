@@ -154,6 +154,19 @@ local_llm_host_is_loopback() {
   hostpart="${url#*://}"
   hostpart="${hostpart%%/*}"            # drop path
   hostpart="${hostpart%%\?*}"          # drop query
+  # Card ae373c8b (Cybersec on 0d2be5e5): the FRAGMENT has to go too, and BEFORE the userinfo
+  # strip. `http://host.invalid#@127.0.0.1/` otherwise leaves `host.invalid#@127.0.0.1`, the
+  # strip below takes everything after the last @, and a hostile host is waved through as
+  # "loopback". Measured with curl -v: that URL really resolves `host.invalid` -- the fragment
+  # never reaches the wire, so the gate's verdict and curl's destination disagreed exactly
+  # where it matters. Worse than a plain miss: the log said "(loopback, non-default)", the
+  # reassuring line, instead of the loud WARNING the real escape hatch prints.
+  hostpart="${hostpart%%#*}"            # drop fragment
+  # NOT stripped, deliberately: a BACKSLASH. `http://evil.example.com\@127.0.0.1/` looks like
+  # the same trick, but `curl -v` shows it resolving 127.0.0.1 -- curl reads the backslash as
+  # part of the USERINFO, not as an authority terminator. Treating it like `/` here would
+  # refuse a URL that genuinely reaches loopback. Measured against curl, not assumed from the
+  # URL spec, because it is curl that makes the connection.
   hostpart="${hostpart##*@}"            # drop userinfo: the authority is what comes AFTER the last @
   case "$hostpart" in
     \[*\]*) hostpart="${hostpart#\[}"; hostpart="${hostpart%%\]*}" ;;   # [::1]:11434
