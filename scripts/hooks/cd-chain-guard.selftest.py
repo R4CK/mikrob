@@ -85,6 +85,31 @@ CASES = [
     ('cd /home/neon/wt && grep -rn "x" .', ALLOW,
      "CD_CHAIN_GUARD=off disables the guard entirely"),  # env applied below
 
+    # --- FIELD REGRESSION 1: a read command with NO file operand cannot wedge ------------------
+    # Found by the guard blocking its own author minutes after it landed. The right-hand side of a
+    # pipe reads stdin: there is no directory to determine, so the permission prompt this guard
+    # exists to prevent can never appear. Blocking these is pure nuisance, fleet-wide.
+    ("cd /home/neon/wt && git merge origin/develop 2>&1 | tail -2", ALLOW,
+     "tail on a PIPE has no file operand -- nothing for the engine to resolve"),
+    ("cd /home/neon/wt && ls | head -5", ALLOW, "head on a pipe, same reason"),
+    ("cd /home/neon/wt && echo hi | cat", ALLOW, "cat on a pipe, same reason"),
+    ("cd /home/neon/wt && wc -l < file", ALLOW, "wc is out of scope anyway"),
+
+    # --- FIELD REGRESSION 2: the wedge shape as an ARGUMENT is data, not a command -------------
+    # Quoted literals were not stripped, so `&&` and `|` INSIDE a string split into segments and
+    # tripped the guard on text that is never executed. noisy-command-guard.py strips them for
+    # exactly this reason; this guard shipped without it.
+    ('cd /home/neon/wt && echo "cd /x && grep -rn z ."', ALLOW,
+     "a wedge shape inside a double-quoted argument is data"),
+    ("cd /home/neon/wt && python3 -c \"print('cd /x && cat y')\"", ALLOW,
+     "a wedge shape inside a python -c body is data"),
+
+    # --- the operand rule must not weaken the real cases ---------------------------------------
+    ('cd /home/neon/wt && grep -r "x"', BLOCK,
+     "recursive with NO path still walks the cwd, so operand count says nothing"),
+    ('cd /home/neon/wt && grep -e "x" file.ts', BLOCK,
+     "-e moves the pattern off the operand list, so the first operand IS a path"),
+
     # --- heredoc bodies are data ---------------------------------------------------------------
     ("cat > /tmp/f <<'EOF'\ncd /home/neon/wt && grep -rn x .\nEOF", ALLOW,
      "a wedge shape inside a heredoc body is text being written, not executed"),
