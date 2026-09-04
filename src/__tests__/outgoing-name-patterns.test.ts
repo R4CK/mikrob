@@ -180,6 +180,33 @@ describe('file discipline', () => {
     addPattern(realDeps(), 'Kovacs', 'literal')
     expect(readPatterns(realDeps()).state).toBe('active')
   })
+
+  it('REFUSES to overwrite a corrupt file that still holds live rules and sibling keys', () => {
+    // The tell was an asymmetry: removePattern already refused on this exact state while
+    // addPattern rewrote the file wholesale, because readRaw() returned the same null for
+    // "absent" and for "present but malformed". The file below is valid JSON, carries the
+    // sibling key the hook appends to its refusal message, two live rules, and ONE
+    // non-string element -- the state an operator reaches the UI to fix.
+    writeRules({
+      correction: 'A helyes alak: Kovacs.',
+      some_other_key: 42,
+      bad_name_patterns: ['Elso', 'Masodik', 17],
+    })
+    const before = readFileSync(rulesPath, 'utf8')
+    expect(() => addPattern(realDeps(), 'Harmadik', 'literal')).toThrow(NamePatternError)
+    expect(readFileSync(rulesPath, 'utf8')).toBe(before) // byte-identical, nothing lost
+    // Without the fix this flipped to 'active' with one pattern: the UI would report the
+    // gate healthy while two rules and two sibling keys were gone.
+    expect(readPatterns(realDeps()).state).toBe('broken')
+  })
+
+  it('still CREATES the file when it is merely ABSENT, at 0600', () => {
+    // The other half of the split: refusing on unreadable must not break first use.
+    rmSync(rulesPath, { force: true })
+    expect(addPattern(realDeps(), 'Kovacs', 'literal').count).toBe(1)
+    expect(readPatterns(realDeps())).toEqual({ state: 'active', patterns: ['Kovacs'] })
+    expect(statSync(rulesPath).mode & 0o777).toBe(0o600)
+  })
 })
 
 describe('HTTP surface', () => {
