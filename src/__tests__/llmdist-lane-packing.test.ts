@@ -164,6 +164,25 @@ describe('rendered geometry is decided by ONE number', () => {
     expect(CSS).toMatch(/\.ovw-llmdist-lane-rows--compact \{[^}]*overflow-y: auto/)
   })
 
+  it('REGRESSION: the track does not flex along the COLUMN axis', () => {
+    // Shipped and broke the live dashboard (448008be): the track kept `flex: 1` from when it was
+    // a child of .ovw-llmdist-lane, a ROW container, where that sized its WIDTH. Moving it into
+    // the column .ovw-llmdist-lane-rows made the main axis HEIGHT, so flex:1's implied
+    // `flex-basis: 0%` overrode `height: 30px`, every track collapsed to zero height, and the
+    // absolutely-positioned blocks vanished. Verified in a real browser: 9 of 9 blocks measured
+    // height 0 with the old rule, 24px with this one.
+    //
+    // vitest has no layout engine, so this pins the CSS declaration rather than the geometry.
+    // Anchored to the START OF A LINE: the compact override's selector also ENDS with
+    // `.ovw-llmdist-lane-track {` and sits earlier in the file, so a plain indexOf sliced the
+    // wrong rule and this assertion failed against correct CSS on its first run.
+    const base = CSS.indexOf('\n.ovw-llmdist-lane-track {') + 1
+    const rule = CSS.slice(base, CSS.indexOf('\n.ovw-llmdist-block {'))
+    expect(rule).toContain('height: 30px')
+    expect(rule).not.toMatch(/flex:\s*1\s*;/)
+    expect(rule).toMatch(/flex:\s*0 0 auto/)
+  })
+
   it('the renderer packs before emitting markup', () => {
     const fn = SRC.slice(SRC.indexOf('function ovwLlmDistLanesHtml('), SRC.indexOf('function ovwLlmDistLegendHtml('))
     expect(fn).toContain('ovwLlmDistPackRows(blocks)')
