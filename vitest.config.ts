@@ -30,9 +30,15 @@ export default defineConfig({
     //  - assert-supported-node: refuse to run on a Node whose ABI the installed
     //    native modules were not built for, which otherwise reds out 40 files
     //    with errors that look like bugs in those files (2026-08-17).
+    //  - isolate-local-llm-state: send the local-LLM scripts' state (notably the
+    //    usage ledger) to a throwaway dir. assert-not-live-install keeps the suite
+    //    out of the live checkout, but the state resolver deliberately points a
+    //    WORKTREE back at the main install -- so without this the suite appended
+    //    test rows to the production ledger (card 4c5c540c).
     setupFiles: [
       './src/__tests__/setup/assert-not-live-install.ts',
       './src/__tests__/setup/assert-supported-node.ts',
+      './src/__tests__/setup/isolate-local-llm-state.ts',
     ],
   },
 })

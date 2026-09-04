@@ -5740,3 +5740,32 @@ azonnal visszatér (mert illeszkedik), a detonáló alak a futam + EGY nem illes
 **Hivatkozás:** kártya `98dbbcc9`; `scripts/name-pattern-tool.py` (+ selftest), `src/web/outgoing-name-patterns.ts`,
 `src/web/routes/name-patterns.ts`. A 0600 mód megtartása külön kikötés: `atomicWriteFileSync` csak
 akkor chmod-ol, ha a hívó átadja a módot (lásd a `1ce3fd90` tanulságát).
+
+## 2026-09-04 13:10 -- A teszt-szennyezés gyökere nem három elfelejtett env-változó, hanem két helyes mechanizmus rossz kombinációja (kártya 4c5c540c)
+
+**Döntés:** A helyi-LLM állapotkönyvtár teszt-izolációja EGY globális vitest setup-fájlba kerül
+(`src/__tests__/setup/isolate-local-llm-state.ts`), nem az érintett tesztfájlok `baseEnv()`-jébe.
+**Miért:** A dispatch három fájlt nevezett meg. Megmérve TIZENKETTŐ tesztfájl futtatja a valódi
+`store/local-llm.sh`-t állapot-izoláció nélkül. De a gyökér mélyebb: az `assert-not-live-install.ts`
+már kizárja, hogy a suite az ÉLES checkoutban fusson, a `store/local-llm-state-dir.sh` viszont
+SZÁNDÉKOSAN a FŐ klón store-jára oldja fel egy worktree állapotát (hogy egy worktree-ből hívott
+script lássa a telepítés kill-switcheit). Mindkét mechanizmus helyes külön-külön; a kombinációjuk
+küldte vissza pont ennek az egy fájlnak az írásait az élesbe. Ezért fájlonkénti javítás a mai napot
+oldaná meg, a holnapit nem: a tizenharmadik teszt, ami spawnolja a scriptet, némán visszahozza, és
+az egyetlen tünet hamis sor egy grafikonon, amit senki nem vet össze semmivel. A resolver saját
+dokumentációja az `env` ágat már így írja le: "wins outright, for tests and any future layout".
+**Mért bizonyíték:** a javítás előtt 232 sor `agent=test-agent`, a legfrissebb két perccel korábbi,
+egy rutin landolás fleet-test futásából. A javítás után mind a 12 suite lefuttatva: 0 sor növekedés.
+**Mellékleletek:** (1) az izoláció kibuktatta a `local-llm-sh-task-allowlist.test.ts`-t, ami a
+`read_model()` miatt csak azért jutott el az allowlist-ágig, mert az ÉLES telepítés modell-fájlját
+olvasta -- a teszt előfeltétele mostantól kimondott (saját state-dir konfigurált modellel), a
+vizsgált sorrend (charset-ellenőrzés a `[[ -f ]]` létezés-próba ELŐTT) változatlan. (2) A
+`model-usage-buckets` hibaüzenete "between 1 and 168"-at állított, miközben a kód 0-nál nagyobbat
+fogadott el: a 0.5 működött, de sehol nem volt dokumentálva. A határ most kimondott (0.5-168) és a
+szöveg egyezik a kóddal.
+**Amit NEM tettünk:** a backend tartományát NEM szűkítettük 0.5-4-re. A csúszka tartománya UI-döntés;
+egy általános olvasó végpont szerződését nem szabad egy widget tartományára szűkíteni (egy kézi
+"mutasd az elmúlt napot" lekérdezés legitim).
+**Ki döntött:** fullstack (mérés + implementáció), Peti (csúszka-igény + takarítás), MikroB (a
+sorrendi pontosítás: előbb guard, csak utána takarítás).
+**Hivatkozás:** kártya `4c5c540c`; `vitest.config.ts`, `src/__tests__/setup/isolate-local-llm-state.ts`.
