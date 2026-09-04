@@ -28,6 +28,17 @@ cat > "$TMP/card.json" <<JSON
  "labels":[{"name":"@backend3"}],"blocked":false,"blockedBy":[]}
 JSON
 
+# A BLOCKED card. The original fixture only ever had `blocked:false`, so the blocked branch was
+# never executed by anything -- and it was wrong: `blockedBy` carries {id,title,status} OBJECTS, not
+# id strings, so the first genuinely blocked card raised TypeError instead of printing. A rendering
+# branch nothing exercises is not code, it is a guess.
+cat > "$TMP/card-blocked.json" <<JSON
+{"id":"blk00001","status":"planned","assignee":"backend3","priority":"normal",
+ "updated_at":$(date +%s),"title":"a blocked card","description":"why it waits",
+ "labels":[],"blocked":true,
+ "blockedBy":[{"id":"dep00001","title":"the card it waits for","status":"planned"}]}
+JSON
+
 cat > "$TMP/board.json" <<JSON
 [{"id":"aaaaaaaa","status":"planned","assignee":"backend3","priority":"low","title":"$LONG_TITLE"},
  {"id":"bbbbbbbb","status":"done","assignee":"qa","priority":"high","title":"other"}]
@@ -120,6 +131,23 @@ if echo "$out" | grep -q 'SENTINEL-TOKEN-DO-NOT-LEAK'; then
 else
   ok "the token never appears in output, even on the error path"
 fi
+
+# --- 9. a BLOCKED card RENDERS, and names its blocker's status ---------------------------------
+# Regression: this raised TypeError on the first real blocked card (a dependency edge is rare, so
+# every card the tool was built against was unblocked). The blocker's STATUS is asserted, not just
+# its id: "waiting on a card that is still planned" and "waiting on one already in review" are
+# different situations, and the id alone cannot tell them apart.
+out="$(python3 "$DASH" card --stdin < "$TMP/card-blocked.json" 2>&1)"; rc=$?
+if [[ $rc -eq 0 ]] && echo "$out" | grep -q 'BLOCKED by: dep00001 (planned)'; then
+  ok "a blocked card renders its blocker as id + status"
+else
+  bad "blocked-card rendering failed (rc=$rc)" "$out"
+fi
+# ... and the unblocked card must NOT grow a blocked line from the same code path.
+out="$(python3 "$DASH" card --stdin < "$TMP/card.json" 2>&1)"
+echo "$out" | grep -q 'BLOCKED' \
+  && bad "an UNBLOCKED card printed a BLOCKED line" "$out" \
+  || ok "an unblocked card prints no BLOCKED line"
 
 echo
 echo "dash.selftest: $pass passed, $fail failed"

@@ -125,6 +125,18 @@ def ago(ts) -> str:
     return f"{mins / 60:.1f}h"
 
 
+
+def _blocker(b) -> str:
+    """One blocker as `id (status)`, tolerating a bare id string from an older API shape."""
+    if isinstance(b, str):
+        return b
+    if isinstance(b, dict):
+        bid = str(b.get("id") or "?")
+        st = b.get("status")
+        return f"{bid} ({st})" if st else bid
+    return str(b)
+
+
 def show_card(d) -> None:
     print(f"{d.get('id')}  {d.get('status')}  {d.get('assignee') or '(unassigned)'}  "
           f"prio={d.get('priority')}  updated={ago(d.get('updated_at'))} ago")
@@ -132,7 +144,14 @@ def show_card(d) -> None:
     if labels:
         print(f"  labels: {labels}")
     if d.get("blocked"):
-        print(f"  BLOCKED by: {', '.join(d.get('blockedBy') or []) or '(unnamed)'}")
+        # blockedBy is a list of {id, title, status} OBJECTS, not of id strings. The first version
+        # joined it directly and raised TypeError on the first card that was actually blocked -- the
+        # branch had never been exercised, because writing a dependency edge is rare and every card
+        # I built this against was unblocked. Printing the id AND the blocker's status is what the
+        # reader needs anyway: "waiting on a card that is still planned" and "waiting on one already
+        # in review" are different situations.
+        print("  BLOCKED by: " + (", ".join(_blocker(b) for b in (d.get("blockedBy") or []))
+                                  or "(unnamed)"))
     print(f"  {d.get('title')}")
     desc = (d.get("description") or "").strip()
     if desc:
