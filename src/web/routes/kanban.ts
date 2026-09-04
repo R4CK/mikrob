@@ -634,8 +634,12 @@ export async function tryHandleKanban(ctx: RouteContext): Promise<boolean> {
     // while the response echoed the generated one. HTTP 200 pointing at a card that does not exist,
     // and the caller's own id silently in the database under a different name than it was told.
     const normalized = normalizeProjectName(data)
-    const suppliedId = typeof normalized.id === 'string' && normalized.id.trim() ? normalized.id.trim() : null
-    const id = suppliedId ?? randomUUID().slice(0, 8)
+    // Read through a TYPED local: `normalized` comes from JSON.parse, so `normalized.id` is `any`,
+    // and letting that flow into `id` made every later call taking it an unsafe-argument finding.
+    // A test-only cast would have hidden that; naming the type is the actual fix.
+    const rawId: unknown = (normalized as Record<string, unknown>).id
+    const suppliedId: string | null = typeof rawId === 'string' && rawId.trim() ? rawId.trim() : null
+    const id: string = suppliedId ?? randomUUID().slice(0, 8)
     createKanbanCard({ ...normalized, id })
     // Card 4bade960: run the dedup pre-filter on EVERY new card (rule 6b was previously enforced
     // only by agent discipline before opening a card, and by the >2-day dispatch filter for cards

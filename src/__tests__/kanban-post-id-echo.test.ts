@@ -27,24 +27,36 @@ function fakeCtx(path: string, method: string, body?: unknown): { ctx: RouteCont
   return { ctx: { req, res, path: url.pathname, method, url } as RouteContext, out }
 }
 
+/**
+ * The echoed id, narrowed to a string.
+ *
+ * `out.body` is `any` (the fake res just JSON.parses whatever the handler wrote), and passing that
+ * straight into getKanbanCard is what no-unsafe-argument objects to -- fairly: a test that reads an
+ * `any` proves nothing about the type the route actually returns. Asserting the type HERE makes
+ * that part of the contract rather than a lint workaround.
+ */
+function echoedId(out: { body: any }): string {
+  expect(typeof out.body?.id, 'the route must answer with a string id').toBe('string')
+  return String(out.body.id)
+}
+
 beforeEach(() => { initDatabase(':memory:') })
 
 describe('POST /api/kanban returns the id it stored', () => {
   it('THE INCIDENT SHAPE: a caller-supplied id is echoed back, and the card exists under it', async () => {
     const { ctx, out } = fakeCtx('/api/kanban', 'POST', { id: 'mycard01', title: 'supplied id', status: 'planned' })
     expect(await tryHandleKanban(ctx)).toBe(true)
-    expect(out.body.id).toBe('mycard01')
+    expect(echoedId(out)).toBe('mycard01')
     // The assertion that would have failed before: the ECHOED id resolves to a real card.
-    expect(getKanbanCard(out.body.id)).toBeTruthy()
+    expect(getKanbanCard(echoedId(out))).toBeTruthy()
     expect(getKanbanCard('mycard01')?.title).toBe('supplied id')
   })
 
   it('generates an id when the caller supplies none, and that one resolves too', async () => {
     const { ctx, out } = fakeCtx('/api/kanban', 'POST', { title: 'generated id', status: 'planned' })
     expect(await tryHandleKanban(ctx)).toBe(true)
-    expect(typeof out.body.id).toBe('string')
-    expect(out.body.id).toHaveLength(8)
-    expect(getKanbanCard(out.body.id)?.title).toBe('generated id')
+    expect(echoedId(out)).toHaveLength(8)
+    expect(getKanbanCard(echoedId(out))?.title).toBe('generated id')
   })
 
   it('an empty or whitespace id is treated as absent, not stored as a blank key', async () => {
@@ -53,8 +65,8 @@ describe('POST /api/kanban returns the id it stored', () => {
     for (const bad of ['', '   ']) {
       const { ctx, out } = fakeCtx('/api/kanban', 'POST', { id: bad, title: 'blank id', status: 'planned' })
       expect(await tryHandleKanban(ctx)).toBe(true)
-      expect(out.body.id.trim()).not.toBe('')
-      expect(getKanbanCard(out.body.id)).toBeTruthy()
+      expect(echoedId(out).trim()).not.toBe('')
+      expect(getKanbanCard(echoedId(out))).toBeTruthy()
     }
   })
 
@@ -66,7 +78,8 @@ describe('POST /api/kanban returns the id it stored', () => {
     ]) {
       const { ctx, out } = fakeCtx('/api/kanban', 'POST', body)
       expect(await tryHandleKanban(ctx)).toBe(true)
-      expect(getKanbanCard(out.body.id), `no card for echoed id ${out.body.id}`).toBeTruthy()
+      const id = echoedId(out)
+      expect(getKanbanCard(id), `no card for echoed id ${id}`).toBeTruthy()
     }
   })
 })
