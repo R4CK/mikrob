@@ -109,6 +109,7 @@ A MikroB-fork saját fejlesztései a Marveen-bázison felül, főleg a **flotta-
 - **Fenntartott, folyamaton belüli küldő-azonosítók**: az üzenet-API megtagadja a fenntartott rendszer-küldőneveket a HTTP-felületen, tehát egy hitelesített rendszer-direktívát csak folyamaton belüli író tud létrehozni, és a címzett ezt ellenőrizni tudja. Upstream nem ismeri.
 - **Helyi-LLM modell-elosztás swimlane** (`GET /api/local-llm/model-usage-buckets`): modellenként csoportosított per-feladat sorok és KPI-blokk az utolsó N órára, hogy mérhető legyen, a feladat-alapú routing tényleg elosztja-e a munkát a modellek között. Upstream nem ismeri.
 - **Kimenő-szöveg kapu**: hook a fő ügynök saját küldésein, ami elfogja a hiányzó magyar ékezetet, az em dasht, a dupla kötőjelet, a homoglifákat és egy lokális, repón kívüli szabályfájlból töltött névszűrőt. A szabályfájl magánszemély nevét tartalmazza, ezért sosem kerül a repóba.
+- **Név-szabály admin felület**: a kimenő-szöveg kapu név/kifejezés-szűrőjét a dashboard Biztonság paneljéről lehet szerkeszteni (felvétel pontos szövegként vagy regexként, törlés, a kapu három állapotának kimondása). A mentés előtt ugyanaz a Python motor ellenőrzi a mintát, amelyik a kaput is futtatja, mert egy le nem forduló minta nem zárná be a kaput, hanem CSENDBEN kikapcsolná; a szabályfájl 0600 marad, és a minták sosem kerülnek naplóba.
 
 ### Dokumentáció-index
 

@@ -5,7 +5,7 @@
 // deterministic OFFLINE CORE (`--repo <path> --sha <sha> --dry-run`) against a throwaway git repo, so
 // the comment body's SHAPE and the "never a verdict" contract are pinned without touching the network.
 import { describe, it, expect, beforeEach, afterEach } from 'vitest'
-import { mkdtempSync, rmSync, writeFileSync, mkdirSync, readFileSync } from 'node:fs'
+import { mkdtempSync, rmSync, writeFileSync, mkdirSync, readFileSync, existsSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join, dirname } from 'node:path'
 import { execFileSync } from 'node:child_process'
@@ -433,5 +433,47 @@ describe('the token is never passed in a curl argv (Cybersec)', () => {
   it('does NOT define the old auth() helper that returned the header for an argv -H', () => {
     expect(code).not.toMatch(/auth\(\)\s*\{/)
     expect(code).not.toContain('-H "$(auth)"')
+  })
+})
+
+// Card 928251b5. The tests above exercise the offline `--repo --sha` core -- the INPUT body it
+// writes for a commit it was HANDED. This block covers the step before that: WHICH commit it picks
+// out of the card's comments, which is where the false positive lived.
+//
+// On card 54d4a4a3 a hex quoted in Cybersec's prose (`ee864511`, whose own message says
+// `(card 550befbf)`) resolved to a real commit, so pre-triage posted a verdict:null round for it.
+// The close-time dependency check read that as a NEW gate round, a valid Cybersec GO went "stale",
+// and the card had to be closed with force:true over a commit nobody on it wrote.
+describe('candidate attribution (card 928251b5)', () => {
+  const STORE = join(import.meta.dirname, '..', '..', 'store')
+
+  it('ships the predicate and its selftest', () => {
+    expect(existsSync(join(STORE, 'gate-pretriage-attribution.sh'))).toBe(true)
+    expect(existsSync(join(STORE, 'gate-pretriage-attribution.selftest.sh'))).toBe(true)
+  })
+
+  it('its selftest passes against REAL git repos, and counts its cases', () => {
+    const out = execFileSync('bash', [join(STORE, 'gate-pretriage-attribution.selftest.sh')], {
+      encoding: 'utf-8',
+      timeout: 120_000,
+    })
+    expect(out).toMatch(/selftest: [1-9]\d* case\(s\), PASS/)
+  })
+
+  // THE WIRING. The selftest proves the predicate; this proves pre-triage actually consults it, and
+  // passes the card it is running for rather than some default.
+  it('gate-pretriage-card.sh sources it and asks about THIS card', () => {
+    const src = readFileSync(join(STORE, 'gate-pretriage-card.sh'), 'utf-8')
+    expect(src).toContain('gate-pretriage-attribution.sh')
+    expect(src).toContain('names_another_card "$r" "$cand" "$CARD"')
+  })
+
+  // Exclusion, not preference -- and the distinction is the fix. kanban-landed-guard's
+  // attributedToCard prefers commits naming the card and keeps everything when none does; correct
+  // there, useless here, because NO commit names 54d4a4a3 at all.
+  it('keeps a commit that names no card, so a rebase or cherry-pick is not narrowed away', () => {
+    const src = readFileSync(join(STORE, 'gate-pretriage-attribution.sh'), 'utf-8')
+    expect(src).toContain('names no card')
+    expect(src).toContain('EXCLUSION, NOT PREFERENCE')
   })
 })
