@@ -99,6 +99,53 @@ describe('gate-sha-repo.sh (card edd4c3bf)', () => {
     expect(out).toContain('actual=marveen')
   })
 
+  it('names a KANBAN CARD ID instead of laundering it as "unlanded" (backend, msg 22750)', () => {
+    // The failure this closes, measured on me: card ids are 8 hex characters, exactly like an
+    // abbreviated sha, so answering "unlanded" for one is PLAUSIBLE AND FALSE -- and that is the
+    // worst kind of wrong answer, because it confirms the reader is looking at a commit. I did
+    // exactly that with fbca2448 and concluded "probably the pre-merge sha the landing rewrote".
+    // It had never been a commit.
+    //
+    // Not hypothetical in the corpus either: of the five Gate-SHA values resolving in NEITHER
+    // clone, one (132fc28c) is a kanban card.
+    const { out, code } = run(['fbca2448'])
+    expect(code, out).toBe(4)
+    expect(out).toContain('card-id|fbca2448|')
+    // The TITLE is the point -- it is what tells the reader what they actually found. It also
+    // regression-guards a real bug: lookup() runs inside $( ), so a subshell variable never reached
+    // the caller and the title came back empty until it was carried in the value.
+    expect(out.split('|')[2] ?? '').not.toBe('')
+  })
+
+  it('an unresolvable value that is NOT a card still reports unlanded', () => {
+    // The card-id branch must not swallow the honest answer.
+    const { out, code } = run(['0000000000000000000000000000000000000000'])
+    expect(out).toBe('unlanded')
+    expect(code).toBe(3)
+  })
+
+  it('FAIL-SOFT: with the board unavailable it falls back to unlanded, never to a wrong repo', () => {
+    // A dashboard that is down, slow or unauthenticated must never turn a correct "unlanded" into
+    // something else. GATE_SHA_REPO_NO_BOARD=1 is the same path an offline run takes.
+    // "unlanded" exits 3, so this must not treat a non-zero exit as a failure to run -- the exit
+    // code IS the contract here, same as everywhere else in this file.
+    let out = ''
+    let code = 0
+    try {
+      out = execFileSync('bash', [SCRIPT, 'fbca2448'], {
+        encoding: 'utf-8',
+        env: { ...process.env, GATE_SHA_REPO_NO_BOARD: '1' },
+        stdio: ['ignore', 'pipe', 'pipe'],
+      }).trim()
+    } catch (e) {
+      const err = e as { status?: number; stdout?: string }
+      out = (err.stdout ?? '').trim()
+      code = err.status ?? -1
+    }
+    expect(out).toBe('unlanded')
+    expect(code).toBe(3)
+  })
+
   it('refuses input that is not a usable sha, rather than resolving something else', () => {
     expect(run(['nothex!']).code).toBe(2)
     expect(run(['abc']).code).toBe(2) // shorter than 7: git itself would call it ambiguous

@@ -31,11 +31,16 @@
 #                                               # exit 1 and a loud line if they disagree
 #   gate-sha-repo.sh --selftest
 #
-# EXIT: 0 resolved (or agreed) | 1 declared/actual mismatch | 3 not found in any clone | 2 usage
+# EXIT: 0 resolved (or agreed) | 1 declared/actual mismatch | 3 not found in any clone
+#     | 4 the value is a KANBAN CARD ID, not a sha | 2 usage
+#
+# GATE_SHA_REPO_NO_BOARD=1 skips the card-id lookup entirely (offline/tests).
 set -uo pipefail
 
 MARVEEN_REPO="${MARVEEN_MAIN:-/home/neon/marveen}"
 CLEANCORE_REPO="${CLEANCORE_MAIN:-/mnt/h/LM_Studio_Workdir/CleanCore}"
+DASH="${DASHBOARD_URL:-http://127.0.0.1:3420}"
+TOKEN_FILE="${DASHBOARD_TOKEN_FILE:-/home/neon/marveen/store/.dashboard-token}"
 
 die() { echo "gate-sha-repo: $2" >&2; exit "$1"; }
 
@@ -52,12 +57,59 @@ normalise_repo() {
   esac
 }
 
+# Is this hex string actually a KANBAN CARD ID? (backend's finding, 2026-09-04.)
+#
+# Card ids are 8 hex characters, exactly like an abbreviated sha, so a card id written into a
+# `Gate-SHA:` line is indistinguishable by SHAPE. Answering "unlanded" for one is PLAUSIBLE AND
+# FALSE, and that is the worst kind of wrong answer: it confirms the reader is looking at a commit,
+# so they go hunting for a branch that never existed. Measured live -- I did exactly that with
+# fbca2448, concluded "probably the pre-merge sha the landing rewrote", and it had never been a
+# commit at all.
+#
+# And it is not hypothetical in the corpus: of the five Gate-SHA values that resolve in NEITHER
+# clone, ONE (132fc28c) is a kanban card. That is not noise in the measurement -- it is the defect
+# this tool should name.
+#
+# Only ever consulted on the "resolves nowhere" path, so a normal lookup needs no dashboard and pays
+# no latency. FAIL-SOFT: an unreachable or slow dashboard must never turn a correct "unlanded" into
+# something else, so any failure falls through to the old answer.
+#
+# The token goes in via a HEADER FILE ON STDIN, never on the command line: /proc/<pid>/cmdline is
+# world-readable (the gate-ops-scripts-token-in-argv lesson).
+card_title_for() {
+  local id="$1" out
+  [ -r "$TOKEN_FILE" ] || return 1
+  out="$(printf 'Authorization: Bearer %s\n' "$(cat "$TOKEN_FILE")" \
+    | curl -sf --max-time 3 -H @- "$DASH/api/kanban/$id" 2>/dev/null)" || return 1
+  CARD_ID="$id" python3 -c '
+import json, os, sys
+try:
+    d = json.load(sys.stdin)
+except Exception:
+    sys.exit(1)
+c = d.get("card", d)
+if not isinstance(c, dict) or not c.get("id"):
+    sys.exit(1)
+print((c.get("title") or "(untitled)")[:80])
+' <<< "$out" 2>/dev/null || return 1
+}
+
 lookup() {
   local sha="$1"
   # Order is irrelevant to correctness (ambiguity is measured at zero), so it is chosen for cost:
   # marveen is the local, warm clone. A caller that needs BOTH answers should call twice.
   if git -C "$MARVEEN_REPO" cat-file -e "${sha}^{commit}" 2>/dev/null; then echo marveen; return 0; fi
   if git -C "$CLEANCORE_REPO" cat-file -e "${sha}^{commit}" 2>/dev/null; then echo cleancore; return 0; fi
+  # Not a commit anywhere. Before saying "unlanded", ask whether it is a card id.
+  if [ "${GATE_SHA_REPO_NO_BOARD:-}" != "1" ]; then
+    local title
+    if title="$(card_title_for "$sha")" && [ -n "$title" ]; then
+      # Carried in the VALUE, not in a variable: lookup() runs inside $( ), and a subshell's
+      # assignments never reach the caller. Measured -- the title came back empty until this changed.
+      echo "card-id|$title"
+      return 4
+    fi
+  fi
   echo unlanded; return 3
 }
 
@@ -107,12 +159,17 @@ FOUND="$(lookup "$SHA")"; RC=$?
 
 case "${1:-}" in
   --path)
+    [ "$RC" -eq 4 ] && die 4 "$SHA is a KANBAN CARD ID, not a sha: ${FOUND#card-id|}"
     [ "$RC" -eq 0 ] || die 3 "$SHA is in neither clone (unlanded branch, or pruned)"
     path_of "$FOUND"
     ;;
   --check)
     [ $# -ge 2 ] || die 2 "--check needs the declared repo"
     DECL="$(normalise_repo "$2")"
+    if [ "$RC" -eq 4 ]; then
+      echo "CARD-ID: $SHA is a kanban card, not a commit (${FOUND#card-id|}) -- there is no repo to check" >&2
+      exit 4
+    fi
     if [ "$RC" -ne 0 ]; then
       echo "UNRESOLVED: $SHA is in neither clone; the declared '$2' cannot be confirmed" >&2
       exit 3
@@ -125,6 +182,12 @@ case "${1:-}" in
     fi
     ;;
   '')
+    if [ "$RC" -eq 4 ]; then
+      # Named, not laundered: the caller is looking for a commit that does not exist because this
+      # was never one. Distinct exit code so a script can branch on it.
+      echo "card-id|$SHA|${FOUND#card-id|}"
+      exit 4
+    fi
     echo "$FOUND"
     [ "$RC" -eq 0 ] || exit 3
     ;;
