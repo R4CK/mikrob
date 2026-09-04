@@ -37,6 +37,14 @@ if ! (pidof systemd >/dev/null 2>&1 && systemctl --user status >/dev/null 2>&1);
   exit 0
 fi
 
+# 1b. File-mode posture: make the services create files private by default (card fcf3a73a). Writes a
+# systemd drop-in and reloads; it NEVER restarts a unit, so a logon can never disrupt a running
+# channel. Inert until each unit's next restart, which is deliberate -- see the script's own header.
+if [ -x "$INSTALL_DIR/store/ensure-umask-dropin.sh" ]; then
+  "$INSTALL_DIR/store/ensure-umask-dropin.sh" >>"$LOG" 2>&1
+  log "umask drop-in ensured (exit $?)"
+fi
+
 # 2. Dashboard: start only if not already active (idempotent, non-disruptive).
 if systemctl --user is-active --quiet mikrob-dashboard.service; then
   log "dashboard already active"
