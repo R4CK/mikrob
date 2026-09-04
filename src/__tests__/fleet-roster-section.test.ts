@@ -15,7 +15,9 @@ vi.mock('../config.js', () => ({
   WEB_PORT: 3420,
   OWNER_DRIVE_FOLDER: '',
   DASHBOARD_PUBLIC_URL: '',
-  // card ec7bdad8: agent-scaffold reads this too; empty keeps the old two-step fallback.
+  // Empty = the resolver falls through to the public URL, then to
+  // localhost -- i.e. exactly the behaviour these tests asserted
+  // before AGENT_API_ORIGIN existed.
   AGENT_API_ORIGIN: '',
 }))
 
