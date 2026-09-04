@@ -1316,12 +1316,19 @@ async function startAgentProcessUnlocked(name: string, opts: { fresh?: boolean }
     // Card b7fa5281: the model is shell-escaped at the sink (shSingleQuote), not merely wrapped in
     // literal single quotes -- so a `'` in the value can never close the quote and inject a command.
     const ollamaEnv = isOllama ? `export ANTHROPIC_AUTH_TOKEN=ollama && export ANTHROPIC_BASE_URL=${OLLAMA_URL} && export ANTHROPIC_MODEL=${shSingleQuote(model)} && ` : ''
+    // Card 1075d0e4 (Cybered, on the e80c011a gate): these keys come from the VAULT and go
+    // straight into a shell command line. The model name beside them was already escaped with
+    // shSingleQuote; the keys were interpolated into double quotes, where `"` and `$(...)`
+    // still expand. A vault value shaped `x";<command>;#` therefore ran as neon at tmux launch
+    // -- BEFORE the hook layer exists, so no PreToolUse guard could see it. Not reachable today
+    // (every running agent is on a claude-* model, none takes these branches), which is exactly
+    // why it had to be closed while it was still latent.
     const deepseekKey = isDeepseek ? (getSecret('DEEPSEEK_API_KEY') ?? '') : ''
-    const deepseekEnv = isDeepseek ? `export ANTHROPIC_AUTH_TOKEN="${deepseekKey}" && export ANTHROPIC_BASE_URL=https://api.deepseek.com/anthropic && export ANTHROPIC_MODEL=${shSingleQuote(model)} && ` : ''
+    const deepseekEnv = isDeepseek ? `export ANTHROPIC_AUTH_TOKEN=${shSingleQuote(deepseekKey)} && export ANTHROPIC_BASE_URL=https://api.deepseek.com/anthropic && export ANTHROPIC_MODEL=${shSingleQuote(model)} && ` : ''
     // OpenRouter: Anthropic-compatible endpoint at https://openrouter.ai/api
     // (the SDK appends /v1/messages). Key from the vault (openrouter-fleet-key).
     const openrouterKey = isOpenRouter ? (getSecret('openrouter-fleet-key') ?? '') : ''
-    const openrouterEnv = isOpenRouter ? `export ANTHROPIC_AUTH_TOKEN="${openrouterKey}" && export ANTHROPIC_BASE_URL=https://openrouter.ai/api && export ANTHROPIC_MODEL=${shSingleQuote(model)} && ` : ''
+    const openrouterEnv = isOpenRouter ? `export ANTHROPIC_AUTH_TOKEN=${shSingleQuote(openrouterKey)} && export ANTHROPIC_BASE_URL=https://openrouter.ai/api && export ANTHROPIC_MODEL=${shSingleQuote(model)} && ` : ''
     // When authMode is 'api', the agent uses its own ANTHROPIC_API_KEY from
     // the vault instead of the host's OAuth. The vault entry ID follows the
     // convention `agent-{name}-api-key`. We inject it as an env var so Claude
@@ -1330,7 +1337,7 @@ async function startAgentProcessUnlocked(name: string, opts: { fresh?: boolean }
     if (isClaude && authMode === 'api') {
       const agentApiKey = getSecret(`agent-${name}-api-key`) ?? ''
       if (agentApiKey) {
-        apiKeyEnv = `export ANTHROPIC_API_KEY="${agentApiKey}" && `
+        apiKeyEnv = `export ANTHROPIC_API_KEY=${shSingleQuote(agentApiKey)} && `
       }
     }
     // Apply security profile: write allow/deny list into settings.json, and
