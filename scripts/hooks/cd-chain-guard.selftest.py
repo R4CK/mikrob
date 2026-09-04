@@ -110,6 +110,26 @@ CASES = [
     ('cd /home/neon/wt && grep -e "x" file.ts', BLOCK,
      "-e moves the pattern off the operand list, so the first operand IS a path"),
 
+    # --- CYBERSEC NO-GO on 7705585d: recursive grep with NO path operand ----------------------
+    # The operand rule reopened the guard's whole reason for existing, in its commonest spelling:
+    # the recursion detector only matched `r`/`R` as the LAST letter of the flag cluster, so `-nr`
+    # counted and `-rn` did not. Every `-rn` case already in this file carried a trailing `.`, so
+    # the operand rule rescued them and the hole was invisible. These four have NO path on purpose.
+    ("cd /home/neon/wt && grep -rn foo", BLOCK,
+     "recursive grep walks the CWD with no path -- the commonest spelling of the wedge"),
+    ("cd /home/neon/wt && grep -rni foo", BLOCK, "r in the middle of the cluster"),
+    ("cd /home/neon/wt && grep -Rn foo", BLOCK, "capital R, first in the cluster"),
+    ('cd /home/neon/wt && grep -rn --include="*.ts" foo', BLOCK,
+     "LITERALLY the shape that wedged four fleet panes -- --include is a flag, not a path"),
+
+    # --- the scoping control: -r on sed/awk is EXTENDED REGEX, not recursion -------------------
+    # Without scoping, widening the recursion match would turn every `sed -nr`/`awk` on a pipe into
+    # a false positive. This pair pins both directions.
+    ('cd /home/neon/wt && sed -nr "s/x/y/p"', ALLOW,
+     "sed -r is extended regex; no path operand, reads stdin, walks nothing"),
+    ('cd /home/neon/wt && sed -nr "s/x/y/p" src/file.ts', BLOCK,
+     "...but the same sed WITH a file operand still resolves against the cd"),
+
     # --- heredoc bodies are data ---------------------------------------------------------------
     ("cat > /tmp/f <<'EOF'\ncd /home/neon/wt && grep -rn x .\nEOF", ALLOW,
      "a wedge shape inside a heredoc body is text being written, not executed"),

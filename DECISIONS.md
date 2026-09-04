@@ -5334,3 +5334,48 @@ helyesbítése és a végrehajtás).
 
 **Hivatkozás:** kártya `fe06da0c` (Cybersec észrevétel: `4ae2d3f5`);
 `store/lockfile-sync-check.sh`, `src/__tests__/lockfile-sync-check-selftest.test.ts`.
+
+## 2026-09-04 08:15 -- Cybersec NO-GO a cd-chain-guard javításán: az operandus-szabály kinyitotta a `grep -rn` alakot
+
+**Döntés:** A rekurzió-felismerés (a) `r`/`R`-t keres BÁRHOL a rövid-flag klaszterben, nem csak
+utolsó betűként, és (b) CSAK ténylegesen rekurzióra képes parancsokra fut (`grep, egrep, fgrep, rg,
+ripgrep, ag, ack`) -- a `sed`/`awk` kimarad, mert ott a `-r` KITERJESZTETT REGEXET jelent, nem
+rekurziót.
+
+**Miért (Cybersec NO-GO a 7705585d-n):** a hamis-pozitív javításhoz tett operandus-ellenőrzés
+kinyitotta azt a hibaosztályt, amiért a guard létezik -- a leggyakoribb írásmódjában. A régi
+rekurzió-regex (`-[a-zA-Z]*[rR](?:\s|$)`) csak akkor talált, ha az `r` a klaszter UTOLSÓ betűje:
+`-nr` illeszkedett, `-rn` nem. Útvonal-operandus nélkül a grep 2 operandust igényel, egy van (a
+minta), tehát átengedte. Pedig a `grep -rn foo` útvonal nélkül a CWD-t járja be, vagyis a `cd`-hez
+képest oldódik fel: pontosan a beragadás, amit a guard megelőz. A
+`grep -rn --include="*.ts" foo` pedig szó szerint az az alak, ami a flotta paneljeit négyszer
+beragasztotta.
+
+**Miért nem vette észre a saját selftestem:** a 37 esetben MINDEN `-rn` minta hordozott egy záró `.`
+útvonal-operandust, tehát az operandus-szabály megmentette őket, és a rés láthatatlan maradt.
+Ugyanezért ment át a "rekurzív ág kivétele" mutáció is: az egyetlen eset, amit megfogott, a
+`grep -r "x"` volt -- ott az `r` véletlenül az utolsó betű. Egy mutáció csak azt méri, amit a
+tesztkészlet MEGKÜLÖNBÖZTET; ha minden eset ugyanazon a második dimenzión (van útvonal-operandus)
+azonos, a mutáció zöldre futhat egy valódi lyuk fölött.
+
+**Mellékhaszon:** a hatókörözés egyben megszüntet egy RÉGEBBI hamis pozitívot is, ami már az eredeti
+guardban is benne volt: a `cd X && sed -nr "s/x/y/p"` (cső, nincs útvonal-operandus) mindkét korábbi
+verzióban BLOCK volt, most PASS. Egy változtatás zárja a lyukat és nyitja a helyes utat.
+
+**Három-utas mérés (ugyanaz a bemenet, három verzió):**
+```
+                                            2dd7c958   7705585d   javítás
+cd /abs && grep -rn foo                      BLOCK      pass       BLOCK
+cd /abs && grep -rni foo                     BLOCK      pass       BLOCK
+cd /abs && grep -Rn foo                      BLOCK      pass       BLOCK
+cd /abs && grep -rn --include="*.ts" foo     BLOCK      pass       BLOCK
+cd /abs && sed -nr "s/x/y/p"                 BLOCK      BLOCK      pass
+cd /abs && sed -nr "s/x/y/p" src/file.ts     BLOCK      BLOCK      BLOCK
+cd /abs && git merge ... | tail -2           BLOCK      pass       pass
+cd /abs && ls | head -5                      BLOCK      pass       pass
+```
+
+**Ki döntött:** Cybersec (a lelet, a mérés és a javítás iránya), backend (végrehajtás).
+
+**Hivatkozás:** kártya `9c664b88` (NO-GO komment 19161), a javított commit `7705585d`;
+`scripts/hooks/cd-chain-guard.py`, `scripts/hooks/cd-chain-guard.selftest.py` (43 eset).

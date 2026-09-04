@@ -117,7 +117,21 @@ _PATTERN_FIRST = {"grep", "egrep", "fgrep", "rg", "ripgrep", "ag", "ack", "sed",
 _PATTERN_FLAG_RX = re.compile(r"(?:^|\s)-[a-zA-Z]*[ef](?:\s|=)")
 # Recursive search walks the CWD even with no path given, so it resolves against the cd either
 # way -- operand count says nothing there.
-_RECURSIVE_RX = re.compile(r"(?:^|\s)-[a-zA-Z]*[rR](?:\s|$)|(?:^|\s)--recursive\b")
+#
+# `r`/`R` ANYWHERE in the short-flag cluster, not only as its last letter (Cybersec NO-GO on
+# 7705585d). The previous form `-[a-zA-Z]*[rR](?:\s|$)` matched `-nr` but NOT `-rn`, and with no
+# path operand `grep -rn foo` then fell through the operand rule and PASSED -- reopening the exact
+# class this guard exists for, in its most common spelling. Worse, `grep -rn --include="*.ts" foo`
+# is literally the shape that wedged the fleet's panes four times. The selftest could not see it
+# because every `-rn` case in it carried a trailing `.` operand, so the operand rule rescued them
+# and the hole stayed invisible.
+#
+# SCOPED to commands that can actually recurse. In `sed`/`awk`, `-r` means EXTENDED REGEX, not
+# recursion: `sed -nr "s/x/y/p"` reads stdin and walks nothing. The old regex matched its `-nr` and
+# blocked it -- a false positive in both directions of this fix, measured by Cybersec. Scoping
+# closes the grep hole and removes the sed false positive in one change.
+_RECURSION_CAPABLE = {"grep", "egrep", "fgrep", "rg", "ripgrep", "ag", "ack"}
+_RECURSIVE_RX = re.compile(r"(?:^|\s)-[a-zA-Z]*[rR][a-zA-Z]*(?:\s|$)|(?:^|\s)--recursive\b")
 _OPERAND_RX = re.compile(r"""(?:^|\s)(?!-)("(?:[^"\\]|\\.)*"|'[^']*'|\S+)""")
 
 
@@ -131,7 +145,7 @@ def _has_path_operand(seg, name):
     this guard exists to prevent. That over-match is exactly the "fleet-wide nuisance" the scope
     note warns about, so it is fixed where the scope is decided.
     """
-    if _RECURSIVE_RX.search(seg):
+    if name in _RECURSION_CAPABLE and _RECURSIVE_RX.search(seg):
         return True
     body = seg.split(None, 1)
     operands = _OPERAND_RX.findall(body[1]) if len(body) > 1 else []
