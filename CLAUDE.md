@@ -288,6 +288,10 @@ visszavonta a plan-grilling döntést (komment 14285): **teljes per-agent worktr
 a CleanCore `agent-worktree.sh` mintájának általánosításával** -- ez STRUKTURÁLISAN zárja ki a
 versenyt (saját index, saját checkoutolt fájlok), nem fegyelemmel.
 
+**A függőség-könyvtár alakja marveen-en (kártya 0b23ec28).** A worktree függőség-könyvtára eddig KÖNYVTÁR-SZIMLINK volt a fő klónba, és ez az enabler a `9dc0fba8` hibaosztály mögött: egy `cd <worktree>/<dep-dir> && rm -rf ../src` a MEGOSZTOTT klón forrását törli, mert a `cd` a feloldott könyvtárba visz, tehát a `..` már a fő klónban van. A `store/agent-worktree-deps.sh <neved>` VALÓDI könyvtárrá alakítja (idempotens; `--check` csak jelent, nem módosít) -- ez az egyetlen alak, amiből a `..` nem tud kilépni; a bejegyzésenkénti szimlink csak eggyel mélyebbre tolja a kijáratot (318 csomag = 318 ajtó). **Egyelőre OPT-IN**, és a rollout szándékosan worktree-nként történik, nem sweepben, mert 15 élő fán más ügynökök munka közben vannak: az `agent-worktree-marveen.sh` alapból továbbra is linkel, és kiírja, mivel teheted valódivá (`MARVEEN_WORKTREE_REAL_DEPS=1` létrehozáskor).
+
+**Következmény a telepítőkre MARVEEN-en (a CleanCore-szabály NEM változik).** Amíg szimlink, a fenti CleanCore-szabály áll: telepítő nem futhat a worktree-ből, mert a közös fát írná át. **Miután `agent-worktree-deps.sh`-val valódi könyvtárrá tetted, ez a tilalom ERRE a worktree-re megszűnik** -- az `npm` ott a sajátját írja, senki máséit. A `--check` megmondja, melyik állapotban vagy; ha nem tudod, futtasd le, ne találgass. A CleanCore-oldal (`store/agent-worktree.sh`, per-package linkek) EGYELŐRE VÁLTOZATLAN, ott a tilalom teljes erővel áll.
+
 1. `bash store/agent-worktree-marveen.sh <neved>` -- saját worktree létrehozása/frissítése
    (`/home/neon/marveen-agent-worktrees/<neved>`, branch `agent/<neved>/work`), idempotens. **A
    TELJES munkamenetre érvényes, nem csak commit előtt**: az adott ponttól kezdve MINDEN

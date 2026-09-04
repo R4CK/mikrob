@@ -123,6 +123,17 @@ while IFS= read -r src; do
     # exist in the main clone today (apps/api, packages/control-plane, both dated 2026-08-26).
     # Copying them here would give every gate tree a symlink loop; skip them.
     [ "$base" = "node_modules" ] && continue
+    # `.vite` is a WRITTEN cache, not a read-only dependency (card 0b23ec28, QA's measurement on the
+    # 5762c0bd r2 gate, comment 18034). Linking it points every gate worktree's dev server at ONE
+    # shared dep-cache: two of them running at once optimise into the same directory and serve each
+    # other 504 Outdated Optimize Dep, which QA hit live and worked around by hand. Same directory-
+    # symlink-to-shared-resource pattern as the node_modules link this script exists to remove, only
+    # with a rebuildable artifact instead of source. A real empty directory costs nothing -- vite
+    # repopulates it on first run -- and the collision cannot happen.
+    if [ "$base" = ".vite" ]; then
+      mkdir -p "$dst/.vite"
+      continue
+    fi
     if [ "$base" = "@cleancore" ]; then
       mkdir -p "$dst/@cleancore"
       while IFS= read -r pkg; do

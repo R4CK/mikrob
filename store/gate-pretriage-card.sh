@@ -250,12 +250,27 @@ case "$project" in
   CleanCore) primary="$CLEANCORE_REPO"; secondary="$MIKROB_REPO" ;;
   *) primary="$MIKROB_REPO"; secondary="$CLEANCORE_REPO" ;;
 esac
-sha=""; repo=""
+# A CANDIDATE THAT NAMES SOMEONE ELSE'S CARD IS NOT THIS CARD'S NEW COMMIT (card 928251b5).
+# The predicate and the full incident write-up live in the sourced lib, so it is testable against
+# real git repos without a live dashboard -- the same reason decisions-append-union.sh and
+# landing-downward-check.sh are their own files.
+# shellcheck source=./gate-pretriage-attribution.sh
+. "$HERE/gate-pretriage-attribution.sh"
+
+sha=""; repo=""; skipped_foreign=""
 while IFS= read -r cand; do
   [[ -n "$cand" ]] || continue
-  if git -C "$primary" cat-file -e "${cand}^{commit}" 2>/dev/null; then sha="$cand"; repo="$primary"; break; fi
-  if git -C "$secondary" cat-file -e "${cand}^{commit}" 2>/dev/null; then sha="$cand"; repo="$secondary"; break; fi
+  for r in "$primary" "$secondary"; do
+    git -C "$r" cat-file -e "${cand}^{commit}" 2>/dev/null || continue
+    if names_another_card "$r" "$cand" "$CARD"; then
+      skipped_foreign="${skipped_foreign}${skipped_foreign:+ }${cand}"
+      continue
+    fi
+    sha="$cand"; repo="$r"; break
+  done
+  [[ -n "$sha" ]] && break
 done <<< "$candidates"
+[[ -z "$skipped_foreign" ]] || echo "  pretriage: ignored commit(s) belonging to another card: $skipped_foreign"
 
 [[ -n "$sha" ]] || { echo "SKIP: no REVIEW commit resolvable on $CARD"; exit 0; }
 

@@ -306,6 +306,44 @@ export function ensureAgentHooks(name: string): boolean {
 const _stalenessScript = join(PROJECT_ROOT, 'scripts', 'hooks', 'staleness-guard.py')
 const STALENESS_HOOK_CMD = `bash -c '[ -f ${_stalenessScript} ] && exec python3 ${_stalenessScript}; exit 0'`
 
+/**
+ * The GENERATION-path half of the staleness guard (card f7b33416, Cybersec+QA finding on 2a07f29e).
+ *
+ * Until this existed the guard had only a backfill: ensureAgentStalenessHook() reaches an agent when
+ * the dashboard next boots, so a freshly spawned agent ran WITHOUT it until then. Every other guard
+ * in this file has both halves, and the meta-test derives its list from `inject*` functions -- so an
+ * ensure-only guard was invisible to the very test written to catch this, and the gap was real, not
+ * merely unreported. Adding the injector closes both at once: a new agent gets the hook at scaffold
+ * time, and the derivation can finally see it.
+ *
+ * Shape note: this one merges into UserPromptSubmit rather than PreToolUse, and its command is the
+ * fail-open bash wrapper rather than a bare python3 call -- if the script file is gone the bash test
+ * exits 0 instead of blocking the prompt. The de-dupe matches on the script name so an older
+ * bare-python3 entry is replaced rather than duplicated.
+ *
+ * The path is joined HERE rather than read from STALENESS_HOOK_CMD, matching the other eight
+ * injectors in this file. That is deliberate: the meta-test derives which hook an injector wires by
+ * reading the injector's own body, so an injector that hides its script behind a module constant is
+ * invisible to it -- and teaching the test to chase constants through two levels of indirection is a
+ * worse trade than one repeated literal that every sibling already repeats.
+ */
+export function injectAgentStalenessHook(existing: Record<string, unknown>): void {
+  const hooks = (existing.hooks && typeof existing.hooks === 'object'
+    ? existing.hooks
+    : (existing.hooks = {})) as Record<string, unknown>
+  const script = join(PROJECT_ROOT, 'scripts', 'hooks', 'staleness-guard.py')
+  const command = `bash -c '[ -f ${script} ] && exec python3 ${script}; exit 0'`
+  // The same registration guard the ensure* path applies: never write a /tmp or missing path into
+  // shared settings.
+  if (isUnsafeHookCommand(command)) return
+  const entry = { hooks: [{ type: 'command', command, timeout: 10 }] }
+  const prev = Array.isArray(hooks.UserPromptSubmit) ? (hooks.UserPromptSubmit as unknown[]) : []
+  hooks.UserPromptSubmit = [
+    ...prev.filter((e) => !JSON.stringify(e).includes('staleness-guard.py')),
+    entry,
+  ]
+}
+
 export function ensureAgentStalenessHook(name: string): boolean {
   // agentSettingsPath() maps MAIN_AGENT_ID to ~/.claude/settings.json; using
   // agentDir() directly here would create a spurious agents/<main> dir and make
@@ -380,6 +418,9 @@ export function writeAgentSettingsFromProfile(name: string, profile: ProfileTemp
   injectCdChainGuard(existing)
   injectNoisyCommandGuard(existing)
   injectPentestToolInstallGuard(existing)
+  // Card f7b33416: this one was backfill-only until now, so a freshly spawned agent ran without the
+  // staleness guard until the dashboard next booted.
+  injectAgentStalenessHook(existing)
   atomicWriteFileSync(settingsPath, JSON.stringify(existing, null, 2))
 }
 

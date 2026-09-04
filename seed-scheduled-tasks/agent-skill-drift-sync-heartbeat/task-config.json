@@ -1,0 +1,11 @@
+{
+  "schedule": "20 3,9,15,21 * * *",
+  "agent": "{{MAIN_AGENT_ID}}",
+  "enabled": true,
+  "type": "heartbeat",
+  "skipIfBusy": false,
+  "forceSend": false,
+  "description": "6 orankent lefuttatja a store/agent-skill-drift-sync.sh --apply-t, hogy egy elo agent sajat .claude/skills/<nev>/SKILL.md masolata ne maradjon csendben elavult egy seed-skills fixe utan (kartya 13512bde, Cybersec kovetkezmenye a 84b304c1-hez). Csak akkor ir Telegramra, ha a script ALERT:yes verdiktet ad (kartya 222fdc5e: a diverged HALMAZ valtozasa a hir, nem a darabszama).",
+  "catchUpMaxAgeMinutes": 1440,
+  "createdAt": 1787861959
+}

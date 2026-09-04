@@ -5627,3 +5627,93 @@ egyetlen valódi képesség sem tűnt el.
 **Ki döntött:** Peti (formátum), fullstack (végrehajtás).
 **Hivatkozás:** kártya `3eb0bbfc`; a `CLAUDE.md` "README karbantartás" szabály fork-fejlesztések
 pontja rögzíti a formátumot.
+
+## 2026-09-04 11:25 -- Ügynök-worktree `node_modules`: valódi könyvtár, nem szimlink a megosztott fára (kártya 0b23ec28)
+
+**Döntés:** Az ügynök-worktree-k `node_modules`-a a megosztott fő klónra mutató KÖNYVTÁR-szimlink
+helyett valódi, saját könyvtár lesz, a fő klónból másolva (`cp -a`, nem `cp -al`). Marveen-en ez
+egyelőre OPT-IN (`MARVEEN_WORKTREE_REAL_DEPS=1`), worktree-nként bevezetve; a lassú másoló lépés
+külön szkriptbe került (`store/agent-worktree-deps.sh`), hogy egy „biztosítsd, hogy megvan" hívás
+ne timeoutoljon. A `store/cc-gate-worktree.sh` `.vite` bejegyzése szintén valódi, üres könyvtár lett.
+
+**Miért:** A 9dc0fba8 incidens gyökér-oka az volt, hogy a könyvtár-szimlink mellett a
+`symlinked-node-modules-guard.py` az EGYETLEN kontroll. Cybered éke ezt kimérte:
+`cd $WT/apps/web/node_modules && rm -rf ../src` a MEGOSZTOTT klón forrását törli, guard rc=0 --
+a `..` kilép a `node_modules` hatóköréből, mert a guard lexikálisan gyűjt, a kernel viszont a
+szimlinkelt cwd-ből fizikailag old fel.
+
+A plan-grilling hozadéka egy HAMIS load-bearing feltevés kizárása volt: a kézenfekvő „legyen valódi
+könyvtár, benne BEJEGYZÉSENKÉNTI szimlink" javítás NEM zárja a hibaosztályt, csak mélyebbre tolja --
+`cd node_modules/<csomag> && rm -rf ../../src` ugyanúgy kilép, és 318 bejegyzés 318 ajtót jelent.
+Az egyetlen szerkezeti zárás a valódi, saját fa. A helyfoglalás nem akadály (mérve: 990M
+worktree-nként marveen-en, 918G szabad a `/home`-on). Másolás és nem újratelepítés, mert a
+worktree-nek azt a függőség-állapotot kell tartania, amiről leágazott; hardlink (`cp -al`) pedig
+megosztaná az inode-ot, vagyis épp a megosztott írható talajt tartaná életben.
+
+**Következmény a szabályszövegre:** a flotta-szintű „függőség-telepítő SOHA nem futhat worktree-ből"
+tilalom marveen-en megfordul azokra a worktree-kre, amik átálltak -- a `CLAUDE.md` ugyanebben a
+munkában frissült, nem külön követő kártyán, hogy a szabály és a valóság ne váljon szét.
+
+**Ki döntött:** MikroB (verdikt: GO-WITH-CHANGES, komment 19318), backend2 plan-grillingje alapján
+(komment 19316). Cybersec GO és QA saját kanári-méréssel, mindkét irányban reprodukálva.
+
+**Hivatkozás:** kártya `0b23ec28`, commit `b98bfaea`; `store/agent-worktree-deps.sh`,
+`store/agent-worktree-marveen.sh`, `store/cc-gate-worktree.sh`, `src/__tests__/agent-worktree-deps.test.ts`;
+előzmény: 9dc0fba8 incidens és a `symlinked-node-modules-guard.py`.
+
+---
+
+## 2026-09-04 -- 222fdc5e -- A drift-heartbeat a diverged HALMAZ változására riaszt, nem a darabszámára
+
+**Döntés.** Az `agent-skill-drift-sync.sh` minden futás végén egy verdikt-sort ad
+(`ALERT:no` / `ALERT:yes reasons=...`), és a hatóránkénti scheduled-task kizárólag erre a sorra
+figyel, nem a `stale`/`diverged` számokra. A diverged **halmazt** (nem a méretét) egy állapot-fájl
+őrzi (`store/agent-skill-drift-state.json`), és azt kizárólag az `--apply` futás lépteti tovább.
+
+**Miért.** Cybersec MEDIUM lelete a 13512bde-n: a feladat azt a szabályt kapta, hogy `stale=0 ÉS
+diverged=0` esetén hallgasson. Az élő állandósult állapot viszont **mérten** `current=93 stale=0
+diverged=5` -- vagyis maga a RUTIN eset is `diverged>0`, tehát a feladat ugyanazt az öt sort küldte
+hatóránként, naponta négyszer, örökre. A diverged halmaz jogosan állandó (QA saját 84b304c1-es
+verdiktje szerint azok szándékos, értékes helyi bővítések). Két hét után senki nem olvassa -- és
+akkor sem, amikor végre változik. A hír tehát nem az, hogy VAN diverged, hanem hogy MEGVÁLTOZOTT.
+
+**Miért halmaz és nem darabszám.** Egy darabszám nem lát egy cserét: ha egy bejegyzés eltűnik és egy
+másik megjelenik, a szám azonos marad, miközben valódi változás történt. A selftest ezt konkrétan
+pinneli: egy fixture-swap után a mért darabszám **változatlan** (3), és a gate mégis riaszt.
+
+**A sérült alapvonal szándékosan RIASZT, nem `die`-ol.** A ház-precedens
+(`store/cleancore-main-suite-guard.sh`, kártya 6d46c7d3) meghal egy sérült állapot-fájlon, és jól
+teszi: az egy KAPU, és egy kapu, ami nem tud összehasonlítani, nem mondhat verdiktet. Ez viszont egy
+RIASZTÓ eszköz, aminek a szerződésében `exit 0` áll -- ha meghalna, magával vinné a hatóránkénti
+szinkront is. Ugyanaz az elv, fordított mechanizmus: ha nem tudjuk BIZONYÍTANI, hogy rutin, akkor azt
+mondjuk, hogy nem rutin. Fordítva soha. Ugyanezért kapott verdikt-sort a "nincs agents könyvtár" ág
+is: az azt jelenti, hogy a szkennelés SEMMIT nem nézett meg, és a néma visszatérés
+megkülönböztethetetlen lett volna a rutintól.
+
+**Elfogadott kockázat, kimondva.** Az alapvonal akkor lép tovább, amikor egy `--apply` futás
+ÉSZLELI a változást, nem akkor, amikor az értesítés bizonyítottan megérkezett. Ha a Telegram-küldés
+elbukik, az az egy változás nem hangzik el újra. Ezért az állapot-fájl eltárolja a `previousList` és
+`changedAt` mezőt, így a következő futás kimenete még mindig megmutatja, mi mozdult és mikor --
+látható, csak nem riaszt újra. Az alternatíva (az alapvonalat egy explicit nyugtázásig tartani) a
+nyugtázást visszatenné a prompt-rétegbe, márpedig épp ott bukott meg a szabály legelőször.
+
+**A dry-run nem ír alapvonalat.** Aki csak ránéz, ne fogyassza el azt a változást, amit a következő
+valódi futásnak kellene bejelentenie.
+
+**Verziókövetés (a lelet másik fele).** A feladat `~/.claude/scheduled-tasks/` alatt élt, de
+`seed-scheduled-tasks/` alatt nem, tehát egy újratelepítés után csendben eltűnt volna. Bekerült
+(f2a14f91 / 38eb6971 mintája). **Mérve, hogy ez önmagában NEM elég:** az `update.sh` seedelő ága
+kihagyja a már létező cél-könyvtárat, a `refresh_untouched_seeds` pedig csak azt frissíti, ami
+byte-azonos egy korábban KIADOTT seed-verzióval -- az élő tartalom viszont sosem a seedből jött,
+tehát `KEPT` maradt volna és a javítás inert. Ezért az élő másolat a renderelt seeddel byte-azonosra
+lett írva; onnantól a meglévő mechanizmus magától szinkronban tartja.
+
+**Mellékesen mért, nem ezen a kártyán javítva:** a `.env`-ben nincs `CHAT_ID` (csak egy üres
+`ALLOWED_CHAT_ID`), miközben minden élő seedelt feladat konkrét `chat_id`-t használ. Egy mai
+`--reseed-fleet` tehát üres `chat_id`-vel renderelné mindegyiket. Ezért az élő másolat a MEGLÉVŐ,
+működő értéket kapta vissza, nem az `.env`-ből származót.
+
+**Az arbitrary-command teszt-hook lecserélve.** A TOCTOU-selftest egy környezeti változóból vett
+útvonalat FUTTATOTT az `--apply` úton -- amit mostantól egy felügyelet nélküli scheduled-task
+használ. A változó most egy skill-NEVET tartalmaz, amit a script ÖSSZEHASONLÍT, és egyetlen fix
+jelölő-szöveget ír; a teszt sosem igényelt többet ennél.

@@ -145,7 +145,11 @@ describe('seed template placeholders are all substituted by every seeder', () =>
         const f = join(SEED_DIR, task, 'SKILL.md')
         return existsSync(f) && readFileSync(f, 'utf-8').includes('{{CHAT_ID}}')
       })
-      expect(users.sort()).toEqual(['fleet-nudger', 'heartbeat-consolidated'].sort())
+      // agent-skill-drift-sync-heartbeat joined the set on card 222fdc5e: its report now goes to
+      // Peti only when the script's own ALERT:yes verdict says the diverged SET changed.
+      expect(users.sort()).toEqual(
+        ['agent-skill-drift-sync-heartbeat', 'fleet-nudger', 'heartbeat-consolidated'].sort(),
+      )
     })
   })
 })
