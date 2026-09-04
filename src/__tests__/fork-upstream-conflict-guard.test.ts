@@ -892,6 +892,18 @@ const ACKNOWLEDGED_CONFLICTS = {
     "EVERYTHING ELSE -- new codes, new cases, changed expectations -- take from upstream on its " +
     "merits: the coverage test RUNS the real validators, so upstream adding a pairing error " +
     "shows up here as a missing hu/en key rather than as silently absent coverage.",
+  // Card ec7bdad8 (2026-09-04): the fork adopted upstream's AGENT_API_ORIGIN key, and BOTH sides
+  // now declare it at the same point in the file, which is what git reports as a conflict.
+  'src/config.ts':
+    "TEXTUAL ONLY, and measured as such: the declaration is BYTE-IDENTICAL on both sides " +
+    "(`export const AGENT_API_ORIGIN = cfg('AGENT_API_ORIGIN') ?? ''`), and a real merge produces " +
+    "exactly ONE conflict region, covering the COMMENT above it and nothing else. Take either " +
+    "side's const -- they are the same characters -- and keep ONE comment; the fork's is kept " +
+    "because it records the measurement in the fork's own words (hairpin NAT, curl exit 7, dead " +
+    "address in every generated CLAUDE.md example) and the fork's other config entries are " +
+    "documented the same way. There is NO semantic decision here: if this file ever conflicts on " +
+    "something other than adjacent comment prose, that is a different question and needs its own " +
+    "entry rather than this one being stretched to cover it.",
   'web/lang/en.js':
     "keep BOTH key blocks -- this is a union, not a pick. MEASURED 2026-09-04 at the key level, not " +
     "the line level: 1590 keys at the merge base, the fork ADDED 516 (the outgoing-copy gate's " +
@@ -1114,6 +1126,7 @@ const ACKNOWLEDGED_UPSTREAM_BLOBS: Readonly<Record<keyof typeof ACKNOWLEDGED_CON
   'src/web/routes/messages.ts': '98710db9e171616e0600061eec649542e779506a',
   // Card 368b77f7, 2026-09-04.
   'src/__tests__/bridge-pairing-i18n.test.ts': '5da8970e4ff27f4d9b1fef46b179ed26e9063ea0',
+  'src/config.ts': '02c6ff722fe731e1ea6c1e4180b82f379ce8e622',
   'web/lang/en.js': '702bdb0730c92a8d3201e1618cf508d9559ac4ab',
   'web/lang/hu.js': '5a1ba1741d5a704bc298f00d5a0f4550b1a2a1b3',
   // Card 272361eb, 2026-09-04 (B-wave 3/6).
