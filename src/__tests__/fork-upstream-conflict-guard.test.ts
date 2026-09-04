@@ -848,6 +848,26 @@ const ACKNOWLEDGED_CONFLICTS = {
     "both sides made the SAME change to triggerMarveenMemorySave (bare sendPromptToSession -> sendSystemDirective(MAIN_AGENT_ID, MAIN_CHANNELS_SESSION, prompt)), so take either for that hunk -- they are semantically equal. Everything ELSE in this file is long-standing fork divergence unrelated to this card: resolve those on their own merits, they are not part of the ab4c85f2 decision. CORRECTION 2026-09-04 (card 272361eb, B-wave): this entry used to say 'lazy bin resolver vs upstream's eager resolveFromPath consts' and had the two sides BACKWARDS -- upstream was the lazy one, WE had the eager module-level consts, which throw at IMPORT time and take every importer of this module down on a PATH gap. That half is no longer a divergence at all: the fork adopted upstream's tmuxBin()/claudeBin() shape, matching platform.ts's own documented rule and agent-process.ts's existing use. What REMAINS undecided here is upstream's STUCKINPUT827 injected-prompt-registry work and its subagent-overdue alert (shouldAlertStuckSubAgent, SUBAGENT_OVERDUE_ALERT_MIN_INTERVAL_MS), neither of which this fork has.",
   // Card 368b77f7 (URGENT: this conflict blocked EVERY marveen landing -- marveen-land.sh refuses on
   // any non-zero fleet-test, with no baseline-delta comparison to fall back on).
+  // Card 73cf0a22 (the BRIDGEHU813 adoption itself). Add/add: upstream created this file in
+  // 1df099be and the fork adopted it in the same shape, so there is no merge base for it and
+  // git shows every fork edit as a conflict. Both differences are structural, not drift, and
+  // neither will ever go away on its own -- which is why this is a written rule rather than a
+  // one-off resolution.
+  'src/__tests__/bridge-pairing-i18n.test.ts':
+    "KEEP THE FORK'S SIDE for exactly two things, take upstream's for everything else. (1) The " +
+    "file it reads is web/app-settings-auth.js, not web/app.js -- this fork extracted the auth " +
+    "panel into that slice, and this file's own web/app.js rule already says an upstream app.js " +
+    "hunk is diffed against the named slice. Taking upstream's path here would make the suite " +
+    "read a file that no longer contains the function; the `start > -1` assertion is what would " +
+    "report it, so the failure would at least be loud. (2) The fork-only test 'the error branch " +
+    "actually CALLS it'. Upstream pins the wiring with tests/browser/**, which this fork " +
+    "deliberately did not adopt (the fleet gate runs vitest and never invokes playwright), so " +
+    "dropping this test in a merge would silently give up the one guarantee that the translator " +
+    "is reached at all -- every other assertion in the file stays green with the call site " +
+    "reverted. Measured on adoption: reverting it fails this test and only this test. " +
+    "EVERYTHING ELSE -- new codes, new cases, changed expectations -- take from upstream on its " +
+    "merits: the coverage test RUNS the real validators, so upstream adding a pairing error " +
+    "shows up here as a missing hu/en key rather than as silently absent coverage.",
   'web/lang/en.js':
     "keep BOTH key blocks -- this is a union, not a pick. MEASURED 2026-09-04 at the key level, not " +
     "the line level: 1590 keys at the merge base, the fork ADDED 516 (the outgoing-copy gate's " +
@@ -1068,6 +1088,7 @@ const ACKNOWLEDGED_UPSTREAM_BLOBS: Readonly<Record<keyof typeof ACKNOWLEDGED_CON
   'src/web/channel-monitor.ts': 'd1c642f669ff2a28b6eec79bbf503365c9ac1b08',
   'src/web/routes/messages.ts': '98710db9e171616e0600061eec649542e779506a',
   // Card 368b77f7, 2026-09-04.
+  'src/__tests__/bridge-pairing-i18n.test.ts': '5da8970e4ff27f4d9b1fef46b179ed26e9063ea0',
   'web/lang/en.js': '702bdb0730c92a8d3201e1618cf508d9559ac4ab',
   'web/lang/hu.js': '5a1ba1741d5a704bc298f00d5a0f4550b1a2a1b3',
   // Card 272361eb, 2026-09-04 (B-wave 3/6).
