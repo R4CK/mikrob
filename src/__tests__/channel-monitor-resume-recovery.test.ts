@@ -146,7 +146,11 @@ describe('channel-monitor: periodic detached-claude reap (CB6CF755 durable fix)'
     // Durable fix is wired by calling the SAME reapDetachedChannelClaudes on a
     // throttle inside check() -- NOT a second/parallel reaper implementation.
     expect(src).toMatch(/shouldRunPeriodicReap\(\s*lastDetachedReapAt/)
-    expect(src).toMatch(/reapDetachedChannelClaudes\(\s*{\s*tmuxPath:\s*TMUX\s*}\s*\)/)
+    // The tmux path is passed however the module resolves the binary -- it was a `TMUX` const and
+    // is now the lazy `tmuxBin()` (card 272361eb). Pinning that SPELLING made this case fail on a
+    // rename that changed nothing about the property under test; the property is that the periodic
+    // reap calls the shared reaper WITH a tmux path, not which expression produced it.
+    expect(src).toMatch(/reapDetachedChannelClaudes\(\s*{\s*tmuxPath:\s*[^}]+}\s*\)/)
     // throttle interval is a sane slow cadence (minutes, not every 60s tick).
     const m = src.match(/const\s+DETACHED_REAP_INTERVAL_MS\s*=\s*([\d*\s_]+)/)
     expect(m, 'DETACHED_REAP_INTERVAL_MS not found').not.toBeNull()
