@@ -43,6 +43,19 @@
 #   agent-skill-drift-sync.sh --telegram       # compact summary only, for Telegram/heartbeat reporting
 #   agent-skill-drift-sync.sh selftest         # fixture-based checks against a throwaway git repo
 #
+# EVERY RUN ENDS WITH A VERDICT LINE, and callers should key on it rather than on the counts
+# (card 222fdc5e):
+#   ALERT:no  (diverged set unchanged since <when>, N entries; stale=0, no concurrent-write skips)
+#   ALERT:yes reasons=<comma-list> diverged=N stale=N skipped-concurrent=N
+# reasons: stale-synced | concurrent-write-skipped | diverged-set-changed | no-baseline |
+#          baseline-unreadable | no-agents-dir
+# The diverged SET (not its size) is what is remembered, in $AGENT_SKILL_DRIFT_STATE
+# (default store/agent-skill-drift-state.json), and ONLY --apply advances that baseline.
+#
+# Env overrides (all exist so a selftest never touches the live install):
+#   AGENT_SKILL_DRIFT_ROOT / _AGENTS_DIR / _SEEDS_DIR / _STATE
+#   AGENT_SKILL_DRIFT_TEST_RACE=<skill>  test-only; COMPARED, never executed
+#
 # Exit: 0 always (report tool, not a gate) -- selftest exits 1 on failure.
 set -uo pipefail
 
@@ -52,6 +65,10 @@ AGENTS_DIR="${AGENT_SKILL_DRIFT_AGENTS_DIR:-$ROOT/agents}"
 SEEDS_DIR="${AGENT_SKILL_DRIFT_SEEDS_DIR:-$ROOT/seed-skills}"
 HIST_CAP=25   # same cap update.sh's seed_copy_is_untouched uses -- a skill unfixed for 25+
               # revisions is not worth the extra git calls (update.sh:605-606).
+
+# Where the last APPLIED diverged set is remembered, so a routine run can stay quiet (card 222fdc5e).
+# Overridable for the same reason the paths above are: a selftest must never touch the live state.
+STATE="${AGENT_SKILL_DRIFT_STATE:-$ROOT/store/agent-skill-drift-state.json}"
 
 APPLY=0
 TELEGRAM=0
@@ -141,10 +158,18 @@ _wanted_skill() {
 }
 
 run_scan() {
-  CUR=0; STALE=0; DIVERGED=0; SKIPPED=0
+  CUR=0; STALE=0; DIVERGED=0; SKIPPED=0; SKIPPED_CONCURRENT=0
   STALE_LIST=""; DIVERGED_LIST=""
 
-  [ -d "$AGENTS_DIR" ] || { echo "agent-skill-drift-sync: no $AGENTS_DIR -- nothing to scan"; return 0; }
+  # An ALERT line on this path too. Returning early without a verdict would leave the heartbeat --
+  # which keys on that line -- with nothing to read, and "no output" is indistinguishable from
+  # "routine" to whatever is downstream. A missing agents directory is not routine: it means the
+  # tool scanned nothing at all, which is exactly the state that must never pass as quiet.
+  if [ ! -d "$AGENTS_DIR" ]; then
+    echo "agent-skill-drift-sync: no $AGENTS_DIR -- nothing to scan"
+    echo "ALERT:yes reasons=no-agents-dir diverged=0 stale=0 skipped-concurrent=0"
+    return 0
+  fi
 
   for adir in "$AGENTS_DIR"/*/; do
     [ -d "$adir" ] || continue
@@ -177,15 +202,21 @@ run_scan() {
             # longer matches what we decided was safe to overwrite -- skip it and say so,
             # instead of silently clobbering (or silently dropping) a concurrent local edit.
             classify_hash="$(_hash <"$installed" 2>/dev/null)"
-            # Test-only hook: a no-op in every real invocation (the env var is never set outside
-            # selftest). Lets selftest deterministically simulate a concurrent write landing in
-            # the classify->mv window, instead of relying on a flaky sleep-based race.
-            if [ -n "${AGENT_SKILL_DRIFT_TEST_RACE_HOOK:-}" ]; then "$AGENT_SKILL_DRIFT_TEST_RACE_HOOK" "$installed"; fi
+            # Test-only: deterministically simulate a concurrent write landing in the
+            # classify->mv window, instead of relying on a flaky sleep-based race. The variable
+            # names a SKILL to race on and is COMPARED, never executed -- the earlier form took a
+            # path to an executable and ran it, which meant an unattended scheduled task carried a
+            # run-arbitrary-command edge for a selftest that only ever needed one fixed write
+            # (card 222fdc5e, Cybersec LOW). A no-op in every real invocation.
+            if [ "${AGENT_SKILL_DRIFT_TEST_RACE:-}" = "$skill" ]; then
+              printf 'CONCURRENT LOCAL EDIT, MUST SURVIVE\n' >"$installed"
+            fi
             tmp="$installed.$$.tmp"
             if render_seed_template <"$ROOT/$rel" >"$tmp"; then
               live_hash="$(_hash <"$installed" 2>/dev/null)"
               if [ "$live_hash" != "$classify_hash" ]; then
                 rm -f "$tmp"
+                SKIPPED_CONCURRENT=$((SKIPPED_CONCURRENT+1))
                 agent_lines="${agent_lines}            -> SKIPPED, file changed between classify and sync (concurrent write) -- re-run to re-check\n"
               elif mv "$tmp" "$installed"; then
                 agent_lines="${agent_lines}            -> synced\n"
@@ -226,6 +257,96 @@ run_scan() {
   else
     echo "---"
     echo "SUMMARY: current=${CUR} stale=${STALE}$([ "$APPLY" -eq 1 ] && echo '(synced)' || echo '(would-sync, dry-run)') diverged=${DIVERGED}(flagged-only) skipped=${SKIPPED}(no-canonical)"
+  fi
+
+  emit_alert_verdict
+}
+
+# WHY A VERDICT LINE AND NOT JUST THE COUNTS (card 222fdc5e, Cybersec MEDIUM on 13512bde).
+#
+# The heartbeat that drives this tool was told to stay quiet only when `stale=0 AND diverged=0`.
+# Measured live: current=89 stale=0 diverged=5. So the ROUTINE state is not "everything current" --
+# it is "five diverged" -- and the task therefore sent the same five lines every six hours, four
+# times a day, forever. The diverged set is legitimately stable (QA's own 84b304c1 verdict: those
+# copies are deliberate local extensions, not faults). Two weeks of that and nobody reads it, least
+# of all on the day it finally changes.
+#
+# The alert-worthy event is therefore a CHANGE of the diverged SET, not its size: a count is equal
+# when one entry appears and another disappears. So the set is hashed and compared against the last
+# APPLIED run.
+#
+# Alert-worthy: stale>0 (we actually changed files), any SKIPPED-on-concurrent-write line (a sync
+# collided and needs a re-run), a diverged set that differs from the baseline, no baseline at all,
+# or a baseline we cannot read.
+#
+# THE UNREADABLE-BASELINE CASE DELIBERATELY ALERTS instead of dying. store/cleancore-main-suite-guard.sh
+# -- the house precedent for this pattern -- `die`s on a corrupt state file, and it is right to: it is
+# a GATE, and a gate that cannot compare must not report a verdict (card 6d46c7d3). This is an
+# ALERTING tool with `exit 0` in its contract, and killing it would take the six-hourly sync down
+# with it. Same principle, opposite mechanism: when we cannot PROVE the situation is routine, we say
+# it is not routine. Never the reverse.
+#
+# ONLY --apply WRITES THE BASELINE. A dry-run is someone looking; it must not consume the change
+# that the next real run is supposed to announce.
+#
+# ACCEPTED, and stated rather than buried: the baseline advances as soon as an --apply run OBSERVES
+# a change, not when the notification is confirmed delivered. If the Telegram send fails, that one
+# change is not re-announced. The state file therefore records `previousList` and `changedAt`, so the
+# next run's --status still shows what moved and when -- visible, just not re-alerted. The
+# alternative (hold the baseline until an explicit ack) puts the acknowledgement back in the prompt,
+# which is exactly the layer whose rule failed here in the first place.
+emit_alert_verdict() {
+  local now diverged_now diverged_sha prev_sha prev_list prev_changed reasons
+  now="$(date +%s)"
+  diverged_now="$(printf '%b' "$DIVERGED_LIST" | sed '/^$/d' | LC_ALL=C sort | paste -sd, -)"
+  diverged_sha="$(printf '%s' "$diverged_now" | _hash)"
+
+  reasons=""
+  [ "$STALE" -gt 0 ] && reasons="${reasons}stale-synced,"
+  [ "$SKIPPED_CONCURRENT" -gt 0 ] && reasons="${reasons}concurrent-write-skipped,"
+
+  if [ ! -f "$STATE" ]; then
+    reasons="${reasons}no-baseline,"
+    prev_list=""; prev_changed="$now"
+  else
+    prev_sha="$(sed -n 's/.*"divergedSha"[[:space:]]*:[[:space:]]*"\([0-9a-f]*\)".*/\1/p' "$STATE" | head -1)"
+    prev_list="$(sed -n 's/.*"divergedList"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/p' "$STATE" | head -1)"
+    prev_changed="$(sed -n 's/.*"changedAt"[[:space:]]*:[[:space:]]*\([0-9]*\).*/\1/p' "$STATE" | head -1)"
+    if [ -z "$prev_sha" ]; then
+      # Present but unparseable. Not "no baseline" -- we say so, and we say we could not read it.
+      reasons="${reasons}baseline-unreadable,"
+      prev_changed="$now"
+    elif [ "$prev_sha" != "$diverged_sha" ]; then
+      reasons="${reasons}diverged-set-changed,"
+      prev_changed="$now"
+    fi
+  fi
+
+  if [ -n "$reasons" ]; then
+    echo "ALERT:yes reasons=${reasons%,} diverged=${DIVERGED} stale=${STALE} skipped-concurrent=${SKIPPED_CONCURRENT}"
+    [ -n "$prev_list" ] && [ "$prev_list" != "$diverged_now" ] && echo "  diverged set was: ${prev_list:-(empty)}"
+    [ -n "$reasons" ] && echo "  diverged set now: ${diverged_now:-(empty)}"
+  else
+    echo "ALERT:no (diverged set unchanged since $(date -d "@$prev_changed" '+%Y-%m-%d %H:%M' 2>/dev/null || echo "$prev_changed"), ${DIVERGED} entr$([ "$DIVERGED" -eq 1 ] && echo y || echo ies); stale=0, no concurrent-write skips)"
+  fi
+
+  # Only a real run moves the baseline -- see the comment above.
+  if [ "$APPLY" -eq 1 ]; then
+    mkdir -p "$(dirname "$STATE")" 2>/dev/null
+    cat >"$STATE.tmp.$$" <<EOF
+{
+  "divergedSha": "$diverged_sha",
+  "divergedList": "$diverged_now",
+  "divergedCount": $DIVERGED,
+  "previousList": "$prev_list",
+  "changedAt": $prev_changed,
+  "measuredAt": $now
+}
+EOF
+    mv -f "$STATE.tmp.$$" "$STATE" 2>/dev/null || {
+      rm -f "$STATE.tmp.$$"
+      echo "WARN: could not write the state file at $STATE -- the next run will report no-baseline"
+    }
   fi
 }
 
@@ -337,20 +458,10 @@ if [[ "$MODE" == selftest ]]; then
   printf 'OLD VERSION\ninstall dir: %s\nagent: selftest\n' "$tmp/root" > "$tmp/root/agents/agentF/.claude/skills/demo-skill/SKILL.md"
   f_target="$tmp/root/agents/agentF/.claude/skills/demo-skill/SKILL.md"
 
-  race_hook="$tmp/race_hook.sh"
-  cat > "$race_hook" <<'HOOK'
-#!/usr/bin/env bash
-# match by glob, not exact string -- the caller's $installed path can carry an extra "/" (from
-# the trailing-slash glob it's built from), which would defeat an exact-path comparison.
-case "$1" in
-  */agentF/*/demo-skill/*SKILL.md)
-    printf 'CONCURRENT LOCAL EDIT, MUST SURVIVE\n' > "$1"
-    ;;
-esac
-HOOK
-  chmod +x "$race_hook"
-
-  out5="$(AGENT_SKILL_DRIFT_ROOT="$tmp/root" AGENT_SKILL_DRIFT_TEST_RACE_HOOK="$race_hook" \
+  # The variable NAMES the skill to race on and is compared, not executed (card 222fdc5e): the old
+  # form pointed at a script and ran it, which is a run-arbitrary-command edge on the --apply path
+  # that an unattended scheduled task now uses. One fixed write is all this test ever needed.
+  out5="$(AGENT_SKILL_DRIFT_ROOT="$tmp/root" AGENT_SKILL_DRIFT_TEST_RACE=demo-skill \
           bash "${BASH_SOURCE[0]}" --apply --agent agentF)"
   echo "$out5" | grep -q 'SKIPPED, file changed between classify and sync' \
     && echo "  ok   TOCTOU race detected and sync skipped, reported" \
@@ -358,6 +469,81 @@ HOOK
   [ "$(cat "$f_target")" = "CONCURRENT LOCAL EDIT, MUST SURVIVE" ] \
     && echo "  ok   concurrent local edit survived (not overwritten by the sync)" \
     || { echo "  FAIL concurrent local edit was lost -- TOCTOU not closed"; fail=1; }
+
+  # ---------------------------------------------------------------------------------------------
+  # The change-based alert trigger (card 222fdc5e). The bug being pinned: the heartbeat treated
+  # diverged>0 as newsworthy, and the live steady state IS diverged>0 (measured: current=93 stale=0
+  # diverged=5), so it sent the same five lines four times a day forever. What is newsworthy is the
+  # SET CHANGING -- and a count cannot see one entry replacing another, which is why these cases
+  # check a swap, not just a growth.
+  # ---------------------------------------------------------------------------------------------
+  st="$tmp/alert-state.json"
+  alert_run() { AGENT_SKILL_DRIFT_ROOT="$tmp/root" AGENT_SKILL_DRIFT_STATE="$st" \
+                bash "${BASH_SOURCE[0]}" "$@"; }
+
+  # A dry-run must not create a baseline: someone LOOKING must not consume the change that the next
+  # real run is supposed to announce.
+  rm -f "$st"
+  out6="$(alert_run --telegram)"
+  echo "$out6" | grep -q 'ALERT:yes reasons=no-baseline' \
+    && echo "  ok   first look with no state -> ALERT:yes (no-baseline)" \
+    || { echo "  FAIL no-baseline not reported:"; echo "$out6"; fail=1; }
+  [ ! -f "$st" ] && echo "  ok   a dry-run wrote NO baseline" \
+    || { echo "  FAIL a dry-run wrote the state file"; fail=1; }
+
+  # --apply establishes the baseline...
+  out7="$(alert_run --apply --telegram)"
+  echo "$out7" | grep -q 'ALERT:yes' && [ -f "$st" ] \
+    && echo "  ok   --apply reports and writes the baseline" \
+    || { echo "  FAIL --apply did not baseline:"; echo "$out7"; fail=1; }
+
+  # ...and the SECOND identical run is the whole point of the card: silence.
+  out8="$(alert_run --apply --telegram)"
+  echo "$out8" | grep -q 'ALERT:no' \
+    && echo "  ok   unchanged diverged set -> ALERT:no (the routine run is quiet)" \
+    || { echo "  FAIL an unchanged run still alerted:"; echo "$out8"; fail=1; }
+
+  # A SWAP: one diverged copy heals, another appears. The COUNT is identical (1), so a count-based
+  # trigger would stay silent through a real change -- the failure this design exists to prevent.
+  printf 'NEW FIXED VERSION\ninstall dir: %s\nagent: selftest\nfix: closed the gap\n' "$tmp/root" \
+    > "$tmp/root/agents/agentB/.claude/skills/demo-skill/SKILL.md"
+  mkdir -p "$tmp/root/agents/agentG/.claude/skills/demo-skill"
+  printf 'OLD VERSION\ninstall dir: %s\nagent: selftest\nA DIFFERENT HAND-PATCH\n' "$tmp/root" \
+    > "$tmp/root/agents/agentG/.claude/skills/demo-skill/SKILL.md"
+  count_before="$(echo "$out8" | sed -n 's/.*ALERT:no.*, \([0-9]*\) entr.*/\1/p')"
+  out9="$(alert_run --apply --telegram)"
+  count_after="$(echo "$out9" | sed -n 's/.*ALERT:yes.* diverged=\([0-9]*\) .*/\1/p')"
+  # The count must be UNCHANGED across the swap -- that is what makes this a real test of the design.
+  # Asserted against the MEASURED before-count rather than a literal, because the fixtures above
+  # contribute diverged entries of their own and hard-coding a number here would silently stop
+  # testing the swap the day one of them changes.
+  [ -n "$count_before" ] && [ "$count_before" = "$count_after" ] \
+    && echo "  ok   the swap kept the COUNT at $count_after (a count-based trigger would miss it)" \
+    || { echo "  FAIL not an equal-count swap (before='$count_before' after='$count_after'):"; echo "$out9"; fail=1; }
+  echo "$out9" | grep -q 'ALERT:yes reasons=diverged-set-changed' \
+    && echo "  ok   an equal-count SET change still alerts" \
+    || { echo "  FAIL a set change with an unchanged count did not alert:"; echo "$out9"; fail=1; }
+
+  # An unreadable baseline must say so and ALERT -- never decay into a silent "no baseline", and
+  # never take the six-hourly sync down with a die() (see emit_alert_verdict's comment).
+  printf 'this is not json\n' > "$st"
+  out10="$(alert_run --telegram)"
+  echo "$out10" | grep -q 'ALERT:yes reasons=baseline-unreadable' \
+    && echo "  ok   a corrupt baseline alerts and says which" \
+    || { echo "  FAIL corrupt baseline mishandled:"; echo "$out10"; fail=1; }
+
+  # Scanning NOTHING must not read as routine.
+  out11="$(AGENT_SKILL_DRIFT_ROOT="$tmp/empty-root" AGENT_SKILL_DRIFT_STATE="$st" \
+           bash "${BASH_SOURCE[0]}" --telegram)"
+  echo "$out11" | grep -q 'ALERT:yes reasons=no-agents-dir' \
+    && echo "  ok   a missing agents dir alerts instead of returning quietly" \
+    || { echo "  FAIL scanning nothing passed as routine:"; echo "$out11"; fail=1; }
+
+  # Non-vacuity on the fixtures themselves: every alert case above ran against the throwaway root
+  # and the throwaway state path, so none of them can have touched the live install's state file.
+  [ ! -e "/home/neon/marveen/store/agent-skill-drift-state.json.tmp.$$" ] \
+    && echo "  ok   no stray temp state left in the live install" \
+    || { echo "  FAIL selftest leaked a temp state file into the live install"; fail=1; }
 
   [ $fail -eq 0 ] && { echo 'selftest: PASS'; exit 0; } || { echo 'selftest: FAIL'; exit 1; }
 fi
