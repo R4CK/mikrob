@@ -146,8 +146,27 @@
 set -euo pipefail
 
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+
+# STATE_DIR vs HERE (card b536501e) -- see store/local-llm-state-dir.sh. This script is the PRESCRIBED
+# entry point (the agent prompts name it), which is exactly why it must resolve state the same way
+# local-llm.sh does: fixing only the callee would leave the documented path half-right.
+if [ -r "$HERE/local-llm-state-dir.sh" ]; then
+  # shellcheck source=/dev/null
+  . "$HERE/local-llm-state-dir.sh"
+  # NOT `$(resolve ...)`: command substitution is a subshell, and the origin the resolver sets there
+  # would not survive it -- announce() keys on that origin, so it would warn on every call.
+  resolve_local_llm_state_dir "$HERE"
+  STATE_DIR="$LOCAL_LLM_STATE_RESOLVED"
+  announce_local_llm_state_dir "local-llm-rag" "$HERE" "$STATE_DIR"
+else
+  STATE_DIR="$HERE"
+  echo "local-llm-rag: WARNING -- $HERE/local-llm-state-dir.sh is missing, falling back to $HERE for dashboard state; category switches may NOT be in force for this call." >&2
+fi
+
 DASH="${DASHBOARD_URL:-http://localhost:3420}"
-TOKEN_FILE="$HERE/.dashboard-token"
+TOKEN_FILE="$STATE_DIR/.dashboard-token"
+# The SIBLING copy stays on HERE deliberately: code travels with the checkout, state does not. The
+# callee resolves its own STATE_DIR the same way, so both agree without either being told.
 LLM="$HERE/local-llm.sh"
 
 AGENT="mikrob"; K=5; QUERY=""; CONTEXT=""; SHARED=1; SHOW_ONLY=0
@@ -325,7 +344,7 @@ if [[ "$AUTO" == "1" ]]; then
   if [[ ! -f "$ROUTER" ]]; then
     online "router not built at $ROUTER, nothing can judge this task"
   fi
-  VERDICT="$(ROUTER="$ROUTER" FRESH="$HERE/build-freshness.mjs" TASK="$TASK" DIFF="$DIFFICULTY" TAGS="$TAGS" CFG="$HERE/local-llm-offload-active.json" node - <<'NODE'
+  VERDICT="$(ROUTER="$ROUTER" FRESH="$HERE/build-freshness.mjs" TASK="$TASK" DIFF="$DIFFICULTY" TAGS="$TAGS" CFG="$STATE_DIR/local-llm-offload-active.json" node - <<'NODE'
 (async () => {
   const fs = require('fs')
   // A STALE ROUTER IS NOT A ROUTER (card a3611ecc). The verdict below is only worth having if the
@@ -413,7 +432,7 @@ fi
 # and this gate can only re-state it as `die 8` -- which would throw away the draft we came here for
 # without changing where the work happens.
 if [[ -z "$ADVISORY_REASON" && -n "$DIFFICULTY" ]]; then
-  GATE="$(DIFFICULTY="$DIFFICULTY" CFG="$HERE/local-llm-offload-active.json" python3 - <<'PY'
+  GATE="$(DIFFICULTY="$DIFFICULTY" CFG="$STATE_DIR/local-llm-offload-active.json" python3 - <<'PY'
 import json, os, sys
 LEVELS = ['trivial', 'isolated', 'module', 'feature', 'architecture']
 CEILING = 'feature'  # offload ceiling: architecture never offloads (mirror local-llm.ts, Peti 2026-08-07)
