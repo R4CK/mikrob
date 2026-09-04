@@ -146,10 +146,20 @@ fi
 # cleancore-land.sh's comment and the card's QA verdict -- claimed a failing verdict could never be
 # waved through, and none of them was true.
 stub_pid=""
-stub_up() { # $1 = port, $2 = json file
-  python3 - "$1" "$2" <<'PYSTUB' &
+stub_port=""
+# THE PORT IS CHOSEN BY THE KERNEL, not written here. It used to be five hardcoded numbers
+# (8801-8805), and this script runs in TWO vitest files -- its own wrapper and the store selftest
+# discovery -- which vitest executes in PARALLEL. Two overlapping runs then bound the same port and
+# the second died with "OSError: [Errno 98] Address already in use", failing a landing whose diff
+# had nothing to do with it. Nothing about the test needs a known number: the caller is handed the
+# port the kernel gave out. Waiting for the port FILE also replaces a fixed `sleep 0.6` with actual
+# readiness -- HTTPServer() has already bound and listened by the time it writes.
+stub_up() { # $1 = json file; sets $stub_port
+  local portfile="$SELFTEST_TMP/stub.port"
+  rm -f "$portfile"
+  python3 - "$1" "$portfile" <<'PYSTUB' &
 import http.server, json, sys
-BODY = json.loads(open(sys.argv[2]).read())
+BODY = json.loads(open(sys.argv[1]).read())
 class H(http.server.BaseHTTPRequestHandler):
     def do_GET(self):
         b = json.dumps(BODY).encode()
@@ -158,18 +168,29 @@ class H(http.server.BaseHTTPRequestHandler):
         self.send_header('Content-Length', str(len(b)))
         self.end_headers(); self.wfile.write(b)
     def log_message(self, *a): pass
-http.server.HTTPServer(('127.0.0.1', int(sys.argv[1])), H).serve_forever()
+srv = http.server.HTTPServer(('127.0.0.1', 0), H)
+with open(sys.argv[2], 'w') as f:
+    f.write(str(srv.server_address[1]))
+srv.serve_forever()
 PYSTUB
   stub_pid=$!
-  sleep 0.6
+  stub_port=""
+  local i
+  for i in $(seq 1 200); do
+    if [ -s "$portfile" ]; then stub_port="$(cat "$portfile")"; break; fi
+    sleep 0.05
+  done
+  if [ -z "$stub_port" ]; then
+    echo "  FAIL stub server never reported a port"; fail=1
+  fi
 }
 stub_down() { [ -n "$stub_pid" ] && kill "$stub_pid" 2>/dev/null; wait "$stub_pid" 2>/dev/null; stub_pid=""; }
 
-rc_case() { # $1 label, $2 expected rc, $3 json file, $4 port
+rc_case() { # $1 label, $2 expected rc, $3 json file
   n=$((n + 1))
-  stub_up "$4" "$3"
+  stub_up "$3"
   local got
-  GATE_CHECK_API="http://127.0.0.1:$4" GATE_CHECK_TOKEN_FILE="$TOKEN_TMP" \
+  GATE_CHECK_API="http://127.0.0.1:$stub_port" GATE_CHECK_TOKEN_FILE="$TOKEN_TMP" \
     gate_verdict_check selftest-card abc1234 refuse >/dev/null 2>&1
   got=$?
   stub_down
@@ -183,22 +204,22 @@ printf '%s' '{"comments":[]}' > "$SELFTEST_TMP/none.json"
 printf '%s' '{"comments":[{"author":"qa","content":"QA FAIL\nGate-SHA: abc1234\n\nbroken"}]}' > "$SELFTEST_TMP/failed.json"
 
 source "$HERE/landing-gate-verdict-check.sh"
-rc_case "a passing verdict returns 0" 0 "$SELFTEST_TMP/ok.json" 8801
-rc_case "NO usable verdict returns 1 -- overridable by an explicit flag" 1 "$SELFTEST_TMP/none.json" 8802
-rc_case "a FAILING verdict returns 2 -- its OWN code, so a caller can refuse only this one" 2 "$SELFTEST_TMP/failed.json" 8803
+rc_case "a passing verdict returns 0" 0 "$SELFTEST_TMP/ok.json"
+rc_case "NO usable verdict returns 1 -- overridable by an explicit flag" 1 "$SELFTEST_TMP/none.json"
+rc_case "a FAILING verdict returns 2 -- its OWN code, so a caller can refuse only this one" 2 "$SELFTEST_TMP/failed.json"
 
 # ...and now through the REAL lander, on its real flag path.
-# args: label, json fixture, port, and 1 = must refuse at the gate / 0 = must get past it
+# args: label, json fixture, and 1 = must refuse at the gate / 0 = must get past it
 land_case() {
   n=$((n + 1))
-  stub_up "$3" "$2"
+  stub_up "$2"
   local out rc
-  out="$(GATE_CHECK_API="http://127.0.0.1:$3" GATE_CHECK_TOKEN_FILE="$TOKEN_TMP" \
+  out="$(GATE_CHECK_API="http://127.0.0.1:$stub_port" GATE_CHECK_TOKEN_FILE="$TOKEN_TMP" \
         timeout 40 bash "$HERE/cleancore-land.sh" selftest-card abc1234 --dry-run --allow-ungated 2>&1)"
   rc=$?
   stub_down
   local ok=0
-  if [ "$4" = 1 ]; then
+  if [ "$3" = 1 ]; then
     # Must stop AT the gate: exit 3 and say why.
     [ "$rc" = 3 ] && printf '%s' "$out" | grep -q 'FAILING verdict is never overridden' && ok=1
   else
@@ -209,9 +230,9 @@ land_case() {
   if [ "$ok" = 1 ]; then echo "  ok   $1"; else echo "  FAIL $1 -> rc=$rc, output did not show the expected outcome"; fail=1; fi
 }
 land_case "--allow-ungated does NOT wave through a FAILING verdict (the hole this card closed)" \
-  "$SELFTEST_TMP/failed.json" 8804 1
+  "$SELFTEST_TMP/failed.json" 1
 land_case "--allow-ungated DOES tolerate a merely-missing verdict, and says so out loud" \
-  "$SELFTEST_TMP/none.json" 8805 0
+  "$SELFTEST_TMP/none.json" 0
 
 rm -rf "$SELFTEST_TMP"
 
