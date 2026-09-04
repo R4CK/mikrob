@@ -2,6 +2,7 @@ import { describe, it, expect, vi } from 'vitest'
 import { mkdtempSync, writeFileSync, readFileSync, mkdirSync } from 'node:fs'
 import { join } from 'node:path'
 import { tmpdir } from 'node:os'
+import { SYSTEM_DIRECTIVE_SENDER, LEGACY_SYSTEM_SENDER, isReservedSenderId } from '../web/system-directive-id.js'
 
 // GUARDHITELES903: the RECEIVER half. The scaffold rule is what turns the
 // envelope's msg_id from provenance into protection, so its presence and
@@ -179,7 +180,57 @@ describe('the two halves must ship together', () => {
     // no such guard: there, the 403 is only an accident of configuration.
     const route = readFileSync(join(SRC, 'routes', 'messages.ts'), 'utf-8')
     expect(route).toContain("from '../system-directive-id.js'")
-    expect(route).toContain('sanitizeAgentIdent(from) === SYSTEM_DIRECTIVE_SENDER')
+    expect(route).toContain('isReservedSenderId(sanitizeAgentIdent(from))')
     expect(buildSystemDirectiveAuthBody('agent-a')).toContain('403')
+  })
+})
+
+// Card 5c5d7bc4, from Cybersec's MEDIUM on ab4c85f2's gate. The section above
+// tells every agent that a row from the reserved sender PROVES the order came
+// from the supervisor. That was true of the ROUTE but not of the NAME: the
+// bare `system` is shared with five in-process notification writers, one of
+// which (routes/agents.ts's "new teammate arrived") interpolates a
+// caller-supplied `description` into the body. A token holder POSTing
+// /api/agents could put chosen text into a genuine from_agent="system" row --
+// and an agent following the recipe would find it exactly where the recipe
+// said to look. Giving the channel its OWN id makes that row a non-directive
+// by construction, instead of requiring every present and future `system`
+// writer to be audited for injectable interpolation.
+describe('the directive channel owns a sender id that no other writer uses (card 5c5d7bc4)', () => {
+  it('the reserved directive id is NOT the shared "system" id', () => {
+    expect(SYSTEM_DIRECTIVE_SENDER).not.toBe(LEGACY_SYSTEM_SENDER)
+    expect(SYSTEM_DIRECTIVE_SENDER).toBe('system-directive')
+  })
+
+  it('the /api/agents "new teammate" notice -- the injectable one -- still writes the SHARED id', () => {
+    // Non-vacuity for the rename: if that writer had moved to the directive id
+    // too, the split above would be cosmetic and the finding would be open.
+    // This is the concrete row Cybersec measured, so it is the one pinned.
+    const agentsRoute = readFileSync(join(SRC, 'routes', 'agents.ts'), 'utf-8')
+    expect(agentsRoute).toContain("createAgentMessage('system', target,")
+    expect(agentsRoute).not.toContain(`createAgentMessage('${SYSTEM_DIRECTIVE_SENDER}'`)
+  })
+
+  it('the generated section names the directive id, never the shared one', () => {
+    const body = buildSystemDirectiveAuthBody('agent-a')
+    expect(body).toContain(`from_agent="${SYSTEM_DIRECTIVE_SENDER}"`)
+    // The exact string the section used to carry. An agent told to accept
+    // from_agent="system" would accept the /api/agents row above.
+    expect(body).not.toContain('from_agent="system"')
+    expect(body).not.toContain('`from="system"`')
+  })
+
+  it('BOTH in-process ids are refused over HTTP, in any casing', () => {
+    // sanitizeAgentIdent only STRIPS characters, it does not lower-case, so
+    // the byte-exact predecessor of this predicate let `System` through.
+    for (const id of ['system', 'system-directive', 'System', 'SYSTEM', 'System-Directive', 'SYSTEM-DIRECTIVE']) {
+      expect(isReservedSenderId(id), id).toBe(true)
+    }
+  })
+
+  it('a normal agent id is NOT reserved -- the predicate did not swallow the fleet', () => {
+    for (const id of ['backend', 'mikrob', 'systematic', 'system-directives', 'subsystem']) {
+      expect(isReservedSenderId(id), id).toBe(false)
+    }
   })
 })

@@ -4988,3 +4988,46 @@ nem hiba, és Fron Teddy előre megkapta.
 swimlane-követelmény és a KPI-lista).
 **Hivatkozás:** kártya `2ffc0a96` (Pair-FE: `d6ecb003`); `src/web/routes/local-llm.ts`
 (`buildModelUsageSwimlane` + a route), `src/__tests__/local-llm-model-usage-swimlane.test.ts`.
+
+## 2026-09-04 06:20 -- A rendszer-direktíva csatorna saját fenntartott azonosítót kap (`system-directive`)
+
+**Döntés:** A hitelesített direktíva-csatorna küldő-azonosítója `system`-ről `system-directive`-re
+változik, és a `POST /api/messages` fenntartott-küldő őre MINDKETTŐT elutasítja, kis-nagybetűtől
+függetlenül. A `SYSTEM_SENDERS` halmaz viszont szándékosan bájthű marad.
+
+**Miért:** Cybersec MEDIUM lelete az `ab4c85f2` gate-jén (komment 22033). A `system` nem a
+direktíva-csatorna névtere: öt másik folyamaton belüli író használja hétköznapi értesítésre, és
+egyikük, a `routes/agents.ts` "új csapattag érkezett" üzenete, a hívó által megadott `description`
+mezőt interpolálja a törzsbe. Egy megosztott Bearer tokent birtokló támadó tehát a `POST /api/agents`
+úton választott szöveget juttathat egy VALÓDI `from_agent="system"` sorba, és az a recept szerint
+ellenőrző ügynök pontosan ott találja meg, ahol a recept mondja. A csatorna saját azonosítója ezt
+szerkezetileg zárja ki: az a sor konstrukció szerint nem direktíva. Az alternatíva minden jelenlegi
+és jövőbeli `system`-író átvizsgálása lett volna injektálható interpolációra, ami fegyelemre épít,
+nem szerkezetre (CLAUDE.md kódminőség 6. pont).
+
+A kis-nagybetű rész ugyanennek a leletnek a másik fele: a `sanitizeAgentIdent` csak KARAKTERT SZŰR,
+nem kisbetűsít, így a `from: "System"` átcsúszott a bájthű `=== 'system'` teszten, és utána a
+`SYSTEM_SENDER_IDS=System` konfiguráció be is engedte. A javítás KIZÁRÓLAG az őr összehasonlítását
+kisbetűsíti, a `SYSTEM_SENDERS` halmazt nem: az őr kisbetűsítése csak elutasítást adhat hozzá, a
+halmazé viszont ELFOGADÁST adna (`SYSTEM_SENDER_IDS=CaseManager` mellett a `casemanager` küldő
+egyszer csak átmenne, amit senki nem konfigurált). Egy fail-closed javítás nem lazíthatja a mellette
+álló kivételt. Ezt külön regressziós teszt rögzíti, mindkét irányban mérve.
+
+**Átmeneti kockázat: nincs.** A vevő-oldali recept (a generált CLAUDE.md szekció) ügynök-INDULÁSKOR
+íródik ki, tehát elvben lehetne egy ablak, amiben a régi receptet hordozó ügynök egy VALÓS
+leállítási parancsot utasítana el injekció-gyanúsként. Lemértem: jelenleg NULLA ügynök CLAUDE.md-je
+tartalmazza a szekciót (a `BEGIN GENERATED: system-directive-auth` markerre egyetlen találat sincs
+az éles fán), tehát a vevő-fél még sehol nem élt. Ettől függetlenül a boríték-szöveg
+(`systemDirectiveEnvelope`) mostantól a konstansot interpolálja a beégetett `"system"` helyett, így
+egy elavult recepttel rendelkező ügynök is a sorral EGYEZŐ értéket lát a borítékon. Ez a tulajdonság
+külön teszttel van rögzítve, mert pont ez teszi a nevet később is cserélhetővé.
+
+**Ki döntött:** Cybersec (lelet), MikroB (kártyanyitás, 5c5d7bc4), backend (végrehajtás és a
+`SYSTEM_SENDERS` bájthű-hagyásának mérnöki döntése).
+
+**Hivatkozás:** kártya `5c5d7bc4` (eredeti: `ab4c85f2`, lelet: komment 22033);
+`src/web/system-directive-id.ts` (`SYSTEM_DIRECTIVE_SENDER`, `LEGACY_SYSTEM_SENDER`,
+`isReservedSenderId`), `src/web/routes/messages.ts`, `src/web/system-directive.ts` (boríték),
+`src/web/agent-scaffold.ts` (a szekció a konstansot interpolálja),
+`src/__tests__/messages-post-sender-guards.test.ts` (17 eset),
+`src/__tests__/system-directive-auth-section.test.ts`, `src/__tests__/system-directive.test.ts`.

@@ -106,4 +106,20 @@ describe('systemDirectiveEnvelope', () => {
     // the [SYSTEM-DIREKTIVA ...] header line".
     expect(env).not.toContain('\n')
   })
+
+  // FORK-ONLY (card 5c5d7bc4). Upstream's envelope hardcodes from_agent="system"
+  // in its prose; this fork interpolates the constant instead, and that is what
+  // makes the rename survivable. The scaffolded CLAUDE.md sections are written
+  // at agent START, so between landing and the next restart an agent still
+  // carries the OLD recipe -- but the envelope it receives is generated from
+  // the same const as the row, so the two agree without the CLAUDE.md having
+  // caught up. A hardcoded literal here would break exactly that window, and
+  // fail-closed means a REAL stop order gets refused as injection-suspect.
+  it('states the reserved sender by VALUE, so a stale CLAUDE.md still verifies correctly', () => {
+    const env = systemDirectiveEnvelope(7)
+    expect(env).toContain(`from_agent="${SYSTEM_DIRECTIVE_SENDER}"`)
+    // The bare shared id must not appear: it is the one an /api/agents POST
+    // can get attacker-chosen text into.
+    expect(env).not.toContain('from_agent="system"')
+  })
 })
