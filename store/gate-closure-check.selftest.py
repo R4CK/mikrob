@@ -23,8 +23,9 @@ failures = []
 n = 0
 
 
-def run(comments, gates=None):
-    args = [sys.executable, CHECK] + ([gates] if gates else [])
+def run(comments, gates=None, expect=None):
+    args = [sys.executable, CHECK] + ([gates] if gates else []) \
+        + (["--expect", expect] if expect else [])
     p = subprocess.run(args, input=json.dumps({"comments": comments}),
                        capture_output=True, text=True)
     return p.stdout.strip()
@@ -34,10 +35,10 @@ def c(author, content):
     return {"author": author, "content": content}
 
 
-def case(label, comments, expect_kind, gates=None):
+def case(label, comments, expect_kind, gates=None, expect_sha=None):
     global n
     n += 1
-    got = run(comments, gates)
+    got = run(comments, gates, expect_sha)
     kind = got.split("|", 1)[0]
     ok = kind == expect_kind
     print("%s %-9s <- %-9s %s" % ("OK  " if ok else "FAIL", expect_kind, kind, label))
@@ -83,6 +84,37 @@ case("an open NO-GO outranks the sha question",
 case("a latest verdict with no Gate-SHA cannot be compared, and says so",
      [c("qa", "QA PASS"), c("cybersec", S % "bbbb2222")], "NOSHA")
 
+# --- --expect: AGREEING ON THE WRONG COMMIT ----------------------------------------------------
+# Measured in production (c458ba0e/acab6155/f8b52ff2, 2026-09-04). After a card's work is rebuilt,
+# rebased or cherry-picked, BOTH old verdicts still name the same OLD sha -- so they agree perfectly
+# and this printed AGREE for code that no longer existed anywhere. The original hazard was gates on
+# DIFFERENT shas; this is gates on the WRONG one, in agreement, which reads as "safe to close".
+case("the gates agree, but on a commit the card no longer delivers",
+     [c("qa", V % "aaaa1111"), c("cybersec", S % "aaaa1111")], "STALE",
+     gates="qa,cybersec", expect_sha="bbbb2222")
+case("...and when the agreed sha IS the delivered one, it is still AGREE",
+     [c("qa", V % "aaaa1111"), c("cybersec", S % "aaaa1111")], "AGREE",
+     gates="qa,cybersec", expect_sha="aaaa1111")
+case("--expect is prefix-compatible, like the agreement check itself",
+     [c("qa", V % "aaaa1111"), c("cybersec", S % "aaaa1111")], "AGREE",
+     gates="qa,cybersec", expect_sha="aaaa111122223333")
+
+# --expect must NOT outrank the answers that already say "do not close". A FAIL is still a FAIL
+# whatever commit it names, and a missing gate is still missing.
+case("a FAILING gate outranks --expect, whatever sha is passed",
+     [c("qa", V % "aaaa1111"), c("cybersec", "CYBERSEC NO-GO\nGate-SHA: aaaa1111")], "FAILED",
+     gates="qa,cybersec", expect_sha="bbbb2222")
+case("a MISSING gate outranks --expect too",
+     [c("qa", V % "aaaa1111")], "MISSING", gates="qa,cybersec", expect_sha="bbbb2222")
+case("NOSHA outranks --expect: an uncomparable verdict cannot be called stale",
+     [c("qa", "QA PASS"), c("cybersec", S % "aaaa1111")], "NOSHA",
+     gates="qa,cybersec", expect_sha="bbbb2222")
+
+# THE COMPATIBILITY CASE. Rule 4a's documented invocation passes no --expect, and that call must
+# behave exactly as it did before this flag existed.
+case("WITHOUT --expect the old behaviour is unchanged",
+     [c("qa", V % "aaaa1111"), c("cybersec", S % "aaaa1111")], "AGREE", gates="qa,cybersec")
+
 # --- WHAT IS NOT A VERDICT ---------------------------------------------------------------------
 case("prose mentioning a verdict mid-sentence is not a verdict",
      [c("mikrob", "A QA PASS majd jon, addig varunk."), c("qa", V % "bbbb2222")], "AGREE")
@@ -108,6 +140,24 @@ print("%s %-9s <- %-9s %s" % ("OK  " if ok else "FAIL", "UNREADABLE",
                               p.stdout.strip().split("|")[0], "an unknown gate name is refused, not ignored"))
 if not ok:
     failures.append(("unknown gate name", "UNREADABLE", p.stdout.strip()))
+
+n += 1
+p = subprocess.run([sys.executable, CHECK, "qa,cybersec", "--expect", "nothex"],
+                   input=json.dumps({"comments": []}), capture_output=True, text=True)
+ok = p.stdout.strip().startswith("UNREADABLE|")
+print("%s %-9s <- %-9s %s" % ("OK  " if ok else "FAIL", "UNREADABLE",
+                              p.stdout.strip().split("|")[0], "a non-sha --expect is refused, not ignored"))
+if not ok:
+    failures.append(("bad --expect", "UNREADABLE", p.stdout.strip()))
+
+n += 1
+p = subprocess.run([sys.executable, CHECK, "qa,cybersec", "--expect"],
+                   input=json.dumps({"comments": []}), capture_output=True, text=True)
+ok = p.stdout.strip().startswith("UNREADABLE|")
+print("%s %-9s <- %-9s %s" % ("OK  " if ok else "FAIL", "UNREADABLE",
+                              p.stdout.strip().split("|")[0], "--expect with no value is refused"))
+if not ok:
+    failures.append(("empty --expect", "UNREADABLE", p.stdout.strip()))
 
 # --- EXIT CODE --------------------------------------------------------------------------------
 # A readout, never a gate on the gate: it must not be able to stop a closure by crashing.

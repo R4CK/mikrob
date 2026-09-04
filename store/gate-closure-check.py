@@ -19,8 +19,19 @@ the board agrees: 70 of 76 verdicts carry one (92%), so 8% legitimately do not. 
 separately keeps this usable -- a human closing a card can see "these two agree, this third one
 cannot be checked" instead of a blanket refusal that would train everyone to skip the check.
 
+WHY `--expect` EXISTS, measured in production (cards c458ba0e/acab6155/f8b52ff2, 2026-09-04). This
+script asks ONE question -- do the designated gates agree with EACH OTHER? -- and after a card's work
+is rebuilt, rebased or cherry-picked, BOTH old verdicts still name the same OLD sha. They agree
+perfectly, so this printed `AGREE|6bb97eba` for code that no longer existed anywhere, while the
+rebuilt deliverable was 80de05f5. The original hazard was gates judging DIFFERENT shas; this is gates
+judging the WRONG one in agreement -- and rule 4a's closure step reads AGREE as "safe to close".
+The script was not lying, it answered a narrower question than the caller was really asking. Pass the
+card's actual commit as `--expect <sha>` and a mismatch reports STALE instead of AGREE.
+
 Input:  the card's comments JSON on stdin (the /api/kanban/<id>/comments shape).
         Optional argv[1]: comma-separated designated gates, e.g. "qa,cybersec".
+        Optional --expect <sha>: the commit this card delivers NOW. Without it the behaviour is
+        unchanged, byte for byte -- rule 4a's existing invocation must keep working untouched.
         Omitted -> inferred from the verdicts present, and the output says so, because an
         UNSTATED designation is exactly how a missing third gate goes unnoticed.
 Output: exactly one line.
@@ -29,6 +40,8 @@ Output: exactly one line.
         FAILED|<details>             a designated gate's latest verdict is a FAIL/NO-GO
         MISSING|<details>            a designated gate has no verdict at all
         NOSHA|<details>              a latest verdict carries no Gate-SHA, so agreement is unprovable
+        STALE|<sha>|<expected>|<why> only with --expect: the gates AGREE, but on a commit this card
+                                     no longer delivers
         UNREADABLE|<why>
 Exit:   0 always. The caller decides -- this is a readout, not a gate on the gate.
 """
@@ -84,7 +97,7 @@ def shas_agree(a, b):
     return a == b or a.startswith(b) or b.startswith(a)
 
 
-def check(comments, designated=None):
+def check(comments, designated=None, expect=None):
     latest = latest_per_gate(comments)
     inferred = designated is None
     if inferred:
@@ -114,6 +127,11 @@ def check(comments, designated=None):
         if not shas_agree(shas[0], other):
             return "DISAGREE|the latest verdicts judge different shas: " + detail
     suffix = " (gates inferred from the verdicts present)" if inferred else ""
+    # The gates agree. Whether they agree about the code THIS CARD NOW DELIVERS is a different
+    # question, and only the caller knows the answer -- so it is asked only when the caller says so.
+    if expect and not shas_agree(shas[0], expect):
+        return "STALE|%s|%s|the gates agree, but on a commit this card no longer delivers (%s)" % (
+            shas[0], expect, detail)
     return "AGREE|%s|%s%s" % (shas[0], detail, suffix)
 
 
@@ -127,14 +145,26 @@ def main():
     if not isinstance(comments, list):
         print("UNREADABLE|unexpected response shape")
         return
+    argv = sys.argv[1:]
+    expect = None
+    if "--expect" in argv:
+        i = argv.index("--expect")
+        if i + 1 >= len(argv) or not argv[i + 1].strip():
+            print("UNREADABLE|--expect needs a sha")
+            return
+        expect = argv[i + 1].strip().lower()
+        if not re.fullmatch(r"[0-9a-f]{7,40}", expect):
+            print("UNREADABLE|--expect is not a sha: %s" % argv[i + 1].strip())
+            return
+        del argv[i:i + 2]
     designated = None
-    if len(sys.argv) > 1 and sys.argv[1].strip():
-        designated = [g for g in re.split(r"[,\s]+", sys.argv[1].strip()) if g]
+    if argv and argv[0].strip():
+        designated = [g for g in re.split(r"[,\s]+", argv[0].strip()) if g]
         unknown = [g for g in designated if g.upper() not in GATES]
         if unknown:
             print("UNREADABLE|not a gate name: %s" % ", ".join(unknown))
             return
-    print(check(comments, designated))
+    print(check(comments, designated, expect))
 
 
 if __name__ == "__main__":

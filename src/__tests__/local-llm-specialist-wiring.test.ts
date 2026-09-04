@@ -69,6 +69,15 @@ describe('the four specialist templates are wired into a real workflow (card 841
 describe('rule 4a demands the gates agree on a SHA, not just that all of them spoke', () => {
   it('names the check and what to do with each of its answers', () => {
     expect(claudeMd).toContain('gate-closure-check.py')
+    // Card fbca2448: after a rebuild the two OLD verdicts agree with EACH OTHER, so the tool
+    // returns AGREE for code that no longer exists. Rule 4a must tell the closer to pass the
+    // card's current sha, or the closure step reads that AGREE as permission to close.
+    expect(
+      claudeMd,
+      'rule 4a no longer mentions --expect, so a rebuilt card can be closed on verdicts that ' +
+        'never saw its code',
+    ).toContain('--expect')
+    expect(claudeMd).toContain('STALE|')
     // The distinction the tool exists to draw: every gate passing is necessary, not sufficient.
     expect(claudeMd).toMatch(/NEM elég önmagában/)
     expect(claudeMd).toContain('DISAGREE')
