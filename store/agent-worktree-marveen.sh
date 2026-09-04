@@ -29,7 +29,11 @@
 # re-checking that those guards still fire everywhere.
 #
 # marveen has no npm workspaces (flat single-package repo, checked via package.json) -- unlike
-# CleanCore, only the root node_modules needs a symlink, no per-package pass.
+# CleanCore, only the root node_modules is involved, no per-package pass. That single entry used to
+# be a directory symlink into the shared clone; card 0b23ec28 makes a REAL directory available
+# instead (store/agent-worktree-deps.sh) and this script can create one directly with
+# MARVEEN_WORKTREE_REAL_DEPS=1. See the node_modules block near the end for why the link is the
+# enabler and why the switch is opt-in rather than a sweep.
 #
 # Usage:
 #   agent-worktree-marveen.sh <agent>          # create (or top up) the agent's worktree
@@ -81,11 +85,27 @@ else
   echo "created $TREE on $BRANCH"
 fi
 
-if [ -e "$TREE/node_modules" ]; then
-  echo "node_modules: already linked"
+# node_modules (card 0b23ec28). A directory symlink here is the enabler behind the 9dc0fba8 class:
+# `cd $TREE/node_modules && rm -rf ../src` resolves `..` inside the MAIN clone, because cd lands the
+# process in the resolved directory. store/agent-worktree-deps.sh replaces the link with a REAL
+# directory, which is the only shape where `..` cannot leave the worktree -- per-entry symlinks only
+# move the exit one level deeper (318 packages, 318 doors).
+#
+# THE SLOW STEP LIVES THERE, NOT HERE, and the new shape is OPT-IN for now. This script is called
+# idempotently from dispatch paths as a cheap "make sure the worktree exists"; a ~1GB copy inside it
+# would change the latency of every agent bootstrap. And flipping 15 live worktrees at once is a
+# sweep across other agents' in-flight work -- the rollout is meant to be deliberate, one tree at a
+# time (plan-grilling verdict, card 0b23ec28). Set MARVEEN_WORKTREE_REAL_DEPS=1 to get the real
+# directory at creation time.
+if [ -L "$TREE/node_modules" ]; then
+  echo "node_modules: symlink -> $MAIN/node_modules (SHARED with every worktree; \`bash store/agent-worktree-deps.sh $AGENT\` makes it real)"
+elif [ -d "$TREE/node_modules" ]; then
+  echo "node_modules: real directory -- no shared-ground symlink here"
+elif [ "${MARVEEN_WORKTREE_REAL_DEPS:-0}" = "1" ]; then
+  bash "$MAIN/store/agent-worktree-deps.sh" "$AGENT" || die 3 "could not populate node_modules"
 else
   ln -s "$MAIN/node_modules" "$TREE/node_modules"
-  echo "node_modules: linked from $MAIN/node_modules"
+  echo "node_modules: linked from $MAIN/node_modules (shared; run \`bash store/agent-worktree-deps.sh $AGENT\` to make it a real directory)"
 fi
 
 echo "path:   $TREE"
