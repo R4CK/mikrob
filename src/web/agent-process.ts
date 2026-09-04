@@ -1070,6 +1070,13 @@ export function shSingleQuote(value: string): string {
  *
  * Card b7fa5281: the model is shell-ESCAPED at the sink (shSingleQuote), not merely wrapped in
  * literal single quotes -- so a `'` in the value can never close the quote and inject a command.
+ *
+ * THE KEYS ARE ESCAPED THE SAME WAY, and that is NOT upstream's shape (card 1075d0e4, backend,
+ * from Cybered's finding on this card's own gate). Upstream interpolates the vault key into DOUBLE
+ * quotes, where `"` and `$(...)` still expand, so a vault value shaped `x";<command>;#` runs as the
+ * host user at tmux launch -- BEFORE the hook layer exists, so no PreToolUse guard can see it.
+ * Restoring upstream's `"${key}"` here would silently reopen that, which is exactly what this
+ * refactor nearly did: backend fixed the INLINE form on develop while this branch was replacing it.
  */
 export type ProviderKind = 'claude' | 'deepseek' | 'openrouter' | 'ollama'
 
@@ -1088,7 +1095,7 @@ export function resolveProviderEnv(
     const key = secretLookup('DEEPSEEK_API_KEY') ?? ''
     return {
       provider: 'deepseek',
-      exportsStr: `export ANTHROPIC_AUTH_TOKEN="${key}" && export ANTHROPIC_BASE_URL=https://api.deepseek.com/anthropic && export ANTHROPIC_MODEL=${shSingleQuote(model)} && `,
+      exportsStr: `export ANTHROPIC_AUTH_TOKEN=${shSingleQuote(key)} && export ANTHROPIC_BASE_URL=https://api.deepseek.com/anthropic && export ANTHROPIC_MODEL=${shSingleQuote(model)} && `,
     }
   }
   if (isOpenRouter) {
@@ -1097,7 +1104,7 @@ export function resolveProviderEnv(
     const key = secretLookup('openrouter-fleet-key') ?? ''
     return {
       provider: 'openrouter',
-      exportsStr: `export ANTHROPIC_AUTH_TOKEN="${key}" && export ANTHROPIC_BASE_URL=https://openrouter.ai/api && export ANTHROPIC_MODEL=${shSingleQuote(model)} && `,
+      exportsStr: `export ANTHROPIC_AUTH_TOKEN=${shSingleQuote(key)} && export ANTHROPIC_BASE_URL=https://openrouter.ai/api && export ANTHROPIC_MODEL=${shSingleQuote(model)} && `,
     }
   }
   if (isOllama) {

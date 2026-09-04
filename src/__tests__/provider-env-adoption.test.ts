@@ -22,7 +22,12 @@ import { resolveProviderEnv, shSingleQuote } from '../web/agent-process.js'
 import { OLLAMA_URL } from '../config.js'
 import { REPO_ROOT } from './helpers/repo-location.js'
 
-/** The fork's PRE-REFACTOR expressions, copied verbatim from the code being replaced. */
+/** The fork's expressions as they stand on LANDED develop, copied verbatim.
+ *
+ * These now include the key escaping backend landed in 392af013 (card 1075d0e4) WHILE this branch
+ * was replacing the same lines. Pinning the pre-fix shape here would have been worse than useless:
+ * this test would have PASSED against a reverted security fix, and then FAILED anyone who tried to
+ * re-apply it -- a test actively defending the vulnerability. */
 function legacyExports(model: string, getSecret: (id: string) => string | null): string {
   const isClaude = model.startsWith('claude-')
   const isDeepseek = model.startsWith('deepseek-')
@@ -30,9 +35,9 @@ function legacyExports(model: string, getSecret: (id: string) => string | null):
   const isOllama = !isClaude && !isDeepseek && !isOpenRouter
   const ollamaEnv = isOllama ? `export ANTHROPIC_AUTH_TOKEN=ollama && export ANTHROPIC_BASE_URL=${OLLAMA_URL} && export ANTHROPIC_MODEL=${shSingleQuote(model)} && ` : ''
   const deepseekKey = isDeepseek ? (getSecret('DEEPSEEK_API_KEY') ?? '') : ''
-  const deepseekEnv = isDeepseek ? `export ANTHROPIC_AUTH_TOKEN="${deepseekKey}" && export ANTHROPIC_BASE_URL=https://api.deepseek.com/anthropic && export ANTHROPIC_MODEL=${shSingleQuote(model)} && ` : ''
+  const deepseekEnv = isDeepseek ? `export ANTHROPIC_AUTH_TOKEN=${shSingleQuote(deepseekKey)} && export ANTHROPIC_BASE_URL=https://api.deepseek.com/anthropic && export ANTHROPIC_MODEL=${shSingleQuote(model)} && ` : ''
   const openrouterKey = isOpenRouter ? (getSecret('openrouter-fleet-key') ?? '') : ''
-  const openrouterEnv = isOpenRouter ? `export ANTHROPIC_AUTH_TOKEN="${openrouterKey}" && export ANTHROPIC_BASE_URL=https://openrouter.ai/api && export ANTHROPIC_MODEL=${shSingleQuote(model)} && ` : ''
+  const openrouterEnv = isOpenRouter ? `export ANTHROPIC_AUTH_TOKEN=${shSingleQuote(openrouterKey)} && export ANTHROPIC_BASE_URL=https://openrouter.ai/api && export ANTHROPIC_MODEL=${shSingleQuote(model)} && ` : ''
   return `${ollamaEnv}${deepseekEnv}${openrouterEnv}`
 }
 
@@ -130,6 +135,56 @@ describe('the RULE TEXT stays out too (Cybered, comment 19877)', () => {
   it('the runAsUser half is recorded as NOT adopted, not as a verified no-op', () => {
     expect(RULES).toMatch(/DO NOT adopt upstream\\?'s umask 002/)
     expect(RULES).not.toMatch(/adopt upstream\\?'s umask 002[\s\S]{0,80}wholesale \(verified no-op/)
+  })
+})
+
+describe('the KEY is shell-escaped too, not just the model (card 1075d0e4)', () => {
+  // This branch nearly reverted a landed security fix, and byte-identity alone would not have
+  // caught it -- it would have CONFIRMED the revert, because the reference it compares against was
+  // the pre-fix shape. backend escaped the keys in the INLINE form on develop (392af013) while this
+  // branch was replacing those very lines with resolveProviderEnv(). Merging "my side" would have
+  // put `"${key}"` back.
+  //
+  // Why it matters more than the usual injection: the launch string runs at tmux start, BEFORE the
+  // Claude Code hook layer exists, so no PreToolUse guard can see it -- and the command is not
+  // logged, so detection is ~nil.
+  // TWO payloads, because they test different things and the first one alone would have been a
+  // vacuous test -- I wrote it that way first and it failed against correct code. Inside single
+  // quotes a `"` is inert, so the double-quote payload only proves the value is quoted AT ALL; the
+  // single-quote payload is the one that can actually break out, so it is the one that proves the
+  // ESCAPING.
+  const dq = 'x";touch /tmp/pwned;#'
+  const sq = "y';touch /tmp/pwned;#"
+  const withKey = (id: string, v: string) => (k: string): string | null => (k === id ? v : null)
+
+  it('a hostile DEEPSEEK key stays DATA -- the quote cannot be closed', () => {
+    const out = resolveProviderEnv('deepseek-v4-pro', withKey('DEEPSEEK_API_KEY', sq)).exportsStr
+    // The only character that can escape single quotes is neutralised: `'` becomes `'\''`.
+    expect(out).toContain(String.raw`'y'\'';touch`)
+    // ...so the shell never sees a bare `';` that would end the value and start a command.
+    expect(out).not.toContain("=y';touch")
+  })
+
+  it('a double-quote payload is inert because the value is single-quoted at all', () => {
+    const out = resolveProviderEnv('deepseek-v4-pro', withKey('DEEPSEEK_API_KEY', dq)).exportsStr
+    expect(out).toContain(`ANTHROPIC_AUTH_TOKEN='${dq}'`)
+    expect(out).not.toContain(`ANTHROPIC_AUTH_TOKEN="`)
+  })
+
+  it('a hostile OPENROUTER key stays DATA', () => {
+    const out = resolveProviderEnv('vendor/model', withKey('openrouter-fleet-key', sq)).exportsStr
+    expect(out).toContain(String.raw`'y'\'';touch`)
+    expect(out).not.toContain("=y';touch")
+  })
+
+  it('no provider branch interpolates a key into DOUBLE quotes', () => {
+    // The shape assertion, so a future "sync with upstream" that restores `"${key}"` fails here
+    // rather than silently reopening the hole.
+    const src = readFileSync(join(REPO_ROOT, 'src/web/agent-process.ts'), 'utf-8')
+    const fn = src.slice(src.indexOf('export function resolveProviderEnv'))
+    const body = fn.slice(0, fn.indexOf('\n}'))
+    expect(body).not.toMatch(/ANTHROPIC_AUTH_TOKEN="\$\{/)
+    expect(body).toContain('ANTHROPIC_AUTH_TOKEN=${shSingleQuote(key)}')
   })
 })
 
