@@ -2073,11 +2073,14 @@ export function buildSystemDirectiveAuthBody(name: string): string {
 }
 
 // Same five-rule idempotency contract as ensureFleetRosterSection /
-// ensureAutonomySection / ensureSkillsPathTrapSection.
+// ensureAutonomySection / ensureSkillsPathTrapSection -- EXCEPT for the main
+// agent: its target is PROJECT_ROOT/CLAUDE.md, a git-tracked file, and a
+// runtime write there fights the --ff-only pull that keeps the live checkout
+// current (card 2dd28b5d/99fccbcf). The block is committed there statically
+// instead; this function no-ops for the main agent on purpose.
 export function ensureSystemDirectiveAuthSection(name: string): void {
-  const claudeMdPath = name === MAIN_AGENT_ID
-    ? join(PROJECT_ROOT, 'CLAUDE.md')
-    : join(agentDir(name), 'CLAUDE.md')
+  if (name === MAIN_AGENT_ID) return
+  const claudeMdPath = join(agentDir(name), 'CLAUDE.md')
   if (!existsSync(claudeMdPath)) return
 
   const block = `${SYSTEM_DIRECTIVE_AUTH_BEGIN}\n${buildSystemDirectiveAuthBody(name)}\n${SYSTEM_DIRECTIVE_AUTH_END}`
