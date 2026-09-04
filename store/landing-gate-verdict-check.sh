@@ -39,6 +39,9 @@
 GATE_CHECK_API="${GATE_CHECK_API:-http://127.0.0.1:3420}"
 GATE_CHECK_TOKEN_FILE="${GATE_CHECK_TOKEN_FILE:-/home/neon/marveen/store/.dashboard-token}"
 
+# EXIT CODES (card 171c9f42): 0 = proceed, 1 = no usable verdict (a caller MAY override this with
+# an explicit, named flag), 2 = a FAILING verdict (never overridable). A caller that treats every
+# non-zero the same reopens exactly the hole this card closed.
 gate_verdict_check() {
   local card="$1" sha="$2" mode="${3:-refuse}"
   local strict=1
@@ -73,7 +76,12 @@ gate_verdict_check() {
   FAILED)
     echo "REFUSED: card $card carries a FAILING gate verdict for $sha -- $detail" >&2
     echo "         A failing verdict is never overridden by --allow-ungated. Fix it and re-gate." >&2
-    return 1
+    # RETURN 2, NOT 1, and the distinction is the whole point (card 171c9f42). Three places said a
+    # failing verdict can never be waved through by --allow-ungated, and none of them was true: the
+    # flag did not override the DECISION, it skipped the CALL, so this branch never ran. Making the
+    # caller able to tell "no verdict" (1) from "a FAILING verdict" (2) is what lets the flag
+    # tolerate the first and never the second -- with one code the caller cannot express it.
+    return 2
     ;;
   esac
 
@@ -90,8 +98,14 @@ gate_verdict_check() {
   echo "REFUSED: card $card has no passing gate verdict for the sha being landed ($sha)." >&2
   echo "         $detail" >&2
   echo "         This is the 08dcc153 shape: 'gate-complete' asserted by the caller, never checked." >&2
-  echo "         If the landing is deliberately ungated (docs-only, own infra card), re-run with" >&2
-  echo "         --allow-ungated, which says so in the open instead of leaving it implied." >&2
+  # Do not tell someone to pass a flag they already passed (card 171c9f42). Now that the caller
+  # ALWAYS calls this function, the override case reaches this branch too, and the old advice line
+  # read as a refusal to a landing that was in fact about to proceed. The caller announces the
+  # toleration itself; here we simply stop giving instructions that are already carried out.
+  if [ "${GATE_CHECK_OVERRIDE_ARMED:-0}" != "1" ]; then
+    echo "         If the landing is deliberately ungated (docs-only, own infra card), re-run with" >&2
+    echo "         --allow-ungated, which says so in the open instead of leaving it implied." >&2
+  fi
   return 1
 }
 

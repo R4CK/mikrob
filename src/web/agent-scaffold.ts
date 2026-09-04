@@ -408,6 +408,11 @@ export function writeAgentSettingsFromProfile(name: string, profile: ProfileTemp
   // actual incident vector -- an agent answering its OWN posed question -- is
   // covered by the self-pace block + the #0 CLAUDE.md doctrine.
   if (agentGetsEmailGate(name)) injectEmailSendGate(existing)
+  // Card 74181db2: opt-in, so the common path is the `else` -- and the else must
+  // REMOVE, not merely skip, or an agent scaffolded while the switch was on would keep
+  // enforcing after it was turned off.
+  if (agentGetsOutgoingCopyGate(name)) injectOutgoingCopyGate(existing)
+  else removeOutgoingCopyGate(existing)
   if (agentGetsGovernanceGates(name)) injectSelfPaceGate(existing)
   if (agentGetsKanbanWriteGate(name)) injectKanbanWriteGate(existing)
   injectEgressGate(existing)
@@ -478,6 +483,77 @@ export function injectEmailSendGate(existing: Record<string, unknown>): void {
     ...prev.filter((e) => !JSON.stringify(e).includes('email-send-gate.mjs')),
     entry,
   ]
+}
+
+// --- outgoing-copy-gate for role agents (card 74181db2) ----------------------
+//
+// THE GAP THIS CLOSES, and the gap it does NOT. The gate is wired into the MAIN
+// agent's settings only, so a role agent's outgoing Telegram text gets no accent,
+// em-dash or name check -- while CLAUDE.md's spelling rule says explicitly that it
+// binds every agent in the fleet. Measured on all 15 role agents: zero occurrences
+// of `outgoing-copy-gate` in either `.claude/settings.json` or
+// `.claude-config/settings.json`. The EMAIL half needs nothing: `email-send-gate.mjs`
+// already hard-denies sending for every non-main agent, so there is no copy to check.
+//
+// OPT-IN, AND THE SWITCH IS READ HERE ON PURPOSE (MikroB's decision, card comment
+// 19349). Wiring this hook puts a python start on EVERY Bash call of EVERY role agent
+// -- measured at median 23.5 ms on this host for an irrelevant command, which is the
+// common case. Gating the INJECTION rather than only the hook's early exit is what
+// makes "off" cost nothing at all rather than 23 ms of deciding to do nothing.
+//
+// The gate re-checks the same variable at runtime (`telegram_bash_enabled`), so the
+// two layers disagree only in the safe direction: wired-but-unset is inert.
+export const OUTGOING_COPY_GATE_ENV = 'OUTGOING_COPY_GATE_TELEGRAM_BASH'
+export const OUTGOING_COPY_GATE_MATCHER = 'Bash'
+
+// Deliberately the INVERSE of the `<GUARD>=off` convention the other guards use: an
+// unset variable means OFF. Those guards default to protecting, so a typo costs
+// protection; this one changes the cost profile of every Bash call in the fleet, so a
+// typo must leave us where we are rather than silently switching 14 agents on.
+export function outgoingCopyGateEnabled(env: NodeJS.ProcessEnv = process.env): boolean {
+  return ['1', 'on', 'true', 'yes'].includes(String(env[OUTGOING_COPY_GATE_ENV] ?? '').trim().toLowerCase())
+}
+
+// Which agents get it: every agent EXCEPT the main one (whose own settings already
+// carry the gate), and only while the switch is on. Pure + exported so both halves of
+// that condition are unit-testable without touching a settings file.
+export function agentGetsOutgoingCopyGate(name: string, env: NodeJS.ProcessEnv = process.env): boolean {
+  return name !== MAIN_AGENT_ID && outgoingCopyGateEnabled(env)
+}
+
+// Idempotently wire the outgoing-copy-gate PreToolUse hook. Same shape + dedupe
+// discipline as injectEmailSendGate.
+export function injectOutgoingCopyGate(existing: Record<string, unknown>): void {
+  const hooks = (existing.hooks && typeof existing.hooks === 'object'
+    ? existing.hooks
+    : (existing.hooks = {})) as Record<string, unknown>
+  const command = hookCommand(join(PROJECT_ROOT, 'scripts', 'hooks', 'outgoing-copy-gate.py'))
+  if (isUnsafeHookCommand(command)) return
+  const entry = {
+    matcher: OUTGOING_COPY_GATE_MATCHER,
+    hooks: [{ type: 'command', command, timeout: 10 }],
+  }
+  const prev = Array.isArray(hooks.PreToolUse) ? (hooks.PreToolUse as unknown[]) : []
+  hooks.PreToolUse = [
+    ...prev.filter((e) => !JSON.stringify(e).includes('outgoing-copy-gate.py')),
+    entry,
+  ]
+}
+
+// Remove a previously wired entry. The switch has to work in BOTH directions or
+// "default off" would only ever hold for a fresh install: an agent scaffolded while
+// the variable was set would keep the hook forever, and unsetting it would look like
+// it worked while every Bash call still paid for a python start. Returns whether
+// anything was removed.
+export function removeOutgoingCopyGate(existing: Record<string, unknown>): boolean {
+  const hooks = (existing.hooks && typeof existing.hooks === 'object'
+    ? existing.hooks
+    : {}) as Record<string, unknown>
+  const prev = Array.isArray(hooks.PreToolUse) ? (hooks.PreToolUse as unknown[]) : []
+  const kept = prev.filter((e) => !JSON.stringify(e).includes('outgoing-copy-gate.py'))
+  if (kept.length === prev.length) return false
+  hooks.PreToolUse = kept
+  return true
 }
 
 // Claude Code runtime self-scheduling tool names denied for sub-agents (fail-
@@ -1065,6 +1141,44 @@ export function ensureCdChainGuard(name: string): boolean {
   return true
 }
 
+// Boot-time backfill for the outgoing-copy-gate (card 74181db2). Same reasoning as the other
+// ensure* backfills -- an inject* alone reaches an agent only when its settings.json is
+// regenerated -- with ONE difference that matters: this one also has to backfill the OFF
+// direction. Every other guard here is unconditional, so its ensure* only ever adds. This one
+// is operator-switched, so a boot after the switch was turned off must REMOVE the entry, or
+// "default off" would hold only for agents that never saw it on.
+//
+// `ensureGovernanceGateCommands` does the same thing for the same reason; both paths exist
+// because the settings-writing paths are not one path, and a guard wired on only one of them
+// reaches an arbitrary subset of the fleet.
+export function ensureOutgoingCopyGate(name: string): boolean {
+  const settingsPath = agentSettingsPath(name)
+  let settings: Record<string, unknown> = {}
+  if (existsSync(settingsPath)) {
+    try { settings = JSON.parse(readFileSync(settingsPath, 'utf-8')) } catch { return false }
+  } else if (!agentGetsOutgoingCopyGate(name)) {
+    // Nothing on disk and nothing wanted: do not create a settings file just to say "off".
+    return false
+  }
+  const hooks = (settings.hooks && typeof settings.hooks === 'object')
+    ? settings.hooks as Record<string, unknown>
+    : {}
+  const ptu = Array.isArray(hooks.PreToolUse) ? hooks.PreToolUse as unknown[] : []
+  const wired = JSON.stringify(ptu).includes('outgoing-copy-gate.py')
+  const wanted = agentGetsOutgoingCopyGate(name)
+  if (wanted === wired) return false
+  if (wanted) {
+    const command = hookCommand(join(PROJECT_ROOT, 'scripts', 'hooks', 'outgoing-copy-gate.py'))
+    if (isUnsafeHookCommand(command)) return false
+    injectOutgoingCopyGate(settings)
+    if (name !== MAIN_AGENT_ID) mkdirSync(join(agentDir(name), '.claude'), { recursive: true })
+  } else if (!removeOutgoingCopyGate(settings)) {
+    return false
+  }
+  atomicWriteFileSync(settingsPath, JSON.stringify(settings, null, 2))
+  return true
+}
+
 // Boot-time backfill for the pentest-tool-install guard, same reasoning as
 // ensureNpmProtectGuard: injectPentestToolInstallGuard alone reaches an agent only when its
 // settings.json is regenerated, so a dashboard restart arms the whole fleet at once.
@@ -1278,11 +1392,21 @@ export function ensureGovernanceGateCommands(name: string): boolean {
   const needEmail = agentGetsEmailGate(name)
     && (!hookCommandWired(ptuJson, emailCmd) || emailGateMatcherStale(ptu))
   const needPace = agentGetsGovernanceGates(name) && !hookCommandWired(ptuJson, paceCmd)
-  if (!needEmail && !needPace) return false
+  // Card 74181db2, both directions. `wanted` false + wired means the operator turned the
+  // switch off: the repair pass is where that actually takes effect, since nothing else
+  // revisits an already-scaffolded settings file.
+  const copyCmd = hookCommand(join(PROJECT_ROOT, 'scripts', 'hooks', 'outgoing-copy-gate.py'))
+  const copyWired = hookCommandWired(ptuJson, copyCmd)
+  const wantCopy = agentGetsOutgoingCopyGate(name)
+  const needCopyAdd = wantCopy && !copyWired
+  const needCopyRemove = !wantCopy && copyWired
+  if (!needEmail && !needPace && !needCopyAdd && !needCopyRemove) return false
   // The injectors dedupe by script basename, so a stale bare-`node` entry is
   // replaced in place rather than accumulated.
   if (needEmail) injectEmailSendGate(settings)
   if (needPace) injectSelfPaceGate(settings)
+  if (needCopyAdd) injectOutgoingCopyGate(settings)
+  if (needCopyRemove) removeOutgoingCopyGate(settings)
   atomicWriteFileSync(settingsPath, JSON.stringify(settings, null, 2))
   return true
 }

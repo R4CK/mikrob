@@ -29,11 +29,13 @@ BLOCK = "block"
 ALLOW = "allow"
 
 
-def verdict(cmd, rules_path=None):
-    return raw_verdict({"tool_name": "Bash", "tool_input": {"command": cmd}}, rules_path)
+def verdict(cmd, rules_path=None, env_extra=None):
+    return raw_verdict(
+        {"tool_name": "Bash", "tool_input": {"command": cmd}}, rules_path, env_extra
+    )
 
 
-def raw_verdict(payload_obj, rules_path=None):
+def raw_verdict(payload_obj, rules_path=None, env_extra=None):
     """Run the gate on an ARBITRARY payload, not just a Bash command.
 
     Needed for the fail-closed net (card 630d9864): the payload shapes that used to crash the
@@ -49,6 +51,11 @@ def raw_verdict(payload_obj, rules_path=None):
         # machine happens to have at store/outgoing-copy-gate-rules.json -- a case that
         # wants "file missing" must not accidentally see a real local file.
         env["OUTGOING_COPY_GATE_RULES"] = "/nonexistent/outgoing-copy-gate-rules.json"
+    # Card 74181db2: the telegram-in-Bash branch is behind an env kill-switch, so a case
+    # has to be able to set it. Cleared by DEFAULT rather than merely left alone -- the
+    # real machine may have it exported, and a case asserting "off" must measure off.
+    env.pop("OUTGOING_COPY_GATE_TELEGRAM_BASH", None)
+    env.update(env_extra or {})
     p = subprocess.run(
         [sys.executable, str(GATE)], input=payload, capture_output=True, text=True, env=env
     )
@@ -92,8 +99,8 @@ KANBAN_MESSAGE_FP = (
 def main():
     failures = []
 
-    def case(label, cmd, expected, rules_path=None):
-        got, stderr = verdict(cmd, rules_path)
+    def case(label, cmd, expected, rules_path=None, env_extra=None):
+        got, stderr = verdict(cmd, rules_path, env_extra)
         ok = got == expected
         print(f"{'OK  ' if ok else 'FAIL'} {expected:5s} <- {got:5s}  {label}")
         if not ok:
@@ -258,19 +265,280 @@ def main():
             rules_path=empty_rules,
         )
 
+        # --- Telegram sent from Bash, behind the kill-switch (card 74181db2) -----------
+        # A role agent has no `telegram__reply` tool (all 15 launch with the plugin false and
+        # without --channels), so the gate's tool-name branch is dead code for them. Their one
+        # route is the raw Bot API call `telegram-reply-fallback` documents -- and nothing ran
+        # on it. These cases pin BOTH halves: that the switch really is off by default, and
+        # that with it on the audit is the same one the MCP path gets.
+        ON = {"OUTGOING_COPY_GATE_TELEGRAM_BASH": "on"}
+        TG_SEND = 'curl -s -X POST https://api.telegram.org/botPLACEHOLDER/sendMessage -d chat_id=1 '
+
+        # THE DEFAULT IS THE LOAD-BEARING CASE. Wiring this hook costs a python start on every
+        # Bash call of every role agent (measured median 23.5 ms), so an unset variable must
+        # mean OFF -- the inverse of the `<GUARD>=off` convention the other guards use.
+        case(
+            "SWITCH DEFAULT OFF: broken accents in a Bot API send pass untouched",
+            TG_SEND + f'-d "text={BROKEN_HU}"',
+            ALLOW,
+            rules_path=empty_rules,
+        )
+        case(
+            "switch on: the SAME send now blocks on the stripped accents",
+            TG_SEND + f'-d "text={BROKEN_HU}"',
+            BLOCK,
+            rules_path=empty_rules,
+            env_extra=ON,
+        )
+        case(
+            "switch on: clean Hungarian passes -- the gate is not a blanket refusal",
+            TG_SEND + f'-d "text={CLEAN_HU}"',
+            ALLOW,
+            rules_path=empty_rules,
+            env_extra=ON,
+        )
+        case(
+            "switch on: an em dash blocks (standing rule, never goes out)",
+            TG_SEND + '--data-urlencode "text=A jelentés kész \u2014 küldöm."',
+            BLOCK,
+            rules_path=empty_rules,
+            env_extra=ON,
+        )
+        case(
+            "switch on: a JSON body is read too, not only form fields",
+            # chat_id stays a FORM field here on purpose: the repo's secret-gate reads a
+            # literal chat_id+text JSON object as a captured channel dump and blocks the
+            # commit. Rewording the fixture is the right answer (the alternative, allowlisting
+            # the path, would stop scanning this file for real secrets forever), and it costs
+            # the test nothing -- the JSON branch under test only looks for the "text" key.
+            TG_SEND + f'-H "Content-Type: application/json" -d \'{{"text":"{BROKEN_HU}"}}\'',
+            BLOCK,
+            rules_path=empty_rules,
+            env_extra=ON,
+        )
+        case(
+            "switch on: a photo CAPTION is audited like message text",
+            'curl https://api.telegram.org/bot1/sendPhoto -F photo=@/tmp/a.png '
+            f'-F "caption={BROKEN_HU}"',
+            BLOCK,
+            rules_path=empty_rules,
+            env_extra=ON,
+        )
+        # --- and the three ways it must NOT fire ---------------------------------------
+        case(
+            "switch on: a photo with NO caption has nothing to audit",
+            'curl https://api.telegram.org/bot1/sendPhoto -F photo=@/tmp/a.png',
+            ALLOW,
+            rules_path=empty_rules,
+            env_extra=ON,
+        )
+        case(
+            "switch on: MENTIONING the host is not sending -- both halves are required",
+            'grep -rn api.telegram.org /home/neon/marveen/store',
+            ALLOW,
+            rules_path=empty_rules,
+            env_extra=ON,
+        )
+        case(
+            "switch on: a READ method (getUpdates) is not a send",
+            'curl -s https://api.telegram.org/bot1/getUpdates',
+            ALLOW,
+            rules_path=empty_rules,
+            env_extra=ON,
+        )
+        # THE CASE THAT ACTUALLY PINS THE METHOD REQUIREMENT. The one above does not: with the
+        # method check removed it still passes, because a bare getUpdates carries no text to
+        # audit either way -- found by mutating, and a finding about the test, not the code.
+        # This one carries a `text=` field that WOULD be audited (its accents are stripped), so
+        # dropping the method half turns it from allow into block.
+        case(
+            "switch on: a non-send method is not a send EVEN with an auditable text field",
+            f'curl -s https://api.telegram.org/bot1/getUpdates -d "text={BROKEN_HU}"',
+            ALLOW,
+            rules_path=empty_rules,
+            env_extra=ON,
+        )
+        # FAIL-OPEN, and deliberately unlike the email path. Email refuses what it cannot
+        # inspect because a letter can wait; Telegram is the owner's only supervision channel,
+        # so blocking a report because its text sits in a variable trades a spelling rule for a
+        # lost message. The refusal is announced via systemMessage rather than silent.
+        case(
+            "switch on: an UNREADABLE body ($VAR) passes -- fail-OPEN, like the MCP telegram path",
+            TG_SEND + '-d "text=$MSG"',
+            ALLOW,
+            rules_path=empty_rules,
+            env_extra=ON,
+        )
+        # THE OVER-FIRE CASE, and it is here because the first version of this change FAILED it.
+        # The telegram detector needs only the host plus a send method ANYWHERE in the command,
+        # which an email whose BODY quotes that URL satisfies. With the telegram branch checked
+        # first, its fail-OPEN verdict hijacked the email path's fail-CLOSED one: measured at
+        # exit 0 (sent unchecked) on a resend.com call with stripped accents. Email is now
+        # tested first, so anything that looks like both is handled as the email it is.
+        case(
+            "an EMAIL whose body merely MENTIONS the Bot API url is still audited as email",
+            REAL_SEND.format(
+                body="Kesz a jelentes, reszletek a https://api.telegram.org/bot1/sendMessage vegponton"
+            ),
+            BLOCK,
+            rules_path=empty_rules,
+            env_extra=ON,
+        )
+        # The email path must be untouched by all of the above: same command shape, different
+        # host, and it still fails CLOSED on an unreadable body.
+        case(
+            "the EMAIL path keeps its fail-CLOSED behaviour on an unreadable body",
+            REAL_SEND.format(body="$(cat /tmp/letter.txt)"),
+            BLOCK,
+            rules_path=empty_rules,
+        )
+
+        def raw_case(label, payload_obj, expected, rules_path=None, env_extra=None):
+            got, stderr = raw_verdict(payload_obj, rules_path, env_extra)
+            ok = got == expected
+            print(f"{'OK  ' if ok else 'FAIL'} {expected:5s} <- {got:5s}  {label}")
+            if not ok:
+                failures.append((label, expected, got, stderr))
+
+        # --- ONE TYPO'D PATTERN MUST NOT KILL THE HOOK (card 0c66be37) ------------------
+        # Cybersec MEDIUM-2, reproduced here before fixing: `re.compile` sat OUTSIDE the try, and
+        # `BAD_NAME = load_bad_name()` runs at MODULE IMPORT -- so one bad pattern did not degrade
+        # the name check, it killed the whole hook before it inspected anything. Exit 1 with empty
+        # stdout, and Claude Code blocks on exit 2 ONLY: every outgoing send passed unchecked,
+        # fleet-wide, silently. Note the helper reads exit 1 as ALLOW, which is exactly the point.
+        broken_pat_rules = write_rules(
+            tmp, {"bad_name_patterns": ["Kovacz", "(?<n>x)"], "correction": "helyesen: Kovacs"}
+        )
+        case(
+            "a non-compiling pattern degrades the NAME CHECK, not the whole hook (email: fail-CLOSED)",
+            REAL_SEND.format(body=CLEAN_HU),
+            BLOCK,
+            rules_path=broken_pat_rules,
+        )
+        # ...and the control itself still works when the patterns are fine. Without this the case
+        # above would pass over a hook that blocks everything for any reason at all.
+        case(
+            "...and a VALID rules file still lets a clean letter through",
+            REAL_SEND.format(body=CLEAN_HU),
+            ALLOW,
+            rules_path=named_rules,
+        )
+        raw_case(
+            "the same bad pattern on the TELEGRAM path stays fail-OPEN (supervision channel)",
+            {"tool_name": "mcp__plugin_telegram_telegram__reply", "tool_input": {"text": CLEAN_HU}},
+            ALLOW,
+            rules_path=broken_pat_rules,
+        )
+
+        # THE MESSAGE MUST NAME THE RIGHT CAUSE. Both failures end in the same refusal, so the
+        # exit code alone cannot tell them apart -- and the only wording used to be "a fajl
+        # hianyzik/ures", which for a bad pattern sends the reader hunting for a file that is
+        # present, readable and valid JSON. A wrong explanation is worse than none: it stops the
+        # next person looking.
+        def msg_says(label, rules_path, must_have, must_not_have):
+            _got, stderr = verdict(REAL_SEND.format(body=CLEAN_HU), rules_path)
+            ok = (must_have in stderr) and (must_not_have not in stderr)
+            print(f"{'OK  ' if ok else 'FAIL'} {'msg':5s} <- {'msg':5s}  {label}")
+            if not ok:
+                failures.append((label, f"contains {must_have!r}, not {must_not_have!r}", stderr[:160], stderr))
+
+        msg_says("a BAD PATTERN is reported as a bad pattern, not as a missing file",
+                 broken_pat_rules, "nem forditható", "hianyzik")
+        msg_says("...and a genuinely MISSING file is still reported as missing",
+                 "/nonexistent/outgoing-copy-gate-rules.json", "hianyzik", "nem forditható")
+
+        # --- A PATTERN CAN COMPILE AND STILL HANG (same card, the other door) ------------
+        # Measured before the budget: `zzz(a+)+$` against a body carrying `zzz` + 40 `a`s left the
+        # hook STILL RUNNING after 25 seconds. Registered with `timeout: 10`, Claude Code kills it,
+        # the exit code is not 2, and the send goes out unchecked -- byte-identical to the compile
+        # crash. The validator cannot catch it either: its ReDoS check is PROBE-based, so a pattern
+        # anchored behind a rare prefix passes validation and is slow only on real traffic.
+        slow_pat_rules = write_rules(
+            tmp, {"bad_name_patterns": ["Kovacz", "zzz(a+)+$"], "correction": "helyesen: Kovacs"}
+        )
+        SLOW_BODY = "Szia, koszonom a turelmet. zzz" + ("a" * 40) + "X"
+        case(
+            "a catastrophically backtracking pattern is BOUNDED, and email fails CLOSED",
+            REAL_SEND.format(body=SLOW_BODY),
+            BLOCK,
+            rules_path=slow_pat_rules,
+            env_extra={"OUTGOING_COPY_GATE_NAME_BUDGET": "1"},
+        )
+        raw_case(
+            "...and the same timeout on TELEGRAM stays fail-OPEN rather than silencing the channel",
+            {"tool_name": "mcp__plugin_telegram_telegram__reply", "tool_input": {"text": SLOW_BODY}},
+            ALLOW,
+            rules_path=slow_pat_rules,
+            env_extra={"OUTGOING_COPY_GATE_NAME_BUDGET": "1"},
+        )
+
+        # --- NOTHING READ AT IMPORT MAY KILL THE HOOK (card 0c66be37, Cybersec NO-GO) ----
+        # This battery exists because I introduced the SAME defect class twice in the same commit.
+        # The card was "one typo'd pattern must not kill the hook"; my fix then added
+        # `NAME_MATCH_BUDGET_S = float(os.environ.get(...))` at MODULE level, so `BUDGET=abc` raised
+        # ValueError at import -- exit 1, zero stdout, the whole hook silently absent on every
+        # agent. Measured before fixing: `2` -> exit 2, `abc` / empty / a single space -> exit 1.
+        #
+        # So this is not another one-off patch: it enumerates EVERY environment knob the module
+        # reads while importing, with values chosen to break a naive parse, and asserts the hook
+        # still reaches a verdict. Exit 1 reads as ALLOW here, which is exactly what makes the
+        # failure invisible in production and visible in this table.
+        def reaches_a_verdict(label, env_extra=None, rules_path=None):
+            """Assert the hook RAN. Exit 0 and 2 are verdicts; exit 1 is the module dying.
+
+            The BLOCK/ALLOW helper cannot express this -- it maps every non-2 code to ALLOW, which
+            is exactly why the production failure was invisible: a hook that never started looks
+            like a hook that looked and had no objection.
+            """
+            nonlocal failures
+            payload = json.dumps({"tool_name": "Bash", "tool_input": {
+                "command": REAL_SEND.format(body=CLEAN_HU)}})
+            env = dict(os.environ)
+            env.pop("OUTGOING_COPY_GATE_TELEGRAM_BASH", None)
+            env["OUTGOING_COPY_GATE_RULES"] = str(rules_path if rules_path is not None else named_rules)
+            env.update(env_extra or {})
+            p = subprocess.run([sys.executable, str(GATE)], input=payload,
+                               capture_output=True, text=True, env=env)
+            ok = p.returncode in (0, 2)
+            print(f"{'OK  ' if ok else 'FAIL'} {'ran':5s} <- {'exit%d' % p.returncode:5s}  {label}")
+            if not ok:
+                failures.append((label, "exit 0 or 2 (a verdict)", f"exit {p.returncode}", p.stderr))
+
+        for value in ["abc", "", " ", "-1", "0", "nan", "inf", "1e400", "2.5", "off", "true", "[]"]:
+            reaches_a_verdict(f"import survives OUTGOING_COPY_GATE_NAME_BUDGET={value!r}",
+                              env_extra={"OUTGOING_COPY_GATE_NAME_BUDGET": value})
+        # A HOSTILE VALUE MUST NOT SILENTLY DISABLE THE BUDGET, only fall back to the default.
+        # Found by mutating: with `except ValueError: return 0.0` (or with non-positive values
+        # meaning "no timer"), every case above still passed -- they only prove the module IMPORTS,
+        # not that the protection survived. So the docstring's claim, that a typo can cost
+        # protection nowhere, was an unmeasured assertion. This is the case that measures it: a
+        # catastrophic pattern with a garbage budget must still be BOUNDED, not hang.
+        case(
+            "a garbage budget falls back to the default -- it does NOT turn the timer off",
+            REAL_SEND.format(body=SLOW_BODY),
+            BLOCK,
+            rules_path=slow_pat_rules,
+            env_extra={"OUTGOING_COPY_GATE_NAME_BUDGET": "abc"},
+        )
+        case(
+            "...and neither does a NEGATIVE one (disabling has to be said, with `off`)",
+            REAL_SEND.format(body=SLOW_BODY),
+            BLOCK,
+            rules_path=slow_pat_rules,
+            env_extra={"OUTGOING_COPY_GATE_NAME_BUDGET": "-1"},
+        )
+
+        # The other import-time knob. It feeds a PATH resolution rather than a number, so the
+        # failure shape differs -- but a hook that dies reading it is just as absent.
+        for value in ["", " ", "/nonexistent/deep/path.json", "relative.json"]:
+            reaches_a_verdict(f"import survives OUTGOING_COPY_GATE_RULES={value!r}", rules_path=value)
+
         # --- Fail-closed net on the __main__ wrapper (B-wave, card 630d9864) -------------
         # Upstream's wrapper, recorded in the conflict map as "a candidate for future adoption,
         # not yet taken", and MEASURED before adopting: a payload whose tool_input is not a dict
         # made collect_mcp_body() raise AttributeError, python exited 1, and PreToolUse treats 1
         # as NON-blocking -- so a malformed call walked straight past the gate. Note what the
         # verdict helper reports: exit 1 reads as ALLOW here, which is precisely the point.
-        def raw_case(label, payload_obj, expected, rules_path=None):
-            got, stderr = raw_verdict(payload_obj, rules_path)
-            ok = got == expected
-            print(f"{'OK  ' if ok else 'FAIL'} {expected:5s} <- {got:5s}  {label}")
-            if not ok:
-                failures.append((label, expected, got, stderr))
-
         raw_case(
             "FAIL-CLOSED NET: non-dict tool_input on the email path -> BLOCK (was exit 1 = unchecked send)",
             {"tool_name": "send_email", "tool_input": "not-a-dict"},

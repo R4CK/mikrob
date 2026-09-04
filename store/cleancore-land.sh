@@ -207,10 +207,22 @@ done
 # THE GATE VERDICT, checked against the board before anything else happens (card 9081d02d). Placed
 # here on purpose: it is the cheapest precondition in the script, so a landing that should not
 # happen at all costs a single HTTP call rather than a full merge + typecheck first.
-if [ "$ALLOW_UNGATED" -eq 1 ]; then
-  echo "  gate-check: SKIPPED (--allow-ungated) -- this landing is deliberately ungated"
-else
-  gate_verdict_check "$CARD" "$SHA" refuse || exit 3
+# --allow-ungated TOLERATES A MISSING VERDICT; IT DOES NOT SKIP THE CHECK (card 171c9f42).
+# It used to skip the CALL, so the FAILED branch never ran and a QA-FAILED card could be landed
+# with the flag -- while the helper's own message, this script's commit message and the card's QA
+# verdict all said that was impossible. The check now ALWAYS runs; the flag only decides what to do
+# with a non-failing refusal.
+GATE_CHECK_OVERRIDE_ARMED="$ALLOW_UNGATED" gate_verdict_check "$CARD" "$SHA" refuse
+gate_rc=$?
+if [ "$gate_rc" -eq 2 ]; then
+  echo "  gate-check: a FAILING verdict is never overridden -- --allow-ungated does not apply here" >&2
+  exit 3
+elif [ "$gate_rc" -ne 0 ]; then
+  if [ "$ALLOW_UNGATED" -eq 1 ]; then
+    echo "  gate-check: no usable verdict, TOLERATED by --allow-ungated -- this landing is deliberately ungated"
+  else
+    exit 3
+  fi
 fi
 # $$ makes the path private to this process. QA2's finding on card 67beaf74 was against the pre-gate,
 # but the defect is the shape, not the script: a deterministic worktree path means a second run's

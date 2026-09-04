@@ -156,7 +156,23 @@ land_one() {
 
   # Only when the caller NAMED the card -- without one there is no single card to ask about, since
   # a marveen branch legitimately carries several. Report-only, for the reason in the source note.
-  if [ -n "$LAND_CARD" ]; then gate_verdict_check "$LAND_CARD" "$branch" report || true; fi
+  # THE SECOND ARGUMENT IS A SHA, NOT A BRANCH (card 171c9f42). It used to be "$branch", and the
+  # parser compares HEX PREFIXES -- so an agent branch name could never match anything, and a fully
+  # gated card (QA PASS + Cybersec GO) produced the same "no verdict for this sha" line as a card
+  # with no verdict at all. The check ran, printed, and told us nothing.
+  #
+  # AND THE `|| true` IS GONE. In report mode the helper already returns 0 for every outcome except
+  # a FAILING verdict, so `|| true` swallowed the one answer worth acting on: it made a QA FAIL
+  # indistinguishable from a pass, on the branch about to be merged.
+  if [ -n "$LAND_CARD" ]; then
+    local land_sha
+    land_sha="$(git -C "$wt" rev-parse "$branch" 2>/dev/null)" || land_sha="$branch"
+    gate_verdict_check "$LAND_CARD" "$land_sha" report || {
+      echo "$agent: REFUSED -- card $LAND_CARD carries a FAILING gate verdict for $land_sha."
+      echo "$agent: Nothing merged, nothing pushed. Fix the finding and re-gate."
+      return 5
+    }
+  fi
 
   local msg="merge: $branch into $DEFAULT_BRANCH (marveen-land, base @ $(git -C "$wt" rev-parse --short HEAD))"
   local merge_err

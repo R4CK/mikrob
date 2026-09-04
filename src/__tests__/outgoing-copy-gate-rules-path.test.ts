@@ -140,11 +140,32 @@ describe('the three loader states are distinct at BOTH call points (card 934dc10
   it('MISSING: email is fail-CLOSED, telegram is fail-OPEN with a systemMessage', () => {
     const r = runGate(emailSend('Kedves Ugyfel, itt a kulcs.'), missing())
     expect(r.code).toBe(2)
-    expect(r.stderr).toContain('NEV-SZABALY fajl hianyzik')
+    // Card 0c66be37 reworded this: a non-compiling PATTERN now reaches the same refusal, and the
+    // old single wording ("a NEV-SZABALY fajl hianyzik/ures") would have sent the reader hunting
+    // for a file that is present, readable and valid JSON. The assertion follows the substance --
+    // this is the MISSING state and it must still say so -- and the bad-pattern case below pins
+    // that the two are actually distinguishable, so the rewording did not just blur them together.
+    expect(r.stderr).toContain('hianyzik')
+    expect(r.stderr).not.toContain('nem forditható')
 
     const t = runGate(telegramReply('Kész a feladat.'), missing())
     expect(t.code).toBe(0)
     expect(JSON.parse(t.stdout).systemMessage).toContain('hianyzik')
+  })
+
+  it('BAD PATTERN: same refusal, but it names the pattern instead of blaming the file', () => {
+    // The failure Cybersec measured (MEDIUM-2 on 98dbbcc9's GO): `re.compile` sat outside the try
+    // and `BAD_NAME = load_bad_name()` runs at import, so ONE typo killed the whole hook -- exit 1,
+    // empty stdout, and Claude Code blocks on exit 2 ONLY. Every send passed unchecked, silently.
+    const rules = rulesFile('broken-pattern.json', { bad_name_patterns: ['Kovacz', '(?<n>x)'], correction: 'x' })
+    const r = runGate(emailSend('Kedves Ugyfel, itt a kulcs.'), rules)
+    expect(r.code, 'the hook must still RUN and refuse, not die with exit 1').toBe(2)
+    expect(r.stderr).toContain('nem forditható')
+    expect(r.stderr, 'the file is present and valid -- do not send the reader after it').not.toContain('hianyzik')
+
+    const t = runGate(telegramReply('Kész a feladat.'), rules)
+    expect(t.code, 'the supervision channel stays fail-OPEN').toBe(0)
+    expect(JSON.parse(t.stdout).systemMessage).toContain('nem forditható')
   })
 
   it('MALFORMED (bad_name_patterns key absent) is BROKEN, not "zero patterns"', () => {

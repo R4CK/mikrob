@@ -5770,6 +5770,151 @@ egy általános olvasó végpont szerződését nem szabad egy widget tartomány
 sorrendi pontosítás: előbb guard, csak utána takarítás).
 **Hivatkozás:** kártya `4c5c540c`; `vitest.config.ts`, `src/__tests__/setup/isolate-local-llm-state.ts`.
 
+## 2026-09-04 -- 74181db2 -- A kimenő-szöveg kapu eléri a role-ügynököket, de kill-switch mögött, alapból kikapcsolva
+
+**Döntés (MikroB, kártya-komment 19349).** Az `outgoing-copy-gate.py` bekerül a
+role-ügynökök hook-készletébe egy `Bash` matcheren, és megtanul felismerni egy
+Telegram Bot API küldést a Bash-parancson belül. Az egész egy env-kapcsoló mögött
+van (`OUTGOING_COPY_GATE_TELEGRAM_BASH`), ami **alapértelmezetten KI**.
+
+**Miért.** A kapu ma csak a fő ügynök sessionjére áll: mind a 15 role-ügynök
+settings-fájljában NULLA az `outgoing-copy-gate` előfordulás, tehát a CLAUDE.md
+helyesírási szabálya ("a flotta MINDEN ügynökére áll") náluk kizárólag fegyelemmel
+érvényesült. Az EMAIL-oldalon nincs teendő: az `email-send-gate.mjs` minden nem-fő
+ügynöknek keményen tiltja a küldést, tehát nincs mit ellenőrizni.
+
+**Amit a terv-fázisú grilling megbuktatott, MIELŐTT kód készült.** MikroB első
+feltétele az volt, hogy a matcher CSAK a `mcp__plugin_telegram_telegram__reply`
+hívásra szűküljön. Ez bizonyíthatóan no-op lett volna: a role-ügynökök ezt a toolt
+nem tudják hívni (mind a 15-nél `telegram@claude-plugins-official: false`, és
+`--channels` nélkül indulnak, `agent-worker.ts:458`), tehát a kapu tool-név szerinti
+ága náluk halott kód. Az egyetlen tényleges útjuk a `telegram-reply-fallback` skill
+által dokumentált nyers Bot API curl -- amin semmi nem futott, és amit a kapu Bash-ága
+sem nézett (az az EMAIL-detektor).
+
+**Elvetett alternatívák.**
+- *(2) Kimondani, hogy szándékos, és csak dokumentálni.* Védhető volt: a role-ügynökök
+  szokásos útja MikroB csatornáján megy tovább, ami már fedett. Elvetve, mert a
+  strukturális védelem olcsóbban megkapható, mint amennyit a fegyelemre hagyás ér.
+- *(3) A skillbe tett kötelező lépés.* Fegyelem, nem szerkezet (6. kódminőségi elv).
+
+**A mért ár, ami a kapcsolót indokolja.** Egy IRRELEVÁNS Bash-hívásra a valódi kapun,
+15 mintából: min 22,4 ms / medián 23,5 ms / max 26,4 ms (loadavg 9,14). Ezt minden
+role-ügynök MINDEN Bash-hívása fizetné. Ezért a kapcsoló nem csak a hook korai
+kilépését vezérli, hanem magát a BEKÖTÉST is: kikapcsolva a hook be sem kerül a
+settingsbe, tehát nulla a költség, nem 23 ms "eldönteni, hogy ne csináljunk semmit".
+
+**Következmények.**
+- A kapcsoló KÉT irányban működik: kikapcsolva a javító-kör (`ensureGovernanceGateCommands`)
+  el is TÁVOLÍTJA a korábban bedrótozott bejegyzést, különben az "alapból ki" csak friss
+  telepítésre igaz.
+- A Telegram-ág FAIL-OPEN marad (olvashatatlan törzsnél is), egyezően a meglévő MCP-ág
+  indoklásával: a Telegram a tulajdonos egyetlen felügyeleti csatornája, ott a némulás
+  drágább, mint egy átcsúszott ékezet. Az EMAIL-ág fail-closed marad.
+- Az env-változó szándékosan a `<GUARD>=off` konvenció INVERZE: itt a nem-beállított
+  érték jelenti a KI-t.
+
+## 2026-09-04 -- 79f62fd7 -- A könnyű kártyák helyi modellel épülnek, de a fail-safe iránya MEGFORDUL
+
+**Döntés.** Új, dispatch-idejű osztályozó (`store/card-build-route.sh`) dönti el, hogy egy
+`planned` kártya első teljes draftját a helyi modell írja-e meg. Szerkezetében a
+`route-classify.sh` mintája (determinizmus, terelés-prefilter, ablakolt olvasás, saját
+audit-log, fail-fast), de a fail-safe iránya AZ ELLENKEZŐJE.
+
+**Miért fordul meg az irány.** A `route-classify.sh` egyetlen biztonsági tulajdonsága, hogy
+CSAK `LOCAL -> ONLINE` irányba tud tévedni: egy rossz válasz, egy megfagyott vagy hiányzó
+modell ott egy online draftot költ, lyukat soha nem nyit. Ez az osztályozó a MÁSIK irányba
+dönt -- az alapállapot ONLINE, és egy LOCAL verdikt gyengébb építőhöz visz munkát. Ezért itt
+MINDEN kétség ONLINE: kill-switch, olvashatatlan kártya, üres vagy túl hosszú szöveg,
+urgent/high prioritás, determinisztikus szókincs-kapu, `route-classify` SECURITY **vagy
+ABSTAIN**, a modell COMPLEX/BUSY/UNKNOWN válasza, hiányzó modell. LOCAL csak akkor, ha MINDEN
+fokozat igenlően átenged -- konjunkció, nem szavazás.
+
+**Amit a mérés megváltoztatott a terven.** A selftest a tábla 15 VALÓDI kártyáján fut, a
+modellt a legmegengedőbb válaszára (EASY) rögzítve -- így ami mégis ONLINE marad, azt a
+determinisztikus kapu fogta meg. Az első változat ezen **5 kártyát elengedett**: azok
+biztonsága kizárólag a 7B COMPLEX-válaszán állt, egy rossz húzásra a gyengébb építőhöz
+kerültek volna. A négy hiányzó osztály (pénz; tárolt-objektum integritás és presign;
+kliens-adta érték hitelessége; dokumentum-összeállítás) most NÉVVEL szerepel a kapuban, és a
+szám 0-ra ment. A selftest minden futáson kiírja ezt a számot.
+
+**Amit a kockázatból NEM szabad eltúlozni.** A LOCAL kártyát is az online szerep-ügynök
+építi -- a draftot átnézi és finomítja --, és ugyanúgy megy a QA+Cybersec gate-en. A
+hibamód tehát HORGONYZÁS (egy hihetőnek látszó rossz draft elfogadása), nem ellenőrizetlen
+kód. Ez valós, de más nagyságrend, és ez indokolja, hogy egyáltalán belevágjunk.
+
+**A legvalószínűbb bukás, amit a terv-fázisú grilling kihozott.** Nem a téves osztályozás,
+hanem hogy JÓL osztályoz és mégsem történik semmi: a heartbeat egy LLM által végrehajtott
+skill, a dispatch-szöveg tanács. Ezért a heartbeat 4b. lépése a KONKRÉT, futtatható
+`local-llm-rag.sh` parancssort viszi a dispatch-üzenetbe -- e nélkül a változás kívülről
+megkülönböztethetetlen lenne a no-op-tól.
+
+**Nyitva hagyva, szándékosan.** A `seed-scheduled-tasks/` alatti (verziókövetett) heartbeat
+kapta meg a 4b. lépést; a FUTÓ példány (`~/.claude/scheduled-tasks/`) nem. Az MikroB saját
+10 perces köre, a bekapcsolás időzítése az ő döntése.
+
+## 2026-09-04 -- 0c66be37 -- A név-ellenőrzés hibája a KAPUT rontsa el, ne a hookot -- és a timeout DOBJON
+
+**Döntés.** A `re.compile` bekerül a `try`-ba, és a match-időre wall-clock költségkeret kerül. Egy
+hibás vagy lassú minta a NÉV-ELLENŐRZÉST kapcsolja `STATE_BROKEN`-re; a hook maga fut tovább.
+
+**Miért.** A `BAD_NAME = load_bad_name()` MODUL-SZINTEN, import időben fut, és a `re.compile` a
+`try`-on KÍVÜL volt. Egy elgépelt minta így nem egy ágat ölt meg, hanem az EGÉSZ hookot, mielőtt
+bármit ellenőrzött volna. Claude Code-ban csak a 2-es kilépési kód blokkol -- exit 1 + üres stdout
+azt jelenti, hogy a kimenő-szűrés MINDEN ügynöknél NÉMÁN nem fut. Reprodukálva a valódi hookkal:
+`["Kovacs"]` -> exit 2 (blokkol egy ékezet nélküli levelet), `["Kovacs","(?<n>x)"]` -> exit 1, 0
+bájt stdout.
+
+**A MÁSODIK AJTÓ UGYANABBA A SZOBÁBA, amit megmértem, mielőtt eldöntöttem volna, hogy hatókörbe
+tartozik-e.** Egy minta hibátlanul fordulhat és MATCH-időben mégis katasztrofálisan visszalépni. A
+kártya által is említett `zzz(a+)+$` mintára egy `zzz` + 40 `a` törzsön a hook 25 másodperc után is
+FUTOTT. Élesben `timeout: 10`-cel van bejegyezve, tehát a futtató megöli, a kilépési kód nem 2, és a
+küldés ellenőrizetlenül megy ki -- bájtra ugyanaz a következmény, mint a fordítási összeomlásnál. A
+validátor ezt nem zárja: a ReDoS-ellenőrzése PRÓBA-alapú, tehát egy ritka prefixre horgonyzott minta
+átmegy rajta és csak valódi forgalmon lassú. Ezért a keret a hook oldalán van, ahol a tényleges
+szöveg van.
+
+**A load-bearing részlet: a timeout DOB, nem `None`-t ad vissza.** A `None` (nincs találat) lett
+volna az egyetlen rossz válasz: egy csendes „a név rendben". A dobás után a KÉT MEGLÉVŐ háló dönt,
+új állapot bevezetése nélkül -- az email-út fail-closed burkolója exit 2-t csinál belőle, a
+`telegram_gate` dokumentált fail-open ága exit 0-t plusz hangos figyelmeztetést. Mutációval
+igazolva: ha a jelzéskezelő visszatér dobás helyett, a keresés NEM szakad meg (a C-szintű regex-motor
+fut tovább), és a teljes selftest lefagy -- pontosan az éles tünet.
+
+**Az üzenet is javult, mert muszáj volt.** A `BAD_NAME is None` ág egyetlen szövege az volt, hogy „a
+NEV-SZABALY fajl hianyzik/ures". Egy hibás mintánál ez HAMIS, és a következő olvasót egy létező,
+olvasható, érvényes JSON keresésére küldi. A rossz magyarázat rosszabb, mint a hiányzó: megállítja a
+keresést. A két ok most külön nevet kap mindkét felhasználói üzenetben, és a selftest állítja, hogy
+megkülönböztethetők.
+
+## 2026-09-04 -- 171c9f42 -- A FAILING verdikt saját kilépési kódot kap, hogy a flag tolerálhassa a hiányzót és soha ne a bukót
+
+**Döntés.** A `gate_verdict_check` mostantól HÁROM kimenetet ad: 0 = mehet, 1 = nincs használható
+verdikt (egy explicit, megnevezett flag felülírhatja), 2 = BUKÓ verdikt (soha nem felülírható). A
+`cleancore-land.sh` MINDIG meghívja, és a `--allow-ungated` csak az 1-est tolerálja.
+
+**Miért.** A flag eddig nem a DÖNTÉST kerülte meg, hanem a HÍVÁST -- így a FAILED ág sosem futott le.
+Három hely állította, hogy egy bukó verdikt sosem járható körbe (a helper saját üzenete, a lander
+kommentje, és a kártya QA-verdiktje), és egyik sem volt igaz. Egyetlen kilépési kóddal a hívó nem is
+tudja kifejezni a különbséget, ezért kellett a 2-es.
+
+**A marveen-oldal két hibája.** A `marveen-land.sh` az ÁGNEVET adta át ott, ahol sha kell -- a parser
+hex-prefixet hasonlít, tehát egy ágnév SOSEM egyezhet, és egy teljesen gate-elt kártya ugyanazt a
+"nincs verdikt" sort kapta, mint egy ellenőrizetlen. A hívás végén álló `|| true` pedig azt az egy
+kimenetet nyelte el, amiért az egész ott van: report módban a helper amúgy is 0-t ad mindenre a bukó
+verdikten kívül.
+
+**A LOW, ami a legfontosabb volt.** Cybersec megmutatta, hogy a két wiring-teszt a FORRÁS SZÖVEGÉT
+nézte, és a helper `return 1 -> return 0` mutációja mellett is ZÖLD maradt. Egy teszt, ami nem tud
+elbukni a kontroll eltávolításától, nem bizonyíték. A viselkedés-bizonyíték most a selftestben van:
+a VALÓDI `cleancore-land.sh`-t hajtja végig a valódi `--allow-ungated` úton egy stub tábla ellen. A
+wiring-teszt ezt teszi törölhetetlenné (ha azok az esetek eltűnnek, elbukik), és forrás-szinten már
+csak a három ténylegesen hibás dolgot pinneli.
+
+**Egy saját csapda a mérés közben.** Az első mutációs futásom szerint a marveen-oldali két javítás
+NEM volt lefedve. Tévedés volt: a shell-idézőjelezés miatt a csere sosem került a fájlba. Miután a
+szkript ELLENŐRZI, hogy a mutáció tényleg a lemezen van (`applied=True`), mindkettő harap. Egy nem
+alkalmazott mutáció "a teszt vak" alakban hazudik.
 ## 2026-09-04 13:16 -- A takarítás a MODELL oszlopra szűr, nem az ügynökére (kártya 4c5c540c)
 
 **Döntés:** A `store/local-llm-usage.log` takarítása a `model == "test-model"` sorokat törli
