@@ -872,6 +872,18 @@ const ACKNOWLEDGED_CONFLICTS = {
     "both sides made the SAME change to triggerMarveenMemorySave (bare sendPromptToSession -> sendSystemDirective(MAIN_AGENT_ID, MAIN_CHANNELS_SESSION, prompt)), so take either for that hunk -- they are semantically equal. Everything ELSE in this file is long-standing fork divergence unrelated to this card: resolve those on their own merits, they are not part of the ab4c85f2 decision. CORRECTION 2026-09-04 (card 272361eb, B-wave): this entry used to say 'lazy bin resolver vs upstream's eager resolveFromPath consts' and had the two sides BACKWARDS -- upstream was the lazy one, WE had the eager module-level consts, which throw at IMPORT time and take every importer of this module down on a PATH gap. That half is no longer a divergence at all: the fork adopted upstream's tmuxBin()/claudeBin() shape, matching platform.ts's own documented rule and agent-process.ts's existing use. What REMAINS undecided here is upstream's STUCKINPUT827 injected-prompt-registry work and its subagent-overdue alert (shouldAlertStuckSubAgent, SUBAGENT_OVERDUE_ALERT_MIN_INTERVAL_MS), neither of which this fork has.",
   // Card 368b77f7 (URGENT: this conflict blocked EVERY marveen landing -- marveen-land.sh refuses on
   // any non-zero fleet-test, with no baseline-delta comparison to fall back on).
+  // Card ec7bdad8 (2026-09-04): the fork adopted upstream's AGENT_API_ORIGIN key, and BOTH sides
+  // now declare it at the same point in the file, which is what git reports as a conflict.
+  'src/config.ts':
+    "TEXTUAL ONLY, and measured as such: the declaration is BYTE-IDENTICAL on both sides " +
+    "(`export const AGENT_API_ORIGIN = cfg('AGENT_API_ORIGIN') ?? ''`), and a real merge produces " +
+    "exactly ONE conflict region, covering the COMMENT above it and nothing else. Take either " +
+    "side's const -- they are the same characters -- and keep ONE comment; the fork's is kept " +
+    "because it records the measurement in the fork's own words (hairpin NAT, curl exit 7, dead " +
+    "address in every generated CLAUDE.md example) and the fork's other config entries are " +
+    "documented the same way. There is NO semantic decision here: if this file ever conflicts on " +
+    "something other than adjacent comment prose, that is a different question and needs its own " +
+    "entry rather than this one being stretched to cover it.",
   'web/lang/en.js':
     "keep BOTH key blocks -- this is a union, not a pick. MEASURED 2026-09-04 at the key level, not " +
     "the line level: 1590 keys at the merge base, the fork ADDED 516 (the outgoing-copy gate's " +
@@ -1070,6 +1082,7 @@ const ACKNOWLEDGED_UPSTREAM_BLOBS: Readonly<Record<keyof typeof ACKNOWLEDGED_CON
   'src/web/channel-monitor.ts': 'd1c642f669ff2a28b6eec79bbf503365c9ac1b08',
   'src/web/routes/messages.ts': '98710db9e171616e0600061eec649542e779506a',
   // Card 368b77f7, 2026-09-04.
+  'src/config.ts': '02c6ff722fe731e1ea6c1e4180b82f379ce8e622',
   'web/lang/en.js': '702bdb0730c92a8d3201e1618cf508d9559ac4ab',
   'web/lang/hu.js': '5a1ba1741d5a704bc298f00d5a0f4550b1a2a1b3',
   // Card 272361eb, 2026-09-04 (B-wave 3/6).

@@ -107,7 +107,7 @@ describe('generateClaudeMd prompt: no hardcoded localhost:3420', () => {
     // Ensures the fallback logic lives in one place (resolveDashboardOrigin),
     // not as an ad-hoc inline expression that could diverge from the heartbeat
     // scaffold.
-    expect(src).toContain('resolveDashboardOrigin(DASHBOARD_PUBLIC_URL, WEB_PORT)')
+    expect(src).toContain('resolveDashboardOrigin(DASHBOARD_PUBLIC_URL, WEB_PORT, AGENT_API_ORIGIN)')
   })
 })
 
@@ -166,7 +166,7 @@ describe('currentHeartbeatIdentity: delegates to resolveDashboardOrigin', () => 
     expect(fnStart).toBeGreaterThan(0)
     const fnEnd = src.indexOf('\n}', fnStart)
     const fnBody = src.slice(fnStart, fnEnd)
-    expect(fnBody).toContain('resolveDashboardOrigin(DASHBOARD_PUBLIC_URL, WEB_PORT)')
+    expect(fnBody).toContain('resolveDashboardOrigin(DASHBOARD_PUBLIC_URL, WEB_PORT, AGENT_API_ORIGIN)')
   })
 
   it('does not hardcode localhost:PORT as a string literal in currentHeartbeatIdentity', () => {
