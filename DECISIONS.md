@@ -6427,3 +6427,51 @@ selftest-felfedezés (kártya 711a7e57) csak a `.selftest.sh` alakra illeszkedet
 python-selftestje -- köztük épp ezé az eszközé -- megírva, commitolva, zöldnek látszóan, soha egyszer
 sem futott le. A felfedezés mostantól interpreter szerint kulcsol, és nyelvenként külön negatív
 kontroll van rá, hogy egy elgépelt kiterjesztés ne tudja csendben lefedetlenül hagyni az egyik nyelvet.
+
+---
+
+## 2026-09-04 -- 5af57bd7 -- Szemafor (max 2) a teljes CleanCore suite-futásokra
+
+**Döntés (MikroB).** Flottaszinten legfeljebb **2 egyidejű** teljes CleanCore suite-futás, `flock`
+alapon; a többi **vár**, nem kap elutasítást. A vitest worker-RPC timeout emelése nem alternatíva.
+
+**Miért nem a timeout.** Kimértem: a worker→fő RPC a birpc `DEFAULT_TIMEOUT = 60 s` értékét
+használja, a vitest 3.2.6 nem ad rá felülírást (a `forks` pool `getRpcOptions()`-je csak
+szerializációt ad, a `worker.js`-ben a `timeout` szó nullaszor szerepel). Csak a `node_modules`
+patchelésével lenne emelhető. És nem is ez a baj: a **fő** folyamat CPU-éheztetése váltja ki, ezért
+nem segített a `--maxWorkers=4` sem — a saját workerjeim korlátozása nem eteti a saját fő
+folyamatomat, amit MÁS ügynökök 12-workeres futásai éheztetnek.
+
+**Szemafor, nem mutex.** A marveen `fleet-test.sh` egyetlen `flock`-ot vesz, mert ott a futások EGY
+fát osztanak — ott a zár HELYESSÉGI kérdés. Itt mindenkinek saját worktree-je van, a futások
+függetlenül helyesek; ami fogy, az a CPU. Tizennyolc ügynök egy 60 perces mutexre sorbaállítva egy
+ritka hamis pirosat cserélne állandó torlódásra.
+
+**`flock` fájlleírón, nem fájl-tartalommal.** A kernel a holder halálakor elengedi, tehát egy
+SIGKILL — ma kétszer így ért véget futás — nem szivárogtat slotot. Tartalom-alapú zárhoz stale-söprő
+kellene, ami újabb elrontható dolog.
+
+**A várakozó nem néma, és ez nem kozmetika.** A 3. szabály szerint egy 10 perce nem mozduló
+`in_progress` kártya beragadt, a 3a. szerint 60 perc után testvérre száll. Egy néma 80 perces
+várakozás tehát elvenné a várakozó ügynöktől a kártyát — rosszabb, mint a hamis piros, amit a
+szemafor elkerülni hivatott. Ezért `PAUSED-SEMAPHORE` komment a várakozás kezdetén, periodikus
+frissítés (300 s, a 10 perces küszöb alatt), `RESUMED-SEMAPHORE` a slot megszerzésekor. Mindegyik
+mozdítja az `updated_at`-et, ami az a mező, amit a figyelő valóban olvas.
+
+**A rutin eset NÉMA.** Ha van szabad slot — a gyakori eset —, semmi nem íródik. Egy értesítés, ami
+egészséges forgalomra is elsül, az, amit két hét múlva átugranak (222fdc5e leckéje, ugyanezen a
+táblán).
+
+**Mért csapda, amit NEM választottam:** kézenfekvő lett volna a `store/load-paused-agents.json`
+marker-fájlba írni, hiszen azt olvassa a `redispatch-guard.sh` `_is_load_paused()`-ja és a
+stuck-card-monitor. **Nem járható:** a `load-guard-bookkeeping.sh:234` a fájlt a saját számított
+halmazából **teljesen felülírja**, tehát egy idegen bejegyzést a következő tickje törölne — a
+kizárás csendben megszűnne, miközben megépítettnek látszik. Ezért megy a jelzés a kártyára, nem a
+marker-fájlba.
+
+**Saját hiba, amit a saját selftestje talált meg.** Az `acquire()` először így szólt:
+`exec {FD}>"$f" 2>/dev/null || continue`. Parancs NÉLKÜLI `exec`-nél a átirányítás a SHELLRE
+vonatkozik és **megmarad**, tehát az a `2>/dev/null` a szkript minden későbbi `echo >&2`-jét
+elnyelte — a sorbanállás-jelzést, a feladás okát, a worktree-hibát. A selftest üres kimenetű exit 3-at
+látott, és ez vezetett a felismerésig. A javítás: a fájlt egy RENDES paranccsal hozzuk létre (annak
+az átirányítása arra a parancsra korlátozódik), az `exec` pedig csupaszon fut.
