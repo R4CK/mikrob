@@ -106,44 +106,112 @@ describe('STDIN_SHELL_RX pipe branch: the broader trigger must not create new fa
   })
 })
 
-describe('PATH_PREFIX CMD_POSITION-anchor fix: quadratic-blowup repro must stay fast (card 39cc3460 round 3)', () => {
+// ---------------------------------------------------------------------------------------------
+// PERFORMANCE: measured as a CPU-time GROWTH RATIO, not an absolute wall-clock budget (card
+// e393c67d, replacing the eight Date.now() budgets this block used to carry).
+//
+// WHY. A wall clock measures the MACHINE. This fleet runs 15 agents at loadavg 8-35, so these
+// budgets went red on diffs that touch nothing this file loads -- the fourth documented case of the
+// class (cards 3208a968, d19bba07, plus three landings lost on fbca2448). Raising the numbers buys
+// weeks; changing the instrument is what actually fixes it. What card 39cc3460 claims is a
+// COMPLEXITY property -- that these constructs stopped being O(n^2) -- and complexity is a ratio,
+// which cancels the machine out. A WALL-clock ratio is still not enough: min-of-rounds is biased
+// against the longer sample (catching one uncontended 120ms window is less likely than catching one
+// uncontended 30ms window), so the ratio inflates on its own under load. CPU time excludes the
+// descheduled interval, which is exactly the part the two samples do not share.
+//
+// DETECTION MEASURED, NOT ASSUMED. PATH_PREFIX was reverted to its pre-fix shape
+// (`\\.` for the escaped-character alternative, and the negated class without CMD_POSITION_CHARS)
+// and the same ratio re-measured at N=4000, loadavg ~20:
+//
+//     anchor   fixed    pre-fix          anchor   fixed    pre-fix
+//       |      2.04x    14.89x             )      4.07x    15.73x
+//       &      4.47x    18.53x             <      5.26x     4.69x
+//       ;      2.76x    14.25x             >      4.36x     3.26x
+//       (      4.65x    17.64x
+//
+// Five of the seven anchors separate cleanly across MAX_RATIO=8. `<` and `>` do not move, and that
+// is correct rather than a gap: they are not in CMD_POSITION_CHARS, so they are held by the negated
+// class's own `<>` exclusion, which the mutation above deliberately leaves in place. Their
+// assertions here are backstops against a general blowup, not proof of this particular fix.
+const N = 16000
+const M = 4 * N
+const ROUNDS = 3
+// Quadratic = 16x, linear = 4x. 8 is the log-space midpoint, so it takes a 2x error in either
+// direction to flip, and load scales BOTH measurements together.
+const MAX_RATIO = 8
+// A deliberately absurd absolute ceiling. The ratio catches a RETURN to O(n^2); it does not catch
+// something that stays linear but becomes 100x slower per character. Measured 5-34ms per call under
+// load, refused at 10s -- a margin nothing on this machine has approached, and the opposite of the
+// 525-vs-500 margin that started this.
+const ABSURD_MS = 10_000
+
+const cpuMsOnce = (command: string): number => {
+  const before = process.cpuUsage()
+  gateDecision('Bash', { command })
+  const d = process.cpuUsage(before)
+  return (d.user + d.system) / 1000
+}
+
+/**
+ * Interleaved, minimum-of-rounds. Interleaved because a load spike between two sequential
+ * measurements would land on only one of them and skew the ratio; minimum because the least
+ * contended sample is the one closest to the code's own cost.
+ */
+const growthRatio = (build: (n: number) => string): { ratio: number; small: number; large: number } => {
+  let small = Infinity
+  let large = Infinity
+  for (let r = 0; r < ROUNDS; r++) {
+    small = Math.min(small, cpuMsOnce(build(N)))
+    large = Math.min(large, cpuMsOnce(build(M)))
+  }
+  return { ratio: large / small, small, large }
+}
+
+const expectLinear = (name: string, build: (n: number) => string): void => {
+  const { ratio, small, large } = growthRatio(build)
+  // The numbers go in the message, so a failure says whether it is a complexity regression or just
+  // a slow machine -- the question the old absolute budget could never answer.
+  expect(
+    ratio,
+    `${name}: n=${N} took ${small.toFixed(1)}ms CPU, n=${M} took ${large.toFixed(1)}ms CPU -> ` +
+      `${ratio.toFixed(2)}x. Linear is ~4x, quadratic ~16x; over ${MAX_RATIO}x means the O(n^2) ` +
+      `backtracking is back.`,
+  ).toBeLessThan(MAX_RATIO)
+  expect(large, `${name}: ${large.toFixed(1)}ms CPU for one call is absurd regardless of shape`).toBeLessThan(ABSURD_MS)
+}
+
+describe('PATH_PREFIX CMD_POSITION-anchor fix: growth stays LINEAR (card 39cc3460 round 3)', () => {
   // Pre-fix measured (Cybersec, Gate-SHA e724ae21, through the real gateDecision()): n=32000 pairs
   // (64 KB) took up to 13.3s on these characters -- already past the hook's own 10s timeout.
-  it.each(ANCHORS)('escaped %s pair-run stays under 500ms at n=16000 pairs', (a) => {
-    const text = `${pairRun(a, 16000)}bash -c "id"`
-    const t0 = Date.now()
-    gateDecision('Bash', { command: text })
-    expect(Date.now() - t0).toBeLessThan(500)
+  it.each(ANCHORS)('escaped %s pair-run grows linearly', (a) => {
+    expectLinear(`escaped ${a} pair-run`, (n) => `${pairRun(a, n)}bash -c "id"`)
   })
 
-  it('stays fast at n=100000 pairs across all seven anchors, near the practical ceiling this class of input reaches', () => {
+  // The ratio is measured at N/4N (16k/64k). This keeps the ORIGINAL n=100000 input size in the
+  // suite: the ratio proves the SHAPE of the growth, but only an actual run at the ceiling proves
+  // the ceiling is reachable at all. Dropping it because the ratio "covers" it would shrink the
+  // exercised input range -- a previously-green assertion disappearing is its own failure, however
+  // good the replacement looks. Absolute, not a ratio, and deliberately absurd: isolated it
+  // measures 37-215ms per anchor.
+  it('all seven anchors stay far under the absurd ceiling at n=100000, the practical ceiling for this class', () => {
     for (const a of ANCHORS) {
-      const text = `${pairRun(a, 100000)}bash -c "id"`
-      const t0 = Date.now()
-      gateDecision('Bash', { command: text })
-      // Generous margin for full-suite CPU contention (isolated measured: 37-215ms per anchor at
-      // this size) -- still two orders of magnitude below the pre-fix quadratic blowup.
-      expect(Date.now() - t0).toBeLessThan(1000)
+      const ms = cpuMsOnce(`${pairRun(a, 100000)}bash -c "id"`)
+      expect(ms, `escaped ${a} at n=100000 took ${ms.toFixed(1)}ms CPU`).toBeLessThan(ABSURD_MS)
     }
   })
 })
 
-describe('card 1a609c01 fix: HAS_PIPE_RX + WRAPPER_POSITION_BARE_SHELL_RX independent check stays fast', () => {
+describe('card 1a609c01 fix: HAS_PIPE_RX + WRAPPER_POSITION_BARE_SHELL_RX independent check stays linear', () => {
   // The whole point of keeping these two checks independent (rather than one combined regex with a
   // filler between the pipe and the retry anchor) is to avoid reintroducing the exact O(n^2) shape
   // rounds 1-3 spent three rounds closing. Same adversarial anchor-pair-run shapes, now through a
   // pipe-prefixed bare shell invocation (the construct this fix actually touches).
-  it.each(ANCHORS)('escaped %s pair-run before a piped bare shell stays under 500ms at n=16000 pairs', (a) => {
-    const text = `echo "x" | ${pairRun(a, 16000)}bash`
-    const t0 = Date.now()
-    gateDecision('Bash', { command: text })
-    expect(Date.now() - t0).toBeLessThan(500)
+  it.each(ANCHORS)('escaped %s pair-run before a piped bare shell grows linearly', (a) => {
+    expectLinear(`escaped ${a} before piped bare shell`, (n) => `echo "x" | ${pairRun(a, n)}bash`)
   })
 
-  it('a long run of plain pipes with no shell name anywhere stays fast (HAS_PIPE_RX alone must not blow up)', () => {
-    const text = '|'.repeat(100000) + 'echo done'
-    const t0 = Date.now()
-    gateDecision('Bash', { command: text })
-    expect(Date.now() - t0).toBeLessThan(500)
+  it('a long run of plain pipes with no shell name anywhere grows linearly (HAS_PIPE_RX alone must not blow up)', () => {
+    expectLinear('plain pipe run', (n) => '|'.repeat(n) + 'echo done')
   })
 })
