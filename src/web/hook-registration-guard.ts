@@ -49,6 +49,20 @@ export const KNOWN_HOOK_SCRIPTS: readonly string[] = [
   // as foreign, so it is KEPT rather than pruned), which is why it has gone unnoticed;
   // closing it for the others belongs on its own card, not in this diff.
   'outgoing-copy-gate.py',
+  // Card 83d970fa (QA, on the 0c66be37 gate): the ACKNOWLEDGED_CONFLICTS entry for this file
+  // records a UNION with upstream, but the array carried only the fork's half -- the documented
+  // decision and the code had drifted apart. This closes ONE of the three; the other two are
+  // deliberately NOT here, and the reason is the direction of the failure.
+  //
+  // Adding a name here makes a settings entry naming it PRUNABLE once its script file is missing.
+  // Measured in this checkout: `skill-usage-capture.py` EXISTS (scripts/hooks/, with its own unit
+  // tests), so listing it costs nothing today and is right the moment anything registers it.
+  // `clear-capture.py` and `clear-replay.py` do NOT exist here -- they arrive with the upstream
+  // merge. Listing them NOW would arm the pruner against exactly the installs that already have
+  // them from upstream: their entry would read as ours-and-stale and be deleted. The union rule
+  // applies AT MERGE TIME, when the scripts arrive with it; see the invariant test that keeps this
+  // from being a matter of anyone remembering.
+  'skill-usage-capture.py',
 ]
 
 // Path fragment that marks a checkout as an agent worktree. Kept
