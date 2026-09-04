@@ -554,11 +554,25 @@ export function correlateWithKanban(): void {
   `).all() as { agent: string; minTs: number; maxTs: number }[]
 
   for (const row of uncorrelated) {
+    // PARENT CARDS ARE NOT WORK ITEMS HERE (adopted from upstream with card 4b03a88d, and ONLY with
+    // it). This correlation reads updated_at as "the agent was working on this card at that moment"
+    // and uses consecutive timestamps as window boundaries. Now that a subcard write also stamps its
+    // ancestors (db.ts, touchAncestorChain), a parent carries the SAME timestamp as the child that
+    // caused it -- and on a tie, which title won the token rows came down to row order rather than to
+    // what was worked on. Parents are skipped so the leaf keeps the attribution.
+    //
+    // THIS FILTER WAS DELIBERATELY REJECTED ON CARD f27c999b (B-wave 4/6) and adopting it now is not
+    // a reversal: its premise is ancestor stamping, which the fork did not have then. Without
+    // bubbling a parent's updated_at means the parent itself was edited, so the filter would have
+    // DISCARDED correct attribution instead of fixing a wrong one. The two changes are one change and
+    // must never be split -- the conflict-map entry for this file recorded that condition and named
+    // this card as the trigger.
     const cards = db.prepare(`
       SELECT id, title, project, assignee, updated_at
       FROM kanban_cards
       WHERE (assignee = ? OR assignee LIKE '%' || ? || '%')
         AND updated_at BETWEEN ? AND ?
+        AND NOT EXISTS (SELECT 1 FROM kanban_cards child WHERE child.parent_id = kanban_cards.id)
       ORDER BY updated_at ASC
     `).all(row.agent, row.agent, row.minTs, row.maxTs) as any[]
 

@@ -2302,6 +2302,53 @@ export function clearPendingSelfAdvanceClear(agentId: string, cardId: string): b
   return db.prepare('DELETE FROM agent_pending_clear WHERE agent_id = ? AND card_id = ?').run(agentId, cardId).changes > 0
 }
 
+/** How far up a parent chain one stamp will walk. The fleet's own decomposition rule is four levels
+ *  (Phase -> Task -> subtask -> step); 16 is slack, not a target, and the limit exists so a malformed
+ *  chain cannot spin. */
+const ANCESTOR_DEPTH_LIMIT = 16
+
+/**
+ * Stamp `updated_at` up the whole parent chain (adopted from upstream, card 4b03a88d).
+ *
+ * WHY THE FORK NEEDS THIS, measured on the live board while taking this card: phase card 607254fb
+ * read as 4.7 HOURS stale while one of its children had been touched 1 minute earlier and another 11
+ * minutes earlier. That is not cosmetic -- working rule 3 detects a stuck card from `updated_at`, and
+ * the orchestrator acted on exactly this reading, judging the lane idle while it was mid-task. A
+ * parent whose children are moving is not stale, and until now nothing said so.
+ *
+ * Cycle- and depth-guarded: `parent_id` is editable through the API, so a looping or runaway chain is
+ * reachable input rather than a theoretical worry. Both cases stop and warn instead of throwing -- a
+ * bad edge must not take down the write that triggered the stamp.
+ */
+function touchAncestorChain(parentId: string | null | undefined, now: number, startedAt: string): void {
+  if (!parentId) return // root card: the common case, and it costs nothing
+  const readParent = db.prepare('SELECT parent_id FROM kanban_cards WHERE id = ?')
+  const stamp = db.prepare('UPDATE kanban_cards SET updated_at = ? WHERE id = ?')
+  const seen = new Set<string>([startedAt])
+  let current: string | null = parentId
+  let depth = 0
+  while (current) {
+    if (seen.has(current)) {
+      logger.warn({ cycleAt: current, from: startedAt }, 'kanban: parent_id cycle -- ancestor stamping stopped')
+      return
+    }
+    if (++depth > ANCESTOR_DEPTH_LIMIT) {
+      logger.warn({ from: startedAt, limit: ANCESTOR_DEPTH_LIMIT }, 'kanban: parent chain too deep -- ancestor stamping stopped')
+      return
+    }
+    seen.add(current)
+    stamp.run(now, current)
+    current = (readParent.get(current) as { parent_id: string | null } | undefined)?.parent_id ?? null
+  }
+}
+
+/** Look the card's parent up and stamp from there -- for call sites that already wrote the card row
+ *  and do not otherwise need its parent_id. */
+function touchAncestorsOf(cardId: string, now: number): void {
+  const row = db.prepare('SELECT parent_id FROM kanban_cards WHERE id=?').get(cardId) as { parent_id: string | null } | undefined
+  touchAncestorChain(row?.parent_id, now, cardId)
+}
+
 export function createKanbanCard(card: {
   id: string
   title: string
@@ -2328,6 +2375,7 @@ export function createKanbanCard(card: {
     card.assignee ?? null, card.priority ?? 'normal',
     card.project ?? null, card.parent_id ?? null, card.due_date ?? null, sortOrder, now, now
   )
+  touchAncestorChain(card.parent_id, now, card.id)
   // Card 6cd61430: a new card can already state its pair and its parent.
   noteRelations(cardEdges({ id: card.id, description: card.description, parent_id: card.parent_id }))
 }
@@ -2479,6 +2527,12 @@ export function updateKanbanCard(
       'INSERT INTO kanban_card_events (card_id, from_status, to_status, actor, created_at, forced) VALUES (?, ?, ?, ?, ?, ?)'
     ).run(id, card.status, f.status, opts?.actor ?? null, now, forcedFlag)
   }
+  if (changed) {
+    touchAncestorChain(f.parent_id, now, id)
+    // A re-parent leaves the OLD chain stale too: that subtree just lost a child, which is a change
+    // to it even though no row beneath it was written.
+    if (card.parent_id && card.parent_id !== f.parent_id) touchAncestorChain(card.parent_id, now, id)
+  }
   if (changed) recordKanbanFieldChanges(id, card, f, opts?.actor, now)
   // Card 6cd61430: an edit can ADD a Pair-* line or a parent. It can also REMOVE one, and this
   // insert-only path cannot see that -- reconcileKanbanRelations() is what deletes the stale edge,
@@ -2615,6 +2669,7 @@ export function moveKanbanCard(id: string, status: KanbanCard['status'], sortOrd
       'INSERT INTO kanban_card_events (card_id, from_status, to_status, actor, created_at, forced) VALUES (?, ?, ?, ?, ?, ?)'
     ).run(id, prev, status, actor ?? null, now, forcedOverride || depBlocked ? 1 : 0)
   }
+  if (changed) touchAncestorsOf(id, now)
   return changed
 }
 
@@ -3346,6 +3401,7 @@ export function addKanbanLineComment(
     'INSERT INTO kanban_line_comments (card_id, sha, file, line, author, content, created_at) VALUES (?, ?, ?, ?, ?, ?, ?)'
   ).run(cardId, sha, file, line, author, content, now)
   db.prepare('UPDATE kanban_cards SET updated_at = ? WHERE id = ?').run(now, cardId)
+  touchAncestorsOf(cardId, now)
   return { id: Number(info.lastInsertRowid), card_id: cardId, sha, file, line, author, content, created_at: now }
 }
 
@@ -3441,6 +3497,7 @@ export function addKanbanComment(cardId: string, author: string, content: string
     'INSERT INTO kanban_comments (card_id, author, content, created_at) VALUES (?, ?, ?, ?)'
   ).run(cardId, author, content, now)
   db.prepare('UPDATE kanban_cards SET updated_at = ? WHERE id = ?').run(now, cardId)
+  touchAncestorsOf(cardId, now)
   // Card 6cd61430: the REVIEW comment carrying `Gate-SHA:` is the fleet's most common marker, and
   // it arrives here. noteRelations cannot fail this write -- see its own comment for why that
   // isolation is deliberate rather than defensive.
