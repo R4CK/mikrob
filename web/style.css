@@ -9723,6 +9723,27 @@ body {
 .auth-device-name { color: var(--text); font-weight: 600; }
 .auth-device-meta { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .auth-device-row .auth-device-revoke { margin-left: auto; flex-shrink: 0; }
+
+/* Outgoing-filter name rules (card 98dbbcc9). A stored rule is an escaped regex source, so
+   it wraps rather than being clipped: a truncated pattern is one the operator cannot tell
+   apart from a similar one, and the Remove button is destructive. */
+.name-pattern-row { align-items: flex-start; gap: 8px; flex-wrap: wrap; }
+.name-pattern-src {
+  color: var(--text);
+  font-family: var(--mono, monospace);
+  font-size: 12px;
+  word-break: break-all;
+  overflow-wrap: anywhere;
+  flex: 1 1 12rem;
+  min-width: 0;
+}
+/* 44px so the destructive control stays comfortably tappable on a phone (rule 13). */
+.name-pattern-row .name-pattern-del { margin-left: auto; flex-shrink: 0; min-height: 44px; }
+.auth-name-patterns select { min-height: 44px; }
+.auth-name-patterns #namePatternAddBtn { min-height: 44px; }
+@media (max-width: 480px) {
+  .name-pattern-row .name-pattern-del { margin-left: 0; width: 100%; }
+}
 .auth-device-mint { margin-top: 10px; }
 .auth-device-minted-row { flex-direction: row; max-width: none; }
 .auth-device-minted-row input { flex: 1; font-family: var(--mono, monospace); font-size: 12px; }

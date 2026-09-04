@@ -5717,3 +5717,26 @@ működő értéket kapta vissza, nem az `.env`-ből származót.
 útvonalat FUTTATOTT az `--apply` úton -- amit mostantól egy felügyelet nélküli scheduled-task
 használ. A változó most egy skill-NEVET tartalmaz, amit a script ÖSSZEHASONLÍT, és egyetlen fix
 jelölő-szöveget ír; a teszt sosem igényelt többet ennél.
+
+## 2026-09-04 12:05 -- A név-szabály mintákat a Python motor validálja, nem a Node (kártya 98dbbcc9)
+
+**Döntés:** A dashboard `bad_name_patterns` CRUD-ja minden mintát egy külön Python segédeszközzel
+(`scripts/name-pattern-tool.py`) ellenőriztet mentés ELŐTT, és a "pontos szöveg" módú bevitelt is
+Python `re.escape`-pel alakítja mintává. Node-oldali `new RegExp` validáció NEM elfogadható.
+**Miért:** A `scripts/hooks/outgoing-copy-gate.py` a mintákat `re.compile("|".join(pats))` alakban
+fordítja, import időben, try/except NÉLKÜL. Egy le nem forduló minta tehát nem "fail-closed"
+állapotot okoz: a hook `re.PatternError`-ral kilép 1-es kóddal, üres stdouttal, és mivel Claude
+Code-ban CSAK a 2-es kód blokkol, a kapu ettől kezdve CSENDBEN NEM FUT egyetlen ügynöknél sem.
+A két motor mérve, mindkét irányban eltér: `(?<n>x)` és `\p{L}` Node-ban érvényes és Pythonban
+összeomlik (hamis ELFOGADÁS -> néma kapu-kiesés), `(?P<n>x)` és `(?#c)x` Pythonban érvényes és
+Node-ban hibás (hamis ELUTASÍTÁS). Öt tesztelt alakból négy eltért. Ugyanez az indok az escapelésre:
+a helyes escape-szabályok a fogyasztó motor szabályai.
+**Kiegészítő döntés:** a validáló visszalépés-robbanást (ReDoS) is elutasít, mert a kapu MINDEN
+eszközhívásnál lefut. A robbanást SIGALRM szakítja meg (a CPython `sre` a match-ciklusban figyeli a
+szignálokat -- mérve, mielőtt ráépítettünk volna), a hívó oldali 10 mp-es process-timeout a tartalék.
+A próba-szövegeket a robbanást TÉNYLEGESEN kiváltó alakra kellett cserélni: `(a+)+$` a "a"*4096-on
+azonnal visszatér (mert illeszkedik), a detonáló alak a futam + EGY nem illeszkedő karakter.
+**Ki döntött:** fullstack (mérés + implementáció), Peti (hibrid felület-igény), MikroB (kiosztás).
+**Hivatkozás:** kártya `98dbbcc9`; `scripts/name-pattern-tool.py` (+ selftest), `src/web/outgoing-name-patterns.ts`,
+`src/web/routes/name-patterns.ts`. A 0600 mód megtartása külön kikötés: `atomicWriteFileSync` csak
+akkor chmod-ol, ha a hívó átadja a módot (lásd a `1ce3fd90` tanulságát).
