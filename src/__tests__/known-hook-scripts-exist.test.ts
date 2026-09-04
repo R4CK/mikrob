@@ -15,7 +15,7 @@
 import { existsSync } from 'node:fs'
 import { join } from 'node:path'
 import { describe, expect, it } from 'vitest'
-import { KNOWN_HOOK_SCRIPTS } from '../web/hook-registration-guard.js'
+import { KNOWN_HOOK_SCRIPTS, pruneStaleHookEntries } from '../web/hook-registration-guard.js'
 import { PROJECT_ROOT } from '../config.js'
 
 // Every listed script lives in one of these two directories today; a new location is a deliberate
@@ -48,9 +48,10 @@ describe('KNOWN_HOOK_SCRIPTS only names scripts this checkout actually has (card
   })
 
   it('the two /clear names stay out until their scripts arrive with the upstream merge', () => {
-    // Not a preference: while the files are absent, listing them arms the pruner against installs
-    // that DO have them. If a later merge brings the scripts, this expectation is what should be
-    // updated -- together with adding the names, in the same commit.
+    // Not a preference: while the files are absent, listing them arms the pruner against an install
+    // that has the ENTRY but not the FILE -- this checkout before the merge -- and the deleted
+    // registration is never written back. If a later merge brings the scripts, this expectation is
+    // what should be updated -- together with adding the names, in the same commit.
     for (const name of ['clear-capture.py', 'clear-replay.py']) {
       if (resolveScript(name) === null) {
         expect(
@@ -64,5 +65,40 @@ describe('KNOWN_HOOK_SCRIPTS only names scripts this checkout actually has (card
         ).toContain(name)
       }
     }
+  })
+
+  // The paragraph above the array states WHICH install an early listing would hurt. That direction
+  // was written backwards once already, and a confident wrong direction is worse than none: it
+  // tells the next maintainer to wait for the wrong signal. So it is executed here.
+  it('the deferral reasoning, executed: the entry-without-file install is the one at risk', () => {
+    const settingsNaming = (script: string) => ({
+      hooks: {
+        PreToolUse: [
+          {
+            matcher: 'Bash',
+            hooks: [{ type: 'command', command: `python3 "/opt/app/scripts/hooks/${script}"` }],
+          },
+        ],
+      },
+    })
+    const listed = { knownScripts: ['clear-capture.py'] as const }
+
+    // Listed + file MISSING -> the registration is DELETED. This is the install the deferral
+    // protects: it carries upstream's entry while this checkout has no script yet.
+    const atRisk = pruneStaleHookEntries(settingsNaming('clear-capture.py'), {
+      ...listed,
+      fileExists: () => false,
+    })
+    expect(atRisk.changed).toBe(true)
+    expect(atRisk.removed.join(' ')).toContain('clear-capture.py')
+
+    // Listed + file PRESENT -> untouched. An install that HAS the script is NOT the population at
+    // risk; claiming it was is precisely the inversion this test exists to prevent.
+    const safe = pruneStaleHookEntries(settingsNaming('clear-capture.py'), {
+      ...listed,
+      fileExists: () => true,
+    })
+    expect(safe.changed).toBe(false)
+    expect(safe.removed).toHaveLength(0)
   })
 })
