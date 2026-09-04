@@ -6358,3 +6358,40 @@ hibaosztaly, amit ugyanezen a napon a fork-horgonynal is javitani kellett (a1481
 indexet, tehat `--repo X --json` mellett a `--json` sosem jutott szohoz.
 
 **Ki dontott:** backend2 (meres + dontes), a kartyat MikroB nyitotta backend2 63beeb8a-REVIEW leletere.
+
+## 2026-09-05 -- f1b3f2f0 -- A landolas ujraepiti a dist-et; a restart valtozatlanul kulon kapu
+
+**Dontes:** a `marveen-land.sh` a sikeres push es az elo checkout elorehuzasa UTAN lefuttatja a
+buildet az ELO TELEPITESBEN, ha a landolt tartomany `src/`-t erint. MikroB dontese volt a (b) irany
+(a feltetel megszuntetese, nem a jelzese); ez annak a vegrehajtasa.
+
+**Amit a kartya premisszajabol JAVITANI kellett:** a kartya szerint "senki nem aggregalja" a
+stale-build tunetet. Ez nem igaz: a `scripts/build-freshness-guard.sh` egy ELO systemd --user
+timeren fut 5 percenkent, 300 masodperces build-turelmi ablakkal -- iras kozben ellenoriztem, epp
+futott, es ezt mondta: "dist/ 2m behind src/ -- within the 300s grace period, no-op". A rés tehat
+sosem volt lathatatlan, csak sosem lett BEZARVA. A kartya lenyege ettol all: a riasztas nem javitas,
+es egy naponta tizszer ujratermelodo feltetelre nem valasz, hogy valaki naponta tizszer lefuttatja
+az update.sh-t.
+
+**A 77075367 dontese NEM lett visszavonva.** Az kimondta, hogy a landolas nem epit ujra ES nem indit
+ujra; ebbol a RESTART fele valtozatlan (tovabbra is ./update.sh, tovabbra is megerositve). Csak az
+ujraepites fele valtozott, es pont az a fele, amire a helyi-modell offload utja ra van kotve: a
+`local-llm-rag.sh` hivasonkent FRISS node-ot indit a dist-bol, tehat neki a build eleg, a restart nem
+kell. Ellenorizve iras elott: a `src/web` alatt semmi nem indit futasidoben node gyereket a dist-bol,
+tehat egy ujraepitett dist nem hasit ketfele verzio koze egy futo szolgaltatast.
+
+**Merve, mert ez minden landolas ara:** a teljes build 16,5 masodperc, a landolas amugy is 140-170
+masodperc. Sorositva fut (`flock`), mert a parhuzamos landolas valos -- egy este ketszer is
+push-versenyt vesztettem.
+
+**Fail-soft es hangos:** a commitok a build futasakor MAR pusholva vannak, tehat egy build-hiba nem
+buktathatja a landolast (az egy megtortent landolast jelentene meg nem tortentkent). Egy bukott build
+pontosan azt az allapotot hagyja hatra, ami eddig is volt, es amire a freshness-guard riaszt.
+
+**Ket sajat hibat a tesztek talaltak meg, nem en:** (1) a lock-fajlt a `store/` ala tettem, ami a
+land-fixture-ben nem letezik -- a `flock` ilyenkor 66-tal all le, es ez REBUILD FAILED-kent jelent meg
+egy olyan buildre, ami el sem indult; a lock azota a `.git` alatt van, aminek a letezeset a script
+amugy is megkoveteli. (2) A "skipped" esetem ROSSZ OKBOL ment at: ket kulon ag irja ugyanazt a szot,
+es a teszt csak a szora allitott -- a specifikus okra allit azota.
+
+**Ki dontett:** MikroB (irany), backend2 (meres + vegrehajtas).
