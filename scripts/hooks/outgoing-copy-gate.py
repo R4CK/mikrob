@@ -1076,7 +1076,38 @@ def telegram_gate(tool_input: dict) -> None:
 # right thing per path, with no new state to model: the email path's fail-closed wrapper turns it
 # into exit 2, and telegram_gate's documented fail-open turns it into exit 0 plus a loud warning.
 # Returning None would have been the one wrong answer -- a silent "the name is fine".
-NAME_MATCH_BUDGET_S = float(os.environ.get("OUTGOING_COPY_GATE_NAME_BUDGET", "2"))
+NAME_MATCH_BUDGET_DEFAULT_S = 2.0
+
+
+def _read_name_budget(raw):
+    """Parse the budget, and NEVER raise doing it (Cybersec NO-GO on my own fix, card 0c66be37).
+
+    I wrote this line as a bare `float(os.environ.get(...))` at module level -- in the very commit
+    that moved a compile INTO a try for exactly this reason. `BUDGET=abc` (or an empty value, or a
+    space) raised ValueError at IMPORT, exit 1, zero stdout: the whole hook silently absent on every
+    agent. Same defect class, same file, same commit. Measured before fixing: `2` -> exit 2,
+    `abc` / `` / ` ` -> exit 1.
+
+    A NON-POSITIVE or unparseable value falls back to the default rather than disabling the timer.
+    Disabling has to be SAID, with the literal `off`, because a typo must cost protection nowhere:
+    if `-1` or `nonsense` silently meant "no budget", the knob would be a way to switch a control
+    off by accident, which is how this class keeps happening.
+    """
+    if raw is None:
+        return NAME_MATCH_BUDGET_DEFAULT_S
+    text = str(raw).strip().lower()
+    if text == "off":
+        return 0.0
+    try:
+        value = float(text)
+    except (TypeError, ValueError):
+        return NAME_MATCH_BUDGET_DEFAULT_S
+    if not (value > 0) or value != value or value == float("inf"):
+        return NAME_MATCH_BUDGET_DEFAULT_S
+    return value
+
+
+NAME_MATCH_BUDGET_S = _read_name_budget(os.environ.get("OUTGOING_COPY_GATE_NAME_BUDGET"))
 
 
 class NamePatternTimeout(Exception):

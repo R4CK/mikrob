@@ -472,6 +472,67 @@ def main():
             env_extra={"OUTGOING_COPY_GATE_NAME_BUDGET": "1"},
         )
 
+        # --- NOTHING READ AT IMPORT MAY KILL THE HOOK (card 0c66be37, Cybersec NO-GO) ----
+        # This battery exists because I introduced the SAME defect class twice in the same commit.
+        # The card was "one typo'd pattern must not kill the hook"; my fix then added
+        # `NAME_MATCH_BUDGET_S = float(os.environ.get(...))` at MODULE level, so `BUDGET=abc` raised
+        # ValueError at import -- exit 1, zero stdout, the whole hook silently absent on every
+        # agent. Measured before fixing: `2` -> exit 2, `abc` / empty / a single space -> exit 1.
+        #
+        # So this is not another one-off patch: it enumerates EVERY environment knob the module
+        # reads while importing, with values chosen to break a naive parse, and asserts the hook
+        # still reaches a verdict. Exit 1 reads as ALLOW here, which is exactly what makes the
+        # failure invisible in production and visible in this table.
+        def reaches_a_verdict(label, env_extra=None, rules_path=None):
+            """Assert the hook RAN. Exit 0 and 2 are verdicts; exit 1 is the module dying.
+
+            The BLOCK/ALLOW helper cannot express this -- it maps every non-2 code to ALLOW, which
+            is exactly why the production failure was invisible: a hook that never started looks
+            like a hook that looked and had no objection.
+            """
+            nonlocal failures
+            payload = json.dumps({"tool_name": "Bash", "tool_input": {
+                "command": REAL_SEND.format(body=CLEAN_HU)}})
+            env = dict(os.environ)
+            env.pop("OUTGOING_COPY_GATE_TELEGRAM_BASH", None)
+            env["OUTGOING_COPY_GATE_RULES"] = str(rules_path if rules_path is not None else named_rules)
+            env.update(env_extra or {})
+            p = subprocess.run([sys.executable, str(GATE)], input=payload,
+                               capture_output=True, text=True, env=env)
+            ok = p.returncode in (0, 2)
+            print(f"{'OK  ' if ok else 'FAIL'} {'ran':5s} <- {'exit%d' % p.returncode:5s}  {label}")
+            if not ok:
+                failures.append((label, "exit 0 or 2 (a verdict)", f"exit {p.returncode}", p.stderr))
+
+        for value in ["abc", "", " ", "-1", "0", "nan", "inf", "1e400", "2.5", "off", "true", "[]"]:
+            reaches_a_verdict(f"import survives OUTGOING_COPY_GATE_NAME_BUDGET={value!r}",
+                              env_extra={"OUTGOING_COPY_GATE_NAME_BUDGET": value})
+        # A HOSTILE VALUE MUST NOT SILENTLY DISABLE THE BUDGET, only fall back to the default.
+        # Found by mutating: with `except ValueError: return 0.0` (or with non-positive values
+        # meaning "no timer"), every case above still passed -- they only prove the module IMPORTS,
+        # not that the protection survived. So the docstring's claim, that a typo can cost
+        # protection nowhere, was an unmeasured assertion. This is the case that measures it: a
+        # catastrophic pattern with a garbage budget must still be BOUNDED, not hang.
+        case(
+            "a garbage budget falls back to the default -- it does NOT turn the timer off",
+            REAL_SEND.format(body=SLOW_BODY),
+            BLOCK,
+            rules_path=slow_pat_rules,
+            env_extra={"OUTGOING_COPY_GATE_NAME_BUDGET": "abc"},
+        )
+        case(
+            "...and neither does a NEGATIVE one (disabling has to be said, with `off`)",
+            REAL_SEND.format(body=SLOW_BODY),
+            BLOCK,
+            rules_path=slow_pat_rules,
+            env_extra={"OUTGOING_COPY_GATE_NAME_BUDGET": "-1"},
+        )
+
+        # The other import-time knob. It feeds a PATH resolution rather than a number, so the
+        # failure shape differs -- but a hook that dies reading it is just as absent.
+        for value in ["", " ", "/nonexistent/deep/path.json", "relative.json"]:
+            reaches_a_verdict(f"import survives OUTGOING_COPY_GATE_RULES={value!r}", rules_path=value)
+
         # --- Fail-closed net on the __main__ wrapper (B-wave, card 630d9864) -------------
         # Upstream's wrapper, recorded in the conflict map as "a candidate for future adoption,
         # not yet taken", and MEASURED before adopting: a payload whose tool_input is not a dict
