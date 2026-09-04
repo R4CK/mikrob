@@ -780,6 +780,24 @@ const ACKNOWLEDGED_CONFLICTS = {
     "both sides added the SAME GET /api/messages/:id handler (identical code, comments differ) -- keep either side's code and the FORK's comment, which records the ab4c85f2 incident that made the endpoint necessary; the fork's other additions in this file (reserved-sender guard, JSON-parse hardening, to-validation, card-state stamping) live in separate regions and are not part of this decision",
   'src/web/channel-monitor.ts':
     "both sides made the SAME change to triggerMarveenMemorySave (bare sendPromptToSession -> sendSystemDirective(MAIN_AGENT_ID, MAIN_CHANNELS_SESSION, prompt)), so take either for that hunk -- they are semantically equal. Everything ELSE in this file is long-standing fork divergence unrelated to this card: resolve those on their own merits, they are not part of the ab4c85f2 decision. CORRECTION 2026-09-04 (card 272361eb, B-wave): this entry used to say 'lazy bin resolver vs upstream's eager resolveFromPath consts' and had the two sides BACKWARDS -- upstream was the lazy one, WE had the eager module-level consts, which throw at IMPORT time and take every importer of this module down on a PATH gap. That half is no longer a divergence at all: the fork adopted upstream's tmuxBin()/claudeBin() shape, matching platform.ts's own documented rule and agent-process.ts's existing use. What REMAINS undecided here is upstream's STUCKINPUT827 injected-prompt-registry work and its subagent-overdue alert (shouldAlertStuckSubAgent, SUBAGENT_OVERDUE_ALERT_MIN_INTERVAL_MS), neither of which this fork has.",
+  // Card 272361eb (B-wave 3/6). Upstream's ENTIRE delta in this file is resolveAgentConfigDirForRead
+  // (43+/1-, the function plus its comment), which the fork has now adopted with identical logic --
+  // so the two sides no longer disagree about behaviour, only about how much comment sits above it.
+  'src/web/claude-plans.ts':
+    "keep the fork's copy: the function body is upstream's verbatim (same signature, same " +
+    "projects/-required check, same null fallbacks), and the fork's longer comment carries the " +
+    "measurement that upstream's does not -- 0 of 15 agents on this install are in the state it " +
+    "fixes, so it is a LATENT correctness fix rather than a live defect, and a later reader must " +
+    "not be left believing a bug was repaired that was not happening. If upstream changes the " +
+    "function itself, adopt that; a comment-only delta is not a reason to touch this file.",
+  // Card 272361eb (B-wave 3/6): both sides amended the SAME assertion after the same rename.
+  'src/__tests__/channel-monitor-resume-recovery.test.ts':
+    "keep the FORK's version. Both sides fixed the case that broke when the eager TMUX const became " +
+    "the lazy tmuxBin(), but upstream swapped one literal spelling for another " +
+    "(tmuxPath:\\s*tmuxBin\\(\\)) and will therefore break again on the next rename. The fork " +
+    "matches any expression in that position, because the property under test is that the periodic " +
+    "reap calls the SHARED reaper with a tmux path -- not which expression produced the path. Take " +
+    "upstream's side only if it stops pinning a spelling.",
   // Card 39b32ac6 (B-wave 2/6), a TAIL-vs-TAIL conflict both sides created for the same feature.
   'src/__tests__/seed-refresh-untouched-only.test.ts':
     "keep the fork's 180 lines of fork-owned cases (seed_copy_try_merge, operator-authored skills, " +
@@ -894,6 +912,9 @@ const ACKNOWLEDGED_UPSTREAM_BLOBS: Readonly<Record<keyof typeof ACKNOWLEDGED_CON
   'src/__tests__/system-directive-auth-section.test.ts': '80d65e4651601d320447bf188d53548a5ef5f8ba',
   'src/web/channel-monitor.ts': 'd1c642f669ff2a28b6eec79bbf503365c9ac1b08',
   'src/web/routes/messages.ts': '98710db9e171616e0600061eec649542e779506a',
+  // Card 272361eb, 2026-09-04 (B-wave 3/6).
+  'src/web/claude-plans.ts': '548f996dbe82ae1062e94ced4acb5a670bfd2bf9',
+  'src/__tests__/channel-monitor-resume-recovery.test.ts': 'e7850cae42ac213af8bcb18dfc9d8c72acae9370',
   // Card 39b32ac6, 2026-09-04 (B-wave 2/6): both sides appended a SEEDREFRESH826 block at the tail.
   'src/__tests__/seed-refresh-untouched-only.test.ts': 'db592152fd319865336fe07aa0ee184d1790a192',
 }
