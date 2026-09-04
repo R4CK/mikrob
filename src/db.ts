@@ -1778,8 +1778,12 @@ export function searchAgentMemories(agentId: string, query: string, limit: numbe
     ).all(terms, agentId, ...shapeFilter.params, limit * RECENCY_OVERSAMPLE) as (Memory & { rank: number })[]
     return withoutRank(reRankByRecency(candidates, limit)) as Memory[]
   } catch {
+    // `FROM memories m`: the shape fragment above is alias-qualified for the FTS join (see
+    // excludeToolLogShapeSql). Without the alias here this catch raised `no such column:
+    // m.content` -- so the designated safety net for an FTS failure threw a SECOND, unrelated
+    // error instead of degrading, turning a recoverable outage into a hard 500 (card ad209cdf).
     return db.prepare(
-      `SELECT * FROM memories WHERE (agent_id = ? OR category = 'shared') AND (content LIKE ? OR keywords LIKE ?)
+      `SELECT * FROM memories m WHERE (agent_id = ? OR category = 'shared') AND (content LIKE ? OR keywords LIKE ?)
        AND (${shapeFilter.sql}) ORDER BY accessed_at DESC LIMIT ?`
     ).all(agentId, `%${query}%`, `%${query}%`, ...shapeFilter.params, limit) as Memory[]
   }
