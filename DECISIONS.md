@@ -5074,3 +5074,41 @@ munka, duplikátumként jelezve), backend (végrehajtás, hatókör-szűkítés,
 `scripts/hooks/cd-chain-guard.py`, `scripts/hooks/cd-chain-guard.selftest.py` (29 eset),
 `src/__tests__/cd-chain-guard-wiring.test.ts` (15 eset, futtatja a selftestet is),
 `src/web/agent-scaffold.ts`, `src/web.ts`, CLAUDE.md 16. szabály.
+
+## 2026-09-04 06:50 -- A fenntartott küldő-névtér az ügynök-LÉTREHOZÁSON is zár (három ajtó, nem egy)
+
+**Döntés:** A `system-directive` és a `system` nevet mostantól nem lehet ügynök-azonosítóként
+létrehozni sem. A már meglévő `isReservedSenderId` predikátum fut mind a HÁROM útvonalon, ami
+`agents/` alá tud könyvtárat tenni: `POST /api/agents` (400), az egy-ügynökös bundle-importáló
+(dobás), és a flotta-bundle-importáló (kihagyás `reserved name` indokkal).
+
+**Miért:** Cybersec LOW-1 lelete az 5c5d7bc4 GO mellékleteként. Az 5c5d7bc4 ott zárta a névteret,
+ahol egy azonosítót ÁLLÍTANAK (`POST /api/messages`), de nem ott, ahol KIBOCSÁTANAK. A
+`sanitizeAgentName` átengedi a `system-directive` alakot, négy folyamaton belüli író pedig az
+ügynök SAJÁT NEVÉT adja `from`-ként (`context-guard-runner.ts`, `context-restart-gate-runner.ts`),
+tehát keletkezne valódi `from_agent="system-directive"` sor, amit nem a `sendSystemDirective()`
+írt. Nem kihasználható ártalmas parancsra (a tartalom sablonos, a recept szó szerinti egyezést
+követel), de visszaveszi az EGY-ÍRÓ tulajdonságot, amit az 5c5d7bc4 éppen megvett.
+
+**Miért három ajtó és nem egy:** a lelet a `POST /api/agents`-et nevezte meg. Végignéztem, mi hív
+még `agents/` alá író kódot, és a bundle-import két további bemenet: az egy-ügynökös importáló a
+manifest nevét VAGY a `?name=` override-ot használja, a flotta-importáló a bundle könyvtárneveit.
+Egy bundle végig támadó által írt tartalom, tehát ugyanolyan megbízhatatlan, mint egy POST törzse.
+Egy ajtón zárt névtér nem névtér.
+
+**Miért kihagyás és nem dobás a flotta-importálónál:** egy mérgezett név egy flotta-bundle-ben nem
+kerülhet az operátornak a másik tizenöt ügynökébe; a `skipped` lista az, amit a UI amúgy is mutat.
+
+**Mért részlet, ami az ellenkezőjét mutatta a várakozásnak:** a `sanitizeAgentName` a szóközt
+TÖRLI (nem kötőjelre cseréli), tehát a „System Directive" alak `systemdirective` lesz, és nem éri
+el a fenntartott azonosítót. A hyphenes, kis-nagybetűs, ékezetes és dupla-kötőjeles alakok viszont
+igen. A tesztek a mért viselkedést rögzítik, nem a feltételezettet; az őr ezért a SZANITIZÁLT
+néven fut, így ha valaki egyszer a szóközt kötőjelre képezné le, az új írásmódot is elkapja
+változtatás nélkül.
+
+**Ki döntött:** Cybersec (lelet), MikroB (kártyanyitás), backend (végrehajtás, a másik két ajtó
+felderítése és a kihagyás-vs-dobás döntés).
+
+**Hivatkozás:** kártya `b46a4b7e` (eredeti: `5c5d7bc4`, lelet: komment 19116);
+`src/web/routes/agents.ts`, `src/web/agent-bundle.ts` (mindkét importáló),
+`src/__tests__/reserved-agent-name.test.ts` (19 eset, 3 mutáció ajtónként külön öl).
