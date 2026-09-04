@@ -5265,6 +5265,21 @@ export function closeOtelSpanIfOpen(traceId: string, spanId: string, endMs: numb
   `).run(endMs, status, traceId, spanId).changes > 0
 }
 
+/**
+ * One span by identity, or null. Card 63beeb8a.
+ *
+ * Exists so routes/spans.ts can tell "no such span" from "already closed" -- three states the
+ * boolean returns of the two close helpers cannot distinguish between them. That distinction is the
+ * whole point: closeOtelSpanIfOpen() returning false means EITHER, and the not-found branch of that
+ * route creates-and-closes, so treating an already-closed span as not-found would rewrite the very
+ * measurement the first-writer-wins rule exists to protect. The doc comment on closeOtelSpanIfOpen
+ * above names that trap; this is what lets the route avoid it.
+ */
+export function getOtelSpan(traceId: string, spanId: string): OtelSpan | null {
+  return (db.prepare('SELECT * FROM otel_spans WHERE trace_id = ? AND span_id = ?')
+    .get(traceId, spanId) as OtelSpan | undefined) ?? null
+}
+
 export function getOtelTrace(traceId: string): OtelSpan[] {
   return db.prepare('SELECT * FROM otel_spans WHERE trace_id = ? ORDER BY start_ms ASC')
     .all(traceId) as OtelSpan[]
