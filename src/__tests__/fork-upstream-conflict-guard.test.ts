@@ -87,6 +87,21 @@ const ACKNOWLEDGED_CONFLICTS = {
   // against on the fork side.
   'src/auto-restart.ts':
     'adopt upstream OPEN_QUESTION_DEFERRAL_CAP_MS + deferralOverride() verbatim -- fork side of the hunk is empty, and this is the same open-question-deferral feature already adopted per the src/web/auto-restart-runner.ts entry',
+  // Card 0c66be37/74181db2, self-created 2026-09-04: a pure ADD/ADD at the tail of
+  // KNOWN_HOOK_SCRIPTS. The fork appended 'outgoing-copy-gate.py' (this app now registers that
+  // gate into ROLE agents' settings, not only the main agent's); upstream appended
+  // 'skill-usage-capture.py' and the /clear continuity pair 'clear-capture.py' + 'clear-replay.py'.
+  // Measured by reading BOTH hunks in the failing guard's own output: there is no semantic tension
+  // -- the list is "hook script filenames THIS app registers", and each side names different, real
+  // hooks that its own side registers.
+  //
+  // Resolution: UNION, all four names. Taking either side wholesale loses real entries. Which way
+  // it fails is worth stating, because the two directions differ: dropping upstream's names leaves
+  // ITS hook entries unprunable (they read as foreign, so a missing-file entry is kept forever),
+  // while dropping the fork's un-registers a gate this fork actively wires. Neither is acceptable,
+  // and neither is the "cheap move" the guard exists to prevent.
+  'src/web/hook-registration-guard.ts':
+    "union of both tails -- keep the fork's 'outgoing-copy-gate.py' AND upstream's 'skill-usage-capture.py' + 'clear-capture.py' + 'clear-replay.py'; the list is additive by construction and neither side may be taken wholesale",
   // BEHAVIOUR-CRITICAL. The fork removed "upgrade to increase your usage limit" from the
   // usage-limit regex (2026-06-30: it matched Claude Code's /upgrade STARTUP HINT, so fresh agents
   // read as limited and got needlessly downgraded). Upstream still has that token AND added a real
@@ -842,6 +857,7 @@ const ACKNOWLEDGED_UPSTREAM_BLOBS: Readonly<Record<keyof typeof ACKNOWLEDGED_CON
   'src/kanban-dispatch.ts': '7fffc38f78b99573fb88fd797ac67b3593ffb872',
   'src/__tests__/kanban-dispatch-rearm.test.ts': 'd9a186a0af48c44c14299c284dbe0caf45d8feaa',
   'src/auto-restart.ts': 'a1f2d75ed063a78eb5be23acb2c4138ca14fff19',
+  'src/web/hook-registration-guard.ts': 'bcd6ad718438ee86e45945cd35f5baaf333c3fc9',
   'src/model-fallback.ts': '93ea8f17a6c9608003f047c1c9b5f8defe0f1da8',
   'src/__tests__/model-fallback.test.ts': '09bc3bf772d195be0980f4bec929eed4ecfadc67',
   'src/web/update-checker.ts': 'c98efe359fd032ee0f196b114d70fb57d166a88c',
