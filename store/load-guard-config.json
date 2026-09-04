@@ -1,5 +1,6 @@
 {
   "reference_nproc": 12,
+  "max_concurrent_agents": 6,
   "watch": {
     "loadavg_ratio": 0.85,
     "psi_some_avg10": 30,

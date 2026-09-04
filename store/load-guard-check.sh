@@ -15,10 +15,23 @@ RESULT=$("$SCRIPT_DIR/load-guard-eval.sh" "$@")
 STATE=$(printf '%s' "$RESULT" | python3 -c "import json,sys; print(json.load(sys.stdin)['state'])")
 ACTION=$(printf '%s' "$RESULT" | python3 -c "import json,sys; print(json.load(sys.stdin)['action'])")
 
-if [ "$ACTION" = "log_only" ]; then
-  echo "ADMIT $STATE"
-  exit 0
-else
+if [ "$ACTION" != "log_only" ]; then
   echo "HOLD $STATE ($ACTION)"
   exit 1
 fi
+
+# Load itself is fine -- also check the proactive agent-panel-count cap (Peti request 2026-09-04,
+# after the 2026-09-03 WSL-overload incident) before admitting new work. See agent-cap-check.sh's
+# own header for why this is a separate, additive check rather than folded into the tiers above:
+# it gates NEW dispatch on panel count, not on measured load.
+set +e
+CAP_RESULT=$("$SCRIPT_DIR/agent-cap-check.sh")
+CAP_EXIT=$?
+set -e
+if [ "$CAP_EXIT" -ne 0 ]; then
+  echo "$CAP_RESULT"
+  exit 1
+fi
+
+echo "ADMIT $STATE"
+exit 0

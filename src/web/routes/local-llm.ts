@@ -725,9 +725,13 @@ export interface UsageRow {
   evalDurationMs: number
 }
 
+/** Default line cap of the ledger tail. Exported-by-const so a caller can tell
+ *  "this is all there is" from "this is where I stopped reading" (card 2ffc0a96). */
+const USAGE_TAIL_MAX_LINES = 5000
+
 // Read at most `maxLines` from the END of the ledger, bounded to `maxBytes` of
 // tail so we never load a giant file. Returns [] on a missing/unreadable file.
-function tailUsageLines(maxLines = 5000, maxBytes = 4 * 1024 * 1024): string[] {
+function tailUsageLines(maxLines = USAGE_TAIL_MAX_LINES, maxBytes = 4 * 1024 * 1024): string[] {
   let fd: number | null = null
   try {
     if (!existsSync(USAGE_FILE)) return []
@@ -1006,6 +1010,157 @@ export function listCategories(): Array<{
     .sort((a, b) => b.count - a.count || a.name.localeCompare(b.name))
 }
 
+// --- Model-usage swimlane (card 2ffc0a96, Peti Telegram 2026-09-03) --------
+//
+// What Peti asked to SEE: whether the task-based local-LLM routing
+// (store/local-llm-model-routing.json) actually spreads work across the two
+// models. The paired Fron Ted card (d6ecb003) renders a swimlane -- one lane
+// per model, one rectangle per task at its real start time -- plus KPI tiles.
+//
+// Shape agreed with fron-teddy BEFORE building (rule 8b, card comment 19021).
+// The card TITLE still says "5 perces bontas"; Peti's later clarification
+// asked for a swimlane, which needs RAW per-task rows, not bucket sums, so
+// there is no bucket_minutes parameter.
+
+/** One local-LLM invocation, shaped for the swimlane. */
+export interface ModelUsageTask {
+  id: string
+  task: string
+  agent: string
+  source: string
+  startMs: number
+  endMs: number
+  /** Wall time (TSV col 5): the width of the swimlane bar. Includes GPU-lock queueing. */
+  durationMs: number
+  /** Ollama's own generation time (TSV col 10). 0 when the row never carried it. */
+  evalDurationMs: number
+  status: string
+  tokensIn: number
+  tokensOut: number
+  /** null -- never 0 -- when the row has no usable eval measurement (err/busy/legacy rows). */
+  tokensPerSec: number | null
+}
+
+export interface ModelUsageSwimlane {
+  windowHours: number
+  generatedAtMs: number
+  /** True when the bounded ledger tail did not reach the start of the window, i.e. rows are missing. */
+  truncated: boolean
+  kpi: {
+    activeModels: number
+    avgLatencyMs: number | null
+    tokensPerSec: number | null
+    totalRequests: number
+    errorRatePct: number
+    busyCount: number
+  }
+  models: Array<{ model: string; tasks: ModelUsageTask[] }>
+}
+
+/** tokens/s from the CLEAN generation time, or null when it cannot be measured.
+ *  Mirrors lastGenerationStats (card b21deb9a): a missing measurement is null,
+ *  never a zero that a chart would draw as a real "0 tokens/s" reading. */
+function tokensPerSecOf(evalTokens: number, evalDurationMs: number): number | null {
+  if (evalDurationMs <= 0 || evalTokens <= 0) return null
+  return Math.round((evalTokens / (evalDurationMs / 1000)) * 10) / 10
+}
+
+/**
+ * Group the ledger's rows into per-model swimlanes for the last `windowHours`.
+ *
+ * Pure: takes already-parsed rows so it can be tested against known ledger
+ * lines rather than the live file.
+ *
+ * TIMESTAMP DIRECTION, the one thing that is easy to get backwards: the
+ * ledger's col 1 is written by log_usage AFTER the call returns (local-llm.sh
+ * captures START_MS at entry and runs `date +%s` at write time), so `ts` is the
+ * COMPLETION second. A swimlane keyed on `ts` as if it were the start would
+ * shift every bar right by its own width -- visible immediately on the 86s
+ * rows this ledger already contains. Hence startMs = ts*1000 - durationMs.
+ * `ts` is second-resolution while durationMs is milliseconds, so startMs is
+ * accurate to within a second; that is stated in the contract and is well
+ * inside what a 6-hour lane can show.
+ */
+export function buildModelUsageSwimlane(
+  rows: readonly UsageRow[],
+  nowMs: number,
+  windowHours: number,
+  tail: { oldestTs: number | null; capped: boolean },
+): ModelUsageSwimlane {
+  const windowStartMs = nowMs - windowHours * 3600 * 1000
+  // UI quick-test probes are not fleet traffic (isRealCall, the fleet's own
+  // measured filter) -- they must not appear as lanes.
+  const inWindow = rows
+    .filter(isRealCall)
+    .filter((r) => r.ts * 1000 >= windowStartMs && r.ts * 1000 <= nowMs)
+    .sort((a, b) => a.ts - b.ts)
+
+  const byModel = new Map<string, ModelUsageTask[]>()
+  let errCount = 0
+  let busyCount = 0
+  let wallSum = 0
+  let evalTokenSum = 0
+  let evalDurationSum = 0
+
+  inWindow.forEach((r, index) => {
+    if (r.status === 'err') errCount++
+    else if (r.status === 'busy') busyCount++
+    wallSum += r.ms
+    if (r.evalDurationMs > 0 && r.evalTokens > 0) {
+      evalTokenSum += r.evalTokens
+      evalDurationSum += r.evalDurationMs
+    }
+    const endMs = r.ts * 1000
+    const model = r.model || '(unknown)'
+    const lane = byModel.get(model) ?? []
+    lane.push({
+      // Stable AND unique: ts alone collides (second resolution, and the
+      // route-classify caller fires several times within one second).
+      id: `${r.ts}-${index}`,
+      task: r.task,
+      agent: r.caller,
+      source: r.source,
+      startMs: endMs - r.ms,
+      endMs,
+      durationMs: r.ms,
+      evalDurationMs: r.evalDurationMs,
+      status: r.status,
+      tokensIn: r.promptTokens,
+      tokensOut: r.evalTokens,
+      tokensPerSec: tokensPerSecOf(r.evalTokens, r.evalDurationMs),
+    })
+    byModel.set(model, lane)
+  })
+
+  // Only models with at least one row in the window (Peti, card comment 18771):
+  // the UI renders exactly what it is given, with no empty second lane.
+  const models = [...byModel.entries()]
+    .map(([model, tasks]) => ({ model, tasks }))
+    .sort((a, b) => b.tasks.length - a.tasks.length || a.model.localeCompare(b.model))
+
+  return {
+    windowHours,
+    generatedAtMs: nowMs,
+    // Truncation needs BOTH facts, and conflating them is a real false
+    // positive: "the oldest row I have is newer than the window" is the normal
+    // state of a young or freshly rotated ledger, where nothing is missing at
+    // all. Only when the tail ALSO hit its line cap did we stop reading early,
+    // and only then may rows inside the window be absent.
+    truncated: tail.capped && tail.oldestTs !== null && tail.oldestTs * 1000 > windowStartMs,
+    kpi: {
+      activeModels: models.length,
+      avgLatencyMs: inWindow.length > 0 ? Math.round(wallSum / inWindow.length) : null,
+      tokensPerSec: tokensPerSecOf(evalTokenSum, evalDurationSum),
+      totalRequests: inWindow.length,
+      // `busy` is GPU-lock contention, not a model failure -- counting it as an
+      // error would make a load spike read as a broken system.
+      errorRatePct: inWindow.length > 0 ? Math.round((errCount / inWindow.length) * 1000) / 10 : 0,
+      busyCount,
+    },
+    models,
+  }
+}
+
 export async function tryHandleLocalLlm(ctx: RouteContext): Promise<boolean> {
   const { req, res, path, method, url } = ctx
 
@@ -1173,6 +1328,30 @@ export async function tryHandleLocalLlm(ctx: RouteContext): Promise<boolean> {
   // restart look like, and the FE has to render that state anyway.
   if (path === '/api/local-llm/utilization-history' && method === 'GET') {
     json(res, { samples: getUtilizationSamples() })
+    return true
+  }
+
+  // GET /api/local-llm/model-usage-buckets?hours=6 -> per-model swimlane rows +
+  // KPI tiles for the paired Fron Ted card d6ecb003 (card 2ffc0a96). See
+  // buildModelUsageSwimlane for the contract and the ts-is-completion-time
+  // subtlety. Reuses the existing tested ledger reader/parser rather than a
+  // second parse of the same TSV.
+  if (path === '/api/local-llm/model-usage-buckets' && method === 'GET') {
+    const rawHours = url.searchParams.get('hours')
+    const parsedHours = rawHours === null ? 6 : Number(rawHours)
+    if (!Number.isFinite(parsedHours) || parsedHours <= 0 || parsedHours > 168) {
+      json(res, { error: 'hours must be a number between 1 and 168' }, 400)
+      return true
+    }
+    const lines = tailUsageLines()
+    const rows = parseUsageRows(lines)
+    // Oldest row the bounded tail actually reached, taken from the PARSED rows
+    // so a malformed line cannot masquerade as coverage; `capped` says whether
+    // we stopped reading early. Both are needed to tell a short ledger from a
+    // truncated one.
+    const oldestTs = rows.length > 0 ? Math.min(...rows.map((r) => r.ts)) : null
+    const tail = { oldestTs, capped: lines.length >= USAGE_TAIL_MAX_LINES }
+    json(res, buildModelUsageSwimlane(rows, Date.now(), parsedHours, tail))
     return true
   }
 

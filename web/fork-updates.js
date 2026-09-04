@@ -111,6 +111,107 @@ function updatesRepoBlockHtml(repo) {
       </section>`
 }
 
+// Adopted repos' freshness strip on the Updates page (card 92a4c2e7). Its own fetch and
+// its own try/catch: a failure here must never blank the two version blocks above it.
+// The classification (repoFreshnessState / summarizeRepoFreshness) is the same one the
+// Beépített repók grid uses, so the two pages cannot disagree about a repo.
+function integratedReposSummaryHtml(repos) {
+  const s = summarizeRepoFreshness(repos)
+  const esc = escapeHtmlUpdates
+  const dateLocale = window._lang === 'en' ? 'en-US' : 'hu-HU'
+  const cls = s.behind > 0 ? 'behind' : (s.upToDate > 0 ? 'up-to-date' : '')
+  const counts = esc(t('updates.integrated.counts', {
+    total: String(s.total), fresh: String(s.upToDate), behind: String(s.behind),
+    review: String(s.reviewRequired), unknown: String(s.unknown),
+  }))
+  const checked = s.lastCheckedAt
+    ? esc(t('updates.integrated.last_checked', { date: new Date(s.lastCheckedAt).toLocaleDateString(dateLocale) }))
+    : esc(t('updates.integrated.never_checked'))
+  const never = s.neverChecked > 0 && s.lastCheckedAt
+    ? ' · ' + esc(t('updates.integrated.never_count', { n: String(s.neverChecked) }))
+    : ''
+  // Full per-repo table (card 184dc8d7): every watched/adopted registry entry, attention-first
+  // order. The note column is the registry's review-note chain; it renders ONLY when the API
+  // actually carries the field (`typeof r.note === 'string'`) -- an absent field must not read
+  // as "no note", so the cell stays empty rather than claiming anything.
+  const anyNote = repos.some((r) => typeof r.note === 'string')
+  const cols = ['name', 'kind', 'enabled', 'installed', 'last_checked', 'state'].concat(anyNote ? ['note'] : [])
+  const head = cols.map((c) => `<th scope="col">${esc(t('updates.integrated.col.' + c))}</th>`).join('')
+  const rows = sortReposForFreshnessTable(repos).map((r) => {
+    const state = repoFreshnessState(r)
+    let stateHtml
+    if (state === 'behind') {
+      stateHtml = `<span class="repo-card-badge repo-card-badge-warn">↑ ${esc(t('updates.integrated.behind_item', { n: String(r.behind) }))}</span>` +
+        (r.reviewRequired ? ` <span class="updates-integrated-review">${esc(t('repos.update_review_required'))}</span>` : '')
+    } else if (state === 'up_to_date') {
+      stateHtml = `<span class="repo-card-badge repo-card-badge-ok" title="${esc(t('repos.fresh.up_to_date_title'))}">✓ ${esc(t('repos.fresh.up_to_date'))}</span>`
+    } else {
+      stateHtml = `<span class="repo-card-badge repo-card-badge-unknown" title="${esc(t('repos.fresh.unknown_title'))}">${esc(t('repos.fresh.unknown'))}</span>`
+    }
+    const kind = `<span class="repo-card-badge repo-card-badge-kind">${esc(r.kind || 'external')}</span>` +
+      (r.adoption ? ` <span class="repo-card-badge">${esc(r.adoption)}</span>` : '')
+    const enabled = r.enabled
+      ? `<span class="updates-integrated-on">${esc(t('common.yes'))}</span>`
+      : `<span class="updates-integrated-off">${esc(t('common.no'))}</span>`
+    const installed = r.installed
+      ? `✓ ${esc(t('repos.installed'))}${r.pinnedVersion ? ` <code>${esc(r.pinnedVersion)}</code>` : ''}`
+      : `<span class="updates-integrated-off">${esc(t('repos.not_installed'))}</span>`
+    const lastChecked = r.lastCheckedAt
+      ? esc(new Date(r.lastCheckedAt).toLocaleDateString(dateLocale))
+      : `<span class="repo-card-date-never">${esc(t('repos.last_checked_never'))}</span>`
+    const url = esc(r.repo || '')
+    const name = url
+      ? `<a href="${url}" target="_blank" rel="noopener noreferrer">${esc(r.name)}</a>`
+      : esc(r.name)
+    // Some registry descriptions are whole due-diligence paragraphs: clamp to two lines in the
+    // cell (CSS), keep the full text reachable on hover via title.
+    const desc = r.description ? `<div class="updates-integrated-desc" title="${esc(r.description)}">${esc(r.description)}</div>` : ''
+    let noteCell = ''
+    if (anyNote) {
+      const note = typeof r.note === 'string' ? r.note.trim() : ''
+      noteCell = note
+        ? `<td data-label="${esc(t('updates.integrated.col.note'))}"><details class="updates-integrated-note"><summary>${esc(t('updates.integrated.note_summary', { n: String(note.length) }))}</summary><pre>${esc(note)}</pre></details></td>`
+        : `<td data-label="${esc(t('updates.integrated.col.note'))}"><span class="updates-integrated-off">${esc(t('common.none'))}</span></td>`
+    }
+    return `<tr class="updates-integrated-row-${state}">` +
+      `<td data-label="${esc(t('updates.integrated.col.name'))}">${name}${desc}</td>` +
+      `<td data-label="${esc(t('updates.integrated.col.kind'))}">${kind}</td>` +
+      `<td data-label="${esc(t('updates.integrated.col.enabled'))}">${enabled}</td>` +
+      `<td data-label="${esc(t('updates.integrated.col.installed'))}">${installed}</td>` +
+      `<td data-label="${esc(t('updates.integrated.col.last_checked'))}">${lastChecked}</td>` +
+      `<td data-label="${esc(t('updates.integrated.col.state'))}">${stateHtml}</td>` +
+      noteCell + '</tr>'
+  }).join('')
+  const table = repos.length
+    ? `<div class="updates-integrated-wrap"><table class="updates-integrated-table"><thead><tr>${head}</tr></thead><tbody>${rows}</tbody></table></div>`
+    : `<div class="updates-integrated-none">${esc(t('updates.integrated.empty'))}</div>`
+  return `
+      <section class="updates-repo-block updates-integrated">
+        <h3 class="updates-repo-label">${esc(t('updates.integrated.title'))}</h3>
+        <div class="updates-summary ${cls}">
+          <strong>${counts}</strong><br>${checked}${never}
+        </div>
+        ${table}
+        <button type="button" class="btn-secondary btn-compact updates-integrated-link" id="updatesIntegratedReposLink">${esc(t('updates.integrated.link'))}</button>
+      </section>`
+}
+
+async function renderIntegratedReposSummary() {
+  const container = document.getElementById('updatesIntegratedRepos')
+  if (!container) return
+  try {
+    const res = await fetch('/api/integrated-repos')
+    if (!res.ok) throw new Error('HTTP ' + res.status)
+    const data = await res.json()
+    container.innerHTML = integratedReposSummaryHtml(Array.isArray(data.repos) ? data.repos : [])
+    const link = document.getElementById('updatesIntegratedReposLink')
+    if (link) link.addEventListener('click', () => switchPage('repos'))
+  } catch (err) {
+    // Rule 12: a speaking, localized error with the way forward, not a blank strip.
+    container.innerHTML = `<section class="updates-repo-block updates-integrated"><h3 class="updates-repo-label">${escapeHtmlUpdates(t('updates.integrated.title'))}</h3><div class="updates-summary error">${escapeHtmlUpdates(t('updates.integrated.error'))} <code>${escapeHtmlUpdates(String(err && err.message || err))}</code></div></section>`
+  }
+}
+
 async function forkLoadUpdates() {
   const container = document.getElementById('updatesRepos')
   const applyBtn = document.getElementById('updatesApplyBtn')
@@ -138,6 +239,8 @@ async function forkLoadUpdates() {
     applyBtn.hidden = true
   }
   renderDiagnoseOffer()
+  // Independent of the version checks above: its own endpoint, its own failure state.
+  renderIntegratedReposSummary()
 }
 
 // The override itself. app.js declared its own loadUpdates(); this replaces that

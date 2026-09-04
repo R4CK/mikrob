@@ -107,7 +107,8 @@ pull() {
 #    OUTSIDE the tracked marveen repo so the Szotasz/marveen ff-only update stays intact.)
 for r in awesome-claude-skills claude-agent-sdk superpowers Skill_Seekers loki-mode \
          anthropics-skills claude-code-best-practice awesome-claude-code-jqueryscript \
-         awesome-agent-skills claude-skills-alirezarezvani claude-code-ultimate-guide; do pull "$r"; done
+         awesome-agent-skills claude-skills-alirezarezvani claude-code-ultimate-guide \
+         awesome-claude-code; do pull "$r"; done
 
 # 2) Re-link superpowers skills (markdown only) as sp-<name>. Symlinks reflect
 #    upstream updates automatically. Drop stale sp-* links first.

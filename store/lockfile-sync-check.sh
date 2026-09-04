@@ -34,6 +34,10 @@
 #
 # Exit: 0 in sync (or not applicable) | 1 OUT OF SYNC | 2 bad usage | 3 harness fault
 #
+# "Not applicable" covers three things, all exit 0: no package.json changed in base..ref; the
+# ref carries no pnpm-lock.yaml (not a pnpm repo); and an in-sync lockfile. The middle one was
+# added by card fe06da0c after it reported OUT OF SYNC on every marveen landing.
+#
 # 3 IS SEPARATE FROM 1 ON PURPOSE. "pnpm is missing" and "the lockfile is stale" are different facts
 # and callers treat them differently: a landing may refuse on 1 but must not refuse on 3, or a broken
 # toolchain silently becomes a policy that blocks every landing.
@@ -110,6 +114,34 @@ if [ "$SELFTEST" -eq 1 ]; then
   touches_manifest "$tmp" HEAD~1 HEAD && r=yes || r=no
   t "a commit touching a NESTED package.json IS applicable" "$r" "yes"
 
+  # The cases above exercise the helpers; these two drive the WHOLE script, because the defect
+  # this closes lived in the main flow and no helper could have shown it (card fe06da0c).
+  npmrepo="$(mktemp -d)"
+  git -C "$npmrepo" init -q .
+  printf '{"name":"x","version":"1.0.0"}\n' > "$npmrepo/package.json"
+  printf '{"name":"x","version":"1.0.0","lockfileVersion":3}\n' > "$npmrepo/package-lock.json"
+  git -C "$npmrepo" add -A >/dev/null 2>&1
+  git -C "$npmrepo" -c user.email=t@t -c user.name=t commit -qm base >/dev/null 2>&1
+  out="$("$0" --repo "$npmrepo" --ref HEAD 2>&1)"; rc=$?
+  t "an npm repo (no pnpm-lock.yaml) is NOT APPLICABLE, never OUT OF SYNC" "$rc" "0"
+  t "and it says why" "$(printf '%s' "$out" | grep -c 'not applicable')" "1"
+
+  # ...but a branch that DELETES the lockfile is still a real finding, given a base to compare to.
+  pnpmrepo="$(mktemp -d)"
+  git -C "$pnpmrepo" init -q .
+  printf '{"name":"x","version":"1.0.0"}\n' > "$pnpmrepo/package.json"
+  echo 'lockfileVersion: 9' > "$pnpmrepo/pnpm-lock.yaml"
+  git -C "$pnpmrepo" add -A >/dev/null 2>&1
+  git -C "$pnpmrepo" -c user.email=t@t -c user.name=t commit -qm base >/dev/null 2>&1
+  rm "$pnpmrepo/pnpm-lock.yaml"
+  printf '{"name":"x","version":"1.0.1"}\n' > "$pnpmrepo/package.json"
+  git -C "$pnpmrepo" add -A >/dev/null 2>&1
+  git -C "$pnpmrepo" -c user.email=t@t -c user.name=t commit -qm drop >/dev/null 2>&1
+  out="$("$0" --repo "$pnpmrepo" --ref HEAD --base HEAD~1 2>&1)"; rc=$?
+  t "deleting a lockfile the base HAD is OUT OF SYNC, not 'not applicable'" "$rc" "1"
+  t "and it names the deletion" "$(printf '%s' "$out" | grep -c 'DELETED')" "1"
+  rm -rf "$npmrepo" "$pnpmrepo"
+
   echo "selftest: $n case(s), $([ $fail -eq 0 ] && echo PASS || echo FAIL)"
   exit $fail
 fi
@@ -124,6 +156,31 @@ if [ -n "$BASE" ]; then
     echo "lockfile-sync: not applicable (no package.json changed in $BASE..$REF)"
     exit 0
   fi
+fi
+
+# NOT APPLICABLE when the ref carries no pnpm-lock.yaml (card fe06da0c). This check is pnpm-only,
+# and marveen is an npm repo (package-lock.json, no pnpm-lock.yaml) -- so every marveen landing that
+# touched package.json got `[fail] lockfile-out-of-sync -- a package.json changed without
+# regenerating pnpm-lock.yaml`, whose real cause was ERR_PNPM_NO_LOCKFILE: "pnpm-lock.yaml is
+# absent". marveen-land.sh bumps package.json on EVERY landing, so the finding fired on every one of
+# them. Measured 2026-09-04 on origin/develop: exit 1, that exact message.
+#
+# This is the script's own stated principle applied one step further. Its header separates exit 3
+# from exit 1 because "pnpm is missing" and "the lockfile is stale" are different facts; "this repo
+# does not use pnpm at all" is a third, and it is not a fact about the card either. A recurring
+# false [fail] is worse than no check: it is the noise a REAL drift would hide in, which is exactly
+# what Cybersec flagged.
+#
+# The deletion case is kept honest: with --base, a ref that DROPPED a lockfile the base had is a
+# real finding, not "not applicable". Without --base there is nothing to compare against, so the
+# absence can only be read as "not a pnpm repo".
+if ! git -C "$REPO" cat-file -e "$REF:pnpm-lock.yaml" 2>/dev/null; then
+  if [ -n "$BASE" ] && git -C "$REPO" cat-file -e "$BASE:pnpm-lock.yaml" 2>/dev/null; then
+    echo "lockfile-sync: OUT OF SYNC at $REF -- pnpm-lock.yaml was DELETED (present at $BASE)"
+    exit 1
+  fi
+  echo "lockfile-sync: not applicable (no pnpm-lock.yaml at $REF -- this repo does not use pnpm)"
+  exit 0
 fi
 
 command -v pnpm >/dev/null 2>&1 || { echo "lockfile-sync: HARNESS FAULT -- pnpm is not on PATH" >&2; exit 3; }

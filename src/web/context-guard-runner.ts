@@ -10,9 +10,9 @@ import {
   agentSessionName,
   restartAgentProcess,
   capturePane,
-  sendPromptToSession,
   isSessionReadyForPrompt,
 } from './agent-process.js'
+import { sendSystemDirective } from './system-directive.js'
 import { MAIN_CHANNELS_SESSION } from './main-agent.js'
 import { detectPaneState, paneShowsContextSaturation } from '../pane-state.js'
 import { readContextTokensFromProjectDir, readActiveModelFromProjectDir, readTranscriptMtimeFromProjectDir } from './active-model.js'
@@ -381,7 +381,12 @@ async function checkAgent(name: string, nowMs: number): Promise<void> {
   try {
     switch (decision.action) {
       case 'request-handoff':
-        await sendPromptToSession(
+        // Through the authenticated-directive primitive, not bare
+        // sendPromptToSession -- this text asks the agent to drop work and
+        // STOP, which without a queue anchor is indistinguishable from a
+        // prompt injection.
+        await sendSystemDirective(
+          name,
           session,
           decision.reason.startsWith(STALE_REFRESH_REASON_PREFIX)
             // The handoff exists but went stale while we waited for an idle
@@ -444,7 +449,10 @@ async function checkAgent(name: string, nowMs: number): Promise<void> {
         const hadHandoff = inputs.handoffMtime !== null || handoffMtime(name) !== null
         // Staleness was measured at RESTART time and rode here in the state;
         // measuring now would be meaningless (the old session is gone).
-        await sendPromptToSession(
+        // Anchored like the handoff request -- the resume prompt steers a
+        // fresh session's entire first turn.
+        await sendSystemDirective(
+          name,
           session,
           resumePrompt(name, handoffPathFor(name), hadHandoff, state.handoffStaleMinutes),
         )
