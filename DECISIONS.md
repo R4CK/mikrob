@@ -4989,6 +4989,26 @@ swimlane-követelmény és a KPI-lista).
 **Hivatkozás:** kártya `2ffc0a96` (Pair-FE: `d6ecb003`); `src/web/routes/local-llm.ts`
 (`buildModelUsageSwimlane` + a route), `src/__tests__/local-llm-model-usage-swimlane.test.ts`.
 
+## 2026-09-04 05:32 -- Proaktív agent-panel-cap a load-guard-be
+
+**Döntés:** Peti kérésére (Telegram, a 2026-09-03 WSL-overload kivizsgálása után) új, proaktív gate
+épült a fut ügynök-panelek darabszámára: `store/agent-cap-check.sh` a `GET /api/agents` `running:true`
+darabszámát veti össze a `load-guard-config.json` `max_concurrent_agents` értékével (első kör: 6),
+bekötve `load-guard-check.sh`-ba, a már meglévő egyetlen "szabad-e új munkát indítani" choke pointba.
+Fail-open minden hibaesetén (nincs token/dashboard-hiba/rossz JSON -> ADMIT).
+**Miért:** a mért load-guard.log (2026-09-03) 51x sigstop_freeze/critical + 96x hard/cgroup_throttle
+állapotot mutatott ~11 órán át (10:39-21:49) -- a meglévő load-guard-eval.sh csak MÉRT load-ra
+(loadavg/PSI) reagál, tehát mindig utólagosan fékez. Minden futó ügynök-panel saját Claude-processz
++ MCP-szerver-alfolyamat-fa (playwright headless böngésző, filesystem-mcp, code-review-graph) -- ez a
+subprocess-tömeg volt a tényleges load-forrás, nem egyetlen kártya munkája. A panel-darabszám
+korlátozása a torlódást a kezdete előtt állítja meg, nem utólag fékez/fagyaszt.
+**Kockázat/hatókör:** csak ÚJ munka indítását (agent start + dispatch) fékezi, már futó agentet,
+gate-et vagy in-flight befejezést nem érint. Fail-open tervezés, hogy egy hibás cap-ellenőrzés ne
+tudja saját magát blokkolni a teljes flotta dispatchjét.
+**Ki döntött:** Peti (kérés) + MikroB (tervezés, végrehajtás). QA-gate folyamatban.
+**Hivatkozás:** kártya `8c8be268`, Gate-SHA `b34b8ea1`, `store/agent-cap-check.sh`,
+`store/load-guard-check.sh`, `store/load-guard-config.json`.
+
 ## 2026-09-04 06:20 -- A rendszer-direktíva csatorna saját fenntartott azonosítót kap (`system-directive`)
 
 **Döntés:** A hitelesített direktíva-csatorna küldő-azonosítója `system`-ről `system-directive`-re
@@ -5112,3 +5132,35 @@ felderítése és a kihagyás-vs-dobás döntés).
 **Hivatkozás:** kártya `b46a4b7e` (eredeti: `5c5d7bc4`, lelet: komment 19116);
 `src/web/routes/agents.ts`, `src/web/agent-bundle.ts` (mindkét importáló),
 `src/__tests__/reserved-agent-name.test.ts` (19 eset, 3 mutáció ajtónként külön öl).
+
+## 2026-09-04 08:40 -- 92a4c2e7: repó-frissesség három kimondott állapottal, közös osztályozóval (Fron Ted)
+
+**Előzmény:** Peti 2026-09-04-i észrevétele: a Frissítések oldalon nem látszik repónként, hogy egy
+beépített repó friss-e vagy lemaradt. A backend (`GET /api/integrated-repos`, `statusForRepo`) már
+adta a `lastCheckedAt` / `behind` / `upstreamSha` mezőket; a Beépített repók rács a `behind > 0`
+esetet mutatta, de a `behind 0` NÉMA volt (nem különbözött a sosem mért repótól), a hiányzó
+ellenőrzés-dátum sora elmaradt, és az oldal info-doboza még azt állította, hogy a jelzés „nem
+elérhető". A Frissítések oldal egyáltalán nem beszélt a beépített repókról.
+
+**Döntés:** (1) HÁROM kimondott állapot repónként: `naprakész` / `N commit lemaradás` / `nem mérhető`.
+A `behind 0` CSAK akkor „naprakész", ha van `upstreamSha` (volt mihez mérni) és telepítve van;
+pipx-telepítés vagy sosem fetchelt klón „nem mérhető" (12. szabály: nincs kitalált állapot). (2) Az
+osztályozás egyetlen DOM-mentes modulban (`web/app-repo-freshness.js`), amit a rács ÉS a Frissítések
+sáv is hív, így a két oldal nem tud eltérni; a modul tesztje a függvényt FUTTATJA, nem újraszámolja.
+(3) A Frissítések oldal egy összegző sávot kap (számok + a lemaradt repók névsora + ugrás a rácsra),
+nem a teljes rács duplikátumát. (4) Az „Utolsó ellenőrzés" sor mindig ott van („még nem történt"
+helyettesítővel), mert az elhagyott sor ránézésre nem különbözött egy ellenőrzöttől.
+
+**Ami NEM változott:** backend; a dashboardról kézzel hozzáadott repók (nincs mért adatuk, a
+Frissítés gombjuk továbbra is vak pull, az info-doboz ezt most már pontosan így mondja).
+
+**Mérés élőben (Playwright, a worktree fájljai a :3420 valós API-ja ellen, desktop 1280 + mobil 390):**
+37 repó, 18 naprakész, 3 lemaradt (2 átnézés előtt), 16 nem mérhető, 15 sosem ellenőrzött; nincs
+konzolhiba, nincs vízszintes görgetés, a „Repónkénti részletek" gomb 44 px és a rácsra visz.
+Mutációs teszt: három mutáns (upstream-ref nélküli „naprakész", kimaradó sáv-hívás, elhagyott
+ellenőrzés-sor) mindegyike bukik a guard-teszten, az alapvonal 40/40 zöld.
+
+**Ki döntött:** Fron Ted (a három állapot és a közös modul), Peti (az igény), MikroB (dispatch, csak-FE hatókör).
+**Hivatkozás:** kártya `92a4c2e7`; `web/app-repo-freshness.js`, `web/app-connectors.js`,
+`web/fork-updates.js`, `src/__tests__/repo-freshness-ui.test.ts`.
+
