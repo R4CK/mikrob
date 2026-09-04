@@ -45,8 +45,18 @@ function stageTree(scriptNames: string[]): { root: string; bin: string } {
   cpSync(join(ROOT, 'store', 'session-limit-pattern.json'), join(stage, 'store', 'session-limit-pattern.json'))
   const bin = join(stage, 'bin')
   mkdirSync(bin, { recursive: true })
+  // The stub DRAINS STDIN, because real `curl -K -` does: send-telegram.sh feeds
+  // curl its config (the URL line) over a pipe. A stub that exits without reading
+  // leaves the writing `printf` on a closed pipe, and under `set -o pipefail`
+  // (host-restart-watchdog.sh, unit-fail-notify.sh) the writer's SIGPIPE -- 141 --
+  // becomes the pipeline's exit status, so a DELIVERED message is reported as a
+  // transport failure and the caller skips its state stamp. It is a scheduler
+  // race, invisible alone and intermittent under full-suite load: measured 22/400
+  // pipelines failing under CPU load, 0/400 idle, 0/400 once the stub drains.
+  // Card 850164cd. Drain BEFORE the exit branch -- real curl reads the config
+  // first, then fails.
   writeFileSync(join(bin, 'curl'),
-    '#!/bin/bash\necho "$@" >> "${CURL_ARGV_LOG:-/dev/null}"\nif [ "${CURL_STUB_EXIT:-0}" -ne 0 ]; then\n  echo "curl: (6) Could not resolve host for https://api.telegram.org/bot${CURL_STUB_TOKEN:-}/sendMessage" >&2\n  exit "${CURL_STUB_EXIT}"\nfi\nprintf \'%s\' "${CURL_STUB_BODY:-{\\"ok\\":true}}"\n')
+    '#!/bin/bash\necho "$@" >> "${CURL_ARGV_LOG:-/dev/null}"\ncat >/dev/null 2>&1 || true\nif [ "${CURL_STUB_EXIT:-0}" -ne 0 ]; then\n  echo "curl: (6) Could not resolve host for https://api.telegram.org/bot${CURL_STUB_TOKEN:-}/sendMessage" >&2\n  exit "${CURL_STUB_EXIT}"\nfi\nprintf \'%s\' "${CURL_STUB_BODY:-{\\"ok\\":true}}"\n')
   writeFileSync(join(bin, 'tmux'), '#!/bin/bash\nexit 1\n')
   // limit-monitor hashes with md5sum, which macOS lacks (md5 only); the hash
   // value is irrelevant to these tests, only the stamp lifecycle is.
@@ -79,6 +89,21 @@ describe('send-telegram.sh library contract', () => {
     writeFileSync(join(stage, 'scripts', 'driver.sh'), `#!/bin/bash\n. "$(dirname "$0")/lib/send-telegram.sh"\n${call}\n`)
     return runScript('driver.sh', [], {}, bin)
   }
+
+  // Card 850164cd. This is the flake's pin, and it is deliberately DETERMINISTIC:
+  // the real config line is ~90 bytes and normally wins the race, so a faithful
+  // reproduction would itself be flaky. A payload larger than the pipe buffer
+  // makes the writer's write() block until the reader drains it, so a stub that
+  // ignores stdin fails EVERY time (141) instead of 5% of the time.
+  it('the staged curl stub drains stdin, so pipefail cannot turn a good send into a transport failure', () => {
+    const { bin } = stageTree([])
+    const payload = join(stage, 'big-config')
+    writeFileSync(payload, 'x'.repeat(200_000)) // > the 64K pipe buffer
+    writeFileSync(join(stage, 'scripts', 'pipe.sh'),
+      '#!/bin/bash\nset -uo pipefail\ncat "$1" | curl -sS -m 15 -K - >/dev/null\n')
+    const r = runScript('pipe.sh', [payload], {}, bin)
+    expect(r.status).toBe(0) // 141 = 128+SIGPIPE when the stub ignores stdin
+  })
 
   it('returns 0 only on curl exit 0 + Bot API ok:true', () => {
     const r = driver(`send_telegram_message "${FAKE_TOKEN}" 42 "hello"`)
