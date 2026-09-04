@@ -26,7 +26,9 @@
 #
 # Exit codes: 0 ok | 2 ollama down | 3 model missing | 4 bad usage | 5 api error |
 #             6 gpu lock busy (contention, not a generation failure -- card ea931c14)
-# No secrets are embedded; this talks only to 127.0.0.1 Ollama.
+# No secrets are embedded; this talks only to a LOOPBACK Ollama -- enforced at startup
+# (require_loopback_ollama_host), not merely intended. Deliberate remote use must set
+# LOCAL_LLM_ALLOW_REMOTE_HOST=1, which is loud on every call.
 set -euo pipefail
 
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -51,7 +53,8 @@ else
   echo "local-llm: WARNING -- $HERE/local-llm-state-dir.sh is missing, falling back to $HERE for dashboard state; switches may NOT be in force for this call." >&2
 fi
 
-OLLAMA_HOST="${OLLAMA_HOST:-http://127.0.0.1:11434}"
+OLLAMA_HOST_DEFAULT="http://127.0.0.1:11434"
+OLLAMA_HOST="${OLLAMA_HOST:-$OLLAMA_HOST_DEFAULT}"
 # Dashboard-written (routes/local-llm.ts atomically writes it) -> STATE_DIR.
 MODEL_FILE="$STATE_DIR/local-llm-model"
 SKILL_DIR="$HERE/local-llm-skills"
@@ -124,6 +127,62 @@ read_model() {
 die() { echo "local-llm: $2" >&2; exit "$1"; }
 
 ollama_up() { curl -fsS -m 5 "$OLLAMA_HOST/api/tags" >/dev/null 2>&1; }
+
+# --- OLLAMA_HOST is a switch, so it gets checked (card 0d2be5e5, Cybersec on the 8417fa5e gate) --
+# The variable was overridable with no validation at all. That mattered little while this path
+# carried code fragments, but the specialist routing changed what flows through it: --task
+# morning-brief / daily-log / board-reconcile / tg-draft now pass the owner's email and calendar
+# content and the whole kanban state. A remote value would have made every morning brief a silent
+# outbound transfer, and nothing in the script would have said so.
+#
+# Enforcing loopback also restores a premise the script ALREADY depends on further down, where the
+# generate call's exit status is interpreted: "curl itself (this fixed, well-formed invocation:
+# static OLLAMA_HOST ...) never legitimately exits 1". Measured here: with an unknown scheme
+# (xyzzy://, notaproto://) curl DOES exit 1 -- CURLE_UNSUPPORTED_PROTOCOL -- and this script then
+# reports `die 6 "gpu lock busy ... (not a generation failure)"`, on which local-llm-worker.sh
+# abstains and REVERTS the attempt count. A single typo in the scheme would therefore retry for
+# ever instead of failing. Constraining the host is what makes that reasoning sound.
+#
+# Fail-closed on anything not provably loopback, including the shapes that look local but are not
+# (userinfo smuggling `http://127.0.0.1@elsewhere/`, a suffix like `127.0.0.1.example.com`).
+local_llm_host_is_loopback() {
+  local url="$1" hostpart
+  case "$url" in
+    http://*|https://*) ;;
+    *) return 1 ;;                      # a non-http scheme is both an egress and an exit-code risk
+  esac
+  hostpart="${url#*://}"
+  hostpart="${hostpart%%/*}"            # drop path
+  hostpart="${hostpart%%\?*}"          # drop query
+  hostpart="${hostpart##*@}"            # drop userinfo: the authority is what comes AFTER the last @
+  case "$hostpart" in
+    \[*\]*) hostpart="${hostpart#\[}"; hostpart="${hostpart%%\]*}" ;;   # [::1]:11434
+    *)        hostpart="${hostpart%%:*}" ;;                            # host:port
+  esac
+  hostpart="$(printf '%s' "$hostpart" | tr '[:upper:]' '[:lower:]')"
+  # Exact matches only. A prefix test like 127.* would accept 127.0.0.1.example.com.
+  [[ "$hostpart" == "localhost" || "$hostpart" == "::1" ]] && return 0
+  [[ "$hostpart" =~ ^127\.[0-9]{1,3}\.[0-9]{1,3}\.[0-9]{1,3}$ ]] && return 0
+  return 1
+}
+
+require_loopback_ollama_host() {
+  if local_llm_host_is_loopback "$OLLAMA_HOST"; then
+    # Named even when allowed, whenever it is not the default: a hijacked-but-still-loopback value
+    # (a different port, say) should not be invisible either. This is the card's "log it once".
+    [[ "$OLLAMA_HOST" == "$OLLAMA_HOST_DEFAULT" ]] \
+      || echo "local-llm: OLLAMA_HOST=$OLLAMA_HOST (loopback, non-default)" >&2
+    return 0
+  fi
+  if [[ "${LOCAL_LLM_ALLOW_REMOTE_HOST:-}" == "1" ]]; then
+    echo "local-llm: WARNING -- OLLAMA_HOST=$OLLAMA_HOST is NOT loopback and LOCAL_LLM_ALLOW_REMOTE_HOST=1 is set." >&2
+    echo "local-llm: WARNING -- prompt content LEAVES THIS MACHINE, including --task payloads that carry email, calendar and kanban state." >&2
+    return 0
+  fi
+  die 4 "OLLAMA_HOST=$OLLAMA_HOST is not loopback -- refusing to send prompt content off this machine (--task payloads carry email/calendar/kanban state). Use a 127.0.0.0/8, localhost or ::1 URL, or set LOCAL_LLM_ALLOW_REMOTE_HOST=1 deliberately."
+}
+
+require_loopback_ollama_host
 
 # Usage metering (fail-open, metadata only -- NEVER the prompt/content).
 # One TSV line per real model invocation: epoch \t caller \t task \t model \t ms \t status
