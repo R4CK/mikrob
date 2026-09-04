@@ -5533,3 +5533,84 @@ upstream fájlon, és a hatályba lépéshez a `mikrob-channels` újraindítása
 igazítás azonnal hat, restart nélkül, és a kisebbséget hozza a többséghez.
 **Ki döntött:** backend (plan-grilling a 0264b294-en), MikroB jóváhagyására vár a gate-en.
 **Hivatkozás:** kártya 0264b294; a `buttons` fork-fejlesztés elvesztése külön kártyán: d6be510a.
+
+## 2026-09-04 09:41 -- Trend-scan: 3 GitHub-repo licenc/relevancia-átvilágítása, 11 skill vendorolva Fron Tednek + gap-fillnek, 1 repo szándékosan kihagyva
+
+**Döntés:** Peti kérésére (trendi GitHub-repók vizsgálata + hasznos rész beépítése skillként)
+három repót néztünk át: `Leonxlnx/taste-skill`, `mvanhorn/last30days-skill`, `addyosmani/agent-skills`.
+Mindhárom MIT (a LICENSE fájl tartalmát közvetlenül ellenőrizve, nem a GitHub API becslését).
+`store/vendor-skill.sh`-val (a már meglévő, `f64fe6e1` kártyán épült vendorolási csővezetéken át,
+NEM kézi cp-vel) **11 skill lett vendorolva**:
+
+- **taste-skill (Fron Ted anti-slop frontend design-taste csomag, 5/~13 skill):**
+  `design-taste-frontend` (v2, a fő skill a DESIGN_VARIANCE/MOTION_INTENSITY/VISUAL_DENSITY
+  tárcsákkal), `industrial-brutalist-ui`, `minimalist-ui` (stílus-variánsok),
+  `imagegen-frontend-web`, `imagegen-frontend-mobile` (kép-generálási irányskillek).
+  Szándékosan KIHAGYVA: `taste-skill-v1` (a repó saját CHANGELOG-ja szerint a v2 lecserélte),
+  `gpt-tasteskill` és `soft-skill` (ugyanazt az anti-slop területet fedik le eltérő, néhol
+  ellentmondó konkrétumokkal -- több "az egyetlen igazi anti-slop skill" egyszerre betöltve
+  ütköző utasításokat adna), `brandkit`, `redesign-skill`, `output-skill` (nem design-specifikus,
+  kívül esik Fron Ted körén), `stitch-skill` (már van saját `stitch-cloud-upload` a hivatalos
+  SDK-val -- jövőbeli kiegészítés lehet, nem ebben a körben), `image-to-code-skill` (kifejezetten
+  Codexre írva, nem Claude Code-ra).
+- **agent-skills (Addy Osmani 25-skill csomagja) -- UTÓLAGOS FRISSÍTÉS, nem első adoptálás:**
+  ez a repó MÁR 2026-07-31 óta figyelt és részlegesen adoptált (kártya `7a6c376f`): 5 skill
+  (`interview-me`, `idea-refine`, `doubt-driven-development`, `context-engineering`,
+  `documentation-and-adrs`) már vendorolva volt, szó szerint megegyezik az upstreammel (a
+  `git-repo-watcher.sh` az összes azóta történt upstream-változást ellenőrizte, egyik sem
+  érintette ezt az 5 könyvtárat) -- ezeken NINCS teendő, nincs merge-jelölt.
+  Az elmúlt hetekben upstream 6 ÚJ skillt is kapott, amit a watcher jelzett, de senki nem
+  értékelt ki adoptálásra (csak azt nézte, érinti-e az 5 már kiválasztottat). Most pótolva: mind
+  a 24 jelenlegi upstream skillt átnéztük a teljes saját skill-készlethez (sp-* skillek,
+  ügynök-típusok, dedikált skillek) képest, és **6 újat vendoroltunk**, mert valódi rést töltenek
+  be: `constraint-driven-development` (írott CONSTRAINTS.md minőségi kontraktus +
+  diff-alapú "csendes lazítás" észlelés -- ehhez foghatót nem találtunk), `api-and-interface-design`
+  (API-tervezési heurisztikák -- a `contract-first-codev` a dispatch-FOLYAMATOT fedi, nem a
+  tervezési elveket), `browser-testing-with-devtools` (futásidejű böngésző-ellenőrzés
+  mechanikája -- FIGYELEM: a `chrome-devtools-mcp` eszköznevekre épül, nálunk
+  `mcp__playwright__*` van, adaptálás-követő kártya kell, MÉG NINCS átírva),
+  `ci-cd-and-automation` (nálunk a gate-folyamat kanban-alapú, semmi nem fedte a tényleges
+  CI-pipeline-konfigurációt), `deprecation-and-migration` (a `module-deletion-sweep` csak a
+  halott-kód-törlést fedi, az `update-safety` csak a saját update.sh rollbackjét -- egyik sem
+  fedi a DB expand/contract vagy API-deprecation stratégiát), `observability-and-instrumentation`
+  (van `observability-engineer` ÜGYNÖK-típus, de nem volt könnyű skill, amit egy másik ügynök
+  saját maga betölthet logolás/metrika/tracing hozzáadásakor -- a hiányzó
+  `references/observability-checklist.md`-t a `doubt-driven-development`-nél már bevált mintával
+  pótoltuk: a fájl bemásolva a skill saját `references/`-ébe, a link lapítva, mert az upstream
+  `../../references/` útvonal a mi lapos `~/.claude/skills/<name>/` elrendezésünkben nem oldható
+  fel). A többi upstream skill (spec-driven-development, planning-and-task-breakdown,
+  incremental-implementation, source-driven-development, frontend-ui-engineering,
+  debugging-and-error-recovery, code-review-and-quality, code-simplification,
+  security-and-hardening, performance-optimization, git-workflow-and-versioning,
+  shipping-and-launch, using-agent-skills) továbbra is KIHAGYVA: mindegyiket lefedi vagy
+  túlszárnyalja egy meglévő `sp-*` skill, dedikált skill vagy ügynök-típus (pl. `sp-systematic-debugging`
+  + `production-debugger`, beépített `/code-review` + `/simplify`, `white-hat-security-testing` +
+  Cybersec/Cybered ügynökök és a kötelező 3-gate folyamat).
+- **last30days-skill -- SZÁNDÉKOSAN NEM ADOPTÁLVA (nem vendorolva, nem figyelt repó).**
+  Ez NEM "sima markdown skill": egy ~2300 soros SKILL.md vékony burka egy 123 fájlos Python
+  motornak, ami böngésző-cookie/keychain kinyerést (Chrome/Safari) végez hitelesített
+  scrapinghez, és egy vendorolt, NEM hivatalos X/Twitter belső API-kliens-t (`bird-search`,
+  MIT licenc, de az X belső, nem-publikus API-ját utánozza -- ez ÁSZF- és fiók-tiltási
+  kockázatot hordoz). A puszta SKILL.md átvétele a szkriptek nélkül egy TÖRÖTT skillt adna (olyan
+  Python-hívásokra utasítana, amik nálunk nem léteznek); a szkriptek átvétele pedig pont az a
+  "futtasd a repóban lévő kódot" lépés volna, amit a feladat kifejezetten tiltott. Mivel a feladat
+  explicit kérte az óvatosságot ("ha bizonytalan vagy, hagyd ki és jelezd, ne találgass"), ez a
+  döntés: KIHAGYVA, nincs semmilyen részleges/light változat sem gyártva helyette (egy hasonló nevű,
+  de sokkal gyengébb stub-skill megtévesztő lenne). Ha Peti mégis akarja a tényleges kutatási
+  motort, az egy külön, dedikált projekt lenne: saját Python-környezet, függőség-audit, és -- a
+  vendorolt `bird-search` kliens miatt -- jogi/ToS-kockázat átvizsgálása, nem egy skill-másolás.
+
+**Miért ezt a formát (`vendor-skill.sh`, nem kézi `cp`):** a flottának már van bejáratott,
+auditálható vendorolási csővezetéke (`store/vendor-skill.sh` + `store/git-repo-watcher.sh` +
+`store/watched-repos.json`, kártya `f64fe6e1`) minden VENDORED.md-vel (forrás, commit-sha,
+licenc), és az `agent-skills` repó már eddig is ezen keresztül volt figyelve. Kézi másolással ez
+a nyomkövetés elveszett volna; utólag át lett vezetve a helyes csatornán (a taste-skill 5
+skillje előbb kézzel lett bemásolva, majd retroaktívan újra-vendorolva `vendor-skill.sh`-val,
+hogy egységes legyen a nyilvántartás).
+
+**Ki döntött:** MikroB (a dispatch, a licenc-átvilágítás jóváhagyása és a végső adopt/skip
+szűrés), a tényleges összehasonlító kutatást egy fork-ügynök végezte a `sp-*`/skill-készlet
+ellenőrzésével.
+**Hivatkozás:** `store/watched-repos.json` (`taste-skill` és `agent-skills` bejegyzések),
+a 11 új skill mindegyike saját `VENDORED.md`-vel `~/.claude/skills/<name>/` alatt; korábbi
+`agent-skills` adoptálás: kártya `7a6c376f` / `f64fe6e1`.
