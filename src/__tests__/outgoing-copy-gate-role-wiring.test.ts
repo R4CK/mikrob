@@ -21,6 +21,7 @@ import {
   OUTGOING_COPY_GATE_ENV,
   OUTGOING_COPY_GATE_MATCHER,
   ensureGovernanceGateCommands,
+  ensureOutgoingCopyGate,
   injectEmailSendGate,
   injectSelfPaceGate,
 } from '../web/agent-scaffold.js'
@@ -169,5 +170,54 @@ describe('ensureGovernanceGateCommands acts on the switch in BOTH directions', (
   it('the main agent is never wired by the repair pass, switch on or off', () => {
     process.env[OUTGOING_COPY_GATE_ENV] = 'on'
     expect(agentGetsOutgoingCopyGate(MAIN_AGENT_ID)).toBe(false)
+  })
+})
+
+// The OTHER settings-writing path. A marveen hook needs both: `ensureGovernanceGateCommands`
+// (the governance repair pass) and `ensureOutgoingCopyGate` (web.ts's boot backfill loop). The
+// repo has a guard test that enforces the pair -- and it caught this diff, which had only the
+// first one, so the boot path would have reached an arbitrary subset of the fleet.
+describe('ensureOutgoingCopyGate is the boot backfill, and it backfills OFF too', () => {
+  const TEST_AGENT = 'outgoingcopy-boot-agent'
+  const testAgentDir = join(PROJECT_ROOT, 'agents', TEST_AGENT)
+  const settingsPath = join(testAgentDir, '.claude', 'settings.json')
+  const prevEnv = process.env[OUTGOING_COPY_GATE_ENV]
+
+  afterEach(() => {
+    rmSync(testAgentDir, { recursive: true, force: true })
+    if (prevEnv === undefined) delete process.env[OUTGOING_COPY_GATE_ENV]
+    else process.env[OUTGOING_COPY_GATE_ENV] = prevEnv
+  })
+
+  const wiredNow = (): boolean =>
+    JSON.stringify(JSON.parse(readFileSync(settingsPath, 'utf-8'))).includes('outgoing-copy-gate.py')
+
+  it('arms an agent that already has a settings.json, then settles', () => {
+    mkdirSync(join(testAgentDir, '.claude'), { recursive: true })
+    writeFileSync(settingsPath, JSON.stringify({}, null, 2))
+    process.env[OUTGOING_COPY_GATE_ENV] = 'on'
+    expect(ensureOutgoingCopyGate(TEST_AGENT)).toBe(true)
+    expect(wiredNow()).toBe(true)
+    expect(ensureOutgoingCopyGate(TEST_AGENT)).toBe(false)
+  })
+
+  it('DISARMS on the next boot after the switch is turned off', () => {
+    // Every other ensure* here only ever adds, because every other guard is unconditional.
+    // This one is operator-switched, so without the removal a boot after switching off would
+    // leave 14 agents still paying for a python start on every Bash call.
+    mkdirSync(join(testAgentDir, '.claude'), { recursive: true })
+    writeFileSync(settingsPath, JSON.stringify({}, null, 2))
+    process.env[OUTGOING_COPY_GATE_ENV] = 'on'
+    ensureOutgoingCopyGate(TEST_AGENT)
+    expect(wiredNow()).toBe(true)
+    process.env[OUTGOING_COPY_GATE_ENV] = 'off'
+    expect(ensureOutgoingCopyGate(TEST_AGENT)).toBe(true)
+    expect(wiredNow()).toBe(false)
+    expect(ensureOutgoingCopyGate(TEST_AGENT)).toBe(false)
+  })
+
+  it('does not CREATE a settings file just to record "off"', () => {
+    delete process.env[OUTGOING_COPY_GATE_ENV]
+    expect(ensureOutgoingCopyGate('outgoingcopy-absent-agent')).toBe(false)
   })
 })

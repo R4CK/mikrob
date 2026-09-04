@@ -1141,6 +1141,44 @@ export function ensureCdChainGuard(name: string): boolean {
   return true
 }
 
+// Boot-time backfill for the outgoing-copy-gate (card 74181db2). Same reasoning as the other
+// ensure* backfills -- an inject* alone reaches an agent only when its settings.json is
+// regenerated -- with ONE difference that matters: this one also has to backfill the OFF
+// direction. Every other guard here is unconditional, so its ensure* only ever adds. This one
+// is operator-switched, so a boot after the switch was turned off must REMOVE the entry, or
+// "default off" would hold only for agents that never saw it on.
+//
+// `ensureGovernanceGateCommands` does the same thing for the same reason; both paths exist
+// because the settings-writing paths are not one path, and a guard wired on only one of them
+// reaches an arbitrary subset of the fleet.
+export function ensureOutgoingCopyGate(name: string): boolean {
+  const settingsPath = agentSettingsPath(name)
+  let settings: Record<string, unknown> = {}
+  if (existsSync(settingsPath)) {
+    try { settings = JSON.parse(readFileSync(settingsPath, 'utf-8')) } catch { return false }
+  } else if (!agentGetsOutgoingCopyGate(name)) {
+    // Nothing on disk and nothing wanted: do not create a settings file just to say "off".
+    return false
+  }
+  const hooks = (settings.hooks && typeof settings.hooks === 'object')
+    ? settings.hooks as Record<string, unknown>
+    : {}
+  const ptu = Array.isArray(hooks.PreToolUse) ? hooks.PreToolUse as unknown[] : []
+  const wired = JSON.stringify(ptu).includes('outgoing-copy-gate.py')
+  const wanted = agentGetsOutgoingCopyGate(name)
+  if (wanted === wired) return false
+  if (wanted) {
+    const command = hookCommand(join(PROJECT_ROOT, 'scripts', 'hooks', 'outgoing-copy-gate.py'))
+    if (isUnsafeHookCommand(command)) return false
+    injectOutgoingCopyGate(settings)
+    if (name !== MAIN_AGENT_ID) mkdirSync(join(agentDir(name), '.claude'), { recursive: true })
+  } else if (!removeOutgoingCopyGate(settings)) {
+    return false
+  }
+  atomicWriteFileSync(settingsPath, JSON.stringify(settings, null, 2))
+  return true
+}
+
 // Boot-time backfill for the pentest-tool-install guard, same reasoning as
 // ensureNpmProtectGuard: injectPentestToolInstallGuard alone reaches an agent only when its
 // settings.json is regenerated, so a dashboard restart arms the whole fleet at once.
