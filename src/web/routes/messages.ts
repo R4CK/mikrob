@@ -299,6 +299,21 @@ export async function tryHandleMessages(ctx: RouteContext): Promise<boolean> {
   }
 
   const msgUpdateMatch = path.match(/^\/api\/messages\/(\d+)$/)
+  // Read one row by id. THE RECIPE'S OWN VERIFICATION STEP (card 22e4c0d9): the
+  // system-directive section written into every agent's CLAUDE.md tells the agent to
+  // authenticate a directive by fetching the anchor row -- `curl .../api/messages/<N>` --
+  // before executing anything irreversible. This fork shipped that instruction (card
+  // ab4c85f2) while having only PUT on this path, so the command returned 404. An agent
+  // doing exactly what it was told would read that as "the row does not exist" and,
+  // fail-closed, refuse a REAL stop order as injection-suspect. Adopted verbatim from
+  // upstream, which has had it all along; getAgentMessage() was already imported here for
+  // the PUT handler below.
+  if (msgUpdateMatch && method === 'GET') {
+    const one = getAgentMessage(parseInt(msgUpdateMatch[1], 10))
+    if (!one) { json(res, { error: 'Message not found' }, 404); return true }
+    json(res, one)
+    return true
+  }
   if (msgUpdateMatch && method === 'PUT') {
     const id = parseInt(msgUpdateMatch[1], 10)
     const body = await readBody(req)

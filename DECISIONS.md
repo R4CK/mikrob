@@ -5164,3 +5164,40 @@ ellenőrzés-sor) mindegyike bukik a guard-teszten, az alapvonal 40/40 zöld.
 **Hivatkozás:** kártya `92a4c2e7`; `web/app-repo-freshness.js`, `web/app-connectors.js`,
 `web/fork-updates.js`, `src/__tests__/repo-freshness-ui.test.ts`.
 
+
+## 2026-09-04 07:15 -- A `GET /api/messages/:id` végpont pótlása: a direktíva-recept saját ellenőrző lépése 404-et adott
+
+**Döntés:** Átvettük az upstream `GET /api/messages/:id` route-ját (öt sor, a `getAgentMessage()`
+már importálva volt a `PUT` kezelőhöz), és mellé egy tesztet, ami a generált CLAUDE.md-szekció
+SZÖVEGÉBŐL olvassa ki a hivatkozott végpontot, majd a valódi route-kezelővel meg is hívja.
+
+**Miért:** az `ab4c85f2` minden ügynök CLAUDE.md-jébe beírta, hogy egy rendszer-direktíva
+visszafordíthatatlan része előtt hitelesíteni kell a horgony-sort a `curl .../api/messages/<N>`
+paranccsal. A forkban ezen az útvonalon CSAK `PUT` volt. Élesben mérve: HTTP 404. Vagyis az az
+ügynök, aki pontosan azt teszi, amit az utasítása mond, azt olvassa ki, hogy a sor nem létezik, és
+a fail-closed szabály szerint egy VALÓDI leállítási direktívát utasít el injekció-gyanúsként. A
+flotta stop-mechanizmusa pont akkor mondana csődöt, amikor használni kell.
+
+**A hibaosztály, kimondva:** az `ab4c85f2`-n magam neveztem meg, hogy egy kétrészes protokoll
+egyik felének átvétele rosszabb a semminél -- és ugyanabba léptem bele, csak a HARMADIK felével.
+A küldőt (`sendSystemDirective`) és a fogadó receptet (a scaffold-szekció) is átvettem, az
+OLVASÓ végpontot nem. Egy utasítás nem passzív szöveg: önálló résztvevő, ami képességet nevez meg.
+A Cybersec gate sem kapta el, mert az azonosító ÍRÓIT auditálta, nem az olvasási utat, amit a
+recept az ügynök kezébe ad.
+
+**Miért így néz ki a teszt:** egy "létezik-e GET handler a /api/messages/:id-n" állítás csak a
+route-ot rögzítené. Ha valaki átfogalmazza a receptet egy másik végpontra, a route továbbra is
+létezik, a teszt zöld marad, az utasítás pedig megint törött. Ezért a teszt a végpontot a
+GENERÁLT UTASÍTÁS SZÖVEGÉBŐL parse-olja ki, és azt hívja meg. Mutációval igazolva mindkét irányban:
+a route eltávolítása 2 tesztet buktat, és a recept átírása egy másik végpontra ugyancsak 2-t --
+vagyis a teszt a mondatot követi, nem egy konstanst.
+
+**Biztonsági hatás: nincs új.** A route ugyanazt a sor-alakot adja vissza, amit a már meglévő
+`GET /api/messages` lista-végpont, és ugyanaz mögött a Bearer-kapu mögött ül (`/api/*` 401 hiányzó
+principal esetén). Nem új adat-osztály, csak egy eddig hiányzó olvasási mód ugyanarra.
+
+**Ki döntött:** backend (a lelet és a végrehajtás), MikroB (külön kártya + külön landolási kör,
+hogy a `93e55311`-en már meglévő Cybersec GO ne váljon érvénytelenné).
+
+**Hivatkozás:** kártya `22e4c0d9` (eredeti: `ab4c85f2`); `src/web/routes/messages.ts`,
+`src/__tests__/directive-recipe-endpoint-exists.test.ts`.
