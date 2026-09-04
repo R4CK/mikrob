@@ -4,7 +4,7 @@ import {
   getKanbanSeqByIdPrefix,
   getKanbanCardStateByIdPrefix,
   markMessageDone, markMessageFailed, getAgentMessage,
-  closeOtelSpan,
+  closeOtelSpanIfOpen,
   getPendingBacklogByAgent,
   COMPLETION_REPORT_PREFIX,
   type AgentMessage,
@@ -332,8 +332,13 @@ export async function tryHandleMessages(ctx: RouteContext): Promise<boolean> {
     if (ok) {
       const done = getAgentMessage(id)
       // Close the OTel span now that the message has a terminal status.
+      // IF-OPEN, first terminal event wins (card dbc0b4bf). The router now closes this span at
+      // DELIVERY, which is the operation it actually opened and measures. Overwriting that here
+      // would replace a measured send->deliver latency with a send->done work duration, in the same
+      // column, with nothing afterwards able to tell which one a row holds. This still closes spans
+      // that never went through the router's delivery path.
       if (done?.trace_id && done?.span_id) {
-        closeOtelSpan(done.trace_id, done.span_id, Date.now(), newStatus === 'done' ? 'ok' : 'error')
+        closeOtelSpanIfOpen(done.trace_id, done.span_id, Date.now(), newStatus === 'done' ? 'ok' : 'error')
       }
       // Notify the delegator: create a reverse message from executor → delegator so
       // they learn the result without polling. See shouldNotifyDelegator for which

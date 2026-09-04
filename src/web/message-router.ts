@@ -14,6 +14,7 @@ import {
   getKanbanCardStateByIdPrefix,
   stampMessageTrace,
   upsertOtelSpan,
+  closeOtelSpanIfOpen,
   type AgentMessage,
 } from '../db.js'
 import { formatDeliveryStalenessNote, supersededDispatch } from './kanban-state-stamp.js'
@@ -932,6 +933,22 @@ export async function runMessageRouterTick(): Promise<void> {
         await sendPromptToSession(session, prefix + wrapped + staleNote, host)
         if (!markMessageDelivered(msg.id)) {
           logger.warn({ id: msg.id }, 'markMessageDelivered affected 0 rows (deleted concurrently?)')
+        }
+        // Close the span HERE, because delivery is what it measures (card dbc0b4bf).
+        //
+        // Measured on live data before changing anything: 9308 messages carried a trace, and 9296
+        // of them sat at 'delivered' forever -- so 9297 spans were stuck 'running' with no end_ms.
+        // The close path was NOT broken: of the 12 traced messages that ever reached a terminal
+        // status, 12 had closed spans. Tracing and completion were simply on disjoint populations.
+        // Nothing marks a tmux-injected message done, because there is no completion signal to
+        // observe -- delivery IS the end of the operation this span opened, and it is exactly what
+        // the table's header calls it: inter-agent latency.
+        //
+        // Only on SUCCESS. The catch below retries a transient inject failure on a later tick, so
+        // closing there would stamp an end on an operation still in flight -- a wrong duration is
+        // worse than a missing one, which is the whole lesson of this card.
+        if (traceCtx) {
+          closeOtelSpanIfOpen(traceCtx.trace_id, traceCtx.span_id, Date.now(), 'ok')
         }
         // Propagate trace context: the receiving agent inherits this trace_id
         // and span_id so its next outbound message continues the same chain.

@@ -66,6 +66,10 @@ vi.mock('../db.js', () => ({
   countNewerMessagesFromSameSender: () => 0,
   upsertOtelSpan: (..._a: unknown[]) => undefined,
   closeOtelSpan: (..._a: unknown[]) => false,
+  // card dbc0b4bf: the router closes the delivery span through the if-open variant. Without a
+  // stub here the import binding is undefined, so any test reaching the delivery success path
+  // would crash on a call rather than on a missing mock -- a confusing way to learn that.
+  closeOtelSpanIfOpen: (..._a: unknown[]) => false,
 }))
 
 vi.mock('../web/voice-directive.js', () => ({
