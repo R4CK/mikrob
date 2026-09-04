@@ -1,4 +1,5 @@
 import { randomUUID } from 'node:crypto'
+import { appendCardStateStamp } from '../kanban-state-stamp.js'
 import { join } from 'node:path'
 import {
   listKanbanCards, createKanbanCard, updateKanbanCard,
@@ -7,7 +8,7 @@ import {
   getKanbanLineComments, addKanbanLineComment,
   getKanbanCard, getChildCards, getDb,
   createAgentMessage, markKanbanCardDispatched,
-  getKanbanSeqByIdPrefix,
+  getKanbanSeqByIdPrefix, getKanbanCardStateByIdPrefix,
   listLabels, getLabel, createLabel, updateLabel, deleteLabel,
   addLabelToCard, removeLabelFromCard, getLabelsForAllCards, getLabelsForCard,
   listArchivedKanbanCards,
@@ -216,7 +217,18 @@ async function fireKanbanDispatch(id: string, actor?: string | null): Promise<vo
     }
     const desc = (card.description ?? '').trim()
     const content = `[Kanban feladat #${id}]: ${card.title}${desc ? ' — ' + desc : ''}\n\n${kanbanMoveInstructions(id, target)}`
-    createAgentMessage(MAIN_AGENT_ID, target, content)
+    // Stamp the board state, exactly as POST /api/messages does (card 382dcb15). This path calls
+    // createAgentMessage DIRECTLY -- it runs inside the card-move request -- and therefore never
+    // passed through the route's appendCardStateStamp. So the AUTO-dispatch messages, the one class
+    // that ALWAYS names a card, were the only ones arriving with no card-state at all. Measured on
+    // the incident that opened this card: message 22192 ("[Kanban feladat #fe06da0c]", 19555s in
+    // the queue) carries no [card-state @send] block, while hand-written messages from the same
+    // sender in the same window do.
+    //
+    // The send stamp is also the PRECONDITION for the delivery-time footer: formatDeliveryStalenessNote
+    // returns '' when the content carries no stamp, so without this an unstamped dispatch could never
+    // tell its recipient that the card moved while it waited -- the exact failure this card is about.
+    createAgentMessage(MAIN_AGENT_ID, target, appendCardStateStamp(content, getKanbanCardStateByIdPrefix))
     markKanbanCardDispatched(id)
     logger.info({ id, target, assignee: card.assignee }, 'Kanban in_progress dispatch fired')
   } catch (err) {
