@@ -199,7 +199,8 @@ const ACKNOWLEDGED_CONFLICTS = {
   // kanban-write gate, quarantineReader project-scope refactor, and watcher from upstream
   // alongside the fork's section-writer, neither side taken wholesale.
   'src/web/agent-scaffold.ts':
-    "keep BOTH section-writers (fork ensureLocalFirstSection + upstream ensureSkillsPathTrapSection), AND adopt upstream kanban-write gate (agentGetsKanbanWriteGate/injectKanbanWriteGate), quarantineReader project-scope refactor (EGRESSRENDER824), and watchEgressAllowlistForReaderRender -- all additive, none taken wholesale. Re-read 2026-08-26 (card 72f5f13b, unblocking fbb36b41/489dae5f landings): upstream moved AGAIN since this rule was written (added findDuplicateJsonKeys dup-key detection in ensureAgentHooks, HEARTBEAT_AGENT_ID import, EMAIL_GATE_MATCHER/emailGateMatcherStale export) -- 22 diff hunks total against a 1600-line security-critical file (fleet-wide hook wiring: git-protect/npm-protect/blast-radius/pentest-install guards live here). NOT safe to hand-merge under time pressure just to unblock a landing. The fork's own guards (git-protect/npm-protect/blast-radius/pentest-install, unchanged in this diff) remain authoritative and untouched on live develop. Full reconciliation of ALL upstream additions (this round's + the previously-acknowledged kanban-write-gate round) is done and build+test-verified in the disposable card-72f5f13b merge worktree, pending the Peti-supervised F5 cutover (card 5c134edf) -- that is where this file's real sync lands, not a piecemeal live-develop patch.",
+    "keep BOTH section-writers (fork ensureLocalFirstSection + upstream ensureSkillsPathTrapSection), AND adopt upstream kanban-write gate (agentGetsKanbanWriteGate/injectKanbanWriteGate), quarantineReader project-scope refactor (EGRESSRENDER824), and watchEgressAllowlistForReaderRender -- all additive, none taken wholesale. Re-read 2026-08-26 (card 72f5f13b, unblocking fbb36b41/489dae5f landings): upstream moved AGAIN since this rule was written (added findDuplicateJsonKeys dup-key detection in ensureAgentHooks, HEARTBEAT_AGENT_ID import, EMAIL_GATE_MATCHER/emailGateMatcherStale export) -- 22 diff hunks total against a 1600-line security-critical file (fleet-wide hook wiring: git-protect/npm-protect/blast-radius/pentest-install guards live here). NOT safe to hand-merge under time pressure just to unblock a landing. The fork's own guards (git-protect/npm-protect/blast-radius/pentest-install, unchanged in this diff) remain authoritative and untouched on live develop. Full reconciliation of ALL upstream additions (this round's + the previously-acknowledged kanban-write-gate round) is done and build+test-verified in the disposable card-72f5f13b merge worktree, pending the Peti-supervised F5 cutover (card 5c134edf) -- that is where this file's real sync lands, not a piecemeal live-develop patch." +
+    "Re-measured 2026-09-03 (backend2, card 6500e1d3 landing-block, 2a72fb5c7f38..936cdac15d5c): upstream threaded a new AGENT_API_ORIGIN through resolveDashboardOrigin, giving it a third parameter and the precedence AGENT_API_ORIGIN > DASHBOARD_PUBLIC_URL > localhost. Its reason is measured, not stylistic: on a single-host install behind hairpin NAT the public name resolved but its 443 was unreachable FROM THE HOST, so 73 generated curl examples across 18 agent CLAUDE.md files pointed at a dead address and returned curl exit 7 -- nothing the agent could even surface. An empty AGENT_API_ORIGIN keeps the old behaviour byte-for-byte. None of it touches the section-writers, the kanban-write gate or the quarantineReader scope that this rule decides. Resolution unchanged; blob bumped. The 'not safe to hand-merge under time pressure' warning above STILL STANDS and is not weakened by this bump.",
   // ORIGINAL entry (2026-08-16, card 88505fb5) described a schema-migration/trigger hunk in
   // ensureSchema() -- that hunk no longer conflicts (both sides' migrations merged clean since).
   // RE-MEASURED 2026-09-01 (heartbeat reconciliation): the file conflicts again, but at a totally
@@ -291,7 +292,8 @@ const ACKNOWLEDGED_CONFLICTS = {
   // Resolution: keep the fork's async measurePct, adopt upstream's configDirFor/measureContextTokens
   // (made async)/measureIdleMs verbatim otherwise, await the two new call sites.
   'src/web/context-guard-runner.ts':
-    "keep the fork async measurePct/configDirFor; adopt upstream measureContextTokens+measureIdleMs to wire the fork's existing idleFlushEnabled domain logic, making measureContextTokens async (fork's readContextTokensFromProjectDir is async, upstream's is sync) and awaiting its two call sites in checkAgent",
+    "keep the fork async measurePct/configDirFor; adopt upstream measureContextTokens+measureIdleMs to wire the fork's existing idleFlushEnabled domain logic, making measureContextTokens async (fork's readContextTokensFromProjectDir is async, upstream's is sync) and awaiting its two call sites in checkAgent" +
+    " SHARPENED 2026-09-03 (backend2, card 6500e1d3 landing-block, b17ba4f630db..2876a41d1fb2) -- NOT a plain blob bump: upstream moved AT one of the two points this rule names. configDirFor() now calls resolveAgentConfigDirForRead() instead of readAgentClaudeConfigDir(), because an agent whose config dir was auto-provisioned by the launcher has no field to read and the old call silently returned the host default, i.e. ANOTHER agent's absence. That is a real bug fix and it does not conflict with 'keep the fork's async configDirFor': the two sides change different things about the same function, so keep the fork's async shape and adopt upstream's resolver INSIDE it. Second upstream change, additive and to be adopted: the request-handoff branch of checkAgent now goes through sendSystemDirective instead of a bare sendPromptToSession (GUARDHITELES903) -- a message telling an agent to drop work and stop is indistinguishable from a prompt injection without a queue anchor, and an agent correctly refused one on 2026-09-03.",
   // Card 2e634e5c, fifth file, the largest and the only one NOT fully hand-verified line-by-line --
   // recorded as a POLICY, not a line-by-line merge, same character as the src/web/update-checker.ts
   // entry above. web/app.js is a STUB scaffold: its content was extracted into 36 web/app-*.js
@@ -378,6 +380,42 @@ const ACKNOWLEDGED_CONFLICTS = {
     "countNewerMessagesFromSameSender import + the 7th `freshness` argument into " +
     "wrapAgentMessageForDelivery (rendered inside the sender line). Different signals, different " +
     "positions, no symbol collision -- taking either side wholesale silently drops a shipped feature",
+  // Card 206ab192 (URGENT: this file being undecided blocked EVERY marveen landing). The CONFLICT is
+  // one hunk -- fork's rollback-guard quarantine block (card 980454f7, the leftover that re-armed the
+  // loop which walked the live install back 529 commits) vs upstream's boot.log timestamp header --
+  // but resolving only that would miss the actual question, so it was measured properly:
+  //
+  // OUR Linux branch is BYTE-IDENTICAL to the merge base. The fork's only divergence in this file is
+  // the quarantine block, which sits before the OS dispatch and touches nothing upstream changed.
+  // Upstream took the file 89 -> 175 lines with work that is squarely OUR problem, not generic:
+  //   - a flock + pidfile IDEMPOTENT launch, because on WSL two autostart hooks reach this script on
+  //     the same boot (wsl.conf [boot] and a Windows ONLOGON task) and the loser used to start a
+  //     SECOND channels.sh polling the SAME bot token -- incoming messages split between two pollers
+  //     with no error anywhere. This fleet runs on WSL2.
+  //   - system-scope units tried BEFORE `systemctl --user`, because as root the user call fails and
+  //     the script fell through to nohup, putting a second dashboard next to the system-unit one
+  //     (EADDRINUSE crash loop).
+  //
+  // SO THE DECISION IS ADOPT -- but start.sh and stop.sh are ONE PROTOCOL and must move together.
+  // start.sh's new _service_live() decides 'already running' from the PIDFILE, and that is only sound
+  // because upstream also made stop.sh remove the pidfile ONLY AFTER the process is confirmed gone
+  // (the other half of 9d3b77f4, 43 insertions in scripts/stop.sh). OUR stop.sh is still the merge-base
+  // version: it does `kill` and then `rm -f` the pidfile immediately, without waiting for exit. Taking
+  // start.sh alone would therefore hand the new liveness check a pidfile that is already gone while the
+  // old process is still winding down -- the update finalizer runs stop.sh then start.sh back to back,
+  // which is exactly the sequence upstream's comment says it fixed. scripts/stop.sh does NOT conflict
+  // (our side is unmodified), so nothing forces it to be looked at -- which is precisely why it is
+  // named here.
+  'scripts/start.sh':
+    'ADOPT upstream wholesale for the OS-dispatch region (our Linux branch is byte-identical to the ' +
+    'merge base, so this is a clean take, not authorship): the flock+pidfile idempotent launch, the ' +
+    'system-scope-units-first branch, and the boot.log timestamp header. KEEP the fork rollback-guard ' +
+    '--quarantine-stray block (card 980454f7), which sits before the OS dispatch and overlaps nothing. ' +
+    'MANDATORY PAIR: adopt scripts/stop.sh from the same upstream commit (9d3b77f4) IN THE SAME ' +
+    'CHANGE -- start.sh decides "already running" from the pidfile, which is only sound once stop.sh ' +
+    'removes that pidfile after confirming exit; our stop.sh still unlinks it immediately after kill. ' +
+    'stop.sh does not conflict, so nothing else will force it to be looked at. Adopting start.sh ' +
+    'alone is WORSE than adopting neither',
   'src/web/token-usage.ts':
     "additive, non-colliding imports on both sides -- keep fork's estimateCostUsd/stripDateSuffix (model-pricing.js) AND upstream's listAgentNames (agent-config.js) + resolveAgentConfigDirForRead (claude-plans.js), all four together",
   // Test-fixture window-size conflict, NOT a source conflict: src/web/schedule-runner.ts itself
@@ -436,7 +474,8 @@ const ACKNOWLEDGED_CONFLICTS = {
   // agent-scaffold.ts. Blob bumped to record today's re-read; resolution unchanged, stays
   // pending F5.
   'src/web/heartbeat-agent-scaffold.ts':
-    'two-way merge: adopt upstream metrics-script approach (HBMEMBLIND819 third contract -- bash heartbeat-metrics.sh, HeartbeatIdentity.metricsScript, HEARTBEAT_AGENT_ID import, updated report format using COUNTS/URGENT/WAITING/SCHEDULES/TASK_RUNS_1H lines verbatim) for the kanban section; keep fork printf|curl token-argv-safe pattern for the remaining curl calls (quota park + inter-agent message) that upstream did not touch -- NOT yet applied to live develop, deferred to F5 same as agent-scaffold.ts',
+    'two-way merge: adopt upstream metrics-script approach (HBMEMBLIND819 third contract -- bash heartbeat-metrics.sh, HeartbeatIdentity.metricsScript, HEARTBEAT_AGENT_ID import, updated report format using COUNTS/URGENT/WAITING/SCHEDULES/TASK_RUNS_1H lines verbatim) for the kanban section; keep fork printf|curl token-argv-safe pattern for the remaining curl calls (quota park + inter-agent message) that upstream did not touch -- NOT yet applied to live develop, deferred to F5 same as agent-scaffold.ts' +
+    "Re-measured 2026-09-03 (backend2, card 6500e1d3 landing-block, bb4a7bc74200..ad28ed576466): upstream threaded the same AGENT_API_ORIGIN into currentHeartbeatIdentity's resolveDashboardOrigin call, and REWROTE the 'Collect the four data sources' prose plus the calendar wording (now HEARTBEAT_CALENDAR_ID rather than 'whatever account the MCP server is authenticated as'). The metrics-script contract this rule adopts is untouched, and so is the fork's printf|curl token-argv-safe pattern it keeps. NOTE for whoever executes the merge: this rule says to take upstream's report format 'verbatim' -- that word now refers to TODAY's block, not the one it was written against, so copy from this blob rather than from memory.",
   // Re-read 2026-08-23 against upstream 9736ea67 (card 394fb5ce): the file moved on, so the rule
   // below now describes TODAY's two hunks rather than the ones it was first written for. The
   // SIGTERM/janitor hunks the previous text named have since merged cleanly and are gone; what
@@ -451,7 +490,8 @@ const ACKNOWLEDGED_CONFLICTS = {
   // Upstream's new sawTurn / 'lost' watchdog in the same file merges CLEANLY and is adopted with
   // no decision needed -- it is recorded here only so the next reader knows it was looked at.
   'src/web/schedule-runner.ts':
-    'two independent non-overlapping changes: keep the fork async runPreCheck signature (955f014e) and the fork try/catch around startAgentProcess (e9d3cd12); adopt upstream quotaWorkClass() and the cleanly-merging sawTurn/lost watchdog',
+    'two independent non-overlapping changes: keep the fork async runPreCheck signature (955f014e) and the fork try/catch around startAgentProcess (e9d3cd12); adopt upstream quotaWorkClass() and the cleanly-merging sawTurn/lost watchdog' +
+    "Re-measured 2026-09-03 (backend2, card 6500e1d3 landing-block, 9736ea673775..a7c10a08f1fa): upstream added a desktop-lock gate (decideDesktopGate/readDesktopLock/recordDesktopSkip), owner-escalation for pending retries (markPendingTaskRetryOwnerAlert + OWNER_ESCALATION_EXTRA_MS, classifyTelegramSendError generalised to classifySendError), and channel-provider imports. All of it is elsewhere in the file; the fork's async runPreCheck signature and its try/catch around startAgentProcess -- the two things this rule decides -- are untouched. Resolution unchanged; blob bumped.",
   // Fork added agents/** to the exclude list (with explanatory comment: live-install agent SDK
   // tests would otherwise drown the real suite). Upstream added assert-supported-node.ts to
   // setupFiles and updated the comment above setupFiles to list both gates. Both changes are
@@ -702,6 +742,30 @@ const ACKNOWLEDGED_CONFLICTS = {
   // would be wrong regardless of what upstream's edit says. Resolution: keep the deletion.
   'src/__tests__/installer-ollama-nonfatal.test.ts':
     'keep the deletion -- this test covers the silent Ollama pre-install step Peti\'s 2026-08-13 directive (EPIC ebc7b4dd) removed from the fork; upstream modified rather than deleted it because upstream never removed that step, but the fork has no code left for this test to exercise',
+  // Card ab4c85f2, 2026-09-03: this fork adopted upstream's GUARDHITELES903
+  // authenticated-directive mechanism. Upstream ships both halves; this fork had
+  // NEITHER, so the adoption touches an upstream-owned module, an upstream-owned
+  // test, and a long-diverged fork file. Three conflicts, three different rules.
+  //
+  // Deliberately NOT GUARDED_FILES for any of them: upstream owns this feature
+  // and is entitled to keep improving it. We want its future changes, not a
+  // permanent exemption from reading them.
+  'src/web/system-directive.ts':
+    "take upstream's version wholesale, then re-apply ONE hunk: the fork imports SYSTEM_DIRECTIVE_SENDER from './system-directive-id.js' (a const-only module) and re-exports it, where upstream declares it inline. The fork needs the shared const because routes/messages.ts guards on it, and a request-path file must not import this tmux-side module. Nothing else in the file is intentionally fork-divergent -- if the diff shows more, upstream changed the logic and that change is wanted",
+  // The fork's copy is upstream's file plus fork-owned additions AND one
+  // deliberately INVERTED assertion, so a wholesale take in either direction is
+  // wrong here.
+  'src/__tests__/system-directive-auth-section.test.ts':
+    "merge, do not take a side: keep upstream's new/changed cases, and keep the fork's three additions -- the 'two halves must ship together' describe block (wiring tripwire this fork needs and upstream does not), the token-not-in-argv assertion, and the INVERTED [CONTEXT-RESTART-GATE] case. Upstream asserts that prefix is IN scope; here it is OUT, because this fork's restart gate sends createAgentMessage(agent -> coordinator) alerts, not directives to the recipient. Never take upstream's in-scope assertion without ALSO adopting upstream's gate wake nudge -- the fork test asserts context-restart-gate-runner.ts contains no sendSystemDirective precisely so that pair cannot drift",
+  // Add/add on the same call site: both sides independently routed the
+  // channels-recovery memory-save through sendSystemDirective. The semantics are
+  // identical; only the import placement and a fork comment differ.
+  // Adopted from upstream and kept as close to it as the fork's tooling allows:
+  // the ONLY divergence is the mock signature, forced by lint, not by taste.
+  'src/__tests__/system-directive.test.ts':
+    "take upstream's version wholesale, then re-apply ONE hunk: the sendPromptToSession mock's call signature lives in vi.fn's generic (type SendPrompt) instead of upstream's four underscore-prefixed parameters. This fork's eslint sets @typescript-eslint/no-unused-vars to a bare 'error' with no argsIgnorePattern, so upstream's shape is four findings and lint-ratchet refuses the landing. Purely mechanical -- the assertions and the cases are upstream's; if the diff shows anything beyond that signature line, upstream changed the tests and those changes are wanted",
+  'src/web/channel-monitor.ts':
+    "both sides made the SAME change to triggerMarveenMemorySave (bare sendPromptToSession -> sendSystemDirective(MAIN_AGENT_ID, MAIN_CHANNELS_SESSION, prompt)), so take either for that hunk -- they are semantically equal. Everything ELSE in this file is long-standing fork divergence unrelated to this card (lazy bin resolver vs upstream's eager resolveFromPath consts, and upstream's STUCKINPUT827 injected-prompt-registry work): resolve those on their own merits, they are not part of the ab4c85f2 decision",
 } as const
 
 // THE UPSTREAM CONTENT EACH RULE ABOVE WAS DECIDED AGAINST (card a1d613e3, Cybersec msg 19105).
@@ -739,13 +803,13 @@ const ACKNOWLEDGED_UPSTREAM_BLOBS: Readonly<Record<keyof typeof ACKNOWLEDGED_CON
   'src/web/context-restart-gate-runner.ts': '268fc2e659fa8210c2b67c1df64e4006c2e727af',
   'src/web.ts': 'a515f9c8750b2aeece08eb66034f466e6d8a7732',
   'src/web/keychain.ts': '1e1730ee0d8f6b1d4b51c5c254f3fab56acfa376',
-  'src/web/agent-scaffold.ts': '2a72fb5c7f388a6be9077a1a3d8821231bcf8a88',
+  'src/web/agent-scaffold.ts': '936cdac15d5c59305cdff4e7659ec95e95d86f2a',
   'src/db.ts': '6a71eab9ab67a2c0e17dd086ee319be80a0bb284',
   'src/web/routes/agents.ts': '4b7a61e33448134091ae6a9175857a4027bdab28',
   'src/web/routes/kanban.ts': '89423d29b8af3e949cb520eefc8f5a0d03ff380c',
   'scripts/hooks/egress-gate.mjs': '229076d5812e7d50a188ca07b43a87fb6239b233',
   'src/__tests__/egress-gate.test.ts': 'c24ca54ffc49de70d602790fa1d6b80e3aea4156',
-  'src/web/context-guard-runner.ts': 'b17ba4f630dbba93cfd5520e3c37a854a5c80c81',
+  'src/web/context-guard-runner.ts': '2876a41d1fb283e5591dec8666b67734b2b52b53',
   'web/app.js': 'e8c74d15bbb930ca7fff43139b868b0e638e7a11',
   'web/style.css': 'b774ccb836f07ca78c300077302834a80cd12edb',
   'src/web/agent-taskstate.ts': '625d03282bb75b554ce23822f67cc4e51b0706c1',
@@ -754,13 +818,14 @@ const ACKNOWLEDGED_UPSTREAM_BLOBS: Readonly<Record<keyof typeof ACKNOWLEDGED_CON
   // correlateWithKanban() (skips parent cards via NOT EXISTS + comment), import hunk untouched,
   // the four-imports rule above still holds; additive, no collision with the fork's edits.
   'src/web/message-router.ts': 'ac55c39b847d2ebbea43ab83cd449a1b774f73ca',
+  'scripts/start.sh': '5ddd9df0c82471ff51efd542c72693033e462988',
   'src/web/token-usage.ts': '346fa63739d85f7af55b06d9359f4ec82db00f3e',
   'src/__tests__/schedule-runner-autostart.test.ts': '678cbb42e4447b206598bfbb9bc271602a3f896b',
   '.gitignore': '1e5adbb2332be0dbf5a710c1899e49305ccb318b',
   'package.json': '031fc59039e3081034cf870745202076818b1bff',
   'package-lock.json': 'f4f25dd6896d5a4f80c13df1b056b632f86f37e6',
-  'src/web/heartbeat-agent-scaffold.ts': 'bb4a7bc74200725e8c257f7d835b082ed6f12047',
-  'src/web/schedule-runner.ts': '9736ea6737757cc0155671dca3d9d2874b330885',
+  'src/web/heartbeat-agent-scaffold.ts': 'ad28ed576466d9a591209c501ced06998ec1a505',
+  'src/web/schedule-runner.ts': 'a7c10a08f1fac72f1401ec53eb415fcd2aee2e24',
   'vitest.config.ts': '62d4ac7606cd719d40e07fc0d82c7f777dda0b30',
   'src/web/agent-process.ts': '45e20624c63fdb4377943aede3cf4fc0d46b3319',
   'src/web/auto-restart-runner.ts': '044dde0ad94f5a57ff8e611656f288b25fecdaff',
@@ -796,6 +861,11 @@ const ACKNOWLEDGED_UPSTREAM_BLOBS: Readonly<Record<keyof typeof ACKNOWLEDGED_CON
   'scripts/install-prod-tree-guard-hook.sh': '9647c9658a5e6352ae0bae57842590a1c2d6e30c',
   'install-linux.sh': '21f10d99336757c0a1416b6e20297b1d3cda42cd',
   'src/__tests__/installer-ollama-nonfatal.test.ts': '7467d0dc6674099a5af6b65d4388d18ff1f99f78',
+  // Card ab4c85f2, 2026-09-03 (adopting GUARDHITELES903 into a fork that had neither half).
+  'src/web/system-directive.ts': '7b69015ec8f1942349f9f912bfda228fb01ee771',
+  'src/__tests__/system-directive.test.ts': '08409868f5f889240baceba1c4a240ac17d2c138',
+  'src/__tests__/system-directive-auth-section.test.ts': '80d65e4651601d320447bf188d53548a5ef5f8ba',
+  'src/web/channel-monitor.ts': 'd1c642f669ff2a28b6eec79bbf503365c9ac1b08',
 }
 
 /** A conflict whose written rule was decided against DIFFERENT upstream content than what is

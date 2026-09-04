@@ -13,6 +13,7 @@ import { logger } from '../../logger.js'
 import { COORDINATOR_AGENT_ID } from '../../channel-coordinator/ingest.js'
 import { sanitizeAgentIdent } from '../../prompt-safety.js'
 import { isKnownAgent } from '../agent-config.js'
+import { SYSTEM_DIRECTIVE_SENDER } from '../system-directive-id.js'
 import { OWNER_NAME, SYSTEM_SENDER_IDS, parseSystemSenderIds } from '../../config.js'
 import { readBody, json, jsonMaybeGzip } from '../http-helpers.js'
 import { normalizeKanbanRefs } from '../kanban-ref-normalize.js'
@@ -83,6 +84,24 @@ export async function tryHandleMessages(ctx: RouteContext): Promise<boolean> {
     if (sanitizeAgentIdent(from) === COORDINATOR_AGENT_ID) {
       logger.warn({ from: from.trim(), to: to.trim() }, 'Rejected /api/messages POST forging channel-coordinator id')
       json(res, { error: 'from is reserved for the in-process channel coordinator' }, 403)
+      return true
+    }
+    // Reserved-sender guard for the authenticated system-directive channel
+    // (src/web/system-directive.ts). Those rows carry from_agent="system", and
+    // every agent's CLAUDE.md now tells it to TRUST such a row as proof that a
+    // stop/handoff order really came from the supervisor. That promise is only
+    // worth anything if "system" can never be written through this endpoint.
+    //
+    // Before this guard the 403 was an ACCIDENT of configuration, not a rule:
+    // "system" 403'd merely because it is not a known agent and not listed in
+    // SYSTEM_SENDER_IDS. But SYSTEM_SENDER_IDS is exactly the knob whose most
+    // natural value is the literal string "system" -- one plausible .env line
+    // would silently turn the fleet's directive authentication off while every
+    // CLAUDE.md kept claiming it held. Hence an explicit check, placed BEFORE
+    // the owner/SYSTEM_SENDERS exemptions so neither can re-open it.
+    if (sanitizeAgentIdent(from) === SYSTEM_DIRECTIVE_SENDER) {
+      logger.warn({ from: from.trim(), to: to.trim() }, 'Rejected /api/messages POST forging the system-directive sender id')
+      json(res, { error: 'from is reserved for in-process system directives' }, 403)
       return true
     }
     // Federation spoof guard: a slash-qualified from ("teodor/teodor") is the

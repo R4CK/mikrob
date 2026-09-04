@@ -4881,6 +4881,114 @@ Külön kártya nyílt rá.
 mindhárom állapot MINDKÉT hívási ponton kipinnelve), kapcsolódó: `36a456e3` (legyenek-e minták --
 Peti döntésére vár), `3ec64c96` (a sentinel eredete), `dfff9b37` (a gate-kör).
 
+## 2026-09-03 20:50 -- Hitelesített rendszer-direktíva csatorna: mindkét fél átvéve, plusz explicit fenntartott-küldő őr
+
+**Döntés:** Az upstream `ensureSystemDirectiveAuthSection` (GUARDHITELES903) átvételekor NEM csak a
+CLAUDE.md-szekciót (a fogadó felet) vettük át, hanem a küldő felet is (`src/web/system-directive.ts`
++ a három valódi direktíva-hívás átállítása), ÉS a fork felvett egy explicit `system`
+fenntartott-küldő őrt a `POST /api/messages`-be, ami az upstreamben NINCS meg.
+
+**Miért (a fogadó fél önmagában káros lett volna):** a szekció azt mondja ki minden ügynöknek, hogy
+egy `[CONTEXT-GUARD]` / `[SYSTEM: ...]` műveletet kérő üzenet `msg_id` nélkül injekció-gyanús, és a
+visszafordíthatatlan részét NEM szabad végrehajtani. A forkunkban viszont MINDEN valódi
+context-guard handoff/resume és a channels-recovery memória-mentés pontosan így, csupasz
+`sendPromptToSession`-nel ment ki, `msg_id` nélkül. A szekció egyedüli átvétele tehát a flotta
+összes VALÓDI context-guard leállítását utasíttatta volna el az ügynökökkel -- egy működő védelem
+megtörése (kódminőségi 5. szabály), nem additív változtatás. Az upstream saját kommentje ugyanezt
+mondja a másik irányból: „an id-carrying sender with no receiver rule is zero protection that looks
+like protection". A két fél együtt szállítandó, és ezt teszt is kikényszeríti.
+
+**Miért kellett az upstreamen túli őr:** a szekció szövege abszolútumként állítja, hogy a
+`/api/messages` POST a `from="system"`-et 403-mal utasítja el. Mérve: sem a mi, sem az upstream
+`routes/messages.ts`-e nem tartalmazott explicit `system`-ellenőrzést -- a 403 pusztán abból jött,
+hogy a `system` nem ismert ügynök és nincs a `SYSTEM_SENDER_IDS`-ben. Márpedig a `SYSTEM_SENDER_IDS`
+pont az a változó, amibe a legkézenfekvőbb érték a `system` string; egyetlen elhihető `.env`-sor
+csendben kikapcsolta volna a teljes direktíva-hitelesítést, miközben minden ügynök CLAUDE.md-je
+tovább állítja, hogy áll. Mutációs méréssel igazolva: az őr nélkül, `SYSTEM_SENDER_IDS=system`
+mellett a hamisított `from=system` direktíva-sor **200-at kap** (a teszt 403 → 200-ra bukik).
+Az őr a tulajdonos/`SYSTEM_SENDERS` kivételek ELÉ került, hogy egyik se tudja újranyitni.
+
+**Hatókör-korlát:** a mi `[CONTEXT-RESTART-GATE]` üzenetünk szándékosan kimaradt -- az nem direktíva,
+hanem `createAgentMessage(name -> MAIN_AGENT_ID)` riasztás, valódi ügynök-feladóval, és nem kér
+műveletet a címzettől. Ellenőrizve, hogy egyetlen HTTP-hívó sem használ `from=system`-et (az összes
+ilyen író folyamaton belüli `createAgentMessage`: `message-router.ts`, `routes/approvals.ts`), tehát
+az őr nem tör el meglévő utat.
+
+**A második upstream tétel (`tryHandleHeartbeat` naptár-route) SKIP.** A függőségei megvannak
+(`getCalendarEvents`, `HEARTBEAT_CALENDAR_ID`), de a fogyasztója nem hívná: a `scripts/heartbeat-metrics.sh`
+138 sorában nulla naptár-hivatkozás van. Átvéve egy nulla hívóval rendelkező végpont lenne. A helyes
+átvétel a heartbeat-digest naptár-bővítését is jelentené, az viszont funkció-döntés, nem
+merge-higiénia -- külön kártyát érdemel.
+
+**Ki döntött:** backend (mérés + hatókör-korrekció), MikroB-nak előre bejelentve a kártyán.
+**Hivatkozás:** kártya `ab4c85f2`; `src/web/system-directive.ts`, `src/web/system-directive-id.ts`,
+`src/web/agent-scaffold.ts` (`ensureSystemDirectiveAuthSection`), `src/web/routes/messages.ts`
+(fenntartott-küldő őr), `src/__tests__/system-directive.test.ts`,
+`src/__tests__/system-directive-auth-section.test.ts`,
+`src/__tests__/messages-post-sender-guards.test.ts`.
+
+**Kiegészítés (ugyanaznap, a fork saját őre találta meg):** az upstream szekció-szövegében az
+ellenőrző parancs `-H "Authorization: Bearer $(cat ...)"` alakban adja a tokent, vagyis a `curl`
+argv-jébe -- amit a `/proc/<pid>/cmdline` minden helyi folyamat számára olvashatóvá tesz. Ez ezen a
+gépen nem elméleti: minden ügynök ugyanazzal a felhasználóval fut. A fork `token-in-argv-guard`
+tesztje az `agent-scaffold.ts`-t is szkenneli, és a szekció átvételekor azonnal pirosra váltott. A
+kiadott parancs ezért a flotta bevett `printf 'Authorization: Bearer %s\n' "$(cat ...)" | curl -H @-`
+cső-alakjára módosult (nincs kérés-törzs, tehát a `-H @-` nem eszi meg). Kivétel-jelölés
+(`guard-allow`) helyett a magyarázó komment lett átfogalmazva, hogy ne idézze a tiltott alakot --
+a kivétel maga is elavulhat, a szerkezeti tiltás nem. Így a fork KÉT ponton tér el az upstream
+átvételtől: a fenntartott-küldő őr és ez.
+
+## 2026-09-03 21:35 -- Helyi-LLM modell-elosztas swimlane: adat-vegpont kontraktusa (2ffc0a96)
+
+**Döntés:** `GET /api/local-llm/model-usage-buckets?hours=6` NEM 5 perces bucketeket ad (ahogy a
+kártya CÍME mondja), hanem NYERS per-feladat sorokat modellenként csoportosítva, plusz egy KPI
+blokkot. Peti későbbi pontosítása (kártya-komment 18774, design-referenciával) swimlane-t kér, ahol
+minden feladat a saját kezdő-időpontjában és időtartamával jelenik meg -- ehhez bucket-összeg
+használhatatlan. A `bucket_minutes` paraméter ezért nincs. A kontraktust Fron Teddy javasolta
+(komment 18874), a backend hat ponton javította és MINDKÉT irányban rögzítette, MIELŐTT bármelyik
+oldal épített (8b. szabály; kártya-komment 19021 + inter-agent üzenet 22019).
+
+**A hat javítás közül kettő helyességi, nem ízlés:**
+
+1. **A ledger 1. oszlopa a BEFEJEZÉS ideje, nem a kezdésé.** Mérve a logot ÍRÓ kódban
+   (`store/local-llm.sh`): `START_MS` a hívás elején, a `$(date +%s)` viszont a `log_usage`-ben, a
+   hívás UTÁN fut. Ezért `startMs = ts*1000 - durationMs`, és a válasz `startMs`-t ÉS `endMs`-t is
+   ad, hogy a frontendnek ne kelljen levezetnie. Naiv `startMs = ts*1000` mellett minden swimlane-sáv
+   a saját hosszával jobbra csúszna -- az élő logban van 86 másodperces feladat, ott ez azonnal
+   látható hiba. A `ts` másodperc-felbontású, a `durationMs` ezredmásodperc, tehát a `startMs`
+   +/-1 mp-en belül pontos; ez ki van mondva a kontraktusban.
+2. **`tokensPerSec` típusa `number | null`, soha nem 0.** Az `err` és `busy` sorok token-oszlopai
+   0-k (a `log_usage` ilyenkor token-argumentumok nélkül hívódik), a régi sorokban pedig nincs is
+   10. oszlop. Egy 0 a grafikonon valódi "0 token/s" mérésként jelenne meg. A szomszédos
+   `last-generation` végpont (b21deb9a kártya) már ezt az elvet követi -- ugyanaz maradt.
+
+**A további négy:** mindkét latency megy (`durationMs` = wall-idő, ez a sáv szélessége, GPU-lock
+várakozással együtt; `evalDurationMs` = tiszta generálási idő, ebből számol a tokens/s -- Peti 18774
+explicit mindkettőt kérte); a UI-próbák kiszűrve a meglévő `isRealCall`-lal; a `busy` (GPU-lock
+torlódás) NEM számít bele az `errorRatePct`-be, külön `busyCount`-ként megy, mert különben egy
+terhelés-csúcs hibás rendszernek látszana; a feladat-`id` `${ts}-${index}`, mert másodperc-felbontás
+mellett a sorok rendszeresen egybeesnek (a `route-classify` hívó sűrűn tüzel).
+
+**`truncated` mező, és amit NEM állít:** a ledger-tail korlátos (5000 sor). A mező CSAK akkor igaz,
+ha a tail elérte a sor-korlátot ÉS az így elért legrégebbi sor is az ablakon belülre esik. A két
+tény összevonása hamis pozitív lenne: "a legrégebbi sorom frissebb az ablaknál" egy fiatal vagy
+frissen rotált lognál a NORMÁLIS állapot, ahol semmi nem hiányzik.
+
+**Nem épült új parser:** a `src/web/routes/local-llm.ts` már tartalmaz tesztelt `parseUsageRows`-t és
+korlátozott `tailUsageLines`-t, az aggregáció ezekre ül (10. szabály).
+
+**Mért állapot a bevezetéskor:** az élő logban az utolsó 6 órában 25 sor van, MIND egyetlen modell
+(`qwen2.5-coder:7b-instruct-q4_K_M`), 21 ok / 4 err, ebből 19 a `route-classify` hívótól. A
+routing-config másik modelljének (`hf.co/empero-ai/Qwen3.8-9B-Distill-GGUF`) továbbra is nulla
+forgalma van -- pontosan az, amit a kártya STATUS QUO-ja írt. A frontend tehát élesben most egy
+sávot rajzol; ez a "csak a ténylegesen aktív modellek szerepeljenek" követelmény helyes viselkedése,
+nem hiba, és Fron Teddy előre megkapta.
+
+**Ki döntött:** backend (mérés + a hat javítás), Fron Teddy (a kontraktus alapalakja), Peti (a
+swimlane-követelmény és a KPI-lista).
+**Hivatkozás:** kártya `2ffc0a96` (Pair-FE: `d6ecb003`); `src/web/routes/local-llm.ts`
+(`buildModelUsageSwimlane` + a route), `src/__tests__/local-llm-model-usage-swimlane.test.ts`.
+
 ## 2026-09-04 05:32 -- Proaktív agent-panel-cap a load-guard-be
 
 **Döntés:** Peti kérésére (Telegram, a 2026-09-03 WSL-overload kivizsgálása után) új, proaktív gate
@@ -4900,3 +5008,34 @@ tudja saját magát blokkolni a teljes flotta dispatchjét.
 **Ki döntött:** Peti (kérés) + MikroB (tervezés, végrehajtás). QA-gate folyamatban.
 **Hivatkozás:** kártya `8c8be268`, Gate-SHA `b34b8ea1`, `store/agent-cap-check.sh`,
 `store/load-guard-check.sh`, `store/load-guard-config.json`.
+
+## 2026-09-04 08:40 -- 92a4c2e7: repó-frissesség három kimondott állapottal, közös osztályozóval (Fron Ted)
+
+**Előzmény:** Peti 2026-09-04-i észrevétele: a Frissítések oldalon nem látszik repónként, hogy egy
+beépített repó friss-e vagy lemaradt. A backend (`GET /api/integrated-repos`, `statusForRepo`) már
+adta a `lastCheckedAt` / `behind` / `upstreamSha` mezőket; a Beépített repók rács a `behind > 0`
+esetet mutatta, de a `behind 0` NÉMA volt (nem különbözött a sosem mért repótól), a hiányzó
+ellenőrzés-dátum sora elmaradt, és az oldal info-doboza még azt állította, hogy a jelzés „nem
+elérhető". A Frissítések oldal egyáltalán nem beszélt a beépített repókról.
+
+**Döntés:** (1) HÁROM kimondott állapot repónként: `naprakész` / `N commit lemaradás` / `nem mérhető`.
+A `behind 0` CSAK akkor „naprakész", ha van `upstreamSha` (volt mihez mérni) és telepítve van;
+pipx-telepítés vagy sosem fetchelt klón „nem mérhető" (12. szabály: nincs kitalált állapot). (2) Az
+osztályozás egyetlen DOM-mentes modulban (`web/app-repo-freshness.js`), amit a rács ÉS a Frissítések
+sáv is hív, így a két oldal nem tud eltérni; a modul tesztje a függvényt FUTTATJA, nem újraszámolja.
+(3) A Frissítések oldal egy összegző sávot kap (számok + a lemaradt repók névsora + ugrás a rácsra),
+nem a teljes rács duplikátumát. (4) Az „Utolsó ellenőrzés" sor mindig ott van („még nem történt"
+helyettesítővel), mert az elhagyott sor ránézésre nem különbözött egy ellenőrzöttől.
+
+**Ami NEM változott:** backend; a dashboardról kézzel hozzáadott repók (nincs mért adatuk, a
+Frissítés gombjuk továbbra is vak pull, az info-doboz ezt most már pontosan így mondja).
+
+**Mérés élőben (Playwright, a worktree fájljai a :3420 valós API-ja ellen, desktop 1280 + mobil 390):**
+37 repó, 18 naprakész, 3 lemaradt (2 átnézés előtt), 16 nem mérhető, 15 sosem ellenőrzött; nincs
+konzolhiba, nincs vízszintes görgetés, a „Repónkénti részletek" gomb 44 px és a rácsra visz.
+Mutációs teszt: három mutáns (upstream-ref nélküli „naprakész", kimaradó sáv-hívás, elhagyott
+ellenőrzés-sor) mindegyike bukik a guard-teszten, az alapvonal 40/40 zöld.
+
+**Ki döntött:** Fron Ted (a három állapot és a közös modul), Peti (az igény), MikroB (dispatch, csak-FE hatókör).
+**Hivatkozás:** kártya `92a4c2e7`; `web/app-repo-freshness.js`, `web/app-connectors.js`,
+`web/fork-updates.js`, `src/__tests__/repo-freshness-ui.test.ts`.
