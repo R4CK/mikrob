@@ -116,3 +116,44 @@ describe('the detector is actually WIRED, not just present (card ec7bdad8)', () 
     expect(check).toBeLessThan(parse)
   })
 })
+
+describe('AGENT_API_ORIGIN is validated too -- the new parameter is not a new door (ec7bdad8 merge)', () => {
+  // WHY THIS EXISTS. Merging develop into this branch collided on resolveDashboardOrigin: this
+  // branch adds the third parameter, develop had meanwhile landed card 1075d0e4's origin
+  // VALIDATION, and this branch's copy predates it. Taking this side wholesale would have reverted
+  // a shipped security fix -- the same trap Cybersec caught one card over on e80c011a, where I had
+  // already done exactly that once. The resolution is the union.
+  //
+  // But a union raises a question the union itself does not answer: agentApiOrigin is a SECOND
+  // config-sourced string reaching the SAME sink (the curl recipes written into every agent's
+  // CLAUDE.md). Validating only publicUrl would close the front door and leave the new one open.
+  // agent-launch-key-quoting.test.ts pins the publicUrl half; this pins the new half, because
+  // nothing did -- every existing three-argument call passes a BENIGN origin.
+  const SHELLY = [
+    'http://x;touch /tmp/pwned;#',
+    'http://h$(id)',
+    'http://h`id`',
+    'http://h|nc evil 1',
+    'http://h&&curl evil',
+  ]
+
+  it.each(SHELLY)('falls back rather than passing through: %s', (evil) => {
+    expect(resolveDashboardOrigin('', 3420, evil)).toBe('http://localhost:3420')
+  })
+
+  it('a hostile agentApiOrigin does not win over a LEGITIMATE publicUrl either', () => {
+    // The precedence rule is agentApiOrigin || publicUrl. If the hostile value were merely
+    // rejected at the end, a caller could still lose the good value on the way -- so assert the
+    // outcome, not the branch: what comes back must be the safe fallback, never the shell.
+    expect(resolveDashboardOrigin('https://dash.example.com', 3420, 'http://x;id;#'))
+      .toBe('http://localhost:3420')
+  })
+
+  it('and the LEGITIMATE agentApiOrigin shapes still work -- not blanket refusal', () => {
+    // Without this, "reject everything" would score as a passing security check and would silently
+    // break the hairpin-NAT deployment this parameter was adopted for.
+    expect(resolveDashboardOrigin('', 3420, 'http://10.0.0.5:3420')).toBe('http://10.0.0.5:3420')
+    expect(resolveDashboardOrigin('', 3420, 'https://api.internal/marveen')).toBe('https://api.internal/marveen')
+    expect(resolveDashboardOrigin('', 3420, 'http://10.0.0.5:3420/')).toBe('http://10.0.0.5:3420')
+  })
+})
