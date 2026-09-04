@@ -130,6 +130,19 @@ CASES = [
     ('cd /home/neon/wt && sed -nr "s/x/y/p" src/file.ts', BLOCK,
      "...but the same sed WITH a file operand still resolves against the cd"),
 
+    # --- CYBERSEC (card 26863263): rg/ag/ack recurse with NO flag at all -----------------------
+    # Their default IS the recursion, so a flag-based test has nothing to match and the operand
+    # rule sees a single operand (the pattern). All four were BLOCK on the original guard and
+    # PASSED from the operand rule onwards.
+    ("cd /home/neon/wt && rg foo", BLOCK, "ripgrep recurses by default -- no -r needed"),
+    ("cd /home/neon/wt && rg -n foo", BLOCK, "a non-recursive flag changes nothing about the default"),
+    ("cd /home/neon/wt && ag foo", BLOCK, "the silver searcher, same default"),
+    ("cd /home/neon/wt && ack foo", BLOCK, "ack, same default"),
+    # Non-weakening control: an absolute path still anchors them, exactly as for grep.
+    ("cd /home/neon/wt && rg foo /home/neon/wt/src", ALLOW,
+     "an absolute path anchors the search -- the engine can resolve THAT"),
+    ("rg foo src", ALLOW, "no cd at all: nothing for this guard to say"),
+
     # --- heredoc bodies are data ---------------------------------------------------------------
     ("cat > /tmp/f <<'EOF'\ncd /home/neon/wt && grep -rn x .\nEOF", ALLOW,
      "a wedge shape inside a heredoc body is text being written, not executed"),
