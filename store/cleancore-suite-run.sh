@@ -38,7 +38,16 @@
 #   store/cleancore-suite-run.sh <agent> [-- <extra vitest args>]
 #   CLEANCORE_SUITE_SLOTS=3 store/cleancore-suite-run.sh backend3
 #
-# Exit: the suite's own exit code | 2 usage | 3 could not acquire within the cap
+# Env:
+#   MARVEEN_MAIN                 default /home/neon/marveen -- the SHARED anchor the slot files live
+#                                under. This is what makes the cap fleet-wide instead of per-checkout
+#                                (see LOCK_PREFIX below); pointing it somewhere private is how the
+#                                selftest contends without touching the real fleet's slots.
+#   CLEANCORE_SUITE_LOCK_PREFIX  overrides the slot path outright. Overriding it per checkout
+#                                REMOVES the mutual exclusion -- that is the bug this default fixes.
+#   CLEANCORE_SUITE_SLOTS        default 2
+#
+# Exit: the suite's own exit code | 2 usage or an unusable lock directory | 3 no slot within the cap
 set -uo pipefail
 
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -46,10 +55,37 @@ SLOTS="${CLEANCORE_SUITE_SLOTS:-2}"
 WAIT_MAX_S="${CLEANCORE_SUITE_WAIT_MAX_S:-7200}"   # 2h: two 60-90min runs can legitimately be ahead
 POLL_S="${CLEANCORE_SUITE_POLL_S:-20}"
 KEEPALIVE_S="${CLEANCORE_SUITE_KEEPALIVE_S:-300}"  # < the 10-minute stuck threshold, with margin
-LOCK_PREFIX="${CLEANCORE_SUITE_LOCK_PREFIX:-$HERE/.cleancore-suite-slot}"
+# THE ANCHOR IS THE WHOLE MECHANISM (card 5af57bd7, Cybered NO-GO). This defaulted to
+# `$HERE/.cleancore-suite-slot` -- the script's OWN directory -- and every agent runs its own
+# marveen worktree copy, each with a real `store/` (measured: distinct inodes). So the cap was 2 PER
+# CHECKOUT: 16 checkouts x 2 = up to 32 concurrent suites, which is the state this script exists to
+# prevent. Measured A/B, same script and same moment, differing only in this path: shared prefix ->
+# the second run correctly queues; per-checkout prefix -> it sails straight through.
+#
+# A mutual-exclusion default must name something the participants SHARE. `MARVEEN_MAIN` is the
+# fleet's existing anchor for exactly this (marveen-land.sh, agent-worktree-marveen.sh).
+#
+# NOTED, because the next reader will wonder: the contention is CPU contention, so a MACHINE-scoped
+# path (/var/lock, /tmp) is arguably the more honest anchor -- two marveen installs on one box would
+# each get their own 2 slots and over-subscribe the same cores. That is not a configuration we have,
+# and following the fleet's one anchor convention beats inventing a second one for a case that does
+# not exist. If a second install ever appears, this is the line to change.
+MAIN="${MARVEEN_MAIN:-/home/neon/marveen}"
+LOCK_PREFIX="${CLEANCORE_SUITE_LOCK_PREFIX:-$MAIN/store/.cleancore-suite-slot}"
 API="${CLEANCORE_SUITE_API:-http://localhost:3420}"
 
 usage() { echo "usage: cleancore-suite-run.sh <agent> [-- <vitest args>]" >&2; exit 2; }
+
+# A LOCK DIRECTORY WE CANNOT WRITE MUST SAY SO. Without this, acquire() simply fails to create each
+# slot file, returns "no slot", and the run queues for the full two hours before giving up -- an
+# unreachable semaphore would be indistinguishable from a genuinely busy one. That is the same class
+# of defect as the anchor bug above: a control that cannot bind must never look like a control that
+# is merely busy.
+LOCK_DIR="$(dirname "$LOCK_PREFIX")"
+if [ ! -d "$LOCK_DIR" ] || [ ! -w "$LOCK_DIR" ]; then
+  echo "cleancore-suite-run: lock directory '$LOCK_DIR' is missing or not writable -- refusing to run rather than silently queueing. Set MARVEEN_MAIN, or CLEANCORE_SUITE_LOCK_PREFIX." >&2
+  exit 2
+fi
 AGENT="${1:-}"; [ -n "$AGENT" ] || usage
 shift || true
 [ "${1:-}" = "--" ] && shift || true

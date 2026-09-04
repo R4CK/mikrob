@@ -98,6 +98,64 @@ fi
 # property is named rather than merely incidental.
 ok "comments are best-effort: every case above ran with the API unreachable"
 
+# --- 9. THE SEMAPHORE IS FLEET-WIDE, NOT PER-CHECKOUT (card 5af57bd7, Cybered NO-GO) ------------
+#
+# The defect this pins: LOCK_PREFIX used to default to the script's OWN directory, and every agent
+# runs its own marveen worktree copy. Each checkout therefore locked its own files and the cap was 2
+# PER CHECKOUT -- 16 checkouts x 2 = up to 32 concurrent suites, the exact state this script exists
+# to prevent. Nothing in the previous eight cases could see it: they all pass an explicit
+# CLEANCORE_SUITE_LOCK_PREFIX, which is precisely the variable that masks the bug.
+#
+# So this case runs the script from TWO DIFFERENT directories with NO prefix override, exactly as
+# two agents would, and asserts they contend. MARVEEN_MAIN points at a temp anchor so the real
+# fleet's slot files are never touched.
+ANCHOR="$TMP/anchor"
+mkdir -p "$ANCHOR/store" "$TMP/co-a/store" "$TMP/co-b/store"
+cp "$RUN" "$TMP/co-a/store/" && cp "$RUN" "$TMP/co-b/store/"
+COPY_A="$TMP/co-a/store/$(basename "$RUN")"
+COPY_B="$TMP/co-b/store/$(basename "$RUN")"
+
+# Hold both slots on the ANCHOR -- the location a correct default must resolve to.
+( exec 9>"$ANCHOR/store/.cleancore-suite-slot-1.lock"; flock 9; sleep 300 ) & HOLDERS+=("$!")
+( exec 9>"$ANCHOR/store/.cleancore-suite-slot-2.lock"; flock 9; sleep 300 ) & HOLDERS+=("$!")
+sleep 0.5
+
+for co in A B; do
+  copy="$COPY_A"; [[ $co == B ]] && copy="$COPY_B"
+  out="$(env MARVEEN_MAIN="$ANCHOR" CLEANCORE_SUITE_API=http://127.0.0.1:9 \
+         CLEANCORE_SUITE_POLL_S=1 CLEANCORE_SUITE_WAIT_MAX_S=3 \
+         bash "$copy" no-such-agent-xyz 2>&1)"; rc=$?
+  if [[ $rc -eq 3 ]] && echo "$out" | grep -q 'no slot after'; then
+    ok "checkout $co resolves to the SHARED anchor and queues (not its own copy's directory)"
+  else
+    bad "checkout $co did NOT contend -- the lock path is per-checkout again" "rc=$rc out=$out"
+  fi
+done
+
+# NEGATIVE CONTROL: reintroduce the old behaviour by pointing each copy at its own directory. If
+# this did NOT sail through, the case above would be passing for some unrelated reason and would not
+# actually be measuring the anchor.
+out="$(env CLEANCORE_SUITE_LOCK_PREFIX="$TMP/co-b/store/.cleancore-suite-slot" \
+       CLEANCORE_SUITE_API=http://127.0.0.1:9 CLEANCORE_SUITE_POLL_S=1 CLEANCORE_SUITE_WAIT_MAX_S=3 \
+       bash "$COPY_B" no-such-agent-xyz 2>&1)"; rc=$?
+if [[ $rc -eq 3 ]] && echo "$out" | grep -q 'no CleanCore worktree'; then
+  ok "negative control: a PER-CHECKOUT prefix does not contend -- so case 9 measures the anchor"
+else
+  bad "negative control did not reproduce the old behaviour" "rc=$rc out=$out"
+fi
+
+# --- 10. an unusable lock directory is LOUD, not "busy" ----------------------------------------
+# Without this the script would fail to create each slot file, report no slot, and queue for the
+# full cap -- an unreachable semaphore indistinguishable from a genuinely busy one, which is the
+# same class of defect as the anchor bug.
+out="$(env MARVEEN_MAIN="$TMP/definitely-not-a-directory" CLEANCORE_SUITE_API=http://127.0.0.1:9 \
+       bash "$RUN" no-such-agent-xyz 2>&1)"; rc=$?
+if [[ $rc -eq 2 ]] && echo "$out" | grep -q 'not writable'; then
+  ok "a missing lock directory exits 2 with a named reason, instead of queueing silently"
+else
+  bad "an unusable lock dir was not reported" "rc=$rc out=$out"
+fi
+
 echo
 echo "cleancore-suite-run.selftest: $pass passed, $fail failed"
 [[ $fail -eq 0 ]]
