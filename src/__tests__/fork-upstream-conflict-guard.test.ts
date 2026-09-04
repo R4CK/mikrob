@@ -764,6 +764,19 @@ const ACKNOWLEDGED_CONFLICTS = {
   // the ONLY divergence is the mock signature, forced by lint, not by taste.
   'src/__tests__/system-directive.test.ts':
     "take upstream's version wholesale, then re-apply TWO hunks: (1) the sendPromptToSession mock's call signature lives in vi.fn's generic (type SendPrompt) instead of upstream's four underscore-prefixed parameters -- this fork's eslint sets @typescript-eslint/no-unused-vars to a bare 'error' with no argsIgnorePattern, so upstream's shape is four findings and lint-ratchet refuses the landing; (2) card 5c5d7bc4 added one FORK-ONLY case to the systemDirectiveEnvelope describe ('states the reserved sender by VALUE'), which pins the interpolation upstream does not have. Keep it: it is the only test that covers the land-before-restart window, where an agent's scaffolded CLAUDE.md still names the old id and only the envelope's interpolated value keeps a real stop order verifiable. Everything else is upstream's; if the diff shows more, upstream changed the tests and those changes are wanted",
+  // Card 22e4c0d9, 2026-09-04: BOTH sides added the same GET /api/messages/:id handler, and the
+  // CODE is byte-identical (verified by diffing the two bodies with comments stripped) -- only the
+  // comment above it differs. Upstream's explains what the endpoint is for; the fork's records WHY
+  // this fork was missing it (the ab4c85f2 recipe told every agent to call an endpoint that 404'd,
+  // so a real stop order would have been refused as injection-suspect). Resolution: keep either
+  // side's CODE, they are the same; keep the FORK's comment, it carries the incident. Nothing else
+  // in this file is part of this decision -- the fork's own additions here (reserved-sender guard,
+  // JSON-parse hardening, `to` validation, card-state stamping) sit in other regions and have
+  // merged cleanly so far. NOTE: this file used to auto-merge SILENTLY; the fork's comment is what
+  // turned it into an honest conflict, and for a trust-boundary route file that is the better
+  // state -- a future upstream change here now forces a re-read instead of arriving unseen.
+  'src/web/routes/messages.ts':
+    "both sides added the SAME GET /api/messages/:id handler (identical code, comments differ) -- keep either side's code and the FORK's comment, which records the ab4c85f2 incident that made the endpoint necessary; the fork's other additions in this file (reserved-sender guard, JSON-parse hardening, to-validation, card-state stamping) live in separate regions and are not part of this decision",
   'src/web/channel-monitor.ts':
     "both sides made the SAME change to triggerMarveenMemorySave (bare sendPromptToSession -> sendSystemDirective(MAIN_AGENT_ID, MAIN_CHANNELS_SESSION, prompt)), so take either for that hunk -- they are semantically equal. Everything ELSE in this file is long-standing fork divergence unrelated to this card (lazy bin resolver vs upstream's eager resolveFromPath consts, and upstream's STUCKINPUT827 injected-prompt-registry work): resolve those on their own merits, they are not part of the ab4c85f2 decision",
 } as const
@@ -866,6 +879,7 @@ const ACKNOWLEDGED_UPSTREAM_BLOBS: Readonly<Record<keyof typeof ACKNOWLEDGED_CON
   'src/__tests__/system-directive.test.ts': '08409868f5f889240baceba1c4a240ac17d2c138',
   'src/__tests__/system-directive-auth-section.test.ts': '80d65e4651601d320447bf188d53548a5ef5f8ba',
   'src/web/channel-monitor.ts': 'd1c642f669ff2a28b6eec79bbf503365c9ac1b08',
+  'src/web/routes/messages.ts': '98710db9e171616e0600061eec649542e779506a',
 }
 
 /** A conflict whose written rule was decided against DIFFERENT upstream content than what is
