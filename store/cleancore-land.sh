@@ -35,6 +35,7 @@
 #    cherry-pick recipe when it fires.
 #
 # Usage:  cleancore-land.sh <cardId> <gated-sha> [--dry-run] [--allow-main-loss] [--skip-typecheck]
+#                                                [--allow-ungated]
 #                                                [--allow-stacked <cardId>[,<cardId>...]]
 #         cleancore-land.sh --selftest
 # Env:    LANDING_DOWNWARD_CHECK=off  disables the downward range check entirely.
@@ -60,6 +61,11 @@ die() { echo "REFUSED: $2" >&2; exit "$1"; }
 # marveen-land.sh -- same reason as above, a duplicated landing precondition drifts.
 # shellcheck source=./landing-downward-check.sh
 . "$(dirname "$0")/landing-downward-check.sh"
+# gate_verdict_check (card 9081d02d): does the card actually CARRY a passing QA verdict for the sha
+# being landed? Shared with marveen-land.sh, which runs it in REPORT mode -- the two landers gate at
+# opposite ends of the landing, and that asymmetry is documented in the helper's own header.
+# shellcheck source=./landing-gate-verdict-check.sh
+. "$(dirname "$0")/landing-gate-verdict-check.sh"
 
 # --- WHO ran this landing (card 7fe98031) -------------------------------------------------------
 #
@@ -178,13 +184,16 @@ if [ "${1:-}" = "--selftest" ]; then
 fi
 
 CARD="${1:-}"; SHA="${2:-}"; shift 2 2>/dev/null
-[ -n "$CARD" ] && [ -n "$SHA" ] || { echo "usage: cleancore-land.sh <cardId> <gated-sha> [--dry-run] [--allow-main-loss] [--skip-typecheck] [--allow-stacked <cardId>[,<cardId>...]]" >&2; exit 2; }
-DRY=""; ALLOW_MAIN_LOSS=0; SKIP_TSC=0; ALLOW_STACKED=""
+[ -n "$CARD" ] && [ -n "$SHA" ] || { echo "usage: cleancore-land.sh <cardId> <gated-sha> [--dry-run] [--allow-main-loss] [--skip-typecheck] [--allow-ungated] [--allow-stacked <cardId>[,<cardId>...]]" >&2; exit 2; }
+DRY=""; ALLOW_MAIN_LOSS=0; SKIP_TSC=0; ALLOW_STACKED=""; ALLOW_UNGATED=0
 while [ $# -gt 0 ]; do
   case "$1" in
     --dry-run) DRY="--dry-run" ;;
     --allow-main-loss) ALLOW_MAIN_LOSS=1 ;;
     --skip-typecheck) SKIP_TSC=1 ;;
+    # Says the ungated landing OUT LOUD instead of leaving it implied, which is the whole
+    # difference from the 08dcc153 incident. Never overrides a FAILING verdict.
+    --allow-ungated) ALLOW_UNGATED=1 ;;
     # Deliberately NOT a --force: the operator has to NAME the foreign cards they are taking on
     # purpose (card dfff9b37, trap 4). A blanket override would be reached for reflexively and the
     # guard would stop meaning anything.
@@ -194,6 +203,15 @@ while [ $# -gt 0 ]; do
   esac
   shift
 done
+
+# THE GATE VERDICT, checked against the board before anything else happens (card 9081d02d). Placed
+# here on purpose: it is the cheapest precondition in the script, so a landing that should not
+# happen at all costs a single HTTP call rather than a full merge + typecheck first.
+if [ "$ALLOW_UNGATED" -eq 1 ]; then
+  echo "  gate-check: SKIPPED (--allow-ungated) -- this landing is deliberately ungated"
+else
+  gate_verdict_check "$CARD" "$SHA" refuse || exit 3
+fi
 # $$ makes the path private to this process. QA2's finding on card 67beaf74 was against the pre-gate,
 # but the defect is the shape, not the script: a deterministic worktree path means a second run's
 # closing `git worktree remove --force` can pull the directory out from under this one's tsc/vitest
