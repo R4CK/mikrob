@@ -1171,7 +1171,15 @@ main {
 }
 .ovw-llmdist-lane-track {
   position: relative;
-  flex: 1;
+  /* NOT `flex: 1`. The track used to be a direct child of .ovw-llmdist-lane, a ROW flex
+     container, where flex:1 sized it along the main axis = WIDTH. It now lives inside
+     .ovw-llmdist-lane-rows, a COLUMN container, where the main axis is HEIGHT -- so flex:1's
+     implied `flex-basis: 0%` overrode `height: 30px`, collapsed every track to zero height, and
+     the absolutely-positioned blocks (top:3px/bottom:3px) vanished. Blocks disappeared from the
+     live dashboard; only the KPI tiles and legend were left. The track must keep its own height
+     and stretch on the CROSS axis instead. */
+  flex: 0 0 auto;
+  width: 100%;
   height: 30px;
   background: var(--bg);
   border-radius: var(--radius-sm);
