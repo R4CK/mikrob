@@ -5769,3 +5769,26 @@ egy általános olvasó végpont szerződését nem szabad egy widget tartomány
 **Ki döntött:** fullstack (mérés + implementáció), Peti (csúszka-igény + takarítás), MikroB (a
 sorrendi pontosítás: előbb guard, csak utána takarítás).
 **Hivatkozás:** kártya `4c5c540c`; `vitest.config.ts`, `src/__tests__/setup/isolate-local-llm-state.ts`.
+
+## 2026-09-04 13:16 -- A takarítás a MODELL oszlopra szűr, nem az ügynökére (kártya 4c5c540c)
+
+**Döntés:** A `store/local-llm-usage.log` takarítása a `model == "test-model"` sorokat törli
+(288 db), nem a kártyában megnevezett `agent == "test-agent"` sorokat (256 db).
+**Miért:** A tünet, amit Peti megnevezett, az hogy a swimlane-en HARMADIK modellként jelenik meg
+egy nem létező modell. A swimlane MODELL szerint csoportosít, és a ledgerben a valódi `queue`
+hívó is írt 32 sort a hamis `test-model`-lel. Csak az `agent=test-agent` sorok törlése tehát
+bent hagyta volna a hamis modellt a grafikonon, vagyis pont azt, amit meg kellett szüntetni.
+Ellenőrizve: a ledger összesen HÁROM modellnevet tartalmaz, a `test-model` egyiknek sem valódi
+neve.
+**Amit KIFEJEZETTEN nem töröltünk:** több VALÓDI hívó neve tartalmazza a "test" szót
+(`backend-selftest`, `backend2-functest`, `backend2-test`, `mikrob-hybrid-test`,
+`mikrob-selftest`, és egy csupasz `test`, ami a VALÓDI qwen modellt használta). Egy `grep -v test`
+mindet elvitte volna. A szűrés ezért egyetlen oszlopra horgonyzott, pontos egyenlőség, sosem
+soron végzett részsztring-keresés.
+**Végrehajtás:** `store/usage-log-purge-test-rows.py` (verziókövetett, újrafuttatható,
+alapból dry-run). Előbb egy MÁSOLATON próbáltuk ki: 288 sor törölve, mind az 5624 valódi qwen-sor
+és mind a 8 valódi "test"-nevű hívó érintetlen; csak ezután futott élesben, időbélyeges
+biztonsági mentéssel. A script a futás közben érkező sorokat is megtartja (a ledgerre nincs lock).
+**Sorrend igazolva:** a guard landolása UTÁN takarítottunk, és a `fleet-test.sh --ref 909e815b`
+a három szennyező suite-ra 0 sor növekedést adott -- vagyis a valódi landolási úton is fog.
+**Ki döntött:** fullstack (mérés + végrehajtás), MikroB (sorrend), Peti (igény).
