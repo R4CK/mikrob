@@ -94,21 +94,34 @@ esac
 
 [ -d "$MAIN/node_modules" ] || die 3 "no $MAIN/node_modules to copy from -- run npm ci in $MAIN first"
 
+# COPY FIRST, SWAP LAST (card 65cc3860). The staging name was always here, but the symlink used to be
+# removed BEFORE the copy -- which left the worktree with NO node_modules for the whole duration of the
+# copy. That is fine for a tree nobody is using and wrong for this card, whose job is to convert 15
+# trees belonging to agents that are mid-task: a vitest or tsc starting inside that window fails, and
+# it fails looking like a broken dependency rather than a maintenance window. Copying first keeps the
+# tree fully usable throughout and narrows the gap to the rm+mv pair (milliseconds).
+#
+# (The window is smaller than the header above assumed: the copy measured 9s, not a minute, on this
+# machine -- 995M at ~110MB/s. Still worth the reorder, because the failure mode below does not depend
+# on how long the copy takes.)
+#
+# It also fixes the failure mode. Under the old order a copy that died (disk full, interrupt) left the
+# tree with the symlink already gone and nothing in its place -- broken, and needing manual repair.
+# Now a failed copy leaves the worktree exactly as it was found.
+STAGE="$TREE/.node_modules.incoming.$$"
+rm -rf "$STAGE"
+echo "node_modules: copying from $MAIN/node_modules (this is the slow step -- ~1GB)"
+cp -a "$MAIN/node_modules" "$STAGE" || { rm -rf "$STAGE"; die 3 "copy failed (the worktree is untouched)"; }
+
 # Replace the LINK, never the target. `rm` on a symlink unlinks the name; it cannot follow through
 # into the shared tree. Guarded anyway, because getting this wrong once deletes the fleet's
 # dependencies: refuse unless the thing being removed is genuinely a link.
 if [ "$CURRENT" = "symlink" ]; then
-  [ -L "$NM" ] || die 3 "$NM stopped being a symlink between the check and the removal -- aborting"
+  [ -L "$NM" ] || { rm -rf "$STAGE"; die 3 "$NM stopped being a symlink between the check and the removal -- aborting"; }
   rm "$NM"
   echo "node_modules: removed the shared symlink (the target in $MAIN is untouched)"
 fi
 
-# Copy into a staging name first, then move into place: an interrupted copy must not leave a
-# half-populated node_modules that looks real to the check above and breaks every later run.
-STAGE="$TREE/.node_modules.incoming.$$"
-rm -rf "$STAGE"
-echo "node_modules: copying from $MAIN/node_modules (this is the slow step -- ~1GB)"
-cp -a "$MAIN/node_modules" "$STAGE" || { rm -rf "$STAGE"; die 3 "copy failed"; }
 mv "$STAGE" "$NM"
 echo "node_modules: REAL directory now at $NM"
 echo "  a 'cd node_modules && rm -rf ..' from here can no longer reach $MAIN"
