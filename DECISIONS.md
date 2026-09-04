@@ -5792,3 +5792,26 @@ biztonsági mentéssel. A script a futás közben érkező sorokat is megtartja 
 **Sorrend igazolva:** a guard landolása UTÁN takarítottunk, és a `fleet-test.sh --ref 909e815b`
 a három szennyező suite-ra 0 sor növekedést adott -- vagyis a valódi landolási úton is fog.
 **Ki döntött:** fullstack (mérés + végrehajtás), MikroB (sorrend), Peti (igény).
+
+## 2026-09-04 13:30 -- A swimlane-blokkok pakolása a KIRAJZOLT geometrián fut, és sűrű módot kap (kártya 4c5c540c, Peti képe)
+
+**Döntés:** A modell-sávon belüli blokkok interval-packinggel al-sorokba kerülnek (first-fit), a
+pakolás pedig a KIRAJZOLT dobozokra fut (bal/jobb él százalékban), nem a nyers idő-intervallumokra.
+**Miért:** A renderer minden blokkot egy minimum-szélességre kerekít. Élő adaton mérve (4 órás
+ablak): a 74 blokkból 66 (89%) RÖVIDEBB ennél a küszöbnél, tehát szélesebbre rajzolódik, mint
+ameddig tartott, és akkor is ütközik, ha az intervalluma nem érintkezik. Emellett 40 VALÓDI
+idő-átfedés is van. Idő-alapú pakolás tehát a látott hibát nem oldotta volna meg.
+**Következmény, amit ki kellett mondani:** a CSS-ből törölni kellett a `min-width: 10px`-et. Két
+külön alsó korlát (0.6% ÉS 10px) mellett a pakoló nem tudhatja egy blokk valódi kirajzolt
+szélességét -- a "nincs átfedés" igaz lett volna százalékban és hamis a képernyőn (0.6% egy ~700px
+sávon ~4px, tehát a pixel-korlát csendben győzött). Egy szám dönt.
+**SŰRŰ MÓD (a szigorú pakolás ára):** a lokális hívás naplózott időtartama TARTALMAZZA a GPU-lock
+várakozást, ezért a sorban álló hívások wall-clock intervalluma ténylegesen átfed. Mérve: 30 perces
+ablakon 23 al-sor, 1 órán 20, 4 órán 36. A régi 30px-es sormagassággal ez EGYETLEN modellre
+760-1190px magas sáv, vagyis a szigorú pakolás önmagában egy átfedést cserélt volna egy
+használhatatlan grafikonra. Ezért 4 al-sor fölött a sáv vékony sorokra vált (a blokk-felirat
+elfogy, a szín + tooltip viszi a jelentést), 260px fölött pedig görget.
+**Ki döntött:** Peti (ne fedjék egymást), fullstack (a mérés és a sűrű mód, mert a szigorú pakolás
+mért ára ez volt), MikroB (átadás).
+**Hivatkozás:** kártya `4c5c540c`; `web/app-overview.js` (`ovwLlmDistPackRows`),
+`src/__tests__/llmdist-lane-packing.test.ts` (a pakolót ténylegesen FUTTATJA, nem grepeli).
