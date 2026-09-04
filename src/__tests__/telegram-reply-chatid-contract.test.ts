@@ -19,10 +19,6 @@ import { homedir } from 'node:os'
 
 const REPO_ROOT = join(import.meta.dirname, '..', '..')
 
-// The chat id every working call site uses. Kept as a pattern, not a literal, so this test does
-// not itself become the 29th place hardcoding it -- it asserts "a real numeric id", not "this id".
-const REAL_ID_RX = /chat_id[\s"'`:=]*\d{6,}/
-
 /**
  * Does this line INSTRUCT an agent to pass 0 as the chat id?
  *
@@ -92,6 +88,9 @@ describe('the `chat_id: 0` recipe is gone from everything the fleet reads', () =
     const md = readFileSync(join(REPO_ROOT, 'CLAUDE.md'), 'utf-8')
     // Both call sites the card touched: the unknown-sender pairing escalation and the morning
     // kick-off. If someone reverts either to 0, this fails alongside the check above.
+    //
+    // Matched as "a real numeric id", never as the literal id itself -- this test should not
+    // become the 29th place in the fleet hardcoding that value.
     expect(md).toMatch(/reply\(chat_id="\d{6,}"/)
     expect(md).toMatch(/reply tool-lal \(chat_id: \d{6,}/)
   })
