@@ -196,3 +196,66 @@ export function formatDeliveryStalenessNote(
     `Olvasd ujra az erintett kartyakat, mielott barmit csinalsz.`
   )
 }
+
+/** Cards a "start this card" dispatch has nothing left to say about.
+ *
+ *  `done` is obvious. `waiting` is here because it means the work is BUILT and sitting in a gate --
+ *  telling the builder to start it is the same noise, one step later. `planned` is deliberately NOT
+ *  terminal: a card moved back to planned may genuinely need picking up again. `in_progress` is not
+ *  terminal either, including the case where a gate FAIL reopened it -- that dispatch is live again. */
+const DISPATCH_SUPERSEDED_STATUSES: ReadonlySet<string> = new Set(['done', 'waiting'])
+
+/** The generated dispatch header, anchored to the START of the first line.
+ *
+ *  Anchored on purpose, and it is the whole safety of this feature: a message that merely MENTIONS a
+ *  dispatch ("the [Kanban feladat #abc12345] you sent is stale") must never be suppressed. Same
+ *  anchoring lesson isUrgentMessage records for verdict words, and c4f2de32 for gate verdicts.
+ *
+ *  The shape is produced by routes/kanban.ts (`[Kanban feladat #${id}]: ${title}...`), so it is
+ *  formulaic rather than hand-written -- which is why dropping one loses no authored text. */
+const DISPATCH_HEADER_RE = /^\[Kanban feladat #([a-f0-9]{8})\]/i
+
+/**
+ * Should this queued message be dropped instead of delivered, because it is a card dispatch whose
+ * card has already finished?
+ *
+ * WHY THIS EXISTS, measured 2026-09-04 (card 790c962d). backend's queue held 10 dispatches; against
+ * the board at that moment, SEVEN were already obsolete -- five `done`, two `waiting`, the oldest
+ * queued six hours. The agent had done that work: it self-advances from the BOARD (fleet rule 11),
+ * so the dispatch never informed it of anything. What the message still costs on arrival is a full
+ * agent turn, plus a second one while the receiver works out it is stale and writes back. That
+ * round trip -- not router latency -- is the "repeating stale-dispatch pattern" the card reports.
+ * Delivery to an idle agent measures 0.1-0.2 minutes; there is no transport problem to fix.
+ *
+ * WHY NOT REUSE formatDeliveryStalenessNote's PATH. That function needs a send-time stamp block, and
+ * dispatches do not carry one: they are created inside routes/kanban.ts via createAgentMessage,
+ * bypassing the POST /api/messages path where appendCardStateStamp runs. Measured over 24 hours:
+ * **1 of 62** dispatch messages carried a stamp. Keying this on the stamp would have made it inert
+ * for 61 of the 62 messages it exists for -- a silent no-op that still looked implemented.
+ *
+ * FAIL-OPEN, deliberately, and the opposite of the sibling gates in this codebase. A lookup that
+ * throws or finds nothing returns null and the message is DELIVERED. The asymmetry is the point:
+ * delivering a stale dispatch costs one wasted turn, while wrongly dropping a live one loses work
+ * nobody will notice is missing. When the two error directions have different weights, the guard
+ * follows the lighter one.
+ *
+ * @returns the card id and its current status when the dispatch is superseded, else null.
+ */
+export function supersededDispatch(
+  content: string,
+  lookup: CardStateLookup,
+): { readonly id: string; readonly status: string } | null {
+  const firstLine = (content ?? '').split('\n').find((l) => l.trim().length > 0)
+  if (!firstLine) return null
+  const m = DISPATCH_HEADER_RE.exec(firstLine.trim())
+  if (!m) return null
+  const id = (m[1] ?? '').toLowerCase()
+  let snap: CardStateSnapshot | null = null
+  try {
+    snap = lookup(id)
+  } catch {
+    return null // a lookup failure must never eat a message
+  }
+  if (snap === null || !DISPATCH_SUPERSEDED_STATUSES.has(snap.status)) return null
+  return { id, status: snap.status }
+}
