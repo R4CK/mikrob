@@ -28,6 +28,12 @@ const FILE_MODE = 0o600
 // Generous for one small JSON exchange, tight enough that a regex the in-tool SIGALRM budget
 // somehow fails to interrupt still cannot hold an HTTP handler open.
 const TOOL_TIMEOUT_MS = 10_000
+// A file that is PRESENT but unreadable still holds someone else's live configuration, so a
+// rewrite would destroy it. Only an ABSENT file is safe to create from scratch. Kept separate
+// from removePattern's wording: there the file may also simply not exist.
+const UNREADABLE_FILE_MESSAGE =
+  'A szabályfájl sérült vagy nem olvasható, ezért nem írom felül -- a benne lévő szabályok elvesznének. ' +
+  'Előbb a fájlt kell helyreállítani.'
 
 /** File present+valid+>=1 pattern / present+valid+empty / missing-unreadable-malformed.
  *  Mirrors the hook's own three states so the UI can say which one is true. */
@@ -99,19 +105,37 @@ export function defaultDeps(): NamePatternDeps {
   }
 }
 
-function readRaw(deps: NamePatternDeps): RulesShape | null {
+/** One `null` used to mean four different things -- absent, unreadable, unparseable, wrong
+ *  shape -- and only the FIRST is safe to overwrite. A writer must tell them apart; a reader
+ *  may keep collapsing them (the hook itself treats every non-usable file as malformed). */
+type RawRead = { kind: 'ok'; value: RulesShape } | { kind: 'absent' } | { kind: 'unreadable' }
+
+function readRawState(deps: NamePatternDeps): RawRead {
+  let text: string
   try {
-    const parsed = JSON.parse(readFileSync(deps.rulesPath, 'utf8')) as unknown
-    if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) return null
+    text = readFileSync(deps.rulesPath, 'utf8')
+  } catch (err) {
+    // ENOENT is the only "there is nothing here to lose" case. EACCES, EISDIR and friends
+    // mean the file IS there and we simply cannot see what it holds.
+    return (err as NodeJS.ErrnoException).code === 'ENOENT' ? { kind: 'absent' } : { kind: 'unreadable' }
+  }
+  try {
+    const parsed = JSON.parse(text) as unknown
+    if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) return { kind: 'unreadable' }
     const obj = parsed as Record<string, unknown>
     // The hook treats a MISSING key as malformed and only an explicit [] as a deliberate
     // empty. Keep that distinction rather than normalising it away here.
-    if (!Array.isArray(obj.bad_name_patterns)) return null
-    if (!obj.bad_name_patterns.every((p) => typeof p === 'string')) return null
-    return obj as RulesShape
+    if (!Array.isArray(obj.bad_name_patterns)) return { kind: 'unreadable' }
+    if (!obj.bad_name_patterns.every((p) => typeof p === 'string')) return { kind: 'unreadable' }
+    return { kind: 'ok', value: obj as RulesShape }
   } catch {
-    return null
+    return { kind: 'unreadable' }
   }
+}
+
+function readRaw(deps: NamePatternDeps): RulesShape | null {
+  const raw = readRawState(deps)
+  return raw.kind === 'ok' ? raw.value : null
 }
 
 export function readPatterns(deps: NamePatternDeps): { state: GateState; patterns: string[] } {
@@ -130,8 +154,14 @@ function write(deps: NamePatternDeps, patterns: string[]): void {
   // Preserve every sibling key (notably `correction`, which the hook appends to its refusal
   // message): this endpoint owns ONE field, and rewriting the file must not quietly drop the
   // rest of someone else's configuration.
-  const existing = readRaw(deps)
-  const next: RulesShape = { ...(existing ?? {}), bad_name_patterns: patterns }
+  const existing = readRawState(deps)
+  // The single point where the file is destroyed, so the refusal lives here rather than in
+  // each caller: an unreadable file is NOT an empty one to build on.
+  if (existing.kind === 'unreadable') throw new NamePatternError(UNREADABLE_FILE_MESSAGE)
+  const next: RulesShape = {
+    ...(existing.kind === 'ok' ? existing.value : {}),
+    bad_name_patterns: patterns,
+  }
   atomicWriteFileSync(deps.rulesPath, JSON.stringify(next, null, 2) + '\n', { mode: FILE_MODE })
 }
 
