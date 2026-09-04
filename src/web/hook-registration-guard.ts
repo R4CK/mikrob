@@ -58,10 +58,18 @@ export const KNOWN_HOOK_SCRIPTS: readonly string[] = [
   // Measured in this checkout: `skill-usage-capture.py` EXISTS (scripts/hooks/, with its own unit
   // tests), so listing it costs nothing today and is right the moment anything registers it.
   // `clear-capture.py` and `clear-replay.py` do NOT exist here -- they arrive with the upstream
-  // merge. Listing them NOW would arm the pruner against exactly the installs that already have
-  // them from upstream: their entry would read as ours-and-stale and be deleted. The union rule
-  // applies AT MERGE TIME, when the scripts arrive with it; see the invariant test that keeps this
-  // from being a matter of anyone remembering.
+  // merge.
+  //
+  // WHICH INSTALL LISTING THEM EARLY WOULD HURT, stated in the direction pruneStaleHookEntries
+  // actually works: it reads the LOCAL settings.json and asks the LOCAL fileExists. An install that
+  // HAS the script keeps its entry -- fileExists is true, so the entry is never stale and the
+  // pruner does not touch it. The population at risk is the mirror image: HAS the entry, LACKS the
+  // file. That is exactly this fork checkout before the merge, where an agent's settings can already
+  // carry upstream's entry (they are copied from the shared ~/.claude) while the script is not here
+  // yet. Listing the names now would delete that registration BEFORE the script arrives with the
+  // merge, and nothing writes it back: this app has no inject*/ensure* for either name, so the union
+  // rule would have nothing left to apply to. It applies AT MERGE TIME, when the scripts arrive with
+  // it; see the invariant test, which executes this paragraph rather than restating it.
   'skill-usage-capture.py',
 ]
 
