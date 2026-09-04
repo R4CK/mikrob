@@ -18,7 +18,18 @@ import { SYSTEM_DIRECTIVE_SENDER } from './system-directive-id.js'
 // back to localhost for single-host installs. Exported so heartbeat-agent-
 // scaffold and tests can import the same logic without duplicating it.
 export function resolveDashboardOrigin(publicUrl: string, port: number | string): string {
-  return (publicUrl || `http://localhost:${port}`).replace(/\/$/, '')
+  const fallback = `http://localhost:${port}`
+  const candidate = (publicUrl || fallback).replace(/\/$/, '')
+  // Card 1075d0e4 (Cybersec, second round): this value is a config string with no validation, and it
+  // is interpolated into the curl RECIPES written into every agent's CLAUDE.md. Those are prompt
+  // text rather than the launch command, so the chain is one step longer than the vault-key one --
+  // an agent has to run the documented snippet -- but agents run these recipes routinely and by
+  // design, so `http://x;<command>;#` would execute in the agent's shell. Weaker than the launch
+  // path (hooks exist by then, and they do not here), same class.
+  //
+  // Restricted to a plain http(s) ORIGIN. Anything else falls back rather than being escaped: a
+  // misconfigured origin should make the recipes point somewhere harmless, not smuggle shell.
+  return /^https?:\/\/[A-Za-z0-9._-]+(?::\d{1,5})?$/.test(candidate) ? candidate : fallback
 }
 
 // Resolved once at module load; DASHBOARD_PUBLIC_URL requires a restart
