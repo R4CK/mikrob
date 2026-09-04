@@ -8,6 +8,10 @@ vi.mock('node:child_process', () => ({
 
 vi.mock('../platform.js', () => ({
   resolveFromPath: (name: string) => `/usr/local/bin/${name}`,
+  // Card 2a653b4b: the module now resolves tmux lazily, so the mock has to offer the lazy shape
+  // too. It still yields the same path the assertions below pin (/usr/local/bin/tmux) -- the point
+  // of the change is WHEN resolution happens (first use, not import), not what it returns.
+  makeLazyBinResolver: (name: string) => () => `/usr/local/bin/${name}`,
 }))
 
 vi.mock('../logger.js', () => ({

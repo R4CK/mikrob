@@ -3756,6 +3756,151 @@ export function getPendingBacklogByAgent(): AgentBacklog[] {
  * dedup input. Returning the raw text keeps the agent-name extraction in the watcher, next to the
  * test that pins it against the router's own formatter.
  */
+// --- Task-event feed for the Swimlane Timeline (card a5bbfb98) ------------------------------------
+//
+// WHAT THE MEASUREMENT SAID, AND WHY THERE IS NO NEW TABLE. The card allowed for building an
+// append-only event log if none existed, and asked to check first. Checked, on live data:
+//
+//   local_llm_queue  2473 rows, 2464 started / 2473 finished, task_type on 2447 -- real blocks
+//   token_usage    371849 rows, model + agent + tokens, indexed (agent, timestamp)
+//   otel_spans       9229 rows, but only 12 CLOSED (0.13%) and ZERO attributes
+//   task_runs       22076 rows, but (name, agent, ts) only -- a firing, not a span
+//
+// otel_spans looks like the right source and is not: `operation` only ever holds `sender->recipient`
+// for inter-agent messages, finishSpan is effectively never called, so 9217 rows sit in 'running'
+// forever with no end_ms. It carries no duration, no category and no attributes -- see the card's
+// REVIEW; fixing that is its own defect, not this endpoint's job.
+//
+// So the timeline is served from what actually holds the data, and the shape below is deliberately
+// honest about the seam: local tasks HAVE real start/end blocks, online-model work has token counts
+// but no per-task duration anywhere in this database. The endpoint reports that rather than
+// inventing a block width.
+//
+// UNITS. local_llm_queue stamps MILLISECONDS (measured: 1788528687675), token_usage.timestamp and
+// task_runs.ts stamp SECONDS. Mixing them silently puts blocks in 1970 or 56000 AD, so every
+// boundary here converts to ms and the conversion is pinned by a test.
+
+export interface TaskEvent {
+  readonly id: number
+  readonly lane: string
+  readonly agent: string
+  readonly category: string
+  readonly startMs: number
+  readonly endMs: number
+  readonly durationMs: number
+  readonly status: string
+  readonly cardId: string | null
+}
+
+/** Finished local-LLM tasks overlapping [fromMs, toMs), oldest first. Only rows with a real
+ *  start AND end become blocks -- a running task has no width yet, and guessing one would draw a
+ *  block that shrinks on the next poll. */
+export function getTaskEvents(fromMs: number, toMs: number, agent: string | null, limit: number): TaskEvent[] {
+  const rows = db.prepare(
+    `SELECT id, agent, COALESCE(task_type,'(uncategorised)') AS category,
+            started_at, finished_at, status, card_id
+       FROM local_llm_queue
+      WHERE started_at IS NOT NULL AND finished_at IS NOT NULL
+        AND finished_at > started_at
+        AND started_at < ? AND finished_at >= ?
+        AND (? IS NULL OR agent = ?)
+      ORDER BY started_at ASC
+      LIMIT ?`,
+  ).all(toMs, fromMs, agent, agent, limit) as {
+    id: number; agent: string; category: string; started_at: number; finished_at: number;
+    status: string; card_id: string | null
+  }[]
+  return rows.map(r => ({
+    id: r.id,
+    lane: 'local',
+    agent: r.agent,
+    category: r.category,
+    startMs: r.started_at,
+    endMs: r.finished_at,
+    durationMs: r.finished_at - r.started_at,
+    status: r.status,
+    cardId: r.card_id,
+  }))
+}
+
+export interface ModelUsage {
+  readonly model: string
+  readonly requests: number
+  readonly inputTokens: number
+  readonly outputTokens: number
+  readonly agents: number
+}
+
+export interface TaskSummary {
+  readonly fromMs: number
+  readonly toMs: number
+  readonly models: ModelUsage[]
+  readonly activeModels: number
+  readonly taskCount: number
+  readonly failedCount: number
+  readonly byCategory: Record<string, number>
+  readonly avgDurationMs: number | null
+  /** Named seam, not decoration: which lanes can draw real blocks. A caller that assumes every
+   *  model has task blocks would silently render an empty timeline and look like a bug. */
+  readonly blockCoverage: { readonly lanes: string[]; readonly note: string }
+}
+
+export function getTaskSummary(fromMs: number, toMs: number): TaskSummary {
+  const fromS = Math.floor(fromMs / 1000)
+  const toS = Math.ceil(toMs / 1000)
+
+  const models = db.prepare(
+    `SELECT COALESCE(model,'(unreported)') AS model, COUNT(*) AS requests,
+            SUM(input_tokens) AS inputTokens, SUM(output_tokens) AS outputTokens,
+            COUNT(DISTINCT agent) AS agents
+       FROM token_usage
+      WHERE timestamp >= ? AND timestamp < ?
+      GROUP BY 1 ORDER BY requests DESC`,
+  ).all(fromS, toS) as { model: string; requests: number; inputTokens: number | null; outputTokens: number | null; agents: number }[]
+
+  const tasks = db.prepare(
+    `SELECT COALESCE(task_type,'(uncategorised)') AS category, COUNT(*) AS n,
+            SUM(status = 'failed') AS failed,
+            AVG(CASE WHEN finished_at > started_at THEN finished_at - started_at END) AS avgMs
+       FROM local_llm_queue
+      WHERE started_at IS NOT NULL AND started_at < ? AND COALESCE(finished_at, started_at) >= ?
+      GROUP BY 1 ORDER BY n DESC`,
+  ).all(toMs, fromMs) as { category: string; n: number; failed: number; avgMs: number | null }[]
+
+  const byCategory: Record<string, number> = {}
+  let taskCount = 0
+  let failedCount = 0
+  let weighted = 0
+  let weightedN = 0
+  for (const r of tasks) {
+    byCategory[r.category] = r.n
+    taskCount += r.n
+    failedCount += r.failed
+    if (r.avgMs !== null) { weighted += r.avgMs * r.n; weightedN += r.n }
+  }
+
+  return {
+    fromMs,
+    toMs,
+    models: models.map(m => ({
+      model: m.model,
+      requests: m.requests,
+      inputTokens: m.inputTokens ?? 0,
+      outputTokens: m.outputTokens ?? 0,
+      agents: m.agents,
+    })),
+    activeModels: models.length,
+    taskCount,
+    failedCount,
+    byCategory,
+    avgDurationMs: weightedN > 0 ? Math.round(weighted / weightedN) : null,
+    blockCoverage: {
+      lanes: ['local'],
+      note: 'Only local-LLM tasks record start and end, so only the "local" lane can draw timeline blocks. Online-model work is counted and its tokens summed, but no per-task duration is stored anywhere in this database (otel_spans records starts and is effectively never closed).',
+    },
+  }
+}
+
 export function recentStuckAlertContents(sinceEpochSeconds: number): string[] {
   const rows = db.prepare(
     `SELECT content FROM agent_messages
