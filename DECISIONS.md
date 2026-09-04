@@ -4880,3 +4880,23 @@ Külön kártya nyílt rá.
 **Hivatkozás:** kártya `934dc104`, `src/__tests__/outgoing-copy-gate-rules-path.test.ts` (13 teszt,
 mindhárom állapot MINDKÉT hívási ponton kipinnelve), kapcsolódó: `36a456e3` (legyenek-e minták --
 Peti döntésére vár), `3ec64c96` (a sentinel eredete), `dfff9b37` (a gate-kör).
+
+## 2026-09-04 05:32 -- Proaktív agent-panel-cap a load-guard-be
+
+**Döntés:** Peti kérésére (Telegram, a 2026-09-03 WSL-overload kivizsgálása után) új, proaktív gate
+épült a fut ügynök-panelek darabszámára: `store/agent-cap-check.sh` a `GET /api/agents` `running:true`
+darabszámát veti össze a `load-guard-config.json` `max_concurrent_agents` értékével (első kör: 6),
+bekötve `load-guard-check.sh`-ba, a már meglévő egyetlen "szabad-e új munkát indítani" choke pointba.
+Fail-open minden hibaesetén (nincs token/dashboard-hiba/rossz JSON -> ADMIT).
+**Miért:** a mért load-guard.log (2026-09-03) 51x sigstop_freeze/critical + 96x hard/cgroup_throttle
+állapotot mutatott ~11 órán át (10:39-21:49) -- a meglévő load-guard-eval.sh csak MÉRT load-ra
+(loadavg/PSI) reagál, tehát mindig utólagosan fékez. Minden futó ügynök-panel saját Claude-processz
++ MCP-szerver-alfolyamat-fa (playwright headless böngésző, filesystem-mcp, code-review-graph) -- ez a
+subprocess-tömeg volt a tényleges load-forrás, nem egyetlen kártya munkája. A panel-darabszám
+korlátozása a torlódást a kezdete előtt állítja meg, nem utólag fékez/fagyaszt.
+**Kockázat/hatókör:** csak ÚJ munka indítását (agent start + dispatch) fékezi, már futó agentet,
+gate-et vagy in-flight befejezést nem érint. Fail-open tervezés, hogy egy hibás cap-ellenőrzés ne
+tudja saját magát blokkolni a teljes flotta dispatchjét.
+**Ki döntött:** Peti (kérés) + MikroB (tervezés, végrehajtás). QA-gate folyamatban.
+**Hivatkozás:** kártya `8c8be268`, Gate-SHA `b34b8ea1`, `store/agent-cap-check.sh`,
+`store/load-guard-check.sh`, `store/load-guard-config.json`.
