@@ -14,6 +14,7 @@ import { tmpdir } from 'node:os'
 import { execFileSync } from 'node:child_process'
 import { agentDir } from './agent-config.js'
 import { sanitizeAgentName } from './sanitize.js'
+import { isReservedSenderId } from './system-directive-id.js'
 import { atomicWriteFileSync } from './atomic-write.js'
 
 // Portable per-agent export/import bundle.
@@ -270,6 +271,12 @@ export function importAgentBundle(
     const rawName = (opts.overrideName ?? manifest.agentName).trim()
     const name = sanitizeAgentName(rawName)
     if (!name) throw new Error('Invalid agent name (empty after sanitization)')
+    // Card b46a4b7e: import is the OTHER door into agents/. A bundle whose manifest (or
+    // ?name= override) names a reserved in-process sender would mint the identity the
+    // POST /api/agents guard refuses -- and a bundle is attacker-authored end to end.
+    if (isReservedSenderId(name)) {
+      throw new Error(`Agent name "${name}" is reserved for in-process system senders`)
+    }
 
     sanitizeImportedConfig(stagedAgentDir)
 
@@ -461,6 +468,10 @@ export function importAllAgentsBundle(
       try { if (!statSync(stagedAgentDir).isDirectory()) continue } catch { continue }
       const name = sanitizeAgentName(entry)
       if (!name) { skipped.push({ name: entry, reason: 'invalid name' }); continue }
+      // Card b46a4b7e, same reason as the single-agent importer above. SKIPPED rather than
+      // thrown: a fleet bundle carrying one bad name must not cost the operator the other
+      // fifteen agents, and the skip list is what the UI already shows.
+      if (isReservedSenderId(name)) { skipped.push({ name, reason: 'reserved name' }); continue }
 
       sanitizeImportedConfig(stagedAgentDir)
       const dest = resolveDest(name) // agentDir: safeJoin rejects traversal

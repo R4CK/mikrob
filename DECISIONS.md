@@ -5009,6 +5009,130 @@ tudja saját magát blokkolni a teljes flotta dispatchjét.
 **Hivatkozás:** kártya `8c8be268`, Gate-SHA `b34b8ea1`, `store/agent-cap-check.sh`,
 `store/load-guard-check.sh`, `store/load-guard-config.json`.
 
+## 2026-09-04 06:20 -- A rendszer-direktíva csatorna saját fenntartott azonosítót kap (`system-directive`)
+
+**Döntés:** A hitelesített direktíva-csatorna küldő-azonosítója `system`-ről `system-directive`-re
+változik, és a `POST /api/messages` fenntartott-küldő őre MINDKETTŐT elutasítja, kis-nagybetűtől
+függetlenül. A `SYSTEM_SENDERS` halmaz viszont szándékosan bájthű marad.
+
+**Miért:** Cybersec MEDIUM lelete az `ab4c85f2` gate-jén (komment 22033). A `system` nem a
+direktíva-csatorna névtere: öt másik folyamaton belüli író használja hétköznapi értesítésre, és
+egyikük, a `routes/agents.ts` "új csapattag érkezett" üzenete, a hívó által megadott `description`
+mezőt interpolálja a törzsbe. Egy megosztott Bearer tokent birtokló támadó tehát a `POST /api/agents`
+úton választott szöveget juttathat egy VALÓDI `from_agent="system"` sorba, és az a recept szerint
+ellenőrző ügynök pontosan ott találja meg, ahol a recept mondja. A csatorna saját azonosítója ezt
+szerkezetileg zárja ki: az a sor konstrukció szerint nem direktíva. Az alternatíva minden jelenlegi
+és jövőbeli `system`-író átvizsgálása lett volna injektálható interpolációra, ami fegyelemre épít,
+nem szerkezetre (CLAUDE.md kódminőség 6. pont).
+
+A kis-nagybetű rész ugyanennek a leletnek a másik fele: a `sanitizeAgentIdent` csak KARAKTERT SZŰR,
+nem kisbetűsít, így a `from: "System"` átcsúszott a bájthű `=== 'system'` teszten, és utána a
+`SYSTEM_SENDER_IDS=System` konfiguráció be is engedte. A javítás KIZÁRÓLAG az őr összehasonlítását
+kisbetűsíti, a `SYSTEM_SENDERS` halmazt nem: az őr kisbetűsítése csak elutasítást adhat hozzá, a
+halmazé viszont ELFOGADÁST adna (`SYSTEM_SENDER_IDS=CaseManager` mellett a `casemanager` küldő
+egyszer csak átmenne, amit senki nem konfigurált). Egy fail-closed javítás nem lazíthatja a mellette
+álló kivételt. Ezt külön regressziós teszt rögzíti, mindkét irányban mérve.
+
+**Átmeneti kockázat: nincs.** A vevő-oldali recept (a generált CLAUDE.md szekció) ügynök-INDULÁSKOR
+íródik ki, tehát elvben lehetne egy ablak, amiben a régi receptet hordozó ügynök egy VALÓS
+leállítási parancsot utasítana el injekció-gyanúsként. Lemértem: jelenleg NULLA ügynök CLAUDE.md-je
+tartalmazza a szekciót (a `BEGIN GENERATED: system-directive-auth` markerre egyetlen találat sincs
+az éles fán), tehát a vevő-fél még sehol nem élt. Ettől függetlenül a boríték-szöveg
+(`systemDirectiveEnvelope`) mostantól a konstansot interpolálja a beégetett `"system"` helyett, így
+egy elavult recepttel rendelkező ügynök is a sorral EGYEZŐ értéket lát a borítékon. Ez a tulajdonság
+külön teszttel van rögzítve, mert pont ez teszi a nevet később is cserélhetővé.
+
+**Ki döntött:** Cybersec (lelet), MikroB (kártyanyitás, 5c5d7bc4), backend (végrehajtás és a
+`SYSTEM_SENDERS` bájthű-hagyásának mérnöki döntése).
+
+**Hivatkozás:** kártya `5c5d7bc4` (eredeti: `ab4c85f2`, lelet: komment 22033);
+`src/web/system-directive-id.ts` (`SYSTEM_DIRECTIVE_SENDER`, `LEGACY_SYSTEM_SENDER`,
+`isReservedSenderId`), `src/web/routes/messages.ts`, `src/web/system-directive.ts` (boríték),
+`src/web/agent-scaffold.ts` (a szekció a konstansot interpolálja),
+`src/__tests__/messages-post-sender-guards.test.ts` (17 eset),
+`src/__tests__/system-directive-auth-section.test.ts`, `src/__tests__/system-directive.test.ts`.
+
+## 2026-09-04 06:40 -- A `cd + olvasás` permission-wedge strukturális lezárása (block-and-suggest hook)
+
+**Döntés:** A `cd <dir> && grep|sed|cat|head|tail|awk|diff|find|git <olvasó>` alakot egy új
+PreToolUse hook (`scripts/hooks/cd-chain-guard.py`, Bash matcher) blokkolja, MIELŐTT a
+permission-engine jóváhagyást kérne, és a hibaüzenete megnevezi a cd-mentes átírást. A hook
+MINDKÉT bekötési úton települ: `injectCdChainGuard` a settings-generálásban és `ensureCdChainGuard`
+a boot-idejű backfill-körben.
+
+**Miért nem prózai szabály:** a szabály („adj át abszolút útvonalat cd helyett") a backend ügynök
+saját memóriájába NÉGYSZER volt beírva, saját maga által, és négyszer regresszált rá ugyanabban a
+napban. Nem tudáshiány, hanem ösztön: worktree létrehozása után cd-zni, aztán dolgozni. Mérve:
+hét eset egy ügynöknél, majd három ügynök EGYSZERRE egy heartbeat-körben (backend, backend2,
+backend3), majd másnap újabb három (cybered, qa2, fron-teddy), közülük egy 57 percig a d6ecb003-on.
+A CLAUDE.md kódminőségi 6. pontja pont ezt írja elő: ahol lehet, szerkezet a fegyelem helyett.
+
+**Miért blokkolás és nem auto-allow:** egy PreToolUse hook elvben visszaadhatna engedélyező
+döntést, és az barátságosabbnak látszana. Rossz döntés lenne: az allow a TELJES Bash-hívásra
+vonatkozik, a `cd X && grep ...` pedig lánc, tehát vakon átengedné azt is, amit az ügynök a grep
+után fűzött. A blokkolás egyetlen újrapróbálkozásba kerül, és semmit nem enged meg.
+
+**Miért ilyen szűk a hatókör:** csak fájltartalmat olvasó/kereső parancsokra fut, és csak akkor,
+ha a parancsban nincs abszolút útvonal, ami feloldaná (`cd /abs && grep -n x /abs/fajl` átmegy).
+A `ls`, `wc`, `du`, `stat` és társaik SZÁNDÉKOSAN kimaradtak: egyikre sem mértünk beragadást, a
+`cd X && ls` viszont a leggyakoribb dolgok egyike, amit egy mérnök gépel. Ez a guard minden ügynök
+Bash-hívása előtt fut, tehát egy túlillesztés valós beragadást cserélne flotta-szintű bosszúságra
+(kódminőségi 2. pont: semmi spekulatív). Új parancs akkor kerül be, ha mérve lett.
+
+**Melléklelet, külön kártyát érdemel:** a `noisy-command-guard.py`-nak EGYÁLTALÁN nincs
+`inject*`/`ensure*` bekötése a kódban -- csak kézzel szerkesztett `settings.json`-okba került be.
+2026-09-04-i méréssel 15 ügynökből 3-nál (`marketing`, `penzugy`, `videooo`) hiányzik, és egy
+újonnan létrehozott ügynök sem kapná meg; a `marketing`-nél a blast-radius és az npm-protect guard
+is hiányzik. A CLAUDE.md 15. szabálya közben élő kontrollként hivatkozik rá. Ez a
+"kézzel másolt őr tetszőleges részhalmazt véd" hibaosztály (`0fa54550`, 13 ügynökből 5), most újra.
+Ezt NEM javítottam ebben a kártyában (hatókör-tartás), jelezve MikroB-nak.
+
+**Ki döntött:** MikroB (két kártya nyitása: a1b2a1de 2026-09-03, 6b32a478 2026-09-04 -- ugyanaz a
+munka, duplikátumként jelezve), backend (végrehajtás, hatókör-szűkítés, block-vs-allow döntés).
+
+**Hivatkozás:** kártyák `6b32a478` és `a1b2a1de` (duplikátumok);
+`scripts/hooks/cd-chain-guard.py`, `scripts/hooks/cd-chain-guard.selftest.py` (29 eset),
+`src/__tests__/cd-chain-guard-wiring.test.ts` (15 eset, futtatja a selftestet is),
+`src/web/agent-scaffold.ts`, `src/web.ts`, CLAUDE.md 16. szabály.
+
+## 2026-09-04 06:50 -- A fenntartott küldő-névtér az ügynök-LÉTREHOZÁSON is zár (három ajtó, nem egy)
+
+**Döntés:** A `system-directive` és a `system` nevet mostantól nem lehet ügynök-azonosítóként
+létrehozni sem. A már meglévő `isReservedSenderId` predikátum fut mind a HÁROM útvonalon, ami
+`agents/` alá tud könyvtárat tenni: `POST /api/agents` (400), az egy-ügynökös bundle-importáló
+(dobás), és a flotta-bundle-importáló (kihagyás `reserved name` indokkal).
+
+**Miért:** Cybersec LOW-1 lelete az 5c5d7bc4 GO mellékleteként. Az 5c5d7bc4 ott zárta a névteret,
+ahol egy azonosítót ÁLLÍTANAK (`POST /api/messages`), de nem ott, ahol KIBOCSÁTANAK. A
+`sanitizeAgentName` átengedi a `system-directive` alakot, négy folyamaton belüli író pedig az
+ügynök SAJÁT NEVÉT adja `from`-ként (`context-guard-runner.ts`, `context-restart-gate-runner.ts`),
+tehát keletkezne valódi `from_agent="system-directive"` sor, amit nem a `sendSystemDirective()`
+írt. Nem kihasználható ártalmas parancsra (a tartalom sablonos, a recept szó szerinti egyezést
+követel), de visszaveszi az EGY-ÍRÓ tulajdonságot, amit az 5c5d7bc4 éppen megvett.
+
+**Miért három ajtó és nem egy:** a lelet a `POST /api/agents`-et nevezte meg. Végignéztem, mi hív
+még `agents/` alá író kódot, és a bundle-import két további bemenet: az egy-ügynökös importáló a
+manifest nevét VAGY a `?name=` override-ot használja, a flotta-importáló a bundle könyvtárneveit.
+Egy bundle végig támadó által írt tartalom, tehát ugyanolyan megbízhatatlan, mint egy POST törzse.
+Egy ajtón zárt névtér nem névtér.
+
+**Miért kihagyás és nem dobás a flotta-importálónál:** egy mérgezett név egy flotta-bundle-ben nem
+kerülhet az operátornak a másik tizenöt ügynökébe; a `skipped` lista az, amit a UI amúgy is mutat.
+
+**Mért részlet, ami az ellenkezőjét mutatta a várakozásnak:** a `sanitizeAgentName` a szóközt
+TÖRLI (nem kötőjelre cseréli), tehát a „System Directive" alak `systemdirective` lesz, és nem éri
+el a fenntartott azonosítót. A hyphenes, kis-nagybetűs, ékezetes és dupla-kötőjeles alakok viszont
+igen. A tesztek a mért viselkedést rögzítik, nem a feltételezettet; az őr ezért a SZANITIZÁLT
+néven fut, így ha valaki egyszer a szóközt kötőjelre képezné le, az új írásmódot is elkapja
+változtatás nélkül.
+
+**Ki döntött:** Cybersec (lelet), MikroB (kártyanyitás), backend (végrehajtás, a másik két ajtó
+felderítése és a kihagyás-vs-dobás döntés).
+
+**Hivatkozás:** kártya `b46a4b7e` (eredeti: `5c5d7bc4`, lelet: komment 19116);
+`src/web/routes/agents.ts`, `src/web/agent-bundle.ts` (mindkét importáló),
+`src/__tests__/reserved-agent-name.test.ts` (19 eset, 3 mutáció ajtónként külön öl).
+
 ## 2026-09-04 08:40 -- 92a4c2e7: repó-frissesség három kimondott állapottal, közös osztályozóval (Fron Ted)
 
 **Előzmény:** Peti 2026-09-04-i észrevétele: a Frissítések oldalon nem látszik repónként, hogy egy
@@ -5039,6 +5163,43 @@ ellenőrzés-sor) mindegyike bukik a guard-teszten, az alapvonal 40/40 zöld.
 **Ki döntött:** Fron Ted (a három állapot és a közös modul), Peti (az igény), MikroB (dispatch, csak-FE hatókör).
 **Hivatkozás:** kártya `92a4c2e7`; `web/app-repo-freshness.js`, `web/app-connectors.js`,
 `web/fork-updates.js`, `src/__tests__/repo-freshness-ui.test.ts`.
+
+## 2026-09-04 07:15 -- A `GET /api/messages/:id` végpont pótlása: a direktíva-recept saját ellenőrző lépése 404-et adott
+
+**Döntés:** Átvettük az upstream `GET /api/messages/:id` route-ját (öt sor, a `getAgentMessage()`
+már importálva volt a `PUT` kezelőhöz), és mellé egy tesztet, ami a generált CLAUDE.md-szekció
+SZÖVEGÉBŐL olvassa ki a hivatkozott végpontot, majd a valódi route-kezelővel meg is hívja.
+
+**Miért:** az `ab4c85f2` minden ügynök CLAUDE.md-jébe beírta, hogy egy rendszer-direktíva
+visszafordíthatatlan része előtt hitelesíteni kell a horgony-sort a `curl .../api/messages/<N>`
+paranccsal. A forkban ezen az útvonalon CSAK `PUT` volt. Élesben mérve: HTTP 404. Vagyis az az
+ügynök, aki pontosan azt teszi, amit az utasítása mond, azt olvassa ki, hogy a sor nem létezik, és
+a fail-closed szabály szerint egy VALÓDI leállítási direktívát utasít el injekció-gyanúsként. A
+flotta stop-mechanizmusa pont akkor mondana csődöt, amikor használni kell.
+
+**A hibaosztály, kimondva:** az `ab4c85f2`-n magam neveztem meg, hogy egy kétrészes protokoll
+egyik felének átvétele rosszabb a semminél -- és ugyanabba léptem bele, csak a HARMADIK felével.
+A küldőt (`sendSystemDirective`) és a fogadó receptet (a scaffold-szekció) is átvettem, az
+OLVASÓ végpontot nem. Egy utasítás nem passzív szöveg: önálló résztvevő, ami képességet nevez meg.
+A Cybersec gate sem kapta el, mert az azonosító ÍRÓIT auditálta, nem az olvasási utat, amit a
+recept az ügynök kezébe ad.
+
+**Miért így néz ki a teszt:** egy "létezik-e GET handler a /api/messages/:id-n" állítás csak a
+route-ot rögzítené. Ha valaki átfogalmazza a receptet egy másik végpontra, a route továbbra is
+létezik, a teszt zöld marad, az utasítás pedig megint törött. Ezért a teszt a végpontot a
+GENERÁLT UTASÍTÁS SZÖVEGÉBŐL parse-olja ki, és azt hívja meg. Mutációval igazolva mindkét irányban:
+a route eltávolítása 2 tesztet buktat, és a recept átírása egy másik végpontra ugyancsak 2-t --
+vagyis a teszt a mondatot követi, nem egy konstanst.
+
+**Biztonsági hatás: nincs új.** A route ugyanazt a sor-alakot adja vissza, amit a már meglévő
+`GET /api/messages` lista-végpont, és ugyanaz mögött a Bearer-kapu mögött ül (`/api/*` 401 hiányzó
+principal esetén). Nem új adat-osztály, csak egy eddig hiányzó olvasási mód ugyanarra.
+
+**Ki döntött:** backend (a lelet és a végrehajtás), MikroB (külön kártya + külön landolási kör,
+hogy a `93e55311`-en már meglévő Cybersec GO ne váljon érvénytelenné).
+
+**Hivatkozás:** kártya `22e4c0d9` (eredeti: `ab4c85f2`); `src/web/routes/messages.ts`,
+`src/__tests__/directive-recipe-endpoint-exists.test.ts`.
 
 ## 2026-09-04 09:20 -- 184dc8d7: teljes repó-tábla a Frissítések oldalon, a review-jegyzet mező hiányával kimondva (Fron Ted)
 

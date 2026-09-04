@@ -133,6 +133,7 @@ import {
   resolveProfilePlaceholders,
 } from '../profiles.js'
 import { sanitizeAgentName, safeJoin } from '../sanitize.js'
+import { isReservedSenderId } from '../system-directive-id.js'
 import { parseMultipart } from '../multipart.js'
 import { readBody, json, jsonMaybeGzip, serveFile } from '../http-helpers.js'
 import {
@@ -861,6 +862,18 @@ export async function tryHandleAgents(ctx: RouteContext, webDir: string): Promis
     const profileId = (rawProfile || 'default').trim() || 'default'
 
     if (!name) { json(res, { error: 'Name is required' }, 400); return true }
+    // Card b46a4b7e (Cybersec LOW on 5c5d7bc4's gate). The reserved sender namespace was enforced
+    // where an id is CLAIMED (POST /api/messages) but not where one is MINTED. sanitizeAgentName
+    // accepts `system-directive` -- lowercase and a hyphen -- so a token holder could create an
+    // agent by that name, and four in-process writers pass the agent's OWN name as `from`
+    // (context-guard-runner.ts, context-restart-gate-runner.ts). Genuine
+    // from_agent="system-directive" rows would then exist outside sendSystemDirective, taking back
+    // the one-writer property the rename was bought for. Checked on the SANITIZED name: a display
+    // name of "System Directive" sanitizes straight into it.
+    if (isReservedSenderId(name)) {
+      json(res, { error: `The name "${name}" is reserved for in-process system senders -- pick another name for the agent` }, 400)
+      return true
+    }
     if (!description) { json(res, { error: 'Description is required' }, 400); return true }
     // Card b7fa5281: reject a shell-unsafe model id BEFORE scaffolding anything -- the value ends up
     // in the agent-launch shell command, so a quote in it is command injection.

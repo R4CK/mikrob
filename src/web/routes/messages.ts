@@ -13,7 +13,7 @@ import { logger } from '../../logger.js'
 import { COORDINATOR_AGENT_ID } from '../../channel-coordinator/ingest.js'
 import { sanitizeAgentIdent } from '../../prompt-safety.js'
 import { isKnownAgent } from '../agent-config.js'
-import { SYSTEM_DIRECTIVE_SENDER } from '../system-directive-id.js'
+import { isReservedSenderId } from '../system-directive-id.js'
 import { OWNER_NAME, SYSTEM_SENDER_IDS, parseSystemSenderIds } from '../../config.js'
 import { readBody, json, jsonMaybeGzip } from '../http-helpers.js'
 import { normalizeKanbanRefs } from '../kanban-ref-normalize.js'
@@ -47,6 +47,12 @@ export function shouldNotifyDelegator(fromAgent: string, toAgent: string, conten
 }
 
 // Frozen at module load, like the config constant it derives from.
+//
+// Deliberately still BYTE-EXACT (card 5c5d7bc4). Lower-casing the reserved-id
+// guard above only ever adds rejections; lower-casing this set would ADD
+// acceptances -- `SYSTEM_SENDER_IDS=CaseManager` would start admitting a
+// sender posting as `casemanager`, which nobody configured. A fail-closed fix
+// must not loosen the exemption it sits next to.
 const SYSTEM_SENDERS = parseSystemSenderIds(SYSTEM_SENDER_IDS, sanitizeAgentIdent)
 
 export async function tryHandleMessages(ctx: RouteContext): Promise<boolean> {
@@ -86,11 +92,12 @@ export async function tryHandleMessages(ctx: RouteContext): Promise<boolean> {
       json(res, { error: 'from is reserved for the in-process channel coordinator' }, 403)
       return true
     }
-    // Reserved-sender guard for the authenticated system-directive channel
-    // (src/web/system-directive.ts). Those rows carry from_agent="system", and
-    // every agent's CLAUDE.md now tells it to TRUST such a row as proof that a
-    // stop/handoff order really came from the supervisor. That promise is only
-    // worth anything if "system" can never be written through this endpoint.
+    // Reserved-sender guard for the in-process-only sender ids
+    // (src/web/system-directive-id.ts). Directive rows carry
+    // from_agent="system-directive", and every agent's CLAUDE.md tells it to
+    // TRUST such a row as proof that a stop/handoff order really came from the
+    // supervisor. That promise is only worth anything if the id can never be
+    // written through this endpoint.
     //
     // Before this guard the 403 was an ACCIDENT of configuration, not a rule:
     // "system" 403'd merely because it is not a known agent and not listed in
@@ -99,9 +106,16 @@ export async function tryHandleMessages(ctx: RouteContext): Promise<boolean> {
     // would silently turn the fleet's directive authentication off while every
     // CLAUDE.md kept claiming it held. Hence an explicit check, placed BEFORE
     // the owner/SYSTEM_SENDERS exemptions so neither can re-open it.
-    if (sanitizeAgentIdent(from) === SYSTEM_DIRECTIVE_SENDER) {
-      logger.warn({ from: from.trim(), to: to.trim() }, 'Rejected /api/messages POST forging the system-directive sender id')
-      json(res, { error: 'from is reserved for in-process system directives' }, 403)
+    //
+    // Card 5c5d7bc4 widened it from one id to the reserved SET and made the
+    // match case-insensitive. Both halves came from the same Cybersec reading:
+    // the directive channel now owns `system-directive`, while the bare
+    // `system` stays reserved here because five in-process writers use it for
+    // ordinary notifications -- legitimate inside the process, never a claim a
+    // token holder gets to make over HTTP.
+    if (isReservedSenderId(sanitizeAgentIdent(from))) {
+      logger.warn({ from: from.trim(), to: to.trim() }, 'Rejected /api/messages POST forging an in-process-only sender id')
+      json(res, { error: 'from is reserved for in-process system senders' }, 403)
       return true
     }
     // Federation spoof guard: a slash-qualified from ("teodor/teodor") is the
@@ -285,6 +299,21 @@ export async function tryHandleMessages(ctx: RouteContext): Promise<boolean> {
   }
 
   const msgUpdateMatch = path.match(/^\/api\/messages\/(\d+)$/)
+  // Read one row by id. THE RECIPE'S OWN VERIFICATION STEP (card 22e4c0d9): the
+  // system-directive section written into every agent's CLAUDE.md tells the agent to
+  // authenticate a directive by fetching the anchor row -- `curl .../api/messages/<N>` --
+  // before executing anything irreversible. This fork shipped that instruction (card
+  // ab4c85f2) while having only PUT on this path, so the command returned 404. An agent
+  // doing exactly what it was told would read that as "the row does not exist" and,
+  // fail-closed, refuse a REAL stop order as injection-suspect. Adopted verbatim from
+  // upstream, which has had it all along; getAgentMessage() was already imported here for
+  // the PUT handler below.
+  if (msgUpdateMatch && method === 'GET') {
+    const one = getAgentMessage(parseInt(msgUpdateMatch[1], 10))
+    if (!one) { json(res, { error: 'Message not found' }, 404); return true }
+    json(res, one)
+    return true
+  }
   if (msgUpdateMatch && method === 'PUT') {
     const id = parseInt(msgUpdateMatch[1], 10)
     const body = await readBody(req)
