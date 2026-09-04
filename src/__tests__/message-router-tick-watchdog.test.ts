@@ -59,6 +59,11 @@ vi.mock('../db.js', () => ({
   // try/catch -- the message fails silently and nothing is delivered, which is how its absence
   // showed up here as "0 sends" rather than as a missing-export error.
   getKanbanCardStateByIdPrefix: () => null,
+  // Card f27c999b: the delivery path also asks how many NEWER messages the same sender has queued
+  // since this one (the freshness/supersession annotation). Omitting it reproduced the failure the
+  // comment above describes, exactly -- 0 sends, no missing-export error, because the throw lands
+  // in the router's per-message try/catch. That note is what made this a two-minute diagnosis.
+  countNewerMessagesFromSameSender: () => 0,
   upsertOtelSpan: (..._a: unknown[]) => undefined,
   closeOtelSpan: (..._a: unknown[]) => false,
 }))
