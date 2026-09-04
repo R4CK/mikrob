@@ -1108,9 +1108,18 @@ export function resolveProviderEnv(
     }
   }
   if (isOllama) {
+    // OLLAMA_URL IS ESCAPED TOO (card e80c011a, Cybersec NO-GO comment 19942). It was the one
+    // shell sink on this line left BARE -- not even double-quoted -- while the model beside it
+    // was escaped and the two keys above it had just been fixed. I had enumerated the sinks by
+    // asking "is this a secret?", and a base URL is not; the question that matters is "does an
+    // outside writer decide this string?", and here one does: OLLAMA_URL is a settings-registry
+    // entry of type 'string' with no valueSet, so validateSettingValue falls straight through to
+    // `return { ok: true, value: String(raw) }` -- zero character validation. A value shaped
+    // `x && <command> #` therefore runs at tmux launch, before the hook layer exists. isOllama is
+    // also the FALLBACK branch, so it is the easiest of the four to reach.
     return {
       provider: 'ollama',
-      exportsStr: `export ANTHROPIC_AUTH_TOKEN=ollama && export ANTHROPIC_BASE_URL=${OLLAMA_URL} && export ANTHROPIC_MODEL=${shSingleQuote(model)} && `,
+      exportsStr: `export ANTHROPIC_AUTH_TOKEN=ollama && export ANTHROPIC_BASE_URL=${shSingleQuote(OLLAMA_URL)} && export ANTHROPIC_MODEL=${shSingleQuote(model)} && `,
     }
   }
   return { provider: 'claude', exportsStr: '' }

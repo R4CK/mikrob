@@ -22,18 +22,30 @@ import { resolveProviderEnv, shSingleQuote } from '../web/agent-process.js'
 import { OLLAMA_URL } from '../config.js'
 import { REPO_ROOT } from './helpers/repo-location.js'
 
-/** The fork's expressions as they stand on LANDED develop, copied verbatim.
+/** The fork's expressions in their INTENDED shape -- landed develop, plus the escaping this branch
+ * is responsible for.
  *
- * These now include the key escaping backend landed in 392af013 (card 1075d0e4) WHILE this branch
- * was replacing the same lines. Pinning the pre-fix shape here would have been worse than useless:
- * this test would have PASSED against a reverted security fix, and then FAILED anyone who tried to
- * re-apply it -- a test actively defending the vulnerability. */
+ * They include the key escaping backend landed in 392af013 (card 1075d0e4) WHILE this branch was
+ * replacing the same lines. Pinning the pre-fix shape here would have been worse than useless: this
+ * test would have PASSED against a reverted security fix, and then FAILED anyone who tried to
+ * re-apply it -- a test actively defending the vulnerability.
+ *
+ * OLLAMA_URL IS ESCAPED HERE FOR THE SAME REASON, and it is the one line where this fixture was
+ * still doing exactly what the paragraph above warns against (Cybersec NO-GO, comment 19942). They
+ * did not infer it, they measured it: with the pending shSingleQuote(OLLAMA_URL) applied to the
+ * source and this fixture left bare, 3 of 25 cases went RED -- so the fixture would have failed the
+ * person re-applying the fix. Both sides now pin the escaped form, which means the byte-equality
+ * assertion no longer depends on which of the two cards lands first.
+ *
+ * SO THIS IS NO LONGER A PURE NO-OP on the ollama branch, and the assertion below is deliberately
+ * NOT retitled to pretend otherwise: it compares against the intended shape, and the ollama line is
+ * a real behaviour change (bare -> POSIX-escaped) that this card owns. */
 function legacyExports(model: string, getSecret: (id: string) => string | null): string {
   const isClaude = model.startsWith('claude-')
   const isDeepseek = model.startsWith('deepseek-')
   const isOpenRouter = !isClaude && !isDeepseek && model.includes('/')
   const isOllama = !isClaude && !isDeepseek && !isOpenRouter
-  const ollamaEnv = isOllama ? `export ANTHROPIC_AUTH_TOKEN=ollama && export ANTHROPIC_BASE_URL=${OLLAMA_URL} && export ANTHROPIC_MODEL=${shSingleQuote(model)} && ` : ''
+  const ollamaEnv = isOllama ? `export ANTHROPIC_AUTH_TOKEN=ollama && export ANTHROPIC_BASE_URL=${shSingleQuote(OLLAMA_URL)} && export ANTHROPIC_MODEL=${shSingleQuote(model)} && ` : ''
   const deepseekKey = isDeepseek ? (getSecret('DEEPSEEK_API_KEY') ?? '') : ''
   const deepseekEnv = isDeepseek ? `export ANTHROPIC_AUTH_TOKEN=${shSingleQuote(deepseekKey)} && export ANTHROPIC_BASE_URL=https://api.deepseek.com/anthropic && export ANTHROPIC_MODEL=${shSingleQuote(model)} && ` : ''
   const openrouterKey = isOpenRouter ? (getSecret('openrouter-fleet-key') ?? '') : ''
@@ -62,8 +74,8 @@ const MODELS = [
   "vendor/mo'del",
 ]
 
-describe('resolveProviderEnv adoption is a no-op (card e80c011a)', () => {
-  it.each(MODELS)('%s: byte-identical to the pre-refactor inline expressions', (model) => {
+describe('resolveProviderEnv adoption: no-op except the ollama escape (card e80c011a)', () => {
+  it.each(MODELS)('%s: byte-identical to the intended inline expressions', (model) => {
     expect(resolveProviderEnv(model, getSecret).exportsStr).toBe(legacyExports(model, getSecret))
   })
 
@@ -208,3 +220,54 @@ describe('MiniMax stays out (Peti NO-GO, card 48565f81)', () => {
     expect(src).not.toContain('CLAUDE_CODE_MAX_CONTEXT_TOKENS')
   })
 })
+
+describe('every shell sink in resolveProviderEnv is escaped, by PROVENANCE (Cybersec 19942)', () => {
+  // WHY THIS EXISTS AND WHY IT IS A SOURCE-SHAPE TEST.
+  //
+  // The two key sinks were fixed because a key is obviously a secret. OLLAMA_URL sat on the very
+  // same line, bare and not even double-quoted, and I read past it three times -- because I was
+  // enumerating sinks by asking "is this a secret?" instead of "does an outside writer decide this
+  // string?". A base URL is not a secret and IS attacker-influenced: it is a settings-registry
+  // entry of type 'string' with no valueSet, so validateSettingValue returns String(raw) unchanged.
+  //
+  // So this asserts the general rule rather than a list of three names: inside resolveProviderEnv,
+  // EVERY interpolation that reaches the launch command line goes through shSingleQuote(). A future
+  // provider added by anyone (upstream included) is covered without touching this file. Pinned at
+  // source level because the string is only ever executed inside a real tmux session -- there is no
+  // cheap seam to drive end-to-end, which is the same reason backend's key-quoting test is one.
+  const SRC = readFileSync(join(REPO_ROOT, 'src', 'web', 'agent-process.ts'), 'utf-8')
+
+  function resolveProviderEnvBody(): string {
+    const start = SRC.indexOf('export function resolveProviderEnv(')
+    expect(start, 'resolveProviderEnv not found -- was it renamed?').toBeGreaterThan(-1)
+    // Ends at the next top-level `export ` / comment banner after the function.
+    const end = SRC.indexOf('\n// All tmux operations route through', start)
+    expect(end, 'end marker moved -- widen this slice rather than letting it silently cover less')
+      .toBeGreaterThan(start)
+    return SRC.slice(start, end)
+  }
+
+  it('no interpolation reaches the command line unescaped', () => {
+    const body = resolveProviderEnvBody()
+    // Every `${...}` inside the function, minus the ones already wrapped.
+    const all = [...body.matchAll(/\$\{([^{}]*)\}/g)].map((m) => m[1].trim())
+    expect(all.length, 'no interpolations found -- the slice above is probably wrong').toBeGreaterThan(3)
+    const unescaped = all.filter((e) => !e.startsWith('shSingleQuote('))
+    expect(
+      unescaped,
+      'an interpolation reaches the tmux launch command line without shSingleQuote(). It does not ' +
+        'matter whether the value looks like a secret: what matters is whether something outside ' +
+        'this process decides the string. Wrap it, or prove it cannot be written from outside.',
+    ).toEqual([])
+  })
+
+  it('BITES: the exact bare shape this NO-GO was about is caught', () => {
+    // Guard against the assertion above going vacuous (an empty match set also equals []).
+    const mutated = 'export function resolveProviderEnv(' +
+      '\n  x = `export ANTHROPIC_BASE_URL=${OLLAMA_URL} && `' +
+      '\n// All tmux operations route through'
+    const all = [...mutated.matchAll(/\$\{([^{}]*)\}/g)].map((m) => m[1].trim())
+    expect(all.filter((e) => !e.startsWith('shSingleQuote('))).toEqual(['OLLAMA_URL'])
+  })
+})
+
