@@ -94,9 +94,40 @@ def _strip_heredoc_bodies(cmd):
     return _HEREDOC_RX.sub("<<HEREDOC-BODY-STRIPPED", cmd)
 
 
+# Inside DOUBLE quotes, bash still expands `$(...)` and backticks -- they are live code, not text.
+# Only SINGLE quotes are fully literal.
+_DQ_SUBST_RX = re.compile(r"\$\([^)]*\)|`[^`]*`")
+
+
 def _strip_quoted_literals(cmd):
-    """Blank out quoted strings, keeping the quotes so operand counting still sees them."""
-    return _QUOTED_RX.sub(lambda m: "''" if m.group(0)[0] == "'" else '""', cmd)
+    """Blank quoted strings, but keep what bash would still EXECUTE inside them.
+
+    QA FAIL on 57bb35a8, and it reopened the guard's whole class through a second mechanism. The
+    first version blanked a double-quoted span wholesale, so
+
+        cd /abs && printf "%s" "$(cat relative/file.txt)"
+
+    lost its `$(cat relative/file.txt)` BEFORE _segments() ran -- and since the segmenter splits on
+    `$(`, the split point was inside the part that had just been erased. The relative-path read
+    vanished from the text and the command passed. The unquoted form of the same line blocked
+    correctly, which is the wrong way round: `"$(...)"` is the shape shellcheck and every style
+    guide ask for, and it is literally the fleet's own token idiom
+    (`"$(cat store/.dashboard-token)"`).
+
+    So: single quotes are erased entirely (nothing in them ever runs); a double-quoted span keeps
+    its command substitutions and loses the rest. The quotes themselves stay, so operand counting
+    still sees a token where one was.
+
+    Nested `$( ... $(...) ...)` truncates at the first `)`. That leaves MORE text than it should
+    rather than less, so the guard errs toward blocking -- the safe direction for a seatbelt.
+    """
+    def repl(m):
+        tok = m.group(0)
+        if tok[0] == "'":
+            return "''"
+        kept = _DQ_SUBST_RX.findall(tok)
+        return '"' + ' '.join(kept) + '"' if kept else '""'
+    return _QUOTED_RX.sub(repl, cmd)
 
 
 def _unquote(s):

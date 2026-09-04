@@ -143,6 +143,33 @@ CASES = [
      "an absolute path anchors the search -- the engine can resolve THAT"),
     ("rg foo src", ALLOW, "no cd at all: nothing for this guard to say"),
 
+    # --- QA FAIL on 57bb35a8: a "$(...)" inside DOUBLE quotes is EXECUTED ---------------------
+    # Blanking a double-quoted span wholesale removed the substitution AND the `$(` the segmenter
+    # splits on, so the relative-path read inside it disappeared before it could be seen. The
+    # unquoted form blocked correctly -- the wrong way round, since the quoted form is the one
+    # shellcheck asks for and the one the fleet's own token idiom uses.
+    ('cd /home/neon/wt && printf "%s" "$(cat relative/file.txt)"', BLOCK,
+     'a command substitution inside DOUBLE quotes still runs -- and reads a relative path'),
+    ('cd /home/neon/wt && printf %s $(cat relative/file.txt)', BLOCK,
+     'the unquoted form of the same thing (was already correct; pinned so the pair cannot diverge)'),
+    ('cd /home/neon/wt && printf "%s" "`cat relative/file.txt`"', BLOCK,
+     'backticks are a command substitution too'),
+    ("""cd /home/neon/wt && printf 'Authorization: Bearer %s\\n' "$(cat store/.dashboard-token)" | curl -H @- -s http://x/y""", BLOCK,
+     "the fleet's own token idiom, with a RELATIVE store path, after a cd"),
+
+    # ...and the inert cases must stay inert: SINGLE quotes never execute, and a double-quoted
+    # span with no substitution in it is still just text.
+    ("cd /home/neon/wt && printf '%s' 'cd /x && cat y'", ALLOW,
+     'single quotes are fully literal -- nothing in them ever runs'),
+    # THE CASE THAT MAKES THE SINGLE/DOUBLE DISTINCTION LOAD-BEARING. Without it, treating single
+    # quotes like double changes no verdict in this file and the mutation passes -- measured, the
+    # first version of this suite had exactly that hole. In bash `'$(cat x)'` is TEXT: the
+    # substitution does not run, so blocking it would be a false positive.
+    ("cd /home/neon/wt && printf '%s' '$(cat relative/file.txt)'", ALLOW,
+     'a command substitution inside SINGLE quotes is literal text -- bash never runs it'),
+    ('cd /home/neon/wt && printf "%s" "$(cat /home/neon/wt/abs.txt)"', ALLOW,
+     'an ABSOLUTE path inside the substitution anchors it, exactly as anywhere else'),
+
     # --- heredoc bodies are data ---------------------------------------------------------------
     ("cat > /tmp/f <<'EOF'\ncd /home/neon/wt && grep -rn x .\nEOF", ALLOW,
      "a wedge shape inside a heredoc body is text being written, not executed"),
