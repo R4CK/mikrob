@@ -1,7 +1,9 @@
 import { readFileSync, writeFileSync, existsSync, mkdirSync, copyFileSync, readdirSync, statSync, rmSync, watchFile, unwatchFile } from 'node:fs'
 import { join } from 'node:path'
 import { homedir } from 'node:os'
-import { PROJECT_ROOT, OWNER_NAME, MAIN_AGENT_ID, HEARTBEAT_AGENT_ID, BOT_NAME, CHANNEL_PROVIDER, WEB_PORT, OWNER_DRIVE_FOLDER, APP_TZ, DASHBOARD_PUBLIC_URL, STORE_DIR } from '../config.js'
+import { PROJECT_ROOT, OWNER_NAME, MAIN_AGENT_ID, HEARTBEAT_AGENT_ID, BOT_NAME, CHANNEL_PROVIDER, WEB_PORT, OWNER_DRIVE_FOLDER, APP_TZ, DASHBOARD_PUBLIC_URL, AGENT_API_ORIGIN, STORE_DIR } from '../config.js'
+import { findDuplicateJsonKeys } from './json-dup-keys.js'
+import { logger } from '../logger.js'
 import { channelStateDir } from '../channel-provider.js'
 import { runAgent } from '../agent.js'
 import { atomicWriteFileSync } from './atomic-write.js'
@@ -17,13 +19,13 @@ import { SYSTEM_DIRECTIVE_SENDER } from './system-directive-id.js'
 // DASHBOARD_PUBLIC_URL wins when set (distributed / k3s deployment); falls
 // back to localhost for single-host installs. Exported so heartbeat-agent-
 // scaffold and tests can import the same logic without duplicating it.
-export function resolveDashboardOrigin(publicUrl: string, port: number | string): string {
-  return (publicUrl || `http://localhost:${port}`).replace(/\/$/, '')
+export function resolveDashboardOrigin(publicUrl: string, port: number | string, agentApiOrigin = ''): string {
+  return (agentApiOrigin || publicUrl || `http://localhost:${port}`).replace(/\/$/, '')
 }
 
 // Resolved once at module load; DASHBOARD_PUBLIC_URL requires a restart
 // (see config-registry.ts `requiresRestart` flag), so a const is safe.
-const dashboardOrigin = resolveDashboardOrigin(DASHBOARD_PUBLIC_URL, WEB_PORT)
+const dashboardOrigin = resolveDashboardOrigin(DASHBOARD_PUBLIC_URL, WEB_PORT, AGENT_API_ORIGIN)
 // Dashboard token path emitted into generated CLAUDE.md curl examples.
 // MUST be absolute: sub-agents run from agents/<name>/, where a relative
 // `store/.dashboard-token` does not exist -- curl then sends an empty Bearer
@@ -220,7 +222,21 @@ export function ensureAgentHooks(name: string): boolean {
   if (!tpl.hooks) return false
   let existing: Record<string, unknown> = {}
   if (existsSync(settingsPath)) {
-    try { existing = JSON.parse(readFileSync(settingsPath, 'utf-8')) } catch { /* overwrite */ }
+    try {
+      const rawExisting = readFileSync(settingsPath, 'utf-8')
+      // JSON.parse keeps only the LAST occurrence of a duplicated key, so a settings file with two
+      // "PreToolUse" (or any hook-event) keys silently drops every hook in the earlier block --
+      // guards die with no error and no symptom until the action they gated goes through
+      // unchecked. This fleet has already hit exactly that: `fix(hooks): merge duplicate Stop keys
+      // in .claude/settings.json`. The evidence exists only in the raw text, so check BEFORE
+      // parsing, and name the paths.
+      const dupKeys = findDuplicateJsonKeys(rawExisting)
+      if (dupKeys.length > 0) {
+        logger.warn({ agent: name, settingsPath, dupKeys },
+          'ensureAgentHooks: duplicate JSON keys in settings -- JSON.parse keeps only the last occurrence, hooks in the earlier block are silently dead')
+      }
+      existing = JSON.parse(rawExisting)
+    } catch { /* overwrite */ }
   }
   const tplHooks = tpl.hooks as Record<string, unknown>
   if (existing.hooks) {

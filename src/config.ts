@@ -322,6 +322,14 @@ export const KANBAN_WIP_OVER_COLOR = env['KANBAN_WIP_OVER_COLOR'] ?? '#c53030'
 // requiresRestart registry keys: read through the override layer so a value
 // saved on the Settings page takes effect on the next restart.
 export const DASHBOARD_PUBLIC_URL = cfg('DASHBOARD_PUBLIC_URL') ?? ''
+// Where an AGENT reaches the dashboard API from where it RUNS -- a different question from
+// DASHBOARD_PUBLIC_URL, which is where the BROWSER reaches it (and which also feeds the CORS
+// allowlist). On a single-host install behind hairpin NAT the two answers differ: upstream measured
+// a live install where the public name resolved but its 443 was unreachable from the host, so every
+// generated curl example in the agents' CLAUDE.md pointed at a dead address and returned `curl exit
+// 7` -- the agent receives nothing at all, not an error it could surface. Empty keeps the previous
+// behaviour byte-for-byte.
+export const AGENT_API_ORIGIN = cfg('AGENT_API_ORIGIN') ?? ''
 // Extra browser origins allowed to make state-changing dashboard requests
 // (CORS + CSRF allowlist), comma-separated, e.g. for VPN/LAN addresses that
 // aren't covered by WEB_HOST or DASHBOARD_PUBLIC_URL. Empty by default so
