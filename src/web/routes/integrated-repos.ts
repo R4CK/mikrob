@@ -103,6 +103,15 @@ export interface IntegratedRepoStatus {
   pinnedVersion: string | null
   /** Human one-liner (what it is / what it solves) for the UI hover tooltip. */
   description: string
+  /** The registry entry's review-note chain, verbatim, as its OWN field.
+   *
+   *  `description` above folds note in as a fallback (`cfg.description || cfg.note`), which means
+   *  the note only ever escapes for an entry that has no description -- and 36 of the registry's
+   *  38 entries have both, with none having a note alone. So the note was unreachable in practice,
+   *  and the note column the Updates page already renders (web/fork-updates.js, card 184dc8d7)
+   *  never appeared: it keys on `typeof r.note === 'string'`, deliberately treating an absent
+   *  field as "unknown" rather than "no note". Empty string when the entry has no note. */
+  note: string
   /** Adoption/install date (YYYY-MM-DD) -- the real install date the UI shows, not the
    *  upstream commit date. Null when the registry entry has no recorded reviewed_at. */
   adoptedAt: string | null
@@ -184,7 +193,12 @@ export function statusForRepo(cfg: IntegratedRepoConfig): IntegratedRepoStatus {
     cloned: false,
     adoption: String(cfg.adoption || ''),
     pinnedVersion: cfg.pinned_version ? String(cfg.pinned_version) : null,
+    // Left exactly as it was on purpose: the two entries with no description of their own still
+    // borrow the note for one, and taking that away would blank their UI text. The new `note`
+    // field below is additive -- it carries the note out independently, without changing what
+    // any existing consumer already reads here.
     description: String(cfg.description || cfg.note || ''),
+    note: String(cfg.note || ''),
     adoptedAt: cfg.reviewed_at ? String(cfg.reviewed_at) : null,
     lastCheckedAt: cfg.last_checked_at ? String(cfg.last_checked_at) : null,
     installed: false,
