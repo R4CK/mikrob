@@ -705,6 +705,7 @@ seed_copy_try_merge() {
     cp "$installed" "$ours_tmp"
     if git merge-file -q "$ours_tmp" "$base_tmp" "$theirs_tmp" >/dev/null 2>&1; then
       cp "$installed" "$installed.seedbak.$(date +%s)" 2>/dev/null || true
+      prune_seedbaks "$installed"
       mv "$ours_tmp" "$installed"
       rm -f "$base_tmp"
       merged=0
@@ -716,6 +717,41 @@ seed_copy_try_merge() {
   return "$merged"
 }
 
+# Keep at most SEEDBAK_KEEP backups per merged file (card 4276708e, Cybersec finding 2).
+#
+# Every successful merge wrote one .seedbak.<epoch> and nothing ever removed them, so the count only
+# ever grew: measured 3 -> 6 -> 9 over four runs in the test fixture, and 39 files / 415 KB on this
+# live install (up from the 33 / 371 KB the finding recorded, i.e. still climbing while the card sat
+# open). Small in bytes, but it is an unbounded loop next to the operator's own files, and the point
+# of a backup is to be findable -- a directory holding a dozen near-identical .seedbak.<epoch> files
+# is one nobody reads.
+#
+# Keeps the NEWEST few and drops the rest. Epoch-second suffixes are fixed-width for the next couple
+# of centuries, so a plain lexical sort is a chronological sort here; `sort` is not assumed to exist
+# in any particular flavour beyond POSIX.
+prune_seedbaks() {
+  target="$1"
+  # Defaulted INSIDE the function, not as a module-level assignment: under `set -u` an
+  # unset global would abort the caller, and the seed-refresh tests slice these functions
+  # out of update.sh individually, so anything defined outside a function is simply absent
+  # there. Measured: the module-level form broke two existing merge tests.
+  keep="${SEEDBAK_KEEP:-3}"
+  # `head -n -N` is GNU-only -- BSD head (macOS, which this script supports: see the bash 3.2 and
+  # md5sum notes elsewhere) rejects it. Count first, then take a positive number.
+  # shellcheck disable=SC2012  # names are our own epoch-suffixed backups, not arbitrary input
+  total="$(ls -1 "$target".seedbak.* 2>/dev/null | wc -l | tr -d ' ')"
+  [ "${total:-0}" -gt "$keep" ] || return 0
+  drop=$((total - keep))
+  # shellcheck disable=SC2012
+  ls -1 "$target".seedbak.* 2>/dev/null \
+    | sort \
+    | head -n "$drop" \
+    | while IFS= read -r old_bak; do
+        [ -f "$old_bak" ] && rm -f "$old_bak"
+      done
+  return 0
+}
+
 # Refresh one seeded directory tree. $1 = repo source dir (relative), $2 = target
 # root, $3 = verbatim|template.
 refresh_untouched_seeds() {
@@ -725,6 +761,14 @@ refresh_untouched_seeds() {
   for d in "$INSTALL_DIR/$src_rel"/*/; do
     [ -d "$d" ] || continue
     name="$(basename "$d")"
+    # -L BEFORE -d, and this order is the whole point: `-d` follows symlinks, so a directory
+    # SYMLINK answers yes and every cp/mv below then writes THROUGH it into whatever it points at.
+    # Not hypothetical -- it already happened on this install: 14 sp-* skill dirs are symlinks into
+    # the vendored ~/.claude/external/superpowers checkout, and three files there carry our seed
+    # content (byte-identical to seed-skills/, +70 lines, differing from the vendor's own HEAD).
+    # We silently forked a third-party repo. A seeded entry we own is a real directory; a symlink is
+    # someone else's ground and is never ours to refresh.
+    [ -L "$target_root/$name" ] && continue     # symlink -> foreign ground, never write through it
     [ -d "$target_root/$name" ] || continue     # not seeded here -> not ours to add
     for f in "$d"*; do
       [ -f "$f" ] || continue

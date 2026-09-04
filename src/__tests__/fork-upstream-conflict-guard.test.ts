@@ -436,14 +436,21 @@ const ACKNOWLEDGED_CONFLICTS = {
   //
   // SO THE DECISION IS ADOPT -- but start.sh and stop.sh are ONE PROTOCOL and must move together.
   // start.sh's new _service_live() decides 'already running' from the PIDFILE, and that is only sound
-  // because upstream also made stop.sh remove the pidfile ONLY AFTER the process is confirmed gone
-  // (the other half of 9d3b77f4, 43 insertions in scripts/stop.sh). OUR stop.sh is still the merge-base
-  // version: it does `kill` and then `rm -f` the pidfile immediately, without waiting for exit. Taking
-  // start.sh alone would therefore hand the new liveness check a pidfile that is already gone while the
-  // old process is still winding down -- the update finalizer runs stop.sh then start.sh back to back,
-  // which is exactly the sequence upstream's comment says it fixed. scripts/stop.sh does NOT conflict
-  // (our side is unmodified), so nothing forces it to be looked at -- which is precisely why it is
-  // named here.
+  // if stop.sh removes the pidfile ONLY AFTER the process is confirmed gone (the other half of
+  // 9d3b77f4, 43 insertions in scripts/stop.sh).
+  //
+  // PREMISE CORRECTED (card 4276708e, Cybersec finding 4b). This comment used to say "OUR stop.sh is
+  // still the merge-base version ... it does `kill` and then `rm -f` the pidfile immediately". That
+  // is BACKWARDS, measured against the merge base: scripts/stop.sh is +43/-2 on the fork side, a
+  // strict SUPERSET that ALREADY carries both halves -- the system-scope-first branch and the
+  // wait-for-exit loop -- and the single most important line it REMOVES is exactly the dangerous
+  // early `rm -f "$pidfile"`. In other words the fork independently fixed the race upstream fixed.
+  //
+  // The conclusion (treat the pair as one protocol) survives the correction; the reasoning does not,
+  // and leaving it inverted was the actual hazard: a later reader acting on "our stop.sh is
+  // unmodified, align it to upstream" would overwrite the confirmed-exit block with whatever
+  // upstream has, reintroducing the double-poller race this pair exists to prevent. scripts/stop.sh
+  // does NOT conflict, so nothing forces anyone to look at it -- which is why it is named here.
   'scripts/start.sh':
     'ADOPT upstream wholesale for the OS-dispatch region (our Linux branch is byte-identical to the ' +
     'merge base, so this is a clean take, not authorship): the flock+pidfile idempotent launch, the ' +

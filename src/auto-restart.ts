@@ -31,6 +31,12 @@ export function mainRestartMechanism(launchctlPresent: boolean): MainRestartMech
   return launchctlPresent ? 'launchd' : 'tmux-respawn'
 }
 
+/** Accepted range for openQuestionDeferralCapHours (card 4276708e). Out-of-range values fall back to
+ *  the default rather than being clamped: a clamp would silently honour half of a wrong number,
+ *  while a fallback keeps the effective value equal to a value someone actually chose. */
+export const OPEN_QUESTION_DEFERRAL_CAP_MIN_HOURS = 1
+export const OPEN_QUESTION_DEFERRAL_CAP_MAX_HOURS = 168
+
 export interface AutoRestartConfig {
   /** Master toggle. When false the agent is never auto-restarted. */
   enabled: boolean
@@ -86,9 +92,16 @@ export function normalizeAutoRestartConfig(raw: unknown): AutoRestartConfig {
   }
   // dailyTime takes precedence: never keep both, so the schedule is unambiguous.
   if (dailyTime !== null) intervalHours = null
+  // Card 4276708e, Cybersec finding 4a: bounded at BOTH ends. `> 0` plus Number.isFinite let
+  // 1e9 hours through -- a cap that large is not a cap, it is "defer forever", which is exactly the
+  // state the deferral override exists to end. A week is the outer edge of a defensible wait for an
+  // owner's answer; anything beyond it is a typo or a misunderstanding, and silently honouring it
+  // would pin an agent indefinitely while the config still read as "capped".
   let openQuestionDeferralCapHours = OPEN_QUESTION_DEFERRAL_CAP_HOURS
   if (typeof o.openQuestionDeferralCapHours === 'number' &&
-      Number.isFinite(o.openQuestionDeferralCapHours) && o.openQuestionDeferralCapHours > 0) {
+      Number.isFinite(o.openQuestionDeferralCapHours) &&
+      o.openQuestionDeferralCapHours >= OPEN_QUESTION_DEFERRAL_CAP_MIN_HOURS &&
+      o.openQuestionDeferralCapHours <= OPEN_QUESTION_DEFERRAL_CAP_MAX_HOURS) {
     openQuestionDeferralCapHours = o.openQuestionDeferralCapHours
   }
   return {
