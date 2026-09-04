@@ -5769,3 +5769,47 @@ egy általános olvasó végpont szerződését nem szabad egy widget tartomány
 **Ki döntött:** fullstack (mérés + implementáció), Peti (csúszka-igény + takarítás), MikroB (a
 sorrendi pontosítás: előbb guard, csak utána takarítás).
 **Hivatkozás:** kártya `4c5c540c`; `vitest.config.ts`, `src/__tests__/setup/isolate-local-llm-state.ts`.
+
+## 2026-09-04 -- 74181db2 -- A kimenő-szöveg kapu eléri a role-ügynököket, de kill-switch mögött, alapból kikapcsolva
+
+**Döntés (MikroB, kártya-komment 19349).** Az `outgoing-copy-gate.py` bekerül a
+role-ügynökök hook-készletébe egy `Bash` matcheren, és megtanul felismerni egy
+Telegram Bot API küldést a Bash-parancson belül. Az egész egy env-kapcsoló mögött
+van (`OUTGOING_COPY_GATE_TELEGRAM_BASH`), ami **alapértelmezetten KI**.
+
+**Miért.** A kapu ma csak a fő ügynök sessionjére áll: mind a 15 role-ügynök
+settings-fájljában NULLA az `outgoing-copy-gate` előfordulás, tehát a CLAUDE.md
+helyesírási szabálya ("a flotta MINDEN ügynökére áll") náluk kizárólag fegyelemmel
+érvényesült. Az EMAIL-oldalon nincs teendő: az `email-send-gate.mjs` minden nem-fő
+ügynöknek keményen tiltja a küldést, tehát nincs mit ellenőrizni.
+
+**Amit a terv-fázisú grilling megbuktatott, MIELŐTT kód készült.** MikroB első
+feltétele az volt, hogy a matcher CSAK a `mcp__plugin_telegram_telegram__reply`
+hívásra szűküljön. Ez bizonyíthatóan no-op lett volna: a role-ügynökök ezt a toolt
+nem tudják hívni (mind a 15-nél `telegram@claude-plugins-official: false`, és
+`--channels` nélkül indulnak, `agent-worker.ts:458`), tehát a kapu tool-név szerinti
+ága náluk halott kód. Az egyetlen tényleges útjuk a `telegram-reply-fallback` skill
+által dokumentált nyers Bot API curl -- amin semmi nem futott, és amit a kapu Bash-ága
+sem nézett (az az EMAIL-detektor).
+
+**Elvetett alternatívák.**
+- *(2) Kimondani, hogy szándékos, és csak dokumentálni.* Védhető volt: a role-ügynökök
+  szokásos útja MikroB csatornáján megy tovább, ami már fedett. Elvetve, mert a
+  strukturális védelem olcsóbban megkapható, mint amennyit a fegyelemre hagyás ér.
+- *(3) A skillbe tett kötelező lépés.* Fegyelem, nem szerkezet (6. kódminőségi elv).
+
+**A mért ár, ami a kapcsolót indokolja.** Egy IRRELEVÁNS Bash-hívásra a valódi kapun,
+15 mintából: min 22,4 ms / medián 23,5 ms / max 26,4 ms (loadavg 9,14). Ezt minden
+role-ügynök MINDEN Bash-hívása fizetné. Ezért a kapcsoló nem csak a hook korai
+kilépését vezérli, hanem magát a BEKÖTÉST is: kikapcsolva a hook be sem kerül a
+settingsbe, tehát nulla a költség, nem 23 ms "eldönteni, hogy ne csináljunk semmit".
+
+**Következmények.**
+- A kapcsoló KÉT irányban működik: kikapcsolva a javító-kör (`ensureGovernanceGateCommands`)
+  el is TÁVOLÍTJA a korábban bedrótozott bejegyzést, különben az "alapból ki" csak friss
+  telepítésre igaz.
+- A Telegram-ág FAIL-OPEN marad (olvashatatlan törzsnél is), egyezően a meglévő MCP-ág
+  indoklásával: a Telegram a tulajdonos egyetlen felügyeleti csatornája, ott a némulás
+  drágább, mint egy átcsúszott ékezet. Az EMAIL-ág fail-closed marad.
+- Az env-változó szándékosan a `<GUARD>=off` konvenció INVERZE: itt a nem-beállított
+  érték jelenti a KI-t.

@@ -37,6 +37,18 @@ export const KNOWN_HOOK_SCRIPTS: readonly string[] = [
   'inbox-drain.py',
   'channel-inbox-drain.py',
   'ledger-capture.py',
+  // Card 74181db2: this app now registers the outgoing-copy-gate into ROLE agents'
+  // settings too (it used to reach only the main agent's, which is written from
+  // templates/settings.json.template rather than from here).
+  //
+  // NOT the only Bash-matcher gate missing from this list -- egress-gate,
+  // kanban-write-gate, git-protect-guard, npm-protect-guard, cd-chain-guard,
+  // noisy-command-guard, blast-radius-guard, symlinked-node-modules-guard and
+  // pentest-tool-install-guard are absent too, and that is a PRE-EXISTING gap, not one
+  // this card introduces. It fails in the harmless direction (an unlisted entry reads
+  // as foreign, so it is KEPT rather than pruned), which is why it has gone unnoticed;
+  // closing it for the others belongs on its own card, not in this diff.
+  'outgoing-copy-gate.py',
 ]
 
 // Path fragment that marks a checkout as an agent worktree. Kept

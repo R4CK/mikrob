@@ -29,11 +29,13 @@ BLOCK = "block"
 ALLOW = "allow"
 
 
-def verdict(cmd, rules_path=None):
-    return raw_verdict({"tool_name": "Bash", "tool_input": {"command": cmd}}, rules_path)
+def verdict(cmd, rules_path=None, env_extra=None):
+    return raw_verdict(
+        {"tool_name": "Bash", "tool_input": {"command": cmd}}, rules_path, env_extra
+    )
 
 
-def raw_verdict(payload_obj, rules_path=None):
+def raw_verdict(payload_obj, rules_path=None, env_extra=None):
     """Run the gate on an ARBITRARY payload, not just a Bash command.
 
     Needed for the fail-closed net (card 630d9864): the payload shapes that used to crash the
@@ -49,6 +51,11 @@ def raw_verdict(payload_obj, rules_path=None):
         # machine happens to have at store/outgoing-copy-gate-rules.json -- a case that
         # wants "file missing" must not accidentally see a real local file.
         env["OUTGOING_COPY_GATE_RULES"] = "/nonexistent/outgoing-copy-gate-rules.json"
+    # Card 74181db2: the telegram-in-Bash branch is behind an env kill-switch, so a case
+    # has to be able to set it. Cleared by DEFAULT rather than merely left alone -- the
+    # real machine may have it exported, and a case asserting "off" must measure off.
+    env.pop("OUTGOING_COPY_GATE_TELEGRAM_BASH", None)
+    env.update(env_extra or {})
     p = subprocess.run(
         [sys.executable, str(GATE)], input=payload, capture_output=True, text=True, env=env
     )
@@ -92,8 +99,8 @@ KANBAN_MESSAGE_FP = (
 def main():
     failures = []
 
-    def case(label, cmd, expected, rules_path=None):
-        got, stderr = verdict(cmd, rules_path)
+    def case(label, cmd, expected, rules_path=None, env_extra=None):
+        got, stderr = verdict(cmd, rules_path, env_extra)
         ok = got == expected
         print(f"{'OK  ' if ok else 'FAIL'} {expected:5s} <- {got:5s}  {label}")
         if not ok:
@@ -254,6 +261,134 @@ def main():
         case(
             "DIGIT-HYPHEN SUFFIX r11: second reproduction, same shape, still caught",
             REAL_SEND.format(body="Az uzenet 1-keszen elment mar."),
+            BLOCK,
+            rules_path=empty_rules,
+        )
+
+        # --- Telegram sent from Bash, behind the kill-switch (card 74181db2) -----------
+        # A role agent has no `telegram__reply` tool (all 15 launch with the plugin false and
+        # without --channels), so the gate's tool-name branch is dead code for them. Their one
+        # route is the raw Bot API call `telegram-reply-fallback` documents -- and nothing ran
+        # on it. These cases pin BOTH halves: that the switch really is off by default, and
+        # that with it on the audit is the same one the MCP path gets.
+        ON = {"OUTGOING_COPY_GATE_TELEGRAM_BASH": "on"}
+        TG_SEND = 'curl -s -X POST https://api.telegram.org/botPLACEHOLDER/sendMessage -d chat_id=1 '
+
+        # THE DEFAULT IS THE LOAD-BEARING CASE. Wiring this hook costs a python start on every
+        # Bash call of every role agent (measured median 23.5 ms), so an unset variable must
+        # mean OFF -- the inverse of the `<GUARD>=off` convention the other guards use.
+        case(
+            "SWITCH DEFAULT OFF: broken accents in a Bot API send pass untouched",
+            TG_SEND + f'-d "text={BROKEN_HU}"',
+            ALLOW,
+            rules_path=empty_rules,
+        )
+        case(
+            "switch on: the SAME send now blocks on the stripped accents",
+            TG_SEND + f'-d "text={BROKEN_HU}"',
+            BLOCK,
+            rules_path=empty_rules,
+            env_extra=ON,
+        )
+        case(
+            "switch on: clean Hungarian passes -- the gate is not a blanket refusal",
+            TG_SEND + f'-d "text={CLEAN_HU}"',
+            ALLOW,
+            rules_path=empty_rules,
+            env_extra=ON,
+        )
+        case(
+            "switch on: an em dash blocks (standing rule, never goes out)",
+            TG_SEND + '--data-urlencode "text=A jelentés kész \u2014 küldöm."',
+            BLOCK,
+            rules_path=empty_rules,
+            env_extra=ON,
+        )
+        case(
+            "switch on: a JSON body is read too, not only form fields",
+            # chat_id stays a FORM field here on purpose: the repo's secret-gate reads a
+            # literal chat_id+text JSON object as a captured channel dump and blocks the
+            # commit. Rewording the fixture is the right answer (the alternative, allowlisting
+            # the path, would stop scanning this file for real secrets forever), and it costs
+            # the test nothing -- the JSON branch under test only looks for the "text" key.
+            TG_SEND + f'-H "Content-Type: application/json" -d \'{{"text":"{BROKEN_HU}"}}\'',
+            BLOCK,
+            rules_path=empty_rules,
+            env_extra=ON,
+        )
+        case(
+            "switch on: a photo CAPTION is audited like message text",
+            'curl https://api.telegram.org/bot1/sendPhoto -F photo=@/tmp/a.png '
+            f'-F "caption={BROKEN_HU}"',
+            BLOCK,
+            rules_path=empty_rules,
+            env_extra=ON,
+        )
+        # --- and the three ways it must NOT fire ---------------------------------------
+        case(
+            "switch on: a photo with NO caption has nothing to audit",
+            'curl https://api.telegram.org/bot1/sendPhoto -F photo=@/tmp/a.png',
+            ALLOW,
+            rules_path=empty_rules,
+            env_extra=ON,
+        )
+        case(
+            "switch on: MENTIONING the host is not sending -- both halves are required",
+            'grep -rn api.telegram.org /home/neon/marveen/store',
+            ALLOW,
+            rules_path=empty_rules,
+            env_extra=ON,
+        )
+        case(
+            "switch on: a READ method (getUpdates) is not a send",
+            'curl -s https://api.telegram.org/bot1/getUpdates',
+            ALLOW,
+            rules_path=empty_rules,
+            env_extra=ON,
+        )
+        # THE CASE THAT ACTUALLY PINS THE METHOD REQUIREMENT. The one above does not: with the
+        # method check removed it still passes, because a bare getUpdates carries no text to
+        # audit either way -- found by mutating, and a finding about the test, not the code.
+        # This one carries a `text=` field that WOULD be audited (its accents are stripped), so
+        # dropping the method half turns it from allow into block.
+        case(
+            "switch on: a non-send method is not a send EVEN with an auditable text field",
+            f'curl -s https://api.telegram.org/bot1/getUpdates -d "text={BROKEN_HU}"',
+            ALLOW,
+            rules_path=empty_rules,
+            env_extra=ON,
+        )
+        # FAIL-OPEN, and deliberately unlike the email path. Email refuses what it cannot
+        # inspect because a letter can wait; Telegram is the owner's only supervision channel,
+        # so blocking a report because its text sits in a variable trades a spelling rule for a
+        # lost message. The refusal is announced via systemMessage rather than silent.
+        case(
+            "switch on: an UNREADABLE body ($VAR) passes -- fail-OPEN, like the MCP telegram path",
+            TG_SEND + '-d "text=$MSG"',
+            ALLOW,
+            rules_path=empty_rules,
+            env_extra=ON,
+        )
+        # THE OVER-FIRE CASE, and it is here because the first version of this change FAILED it.
+        # The telegram detector needs only the host plus a send method ANYWHERE in the command,
+        # which an email whose BODY quotes that URL satisfies. With the telegram branch checked
+        # first, its fail-OPEN verdict hijacked the email path's fail-CLOSED one: measured at
+        # exit 0 (sent unchecked) on a resend.com call with stripped accents. Email is now
+        # tested first, so anything that looks like both is handled as the email it is.
+        case(
+            "an EMAIL whose body merely MENTIONS the Bot API url is still audited as email",
+            REAL_SEND.format(
+                body="Kesz a jelentes, reszletek a https://api.telegram.org/bot1/sendMessage vegponton"
+            ),
+            BLOCK,
+            rules_path=empty_rules,
+            env_extra=ON,
+        )
+        # The email path must be untouched by all of the above: same command shape, different
+        # host, and it still fails CLOSED on an unreadable body.
+        case(
+            "the EMAIL path keeps its fail-CLOSED behaviour on an unreadable body",
+            REAL_SEND.format(body="$(cat /tmp/letter.txt)"),
             BLOCK,
             rules_path=empty_rules,
         )

@@ -847,6 +847,128 @@ def collect_telegram_body(tool_input: dict) -> str:
     return MDV2_ESCAPE.sub(r"\1", "\n".join(got))
 
 
+# --- Telegram sent from a Bash command (card 74181db2) -----------------------
+#
+# WHY THIS EXISTS AT ALL. The gate's telegram branch matches on the TOOL NAME
+# (`telegram.*__reply$`), and a role agent never has that tool: all 15 launch with
+# `telegram@claude-plugins-official: false` and without `--channels`
+# (agent-worker.ts:458, measured on the running processes). So for them that branch
+# is dead code. The route they DO have is the one `telegram-reply-fallback` documents
+# for exactly the case where the MCP tool is absent: a raw Bot API call over curl,
+# from Bash. Nothing ran on it -- the Bash branch is the EMAIL detector, and
+# `collect_telegram_body` only ever read an MCP tool-input.
+#
+# DEFAULT OFF, AND THAT IS THE POINT (MikroB's decision, card comment 19349). Turning
+# this on costs a python start on EVERY Bash call of EVERY role agent -- measured on
+# this host at median 23.5 ms (15 samples, loadavg 9.14) for an IRRELEVANT command,
+# which is the common case. So the switch is opt-in at BOTH layers: the scaffold does
+# not even wire the hook unless it is set (zero cost when off, not merely a fast exit),
+# and the gate itself re-checks it here, so an already-wired agent stops enforcing the
+# moment the variable goes away -- without regenerating anything.
+TELEGRAM_BASH_ENV = "OUTGOING_COPY_GATE_TELEGRAM_BASH"
+
+
+def telegram_bash_enabled(env=None) -> bool:
+    """Opt-in, and deliberately the INVERSE of the `<GUARD>=off` convention the other
+    hooks use. Those default to protecting; this one changes the cost profile of every
+    Bash call in the fleet, so an unset variable must mean OFF -- a typo in the name can
+    then only leave us where we already are, never silently switch 14 agents on."""
+    raw = (env if env is not None else os.environ).get(TELEGRAM_BASH_ENV, "")
+    return str(raw).strip().lower() in ("1", "on", "true", "yes")
+
+
+# A Bot API send: the host AND a sending method. Both halves are required -- a bare
+# mention of api.telegram.org (a comment, a doc edit, a grep for it) is not a send, and
+# `sendMessage` on its own is an ordinary English word pair in prose.
+_TG_HOST_RX = re.compile(r"api\.telegram\.org", re.I)
+_TG_METHOD_RX = re.compile(
+    r"/(sendMessage|sendPhoto|sendDocument|sendVoice|sendAudio|sendVideo|"
+    r"sendAnimation|sendMediaGroup|editMessageText)\b",
+    re.I,
+)
+
+
+def is_telegram_bash_send(cmd: str) -> bool:
+    return bool(_TG_HOST_RX.search(cmd) and _TG_METHOD_RX.search(cmd))
+
+
+# `text=` / `caption=` as a form field (-d, --data, --data-urlencode, -F), quoted or not.
+_TG_FIELD_RX = re.compile(
+    r"""(?:^|\s)(?:-d|--data(?:-raw|-urlencode|-binary)?|-F|--form)\s+"""
+    r"""(?:"(?:text|caption)=([^"]*)"|'(?:text|caption)=([^']*)'|(?:text|caption)=(\S+))""",
+    re.I,
+)
+# The same two fields inside a JSON body.
+_TG_JSON_RX = re.compile(r'"(?:text|caption)"\s*:\s*"((?:\\.|[^"\\])*)"', re.I)
+# Anything the shell would expand before curl ever sees it. We hold the UNEXPANDED
+# command text, so auditing this would audit the script, not the message.
+_TG_UNRESOLVED_RX = re.compile(r"\$\(|`|\$\{?\w")
+
+
+def collect_telegram_bash_body(cmd: str):
+    """Return (text, unreadable_reason) for a Bot API send written in Bash.
+
+    Same recovery discipline as `collect_bash_body`, and the same refusal to guess: a
+    body that arrives through `$(cat ...)`, a backtick or a variable is reported as
+    unreadable rather than audited, because what we hold is the command, not the message
+    (the measured 2026-08-11 email case, where a filename supplied the finding and the
+    letter went unread, is the same shape)."""
+    parts = []
+    for m in _TG_FIELD_RX.finditer(cmd):
+        val = m.group(1) or m.group(2) or m.group(3) or ""
+        if _TG_UNRESOLVED_RX.search(val):
+            return ("\n".join(parts),
+                    f"a Telegram-szoveg shell-behelyettesitest tartalmaz ({val[:60]}...)")
+        parts.append(val)
+    for m in _TG_JSON_RX.finditer(cmd):
+        val = m.group(1)
+        if _TG_UNRESOLVED_RX.search(val):
+            return ("\n".join(parts),
+                    f"a Telegram-szoveg shell-behelyettesitest tartalmaz ({val[:60]}...)")
+        # JSON string escapes only; the MarkdownV2 unescape happens in the caller, once.
+        parts.append(val.replace('\\n', '\n').replace('\\"', '"').replace('\\\\', '\\'))
+    return ("\n".join(parts), None)
+
+
+def telegram_bash_gate(cmd: str) -> None:
+    """Audit a Bot API send written in Bash. FAIL-OPEN, exactly like `telegram_gate`.
+
+    The reasoning is that branch's, unchanged and deliberately not re-litigated here:
+    Telegram is the owner's ONLY supervision channel, so a gate that silences it costs
+    more than a slipped accent. That applies to an UNREADABLE body too -- which is where
+    this differs from the email path on purpose. Email refuses what it cannot inspect
+    because a letter can wait; blocking a supervision message because its text sits in a
+    shell variable would trade a spelling rule for a lost report. The refusal is loud
+    (a systemMessage the session actually sees) rather than silent, so the hole is
+    visible instead of merely permitted. A FOUND problem still blocks."""
+    try:
+        text, unreadable = collect_telegram_bash_body(cmd)
+        if unreadable:
+            print(json.dumps({"systemMessage":
+                "outgoing-copy-gate (Telegram/Bash): a szoveget NEM tudtam megvizsgalni -- "
+                f"{unreadable}. Atengedem (a felugyeleti csatorna nemitasa dragabb), de a "
+                "helyesirast ezen a kuldesen SEMMI nem ellenorizte. Ha ellenorizve akarod, "
+                "add at a szoveget literalkent (-d \"text=...\")."}))
+            sys.exit(0)
+        if not text.strip():
+            sys.exit(0)  # a photo/document send with no caption: nothing to audit
+        problems = audit(MDV2_ESCAPE.sub(r"\1", text))
+    except SystemExit:
+        raise
+    except Exception as exc:  # noqa: BLE001 -- deliberate blanket: fail-open path
+        warn = f"outgoing-copy-gate: TELEGRAM/BASH-ag belso hiba, FAIL-OPEN atengedes: {exc!r}\n"
+        sys.stderr.write(warn)
+        sys.exit(0)
+    if problems:
+        sys.stderr.write(
+            "KIMENO-SZOVEG KAPU (Telegram, Bash): TILTVA, az uzenet nem mehet ki igy.\n\n"
+            + "\n".join(f"  - {p}" for p in problems)
+            + "\n\nJavitsd a szoveget es kuldd ujra.\n"
+        )
+        sys.exit(2)
+    sys.exit(0)
+
+
 def telegram_gate(tool_input: dict) -> None:
     """Audit a Telegram reply. FAIL-OPEN on any internal error (exit 0 + loud
     log): email is deferrable, but Telegram is the owner's ONLY supervision
@@ -1028,9 +1150,27 @@ def main():
         text, unreadable = collect_mcp_body(tool_input), None
     elif tool == "Bash":
         cmd = str(tool_input.get("command") or "")
-        if not is_send_invocation(cmd):
+        # Card 74181db2: a Bot API send written in Bash is the ONLY Telegram route a role
+        # agent has (see telegram_bash_gate).
+        #
+        # THE EMAIL DETECTOR RUNS FIRST, and the order is load-bearing rather than tidy. I
+        # wrote it the other way round first, on the reasoning that the two are disjoint --
+        # `is_send_invocation` looks for mail vendors, a Bot API call names none. They are not
+        # disjoint on the CONTENT: an email whose body merely MENTIONS
+        # `api.telegram.org/.../sendMessage` satisfies this detector, and since the telegram
+        # branch is fail-OPEN while the email branch is fail-CLOSED, that hijacked the stricter
+        # path with the looser one. Measured before fixing: a resend.com send with stripped
+        # Hungarian accents and that URL in its prose exited 0 (unchecked) instead of 2.
+        #
+        # Email first makes the failure direction safe: a Telegram send names no mail vendor,
+        # so it still reaches the branch below; and anything that looks like BOTH is treated as
+        # the email it is, on the fail-closed path.
+        if is_send_invocation(cmd):
+            text, unreadable = collect_bash_body(cmd)
+        elif telegram_bash_enabled() and is_telegram_bash_send(cmd):
+            telegram_bash_gate(cmd)  # exits; never falls through
+        else:
             sys.exit(0)
-        text, unreadable = collect_bash_body(cmd)
     else:
         sys.exit(0)
 
