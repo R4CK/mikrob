@@ -5533,3 +5533,17 @@ upstream fájlon, és a hatályba lépéshez a `mikrob-channels` újraindítása
 igazítás azonnal hat, restart nélkül, és a kisebbséget hozza a többséghez.
 **Ki döntött:** backend (plan-grilling a 0264b294-en), MikroB jóváhagyására vár a gate-en.
 **Hivatkozás:** kártya 0264b294; a `buttons` fork-fejlesztés elvesztése külön kártyán: d6be510a.
+
+## 2026-09-04 09:45 -- A README fork-fejlesztés-bejegyzés formátuma: név + tömör leírás, semmi több (kártya 3eb0bbfc)
+
+**Döntés:** A `README.md` "Egyedi fork-fejlesztések (amiért külön fork)" szekciójának minden
+bejegyzése kizárólag a funkció NEVÉBŐL (rövid, félkövér) és egy tömör, önmagában érthető
+leírásból áll. Kikerül belőle: ki kérte, mikor, a kártya-ID, a fájlnév/sor/DB-mechanika és az
+indoklás-történet. A meglévő 77 bejegyzés át lett húzva erre a formátumra.
+**Miért:** Peti kifejezett kérése (2026-09-04, Telegram): a szekció túl részletes lett, a README-nek
+a MI-t kell mondania, nem a HOGYAN-t és a MIÉRT-et. A háttér nem vész el, a git-log és ez a
+`DECISIONS.md` őrzi. Mérve: a szekció 123 793 bájtról 20 364-re csökkent (83% kevesebb), miközben
+egyetlen valódi képesség sem tűnt el.
+**Ki döntött:** Peti (formátum), fullstack (végrehajtás).
+**Hivatkozás:** kártya `3eb0bbfc`; a `CLAUDE.md` "README karbantartás" szabály fork-fejlesztések
+pontja rögzíti a formátumot.
