@@ -1485,9 +1485,25 @@ export function saveMemory(
   topicKey?: string
 ): void {
   const now = Math.floor(Date.now() / 1000)
-  db.prepare(
+  const info = db.prepare(
     'INSERT INTO memories (chat_id, topic_key, content, sector, salience, created_at, accessed_at) VALUES (?, ?, ?, ?, 1.0, ?, ?)'
   ).run(chatId, topicKey ?? null, content, sector, now, now)
+  const id = Number(info.lastInsertRowid)
+
+  // Fire-and-forget embedding, the same shape saveAgentMemory already uses (card f27c999b,
+  // adopted from upstream). This path had none, so a row written here reached semantic search
+  // only after backfillEmbeddings() ran -- and that runs at STARTUP (index.ts), not on a timer.
+  //
+  // MEASURED before adopting, because the note that asked for this (and my own restatement of it)
+  // overstated the effect: 0 of 1509 rows on this install are unvectorised, including all 20
+  // nightly daily-log digest rows. The backfill is doing its job. What this fixes is the WINDOW,
+  // not a permanent hole: a memory written at 02:00 is unsearchable until the next restart, which
+  // can be a day away, and the guarantee currently depends on a sweep nobody schedules.
+  generateEmbedding(content).then(emb => {
+    if (emb) {
+      db.prepare('UPDATE memories SET embedding = ? WHERE id = ?').run(JSON.stringify(emb), id)
+    }
+  }).catch(() => {})
 }
 
 // Build a safe FTS5 MATCH expression from a free-form user query.
