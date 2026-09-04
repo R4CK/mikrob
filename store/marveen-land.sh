@@ -91,6 +91,14 @@ sync_live_install() {
 # branches, gate-AFTER-landing, and multi-card landings are the normal case, not the anomaly).
 # shellcheck source=./landing-downward-check.sh
 . "$(dirname "$0")/landing-downward-check.sh"
+# gate_verdict_check (card 9081d02d): shared with cleancore-land.sh, but run here in REPORT mode.
+# Marveen gates AFTER landing -- the root CLAUDE.md says "a visszaadott sha a Gate-SHA", i.e. the
+# sha a gate will judge is the one THIS script is about to produce -- so demanding a verdict up
+# front would deadlock every marveen landing rather than tighten it. Measured on the cards landed
+# 2026-09-04 (b3bf3cc2, d9b1b418, af5d3dbf): each was already an ancestor of origin/develop when
+# its gate ran. Same shape as downward_check above: shared code, different default.
+# shellcheck source=./landing-gate-verdict-check.sh
+. "$(dirname "$0")/landing-gate-verdict-check.sh"
 
 if [ "${1:-}" = "--selftest" ]; then
   fail=0; n=0
@@ -145,6 +153,10 @@ land_one() {
     echo "$agent: REFUSED -- commits belonging to OTHER cards are in $branch. Nothing merged, nothing pushed."
     return 4
   }
+
+  # Only when the caller NAMED the card -- without one there is no single card to ask about, since
+  # a marveen branch legitimately carries several. Report-only, for the reason in the source note.
+  if [ -n "$LAND_CARD" ]; then gate_verdict_check "$LAND_CARD" "$branch" report || true; fi
 
   local msg="merge: $branch into $DEFAULT_BRANCH (marveen-land, base @ $(git -C "$wt" rev-parse --short HEAD))"
   local merge_err
