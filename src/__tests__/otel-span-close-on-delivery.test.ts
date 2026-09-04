@@ -14,6 +14,9 @@
 // pin the statements rather than a restatement of them.
 import { describe, it, expect, beforeEach } from 'vitest'
 import Database from 'better-sqlite3'
+import { readFileSync } from 'node:fs'
+import { join } from 'node:path'
+import { REPO_ROOT } from './helpers/repo-location.js'
 
 type Status = 'ok' | 'error' | 'timeout' | 'running'
 let db: InstanceType<typeof Database>
@@ -27,6 +30,8 @@ const closeSpan = (t: string, s: string, endMs: number, st: Status): boolean =>
 const closeSpanIfOpen = (t: string, s: string, endMs: number, st: Status): boolean =>
   db.prepare('UPDATE otel_spans SET end_ms = ?, status = ? WHERE trace_id = ? AND span_id = ? AND end_ms IS NULL')
     .run(endMs, st, t, s).changes > 0
+
+const openSpanAt = (t: string, s: string, startMs: number): void => openSpan(t, s, startMs)
 
 const openSpan = (t: string, s: string, startMs: number): void => {
   db.prepare(
@@ -98,6 +103,53 @@ describe('otel_spans: the span closes at delivery (card dbc0b4bf)', () => {
 
   it('closing a span that does not exist reports false, so callers can tell the two apart', () => {
     expect(closeSpanIfOpen('NOPE', 'NOPE', 1, 'ok')).toBe(false)
+  })
+})
+
+describe('WHICH INTERVAL the span measures (Cybered NO-GO, comment 19920)', () => {
+  // Nothing pinned this before, and that is how it slipped: the span was opened with the TICK's
+  // clock, but stamping happens AFTER the sessionExists / isSessionReadyForPrompt checks, so the
+  // clock only started once the message was already deliverable. The queueing wait -- the entire
+  // quantity worth having -- was excluded, while four comments called it send->delivered latency.
+  //
+  // Measured on the live DB, 9330 traced deliveries: real wait averaged 1289.8s (worst 26576s),
+  // a tick-start span would have reported 1.8s (worst 544.9s). ~700x under on average, and always
+  // toward "healthy" -- in precisely the failure this table would be watched for.
+  //
+  // Cybered also measured that the swap left the suite 9/9 GREEN, i.e. the old tests pinned the
+  // CLOSING and not the REPORTING. That gap is what this block closes.
+
+  it('the reported duration is the FULL wait, not the tick fragment', () => {
+    const createdMs = 1_000_000
+    const deliveredMs = createdMs + 1_290_000 // ~21.5 min, the measured fleet average
+    openSpanAt('T-wait', 'S-wait', createdMs)
+    closeSpanIfOpen('T-wait', 'S-wait', deliveredMs, 'ok')
+    const span = spanOf('T-wait', 'S-wait')!
+    expect(span.end_ms! - createdMs).toBe(1_290_000)
+    // The number a tick-start clock would have produced instead, had the router stamped the span
+    // when it got round to the message rather than when the message was created.
+    expect(span.end_ms! - (deliveredMs - 1_800)).not.toBe(1_290_000)
+  })
+
+  it('the router opens the span at msg.created_at, NOT at the tick clock', () => {
+    // Source-level, because the statement above cannot see which value the router passes -- and
+    // that is exactly the substitution Cybered proved the suite could not detect.
+    const src = readFileSync(join(REPO_ROOT, 'src/web/message-router.ts'), 'utf-8')
+    const fn = src.slice(src.indexOf('function stampTraceOnMessage'))
+    const body = fn.slice(0, fn.indexOf('\n}'))
+    expect(body).toContain('start_ms: msg.created_at * 1000')
+    // The tick clock must not be what opens it. `nowMs` was the parameter that carried it.
+    expect(body).not.toMatch(/start_ms:\s*nowMs/)
+    expect(body).not.toMatch(/start_ms:\s*now\b/)
+    expect(body).not.toMatch(/start_ms:\s*Date\.now\(\)/)
+  })
+
+  it('the span start and the ABANDON clock speak about the same instant', () => {
+    // The abandon window already measures age as `now - msg.created_at * 1000`. If the span used a
+    // different origin, two mechanisms would disagree about how long the same message had waited.
+    const src = readFileSync(join(REPO_ROOT, 'src/web/message-router.ts'), 'utf-8')
+    expect(src).toContain('const ageMs = now - msg.created_at * 1000')
+    expect(src).toContain('start_ms: msg.created_at * 1000')
   })
 })
 
