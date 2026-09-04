@@ -29,13 +29,13 @@ BLOCK = "block"
 ALLOW = "allow"
 
 
-def verdict(cmd, rules_path=None, env_extra=None):
+def verdict(cmd, rules_path=None, env_extra=None, argv=None):
     return raw_verdict(
-        {"tool_name": "Bash", "tool_input": {"command": cmd}}, rules_path, env_extra
+        {"tool_name": "Bash", "tool_input": {"command": cmd}}, rules_path, env_extra, argv
     )
 
 
-def raw_verdict(payload_obj, rules_path=None, env_extra=None):
+def raw_verdict(payload_obj, rules_path=None, env_extra=None, argv=None):
     """Run the gate on an ARBITRARY payload, not just a Bash command.
 
     Needed for the fail-closed net (card 630d9864): the payload shapes that used to crash the
@@ -57,7 +57,8 @@ def raw_verdict(payload_obj, rules_path=None, env_extra=None):
     env.pop("OUTGOING_COPY_GATE_TELEGRAM_BASH", None)
     env.update(env_extra or {})
     p = subprocess.run(
-        [sys.executable, str(GATE)], input=payload, capture_output=True, text=True, env=env
+        [sys.executable, str(GATE), *(argv or [])],
+        input=payload, capture_output=True, text=True, env=env,
     )
     return (BLOCK if p.returncode == 2 else ALLOW), (p.stderr or "").strip()
 
@@ -99,8 +100,8 @@ KANBAN_MESSAGE_FP = (
 def main():
     failures = []
 
-    def case(label, cmd, expected, rules_path=None, env_extra=None):
-        got, stderr = verdict(cmd, rules_path, env_extra)
+    def case(label, cmd, expected, rules_path=None, env_extra=None, argv=None):
+        got, stderr = verdict(cmd, rules_path, env_extra, argv)
         ok = got == expected
         print(f"{'OK  ' if ok else 'FAIL'} {expected:5s} <- {got:5s}  {label}")
         if not ok:
@@ -297,6 +298,121 @@ def main():
             rules_path=empty_rules,
             env_extra=ON,
         )
+
+        # THE SWITCH HAS TO BE REACHABLE, not merely correct (Cybered F1 on this card). The
+        # process that DECIDES to wire the gate is the dashboard; the process that ENFORCES it
+        # is a hook inside an agent's tmux panel -- two different environments. A panel is
+        # started with `tmux new-session` against an ALREADY-RUNNING tmux server, so it
+        # inherits the server's startup environment, not the dashboard's, and only names in
+        # tmux `update-environment` ever refresh (this one is not among them). Measured on this
+        # host: the variable is absent in the new session even when it is set in the caller.
+        #
+        # So an env-ONLY check here would not fail safe, it would fail UNREACHABLE: the gate
+        # wired into 14 agents, a python start on every Bash call, a settings entry that reads
+        # as an armed control, and nothing enforced. The decision travels in the wired COMMAND
+        # instead; these two cases are what keep that true.
+        case(
+            "REACHABILITY: the flag alone enforces, with the variable absent from the environment",
+            TG_SEND + f'-d "text={BROKEN_HU}"',
+            BLOCK,
+            rules_path=empty_rules,
+            argv=["--telegram-bash"],
+        )
+        case(
+            "the flag is not a blanket refusal either: clean Hungarian still passes",
+            TG_SEND + f'-d "text={CLEAN_HU}"',
+            ALLOW,
+            rules_path=empty_rules,
+            argv=["--telegram-bash"],
+        )
+        case(
+            "and WITHOUT the flag the same send is untouched -- the default is still off",
+            TG_SEND + f'-d "text={BROKEN_HU}"',
+            ALLOW,
+            rules_path=empty_rules,
+        )
+
+        # --- F2: bash substitutes NOTHING inside single quotes ------------------------
+        # The unresolved-substitution check used to run on the extracted value whatever
+        # quoting it came from, so a backtick or a `$` inside '...' made the gate stand
+        # aside on a perfectly readable message. Measured on our own corpus: 189 of 1478
+        # messages in 7 days carry a backtick (12.8%) -- and our style rules ASK for
+        # backticked identifiers, so this is the normal way we write, not an edge case.
+        # The failure was fail-open and loud-ish ("nem tudtam megvizsgalni"), which is
+        # worse than it sounds: the reader learns that the message is routine.
+        case(
+            "F2: a backtick inside SINGLE quotes is a character, not a substitution",
+            TG_SEND + f"-d 'text={BROKEN_HU} Lasd a `store/x.sh` fajlt.'",
+            BLOCK, rules_path=empty_rules, argv=["--telegram-bash"],
+        )
+        case(
+            "F2: the same for $VAR inside single quotes",
+            TG_SEND + f"-d 'text={BROKEN_HU} A $HOME alatt.'",
+            BLOCK, rules_path=empty_rules, argv=["--telegram-bash"],
+        )
+        case(
+            "F2: and inside a single-quoted JSON body",
+            # No chat_id field here on purpose: `"chat_id": <n>` is how the repo's secret-gate
+            # recognises a pasted Telegram update dump, and it should keep doing so. TG_SEND
+            # already carries a realistic chat_id as a form field, and this case is about the
+            # TEXT extraction from a single-quoted JSON body, so the field adds nothing to it.
+            TG_SEND + "-H 'Content-Type: application/json' "
+            + f"""-d '{{"text":"{BROKEN_HU} Lasd a `x.sh`."}}'""",
+            BLOCK, rules_path=empty_rules, argv=["--telegram-bash"],
+        )
+        # THE OTHER HALF, which must not regress: inside "..." and in a bare word the shell
+        # DOES substitute, so those stay unreadable. Getting this direction wrong is how the
+        # sibling cd-chain-guard bug happened, in the mirror image.
+        case(
+            "F2 other half: $(...) inside DOUBLE quotes is still unreadable, still passes",
+            TG_SEND + '-d "text=$(cat body.txt)"',
+            ALLOW, rules_path=empty_rules, argv=["--telegram-bash"],
+        )
+        case(
+            "F2 other half: a bare unquoted $VAR is still unreadable",
+            TG_SEND + "-d text=$MSG",
+            ALLOW, rules_path=empty_rules, argv=["--telegram-bash"],
+        )
+        case(
+            "F2: clean Hungarian in single quotes is not blocked either",
+            TG_SEND + f"-d 'text={CLEAN_HU}'",
+            ALLOW, rules_path=empty_rules, argv=["--telegram-bash"],
+        )
+
+        # --- F3: an empty extraction is not always "nothing to audit" -----------------
+        # sendMessage and editMessageText make `text` MANDATORY in the Bot API, so an empty
+        # extraction there means the extraction FAILED -- typically a body passed as
+        # `-d @payload.json` or on stdin, which is not in the command at all. That used to
+        # exit 0 silently, indistinguishable from an irrelevant command, while the whole
+        # point of the fail-open design is that the hole is VISIBLE. For sendPhoto an empty
+        # caption is genuinely nothing to audit, and that must stay silent.
+        def says_unreadable(label, cmd, expected):
+            env = dict(os.environ)
+            env["OUTGOING_COPY_GATE_RULES"] = str(empty_rules)
+            env.pop("OUTGOING_COPY_GATE_TELEGRAM_BASH", None)
+            payload = json.dumps({"tool_name": "Bash", "tool_input": {"command": cmd}})
+            p2 = subprocess.run([sys.executable, str(GATE), "--telegram-bash"], input=payload,
+                                capture_output=True, text=True, env=env)
+            got = "systemMessage" in (p2.stdout or "")
+            ok = got == expected and p2.returncode == 0
+            print(f"{'OK  ' if ok else 'FAIL'} {'loud' if expected else 'quiet':5s} "
+                  f"<- {'loud' if got else 'quiet':5s}  {label}")
+            if not ok:
+                failures.append((label, f"loud={expected}, exit 0",
+                                 f"loud={got}, exit {p2.returncode}", p2.stderr))
+
+        says_unreadable(
+            "F3: sendMessage with the body in a file says so, instead of exiting silently",
+            TG_SEND + '-H "Content-Type: application/json" -d @payload.json',
+            True)
+        says_unreadable(
+            "F3: the same for a body on stdin (-d @-)",
+            TG_SEND + "-d @-",
+            True)
+        says_unreadable(
+            "F3 other half: a captionless sendPhoto stays silent -- there IS nothing to audit",
+            "curl -s -X POST https://api.telegram.org/botPLACEHOLDER/sendPhoto -F photo=@a.jpg",
+            False)
         case(
             "switch on: an em dash blocks (standing rule, never goes out)",
             TG_SEND + '--data-urlencode "text=A jelentés kész \u2014 küldöm."',

@@ -24,6 +24,7 @@ import {
   ensureOutgoingCopyGate,
   injectEmailSendGate,
   injectSelfPaceGate,
+  OUTGOING_COPY_GATE_FLAG,
 } from '../web/agent-scaffold.js'
 import { KNOWN_HOOK_SCRIPTS } from '../web/hook-registration-guard.js'
 import { MAIN_AGENT_ID, PROJECT_ROOT } from '../config.js'
@@ -70,6 +71,31 @@ describe('injection is idempotent and reversible', () => {
     const got = gateEntries(s)
     expect(got).toHaveLength(1)
     expect((got[0] as { matcher?: string }).matcher).toBe(OUTGOING_COPY_GATE_MATCHER)
+  })
+
+  // The wired command has to CARRY the decision, because the enforcing process cannot read it
+  // from the environment: agent panels are started with `tmux new-session` against an
+  // already-running tmux server and inherit the SERVER's startup environment, not this one.
+  // Without the flag the gate would be wired into 14 agents, cost a python start on every Bash
+  // call, look like an armed control in settings.json -- and enforce nothing (Cybered F1).
+  it('the wired command carries the decision as a flag, not only as an env var', () => {
+    const s: Record<string, unknown> = {}
+    injectOutgoingCopyGate(s)
+    const cmd = (gateEntries(s)[0] as { hooks: Array<{ command: string }> }).hooks[0].command
+    expect(cmd).toContain('outgoing-copy-gate.py')
+    expect(cmd).toContain(OUTGOING_COPY_GATE_FLAG)
+    // After the script path, so the hook's own `--status` dispatch on argv[1] is unaffected.
+    expect(cmd.indexOf(OUTGOING_COPY_GATE_FLAG)).toBeGreaterThan(cmd.indexOf('outgoing-copy-gate.py'))
+  })
+
+  it('the flag stays in step with the hook that reads it', () => {
+    const hook = readFileSync(
+      join(PROJECT_ROOT, 'scripts', 'hooks', 'outgoing-copy-gate.py'), 'utf-8')
+    expect(
+      hook,
+      'the hook must read the same flag string the wiring writes -- renaming one silently ' +
+        'disarms the gate while leaving it wired',
+    ).toContain(`TELEGRAM_BASH_FLAG = "${OUTGOING_COPY_GATE_FLAG}"`)
   })
 
   it('re-running does not accumulate duplicates (respawn re-runs the scaffold)', () => {
