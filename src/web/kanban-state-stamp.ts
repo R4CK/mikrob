@@ -15,6 +15,13 @@
 // the kanban-ref normalizer that already rewrites card references there for the same reason: code
 // enforcement of a convention agents otherwise have to hold in their heads.
 //
+// TWO CALLERS, AND THEY ARE NOT THE SAME (card 382dcb15, Cybered F1/F2). The POST path carries text an
+// AUTHOR wrote, so a stamp already in it is a re-send and must be left alone. The AUTO-dispatch path
+// (fireKanbanDispatch) composes its content from the card's own title and description, so its
+// "sender" is the system, not an author -- and a marker in that text is the CARD TALKING ABOUT
+// stamping, not a stamp. Those two need different idempotency answers, which is why there are two
+// entry points below; appendCardStateStampForDispatch carries the measured failure.
+//
 // WHAT IT IS NOT. The stamp is a STALENESS HINT, not an authorization or a lock. It says what the
 // board said at send time; the recipient still has to re-read the card before acting, which is why
 // the runbook rule ships with it rather than instead of it. It is also not a guarantee against a
@@ -31,9 +38,11 @@ export interface CardStateSnapshot {
 
 export type CardStateLookup = (idPrefix: string) => CardStateSnapshot | null
 
-/** Bare 8-hex tokens on a word boundary. Deliberately NOT anchored to `#`: a dispatch message names
- *  the card as `45331a93`, and by the time this runs the `#`-prefixed form has already been rewritten
- *  to `#<seq>` by normalizeKanbanRefs. */
+/** Bare 8-hex tokens on a word boundary, which covers BOTH callers -- deliberately not anchored to
+ *  `#`. On the POST /api/messages path the `#`-prefixed form has already been rewritten to `#<seq>` by
+ *  normalizeKanbanRefs before this runs, so what is left is bare. On the AUTO-dispatch path
+ *  normalizeKanbanRefs does NOT run at all (card 382dcb15, Cybered F3), so the id deliberately stays
+ *  in hex as `[Kanban feladat #a1b2c3d4]` -- the word boundary matches it straight through the `#`. */
 const HEX8_RE = /\b([a-f0-9]{8})\b/gi
 
 /** At most this many cards get a line. A message quoting a dozen ids is a report, not a dispatch,
@@ -53,8 +62,42 @@ export const CARD_STATE_MARKER = '[card-state @send]'
  */
 export function appendCardStateStamp(content: string, lookup: CardStateLookup): string {
   if (!content) return content
+  // Author-written text: a marker already present means this is a re-send, so leave it alone.
   if (content.includes(CARD_STATE_MARKER)) return content
+  return stampCards(content, lookup)
+}
 
+/**
+ * The AUTO-dispatch entry point -- the same stamp, WITHOUT the re-send guard.
+ *
+ * THE MEASURED FAILURE (card 382dcb15, Cybered F1). fireKanbanDispatch builds its message out of the
+ * card's own title and description. appendCardStateStamp's guard asks "does this content contain the
+ * marker?", and on this path the content is mostly text a card AUTHOR wrote -- so a card whose
+ * description merely MENTIONS `[card-state @send]` answered yes, and the dispatch went out silently
+ * unstamped.
+ *
+ * Not hypothetical, and worst exactly where it hurts: cards 382dcb15 and 790c962d both carry the
+ * marker in their descriptions, so the two cards most likely to be dispatched while someone works on
+ * this feature were the two that would not be stamped. An unstamped dispatch also silences the
+ * delivery-time note, which takes the send stamp as its input -- so the miss is invisible twice.
+ *
+ * The guard has nothing to do here: this path never re-sends. It composes fresh content from the
+ * board on every call, so a marker in that text is the card TALKING ABOUT stamping, never a stamp
+ * this code wrote.
+ *
+ * RESIDUAL, stated rather than quietly fixed: a description containing a full stamped LINE
+ * (`  <hex8> status=... updated_at=...`), not just the marker, will also be parsed by
+ * formatDeliveryStalenessNote, which scans the whole body. That can only add a spurious "changed"
+ * hint, never suppress a real one, and a hand-written message can do the same today -- so it is
+ * hint quality, not this card's defect.
+ */
+export function appendCardStateStampForDispatch(content: string, lookup: CardStateLookup): string {
+  if (!content) return content
+  return stampCards(content, lookup)
+}
+
+/** The stamping itself, shared by both entry points -- they differ ONLY in the re-send guard. */
+function stampCards(content: string, lookup: CardStateLookup): string {
   const seen = new Set<string>()
   const found: CardStateSnapshot[] = []
   for (const m of content.matchAll(HEX8_RE)) {

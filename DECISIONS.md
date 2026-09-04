@@ -5740,3 +5740,56 @@ azonnal visszatér (mert illeszkedik), a detonáló alak a futam + EGY nem illes
 **Hivatkozás:** kártya `98dbbcc9`; `scripts/name-pattern-tool.py` (+ selftest), `src/web/outgoing-name-patterns.ts`,
 `src/web/routes/name-patterns.ts`. A 0600 mód megtartása külön kikötés: `atomicWriteFileSync` csak
 akkor chmod-ol, ha a hívó átadja a módot (lásd a `1ce3fd90` tanulságát).
+
+## 2026-09-04 14:55 -- Az uzenet-backlog figyelo a `[session-stuck]` KIEGESZITESE, nem masodik csatorna (kartya 1e7ba5c1)
+
+**Döntés:** A `message-backlog-watcher` megmarad, de KIZÁRÓLAG kiegészítésként: hallgat minden olyan
+ügynökről, akiről a router az elmúlt órában már küldött `[session-stuck]` riasztást, és soha nem
+riaszt a fő-ügynökről. A küszöb továbbra is ÉLETKOR-alapú (nem darabszám), a cooldown ügynökönkénti,
+és a riasztás szövege attól függ, van-e élő panel.
+**Miért:** A kártya eredeti premisszája -- „a backlog végpontot senki nem figyeli" -- MÉRHETŐEN
+TÉVES volt, és ezt Cybered bizonyította: a `message-router.ts` már ma is küldi ugyanazt a riasztást
+ugyanabba a postaládába (174 db / 7 nap), méghozzá TÖBB információval, mert kiolvassa a panelt, és
+így meg tudja különböztetni a dolgozó ügynököt a beragadttól -- amit a sor önmagában nem tud. Az én
+REVIEW-m a router kommentjét idézte („the queue side alone cannot tell them apart"), de a sor ott nem
+ér véget: `; the pane can`. Az emitter ~100 sorral feljebb van ugyanabban a fájlban. A keresésem a
+scheduled-taskokra, a heartbeatre és a `fleet-nudger.sh`-ra terjedt ki, a folyamaton belüli
+watcher-ekre nem -- ott, ahol a fogyasztó ténylegesen él.
+**A maradék rés, ami VALÓS, és amiért a watcher mégis marad:** a router `agentStuckSince` térképe
+MEMÓRIÁBAN él, tehát egy dashboard-újraindítás nullázza, míg az üzenetek `created_at`-ja túléli. Egy
+újraindításon átnyúló, régi sor így teljesen kicsúszhat a `[session-stuck]` alól, mert az órát senki
+nem indítja újra egy már öreg sorra. Ezt a rést fedi le a watcher, és csak ezt.
+**Miért kötelező a fő-ügynök tiltása:** a riasztás CÍMZETTJE a fő-ügynök, tehát egy róla szóló
+riasztás pont abba a sorba kerül, amit leír, és a watcher a saját kimenetét kezdi mérni. Cybered
+visszajátszotta 7 valós napon: 57 riasztásból 11 volt ilyen, és a nyolcadik óránkénti ismétlésre a
+jelentett 11 pending sorból 7 a watcher saját gyártmánya lett volna. Mindkét szomszédos emitter
+(`formatStuckSessionAlert`, `notifyOrchestratorOfFailedHandoff`) ugyanígy tiltja, kiírt indokkal.
+**Ki döntött:** Cybered (mérés + NO-GO), MikroB (hatókör-döntés: kiegészítés, dedup-pal), backend2
+(implementáció).
+**Hivatkozás:** kártya `1e7ba5c1`, Cybered komment 19609, MikroB msg 22523;
+`src/web/message-backlog-watcher.ts`, `db.recentStuckAlertContents`.
+
+## 2026-09-04 14:55 -- Az auto-dispatch belyegzese KULON belepesi ponton megy, ujrakuldes-or nelkul (kartya 382dcb15)
+
+**Döntés:** A `fireKanbanDispatch` az `appendCardStateStampForDispatch`-et hívja, ami ugyanazt a
+bélyeget teszi ki, de a „már van benne marker -> ez újraküldés" őr NÉLKÜL. A `POST /api/messages` út
+változatlanul az őrzött `appendCardStateStamp`-et használja.
+**Miért:** Az őr a TELJES tartalmat vizsgálta (`content.includes(CARD_STATE_MARKER)`), a dispatch-út
+tartalma viszont a kártya saját címéből és leírásából áll össze. Egy olyan kártya tehát, aminek a
+leírása csak MEGEMLÍTI a `[card-state @send]` stringet, „igen"-t kapott, és a dispatch némán,
+bélyegzetlenül ment ki. Nem elméleti és pont ott a legrosszabb, ahol számít: a `382dcb15` (maga a
+bélyegzésről szóló kártya) és a `790c962d` leírása is tartalmazza a markert, tehát az a két kártya,
+amit ezen a feature-ön dolgozva a legvalószínűbben dispatchelnek, épp az a kettő volt, amit nem
+bélyegeztünk volna. És mivel a kézbesítés-kori lábléc a küldés-kori bélyeget veszi bemenetnek, a
+kimaradás kétszeresen láthatatlan.
+**Miért biztonságos az őrt elhagyni ezen az úton:** ez az út SOHA nem újraküldés -- minden híváskor
+frissen állítja össze a tartalmat a tábláról, tehát egy marker abban a szövegben a kártya, ami a
+bélyegzésről BESZÉL, nem egy bélyeg, amit ez a kód írt.
+**Ismert maradék, kimondva:** ha egy leírás nem csak a markert, hanem egy teljes bélyegzett SORT is
+tartalmaz, a `formatDeliveryStalenessNote` azt is beolvassa, mert az egész törzset pásztázza. Ez
+csak téves „változott" tippet adhat, valódit elnyomni nem tud, és egy kézzel írt üzenet ma is meg
+tudja tenni -- tehát tipp-minőségi kérdés, nem ennek a kártyának a hibája.
+**Ki döntött:** Cybered (F1 lelet), MikroB (jóváhagyás), backend2 (implementáció).
+**Hivatkozás:** kártya `382dcb15`, Cybered komment 19612; `src/web/kanban-state-stamp.ts`,
+`src/web/routes/kanban.ts`.
+

@@ -1,5 +1,5 @@
 import { randomUUID } from 'node:crypto'
-import { appendCardStateStamp } from '../kanban-state-stamp.js'
+import { appendCardStateStampForDispatch } from '../kanban-state-stamp.js'
 import { join } from 'node:path'
 import {
   listKanbanCards, createKanbanCard, updateKanbanCard,
@@ -228,7 +228,7 @@ async function fireKanbanDispatch(id: string, actor?: string | null): Promise<vo
     // The send stamp is also the PRECONDITION for the delivery-time footer: formatDeliveryStalenessNote
     // returns '' when the content carries no stamp, so without this an unstamped dispatch could never
     // tell its recipient that the card moved while it waited -- the exact failure this card is about.
-    createAgentMessage(MAIN_AGENT_ID, target, appendCardStateStamp(content, getKanbanCardStateByIdPrefix))
+    createAgentMessage(MAIN_AGENT_ID, target, appendCardStateStampForDispatch(content, getKanbanCardStateByIdPrefix))
     markKanbanCardDispatched(id)
     logger.info({ id, target, assignee: card.assignee }, 'Kanban in_progress dispatch fired')
   } catch (err) {

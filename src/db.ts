@@ -3746,6 +3746,24 @@ export function getPendingBacklogByAgent(): AgentBacklog[] {
     .sort((a, b) => b.oldestAgeSeconds - a.oldestAgeSeconds)
 }
 
+/**
+ * Contents of the `[session-stuck]` alerts the router has already sent about stuck agents.
+ *
+ * Card 1e7ba5c1 round 2 (Cybered F1): the message-backlog watcher is a SUPPLEMENT to that alert, not
+ * a second channel -- `[session-stuck]` fires on the same phenomenon with strictly more information
+ * (it reads the pane, so it can say busy vs idle, which the queue alone cannot). Measured: 174 of
+ * them in 7 days. The backlog watcher only speaks where that one has been silent, so this is the
+ * dedup input. Returning the raw text keeps the agent-name extraction in the watcher, next to the
+ * test that pins it against the router's own formatter.
+ */
+export function recentStuckAlertContents(sinceEpochSeconds: number): string[] {
+  const rows = db.prepare(
+    `SELECT content FROM agent_messages
+      WHERE from_agent = 'system' AND created_at >= ? AND content LIKE '[session-stuck]%'`,
+  ).all(sinceEpochSeconds) as { content: string }[]
+  return rows.map(r => r.content)
+}
+
 // Close a pending backlog that is NOT going to be delivered -- stale rows an
 // operator does not want the router to replay (an old thank-you note, a legal
 // warning whose content has since changed). Separate from markMessageDelivered
