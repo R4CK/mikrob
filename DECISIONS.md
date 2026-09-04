@@ -5627,3 +5627,60 @@ egyetlen valódi képesség sem tűnt el.
 **Ki döntött:** Peti (formátum), fullstack (végrehajtás).
 **Hivatkozás:** kártya `3eb0bbfc`; a `CLAUDE.md` "README karbantartás" szabály fork-fejlesztések
 pontja rögzíti a formátumot.
+
+---
+
+## 2026-09-04 -- 222fdc5e -- A drift-heartbeat a diverged HALMAZ változására riaszt, nem a darabszámára
+
+**Döntés.** Az `agent-skill-drift-sync.sh` minden futás végén egy verdikt-sort ad
+(`ALERT:no` / `ALERT:yes reasons=...`), és a hatóránkénti scheduled-task kizárólag erre a sorra
+figyel, nem a `stale`/`diverged` számokra. A diverged **halmazt** (nem a méretét) egy állapot-fájl
+őrzi (`store/agent-skill-drift-state.json`), és azt kizárólag az `--apply` futás lépteti tovább.
+
+**Miért.** Cybersec MEDIUM lelete a 13512bde-n: a feladat azt a szabályt kapta, hogy `stale=0 ÉS
+diverged=0` esetén hallgasson. Az élő állandósult állapot viszont **mérten** `current=93 stale=0
+diverged=5` -- vagyis maga a RUTIN eset is `diverged>0`, tehát a feladat ugyanazt az öt sort küldte
+hatóránként, naponta négyszer, örökre. A diverged halmaz jogosan állandó (QA saját 84b304c1-es
+verdiktje szerint azok szándékos, értékes helyi bővítések). Két hét után senki nem olvassa -- és
+akkor sem, amikor végre változik. A hír tehát nem az, hogy VAN diverged, hanem hogy MEGVÁLTOZOTT.
+
+**Miért halmaz és nem darabszám.** Egy darabszám nem lát egy cserét: ha egy bejegyzés eltűnik és egy
+másik megjelenik, a szám azonos marad, miközben valódi változás történt. A selftest ezt konkrétan
+pinneli: egy fixture-swap után a mért darabszám **változatlan** (3), és a gate mégis riaszt.
+
+**A sérült alapvonal szándékosan RIASZT, nem `die`-ol.** A ház-precedens
+(`store/cleancore-main-suite-guard.sh`, kártya 6d46c7d3) meghal egy sérült állapot-fájlon, és jól
+teszi: az egy KAPU, és egy kapu, ami nem tud összehasonlítani, nem mondhat verdiktet. Ez viszont egy
+RIASZTÓ eszköz, aminek a szerződésében `exit 0` áll -- ha meghalna, magával vinné a hatóránkénti
+szinkront is. Ugyanaz az elv, fordított mechanizmus: ha nem tudjuk BIZONYÍTANI, hogy rutin, akkor azt
+mondjuk, hogy nem rutin. Fordítva soha. Ugyanezért kapott verdikt-sort a "nincs agents könyvtár" ág
+is: az azt jelenti, hogy a szkennelés SEMMIT nem nézett meg, és a néma visszatérés
+megkülönböztethetetlen lett volna a rutintól.
+
+**Elfogadott kockázat, kimondva.** Az alapvonal akkor lép tovább, amikor egy `--apply` futás
+ÉSZLELI a változást, nem akkor, amikor az értesítés bizonyítottan megérkezett. Ha a Telegram-küldés
+elbukik, az az egy változás nem hangzik el újra. Ezért az állapot-fájl eltárolja a `previousList` és
+`changedAt` mezőt, így a következő futás kimenete még mindig megmutatja, mi mozdult és mikor --
+látható, csak nem riaszt újra. Az alternatíva (az alapvonalat egy explicit nyugtázásig tartani) a
+nyugtázást visszatenné a prompt-rétegbe, márpedig épp ott bukott meg a szabály legelőször.
+
+**A dry-run nem ír alapvonalat.** Aki csak ránéz, ne fogyassza el azt a változást, amit a következő
+valódi futásnak kellene bejelentenie.
+
+**Verziókövetés (a lelet másik fele).** A feladat `~/.claude/scheduled-tasks/` alatt élt, de
+`seed-scheduled-tasks/` alatt nem, tehát egy újratelepítés után csendben eltűnt volna. Bekerült
+(f2a14f91 / 38eb6971 mintája). **Mérve, hogy ez önmagában NEM elég:** az `update.sh` seedelő ága
+kihagyja a már létező cél-könyvtárat, a `refresh_untouched_seeds` pedig csak azt frissíti, ami
+byte-azonos egy korábban KIADOTT seed-verzióval -- az élő tartalom viszont sosem a seedből jött,
+tehát `KEPT` maradt volna és a javítás inert. Ezért az élő másolat a renderelt seeddel byte-azonosra
+lett írva; onnantól a meglévő mechanizmus magától szinkronban tartja.
+
+**Mellékesen mért, nem ezen a kártyán javítva:** a `.env`-ben nincs `CHAT_ID` (csak egy üres
+`ALLOWED_CHAT_ID`), miközben minden élő seedelt feladat konkrét `chat_id`-t használ. Egy mai
+`--reseed-fleet` tehát üres `chat_id`-vel renderelné mindegyiket. Ezért az élő másolat a MEGLÉVŐ,
+működő értéket kapta vissza, nem az `.env`-ből származót.
+
+**Az arbitrary-command teszt-hook lecserélve.** A TOCTOU-selftest egy környezeti változóból vett
+útvonalat FUTTATOTT az `--apply` úton -- amit mostantól egy felügyelet nélküli scheduled-task
+használ. A változó most egy skill-NEVET tartalmaz, amit a script ÖSSZEHASONLÍT, és egyetlen fix
+jelölő-szöveget ír; a teszt sosem igényelt többet ennél.
