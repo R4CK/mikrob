@@ -5518,3 +5518,18 @@ mutáció-eset pótlása).
 
 **Hivatkozás:** kártya `9c664b88` (QA FAIL komment); `scripts/hooks/cd-chain-guard.py`,
 `scripts/hooks/cd-chain-guard.selftest.py` (56 eset).
+
+## 2026-09-04 08:55 -- A `chat_id: 0` konvenciót megszüntetjük, nem implementáljuk (kártya 0264b294)
+
+**Döntés:** A `reply` tool `chat_id: 0` hívásait mindenhol a valós chat ID-re cseréljük, és NEM
+építünk a pluginba `0` -> fő-csatorna feloldást.
+**Miért:** A kártya kiinduló hipotézise (session-szintű kötés, amit az `update.sh` restartja
+elvesztett) nem áll: a plugin `assertAllowedChat()`-je feltétel nélküli, és `git log -S` szerint az
+upstream történetében soha nem létezett `0`-ra vonatkozó ág. Vagyis nem elveszett konvenció, hanem
+egy sosem implementált feltételezés. A hívói oldal ezt alátámasztja: 23 ütemezett feladat már a
+valós ID-t használja és működik, 5 használta a `0`-t és némán bukott. A plugin-oldali megvalósítás
+drágább és kockázatosabb lett volna (allowlist-közeli kód, fork-lokális szerkesztés egy KÖVETETT
+upstream fájlon, és a hatályba lépéshez a `mikrob-channels` újraindítása), miközben a doksi-oldali
+igazítás azonnal hat, restart nélkül, és a kisebbséget hozza a többséghez.
+**Ki döntött:** backend (plan-grilling a 0264b294-en), MikroB jóváhagyására vár a gate-en.
+**Hivatkozás:** kártya 0264b294; a `buttons` fork-fejlesztés elvesztése külön kártyán: d6be510a.
