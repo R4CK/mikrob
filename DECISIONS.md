@@ -5813,3 +5813,42 @@ settingsbe, tehát nulla a költség, nem 23 ms "eldönteni, hogy ne csináljunk
   drágább, mint egy átcsúszott ékezet. Az EMAIL-ág fail-closed marad.
 - Az env-változó szándékosan a `<GUARD>=off` konvenció INVERZE: itt a nem-beállított
   érték jelenti a KI-t.
+
+## 2026-09-04 -- 79f62fd7 -- A könnyű kártyák helyi modellel épülnek, de a fail-safe iránya MEGFORDUL
+
+**Döntés.** Új, dispatch-idejű osztályozó (`store/card-build-route.sh`) dönti el, hogy egy
+`planned` kártya első teljes draftját a helyi modell írja-e meg. Szerkezetében a
+`route-classify.sh` mintája (determinizmus, terelés-prefilter, ablakolt olvasás, saját
+audit-log, fail-fast), de a fail-safe iránya AZ ELLENKEZŐJE.
+
+**Miért fordul meg az irány.** A `route-classify.sh` egyetlen biztonsági tulajdonsága, hogy
+CSAK `LOCAL -> ONLINE` irányba tud tévedni: egy rossz válasz, egy megfagyott vagy hiányzó
+modell ott egy online draftot költ, lyukat soha nem nyit. Ez az osztályozó a MÁSIK irányba
+dönt -- az alapállapot ONLINE, és egy LOCAL verdikt gyengébb építőhöz visz munkát. Ezért itt
+MINDEN kétség ONLINE: kill-switch, olvashatatlan kártya, üres vagy túl hosszú szöveg,
+urgent/high prioritás, determinisztikus szókincs-kapu, `route-classify` SECURITY **vagy
+ABSTAIN**, a modell COMPLEX/BUSY/UNKNOWN válasza, hiányzó modell. LOCAL csak akkor, ha MINDEN
+fokozat igenlően átenged -- konjunkció, nem szavazás.
+
+**Amit a mérés megváltoztatott a terven.** A selftest a tábla 15 VALÓDI kártyáján fut, a
+modellt a legmegengedőbb válaszára (EASY) rögzítve -- így ami mégis ONLINE marad, azt a
+determinisztikus kapu fogta meg. Az első változat ezen **5 kártyát elengedett**: azok
+biztonsága kizárólag a 7B COMPLEX-válaszán állt, egy rossz húzásra a gyengébb építőhöz
+kerültek volna. A négy hiányzó osztály (pénz; tárolt-objektum integritás és presign;
+kliens-adta érték hitelessége; dokumentum-összeállítás) most NÉVVEL szerepel a kapuban, és a
+szám 0-ra ment. A selftest minden futáson kiírja ezt a számot.
+
+**Amit a kockázatból NEM szabad eltúlozni.** A LOCAL kártyát is az online szerep-ügynök
+építi -- a draftot átnézi és finomítja --, és ugyanúgy megy a QA+Cybersec gate-en. A
+hibamód tehát HORGONYZÁS (egy hihetőnek látszó rossz draft elfogadása), nem ellenőrizetlen
+kód. Ez valós, de más nagyságrend, és ez indokolja, hogy egyáltalán belevágjunk.
+
+**A legvalószínűbb bukás, amit a terv-fázisú grilling kihozott.** Nem a téves osztályozás,
+hanem hogy JÓL osztályoz és mégsem történik semmi: a heartbeat egy LLM által végrehajtott
+skill, a dispatch-szöveg tanács. Ezért a heartbeat 4b. lépése a KONKRÉT, futtatható
+`local-llm-rag.sh` parancssort viszi a dispatch-üzenetbe -- e nélkül a változás kívülről
+megkülönböztethetetlen lenne a no-op-tól.
+
+**Nyitva hagyva, szándékosan.** A `seed-scheduled-tasks/` alatti (verziókövetett) heartbeat
+kapta meg a 4b. lépést; a FUTÓ példány (`~/.claude/scheduled-tasks/`) nem. Az MikroB saját
+10 perces köre, a bekapcsolás időzítése az ő döntése.
