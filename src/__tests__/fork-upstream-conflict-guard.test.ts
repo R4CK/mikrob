@@ -358,7 +358,9 @@ const ACKNOWLEDGED_CONFLICTS = {
   'web/app.js':
     'STUB scaffold + 36 extracted web/app-*.js slices are authoritative; a conflicting upstream hunk must be diffed against its named slice file and only genuinely-new upstream behavior ported forward, never taken wholesale -- proven on the i18n-nav hunk (found + fixed one real gap: missing renderUpdatesVersion re-apply on language switch). Re-audited 2026-08-25 (card 9ef96512, blob c8c11f94): 3 upstream hunks, all in the loadOllamaModels / resetWizard / startup-init region (app-settings.js). Ported: (1) loadOllamaModels refactored to populate both optgroups (ollamaModelGroup edit-panel + agentModelOllamaGroup wizard -- wizard was missing local-model option entirely); (2) agentModelOllamaGroup added to wizard HTML (index.html); (3) resetWizard() now calls loadOllamaModels() (app-wizard.js); (4) loadOllamaModels() added to startup init (app-settings.js). No behavioral gap found in any other region. Re-audited 2026-09-02 (card 684dda18, blob e8c74d15): upstream diff since c8c11f94 has 3 hunks -- (1) activity-badge "thinking orb" spinner for state===working (app-activity.js): NOT a gap, the fork already signals "working" via a different mechanism (activity-badge.act-working has its own "breathing" pulse animation in style.css, card predates this) -- adding the orb on top would double-animate the same signal, skipped as redundant. (2) /api/context-guard-fed static badge on Agents-grid cards (app-agents.js): NOT a gap, the fork already has a strictly superior LIVE-POLLED per-agent context HUD (agentHudBlockHtml + GET /api/agent-hud poll, card e9504aba) with a bar + percentage + color tiers, upstream\'s is a page-load-only static badge -- fork mechanism supersedes it. (3) MiniMax direct-API model option (loadAvailableModels, mirrors the existing DeepSeek pattern, gated behind MINIMAX_API_KEY): a genuinely NEW, not-yet-adopted upstream feature needing a backend port too (src/web/routes/agents.ts models endpoint) -- this is an ADOPTION decision, not a passive conflict resolution, so it is NOT folded in here; opened as its own low-priority follow-up card (48565f81) for Peti to decide on. No further behavioral gap found in this increment. Remaining ~11k lines (other regions, prior to c8c11f94) still not yet hand-audited slice-by-slice.' +
     " Re-audited 2026-09-04 (card 740551e6, blob 102cd901): the increment since 1e87b1d9 is " +
-    "+282/-119 and is ONE coherent upstream change -- it DELETED the Activity page (nav entry, " +
+    "+282/-119 across 21 hunks, landed as two upstream commits on 2026-09-04 16:53 (c118ede2 #902 " +
+    "context-guard UI, 4408754b #882 agent-card + Activity retirement), and is ONE coherent upstream " +
+    "change -- it DELETED the Activity page (nav entry, " +
     "PAGE_HEADER_I18N row, startActivityPoll/stopActivityPoll/loadActivity, and the 8 activity.* " +
     "locale keys) and merged that content into the Team page, then added (a) agentActivityBodyHtml, " +
     "(b) a per-agent context-guard SETTINGS UI (setupContextGuardUI / updateContextGuardLiveStatus / " +
@@ -392,8 +394,10 @@ const ACKNOWLEDGED_CONFLICTS = {
   'web/style.css':
     'two independent additive hunks, no overlap: keep fork .agent-hud* rules AND upstream ' +
     '.agent-ctx-badge rules verbatim, both blocks, either order. ' +
-    "RE-MEASURED 2026-09-04 (card 740551e6, upstream blob a7fc0f2b): upstream added 65 lines and a " +
-    "naive selector COUNT looks alarming -- .team-node appears 16x on the fork side, 18x upstream. " +
+    "RE-MEASURED 2026-09-04 (card 740551e6, upstream blob a7fc0f2b): +65/-1, and the single removed " +
+    "line is a COMMENT -- no CSS rule was taken away, which is what makes the union safe here rather " +
+    "than merely convenient. A naive selector count still looks alarming and a " +
+    ".team-node appears 16x on the fork side, 18x upstream. " +
     "It is NOT a collision: the shared .team-node{} body is BYTE-IDENTICAL on both sides (extracted " +
     "and diffed), i.e. merge-base heritage, and every differing selector is additive on exactly one " +
     "side. Fork-only: .team-node.main.agent-card-running::after. Upstream-only: " +
@@ -861,11 +865,18 @@ const ACKNOWLEDGED_CONFLICTS = {
     "RE-MEASURED 2026-09-04 (card 740551e6, upstream blob 702bdb07): 1618 base keys, fork +525, " +
     "upstream +46, COLLISIONS STILL ZERO -- but the premise 'NEITHER SIDE REMOVED ANY' above is NO " +
     "LONGER TRUE, and that is the part worth reading. Upstream REMOVED 8 activity.* keys because it " +
-    "DELETED its Activity page and merged that content into the Team page. The fork still HAS that " +
-    "page (web/app-activity.js) and still references those keys -- measured 2, 6, 1 and 1 references " +
-    "in web/ outside the locale files. Direction unchanged, but the union is no longer symmetric: " +
-    "KEEP the fork's activity.* keys explicitly. Taking upstream's deletions would leave the fork's " +
-    "Activity page rendering raw key names.",
+    "DELETED its Activity page and merged that content into the Team page. Of the +46, NINETEEN " +
+    "arrived in this increment alone (14 of them agents.settings.ctx_guard_*) -- the rest predate the " +
+    "previous pin; both figures are correct, they just answer different questions, and the +46 is the " +
+    "one this union rule is about. The fork still HAS that page and still references all 8 removed " +
+    "keys: 16 references across web/index.html, web/app-activity.js and web/app-i18n-nav.js " +
+    "(re-counted over all eight keys -- an earlier note here quoted a four-key sample and read like a " +
+    "total). Direction unchanged, but the union is no longer symmetric: KEEP the fork's activity.* " +
+    "keys explicitly. Taking upstream's deletions would leave a LIVE fork page rendering raw key " +
+    "names. NOTE THE SCOPE: whether the fork should ALSO retire its Activity page is NOT a merge " +
+    "question and must not be settled inside a conflict resolution -- it is a working fork feature, " +
+    "so code-quality rule 5 makes it Peti's call. This entry only records that the merge does not " +
+    "decide it by default.",
   'web/lang/hu.js':
     "same as web/lang/en.js, measured identically (1590 base, +516 fork, +27 upstream, 0 collisions, " +
     "0 removals on either side). The two locale files are edited in lockstep by both sides, so a " +
