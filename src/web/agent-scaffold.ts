@@ -501,10 +501,22 @@ export function injectEmailSendGate(existing: Record<string, unknown>): void {
 // common case. Gating the INJECTION rather than only the hook's early exit is what
 // makes "off" cost nothing at all rather than 23 ms of deciding to do nothing.
 //
-// The gate re-checks the same variable at runtime (`telegram_bash_enabled`), so the
-// two layers disagree only in the safe direction: wired-but-unset is inert.
+// The two layers must not read the switch from two DIFFERENT environments. This process
+// (the dashboard) sees the variable; an agent's tmux panel does not, and cannot: panels are
+// started with `tmux new-session` against an already-running tmux server, so the session
+// inherits the SERVER's startup environment rather than this one (measured on this host --
+// only names in tmux `update-environment` refresh, and this is not one of them).
+//
+// An env-only check on the hook side therefore does not fail "safe", it fails UNREACHABLE:
+// switching the gate on would wire it into 14 agents, make every Bash call pay a python
+// start, present a settings entry that reads as an armed control -- and enforce nothing.
+// So the decision travels in the COMMAND this process writes (OUTGOING_COPY_GATE_FLAG),
+// which is the one channel the panel does see.
 export const OUTGOING_COPY_GATE_ENV = 'OUTGOING_COPY_GATE_TELEGRAM_BASH'
 export const OUTGOING_COPY_GATE_MATCHER = 'Bash'
+// Carried in the wired command so the enforcing process reads the SAME decision this one
+// made. Must stay in step with TELEGRAM_BASH_FLAG in scripts/hooks/outgoing-copy-gate.py.
+export const OUTGOING_COPY_GATE_FLAG = '--telegram-bash'
 
 // Deliberately the INVERSE of the `<GUARD>=off` convention the other guards use: an
 // unset variable means OFF. Those guards default to protecting, so a typo costs
@@ -527,8 +539,11 @@ export function injectOutgoingCopyGate(existing: Record<string, unknown>): void 
   const hooks = (existing.hooks && typeof existing.hooks === 'object'
     ? existing.hooks
     : (existing.hooks = {})) as Record<string, unknown>
-  const command = hookCommand(join(PROJECT_ROOT, 'scripts', 'hooks', 'outgoing-copy-gate.py'))
-  if (isUnsafeHookCommand(command)) return
+  const base = hookCommand(join(PROJECT_ROOT, 'scripts', 'hooks', 'outgoing-copy-gate.py'))
+  // Validate the bare command: isUnsafeHookCommand resolves the script path out of it, and
+  // that check should see exactly what it was written for, not a flag appended afterwards.
+  if (isUnsafeHookCommand(base)) return
+  const command = `${base} ${OUTGOING_COPY_GATE_FLAG}`
   const entry = {
     matcher: OUTGOING_COPY_GATE_MATCHER,
     hooks: [{ type: 'command', command, timeout: 10 }],

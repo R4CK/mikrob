@@ -41,13 +41,6 @@ export const KNOWN_HOOK_SCRIPTS: readonly string[] = [
   // settings too (it used to reach only the main agent's, which is written from
   // templates/settings.json.template rather than from here).
   //
-  // NOT the only Bash-matcher gate missing from this list -- egress-gate,
-  // kanban-write-gate, git-protect-guard, npm-protect-guard, cd-chain-guard,
-  // noisy-command-guard, blast-radius-guard, symlinked-node-modules-guard and
-  // pentest-tool-install-guard are absent too, and that is a PRE-EXISTING gap, not one
-  // this card introduces. It fails in the harmless direction (an unlisted entry reads
-  // as foreign, so it is KEPT rather than pruned), which is why it has gone unnoticed;
-  // closing it for the others belongs on its own card, not in this diff.
   'outgoing-copy-gate.py',
   // Card 83d970fa (QA, on the 0c66be37 gate): the ACKNOWLEDGED_CONFLICTS entry for this file
   // records a UNION with upstream, but the array carried only the fork's half -- the documented
@@ -71,6 +64,35 @@ export const KNOWN_HOOK_SCRIPTS: readonly string[] = [
   // rule would have nothing left to apply to. It applies AT MERGE TIME, when the scripts arrive with
   // it; see the invariant test, which executes this paragraph rather than restating it.
   'skill-usage-capture.py',
+
+  // Card 38c5e758: the nine Bash-matcher gates this app also writes. They were absent for a long
+  // time and the earlier comment here called that harmless, on the reasoning that an unlisted
+  // entry reads as foreign and is KEPT rather than pruned. Kept is right; harmless is only true
+  // for two of the nine, and the measurement says which:
+  //
+  //   node <missing>.mjs   -> exit 1  -- NOT a blocking status, so the gate silently does nothing
+  //   python3 <missing>.py -> exit 2  -- which is exactly the status PreToolUse treats as BLOCK
+  //
+  // The seven python gates are wired as a bare `python3 "<abs path>"` (unlike the staleness hook,
+  // which uses a `[ -f ... ] && exec` fail-open wrapper). So if one of those script files is not
+  // where the entry says -- an install moved, a path renamed, settings written by a different
+  // checkout -- that agent's EVERY Bash call is blocked, not degraded. And while the name is
+  // absent from this list, pruneStaleHookEntries reads the entry as foreign and refuses to touch
+  // it, so the block is permanent until somebody edits settings.json by hand.
+  //
+  // Listing them is therefore what makes the self-heal reach the case that actually hurts: the
+  // entry is removed on the next dashboard boot instead of wedging the pane. The existence
+  // invariant below (card 83d970fa) covers these automatically -- a name here must name a script
+  // that exists, so a future rename cannot leave a prunable ghost behind.
+  'egress-gate.mjs',
+  'kanban-write-gate.mjs',
+  'git-protect-guard.py',
+  'npm-protect-guard.py',
+  'cd-chain-guard.py',
+  'noisy-command-guard.py',
+  'blast-radius-guard.py',
+  'symlinked-node-modules-guard.py',
+  'pentest-tool-install-guard.py',
 ]
 
 // Path fragment that marks a checkout as an agent worktree. Kept

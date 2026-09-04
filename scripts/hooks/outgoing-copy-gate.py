@@ -911,13 +911,28 @@ def collect_telegram_body(tool_input: dict) -> str:
 # and the gate itself re-checks it here, so an already-wired agent stops enforcing the
 # moment the variable goes away -- without regenerating anything.
 TELEGRAM_BASH_ENV = "OUTGOING_COPY_GATE_TELEGRAM_BASH"
+# The wired command carries the decision as argv, because an environment variable cannot
+# reach here: agent panels are started with `tmux new-session` on an ALREADY-RUNNING tmux
+# server, and such a session inherits the SERVER's startup environment, not the caller's
+# (only names listed in tmux `update-environment` refresh, and this one is not among them).
+# So the process that decides to wire the gate writes the decision into the command it
+# writes, and this process reads it from there. The env var stays as a second route for
+# a manual run and for the tests.
+TELEGRAM_BASH_FLAG = "--telegram-bash"
 
 
-def telegram_bash_enabled(env=None) -> bool:
+def telegram_bash_enabled(env=None, argv=None) -> bool:
     """Opt-in, and deliberately the INVERSE of the `<GUARD>=off` convention the other
     hooks use. Those default to protecting; this one changes the cost profile of every
     Bash call in the fleet, so an unset variable must mean OFF -- a typo in the name can
-    then only leave us where we already are, never silently switch 14 agents on."""
+    then only leave us where we already are, never silently switch 14 agents on.
+
+    Reads argv FIRST (see TELEGRAM_BASH_FLAG): that is the only channel that actually
+    reaches an agent panel, so an env-only check would make the switch unreachable -- wired
+    into 14 agents, paying a python start on every Bash call, and enforcing nothing."""
+    args = sys.argv[1:] if argv is None else argv
+    if TELEGRAM_BASH_FLAG in args:
+        return True
     raw = (env if env is not None else os.environ).get(TELEGRAM_BASH_ENV, "")
     return str(raw).strip().lower() in ("1", "on", "true", "yes")
 
@@ -950,6 +965,58 @@ _TG_JSON_RX = re.compile(r'"(?:text|caption)"\s*:\s*"((?:\\.|[^"\\])*)"', re.I)
 _TG_UNRESOLVED_RX = re.compile(r"\$\(|`|\$\{?\w")
 
 
+# Methods where the Bot API makes the text field MANDATORY. For these an empty extraction
+# is not "nothing to audit" (a captionless photo), it is a FAILED extraction -- see F3.
+_TG_TEXT_REQUIRED_RX = re.compile(r"/(sendMessage|editMessageText)\b", re.I)
+# A body handed to curl from a file or stdin (`-d @payload.json`, `--data @-`). The text is
+# simply not in the command, so there is nothing to read and saying so is the honest answer.
+_TG_FILE_BODY_RX = re.compile(
+    r"(?:^|\s)(?:-d|--data(?:-raw|-urlencode|-binary)?|-F|--form)\s+@(\S+)")
+
+
+def _single_quoted_spans(cmd: str):
+    """Character ranges that sit inside '...'.
+
+    Bash substitutes NOTHING inside single quotes -- not `$VAR`, not `$(...)`, not a
+    backtick -- so text quoted that way is literal and perfectly readable. Treating it as
+    a substitution is what made the gate stand aside on roughly one message in seven
+    (measured: 189 of 1478 fleet messages carry a backtick, and our own style rules ask
+    for backticked identifiers). Inside "..." the shell DOES substitute, so those spans
+    are not literal and are skipped here on purpose.
+
+    Same discipline, opposite direction, as the cd-chain-guard lesson: a guard that reads
+    shell has to honour quote semantics, and only '...' is literal.
+    """
+    spans = []
+    i, n = 0, len(cmd)
+    while i < n:
+        ch = cmd[i]
+        if ch == "'":
+            j = cmd.find("'", i + 1)
+            if j == -1:  # unterminated: treat the remainder as quoted
+                spans.append((i + 1, n))
+                break
+            spans.append((i + 1, j))
+            i = j + 1
+        elif ch == '"':
+            j = i + 1
+            while j < n:
+                if cmd[j] == "\\":
+                    j += 2
+                    continue
+                if cmd[j] == '"':
+                    break
+                j += 1
+            i = j + 1
+        else:
+            i += 1
+    return spans
+
+
+def _in_single_quotes(pos: int, spans) -> bool:
+    return any(a <= pos < b for a, b in spans)
+
+
 def collect_telegram_bash_body(cmd: str):
     """Return (text, unreadable_reason) for a Bot API send written in Bash.
 
@@ -959,15 +1026,23 @@ def collect_telegram_bash_body(cmd: str):
     (the measured 2026-08-11 email case, where a filename supplied the finding and the
     letter went unread, is the same shape)."""
     parts = []
+    sq_spans = _single_quoted_spans(cmd)
     for m in _TG_FIELD_RX.finditer(cmd):
-        val = m.group(1) or m.group(2) or m.group(3) or ""
-        if _TG_UNRESOLVED_RX.search(val):
+        dq, sq, bare = m.group(1), m.group(2), m.group(3)
+        val = dq if dq is not None else (sq if sq is not None else (bare or ""))
+        # Only ask about substitution where the shell would actually perform one. The
+        # single-quoted group is literal by definition, so a backtick or a `$` in it is
+        # just a character in the message (F2).
+        if sq is None and _TG_UNRESOLVED_RX.search(val):
             return ("\n".join(parts),
                     f"a Telegram-szoveg shell-behelyettesitest tartalmaz ({val[:60]}...)")
         parts.append(val)
     for m in _TG_JSON_RX.finditer(cmd):
         val = m.group(1)
-        if _TG_UNRESOLVED_RX.search(val):
+        # The JSON body is usually written as -d '{...}', i.e. inside single quotes, so the
+        # same rule applies -- but the regex cannot see its own delimiter, so the position
+        # is checked against the command's quoting instead.
+        if not _in_single_quotes(m.start(1), sq_spans) and _TG_UNRESOLVED_RX.search(val):
             return ("\n".join(parts),
                     f"a Telegram-szoveg shell-behelyettesitest tartalmaz ({val[:60]}...)")
         # JSON string escapes only; the MarkdownV2 unescape happens in the caller, once.
@@ -996,6 +1071,22 @@ def telegram_bash_gate(cmd: str) -> None:
                 "add at a szoveget literalkent (-d \"text=...\")."}))
             sys.exit(0)
         if not text.strip():
+            # An empty extraction means two very different things depending on the method.
+            # For sendPhoto/sendDocument there may genuinely be no caption. For sendMessage
+            # and editMessageText the Bot API REQUIRES the text field, so empty means the
+            # extraction failed -- typically a body handed over as `-d @payload.json` or on
+            # stdin, which is not in the command at all. That belongs on the loud path, not
+            # on a silent exit that looks identical to an irrelevant command (F3).
+            if _TG_TEXT_REQUIRED_RX.search(cmd):
+                at = _TG_FILE_BODY_RX.search(cmd)
+                why = (f"a torzs fajlbol/stdinbol jon ({at.group(1)[:40]}), tehat a szoveg "
+                       "nincs benne a parancsban") if at else (
+                       "a metodus kotelezove teszi a szoveget, de nem tudtam kinyerni")
+                print(json.dumps({"systemMessage":
+                    "outgoing-copy-gate (Telegram/Bash): a szoveget NEM tudtam megvizsgalni -- "
+                    f"{why}. Atengedem (a felugyeleti csatorna nemitasa dragabb), de a "
+                    "helyesirast ezen a kuldesen SEMMI nem ellenorizte. Ha ellenorizve akarod, "
+                    "add at a szoveget literalkent (-d \"text=...\")."}))
             sys.exit(0)  # a photo/document send with no caption: nothing to audit
         problems = audit(MDV2_ESCAPE.sub(r"\1", text))
     except SystemExit:
@@ -1349,8 +1440,10 @@ def main():
 
 
 if __name__ == "__main__":
-    # --status is a READ-ONLY posture readout, not a hook path: PreToolUse never passes
-    # argv, so this cannot collide with the gate's real job.
+    # --status is a READ-ONLY posture readout. PreToolUse DOES pass argv now (the wired
+    # command carries TELEGRAM_BASH_FLAG), so this checks argv[1] for --status specifically
+    # rather than merely for the presence of arguments -- `... outgoing-copy-gate.py
+    # --telegram-bash` must take the gate path, not print a report and exit 0.
     if len(sys.argv) > 1 and sys.argv[1] == "--status":
         print(status_report())
         sys.exit(0)
