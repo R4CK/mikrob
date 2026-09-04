@@ -15,7 +15,7 @@ import { CONTENT_SECURITY_POLICY } from './web/csp.js'
 import { json } from './web/http-helpers.js'
 import { detectLanIp } from './web/network-info.js'
 import { AGENTS_BASE_DIR, listAgentNames, listAllAgentNames } from './web/agent-config.js'
-import { ensureAgentHooks, ensureAgentStalenessHook, ensureEgressGate, ensureNpmProtectGuard, ensureBlastRadiusGuard, ensurePentestToolInstallGuard, ensureSymlinkedNodeModulesGuard, ensureTaskstateReplayMatcher, ensureGovernanceGateCommands, ensureQuarantineReader, watchEgressAllowlistForReaderRender, ensureDefaultScheduledTasks, agentSettingsPath, ensureAutonomySection, ensureSkillsPathTrapSection } from './web/agent-scaffold.js'
+import { ensureAgentHooks, ensureAgentStalenessHook, ensureEgressGate, ensureNpmProtectGuard, ensureBlastRadiusGuard, ensurePentestToolInstallGuard, ensureSymlinkedNodeModulesGuard, ensureCdChainGuard, ensureTaskstateReplayMatcher, ensureGovernanceGateCommands, ensureQuarantineReader, watchEgressAllowlistForReaderRender, ensureDefaultScheduledTasks, agentSettingsPath, ensureAutonomySection, ensureSkillsPathTrapSection } from './web/agent-scaffold.js'
 import { shouldRegisterHooks, pruneStaleHooksFromSettingsFile } from './web/hook-registration-guard.js'
 import { refreshMarveenBotUsername } from './web/telegram.js'
 import { startMessageRouter } from './web/message-router.js'
@@ -568,6 +568,7 @@ export function startWebServer(port = 3420): http.Server {
       const blastGuardPatched: string[] = []
       const pentestGuardPatched: string[] = []
       const symlinkNmGuardPatched: string[] = []
+      const cdChainGuardPatched: string[] = []
       const taskstateMatcherPatched: string[] = []
       const pruned: string[] = []
       // Include the main agent (MAIN_AGENT_ID) so the voice hook is also seeded
@@ -591,6 +592,7 @@ export function startWebServer(port = 3420): http.Server {
         if (ensureBlastRadiusGuard(agentName)) blastGuardPatched.push(agentName)
         if (ensurePentestToolInstallGuard(agentName)) pentestGuardPatched.push(agentName)
         if (ensureSymlinkedNodeModulesGuard(agentName)) symlinkNmGuardPatched.push(agentName)
+        if (ensureCdChainGuard(agentName)) cdChainGuardPatched.push(agentName)
         if (ensureTaskstateReplayMatcher(agentName)) taskstateMatcherPatched.push(agentName)
         if (ensureGovernanceGateCommands(agentName)) govPatched.push(agentName)
         ensureQuarantineReader(agentName)
@@ -609,6 +611,7 @@ export function startWebServer(port = 3420): http.Server {
       if (blastGuardPatched.length) logger.info({ patched: blastGuardPatched }, 'blast-radius guard backfilled into agent settings.json')
       if (pentestGuardPatched.length) logger.info({ patched: pentestGuardPatched }, 'pentest-tool-install guard backfilled into agent settings.json')
       if (symlinkNmGuardPatched.length) logger.info({ patched: symlinkNmGuardPatched }, 'symlinked-node-modules guard backfilled into agent settings.json')
+      if (cdChainGuardPatched.length) logger.info({ patched: cdChainGuardPatched }, 'cd-chain guard backfilled into agent settings.json')
       if (taskstateMatcherPatched.length) logger.info({ patched: taskstateMatcherPatched }, 'taskstate-replay SessionStart matcher widened in agent settings.json')
       if (patched.length) logger.info({ patched }, 'PreCompact hook backfilled into agent settings.json')
       if (stalePatched.length) logger.info({ patched: stalePatched }, 'staleness-guard UserPromptSubmit hook backfilled into agent settings.json')

@@ -377,6 +377,7 @@ export function writeAgentSettingsFromProfile(name: string, profile: ProfileTemp
   injectNpmProtectGuard(existing)
   injectSymlinkedNodeModulesGuard(existing)
   injectBlastRadiusGuard(existing)
+  injectCdChainGuard(existing)
   atomicWriteFileSync(settingsPath, JSON.stringify(existing, null, 2))
 }
 
@@ -886,6 +887,59 @@ export function injectPentestToolInstallGuard(existing: Record<string, unknown>)
     ...prev.filter((e) => !JSON.stringify(e).includes('pentest-tool-install-guard.py')),
     entry,
   ]
+}
+
+// Idempotently wire the cd-chain guard PreToolUse hook (cards a1b2a1de + 6b32a478).
+//
+// A `cd` earlier on the line makes a following grep/sed/cat's directory statically unresolvable,
+// so the permission engine cannot evaluate its Read() deny rules and asks. In a fleet agent's tmux
+// pane there is nobody to answer: the pane sits on the prompt until MikroB notices and sends a
+// keystroke by hand -- measured seven times on one agent, then three agents wedged at once in a
+// single heartbeat sweep, then three more the next day, one of them for 57 minutes.
+//
+// Wired on BOTH paths on purpose. The noisy-command-guard is the cautionary case: it has no
+// inject*/ensure* at all, so it reached the fleet only where somebody hand-edited a settings.json
+// -- measured 2026-09-04, three agents (marketing, penzugy, videooo) never got it, and a new agent
+// would not either. A guard that arms an arbitrary subset is not a control.
+export function injectCdChainGuard(existing: Record<string, unknown>): void {
+  const hooks = (existing.hooks && typeof existing.hooks === 'object'
+    ? existing.hooks
+    : (existing.hooks = {})) as Record<string, unknown>
+  const command = `python3 "${join(PROJECT_ROOT, 'scripts', 'hooks', 'cd-chain-guard.py')}"`
+  if (isUnsafeHookCommand(command)) return
+  const entry = {
+    matcher: 'Bash',
+    hooks: [{ type: 'command', command, timeout: 10 }],
+  }
+  const prev = Array.isArray(hooks.PreToolUse) ? (hooks.PreToolUse as unknown[]) : []
+  hooks.PreToolUse = [
+    ...prev.filter((e) => !JSON.stringify(e).includes('cd-chain-guard.py')),
+    entry,
+  ]
+}
+
+// Boot-time backfill for the cd-chain guard, same reasoning as ensureNpmProtectGuard:
+// injectCdChainGuard alone reaches an agent only when its settings.json is regenerated, and the
+// wedge costs 10+ minutes every time it fires. A dashboard restart arms the whole fleet at once.
+// Returns true when it actually changed a file.
+export function ensureCdChainGuard(name: string): boolean {
+  const settingsPath = agentSettingsPath(name)
+  let settings: Record<string, unknown> = {}
+  if (existsSync(settingsPath)) {
+    try { settings = JSON.parse(readFileSync(settingsPath, 'utf-8')) } catch { return false }
+  }
+  const command = `python3 "${join(PROJECT_ROOT, 'scripts', 'hooks', 'cd-chain-guard.py')}"`
+  const hooks = (settings.hooks && typeof settings.hooks === 'object')
+    ? settings.hooks as Record<string, unknown>
+    : {}
+  const ptu = Array.isArray(hooks.PreToolUse) ? hooks.PreToolUse as unknown[] : []
+  const ptuJson = JSON.stringify(ptu)
+  if (ptuJson.includes('cd-chain-guard.py') && hookCommandWired(ptuJson, command)) return false
+  if (isUnsafeHookCommand(command)) return false
+  injectCdChainGuard(settings)
+  if (name !== MAIN_AGENT_ID) mkdirSync(join(agentDir(name), '.claude'), { recursive: true })
+  atomicWriteFileSync(settingsPath, JSON.stringify(settings, null, 2))
+  return true
 }
 
 // Boot-time backfill for the pentest-tool-install guard, same reasoning as

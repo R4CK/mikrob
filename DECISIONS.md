@@ -5031,3 +5031,46 @@ külön teszttel van rögzítve, mert pont ez teszi a nevet később is cserélh
 `src/web/agent-scaffold.ts` (a szekció a konstansot interpolálja),
 `src/__tests__/messages-post-sender-guards.test.ts` (17 eset),
 `src/__tests__/system-directive-auth-section.test.ts`, `src/__tests__/system-directive.test.ts`.
+
+## 2026-09-04 06:40 -- A `cd + olvasás` permission-wedge strukturális lezárása (block-and-suggest hook)
+
+**Döntés:** A `cd <dir> && grep|sed|cat|head|tail|awk|diff|find|git <olvasó>` alakot egy új
+PreToolUse hook (`scripts/hooks/cd-chain-guard.py`, Bash matcher) blokkolja, MIELŐTT a
+permission-engine jóváhagyást kérne, és a hibaüzenete megnevezi a cd-mentes átírást. A hook
+MINDKÉT bekötési úton települ: `injectCdChainGuard` a settings-generálásban és `ensureCdChainGuard`
+a boot-idejű backfill-körben.
+
+**Miért nem prózai szabály:** a szabály („adj át abszolút útvonalat cd helyett") a backend ügynök
+saját memóriájába NÉGYSZER volt beírva, saját maga által, és négyszer regresszált rá ugyanabban a
+napban. Nem tudáshiány, hanem ösztön: worktree létrehozása után cd-zni, aztán dolgozni. Mérve:
+hét eset egy ügynöknél, majd három ügynök EGYSZERRE egy heartbeat-körben (backend, backend2,
+backend3), majd másnap újabb három (cybered, qa2, fron-teddy), közülük egy 57 percig a d6ecb003-on.
+A CLAUDE.md kódminőségi 6. pontja pont ezt írja elő: ahol lehet, szerkezet a fegyelem helyett.
+
+**Miért blokkolás és nem auto-allow:** egy PreToolUse hook elvben visszaadhatna engedélyező
+döntést, és az barátságosabbnak látszana. Rossz döntés lenne: az allow a TELJES Bash-hívásra
+vonatkozik, a `cd X && grep ...` pedig lánc, tehát vakon átengedné azt is, amit az ügynök a grep
+után fűzött. A blokkolás egyetlen újrapróbálkozásba kerül, és semmit nem enged meg.
+
+**Miért ilyen szűk a hatókör:** csak fájltartalmat olvasó/kereső parancsokra fut, és csak akkor,
+ha a parancsban nincs abszolút útvonal, ami feloldaná (`cd /abs && grep -n x /abs/fajl` átmegy).
+A `ls`, `wc`, `du`, `stat` és társaik SZÁNDÉKOSAN kimaradtak: egyikre sem mértünk beragadást, a
+`cd X && ls` viszont a leggyakoribb dolgok egyike, amit egy mérnök gépel. Ez a guard minden ügynök
+Bash-hívása előtt fut, tehát egy túlillesztés valós beragadást cserélne flotta-szintű bosszúságra
+(kódminőségi 2. pont: semmi spekulatív). Új parancs akkor kerül be, ha mérve lett.
+
+**Melléklelet, külön kártyát érdemel:** a `noisy-command-guard.py`-nak EGYÁLTALÁN nincs
+`inject*`/`ensure*` bekötése a kódban -- csak kézzel szerkesztett `settings.json`-okba került be.
+2026-09-04-i méréssel 15 ügynökből 3-nál (`marketing`, `penzugy`, `videooo`) hiányzik, és egy
+újonnan létrehozott ügynök sem kapná meg; a `marketing`-nél a blast-radius és az npm-protect guard
+is hiányzik. A CLAUDE.md 15. szabálya közben élő kontrollként hivatkozik rá. Ez a
+"kézzel másolt őr tetszőleges részhalmazt véd" hibaosztály (`0fa54550`, 13 ügynökből 5), most újra.
+Ezt NEM javítottam ebben a kártyában (hatókör-tartás), jelezve MikroB-nak.
+
+**Ki döntött:** MikroB (két kártya nyitása: a1b2a1de 2026-09-03, 6b32a478 2026-09-04 -- ugyanaz a
+munka, duplikátumként jelezve), backend (végrehajtás, hatókör-szűkítés, block-vs-allow döntés).
+
+**Hivatkozás:** kártyák `6b32a478` és `a1b2a1de` (duplikátumok);
+`scripts/hooks/cd-chain-guard.py`, `scripts/hooks/cd-chain-guard.selftest.py` (29 eset),
+`src/__tests__/cd-chain-guard-wiring.test.ts` (15 eset, futtatja a selftestet is),
+`src/web/agent-scaffold.ts`, `src/web.ts`, CLAUDE.md 16. szabály.
