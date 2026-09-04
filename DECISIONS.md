@@ -6157,3 +6157,41 @@ párhuzamosan, tehát egy ~80-100 s-os suite-ban ez nagyrészt elrejtőzik. A m�
 szándékosan ÚJRA futtatja: a "ki köti be máshol" nyilvántartás pontosan az a könyvelés, ami elavul,
 és a saját teszt-fájljuk amúgy is más invariánsokat állít (a skills-symlink például az `rm`-`mv`
 sorrendet), tehát nem redundáns.
+
+---
+
+## 2026-09-04 -- e96b06e7 -- Helyi JSON-kivonatoló a dashboard API-hoz, nem külső tömörítő
+
+**Döntés.** Egy stdlib-only Python szkript (`store/dash.py`) sűríti a gyakori dashboard-API
+válaszokat: `card`, `comments`, `board`, `agents`, `queue`, plus egy `get` menekülőút. Nulla új
+függőség, nulla új kimenő útvonal -- localhost, a már meglévő tokennel.
+
+**Miért nem külső eszköz.** Ez a 241dbf87 (headroom) kiértékelés lelete volt: a `noisy-run.sh`
+SOR-alapú szűrése JSON-válaszon semmit nem ér, mert az egész válasz egy sor. A headroom pont ezt a
+rést töltené be -- de az értéke egy olyan pozícióból jött (minden LLM-hívás előtt), amit egy
+kényelmi funkcióért nem adunk oda. Egy ~200 soros helyi szkript ugyanazt a rést zárja, a mi
+API-alakunkra szabva.
+
+**Mérve, nem feltételezve:** a `GET /api/kanban` 242 kártyát ad vissza, egyenként 18 mezővel,
+minden teljes `description`-nel. Nyersen olvashatatlan; kézzel kivonatolva naponta többször
+újra van találva.
+
+**Az auth szándékosan bent van.** A megszokott alak
+`printf 'Authorization: Bearer %s\n' "$(cat store/.dashboard-token)" | curl -H @- ...`, és a
+hibamódja néma: a `-H @-` elfogyasztja a stdint, így minden olyan kérés, ami testet is csövez, ÜRESET
+küld, a szerver pedig 200-at ad a semmire. Ezt az egész hibaosztályt megszünteti olvasásokra.
+
+**A token soha nem íródik ki**, és ezt a selftest a HIBA-ágon állítja -- ott szokott egy érték
+kicsúszni, mert a hibaszöveg sietve készül.
+
+**Minden rövidítés jelölt.** `...(+N)`, számmal: egy csupasz `...` a olvasót találgatni hagyja, hogy
+a levágott rész számított-e; a szám elég ahhoz, hogy eldöntse, elmenjen-e elolvasni.
+
+**Egy valós hiba, amit az élő próba fogott meg:** a token a gitignorált `store/`-ban él, tehát csak a
+FŐ checkoutban létezik -- minden ügynök viszont a saját worktree-jéből fut, ahol nincs. Az első éles
+hívás pontosan így bukott el. A feloldás most: `DASH_TOKEN_FILE` > a szkript könyvtára > a `git
+rev-parse --git-common-dir`-ből származtatott fő checkout. Hordozható, nem beégetett `/home` út.
+
+**Hurokzárás:** a selftestjét a 711a7e57-en épített felfedezés-wrapper AUTOMATIKUSAN bekötötte,
+nulla szerkesztéssel (14 -> 15 teszt). Ez a legjobb bizonyíték arra, hogy ott a felfedezés volt a
+helyes választás nyolc kézzel írt wrapper helyett: a következő selftest magától bekötődött.
