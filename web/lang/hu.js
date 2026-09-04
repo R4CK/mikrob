@@ -2146,6 +2146,8 @@ window._i18n.hu = {
   'overview.llmDist.range_label':       'Időablak',
   'overview.llmDist.range_minutes':     '{n} perc',
   'overview.llmDist.range_hours':       '{n} óra',
+  'overview.llmDist.scroll_label':      'Idővonal görgetése',
+  'overview.llmDist.scroll_hint':       'Egyszerre 10 perc látszik. Húzd a csúszkát balra, hogy visszamenj az időben.',
   'overview.llmDist.empty':             'Még nincs valódi feladat-forgalom ebben az ablakban.',
   'overview.llmDist.error':             'Nem sikerült betölteni a modell-elosztási adatokat.',
   'overview.llmDist.kpi.active_models': 'Aktív modellek',

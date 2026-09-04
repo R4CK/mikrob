@@ -19,6 +19,22 @@ const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), '..', '..')
 const SRC = readFileSync(join(ROOT, 'web', 'app-overview.js'), 'utf8')
 const CSS = readFileSync(join(ROOT, 'web', 'style.css'), 'utf8')
 
+
+/** Body of the rule whose selector is EXACTLY `sel` at the start of a line.
+ *  Ad-hoc indexOf slicing mis-fired three times writing this file: `.ovw-llmdist-block {` also
+ *  matches inside `.ovw-llmdist-lane-rows--compact .ovw-llmdist-block {`, and a slice that
+ *  overshoots swallows unrelated declarations (`min-width: 0` on the rows container) and asserts
+ *  about the wrong thing. Anchor on the selector, stop at the closing brace. */
+function ruleBody(sel: string): string {
+  const re = new RegExp('(?:^|\\n)' + sel.replace(/[.*+?^${}()|[\]\\]/g, '\\$&') + '\\s*\\{([^}]*)\\}')
+  const m = CSS.match(re)
+  if (!m) throw new Error(`rule not found: ${sel}`)
+  // Comments STRIPPED. These rules are commented heavily and the comments quote the very
+  // properties the assertions forbid ("the `min-width: 10px` removed earlier"), so an assertion
+  // over the raw body fails on its own rationale. Caught exactly that way.
+  return m[1].replace(/\/\*[\s\S]*?\*\//g, '')
+}
+
 interface Block { leftPct: number; widthPct: number; row: number }
 type Packer = (blocks: Block[], gapPct?: number) => number
 
@@ -68,6 +84,15 @@ function assertNoOverlap(blocks: Block[]) {
 
 const mk = (pairs: Array<[number, number]>): Block[] =>
   pairs.map(([leftPct, widthPct]) => ({ leftPct, widthPct, row: 0 }))
+
+describe('ruleBody helper', () => {
+  it('strips comments, so an assertion cannot fail (or pass) on the rationale text', () => {
+    const raw = CSS.match(/(?:^|\n)\.ovw-llmdist-block\s*\{([^}]*)\}/)![1]
+    expect(raw, 'fixture assumption: this rule quotes min-width in a comment').toContain('min-width')
+    expect(ruleBody('.ovw-llmdist-block')).not.toContain('min-width')
+    expect(ruleBody('.ovw-llmdist-block')).toContain('position: absolute')
+  })
+})
 
 describe('ovwLlmDistPackRows', () => {
   it('leaves non-overlapping blocks on a single row', () => {
@@ -142,8 +167,7 @@ describe('rendered geometry is decided by ONE number', () => {
   it('the CSS pixel floor is gone, so percent is authoritative', () => {
     // With both `min-width: 10px` and a percent floor, "no overlap" could be true in percent and
     // false on screen: 0.6% of a ~700px track is ~4px, so the pixel floor silently won.
-    const blockRule = CSS.slice(CSS.indexOf('.ovw-llmdist-block {'), CSS.indexOf('.ovw-llmdist-block:hover'))
-    expect(blockRule).not.toContain('min-width')
+    expect(ruleBody('.ovw-llmdist-block')).not.toContain('min-width')
   })
 
   it('the lane stacks its sub-rows', () => {
@@ -176,17 +200,75 @@ describe('rendered geometry is decided by ONE number', () => {
     // Anchored to the START OF A LINE: the compact override's selector also ENDS with
     // `.ovw-llmdist-lane-track {` and sits earlier in the file, so a plain indexOf sliced the
     // wrong rule and this assertion failed against correct CSS on its first run.
-    const base = CSS.indexOf('\n.ovw-llmdist-lane-track {') + 1
-    const rule = CSS.slice(base, CSS.indexOf('\n.ovw-llmdist-block {'))
-    expect(rule).toContain('height: 30px')
+    const rule = ruleBody('.ovw-llmdist-lane-track')
+    expect(rule).toContain('height: 38px')
     expect(rule).not.toMatch(/flex:\s*1\s*;/)
     expect(rule).toMatch(/flex:\s*0 0 auto/)
   })
 
   it('the renderer packs before emitting markup', () => {
     const fn = SRC.slice(SRC.indexOf('function ovwLlmDistLanesHtml('), SRC.indexOf('function ovwLlmDistLegendHtml('))
-    expect(fn).toContain('ovwLlmDistPackRows(blocks)')
+    expect(fn).toContain('ovwLlmDistPackRows(blocks, gap)')
     expect(fn).toContain('OVW_LLMDIST_MIN_W_PCT')
     expect(fn).not.toMatch(/Math\.max\(0\.6,/) // the literal floor moved into the shared const
+    expect(fn).toContain('OVW_LLMDIST_MIN_W_PCT / z')
+  })
+})
+
+describe('ten-minute scrollable viewport (card b52c3c42)', () => {
+  it('zoom is the loaded range divided by the ten-minute viewport', () => {
+    const zoom = new Function(
+      SRC.slice(SRC.indexOf('const OVW_LLMDIST_VIEWPORT_MIN'), SRC.indexOf('const OVW_LLMDIST_LABEL_GUTTER_PX')) +
+      extract('ovwLlmDistZoom') + '\nreturn ovwLlmDistZoom',
+    )() as (h: number) => number
+    expect(zoom(0.5)).toBe(3)
+    expect(zoom(1)).toBe(6)
+    expect(zoom(4)).toBe(24)
+    // Never below 1: a canvas narrower than its own viewport would scroll backwards into nothing.
+    expect(zoom(0.1)).toBe(1)
+    expect(zoom(NaN)).toBe(1)
+    expect(zoom(-3)).toBe(1)
+  })
+
+  it('the canvas multiplies ONLY the track area, not the label gutter', () => {
+    // `106px + (100% - 106px) * zoom`. Multiplying the whole width instead would make the visible
+    // slice short by the label width -- about 13% off at a typical card width, so the "ten
+    // minutes" claim would simply be wrong. Verified in a browser: 10.00 minutes visible.
+    expect(CSS).toMatch(/\.ovw-llmdist-canvas \{[^}]*calc\(106px \+ \(100% - 106px\) \* var\(--llmdist-zoom/)
+  })
+
+  it('geometry scales with zoom so the floor and gap keep their PIXEL size', () => {
+    const fn = SRC.slice(SRC.indexOf('function ovwLlmDistLanesHtml('), SRC.indexOf('function ovwLlmDistLegendHtml('))
+    expect(fn).toContain('OVW_LLMDIST_MIN_W_PCT / z')
+    expect(fn).toContain('OVW_LLMDIST_GAP_PCT / z')
+    expect(fn).toContain('ovwLlmDistPackRows(blocks, gap)')
+  })
+
+  it('no CSS property silently re-imposes a minimum block width', () => {
+    // Twice now a pixel-sized property has overridden the percentage the packer reasons about:
+    // first `min-width: 10px`, then `padding: 0 8px` (which floors a block at 16px and put 21
+    // on-screen overlaps back into a layout the packer believed was clean). The label is inset
+    // with text-indent, which does not contribute to the box width.
+    const rule = ruleBody('.ovw-llmdist-block')
+    expect(rule).not.toMatch(/min-width/)
+    expect(rule).not.toMatch(/padding:\s*0\s+[1-9]/)
+    expect(rule).toMatch(/text-indent/)
+  })
+
+  it('the label stays put while the canvas scrolls under it', () => {
+    expect(CSS).toMatch(/\.ovw-llmdist-lane-label \{[^}]*position: sticky/)
+  })
+
+  it('opens on NOW, after the card is un-hidden', () => {
+    // A hidden element has no layout, so reading scrollWidth before un-hiding yields 0 and the
+    // view opens at the OLDEST end -- the opposite of "drag back from the present".
+    // Anchored on the scroller lookup, not on `card.hidden = false`: that line appears in the
+    // empty-models and error branches too, so both indexOf and lastIndexOf land in a branch
+    // where no scroller exists.
+    const at = SRC.indexOf("const scroller = document.getElementById('ovwLlmDistScroll')")
+    expect(at, 'scroller lookup not found').toBeGreaterThan(-1)
+    expect(SRC.slice(at, at + 200)).toContain('scrollLeft = scroller.scrollWidth')
+    // ...and it must come AFTER the card is un-hidden, or scrollWidth reads 0.
+    expect(SRC.lastIndexOf('card.hidden = false', at)).toBeGreaterThan(-1)
   })
 })

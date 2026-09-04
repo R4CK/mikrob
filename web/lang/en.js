@@ -2143,6 +2143,8 @@ window._i18n.en = {
   'overview.llmDist.range_label':       'Time window',
   'overview.llmDist.range_minutes':     '{n} min',
   'overview.llmDist.range_hours':       '{n} h',
+  'overview.llmDist.scroll_label':      'Scroll the timeline',
+  'overview.llmDist.scroll_hint':       'Ten minutes are shown at a time. Drag left to go back in time.',
   'overview.llmDist.empty':             'No real task traffic in this window yet.',
   'overview.llmDist.error':             'Could not load the model-distribution data.',
   'overview.llmDist.kpi.active_models': 'Active Models',
