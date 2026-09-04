@@ -651,6 +651,17 @@ function ovwLlmDistFormatMs(ms) {
     : t('overview.llmDist.ms', { n: Math.round(ms) })
 }
 
+// avgLatencyMs (empty window) and tokensPerSec (no row in the window/lane had a usable eval
+// measurement) are `number | null` in the contract (card 2ffc0a96, backend comment 19021): null
+// means "not measured", and must never render as "0" -- a real 0 there would read as an actual
+// zero-latency/zero-throughput measurement instead of "nothing to show".
+function ovwLlmDistFormatMsOrNa(ms) {
+  return ms == null ? '—' : ovwLlmDistFormatMs(ms)
+}
+function ovwLlmDistFormatTpsOrNa(tps) {
+  return tps == null ? '—' : t('overview.llmDist.tps', { n: Number(tps).toFixed(1) })
+}
+
 function ovwLlmDistStatusLabel(status) {
   if (status === 'err') return t('overview.llmDist.status.err')
   if (status === 'busy') return t('overview.llmDist.status.busy')
@@ -660,8 +671,8 @@ function ovwLlmDistStatusLabel(status) {
 function ovwLlmDistKpiHtml(kpi) {
   const items = [
     ['active_models', String(kpi.activeModels ?? 0)],
-    ['avg_latency', ovwLlmDistFormatMs(kpi.avgLatencyMs || 0)],
-    ['tokens_per_sec', t('overview.llmDist.tps', { n: (kpi.tokensPerSec || 0).toFixed(1) })],
+    ['avg_latency', ovwLlmDistFormatMsOrNa(kpi.avgLatencyMs)],
+    ['tokens_per_sec', ovwLlmDistFormatTpsOrNa(kpi.tokensPerSec)],
     ['total_requests', (kpi.totalRequests || 0).toLocaleString('hu-HU').replace(/,/g, ' ')],
     ['error_rate', (kpi.errorRatePct || 0).toFixed(1) + '%'],
   ]
@@ -694,7 +705,7 @@ function ovwLlmDistLanesHtml(models, rangeStartMs, rangeEndMs) {
         style="left:${leftPct.toFixed(2)}%;width:${widthPct.toFixed(2)}%;background:${color}"
         data-task="${escapeHtml(task.task || '')}" data-agent="${escapeHtml(task.agent || '')}"
         data-duration="${Number(task.durationMs) || 0}" data-tokens-in="${Number(task.tokensIn) || 0}"
-        data-tokens-out="${Number(task.tokensOut) || 0}" data-tps="${Number(task.tokensPerSec) || 0}"
+        data-tokens-out="${Number(task.tokensOut) || 0}" data-tps-label="${escapeHtml(ovwLlmDistFormatTpsOrNa(task.tokensPerSec))}"
         data-status-label="${escapeHtml(ovwLlmDistStatusLabel(task.status))}"
       >${escapeHtml(task.task || '')}</button>`
     }).join('')
@@ -725,7 +736,7 @@ function ovwLlmDistShowTooltip(target) {
   const duration = Number(target.dataset.duration) || 0
   const tokensIn = Number(target.dataset.tokensIn) || 0
   const tokensOut = Number(target.dataset.tokensOut) || 0
-  const tps = Number(target.dataset.tps) || 0
+  const tpsLabel = target.dataset.tpsLabel || '—'
   const statusLabel = target.dataset.statusLabel || ''
   const el = ovwLlmDistTooltipEl
   el.innerHTML = `
@@ -733,7 +744,7 @@ function ovwLlmDistShowTooltip(target) {
     <div class="ovw-llmdist-tooltip-row"><span>${escapeHtml(t('overview.llmDist.tooltip.agent'))}</span><span>${escapeHtml(agent)}</span></div>
     <div class="ovw-llmdist-tooltip-row"><span>${escapeHtml(t('overview.llmDist.tooltip.duration'))}</span><span>${escapeHtml(ovwLlmDistFormatMs(duration))}</span></div>
     <div class="ovw-llmdist-tooltip-row"><span>${escapeHtml(t('overview.llmDist.tooltip.tokens'))}</span><span>${escapeHtml(t('overview.llmDist.tooltip.tokens_value', { total: tokensIn + tokensOut, in: tokensIn, out: tokensOut }))}</span></div>
-    <div class="ovw-llmdist-tooltip-row"><span>${escapeHtml(t('overview.llmDist.tooltip.throughput'))}</span><span>${escapeHtml(t('overview.llmDist.tps', { n: tps.toFixed(1) }))}</span></div>
+    <div class="ovw-llmdist-tooltip-row"><span>${escapeHtml(t('overview.llmDist.tooltip.throughput'))}</span><span>${escapeHtml(tpsLabel)}</span></div>
     <div class="ovw-llmdist-tooltip-row"><span>${escapeHtml(t('overview.llmDist.tooltip.status'))}</span><span>${escapeHtml(statusLabel)}</span></div>
   `
   el.hidden = false
