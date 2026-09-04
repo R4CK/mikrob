@@ -6292,3 +6292,39 @@ ezért mindkettőt külön állapotra képezi le, és a pathspec-ágat a mérés
 **Ami NYITVA maradt, MikroB döntése:** (a) az élő checkout periodikus előrehúzása, hogy a kézi
 landolás utáni ablak is bezáruljon -- ez az élő telepítést érinti időzítve, ezért nem egyoldalú
 lépés; (b) a keresési fegyelem fleet-szintű kimondása a root CLAUDE.md-ben.
+
+## 2026-09-04 -- a14812e8 -- Fork-oldali horgony: megnevezett teny, nem blob-pin
+
+**Dontes:** az `ACKNOWLEDGED_CONFLICTS` mentesitesei mostantol OPCIONALISAN megnevezhetnek egy
+fork-oldali tenyt (`ACKNOWLEDGED_FORK_ANCHORS`: szimbolum + fajl + present/absent + miert
+teherhordo). Ha az a teny megvaltozik, a guard ujradontest ker. Fork-oldali BLOB-pin NEM keszult.
+
+**Miert nem blob-pin (a kezenfekvo szimmetria):** lemerve 14 napra ezen a repon **404 fork-oldali
+commit a 72 pinnelt fajlon, es 72-bol 67 mozdult**. Egy fork-oldali blob-pin naponta kb. 29-szer
+avulna el, szinte mindig olyan szerkesztesen, ami a szabaly targyat nem is erinti. Az upstream-pin
+azert engedheti meg maganak a teljes-fajl granularitast, mert az upstream ritkan mozdul; a mi
+oldalunknak nincs meg ez a tulajdonsaga, es egy naponta 29-szer siro kapu pecsetelove valik.
+
+**Miert opcionalis, es miert marad az:** a 73 szabalybol 9 tesz barmilyen fork-oldali allitast, es
+azok tobbsege ATVETELI TORTENET ("not adopted this round"), nem elo, ellenorizheto allitas a farol.
+Minden bejegyzest predikatumba kenyszeriteni azt jelentene, hogy prozat irunk at olyan formalizmusba,
+ami nem illik ra.
+
+**Ket meres forditotta meg a sajat tervemet epites kozben:**
+
+(1) A `content.includes(needle)` horgony VAK az atnevezesre: a `touchAncestorChain` ->
+`touchAncestorChainRENAMED` mutacio zolden ment at, mert az uj nev TARTALMAZZA a regit. Emiatt kapott
+a matcher azonositó-hatar ellenorzest (`containsAsToken`). A mutacio a javitas utan helyesen bukik.
+
+(2) Egy horgony nem lehet KOMMENTTEL kielegitheto. Az `installer-ollama-nonfatal` szabaly termeszetes
+horgonya az `ollama_pull` lenne, ami meg mindig szerepel egyszer az `install-linux.sh`-ban -- egy
+kommentben, ami azt magyarazza, hogy a hivast ELTAVOLITOTTAK. Egy `absent` horgony ott mar az elso
+napon pirosan allna, egy `present` pedig orokre zolden a rossz okbol. Az a bejegyzes ezert NEM kap
+horgonyt, es a kizarast kulon teszt pinneli, hogy egy kesobbi szerkeszto ne a nyilvanvalo horgonyt
+tegye be szo nelkul.
+
+**Az ellenorzes MINDIG fut, nem csak utkozeskor.** A blob-check csak az adott futasban ténylegesen
+utkozo fajlokra ertekelodik; a token-usage.ts hiba viszont utkozes NELKUL tortent -- a szabaly
+egyszeruen nem volt mar igaz. Feltetelesse tenni ujratermelne a lyukat, amit be kell zarnia.
+
+**Ki dontott:** backend2 (meres + terv), a kartyat MikroB nyitotta backend2 leletere (607254fb komment 19951).

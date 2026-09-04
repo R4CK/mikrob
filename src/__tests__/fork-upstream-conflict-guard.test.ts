@@ -1184,6 +1184,131 @@ export function classifyConflicts(
   return { guarded, unwatched, stale }
 }
 
+// ---------------------------------------------------------------------------------------------
+// FORK-SIDE ANCHORS (card a14812e8)
+//
+// THE GAP THIS CLOSES. ACKNOWLEDGED_UPSTREAM_BLOBS pins every rule to an UPSTREAM blob, so a rule
+// goes stale when UPSTREAM moves. Nothing pinned OUR side, and the token-usage.ts entry went wrong
+// for exactly that reason: it asserted "this fork had NO touchAncestorChain" long after card
+// 4b03a88d added it. WE moved, upstream did not, so the pin stayed fresh the whole time the rule
+// was asserting something false about our own tree -- and the re-measure tool reported 0 stale out
+// of 23. A stale exemption is worse than a missing one: a missing entry gets caught at the next
+// conflict, while that one would have told the next merger, with a "-- checked", to delete a filter
+// that had become correct.
+//
+// WHY NOT A FORK-SIDE BLOB PIN, which is the obvious symmetry. Measured on this repo over 14 days:
+// 404 fork-side commits across the 72 pinned files, and 67 of 72 files moved at all. A blob pin on
+// our side would go stale roughly 29 times a day, almost always on an edit that never touches the
+// region the rule is about. The upstream pin can afford whole-file granularity precisely because
+// upstream moves rarely; our side does not have that property, and a gate that cries ~29 times a
+// day is a gate that gets rubber-stamped.
+//
+// WHY OPTIONAL, AND WHY IT STAYS OPTIONAL. Of the 73 rules, 9 make any fork-side factual claim at
+// all, and most of those are ADOPTION HISTORY ("not adopted this round") rather than a live,
+// checkable statement about the tree. Forcing every entry into a predicate would mean rewriting
+// prose into a formalism that does not fit it -- so an entry without an anchor behaves exactly as
+// before, and only a DECLARED anchor is enforced.
+//
+// UNLIKE the blob check, this runs ALWAYS, not only for files that conflict in this run. The
+// token-usage failure happened with no conflict in play: the rule was simply no longer true. Making
+// it conditional on a conflict would reproduce the hole it exists to close.
+//
+// AN ANCHOR MUST NOT BE SATISFIABLE BY A COMMENT. Measured while choosing these: the natural anchor
+// for the installer-ollama-nonfatal rule ("the fork has no code left for this test to exercise") is
+// `ollama_pull`, which still appears once in install-linux.sh -- inside a comment explaining that
+// the call was REMOVED. A fixed-string anchor there would assert the comment, not the code, and
+// would go green for the wrong reason forever. That entry therefore gets NO anchor rather than a
+// misleading one; the exclusion is deliberate and is the reason this map is Partial.
+
+/** A named, checkable fact about OUR tree that an acknowledgement's rule rests on. */
+export interface ForkAnchor {
+  /** Searched as a FIXED string, never a regex: these come from prose and would otherwise have to
+   *  be escaped by every future editor. */
+  readonly needle: string
+  /** Repo-relative file the needle is expected in (or absent from). One file, not a glob: an anchor
+   *  that ranges over a tree answers a different question every time the tree grows. */
+  readonly file: string
+  readonly expect: 'present' | 'absent'
+  /** Why this fact is load-bearing for the rule -- carried into the failure message, for the same
+   *  reason StaleAcknowledgement carries `rule`: the reader is being asked to re-decide, not to
+   *  bump a number. */
+  readonly because: string
+}
+
+const ACKNOWLEDGED_FORK_ANCHORS: Partial<Record<keyof typeof ACKNOWLEDGED_CONFLICTS, ForkAnchor>> = {
+  // The entry this card came from. Its rule says the two halves "must stay together: the filter is
+  // only correct BECAUSE a parent now carries its child's updated_at". So the anchor is the half
+  // that lives OUTSIDE the conflicting file -- removing ancestor stamping while the parent-skip
+  // filter stays would silently start discarding correct attribution, and nothing else would notice.
+  'src/web/token-usage.ts': {
+    needle: 'touchAncestorChain',
+    file: 'src/db.ts',
+    expect: 'present',
+    because:
+      "token-usage.ts keeps upstream's parent-skip filter ONLY because db.ts stamps a parent with " +
+      'its child updated_at. Drop the stamping and the filter starts discarding real attribution.',
+  },
+  // "the fork's file still has the inline functions verbatim (recorded resolution unchanged, still a
+  // strict superset via the sentinel fix), so this round is acknowledge-only". A def line cannot be
+  // satisfied by prose the way a bare identifier can.
+  'scripts/hooks/outgoing-copy-gate.py': {
+    needle: 'def is_send_invocation',
+    file: 'scripts/hooks/outgoing-copy-gate.py',
+    expect: 'present',
+    because:
+      'the rule is acknowledge-only on the ground that the fork keeps its inline send-detection ' +
+      'functions; if they are extracted or removed, the "strict superset" claim needs re-deciding.',
+  },
+}
+
+/** An acknowledgement whose rule rests on a fork-side fact that is no longer true. */
+export interface DriftedForkAnchor {
+  readonly file: string
+  readonly anchor: ForkAnchor
+  readonly found: boolean
+}
+
+/**
+ * Substring containment is NOT enough, and this was measured rather than reasoned: renaming
+ * `touchAncestorChain` to `touchAncestorChainRENAMED` -- a rename is one of the ways the anchored
+ * fact stops being true -- left `content.includes(needle)` perfectly green, because the new name
+ * CONTAINS the old one. The anchor would have gone on asserting a symbol that no longer exists
+ * under that name.
+ *
+ * So a match must sit on identifier boundaries: no `[A-Za-z0-9_$]` immediately either side. The
+ * needle itself stays a plain fixed string -- authors write these from prose and must not have to
+ * escape anything -- the boundary is applied here instead of being pushed into the declaration.
+ */
+export function containsAsToken(content: string, needle: string): boolean {
+  const isWordChar = (c: string | undefined): boolean => c !== undefined && /[A-Za-z0-9_$]/.test(c)
+  let from = 0
+  for (;;) {
+    const at = content.indexOf(needle, from)
+    if (at === -1) return false
+    if (!isWordChar(content[at - 1]) && !isWordChar(content[at + needle.length])) return true
+    from = at + 1
+  }
+}
+
+/**
+ * Pure and injectable (`readFile`) for the same reason classifyConflicts is: the live test reads the
+ * real tree, and a classification exercised only there would be untested wherever the tree happens
+ * not to trip it. `readFile` returns null for a missing file, which is DRIFT for a 'present' anchor
+ * -- a rule resting on a file that is gone is exactly as stale as one resting on deleted code.
+ */
+export function classifyForkAnchors(
+  anchors: Readonly<Record<string, ForkAnchor>>,
+  readFile: (file: string) => string | null
+): DriftedForkAnchor[] {
+  const drifted: DriftedForkAnchor[] = []
+  for (const [file, anchor] of Object.entries(anchors)) {
+    const content = readFile(anchor.file)
+    const found = content !== null && containsAsToken(content, anchor.needle)
+    if ((anchor.expect === 'present') !== found) drifted.push({ file, anchor, found })
+  }
+  return drifted
+}
+
 // Card 1e8111a3. Cybersec measured 8 unwatched-conflict occurrences where the failure message told
 // the reader WHAT to do (decide a rule, record it in ACKNOWLEDGED_CONFLICTS/_BLOBS) but not HOW --
 // every occurrence required hand-typing the file path and running `git rev-parse` to get the blob
@@ -1599,5 +1724,113 @@ describe('readyToPasteEntry + extractConflictHunks (card 1e8111a3: hand a paste-
     const hunk = extractConflictHunks(content, 200)
     expect(hunk.length).toBeLessThan(250)
     expect(hunk).toContain('truncated')
+  })
+})
+
+describe('fork-side anchors: a rule that rests on OUR tree goes stale when OUR tree moves (card a14812e8)', () => {
+  const readReal = (file: string): string | null => {
+    try {
+      return readFileSync(join(REPO_ROOT, file), 'utf-8')
+    } catch {
+      return null
+    }
+  }
+
+  // The one that matters: green on the tree as it is. A guard landing red would block every
+  // marveen landing (card 368b77f7 measured exactly that), so this is not a formality.
+  it('every declared anchor holds on the CURRENT tree', () => {
+    const drifted = classifyForkAnchors(
+      ACKNOWLEDGED_FORK_ANCHORS as Readonly<Record<string, ForkAnchor>>,
+      readReal
+    )
+    expect(
+      drifted.map(
+        (d) =>
+          `${d.file}: expected '${d.anchor.needle}' ${d.anchor.expect} in ${d.anchor.file}, ` +
+          `found=${d.found}. WHY IT MATTERS: ${d.anchor.because} ` +
+          `Re-decide the ACKNOWLEDGED_CONFLICTS rule -- do not just edit the anchor to match.`
+      )
+    ).toEqual([])
+  })
+
+  it('every anchor points at a file that actually exists -- a missing file is drift, not a pass', () => {
+    for (const [, anchor] of Object.entries(ACKNOWLEDGED_FORK_ANCHORS)) {
+      expect(readReal(anchor!.file), `anchor file missing: ${anchor!.file}`).not.toBeNull()
+    }
+  })
+
+  it('a present-anchor whose needle is gone is drift', () => {
+    const anchors = {
+      'a.ts': { needle: 'touchAncestorChain', file: 'src/db.ts', expect: 'present', because: 'x' },
+    } as const
+    const drifted = classifyForkAnchors(anchors, () => 'nothing relevant here')
+    expect(drifted).toHaveLength(1)
+    expect(drifted[0]!.found).toBe(false)
+  })
+
+  it('a present-anchor whose needle is there is NOT drift', () => {
+    const anchors = {
+      'a.ts': { needle: 'touchAncestorChain', file: 'src/db.ts', expect: 'present', because: 'x' },
+    } as const
+    expect(classifyForkAnchors(anchors, () => 'export function touchAncestorChain() {}')).toEqual([])
+  })
+
+  // The inverse direction has to work too, or "expect: absent" would be a decorative field that
+  // silently never fires -- the same class of defect this whole map exists to catch.
+  it('an absent-anchor whose needle APPEARED is drift', () => {
+    const anchors = {
+      'a.ts': { needle: 'ollama_pull', file: 'install-linux.sh', expect: 'absent', because: 'x' },
+    } as const
+    const drifted = classifyForkAnchors(anchors, () => 'ollama_pull "nomic-embed-text"')
+    expect(drifted).toHaveLength(1)
+    expect(drifted[0]!.found).toBe(true)
+  })
+
+  // Measured, not assumed: this exact mutation went GREEN before containsAsToken existed.
+  it('a RENAMED symbol is drift -- substring containment would have missed it', () => {
+    const anchors = {
+      'a.ts': { needle: 'touchAncestorChain', file: 'src/db.ts', expect: 'present', because: 'x' },
+    } as const
+    const drifted = classifyForkAnchors(anchors, () => 'export function touchAncestorChainRENAMED()')
+    expect(drifted).toHaveLength(1)
+  })
+
+  it('containsAsToken matches on identifier boundaries, both sides', () => {
+    expect(containsAsToken('call touchAncestorChain(id)', 'touchAncestorChain')).toBe(true)
+    expect(containsAsToken('touchAncestorChainRENAMED()', 'touchAncestorChain')).toBe(false)
+    expect(containsAsToken('xtouchAncestorChain()', 'touchAncestorChain')).toBe(false)
+    // A later legitimate occurrence must still be found after an earlier glued one.
+    expect(containsAsToken('preTouch touchAncestorChainX; touchAncestorChain()', 'touchAncestorChain')).toBe(true)
+    // Needles that are not bare identifiers still work -- the boundary is about the edges only.
+    expect(containsAsToken('def is_send_invocation(cmd):', 'def is_send_invocation')).toBe(true)
+  })
+
+  it('a missing FILE is drift for a present-anchor -- a rule resting on a deleted file is stale', () => {
+    const anchors = {
+      'a.ts': { needle: 'anything', file: 'gone.ts', expect: 'present', because: 'x' },
+    } as const
+    expect(classifyForkAnchors(anchors, () => null)).toHaveLength(1)
+  })
+
+  // Card a14812e8, measured: `ollama_pull` still appears once in install-linux.sh, inside a comment
+  // saying the call was REMOVED. An anchor there would assert the comment and stay green forever for
+  // the wrong reason. This pins the EXCLUSION so a future editor adding the obvious anchor trips
+  // here and reads why, instead of shipping a check that cannot fail.
+  it('installer-ollama-nonfatal deliberately has NO anchor, because its needle survives only in a comment', () => {
+    expect(
+      Object.prototype.hasOwnProperty.call(
+        ACKNOWLEDGED_FORK_ANCHORS,
+        'src/__tests__/installer-ollama-nonfatal.test.ts'
+      )
+    ).toBe(false)
+    const installer = readReal('install-linux.sh') ?? ''
+    // The measurement the exclusion rests on: the string is present, and only in prose.
+    expect(installer).toContain('ollama_pull')
+    const codeLines = installer
+      .split('\n')
+      .filter((l) => l.includes('ollama_pull') && !l.trimStart().startsWith('#'))
+    expect(codeLines, 'ollama_pull reappeared in CODE -- the exclusion needs re-deciding').toEqual(
+      []
+    )
   })
 })
