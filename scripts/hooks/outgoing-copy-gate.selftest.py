@@ -30,7 +30,17 @@ ALLOW = "allow"
 
 
 def verdict(cmd, rules_path=None):
-    payload = json.dumps({"tool_name": "Bash", "tool_input": {"command": cmd}})
+    return raw_verdict({"tool_name": "Bash", "tool_input": {"command": cmd}}, rules_path)
+
+
+def raw_verdict(payload_obj, rules_path=None):
+    """Run the gate on an ARBITRARY payload, not just a Bash command.
+
+    Needed for the fail-closed net (card 630d9864): the payload shapes that used to crash the
+    hook are malformed ones -- a tool_input that is not a dict -- which the Bash-shaped helper
+    above cannot express.
+    """
+    payload = json.dumps(payload_obj)
     env = dict(os.environ)
     if rules_path is not None:
         env["OUTGOING_COPY_GATE_RULES"] = str(rules_path)
@@ -244,6 +254,59 @@ def main():
         case(
             "DIGIT-HYPHEN SUFFIX r11: second reproduction, same shape, still caught",
             REAL_SEND.format(body="Az uzenet 1-keszen elment mar."),
+            BLOCK,
+            rules_path=empty_rules,
+        )
+
+        # --- Fail-closed net on the __main__ wrapper (B-wave, card 630d9864) -------------
+        # Upstream's wrapper, recorded in the conflict map as "a candidate for future adoption,
+        # not yet taken", and MEASURED before adopting: a payload whose tool_input is not a dict
+        # made collect_mcp_body() raise AttributeError, python exited 1, and PreToolUse treats 1
+        # as NON-blocking -- so a malformed call walked straight past the gate. Note what the
+        # verdict helper reports: exit 1 reads as ALLOW here, which is precisely the point.
+        def raw_case(label, payload_obj, expected, rules_path=None):
+            got, stderr = raw_verdict(payload_obj, rules_path)
+            ok = got == expected
+            print(f"{'OK  ' if ok else 'FAIL'} {expected:5s} <- {got:5s}  {label}")
+            if not ok:
+                failures.append((label, expected, got, stderr))
+
+        raw_case(
+            "FAIL-CLOSED NET: non-dict tool_input on the email path -> BLOCK (was exit 1 = unchecked send)",
+            {"tool_name": "send_email", "tool_input": "not-a-dict"},
+            BLOCK,
+            rules_path=empty_rules,
+        )
+        raw_case(
+            "FAIL-CLOSED NET: a NUMBER as tool_input crashes the same way -> BLOCK",
+            {"tool_name": "send_email", "tool_input": 42},
+            BLOCK,
+            rules_path=empty_rules,
+        )
+        # The net must NOT reach the Telegram branch: telegram_gate() is fail-OPEN by design,
+        # because Telegram is the owner's only supervision channel and silencing it costs more
+        # than a slipped accent. It catches its own errors and exits 0 before the net can see them.
+        raw_case(
+            "FAIL-OPEN PRESERVED: the same malformed payload on the TELEGRAM path still passes",
+            {"tool_name": "mcp__telegram__reply", "tool_input": "not-a-dict"},
+            ALLOW,
+            rules_path=empty_rules,
+        )
+        raw_case(
+            "the net does not over-block: a well-formed clean email still passes",
+            {
+                "tool_name": "send_email",
+                "tool_input": {"body": "Szia, köszönöm a türelmet, hamarosan küldöm a fájlt."},
+            },
+            ALLOW,
+            rules_path=empty_rules,
+        )
+        raw_case(
+            "the net does not mask a real finding: a well-formed email with broken accents still BLOCKs",
+            {
+                "tool_name": "send_email",
+                "tool_input": {"body": "Szia, koszonom a turelmet, hamarosan kuldom a fajlt."},
+            },
             BLOCK,
             rules_path=empty_rules,
         )
