@@ -869,9 +869,14 @@ const ACKNOWLEDGED_CONFLICTS = {
     "arrived in this increment alone (14 of them agents.settings.ctx_guard_*) -- the rest predate the " +
     "previous pin; both figures are correct, they just answer different questions, and the +46 is the " +
     "one this union rule is about. The fork still HAS that page and still references all 8 removed " +
-    "keys: 16 references across web/index.html, web/app-activity.js and web/app-i18n-nav.js " +
-    "(re-counted over all eight keys -- an earlier note here quoted a four-key sample and read like a " +
-    "total). Direction unchanged, but the union is no longer symmetric: KEEP the fork's activity.* " +
+    "keys: ALL EIGHT are still referenced by live fork code, in web/index.html, web/app-activity.js " +
+    "and web/app-i18n-nav.js. Stated as coverage rather than as a count on purpose -- a count goes " +
+    "stale on any refactor, while 'every removed key is still used' is both durable and the stronger " +
+    "argument. (Two earlier versions of this note carried a NUMBER and both were wrong: the first " +
+    "quoted a four-key sample as if it were a total, the second said 16 because `grep` was given the " +
+    "key as a PATTERN -- the dot is a wildcard, so activity.empty also matched the CSS class " +
+    "activity-empty. Measured with -F the total is 10. Dotted i18n keys are exactly the case where " +
+    "that bites; backend caught it, card comment 19707.) Direction unchanged, but the union is no longer symmetric: KEEP the fork's activity.* " +
     "keys explicitly. Taking upstream's deletions would leave a LIVE fork page rendering raw key " +
     "names. NOTE THE SCOPE: whether the fork should ALSO retire its Activity page is NOT a merge " +
     "question and must not be settled inside a conflict resolution -- it is a working fork feature, " +
