@@ -780,6 +780,19 @@ const ACKNOWLEDGED_CONFLICTS = {
     "both sides added the SAME GET /api/messages/:id handler (identical code, comments differ) -- keep either side's code and the FORK's comment, which records the ab4c85f2 incident that made the endpoint necessary; the fork's other additions in this file (reserved-sender guard, JSON-parse hardening, to-validation, card-state stamping) live in separate regions and are not part of this decision",
   'src/web/channel-monitor.ts':
     "both sides made the SAME change to triggerMarveenMemorySave (bare sendPromptToSession -> sendSystemDirective(MAIN_AGENT_ID, MAIN_CHANNELS_SESSION, prompt)), so take either for that hunk -- they are semantically equal. Everything ELSE in this file is long-standing fork divergence unrelated to this card (lazy bin resolver vs upstream's eager resolveFromPath consts, and upstream's STUCKINPUT827 injected-prompt-registry work): resolve those on their own merits, they are not part of the ab4c85f2 decision",
+  // Card 39b32ac6 (B-wave 2/6), a TAIL-vs-TAIL conflict both sides created for the same feature.
+  'src/__tests__/seed-refresh-untouched-only.test.ts':
+    "keep the fork's 180 lines of fork-owned cases (seed_copy_try_merge, operator-authored skills, " +
+    "the CLAUDE.md exclusion) -- a wholesale take of upstream's file drops all of them -- and APPEND " +
+    "upstream's SEEDREFRESH826 describe block, which covers the same top-level scheduled-tasks refresh " +
+    "with the more realistic fixture (the node seeder's {{PROJECT_ROOT}} alias resolved on disk, which " +
+    "the fork's own first draft did not exercise). Both sides appended at the tail for the same reason, " +
+    "so this is a union, not a pick. ONE fork amendment inside upstream's block, and it is deliberate: " +
+    "upstream's 'a locally modified copy survives' case is VACUOUS -- measured by deleting the source " +
+    "line under test, which left it green, because nothing refreshing at all also leaves the edit alone. " +
+    "A witness task (untouched, one release behind) refreshes in the same run, so the edited copy being " +
+    "spared now means the rule held rather than the feature being absent. Keep upstream's RED-BEFORE " +
+    "case alongside it; it pins the source line by name, which the witness does not.",
 } as const
 
 // THE UPSTREAM CONTENT EACH RULE ABOVE WAS DECIDED AGAINST (card a1d613e3, Cybersec msg 19105).
@@ -881,6 +894,8 @@ const ACKNOWLEDGED_UPSTREAM_BLOBS: Readonly<Record<keyof typeof ACKNOWLEDGED_CON
   'src/__tests__/system-directive-auth-section.test.ts': '80d65e4651601d320447bf188d53548a5ef5f8ba',
   'src/web/channel-monitor.ts': 'd1c642f669ff2a28b6eec79bbf503365c9ac1b08',
   'src/web/routes/messages.ts': '98710db9e171616e0600061eec649542e779506a',
+  // Card 39b32ac6, 2026-09-04 (B-wave 2/6): both sides appended a SEEDREFRESH826 block at the tail.
+  'src/__tests__/seed-refresh-untouched-only.test.ts': 'db592152fd319865336fe07aa0ee184d1790a192',
 }
 
 /** A conflict whose written rule was decided against DIFFERENT upstream content than what is
