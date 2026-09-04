@@ -77,6 +77,13 @@ describe('agent launch command: vault keys are shell-escaped (card 1075d0e4)', (
     expect(resolveDashboardOrigin('https://dash.example.com', 3420)).toBe('https://dash.example.com')
     expect(resolveDashboardOrigin('http://10.0.0.5:8080/', 3420)).toBe('http://10.0.0.5:8080')
     expect(resolveDashboardOrigin('', 3420)).toBe('http://localhost:3420')
+    // ...and a SUB-PATH deployment keeps working. My first version of this validation allowed
+    // only scheme://host[:port] and sent those operators back to localhost; the pre-existing
+    // agent-scaffold-dashboard-origin suite caught it on the landing. Pinned here too, beside
+    // the injection cases, so the security rule and the deployment feature stay visible as one
+    // constraint rather than two tests that can drift apart.
+    expect(resolveDashboardOrigin('https://example.com/marveen', 3420)).toBe('https://example.com/marveen')
+    expect(resolveDashboardOrigin('https://example.com/marveen/', 3420)).toBe('https://example.com/marveen')
   })
 
   it("a value containing a single quote cannot break out either", () => {

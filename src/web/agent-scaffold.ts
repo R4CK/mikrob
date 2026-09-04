@@ -29,7 +29,15 @@ export function resolveDashboardOrigin(publicUrl: string, port: number | string)
   //
   // Restricted to a plain http(s) ORIGIN. Anything else falls back rather than being escaped: a
   // misconfigured origin should make the recipes point somewhere harmless, not smuggle shell.
-  return /^https?:\/\/[A-Za-z0-9._-]+(?::\d{1,5})?$/.test(candidate) ? candidate : fallback
+  // A PATH PREFIX IS A SUPPORTED DEPLOYMENT, not an anomaly: operators host the dashboard under
+  // a sub-path behind a reverse proxy (k3s), and agent-scaffold-dashboard-origin.test.ts has
+  // pinned that since before this card. My first attempt at this validation allowed only
+  // scheme://host[:port] and silently sent those deployments back to localhost -- the existing
+  // test caught it on the landing. So the path is allowed, from a character set that cannot
+  // start a command: no ; $ ` & | quote space or parenthesis survives the test.
+  return /^https?:\/\/[A-Za-z0-9._-]+(?::\d{1,5})?(?:\/[A-Za-z0-9._~\/-]*)?$/.test(candidate)
+    ? candidate
+    : fallback
 }
 
 // Resolved once at module load; DASHBOARD_PUBLIC_URL requires a restart
