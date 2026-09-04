@@ -1139,9 +1139,29 @@ main {
   font-variant-numeric: tabular-nums;
 }
 .ovw-llmdist-lanes { display: flex; flex-direction: column; gap: 10px; }
-.ovw-llmdist-lane { display: flex; align-items: center; gap: 10px; }
+.ovw-llmdist-lane { display: flex; align-items: flex-start; gap: 10px; }
+/* Sub-rows produced by the interval packer: one track per row, stacked. A lane with a
+   single row is visually identical to the pre-packing layout. */
+.ovw-llmdist-lane-rows { flex: 1; display: flex; flex-direction: column; gap: 3px; min-width: 0; }
+/* Compact density (card 4c5c540c). Real data needs 20-36 sub-rows because a call's logged
+   duration includes its GPU-lock wait, so queued calls really do overlap in wall-clock time.
+   At the full 30px row that is a ~1200px lane for one model; thin rows keep the "no overlap"
+   guarantee AND a chart that fits, with a scroll as the backstop for an extreme burst. */
+.ovw-llmdist-lane-rows--compact { gap: 1px; max-height: 260px; overflow-y: auto; }
+.ovw-llmdist-lane-rows--compact .ovw-llmdist-lane-track { height: 9px; border-radius: 2px; }
+.ovw-llmdist-lane-rows--compact .ovw-llmdist-block {
+  top: 0;
+  bottom: 0;
+  padding: 0;
+  border-radius: 2px;
+  /* The task name cannot fit in 9px; colour + the tooltip carry it. The text stays in the DOM
+     (clipped, not removed) so the button keeps its accessible name. */
+  font-size: 0;
+  line-height: 0;
+}
 .ovw-llmdist-lane-label {
   width: 96px;
+  line-height: 30px;
   flex: 0 0 auto;
   font-size: 12px;
   color: var(--text-muted);
@@ -1161,7 +1181,6 @@ main {
   position: absolute;
   top: 3px;
   bottom: 3px;
-  min-width: 10px;
   border-radius: 4px;
   border: none;
   padding: 0 6px;
