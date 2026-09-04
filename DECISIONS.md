@@ -5614,3 +5614,16 @@ ellenőrzésével.
 **Hivatkozás:** `store/watched-repos.json` (`taste-skill` és `agent-skills` bejegyzések),
 a 11 új skill mindegyike saját `VENDORED.md`-vel `~/.claude/skills/<name>/` alatt; korábbi
 `agent-skills` adoptálás: kártya `7a6c376f` / `f64fe6e1`.
+## 2026-09-04 09:45 -- A README fork-fejlesztés-bejegyzés formátuma: név + tömör leírás, semmi több (kártya 3eb0bbfc)
+
+**Döntés:** A `README.md` "Egyedi fork-fejlesztések (amiért külön fork)" szekciójának minden
+bejegyzése kizárólag a funkció NEVÉBŐL (rövid, félkövér) és egy tömör, önmagában érthető
+leírásból áll. Kikerül belőle: ki kérte, mikor, a kártya-ID, a fájlnév/sor/DB-mechanika és az
+indoklás-történet. A meglévő 77 bejegyzés át lett húzva erre a formátumra.
+**Miért:** Peti kifejezett kérése (2026-09-04, Telegram): a szekció túl részletes lett, a README-nek
+a MI-t kell mondania, nem a HOGYAN-t és a MIÉRT-et. A háttér nem vész el, a git-log és ez a
+`DECISIONS.md` őrzi. Mérve: a szekció 123 793 bájtról 20 364-re csökkent (83% kevesebb), miközben
+egyetlen valódi képesség sem tűnt el.
+**Ki döntött:** Peti (formátum), fullstack (végrehajtás).
+**Hivatkozás:** kártya `3eb0bbfc`; a `CLAUDE.md` "README karbantartás" szabály fork-fejlesztések
+pontja rögzíti a formátumot.
