@@ -5081,9 +5081,11 @@ Bash-hívása előtt fut, tehát egy túlillesztés valós beragadást cserélne
 
 **Melléklelet, külön kártyát érdemel:** a `noisy-command-guard.py`-nak EGYÁLTALÁN nincs
 `inject*`/`ensure*` bekötése a kódban -- csak kézzel szerkesztett `settings.json`-okba került be.
-2026-09-04-i méréssel 15 ügynökből 3-nál (`marketing`, `penzugy`, `videooo`) hiányzik, és egy
-újonnan létrehozott ügynök sem kapná meg; a `marketing`-nél a blast-radius és az npm-protect guard
-is hiányzik. A CLAUDE.md 15. szabálya közben élő kontrollként hivatkozik rá. Ez a
+2026-09-04-i méréssel 15 ügynökből 3-nál (`marketing`, `penzugy`, `videooo`) hiányzik. HELYESBÍTVE
+ugyanaznap (kártya `2a07f29e`): itt eredetileg az is szerepelt, hogy a `marketing`-nél a blast-radius
+és az npm-protect guard is hiányzik -- ez TÉVES volt, csak az egyik settings-fájlt mértem. A két élő
+fájl uniójára a noisy-command-guard az EGYETLEN hiányzó, azon a 3 ügynökön. Lásd a 2a07f29e
+bejegyzését a pontos mechanizmusért. A CLAUDE.md 15. szabálya közben élő kontrollként hivatkozik rá. Ez a
 "kézzel másolt őr tetszőleges részhalmazt véd" hibaosztály (`0fa54550`, 13 ügynökből 5), most újra.
 Ezt NEM javítottam ebben a kártyában (hatókör-tartás), jelezve MikroB-nak.
 
@@ -5226,3 +5228,189 @@ lista a táblába olvadt (ugyanaz az információ, egy helyen).
 **Ki döntött:** MikroB (szűkítés, ls-remote elvetése), Fron Ted (a note-mező hiányának kezelése, sorrend).
 **Hivatkozás:** kártya `184dc8d7` (rokon: `92a4c2e7`); `web/fork-updates.js`, `web/app-repo-freshness.js`,
 `src/__tests__/repo-freshness-ui.test.ts`.
+
+## 2026-09-04 07:30 -- Minden hook-guard kódból, mindkét úton: a noisy-command-guard bekötése és két talált féloldalasság
+
+**Döntés:** A `noisy-command-guard.py` bekötve a rendes `injectNoisyCommandGuard` (settings-generálás)
++ `ensureNoisyCommandGuard` (boot-idejű backfill) úton. Mellé egy meta-teszt
+(`hook-guards-are-code-wired.test.ts`), ami a guard-listát a FORRÁSBÓL vezeti le, és mindegyikre
+kikényszeríti MINDKÉT felet. A teszt írásakor azonnal talált két meglévő féloldalasságot, mindkettő
+javítva: a `pentest-tool-install-guard` csak a backfillen volt rajta (egy ÚJ ügynök a spawn-nál nem
+kapta meg), a `git-protect-guard` pedig csak a generálási úton (egy MEGLÉVŐ ügynök sosem kapott
+backfillt) -- utóbbi az a guard, ami a megosztott fán a `git add -A` / `reset --hard` osztályt
+blokkolja, tehát a respawn-ra várás nála a legrosszabb alapértelmezés.
+
+**Miért nem volt bekötve eddig:** a hook 2026-08-23 óta létezik és a CLAUDE.md 15. szabálya élő
+kontrollként hivatkozik rá, de a kódban SEHOL nem regisztrálta semmi. Csak azért ért el ügynököket,
+mert valaki kézzel beírta a KÖZÖS `~/.claude/settings.json`-ba, amit a `provisionIsolatedConfigDir()`
+másol be minden ügynök `.claude-config`-jába a provisioning pillanatában. A lefedettség tehát annak
+a véletlene volt, hogy egy ügynököt MIKOR provisionáltak ahhoz a kézi szerkesztéshez képest.
+
+**Mérési helyesbítés, saját hiba:** az első mérésem (a `6b32a478` mellékleleteként) azt is állította,
+hogy a `marketing`-nél a blast-radius és az npm-protect guard is hiányzik. TÉVES: csak az
+`.claude-config/settings.json`-t néztem. Ügynökönként KÉT élő settings-fájl van, és a Claude Code a
+kettőt egyesíti:
+- `agents/<n>/.claude/settings.json` -- PROJEKT szint, ezt írja az `agentSettingsPath()` és minden
+  `ensure*` backfill. Kód-tulajdonú.
+- `agents/<n>/.claude-config/settings.json` -- FELHASZNÁLÓ szint (az izolált `CLAUDE_CONFIG_DIR`),
+  ezt a `provisionIsolatedConfigDir` a közös `~/.claude/settings.json`-ból MÁSOLJA.
+A kettő unióján mérve egyetlen guard hiányzott, a noisy-command-guard, pontosan azon a 3 ügynökön
+(`marketing`, `penzugy`, `videooo`). A README és a `06:40`-es bejegyzés helyesbítve.
+
+**Ki döntött:** backend (a lelet, a mérés, a helyesbítés és a végrehajtás), MikroB (külön kártya).
+
+**Hivatkozás:** kártya `2a07f29e` (eredeti jelzés: `6b32a478` melléklelete);
+`src/web/agent-scaffold.ts`, `src/web.ts`, `src/__tests__/hook-guards-are-code-wired.test.ts`.
+
+## 2026-09-04 07:50 -- A cd-chain-guard két mezei hamis-pozitívja, javítva (a guard a saját szerzőjét blokkolta)
+
+**Döntés:** A `scripts/hooks/cd-chain-guard.py` mostantól (1) csak akkor blokkol, ha az olvasó-parancsnak
+VAN útvonal-operandusa, és (2) kiszűri az idézőjeles literálokat, mielőtt szegmensekre bontaná a
+parancsot. A selftest 29-ről 37 esetre nőtt, mindkét szabály mutációval igazolva.
+
+**Miért:** a guard percekkel a landolás után elkezdett jogos parancsokat blokkolni, és elsőként a saját
+szerzőjét fogta meg. Két különböző hibaosztály:
+1. `cd X && git merge ... | tail -2` -- a `tail` itt egy CSÖVET olvas, nincs fájl-argumentuma, tehát
+   nincs feloldandó könyvtár sem: ez a parancs SOSEM tudott volna beragadni. Ugyanez a
+   `cd X && ls | head -5` és a `cd X && echo hi | cat`. A matcher a parancs NEVÉBŐL dolgozott, és nem
+   nézte, van-e egyáltalán operandusa.
+2. `python3 -c "print('cd /x && cat y')"` -- a guard nem szűrte az idézőjeles literálokat, ezért az
+   idézőjelen BELÜLI `&&` és `|` mentén szegmensekre esett, és megfogta a guardot olyan szövegen, ami
+   sosem fut le. A `noisy-command-guard.py` fejléce ezt a hibaosztályt kimondottan dokumentálja (a saját
+   javasolt parancsa fogta meg magát), és emiatt szűri a literálokat -- ez a guard e nélkül indult.
+
+**A tanulság, ami túlmutat ezen a guardon:** a REVIEW-ban magam írtam, hogy egy túlillesztés "valós
+beragadást cserélne flotta-szintű bosszúságra", és épp ezt építettem bele. A 29 selftest-eset az
+alakot fedte, nem a HASZNÁLATOT: egyetlen esetem sem volt csővel, és egyetlen sem adta át a wedge-alakot
+argumentumként -- pedig a második mintát a saját `scripts/`-fájlokban naponta írjuk. Egy blokkoló hook
+eseteit nem elég a védeni kívánt alakból meríteni; a valós parancs-korpuszból is kell.
+
+**Ki döntött:** backend (a regresszió, a felfedezés és a javítás is).
+
+**Hivatkozás:** eredeti kártya `6b32a478`; `scripts/hooks/cd-chain-guard.py`,
+`scripts/hooks/cd-chain-guard.selftest.py` (37 eset), `src/__tests__/cd-chain-guard-wiring.test.ts`.
+
+## 2026-09-04 08:00 -- A lockfile-out-of-sync zaj oka nem a verzió-bump volt, hanem a csomagkezelő
+
+**Döntés:** A `store/lockfile-sync-check.sh` mostantól NEM ALKALMAZHATÓ-t (exit 0) ad, ha az adott
+ref-en nincs `pnpm-lock.yaml` -- vagyis a repó nem pnpm-et használ. Az OUT OF SYNC (exit 1) marad
+minden valódi esetre, és `--base` mellett a lockfile TÖRLÉSE is valódi lelet, nem "nem alkalmazható".
+
+**Miért nem az, amit a kártya feltételezett:** a kártya (Cybersec észrevétele nyomán) azt írta, hogy
+a lander bumpolja a `package.json`-t, a lockfile-t nem, ezért látszik verzió-eltérés
+(`1.34.1+mikrob.47` vs `1.34.1`). Megmértem, és mindkét fele másképp van:
+- A `marveen-land.sh` MÁR szinkronban tartja a `package-lock.json`-t (`bump-fork-version.sh`), és a
+  `+mikrob.N` utótag SZÁNDÉKOSAN nincs benne a lockfile-ban -- a script fejléce ezt ki is mondja
+  (npm az `X.Y.Z` alakot várja ott). A develop-on mért `package.json 1.34.1+mikrob.57` /
+  `package-lock.json 1.34.1` tehát a TERVEZETT állapot, nem drift.
+- A `cleancore-land.sh` nem bumpol semmit, csak ellenőriz.
+
+**Ami valóban történt:** a `lockfile-sync-check.sh` pnpm-only (`pnpm install --frozen-lockfile`), a
+marveen viszont npm-repó (`package-lock.json`, `pnpm-lock.yaml` nincs). A check ezért
+`ERR_PNPM_NO_LOCKFILE`-t kapott ("pnpm-lock.yaml is absent"), és ezt OUT OF SYNC-nek jelentette,
+"a package.json changed without regenerating pnpm-lock.yaml" szöveggel. Mivel a `marveen-land.sh`
+MINDEN landolásnál bumpolja a `package.json`-t, a gate-pretriage 8. szekciója minden landolás után
+kiírta a `[fail]`-t. Mérve 2026-09-04-én az `origin/develop`-on: exit 1, pontosan ezzel az üzenettel.
+
+**Az elv, amit ez követ:** a script saját fejléce külön kezeli az exit 3-at az exit 1-től, mert
+"a pnpm hiányzik" és "a lockfile elavult" különböző tények. A "ez a repó egyáltalán nem pnpm-et
+használ" egy harmadik, és az sem a kártyáról szóló tény. Egy visszatérő hamis `[fail]` rosszabb,
+mint ha nem lenne check: az a zaj, amiben egy VALÓDI drift elrejtőzik -- pontosan ezt jelezte
+Cybersec.
+
+**Ellenőrizve mindkét irányban:** a CleanCore-on (valódi pnpm-repó) a check TOVÁBBRA IS fut és
+dolgozik (`OK -- 36 manifest(s) at HEAD match pnpm-lock.yaml`); a marveen gate-pretriage-ből a
+lockfile-lelet eltűnt. A selftest 7-ről 11 esetre nőtt, és kapott egy vitest-futtatót
+(`lockfile-sync-check-selftest.test.ts`), mert eddig semmi nem futtatta -- egy olyan check
+selftestje, aminek a verdiktjére a `cleancore-land.sh` landolást UTASÍT EL, nem maradhat
+kézi-indítású.
+
+**NYITVA MARAD, külön kártyát érdemel:** a marveennek ezzel NINCS lockfile-drift ellenőrzése
+(eddig sem volt -- a mostani csak hamisan jelzett). Egy npm-ág (`package-lock.json` ellenőrzése)
+külön munka, saját tervezéssel; ezt a kártyát nem terheltem vele.
+
+**Ki döntött:** Cybersec (az észrevétel), MikroB (kártya), backend (a mérés, a premissza
+helyesbítése és a végrehajtás).
+
+**Hivatkozás:** kártya `fe06da0c` (Cybersec észrevétel: `4ae2d3f5`);
+`store/lockfile-sync-check.sh`, `src/__tests__/lockfile-sync-check-selftest.test.ts`.
+
+## 2026-09-04 08:15 -- Cybersec NO-GO a cd-chain-guard javításán: az operandus-szabály kinyitotta a `grep -rn` alakot
+
+**Döntés:** A rekurzió-felismerés (a) `r`/`R`-t keres BÁRHOL a rövid-flag klaszterben, nem csak
+utolsó betűként, és (b) CSAK ténylegesen rekurzióra képes parancsokra fut (`grep, egrep, fgrep, rg,
+ripgrep, ag, ack`) -- a `sed`/`awk` kimarad, mert ott a `-r` KITERJESZTETT REGEXET jelent, nem
+rekurziót.
+
+**Miért (Cybersec NO-GO a 7705585d-n):** a hamis-pozitív javításhoz tett operandus-ellenőrzés
+kinyitotta azt a hibaosztályt, amiért a guard létezik -- a leggyakoribb írásmódjában. A régi
+rekurzió-regex (`-[a-zA-Z]*[rR](?:\s|$)`) csak akkor talált, ha az `r` a klaszter UTOLSÓ betűje:
+`-nr` illeszkedett, `-rn` nem. Útvonal-operandus nélkül a grep 2 operandust igényel, egy van (a
+minta), tehát átengedte. Pedig a `grep -rn foo` útvonal nélkül a CWD-t járja be, vagyis a `cd`-hez
+képest oldódik fel: pontosan a beragadás, amit a guard megelőz. A
+`grep -rn --include="*.ts" foo` pedig szó szerint az az alak, ami a flotta paneljeit négyszer
+beragasztotta.
+
+**Miért nem vette észre a saját selftestem:** a 37 esetben MINDEN `-rn` minta hordozott egy záró `.`
+útvonal-operandust, tehát az operandus-szabály megmentette őket, és a rés láthatatlan maradt.
+Ugyanezért ment át a "rekurzív ág kivétele" mutáció is: az egyetlen eset, amit megfogott, a
+`grep -r "x"` volt -- ott az `r` véletlenül az utolsó betű. Egy mutáció csak azt méri, amit a
+tesztkészlet MEGKÜLÖNBÖZTET; ha minden eset ugyanazon a második dimenzión (van útvonal-operandus)
+azonos, a mutáció zöldre futhat egy valódi lyuk fölött.
+
+**Mellékhaszon:** a hatókörözés egyben megszüntet egy RÉGEBBI hamis pozitívot is, ami már az eredeti
+guardban is benne volt: a `cd X && sed -nr "s/x/y/p"` (cső, nincs útvonal-operandus) mindkét korábbi
+verzióban BLOCK volt, most PASS. Egy változtatás zárja a lyukat és nyitja a helyes utat.
+
+**Három-utas mérés (ugyanaz a bemenet, három verzió):**
+```
+                                            2dd7c958   7705585d   javítás
+cd /abs && grep -rn foo                      BLOCK      pass       BLOCK
+cd /abs && grep -rni foo                     BLOCK      pass       BLOCK
+cd /abs && grep -Rn foo                      BLOCK      pass       BLOCK
+cd /abs && grep -rn --include="*.ts" foo     BLOCK      pass       BLOCK
+cd /abs && sed -nr "s/x/y/p"                 BLOCK      BLOCK      pass
+cd /abs && sed -nr "s/x/y/p" src/file.ts     BLOCK      BLOCK      BLOCK
+cd /abs && git merge ... | tail -2           BLOCK      pass       pass
+cd /abs && ls | head -5                      BLOCK      pass       pass
+```
+
+**Ki döntött:** Cybersec (a lelet, a mérés és a javítás iránya), backend (végrehajtás).
+
+**Hivatkozás:** kártya `9c664b88` (NO-GO komment 19161), a javított commit `7705585d`;
+`scripts/hooks/cd-chain-guard.py`, `scripts/hooks/cd-chain-guard.selftest.py` (43 eset).
+
+## 2026-09-04 08:20 -- A negyedik ajtó: `POST /api/fleet/import` (QA FAIL a b46a4b7e-n)
+
+**Döntés:** A `fleet-transfer.ts` `validateNames()`-e mostantól a `SAFE_NAME_RE` MELLETT az
+`isReservedSenderId`-t is futtatja az ügynök-nevekre. A négy ajtó ezzel teljes.
+
+**Miért:** a QA gate megtalálta azt a negyedik utat, amit a REVIEW-mban magam kérdeztem meg
+("maradt-e negyedik út `agents/` alá"). A `validateNames()` csak a `SAFE_NAME_RE`-t nézte, ami
+mindkét fenntartott azonosítót elfogadja szó szerint (megmérve: `/^[a-z0-9][a-z0-9_-]*$/` illeszkedik
+a `system`-re és a `system-directive`-re is). A `writeAgentFiles()` saját kommentje mondja ki, hogy
+a nevek "already validated by validateNames() before this is called" -- vagyis ez az EGYETLEN kapu a
+`safeJoin(AGENTS_BASE_DIR, agent.name)` előtt. Egy fleet-export JSON pedig végig támadó által írt
+tartalom, pontosan úgy, ahogy egy bundle manifestje -- amit a másik három ajtónál magam hoztam fel
+indoklásként.
+
+**A MÉRÉSI HIBÁM, ami miatt kimaradt:** az ajtókat két HELPER-NÉV grepelésével számoltam össze
+(`scaffoldAgentDir`, `resolveDest`). Ez csak azokat az ajtókat találja meg, amelyek ezt a két
+helpert használják -- a `fleet-transfer.ts` viszont `safeJoin(AGENTS_BASE_DIR, agent.name)`-nel ír,
+egyiket sem hívja. A helyes felsorolás a CÉL szerint megy, nem a segédfüggvény szerint. Újrafuttatva
+a cél szerint (`AGENTS_BASE_DIR` / `agentDir(` / `agentConfigRoot(` írási művelettel), a
+`fleet-transfer.ts:944` az EGYETLEN további író; minden más találat már létező, korábban validált
+ügynökön dolgozik, a `web.ts:102` pedig magát az alap-könyvtárat hozza létre. A négy ajtó ezzel
+bizonyítottan teljes, nem csak remélhetően.
+
+**Egy eltérés a QA javasolt egysorosától, szándékosan:** a QA a `sanitizeAgentName(...)` eredményén
+ellenőrizne; én a NYERS `agent.name`-en ellenőrzök. Az a string lesz a könyvtár neve, és a
+`SAFE_NAME_RE` már kikényszerítette a kisbetűt. Egy szanitizált MÁSOLAT ellenőrzése miközben az
+EREDETIT írjuk ki pontosan az a hibaosztály, amit a b46a4b7e másik három ajtajánál elkerültünk
+(ott a szanitizált érték a kiírt érték, ezért ott az a helyes). Teszt rögzíti mindkettőt.
+
+**Ki döntött:** QA (a lelet és a mérés), backend (végrehajtás, a nyers-vs-szanitizált finomítás és
+a cél szerinti újra-felsorolás).
+
+**Hivatkozás:** kártya `b46a4b7e` (QA FAIL komment), `src/web/fleet-transfer.ts`,
+`src/__tests__/fleet-transfer.test.ts` (4 új eset, köztük a nem-vakusság kontroll).

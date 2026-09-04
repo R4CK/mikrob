@@ -361,3 +361,63 @@ describe('importFleet: avatarExt traversal rejected', () => {
     expect(errors.some(e => e.includes('avatarExt') && e.includes('testbot'))).toBe(true)
   })
 })
+
+// ---------------------------------------------------------------------------
+// The reserved sender namespace, on the FOURTH door (card b46a4b7e, QA gate on f1565e66)
+// ---------------------------------------------------------------------------
+//
+// Card 5c5d7bc4 gave the system-directive channel its own sender id; b46a4b7e closed the three
+// doors that MINT an agent identity (POST /api/agents, and both bundle importers). The QA gate
+// found a fourth: this one. validateNames() checked only SAFE_NAME_RE, which accepts both reserved
+// ids verbatim -- and writeAgentFiles' own comment says names are "already validated by
+// validateNames() before this is called", so it is the only gate before
+// safeJoin(AGENTS_BASE_DIR, agent.name).
+//
+// It matters for the same reason as the other three: an agent directory by that name means
+// context-guard-runner.ts and context-restart-gate-runner.ts, which pass the agent's OWN name as
+// `from`, would write genuine from_agent="system-directive" rows that sendSystemDirective never
+// wrote -- losing the one-writer property the rename was bought for.
+describe('importFleet: reserved sender ids cannot be minted as agent names (card b46a4b7e)', () => {
+  const fleetWithAgent = (name: string): string => JSON.stringify({
+    schemaVersion: 1,
+    exportedAt: '2026-01-01T00:00:00.000Z',
+    sourceHost: 'attacker',
+    agents: [{
+      name,
+      config: {}, claudeMd: '', soulMd: '', mcp: {}, settings: {}, channelsAccess: {}, agentSkills: [],
+    }],
+    skills: [], scheduledTasks: [], memories: [], dailyLogs: [],
+    kanban: { cards: [], comments: [], cardEvents: [], labels: [], cardLabels: [] },
+    ideaBox: { ideas: [], comments: [], statusLog: [] },
+    dashboardSettings: { autonomy: {}, autoRestart: {}, agentsDesired: {}, norbertPersonal: {} },
+  })
+
+  const errorsFor = async (name: string): Promise<string[]> => {
+    const { importFleet } = await import('../web/fleet-transfer.js')
+    // Dry run: the name check runs before the apply branch, so nothing is ever written.
+    const result = importFleet(fleetWithAgent(name), { apply: false })
+    return ((result as any).errors as string[]) ?? []
+  }
+
+  // NON-VACUITY, and it has to come first: if this fixture failed SCHEMA validation, every case
+  // below would "pass" on an unrelated error. An ordinary name must produce no errors at all.
+  it('an ordinary agent name imports with NO errors -- the fixture is valid', async () => {
+    expect(await errorsFor('testbot')).toEqual([])
+  })
+
+  it.each(['system-directive', 'system'])('rejects the reserved id %j', async (name) => {
+    const errors = await errorsFor(name)
+    expect(errors.some((e) => e.includes('fenntartott'))).toBe(true)
+    // Named, not generic: the operator has to be able to tell WHICH name was refused.
+    expect(errors.some((e) => e.includes(name))).toBe(true)
+  })
+
+  // SAFE_NAME_RE was the only check here, and it is the reason the door was open: it accepts both
+  // reserved ids. Pinned so nobody "simplifies" the new check away on the grounds that the name
+  // pattern already validates the value.
+  it('SAFE_NAME_RE alone would let both reserved ids through', () => {
+    const SAFE_NAME_RE = /^[a-z0-9][a-z0-9_-]*$/
+    expect(SAFE_NAME_RE.test('system-directive')).toBe(true)
+    expect(SAFE_NAME_RE.test('system')).toBe(true)
+  })
+})

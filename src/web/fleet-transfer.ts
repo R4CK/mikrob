@@ -17,6 +17,7 @@ import {
 } from 'node:crypto'
 import { PROJECT_ROOT, STORE_DIR, MAIN_AGENT_ID, BOT_NAME, BRAND_NAME, OWNER_NAME, CHANNEL_PROVIDER } from '../config.js'
 import { atomicWriteFileSync } from './atomic-write.js'
+import { isReservedSenderId } from './system-directive-id.js'
 import { updateEnvFile } from '../env.js'
 import { AGENTS_BASE_DIR, listAgentNames } from './agent-config.js'
 import { safeJoin } from './sanitize.js'
@@ -764,6 +765,21 @@ function validateNames(fleet: FleetJson): string[] {
   for (const agent of fleet.agents ?? []) {
     if (!SAFE_NAME_RE.test(String(agent.name ?? ''))) {
       errors.push(`Érvénytelen agent.name: "${String(agent.name).slice(0, 60)}"`)
+    }
+    // THE FOURTH DOOR (card b46a4b7e, found by the QA gate on f1565e66). The reserved
+    // sender namespace is enforced on POST /api/agents and both bundle importers, but this
+    // path had only SAFE_NAME_RE -- which accepts `system` and `system-directive` verbatim
+    // (measured: both match /^[a-z0-9][a-z0-9_-]*$/). writeAgentFiles' own comment says the
+    // names are "already validated by validateNames() before this is called", so this is the
+    // only gate on the way to safeJoin(AGENTS_BASE_DIR, agent.name) -- and a fleet-export JSON
+    // is attacker-written end to end, exactly like a bundle manifest.
+    //
+    // Checked on the VERBATIM name, not a sanitized copy: this value is what becomes the
+    // directory, and SAFE_NAME_RE has already forced it lowercase. Validating a transformed
+    // string while writing the original is how a guard ends up checking something other than
+    // what it protects.
+    if (isReservedSenderId(String(agent.name ?? ''))) {
+      errors.push(`A(z) "${String(agent.name).slice(0, 60)}" név fenntartott a folyamaton belüli rendszer-küldőknek -- adj másik nevet az ügynöknek`)
     }
     // B1: avatarExt defense-in-depth guard (primary enforcement in writeAgentFiles)
     if (agent.avatar && agent.avatarExt !== undefined &&
