@@ -4988,3 +4988,34 @@ nem hiba, és Fron Teddy előre megkapta.
 swimlane-követelmény és a KPI-lista).
 **Hivatkozás:** kártya `2ffc0a96` (Pair-FE: `d6ecb003`); `src/web/routes/local-llm.ts`
 (`buildModelUsageSwimlane` + a route), `src/__tests__/local-llm-model-usage-swimlane.test.ts`.
+
+## 2026-09-04 08:40 -- 92a4c2e7: repó-frissesség három kimondott állapottal, közös osztályozóval (Fron Ted)
+
+**Előzmény:** Peti 2026-09-04-i észrevétele: a Frissítések oldalon nem látszik repónként, hogy egy
+beépített repó friss-e vagy lemaradt. A backend (`GET /api/integrated-repos`, `statusForRepo`) már
+adta a `lastCheckedAt` / `behind` / `upstreamSha` mezőket; a Beépített repók rács a `behind > 0`
+esetet mutatta, de a `behind 0` NÉMA volt (nem különbözött a sosem mért repótól), a hiányzó
+ellenőrzés-dátum sora elmaradt, és az oldal info-doboza még azt állította, hogy a jelzés „nem
+elérhető". A Frissítések oldal egyáltalán nem beszélt a beépített repókról.
+
+**Döntés:** (1) HÁROM kimondott állapot repónként: `naprakész` / `N commit lemaradás` / `nem mérhető`.
+A `behind 0` CSAK akkor „naprakész", ha van `upstreamSha` (volt mihez mérni) és telepítve van;
+pipx-telepítés vagy sosem fetchelt klón „nem mérhető" (12. szabály: nincs kitalált állapot). (2) Az
+osztályozás egyetlen DOM-mentes modulban (`web/app-repo-freshness.js`), amit a rács ÉS a Frissítések
+sáv is hív, így a két oldal nem tud eltérni; a modul tesztje a függvényt FUTTATJA, nem újraszámolja.
+(3) A Frissítések oldal egy összegző sávot kap (számok + a lemaradt repók névsora + ugrás a rácsra),
+nem a teljes rács duplikátumát. (4) Az „Utolsó ellenőrzés" sor mindig ott van („még nem történt"
+helyettesítővel), mert az elhagyott sor ránézésre nem különbözött egy ellenőrzöttől.
+
+**Ami NEM változott:** backend; a dashboardról kézzel hozzáadott repók (nincs mért adatuk, a
+Frissítés gombjuk továbbra is vak pull, az info-doboz ezt most már pontosan így mondja).
+
+**Mérés élőben (Playwright, a worktree fájljai a :3420 valós API-ja ellen, desktop 1280 + mobil 390):**
+37 repó, 18 naprakész, 3 lemaradt (2 átnézés előtt), 16 nem mérhető, 15 sosem ellenőrzött; nincs
+konzolhiba, nincs vízszintes görgetés, a „Repónkénti részletek" gomb 44 px és a rácsra visz.
+Mutációs teszt: három mutáns (upstream-ref nélküli „naprakész", kimaradó sáv-hívás, elhagyott
+ellenőrzés-sor) mindegyike bukik a guard-teszten, az alapvonal 40/40 zöld.
+
+**Ki döntött:** Fron Ted (a három állapot és a közös modul), Peti (az igény), MikroB (dispatch, csak-FE hatókör).
+**Hivatkozás:** kártya `92a4c2e7`; `web/app-repo-freshness.js`, `web/app-connectors.js`,
+`web/fork-updates.js`, `src/__tests__/repo-freshness-ui.test.ts`.
