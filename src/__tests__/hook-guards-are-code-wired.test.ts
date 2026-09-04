@@ -43,13 +43,30 @@ function generationBlock(src: string): string {
  */
 function injectorsWiringAHookScript(src: string): { fn: string; script: string }[] {
   const out: { fn: string; script: string }[] = []
-  const rx = /export function (inject\w+)\(existing[^)]*\)[^{]*\{([\s\S]*?)\n\}/g
+  // The parameter NAME is not part of the contract (card f7b33416). It used to be matched literally
+  // as `\(existing[^)]*\)`, so renaming that parameter dropped the injector out of the derived set
+  // in silence -- QA reproduced it: renaming injectBlastRadiusGuard's parameter took the suite from
+  // 20/20 to 18/18 with zero failures. A derivation that quietly returns a smaller set is the same
+  // defect class this whole file guards against, one level up.
+  const rx = /export function (inject\w+)\([^)]*\)[^{]*\{([\s\S]*?)\n\}/g
   let m: RegExpExecArray | null
   while ((m = rx.exec(src)) !== null) {
-    const script = /'scripts', 'hooks', '([^']+)'/.exec(m[2])
-    if (script) out.push({ fn: m[1], script: script[1] })
+    const fn = m[1] as string
+    const body = m[2] as string
+    const direct = /'scripts', 'hooks', '([^']+)'/.exec(body)
+    if (direct) out.push({ fn, script: direct[1] as string })
   }
   return out
+}
+
+/**
+ * Every hook script this file references, however it is referenced. This is the set the derivation
+ * above has to MATCH -- see the equality assertion below for why a `>= 7` floor was not enough.
+ */
+function allHookScriptsReferenced(src: string): string[] {
+  const out = new Set<string>()
+  for (const m of src.matchAll(/'scripts', 'hooks', '([^']+)'/g)) out.add(m[1] as string)
+  return [...out].sort()
 }
 
 const INJECTORS = injectorsWiringAHookScript(SCAFFOLD)
@@ -62,6 +79,18 @@ describe('every hook guard is registered by code, on both paths (card 2a07f29e)'
     expect(INJECTORS.length).toBeGreaterThanOrEqual(7)
     expect(INJECTORS.map((i) => i.script)).toContain('noisy-command-guard.py')
     expect(INJECTORS.map((i) => i.script)).toContain('cd-chain-guard.py')
+  })
+
+  // THE FLOOR WAS NOT ENOUGH (card f7b33416, Cybersec+QA on 2a07f29e). `>= 7` passes just as
+  // happily on 8 injectors as on 9, so two different silences slipped through it: a guard wired
+  // only by an ensure* (staleness-guard.py had no injector at all, and was therefore missing from
+  // the GENERATION path too, not merely from this test), and an injector that fell out of the
+  // derivation when someone renamed its parameter. Equality closes both -- every hook script this
+  // file mentions must be reachable through an injector, and any new one has to arrive with both
+  // halves or this fails by name.
+  it('EVERY referenced hook script is wired by an injector -- set equality, not a floor', () => {
+    const derived = [...new Set(INJECTORS.map((i) => i.script))].sort()
+    expect(derived).toEqual(allHookScriptsReferenced(SCAFFOLD))
   })
 
   it.each(INJECTORS)('$script: the generation path calls $fn', ({ fn }) => {
