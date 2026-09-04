@@ -92,23 +92,53 @@ describe('STDIN_SHELL_RX xargs branch: must keep denying (card ccc2c742 fix accu
   })
 })
 
+/**
+ * CPU milliseconds spent inside `fn`, not wall-clock (card 3b6c94af).
+ *
+ * WHY THE INSTRUMENT CHANGED. This pair is a QUADRATIC-BLOWUP regression test: the thing it must
+ * catch is a regex that starts doing vastly more WORK. Wall-clock measures work plus whatever else
+ * the machine was doing, and the suite runs 12 vitest workers in parallel, so the second case went
+ * red at 573ms against a 500ms budget during a full run while passing 18/18 in isolation. That is a
+ * false alarm on a green codebase, and under marveen-land's zero-tolerance it stopped every landing.
+ *
+ * Measured on this host, same call, idle vs all cores saturated:
+ *
+ *            n=100000              n=500000
+ *   idle     wall  83  cpu  88     wall 237  cpu 234
+ *   loaded   wall  90  cpu  64     wall 315  cpu 181
+ *
+ * Wall inflates with contention (237 -> 315 here, 573 in the real full run); CPU stays in the same
+ * band. The work is CPU-bound regex backtracking, so a genuine blowup shows up in CPU just as
+ * plainly -- the pre-fix cost was 9051ms at n=100000, roughly 100x the current figure. Switching
+ * instrument therefore does NOT weaken the assertion (rule 7): it measures the same quantity with
+ * the noise removed, and the budgets below still sit an order of magnitude under any real
+ * regression.
+ */
+function cpuMsOf(fn: () => void): number {
+  const before = process.cpuUsage()
+  fn()
+  const d = process.cpuUsage(before)
+  return (d.user + d.system) / 1000
+}
+
 describe('STDIN_SHELL_RX xargs branch: quadratic-blowup repro must stay fast (card ccc2c742)', () => {
   // The exact adversarial shape from the finding: `xargs` + a long backslash run (no `/`, so
   // PATH_PREFIX's optional group can never close) + a shell name. Whatever the outcome (denied or
   // not), it must not take anywhere near the measured pre-fix cost (9051ms at n=100000).
-  it('stays under 200ms at n=100000 backslashes (pre-fix measured: 9051ms)', () => {
+  it('stays cheap at n=100000 backslashes (pre-fix measured: 9051ms; now ~64-88ms CPU)', () => {
     const text = `xargs -0 ${backslashRun(100000)}bash`
-    const t0 = Date.now()
-    gateDecision('Bash', { command: text })
-    const ms = Date.now() - t0
-    expect(ms).toBeLessThan(200)
+    const ms = cpuMsOf(() => { gateDecision('Bash', { command: text }) })
+    // ~11x the worst measured figure, and ~9x BELOW the pre-fix cost: a blowup cannot hide in here.
+    expect(ms).toBeLessThan(1000)
+    // Non-vacuity: a gate that stopped examining the input at all would read as 0 and pass silently.
+    expect(ms).toBeGreaterThan(0)
   })
 
-  it('stays under 500ms at n=500000 backslashes (below the 1MB size gate)', () => {
+  it('stays cheap at n=500000 backslashes, below the 1MB size gate (now ~181-234ms CPU)', () => {
     const text = `xargs -0 ${backslashRun(500000)}bash`
-    const t0 = Date.now()
-    gateDecision('Bash', { command: text })
-    const ms = Date.now() - t0
-    expect(ms).toBeLessThan(500)
+    const ms = cpuMsOf(() => { gateDecision('Bash', { command: text }) })
+    // A quadratic regression here would be ~25x the n=100000 pre-fix cost, i.e. minutes, not 1.5s.
+    expect(ms).toBeLessThan(1500)
+    expect(ms).toBeGreaterThan(0)
   })
 })
