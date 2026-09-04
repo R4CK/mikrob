@@ -134,7 +134,29 @@ describe('STDIN_SHELL_RX pipe branch: the broader trigger must not create new fa
 // is correct rather than a gap: they are not in CMD_POSITION_CHARS, so they are held by the negated
 // class's own `<>` exclusion, which the mutation above deliberately leaves in place. Their
 // assertions here are backstops against a general blowup, not proof of this particular fix.
-const N = 16000
+//
+// WHY N=8000 AND NOT MORE. A ratio costs more than a single timed call -- ROUNDS samples at N plus
+// ROUNDS at 4N, per assertion. At N=16000 this file went from 1357ms to 4682ms, and it runs inside
+// a 612-file suite whose CPU contention is the very thing that makes these tests flake: paying 3.4x
+// here would feed the problem this card exists to fix. Re-measured at N=8000 with the same mutation
+// (loadavg ~23):
+//
+//     anchor    fixed   pre-fix          anchor    fixed   pre-fix
+//       |       4.99x   15.73x             )       3.99x   16.89x
+//       &       5.21x   14.84x             <       3.96x    4.46x
+//       ;       4.28x   15.64x             >       5.06x    4.73x
+//       (       3.91x   16.16x
+//
+// Same separation, same five anchors, at half the cost. The smallest sample is 2.6ms CPU, which is
+// thousands of microseconds of process.cpuUsage() resolution -- not near the noise floor.
+//
+// THE REMAINING COST IS DELIBERATE, not overlooked: this file lands at ~3.0s against the old 1.36s,
+// still 2.2x. A ratio inherently costs more than one timed call (ROUNDS samples at N plus ROUNDS at
+// 4N, per assertion), and ROUNDS stays at 3 because dropping to 2 pushed the worst observed ratio
+// from 5.4x to 6.4x -- thinner margin under MAX_RATIO=8 than the noise rejection is worth. The
+// trade is priced against what it prevents: one false red costs a whole fleet-test run (130-170s)
+// and, on card fbca2448, cost three landings in a row. 1.7s per suite run against that is cheap.
+const N = 8000
 const M = 4 * N
 const ROUNDS = 3
 // Quadratic = 16x, linear = 4x. 8 is the log-space midpoint, so it takes a 2x error in either
