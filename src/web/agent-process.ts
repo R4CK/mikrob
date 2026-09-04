@@ -1379,7 +1379,7 @@ async function startAgentProcessUnlocked(name: string, opts: { fresh?: boolean }
     if (isClaude && authMode === 'api') {
       const agentApiKey = getSecret(`agent-${name}-api-key`) ?? ''
       if (agentApiKey) {
-        apiKeyEnv = `export ANTHROPIC_API_KEY="${agentApiKey}" && `
+        apiKeyEnv = `export ANTHROPIC_API_KEY=${shSingleQuote(agentApiKey)} && `
       }
     }
     // Apply security profile: write allow/deny list into settings.json, and
