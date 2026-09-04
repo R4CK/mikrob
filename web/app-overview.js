@@ -630,9 +630,14 @@ async function loadCostEstimatesWidget() {
 // ============================================================
 // === Overview: local-LLM model-distribution swimlane (card d6ecb003, pair-BE 2ffc0a96) ===
 // ============================================================
-// One lane per model that actually has activity in the window (no empty lane for an unused
-// model, per Peti's spec), tasks rendered as blocks positioned by their REAL start-time and
-// duration (not bucketed) and colored by task type, with a hover/focus tooltip and a legend.
+// One lane per model with activity in the window PLUS one per installed/configured model that
+// had none (card 21950f77 -- this REVERSES the original "no empty lane for an unused model"
+// spec: with only busy lanes drawn, an idle model and a model that does not exist looked the
+// same). Tasks render as blocks positioned by their REAL start-time and duration (not bucketed)
+// and colored by task type, with a hover/focus tooltip and a legend. An idle lane draws one
+// short muted row instead of a full-height track, so the roster costs the viewport almost
+// nothing; a lane whose model is no longer installed is labelled as such, but ONLY when the
+// roster was actually readable (see rosterAvailable).
 // Design ref: store/design-refs/local-llm-swimlane-mockup-2026-09-03.jpg.
 const OVW_LLMDIST_PALETTE = ['#4a9eff', '#34d399', '#a78bfa', '#f59e0b', '#f87171', '#22d3ee', '#fb7185', '#facc15']
 let ovwLlmDistTaskColors = new Map()
@@ -771,7 +776,7 @@ function ovwLlmDistPackRows(blocks, gapPct) {
   return rowRightEdge.length
 }
 
-function ovwLlmDistLanesHtml(models, rangeStartMs, rangeEndMs, zoom) {
+function ovwLlmDistLanesHtml(models, rangeStartMs, rangeEndMs, zoom, rosterAvailable) {
   const span = Math.max(1, rangeEndMs - rangeStartMs)
   // Both geometry constants are percentages of the CANVAS, which is `zoom` times wider than the
   // viewport -- so dividing by zoom keeps the VISUAL minimum and the VISUAL gap exactly where they
@@ -783,6 +788,23 @@ function ovwLlmDistLanesHtml(models, rangeStartMs, rangeEndMs, zoom) {
   const gap = OVW_LLMDIST_GAP_PCT / z
   return models.map((m) => {
     const tasks = Array.isArray(m.tasks) ? m.tasks : []
+    // `installed: false` is only MEANINGFUL when the roster lookup succeeded. With ollama down
+    // every lane comes back false, and badging them all "no longer installed" would be a claim
+    // about state we could not read -- the same failure the /models endpoint refuses to make.
+    const removed = rosterAvailable === true && m.installed === false
+    const labelHtml = `<span class="ovw-llmdist-lane-label${removed ? ' ovw-llmdist-lane-label--removed' : ''}"
+        title="${escapeHtml((m.model || '') + (removed ? ' -- ' + t('overview.llmDist.lane_uninstalled') : ''))}"
+      >${escapeHtml(m.model || '?')}</span>`
+    if (!tasks.length) {
+      return `<div class="ovw-llmdist-lane ovw-llmdist-lane--idle">
+      ${labelHtml}
+      <div class="ovw-llmdist-lane-rows">
+        <div class="ovw-llmdist-lane-track ovw-llmdist-lane-track--idle">
+          <span class="ovw-llmdist-lane-idle-note">${escapeHtml(t('overview.llmDist.lane_idle'))}</span>
+        </div>
+      </div>
+    </div>`
+    }
     const blocks = tasks.map((task) => {
       const leftPct = Math.min(100, Math.max(0, ((Number(task.startMs) - rangeStartMs) / span) * 100))
       const widthPct = Math.min(100 - leftPct, Math.max(minW, (Number(task.durationMs) / span) * 100))
@@ -811,7 +833,7 @@ function ovwLlmDistLanesHtml(models, rangeStartMs, rangeEndMs, zoom) {
       return `<div class="ovw-llmdist-lane-track">${inRow}</div>`
     }).join('')
     return `<div class="ovw-llmdist-lane">
-      <span class="ovw-llmdist-lane-label" title="${escapeHtml(m.model || '')}">${escapeHtml(m.model || '?')}</span>
+      ${labelHtml}
       <div class="ovw-llmdist-lane-rows${compact ? ' ovw-llmdist-lane-rows--compact' : ''}">${rowsHtml}</div>
     </div>`
   }).join('')
@@ -950,7 +972,7 @@ async function loadLlmDistWidget() {
       <div class="ovw-llmdist-scroll" id="ovwLlmDistScroll" tabindex="0"
            role="group" aria-label="${escapeHtml(t('overview.llmDist.scroll_label'))}">
         <div class="ovw-llmdist-canvas" style="--llmdist-zoom:${zoom.toFixed(4)}">
-          <div class="ovw-llmdist-lanes">${ovwLlmDistLanesHtml(models, rangeStartMs, rangeEndMs, zoom)}</div>
+          <div class="ovw-llmdist-lanes">${ovwLlmDistLanesHtml(models, rangeStartMs, rangeEndMs, zoom, d.rosterAvailable)}</div>
           <div class="ovw-llmdist-axis">${ovwLlmDistAxisHtml(rangeStartMs, rangeEndMs)}</div>
         </div>
       </div>

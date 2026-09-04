@@ -1217,6 +1217,39 @@ main {
   border-radius: var(--radius-sm);
   overflow: hidden;
 }
+/* Idle lane (card 21950f77): a model that is installed/configured but got no call in the
+   window. It carries no geometry, so it is drawn as one short dashed row rather than a
+   full-height track -- the roster then costs the viewport ~20px per model instead of 38px plus
+   a gap, which is what keeps the "thicker blocks" of the previous card intact. */
+.ovw-llmdist-lane--idle .ovw-llmdist-lane-label { line-height: 22px; }
+.ovw-llmdist-lane-track--idle {
+  height: 22px;
+  background: transparent;
+  border: 1px dashed var(--border);
+  display: flex;
+  align-items: center;
+  /* The note must stay legible; the track's own clip would cut a sticky child. */
+  overflow: visible;
+}
+.ovw-llmdist-lane-idle-note {
+  /* Sticky for the same reason the model label is: the canvas is up to 24 viewports wide and
+     opens scrolled to NOW, so a note pinned to the canvas origin would sit off-screen and the
+     lane would read as an unexplained empty box. 106px = label width + the lane's 10px gap,
+     the same allowance .ovw-llmdist-canvas reserves. */
+  position: sticky;
+  left: 106px;
+  padding: 0 8px;
+  font-size: 11px;
+  line-height: 20px;
+  color: var(--text-muted);
+  white-space: nowrap;
+}
+/* A model with traffic in the window that ollama no longer lists. Stated only when the roster
+   lookup actually succeeded (rosterAvailable), never inferred from a failed lookup. */
+.ovw-llmdist-lane-label--removed {
+  color: var(--danger);
+  text-decoration: line-through;
+}
 .ovw-llmdist-block {
   position: absolute;
   top: 3px;
@@ -1290,6 +1323,7 @@ main {
   .ovw-llmdist-kpis { grid-template-columns: repeat(2, 1fr); }
   .ovw-llmdist-lane-label { width: 64px; }
   .ovw-llmdist-axis { padding-left: 74px; }
+  .ovw-llmdist-lane-idle-note { left: 74px; }
 }
 
 .overview-team-graph {

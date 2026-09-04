@@ -2146,6 +2146,8 @@ window._i18n.en = {
   'overview.llmDist.scroll_label':      'Scroll the timeline',
   'overview.llmDist.scroll_hint':       'Ten minutes are shown at a time. Drag left to go back in time.',
   'overview.llmDist.empty':             'No real task traffic in this window yet.',
+  'overview.llmDist.lane_idle':         'No calls in this window',
+  'overview.llmDist.lane_uninstalled':  'No longer installed',
   'overview.llmDist.error':             'Could not load the model-distribution data.',
   'overview.llmDist.kpi.active_models': 'Active Models',
   'overview.llmDist.kpi.avg_latency':   'Avg Latency',

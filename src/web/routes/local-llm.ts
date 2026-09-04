@@ -1051,6 +1051,10 @@ export interface ModelUsageSwimlane {
   generatedAtMs: number
   /** True when the bounded ledger tail did not reach the start of the window, i.e. rows are missing. */
   truncated: boolean
+  /** False when the installed-model roster could not be read (ollama down). Then `installed` on
+   *  every lane is unknown rather than false, and the UI must not badge a model as removed on
+   *  the strength of a lookup that did not happen. */
+  rosterAvailable: boolean
   kpi: {
     activeModels: number
     avgLatencyMs: number | null
@@ -1059,7 +1063,10 @@ export interface ModelUsageSwimlane {
     errorRatePct: number
     busyCount: number
   }
-  models: Array<{ model: string; tasks: ModelUsageTask[] }>
+  /** One lane per model with activity in the window PLUS one per installed/configured model
+   *  that had none (card 21950f77). `installed` separates "idle but present" from "used here,
+   *  no longer installed" -- the distinction Peti asked to be able to see. */
+  models: Array<{ model: string; tasks: ModelUsageTask[]; installed: boolean }>
 }
 
 /** tokens/s from the CLEAN generation time, or null when it cannot be measured.
@@ -1091,6 +1098,7 @@ export function buildModelUsageSwimlane(
   nowMs: number,
   windowHours: number,
   tail: { oldestTs: number | null; capped: boolean },
+  roster: readonly string[] | null = null,
 ): ModelUsageSwimlane {
   const windowStartMs = nowMs - windowHours * 3600 * 1000
   // UI quick-test probes are not fleet traffic (isRealCall, the fleet's own
@@ -1137,11 +1145,30 @@ export function buildModelUsageSwimlane(
     byModel.set(model, lane)
   })
 
-  // Only models with at least one row in the window (Peti, card comment 18771):
-  // the UI renders exactly what it is given, with no empty second lane.
-  const models = [...byModel.entries()]
-    .map(([model, tasks]) => ({ model, tasks }))
-    .sort((a, b) => b.tasks.length - a.tasks.length || a.model.localeCompare(b.model))
+  // Lanes are the UNION of "had activity here" and "is installed/configured" (card 21950f77,
+  // Peti Telegram 2026-09-04). This REPLACES the earlier activity-only rule (comment 18771):
+  // an installed model that happened to get no call in the chosen window used to vanish from
+  // the chart entirely, so "idle" and "not installed at all" looked identical. Comparison is on
+  // the canonical name because the ledger carries whatever the caller typed while ollama always
+  // reports a resolved tag -- keying on the raw string would draw the SAME model twice.
+  const rosterNames = roster ?? []
+  const rosterCanon = new Set(rosterNames.map(canonicalModelName))
+  const seen = new Set([...byModel.keys()].map(canonicalModelName))
+  const lanes = [...byModel.entries()].map(([model, tasks]) => ({ model, tasks }))
+  for (const name of rosterNames) {
+    const canon = canonicalModelName(name)
+    if (seen.has(canon)) continue
+    seen.add(canon) // a roster with both "x" and "x:latest" must still produce ONE lane
+    lanes.push({ model: name, tasks: [] })
+  }
+  const models = lanes
+    .map((lane) => ({ ...lane, installed: rosterCanon.has(canonicalModelName(lane.model)) }))
+    // Busy lanes first (most calls first), idle ones after: an idle lane carries no geometry, so
+    // letting it sort by name into the middle would push real traffic below the fold.
+    .sort((a, b) =>
+      (b.tasks.length > 0 ? 1 : 0) - (a.tasks.length > 0 ? 1 : 0) ||
+      b.tasks.length - a.tasks.length ||
+      a.model.localeCompare(b.model))
 
   return {
     windowHours,
@@ -1152,8 +1179,11 @@ export function buildModelUsageSwimlane(
     // all. Only when the tail ALSO hit its line cap did we stop reading early,
     // and only then may rows inside the window be absent.
     truncated: tail.capped && tail.oldestTs !== null && tail.oldestTs * 1000 > windowStartMs,
+    rosterAvailable: roster !== null,
     kpi: {
-      activeModels: models.length,
+      // Models that ACTUALLY ran in the window. Deliberately not models.length any more: that
+      // now counts idle roster lanes too, and a KPI called "active" must not include them.
+      activeModels: models.filter((m) => m.tasks.length > 0).length,
       avgLatencyMs: inWindow.length > 0 ? Math.round(wallSum / inWindow.length) : null,
       tokensPerSec: tokensPerSecOf(evalTokenSum, evalDurationSum),
       totalRequests: inWindow.length,
@@ -1164,6 +1194,32 @@ export function buildModelUsageSwimlane(
     },
     models,
   }
+}
+
+/** Models the swimlane draws a lane for even with no traffic in the window (card 21950f77):
+ *  everything ollama has installed, plus whatever store/local-llm-model names as active. The
+ *  active model is unioned in on purpose -- it is the one lane whose absence would be most
+ *  confusing, and it is knowable from disk when ollama is not answering.
+ *
+ *  `null`, not `[]`, when ollama is down: an empty roster would make every lane report
+ *  installed:false, i.e. the UI would state that every model was removed on the strength of a
+ *  lookup that never returned. Callers turn that into "unknown" instead.
+ *
+ *  Never fails the request. The swimlane's job is to show the ledger; the roster is an extra,
+ *  and losing it degrades the chart to its previous activity-only behaviour rather than a 503.
+ */
+async function modelRoster(): Promise<string[] | null> {
+  const tags = await ollama('/api/tags')
+  if (tags === null) return null
+  const raw = (Array.isArray(tags?.models) ? tags.models : []) as unknown[]
+  const names = raw
+    .map((m) => (m as { name?: unknown }).name)
+    .filter((n): n is string => typeof n === 'string' && n.trim() !== '')
+  const active = readActiveModel()
+  if (active) names.push(active)
+  // The test harness's stub ollama answers with a synthetic `test-model`; it is not a fleet model
+  // and must never become a lane (card 21950f77, explicit in the request).
+  return names.filter((n) => canonicalModelName(n) !== 'test-model:latest')
 }
 
 export async function tryHandleLocalLlm(ctx: RouteContext): Promise<boolean> {
@@ -1362,7 +1418,7 @@ export async function tryHandleLocalLlm(ctx: RouteContext): Promise<boolean> {
     // truncated one.
     const oldestTs = rows.length > 0 ? Math.min(...rows.map((r) => r.ts)) : null
     const tail = { oldestTs, capped: lines.length >= USAGE_TAIL_MAX_LINES }
-    json(res, buildModelUsageSwimlane(rows, Date.now(), parsedHours, tail))
+    json(res, buildModelUsageSwimlane(rows, Date.now(), parsedHours, tail, await modelRoster()))
     return true
   }
 
