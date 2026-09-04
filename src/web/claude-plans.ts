@@ -19,7 +19,7 @@
 // kept pure (raw JSON string + homeDir in, validated array out) so it unit-
 // tests without the fs, mirroring resolveClaudeConfigDir in agent-config.ts.
 
-import { readFileSync, statSync } from 'node:fs'
+import { existsSync, readFileSync, statSync } from 'node:fs'
 import { homedir } from 'node:os'
 import { join } from 'node:path'
 import { PROJECT_ROOT } from '../config.js'
@@ -166,4 +166,32 @@ export function resolveAgentConfigDir(
     return { configDir: readAgentClaudeConfigDir(name), planUnresolved: true }
   }
   return { configDir: readAgentClaudeConfigDir(name), planUnresolved: false }
+}
+
+
+/**
+ * The READ-side resolver: which config dir does a TRANSCRIPT READER have to look in?
+ *
+ * Adopted from upstream in the B-wave (card 272361eb). resolveAgentConfigDir() above answers the
+ * LAUNCH question -- what was configured -- and returns null when nothing was. But the launcher
+ * also AUTO-PROVISIONS an isolated dir for a channel sub-agent that has no explicit field
+ * (ensureIsolatedChannelConfigDir in agent-process.ts), and it does not write that path back into
+ * the agent config. A reader that stops at "nothing configured" then falls back to the host
+ * default and reports ANOTHER agent's absence as this one's -- a wrong answer, silently, with no
+ * error anywhere.
+ *
+ * MEASURED before adopting (2026-09-04, this install): 0 of 15 agents are currently in that state,
+ * because every one of them has the field set. So this is a latent correctness fix, not a live
+ * defect here -- but the path is reachable for the next auto-provisioned agent, and the failure it
+ * produces is a plausible-looking answer rather than a crash.
+ *
+ * Requiring `projects/` rather than just the directory is upstream's, and deliberate: a
+ * half-provisioned dir must not shadow the shared root the agent may genuinely still be using.
+ */
+export function resolveAgentConfigDirForRead(name: string, projectRootOverride?: string): string | null {
+  const configured = resolveAgentConfigDir(name).configDir
+  if (configured) return configured
+  const isolated = join(projectRootOverride ?? PROJECT_ROOT, 'agents', name, '.claude-config')
+  if (existsSync(join(isolated, 'projects'))) return isolated
+  return null
 }
