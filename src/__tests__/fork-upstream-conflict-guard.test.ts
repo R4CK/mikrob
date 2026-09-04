@@ -883,9 +883,13 @@ const ACKNOWLEDGED_CONFLICTS = {
     "resolution that applied to one and not the other would leave the pair out of sync -- which the " +
     "i18n parity test would then report as a fork defect rather than as half a merge. " +
     "RE-MEASURED 2026-09-04 (card 740551e6, upstream blob 5a1ba174): identical numbers to en.js " +
-    "(1618 base, +525 fork, +46 upstream, 0 collisions) and the SAME 8 activity.* removals upstream. " +
-    "Keep the fork's activity.* keys here too -- dropping them in one locale and not the other is " +
-    "exactly the half-merge this entry exists to prevent.",
+    "(1618 base, +525 fork, +46 upstream, 0 collisions) and the SAME 8 activity.* removals upstream " +
+    "-- so the '0 removals on either side' written at the TOP of this entry is NO LONGER TRUE, and " +
+    "is kept only as the record of what the earlier round measured. Keep the fork's activity.* keys " +
+    "here too: dropping them in one locale and not the other is exactly the half-merge this entry " +
+    "exists to prevent. MikroB's decision, 2026-09-04: hold the union for these eight keys, do NOT " +
+    "take the upstream removal -- the fork's Activity page is live, and retiring it would be a " +
+    "separate call under code-quality rule 5, not a merge outcome.",
   // Card 272361eb (B-wave 3/6). Upstream's ENTIRE delta in this file is resolveAgentConfigDirForRead
   // (43+/1-, the function plus its comment), which the fork has now adopted with identical logic --
   // so the two sides no longer disagree about behaviour, only about how much comment sits above it.
