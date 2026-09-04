@@ -693,25 +693,82 @@ function ovwLlmDistAxisHtml(rangeStartMs, rangeEndMs) {
   return labels.join('')
 }
 
+// Minimum rendered block width, in PERCENT of the track, and the clearance the packer keeps
+// between two blocks on the same sub-row. Percent is the single source of truth on purpose:
+// the CSS used to ALSO carry `min-width: 10px`, and with two different floors the packer could
+// never know a block's real rendered width (0.6% of a ~700px track is ~4px, so the pixel floor
+// silently won and inflated every short block past what the geometry said). Blocks cannot be
+// packed without overlap unless one number decides their width.
+const OVW_LLMDIST_MIN_W_PCT = 0.6
+const OVW_LLMDIST_GAP_PCT = 0.25
+// Above this many packed sub-rows the lane goes compact rather than tall.
+const OVW_LLMDIST_COMPACT_FROM_ROWS = 4
+
+/** Greedy interval packing (first-fit) over RENDERED geometry.
+ *
+ *  Packing on raw start/end times would not fix what the operator sees. Measured on live data in
+ *  a 4h window: 89% of blocks (66 of 74) are SHORTER than the min-width floor, so they render
+ *  wider than their true duration and collide visually even when their intervals do not touch.
+ *  There were also 40 genuine time-overlaps. Both classes are handled by packing the boxes that
+ *  actually get drawn, left edge to right edge, rather than the intervals behind them.
+ *
+ *  Mutates each block with `row` and returns the number of sub-rows used.
+ */
+function ovwLlmDistPackRows(blocks, gapPct) {
+  const gap = typeof gapPct === 'number' ? gapPct : OVW_LLMDIST_GAP_PCT
+  const rowRightEdge = []
+  // Left-to-right, with the original index as a stable tiebreak so two blocks starting at the
+  // same instant keep a deterministic order (and therefore a deterministic row assignment).
+  const order = blocks.map((b, i) => ({ b, i }))
+    .sort((x, y) => (x.b.leftPct - y.b.leftPct) || (x.i - y.i))
+  for (const { b } of order) {
+    const right = b.leftPct + b.widthPct
+    let row = rowRightEdge.findIndex((edge) => b.leftPct >= edge + gap)
+    if (row === -1) {
+      rowRightEdge.push(right)
+      row = rowRightEdge.length - 1
+    } else {
+      rowRightEdge[row] = Math.max(rowRightEdge[row], right)
+    }
+    b.row = row
+  }
+  return rowRightEdge.length
+}
+
 function ovwLlmDistLanesHtml(models, rangeStartMs, rangeEndMs) {
   const span = Math.max(1, rangeEndMs - rangeStartMs)
   return models.map((m) => {
     const tasks = Array.isArray(m.tasks) ? m.tasks : []
     const blocks = tasks.map((task) => {
       const leftPct = Math.min(100, Math.max(0, ((Number(task.startMs) - rangeStartMs) / span) * 100))
-      const widthPct = Math.min(100 - leftPct, Math.max(0.6, (Number(task.durationMs) / span) * 100))
-      const color = ovwLlmDistColorFor(task.task || '')
-      return `<button type="button" class="ovw-llmdist-block" data-status="${escapeHtml(task.status || 'ok')}"
+      const widthPct = Math.min(100 - leftPct, Math.max(OVW_LLMDIST_MIN_W_PCT, (Number(task.durationMs) / span) * 100))
+      return { task, leftPct, widthPct, row: 0 }
+    })
+    const rowCount = ovwLlmDistPackRows(blocks)
+    // DENSITY. Strict non-overlap is what was asked for, and on real data it is expensive: a
+    // local call's logged duration INCLUDES its wait for the GPU lock, so queued calls genuinely
+    // occupy overlapping wall-clock intervals. Measured live: 23 sub-rows over 30 minutes, 36
+    // over 4 hours. At the original 30px row that is a 760-1190px tall lane for ONE model, which
+    // trades an overlap the operator can squint past for a chart that no longer fits the page.
+    // So past a handful of rows the lane switches to compact rows (the block text clips away,
+    // colour + tooltip carry the meaning) and scrolls if it is still too tall.
+    const compact = rowCount > OVW_LLMDIST_COMPACT_FROM_ROWS
+    const rowsHtml = Array.from({ length: Math.max(1, rowCount) }, (_, r) => {
+      const inRow = blocks.filter((b) => b.row === r).map(({ task, leftPct, widthPct }) => {
+        const color = ovwLlmDistColorFor(task.task || '')
+        return `<button type="button" class="ovw-llmdist-block" data-status="${escapeHtml(task.status || 'ok')}"
         style="left:${leftPct.toFixed(2)}%;width:${widthPct.toFixed(2)}%;background:${color}"
         data-task="${escapeHtml(task.task || '')}" data-agent="${escapeHtml(task.agent || '')}"
         data-duration="${Number(task.durationMs) || 0}" data-tokens-in="${Number(task.tokensIn) || 0}"
         data-tokens-out="${Number(task.tokensOut) || 0}" data-tps-label="${escapeHtml(ovwLlmDistFormatTpsOrNa(task.tokensPerSec))}"
         data-status-label="${escapeHtml(ovwLlmDistStatusLabel(task.status))}"
       >${escapeHtml(task.task || '')}</button>`
+      }).join('')
+      return `<div class="ovw-llmdist-lane-track">${inRow}</div>`
     }).join('')
     return `<div class="ovw-llmdist-lane">
       <span class="ovw-llmdist-lane-label" title="${escapeHtml(m.model || '')}">${escapeHtml(m.model || '?')}</span>
-      <div class="ovw-llmdist-lane-track">${blocks}</div>
+      <div class="ovw-llmdist-lane-rows${compact ? ' ovw-llmdist-lane-rows--compact' : ''}">${rowsHtml}</div>
     </div>`
   }).join('')
 }
