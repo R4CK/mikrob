@@ -6042,3 +6042,30 @@ behúzva, ami nem járul hozzá a doboz szélességéhez, és erre teszt is ker�
 **Ki döntött:** Peti (a két vezérlő és a vastagabb blokkok), fullstack (a mérések és az arányok).
 **Hivatkozás:** kártya `b52c3c42`; `web/app-overview.js`, `web/style.css`,
 `src/__tests__/llmdist-lane-packing.test.ts`.
+
+## 2026-09-04 18:40 -- BRIDGEHU813 átvéve, a hozzá tartozó böngésző-suite tudatosan nem
+
+**Döntés:** Az upstream `1df099be` (#1170, BRIDGEHU813) párosítási hibaüzenet-fordítását átvettük
+a forkba (kártya `73cf0a22`), a hozzá tartozó Playwright-suite-ot (`tests/browser/**`,
+`playwright.browser.config.ts`, `browser-verify` script, és a csak ezeket kiszolgáló
+`vitest.config.ts` kizárás) viszont NEM.
+
+**Miért az átvétel:** a párosítási panel magyar volt mindenhol, kivéve azt az egy sort, amit a
+felhasználó hiba esetén elolvas -- ott a szerver angol mondata jelent meg nyersen. Ez a
+CLAUDE.md 12. szabályába ütközik (beszédes, i18n-kulcsból jövő hibaüzenet). Az upstream megoldása a
+helyes irányú: a stabil `code` mezőre fordít, nem a mondatra, és ismeretlen kódnál visszaesik a
+szerver saját mondatára, tehát egy később hozzáadott szerver-hiba angolul jelenik meg, nem üres
+sorként vagy nyers kulcsként.
+
+**Miért nem a böngésző-suite:** a flotta kapuja (`store/fleet-test.sh`) vitestet futtat, és
+egyáltalán nem hív Playwrightot. Egy átvett böngésző-suite tehát olyan suite lenne, amit senki nem
+futtat -- egy nem futó teszt lefedettségnek olvasódik, miközben semmit nem őriz.
+
+**Ami emiatt NEM maradhatott el:** az upstream böngésző-tesztje pinneli a BEKÖTÉST, vagyis azt,
+hogy a hibaág ténylegesen MEGHÍVJA a fordítót. Ezt a garanciát nem ejtettük, hanem áthelyeztük: az
+átvett unit-teszt közvetlenül állítja, és mérve bukik, ha a hívási pontot visszaállítjuk. Enélkül a
+fájl összes többi állítása zöld maradna, miközben a felhasználó újra angolul látná a hibát -- pont
+az a hiba, amit ez a kártya javít.
+
+**Újranyitandó, ha:** a flotta kapuja valaha kap egy Playwright-lépcsőt. Akkor a suite átvétele
+önálló döntés, nem automatikus következmény.
