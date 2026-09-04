@@ -872,11 +872,37 @@ const ACKNOWLEDGED_CONFLICTS = {
     "both sides made the SAME change to triggerMarveenMemorySave (bare sendPromptToSession -> sendSystemDirective(MAIN_AGENT_ID, MAIN_CHANNELS_SESSION, prompt)), so take either for that hunk -- they are semantically equal. Everything ELSE in this file is long-standing fork divergence unrelated to this card: resolve those on their own merits, they are not part of the ab4c85f2 decision. CORRECTION 2026-09-04 (card 272361eb, B-wave): this entry used to say 'lazy bin resolver vs upstream's eager resolveFromPath consts' and had the two sides BACKWARDS -- upstream was the lazy one, WE had the eager module-level consts, which throw at IMPORT time and take every importer of this module down on a PATH gap. That half is no longer a divergence at all: the fork adopted upstream's tmuxBin()/claudeBin() shape, matching platform.ts's own documented rule and agent-process.ts's existing use. What REMAINS undecided here is upstream's STUCKINPUT827 injected-prompt-registry work and its subagent-overdue alert (shouldAlertStuckSubAgent, SUBAGENT_OVERDUE_ALERT_MIN_INTERVAL_MS), neither of which this fork has.",
   // Card 368b77f7 (URGENT: this conflict blocked EVERY marveen landing -- marveen-land.sh refuses on
   // any non-zero fleet-test, with no baseline-delta comparison to fall back on).
+  // Card 73cf0a22 (the BRIDGEHU813 adoption itself). Add/add: upstream created this file in
+  // 1df099be and the fork adopted it in the same shape, so there is no merge base for it and
+  // git shows every fork edit as a conflict. Both differences are structural, not drift, and
+  // neither will ever go away on its own -- which is why this is a written rule rather than a
+  // one-off resolution.
+  'src/__tests__/bridge-pairing-i18n.test.ts':
+    "KEEP THE FORK'S SIDE for exactly two things, take upstream's for everything else. (1) The " +
+    "file it reads is web/app-settings-auth.js, not web/app.js -- this fork extracted the auth " +
+    "panel into that slice, and this file's own web/app.js rule already says an upstream app.js " +
+    "hunk is diffed against the named slice. Taking upstream's path here would make the suite " +
+    "read a file that no longer contains the function; the `start > -1` assertion is what would " +
+    "report it, so the failure would at least be loud. (2) The fork-only test 'the error branch " +
+    "actually CALLS it'. Upstream pins the wiring with tests/browser/**, which this fork " +
+    "deliberately did not adopt (the fleet gate runs vitest and never invokes playwright), so " +
+    "dropping this test in a merge would silently give up the one guarantee that the translator " +
+    "is reached at all -- every other assertion in the file stays green with the call site " +
+    "reverted. Measured on adoption: reverting it fails this test and only this test. " +
+    "EVERYTHING ELSE -- new codes, new cases, changed expectations -- take from upstream on its " +
+    "merits: the coverage test RUNS the real validators, so upstream adding a pairing error " +
+    "shows up here as a missing hu/en key rather than as silently absent coverage.",
   'web/lang/en.js':
     "keep BOTH key blocks -- this is a union, not a pick. MEASURED 2026-09-04 at the key level, not " +
     "the line level: 1590 keys at the merge base, the fork ADDED 516 (the outgoing-copy gate's " +
     "names.* rules UI, card 98dbbcc9, among others), upstream ADDED 27 (auth.bridge.err.*, " +
     "BRIDGEHU813 #1170), the two sets COLLIDE ON ZERO KEYS, and NEITHER SIDE REMOVED ANY. The " +
+    "CORRECTION 2026-09-04 (card 73cf0a22): that 27 is 26. The upstream hunk adds 29 lines, three " +
+    "of which are its comment header, and upstream's own commit message says 26. The union rule is " +
+    "unaffected -- it turns on the collision count, not on the size of either side -- but the figure " +
+    "is now measured rather than eyeballed. Those 26 keys are ALSO ON THE FORK SIDE as of that " +
+    "card, byte-identical to upstream's, so they are common content now, not an upstream-only " +
+    "addition waiting to be merged. " +
     "conflict is textual, not semantic: both appended at the same tail. Same shape and same " +
     "resolution as web/style.css. " +
     "OVERLAY EXTRACTION CONSIDERED AND DECLINED, which is what the guard's failure message asks for: " +
@@ -907,7 +933,8 @@ const ACKNOWLEDGED_CONFLICTS = {
     "so code-quality rule 5 makes it Peti's call. This entry only records that the merge does not " +
     "decide it by default.",
   'web/lang/hu.js':
-    "same as web/lang/en.js, measured identically (1590 base, +516 fork, +27 upstream, 0 collisions, " +
+    "same as web/lang/en.js, measured identically (1590 base, +516 fork, +27 upstream -- 26, see " +
+    "the en.js entry's 2026-09-04 correction, and both sides carry those keys now, 0 collisions, " +
     "0 removals on either side). The two locale files are edited in lockstep by both sides, so a " +
     "resolution that applied to one and not the other would leave the pair out of sync -- which the " +
     "i18n parity test would then report as a fork defect rather than as half a merge. " +
@@ -1012,6 +1039,22 @@ const ACKNOWLEDGED_UPSTREAM_BLOBS: Readonly<Record<keyof typeof ACKNOWLEDGED_CON
   // translation, and it has neither playwright.browser.config.ts nor tests/browser/**. So BRIDGEHU813
   // is a real, applicable adoption decision -- and it is taken on its own card, NOT folded into this
   // pin refresh. A feature adoption hidden inside a blob bump is exactly what this map exists to stop.
+  //
+  // ADOPTED 2026-09-04 on that separate card (73cf0a22), so the paragraph above is the record of what
+  // was true at the pin refresh, not a description of today. Taken: the server-side stable `code`
+  // (src/remote-enroll-core.ts, src/web/bridge-enroll.ts, src/web/routes/security.ts -- all three
+  // were byte-identical to upstream's parent, so they now equal upstream's post-image exactly and
+  // conflict on nothing), the 26 auth.bridge.err.* keys in both locales, and bridgeEnrollErrorText()
+  // into web/app-settings-auth.js, which is the slice this file's own app.js rule names.
+  //
+  // NOT taken, and this is the deliberate half: playwright.browser.config.ts, tests/browser/**, the
+  // `browser-verify` script, and the vitest.config.ts exclusion that exists only to serve them. The
+  // fleet gate (store/fleet-test.sh) runs vitest and never invokes playwright, so an adopted browser
+  // suite would be a suite nobody runs -- and an unrun suite reads as coverage while guarding
+  // nothing. The guarantee it carries upstream (that the error branch actually CALLS the translator)
+  // was NOT dropped with it: it is asserted directly in the adopted unit test, and that assertion
+  // was measured to fail when the call site is reverted. Revisit if the fleet gate grows a
+  // playwright stage.
   'web/app.js': '102cd90154b20f3064740f29f72461d686a75ab9',
   'web/style.css': 'a7fc0f2baf1989fc5ecd2cd8c78f86c6104b55da',
   'src/web/agent-taskstate.ts': '625d03282bb75b554ce23822f67cc4e51b0706c1',
@@ -1070,6 +1113,7 @@ const ACKNOWLEDGED_UPSTREAM_BLOBS: Readonly<Record<keyof typeof ACKNOWLEDGED_CON
   'src/web/channel-monitor.ts': 'd1c642f669ff2a28b6eec79bbf503365c9ac1b08',
   'src/web/routes/messages.ts': '98710db9e171616e0600061eec649542e779506a',
   // Card 368b77f7, 2026-09-04.
+  'src/__tests__/bridge-pairing-i18n.test.ts': '5da8970e4ff27f4d9b1fef46b179ed26e9063ea0',
   'web/lang/en.js': '702bdb0730c92a8d3201e1618cf508d9559ac4ab',
   'web/lang/hu.js': '5a1ba1741d5a704bc298f00d5a0f4550b1a2a1b3',
   // Card 272361eb, 2026-09-04 (B-wave 3/6).
