@@ -32,6 +32,7 @@ import json
 import os
 import re
 import sys
+import threading
 import time
 
 # ADOPTED FROM UPSTREAM VERBATIM (card 3ec64c96, 2026-08-25): upstream independently built
@@ -541,8 +542,52 @@ def load_bad_name():
         return _log_missing_rules()
     pats = data.get("bad_name_patterns") or []
     if pats:
-        return re.compile("|".join(pats))
+        # THE COMPILE MUST BE INSIDE A try (card 0c66be37, Cybersec MEDIUM-2 on 98dbbcc9's GO).
+        # It was outside, and `BAD_NAME = load_bad_name()` runs at MODULE IMPORT -- so ONE typo'd
+        # pattern did not degrade the name check, it killed the ENTIRE hook before it inspected
+        # anything. Measured with the real hook: rules ["Kovacs"] -> exit 2 (blocks a broken-accent
+        # mail); rules ["Kovacs", "(?<n>x)"] -> exit 1, zero bytes of stdout. Claude Code blocks on
+        # exit 2 ONLY, so exit 1 means every outgoing send passes unchecked, fleet-wide, with
+        # nothing anywhere to say the control stopped running. A crashing hook does not fail
+        # closed; it stops running.
+        #
+        # Falling back to STATE_BROKEN keeps the ALREADY-MODELLED consequences: the email path is
+        # fail-closed on `BAD_NAME is None` (refuses and names the rules file), the Telegram path
+        # fail-open with a systemMessage. Both are visible. That is the whole difference between a
+        # degraded control and an invisible one.
+        try:
+            return re.compile("|".join(pats))
+        except re.error as exc:
+            # NOT _log_missing_rules(): that writes "FAJL HIANYZIK/URES", which would be false here
+            # and would send whoever reads the log looking for a file that is present and readable.
+            # A wrong explanation is worse than a missing one -- it stops the next reader looking.
+            return _log_broken_pattern(exc)
     return NO_BAD_NAME_PATTERNS
+
+
+# WHY the name check is down, when it is. Set by the loader, read by the two places that TELL
+# somebody about it. Without this, a bad pattern produced the missing-file wording -- and an
+# operator would go looking for a file that is present, readable and valid JSON (card 0c66be37).
+BROKEN_REASON = None
+
+
+def _log_broken_pattern(exc):
+    """The rules file is present and parses, but a PATTERN in it does not compile.
+
+    Returns None (STATE_BROKEN) like the missing-file path, because the consequence is the same --
+    the name check cannot run -- but says which of the two it was, and names the offending pattern
+    so the fix is one edit rather than a hunt through the list."""
+    global BROKEN_REASON
+    BROKEN_REASON = f"egy nev-minta nem forditható ({exc})"
+    try:
+        log_path = os.path.join(os.path.dirname(_LOCAL_RULES), "outgoing-copy-gate.log")
+        with open(log_path, "a", encoding="utf-8") as fh:
+            fh.write(f"outgoing-copy-gate: HIBAS NEV-MINTA a szabalyfajlban ({_LOCAL_RULES}): "
+                     f"{exc} -- a nev-ellenorzes NEM fut, amig a minta javitva nincs. "
+                     "A fajl letezik es olvashato; egy minta nem forditható.\n")
+    except OSError:
+        pass
+    return None
 
 
 def _log_missing_rules():
@@ -1006,10 +1051,66 @@ def telegram_gate(tool_input: dict) -> None:
     # logfajlban, amit senki nem olvas.
     if BAD_NAME is None:
         print(json.dumps({"systemMessage":
-            "outgoing-copy-gate: a NEV-SZABALY fajl hianyzik/ures "
-            f"({_LOCAL_RULES}) -- a nev-ellenorzes NEM fut a kimeno uzeneteken. "
-            "Potold a store/outgoing-copy-gate-rules.json-t."}))
+            "outgoing-copy-gate: a nev-ellenorzes NEM fut a kimeno uzeneteken -- "
+            f"{BROKEN_REASON or 'a szabalyfajl hianyzik, olvashatatlan vagy rossz alaku'} "
+            f"({_LOCAL_RULES}). Javitsd a store/outgoing-copy-gate-rules.json-t."}))
     sys.exit(0)
+
+
+# --- match-time budget on the name patterns (card 0c66be37) -------------------------------------
+#
+# THE SECOND DOOR INTO THE SAME ROOM. Guarding the COMPILE stops a typo from killing the hook, but a
+# pattern can compile perfectly and then backtrack catastrophically at MATCH time. Measured on this
+# host with a pattern the card names -- `zzz(a+)+$` against a body containing `zzz` + 40 `a`s -- the
+# hook was STILL RUNNING after 25 seconds. In production it is registered with `timeout: 10`, so
+# Claude Code kills it, the exit code is not 2, and the send goes out UNCHECKED with nothing to say
+# the control stopped. Byte-identical outcome to the compile crash, reached from the other side, and
+# the card asks for the hook-side runtime protection to cover it.
+#
+# The validator cannot close this alone: its ReDoS check is PROBE-based (a handful of fixed strings
+# against the joint regex), so a pattern anchored behind a rare prefix passes validation and is slow
+# only on real traffic. That is the card's own LOW, and it is why the budget lives HERE, where the
+# actual text is.
+#
+# A timeout deliberately RAISES rather than returning "no match". The two existing nets then do the
+# right thing per path, with no new state to model: the email path's fail-closed wrapper turns it
+# into exit 2, and telegram_gate's documented fail-open turns it into exit 0 plus a loud warning.
+# Returning None would have been the one wrong answer -- a silent "the name is fine".
+NAME_MATCH_BUDGET_S = float(os.environ.get("OUTGOING_COPY_GATE_NAME_BUDGET", "2"))
+
+
+class NamePatternTimeout(Exception):
+    pass
+
+
+def _name_search(plain):
+    """Run the bad-name patterns against `plain` under a wall-clock budget."""
+    if not BAD_NAME:
+        return None
+    # setitimer is POSIX and main-thread only. Where it is unavailable the search still runs, just
+    # unbudgeted -- the pre-existing behaviour, and better than refusing to check at all. Stated
+    # rather than implied, because "there is a timeout" would otherwise be false on those hosts.
+    try:
+        import signal
+        have_timer = hasattr(signal, "setitimer") and threading.current_thread() is threading.main_thread()
+    except Exception:  # noqa: BLE001
+        have_timer = False
+    if not have_timer or NAME_MATCH_BUDGET_S <= 0:
+        return BAD_NAME.search(plain)
+
+    def _fire(_signum, _frame):
+        raise NamePatternTimeout(
+            f"a nev-minta illesztese tullepte a {NAME_MATCH_BUDGET_S:g}s koltsegkeretet "
+            "(valoszinuleg katasztrofalis visszalepes egy mintaban)"
+        )
+
+    prev = signal.signal(signal.SIGALRM, _fire)
+    signal.setitimer(signal.ITIMER_REAL, NAME_MATCH_BUDGET_S)
+    try:
+        return BAD_NAME.search(plain)
+    finally:
+        signal.setitimer(signal.ITIMER_REAL, 0)
+        signal.signal(signal.SIGALRM, prev)
 
 
 def audit(text: str):
@@ -1020,7 +1121,7 @@ def audit(text: str):
         problems.append(
             f"GONDOLATJEL (em dash, U+2014) {plain.count(EM_DASH)} helyen -- allo szabaly, soha nem mehet ki."
         )
-    bad = BAD_NAME.search(plain) if BAD_NAME else None
+    bad = _name_search(plain)
     if bad:
         problems.append(
             f"HELYTELEN NEV: {bad.group(0)!r} -- a lokal nev-szabaly (store/outgoing-copy-gate-rules.json) szerint helytelen alak; a helyes irast a szabaly-fajl correction mezoje adja." + _name_correction()
@@ -1191,10 +1292,14 @@ def main():
     # szabaly-fajl potlasat. (A telegram-ag fail-open marad systemMessage
     # figyelmeztetessel: az a felugyeleti csatorna, ott a nemulas a dragabb.)
     if BAD_NAME is None:
+        # Card 0c66be37: say WHICH of the two broke. "hianyzik/ures" was the only wording, and a
+        # bad pattern now reaches here too -- sending the reader after a file that is present and
+        # valid. The consequence is identical (the check cannot run); the fix is not.
+        why = BROKEN_REASON or "a fajl hianyzik, olvashatatlan vagy rossz alaku"
         sys.stderr.write(
-            "KIMENO-SZOVEG KAPU: TILTVA -- a NEV-SZABALY fajl hianyzik/ures "
-            f"({_LOCAL_RULES}), igy a nev-ellenorzes nem tud lefutni.\n"
-            "Email fail-closed: potold a store/outgoing-copy-gate-rules.json-t "
+            f"KIMENO-SZOVEG KAPU: TILTVA -- a nev-ellenorzes nem tud lefutni: {why} "
+            f"({_LOCAL_RULES}).\n"
+            "Email fail-closed: javitsd a store/outgoing-copy-gate-rules.json-t "
             "(bad_name_patterns + correction), aztan kuldd ujra.\n"
         )
         sys.exit(2)

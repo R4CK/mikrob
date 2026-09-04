@@ -5852,3 +5852,37 @@ megkülönböztethetetlen lenne a no-op-tól.
 **Nyitva hagyva, szándékosan.** A `seed-scheduled-tasks/` alatti (verziókövetett) heartbeat
 kapta meg a 4b. lépést; a FUTÓ példány (`~/.claude/scheduled-tasks/`) nem. Az MikroB saját
 10 perces köre, a bekapcsolás időzítése az ő döntése.
+
+## 2026-09-04 -- 0c66be37 -- A név-ellenőrzés hibája a KAPUT rontsa el, ne a hookot -- és a timeout DOBJON
+
+**Döntés.** A `re.compile` bekerül a `try`-ba, és a match-időre wall-clock költségkeret kerül. Egy
+hibás vagy lassú minta a NÉV-ELLENŐRZÉST kapcsolja `STATE_BROKEN`-re; a hook maga fut tovább.
+
+**Miért.** A `BAD_NAME = load_bad_name()` MODUL-SZINTEN, import időben fut, és a `re.compile` a
+`try`-on KÍVÜL volt. Egy elgépelt minta így nem egy ágat ölt meg, hanem az EGÉSZ hookot, mielőtt
+bármit ellenőrzött volna. Claude Code-ban csak a 2-es kilépési kód blokkol -- exit 1 + üres stdout
+azt jelenti, hogy a kimenő-szűrés MINDEN ügynöknél NÉMÁN nem fut. Reprodukálva a valódi hookkal:
+`["Kovacs"]` -> exit 2 (blokkol egy ékezet nélküli levelet), `["Kovacs","(?<n>x)"]` -> exit 1, 0
+bájt stdout.
+
+**A MÁSODIK AJTÓ UGYANABBA A SZOBÁBA, amit megmértem, mielőtt eldöntöttem volna, hogy hatókörbe
+tartozik-e.** Egy minta hibátlanul fordulhat és MATCH-időben mégis katasztrofálisan visszalépni. A
+kártya által is említett `zzz(a+)+$` mintára egy `zzz` + 40 `a` törzsön a hook 25 másodperc után is
+FUTOTT. Élesben `timeout: 10`-cel van bejegyezve, tehát a futtató megöli, a kilépési kód nem 2, és a
+küldés ellenőrizetlenül megy ki -- bájtra ugyanaz a következmény, mint a fordítási összeomlásnál. A
+validátor ezt nem zárja: a ReDoS-ellenőrzése PRÓBA-alapú, tehát egy ritka prefixre horgonyzott minta
+átmegy rajta és csak valódi forgalmon lassú. Ezért a keret a hook oldalán van, ahol a tényleges
+szöveg van.
+
+**A load-bearing részlet: a timeout DOB, nem `None`-t ad vissza.** A `None` (nincs találat) lett
+volna az egyetlen rossz válasz: egy csendes „a név rendben". A dobás után a KÉT MEGLÉVŐ háló dönt,
+új állapot bevezetése nélkül -- az email-út fail-closed burkolója exit 2-t csinál belőle, a
+`telegram_gate` dokumentált fail-open ága exit 0-t plusz hangos figyelmeztetést. Mutációval
+igazolva: ha a jelzéskezelő visszatér dobás helyett, a keresés NEM szakad meg (a C-szintű regex-motor
+fut tovább), és a teljes selftest lefagy -- pontosan az éles tünet.
+
+**Az üzenet is javult, mert muszáj volt.** A `BAD_NAME is None` ág egyetlen szövege az volt, hogy „a
+NEV-SZABALY fajl hianyzik/ures". Egy hibás mintánál ez HAMIS, és a következő olvasót egy létező,
+olvasható, érvényes JSON keresésére küldi. A rossz magyarázat rosszabb, mint a hiányzó: megállítja a
+keresést. A két ok most külön nevet kap mindkét felhasználói üzenetben, és a selftest állítja, hogy
+megkülönböztethetők.

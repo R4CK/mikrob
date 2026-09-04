@@ -393,19 +393,91 @@ def main():
             rules_path=empty_rules,
         )
 
+        def raw_case(label, payload_obj, expected, rules_path=None, env_extra=None):
+            got, stderr = raw_verdict(payload_obj, rules_path, env_extra)
+            ok = got == expected
+            print(f"{'OK  ' if ok else 'FAIL'} {expected:5s} <- {got:5s}  {label}")
+            if not ok:
+                failures.append((label, expected, got, stderr))
+
+        # --- ONE TYPO'D PATTERN MUST NOT KILL THE HOOK (card 0c66be37) ------------------
+        # Cybersec MEDIUM-2, reproduced here before fixing: `re.compile` sat OUTSIDE the try, and
+        # `BAD_NAME = load_bad_name()` runs at MODULE IMPORT -- so one bad pattern did not degrade
+        # the name check, it killed the whole hook before it inspected anything. Exit 1 with empty
+        # stdout, and Claude Code blocks on exit 2 ONLY: every outgoing send passed unchecked,
+        # fleet-wide, silently. Note the helper reads exit 1 as ALLOW, which is exactly the point.
+        broken_pat_rules = write_rules(
+            tmp, {"bad_name_patterns": ["Kovacz", "(?<n>x)"], "correction": "helyesen: Kovacs"}
+        )
+        case(
+            "a non-compiling pattern degrades the NAME CHECK, not the whole hook (email: fail-CLOSED)",
+            REAL_SEND.format(body=CLEAN_HU),
+            BLOCK,
+            rules_path=broken_pat_rules,
+        )
+        # ...and the control itself still works when the patterns are fine. Without this the case
+        # above would pass over a hook that blocks everything for any reason at all.
+        case(
+            "...and a VALID rules file still lets a clean letter through",
+            REAL_SEND.format(body=CLEAN_HU),
+            ALLOW,
+            rules_path=named_rules,
+        )
+        raw_case(
+            "the same bad pattern on the TELEGRAM path stays fail-OPEN (supervision channel)",
+            {"tool_name": "mcp__plugin_telegram_telegram__reply", "tool_input": {"text": CLEAN_HU}},
+            ALLOW,
+            rules_path=broken_pat_rules,
+        )
+
+        # THE MESSAGE MUST NAME THE RIGHT CAUSE. Both failures end in the same refusal, so the
+        # exit code alone cannot tell them apart -- and the only wording used to be "a fajl
+        # hianyzik/ures", which for a bad pattern sends the reader hunting for a file that is
+        # present, readable and valid JSON. A wrong explanation is worse than none: it stops the
+        # next person looking.
+        def msg_says(label, rules_path, must_have, must_not_have):
+            _got, stderr = verdict(REAL_SEND.format(body=CLEAN_HU), rules_path)
+            ok = (must_have in stderr) and (must_not_have not in stderr)
+            print(f"{'OK  ' if ok else 'FAIL'} {'msg':5s} <- {'msg':5s}  {label}")
+            if not ok:
+                failures.append((label, f"contains {must_have!r}, not {must_not_have!r}", stderr[:160], stderr))
+
+        msg_says("a BAD PATTERN is reported as a bad pattern, not as a missing file",
+                 broken_pat_rules, "nem forditható", "hianyzik")
+        msg_says("...and a genuinely MISSING file is still reported as missing",
+                 "/nonexistent/outgoing-copy-gate-rules.json", "hianyzik", "nem forditható")
+
+        # --- A PATTERN CAN COMPILE AND STILL HANG (same card, the other door) ------------
+        # Measured before the budget: `zzz(a+)+$` against a body carrying `zzz` + 40 `a`s left the
+        # hook STILL RUNNING after 25 seconds. Registered with `timeout: 10`, Claude Code kills it,
+        # the exit code is not 2, and the send goes out unchecked -- byte-identical to the compile
+        # crash. The validator cannot catch it either: its ReDoS check is PROBE-based, so a pattern
+        # anchored behind a rare prefix passes validation and is slow only on real traffic.
+        slow_pat_rules = write_rules(
+            tmp, {"bad_name_patterns": ["Kovacz", "zzz(a+)+$"], "correction": "helyesen: Kovacs"}
+        )
+        SLOW_BODY = "Szia, koszonom a turelmet. zzz" + ("a" * 40) + "X"
+        case(
+            "a catastrophically backtracking pattern is BOUNDED, and email fails CLOSED",
+            REAL_SEND.format(body=SLOW_BODY),
+            BLOCK,
+            rules_path=slow_pat_rules,
+            env_extra={"OUTGOING_COPY_GATE_NAME_BUDGET": "1"},
+        )
+        raw_case(
+            "...and the same timeout on TELEGRAM stays fail-OPEN rather than silencing the channel",
+            {"tool_name": "mcp__plugin_telegram_telegram__reply", "tool_input": {"text": SLOW_BODY}},
+            ALLOW,
+            rules_path=slow_pat_rules,
+            env_extra={"OUTGOING_COPY_GATE_NAME_BUDGET": "1"},
+        )
+
         # --- Fail-closed net on the __main__ wrapper (B-wave, card 630d9864) -------------
         # Upstream's wrapper, recorded in the conflict map as "a candidate for future adoption,
         # not yet taken", and MEASURED before adopting: a payload whose tool_input is not a dict
         # made collect_mcp_body() raise AttributeError, python exited 1, and PreToolUse treats 1
         # as NON-blocking -- so a malformed call walked straight past the gate. Note what the
         # verdict helper reports: exit 1 reads as ALLOW here, which is precisely the point.
-        def raw_case(label, payload_obj, expected, rules_path=None):
-            got, stderr = raw_verdict(payload_obj, rules_path)
-            ok = got == expected
-            print(f"{'OK  ' if ok else 'FAIL'} {expected:5s} <- {got:5s}  {label}")
-            if not ok:
-                failures.append((label, expected, got, stderr))
-
         raw_case(
             "FAIL-CLOSED NET: non-dict tool_input on the email path -> BLOCK (was exit 1 = unchecked send)",
             {"tool_name": "send_email", "tool_input": "not-a-dict"},
