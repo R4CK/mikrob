@@ -61,7 +61,10 @@ describe('resolveAgentConfigDirForRead (card 272361eb)', () => {
     }
   })
 
-  it('the context guard reads through THIS resolver, not the raw config field', () => {
+  it.each([
+    ['context-guard-runner.ts', 'the periodic context guard'],
+    ['context-restart-gate-runner.ts', 'the context-restart gate'],
+  ])('%s reads through THIS resolver, not the raw config field', (file) => {
     // Wiring, not just the predicate: the fix is worthless if the runner still calls the old one.
     // Same shape as the hook-guards wiring test -- assert the call site, from the source.
     //
@@ -69,7 +72,7 @@ describe('resolveAgentConfigDirForRead (card 272361eb)', () => {
     // failed on the runner's own explanatory comment, which names the old function precisely
     // BECAUSE it is explaining what was replaced. A guard that matches its own rationale is the
     // same trap as a config guard matching its own comments.
-    const raw = readFileSync(join(import.meta.dirname, '..', 'web', 'context-guard-runner.ts'), 'utf-8')
+    const raw = readFileSync(join(import.meta.dirname, '..', 'web', file), 'utf-8')
     const code = raw.split('\n').filter((l) => !l.trim().startsWith('//')).join('\n')
     // The stripping itself is pinned: if it ever stopped removing anything, the negative below
     // would go vacuous in the silent direction.
