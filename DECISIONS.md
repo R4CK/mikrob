@@ -6012,3 +6012,33 @@ tudja tenni -- tehát tipp-minőségi kérdés, nem ennek a kártyának a hibáj
 **Ki döntött:** Cybered (F1 lelet), MikroB (jóváhagyás), backend2 (implementáció).
 **Hivatkozás:** kártya `382dcb15`, Cybered komment 19612; `src/web/kanban-state-stamp.ts`,
 `src/web/routes/kanban.ts`.
+
+## 2026-09-04 17:55 -- Tíz perces gördíthető viewport a swimlane-en, és a "padding is minimum-width" csapda MÁSODSZOR (kártya b52c3c42)
+
+**Döntés:** A betöltött tartomány (csúszka, 30p-4h) és a LÁTHATÓ ablak (10 perc) két külön
+mechanizmus. A vászon `zoom = tartomány/10perc` viewportnyi széles, vízszintesen gördíthető, és a
+`calc(106px + (100% - 106px) * zoom)` képlet CSAK a sáv-területet szorozza -- a 106px-es
+címke-oszlopot nem. Enélkül a látható szelet a címke szélességével rövidebb lenne, tehát a "tíz
+perc" állítás egyszerűen hamis lenne (~13% eltérés tipikus kártya-szélességen). Böngészőben mérve:
+pontosan 10,00 perc látszik.
+**Geometria:** a minimum-szélesség és a rés a viewport SZÁZALÉKÁBAN van megadva, és zoom-mal
+osztódik, így pixelben ugyanakkora marad bármekkora betöltött tartománynál. Ez teszi
+megfizethetővé a vastagabb blokkokat: a pakoló 4 órán 13 al-sor helyett 4-et kér, mert a blokkok
+89%-a korábban CSAK a padló miatt volt egyáltalán széles.
+**A padló 0,6% -> 2% (a viewporthoz mérve, ~5px -> ~16px):** Peti olvasható blokkokat kért, egy
+rövid hívás pedig pontosan annyi széles, amennyit a padló enged. Mért ár al-sorokban: 3 az
+alapértelmezett 1 órás ablakon, 8 a 4 órás szélsőértéken; a compact-küszöb ezért 8-ról 6-ra ment,
+hogy a gyakori 1 órás nézet teljes magasságú maradjon, a 4 órás pedig vékony sorokra váltson.
+**AMIT NEM SIKERÜLT teljesíteni, és kimondom:** a "olvashatóbb felirat" a MAGASSÁGRA teljesült
+(24px -> 32px blokk, 30px -> 38px sáv) és a minimum szélességre (5px -> 16px), de egy 5 másodperces
+hívás egy 10 perces ablakban a szélesség ~1/120-a: rövid blokkon SEMMILYEN behúzással nem fér el a
+felirat. Mérve: 19 blokkból 1 mutatja a teljes feliratát. Ott a szín + a jelmagyarázat viszi a
+feladat-típust, a tooltip a részletet. Ez a nézet inherens korlátja, nem beállítás kérdése.
+**MÁSODSZOR ugyanaz a csapda:** a `padding: 0 8px`, amit az olvashatóságért tettem be, MINIMUM
+SZÉLESSÉGET jelent (16px), amiről a pakoló nem tud -- böngészőben mérve 21 képernyő-átfedést hozott
+vissza egy olyan elrendezésbe, amit a pakoló tisztának hitt. Pontosan az a hibaosztály, amit a
+`min-width: 10px` eltávolításakor már egyszer lezártunk. A felirat mostantól `text-indent`-tel van
+behúzva, ami nem járul hozzá a doboz szélességéhez, és erre teszt is került.
+**Ki döntött:** Peti (a két vezérlő és a vastagabb blokkok), fullstack (a mérések és az arányok).
+**Hivatkozás:** kártya `b52c3c42`; `web/app-overview.js`, `web/style.css`,
+`src/__tests__/llmdist-lane-packing.test.ts`.
