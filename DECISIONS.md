@@ -5886,3 +5886,32 @@ NEV-SZABALY fajl hianyzik/ures". Egy hibás mintánál ez HAMIS, és a következ
 olvasható, érvényes JSON keresésére küldi. A rossz magyarázat rosszabb, mint a hiányzó: megállítja a
 keresést. A két ok most külön nevet kap mindkét felhasználói üzenetben, és a selftest állítja, hogy
 megkülönböztethetők.
+
+## 2026-09-04 -- 171c9f42 -- A FAILING verdikt saját kilépési kódot kap, hogy a flag tolerálhassa a hiányzót és soha ne a bukót
+
+**Döntés.** A `gate_verdict_check` mostantól HÁROM kimenetet ad: 0 = mehet, 1 = nincs használható
+verdikt (egy explicit, megnevezett flag felülírhatja), 2 = BUKÓ verdikt (soha nem felülírható). A
+`cleancore-land.sh` MINDIG meghívja, és a `--allow-ungated` csak az 1-est tolerálja.
+
+**Miért.** A flag eddig nem a DÖNTÉST kerülte meg, hanem a HÍVÁST -- így a FAILED ág sosem futott le.
+Három hely állította, hogy egy bukó verdikt sosem járható körbe (a helper saját üzenete, a lander
+kommentje, és a kártya QA-verdiktje), és egyik sem volt igaz. Egyetlen kilépési kóddal a hívó nem is
+tudja kifejezni a különbséget, ezért kellett a 2-es.
+
+**A marveen-oldal két hibája.** A `marveen-land.sh` az ÁGNEVET adta át ott, ahol sha kell -- a parser
+hex-prefixet hasonlít, tehát egy ágnév SOSEM egyezhet, és egy teljesen gate-elt kártya ugyanazt a
+"nincs verdikt" sort kapta, mint egy ellenőrizetlen. A hívás végén álló `|| true` pedig azt az egy
+kimenetet nyelte el, amiért az egész ott van: report módban a helper amúgy is 0-t ad mindenre a bukó
+verdikten kívül.
+
+**A LOW, ami a legfontosabb volt.** Cybersec megmutatta, hogy a két wiring-teszt a FORRÁS SZÖVEGÉT
+nézte, és a helper `return 1 -> return 0` mutációja mellett is ZÖLD maradt. Egy teszt, ami nem tud
+elbukni a kontroll eltávolításától, nem bizonyíték. A viselkedés-bizonyíték most a selftestben van:
+a VALÓDI `cleancore-land.sh`-t hajtja végig a valódi `--allow-ungated` úton egy stub tábla ellen. A
+wiring-teszt ezt teszi törölhetetlenné (ha azok az esetek eltűnnek, elbukik), és forrás-szinten már
+csak a három ténylegesen hibás dolgot pinneli.
+
+**Egy saját csapda a mérés közben.** Az első mutációs futásom szerint a marveen-oldali két javítás
+NEM volt lefedve. Tévedés volt: a shell-idézőjelezés miatt a csere sosem került a fájlba. Miután a
+szkript ELLENŐRZI, hogy a mutáció tényleg a lemezen van (`applied=True`), mindkettő harap. Egy nem
+alkalmazott mutáció "a teszt vak" alakban hazudik.
