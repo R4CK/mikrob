@@ -61,3 +61,19 @@ describe('the four specialist templates are wired into a real workflow (card 841
     expect(claudeMd).toMatch(/Kritikusat.*NE ezzel írj/s)
   })
 })
+
+// --- gate closure: same sha, not merely all present (card 1c4f9af1) --------------------------
+// Cybered's finding. Pinned in the same file because it is the same class of problem: a rule that
+// lives only in prose is a rule nobody can check, and CLAUDE.md rule 4a is where MikroB's closure
+// step is written down.
+describe('rule 4a demands the gates agree on a SHA, not just that all of them spoke', () => {
+  it('names the check and what to do with each of its answers', () => {
+    expect(claudeMd).toContain('gate-closure-check.py')
+    // The distinction the tool exists to draw: every gate passing is necessary, not sufficient.
+    expect(claudeMd).toMatch(/NEM elég önmagában/)
+    expect(claudeMd).toContain('DISAGREE')
+    // NOSHA has to be named too, or a reader meets an answer the instruction never mentioned and
+    // guesses -- and 8% of real verdicts carry no Gate-SHA line.
+    expect(claudeMd).toContain('NOSHA')
+  })
+})
