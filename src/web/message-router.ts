@@ -14,6 +14,7 @@ import {
   getKanbanCardStateByIdPrefix,
   stampMessageTrace,
   upsertOtelSpan,
+  closeOtelSpanIfOpen,
   type AgentMessage,
 } from '../db.js'
 import { formatDeliveryStalenessNote, supersededDispatch } from './kanban-state-stamp.js'
@@ -242,7 +243,7 @@ function generateSpanId(): string { return randomUUID().replace(/-/g, '').slice(
 
 // Stamps a trace context onto an unstamped pending message, using either an
 // inherited context (propagation) or a freshly generated root trace.
-function stampTraceOnMessage(msg: AgentMessage, nowMs: number): { trace_id: string; span_id: string; parent_span_id: string | null } {
+function stampTraceOnMessage(msg: AgentMessage): { trace_id: string; span_id: string; parent_span_id: string | null } {
   const inherited = deliveredTraceCtx.get(msg.from_agent)
   const trace_id = inherited?.trace_id ?? generateTraceId()
   const span_id  = generateSpanId()
@@ -250,7 +251,28 @@ function stampTraceOnMessage(msg: AgentMessage, nowMs: number): { trace_id: stri
   const stamped = stampMessageTrace(msg.id, trace_id, span_id, parent_span_id)
   if (stamped) {
     const operation = `${msg.from_agent}->${msg.to_agent}`
-    upsertOtelSpan({ trace_id, span_id, parent_span_id, agent_id: msg.from_agent, operation, start_ms: nowMs, attributes: null })
+    // start_ms is when the MESSAGE WAS CREATED, not when this tick reached it (Cybered NO-GO,
+    // comment 19920). Stamping happens AFTER the sessionExists / isSessionReadyForPrompt checks,
+    // so a tick-start clock begins measuring only once the message is already deliverable -- it
+    // excludes the queueing wait, which is the entire quantity worth having.
+    //
+    // Measured on the live DB across 9330 traced, delivered messages: real wait averaged 1289.8s
+    // (worst 26576s, 7h23m), while a tick-start span would have reported 1.8s (worst 544.9s). A
+    // ~700x underreport on average, ~10000x at worst, and ALWAYS in the direction that makes the
+    // fleet look healthy -- in exactly the failure this table would be watched for. This card's own
+    // header says a wrong duration is worse than a missing one; that applies here too.
+    //
+    // Same expression the abandon clock already uses (`now - msg.created_at * 1000`): the span's
+    // start and the abandon window should be talking about the same instant.
+    upsertOtelSpan({
+      trace_id,
+      span_id,
+      parent_span_id,
+      agent_id: msg.from_agent,
+      operation,
+      start_ms: msg.created_at * 1000,
+      attributes: null,
+    })
   }
   return { trace_id, span_id, parent_span_id }
 }
@@ -874,7 +896,7 @@ export async function runMessageRouterTick(): Promise<void> {
       if (!isChannelInbound) {
         const effective = msg.trace_id && msg.span_id
           ? { trace_id: msg.trace_id, span_id: msg.span_id }
-          : stampTraceOnMessage(msg, now)
+          : stampTraceOnMessage(msg)
         traceCtx = effective
       }
 
@@ -932,6 +954,25 @@ export async function runMessageRouterTick(): Promise<void> {
         await sendPromptToSession(session, prefix + wrapped + staleNote, host)
         if (!markMessageDelivered(msg.id)) {
           logger.warn({ id: msg.id }, 'markMessageDelivered affected 0 rows (deleted concurrently?)')
+        }
+        // Close the span HERE, because delivery is what it measures (card dbc0b4bf). Paired with a
+        // start_ms of msg.created_at, this interval is genuinely send -> delivered, INCLUDING the
+        // queueing wait -- which is what every comment about this table has always claimed and what
+        // it did not actually measure until the Cybered NO-GO on this card.
+        //
+        // Measured on live data before changing anything: 9308 messages carried a trace, and 9296
+        // of them sat at 'delivered' forever -- so 9297 spans were stuck 'running' with no end_ms.
+        // The close path was NOT broken: of the 12 traced messages that ever reached a terminal
+        // status, 12 had closed spans. Tracing and completion were simply on disjoint populations.
+        // Nothing marks a tmux-injected message done, because there is no completion signal to
+        // observe -- delivery IS the end of the operation this span opened, and it is exactly what
+        // the table's header calls it: inter-agent latency.
+        //
+        // Only on SUCCESS. The catch below retries a transient inject failure on a later tick, so
+        // closing there would stamp an end on an operation still in flight -- a wrong duration is
+        // worse than a missing one, which is the whole lesson of this card.
+        if (traceCtx) {
+          closeOtelSpanIfOpen(traceCtx.trace_id, traceCtx.span_id, Date.now(), 'ok')
         }
         // Propagate trace context: the receiving agent inherits this trace_id
         // and span_id so its next outbound message continues the same chain.

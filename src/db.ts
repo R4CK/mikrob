@@ -3823,10 +3823,20 @@ export function getPendingBacklogByAgent(): AgentBacklog[] {
 //   otel_spans       9229 rows, but only 12 CLOSED (0.13%) and ZERO attributes
 //   task_runs       22076 rows, but (name, agent, ts) only -- a firing, not a span
 //
-// otel_spans looks like the right source and is not: `operation` only ever holds `sender->recipient`
-// for inter-agent messages, finishSpan is effectively never called, so 9217 rows sit in 'running'
-// forever with no end_ms. It carries no duration, no category and no attributes -- see the card's
-// REVIEW; fixing that is its own defect, not this endpoint's job.
+// otel_spans looked like the right source and was not: `operation` only ever holds
+// `sender->recipient` for inter-agent messages, and at the time of measurement 9217 of 9229 rows
+// sat in 'running' forever with no end_ms, carrying no duration, no category and no attributes.
+//
+// That was card dbc0b4bf, and it is now fixed at the source: the router closes each span when the
+// message is DELIVERED, which is the operation the span opens and what this table's own header
+// calls it (inter-agent latency). Note what the defect actually was -- the close path was never
+// broken. Of the 12 traced messages that ever reached a terminal status, 12 had closed spans.
+// Tracing and completion were on disjoint populations: nothing marks a tmux-injected message done,
+// because there is no completion signal to observe.
+//
+// It still does not serve THIS endpoint. A send->deliver latency is not a task duration, and the
+// `operation` column still holds only a sender->recipient pair, with no category. The timeline
+// below is unchanged; this note is here so the next reader does not re-derive the same dead end.
 //
 // So the timeline is served from what actually holds the data, and the shape below is deliberately
 // honest about the seam: local tasks HAVE real start/end blocks, online-model work has token counts
@@ -3953,7 +3963,7 @@ export function getTaskSummary(fromMs: number, toMs: number): TaskSummary {
     avgDurationMs: weightedN > 0 ? Math.round(weighted / weightedN) : null,
     blockCoverage: {
       lanes: ['local'],
-      note: 'Only local-LLM tasks record start and end, so only the "local" lane can draw timeline blocks. Online-model work is counted and its tokens summed, but no per-task duration is stored anywhere in this database (otel_spans records starts and is effectively never closed).',
+      note: 'Only local-LLM tasks record start and end, so only the "local" lane can draw timeline blocks. Online-model work is counted and its tokens summed, but no per-task duration is stored anywhere in this database (otel_spans measures inter-agent send->deliver latency, not task work).',
     },
   }
 }
@@ -5227,6 +5237,27 @@ export function upsertOtelSpan(span: Omit<OtelSpan, 'end_ms' | 'status'> & { end
 export function closeOtelSpan(traceId: string, spanId: string, endMs: number, status: OtelSpan['status']): boolean {
   return db.prepare(`
     UPDATE otel_spans SET end_ms = ?, status = ? WHERE trace_id = ? AND span_id = ?
+  `).run(endMs, status, traceId, spanId).changes > 0
+}
+
+/**
+ * Close a span only if it is still open -- FIRST terminal event wins.
+ *
+ * Card dbc0b4bf. These spans are opened by the message router and measure the one thing this
+ * table's own header calls it: inter-agent latency, send -> delivered. A message can ALSO be marked
+ * done later via PUT /api/messages/:id, and closing again there would silently overwrite a measured
+ * latency with a work duration -- two different quantities in one column, indistinguishable
+ * afterwards. Whichever terminal event happens first is the one the span was measuring.
+ *
+ * Deliberately NOT a change to closeOtelSpan above: routes/spans.ts uses that function's return
+ * value to detect "span does not exist yet" and falls back to an upsert-close, so making it
+ * first-writer-wins there would send an already-closed span down the not-found path and rewrite it
+ * anyway. External reporters keep the old, unconditional semantics.
+ */
+export function closeOtelSpanIfOpen(traceId: string, spanId: string, endMs: number, status: OtelSpan['status']): boolean {
+  return db.prepare(`
+    UPDATE otel_spans SET end_ms = ?, status = ?
+    WHERE trace_id = ? AND span_id = ? AND end_ms IS NULL
   `).run(endMs, status, traceId, spanId).changes > 0
 }
 
