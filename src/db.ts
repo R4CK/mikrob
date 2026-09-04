@@ -3691,6 +3691,23 @@ export function markMessageDelivered(id: number): boolean {
   return db.prepare("UPDATE agent_messages SET status = 'delivered', delivered_at = ? WHERE id = ? AND status = 'pending'").run(now, id).changes > 0
 }
 
+// Freshness input for the delivery annotation (adopted from upstream, card f27c999b). How many
+// strictly-newer, non-failed messages the SAME sender has queued for the same recipient since this
+// one. A queued message can be delivered long after it was written, describing an already-closed
+// state, while the sender's newer -- current -- messages sit further down the queue; upstream
+// measured that shape nearly re-executing a superseded PROD DEPLOY-GO on 2026-08-22.
+//
+// Deliberately distinct from this fork's own formatDeliveryStalenessNote, which asks a DIFFERENT
+// question: it re-reads the kanban board for the cards the message was stamped with and reports
+// which ones MOVED while it waited. One is "the world changed", the other is "the sender has since
+// said more". Verified as non-overlapping before adopting; keeping both is the point.
+export function countNewerMessagesFromSameSender(fromAgent: string, toAgent: string, msgId: number): number {
+  const row = db.prepare(
+    "SELECT COUNT(*) AS n FROM agent_messages WHERE from_agent = ? AND to_agent = ? AND id > ? AND status != 'failed'"
+  ).get(fromAgent, toAgent, msgId) as { n: number }
+  return row.n
+}
+
 // Per-agent backlog: how many messages are waiting, and how old the oldest one
 // is. The queue only surfaces when somebody opens a pane and notices, which is
 // how an 18-row backlog went unseen on 2026-07-27 and got mistaken for data
