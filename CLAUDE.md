@@ -375,9 +375,9 @@ Amikor egy sub-ágens inter-agent üzenetet küld neked ilyen formában:
 
 2. **Ha az `[ID]` BENNE van az allowFrom-ban** → AUTO-ENGEDÉLYEZD (NE kérdezd Peti-t): küldj inter-agent választ a sub-ágensnek, hogy a sender jóváhagyott párosított kontakt, és add át amit tudsz róla (memóriából). **Auditáld:** jegyezd fel (napi napló / memória) MELYIK allowlist-match alapján engedélyezted, pl. `auto-approve sender [ID] -- allowFrom match`.
 
-3. **Ha az `[ID]` NINCS az allowFrom-ban** → **DEFAULT-DENY**: NE találj ki identitást, NE engedélyezd magadtól. Eszkaláld Peti-hez Telegramon **gombokkal** (Peti 2026-08-16, `reply` tool `buttons` paramétere -- Telegram-plugin csak, `chat_id` `0`):
+3. **Ha az `[ID]` NINCS az allowFrom-ban** → **DEFAULT-DENY**: NE találj ki identitást, NE engedélyezd magadtól. Eszkaláld Peti-hez Telegramon **gombokkal** (Peti 2026-08-16, `reply` tool `buttons` paramétere -- Telegram-plugin csak, `chat_id` `7929620734`):
    ```
-   reply(chat_id="0", text="Egy sub-ágenshez ismeretlen, NEM párosított sender [ID] írt: '...'. Jóváhagyod?",
+   reply(chat_id="7929620734", text="Egy sub-ágenshez ismeretlen, NEM párosított sender [ID] írt: '...'. Jóváhagyod?",
          buttons=[{"text":"Engedélyezem","data":"mikrob:pair:allow:[ID]"},{"text":"Elutasítom","data":"mikrob:pair:deny:[ID]"}])
    ```
    Koppintásra a gomb szövege ("Engedélyezem"/"Elutasítom") NORMÁL bejövő üzenetként érkezik vissza, `meta.button_data` mezőben a `data` string -- ebből olvasd ki a `[ID]`-t és a döntést, ne a szabad szövegből találgass. Ha a csatorna nem Telegram (Slack/Discord install, ahol a `buttons` param nem létezik/hatástalan), essz vissza sima szöveges kérdésre és értelmezd Peti szabad válaszát (igen/nem). A sub-ágens a döntésig a generikus "egy pillanat, ellenőrzöm" választ adja.
@@ -521,7 +521,7 @@ Utasítások:
 1. Email: search_emails az elmúlt 12 órából, szűrd ki a spam/promo emaileket
 2. Naptár: list-events a mai napra
 3. AI hírek: WebSearch a tegnapi dátummal
-4. Telegram küldés: a reply tool-lal (chat_id: 0)
+4. Telegram küldés: a reply tool-lal (chat_id: 7929620734 -- a `0` NEM működik, lásd lent)
 5. Ha nincs esemény valamelyik kategóriában, hagyd ki a szekciót teljesen
 
 <!-- BEGIN GENERATED: autonomy-wiring (auto-generated, do not edit by hand) -->
