@@ -5289,3 +5289,48 @@ eseteit nem elég a védeni kívánt alakból meríteni; a valós parancs-korpus
 
 **Hivatkozás:** eredeti kártya `6b32a478`; `scripts/hooks/cd-chain-guard.py`,
 `scripts/hooks/cd-chain-guard.selftest.py` (37 eset), `src/__tests__/cd-chain-guard-wiring.test.ts`.
+
+## 2026-09-04 08:00 -- A lockfile-out-of-sync zaj oka nem a verzió-bump volt, hanem a csomagkezelő
+
+**Döntés:** A `store/lockfile-sync-check.sh` mostantól NEM ALKALMAZHATÓ-t (exit 0) ad, ha az adott
+ref-en nincs `pnpm-lock.yaml` -- vagyis a repó nem pnpm-et használ. Az OUT OF SYNC (exit 1) marad
+minden valódi esetre, és `--base` mellett a lockfile TÖRLÉSE is valódi lelet, nem "nem alkalmazható".
+
+**Miért nem az, amit a kártya feltételezett:** a kártya (Cybersec észrevétele nyomán) azt írta, hogy
+a lander bumpolja a `package.json`-t, a lockfile-t nem, ezért látszik verzió-eltérés
+(`1.34.1+mikrob.47` vs `1.34.1`). Megmértem, és mindkét fele másképp van:
+- A `marveen-land.sh` MÁR szinkronban tartja a `package-lock.json`-t (`bump-fork-version.sh`), és a
+  `+mikrob.N` utótag SZÁNDÉKOSAN nincs benne a lockfile-ban -- a script fejléce ezt ki is mondja
+  (npm az `X.Y.Z` alakot várja ott). A develop-on mért `package.json 1.34.1+mikrob.57` /
+  `package-lock.json 1.34.1` tehát a TERVEZETT állapot, nem drift.
+- A `cleancore-land.sh` nem bumpol semmit, csak ellenőriz.
+
+**Ami valóban történt:** a `lockfile-sync-check.sh` pnpm-only (`pnpm install --frozen-lockfile`), a
+marveen viszont npm-repó (`package-lock.json`, `pnpm-lock.yaml` nincs). A check ezért
+`ERR_PNPM_NO_LOCKFILE`-t kapott ("pnpm-lock.yaml is absent"), és ezt OUT OF SYNC-nek jelentette,
+"a package.json changed without regenerating pnpm-lock.yaml" szöveggel. Mivel a `marveen-land.sh`
+MINDEN landolásnál bumpolja a `package.json`-t, a gate-pretriage 8. szekciója minden landolás után
+kiírta a `[fail]`-t. Mérve 2026-09-04-én az `origin/develop`-on: exit 1, pontosan ezzel az üzenettel.
+
+**Az elv, amit ez követ:** a script saját fejléce külön kezeli az exit 3-at az exit 1-től, mert
+"a pnpm hiányzik" és "a lockfile elavult" különböző tények. A "ez a repó egyáltalán nem pnpm-et
+használ" egy harmadik, és az sem a kártyáról szóló tény. Egy visszatérő hamis `[fail]` rosszabb,
+mint ha nem lenne check: az a zaj, amiben egy VALÓDI drift elrejtőzik -- pontosan ezt jelezte
+Cybersec.
+
+**Ellenőrizve mindkét irányban:** a CleanCore-on (valódi pnpm-repó) a check TOVÁBBRA IS fut és
+dolgozik (`OK -- 36 manifest(s) at HEAD match pnpm-lock.yaml`); a marveen gate-pretriage-ből a
+lockfile-lelet eltűnt. A selftest 7-ről 11 esetre nőtt, és kapott egy vitest-futtatót
+(`lockfile-sync-check-selftest.test.ts`), mert eddig semmi nem futtatta -- egy olyan check
+selftestje, aminek a verdiktjére a `cleancore-land.sh` landolást UTASÍT EL, nem maradhat
+kézi-indítású.
+
+**NYITVA MARAD, külön kártyát érdemel:** a marveennek ezzel NINCS lockfile-drift ellenőrzése
+(eddig sem volt -- a mostani csak hamisan jelzett). Egy npm-ág (`package-lock.json` ellenőrzése)
+külön munka, saját tervezéssel; ezt a kártyát nem terheltem vele.
+
+**Ki döntött:** Cybersec (az észrevétel), MikroB (kártya), backend (a mérés, a premissza
+helyesbítése és a végrehajtás).
+
+**Hivatkozás:** kártya `fe06da0c` (Cybersec észrevétel: `4ae2d3f5`);
+`store/lockfile-sync-check.sh`, `src/__tests__/lockfile-sync-check-selftest.test.ts`.
