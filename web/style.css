@@ -1081,6 +1081,35 @@ main {
 .ovw-llmdist-empty,
 .ovw-llmdist-error { font-size: 13px; color: var(--text-muted); margin: 0; padding: 8px 0; }
 .ovw-llmdist-error { color: var(--danger); }
+/* Swimlane time-window slider (card 4c5c540c). 44px on the thumb and the row so the control
+   is usable with a thumb on a phone, per the responsive rule. */
+.ovw-llmdist-range {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  margin: 4px 0 10px;
+  flex-wrap: wrap;
+}
+.ovw-llmdist-range label { font-size: 12px; color: var(--text-muted); }
+.ovw-llmdist-range input[type="range"] {
+  flex: 1 1 160px;
+  min-width: 120px;
+  height: 44px;
+  accent-color: var(--accent, #4f8cff);
+  background: transparent;
+  cursor: pointer;
+}
+.ovw-llmdist-range output {
+  font-variant-numeric: tabular-nums;
+  font-size: 12px;
+  color: var(--text);
+  min-width: 5.5em;
+  text-align: right;
+}
+@media (max-width: 480px) {
+  .ovw-llmdist-range { gap: 6px; }
+  .ovw-llmdist-range output { min-width: 4.5em; }
+}
 .ovw-llmdist-kpis {
   display: grid;
   grid-template-columns: repeat(5, 1fr);

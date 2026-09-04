@@ -1337,10 +1337,16 @@ export async function tryHandleLocalLlm(ctx: RouteContext): Promise<boolean> {
   // subtlety. Reuses the existing tested ledger reader/parser rather than a
   // second parse of the same TSV.
   if (path === '/api/local-llm/model-usage-buckets' && method === 'GET') {
+    // Bounds stay WIDE on purpose (card 4c5c540c). The Overview slider offers 0.5-4h because
+    // that is the range an operator watches live, but that is a UI decision: this is a general
+    // read endpoint and a manual "show me the last day" query is legitimate, so the slider's
+    // range must not become the contract's. What DID need fixing is the message, which claimed
+    // a minimum of 1 while the check accepted anything above 0 -- 0.5 worked and was documented
+    // nowhere. The floor is now explicit and the text matches the code.
     const rawHours = url.searchParams.get('hours')
     const parsedHours = rawHours === null ? 6 : Number(rawHours)
-    if (!Number.isFinite(parsedHours) || parsedHours <= 0 || parsedHours > 168) {
-      json(res, { error: 'hours must be a number between 1 and 168' }, 400)
+    if (!Number.isFinite(parsedHours) || parsedHours < 0.5 || parsedHours > 168) {
+      json(res, { error: 'hours must be a number between 0.5 and 168' }, 400)
       return true
     }
     const lines = tailUsageLines()

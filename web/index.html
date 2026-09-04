@@ -522,6 +522,12 @@
           <h3 data-i18n="overview.llmDist.title">Helyi LLM feladat-elosztás</h3>
           <span class="overview-card-meta" id="ovwLlmDistMeta" data-i18n="overview.llmDist.meta">utolsó 6 óra</span>
         </div>
+        <div class="ovw-llmdist-range">
+          <label for="ovwLlmDistHours" data-i18n="overview.llmDist.range_label">Időablak</label>
+          <input type="range" id="ovwLlmDistHours" min="0.5" max="4" step="0.5" value="1"
+                 aria-describedby="ovwLlmDistHoursOut">
+          <output id="ovwLlmDistHoursOut" for="ovwLlmDistHours"></output>
+        </div>
         <div class="ovw-llmdist-kpis" id="ovwLlmDistKpis"></div>
         <div id="ovwLlmDistBody">
           <p class="ovw-llmdist-loading" data-i18n="common.loading">Betöltés...</p>

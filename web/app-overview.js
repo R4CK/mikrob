@@ -769,13 +769,61 @@ function ovwLlmDistWireTooltips(body) {
   })
 }
 
+// Swimlane time window (card 4c5c540c). Was hardcoded to 6h; Peti asked for 30 minutes to 4
+// hours, which is the range you actually watch while work is flowing. The API's own bounds stay
+// wide (0.5-168) -- this slider is a UI choice, not the contract.
+const OVW_LLMDIST_HOURS_KEY = 'marveen-llmdist-hours'
+const OVW_LLMDIST_MIN_H = 0.5
+const OVW_LLMDIST_MAX_H = 4
+
+function ovwLlmDistHours() {
+  const el = document.getElementById('ovwLlmDistHours')
+  const raw = el ? Number(el.value) : Number(localStorage.getItem(OVW_LLMDIST_HOURS_KEY))
+  // Clamp rather than trust: a stored value survives a future range change, and a slider the
+  // browser restored on reload can hold anything the previous build allowed.
+  if (!Number.isFinite(raw) || raw <= 0) return 1
+  return Math.min(OVW_LLMDIST_MAX_H, Math.max(OVW_LLMDIST_MIN_H, raw))
+}
+
+/** Human label for a fractional-hour window: "30 perc" / "1,5 óra" / "1.5 h".
+ *  The decimal separator is locale-specific -- hardcoding the Hungarian comma would print
+ *  "1,5 h" to an English operator -- so the number is formatted with the ACTIVE i18n language
+ *  (window._lang, the same source t() reads), not with a fixed string replace. */
+function ovwLlmDistHoursLabel(h) {
+  if (h < 1) return t('overview.llmDist.range_minutes', { n: Math.round(h * 60) })
+  const lang = (typeof window !== 'undefined' && window._lang) || 'hu'
+  let n
+  try { n = h.toLocaleString(lang) } catch { n = String(h) }
+  return t('overview.llmDist.range_hours', { n })
+}
+
+function initLlmDistRange() {
+  const el = document.getElementById('ovwLlmDistHours')
+  if (!el || el.dataset.wired === '1') return
+  let stored = Number(localStorage.getItem(OVW_LLMDIST_HOURS_KEY))
+  if (!Number.isFinite(stored) || stored <= 0) stored = 1
+  el.value = String(Math.min(OVW_LLMDIST_MAX_H, Math.max(OVW_LLMDIST_MIN_H, stored)))
+  const out = document.getElementById('ovwLlmDistHoursOut')
+  const paint = () => { if (out) out.textContent = ovwLlmDistHoursLabel(ovwLlmDistHours()) }
+  paint()
+  // `input` paints the label as it slides (no request per pixel); `change` fires once the
+  // operator lets go, and only that refetches.
+  el.addEventListener('input', paint)
+  el.addEventListener('change', () => {
+    try { localStorage.setItem(OVW_LLMDIST_HOURS_KEY, String(ovwLlmDistHours())) } catch { /* private mode */ }
+    void loadLlmDistWidget()
+  })
+  el.dataset.wired = '1'
+}
+
 async function loadLlmDistWidget() {
   const card = document.getElementById('ovwLlmDistCard')
   const kpisEl = document.getElementById('ovwLlmDistKpis')
   const body = document.getElementById('ovwLlmDistBody')
   const metaEl = document.getElementById('ovwLlmDistMeta')
   if (!card || !body) return
-  const hours = 6
+  initLlmDistRange()
+  const hours = ovwLlmDistHours()
   const token = localStorage.getItem('marveen-dashboard-token') || ''
   try {
     const r = await fetch(`/api/local-llm/model-usage-buckets?hours=${hours}`, {
@@ -784,7 +832,7 @@ async function loadLlmDistWidget() {
     if (r.status === 404) { card.hidden = true; return }
     if (!r.ok) throw new Error('HTTP ' + r.status)
     const d = await r.json()
-    if (metaEl) metaEl.textContent = t('overview.llmDist.meta', { hours: d.windowHours || hours })
+    if (metaEl) metaEl.textContent = t('overview.llmDist.meta', { hours: ovwLlmDistHoursLabel(d.windowHours || hours) })
     if (kpisEl) kpisEl.innerHTML = ovwLlmDistKpiHtml(d.kpi || {})
     const models = Array.isArray(d.models) ? d.models : []
     if (!models.length) {
