@@ -6195,3 +6195,42 @@ rev-parse --git-common-dir`-ből származtatott fő checkout. Hordozható, nem b
 **Hurokzárás:** a selftestjét a 711a7e57-en épített felfedezés-wrapper AUTOMATIKUSAN bekötötte,
 nulla szerkesztéssel (14 -> 15 teszt). Ez a legjobb bizonyíték arra, hogy ott a felfedezés volt a
 helyes választás nyolc kézzel írt wrapper helyett: a következő selftest magától bekötődött.
+
+---
+
+## 2026-09-04 -- 89f4c28d -- A routing-selftest hermetikus lett, és ezzel bekötődött
+
+**Döntés.** A `local-llm.sh` mostantól honorálja a `LOCAL_LLM_MODEL_ROUTING_FILE` env-változót
+(`cfg="${LOCAL_LLM_MODEL_ROUTING_FILE:-$HERE/local-llm-model-routing.json}"`), a selftest ideiglenes
+fájlra mutat, és a `store-selftests-all-run` kizárás-listája **üres lett**.
+
+**Miért kellett.** A selftest korábban kicserélte a `store/local-llm-model-routing.json`-t -- a saját
+kommentje szerint "this IS the file the running fleet uses" -- és `trap cleanup EXIT`-tel állította
+vissza. A trap **SIGKILL-re nem fut le**, ez a suite pedig landoláskor fut, a landolásokat pedig
+megölik. Egy megölt futás 18 ügynök routing-configját hagyta volna egy nem létező modellre mutató
+hamis fájlon. Ezért volt kizárva a 711a7e57-en, és ezért nem volt szabad csak úgy bekötni.
+
+**Visszafelé kompatibilis.** A változó nélkül a viselkedés byte-azonos a korábbival: ez egy út arra,
+hogy máshová mutassunk, nem új alapértelmezés.
+
+**Bizonyítva, nem állítva:** a selftest futása előtt és után az élő `/home/neon/marveen/store/`-beli
+config sha256-ja **azonos** (`bc1994fb…`), és a worktree-belié is. Még a mutációs futás sem nyúlt
+hozzá. A kizárás megszűnése után a felfedezés-wrapper 15 -> 16 tesztre nőtt.
+
+**Az override teherhordó, nem dekoráció:** visszaállítva a beégetett útra a selftest elbukik (4/1).
+
+**ÉS AMIT A BEKÖTÉS AZONNAL FELSZÍNRE HOZOTT -- ez a kártya legérdekesebb része.** Az 5. eset
+("missing routing config fails open") a `no model configured` szöveget is bukásnak vette. Ez két
+független dolgot mos össze: a hiányzó ROUTING configot (amiről a case szól) és az üres MODEL
+ÁLLAPOT-KÖNYVTÁRAT (egészen más). A `src/__tests__/setup/isolate-local-llm-state.ts` minden
+vitest-futásnál friss temp könyvtárra állítja a `LOCAL_LLM_STATE_DIR`-t -- pontosan azért, hogy a
+tesztek ne nyúljanak a flotta LLM-állapotához --, tehát a suite-on belül a "no model configured" a
+HELYES válasz, és a case elbukott rajta. Kézzel futtatva sosem bukott, mert ott van konfigurált
+modell.
+
+Ez pontosan az a hibaosztály, amiért ez a kártya-család létezik: **egy nem futó ellenőrzés a saját
+hibáját is elrejti.** Nem volt hibás, amíg nem futott.
+
+A javítás nem lazítás: a case most a Traceback-et nézi (az a crash), ÉS azt, hogy hiányzó config
+mellett ne szivárogjon ki a fake modell (az a routing). Mindkettő a routingról szól, és egyik sem
+függ attól, hogy van-e letöltött modell.

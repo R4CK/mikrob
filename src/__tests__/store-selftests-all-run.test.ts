@@ -35,18 +35,17 @@ const STORE = join(REPO_ROOT, 'store')
  * stops covering something, so every entry has to earn its line and has to still exist.
  */
 const EXCLUDED: Readonly<Record<string, string>> = {
-  // Its own comment says it plainly: it swaps `store/local-llm-model-routing.json` out and back,
-  // and "this IS the file the running fleet uses". A `trap cleanup EXIT` restores it on a normal
-  // exit or an ordinary signal -- but NOT on SIGKILL, and this suite runs during landings, which do
-  // get killed (one of this agent's own runs was killed by a session teardown the same day). A
-  // killed run would leave 18 agents' routing config replaced by a fake pointing at a nonexistent
-  // model. It passes when run by hand (5/5); it is the WIRING that is unsafe, not the script.
+  // Empty, and that is the point of card 89f4c28d.
   //
-  // The fix is one line in local-llm.sh -- `cfg="${LOCAL_LLM_MODEL_ROUTING_FILE:-$HERE/...}"` --
-  // after which the selftest can point at a temp file and join this list. That edits a live fleet
-  // script, which is a separate decision from wiring, so it is not folded in here.
-  'local-llm-model-routing':
-    'swaps the LIVE fleet routing config; its cleanup trap does not survive SIGKILL, and landings get killed',
+  // local-llm-model-routing used to live here: it swapped `store/local-llm-model-routing.json` --
+  // "this IS the file the running fleet uses", said its own comment -- out and back under a cleanup
+  // trap that does not survive SIGKILL, while this suite runs during landings, which get killed.
+  // Rather than leave a written control permanently unrun, local-llm.sh now honours
+  // LOCAL_LLM_MODEL_ROUTING_FILE and the selftest points at a temp file, so it joined the list.
+  // Verified by checksum: the live config is byte-identical before and after the run.
+  //
+  // The shape stays because the next unsafe-to-wire selftest should land HERE with its reason,
+  // rather than quietly not being wired at all -- which is the failure this whole file exists for.
 }
 
 function discover(): string[] {
