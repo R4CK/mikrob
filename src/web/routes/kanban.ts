@@ -628,9 +628,15 @@ export async function tryHandleKanban(ctx: RouteContext): Promise<boolean> {
         return true
       }
     }
-    const id = randomUUID().slice(0, 8)
+    // ONE id, used for BOTH the row and the response (card f27c999b, adopted from upstream).
+    // It used to be `createKanbanCard({ id, ...normalized })` with a generated id, and `normalized`
+    // still carries a caller-supplied `id` -- so the spread OVERRODE the generated one in the row
+    // while the response echoed the generated one. HTTP 200 pointing at a card that does not exist,
+    // and the caller's own id silently in the database under a different name than it was told.
     const normalized = normalizeProjectName(data)
-    createKanbanCard({ id, ...normalized })
+    const suppliedId = typeof normalized.id === 'string' && normalized.id.trim() ? normalized.id.trim() : null
+    const id = suppliedId ?? randomUUID().slice(0, 8)
+    createKanbanCard({ ...normalized, id })
     // Card 4bade960: run the dedup pre-filter on EVERY new card (rule 6b was previously enforced
     // only by agent discipline before opening a card, and by the >2-day dispatch filter for cards
     // already open). One extra async spawn per card create, awaited before responding -- same
