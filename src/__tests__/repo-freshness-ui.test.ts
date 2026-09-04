@@ -38,6 +38,7 @@ type Win = {
   _i18n: Record<string, Record<string, string>>
   repoFreshnessState: (r: Repo | null | undefined) => State
   summarizeRepoFreshness: (repos: Repo[] | undefined) => Summary
+  sortReposForFreshnessTable: (repos: (Repo & { name?: string })[] | undefined) => (Repo & { name?: string })[]
 }
 
 let win: Win
@@ -104,6 +105,26 @@ describe('summarizeRepoFreshness', () => {
   })
 })
 
+describe('sortReposForFreshnessTable (card 184dc8d7, executed)', () => {
+  const input = [
+    { name: 'zeta', behind: 0, upstreamSha: 'x', installed: true },
+    { name: 'alpha', behind: 0, upstreamSha: 'x', installed: true },
+    { name: 'pipx-thing', behind: 0, upstreamSha: null, installed: true },
+    { name: 'small-lag', behind: 1, upstreamSha: 'x', installed: true },
+    { name: 'big-lag', behind: 88, upstreamSha: 'x', installed: true },
+  ]
+  it('orders attention-first: behind (most commits first), then unknown, then up to date by name', () => {
+    const names = win.sortReposForFreshnessTable(input).map((r) => r.name)
+    expect(names).toEqual(['big-lag', 'small-lag', 'pipx-thing', 'alpha', 'zeta'])
+  })
+  it('does not mutate its input and tolerates undefined', () => {
+    const before = input.map((r) => r.name)
+    win.sortReposForFreshnessTable(input)
+    expect(input.map((r) => r.name)).toEqual(before)
+    expect(win.sortReposForFreshnessTable(undefined)).toEqual([])
+  })
+})
+
 describe('the module is pure and loaded before both consumers', () => {
   it('app-repo-freshness.js touches no DOM at load', () => {
     expect(FRESHNESS_SRC).not.toMatch(/\bdocument\./)
@@ -159,10 +180,28 @@ describe('Frissítések page carries the adopted repos strip', () => {
     const body = OVERLAY.slice(OVERLAY.indexOf('async function forkLoadUpdates()'))
     expect(body).toContain('renderIntegratedReposSummary()')
   })
-  it('summarises through the shared functions and lists the behind repos per name', () => {
+  it('summarises through the shared functions and renders the FULL per-repo table in attention-first order (card 184dc8d7)', () => {
     expect(OVERLAY).toContain('summarizeRepoFreshness(repos)')
-    expect(OVERLAY).toContain("repoFreshnessState(r) === 'behind'")
+    expect(OVERLAY).toContain('sortReposForFreshnessTable(repos).map(')
+    expect(OVERLAY).toContain('const state = repoFreshnessState(r)')
     expect(OVERLAY).toContain("t('updates.integrated.behind_item'")
+    expect(OVERLAY).toContain('<table class="updates-integrated-table">')
+  })
+  it('every table cell carries a data-label so the mobile stacked layout stays labelled (rule 13)', () => {
+    const fn = OVERLAY.slice(OVERLAY.indexOf('function integratedReposSummaryHtml'), OVERLAY.indexOf('async function renderIntegratedReposSummary'))
+    const tds = fn.match(/<td\b[^>]*>/g) || []
+    expect(tds.length).toBeGreaterThanOrEqual(7)
+    for (const td of tds) expect(td).toContain('data-label=')
+  })
+  it('shows enabled/disabled and adoption per row (the narrowed-scope columns)', () => {
+    expect(OVERLAY).toContain("t('updates.integrated.col.enabled')")
+    expect(OVERLAY).toContain('esc(r.adoption)')
+    expect(OVERLAY).toContain("t('common.yes')")
+  })
+  it('the review-note column exists ONLY when the API carries the field -- absence is not "no note"', () => {
+    expect(OVERLAY).toContain("repos.some((r) => typeof r.note === 'string')")
+    expect(OVERLAY).toContain('<details class="updates-integrated-note">')
+    expect(OVERLAY).not.toContain("r.description.length")
   })
   it('the details button jumps to the repos page (no dead-end link, rule 9)', () => {
     expect(OVERLAY).toContain("switchPage('repos')")
@@ -179,8 +218,11 @@ describe('every new i18n key exists in hu AND en', () => {
     'repos.fresh.unknown', 'repos.fresh.unknown_title', 'repos.last_checked_never',
     'updates.integrated.title', 'updates.integrated.counts', 'updates.integrated.last_checked',
     'updates.integrated.never_checked', 'updates.integrated.never_count',
-    'updates.integrated.behind_item', 'updates.integrated.none_behind',
+    'updates.integrated.behind_item', 'updates.integrated.empty',
     'updates.integrated.link', 'updates.integrated.error',
+    'updates.integrated.col.name', 'updates.integrated.col.kind', 'updates.integrated.col.enabled',
+    'updates.integrated.col.installed', 'updates.integrated.col.last_checked',
+    'updates.integrated.col.state', 'updates.integrated.col.note', 'updates.integrated.note_summary',
   ]
   for (const k of keys) {
     it(k, () => {
