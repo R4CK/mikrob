@@ -676,12 +676,15 @@ async function loadGitHubRepos() {
 
 // --- Beépített repók (dedicated dashboard page, card 000ec0d0 / epic b48fc58c) ---
 // Reuses the existing, real GET/POST/PATCH/DELETE /api/connectors/github-repos
-// endpoints (same backend as the Connectors-page sub-section above). Update-
-// availability DETECTION -- knowing in advance whether a repo actually has new
-// upstream commits -- is separate backend work (card a5c13533, not yet built).
-// The Update button here always attempts a pull and is honestly labelled as
-// such (see the info-box in index.html); it never claims a repo "is up to
-// date" or "has an update available" without real data behind that claim.
+// endpoints (same backend as the Connectors-page sub-section above) for the repos
+// added from the dashboard, plus GET /api/integrated-repos for the ADOPTED ones.
+// Update-availability DETECTION exists only for the adopted set: the backend
+// measures `behind` / `upstreamSha` / `lastCheckedAt` per repo (statusForRepo), and
+// card 92a4c2e7 renders every one of those as an explicit three-state signal
+// (up to date / N commits behind / not measurable) via app-repo-freshness.js.
+// A dashboard-added repo carries no such data, so its Update button still
+// attempts a pull and is labelled as such (info-box in index.html) -- the page
+// never claims "up to date" or "update available" without real data behind it.
 let _reposCache = []
 
 async function loadReposPage() {
@@ -722,6 +725,8 @@ async function loadReposPage() {
         lastCheckedAt: r.lastCheckedAt || null,
         kind: r.kind,
         behind: r.behind || 0,
+        // Needed by repoFreshnessState(): behind 0 with NO upstream ref is 'unknown', not fresh.
+        upstreamSha: r.upstreamSha || null,
         reviewRequired: !!r.reviewRequired,
         adoption: r.adoption || '',
         pinnedVersion: r.pinnedVersion || null,
@@ -731,6 +736,13 @@ async function loadReposPage() {
     }
     _reposCache = [...adopted, ...manual]
     document.getElementById('reposStatTotal').textContent = String(_reposCache.length)
+    // Freshness tiles (card 92a4c2e7), counted over the ADOPTED repos only -- those are
+    // the ones /api/integrated-repos measured; a dashboard-added repo has no upstream data.
+    const fresh = summarizeRepoFreshness(adopted)
+    document.getElementById('reposStatFresh').textContent = String(fresh.upToDate)
+    document.getElementById('reposStatBehind').textContent = String(fresh.behind)
+    document.getElementById('reposStatReview').textContent = String(fresh.reviewRequired)
+    document.getElementById('reposStatUnknown').textContent = String(fresh.unknown)
     renderReposGrid(_reposCache)
   } catch (err) {
     loadingEl.hidden = true
@@ -785,9 +797,18 @@ function renderReposGrid(repos) {
       // Upstream moved ahead (Peti 2026-07-31): highlight the whole card + a warning message,
       // not just a small badge, so an available update is impossible to miss.
       if (r.behind > 0) card.classList.add('repo-card-outdated')
-      const behind = r.behind > 0
-        ? `<span class="repo-card-badge repo-card-badge-warn">↑ ${r.behind} ${escapeHtml(t('repos.update_available_badge'))}</span>`
-        : ''
+      // Three explicit freshness states (card 92a4c2e7): silence used to be the only
+      // "up to date" signal, and a never-fetched clone or pipx install looked the same as
+      // a fresh one. The classification is shared with the Frissítések page.
+      const freshness = repoFreshnessState(r)
+      let freshBadge
+      if (freshness === 'behind') {
+        freshBadge = `<span class="repo-card-badge repo-card-badge-warn">↑ ${r.behind} ${escapeHtml(t('repos.update_available_badge'))}</span>`
+      } else if (freshness === 'up_to_date') {
+        freshBadge = `<span class="repo-card-badge repo-card-badge-ok" title="${escapeHtml(t('repos.fresh.up_to_date_title'))}">✓ ${escapeHtml(t('repos.fresh.up_to_date'))}</span>`
+      } else {
+        freshBadge = `<span class="repo-card-badge repo-card-badge-unknown" title="${escapeHtml(t('repos.fresh.unknown_title'))}">${escapeHtml(t('repos.fresh.unknown'))}</span>`
+      }
       const warnRow = r.behind > 0
         ? `<div class="repo-card-warning" role="status">⚠ ${escapeHtml(t('repos.update_available_msg', { n: String(r.behind) }))}${r.reviewRequired ? ' ' + escapeHtml(t('repos.update_review_required')) : ''}</div>`
         : ''
@@ -798,13 +819,14 @@ function renderReposGrid(repos) {
         ? `<span class="repo-card-badge repo-card-badge-ok" title="${escapeHtml(t('repos.installed_title'))}">✓ ${escapeHtml(t('repos.installed'))}${r.adoption === 'pipx' ? ` (pipx${ver})` : ''}</span>`
         : `<span class="repo-card-badge" title="${escapeHtml(t('repos.not_installed_title'))}">${escapeHtml(t('repos.not_installed'))}</span>`
       // Last-checked date (card 9e92e94c): only the daily-synced vendored clones write this
-      // (external-repos-sync.sh's write_back), so pipx/rules-folded adoptions have none -- omit
-      // the row for those rather than show a misleading blank date.
+      // (external-repos-sync.sh's write_back), so pipx/rules-folded adoptions have none. The
+      // row is ALWAYS present (card 92a4c2e7): a missing date reads as "not checked yet",
+      // never as a blank -- an omitted row was indistinguishable from a checked one at a glance.
       const checkedRow = r.lastCheckedAt
         ? `<span class="repo-card-date">${escapeHtml(t('repos.last_checked_at'))}: ${new Date(r.lastCheckedAt).toLocaleDateString(dateLocale)}</span>`
-        : ''
+        : `<span class="repo-card-date repo-card-date-never">${escapeHtml(t('repos.last_checked_at'))}: ${escapeHtml(t('repos.last_checked_never'))}</span>`
       card.innerHTML = header +
-        `<div class="repo-card-meta"><span class="repo-card-badge repo-card-badge-kind">${kind}</span>${installBadge}<span class="repo-card-badge">${escapeHtml(t('repos.badge.adopted'))}</span>${behind}<span class="repo-card-date">${escapeHtml(t('repos.installed_at'))}: ${date}</span>${checkedRow}</div>${warnRow}`
+        `<div class="repo-card-meta"><span class="repo-card-badge repo-card-badge-kind">${kind}</span>${installBadge}<span class="repo-card-badge">${escapeHtml(t('repos.badge.adopted'))}</span>${freshBadge}<span class="repo-card-date">${escapeHtml(t('repos.installed_at'))}: ${date}</span>${checkedRow}</div>${warnRow}`
       gridEl.appendChild(card)
       continue
     }

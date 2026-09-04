@@ -2380,6 +2380,12 @@
       <!-- Two independent version checks: original upstream (Marveen) + our fork (MikroB).
            Each block is rendered by loadUpdates() with its own status + changes list. -->
       <div id="updatesRepos"></div>
+
+      <!-- Adopted (beépített) repos' freshness at a glance (card 92a4c2e7): counts +
+           the repos that are behind, from /api/integrated-repos, rendered by
+           renderIntegratedReposSummary() in fork-updates.js. Per-repo detail lives on
+           the Beépített repók page; the button below jumps there. -->
+      <div id="updatesIntegratedRepos"></div>
     </div>
 
     <!-- Beépített repók (adopted external GitHub repos: skills, MCP servers, tools).
@@ -2409,10 +2415,28 @@
           <div class="stat-value" id="reposStatTotal">0</div>
           <div class="stat-label" data-i18n="repos.stat.total">Beépített repó</div>
         </div>
+        <!-- Freshness tiles (card 92a4c2e7): filled by loadReposPage() from the ADOPTED
+             repos' measured upstream status (/api/integrated-repos), never guessed. -->
+        <div class="stat-card">
+          <div class="stat-value stat-value-ok" id="reposStatFresh">0</div>
+          <div class="stat-label" data-i18n="repos.stat.fresh">Naprakész</div>
+        </div>
+        <div class="stat-card">
+          <div class="stat-value stat-value-warn" id="reposStatBehind">0</div>
+          <div class="stat-label" data-i18n="repos.stat.behind">Lemaradt</div>
+        </div>
+        <div class="stat-card">
+          <div class="stat-value stat-value-warn" id="reposStatReview">0</div>
+          <div class="stat-label" data-i18n="repos.stat.review">Átnézés előtt</div>
+        </div>
+        <div class="stat-card">
+          <div class="stat-value stat-value-muted" id="reposStatUnknown">0</div>
+          <div class="stat-label" data-i18n="repos.stat.unknown">Nem mérhető</div>
+        </div>
       </div>
 
       <div class="info-box" data-i18n="repos.detect_info_box">
-        A "van-e frissítés" jelzés még nem elérhető (backend fejlesztés alatt) -- a Frissítés gomb mindig lefuttatja a git pull-t, függetlenül attól, hogy van-e ténylegesen új commit.
+        Az adoptált repóknál a frissesség mért adat: utolsó ellenőrzés dátuma és az upstream-lemaradás commitban (naprakész / N commit lemaradás / nem mérhető). A dashboardról hozzáadott repóknál ilyen mérés nincs, ott a Frissítés gomb mindig lefuttatja a git pull-t.
       </div>
 
       <div class="repos-add-row">
@@ -3944,6 +3968,7 @@
   <script src="/app-settings.js"></script>
   <script src="/app-wizard.js"></script>
   <script src="/app-agent-bundle.js"></script>
+  <script src="/app-repo-freshness.js"></script>   <!-- card 92a4c2e7: pure freshness classification, used by app-connectors.js + fork-updates.js -->
   <script src="/app-connectors.js"></script>
   <script src="/app-onboarding.js"></script>
   <script src="/app-updates.js"></script>
