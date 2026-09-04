@@ -111,10 +111,19 @@ async function performRestart(name: string, cfg: AutoRestartConfig): Promise<voi
   }
 }
 
-async function checkAgent(name: string, nowMs: number): Promise<void> {
+/** Exported as a test seam (card 4276708e, Cybersec finding 3): the streak map's LIFECYCLE -- as
+ *  opposed to the pure deferral maths, which src/auto-restart.ts already covers -- lives entirely in
+ *  this function's early returns, and no test reached it before. */
+export async function checkAgent(name: string, nowMs: number): Promise<void> {
   const cfg = readAutoRestartConfig(name)
   if (!cfg.enabled) {
     lastRestart.delete(name) // re-seed cleanly if re-enabled later
+    // Card 4276708e, Cybersec finding 3: the deferral streak has to go with it. Its sibling above
+    // was already cleared here; this one was not, so a stale sinceMs survived disable -> enable, and
+    // the NEXT open question -- a brand-new one -- would be measured against the OLD clock. The cap
+    // then looks long since exceeded and the override fires on the FIRST tick, restarting straight
+    // through a question the owner has only just been asked.
+    openQuestionDeferrals.delete(name)
     return
   }
   // Sub-agents must be up to be restarted; the main session is launchd-managed
@@ -125,7 +134,12 @@ async function checkAgent(name: string, nowMs: number): Promise<void> {
   // (the core SSH-independence invariant). 'stopped' is also left alone (auto-
   // restart cycles running sessions on a schedule; it does not resurrect dead
   // ones, matching the prior local behavior).
-  if (name !== MAIN_AGENT_ID && agentRunState(name) !== 'running') return
+  if (name !== MAIN_AGENT_ID && agentRunState(name) !== 'running') {
+    // Same reason as the disabled branch: a stopped agent's streak must not outlive it and prime an
+    // instant override on the next start.
+    openQuestionDeferrals.delete(name)
+    return
+  }
 
   // Seed on first sight so a daily slot that already elapsed before boot does
   // not fire now.
@@ -189,6 +203,18 @@ async function checkAgent(name: string, nowMs: number): Promise<void> {
   } catch (err) {
     logger.warn({ err, name }, 'auto-restart: restart failed')
   }
+}
+
+/** Test seam: both maps are module-level process state, so a test driving two ticks needs a known
+ *  starting point. Exposes the streak map read-only so a test can assert the lifecycle directly
+ *  rather than inferring it from a restart that may not have been attempted for other reasons. */
+export function resetAutoRestartRunnerStateForTest(): void {
+  lastRestart.clear()
+  openQuestionDeferrals.clear()
+}
+
+export function peekOpenQuestionDeferralForTest(name: string): { sinceMs: number; count: number } | null {
+  return openQuestionDeferrals.get(name) ?? null
 }
 
 export function startAutoRestartRunner(): NodeJS.Timeout {
