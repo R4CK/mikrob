@@ -31,6 +31,7 @@ import { getDb } from './db.js'
 import { startStuckInputWatcher } from './web/stuck-input-watcher.js'
 import { startInboxNudgeWatcher } from './web/inbox-nudge-watcher.js'
 import { startSelfAdvanceClearWatcher } from './web/self-advance-clear-watcher.js'
+import { startMessageBacklogWatcher } from './web/message-backlog-watcher.js'
 import { startStuckToolCallWatcher } from './web/stuck-tool-call-watcher.js'
 import { startReauthHealer } from './web/reauth-healer.js'
 import { startAutoRestartRunner } from './web/auto-restart-runner.js'
@@ -445,7 +446,12 @@ export function startWebServer(port = 3420): http.Server {
   if (!webOnly) logger.info('Inbox nudge watcher started (20s poll, 55s offset)')
 
   const selfAdvanceClearInterval = webOnly ? undefined : startSelfAdvanceClearWatcher()
+  // Card 1e7ba5c1: nothing watched GET /api/messages/backlog, so an agent could hold undelivered
+  // messages for hours with no signal anywhere (measured: 27 messages, oldest 325 minutes, session
+  // running). webOnly-gated like its neighbour -- a dashboard-only process has no router to report on.
+  const messageBacklogInterval = webOnly ? undefined : startMessageBacklogWatcher()
   if (!webOnly) logger.info('Self-advance clear watcher started (20s poll)')
+  if (!webOnly) logger.info('Message-backlog watcher started (5m poll)')
 
   const reauthHealerInterval = webOnly ? undefined : startReauthHealer()
   if (!webOnly && reauthHealerInterval) logger.info('Reauth healer started (3min poll, 90s offset)')
@@ -671,6 +677,7 @@ export function startWebServer(port = 3420): http.Server {
     clearInterval(stuckToolCallInterval)
     if (inboxNudgeInterval) clearInterval(inboxNudgeInterval)
     if (selfAdvanceClearInterval) clearInterval(selfAdvanceClearInterval)
+    if (messageBacklogInterval) clearInterval(messageBacklogInterval)
     if (reauthHealerInterval) clearInterval(reauthHealerInterval)
     clearInterval(autoRestartInterval)
     clearInterval(modelFallbackInterval)
