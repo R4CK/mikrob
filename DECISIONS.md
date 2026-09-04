@@ -6395,3 +6395,35 @@ amugy is megkoveteli. (2) A "skipped" esetem ROSSZ OKBOL ment at: ket kulon ag i
 es a teszt csak a szora allitott -- a specifikus okra allit azota.
 
 **Ki dontett:** MikroB (irany), backend2 (meres + vegrehajtas).
+
+## 2026-09-05 00:55 -- A kártyazárás-ellenőrző elvárt-sha alapértelmezetté tétele (kártya 2003e04b)
+
+**Döntés:** a `store/gate-closure-check.py` `--expect` kapcsolója alapértelmezetté vált: kapcsoló
+nélkül a kártya legfrissebb `REVIEW` kommentjének `Gate-SHA:` sorát használja elvárt shaként. Az
+eltérést viszont NEM sha-egyenlőséggel ítéli meg, hanem tartalommal: feloldja mindkét commitot a két
+klón egyikébe, és összeveti a szállított fájlok tartalmát. Új `UNRESOLVED` állapot arra, amikor az
+eltérés nem ítélhető meg. A régi viselkedés a `--no-expect`-tel áll vissza.
+
+**Miért nem a kártyában scope-olt egyszerű alak:** a kártya és a hozzá tartozó plan-grilling (Cybered)
+két utat kínált -- (a) az elvárt sha a REVIEW-ból, sha-egyenlőséggel, (b) tartalom-alapú összevetés --
+és úgy ítélte, hogy (a) önmagában elég, mert a REVIEW shája „definíció szerint egyezik a
+verdiktekkel". Ez a teljes táblán MÉRVE nem igaz. Az 557 `AGREE` kártyából 38-nál tér el a REVIEW
+shája attól, amit a gate-ek megnéztek, és ebből 23 bizonyíthatóan ártalmatlan: 10-nél a két commit
+bájtra ugyanazt tartalmazza a kártya által szállított fájlokra, 13-nál pedig csak a `package.json`
+(minden landolás verziót bumpol), a `DECISIONS.md` vagy a `README.md` mozdult -- tipikusan a
+munka-commit kontra az őt landoló merge. Tisztán sha-egyenlőséggel tehát a zárások 6,8%-ára szólt
+volna riasztás, háromötöde hamisan, ami néhány nap alatt megtanítja a flottának, hogy hagyja
+figyelmen kívül. A (b) úton ugyanez 15 kártya (2,7%): 14 valódi tartalmi eltérés a kártya saját
+fájljaiban, plusz 1 feloldhatatlan.
+
+**Amit a mérés még megmutatott:** a `STALE` szövege szándékosan nem nevez meg bűnöst. A c458ba0e
+mintában a gate-ek shája az elavult, az edd4c3bf-en viszont fordítva: a szállítmány egy „nem új
+REVIEW" jelzésű INFO-ONLY kommentben lépett tovább, a gate-ek helyesen az ÚJABB shát nézték, és a
+REVIEW a lemaradt artifaktum. Az eszköz a két commitot és az eltérő fájlokat mondja meg; melyik az
+elavult, az az olvasó döntése.
+
+**Kapcsolódó, ugyanebben a munkában:** a `store/*.selftest.py` fájlokat semmi nem futtatta. A
+selftest-felfedezés (kártya 711a7e57) csak a `.selftest.sh` alakra illeszkedett, így a repó mindkét
+python-selftestje -- köztük épp ezé az eszközé -- megírva, commitolva, zöldnek látszóan, soha egyszer
+sem futott le. A felfedezés mostantól interpreter szerint kulcsol, és nyelvenként külön negatív
+kontroll van rá, hogy egy elgépelt kiterjesztés ne tudja csendben lefedetlenül hagyni az egyik nyelvet.

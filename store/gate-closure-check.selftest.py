@@ -12,10 +12,13 @@ The synthetic cases below pin the rule; the numbers in the header of gate-closur
 running it over the real board, where 10 cards carry mixed shas across their history and only 4 of
 them are the hazard.
 """
+import io
 import json
 import os
+import shutil
 import subprocess
 import sys
+import tempfile
 
 CHECK = os.path.join(os.path.dirname(os.path.abspath(__file__)), "gate-closure-check.py")
 
@@ -23,11 +26,18 @@ failures = []
 n = 0
 
 
-def run(comments, gates=None, expect=None):
+def run(comments, gates=None, expect=None, extra=(), env=None):
     args = [sys.executable, CHECK] + ([gates] if gates else []) \
-        + (["--expect", expect] if expect else [])
+        + (["--expect", expect] if expect else []) + list(extra)
+    e = dict(os.environ)
+    # Point the clone lookup at nothing by default, so a case that does not build a repo cannot
+    # accidentally read the real marveen/CleanCore checkouts and change answer with the machine.
+    e.setdefault("MARVEEN_MAIN", "/nonexistent-marveen")
+    e.setdefault("CLEANCORE_MAIN", "/nonexistent-cleancore")
+    if env:
+        e.update(env)
     p = subprocess.run(args, input=json.dumps({"comments": comments}),
-                       capture_output=True, text=True)
+                       capture_output=True, text=True, env=e)
     return p.stdout.strip()
 
 
@@ -35,10 +45,10 @@ def c(author, content):
     return {"author": author, "content": content}
 
 
-def case(label, comments, expect_kind, gates=None, expect_sha=None):
+def case(label, comments, expect_kind, gates=None, expect_sha=None, extra=(), env=None):
     global n
     n += 1
-    got = run(comments, gates, expect_sha)
+    got = run(comments, gates, expect_sha, extra, env)
     kind = got.split("|", 1)[0]
     ok = kind == expect_kind
     print("%s %-9s <- %-9s %s" % ("OK  " if ok else "FAIL", expect_kind, kind, label))
@@ -122,6 +132,138 @@ case("the Gate-SHA header may come FIRST, the verdict second",
      [c("qa", "Gate-SHA: bbbb2222\nQA PASS"), c("cybersec", S % "bbbb2222")], "AGREE")
 case("a REVIEW comment from the author is not a gate verdict",
      [c("backend", "REVIEW: kesz.\nGate-SHA: bbbb2222"), c("qa", V % "bbbb2222")], "AGREE")
+
+# --- THE DEFAULT EXPECTATION (card 2003e04b) ---------------------------------------------------
+# Cybered demonstrated the flag's flaw minutes after it landed by forgetting to pass it. So the
+# expectation now comes from the card when the caller gives none -- and everything below pins the
+# two conditions their plan-grilling attached to that, plus what the board measurement added.
+
+R = "REVIEW: kesz.\nGate-SHA: %s"
+
+case("no --expect: the REVIEW's sha is used, and agreeing with it is AGREE",
+     [c("backend", R % "aaaa1111"), c("qa", V % "aaaa1111")], "AGREE")
+case("no --expect: gates on a sha the REVIEW does not name, unjudgeable -> NOT agree",
+     [c("backend", R % "bbbb2222"), c("qa", V % "aaaa1111")], "UNRESOLVED")
+case("the LATEST REVIEW wins, so a delta re-declaration is what gets compared",
+     [c("backend", R % "aaaa1111"), c("backend", R % "bbbb2222"), c("qa", V % "bbbb2222")],
+     "AGREE")
+case("a REVIEW naming SEVERAL commits (rule 4b): a verdict on any of them is judging the delivery",
+     [c("backend", "REVIEW: kesz.\nGate-SHA: aaaa1111, bbbb2222"), c("qa", V % "bbbb2222")],
+     "AGREE")
+
+# Cybered's condition 1: "no expectation" must never be indistinguishable from "expectation met".
+case("no REVIEW at all: still AGREE, but the line SAYS the delivered commit is unchecked",
+     [c("qa", V % "aaaa1111"), c("cybersec", S % "aaaa1111")], "AGREE", gates="qa,cybersec")
+n += 1
+_out = run([c("qa", V % "aaaa1111")], None, None)
+_ok = "unchecked" in _out
+print("%s %-9s <- %-9s %s" % ("OK  " if _ok else "FAIL", "says-so", "says-so" if _ok else "silent",
+                              "...and that sentence is actually in the output"))
+if not _ok:
+    failures.append(("no-review must say so", "contains 'unchecked'", _out))
+case("a REVIEW with no Gate-SHA line is the same case: unchecked, and said out loud",
+     [c("backend", "REVIEW: kesz, de nincs sha."), c("qa", V % "aaaa1111")], "AGREE")
+
+# Cybered's condition 2: anchored exactly like the verdict, or a comment QUOTING a review supplies
+# the expectation -- the mirror image of gate-dispatch-check's documented false-positive class.
+case("a comment that merely QUOTES a REVIEW does not declare the expectation",
+     [c("mikrob", "Idezem a reviewt:\nREVIEW: kesz.\nGate-SHA: bbbb2222"), c("qa", V % "aaaa1111")],
+     "AGREE")
+
+case("--no-expect restores the pre-2003e04b behaviour exactly",
+     [c("backend", R % "bbbb2222"), c("qa", V % "aaaa1111")], "AGREE", extra=("--no-expect",))
+case("an explicit --expect still outranks the REVIEW's declaration",
+     [c("backend", R % "aaaa1111"), c("qa", V % "aaaa1111")], "STALE", expect_sha="cccc3333")
+
+# --- THE VERDICT WORD MUST END, NOT MERELY HIT A WORD BOUNDARY ---------------------------------
+# `\b` matched between the S of PASS and the hyphen, so a BUILDER's "QA PASS-eligible" parsed as
+# the QA gate's verdict (measured: card 65e0b0d5, author backend2). Four comments in 20121 carry
+# the shape; this is the only one whose direction is a false PASS.
+case("a builder's 'QA PASS-eligible' is not a QA verdict",
+     [c("backend2", "QA PASS-eligible\nGate-SHA: aaaa1111")], "MISSING")
+case("nor is 'CYBERSEC GO-ish'",
+     [c("backend", "CYBERSEC GO-ish, de meg nem futott")], "MISSING")
+case("and a real verdict is still read when the word simply ends",
+     [c("qa", V % "aaaa1111")], "AGREE")
+
+# --- THE CONTENT COMPARISON, AGAINST A REAL GIT REPO -------------------------------------------
+# The cases above all use shas that resolve nowhere, which exercises the "cannot judge" branch and
+# nothing else. The comparison itself -- the part that decides whether a differing sha is benign --
+# needs actual commits, so this builds a throwaway repo shaped like the two things the board really
+# does: a work commit, the landing that carried it (same code, bumped version, appended log), and a
+# genuinely different commit. Hermetic on purpose: pointing this at the real clones would make the
+# selftest's answer depend on which machine and which day it ran.
+
+_TMP = tempfile.mkdtemp(prefix="gate-closure-selftest-")
+
+
+def _g(*args):
+    subprocess.run(("git", "-C", _TMP, "-c", "user.email=s@e.lf", "-c", "user.name=selftest") + args,
+                   check=True, capture_output=True, text=True)
+
+
+def _rev(ref="HEAD"):
+    return subprocess.run(("git", "-C", _TMP, "rev-parse", ref),
+                          capture_output=True, text=True).stdout.strip()
+
+
+def _write(rel, text):
+    path = os.path.join(_TMP, rel)
+    os.makedirs(os.path.dirname(path), exist_ok=True)
+    io.open(path, "w", encoding="utf-8").write(text)
+
+
+try:
+    _g("init", "-q", "-b", "main")
+    _write("src/thing.ts", "export const A = 1\n")
+    _write("package.json", '{"version":"1.0.0"}\n')
+    _write("DECISIONS.md", "- first\n")
+    _g("add", "-A"); _g("commit", "-qm", "work")
+    WORK = _rev()
+
+    # The landing: the SAME delivered code, with the two things every landing moves anyway.
+    _write("package.json", '{"version":"1.0.1"}\n')
+    _write("DECISIONS.md", "- first\n- someone else's entry\n")
+    _g("add", "-A"); _g("commit", "-qm", "land")
+    LAND = _rev()
+
+    # A genuinely different deliverable.
+    _write("src/thing.ts", "export const A = 2\n")
+    _g("add", "-A"); _g("commit", "-qm", "different")
+    OTHER = _rev()
+
+    # A MERGE commit, because `git show --name-only` prints nothing for one and the file list then
+    # comes back empty -- which read as "no files differ", a vacuous pass on 8 of the 37 real cases.
+    _g("checkout", "-q", "-b", "side", WORK)
+    _write("src/side.ts", "export const B = 1\n")
+    _g("add", "-A"); _g("commit", "-qm", "side work")
+    _g("checkout", "-q", "main")
+    _g("merge", "-q", "--no-ff", "-m", "merge: side into main", "side")
+    MERGE = _rev()
+
+    ENV = {"MARVEEN_MAIN": _TMP, "CLEANCORE_MAIN": "/nonexistent-cleancore"}
+
+    case("a differing sha whose DELIVERED FILES are identical is AGREE, not a false alarm",
+         [c("backend", R % WORK), c("qa", V % LAND)], "AGREE", env=ENV)
+    n += 1
+    _out = run([c("backend", R % WORK), c("qa", V % LAND)], None, None, (), ENV)
+    _ok = "package.json" in _out and "DECISIONS.md" in _out
+    print("%s %-9s <- %-9s %s" % ("OK  " if _ok else "FAIL", "names-em", "names-em" if _ok else "silent",
+                                  "...and it NAMES what it ignored, so the pass is auditable"))
+    if not _ok:
+        failures.append(("must name the ignored files", "package.json + DECISIONS.md", _out))
+
+    case("a differing sha whose delivered files REALLY differ is STALE",
+         [c("backend", R % WORK), c("qa", V % OTHER)], "STALE", env=ENV)
+    case("...and that is the shape --expect was built for, still caught when passed explicitly",
+         [c("qa", V % OTHER)], "STALE", expect_sha=WORK, env=ENV)
+    case("a MERGE commit's file list is not empty, so a landing-shaped REVIEW is really compared",
+         [c("backend", R % MERGE), c("qa", V % OTHER)], "STALE", env=ENV)
+    case("an unreachable clone cannot turn a mismatch into a pass",
+         [c("backend", R % WORK), c("qa", V % OTHER)], "UNRESOLVED",
+         env={"MARVEEN_MAIN": "/nonexistent-marveen", "CLEANCORE_MAIN": "/nonexistent-cleancore"})
+finally:
+    shutil.rmtree(_TMP, ignore_errors=True)
 
 # --- MALFORMED INPUT ---------------------------------------------------------------------------
 n += 1
