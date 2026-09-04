@@ -5481,3 +5481,40 @@ marveen develop -> `OK -- 21 declared dependencies match`, CleanCore -> `not app
 
 **Hivatkozás:** kártya `c3f052ad` (a `fe06da0c` komment 19169-ből); `store/npm-lockfile-sync-check.sh`,
 `store/marveen-land.sh`, `store/gate-pretriage.sh`, `src/__tests__/lockfile-sync-check-selftest.test.ts`.
+
+## 2026-09-04 08:50 -- QA FAIL: egy `"$(...)"` a KETTŐS idézőjelen belül is végrehajtódik
+
+**Döntés:** A `_strip_quoted_literals` mostantól különbséget tesz: az EGYSZERES idézőjeles szakaszt
+teljesen kiüríti (abban semmi nem fut le), a KETTŐS idézőjelesből viszont MEGTARTJA a
+parancs-behelyettesítéseket (`$(...)`, backtick), és csak a többit üríti ki.
+
+**Miért (QA FAIL az 57bb35a8-on):** a korábbi verzió a kettős idézőjeles szakaszt EGÉSZBEN
+kiürítette, tehát a `cd /abs && printf "%s" "$(cat relative/file.txt)"` parancsból eltűnt a
+`$(cat relative/file.txt)` MIELŐTT a `_segments()` lefutott volna -- és mivel a szegmentáló épp a
+`$(` határon vág, a vágási pont a már kiürített részen belül volt. A relatív utat olvasó parancs
+kiesett a szövegből, és a hívás átment. Ugyanennek a parancsnak az IDÉZŐJEL NÉLKÜLI alakja helyesen
+blokkolt -- fordítva, mint kellene: a `"$(...)"` az az alak, amit a shellcheck és minden
+stílus-útmutató kér, és szó szerint ez a flotta saját token-átadási idiómája
+(`"$(cat store/.dashboard-token)"`).
+
+**Bash-szemantika, amit elrontottam:** csak az EGYSZERES idézőjel literál. Kettős idézőjelen belül
+a `$(...)`, a backtick és a `$VAR` is kifejtődik. Egy guard, ami mindkettőt "adatnak" veszi, a
+nyelvet érti félre, nem a mintát.
+
+**Egy második lelet a saját tesztkészletemben, amit a mutáció mutatott meg:** az "egyszeres
+idézőjel literál" esetem nem tartalmazott parancs-behelyettesítést, ezért a "kezeld az egyszereset
+is kettősként" mutáció NEM bukott meg -- vagyis a megkülönböztetés nem volt teherbíróan tesztelve.
+Pótolva: `'$(cat relative/file.txt)'` egyszeres idézőjelben ALLOW marad, és a mutáció most harap.
+Ez ugyanaz a hibaosztály, amit a Cybersec a `-rn`-nél megnevezett: egy eset csak akkor mér, ha a
+vizsgált DIMENZIÓN eltér a többitől.
+
+**Három-utas mérés:** a QA reprója, a backtick-alak és a flotta token-idiómája mind
+BLOCK -> pass (57bb35a8) -> BLOCK (javítás); az inert esetek (egyszeres idézőjel, wedge-alak
+argumentumként, `python3 -c` törzs) végig ALLOW maradnak; a korábbi javítások (rg, grep -rn, cső)
+mind állnak.
+
+**Ki döntött:** QA (a lelet, saját adverzariális teszttel), backend (végrehajtás + a hiányzó
+mutáció-eset pótlása).
+
+**Hivatkozás:** kártya `9c664b88` (QA FAIL komment); `scripts/hooks/cd-chain-guard.py`,
+`scripts/hooks/cd-chain-guard.selftest.py` (56 eset).
