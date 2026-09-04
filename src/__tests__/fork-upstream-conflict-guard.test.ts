@@ -216,7 +216,8 @@ const ACKNOWLEDGED_CONFLICTS = {
   'src/db.ts':
     "comment-only collision at moveKanbanCard(), zero code divergence -- keep fork's depBlocked/isForceActor comment (a8aa9ae5) AND append upstream's dispatched_at=NULL clear-on-move comment just above the db.prepare() branch it documents (that SQL is already identical/shared on both sides)." +
     " Re-measured 2026-09-02 (MikroB landing-block, QA stale-blob catch 9a9dc8394559..59fbb9d1d82b): upstream moved again, but entirely elsewhere in the file (EMAILKAPU901 PR2 -- content_hash/consumed_at columns and plumbing on the approvals table, a one-shot-consumption anchor for its email-approval gate). Zero overlap with moveKanbanCard(); resolution at the actual conflict point is unchanged. Re-measured AGAIN 2026-09-02 (Cybersec, card 9dc0fba8 landing-block, 59fbb9d1d82b..d15ec3aba7a1): upstream moved once more and again elsewhere -- updateKanbanCard() now writes a kanban_card_events row on a real status transition and takes an `actor` argument. The only occurrence of moveKanbanCard in that diff is inside a NEW COMMENT (\'audited exactly like one made through moveKanbanCard\'), not at the conflict point. Resolution unchanged; blob bumped. Re-measured a THIRD time 2026-09-02 (fron-ted, landing 5dd4a211, d15ec3aba7a1..61dc38447a22): upstream added touchAncestorChain() (parent updated_at bubbling from createKanbanCard/updateKanbanCard, cycle/depth guarded) -- additive, elsewhere in the file, no line of moveKanbanCard() touched. Resolution unchanged; blob bumped." +
-    "Re-measured 2026-09-03 (backend2, card 934dc104 landing-block, 61dc38447a22..6a71eab9ab67): upstream added countNewerMessagesFromSameSender() after markMessageDelivered() -- the DB half of its freshness/supersession signal (see the src/web/message-router.ts entry, which keeps that feature alongside the fork's staleness note). Additive, nowhere near moveKanbanCard(). Resolution unchanged; blob bumped.",
+    "Re-measured 2026-09-03 (backend2, card 934dc104 landing-block, 61dc38447a22..6a71eab9ab67): upstream added countNewerMessagesFromSameSender() after markMessageDelivered() -- the DB half of its freshness/supersession signal (see the src/web/message-router.ts entry, which keeps that feature alongside the fork's staleness note). Additive, nowhere near moveKanbanCard(). Resolution unchanged; blob bumped." +
+    "Re-measured 2026-09-04 (backend, card 5bee4b22 landing-block, 6a71eab9ab67..cf4c1052f7ef): upstream made saveMemory() fire-and-forget an embedding after the INSERT (mirroring saveAgentMemory), so rows written through that path -- the nightly daily-log digest among them -- stop being left unvectorised. 13 lines added inside saveMemory(), one turned into `const info =`. moveKanbanCard() does not appear in the diff at all. Resolution unchanged; blob bumped.",
   // Card 2e634e5c. Both sides independently fixed the SAME ghost-session bug (agent DELETE leaving
   // an orphaned tmux session), but the fork's fix is strictly more correct: it AWAITS
   // stopAgentProcess(), tracks the result, and logs on failure; upstream's is a floating (un-awaited)
@@ -817,7 +818,7 @@ const ACKNOWLEDGED_UPSTREAM_BLOBS: Readonly<Record<keyof typeof ACKNOWLEDGED_CON
   'src/web.ts': 'a515f9c8750b2aeece08eb66034f466e6d8a7732',
   'src/web/keychain.ts': '1e1730ee0d8f6b1d4b51c5c254f3fab56acfa376',
   'src/web/agent-scaffold.ts': '936cdac15d5c59305cdff4e7659ec95e95d86f2a',
-  'src/db.ts': '6a71eab9ab67a2c0e17dd086ee319be80a0bb284',
+  'src/db.ts': 'cf4c1052f7efa2fcbfbbfec89f8e76eec543e405',
   'src/web/routes/agents.ts': '4b7a61e33448134091ae6a9175857a4027bdab28',
   'src/web/routes/kanban.ts': '89423d29b8af3e949cb520eefc8f5a0d03ff380c',
   'scripts/hooks/egress-gate.mjs': '229076d5812e7d50a188ca07b43a87fb6239b233',

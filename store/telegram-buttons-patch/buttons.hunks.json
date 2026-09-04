@@ -1,0 +1,22 @@
+[
+ {
+  "name": "reply-tool schema: the `buttons` parameter",
+  "anchor": "        },\n        required: ['chat_id', 'text'],",
+  "replacement": "          buttons: {\n            type: 'array',\n            items: {\n              type: 'object',\n              properties: {\n                text: { type: 'string', description: 'Visible button label.' },\n                data: { type: 'string', description: 'Opaque payload, max 64 bytes. Yours to define and parse back.' },\n              },\n              required: ['text', 'data'],\n            },\n            description: \"Optional inline keyboard, one row, attached under the message. When an allowlisted sender taps a button, its text arrives back through the normal inbound channel exactly as if typed, with meta.button_data set to that button's data string so the tap can be told apart from a real typed reply. The tapped message is edited in place to show the choice and the keyboard is removed, so it cannot be tapped twice.\",\n          },\n        },\n        required: ['chat_id', 'text'],"
+ },
+ {
+  "name": "reply handler: parse `buttons` into an InlineKeyboard",
+  "anchor": "        const sentIds: number[] = []\n",
+  "replacement": "        const sentIds: number[] = []\n        const buttons = (args.buttons as { text: string; data: string }[] | undefined) ?? []\n        const keyboard = buttons.length\n          ? buttons.reduce((kb, b) => kb.text(b.text, b.data), new InlineKeyboard())\n          : undefined\n\n"
+ },
+ {
+  "name": "reply handler: attach the keyboard to the LAST chunk only",
+  "anchor": "            const sent = await bot.api.sendMessage(chat_id, chunks[i], {\n              ...(shouldReplyTo ? { reply_parameters: { message_id: reply_to } } : {}),\n              ...(parseMode ? { parse_mode: parseMode } : {}),\n            })\n",
+  "replacement": "            const isLast = i === chunks.length - 1\n            const sent = await bot.api.sendMessage(chat_id, chunks[i], {\n              ...(shouldReplyTo ? { reply_parameters: { message_id: reply_to } } : {}),\n              ...(parseMode ? { parse_mode: parseMode } : {}),\n              ...(isLast && keyboard ? { reply_markup: keyboard } : {}),\n            })\n"
+ },
+ {
+  "name": "callback_query: deliver a caller-defined button tap inbound",
+  "anchor": "  if (!m) {\n    await ctx.answerCallbackQuery().catch(() => {})\n    return\n  }\n",
+  "replacement": "  if (!m) {\n    // Generic caller-defined button from the `reply` tool's `buttons` param.\n    // Security mirrors the perm: path and the text-reply path: allowFrom\n    // must contain the sender.\n    const access = loadAccess()\n    const senderId = String(ctx.from.id)\n    if (!access.allowFrom.includes(senderId)) {\n      await ctx.answerCallbackQuery({ text: 'Not authorized.' }).catch(() => {})\n      return\n    }\n    const msg = ctx.callbackQuery.message\n    // The tap only carries callback_data \u2014 recover the visible label from the\n    // keyboard that was actually sent, so the injected inbound text reads\n    // exactly like the user typed the button's label.\n    let label = data\n    const kb = msg && 'reply_markup' in msg ? msg.reply_markup?.inline_keyboard : undefined\n    if (kb) {\n      for (const row of kb) {\n        const hit = row.find(b => 'callback_data' in b && b.callback_data === data)\n        if (hit) { label = hit.text; break }\n      }\n    }\n    await ctx.answerCallbackQuery({ text: label }).catch(() => {})\n    // Strip the keyboard and show the outcome so the same tap can't fire twice.\n    if (msg && 'text' in msg && msg.text) {\n      await ctx.editMessageText(`${msg.text}\\n\\n${label} \u2705`).catch(() => {})\n    }\n    mcp.notification({\n      method: 'notifications/claude/channel',\n      params: {\n        content: label,\n        meta: {\n          chat_id: String(ctx.chat!.id),\n          ...(msg ? { message_id: String(msg.message_id) } : {}),\n          user: ctx.from.username ?? senderId,\n          user_id: senderId,\n          ts: new Date().toISOString(),\n          button_data: data,\n        },\n      },\n    }).catch(err => {\n      process.stderr.write(`telegram channel: failed to deliver button tap: ${err}\\n`)\n    })\n    return\n  }\n\n"
+ }
+]

@@ -96,7 +96,67 @@ def _strip_heredoc_bodies(cmd):
 
 # Inside DOUBLE quotes, bash still expands `$(...)` and backticks -- they are live code, not text.
 # Only SINGLE quotes are fully literal.
-_DQ_SUBST_RX = re.compile(r"\$\([^)]*\)|`[^`]*`")
+#
+# This used to be the regex `\$\([^)]*\)|`[^`]*``, which stops at the FIRST `)` -- and a regex
+# cannot count parentheses, so nesting was never going to work here (card 5bee4b22, QA MEDIUM on
+# 9c664b88). Backticks do not nest, so they stay a plain scan; `$( ... )` gets a real walker.
+
+
+def _close_paren(text, k):
+    """Index just past the `)` that closes a `$(` whose body starts at k, or len(text).
+
+    Quoted spans are stepped over rather than counted: a `)` inside `'...'` or `"..."` is literal
+    text to bash, so counting it would close the substitution early -- which is the very
+    truncation this function exists to stop. An UNTERMINATED substitution returns len(text),
+    keeping everything; that direction only ever gives the scanner more to look at.
+    """
+    depth, n = 1, len(text)
+    while k < n:
+        c = text[k]
+        if c == "\\":
+            k += 2
+        elif c == "'":
+            j = text.find("'", k + 1)
+            k = n if j < 0 else j + 1
+        elif c == '"':
+            j = k + 1
+            while j < n and text[j] != '"':
+                j += 2 if text[j] == "\\" else 1
+            k = n if j >= n else j + 1
+        elif c == "(":
+            depth += 1
+            k += 1
+        elif c == ")":
+            depth -= 1
+            if depth == 0:
+                return k + 1
+            k += 1
+        else:
+            k += 1
+    return n
+
+
+def _executable_spans(text):
+    """The substrings inside a double-quoted span that bash would still EXECUTE."""
+    out, i, n = [], 0, len(text)
+    while i < n:
+        c = text[i]
+        if c == "\\":
+            i += 2
+        elif c == "'":
+            j = text.find("'", i + 1)
+            i = n if j < 0 else j + 1
+        elif c == "`":
+            j = text.find("`", i + 1)
+            out.append(text[i:] if j < 0 else text[i:j + 1])
+            i = n if j < 0 else j + 1
+        elif c == "$" and i + 1 < n and text[i + 1] == "(":
+            end = _close_paren(text, i + 2)
+            out.append(text[i:end])
+            i = end
+        else:
+            i += 1
+    return out
 
 
 def _strip_quoted_literals(cmd):
@@ -118,16 +178,66 @@ def _strip_quoted_literals(cmd):
     its command substitutions and loses the rest. The quotes themselves stay, so operand counting
     still sees a token where one was.
 
-    Nested `$( ... $(...) ...)` truncates at the first `)`. That leaves MORE text than it should
-    rather than less, so the guard errs toward blocking -- the safe direction for a seatbelt.
+    NESTING, and a claim of mine that was simply wrong (card 5bee4b22, QA MEDIUM). The earlier
+    version of this docstring said nested `$( ... $(...) ...)` "truncates at the first `)`, which
+    leaves MORE text than it should, so the guard errs toward blocking -- the safe direction".
+    Both halves are false, and measurably so. `findall` keeps the MATCH and discards the rest of
+    the quoted span, so truncation loses text, in two different ways:
+
+        cd /abs && printf "%s" "$(cat $(echo relative)/file.txt)"
+
+    kept only `$(cat $(echo relative)`, dropping the `/file.txt` operand -- so `cat` looked like a
+    stdin read and passed. And:
+
+        cd /abs && printf "%s" "$(foo $(bar) && cat relative/f)"
+
+    kept `$(foo $(bar)` and dropped `cat relative/f` ENTIRELY -- the read command disappeared from
+    the text before anything could look at it. Balanced walking (`_executable_spans`) fixes both.
+    A SECOND correction, found while fixing the first (card 5bee4b22). This used to be
+    `_QUOTED_RX.sub(...)`, and that regex looks for the closing `"` without knowing that `$( )`
+    RESTARTS quoting inside itself. Bash is happy with
+
+        cd /abs && echo "$(grep -c "|" rel/f)"
+
+    -- verified against bash itself, it prints a count -- but the regex matched `"$(grep -c "` as
+    the quoted span, so the boundary was already wrong before anything looked inside. Walking it
+    instead, and jumping over `$( )` and backtick regions while hunting the closing quote, gets the
+    span right; `_close_paren` already knows how to skip quoted material, so the two halves cover
+    each other.
     """
-    def repl(m):
-        tok = m.group(0)
-        if tok[0] == "'":
-            return "''"
-        kept = _DQ_SUBST_RX.findall(tok)
-        return '"' + ' '.join(kept) + '"' if kept else '""'
-    return _QUOTED_RX.sub(repl, cmd)
+    out = []
+    i, n = 0, len(cmd)
+    while i < n:
+        c = cmd[i]
+        if c == "\\" and i + 1 < n:
+            out.append(cmd[i:i + 2])
+            i += 2
+        elif c == "'":
+            j = cmd.find("'", i + 1)
+            out.append("''")
+            i = n if j < 0 else j + 1
+        elif c == '"':
+            j = i + 1
+            while j < n:
+                if cmd[j] == "\\":
+                    j += 2
+                elif cmd[j] == '"':
+                    break
+                elif cmd[j] == "$" and j + 1 < n and cmd[j + 1] == "(":
+                    j = _close_paren(cmd, j + 2)
+                elif cmd[j] == "`":
+                    k = cmd.find("`", j + 1)
+                    j = n if k < 0 else k + 1
+                else:
+                    j += 1
+            interior = cmd[i + 1:min(j, n)]
+            kept = _executable_spans(interior)
+            out.append('"' + ' '.join(kept) + '"' if kept else '""')
+            i = n if j >= n else j + 1
+        else:
+            out.append(c)
+            i += 1
+    return "".join(out)
 
 
 def _unquote(s):
@@ -136,8 +246,133 @@ def _unquote(s):
     return s
 
 
+# A word whose operand STARTS with a command substitution -- `cat $(echo rel)/file.txt` -- is split
+# by _SEG_SPLIT_RX exactly at the `$(`, so the read command is left holding no operand at all and
+# the operand rule reads it as a harmless stdin read. That is how QA's nested case passed even
+# after the truncation above was fixed: balanced extraction restores the TEXT, but the segmenter
+# still cuts the word in half.
+#
+# The operand is real; we simply cannot resolve it, and an unresolvable operand is by definition
+# not an absolute path -- which is the same thing the permission engine will conclude. So the
+# segment inherits a synthetic operand standing for "a path this guard cannot resolve". It carries
+# no `/`, so _ABS_PATH_RX still refuses to anchor on it.
+_SUBST_OPERAND = "\x00cmdsubst\x00"
+
+
 def _segments(cmd):
-    return _SEG_SPLIT_RX.split(cmd)
+    """Split into simple commands, HONOURING QUOTES.
+
+    This was `_SEG_SPLIT_RX.split(cmd)` -- a plain regex split, blind to quoting. Card 5bee4b22,
+    QA FAIL, reproducing a LOW that Cybersec had raised on the previous round and that I missed
+    because it lived in a card COMMENT rather than the description:
+
+        cd /abs && echo "$(grep -c ')' rel/f)"        -> passed, should block
+        cd /abs && echo "$(sed -n 's/(x)/y/p' rel/f)" -> passed, should block
+
+    The balanced-paren work of the previous round is not at fault and does its job: the whole
+    `$(grep -c ')' rel/f)` survives extraction intact, because `_close_paren` correctly steps over
+    the single-quoted `')'`. The KEPT text then goes back into the command string and gets split
+    AGAIN -- and that second pass knew nothing about quotes, so the literal `)` inside `')'` was
+    read as a paren boundary:
+
+        seg "grep -c '"   depth=1        <- grep, holding no path
+        seg "' rel/f"     depth=0        <- its operand, stranded in another segment
+
+    grep is pattern-first and needs two operands; it could see neither. The same shape at TOP level
+    was always handled, which is what made this invisible: `_strip_quoted_literals` replaces a
+    top-level `'...'` with `''` BEFORE segmentation, so no literal paren ever reached it. The gap
+    is specifically a quoted literal paren INSIDE a substitution that was deliberately kept.
+
+    So quote-awareness has to live in BOTH phases, not just the extraction one. Single quotes are
+    copied through verbatim (nothing in them is a delimiter, ever). Inside double quotes only
+    `$(` and a backtick still open a substitution -- everything else, `)` and `|` and `&&`
+    included, is literal text, which is exactly what bash does.
+    """
+    out = []
+    buf = []
+    depth = 0
+    dq = [False]      # inside double quotes? one flag per nesting level
+    in_tick = False   # backticks do not nest; one flag is enough
+    i, n = 0, len(cmd)
+
+    def flush(opens_subst=False):
+        seg = "".join(buf)
+        # The synthetic operand is appended with NO separator, so it lands on the WORD the
+        # substitution belongs to rather than beside it. With a space,
+        # `cd "$(git rev-parse --show-toplevel)" && grep -rn x .` split into `cd "` plus a loose
+        # token, `_CD_RX` (anchored with `\s*$`) stopped matching, and a real wedge shape went
+        # BLOCK -> pass -- in the double-quoted spelling, the one people actually write.
+        out.append(((seg + _SUBST_OPERAND) if opens_subst else seg, depth))
+        del buf[:]
+
+    while i < n:
+        c = cmd[i]
+        if c == "\\" and i + 1 < n:
+            buf.append(cmd[i:i + 2])
+            i += 2
+            continue
+        if c == "'" and not dq[-1]:
+            j = cmd.find("'", i + 1)
+            end = n if j < 0 else j + 1
+            buf.append(cmd[i:end])
+            i = end
+            continue
+        if c == '"':
+            dq[-1] = not dq[-1]
+            buf.append(c)
+            i += 1
+            continue
+        # Substitution openers fire inside double quotes too -- bash expands them there.
+        if c == "$" and i + 1 < n and cmd[i + 1] == "(":
+            flush(True)
+            depth += 1
+            dq.append(False)
+            i += 2
+            continue
+        if c == "`":
+            flush(not in_tick)
+            if in_tick:
+                depth = max(0, depth - 1)
+                if len(dq) > 1:
+                    dq.pop()
+            else:
+                depth += 1
+                dq.append(False)
+            in_tick = not in_tick
+            i += 1
+            continue
+        if not dq[-1]:
+            if cmd.startswith("&&", i) or cmd.startswith("||", i):
+                flush()
+                i += 2
+                continue
+            if (c == "<" or c == ">") and i + 1 < n and cmd[i + 1] == "(":
+                flush()
+                depth += 1
+                dq.append(False)
+                i += 2
+                continue
+            if c == "(":
+                flush()
+                depth += 1
+                dq.append(False)
+                i += 1
+                continue
+            if c == ")":
+                flush()
+                depth = max(0, depth - 1)
+                if len(dq) > 1:
+                    dq.pop()
+                i += 1
+                continue
+            if c in ";\n|&":
+                flush()
+                i += 1
+                continue
+        buf.append(c)
+        i += 1
+    flush()
+    return out
 
 
 # Commands whose FIRST operand is a pattern or a script, not a path: they need a SECOND operand
@@ -256,7 +491,19 @@ def main():
     try:
         segs = _segments(_strip_quoted_literals(_strip_heredoc_bodies(raw)))
         cd_target = None
-        for seg in segs:
+        # A substitution that IS the cd's own target runs BEFORE the cd, so the cd cannot be what
+        # its directory resolves against. `ROOT="$(cd "$(git rev-parse --git-common-dir)/.." && pwd)"`
+        # -- a real line in this repo -- would otherwise read as "cd, then a relative git read",
+        # because flat splitting puts that `git rev-parse` right after the cd even though it runs
+        # first. Skipping while DEEPER than the cd, and resuming at its own depth, keeps the case
+        # that matters: in `cd "$(...)" && grep -rn x .` the grep is back at the cd's depth and is
+        # still judged against it.
+        skip_below = None
+        for seg, depth in segs:
+            if skip_below is not None:
+                if depth > skip_below:
+                    continue
+                skip_below = None
             if f"{ALLOW_ENV}=1" in seg:
                 # Per simple command, same as noisy-command-guard: naming the hatch elsewhere on
                 # the line says nothing about THIS command.
@@ -264,6 +511,8 @@ def main():
             m = _CD_RX.match(seg)
             if m:
                 cd_target = _unquote(m.group("target"))
+                if _SUBST_OPERAND in m.group("target"):
+                    skip_below = depth
                 continue
             if cd_target is None:
                 continue
