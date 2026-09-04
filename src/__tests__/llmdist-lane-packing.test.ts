@@ -272,3 +272,76 @@ describe('ten-minute scrollable viewport (card b52c3c42)', () => {
     expect(SRC.lastIndexOf('card.hidden = false', at)).toBeGreaterThan(-1)
   })
 })
+
+// ---------------------------------------------------------------------------------------
+// Card 21950f77: an installed-but-idle model gets a lane too, and a lane whose model is no
+// longer installed says so -- but ONLY when the roster lookup actually succeeded.
+//
+// The renderer is EXECUTED here, for the same reason the packer is: "does not claim a model
+// was removed" is a property of the produced HTML, not of the source text.
+// ---------------------------------------------------------------------------------------
+type Lane = { model: string; tasks: unknown[]; installed?: boolean }
+type Renderer = (
+  models: Lane[], startMs: number, endMs: number, zoom: number, rosterAvailable?: boolean,
+) => string
+
+let renderLanes: Renderer
+
+beforeAll(() => {
+  const consts = (SRC.match(/^const OVW_LLMDIST_[A-Z_]+ = [\d.]+$/gm) ?? []).join('\n')
+  const stubs = `
+    const escapeHtml = (v) => String(v == null ? '' : v).replace(/&/g, '&amp;').replace(/</g, '&lt;')
+    const t = (key) => 'i18n:' + key
+    const ovwLlmDistColorFor = () => '#000'
+    const ovwLlmDistFormatTpsOrNa = () => 'tps'
+    const ovwLlmDistStatusLabel = () => 'ok'
+  `
+  const body = `${consts}\n${stubs}\n${extract('ovwLlmDistPackRows')}\n${extract('ovwLlmDistLanesHtml')}\n` +
+    'return ovwLlmDistLanesHtml'
+  renderLanes = new Function(body)() as Renderer
+})
+
+const NOW = 1_788_000_000_000
+const HOUR_AGO = NOW - 3600_000
+const task = () => ({ startMs: NOW - 60_000, durationMs: 5_000, task: 'code', agent: 'backend', status: 'ok', tokensIn: 1, tokensOut: 1, tokensPerSec: 1 })
+
+describe('ovwLlmDistLanesHtml -- idle roster lanes (card 21950f77)', () => {
+  it('draws an idle lane with a note and NO blocks', () => {
+    const html = renderLanes([{ model: 'mistral', tasks: [], installed: true }], HOUR_AGO, NOW, 6, true)
+    expect(html).toContain('ovw-llmdist-lane--idle')
+    expect(html).toContain('i18n:overview.llmDist.lane_idle')
+    // An empty lane must not emit a block button; before the split it rendered one empty
+    // full-height track and nothing said why it was blank.
+    expect(html).not.toContain('ovw-llmdist-block')
+  })
+
+  it('does NOT draw the idle chrome on a lane that has traffic', () => {
+    const html = renderLanes([{ model: 'mistral', tasks: [task()], installed: true }], HOUR_AGO, NOW, 6, true)
+    expect(html).not.toContain('ovw-llmdist-lane--idle')
+    expect(html).toContain('ovw-llmdist-block')
+  })
+
+  it('marks a lane whose model is no longer installed', () => {
+    const html = renderLanes([{ model: 'gone', tasks: [task()], installed: false }], HOUR_AGO, NOW, 6, true)
+    expect(html).toContain('ovw-llmdist-lane-label--removed')
+    expect(html).toContain('i18n:overview.llmDist.lane_uninstalled')
+  })
+
+  it('does NOT claim a model was removed when the roster could not be read', () => {
+    // THE guard. With ollama down every lane arrives installed:false; badging them all
+    // "no longer installed" would state what the lookup never returned.
+    const html = renderLanes([{ model: 'gone', tasks: [task()], installed: false }], HOUR_AGO, NOW, 6, false)
+    expect(html).not.toContain('ovw-llmdist-lane-label--removed')
+    expect(html).not.toContain('i18n:overview.llmDist.lane_uninstalled')
+  })
+
+  it('keeps the idle note sticky at the label offset, so it survives a scroll to NOW', () => {
+    // The canvas is up to 24 viewports wide and opens scrolled to the right edge. A note
+    // pinned to the canvas origin is simply off-screen, and the lane reads as an empty box.
+    const rule = ruleBody('.ovw-llmdist-lane-idle-note')
+    expect(rule).toContain('position: sticky')
+    // 106px = the label allowance .ovw-llmdist-canvas reserves in its width calc.
+    expect(rule).toContain('left: 106px')
+    expect(ruleBody('.ovw-llmdist-canvas')).toContain('106px')
+  })
+})

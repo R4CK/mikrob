@@ -35,6 +35,11 @@ const FULL_TAIL = { oldestTs: null as number | null, capped: false }
 const build = (lines: string[], tail = FULL_TAIL, hours = 6) =>
   buildModelUsageSwimlane(parseUsageRows(lines), NOW_MS, hours, tail)
 
+/** Same, with an installed-model roster (card 21950f77). `null` -- the default above -- means
+ *  "could not read the roster", which is NOT the same as an empty one. */
+const buildWithRoster = (lines: string[], roster: readonly string[] | null, hours = 6) =>
+  buildModelUsageSwimlane(parseUsageRows(lines), NOW_MS, hours, FULL_TAIL, roster)
+
 describe('buildModelUsageSwimlane -- timestamp direction', () => {
   // THE defect this suite exists for. log_usage captures START_MS at entry and runs `date +%s` at
   // WRITE time, so column 1 is the COMPLETION second. A swimlane that treats it as the start
@@ -117,8 +122,11 @@ describe('buildModelUsageSwimlane -- busy is contention, not failure', () => {
 })
 
 describe('buildModelUsageSwimlane -- which lanes exist', () => {
-  it('omits a model with no rows in the window entirely (no empty lane)', () => {
-    // Peti, card comment 18771: the UI renders exactly what it is given.
+  it('omits a model with no rows and NO roster to vouch for it', () => {
+    // Was "no empty lane, ever" (Peti, card comment 18771). Card 21950f77 reversed that for
+    // models the roster knows about; with no roster there is still nothing to draw a lane FROM,
+    // which is what this pins -- and it is the state the endpoint falls back to when ollama is
+    // unreachable.
     const ts = NOW_MS / 1000 - 10
     const { models, kpi } = build([line({ ts, model: MODEL_A })])
     expect(models.map((m) => m.model)).toEqual([MODEL_A])
@@ -169,6 +177,69 @@ describe('buildModelUsageSwimlane -- which lanes exist', () => {
     expect(kpi.errorRatePct).toBe(0)
     // A NaN would serialise to null and read as "not measured" -- it is not.
     expect(Number.isNaN(kpi.errorRatePct)).toBe(false)
+  })
+})
+
+describe('buildModelUsageSwimlane -- the installed-model roster (card 21950f77)', () => {
+  const ts = NOW_MS / 1000 - 10
+
+  it('draws a lane for an installed model with NO traffic, after the busy ones', () => {
+    // Peti's actual complaint: in a window where only one model ran, the other one vanished, so
+    // "idle" and "not installed at all" looked identical on screen.
+    const { models } = buildWithRoster([line({ ts, model: MODEL_A })], [MODEL_A, MODEL_B])
+    expect(models.map((m) => m.model)).toEqual([MODEL_A, MODEL_B])
+    expect(models[1]!.tasks).toEqual([])
+    expect(models[1]!.installed).toBe(true)
+  })
+
+  it('keeps every idle lane BELOW every busy lane, whatever the names sort like', () => {
+    // 'aaa-idle' sorts before both busy models by name; it must still land last, or a roster of
+    // idle models would push the real traffic off the first screen.
+    const { models } = buildWithRoster(
+      [line({ ts, model: MODEL_B }), line({ ts, model: MODEL_A }), line({ ts, model: MODEL_A })],
+      ['aaa-idle:latest', MODEL_A],
+    )
+    expect(models.map((m) => m.model)).toEqual([MODEL_A, MODEL_B, 'aaa-idle:latest'])
+    expect(models.map((m) => m.tasks.length)).toEqual([2, 1, 0])
+  })
+
+  it('marks a model that RAN here but is no longer installed', () => {
+    const { models, rosterAvailable } = buildWithRoster([line({ ts, model: MODEL_B })], [MODEL_A])
+    expect(rosterAvailable).toBe(true)
+    const gone = models.find((m) => m.model === MODEL_B)!
+    expect(gone.installed).toBe(false)
+    expect(gone.tasks).toHaveLength(1)
+  })
+
+  it('says the roster is UNAVAILABLE rather than empty when it could not be read', () => {
+    // The distinction the UI depends on. With ollama down every lane is installed:false, and a
+    // UI that badged them all "no longer installed" would be stating what it could not look up.
+    const { models, rosterAvailable } = buildWithRoster([line({ ts, model: MODEL_A })], null)
+    expect(rosterAvailable).toBe(false)
+    expect(models[0]!.installed).toBe(false)
+  })
+
+  it('matches the ledger name to the roster name CANONICALLY, so one model is one lane', () => {
+    // The ledger carries whatever the caller typed; ollama always reports a resolved tag. Keyed
+    // on the raw string these are two different models and the same one gets drawn twice.
+    const { models } = buildWithRoster([line({ ts, model: 'qwen2.5-coder:latest' })], ['qwen2.5-coder'])
+    expect(models).toHaveLength(1)
+    expect(models[0]!.model).toBe('qwen2.5-coder:latest')
+    expect(models[0]!.installed).toBe(true)
+    expect(models[0]!.tasks).toHaveLength(1)
+  })
+
+  it('emits ONE lane for a roster that names the same model twice', () => {
+    const { models } = buildWithRoster([], ['mistral', 'mistral:latest'])
+    expect(models).toHaveLength(1)
+  })
+
+  it('keeps activeModels counting only models that actually ran', () => {
+    // The KPI is labelled "Aktív modellek". Idle roster lanes must not inflate it.
+    const { models, kpi } = buildWithRoster([line({ ts, model: MODEL_A })], [MODEL_A, MODEL_B, 'mistral'])
+    expect(models).toHaveLength(3)
+    expect(kpi.activeModels).toBe(1)
+    expect(kpi.totalRequests).toBe(1)
   })
 })
 
