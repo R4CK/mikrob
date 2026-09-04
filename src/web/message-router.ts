@@ -8,6 +8,7 @@ import {
   markMessageDone,
   markMessageFailed,
   markPendingFederatedFailed,
+  closeMessagesWithoutDelivery,
   setMessageResult,
   createAgentMessage,
   getKanbanCardStateByIdPrefix,
@@ -15,7 +16,7 @@ import {
   upsertOtelSpan,
   type AgentMessage,
 } from '../db.js'
-import { formatDeliveryStalenessNote } from './kanban-state-stamp.js'
+import { formatDeliveryStalenessNote, supersededDispatch } from './kanban-state-stamp.js'
 import { countNewerMessagesFromSameSender } from '../db.js'
 import { isQualifiedId } from './federation/address.js'
 import { sendFederatedMessage } from './federation/bridge.js'
@@ -693,6 +694,33 @@ export async function runMessageRouterTick(): Promise<void> {
       // Skip messages already batched by the reconnect pre-pass: they are
       // 'done' in the DB now but still appear in our snapshot slice.
       if (batchedMsgIdsThisTick.has(msg.id)) continue
+      // Card 790c962d: drop a dispatch whose card has already finished, BEFORE any session work.
+      //
+      // Placed at the very top of the loop on purpose. Every check below it waits on the receiver's
+      // pane being free, and the whole problem is that the receiver is busy for hours -- suppressing
+      // after the readiness gate would only clear the backlog at the rate the agent drains it, which
+      // is the rate that made the backlog in the first place. Here it costs no tmux call and no turn.
+      //
+      // Measured: backend's queue held 10 dispatches, 7 already obsolete (5 done, 2 waiting), oldest
+      // six hours. The agent had finished that work off the BOARD (rule 11), so the message informed
+      // it of nothing while still costing a turn to read and another to answer "this is stale".
+      //
+      // The row is CLOSED, not deleted: closeMessagesWithoutDelivery leaves a timestamp and a reason,
+      // so "was this actually delivered?" stays answerable afterwards -- and the content survives in
+      // the row, so a wrong suppression is recoverable rather than lost.
+      const superseded = supersededDispatch(msg.content, getKanbanCardStateByIdPrefix)
+      if (superseded) {
+        const waitedMin = Math.round((now - msg.created_at * 1000) / 60000)
+        closeMessagesWithoutDelivery(
+          [msg.id],
+          `dispatch superseded: card ${superseded.id} is ${superseded.status} (queued ${waitedMin} min)`,
+        )
+        logger.info(
+          { id: msg.id, agent: msg.to_agent, card: superseded.id, status: superseded.status, waitedMin },
+          'message-router: dispatch dropped, card already finished',
+        )
+        continue
+      }
       // Per-message fault isolation: a throw from any helper (e.g. safeJoin
       // on a '..'-bearing to_agent) previously escaped the whole tick through
       // the catch-less try/finally, aborting delivery for every younger

@@ -40,6 +40,13 @@ vi.mock('../db.js', () => ({
   markMessageFailed: (...a: unknown[]) => mockMarkFailed(...a),
   markMessageDone: (..._a: unknown[]) => true,
   createAgentMessage: (..._a: unknown[]) => ({ id: 999 }),
+  // card 790c962d: the router now asks the board about every message before any session work, to
+  // drop dispatches whose card already finished. null = "card not found" = the fail-open branch, so
+  // nothing is suppressed here and this test still measures exactly what it did before: the cap.
+  // No parameters: the file's `(..._a: unknown[])` style trips no-unused-vars, and the lint ratchet
+  // (rightly) refuses a baseline that got worse. Neither stub reads its arguments.
+  getKanbanCardStateByIdPrefix: () => null,
+  closeMessagesWithoutDelivery: () => 0,
   // card def5a189: OTel trace stubs -- no-ops in this test
   stampMessageTrace: (..._a: unknown[]) => false,
   upsertOtelSpan: (..._a: unknown[]) => undefined,

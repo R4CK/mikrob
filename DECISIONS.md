@@ -6042,3 +6042,57 @@ behúzva, ami nem járul hozzá a doboz szélességéhez, és erre teszt is ker�
 **Ki döntött:** Peti (a két vezérlő és a vastagabb blokkok), fullstack (a mérések és az arányok).
 **Hivatkozás:** kártya `b52c3c42`; `web/app-overview.js`, `web/style.css`,
 `src/__tests__/llmdist-lane-packing.test.ts`.
+
+---
+
+## 2026-09-04 -- 790c962d -- Az elavult kártya-dispatch nem kézbesítődik, hanem lezárul
+
+**Döntés.** A `message-router` a kézbesítési hurok LEGELEJÉN eldobja azt az üzenetet, ami kártya-dispatch
+(`[Kanban feladat #<id>]` a SOR ELEJÉN) és a kártya azóta `done` vagy `waiting` lett. A sor
+`closeMessagesWithoutDelivery()`-vel zárul: időbélyeg + indok marad, a tartalom megmarad.
+
+**Mit mértem, mielőtt bármit építettem.** A kártya két javítást kínált (gyorsítás vagy kézbesítés-idejű
+friss-ellenőrzés), és a mérés szerint **egyik sem volt a helyes lépés**:
+
+- **A kézbesítés nem lassú.** 6 óra alatt: mikrob 118 üzenet **0,1 perc** átlagos várakozással, qa 0,4,
+  backend3 0,2. Ez kizárja a "soros feldolgozás / egyetlen worker / rate-limit" magyarázatot. A
+  várakozás a FOGADÓ foglaltságával korrelál -- egy dolgozó Claude-panelbe nem lehet promptot
+  injektálni a kör megsértése nélkül, és a kód ezt tudja is (`shouldAbandon` csak HIÁNYZÓ sessionre ad
+  fel üzenetet, foglaltra nem).
+- **A friss-ellenőrzés már megvolt** (`formatDeliveryStalenessNote`, kártya 9566a197).
+
+**A tényleges veszteség, és ez az új lelet.** A torlódás egyetlen ügynöknél állt (23 függő üzenet,
+minden más sor üres). Abból 10 kártya-dispatch, és a táblával összevetve **tízből hét már elavult**
+volt: öt `done`, kettő `waiting`, a legrégebbi hat órája sorban. Az ügynök elvégezte azt a munkát --
+a TÁBLÁRÓL vette fel (11. szabály), nem a dispatchből. A dispatch tehát nem informált semmiről,
+viszont érkezéskor elvisz egy kört, plusz még egyet, amíg a fogadó felismeri hogy elavult és visszaír.
+
+**Miért nem a meglévő stamp-útra épült.** A `formatDeliveryStalenessNote` send-time stamp blokkot
+igényel, a dispatch-ek viszont nem hordoznak ilyet: a `routes/kanban.ts` `createAgentMessage`-dzsel
+hozza létre őket, megkerülve a POST /api/messages utat, ahol az `appendCardStateStamp` fut. **24 óra
+alatt 62 dispatchből 1** hordozott stampet. A stampre kulcsolás tehát 61/62 arányban INERT lett volna
+-- egy néma no-op, ami közben megépítettnek látszik. Ezért a fejlécből olvassa ki az azonosítót.
+
+**Az elhelyezés maga a funkció.** A hurok legelején fut, MINDEN session-munka előtt. Alatta minden
+ellenőrzés a fogadó paneljének szabaddá válására vár -- és épp az a probléma, hogy a fogadó órákig
+foglalt. A készenléti kapu UTÁN elnyomva a torlódás csak olyan ütemben tisztulna, amilyen ütemben az
+ügynök amúgy is üríti, vagyis abban az ütemben, ami a torlódást okozta.
+
+**FAIL-OPEN, szándékosan, a repó többi kapujával ellentétesen.** Ha a kártya-lekérdezés dob vagy nem
+talál, az üzenet KÉZBESÍTŐDIK. Az aszimmetria a lényeg: egy elavult dispatch kézbesítése egy elpazarolt
+kört ér, egy élő dispatch téves eldobása viszont olyan munkát veszít el, aminek a hiányát senki nem
+veszi észre. Ahol a két hibairány súlya különbözik, a guard a könnyebbet választja.
+
+**A horgonyzás a funkció biztonsága.** A fejléc-minta a SOR ELEJÉHEZ van horgonyozva, hogy egy üzenet,
+ami csak EMLÍT egy dispatchet ("a [Kanban feladat #...] amit küldtél már nem aktuális"), soha ne
+essen áldozatul. A mutáció-próba itt talált egy hibát a saját tesztemben: az első fixture-öm a
+hivatkozást a MÁSODIK sorra tette, amit az "első nem üres sor" szabály amúgy is kizár -- a `^` horgony
+törlése zölden hagyta a tesztet. A valódi eset a fejléc az ELSŐ sor közepén; az a fixture most ott van.
+
+**Csak a router-úton, tudatosan.** A testvér-kontroll (`formatDeliveryStalenessNote`) MINDKÉT úton ott
+van, és a saját tesztje ki is mondja, miért. Ez router-only, két mért okból, és a döntés teszttel van
+rögzítve, hogy ne feledékenységnek látsszon: (1) a `drain-inbox` KIZÁRÓLAG a fő ügynököt szolgálja,
+akinek a sora nem évül el (6 óra, 118 üzenet, 0,1 perc átlag, 0,7 perc a legrosszabb) -- ott nincs mit
+eldobni; (2) az út `claimPendingForAgent`-tel KEZD, ami a hurok előtt `delivered`-re állítja a sort, így
+egy utólagos elnyomás pont az a "láthatatlan üzenetvesztés" lenne, amitől ugyanannak a fájlnak a saját
+`from_agent` ága óv.
