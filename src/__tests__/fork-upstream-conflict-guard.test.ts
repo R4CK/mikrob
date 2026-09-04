@@ -356,7 +356,24 @@ const ACKNOWLEDGED_CONFLICTS = {
   // upstream's still-monolithic app.js) is recommended but not opened here -- judgement call for
   // MikroB, not unilaterally opened per the dedup rule.
   'web/app.js':
-    'STUB scaffold + 36 extracted web/app-*.js slices are authoritative; a conflicting upstream hunk must be diffed against its named slice file and only genuinely-new upstream behavior ported forward, never taken wholesale -- proven on the i18n-nav hunk (found + fixed one real gap: missing renderUpdatesVersion re-apply on language switch). Re-audited 2026-08-25 (card 9ef96512, blob c8c11f94): 3 upstream hunks, all in the loadOllamaModels / resetWizard / startup-init region (app-settings.js). Ported: (1) loadOllamaModels refactored to populate both optgroups (ollamaModelGroup edit-panel + agentModelOllamaGroup wizard -- wizard was missing local-model option entirely); (2) agentModelOllamaGroup added to wizard HTML (index.html); (3) resetWizard() now calls loadOllamaModels() (app-wizard.js); (4) loadOllamaModels() added to startup init (app-settings.js). No behavioral gap found in any other region. Re-audited 2026-09-02 (card 684dda18, blob e8c74d15): upstream diff since c8c11f94 has 3 hunks -- (1) activity-badge "thinking orb" spinner for state===working (app-activity.js): NOT a gap, the fork already signals "working" via a different mechanism (activity-badge.act-working has its own "breathing" pulse animation in style.css, card predates this) -- adding the orb on top would double-animate the same signal, skipped as redundant. (2) /api/context-guard-fed static badge on Agents-grid cards (app-agents.js): NOT a gap, the fork already has a strictly superior LIVE-POLLED per-agent context HUD (agentHudBlockHtml + GET /api/agent-hud poll, card e9504aba) with a bar + percentage + color tiers, upstream\'s is a page-load-only static badge -- fork mechanism supersedes it. (3) MiniMax direct-API model option (loadAvailableModels, mirrors the existing DeepSeek pattern, gated behind MINIMAX_API_KEY): a genuinely NEW, not-yet-adopted upstream feature needing a backend port too (src/web/routes/agents.ts models endpoint) -- this is an ADOPTION decision, not a passive conflict resolution, so it is NOT folded in here; opened as its own low-priority follow-up card (48565f81) for Peti to decide on. No further behavioral gap found in this increment. Remaining ~11k lines (other regions, prior to c8c11f94) still not yet hand-audited slice-by-slice.',
+    'STUB scaffold + 36 extracted web/app-*.js slices are authoritative; a conflicting upstream hunk must be diffed against its named slice file and only genuinely-new upstream behavior ported forward, never taken wholesale -- proven on the i18n-nav hunk (found + fixed one real gap: missing renderUpdatesVersion re-apply on language switch). Re-audited 2026-08-25 (card 9ef96512, blob c8c11f94): 3 upstream hunks, all in the loadOllamaModels / resetWizard / startup-init region (app-settings.js). Ported: (1) loadOllamaModels refactored to populate both optgroups (ollamaModelGroup edit-panel + agentModelOllamaGroup wizard -- wizard was missing local-model option entirely); (2) agentModelOllamaGroup added to wizard HTML (index.html); (3) resetWizard() now calls loadOllamaModels() (app-wizard.js); (4) loadOllamaModels() added to startup init (app-settings.js). No behavioral gap found in any other region. Re-audited 2026-09-02 (card 684dda18, blob e8c74d15): upstream diff since c8c11f94 has 3 hunks -- (1) activity-badge "thinking orb" spinner for state===working (app-activity.js): NOT a gap, the fork already signals "working" via a different mechanism (activity-badge.act-working has its own "breathing" pulse animation in style.css, card predates this) -- adding the orb on top would double-animate the same signal, skipped as redundant. (2) /api/context-guard-fed static badge on Agents-grid cards (app-agents.js): NOT a gap, the fork already has a strictly superior LIVE-POLLED per-agent context HUD (agentHudBlockHtml + GET /api/agent-hud poll, card e9504aba) with a bar + percentage + color tiers, upstream\'s is a page-load-only static badge -- fork mechanism supersedes it. (3) MiniMax direct-API model option (loadAvailableModels, mirrors the existing DeepSeek pattern, gated behind MINIMAX_API_KEY): a genuinely NEW, not-yet-adopted upstream feature needing a backend port too (src/web/routes/agents.ts models endpoint) -- this is an ADOPTION decision, not a passive conflict resolution, so it is NOT folded in here; opened as its own low-priority follow-up card (48565f81) for Peti to decide on. No further behavioral gap found in this increment. Remaining ~11k lines (other regions, prior to c8c11f94) still not yet hand-audited slice-by-slice.' +
+    " Re-audited 2026-09-04 (card 740551e6, blob 102cd901): the increment since 1e87b1d9 is " +
+    "+282/-119 across 21 hunks, landed as two upstream commits on 2026-09-04 16:53 (c118ede2 #902 " +
+    "context-guard UI, 4408754b #882 agent-card + Activity retirement), and is ONE coherent upstream " +
+    "change -- it DELETED the Activity page (nav entry, " +
+    "PAGE_HEADER_I18N row, startActivityPoll/stopActivityPoll/loadActivity, and the 8 activity.* " +
+    "locale keys) and merged that content into the Team page, then added (a) agentActivityBodyHtml, " +
+    "(b) a per-agent context-guard SETTINGS UI (setupContextGuardUI / updateContextGuardLiveStatus / " +
+    "startContextGuardPoll, backed by the new agents.settings.ctx_guard_* keys), (c) a live " +
+    ".team-node-active working state plus a run-state line on the team graph, (d) onAgentCardClick. " +
+    "RESOLUTION: do NOT take the deletion -- the fork keeps its own Activity page and its locale " +
+    "keys, so taking upstream wholesale would remove a live fork feature. (c) is redundant with the " +
+    "fork's existing running indicator (.team-node.main.agent-card-running::after), the same " +
+    "reasoning that skipped the thinking-orb last round: two animations for one signal. (b) is a " +
+    "genuinely new capability the fork lacks -- its own agent-hud DISPLAYS context, this EDITS the " +
+    "config -- and needs a backend port, so it is an ADOPTION decision rather than a passive " +
+    "conflict resolution: NOT folded in here, raised on card 740551e6 for triage, the same " +
+    "treatment MiniMax got last round (card 48565f81).",
   // Two independent additive hunks with no behavioral overlap. Fork adds: HEARTBEAT.md ignore,
   // Ingatlan/ runtime data exclusions, and per-extension keep-tracked exceptions for operational
   // scripts (store/*.sh, store/*.py, store/stitch-tools/gen.mjs) by switching store/ → store/*
@@ -375,7 +392,18 @@ const ACKNOWLEDGED_CONFLICTS = {
   // wholesale-one-side pick, same "two independent additive hunks" character as the .gitignore
   // entry above, just CSS instead of ignore-patterns.
   'web/style.css':
-    'two independent additive hunks, no overlap: keep fork .agent-hud* rules AND upstream .agent-ctx-badge rules verbatim, both blocks, either order',
+    'two independent additive hunks, no overlap: keep fork .agent-hud* rules AND upstream ' +
+    '.agent-ctx-badge rules verbatim, both blocks, either order. ' +
+    "RE-MEASURED 2026-09-04 (card 740551e6, upstream blob a7fc0f2b): +65/-1, and the single removed " +
+    "line is a COMMENT -- no CSS rule was taken away, which is what makes the union safe here rather " +
+    "than merely convenient. A naive selector count still looks alarming and a " +
+    ".team-node appears 16x on the fork side, 18x upstream. " +
+    "It is NOT a collision: the shared .team-node{} body is BYTE-IDENTICAL on both sides (extracted " +
+    "and diffed), i.e. merge-base heritage, and every differing selector is additive on exactly one " +
+    "side. Fork-only: .team-node.main.agent-card-running::after. Upstream-only: " +
+    ".team-node.team-node-active, its :hover, and .team-node-status. Resolution unchanged (union, " +
+    "both blocks); this note exists so the next reader does not re-derive the same scare from the " +
+    "same count.",
   // Measured 2026-09-01, same heartbeat reconciliation. Both sides independently arrived at the
   // IDENTICAL functional value (REPLAY_SOURCES = new Set(['compact', 'resume', 'startup', 'clear']))
   // via separate reasoning chains (fork: rule-14 /clear between cards + model-fallback step-down
@@ -833,12 +861,40 @@ const ACKNOWLEDGED_CONFLICTS = {
     "key belongs in, and this fork has already been bitten by an insert script writing to the wrong " +
     "place. A union conflict with zero key collisions costs one merge decision; a two-file layout " +
     "costs a loader change plus a permanent correctness question on every key added. REVISIT IF the " +
-    "collision count is ever non-zero -- that is the point where a union stops being mechanical.",
+    "collision count is ever non-zero -- that is the point where a union stops being mechanical. " +
+    "RE-MEASURED 2026-09-04 (card 740551e6, upstream blob 702bdb07): 1618 base keys, fork +525, " +
+    "upstream +46, COLLISIONS STILL ZERO -- but the premise 'NEITHER SIDE REMOVED ANY' above is NO " +
+    "LONGER TRUE, and that is the part worth reading. Upstream REMOVED 8 activity.* keys because it " +
+    "DELETED its Activity page and merged that content into the Team page. Of the +46, NINETEEN " +
+    "arrived in this increment alone (14 of them agents.settings.ctx_guard_*) -- the rest predate the " +
+    "previous pin; both figures are correct, they just answer different questions, and the +46 is the " +
+    "one this union rule is about. The fork still HAS that page and still references all 8 removed " +
+    "keys: ALL EIGHT are still referenced by live fork code, in web/index.html, web/app-activity.js " +
+    "and web/app-i18n-nav.js. Stated as coverage rather than as a count on purpose -- a count goes " +
+    "stale on any refactor, while 'every removed key is still used' is both durable and the stronger " +
+    "argument. (Two earlier versions of this note carried a NUMBER and both were wrong: the first " +
+    "quoted a four-key sample as if it were a total, the second said 16 because `grep` was given the " +
+    "key as a PATTERN -- the dot is a wildcard, so activity.empty also matched the CSS class " +
+    "activity-empty. Measured with -F the total is 10. Dotted i18n keys are exactly the case where " +
+    "that bites; backend caught it, card comment 19707.) Direction unchanged, but the union is no longer symmetric: KEEP the fork's activity.* " +
+    "keys explicitly. Taking upstream's deletions would leave a LIVE fork page rendering raw key " +
+    "names. NOTE THE SCOPE: whether the fork should ALSO retire its Activity page is NOT a merge " +
+    "question and must not be settled inside a conflict resolution -- it is a working fork feature, " +
+    "so code-quality rule 5 makes it Peti's call. This entry only records that the merge does not " +
+    "decide it by default.",
   'web/lang/hu.js':
     "same as web/lang/en.js, measured identically (1590 base, +516 fork, +27 upstream, 0 collisions, " +
     "0 removals on either side). The two locale files are edited in lockstep by both sides, so a " +
     "resolution that applied to one and not the other would leave the pair out of sync -- which the " +
-    "i18n parity test would then report as a fork defect rather than as half a merge.",
+    "i18n parity test would then report as a fork defect rather than as half a merge. " +
+    "RE-MEASURED 2026-09-04 (card 740551e6, upstream blob 5a1ba174): identical numbers to en.js " +
+    "(1618 base, +525 fork, +46 upstream, 0 collisions) and the SAME 8 activity.* removals upstream " +
+    "-- so the '0 removals on either side' written at the TOP of this entry is NO LONGER TRUE, and " +
+    "is kept only as the record of what the earlier round measured. Keep the fork's activity.* keys " +
+    "here too: dropping them in one locale and not the other is exactly the half-merge this entry " +
+    "exists to prevent. MikroB's decision, 2026-09-04: hold the union for these eight keys, do NOT " +
+    "take the upstream removal -- the fork's Activity page is live, and retiring it would be a " +
+    "separate call under code-quality rule 5, not a merge outcome.",
   // Card 272361eb (B-wave 3/6). Upstream's ENTIRE delta in this file is resolveAgentConfigDirForRead
   // (43+/1-, the function plus its comment), which the fork has now adopted with identical logic --
   // so the two sides no longer disagree about behaviour, only about how much comment sits above it.
@@ -931,8 +987,8 @@ const ACKNOWLEDGED_UPSTREAM_BLOBS: Readonly<Record<keyof typeof ACKNOWLEDGED_CON
   // translation, and it has neither playwright.browser.config.ts nor tests/browser/**. So BRIDGEHU813
   // is a real, applicable adoption decision -- and it is taken on its own card, NOT folded into this
   // pin refresh. A feature adoption hidden inside a blob bump is exactly what this map exists to stop.
-  'web/app.js': '1e87b1d99abad77e49b65513b79cd70f447eee7f',
-  'web/style.css': 'b774ccb836f07ca78c300077302834a80cd12edb',
+  'web/app.js': '102cd90154b20f3064740f29f72461d686a75ab9',
+  'web/style.css': 'a7fc0f2baf1989fc5ecd2cd8c78f86c6104b55da',
   'src/web/agent-taskstate.ts': '625d03282bb75b554ce23822f67cc4e51b0706c1',
   'src/__tests__/agent-taskstate.test.ts': '82dc411aa813d66c0800e7f8007dfdcd2a42e43f',
   // 2026-09-02 (fron-ted, landing 5dd4a211): upstream moved 346fa637 -- body-only change in
@@ -989,8 +1045,8 @@ const ACKNOWLEDGED_UPSTREAM_BLOBS: Readonly<Record<keyof typeof ACKNOWLEDGED_CON
   'src/web/channel-monitor.ts': 'd1c642f669ff2a28b6eec79bbf503365c9ac1b08',
   'src/web/routes/messages.ts': '98710db9e171616e0600061eec649542e779506a',
   // Card 368b77f7, 2026-09-04.
-  'web/lang/en.js': '3cb83f75acffba664ac8f88f5225b2bec82be328',
-  'web/lang/hu.js': '508c848d3a6947652ea74b3b19375dc0d30c11d7',
+  'web/lang/en.js': '702bdb0730c92a8d3201e1618cf508d9559ac4ab',
+  'web/lang/hu.js': '5a1ba1741d5a704bc298f00d5a0f4550b1a2a1b3',
   // Card 272361eb, 2026-09-04 (B-wave 3/6).
   'src/web/claude-plans.ts': '548f996dbe82ae1062e94ced4acb5a670bfd2bf9',
   'src/__tests__/channel-monitor-resume-recovery.test.ts': 'e7850cae42ac213af8bcb18dfc9d8c72acae9370',
