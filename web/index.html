@@ -514,6 +514,20 @@
         </div>
       </div>
 
+      <!-- Local-LLM model-distribution swimlane (card d6ecb003, pair-BE 2ffc0a96, Peti
+           design-ref store/design-refs/local-llm-swimlane-mockup-2026-09-03.jpg). Hidden until
+           loadLlmDistWidget() confirms GET /api/local-llm/model-usage-buckets exists. -->
+      <div class="overview-card ovw-llmdist-card" id="ovwLlmDistCard" hidden>
+        <div class="overview-card-head">
+          <h3 data-i18n="overview.llmDist.title">Helyi LLM feladat-elosztás</h3>
+          <span class="overview-card-meta" id="ovwLlmDistMeta" data-i18n="overview.llmDist.meta">utolsó 6 óra</span>
+        </div>
+        <div class="ovw-llmdist-kpis" id="ovwLlmDistKpis"></div>
+        <div id="ovwLlmDistBody">
+          <p class="ovw-llmdist-loading" data-i18n="common.loading">Betöltés...</p>
+        </div>
+      </div>
+
       <div class="overview-grid">
         <div class="overview-card">
           <div class="overview-card-head">

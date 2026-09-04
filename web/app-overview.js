@@ -27,6 +27,7 @@ async function loadOverview() {
     void loadModelTierConfig()
     void loadLocalLlmInfo()
     void loadCostEstimatesWidget()
+    void loadLlmDistWidget()
     startOvwSpectrum()
     const banner = document.getElementById('updateBanner')
     if (banner) {
@@ -622,6 +623,177 @@ async function loadCostEstimatesWidget() {
     card.hidden = false
   } catch {
     body.innerHTML = `<p class="ovw-cost-error">${escapeHtml(t('overview.cost.error'))}</p>`
+    card.hidden = false
+  }
+}
+
+// ============================================================
+// === Overview: local-LLM model-distribution swimlane (card d6ecb003, pair-BE 2ffc0a96) ===
+// ============================================================
+// One lane per model that actually has activity in the window (no empty lane for an unused
+// model, per Peti's spec), tasks rendered as blocks positioned by their REAL start-time and
+// duration (not bucketed) and colored by task type, with a hover/focus tooltip and a legend.
+// Design ref: store/design-refs/local-llm-swimlane-mockup-2026-09-03.jpg.
+const OVW_LLMDIST_PALETTE = ['#4a9eff', '#34d399', '#a78bfa', '#f59e0b', '#f87171', '#22d3ee', '#fb7185', '#facc15']
+let ovwLlmDistTaskColors = new Map()
+let ovwLlmDistTooltipEl = null
+
+function ovwLlmDistColorFor(task) {
+  if (!ovwLlmDistTaskColors.has(task)) {
+    ovwLlmDistTaskColors.set(task, OVW_LLMDIST_PALETTE[ovwLlmDistTaskColors.size % OVW_LLMDIST_PALETTE.length])
+  }
+  return ovwLlmDistTaskColors.get(task)
+}
+
+function ovwLlmDistFormatMs(ms) {
+  return ms >= 1000
+    ? t('overview.llmDist.sec', { n: (ms / 1000).toFixed(1) })
+    : t('overview.llmDist.ms', { n: Math.round(ms) })
+}
+
+function ovwLlmDistStatusLabel(status) {
+  if (status === 'err') return t('overview.llmDist.status.err')
+  if (status === 'busy') return t('overview.llmDist.status.busy')
+  return t('overview.llmDist.status.ok')
+}
+
+function ovwLlmDistKpiHtml(kpi) {
+  const items = [
+    ['active_models', String(kpi.activeModels ?? 0)],
+    ['avg_latency', ovwLlmDistFormatMs(kpi.avgLatencyMs || 0)],
+    ['tokens_per_sec', t('overview.llmDist.tps', { n: (kpi.tokensPerSec || 0).toFixed(1) })],
+    ['total_requests', (kpi.totalRequests || 0).toLocaleString('hu-HU').replace(/,/g, ' ')],
+    ['error_rate', (kpi.errorRatePct || 0).toFixed(1) + '%'],
+  ]
+  return items.map(([key, value]) => `
+    <div class="ovw-llmdist-kpi">
+      <p class="ovw-llmdist-kpi-label">${escapeHtml(t('overview.llmDist.kpi.' + key))}</p>
+      <p class="ovw-llmdist-kpi-value">${escapeHtml(value)}</p>
+    </div>`).join('')
+}
+
+function ovwLlmDistAxisHtml(rangeStartMs, rangeEndMs) {
+  const steps = 6
+  const labels = []
+  for (let i = 0; i <= steps; i++) {
+    const ts = rangeStartMs + ((rangeEndMs - rangeStartMs) * i) / steps
+    labels.push(`<span>${escapeHtml(new Date(ts).toLocaleTimeString('hu-HU', { hour: '2-digit', minute: '2-digit' }))}</span>`)
+  }
+  return labels.join('')
+}
+
+function ovwLlmDistLanesHtml(models, rangeStartMs, rangeEndMs) {
+  const span = Math.max(1, rangeEndMs - rangeStartMs)
+  return models.map((m) => {
+    const tasks = Array.isArray(m.tasks) ? m.tasks : []
+    const blocks = tasks.map((task) => {
+      const leftPct = Math.min(100, Math.max(0, ((Number(task.startMs) - rangeStartMs) / span) * 100))
+      const widthPct = Math.min(100 - leftPct, Math.max(0.6, (Number(task.durationMs) / span) * 100))
+      const color = ovwLlmDistColorFor(task.task || '')
+      return `<button type="button" class="ovw-llmdist-block" data-status="${escapeHtml(task.status || 'ok')}"
+        style="left:${leftPct.toFixed(2)}%;width:${widthPct.toFixed(2)}%;background:${color}"
+        data-task="${escapeHtml(task.task || '')}" data-agent="${escapeHtml(task.agent || '')}"
+        data-duration="${Number(task.durationMs) || 0}" data-tokens-in="${Number(task.tokensIn) || 0}"
+        data-tokens-out="${Number(task.tokensOut) || 0}" data-tps="${Number(task.tokensPerSec) || 0}"
+        data-status-label="${escapeHtml(ovwLlmDistStatusLabel(task.status))}"
+      >${escapeHtml(task.task || '')}</button>`
+    }).join('')
+    return `<div class="ovw-llmdist-lane">
+      <span class="ovw-llmdist-lane-label" title="${escapeHtml(m.model || '')}">${escapeHtml(m.model || '?')}</span>
+      <div class="ovw-llmdist-lane-track">${blocks}</div>
+    </div>`
+  }).join('')
+}
+
+function ovwLlmDistLegendHtml() {
+  if (!ovwLlmDistTaskColors.size) return ''
+  const items = [...ovwLlmDistTaskColors.entries()].map(([task, color]) =>
+    `<span class="ovw-llmdist-legend-item"><span class="ovw-llmdist-legend-swatch" style="background:${color}"></span>${escapeHtml(task)}</span>`
+  ).join('')
+  return `<div class="ovw-llmdist-legend" aria-label="${escapeHtml(t('overview.llmDist.legend_title'))}">${items}</div>`
+}
+
+function ovwLlmDistShowTooltip(target) {
+  if (!ovwLlmDistTooltipEl) {
+    ovwLlmDistTooltipEl = document.createElement('div')
+    ovwLlmDistTooltipEl.className = 'ovw-llmdist-tooltip'
+    ovwLlmDistTooltipEl.hidden = true
+    document.body.appendChild(ovwLlmDistTooltipEl)
+  }
+  const task = target.dataset.task || ''
+  const agent = target.dataset.agent || ''
+  const duration = Number(target.dataset.duration) || 0
+  const tokensIn = Number(target.dataset.tokensIn) || 0
+  const tokensOut = Number(target.dataset.tokensOut) || 0
+  const tps = Number(target.dataset.tps) || 0
+  const statusLabel = target.dataset.statusLabel || ''
+  const el = ovwLlmDistTooltipEl
+  el.innerHTML = `
+    <div class="ovw-llmdist-tooltip-title">${escapeHtml(task)}</div>
+    <div class="ovw-llmdist-tooltip-row"><span>${escapeHtml(t('overview.llmDist.tooltip.agent'))}</span><span>${escapeHtml(agent)}</span></div>
+    <div class="ovw-llmdist-tooltip-row"><span>${escapeHtml(t('overview.llmDist.tooltip.duration'))}</span><span>${escapeHtml(ovwLlmDistFormatMs(duration))}</span></div>
+    <div class="ovw-llmdist-tooltip-row"><span>${escapeHtml(t('overview.llmDist.tooltip.tokens'))}</span><span>${escapeHtml(t('overview.llmDist.tooltip.tokens_value', { total: tokensIn + tokensOut, in: tokensIn, out: tokensOut }))}</span></div>
+    <div class="ovw-llmdist-tooltip-row"><span>${escapeHtml(t('overview.llmDist.tooltip.throughput'))}</span><span>${escapeHtml(t('overview.llmDist.tps', { n: tps.toFixed(1) }))}</span></div>
+    <div class="ovw-llmdist-tooltip-row"><span>${escapeHtml(t('overview.llmDist.tooltip.status'))}</span><span>${escapeHtml(statusLabel)}</span></div>
+  `
+  el.hidden = false
+  const rect = target.getBoundingClientRect()
+  const top = Math.max(8, rect.top - el.offsetHeight - 8)
+  const maxLeft = window.innerWidth - el.offsetWidth - 8
+  const left = Math.max(8, Math.min(rect.left, maxLeft))
+  el.style.top = top + 'px'
+  el.style.left = left + 'px'
+}
+
+function ovwLlmDistHideTooltip() {
+  if (ovwLlmDistTooltipEl) ovwLlmDistTooltipEl.hidden = true
+}
+
+function ovwLlmDistWireTooltips(body) {
+  body.querySelectorAll('.ovw-llmdist-block').forEach((el) => {
+    el.addEventListener('mouseenter', () => ovwLlmDistShowTooltip(el))
+    el.addEventListener('focus', () => ovwLlmDistShowTooltip(el))
+    el.addEventListener('mouseleave', ovwLlmDistHideTooltip)
+    el.addEventListener('blur', ovwLlmDistHideTooltip)
+  })
+}
+
+async function loadLlmDistWidget() {
+  const card = document.getElementById('ovwLlmDistCard')
+  const kpisEl = document.getElementById('ovwLlmDistKpis')
+  const body = document.getElementById('ovwLlmDistBody')
+  const metaEl = document.getElementById('ovwLlmDistMeta')
+  if (!card || !body) return
+  const hours = 6
+  const token = localStorage.getItem('marveen-dashboard-token') || ''
+  try {
+    const r = await fetch(`/api/local-llm/model-usage-buckets?hours=${hours}`, {
+      headers: { 'Authorization': 'Bearer ' + token },
+    })
+    if (r.status === 404) { card.hidden = true; return }
+    if (!r.ok) throw new Error('HTTP ' + r.status)
+    const d = await r.json()
+    if (metaEl) metaEl.textContent = t('overview.llmDist.meta', { hours: d.windowHours || hours })
+    if (kpisEl) kpisEl.innerHTML = ovwLlmDistKpiHtml(d.kpi || {})
+    const models = Array.isArray(d.models) ? d.models : []
+    if (!models.length) {
+      body.innerHTML = `<p class="ovw-llmdist-empty">${escapeHtml(t('overview.llmDist.empty'))}</p>`
+      card.hidden = false
+      return
+    }
+    ovwLlmDistTaskColors = new Map()
+    models.forEach((m) => (Array.isArray(m.tasks) ? m.tasks : []).forEach((task) => ovwLlmDistColorFor(task.task || '')))
+    const rangeEndMs = d.generatedAtMs || Date.now()
+    const rangeStartMs = rangeEndMs - (d.windowHours || hours) * 3600000
+    body.innerHTML = `
+      <div class="ovw-llmdist-lanes">${ovwLlmDistLanesHtml(models, rangeStartMs, rangeEndMs)}</div>
+      <div class="ovw-llmdist-axis">${ovwLlmDistAxisHtml(rangeStartMs, rangeEndMs)}</div>
+      ${ovwLlmDistLegendHtml()}
+    `
+    ovwLlmDistWireTooltips(body)
+    card.hidden = false
+  } catch {
+    body.innerHTML = `<p class="ovw-llmdist-error">${escapeHtml(t('overview.llmDist.error'))}</p>`
     card.hidden = false
   }
 }
