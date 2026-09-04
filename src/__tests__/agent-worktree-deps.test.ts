@@ -13,7 +13,7 @@
 // every destructive step asserts its path is under that temp root before running.
 import { describe, it, expect, beforeEach, afterEach } from 'vitest'
 import { execFileSync } from 'node:child_process'
-import { copyFileSync, existsSync, lstatSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs'
+import { chmodSync, copyFileSync, existsSync, lstatSync, mkdirSync, mkdtempSync, readdirSync, rmSync, writeFileSync } from 'node:fs'
 import { dirname, join } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { tmpdir } from 'node:os'
@@ -157,6 +157,33 @@ describe('agent-worktree-deps.sh', () => {
       encoding: 'utf-8',
     }).trim()
     expect(leftovers).toBe('0')
+  })
+
+  // Card 65cc3860: the rollout converts trees belonging to agents that are MID-TASK, so the copy must
+  // happen BEFORE the symlink is removed. The window is otherwise the whole ~1 minute of the copy,
+  // during which the worktree has no node_modules at all and any vitest/tsc started there fails
+  // looking like a broken dependency.
+  //
+  // The ordering is pinned through its observable consequence: make the copy fail, and the worktree
+  // must be exactly as it was found. Under the old order the symlink was already gone by then, so the
+  // tree was left broken and needing manual repair.
+  it('a FAILED copy leaves the worktree untouched -- the symlink is still there (copy before swap)', () => {
+    const unreadable = join(main, 'node_modules', 'unreadable-pkg')
+    mkdirSync(unreadable, { recursive: true })
+    writeFileSync(join(unreadable, 'index.js'), 'x')
+    chmodSync(unreadable, 0o000) // cp -a cannot descend into it
+    try {
+      run(WORKTREE_SH, ['agentx'])
+      const r = run(DEPS_SH, ['agentx'])
+      expect(r.status).not.toBe(0)
+      // The name must still be the ORIGINAL symlink, not missing and not a half-copy.
+      expect(lstatSync(join(tree, 'node_modules')).isSymbolicLink()).toBe(true)
+      // And no staging directory is left lying around.
+      expect(readdirSync(tree).some((e) => e.startsWith('.node_modules.incoming.'))).toBe(false)
+    } finally {
+      chmodSync(unreadable, 0o755)
+      rmSync(unreadable, { recursive: true, force: true })
+    }
   })
 
   it('refuses when there is no worktree, instead of creating something halfway', () => {
