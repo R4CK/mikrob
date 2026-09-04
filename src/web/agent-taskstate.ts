@@ -117,9 +117,14 @@ export function buildTaskStateInjection(r: AgentTaskState): string {
   const lines: string[] = [
     SENTINEL,
     // Source-neutral wording: the same record is replayed after a compact, a
-    // resume AND a crash respawn (source=startup, added 2026-07-27), so it must
-    // not claim a compact happened.
-    'A sessiond ujraindult egy FOLYAMATBAN LEVO feladat kozben (tomorites, resume vagy osszeomlas utani ujraindulas). Ez NEM uj feladat -- FOLYTASD onnan ahol abbamaradt. NE INDITSD ujra a mar kesz lepeseket, es NE delegald ujra amit mar atadtal.',
+    // resume, a /clear AND a crash respawn (source=startup, added 2026-07-27),
+    // so it must not claim a compact happened. The /clear wording is upstream's
+    // (adopted card 272361eb): 'clear' has been a replay source on both sides
+    // since 1ce3fd90, but this sentence still listed three of the four, so an
+    // agent restarted by CLAUDE.md rule 14 read a description of someone else's
+    // situation. taskstate-injection-names-every-replay-source.test.ts now pins
+    // the sentence to the set -- the drift this file has already suffered twice.
+    'A sessiond ujraindult egy FOLYAMATBAN LEVO feladat kozben (tomorites, resume, /clear vagy osszeomlas utani ujraindulas). Ez NEM uj feladat -- FOLYTASD onnan ahol abbamaradt. NE INDITSD ujra a mar kesz lepeseket, es NE delegald ujra amit mar atadtal.',
   ]
   if (r.summary.trim()) lines.push(`FELADAT: ${r.summary.trim()}`)
   if (r.doneSteps.length) lines.push('MAR KESZ (NE ismeteld meg):\n' + r.doneSteps.map((s) => `  - ${s}`).join('\n'))

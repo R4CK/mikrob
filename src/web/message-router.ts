@@ -16,6 +16,7 @@ import {
   type AgentMessage,
 } from '../db.js'
 import { formatDeliveryStalenessNote } from './kanban-state-stamp.js'
+import { countNewerMessagesFromSameSender } from '../db.js'
 import { isQualifiedId } from './federation/address.js'
 import { sendFederatedMessage } from './federation/bridge.js'
 import { getFederationConfig, abandonWindowMsForPeer } from './federation/config.js'
@@ -884,7 +885,14 @@ export async function runMessageRouterTick(): Promise<void> {
         // wrap (trusted/untrusted) carries the raw content. Single-source frame.
         // msgId passed so receiving agents can write back via PUT /api/messages/:id.
         const content = isChannelInbound ? deliveryContent : msg.content
-        const { prefix, wrapped } = wrapAgentMessageForDelivery(category, safeFromAgent, msg.from_agent, content, msg.id, msg.origin_note)
+        // Freshness/supersession (adopted from upstream, card f27c999b): a DIFFERENT question from
+        // the board re-check below -- "has this sender said more since?" rather than "did the board
+        // move?". Both are wired here because either alone leaves a real stale-replay path open.
+        const freshness = {
+          ageMs,
+          newerFromSameSender: countNewerMessagesFromSameSender(msg.from_agent, msg.to_agent, msg.id),
+        }
+        const { prefix, wrapped } = wrapAgentMessageForDelivery(category, safeFromAgent, msg.from_agent, content, msg.id, msg.origin_note, freshness)
         // Card 9566a197: the send-time card-state stamp is a photograph, and this queue routinely
         // holds a message for two to three hours while the receiver works. Re-read the board HERE,
         // at the only point that knows what the wait actually was, and say which stamped card has

@@ -102,6 +102,10 @@
 #   landing-copy-draft  feature/product description -> landing-page copy skeleton (headline/subhead/CTA); DRAFT
 #   legal-summary   contract/clause text -> plain-language summary; NEVER drafts new legal wording or opinion
 #   perf-summary    ALREADY-MEASURED before/after perf numbers -> narrative summary; DRAFT, never measures new numbers
+#   -- Card a3b4e0f4 (2026-09-04 category review, Peti-approved):
+#   corpus-driven-test-cases  guard/detector description + the repo's REAL command lines -> test cases
+#                   in BOTH halves (must-block + must-NOT-block), each quoting or mutating a corpus
+#                   line; DRAFT, a human runs them against the guard
 # These offload work that today burns online Claude tokens; drafts are draft-only
 # (label local-llm-draft) and re-checked by MikroB + gate before shipping.
 #

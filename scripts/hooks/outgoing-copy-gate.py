@@ -1078,4 +1078,31 @@ if __name__ == "__main__":
     if len(sys.argv) > 1 and sys.argv[1] == "--status":
         print(status_report())
         sys.exit(0)
-    main()
+    # Upstream's fail-closed net, adopted on card 630d9864 (B-wave). It was recorded as "a
+    # candidate for future adoption, not yet taken" and it is the one genuinely open item in this
+    # file -- MEASURED before adopting: a payload whose tool_input is not a dict (e.g. a bare
+    # string) made collect_mcp_body() raise AttributeError, python exited 1, and PreToolUse treats
+    # 1 as NON-blocking, so the send ran UNCHECKED. That is the exact inverse of this gate's
+    # fail-closed contract, reached by a malformed call rather than by any decision.
+    #
+    # It sits AFTER the --status branch on purpose: --status is a human-invoked read-only readout,
+    # never a hook path, and answering a status question with a "TILTVA" send-refusal would be a
+    # lie about what failed.
+    #
+    # The telegram path never reaches this net: telegram_gate() catches its own errors and exits 0
+    # (fail-open BY DESIGN -- Telegram is the owner's only supervision channel, so silence there
+    # costs more than a slipped accent). Verified in this fork, not assumed from upstream's
+    # comment. So this only ever catches the email/Bash send paths, where blocking is the safe
+    # failure mode.
+    try:
+        main()
+    except SystemExit:
+        raise
+    except Exception as exc:  # noqa: BLE001 -- deliberate blanket: fail-closed net
+        sys.stderr.write(
+            "KIMENO-SZOVEG KAPU: TILTVA, belso hiba a vizsgalat kozben "
+            f"({exc!r}).\n"
+            "Fail-closed: egy vizsgalhatatlan kuldes pont a kaput utne ki. "
+            "Tedd vizsgalhatova a hivast, aztan kuldd ujra.\n"
+        )
+        sys.exit(2)

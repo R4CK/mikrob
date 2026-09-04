@@ -320,7 +320,21 @@ except Exception:
   SYS_FROM_TPL="$(awk '/^---$/{exit} {print}' "$TPL")"
   USER_TPL="$(awk 'f{print} /^---$/{f=1}' "$TPL")"
   [[ -z "$SYSTEM" ]] && SYSTEM="$SYS_FROM_TPL"
-  PROMPT="${USER_TPL//\{\{INPUT\}\}/$PROMPT}"
+  # `&` IS SPECIAL IN THE REPLACEMENT HALF OF ${var//pat/rep} (card a3b4e0f4). Bash expands a bare
+  # `&` there to the text the pattern matched, so an input containing `cd X && grep foo` reached the
+  # model as `cd X {{INPUT}}{{INPUT}} grep foo` -- the caller's own command mangled into the
+  # placeholder's name, silently, with no error anywhere. Measured on bash 5.3.9 while testing this
+  # card's new template; it hits EVERY --task template, not one, because this is the single
+  # substitution site for all of them.
+  #
+  # BOTH escapes are needed, in this order. The replacement half also honours `\` as an escape, so
+  # escaping only the ampersands corrupts an input that already contains `\&` (printf '%s' '\&' is a
+  # real shape in a command corpus): `\&` would become `\\&`, i.e. a literal backslash followed by a
+  # still-special `&`. Backslashes first, ampersands second, and both round-trip. The test file
+  # local-llm-template-input-ampersand.test.ts runs THIS line, so it fails if either is dropped --
+  # it is what caught the `\&` case above.
+  ESCAPED_INPUT="${PROMPT//\\/\\\\}"
+  PROMPT="${USER_TPL//\{\{INPUT\}\}/${ESCAPED_INPUT//&/\\&}}"
 fi
 
 ollama_up || die 2 "ollama down at $OLLAMA_HOST [$LOCAL_LLM_PLATFORM] -- $(ollama_start_hint)"

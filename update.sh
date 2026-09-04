@@ -782,6 +782,15 @@ run_seed_refresh() {
   refresh_untouched_seeds "seed-skills" "$HOME/.claude/skills" "template"
   if [ -n "${MAIN_AGENT_ID:-}" ]; then
     refresh_untouched_seeds "seed-scheduled-tasks" "$HOME/.claude/scheduled-tasks" "template"
+    # SEEDREFRESH826, adopted from upstream in the B-wave (card 39b32ac6). The TOP-LEVEL
+    # scheduled-tasks/ dir is seeded once by ensureDefaultScheduledTasks and was never refreshed
+    # afterwards, so every shipped fix to those tasks reached NEW installs only. Not taken on
+    # upstream's word: measured on this host with the same comparison refresh_untouched_seeds
+    # itself uses (render the template, hash both sides) -- 6/6 installed copies had drifted,
+    # reggeli-napindito/SKILL.md worst at 1190 B installed against 6351 B shipped.
+    # Safe by construction: the function refreshes only copies that are still byte-identical to
+    # something we shipped, so a locally-edited task is kept, not overwritten.
+    refresh_untouched_seeds "scheduled-tasks" "$HOME/.claude/scheduled-tasks" "template"
   fi
   if [ "$SEED_REFRESH_UPDATED" -gt 0 ] || [ "$SEED_REFRESH_MERGED" -gt 0 ]; then
     echo -e "  ${GREEN}✓${NC} Szallitott skill/feladat frissitve: ${SEED_REFRESH_UPDATED} (erintetlen masolat), ${SEED_REFRESH_MERGED} (osszefesulve helyi szerkesztessel); megtartva: ${SEED_REFRESH_KEPT} (konfliktus vagy nem osszefesulheto)"

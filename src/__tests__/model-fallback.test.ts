@@ -43,6 +43,26 @@ describe('detectsUsageLimit', () => {
     expect(detectsUsageLimit('You hit the session limit')).toBe(true)
   })
 
+  it('matches the WEEKLY/session phrasings adopted in the B-wave (upstream measured 2026-08-18)', () => {
+    // Card f27c999b. Upstream measured these three going UNDETECTED, and the cost of a miss here is
+    // an agent that keeps hammering a paused session because the detector called it healthy.
+    expect(detectsUsageLimit('You have reached your weekly limit')).toBe(true)
+    expect(detectsUsageLimit('Approaching your weekly limit')).toBe(true)
+    expect(detectsUsageLimit('Session limit reached')).toBe(true)
+    expect(detectsUsageLimit('Weekly limit reached ∙ resets Monday')).toBe(true)
+    // The usage-limit wordings these generalise from must not have been traded away for them.
+    expect(detectsUsageLimit('You have reached your usage limit. Try again later.')).toBe(true)
+    expect(detectsUsageLimit('Approaching usage limit')).toBe(true)
+  })
+
+  it('did NOT adopt upstream\'s unbounded word wildcard between "approaching" and "limit"', () => {
+    // Upstream widened this to `approaching (?:your )?(?:\\w+ )?(usage|weekly) limit`. We took the
+    // measured phrasings and left the wildcard out: no observed banner needs it, and an arbitrary
+    // word in the middle widens a detector whose false positive costs a WRONGFUL model downgrade --
+    // the same class as the /upgrade startup hint this fork already had to remove.
+    expect(detectsUsageLimit('approaching some completely unrelated weekly limit')).toBe(false)
+  })
+
   it('keeps BOTH halves of the fork/upstream resolution at once', () => {
     // The two changes are independent and pull in opposite directions, so this pins them together:
     // taking upstream's file wholesale reintroduces the /upgrade false positive, keeping ours
