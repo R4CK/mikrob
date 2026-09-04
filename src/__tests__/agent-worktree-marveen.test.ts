@@ -143,6 +143,25 @@ describe('agent-worktree-marveen.sh (card dc185b52)', () => {
   })
 })
 
+
+// Every test in the block below runs the real lander, which means real git subprocesses: a merge,
+// a verification command and a push, in a throwaway repo. That is I/O and process work, not this
+// process's CPU, so the card's other fix (measure CPU time) does not apply here -- there is no CPU
+// figure to measure, the parent mostly waits.
+//
+// The 5000ms vitest default was acting as a performance budget by accident. Measured under full
+// saturation on 12 cores: the slowest test ('--all', which does TWO landing cycles where the others
+// do one) took 2395 / 3045 / 7876ms across three runs, and six of its neighbours sat at 2.8-3.5s.
+// Idle, that same test is 1390ms. So the default left under 2x headroom on a file whose work is
+// inherently contended.
+//
+// Raising it weakens NOTHING, and that is the difference from the ratio test in
+// path-prefix-escaped-pipe-quadratic: there the number IS the assertion, so it stays at 8. Here
+// every assertion is about landing BEHAVIOUR -- exit status, output, what ended up on the branch --
+// and the timeout is only a deadlock guard. A generous deadlock guard still catches a hang; a tight
+// one just fails honest work on a busy machine.
+const LAND_TIMEOUT_MS = 30_000
+
 describe('marveen-land.sh (card dc185b52)', () => {
   async function commitInWorktree(agent: string, files: Record<string, string>): Promise<void> {
     await runWorktree(agent)
@@ -167,7 +186,7 @@ describe('marveen-land.sh (card dc185b52)', () => {
     gitOk(main, 'fetch', '-q', 'origin', 'develop')
     const files = git(main, 'ls-tree', '-r', '--name-only', 'origin/develop')
     expect(files.split('\n')).toContain('backend-new.txt')
-  })
+  }, LAND_TIMEOUT_MS)
 
   it('MUTATION-PROOF: refuses a real content conflict and pushes nothing', async () => {
     await commitInWorktree('backend', { 'shared.txt': 'aaa\nbbb\nccc\nbackend-tail\n' })
@@ -183,7 +202,7 @@ describe('marveen-land.sh (card dc185b52)', () => {
 
     gitOk(main, 'fetch', '-q', 'origin', 'develop')
     expect(git(main, 'rev-parse', 'origin/develop')).toBe(before)
-  })
+  }, LAND_TIMEOUT_MS)
 
   it('refuses when the verification command fails on the merge result, and pushes nothing', async () => {
     await commitInWorktree('backend', { 'backend-new.txt': 'x\n' })
@@ -195,7 +214,7 @@ describe('marveen-land.sh (card dc185b52)', () => {
 
     gitOk(main, 'fetch', '-q', 'origin', 'develop')
     expect(git(main, 'rev-parse', 'origin/develop')).toBe(before)
-  })
+  }, LAND_TIMEOUT_MS)
 
   it('a successful landing leaves the agent worktree untouched, but its branch is an ancestor of origin/develop', async () => {
     await commitInWorktree('backend', { 'backend-new.txt': 'x\n' })
@@ -207,7 +226,7 @@ describe('marveen-land.sh (card dc185b52)', () => {
     expect(git(join(worktrees, 'backend'), 'rev-parse', 'HEAD')).toBe(preLandTip)
     gitOk(main, 'fetch', '-q', 'origin', 'develop')
     expect(() => git(main, 'merge-base', '--is-ancestor', preLandTip, 'origin/develop')).not.toThrow()
-  })
+  }, LAND_TIMEOUT_MS)
 
   it('--all lands every agent/*/work branch with unmerged work in one sweep', async () => {
     await commitInWorktree('backend', { 'backend-new.txt': 'x\n' })
@@ -221,7 +240,7 @@ describe('marveen-land.sh (card dc185b52)', () => {
     gitOk(main, 'fetch', '-q', 'origin', 'develop')
     const files = git(main, 'ls-tree', '-r', '--name-only', 'origin/develop')
     expect(files.split('\n')).toEqual(expect.arrayContaining(['backend-new.txt', 'fullstack-new.txt']))
-  })
+  }, LAND_TIMEOUT_MS)
 
   it('landing again after a clean land is a no-op, not an error', async () => {
     await commitInWorktree('backend', { 'backend-new.txt': 'x\n' })
@@ -230,7 +249,7 @@ describe('marveen-land.sh (card dc185b52)', () => {
     const r = await runLand(['backend'], writeStub(0))
     expect(r.status).toBe(0)
     expect(r.out).toContain('already fully landed')
-  })
+  }, LAND_TIMEOUT_MS)
 
   // ── Card 77075367: a src/-touching land is not a silent stale-dist gap ─────────────────────
   // A landed src/ change does not rebuild dist/ or restart mikrob-channels/mikrob-dashboard
@@ -245,14 +264,14 @@ describe('marveen-land.sh (card dc185b52)', () => {
     expect(r.out).toContain('WARNING')
     expect(r.out).toContain('src/')
     expect(r.out).toContain('./update.sh')
-  })
+  }, LAND_TIMEOUT_MS)
 
   it('does NOT warn when the landed change stays outside src/', async () => {
     await commitInWorktree('backend', { 'store/new-thing.sh': '#!/usr/bin/env bash\n' })
     const r = await runLand(['backend'], writeStub(0))
     expect(r.status).toBe(0)
     expect(r.out).not.toContain('WARNING')
-  })
+  }, LAND_TIMEOUT_MS)
 
   // ── Card 65657bad: a lost push race is not a failure ───────────────────────────────────────
   // Measured on card 6cd3b6af: two consecutive PUSH FAILEDs, each because another agent landed
@@ -302,7 +321,7 @@ describe('marveen-land.sh (card dc185b52)', () => {
     expect(r.out).toMatch(/another agent landed during the merge\+test window/)
     // Two full attempts: the first lost the race, the second merged onto the new tip.
     expect(stub.runs()).toBe(2)
-  })
+  }, LAND_TIMEOUT_MS)
 
   it('the retry RE-VERIFIES: the second attempt merges the peer commit and tests THAT', async () => {
     // The cheap wrong fix is to push the already-approved merge again onto the moved base, or to
@@ -315,7 +334,7 @@ describe('marveen-land.sh (card dc185b52)', () => {
     const landed = git(main, 'ls-tree', '-r', '--name-only', 'origin/develop')
     expect(landed).toContain('backend-new.txt')
     expect(landed, "the peer's commit was overwritten rather than merged").toContain('rival.txt')
-  })
+  }, LAND_TIMEOUT_MS)
 
   it('CONTROL: a push refused for a NON-race reason is reported, and not retried', async () => {
     // Retrying a rejecting hook (or bad credentials) burns another full merge+verify cycle and
@@ -330,7 +349,7 @@ describe('marveen-land.sh (card dc185b52)', () => {
     expect(r.status).not.toBe(0)
     expect(r.out).toContain('PUSH FAILED')
     expect(stub.runs(), 'a non-race rejection was retried').toBe(1)
-  })
+  }, LAND_TIMEOUT_MS)
 
   it('THE POINT OF THE CARD: the failure message carries git\'s own words', async () => {
     // Without this the operator cannot tell a race from a real fault -- which is the whole finding.
@@ -341,7 +360,7 @@ describe('marveen-land.sh (card dc185b52)', () => {
 
     const r = await runLand(['backend'], writeStub(0))
     expect(r.out, 'the push error is still being swallowed').toContain('policy: pushes are frozen')
-  })
+  }, LAND_TIMEOUT_MS)
 
   it('a repeatedly-raced push gives up after the attempt budget, and pushes nothing', async () => {
     // Unbounded retry on a continuously-landing fleet would spin for ever, burning a full test run
@@ -381,5 +400,5 @@ describe('marveen-land.sh (card dc185b52)', () => {
     expect(Number(execFileSync('cat', [counter], { encoding: 'utf-8' }).trim())).toBe(2)
     // The branch is untouched: nothing of ours reached origin.
     expect(git(main, 'ls-tree', '-r', '--name-only', 'origin/develop')).not.toContain('backend-new.txt')
-  })
+  }, LAND_TIMEOUT_MS)
 })
