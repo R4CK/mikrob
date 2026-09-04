@@ -249,6 +249,11 @@ const CATEGORY_DESCRIPTIONS: Record<string, string> = {
   'landing-copy-draft': 'Feature/termék leírás -> landing-oldal szöveg váz (headline/subhead/CTA); DRAFT',
   'legal-summary': 'Szerződés/klauzula szövege -> köznyelvi összefoglaló; SOSEM ad új jogi szöveget/véleményt',
   'perf-summary': 'Már mért before/after teljesítmény-számok -> szöveges összefoglaló; DRAFT, nem mér újat',
+  // Card a3b4e0f4 (a 2026-09-04-i local-llm kategória-review, Peti jóváhagyta): teszteset-javaslat
+  // a repó VALÓS parancs-korpuszából, nem a fenyegetés-modellből -- a cd-chain-guard.py háromszor
+  // pont abból a hibából bukott, hogy a tesztesetei szintetikusak voltak.
+  'corpus-driven-test-cases':
+    'Guard/detektor leírás + a repó valós parancsai -> tesztesetek KÉT felében (blokkolandó + át kell engedni), korpuszra hivatkozva; DRAFT',
 }
 
 /** Clamp/parse an aggressiveness input to an integer in [0,100]; non-numeric -> the default. (Mechanical

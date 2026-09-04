@@ -206,3 +206,49 @@ describe('the 2026-08-02 agent-task-driven category batch is wired end to end', 
     for (const name of NEW_CATEGORIES_3) expect(isValidCategoryName(name)).toBe(true)
   })
 })
+
+// Card a3b4e0f4 (the 2026-09-04 category review, all three proposals approved by Peti): one more
+// DRAFT-only preset -- corpus-driven-test-cases. Same wire-up contract as every batch above: a real
+// template on disk, a curated HU description, surfaced by listCategories(), passes the allowlist.
+describe('corpus-driven-test-cases is wired end to end (card a3b4e0f4)', () => {
+  const NAME = 'corpus-driven-test-cases'
+  const skillDir = join(STORE_DIR, 'local-llm-skills')
+
+  it('lists at least 79 categories now (78 + this one), sourced from disk', () => {
+    expect(listCategories().length).toBeGreaterThanOrEqual(79)
+  })
+
+  it('has a valid template: non-empty system block, a --- separator, and {{INPUT}}', () => {
+    const tpl = readFileSync(join(skillDir, `${NAME}.txt`), 'utf8')
+    const sepIdx = tpl.split('\n').indexOf('---')
+    expect(sepIdx, `${NAME}: missing '---' separator`).toBeGreaterThan(0)
+    expect(tpl.includes('{{INPUT}}'), `${NAME}: missing {{INPUT}} placeholder`).toBe(true)
+    expect(tpl.slice(0, tpl.indexOf('\n---')).trim().length, `${NAME}: empty system block`).toBeGreaterThan(20)
+  })
+
+  // The POINT of this category, not decoration: a guard's test cases must come from the repo's real
+  // command corpus, and they must cover BOTH directions. cd-chain-guard.py failed three rounds in a
+  // row with cases drawn from its threat model, and its first false-positive fix reopened the
+  // primary case precisely because the suite had no must-NOT-block half grounded in real commands.
+  // A future edit that softens the template into a generic "list some test cases" prompt fails here.
+  it('the template demands both halves and forbids ungrounded cases', () => {
+    const tpl = readFileSync(join(skillDir, `${NAME}.txt`), 'utf8')
+    expect(tpl).toContain('MUST BLOCK')
+    expect(tpl).toContain('MUST NOT BLOCK')
+    expect(tpl).toContain('FROM:')
+    expect(tpl.toLowerCase()).toContain('verbatim')
+    expect(tpl.toLowerCase()).toContain('never invent')
+  })
+
+  it('surfaces via listCategories with a curated description (not a bare name fallback)', () => {
+    const cat = listCategories().find((c) => c.name === NAME)
+    expect(cat, `${NAME}: not listed`).toBeTruthy()
+    expect(cat!.description).not.toBe(NAME)
+    expect(cat!.description.length).toBeGreaterThan(NAME.length)
+    expect(cat!.description).toContain(' ')
+  })
+
+  it('the name passes the POST allowlist (dashboard toggle can reach it)', () => {
+    expect(isValidCategoryName(NAME)).toBe(true)
+  })
+})
