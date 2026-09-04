@@ -6328,3 +6328,33 @@ utkozo fajlokra ertekelodik; a token-usage.ts hiba viszont utkozes NELKUL torten
 egyszeruen nem volt mar igaz. Feltetelesse tenni ujratermelne a lyukat, amit be kell zarnia.
 
 **Ki dontott:** backend2 (meres + terv), a kartyat MikroB nyitotta backend2 leletere (607254fb komment 19951).
+
+## 2026-09-05 -- e5b7ff19 -- Hatokor-allitas sweep: jelento eszkoz, nem kapu
+
+**Dontes:** a "teszt-fejlec olyan hatokort allit, amit nem fed le" osztalyra JELENTO eszkoz keszult
+(`store/test-scope-claim-check.py`), nem blokkolo kapu.
+
+**Miert nem kapu -- merve:** 611 teszt-fajlon 61 fejlec-allitas oldodik fel tulajdonosra, ebbol 33
+nem eri el a kiszolgalot, es kezi ellenorzes utan PONTOSAN EGY valodi eltereses akadt. A tobbi
+forras-kontraktus-or (app.js-t, shell-scriptet, SKILL.md-t olvasnak szovegkent es toredekeket
+allitanak), amelyek fejlece a route-ot a JAVITAS KONTEXTUSAKENT nevezi meg, nem sajat hatokorkent --
+ez legitim es gyakori alak itt. Egy kapu tehat kb. 23 hamis pozitivot adna 1 talalat mellett.
+
+**A megerositett lelet:** `otel-distributed-tracing.test.ts` fejlece szo szerint ezt mondja:
+"Scope: DB layer ... API route (POST/GET /api/spans, GET /api/traces/:id, GET /api/traces)". A fajl
+sajat maga hozza letre az `otel_spans` tablat es `db.prepare`-rel ujraimplementalja a lekerdezeseket;
+a `tryHandleSpans`-t nulla teszt eri el. Ez a kartya sajat 1. peldaja, es MA IS fennall. A 63beeb8a
+(waiting) ugyanennek a vegpontnak az IRASI invariansarol szol, nem a lefedettsegi resrol -- ezert a
+lelet oda ment kommentkent, uj kartya nyitasa helyett (6b. szabaly).
+
+**Az eszkoz sajat vaksaga is mert lelet volt.** Az elso valtozat a kiszolgalo modult BASENAME-
+RESZSZTRINGGEL kereste a teszt kodjaban, es a 'spans' szo egy spans-rol szolo tesztben amugy is
+mindenutt ott van (tabla-nevek, valtozok, SQL) -- tehat a `routes/spans.ts` "elertnek" latszott egy
+olyan fajlbol, ami csak vitestet es better-sqlite3-at importal. Az eszkoz ELVESZTETTE a sajat alapito
+eseteet. A reachability azota IMPORT vagy HANDLER-NEV szerinti token-illesztes. Ugyanaz a containment-
+hibaosztaly, amit ugyanezen a napon a fork-horgonynal is javitani kellett (a14812e8).
+
+**A selftest az elso futason talalt egy masodik hibat:** az argumentum-feldolgozo ketszer leptette az
+indexet, tehat `--repo X --json` mellett a `--json` sosem jutott szohoz.
+
+**Ki dontott:** backend2 (meres + dontes), a kartyat MikroB nyitotta backend2 63beeb8a-REVIEW leletere.
