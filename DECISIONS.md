@@ -6096,3 +6096,21 @@ akinek a sora nem évül el (6 óra, 118 üzenet, 0,1 perc átlag, 0,7 perc a le
 eldobni; (2) az út `claimPendingForAgent`-tel KEZD, ami a hurok előtt `delivered`-re állítja a sort, így
 egy utólagos elnyomás pont az a "láthatatlan üzenetvesztés" lenne, amitől ugyanannak a fájlnak a saját
 `from_agent` ága óv.
+
+## 2026-09-04 18:40 -- Swimlane: a telepített-de-inaktív modell is kap sávot (a korábbi döntés megfordítása)
+
+**Döntés:** a helyi-LLM swimlane mostantól minden telepített/konfigurált modellre rajzol sávot,
+akkor is, ha az adott időablakban egyetlen hívása sem volt. Az inaktív sáv rövid, szaggatott sor
+egy rövid magyarázó szöveggel, nem teljes magasságú üres sáv; a sorrendben minden inaktív sáv az
+összes aktív alá kerül. Külön jelölést kap az a modell, aminek volt forgalma az ablakban, de az
+Ollama már nem listázza (nincs telepítve) -- ezt viszont CSAK akkor mondja ki a felület, ha a
+roster-lekérdezés ténylegesen sikerült; ha az Ollama nem elérhető, a hiányzó információ nem
+fordul át állításra.
+**Miért:** Peti kérése (2026-09-04, Telegram, képmelléklettel). Ez megfordítja a korábbi
+"soha ne legyen üres sáv" döntést (18771-es kártya-komment): azzal a szabállyal egy éppen nem
+használt modell teljesen eltűnt a diagramról, tehát az "inaktív" és a "nem is létezik" állapot
+ugyanúgy nézett ki. A KPI-ban az "Aktív modellek" szám szándékosan NEM tartalmazza az inaktív
+sávokat.
+**Ki döntött:** Peti (kérés) + Fullstack (megvalósítási döntések: inaktív sáv alakja, sorrend,
+roster-forrás, a nem-elérhető Ollama kezelése).
+**Hivatkozás:** kártya 21950f77.
