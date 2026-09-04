@@ -408,3 +408,113 @@ describe('the refresh runs where it can reach an already-current machine', () =>
     expect(UPDATE).toMatch(/REGEN_CLAUDEMD/)   // the flag still exists, unchanged
   })
 })
+
+// SEEDREFRESH826, adopted from upstream in the B-wave (card 39b32ac6). The TOP-LEVEL
+// scheduled-tasks/ dir is seeded once by ensureDefaultScheduledTasks and was never refreshed after
+// that, so every shipped fix to those tasks reached NEW installs only. Measured on this host with
+// the same comparison the refresh itself uses (render the template, hash both sides): 6/6 installed
+// copies had drifted, reggeli-napindito/SKILL.md worst at 1190 B installed against 6351 B shipped.
+//
+// The cases below run in a throwaway install, never against the live one -- the card's own
+// requirement that this must not first break in production. They also need MAIN_AGENT_ID set:
+// both scheduled-task refreshes sit behind `if [ -n "${MAIN_AGENT_ID:-}" ]`, and the harness above
+// deliberately leaves it empty, so nothing in this file exercised that branch until now.
+function makeTopLevelFixture() {
+  const base = mkdtempSync(join(tmpdir(), 'seedrefresh-top-'))
+  const install = join(base, 'install')
+  const home = join(base, 'home')
+  // TWO seeded tasks on purpose. A negative case ("a local edit survives") passes trivially when
+  // the refresh never ran at all, so it proves nothing on its own -- measured: deleting the call
+  // under test left two of these three cases green. The witness task refreshes in the same run, so
+  // the edited one is spared BY THE RULE rather than by the feature being absent.
+  for (const name of ['demo-top', 'demo-witness']) {
+    mkdirSync(join(install, 'scheduled-tasks', name), { recursive: true })
+    mkdirSync(join(home, '.claude', 'scheduled-tasks', name), { recursive: true })
+  }
+  writeFileSync(join(install, '.env'), 'MAIN_AGENT_ID=marveen\nWEB_PORT=3420\n')
+
+  git(install, ['init', '-q'])
+  git(install, ['config', 'user.email', 'test@example.invalid'])
+  git(install, ['config', 'user.name', 'test'])
+
+  const versions = ['top v1 {{MAIN_AGENT_ID}}\n', 'top v2 {{MAIN_AGENT_ID}}\n', 'top v3 {{MAIN_AGENT_ID}}\n']
+  for (const v of versions) {
+    for (const name of ['demo-top', 'demo-witness']) {
+      writeFileSync(join(install, 'scheduled-tasks', name, 'SKILL.md'), v)
+      git(install, ['add', `scheduled-tasks/${name}/SKILL.md`])
+    }
+    git(install, ['commit', '-q', '-m', 'ship'])
+  }
+  const installed = join(home, '.claude', 'scheduled-tasks', 'demo-top', 'SKILL.md')
+  const witness = join(home, '.claude', 'scheduled-tasks', 'demo-witness', 'SKILL.md')
+  // What the refresh would write: the CURRENT shipped version, rendered.
+  const rendered = (v: string) => v.replace(/\{\{MAIN_AGENT_ID\}\}/g, 'marveen')
+  return { base, install, home, installed, witness, versions, rendered }
+}
+
+function runRefreshWithMainAgent(install: string, home: string): { out: string; code: number } {
+  const script = join(install, 'probe-top.sh')
+  writeFileSync(script, [
+    'set -u',
+    'GREEN=""; NC=""',
+    `INSTALL_DIR="${install}"`,
+    `HOME="${home}"`,
+    'MAIN_AGENT_ID="marveen"; BOT_NAME=""; OWNER_NAME=""; WEB_PORT="3420"',
+    FUNCS,
+    'run_seed_refresh',
+  ].join('\n') + '\n')
+  try {
+    return { out: execFileSync('bash', [script], { encoding: 'utf-8' }).trim(), code: 0 }
+  } catch (e) {
+    const err = e as { stdout?: string; stderr?: string; status?: number }
+    return { out: `${String(err.stdout ?? '')}${String(err.stderr ?? '')}`.trim(), code: err.status ?? -1 }
+  }
+}
+
+describe('the TOP-LEVEL scheduled-tasks dir is refreshed too (card 39b32ac6)', () => {
+  it('refreshes an untouched copy that is two releases behind', () => {
+    const f = makeTopLevelFixture()
+    try {
+      writeFileSync(f.installed, f.rendered(f.versions[0]))
+      const r = runRefreshWithMainAgent(f.install, f.home)
+      expect(r.code).toBe(0)
+      expect(readFileSync(f.installed, 'utf-8')).toBe(f.rendered(f.versions[2]))
+      expect(r.out).toMatch(/frissitve: 1/)
+    } finally {
+      rmSync(f.base, { recursive: true, force: true })
+    }
+  })
+
+  it('NEVER overwrites a locally edited one -- the same rule as every other seed', () => {
+    const f = makeTopLevelFixture()
+    try {
+      const edited = f.rendered(f.versions[1]) + '# the operator added this line\n'
+      writeFileSync(f.installed, edited)
+      // The witness is untouched and two releases behind: it MUST refresh in the same run, so a
+      // green result cannot mean "the refresh never reached this directory".
+      writeFileSync(f.witness, f.rendered(f.versions[0]))
+      const r = runRefreshWithMainAgent(f.install, f.home)
+      expect(r.code).toBe(0)
+      expect(readFileSync(f.installed, 'utf-8')).toBe(edited)
+      expect(readFileSync(f.witness, 'utf-8')).toBe(f.rendered(f.versions[2]))
+      expect(r.out).toMatch(/frissitve: 1/)
+    } finally {
+      rmSync(f.base, { recursive: true, force: true })
+    }
+  })
+
+  it('renders the template rather than copying it verbatim', () => {
+    const f = makeTopLevelFixture()
+    try {
+      // Seed it with an OLD rendered version, so landing on v3 is only possible if the refresh ran.
+      writeFileSync(f.installed, f.rendered(f.versions[0]))
+      expect(runRefreshWithMainAgent(f.install, f.home).code).toBe(0)
+      const got = readFileSync(f.installed, 'utf-8')
+      expect(got).toBe(f.rendered(f.versions[2]))
+      expect(got).not.toContain('{{MAIN_AGENT_ID}}')
+      expect(got).toContain('marveen')
+    } finally {
+      rmSync(f.base, { recursive: true, force: true })
+    }
+  })
+})
