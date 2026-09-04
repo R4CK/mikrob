@@ -5081,9 +5081,11 @@ Bash-hívása előtt fut, tehát egy túlillesztés valós beragadást cserélne
 
 **Melléklelet, külön kártyát érdemel:** a `noisy-command-guard.py`-nak EGYÁLTALÁN nincs
 `inject*`/`ensure*` bekötése a kódban -- csak kézzel szerkesztett `settings.json`-okba került be.
-2026-09-04-i méréssel 15 ügynökből 3-nál (`marketing`, `penzugy`, `videooo`) hiányzik, és egy
-újonnan létrehozott ügynök sem kapná meg; a `marketing`-nél a blast-radius és az npm-protect guard
-is hiányzik. A CLAUDE.md 15. szabálya közben élő kontrollként hivatkozik rá. Ez a
+2026-09-04-i méréssel 15 ügynökből 3-nál (`marketing`, `penzugy`, `videooo`) hiányzik. HELYESBÍTVE
+ugyanaznap (kártya `2a07f29e`): itt eredetileg az is szerepelt, hogy a `marketing`-nél a blast-radius
+és az npm-protect guard is hiányzik -- ez TÉVES volt, csak az egyik settings-fájlt mértem. A két élő
+fájl uniójára a noisy-command-guard az EGYETLEN hiányzó, azon a 3 ügynökön. Lásd a 2a07f29e
+bejegyzését a pontos mechanizmusért. A CLAUDE.md 15. szabálya közben élő kontrollként hivatkozik rá. Ez a
 "kézzel másolt őr tetszőleges részhalmazt véd" hibaosztály (`0fa54550`, 13 ügynökből 5), most újra.
 Ezt NEM javítottam ebben a kártyában (hatókör-tartás), jelezve MikroB-nak.
 
@@ -5226,3 +5228,36 @@ lista a táblába olvadt (ugyanaz az információ, egy helyen).
 **Ki döntött:** MikroB (szűkítés, ls-remote elvetése), Fron Ted (a note-mező hiányának kezelése, sorrend).
 **Hivatkozás:** kártya `184dc8d7` (rokon: `92a4c2e7`); `web/fork-updates.js`, `web/app-repo-freshness.js`,
 `src/__tests__/repo-freshness-ui.test.ts`.
+
+## 2026-09-04 07:30 -- Minden hook-guard kódból, mindkét úton: a noisy-command-guard bekötése és két talált féloldalasság
+
+**Döntés:** A `noisy-command-guard.py` bekötve a rendes `injectNoisyCommandGuard` (settings-generálás)
++ `ensureNoisyCommandGuard` (boot-idejű backfill) úton. Mellé egy meta-teszt
+(`hook-guards-are-code-wired.test.ts`), ami a guard-listát a FORRÁSBÓL vezeti le, és mindegyikre
+kikényszeríti MINDKÉT felet. A teszt írásakor azonnal talált két meglévő féloldalasságot, mindkettő
+javítva: a `pentest-tool-install-guard` csak a backfillen volt rajta (egy ÚJ ügynök a spawn-nál nem
+kapta meg), a `git-protect-guard` pedig csak a generálási úton (egy MEGLÉVŐ ügynök sosem kapott
+backfillt) -- utóbbi az a guard, ami a megosztott fán a `git add -A` / `reset --hard` osztályt
+blokkolja, tehát a respawn-ra várás nála a legrosszabb alapértelmezés.
+
+**Miért nem volt bekötve eddig:** a hook 2026-08-23 óta létezik és a CLAUDE.md 15. szabálya élő
+kontrollként hivatkozik rá, de a kódban SEHOL nem regisztrálta semmi. Csak azért ért el ügynököket,
+mert valaki kézzel beírta a KÖZÖS `~/.claude/settings.json`-ba, amit a `provisionIsolatedConfigDir()`
+másol be minden ügynök `.claude-config`-jába a provisioning pillanatában. A lefedettség tehát annak
+a véletlene volt, hogy egy ügynököt MIKOR provisionáltak ahhoz a kézi szerkesztéshez képest.
+
+**Mérési helyesbítés, saját hiba:** az első mérésem (a `6b32a478` mellékleleteként) azt is állította,
+hogy a `marketing`-nél a blast-radius és az npm-protect guard is hiányzik. TÉVES: csak az
+`.claude-config/settings.json`-t néztem. Ügynökönként KÉT élő settings-fájl van, és a Claude Code a
+kettőt egyesíti:
+- `agents/<n>/.claude/settings.json` -- PROJEKT szint, ezt írja az `agentSettingsPath()` és minden
+  `ensure*` backfill. Kód-tulajdonú.
+- `agents/<n>/.claude-config/settings.json` -- FELHASZNÁLÓ szint (az izolált `CLAUDE_CONFIG_DIR`),
+  ezt a `provisionIsolatedConfigDir` a közös `~/.claude/settings.json`-ból MÁSOLJA.
+A kettő unióján mérve egyetlen guard hiányzott, a noisy-command-guard, pontosan azon a 3 ügynökön
+(`marketing`, `penzugy`, `videooo`). A README és a `06:40`-es bejegyzés helyesbítve.
+
+**Ki döntött:** backend (a lelet, a mérés, a helyesbítés és a végrehajtás), MikroB (külön kártya).
+
+**Hivatkozás:** kártya `2a07f29e` (eredeti jelzés: `6b32a478` melléklelete);
+`src/web/agent-scaffold.ts`, `src/web.ts`, `src/__tests__/hook-guards-are-code-wired.test.ts`.
