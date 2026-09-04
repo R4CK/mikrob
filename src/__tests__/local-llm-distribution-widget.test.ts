@@ -113,6 +113,37 @@ describe('local-llm-distribution-widget: KPI cards', () => {
     expect(body).toContain('kpi.totalRequests')
     expect(body).toContain('kpi.errorRatePct')
   })
+
+  // Regression guard: backend's contract (card 2ffc0a96, comment 19021) makes avgLatencyMs and
+  // kpi.tokensPerSec `number | null` -- null means "not measured" (empty window, or no row had a
+  // usable eval measurement) and must never render as "0", which would read as a real
+  // zero-latency/zero-throughput reading. `|| 0` on a nullable number silently reintroduces
+  // exactly the bug the backend's own contract was written to prevent.
+  it('does NOT coerce nullable KPI fields with `|| 0` (would turn null into a fake zero)', () => {
+    const body = fnBody(APP, 'function ovwLlmDistKpiHtml(')
+    expect(body).not.toContain('kpi.avgLatencyMs || 0')
+    expect(body).not.toContain('kpi.tokensPerSec || 0')
+  })
+
+  it('routes nullable KPI fields through the OrNa helpers', () => {
+    const body = fnBody(APP, 'function ovwLlmDistKpiHtml(')
+    expect(body).toContain('ovwLlmDistFormatMsOrNa(kpi.avgLatencyMs)')
+    expect(body).toContain('ovwLlmDistFormatTpsOrNa(kpi.tokensPerSec)')
+  })
+})
+
+describe('local-llm-distribution-widget: null-safe latency/throughput formatting', () => {
+  it('ovwLlmDistFormatMsOrNa renders "—" for null, not "0 ms"', () => {
+    const body = fnBody(APP, 'function ovwLlmDistFormatMsOrNa(')
+    expect(body).toContain('ms == null')
+    expect(body).toContain("'—'")
+  })
+
+  it('ovwLlmDistFormatTpsOrNa renders "—" for null, not "0.0 t/mp"', () => {
+    const body = fnBody(APP, 'function ovwLlmDistFormatTpsOrNa(')
+    expect(body).toContain('tps == null')
+    expect(body).toContain("'—'")
+  })
 })
 
 describe('local-llm-distribution-widget: swimlane rendering', () => {
@@ -147,6 +178,16 @@ describe('local-llm-distribution-widget: swimlane rendering', () => {
     expect(legendBody).toContain('ovwLlmDistTaskColors')
     expect(legendBody).toContain('ovw-llmdist-legend-swatch')
   })
+
+  // Regression guard: per-task tokensPerSec is `number | null` (contract 2ffc0a96, comment 19021)
+  // for err/busy/legacy rows. The block must carry the already-formatted, null-safe label instead
+  // of a raw number the tooltip would coerce with `|| 0`.
+  it('carries a pre-formatted, null-safe throughput label (not a raw nullable number)', () => {
+    const body = fnBody(APP, 'function ovwLlmDistLanesHtml(')
+    expect(body).toContain('data-tps-label=')
+    expect(body).toContain('ovwLlmDistFormatTpsOrNa(task.tokensPerSec)')
+    expect(body).not.toContain('data-tps=')
+  })
 })
 
 describe('local-llm-distribution-widget: tooltip (hover + keyboard focus)', () => {
@@ -171,6 +212,12 @@ describe('local-llm-distribution-widget: tooltip (hover + keyboard focus)', () =
     const body = fnBody(APP, 'function ovwLlmDistShowTooltip(')
     expect(body).toContain('escapeHtml(task)')
     expect(body).toContain('escapeHtml(agent)')
+  })
+
+  it('reads the pre-formatted tps label from the dataset instead of recomputing from a raw number', () => {
+    const body = fnBody(APP, 'function ovwLlmDistShowTooltip(')
+    expect(body).toContain('dataset.tpsLabel')
+    expect(body).not.toContain('Number(target.dataset.tps)')
   })
 })
 
