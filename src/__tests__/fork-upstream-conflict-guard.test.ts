@@ -853,6 +853,12 @@ const ACKNOWLEDGED_CONFLICTS = {
     "the line level: 1590 keys at the merge base, the fork ADDED 516 (the outgoing-copy gate's " +
     "names.* rules UI, card 98dbbcc9, among others), upstream ADDED 27 (auth.bridge.err.*, " +
     "BRIDGEHU813 #1170), the two sets COLLIDE ON ZERO KEYS, and NEITHER SIDE REMOVED ANY. The " +
+    "CORRECTION 2026-09-04 (card 73cf0a22): that 27 is 26. The upstream hunk adds 29 lines, three " +
+    "of which are its comment header, and upstream's own commit message says 26. The union rule is " +
+    "unaffected -- it turns on the collision count, not on the size of either side -- but the figure " +
+    "is now measured rather than eyeballed. Those 26 keys are ALSO ON THE FORK SIDE as of that " +
+    "card, byte-identical to upstream's, so they are common content now, not an upstream-only " +
+    "addition waiting to be merged. " +
     "conflict is textual, not semantic: both appended at the same tail. Same shape and same " +
     "resolution as web/style.css. " +
     "OVERLAY EXTRACTION CONSIDERED AND DECLINED, which is what the guard's failure message asks for: " +
@@ -883,7 +889,8 @@ const ACKNOWLEDGED_CONFLICTS = {
     "so code-quality rule 5 makes it Peti's call. This entry only records that the merge does not " +
     "decide it by default.",
   'web/lang/hu.js':
-    "same as web/lang/en.js, measured identically (1590 base, +516 fork, +27 upstream, 0 collisions, " +
+    "same as web/lang/en.js, measured identically (1590 base, +516 fork, +27 upstream -- 26, see " +
+    "the en.js entry's 2026-09-04 correction, and both sides carry those keys now, 0 collisions, " +
     "0 removals on either side). The two locale files are edited in lockstep by both sides, so a " +
     "resolution that applied to one and not the other would leave the pair out of sync -- which the " +
     "i18n parity test would then report as a fork defect rather than as half a merge. " +
@@ -987,6 +994,22 @@ const ACKNOWLEDGED_UPSTREAM_BLOBS: Readonly<Record<keyof typeof ACKNOWLEDGED_CON
   // translation, and it has neither playwright.browser.config.ts nor tests/browser/**. So BRIDGEHU813
   // is a real, applicable adoption decision -- and it is taken on its own card, NOT folded into this
   // pin refresh. A feature adoption hidden inside a blob bump is exactly what this map exists to stop.
+  //
+  // ADOPTED 2026-09-04 on that separate card (73cf0a22), so the paragraph above is the record of what
+  // was true at the pin refresh, not a description of today. Taken: the server-side stable `code`
+  // (src/remote-enroll-core.ts, src/web/bridge-enroll.ts, src/web/routes/security.ts -- all three
+  // were byte-identical to upstream's parent, so they now equal upstream's post-image exactly and
+  // conflict on nothing), the 26 auth.bridge.err.* keys in both locales, and bridgeEnrollErrorText()
+  // into web/app-settings-auth.js, which is the slice this file's own app.js rule names.
+  //
+  // NOT taken, and this is the deliberate half: playwright.browser.config.ts, tests/browser/**, the
+  // `browser-verify` script, and the vitest.config.ts exclusion that exists only to serve them. The
+  // fleet gate (store/fleet-test.sh) runs vitest and never invokes playwright, so an adopted browser
+  // suite would be a suite nobody runs -- and an unrun suite reads as coverage while guarding
+  // nothing. The guarantee it carries upstream (that the error branch actually CALLS the translator)
+  // was NOT dropped with it: it is asserted directly in the adopted unit test, and that assertion
+  // was measured to fail when the call site is reverted. Revisit if the fleet gate grows a
+  // playwright stage.
   'web/app.js': '102cd90154b20f3064740f29f72461d686a75ab9',
   'web/style.css': 'a7fc0f2baf1989fc5ecd2cd8c78f86c6104b55da',
   'src/web/agent-taskstate.ts': '625d03282bb75b554ce23822f67cc4e51b0706c1',
