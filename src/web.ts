@@ -15,7 +15,7 @@ import { CONTENT_SECURITY_POLICY } from './web/csp.js'
 import { json } from './web/http-helpers.js'
 import { detectLanIp } from './web/network-info.js'
 import { AGENTS_BASE_DIR, listAgentNames, listAllAgentNames } from './web/agent-config.js'
-import { ensureAgentHooks, ensureAgentStalenessHook, ensureEgressGate, ensureNpmProtectGuard, ensureBlastRadiusGuard, ensurePentestToolInstallGuard, ensureSymlinkedNodeModulesGuard, ensureCdChainGuard, ensureNoisyCommandGuard, ensureGitProtectGuard, ensureTaskstateReplayMatcher, ensureGovernanceGateCommands, ensureQuarantineReader, watchEgressAllowlistForReaderRender, ensureDefaultScheduledTasks, agentSettingsPath, ensureAutonomySection, ensureSkillsPathTrapSection } from './web/agent-scaffold.js'
+import { ensureAgentHooks, ensureAgentStalenessHook, ensureEgressGate, ensureNpmProtectGuard, ensureBlastRadiusGuard, ensurePentestToolInstallGuard, ensureSymlinkedNodeModulesGuard, ensureCdChainGuard, ensureNoisyCommandGuard, ensureGitProtectGuard, ensureTaskstateReplayMatcher, ensureGovernanceGateCommands, ensureQuarantineReader, watchEgressAllowlistForReaderRender, ensureDefaultScheduledTasks, agentSettingsPath, ensureAutonomySection, ensureSkillsPathTrapSection, ensureSystemDirectiveAuthSection } from './web/agent-scaffold.js'
 import { shouldRegisterHooks, pruneStaleHooksFromSettingsFile } from './web/hook-registration-guard.js'
 import { refreshMarveenBotUsername } from './web/telegram.js'
 import { startMessageRouter } from './web/message-router.js'
@@ -31,6 +31,7 @@ import { getDb } from './db.js'
 import { startStuckInputWatcher } from './web/stuck-input-watcher.js'
 import { startInboxNudgeWatcher } from './web/inbox-nudge-watcher.js'
 import { startSelfAdvanceClearWatcher } from './web/self-advance-clear-watcher.js'
+import { startMessageBacklogWatcher } from './web/message-backlog-watcher.js'
 import { startStuckToolCallWatcher } from './web/stuck-tool-call-watcher.js'
 import { startReauthHealer } from './web/reauth-healer.js'
 import { startAutoRestartRunner } from './web/auto-restart-runner.js'
@@ -445,7 +446,12 @@ export function startWebServer(port = 3420): http.Server {
   if (!webOnly) logger.info('Inbox nudge watcher started (20s poll, 55s offset)')
 
   const selfAdvanceClearInterval = webOnly ? undefined : startSelfAdvanceClearWatcher()
+  // Card 1e7ba5c1: nothing watched GET /api/messages/backlog, so an agent could hold undelivered
+  // messages for hours with no signal anywhere (measured: 27 messages, oldest 325 minutes, session
+  // running). webOnly-gated like its neighbour -- a dashboard-only process has no router to report on.
+  const messageBacklogInterval = webOnly ? undefined : startMessageBacklogWatcher()
   if (!webOnly) logger.info('Self-advance clear watcher started (20s poll)')
+  if (!webOnly) logger.info('Message-backlog watcher started (5m poll)')
 
   const reauthHealerInterval = webOnly ? undefined : startReauthHealer()
   if (!webOnly && reauthHealerInterval) logger.info('Reauth healer started (3min poll, 90s offset)')
@@ -546,6 +552,13 @@ export function startWebServer(port = 3420): http.Server {
     ensureFederationClaudeMdSection()
     ensureAutonomySection(MAIN_AGENT_ID)
     ensureSkillsPathTrapSection(MAIN_AGENT_ID)
+    // The MAIN agent needs the directive-verification recipe MORE than a sub-agent, not less: it is
+    // the one the context-restart gate and channel-monitor send authenticated directives TO. The
+    // per-agent call lives in startAgentProcess, which the main agent never goes through -- it comes
+    // up via channels.sh -- so without this line its CLAUDE.md is the one that never gets the
+    // section. Adopted from upstream with the sibling section-writers it belongs next to (card
+    // f27c999b, B-wave).
+    ensureSystemDirectiveAuthSection(MAIN_AGENT_ID)
   }
 
   // Backfill the PreCompact hook into existing agents' settings.json so the
@@ -664,6 +677,7 @@ export function startWebServer(port = 3420): http.Server {
     clearInterval(stuckToolCallInterval)
     if (inboxNudgeInterval) clearInterval(inboxNudgeInterval)
     if (selfAdvanceClearInterval) clearInterval(selfAdvanceClearInterval)
+    if (messageBacklogInterval) clearInterval(messageBacklogInterval)
     if (reauthHealerInterval) clearInterval(reauthHealerInterval)
     clearInterval(autoRestartInterval)
     clearInterval(modelFallbackInterval)

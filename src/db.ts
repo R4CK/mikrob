@@ -1485,9 +1485,25 @@ export function saveMemory(
   topicKey?: string
 ): void {
   const now = Math.floor(Date.now() / 1000)
-  db.prepare(
+  const info = db.prepare(
     'INSERT INTO memories (chat_id, topic_key, content, sector, salience, created_at, accessed_at) VALUES (?, ?, ?, ?, 1.0, ?, ?)'
   ).run(chatId, topicKey ?? null, content, sector, now, now)
+  const id = Number(info.lastInsertRowid)
+
+  // Fire-and-forget embedding, the same shape saveAgentMemory already uses (card f27c999b,
+  // adopted from upstream). This path had none, so a row written here reached semantic search
+  // only after backfillEmbeddings() ran -- and that runs at STARTUP (index.ts), not on a timer.
+  //
+  // MEASURED before adopting, because the note that asked for this (and my own restatement of it)
+  // overstated the effect: 0 of 1509 rows on this install are unvectorised, including all 20
+  // nightly daily-log digest rows. The backfill is doing its job. What this fixes is the WINDOW,
+  // not a permanent hole: a memory written at 02:00 is unsearchable until the next restart, which
+  // can be a day away, and the guarantee currently depends on a sweep nobody schedules.
+  generateEmbedding(content).then(emb => {
+    if (emb) {
+      db.prepare('UPDATE memories SET embedding = ? WHERE id = ?').run(JSON.stringify(emb), id)
+    }
+  }).catch(() => {})
 }
 
 // Build a safe FTS5 MATCH expression from a free-form user query.
@@ -3728,6 +3744,24 @@ export function getPendingBacklogByAgent(): AgentBacklog[] {
     .map(r => ({ agent: r.agent, pending: r.pending, oldestAgeSeconds: Math.max(0, now - r.oldest) }))
     // oldest-first: whoever has been waiting longest is the one worth looking at
     .sort((a, b) => b.oldestAgeSeconds - a.oldestAgeSeconds)
+}
+
+/**
+ * Contents of the `[session-stuck]` alerts the router has already sent about stuck agents.
+ *
+ * Card 1e7ba5c1 round 2 (Cybered F1): the message-backlog watcher is a SUPPLEMENT to that alert, not
+ * a second channel -- `[session-stuck]` fires on the same phenomenon with strictly more information
+ * (it reads the pane, so it can say busy vs idle, which the queue alone cannot). Measured: 174 of
+ * them in 7 days. The backlog watcher only speaks where that one has been silent, so this is the
+ * dedup input. Returning the raw text keeps the agent-name extraction in the watcher, next to the
+ * test that pins it against the router's own formatter.
+ */
+export function recentStuckAlertContents(sinceEpochSeconds: number): string[] {
+  const rows = db.prepare(
+    `SELECT content FROM agent_messages
+      WHERE from_agent = 'system' AND created_at >= ? AND content LIKE '[session-stuck]%'`,
+  ).all(sinceEpochSeconds) as { content: string }[]
+  return rows.map(r => r.content)
 }
 
 // Close a pending backlog that is NOT going to be delivered -- stale rows an
