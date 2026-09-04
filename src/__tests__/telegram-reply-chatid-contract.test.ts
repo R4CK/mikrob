@@ -14,6 +14,7 @@
 // guards the fork-local plugin feature that the SAME CLAUDE.md recipe depends on.
 import { describe, it, expect } from 'vitest'
 import { readFileSync, existsSync, readdirSync } from 'node:fs'
+import { spawnSync } from 'node:child_process'
 import { join } from 'node:path'
 import { homedir } from 'node:os'
 
@@ -186,5 +187,45 @@ describe('the live Telegram plugin still carries the fork-local features CLAUDE.
   it('reports whether it could actually look', () => {
     if (!live) console.warn('[telegram-plugin] project-scope install path not resolvable -- fork-feature check did not run')
     expect(live === null || typeof live === 'string').toBe(true)
+  })
+})
+
+// -------------------------------------------------------------------------------------------
+// The remedy for the landmine above (card d6be510a). The guard in the previous block detects
+// that the live plugin lost `buttons`; store/telegram-buttons-patch/ puts it back. A patch
+// nobody runs is not a mechanism, and a patch whose selftest nobody runs is not a patch -- so
+// its selftest runs here, on every landing, next to the check it repairs.
+// -------------------------------------------------------------------------------------------
+describe('store/telegram-buttons-patch', () => {
+  const DIR = join(REPO_ROOT, 'store', 'telegram-buttons-patch')
+
+  it('ships the applier, its hunks and its selftest', () => {
+    for (const f of ['apply.py', 'buttons.hunks.json', 'selftest.py', 'README.md']) {
+      expect(existsSync(join(DIR, f)), `${f} missing`).toBe(true)
+    }
+  })
+
+  it('carries all four hunks, each with an anchor and a replacement', () => {
+    type Hunk = { name: string; anchor: string; replacement: string }
+    const hunks = JSON.parse(readFileSync(join(DIR, 'buttons.hunks.json'), 'utf-8')) as Hunk[]
+    expect(Array.isArray(hunks)).toBe(true)
+    expect(hunks).toHaveLength(4)
+    for (const h of hunks) {
+      expect(typeof h.name).toBe('string')
+      // A replacement must ADD something, or the hunk is a no-op that would pass silently.
+      expect(h.replacement.length).toBeGreaterThan(h.anchor.length)
+    }
+  })
+
+  it('its selftest passes', () => {
+    // exit 3 means this machine has no un-patched upstream copy to test against -- a fact about
+    // the environment, not a failure. Reported rather than swallowed.
+    const r = spawnSync('python3', [join(DIR, 'selftest.py')], { encoding: 'utf-8' })
+    if (r.status === 3) {
+      console.warn('[telegram-buttons-patch] no un-patched upstream copy here -- selftest skipped')
+      return
+    }
+    expect(r.stdout + r.stderr).toContain('All cases passed.')
+    expect(r.status).toBe(0)
   })
 })
