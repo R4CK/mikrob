@@ -280,7 +280,7 @@ const ACKNOWLEDGED_CONFLICTS = {
   // upstream adds nothing the fork lacks here.
   'src/web/routes/agents.ts':
     'keep the fork version wholesale -- it already awaits stopAgentProcess() and tracks/logs the result; upstream is an un-awaited (racy) reimplementation of the same fix' +
-    "Re-measured 2026-09-03 (backend2, card 934dc104 landing-block, 7711d18a7752..4b7a61e33448) and the rule needed SHARPENING, not just a bump. 'Keep the fork version wholesale' was written about ONE hunk (the awaited stopAgentProcess()), and read literally against today's blob it would now discard two unrelated upstream additions: MiniMax direct-API gating in /api/models/available, and the freshness/supersession annotation on the main-agent inbox-drain path (the same feature acknowledged in src/web/message-router.ts and src/db.ts). Corrected rule: at the stopAgentProcess conflict point keep the FORK side (it awaits and logs; upstream's is an un-awaited reimplementation of the same fix); everywhere else in this file the sides are additive -- keep both.",
+    "Re-measured 2026-09-03 (backend2, card 934dc104 landing-block, 7711d18a7752..4b7a61e33448) and the rule needed SHARPENING, not just a bump. 'Keep the fork version wholesale' was written about ONE hunk (the awaited stopAgentProcess()), and read literally against today's blob it would now discard an unrelated upstream addition: the freshness/supersession annotation on the main-agent inbox-drain path (the same feature acknowledged in src/web/message-router.ts and src/db.ts). Corrected rule: at the stopAgentProcess conflict point keep the FORK side (it awaits and logs; upstream's is an un-awaited reimplementation of the same fix); everywhere else in this file the sides are additive -- keep both, WITH ONE NAMED EXCEPTION: upstream's MiniMax direct-API gating in /api/models/available is NOT to be taken (Peti NO-GO, card 48565f81). An earlier version of this entry listed that gating among the additions a literal reading would wrongly discard, i.e. it argued FOR bringing it in -- corrected 2026-09-04 (card e80c011a, Cybered comment 19877), because the launcher-side exclusion is worthless if the route side walks back in through a different rule.",
   // Card 2e634e5c, re-measured 2026-09-02 (card 684dda18): the dispatch-instruction-text generator
   // hunk still resolves the same direction as before (upstream's variant tells the agent to move its
   // OWN card straight to `"status":"done"`, which contradicts fork rule 4 that a builder never
@@ -613,22 +613,36 @@ const ACKNOWLEDGED_CONFLICTS = {
   // (1) ISOLATED_CONFIG_SKIP set -- fork skips 'skills' (Peti 2026-08-03, per-agent curated skill
   //     set) and upstream separately skips 'projects' (memory-store symlink collision fix); the two
   //     rationales are orthogonal directory names, union both.
-  // (2) provider-env building -- upstream refactored the inline ollama/deepseek/openrouter
-  //     export-string building into a shared resolveProviderEnv() (agent-process.ts, tested in
-  //     agent-provider-env.test.ts). Verified line-by-line: it reproduces the fork's exact
-  //     ollama/deepseek/openrouter export strings byte-for-byte (SAME shSingleQuote sink-escaping,
-  //     card b7fa5281, cited verbatim in both), and ADDS a fourth provider (minimax, with its own
-  //     documented context-window workaround) -- net additive, safe to adopt wholesale.
-  // (3) cmd assembly -- upstream adds a `umask 002` prefix and routes the tmux call through
-  //     agentTmuxTarget(name)/startTarget instead of a bare `null` host, unlocking per-user/remote
-  //     agent hosting. Verified BOTH are no-ops for every agent as configured today:
-  //     agentTmuxTarget() returns {host:null, runAsUser:null} unless an agent's OWN config sets a
-  //     remote host or runAsUser (none do), and upstream's own doc comment states
-  //     "host=null is byte-identical to the prior direct local tmux call" -- so adopting this is
-  //     zero behavior change today and opt-in infrastructure for later, not a live architecture
-  //     switch that needs a decision now.
+  // (2) provider-env building -- ADOPTED 2026-09-04 (card e80c011a), MINUS the minimax branch.
+  //     Upstream refactored the inline ollama/deepseek/openrouter export-string building into a
+  //     shared resolveProviderEnv(). It reproduces the fork's ollama/deepseek/openrouter strings
+  //     byte-for-byte (SAME shSingleQuote sink-escaping, card b7fa5281), and that is now measured
+  //     rather than eyeballed: provider-env-adoption.test.ts reimplements the pre-refactor inline
+  //     expressions and asserts byte equality.
+  //     THE MINIMAX BRANCH IS NOT ADOPTABLE -- Peti NO-GO, card 48565f81, CLAUDE.md rule 17. This
+  //     comment used to read "net additive, safe to adopt wholesale", which is the sentence a
+  //     future merger would act on, and acting on it lands a declined feature.
+  //     WATCH THE SHAPE OF THE CONFLICT (Cybered, comment 19877): before the adoption this was one
+  //     big "new function replaces inline code" hunk -- loud, obviously a decision. Afterwards it
+  //     is TWO SMALL HUNKS that look purely additive: an `isMinimax` line in the discriminator and
+  //     an `if (isMinimax)` block. The natural reflex on those is union, and union is WRONG here.
+  //     The exclusion is pinned behaviourally and at source level in provider-env-adoption.test.ts,
+  //     but a red test loses an argument with a written rule, which is why this prose had to change
+  //     too.
+  // (3) cmd assembly -- NOT ADOPTED. MikroB decision 2026-09-04 (cards bd450735 / e80c011a).
+  //     Upstream adds a `umask 002` prefix and routes the tmux call through agentTmuxTarget(name)
+  //     instead of a bare `null` host. This comment used to call both "no-ops for every agent as
+  //     configured today ... not a live architecture switch that needs a decision now". The OUTPUT
+  //     is a no-op; the DEPENDENCIES are a feature, and that distinction is the whole point.
+  //     Measured: it needs readAgentRunAsUser(), a 5th runAsUser parameter plus a sudo branch in
+  //     buildTmuxInvocation (ssh-tmux.ts), sessionRunAsUserMap() with a TTL cache,
+  //     runAsUserForTmuxArgs(), resolveTarget(), a HOST-LEVEL SUDOERS RULE (upstream says so in its
+  //     own comment), and generalising 23 runTmux( call sites in the fleet's most startup-critical
+  //     file -- while the fork has NO runAsUser consumer at all (the word appears nowhere in src/).
+  //     umask 002 is dead without it: it fires only when runAsUser is set. Per-agent OS-user
+  //     isolation is its OWN card with its own plan-grilling if the fleet ever wants it.
   'src/web/agent-process.ts':
-    'union all three: (1) ISOLATED_CONFIG_SKIP keeps BOTH \'skills\' (fork) and \'projects\' (upstream) entries; (2) adopt upstream\'s resolveProviderEnv() refactor wholesale (verified byte-identical output for ollama/deepseek/openrouter incl. the b7fa5281 shSingleQuote fix, plus adds minimax); (3) adopt upstream\'s umask 002 + agentTmuxTarget(name)/startTarget cmd-assembly change wholesale (verified no-op for any agent without remote/runAsUser config, per upstream\'s own "byte-identical to the prior direct local tmux call" doc comment) -- the fork\'s *Unlocked/withLifecycleLock split (card 74ba7c78) is UNRELATED to this hunk set and already correctly merged, do not touch it (4) Re-read 2026-09-03 (card 3bd18e70, blob 4c439228): the agent-scaffold import line now conflicts too -- union the fork ensureLocalFirstSection with upstream ensureSystemDirectiveAuthSection (GUARDHITELES903) on one line; the ensureSystemDirectiveAuthSection(name) call in startAgentProcess auto-merges (additive).' +
+    'union all three: (1) ISOLATED_CONFIG_SKIP keeps BOTH \'skills\' (fork) and \'projects\' (upstream) entries; (2) ADOPTED 2026-09-04 (card e80c011a): upstream\'s resolveProviderEnv() refactor, MINUS the minimax branch. Byte-identical output for claude/ollama/deepseek/openrouter incl. the b7fa5281 shSingleQuote fix, measured -- provider-env-adoption.test.ts reimplements the pre-refactor inline expressions and asserts byte equality. THE MINIMAX BRANCH IS NOT ADOPTABLE (Peti NO-GO, card 48565f81, CLAUDE.md rule 17); the exclusion is pinned behaviourally AND at source level so an upstream sync cannot bring it back quietly. After the adoption the remaining conflict is two SMALL hunks that look purely additive (an isMinimax discriminator line and an if(isMinimax) block) -- do NOT union them, that is the declined feature arriving by reflex; (3) DO NOT adopt upstream\'s umask 002 + agentTmuxTarget(name)/startTarget change. MikroB decision 2026-09-04 (cards bd450735/e80c011a). The OUTPUT is a no-op, the DEPENDENCIES are a feature: readAgentRunAsUser(), a 5th runAsUser parameter plus a sudo branch in buildTmuxInvocation, sessionRunAsUserMap(), runAsUserForTmuxArgs(), resolveTarget(), a HOST-LEVEL SUDOERS RULE, and 23 runTmux( call sites -- with NO runAsUser consumer in the fork. umask 002 is dead without it. Own card, own plan-grilling, if ever -- the fork\'s *Unlocked/withLifecycleLock split (card 74ba7c78) is UNRELATED to this hunk set and already correctly merged, do not touch it (4) Re-read 2026-09-03 (card 3bd18e70, blob 4c439228): the agent-scaffold import line now conflicts too -- union the fork ensureLocalFirstSection with upstream ensureSystemDirectiveAuthSection (GUARDHITELES903) on one line; the ensureSystemDirectiveAuthSection(name) call in startAgentProcess auto-merges (additive).' +
     "Re-measured 2026-09-03 (backend2, card 934dc104 landing-block, 4c43922809b2..45e20624c63f): upstream replaced the identity slash command `/name` with `/rename` (identitySlashCommands + three comments + two log messages), because `/name` does not exist and the rejected line sits parked in the input box, which the router then reads as busy. Untouched: ISOLATED_CONFIG_SKIP, resolveProviderEnv(), the umask/agentTmuxTarget assembly and the agent-scaffold import line -- i.e. every point this rule decides. Resolution unchanged; blob bumped.",
   // Upstream adds a re-entrancy guard (`tickRunning`) around the sweep, for the exact reason the
   // fork ALSO has: once checkAgent awaits a real restart instead of a blocking execSync('sleep N')

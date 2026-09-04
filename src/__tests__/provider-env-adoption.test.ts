@@ -90,6 +90,49 @@ describe('resolveProviderEnv adoption is a no-op (card e80c011a)', () => {
   })
 })
 
+describe('the RULE TEXT stays out too (Cybered, comment 19877)', () => {
+  // Cybered's finding, and it is the sharp half of this card: the code pin above is not enough.
+  // At merge time the authority a human acts on is the WRITTEN RULE in the conflict guard, not a
+  // red test -- "a red test loses an argument with a written rule". Worse, adopting the refactor
+  // SHRANK the decision point it depends on: before, upstream's change was one big "new function
+  // replaces inline code" hunk, obviously a decision; after, it is two small hunks that look purely
+  // additive (an isMinimax discriminator line, an if(isMinimax) block), and the reflex on those is
+  // union. So the prose that says "union" had to change, and now it is pinned.
+  const RULES = readFileSync(join(REPO_ROOT, 'src/__tests__/fork-upstream-conflict-guard.test.ts'), 'utf-8')
+
+  it('no rule tells a future merger that adopting minimax is safe', () => {
+    // Matched with the surrounding words that made them INSTRUCTIONS. Both sentences survive in the
+    // file as explicitly refuted history ("this comment used to read ..."), which is more useful
+    // than deleting them -- but neither may stand as current guidance again.
+    expect(RULES).not.toMatch(/adds a fourth provider[\s\S]{0,120}safe to adopt wholesale/i)
+    expect(RULES).not.toMatch(/resolveProviderEnv\(\) refactor wholesale[^"]{0,200}plus adds minimax/i)
+  })
+
+  it('the rule says the minimax branch is NOT adoptable, and names the NO-GO', () => {
+    expect(RULES).toContain('THE MINIMAX BRANCH IS NOT ADOPTABLE')
+    expect(RULES).toContain('48565f81')
+  })
+
+  it('the rule warns that the remaining conflict LOOKS additive -- union is the wrong reflex', () => {
+    // Without this the next merger sees two innocent hunks and no reason to hesitate.
+    expect(RULES).toMatch(/do NOT union them|union is WRONG here/)
+  })
+
+  it('the SECOND door is shut: the routes/agents.ts rule no longer argues for MiniMax gating', () => {
+    // routes/agents.ts said a literal reading would "wrongly discard" upstream's MiniMax gating in
+    // /api/models/available -- i.e. it argued FOR bringing it in. The launcher-side exclusion is
+    // worthless if the route side walks back in through a different rule.
+    expect(RULES).not.toMatch(/wrongly discard[\s\S]{0,80}MiniMax direct-API gating/i)
+    expect(RULES).not.toMatch(/discard two unrelated upstream additions: MiniMax/i)
+    expect(RULES).toContain('WITH ONE NAMED EXCEPTION')
+  })
+
+  it('the runAsUser half is recorded as NOT adopted, not as a verified no-op', () => {
+    expect(RULES).toMatch(/DO NOT adopt upstream\\?'s umask 002/)
+    expect(RULES).not.toMatch(/adopt upstream\\?'s umask 002[\s\S]{0,80}wholesale \(verified no-op/)
+  })
+})
+
 describe('MiniMax stays out (Peti NO-GO, card 48565f81)', () => {
   it('a minimax- model does NOT get a minimax provider chain', () => {
     // Without a `minimax-` branch it falls through the discriminator to ollama, exactly as it did
