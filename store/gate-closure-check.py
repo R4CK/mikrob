@@ -205,7 +205,7 @@ def latest_per_gate(comments):
     Deliberately not "the highest id" or a timestamp: the caller hands us the list the API returned,
     and re-sorting it here would invent an ordering the board never promised.
     """
-    latest, latest_by_role = {}, {}
+    latest, latest_by_role, latest_by_author = {}, {}, {}
     for c in comments:
         c = c or {}
         v = verdict_of(c.get("content"))
@@ -214,6 +214,7 @@ def latest_per_gate(comments):
         latest[v[0]] = v
         if author_role(c.get("author")) == v[0]:
             latest_by_role[v[0]] = v
+        latest_by_author[(v[0], (c.get("author") or "").strip().lower())] = v
 
     # AN UNATTRIBUTABLE PASS IS NOT A PASS; AN UNATTRIBUTABLE REFUSAL IS STILL A REFUSAL.
     #
@@ -231,6 +232,34 @@ def latest_per_gate(comments):
             continue
         if gate in latest_by_role:
             latest[gate] = latest_by_role[gate]
+
+    # A STANDING REFUSAL FROM A SIBLING IS STILL A REFUSAL (card c52e2823).
+    #
+    # A role may be staffed by two agents, and the dict above keys on the ROLE, so within one role
+    # the LAST comment won whoever wrote it. Measured on this file as it stood: `QA FAIL` followed by
+    # `QA2 PASS` on the SAME sha answered AGREE, and rule 4a's closure step reads AGREE as "safe to
+    # close" -- a card could close over a stated refusal, which is the direction this whole tool
+    # exists to prevent. The control that proves the harness was not simply blind: a lone `QA FAIL`
+    # answered FAILED all along.
+    #
+    # This is the asymmetry two comments up, one dimension over. There it was about WHO wrote the
+    # verdict; here it is about WHICH of two siblings did. Same rule: a refusal stands, and only a
+    # PASS may be superseded.
+    #
+    # SUPERSEDED BY A NEW SHA, NOT BY A SIBLING. A refusal only blocks when it concerns the same
+    # commit the passing verdict names -- the ordinary flow (qa fails sha X, the builder fixes it,
+    # qa2 delta-gates sha Y and passes) must not be blocked by a refusal about code that is gone.
+    # A refusal naming NO sha does block, because "an unattributable refusal is still a refusal"
+    # cannot mean anything else here.
+    for gate, v in list(latest.items()):
+        if v[1] not in PASSING:
+            continue
+        for (g, _who), fv in latest_by_author.items():
+            if g != gate or fv[1] in PASSING:
+                continue
+            if fv[2] is None or (v[2] is not None and shas_agree(v[2], fv[2])):
+                latest[gate] = fv
+                break
     return latest
 
 

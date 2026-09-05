@@ -364,6 +364,26 @@ case("a sibling PASS after the other sibling's FAIL is a re-review, and closes",
 case("a sibling FAIL after the other sibling's PASS still refuses the closure",
      [c("qa2", "QA2 PASS\nGate-SHA: bbbb2222"), c("qa", "QA FAIL\nGate-SHA: bbbb2222"),
       c("cybersec", S % "bbbb2222")], "FAILED", "qa,cybersec")
+# ...and the case NEITHER of the two above covers, which was AGREE until card c52e2823 measured it:
+# the sibling PASS comes last on the SAME sha. "Re-review" is what makes the different-sha case safe
+# -- there the refusal is about code that is gone. On ONE sha there is nothing to re-review: two gate
+# agents simply disagree about the same commit, and rule 4a reads AGREE as "safe to close".
+case("a sibling PASS on the SAME sha does not bury the other sibling's FAIL",
+     [c("qa", "QA FAIL\nGate-SHA: bbbb2222"), c("qa2", "QA2 PASS\nGate-SHA: bbbb2222"),
+      c("cybersec", S % "bbbb2222")], "FAILED", "qa,cybersec")
+# A refusal that names no commit cannot be shown to be superseded, and this file already says an
+# unattributable refusal is still a refusal. Fail-closed is the only reading available.
+case("a refusal with NO Gate-SHA is not superseded by a sibling's PASS either",
+     [c("qa", "QA FAIL\nthe fixture carries no sha"), c("qa2", "QA2 PASS\nGate-SHA: bbbb2222"),
+      c("cybersec", S % "bbbb2222")], "FAILED", "qa,cybersec")
+# CONTROL. Measured, so it says what it actually catches rather than what it sounds like: this case
+# goes red when standing refusals are keyed by the ROLE instead of by the AUTHOR -- the shape where a
+# gate can never clear its own FAIL and every self-correction refuses forever. The OTHER over-block
+# ("block every standing refusal, sha be damned") is caught by the different-sha re-review case
+# above, not by this one. Two mutations, two different cases; neither covers both.
+case("CONTROL: a gate that re-checks ITSELF on the same sha still closes",
+     [c("qa", "QA FAIL\nGate-SHA: bbbb2222"), c("qa", "QA PASS\nGate-SHA: bbbb2222"),
+      c("cybersec", S % "bbbb2222")], "AGREE", "qa,cybersec")
 case("the siblings are ONE gate: qa2 alone does not satisfy a designated cybersec",
      [c("qa2", "QA2 PASS\nGate-SHA: bbbb2222")], "MISSING", "qa,cybersec")
 # Future siblings are recognised by shape rather than by an enumerated list, so CYBERSEC2/CYBERED2
