@@ -60,15 +60,23 @@ try_append_union() {
   esac
 
   local ours_added theirs_added
-  ours_added="${ours#"$base"}"
-  theirs_added="${theirs#"$base"}"
+  # OFFSET, not pattern-strip. `${ours#"$base"}` is O(n^2) in bash and froze every landing that
+  # touched this file: measured on the real 447 KB DECISIONS.md it took 405 SECONDS at 97% CPU
+  # (32 KB 1.9s, 64 KB 8.0s, 128 KB 32.2s, 256 KB 138s -- ~4x per doubling), and fullstack lost
+  # ~25 minutes of a landing to it before the cause was found (card d56786a7).
+  #
+  # The `case` above has ALREADY proved that base is a literal prefix of both sides, so there is
+  # nothing left to match: skipping ${#base} characters is the same answer by construction, and
+  # measured identical at every size above. 0.010s on the same 447 KB input.
+  ours_added="${ours:${#base}}"
+  theirs_added="${theirs:${#base}}"
   # Both sides must have actually ADDED something. If one side is byte-identical to base, git would
   # not have conflicted this file in the first place -- reaching here with an empty added-half means
   # some assumption above is wrong, so fall through to the refusal rather than guess.
   [ -n "$ours_added" ] && [ -n "$theirs_added" ] || return 1
 
   # LINE-BOUNDARY, not just a string prefix (caught by this file's own selftest before landing):
-  # bash's `${var#pattern}` prefix strip is byte-based, so "## entry A" is a "prefix" of both
+  # the prefix test above is a plain string prefix, so "## entry A" is a "prefix" of both
   # "## entry A" (unchanged) AND "## entry A (CORRECTED)" -- the latter is an EDIT of the base's own
   # last line, not a new line appended after it, and the string-prefix check alone cannot tell them
   # apart. Requiring the added half to itself START WITH A NEWLINE closes that: a genuine append
@@ -276,6 +284,39 @@ if [ "${BASH_SOURCE[0]}" = "${0}" ] && [ "${1:-}" = "--selftest" ]; then
     t_refused "one side identical to base (git still conflicted it) -- refused, not guessed at"
   else
     echo "  ok   one side identical to base -- git fast-forwarded it, never reached try_append_union"
+  fi
+
+  # REALISTIC SIZE, on a clock (card d56786a7). Every case above runs on a few hundred bytes, so
+  # every one of them passed just as happily with the O(n^2) `${ours#"$base"}` strip that froze
+  # real landings for minutes -- correctness cases cannot see a complexity bug, only size can.
+  #
+  # This is a wall-clock budget, which is normally a flaky thing to assert. It is safe HERE only
+  # because the gap is absurd rather than marginal: measured on this input, pattern-strip took
+  # 138s and the offset form 0.007s, ~20000x. A 60s budget is four orders of magnitude above the
+  # fixed version and still less than half the broken one, so machine load cannot flip it. Do not
+  # copy this pattern where the margin is tight -- that is a different card (3208a968).
+  big_base=""
+  for _ in $(seq 1 4000); do
+    big_base+="## 2026-01-01 -- padding entry to reach a realistic file size
+some body text on the following line
+"
+  done
+  setup_conflict big-append "$big_base" \
+    "${big_base}## 2026-01-02 -- entry B (left)
+" \
+    "${big_base}## 2026-01-03 -- entry C (right)
+"
+  perf_start=$(date +%s)
+  t_resolved "a REALISTIC-SIZE file ($(printf '%s' "$big_base" | wc -c) bytes) unions without freezing" \
+    "${big_base}## 2026-01-02 -- entry B (left)
+## 2026-01-03 -- entry C (right)
+"
+  perf_elapsed=$(( $(date +%s) - perf_start ))
+  if [ "$perf_elapsed" -gt 60 ]; then
+    echo "  FAIL the realistic-size union took ${perf_elapsed}s (budget 60s) -- the O(n^2) prefix strip is back"
+    fail=1
+  else
+    echo "  ok   ...and it took ${perf_elapsed}s, well inside the 60s budget"
   fi
 
   echo "selftest: $([ $fail -eq 0 ] && echo PASS || echo FAIL)"

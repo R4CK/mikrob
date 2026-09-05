@@ -30,8 +30,30 @@
 set -euo pipefail
 
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+
+# STATE_DIR vs HERE (card b536501e). HERE is where this FILE lives; STATE_DIR is where the RUNNING
+# INSTALL's dashboard state lives. They are the same in the install and different in every agent
+# worktree, which is the whole point -- see store/local-llm-state-dir.sh for the defect this closes.
+# Everything the dashboard WRITES is read from STATE_DIR; everything version-controlled that travels
+# with the code stays on HERE.
+if [ -r "$HERE/local-llm-state-dir.sh" ]; then
+  # shellcheck source=/dev/null
+  . "$HERE/local-llm-state-dir.sh"
+  # NOT `$(resolve ...)`: command substitution is a subshell, and the origin the resolver sets there
+  # would not survive it -- announce() keys on that origin, so it would warn on every call.
+  resolve_local_llm_state_dir "$HERE"
+  STATE_DIR="$LOCAL_LLM_STATE_RESOLVED"
+  announce_local_llm_state_dir "local-llm" "$HERE" "$STATE_DIR"
+else
+  # Missing helper is not a reason to go quiet: without it the kill switch below reads this copy's
+  # own directory, which in a worktree holds nothing.
+  STATE_DIR="$HERE"
+  echo "local-llm: WARNING -- $HERE/local-llm-state-dir.sh is missing, falling back to $HERE for dashboard state; switches may NOT be in force for this call." >&2
+fi
+
 OLLAMA_HOST="${OLLAMA_HOST:-http://127.0.0.1:11434}"
-MODEL_FILE="$HERE/local-llm-model"
+# Dashboard-written (routes/local-llm.ts atomically writes it) -> STATE_DIR.
+MODEL_FILE="$STATE_DIR/local-llm-model"
 SKILL_DIR="$HERE/local-llm-skills"
 TIMEOUT="${LOCAL_LLM_TIMEOUT:-120}"
 # GPU-concurrency guard (card 2026-08-03, Peti driver-update follow-up): the WSL2 GPU-passthrough
@@ -47,7 +69,7 @@ GPU_LOCK_WAIT="${LOCAL_LLM_LOCK_WAIT:-600}"
 # --queue-managed): a worker-claimed call already has a real running row from claimNext(), so
 # self-registering here would double-count the same unit of work.
 DASH_API="http://127.0.0.1:${WEB_PORT:-3420}/api/local-llm/queue"
-DASH_TOKEN_FILE="${LOCAL_LLM_DASH_TOKEN_FILE:-$HERE/.dashboard-token}"
+DASH_TOKEN_FILE="${LOCAL_LLM_DASH_TOKEN_FILE:-$STATE_DIR/.dashboard-token}"
 
 # --- host-platform detection (card b097b578) -----------------------------------------------------
 # The Ollama HTTP API is identical on every platform, so ONLY the operator-facing "how do I start it"
@@ -105,7 +127,11 @@ ollama_up() { curl -fsS -m 5 "$OLLAMA_HOST/api/tags" >/dev/null 2>&1; }
 
 # Usage metering (fail-open, metadata only -- NEVER the prompt/content).
 # One TSV line per real model invocation: epoch \t caller \t task \t model \t ms \t status
-USAGE_LOG="$HERE/local-llm-usage.log"
+# STATE_DIR, not HERE: the dashboard reads this file from the INSTALL store (routes/local-llm.ts
+# USAGE_FILE), so a worktree copy writing beside itself would keep its calls out of the usage and
+# metering views entirely -- the same install-owned-data-resolved-script-relative class as the
+# kill switch above, with a metrics consequence instead of a security one.
+USAGE_LOG="$STATE_DIR/local-llm-usage.log"
 log_usage() { # $1=status(ok|err|busy)  $2=elapsed_ms  $3=eval_count  $4=prompt_eval_count  $5=eval_duration_ms
   # Strip TAB/NEWLINE from free-text fields so a caller/task/source value can never
   # inject extra TSV columns or fake rows (metric-integrity hardening; Cybersec LOW).
@@ -189,7 +215,7 @@ fi
 # file that exists but cannot be parsed is state we cannot determine, so it also routes online, loudly
 # -- naming the file, because the only way to produce one is to hand-edit it (the API writes atomically).
 model_switch_state() {
-  MODEL="$1" CFG="$HERE/local-llm-model-disabled.json" python3 -c '
+  MODEL="$1" CFG="$STATE_DIR/local-llm-model-disabled.json" python3 -c '
 import json, os
 name = os.environ["MODEL"]
 canon = name if ":" in name else name + ":latest"
@@ -216,7 +242,7 @@ if [[ "$MODE" == "generate" ]]; then
       echo "local-llm: model '$MODEL' is DISABLED from the dashboard (Lokális LLM -> a modell sorának kapcsolója) -- this call belongs online. Enable it there, or pass --model with an enabled model." >&2
       exit 9 ;;
     UNREADABLE)
-      echo "local-llm: cannot read $HERE/local-llm-model-disabled.json, so it is unknown whether '$MODEL' is disabled -- routing this call online. Fix or delete that file." >&2
+      echo "local-llm: cannot read $STATE_DIR/local-llm-model-disabled.json, so it is unknown whether '$MODEL' is disabled -- routing this call online. Fix or delete that file." >&2
       exit 9 ;;
   esac
 fi
@@ -275,7 +301,7 @@ if [[ -n "$TASK" ]]; then
   # config fails OPEN (treat as enabled) so a config hiccup never silently blocks all offload --
   # the toggle is an opt-out, not a fail-closed gate. Exit 9 matches local-llm-rag.sh's --auto
   # "ROUTE=online" code: to a caller, a disabled category is the same signal as "do this online".
-  DISABLED_CHECK="$(TASK="$TASK" CFG="$HERE/local-llm-offload-active.json" python3 -c '
+  DISABLED_CHECK="$(TASK="$TASK" CFG="$STATE_DIR/local-llm-offload-active.json" python3 -c '
 import json, os
 task = os.environ["TASK"]
 try:

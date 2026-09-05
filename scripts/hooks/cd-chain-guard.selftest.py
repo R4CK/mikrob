@@ -85,6 +85,173 @@ CASES = [
     ('cd /home/neon/wt && grep -rn "x" .', ALLOW,
      "CD_CHAIN_GUARD=off disables the guard entirely"),  # env applied below
 
+    # --- FIELD REGRESSION 1: a read command with NO file operand cannot wedge ------------------
+    # Found by the guard blocking its own author minutes after it landed. The right-hand side of a
+    # pipe reads stdin: there is no directory to determine, so the permission prompt this guard
+    # exists to prevent can never appear. Blocking these is pure nuisance, fleet-wide.
+    ("cd /home/neon/wt && git merge origin/develop 2>&1 | tail -2", ALLOW,
+     "tail on a PIPE has no file operand -- nothing for the engine to resolve"),
+    ("cd /home/neon/wt && ls | head -5", ALLOW, "head on a pipe, same reason"),
+    ("cd /home/neon/wt && echo hi | cat", ALLOW, "cat on a pipe, same reason"),
+    ("cd /home/neon/wt && wc -l < file", ALLOW, "wc is out of scope anyway"),
+
+    # --- FIELD REGRESSION 2: the wedge shape as an ARGUMENT is data, not a command -------------
+    # Quoted literals were not stripped, so `&&` and `|` INSIDE a string split into segments and
+    # tripped the guard on text that is never executed. noisy-command-guard.py strips them for
+    # exactly this reason; this guard shipped without it.
+    ('cd /home/neon/wt && echo "cd /x && grep -rn z ."', ALLOW,
+     "a wedge shape inside a double-quoted argument is data"),
+    ("cd /home/neon/wt && python3 -c \"print('cd /x && cat y')\"", ALLOW,
+     "a wedge shape inside a python -c body is data"),
+
+    # --- the operand rule must not weaken the real cases ---------------------------------------
+    ('cd /home/neon/wt && grep -r "x"', BLOCK,
+     "recursive with NO path still walks the cwd, so operand count says nothing"),
+    ('cd /home/neon/wt && grep -e "x" file.ts', BLOCK,
+     "-e moves the pattern off the operand list, so the first operand IS a path"),
+
+    # --- CYBERSEC NO-GO on 7705585d: recursive grep with NO path operand ----------------------
+    # The operand rule reopened the guard's whole reason for existing, in its commonest spelling:
+    # the recursion detector only matched `r`/`R` as the LAST letter of the flag cluster, so `-nr`
+    # counted and `-rn` did not. Every `-rn` case already in this file carried a trailing `.`, so
+    # the operand rule rescued them and the hole was invisible. These four have NO path on purpose.
+    ("cd /home/neon/wt && grep -rn foo", BLOCK,
+     "recursive grep walks the CWD with no path -- the commonest spelling of the wedge"),
+    ("cd /home/neon/wt && grep -rni foo", BLOCK, "r in the middle of the cluster"),
+    ("cd /home/neon/wt && grep -Rn foo", BLOCK, "capital R, first in the cluster"),
+    ('cd /home/neon/wt && grep -rn --include="*.ts" foo', BLOCK,
+     "LITERALLY the shape that wedged four fleet panes -- --include is a flag, not a path"),
+
+    # --- the scoping control: -r on sed/awk is EXTENDED REGEX, not recursion -------------------
+    # Without scoping, widening the recursion match would turn every `sed -nr`/`awk` on a pipe into
+    # a false positive. This pair pins both directions.
+    ('cd /home/neon/wt && sed -nr "s/x/y/p"', ALLOW,
+     "sed -r is extended regex; no path operand, reads stdin, walks nothing"),
+    ('cd /home/neon/wt && sed -nr "s/x/y/p" src/file.ts', BLOCK,
+     "...but the same sed WITH a file operand still resolves against the cd"),
+
+    # --- CYBERSEC (card 26863263): rg/ag/ack recurse with NO flag at all -----------------------
+    # Their default IS the recursion, so a flag-based test has nothing to match and the operand
+    # rule sees a single operand (the pattern). All four were BLOCK on the original guard and
+    # PASSED from the operand rule onwards.
+    ("cd /home/neon/wt && rg foo", BLOCK, "ripgrep recurses by default -- no -r needed"),
+    ("cd /home/neon/wt && rg -n foo", BLOCK, "a non-recursive flag changes nothing about the default"),
+    ("cd /home/neon/wt && ag foo", BLOCK, "the silver searcher, same default"),
+    ("cd /home/neon/wt && ack foo", BLOCK, "ack, same default"),
+    # Non-weakening control: an absolute path still anchors them, exactly as for grep.
+    ("cd /home/neon/wt && rg foo /home/neon/wt/src", ALLOW,
+     "an absolute path anchors the search -- the engine can resolve THAT"),
+    ("rg foo src", ALLOW, "no cd at all: nothing for this guard to say"),
+
+    # --- QA FAIL on 57bb35a8: a "$(...)" inside DOUBLE quotes is EXECUTED ---------------------
+    # Blanking a double-quoted span wholesale removed the substitution AND the `$(` the segmenter
+    # splits on, so the relative-path read inside it disappeared before it could be seen. The
+    # unquoted form blocked correctly -- the wrong way round, since the quoted form is the one
+    # shellcheck asks for and the one the fleet's own token idiom uses.
+    ('cd /home/neon/wt && printf "%s" "$(cat relative/file.txt)"', BLOCK,
+     'a command substitution inside DOUBLE quotes still runs -- and reads a relative path'),
+    ('cd /home/neon/wt && printf %s $(cat relative/file.txt)', BLOCK,
+     'the unquoted form of the same thing (was already correct; pinned so the pair cannot diverge)'),
+    ('cd /home/neon/wt && printf "%s" "`cat relative/file.txt`"', BLOCK,
+     'backticks are a command substitution too'),
+    ("""cd /home/neon/wt && printf 'Authorization: Bearer %s\\n' "$(cat store/.dashboard-token)" | curl -H @- -s http://x/y""", BLOCK,
+     "the fleet's own token idiom, with a RELATIVE store path, after a cd"),
+
+    # ...and the inert cases must stay inert: SINGLE quotes never execute, and a double-quoted
+    # span with no substitution in it is still just text.
+    ("cd /home/neon/wt && printf '%s' 'cd /x && cat y'", ALLOW,
+     'single quotes are fully literal -- nothing in them ever runs'),
+    # THE CASE THAT MAKES THE SINGLE/DOUBLE DISTINCTION LOAD-BEARING. Without it, treating single
+    # quotes like double changes no verdict in this file and the mutation passes -- measured, the
+    # first version of this suite had exactly that hole. In bash `'$(cat x)'` is TEXT: the
+    # substitution does not run, so blocking it would be a false positive.
+    ("cd /home/neon/wt && printf '%s' '$(cat relative/file.txt)'", ALLOW,
+     'a command substitution inside SINGLE quotes is literal text -- bash never runs it'),
+    ('cd /home/neon/wt && printf "%s" "$(cat /home/neon/wt/abs.txt)"', ALLOW,
+     'an ABSOLUTE path inside the substitution anchors it, exactly as anywhere else'),
+
+    # --- NESTED command substitution (card 5bee4b22, QA MEDIUM on 9c664b88) ---------------------
+    # Two independent defects met here, and only the SECOND one is what QA's repro exercised.
+    #
+    # (1) The extractor was the regex `\$\([^)]*\)`, which stops at the first `)`. A regex cannot
+    #     count parentheses, so nesting was never going to work. It kept the MATCH and threw away
+    #     the rest of the quoted span.
+    # (2) The segmenter splits on `$(`, so a word whose operand STARTS with a substitution is cut
+    #     in half and the read command is left holding nothing.
+    ('cd /home/neon/wt && printf "%s" "$(cat $(echo relative)/file.txt)"', BLOCK,
+     "QA's repro: the operand `$(echo relative)/file.txt` is real, just unresolvable -- and an "
+     "unresolvable operand is not an absolute path"),
+    ('cd /home/neon/wt && printf "%s" "$(foo $(bar) && cat relative/f)"', BLOCK,
+     'the other face of the truncation: `cat relative/f` vanished ENTIRELY before anything looked '
+     'at it (defect 1 alone, no operand trickery)'),
+
+    # cd to a command substitution, in all three spellings. The quoted one is the reason this
+    # block exists twice: my first fix appended the synthetic operand as a SEPARATE token, which
+    # broke `_CD_RX`'s `\s*$` anchor and took this exact case from BLOCK to pass -- a real wedge
+    # shape lost while fixing a narrower one. Same trap as the previous round, where the quoted
+    # `"$(...)"` was the spelling that regressed.
+    ('cd $(git rev-parse --show-toplevel) && grep -rn x .', BLOCK,
+     'cd to an unresolvable target, then a relative recursive grep -- the wedge, bare spelling'),
+    ('cd "$(git rev-parse --show-toplevel)" && grep -rn x .', BLOCK,
+     'the DOUBLE-QUOTED spelling shellcheck asks for -- pinned because a fix for the bare form '
+     'silently broke it once'),
+    ('cd `git rev-parse --show-toplevel` && grep -rn x .', BLOCK,
+     'the backtick spelling of the same thing'),
+
+    # ...but a substitution that IS the cd's own target runs BEFORE the cd, so the cd cannot be
+    # what it resolves against. This is a REAL line from this repo (install-token-push-guard-hook.sh),
+    # found by sweeping 16221 command lines out of the fleet's own shell scripts rather than by
+    # imagining what someone might type.
+    ('ROOT="$(cd "$(git rev-parse --git-common-dir)/.." && pwd)"', ALLOW,
+     "the `$(cd \"$(...)\" && pwd)` root-resolving idiom: the git read runs before the cd, not after"),
+    # A pair worth keeping side by side. I wrote the first one as an ALLOW case and it failed --
+    # correctly, because I was wrong: `$(echo x)/home/neon/wt/abs.txt` expands to
+    # `x/home/neon/wt/abs.txt`, which is RELATIVE. A leading `/` further along the word does not
+    # make a path absolute when a substitution comes before it.
+    ('cd /home/neon/wt && printf "%s" "$(cat $(echo x)/home/neon/wt/abs.txt)"', BLOCK,
+     'looks absolute, is not: the substitution comes FIRST, so the whole word is relative'),
+    ('cd /home/neon/wt && printf "%s" "$(cat /home/neon/wt/$(echo abs).txt)"', ALLOW,
+     '...and genuinely absolute still anchors it, substitution or not -- the `/` is in front'),
+
+    # --- a QUOTED literal paren INSIDE a kept substitution (card 5bee4b22, QA FAIL) -------------
+    # Cybersec raised these on the previous round and I missed them: they sat in a card COMMENT
+    # rather than the description, and I read only the description.
+    #
+    # Balanced extraction was never at fault -- `_close_paren` steps over the quoted paren
+    # correctly and the whole substitution survives intact. The KEPT text was then split a SECOND
+    # time by a quote-BLIND segmenter, which read the literal `)` as a paren boundary and stranded
+    # grep's operand in a different segment:
+    #     seg  grep -c '     depth=1   <- grep, holding no path
+    #     seg  ' rel/f       depth=0   <- its operand, somewhere else entirely
+    # grep is pattern-first and needs two operands; it could see neither.
+    ('cd /home/neon/wt && echo "$(grep -c \')\' rel/f)"', BLOCK,
+     "a quoted literal paren inside the substitution must not end the grep's segment"),
+    ('cd /home/neon/wt && echo "$(sed -n \'s/(x)/y/p\' rel/f)"', BLOCK,
+     "the same with a sed expression, which splits into three pieces instead of two"),
+    ('cd /home/neon/wt && echo "$(grep -c \'|\' rel/f)"', BLOCK,
+     "a quoted PIPE is not a command separator either -- same blindness, different delimiter"),
+
+    # The top-level spelling always worked, and that is exactly why the bug above stayed invisible:
+    # _strip_quoted_literals blanks a top-level '...' BEFORE segmentation, so no literal paren ever
+    # reached it there. Pinned so the two phases cannot drift apart again.
+    ("cd /home/neon/wt && grep -c ')' relative/f", BLOCK,
+     "the same shape at TOP level -- handled all along, now by the same rule as the nested one"),
+
+    ('cd /home/neon/wt && echo "$(grep -c \')\' /home/neon/wt/f)"', ALLOW,
+     "...and an absolute path inside that same shape still anchors it"),
+
+    # ...and the same class with DOUBLE quotes, which I found while fixing the single-quote one.
+    # `$( )` RESTARTS quoting inside itself, so these are valid bash -- checked against bash, they
+    # print a count -- and they read a relative path after a cd. The old `_QUOTED_RX` looked for
+    # the closing `"` without knowing that, and matched `"$(grep -c "` as the span, so the boundary
+    # was wrong before anything looked inside.
+    ('cd /home/neon/wt && echo "$(grep -c "|" rel/f)"', BLOCK,
+     "a quoted delimiter inside a nested DOUBLE-quoted word, valid bash, relative read"),
+    ('cd /home/neon/wt && echo "$(grep -c ")" rel/f)"', BLOCK,
+     "the paren spelling of the same thing"),
+    ('cd /home/neon/wt && echo "$(grep -c "|" /home/neon/wt/f)"', ALLOW,
+     "...and absolute still anchors it, so the fix did not just start blocking the shape"),
+
     # --- heredoc bodies are data ---------------------------------------------------------------
     ("cat > /tmp/f <<'EOF'\ncd /home/neon/wt && grep -rn x .\nEOF", ALLOW,
      "a wedge shape inside a heredoc body is text being written, not executed"),

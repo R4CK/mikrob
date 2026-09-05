@@ -91,6 +91,14 @@ sync_live_install() {
 # branches, gate-AFTER-landing, and multi-card landings are the normal case, not the anomaly).
 # shellcheck source=./landing-downward-check.sh
 . "$(dirname "$0")/landing-downward-check.sh"
+# gate_verdict_check (card 9081d02d): shared with cleancore-land.sh, but run here in REPORT mode.
+# Marveen gates AFTER landing -- the root CLAUDE.md says "a visszaadott sha a Gate-SHA", i.e. the
+# sha a gate will judge is the one THIS script is about to produce -- so demanding a verdict up
+# front would deadlock every marveen landing rather than tighten it. Measured on the cards landed
+# 2026-09-04 (b3bf3cc2, d9b1b418, af5d3dbf): each was already an ancestor of origin/develop when
+# its gate ran. Same shape as downward_check above: shared code, different default.
+# shellcheck source=./landing-gate-verdict-check.sh
+. "$(dirname "$0")/landing-gate-verdict-check.sh"
 
 if [ "${1:-}" = "--selftest" ]; then
   fail=0; n=0
@@ -145,6 +153,10 @@ land_one() {
     echo "$agent: REFUSED -- commits belonging to OTHER cards are in $branch. Nothing merged, nothing pushed."
     return 4
   }
+
+  # Only when the caller NAMED the card -- without one there is no single card to ask about, since
+  # a marveen branch legitimately carries several. Report-only, for the reason in the source note.
+  if [ -n "$LAND_CARD" ]; then gate_verdict_check "$LAND_CARD" "$branch" report || true; fi
 
   local msg="merge: $branch into $DEFAULT_BRANCH (marveen-land, base @ $(git -C "$wt" rev-parse --short HEAD))"
   local merge_err
@@ -202,6 +214,32 @@ land_one() {
   else
     say "$agent: seam: no file touched by both sides"
   fi
+
+  # npm lockfile drift on the MERGE RESULT (card c3f052ad). marveen is an npm repo, and the
+  # pnpm-only store/lockfile-sync-check.sh never checked anything here -- it reported
+  # ERR_PNPM_NO_LOCKFILE as drift on every landing until card fe06da0c made that "not applicable".
+  # Fixing the noise left the real hole open: a dependency declared in package.json without
+  # regenerating package-lock.json still reaches the deploy unseen, which is the exact incident
+  # class (twice in one day, cards 8d673233 and af7441a3) that produced the pnpm check.
+  #
+  # ON THE MERGE RESULT, not the branch: two branches that are each internally consistent can
+  # merge into an inconsistent whole (one adds a dependency, the other regenerates the lock), and
+  # what matters is what LANDS. --base origin/<default> keeps it free on the majority of landings,
+  # which touch no manifest at all.
+  #
+  # REFUSES ON 1, NEVER ON 3, mirroring cleancore-land.sh's pnpm refusal: "the lockfile is stale"
+  # and "this lockfile shape is one the checker cannot read" are different facts, and treating a
+  # harness fault as a policy would silently block every landing.
+  NPM_LF_OUT="$("$(dirname "$0")/npm-lockfile-sync-check.sh" --repo "$wt" --ref "$merge_sha" --base "origin/$DEFAULT_BRANCH" 2>&1)"
+  case $? in
+    1)
+      echo "$agent: REFUSED -- package-lock.json does not match package.json on the merge result."
+      echo "$NPM_LF_OUT"
+      echo "Regenerate the lockfile (npm install --package-lock-only) on $branch, re-gate, and land again. Nothing pushed; $branch is untouched."
+      return 4 ;;
+    3) say "$agent: npm lockfile check skipped (harness fault, not a verdict): $(printf '%s' "$NPM_LF_OUT" | head -1)" ;;
+    *) : ;;
+  esac
 
   # Fork-own version bump (DECISIONS.md 2026-08-20/25, automated 2026-08-26 per Peti request):
   # every fork-own landing bumps package.json's +mikrob.N build-metadata, keeping package-lock.json's

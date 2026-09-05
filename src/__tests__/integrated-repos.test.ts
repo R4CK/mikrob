@@ -156,6 +156,37 @@ describe('statusForRepo -- upstream-behind detection against a real repo', () =>
   })
 })
 
+describe('statusForRepo -- the note field (card e52b0131, Fron Ted contract 184dc8d7)', () => {
+  // `description` folds the note in as a fallback (`cfg.description || cfg.note`), so a note only
+  // ever escaped for an entry with NO description. Measured against the live registry: 36 of 38
+  // entries carry both, and none carries a note alone -- so the fallback never fired for any of
+  // them and the note was unreachable. The Updates page already renders a note column keyed on
+  // `typeof r.note === 'string'` (web/fork-updates.js), so the column simply never appeared.
+  it('carries the note out on its OWN field, not only through the description fallback', () => {
+    const s = statusForRepo(cfg({ description: 'a one-liner', note: 'REVIEWED 2026-09-04: fine' }))
+    expect(s.note).toBe('REVIEWED 2026-09-04: fine')
+    // ...and the entry that has both still shows its own description, unchanged.
+    expect(s.description).toBe('a one-liner')
+  })
+
+  it('leaves the description fallback alone for an entry with no description of its own', () => {
+    // The two registry entries without a description borrow the note for one. Removing that
+    // fallback would blank their UI text, so it stays -- the note field is additive, not a
+    // replacement.
+    const s = statusForRepo(cfg({ note: 'only a note here' }))
+    expect(s.description).toBe('only a note here')
+    expect(s.note).toBe('only a note here')
+  })
+
+  it('is an empty string, never undefined, when the entry has no note', () => {
+    // The FE distinguishes "field absent" (unknown) from "empty" (no note). A missing key would
+    // put it back in the unknown branch and hide the column again.
+    const s = statusForRepo(cfg({ description: 'no note on this one' }))
+    expect(s.note).toBe('')
+    expect(typeof s.note).toBe('string')
+  })
+})
+
 describe('readRegistry + buildIntegratedRepos', () => {
   it('returns [] for a missing or malformed registry rather than throwing', () => {
     expect(readRegistry(join(tmp, 'nope.json'))).toEqual([])

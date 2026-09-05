@@ -306,6 +306,44 @@ export function ensureAgentHooks(name: string): boolean {
 const _stalenessScript = join(PROJECT_ROOT, 'scripts', 'hooks', 'staleness-guard.py')
 const STALENESS_HOOK_CMD = `bash -c '[ -f ${_stalenessScript} ] && exec python3 ${_stalenessScript}; exit 0'`
 
+/**
+ * The GENERATION-path half of the staleness guard (card f7b33416, Cybersec+QA finding on 2a07f29e).
+ *
+ * Until this existed the guard had only a backfill: ensureAgentStalenessHook() reaches an agent when
+ * the dashboard next boots, so a freshly spawned agent ran WITHOUT it until then. Every other guard
+ * in this file has both halves, and the meta-test derives its list from `inject*` functions -- so an
+ * ensure-only guard was invisible to the very test written to catch this, and the gap was real, not
+ * merely unreported. Adding the injector closes both at once: a new agent gets the hook at scaffold
+ * time, and the derivation can finally see it.
+ *
+ * Shape note: this one merges into UserPromptSubmit rather than PreToolUse, and its command is the
+ * fail-open bash wrapper rather than a bare python3 call -- if the script file is gone the bash test
+ * exits 0 instead of blocking the prompt. The de-dupe matches on the script name so an older
+ * bare-python3 entry is replaced rather than duplicated.
+ *
+ * The path is joined HERE rather than read from STALENESS_HOOK_CMD, matching the other eight
+ * injectors in this file. That is deliberate: the meta-test derives which hook an injector wires by
+ * reading the injector's own body, so an injector that hides its script behind a module constant is
+ * invisible to it -- and teaching the test to chase constants through two levels of indirection is a
+ * worse trade than one repeated literal that every sibling already repeats.
+ */
+export function injectAgentStalenessHook(existing: Record<string, unknown>): void {
+  const hooks = (existing.hooks && typeof existing.hooks === 'object'
+    ? existing.hooks
+    : (existing.hooks = {})) as Record<string, unknown>
+  const script = join(PROJECT_ROOT, 'scripts', 'hooks', 'staleness-guard.py')
+  const command = `bash -c '[ -f ${script} ] && exec python3 ${script}; exit 0'`
+  // The same registration guard the ensure* path applies: never write a /tmp or missing path into
+  // shared settings.
+  if (isUnsafeHookCommand(command)) return
+  const entry = { hooks: [{ type: 'command', command, timeout: 10 }] }
+  const prev = Array.isArray(hooks.UserPromptSubmit) ? (hooks.UserPromptSubmit as unknown[]) : []
+  hooks.UserPromptSubmit = [
+    ...prev.filter((e) => !JSON.stringify(e).includes('staleness-guard.py')),
+    entry,
+  ]
+}
+
 export function ensureAgentStalenessHook(name: string): boolean {
   // agentSettingsPath() maps MAIN_AGENT_ID to ~/.claude/settings.json; using
   // agentDir() directly here would create a spurious agents/<main> dir and make
@@ -378,6 +416,11 @@ export function writeAgentSettingsFromProfile(name: string, profile: ProfileTemp
   injectSymlinkedNodeModulesGuard(existing)
   injectBlastRadiusGuard(existing)
   injectCdChainGuard(existing)
+  injectNoisyCommandGuard(existing)
+  injectPentestToolInstallGuard(existing)
+  // Card f7b33416: this one was backfill-only until now, so a freshly spawned agent ran without the
+  // staleness guard until the dashboard next booted.
+  injectAgentStalenessHook(existing)
   atomicWriteFileSync(settingsPath, JSON.stringify(existing, null, 2))
 }
 
@@ -922,6 +965,86 @@ export function injectCdChainGuard(existing: Record<string, unknown>): void {
 // injectCdChainGuard alone reaches an agent only when its settings.json is regenerated, and the
 // wedge costs 10+ minutes every time it fires. A dashboard restart arms the whole fleet at once.
 // Returns true when it actually changed a file.
+// Boot-time backfill for the git-protect guard (card 2a07f29e, gap found by
+// hook-guards-are-code-wired.test.ts). injectGitProtectGuard has been on the generation path all
+// along, but there was no ensure* -- so an agent that already had a settings.json only got the
+// guard when its settings were next REGENERATED. This is the guard that blocks the whole-tree
+// destructive git ops (`add -A`, `checkout -- .`, `reset --hard`, `clean -fd`) that would wipe
+// other agents' uncommitted work, so waiting for a respawn is the wrong default for it.
+export function ensureGitProtectGuard(name: string): boolean {
+  const settingsPath = agentSettingsPath(name)
+  let settings: Record<string, unknown> = {}
+  if (existsSync(settingsPath)) {
+    try { settings = JSON.parse(readFileSync(settingsPath, 'utf-8')) } catch { return false }
+  }
+  const command = `python3 "${join(PROJECT_ROOT, 'scripts', 'hooks', 'git-protect-guard.py')}"`
+  const hooks = (settings.hooks && typeof settings.hooks === 'object')
+    ? settings.hooks as Record<string, unknown>
+    : {}
+  const ptu = Array.isArray(hooks.PreToolUse) ? hooks.PreToolUse as unknown[] : []
+  const ptuJson = JSON.stringify(ptu)
+  if (ptuJson.includes('git-protect-guard.py') && hookCommandWired(ptuJson, command)) return false
+  if (isUnsafeHookCommand(command)) return false
+  injectGitProtectGuard(settings)
+  if (name !== MAIN_AGENT_ID) mkdirSync(join(agentDir(name), '.claude'), { recursive: true })
+  atomicWriteFileSync(settingsPath, JSON.stringify(settings, null, 2))
+  return true
+}
+
+// Idempotently wire the noisy-command guard PreToolUse hook (card 2a07f29e).
+//
+// This guard has existed since 2026-08-23 and CLAUDE.md rule 15 cites it as an armed control, but
+// nothing in the codebase ever registered it: it reached agents only because someone hand-added it
+// to the SHARED ~/.claude/settings.json, which provisionIsolatedConfigDir() copies into each
+// agent's .claude-config at provisioning time. So coverage is an accident of WHEN an agent was
+// provisioned relative to that hand-edit -- measured 2026-09-04, three agents (marketing, penzugy,
+// videooo) never got it, and any agent re-provisioned after someone tidies that shared file would
+// lose it again.
+//
+// Registering it here puts it in the PROJECT-level settings the backfill loop owns
+// (agents/<name>/.claude/settings.json), which is regenerated on every dashboard boot and never
+// depends on a hand-edit. Both files are live -- Claude Code merges user-level and project-level
+// settings -- so this is additive to the hand-added copy, not a replacement for it.
+export function injectNoisyCommandGuard(existing: Record<string, unknown>): void {
+  const hooks = (existing.hooks && typeof existing.hooks === 'object'
+    ? existing.hooks
+    : (existing.hooks = {})) as Record<string, unknown>
+  const command = `python3 "${join(PROJECT_ROOT, 'scripts', 'hooks', 'noisy-command-guard.py')}"`
+  if (isUnsafeHookCommand(command)) return
+  const entry = {
+    matcher: 'Bash',
+    hooks: [{ type: 'command', command, timeout: 10 }],
+  }
+  const prev = Array.isArray(hooks.PreToolUse) ? (hooks.PreToolUse as unknown[]) : []
+  hooks.PreToolUse = [
+    ...prev.filter((e) => !JSON.stringify(e).includes('noisy-command-guard.py')),
+    entry,
+  ]
+}
+
+// Boot-time backfill for the noisy-command guard, same reasoning as ensureCdChainGuard: the
+// injector alone reaches an agent only when its settings.json is regenerated. Returns true when
+// it actually changed a file.
+export function ensureNoisyCommandGuard(name: string): boolean {
+  const settingsPath = agentSettingsPath(name)
+  let settings: Record<string, unknown> = {}
+  if (existsSync(settingsPath)) {
+    try { settings = JSON.parse(readFileSync(settingsPath, 'utf-8')) } catch { return false }
+  }
+  const command = `python3 "${join(PROJECT_ROOT, 'scripts', 'hooks', 'noisy-command-guard.py')}"`
+  const hooks = (settings.hooks && typeof settings.hooks === 'object')
+    ? settings.hooks as Record<string, unknown>
+    : {}
+  const ptu = Array.isArray(hooks.PreToolUse) ? hooks.PreToolUse as unknown[] : []
+  const ptuJson = JSON.stringify(ptu)
+  if (ptuJson.includes('noisy-command-guard.py') && hookCommandWired(ptuJson, command)) return false
+  if (isUnsafeHookCommand(command)) return false
+  injectNoisyCommandGuard(settings)
+  if (name !== MAIN_AGENT_ID) mkdirSync(join(agentDir(name), '.claude'), { recursive: true })
+  atomicWriteFileSync(settingsPath, JSON.stringify(settings, null, 2))
+  return true
+}
+
 export function ensureCdChainGuard(name: string): boolean {
   const settingsPath = agentSettingsPath(name)
   let settings: Record<string, unknown> = {}

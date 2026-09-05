@@ -11,7 +11,7 @@ description: Reply to a Telegram user when the telegram channel MCP reply tool (
 ## Eljárás
 1. Bot token a channel configból:
    `TOKEN=$(grep -oE '[0-9]+:[A-Za-z0-9_-]+' ~/.claude/channels/telegram/.env | head -1)`
-2. chat_id: a valós felhasználói chat ID az allowlistából (`~/.claude/channels/telegram/access.json` -> `allowFrom[0]`), NEM a 0. A `chat_id: 0` csak az MCP reply tool belső konvenciója a fő csatornára; a nyers Bot API valós numerikus chat_id-t vár.
+2. chat_id: a valós felhasználói chat ID az allowlistából (`~/.claude/channels/telegram/access.json` -> `allowFrom[0]`), NEM a 0. A `chat_id: 0` SEHOL nem működik: sem a nyers Bot API-nál, sem az MCP `reply` tool-nál. Korábban ez a skill azt állította, hogy a `0` a reply tool belső konvenciója a fő csatornára -- ez téves volt (2026-09-04-én mérve, kártya 0264b294). A plugin `assertAllowedChat()`-je feltétel nélkül dob mindenre, ami nincs az `allowFrom`-ban vagy a `groups`-ban, és `0`-ra vonatkozó ág egyik verziójában sem létezett, az upstream történetében sem. Mindkét úton a valós ID kell.
 3. Küldés (plain text a legbiztosabb, parse_mode nélkül -- nincs escaping-buktató):
    ```bash
    # A bot token a Bot API-nál KÖTELEZŐEN az URL útvonalában van, headerbe nem tehető -- ezért az
