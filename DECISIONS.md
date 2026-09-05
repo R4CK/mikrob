@@ -7622,3 +7622,40 @@ megfogni, nem védelem, csak látszat.
 **Ki döntött:** Cybersec (lelet), backend (megvalósítás és a holt konstans kivétele).
 **Hivatkozás:** kártya 75de69d4 (Cybersec komment 20410 H2); `src/web/agent-dir-tripwire.ts`,
 `src/__tests__/agent-dir-namespace-runtime.test.ts` (9 -> 15 eset).
+
+---
+
+## 2026-09-05 -- b7e57877 -- Az append-unió a két oldal KÖZÖS PREFIXÉHEZ képest készül, nem a merge-base-hez
+
+**Döntés.** A `decisions-append-union.sh` előfeltétele már nem az, hogy a merge-base bájt-prefixe
+legyen mindkét oldalnak. Az unió a két oldal KÖZÖS PREFIXÉHEZ képest készül, és a biztonsági
+tulajdonság külön, kimondott ellenőrzés: a merge-base egyetlen sora sem hiányozhat abból a
+prefixből.
+
+**Miért.** A régi alak olyan landolásokat utasított el, ahol nem volt nézeteltérés. Mérve
+(`agent/fron-ted/work`, `git diff --numstat`): a branch oldal `30 0`, a main oldal `924 0` -- EGYIK
+SEM TÖRÖL semmit. Mindkettő ugyanazt az EGY ÜRES SORT szúrja be a fájl közepére (6520. sor egy 6743
+sorosban), majd a saját bejegyzését a végére. A bázis emiatt nem bájt-prefixe egyik oldalnak sem.
+Ami mindkét oldalon AZONOS, az nem lehet nézeteltérés.
+
+**A garancia nem gyengült, hanem áthelyeződött.** A régi bájt-prefix teszt azt vásárolta meg, hogy
+semmi nem vész el a bázisból. Ugyanez most `diff`-fel, a közös prefixre: ha a két oldal KORÁN,
+KÜLÖNBÖZŐ tartalommal ágazik szét, a közös prefix rövid, a bázis sorai hiányoznak belőle, és a
+függvény ELUTASÍT -- e nélkül a két maradék összefűzése megduplázná a fájl nagy részét.
+
+**Amit NEM választottunk: a git `merge=union` drivere.** Kézenfekvő lenne egy szigorúan append-only
+naplóra, és backend fel is vetette. Elvetve, és nem a duplikálás miatt: a driver FELTÉTEL NÉLKÜL sül
+el, tehát egy VALÓDI szerkesztést -- egy korábbi bejegyzés javítását vagy egy archiválási átírást --
+ugyanúgy unionálna, a logban tiszta merge-nek látszva. És ez nem hipotetikus: a CLAUDE.md előírja a
+desztillálást (90 napnál régebbi bejegyzés dátumozott archívum-fájlba), ami MEGLÉVŐ tartalom
+eltávolítása EBBŐL a fájlból. A fájl dokumentált életciklusa tartalmazza pont azt a műveletet, amit
+a driver csendben rosszul kezelne. Backend a saját szavaival visszavonta a javaslatot.
+
+**Amit átvettünk backendtől:** a fejléc-SOR tagsági ellenőrzés a darabszám-azonosság MELLÉ. Ő mérte
+egy független implementáción, hogy egy sor közepére eső vágás elnyelhet egy `## ` fejlécet (165 lett
+166 helyett), és hogy a puszta darabszám ezt átengedi, mert a 165 hihetőnek látszik.
+
+**A megmaradó, KIMONDOTT rés:** az unió SOROKAT hasonlít, tehát két tartalmilag azonos, de eltérő
+TÖRDELÉSŰ bejegyzést két különböző bejegyzésnek lát, és duplikátumot ír. Ez a nap folyamán élesben
+elő is fordult (ugyanaz a szöveg két tördelésben, két ágon). Sor-összehasonlítással nem javítható;
+külön kártya kérdése, nem ezé.
