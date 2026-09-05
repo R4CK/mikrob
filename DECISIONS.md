@@ -6562,3 +6562,29 @@ plan-grilling olyat kér, amit a landoló szkript definíció szerint nem tud el
 **Ki döntött:** backend2 (mérés és verdikt), MikroB (dispatch, 999fd78a).
 **Hivatkozás:** kártya 999fd78a; mért revert-commit `517c6957`; landolási merge-ek `78f9be50`,
 `13bf2707`, `cae546af`; hullám előtti alapvonal `7d548869`.
+
+## 2026-09-05 -- 54fd9c02 -- Az ötödik ajtót a KORPUSZ őrzi, nem a shell, és a nyers könyvtárnév a teherbíró alak
+
+**Döntés:** Az install-linux.sh/install-macos.sh `seed-fleet-agents/*/` -> `agents/` másolását NEM a
+shellben validáljuk, hanem egy forrás-szkennelő teszttel a szállított seed-korpuszon
+(`reserved-agent-name.test.ts`, "door 5"). Az ellenőrzés a NYERS könyvtárnévre fut (mellette,
+olcsó második félként, a szanitizált alakra is).
+
+**Miért:** (1) A shellből nem hívható az `isReservedSenderId`, tehát egy shell-oldali ellenőrzés a
+fenntartott halmaz MÁSODIK példányát hozná létre, ami pont a b46a4b7e által megszüntetett
+drift-osztály. (2) Egy korpusz-ellenőrzés MINDKÉT installert fedi, plusz bármelyik jövőbelit, anélkül
+hogy bármelyiket megnevezné. (3) Az ellenőrzés ideje telepítés-időből (idegen gépen, megfigyeletlenül)
+commit-időre kerül. (4) A nyers alak a teherbíró: a `listAllAgentNames()` (agent-config.ts)
+szanitizálás nélkül adja vissza a `readdirSync` bejegyzéseket, tehát a könyvtárnév MAGA lesz az
+ügynök neve, és pont ezt adja tovább a `context-guard-runner.ts` `from`-ként.
+
+**Elutasított alternatívák:** (a) név-ellenőrzés a shellben -- lásd (1); (b) a fenntartott halmaz
+normalizálása, hogy az aláhúzásos alakok is bele essenek -- a `SAFE_NAME_RE` SZÁNDÉKOSAN átengedi az
+aláhúzást (`system_directive` érvényes ügynöknév), ezt elvenni valódi neveket törne el egy nem létező
+támadás kedvéért.
+
+**Következmény:** Ha valaha egy seed-könyvtár fenntartott nevet kapna, a commit bukik, és a
+hibaüzenet megmondja a teendőt (átnevezés), kifejezetten megtiltva a fenntartott halmaz lazítását.
+
+**Ki döntött:** backend2, Cybersec javaslata alapján (b46a4b7e gate-melléklete, komment 22244).
+**Hivatkozás:** kártya 54fd9c02.
