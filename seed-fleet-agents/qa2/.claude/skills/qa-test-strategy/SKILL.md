@@ -5,10 +5,15 @@ description: Test-pyramid-based QA strategy, regression discipline, and independ
 # QA Test Strategy & Sign-off
 
 ## Mikor használd
+Kész (vagy közel kész) munka tesztelésekor és a "shippable?" döntésnél. A flotta szabálya: a feladat KÉSZÍTŐJE soha nem ellenőrizheti a sajátját — DONE-ba csak MikroB vagy a QA ügynök teheti, és csak NEM saját munkát.
 Kész (vagy közel kész) munka tesztelésekor és a "shippable?" döntésnél.
 A flotta szabálya: a feladat KÉSZÍTŐJE soha nem ellenőrizheti a sajátját -- DONE-ba csak
 MikroB vagy a QA ügynök teheti, és csak NEM saját munkát.
 
+## Eljárás
+1. **Shift left:** vond be magad korán (követelmény, design), ne csak a végén.
+2. **Acceptance criteria:** írd ki a feladat összes elvárását, pipáld egyenként.
+3. **Test pyramid:**
 ## Alapeljárás
 
 1. **Ungated kártya keresése** -> `kanban-gate-scan` skill (Python board scan).
@@ -29,6 +34,13 @@ MikroB vagy a QA ügynök teheti, és csak NEM saját munkát.
    npx tsc --noEmit 2>&1 | grep -E "error TS"
    ```
    - Unit (legtöbb): egységek izoláltan.
+   - Integration (közép): komponensek/szolgáltatások interakciói.
+   - E2E (kevés): csak kritikus user flow-k és magas kockázatú utak.
+4. **Regresszió:** minden változásnál smoke-test a kritikus utakra; minden megtalált bugra írj automata tesztet, hogy némán ne térhessen vissza. Teljes regresszió release candidate előtt.
+5. **Futtasd, ne feltételezd:** a teszteket ténylegesen futtasd le (vagy nézd végig). Zöld pipa, amit nem láttál lefutni, nem bizonyíték.
+6. **Verdikt:**
+   - PASS -> mozgasd DONE-ba (`/api/kanban/<id>/move` status=done) + eredmény-komment.
+   - FAIL -> vissza in_progress-re precíz, reprodukálható bug-jelentéssel (lépések / elvárt / tényleges).
    - Integration (közép): komponensek / service-ek interakciói.
    - E2E (kevés): csak kritikus user flow + magas kockázatú utak.
 5. **Regresszió**: minden változásnál smoke-test a kritikus utakra; minden bugra automata teszt.
@@ -37,6 +49,11 @@ MikroB vagy a QA ügynök teheti, és csak NEM saját munkát.
    - `QA FAIL -- commit <sha>. Repro: ... Elvárt: ... Tényleges: ... Következő lépés: ...`
 7. **Move**: PASS -> `waiting` (MikroB zárja DONE-ba); FAIL -> `in_progress`.
 
+## Buktatók
+- SOHA ne hagyd jóvá a saját munkádat. Ha te készítetted, más (MikroB) ellenőrzi.
+- "Valószínűleg működik" nem verdikt. Reprodukálj vagy futtass.
+- E2E-t ne szórj szét mindenre — drága és törékeny; csak kritikus flow.
+- Bug találtál, de nincs rá teszt? A javítás nem kész, amíg nincs regressziós teszt.
 ```bash
 TOKEN=$(cat /home/neon/marveen/store/.dashboard-token)
 # Komment
@@ -49,8 +66,18 @@ printf 'Authorization: Bearer %s\n' "$TOKEN" \
   -d '{"status":"waiting"}'
 ```
 
+### Stale-PASS csapda (valós tanulság)
+Ha Cybersec NO-GO-t adott és az ügynök új commitot készített a fix után, a korábbi QA PASS már egy más artifactra vonatkozik. Kötelező lépések:
+1. Nézd meg a REVIEW kommentben és a Cybersec NO-GO-ban szereplő commit hash-t.
+2. Ha eltérnek (vagy ha a kártyán azóta új commit volt), NE fogadd el a régi PASS-t -- futtasd újra a teszteket a legfrissebb commiten.
+3. A verdikt-kommentbe mindig írd bele a konkrét commit hash-t (`commit <sha>`), hogy egyértelmű legyen, melyik artifactra vonatkozik.
 ## Kötelező ellenőrzőlista (minden kártyán)
 
+### Round-trip persistencia-teszt (ne maszkold in-memory)
+Adatbázis-írás tesztelésekor ne hidd el, hogy a teszt lefedi a perzisztenciát, ha az in-memory step outputját manuálisan override-olják a következő lépésben:
+- ROSSZ: `step2({ ...step1Result, graceEndsAt: manualDate })` -- az in-memory adat szétválik attól, ami az adatbázisba kerül.
+- JÓ: `step2(step1Result.graceEndsAt)` -- a step1 tényleges outputját adja tovább; ha a DB nem mentette a mezőt, step2 null-t kap és elbukik.
+Minden round-trip tesztnél ellenőrizd, hogy a teszt NEM fed el egy adatvesztést azzal, hogy a hiányzó DB-mezőt kézzel injektálja a következő lépésbe.
 **FE kártyák:**
 - [ ] Rule 12: error state -- i18n kulcs + akciógomb + retry trigger (`retryKey` dep array)
 - [ ] Rule 13: touch target MIN 44px a GOMB saját CSS-én (szülő 44px NEM elég)
@@ -59,6 +86,12 @@ printf 'Authorization: Bearer %s\n' "$TOKEN" \
 - [ ] RBAC-függő akció: az actor ténylegesen rendelkezik-e az Action-nel? (`rbac.ts` grep)
 - [ ] CSP: nincs `style={{}}` inline-stílus React-ban (jsdom nem blokkolja, prod CSP igen)
 
+### i18n-teljességellenőrzés (BidCalculatorForm-tanulság)
+i18n wiring review-nál a render-path t()-hívások nem elegendők -- minden kódútvonalat le kell ellenőrizni:
+- **Error catch ágak**: `catch` blokkban lévő `setError(... : 'hardcoded string')` sosem jelenik meg happy-path tesztben, mégis felhasználónak megjelenő szöveg
+- **useEffect / async callback zárvány**: a `t()` elérhető, de elfelejtik bekötni
+- Módszer (fron-ted javaslat): `grep -nE '>[A-Z]|aria-label="[A-Z]|placeholder="[A-Z]'` a módosított .tsx-en -- bármely találat potenciálisan bekötetlen i18n string (kizárni: adatvezérelt prop, CSS class, enum érték)
+- Kulcs-paritás ellenőrzés: flatten + set-diff minden locale-ban -- egyetlen hiányzó kulcs láthatatlan fallback-leakhez vezet
 **BE kártyák:**
 - [ ] `authorizeScoped(ctx, Action.X)` ELSŐ hívás a handlerben
 - [ ] tenantId KIZÁRÓLAG `ctx.tenantId`-ból (soha nem body-ból)
@@ -69,6 +102,11 @@ printf 'Authorization: Bearer %s\n' "$TOKEN" \
 - [ ] "Utolsó fallible lépés" igény: ha comment azt állítja hogy egy mutáló hívás az utolsó dobható lépés, ellenőrizd a rákövetkező kódot -- ha az is dobhat, a comment hibás
 - [ ] tsc projekt-szintű: `npx tsc --noEmit` hibamentes
 
+### Non-vacuous fail-closed tesztverifikáció (VIES-tanulság)
+Fail-closed garantiát csak akkor fogadd el, ha a tesztek bizonyítják, hogy a negatív ágak tényleg FAIL-re futnak:
+- Timeout: a fetch tényleg lóg-e az AbortController-ig (ne csak gyors reject legyen)
+- Injection guard: `vi.fn()` spy igazolja, hogy a live service NOT CALLED rossz inputra
+- Minden failure mode-ra explicit `expect(res.valid).toBe(false)` -- a "zöld" önmagában nem elég ha a guard nem fut
 **Migráció kártyák:**
 - [ ] ENABLE + FORCE RLS mindkét irányban (header ÉS child tábla külön)
 - [ ] NULLIF(current_setting('app.tenant_id', true), '')::uuid minta (pool-reuse safe, PG18)
@@ -80,13 +118,32 @@ printf 'Authorization: Bearer %s\n' "$TOKEN" \
 - [ ] BEGIN/COMMIT wrap
 - [ ] Child table cross-tenant FK rés: ha child.tenant_id NEM composite FK a parent(tenant_id, id)-ra, notézd -- B-owned sor kerülhet idegen parent alá (-> `references/be-patterns.md` ## Migráció: child table cross-tenant FK rés)
 
+### Pipe exit-code csapda (Bash shell-tanulság)
+`cmd | head -N; echo "EXIT:$?"` az exit code-ot a `head` parancsé adja vissza, NEM a `cmd`-é -- még ha `cmd` hibával zárult is, az `EXIT:0` jelenik meg.
+- ROSSZ: `npx tsc --noEmit 2>&1 | head -10; echo "EXIT:$?"` -> EXIT:0 (head kilépési kódja)
+- JÓ: `npx tsc --noEmit 2>&1; echo "REAL_EXIT:$?"` -> EXIT:2 (tsc valódi kilépési kódja)
+Tsc/lint/teszt exit-code ellenőrzésnél MINDIG pipe nélkül futtass, vagy PIPESTATUS-t használj: `${PIPESTATUS[0]}`.
 **Általános:**
 - [ ] Nem saját munkát ellenőrzöm (Rule 4)
 - [ ] A REVIEW hivatkozott sha-ja == a legújabb commit (nem stale)
 - [ ] tsc clean (vitest nem type-check-el, zöld teszt mellé mindig tsc)
 
+- [ ] Nem-kikényszerített doc-comment invariáns (Cybersec javaslat, 2026-08-21): ha egy komment, docstring vagy migrációs fejléc GARANCIÁT állít egy adatmezőre ("ide csak redaktált szöveg kerül", "csak valódi állapotváltásnál íródik", "csak szerver-oldali logoláshoz"), van-e a kód-útvonalon MELLETTE VAGY kikényszerítő hívás, VAGY teszt, ami pont ezt az invariánst állítja? Ha egyik sincs: FINDING, függetlenül attól, hogy a mai viselkedés helyes-e -- a komment ilyenkor a jövőbeli olvasót téveszti meg. Nyomon követés: sorold fel a mezőt ÍRÓ összes hívót (nem csak a nevesítettet), és mindegyikre kérdezd meg, hogy azon az ágon lefut-e a kikényszerítés.
+- [ ] **CleanCore kártyákon: kód-duplikáció ellenőrzés** (card 4bade960, GitHub-first: jscpd, MIT, github.com/kucherenko/jscpd) -- `bash {{INSTALL_DIR}}/store/jscpd-duplication-check.sh <CleanCore path> [threshold%, default 5]`. Exit 0 = OK; exit 1 = a duplikáció a küszöb felett -- a konzol-riport megmondja melyik fájlpár, azt nézd meg FINDING-ként. Marveen (fleet) kódon nem kötelező (belső, nem CleanCore).
+
+### Merge-base delta izoláció (git diff tanulság)
+Ha egy feature-branch delta-ját akarod látni (mi változott a branch-en, NEM ami develop-ra jött azóta), `git diff develop..<sha>` HIBÁS ha develop előrement.
+- HELYES: `git merge-base develop <sha>` -> majd `git diff <merge-base>..<sha>`
+- `git diff develop..<sha>` a develop saját commit-jait is belekeveri a deltába (pl. 76 fájl látszik 46 helyett)
+Ez a gate-elés során kritikus: mindig a valódi branch-deltát gate-eld, ne a develop-divergenciát.
 ## Atomic-fact buktató (magic-link tanulság)
 
+### REVIEW-kommentben közölt tesztszámot mindig verifkáld (WF-5 tanulság)
+Ha a REVIEW azt állítja "18+13+10 mind zöld" -- NE fogadd el a számot, nézd meg a tényleges tesztfájlokat a commitban:
+- `git show <sha> --name-only | grep test` -> megmutatja a commitban lévő tesztfájlokat
+- Számold meg a `it(` és `test(` hívásokat minden fájlban, ne a REVIEW állítását.
+- WF-5 konkrét eset: a "10" ShiftEditPage tesztekre vonatkozott, de ShiftEditPage.test.tsx NEM létezett a commitban (a REVIEW tévedett). Így az edit komponens tesztek nélkül ment át.
+Általános szabály: ha a REVIEW-ban szereplő tesztszám és a `git show --name-only` tesztfájlainak valódi száma nem adja ki az összeget, KERESS RÁJUK -- valamelyik fájl hiányzik vagy nem commitolt.
 **Claim bizonyíték nélkül** (f94ae82f tanulság, 2026-08-06): ha a REVIEW azt állítja hogy "X tesztelve van"
 de nincs konkrét atom-bizonyíték, az NEM elég. 151/151 zöld tesztnél is volt 2 MAJOR bug (magic-link),
 mert a negatív atomok (email-mismatch, superadmin izoláció) soha nem kerültek ellenőrzésre.
@@ -94,6 +151,11 @@ mert a negatív atomok (email-mismatch, superadmin izoláció) soha nem kerülte
 bontsd atomokra, minden atomhoz futtasd a verifikáló parancsot. Claim csak akkor fogadható el, ha
 minden atomja VERIFIED vagy UNTESTABLE (indokkal). -> `references/atomic-fact.md` sablon-ok.
 
+### Contract-first FE tesztelés (WF-5 tanulság)
+Ha egy FE komponens "contract-first" (a BE endpoint még nincs live), a teszthiány NEM elfogadható:
+- A BE-függő integráció mocked-kel is tesztelhető: pre-fill loading state, API error handling (409/403/network), navigáció, form validáció
+- Alap minimum: a komponens renderel, a hibakezelés az i18n kulcsokból jön (ne hardcode), a navigate() meghívódik siker/cancel esetén
+- "A BE nincs live" nem magyarázza a teszthiányt -- a kontraktus létezik, a mock alapján írható teszt. A teszthiány QA finding, és WF-3 (BE) live-ra állítása ELŐTT pótolni kell.
 ## Fő buktatók (részletek a references/ mappában)
 
 **FAKE-SUCCESS** (F4-FE c764ec8): `handleDelete()` kihagyja az API-t -> `onDeleted()` azonnal -> FAIL.
@@ -113,6 +175,8 @@ minden atomja VERIFIED vagy UNTESTABLE (indokkal). -> `references/atomic-fact.md
 
 **Tests-green tsc-red**: vitest nem type-check-el; mindig futtatni `npx tsc --noEmit`.
 
+**jscpd --threshold már önmagában exit-kódol** (card 4bade960, mérve nem feltételezve): jscpd@4.3.0 a `--threshold N` flag-gel ÖNMAGÁBAN nem-nulla exit kóddal áll le, ha a duplikáció eléri/meghaladja N%-ot (a `--help` szövege is ezt mondja) -- külön `--exitCode` flag NEM kell egy egyszerű pass/fail gate-hez, az csak azt választja meg MELYIK nem-nulla kódot használja. Ha valaha más jscpd major verzióra váltunk, ezt újra kell mérni, nem a régi mérésre hagyatkozni.
+
 **Üres commit (bd462365, 2026-08-02)**: REVIEW azt állítja fájl hozzáadva, de a commit üres -- `git diff <sha>^ <sha> --name-only` üres kimenetet ad, a fa-hash megegyezik a szülőével. A `git show <sha> --stat` sem mutat changed file-okat. Ez akkor fordul elő, ha a builder `git commit` előtt nem adta hozzá a fájlt (`git add`), vagy a commit --amend egy korábbi üres commitot vitt tovább. Gate: `git diff <sha>^ <sha> --name-only` KÖTELEZŐ ellenőrzés minden "kész" commit-ra -- ha üres: QA FAIL azonnal, a fájl nincs commitolva.
 
 **Board scan false-positive**: `MIKROB_CLOSED_RE`, `BLOCKED_MARKERS`, `is_gate_review()`.
@@ -129,6 +193,8 @@ minden atomja VERIFIED vagy UNTESTABLE (indokkal). -> `references/atomic-fact.md
 
 **Child table cross-tenant FK rés** (6af23cea, 2026-07-31): child RLS `tenant_id=GUC` csak a saját sort védi; a FK-ellenőrzés bypass-olja a parent RLS-t -> B insertalhat child sort idegen parent alá. Composite FK vagy app-réteg enforcement kell.
 -> `references/be-patterns.md` ## Migráció: child table cross-tenant FK rés
+
+**Nem-kikényszerített doc-comment invariáns** (Cybersec javaslat, 2026-08-21, három azonos minta egy napon belül): `transportCause` kommentje "szerver-oldali logoláshoz" -- semmi nem olvasta (81e2484f); `provisioning_started_at` kommentje "CSAK valódi állapotváltásnál" -- működő CAS nélkül (09b41866); `last_error` kommentje "kizárólag redaktált szöveg" -- redakció nélkül a persist-határon (460c1725). Mindháromnál a komment volt az EGYETLEN "védelem", nem egy tényleges kikényszerítő hívás vagy teszt. A kód ma helyesen viselkedhet -- ez nem menti fel: a komment akkor is FINDING, ha a jelenlegi hívók mind jól viselkednek, mert a jövőbeli olvasót a garancia-állítás téveszti meg egy új hívónál. Lásd fenti "Általános" checklist-pont.
 
 **Docs corpus scan timeout untracked fájloktól** (7e2f0a13, 2026-08-01): a `no-false-storage-claims.test.ts` docs corpus scan-je timeout-ra eshet, ha a docs/ mappában sok untracked (el nem kötelezett) fájl van (pl. stitch-gen HTML-ek). Ez NEM a szóban forgó kártya regressziója. Azonosítás: `git stash -u` (untracked-et is) -> teszt újrafuttatás -> ha most zöld -> pre-existing, a stash-elt fájlok okozták -> `git stash pop`. QA PASS adható NOTE-tal; külön bug-kártya a timeout emelésre.
 
@@ -161,6 +227,14 @@ minden atomja VERIFIED vagy UNTESTABLE (indokkal). -> `references/atomic-fact.md
 ## Ellenőrzés
 - Minden acceptance criterion pipálva.
 - Happy + loading/empty/error/edge state lefedve.
+- Tesztek léteznek és zölden futnak; nincs szomszédos regresszió.
+- i18n wiring: render-path ÉS catch/async ágak, kulcs-paritás mind a 7 locale-ban.
+
+## Források
+- https://martinfowler.com/articles/practical-test-pyramid.html
+- https://www.browserstack.com/guide/qa-best-practices
+- https://www.netguru.com/blog/qa-best-practices
+- https://www.testrail.com/blog/testing-pyramid/
 - Tesztek zölden futnak + tsc clean; nincs szomszédos regresszió.
 - i18n: render-path ÉS catch/async ágak, kulcs-paritás mind a 7 locale-ban.
 - Verdikt kommentben konkrét sha + teszt-számok.

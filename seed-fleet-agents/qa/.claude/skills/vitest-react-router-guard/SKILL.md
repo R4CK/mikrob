@@ -1,5 +1,6 @@
 ---
 name: vitest-react-router-guard
+description: Write Vitest tests for React Router v6 auth/role guard components that render <Navigate>. Covers: infinite-redirect-loop pitfall, vi.hoisted mock pattern for useSession, nested vi.mock hoisting override, JSDOM aria-landmark pitfalls (<header> inside <main>), i18n translation value vs key mismatch. Trigger: "test a route guard", "test PortalAuthGuard / AuthGuard / PrivateRoute", "guard test hangs / infinite loop", "vi.mock useSession", "multiple elements with role banner", "getByRole banner fails".
 description: Vitest tests for React Router v6 components. Covers: guard infinite-redirect-loop, vi.hoisted for data constants + vi.fn, useParams mutable-variable mock, multiple-elements-same-text scoping, JSDOM aria-landmark pitfalls, i18n key vs value mismatch. Trigger: "test a route guard", "vi.mock useParams", "useParams returns empty", "TDZ vi.hoisted", "multiple elements with same text", "Found multiple elements", "guard test hangs".
 ---
 

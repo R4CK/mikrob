@@ -7414,3 +7414,56 @@ merge-döntés a másolás helyett, a mentés/rollback út).
 **Hivatkozás:** kártya 1b6abfad; `agents/{fron-ted,fron-teddy,fullstack}/.claude/skills/
 react-page-api-wiring/SKILL.md` (gitignore-olt, élő), `seed-fleet-agents/fron-ted/.claude/skills/
 react-page-api-wiring/SKILL.md` (verziókövetett).
+
+## 2026-09-05 -- 30b76a8d -- A gate-ügynökök a saját gate-elési skilljük felét nem látták
+
+**A helyzet:** a projekt-szintű skill-példány nyer (a 1b6abfad-en mérve), és a gate-ügynökök
+példányai csonkák voltak. A qa és qa2 a `qa-test-strategy`-ből 89 sort olvasott a 172-ből, és a
+rejtett 127 sor között ott volt a teljes `## Kötelező ellenőrzőlista (minden kártyán)`, az
+`## Alapeljárás`, a magic-link atomic-fact buktató és a references index. Mind a négy gate-ügynök
+(qa, qa2, cybersec, cybered) `gate-worktree-pattern` példányából pedig pont az a 15 sor hiányzott,
+ami az `--agent` kapcsoló kötelezőségét írja le (kártya a7da80d6) -- vagyis annak a javításnak a
+leírása, ami megakadályozza, hogy két gate ugyanazon a kártyán és shán egy könyvtárra ütközzön.
+
+**Döntés: merge, nem másolás -- 11 fájlból 10-nél ez különbséget is jelentett.** A kártya azt
+mondta, zárkóztassuk fel a globálishoz; a literális végrehajtás fájlonként 1 és 66 közötti sort
+törölt volna, mert a projekt-példányok saját tartalmat is visznek. Az egyetlen fájl, ahol a
+másolás is helyes lett volna, a `teszter/qa-test-strategy` -- és ez látszik is: az eredménye
+bájtazonos a globálissal (sha 9d599569). A többi tíznél a projekt-only tartalom megmaradt.
+
+**ATOMI ÍRÁS, mert mind a négy gate-ügynök FUTOTT.** A 1b6abfad-nél mindhárom FE-ügynök állt, itt
+viszont a qa, qa2, cybersec és cybered egyaránt `running=True` volt. Egy csonkoló írás ablakot hagy,
+amiben egy egyidejű skill-betöltés fél fájlt olvas; ezért ideiglenes fájl + `os.replace` ment, a
+0664-es módot kifejezetten átvive (egy friss temp fájl különben az umask alapértelmezésére esne).
+Symlink-ellenőrzés is fut írás előtt.
+
+**A FÉL JAVÍTÁS, amit menet közben kellett észrevenni:** a visszaállított `## References index`
+négy `references/*.md` fájlra mutat, amik a globális fában megvannak, de EGYIK ÉRINTETT ÜGYNÖK
+fájában sem. Vagyis a szekció visszahelyezése önmagában egy olyan indexet állított volna helyre,
+aminek minden linkje halott pont ott, ahová visszakerült. A négy fájl telepítve lett -- fájlonként
+eldöntött forrásból: háromnál a seed és a globális bájtazonos, a `SKILL-FULL-BACKUP.md`-nél viszont
+a SEED van előrébb 10 sorral (a "sqlite3 CLI nem garantált telepítve" python-fallback), ezért az
+onnan jött, renderelve.
+
+**Egy ötödik link NEM hiányzik, csak a saját ellenőrzőm nézte annak:** a `references/atomic-fact.md`
+egy MÁSIK skill (`atomic-fact-gate-protocol`) fájlja, a szövegben abszolút úttal. A regexem a
+végét illesztette, és hiányzónak minősítette. A fájl megvan globálisan, per-ügynök példány nincs
+rá, tehát ott a globális nyer. Nem javítottam a skill prózáját (nem az én szövegem, 3. alapelv).
+
+**Egy saját őröm túl szigorú volt, és ezt is meg kellett mérni:** a seed-oldali merge-nél az
+`extra` (a seedben lévő, a live-ban nem szereplő sor) önmagában elutasítást váltott ki. Ez hibás:
+egy kétoldali fájlban a seed jogosan visz sajátot, és a megtartása MAGA a merge célja. A helyes
+feltétel az, hogy minden extra sor a SEEDBŐL jöjjön -- egy máshonnan került sor lenne a valódi
+hiba ("invented"). A `qa2/i18n-parity-sweep` emiatt bukott először.
+
+**Bizonyíték:** 11 élő fájl írva, mind a két állítással (egyetlen projekt- és egyetlen globális sor
+sem veszett el), sha előtte/utána rögzítve, mentés a `store/skill-backups/` alá. Lemezen
+ellenőrizve: a `gate-worktree-pattern` `--agent` sora mind a négy ügynöknél ott van, a
+`## Kötelező ellenőrzőlista` a qa és qa2 példányában ott van, nulla ottfelejtett temp fájl.
+7 seed-fájl frissült + a teszter seedje megkapta a négy hiányzó reference fájlt. 8 seed/skill
+őrteszt zölden (87 passed).
+
+**Ki döntött:** MikroB (kártya, NORMAL, mert a gate-működést érinti), backend2 (fájlonkénti
+irány, atomi írás a futó ügynökök miatt, a references fél-javítás észrevétele).
+**Hivatkozás:** kártya 30b76a8d; `agents/{qa,qa2,teszter,cybersec,cybered}/.claude/skills/...`
+(gitignore-olt, élő), `seed-fleet-agents/{qa,qa2,teszter}/...` (verziókövetett).
