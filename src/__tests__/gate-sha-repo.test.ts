@@ -220,6 +220,74 @@ describe('gate-sha-repo.sh (card edd4c3bf)', () => {
     expect(code).toBe(3)
   })
 
+  // --- Cybered F-1/F-2 (card 33aeb7a8): the header the stub cannot cover ------------------------
+  //
+  // file:// makes curl ignore headers, so the board stub above buys determinism at the cost of the
+  // Authorization path -- measured by Cybered: deleting the header from the call left this file
+  // 12/12 GREEN. My own REVIEW on 90eaa6e5 admitted the response-SHAPE trade-off and not this one.
+  // The header assembly now lives in its own function so it can be measured directly, and a token
+  // that cannot be read is no longer a silent degradation to "unlanded".
+
+  it('--auth-check reports the header can be built, and never prints the token', () => {
+    const dir = mkdtempSync(join(tmpdir(), 'gate-sha-repo-token-'))
+    const tokenFile = join(dir, 'token')
+    writeFileSync(tokenFile, 'super-secret-value\n')
+    const { out, code } = run(['--auth-check'], { DASHBOARD_TOKEN_FILE: tokenFile })
+    expect(code, out).toBe(0)
+    expect(out).toBe('ok')
+    // The whole reason this flag reports a STATUS and not the header: it runs in every agent's
+    // shell, and a flag that printed the token would be a leak primitive.
+    expect(out).not.toContain('super-secret-value')
+  })
+
+  it('--auth-check DISTINGUISHES a missing token file from an empty one', () => {
+    const dir = mkdtempSync(join(tmpdir(), 'gate-sha-repo-token-'))
+    const empty = join(dir, 'empty')
+    writeFileSync(empty, '')
+    expect(run(['--auth-check'], { DASHBOARD_TOKEN_FILE: join(dir, 'nope') })).toEqual({ out: 'no-token', code: 1 })
+    expect(run(['--auth-check'], { DASHBOARD_TOKEN_FILE: empty })).toEqual({ out: 'empty-token', code: 1 })
+  })
+
+  it('F-2: an unreadable token still answers unlanded, but SAYS it skipped the board', () => {
+    // The fail-soft answer is deliberate and must not change. What was wrong is that it was silent:
+    // a broken token read is indistinguishable from an honest "this is not a card" on stdout.
+    const dir = mkdtempSync(join(tmpdir(), 'gate-sha-repo-token-'))
+    const env = { ...process.env, DASHBOARD_TOKEN_FILE: join(dir, 'nope') }
+    let stdout = ''
+    let stderr = ''
+    let code = 0
+    try {
+      stdout = execFileSync('bash', [SCRIPT, 'fbca2448'], { encoding: 'utf-8', env, stdio: ['ignore', 'pipe', 'pipe'] }).trim()
+    } catch (e) {
+      const err = e as { status?: number; stdout?: string; stderr?: string }
+      stdout = (err.stdout ?? '').trim()
+      stderr = (err.stderr ?? '').trim()
+      code = err.status ?? -1
+    }
+    expect(stdout, 'the fail-soft ANSWER must not change').toBe('unlanded')
+    expect(code).toBe(3)
+    expect(stderr).toContain('board not consulted')
+    expect(stderr).toContain('no-token')
+  })
+
+  it('CONTROL: with a usable token the skip notice is ABSENT, so it is not printed unconditionally', () => {
+    // Without this, a notice hardcoded on every run would satisfy the case above perfectly.
+    const dir = mkdtempSync(join(tmpdir(), 'gate-sha-repo-token-'))
+    const tokenFile = join(dir, 'token')
+    writeFileSync(tokenFile, 'stub-token\n')
+    let stderr = ''
+    try {
+      execFileSync('bash', [SCRIPT, 'fbca2448'], {
+        encoding: 'utf-8',
+        env: { ...process.env, ...boardStub({ fbca2448: 'stub' }), DASHBOARD_TOKEN_FILE: tokenFile },
+        stdio: ['ignore', 'pipe', 'pipe'],
+      })
+    } catch (e) {
+      stderr = ((e as { stderr?: string }).stderr ?? '').trim()
+    }
+    expect(stderr).not.toContain('board not consulted')
+  })
+
   it('refuses input that is not a usable sha, rather than resolving something else', () => {
     expect(run(['nothex!']).code).toBe(2)
     expect(run(['abc']).code).toBe(2) // shorter than 7: git itself would call it ambiguous
