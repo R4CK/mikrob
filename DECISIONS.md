@@ -8377,3 +8377,41 @@ számít. Egy teljes-tábla mérés azt mondja meg, mi történik MOST, nem azt,
 (implementáció és független újramérés).
 **Hivatkozás:** kártya `82fa48b0`; `store/gate_scan_lib.py`, `store/gate-decl-check.py`,
 `store/gate-scan-selftest.py`, `store/gate-decl-check.selftest.py`.
+
+## 2026-09-05 -- 26ab08a2 (2. kör): a degradáció-predikátum invariánsra kerül, tünet helyett
+
+**Döntés:** a lint-racsni degradáció-felismerése nem egyetlen tünetre (`parse_now > parse_was`)
+horgonyoz, hanem arra az invariánsra, hogy UGYANAZT A FÁT mértük-e, három független jellel
+(nulla lelet fájlok mellett; kettő vagy több korlátozott szabály egyidejű pontos nullázása;
+parse-hiba a korlát fölött). A korlát LÉTREHOZÁSA külön ige (`--bootstrap`), nem az `--update`
+mellékhatása.
+
+**Miért:** az első kör mechanizmusa működött (négy kontroll: egészséges=0, regresszió=1,
+degradáció=3, degradált --update=3), de a predikátum a degradáció HANGOS felére ült. Cybersec
+hét megkerülési utat mért (NO-GO, 21010), Cybered ebből hármat előzetesen (INFO-ONLY, 20989).
+Mind ugyanaz az alak: ami a mért HALMAZT szűkíti parse-hiba termelése helyett, azt a régi
+predikátum nem látja, sőt a parse-hiba csökkenésekor a degradációt IMPROVED-ként ünnepelte. A
+legsúlyosabb (bypass A) egyetlen `rm`: baseline törlése után az `--update` bootstrapnak számított
+és lemezre írta a `{"(parse-error)": 861}`-et, vagyis mind az öt típus-érzékeny szabályt véglegesen
+kivette a korlátból, nulla kilépőkóddal.
+
+**A vállalt ár, kimondva:** a `COLLAPSE_MIN = 2` küszöb szándékos. EGY korlátozott szabály pontos
+nullára esése továbbra is IMPROVED, mert innen nézve megkülönböztethetetlen attól, hogy valaki
+tényleg befejezte azt a szabályt. Egy szabályt érintő szűkítés tehát átmegy; kettő már nem. A
+küszöb egyre vitele a valódi egy-szabályos javítást minősítené mérés-hibának (mutációval mérve:
+pontosan az anti-blanket kontroll bukik el tőle).
+
+**Egy teszt ígéretét MEGFORDÍTOTTUK, nem csendben:** a korábbi F eset azt rögzítette, hogy
+`--update` baseline nélkül mindenképp ír egyet. Ez az ígéret MAGA volt a bypass A. Az eset ketté
+vált: `--update` megtagadja a létrehozást és megnevezi a `--bootstrap`-ot, a `--bootstrap` pedig
+továbbra is működik a valódi első futásra.
+
+**Bizonyíték, hogy nem egy mindent-megtagadó javítás:** Cybersec kikötötte, hogy egy blanket
+refusal ugyanúgy zöld lenne az első hét soron. Mutációval mérve: a "mindig degradált" mutáns 9
+esetet buktat, köztük mind a négy egészséges kontrollt; a valós fán a futás továbbra is exit 0
+(230 lelet, baseline holds).
+
+**Ki döntött:** Cybersec (NO-GO, a hét út mérése és a javasolt gyógymód, 21010), Cybered
+(INFO-ONLY előmérés, 20989), MikroB (NO-GO elfogadva, re-dispatch, 21013), backend2
+(implementáció, független újramérés, mutáció-ellenőrzés).
+**Hivatkozás:** kártya `26ab08a2`; `store/lint-ratchet.sh`, `store/lint-ratchet.selftest.sh`.

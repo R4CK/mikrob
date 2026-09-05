@@ -28,24 +28,30 @@
 # each carries its own bound.
 #
 # Usage:
-#   store/lint-ratchet.sh            # check against the baseline; exit 1 if any rule got worse
-#   store/lint-ratchet.sh --update   # rewrite the baseline from the current counts
-#   store/lint-ratchet.sh --show     # print current counts vs baseline, always exit 0
+#   store/lint-ratchet.sh              # check against the baseline; exit 1 if any rule got worse
+#   store/lint-ratchet.sh --update     # rewrite the baseline from the current counts
+#   store/lint-ratchet.sh --show       # print current counts vs baseline, always exit 0
+#   store/lint-ratchet.sh --bootstrap  # CREATE a baseline where none exists (see below)
 #
 # Exit: 0 no rule got worse | 1 a rule got worse | 3 the run could not be MEASURED (ESLint could
-# not run at all, or parse errors rose above their bound so the type-aware counts mean nothing --
-# see the block beside `measurement_degraded`)
+# not run at all, or the run read a DEGRADED view of the tree -- see `degradation_reason`)
 set -uo pipefail
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 BASELINE="$ROOT/store/lint-baseline.json"
 MODE="check"
 
+BOOTSTRAP=0
 case "${1:-}" in
-  --update) MODE="update" ;;
-  --show)   MODE="show" ;;
-  "")       ;;
-  *) echo "lint-ratchet.sh: unknown argument '$1' (expected --update, --show or nothing)" >&2; exit 3 ;;
+  --update)    MODE="update" ;;
+  --show)      MODE="show" ;;
+  # A SEPARATE VERB, not a flag on --update, because the two say different things. `--update`
+  # means "I have a bound and I am moving it"; `--bootstrap` means "there is no bound yet".
+  # Deleting the baseline used to turn the first into the second silently -- see the block beside
+  # `degradation_reason`.
+  --bootstrap) MODE="update"; BOOTSTRAP=1 ;;
+  "")          ;;
+  *) echo "lint-ratchet.sh: unknown argument '$1' (expected --update, --bootstrap, --show or nothing)" >&2; exit 3 ;;
 esac
 
 cd "$ROOT" || { echo "lint-ratchet.sh: cannot cd to $ROOT" >&2; exit 3; }
@@ -57,10 +63,11 @@ report="$(mktemp)"
 trap 'rm -f "$report"' EXIT
 npx eslint src -f json > "$report" 2>/dev/null
 
-MODE="$MODE" BASELINE="$BASELINE" REPORT="$report" python3 - <<'PY'
+MODE="$MODE" BOOTSTRAP="$BOOTSTRAP" BASELINE="$BASELINE" REPORT="$report" python3 - <<'PY'
 import json, os, sys, collections
 
 mode = os.environ['MODE']
+bootstrap = os.environ.get('BOOTSTRAP') == '1'
 baseline_path = os.environ['BASELINE']
 
 try:
@@ -89,15 +96,32 @@ try:
         baseline = json.load(fh)
     have_baseline = True
 except FileNotFoundError:
-    if mode == 'update':
-        # BOOTSTRAP. With no baseline there is nothing to compare against, so the degraded-run
-        # refusal below cannot fire here -- it would make the FIRST --update impossible on any
-        # tree that has parse errors at all, which this one does (6 of them, and they are the
-        # recorded state rather than a fault).
+    # A MISSING BASELINE IS NOT AUTOMATICALLY A FIRST RUN (Cybersec NO-GO, bypass A, comment
+    # 21010). This branch used to treat "no file" as bootstrap whenever the mode was --update,
+    # which made every guard below unreachable by `rm`: delete the baseline, re-run --update on a
+    # degraded tree, and the collapsed counts are written as the new normal with exit 0 and a
+    # congratulatory message. Measured: it wrote `{"(parse-error)": 861}` -- all five type-aware
+    # rules erased from the bound, permanently.
+    #
+    # The likely author of that sequence is not an attacker. It is an agent who hits the refusal,
+    # cannot fix the toolchain, and starts "from a clean slate" -- a documented pattern on this
+    # very card, where the card text itself would have led to --update.
+    #
+    # So creating a bound is now its own verb. It stays possible (a real first run needs it) but
+    # it can no longer happen as a SIDE EFFECT of asking to move an existing bound.
+    if mode == 'update' and bootstrap:
         baseline, have_baseline = {}, False
+    elif mode == 'update':
+        print(f'lint-ratchet.sh: REFUSING to write a baseline -- there is none at {baseline_path}, '
+              f'and --update MOVES an existing bound rather than creating one.', file=sys.stderr)
+        print('    If the baseline was deleted, restore it from git; the recorded bound is the '
+              'point of the ratchet.', file=sys.stderr)
+        print('    If this genuinely is the first run on this tree, say so explicitly: '
+              '`store/lint-ratchet.sh --bootstrap`.', file=sys.stderr)
+        raise SystemExit(3)
     else:
         print(f'lint-ratchet.sh: no baseline at {baseline_path}. Create it with '
-              f'`store/lint-ratchet.sh --update` and commit it.', file=sys.stderr)
+              f'`store/lint-ratchet.sh --bootstrap` and commit it.', file=sys.stderr)
         raise SystemExit(3)
 
 # THE MEASUREMENT CAN BREAK, AND A BROKEN ONE LOOKS LIKE GOOD NEWS (card 26ab08a2).
@@ -116,17 +140,67 @@ except FileNotFoundError:
 # how a gate gets disarmed by someone following its own instructions.
 parse_key = '(parse-error)'
 parse_now, parse_was = counts.get(parse_key, 0), baseline.get(parse_key, 0)
-measurement_degraded = have_baseline and parse_now > parse_was
+
+# THE PREDICATE ANCHORS ON THE INVARIANT, NOT ON ONE SYMPTOM (Cybersec NO-GO, comment 21010).
+#
+# The first version of this guard was `parse_now > parse_was`: it fired only when the tree got
+# LOUDER about being unreadable. That is one signature of a degraded run, and Cybersec measured
+# SEVEN ways past it -- every degradation that SHRINKS the measured set instead of producing parse
+# errors leaves that count flat or falling while the type-aware rules go to zero, so the script
+# printed IMPROVED and offered to record it. The quiet half of the same failure.
+#
+# The invariant the ratchet actually depends on is: DID THIS RUN MEASURE THE SAME TREE THE
+# BASELINE MEASURED? Three independent signals say it did not, and each returns its own reason so
+# the message names the trigger that fired rather than the one that happened to be written first.
+# (That was Cybersec's own note on their prototype: a refusal that blames parse errors when the
+# real trigger was a rule collapse re-creates the misdirected-message class this card is about.)
+#
+# ORDER IS MOST-SPECIFIC FIRST, because more than one can be true at once and the first is the
+# most actionable.
+COLLAPSE_MIN = 2
+
+
+def degradation_reason(counts, baseline, have_baseline, files_linted):
+    """Why this run cannot be compared to the baseline, or None if it can."""
+    findings = sum(counts.values())
+    # (c) FILES WENT IN, NOTHING CAME OUT. The zero-FILES case was already a setup fault; this is
+    # the same fault one level in, and it needs no deletion and no broken toolchain to reach.
+    # Recording it writes an EMPTY ratchet, which un-bounds every rule at once.
+    if files_linted and not findings:
+        return (f'ESLint linted {files_linted} file(s) and reported ZERO findings of any kind. '
+                f'On a tree with a recorded bound that is a configuration fault, not a clean '
+                f'sweep -- a working run on this repo has never once reported nothing.')
+    if not have_baseline:
+        return None
+    # (b) SEVERAL BOUNDED RULES AT EXACTLY ZERO AT ONCE. A real fix drives ONE rule to zero; the
+    # type-aware rules going dark together is what a lost TS program looks like from here. The
+    # threshold is deliberately two rather than one, so that genuinely finishing off a single rule
+    # is not called a degradation -- the cost of that choice is stated in the card.
+    collapsed = sorted(r for r, was in baseline.items()
+                       if r != parse_key and was > 0 and counts.get(r, 0) == 0)
+    if len(collapsed) >= COLLAPSE_MIN:
+        return (f'{len(collapsed)} rules that had recorded findings are ALL at exactly zero in '
+                f'this run ({", ".join(collapsed)}). A fix moves one rule; several going dark at '
+                f'once is what an unresolved TS program looks like from in here.')
+    # (a) THE ORIGINAL SIGNAL, kept: the loud half is still real, and still the only one that
+    # fires when the set is intact but unreadable.
+    if parse_now > parse_was:
+        return (f'parse errors are ABOVE the recorded bound ({parse_was} -> {parse_now}), so this '
+                f'run read a tree it could not fully parse.')
+    return None
+
+
+degraded = degradation_reason(counts, baseline, have_baseline, len(report))
+measurement_degraded = degraded is not None
 
 if mode == 'update' and measurement_degraded:
-    print(f'lint-ratchet.sh: REFUSING to write the baseline -- parse errors are ABOVE the '
-          f'recorded bound ({parse_was} -> {parse_now}), so this run measured a tree it could '
-          f'not fully read.', file=sys.stderr)
-    print('    Recording it would bake the blindness in: the type-aware rules find nothing in '
-          'files that do not parse,', file=sys.stderr)
-    print('    so their counts here are not evidence of anything. Fix the parse errors (or the '
-          'toolchain), then re-run --update.', file=sys.stderr)
-    print('    See them: npx eslint src | grep -i "parsing error"', file=sys.stderr)
+    print(f'lint-ratchet.sh: REFUSING to write the baseline -- {degraded}', file=sys.stderr)
+    print('    Recording it would bake the blindness in: a rule that was not measured reads as a '
+          'rule with no findings,', file=sys.stderr)
+    print('    so these counts are not evidence of anything. Fix the measurement, then re-run '
+          '--update.', file=sys.stderr)
+    print('    Start here: npx eslint src | grep -i "parsing error", and check that tsconfig.json '
+          'resolves for every linted file.', file=sys.stderr)
     raise SystemExit(3)
 
 if mode == 'update':
@@ -161,15 +235,15 @@ if mode == 'show':
 
 if measurement_degraded:
     print(file=sys.stderr)
-    print(f'lint-ratchet.sh: COULD NOT MEASURE -- parse errors rose ({parse_was} -> {parse_now}), '
-          f'so this run read a degraded view of the tree.', file=sys.stderr)
-    print('    The five type-aware rules find NOTHING in a file that does not parse, so their '
-          'counts above are not', file=sys.stderr)
+    print(f'lint-ratchet.sh: COULD NOT MEASURE -- {degraded}', file=sys.stderr)
+    print('    The type-aware rules find NOTHING in a file they cannot resolve, so the counts '
+          'above are not', file=sys.stderr)
     print('    comparable to the baseline in either direction -- a drop here is missing '
           'measurement, not progress.', file=sys.stderr)
-    print('    Fix the parse errors first, then re-run. Do NOT --update in this state; the '
+    print('    Fix the measurement first, then re-run. Do NOT --update in this state; the '
           'script refuses it for the same reason.', file=sys.stderr)
-    print('    See them: npx eslint src | grep -i "parsing error"', file=sys.stderr)
+    print('    Start here: npx eslint src | grep -i "parsing error", and check that tsconfig.json '
+          'resolves for every linted file.', file=sys.stderr)
     for rule, was, now in worse:
         if rule != parse_key:
             print(f'    (also above baseline, but measured in the same degraded run) '
