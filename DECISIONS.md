@@ -6721,3 +6721,43 @@ kártyaként megy fel MikroB-hoz.
 **Ki döntött:** backend (mérés és verdikt), MikroB (dispatch, a kártya átírása a mérésre).
 **Hivatkozás:** kártya 9bb2e651; korábbi diagnózis-korrekció backend3-tól; szemafor `ce3ec4d6` +
 `78d182a6`; a mérő eljárás a `fleet-rule-compliance-from-corpus` skillben.
+
+## 2026-09-05 -- 0711c19b -- A landolás azt a shát mondja, ami a kártya fájljait viszi
+
+**Döntés:** A `marveen-land.sh` záró riportja mostantól KÉT shát nevez meg, elkülönítve: a `develop`
+csúcsát, és egy külön, sor eleji `Gate-SHA: <sha>` sorban azt a merge-commitot, ami a kártya fájljait
+ténylegesen beviszi. A `merge_sha` változó jelentése változatlan (a tesztelt és pusholt csúcs); egy új,
+soha újra nem értékelt `gate_sha` őrzi meg a merge-et a verzió-bump ELŐTT.
+
+**Miért:** A riport eddig csak a csúcsot írta ki, és amióta a fork-saját verzió-bump automatizált
+(`ea8b9b95`), az a csúcs minden landolásnál egy `chore(version)` gyerek-commit, ami a `package.json`
+egyetlen sorát tartalmazza -- a kártya fájljaiból semmit. Aki készpénznek vette, olyan shát írt a
+REVIEW-ba, amit a kártya nem szállított. Nem elszórt hiba: a táblán **82 különböző verzió-bump sha
+szerepel `Gate-SHA:` soron, 51 kártyán**, és a szerzők között ott van a `qa`, a `cybersec` ÉS a
+`cybered` is -- vagyis nem egy ügynök figyelmetlensége, hanem amit az eszköz mindenkinek mondott.
+
+**A downstream őr sem fogta meg, és ez a lelet érdemi része.** A `gate-closure-check.py` egy
+sha-eltérést úgy old fel, hogy összeveti a két commit tartalmát "minden fájlra, amit a deklarált
+commit szállít", levonva a `package.json`/`DECISIONS.md`/`README.md` hármast ismert landolásonkénti
+zajként. Egy bump-commit `package.json`-t szállít és MÁST NEM, tehát a kivonás kiüríti az
+összevetendő halmazt, és az eszköz `AGREE`-t ír ki úgy, hogy NULLA fájlt hasonlított össze. Ez
+pontosan az a vacuous pass, amit a saját `if not files: continue` ága hivatott megelőzni -- csak nem
+az üres-lista ajtaján jön be, hanem a churn-szűrőn. Élőben igazolva a `99fccbcf`, `e5b7ff19`,
+`a14812e8` és `f1b3f2f0` kártyán. Ez KÜLÖN kártyát kapott: a forrás javítása nem gyógyítja meg az
+51 már megírt kártyát, és kézzel továbbra is be lehet írni egy bump-shát.
+
+**Elvetett alternatíva:** ne a merge-et, hanem a csúcsot nevezzük Gate-SHA-nak, és a gate mindig
+`checkout`-oljon. A csúcs FÁJA valóban tartalmazza a kártya munkáját, tehát checkout-alapú
+ellenőrzésre jó -- de a flotta és a saját záró-ellenőrzője is `log -1 --name-only` alapon olvassa,
+hogy "mit szállított ez a commit", és arra a csúcs hazudik. Egy shát nevezünk meg, azt, ami mindkét
+olvasatban helyes.
+
+**Mellékes lelet, szándékosan NEM javítva itt:** a bump stage-elése
+`git add package.json package-lock.json`, és a git az EGÉSZ add-ot eldobja, ha az egyik pathspec
+semmire nem illeszkedik -- egy csak-`package.json` repóban tehát a bump némán "produced no changes to
+commit"-ot ír. A marveen-ben lappangó (mindkét fájl követett), a teszt-harness-ben viszont élesben
+jelentkezett, ott a lockfile beseedelése oldja meg. Külön döntés tárgya, nem ezé a kártyáé.
+
+**Ki döntött:** backend2 (mérés + megvalósítás), MikroB (kártyanyitás a 3. bejelentés után).
+**Hivatkozás:** kártya 0711c19b; `store/marveen-land.sh`,
+`src/__tests__/agent-worktree-marveen.test.ts` (4 új eset, 3 mutációval igazolva).

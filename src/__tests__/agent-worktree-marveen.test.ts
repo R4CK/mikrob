@@ -521,3 +521,105 @@ describe('marveen-land.sh (card dc185b52)', () => {
     expect(git(main, 'ls-tree', '-r', '--name-only', 'origin/develop')).not.toContain('backend-new.txt')
   }, LAND_TIMEOUT_MS)
 })
+
+// Card 0711c19b. The landing report printed only the develop TIP, and since the fork-own version
+// bump was automated (ea8b9b95) that tip is a `chore(version)` child carrying one line of
+// package.json -- never the card's files. Three separate cards copied it into a REVIEW as the
+// Gate-SHA before anyone opened a card; a board-wide count found 82 distinct bump shas on a
+// `Gate-SHA:` line across 51 cards, written by builders and by qa/cybersec/cybered alike.
+//
+// It is not self-correcting downstream either: gate-closure-check.py resolves a sha mismatch by
+// comparing "every file the declared commit delivers" minus package.json/DECISIONS.md/README.md as
+// per-landing churn -- and a bump commit delivers package.json and nothing else, so the subtraction
+// empties the comparison set and the check answers AGREE having compared zero files.
+describe('marveen-land.sh names the sha that carries the work, not the version bump (card 0711c19b)', () => {
+  // The bump only fires on a package.json whose version already matches X.Y.Z+mikrob.N
+  // (store/bump-fork-version.sh refuses to guess at any other shape), so a landing test that wants
+  // to see the bump has to put one on the default branch first.
+  //
+  // package-lock.json is seeded too, and NOT for realism alone: marveen-land.sh stages the bump
+  // with `git add package.json package-lock.json`, and git aborts that add ENTIRELY when one
+  // pathspec matches nothing -- so on a repo carrying only package.json the bump silently writes
+  // its change, stages nothing, and reports "version bump produced no changes to commit". Measured
+  // here first (this block's CONTROL case failed for exactly that reason), then confirmed
+  // standalone. Latent in marveen today because both files are tracked; noted, not fixed here.
+  function seedBumpablePackageJson(): void {
+    writeFileSync(join(main, 'package.json'), '{\n  "name": "t",\n  "version": "1.0.0+mikrob.7"\n}\n')
+    writeFileSync(
+      join(main, 'package-lock.json'),
+      '{\n  "name": "t",\n  "version": "1.0.0",\n  "lockfileVersion": 3,\n  "packages": {\n    "": {\n      "name": "t",\n      "version": "1.0.0"\n    }\n  }\n}\n'
+    )
+    gitOk(main, 'add', 'package.json', 'package-lock.json')
+    gitOk(main, 'commit', '-q', '-m', 'seed package.json')
+    gitOk(main, 'push', '-q', 'origin', 'develop')
+  }
+
+  async function landWithWork(agent: string, file: string): Promise<{ status: number; out: string }> {
+    await runWorktree(agent)
+    const tree = join(worktrees, agent)
+    gitOk(tree, 'config', 'user.email', `${agent}@t.local`)
+    gitOk(tree, 'config', 'user.name', agent)
+    writeFileSync(join(tree, file), 'work\n')
+    gitOk(tree, 'add', file)
+    gitOk(tree, 'commit', '-q', '-m', `${agent} work`)
+    return runLand([agent], writeStub(0))
+  }
+
+  // gate-closure-check.py's own _SHA_LINE: line start, optional space, then the sha. A report that
+  // spells it any other way is not copy-pasteable into a REVIEW, which is the entire point.
+  const GATE_SHA_LINE = /^\s*Gate-SHA:\s*([0-9a-f]{40})$/m
+
+  it('CONTROL / non-vacuity: the version bump really does fire in this harness', async () => {
+    seedBumpablePackageJson()
+    const r = await landWithWork('backend', 'backend-new.txt')
+
+    // Without this the rest of the block would pass on a repo where no bump commit exists at all,
+    // which is the one condition under which the defect cannot appear.
+    expect(r.out).toContain('version bumped to 1.0.0+mikrob.8')
+    gitOk(main, 'fetch', '-q', 'origin', 'develop')
+    expect(git(main, 'log', '-1', '--format=%s', 'origin/develop')).toContain('chore(version): bump')
+  }, LAND_TIMEOUT_MS)
+
+  it('THE DEFECT: the reported Gate-SHA carries the card\'s files, and is not the bump commit', async () => {
+    seedBumpablePackageJson()
+    const r = await landWithWork('backend', 'backend-new.txt')
+    expect(r.status).toBe(0)
+
+    const m = GATE_SHA_LINE.exec(r.out)
+    expect(m, `no copy-pasteable Gate-SHA line in:\n${r.out}`).not.toBeNull()
+    const gateSha = m![1]
+
+    gitOk(main, 'fetch', '-q', 'origin', 'develop')
+    // --first-parent, matching how gate-closure-check.py reads a landing: `git show --name-only` is
+    // empty for a merge commit.
+    const delivered = git(main, 'log', '-1', '--name-only', '--format=', '--first-parent', gateSha)
+      .split('\n')
+      .filter((l) => l.trim())
+    expect(delivered).toContain('backend-new.txt')
+
+    // The regression, stated as itself: the old line printed the tip, and the tip is the bump.
+    expect(git(main, 'log', '-1', '--format=%s', gateSha)).not.toContain('chore(version): bump')
+    expect(gateSha).not.toBe(git(main, 'rev-parse', 'origin/develop'))
+    // And the churn subtraction that made this survive downstream: package.json alone is what the
+    // bump delivers, so a Gate-SHA pointing at it compares nothing.
+    expect(delivered).not.toEqual(['package.json'])
+  }, LAND_TIMEOUT_MS)
+
+  it('says WHY the tip differs, so the tip is not copied by mistake', async () => {
+    seedBumpablePackageJson()
+    const r = await landWithWork('backend', 'backend-new.txt')
+    expect(r.out).toContain('do not put it in the REVIEW')
+  }, LAND_TIMEOUT_MS)
+
+  it('no bump, no warning: without a package.json the Gate-SHA is the tip and nothing claims otherwise', async () => {
+    const r = await landWithWork('backend', 'backend-new.txt')
+    expect(r.status).toBe(0)
+
+    const m = GATE_SHA_LINE.exec(r.out)
+    expect(m).not.toBeNull()
+    gitOk(main, 'fetch', '-q', 'origin', 'develop')
+    expect(m![1]).toBe(git(main, 'rev-parse', 'origin/develop'))
+    // A warning about a bump that never happened would train everyone to ignore the warning.
+    expect(r.out).not.toContain('do not put it in the REVIEW')
+  }, LAND_TIMEOUT_MS)
+})

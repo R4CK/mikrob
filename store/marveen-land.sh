@@ -258,6 +258,13 @@ land_one() {
     fi
   fi
   local merge_sha; merge_sha="$(git -C "$wt" rev-parse HEAD)"
+  # Card 0711c19b: the sha that CARRIES this card's files, captured here because the fork-own
+  # version bump below commits a CHILD on top and reassigns merge_sha to it. merge_sha keeps its
+  # existing meaning -- the tip about to be tested and pushed -- and every downstream use still
+  # wants that tip (fleet-test runs on what actually lands, so does the ancestry check and the
+  # src/ diff that triggers the rebuild). The one consumer that wants the OTHER sha is a human
+  # copying a Gate-SHA into a REVIEW, and the report at the end of this function now says so.
+  local gate_sha="$merge_sha"
   say "$agent: merged --no-ff, no conflicts ($(git -C "$wt" diff --name-only "$base_sha..HEAD" | wc -l) file(s) changed since $DEFAULT_BRANCH base)"
 
   # SEAM CHECK, both directions (same reasoning as cleancore-land.sh): "no conflict" only means git
@@ -389,7 +396,28 @@ land_one() {
     if git -C "$wt" diff --name-only "$base_sha..$merge_sha" -- src/ | grep -q .; then
       rebuild_live_install
     fi
-    echo "$agent: LANDED $branch -> origin/$DEFAULT_BRANCH ($(git -C "$wt" rev-parse --short HEAD))"
+    echo "$agent: LANDED $branch -> origin/$DEFAULT_BRANCH (develop tip $(git -C "$wt" rev-parse --short HEAD))"
+    # Card 0711c19b, reported three times before it got a card. This line used to print ONLY the
+    # develop tip, and on every landing since the version bump was automated (ea8b9b95) that tip is
+    # a `chore(version)` child holding one line of package.json -- none of the card's files. Taken
+    # at face value it produces a REVIEW whose Gate-SHA names a commit the card did not deliver.
+    #
+    # Measured on this board before the fix: 82 distinct version-bump shas appear on a `Gate-SHA:`
+    # line across 51 cards, written by BUILDERS AND GATES ALIKE (qa, cybersec and cybered are all
+    # among the authors) -- so it is not one agent's slip, it is what the tool told everyone.
+    #
+    # It also disarms the guard meant to catch exactly this. gate-closure-check.py compares the two
+    # shas over "every file the declared commit delivers", minus package.json/DECISIONS.md/README.md
+    # as known per-landing churn. A bump commit delivers package.json and NOTHING ELSE, so that
+    # subtraction empties the comparison set and the check reports AGREE having compared zero files
+    # -- the same vacuous pass its own `if not files: continue` guard was written to prevent, coming
+    # in through the churn filter instead of the empty-list path. Verified live on 99fccbcf,
+    # e5b7ff19, a14812e8 and f1b3f2f0.
+    #
+    # Printed at line start and in the exact shape a REVIEW needs, so the correct answer is the one
+    # that is easy to copy. Fixing the source does not heal the 51 cards already written this way.
+    echo "Gate-SHA: $gate_sha"
+    [ "$gate_sha" = "$merge_sha" ] || say "$agent: the develop tip above is the +mikrob version bump committed on top of that merge -- it carries no card content, do not put it in the REVIEW"
     return 0
   fi
   echo "$agent: PUSH reported success but $merge_sha is NOT an ancestor of origin/$DEFAULT_BRANCH -- verify by hand"
