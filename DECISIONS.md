@@ -8199,3 +8199,52 @@ fogta meg**, mert minden esete a `--path` ágon fut, ami a létrehozás előtt k
 tesztfájl fogta meg a suite-ban. Egy selftest, ami sosem hoz létre semmit, nem tud jótállni egy
 scriptért, aminek a fő dolga a létrehozás -- ezért került bele négy VALÓS létrehozás-eset, és a
 „jelölőt a létrehozás elé" mutáció most 2 esetet vált pirosra.
+
+## 2026-09-05 -- 82fa48b0 -- GATE_DECL_RX: mondat/tagmondat-horgonyzás, mert a sor-eleji 419 valódi designációt dobott volna el (backend2)
+
+**Előzmény:** a 67a5ee01 mellékterméke, hogy a `GATE_DECL_RX` KERES a leírásban ahelyett, hogy
+horgonyozna, tehát a `Gate:` szót idézett prózában is találatnak veszi. A kártya azt írta elő, hogy
+horgonyozzuk SOR ELEJÉRE. Plan-grillinget kértél rá a 515-kártyás blast radius miatt (1b. szabály),
+és jól tetted: a felmérés a saját javaslatomat döntötte meg.
+
+**A mérés (mind a 2997 kártyán, azon az 1322-n értékelve, ahol ma van szerepet megnevező
+designáció):**
+
+    A) keresés (a régi)                      megőriz 1322, veszít   0  -- de az alapító esetet elrontja
+    B) sor eleje (a kártya terve)            megőriz  903, veszít 419
+    C) mondat eleje                          megőriz 1314, veszít   8
+    D) mondat eleje + tagmondat (`;` `,` `(`) megőriz 1318, veszít   4, változtat 0
+
+**Döntés (MikroB, komment 20581): D.** A valódi designáció tipikusan egy bekezdés ZÁRÓ MONDATA, nem
+külön sor -- a sor-eleji horgonyzás tizenhét valódi designációt dobott volna el minden egyes javított
+fals pozitívra. A D az alapító esetet (a 67a5ee01 EREDETI szövegét) helyesen kezeli: nincs
+designáció, a kártya átesik és MINDEN gate elé kerül.
+
+**A LOAD-BEARING FELTEVÉS, amit senki nem ellenőrzött, én sem, amikor jelentettem:** hogy a valódi
+designációk sor elején állnak. Nem álltak. A jelentés helyes volt, a hozzá javasolt javítás nem --
+a kettő két külön állítás, és az elsőre szóló bizonyíték nem bizonyítja a másodikat.
+
+**Teljes tábla előtte/utána (2997 kártya x 3 gate):** 20 kártya kerül ÚJONNAN a gate-ek elé
+(qa 5, cybersec 7, cybered 8), és NULLA kártya esik ki bármelyik gate látóköréből. A változás tehát
+kizárólag a biztonságos irányba dől, ami a lib saját dokumentált aszimmetriája.
+
+**A NÉGY, amit a D még mindig elveszít, nevesítve:** `5fd54914` (`-` előzi meg), `722b444a` és
+`f5e4279b` (`)` előzi meg, „(5) gate:" listaszámozás), `c52e2823` (mondat közben). Mind a négy
+FAIL-SAFE irányba dől: nincs designáció -> a kártya átesik és minden gate elé kerül. A `)` és a `-`
+felvétele a határoló-osztályba hármat visszahozna belőlük -- ez egy karakter, és SZÁNDÉKOSAN nem
+csináltam meg: a jóváhagyott határoló-halmazt bővítené, tehát külön döntés.
+
+**Amit a javítás mellé kellett tenni, mert a regex önmagában nem elég:** a designáció HELYE
+konvenció kérdése, és a parser javítása nem javítja azt, ahogy az emberek írnak. Ezért a
+`gate-decl-check.py` mostantól `MID-SENTENCE` kóddal JELENTI a mondat közbeni designációt (a fenti
+négyet élesben felismeri), különben ez a szám halkan nőne.
+
+**Módszertani csapda, kimondva a selftestben is:** a 67a5ee01 ÉLŐ szövegén a hiba MÁR NEM
+reprodukálható, mert MikroB időközben odaírt egy kimondott `Gate:` sort a végére. Aki az élő kártyán
+teszteli, mind a négy szabállyal {QA, CYBERSEC}-et kap, és arra jut, hogy nincs mit javítani. A
+selftest ezért az EREDETI szöveggel dolgozik, és ezt le is írja magáról.
+
+**Ki döntött:** MikroB (D változat, komment 20581), backend2 (mérés, alternatívák, a `)`/`-`
+bővítés külön hagyása).
+**Hivatkozás:** kártya `82fa48b0`; `store/gate_scan_lib.py`, `store/gate-scan-selftest.py`,
+`store/gate-decl-check.py`, `store/gate-decl-check.selftest.py`.

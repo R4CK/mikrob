@@ -93,11 +93,40 @@ case("the LATEST MikroB designation wins over an earlier one", "Gate: QA + Cyber
 # Verbatim shape of 67a5ee01's LAST `Gate:` match, which is the one declared_gate_excludes_me()
 # uses. Note the first fixture I wrote for this was WRONG in an instructive way: prose reading
 # 'a "Gate: QA + X" designacio' does name a role, so it is not this class at all.
-case("a Gate: line that names no role at all is not OK, it excludes everyone",
+# UPDATED BY CARD 82fa48b0. This fixture is 67a5ee01's real mid-sentence prose, and it used to be
+# read as a designation naming nobody -- the PROSE finding. Anchoring GATE_DECL_RX to a sentence or
+# clause start means the parser no longer sees it at all, so the card falls through and surfaces to
+# EVERY gate, which is the correct outcome for text that designates nothing. The case is kept
+# (rather than deleted) precisely because it is the founding text: it now pins the FIX.
+case("founding prose: mid-sentence Gate: talk is no longer read as a designation",
      "MEGOLDAS: (b) MikroB mostantol a Gate: sort description-be irja PUT-tal, nem csak kommentbe.",
-     [], "PROSE", 1)
-case("...and prose does not become a designation just because a real one follows elsewhere",
-     'Gate: QA + Cybersec\nA "Gate: sort description-be irja" reszrol meg beszelunk.', [], "PROSE", 1)
+     [], "NONE", 0)
+case("...and a real designation is no longer shadowed by prose that follows it",
+     'Gate: QA + Cybersec\nA "Gate: sort description-be irja" reszrol meg beszelunk.', [], "OK", 0)
+
+# PROSE is still REACHABLE, just narrower: a `Gate:` that DOES start a sentence and still names no
+# role. Without this the code path would be dead and nobody would notice.
+case("PROSE survives the anchoring: a line-start Gate: naming no role still excludes everyone",
+     "Gate: majd eldontjuk kesobb", [], "PROSE", 1)
+
+# The convention-drift report the anchoring makes necessary (card 82fa48b0 DoD). These are the real
+# board shapes the anchored regex drops: they are genuine designations, so the tool must SAY so
+# rather than let them read as "no designation at all".
+case("MID-SENTENCE: a real designation after a closing paren is reported, not silently dropped",
+     "... a felbontas szerint; (5) gate: QA + Cybersec szerinti ellenorzes.", [], "MID-SENTENCE", 1)
+case("MID-SENTENCE: a real designation after a hyphen is reported",
+     "Trust-boundary/access -> 3-gate: QA + Cybersec + Cybered.", [], "MID-SENTENCE", 1)
+# Verbatim from c52e2823, one of the four the anchoring drops. Note WHY the old rule read it as a
+# designation at all: the role name it picks up ("QA2") appears LATER in the same sentence, not
+# before the colon -- so this is prose describing what the QA gate should check, which the old rule
+# scored as a gate tier. Dropping it is arguably a fix rather than a loss; it is reported either way.
+case("MID-SENTENCE: the real c52e2823 shape is reported, not silently dropped",
+     "o a sajat hibaja, o ismeri a kontextust. QA gate: a javitas + mindket eszkoz tesztje "
+     "(pozitiv: QA2 PASS/FAIL felismerve).", [], "MID-SENTENCE", 1)
+case("CONTROL: mid-sentence prose naming NO role is NOT a MID-SENTENCE finding",
+     "MikroB mostantol a Gate: sort description-be irja.", [], "NONE", 0)
+case("CONTROL: a properly anchored designation is OK, never MID-SENTENCE",
+     "... a felbontas szerint. Gate: QA + Cybersec", [], "OK", 0)
 # CONTROL: a real designation that merely CONTAINS extra words is still a designation.
 case("CONTROL: a designation with a parenthetical is still a designation",
      "Gate: QA + Cybersec (tartalom-ellenorzes, trust-boundary erintve)", [], "OK", 0)
