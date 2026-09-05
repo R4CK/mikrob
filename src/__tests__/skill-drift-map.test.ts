@@ -39,6 +39,18 @@ function pair(skill: string, template: string, live: string): void {
   writeFileSync(join(l, 'SKILL.md'), live)
 }
 
+/** Write one skill file into a PER-AGENT template tree and the live tree that tree installs to.
+ * seed-fleet-agents/<agent>/ is `cp -r`d into agents/<agent>/ (install-linux.sh:1534), so the live
+ * counterpart is agents/<agent>/.claude/skills -- NOT the global set `pair()` above writes to. */
+function agentPair(agent: string, skill: string, template: string, live: string): void {
+  const t = join(installDir, 'seed-fleet-agents', agent, '.claude/skills', skill)
+  const l = join(installDir, 'agents', agent, '.claude/skills', skill)
+  mkdirSync(t, { recursive: true })
+  mkdirSync(l, { recursive: true })
+  writeFileSync(join(t, 'SKILL.md'), template)
+  writeFileSync(join(l, 'SKILL.md'), live)
+}
+
 function run(args: string[] = []): string {
   return execFileSync('python3', [TOOL, ...args], {
     encoding: 'utf8',
@@ -108,14 +120,71 @@ describe('store/skill-drift-map.py', () => {
   it('sees every template tree, not only seed-skills', () => {
     // seed-fleet-agents/<agent>/.claude/skills is where a NEW AGENT is seeded from; a tool blind to
     // it would report a clean bill while every freshly created agent got a stale skill.
-    const agentSkill = join(installDir, 'seed-fleet-agents/qa/.claude/skills/agent-only-skill')
-    mkdirSync(agentSkill, { recursive: true })
-    writeFileSync(join(agentSkill, 'SKILL.md'), 'old\n')
-    mkdirSync(join(liveDir, 'agent-only-skill'), { recursive: true })
-    writeFileSync(join(liveDir, 'agent-only-skill/SKILL.md'), 'old\nnew live line\n')
+    //
+    // The live half of this fixture used to sit in liveDir (the GLOBAL skills dir). That was the
+    // defect this test could not see, because it was built into the fixture: a per-agent seed
+    // installs into agents/<agent>/.claude/skills (install-linux.sh:1534), never into the global
+    // set. The assertion below is unchanged -- only the fixture moved to where the file really goes.
+    agentPair('qa', 'agent-only-skill', 'old\n', 'old\nnew live line\n')
     const out = run(['--skill', 'agent-only-skill'])
     expect(out).toMatch(/1\s+template LAGS/)
     expect(out).toMatch(/seed-fleet-agents\/qa\/agent-only-skill/)
+  })
+})
+
+// Card bfc028b4. Every template tree is paired with the live copy it actually installs to, and
+// getting that pairing wrong is silent -- the tool kept reporting, the reports were just about the
+// wrong two files. Measured on the real install before the fix: 17 TEMPLATE-ONLY skills of which 1
+// was real, and two LIVE LOST content rows that never appeared at all.
+describe('each template tree is paired with ITS OWN live root (card bfc028b4)', () => {
+  it('THE DEFECT: a per-agent skill matching its OWN agent is clean, even when the global copy differs', () => {
+    // The shape that misled a real sync: identical to agents/<a>/..., different from ~/.claude/skills.
+    // Against the global root this reads as drift and invites a "fix" the agent will never see.
+    agentPair('backend', 'paired-skill', 'the one true line\n', 'the one true line\n')
+    mkdirSync(join(liveDir, 'paired-skill'), { recursive: true })
+    writeFileSync(join(liveDir, 'paired-skill/SKILL.md'), 'a completely different global line\n')
+    const out = run(['--skill', 'paired-skill'])
+    expect(out, 'the per-agent pair is byte-identical, so nothing about it is drift')
+      .not.toMatch(/seed-fleet-agents\/backend\/paired-skill/)
+  })
+
+  it('a skill installed ONLY per-agent is not TEMPLATE-ONLY just because the global set lacks it', () => {
+    // 16 of the 17 TEMPLATE-ONLY rows on the real install were exactly this.
+    agentPair('cybered', 'per-agent-only-skill', 'body\n', 'body\n')
+    const out = run(['--skill', 'per-agent-only-skill'])
+    expect(out).not.toMatch(/TEMPLATE-ONLY skill/)
+  })
+
+  it('CONTROL: a skill missing from the agent\'s OWN live tree is still TEMPLATE-ONLY', () => {
+    // Without this the fix could have "passed" by silencing the category rather than aiming it.
+    const seed = join(installDir, 'seed-fleet-agents/cybered/.claude/skills/genuinely-absent')
+    mkdirSync(seed, { recursive: true })
+    writeFileSync(join(seed, 'SKILL.md'), 'body\n')
+    // cybered HAS a live tree (created by the case above) -- the skill just is not in it.
+    const out = run(['--skill', 'genuinely-absent'])
+    expect(out).toMatch(/1\s+TEMPLATE-ONLY skill/)
+  })
+
+  it('an agent seeded but never installed reports ONCE, not once per skill', () => {
+    // Per-skill reporting is what made the old count unreadable: the signal drowned in its own
+    // repetition. Three skills, one row.
+    for (const s of ['a-skill', 'b-skill', 'c-skill']) {
+      const seed = join(installDir, 'seed-fleet-agents/notinstalled/.claude/skills', s)
+      mkdirSync(seed, { recursive: true })
+      writeFileSync(join(seed, 'SKILL.md'), 'body\n')
+    }
+    const out = run(['--full'])
+    const rows = out.split('\n').filter((l) => l.includes('LIVE TREE ABSENT'))
+    expect(rows.filter((l) => l.includes('notinstalled'))).toHaveLength(1)
+  })
+
+  it('the installer\'s __MARVEEN_INSTALL_DIR__ sentinel renders, it is not drift', () => {
+    // seed-fleet-agents/ uses a SECOND placeholder convention (install-linux.sh:1546 sed) that the
+    // tool did not know about, so every sentinel-bearing line read as a difference.
+    agentPair('marketing', 'sentinel-skill',
+      'run __MARVEEN_INSTALL_DIR__/store/x.sh\n', `run ${installDir}/store/x.sh\n`)
+    const out = run(['--skill', 'sentinel-skill'])
+    expect(out).toMatch(/1\s+placeholder rendering only \(correct\)/)
   })
 })
 
@@ -165,6 +234,22 @@ describe('placeholder-count regression (card d4412070, bf67711e follow-up: embed
     writeFileSync(tplPath, `run at ${gitInstallDir}/store/x.sh with port 3420\n`)
     const out = runGit()
     expect(out).toMatch(/embedded-pg-e2e-runner\/SKILL\.md: 2 -> 0/)
+  })
+
+  it('a flattened __MARVEEN_INSTALL_DIR__ is the same corruption and is counted too (card bfc028b4)', () => {
+    // seed-fleet-agents/ ships a SECOND placeholder convention, rewritten by sed at
+    // install-linux.sh:1546. Counting only {{NAME}} left the whole per-agent tree unwatched for
+    // exactly the flattening this section exists to catch. Measured: without the widened pattern
+    // this case is the only one of the five bfc028b4 cases that stays green, so it is the one that
+    // makes that half of the change load-bearing rather than decorative.
+    const dir = join(gitInstallDir, 'seed-fleet-agents/backend/.claude/skills/sentinel-skill')
+    mkdirSync(dir, { recursive: true })
+    const tplPath = join(dir, 'SKILL.md')
+    writeFileSync(tplPath, 'run __MARVEEN_INSTALL_DIR__/store/x.sh\n')
+    commitAll('initial')
+    writeFileSync(tplPath, `run ${gitInstallDir}/store/x.sh\n`)
+    const out = runGit()
+    expect(out).toMatch(/sentinel-skill\/SKILL\.md: 1 -> 0/)
   })
 
   it('an unrelated content edit that keeps both placeholders is NOT flagged', () => {

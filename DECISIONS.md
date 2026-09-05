@@ -7351,3 +7351,47 @@ látja, LOW).
 **Ki döntött:** Cybersec (lelet + javítási irány), backend (megvalósítás).
 **Hivatkozás:** kártya 53c59307, Cybersec komment 20410; `src/web/agent-dir-tripwire.ts`,
 `src/__tests__/agent-dir-namespace-runtime.test.ts` (7 -> 9 eset).
+
+## 2026-09-05 -- 23d09a68 (1. lépés) -- A skill-drift eszköz mostantól minden seed-fát a SAJÁT live párjához mér
+
+**Döntés:** a `store/skill-drift-map.py` minden template-fához a ténylegesen hozzá tartozó live
+gyökeret párosítja. A `seed-skills/` továbbra is a globális `~/.claude/skills`-hez mérődik
+(install-linux.sh:1464, update.sh:826), a `seed-fleet-agents/<a>/` viszont mostantól az
+`agents/<a>/.claude/skills`-hez, mert az install-linux.sh:1534 oda másolja. Ezenfelül az eszköz
+megtanulta a második placeholder-konvenciót is: a `__MARVEEN_INSTALL_DIR__` / `__MARVEEN_HOME__`
+sentineleket (install-linux.sh:1546), rendereléshez ÉS a belaposodás-számláláshoz egyaránt.
+
+**Miért:** a rossz párosítás CSENDES. Az eszköz végig jelentett, csak nem arról a két fájlról,
+amiről hitte. A valós telepítésen 17 `TEMPLATE-ONLY skill`-t mondott, amiből EGY volt valódi (a
+másik 16 telepítve van, csak per-ügynökként), és teljesen elrejtett két `LIVE LOST content` sort,
+vagyis pont a veszélyes irányt. A bfc028b4 kártyán emiatt szinkronizáltam tíz fájlt egy olyan
+forráshoz, amit az érintett ügynökök nem olvasnak; a landolás előtt visszavontam.
+
+**Ami ezen felül változott:** ha egy seed-ügynöknek egyáltalán nincs telepített live fája, az
+mostantól EGYSZER jelenik meg (`LIVE TREE ABSENT`), nem skillenként. A skillenkénti ismétlés tette
+olvashatatlanná a régi számot: a jel a saját zajában fulladt meg.
+
+**Egy meglévő teszt fixture-jét át kellett helyezni, nem törölni.** A `sees every template tree,
+not only seed-skills` eset a per-ügynök seed live felét a GLOBÁLIS könyvtárba írta, vagyis a hibát
+rögzítette a fixture-be: a teszt szándéka helyes volt, a párosítása nem. Az állítás változatlan,
+csak a fájl került oda, ahová valójában települ. A `waiting`-re állított kártya lezárásakor ez a
+különbség számít: egy eltűnt teszt FAIL lenne, egy áthelyezett fixture nem.
+
+**Bizonyíték:** 10 -> 16 eset ebben a fájlban (a +6 pontosan a hat új eset), a tágabb seed/skill
+őrkészlet 88 -> 94. Négy mutáció, mind a saját esetével elkapva, minden revert md5-tel bájtazonos:
+(M1) a per-ügynök live-gyökér visszaállítása a globálisra -> 5 bukás; (M2) a sentinelek kivétele a
+SUBS-ból -> 1; (M3) a `LIVE TREE ABSENT` skillenkénti jelentése -> 1; (M4) a `__MARVEEN_` kivétele a
+`PLACEHOLDER_RX`-ből -> ELSŐRE 0 BUKÁS. Az M4 a saját munkám fedetlen fele volt: a sentinel-
+belaposodásra nem volt eset, tehát a változtatás azon fele bizonyíthatatlan lett volna. Írtam rá
+egyet a git-alapú regressziós blokkba, utána az M4 is bukik. Ezt azért írom le, mert a tanulság nem
+a javítás, hanem az, hogy a mutáció-futtatás nélkül ez a fél változtatás dekorációként landolt volna.
+
+**A javított mérés a landolt develop-on:** 13 placeholder-renderelés + 11 de-perszonalizálás
+(helyesen nem drift), és 46 valódi drift-sor: 14 template-only fájl, 12 two-sided, 10 live-only
+fájl, 7 template LAGS, 2 LIVE LOST content, 1 TEMPLATE-ONLY skill. A régi leírás "70 tétele"
+ezzel érvénytelen; a 23d09a68 leírását átírtam.
+
+**Ki döntött:** MikroB (előbb az eszközt javítsuk, minden más arra épül), backend2 (a párosítási
+hiba felderítése, a javítás és a mutációs igazolás).
+**Hivatkozás:** kártya 23d09a68 (lelet: bfc028b4); `store/skill-drift-map.py`,
+`src/__tests__/skill-drift-map.test.ts` (10 -> 16 eset).
