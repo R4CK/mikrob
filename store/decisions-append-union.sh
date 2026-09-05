@@ -33,6 +33,36 @@
 #   returns 1 = not this shape (more than one file conflicted, or the base/ours/theirs prefix check
 #               or the header-count sanity check did not hold) -- caller's existing abort-and-refuse
 #               path is unchanged. Never partially mutates the worktree on a 1 return.
+# The LENGTH of the longest common prefix of two strings, truncated to the last complete line.
+#
+# RETURNS A LENGTH, NOT THE STRING, and that is not a style choice. `$(...)` strips trailing
+# newlines from what it captures, so a helper that echoed the prefix itself would lose the very
+# newline that makes it end on a line boundary -- the caller's offset would then be one byte short
+# and every remainder would begin with a stray "\n". A number survives command substitution intact,
+# and it also avoids copying a 447 KB string through a subshell.
+#
+# `cmp` finds the first differing BYTE in one C-speed pass -- bash cannot compare 447 KB strings
+# byte by byte without the O(n^2) behaviour card d56786a7 measured.
+_common_line_prefix_len() {
+  local a="$1" b="$2" n cut head
+  n="$(cmp <(printf '%s' "$a") <(printf '%s' "$b") 2>/dev/null | sed -n 's/.*byte \([0-9][0-9]*\).*/\1/p')"
+  if [ -z "$n" ]; then
+    # cmp is silent on identical input and prints "EOF on <file>" when one side is a prefix of the
+    # other. Identical means git would not have conflicted this file at all: refuse rather than
+    # answer for a state that should not exist. Otherwise the shorter string is the whole prefix.
+    [ "${#a}" -eq "${#b}" ] && return 1
+    if [ "${#a}" -lt "${#b}" ]; then n=$(( ${#a} + 1 )); else n=$(( ${#b} + 1 )); fi
+  fi
+  cut=$(( n - 1 ))                       # cmp reports 1-based; the bytes BEFORE it are common
+  head="${a:0:$cut}"
+  # Back up to the last complete line. `%$'\n'*` removes everything after the final newline; if
+  # there is no newline at all there is no usable line boundary, and the answer is 0.
+  case "$head" in
+  *$'\n'*) head="${head%$'\n'*}"; printf '%s' "$(( ${#head} + 1 ))" ;;
+  *) printf '0' ;;
+  esac
+}
+
 try_append_union() {
   local wt="$1" file="$2"
   local conflicted
@@ -46,51 +76,80 @@ try_append_union() {
   ours="$(git -C "$wt" show ":2:$file" 2>/dev/null)" || return 1
   theirs="$(git -C "$wt" show ":3:$file" 2>/dev/null)" || return 1
 
-  # PURE APPEND ON BOTH SIDES: each side's content must begin with EXACTLY the base content --
-  # nothing removed, nothing changed, only lines added after it. A real edit (a correction to an
-  # existing entry, an archival rewrite touching old text) breaks this prefix match and correctly
-  # falls through to the refusal, never a guess about which edit "wins".
-  case "$ours" in
-  "$base"*) ;;
-  *) return 1 ;;
-  esac
-  case "$theirs" in
-  "$base"*) ;;
-  *) return 1 ;;
-  esac
+  # THE SHARED PART IS THE COMMON PREFIX OF THE TWO SIDES, NOT THE MERGE-BASE (card b7e57877).
+  #
+  # This used to require the base to be a literal byte prefix of BOTH sides. Measured on the real
+  # repo, that refused landings for a reason with no meaning: both sides had inserted THE SAME
+  # SINGLE BLANK LINE mid-file (line 6520 of 6743) and then appended their own entry at the tail.
+  # Neither side deleted anything -- `git diff --numstat` was "30 0" and "924 0" -- so there was no
+  # disagreement to protect against, only a byte difference identical on both sides. 5 of the 13
+  # open branches that touch this file were blocked that way; 4 of them on BOTH sides at once.
+  #
+  # What both sides contain IDENTICALLY cannot be a disagreement, so the union is taken against
+  # their common prefix. The safety property is preserved by the check below, not weakened: nothing
+  # the merge-base held may be missing from that prefix.
+  local prefix_len prefix ours_added theirs_added
+  prefix_len="$(_common_line_prefix_len "$ours" "$theirs")" || return 1
+  [ -n "$prefix_len" ] && [ "$prefix_len" -gt 0 ] 2>/dev/null || return 1
+  prefix="${ours:0:$prefix_len}"
 
-  local ours_added theirs_added
-  # OFFSET, not pattern-strip. `${ours#"$base"}` is O(n^2) in bash and froze every landing that
+  # THE GUARANTEE, and the reason this stays safe when the prefix is no longer the base. If the two
+  # sides diverge EARLY -- a real edit at line 10 of a 6743-line file -- the common prefix is those
+  # 10 lines, and concatenating the two remainders would DUPLICATE almost the whole file. That is
+  # caught here: every line the merge-base had must still be present, in order, in the common
+  # prefix. `diff` prints a `<` line for anything present in base and absent from the prefix, so a
+  # single such line refuses the union. This is what the old byte-prefix test bought, restated in a
+  # form that ignores changes both sides made identically.
+  #
+  # TRAILING NEWLINES ARE NORMALISED ON BOTH SIDES FIRST, and this is not cosmetic: `$(git show ...)`
+  # strips trailing newlines from what it captures, so `base` arrives WITHOUT its final newline while
+  # `prefix` -- sliced out of `ours` at a line boundary -- still ends with one. Diffing them raw makes
+  # `diff` report "\ No newline at end of file" and emit a `<` line for the last line of base, so the
+  # check refused every genuine append. Caught by this file's own selftest, which went red on the two
+  # cases that were passing before the rewrite.
+  if diff <(printf '%s\n' "${base%%$'\n'}") <(printf '%s\n' "${prefix%%$'\n'}") | grep -q '^<'; then
+    return 1
+  fi
+
+  # OFFSET, not pattern-strip. `${ours#"$prefix"}` is O(n^2) in bash and froze every landing that
   # touched this file: measured on the real 447 KB DECISIONS.md it took 405 SECONDS at 97% CPU
   # (32 KB 1.9s, 64 KB 8.0s, 128 KB 32.2s, 256 KB 138s -- ~4x per doubling), and fullstack lost
   # ~25 minutes of a landing to it before the cause was found (card d56786a7).
   #
-  # The `case` above has ALREADY proved that base is a literal prefix of both sides, so there is
-  # nothing left to match: skipping ${#base} characters is the same answer by construction, and
-  # measured identical at every size above. 0.010s on the same 447 KB input.
-  ours_added="${ours:${#base}}"
-  theirs_added="${theirs:${#base}}"
-  # Both sides must have actually ADDED something. If one side is byte-identical to base, git would
-  # not have conflicted this file in the first place -- reaching here with an empty added-half means
-  # some assumption above is wrong, so fall through to the refusal rather than guess.
+  # _common_line_prefix has ALREADY proved this is a literal prefix of both sides, so there is
+  # nothing left to match: skipping ${#prefix} characters is the same answer by construction.
+  ours_added="${ours:${#prefix}}"
+  theirs_added="${theirs:${#prefix}}"
+  # Both sides must have actually ADDED something. If one side is byte-identical to the shared
+  # prefix, git would not have conflicted this file in the first place -- reaching here with an
+  # empty added-half means some assumption above is wrong, so refuse rather than guess.
   [ -n "$ours_added" ] && [ -n "$theirs_added" ] || return 1
 
-  # LINE-BOUNDARY, not just a string prefix (caught by this file's own selftest before landing):
-  # the prefix test above is a plain string prefix, so "## entry A" is a "prefix" of both
-  # "## entry A" (unchanged) AND "## entry A (CORRECTED)" -- the latter is an EDIT of the base's own
-  # last line, not a new line appended after it, and the string-prefix check alone cannot tell them
-  # apart. Requiring the added half to itself START WITH A NEWLINE closes that: a genuine append
-  # always begins a fresh line, an edit to the existing last line never does.
-  case "$ours_added" in
-  $'\n'*) ;;
-  *) return 1 ;;
-  esac
-  case "$theirs_added" in
-  $'\n'*) ;;
+  # LINE BOUNDARY. _common_line_prefix already truncates to the last newline, so each remainder
+  # begins at the start of a line and the concatenation below cannot splice two half-lines into one
+  # -- the failure the old code prevented by requiring the remainder to START with a newline. That
+  # older form cannot be used here: the prefix now ENDS with the newline instead of the remainder
+  # beginning with it. Asserted rather than assumed, because it is the whole basis of the splice.
+  case "$prefix" in
+  ''|*$'\n') ;;
   *) return 1 ;;
   esac
 
-  local union="${base}${ours_added}${theirs_added}"
+  # THE JOIN NEEDS AN EXPLICIT NEWLINE, and leaving it out spliced two entries into one line.
+  # `$(git show ...)` strips trailing newlines from what it captures, so `ours_added` ends WITHOUT
+  # one; concatenating `theirs_added` straight onto it produced "## entry B## entry C" -- a single
+  # malformed line carrying both sides' first entry, which would then have been committed.
+  #
+  # The old code never had to think about this: it kept the newline at the START of each added half
+  # (base had none, each tail began with one), which is newline-loss-proof by construction. Moving
+  # the boundary into the prefix is what made the join explicit, so it is made explicit HERE rather
+  # than relying on either side to carry it. Found by this file's own selftest.
+  local joined="$ours_added"
+  case "$joined" in
+  *$'\n') ;;
+  *) joined="${joined}"$'\n' ;;
+  esac
+  local union="${prefix}${joined}${theirs_added}"
 
   # HEADER-COUNT CHECK (backend's own verification idea, card cbb66abf) as the actual arithmetic,
   # not the shorthand "both sides' counts added together": base's own headers are counted in BOTH
@@ -99,12 +158,33 @@ try_append_union() {
   # A real DECISIONS.md already carries hundreds of headers on both sides by the time two branches
   # diverge, so the literal "added together" reading would refuse every real case -- this is the
   # corrected form, cheap belt-and-suspenders ahead of the caller's own seam-check.
-  local h_base h_ours h_theirs h_union
-  h_base="$(grep -c '^## ' <<<"$base")"
+  local h_prefix h_ours h_theirs h_union
+  h_prefix="$(grep -c '^## ' <<<"$prefix")"
   h_ours="$(grep -c '^## ' <<<"$ours")"
   h_theirs="$(grep -c '^## ' <<<"$theirs")"
   h_union="$(grep -c '^## ' <<<"$union")"
-  [ "$h_union" -eq "$((h_ours + h_theirs - h_base))" ] || return 1
+  # Counted against the SHARED PREFIX, not the base: the prefix is what appears once in the union,
+  # so it is what must be subtracted. Using the base here would be wrong whenever the two sides made
+  # an identical change beyond it -- the exact case this card widened the function to accept.
+  [ "$h_union" -eq "$((h_ours + h_theirs - h_prefix))" ] || return 1
+
+  # ...AND THE COUNT ALONE IS NOT ENOUGH (backend's measurement, msg 23346, on an independent
+  # implementation of the same idea). A cut that lands MID-LINE glues one side's first entry onto the
+  # other's last line and swallows its `## ` header: backend measured 165 headers where 166 were due,
+  # and 165 "looks plausible" -- the arithmetic identity can be satisfied while a specific entry is
+  # gone. Membership is the property that actually matters, so it is checked directly: every header
+  # LINE present on either side must be present in the union.
+  #
+  # This is defence in depth rather than the primary guarantee. _common_line_prefix_len truncates to
+  # the last newline, so the splice cannot land mid-line here in the first place (verified against
+  # backend's exact scenario: raw divergence inside a "## 2026-09-05 -- " line still yields a prefix
+  # ending at that line's start). But this function writes a file that a human will trust without
+  # re-reading, and the cheap check for the exact failure a peer measured is worth its eight lines.
+  local missing
+  missing="$(comm -23 \
+    <({ grep '^## ' <<<"$ours"; grep '^## ' <<<"$theirs"; } | sort -u) \
+    <(grep '^## ' <<<"$union" | sort -u))"
+  [ -z "$missing" ] || return 1
 
   printf '%s\n' "$union" >"$wt/$file"
   git -C "$wt" add "$file" || return 1
@@ -285,6 +365,61 @@ if [ "${BASH_SOURCE[0]}" = "${0}" ] && [ "${1:-}" = "--selftest" ]; then
   else
     echo "  ok   one side identical to base -- git fast-forwarded it, never reached try_append_union"
   fi
+
+  # THE CASE THIS FUNCTION WAS WIDENED FOR (card b7e57877), measured on the real repo before it was
+  # written: both sides insert the SAME single blank line mid-file and then append their own entry.
+  # `git diff --numstat` was "30 0" and "924 0" -- neither side deleted anything -- yet the old
+  # byte-prefix-against-base test refused, because the base was no longer a literal prefix of either
+  # side. 5 of the 13 open branches touching this file were blocked that way, 4 on BOTH sides.
+  setup_conflict identical-midfile-insert \
+    "## entry A
+body of A
+## entry B
+" \
+    "## entry A
+body of A
+
+## entry B
+## entry L (left)
+" \
+    "## entry A
+body of A
+
+## entry B
+## entry R (right)
+"
+  t_resolved "an IDENTICAL mid-file insertion on both sides no longer blocks the union" \
+    "## entry A
+body of A
+
+## entry B
+## entry L (left)
+## entry R (right)
+"
+
+  # ...AND THE SAFETY PROPERTY THAT MAKES THE WIDENING SAFE. If the two sides diverge EARLY with
+  # DIFFERENT content, their common prefix is short, and concatenating the two remainders would
+  # duplicate most of the file. The no-deletion check catches exactly that: lines the merge-base had
+  # are missing from the common prefix, so the union is refused. Without this case the widening
+  # would be untested where it matters -- the previous version could not reach this shape at all.
+  setup_conflict divergent-midfile-insert \
+    "## entry A
+body of A
+## entry B
+" \
+    "## entry A
+LEFT-ONLY LINE
+body of A
+## entry B
+## entry L (left)
+" \
+    "## entry A
+RIGHT-ONLY LINE
+body of A
+## entry B
+## entry R (right)
+"
+  t_refused "DIFFERENT mid-file insertions are refused -- the union never duplicates the tail"
 
   # REALISTIC SIZE, on a clock (card d56786a7). Every case above runs on a few hundred bytes, so
   # every one of them passed just as happily with the O(n^2) `${ours#"$base"}` strip that froze

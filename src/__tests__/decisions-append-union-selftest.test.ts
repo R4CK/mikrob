@@ -35,8 +35,14 @@ describe('decisions-append-union.sh selftest', () => {
   // costs seconds; this costs nothing and names the exact construct that must not come back.
   it('slices the added half by OFFSET, never by pattern-strip', () => {
     const src = execFileSync('cat', [SCRIPT], { encoding: 'utf-8' })
-    expect(src).toContain('ours_added="${ours:${#base}}"')
-    expect(src).toContain('theirs_added="${theirs:${#base}}"')
+    // The offset is now taken against the SHARED PREFIX rather than the merge-base (card b7e57877):
+    // the union is computed from what the two sides have in common, so `base` is no longer the thing
+    // being sliced off. The PROPERTY this test exists for is unchanged -- slice by offset, never by
+    // pattern-strip -- and only the name of the variable it slices against moved. Updating the
+    // needle keeps the assertion; weakening it to a substring like 'ours_added="${ours:' would not,
+    // because that would also accept a pattern-strip written on the following line.
+    expect(src).toContain('ours_added="${ours:${#prefix}}"')
+    expect(src).toContain('theirs_added="${theirs:${#prefix}}"')
     // CODE lines only. The fix's own comment explains WHY the pattern-strip form is wrong and
     // therefore quotes it, so scanning the whole file would fail on the prose that documents the
     // fix -- a trap this repo's docs guards have sprung on me before. Scoping the scan to code is
@@ -47,5 +53,9 @@ describe('decisions-append-union.sh selftest', () => {
     // there is nothing left for a pattern to match.
     expect(code).not.toContain('${ours#')
     expect(code).not.toContain('${theirs#')
+    // The new variable gets the same prohibition: `${prefix#...}` on a 447 KB string is the same
+    // O(n^2) trap under a different name, and a rename is exactly how a guard stops covering the
+    // thing it was written for.
+    expect(code).not.toContain('${prefix#')
   })
 })
