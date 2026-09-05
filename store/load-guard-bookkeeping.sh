@@ -179,10 +179,24 @@ trap 'rm -f "$hdr_file"' EXIT
 printf 'Authorization: Bearer %s\n' "$(cat "$TOKEN_FILE" 2>/dev/null)" > "$hdr_file"
 
 _kanban_get() { curl -sf --max-time 10 -H @"$hdr_file" "$DASH/api/kanban" 2>/dev/null || echo '[]'; }
-_post_comment() { # $1 cardId $2 text
+# THE AUTHOR IS A PARAMETER, not a constant (card 9444a7bb). It used to be hardcoded "backend", so
+# every PAUSED-LOAD/RESUMED-LOAD note claimed backend had been frozen no matter who actually was --
+# measured on card 98dbbcc9: 36 notes in ~4.5 minutes, all authored "backend", on FULLSTACK's card
+# while fullstack was the SIGSTOPped process (the sigstop-state file named fullstack correctly, so
+# only the attribution was wrong). That corrupts the one thing a card's comment history is for:
+# who did what, when. Someone reading back through an incident would have gone looking for backend.
+#
+# NO DEFAULT. A default is what produced this bug: a caller that forgets the argument would silently
+# blame whoever the default names. An empty author falls back to "load-guard" -- which is the honest
+# answer (the guard IS the writer) and, unlike any agent name, cannot be mistaken for a person's own
+# note. The comment still posts, because its other job is moving `updated_at` so the stuck-monitor
+# does not take the card away from an agent that is merely frozen.
+_post_comment() { # $1 cardId  $2 author  $3 text
   [ -n "$1" ] && [ "$1" != "null" ] || return 0
+  local author="${2:-load-guard}"
+  [ -n "$author" ] || author="load-guard"
   curl -sf --max-time 10 -H @"$hdr_file" -X POST "$DASH/api/kanban/$1/comments" -H 'Content-Type: application/json' \
-    -d "$(python3 -c 'import json,sys; print(json.dumps({"author":"backend","content":sys.argv[1]}))' "$2")" \
+    -d "$(python3 -c 'import json,sys; print(json.dumps({"author":sys.argv[1],"content":sys.argv[2]}))' "$author" "$3")" \
     >/dev/null 2>&1 || true
 }
 
@@ -203,7 +217,7 @@ for c in cards:
 ")"
   mech="$(printf '%s' "$RESULT" | AGENT="$agent" python3 -c "import json,os,sys; print(json.load(sys.stdin)['paused'][os.environ['AGENT']]['mechanism'])")"
   if [ -n "$card_id" ]; then
-    _post_comment "$card_id" "INFO-ONLY: PAUSED-LOAD ($mech) -- a load-guard terheles miatt szuneteltette ezt az ugynokot, a fagyasztas/fekezes ideje alatt a kartya nem szamit beragadtnak."
+    _post_comment "$card_id" "$agent" "INFO-ONLY: PAUSED-LOAD ($mech) -- a load-guard terheles miatt szuneteltette ezt az ugynokot, a fagyasztas/fekezes ideje alatt a kartya nem szamit beragadtnak."
   fi
   # patch the computed card_id into RESULT for the write-out below
   RESULT="$(printf '%s' "$RESULT" | AGENT="$agent" CARD="$card_id" python3 -c "
@@ -227,7 +241,7 @@ for line in "${ends[@]}"; do
   agent="${line%%$'\t'*}"
   card_id="${line#*$'\t'}"
   [ -n "$card_id" ] || continue
-  _post_comment "$card_id" "INFO-ONLY: RESUMED-LOAD -- a load-guard felengedte ezt az ugynokot, a terheles-alapu szuneteles veget ert."
+  _post_comment "$card_id" "$agent" "INFO-ONLY: RESUMED-LOAD -- a load-guard felengedte ezt az ugynokot, a terheles-alapu szuneteles veget ert."
 done
 
 # ---- write the new snapshots --------------------------------------------------------------------
