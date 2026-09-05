@@ -576,8 +576,16 @@ export function listAllAgentNames(): string[] {
   // the INSTALL path; this closes the runtime one. Any live agent can `mkdir agents/system-directive`
   // with plain Bash, and without this filter that directory would join the context-guard sweep --
   // whose two writers send messages carrying the swept name as `from`. The name never reaching the
-  // list is what makes the mkdir worthless, and it is a single choke point: this is the only
-  // readdir of AGENTS_BASE_DIR in src/.
+  // list is what makes the mkdir worthless.
+  //
+  // WHAT THIS CHOKE POINT ACTUALLY COVERS -- the earlier wording here said "the only readdir of
+  // AGENTS_BASE_DIR in src/", and Cybersec measured that FALSE (card 53c59307): channel-invites.ts
+  // reads the same root directly (index.ts hands it AGENTS_BASE_DIR). The security conclusion is
+  // unchanged, because that reader never mints a sender id -- it only looks for directories holding
+  // a channel access.json and uses the name for that path -- but the correct statement is narrower:
+  // this drop protects the CONSUMERS of listAllAgentNames, not the directory itself, and there is
+  // already one direct reader walking past it. A false "single choke point" is worse than no claim:
+  // it tells the next reader not to look.
   //
   // isReservedSenderId is case-insensitive, so `agents/System-Directive` is dropped too. A name
   // that merely SANITIZES to a reserved id (`System--Directive`) is not dropped, deliberately:

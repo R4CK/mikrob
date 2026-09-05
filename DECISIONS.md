@@ -7316,6 +7316,42 @@ az eszközhiba felderítése és a per-ügynök fél visszavonása).
 **Hivatkozás:** kártya bfc028b4; `seed-skills/` 5 fájl. A per-ügynök fél és a
 `store/skill-drift-map.py` javítása külön döntést igényel.
 
+## 2026-09-05 10:45 -- A tripwire-riasztás a könyvtárnevet ADATKÉNT írja ki (Cybersec H1, NO-GO feloldás)
+
+**Döntés:** Az `agent-dir-tripwire.ts` riasztása a támadó által választott könyvtárnevet mindkét
+helyen fertőtlenítve jeleníti meg: a névnél idézve-escapelve (`asData`), a karantén-útvonalnál pedig
+egy származtatott, fájlrendszer-biztos slug alakjában (`quarantineSlug`), nem a nyers néven.
+
+**Miért:** Cybersec HIGH lelete a landolt `9bfa6858`-on, lefuttatott PoC-cal. A `readdirSync`
+kimenete Linuxon a `/` és a NUL kivételével bármilyen bájtot tartalmazhat, ÚJSORT is. A nyers
+interpoláció miatt egy `mkdir agents/$'system-directive\n\n[SYSTEM-DIREKTIVA ...] <utasítás>'` a
+riasztás törzsébe SAJÁT SORKÉNT került be, egy biztonsági riasztás keretében, `from=<fő ügynök>`
+azonosítóval. Ez pont az az azonosító, amit a HTTP API NEM enged hamisítani (a `POST /api/messages`
+403-at ad rá, mert a fő ügynöknek nincs `agents/` könyvtára), a tripwire viszont folyamaton belül,
+a route-őrök mellett írja. Vagyis nem ugyanaz a képesség más köntösben, hanem ÚJ képesség, egyetlen
+`mkdir`-rel, pontosan attól a szereplőtől, akit ez a kontroll figyel.
+
+**Miért nem elég a `JSON.stringify` önmagában:** nem escapeli az U+2028/U+2029 sorelválasztókat,
+amiken több megjelenítő tördel. Ezért a nem-nyomtatható ASCII-n kívüli minden karakter előbb látható
+escape-re cserélődik, és csak utána megy az idézőjelezés.
+
+**Miért kap a karantén-útvonal is fertőtlenített nevet:** a riasztás KIÍRJA ezt az útvonalat, tehát
+a nyers név ott MÁSODSZOR is becsempészné a payloadot. A slug megtartja az alfanumerikus részt (hogy
+egy ember össze tudja párosítani a riasztást a könyvtárral), de minden struktúrát elvesz; a sha256-os
+utótag pedig megakadályozza, hogy két különböző név ugyanabba a célkönyvtárba olvadjon össze.
+
+**Amit a teszt pontosan állít:** nem azt, hogy a payload karakterei eltűnnek (a nevet jelenteni KELL),
+hanem hogy a STRUKTÚRA tűnik el -- a törzs egyetlen sora sem kezdődik idegen szögletes prefixszel, és
+a név egyetlen soron van. Mindkét interpolációs hely külön mutánssal ellenőrizve.
+
+**Nyitva marad, Cybersec beleegyezésével külön kártyára:** H2 (sweepenkénti riasztás- és
+karantén-korlát hiánya, MEDIUM) és L1 (a "egy fenntartott halmaz" őr csak a `new Set([...])` alakot
+látja, LOW).
+
+**Ki döntött:** Cybersec (lelet + javítási irány), backend (megvalósítás).
+**Hivatkozás:** kártya 53c59307, Cybersec komment 20410; `src/web/agent-dir-tripwire.ts`,
+`src/__tests__/agent-dir-namespace-runtime.test.ts` (7 -> 9 eset).
+
 ## 2026-09-05 -- 23d09a68 (1. lépés) -- A skill-drift eszköz mostantól minden seed-fát a SAJÁT live párjához mér
 
 **Döntés:** a `store/skill-drift-map.py` minden template-fához a ténylegesen hozzá tartozó live
@@ -7502,6 +7538,90 @@ kártyára.
 írtam, és azonnal driftként jelent meg -- ezért kerültek a `store/skill-backups/` alá).
 **Hivatkozás:** kártya 23d09a68; `store/skill-drift-map.py`,
 `src/__tests__/skill-drift-map.test.ts` (16 -> 18 eset).
+
+## 2026-09-05 -- Minta -- Egy őr, ami KÖZVETÍTŐT pinnel, nem az EREDMÉNYT: négy lépcső, egy nap
+
+**Mit láttunk:** egy napon belül négy kártyán, több szerzőtől, ugyanaz a gyökér jött vissza. Minden
+kör valódi szűkítés volt, és egyik sem zárta le az osztályt, mert mindegyik egy KÖZVETÍTŐT állított
+az EREDMÉNY helyett.
+
+| lépcső | mit pinnel az őr | mi kerüli meg | kártya |
+|---|---|---|---|
+| 1. | a szimbólum nevét a nyers forrásszövegben | egy KOMMENT, ami leírja a nevet | `a14812e8` |
+| 2. | a HOZZÁRENDELÉST (`VAR=...`) | a művelet máshonnan olvas; és egy MÁSODIK `VAR=` átirányítja az értéket | `06d36307`, `2f0c7d24` |
+| 3. | a MŰVELET HELYESÍRÁSÁT (`^\s*(?:cp\|rsync\|mv)\b.*\$DEST`) | alias-változó a célra, `tar` a `cp` helyett, egysoros ciklus (a `cp` nem a sor eleje) | `07433dab` |
+| 4. | a JELENTÉST (`--lock-path` kiírja a feloldott értéket) | a jelentés igazat mond, a művelet máshova megy (`exec 9>` más fájlra) | `43ecdbe6` |
+
+**A 4. lépcső azért fontos, mert ÚGY NÉZ KI, MINT A KIÚT.** A 3. lépcsőn a helyes tanács az volt,
+hogy lépj ki a szöveg-illesztésből, és a `43ecdbe6` pontosan ezt tette: a szkript egy kapcsolóval
+VISSZAADJA a ténylegesen használt értéket, a teszt pedig azt állítja. Ez megöli az 1-3. lépcső
+összes alakját (mérve: a komment-alak 2 pirosat ad, a második hozzárendelés 1-et -- utóbbi a
+`07433dab`-on még zölden átment). Mégis marad egy varrat: a jelentett érték és a tényleges művelet
+két különböző dolog. Mérve: ha a `--lock-path` az igazat írja ki, de az `exec 9>` egy másik fájlra
+megy, a guard 8/8 zöld marad.
+
+**A kimondott szabály:** ha egy őr KÓD-TÉNYT állít (jelen van, hiányzik, pontosan egyszer szerepel,
+ezt az értéket használja), kérdezd meg, MIT figyel meg valójában. Ha a válasz "a forrásszöveget",
+"egy sor alakját" vagy "amit a program mond magáról", akkor közvetítőt mérsz, és a varrat a
+közvetítő és a dolog között mindig kihasználható. A hatást a hatás SAJÁT mechanizmusával kell mérni:
+
+- zárra: futtasd a szkriptet a háttérben, és a JELENTETT útvonalon egy második folyamatból a
+  `flock -n` BUKJON, egy per-fa kontroll-útvonalon pedig SIKERÜLJÖN;
+- másolásra: ideiglenes cél-könyvtár, valódi korpusz PLUSZ egy CSALI korpusz, és állítsd, hogy
+  pontosan a valódi korpusz nevei érkeznek meg.
+
+**A kontroll nem opcionális.** Minden fenti alaknál a csali/negatív eset az, ami megkülönbözteti a
+"helyesen működik" és a "semmit nem néz" állapotot. Csali nélkül egy üres cél-könyvtár is zöld.
+
+**Ahol NEM alkalmazandó:** próza-/doksi-korpusz, ahol pont bármely említést keresel. A
+megkülönböztetés ugyanaz, mint a Kódminőségi alapelvek 12. pontjában: kód-tényt vagy szöveg-tényt
+állítasz.
+
+**Az olcsó rétegek maradjanak, csak ne ők legyenek az elsődleges állítás.** A szöveg-illesztés és a
+jelentés-ellenőrzés gyors előszűrő; a hatás-mérés a tényleges bizonyíték.
+
+**Két konkrét, mérve alátámasztott alszabály, ami ebből esik ki:**
+
+1. Aki KOMMENTET dob el illesztés előtt, tegyen NEM-ÜRESSÉG állítást a SZŰRT korpuszra. Szűrés után
+   az üres korpusz minden negatív állítást zölden hagy. A `07433dab` javítása ezt helyesen csinálja
+   (`expect(code.length, '<script> is empty after dropping comments').toBeGreaterThan(0)`). Mérve,
+   hogy a szűrés nem torzít: az `install-linux.sh` 2294 sorából 1711, az `install-macos.sh` 1636-ból
+   1287 marad, és a találatszám mindkét mintára 1 marad, szűréssel és nélküle egyaránt.
+2. Aki JELENLÉTRŐL SZÁMLÁLÁSRA vált, mondja ki a kommentben, MIT számol. A "pontosan egy hely másol
+   ide" túlállítás, ha a valóság "egy sor, ami parancs-tokennel kezdődik és megnevezi a
+   cél-változót". A túlállítás a károsabb fele: a következő olvasó abbahagyja a keresést.
+
+**Ki döntött:** Cybersec (a minta összegzése és a remedy általánosítása), MikroB (a lelet-kártyák
+nyitása és a scoping), backend/backend2/backend3 (a négy javítás).
+**Hivatkozás:** kártyák `a14812e8`, `06d36307` / `5f84bf68`, `2f0c7d24` / `43ecdbe6`, `07433dab` /
+`38b43fe5`; CLAUDE.md Kódminőségi alapelvek 12. pont.
+
+## 2026-09-05 11:20 -- A tripwire sweepenkénti riasztás- és másolás-korlátja (Cybersec H2)
+
+**Döntés:** Az `agent-dir-tripwire.ts` sweepenként legfeljebb 3 RÉSZLETES riasztást küld, a többit egy
+összefoglaló üzenetbe vonja; a karantén-másolat csak a részletesen riasztott nevekre készül, és egy
+5 MB-nál nagyobb könyvtárat egyáltalán nem másol. Minden név latchelődik és minden név bekerül a
+strukturált logba -- csak az ÜZENETEK olvadnak össze, a nyilvántartás nem.
+
+**Miért:** a latch NÉVENKÉNT tart, tehát az egy név ismétlődését korlátozza, a sok nevet nem. Egy
+`mkdir`-ciklus N különböző rosszul formált nevet csinál, amiből egyetlen sweepben N riasztás ÉS N
+rekurzív másolat lett. A modul kommentárja ezt a DoS-t megoldottnak ÁLLÍTOTTA, ezért a komment is
+javítva: kimondja, mit NEM fed a latch.
+
+**Miért nem veszít bizonyítékot a kihagyott másolás:** ez a modul soha nem töröl, tehát az eredeti
+könyvtár pontosan ott marad az `agents/` alatt, ahogy a támadó hagyta. A karantén egy kényelmi
+másolat egy embernek, nem a nyilvántartás. Ezért a korlát biztonságos módon vág, szemben egy
+törléssel, ami sosem lenne az.
+
+**Egy dolgot a mérés vett ki a javításból:** először egy külön `MAX_COPIES_PER_SWEEP` konstans is
+bekerült. A mutációs teszt megmutatta, hogy HOLT: a végtelenre állítása egyetlen tesztet sem
+változtatott, mert csak a részletesen riasztott nevek kerülnek másolásra, tehát a riasztás-korlát
+már eleve korlátozza a másolást is. Kivettem. Egy olyan konstans, amit semmilyen teszt nem tud
+megfogni, nem védelem, csak látszat.
+
+**Ki döntött:** Cybersec (lelet), backend (megvalósítás és a holt konstans kivétele).
+**Hivatkozás:** kártya 75de69d4 (Cybersec komment 20410 H2); `src/web/agent-dir-tripwire.ts`,
+`src/__tests__/agent-dir-namespace-runtime.test.ts` (9 -> 15 eset).
 
 ## 2026-09-05 -- 30b76a8d (NO-GO javítás) -- Egy "semmi ne vesszen el" merge megőrizte a LEVÁLTOTT parancsalakot
 
