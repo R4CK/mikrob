@@ -7538,3 +7538,60 @@ kártyára.
 írtam, és azonnal driftként jelent meg -- ezért kerültek a `store/skill-backups/` alá).
 **Hivatkozás:** kártya 23d09a68; `store/skill-drift-map.py`,
 `src/__tests__/skill-drift-map.test.ts` (16 -> 18 eset).
+
+## 2026-09-05 -- Minta -- Egy őr, ami KÖZVETÍTŐT pinnel, nem az EREDMÉNYT: négy lépcső, egy nap
+
+**Mit láttunk:** egy napon belül négy kártyán, több szerzőtől, ugyanaz a gyökér jött vissza. Minden
+kör valódi szűkítés volt, és egyik sem zárta le az osztályt, mert mindegyik egy KÖZVETÍTŐT állított
+az EREDMÉNY helyett.
+
+| lépcső | mit pinnel az őr | mi kerüli meg | kártya |
+|---|---|---|---|
+| 1. | a szimbólum nevét a nyers forrásszövegben | egy KOMMENT, ami leírja a nevet | `a14812e8` |
+| 2. | a HOZZÁRENDELÉST (`VAR=...`) | a művelet máshonnan olvas; és egy MÁSODIK `VAR=` átirányítja az értéket | `06d36307`, `2f0c7d24` |
+| 3. | a MŰVELET HELYESÍRÁSÁT (`^\s*(?:cp\|rsync\|mv)\b.*\$DEST`) | alias-változó a célra, `tar` a `cp` helyett, egysoros ciklus (a `cp` nem a sor eleje) | `07433dab` |
+| 4. | a JELENTÉST (`--lock-path` kiírja a feloldott értéket) | a jelentés igazat mond, a művelet máshova megy (`exec 9>` más fájlra) | `43ecdbe6` |
+
+**A 4. lépcső azért fontos, mert ÚGY NÉZ KI, MINT A KIÚT.** A 3. lépcsőn a helyes tanács az volt,
+hogy lépj ki a szöveg-illesztésből, és a `43ecdbe6` pontosan ezt tette: a szkript egy kapcsolóval
+VISSZAADJA a ténylegesen használt értéket, a teszt pedig azt állítja. Ez megöli az 1-3. lépcső
+összes alakját (mérve: a komment-alak 2 pirosat ad, a második hozzárendelés 1-et -- utóbbi a
+`07433dab`-on még zölden átment). Mégis marad egy varrat: a jelentett érték és a tényleges művelet
+két különböző dolog. Mérve: ha a `--lock-path` az igazat írja ki, de az `exec 9>` egy másik fájlra
+megy, a guard 8/8 zöld marad.
+
+**A kimondott szabály:** ha egy őr KÓD-TÉNYT állít (jelen van, hiányzik, pontosan egyszer szerepel,
+ezt az értéket használja), kérdezd meg, MIT figyel meg valójában. Ha a válasz "a forrásszöveget",
+"egy sor alakját" vagy "amit a program mond magáról", akkor közvetítőt mérsz, és a varrat a
+közvetítő és a dolog között mindig kihasználható. A hatást a hatás SAJÁT mechanizmusával kell mérni:
+
+- zárra: futtasd a szkriptet a háttérben, és a JELENTETT útvonalon egy második folyamatból a
+  `flock -n` BUKJON, egy per-fa kontroll-útvonalon pedig SIKERÜLJÖN;
+- másolásra: ideiglenes cél-könyvtár, valódi korpusz PLUSZ egy CSALI korpusz, és állítsd, hogy
+  pontosan a valódi korpusz nevei érkeznek meg.
+
+**A kontroll nem opcionális.** Minden fenti alaknál a csali/negatív eset az, ami megkülönbözteti a
+"helyesen működik" és a "semmit nem néz" állapotot. Csali nélkül egy üres cél-könyvtár is zöld.
+
+**Ahol NEM alkalmazandó:** próza-/doksi-korpusz, ahol pont bármely említést keresel. A
+megkülönböztetés ugyanaz, mint a Kódminőségi alapelvek 12. pontjában: kód-tényt vagy szöveg-tényt
+állítasz.
+
+**Az olcsó rétegek maradjanak, csak ne ők legyenek az elsődleges állítás.** A szöveg-illesztés és a
+jelentés-ellenőrzés gyors előszűrő; a hatás-mérés a tényleges bizonyíték.
+
+**Két konkrét, mérve alátámasztott alszabály, ami ebből esik ki:**
+
+1. Aki KOMMENTET dob el illesztés előtt, tegyen NEM-ÜRESSÉG állítást a SZŰRT korpuszra. Szűrés után
+   az üres korpusz minden negatív állítást zölden hagy. A `07433dab` javítása ezt helyesen csinálja
+   (`expect(code.length, '<script> is empty after dropping comments').toBeGreaterThan(0)`). Mérve,
+   hogy a szűrés nem torzít: az `install-linux.sh` 2294 sorából 1711, az `install-macos.sh` 1636-ból
+   1287 marad, és a találatszám mindkét mintára 1 marad, szűréssel és nélküle egyaránt.
+2. Aki JELENLÉTRŐL SZÁMLÁLÁSRA vált, mondja ki a kommentben, MIT számol. A "pontosan egy hely másol
+   ide" túlállítás, ha a valóság "egy sor, ami parancs-tokennel kezdődik és megnevezi a
+   cél-változót". A túlállítás a károsabb fele: a következő olvasó abbahagyja a keresést.
+
+**Ki döntött:** Cybersec (a minta összegzése és a remedy általánosítása), MikroB (a lelet-kártyák
+nyitása és a scoping), backend/backend2/backend3 (a négy javítás).
+**Hivatkozás:** kártyák `a14812e8`, `06d36307` / `5f84bf68`, `2f0c7d24` / `43ecdbe6`, `07433dab` /
+`38b43fe5`; CLAUDE.md Kódminőségi alapelvek 12. pont.
