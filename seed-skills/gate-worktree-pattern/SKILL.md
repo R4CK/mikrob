@@ -20,15 +20,18 @@ in the shared clone.
 ## Procedure
 
 ```bash
-# create (idempotent; prints the path)
-WT=$(bash store/cc-gate-worktree.sh --path <card> <sha>)
-bash store/cc-gate-worktree.sh <card> <sha>
+# create (idempotent; prints the path) -- --agent (or CC_GATE_AGENT) is REQUIRED (card a7da80d6):
+# the agent name is now PART OF THE PATH, so two gates reviewing the same card at the same sha never
+# collide on one directory (see "The trap this replaces" below for what that collision used to do).
+WT=$(bash store/cc-gate-worktree.sh --agent <you> --path <card> <sha>)
+bash store/cc-gate-worktree.sh --agent <you> <card> <sha>
 
 # work in it
 cd "$WT" && bash {{INSTALL_DIR}}/scripts/noisy-run.sh npx vitest run --root apps/web <files>
 
-# tear down (stops anything still running there, removes, prunes, sweeps the cache skeleton)
-bash store/cc-gate-worktree.sh --remove "$WT"
+# tear down (stops anything still running there, removes, prunes, sweeps the cache skeleton) --
+# --agent scopes the kill/removal to YOUR own worktree; a bare 2-argument call now dies loudly.
+bash store/cc-gate-worktree.sh --agent <you> --remove "$WT"
 ```
 
 That is the whole procedure. Do not hand-roll the setup inline; the script exists because the
@@ -54,6 +57,14 @@ vite/vitest answered `Failed to resolve import @cleancore/i18n` for 38 minutes (
 
 `store/cc-gate-worktree.sh` gives the worktree a REAL `node_modules` directory whose ENTRIES are
 symlinks. A write inside it stays inside it: the escaping path does not exist any more.
+
+**A second collision, fixed the same way (card a7da80d6).** The path used to be card+sha ONLY, so
+two gates reviewing the SAME card at the SAME sha -- the normal case, since a card is gated by QA and
+Cybersec/Cybered together -- were handed the SAME directory. `--remove` by whichever gate finished
+first then killed every process whose cwd was inside it and deleted the tree, taking a peer's
+running vitest with it SILENTLY: no error to the victim, just a suite that stops and a checkout that
+is gone. The agent name is now PART OF THE PATH (`cc-gate-<card>-<agent>-<sha>`) and is REQUIRED --
+`--agent <you>` or `CC_GATE_AGENT` -- so this cannot be forgotten the way a prose reminder can.
 
 ## Pitfalls
 
