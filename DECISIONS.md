@@ -6590,3 +6590,31 @@ figyelmeztetés.
 kimondott hiányok), MikroB (dispatch).
 **Hivatkozás:** kártya `87be1810` (Pair-BE `a5bbfb98`, fázis `aecd9a12`); `web/app-llm-monitor.js`,
 `src/__tests__/llm-monitor-module.test.ts`.
+
+## 2026-09-05 -- CLAUDE.md 14. szabály (kötelező `/clear` két munka között) törölve
+
+Peti Telegramon (2026-09-05 07:18) jelezte: már régebben kérte a 14. szabály törlését, és
+kifejezetten frusztrálta, hogy törlés helyett egy strukturális kikényszerítő mechanizmus
+(`src/web/kanban-dispatch-clear-guard.ts` + `src/web/self-advance-clear-watcher.ts`, a "dispatch
+kapcsoló") épült a szabály KÖRÉ, ahelyett hogy magát a szabályt szüntettük volna meg.
+
+**Mit csináltam.** A 14. szabály teljes bekezdését kitöröltem a CLAUDE.md-ből, a rá következő
+szabályokat (15-18) 14-17-re számoztam át, és javítottam az egyetlen belső kereszthivatkozást
+(a mai 15. szabály "mint a 15. szabálynál" mondata "mint a 14. szabálynál"-ra módosult, mert a
+noisy-command-guard rész csúszott eggyel feljebb). Ellenőriztem, hogy a `store/` és `src/` alatt
+egyetlen szkript sem hivatkozik a szabályokra sorszám szerint, tehát a renumbering nem tört el
+automatizált logikát.
+
+**Mi maradt nyitva.** A kódoldal (a két fájl + a `web.ts`-beli bedrótozás + `agent_pending_clear`
+tábla) még él, most már holt logikaként. Nyitottam rá egy takarítókártyát (`7debd869`, backend2,
+marveen projekt, normal), ami eltávolítja mindkét fájlt, a bedrótozást, a hozzájuk tartozó
+teszteket, és eldönti az `agent_pending_clear` tábla sorsát (törlés vagy szándékosan árván
+hagyás -- ha bizonytalan, kérdezzen).
+
+**Miért nem törtem ki azonnal a kódot is.** A marveen saját infrastruktúrája, tehát a szokásos
+worktree + fleet-test + landolás + QA-gate útvonalon kell mennie (Marveen repo saját-worktree
+fegyelme szakasz), nem MikroB kézi Bash-hívásaival egy éles szolgáltatásban.
+
+**Ki döntött:** Peti (törlés-kérés, Telegram). **Végrehajtotta:** MikroB (doksi), backend2
+(kódtakarítás, kártya 7debd869).
+**Hivatkozás:** kártya 7debd869; CLAUDE.md korábbi 14. szabály (2026-08-23-tól élt).
