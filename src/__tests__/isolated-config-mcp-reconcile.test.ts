@@ -135,13 +135,18 @@ describe('isolated config dir: mcpServers reconcile', () => {
     expect(statSync(isolatedDotClaude()).mode & 0o777).toBe(0o600)
   })
 
-  it('preserves a deliberately wider mode too, rather than forcing 0600', () => {
+  it('narrows a pre-existing wider mode back to 0600 on reconcile', () => {
+    // Cybersec NO-GO (card 75c2dbb7, Gate-SHA 434d9a0f): umask can only strip
+    // bits, never add them, so the old mode-carry code could never actually
+    // widen a file -- the only live effect of "preserving" the mode was to
+    // let a stray 0644/0666 on a credential-bearing config survive forever.
+    // The reconcile is the regular rewrite path, so it is also the fix point.
     ensureIsolatedChannelConfigDir(AGENT, 'telegram')
     chmodSync(isolatedDotClaude(), 0o644)
     writeShared({ gmail: { command: 'npx', args: ['gmail-mcp'] }, extra: { command: 'x' } })
     ensureIsolatedChannelConfigDir(AGENT, 'telegram')
     expect(Object.keys(servers()).sort()).toEqual(['extra', 'gmail'])
-    expect(statSync(isolatedDotClaude()).mode & 0o777).toBe(0o644)
+    expect(statSync(isolatedDotClaude()).mode & 0o777).toBe(0o600)
   })
 
   it('creates a brand new isolated config owner-only, not at the umask default', () => {
