@@ -17,7 +17,7 @@
 // CHOOSES is itself a primitive the moment the name match ever loosens. One sloppy regex is the
 // whole distance between a harmless narrow match and arbitrary directory removal. We copy the
 // contents to quarantine and leave the original untouched for a human.
-import { existsSync, mkdirSync, readFileSync, statSync, cpSync } from 'node:fs'
+import { mkdirSync, readFileSync, statSync, cpSync } from 'node:fs'
 import { join } from 'node:path'
 import { STORE_DIR, MAIN_AGENT_ID } from '../config.js'
 import { AGENTS_BASE_DIR, listRejectedAgentDirNames, type AgentDirRejection } from './agent-config.js'
