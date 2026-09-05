@@ -7502,3 +7502,48 @@ kártyára.
 írtam, és azonnal driftként jelent meg -- ezért kerültek a `store/skill-backups/` alá).
 **Hivatkozás:** kártya 23d09a68; `store/skill-drift-map.py`,
 `src/__tests__/skill-drift-map.test.ts` (16 -> 18 eset).
+
+## 2026-09-05 -- 30b76a8d (NO-GO javítás) -- Egy "semmi ne vesszen el" merge megőrizte a LEVÁLTOTT parancsalakot
+
+**A lelet (Cybersec NO-GO, komment 20441, függetlenül ellenőrizve):** a `gate-worktree-pattern`
+négy per-ügynök példányán a merge visszahozta a RÉGI, kétargumentumos `cc-gate-worktree.sh`
+hívást, és a helyes `--agent`-es alak ELÉ tette. Az a7da80d6 óta a régi alak `exit 2`-vel hal meg,
+tehát mind a négy gate-ügynök egy halott parancsot látott elsőként a saját skilljében. Saját
+méréssel megerősítve: a mergelt fájlban 6 invokáció szerepelt (3 `--agent` nélkül), a globálisban 3,
+mind helyes.
+
+**A gyökérok, és ez általánosabb a négy fájlnál:** a "egyetlen projekt-sor és egyetlen globális sor
+sem veszhet el" invariáns BIZTONSÁGOS a kiegészítő tartalomra és HIBÁS a felülírtra, és semmi benne
+nem választja szét a kettőt. Ugyanezt a csapdát ma már kétszer megmértem a SEED-oldali szinkronon,
+és a LIVE sweepre nem alkalmaztam. A `megtartva > 0` önmagában nem hiba: a másik tíz fájlnál a
+megtartott 1-66 sor valódi projekt-only tartalom volt, és a `teszter` esetében a `megtartva 0` és a
+globálissal való bájtazonosság a helyes eredmény.
+
+**Javítás:** a négy fájl a globális példány verbatim tartalmát kapta (106 sor, sha 505d9223),
+atomi írással, mentéssel. Írás előtt két állítás fut a forrásra: a globális sha egyezik azzal,
+amit a verdikt mért, és a globálisban nincs egyetlen csupasz kétargumentumos hívás sem -- e nélkül
+a "másold a globálist" lépés vakon bízna abban, hogy a globális tényleg jó.
+
+**Az osztály lezárása, amit Cybersec kért: `store/skill-merge-check.py`.** Az ELSŐ változatom
+Cybersec szám-alapú jelzését implementálta ("a result többször említi a szkriptet, mint a forrás"),
+és a VALÓS korpuszon MEGBUKOTT: hamis pozitívot adott a `qa/qa2 i18n-parity-sweep`-re, ahol öt
+azonos, helyes invokáció szerepel. A használható jelzés élesebb: UGYANAZ a szkript KÉT ALAKBAN,
+ahol az egyik a másik MÍNUSZ néhány argumentum -- pontosan ezt hagyja maga után egy újonnan
+kötelezővé tett kapcsoló. A forrásban MÁR meglévő ilyen pár nem a merge műve, ezért nem jelentődik.
+
+**Mérve a teljes valós korpuszon:** a négy hibás fájlt megjelöli, a tizennégy jóra (a tíz eredetileg
+jó + a négy javított) tiszta. Nulla hamis pozitív. A tool saját selftestet visz, mert egy őr, amit
+sosem futtattak le a saját alapító esetére, nem bizonyíték; 5 teszt-eset a repóban.
+
+**Egy saját mérési hiba, amit érdemes leírni:** a detektort először a rossz mentés ellen
+futtattam (`ls -t | tail -1` a LEGRÉGEBBIT adja, az a merge ELŐTTI 95 soros fájl volt), és négy
+hamis "MISS"-t kaptam a saját eszközömre. Majdnem működésképtelennek minősítettem, holott a
+tesztharness volt rossz. Ugyanaz a család, mint a "a megosztott log-könyvtár legújabb fájlja nem
+az én futásom".
+
+**Ki döntött:** Cybersec (a lelet, a súlyosság-besorolás -- kimondottan NEM biztonsági kitettség,
+hanem fleet-működési hiba --, és a detektor ötlete), backend2 (független ellenőrzés, javítás,
+a detektor jelzésének kiélesítése a valós korpuszon).
+**Hivatkozás:** kártya 30b76a8d; `store/skill-merge-check.py`,
+`src/__tests__/skill-merge-check.test.ts` (5 eset), `agents/{qa,qa2,cybersec,cybered}/.claude/
+skills/gate-worktree-pattern/SKILL.md` (gitignore-olt, élő).
