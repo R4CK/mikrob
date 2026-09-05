@@ -96,6 +96,58 @@ other="$TMP/gates/cc-gate-card1-cybered-$SHORT"
 run --agent qa --force --remove "$other" >/dev/null 2>&1; rc=$?
 [[ $rc -eq 0 ]] && ok "--force removes a foreign tree deliberately" || bad "--force did not work (rc=$rc)"
 
+# --- 7. F-1: a SUBSTRING of the path is not ownership (Cybered, card 5e4e629f) -------------------
+# The layout is cc-gate-<card>-<agent>-<short>, so this tree is owned by qa. It happens to contain
+# "-cybered-" as the CARD-adjacent segment, and the old `*"-$AGENT-"*` substring test handed it to
+# cybered, which deleted it. Reproduced in a sandbox before the fix; this pins the refusal.
+victim2="$TMP/gates/cc-gate-63f098ce-cybered-qa-deadbee"
+mkdir -p "$victim2"; echo "qa's work" > "$victim2/evidence.txt"
+run --agent cybered --remove "$victim2" >/dev/null 2>&1; rc=$?
+[[ $rc -ne 0 ]] && ok "F-1: a peer whose NAME appears mid-path cannot remove the tree" \
+  || bad "F-1: cybered removed qa's tree via the substring match"
+[ -f "$victim2/evidence.txt" ] && ok "F-1: the victim's contents survived" || bad "F-1: victim contents gone"
+# ...and the control that keeps that rule honest: the real owner must still be able to remove it,
+# or the fix would be "refuse everything", which passes the case above while breaking the tool.
+run --agent qa --remove "$victim2" >/dev/null 2>&1; rc=$?
+[[ $rc -eq 0 ]] && ok "F-1 control: the real owner still removes its own legacy tree" \
+  || bad "F-1 control: the owner can no longer remove its own tree (rc=$rc)"
+
+# --- 8. the OWNER MARKER outranks the path, in both directions -----------------------------------
+# The marker is the authority; the path is not. Both directions are asserted because a fix that
+# only ever refuses would pass the first half.
+m1="$TMP/gates/cc-gate-card9-qa-$SHORT"
+mkdir -p "$m1"; echo cybered > "$m1/.cc-gate-owner"; echo x > "$m1/evidence.txt"
+run --agent qa --remove "$m1" >/dev/null 2>&1; rc=$?
+[[ $rc -ne 0 ]] && ok "marker beats the path: qa refused on a tree marked cybered" \
+  || bad "marker ignored: qa removed a tree marked cybered"
+[ -f "$m1/evidence.txt" ] && ok "marker-protected contents survived" || bad "marker-protected contents gone"
+m2="$TMP/gates/cc-gate-card9-cybered-$SHORT"
+mkdir -p "$m2"; echo qa > "$m2/.cc-gate-owner"
+run --agent qa --remove "$m2" >/dev/null 2>&1; rc=$?
+[[ $rc -eq 0 ]] && ok "marker beats the path: qa removes a tree MARKED qa despite the path" \
+  || bad "marker not honoured in the permitting direction (rc=$rc)"
+
+# --- 9. F-2: `..` cannot walk out of the gate root ------------------------------------------------
+# The old containment test was a glob, and a glob's `*` spans `/`, so "$GATE_ROOT/cc-gate-x/../.."
+# matched and `rm -rf` ran outside. THE TARGET IS BUILT TO PASS THE OWNERSHIP CHECK TOO -- the first
+# attempt at this case did not reproduce the bug, because ownership refused it first and the
+# containment hole never came into play. An escape probe has to survive every OTHER guard on the way.
+outside="$TMP/outside/cc-gate-zzz-qa-dead"
+mkdir -p "$outside"; echo "not a gate tree" > "$outside/important.txt"
+mkdir -p "$TMP/gates/cc-gate-x"
+# NOTE ON MUTATION COVERAGE, measured: this escape is caught by EITHER the resolved-root test or
+# the nested test below it, so reverting only one of them leaves these two cases green and they
+# read as vacuous. Reverting BOTH turns them red. The nested case further down is the one held by
+# a single guard.
+run --agent qa --remove "$TMP/gates/cc-gate-x/../../outside/cc-gate-zzz-qa-dead" >/dev/null 2>&1; rc=$?
+[[ $rc -ne 0 ]] && ok "F-2: a .. escape is refused" || bad "F-2: rm -rf escaped the gate root"
+[ -f "$outside/important.txt" ] && ok "F-2: the file outside the gate root survived" \
+  || bad "F-2: a file outside the gate root was deleted"
+# A NESTED path inside the gate root is refused too -- only a direct child may be removed.
+mkdir -p "$TMP/gates/cc-gate-p-qa-$SHORT/inner-qa-$SHORT"
+run --agent qa --remove "$TMP/gates/cc-gate-p-qa-$SHORT/inner-qa-$SHORT" >/dev/null 2>&1; rc=$?
+[[ $rc -ne 0 ]] && ok "F-2: a nested path under the gate root is refused" || bad "F-2: nested path removed"
+
 echo
 echo "cc-gate-worktree.selftest: $pass passed, $fail failed"
 [[ $fail -eq 0 ]]
