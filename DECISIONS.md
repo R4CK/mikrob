@@ -7067,6 +7067,22 @@ Most kimondja, hogy lezárva, és rögzíti a második felét is (trackingRef), 
 nem szerepelt. Egy főkönyv, ami egy elintézett dolgot még mindig teendőként említ, olyan főkönyv,
 amiben senki nem bízik.
 
+**Utólagos kiegészítés (ugyanaznap, a landolás blokkolta):** az első landolási kísérlet `REFUSED`-öt
+kapott, és nem flake volt. A fork/upstream merge-conflict őr azt jelentette, hogy a
+`src/__tests__/update-checker-branch.test.ts` mostantól ütközik az upstreammel, és senki nem döntött
+róla. Megmértem, hogy tényleg az én változtatásom okozta-e: `merge-tree` a commitommal 50 ütközést
+ad, a szülő commitjával 49-et, és a különbség pontosan ez az egy fájl. Mindkét oldal a 60. sor utáni
+FARKBA fűzött be egy új describe-blokkot, ezért ütköznek. Az upstream blokkja a `remoteIsOwnOrigin`,
+`branchOnRemote` és egy könyvtár-argumentumot fogadó `parseGitHubRemote(root)` köré épül -- ebből a
+forkban EGYIK SEM létezik (a `remoteIsOwnOrigin` és a `branchOnRemote` sehol, a `parseGitHubRemote`
+pedig argumentum nélküli), tehát nem fordulna le. Ez nem ízlésbeli választás, hanem ugyanaz a
+szándékos át-nem-vétel, amit a `src/web/update-checker.ts` bejegyzése már rögzít, csak a teszt
+oldaláról nézve. **Döntés: a fork oldala marad egészben**, mindkét hunkban; az upstream `afterAll`
+importja a saját blokkjához tartozik, azzal együtt esik ki. A szabály KÖTVE van a modul-bejegyzéshez:
+ha a gépezet valaha átkerül, az upstream esetei ugyanabban a változtatásban jönnek vele, külön nem
+támaszthatók fel. Egy teszt-fájl az az egyetlen hely, ahol a "vedd a másik oldalt egészben" ártalmatlannak
+látszik, miközben csendben lefedettséget töröl.
+
 **Ki döntött:** backend2 (lelet a f27c999b B-hullámból, mérés + megvalósítás), MikroB (a szélesebb
 hatókör jóváhagyása).
 **Hivatkozás:** kártya 1140a745; `src/web/update-checker.ts`,
