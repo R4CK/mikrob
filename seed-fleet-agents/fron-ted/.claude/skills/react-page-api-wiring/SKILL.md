@@ -426,6 +426,44 @@ describe('offline', () => {
 })
 ```
 
+## Detail view (fetch-by-ID, no demo fallback)
+
+When the page fetches a single entity by URL param (`useParams`), NOT a list, there is
+**no demo/offline fallback** -- an offline detail view has no meaningful cached state.
+Use the nonce pattern below with explicit cleanup:
+
+- `loading` starts `true` (shows skeleton/loading message immediately).
+- On error: show `role="alert"` + retry button (no demo data).
+- On success: render entity fields.
+- On not-found (404): show `role="status"` notAvailable message, not an error alert.
+
+The test file omits the `offline` describe block for detail views. Instead add a
+`not-found` test:
+```typescript
+it('shows notAvailable status when API returns 404', async () => {
+  vi.mocked(api.getEntity).mockRejectedValue(new ApiError(404, null, 'Not found'))
+  await renderWithProviders(<EntityDetailPage />)
+  await waitFor(() => expect(screen.getByRole('status')).toBeInTheDocument())
+  expect(screen.queryByRole('alert')).toBeNull()
+  expect(screen.queryByRole('heading', { level: 1 })).toBeNull()
+})
+```
+
+If you need to distinguish 404 (not found) from 5xx (server error), use:
+```typescript
+.catch((err: unknown) => {
+  if (!cancelled) {
+    if (err instanceof ApiError && err.status === 404) {
+      setVisit(null); setLoading(false)  // stays on "notAvailable" branch
+    } else {
+      setErr(true); setLoading(false)    // shows error+retry
+    }
+  }
+})
+```
+Otherwise, a simpler "all errors → error state" is fine for detail views where 404
+is unexpected (the parent list page only links to valid IDs).
+
 ## Retry nonce pattern (alternative to useCallback load)
 When the component already has complex `useEffect` deps that make a `useCallback`-based `load()` harder to wire, use a retry nonce instead:
 ```typescript

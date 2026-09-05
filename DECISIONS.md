@@ -7395,3 +7395,58 @@ ezzel érvénytelen; a 23d09a68 leírását átírtam.
 hiba felderítése, a javítás és a mutációs igazolás).
 **Hivatkozás:** kártya 23d09a68 (lelet: bfc028b4); `store/skill-drift-map.py`,
 `src/__tests__/skill-drift-map.test.ts` (10 -> 16 eset).
+
+## 2026-09-05 -- 1b6abfad -- A skill-feloldás nálunk a PROJEKT-szintű példányt választja, és emiatt három FE-ügynök csonka útmutatót olvasott
+
+**A mért tény, ami mindent eldönt:** ezen a telepítésen a munkakönyvtár `.claude/skills/`
+példánya NYER a személyes `~/.claude/skills/`-szel szemben. Ez a HIVATALOS DOKUMENTÁCIÓ
+ELLENTÉTE (code.claude.com/docs/en/skills: "personal overrides project"), ezért mérni kellett,
+nem elolvasni. Valószínű magyarázat, hogy a doksi újabb viselkedést ír le a nálunk futó
+verziónál; a mi telepítésünkre a mérés a mérvadó.
+
+**A mérés maga, nulla fájlmódosítással:** az `async-refactor-fail-open-guard` skill mindkét
+helyen létezik, 127-127 sor, és pontosan EGY sorban tér el (a globális az e98a34d3 szerinti
+javított zárási sorrendet mondja, a projekt-szintű a régit). A skill meghívásakor a
+PROJEKT-szintű sor érkezett, és a futtató a base directoryt is kiírta. Egy eleve meglévő
+különbség mérésre használható; nem kellett hozzá semmit elrontani.
+
+**Miért számít:** a `react-page-api-wiring` skill projekt-szintű példányából a fron-ted,
+fron-teddy és fullstack ügynöknél hiányzott 143-211 sor, köztük KÉT BLOKKOLÓNAK jelölt
+szekció (action-gomb RBAC-képesség ellenőrzés; endpoint-készültség négy állapota). Mivel a
+projekt-szintű nyer, ezek az ügynökök TÉNYLEGESEN a csonka verziót olvasták. A 2b szekció pont
+a 9. munkavégzési szabály (flow-connectivity) által tiltott hibaosztályt zárja ki, és egy valós
+esetet is idéz: az F1 open-shift kártyán a crew "claim" gomb rossz RBAC Actionhöz volt kötve,
+minden crew-kattintás 403-at kapott, miközben a FE kód és a tesztek zöldek voltak.
+
+**Döntés: MERGE, nem másolás.** A kártya azt mondta, "zárkóztasd fel mindhármat a globálishoz
+(673 sor)". Ez fron-ted-nél 26 sort TÖRÖLT volna: a projekt-példánya egy egész szekciót visz,
+amit a globális nem ismer ("## Detail view (fetch-by-ID, no demo fallback)", a 404 kontra 5xx
+elágazással és teszt-példával). Ezért mindhárom fájl aligned merge-öt kapott, két állításra
+kötve: egyetlen projekt-sor és egyetlen globális sor sem veszhet el.
+
+**Az eredmény önmagát ellenőrzi:** fron-teddy és fullstack merge-elt tartalma BÁJTAZONOS a
+globálissal (sha 07495a6b, 673 sor) -- ez a legerősebb megerősítés arra, hogy náluk a globális
+valódi felülhalmaz volt, tehát a merge ott pontosan a helyes csere. fron-ted 711 sor lett: 673
+globális + a saját 26 sora.
+
+**Az `agents/` GITIGNORE-OLT (.gitignore:86), tehát ez a változás NEM látszik commit-diffként.**
+Ezért a felülvizsgálhatóság és a visszaállíthatóság csak akkor létezik, ha itt előállítom:
+mindhárom fájlról időbélyeges biztonsági másolat készült, és a sha256 előtte/utána rögzítve van
+(fron-ted 8ef3905d -> 1ba774e8, fron-teddy és fullstack 078b2bdf -> 07495a6b). A másolatok a
+`store/skill-backups/` alá kerültek, NEM a skill-fa mellé: egy a vizsgált fában hagyott backup
+maga válik mérési zajjá (lásd lent).
+
+**Mellékelelet, amit a saját backupom hozott elő:** a `skill-drift-map.py` 10 `live-only file`
+sorából MIND A 10 backup-artefaktum (9 darab `SKILL.md.seedbak.<epoch>` az update.sh merge-útjából,
+plusz egy elárvult `SKILL.md.bak` cybered fájában), nulla valódi drift. A "46 valódi drift-sor"
+tehát valójában 36. Az eszköz backup-kihagyása a 23d09a68-ra megy.
+
+**A seed is frissült:** fron-ted seed-példánya megkapta ugyanazt a 26 soros szekciót (673 -> 711),
+különben egy friss telepítés újratermelné a hiányt. fron-teddy és fullstack seedje a javítás után
+már egyezik a live példányával, ott nincs teendő.
+
+**Ki döntött:** MikroB (kártya, HIGH, majd az empirikus zárás kérése), backend2 (a mérés, a
+merge-döntés a másolás helyett, a mentés/rollback út).
+**Hivatkozás:** kártya 1b6abfad; `agents/{fron-ted,fron-teddy,fullstack}/.claude/skills/
+react-page-api-wiring/SKILL.md` (gitignore-olt, élő), `seed-fleet-agents/fron-ted/.claude/skills/
+react-page-api-wiring/SKILL.md` (verziókövetett).
