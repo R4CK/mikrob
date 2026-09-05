@@ -7977,3 +7977,30 @@ nem olvasható ki belőlük. Ez nem az én merge-em műve és nem is ezé a kár
 **Hivatkozás:** kártya 23d09a68; `store/skill-merge-check.py`,
 `src/__tests__/skill-merge-check.test.ts`, `seed-fleet-agents/{qa,qa2}/vitest-react-router-guard`,
 `seed-fleet-agents/qa2/i18n-parity-sweep`.
+
+## 2026-09-05 -- 67a5ee01: a gate-tooling három vaksága, és miért csak kettőt javítottam
+
+**Döntés:** a kártya két hibát nevezett meg, a mérés hármat talált. Kettőt megjavítottam, a harmadikat bizonyítékkal jelentem, mert a hatóköre két másik ügynök szkennerére terjed ki.
+
+**1. A `gate-closure-check.py` nem látta a testvér-ügynök verdiktjét.** A verdikt-regex `QA`-nál megállt, és a `QA2 PASS` „2"-ese nem illeszkedett. Mérve: **601 testvér-verdikt volt láthatatlan**, egészen az 1952-es kommentig visszamenőleg, és **42 kártya olvasott MISSING-et olyan gate-re, amelyik valójában aláírt**. Cybersec ezt élesben kapta el három kártyán, amikor qa2-t behúzta terheléskiegyenlítésre.
+
+**A tervezési döntés nem a regex volt, hanem hogy a QA2 KÜLÖN gate-e.** Nem az: a 4. szabály szerint a testvérek ugyanannak a szerepnek a két embere, és egy kártyát csak az EGYIKÜK néz meg. Ezért a szám normalizálódik, nem lesz belőle negyedik gate-kulcs -- ha külön kulcsot kapna, a 42 kártyán a QA gate MISSING maradna, vagyis pont a javítandó hibát írnám át másik alakba.
+
+**A kockázatos irány mérve, nem feltételezve.** A normalizálás 65 kártya kiolvasását változtatja meg: 42-nél MISSING -> PASS, és **9-nél QA FAIL -> PASS** -- ez utóbbi a veszélyes irány, ezért egyenként megnéztem. Mind a 9-nél a testvér PASS-e szigorúan a FAIL UTÁN érkezett, és mind a 9 kártya már `done`: a testvér a javítást vizsgálta felül, pontosan úgy, ahogy egy gate saját magát újraellenőrzi. A régi eszköz ezen a 9 kártyán FAIL-t mondott volna olyan munkára, amit a tábla jogosan lezárt. A fordított eset (testvér FAIL a másik PASS-e után) továbbra is megtagadja a zárást -- ez tartja a fenti viselkedést attól, hogy kiskapu legyen, és külön eset pinneli.
+
+**A kapcsoló oldalát is normalizálni kellett, és ezt csak a valódi híváson vettem észre:** a `--gates qa2,cybersec` `UNREADABLE|not a gate name: qa2`-t adott. A tábla `Gate:` sorai MÁR neveznek QA2-t, tehát aki a kártya saját designációját másolja be, hibát kapott volna egy teljesen érvényes gate-készletre. Egy valóban ismeretlen név továbbra is elutasításra kerül.
+
+**2. A `Gate:` designáció ott legyen, ahol a szkenner olvassa.** A `declared_gate_excludes_me()` a DESCRIPTION-t nézi, tehát egy csak kommentbe írt designáció a kódnak nem létezik. Mérve 2951 kártyán: 1161 a leírásban, 158 mindkettőben, **110 kizárólag MikroB-kommentben**. Nyitott kártya ma egy sincs ebben a csoportban, tehát ez folyamat-védelem, nem futó incidens -- pont ilyenkor olcsó beépíteni. A fordított kockázat a nagyobb: a 158-ból **51 ELLENTMOND** egymásnak, és ebből **23-nál a leírás SZŰKEBB** a legfrissebb MikroB-kommentnél. Ez a veszélyes irány, mert amelyik gate-et a leírás kihagyja, annak a szkenner azt mondja, hogy a kártya nem az övé, és KIHAGYJA. A másik 28 bővebb, ami egy fölösleges átolvasásba kerül. A két irány nem szimmetrikus, ezért az eszköz nem is egy számként jelenti őket. Új eszköz: `store/gate-decl-check.py` (+ auto-felfedezett selftest, 15 eset).
+
+**Egy saját mérési hibám, amit érdemes rögzíteni:** az első összevetésem 53 ellentmondást mutatott, mert a `qa2`-t külön gate-nek számolta -- vagyis PONTOSAN az a hiba volt benne, amit az 1. pontban javítottam. Normalizálás után 51 a valódi szám.
+
+**3. AMIT NEM JAVÍTOTTAM, ÉS EZ A LEGSÚLYOSABB.** Az eszközt a valódi táblán futtatva (nem fixtúrán) kiderült, hogy a `GATE_DECL_RX` KERES ahelyett, hogy sorra HORGONYOZNA, ezért a `Gate:` szót mondat közben és idézett prózában is megtalálja. Következmény ezen a kártyán, a 67a5ee01-en magán: a leírása gate-designációkról BESZÉL, az utolsó találat egy prózasor, és a `declared_gate_excludes_me()` emiatt **mind a három gate-re True-t ad** -- vagyis a gate-designációról szóló kártya maga láthatatlan mindhárom szkennernek. A táblán 24 kártya hordozza ezt az alakot.
+
+**Miért nem javítottam:** a sor elejére horgonyzás **515 kihagyási döntést** változtatna meg (367 cybered, 124 cybersec, 24 qa), mind a „több kártya kerül a gate elé" irányba -- ami a lib saját dokumentált biztonságos iránya, de akkor is két MÁSIK ügynök szkennerének a viselkedése. Ez saját kártyát és plan-grillinget érdemel, nem egy csendes bővítést az enyém alatt. Amit megtettem: az eszköz `PROSE` kóddal jelenti ezt az alakot, tehát a hiba mostantól LÁTHATÓ minden érintett kártyán.
+
+**Bizonyíték:** `gate-closure-check.selftest.py` 49 -> 58 eset, az új `gate-decl-check.selftest.py` 15 eset, a `store-selftests-all-run` harness 23 selftestet fedez fel és futtat (az újat is, kézi bedrótozás nélkül). Az új eszköz a valódi alapító kártyán `PROSE`-t ad, exit 1.
+
+**Egy fixtúra-tanulság:** az első PROSE-fixtúrám HIBÁS volt, mert az `a "Gate: QA + X" designacio` próza MEGNEVEZ egy szerepet, tehát nem ez az osztály. A valódi kártya utolsó találatát kellett használnom. A fixtúra volt rossz, nem az eszköz.
+
+**Ki döntött:** backend2 (a normalizálás iránya és a 3. pont jelentés-kontra-javítás határa).
+**Hivatkozás:** kártya 67a5ee01; `store/gate-closure-check.py`, `store/gate-closure-check.selftest.py`, `store/gate-decl-check.py`, `store/gate-decl-check.selftest.py`.

@@ -344,6 +344,42 @@ print("%s %-9s <- %-9s %s" % ("OK  " if ok else "FAIL", "UNREADABLE",
 if not ok:
     failures.append(("empty --expect", "UNREADABLE", p.stdout.strip()))
 
+# --- SIBLING GATE AGENTS (card 67a5ee01) ------------------------------------------------------
+# A gate ROLE may be staffed by more than one agent, and rule 4 requires load-balancing between
+# them, so only ONE of a pair reviews a given card. Before this, the verdict regex stopped at
+# "QA" and the "2" of "QA2 PASS" did not match -- measured on this board, 601 sibling verdicts
+# going back to comment 1952 were invisible, and 42 cards read MISSING for a gate that had in
+# fact signed off. Cybersec hit it live on three cards while load-balancing qa2 in.
+case("QA2 is the QA role, not a fourth gate -- its verdict satisfies a designated qa",
+     [c("qa2", "QA2 PASS\nGate-SHA: bbbb2222"), c("cybersec", S % "bbbb2222")], "AGREE", "qa,cybersec")
+case("a sibling verdict still has to agree on the SHA",
+     [c("qa2", "QA2 PASS\nGate-SHA: aaaa1111"), c("cybersec", S % "bbbb2222")], "DISAGREE", "qa,cybersec")
+# The measured direction of change, and the reason it is safe: on all 9 board cards where this
+# flips QA from FAIL to PASS, the sibling PASS comes strictly AFTER the FAIL and the card is
+# already `done` -- the sibling was re-reviewing the fix, exactly as one gate re-reviewing itself.
+case("a sibling PASS after the other sibling's FAIL is a re-review, and closes",
+     [c("qa", "QA FAIL\nGate-SHA: aaaa1111"), c("qa2", "QA2 PASS\nGate-SHA: bbbb2222"),
+      c("cybersec", S % "bbbb2222")], "AGREE", "qa,cybersec")
+# ...and the fail-closed mirror image, which is what keeps the above from being a loophole.
+case("a sibling FAIL after the other sibling's PASS still refuses the closure",
+     [c("qa2", "QA2 PASS\nGate-SHA: bbbb2222"), c("qa", "QA FAIL\nGate-SHA: bbbb2222"),
+      c("cybersec", S % "bbbb2222")], "FAILED", "qa,cybersec")
+case("the siblings are ONE gate: qa2 alone does not satisfy a designated cybersec",
+     [c("qa2", "QA2 PASS\nGate-SHA: bbbb2222")], "MISSING", "qa,cybersec")
+# Future siblings are recognised by shape rather than by an enumerated list, so CYBERSEC2/CYBERED2
+# work the day they exist. There are ZERO of them on the board today, so unlike QA2 this half is
+# pinned by these cases only -- said plainly rather than implied.
+case("a future CYBERSEC2 sibling is recognised as the cybersec role",
+     [c("qa", V % "bbbb2222"), c("cybersec2", "CYBERSEC2 GO\nGate-SHA: bbbb2222")], "AGREE", "qa,cybersec")
+# The guard that stops the digits from swallowing prose: a number must attach to the gate word.
+case("'QA 2 PASS' with a detached number is not a verdict",
+     [c("qa", "QA 2 PASS\nGate-SHA: bbbb2222"), c("cybersec", S % "bbbb2222")], "MISSING", "qa,cybersec")
+
+case("a DESIGNATION naming the sibling ('qa2,cybersec') is a valid gate set, not UNREADABLE",
+     [c("qa2", "QA2 PASS\nGate-SHA: bbbb2222"), c("cybersec", S % "bbbb2222")], "AGREE", "qa2,cybersec")
+case("...and a genuinely unknown name is still refused, so the normalisation did not open the door",
+     [c("qa", V % "bbbb2222")], "UNREADABLE", "bogus,qa")
+
 # --- EXIT CODE --------------------------------------------------------------------------------
 # A readout, never a gate on the gate: it must not be able to stop a closure by crashing.
 n += 1
