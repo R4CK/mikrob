@@ -32,7 +32,9 @@
 #   store/lint-ratchet.sh --update   # rewrite the baseline from the current counts
 #   store/lint-ratchet.sh --show     # print current counts vs baseline, always exit 0
 #
-# Exit: 0 no rule got worse | 1 a rule got worse | 3 ESLint could not run
+# Exit: 0 no rule got worse | 1 a rule got worse | 3 the run could not be MEASURED (ESLint could
+# not run at all, or parse errors rose above their bound so the type-aware counts mean nothing --
+# see the block beside `measurement_degraded`)
 set -uo pipefail
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
@@ -82,6 +84,51 @@ for entry in report:
         # as an improvement.
         counts[message.get('ruleId') or '(parse-error)'] += 1
 
+try:
+    with open(baseline_path, encoding='utf-8') as fh:
+        baseline = json.load(fh)
+    have_baseline = True
+except FileNotFoundError:
+    if mode == 'update':
+        # BOOTSTRAP. With no baseline there is nothing to compare against, so the degraded-run
+        # refusal below cannot fire here -- it would make the FIRST --update impossible on any
+        # tree that has parse errors at all, which this one does (6 of them, and they are the
+        # recorded state rather than a fault).
+        baseline, have_baseline = {}, False
+    else:
+        print(f'lint-ratchet.sh: no baseline at {baseline_path}. Create it with '
+              f'`store/lint-ratchet.sh --update` and commit it.', file=sys.stderr)
+        raise SystemExit(3)
+
+# THE MEASUREMENT CAN BREAK, AND A BROKEN ONE LOOKS LIKE GOOD NEWS (card 26ab08a2).
+#
+# Five of the six ratcheted rules are TYPE-AWARE: they need typescript-eslint to resolve a TS
+# program for each file. When that resolution fails, the rules do not error -- they simply find
+# nothing. Measured on a throwaway worktree at 332fa462 by removing tsconfig.json: every typed
+# rule went to ZERO and the script printed five `IMPROVED` lines plus its standing advice to run
+# `--update` and record them. Only the `(parse-error)` bucket moved the other way (6 -> 861),
+# which is what made the run fail at all.
+#
+# So a parse-error rise is not "one more rule got worse" -- it means the run linted a DEGRADED
+# view of the tree, and every other number in it was produced against that same degraded view.
+# Reporting it as rule movement points the reader at lint findings when the actual fault is the
+# toolchain, and the printed remedy (`--update`) would then RECORD the degraded numbers. That is
+# how a gate gets disarmed by someone following its own instructions.
+parse_key = '(parse-error)'
+parse_now, parse_was = counts.get(parse_key, 0), baseline.get(parse_key, 0)
+measurement_degraded = have_baseline and parse_now > parse_was
+
+if mode == 'update' and measurement_degraded:
+    print(f'lint-ratchet.sh: REFUSING to write the baseline -- parse errors are ABOVE the '
+          f'recorded bound ({parse_was} -> {parse_now}), so this run measured a tree it could '
+          f'not fully read.', file=sys.stderr)
+    print('    Recording it would bake the blindness in: the type-aware rules find nothing in '
+          'files that do not parse,', file=sys.stderr)
+    print('    so their counts here are not evidence of anything. Fix the parse errors (or the '
+          'toolchain), then re-run --update.', file=sys.stderr)
+    print('    See them: npx eslint src | grep -i "parsing error"', file=sys.stderr)
+    raise SystemExit(3)
+
 if mode == 'update':
     with open(baseline_path, 'w', encoding='utf-8') as fh:
         json.dump(dict(sorted(counts.items())), fh, indent=2, ensure_ascii=False)
@@ -89,14 +136,6 @@ if mode == 'update':
     total = sum(counts.values())
     print(f'lint-ratchet.sh: baseline written -- {len(counts)} rules, {total} findings.')
     raise SystemExit(0)
-
-try:
-    with open(baseline_path, encoding='utf-8') as fh:
-        baseline = json.load(fh)
-except FileNotFoundError:
-    print(f'lint-ratchet.sh: no baseline at {baseline_path}. Create it with '
-          f'`store/lint-ratchet.sh --update` and commit it.', file=sys.stderr)
-    raise SystemExit(3)
 
 worse, better = [], []
 for rule in sorted(set(baseline) | set(counts)):
@@ -107,8 +146,9 @@ for rule in sorted(set(baseline) | set(counts)):
         better.append((rule, was, now))
 
 for rule, was, now in better:
-    print(f'lint-ratchet.sh: IMPROVED  {rule}: {was} -> {now}')
-if better and mode != 'show':
+    label = 'UNMEASURED' if measurement_degraded else 'IMPROVED  '
+    print(f'lint-ratchet.sh: {label}{rule}: {was} -> {now}')
+if better and mode != 'show' and not measurement_degraded:
     print('lint-ratchet.sh: run `store/lint-ratchet.sh --update` and commit the baseline so the '
           'bound tightens -- an improvement nobody records can be spent again later.')
 
@@ -118,6 +158,23 @@ if mode == 'show':
     for rule, n in sorted(counts.items()):
         print(f'   {n:5d}  {rule}   (baseline {baseline.get(rule, 0)})')
     raise SystemExit(0)
+
+if measurement_degraded:
+    print(file=sys.stderr)
+    print(f'lint-ratchet.sh: COULD NOT MEASURE -- parse errors rose ({parse_was} -> {parse_now}), '
+          f'so this run read a degraded view of the tree.', file=sys.stderr)
+    print('    The five type-aware rules find NOTHING in a file that does not parse, so their '
+          'counts above are not', file=sys.stderr)
+    print('    comparable to the baseline in either direction -- a drop here is missing '
+          'measurement, not progress.', file=sys.stderr)
+    print('    Fix the parse errors first, then re-run. Do NOT --update in this state; the '
+          'script refuses it for the same reason.', file=sys.stderr)
+    print('    See them: npx eslint src | grep -i "parsing error"', file=sys.stderr)
+    for rule, was, now in worse:
+        if rule != parse_key:
+            print(f'    (also above baseline, but measured in the same degraded run) '
+                  f'{rule}: {was} -> {now}', file=sys.stderr)
+    raise SystemExit(3)
 
 if worse:
     print(file=sys.stderr)
