@@ -87,6 +87,18 @@ try_append_union() {
   # and landed; the ambient-environment surface is gone entirely. Cybered's objection that the
   # DECISIONS.md convention must not be hardcoded into a file-parameterised function is still
   # answered -- a future append-only file's caller passes its own pattern here.
+  #
+  # READ THIS BEFORE WIDENING THE PATTERN (Cybered F-5, measured on Gate-SHA fd0e3446). The entry
+  # boundary is a LINE-PATTERN HEURISTIC, not a structural fact, and a BODY line that matches the
+  # pattern reopens the silent gluing -- it does NOT fail closed. Measured, so this is not a
+  # theoretical caveat: with the dated default, a body line spelled `## 2026-01-01 -- idezett regi
+  # fejlec` (a quoted OLD header inside a new entry) makes both remainders "start a new entry", the
+  # union RESOLVES, and both continuations land under one header. That is the same silent merge the
+  # Cybersec NO-GO was raised for, one level further down. The real corpus has no such line today
+  # (of 201 headers, the 2 that run backwards chronologically were read and are genuinely
+  # out-of-order entries, not quoted headers), which is exactly what was true of CS-2 until it
+  # was not. Every widening of this pattern trades away more of that margin; know what you are
+  # giving up before you do it.
   local header_glob="${3:-## [0-9][0-9][0-9][0-9]-*}"
   local conflicted
   conflicted="$(git -C "$wt" diff --name-only --diff-filter=U)"
@@ -184,13 +196,28 @@ try_append_union() {
   # set to something that accepts everything. A guard predicate whose permissive direction is
   # untested is the failure class Cybersec measured three times in one day on separate cards.
   #
-  # A boundary pattern that matches a line which can legally appear INSIDE an entry is not a
-  # boundary at all -- that is the whole CS-2 lesson, stated as a runtime precondition rather than
-  # left to the caller's good taste. The probes are lines that must never be entry boundaries: a
-  # blank line, a bare `## ` heading and a `## ` heading with prose after it (exactly the CS-2
-  # shape), ordinary prose, and the separator forms. `*` fails on all of them; `## *` fails on the
-  # two heading probes -- which is correct and not an oversight, since a bare `## ` boundary is the
-  # unsafe spelling this card removed. The default passes all probes: it requires four digits.
+  # WHAT THIS ACTUALLY IS: A FILTER OVER SEVEN FIXED PROBE LINES -- NOT a precondition (Cybersec,
+  # msg 23507, doc-accuracy finding on the first version of this comment, which claimed the
+  # stronger thing). The difference matters to the next reader: a precondition would mean no
+  # pattern matching an inside-an-entry line can get through, and that is NOT what runs here.
+  # The probes are a blank line, a bare `## `, a `## ` heading with prose after it (the CS-2
+  # shape), ordinary prose, and the three separator forms. `*` fails all of them; `## *` fails the
+  # two heading probes, which is correct rather than an oversight, since a bare `## ` boundary is
+  # the unsafe spelling this card removed. The default passes every probe: it requires four digits.
+  #
+  # WHAT GETS THROUGH, stated so nobody stops looking: any pattern narrower than the probes but
+  # still wider than a real entry header. My own hostile test value `## entry*` is the proof -- it
+  # passes all seven and still matches an undated header. Cybersec's example is sharper: `## [0-9]*`
+  # passes all seven and matches the BODY line `## 2 reasons why`. The filter buys the obvious
+  # mistakes, not a guarantee.
+  #
+  # THE ACTUAL CONTROL IS THAT THE PATTERN IS AN ARGUMENT, not this filter, and Cybersec added a
+  # reason for that beyond permissiveness: the pattern is interpolated UNQUOTED into `case ... in
+  # $header_glob)`, so the string stands in shell pattern position. As an environment variable it
+  # was open not only to over-wide values but to `)` and `|` -- case-arm punctuation, read from
+  # ambient state. Deleting the environment read closed that too. Which is also why this filter is
+  # deliberately NOT made cleverer: with the pattern argument-only there is no attacker at this
+  # boundary, and a smarter filter would buy nothing while implying more than it delivers.
   #
   # FAIL-CLOSED, and specifically NOT a silent fall back to the default: a caller that passes an
   # unusable pattern gets the union REFUSED (return 1, the caller's ordinary manual-resolution
@@ -787,6 +814,40 @@ body of A
     echo "       is being used as a bash CHARACTER index (card b7e57877)"
     fail=1
   fi
+
+  # ...AND THE SECOND `local LC_ALL=C`, WHICH THE ASSERTION ABOVE DOES NOT COVER (Cybered F-4,
+  # comment 20514). There are TWO of them: one in _common_line_prefix_len, where `cmp`'s byte offset
+  # is produced, and one in try_append_union, where that offset is USED to slice (`${ours:0:$n}`,
+  # `${#prefix}`). The helper assertion above pins only the first. Verified by mutation before this
+  # case was written: deleting the SECOND one leaves the whole selftest green at 19/19 -- a
+  # load-bearing line with no coverage at all.
+  #
+  # END-TO-END, not a helper assertion, because that is where the second one lives. Without it the
+  # slice counts CHARACTERS while the offset was counted in BYTES, so `prefix` runs PAST the true
+  # common prefix into this side's own appended entry; the remainder then no longer starts at an
+  # entry header and the union is REFUSED -- exactly the landing this card exists to unblock,
+  # failing again for a reason nothing would have explained. The accented body has to be long
+  # enough that the byte/character gap exceeds one line, or the truncate-to-newline step absorbs it
+  # and the fixture goes green either way (two earlier attempts at a UTF-8 fixture died that way).
+  utf8_body=""
+  for _ in $(seq 1 200); do
+    utf8_body+="Hosszú, ékezetes törzsszöveg: árvíztűrő tükörfúrógép, őúűéáí ÖÜÓŐÚÉÁŰÍ.
+"
+  done
+  setup_conflict utf8-end-to-end \
+    "## 2026-01-01 -- alap bejegyzés
+${utf8_body}" \
+    "## 2026-01-01 -- alap bejegyzés
+${utf8_body}## 2026-01-02 -- bal oldali bejegyzés, ékezetekkel: őúű
+" \
+    "## 2026-01-01 -- alap bejegyzés
+${utf8_body}## 2026-01-03 -- jobb oldali bejegyzés, ékezetekkel: ÁÉÍ
+"
+  t_resolved "UTF-8 end-to-end: the SLICING scope counts bytes too (Cybered F-4)" \
+    "## 2026-01-01 -- alap bejegyzés
+${utf8_body}## 2026-01-02 -- bal oldali bejegyzés, ékezetekkel: őúű
+## 2026-01-03 -- jobb oldali bejegyzés, ékezetekkel: ÁÉÍ
+"
 
   # REALISTIC SIZE, on a clock (card d56786a7). Every case above runs on a few hundred bytes, so
   # every one of them passed just as happily with the O(n^2) `${ours#"$base"}` strip that froze
