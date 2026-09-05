@@ -19,6 +19,7 @@ import { detectPaneState, paneShowsContextSaturation } from '../pane-state.js'
 import { readContextTokensFromProjectDir, readActiveModelFromProjectDir, readTranscriptMtimeFromProjectDir } from './active-model.js'
 import { readContextGuardConfig } from './context-guard-store.js'
 import { createAgentMessage } from '../db.js'
+import { sweepAgentDirTripwire } from './agent-dir-tripwire.js'
 import {
   decideGuard,
   contextLimitForModel,
@@ -543,6 +544,12 @@ export function startContextGuardRunner(): NodeJS.Timeout {
     tickRunning = true
     try {
       const now = Date.now()
+      // The agents/ namespace tripwire rides THIS sweep rather than owning a timer: it needs the
+      // same cadence, and the sweep already holds the db handle the alert needs. The listing
+      // function itself stays pure (card 53c59307) precisely so this stays the only alerting site.
+      try { sweepAgentDirTripwire(createAgentMessage) } catch (err) {
+        logger.debug({ err }, 'agent-dir-tripwire: sweep error')
+      }
       for (const name of guardSweepAgentNames()) {
         try { await checkAgent(name, now) } catch (err) { logger.debug({ err, agent: name }, 'context-guard: agent check error') }
       }
