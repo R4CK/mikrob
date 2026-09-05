@@ -7087,3 +7087,33 @@ látszik, miközben csendben lefedettséget töröl.
 hatókör jóváhagyása).
 **Hivatkozás:** kártya 1140a745; `src/web/update-checker.ts`,
 `src/__tests__/update-checker-branch.test.ts` (6 -> 13 eset), `src/__tests__/fork-upstream-conflict-guard.test.ts`.
+
+## 2026-09-05 10:20 -- gate-sha-repo.test.ts: a hamis pirosat a teszt oldalán zárjuk, a szkript nem változik
+
+**Döntés:** A `src/__tests__/gate-sha-repo.test.ts` négy esete élő HTTP-hívást tett a dashboardra
+(`store/gate-sha-repo.sh`, `curl --max-time 3`). A javítás KIZÁRÓLAG teszt-oldali: egy `file://`
+alapú board-stub (`boardStub()`), amit a szkript már meglévő `DASHBOARD_URL` és
+`DASHBOARD_TOKEN_FILE` kapcsolóin keresztül kap meg. A `gate-sha-repo.sh` egyetlen bájtja sem
+változik, a 3 másodperces büdzsé és a fail-soft ág éles viselkedésként marad.
+
+**Miért:** Telített teljes suite-ban a 3 mp lejárt, a szkript a szándékos fail-soft ágára esett
+(`unlanded`, exit 3), a teszt viszont a card-id választ (exit 4) várta, tehát HELYES kódon lett
+piros. Három előfordulás egy nap alatt, ebből KETTŐ QA gate-futás -- ott a hamis piros helyes munkát
+küld vissza `in_progress`-be, ami a 17. szabály szerint a legdrágább kár. Mérve: a változtatás
+előtti fájl elérhetetlen boardon `AssertionError: unlanded: expected 3 to be 4`, 12,36 mp; utána
+ugyanaz a futás 12/12 zöld, 0,49 mp.
+
+**Miért `file://` és nem stub HTTP-szerver porton:** egy szerver ugyanabból a Node event loopból
+válaszolna, amit a telített worker éheztet -- vagyis pont az a 3 mp-es büdzsé járhatna le újra,
+amit javítunk. A `curl` fájlt olvas socket, port és event loop nélkül, ott nincs mi lejárjon.
+
+**Amit a stub cserébe elveszít, kimondva:** a board válasz-ALAKJÁT (`{"card":{"id","title"}}`)
+bedrótozza, tehát egy alak-változás élesben törne, itt nem. Tudatosan vállalt csere: a szkript
+`d.get("card", d)`-vel mindkét alakot tűri, és egy board-alakváltozás egyszerre sok flotta-szkriptet
+törne, hangosan. Amivé viszont NEM válhat: indok arra, hogy élő hívás visszakerüljön egy
+teljes-suite tesztbe.
+
+**Ki döntött:** MikroB (kártya nyitása, jóváhagyás -- az `edd4c3bf` élő eredményét érinti, ezért
+külön kártyán), backend (mérés + megvalósítás).
+**Hivatkozás:** kártya 90eaa6e5 (a 9bb2e651 leletéből); `src/__tests__/gate-sha-repo.test.ts`
+(10 -> 12 eset).
