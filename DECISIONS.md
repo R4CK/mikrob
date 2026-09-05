@@ -6562,3 +6562,42 @@ plan-grilling olyat kér, amit a landoló szkript definíció szerint nem tud el
 **Ki döntött:** backend2 (mérés és verdikt), MikroB (dispatch, 999fd78a).
 **Hivatkozás:** kártya 999fd78a; mért revert-commit `517c6957`; landolási merge-ek `78f9be50`,
 `13bf2707`, `cae546af`; hullám előtti alapvonal `7d548869`.
+
+---
+
+## 2026-09-05 -- c6153a69 -- The flake was already diagnosed; what was missing is that the CleanCore side never SAID so
+
+**Decision.** A shared classifier (`store/vitest-flake-classify.sh`), wired into
+`store/cleancore-suite-run.sh` -- the one entry point rule 18 mandates for a full CleanCore suite.
+It explains a nonzero exit when, and only when, the log carries vitest's worker-RPC timeout AND no
+failed test. It never alters the exit code.
+
+**What the investigation actually found.** The mechanism was already established and does not need
+re-deriving; it needed VERIFYING, which was done here against the installed CleanCore vitest 3.2.6
+rather than taken from the marveen-side note:
+
+    dist/chunks/index.B521nVV-.js:3    const DEFAULT_TIMEOUT = 6e4        <- 60s
+    dist/chunks/index.B521nVV-.js:21   timeout = DEFAULT_TIMEOUT          <- birpc's own default
+    dist/chunks/utils.CAioKnHs.js:25   createForksRpcOptions() -> serialize/deserialize/post/on, NO timeout
+
+So the card's third suggested lever, "increase the RPC timeout", **does not exist on this version** --
+and neither does the local-LLM draft's version of the same advice. The worker reports progress to the
+MAIN process over that RPC; a CPU-starved main process misses the 60s round trip and the WORKER
+throws, after every test has already passed.
+
+**The real gap was diagnosis cost, not the flake.** `fleet-test.sh` has classified this for the
+marveen suite since card 54699bbb. The CleanCore side had nothing, so each agent re-derived it from a
+bare "1 error" line -- three times in one day on this board, each ending in a hand-written REVIEW
+paragraph saying the same thing.
+
+**What was NOT done, and why.** No worker-count change is recommended, because the data does not
+support one. The only low-worker run available (`--maxWorkers=2`, marveen) came from a DIFFERENT
+suite of a different size and duration than the 12-worker CleanCore runs, so worker count is
+confounded with everything else; claiming a causal lever from that comparison would be exactly the
+kind of confident-but-unsupported inference this card's own history is full of. A controlled
+experiment is one suite, two worker counts, and costs ~1.5 hours of machine time -- worth doing
+deliberately, not smuggled into a LOW card.
+
+**Known duplication, stated rather than hidden.** `fleet-test.sh` keeps its own inline copy of this
+classification. Two spellings of one rule drift, but that file is gated, working and unrelated to
+this card, so it was left alone; the new script's header names it for migration on the next touch.

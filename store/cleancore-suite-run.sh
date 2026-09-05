@@ -199,4 +199,19 @@ fi
 
 echo "cleancore-suite-run: slot ${SLOT}/${SLOTS}, running in $WT" >&2
 cd "$WT" || exit 3
-./node_modules/.bin/vitest run "$@"
+
+# THE LOG IS CAPTURED so the run can be CLASSIFIED, not just returned (card c6153a69). A full suite
+# that hits vitest's worker-RPC timeout exits 1 with ZERO failed tests, and the only evidence is one
+# "Unhandled Error" paragraph a thousand lines above the summary. That has now cost three separate
+# re-diagnoses on three separate cards, each ending in a hand-written REVIEW paragraph saying the
+# same thing. `tee` keeps the live output exactly as before; PIPESTATUS keeps the real exit code.
+run_log="$(mktemp)"
+trap 'rm -f "$_hdr_file" "$run_log"' EXIT
+./node_modules/.bin/vitest run "$@" 2>&1 | tee "$run_log"
+status="${PIPESTATUS[0]}"
+
+# Adds an explanation on stderr when the run is the known flake; NEVER changes the exit code. A
+# wrapper that turned exit 1 into exit 0 here would be indistinguishable from one hiding a real
+# regression, which is the opposite of what this is for.
+bash "$HERE/vitest-flake-classify.sh" "$status" "$run_log" || true
+exit "$status"
