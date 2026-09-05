@@ -56,6 +56,29 @@ esac
 
 cd "$ROOT" || { echo "lint-ratchet.sh: cannot cd to $ROOT" >&2; exit 3; }
 
+# THE BOOTSTRAP FLOOR (Cybered, INFO-ONLY 20989, point 2). Making bootstrap its own verb closes the
+# ACCIDENTAL path to bypass A -- an agent who hits the refusal and restarts "from a clean slate"
+# now has to type something that says what it does. It does NOT close the DELIBERATE path: measured
+# after that change, `--bootstrap` on a fully degraded tree still writes {"(parse-error)": 861},
+# which is bypass A's exact end state.
+#
+# Cybered named the fix: the previous bound is in version control, so "there is no baseline" is in
+# practice a DELETION, not a first run. If git still has it, this is a restore, not a bootstrap.
+#
+# FAILS OPEN when git cannot answer (no repo, no git, file never committed) and only then. A
+# genuine first run has to stay possible, and the hermetic selftest runs outside any repo. The
+# threat here is an agent taking a shortcut inside the real checkout, and there git always answers.
+if [ "$BOOTSTRAP" = 1 ] && [ ! -f "$BASELINE" ]; then
+  if git -C "$ROOT" show "HEAD:store/lint-baseline.json" >/dev/null 2>&1; then
+    echo "lint-ratchet.sh: REFUSING to bootstrap -- store/lint-baseline.json is MISSING from the" >&2
+    echo "    working tree but PRESENT in git HEAD, so this is a deleted bound, not a first run." >&2
+    echo "    Restore it:  git checkout HEAD -- store/lint-baseline.json" >&2
+    echo "    Bootstrapping here would record the current counts as the new normal, and if this" >&2
+    echo "    run is degraded that erases every type-aware rule from the bound permanently." >&2
+    exit 3
+  fi
+fi
+
 # ESLint exits 1 when it finds problems, which is the NORMAL case here -- the ratchet, not the
 # exit code, decides. Only a missing/broken ESLint is fatal, and that shows up as unparseable
 # output rather than as a nonzero status.
