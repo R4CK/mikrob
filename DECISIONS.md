@@ -7087,3 +7087,37 @@ látszik, miközben csendben lefedettséget töröl.
 hatókör jóváhagyása).
 **Hivatkozás:** kártya 1140a745; `src/web/update-checker.ts`,
 `src/__tests__/update-checker-branch.test.ts` (6 -> 13 eset), `src/__tests__/fork-upstream-conflict-guard.test.ts`.
+
+## 2026-09-05 -- e00e7ff3 -- Upstreammel közös teszt-fájl bővítése tartozik egy ACKNOWLEDGED_CONFLICTS bejegyzéssel
+
+**Döntés:** a `project-workflow` skill kapott egy új szekciót arról, hogy ha valaki egy upstreammel
+KÖZÖS marveen teszt-fájl VÉGÉRE fűz új `describe` blokkot, az ütközést gyárt, mert az upstream
+ugyanoda fűz. A tartozás ezért ugyanabban a commitban esedékes: `ACKNOWLEDGED_CONFLICTS` bejegyzés
+plusz `ACKNOWLEDGED_UPSTREAM_BLOBS` pin.
+
+**Miért skill és nem CLAUDE.md:** a CLAUDE.md már kimondja a landolási folyamatot; ez egy konkrét,
+visszatérő buktató a folyamaton BELÜL, és a `project-workflow` skill az a hely, ahol a többi hasonló
+(teszt-worktree, `[NN%]` clobber) is él. A szekció három dolgot rögzít, amit a 1140a745 mérése adott:
+(a) a tulajdonlás egy paranccsal eldől (`merge-tree` a saját commiton és a szülőn, a két szám
+különbsége a saját fájl -- mérve 50 kontra 49); (b) a feloldást SZIMBÓLUMBÓL kell eldönteni, nem
+ízlésből (ha az upstream blokkja nem létező függvényeket hív, az oldala le sem fordulna, ez mért tény);
+(c) a teszt-fájl bejegyzését oda kell kötni a tesztelt modul bejegyzéséhez, mert teszt-fájlnál a
+"vedd a másik oldalt egészben" az egyetlen olyan hely, ahol ez a lépés nem hangos, viszont csendben
+lefedettséget töröl.
+
+**Hol él a szöveg:** a verziókövetett `seed-skills/project-workflow/SKILL.md`-ben ÉS az élő
+`~/.claude/skills/project-workflow/SKILL.md`-ben, szó szerint azonosan. Csak a seedbe írni azt
+jelentené, hogy a szabály a következő `update.sh`-ig nem létezik a futó flottának; csak az élőbe írni
+azt, hogy egy friss telepítésre soha nem kerül ki, és nincs verziókövetve. Azonos szöveggel a jövőbeli
+`seed_copy_try_merge` erre a régióra no-op.
+
+**Mellékes lelet, NEM javítva:** a seed `project-workflow` SKILL.md még a RÉGI zárási sorrendet
+mondja (`waiting` + REVIEW), az élő példány viszont már az e98a34d3 szerinti helyeset (ELŐSZÖR REVIEW,
+utána `waiting`). A 75a573af commit csak a CLAUDE.md-t javította, a seed-skillt nem, tehát egy friss
+telepítés a javítás ELŐTTI sorrendet kapná. Ez pontosan ugyanaz a drift-osztály, amiről ez a kártya
+szól, egy szinttel feljebb. Nem nyúltam hozzá: egy másik kártya landolt eredménye, MikroB döntése,
+hogy nyit-e rá kártyát.
+
+**Ki döntött:** MikroB (kártya nyitása backend2 leletéből), backend2 (a szekció tartalma és a
+seed+élő kettős írás).
+**Hivatkozás:** kártya e00e7ff3 (lelet: 1140a745); `seed-skills/project-workflow/SKILL.md`.

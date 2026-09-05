@@ -94,6 +94,40 @@ A script idempotens: létrehozza egyszer a `{{INSTALL_DIR}}-test` worktree-t, ut
 a megadott commitra reseteli, és symlinkeli az élő `node_modules`-t (nincs második `npm ci`).
 Ne hozz ad-hoc temp worktree-t -- pont ezt váltja ki.
 
+## Upstreammel KÖZÖS teszt-fájl bővítését ACKNOWLEDGED_CONFLICTS követi (kártya e00e7ff3)
+
+Ha egy marveen teszt-fájl VÉGÉRE fűzöl új `describe` blokkot, és az a fájl az upstreamben is létezik,
+a landolásod a saját őrünkön bukik el: az upstream ugyanoda fűz, tehát a két farok ütközik. Ez
+szerkezeti, nem flake, és minden ilyen kártyán újra megtörténik. A `store/marveen-land.sh` ilyenkor
+`REFUSED`-öt ad, és a `src/__tests__/fork-upstream-conflict-guard.test.ts` mondja meg, melyik fájlra.
+
+**Kié az ütközés? Egy paranccsal eldől.** Ne kezdd a saját diffed hibáztatásával, de idegen blokknak
+se minősítsd:
+```bash
+git fetch upstream develop
+git merge-tree --write-tree <a te commitod>  upstream/develop | grep -c CONFLICT
+git merge-tree --write-tree <a szülő commit> upstream/develop | grep -c CONFLICT
+```
+Ha a két szám különbözik, a különbség a te fájlod (mérve 2026-09-05: 50 kontra 49, és a két halmaz
+diffje pontosan egy fájlt adott). Ha egyezik, a blokk pre-existing, nem a te változtatásod okozta.
+
+**A tartozás: `ACKNOWLEDGED_CONFLICTS` bejegyzés UGYANABBAN a commitban**, a hozzá tartozó
+`ACKNOWLEDGED_UPSTREAM_BLOBS` pinnel együtt. Az őr a bukás útján kiírja a beilleszthető bejegyzést ÉS
+mindkét oldal hunkját -- azt olvasd, a blob-pint ne írd kézzel.
+
+**A feloldást SZIMBÓLUMBÓL döntsd el, ne ízlésből.** Grep-eld ki, milyen függvényeket hív az upstream
+blokkja, és hogy azok léteznek-e ebben a forkban UGYANAZZAL a szignatúrával. Ha nem léteznek, az
+upstream oldala le sem fordulna itt -- ez mért tény, nem preferencia. Ha léteznek, valódi mérlegelés
+van, és az indoklás a bejegyzés szövegébe megy.
+
+**Kösd a bejegyzést a modulja bejegyzéséhez.** Egy teszt-fájl feloldása általában abból következik,
+amit a tesztelt modulról már eldöntöttünk; írd is ezt bele, hogy egy jövőbeli átvétel a kettőt együtt
+mozgassa. Teszt-fájlnál a "vedd a másik oldalt egészben" ártalmatlannak látszik, miközben csendben
+lefedettséget töröl -- ez az egyetlen hely, ahol ez a lépés nem hangos.
+
+**Mikor NEM kell:** fork-only fájlnál (az upstreamben nincs), vagy ha nem a farokba írsz, hanem olyan
+régióba, amit az upstream nem érint. A biztos válasz mindig a fenti két `merge-tree` szám.
+
 ## Ellenőrzés
 - Minden aktív kártyán van assignee ÉS `[NN%]` a címben.
 - Done kártyát nem a készítője mozgatta.
