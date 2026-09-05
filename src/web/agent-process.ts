@@ -1,4 +1,4 @@
-import { existsSync, readFileSync, mkdirSync, writeFileSync, readdirSync, lstatSync, symlinkSync, rmSync, realpathSync, renameSync, statSync } from 'node:fs'
+import { existsSync, readFileSync, mkdirSync, writeFileSync, readdirSync, lstatSync, symlinkSync, rmSync, realpathSync, renameSync, statSync, chmodSync } from 'node:fs'
 import { join } from 'node:path'
 import { homedir } from 'node:os'
 import { execFileSync } from 'node:child_process'
@@ -610,12 +610,20 @@ export function resolveMainAgentConfigDir(): string | null {
 // this reconcile is exactly the path that starts rewriting the file regularly.
 // Fall back to 0600 (not the umask) when the target does not exist yet, since
 // the content class is the same either way.
+//
+// The `mode` passed to writeFileSync is itself masked by the process umask at
+// creation time (measured, card 75c2dbb7: a carried-over 0644 narrows to 0600
+// under the fleet's installed umask 0077, while the same code looks correct
+// under umask 0002 where the mask is a no-op). chmodSync is NOT subject to
+// umask, so it is the only way to make the carried mode stick regardless of
+// the host's umask.
 function writeJsonAtomic(path: string, value: unknown): void {
   let mode = 0o600
   try { mode = statSync(path).mode & 0o777 } catch { /* new file -> owner-only */ }
   const tmp = `${path}.tmp-${process.pid}`
   writeFileSync(tmp, JSON.stringify(value, null, 2) + '\n', { mode })
   renameSync(tmp, path)
+  chmodSync(path, mode)
 }
 
 // Fill mcpServers gaps in an ALREADY provisioned isolated .claude.json from the
