@@ -27,7 +27,7 @@ description: Investigate an upstream/sibling fork (or any community/open-source 
 
    A candidate with an incompatible or missing license is eliminated at this step, before the maintenance/security/size columns are even filled in for it -- do not let it advance into a full evaluation on the strength of a compelling feature match alone (measured twice in a row, cards `e7510a83` and `ef9a7bf1`: the most-wanted candidate in each was disqualified on license, discovered late).
 7. **Decide with evidence and record it.** State `adopt` / `adapt` / `build` / `no-op` + the concrete proof (diff output, grep result, commit SHA). If adapting an artifact tied to a specific person/tenant/product, DE-PERSONALIZE it. If build-from-scratch or no-op, document WHY.
-8. **Integrate safely.** Shared checkout: stage only your files (never `git add -A`); keep it update-safe (runtime data in gitignored dirs, additive fork files, no upstream-core edits that would break an ff-only pull). End the card `waiting` + REVIEW stating the decision + commit (or "no code change" for a no-op).
+8. **Integrate safely.** Shared checkout: stage only your files (never `git add -A`); keep it update-safe (runtime data in gitignored dirs, additive fork files, no upstream-core edits that would break an ff-only pull). End the card with a REVIEW comment stating the decision + commit (or "no code change" for a no-op) FIRST, THEN move it to `waiting` (card e98a34d3).
 
 ## Pitfalls
 - **Stale-merge-base diff trap** (step 3): diffing vs HEAD instead of the merge-base makes your own advancement look like the fork's change. Always merge-base.

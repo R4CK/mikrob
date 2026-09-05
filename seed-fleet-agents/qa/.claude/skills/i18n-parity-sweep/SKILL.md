@@ -147,9 +147,25 @@ de a gate KÖTELEZŐEN visszaellenőrzi (lásd §QA gate: double-brace ICU).
 
 ### 2. Fordítás -- SINGLE PROCESS PATTERN (WSL2/NTFS kötelező!)
 
+**QA-nak nincs saját worktree-je** (kártya 973ed6eb / `qa-test-strategy` skill): a fejlesztő ügynökök
+mintája (`agent-worktree.sh <ügynök> --path`) itt nem alkalmazható -- az a QA névre nem hoz létre
+könyvtárat. Ha QA-t ténylegesen fordítás-írásra osztják be (nem csak a lenti gate-re), nyiss egy
+eldobható worktree-t a HEAD-en -- nem egy felülvizsgált SHA-n, mert itt ÚJ tartalmat írunk, nem egy
+meglévő commitot ellenőrzünk:
+```bash
+CC="${CLEANCORE_MAIN:-/mnt/h/LM_Studio_Workdir/CleanCore}"
+export QA_WT="$(mktemp -d)"   # export: a lenti python is olvassa os.environ-ből
+git -C "$CC" worktree add "$QA_WT" HEAD
+# ... dolgozz a $QA_WT alatt (lásd lent) ...
+git -C "$CC" worktree remove "$QA_WT"   # a végén, eldobható
+```
+
 **KRITIKUS:** WSL2-n a `/mnt/h/...` (NTFS 9P mount) caching miatt külön Python processzek elavult fájlt olvasnak. Mindig EGY processz tölt be mindent, módosít memóriában, és írja ki az összeset.
 
 ```python
+import json, pathlib, os
+
+BASE = pathlib.Path(os.environ['QA_WT']) / 'packages/i18n/messages'  # a fenti eldobható worktree
 import json, pathlib
 
 BASE = pathlib.Path(CC) / 'packages/i18n/messages'   # CC: a SAJÁT worktree-d, lásd fent
@@ -198,10 +214,12 @@ print('Done.')
 ### 3. Commit (namespace-enként vagy batch)
 
 ```bash
+cd "$QA_WT"   # a fenti eldobható worktree, NEM a megosztott fő klón
 cd "$(/home/neon/marveen/store/agent-worktree.sh <a te agent-neved> --path)"
 git add packages/i18n/messages/de.json packages/i18n/messages/es.json \
         packages/i18n/messages/fr.json packages/i18n/messages/it.json \
         packages/i18n/messages/pl.json
+# NE git add -A -- a fő klónban más ágensek is dolgozhatnak, a worktree-nek is csak a sajátodat!
 # Explicit fájllista, ne `git add -A`: a saját worktree-d indexe már megvéd más ügynök
 # stage-elt munkájától, de a te SAJÁT szemetedet (build-artefakt, ideiglenes fájl) még mindig
 # beviheti egy -A.
@@ -211,6 +229,7 @@ git commit -m "feat(i18n): <namespace> translations — de/es/fr/it/pl"
 ### 4. Teszt
 
 ```bash
+cd "$QA_WT"   # ugyanaz az eldobható worktree
 cd "$(/home/neon/marveen/store/agent-worktree.sh <a te agent-neved> --path)"
 npx vitest run apps/web/src/i18n-locale-guard.test.ts
 # 14/14 kell
@@ -264,6 +283,12 @@ Amikor új user-facing string kerül a kódba és az összes locale-ba egyszerre
 
 ### Pattern: ordered-insert after anchor key
 
+QA-nál ugyanaz a worktree-szabály, mint a 2. lépésnél: `$QA_WT`, nem a megosztott fő klón.
+
+```python
+import json, pathlib, os
+
+BASE = pathlib.Path(os.environ['QA_WT']) / 'packages/i18n/messages'
 ```python
 import json, pathlib
 

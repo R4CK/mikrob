@@ -7260,3 +7260,365 @@ környezetet teljesen figyelmen kívül hagyó szkript is átmenne.
 **Ki döntött:** Cybersec (mérés + a javítási irány), MikroB (kártya), backend (megvalósítás).
 **Hivatkozás:** kártya 43ecdbe6; `store/fleet-test.sh`,
 `src/__tests__/fleet-test-serialises-runs.test.ts` (4 -> 8 eset).
+
+## 2026-09-05 -- bfc028b4 -- Elavult seed-skillek felzárkóztatása, és egy mérőeszköz-hiba, ami a felét érvénytelenítette
+
+**A probléma:** több seed-skill példány egy MÁR JAVÍTOTT hibát ír le helyesnek. A legsúlyosabb az
+e98a34d3 zárási sorrend (`waiting` + REVIEW helyett ELŐSZÖR REVIEW): a 75a573af commit kizárólag a
+CLAUDE.md-t javította, így több seed-példány máig a régi sorrendet tanítja. Egy friss telepítés
+pontosan azt az árva `waiting` kártyát termelné újra, ami miatt a szabály megszületett.
+
+**Amit ez a commit szállít: 5 fájl a `seed-skills/` fában.** Ennek a fának a live megfelelője
+igazoltan a globális `~/.claude/skills/` (install-linux.sh:1464 és update.sh:826). Ezen belül:
+`plan-grilling` és `qa-test-strategy` (template LAGS, csak beszúrás), valamint
+`fork-adopt-investigation`, `full-value-audit` és `project-workflow` (two-sided, ahol az ÉLŐ van
+előrébb: mindegyik élő sor egy LANDOLT kártyára vagy landolt CLAUDE.md-szabályra hivatkozik).
+NEM szinkronizáltam a `qa-test-strategy/references/SKILL-FULL-BACKUP.md`-t: ott a TEMPLATE van
+előrébb (`python3 -c "import sqlite3"` egy kimondott "a sqlite3 CLI NEM garantált telepítve"
+megjegyzéssel, és megtartja a `{{INSTALL_DIR}}`-t), tehát a szinkron TÖRÖLNE egy hordozhatósági
+javítást.
+
+**A `seed-fleet-agents/` fele VISSZAVONVA, mielőtt landolt volna, mert a mérőeszköz rossz oldalhoz
+hasonlít.** A `store/skill-drift-map.py` MINDEN seed-fát az EGYETLEN globális `~/.claude/skills/`
+könyvtárhoz mér, a per-ügynök `seed-fleet-agents/<a>/.claude/skills/` fákat is. A tényleges live
+megfelelőjük viszont `agents/<a>/.claude/skills/`, mert az install-linux.sh:1534 a
+`seed-fleet-agents/<a>/`-t az `agents/<a>/`-ba másolja. Mérve: a 10 per-ügynök fájl MINDEGYIKÉNEK
+van saját live példánya, és MINDEGYIK eltér a globálistól (2-től 237 eltérő sorig). Tíz fájlt
+szinkronizáltam egy olyan forráshoz, amit az érintett ügynökök nem olvasnak; a "result ≡ live"
+állításom is a rossz oldalra vonatkozott. A commitot a landolás előtt megállítottam (semmi nem ment
+`origin`-ra), és a per-ügynök felet visszaállítottam.
+
+**A javított mérés, a helyes gyökérrel** (a tool száma kontra a valóság):
+- `TEMPLATE-ONLY skill`: a tool 17-et mond, valójában **1** (`fron-ted/impeccable`). A többi 16 telepítve
+  VAN, csak per-ügynökként. MikroB gyanúja ("lehet ártalmatlan") helyes volt, az ok egy eszközhiba.
+- 189 fájl azonos, 11 de-perszonalizálás (helyesen nem drift), 29 valódi drift-sor.
+- Két olyan kategória jelenik meg, amit a tool SOHA nem mutatott: **2 `LIVE LOST content`**
+  (`fron-teddy` és `fullstack` `react-page-api-wiring`), ahol az ÉLŐ példány veszített el tartalmat.
+  Ez a veszélyesebb irány, és pont ez maradt láthatatlan.
+- A 10 visszavont fájlból a helyes gyökérrel mérve `backend` és `backend2` `async-refactor-fail-open-guard`
+  példánya AZONOS a live-jával: két szinkron teljesen fölösleges lett volna.
+
+**Enyhítő körülmény a per-ügynök oldalon, mérve:** a `seed-fleet-agents/` fát az update.sh SOHA nem
+frissíti (a `refresh_untouched_seeds` hívások csak `seed-skills`-re és a scheduled-tasks fákra
+mennek), az install pedig kihagyja a már létező ügynököt. Tehát ez a drift kizárólag FRISS
+telepítést vagy ÚJONNAN létrehozott ügynököt érint; meglévő gépen nem romlik tovább és nem is gyógyul.
+
+**A tanulság, ami a fájlokon túl is áll:** az őreim a HŰSÉGET tudják ellenőrizni, az IRÁNYT és a
+PÁROSÍTÁST nem. Két negatív kontrollal mértem: (1) a placeholder-belaposítást nem a placeholder-
+számláló kapta el (egy elveszett, egy keletkezett, nettó nulla), hanem a nyers-útvonal ellenőrzés;
+(2) a "template van előrébb" fájl vak szinkronját EGYIK őr sem kapta el, mert a normalizált
+egyenlőség teljesül, ha a cél maga az élő fájl. Most kiderült a harmadik, ami mindkettőnél
+súlyosabb: ha a live PÁR maga rossz, minden állítás igaz marad és mégis értéktelen. Egy
+"nulla eltérés" jelentés akkor is így néz ki, ha a rossz két fájlt hasonlítottuk össze.
+
+**Ki döntött:** MikroB (kártya + hatókör), backend2 (irány-döntés fájlonként, negatív kontrollok,
+az eszközhiba felderítése és a per-ügynök fél visszavonása).
+**Hivatkozás:** kártya bfc028b4; `seed-skills/` 5 fájl. A per-ügynök fél és a
+`store/skill-drift-map.py` javítása külön döntést igényel.
+
+## 2026-09-05 10:45 -- A tripwire-riasztás a könyvtárnevet ADATKÉNT írja ki (Cybersec H1, NO-GO feloldás)
+
+**Döntés:** Az `agent-dir-tripwire.ts` riasztása a támadó által választott könyvtárnevet mindkét
+helyen fertőtlenítve jeleníti meg: a névnél idézve-escapelve (`asData`), a karantén-útvonalnál pedig
+egy származtatott, fájlrendszer-biztos slug alakjában (`quarantineSlug`), nem a nyers néven.
+
+**Miért:** Cybersec HIGH lelete a landolt `9bfa6858`-on, lefuttatott PoC-cal. A `readdirSync`
+kimenete Linuxon a `/` és a NUL kivételével bármilyen bájtot tartalmazhat, ÚJSORT is. A nyers
+interpoláció miatt egy `mkdir agents/$'system-directive\n\n[SYSTEM-DIREKTIVA ...] <utasítás>'` a
+riasztás törzsébe SAJÁT SORKÉNT került be, egy biztonsági riasztás keretében, `from=<fő ügynök>`
+azonosítóval. Ez pont az az azonosító, amit a HTTP API NEM enged hamisítani (a `POST /api/messages`
+403-at ad rá, mert a fő ügynöknek nincs `agents/` könyvtára), a tripwire viszont folyamaton belül,
+a route-őrök mellett írja. Vagyis nem ugyanaz a képesség más köntösben, hanem ÚJ képesség, egyetlen
+`mkdir`-rel, pontosan attól a szereplőtől, akit ez a kontroll figyel.
+
+**Miért nem elég a `JSON.stringify` önmagában:** nem escapeli az U+2028/U+2029 sorelválasztókat,
+amiken több megjelenítő tördel. Ezért a nem-nyomtatható ASCII-n kívüli minden karakter előbb látható
+escape-re cserélődik, és csak utána megy az idézőjelezés.
+
+**Miért kap a karantén-útvonal is fertőtlenített nevet:** a riasztás KIÍRJA ezt az útvonalat, tehát
+a nyers név ott MÁSODSZOR is becsempészné a payloadot. A slug megtartja az alfanumerikus részt (hogy
+egy ember össze tudja párosítani a riasztást a könyvtárral), de minden struktúrát elvesz; a sha256-os
+utótag pedig megakadályozza, hogy két különböző név ugyanabba a célkönyvtárba olvadjon össze.
+
+**Amit a teszt pontosan állít:** nem azt, hogy a payload karakterei eltűnnek (a nevet jelenteni KELL),
+hanem hogy a STRUKTÚRA tűnik el -- a törzs egyetlen sora sem kezdődik idegen szögletes prefixszel, és
+a név egyetlen soron van. Mindkét interpolációs hely külön mutánssal ellenőrizve.
+
+**Nyitva marad, Cybersec beleegyezésével külön kártyára:** H2 (sweepenkénti riasztás- és
+karantén-korlát hiánya, MEDIUM) és L1 (a "egy fenntartott halmaz" őr csak a `new Set([...])` alakot
+látja, LOW).
+
+**Ki döntött:** Cybersec (lelet + javítási irány), backend (megvalósítás).
+**Hivatkozás:** kártya 53c59307, Cybersec komment 20410; `src/web/agent-dir-tripwire.ts`,
+`src/__tests__/agent-dir-namespace-runtime.test.ts` (7 -> 9 eset).
+
+## 2026-09-05 -- 23d09a68 (1. lépés) -- A skill-drift eszköz mostantól minden seed-fát a SAJÁT live párjához mér
+
+**Döntés:** a `store/skill-drift-map.py` minden template-fához a ténylegesen hozzá tartozó live
+gyökeret párosítja. A `seed-skills/` továbbra is a globális `~/.claude/skills`-hez mérődik
+(install-linux.sh:1464, update.sh:826), a `seed-fleet-agents/<a>/` viszont mostantól az
+`agents/<a>/.claude/skills`-hez, mert az install-linux.sh:1534 oda másolja. Ezenfelül az eszköz
+megtanulta a második placeholder-konvenciót is: a `__MARVEEN_INSTALL_DIR__` / `__MARVEEN_HOME__`
+sentineleket (install-linux.sh:1546), rendereléshez ÉS a belaposodás-számláláshoz egyaránt.
+
+**Miért:** a rossz párosítás CSENDES. Az eszköz végig jelentett, csak nem arról a két fájlról,
+amiről hitte. A valós telepítésen 17 `TEMPLATE-ONLY skill`-t mondott, amiből EGY volt valódi (a
+másik 16 telepítve van, csak per-ügynökként), és teljesen elrejtett két `LIVE LOST content` sort,
+vagyis pont a veszélyes irányt. A bfc028b4 kártyán emiatt szinkronizáltam tíz fájlt egy olyan
+forráshoz, amit az érintett ügynökök nem olvasnak; a landolás előtt visszavontam.
+
+**Ami ezen felül változott:** ha egy seed-ügynöknek egyáltalán nincs telepített live fája, az
+mostantól EGYSZER jelenik meg (`LIVE TREE ABSENT`), nem skillenként. A skillenkénti ismétlés tette
+olvashatatlanná a régi számot: a jel a saját zajában fulladt meg.
+
+**Egy meglévő teszt fixture-jét át kellett helyezni, nem törölni.** A `sees every template tree,
+not only seed-skills` eset a per-ügynök seed live felét a GLOBÁLIS könyvtárba írta, vagyis a hibát
+rögzítette a fixture-be: a teszt szándéka helyes volt, a párosítása nem. Az állítás változatlan,
+csak a fájl került oda, ahová valójában települ. A `waiting`-re állított kártya lezárásakor ez a
+különbség számít: egy eltűnt teszt FAIL lenne, egy áthelyezett fixture nem.
+
+**Bizonyíték:** 10 -> 16 eset ebben a fájlban (a +6 pontosan a hat új eset), a tágabb seed/skill
+őrkészlet 88 -> 94. Négy mutáció, mind a saját esetével elkapva, minden revert md5-tel bájtazonos:
+(M1) a per-ügynök live-gyökér visszaállítása a globálisra -> 5 bukás; (M2) a sentinelek kivétele a
+SUBS-ból -> 1; (M3) a `LIVE TREE ABSENT` skillenkénti jelentése -> 1; (M4) a `__MARVEEN_` kivétele a
+`PLACEHOLDER_RX`-ből -> ELSŐRE 0 BUKÁS. Az M4 a saját munkám fedetlen fele volt: a sentinel-
+belaposodásra nem volt eset, tehát a változtatás azon fele bizonyíthatatlan lett volna. Írtam rá
+egyet a git-alapú regressziós blokkba, utána az M4 is bukik. Ezt azért írom le, mert a tanulság nem
+a javítás, hanem az, hogy a mutáció-futtatás nélkül ez a fél változtatás dekorációként landolt volna.
+
+**A javított mérés a landolt develop-on:** 13 placeholder-renderelés + 11 de-perszonalizálás
+(helyesen nem drift), és 46 valódi drift-sor: 14 template-only fájl, 12 two-sided, 10 live-only
+fájl, 7 template LAGS, 2 LIVE LOST content, 1 TEMPLATE-ONLY skill. A régi leírás "70 tétele"
+ezzel érvénytelen; a 23d09a68 leírását átírtam.
+
+**Ki döntött:** MikroB (előbb az eszközt javítsuk, minden más arra épül), backend2 (a párosítási
+hiba felderítése, a javítás és a mutációs igazolás).
+**Hivatkozás:** kártya 23d09a68 (lelet: bfc028b4); `store/skill-drift-map.py`,
+`src/__tests__/skill-drift-map.test.ts` (10 -> 16 eset).
+
+## 2026-09-05 -- 1b6abfad -- A skill-feloldás nálunk a PROJEKT-szintű példányt választja, és emiatt három FE-ügynök csonka útmutatót olvasott
+
+**A mért tény, ami mindent eldönt:** ezen a telepítésen a munkakönyvtár `.claude/skills/`
+példánya NYER a személyes `~/.claude/skills/`-szel szemben. Ez a HIVATALOS DOKUMENTÁCIÓ
+ELLENTÉTE (code.claude.com/docs/en/skills: "personal overrides project"), ezért mérni kellett,
+nem elolvasni. Valószínű magyarázat, hogy a doksi újabb viselkedést ír le a nálunk futó
+verziónál; a mi telepítésünkre a mérés a mérvadó.
+
+**A mérés maga, nulla fájlmódosítással:** az `async-refactor-fail-open-guard` skill mindkét
+helyen létezik, 127-127 sor, és pontosan EGY sorban tér el (a globális az e98a34d3 szerinti
+javított zárási sorrendet mondja, a projekt-szintű a régit). A skill meghívásakor a
+PROJEKT-szintű sor érkezett, és a futtató a base directoryt is kiírta. Egy eleve meglévő
+különbség mérésre használható; nem kellett hozzá semmit elrontani.
+
+**Miért számít:** a `react-page-api-wiring` skill projekt-szintű példányából a fron-ted,
+fron-teddy és fullstack ügynöknél hiányzott 143-211 sor, köztük KÉT BLOKKOLÓNAK jelölt
+szekció (action-gomb RBAC-képesség ellenőrzés; endpoint-készültség négy állapota). Mivel a
+projekt-szintű nyer, ezek az ügynökök TÉNYLEGESEN a csonka verziót olvasták. A 2b szekció pont
+a 9. munkavégzési szabály (flow-connectivity) által tiltott hibaosztályt zárja ki, és egy valós
+esetet is idéz: az F1 open-shift kártyán a crew "claim" gomb rossz RBAC Actionhöz volt kötve,
+minden crew-kattintás 403-at kapott, miközben a FE kód és a tesztek zöldek voltak.
+
+**Döntés: MERGE, nem másolás.** A kártya azt mondta, "zárkóztasd fel mindhármat a globálishoz
+(673 sor)". Ez fron-ted-nél 26 sort TÖRÖLT volna: a projekt-példánya egy egész szekciót visz,
+amit a globális nem ismer ("## Detail view (fetch-by-ID, no demo fallback)", a 404 kontra 5xx
+elágazással és teszt-példával). Ezért mindhárom fájl aligned merge-öt kapott, két állításra
+kötve: egyetlen projekt-sor és egyetlen globális sor sem veszhet el.
+
+**Az eredmény önmagát ellenőrzi:** fron-teddy és fullstack merge-elt tartalma BÁJTAZONOS a
+globálissal (sha 07495a6b, 673 sor) -- ez a legerősebb megerősítés arra, hogy náluk a globális
+valódi felülhalmaz volt, tehát a merge ott pontosan a helyes csere. fron-ted 711 sor lett: 673
+globális + a saját 26 sora.
+
+**Az `agents/` GITIGNORE-OLT (.gitignore:86), tehát ez a változás NEM látszik commit-diffként.**
+Ezért a felülvizsgálhatóság és a visszaállíthatóság csak akkor létezik, ha itt előállítom:
+mindhárom fájlról időbélyeges biztonsági másolat készült, és a sha256 előtte/utána rögzítve van
+(fron-ted 8ef3905d -> 1ba774e8, fron-teddy és fullstack 078b2bdf -> 07495a6b). A másolatok a
+`store/skill-backups/` alá kerültek, NEM a skill-fa mellé: egy a vizsgált fában hagyott backup
+maga válik mérési zajjá (lásd lent).
+
+**Mellékelelet, amit a saját backupom hozott elő:** a `skill-drift-map.py` 10 `live-only file`
+sorából MIND A 10 backup-artefaktum (9 darab `SKILL.md.seedbak.<epoch>` az update.sh merge-útjából,
+plusz egy elárvult `SKILL.md.bak` cybered fájában), nulla valódi drift. A "46 valódi drift-sor"
+tehát valójában 36. Az eszköz backup-kihagyása a 23d09a68-ra megy.
+
+**A seed is frissült:** fron-ted seed-példánya megkapta ugyanazt a 26 soros szekciót (673 -> 711),
+különben egy friss telepítés újratermelné a hiányt. fron-teddy és fullstack seedje a javítás után
+már egyezik a live példányával, ott nincs teendő.
+
+**Ki döntött:** MikroB (kártya, HIGH, majd az empirikus zárás kérése), backend2 (a mérés, a
+merge-döntés a másolás helyett, a mentés/rollback út).
+**Hivatkozás:** kártya 1b6abfad; `agents/{fron-ted,fron-teddy,fullstack}/.claude/skills/
+react-page-api-wiring/SKILL.md` (gitignore-olt, élő), `seed-fleet-agents/fron-ted/.claude/skills/
+react-page-api-wiring/SKILL.md` (verziókövetett).
+
+## 2026-09-05 -- 30b76a8d -- A gate-ügynökök a saját gate-elési skilljük felét nem látták
+
+**A helyzet:** a projekt-szintű skill-példány nyer (a 1b6abfad-en mérve), és a gate-ügynökök
+példányai csonkák voltak. A qa és qa2 a `qa-test-strategy`-ből 89 sort olvasott a 172-ből, és a
+rejtett 127 sor között ott volt a teljes `## Kötelező ellenőrzőlista (minden kártyán)`, az
+`## Alapeljárás`, a magic-link atomic-fact buktató és a references index. Mind a négy gate-ügynök
+(qa, qa2, cybersec, cybered) `gate-worktree-pattern` példányából pedig pont az a 15 sor hiányzott,
+ami az `--agent` kapcsoló kötelezőségét írja le (kártya a7da80d6) -- vagyis annak a javításnak a
+leírása, ami megakadályozza, hogy két gate ugyanazon a kártyán és shán egy könyvtárra ütközzön.
+
+**Döntés: merge, nem másolás -- 11 fájlból 10-nél ez különbséget is jelentett.** A kártya azt
+mondta, zárkóztassuk fel a globálishoz; a literális végrehajtás fájlonként 1 és 66 közötti sort
+törölt volna, mert a projekt-példányok saját tartalmat is visznek. Az egyetlen fájl, ahol a
+másolás is helyes lett volna, a `teszter/qa-test-strategy` -- és ez látszik is: az eredménye
+bájtazonos a globálissal (sha 9d599569). A többi tíznél a projekt-only tartalom megmaradt.
+
+**ATOMI ÍRÁS, mert mind a négy gate-ügynök FUTOTT.** A 1b6abfad-nél mindhárom FE-ügynök állt, itt
+viszont a qa, qa2, cybersec és cybered egyaránt `running=True` volt. Egy csonkoló írás ablakot hagy,
+amiben egy egyidejű skill-betöltés fél fájlt olvas; ezért ideiglenes fájl + `os.replace` ment, a
+0664-es módot kifejezetten átvive (egy friss temp fájl különben az umask alapértelmezésére esne).
+Symlink-ellenőrzés is fut írás előtt.
+
+**A FÉL JAVÍTÁS, amit menet közben kellett észrevenni:** a visszaállított `## References index`
+négy `references/*.md` fájlra mutat, amik a globális fában megvannak, de EGYIK ÉRINTETT ÜGYNÖK
+fájában sem. Vagyis a szekció visszahelyezése önmagában egy olyan indexet állított volna helyre,
+aminek minden linkje halott pont ott, ahová visszakerült. A négy fájl telepítve lett -- fájlonként
+eldöntött forrásból: háromnál a seed és a globális bájtazonos, a `SKILL-FULL-BACKUP.md`-nél viszont
+a SEED van előrébb 10 sorral (a "sqlite3 CLI nem garantált telepítve" python-fallback), ezért az
+onnan jött, renderelve.
+
+**Egy ötödik link NEM hiányzik, csak a saját ellenőrzőm nézte annak:** a `references/atomic-fact.md`
+egy MÁSIK skill (`atomic-fact-gate-protocol`) fájlja, a szövegben abszolút úttal. A regexem a
+végét illesztette, és hiányzónak minősítette. A fájl megvan globálisan, per-ügynök példány nincs
+rá, tehát ott a globális nyer. Nem javítottam a skill prózáját (nem az én szövegem, 3. alapelv).
+
+**Egy saját őröm túl szigorú volt, és ezt is meg kellett mérni:** a seed-oldali merge-nél az
+`extra` (a seedben lévő, a live-ban nem szereplő sor) önmagában elutasítást váltott ki. Ez hibás:
+egy kétoldali fájlban a seed jogosan visz sajátot, és a megtartása MAGA a merge célja. A helyes
+feltétel az, hogy minden extra sor a SEEDBŐL jöjjön -- egy máshonnan került sor lenne a valódi
+hiba ("invented"). A `qa2/i18n-parity-sweep` emiatt bukott először.
+
+**Bizonyíték:** 11 élő fájl írva, mind a két állítással (egyetlen projekt- és egyetlen globális sor
+sem veszett el), sha előtte/utána rögzítve, mentés a `store/skill-backups/` alá. Lemezen
+ellenőrizve: a `gate-worktree-pattern` `--agent` sora mind a négy ügynöknél ott van, a
+`## Kötelező ellenőrzőlista` a qa és qa2 példányában ott van, nulla ottfelejtett temp fájl.
+7 seed-fájl frissült + a teszter seedje megkapta a négy hiányzó reference fájlt. 8 seed/skill
+őrteszt zölden (87 passed).
+
+**Ki döntött:** MikroB (kártya, NORMAL, mert a gate-működést érinti), backend2 (fájlonkénti
+irány, atomi írás a futó ügynökök miatt, a references fél-javítás észrevétele).
+**Hivatkozás:** kártya 30b76a8d; `agents/{qa,qa2,teszter,cybersec,cybered}/.claude/skills/...`
+(gitignore-olt, élő), `seed-fleet-agents/{qa,qa2,teszter}/...` (verziókövetett).
+
+## 2026-09-05 -- 23d09a68 (2. lépés) -- A drift-riport `live-only file` kategóriája 100%-ban a saját backupjaink zaja volt
+
+**Döntés:** a `skill-drift-map.py` kihagyja a backup-artefaktumokat (`*.bak`, `*.seedbak.<epoch>`)
+mindkét sweepből. Az `update.sh:707` a mergelt fájl MELLÉ írja a `.seedbak.<epoch>`-ot, a vizsgált
+fán BELÜL, tehát minden sikeres merge egy állandó sort adott a riporthoz.
+
+**Miért nem elvi, hanem mért:** a valós telepítésen a 10 `live-only file` sorból MIND A 10 backup
+volt (9 `seedbak` + egy elárvult `.bak` cybered fájában), nulla valódi lelet. A kategória tehát nem
+zajos volt, hanem teljes egészében zaj.
+
+**Szándékosan szűk minta.** Csak a két backup-utótag, mert egy skill-fájl `SKILL.md` vagy valami a
+`references/` alatt -- egy `.bak` sosem hordoz működést. Egy tág "hagyj ki mindent, ami szokatlan"
+szabály viszont elrejtené az első valódi extra fájlt, amit valaha valaki odatesz. Ezt CONTROL eset
+őrzi: egy valódi extra fájl a live fában TOVÁBBRA IS jelentődik.
+
+**Bizonyíték:** 16 -> 18 eset, két mutáció mindkét irányban: a skip kivétele -> 1 bukás, a skip
+kiszélesítése "mindent kihagy"-ra -> 7 bukás; a revert md5-tel bájtazonos. A drift-riport valódi
+sorai 46-ról 20-ra estek (a mai javításokkal együtt): 6 template-only fájl, 6 two-sided, 6 template
+LAGS, 1 TEMPLATE-ONLY skill, 1 LIVE LOST content, és NULLA live-only fájl.
+
+**Egy aszimmetria, amit ÉN hoztam létre és NEM oldottam fel, indoklással.** A
+`seed-fleet-agents/qa2/i18n-parity-sweep` mostantól `LIVE LOST content`: a 30b76a8d-en a live
+tartalmat bevittem a seedbe, de a seed saját három sorát nem vittem ki a live-ba. Az a három sor
+viszont a MEGOSZTOTT CleanCore klónra hivatkozik (`cd /mnt/h/LM_Studio_Workdir/CleanCore`,
+`BASE = pathlib.Path('/mnt/h/.../CleanCore/packages/i18n/messages')`), amit a CLAUDE.md már
+visszavont: a klón CSAK fetch/landolás-alap, a munka per-ügynök worktree-ben folyik. A
+"konvergálás" tehát elavult útmutatást vinne be pont abba a példányba, amelyik nyer. Ezért
+szándékosan aszimmetrikus maradt; a skill tartalmi frissítése a tulajdonosára tartozik, nem erre a
+kártyára.
+
+**Ki döntött:** backend2 (a lelet a saját mentésemből jött: a `.bak`-ot először a skill-fa mellé
+írtam, és azonnal driftként jelent meg -- ezért kerültek a `store/skill-backups/` alá).
+**Hivatkozás:** kártya 23d09a68; `store/skill-drift-map.py`,
+`src/__tests__/skill-drift-map.test.ts` (16 -> 18 eset).
+
+## 2026-09-05 -- Minta -- Egy őr, ami KÖZVETÍTŐT pinnel, nem az EREDMÉNYT: négy lépcső, egy nap
+
+**Mit láttunk:** egy napon belül négy kártyán, több szerzőtől, ugyanaz a gyökér jött vissza. Minden
+kör valódi szűkítés volt, és egyik sem zárta le az osztályt, mert mindegyik egy KÖZVETÍTŐT állított
+az EREDMÉNY helyett.
+
+| lépcső | mit pinnel az őr | mi kerüli meg | kártya |
+|---|---|---|---|
+| 1. | a szimbólum nevét a nyers forrásszövegben | egy KOMMENT, ami leírja a nevet | `a14812e8` |
+| 2. | a HOZZÁRENDELÉST (`VAR=...`) | a művelet máshonnan olvas; és egy MÁSODIK `VAR=` átirányítja az értéket | `06d36307`, `2f0c7d24` |
+| 3. | a MŰVELET HELYESÍRÁSÁT (`^\s*(?:cp\|rsync\|mv)\b.*\$DEST`) | alias-változó a célra, `tar` a `cp` helyett, egysoros ciklus (a `cp` nem a sor eleje) | `07433dab` |
+| 4. | a JELENTÉST (`--lock-path` kiírja a feloldott értéket) | a jelentés igazat mond, a művelet máshova megy (`exec 9>` más fájlra) | `43ecdbe6` |
+
+**A 4. lépcső azért fontos, mert ÚGY NÉZ KI, MINT A KIÚT.** A 3. lépcsőn a helyes tanács az volt,
+hogy lépj ki a szöveg-illesztésből, és a `43ecdbe6` pontosan ezt tette: a szkript egy kapcsolóval
+VISSZAADJA a ténylegesen használt értéket, a teszt pedig azt állítja. Ez megöli az 1-3. lépcső
+összes alakját (mérve: a komment-alak 2 pirosat ad, a második hozzárendelés 1-et -- utóbbi a
+`07433dab`-on még zölden átment). Mégis marad egy varrat: a jelentett érték és a tényleges művelet
+két különböző dolog. Mérve: ha a `--lock-path` az igazat írja ki, de az `exec 9>` egy másik fájlra
+megy, a guard 8/8 zöld marad.
+
+**A kimondott szabály:** ha egy őr KÓD-TÉNYT állít (jelen van, hiányzik, pontosan egyszer szerepel,
+ezt az értéket használja), kérdezd meg, MIT figyel meg valójában. Ha a válasz "a forrásszöveget",
+"egy sor alakját" vagy "amit a program mond magáról", akkor közvetítőt mérsz, és a varrat a
+közvetítő és a dolog között mindig kihasználható. A hatást a hatás SAJÁT mechanizmusával kell mérni:
+
+- zárra: futtasd a szkriptet a háttérben, és a JELENTETT útvonalon egy második folyamatból a
+  `flock -n` BUKJON, egy per-fa kontroll-útvonalon pedig SIKERÜLJÖN;
+- másolásra: ideiglenes cél-könyvtár, valódi korpusz PLUSZ egy CSALI korpusz, és állítsd, hogy
+  pontosan a valódi korpusz nevei érkeznek meg.
+
+**A kontroll nem opcionális.** Minden fenti alaknál a csali/negatív eset az, ami megkülönbözteti a
+"helyesen működik" és a "semmit nem néz" állapotot. Csali nélkül egy üres cél-könyvtár is zöld.
+
+**Ahol NEM alkalmazandó:** próza-/doksi-korpusz, ahol pont bármely említést keresel. A
+megkülönböztetés ugyanaz, mint a Kódminőségi alapelvek 12. pontjában: kód-tényt vagy szöveg-tényt
+állítasz.
+
+**Az olcsó rétegek maradjanak, csak ne ők legyenek az elsődleges állítás.** A szöveg-illesztés és a
+jelentés-ellenőrzés gyors előszűrő; a hatás-mérés a tényleges bizonyíték.
+
+**Két konkrét, mérve alátámasztott alszabály, ami ebből esik ki:**
+
+1. Aki KOMMENTET dob el illesztés előtt, tegyen NEM-ÜRESSÉG állítást a SZŰRT korpuszra. Szűrés után
+   az üres korpusz minden negatív állítást zölden hagy. A `07433dab` javítása ezt helyesen csinálja
+   (`expect(code.length, '<script> is empty after dropping comments').toBeGreaterThan(0)`). Mérve,
+   hogy a szűrés nem torzít: az `install-linux.sh` 2294 sorából 1711, az `install-macos.sh` 1636-ból
+   1287 marad, és a találatszám mindkét mintára 1 marad, szűréssel és nélküle egyaránt.
+2. Aki JELENLÉTRŐL SZÁMLÁLÁSRA vált, mondja ki a kommentben, MIT számol. A "pontosan egy hely másol
+   ide" túlállítás, ha a valóság "egy sor, ami parancs-tokennel kezdődik és megnevezi a
+   cél-változót". A túlállítás a károsabb fele: a következő olvasó abbahagyja a keresést.
+
+**Ki döntött:** Cybersec (a minta összegzése és a remedy általánosítása), MikroB (a lelet-kártyák
+nyitása és a scoping), backend/backend2/backend3 (a négy javítás).
+**Hivatkozás:** kártyák `a14812e8`, `06d36307` / `5f84bf68`, `2f0c7d24` / `43ecdbe6`, `07433dab` /
+`38b43fe5`; CLAUDE.md Kódminőségi alapelvek 12. pont.
+
+## 2026-09-05 11:20 -- A tripwire sweepenkénti riasztás- és másolás-korlátja (Cybersec H2)
+
+**Döntés:** Az `agent-dir-tripwire.ts` sweepenként legfeljebb 3 RÉSZLETES riasztást küld, a többit egy
+összefoglaló üzenetbe vonja; a karantén-másolat csak a részletesen riasztott nevekre készül, és egy
+5 MB-nál nagyobb könyvtárat egyáltalán nem másol. Minden név latchelődik és minden név bekerül a
+strukturált logba -- csak az ÜZENETEK olvadnak össze, a nyilvántartás nem.
+
+**Miért:** a latch NÉVENKÉNT tart, tehát az egy név ismétlődését korlátozza, a sok nevet nem. Egy
+`mkdir`-ciklus N különböző rosszul formált nevet csinál, amiből egyetlen sweepben N riasztás ÉS N
+rekurzív másolat lett. A modul kommentárja ezt a DoS-t megoldottnak ÁLLÍTOTTA, ezért a komment is
+javítva: kimondja, mit NEM fed a latch.
+
+**Miért nem veszít bizonyítékot a kihagyott másolás:** ez a modul soha nem töröl, tehát az eredeti
+könyvtár pontosan ott marad az `agents/` alatt, ahogy a támadó hagyta. A karantén egy kényelmi
+másolat egy embernek, nem a nyilvántartás. Ezért a korlát biztonságos módon vág, szemben egy
+törléssel, ami sosem lenne az.
+
+**Egy dolgot a mérés vett ki a javításból:** először egy külön `MAX_COPIES_PER_SWEEP` konstans is
+bekerült. A mutációs teszt megmutatta, hogy HOLT: a végtelenre állítása egyetlen tesztet sem
+változtatott, mert csak a részletesen riasztott nevek kerülnek másolásra, tehát a riasztás-korlát
+már eleve korlátozza a másolást is. Kivettem. Egy olyan konstans, amit semmilyen teszt nem tud
+megfogni, nem védelem, csak látszat.
+
+**Ki döntött:** Cybersec (lelet), backend (megvalósítás és a holt konstans kivétele).
+**Hivatkozás:** kártya 75de69d4 (Cybersec komment 20410 H2); `src/web/agent-dir-tripwire.ts`,
+`src/__tests__/agent-dir-namespace-runtime.test.ts` (9 -> 15 eset).

@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
-"""skill-drift-map.py -- classify the drift between the LIVE global skills and the tracked templates.
+"""skill-drift-map.py -- classify the drift between each tracked template tree and the LIVE copy
+it actually installs to.
 
 WHY THIS EXISTS (card bf67711e). Three trees hold "the skills", and they are not copies of each other:
 
@@ -7,7 +8,13 @@ WHY THIS EXISTS (card bf67711e). Three trees hold "the skills", and they are not
   seed-skills/                           what install-linux.sh:1462 copies into ~/.claude/skills on a
                                          FRESH install (per-directory skip if it already exists), and
                                          what update.sh:665 refreshes for UNTOUCHED copies
-  seed-fleet-agents/<agent>/.claude/skills/   the curated per-agent set a NEW agent is seeded with
+  seed-fleet-agents/<agent>/.claude/skills/   the curated per-agent set a NEW agent is seeded with,
+                                         `cp -r`d into agents/<agent>/ (install-linux.sh:1534)
+
+EACH TEMPLATE TREE IS PAIRED WITH ITS OWN LIVE ROOT, and getting that wrong is silent: this tool
+used to compare EVERY tree against ~/.claude/skills, so the per-agent trees were measured against
+a directory their agents do not read. It reported 17 TEMPLATE-ONLY skills where 1 was real, and
+hid two LIVE LOST content rows completely (card bfc028b4). See trees().
 
 A plain `diff -r` over them is useless, because TWO KINDS OF DIFFERENCE ARE CORRECT BY DESIGN and
 together they account for most of the noise:
@@ -52,7 +59,20 @@ import sys
 from collections import Counter
 from pathlib import Path
 
-PLACEHOLDER_RX = re.compile(r'\{\{[A-Z_]+\}\}')
+# Two placeholder conventions ship in these trees, not one. seed-skills/ uses {{NAME}},
+# rendered by the installer's sed; seed-fleet-agents/ ALSO uses __MARVEEN_INSTALL_DIR__ /
+# __MARVEEN_HOME__ sentinels, rewritten at install-linux.sh:1546. Both must be rendered
+# before comparing and both must be counted for the flattening check below -- a sentinel
+# overwritten with a literal path is the same corruption as a flattened {{INSTALL_DIR}}.
+PLACEHOLDER_RX = re.compile(r'\{\{[A-Z_]+\}\}|__MARVEEN_[A-Z_]+__')
+
+# Backup artefacts are NOT drift, and on a real install they were 100% of the noise: every one of
+# the 10 `live-only file` rows was a backup, zero were real (card 23d09a68). update.sh:707 writes a
+# `<file>.seedbak.<epoch>` beside the file it merges, INSIDE the scanned tree, so each successful
+# merge permanently adds a row to this report. Deliberately narrow: only the two backup suffixes,
+# because a skill file is SKILL.md or something under references/ -- a `.bak` is never load-bearing,
+# but a broad 'skip anything unusual' rule would hide a real file the day someone adds one.
+BACKUP_RX = re.compile(r'\.(?:seed)?bak(?:\.\d+)?$')
 
 INSTALL_DIR = Path(os.environ.get('INSTALL_DIR', '/home/neon/marveen'))
 LIVE = Path(os.environ.get('SKILLS_DIR', str(Path.home() / '.claude/skills')))
@@ -74,6 +94,8 @@ SUBS = {
     '{{BOT_NAME}}': env_value('BOT_NAME', 'MikroB'),
     '{{OWNER_NAME}}': env_value('OWNER_NAME', 'Peti'),
     '{{WEB_PORT}}': env_value('WEB_PORT', '3420'),
+    '__MARVEEN_INSTALL_DIR__': str(INSTALL_DIR),
+    '__MARVEEN_HOME__': str(Path.home()),
 }
 
 # Both sides collapse to <OWNER> so a de-personalised line matches its personalised twin. The list is
@@ -86,15 +108,26 @@ OWNER_RX = re.compile('|'.join([
 ]), re.I)
 
 
-def trees() -> list[tuple[str, Path]]:
-    out = [('seed-skills', INSTALL_DIR / 'seed-skills')]
+def trees() -> list[tuple[str, Path, Path]]:
+    """(name, template root, LIVE root) -- each tree paired with the copy it actually installs to.
+
+    The pairing is the load-bearing part and it is NOT one shared live directory (card bfc028b4,
+    found by syncing ten files toward a copy the affected agents never read). seed-skills/ installs
+    into ~/.claude/skills (install-linux.sh:1464, refreshed by update.sh:826), but
+    seed-fleet-agents/<a>/ is `cp -r`d into agents/<a>/ (install-linux.sh:1534), so ITS live
+    counterpart is agents/<a>/.claude/skills. Comparing a per-agent seed against the global set
+    reported 17 TEMPLATE-ONLY skills where only 1 was real, and hid two LIVE LOST content rows
+    entirely -- every assertion about faithfulness stays true while answering about the wrong pair.
+    """
+    out = [('seed-skills', INSTALL_DIR / 'seed-skills', LIVE)]
     seed_agents = INSTALL_DIR / 'seed-fleet-agents'
     if seed_agents.is_dir():
         for agent in sorted(seed_agents.iterdir()):
             p = agent / '.claude/skills'
             if p.is_dir():
-                out.append((f'seed-fleet-agents/{agent.name}', p))
-    return [(n, p) for n, p in out if p.is_dir()]
+                out.append((f'seed-fleet-agents/{agent.name}', p,
+                            INSTALL_DIR / 'agents' / agent.name / '.claude/skills'))
+    return [(n, p, lv) for n, p, lv in out if p.is_dir()]
 
 
 def committed_text(path: Path) -> str | None:
@@ -125,7 +158,7 @@ def placeholder_regressions() -> list[tuple[str, str, int, int]]:
     Returns (tree_name, relative-path-within-tree, old_count, new_count) tuples, worst first.
     """
     rows = []
-    for tree_name, tree in trees():
+    for tree_name, tree, _live_root in trees():
         for f in sorted(tree.rglob('*')):
             if not f.is_file():
                 continue
@@ -183,17 +216,23 @@ def main(argv: list[str]) -> int:
         return 2
 
     rows, correct = [], Counter()
-    for tree_name, tree in trees():
+    for tree_name, tree, live_root in trees():
+        if not live_root.is_dir():
+            # The whole target is absent (an agent that was seeded but never installed here).
+            # Reported ONCE, not once per skill: inflating it per skill is what made the old
+            # TEMPLATE-ONLY count unreadable.
+            rows.append((tree_name, '(whole tree)', '', 'LIVE TREE ABSENT', set(), set()))
+            continue
         for skill in sorted(d for d in tree.iterdir() if d.is_dir()):
             if want_skill and skill.name != want_skill:
                 continue
-            live_skill = LIVE / skill.name
+            live_skill = live_root / skill.name
             if not live_skill.is_dir():
                 rows.append((tree_name, skill.name, '', 'TEMPLATE-ONLY skill', set(), set()))
                 continue
             seen = set()
             for f in sorted(skill.rglob('*')):
-                if not f.is_file():
+                if not f.is_file() or BACKUP_RX.search(f.name):
                     continue
                 rel = f.relative_to(skill)
                 seen.add(rel)
@@ -209,9 +248,12 @@ def main(argv: list[str]) -> int:
                     continue
                 rows.append((tree_name, skill.name, str(rel), verdict, only_live, only_tpl))
             for f in sorted(live_skill.rglob('*')):
-                if f.is_file() and f.relative_to(live_skill) not in seen:
-                    rows.append((tree_name, skill.name, str(f.relative_to(live_skill)),
-                                 'live-only file', set(), set()))
+                if not f.is_file() or f.relative_to(live_skill) in seen:
+                    continue
+                if BACKUP_RX.search(f.name):
+                    continue  # update.sh's own .seedbak, or someone's .bak -- not content
+                rows.append((tree_name, skill.name, str(f.relative_to(live_skill)),
+                             'live-only file', set(), set()))
 
     print('NOT drift, correct by design:')
     for k, v in correct.most_common() or [('(none)', 0)]:
