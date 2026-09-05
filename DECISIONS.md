@@ -6884,3 +6884,38 @@ ezért nem kapott önálló plan-grilling kört.
 **Ki döntött:** backend2 (lelet a 0711c19b méréséből, design + megvalósítás).
 **Hivatkozás:** kártya 74aa46a5; `store/gate-closure-check.py`,
 `store/gate-closure-check.selftest.py` (44 -> 49 eset, 4 mutációval igazolva).
+
+## 2026-09-05 -- 07433dab -- Az ötödik ajtó őre a MŰVELETET pinneli, és a nevek ALAKJÁT is méri
+
+**Döntés:** A `reserved-agent-name.test.ts` "door 5" blokkja három ponton szigorodik: (1) az őr nem a
+`SEED_FLEET_DIR=` HOZZÁRENDELÉST pinneli, hanem azt, hogy a másoló ciklus TÉNYLEGESEN ezt a változót
+járja be; (2) installerenként PONTOSAN EGY hely másolhat az `agents/` alá (szám, nem jelenlét); (3)
+minden seed-könyvtárnév változatlanul túl kell élje a `sanitizeAgentName`-et, nem elég, hogy nincs
+benne a fenntartott halmazban. A komment-sorokat mindhárom illesztés előtt eldobjuk.
+
+**Miért:** a tegnap landolt őr (54fd9c02) csak a változó-átírási mutációt buktatta el. Cybersec két
+alakot nevezett meg, amik átsétálnak rajta, és MINDKETTŐT lemértem a valódi installereken, mielőtt
+javítottam: a `SEED_FLEET_DIR=` sor változatlanul marad, miközben (a) a ciklus forrása másra
+mutat, vagy (b) az eredeti mellé bekerül egy MÁSODIK másoló ciklus egy másik korpuszból. A régi
+állítás mindkét mutált fájlon ZÖLD marad -- kimérve, nem levezetve. Cybered harmadik alakja pedig
+ortogonális: az őr a nevet a fenntartott HALMAZHOZ méri, az ALAKJÁHOZ sehol, így egy
+`ZZ_Cybered Probe` nevű könyvtár után 23/23 zöld maradt -- és ez az EGYETLEN ajtó, ami nyers
+repo-stringet tesz az `agents/` alá (minden más út a `sanitizeAgentName`-en keresztül épít), majd
+beépül a context-guard-runner üzenet-törzsébe is.
+
+Ez ugyanaz a megkülönböztetés, amit a CLAUDE.md 12. szabálya a szimbólum-jelenlétre kimond, egy
+réteggel feljebb: attól, hogy egy azonosító SZEREPEL, még nem azt HASZNÁLJÁK. A komment-szűrés is
+ugyanezért van -- egy a ciklust szó szerint idéző komment különben minden itteni állítást zölden
+tartana, miközben a valódi ciklus eltűnt.
+
+**Mérve:** a ma szállított 14 seed-könyvtár MIND átmegy az alak-ellenőrzésen, tehát a szigorítás nulla
+hamis riasztást termel. A komment-eldobás után 2294-ből 1711 sor marad az install-linux.sh-ban és
+1636-ból 1287 a macos-ban; a találatszám mindkét mintára ma 1, komment-szűréssel és nélküle egyaránt.
+
+**Elvetett alternatíva:** shell-oldali név-ellenőrzés az installerbe. Ugyanaz az érv, mint 54fd9c02-nél:
+a shell nem tudja hívni a `sanitizeAgentName`-et, tehát egy shell-ellenőrzés a szabály MÁSODIK
+példánya lenne -- pont az a drift-osztály, amit a b46a4b7e megszüntetett.
+
+**Ki döntött:** Cybersec + Cybered (leletek a 54fd9c02 gate-köréből), backend2 (mérés + megvalósítás).
+**Hivatkozás:** kártya 07433dab; `src/__tests__/reserved-agent-name.test.ts` (23 -> 26 eset, 3
+mutációval igazolva + egy kontroll arról, hogy a RÉGI őr mindkét bypass-alakot átengedte).
