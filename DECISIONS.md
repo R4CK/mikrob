@@ -7667,3 +7667,55 @@ a detektor jelzésének kiélesítése a valós korpuszon).
 **Hivatkozás:** kártya 30b76a8d; `store/skill-merge-check.py`,
 `src/__tests__/skill-merge-check.test.ts` (5 eset), `agents/{qa,qa2,cybersec,cybered}/.claude/
 skills/gate-worktree-pattern/SKILL.md` (gitignore-olt, élő).
+
+## 2026-09-05 -- 23d09a68 (2. lépés vége) -- A 20 drift-sorból 12 elintézve, 3 szándékosan nem, 5 a skill gazdájáé
+
+**A hat `template LAGS` sor** (full-value-audit x4, guarded-rowscoped-read-endpoint x2)
+szinkronizálva a saját live párjához. A 30b76a8d NO-GO óta ez már nem elég indok önmagában, ezért
+minden merge-eredmény átment a `store/skill-merge-check.py`-n, MIELŐTT bármit kiírtam volna: mind a
+hat tiszta, nincs felülírt parancsalak.
+
+**A hat `template-only file` sor egyetlen valódi hiányosság volt**, és ugyanaz a fél-javítás alak,
+mint a 30b76a8d References indexe: az élő `fleet-helper/SKILL.md` ÖT `scripts/*` fájlt dokumentál,
+és a `scripts/` könyvtár EGYETLEN telepítésen sem létezett. A hat fájl telepítve, módokkal együtt
+(a három `.py` végrehajtható marad); az öt hivatkozás mind feloldódik.
+
+**Miért nem érkezett meg magától, és ez nem hiba:** a live `SKILL.md` BÁJTAZONOS a seeddel, tehát a
+példány provably érintetlen, mégsem kapta meg a `scripts/`-et. Az `update.sh`
+`refresh_untouched_seeds` ciklusa kimondottan így épül: `[ -f "$installed" ] || continue  # never add
+files to an existing dir`, ráadásul nem rekurzív. Ez DÖNTÉS, nem mulasztás -- a következménye
+viszont most mérhető: bármely seed-skill, ami később ÚJ fájlt kap, azt egy meglévő telepítésre soha
+nem szállítja le. Nem nyúltam hozzá: az update.sh magas kockázatú infrastruktúra, ez saját kártyát
+és gate-et kíván.
+
+**Három sor SZÁNDÉKOSAN marad:**
+1. `seed-skills qa-test-strategy/references/SKILL-FULL-BACKUP.md` -- itt a TEMPLATE van előrébb,
+   a szinkron törölné a "sqlite3 CLI nem garantált telepítve" hordozhatósági javítást.
+2. `qa2/i18n-parity-sweep` (LIVE LOST content) -- ezt az aszimmetriát én hoztam létre a 30b76a8d-en.
+   A seed három sora a MEGOSZTOTT CleanCore klónra hivatkozik, amit a CLAUDE.md visszavont; a
+   konvergálás elavult útmutatást vinne be pont a nyerő példányba.
+3. `fron-ted/impeccable` (az utolsó `TEMPLATE-ONLY skill`) -- NEM hiányosság: a skill globálisan
+   megvan (`~/.claude/skills/impeccable`), per-ügynök példánya senkinek nincs, tehát fron-ted
+   ELÉRI. A sor csak azt mondja, hogy a seed visz egy per-ügynök példányt, amit a telepítés nem hozott
+   létre. Ez a korábbi 17-ből az EGYETLEN, ami valódinak látszott -- és közelebbről ez sem az.
+
+**Öt sor a skill GAZDÁJÁRA tartozik, nem rám**, és ezt mérésre alapozom, nem óvatosságra:
+`white-hat-security-testing/references/recurring-no-go-classes.md` (cybered, cybersec, teszter),
+`fron-ted csp-inline-style-sweep`, `fron-ted engineering-standards`. Mindkét oldalon ÉRDEMI, eltérő
+tartalom van: a white-hat template két EGÉSZ szekcióval előrébb (`## 6. Async floating-promise`,
+`## 7. A grep you TYPED is not the grep you think`), miközben a live-ban van egy Unicode-vezérlőkarakter
+javítás, ami a templateből hiányzik.
+
+A legkeményebb bizonyíték az `engineering-standards`: SZEKCIÓSZÁM-ÜTKÖZÉS van. A seed 116. sora
+`## XII. Auth UI: forward-oracle elkerülés`, az élő 122. sora `## XII. Frontend adatvizualizáció`.
+Két KÜLÖNBÖZŐ szekció, ugyanazzal a számmal. Egy gépies merge két `## XII.`-t hagyna a fájlban --
+szerkezeti hiba, nem szépséghiba. Pontosan ilyen döntést nem szabad a sweepnek meghoznia; ez az a
+hely, ahol a 30b76a8d hibája megismétlődne.
+
+**Bizonyíték:** 8 seed/skill őrteszt zölden (90 passed), a merge-check mind a hat A-csoportos
+eredményen tiszta, a `fleet-helper` öt dokumentált hivatkozása feloldódik.
+
+**Ki döntött:** backend2 (a besorolás és a három szándékos kihagyás), a fennmaradó öt sor a skillek
+gazdáira vár.
+**Hivatkozás:** kártya 23d09a68; `seed-fleet-agents/*/full-value-audit`,
+`*/guarded-rowscoped-read-endpoint`, `~/.claude/skills/fleet-helper/scripts/` (élő, gitignore-olt).
