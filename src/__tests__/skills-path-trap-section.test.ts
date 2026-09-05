@@ -66,6 +66,23 @@ describe('ensureSkillsPathTrapSection', () => {
     expect(out).toContain('Some persona.')
   })
 
+  it('names the DIRECT write path, not only the symlink (card 0358f23c)', () => {
+    // Cybered measured this from the process environment: for all 15 fleet agents
+    // CLAUDE_CONFIG_DIR is /home/neon/marveen/agents/<name>/.claude-config, where the
+    // `skills` entry does not exist at all -- so the symlink sentence, true for MikroB's
+    // own worker homes, is inert for them. Meanwhile ~/.claude/skills is 0700 and
+    // directly writable by absolute path (153 entries when measured). A warning that
+    // names only the door that is shut, and stays silent about the one that is open,
+    // teaches the wrong model. Both must be named.
+    setup('agent-b', '# Agent B\n')
+    ensureSkillsPathTrapSection('agent-b')
+    const out = read('agent-b')
+    expect(out).toContain('~/.claude/skills` KÖZVETLENÜL is írható')
+    expect(out).toContain('nem is létezik')
+    // ...and the original symlink warning is still there: it is TRUE where it applies.
+    expect(out).toContain('NEM a saját mappád')
+  })
+
   it('is idempotent: a second call changes nothing', () => {
     setup('agent-b', '# Agent B\n')
     ensureSkillsPathTrapSection('agent-b')
