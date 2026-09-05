@@ -5663,6 +5663,36 @@ előzmény: 9dc0fba8 incidens és a `symlinked-node-modules-guard.py`.
 
 ---
 
+## 2026-09-05 -- CLAUDE.md 12. pont -- Szimbólum-jelenlét ellenőrzése azonosító-határra üljön, ne részsztringre
+
+**Döntés.** A "Kódminőségi alapelvek" szekció új 12. pontja: egy present/absent-őr needle-je
+azonosító-határra üljön (nem részsztring), ÉS a needle vigye magával a deklarációs kulcsszót
+(`function foo`, nem csupasz `foo`), mert a két hiba egymás után nyílik ki -- a határ önmagában nem
+elég, csak a puszta átnevezés ellen véd.
+
+**Miért, két kártyáról ugyanazon a napon.** `a14812e8`: `content.includes('touchAncestorChain')`
+zöld maradt a `touchAncestorChainRENAMED` átnevezésen -- ezt a szerző mérte és `containsAsToken`-nal
+javította. Cybersec GO-ja közben megmutatta a MARADÉK rést: a valódi függvényt kivágva, egy
+sor-/blokk-kommentbe vagy string-literálba írt megnevezés a kulcsszó nélküli needle-t akkor is
+zölden tartja, ha a deklaráció eltűnik -- és ez nem elméleti, a kártya saját második horgonyának
+(`def is_send_invocation`) cél-fájljában MÁR MA is van két ilyen komment-említés. `e5b7ff19`:
+a reachability basename-részsztring volt, és a "spans" szó egy spans-ról szóló tesztben amúgy is
+mindenütt ott van -- a szerző majdnem "nulla lelet"-et jelentett a saját eszköze vakságából, nem
+tiszta korpuszból.
+
+**Mit NEM ír elő.** Nem kéri meglévő őrök visszamenőleges átírását (a két konkrét helyet a saját
+kártyáján jelentették, LOW-MEDIUM, egyik sem blokkolt verdiktet) -- a szabály a következő ilyen őrre
+szól. Azt sem, hogy a tagadás-/idézőjel-szűrés járható út lenne hamis pozitívra: Cybersec mérése
+szerint 61 állításból 8 ül tagadó/idézőjeles soron, köztük valódi állítások is, egy ilyen szűrő csak
+hamis negatívot termelne -- a riport ADDITÍV kategóriát mondjon (fejléc hamis / sehol nincs lefedve)
+szűrés helyett.
+
+**Ki döntött:** Cybersec javasolta (kártyák a14812e8, e5b7ff19 gate-verdiktjei), MikroB vitte fel a
+CLAUDE.md-be, ugyanabban a munkában mint egy rutin upstream-szinkron (agent/mikrob/work ->
+origin/develop merge), külön kártya nélkül -- dokumentációs, kockázatmentes kiegészítés.
+
+---
+
 ## 2026-09-04 -- 222fdc5e -- A drift-heartbeat a diverged HALMAZ változására riaszt, nem a darabszámára
 
 **Döntés.** Az `agent-skill-drift-sync.sh` minden futás végén egy verdikt-sort ad
@@ -6115,6 +6145,33 @@ sávokat.
 roster-forrás, a nem-elérhető Ollama kezelése).
 **Hivatkozás:** kártya 21950f77.
 
+## 2026-09-04 18:40 -- BRIDGEHU813 átvéve, a hozzá tartozó böngésző-suite tudatosan nem
+
+**Döntés:** Az upstream `1df099be` (#1170, BRIDGEHU813) párosítási hibaüzenet-fordítását átvettük
+a forkba (kártya `73cf0a22`), a hozzá tartozó Playwright-suite-ot (`tests/browser/**`,
+`playwright.browser.config.ts`, `browser-verify` script, és a csak ezeket kiszolgáló
+`vitest.config.ts` kizárás) viszont NEM.
+
+**Miért az átvétel:** a párosítási panel magyar volt mindenhol, kivéve azt az egy sort, amit a
+felhasználó hiba esetén elolvas -- ott a szerver angol mondata jelent meg nyersen. Ez a
+CLAUDE.md 12. szabályába ütközik (beszédes, i18n-kulcsból jövő hibaüzenet). Az upstream megoldása a
+helyes irányú: a stabil `code` mezőre fordít, nem a mondatra, és ismeretlen kódnál visszaesik a
+szerver saját mondatára, tehát egy később hozzáadott szerver-hiba angolul jelenik meg, nem üres
+sorként vagy nyers kulcsként.
+
+**Miért nem a böngésző-suite:** a flotta kapuja (`store/fleet-test.sh`) vitestet futtat, és
+egyáltalán nem hív Playwrightot. Egy átvett böngésző-suite tehát olyan suite lenne, amit senki nem
+futtat -- egy nem futó teszt lefedettségnek olvasódik, miközben semmit nem őriz.
+
+**Ami emiatt NEM maradhatott el:** az upstream böngésző-tesztje pinneli a BEKÖTÉST, vagyis azt,
+hogy a hibaág ténylegesen MEGHÍVJA a fordítót. Ezt a garanciát nem ejtettük, hanem áthelyeztük: az
+átvett unit-teszt közvetlenül állítja, és mérve bukik, ha a hívási pontot visszaállítjuk. Enélkül a
+fájl összes többi állítása zöld maradna, miközben a felhasználó újra angolul látná a hibát -- pont
+az a hiba, amit ez a kártya javít.
+
+**Újranyitandó, ha:** a flotta kapuja valaha kap egy Playwright-lépcsőt. Akkor a suite átvétele
+önálló döntés, nem automatikus következmény.
+
 ---
 
 ## 2026-09-04 -- 711a7e57 -- A selftestek felfedezéssel futnak, nem kézzel írt wrapperenként
@@ -6235,6 +6292,172 @@ A javítás nem lazítás: a case most a Traceback-et nézi (az a crash), ÉS az
 mellett ne szivárogjon ki a fake modell (az a routing). Mindkettő a routingról szól, és egyik sem
 függ attól, hogy van-e letöltött modell.
 
+## 2026-09-04 -- 99fccbcf -- A munkafa-frissesség kereséshez: eszköz, nem blokkoló hook
+
+**Döntés:** a „grep az élő telepítésen hamis nullát adhat” hibaosztályra NEM épült blokkoló
+PreToolUse hook. Helyette egy hívható, csak-olvasó eszköz készült (`store/live-tree-freshness.sh`),
+ami kimondja a fa lemaradását, és a keresést a refen futtatja a munkafa helyett.
+
+**Miért:** a hook eseteit a valódi parancs-korpuszból mértem, nem a fenyegetésmodellből. 20 óra
+alatt 4121 Bash-hívásból **15** volt rekurzív keresés az élő checkouton, mind egyetlen ügynöktől,
+és mind `store/` alatti fájl/log keresése -- egyetlen forrás-létezés kérdés sem. Natív Grep/Glob
+hívás ugyanarra az útvonalra: **0**. Egy guard ott napi ~15 hamis pozitívot termelt volna, és a
+valódi esetet (egy `grep -rl` egy 12 committal lemaradt fán) nem fogta volna meg.
+
+**A kitettség viszont valós, és ezt is mértem.** A `marveen-land.sh` a 02f462e1 óta minden
+landolás után előrehúzza az élő checkoutot, de a közvetlenül pusholó kézi landolás nem hívja meg.
+A 142 ablakon mérve: medián 16,4 perc / 3 commit lemaradás, de **22 ablak egy óránál hosszabb** és
+**26 ablakban 5+ commitot** nem látott a fa. 2026-09-04-en önmagában 17, 16, 15, 12 és 12 commitos
+ablakok. A saját hamis nullám egy 12 commit / 60 perces ablakba esett.
+
+**Egy mérés menet közben megfordított egy állításomat.** Azt írtam a script fejlécébe, hogy a
+rossz ref némán, exit 1-gyel tér vissza, tehát megkülönböztethetetlen az őszinte „nincs
+találat”-tól. Ez hamis: a rossz ref hangos (`fatal: unable to resolve revision`, exit 128).
+A ténylegesen néma alak a rossz PATHSPEC (`git grep <minta> <jó-ref> -- nincs/ilyen.ts` -> üres
+kimenet, exit 1), ami egy átnevezett vagy fejből gépelt útvonalnál a valószínűbb hiba. Az eszköz
+ezért mindkettőt külön állapotra képezi le, és a pathspec-ágat a mérés után kapta meg.
+
+**Ki döntött:** backend2 (mérés + döntés), a kártyát MikroB nyitotta backend2 operatív jelzésére.
+
+**Ami NYITVA maradt, MikroB döntése:** (a) az élő checkout periodikus előrehúzása, hogy a kézi
+landolás utáni ablak is bezáruljon -- ez az élő telepítést érinti időzítve, ezért nem egyoldalú
+lépés; (b) a keresési fegyelem fleet-szintű kimondása a root CLAUDE.md-ben.
+
+## 2026-09-04 -- a14812e8 -- Fork-oldali horgony: megnevezett teny, nem blob-pin
+
+**Dontes:** az `ACKNOWLEDGED_CONFLICTS` mentesitesei mostantol OPCIONALISAN megnevezhetnek egy
+fork-oldali tenyt (`ACKNOWLEDGED_FORK_ANCHORS`: szimbolum + fajl + present/absent + miert
+teherhordo). Ha az a teny megvaltozik, a guard ujradontest ker. Fork-oldali BLOB-pin NEM keszult.
+
+**Miert nem blob-pin (a kezenfekvo szimmetria):** lemerve 14 napra ezen a repon **404 fork-oldali
+commit a 72 pinnelt fajlon, es 72-bol 67 mozdult**. Egy fork-oldali blob-pin naponta kb. 29-szer
+avulna el, szinte mindig olyan szerkesztesen, ami a szabaly targyat nem is erinti. Az upstream-pin
+azert engedheti meg maganak a teljes-fajl granularitast, mert az upstream ritkan mozdul; a mi
+oldalunknak nincs meg ez a tulajdonsaga, es egy naponta 29-szer siro kapu pecsetelove valik.
+
+**Miert opcionalis, es miert marad az:** a 73 szabalybol 9 tesz barmilyen fork-oldali allitast, es
+azok tobbsege ATVETELI TORTENET ("not adopted this round"), nem elo, ellenorizheto allitas a farol.
+Minden bejegyzest predikatumba kenyszeriteni azt jelentene, hogy prozat irunk at olyan formalizmusba,
+ami nem illik ra.
+
+**Ket meres forditotta meg a sajat tervemet epites kozben:**
+
+(1) A `content.includes(needle)` horgony VAK az atnevezesre: a `touchAncestorChain` ->
+`touchAncestorChainRENAMED` mutacio zolden ment at, mert az uj nev TARTALMAZZA a regit. Emiatt kapott
+a matcher azonositó-hatar ellenorzest (`containsAsToken`). A mutacio a javitas utan helyesen bukik.
+
+(2) Egy horgony nem lehet KOMMENTTEL kielegitheto. Az `installer-ollama-nonfatal` szabaly termeszetes
+horgonya az `ollama_pull` lenne, ami meg mindig szerepel egyszer az `install-linux.sh`-ban -- egy
+kommentben, ami azt magyarazza, hogy a hivast ELTAVOLITOTTAK. Egy `absent` horgony ott mar az elso
+napon pirosan allna, egy `present` pedig orokre zolden a rossz okbol. Az a bejegyzes ezert NEM kap
+horgonyt, es a kizarast kulon teszt pinneli, hogy egy kesobbi szerkeszto ne a nyilvanvalo horgonyt
+tegye be szo nelkul.
+
+**Az ellenorzes MINDIG fut, nem csak utkozeskor.** A blob-check csak az adott futasban ténylegesen
+utkozo fajlokra ertekelodik; a token-usage.ts hiba viszont utkozes NELKUL tortent -- a szabaly
+egyszeruen nem volt mar igaz. Feltetelesse tenni ujratermelne a lyukat, amit be kell zarnia.
+
+**Ki dontott:** backend2 (meres + terv), a kartyat MikroB nyitotta backend2 leletere (607254fb komment 19951).
+
+## 2026-09-05 -- e5b7ff19 -- Hatokor-allitas sweep: jelento eszkoz, nem kapu
+
+**Dontes:** a "teszt-fejlec olyan hatokort allit, amit nem fed le" osztalyra JELENTO eszkoz keszult
+(`store/test-scope-claim-check.py`), nem blokkolo kapu.
+
+**Miert nem kapu -- merve:** 611 teszt-fajlon 61 fejlec-allitas oldodik fel tulajdonosra, ebbol 33
+nem eri el a kiszolgalot, es kezi ellenorzes utan PONTOSAN EGY valodi eltereses akadt. A tobbi
+forras-kontraktus-or (app.js-t, shell-scriptet, SKILL.md-t olvasnak szovegkent es toredekeket
+allitanak), amelyek fejlece a route-ot a JAVITAS KONTEXTUSAKENT nevezi meg, nem sajat hatokorkent --
+ez legitim es gyakori alak itt. Egy kapu tehat kb. 23 hamis pozitivot adna 1 talalat mellett.
+
+**A megerositett lelet:** `otel-distributed-tracing.test.ts` fejlece szo szerint ezt mondja:
+"Scope: DB layer ... API route (POST/GET /api/spans, GET /api/traces/:id, GET /api/traces)". A fajl
+sajat maga hozza letre az `otel_spans` tablat es `db.prepare`-rel ujraimplementalja a lekerdezeseket;
+a `tryHandleSpans`-t nulla teszt eri el. Ez a kartya sajat 1. peldaja, es MA IS fennall. A 63beeb8a
+(waiting) ugyanennek a vegpontnak az IRASI invariansarol szol, nem a lefedettsegi resrol -- ezert a
+lelet oda ment kommentkent, uj kartya nyitasa helyett (6b. szabaly).
+
+**Az eszkoz sajat vaksaga is mert lelet volt.** Az elso valtozat a kiszolgalo modult BASENAME-
+RESZSZTRINGGEL kereste a teszt kodjaban, es a 'spans' szo egy spans-rol szolo tesztben amugy is
+mindenutt ott van (tabla-nevek, valtozok, SQL) -- tehat a `routes/spans.ts` "elertnek" latszott egy
+olyan fajlbol, ami csak vitestet es better-sqlite3-at importal. Az eszkoz ELVESZTETTE a sajat alapito
+eseteet. A reachability azota IMPORT vagy HANDLER-NEV szerinti token-illesztes. Ugyanaz a containment-
+hibaosztaly, amit ugyanezen a napon a fork-horgonynal is javitani kellett (a14812e8).
+
+**A selftest az elso futason talalt egy masodik hibat:** az argumentum-feldolgozo ketszer leptette az
+indexet, tehat `--repo X --json` mellett a `--json` sosem jutott szohoz.
+
+**Ki dontott:** backend2 (meres + dontes), a kartyat MikroB nyitotta backend2 63beeb8a-REVIEW leletere.
+
+## 2026-09-05 -- f1b3f2f0 -- A landolas ujraepiti a dist-et; a restart valtozatlanul kulon kapu
+
+**Dontes:** a `marveen-land.sh` a sikeres push es az elo checkout elorehuzasa UTAN lefuttatja a
+buildet az ELO TELEPITESBEN, ha a landolt tartomany `src/`-t erint. MikroB dontese volt a (b) irany
+(a feltetel megszuntetese, nem a jelzese); ez annak a vegrehajtasa.
+
+**Amit a kartya premisszajabol JAVITANI kellett:** a kartya szerint "senki nem aggregalja" a
+stale-build tunetet. Ez nem igaz: a `scripts/build-freshness-guard.sh` egy ELO systemd --user
+timeren fut 5 percenkent, 300 masodperces build-turelmi ablakkal -- iras kozben ellenoriztem, epp
+futott, es ezt mondta: "dist/ 2m behind src/ -- within the 300s grace period, no-op". A rés tehat
+sosem volt lathatatlan, csak sosem lett BEZARVA. A kartya lenyege ettol all: a riasztas nem javitas,
+es egy naponta tizszer ujratermelodo feltetelre nem valasz, hogy valaki naponta tizszer lefuttatja
+az update.sh-t.
+
+**A 77075367 dontese NEM lett visszavonva.** Az kimondta, hogy a landolas nem epit ujra ES nem indit
+ujra; ebbol a RESTART fele valtozatlan (tovabbra is ./update.sh, tovabbra is megerositve). Csak az
+ujraepites fele valtozott, es pont az a fele, amire a helyi-modell offload utja ra van kotve: a
+`local-llm-rag.sh` hivasonkent FRISS node-ot indit a dist-bol, tehat neki a build eleg, a restart nem
+kell. Ellenorizve iras elott: a `src/web` alatt semmi nem indit futasidoben node gyereket a dist-bol,
+tehat egy ujraepitett dist nem hasit ketfele verzio koze egy futo szolgaltatast.
+
+**Merve, mert ez minden landolas ara:** a teljes build 16,5 masodperc, a landolas amugy is 140-170
+masodperc. Sorositva fut (`flock`), mert a parhuzamos landolas valos -- egy este ketszer is
+push-versenyt vesztettem.
+
+**Fail-soft es hangos:** a commitok a build futasakor MAR pusholva vannak, tehat egy build-hiba nem
+buktathatja a landolast (az egy megtortent landolast jelentene meg nem tortentkent). Egy bukott build
+pontosan azt az allapotot hagyja hatra, ami eddig is volt, es amire a freshness-guard riaszt.
+
+**Ket sajat hibat a tesztek talaltak meg, nem en:** (1) a lock-fajlt a `store/` ala tettem, ami a
+land-fixture-ben nem letezik -- a `flock` ilyenkor 66-tal all le, es ez REBUILD FAILED-kent jelent meg
+egy olyan buildre, ami el sem indult; a lock azota a `.git` alatt van, aminek a letezeset a script
+amugy is megkoveteli. (2) A "skipped" esetem ROSSZ OKBOL ment at: ket kulon ag irja ugyanazt a szot,
+es a teszt csak a szora allitott -- a specifikus okra allit azota.
+
+**Ki dontett:** MikroB (irany), backend2 (meres + vegrehajtas).
+
+## 2026-09-05 00:55 -- A kártyazárás-ellenőrző elvárt-sha alapértelmezetté tétele (kártya 2003e04b)
+
+**Döntés:** a `store/gate-closure-check.py` `--expect` kapcsolója alapértelmezetté vált: kapcsoló
+nélkül a kártya legfrissebb `REVIEW` kommentjének `Gate-SHA:` sorát használja elvárt shaként. Az
+eltérést viszont NEM sha-egyenlőséggel ítéli meg, hanem tartalommal: feloldja mindkét commitot a két
+klón egyikébe, és összeveti a szállított fájlok tartalmát. Új `UNRESOLVED` állapot arra, amikor az
+eltérés nem ítélhető meg. A régi viselkedés a `--no-expect`-tel áll vissza.
+
+**Miért nem a kártyában scope-olt egyszerű alak:** a kártya és a hozzá tartozó plan-grilling (Cybered)
+két utat kínált -- (a) az elvárt sha a REVIEW-ból, sha-egyenlőséggel, (b) tartalom-alapú összevetés --
+és úgy ítélte, hogy (a) önmagában elég, mert a REVIEW shája „definíció szerint egyezik a
+verdiktekkel". Ez a teljes táblán MÉRVE nem igaz. Az 557 `AGREE` kártyából 38-nál tér el a REVIEW
+shája attól, amit a gate-ek megnéztek, és ebből 23 bizonyíthatóan ártalmatlan: 10-nél a két commit
+bájtra ugyanazt tartalmazza a kártya által szállított fájlokra, 13-nál pedig csak a `package.json`
+(minden landolás verziót bumpol), a `DECISIONS.md` vagy a `README.md` mozdult -- tipikusan a
+munka-commit kontra az őt landoló merge. Tisztán sha-egyenlőséggel tehát a zárások 6,8%-ára szólt
+volna riasztás, háromötöde hamisan, ami néhány nap alatt megtanítja a flottának, hogy hagyja
+figyelmen kívül. A (b) úton ugyanez 15 kártya (2,7%): 14 valódi tartalmi eltérés a kártya saját
+fájljaiban, plusz 1 feloldhatatlan.
+
+**Amit a mérés még megmutatott:** a `STALE` szövege szándékosan nem nevez meg bűnöst. A c458ba0e
+mintában a gate-ek shája az elavult, az edd4c3bf-en viszont fordítva: a szállítmány egy „nem új
+REVIEW" jelzésű INFO-ONLY kommentben lépett tovább, a gate-ek helyesen az ÚJABB shát nézték, és a
+REVIEW a lemaradt artifaktum. Az eszköz a két commitot és az eltérő fájlokat mondja meg; melyik az
+elavult, az az olvasó döntése.
+
+**Kapcsolódó, ugyanebben a munkában:** a `store/*.selftest.py` fájlokat semmi nem futtatta. A
+selftest-felfedezés (kártya 711a7e57) csak a `.selftest.sh` alakra illeszkedett, így a repó mindkét
+python-selftestje -- köztük épp ezé az eszközé -- megírva, commitolva, zöldnek látszóan, soha egyszer
+sem futott le. A felfedezés mostantól interpreter szerint kulcsol, és nyelvenként külön negatív
+kontroll van rá, hogy egy elgépelt kiterjesztés ne tudja csendben lefedetlenül hagyni az egyik nyelvet.
+
 ---
 
 ## 2026-09-04 -- 5af57bd7 -- Szemafor (max 2) a teljes CleanCore suite-futásokra
@@ -6282,3 +6505,60 @@ vonatkozik és **megmarad**, tehát az a `2>/dev/null` a szkript minden később
 elnyelte — a sorbanállás-jelzést, a feladás okát, a worktree-hibát. A selftest üres kimenetű exit 3-at
 látott, és ez vezetett a felismerésig. A javítás: a fájlt egy RENDES paranccsal hozzuk létre (annak
 az átirányítása arra a parancsra korlátozódik), az `exec` pedig csupaszon fut.
+
+## 2026-09-05 -- 999fd78a -- A B-hullám `git revert -m1`-gyel nem visszafordítható, és a jelenlegi landolási modellben nem is lehet az
+
+**Döntés:** a 607254fb plan-grilling verdiktjének (4) pontját (`git revert -m1` tesztelve, nem
+feltételezve) végrehajtottam, és a válasz NEMLEGES. A B-hullámot a mai `origin/develop`-ról nem lehet
+`git revert -m1`-gyel visszafordítani. Nem javasoltam és nem is hajtottam végre kényszerített
+revertet: az a CLAUDE.md kódminőségi 5. szabályába ütközne (működő, landolt funkció visszavonása
+Peti kifejezett engedélye nélkül).
+
+**Mérés (eldobható worktree, `/home/neon/marveen-revert-999fd78a`, `origin/develop` @ a392fe31).**
+A hullám 20 committal, három landolási merge-en át, 18 óra alatt ért a develop-ra:
+
+| landolási merge | B-hullám / idegen commit | `revert -m1` ütközés | érintett fájl |
+|---|---|---|---|
+| `78f9be50` | 12 / 1 | 4 | 33 |
+| `13bf2707` | 5 / 4 | 4 | 14 |
+| `cae546af` | 1 / 1 | 1 | 3 |
+
+Egyik sem alkalmazódik tisztán: összesen 9 ütközés, mindegyik kézi feloldást igényel. És ami
+súlyosabb: a revert nem a hullámot fordítaná vissza, hanem mindent, amit az adott landolás hozott.
+A `13bf2707` `-m1` revertje TÖRÖLNÉ a message-backlog-watcher funkciót (1e7ba5c1) és a
+card-state-stamp tesztet (382dcb15); a `78f9be50`-é a local-llm corpus-driven-test-cases anyagot
+(a3b4e0f4); a `cae546af`-é a ponytail watched-repos frissítést.
+
+**A fájl-szintű, sebészi visszaállítás sem járható maradéktalanul.** A hullám 38 fájlt érint. Ebből
+29 visszaállítható a hullám előtti (`7d548869`) állapotra anélkül, hogy későbbi munkát elvinne; 9-en
+viszont idegen commitok ülnek. A legélesebb eset a `scripts/hooks/outgoing-copy-gate.py` és a
+selftestje: rájuk a hullám UTÁN három biztonsági javítás landolt (`d0073382`, `9b43901f`, `c7dd0484`,
+Cybered F1/F2/F3). Egy naiv hullám-rollback ezeket a javításokat CSENDBEN visszavonná, azaz landolt
+biztonsági hibákat élesztene újra. További érintett: `package.json` (35 későbbi commit), `src/db.ts`
+(5), `src/web.ts` (4), `src/web/message-router.ts` (3).
+
+**Miért nem lehetett ez másképp -- ez nem mulasztás, hanem a landolási modell következménye.**
+A `store/marveen-land.sh` a teljes `agent/<ügynök>/work` ágat mergeli a develop-ba, és a per-kártya
+őre (`downward_check`) csak akkor SZIGORÚ, ha a hívó megnevezte a kártyát (`--card`); e nélkül
+riport-üzemmódban fut. A szkript saját forrásjegyzete mondja ki az okot: „without one there is no
+single card to ask about, since a marveen branch legitimately carries several". Vagyis egy
+hullámonként revertelhető merge KONSTRUKCIÓ SZERINT nem jön létre, hacsak a hullám nem kap saját
+ágat, amire az ügynök közben semmi mást nem commitol, és nem `--card`-dal landol.
+
+**Amit ténylegesen leteszteltem és zöld.** A `cae546af` az egyetlen, aminek a revertjét be tudtam
+fejezni (egy ütközés: a `package.json` verziója, mert utána `a392fe31` újra bumpolt; feloldás:
+alap-verzió vissza `1.34.1`-re, a landolás-számláló marad, a lock-fájl alapja egyezik). Az eredmény
+`517c6957`. Ezen a `store/fleet-test.sh --ref 517c6957` **614 fájl / 14801 zöld / 101 skipped**,
+lint-ratchet tartja magát; a develop tipen (`a392fe31`) futtatott kontroll BETŰRE ugyanez, tehát a
+revert egyetlen tesztet sem vesztett el és egyet sem tört el. A revertelt fát a
+`/home/neon/marveen-test` HEAD-je és a benne lévő `1.34.1+mikrob.4` verzió igazolja, tehát a zöld
+futás valóban a revertet mérte, nem a develop tipet.
+
+**Következmény.** (1) A 607254fb (4) pontja a hullámra utólag NEM teljesíthető; a hullám élesben
+marad, a rollback-út nem egy parancs, hanem egy 29 fájlos, felülvizsgált fájl-visszaállítás plusz a
+9 szennyezett fájl kézi kezelése. (2) Jövőbeli kockázatos hullámnál a követelmény csak akkor
+értelmes, ha a hullám SAJÁT ágon, `--card`-dal, idegen commit nélkül landol -- különben a
+plan-grilling olyat kér, amit a landoló szkript definíció szerint nem tud előállítani.
+**Ki döntött:** backend2 (mérés és verdikt), MikroB (dispatch, 999fd78a).
+**Hivatkozás:** kártya 999fd78a; mért revert-commit `517c6957`; landolási merge-ek `78f9be50`,
+`13bf2707`, `cae546af`; hullám előtti alapvonal `7d548869`.

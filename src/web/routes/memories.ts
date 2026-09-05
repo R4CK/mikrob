@@ -148,8 +148,17 @@ export async function tryHandleMemories(ctx: RouteContext): Promise<boolean> {
         // feature, so it must not reopen the gap the primary query just closed.
         const db2 = getDb()
         const shapeFilter = excludeToolLogShapeSql()
+        // `FROM memories m` -- the alias is REQUIRED, not stylistic (card ad209cdf).
+        // excludeToolLogShapeSql() emits `m.content NOT LIKE ?`, qualified because its primary
+        // consumer joins memories_fts, which has its OWN `content` and `keywords` columns; drop
+        // the qualifier there and the join turns ambiguous. Pasted into an UNALIASED
+        // `FROM memories`, the same fragment raised `no such column: m.content` at prepare time,
+        // on every run -- and this fallback runs only when the search found nothing, so a
+        // zero-result agent-scoped query answered HTTP 500 instead of an empty list. The caller
+        // could not tell "nothing matched" from "the memory system is down", on the very path
+        // every agent uses before answering.
         results = db2.prepare(
-          `SELECT * FROM memories WHERE (agent_id = ? OR category = 'shared') AND (content LIKE ? OR keywords LIKE ?)
+          `SELECT * FROM memories m WHERE (agent_id = ? OR category = 'shared') AND (content LIKE ? OR keywords LIKE ?)
            AND (${shapeFilter.sql}) ORDER BY accessed_at DESC LIMIT ?`
         ).all(agentId, `%${q}%`, `%${q}%`, ...shapeFilter.params, limit) as Memory[]
       }

@@ -1,5 +1,13 @@
 // Card 711a7e57: every store/*.selftest.sh actually RUNS.
 //
+// EXTENDED TO `.selftest.py` (card 2003e04b). The discovery this file introduced closed the hole for
+// shell selftests and left the identical one open next to it: the glob matched `.selftest.sh` only,
+// so BOTH of the repo's `store/*.selftest.py` files -- gate-closure-check and
+// pentest-tool-egress-proxy -- were referenced by nothing and had never executed in the suite. That
+// is the same "written, committed, green-looking, never run" class the card above was opened for,
+// one file extension over, and it was found while changing gate-closure-check.py: its only control
+// was a selftest nothing invoked. Discovery now keys on the interpreter each script needs.
+//
 // THE DEFECT. Measured on this repo 2026-09-04: of 13 `store/*.selftest.sh`, EIGHT were referenced
 // by nothing at all — local-llm-bench-lock, -hwdetect, -model-routing, -parallel-bench, -platform,
 // -tune-decide, -tune-sweep, and offload-dispatch. They are written, committed, and green-looking
@@ -48,15 +56,24 @@ const EXCLUDED: Readonly<Record<string, string>> = {
   // rather than quietly not being wired at all -- which is the failure this whole file exists for.
 }
 
-function discover(): string[] {
-  return readdirSync(STORE)
-    .filter((f) => f.endsWith('.selftest.sh'))
-    .map((f) => f.replace(/\.selftest\.sh$/, ''))
-    .sort()
+/** Suffix -> the interpreter that runs it. Adding a language here wires every existing script in
+ *  it at once, which is the whole point of discovering rather than hand-writing wrappers. */
+const RUNNERS: ReadonlyArray<readonly [string, string]> = [
+  ['.selftest.sh', 'bash'],
+  ['.selftest.py', 'python3'],
+]
+
+function discover(): Array<{ name: string; file: string; runner: string }> {
+  const files = readdirSync(STORE)
+  return RUNNERS.flatMap(([suffix, runner]) =>
+    files
+      .filter((f) => f.endsWith(suffix))
+      .map((f) => ({ name: f.slice(0, -suffix.length), file: f, runner })),
+  ).sort((a, b) => a.file.localeCompare(b.file))
 }
 
 const ALL = discover()
-const RUNNABLE = ALL.filter((n) => !(n in EXCLUDED))
+const RUNNABLE = ALL.filter((s) => !(s.name in EXCLUDED))
 
 /** The two report shapes in use, both requiring a NON-ZERO count.
  *
@@ -69,26 +86,39 @@ const OK_SHAPES: readonly RegExp[] = [
   /selftest: ([1-9]\d*) case\(s\), PASS/, //    skills-symlink-to-realdir style
 ]
 
-describe('every store/*.selftest.sh actually runs (card 711a7e57)', () => {
+describe('every store/*.selftest.{sh,py} actually runs (cards 711a7e57, 2003e04b)', () => {
   it('discovery found the selftests -- it is not asserting over an empty list', () => {
     // The negative control. A renamed directory or a broken glob would otherwise report a perfectly
     // healthy set of selftests that this file never looked at -- which is the very failure the card
     // is about, reintroduced one level up.
-    expect(ALL.length, `no *.selftest.sh found under ${STORE}`).toBeGreaterThanOrEqual(12)
+    expect(ALL.length, `no *.selftest.* found under ${STORE}`).toBeGreaterThanOrEqual(12)
     expect(RUNNABLE.length).toBeGreaterThanOrEqual(ALL.length - Object.keys(EXCLUDED).length)
+  })
+
+  it('every wired language actually matched something', () => {
+    // Per-language negative control. Without it, a typo in one suffix silently un-covers that whole
+    // language while the total count above stays comfortably above its floor -- which is exactly how
+    // the .py files went unrun in the first place.
+    for (const [suffix] of RUNNERS) {
+      expect(
+        ALL.filter((s) => s.file.endsWith(suffix)).length,
+        `no *${suffix} discovered -- either the suffix is wrong or they were all deleted`,
+      ).toBeGreaterThan(0)
+    }
   })
 
   it('every excluded entry still exists, so a stale exclusion cannot sit here unnoticed', () => {
     // An exclusion for a deleted script is dead weight that reads like a live decision. Worse, it
     // hides that the reason no longer applies to anything.
+    const names = ALL.map((s) => s.name)
     for (const name of Object.keys(EXCLUDED)) {
-      expect(ALL, `${name} is excluded but no longer exists -- drop the entry`).toContain(name)
+      expect(names, `${name} is excluded but no longer exists -- drop the entry`).toContain(name)
       expect(EXCLUDED[name]!.length, `${name}'s exclusion needs a real reason`).toBeGreaterThan(20)
     }
   })
 
-  it.each(RUNNABLE)('%s passes', (name) => {
-    const out = execFileSync('bash', [join(STORE, `${name}.selftest.sh`)], {
+  it.each(RUNNABLE.map((s) => [s.file, s] as const))('%s passes', (_label, script) => {
+    const out = execFileSync(script.runner, [join(STORE, script.file)], {
       encoding: 'utf-8',
       timeout: 180_000,
       // Inherit nothing that could make a selftest take a different path than it does by hand.
@@ -97,7 +127,7 @@ describe('every store/*.selftest.sh actually runs (card 711a7e57)', () => {
     const matched = OK_SHAPES.some((re) => re.test(out))
     expect(
       matched,
-      `${name}.selftest.sh exited 0 but printed no recognised non-zero PASS summary. ` +
+      `${script.file} exited 0 but printed no recognised non-zero PASS summary. ` +
         `Either it ran no cases, or it reports in a shape this file does not know yet ` +
         `(add it to OK_SHAPES rather than loosening one). Tail:\n${out.slice(-400)}`,
     ).toBe(true)

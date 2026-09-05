@@ -38,12 +38,17 @@
 #
 # Exit: 0 in sync (or not applicable) | 1 OUT OF SYNC | 2 bad usage | 3 harness fault
 #
+# On the OUT OF SYNC path only, a local-model DRAFT summarising the drift is appended (card
+# d8c3d10e). It is advisory and cannot change the exit code; NPM_LOCKFILE_SYNC_NO_LLM=1 skips it.
+#
 # 3 IS SEPARATE FROM 1, same contract as the pnpm sibling: "this lockfile shape is one I cannot
 # read" and "the lockfile is stale" are different facts, and a landing must refuse on 1 but never
 # on 3. Concretely, exit 3 covers a lockfileVersion below 3 (no `packages[""]` mirror to compare)
 # and a package.json declaring `workspaces` (this check reads the ROOT manifest only, so on a
 # workspace repo it would silently under-check -- saying so is better than a comfortable 0).
 set -uo pipefail
+# This script's own directory, so the sibling local-llm-rag.sh can be found regardless of cwd.
+HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 
 REPO=""; REF="HEAD"; BASE=""; SELFTEST=0
 [ "${1:-}" = "--selftest" ] && SELFTEST=1
@@ -123,6 +128,32 @@ PY
   return $rc
 }
 
+# A terse, human-readable summary of the drift, drafted by the LOCAL model (card d8c3d10e, from the
+# 2026-09-04 local-llm category review; Peti approved all three proposals).
+#
+# THE VERDICT IS NOT ITS BUSINESS. This runs only after the comparison has already decided, takes
+# the decision's own output as input, and RETURNS 0 ON EVERY PATH -- a missing model, a slow one, a
+# non-zero exit or empty output all leave the exit code exactly where compare_manifests put it. That
+# is the whole point: this script is a landing gate, and this family of scripts refuses to let a
+# harness fault become a verdict. A draft that could fail the check would be worse than no draft.
+#
+# Only on the FAILING path, so a healthy landing pays nothing at all -- and on a failing one the
+# landing has already stopped, so the seconds buy an explanation of WHAT drifted rather than delay.
+#
+# NPM_LOCKFILE_SYNC_NO_LLM=1 turns it off (offline runs, tests, or anyone who just wants the facts).
+dep_diff_draft() {
+  [ "${NPM_LOCKFILE_SYNC_NO_LLM:-0}" = "1" ] && return 0
+  local rag="$HERE/local-llm-rag.sh"
+  [ -r "$rag" ] || return 0
+  local draft
+  draft="$(printf '%s\n' "$1" | timeout 120 bash "$rag" --task dep-diff --caller npm-lockfile-sync 2>/dev/null)" || return 0
+  [ -n "$draft" ] || return 0
+  echo
+  echo "  --- dep-diff DRAFT (local model; NOT a verdict, the exit code above already decided) ---"
+  printf '%s\n' "$draft" | sed 's/^/  /'
+  return 0
+}
+
 if [ "$SELFTEST" -eq 1 ]; then
   fail=0; n=0
   t() { n=$((n+1)); [ "$2" = "$3" ] || { echo "  FAIL $1: got [$2] want [$3]"; fail=1; }; }
@@ -180,6 +211,28 @@ print(json.dumps({'lockfileVersion': 3, 'packages': pkgs}))
   compare_manifests '{"dependencies":{"a":"^1.0.0"}}' "$big_lock" T >/dev/null 2>&1
   t "a realistically large lockfile does not blow the argument limit" "$?" "0"
 
+  # --- card d8c3d10e: the draft must never be able to move the verdict ---------------------
+  # Every one of these asserts the SAME thing from a different failure: dep_diff_draft returns 0.
+  # That is the whole contract. This script is a landing gate; a draft that could fail it would be
+  # worse than no draft, and this family of scripts exists to keep harness faults out of verdicts.
+
+  NPM_LOCKFILE_SYNC_NO_LLM=1 dep_diff_draft "some drift" >/dev/null 2>&1
+  t "opt-out env returns 0 and prints nothing" "$?" "0"
+
+  out="$(NPM_LOCKFILE_SYNC_NO_LLM=1 dep_diff_draft "some drift" 2>&1)"
+  t "opt-out really is silent" "${out:-EMPTY}" "EMPTY"
+
+  ( HERE=/nonexistent-dir-for-selftest; dep_diff_draft "some drift" >/dev/null 2>&1 )
+  t "a MISSING router script returns 0, never a failure" "$?" "0"
+
+  ( HERE="$(mktemp -d)"; printf '#!/usr/bin/env bash\nexit 7\n' > "$HERE/local-llm-rag.sh"
+    dep_diff_draft "some drift" >/dev/null 2>&1 )
+  t "a router that EXITS NON-ZERO returns 0, never a failure" "$?" "0"
+
+  ( HERE="$(mktemp -d)"; printf '#!/usr/bin/env bash\ncat >/dev/null\n' > "$HERE/local-llm-rag.sh"
+    dep_diff_draft "some drift" >/dev/null 2>&1 )
+  t "a router that returns EMPTY output returns 0 and prints nothing" "$?" "0"
+
   echo "selftest: $n case(s), $([ $fail -eq 0 ] && echo PASS || echo FAIL)"
   exit $fail
 fi
@@ -208,4 +261,11 @@ fi
 
 PKG_JSON="$(git -C "$REPO" show "$REF:package.json" 2>/dev/null)"
 LOCK_JSON="$(git -C "$REPO" show "$REF:package-lock.json" 2>/dev/null)"
-compare_manifests "$PKG_JSON" "$LOCK_JSON" "$REF"
+# stdout is captured so the drift lines can be handed to the draft verbatim -- they ARE the package
+# list the card asks to summarise, and re-deriving them would be a second source that could disagree
+# with the one the verdict used. stderr stays unbuffered and live: a harness fault must not wait.
+SYNC_OUT="$(compare_manifests "$PKG_JSON" "$LOCK_JSON" "$REF")"
+SYNC_RC=$?
+printf '%s\n' "$SYNC_OUT"
+[ "$SYNC_RC" -eq 1 ] && dep_diff_draft "$SYNC_OUT"
+exit "$SYNC_RC"

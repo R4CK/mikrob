@@ -1,7 +1,9 @@
 import { readFileSync, writeFileSync, existsSync, mkdirSync, copyFileSync, readdirSync, statSync, rmSync, watchFile, unwatchFile } from 'node:fs'
 import { join } from 'node:path'
 import { homedir } from 'node:os'
-import { PROJECT_ROOT, OWNER_NAME, MAIN_AGENT_ID, HEARTBEAT_AGENT_ID, BOT_NAME, CHANNEL_PROVIDER, WEB_PORT, OWNER_DRIVE_FOLDER, APP_TZ, DASHBOARD_PUBLIC_URL, STORE_DIR } from '../config.js'
+import { PROJECT_ROOT, OWNER_NAME, MAIN_AGENT_ID, HEARTBEAT_AGENT_ID, BOT_NAME, CHANNEL_PROVIDER, WEB_PORT, OWNER_DRIVE_FOLDER, APP_TZ, DASHBOARD_PUBLIC_URL, AGENT_API_ORIGIN, STORE_DIR } from '../config.js'
+import { findDuplicateJsonKeys } from './json-dup-keys.js'
+import { logger } from '../logger.js'
 import { channelStateDir } from '../channel-provider.js'
 import { runAgent } from '../agent.js'
 import { atomicWriteFileSync } from './atomic-write.js'
@@ -17,13 +19,37 @@ import { SYSTEM_DIRECTIVE_SENDER } from './system-directive-id.js'
 // DASHBOARD_PUBLIC_URL wins when set (distributed / k3s deployment); falls
 // back to localhost for single-host installs. Exported so heartbeat-agent-
 // scaffold and tests can import the same logic without duplicating it.
-export function resolveDashboardOrigin(publicUrl: string, port: number | string): string {
-  return (publicUrl || `http://localhost:${port}`).replace(/\/$/, '')
+export function resolveDashboardOrigin(publicUrl: string, port: number | string, agentApiOrigin = ''): string {
+  const fallback = `http://localhost:${port}`
+  const candidate = (agentApiOrigin || publicUrl || fallback).replace(/\/$/, '')
+  // Card 1075d0e4 (Cybersec, second round): this value is a config string with no validation, and it
+  // is interpolated into the curl RECIPES written into every agent's CLAUDE.md. Those are prompt
+  // text rather than the launch command, so the chain is one step longer than the vault-key one --
+  // an agent has to run the documented snippet -- but agents run these recipes routinely and by
+  // design, so `http://x;<command>;#` would execute in the agent's shell. Weaker than the launch
+  // path (hooks exist by then, and they do not here), same class.
+  //
+  // Restricted to a plain http(s) ORIGIN. Anything else falls back rather than being escaped: a
+  // misconfigured origin should make the recipes point somewhere harmless, not smuggle shell.
+  // A PATH PREFIX IS A SUPPORTED DEPLOYMENT, not an anomaly: operators host the dashboard under
+  // a sub-path behind a reverse proxy (k3s), and agent-scaffold-dashboard-origin.test.ts has
+  // pinned that since before this card. My first attempt at this validation allowed only
+  // scheme://host[:port] and silently sent those deployments back to localhost -- the existing
+  // test caught it on the landing. So the path is allowed, from a character set that cannot
+  // start a command: no ; $ ` & | quote space or parenthesis survives the test.
+  //
+  // Card ec7bdad8: agentApiOrigin (AGENT_API_ORIGIN) takes precedence over publicUrl when set --
+  // it names the address agents should actually reach the dashboard on when that differs from the
+  // publicly-advertised one (e.g. hairpin NAT). Same validation applies to it: an unvalidated
+  // candidate still falls back rather than being escaped.
+  return /^https?:\/\/[A-Za-z0-9._-]+(?::\d{1,5})?(?:\/[A-Za-z0-9._~\/-]*)?$/.test(candidate)
+    ? candidate
+    : fallback
 }
 
 // Resolved once at module load; DASHBOARD_PUBLIC_URL requires a restart
 // (see config-registry.ts `requiresRestart` flag), so a const is safe.
-const dashboardOrigin = resolveDashboardOrigin(DASHBOARD_PUBLIC_URL, WEB_PORT)
+const dashboardOrigin = resolveDashboardOrigin(DASHBOARD_PUBLIC_URL, WEB_PORT, AGENT_API_ORIGIN)
 // Dashboard token path emitted into generated CLAUDE.md curl examples.
 // MUST be absolute: sub-agents run from agents/<name>/, where a relative
 // `store/.dashboard-token` does not exist -- curl then sends an empty Bearer
@@ -220,7 +246,21 @@ export function ensureAgentHooks(name: string): boolean {
   if (!tpl.hooks) return false
   let existing: Record<string, unknown> = {}
   if (existsSync(settingsPath)) {
-    try { existing = JSON.parse(readFileSync(settingsPath, 'utf-8')) } catch { /* overwrite */ }
+    try {
+      const rawExisting = readFileSync(settingsPath, 'utf-8')
+      // JSON.parse keeps only the LAST occurrence of a duplicated key, so a settings file with two
+      // "PreToolUse" (or any hook-event) keys silently drops every hook in the earlier block --
+      // guards die with no error and no symptom until the action they gated goes through
+      // unchecked. This fleet has already hit exactly that: `fix(hooks): merge duplicate Stop keys
+      // in .claude/settings.json`. The evidence exists only in the raw text, so check BEFORE
+      // parsing, and name the paths.
+      const dupKeys = findDuplicateJsonKeys(rawExisting)
+      if (dupKeys.length > 0) {
+        logger.warn({ agent: name, settingsPath, dupKeys },
+          'ensureAgentHooks: duplicate JSON keys in settings -- JSON.parse keeps only the last occurrence, hooks in the earlier block are silently dead')
+      }
+      existing = JSON.parse(rawExisting)
+    } catch { /* overwrite */ }
   }
   const tplHooks = tpl.hooks as Record<string, unknown>
   if (existing.hooks) {
@@ -2033,11 +2073,14 @@ export function buildSystemDirectiveAuthBody(name: string): string {
 }
 
 // Same five-rule idempotency contract as ensureFleetRosterSection /
-// ensureAutonomySection / ensureSkillsPathTrapSection.
+// ensureAutonomySection / ensureSkillsPathTrapSection -- EXCEPT for the main
+// agent: its target is PROJECT_ROOT/CLAUDE.md, a git-tracked file, and a
+// runtime write there fights the --ff-only pull that keeps the live checkout
+// current (card 2dd28b5d/99fccbcf). The block is committed there statically
+// instead; this function no-ops for the main agent on purpose.
 export function ensureSystemDirectiveAuthSection(name: string): void {
-  const claudeMdPath = name === MAIN_AGENT_ID
-    ? join(PROJECT_ROOT, 'CLAUDE.md')
-    : join(agentDir(name), 'CLAUDE.md')
+  if (name === MAIN_AGENT_ID) return
+  const claudeMdPath = join(agentDir(name), 'CLAUDE.md')
   if (!existsSync(claudeMdPath)) return
 
   const block = `${SYSTEM_DIRECTIVE_AUTH_BEGIN}\n${buildSystemDirectiveAuthBody(name)}\n${SYSTEM_DIRECTIVE_AUTH_END}`
