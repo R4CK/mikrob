@@ -8377,3 +8377,37 @@ számít. Egy teljes-tábla mérés azt mondja meg, mi történik MOST, nem azt,
 (implementáció és független újramérés).
 **Hivatkozás:** kártya `82fa48b0`; `store/gate_scan_lib.py`, `store/gate-decl-check.py`,
 `store/gate-scan-selftest.py`, `store/gate-decl-check.selftest.py`.
+
+## 2026-09-05 -- A seam-predikátum saját kontraktusra pinnelve, és közben egy valódi rés (kártya 3ae71df1, Cybersec 20760)
+
+**A kérés, és miért volt jogos.** A J-1 ellenőrzés `---` és `===` alakot is elutasít, de az egyetlen
+fixture-öm a `---`-t gyakorolta. Cybersec kérte a predikátum KÖZVETLEN, egységszintű tesztjét, és
+előre kimondta, miért nem elég egy merge-fixture a `=` félre. **Lemértem, és igaza volt:** a `===`
+nincs a megosztott-új kivétel-listán, tehát a `_starts_new_entry` már azelőtt elutasítja, hogy a
+seam szóhoz jutna. Bizonyíték: a seam-ellenőrzést KIVÉVE a `---` fixture RESOLVED lesz (tehát az
+valódi), a `===` viszont továbbra is refused (tehát az vákuum lenne). Pontosan a szomszédos-őr
+maszkolás.
+
+**A predikátum ezért külön függvény lett** (`_seam_makes_setext_heading`), és a saját kontraktusára
+van pinnelve: 14 közvetlen eset, mindkét irányban.
+
+**ÉS A KÖZVETLEN TESZT AZONNAL VALÓDI HIBÁT TALÁLT A SAJÁT KÓDOMBAN.** Az eredeti minta
+`---|===|--------*|========*` volt: pontosan HÁROM, vagy legalább NYOLC karakter. A **négy–hét
+karakteres futam kimaradt**, pedig CommonMarkban a setext aláhúzás BÁRMILYEN hosszú `-` (vagy `=`)
+sorozat, ha más nincs a sorban -- egyetlen `-` is. A javítás karakter-osztályra vált: a sor
+kizárólag `-`-ból vagy kizárólag `=`-ből álljon. A vegyes (`-=-`) és a záró szöveges (`--- x`) alak
+NEM utasítódik el, mert azok nem setext aláhúzások, és egy mérés nélküli tágítás pont az az irány,
+amit ez a fájl elutasít.
+
+**Ez az eset a saját kérés indoklását igazolja:** az end-to-end fixture három éven át csak az egzakt
+`---` betűzést gyakorolta volna, és a rés a többi hosszon csendben ott marad.
+
+**A `=` fél megtartva, kimondott indokkal.** Ma nem érhető el a seamig -- de ez időzítési tény, nem
+biztonsági tulajdonság: egyetlen sor a kivétel-listán elérhetővé teszi, és Cybered mérte, hogy egy
+ilyen bővítés KÖZVETLENÜL gyárt J-1 példányt. Ugyanaz a mérce, mint a merge-driver tételnél ezen a
+kártyán: a „nincs bedrótozva" nem azonos a „szerkezetileg lehetetlen"-nel. Most már nem is
+elérhetetlen a TESZT számára, mert a predikátum közvetlenül hívható.
+
+**Mutációs mérés:** a `=` fél kivéve -> 3 piros; vissza a régi rögzített betűzésekre -> 5 piros
+(pont a 4-7 hosszúak és az egykarakteresek); az üres-last_before fél kivéve -> 2 piros (egy rule
+semmi alatt nem fejléc). Mind átmenő kontroll mellett.

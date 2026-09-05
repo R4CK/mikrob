@@ -72,6 +72,42 @@ _common_line_prefix_len() {
   esac
 }
 
+# Would splicing these two lines together form a SETEXT HEADING that neither side wrote?
+#
+# EXTRACTED SO IT CAN BE TESTED ON ITS OWN CONTRACT (Cybersec, comment 20760). Inline, the `=`
+# half could only be exercised through a full merge fixture -- and MEASURED, such a fixture is
+# VACUOUS: `===` is not on the shared-new exception list, so `_starts_new_entry` refuses it before
+# the seam is ever consulted. Removing this whole check leaves a `===` fixture refused and a `---`
+# fixture resolving, which is exactly how an adjacent guard masks the one under test.
+#
+# WHY THE `=` HALF STAYS even though nothing reaches it today: `===` becomes reachable the moment
+# anyone adds it to the shared-new exception list, and Cybered measured that such an addition
+# directly manufactures a J-1 instance. "Not wired" is a timing fact, not a safety property -- the
+# same standard applied to the merge-driver finding on this card. Keeping it costs one character
+# class; dropping it means a future one-line widening silently arms the seam.
+#
+# $1 = last non-blank line BEFORE the junction, $2 = first line AFTER it.
+# 0 = would form a heading (refuse), 1 = safe.
+_seam_makes_setext_heading() {
+  # A rule under NOTHING is just a rule: markdown needs a paragraph line above it to promote.
+  [ -n "$1" ] || return 1
+  # ANY RUN OF `-` OR `=`, NOT A HANDFUL OF SPELLINGS. The first version listed
+  # `---|===|--------*|========*`, which matches exactly three or at least eight -- so a FOUR to
+  # SEVEN character run fell through, and in CommonMark a setext underline is any sequence of `-`
+  # (or `=`) with nothing else on the line, of any length. Found by this file's own direct seam
+  # cases the moment they were written, which is precisely what Cybersec asked them for: the
+  # end-to-end fixture only ever exercised the exact `---` spelling.
+  case "$2" in
+  '') return 1 ;;
+  *[!-]*) : ;;
+  *) return 0 ;;
+  esac
+  case "$2" in
+  *[!=]*) return 1 ;;
+  *) return 0 ;;
+  esac
+}
+
 try_append_union() {
   # Same reason as _common_line_prefix_len: this function SLICES with the offset that function
   # returns, so it has to index the same way cmp counted. Set here as well as there, because the
@@ -337,10 +373,7 @@ try_append_union() {
   local before_junction="${prefix}${joined}" last_before first_after fences
   last_before="$(printf '%s' "$before_junction" | grep -v '^[[:space:]]*$' | tail -n1)"
   first_after="$(printf '%s' "$theirs_added" | head -n1)"
-  case "$first_after" in
-  ---|===|--------*|========*)
-    [ -n "$last_before" ] && return 1 ;;
-  esac
+  _seam_makes_setext_heading "$last_before" "$first_after" && return 1
   fences="$(printf '%s' "$before_junction" | grep -c '^```' || true)"
   [ $(( fences % 2 )) -eq 0 ] || return 1
 
@@ -975,6 +1008,40 @@ body of A
 ## 2026-09-06 -- entry C (right)
 "
   t_refused "J-1: the junction must not manufacture a setext heading"
+
+  # ...AND THE PREDICATE ON ITS OWN CONTRACT (Cybersec, comment 20760). The end-to-end fixture above
+  # covers the `-` half and is genuine -- MEASURED: with the seam check removed it RESOLVES. The `=`
+  # half cannot be covered that way: `===` is not on the shared-new exception list, so
+  # `_starts_new_entry` refuses it first, and a `===` merge fixture stays green with the seam check
+  # deleted. Green for the wrong reason is not coverage, so the `=` half is pinned here, directly.
+  _seam_case() { # $1 label, $2 last-before, $3 first-after, $4 expected: refuse|safe
+    n=$((n+1))
+    local got=safe
+    _seam_makes_setext_heading "$2" "$3" && got=refuse
+    if [ "$got" = "$4" ]; then echo "  ok   seam: $1"
+    else echo "  FAIL seam: $1 -> $got, expected $4"; fail=1; fi
+  }
+  _seam_case "prose then ---  forms a heading"        "utolso prozasor" "---"   refuse
+  _seam_case "prose then ===  forms a heading"        "utolso prozasor" "==="   refuse
+  # THE RUN LENGTHS THAT THE FIRST PATTERN MISSED. It matched exactly three or at least eight;
+  # CommonMark accepts any length, so four through seven silently formed a heading.
+  _seam_case "prose then ---- (four dashes)"          "utolso prozasor" "----"  refuse
+  _seam_case "prose then ----- (five dashes)"         "utolso prozasor" "-----" refuse
+  _seam_case "prose then ==== (four equals)"          "utolso prozasor" "====="  refuse
+  _seam_case "prose then a single -"                  "utolso prozasor" "-"     refuse
+  _seam_case "prose then a single ="                  "utolso prozasor" "="     refuse
+  _seam_case "prose then a very long dash run"        "utolso prozasor" "------------" refuse
+  # THE OTHER DIRECTION, so "always refuse" cannot pass the four above.
+  _seam_case "prose then an ordinary line is safe"    "utolso prozasor" "jobb torzs" safe
+  _seam_case "prose then a *** rule is safe"          "utolso prozasor" "***"   safe
+  # MIXED characters are not a setext underline, and refusing them would be a widening with no
+  # markdown behind it -- the direction this file refuses to take without a measurement.
+  _seam_case "prose then -=- (mixed) is safe"         "utolso prozasor" "-=-"   safe
+  _seam_case "prose then '--- x' (trailing text) safe" "utolso prozasor" "--- x" safe
+  # A rule with NOTHING above it is a rule, not a heading -- this is the `[ -n "$1" ]` half, and
+  # without it the function would refuse a legitimate separator-led append.
+  _seam_case "--- with nothing above it is safe"      ""                "---"   safe
+  _seam_case "=== with nothing above it is safe"      ""                "==="   safe
 
   # J-2: THE SEAM SWALLOWS THE OTHER SIDE INTO A CODE FENCE (Cybered, comment 20597). Everything up
   # to the junction leaves a fence open, so theirs' whole entry lands inside it: its `## ` header
