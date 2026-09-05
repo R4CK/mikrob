@@ -168,6 +168,24 @@ try_append_union() {
   # an identical change beyond it -- the exact case this card widened the function to accept.
   [ "$h_union" -eq "$((h_ours + h_theirs - h_prefix))" ] || return 1
 
+  # ...AND THE COUNT ALONE IS NOT ENOUGH (backend's measurement, msg 23346, on an independent
+  # implementation of the same idea). A cut that lands MID-LINE glues one side's first entry onto the
+  # other's last line and swallows its `## ` header: backend measured 165 headers where 166 were due,
+  # and 165 "looks plausible" -- the arithmetic identity can be satisfied while a specific entry is
+  # gone. Membership is the property that actually matters, so it is checked directly: every header
+  # LINE present on either side must be present in the union.
+  #
+  # This is defence in depth rather than the primary guarantee. _common_line_prefix_len truncates to
+  # the last newline, so the splice cannot land mid-line here in the first place (verified against
+  # backend's exact scenario: raw divergence inside a "## 2026-09-05 -- " line still yields a prefix
+  # ending at that line's start). But this function writes a file that a human will trust without
+  # re-reading, and the cheap check for the exact failure a peer measured is worth its eight lines.
+  local missing
+  missing="$(comm -23 \
+    <({ grep '^## ' <<<"$ours"; grep '^## ' <<<"$theirs"; } | sort -u) \
+    <(grep '^## ' <<<"$union" | sort -u))"
+  [ -z "$missing" ] || return 1
+
   printf '%s\n' "$union" >"$wt/$file"
   git -C "$wt" add "$file" || return 1
   return 0
