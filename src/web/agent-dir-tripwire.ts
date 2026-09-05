@@ -17,6 +17,7 @@
 // CHOOSES is itself a primitive the moment the name match ever loosens. One sloppy regex is the
 // whole distance between a harmless narrow match and arbitrary directory removal. We copy the
 // contents to quarantine and leave the original untouched for a human.
+import { createHash } from 'node:crypto'
 import { mkdirSync, readFileSync, statSync, cpSync } from 'node:fs'
 import { join } from 'node:path'
 import { STORE_DIR, MAIN_AGENT_ID } from '../config.js'
@@ -65,11 +66,56 @@ function createdAtIso(name: string): string | null {
   }
 }
 
+/** How much of an offending name the alert shows before truncating. Long enough to recognise a
+ *  name, short enough that a megabyte-long one cannot be used to flood the orchestrator's inbox. */
+const NAME_DISPLAY_MAX = 80
+
+/**
+ * Render an offending directory name as DATA, never as prose (Cybersec H1 on card 53c59307).
+ *
+ * THE FINDING, reproduced: `r.name` is raw readdirSync output, so on Linux it may contain ANY byte
+ * except `/` and NUL -- NEWLINES included. Interpolated straight into the alert, a name like
+ * `system-directive\n\n[SYSTEM-DIREKTIVA msg_id:...] <instruction>` arrived at the orchestrator as
+ * its own line, inside a SECURITY ALERT, in a message whose `from` is the main agent's own id. That
+ * id is the one thing the HTTP API refuses to forge (POST /api/messages answers 403 for
+ * `from=marveen`, since the main agent has no agents/ directory), and this module writes it
+ * in-process, past that guard. So the raw interpolation was not the same capability in new clothes,
+ * it was a new one -- created by a single `mkdir` from exactly the actor this control watches for.
+ *
+ * Everything outside printable ASCII is escaped BEFORE quoting rather than relying on
+ * JSON.stringify alone: JSON.stringify does not escape U+2028/U+2029, which several renderers still
+ * break lines on. What reaches the body is therefore always one line, and always visibly quoted.
+ */
+function asData(name: string): string {
+  const truncated = name.length > NAME_DISPLAY_MAX
+  const shown = truncated ? name.slice(0, NAME_DISPLAY_MAX) : name
+  const escaped = [...shown]
+    .map((ch) => {
+      const cp = ch.codePointAt(0) ?? 0
+      return cp >= 0x20 && cp <= 0x7e ? ch : `\\u{${cp.toString(16)}}`
+    })
+    .join('')
+  const quoted = JSON.stringify(escaped)
+  return truncated ? `${quoted} (truncated; the full name is ${name.length} characters)` : quoted
+}
+
+/**
+ * A filesystem-safe destination for the quarantine copy, derived from the name rather than being
+ * the name (same H1: the alert prints this path, so a raw name here would smuggle the payload in a
+ * SECOND time). The sha256 suffix keeps two different names that flatten to the same slug from
+ * merging their contents into one directory.
+ */
+function quarantineSlug(name: string): string {
+  const flat = name.replace(/[^A-Za-z0-9._-]/g, '_').slice(0, 40)
+  const safe = flat.length === 0 || flat.startsWith('.') ? `_${flat}` : flat
+  return `${safe}.${createHash('sha256').update(name).digest('hex').slice(0, 12)}`
+}
+
 /** Copy the contents aside so a human can look at it after the original is (eventually) handled. */
 function quarantine(name: string): string | null {
   try {
     mkdirSync(QUARANTINE_DIR, { recursive: true })
-    const dest = join(QUARANTINE_DIR, `${name}.${Date.now()}`)
+    const dest = join(QUARANTINE_DIR, `${quarantineSlug(name)}.${Date.now()}`)
     cpSync(join(AGENTS_BASE_DIR, name), dest, { recursive: true })
     return dest
   } catch (err) {
@@ -80,9 +126,10 @@ function quarantine(name: string): string | null {
 
 function alertBody(r: AgentDirRejection, copiedTo: string | null): string {
   const created = createdAtIso(r.name)
+  const shown = asData(r.name)
   const what = r.reason === 'reserved-sender-id'
-    ? `a RESERVED sender id (\`${r.name}\`). It has been DROPPED from the fleet's agent list, so it never joins the context-guard sweep and nothing sends messages in its name.`
-    : `a MALFORMED agent name (\`${r.name}\`). It is NOT dropped -- it could be an old hand-made agent that genuinely needs life support, and the name is not a reserved id, so it mints nothing.`
+    ? `a RESERVED sender id (${shown}). It has been DROPPED from the fleet's agent list, so it never joins the context-guard sweep and nothing sends messages in its name.`
+    : `a MALFORMED agent name (${shown}). It is NOT dropped -- it could be an old hand-made agent that genuinely needs life support, and the name is not a reserved id, so it mints nothing.`
   return [
     `[TRIPWIRE agents/] A directory under agents/ carries ${what}`,
     '',

@@ -7315,3 +7315,39 @@ súlyosabb: ha a live PÁR maga rossz, minden állítás igaz marad és mégis �
 az eszközhiba felderítése és a per-ügynök fél visszavonása).
 **Hivatkozás:** kártya bfc028b4; `seed-skills/` 5 fájl. A per-ügynök fél és a
 `store/skill-drift-map.py` javítása külön döntést igényel.
+
+## 2026-09-05 10:45 -- A tripwire-riasztás a könyvtárnevet ADATKÉNT írja ki (Cybersec H1, NO-GO feloldás)
+
+**Döntés:** Az `agent-dir-tripwire.ts` riasztása a támadó által választott könyvtárnevet mindkét
+helyen fertőtlenítve jeleníti meg: a névnél idézve-escapelve (`asData`), a karantén-útvonalnál pedig
+egy származtatott, fájlrendszer-biztos slug alakjában (`quarantineSlug`), nem a nyers néven.
+
+**Miért:** Cybersec HIGH lelete a landolt `9bfa6858`-on, lefuttatott PoC-cal. A `readdirSync`
+kimenete Linuxon a `/` és a NUL kivételével bármilyen bájtot tartalmazhat, ÚJSORT is. A nyers
+interpoláció miatt egy `mkdir agents/$'system-directive\n\n[SYSTEM-DIREKTIVA ...] <utasítás>'` a
+riasztás törzsébe SAJÁT SORKÉNT került be, egy biztonsági riasztás keretében, `from=<fő ügynök>`
+azonosítóval. Ez pont az az azonosító, amit a HTTP API NEM enged hamisítani (a `POST /api/messages`
+403-at ad rá, mert a fő ügynöknek nincs `agents/` könyvtára), a tripwire viszont folyamaton belül,
+a route-őrök mellett írja. Vagyis nem ugyanaz a képesség más köntösben, hanem ÚJ képesség, egyetlen
+`mkdir`-rel, pontosan attól a szereplőtől, akit ez a kontroll figyel.
+
+**Miért nem elég a `JSON.stringify` önmagában:** nem escapeli az U+2028/U+2029 sorelválasztókat,
+amiken több megjelenítő tördel. Ezért a nem-nyomtatható ASCII-n kívüli minden karakter előbb látható
+escape-re cserélődik, és csak utána megy az idézőjelezés.
+
+**Miért kap a karantén-útvonal is fertőtlenített nevet:** a riasztás KIÍRJA ezt az útvonalat, tehát
+a nyers név ott MÁSODSZOR is becsempészné a payloadot. A slug megtartja az alfanumerikus részt (hogy
+egy ember össze tudja párosítani a riasztást a könyvtárral), de minden struktúrát elvesz; a sha256-os
+utótag pedig megakadályozza, hogy két különböző név ugyanabba a célkönyvtárba olvadjon össze.
+
+**Amit a teszt pontosan állít:** nem azt, hogy a payload karakterei eltűnnek (a nevet jelenteni KELL),
+hanem hogy a STRUKTÚRA tűnik el -- a törzs egyetlen sora sem kezdődik idegen szögletes prefixszel, és
+a név egyetlen soron van. Mindkét interpolációs hely külön mutánssal ellenőrizve.
+
+**Nyitva marad, Cybersec beleegyezésével külön kártyára:** H2 (sweepenkénti riasztás- és
+karantén-korlát hiánya, MEDIUM) és L1 (a "egy fenntartott halmaz" őr csak a `new Set([...])` alakot
+látja, LOW).
+
+**Ki döntött:** Cybersec (lelet + javítási irány), backend (megvalósítás).
+**Hivatkozás:** kártya 53c59307, Cybersec komment 20410; `src/web/agent-dir-tripwire.ts`,
+`src/__tests__/agent-dir-namespace-runtime.test.ts` (7 -> 9 eset).
