@@ -15,11 +15,24 @@ The fork-owned, git-tracked copies are:
 
 Those are the source of truth and they are safe: they are in this repo, tracked and pushed.
 
-The **delivered** copies the agents actually read are not in this repo. `~/.claude/skills/sp-*` are
-symlinks into a vendored third-party checkout (`~/.claude/external/superpowers`), and the additions
-exist there only as uncommitted modifications to that checkout, written by `update.sh`. A
-`git checkout` or a vendor refresh in that repo reverts them until the next `update.sh` run
-re-merges. That delivery mechanism is a separate question, deliberately not changed here.
+The **delivered** copies the agents actually read are not in this repo: they live under
+`~/.claude/skills/sp-*`. They are REAL DIRECTORIES -- measured on this install, 14 of them, zero
+symlinks.
+
+They were symlinks into a vendored third-party checkout (`~/.claude/external/superpowers`) when this
+file was first written, and the paragraph that said so shipped false in the same bundle-merge
+(`2553732f`) that made it false: sibling card `7d2ebd24` converted them with
+`store/skills-symlink-to-realdir.sh`, which stages a verified copy and only then removes the link.
+Corrected on card `ef9d1d55`, from a Cybered measurement.
+
+What that changes, and it is not cosmetic. While they were links, our additions existed only as
+uncommitted modifications inside someone else's checkout, so a `git checkout` there reverted what
+every agent read; `update.sh`'s refresh also wrote THROUGH the links into that repo, because `-d`
+follows a symlink. Neither is true now: the delivered copies are ours, `refresh_untouched_seeds`
+tests `-L` before `-d` and skips a symlink as foreign ground, and it refreshes these directories
+from `seed-skills/` -- but only files it can prove untouched, so an operator edit is still kept.
+
+The vendored checkout still exists; it is simply no longer what the agents read.
 
 ## What was added (measured against the vendor's own HEAD: 70 lines, zero deletions)
 
