@@ -85,6 +85,7 @@ printf 'Authorization: Bearer %s\n' "$TOKEN" \
 - [ ] A REVIEW hivatkozott sha-ja == a legújabb commit (nem stale)
 - [ ] tsc clean (vitest nem type-check-el, zöld teszt mellé mindig tsc)
 - [ ] Nem-kikényszerített doc-comment invariáns (Cybersec javaslat, 2026-08-21): ha egy komment, docstring vagy migrációs fejléc GARANCIÁT állít egy adatmezőre ("ide csak redaktált szöveg kerül", "csak valódi állapotváltásnál íródik", "csak szerver-oldali logoláshoz"), van-e a kód-útvonalon MELLETTE VAGY kikényszerítő hívás, VAGY teszt, ami pont ezt az invariánst állítja? Ha egyik sincs: FINDING, függetlenül attól, hogy a mai viselkedés helyes-e -- a komment ilyenkor a jövőbeli olvasót téveszti meg. Nyomon követés: sorold fel a mezőt ÍRÓ összes hívót (nem csak a nevesítettet), és mindegyikre kérdezd meg, hogy azon az ágon lefut-e a kikényszerítés.
+- [ ] **CleanCore kártyákon: kód-duplikáció ellenőrzés** (card 4bade960, GitHub-first: jscpd, MIT, github.com/kucherenko/jscpd) -- `bash {{INSTALL_DIR}}/store/jscpd-duplication-check.sh <CleanCore path> [threshold%, default 5]`. Exit 0 = OK; exit 1 = a duplikáció a küszöb felett -- a konzol-riport megmondja melyik fájlpár, azt nézd meg FINDING-ként. Marveen (fleet) kódon nem kötelező (belső, nem CleanCore).
 
 ## Atomic-fact buktató (magic-link tanulság)
 
@@ -113,6 +114,8 @@ minden atomja VERIFIED vagy UNTESTABLE (indokkal). -> `references/atomic-fact.md
 -> `references/be-patterns.md` ## Validációs hiba -> 500
 
 **Tests-green tsc-red**: vitest nem type-check-el; mindig futtatni `npx tsc --noEmit`.
+
+**jscpd --threshold már önmagában exit-kódol** (card 4bade960, mérve nem feltételezve): jscpd@4.3.0 a `--threshold N` flag-gel ÖNMAGÁBAN nem-nulla exit kóddal áll le, ha a duplikáció eléri/meghaladja N%-ot (a `--help` szövege is ezt mondja) -- külön `--exitCode` flag NEM kell egy egyszerű pass/fail gate-hez, az csak azt választja meg MELYIK nem-nulla kódot használja. Ha valaha más jscpd major verzióra váltunk, ezt újra kell mérni, nem a régi mérésre hagyatkozni.
 
 **Üres commit (bd462365, 2026-08-02)**: REVIEW azt állítja fájl hozzáadva, de a commit üres -- `git diff <sha>^ <sha> --name-only` üres kimenetet ad, a fa-hash megegyezik a szülőével. A `git show <sha> --stat` sem mutat changed file-okat. Ez akkor fordul elő, ha a builder `git commit` előtt nem adta hozzá a fájlt (`git add`), vagy a commit --amend egy korábbi üres commitot vitt tovább. Gate: `git diff <sha>^ <sha> --name-only` KÖTELEZŐ ellenőrzés minden "kész" commit-ra -- ha üres: QA FAIL azonnal, a fájl nincs commitolva.
 

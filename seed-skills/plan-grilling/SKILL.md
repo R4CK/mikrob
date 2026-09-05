@@ -40,6 +40,7 @@ list the exact changes. Don't soften — the value is in the hole you find.
 - Don't grill trivial work — it wastes effort and reads as obstruction.
 - Don't accept "should be fine" — convert every one into a concrete "when X, then Y".
 - Don't grill forever — the goal is a decision, not paralysis. Two passes usually surface the real gap; log the residual risk and move.
+- If the plan writes to or deletes from a table, check the ACTUAL runtime-role privileges (GRANT/REVOKE migrations) and FK `ON DELETE` rules for that table before approving — not just the schema shape. A plan can look sound at the code/schema level and still be blocked by a REVOKE the runtime role hit in an unrelated earlier migration, or by a `RESTRICT`/WORM constraint on a child table. Found live 2026-08-20 (CleanCore card 328c2fac): a GO-WITH-CHANGES verdict approved a DELETE-based reap that the runtime role (`cleancore_app`) had no privilege to perform (three separate REVOKE migrations), and would have hit a WORM-protected audit table besides. Caught only because the builder re-checked grants before writing code, not by the grilling itself. `grep -rn "REVOKE\|ON DELETE" <migrations-dir>` for every table the plan touches is now part of the checklist, not optional.
 
 ## Validation
 The plan is grilled enough when you can state, in one line each: the goal-check,

@@ -7151,3 +7151,58 @@ hogy nyit-e rá kártyát.
 **Ki döntött:** MikroB (kártya nyitása backend2 leletéből), backend2 (a szekció tartalma és a
 seed+élő kettős írás).
 **Hivatkozás:** kártya e00e7ff3 (lelet: 1140a745); `seed-skills/project-workflow/SKILL.md`.
+
+## 2026-09-05 -- bfc028b4 -- Elavult seed-skillek felzárkóztatása, és egy mérőeszköz-hiba, ami a felét érvénytelenítette
+
+**A probléma:** több seed-skill példány egy MÁR JAVÍTOTT hibát ír le helyesnek. A legsúlyosabb az
+e98a34d3 zárási sorrend (`waiting` + REVIEW helyett ELŐSZÖR REVIEW): a 75a573af commit kizárólag a
+CLAUDE.md-t javította, így több seed-példány máig a régi sorrendet tanítja. Egy friss telepítés
+pontosan azt az árva `waiting` kártyát termelné újra, ami miatt a szabály megszületett.
+
+**Amit ez a commit szállít: 5 fájl a `seed-skills/` fában.** Ennek a fának a live megfelelője
+igazoltan a globális `~/.claude/skills/` (install-linux.sh:1464 és update.sh:826). Ezen belül:
+`plan-grilling` és `qa-test-strategy` (template LAGS, csak beszúrás), valamint
+`fork-adopt-investigation`, `full-value-audit` és `project-workflow` (two-sided, ahol az ÉLŐ van
+előrébb: mindegyik élő sor egy LANDOLT kártyára vagy landolt CLAUDE.md-szabályra hivatkozik).
+NEM szinkronizáltam a `qa-test-strategy/references/SKILL-FULL-BACKUP.md`-t: ott a TEMPLATE van
+előrébb (`python3 -c "import sqlite3"` egy kimondott "a sqlite3 CLI NEM garantált telepítve"
+megjegyzéssel, és megtartja a `{{INSTALL_DIR}}`-t), tehát a szinkron TÖRÖLNE egy hordozhatósági
+javítást.
+
+**A `seed-fleet-agents/` fele VISSZAVONVA, mielőtt landolt volna, mert a mérőeszköz rossz oldalhoz
+hasonlít.** A `store/skill-drift-map.py` MINDEN seed-fát az EGYETLEN globális `~/.claude/skills/`
+könyvtárhoz mér, a per-ügynök `seed-fleet-agents/<a>/.claude/skills/` fákat is. A tényleges live
+megfelelőjük viszont `agents/<a>/.claude/skills/`, mert az install-linux.sh:1534 a
+`seed-fleet-agents/<a>/`-t az `agents/<a>/`-ba másolja. Mérve: a 10 per-ügynök fájl MINDEGYIKÉNEK
+van saját live példánya, és MINDEGYIK eltér a globálistól (2-től 237 eltérő sorig). Tíz fájlt
+szinkronizáltam egy olyan forráshoz, amit az érintett ügynökök nem olvasnak; a "result ≡ live"
+állításom is a rossz oldalra vonatkozott. A commitot a landolás előtt megállítottam (semmi nem ment
+`origin`-ra), és a per-ügynök felet visszaállítottam.
+
+**A javított mérés, a helyes gyökérrel** (a tool száma kontra a valóság):
+- `TEMPLATE-ONLY skill`: a tool 17-et mond, valójában **1** (`fron-ted/impeccable`). A többi 16 telepítve
+  VAN, csak per-ügynökként. MikroB gyanúja ("lehet ártalmatlan") helyes volt, az ok egy eszközhiba.
+- 189 fájl azonos, 11 de-perszonalizálás (helyesen nem drift), 29 valódi drift-sor.
+- Két olyan kategória jelenik meg, amit a tool SOHA nem mutatott: **2 `LIVE LOST content`**
+  (`fron-teddy` és `fullstack` `react-page-api-wiring`), ahol az ÉLŐ példány veszített el tartalmat.
+  Ez a veszélyesebb irány, és pont ez maradt láthatatlan.
+- A 10 visszavont fájlból a helyes gyökérrel mérve `backend` és `backend2` `async-refactor-fail-open-guard`
+  példánya AZONOS a live-jával: két szinkron teljesen fölösleges lett volna.
+
+**Enyhítő körülmény a per-ügynök oldalon, mérve:** a `seed-fleet-agents/` fát az update.sh SOHA nem
+frissíti (a `refresh_untouched_seeds` hívások csak `seed-skills`-re és a scheduled-tasks fákra
+mennek), az install pedig kihagyja a már létező ügynököt. Tehát ez a drift kizárólag FRISS
+telepítést vagy ÚJONNAN létrehozott ügynököt érint; meglévő gépen nem romlik tovább és nem is gyógyul.
+
+**A tanulság, ami a fájlokon túl is áll:** az őreim a HŰSÉGET tudják ellenőrizni, az IRÁNYT és a
+PÁROSÍTÁST nem. Két negatív kontrollal mértem: (1) a placeholder-belaposítást nem a placeholder-
+számláló kapta el (egy elveszett, egy keletkezett, nettó nulla), hanem a nyers-útvonal ellenőrzés;
+(2) a "template van előrébb" fájl vak szinkronját EGYIK őr sem kapta el, mert a normalizált
+egyenlőség teljesül, ha a cél maga az élő fájl. Most kiderült a harmadik, ami mindkettőnél
+súlyosabb: ha a live PÁR maga rossz, minden állítás igaz marad és mégis értéktelen. Egy
+"nulla eltérés" jelentés akkor is így néz ki, ha a rossz két fájlt hasonlítottuk össze.
+
+**Ki döntött:** MikroB (kártya + hatókör), backend2 (irány-döntés fájlonként, negatív kontrollok,
+az eszközhiba felderítése és a per-ügynök fél visszavonása).
+**Hivatkozás:** kártya bfc028b4; `seed-skills/` 5 fájl. A per-ügynök fél és a
+`store/skill-drift-map.py` javítása külön döntést igényel.

@@ -76,7 +76,7 @@ and never hand it to an external model without reading the wrapper's own limits 
   - Inventory + optimization: engineering agents + `codebase-auditor` / `performance-optimizer`.
   - Functional testing: `qa-engineer`.
   - Offensive testing: `cybersecurity-redteam` (Cybersec, `white-hat-security-testing` skill).
-- MikroB orchestrates: decompose into Phase/Task/subtask kanban cards (see `project-workflow`), dispatch to role-agents via inter-agent messages (never a subagent for fleet work), each finisher goes `waiting` + "REVIEW".
+- MikroB orchestrates: decompose into Phase/Task/subtask kanban cards (see `project-workflow`), dispatch to role-agents via inter-agent messages (never a subagent for fleet work), each finisher writes the "REVIEW" comment FIRST, THEN moves the card to `waiting` (card e98a34d3: reversed order risks an orphaned REVIEW-less `waiting` card if a SIGSTOP freeze lands between the two steps).
 - **Three mandatory gates:** every completed piece passes QA (functional), Cybersec (per-finding security), and Cybered (adversarial red-team: assume-breach, kill-chain, active defense). DONE = QA PASS + Cybersec GO + Cybered GO. No gate verifies its own work.
 
 ## Pitfalls
