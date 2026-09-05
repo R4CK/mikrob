@@ -336,12 +336,12 @@
     "adoption": "adopt",
     "pinned_version": "16f2980",
     "enabled": true,
-    "last_sha": "2ed6c52c",
+    "last_sha": "974d940a",
     "reviewed_at": "2026-07-31",
     "description": "AKTIVALVA 2026-07-31 (kartya 7a6c376f, Peti jovahagyasa + QA PASS). CSAK-SZOVEG skill-csomag (MIT, 92.5k csillag, push 2026-07-15): mind a 6 skill (ponytail, -audit, -debt, -gain, -help, -review) bemasolva a ~/.claude/skills/-be, forras a pinelt read-only klon store/adopted/ponytail @16f2980. Nincs bin, NULLA runtime-dep, nincs install-hook -> nem futtathato kod. MIERT NYERUNK VELE: a karpathycoder a MAR ELDONTOTT valtozast tartja minimalisan (sebeszi diff); a ponytail egy lepessel korabban kerdez ra, hogy erdemes-e egyaltalan megepiteni es mennyi technikai adossagot general -- ez a szog nem volt lefedve. Telepites elott a SKILL.md-ket atneztem: nincs shell/halozati/bypass-utasitas (a graphify-eset utan ez kotelezo lepes, ott egy telepitett skill maga tanitotta a kapu megkeruleset). Nevutkozes nem volt.",
-    "last_checked_upstream_sha": "2ed6c52c",
-    "note": " | 2026-08-08: FIRST upstream change since adoption, 16f2980..2ed6c52c = mostly docs/plugin-metadata + a real fix in hooks/ponytail-runtime.js (VS Code Copilot env-var detection fallback, benign logic-only change, no exec/network). IRRELEVANT to us: we cherry-picked ONLY the 6 SKILL.md files into ~/.claude/skills/, never wired hooks/ or ponytail-mcp/. No card, no Telegram. | 2026-08-23: git-repo-watcher.sh ellenorizve, NOCHANGE.",
-    "last_checked_at": "2026-08-23"
+    "last_checked_upstream_sha": "974d940a",
+    "note": " | 2026-08-08: FIRST upstream change since adoption, 16f2980..2ed6c52c = mostly docs/plugin-metadata + a real fix in hooks/ponytail-runtime.js (VS Code Copilot env-var detection fallback, benign logic-only change, no exec/network). IRRELEVANT to us: we cherry-picked ONLY the 6 SKILL.md files into ~/.claude/skills/, never wired hooks/ or ponytail-mcp/. No card, no Telegram. | 2026-08-23: git-repo-watcher.sh ellenorizve, NOCHANGE. | 2026-09-05: upstream 2ed6c52c..974d940a = 3 commit, kizarolag README.md/README.es.md/README.ko.md Trendshift-badge sorok (+15 sor osszesen), nulla kod-valtozas. NO-OP, nincs kartya.",
+    "last_checked_at": "2026-09-05"
   },
   {
     "name": "agent-skills",
