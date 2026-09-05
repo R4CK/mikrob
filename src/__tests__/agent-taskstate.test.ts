@@ -45,7 +45,7 @@ describe('shouldReplayTaskState', () => {
     expect(shouldReplayTaskState(rec(), 'other', NOW + 1000)).toBe(false)
     expect(shouldReplayTaskState(rec(), '', NOW + 1000)).toBe(false)
   })
-  // A /clear wipes the conversation while the WORK continues: CLAUDE.md rule 14 clears between two
+  // A /clear wipes the conversation while the WORK continues: agents /clear between two
   // cards, and the model-fallback runner now respawns a stepped-down agent fresh. Same shape as a
   // compact, so the record has to survive it -- otherwise the fresh-session switch would trade a
   // slow session for an amnesiac one.

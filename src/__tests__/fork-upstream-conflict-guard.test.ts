@@ -104,7 +104,8 @@ const ACKNOWLEDGED_CONFLICTS = {
   // tail). Resolution: keep the fork version wholesale, it already contains everything upstream
   // has plus the fork-only additions.
   'src/kanban-dispatch.ts':
-    "keep the fork version wholesale -- it is upstream's resolveKanbanDispatch verbatim plus the fork-only isSelfAdvanceMove/isGenuineSelfAdvanceSwitch appended after, zero divergence on the shared part",
+    "keep the fork version wholesale -- it is upstream's resolveKanbanDispatch verbatim plus the fork-only isSelfAdvanceMove appended after, zero divergence on the shared part." +
+    " Card 7debd869 (2026-09-05): the tail lost isGenuineSelfAdvanceSwitch when Peti had CLAUDE.md's /clear-between-cards rule deleted and its code removed. isSelfAdvanceMove (dispatch-echo suppression) is untouched, so the resolution above is unchanged -- only the symbol list narrowed. The comment block above records the state at the time of the merge and is left as written.",
   // Card 684dda18, self-created 2026-09-02 (add/add): ported this test file from upstream
   // (kanban-dispatch-rearm.test.ts) to cover the db.ts dispatched_at re-arm fix, adapting ONE case
   // to pass force:true on a waiting->in_progress reopen -- the fork's own reviewedCardBlocksInProgress
@@ -160,7 +161,28 @@ const ACKNOWLEDGED_CONFLICTS = {
     'keep the fork aggregate shape, port upstream single-result features onto it' +
     "Re-measured 2026-09-03 (backend2, card 934dc104 landing-block, 24e46f990c7b..c98efe359fd0): upstream reworked its SINGLE-repo checker -- parseGitHubRemote() now prefers an `upstream` remote over `origin` (a fork otherwise asks itself about itself and stays silent forever), branchOnRemote()/remoteIsOwnOrigin() pick the right branch to query, and upstreamMergeBase() takes a base the queried remote actually knows instead of reporting fork-distance. The rule is unchanged and now has concrete work behind it: these are exactly the 'single-result features' to port onto the fork's aggregate shape. Blob bumped." +
     " RE-MEASURED 2026-09-04 (card f27c999b, B-wave 4/6) and the sentence above is MISLEADING, so read this before porting anything: the fork already achieves BOTH of upstream's outcomes, by a different and more general mechanism. (a) 'a fork otherwise asks itself about itself and stays silent forever' does not happen here -- repoConfigs() checks TWO repos explicitly, Szotasz/marveen AND the local origin, and the upstream-update banner reads the marveen entry; upstream's parseGitHubRemote remote-preference is a heuristic for finding the one right repo, which the fork does not need. (b) upstreamMergeBase is already covered: computeStatus tries the raw HEAD compare and, on the measured 404 that a customised fork always produces, falls back to mergeBaseWith(cfg.trackingRef) -- the fork point, which IS a commit the remote knows -- and marks status.fork. Its own comment says this is how the behind-count against Szotasz/marveen@main is measured. Porting upstream's machinery on top would duplicate working logic with a narrower version of it. " +
-    "THE ONE GENUINE RESIDUE, left as a follow-up rather than half-ported: repoConfigs() HARDCODES branch 'main' for the upstream repo. Upstream's branchOnRemote()/fetchDefaultBranch() asks the remote for its default branch instead. If Szotasz/marveen ever renames its default, our upstream check turns into a permanent error string and the banner goes quiet -- the same silent-blindness shape this entry is about, one level over. Small and self-contained: ask GitHub for the default branch, keep 'main' as the fallback.",
+    "THE ONE GENUINE RESIDUE -- CLOSED 2026-09-05 (card 1140a745), recorded here because a ledger that still calls a fixed thing a follow-up is a ledger nobody trusts. repoConfigs() USED TO HARDCODE branch 'main' for the upstream repo; if Szotasz/marveen ever renamed its default, our upstream check would turn into a permanent error string and the banner would go quiet -- the same silent-blindness shape this entry is about, one level over. It now asks GitHub for the default branch (upstreamDefaultBranch(), fail-soft to 'main' on any failure) and derives BOTH the API branch and the local trackingRef from that one resolved value. The second half was NOT in the original note and matters more than the first: mergeBaseWith() returns '' for an absent ref and computeStatus reads that as behind = 0 with NO error, so fixing only the branch would have swapped one silent blindness for another. Upstream's own branchOnRemote()/fetchDefaultBranch() machinery is STILL not ported, for the reason above -- its remote-preference heuristic solves a problem this fork does not have.",
+  // The TEST-SIDE MIRROR of the entry above, conflicting for the same reason (measured 2026-09-05,
+  // card 1140a745). Both sides appended a new describe block at the tail of a file that ended at
+  // line 60, so the two tails collide, and the import line a few lines above collides with them.
+  //
+  // Upstream's appended block exercises remoteIsOwnOrigin(), branchOnRemote() and a
+  // parseGitHubRemote(root) that takes a directory argument. NONE of those are takeable here, and
+  // that was measured rather than assumed: grep finds no remoteIsOwnOrigin and no branchOnRemote
+  // anywhere in this fork, and the fork's parseGitHubRemote takes no arguments. Upstream's cases
+  // would not compile against this tree. So this is not a preference between two working
+  // alternatives -- it is the same deliberate non-port the entry above records, seen from the
+  // test side.
+  //
+  // Resolution: KEEP THE FORK SIDE WHOLESALE for both hunks -- the fork's tail block (upstream
+  // default-branch resolution, card 1140a745) and the fork's widened '../web/update-checker.js'
+  // import. Upstream's `afterAll` addition to the vitest import belongs to its block and is unused
+  // without it, so it drops out with it. This entry is BOUND to the one above: if that machinery is
+  // ever ported, port upstream's cases in the same change. Do not resurrect them alone -- a test
+  // file is the one place where taking the other side wholesale looks harmless and silently deletes
+  // coverage.
+  'src/__tests__/update-checker-branch.test.ts':
+    "keep the fork side wholesale -- upstream's appended block tests remoteIsOwnOrigin/branchOnRemote/parseGitHubRemote(root), none of which exist in this fork (the deliberate non-port recorded on src/web/update-checker.ts), so it cannot compile here; the fork's own tail block and widened import stay, and upstream's unused afterAll import drops with its block. Revisit ONLY together with the src/web/update-checker.ts entry.",
   // ORIGINAL entry (2026-08-16, card 78c14372) merged `agentDir` (fork) + `readAgentClaudeConfigDir`
   // (upstream) onto one import line. RE-MEASURED 2026-09-01 (heartbeat reconciliation): upstream
   // replaced its own `readAgentClaudeConfigDir` with `resolveAgentConfigDirForRead` (new module,
@@ -306,7 +328,8 @@ const ACKNOWLEDGED_CONFLICTS = {
   // reviewedCardBlocksInProgress() gate (card c4f2de32), which upstream has no equivalent of.
   'src/web/routes/kanban.ts':
     "dispatch-text hunk: keep the fork's waiting-text wholesale (fork rule 4, no self-close-to-done). Other two hunks: adopt upstream's resolveKanbanDispatch + reportUndeliveredDispatch (session-down is no longer a silent no-op), keep the fork's self-advance suppression + /clear-before-switch wholesale alongside it -- non-overlapping concerns, not a fork-vs-upstream pick. Re-measured 2026-09-02 (Cybersec, card 9dc0fba8 landing-block, 00ec734f520d..89423d29b8af): upstream moved, entirely outside all three recorded hunks -- it fixed the POST handler so a caller-supplied card id wins in the row AND in the response (it used to store the supplied id and echo the generated one, HTTP 200 pointing at a card that does not exist), and it lifts `actor` out of the field set for db.ts\'s new audit event. Zero hits on resolveKanbanDispatch, reportUndeliveredDispatch, the waiting-text hunk, the self-advance suppression or the /clear-before-switch block. Resolution at the conflict points unchanged; blob bumped." +
-    " DONE 2026-09-04 (card f27c999b, B-wave 4/6), and TWO of the three items turned out to be already-solved rather than pending. (1) The POST id bug WAS live here and is fixed: `createKanbanCard({ id, ...normalized })` let a caller-supplied id win in the ROW while the response echoed the generated one -- HTTP 200 naming a card that does not exist. Now one id is resolved first and used for both; kanban-post-id-echo.test.ts pins the property for every shape, and 3 of its 4 cases fail on the old spread order. (2) resolveKanbanDispatch: already adopted -- kanban-dispatch.ts is upstream's verbatim plus two fork-only functions, measured. (3) reportUndeliveredDispatch: NOT adopted, because the fork already closed the same hole its own way. resolveKanbanDispatchTarget returning null no longer goes quiet: the failure lands on the card AND in the main agent's inbox, with four contract tests in kanban-dispatch-silent-noop.test.ts, and that file documents why the stricter 'message first, in_progress after delivery' contract is not available here (createAgentMessage only ENQUEUES, so 'after successful delivery' is not knowable at move time). Adopting upstream's version would be a second mechanism for a closed hole. The waiting-text hunk and the self-advance / clear-before-switch blocks are untouched, as the rule requires.",
+    " DONE 2026-09-04 (card f27c999b, B-wave 4/6), and TWO of the three items turned out to be already-solved rather than pending. (1) The POST id bug WAS live here and is fixed: `createKanbanCard({ id, ...normalized })` let a caller-supplied id win in the ROW while the response echoed the generated one -- HTTP 200 naming a card that does not exist. Now one id is resolved first and used for both; kanban-post-id-echo.test.ts pins the property for every shape, and 3 of its 4 cases fail on the old spread order. (2) resolveKanbanDispatch: already adopted -- kanban-dispatch.ts is upstream's verbatim plus two fork-only functions, measured. (3) reportUndeliveredDispatch: NOT adopted, because the fork already closed the same hole its own way. resolveKanbanDispatchTarget returning null no longer goes quiet: the failure lands on the card AND in the main agent's inbox, with four contract tests in kanban-dispatch-silent-noop.test.ts, and that file documents why the stricter 'message first, in_progress after delivery' contract is not available here (createAgentMessage only ENQUEUES, so 'after successful delivery' is not knowable at move time). Adopting upstream's version would be a second mechanism for a closed hole. The waiting-text hunk and the self-advance / clear-before-switch blocks are untouched, as the rule requires." +
+    " Card 7debd869 (2026-09-05): the /clear-before-switch block named throughout this entry NO LONGER EXISTS in this file -- Peti had CLAUDE.md's /clear-between-cards rule deleted and its code removed with it. A future merger must keep only the fork's self-advance dispatch-echo suppression and the waiting-text hunk; there is no /clear call left to preserve.",
   // Card 2e634e5c, fourth file. A genuine two-way merge, not a wholesale pick either direction:
   // the fork owns Firecrawl namespace default-deny + FIRECRAWL_SCRAPE_ALLOWED_KEYS param-allowlist
   // (card 91c4a369); upstream owns the tier-based egressDecision({blocked,tier}) shape, agentType
@@ -433,11 +456,11 @@ const ACKNOWLEDGED_CONFLICTS = {
     "both sides converge on the same REPLAY_SOURCES set; keep fork's `export const` + fork comment (upstream's unexported const would break the fork's hook-matcher import), set contents identical",
   // Same underlying convergence as src/web/agent-taskstate.ts above, in the paired test file: both
   // add a `replays on clear too` case with the same assertion, different comment/test-name framing.
-  // Resolution: keep the fork's version (references CLAUDE.md rule 14 + the model-fallback respawn,
+  // Resolution: keep the fork's version (references the /clear-between-cards practice + the model-fallback respawn,
   // both fork-specific), drop upstream's duplicate case -- not a wholesale-theirs, a same-assertion
   // dedup.
   'src/__tests__/agent-taskstate.test.ts':
-    "duplicate `replays on clear too` case on both sides (same assertion, different framing) -- keep fork's version (cites CLAUDE.md rule 14 + model-fallback respawn), drop upstream's duplicate",
+    "duplicate `replays on clear too` case on both sides (same assertion, different framing) -- keep fork's version (cites CLAUDE.md the /clear-between-cards practice + model-fallback respawn), drop upstream's duplicate",
   // Two additive, non-overlapping import blocks -- same character as the .gitignore/web/style.css
   // entries above. Fork imports estimateCostUsd/stripDateSuffix from model-pricing.js; upstream
   // imports listAgentNames from agent-config.js and resolveAgentConfigDirForRead from
@@ -1025,6 +1048,7 @@ const ACKNOWLEDGED_UPSTREAM_BLOBS: Readonly<Record<keyof typeof ACKNOWLEDGED_CON
   'src/model-fallback.ts': '93ea8f17a6c9608003f047c1c9b5f8defe0f1da8',
   'src/__tests__/model-fallback.test.ts': '09bc3bf772d195be0980f4bec929eed4ecfadc67',
   'src/web/update-checker.ts': 'c98efe359fd032ee0f196b114d70fb57d166a88c',
+  'src/__tests__/update-checker-branch.test.ts': '71a277dd1ffa34f6a1c77240cc7791a92d9c139d',
   'src/web/context-restart-gate-runner.ts': '268fc2e659fa8210c2b67c1df64e4006c2e727af',
   'src/web.ts': 'a515f9c8750b2aeece08eb66034f466e6d8a7732',
   'src/web/keychain.ts': '1e1730ee0d8f6b1d4b51c5c254f3fab56acfa376',

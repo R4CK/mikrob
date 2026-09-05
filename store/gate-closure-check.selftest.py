@@ -241,6 +241,23 @@ try:
     _g("merge", "-q", "--no-ff", "-m", "merge: side into main", "side")
     MERGE = _rev()
 
+    # Card 74aa46a5: the two shapes whose ENTIRE delivery is a churn file, so subtracting churn
+    # leaves nothing to compare. The bump is what marveen-land.sh puts on top of every landing;
+    # the docs-only commit is the other, rarer way to get there (28 such shas on the live board).
+    _write("package.json", '{"version":"1.0.2"}\n')
+    _g("add", "-A"); _g("commit", "-qm", "chore(version): bump to 1.0.2+mikrob.1 (marveen-land, selftest)")
+    BUMP = _rev()
+
+    _write("DECISIONS.md", "- first\n- someone else's entry\n- a docs-only card\n")
+    _g("add", "-A"); _g("commit", "-qm", "docs(decisions): a docs-only card")
+    DOCS = _rev()
+
+    # ...and one commit AFTER the docs-only one that leaves DECISIONS.md alone, so a churn-only
+    # delivery whose churn file is genuinely IDENTICAL still has somewhere to land as AGREE.
+    _write("src/thing.ts", "export const A = 3\n")
+    _g("add", "-A"); _g("commit", "-qm", "later work, DECISIONS.md untouched")
+    AFTER_DOCS = _rev()
+
     ENV = {"MARVEEN_MAIN": _TMP, "CLEANCORE_MAIN": "/nonexistent-cleancore"}
 
     case("a differing sha whose DELIVERED FILES are identical is AGREE, not a false alarm",
@@ -262,6 +279,32 @@ try:
     case("an unreachable clone cannot turn a mismatch into a pass",
          [c("backend", R % WORK), c("qa", V % OTHER)], "UNRESOLVED",
          env={"MARVEEN_MAIN": "/nonexistent-marveen", "CLEANCORE_MAIN": "/nonexistent-cleancore"})
+
+    # --- card 74aa46a5: the churn subtraction must not empty the comparison into a pass ---------
+    case("a REVIEW naming a VERSION BUMP delivers only package.json, so ignoring churn compares "
+         "nothing -- that is unresolved, not agreement",
+         [c("backend", R % BUMP), c("qa", V % WORK)], "UNRESOLVED", env=ENV)
+    n += 1
+    _out = run([c("backend", R % BUMP), c("qa", V % WORK)], None, None, (), ENV)
+    _ok = "version bump" in _out and "0711c19b" in _out
+    print("%s %-9s <- %-9s %s" % ("OK  " if _ok else "FAIL", "says-why", "says-why" if _ok else "bare",
+                                  "...and it names the cause, so the reader knows to re-read the REVIEW"))
+    if not _ok:
+        failures.append(("must name the version-bump cause", "version bump + 0711c19b", _out))
+
+    case("the same hole through the OTHER door: a docs-only delivery is DECISIONS.md and nothing "
+         "else, so ignoring it also compares nothing",
+         [c("backend", R % DOCS), c("qa", V % WORK)], "UNRESOLVED", env=ENV)
+
+    # The two controls that keep the tightening from becoming a false alarm generator. Both were
+    # measured on the live board before this landed: 14 cards change answer, all of them already
+    # closed, and NONE of them is either of these shapes.
+    case("CONTROL: a churn-only delivery whose churn file is genuinely IDENTICAL is still AGREE -- "
+         "nothing differs anywhere, which is a real answer, not an empty one",
+         [c("backend", R % DOCS), c("qa", V % AFTER_DOCS)], "AGREE", env=ENV)
+    case("CONTROL: a delivery with REAL files that simply did not differ keeps its pass, even "
+         "though the churn files moved",
+         [c("backend", R % WORK), c("qa", V % LAND)], "AGREE", env=ENV)
 finally:
     shutil.rmtree(_TMP, ignore_errors=True)
 

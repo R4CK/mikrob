@@ -192,11 +192,15 @@ except Exception:
     pass
 ' "$1" "$2" 2>/dev/null; }
 
-# Project dispatch priority (card 2d6587fe): rule 14 hardcodes "project cards (CleanCore) before
-# non-project (marveen-infra)". This reads the same setting the dashboard's dropdown writes
-# (store/project-dispatch-priority.json), so a Peti override at the dashboard actually reaches the
-# nudge text instead of only living in a prose rule nobody re-reads at dispatch time. Empty/missing
-# -> unchanged wording (rule 14's own default order still applies, just not named explicitly).
+# Project dispatch priority (card 2d6587fe). This reads the same setting the dashboard's dropdown
+# writes (store/project-dispatch-priority.json), so a Peti override at the dashboard actually
+# reaches the nudge text instead of only living in a prose rule nobody re-reads at dispatch time.
+# Empty/missing -> unchanged wording: no project preference, ordinary card priority decides
+# (CLAUDE.md rule 6, with rule 6b's two-day override).
+#
+# These comments used to attribute the default order to "rule 14". Card 43d933b1 checked it: rule 14
+# has never said anything about dispatch order, and no rule anywhere states a CleanCore-first
+# default. Only the attribution was wrong; the behaviour is unchanged.
 # Overridable so a selftest can point at a throwaway file instead of the live setting.
 PRIORITY_CONFIG="${PROJECT_PRIORITY_CONFIG:-$ROOT/store/project-dispatch-priority.json}"
 PRIORITY_PROJECTS="$(python3 -c "
@@ -210,7 +214,7 @@ except Exception:
 " 2>/dev/null)"
 NUDGE_ENG='SELF-ADVANCE (rule 11, NE varj MikroB-ra): ha nincs aktiv munkad, curl a kanbant es vedd a neked cimzett legmagasabb-prio planned kartyat (nem BLOKKOLT) -> in_progress -> epitsd -> vegen waiting+REVIEW. Ha nincs planned, epitsd a design-impl kovetkezo kepernyoit (fron-ted/fron-teddy) v. a kovetkezo sec-followupot (backend/fullstack). Szabaly 10/11. TOKEN-SPOROLAS (Peti 2026-08-13): a kartyan mar rajta lehet egy LOCAL-LLM DRAFT komment (helyi 7B, offload-dispatch.sh irta) -- ELOSZOR ezt nezd meg. Ha lefedi a feladatot/hibat, VALIDALD (futtasd le a teszteket, olvasd at) es azt ALKALMAZD, NE irj ujra nulla-tol Claude-dal. Csak akkor irj sajat kodot, ha a draft hianyzik, hianyos, vagy hibas -- ilyenkor ird le roviden a REVIEW kommentben, mit hagytal el a draftbol es miert.'
 if [ -n "$PRIORITY_PROJECTS" ]; then
-  NUDGE_ENG="$NUDGE_ENG DISPATCH-PRIORITAS BEALLITVA: ($PRIORITY_PROJECTS) projekt(ek) kartyai MOST elozzek meg a tobbit, EBBEN a sorrendben (dashboard-beallitas, felulirja a rule 14 alap sorrendjet, amig ez a beallitas fenn van)."
+  NUDGE_ENG="$NUDGE_ENG DISPATCH-PRIORITAS BEALLITVA: ($PRIORITY_PROJECTS) projekt(ek) kartyai MOST elozzek meg a tobbit, EBBEN a sorrendben (dashboard-beallitas, felulirja a szokasos kartya-prioritas sorrendet, amig ez a beallitas fenn van)."
 fi
 # Observable in --dry-run without printing the whole nudge body (same summary-line convention as
 # GATE-WORK/ENG-WORK below).

@@ -8,7 +8,7 @@
 // start and the 'startup' support was unreachable for every restart since it was added. The exact
 // shape of card 91c4a369's egress-gate lesson: referencing the script is not running it.
 //
-// This card needs 'clear' for the same reason (rule 14, and the fresh model-step-down respawn), so
+// This card needs 'clear' for the same reason (a /clear between cards, and the fresh model-step-down respawn), so
 // the coupling itself is pinned here rather than the individual values.
 import { describe, it, expect, vi, beforeEach, afterAll } from 'vitest'
 import { mkdtempSync, mkdirSync, rmSync, writeFileSync, readFileSync, existsSync } from 'node:fs'

@@ -6635,3 +6635,628 @@ mutations -- because the fake dashboard had no card for those agents, so `_card_
 an unrelated precondition. Fixed by giving those agents cards in the harness and requiring that a
 comment WAS posted before checking its author. Same failure class this fleet has documented before
 (an early guard makes every "it refused" probe vacuous) -- knowing it did not prevent writing it.
+
+---
+
+## 2026-09-05 -- 87be1810 -- LLM monitor: külön oldal, ügynök-sávok, a hiányzó adat kimondva (Fron Ted)
+
+**Előzmény:** Peti design-képe (store/design-refs/local-llm-swimlane-mockup-2026-09-03.jpg) a
+forrás-igazság: KPI-sor, Swimlane Timeline (Tasks) kattintható részlet-panellel, Workload
+time-series. A backend (a5bbfb98) a `/api/task-events` + `/api/task-summary` feedet szállította,
+és kimondta: csak a helyi LLM-feladatoknak van kezdete ÉS vége (`blockCoverage.lanes = ['local']`),
+az online modellek munkája megszámolható, de feladatonkénti időtartam nincs tárolva. Az Áttekintésen
+már él egy per-MODELL swimlane (d6ecb003) a helyi ledgerből.
+
+**Döntés:** (1) HOL: külön oldal a Statisztikák csoportban ("LLM monitor", #llmMonitor), mert a
+kép egy monitorozó KÉPERNYŐ, nem egy kártya; az Áttekintés kompakt per-modell nézete marad.
+(2) SÁVOK: ügynökönként (a feed lane-je egyetlen "local", az ügynök a valós tengely), a blokkok
+kategória-színnel, valós indulás + időtartam szerint, ugyanazzal a first-fit csomagolóval és
+CSS-geometriával, mint az Áttekintés swimlane-je (egy rendszer, nem kettő). (3) RÉSZLET-PANEL
+kattintásra/Enterre: időtartam, ügynök, kategória, állapot, indulás, kártya-link -- a token/átvitel
+sor helyett egy kimondott jegyzet, mert ezt a feed NEM hordozza (12. szabály: nem mutatunk nullát
+mért érték helyett). (4) TERHELÉS-IDŐSOR: a feedből kliens-oldalon vödrözve (24 vödör, top-4
+kategória + egyéb, Catmull-Rom görbe). A kép "Model A / Model B" percenkénti kérés-görbéje az online
+modellekre NEM építhető a mai kontraktusból (csak összesítés van modellenként); needs-build,
+javasolt BE-mező: `task-summary?buckets=N -> series[]`. (5) A `blockCoverage` jegyzet a felületen
+látszik (lokalizált sor, a szerver angol szövege hoverre), a 2000-es limit túlcsordulása külön
+figyelmeztetés.
+
+**Ki döntött:** Peti (design-kép), backend2 (kontraktus + lefedettség), Fron Ted (oldal, sávok,
+kimondott hiányok), MikroB (dispatch).
+**Hivatkozás:** kártya `87be1810` (Pair-BE `a5bbfb98`, fázis `aecd9a12`); `web/app-llm-monitor.js`,
+`src/__tests__/llm-monitor-module.test.ts`.
+
+## 2026-09-05 -- CLAUDE.md 14. szabály (kötelező `/clear` két munka között) törölve
+
+Peti Telegramon (2026-09-05 07:18) jelezte: már régebben kérte a 14. szabály törlését, és
+kifejezetten frusztrálta, hogy törlés helyett egy strukturális kikényszerítő mechanizmus
+(`src/web/kanban-dispatch-clear-guard.ts` + `src/web/self-advance-clear-watcher.ts`, a "dispatch
+kapcsoló") épült a szabály KÖRÉ, ahelyett hogy magát a szabályt szüntettük volna meg.
+
+**Mit csináltam.** A 14. szabály teljes bekezdését kitöröltem a CLAUDE.md-ből, a rá következő
+szabályokat (15-18) 14-17-re számoztam át, és javítottam az egyetlen belső kereszthivatkozást
+(a mai 15. szabály "mint a 15. szabálynál" mondata "mint a 14. szabálynál"-ra módosult, mert a
+noisy-command-guard rész csúszott eggyel feljebb). Ellenőriztem, hogy a `store/` és `src/` alatt
+egyetlen szkript sem hivatkozik a szabályokra sorszám szerint, tehát a renumbering nem tört el
+automatizált logikát.
+
+**Mi maradt nyitva.** A kódoldal (a két fájl + a `web.ts`-beli bedrótozás + `agent_pending_clear`
+tábla) még él, most már holt logikaként. Nyitottam rá egy takarítókártyát (`7debd869`, backend2,
+marveen projekt, normal), ami eltávolítja mindkét fájlt, a bedrótozást, a hozzájuk tartozó
+teszteket, és eldönti az `agent_pending_clear` tábla sorsát (törlés vagy szándékosan árván
+hagyás -- ha bizonytalan, kérdezzen).
+
+**Miért nem törtem ki azonnal a kódot is.** A marveen saját infrastruktúrája, tehát a szokásos
+worktree + fleet-test + landolás + QA-gate útvonalon kell mennie (Marveen repo saját-worktree
+fegyelme szakasz), nem MikroB kézi Bash-hívásaival egy éles szolgáltatásban.
+
+**Ki döntött:** Peti (törlés-kérés, Telegram). **Végrehajtotta:** MikroB (doksi), backend2
+(kódtakarítás, kártya 7debd869).
+**Hivatkozás:** kártya 7debd869; CLAUDE.md korábbi 14. szabály (2026-08-23-tól élt).
+
+## 2026-09-05 -- 54fd9c02 -- Az ötödik ajtót a KORPUSZ őrzi, nem a shell, és a nyers könyvtárnév a teherbíró alak
+
+**Döntés:** Az install-linux.sh/install-macos.sh `seed-fleet-agents/*/` -> `agents/` másolását NEM a
+shellben validáljuk, hanem egy forrás-szkennelő teszttel a szállított seed-korpuszon
+(`reserved-agent-name.test.ts`, "door 5"). Az ellenőrzés a NYERS könyvtárnévre fut (mellette,
+olcsó második félként, a szanitizált alakra is).
+
+**Miért:** (1) A shellből nem hívható az `isReservedSenderId`, tehát egy shell-oldali ellenőrzés a
+fenntartott halmaz MÁSODIK példányát hozná létre, ami pont a b46a4b7e által megszüntetett
+drift-osztály. (2) Egy korpusz-ellenőrzés MINDKÉT installert fedi, plusz bármelyik jövőbelit, anélkül
+hogy bármelyiket megnevezné. (3) Az ellenőrzés ideje telepítés-időből (idegen gépen, megfigyeletlenül)
+commit-időre kerül. (4) A nyers alak a teherbíró: a `listAllAgentNames()` (agent-config.ts)
+szanitizálás nélkül adja vissza a `readdirSync` bejegyzéseket, tehát a könyvtárnév MAGA lesz az
+ügynök neve, és pont ezt adja tovább a `context-guard-runner.ts` `from`-ként.
+
+**Elutasított alternatívák:** (a) név-ellenőrzés a shellben -- lásd (1); (b) a fenntartott halmaz
+normalizálása, hogy az aláhúzásos alakok is bele essenek -- a `SAFE_NAME_RE` SZÁNDÉKOSAN átengedi az
+aláhúzást (`system_directive` érvényes ügynöknév), ezt elvenni valódi neveket törne el egy nem létező
+támadás kedvéért.
+
+**Következmény:** Ha valaha egy seed-könyvtár fenntartott nevet kapna, a commit bukik, és a
+hibaüzenet megmondja a teendőt (átnevezés), kifejezetten megtiltva a fenntartott halmaz lazítását.
+
+**Ki döntött:** backend2, Cybersec javaslata alapján (b46a4b7e gate-melléklete, komment 22244).
+**Hivatkozás:** kártya 54fd9c02.
+
+## 2026-09-05 -- Az `agents/` névtér futásidejű zárása: fail-closed ejtés + latch-elt tripwire (kártya 53c59307)
+
+**Döntés.** Cybered tervét (20323-as komment) változtatás nélkül megvalósítottam: az (a) és (b) irány
+közül MINDKETTŐ, mert két külön kérdésre felelnek. Az ejtés a KONTROLL (`listAllAgentNames()` nem ad
+vissza fenntartott nevű könyvtárat), a riasztás a LÁTHATÓSÁG, és mindkettő UGYANABBÓL az egy
+predikátumból (`isReservedSenderId`) jön. Külön-külön mindkettő rossz: az ejtés egyedül némán
+semlegesít, tehát a támadó megtudja, hogy nem működik, mi viszont soha nem tudjuk meg, hogy
+megpróbálta; a riasztás egyedül egy ténylegesen megtörtént mintelésről szól.
+
+**Miért volt nyitva.** Az `54fd9c02` a TELEPÍTÉSI utat zárta le. Bármelyik élő flotta-ügynök viszont
+`mkdir agents/system-directive`-et tud csinálni sima Bash-sel, installer nélkül -- a könyvtár ezzel
+bekerült volna a context-guard sweepbe, aminek két írója (`context-guard-runner.ts`,
+`context-restart-gate-runner.ts`) a sweepelt nevet adja `from`-ként a `createAgentMessage`-nek. Ekkor
+léteznének VALÓDI `from_agent="system-directive"` sorok, amiket a `sendSystemDirective` sosem írt --
+pont az az egy-író tulajdonság, amiért az átnevezés készült.
+
+**Egy fojtópont, mérve.** A teljes `src/`-ben EGYETLEN `readdirSync` fut az `AGENTS_BASE_DIR`-en, a
+`listAllAgentNames()`-ben (Cybered mérése, magam is ellenőriztem). Ezért nem részleges javítás: egy
+helyen zárul az egész osztály. Több független readdir esetén ez a terv nem lett volna elég.
+
+**Az aszimmetria a terv lényege, és ezt nem szabad egyszerűsíteni.**
+- `isReservedSenderId(n)` igaz -> EJTÉS + riasztás. Egyetlen legitim ajtó sem tud ilyen könyvtárat
+  létrehozni (az API 400-zal utasítja el, a bundle-import dob, a seed-korpusz őre az `54fd9c02`-ben),
+  tehát az ejtés nem rejthet el valódi ügynököt az életfenntartás elől. EZ a tulajdonság teszi az
+  ejtést megengedhetővé, nem a szigor önmagában.
+- `sanitizeAgentName(n) !== n`, de nem fenntartott -> CSAK riasztás, NINCS ejtés. Egy ilyen könyvtár
+  lehet régi, kézzel létrehozott, ténylegesen dolgozó ügynök, és a sweepből kiejteni egy 100%-os
+  kontextuson álló session elvesztését jelentené. A név nem fenntartott azonosító, tehát nem mintel
+  semmit: itt a láthatóság a helyes válasz, nem a semlegesítés.
+
+**A latch nem csiszolás, hanem teherhordó elem.** A `listAllAgentNames()` forró úton fut (az
+invite-monitor másodpercenként, a sweep ciklikusan). Latch nélkül EGYETLEN `mkdir` percenként ~20
+üzenetet írna a fő ügynök postaládájába, örökre -- egy-paranccsal elérhető, önmagunk ellen fordított
+DoS az orchestrátor bemenetén, pont attól a szereplőtől, aki ellen a kontroll szól. A latch a
+`store/` alatt perzisztál (újraindítás ne fegyverezze újra), és csak akkor fegyverez újra, ha a
+könyvtár eltűnt és megint megjelent. Sikertelen küldés NEM latch-el, különben pont az az egy
+riasztás veszne el, ami számít.
+
+**Nincs automatikus törlés, szándékosan.** Az ejtés már semlegesített, tehát a törlés nem véd többet,
+csak bizonyítékot semmisít meg. Súlyosabb ok: egy visszafordíthatatlan törlés, aminek az útvonalát a
+TÁMADÓ választja, maga is támadási primitív, amint a névillesztés valaha lazul -- egy elrontott regex
+a távolság a veszélytelen szűk illesztés és a tetszőleges könyvtár-törlés között. Helyette:
+karantén-másolat a `store/agent-dir-quarantine/` alá, az eredeti érintetlenül a helyén.
+
+**Attribúció: kimondva gyenge.** A flotta minden ügynöke ugyanazon az OS-felhasználón fut, tehát a
+könyvtár tulajdonosa semmit nem árul el arról, ki hozta létre. A riasztás a létrehozás időbélyegét
+adja, és a szövegében KI IS MONDJA, hogy ez korrelációs jelzés, nem bizonyíték. Az igazi védelem nem
+a jobb nyomozás, hanem hogy a cselekmény haszontalan legyen.
+
+**Tisztaság.** A `listAllAgentNames()` és az új `listRejectedAgentDirNames()` tiszta függvény marad:
+nincs db, nincs üzenetküldés. Egy riasztó mellékhatás azt jelentené, hogy minden tesztfutás
+riasztásokat termel, vagyis a saját csatornánkat tanítanánk meg arra, hogy a riasztás zaj. A
+riasztást a context-guard sweep küldi, aminek már van db-hozzáférése. Ezt teszt pinneli
+import-gráf-tényként (a `db.ts` nem érhető el az `agent-config.ts`-ből), nem kommentként.
+
+**Amit MÉRTEM, nem feltételeztem.** A hét gate-pont mindegyikére teszt, plusz három mutáns, mind
+alkalmazva és visszaállítva: az ejtés kivétele -> 2 piros; a latch kivétele -> 1 piros; az aszimmetria
+összeolvasztása (a rosszul formált név is ejtve) -> 1 piros. Alapvonal és visszaállítás után 7/7 zöld.
+Regresszió: 47/47 a névtér-körben (reserved-agent-name, system-directive-auth-section), 85/85 a
+context-guard körben. `tsc --noEmit` exit 0.
+
+**Egy megfigyelés, ami NEM változtatta meg a tervet.** Egy olyan név, ami csak SANITIZÁLVA lesz
+fenntartott (pl. `System--Directive`), nem esik ki -- és ez helyes: a `from_agent`-hez vezető úton
+semmi nem sanitizál, tehát egy ilyen könyvtár nem a fenntartott azonosítót írja, nem mintel semmit.
+Ejteni a fenti aszimmetriát sértené haszon nélkül. A kis-nagybetű viszont számít, és fedve van: az
+`isReservedSenderId` case-insensitive, tehát az `agents/System-Directive` is kiesik.
+
+**Amit ez a kártya NEM old meg.** Az `agents/` alá ÍRÁS megakadályozása (jogosultság, hook,
+immutábilis mount) külön kártya és nagyobb kockázat: az ügynökök legitim módon írnak a saját
+könyvtárukba. Ez a kártya a névteret zárja, nem az írást.
+
+**Ki döntött:** Cybered (terv és irányválasztás), backend (megvalósítás és mérés), MikroB (dispatch).
+**Hivatkozás:** kártya 53c59307; előzmény 54fd9c02 (telepítési út) és 5c5d7bc4 (a saját sender id).
+
+## 2026-09-05 -- A `fleet-test.sh` FLEET_TEST_TREE-kijárata lezárva: a zár gép-szintű, nem fánként (kártya 2f0c7d24)
+
+**Döntés.** Peti explicit jóváhagyásával (Telegram, 2026-09-05, „1 - zárd le, kódot módosítasz") a
+`store/fleet-test.sh` zárja mostantól EGY gép-szintű horgonyra (`${ROOT}-test.lock`) kerül, nem a
+`$TEST_TREE`-re. A `FLEET_TEST_TREE` env-változó megmarad, és továbbra is megválasztja, HOL fut a
+suite -- de többé nem választja meg, hogy SORBAN ÁLL-E. A korábbi viselkedés (fánként külön zár) az
+`85faec1b` kártya tudatos, mért döntése volt; ez a bejegyzés azt fordítja vissza, nem egy hibát javít.
+
+**Miért fordul meg egy tudatos döntés.** Az eredeti indok helyes volt a maga körében: egy privát fa
+nem tudja elrontani a közöset, tehát nem kell mögé sorolni. Csakhogy a fa nem az egyetlen megosztott
+erőforrás. Egy teljes suite magonként egy workert indít (itt 12), így két futás két KÜLÖN fán is
+elveszi egymás CPU-ját, és a kiéheztetett futás nem hibán, hanem időtúllépésen bukik. A kontenció
+által termelt hamis piros a drága fajta: egy gate-en helyes munkát küld vissza `in_progress`-be.
+
+**Mérés a döntés előtt (a `fleet-rule-compliance-from-corpus` eljárással, 504 egyedi ügynök-átiraton).**
+- A `FLEET_TEST_TREE` NEM használatlan, ahogy a kártya (és az én korábbi 9bb2e651-es megfogalmazásom)
+  sugallta: **237 tényleges beállítás** 11 napon át, QA (`marveen-qa-test`, `qa-<kártya>-gate`),
+  backend2 (`marveen-test-b2`, `be2-mutate`) és Cybersec fáira. Amit helyesen lehet állítani: az
+  UTOLSÓ használat **2026-08-26**, azóta tíz napja egyszer sem. A lezárás tehát ma nem tör el élő
+  munkafolyamatot -- de a „ma senki nem használja" indoklás pontatlan volt, a helyes az, hogy a
+  korábbi használói már átálltak másra.
+- Figyelmeztetés a mérésről magáról: az első futásom minden ügynök könyvtárán át ugyanazt a korpuszt
+  15-ször számolta (a projekt-könyvtárak szimlinkeltek), és az első „csak 1 megkerülés" eredményem is
+  hibás volt, mert a detektorom a `2>&1` átirányítást pozicionális szűrőnek olvasta. Mindkettő
+  javítva, a számok a javított futásból valók.
+
+**Ami emiatt a tesztben változott, és miért nem törlés.** A `fleet-test-serialises-runs.test.ts`
+egyik állítása KIKÖTÖTTE a kijáratot (`LOCK_FILE="${TEST_TREE}.lock"` megléte volt a zöld feltétel),
+tehát a lezárás e nélkül nem is landolhatott volna. Az állítás nem eltűnt, hanem MEGFORDULT (a
+tree-re kulcsolt zár mostantól hiba, és külön állítás követeli a gép-szintű horgonyt), plusz egy új
+CONTROL eset a régi alakra: ha valaki visszaállítja a fánkénti zárat, a teszt pirosra vált. Enélkül
+a 7. kódminőségi alapelv szerint gyengülő tesztről beszélnénk, nem javításról.
+
+**Mérés a változtatás UTÁN (viselkedés, nem szövegellenőrzés).** `FLEET_TEST_TREE` egy privát útra
+állítva, miközben egy MÁSIK ügynök valódi futása tartotta a zárat: `FLEET_TEST_LOCK_WAIT=2` mellett
+kiírta, hogy vár, majd 3-as kóddal kilépett, és a `/home/neon/marveen-test.lock`-ot -- a KÖZÖS
+horgonyt -- nevezte meg. A régi kóddal a privát fa saját, szabad zárját vette volna, és azonnal
+indult volna. A hibaüzenetben szereplő útvonal maga a bizonyíték.
+
+**Amit ez a változtatás NEM old meg (a leletet a kártyán kívül is ki kell mondani).** A marveen
+sorosításból ma nem a `FLEET_TEST_TREE`-vel lépnek ki, hanem úgy, hogy a `fleet-test.sh`-t egyáltalán
+nem hívják: 2026-09-01 óta **89 teljes marveen suite-futás** ment közvetlen `npx vitest run`-nal a
+szkript megkerülésével, ebből **59 QA gate-fákban** (`qa-priv-*`). Ez a jelenlegi tényleges kijárat,
+és ezt a kártya nem érinti. Külön kártya kell rá; addig a „senki nem tud csendben kilépni a
+sorosításból" állítás NEM igaz, csak a `FLEET_TEST_TREE`-n keresztül nem tud.
+
+**Ki döntött:** Peti (jóváhagyás), MikroB (dispatch, kártyanyitás), backend (mérés, implementáció).
+**Hivatkozás:** kártya 2f0c7d24; előzmény 9bb2e651 és 85faec1b; a mérő eljárás a
+`fleet-rule-compliance-from-corpus` skillben.
+
+## 2026-09-05 -- A 17. szabály (CleanCore suite-szemafor) premisszájának korrekciója, és a két független zár kérdése (kártya 9bb2e651)
+
+**Döntés.** A 17. szabály egy hét múlva esedékes felülvizsgálatához a kiinduló premisszát korrigálni
+kell: **a megkerülés-minta NEM rosszabbodik**, és a korpusz ezt nem támasztja alá. Ebből
+következően PreToolUse hook a CleanCore-oldalra NEM indokolt. A marveen-oldalra sem kell új fék, mert
+ott már szigorúbb korlát van, mint a CleanCore-on. Marad a két zár egymástól független ténye, amit
+dokumentálni kell, nem összehangolni -- egyelőre.
+
+**Mérés (backend, a teljes ügynök-átirat korpuszon: 12 195 jelölt Bash-parancs).**
+- Ebből 2 244 PUSZTA EMLÍTÉS volt, nem futtatás (`pgrep -f vitest`, `cat vitest.config.ts`, magyar
+  próza egy heredoc-testben). Szűrés nélkül a szám tízszeres, és minden ráépülő következtetés hamis.
+- A `store/cleancore-suite-run.sh` `ce3ec4d6`-ban jött létre (2026-09-04 22:41 helyi), és `78d182a6`
+  tette flotta-szintűvé (23:52). Az idővonalat a SZKRIPT LÉTEZÉSÉHEZ kell vágni, nem a szabály
+  kihirdetéséhez: az 5 megtalált teljes-suite megkerülés MIND korábbi, tehát akkor a szabály nem
+  hogy nem volt betartva, betarthatatlan volt.
+- A szkript létezése óta: **0 CleanCore teljes-suite megkerülés**, 2 szemaforos futás, 57 mentesülő
+  célzott futás (a mentesülő szám nem nulla, tehát a nulla nem azt jelenti, hogy senki nem dolgozott
+  a repóban).
+- A szabályban „második megkerülés-adatpontként" szereplő gate-futás (002120b1, QA) valójában
+  **marveen** teljes suite egy eldobható `qa-priv-<kártya>-<sha>` worktree-ben. A szkript létezése óta
+  futott ÖSSZES teljes suite-ot repo-szűrő nélkül átnéztem: 13 darab, mind QA gate-futás, és mind a
+  12 mögöttes kártya marveen INFRA. Egy sem CleanCore.
+
+**A hamis piros tényleges előfordulásai.** A `Timeout calling "onTaskUpdate"` jelzőre 8 találat van a
+parancs-kimenetek között; ebből **7 valódi**, és mind a CleanCore vitestjére mutat
+(`CleanCore/node_modules/.pnpm/vitest@3.2.6`), időben 06:18 és 20:41 között, tehát MIND a szemafor
+létrejötte előtt. A nyolcadik nem előfordulás: a 17. szabály SAJÁT SZÖVEGE jelenik meg egy marveen
+teszt-diffben, és a szabály idézi a hibajelzőt -- egy jelző-alapú keresés tehát megtalálja magát a
+szabályt. A szemafor landolása óta nulla előfordulás.
+
+**Amit korrigálok a saját korábbi állításomban.** Először azt jelentettem, hogy a valódi fékezetlen
+terhelés a marveen gate-futásokra került (QA 10 teljes suite 3 óra alatt, „nincs rá szemafor"). Ez
+téves: a `fleet-test.sh` EGYETLEN flockot vesz a fa útvonalára, tehát **max 1** egyidejű futást enged
+-- szigorúbb korlát, mint a CleanCore kettő. QA 10 futása sorosan ment, nem párhuzamosan.
+
+**A tényleges maradék kockázat, számokkal.** Egy vitest-suite alapból annyi workert indít, ahány CPU
+van (itt 12, a `cleancore-suite-run.sh` fejléce is ezt mondja ki, és élőben is mérhető: 15 vitest
+folyamat 17,2-es terhelés mellett). A két zár nem tud egymásról, ezért a legrosszabb eset
+2 CleanCore + 1 marveen = **3 egyidejű teljes suite, ~36 worker 12 CPU-n**. Ez ugyanaz az éheztetési
+feltétel, ami a 7 hamis pirosat okozta -- azzal a különbséggel, hogy a 3-utas átfedésre eddig
+EGYETLEN megfigyelt bukás sincs. Ezért a közös, gép-szintű számláló megépítése ma spekulatív lenne,
+és pont az a hiba, ami ellen a 17. szabály maga is szól (a hook eseteinek a valódi korpuszból kell
+jönniük, nem a fenyegetés-modellből).
+
+**Következmény / következő lépés.** (1) A két-kapu-egymástól-független tény dokumentálva. (2) Mielőtt
+bárki koordinációt épít, a 3-utas átfedést MÉRHETŐVÉ kell tenni (a nehéz futások kezdete/vége közös
+jelöléssel), és csak megfigyelt átfedés + bukás után épüljön mechanizmus. (3) A `FLEET_TEST_TREE`
+env-változó csendes kilépést ad a marveen sorosításból („a private tree never queues behind the
+shared one") -- ma senki nem használja, de ez ugyanaz az alak, mint az `5af57bd7` per-checkout
+horgony-hibája, amit a `78d182a6` javított. A `fleet-test.sh` viszont minden marveen landolást
+kapuz, tehát működő, bizonyítottan éles funkció: hozzányúlni csak Peti kifejezett jóváhagyásával
+szabad (5. kódminőségi alapelv), ezért ez kérdésként megy fel, nem javításként.
+
+**Kiegészítés: egy MÁSODIK, ettől független terhelés-érzékenységi osztály a marveen landolási
+kapuban (menet közben mérve, nem a kártya kiinduló kérdése).** A fenti bejegyzés landolása maga
+akadt el rajta, ezért ide tartozik. A `src/__tests__/gate-sha-repo.test.ts` egyik esete
+(`names a KANBAN CARD ID instead of laundering it as "unlanded"`) ÉLŐ HTTP-hívást tesz a
+dashboardra a teljes suite közben, a `store/gate-sha-repo.sh` pedig `curl -sf --max-time 3`-mal
+kérdezi le a kártyát. Telített gépen (612 tesztfájl, 446 mp teszt-idő 113 mp valós idő alatt) ez a
+3 másodperces költségkeret elfogy, a szkript a szándékos fail-soft ágára esik (`unlanded`, 3-as
+kilépés), a teszt viszont a sikeres ágat várja (4-es kilépés) -- **hamis piros, ami minden marveen
+landolást kapuz**. Nem elméleti: három független előfordulás a szkript landolása óta (09-05 00:38,
+00:41, és a saját 08:44-es landolásom), mind ugyanazzal az `expected 3 to be 4` állítással; a
+szkript ugyanezekre a bemenetekre terheletlenül helyesen felel. Ez tehát MÁS mechanizmus, mint a
+birpc-timeout (nem a vitest RPC-je, hanem egy korlátos külső hívás a teszten belül), de UGYANAZ az
+osztály: a kontenció zöldből pirosat csinál. Két következménye van. (1) A „marveen-oldalon nincs
+megfigyelt terhelés-okozta bukás" állítás így PONTOSÍTVA értendő: a teljes suite-ok sorosítására
+tényleg nincs szükség új fékre, de a landolási kapun belül van terhelés-érzékeny pont, csak nem a
+sorosítás hiánya okozza. (2) A javítás iránya nem fék, hanem determinizmus: a szkriptben MÁR OTT VAN
+a `GATE_SHA_REPO_NO_BOARD=1` offline ág, tehát a teszt élő board helyett stubbal is futhatna. Ez a
+`gate-sha-repo.sh` az `edd4c3bf` kártya éles, működő eredménye, ezért nem nyúlok hozzá: külön
+kártyaként megy fel MikroB-hoz.
+
+**Ki döntött:** backend (mérés és verdikt), MikroB (dispatch, a kártya átírása a mérésre).
+**Hivatkozás:** kártya 9bb2e651; korábbi diagnózis-korrekció backend3-tól; szemafor `ce3ec4d6` +
+`78d182a6`; a mérő eljárás a `fleet-rule-compliance-from-corpus` skillben.
+
+## 2026-09-05 -- 74851e8b -- A fast-uri javítás a 3.x-en BELÜL van, nem major ugrás, és a valódi hiba az override KÜSZÖBE volt
+
+**Döntés:** A `fast-uri` HIGH és a `qs` MODERATE tanácsot a 3.x/6.x soron BELÜL zárjuk:
+`fast-uri` override `>=3.1.4 <4` -> `>=3.1.7 <4`, és új `qs` override `>=6.16.0 <7`. NEM emeltük a
+`fast-uri`-t 4.x-re, ahogy a kártya javasolta.
+
+**Miért:** Az `ajv@8.20.0` `"fast-uri": "^3.0.1"`-et deklarál. A sebezhető tartomány `3.0.0 - 3.1.5`,
+és létezik `3.1.6`/`3.1.7` -- vagyis a javítás elérhető az ajv által deklarált tartományon belül,
+semver-sértés és major ugrás nélkül egy olyan függőség alatt, amit nem mi kontrollálunk. A 4.x-re
+erőltetés ugyanazt a biztonsági eredményt adta volna, plusz egy nem deklarált major kockázatát.
+Ugyanez a `qs`-nél: a `body-parser@^6.15.2` és az `express@^6.14.0` egyaránt elfogadja a 6.16.0-t.
+
+**A TANULSÁG, ami túlmutat ezen a két csomagon:** a package.json MÁR tartalmazott egy
+`"fast-uri": ">=3.1.4 <4"` override-ot, és a fa mégis a sebezhető 3.1.5-öt telepítette. Egy override,
+aminek a KÜSZÖBE a tanács tartományán BELÜL van, kielégíthető sebezhető verzióval -- miközben a
+package.json-t átfutó olvasónak lezárt ügynek látszik. A két szám (küszöb kontra tanács-plafon)
+viszonyát semmi nem ellenőrizte. Ezt zárja be a `fast-uri-qs-advisories.test.ts`, nem csak a mai két
+nevet.
+
+**Mellékesen talált csapda:** a package.json KÉT override-térképet hordoz (npm `overrides` és
+`pnpm.overrides`), tükrözve. Az egyik frissítése a másik nélkül néma: az dönti el a javítás
+érvényesülését, hogy ki melyik telepítőt futtatja. Az őr ezt is állítja.
+
+**A CSOMAG NEM SZÉTVÁGHATÓ, mérve:** a package.json override a lockfile nélkül eltöri az `npm ci`-t
+(`Invalid: lock file's fast-uri@3.1.5 does not satisfy fast-uri@3.1.7`, exit 1) -- tehát a két fájlnak
+EGYÜTT kell landolnia. A lockfile-t viszont a `git-protect-guard.py` szerint ügynök nem commitolhatja
+(MikroB batcheli a függőségeket), ezért a landolás MikroB lépése, nem a backend2-é.
+
+**Hatókörön kívül hagyva (nem elhallgatva):** dev-only tanácsok maradtak (vitest CRITICAL, vite HIGH,
+esbuild/vite-node/@vitest/mocker MODERATE). A kártya `--omit=dev`-re szólt; ezek a teszt-eszközlánc
+major frissítését igényelnék, ami külön munka és külön kockázat.
+
+**Ki döntött:** backend2 (technikai döntések), a landolás MikroB jóváhagyásával.
+**Hivatkozás:** kártya 74851e8b.
+
+## 2026-09-05 -- 0711c19b -- A landolás azt a shát mondja, ami a kártya fájljait viszi
+
+**Döntés:** A `marveen-land.sh` záró riportja mostantól KÉT shát nevez meg, elkülönítve: a `develop`
+csúcsát, és egy külön, sor eleji `Gate-SHA: <sha>` sorban azt a merge-commitot, ami a kártya fájljait
+ténylegesen beviszi. A `merge_sha` változó jelentése változatlan (a tesztelt és pusholt csúcs); egy új,
+soha újra nem értékelt `gate_sha` őrzi meg a merge-et a verzió-bump ELŐTT.
+
+**Miért:** A riport eddig csak a csúcsot írta ki, és amióta a fork-saját verzió-bump automatizált
+(`ea8b9b95`), az a csúcs minden landolásnál egy `chore(version)` gyerek-commit, ami a `package.json`
+egyetlen sorát tartalmazza -- a kártya fájljaiból semmit. Aki készpénznek vette, olyan shát írt a
+REVIEW-ba, amit a kártya nem szállított. Nem elszórt hiba: a táblán **82 különböző verzió-bump sha
+szerepel `Gate-SHA:` soron, 51 kártyán**, és a szerzők között ott van a `qa`, a `cybersec` ÉS a
+`cybered` is -- vagyis nem egy ügynök figyelmetlensége, hanem amit az eszköz mindenkinek mondott.
+
+**A downstream őr sem fogta meg, és ez a lelet érdemi része.** A `gate-closure-check.py` egy
+sha-eltérést úgy old fel, hogy összeveti a két commit tartalmát "minden fájlra, amit a deklarált
+commit szállít", levonva a `package.json`/`DECISIONS.md`/`README.md` hármast ismert landolásonkénti
+zajként. Egy bump-commit `package.json`-t szállít és MÁST NEM, tehát a kivonás kiüríti az
+összevetendő halmazt, és az eszköz `AGREE`-t ír ki úgy, hogy NULLA fájlt hasonlított össze. Ez
+pontosan az a vacuous pass, amit a saját `if not files: continue` ága hivatott megelőzni -- csak nem
+az üres-lista ajtaján jön be, hanem a churn-szűrőn. Élőben igazolva a `99fccbcf`, `e5b7ff19`,
+`a14812e8` és `f1b3f2f0` kártyán. Ez KÜLÖN kártyát kapott: a forrás javítása nem gyógyítja meg az
+51 már megírt kártyát, és kézzel továbbra is be lehet írni egy bump-shát.
+
+**Elvetett alternatíva:** ne a merge-et, hanem a csúcsot nevezzük Gate-SHA-nak, és a gate mindig
+`checkout`-oljon. A csúcs FÁJA valóban tartalmazza a kártya munkáját, tehát checkout-alapú
+ellenőrzésre jó -- de a flotta és a saját záró-ellenőrzője is `log -1 --name-only` alapon olvassa,
+hogy "mit szállított ez a commit", és arra a csúcs hazudik. Egy shát nevezünk meg, azt, ami mindkét
+olvasatban helyes.
+
+**Mellékes lelet, szándékosan NEM javítva itt:** a bump stage-elése
+`git add package.json package-lock.json`, és a git az EGÉSZ add-ot eldobja, ha az egyik pathspec
+semmire nem illeszkedik -- egy csak-`package.json` repóban tehát a bump némán "produced no changes to
+commit"-ot ír. A marveen-ben lappangó (mindkét fájl követett), a teszt-harness-ben viszont élesben
+jelentkezett, ott a lockfile beseedelése oldja meg. Külön döntés tárgya, nem ezé a kártyáé.
+
+**Ki döntött:** backend2 (mérés + megvalósítás), MikroB (kártyanyitás a 3. bejelentés után).
+**Hivatkozás:** kártya 0711c19b; `store/marveen-land.sh`,
+`src/__tests__/agent-worktree-marveen.test.ts` (4 új eset, 3 mutációval igazolva).
+
+## 2026-09-05 -- 74aa46a5 -- A churn-kivonás nem üresítheti ki az összevetést egy passzba
+
+**Döntés:** A `gate-closure-check.py` `content_verdict()` függvénye mostantól `unresolved`-et ad, ha a
+deklarált commit MINDEN szállított fájlja a churn-listán van (`package.json`/`DECISIONS.md`/
+`README.md`) ÉS ezek közül legalább egy ténylegesen eltér. Verzió-bumpnál a hibaüzenet meg is nevezi
+az okot, és a 0711c19b-re mutat.
+
+**Miért:** A függvény már védekezett az ÜRES szállítás ellen (`if not files: continue`, azzal az
+indokkal, hogy a "same" ott vacuous pass lenne). A rá következő sor viszont kivonja a churn-hármast,
+és ez MÉGEGYSZER ki tudja üríteni az összevetést, egy ponton, ahová az őr már nem ér el. Egy
+`chore(version)` bump `package.json`-t szállít és MÁST NEM, tehát a kivonás konstrukció szerint
+totális: a függvény "azonos tartalom" választ ad, miután NULLA fájlt hasonlított össze. Egy őr, ami
+így válaszol, nem szigorúbb a semminél, csak drágább.
+
+**Mérve, nem feltételezve.** A teljes élő táblán (2821 kártya) a változás **14 kártya** verdiktjét
+mozdítja el, mindegyiket `AGREE` -> `UNRESOLVED`, és **mind a 14 már `done`** -- vagyis EGYETLEN
+nyitott lezárást sem blokkol. A 14-ből négy a lelet alapító esete (99fccbcf, e5b7ff19, a14812e8,
+f1b3f2f0, mind bump-sha), a többi a másik ajtó: csak `README.md`-t (d696e3bb) vagy csak
+`DECISIONS.md`-t (5b90d903) szállító deklarált commit.
+
+**Két KONTROLL tartja meg, ami eddig helyes volt** (mindkettő selftest-eset, mutációval igazolva):
+egy csak-churn szállítás, aminek a churn-fájlja TÉNYLEG bájtazonos, továbbra is `AGREE` (ott semmi
+nem tér el, az valódi válasz, nem üres); és egy valós fájlokat is szállító commit, aminél csak a
+churn mozdult, ugyanúgy megtartja a passzát -- azt a commitot ÖSSZEHASONLÍTOTTUK.
+
+**Hatókör-korlát, kimondva:** ez csak az ELTÉRŐ-sha ágat éri el. Ha a REVIEW és mindkét gate UGYANAZT
+a bump-shát nevezi meg (a táblán ez a gyakoribb: 82 bump-sha 51 kártyán), a `shas_agree` rövidre zár
+`AGREE`-re, és ide el sem jut. Az a kérdés -- "a megnevezett sha egyáltalán a kártya munkája-e" --
+nem ezé az őré: azt a FORRÁSNÁL zárta le a 0711c19b.
+
+**Kockázat-értékelés:** szigorítás egy záró-ellenőrzésen, aminek a hibamódja eddig HAMIS PASS volt.
+Nulla nyitott kártyát érint, egy committal visszafordítható, és a hatása mérve van, nem becsülve --
+ezért nem kapott önálló plan-grilling kört.
+
+**Ki döntött:** backend2 (lelet a 0711c19b méréséből, design + megvalósítás).
+**Hivatkozás:** kártya 74aa46a5; `store/gate-closure-check.py`,
+`store/gate-closure-check.selftest.py` (44 -> 49 eset, 4 mutációval igazolva).
+
+## 2026-09-05 -- 07433dab -- Az ötödik ajtó őre a MŰVELETET pinneli, és a nevek ALAKJÁT is méri
+
+**Döntés:** A `reserved-agent-name.test.ts` "door 5" blokkja három ponton szigorodik: (1) az őr nem a
+`SEED_FLEET_DIR=` HOZZÁRENDELÉST pinneli, hanem azt, hogy a másoló ciklus TÉNYLEGESEN ezt a változót
+járja be; (2) installerenként PONTOSAN EGY hely másolhat az `agents/` alá (szám, nem jelenlét); (3)
+minden seed-könyvtárnév változatlanul túl kell élje a `sanitizeAgentName`-et, nem elég, hogy nincs
+benne a fenntartott halmazban. A komment-sorokat mindhárom illesztés előtt eldobjuk.
+
+**Miért:** a tegnap landolt őr (54fd9c02) csak a változó-átírási mutációt buktatta el. Cybersec két
+alakot nevezett meg, amik átsétálnak rajta, és MINDKETTŐT lemértem a valódi installereken, mielőtt
+javítottam: a `SEED_FLEET_DIR=` sor változatlanul marad, miközben (a) a ciklus forrása másra
+mutat, vagy (b) az eredeti mellé bekerül egy MÁSODIK másoló ciklus egy másik korpuszból. A régi
+állítás mindkét mutált fájlon ZÖLD marad -- kimérve, nem levezetve. Cybered harmadik alakja pedig
+ortogonális: az őr a nevet a fenntartott HALMAZHOZ méri, az ALAKJÁHOZ sehol, így egy
+`ZZ_Cybered Probe` nevű könyvtár után 23/23 zöld maradt -- és ez az EGYETLEN ajtó, ami nyers
+repo-stringet tesz az `agents/` alá (minden más út a `sanitizeAgentName`-en keresztül épít), majd
+beépül a context-guard-runner üzenet-törzsébe is.
+
+Ez ugyanaz a megkülönböztetés, amit a CLAUDE.md 12. szabálya a szimbólum-jelenlétre kimond, egy
+réteggel feljebb: attól, hogy egy azonosító SZEREPEL, még nem azt HASZNÁLJÁK. A komment-szűrés is
+ugyanezért van -- egy a ciklust szó szerint idéző komment különben minden itteni állítást zölden
+tartana, miközben a valódi ciklus eltűnt.
+
+**Mérve:** a ma szállított 14 seed-könyvtár MIND átmegy az alak-ellenőrzésen, tehát a szigorítás nulla
+hamis riasztást termel. A komment-eldobás után 2294-ből 1711 sor marad az install-linux.sh-ban és
+1636-ból 1287 a macos-ban; a találatszám mindkét mintára ma 1, komment-szűréssel és nélküle egyaránt.
+
+**Elvetett alternatíva:** shell-oldali név-ellenőrzés az installerbe. Ugyanaz az érv, mint 54fd9c02-nél:
+a shell nem tudja hívni a `sanitizeAgentName`-et, tehát egy shell-ellenőrzés a szabály MÁSODIK
+példánya lenne -- pont az a drift-osztály, amit a b46a4b7e megszüntetett.
+
+**Ki döntött:** Cybersec + Cybered (leletek a 54fd9c02 gate-köréből), backend2 (mérés + megvalósítás).
+**Hivatkozás:** kártya 07433dab; `src/__tests__/reserved-agent-name.test.ts` (23 -> 26 eset, 3
+mutációval igazolva + egy kontroll arról, hogy a RÉGI őr mindkét bypass-alakot átengedte).
+
+## 2026-09-05 -- 43d933b1 -- A projekt-dispatch sorrendnek sosem volt "rule 14" nevű forrása
+
+**Döntés:** A `src/web/routes/project-priority.ts` (4 hely) és a `store/fleet-nudger.sh` (3 hely)
+"CLAUDE.md rule 14" hivatkozásai kikerülnek. A helyükre az kerül, ami IGAZ: üres beállításnál nincs
+projekt-szintű preferencia, és a szokásos kártya-prioritás dönt (6. szabály, urgent > high > normal
+> low, a 6b. két-napos elsőbbségével). A viselkedés NEM változott, csak az a mondat, ami forrást
+állított neki.
+
+**Miért:** a hivatkozás kétszeresen hamis. Egyrészt a 14. szabály SOHA nem mondott semmit a
+dispatch-sorrendről -- a 2026-09-05-i átszámozás előtt a két munka közti kötelező `/clear` volt, ma a
+zajos-parancs hook. Másrészt, és ez a súlyosabb: átnéztem a CLAUDE.md-t ÉS az ütemezett feladatok
+promptjait, és SEHOL nincs olyan szabály, ami "CleanCore-kártyák előbb, mint marveen-infra"
+sorrendet mondana ki. A `folyamatos-munka-orchestrator` tényleges szabálya sima prioritás-sorrend.
+Vagyis a komment nem elavult volt, hanem egy sosem létezett szabályra hivatkozott -- és ezt a
+2d6587fe kártya SAJÁT leírása is átvette ("alap mod (jelenlegi 14. szabaly)"), tehát a kód
+hűségesen másolta a kártyát.
+
+**Az egyik érintett hely NEM komment volt:** a `fleet-nudger.sh` 213. sora a flottának KIKÜLDÖTT
+nudge-szövegben állította, hogy a beállítás "felulirja a rule 14 alap sorrendjet". Vagyis minden
+ügynök egy nem létező szabályról kapott tájékoztatást minden nudge-nál.
+
+**Az új komment SZÁNDÉKOSAN kimondja a "rule 14" nevet** -- azért, hogy a következő olvasó ne
+"állítsa vissza" a hivatkozást. Emiatt egy csupasz "nincs benne a 'rule 14' string" ellenőrzés
+elbukna a saját magyarázatán; a javító szkript ezért a hamis ÁLLÍTÁS alakjaira ellenőriz
+(`rule 14 hardcodes`, `rule 14's default`, ...), nem a tokenre. Ugyanaz a csapda, mint amikor egy
+doksi-őr a saját prózája miatt buktat egy kártyát.
+
+**Mellékes mérés, MikroB-nak jelezve:** a repóban jelenleg **141** hivatkozás nevez meg CLAUDE.md
+szabályt SZÁM szerint (`rule N` / `N. szabály`), 15+ fájlban. A szabályok átszámozhatók -- tegnap
+épp ez történt --, tehát ez egy mérhető drift-felület. Nem ennek a kártyának a hatóköre; MikroB
+dönti el, kell-e rá külön kártya.
+
+**Ki döntött:** backend2 (a lelet a 7debd869 munka közben, mérés + javítás).
+**Hivatkozás:** kártya 43d933b1; `src/web/routes/project-priority.ts`, `store/fleet-nudger.sh`.
+
+## 2026-09-05 -- 1140a745 -- Az upstream alapértelmezett ágát MEGKÉRDEZZÜK, és a tracking-ref UGYANABBÓL jön
+
+**Döntés:** Az `update-checker.ts` nem hardcode-olja többé a `main`-t az upstream repóhoz. Egy új,
+fail-soft `upstreamDefaultBranch()` megkérdezi a GitHub-ot (`GET /repos/<owner>/<repo>` ->
+`default_branch`), és bármilyen hiba esetén a `main`-re esik vissza. Az upstream bejegyzést egy külön
+`upstreamRepoConfig(branch)` építi, ami a `branch`-et ÉS a `trackingRef`-et UGYANABBÓL az egy
+feloldott értékből származtatja. Nem vettük át az upstream `branchOnRemote()`/`fetchDefaultBranch()`
+gépezetét: annak remote-preferencia-heurisztikája olyan problémát old meg (melyik az egy helyes
+repó), ami ennek a forknak nincs -- a `repoConfigs()` két repót ellenőriz explicit módon.
+
+**Miért a szélesebb hatókör (ez a kártyában nem volt benne):** a `trackingRef: 'upstream/main'`
+javítatlanul hagyása egyik csendes vakságot cserélte volna le egy másikra. A `mergeBaseWith()` hiányzó
+refnél ÜRES stringet ad, a `computeStatus` pedig ezt `behind = 0`-ként olvassa, HIBAÜZENET NÉLKÜL --
+vagyis egy átnevezett upstream-alapértelmezés után a dashboard "naprakész"-t mondana egy olyan refre
+hivatkozva, ami már semmit nem követ. Pont az a hibaosztály, ami ellen maga az ellenőrzés van. MikroB
+jóváhagyta a tágítást (msg 23202).
+
+**Az üres string külön eset, és külön ellenőrzés őrzi:** egy `default_branch: ''` válasz a
+`.../commits/` URL-t építené -- az egy MÁSIK végpont, és olyan okból hibázna, ami semmiben nem
+hasonlít az igazi okára. A resolver ezért a nem-string ÉS az üres választ is a fallbackre viszi.
+
+**Tesztelhetőség:** a `fetchImpl` injektálható paraméter, és mind a hét eset saját hamis fetch-et ad.
+A suite SOHA nem ér el a hálózathoz ehhez -- egy teszt, aminek a GitHub elérhetősége kell, az időjárást
+méri, nem a kódot.
+
+**Mérés:** alapvonal 6 teszt az `origin/develop`-on, nálam 13 -- a +7 pontosan az én hét esetem, semmi
+nem tűnt el. Négy mutáció igazolja, hogy egyik állítás sem dekoratív (hardcode-olt trackingRef
+visszaállítása, az üres-string ellenőrzés elvétele, a fail-soft megszüntetése, a repo-végpont
+lecserélése egy ág-specifikusra) -- mind a négy bukik, mindegyik revert md5-tel bájtazonos.
+A `repoConfigs()` aszinkronná tétele egyetlen hívót érint (a már `async` `refreshUpdateStatus`), és a
+frissítés 6 óránként fut, tehát egy extra GitHub-hívás költsége elhanyagolható; cache nem kell.
+
+**A főkönyvet is javítottam:** a `fork-upstream-conflict-guard.test.ts` "THE ONE GENUINE RESIDUE"
+bejegyzése eddig azt mondta, hogy ez "left as a follow-up" -- ez a landolással hamissá vált volna.
+Most kimondja, hogy lezárva, és rögzíti a második felét is (trackingRef), ami az eredeti jegyzetben
+nem szerepelt. Egy főkönyv, ami egy elintézett dolgot még mindig teendőként említ, olyan főkönyv,
+amiben senki nem bízik.
+
+**Utólagos kiegészítés (ugyanaznap, a landolás blokkolta):** az első landolási kísérlet `REFUSED`-öt
+kapott, és nem flake volt. A fork/upstream merge-conflict őr azt jelentette, hogy a
+`src/__tests__/update-checker-branch.test.ts` mostantól ütközik az upstreammel, és senki nem döntött
+róla. Megmértem, hogy tényleg az én változtatásom okozta-e: `merge-tree` a commitommal 50 ütközést
+ad, a szülő commitjával 49-et, és a különbség pontosan ez az egy fájl. Mindkét oldal a 60. sor utáni
+FARKBA fűzött be egy új describe-blokkot, ezért ütköznek. Az upstream blokkja a `remoteIsOwnOrigin`,
+`branchOnRemote` és egy könyvtár-argumentumot fogadó `parseGitHubRemote(root)` köré épül -- ebből a
+forkban EGYIK SEM létezik (a `remoteIsOwnOrigin` és a `branchOnRemote` sehol, a `parseGitHubRemote`
+pedig argumentum nélküli), tehát nem fordulna le. Ez nem ízlésbeli választás, hanem ugyanaz a
+szándékos át-nem-vétel, amit a `src/web/update-checker.ts` bejegyzése már rögzít, csak a teszt
+oldaláról nézve. **Döntés: a fork oldala marad egészben**, mindkét hunkban; az upstream `afterAll`
+importja a saját blokkjához tartozik, azzal együtt esik ki. A szabály KÖTVE van a modul-bejegyzéshez:
+ha a gépezet valaha átkerül, az upstream esetei ugyanabban a változtatásban jönnek vele, külön nem
+támaszthatók fel. Egy teszt-fájl az az egyetlen hely, ahol a "vedd a másik oldalt egészben" ártalmatlannak
+látszik, miközben csendben lefedettséget töröl.
+
+**Ki döntött:** backend2 (lelet a f27c999b B-hullámból, mérés + megvalósítás), MikroB (a szélesebb
+hatókör jóváhagyása).
+**Hivatkozás:** kártya 1140a745; `src/web/update-checker.ts`,
+`src/__tests__/update-checker-branch.test.ts` (6 -> 13 eset), `src/__tests__/fork-upstream-conflict-guard.test.ts`.
+
+## 2026-09-05 10:20 -- gate-sha-repo.test.ts: a hamis pirosat a teszt oldalán zárjuk, a szkript nem változik
+
+**Döntés:** A `src/__tests__/gate-sha-repo.test.ts` négy esete élő HTTP-hívást tett a dashboardra
+(`store/gate-sha-repo.sh`, `curl --max-time 3`). A javítás KIZÁRÓLAG teszt-oldali: egy `file://`
+alapú board-stub (`boardStub()`), amit a szkript már meglévő `DASHBOARD_URL` és
+`DASHBOARD_TOKEN_FILE` kapcsolóin keresztül kap meg. A `gate-sha-repo.sh` egyetlen bájtja sem
+változik, a 3 másodperces büdzsé és a fail-soft ág éles viselkedésként marad.
+
+**Miért:** Telített teljes suite-ban a 3 mp lejárt, a szkript a szándékos fail-soft ágára esett
+(`unlanded`, exit 3), a teszt viszont a card-id választ (exit 4) várta, tehát HELYES kódon lett
+piros. Három előfordulás egy nap alatt, ebből KETTŐ QA gate-futás -- ott a hamis piros helyes munkát
+küld vissza `in_progress`-be, ami a 17. szabály szerint a legdrágább kár. Mérve: a változtatás
+előtti fájl elérhetetlen boardon `AssertionError: unlanded: expected 3 to be 4`, 12,36 mp; utána
+ugyanaz a futás 12/12 zöld, 0,49 mp.
+
+**Miért `file://` és nem stub HTTP-szerver porton:** egy szerver ugyanabból a Node event loopból
+válaszolna, amit a telített worker éheztet -- vagyis pont az a 3 mp-es büdzsé járhatna le újra,
+amit javítunk. A `curl` fájlt olvas socket, port és event loop nélkül, ott nincs mi lejárjon.
+
+**Amit a stub cserébe elveszít, kimondva:** a board válasz-ALAKJÁT (`{"card":{"id","title"}}`)
+bedrótozza, tehát egy alak-változás élesben törne, itt nem. Tudatosan vállalt csere: a szkript
+`d.get("card", d)`-vel mindkét alakot tűri, és egy board-alakváltozás egyszerre sok flotta-szkriptet
+törne, hangosan. Amivé viszont NEM válhat: indok arra, hogy élő hívás visszakerüljön egy
+teljes-suite tesztbe.
+
+**Ki döntött:** MikroB (kártya nyitása, jóváhagyás -- az `edd4c3bf` élő eredményét érinti, ezért
+külön kártyán), backend (mérés + megvalósítás).
+**Hivatkozás:** kártya 90eaa6e5 (a 9bb2e651 leletéből); `src/__tests__/gate-sha-repo.test.ts`
+(10 -> 12 eset).
+
+## 2026-09-05 -- e00e7ff3 -- Upstreammel közös teszt-fájl bővítése tartozik egy ACKNOWLEDGED_CONFLICTS bejegyzéssel
+
+**Döntés:** a `project-workflow` skill kapott egy új szekciót arról, hogy ha valaki egy upstreammel
+KÖZÖS marveen teszt-fájl VÉGÉRE fűz új `describe` blokkot, az ütközést gyárt, mert az upstream
+ugyanoda fűz. A tartozás ezért ugyanabban a commitban esedékes: `ACKNOWLEDGED_CONFLICTS` bejegyzés
+plusz `ACKNOWLEDGED_UPSTREAM_BLOBS` pin.
+
+**Miért skill és nem CLAUDE.md:** a CLAUDE.md már kimondja a landolási folyamatot; ez egy konkrét,
+visszatérő buktató a folyamaton BELÜL, és a `project-workflow` skill az a hely, ahol a többi hasonló
+(teszt-worktree, `[NN%]` clobber) is él. A szekció három dolgot rögzít, amit a 1140a745 mérése adott:
+(a) a tulajdonlás egy paranccsal eldől (`merge-tree` a saját commiton és a szülőn, a két szám
+különbsége a saját fájl -- mérve 50 kontra 49); (b) a feloldást SZIMBÓLUMBÓL kell eldönteni, nem
+ízlésből (ha az upstream blokkja nem létező függvényeket hív, az oldala le sem fordulna, ez mért tény);
+(c) a teszt-fájl bejegyzését oda kell kötni a tesztelt modul bejegyzéséhez, mert teszt-fájlnál a
+"vedd a másik oldalt egészben" az egyetlen olyan hely, ahol ez a lépés nem hangos, viszont csendben
+lefedettséget töröl.
+
+**Hol él a szöveg:** a verziókövetett `seed-skills/project-workflow/SKILL.md`-ben ÉS az élő
+`~/.claude/skills/project-workflow/SKILL.md`-ben, szó szerint azonosan. Csak a seedbe írni azt
+jelentené, hogy a szabály a következő `update.sh`-ig nem létezik a futó flottának; csak az élőbe írni
+azt, hogy egy friss telepítésre soha nem kerül ki, és nincs verziókövetve. Azonos szöveggel a jövőbeli
+`seed_copy_try_merge` erre a régióra no-op.
+
+**Mellékes lelet, NEM javítva:** a seed `project-workflow` SKILL.md még a RÉGI zárási sorrendet
+mondja (`waiting` + REVIEW), az élő példány viszont már az e98a34d3 szerinti helyeset (ELŐSZÖR REVIEW,
+utána `waiting`). A 75a573af commit csak a CLAUDE.md-t javította, a seed-skillt nem, tehát egy friss
+telepítés a javítás ELŐTTI sorrendet kapná. Ez pontosan ugyanaz a drift-osztály, amiről ez a kártya
+szól, egy szinttel feljebb. Nem nyúltam hozzá: egy másik kártya landolt eredménye, MikroB döntése,
+hogy nyit-e rá kártyát.
+
+**Ki döntött:** MikroB (kártya nyitása backend2 leletéből), backend2 (a szekció tartalma és a
+seed+élő kettős írás).
+**Hivatkozás:** kártya e00e7ff3 (lelet: 1140a745); `seed-skills/project-workflow/SKILL.md`.
+
+## 2026-09-05 10:35 -- A suite-zár guard-tesztje a FELOLDOTT zár-útvonalat állítja, nem a forrásszöveget
+
+**Döntés:** A `fleet-test.sh` kap egy `--lock-path` kapcsolót, ami kiírja a ténylegesen használt zár
+fájlt és kilép, MIELŐTT bármit zárolna. A `fleet-test-serialises-runs.test.ts` elsődleges állítása
+mostantól ez a visszakapott ÉRTÉK, nem a szkript forrásszövegének mintaillesztése. A szöveg-olvasás
+megmarad másodlagos rétegnek, két javítással: a teljes-soros kommentek olvasás előtt lehullanak, és
+a kapcsos zárójel opcionális mindkét mintában.
+
+**Miért:** Cybersec mérése (a 2f0c7d24 következménye): a szöveg-alapú `problems()` (a) a
+kapcsos zárójel nélküli `LOCK_FILE="$TEST_TREE.lock"` alakot nem nevezte meg, csak a homályos
+"nincs gépszintű horgony" üzenetet adta, és (b) egy KOMMENTBE tett kanonikus sorral teljesen
+elnémítható volt -- per-fa zárral együtt `problems() === []`. Mindkettőt reprodukáltam a landolt
+szkripten, mielőtt hozzányúltam volna: (a) egyetlen homályos lelet, (b) NULLA lelet.
+
+Ez a HARMADIK eset egy napon belül ugyanabból az osztályból (a14812e8, 06d36307-F1, 43ecdbe6),
+ezért a javítás nem a mintát csiszolja, hanem kilép a szöveg-illesztésből: egy visszakapott értéket
+nem lehet a helyes szavak leírásával kielégíteni.
+
+**Amit szándékosan NEM javítok:** a kód UTÁN álló, sor végi kommentet nem vágom le. Helyesen csak
+úgy lehetne, ha tudnám, mikor van a `#` sztringen belül (`${VAR#prefix}` nem komment), és egy
+félig-jó vágó valódi sorokat rontana el. A maradék rés azért vállalható, mert az elsődleges állítás
+már nem szöveges.
+
+**Egy mérési tanulság, ami a tesztbe is bekerült:** a `--lock-path` ALAPÉRTELMEZETT fán mérve nem
+elég bizonyíték. Az alapértelmezett tesztfa `/home/neon/marveen-test`, tehát a per-fa zár
+(`$TEST_TREE.lock`) és a gépszintű (`${ROOT}-test.lock`) UGYANAZT a stringet adja. A megkerülést
+csak a `FLEET_TEST_TREE`-vel felülírt eset mutatja meg -- és ehhez kell egy kontroll is, ami
+igazolja, hogy a szkript egyáltalán olvassa a változót (a `--path` követi), különben egy a
+környezetet teljesen figyelmen kívül hagyó szkript is átmenne.
+
+**Ki döntött:** Cybersec (mérés + a javítási irány), MikroB (kártya), backend (megvalósítás).
+**Hivatkozás:** kártya 43ecdbe6; `store/fleet-test.sh`,
+`src/__tests__/fleet-test-serialises-runs.test.ts` (4 -> 8 eset).

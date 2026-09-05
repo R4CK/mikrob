@@ -18,7 +18,7 @@
 // decides. This operation needs no judgment -- it is an idempotent function call with a fixed
 // argument list -- and prompt-mediated sweeps can be skipped, misread, or starved when the runner
 // is busy. A timer cannot. CLAUDE.md's own rule is structural protection over discipline, and this
-// follows the startSelfAdvanceClearWatcher precedent exactly.
+// follows the startInboxNudgeWatcher precedent exactly.
 //
 // WHY IT IS CHEAP ENOUGH TO RUN ON A TIMER. Every writer reads, rebuilds its block, compares, and
 // returns WITHOUT writing when the result is identical (`if (updated === existing) return`). In the

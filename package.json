@@ -1,6 +1,6 @@
 {
   "name": "marveen",
-  "version": "1.36.0+mikrob.6",
+  "version": "1.36.0+mikrob.24",
   "license": "MIT",
   "type": "module",
   "scripts": {
@@ -48,13 +48,15 @@
   },
   "overrides": {
     "hono": ">=4.12.27 <5",
-    "fast-uri": ">=3.1.4 <4",
+    "fast-uri": ">=3.1.7 <4",
+    "qs": ">=6.16.0 <7",
     "body-parser": ">=2.2.3 <3"
   },
   "pnpm": {
     "overrides": {
       "hono": ">=4.12.27 <5",
-      "fast-uri": ">=3.1.4 <4",
+      "fast-uri": ">=3.1.7 <4",
+      "qs": ">=6.16.0 <7",
       "body-parser": ">=2.2.3 <3"
     }
   }

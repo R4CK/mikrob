@@ -14,7 +14,7 @@
 // split across files is one that gets half-deleted. The 15-line bundle harness is duplicated from
 // agent-bundle.test.ts for the same reason.
 import { describe, it, expect, beforeEach, afterEach } from 'vitest'
-import { mkdtempSync, mkdirSync, writeFileSync, readFileSync, existsSync, rmSync } from 'node:fs'
+import { mkdtempSync, mkdirSync, writeFileSync, readFileSync, readdirSync, statSync, existsSync, rmSync } from 'node:fs'
 import { execFileSync } from 'node:child_process'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
@@ -201,4 +201,139 @@ describe('why minting the id matters: in-process writers use the agent NAME as `
       expect(src).toMatch(/createAgentMessage\(\s*name\s*,/)
     },
   )
+})
+
+// Door 5: the SHIPPED SEED FLEET (card 54fd9c02, Cybersec's finding attached to b46a4b7e's GO).
+//
+// The doors above all sit in the TypeScript layer. install-linux.sh:1534-1543 and the identical
+// block in install-macos.sh:1055 do not go through any of them: they `cp -r` every
+// seed-fleet-agents/*/ directory into agents/ with nothing but an already-exists skip. A commit
+// that added a seed-fleet-agents/system-directive/ directory would create agents/system-directive
+// on the next fresh install, past all four TS guards, and listAllAgentNames() hands that directory
+// name back VERBATIM -- readdirSync with no sanitization -- which is precisely the value
+// context-guard-runner.ts then passes as `from` to createAgentMessage. Minting, not claiming.
+//
+// The guard is therefore on the CORPUS, not on the shell. That is Cybersec's point and it is the
+// stronger placement for two reasons: shell cannot call isReservedSenderId, and a corpus check
+// covers both installers plus any third one that ever ships, without naming any of them. It also
+// moves the check from install time (on a stranger's machine, unobserved) to commit time.
+describe('door 5: the seed fleet shipped in the repo', () => {
+  const SEED_FLEET = join(SRC, '..', 'seed-fleet-agents')
+
+  function seedDirNames(): string[] {
+    return readdirSync(SEED_FLEET).filter((f) => {
+      try { return statSync(join(SEED_FLEET, f)).isDirectory() } catch { return false }
+    })
+  }
+
+  // Both forms, and the RAW one is the load-bearing half -- measured, not assumed:
+  // listAllAgentNames() in agent-config.ts returns readdirSync entries as they are, so the
+  // directory name IS the agent name. isReservedSenderId lower-cases, so a `System-Directive`
+  // directory is caught here without a sanitize step. The sanitized form is the cheap second
+  // half: it costs one call and catches the spellings this file already documents as reaching
+  // the reserved id only after normalization (`System--Directive`, `-system-directive-`),
+  // should anything downstream ever start normalizing a directory name into an id.
+  function reservedAmong(names: readonly string[]): string[] {
+    return names.filter((n) => isReservedSenderId(n) || isReservedSenderId(sanitizeAgentName(n)))
+  }
+
+  it('the corpus is real -- an empty or moved directory must not read as "all clean"', () => {
+    // Without this, deleting seed-fleet-agents/ or renaming it turns the guard below into a
+    // permanent pass. That failure mode is invisible: zero offenders looks the same whether the
+    // corpus is clean or absent.
+    expect(existsSync(SEED_FLEET), `${SEED_FLEET} is missing -- the installers seed from it`).toBe(true)
+    expect(seedDirNames().length).toBeGreaterThan(0)
+  })
+
+  it('CONTROL: the check fires on the case it exists for', () => {
+    // The founding case, run against the check itself before trusting its silence.
+    expect(reservedAmong(['backend', SYSTEM_DIRECTIVE_SENDER, 'qa'])).toEqual([SYSTEM_DIRECTIVE_SENDER])
+    expect(reservedAmong([LEGACY_SYSTEM_SENDER])).toEqual([LEGACY_SYSTEM_SENDER])
+    expect(reservedAmong(['System-Directive'])).toEqual(['System-Directive'])
+    expect(reservedAmong(['System--Directive'])).toEqual(['System--Directive'])
+    // ...and it does not flag the ordinary fleet, or the near-misses the predicate must let by.
+    expect(reservedAmong(['backend2', 'fron-ted', 'systematic', 'subsystem', 'system-directives'])).toEqual([])
+  })
+
+  it('no shipped seed directory is a reserved sender id', () => {
+    expect(
+      reservedAmong(seedDirNames()),
+      'These ship in seed-fleet-agents/ and the installers cp -r them into agents/ by name, with ' +
+        'no validation -- creating an agent inside the in-process sender namespace on every fresh ' +
+        'install. Rename the directory. Do NOT relax the reserved set to accommodate it.',
+    ).toEqual([])
+  })
+
+  // Card 07433dab, from the gate round on 54fd9c02. The first version of the check below pinned
+  // the ASSIGNMENT (`SEED_FLEET_DIR=...`) and stopped there, which says nothing about where the
+  // copy loop actually READS from. Cybersec named two shapes that walk straight past it: the
+  // assignment stays while the loop's source is repointed, and a SECOND copy loop is added
+  // alongside the original. Only the variable-rewrite mutation failed. So the operation is pinned
+  // now, not the name of the thing it uses -- the same distinction rule 12 draws for symbol
+  // presence, one layer up: an identifier being mentioned is not the identifier being used.
+  //
+  // Comment lines are dropped before matching, for that same reason. A full-line comment quoting
+  // the loop verbatim would otherwise satisfy every assertion here while the real loop was gone --
+  // measured on this repo: dropping them leaves 1711 of 2294 lines in install-linux.sh and 1287 of
+  // 1636 in install-macos.sh, and the match count is unchanged at 1 either way today.
+  const INSTALLERS = ['install-linux.sh', 'install-macos.sh'] as const
+
+  function installerCode(script: string): string {
+    const src = readFileSync(join(SRC, '..', script), 'utf-8')
+    return src
+      .split('\n')
+      .filter((l) => !l.trimStart().startsWith('#'))
+      .join('\n')
+  }
+
+  it('both installers still seed from THIS directory, and the copy loop READS that variable', () => {
+    // The corpus check is only as good as the claim that it is the corpus the installers copy.
+    // If an installer switches to another seed path, this guard would keep passing over a
+    // directory nobody installs any more, which is the silent version of not existing.
+    for (const script of INSTALLERS) {
+      const code = installerCode(script)
+      expect(code.length, `${script} is empty after dropping comments`).toBeGreaterThan(0)
+      expect(code, script).toMatch(/SEED_FLEET_DIR=.*\/seed-fleet-agents/)
+      // The operation, not the assignment: the loop that produces the directories being copied
+      // must iterate THIS variable. Repointing it elsewhere leaves the line above untouched.
+      expect(code, `${script}: the seed copy loop must iterate $SEED_FLEET_DIR itself`)
+        .toMatch(/for\s+\w+\s+in\s+"\$SEED_FLEET_DIR"\/\*\/\s*;\s*do/)
+    }
+  })
+
+  it('exactly ONE place per installer copies into the fleet directory', () => {
+    // The second bypass Cybersec named: leave the original loop exactly as it is and add another
+    // one, from a different corpus, next to it. Every assertion above still passes -- the guarded
+    // loop is untouched -- while unguarded directories land in agents/ all the same. Counting the
+    // copy sites is what closes that, and it is why this asserts a COUNT and not a presence.
+    const COPIES_INTO_FLEET = /^\s*(?:cp|rsync|mv)\b[^\n]*(?:\$FLEET_DIR|\/agents\b)/gm
+    for (const script of INSTALLERS) {
+      const hits = installerCode(script).match(COPIES_INTO_FLEET) ?? []
+      expect(hits, `${script}: copy sites into the fleet directory`).toHaveLength(1)
+    }
+  })
+
+  it('a seed directory name must survive sanitizeAgentName UNCHANGED, not merely miss the reserved set', () => {
+    // Cybered's finding on 54fd9c02: everything above measures the name against the reserved SET
+    // and never against its SHAPE. `ZZ_Cybered Probe` is not reserved, so the checks above stay
+    // green -- and it still becomes an agent id, because this is the ONE door that puts a raw repo
+    // string under agents/ (every other path builds the name through sanitizeAgentName). It then
+    // rides into the context-guard-runner message body, where a git tree entry name carrying a
+    // quote or a newline is not a cosmetic problem.
+    const misshapen = seedDirNames().filter((n) => sanitizeAgentName(n) !== n)
+    expect(
+      misshapen,
+      'These ship in seed-fleet-agents/ and become agent ids verbatim. Rename the directory to its ' +
+        'sanitized form. Do NOT widen sanitizeAgentName to accommodate it.',
+    ).toEqual([])
+  })
+
+  it('CONTROL: the shape check fires on the case it exists for', () => {
+    // Run against the founding case before trusting its silence -- the same rule the reserved-set
+    // control above follows. All 14 directories shipping today pass, which is what makes the
+    // assertion above safe to add; these are what it would have caught.
+    for (const bad of ['ZZ_Cybered Probe', 'System-Directive', 'sys"tem', 'a b', 'UPPER'])
+      expect(sanitizeAgentName(bad), bad).not.toBe(bad)
+    for (const good of ['backend2', 'fron-ted', 'ok-name']) expect(sanitizeAgentName(good)).toBe(good)
+  })
 })

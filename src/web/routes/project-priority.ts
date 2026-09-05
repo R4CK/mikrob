@@ -1,10 +1,20 @@
 // Project-level dispatch priority (card 2d6587fe, Peti screenshot request 2026-08-08 09:46).
 //
-// CLAUDE.md rule 14 hardcodes "project cards (CleanCore) before non-project (marveen-infra)" --
-// this generalizes that into a real, settable dashboard preference: when EMPTY, rule 14's default
-// order applies unchanged; when set, the named project(s) go first at every dispatch decision
-// (fleet-nudger self-advance, folyamatos-munka-orchestrator, MikroB's own gate-reconciler), in the
-// order given, until cleared back to empty.
+// A settable dashboard preference for project-level dispatch order: when EMPTY there is no
+// project-level preference at all and dispatch runs on ordinary card priority (CLAUDE.md rule 6,
+// urgent > high > normal > low, with rule 6b putting any `planned` card older than two days first);
+// when set, the named project(s) go first at every dispatch decision (fleet-nudger self-advance,
+// folyamatos-munka-orchestrator, MikroB's own gate-reconciler), in the order given, until cleared
+// back to empty.
+//
+// The comments here used to say this generalizes "CLAUDE.md rule 14", which -- they claimed --
+// hardcodes "project cards (CleanCore) before non-project (marveen-infra)". Card 43d933b1 checked
+// that attribution and it is false twice over: rule 14 has never said anything about dispatch order
+// (before the 2026-09-05 renumbering it was the mandatory /clear between two cards; it is now the
+// noisy-command hook), and NO rule anywhere -- CLAUDE.md or the scheduled-task prompts -- states a
+// CleanCore-first default. The default this code implements is the one described above, which is
+// simply "no project preference", and the empty case has always behaved that way. Nothing about
+// the behaviour changed; only the sentence that claimed a source for it.
 import { existsSync, readFileSync, writeFileSync } from 'node:fs'
 import { join } from 'node:path'
 import { PROJECT_ROOT } from '../../config.js'
@@ -17,7 +27,7 @@ import type { RouteContext } from './types.js'
 const CONFIG_PATH = join(PROJECT_ROOT, 'store', 'project-dispatch-priority.json')
 
 interface ProjectPriorityConfig {
-  // Order = priority order. Empty = default mode (rule 14's hardcoded CleanCore > MikroB).
+  // Order = priority order. Empty = no project preference; ordinary card priority decides.
   priority: string[]
   updated_at: number
 }
@@ -31,8 +41,8 @@ function loadConfig(): ProjectPriorityConfig {
       updated_at: typeof parsed.updated_at === 'number' ? parsed.updated_at : 0,
     }
   } catch {
-    // A corrupt file must not crash every dispatch-decision reader -- empty/default is the safe
-    // fallback (rule 14's own hardcoded order), same direction as "no file yet".
+    // A corrupt file must not crash every dispatch-decision reader -- empty is the safe fallback
+    // (no project preference, ordinary card priority), same direction as "no file yet".
     return { priority: [], updated_at: 0 }
   }
 }
