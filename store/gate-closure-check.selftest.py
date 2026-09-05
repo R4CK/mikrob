@@ -389,6 +389,63 @@ print("%s %-9s <- %-9s %s" % ("OK  " if ok else "FAIL", "exit 0", "exit %d" % p.
 if not ok:
     failures.append(("exit code", "0", str(p.returncode)))
 
+# --- AUTHOR ATTRIBUTION (card 44849954, Cybered's finding) -------------------------------------
+# The tool authenticated a verdict by its TEXT and never by its AUTHOR. Comment authorship on the
+# kanban API comes from the request body under one shared token, so the shape check was the only
+# thing between a maker and their own sign-off.
+SHA_A = "a" * 40
+SHA_B = "b" * 40
+
+case("THE DEFECT: a maker's own 'QA PASS' with no verdict from QA is not a sign-off",
+     [c("backend2", "REVIEW: kesz\nGate-SHA: " + SHA_A),
+      c("backend2", V % SHA_A),
+      c("cybersec", S % SHA_A)],
+     "UNVERIFIED-AUTHOR", gates="qa,cybersec")
+
+case("FALLBACK: a relayed PASS defers to the gate's OWN earlier verdict, and recovers its sha",
+     [c("qa", V % SHA_A),
+      c("cybersec", S % SHA_A),
+      c("mikrob", "QA PASS -- osszefoglalo, a gate mar zoldre tette")],   # no Gate-SHA of its own
+     "AGREE", gates="qa,cybersec", expect_sha=SHA_A)
+
+# THE ASYMMETRY, and the reason this is not a plain "prefer the gate's own comment". Without it,
+# preferring QA's older PASS would close a card over a stated refusal -- worse than the bug fixed.
+case("ASYMMETRY: a relayed FAIL is NOT overridden by the gate's own earlier PASS",
+     [c("qa", V % SHA_A),
+      c("cybersec", S % SHA_A),
+      c("mikrob", "QA FAIL -- ujranyitva, a gate visszadobta")],
+     "FAILED", gates="qa,cybersec")
+
+case("an unattributed FAIL still reads as FAILED, not UNVERIFIED-AUTHOR",
+     [c("backend2", "QA FAIL\nGate-SHA: " + SHA_A), c("cybersec", S % SHA_A)],
+     "FAILED", gates="qa,cybersec")
+
+# The author fold MIRRORS the verdict-word fold (the note on GATES). Applying it to one side only
+# is its own bug: measured, an unfolded author check calls 245 legitimate QA2 verdicts foreign.
+case("SIBLING: qa2 speaks for the QA gate, exactly as the verdict word QA2 does",
+     [c("qa2", V % SHA_A), c("cybersec", S % SHA_A)],
+     "AGREE", gates="qa,cybersec", expect_sha=SHA_A)
+
+case("FUTURE SIBLING: cybersec2 needs no edit here -- trailing digits are stripped by rule",
+     [c("qa", V % SHA_A), c("cybersec2", S % SHA_A)],
+     "AGREE", gates="qa,cybersec", expect_sha=SHA_A)
+
+case("ALIAS: the subagent_type name qa-engineer is the same actor as qa",
+     [c("qa-engineer", V % SHA_A), c("cybersec", S % SHA_A)],
+     "AGREE", gates="qa,cybersec", expect_sha=SHA_A)
+
+case("CONTROL: an ordinary pair of gate-authored verdicts is untouched",
+     [c("qa", V % SHA_A), c("cybersec", S % SHA_A)],
+     "AGREE", gates="qa,cybersec", expect_sha=SHA_A)
+
+case("CONTROL: attribution does not mask a real sha DISAGREEMENT between two gates",
+     [c("qa", V % SHA_A), c("cybersec", S % SHA_B)],
+     "DISAGREE", gates="qa,cybersec")
+
+case("CONTROL: a gate that never posted at all is MISSING, not UNVERIFIED-AUTHOR",
+     [c("qa", V % SHA_A)],
+     "MISSING", gates="qa,cybersec")
+
 print()
 print("selftest: %d case(s), %s" % (n, "PASS" if not failures else "FAIL"))
 for f in failures:
