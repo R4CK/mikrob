@@ -8103,3 +8103,22 @@ hogy „a másik lefedi", egy megnevezett konkrét eseten téved.
 **Amit ez NEM old meg, kimondva:** a dátumozott minta a kód szerint már nem a létrát tartja, hanem a
 folytatás-tengelyt; a régi indoklása hamissá vált, ezért át lett írva, nem ott hagyva. A tördelés-
 duplikáció (bc0af927) változatlanul nyitva.
+
+## 2026-09-05 -- A strukturális határ ÁRA: azonos új bejegyzés két ágon mostantól kézi feloldás (kártya b7e57877, Cybered 20572)
+
+**Kimondva, mert viselkedésváltozás, nem mellékhatás.** A strukturális bejegyzés-határ egyenes
+következménye, hogy egy eset, ami korábban helyesen feloldódott, MOSTANTÓL elutasítás: ha mindkét
+ág hozzáfűzi UGYANAZT az új bejegyzést (X), majd mindegyik a sajátját, az X megosztott új ÉRDEMI
+tartalom, tehát a függvény elutasít. Korábban `X egyszer, utána A és B` lett belőle.
+
+**Nem hipotetikus:** pontosan ez történt ezen a kártyán ma, amikor az egyik gate már lelandolta a
+DECISIONS-bejegyzést, és ezen az ágon még megvolt a saját példány -- akkor kézzel oldottuk fel.
+Mostantól ilyenkor a landoló áll meg. Az irány helyes: a gép nem tudja eldönteni, hogy duplikátum-e
+vagy két független döntés ugyanarról. Saját teszt-eset rögzíti, hogy a következő olvasó ne
+„javítsa vissza".
+
+**A kivétel-lista SOR-PONTOS, és a közeli alakjai fail-closed.** Megosztott új ÜRES és ELVÁLASZTÓ
+sor az egyetlen, ami átmegy a strukturális ellenőrzésen, ezért a lyuk szélessége mérve van: csak az
+egzakt `---` és `***` unionál; a záró szóközös `--- `, a `- - -`, a `* * *` és a `----` mind
+elutasítás. Ezt is teszteset rögzíti, mert egy itteni tágítás az EGYETLEN kivételt tágítaná az
+egész ellenőrzésben.

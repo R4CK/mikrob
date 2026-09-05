@@ -720,6 +720,64 @@ folytatás JOBB
 "
   t_refused "both sides continuing the SAME existing entry is refused (line-pattern axis)"
 
+  # THE PRICE OF THE STRUCTURAL RULE, and it is a case that RESOLVED before it (Cybered, comment
+  # 20572, who asked for it to be said out loud rather than discovered). Both sides append the SAME
+  # new entry X and then each their own: X is shared NEW substantive content, so the union is now
+  # refused where it used to produce "X once, then A, then B".
+  #
+  # NOT HYPOTHETICAL -- it happened on this very card today, when a gate had already landed the
+  # DECISIONS entry and this branch still carried its own copy; that was resolved by hand. From here
+  # the landing stops instead, and that is the right direction (manual resolution, not a bad merge):
+  # a machine cannot tell a duplicate from two independent decisions that happen to say the same
+  # thing. But it is a behaviour change, and a behaviour change nobody tests is one the next reader
+  # will "fix" back -- the same reason the undated-header price has a case of its own.
+  #
+  # DISTINCT from `both-continue-existing-entry` above, which Cybered pointed out does NOT cover
+  # this: that one is two continuations of an EXISTING entry, this one is the same NEW entry twice.
+  setup_conflict same-new-entry-both-sides \
+    "## 2026-09-01 -- entry A
+body of A
+" \
+    "## 2026-09-01 -- entry A
+body of A
+## 2026-09-05 -- Közös X
+X törzs
+## 2026-09-06 -- entry B (left)
+" \
+    "## 2026-09-01 -- entry A
+body of A
+## 2026-09-05 -- Közös X
+X törzs
+## 2026-09-07 -- entry C (right)
+"
+  t_refused "the SAME new entry on both sides is now refused -- the price of the structural rule"
+
+  # THE EXCEPTION LIST IS LINE-EXACT, AND ITS NEAR MISSES MUST FAIL CLOSED (Cybered named these as
+  # their next measurement, comment 20572). Shared new blank and separator lines are the ONE thing
+  # allowed through the structural check, so the width of that hole is worth pinning: anything that
+  # merely LOOKS like a rule -- a trailing space, `- - -`, `* * *`, four dashes -- is shared new
+  # substantive content and is refused. Measured: only the exact `---` and `***` forms union.
+  # A widening here would be a widening of the only exception in the whole check.
+  setup_conflict separator-near-miss \
+    "## 2026-09-01 -- entry A
+body of A
+" \
+    "## 2026-09-01 -- entry A
+body of A
+
+--- 
+
+## 2026-09-05 -- entry B (left)
+" \
+    "## 2026-09-01 -- entry A
+body of A
+
+--- 
+
+## 2026-09-06 -- entry C (right)
+"
+  t_refused "a separator with a trailing space is not on the exception list -- refused"
+
   # THE PRICE OF THE DATED FORM, PINNED RATHER THAN DESCRIBED. A genuine append whose header is
   # undated is refused and falls to the caller's manual path. Measured before accepting it: every
   # header in marveen's DECISIONS.md (208 as of 2026-09-05) and CleanCore's (154) is dated, so this
