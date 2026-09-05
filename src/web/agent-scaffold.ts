@@ -1988,6 +1988,12 @@ function buildSkillsPathTrapBody(): string {
     'A saját, csak neked szóló vagy kipróbálatlan külső skill a munkakönyvtárad',
     '`.claude/skills/` mappájába megy. A globálisba írás tudatos, flotta-szintű',
     'döntés legyen, ne alapértelmezés.',
+    '',
+    'A SYMLINK NEM AZ EGYETLEN AJTÓ, és a legtöbb ügynöknél nem is az a nyitva',
+    'álló. A globális `~/.claude/skills` KÖZVETLENÜL is írható, abszolút úttal,',
+    'symlink nélkül. A flotta-ügynököknél a `.claude-config/skills` út tipikusan',
+    'nem is létezik, tehát rád nézve a közvetlen írás a valódi óvintézkedés',
+    'tárgya. Bármelyik úton írsz oda, a TELJES flotta megkapja.',
   ].join('\n')
 }
 
