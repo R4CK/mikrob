@@ -8036,3 +8036,31 @@ feloldani hivatott.
 
 **Ki döntött:** backend2 (a normalizálás iránya és a 3. pont jelentés-kontra-javítás határa).
 **Hivatkozás:** kártya 67a5ee01; `store/gate-closure-check.py`, `store/gate-closure-check.selftest.py`, `store/gate-decl-check.py`, `store/gate-decl-check.selftest.py`.
+
+## 2026-09-05 -- 1d851280: a kártya premisszája hibás volt, és a hiba iránya rosszabb, mint amit állított
+
+**Döntés:** a `git show --name-only` NEM üres listát ad egy merge-commiton, hanem RÉSZLEGESET, és ez rosszabb.
+
+**A mérés (git 2.53.0, a 8c960106 landoló merge-ön, ami 12 fájlt hoz):**
+
+    git show --name-only <merge>          ->   1 fájl     RÉSZLEGES
+    git show --stat <merge>               ->  12 fájl     helyes
+    git show <merge> -- <path>            ->  üres        VACUOUS
+    git show --stat <merge> -- <path>     ->  üres        VACUOUS
+    git diff <merge>^1 <merge>            ->  12 fájl     helyes
+    git diff <merge>^1 <merge> -- <path>  ->  a diff      helyes
+
+**Miért fontos a különbség.** A kártya azt írta, hogy a `--name-only` minden fájlra üres listát ad. Nem: azokat a fájlokat listázza, amelyek MINDEN szülőtől eltérnek, vagyis a konfliktus-feloldottakat. Egy üres válasz elrontottnak látszik és második pillantásra hív; egy egyfájlos válasz az IGAZSÁGNAK látszik. Ma kétszer dőltem be neki a saját landolásaimon: a `git show --name-only` pontosan a `DECISIONS.md`-t írta ki, ami hihető és teljesnek látszó, mégis hiányos.
+
+**Két további, nem várt tény.** A `--stat` és a `--name-only` UGYANAZON a merge-ön eltérő választ ad; és egy pathspec hozzáadása a `--stat`-ot helyesből vacuous-szá billenti. Nem konvenció tehát az, hogy melyik kapcsoló működik éppen -- a `git diff <sha>^1 <sha>` az, és nem-merge commiton azonos a `git show`-val.
+
+**Amit szállítok:** `store/merge-vacuous-git-check.py` (+ auto-felfedezett selftest, 9 eset) megkeresi ezeket az alakokat. A CONTROL-esetek külön pinnelik, hogy a biztonságos alakot és a pathspec nélküli `--stat`-ot NEM jelenti, és hogy egy olyan sor sem lelet, amelyik a javítást DOKUMENTÁLJA (mindkét alakot idézi) -- különben az eszköz a saját javítását büntetné, és senki nem venné be.
+
+**Az eszköz azonnal talált egyet, amit én kézzel kihagytam:** a `git show <sha> --name-only | grep test` alakot, ahol a `<sha>` a parancs és a kapcsoló KÖZÖTT áll. A kézi felsorolásom hiányos volt, a detektoré nem -- pontosan ezért a detektor a szállítmány, nem a felsorolás.
+
+**Javítva (4 fájl, seed + élő párban):** a qa és qa2 `qa-test-strategy/SKILL.md` két gate-utasítása, ahol a QA a REVIEW tesztszámát veti össze a commit tényleges tesztfájljaival.
+
+**NEM javítva, jelentve (21 találat, MikroB döntése).** A `references/` dokumentumokban: `be-patterns.md` 4, `fe-patterns.md` 1, `verdict-and-board.md` 1, `atomic-fact.md` 1 -- és `SKILL-FULL-BACKUP.md` 14. Az utóbbi egy BACKUP fájl, oda javítást vinni szerintem téves. Ez a 7+14 találat 7 fa-másolatban él (globális, seed-skills, qa/qa2/teszter seed és élő), vagyis a 184 nyers előfordulás valójában ~25 egyedi sor. Egy NORMAL kártya alatt 184 sort átírni más ügynökök élő skilljeiben aránytalan; a detektor viszont mostantól bármikor megmutatja őket egy paranccsal.
+
+**Ki döntött:** backend2 (a premissza korrekciója és a javított/jelentett határ).
+**Hivatkozás:** kártya 1d851280; `store/merge-vacuous-git-check.py`, `seed-fleet-agents/{qa,qa2}/qa-test-strategy/SKILL.md`.
