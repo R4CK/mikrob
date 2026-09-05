@@ -6644,3 +6644,38 @@ hibaüzenet megmondja a teendőt (átnevezés), kifejezetten megtiltva a fenntar
 
 **Ki döntött:** backend2, Cybersec javaslata alapján (b46a4b7e gate-melléklete, komment 22244).
 **Hivatkozás:** kártya 54fd9c02.
+
+## 2026-09-05 -- 74851e8b -- A fast-uri javítás a 3.x-en BELÜL van, nem major ugrás, és a valódi hiba az override KÜSZÖBE volt
+
+**Döntés:** A `fast-uri` HIGH és a `qs` MODERATE tanácsot a 3.x/6.x soron BELÜL zárjuk:
+`fast-uri` override `>=3.1.4 <4` -> `>=3.1.7 <4`, és új `qs` override `>=6.16.0 <7`. NEM emeltük a
+`fast-uri`-t 4.x-re, ahogy a kártya javasolta.
+
+**Miért:** Az `ajv@8.20.0` `"fast-uri": "^3.0.1"`-et deklarál. A sebezhető tartomány `3.0.0 - 3.1.5`,
+és létezik `3.1.6`/`3.1.7` -- vagyis a javítás elérhető az ajv által deklarált tartományon belül,
+semver-sértés és major ugrás nélkül egy olyan függőség alatt, amit nem mi kontrollálunk. A 4.x-re
+erőltetés ugyanazt a biztonsági eredményt adta volna, plusz egy nem deklarált major kockázatát.
+Ugyanez a `qs`-nél: a `body-parser@^6.15.2` és az `express@^6.14.0` egyaránt elfogadja a 6.16.0-t.
+
+**A TANULSÁG, ami túlmutat ezen a két csomagon:** a package.json MÁR tartalmazott egy
+`"fast-uri": ">=3.1.4 <4"` override-ot, és a fa mégis a sebezhető 3.1.5-öt telepítette. Egy override,
+aminek a KÜSZÖBE a tanács tartományán BELÜL van, kielégíthető sebezhető verzióval -- miközben a
+package.json-t átfutó olvasónak lezárt ügynek látszik. A két szám (küszöb kontra tanács-plafon)
+viszonyát semmi nem ellenőrizte. Ezt zárja be a `fast-uri-qs-advisories.test.ts`, nem csak a mai két
+nevet.
+
+**Mellékesen talált csapda:** a package.json KÉT override-térképet hordoz (npm `overrides` és
+`pnpm.overrides`), tükrözve. Az egyik frissítése a másik nélkül néma: az dönti el a javítás
+érvényesülését, hogy ki melyik telepítőt futtatja. Az őr ezt is állítja.
+
+**A CSOMAG NEM SZÉTVÁGHATÓ, mérve:** a package.json override a lockfile nélkül eltöri az `npm ci`-t
+(`Invalid: lock file's fast-uri@3.1.5 does not satisfy fast-uri@3.1.7`, exit 1) -- tehát a két fájlnak
+EGYÜTT kell landolnia. A lockfile-t viszont a `git-protect-guard.py` szerint ügynök nem commitolhatja
+(MikroB batcheli a függőségeket), ezért a landolás MikroB lépése, nem a backend2-é.
+
+**Hatókörön kívül hagyva (nem elhallgatva):** dev-only tanácsok maradtak (vitest CRITICAL, vite HIGH,
+esbuild/vite-node/@vitest/mocker MODERATE). A kártya `--omit=dev`-re szólt; ezek a teszt-eszközlánc
+major frissítését igényelnék, ami külön munka és külön kockázat.
+
+**Ki döntött:** backend2 (technikai döntések), a landolás MikroB jóváhagyásával.
+**Hivatkozás:** kártya 74851e8b.
