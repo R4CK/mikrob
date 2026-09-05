@@ -47,8 +47,11 @@ ensure_pane() {
   # assignment as the end of options and the following -u becomes the command (env error).
   tmux send-keys -t "$PANE" "env -u CLAUDE_CODE_OAUTH_TOKEN -u ANTHROPIC_API_KEY CLAUDE_CONFIG_DIR=$PROBE_CONFIG_DIR claude" Enter 2>/dev/null
   sleep 10
-  # Trust-folder prompt, if shown.
-  tmux send-keys -t "$PANE" '1' 2>/dev/null; sleep 1; tmux send-keys -t "$PANE" Enter 2>/dev/null
+  # Trust-folder prompt, if shown: it's an arrow-selected menu with "No, exit" pre-highlighted,
+  # not a numbered list -- sending '1' does nothing and a bare Enter confirms "No, exit", which
+  # drops the pane back to a bash prompt (measured 2026-09-05). Down selects "Yes, I trust this
+  # folder" before confirming.
+  tmux send-keys -t "$PANE" Down 2>/dev/null; sleep 1; tmux send-keys -t "$PANE" Enter 2>/dev/null
   sleep 6
 }
 
