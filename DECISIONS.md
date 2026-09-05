@@ -8448,3 +8448,43 @@ esetet buktat, köztük mind a négy egészséges kontrollt; a valós fán a fut
 (INFO-ONLY előmérés, 20989), MikroB (NO-GO elfogadva, re-dispatch, 21013), backend2
 (implementáció, független újramérés, mutáció-ellenőrzés).
 **Hivatkozás:** kártya `26ab08a2`; `store/lint-ratchet.sh`, `store/lint-ratchet.selftest.sh`.
+
+## 2026-09-05 -- A kerítés-ellenőrzés ÁLLAPOTGÉP lett, nem egy írásmód (kártya 3ae71df1, Cybered R-1/R-2/R-3)
+
+**R-1: a J-2 paritás egyetlen írásmódot nézett.** A `grep -c '^```'` alak ugyanazon a fixture-alakon,
+amin a lezáratlan ``` helyesen elutasít, a lezáratlan `~~~`-t és a két szóközzel BEHÚZOTT ```-t
+átengedte -- mindkettő pontosan a J-2 kárt termeli. Cybered mérte, és kifejezetten kérte, hogy a
+`~~~` NE harmadik fokként kerüljön be ugyanarra a létrára. Egyetértek: ez a kártya kétszer mászta
+meg ugyanezt, és mindkétszer a KÉRDÉS cseréje volt a válasz.
+
+Ezért a check CommonMark-állapotgép: a kerítés három vagy több `` ` `` vagy `~`, legfeljebb három
+szóköz behúzással (négy már behúzott kódblokk, sosem kerítés), a záró ugyanaz a karakter, legalább
+olyan hosszú, és nincs utána más. A nyitón megengedett az info-string (```bash), a zárón tilos --
+ezért a záró szigorúan illesztett: az elnézés ott olyan blokkot zárna, amit a parser nyitva hagy,
+és az a fail-OPEN irány.
+
+**R-2: az őr hibaüzenete a NEM őrzött útra mutatott.** `bash <fájl> a b c` -> rc=2, de
+`bash -c '. <fájl> a b c'` -> rc=0, tehát a csendes adatvesztés megvan -- és az üzenet épp azt
+ajánlotta, hogy „sourceold és hívd a függvényét". A sourceolt utat NEM lehet őrizni: a fájl örökli a
+hívó pozicionális paramétereit, tehát egy három argumentummal indított `marveen-land.sh`
+megkülönböztethetetlen lenne egy driver-hívástól. Az üzenet ezért mostantól kimondja, hogy ehhez a
+fájlhoz NINCS támogatott merge-driver konfiguráció, és megnevezi a korlátot is.
+
+**R-3: mérve NEM elérhető, és ez a lelet érdemi része.** A `last_before` az utolsó NEM ÜRES sort
+vette; egy üres sor a junction előtt markdownban lezárja a bekezdést, tehát az utána jövő `---`
+vízszintes vonal, nem setext fejléc. A javítás viszont end-to-end NEM változtat semmit: mérve, egy
+lemezen `prozasor\n\n`-nel végződő fájl `$(git show ...)` után `prozasor`-ként érkezik -- a
+parancs-behelyettesítés levágja a záró újsorokat, tehát a `before_junction` sosem végződhet üres
+soron. **Az első javítási kísérletem `$(... | tail -n1)` volt, és pont ezért mért no-opot.** A kód
+bent marad (paraméter-kiterjesztéssel, ami nem vág), a komment pedig kimondja, hogy ma elérhetetlen,
+és hogy egyetlen változás -- `ours` beolvasása parancs-behelyettesítés nélkül -- elérhetővé teszi.
+
+**KÉT SAJÁT HIBA, AMIT A MÉRÉS FOGOTT MEG.** (1) A generált fixture-ökbe nyers backtickeket írtam
+kettős idézőjelben: bash parancs-behelyettesítés, a selftest LEFAGYOTT. Ugyanaz az osztály, mint ma
+a teszt-CÍMKÉKNÉL, egy szinttel beljebb. (2) A záróra vonatkozó két szigorítás (legalább olyan
+hosszú; nincs utána szöveg) PINNELETLEN volt -- a mutációjuk zölden hagyta a suite-ot, tehát a kód
+helyes volt, a tesztek viszont nem figyelték. Mindkettő saját esetet kapott.
+
+**Mutációs mérés, öt mutáció, mind csak a sajátját:** vissza a grep-paritásra -> 2 piros (a `~~~` és
+a behúzott); a tilde elvéve -> 1; a behúzás-levágás elvéve -> 1; a záró rövidebbet is elfogad -> 1;
+a záró utáni szöveget elfogad -> 1. Átmenő kontroll mellett.
