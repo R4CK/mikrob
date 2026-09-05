@@ -8159,3 +8159,43 @@ pontos sorszám-azonosság), 16 elutasítva „a beszúrási pont körüli szöv
 commitból vette, ami már benne volt a bázisban, tehát duplikátumot szúrt be -- 34-ből 25 „hiba"
 a harness hibája volt, nem az eszközé. A második javítás pedig egy rossz VÁRAKOZÁS volt: „mindkét
 oldal pontosan egy sort ad hozzá" nem igaz, két valós commit bulletet ÉS üres sort adott.
+
+## 2026-09-05 -- A gate-worktree tulajdonjoga JELÖLŐ FÁJL, nem útvonal-minta (kártya 5e4e629f, Cybered F-1/F-2)
+
+**Döntés.** A `store/cc-gate-worktree.sh --remove` tulajdonos-ellenőrzése egy `.cc-gate-owner`
+jelölő fájl a fában, amit a létrehozás ír ki. Az útvonal nem hatóság többé. A tartalmazás-
+ellenőrzés pedig a FELOLDOTT útvonalon fut (`realpath -m`), és csak a gate-gyökér KÖZVETLEN
+gyerekét engedi.
+
+**Miért nem szigorúbb minta (ez volt a kézenfekvő).** A `cc-gate-<kártya>-<ügynök>-<sha>` alakban
+MIND a kártya-azonosító, MIND az ügynök-név tartalmazhat kötőjelet (`fron-ted`), tehát a basename
+mezőkre bontása szerkezetileg kétértelmű. Egy fájl, amit a létrehozó ír, nem az.
+
+**Reprodukálva javítás előtt, homokozóban.** F-1: a `cc-gate-63f098ce-cybered-qa-deadbee` fát
+(tulajdonos: `qa`) a `cybered` törölte, mert a részsztring-illesztés átengedte. F-2: a
+`$GATE_ROOT/cc-gate-x/../../outside/...` cél `rm -rf`-et futtatott a gate-gyökéren KÍVÜL, mert a
+tartalmazás-ellenőrzés glob volt, és a `*` átfogja a `/`-t.
+
+**Amit az F-2 reprodukciója tanított:** az ELSŐ próbám NEM reprodukálta a hibát, mert a tulajdonos-
+ellenőrzés fogta el előbb. Egy szökés-próbának minden MÁSIK őrön is át kell jutnia, különben egy
+másik őr munkáját méri. A második próba ezért olyan basename-et használt, ami a tulajdonos-
+ellenőrzést is kielégíti.
+
+**Visszafelé kompatibilitás, szándékosan.** A jelölő nélküli, korábban létrehozott fákra a
+visszaesés az ELŐZŐ szabály HORGONYZOTT alakja (a névnek `-<ügynök>-<sha>`-ra kell VÉGZŐDNIE),
+ami egzakt, nem részsztring -- így elutasítja a kártyát kiváltó esetet, de nem töri el a futó
+gate-ek takarítását. A jelölőt minden futás kiírja, tehát a régi fák a következő top-upnál
+megkapják, migráció nélkül.
+
+**Mutációs mérés, kimondva, mert nem egyforma:** a részsztring-visszaállítás 2 esetet, a jelölő
+kiiktatása 3 esetet vált pirosra. A `..`-szökést viszont MINDKÉT tartalmazás-őr elfogja, tehát
+egyetlen mutáció sem izolálja -- a kombinált mutáció 3 esetet vált pirosra; a beágyazott-útvonal
+eset az, ami egyetlen őrön áll.
+
+**A jelölő a LÉTREHOZÁS UTÁN íródik, és ez egy landolásba került megtanulni.** Az első változat a
+könyvtárat előre létrehozta és a jelölőt a `git worktree add` ELÉ írta -- git ezután megtagadta a
+munkát, mert a cél már nem volt üres („git worktree add failed"). **A saját selftestem ezt NEM
+fogta meg**, mert minden esete a `--path` ágon fut, ami a létrehozás előtt kilép; egy másik
+tesztfájl fogta meg a suite-ban. Egy selftest, ami sosem hoz létre semmit, nem tud jótállni egy
+scriptért, aminek a fő dolga a létrehozás -- ezért került bele négy VALÓS létrehozás-eset, és a
+„jelölőt a létrehozás elé" mutáció most 2 esetet vált pirosra.

@@ -55,6 +55,8 @@ MAIN="${CLEANCORE_MAIN:-/mnt/h/LM_Studio_Workdir/CleanCore}"
 GATE_ROOT="${CC_GATE_ROOT:-$HOME}"
 AGENT="${CC_GATE_AGENT:-}"
 FORCE=0
+# The owner marker. Written at creation, read at removal -- the only authority on who owns a tree.
+OWNER_FILE=".cc-gate-owner"
 
 die() { echo "cc-gate-worktree.sh: $2" >&2; exit "$1"; }
 
@@ -77,18 +79,64 @@ case "$AGENT" in *[!a-zA-Z0-9._-]*) die 2 "agent name must be [a-zA-Z0-9._-]+ (g
 if [ "${1:-}" = "--remove" ]; then
   target="${2:-}"
   [ -n "$target" ] || die 2 "usage: cc-gate-worktree.sh --remove <path>"
-  case "$target" in "$GATE_ROOT"/cc-gate-*) : ;; *) die 2 "refusing to remove a path outside $GATE_ROOT/cc-gate-* (got: $target)" ;; esac
-  # OWNERSHIP, checked before anything is killed or deleted (card a7da80d6). The kill loop below is
-  # deliberate and wanted -- for YOUR OWN strays -- but pointed at a peer's tree it is exactly the
-  # silent data loss this card exists for. The agent segment sits between the card and the short
-  # sha, so a tree this agent owns ends with "-$AGENT-<short>".
-  case "$(basename "$target")" in
-    *"-$AGENT-"*) : ;;
-    *)
-      [ "$FORCE" -eq 1 ] || die 2 "refusing to remove '$target': it is not $AGENT's worktree (the path carries no -$AGENT- segment). A peer may be running tests in it right now, and this command KILLS every process whose cwd is inside. Pass --force only if you know it is abandoned."
-      echo "  --force: removing a worktree that is not $AGENT's" >&2
-      ;;
+  # CONTAINMENT ON THE RESOLVED PATH, not on the string (Cybered F-2, card 5e4e629f). The old test
+  # was `case "$target" in "$GATE_ROOT"/cc-gate-*)`, and a shell glob's `*` spans `/` -- so
+  # "$GATE_ROOT/cc-gate-x/../../outside/..." matched, and `rm -rf` ran outside the gate root.
+  # Reproduced before fixing. Resolving both sides and requiring the target to be a DIRECT child
+  # closes it by construction: `..` cannot survive `realpath -m`, and a nested path fails the
+  # child test. `-m` because the target may already be gone -- removal must stay idempotent.
+  target_real="$(realpath -m -- "$target" 2>/dev/null || true)"
+  root_real="$(realpath -m -- "$GATE_ROOT" 2>/dev/null || true)"
+  [ -n "$target_real" ] && [ -n "$root_real" ] || die 2 "could not resolve the path (got: $target)"
+  case "$target_real" in
+    "$root_real"/cc-gate-*) : ;;
+    *) die 2 "refusing to remove a path outside $root_real/cc-gate-* (got: $target -> $target_real)" ;;
   esac
+  # WHAT EACH OF THESE TWO ACTUALLY HOLDS, measured rather than assumed: the `..` escape is caught
+  # by EITHER of them, so reverting only the glob above leaves the selftest fully green and its two
+  # escape cases look vacuous; a combined mutation (both reverted) turns them red. This NESTED test
+  # is the one that is singly load-bearing -- removing it alone turns exactly one case red. Both are
+  # kept: they answer different questions ("is it under the root" vs "is it a direct child"), and
+  # the kill loop below makes a wrong answer expensive.
+  case "${target_real#"$root_real"/}" in
+    */*) die 2 "refusing to remove a NESTED path: only a direct child of $root_real may be removed (got: $target -> $target_real)" ;;
+  esac
+
+  # OWNERSHIP IS A MARKER FILE IN THE TREE, NOT A PATTERN ON THE PATH (Cybered F-1, card 5e4e629f).
+  # The old test was a SUBSTRING match, `case "$(basename "$target")" in *"-$AGENT-"*)`, and it
+  # handed a peer's tree to the wrong agent: "cc-gate-63f098ce-cybered-qa-deadbee" is owned by qa
+  # (the layout is cc-gate-<card>-<agent>-<short>), but it contains "-cybered-", so cybered passed
+  # the check and deleted it -- reproduced in a sandbox before this fix. A STRICTER PATTERN is not
+  # the answer either: both card ids and agent names may contain "-" (fron-ted), so splitting the
+  # basename into fields is ambiguous by construction. A file the creator writes is not.
+  owner=""
+  [ -f "$target_real/$OWNER_FILE" ] && owner="$(head -n1 "$target_real/$OWNER_FILE" 2>/dev/null || true)"
+  if [ -n "$owner" ]; then
+    [ "$owner" = "$AGENT" ] || {
+      [ "$FORCE" -eq 1 ] || die 2 "refusing to remove '$target': it belongs to $owner, not $AGENT (per $OWNER_FILE). A peer may be running tests in it right now, and this command KILLS every process whose cwd is inside. Pass --force only if you know it is abandoned."
+      echo "  --force: removing $owner's worktree" >&2
+    }
+  else
+    # LEGACY TREES, created before the marker existed, are the reason this is not simply a refusal:
+    # gates are in flight right now and must not have their teardown broken. The fallback is the
+    # ANCHORED form of the old test -- the tree must END with "-$AGENT-<short>" -- which is exact
+    # rather than a substring, so it rejects the case that started this card while still accepting
+    # every tree this script has actually created.
+    case "$(basename "$target_real")" in
+      *"-$AGENT-"*)
+        case "${target_real##*"-$AGENT-"}" in
+          *-*) ownership_ok=0 ;;
+          "") ownership_ok=0 ;;
+          *) ownership_ok=1 ;;
+        esac ;;
+      *) ownership_ok=0 ;;
+    esac
+    [ "$ownership_ok" -eq 1 ] || {
+      [ "$FORCE" -eq 1 ] || die 2 "refusing to remove '$target': no $OWNER_FILE, and the path does not end with -$AGENT-<short>, so it is not $AGENT's worktree. A peer may be running tests in it right now, and this command KILLS every process whose cwd is inside. Pass --force only if you know it is abandoned."
+      echo "  --force: removing a worktree that is not $AGENT's" >&2
+    }
+  fi
+  target="$target_real"
   # A dev server left running in a removed worktree keeps recreating .vite cache dirs there and
   # holds a port -- exactly the orphan vite that had to be hunted down by hand after the incident.
   # Match on the process's own cwd, never on a command-line pattern: a pattern can catch a peer's
@@ -130,6 +178,18 @@ else
     || die 3 "git worktree add failed for $SHORT"
   echo "worktree created: $TREE @ $SHORT"
 fi
+
+# THE OWNER MARKER, written AFTER the worktree exists and on EVERY run (card 5e4e629f).
+#
+# AFTER, and this cost a landing to learn: the first version created the directory and wrote the
+# marker BEFORE `git worktree add`, which then refused because the target was no longer empty --
+# "git worktree add failed". This script's own selftest did not catch it (its cases take the
+# --path branch, which exits before creation); agent-worktree-deps.test.ts did.
+#
+# ON EVERY RUN, not only at creation, because this script is idempotent "create or top up": a tree
+# made before the marker existed gets one on its next top-up. That is how the legacy path-based
+# fallback in --remove stops being needed, without anyone running a migration.
+printf '%s\n' "$AGENT" >"$TREE/$OWNER_FILE"
 
 # Map @cleancore/<name> -> directory inside the WORKTREE, derived from package.json names. Never a
 # hardcoded list: a package added after this script was written must still resolve.
