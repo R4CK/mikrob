@@ -111,6 +111,13 @@ FAIL_RE = re.compile(
 )
 
 
+# The PRE-ANCHORING form of the same declaration. It lives HERE, beside the anchored rule, because
+# it is no longer only a drift-measuring curiosity: `declared_gate_excludes_me` below CONSULTS it to
+# decide whether the anchored reading can be trusted at all. Two copies of it in two files is the
+# exact defect class this module exists to close.
+BARE_DECL_RX = re.compile(r'Gate:\s*([^\n]+)', re.IGNORECASE)
+
+
 def declared_gate_excludes_me(description, my_gate):
     """True when the card's own description names its gates and MINE is not among them.
 
@@ -124,8 +131,45 @@ def declared_gate_excludes_me(description, my_gate):
     NO `Gate:` line at all -> False, i.e. fall through and surface the card. Absence of a declaration
     is not a decision, and the failure directions are not symmetric: surfacing a card that is not
     mine costs one read, while skipping one that is costs a missing gate.
+
+    A declaration the anchored regex CANNOT READ but the bare one can, positioned after the last
+    anchored one -> also False, for the same reason one level over: an incomplete reading is not a
+    decision either. See the block in the body.
     """
-    matches = GATE_DECL_RX.findall(description or '')
+    text = description or ''
+    matches = list(GATE_DECL_RX.finditer(text))
     if not matches:
         return False
-    return my_gate.lower() not in matches[-1].lower()
+
+    # A LATER DESIGNATION THE ANCHORED RULE CANNOT SEE MAKES THE EARLIER ONE UNTRUSTWORTHY
+    # (Cybered NO-GO on this card, comment 20940). Anchoring closed a fail-open hole and opened a
+    # narrower one in the OTHER direction, precisely on the case the last-match-wins rule exists
+    # for. If the newest designation is written mid-sentence -- and 419 of the board's real ones
+    # are -- the anchored regex drops it, and the last SURVIVING match is an older, usually
+    # NARROWER designation. The card then falls silently out of the gates the fresh designation
+    # names. Cybered's proof-of-concept, on ordinary card prose:
+    #
+    #     "Elso korben a felbontas szerint keszult. Gate: QA.
+    #      MikroB kiterjesztette a hatokort ..., tehat a helyes designacio
+    #      mostantol Gate: QA + Cybersec + Cybered (publikus write path)."
+    #
+    # Before this guard: qa False, cybersec True, cybered True -- two gates skipped on a card whose
+    # own newest sentence names them. Under the pre-anchoring search all three were False.
+    #
+    # So: if the bare form finds a declaration BEYOND the last anchored one, this description is not
+    # something we can read reliably, and an unreadable designation is not a decision. Fall through.
+    # That is the same asymmetry stated below and in this module's docstring -- one wasted read
+    # against one missing gate -- applied to a reading we know is incomplete rather than to an
+    # absence. Both regexes run to end of line, so their `end()` positions coincide for the same
+    # declaration and a strictly greater one is genuinely a later, unseen declaration.
+    #
+    # Measured board-wide, independently of Cybered's own sweep and agreeing with it exactly (3001
+    # cards x 3 gates): this surfaces ONE extra card today (3d923ef5, to cybersec and cybered) and
+    # skips none. The shape it protects against is already present on that card -- its anchored last
+    # match already differs from its bare last match, and only a single edit widening its scope
+    # mid-sentence separates it from being live.
+    last_anchored_end = matches[-1].end()
+    if any(b.end() > last_anchored_end for b in BARE_DECL_RX.finditer(text)):
+        return False
+
+    return my_gate.lower() not in matches[-1].group(1).lower()

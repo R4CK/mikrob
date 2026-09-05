@@ -56,7 +56,7 @@ import sys
 # Shared recognition rules rather than a fourth private copy of the same regex -- the defect class
 # gate_scan_lib exists to close (card 3477c793).
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
-from gate_scan_lib import GATE_DECL_RX  # noqa: E402
+from gate_scan_lib import GATE_DECL_RX, BARE_DECL_RX  # noqa: E402
 
 # A gate role, with any sibling number attached. `\d*` rather than an enumerated "QA2" so a future
 # CYBERSEC2/CYBERED2 needs no edit here; there are zero of those on the board today.
@@ -68,10 +68,10 @@ def roles(text):
     return {m.group(1).upper() for m in _ROLE.finditer(text or "")}
 
 
-# The PRE-ANCHORING form, kept ONLY to measure drift against the anchored one. Never used to make a
-# decision: if this and GATE_DECL_RX disagree, the anchored rule is the one the scanners obey, and
-# the disagreement is exactly what gets reported.
-_BARE_DECL_RX = re.compile(r"Gate:\s*([^\n]+)", re.IGNORECASE)
+# The PRE-ANCHORING form now lives in gate_scan_lib beside the anchored rule, because the scanner
+# consults it too (Cybered NO-GO 20940: a later mid-sentence designation makes the anchored reading
+# untrustworthy, so declared_gate_excludes_me falls through). Keeping a private copy here would put
+# the same idea in two files -- the defect class that module exists to close.
 
 
 def declared_roles(text):
@@ -104,10 +104,18 @@ def check(description, comments):
     # such cards board-wide; each one now falls through and surfaces to EVERY gate, so the cost is a
     # wasted read, not a missed gate. It is still reported: the position of a designation is a
     # CONVENTION, and fixing the parser does not fix how people write. Unreported, those 4 grow.
-    bare = _BARE_DECL_RX.findall(description or "")
-    if desc is None and bare:
+    #
+    # IT SITS ON THE ROLE-SET DIFFERENCE, NOT ON `desc is None` (Cybered NO-GO 20940). The old
+    # condition ran the report ONLY when the anchored regex saw nothing at all -- that is, only in
+    # the harmless case, where the card already falls through to every gate and the cost is one
+    # wasted read. In the DAMAGING case, where an earlier narrow "Gate: QA." survives anchoring
+    # while a later, wider mid-sentence designation is dropped, the anchored regex does find
+    # something, so the branch never ran: this tool answered OK and handed back the NARROWED role
+    # set as truth. Loudest where the drift is free, silent where it costs two gates.
+    bare = BARE_DECL_RX.findall(description or "")
+    if bare:
         drifted = roles(bare[-1])
-        if drifted:
+        if drifted and drifted != (desc or set()):
             return ("MID-SENTENCE", drifted, latest_comment)
 
     if desc is None and latest_comment is None:

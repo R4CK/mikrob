@@ -8330,3 +8330,50 @@ hagyta. A fixture most a verify-hívásnál dobat, és a mutáció pirosra vált
 retry-ol ahelyett hogy gyorsan bukna -> 1 piros; az olvashatatlan pane még-beragadtnak számít ->
 1 piros; az egyik hívási hely visszaállítva csupasz `await`-re -> 1 piros (csak a sajátja).
 Mindegyik átmenő kontroll mellett.
+
+---
+
+## 2026-09-05 -- 82fa48b0 (2. kör) -- A horgonyzás egy ÚJ fail-open utat nyitott, és a "csak a biztonságos irányba dől" állítás a MAI ADATRA volt igaz, nem a SZABÁLYRA (Cybered NO-GO 20940)
+
+**Ez a bejegyzés a fenti 82fa48b0-bejegyzést PONTOSÍTJA, nem vonja vissza.** A mérés, a
+variáns-választás és a négy elveszített kártya listája változatlanul áll. Ami nem állt: a
+záró következtetés általánossága.
+
+**A lelet.** A `declared_gate_excludes_me` az UTOLSÓ designációt fogadja el, és a modul saját
+docstringje mondja ki, miért: a hatókör menet közben bővülhet, és a legfrissebb állítás a
+jelenlegi. Ugyanezen a kártyán mértük meg, hogy a valódi designációk 419 esetben MONDAT
+KÖZBEN állnak. A kettő együtt: ha a KÉSŐBBI, SZÉLESEBB designáció mondat közben van írva, a
+horgonyzott regex eldobja, és az utolsó TÚLÉLŐ találat egy korábbi, SZŰKEBB designáció lesz.
+A kártya onnantól csendben kiesik azokból a gate-ekből, amiket a friss designáció megnevez.
+Cybered proof-of-conceptje hétköznapi kártyaszöveg, és a horgonyzás ELŐTTI puszta keresés
+alatt mindhárom gate helyesen felszínre hozta volna.
+
+**És a mellé szállított detektor pont erre volt vak.** A `gate-decl-check.py` MID-SENTENCE ága
+a `desc is None` feltételen ült, vagyis csak akkor futott le, amikor a horgonyzott regex
+SEMMIT nem talált -- az ártalmatlan esetben, ahol a kártya amúgy is átesik és a drift ára egy
+felesleges átolvasás. A káros esetben talált valamit, tehát az ág soha nem futott: a szkript
+OK-t mondott, és a LESZŰKÍTETT szerep-halmazt adta vissza igazságként. Hangos ott, ahol a
+drift ingyen van, néma ott, ahol két gate az ára.
+
+**Amit ez a kör megváltoztat.** (1) `declared_gate_excludes_me`: ha a puszta (nem horgonyzott)
+alak talál designációt a horgonyzott UTOLSÓ találat UTÁN, az olvasat nem megbízható, tehát a
+kártya átesik minden gate elé. Egy hiányos olvasat éppúgy nem döntés, mint egy hiányzó
+designáció -- ez a lib saját kimondott aszimmetriája, egy felesleges átolvasás egy kimaradt
+gate ellen. (2) A MID-SENTENCE ág a horgonyzott és a puszta olvasat SZEREP-HALMAZ eltérésén
+ül, nem a `desc is None`-on. (3) Selftest mindkettőre, plusz a `>=` mutációra egy kimondott
+kontroll: ott minden kártya átesne és a függvény némán `return False`-szá válna.
+
+**Mérés (saját, Cybereddel egyezően):** 3001 kártya x 3 gate. Újonnan felszínre kerül: EGY
+kártya (`3d923ef5`, cybersec + cybered). Újonnan kiesik: NULLA. A védett alakzat tehát ma is
+jelen van a táblán, csak még nem éles.
+
+**A tanulság, ami túlmutat a kártyán.** Az előző kör commit-üzenete és DECISIONS-bejegyzése a
+"nulla újonnan kihagyott kártya / kizárólag a biztonságos irányba dől" állítást a SZABÁLYRA
+mondta ki, miközben a mérés a MAI TÁBLÁRÓL szólt. A kettő nem ugyanaz, és pont az a függvény,
+ami eldönti, hogy egy gate ránéz-e egyáltalán egy kártyára, az a hely, ahol ez a különbség
+számít. Egy teljes-tábla mérés azt mondja meg, mi történik MOST, nem azt, hogy mi NEM TÖRTÉNHET.
+
+**Ki döntött:** Cybered (lelet és javasolt gyógymód, 20940), MikroB (re-dispatch), backend2
+(implementáció és független újramérés).
+**Hivatkozás:** kártya `82fa48b0`; `store/gate_scan_lib.py`, `store/gate-decl-check.py`,
+`store/gate-scan-selftest.py`, `store/gate-decl-check.selftest.py`.
