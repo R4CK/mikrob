@@ -264,13 +264,76 @@ describe('door 5: the seed fleet shipped in the repo', () => {
     ).toEqual([])
   })
 
-  it('both installers still seed from THIS directory', () => {
+  // Card 07433dab, from the gate round on 54fd9c02. The first version of the check below pinned
+  // the ASSIGNMENT (`SEED_FLEET_DIR=...`) and stopped there, which says nothing about where the
+  // copy loop actually READS from. Cybersec named two shapes that walk straight past it: the
+  // assignment stays while the loop's source is repointed, and a SECOND copy loop is added
+  // alongside the original. Only the variable-rewrite mutation failed. So the operation is pinned
+  // now, not the name of the thing it uses -- the same distinction rule 12 draws for symbol
+  // presence, one layer up: an identifier being mentioned is not the identifier being used.
+  //
+  // Comment lines are dropped before matching, for that same reason. A full-line comment quoting
+  // the loop verbatim would otherwise satisfy every assertion here while the real loop was gone --
+  // measured on this repo: dropping them leaves 1711 of 2294 lines in install-linux.sh and 1287 of
+  // 1636 in install-macos.sh, and the match count is unchanged at 1 either way today.
+  const INSTALLERS = ['install-linux.sh', 'install-macos.sh'] as const
+
+  function installerCode(script: string): string {
+    const src = readFileSync(join(SRC, '..', script), 'utf-8')
+    return src
+      .split('\n')
+      .filter((l) => !l.trimStart().startsWith('#'))
+      .join('\n')
+  }
+
+  it('both installers still seed from THIS directory, and the copy loop READS that variable', () => {
     // The corpus check is only as good as the claim that it is the corpus the installers copy.
     // If an installer switches to another seed path, this guard would keep passing over a
     // directory nobody installs any more, which is the silent version of not existing.
-    for (const script of ['install-linux.sh', 'install-macos.sh']) {
-      const src = readFileSync(join(SRC, '..', script), 'utf-8')
-      expect(src, script).toMatch(/SEED_FLEET_DIR=.*\/seed-fleet-agents/)
+    for (const script of INSTALLERS) {
+      const code = installerCode(script)
+      expect(code.length, `${script} is empty after dropping comments`).toBeGreaterThan(0)
+      expect(code, script).toMatch(/SEED_FLEET_DIR=.*\/seed-fleet-agents/)
+      // The operation, not the assignment: the loop that produces the directories being copied
+      // must iterate THIS variable. Repointing it elsewhere leaves the line above untouched.
+      expect(code, `${script}: the seed copy loop must iterate $SEED_FLEET_DIR itself`)
+        .toMatch(/for\s+\w+\s+in\s+"\$SEED_FLEET_DIR"\/\*\/\s*;\s*do/)
     }
+  })
+
+  it('exactly ONE place per installer copies into the fleet directory', () => {
+    // The second bypass Cybersec named: leave the original loop exactly as it is and add another
+    // one, from a different corpus, next to it. Every assertion above still passes -- the guarded
+    // loop is untouched -- while unguarded directories land in agents/ all the same. Counting the
+    // copy sites is what closes that, and it is why this asserts a COUNT and not a presence.
+    const COPIES_INTO_FLEET = /^\s*(?:cp|rsync|mv)\b[^\n]*(?:\$FLEET_DIR|\/agents\b)/gm
+    for (const script of INSTALLERS) {
+      const hits = installerCode(script).match(COPIES_INTO_FLEET) ?? []
+      expect(hits, `${script}: copy sites into the fleet directory`).toHaveLength(1)
+    }
+  })
+
+  it('a seed directory name must survive sanitizeAgentName UNCHANGED, not merely miss the reserved set', () => {
+    // Cybered's finding on 54fd9c02: everything above measures the name against the reserved SET
+    // and never against its SHAPE. `ZZ_Cybered Probe` is not reserved, so the checks above stay
+    // green -- and it still becomes an agent id, because this is the ONE door that puts a raw repo
+    // string under agents/ (every other path builds the name through sanitizeAgentName). It then
+    // rides into the context-guard-runner message body, where a git tree entry name carrying a
+    // quote or a newline is not a cosmetic problem.
+    const misshapen = seedDirNames().filter((n) => sanitizeAgentName(n) !== n)
+    expect(
+      misshapen,
+      'These ship in seed-fleet-agents/ and become agent ids verbatim. Rename the directory to its ' +
+        'sanitized form. Do NOT widen sanitizeAgentName to accommodate it.',
+    ).toEqual([])
+  })
+
+  it('CONTROL: the shape check fires on the case it exists for', () => {
+    // Run against the founding case before trusting its silence -- the same rule the reserved-set
+    // control above follows. All 14 directories shipping today pass, which is what makes the
+    // assertion above safe to add; these are what it would have caught.
+    for (const bad of ['ZZ_Cybered Probe', 'System-Directive', 'sys"tem', 'a b', 'UPPER'])
+      expect(sanitizeAgentName(bad), bad).not.toBe(bad)
+    for (const good of ['backend2', 'fron-ted', 'ok-name']) expect(sanitizeAgentName(good)).toBe(good)
   })
 })
