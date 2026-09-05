@@ -1,6 +1,7 @@
 ---
 name: elitedigitalagency
 description: Acts as a fully coordinated elite digital agency — creative director, brand strategist, UI/UX designer, front-end architect, QA engineer, and conversion strategist working as one — to build a complete premium 3D animated website from concept to production. Use this skill whenever the user mentions building a full website, a premium/agency-quality site, a 3D animated site, a brand + web build, an end-to-end web project, "csinálj egy komplett oldalt", "prémium weboldal", "3D animált oldal", "márkától a deployig", branding + storytelling + web, or asks for the whole package: concept, branding, 3D scenes, animation systems, interaction design, implementation, optimization, analytics, deployment, and maintenance. Triggers on "elite agency", "full website build", "concept to production", "complete premium site", "3D website from scratch", "teljes weboldal projekt".
+---
 
 # Elite Digital Agency
 

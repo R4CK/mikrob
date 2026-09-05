@@ -15,7 +15,7 @@
 // other MINUS some arguments" -- which is exactly what a required new flag leaves behind.
 import { describe, it, expect } from 'vitest'
 import { execFileSync } from 'node:child_process'
-import { mkdtempSync, writeFileSync, rmSync } from 'node:fs'
+import { mkdtempSync, mkdirSync, writeFileSync, rmSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { REPO_ROOT } from './helpers/repo-location.js'
@@ -110,6 +110,32 @@ describe('frontmatter the merge made unreadable (card 23d09a68)', () => {
     const r = pair(unterminated, FM_SOURCE)
     expect(r.code).toBe(1)
     expect(r.out).toMatch(/never closes/)
+  })
+
+  // --- --lint mode (card 858b9e90): the PRE-EXISTING defect, which the pairwise mode skips by
+  // design ("a pre-existing malformed frontmatter is a lint's job, not this tool's").
+  it('THE LANDING GATE: every seed-skills frontmatter is closed and carries the Level-0 fields', () => {
+    // Deliberately the REAL corpus, not a fixture. Two of the 95 opened `---` and never closed it
+    // (elitedigitalagency, threejsinteractionblueprint), fixed in the same commit as this gate.
+    // Nothing reported them for as long as they existed, because the only detector for the shape
+    // was keyed on a merge having introduced it -- a guard scoped to the one path that could not
+    // produce the defect. A fixture-only version of this test would repeat that mistake.
+    const r = run(['--lint', join(REPO_ROOT, 'seed-skills')])
+    expect(r.out).toMatch(/^OK: \d+ SKILL\.md frontmatter block/m)
+    expect(r.code).toBe(0)
+  })
+
+  it('the lint flags an unterminated block that no merge introduced', () => {
+    const dir = mkdtempSync(join(tmpdir(), 'mergelint-'))
+    try {
+      mkdirSync(join(dir, 'broken'), { recursive: true })
+      writeFileSync(join(dir, 'broken', 'SKILL.md'), '---\nname: s\ndescription: d\n\n# T\nbody\n')
+      const r = run(['--lint', dir])
+      expect(r.code).toBe(1)
+      expect(r.out).toMatch(/never closes/)
+    } finally {
+      rmSync(dir, { recursive: true, force: true })
+    }
   })
 
   it('CONTROL: body prose with colons is NOT read as duplicate frontmatter keys', () => {
