@@ -619,7 +619,11 @@ export function resolveMainAgentConfigDir(): string | null {
 // the host's umask.
 function writeJsonAtomic(path: string, value: unknown): void {
   let mode = 0o600
-  try { mode = statSync(path).mode & 0o777 } catch { /* new file -> owner-only */ }
+  // Cybersec NO-GO (card 75c2dbb7, Gate-SHA 434d9a0f): umask can only ever
+  // strip bits, never add them, so a carried-over mode can't come out WIDER
+  // than what was on disk -- capping at 0o600 removes the only way this could
+  // preserve a pre-existing world/group-writable mode on a credential file.
+  try { mode = statSync(path).mode & 0o777 & 0o600 } catch { /* new file -> owner-only */ }
   const tmp = `${path}.tmp-${process.pid}`
   writeFileSync(tmp, JSON.stringify(value, null, 2) + '\n', { mode })
   renameSync(tmp, path)
