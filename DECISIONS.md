@@ -6644,6 +6644,26 @@ horgony-hibája, amit a `78d182a6` javított. A `fleet-test.sh` viszont minden m
 kapuz, tehát működő, bizonyítottan éles funkció: hozzányúlni csak Peti kifejezett jóváhagyásával
 szabad (5. kódminőségi alapelv), ezért ez kérdésként megy fel, nem javításként.
 
+**Kiegészítés: egy MÁSODIK, ettől független terhelés-érzékenységi osztály a marveen landolási
+kapuban (menet közben mérve, nem a kártya kiinduló kérdése).** A fenti bejegyzés landolása maga
+akadt el rajta, ezért ide tartozik. A `src/__tests__/gate-sha-repo.test.ts` egyik esete
+(`names a KANBAN CARD ID instead of laundering it as "unlanded"`) ÉLŐ HTTP-hívást tesz a
+dashboardra a teljes suite közben, a `store/gate-sha-repo.sh` pedig `curl -sf --max-time 3`-mal
+kérdezi le a kártyát. Telített gépen (612 tesztfájl, 446 mp teszt-idő 113 mp valós idő alatt) ez a
+3 másodperces költségkeret elfogy, a szkript a szándékos fail-soft ágára esik (`unlanded`, 3-as
+kilépés), a teszt viszont a sikeres ágat várja (4-es kilépés) -- **hamis piros, ami minden marveen
+landolást kapuz**. Nem elméleti: három független előfordulás a szkript landolása óta (09-05 00:38,
+00:41, és a saját 08:44-es landolásom), mind ugyanazzal az `expected 3 to be 4` állítással; a
+szkript ugyanezekre a bemenetekre terheletlenül helyesen felel. Ez tehát MÁS mechanizmus, mint a
+birpc-timeout (nem a vitest RPC-je, hanem egy korlátos külső hívás a teszten belül), de UGYANAZ az
+osztály: a kontenció zöldből pirosat csinál. Két következménye van. (1) A „marveen-oldalon nincs
+megfigyelt terhelés-okozta bukás" állítás így PONTOSÍTVA értendő: a teljes suite-ok sorosítására
+tényleg nincs szükség új fékre, de a landolási kapun belül van terhelés-érzékeny pont, csak nem a
+sorosítás hiánya okozza. (2) A javítás iránya nem fék, hanem determinizmus: a szkriptben MÁR OTT VAN
+a `GATE_SHA_REPO_NO_BOARD=1` offline ág, tehát a teszt élő board helyett stubbal is futhatna. Ez a
+`gate-sha-repo.sh` az `edd4c3bf` kártya éles, működő eredménye, ezért nem nyúlok hozzá: külön
+kártyaként megy fel MikroB-hoz.
+
 **Ki döntött:** backend (mérés és verdikt), MikroB (dispatch, a kártya átírása a mérésre).
 **Hivatkozás:** kártya 9bb2e651; korábbi diagnózis-korrekció backend3-tól; szemafor `ce3ec4d6` +
 `78d182a6`; a mérő eljárás a `fleet-rule-compliance-from-corpus` skillben.
