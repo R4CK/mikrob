@@ -6919,3 +6919,38 @@ példánya lenne -- pont az a drift-osztály, amit a b46a4b7e megszüntetett.
 **Ki döntött:** Cybersec + Cybered (leletek a 54fd9c02 gate-köréből), backend2 (mérés + megvalósítás).
 **Hivatkozás:** kártya 07433dab; `src/__tests__/reserved-agent-name.test.ts` (23 -> 26 eset, 3
 mutációval igazolva + egy kontroll arról, hogy a RÉGI őr mindkét bypass-alakot átengedte).
+
+## 2026-09-05 -- 43d933b1 -- A projekt-dispatch sorrendnek sosem volt "rule 14" nevű forrása
+
+**Döntés:** A `src/web/routes/project-priority.ts` (4 hely) és a `store/fleet-nudger.sh` (3 hely)
+"CLAUDE.md rule 14" hivatkozásai kikerülnek. A helyükre az kerül, ami IGAZ: üres beállításnál nincs
+projekt-szintű preferencia, és a szokásos kártya-prioritás dönt (6. szabály, urgent > high > normal
+> low, a 6b. két-napos elsőbbségével). A viselkedés NEM változott, csak az a mondat, ami forrást
+állított neki.
+
+**Miért:** a hivatkozás kétszeresen hamis. Egyrészt a 14. szabály SOHA nem mondott semmit a
+dispatch-sorrendről -- a 2026-09-05-i átszámozás előtt a két munka közti kötelező `/clear` volt, ma a
+zajos-parancs hook. Másrészt, és ez a súlyosabb: átnéztem a CLAUDE.md-t ÉS az ütemezett feladatok
+promptjait, és SEHOL nincs olyan szabály, ami "CleanCore-kártyák előbb, mint marveen-infra"
+sorrendet mondana ki. A `folyamatos-munka-orchestrator` tényleges szabálya sima prioritás-sorrend.
+Vagyis a komment nem elavult volt, hanem egy sosem létezett szabályra hivatkozott -- és ezt a
+2d6587fe kártya SAJÁT leírása is átvette ("alap mod (jelenlegi 14. szabaly)"), tehát a kód
+hűségesen másolta a kártyát.
+
+**Az egyik érintett hely NEM komment volt:** a `fleet-nudger.sh` 213. sora a flottának KIKÜLDÖTT
+nudge-szövegben állította, hogy a beállítás "felulirja a rule 14 alap sorrendjet". Vagyis minden
+ügynök egy nem létező szabályról kapott tájékoztatást minden nudge-nál.
+
+**Az új komment SZÁNDÉKOSAN kimondja a "rule 14" nevet** -- azért, hogy a következő olvasó ne
+"állítsa vissza" a hivatkozást. Emiatt egy csupasz "nincs benne a 'rule 14' string" ellenőrzés
+elbukna a saját magyarázatán; a javító szkript ezért a hamis ÁLLÍTÁS alakjaira ellenőriz
+(`rule 14 hardcodes`, `rule 14's default`, ...), nem a tokenre. Ugyanaz a csapda, mint amikor egy
+doksi-őr a saját prózája miatt buktat egy kártyát.
+
+**Mellékes mérés, MikroB-nak jelezve:** a repóban jelenleg **141** hivatkozás nevez meg CLAUDE.md
+szabályt SZÁM szerint (`rule N` / `N. szabály`), 15+ fájlban. A szabályok átszámozhatók -- tegnap
+épp ez történt --, tehát ez egy mérhető drift-felület. Nem ennek a kártyának a hatóköre; MikroB
+dönti el, kell-e rá külön kártya.
+
+**Ki döntött:** backend2 (a lelet a 7debd869 munka közben, mérés + javítás).
+**Hivatkozás:** kártya 43d933b1; `src/web/routes/project-priority.ts`, `store/fleet-nudger.sh`.
