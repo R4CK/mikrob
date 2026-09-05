@@ -6645,6 +6645,56 @@ hibaüzenet megmondja a teendőt (átnevezés), kifejezetten megtiltva a fenntar
 **Ki döntött:** backend2, Cybersec javaslata alapján (b46a4b7e gate-melléklete, komment 22244).
 **Hivatkozás:** kártya 54fd9c02.
 
+## 2026-09-05 -- A `fleet-test.sh` FLEET_TEST_TREE-kijárata lezárva: a zár gép-szintű, nem fánként (kártya 2f0c7d24)
+
+**Döntés.** Peti explicit jóváhagyásával (Telegram, 2026-09-05, „1 - zárd le, kódot módosítasz") a
+`store/fleet-test.sh` zárja mostantól EGY gép-szintű horgonyra (`${ROOT}-test.lock`) kerül, nem a
+`$TEST_TREE`-re. A `FLEET_TEST_TREE` env-változó megmarad, és továbbra is megválasztja, HOL fut a
+suite -- de többé nem választja meg, hogy SORBAN ÁLL-E. A korábbi viselkedés (fánként külön zár) az
+`85faec1b` kártya tudatos, mért döntése volt; ez a bejegyzés azt fordítja vissza, nem egy hibát javít.
+
+**Miért fordul meg egy tudatos döntés.** Az eredeti indok helyes volt a maga körében: egy privát fa
+nem tudja elrontani a közöset, tehát nem kell mögé sorolni. Csakhogy a fa nem az egyetlen megosztott
+erőforrás. Egy teljes suite magonként egy workert indít (itt 12), így két futás két KÜLÖN fán is
+elveszi egymás CPU-ját, és a kiéheztetett futás nem hibán, hanem időtúllépésen bukik. A kontenció
+által termelt hamis piros a drága fajta: egy gate-en helyes munkát küld vissza `in_progress`-be.
+
+**Mérés a döntés előtt (a `fleet-rule-compliance-from-corpus` eljárással, 504 egyedi ügynök-átiraton).**
+- A `FLEET_TEST_TREE` NEM használatlan, ahogy a kártya (és az én korábbi 9bb2e651-es megfogalmazásom)
+  sugallta: **237 tényleges beállítás** 11 napon át, QA (`marveen-qa-test`, `qa-<kártya>-gate`),
+  backend2 (`marveen-test-b2`, `be2-mutate`) és Cybersec fáira. Amit helyesen lehet állítani: az
+  UTOLSÓ használat **2026-08-26**, azóta tíz napja egyszer sem. A lezárás tehát ma nem tör el élő
+  munkafolyamatot -- de a „ma senki nem használja" indoklás pontatlan volt, a helyes az, hogy a
+  korábbi használói már átálltak másra.
+- Figyelmeztetés a mérésről magáról: az első futásom minden ügynök könyvtárán át ugyanazt a korpuszt
+  15-ször számolta (a projekt-könyvtárak szimlinkeltek), és az első „csak 1 megkerülés" eredményem is
+  hibás volt, mert a detektorom a `2>&1` átirányítást pozicionális szűrőnek olvasta. Mindkettő
+  javítva, a számok a javított futásból valók.
+
+**Ami emiatt a tesztben változott, és miért nem törlés.** A `fleet-test-serialises-runs.test.ts`
+egyik állítása KIKÖTÖTTE a kijáratot (`LOCK_FILE="${TEST_TREE}.lock"` megléte volt a zöld feltétel),
+tehát a lezárás e nélkül nem is landolhatott volna. Az állítás nem eltűnt, hanem MEGFORDULT (a
+tree-re kulcsolt zár mostantól hiba, és külön állítás követeli a gép-szintű horgonyt), plusz egy új
+CONTROL eset a régi alakra: ha valaki visszaállítja a fánkénti zárat, a teszt pirosra vált. Enélkül
+a 7. kódminőségi alapelv szerint gyengülő tesztről beszélnénk, nem javításról.
+
+**Mérés a változtatás UTÁN (viselkedés, nem szövegellenőrzés).** `FLEET_TEST_TREE` egy privát útra
+állítva, miközben egy MÁSIK ügynök valódi futása tartotta a zárat: `FLEET_TEST_LOCK_WAIT=2` mellett
+kiírta, hogy vár, majd 3-as kóddal kilépett, és a `/home/neon/marveen-test.lock`-ot -- a KÖZÖS
+horgonyt -- nevezte meg. A régi kóddal a privát fa saját, szabad zárját vette volna, és azonnal
+indult volna. A hibaüzenetben szereplő útvonal maga a bizonyíték.
+
+**Amit ez a változtatás NEM old meg (a leletet a kártyán kívül is ki kell mondani).** A marveen
+sorosításból ma nem a `FLEET_TEST_TREE`-vel lépnek ki, hanem úgy, hogy a `fleet-test.sh`-t egyáltalán
+nem hívják: 2026-09-01 óta **89 teljes marveen suite-futás** ment közvetlen `npx vitest run`-nal a
+szkript megkerülésével, ebből **59 QA gate-fákban** (`qa-priv-*`). Ez a jelenlegi tényleges kijárat,
+és ezt a kártya nem érinti. Külön kártya kell rá; addig a „senki nem tud csendben kilépni a
+sorosításból" állítás NEM igaz, csak a `FLEET_TEST_TREE`-n keresztül nem tud.
+
+**Ki döntött:** Peti (jóváhagyás), MikroB (dispatch, kártyanyitás), backend (mérés, implementáció).
+**Hivatkozás:** kártya 2f0c7d24; előzmény 9bb2e651 és 85faec1b; a mérő eljárás a
+`fleet-rule-compliance-from-corpus` skillben.
+
 ## 2026-09-05 -- A 17. szabály (CleanCore suite-szemafor) premisszájának korrekciója, és a két független zár kérdése (kártya 9bb2e651)
 
 **Döntés.** A 17. szabály egy hét múlva esedékes felülvizsgálatához a kiinduló premisszát korrigálni

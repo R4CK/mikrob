@@ -1,4 +1,4 @@
-// fleet-test.sh must let only one run at a time mutate a given tree (card 85faec1b).
+// fleet-test.sh must let only one suite run at a time on this machine (cards 85faec1b, 2f0c7d24).
 //
 // THE FAILURE WAS MEASURED, and it is worse than a flaky suite. Two full-suite runs at the SAME sha
 // reported 13 and 7 failures with different failing sets. The tree's reflog named the mechanism:
@@ -15,7 +15,18 @@
 //   * no contention                       -> 2s
 //   * a holder keeping the lock for 12s   -> 12s, with the "waiting" notice, then a passing run
 //   * a holder on the SHARED tree's lock while running against a PRIVATE tree -> 2s, no waiting
-// The third is what pins the lock to the TREE PATH rather than to the script.
+// The third was what pinned the lock to the TREE PATH rather than to the script.
+//
+// THAT THIRD MEASUREMENT IS NOW REVERSED ON PURPOSE (card 2f0c7d24, Peti approved 2026-09-05). A
+// private FLEET_TEST_TREE was a silent opt-out from serialisation, and the tree is not the only
+// shared resource: a full suite starts one worker per core, so two runs on two trees starve each
+// other's CPU and fail on timeouts instead of on defects. Re-measured after the change, same box,
+// with FLEET_TEST_TREE pointed at a private path and another agent's real run holding the lock:
+//   * FLEET_TEST_LOCK_WAIT=2 -> "another suite run holds the fleet lock -- waiting (up to 2s)",
+//     then exit 3 naming /home/neon/marveen-test.lock -- the SHARED anchor, not the private tree's.
+// The path in that message is the measurement: before this card it would have read
+// <private tree>.lock, which was free, and the run would have started at once instead of queueing.
+// FLEET_TEST_TREE still chooses WHERE a run happens; it no longer chooses WHETHER it queues.
 import { describe, it, expect } from 'vitest'
 import { readFileSync } from 'node:fs'
 import { join, dirname } from 'node:path'
@@ -40,9 +51,13 @@ function problems(text: string): string[] {
   // would leave the exact window this card is about wide open.
   if (lock >= 0 && checkout >= 0 && lock > checkout) found.push('the lock is taken AFTER the checkout')
 
-  // Keyed on the tree, so a private FLEET_TEST_TREE does not queue behind the shared one -- which
-  // would turn the documented workaround into a slower version of the bug.
-  if (!/LOCK_FILE="\$\{TEST_TREE\}\.lock"/.test(text)) found.push('the lock is not keyed on the tree path')
+  // MACHINE-WIDE, not per tree (card 2f0c7d24, Peti approved 2026-09-05). This assertion is the
+  // exact INVERSE of what this file demanded before that card: keying the lock on ${TEST_TREE} made
+  // FLEET_TEST_TREE=<own path> a silent opt-out from serialisation, because a private tree got a
+  // private lock and queued behind nobody. Two suites on two trees still start one worker per core
+  // each and starve one another, and a starved run fails on timeouts rather than on defects.
+  if (/LOCK_FILE="\$\{TEST_TREE\}/.test(text)) found.push('the lock is keyed on the tree, so FLEET_TEST_TREE opts out of the queue')
+  if (!/LOCK_FILE="\$\{ROOT\}-test\.lock"/.test(text)) found.push('the lock is not anchored to one machine-wide path')
   // Beside the tree, never inside it: `git clean -fdq` runs in there on every invocation.
   if (/LOCK_FILE="\$\{?TEST_TREE\}?\//.test(text)) found.push('the lock file lives inside the tree git clean wipes')
 
@@ -57,10 +72,10 @@ function problems(text: string): string[] {
   return found
 }
 
-describe('fleet-test.sh serialises runs per tree (card 85faec1b)', () => {
+describe('fleet-test.sh serialises suite runs machine-wide (cards 85faec1b, 2f0c7d24)', () => {
   const text = readFileSync(SCRIPT, 'utf-8')
 
-  it('takes a per-tree lock before touching the tree, bounded and fatal on timeout', () => {
+  it('takes ONE machine-wide lock before touching the tree, bounded and fatal on timeout', () => {
     expect(problems(text)).toEqual([])
   })
 
@@ -69,6 +84,15 @@ describe('fleet-test.sh serialises runs per tree (card 85faec1b)', () => {
     const preFix = text.replace(/\ncommand -v flock[\s\S]*?\nfi\n/, '\n')
     expect(preFix, 'the mutation did not apply -- the block was not found').not.toMatch(/flock/)
     expect(problems(preFix)).toContain('no lock at all')
+  })
+
+  it('CONTROL: the pre-2f0c7d24 per-tree lock is REJECTED, so the bypass cannot come back', () => {
+    // Without this, the two assertions above could both be dead and the file would still be green.
+    const perTree = text.replace(/LOCK_FILE="\$\{ROOT\}-test\.lock"/, 'LOCK_FILE="${TEST_TREE}.lock"')
+    expect(perTree, 'the mutation did not apply -- the anchor line was not found').toContain('LOCK_FILE="${TEST_TREE}.lock"')
+    const found = problems(perTree)
+    expect(found).toContain('the lock is keyed on the tree, so FLEET_TEST_TREE opts out of the queue')
+    expect(found).toContain('the lock is not anchored to one machine-wide path')
   })
 
   it('CONTROL: a lock taken too late is caught, not just a missing one', () => {
