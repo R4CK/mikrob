@@ -8244,3 +8244,41 @@ formánként megy -- az egy-formát-beengedő mutáció pontosan a saját eseté
 **Egy saját hiba, ami majdnem átment:** a teszt-CÍMKÉKBE tett backtickeket a bash
 parancs-behelyettesítésként futtatta, így két near-miss címke azonosra rövidült -- pont a
 formánkénti megkülönböztetést ölte volna meg. A címkékből kivéve.
+
+## 2026-09-05 -- Az upstream clearInputBuffer retry+verify átvétele (kártya b34fa678)
+
+**Döntés.** A fork `clearInputBuffer`-je átveszi az upstream retry+verify alakját (blob
+`31758af9d36f`): háromszor próbálkozik, minden kör újraolvassa a sor-számot, a törlés UTÁN
+`stuckInputSignature`-rel ELLENŐRZI, hogy a doboz tényleg kiürült, és `void` helyett `boolean`-t ad.
+
+**A mögötte lévő incidens (upstream dokumentálja):** a törlés eddig fire-and-forget volt. Egy nem
+verifikált törlés a parkolt tick egy TÖREDÉKÉT hagyta a bufferben, ami onnantól semelyik
+delivery-wrapperrel nem egyezett -- így minden későbbi restart-döntés `machineOrigin=false`-t
+olvasott és halasztott. A session 25,4 órára beragadt. A restart hard cap csak a kárt korlátozza,
+a gyökér az ellenőrizetlen törlés.
+
+**Öt hívási hely van, nem kettő -- és ez szándékos.** A kártya „a channel-monitor.ts két hívási
+helye" megfogalmazása pontos abban, hogy mit kell IGAZÍTANI, de a fork valójában ötször hívja:
+`channel-monitor.ts` 378/393 (re-inject), 413/417 (nincs re-inject), és `agent-process.ts` 2119
+(pre-flight a küldés előtt). Upstream is csak a két re-inject NÉLKÜLI helyet igazítja, és a saját
+belső hívását bájtra változatlanul hagyja -- a re-injectes helyeken a boolean nem ad hozzá semmit,
+mert közvetlenül utána `sendPromptToSession` fut, ami felülírja a doboz tartalmát és saját
+kézbesítés-ellenőrzést visz. Ezt a hűséget megtartottam; a fork ötödik helye sem változott.
+
+**Amit NEM vettem át:** az upstream harmadik re-inject ága (`reinject-recorded`, a STUCKINPUT827
+injected-prompt-registry munkája) a forkban nem létezik, és nem ennek a kártyának a hatóköre.
+
+**Tesztelés, és egy saját vákuum eset.** Öt futásidejű eset a mockolt `execFileSync` fölött (a
+suite meglévő mintája), plusz két forrás-alapú eset a két hívási hely bedrótozására -- utóbbi
+kimondja magáról, hogy a WIRING-et rögzíti, nem a futásidejű viselkedést, mert
+`performStuckInputAction`-höz nincs harness ebben a suite-ban, és egyet építeni egy NORMAL kártyáért
+új infrastruktúra lenne, nem lefedettség.
+Az „olvashatatlan pane" esetem ELŐSZÖR VÁKUUM volt: üres sztringgel etettem, ami a
+`stuckInputSignature(...) == null` ágon megy át, nem az `after == null`-on -- a `capturePane`
+kizárólag akkor ad null-t, ha a `captureTmux` DOB. A mutáció, ami a null-ágat kiveszi, zölden
+hagyta. A fixture most a verify-hívásnál dobat, és a mutáció pirosra váltja.
+
+**Mutációs mérés:** nincs retry (MAX_ATTEMPTS=1) -> 2 piros; verify eltávolítva -> 3 piros; a dobás
+retry-ol ahelyett hogy gyorsan bukna -> 1 piros; az olvashatatlan pane még-beragadtnak számít ->
+1 piros; az egyik hívási hely visszaállítva csupasz `await`-re -> 1 piros (csak a sajátja).
+Mindegyik átmenő kontroll mellett.
