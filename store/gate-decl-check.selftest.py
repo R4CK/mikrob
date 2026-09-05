@@ -18,18 +18,31 @@ def run(description, comments):
     p = subprocess.run([sys.executable, CHECK],
                        input=json.dumps({"description": description, "comments": comments}),
                        capture_output=True, text=True)
-    return p.stdout.strip().split("|", 1)[0], p.returncode
+    out = p.stdout.strip()
+    return out.split("|", 1)[0], p.returncode, out
 
 
 def c(author, content):
     return {"author": author, "content": content}
 
 
-def case(label, description, comments, expect_code, expect_exit):
+def case(label, description, comments, expect_code, expect_exit, roles=None):
+    """`roles`, when given, also asserts WHICH roles the report names.
+
+    The code alone is not enough for the composition cases (Cybered NO-GO 20940): the failure being
+    pinned there is a report that fires with the SURVIVING NARROW role set, which looks correct
+    until you read the set it hands back.
+    """
     global n
     n += 1
-    code, rc = run(description, comments)
+    code, rc, out = run(description, comments)
     ok = code == expect_code and rc == expect_exit
+    if ok and roles is not None:
+        named = out.split("|", 1)[1] if "|" in out else ""
+        named = named.split(" ", 1)[0]
+        ok = set(filter(None, named.split(","))) == set(roles)
+        if not ok:
+            code = "%s|%s" % (code, named)
     print("%s %-13s <- %-13s exit %d  %s"
           % ("OK  " if ok else "FAIL", expect_code, code, rc, label))
     if not ok:
@@ -130,6 +143,29 @@ case("CONTROL: a properly anchored designation is OK, never MID-SENTENCE",
 # CONTROL: a real designation that merely CONTAINS extra words is still a designation.
 case("CONTROL: a designation with a parenthetical is still a designation",
      "Gate: QA + Cybersec (tartalom-ellenorzes, trust-boundary erintve)", [], "OK", 0)
+
+# --- the composition the report used to be blind to (Cybered NO-GO 20940) --------------------
+# MID-SENTENCE used to sit on `desc is None`, i.e. it only ran when the anchored regex saw NOTHING
+# -- the harmless case, where the card falls through to every gate and the drift costs one wasted
+# read. In the damaging case an earlier narrow "Gate: QA." survives anchoring while a later, wider
+# mid-sentence designation is dropped: the anchored regex finds something, the branch never ran,
+# and this tool answered OK while handing back the NARROWED role set as truth. Loud where the drift
+# is free, silent where it costs two gates.
+case("COMPOSITION: an earlier narrow designation must not hide a later mid-sentence widening",
+     "Elso korben a felbontas szerint keszult. Gate: QA.\n"
+     "MikroB kiterjesztette a hatokort a chained finding utan, tehat a helyes designacio\n"
+     "mostantol Gate: QA + Cybersec + Cybered (publikus write path).",
+     [], "MID-SENTENCE", 1)
+# ...and the roles it reports are the TRUE ones, not the surviving narrow set. Without this the
+# case above passes on a report that names {QA} and still sends nobody else to the card.
+case("COMPOSITION: the reported roles are the later designation's, not the surviving narrow one",
+     "Elso korben a felbontas szerint keszult. Gate: QA.\n"
+     "mostantol Gate: QA + Cybersec + Cybered (publikus write path).",
+     [], "MID-SENTENCE", 1, roles={"QA", "CYBERSEC", "CYBERED"})
+# The control that keeps the widened condition from firing on every ordinary card: when the bare
+# and anchored readings name the SAME roles there is no drift to report.
+case("CONTROL: bare and anchored agreeing on the roles is still plain OK",
+     "Valami bevezeto mondat. Gate: QA + Cybersec.", [], "OK", 0)
 
 print()
 print("selftest: %d case(s), %s" % (n, "PASS" if not failures else "FAIL"))

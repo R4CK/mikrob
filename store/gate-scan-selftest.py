@@ -156,6 +156,49 @@ check('CONTROL: the boundary class must NOT admit a quote -- that is the foundin
 check('CONTROL: a word ending in -gate is not a designation',
       declared_gate_excludes_me('a watergate: QA + Cybersec', 'cybered'), False)
 
+# ------------------------------------------------------- the composition anchoring opened up
+# Cybered NO-GO 20940. Anchoring closed a fail-open hole and opened a narrower one in the OTHER
+# direction, on exactly the case the last-match-wins rule exists for: scope widening mid-thread.
+# When the NEWEST designation is written mid-sentence, the anchored regex drops it and the last
+# SURVIVING match is an older, narrower one -- so the card falls silently out of the gates its own
+# newest sentence names. Neither existing mutation covered this: reverting to the bare search fails
+# 7 checks and line-start anchoring fails 5, and this composition appears in neither set, because
+# both of those mutate the REGEX while this is about which match is believed.
+_WIDENED = ('Elso korben a felbontas szerint keszult. Gate: QA.\n'
+            'MikroB kiterjesztette a hatokort a chained finding utan, tehat a helyes designacio\n'
+            'mostantol Gate: QA + Cybersec + Cybered (publikus write path).')
+for _g in ('qa', 'cybersec', 'cybered'):
+    check('COMPOSITION: a later mid-sentence WIDENING is not overruled by an earlier narrow one (%s)'
+          % _g, declared_gate_excludes_me(_WIDENED, _g), False)
+
+# The negative control that makes the case above mean something. Same opening sentence, without the
+# later designation: the narrow designation is then the whole truth and must still exclude, or the
+# guard has simply turned the function into a no-op.
+check('CONTROL: without the later designation the narrow one still excludes (cybersec)',
+      declared_gate_excludes_me('Elso korben a felbontas szerint keszult. Gate: QA.', 'cybersec'),
+      True)
+check('CONTROL: without the later designation the narrow one still excludes (cybered)',
+      declared_gate_excludes_me('Elso korben a felbontas szerint keszult. Gate: QA.', 'cybered'),
+      True)
+
+# The OTHER order, pinned because the rule is about READABILITY, not about widening. Here falling
+# through happens to be the generous direction anyway, but it must happen for the stated reason: the
+# newest statement is unreadable, so the older one is not the card's current designation either.
+check('COMPOSITION, reversed: a later mid-sentence NARROWING also makes the reading untrustworthy',
+      declared_gate_excludes_me(
+          'Gate: QA + Cybersec + Cybered.\n'
+          'Kesobb szukitettuk, tehat a helyes designacio mostantol Gate: QA (nincs trust-boundary).',
+          'cybersec'),
+      False)
+
+# MUTATION CONTROL for the comparison itself. Every ordinary designation is matched by BOTH regexes
+# at the same end position; if the guard compared with >= instead of >, every card on the board
+# would fall through and declared_gate_excludes_me would silently become `return False`. The two
+# CONTROLs above already fail under that mutation -- this one says so out loud, so the next reader
+# knows the strictness of that comparison is load-bearing.
+check('MUTATION CONTROL: a bare match at the SAME position as the anchored one must not fall through',
+      declared_gate_excludes_me('Gate: QA + Cybersec', 'cybered'), True)
+
 check('base form: CYBERED FULL-CARD GO', bool(PASS_RE.match('CYBERED FULL-CARD GO')), True)
 check('base form: QA FAIL', bool(FAIL_RE.match('QA FAIL')), True)
 check('base form: CYBERSEC NO-GO', bool(FAIL_RE.match('CYBERSEC NO-GO')), True)
