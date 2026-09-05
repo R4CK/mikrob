@@ -14,7 +14,7 @@
 // split across files is one that gets half-deleted. The 15-line bundle harness is duplicated from
 // agent-bundle.test.ts for the same reason.
 import { describe, it, expect, beforeEach, afterEach } from 'vitest'
-import { mkdtempSync, mkdirSync, writeFileSync, readFileSync, existsSync, rmSync } from 'node:fs'
+import { mkdtempSync, mkdirSync, writeFileSync, readFileSync, readdirSync, statSync, existsSync, rmSync } from 'node:fs'
 import { execFileSync } from 'node:child_process'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
@@ -201,4 +201,76 @@ describe('why minting the id matters: in-process writers use the agent NAME as `
       expect(src).toMatch(/createAgentMessage\(\s*name\s*,/)
     },
   )
+})
+
+// Door 5: the SHIPPED SEED FLEET (card 54fd9c02, Cybersec's finding attached to b46a4b7e's GO).
+//
+// The doors above all sit in the TypeScript layer. install-linux.sh:1534-1543 and the identical
+// block in install-macos.sh:1055 do not go through any of them: they `cp -r` every
+// seed-fleet-agents/*/ directory into agents/ with nothing but an already-exists skip. A commit
+// that added a seed-fleet-agents/system-directive/ directory would create agents/system-directive
+// on the next fresh install, past all four TS guards, and listAllAgentNames() hands that directory
+// name back VERBATIM -- readdirSync with no sanitization -- which is precisely the value
+// context-guard-runner.ts then passes as `from` to createAgentMessage. Minting, not claiming.
+//
+// The guard is therefore on the CORPUS, not on the shell. That is Cybersec's point and it is the
+// stronger placement for two reasons: shell cannot call isReservedSenderId, and a corpus check
+// covers both installers plus any third one that ever ships, without naming any of them. It also
+// moves the check from install time (on a stranger's machine, unobserved) to commit time.
+describe('door 5: the seed fleet shipped in the repo', () => {
+  const SEED_FLEET = join(SRC, '..', 'seed-fleet-agents')
+
+  function seedDirNames(): string[] {
+    return readdirSync(SEED_FLEET).filter((f) => {
+      try { return statSync(join(SEED_FLEET, f)).isDirectory() } catch { return false }
+    })
+  }
+
+  // Both forms, and the RAW one is the load-bearing half -- measured, not assumed:
+  // listAllAgentNames() in agent-config.ts returns readdirSync entries as they are, so the
+  // directory name IS the agent name. isReservedSenderId lower-cases, so a `System-Directive`
+  // directory is caught here without a sanitize step. The sanitized form is the cheap second
+  // half: it costs one call and catches the spellings this file already documents as reaching
+  // the reserved id only after normalization (`System--Directive`, `-system-directive-`),
+  // should anything downstream ever start normalizing a directory name into an id.
+  function reservedAmong(names: readonly string[]): string[] {
+    return names.filter((n) => isReservedSenderId(n) || isReservedSenderId(sanitizeAgentName(n)))
+  }
+
+  it('the corpus is real -- an empty or moved directory must not read as "all clean"', () => {
+    // Without this, deleting seed-fleet-agents/ or renaming it turns the guard below into a
+    // permanent pass. That failure mode is invisible: zero offenders looks the same whether the
+    // corpus is clean or absent.
+    expect(existsSync(SEED_FLEET), `${SEED_FLEET} is missing -- the installers seed from it`).toBe(true)
+    expect(seedDirNames().length).toBeGreaterThan(0)
+  })
+
+  it('CONTROL: the check fires on the case it exists for', () => {
+    // The founding case, run against the check itself before trusting its silence.
+    expect(reservedAmong(['backend', SYSTEM_DIRECTIVE_SENDER, 'qa'])).toEqual([SYSTEM_DIRECTIVE_SENDER])
+    expect(reservedAmong([LEGACY_SYSTEM_SENDER])).toEqual([LEGACY_SYSTEM_SENDER])
+    expect(reservedAmong(['System-Directive'])).toEqual(['System-Directive'])
+    expect(reservedAmong(['System--Directive'])).toEqual(['System--Directive'])
+    // ...and it does not flag the ordinary fleet, or the near-misses the predicate must let by.
+    expect(reservedAmong(['backend2', 'fron-ted', 'systematic', 'subsystem', 'system-directives'])).toEqual([])
+  })
+
+  it('no shipped seed directory is a reserved sender id', () => {
+    expect(
+      reservedAmong(seedDirNames()),
+      'These ship in seed-fleet-agents/ and the installers cp -r them into agents/ by name, with ' +
+        'no validation -- creating an agent inside the in-process sender namespace on every fresh ' +
+        'install. Rename the directory. Do NOT relax the reserved set to accommodate it.',
+    ).toEqual([])
+  })
+
+  it('both installers still seed from THIS directory', () => {
+    // The corpus check is only as good as the claim that it is the corpus the installers copy.
+    // If an installer switches to another seed path, this guard would keep passing over a
+    // directory nobody installs any more, which is the silent version of not existing.
+    for (const script of ['install-linux.sh', 'install-macos.sh']) {
+      const src = readFileSync(join(SRC, '..', script), 'utf-8')
+      expect(src, script).toMatch(/SEED_FLEET_DIR=.*\/seed-fleet-agents/)
+    }
+  })
 })
