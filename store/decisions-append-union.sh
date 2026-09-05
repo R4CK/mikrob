@@ -72,6 +72,54 @@ _common_line_prefix_len() {
   esac
 }
 
+# Does this text end INSIDE an open fenced code block?
+#
+# STATE, NOT A SPELLING (Cybered R-1). The first version counted `grep -c '^```'` and asked for an
+# even number. Measured on the same fixture shape that correctly refuses an unclosed ```: an
+# unclosed `~~~` and a ```-fence indented by two spaces both UNIONED, and both produce exactly the
+# J-2 harm -- theirs' entry swallowed into the block. That is one spelling of a general property,
+# and adding `~~~` beside it would be the third rung of the same ladder this card already climbed
+# twice; the answer there was to change the question, and it is the answer here too.
+#
+# So this tracks the CommonMark rule instead: a fence opens on three or more ` or ~ indented at most
+# three spaces (four is an indented code block, never a fence), and closes on the SAME character, at
+# least as long, with nothing but whitespace after it. An info string (```bash) is allowed on the
+# opener and forbidden on the closer, which is why the closer is matched strictly -- being lenient
+# there would close a block the parser leaves open, and that is the fail-OPEN direction.
+#
+# $1 = the text. 0 = ends inside an open fence (refuse), 1 = balanced.
+_ends_inside_code_fence() {
+  local LC_ALL=C line body ch run rest open_ch='' open_len=0
+  while IFS= read -r line; do
+    body="$line"
+    case "$body" in
+    '    '*) continue ;;
+    '   '*) body="${body#   }" ;;
+    '  '*)  body="${body#  }" ;;
+    ' '*)   body="${body# }" ;;
+    esac
+    case "$body" in
+    '`'*) ch='`' ;;
+    '~'*) ch='~' ;;
+    *) continue ;;
+    esac
+    run=0
+    while [ "${body:$run:1}" = "$ch" ]; do run=$((run + 1)); done
+    [ "$run" -ge 3 ] || continue
+    if [ -z "$open_ch" ]; then
+      open_ch="$ch"; open_len="$run"
+      continue
+    fi
+    [ "$ch" = "$open_ch" ] && [ "$run" -ge "$open_len" ] || continue
+    rest="${body:$run}"
+    case "$rest" in
+    *[![:space:]]*) continue ;;      # text after the fence -> not a closer
+    esac
+    open_ch=''; open_len=0
+  done <<<"$1"
+  [ -n "$open_ch" ]
+}
+
 # Would splicing these two lines together form a SETEXT HEADING that neither side wrote?
 #
 # EXTRACTED SO IT CAN BE TESTED ON ITS OWN CONTRACT (Cybersec, comment 20760). Inline, the `=`
@@ -370,12 +418,33 @@ try_append_union() {
   # every line-based check above still passes because the lines are all present. Parity is counted
   # over prefix+ours precisely because a fence opened in the shared prefix is closed by each side
   # separately; what matters is the state at the point theirs is spliced in.
-  local before_junction="${prefix}${joined}" last_before first_after fences
-  last_before="$(printf '%s' "$before_junction" | grep -v '^[[:space:]]*$' | tail -n1)"
+  local before_junction="${prefix}${joined}" last_before first_after
+  # THE ACTUAL LAST LINE, not the last NON-EMPTY one (Cybered R-3). A setext underline must
+  # IMMEDIATELY follow paragraph content: a blank line ends the paragraph, so a `---` after one is
+  # an ordinary horizontal rule. Filtering blanks out would look past that blank line, find the
+  # prose above it, and refuse a legitimate merge.
+  #
+  # NOT REACHABLE THROUGH THE MERGE PATH TODAY, AND SAYING SO IS THE POINT. Measured: a file ending
+  # "prozasor\n\n" on disk arrives here as "prozasor" -- `$(git show ...)` strips trailing newlines,
+  # so `before_junction` cannot end on a blank line no matter what either side wrote. The end-to-end
+  # behaviour is therefore UNCHANGED by this line, and an end-to-end fixture for it would be vacuous
+  # (the same trap as the seam predicate's `=` half, and the reason that half is pinned directly).
+  #
+  # KEPT ANYWAY, for the reason the `=` half is kept: the predicate should be right on its own
+  # contract, and this becomes reachable the moment anyone reads `ours` without command substitution
+  # -- which is a live possibility precisely because this file has already been bitten twice by that
+  # stripping. The predicate half is pinned by the direct seam cases below (a rule with nothing above
+  # it is safe); this line is what would feed it a genuinely empty `last_before`.
+  #
+  # Parameter expansion, not `$(... | tail -n1)`: the first attempt at this used the latter and
+  # measured as a NO-OP, because the substitution had already eaten the blank line before `tail` ran.
+  case "$before_junction" in
+  *$'\n'$'\n') last_before='' ;;
+  *) last_before="$(printf '%s' "$before_junction" | tail -n1)" ;;
+  esac
   first_after="$(printf '%s' "$theirs_added" | head -n1)"
   _seam_makes_setext_heading "$last_before" "$first_after" && return 1
-  fences="$(printf '%s' "$before_junction" | grep -c '^```' || true)"
-  [ $(( fences % 2 )) -eq 0 ] || return 1
+  _ends_inside_code_fence "$before_junction" && return 1
 
   # HEADER-COUNT CHECK (backend's own verification idea, card cbb66abf) as the actual arithmetic,
   # not the shorthand "both sides' counts added together": base's own headers are counted in BOTH
@@ -442,7 +511,10 @@ if [ "${BASH_SOURCE[0]}" = "${0}" ] && [ "${1:-}" != "--selftest" ]; then
   echo "$(basename "${BASH_SOURCE[0]}"): this file is a SOURCED helper, not an executable." >&2
   echo "  It takes no positional arguments. If you reached this from a git merge driver" >&2
   echo "  configuration, REMOVE IT: exiting 0 there would make git keep ours and silently" >&2
-  echo "  discard theirs. Source it and call its function instead; --selftest runs its tests." >&2
+  echo "  There is NO supported merge-driver configuration for this file -- do not wire one." >&2
+  echo "  (--selftest runs its tests. Note the guard cannot see a driver that SOURCES this file:" >&2
+  echo "   sourcing inherits the caller's positional parameters, so a caller invoked with three" >&2
+  echo "   arguments would be indistinguishable from a driver call. Cybered R-2.)" >&2
   exit 2
 fi
 
@@ -494,6 +566,13 @@ if [ "${BASH_SOURCE[0]}" = "${0}" ] && [ "${1:-}" = "--selftest" ]; then
     else
       echo "  FAIL $1 -> expected try_append_union to resolve (return 0), it returned 1"; fail=1
     fi
+  }
+  # Like t_resolved but without an expected-content argument: these fence fixtures differ only in
+  # the block they carry, and pinning the whole file for each would assert the fixture, not the rule.
+  t_resolved_any() { # $1 = label
+    if try_append_union "$REPO" "DECISIONS.md"; then echo "  ok   $1"
+    else echo "  FAIL $1 -> expected try_append_union to resolve (return 0), it returned 1"; fail=1; fi
+    git -C "$REPO" merge --abort 2>/dev/null || true
   }
   t_refused() { # $1 = label
     if try_append_union "$REPO" "DECISIONS.md"; then
@@ -1062,6 +1141,162 @@ body of A
 jobb törzs
 "
   t_refused "J-2: an unclosed code fence at the junction is refused"
+
+  # ONE CASE PER FENCE SPELLING (Cybered R-1). The parity check used to be `grep -c '^```'`, which
+  # is ONE spelling of a general property: measured on this same shape, an unclosed `~~~` and a
+  # ```-fence indented two spaces both UNIONED and produced exactly the J-2 harm. Adding `~~~`
+  # beside the backtick would have been the third rung of the ladder this card already climbed
+  # twice, so the check became a fence-state scan instead -- and each spelling gets its own case,
+  # because widening them as a block turns one case red and reads as coverage of all of them.
+  setup_conflict junction-unclosed-tilde-fence \
+    "## 2026-09-01 -- entry A
+body of A
+" \
+    "## 2026-09-01 -- entry A
+body of A
+## 2026-09-05 -- entry B (left)
+~~~bash
+echo hello
+" \
+    "## 2026-09-01 -- entry A
+body of A
+## 2026-09-06 -- entry C (right)
+jobb törzs
+"
+  t_refused "J-2: an unclosed ~~~ fence is refused too"
+
+  setup_conflict junction-unclosed-indented-fence \
+    "## 2026-09-01 -- entry A
+body of A
+" \
+    "## 2026-09-01 -- entry A
+body of A
+## 2026-09-05 -- entry B (left)
+  \`\`\`bash
+echo hello
+" \
+    "## 2026-09-01 -- entry A
+body of A
+## 2026-09-06 -- entry C (right)
+jobb törzs
+"
+  t_refused "J-2: an unclosed fence indented 2 spaces is refused"
+
+  # ...AND THE CONTROLS. Each closer form must still union, or "refuse on any fence character"
+  # would pass every case above while breaking ordinary content.
+  setup_conflict junction-closed-tilde-fence \
+    "## 2026-09-01 -- entry A
+body of A
+" \
+    "## 2026-09-01 -- entry A
+body of A
+## 2026-09-05 -- entry B (left)
+~~~bash
+echo hello
+~~~
+" \
+    "## 2026-09-01 -- entry A
+body of A
+## 2026-09-06 -- entry C (right)
+jobb törzs
+"
+  t_resolved_any "a CLOSED ~~~ fence still unions"
+
+  setup_conflict junction-fence-closed-by-longer \
+    "## 2026-09-01 -- entry A
+body of A
+" \
+    "## 2026-09-01 -- entry A
+body of A
+## 2026-09-05 -- entry B (left)
+\`\`\`bash
+echo hello
+\`\`\`\`\`
+" \
+    "## 2026-09-01 -- entry A
+body of A
+## 2026-09-06 -- entry C (right)
+jobb törzs
+"
+  t_resolved_any "a fence closed by a LONGER run still unions"
+
+  setup_conflict junction-tilde-not-closed-by-backtick \
+    "## 2026-09-01 -- entry A
+body of A
+" \
+    "## 2026-09-01 -- entry A
+body of A
+## 2026-09-05 -- entry B (left)
+~~~bash
+echo hello
+\`\`\`
+" \
+    "## 2026-09-01 -- entry A
+body of A
+## 2026-09-06 -- entry C (right)
+jobb törzs
+"
+  t_refused "a ~~~ fence is NOT closed by \`\`\` -- refused"
+
+  setup_conflict junction-four-space-indent-not-a-fence \
+    "## 2026-09-01 -- entry A
+body of A
+" \
+    "## 2026-09-01 -- entry A
+body of A
+## 2026-09-05 -- entry B (left)
+    \`\`\`bash
+echo hello
+" \
+    "## 2026-09-01 -- entry A
+body of A
+## 2026-09-06 -- entry C (right)
+jobb törzs
+"
+  t_resolved_any "four spaces is an indented block, not a fence -- unions"
+
+  # THE TWO STRICTNESS RULES ON THE CLOSER, each pinned on its own. Both were unpinned in the first
+  # version: mutating "closer must be at least as long" and "closer must have nothing after it" left
+  # the whole selftest green, so the code was right and the tests were not watching. CommonMark says
+  # a closing fence is at least as long as the opener and carries no info string; being lenient on
+  # either would close a block the parser leaves OPEN, which is the fail-open direction.
+  setup_conflict junction-closer-too-short \
+    "## 2026-09-01 -- entry A
+body of A
+" \
+    "## 2026-09-01 -- entry A
+body of A
+## 2026-09-05 -- entry B (left)
+\`\`\`\`\`bash
+echo hello
+\`\`\`
+" \
+    "## 2026-09-01 -- entry A
+body of A
+## 2026-09-06 -- entry C (right)
+jobb törzs
+"
+  t_refused "a SHORTER closing run does not close the fence -- refused"
+
+  setup_conflict junction-closer-with-text \
+    "## 2026-09-01 -- entry A
+body of A
+" \
+    "## 2026-09-01 -- entry A
+body of A
+## 2026-09-05 -- entry B (left)
+\`\`\`bash
+echo hello
+\`\`\` trailing
+" \
+    "## 2026-09-01 -- entry A
+body of A
+## 2026-09-06 -- entry C (right)
+jobb törzs
+"
+  t_refused "a closing fence with trailing text does not close it -- refused"
+
+
 
   # ...AND THE CONTROL THAT KEEPS J-2 HONEST: a fence that ours CLOSES is ordinary content and must
   # still union. Without this, "refuse whenever a backtick appears" would pass the case above.
