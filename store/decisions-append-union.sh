@@ -138,6 +138,55 @@ try_append_union() {
   # empty added-half means some assumption above is wrong, so refuse rather than guess.
   [ -n "$ours_added" ] && [ -n "$theirs_added" ] || return 1
 
+  # EACH REMAINDER MUST BEGIN A NEW ENTRY (Cybersec NO-GO, comment 20499).
+  #
+  # THE HOLE: the common prefix can legitimately END WITH A SHARED `## ` HEADER LINE -- both sides
+  # wrote the same header and then DIFFERENT bodies under it. Concatenating the remainders then
+  # produces ONE header with two bodies glued together: not a duplicate entry, a silently merged
+  # one. The old base-anchored boundary could not reach that state, so this is a regression my own
+  # widening introduced -- and `uniq -d` on the headers would not see it either, because there is
+  # only one header.
+  #
+  # WHY NOT THE LITERAL RULE the NO-GO proposed ("each remainder must start with `## `"): MEASURED
+  # on the real file, 18 of its 199 entries are preceded by a `---` separator line and 181 by
+  # ordinary text. An append that carries its own separator therefore begins with `---`, not `## `
+  # -- including the one this card's own DECISIONS entry made an hour ago. The literal rule would
+  # refuse those as edits. So this encodes the INTENT rather than its first spelling: the remainder
+  # must reach an entry header with nothing but separator or blank lines before it. Body prose ahead
+  # of the first header is exactly the "both sides continued the same entry" shape.
+  #
+  # ...AND WHY THE HEADER MUST BE DATED, not merely `## ` (Cybered CS-2, msg 23477, fixture
+  # reproduced as a selftest case below). A bare `## ` boundary has the SAME hole one level down:
+  # if the two sides diverge on a body line that itself begins with `## ` -- a quoted heading inside
+  # an entry -- then BOTH remainders start with `## `, the check passes, and the union again glues
+  # two bodies under one shared header. Requiring the header to carry a date closes it, because an
+  # entry header in this log always does and a quoted heading in prose essentially never does.
+  #
+  # MEASURED before choosing this over "document the assumption and move on": marveen's DECISIONS.md
+  # has 199 `^## ` lines and 199 of them are dated; CleanCore's has 154 of 154. Zero body `## ` lines
+  # exist in either file today, so CS-2 is latent rather than live -- but the cost of closing it is
+  # only ever a REFUSAL (the caller's normal manual-resolution path), never a bad merge, so the
+  # fail-closed direction is the cheap one. A non-dated header append is refused from here on; that
+  # cost is pinned by its own selftest case rather than left as prose.
+  #
+  # OVERRIDABLE rather than hardcoded, because this function takes the filename as a parameter and
+  # a future append-only file may spell its entry boundary differently. The default states THIS
+  # log's convention; a caller with another one sets the variable instead of copying the function.
+  local header_glob="${DECISIONS_ENTRY_HEADER_GLOB:-## [0-9][0-9][0-9][0-9]-*}"
+  _starts_new_entry() {
+    local rest="$1" line
+    while IFS= read -r line; do
+      case "$line" in
+      $header_glob) return 0 ;;
+      ''|'---'|'***'|'___') continue ;;
+      *) return 1 ;;
+      esac
+    done <<<"$rest"
+    return 1                      # no header at all -- not a new entry
+  }
+  _starts_new_entry "$ours_added" || return 1
+  _starts_new_entry "$theirs_added" || return 1
+
   # LINE BOUNDARY. _common_line_prefix already truncates to the last newline, so each remainder
   # begins at the start of a line and the concatenation below cannot splice two half-lines into one
   # -- the failure the old code prevented by requiring the remainder to START with a newline. That
@@ -384,30 +433,35 @@ if [ "${BASH_SOURCE[0]}" = "${0}" ] && [ "${1:-}" = "--selftest" ]; then
   # `git diff --numstat` was "30 0" and "924 0" -- neither side deleted anything -- yet the old
   # byte-prefix-against-base test refused, because the base was no longer a literal prefix of either
   # side. 5 of the 13 open branches touching this file were blocked that way, 4 on BOTH sides.
+  #
+  # ITS HEADERS ARE DATED and that is load-bearing, not decoration: the entry-boundary check above
+  # requires a dated header, so an undated `## entry L` remainder is refused. The fixture is about
+  # the MID-FILE INSERTION, so it carries the real file's header convention; the undated case has
+  # its own fixture below asserting the refusal.
   setup_conflict identical-midfile-insert \
-    "## entry A
+    "## 2026-01-01 -- entry A
 body of A
-## entry B
+## 2026-01-02 -- entry B
 " \
-    "## entry A
+    "## 2026-01-01 -- entry A
 body of A
 
-## entry B
-## entry L (left)
+## 2026-01-02 -- entry B
+## 2026-01-04 -- entry L (left)
 " \
-    "## entry A
+    "## 2026-01-01 -- entry A
 body of A
 
-## entry B
-## entry R (right)
+## 2026-01-02 -- entry B
+## 2026-01-05 -- entry R (right)
 "
   t_resolved "an IDENTICAL mid-file insertion on both sides no longer blocks the union" \
-    "## entry A
+    "## 2026-01-01 -- entry A
 body of A
 
-## entry B
-## entry L (left)
-## entry R (right)
+## 2026-01-02 -- entry B
+## 2026-01-04 -- entry L (left)
+## 2026-01-05 -- entry R (right)
 "
 
   # ...AND THE SAFETY PROPERTY THAT MAKES THE WIDENING SAFE. If the two sides diverge EARLY with
@@ -433,6 +487,129 @@ body of A
 ## entry R (right)
 "
   t_refused "DIFFERENT mid-file insertions are refused -- the union never duplicates the tail"
+
+  # CYBERSEC'S CASE: both sides wrote the SAME header and then DIFFERENT bodies under it. The common
+  # prefix then ends AFTER that shared header, and concatenating the remainders would produce ONE
+  # header carrying both bodies -- a silently merged entry, which a duplicate-header check cannot
+  # see because there is only one header. Must refuse.
+  setup_conflict shared-header-split-body \
+    "## entry A
+body of A
+"\
+    "## entry A
+body of A
+## 2026-01-02 -- ugyanaz a fejlec
+bal oldali torzs
+" \
+    "## entry A
+body of A
+## 2026-01-02 -- ugyanaz a fejlec
+jobb oldali torzs
+"
+  t_refused "a SHARED header with different bodies under it is refused, not glued into one entry"
+
+  # CYBERED'S CS-2: THE SAME HOLE ONE LEVEL DOWN (msg 23477, their fixture reproduced verbatim).
+  # Both sides share the header AND an intro line, and then diverge on a body line that itself
+  # begins with `## ` -- a quoted heading inside the entry. Under a bare `## ` boundary BOTH
+  # remainders start with `## `, so the shared-header check above passes and the union produces one
+  # header carrying two continuations. The dated-header boundary is what refuses it: `## quoted
+  # heading OURS` is not a dated entry header. Verified failing before the change and passing after.
+  setup_conflict cs2-quoted-heading-in-body \
+    "## 2026-09-01 -- entry A
+body of A
+" \
+    "## 2026-09-01 -- entry A
+body of A
+## 2026-09-05 -- Same Decision
+intro line
+## quoted heading OURS
+tail A
+" \
+    "## 2026-09-01 -- entry A
+body of A
+## 2026-09-05 -- Same Decision
+intro line
+## quoted heading THEIRS
+tail B
+"
+  t_refused "a body line starting with ## does not count as an entry boundary (Cybered CS-2)"
+
+  # THE PRICE OF THAT RULE, PINNED RATHER THAN DESCRIBED. Requiring a DATE means a genuine
+  # append whose header is undated is now refused and falls to the caller's manual path. Measured
+  # before accepting it: 199 of 199 headers in marveen's DECISIONS.md are dated and 154 of 154 in
+  # CleanCore's, so this costs nothing today -- but it is a real behaviour change, and a behaviour
+  # change nobody tests is one the next reader will "fix" back.
+  setup_conflict undated-header-append \
+    "## 2026-01-01 -- entry A
+" \
+    "## 2026-01-01 -- entry A
+## entry L (left, undated)
+" \
+    "## 2026-01-01 -- entry A
+## entry R (right, undated)
+"
+  t_refused "an UNDATED header append is refused -- the documented cost of the CS-2 boundary"
+
+  # ...AND THE OVERRIDE IS REAL, not a comment. The boundary pattern is a variable so a future
+  # append-only file with another convention can reuse this function instead of copying it; if that
+  # is only asserted in prose it will rot. Same fixture as above, unioning under an override that
+  # accepts the undated shape.
+  setup_conflict undated-header-append-override \
+    "## 2026-01-01 -- entry A
+" \
+    "## 2026-01-01 -- entry A
+## entry L (left, undated)
+" \
+    "## 2026-01-01 -- entry A
+## entry R (right, undated)
+"
+  # NOT a subshell: `fail=1` set inside `( ... )` is discarded when it exits, so a regression here
+  # would report itself as a pass. Set, run, unset.
+  DECISIONS_ENTRY_HEADER_GLOB='## *'
+  t_resolved "the entry-boundary pattern is overridable (DECISIONS_ENTRY_HEADER_GLOB)" \
+    "## 2026-01-01 -- entry A
+## entry L (left, undated)
+## entry R (right, undated)
+"
+  unset DECISIONS_ENTRY_HEADER_GLOB
+
+  # ...AND THE CONTROL THAT KEEPS THAT RULE HONEST: an append carrying its own `---` separator is a
+  # NEW entry, not an edit, and must still union. Measured on the real file: 18 of 199 entries are
+  # preceded by `---`, so the literal "remainder must start with ## " rule the NO-GO proposed would
+  # refuse a legitimate shape -- including this card's own DECISIONS entry.
+  setup_conflict separator-led-append \
+    "## entry A
+body of A
+" \
+    "## entry A
+body of A
+
+---
+
+## 2026-01-02 -- bal oldali bejegyzes
+" \
+    "## entry A
+body of A
+
+---
+
+## 2026-01-03 -- jobb oldali bejegyzes
+"
+  # THE EXPECTED RESULT KEEPS THE SHARED SEPARATOR ONCE, and that is the correct answer rather than a
+  # compromise: both sides wrote the same `---`, so it belongs to the common prefix and appears a
+  # single time. The two new entries then sit adjacent with no rule between them -- which is the
+  # file's majority shape anyway (181 of 199 entries have no `---` before them). A first version of
+  # this expectation demanded the separator twice and failed here; the union was right and my
+  # expectation was wrong.
+  t_resolved "an append that leads with a --- separator still unions (18 of 199 real entries do)" \
+    "## entry A
+body of A
+
+---
+
+## 2026-01-02 -- bal oldali bejegyzes
+## 2026-01-03 -- jobb oldali bejegyzes
+"
 
   # UTF-8: THE INVARIANT, ASSERTED ON THE HELPER DIRECTLY (card b7e57877).
   #

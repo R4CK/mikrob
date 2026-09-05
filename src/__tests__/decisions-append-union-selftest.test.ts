@@ -35,19 +35,25 @@ describe('decisions-append-union.sh selftest', () => {
   // costs seconds; this costs nothing and names the exact construct that must not come back.
   it('slices the added half by OFFSET, never by pattern-strip', () => {
     const src = execFileSync('cat', [SCRIPT], { encoding: 'utf-8' })
+    // CODE LINES ONLY, FOR BOTH DIRECTIONS (Cybered F-1). The prohibitions below always scanned the
+    // comment-stripped copy, but the two POSITIVE assertions used to scan the whole file -- so the
+    // pair could be satisfied by prose. Reverting the code to the old offset AND adding a comment
+    // that quotes the pinned literal would have left this test GREEN while the code was wrong: the
+    // positive matched the comment, and the prohibition never saw it because it reads `code`. An
+    // asymmetric guard is worse than a missing one, because it reports coverage in the exact case it
+    // does not cover.
+    const code = src
+      .split('\n')
+      .filter((l) => !/^\s*#/.test(l))
+      .join('\n')
     // The offset is now taken against the SHARED PREFIX rather than the merge-base (card b7e57877):
     // the union is computed from what the two sides have in common, so `base` is no longer the thing
     // being sliced off. The PROPERTY this test exists for is unchanged -- slice by offset, never by
     // pattern-strip -- and only the name of the variable it slices against moved. Updating the
     // needle keeps the assertion; weakening it to a substring like 'ours_added="${ours:' would not,
     // because that would also accept a pattern-strip written on the following line.
-    expect(src).toContain('ours_added="${ours:${#prefix}}"')
-    expect(src).toContain('theirs_added="${theirs:${#prefix}}"')
-    // CODE lines only. The fix's own comment explains WHY the pattern-strip form is wrong and
-    // therefore quotes it, so scanning the whole file would fail on the prose that documents the
-    // fix -- a trap this repo's docs guards have sprung on me before. Scoping the scan to code is
-    // what the assertion actually means; weakening the pattern would not be.
-    const code = src.split('\n').filter((l) => !/^\s*#/.test(l)).join('\n')
+    expect(code).toContain('ours_added="${ours:${#prefix}}"')
+    expect(code).toContain('theirs_added="${theirs:${#prefix}}"')
     // The pattern-strip form is O(n^2) in bash: 405s on the real 447 KB DECISIONS.md, against
     // 0.010s for the offset form. The `case` above it has already proved the literal prefix, so
     // there is nothing left for a pattern to match.
