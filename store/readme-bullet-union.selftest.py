@@ -252,7 +252,13 @@ if __name__ == "__main__":
     e2e = end_to_end()
     print("  --- mutations ---")
     probs = mutations()
-    if fails or probs or e2e:
-        print("selftest: FAIL")
+    # THE SUMMARY CARRIES THE COUNT, in the shape src/__tests__/store-selftests-all-run.test.ts
+    # already recognises. A bare "selftest: PASS" is what that guard exists to reject: it cannot
+    # tell a suite that ran everything from one that ran nothing, which is the exact failure it
+    # was written for. Reusing an existing shape rather than adding one keeps that guard tight.
+    total = len(CASES) + 2 + len(MUTATIONS)
+    failed = len(fails) + e2e + probs
+    if failed:
+        print("selftest: %d passed, %d failed" % (total - failed, failed))
         sys.exit(1)
-    print("selftest: PASS")
+    print("selftest: %d passed, 0 failed" % total)
