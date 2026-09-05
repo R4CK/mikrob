@@ -141,13 +141,16 @@ describe('load-guard-bookkeeping --test-compute: the rolling pause-event window'
 describe('load-guard-bookkeeping --test-compute: no-op / malformed-input safety', () => {
   it('nothing throttled or frozen, nothing previously paused -> everything empty, no crash', () => {
     const r = compute({ throttled: null }, { frozen: null }, {}, {}, 1000)
-    expect(r).toEqual({ paused: {}, events: {}, starts: [], ends: [], alert_agents: [] })
+    // `episodes`/`notes` joined the contract in card 9c6b1802: the kanban note is now emitted
+    // per THROTTLING EPISODE rather than per transition. The point of this case is unchanged --
+    // an idle tick produces nothing anywhere -- so the new keys are asserted empty too.
+    expect(r).toEqual({ paused: {}, events: {}, starts: [], ends: [], alert_agents: [], episodes: {}, notes: [] })
   })
 
   it('a state file that failed to parse falls back to empty, never crashes the tick', () => {
     const out = execFileSync('bash', [
       SCRIPT, '--test-compute', 'not-json', '', '', '', '1000', '2', '3600',
     ]).toString()
-    expect(JSON.parse(out)).toEqual({ paused: {}, events: {}, starts: [], ends: [], alert_agents: [] })
+    expect(JSON.parse(out)).toEqual({ paused: {}, events: {}, starts: [], ends: [], alert_agents: [], episodes: {}, notes: [] })
   })
 })

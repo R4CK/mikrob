@@ -8530,3 +8530,39 @@ helyes volt, a tesztek viszont nem figyelték. Mindkettő saját esetet kapott.
 **Mutációs mérés, öt mutáció, mind csak a sajátját:** vissza a grep-paritásra -> 2 piros (a `~~~` és
 a behúzott); a tilde elvéve -> 1; a behúzás-levágás elvéve -> 1; a záró rövidebbet is elfogad -> 1;
 a záró utáni szöveget elfogad -> 1. Átmenő kontroll mellett.
+
+## 2026-09-05 -- 9c6b1802: a fékezés-jegyzet egysége az EPIZÓD, nem az átmenet
+
+**Döntés:** A load-guard PAUSED-LOAD/RESUMED-LOAD kanban-jegyzete mostantól epizód-szintű: egy
+jegyzet a fékezési epizód kezdetén, egy a végén (ciklusszámmal és időtartammal), és közben
+időkorlátos életjel. Az egyes fagyasztási ciklusok nem írnak jegyzetet. Két új hangoló érték a
+`load-guard-config.json` `bookkeeping` blokkjában: `episode_gap_seconds` (300) és
+`heartbeat_seconds` (240).
+
+**Miért:** A jelenség nem hiba volt, hanem a mechanizmus szerkezete. A `sigstop_freeze`
+`max_freeze_seconds` értéke 90, tehát tartós terhelés alatt a guard fagyaszt, eléri a korlátot,
+felenged egy még mindig terhelt gépre, majd újrafagyaszt. Élő mérés a táblán: 1082 fékezés-kezdetből
+988 volt `sigstop_freeze`, a medián állapot-hossz 10 másodperc, és az összes kanban-komment 10,2
+százaléka ilyen jegyzet. A legrosszabb kártya (fe5d7967) 353 kommentjéből 342 volt ez, vagyis 11
+valódi komment maradt. Az átmenet tehát rossz hír-egység volt; az epizód a jó, és a ciklusszám
+olyan információ, amit 46 azonos pár soha nem adott meg.
+
+**A KORLÁT, ami a tervet eldöntötte:** a jegyzetnek van egy MÁSODIK funkciója is, mozgatja a kártya
+`updated_at` mezőjét. A stuck-card-monitor a `load-paused-agents.json` alapján zárja ki a fékezett
+ügynököket, tehát a FOLYAMATOSAN fékezett ügynököt a jelzőfájl védi; de a jelzőhalmazból ki-be
+ugráló ügynököt a monitor elkaphatja egy felengedett pillanatban, és akkor már csak az `updated_at`
+áll közte és a 10 perces beragadás-ítélet között. Ezért a néma ablak KORLÁTOZOTT, nem megszüntetett.
+A teljes élő jegyzet-korpuszon (2150 darab) szimulálva a leghosszabb néma ablak egy aktív epizódon
+belül 497 másodperc, a monitor 600 másodperces küszöbe alatt, körülbelül 100 másodperc tartalékkal.
+Ugyanezen a korpuszon a jegyzetek száma 2150-ről 382-re esik (82 százalék).
+
+**Elvetett alternatíva:** egyszerű küszöb az állapot hosszára (csak N másodpercnél hosszabb fékezés
+ír jegyzetet). Mivel a `sigstop_freeze` 90 másodpercnél tovább nem tarthat, minden 90 feletti küszöb
+kivétel nélkül elnyomta volna a fékezések 91 százalékát adó mechanizmus MINDEN jegyzetét, a 90 alatti
+küszöbök pedig a mérés szerint vagy keveset nyertek, vagy a néma ablakot 600 másodperc fölé vitték.
+
+**Amit ez NEM old meg:** magát a flapping-et. A 90 másodperces korlát és a tartós terhelés
+kölcsönhatása változatlan; ez a döntés a jelentést javítja, nem a fékezést. Ha a flapping maga
+zavaró, az külön kártya a `max_freeze_seconds` és a felengedés utáni visszaesés-kezelés kérdésére.
+
+**Ki döntött:** backend2, Cybered megfigyelése alapján (komment 21017). Gate: QA.

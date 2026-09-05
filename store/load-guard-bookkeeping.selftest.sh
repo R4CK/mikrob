@@ -71,7 +71,7 @@ state() { # $1 = json for the sigstop state file
 run() {
   DASH="http://127.0.0.1:9" DASHBOARD_TOKEN_FILE="$TMP/token" \
   bash "$RUN" --cgroup-state "$TMP/cgroup.json" --sigstop-state "$TMP/sigstop.json" \
-    --paused "$TMP/paused.json" --events "$TMP/events.json" \
+    --paused "$TMP/paused.json" --events "$TMP/events.json" --episodes "$TMP/episodes.json" \
     --alert-stamp "$TMP/alert.json" --alert-dryrun --now "$1" >/dev/null 2>&1
 }
 author_of() { python3 -c '
@@ -85,7 +85,7 @@ for line in open(sys.argv[1]):
 ' "$CAPTURE" "$1"; }
 
 # --- 1. PAUSED-LOAD is authored by the agent that was FROZEN -------------------------------------
-printf '%s' '{}' > "$TMP/paused.json"; printf '%s' '{}' > "$TMP/events.json"
+printf '%s' '{}' > "$TMP/paused.json"; printf '%s' '{}' > "$TMP/events.json"; printf '%s' '{}' > "$TMP/episodes.json"
 state '{"frozen":"fullstack","since":1788000000}'
 run 1788000010
 a="$(author_of 'PAUSED-LOAD')"
@@ -99,9 +99,24 @@ fi
   || ok "the note does not claim backend was frozen"
 
 # --- 2. RESUMED-LOAD is authored by the same agent -----------------------------------------------
+# TIMING CHANGED IN CARD 9c6b1802, AND THE CHANGE IS THE POINT, so it is written here rather than
+# quietly absorbed: the resume note is now the end of an EPISODE, not the end of one freeze cycle.
+# A release is no longer news by itself, because sigstop_freeze is capped at 90s and therefore
+# releases constantly under sustained load -- that cap is what produced 988 of the 1082 pause
+# notes on the live board. So this case now drives the episode to its actual end. What it asserts
+# is UNCHANGED and is the reason the case exists: the note carries the released agent as author.
 : > "$CAPTURE"
 state '{}'
 run 1788000100
+a="$(author_of 'RESUMED-LOAD')"
+if [ -z "$a" ]; then
+  ok "a mere release posts NO resume note yet -- the episode has not lapsed"
+else
+  bad "a resume note fired 90s into an open episode (author '$a')" "$(cat "$CAPTURE")"
+fi
+
+# now let the episode lapse (episode_gap defaults to 300s) and the note must appear
+run 1788000400
 a="$(author_of 'RESUMED-LOAD')"
 if [ "$a" = "fullstack" ]; then
   ok "RESUMED-LOAD is authored by the agent that was released"
@@ -111,7 +126,7 @@ fi
 
 # --- 3. a DIFFERENT agent gets its own name, so case 1 is not a constant --------------------------
 # Without this, an author hardcoded to "fullstack" would satisfy everything above.
-: > "$CAPTURE"; printf '%s' '{}' > "$TMP/paused.json"; printf '%s' '{}' > "$TMP/events.json"
+: > "$CAPTURE"; printf '%s' '{}' > "$TMP/paused.json"; printf '%s' '{}' > "$TMP/events.json"; printf '%s' '{}' > "$TMP/episodes.json"
 state '{"frozen":"backend","since":1788000200}'
 run 1788000210
 a="$(author_of 'PAUSED-LOAD')"
@@ -126,7 +141,7 @@ fi
 # up by assignee. That is an accident of one caller, not a rule -- so the rule is stated here.
 #
 # An UNKNOWN name must not reach a card's audit trail as if it were an agent.
-: > "$CAPTURE"; printf '%s' '{}' > "$TMP/paused.json"; printf '%s' '{}' > "$TMP/events.json"
+: > "$CAPTURE"; printf '%s' '{}' > "$TMP/paused.json"; printf '%s' '{}' > "$TMP/events.json"; printf '%s' '{}' > "$TMP/episodes.json"
 state '{"frozen":"fullstack","since":1788000300}'
 # The card lookup still resolves (fullstack has a card); the AUTHOR is what we bend, by asking the
 # validator directly through a fabricated state whose name is not in the registry.
@@ -142,7 +157,7 @@ fi
 # An identity that CANNOT have been throttled must not sign a throttle note. MikroB and the gate
 # pool are excluded from every mechanism (load-guard-excluded.sh), so such a note would assert
 # something impossible.
-: > "$CAPTURE"; printf '%s' '{}' > "$TMP/paused.json"; printf '%s' '{}' > "$TMP/events.json"
+: > "$CAPTURE"; printf '%s' '{}' > "$TMP/paused.json"; printf '%s' '{}' > "$TMP/events.json"; printf '%s' '{}' > "$TMP/episodes.json"
 printf '%s' '{"frozen":"qa","since":1788000400}' > "$TMP/sigstop.json"
 printf '%s' '{}' > "$TMP/cgroup.json"
 out="$(run 1788000410 2>&1)"
@@ -155,7 +170,74 @@ fi
 
 # CONTROL for the two above: a known, throttleable agent IS still written as itself. Without this,
 # a validator that rejected everything would satisfy both cases.
-: > "$CAPTURE"; printf '%s' '{}' > "$TMP/paused.json"; printf '%s' '{}' > "$TMP/events.json"
+
+# --- 8. THE FLAPPING COLLAPSE, which is what card 9c6b1802 is about -------------------------------
+# sigstop_freeze is capped at max_freeze_seconds (90 by config), so under sustained load it freezes,
+# hits the cap, releases into a still-loaded machine and refreezes. Measured on the live board:
+# 988 of 1082 pause-starts were sigstop_freeze, median dwell 10s, and card fe5d7967 carried 342 of
+# its 353 comments as these notes. Under the OLD rule each cycle posted a pair, so this scenario --
+# 15 cycles -- cost 30 comments. The episode rule must cost far less while still saying it is
+# happening.
+: > "$CAPTURE"; printf '%s' '{}' > "$TMP/paused.json"; printf '%s' '{}' > "$TMP/events.json"; printf '%s' '{}' > "$TMP/episodes.json"
+t=1788100000
+for i in $(seq 1 15); do
+  state '{"frozen":"backend","since":1788100000}'; run "$t"; t=$((t+10))
+  state '{}';                                      run "$t"; t=$((t+10))
+done
+posted=$(grep -c . "$CAPTURE" 2>/dev/null || echo 0)
+if [ "$posted" -lt 10 ]; then
+  ok "15 freeze cycles cost $posted notes, not the 30 the per-transition rule charged"
+else
+  bad "flapping still costs $posted notes for 15 cycles" "$(cat "$CAPTURE")"
+fi
+# ...and it must not go SILENT: the episode was announced.
+if grep -q 'PAUSED-LOAD' "$CAPTURE"; then
+  ok "the episode is still announced -- quieter, not invisible"
+else
+  bad "flapping produced no note at all" "$(cat "$CAPTURE")"
+fi
+
+# --- 9. THE HEARTBEAT BOUND is a SAFETY property, not cosmetics -----------------------------------
+# The note also moves the card updated_at field. The stuck-card-monitor excludes agents listed in
+# load-paused-agents.json, but an agent flapping in and out of that set can be sampled while
+# ADMITted, and then only updated_at stands between it and a 10-minute stuck verdict. So a
+# CONTINUOUSLY paused agent must keep producing a note well inside that window.
+: > "$CAPTURE"; printf '%s' '{}' > "$TMP/paused.json"; printf '%s' '{}' > "$TMP/events.json"; printf '%s' '{}' > "$TMP/episodes.json"
+state '{"frozen":"backend","since":1788200000}'
+t=1788200000
+for i in $(seq 1 12); do run "$t"; t=$((t+50)); done   # 600s of continuous freeze
+beats=$(grep -c 'PAUSED-LOAD' "$CAPTURE" 2>/dev/null || echo 0)
+if [ "$beats" -ge 3 ]; then
+  ok "a 600s continuous freeze still posts $beats notes, so updated_at never goes 600s stale"
+else
+  bad "only $beats note(s) in a 600s freeze -- the stuck-monitor budget is not covered" "$(cat "$CAPTURE")"
+fi
+
+# --- 10. CONTROL: one long, non-flapping pause is still exactly one start and one end -------------
+# Without this, a rule that simply swallowed everything would pass case 8 just as well.
+: > "$CAPTURE"; printf '%s' '{}' > "$TMP/paused.json"; printf '%s' '{}' > "$TMP/events.json"; printf '%s' '{}' > "$TMP/episodes.json"
+state '{"frozen":"backend","since":1788300000}'
+run 1788300000
+run 1788300060
+state '{}'
+run 1788300120
+run 1788300500                                  # lapse: 380s after the last activity
+starts_n=$(grep -c 'PAUSED-LOAD' "$CAPTURE" 2>/dev/null || echo 0)
+ends_n=$(grep -c 'RESUMED-LOAD' "$CAPTURE" 2>/dev/null || echo 0)
+if [ "$starts_n" = "1" ] && [ "$ends_n" = "1" ]; then
+  ok "CONTROL: an ordinary 120s pause is still exactly one PAUSED-LOAD and one RESUMED-LOAD"
+else
+  bad "ordinary pause posted $starts_n start(s) and $ends_n end(s), want 1 and 1" "$(cat "$CAPTURE")"
+fi
+
+# --- 11. the end note CARRIES the cycle count, which the old pair never did -----------------------
+if grep -q 'ciklusb' "$CAPTURE"; then
+  ok "the resume note reports how many cycles the episode contained"
+else
+  bad "the resume note does not name the cycle count" "$(cat "$CAPTURE")"
+fi
+
+: > "$CAPTURE"; printf '%s' '{}' > "$TMP/paused.json"; printf '%s' '{}' > "$TMP/events.json"; printf '%s' '{}' > "$TMP/episodes.json"
 state '{"frozen":"fullstack","since":1788000500}'
 run 1788000510
 [ "$(author_of 'PAUSED-LOAD')" = "fullstack" ] \
