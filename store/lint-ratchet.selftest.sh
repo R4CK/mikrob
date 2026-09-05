@@ -148,15 +148,30 @@ run "$root" --update
   && ok "--update on a healthy run still writes the tightened baseline" \
   || bad "--update on a healthy run still writes the tightened baseline" "code=$CODE out=$OUT"
 
-# --- F: bootstrap -- no baseline at all, --update must not refuse over parse errors -------------
-# Without this the guard makes the FIRST --update impossible on any tree that has parse errors,
-# and this repo records six of them as its normal state.
+# --- F: bootstrap -- THIS CASE'S PROMISE WAS REVERSED, deliberately and not silently -----------
+# It used to assert that `--update` with NO baseline writes one regardless, so that the first run
+# on a tree with parse errors was possible. That promise WAS the bypass: Cybersec (NO-GO, comment
+# 21010, bypass A) showed that deleting the baseline turns every guard in this file off, because
+# `--update` then means bootstrap and the degraded-run refusal is unreachable. Measured, it wrote
+# `{"(parse-error)": 861}` -- all five type-aware rules dropped out of the bound permanently.
+#
+# The capability is kept, because a real first run does need it; it just has to be ASKED for. So
+# the case splits: --update refuses to create, --bootstrap creates. Recording the reversal here
+# rather than editing the assertion in place, because a test whose promise changes silently is how
+# a reviewer loses the thread.
 root="$(new_root --no-baseline)"; export REPORT_JSON="$TMP/f.json"
 mk_report "$REPORT_JSON" "parse=6" "$UA=101"
 run "$root" --update
+[ "$CODE" = 3 ] && [ ! -f "$root/store/lint-baseline.json" ] && echo "$OUT" | grep -q -- "--bootstrap" \
+  && ok "BYPASS A: --update with no baseline REFUSES to create one, and names --bootstrap" \
+  || bad "BYPASS A: --update with no baseline REFUSES to create one, and names --bootstrap" "code=$CODE out=$OUT"
+
+root="$(new_root --no-baseline)"; export REPORT_JSON="$TMP/f2.json"
+mk_report "$REPORT_JSON" "parse=6" "$UA=101"
+run "$root" --bootstrap
 [ "$CODE" = 0 ] && [ -f "$root/store/lint-baseline.json" ] \
-  && ok "bootstrap --update with no baseline writes one despite parse errors" \
-  || bad "bootstrap --update with no baseline writes one despite parse errors" "code=$CODE out=$OUT"
+  && ok "--bootstrap with no baseline still writes one despite parse errors (the real first run)" \
+  || bad "--bootstrap with no baseline still writes one despite parse errors" "code=$CODE out=$OUT"
 
 # --- G: a genuine improvement in a HEALTHY run still reads as one -------------------------------
 root="$(new_root)"; export REPORT_JSON="$TMP/g.json"
@@ -184,6 +199,82 @@ run "$root"
 [ "$CODE" = 3 ] && echo "$OUT" | grep -q "linted ZERO files" \
   && ok "an empty report is still refused as a configuration fault" \
   || bad "an empty report is still refused as a configuration fault" "code=$CODE out=$OUT"
+
+# --- THE SIX REMAINING BYPASSES (Cybersec NO-GO, comment 21010) --------------------------------
+# Every one of these exited 0 on the shipped version, most of them printing IMPROVED. They share
+# one shape: the measured SET shrinks while the parse-error count stays flat or FALLS, so a guard
+# keyed on "parse errors rose" never fires. That is why the predicate now asks whether the same
+# tree was measured, and reports WHICH signal answered no.
+
+# --- J: BYPASS B -- parse errors UNCHANGED, the typed rules go dark ----------------------------
+root="$(new_root)"; export REPORT_JSON="$TMP/j.json"
+mk_report "$REPORT_JSON" "parse=6"
+run "$root"
+[ "$CODE" = 3 ] && echo "$OUT" | grep -q "COULD NOT MEASURE" && ! echo "$OUT" | grep -q "IMPROVED" \
+  && ok "BYPASS B: rules dark with parse errors FLAT is COULD NOT MEASURE, not IMPROVED" \
+  || bad "BYPASS B: rules dark with parse errors FLAT is COULD NOT MEASURE" "code=$CODE out=$OUT"
+
+# --- K: BYPASS C -- parse errors FALL while the typed rules go dark ----------------------------
+# The nastiest reading of the old predicate: it celebrated the degradation, because the one number
+# it watched moved in the "good" direction.
+root="$(new_root)"; export REPORT_JSON="$TMP/k.json"
+mk_report "$REPORT_JSON" "parse=1"
+run "$root"
+[ "$CODE" = 3 ] && echo "$OUT" | grep -q "COULD NOT MEASURE" \
+  && ok "BYPASS C: rules dark while parse errors FALL is still COULD NOT MEASURE" \
+  || bad "BYPASS C: rules dark while parse errors FALL is still COULD NOT MEASURE" "code=$CODE out=$OUT"
+
+# --- L: BYPASS D -- files linted, ZERO findings of any kind ------------------------------------
+# Needs no deletion and no broken toolchain, which is why Cybersec rated it above A.
+root="$(new_root)"; export REPORT_JSON="$TMP/l.json"
+mk_report "$REPORT_JSON"
+run "$root"
+[ "$CODE" = 3 ] && echo "$OUT" | grep -q "ZERO findings" \
+  && ok "BYPASS D: files linted with ZERO findings is a configuration fault" \
+  || bad "BYPASS D: files linted with ZERO findings is a configuration fault" "code=$CODE out=$OUT"
+
+# --- M: BYPASS E -- the same report with --update must not write an EMPTY ratchet ---------------
+# This was the end state: `{}` on disk, every rule unbounded at once, exit 0.
+root="$(new_root)"; export REPORT_JSON="$TMP/m.json"
+mk_report "$REPORT_JSON"
+before="$(cat "$root/store/lint-baseline.json")"
+run "$root" --update
+after="$(cat "$root/store/lint-baseline.json")"
+[ "$CODE" = 3 ] && [ "$before" = "$after" ] \
+  && ok "BYPASS E: --update on a zero-findings report refuses and leaves the baseline untouched" \
+  || bad "BYPASS E: --update on a zero-findings report refuses" "code=$CODE out=$OUT"
+
+# --- N: THE MESSAGE NAMES THE SIGNAL THAT ACTUALLY FIRED ---------------------------------------
+# Cybersec flagged this against their own prototype: a refusal that blames parse errors when the
+# trigger was a rule collapse rebuilds the misdirected-message class this card exists for.
+root="$(new_root)"; export REPORT_JSON="$TMP/n.json"
+mk_report "$REPORT_JSON" "parse=6"
+run "$root"
+echo "$OUT" | grep -q "are ALL at exactly zero" && ! echo "$OUT" | grep -q "parse errors are ABOVE" \
+  && ok "the refusal names the rule collapse, not the parse-error count that did not move" \
+  || bad "the refusal names the rule collapse" "code=$CODE out=$OUT"
+
+# --- O: THE ANTI-BLANKET CONTROL, and the stated cost of COLLAPSE_MIN=2 ------------------------
+# Cybersec's warning in full: "a fix that refuses EVERYTHING would be just as green on the first
+# seven cases -- reaching a closed state is not enough". This is the case that separates the two.
+# ONE bounded rule driven to exactly zero is what finishing off a rule looks like, and it must
+# still read as IMPROVED and exit 0. It is also the deliberate hole: a single-rule collapse is
+# indistinguishable from a single-rule fix from in here, and the threshold buys that on purpose.
+root="$(new_root)"; export REPORT_JSON="$TMP/o.json"
+mk_report "$REPORT_JSON" "parse=6" "$UV=107"
+run "$root"
+[ "$CODE" = 0 ] && echo "$OUT" | grep -q "IMPROVED" && ! echo "$OUT" | grep -q "COULD NOT MEASURE" \
+  && ok "CONTROL: ONE bounded rule reaching zero is still IMPROVED and exits 0" \
+  || bad "CONTROL: ONE bounded rule reaching zero is still IMPROVED" "code=$CODE out=$OUT"
+
+# --- P: CONTROL -- a healthy --update still tightens the bound ---------------------------------
+# The other half of the anti-blanket proof: refusing is not the only thing this script can do.
+root="$(new_root)"; export REPORT_JSON="$TMP/p.json"
+mk_report "$REPORT_JSON" "parse=6" "$UA=95" "$UV=107"
+run "$root" --update
+[ "$CODE" = 0 ] && grep -q '"@typescript-eslint/no-unsafe-argument": 95' "$root/store/lint-baseline.json" \
+  && ok "CONTROL: a healthy --update still writes the tightened bound" \
+  || bad "CONTROL: a healthy --update still writes the tightened bound" "code=$CODE out=$OUT"
 
 echo
 printf 'lint-ratchet selftest: %d passed, %d failed (%d cases)\n' "$pass" "$fail" "$((pass+fail))"
