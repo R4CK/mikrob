@@ -43,9 +43,20 @@ if [ "$is_post" = "1" ]; then
   printf '%s\n' "$body" >> "$CAPTURE"
   exit 0
 fi
+# GET /api/agents -- the registry the author check consults (card be81d16c). Served BEFORE the
+# kanban branch: the author validation is what most of these cases are about, and a shim that
+# answered a card list here would make every author fall back to the sentinel.
+case "$url" in
+  */api/agents*)
+    if [ -n "${AGENTS_UNREADABLE:-}" ]; then exit 22; fi
+    printf '%s' '[{"agent_id":"fullstack"},{"agent_id":"backend"},{"agent_id":"qa"},{"agent_id":"mikrob"}]'
+    exit 0 ;;
+esac
 # GET /api/kanban -- one in_progress card per agent the test cares about.
 printf '%s' '[{"id":"card-fs","status":"in_progress","assignee":"fullstack"},
-              {"id":"card-be","status":"in_progress","assignee":"backend"}]'
+              {"id":"card-be","status":"in_progress","assignee":"backend"},
+              {"id":"card-gh","status":"in_progress","assignee":"ghost-agent"},
+              {"id":"card-qa","status":"in_progress","assignee":"qa"}]'
 SHIM
 chmod +x "$TMP/bin/curl"
 export PATH="$TMP/bin:$PATH"
@@ -109,6 +120,47 @@ if [ "$a" = "backend" ]; then
 else
   bad "author is '$a', want 'backend' for a real backend freeze" "$(cat "$CAPTURE")"
 fi
+
+# --- 4. the author restriction is EXPLICIT, not a side effect (card be81d16c) -------------------
+# Cybersec's point: the name happened to be constrained only because today's caller looks the card
+# up by assignee. That is an accident of one caller, not a rule -- so the rule is stated here.
+#
+# An UNKNOWN name must not reach a card's audit trail as if it were an agent.
+: > "$CAPTURE"; printf '%s' '{}' > "$TMP/paused.json"; printf '%s' '{}' > "$TMP/events.json"
+state '{"frozen":"fullstack","since":1788000300}'
+# The card lookup still resolves (fullstack has a card); the AUTHOR is what we bend, by asking the
+# validator directly through a fabricated state whose name is not in the registry.
+printf '%s' '{"frozen":"ghost-agent","since":1788000300}' > "$TMP/sigstop.json"
+out="$(run 1788000310 2>&1)"
+a="$(author_of 'PAUSED-LOAD')"
+if [ -n "$a" ] && [ "$a" != "ghost-agent" ]; then
+  ok "an UNKNOWN author is replaced (posted as '$a', not 'ghost-agent')"
+else
+  bad "unknown-author case: posted author was '$a' (empty means NOTHING was posted -- vacuous)" "$(cat "$CAPTURE")"
+fi
+
+# An identity that CANNOT have been throttled must not sign a throttle note. MikroB and the gate
+# pool are excluded from every mechanism (load-guard-excluded.sh), so such a note would assert
+# something impossible.
+: > "$CAPTURE"; printf '%s' '{}' > "$TMP/paused.json"; printf '%s' '{}' > "$TMP/events.json"
+printf '%s' '{"frozen":"qa","since":1788000400}' > "$TMP/sigstop.json"
+printf '%s' '{}' > "$TMP/cgroup.json"
+out="$(run 1788000410 2>&1)"
+a="$(author_of 'PAUSED-LOAD')"
+if [ -n "$a" ] && [ "$a" != "qa" ]; then
+  ok "an EXCLUDED identity cannot sign a throttle note (posted as '$a', not 'qa')"
+else
+  bad "excluded-identity case: posted author was '$a' (empty means NOTHING was posted -- vacuous)" "$(cat "$CAPTURE")"
+fi
+
+# CONTROL for the two above: a known, throttleable agent IS still written as itself. Without this,
+# a validator that rejected everything would satisfy both cases.
+: > "$CAPTURE"; printf '%s' '{}' > "$TMP/paused.json"; printf '%s' '{}' > "$TMP/events.json"
+state '{"frozen":"fullstack","since":1788000500}'
+run 1788000510
+[ "$(author_of 'PAUSED-LOAD')" = "fullstack" ] \
+  && ok "CONTROL: a known, throttleable agent still signs as itself" \
+  || bad "the validator rejects a legitimate agent too" "$(cat "$CAPTURE")"
 
 echo
 echo "load-guard-bookkeeping.selftest: $pass passed, $fail failed"
