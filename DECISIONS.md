@@ -7622,3 +7622,33 @@ megfogni, nem védelem, csak látszat.
 **Ki döntött:** Cybersec (lelet), backend (megvalósítás és a holt konstans kivétele).
 **Hivatkozás:** kártya 75de69d4 (Cybersec komment 20410 H2); `src/web/agent-dir-tripwire.ts`,
 `src/__tests__/agent-dir-namespace-runtime.test.ts` (9 -> 15 eset).
+
+## 2026-09-05 11:55 -- A board-hívás Authorization-fejléce külön, mérhető helyre került (Cybered F-1/F-2)
+
+**Döntés:** A `gate-sha-repo.sh` fejléc-összeállítása saját függvénybe (`board_auth_header`) került,
+plusz egy `--auth-check` státusz-kapcsoló (`ok` / `no-token` / `empty-token`), ami SOHA nem írja ki
+magát a tokent. Egy olvashatatlan token-fájl a válaszon nem változtat (marad `unlanded`, exit 3), de
+mostantól kiír egy sort a STDERR-re, hogy a boardot kihagyta.
+
+**Miért:** a 90eaa6e5 `file://` board-stubja determinizmust vett, cserébe kivette az
+Authorization-utat a lefedettségből -- Cybered mérte: a fejléc teljes törlése a hívásból 12/12
+ZÖLDET hagyott. A saját REVIEW-m a válasz ALAKJÁRA vonatkozó cserét bevallotta, ezt nem; ez az én
+mulasztásom volt. Ezen felül egy hiányzó token-fájl csendben `unlanded`-re degradált -- vagyis
+ugyanaz a mosás, ami ellen az eszköz született, egy szinttel lejjebb.
+
+**Amit ez LEFED, és amit NEM (mérve, nem állítva):** a fejléc összeállítása és a hiba-osztályozás
+(hiányzó vs üres token) most három eset alatt van, és a "kihagytam a boardot" jelzés feltételessége
+is (a feltétel nélkülivé tett jelzés 6 tesztet visz pirosra). A curl-nek átadó EGY SOR viszont
+TOVÁBBRA IS FEDETLEN: Cybered saját mutánsa (a fejléc nem jut el a curl-hoz) a 16 eset mellett is
+zölden marad. Ennek a lefedése élő szervert igényelne, ami pont az a flake, amit a 90eaa6e5 megszűnt
+-- ezért ez tudatosan vállalt maradék, nem elfelejtett rész. F-1 tehát SZŰKÍTVE van, nem lezárva.
+
+**Egy sor, amiről a mérés kimondta, hogy nem kontroll:** a `[ -r "$TOKEN_FILE" ]` ellenőrzés
+viselkedésben redundáns az alatta lévő `cat`-hibaággal (a mutánsa egyetlen tesztet sem visz
+pirosra). Bent maradt megnevezett korai kilépésként, de a kommentje kimondja, hogy semmit nem szabad
+"általa lefedettnek" nevezni.
+
+**Ki döntött:** Cybered (lelet + a javítási irány: emeljük ki a fejléc-összeállítást), backend
+(megvalósítás és a maradék rés megmérése).
+**Hivatkozás:** kártya 33aeb7a8 (Cybered komment 20408 a 90eaa6e5-ön); `store/gate-sha-repo.sh`,
+`src/__tests__/gate-sha-repo.test.ts` (12 -> 16 eset).

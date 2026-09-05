@@ -30,6 +30,7 @@
 #   gate-sha-repo.sh <sha> --check <declared>   # compares a declared repo against the lookup;
 #                                               # exit 1 and a loud line if they disagree
 #   gate-sha-repo.sh --selftest
+#   gate-sha-repo.sh --auth-check     # prints ok | no-token | empty-token (NEVER the token itself)
 #
 # EXIT: 0 resolved (or agreed) | 1 declared/actual mismatch | 3 not found in any clone
 #     | 4 the value is a KANBAN CARD ID, not a sha | 2 usage
@@ -76,11 +77,37 @@ normalise_repo() {
 #
 # The token goes in via a HEADER FILE ON STDIN, never on the command line: /proc/<pid>/cmdline is
 # world-readable (the gate-ops-scripts-token-in-argv lesson).
+#
+# The header is assembled in its OWN function (card 33aeb7a8, Cybered F-1/F-2 on 90eaa6e5) so it can
+# be measured without a live server. The test stubs the board over file://, where curl ignores
+# headers entirely -- so before this split, deleting the header from the call left the suite 12/12
+# GREEN, and an unreadable token file degraded to a plain "unlanded" with nothing said. That is the
+# same laundering this tool exists to stop, one level down: the answer stays fail-soft, but it must
+# not be SILENT about having skipped the board.
+#
+# What the split does NOT cover, stated rather than implied: the one line that hands the header to
+# curl. Proving that needs a server to receive it, and a live board call inside a full suite is
+# exactly the flake card 90eaa6e5 removed. This buys the assembly and the failure classification;
+# the glue is one line, and it is the line a reader can check by eye.
+board_auth_header() {
+  # Behaviourally REDUNDANT with the cat failure below -- measured: removing this line changes no
+  # test, because cat on a missing or unreadable file fails the same way. It stays as a named early
+  # exit, and is NOT counted as a control: nothing here should be described as covered by it.
+  [ -r "$TOKEN_FILE" ] || { echo "no-token"; return 1; }
+  local tok; tok="$(cat "$TOKEN_FILE" 2>/dev/null)" || { echo "no-token"; return 1; }
+  [ -n "$tok" ] || { echo "empty-token"; return 1; }
+  printf 'Authorization: Bearer %s\n' "$tok"
+}
+
 card_title_for() {
-  local id="$1" out
-  [ -r "$TOKEN_FILE" ] || return 1
-  out="$(printf 'Authorization: Bearer %s\n' "$(cat "$TOKEN_FILE")" \
-    | curl -sf --max-time 3 -H @- "$DASH/api/kanban/$id" 2>/dev/null)" || return 1
+  local id="$1" out hdr
+  # NOTE: the header value never reaches a command line -- it goes to curl on STDIN as a header file
+  # (the gate-ops-scripts-token-in-argv lesson), which is why this is a pipe and not -H "$hdr".
+  if ! hdr="$(board_auth_header)"; then
+    echo "gate-sha-repo: board not consulted ($hdr) -- answering from the clones alone" >&2
+    return 1
+  fi
+  out="$(printf '%s' "$hdr" | curl -sf --max-time 3 -H @- "$DASH/api/kanban/$id" 2>/dev/null)" || return 1
   CARD_ID="$id" python3 -c '
 import json, os, sys
 try:
@@ -148,6 +175,15 @@ selftest() {
 [ $# -ge 1 ] || die 2 "usage: gate-sha-repo.sh <sha> [--path | --check <declared>] | --selftest"
 
 if [ "$1" = "--selftest" ]; then selftest; exit $?; fi
+
+# Reports whether the board header COULD be assembled, and never the value: a flag that printed the
+# token would be a leak primitive in a script every agent runs. `ok` means the token file was
+# readable and non-empty, nothing about whether the board accepts it.
+if [ "$1" = "--auth-check" ]; then
+  if board_auth_header >/dev/null 2>&1; then echo ok; exit 0; fi
+  board_auth_header 2>/dev/null | head -1
+  exit 1
+fi
 
 SHA="$1"; shift
 case "$SHA" in
