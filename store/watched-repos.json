@@ -103,7 +103,7 @@
     "note": "KORAI ADOPCIO (~/.claude/external), NAPONTA szinkronizalva a external-repos-daily-sync utemezett taskkal (06:17) a ~/.claude/external/sync.sh-n at (git pull --ff-only, nem-ff eseten biztonsagos reset a mult-szinkronponthoz kepest -- lasd store/external-repos-sync.sh, card 9b9422d1). enabled=false itt, mert a frissitest a napi sync kezeli (a git-repo-watcher NE dupla-huzza); az /api/integrated-repos igy is olvassa es listazza (behind-detektalas mukodik, mert a napi sync fetch-el). Licenc: lasd a repot. | 2026-08-23: external-repos-sync ellenorizve, NINCS uj upstream commit (current).",
     "description": "Kurált Claude-skill index (közösségi gyűjtemény), cherry-pick forrás.",
     "reviewed_at": "2026-07-31",
-    "last_checked_at": "2026-09-04",
+    "last_checked_at": "2026-09-05",
     "last_checked_upstream_sha": "1da55aa810f206d3fe2005e7e3989b15a275d942"
   },
   {
@@ -113,13 +113,13 @@
     "local": "/home/neon/.claude/external/claude-agent-sdk",
     "type": "code",
     "enabled": false,
-    "last_sha": "a79d677cbd0a627bddf8ad37d8d010c727c71fc7",
+    "last_sha": "a96f6b5cbea197f23a3372709e3e549e8495fd63",
     "kind": "external",
     "adoption": "vendored-external",
     "note": "KORAI ADOPCIO (~/.claude/external), NAPONTA szinkronizalva a external-repos-daily-sync utemezett taskkal (06:17) a ~/.claude/external/sync.sh-n at (git pull --ff-only, nem-ff eseten biztonsagos reset a mult-szinkronponthoz kepest -- lasd store/external-repos-sync.sh, card 9b9422d1). enabled=false itt, mert a frissitest a napi sync kezeli (a git-repo-watcher NE dupla-huzza); az /api/integrated-repos igy is olvassa es listazza (behind-detektalas mukodik, mert a napi sync fetch-el). Licenc: lasd a repot. | 2026-08-23: external-repos-sync.sh ff-only frissitve 48275071-ra. Gyors supply-chain scan (uj/valtozott .sh/.py fajlok curl/wget/eval/subprocess/base64-mintakra): nincs gyanus talalat, csak teszt/dokumentacio/profiler-szkript tartalom. Nincs symlink-elve aktiv skillkent (csak superpowers-nek van auto-link), tehat nem fut automatikusan.",
     "description": "Hivatalos Anthropic Agent SDK — referencia agent-építéshez és tool-use mintákhoz.",
     "reviewed_at": "2026-07-31",
-    "last_checked_at": "2026-09-04",
+    "last_checked_at": "2026-09-05",
     "last_synced_sha": "48275071",
     "last_checked_upstream_sha": "48275071e804139579fabada9bb8d90cfe02b062"
   },
@@ -136,7 +136,7 @@
     "note": "KORAI ADOPCIO (~/.claude/external), NAPONTA szinkronizalva a external-repos-daily-sync utemezett taskkal (06:17) a ~/.claude/external/sync.sh-n at (git pull --ff-only, nem-ff eseten biztonsagos reset a mult-szinkronponthoz kepest -- lasd store/external-repos-sync.sh, card 9b9422d1). enabled=false itt, mert a frissitest a napi sync kezeli (a git-repo-watcher NE dupla-huzza); az /api/integrated-repos igy is olvassa es listazza (behind-detektalas mukodik, mert a napi sync fetch-el). Licenc: lasd a repot. | 2026-08-23: external-repos-sync ellenorizve, NINCS uj upstream commit (current).",
     "description": "obra 'superpowers' skill-készlet; a markdown-skillek sp- prefixszel automatikusan belinkelve a ~/.claude/skills alá.",
     "reviewed_at": "2026-07-31",
-    "last_checked_at": "2026-09-04",
+    "last_checked_at": "2026-09-05",
     "last_checked_upstream_sha": "b36e0829c6d0140e93cfef2ca599b1b07d4a7797"
   },
   {
@@ -152,7 +152,7 @@
     "note": "KORAI ADOPCIO (~/.claude/external), NAPONTA szinkronizalva a external-repos-daily-sync utemezett taskkal (06:17) a ~/.claude/external/sync.sh-n at (git pull --ff-only, nem-ff eseten biztonsagos reset a mult-szinkronponthoz kepest -- lasd store/external-repos-sync.sh, card 9b9422d1). enabled=false itt, mert a frissitest a napi sync kezeli (a git-repo-watcher NE dupla-huzza); az /api/integrated-repos igy is olvassa es listazza (behind-detektalas mukodik, mert a napi sync fetch-el). Licenc: lasd a repot. | 2026-08-23: external-repos-sync ellenorizve, NINCS uj upstream commit (current).",
     "description": "Skill-generáló/felderítő toolkit — új skillek építéséhez.",
     "reviewed_at": "2026-07-31",
-    "last_checked_at": "2026-09-04",
+    "last_checked_at": "2026-09-05",
     "last_checked_upstream_sha": "f3972efa33fa79634b96936acf1fac321cdcf7c1"
   },
   {
@@ -168,7 +168,7 @@
     "note": "KORAI ADOPCIO (~/.claude/external), NAPONTA szinkronizalva a external-repos-daily-sync utemezett taskkal (06:17) a ~/.claude/external/sync.sh-n at (git pull --ff-only, nem-ff eseten biztonsagos reset a mult-szinkronponthoz kepest -- lasd store/external-repos-sync.sh, card 9b9422d1). enabled=false itt, mert a frissitest a napi sync kezeli (a git-repo-watcher NE dupla-huzza); az /api/integrated-repos igy is olvassa es listazza (behind-detektalas mukodik, mert a napi sync fetch-el). Licenc: lasd a repot. | 2026-08-23: external-repos-sync.sh ff-only frissitve 380f7993-ra. Gyors supply-chain scan (uj/valtozott .sh/.py fajlok curl/wget/eval/subprocess/base64-mintakra): nincs gyanus talalat, csak teszt/dokumentacio/profiler-szkript tartalom. Nincs symlink-elve aktiv skillkent (csak superpowers-nek van auto-link), tehat nem fut automatikusan.",
     "description": "loki-mode skill/operációs-mód készlet ügynökökhöz.",
     "reviewed_at": "2026-07-31",
-    "last_checked_at": "2026-09-04",
+    "last_checked_at": "2026-09-05",
     "last_synced_sha": "380f7993",
     "last_checked_upstream_sha": "380f7993d7ef59d2fd72c3f0f4a5bae13a8cd60a"
   },
@@ -186,7 +186,7 @@
     "reviewed_at": "2026-08-13",
     "note": "ADOPTALT 2026-07-31 (Peti adopt-9). Klon ~/.claude/external, NAPONTA szinkron az external-repos-daily-sync-kel. Licenc-besorolas JAVITVA 2026-08-13 (card 8998518e) -- lasd license_note. A repon KIVUL -> ff-only update sertetlen. | 2026-08-23: external-repos-sync.sh ff-only frissitve 3b3fad96-ra. Gyors supply-chain scan (uj/valtozott .sh/.py fajlok curl/wget/eval/subprocess/base64-mintakra): nincs gyanus talalat, csak teszt/dokumentacio/profiler-szkript tartalom. Nincs symlink-elve aktiv skillkent (csak superpowers-nek van auto-link), tehat nem fut automatikusan.",
     "description": "Hivatalos Anthropic Agent Skills referencia (kanonikus SKILL.md minták).",
-    "last_checked_at": "2026-09-04",
+    "last_checked_at": "2026-09-05",
     "last_synced_sha": "3b3fad96",
     "last_checked_upstream_sha": "3b3fad96af16a10759d930941b4520ba0c40edae"
   },
@@ -197,14 +197,14 @@
     "local": "/home/neon/.claude/external/claude-code-best-practice",
     "type": "text",
     "enabled": false,
-    "last_sha": "d90cdbc4fa07a8c0f1d27372abee401d69d7d3d7",
+    "last_sha": "5449071fe4bb7b97b6ec44dd792ec60ecdf466a6",
     "kind": "skill",
     "adoption": "vendored-external",
     "license_note": "MIT. Agentic-engineering rules/best-practice corpus -- reference for CLAUDE.md/engineering-standards patterns.",
     "reviewed_at": "2026-07-31",
     "note": "ADOPTALT 2026-07-31 (Peti adopt-9). Klon ~/.claude/external, NAPONTA szinkron az external-repos-daily-sync-kel. MIT. Agentic-engineering rules/best-practice corpus -- reference for CLAUDE.md/engineering-standards patterns. A repon KIVUL -> ff-only update sertetlen. | 2026-08-23: external-repos-sync.sh ff-only frissitve 5d1e67d3-ra. Gyors supply-chain scan (uj/valtozott .sh/.py fajlok curl/wget/eval/subprocess/base64-mintakra): nincs gyanus talalat, csak teszt/dokumentacio/profiler-szkript tartalom. Nincs symlink-elve aktiv skillkent (csak superpowers-nek van auto-link), tehat nem fut automatikusan.",
     "description": "Agentic-engineering szabály- és best-practice korpusz — minta a CLAUDE.md/engineering-standards patternekhez.",
-    "last_checked_at": "2026-09-04",
+    "last_checked_at": "2026-09-05",
     "last_synced_sha": "5d1e67d3",
     "last_checked_upstream_sha": "5d1e67d3ac6b26da4610998602a1d3cc61e01a82"
   },
@@ -222,7 +222,7 @@
     "reviewed_at": "2026-07-31",
     "note": "ADOPTALT 2026-07-31 (Peti adopt-9). Klon ~/.claude/external, NAPONTA szinkron az external-repos-daily-sync-kel. CC0. Curated Claude Code index (overlaps awesome-claude-skills; reference bookmark). A repon KIVUL -> ff-only update sertetlen. | 2026-08-23: external-repos-sync ellenorizve, NINCS uj upstream commit (current).",
     "description": "Friss Claude Code eszköz/skill/szabály index (CC0), referencia-könyvjelző.",
-    "last_checked_at": "2026-09-04",
+    "last_checked_at": "2026-09-05",
     "last_checked_upstream_sha": "2982de16f0a8ff84795f70e8c750908230fa5854"
   },
   {
@@ -232,14 +232,14 @@
     "local": "/home/neon/.claude/external/awesome-agent-skills",
     "type": "text",
     "enabled": false,
-    "last_sha": "4a755af153df462e10859336596c73415d64437a",
+    "last_sha": "c984a96f21952fa72acd7f78108d66024c1aa862",
     "kind": "external",
     "adoption": "vendored-external",
     "license_note": "MIT. 1000+ cross-agent skills index -- cherry-pick source.",
     "reviewed_at": "2026-07-31",
     "note": "ADOPTALT 2026-07-31 (Peti adopt-9). Klon ~/.claude/external, NAPONTA szinkron az external-repos-daily-sync-kel. MIT. 1000+ cross-agent skills index -- cherry-pick source. A repon KIVUL -> ff-only update sertetlen. | 2026-08-23: external-repos-sync.sh ff-only frissitve 90566136-ra. Gyors supply-chain scan (uj/valtozott .sh/.py fajlok curl/wget/eval/subprocess/base64-mintakra): nincs gyanus talalat, csak teszt/dokumentacio/profiler-szkript tartalom. Nincs symlink-elve aktiv skillkent (csak superpowers-nek van auto-link), tehat nem fut automatikusan.",
     "description": "1000+ cross-agent skill index (VoltAgent), cherry-pick forrás.",
-    "last_checked_at": "2026-09-04",
+    "last_checked_at": "2026-09-05",
     "last_synced_sha": "90566136",
     "last_checked_upstream_sha": "90566136ede9a20351f452c5f99e9e593e961a84"
   },
@@ -257,7 +257,7 @@
     "reviewed_at": "2026-07-31",
     "note": "ADOPTALT 2026-07-31 (Peti adopt-9). Klon ~/.claude/external, NAPONTA szinkron az external-repos-daily-sync-kel. MIT. 345 skills+agents+commands -- cherry-pick, overlap with existing. A repon KIVUL -> ff-only update sertetlen. | 2026-08-23: external-repos-sync.sh ff-only frissitve 98180daf-ra. Gyors supply-chain scan (uj/valtozott .sh/.py fajlok curl/wget/eval/subprocess/base64-mintakra): nincs gyanus talalat, csak teszt/dokumentacio/profiler-szkript tartalom. Nincs symlink-elve aktiv skillkent (csak superpowers-nek van auto-link), tehat nem fut automatikusan.",
     "description": "345 skill + agent + command gyűjtemény, cherry-pick forrás.",
-    "last_checked_at": "2026-09-04",
+    "last_checked_at": "2026-09-05",
     "last_synced_sha": "98180daf",
     "last_checked_upstream_sha": "98180dafc4f0bc9d629bd479fc6107674cfb3cf8"
   },
@@ -268,14 +268,14 @@
     "local": "/home/neon/.claude/external/claude-code-ultimate-guide",
     "type": "text",
     "enabled": false,
-    "last_sha": "6333bd159130b265b19250612f64ace1ceedb092",
+    "last_sha": "0e1c839c96d214dceb7130104738840015e97742",
     "kind": "external",
     "adoption": "vendored-external",
     "license_note": "CC-BY-SA-4.0 (share-alike). Comprehensive guide+templates -- reference; attribution/copyleft if redistributed.",
     "reviewed_at": "2026-07-31",
     "note": "ADOPTALT 2026-07-31 (Peti adopt-9). Klon ~/.claude/external, NAPONTA szinkron az external-repos-daily-sync-kel. CC-BY-SA-4.0 (share-alike). Comprehensive guide+templates -- reference; attribution/copyleft if redistributed. A repon KIVUL -> ff-only update sertetlen. | 2026-08-23: external-repos-sync.sh ff-only frissitve ac5d3597-ra. Gyors supply-chain scan (uj/valtozott .sh/.py fajlok curl/wget/eval/subprocess/base64-mintakra): nincs gyanus talalat, csak teszt/dokumentacio/profiler-szkript tartalom. Nincs symlink-elve aktiv skillkent (csak superpowers-nek van auto-link), tehat nem fut automatikusan.",
     "description": "Átfogó Claude Code guide + sablonok (referencia, CC-BY-SA).",
-    "last_checked_at": "2026-09-04",
+    "last_checked_at": "2026-09-05",
     "last_synced_sha": "ac5d3597",
     "last_checked_upstream_sha": "ac5d35972d68a6b5d99f2649adc8290b6831f14b"
   },
@@ -597,7 +597,8 @@
     "description": "Completion-discipline skill: gate-contract (CHECK/EXPECT/EVIDENCE) verification before reporting done, Depth Tree task decomposition, optional Stop-hook to mechanically block premature completion. Fleet-wide, all agents.",
     "note": "ADOPTED 2026-08-23 (Peti Telegram approval, fleet-wide -- overrode MikroB's own limited-pilot recommendation). Due diligence: MIT licence, zero runtime deps, created 2026-08-09 (2 weeks old, actively pushed same day), 1205 stars/82 forks (high for repo age, treated with caution but not disqualifying), 3 open issues. Read scripts/stop-hook.mjs and scripts/install-hooks.mjs before vendoring: both defensive (fail-open on error, refuse-to-touch-symlinks, backup-before-write, idempotent, no eval/exec of untrusted content, no network calls) -- no supply-chain red flags found. Vendored via store/vendor-skill.sh at commit 754d9a68. The Stop-hook itself is NOT auto-installed into any agent's settings.json by vendoring alone -- scripts/install-hooks.mjs must be run per-agent (or globally) to actually wire the hook; vendoring only makes the skill/scripts available. Follow-up needed: decide + execute actual Stop-hook wiring for fleet-wide enforcement (Peti asked for fleet-wide, not just skill-availability) -- tracked on a kanban card. | 2026-08-24: upstream 754d9a68..265fbd5d = REAL feature batch (9 commit, 27 fajl, +2534/-122) -- uj scripts/lib/dispatch.mjs + scripts/lib/process-tree.mjs (parhuzamos dispatch-hullam kikenyszeritese + kereszt-platform folyamatfa-leallitas timeoutra), scripts/gate-lint.mjs (uj ledger-lint), stop-hook.mjs bovitve, kiterjedt uj tesztek. Supply-chain check: nincs child_process/exec/spawn/eval/halozat/fetch minta az uj fajlokban Leiras: process-tree.mjs process.kill(-pid,'SIGKILL')-t hasznal csoport-alapon (POSIX) es kulon validalt taskkill.exe-utvonalat Windows-on (PATH-hijack ellen vedve, expliciten kommentelve a kodban). Nincs uj fuggoseg (package.json csak verzio-bump). A Stop-hook meg mindig NINCS bedrotozva egy agent settings.json-ba sem (csak skill-elerhetoseg, korabbi adopcios jegyzet szerint), tehat elo kockazat jelenleg nulla. Tiszta, ADOPT-minositesu valtozas. Peti ertesitve. | 2026-08-26: upstream 265fbd5d..da0b00a3 = fix: harden skill execution boundaries (16 fajl, +526/-99). Uj scripts/lib/check-supervisor.mjs -- a CHECK-parancsot process-group supervisoron at inditja (ugyanaz a mar bizalmi parancs, csak stabilabb folyamatfelugyelet). scripts/install-hooks.mjs valodi biztonsagi javitas: settings.json olvasasa O_NOFOLLOW-val nyitott fd-n, inode/device-egyezes olvasas elott/utan (TOCTOU/symlink-race vedelem), szigoritott ownership-matcher (substring-hamis-pozitiv, pl. --unlazy-helper, kizarva). Nincs uj exec/halozat/fuggoseg. Stop-hook tovabbra sincs bedrotozva egyik agent settings.json-jaba, elo kockazat nulla. Tiszta, ADOPT-minositesu hardening. Kartya 2b5cb027, Peti ertesitve. | 2026-09-02: upstream da0b00a3..473d4b80 = gate/dispatch/orchestration hardening (scripts/gate-check.mjs, gate-lint.mjs, dispatch-check.mjs, stop-hook.mjs) + docs + large test expansion (6 commits, 21 files, +1625/-161). Quick supply-chain check: no new exec/spawn/eval/curl/wget/fetch/base64/child_process pattern in scripts/. Stop-hook still NOT wired into any agent settings.json -- live risk zero. Vendored copy unaffected (no auto-apply). | 2026-09-03: upstream 473d4b80..16671491 = fix: bind gate evidence and harden Windows identity (1 commit, 14 files, +882/-107). scripts/gate-check.mjs + scripts/lib/gates.mjs: automatic EXPECT evidence now bound to a gate-definition digest (prevents stale evidence surviving a CHECK/EXPECT edit); file-identity checks (dev/ino) switched to bigint stat across gate-check.mjs and install-hooks.mjs (Windows inode identity no longer silently truncated to 32-bit, closes a TOCTOU/symlink-race gap on Windows). No package.json change (zero new deps), no new exec/spawn/eval/network pattern (grep-verified). Stop-hook still NOT wired into any agent settings.json -- live risk zero. ADOPT-class hardening, same pattern as 2026-08-24/2026-08-26 batches. Peti ertesitve, update-review kartya nyitva: aaf5495b.",
     "last_checked_upstream_sha": "16671491",
-    "last_checked_at": "2026-09-04"
+    "last_checked_at": "2026-09-05",
+    "sync_note": "JAVITAS 2026-09-05: a last_sha mezo a 2026-09-03-i reviewnel elmaradt a last_checked_upstream_sha-tol (473d4b80 maradt, holott a review 16671491-re szolt), ezert a git-repo-watcher.sh ujra CHANGED:code-kent flaggelte ugyanazt a mar attekintett tartomanyt. Origin/main frissen fetch-elve: meg mindig 16671491, nincs uj commit a 2026-09-03-i review ota. Nincs uj kod-attekintes, csak a mezo szinkronizalva a mar dokumentalt allapotra."
   },
   {
     "name": "taste-skill",
