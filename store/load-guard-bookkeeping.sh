@@ -179,10 +179,76 @@ trap 'rm -f "$hdr_file"' EXIT
 printf 'Authorization: Bearer %s\n' "$(cat "$TOKEN_FILE" 2>/dev/null)" > "$hdr_file"
 
 _kanban_get() { curl -sf --max-time 10 -H @"$hdr_file" "$DASH/api/kanban" 2>/dev/null || echo '[]'; }
-_post_comment() { # $1 cardId $2 text
+
+# THE AUTHOR RESTRICTION IS EXPLICIT, not a side effect (card be81d16c, Cybersec on 9444a7bb).
+# Opening the hardcoded author to a parameter left the NAME unconstrained. It happened not to matter,
+# because the only caller derives it from a kanban lookup filtered on assignee == agent -- but that
+# is an accident of how today's caller is written, not a rule. A future caller that posts without
+# that lookup would inherit nothing, and this function would happily sign a note with any string,
+# including another agent's name or a reserved identity, straight into a card's audit trail.
+#
+# THE ONE SENTINEL that is not an agent. Kept out of the registry check on purpose: it is what an
+# empty author falls back to, and it must never resolve to a person.
+readonly LOAD_GUARD_AUTHOR='load-guard'
+
+# The registry is the dashboard's own agent list -- the same source the rest of the fleet uses, so
+# there is no second list here to drift out of step with reality.
+_known_agents() { curl -sf --max-time 10 -H @"$hdr_file" "$DASH/api/agents" 2>/dev/null || echo '[]'; }
+KNOWN_AGENTS_JSON=""
+
+# A NAME THAT CANNOT HAVE BEEN THROTTLED MUST NOT SIGN A THROTTLE NOTE. MikroB and the whole gate
+# pool are excluded from EVERY throttle mechanism (load-guard-excluded.sh, hardcoded on the d7a28a0a
+# NO-GO), so a PAUSED-LOAD note signed by one of them asserts something that cannot be true. Sourced
+# rather than re-listed: two copies of one policy is how one of them quietly stops matching.
+# shellcheck source=/dev/null
+. "$SCRIPT_DIR/load-guard-excluded.sh" 2>/dev/null || true
+
+_valid_author() { # $1 = candidate; echoes the name to use
+  local want="$1"
+  [ "$want" = "$LOAD_GUARD_AUTHOR" ] && { echo "$LOAD_GUARD_AUTHOR"; return 0; }
+  if [ -n "$want" ] && declare -F is_excluded >/dev/null 2>&1; then
+    if is_excluded "$want" || is_excluded "agent-$want"; then
+      echo "load-guard-bookkeeping: refusing to sign a throttle note as '$want' -- that identity is excluded from every throttle mechanism, so it cannot have been paused (card be81d16c)" >&2
+      echo "$LOAD_GUARD_AUTHOR"; return 0
+    fi
+  fi
+  [ -z "$KNOWN_AGENTS_JSON" ] && KNOWN_AGENTS_JSON="$(_known_agents)"
+  if printf '%s' "$KNOWN_AGENTS_JSON" | WANT="$want" python3 -c "
+import json, os, sys
+want = os.environ['WANT']
+try: rows = json.load(sys.stdin)
+except Exception: sys.exit(1)          # unreadable registry -> not a known agent
+rows = rows if isinstance(rows, list) else rows.get('agents', [])
+ids = {(r.get('agent_id') or r.get('name') or '') for r in rows if isinstance(r, dict)}
+sys.exit(0 if want in ids else 1)
+" 2>/dev/null; then
+    echo "$want"; return 0
+  fi
+  # Unknown, or the registry could not be read. Fall back to the sentinel rather than refusing the
+  # comment outright: its other job is moving `updated_at` so the stuck-monitor does not take the
+  # card away from an agent that is merely frozen. Never silent -- an unknown author is a caller bug.
+  echo "load-guard-bookkeeping: '$want' is not a known agent (or the registry was unreadable); signing as $LOAD_GUARD_AUTHOR instead (card be81d16c)" >&2
+  echo "$LOAD_GUARD_AUTHOR"
+}
+# THE AUTHOR IS A PARAMETER, not a constant (card 9444a7bb). It used to be hardcoded "backend", so
+# every PAUSED-LOAD/RESUMED-LOAD note claimed backend had been frozen no matter who actually was --
+# measured on card 98dbbcc9: 36 notes in ~4.5 minutes, all authored "backend", on FULLSTACK's card
+# while fullstack was the SIGSTOPped process (the sigstop-state file named fullstack correctly, so
+# only the attribution was wrong). That corrupts the one thing a card's comment history is for:
+# who did what, when. Someone reading back through an incident would have gone looking for backend.
+#
+# NO DEFAULT. A default is what produced this bug: a caller that forgets the argument would silently
+# blame whoever the default names. An empty author falls back to "load-guard" -- which is the honest
+# answer (the guard IS the writer) and, unlike any agent name, cannot be mistaken for a person's own
+# note. The comment still posts, because its other job is moving `updated_at` so the stuck-monitor
+# does not take the card away from an agent that is merely frozen.
+_post_comment() { # $1 cardId  $2 author  $3 text
   [ -n "$1" ] && [ "$1" != "null" ] || return 0
+  local author="${2:-$LOAD_GUARD_AUTHOR}"
+  [ -n "$author" ] || author="$LOAD_GUARD_AUTHOR"
+  author="$(_valid_author "$author")"
   curl -sf --max-time 10 -H @"$hdr_file" -X POST "$DASH/api/kanban/$1/comments" -H 'Content-Type: application/json' \
-    -d "$(python3 -c 'import json,sys; print(json.dumps({"author":"backend","content":sys.argv[1]}))' "$2")" \
+    -d "$(python3 -c 'import json,sys; print(json.dumps({"author":sys.argv[1],"content":sys.argv[2]}))' "$author" "$3")" \
     >/dev/null 2>&1 || true
 }
 
@@ -203,7 +269,7 @@ for c in cards:
 ")"
   mech="$(printf '%s' "$RESULT" | AGENT="$agent" python3 -c "import json,os,sys; print(json.load(sys.stdin)['paused'][os.environ['AGENT']]['mechanism'])")"
   if [ -n "$card_id" ]; then
-    _post_comment "$card_id" "INFO-ONLY: PAUSED-LOAD ($mech) -- a load-guard terheles miatt szuneteltette ezt az ugynokot, a fagyasztas/fekezes ideje alatt a kartya nem szamit beragadtnak."
+    _post_comment "$card_id" "$agent" "INFO-ONLY: PAUSED-LOAD ($mech) -- a load-guard terheles miatt szuneteltette ezt az ugynokot, a fagyasztas/fekezes ideje alatt a kartya nem szamit beragadtnak."
   fi
   # patch the computed card_id into RESULT for the write-out below
   RESULT="$(printf '%s' "$RESULT" | AGENT="$agent" CARD="$card_id" python3 -c "
@@ -227,7 +293,7 @@ for line in "${ends[@]}"; do
   agent="${line%%$'\t'*}"
   card_id="${line#*$'\t'}"
   [ -n "$card_id" ] || continue
-  _post_comment "$card_id" "INFO-ONLY: RESUMED-LOAD -- a load-guard felengedte ezt az ugynokot, a terheles-alapu szuneteles veget ert."
+  _post_comment "$card_id" "$agent" "INFO-ONLY: RESUMED-LOAD -- a load-guard felengedte ezt az ugynokot, a terheles-alapu szuneteles veget ert."
 done
 
 # ---- write the new snapshots --------------------------------------------------------------------

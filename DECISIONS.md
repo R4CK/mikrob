@@ -6563,6 +6563,81 @@ plan-grilling olyat kér, amit a landoló szkript definíció szerint nem tud el
 **Hivatkozás:** kártya 999fd78a; mért revert-commit `517c6957`; landolási merge-ek `78f9be50`,
 `13bf2707`, `cae546af`; hullám előtti alapvonal `7d548869`.
 
+---
+
+## 2026-09-05 -- c6153a69 -- The flake was already diagnosed; what was missing is that the CleanCore side never SAID so
+
+**Decision.** A shared classifier (`store/vitest-flake-classify.sh`), wired into
+`store/cleancore-suite-run.sh` -- the one entry point rule 18 mandates for a full CleanCore suite.
+It explains a nonzero exit when, and only when, the log carries vitest's worker-RPC timeout AND no
+failed test. It never alters the exit code.
+
+**What the investigation actually found.** The mechanism was already established and does not need
+re-deriving; it needed VERIFYING, which was done here against the installed CleanCore vitest 3.2.6
+rather than taken from the marveen-side note:
+
+    dist/chunks/index.B521nVV-.js:3    const DEFAULT_TIMEOUT = 6e4        <- 60s
+    dist/chunks/index.B521nVV-.js:21   timeout = DEFAULT_TIMEOUT          <- birpc's own default
+    dist/chunks/utils.CAioKnHs.js:25   createForksRpcOptions() -> serialize/deserialize/post/on, NO timeout
+
+So the card's third suggested lever, "increase the RPC timeout", **does not exist on this version** --
+and neither does the local-LLM draft's version of the same advice. The worker reports progress to the
+MAIN process over that RPC; a CPU-starved main process misses the 60s round trip and the WORKER
+throws, after every test has already passed.
+
+**The real gap was diagnosis cost, not the flake.** `fleet-test.sh` has classified this for the
+marveen suite since card 54699bbb. The CleanCore side had nothing, so each agent re-derived it from a
+bare "1 error" line -- three times in one day on this board, each ending in a hand-written REVIEW
+paragraph saying the same thing.
+
+**What was NOT done, and why.** No worker-count change is recommended, because the data does not
+support one. The only low-worker run available (`--maxWorkers=2`, marveen) came from a DIFFERENT
+suite of a different size and duration than the 12-worker CleanCore runs, so worker count is
+confounded with everything else; claiming a causal lever from that comparison would be exactly the
+kind of confident-but-unsupported inference this card's own history is full of. A controlled
+experiment is one suite, two worker counts, and costs ~1.5 hours of machine time -- worth doing
+deliberately, not smuggled into a LOW card.
+
+**Known duplication, stated rather than hidden.** `fleet-test.sh` keeps its own inline copy of this
+classification. Two spellings of one rule drift, but that file is gated, working and unrelated to
+this card, so it was left alone; the new script's header names it for migration on the next touch.
+
+---
+
+## 2026-09-05 -- be81d16c -- The author restriction is stated, not inherited from how one caller happens to work
+
+**Decision.** `_post_comment`'s author is validated against the dashboard's own agent registry, and
+an identity that is excluded from every throttle mechanism is refused outright. Anything else falls
+back to the `load-guard` sentinel with a loud stderr line.
+
+**Why.** Cybersec's follow-on to 9444a7bb: opening the hardcoded author to a parameter left the NAME
+unconstrained. It happened not to matter, because the only caller derives it from a kanban lookup
+filtered on `assignee == agent` -- but that is an accident of one caller, not a rule. A future caller
+posting without that lookup inherits nothing, and the function would sign a note with any string,
+including another agent's name, straight into a card's audit trail.
+
+**Two rules, and why each is shaped that way.** The registry is the dashboard's `/api/agents` rather
+than a list in this file: a second copy of "who exists" is a copy that drifts. And the
+excluded-identity check SOURCES `load-guard-excluded.sh` instead of re-listing MikroB and the gate
+pool, for the reason that file gives about itself -- two spellings of one policy is how one of them
+quietly stops matching. A note signed by an excluded identity asserts something that cannot be true:
+they can never be a throttle target.
+
+**Why the fallback still posts.** Refusing the comment would cost the `updated_at` movement the
+stuck-monitor depends on, so an agent that is merely frozen would start looking abandoned. The
+sentinel keeps that function while never impersonating anyone; the stderr line makes the caller bug
+visible rather than absorbed.
+
+**MY OWN TESTS WERE VACUOUS FIRST, and the mutation step is the only reason that did not ship.**
+The two new cases asserted "the author is not qa" / "not ghost-agent" and passed under BOTH
+mutations -- because the fake dashboard had no card for those agents, so `_card_id` was empty,
+`_post_comment` returned early, and nothing was posted at all. The assertions were true because of
+an unrelated precondition. Fixed by giving those agents cards in the harness and requiring that a
+comment WAS posted before checking its author. Same failure class this fleet has documented before
+(an early guard makes every "it refused" probe vacuous) -- knowing it did not prevent writing it.
+
+---
+
 ## 2026-09-05 -- 87be1810 -- LLM monitor: külön oldal, ügynök-sávok, a hiányzó adat kimondva (Fron Ted)
 
 **Előzmény:** Peti design-képe (store/design-refs/local-llm-swimlane-mockup-2026-09-03.jpg) a
@@ -7151,6 +7226,40 @@ hogy nyit-e rá kártyát.
 **Ki döntött:** MikroB (kártya nyitása backend2 leletéből), backend2 (a szekció tartalma és a
 seed+élő kettős írás).
 **Hivatkozás:** kártya e00e7ff3 (lelet: 1140a745); `seed-skills/project-workflow/SKILL.md`.
+
+## 2026-09-05 10:35 -- A suite-zár guard-tesztje a FELOLDOTT zár-útvonalat állítja, nem a forrásszöveget
+
+**Döntés:** A `fleet-test.sh` kap egy `--lock-path` kapcsolót, ami kiírja a ténylegesen használt zár
+fájlt és kilép, MIELŐTT bármit zárolna. A `fleet-test-serialises-runs.test.ts` elsődleges állítása
+mostantól ez a visszakapott ÉRTÉK, nem a szkript forrásszövegének mintaillesztése. A szöveg-olvasás
+megmarad másodlagos rétegnek, két javítással: a teljes-soros kommentek olvasás előtt lehullanak, és
+a kapcsos zárójel opcionális mindkét mintában.
+
+**Miért:** Cybersec mérése (a 2f0c7d24 következménye): a szöveg-alapú `problems()` (a) a
+kapcsos zárójel nélküli `LOCK_FILE="$TEST_TREE.lock"` alakot nem nevezte meg, csak a homályos
+"nincs gépszintű horgony" üzenetet adta, és (b) egy KOMMENTBE tett kanonikus sorral teljesen
+elnémítható volt -- per-fa zárral együtt `problems() === []`. Mindkettőt reprodukáltam a landolt
+szkripten, mielőtt hozzányúltam volna: (a) egyetlen homályos lelet, (b) NULLA lelet.
+
+Ez a HARMADIK eset egy napon belül ugyanabból az osztályból (a14812e8, 06d36307-F1, 43ecdbe6),
+ezért a javítás nem a mintát csiszolja, hanem kilép a szöveg-illesztésből: egy visszakapott értéket
+nem lehet a helyes szavak leírásával kielégíteni.
+
+**Amit szándékosan NEM javítok:** a kód UTÁN álló, sor végi kommentet nem vágom le. Helyesen csak
+úgy lehetne, ha tudnám, mikor van a `#` sztringen belül (`${VAR#prefix}` nem komment), és egy
+félig-jó vágó valódi sorokat rontana el. A maradék rés azért vállalható, mert az elsődleges állítás
+már nem szöveges.
+
+**Egy mérési tanulság, ami a tesztbe is bekerült:** a `--lock-path` ALAPÉRTELMEZETT fán mérve nem
+elég bizonyíték. Az alapértelmezett tesztfa `/home/neon/marveen-test`, tehát a per-fa zár
+(`$TEST_TREE.lock`) és a gépszintű (`${ROOT}-test.lock`) UGYANAZT a stringet adja. A megkerülést
+csak a `FLEET_TEST_TREE`-vel felülírt eset mutatja meg -- és ehhez kell egy kontroll is, ami
+igazolja, hogy a szkript egyáltalán olvassa a változót (a `--path` követi), különben egy a
+környezetet teljesen figyelmen kívül hagyó szkript is átmenne.
+
+**Ki döntött:** Cybersec (mérés + a javítási irány), MikroB (kártya), backend (megvalósítás).
+**Hivatkozás:** kártya 43ecdbe6; `store/fleet-test.sh`,
+`src/__tests__/fleet-test-serialises-runs.test.ts` (4 -> 8 eset).
 
 ## 2026-09-05 -- bfc028b4 -- Elavult seed-skillek felzárkóztatása, és egy mérőeszköz-hiba, ami a felét érvénytelenítette
 
