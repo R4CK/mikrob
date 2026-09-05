@@ -7659,3 +7659,33 @@ egy független implementáción, hogy egy sor közepére eső vágás elnyelhet 
 TÖRDELÉSŰ bejegyzést két különböző bejegyzésnek lát, és duplikátumot ír. Ez a nap folyamán élesben
 elő is fordult (ugyanaz a szöveg két tördelésben, két ágon). Sor-összehasonlítással nem javítható;
 külön kártya kérdése, nem ezé.
+
+## 2026-09-05 -- A bejegyzés-határ DÁTUMOZOTT fejléc, nem puszta `## ` (kártya b7e57877, Cybered CS-2)
+
+**Döntés.** A `store/decisions-append-union.sh` bejegyzés-határ ellenőrzése (`_starts_new_entry`)
+mostantól DÁTUMOZOTT fejlécet követel (`## [0-9][0-9][0-9][0-9]-*`), nem elég a `## ` előtag. A
+minta változó (`DECISIONS_ENTRY_HEADER_GLOB`), nem beégetett érték: a függvény a fájlnevet
+paraméterként kapja, tehát egy jövőbeli append-only fájl más konvencióval felülírhatja ahelyett,
+hogy lemásolná a függvényt.
+
+**Miért.** Cybersec NO-GO-ja után bevezetett `## ` határnak UGYANAZ a rése egy szinttel lejjebb.
+Cybered mérte és adott rá futtatható fixture-t (CS-2): ha a két oldal egy olyan TÖRZS-soron ágazik
+szét, ami maga is `## `-gal kezdődik (egy idézett alcím a bejegyzésen belül), akkor MINDKÉT maradék
+`## `-gal kezdődik, az ellenőrzés átengedi, és az unió ismét EGY fejléc alá ragaszt két törzset --
+pont az a csendben összeolvasztott bejegyzés, amit a NO-GO javítani akart. A saját ellenőrzésem
+megerősítette: a fixture a javítás előtt RESOLVED-ot adott.
+
+**A választás két lemért út közül.** (a) dátumozott minta a határellenőrzésben, (b) marad a `## `,
+és a feltevés kommentbe kerül egy CS-2 selftest-esettel. Az (a) mellett az döntött, hogy a költsége
+KIZÁRÓLAG elutasítás lehet -- a hívó megszokott, kézi konfliktus-feloldó útja --, sosem rossz merge.
+Saját mérés a valós korpuszon (nem a peer számát átvéve): marveen `DECISIONS.md` 200/200 fejléce
+dátumozott, CleanCore 154/154. Ma tehát nulla eset esik el emiatt; a CS-2 latens rés, nem éles.
+
+**Amit ez ténylegesen elvesz.** Egy dátum nélküli fejlécű, egyébként valódi append mostantól
+elutasításra kerül. Ez viselkedésváltozás, ezért SAJÁT selftest-eset rögzíti (nem prózában marad),
+és a felülírható minta ugyanígy kap egy esetet -- egy csak kommentben állított paraméterezhetőség
+elrohad. Mindhárom új eset mutációval ellenőrizve: a régi `## ` határra visszaállítva a CS-2 és a
+dátum nélküli eset pirosra vált, a beégetett mintára visszaállítva a felülírásos eset vált pirosra.
+
+**A megmaradó rés változatlan** (előző bejegyzés): az unió SOROKAT hasonlít, tehát két tartalmilag
+azonos, de eltérő tördelésű bejegyzést duplikál. Külön kártya kérdése.
