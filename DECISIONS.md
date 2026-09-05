@@ -6846,3 +6846,41 @@ jelentkezett, ott a lockfile beseedelése oldja meg. Külön döntés tárgya, n
 **Ki döntött:** backend2 (mérés + megvalósítás), MikroB (kártyanyitás a 3. bejelentés után).
 **Hivatkozás:** kártya 0711c19b; `store/marveen-land.sh`,
 `src/__tests__/agent-worktree-marveen.test.ts` (4 új eset, 3 mutációval igazolva).
+
+## 2026-09-05 -- 74aa46a5 -- A churn-kivonás nem üresítheti ki az összevetést egy passzba
+
+**Döntés:** A `gate-closure-check.py` `content_verdict()` függvénye mostantól `unresolved`-et ad, ha a
+deklarált commit MINDEN szállított fájlja a churn-listán van (`package.json`/`DECISIONS.md`/
+`README.md`) ÉS ezek közül legalább egy ténylegesen eltér. Verzió-bumpnál a hibaüzenet meg is nevezi
+az okot, és a 0711c19b-re mutat.
+
+**Miért:** A függvény már védekezett az ÜRES szállítás ellen (`if not files: continue`, azzal az
+indokkal, hogy a "same" ott vacuous pass lenne). A rá következő sor viszont kivonja a churn-hármast,
+és ez MÉGEGYSZER ki tudja üríteni az összevetést, egy ponton, ahová az őr már nem ér el. Egy
+`chore(version)` bump `package.json`-t szállít és MÁST NEM, tehát a kivonás konstrukció szerint
+totális: a függvény "azonos tartalom" választ ad, miután NULLA fájlt hasonlított össze. Egy őr, ami
+így válaszol, nem szigorúbb a semminél, csak drágább.
+
+**Mérve, nem feltételezve.** A teljes élő táblán (2821 kártya) a változás **14 kártya** verdiktjét
+mozdítja el, mindegyiket `AGREE` -> `UNRESOLVED`, és **mind a 14 már `done`** -- vagyis EGYETLEN
+nyitott lezárást sem blokkol. A 14-ből négy a lelet alapító esete (99fccbcf, e5b7ff19, a14812e8,
+f1b3f2f0, mind bump-sha), a többi a másik ajtó: csak `README.md`-t (d696e3bb) vagy csak
+`DECISIONS.md`-t (5b90d903) szállító deklarált commit.
+
+**Két KONTROLL tartja meg, ami eddig helyes volt** (mindkettő selftest-eset, mutációval igazolva):
+egy csak-churn szállítás, aminek a churn-fájlja TÉNYLEG bájtazonos, továbbra is `AGREE` (ott semmi
+nem tér el, az valódi válasz, nem üres); és egy valós fájlokat is szállító commit, aminél csak a
+churn mozdult, ugyanúgy megtartja a passzát -- azt a commitot ÖSSZEHASONLÍTOTTUK.
+
+**Hatókör-korlát, kimondva:** ez csak az ELTÉRŐ-sha ágat éri el. Ha a REVIEW és mindkét gate UGYANAZT
+a bump-shát nevezi meg (a táblán ez a gyakoribb: 82 bump-sha 51 kártyán), a `shas_agree` rövidre zár
+`AGREE`-re, és ide el sem jut. Az a kérdés -- "a megnevezett sha egyáltalán a kártya munkája-e" --
+nem ezé az őré: azt a FORRÁSNÁL zárta le a 0711c19b.
+
+**Kockázat-értékelés:** szigorítás egy záró-ellenőrzésen, aminek a hibamódja eddig HAMIS PASS volt.
+Nulla nyitott kártyát érint, egy committal visszafordítható, és a hatása mérve van, nem becsülve --
+ezért nem kapott önálló plan-grilling kört.
+
+**Ki döntött:** backend2 (lelet a 0711c19b méréséből, design + megvalósítás).
+**Hivatkozás:** kártya 74aa46a5; `store/gate-closure-check.py`,
+`store/gate-closure-check.selftest.py` (44 -> 49 eset, 4 mutációval igazolva).
