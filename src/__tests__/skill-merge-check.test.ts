@@ -81,3 +81,42 @@ describe('store/skill-merge-check.py (card 30b76a8d)', () => {
     expect(pair(SOURCE + '\nSome added guidance, no command in it.\n', SOURCE).code).toBe(0)
   })
 })
+
+describe('frontmatter the merge made unreadable (card 23d09a68)', () => {
+  const FM_SOURCE = '---\nname: s\ndescription: the project copy\n---\nbody\n'
+
+  it('THE DEFECT: two description: keys, which is what my own 30b76a8d merge produced', () => {
+    // Measured on the landed file: seed-fleet-agents/{qa,qa2}/.../vitest-react-router-guard had
+    // TWO description: keys after that merge, and one before. Both texts were accurate -- the
+    // body is the union of two lineages -- but YAML can only keep one, so the advertised
+    // triggers became parser-dependent. Same additive-merge class as the Cybersec NO-GO.
+    const merged = '---\nname: s\ndescription: the project copy\ndescription: the global copy\n---\nbody\n'
+    const r = pair(merged, FM_SOURCE)
+    expect(r.code).toBe(1)
+    expect(r.out).toMatch(/`description:` appears 2 times/)
+  })
+
+  it('CONTROL: a duplicate ALREADY in the source is not the merge\'s doing', () => {
+    const both = '---\nname: s\ndescription: a\ndescription: b\n---\nbody\n'
+    expect(pair(both, both).code).toBe(0)
+  })
+
+  it('CONTROL: a clean frontmatter is not flagged', () => {
+    expect(pair(FM_SOURCE, FM_SOURCE).code).toBe(0)
+  })
+
+  it('an opened-but-never-closed block is reported as unreadable', () => {
+    const unterminated = '---\nname: s\ndescription: d\n\n# Title\nbody\n'
+    const r = pair(unterminated, FM_SOURCE)
+    expect(r.code).toBe(1)
+    expect(r.out).toMatch(/never closes/)
+  })
+
+  it('CONTROL: body prose with colons is NOT read as duplicate frontmatter keys', () => {
+    // My first scanner ran to EOF when the terminator was missing and reported bogus duplicate
+    // keys on two seed-skills files ("Input:", "Output:" in the body). A guard whose false
+    // positives outnumber its findings gets ignored, so the parse stops at the terminator.
+    const r = pair('---\nname: s\n\n# T\nInput: a\nInput: b\n', FM_SOURCE)
+    expect(r.out).not.toMatch(/`Input:` appears/)
+  })
+})

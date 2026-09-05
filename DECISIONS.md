@@ -7719,3 +7719,58 @@ eredményen tiszta, a `fleet-helper` öt dokumentált hivatkozása feloldódik.
 gazdáira vár.
 **Hivatkozás:** kártya 23d09a68; `seed-fleet-agents/*/full-value-audit`,
 `*/guarded-rowscoped-read-endpoint`, `~/.claude/skills/fleet-helper/scripts/` (élő, gitignore-olt).
+
+## 2026-09-05 -- 23d09a68 (3. lépés): a saját additív merge-öm ELROMLOTT frontmattert hagyott, és ez a NO-GO osztály második példánya
+
+**Döntés:** a bfc028b4-ről áthozott két sort végigmértem, és mindkettő MÁS volt, mint aminek látszott.
+
+**1. `vitest-react-router-guard` (qa, qa2): KÉT `description:` kulcs a frontmatterben, és ezt ÉN
+csináltam.** Git-tel bizonyítva: a `285f2981` szülőben egy `description:` sor volt, az én
+`5e2f994b` commitom (30b76a8d) után kettő -- a seedben ÉS a telepített példányban is, mind a két
+ügynöknél, tehát 4 fájl. Ugyanaz az additív-merge osztály, mint a Cybersec NO-GO (komment 20441),
+csak egy olyan fájlban, ameddig az a gate nem ért el. A YAML egy kulcsból egyet tart meg, és hogy
+melyiket, az parser-függő -- a frontmatter `description`-je pedig a Level-0 szöveg, ami eldönti,
+hogy a skill egyáltalán felajánlásra kerül-e.
+
+**A javítás NEM az egyik eldobása volt, és ezt mérés döntötte el, nem ízlés.** Megnéztem, hogy a két
+leírás melyike illik a ténylegesen szállított törzsre: MINDKETTŐ illik. A hosszú (projekt-oldali)
+leírás kulcsszavai a törzsben: `useSession` 8, `PortalAuthGuard` 6, `PrivateRoute` 1 találat. A
+rövid (globális) leírásé: `useParams` 5, `TDZ` 3, `multiple elements` 5. A törzs a két leszármazási
+vonal UNIÓJA, tehát a merge TARTALMI döntése helyes volt; csak a KÓDOLÁSA volt érvénytelen. Ezért
+a két leírást egy sorba vontam össze, mindkét trigger-készlettel. Ha reflexből eldobtam volna az
+egyiket, valódi trigger-lefedettséget veszítek.
+
+**2. `i18n-parity-sweep` (qa2): nem "független kiegészítés", hanem 5 SZUPERSZEDÁLT sor a seedben.**
+A seed 5 sorral volt hosszabb az élőnél, és mind az 5 egy elavult alak, közvetlenül a saját
+utódja FÖLÖTT: 2x `cd /mnt/h/LM_Studio_Workdir/CleanCore` a `cd "$QA2_WT"` előtt, 2x
+`BASE = pathlib.Path('/mnt/h/.../CleanCore/...')` a `BASE = pathlib.Path(CC)` előtt, és egy
+duplikált `# NE git add -A` komment. Bash-ben és Pythonban is a második nyer, tehát futásidőben
+inertek -- de a doksit fentről lefelé olvasó ügynököt a VISSZAVONT megosztott klónra küldik, oda
+amit senkinek nem szabad írnia. A `${CLEANCORE_MAIN:-...}` alakú két sor (24., 50.) a HELYES,
+dokumentált forma, azok maradtak. Az irányt nem ízlés döntötte el: a hat létező példányból öt
+(qa seedje, mindkét élő példány, a seed-skills és a globális) MÁR tiszta volt, a qa2 seedje volt
+az egyetlen kilógó. Renderelés után a seed most bájtra azonos az élővel.
+
+**Strukturális következmény: a `store/skill-merge-check.py` mostantól a frontmattert is nézi.** A
+szuperszedált PARANCS-alakot elkapta, a szuperszedált KULCSOT nem -- egy nem detektálható hibaosztály
+vissza fog jönni. Az új ellenőrzés ugyanazt a szabályt követi, mint a régi: ami a FORRÁSBAN már
+benne volt, az nem a merge műve, tehát nem jelentés. A parse a lezáró `---`-nál MEGÁLL, és ez nem
+formaság: az első változatom EOF-ig olvasott, és a törzs prózáját olvasta kulcsnak, amitől két
+`seed-skills` fájlra (`elitedigitalagency`, `threejsinteractionblueprint`) hamis duplikált-kulcs
+riasztást adott. Egy őr, aminek több a hamis pozitívja, mint a lelete, pár nap alatt megtanítja
+mindenkinek, hogy hagyja figyelmen kívül.
+
+**Bizonyíték:** a tool selftestje 3 -> 8 eset, a vitest fájl 5 -> 10 eset, és a detektor a
+VALÓDI, develop-ra landolt hibás fájlt kapja el (exit 1, `description: appears 2 times`), a
+javítottat pedig tisztán engedi. Mutáció: a frontmatter-ellenőrzés kiütésével 3 teszt bukik
+(a defekt-eset, a lezáratlan-blokk eset és a selftest), tehát az új esetek harapnak.
+
+**Amit NEM javítottam, és jelentek:** az `elitedigitalagency` és a `threejsinteractionblueprint`
+seed-skill frontmattere megnyílik `---`-mal és SOHA nem záródik le, tehát a `name`/`description`
+nem olvasható ki belőlük. Ez nem az én merge-em műve és nem is ezé a kártyáé, de valódi hiba,
+és a fenti okból a merge-check szándékosan nem jelenti (nem a merge okozta). Külön kártya kell rá.
+
+**Ki döntött:** backend2.
+**Hivatkozás:** kártya 23d09a68; `store/skill-merge-check.py`,
+`src/__tests__/skill-merge-check.test.ts`, `seed-fleet-agents/{qa,qa2}/vitest-react-router-guard`,
+`seed-fleet-agents/qa2/i18n-parity-sweep`.
