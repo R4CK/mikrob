@@ -6645,6 +6645,80 @@ hibaüzenet megmondja a teendőt (átnevezés), kifejezetten megtiltva a fenntar
 **Ki döntött:** backend2, Cybersec javaslata alapján (b46a4b7e gate-melléklete, komment 22244).
 **Hivatkozás:** kártya 54fd9c02.
 
+## 2026-09-05 -- Az `agents/` névtér futásidejű zárása: fail-closed ejtés + latch-elt tripwire (kártya 53c59307)
+
+**Döntés.** Cybered tervét (20323-as komment) változtatás nélkül megvalósítottam: az (a) és (b) irány
+közül MINDKETTŐ, mert két külön kérdésre felelnek. Az ejtés a KONTROLL (`listAllAgentNames()` nem ad
+vissza fenntartott nevű könyvtárat), a riasztás a LÁTHATÓSÁG, és mindkettő UGYANABBÓL az egy
+predikátumból (`isReservedSenderId`) jön. Külön-külön mindkettő rossz: az ejtés egyedül némán
+semlegesít, tehát a támadó megtudja, hogy nem működik, mi viszont soha nem tudjuk meg, hogy
+megpróbálta; a riasztás egyedül egy ténylegesen megtörtént mintelésről szól.
+
+**Miért volt nyitva.** Az `54fd9c02` a TELEPÍTÉSI utat zárta le. Bármelyik élő flotta-ügynök viszont
+`mkdir agents/system-directive`-et tud csinálni sima Bash-sel, installer nélkül -- a könyvtár ezzel
+bekerült volna a context-guard sweepbe, aminek két írója (`context-guard-runner.ts`,
+`context-restart-gate-runner.ts`) a sweepelt nevet adja `from`-ként a `createAgentMessage`-nek. Ekkor
+léteznének VALÓDI `from_agent="system-directive"` sorok, amiket a `sendSystemDirective` sosem írt --
+pont az az egy-író tulajdonság, amiért az átnevezés készült.
+
+**Egy fojtópont, mérve.** A teljes `src/`-ben EGYETLEN `readdirSync` fut az `AGENTS_BASE_DIR`-en, a
+`listAllAgentNames()`-ben (Cybered mérése, magam is ellenőriztem). Ezért nem részleges javítás: egy
+helyen zárul az egész osztály. Több független readdir esetén ez a terv nem lett volna elég.
+
+**Az aszimmetria a terv lényege, és ezt nem szabad egyszerűsíteni.**
+- `isReservedSenderId(n)` igaz -> EJTÉS + riasztás. Egyetlen legitim ajtó sem tud ilyen könyvtárat
+  létrehozni (az API 400-zal utasítja el, a bundle-import dob, a seed-korpusz őre az `54fd9c02`-ben),
+  tehát az ejtés nem rejthet el valódi ügynököt az életfenntartás elől. EZ a tulajdonság teszi az
+  ejtést megengedhetővé, nem a szigor önmagában.
+- `sanitizeAgentName(n) !== n`, de nem fenntartott -> CSAK riasztás, NINCS ejtés. Egy ilyen könyvtár
+  lehet régi, kézzel létrehozott, ténylegesen dolgozó ügynök, és a sweepből kiejteni egy 100%-os
+  kontextuson álló session elvesztését jelentené. A név nem fenntartott azonosító, tehát nem mintel
+  semmit: itt a láthatóság a helyes válasz, nem a semlegesítés.
+
+**A latch nem csiszolás, hanem teherhordó elem.** A `listAllAgentNames()` forró úton fut (az
+invite-monitor másodpercenként, a sweep ciklikusan). Latch nélkül EGYETLEN `mkdir` percenként ~20
+üzenetet írna a fő ügynök postaládájába, örökre -- egy-paranccsal elérhető, önmagunk ellen fordított
+DoS az orchestrátor bemenetén, pont attól a szereplőtől, aki ellen a kontroll szól. A latch a
+`store/` alatt perzisztál (újraindítás ne fegyverezze újra), és csak akkor fegyverez újra, ha a
+könyvtár eltűnt és megint megjelent. Sikertelen küldés NEM latch-el, különben pont az az egy
+riasztás veszne el, ami számít.
+
+**Nincs automatikus törlés, szándékosan.** Az ejtés már semlegesített, tehát a törlés nem véd többet,
+csak bizonyítékot semmisít meg. Súlyosabb ok: egy visszafordíthatatlan törlés, aminek az útvonalát a
+TÁMADÓ választja, maga is támadási primitív, amint a névillesztés valaha lazul -- egy elrontott regex
+a távolság a veszélytelen szűk illesztés és a tetszőleges könyvtár-törlés között. Helyette:
+karantén-másolat a `store/agent-dir-quarantine/` alá, az eredeti érintetlenül a helyén.
+
+**Attribúció: kimondva gyenge.** A flotta minden ügynöke ugyanazon az OS-felhasználón fut, tehát a
+könyvtár tulajdonosa semmit nem árul el arról, ki hozta létre. A riasztás a létrehozás időbélyegét
+adja, és a szövegében KI IS MONDJA, hogy ez korrelációs jelzés, nem bizonyíték. Az igazi védelem nem
+a jobb nyomozás, hanem hogy a cselekmény haszontalan legyen.
+
+**Tisztaság.** A `listAllAgentNames()` és az új `listRejectedAgentDirNames()` tiszta függvény marad:
+nincs db, nincs üzenetküldés. Egy riasztó mellékhatás azt jelentené, hogy minden tesztfutás
+riasztásokat termel, vagyis a saját csatornánkat tanítanánk meg arra, hogy a riasztás zaj. A
+riasztást a context-guard sweep küldi, aminek már van db-hozzáférése. Ezt teszt pinneli
+import-gráf-tényként (a `db.ts` nem érhető el az `agent-config.ts`-ből), nem kommentként.
+
+**Amit MÉRTEM, nem feltételeztem.** A hét gate-pont mindegyikére teszt, plusz három mutáns, mind
+alkalmazva és visszaállítva: az ejtés kivétele -> 2 piros; a latch kivétele -> 1 piros; az aszimmetria
+összeolvasztása (a rosszul formált név is ejtve) -> 1 piros. Alapvonal és visszaállítás után 7/7 zöld.
+Regresszió: 47/47 a névtér-körben (reserved-agent-name, system-directive-auth-section), 85/85 a
+context-guard körben. `tsc --noEmit` exit 0.
+
+**Egy megfigyelés, ami NEM változtatta meg a tervet.** Egy olyan név, ami csak SANITIZÁLVA lesz
+fenntartott (pl. `System--Directive`), nem esik ki -- és ez helyes: a `from_agent`-hez vezető úton
+semmi nem sanitizál, tehát egy ilyen könyvtár nem a fenntartott azonosítót írja, nem mintel semmit.
+Ejteni a fenti aszimmetriát sértené haszon nélkül. A kis-nagybetű viszont számít, és fedve van: az
+`isReservedSenderId` case-insensitive, tehát az `agents/System-Directive` is kiesik.
+
+**Amit ez a kártya NEM old meg.** Az `agents/` alá ÍRÁS megakadályozása (jogosultság, hook,
+immutábilis mount) külön kártya és nagyobb kockázat: az ügynökök legitim módon írnak a saját
+könyvtárukba. Ez a kártya a névteret zárja, nem az írást.
+
+**Ki döntött:** Cybered (terv és irányválasztás), backend (megvalósítás és mérés), MikroB (dispatch).
+**Hivatkozás:** kártya 53c59307; előzmény 54fd9c02 (telepítési út) és 5c5d7bc4 (a saját sender id).
+
 ## 2026-09-05 -- A `fleet-test.sh` FLEET_TEST_TREE-kijárata lezárva: a zár gép-szintű, nem fánként (kártya 2f0c7d24)
 
 **Döntés.** Peti explicit jóváhagyásával (Telegram, 2026-09-05, „1 - zárd le, kódot módosítasz") a

@@ -3,7 +3,8 @@ import { join } from 'node:path'
 import { homedir } from 'node:os'
 import { PROJECT_ROOT, MAIN_AGENT_ID, DEFAULT_AGENT_MODEL } from '../config.js'
 import { atomicWriteFileSync } from './atomic-write.js'
-import { safeJoin } from './sanitize.js'
+import { safeJoin, sanitizeAgentName } from './sanitize.js'
+import { isReservedSenderId } from './system-directive-id.js'
 // Model-id allowlist lives in a dep-free module so model-fallback.ts can share it (card b7fa5281).
 // The re-export is load-bearing in THIS fork: model-fallback-runner.ts and routes/agents.ts import
 // these symbols from here, not from model-id.js (upstream drops the re-export because its own
@@ -525,11 +526,65 @@ export const HIDDEN_AGENT_SENTINEL = '.hidden-from-dashboard'
  * decide whether that agent gets kept alive. Lifecycle sweeps use this
  * function; anything that renders a list to the operator uses listAgentNames().
  */
-export function listAllAgentNames(): string[] {
+function agentDirNames(): string[] {
   if (!existsSync(AGENTS_BASE_DIR)) return []
   return readdirSync(AGENTS_BASE_DIR).filter((f) => {
     try { return statSync(join(AGENTS_BASE_DIR, f)).isDirectory() } catch { return false }
   })
+}
+
+/** Why a directory under agents/ is not simply an agent (card 53c59307). */
+export type AgentDirRejectionReason = 'reserved-sender-id' | 'malformed-name'
+
+export interface AgentDirRejection {
+  readonly name: string
+  readonly reason: AgentDirRejectionReason
+  /** True when listAllAgentNames() DROPPED it; false when it is only reported. */
+  readonly dropped: boolean
+}
+
+/**
+ * Directories under agents/ that the fleet refuses to treat as ordinary agents, and what was
+ * done about each (card 53c59307, Cybered's plan).
+ *
+ * PURE ON PURPOSE: no db, no message, no logging. This function is called from a hot sweep and
+ * from tests, and an alerting side effect here would mean every test run writes alerts -- which
+ * is the standard way a good detection becomes noise everybody filters out within a week. The
+ * caller that already owns a db handle sends the alert; see context-guard-runner.ts.
+ *
+ * THE TWO CASES ARE DELIBERATELY ASYMMETRIC, and collapsing them is the mistake to avoid:
+ *  - `reserved-sender-id` is DROPPED. No legitimate door can create such a directory -- POST
+ *    /api/agents rejects the name, the bundle import throws, and the seed-corpus guard (card
+ *    54fd9c02) refuses it at install time -- so dropping it cannot hide a real agent from life
+ *    support. That property is what makes dropping safe, and it is the whole argument.
+ *  - `malformed-name` is REPORTED ONLY. Such a directory could be an old, hand-made, genuinely
+ *    working agent, and removing it from the context-guard sweep would strand a live session at
+ *    100% context. The name is not a reserved id, so it mints nothing; visibility is the right
+ *    answer here, not neutralisation.
+ */
+export function listRejectedAgentDirNames(): AgentDirRejection[] {
+  const out: AgentDirRejection[] = []
+  for (const name of agentDirNames()) {
+    if (isReservedSenderId(name)) out.push({ name, reason: 'reserved-sender-id', dropped: true })
+    else if (sanitizeAgentName(name) !== name) out.push({ name, reason: 'malformed-name', dropped: false })
+  }
+  return out
+}
+
+export function listAllAgentNames(): string[] {
+  // FAIL-CLOSED on the reserved sender ids (card 53c59307). The seed-time guard (54fd9c02) closed
+  // the INSTALL path; this closes the runtime one. Any live agent can `mkdir agents/system-directive`
+  // with plain Bash, and without this filter that directory would join the context-guard sweep --
+  // whose two writers send messages carrying the swept name as `from`. The name never reaching the
+  // list is what makes the mkdir worthless, and it is a single choke point: this is the only
+  // readdir of AGENTS_BASE_DIR in src/.
+  //
+  // isReservedSenderId is case-insensitive, so `agents/System-Directive` is dropped too. A name
+  // that merely SANITIZES to a reserved id (`System--Directive`) is not dropped, deliberately:
+  // nothing sanitizes the name on the way to `from_agent`, so such a directory writes a row whose
+  // sender is not the reserved id and mints nothing -- and dropping it would break the asymmetry
+  // above for no gain.
+  return agentDirNames().filter((f) => !isReservedSenderId(f))
 }
 
 export function listAgentNames(): string[] {
