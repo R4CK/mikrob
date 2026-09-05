@@ -243,8 +243,11 @@ for rule in sorted(set(baseline) | set(counts)):
         better.append((rule, was, now))
 
 for rule, was, now in better:
-    label = 'UNMEASURED' if measurement_degraded else 'IMPROVED  '
-    print(f'lint-ratchet.sh: {label}{rule}: {was} -> {now}')
+    # Padded and separated EXPLICITLY. Both labels used to carry their own trailing spaces, so
+    # 'IMPROVED  ' aligned and 'UNMEASURED' -- exactly as long as the padded field -- ran straight
+    # into the rule name: 'UNMEASUREDno-floating-promises'. The column is the format's job.
+    label = 'UNMEASURED' if measurement_degraded else 'IMPROVED'
+    print(f'lint-ratchet.sh: {label:<10} {rule}: {was} -> {now}')
 if better and mode != 'show' and not measurement_degraded:
     print('lint-ratchet.sh: run `store/lint-ratchet.sh --update` and commit the baseline so the '
           'bound tightens -- an improvement nobody records can be spent again later.')
