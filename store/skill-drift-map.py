@@ -66,6 +66,14 @@ from pathlib import Path
 # overwritten with a literal path is the same corruption as a flattened {{INSTALL_DIR}}.
 PLACEHOLDER_RX = re.compile(r'\{\{[A-Z_]+\}\}|__MARVEEN_[A-Z_]+__')
 
+# Backup artefacts are NOT drift, and on a real install they were 100% of the noise: every one of
+# the 10 `live-only file` rows was a backup, zero were real (card 23d09a68). update.sh:707 writes a
+# `<file>.seedbak.<epoch>` beside the file it merges, INSIDE the scanned tree, so each successful
+# merge permanently adds a row to this report. Deliberately narrow: only the two backup suffixes,
+# because a skill file is SKILL.md or something under references/ -- a `.bak` is never load-bearing,
+# but a broad 'skip anything unusual' rule would hide a real file the day someone adds one.
+BACKUP_RX = re.compile(r'\.(?:seed)?bak(?:\.\d+)?$')
+
 INSTALL_DIR = Path(os.environ.get('INSTALL_DIR', '/home/neon/marveen'))
 LIVE = Path(os.environ.get('SKILLS_DIR', str(Path.home() / '.claude/skills')))
 
@@ -224,7 +232,7 @@ def main(argv: list[str]) -> int:
                 continue
             seen = set()
             for f in sorted(skill.rglob('*')):
-                if not f.is_file():
+                if not f.is_file() or BACKUP_RX.search(f.name):
                     continue
                 rel = f.relative_to(skill)
                 seen.add(rel)
@@ -240,9 +248,12 @@ def main(argv: list[str]) -> int:
                     continue
                 rows.append((tree_name, skill.name, str(rel), verdict, only_live, only_tpl))
             for f in sorted(live_skill.rglob('*')):
-                if f.is_file() and f.relative_to(live_skill) not in seen:
-                    rows.append((tree_name, skill.name, str(f.relative_to(live_skill)),
-                                 'live-only file', set(), set()))
+                if not f.is_file() or f.relative_to(live_skill) in seen:
+                    continue
+                if BACKUP_RX.search(f.name):
+                    continue  # update.sh's own .seedbak, or someone's .bak -- not content
+                rows.append((tree_name, skill.name, str(f.relative_to(live_skill)),
+                             'live-only file', set(), set()))
 
     print('NOT drift, correct by design:')
     for k, v in correct.most_common() or [('(none)', 0)]:

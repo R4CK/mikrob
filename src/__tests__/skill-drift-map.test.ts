@@ -178,6 +178,28 @@ describe('each template tree is paired with ITS OWN live root (card bfc028b4)', 
     expect(rows.filter((l) => l.includes('notinstalled'))).toHaveLength(1)
   })
 
+  it('a .seedbak backup is not a live-only file (card 23d09a68)', () => {
+    // update.sh:707 writes <file>.seedbak.<epoch> BESIDE the file it merges, inside the scanned
+    // tree, so every successful merge used to add a permanent row to this report. Measured on the
+    // real install: all 10 `live-only file` rows were backups and none were real.
+    agentPair('jogasz', 'backup-noise-skill', 'body\n', 'body\n')
+    const live = join(installDir, 'agents/jogasz/.claude/skills/backup-noise-skill')
+    writeFileSync(join(live, 'SKILL.md.seedbak.1788522556'), 'an old copy\n')
+    writeFileSync(join(live, 'SKILL.md.bak'), 'someone\'s hand backup\n')
+    const out = run(['--skill', 'backup-noise-skill'])
+    expect(out).not.toMatch(/live-only file/)
+  })
+
+  it('CONTROL: a real extra file in the live tree IS still reported (the skip did not widen)', () => {
+    // Without this the case above could pass by silencing the category rather than narrowing it.
+    agentPair('marketing', 'real-extra-skill', 'body\n', 'body\n')
+    writeFileSync(
+      join(installDir, 'agents/marketing/.claude/skills/real-extra-skill', 'notes.md'),
+      'a real file nobody put in the template\n')
+    const out = run(['--skill', 'real-extra-skill'])
+    expect(out).toMatch(/1\s+live-only file/)
+  })
+
   it('the installer\'s __MARVEEN_INSTALL_DIR__ sentinel renders, it is not drift', () => {
     // seed-fleet-agents/ uses a SECOND placeholder convention (install-linux.sh:1546 sed) that the
     // tool did not know about, so every sentinel-bearing line read as a difference.
