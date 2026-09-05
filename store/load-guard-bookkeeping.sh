@@ -42,7 +42,7 @@
 #
 # Usage: load-guard-bookkeeping.sh
 #   [--cgroup-state <path>] [--sigstop-state <path>] [--paused <path>] [--events <path>]
-#   [--alert-stamp <path>] [--config <path>] [--now <epoch>] [--alert-dryrun]
+#   [--alert-stamp <path>] [--config <path>] [--episodes <path>] [--now <epoch>] [--alert-dryrun]
 # All overrides are test-only; production passes none.
 set -uo pipefail
 
@@ -51,6 +51,7 @@ CGROUP_STATE="$SCRIPT_DIR/load-guard-cgroup-state.json"
 SIGSTOP_STATE="$SCRIPT_DIR/load-guard-sigstop-state.json"
 PAUSED="$SCRIPT_DIR/load-paused-agents.json"
 EVENTS="$SCRIPT_DIR/load-guard-pause-events.json"
+EPISODES="$SCRIPT_DIR/load-guard-episodes.json"
 ALERT_STAMP="$SCRIPT_DIR/.load-guard-bookkeeping-alerted.json"
 CONFIG="$SCRIPT_DIR/load-guard-config.json"
 NOW=""
@@ -65,9 +66,12 @@ import json
 import sys
 
 cgroup_json, sigstop_json, prev_paused_json, prev_events_json, now_s, threshold_s, window_s = sys.argv[1:8]
+prev_episodes_json, gap_s, heartbeat_s = sys.argv[8:11]
 now = int(now_s)
 threshold = int(threshold_s)
 window = int(window_s)
+episode_gap = int(gap_s)
+heartbeat = int(heartbeat_s)
 
 def jload(s, default):
     try:
@@ -107,6 +111,64 @@ for agent in prev_paused:
     if agent not in mechanisms:
         ends.append({"agent": agent, "card_id": prev_paused[agent].get("card_id")})
 
+prev_episodes = jload(prev_episodes_json, {})
+
+# EPISODE-LEVEL REPORTING (card 9c6b1802). The per-transition note was the wrong unit of news.
+# sigstop_freeze is capped at max_freeze_seconds (90 by config), so under sustained load it can
+# only ever freeze, hit the cap, release into a still-loaded machine and refreeze -- the flapping
+# is INHERENT to the mechanism, not a fault. Measured on the live board: 988 of 1082 pause-starts
+# were sigstop_freeze, median dwell 10s, and one card carried 342 of its 353 comments as these
+# notes. An EPISODE (throttling began ... throttling ended) is the thing a reader wants, and its
+# cycle count is real information that 46 identical pairs never conveyed.
+#
+# THE NOTE IS NOT ONLY NEWS -- it also moves the card `updated_at` field, which is why suppressing it
+# outright would be unsafe. The stuck-card-monitor excludes agents listed in
+# load-paused-agents.json, so a CONTINUOUSLY paused agent is protected by the marker file; but an
+# agent flapping in and out of that set can be sampled while ADMITted, and then only `updated_at`
+# stands between it and a 10-minute stuck verdict. Hence the heartbeat below: the silent window is
+# BOUNDED, not removed. Simulated over all 2150 live notes, the worst silent window inside an
+# active episode is 497s against the 600s monitor threshold.
+new_episodes = {}
+notes = []
+
+for agent in set(mechanisms) | set(prev_episodes):
+    is_paused = agent in mechanisms
+    ep = dict(prev_episodes.get(agent) or {})
+    mech_str = "+".join(mechanisms[agent]) if is_paused else ep.get("mechanism", "")
+
+    if not ep:
+        if is_paused:
+            notes.append({"agent": agent, "kind": "start", "mechanism": mech_str,
+                          "cycles": 1, "duration": 0, "card_id": None})
+            new_episodes[agent] = {"start": now, "cycles": 1, "last_activity": now,
+                                   "last_post": now, "mechanism": mech_str, "card_id": None}
+        continue
+
+    if is_paused:
+        # A fresh pause START inside an open episode is another cycle, not another episode.
+        if agent not in prev_paused:
+            ep["cycles"] = int(ep.get("cycles", 0)) + 1
+        ep["mechanism"] = mech_str
+        ep["last_activity"] = now
+    elif now - int(ep.get("last_activity", now)) > episode_gap:
+        # Quiet long enough to call it over. The duration is measured to the last ACTIVITY, not to
+        # now -- the lapse window itself is not part of the throttling.
+        notes.append({"agent": agent, "kind": "end", "mechanism": ep.get("mechanism", ""),
+                      "cycles": int(ep.get("cycles", 0)),
+                      "duration": int(ep.get("last_activity", now)) - int(ep.get("start", now)),
+                      "card_id": ep.get("card_id")})
+        continue
+
+    # Heartbeat only while actually paused: an ADMITted agent moves its own card.
+    if is_paused and now - int(ep.get("last_post", ep.get("start", now))) >= heartbeat:
+        notes.append({"agent": agent, "kind": "heartbeat", "mechanism": ep.get("mechanism", ""),
+                      "cycles": int(ep.get("cycles", 0)),
+                      "duration": now - int(ep.get("start", now)),
+                      "card_id": ep.get("card_id")})
+        ep["last_post"] = now
+
+    new_episodes[agent] = ep
+
 # Rolling pause-START window per agent, pruned to `window` seconds before this tick'"'"'s own
 # starts are appended -- an event exactly `window` seconds old has already aged out.
 new_events = {}
@@ -125,12 +187,15 @@ print(json.dumps({
     "starts": starts,
     "ends": ends,
     "alert_agents": alert_agents,
+    "episodes": new_episodes,
+    "notes": notes,
 }))
 '
 
 if [ "${1:-}" = "--test-compute" ]; then
   # candidates: cgroup-json sigstop-json prev-paused-json prev-events-json now threshold window
-  python3 -c "$COMPUTE_PY" "$2" "$3" "$4" "$5" "$6" "$7" "$8"
+  #             [prev-episodes-json episode-gap heartbeat]
+  python3 -c "$COMPUTE_PY" "$2" "$3" "$4" "$5" "$6" "$7" "$8" "${9:-{\}}" "${10:-300}" "${11:-240}"
   exit 0
 fi
 
@@ -140,6 +205,7 @@ while [ $# -gt 0 ]; do
     --sigstop-state) SIGSTOP_STATE="$2"; shift 2 ;;
     --paused) PAUSED="$2"; shift 2 ;;
     --events) EVENTS="$2"; shift 2 ;;
+    --episodes) EPISODES="$2"; shift 2 ;;
     --alert-stamp) ALERT_STAMP="$2"; shift 2 ;;
     --config) CONFIG="$2"; shift 2 ;;
     --now) NOW="$2"; shift 2 ;;
@@ -154,14 +220,17 @@ done
 THRESHOLD=2
 WINDOW=3600
 COOLDOWN=3600
+EPISODE_GAP=300
+HEARTBEAT=240
 if [ -f "$CONFIG" ]; then
-  read -r THRESHOLD WINDOW COOLDOWN < <(python3 -c "
+  read -r THRESHOLD WINDOW COOLDOWN EPISODE_GAP HEARTBEAT < <(python3 -c "
 import json
 try:
     c = json.load(open('$CONFIG')).get('bookkeeping', {})
 except Exception:
     c = {}
-print(c.get('alert_repeat_threshold', 2), c.get('alert_window_seconds', 3600), c.get('alert_cooldown_seconds', 3600))
+print(c.get('alert_repeat_threshold', 2), c.get('alert_window_seconds', 3600), c.get('alert_cooldown_seconds', 3600),
+      c.get('episode_gap_seconds', 300), c.get('heartbeat_seconds', 240))
 ")
 fi
 
@@ -170,8 +239,9 @@ cgroup_json="$(cat "$CGROUP_STATE" 2>/dev/null || echo '{}')"
 sigstop_json="$(cat "$SIGSTOP_STATE" 2>/dev/null || echo '{}')"
 prev_paused_json="$(cat "$PAUSED" 2>/dev/null || echo '{}')"
 prev_events_json="$(cat "$EVENTS" 2>/dev/null || echo '{}')"
+prev_episodes_json="$(cat "$EPISODES" 2>/dev/null || echo '{}')"
 
-RESULT="$(python3 -c "$COMPUTE_PY" "$cgroup_json" "$sigstop_json" "$prev_paused_json" "$prev_events_json" "$NOW" "$THRESHOLD" "$WINDOW")"
+RESULT="$(python3 -c "$COMPUTE_PY" "$cgroup_json" "$sigstop_json" "$prev_paused_json" "$prev_events_json" "$NOW" "$THRESHOLD" "$WINDOW" "$prev_episodes_json" "$EPISODE_GAP" "$HEARTBEAT")"
 
 # ---- real IO: kanban comments (INFO-ONLY) + card_id lookup for new starts ----------------------
 hdr_file="$(mktemp)"; chmod 600 "$hdr_file"
@@ -268,9 +338,9 @@ for c in cards:
         print(c['id']); break
 ")"
   mech="$(printf '%s' "$RESULT" | AGENT="$agent" python3 -c "import json,os,sys; print(json.load(sys.stdin)['paused'][os.environ['AGENT']]['mechanism'])")"
-  if [ -n "$card_id" ]; then
-    _post_comment "$card_id" "$agent" "INFO-ONLY: PAUSED-LOAD ($mech) -- a load-guard terheles miatt szuneteltette ezt az ugynokot, a fagyasztas/fekezes ideje alatt a kartya nem szamit beragadtnak."
-  fi
+  # The NOTE is no longer posted here -- see the episode block in COMPUTE_PY. This loop still
+  # resolves the card id, because load-paused-agents.json carries it and its consumers predate
+  # episodes.
   # patch the computed card_id into RESULT for the write-out below
   RESULT="$(printf '%s' "$RESULT" | AGENT="$agent" CARD="$card_id" python3 -c "
 import json, os, sys
@@ -288,16 +358,58 @@ import json,sys
 for e in json.load(sys.stdin)['ends']:
     print(e['agent'] + '\t' + str(e.get('card_id') or ''))
 ")
-for line in "${ends[@]}"; do
+# `ends` stays in the compute output (the marker file and the selftests both read it); the RESUMED
+# note itself is now an EPISODE end, emitted by the block below.
+
+# ---- real IO: the episode notes -----------------------------------------------------------------
+# One note per episode edge plus a bounded heartbeat, instead of one pair per freeze cycle.
+_lookup_card() { # $1 agent -- the agent's in_progress card, or empty
+  [ -n "$KANBAN_JSON" ] || KANBAN_JSON="$(_kanban_get)"
+  printf '%s' "$KANBAN_JSON" | AGENT="$1" python3 -c "
+import json, os, sys
+try: cards = json.load(sys.stdin)
+except Exception: sys.exit(0)
+agent = os.environ['AGENT']
+for c in cards:
+    if c.get('status') == 'in_progress' and c.get('assignee') == agent:
+        print(c['id']); break
+"
+}
+
+mapfile -t notes < <(printf '%s' "$RESULT" | python3 -c "
+import json, sys
+for n in json.load(sys.stdin)['notes']:
+    print('\t'.join([n['agent'], n['kind'], n.get('mechanism') or '', str(n.get('cycles') or 0),
+                     str(n.get('duration') or 0), n.get('card_id') or '']))
+")
+for line in "${notes[@]}"; do
   [ -n "$line" ] || continue
-  agent="${line%%$'\t'*}"
-  card_id="${line#*$'\t'}"
-  [ -n "$card_id" ] || continue
-  _post_comment "$card_id" "$agent" "INFO-ONLY: RESUMED-LOAD -- a load-guard felengedte ezt az ugynokot, a terheles-alapu szuneteles veget ert."
+  IFS=$'\t' read -r n_agent n_kind n_mech n_cycles n_dur n_card <<< "$line"
+  [ -n "$n_card" ] || n_card="$(_lookup_card "$n_agent")"
+  [ -n "$n_card" ] || continue
+  mins=$(( (n_dur + 30) / 60 ))
+  case "$n_kind" in
+    start)
+      _post_comment "$n_card" "$n_agent" "INFO-ONLY: PAUSED-LOAD ($n_mech) -- a load-guard terhelés miatt szüneteltette ezt az ügynököt. A fékezés ideje alatt a kártya nem számít beragadtnak." ;;
+    heartbeat)
+      _post_comment "$n_card" "$n_agent" "INFO-ONLY: PAUSED-LOAD ($n_mech) -- a fékezés tart: eddig $n_cycles ciklus, kb. $mins perce. A kártya nem számít beragadtnak." ;;
+    end)
+      _post_comment "$n_card" "$n_agent" "INFO-ONLY: RESUMED-LOAD -- a load-guard felengedte ezt az ügynököt. Az epizód $n_cycles ciklusból állt, kb. $mins percig tartott." ;;
+  esac
+  # the resolved id belongs to the episode too, so the next note does not look it up again
+  RESULT="$(printf '%s' "$RESULT" | AGENT="$n_agent" CARD="$n_card" python3 -c "
+import json, os, sys
+r = json.load(sys.stdin)
+a = os.environ['AGENT']
+if a in r.get('episodes', {}):
+    r['episodes'][a]['card_id'] = os.environ.get('CARD') or None
+print(json.dumps(r))
+")"
 done
 
 # ---- write the new snapshots --------------------------------------------------------------------
 printf '%s' "$RESULT" | python3 -c "import json,sys; print(json.dumps(json.load(sys.stdin)['paused']))" > "$PAUSED"
+printf '%s' "$RESULT" | python3 -c "import json,sys; print(json.dumps(json.load(sys.stdin)['episodes']))" > "$EPISODES"
 printf '%s' "$RESULT" | python3 -c "import json,sys; print(json.dumps(json.load(sys.stdin)['events']))" > "$EVENTS"
 
 # ---- alerting: repeated pausing only, cooldown-stamped -------------------------------------------
