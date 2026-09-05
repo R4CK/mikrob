@@ -7028,3 +7028,46 @@ dönti el, kell-e rá külön kártya.
 
 **Ki döntött:** backend2 (a lelet a 7debd869 munka közben, mérés + javítás).
 **Hivatkozás:** kártya 43d933b1; `src/web/routes/project-priority.ts`, `store/fleet-nudger.sh`.
+
+## 2026-09-05 -- 1140a745 -- Az upstream alapértelmezett ágát MEGKÉRDEZZÜK, és a tracking-ref UGYANABBÓL jön
+
+**Döntés:** Az `update-checker.ts` nem hardcode-olja többé a `main`-t az upstream repóhoz. Egy új,
+fail-soft `upstreamDefaultBranch()` megkérdezi a GitHub-ot (`GET /repos/<owner>/<repo>` ->
+`default_branch`), és bármilyen hiba esetén a `main`-re esik vissza. Az upstream bejegyzést egy külön
+`upstreamRepoConfig(branch)` építi, ami a `branch`-et ÉS a `trackingRef`-et UGYANABBÓL az egy
+feloldott értékből származtatja. Nem vettük át az upstream `branchOnRemote()`/`fetchDefaultBranch()`
+gépezetét: annak remote-preferencia-heurisztikája olyan problémát old meg (melyik az egy helyes
+repó), ami ennek a forknak nincs -- a `repoConfigs()` két repót ellenőriz explicit módon.
+
+**Miért a szélesebb hatókör (ez a kártyában nem volt benne):** a `trackingRef: 'upstream/main'`
+javítatlanul hagyása egyik csendes vakságot cserélte volna le egy másikra. A `mergeBaseWith()` hiányzó
+refnél ÜRES stringet ad, a `computeStatus` pedig ezt `behind = 0`-ként olvassa, HIBAÜZENET NÉLKÜL --
+vagyis egy átnevezett upstream-alapértelmezés után a dashboard "naprakész"-t mondana egy olyan refre
+hivatkozva, ami már semmit nem követ. Pont az a hibaosztály, ami ellen maga az ellenőrzés van. MikroB
+jóváhagyta a tágítást (msg 23202).
+
+**Az üres string külön eset, és külön ellenőrzés őrzi:** egy `default_branch: ''` válasz a
+`.../commits/` URL-t építené -- az egy MÁSIK végpont, és olyan okból hibázna, ami semmiben nem
+hasonlít az igazi okára. A resolver ezért a nem-string ÉS az üres választ is a fallbackre viszi.
+
+**Tesztelhetőség:** a `fetchImpl` injektálható paraméter, és mind a hét eset saját hamis fetch-et ad.
+A suite SOHA nem ér el a hálózathoz ehhez -- egy teszt, aminek a GitHub elérhetősége kell, az időjárást
+méri, nem a kódot.
+
+**Mérés:** alapvonal 6 teszt az `origin/develop`-on, nálam 13 -- a +7 pontosan az én hét esetem, semmi
+nem tűnt el. Négy mutáció igazolja, hogy egyik állítás sem dekoratív (hardcode-olt trackingRef
+visszaállítása, az üres-string ellenőrzés elvétele, a fail-soft megszüntetése, a repo-végpont
+lecserélése egy ág-specifikusra) -- mind a négy bukik, mindegyik revert md5-tel bájtazonos.
+A `repoConfigs()` aszinkronná tétele egyetlen hívót érint (a már `async` `refreshUpdateStatus`), és a
+frissítés 6 óránként fut, tehát egy extra GitHub-hívás költsége elhanyagolható; cache nem kell.
+
+**A főkönyvet is javítottam:** a `fork-upstream-conflict-guard.test.ts` "THE ONE GENUINE RESIDUE"
+bejegyzése eddig azt mondta, hogy ez "left as a follow-up" -- ez a landolással hamissá vált volna.
+Most kimondja, hogy lezárva, és rögzíti a második felét is (trackingRef), ami az eredeti jegyzetben
+nem szerepelt. Egy főkönyv, ami egy elintézett dolgot még mindig teendőként említ, olyan főkönyv,
+amiben senki nem bízik.
+
+**Ki döntött:** backend2 (lelet a f27c999b B-hullámból, mérés + megvalósítás), MikroB (a szélesebb
+hatókör jóváhagyása).
+**Hivatkozás:** kártya 1140a745; `src/web/update-checker.ts`,
+`src/__tests__/update-checker-branch.test.ts` (6 -> 13 eset), `src/__tests__/fork-upstream-conflict-guard.test.ts`.
