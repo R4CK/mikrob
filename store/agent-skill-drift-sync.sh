@@ -46,15 +46,28 @@
 # EVERY RUN ENDS WITH A VERDICT LINE, and callers should key on it rather than on the counts
 # (card 222fdc5e):
 #   ALERT:no  (diverged set unchanged since <when>, N entries; stale=0, no concurrent-write skips)
-#   ALERT:yes reasons=<comma-list> diverged=N stale=N skipped-concurrent=N
-# reasons: stale-synced | concurrent-write-skipped | diverged-set-changed | no-baseline |
-#          baseline-unreadable | no-agents-dir
+#   ALERT:yes reasons=<comma-list> diverged=N stale=N skipped-concurrent=N skipped-running=N
+# reasons: stale-synced | concurrent-write-skipped | running-agent-skipped | diverged-set-changed |
+#          no-baseline | baseline-unreadable | no-agents-dir
+#
+# `skipped-running` is the count of stale copies left alone because their agent was RUNNING (card
+# e667c8bd). It is work still owed, not an error -- the copy stays exactly as stale as it already
+# was, and the next run re-checks. See _agent_is_running for why the write is refused.
+#
+# PRE-EXISTING IMPRECISION, noted rather than changed here: `stale-synced` fires whenever STALE>0,
+# including on a DRY RUN where nothing was written. That predates this card and has its own
+# consumers; the `skipped-running` field exists partly so a reader can tell the two apart until
+# somebody fixes the label properly.
 # The diverged SET (not its size) is what is remembered, in $AGENT_SKILL_DRIFT_STATE
 # (default store/agent-skill-drift-state.json), and ONLY --apply advances that baseline.
 #
 # Env overrides (all exist so a selftest never touches the live install):
 #   AGENT_SKILL_DRIFT_ROOT / _AGENTS_DIR / _SEEDS_DIR / _STATE
 #   AGENT_SKILL_DRIFT_TEST_RACE=<skill>  test-only; COMPARED, never executed
+#   AGENT_SKILL_DRIFT_TEST_SESSIONS=<newline-separated session names>  test-only; stands in for
+#     `tmux list-sessions` output so the selftest drives the REAL matching code. Setting it to the
+#     empty string claims nothing is running -- which is why it is named as a test hook and why the
+#     unset case always does the real check.
 #
 # Exit: 0 always (report tool, not a gate) -- selftest exits 1 on failure.
 set -uo pipefail
@@ -157,9 +170,71 @@ _wanted_skill() {
   return 1
 }
 
+# --- is the target agent RUNNING? (card e667c8bd, Cybered finding, comment 20436) ------------
+#
+# WHY THIS IS A REFUSAL AND NOT A WARNING. The tool already guards the narrow race it can SEE: the
+# TOCTOU re-hash below catches a write that lands between classify and mv. It cannot see the wide
+# one. A live agent reads these files at runtime and is EXPECTED to hand-patch its own copy
+# mid-session (CLAUDE.md, "Skill patch (runtime javitas)"), so rewriting one under a working agent
+# changes the instructions it is following, with nothing in the session saying so. The measured
+# incident (Cybered, 2026-09-05 11:04) wrote a dozen backups into live trees while their owners
+# worked, and the acceptable counter-example from the same morning -- MikroB's 10:57 correction --
+# differed in exactly one respect: it verified running=False on all three targets first.
+#
+# THE SOURCE IS TMUX, NOT THE DASHBOARD API, and the reason is the failure direction. Both agree
+# exactly today (measured on all 15 agents: `running` in /api/agents is true iff a tmux session
+# `agent-<name>` exists). But the API adds a service that can be DOWN while the agents it describes
+# are UP, and a down dashboard would answer "not running" for everyone -- the dangerous direction,
+# on an unattended six-hourly --apply. tmux runs on the same host as the trees being written, so it
+# cannot be absent while its own sessions are alive.
+#
+# FAIL-CLOSED, and it can only cost a delay: an agent we cannot prove is parked is treated as
+# running, so the sync is skipped and the next run re-checks. The asymmetry is the same one this
+# file already argues for the unreadable baseline -- when we cannot PROVE the situation is safe, we
+# do not call it safe.
+#
+# NOT WAITING FOR THE PARK, which the card offered as an alternative: this runs unattended every six
+# hours, so blocking on a busy agent would stall the whole sweep behind one long-running session.
+# Skipping names the agent and re-tries in six hours; the copy stays stale in the meantime, which is
+# the state it was already in.
+#
+# WHAT THIS DOES NOT CLOSE, stated because the card's goal is broader than its code half: a manual
+# `cp` into agents/<name>/.claude/skills/ bypasses this file entirely. The refusal is only worth
+# what the rule that every skill write goes through this path is worth. That rule is the card's
+# other half and it lives in the process, not here.
+_RUNNING_SESSIONS=""      # cached per run; "?" means undetermined -> everything counts as running
+_load_running_sessions() {
+  if [ -n "${AGENT_SKILL_DRIFT_TEST_SESSIONS+set}" ]; then
+    # Test-only, mirroring AGENT_SKILL_DRIFT_TEST_RACE above: supplies exactly what tmux would have
+    # printed, one session name per line, so the selftest exercises the REAL matching code rather
+    # than a second implementation of it.
+    _RUNNING_SESSIONS="$(printf '%s\n' "$AGENT_SKILL_DRIFT_TEST_SESSIONS")"
+    return
+  fi
+  if ! command -v tmux >/dev/null 2>&1; then
+    _RUNNING_SESSIONS="?"
+    return
+  fi
+  local out rc
+  out="$(tmux list-sessions -F '#{session_name}' 2>&1)"; rc=$?
+  if [ "$rc" -eq 0 ]; then
+    _RUNNING_SESSIONS="$out"
+  elif printf '%s' "$out" | grep -qi 'no server running'; then
+    # tmux answered, and its answer is "nothing is up". That is a real reading, not a failure.
+    _RUNNING_SESSIONS=""
+  else
+    _RUNNING_SESSIONS="?"
+  fi
+}
+_agent_is_running() {
+  [ "$_RUNNING_SESSIONS" = "?" ] && return 0
+  printf '%s\n' "$_RUNNING_SESSIONS" | grep -qx "agent-$1"
+}
+
 run_scan() {
-  CUR=0; STALE=0; DIVERGED=0; SKIPPED=0; SKIPPED_CONCURRENT=0
+  CUR=0; STALE=0; DIVERGED=0; SKIPPED=0; SKIPPED_CONCURRENT=0; SKIPPED_RUNNING=0
   STALE_LIST=""; DIVERGED_LIST=""
+  _load_running_sessions
 
   # An ALERT line on this path too. Returning early without a verdict would leave the heartbeat --
   # which keys on that line -- with nothing to read, and "no output" is indistinguishable from
@@ -167,7 +242,7 @@ run_scan() {
   # tool scanned nothing at all, which is exactly the state that must never pass as quiet.
   if [ ! -d "$AGENTS_DIR" ]; then
     echo "agent-skill-drift-sync: no $AGENTS_DIR -- nothing to scan"
-    echo "ALERT:yes reasons=no-agents-dir diverged=0 stale=0 skipped-concurrent=0"
+    echo "ALERT:yes reasons=no-agents-dir diverged=0 stale=0 skipped-concurrent=0 skipped-running=0"
     return 0
   fi
 
@@ -177,6 +252,9 @@ run_scan() {
     _wanted_agent "$agent" || continue
     skdir="$adir.claude/skills"
     [ -d "$skdir" ] || continue
+    # Once per agent, not once per skill: the answer cannot change usefully inside one agent's
+    # loop, and asking repeatedly would only widen the window between the reading and the write.
+    if _agent_is_running "$agent"; then agent_running=1; else agent_running=0; fi
 
     agent_lines=""
     for sdir in "$skdir"/*/; do
@@ -195,7 +273,12 @@ run_scan() {
           STALE=$((STALE+1))
           STALE_LIST="${STALE_LIST}${agent}/${skill}\n"
           agent_lines="${agent_lines}  STALE     ${skill} -- byte-identical to a shipped-but-superseded version, safe to re-sync\n"
-          if [ "$APPLY" -eq 1 ]; then
+          if [ "$APPLY" -eq 1 ] && [ "$agent_running" -eq 1 ]; then
+            # The wide race the TOCTOU guard below cannot see. See _agent_is_running for why this
+            # refuses rather than warns, and why it does not wait for the agent to park.
+            SKIPPED_RUNNING=$((SKIPPED_RUNNING+1))
+            agent_lines="${agent_lines}            -> SKIPPED, ${agent} is RUNNING (a live agent reads and may hand-patch this file) -- re-runs when it parks\n"
+          elif [ "$APPLY" -eq 1 ]; then
             # TOCTOU guard: re-hash the live file immediately before the mv and compare against
             # the hash classify_copy just judged safe. If something else wrote to this live
             # per-agent skill file in the window between classification and now, the file no
@@ -304,6 +387,9 @@ emit_alert_verdict() {
   reasons=""
   [ "$STALE" -gt 0 ] && reasons="${reasons}stale-synced,"
   [ "$SKIPPED_CONCURRENT" -gt 0 ] && reasons="${reasons}concurrent-write-skipped,"
+  # A skipped sync is work still owed, so it must not read as routine. It is NOT an error: the copy
+  # simply stays as stale as it already was until the agent parks.
+  [ "$SKIPPED_RUNNING" -gt 0 ] && reasons="${reasons}running-agent-skipped,"
 
   if [ ! -f "$STATE" ]; then
     reasons="${reasons}no-baseline,"
@@ -323,7 +409,7 @@ emit_alert_verdict() {
   fi
 
   if [ -n "$reasons" ]; then
-    echo "ALERT:yes reasons=${reasons%,} diverged=${DIVERGED} stale=${STALE} skipped-concurrent=${SKIPPED_CONCURRENT}"
+    echo "ALERT:yes reasons=${reasons%,} diverged=${DIVERGED} stale=${STALE} skipped-concurrent=${SKIPPED_CONCURRENT} skipped-running=${SKIPPED_RUNNING}"
     [ -n "$prev_list" ] && [ "$prev_list" != "$diverged_now" ] && echo "  diverged set was: ${prev_list:-(empty)}"
     [ -n "$reasons" ] && echo "  diverged set now: ${diverged_now:-(empty)}"
   else
@@ -469,6 +555,65 @@ if [[ "$MODE" == selftest ]]; then
   [ "$(cat "$f_target")" = "CONCURRENT LOCAL EDIT, MUST SURVIVE" ] \
     && echo "  ok   concurrent local edit survived (not overwritten by the sync)" \
     || { echo "  FAIL concurrent local edit was lost -- TOCTOU not closed"; fail=1; }
+
+  # --- PART 4: the WIDE race -- writing into a RUNNING agent's tree (card e667c8bd) ------------
+  # The TOCTOU guard above only sees a write that lands inside the classify->mv window. A live agent
+  # holds these files for a whole session and is expected to hand-patch them, so the sync must not
+  # touch its tree at all. Fixture: agentG is stale in exactly the way agentA was, so the ONLY
+  # difference between "synced" and "skipped" below is whether a session named agent-agentG exists.
+  mkdir -p "$tmp/root/agents/agentG/.claude/skills/demo-skill"
+  g_target="$tmp/root/agents/agentG/.claude/skills/demo-skill/SKILL.md"
+  g_stale() { printf 'OLD VERSION\ninstall dir: %s\nagent: selftest\n' "$tmp/root" > "$g_target"; }
+  sync_run() { AGENT_SKILL_DRIFT_ROOT="$tmp/root" AGENT_SKILL_DRIFT_TEST_SESSIONS="$1" \
+               bash "${BASH_SOURCE[0]}" --apply --agent agentG; }
+
+  g_stale
+  out7="$(sync_run "agent-agentG
+agent-someone-else")"
+  echo "$out7" | grep -q 'SKIPPED, agentG is RUNNING' \
+    && echo "  ok   a RUNNING agent's stale copy is skipped, and the report says why" \
+    || { echo "  FAIL running agent was not skipped:"; echo "$out7"; fail=1; }
+  grep -q 'OLD VERSION' "$g_target" \
+    && echo "  ok   the running agent's file is byte-untouched (still the old content)" \
+    || { echo "  FAIL the sync wrote into a running agent's tree"; fail=1; }
+  echo "$out7" | grep -q 'skipped-running=1' \
+    && echo "  ok   the verdict line carries skipped-running=1" \
+    || { echo "  FAIL skipped-running missing from the verdict:"; echo "$out7"; fail=1; }
+  echo "$out7" | grep -q 'reasons=.*running-agent-skipped' \
+    && echo "  ok   the skip is a REASON, so the run cannot read as routine" \
+    || { echo "  FAIL running-agent-skipped is not among the reasons:"; echo "$out7"; fail=1; }
+
+  # THE CONTROL THAT MAKES THE CASE ABOVE MEAN SOMETHING. Same fixture, same command, only the
+  # session list differs: a parked agent must still be synced. Without this, a guard that refused
+  # every write would pass every assertion above.
+  g_stale
+  out8="$(sync_run "agent-someone-else")"
+  grep -q 'fix: closed the gap' "$g_target" \
+    && echo "  ok   CONTROL: a PARKED agent is still synced -- the guard is not a blanket refusal" \
+    || { echo "  FAIL a parked agent was not synced:"; echo "$out8"; fail=1; }
+
+  # FAIL-CLOSED when the reading itself fails. A tmux that errors for any reason OTHER than "no
+  # server running" tells us nothing, and an agent we cannot prove is parked is treated as running.
+  mkdir -p "$tmp/fakebin"
+  printf '#!/usr/bin/env bash\necho "connect failed: no such file or directory" >&2\nexit 1\n' > "$tmp/fakebin/tmux"
+  chmod +x "$tmp/fakebin/tmux"
+  g_stale
+  out9="$(AGENT_SKILL_DRIFT_ROOT="$tmp/root" PATH="$tmp/fakebin:$PATH" \
+          bash "${BASH_SOURCE[0]}" --apply --agent agentG)"
+  echo "$out9" | grep -q 'SKIPPED, agentG is RUNNING' \
+    && echo "  ok   an UNREADABLE tmux fails closed -- undetermined counts as running" \
+    || { echo "  FAIL undetermined tmux did not fail closed:"; echo "$out9"; fail=1; }
+
+  # ...and the other half of that distinction, which is the load-bearing one: "no server running" is
+  # tmux ANSWERING, not tmux failing. Collapsing the two would make the tool a permanent no-op on
+  # any box where the fleet is parked -- exactly when the sync is safest and most useful.
+  printf '#!/usr/bin/env bash\necho "no server running on /tmp/tmux-1000/default" >&2\nexit 1\n' > "$tmp/fakebin/tmux"
+  g_stale
+  out10="$(AGENT_SKILL_DRIFT_ROOT="$tmp/root" PATH="$tmp/fakebin:$PATH" \
+           bash "${BASH_SOURCE[0]}" --apply --agent agentG)"
+  grep -q 'fix: closed the gap' "$g_target" \
+    && echo "  ok   \"no server running\" is an ANSWER, not a failure -- the sync proceeds" \
+    || { echo "  FAIL a parked box was treated as undetermined:"; echo "$out10"; fail=1; }
 
   # ---------------------------------------------------------------------------------------------
   # The change-based alert trigger (card 222fdc5e). The bug being pinned: the heartbeat treated
