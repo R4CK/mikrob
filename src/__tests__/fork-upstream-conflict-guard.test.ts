@@ -161,7 +161,28 @@ const ACKNOWLEDGED_CONFLICTS = {
     'keep the fork aggregate shape, port upstream single-result features onto it' +
     "Re-measured 2026-09-03 (backend2, card 934dc104 landing-block, 24e46f990c7b..c98efe359fd0): upstream reworked its SINGLE-repo checker -- parseGitHubRemote() now prefers an `upstream` remote over `origin` (a fork otherwise asks itself about itself and stays silent forever), branchOnRemote()/remoteIsOwnOrigin() pick the right branch to query, and upstreamMergeBase() takes a base the queried remote actually knows instead of reporting fork-distance. The rule is unchanged and now has concrete work behind it: these are exactly the 'single-result features' to port onto the fork's aggregate shape. Blob bumped." +
     " RE-MEASURED 2026-09-04 (card f27c999b, B-wave 4/6) and the sentence above is MISLEADING, so read this before porting anything: the fork already achieves BOTH of upstream's outcomes, by a different and more general mechanism. (a) 'a fork otherwise asks itself about itself and stays silent forever' does not happen here -- repoConfigs() checks TWO repos explicitly, Szotasz/marveen AND the local origin, and the upstream-update banner reads the marveen entry; upstream's parseGitHubRemote remote-preference is a heuristic for finding the one right repo, which the fork does not need. (b) upstreamMergeBase is already covered: computeStatus tries the raw HEAD compare and, on the measured 404 that a customised fork always produces, falls back to mergeBaseWith(cfg.trackingRef) -- the fork point, which IS a commit the remote knows -- and marks status.fork. Its own comment says this is how the behind-count against Szotasz/marveen@main is measured. Porting upstream's machinery on top would duplicate working logic with a narrower version of it. " +
-    "THE ONE GENUINE RESIDUE, left as a follow-up rather than half-ported: repoConfigs() HARDCODES branch 'main' for the upstream repo. Upstream's branchOnRemote()/fetchDefaultBranch() asks the remote for its default branch instead. If Szotasz/marveen ever renames its default, our upstream check turns into a permanent error string and the banner goes quiet -- the same silent-blindness shape this entry is about, one level over. Small and self-contained: ask GitHub for the default branch, keep 'main' as the fallback.",
+    "THE ONE GENUINE RESIDUE -- CLOSED 2026-09-05 (card 1140a745), recorded here because a ledger that still calls a fixed thing a follow-up is a ledger nobody trusts. repoConfigs() USED TO HARDCODE branch 'main' for the upstream repo; if Szotasz/marveen ever renamed its default, our upstream check would turn into a permanent error string and the banner would go quiet -- the same silent-blindness shape this entry is about, one level over. It now asks GitHub for the default branch (upstreamDefaultBranch(), fail-soft to 'main' on any failure) and derives BOTH the API branch and the local trackingRef from that one resolved value. The second half was NOT in the original note and matters more than the first: mergeBaseWith() returns '' for an absent ref and computeStatus reads that as behind = 0 with NO error, so fixing only the branch would have swapped one silent blindness for another. Upstream's own branchOnRemote()/fetchDefaultBranch() machinery is STILL not ported, for the reason above -- its remote-preference heuristic solves a problem this fork does not have.",
+  // The TEST-SIDE MIRROR of the entry above, conflicting for the same reason (measured 2026-09-05,
+  // card 1140a745). Both sides appended a new describe block at the tail of a file that ended at
+  // line 60, so the two tails collide, and the import line a few lines above collides with them.
+  //
+  // Upstream's appended block exercises remoteIsOwnOrigin(), branchOnRemote() and a
+  // parseGitHubRemote(root) that takes a directory argument. NONE of those are takeable here, and
+  // that was measured rather than assumed: grep finds no remoteIsOwnOrigin and no branchOnRemote
+  // anywhere in this fork, and the fork's parseGitHubRemote takes no arguments. Upstream's cases
+  // would not compile against this tree. So this is not a preference between two working
+  // alternatives -- it is the same deliberate non-port the entry above records, seen from the
+  // test side.
+  //
+  // Resolution: KEEP THE FORK SIDE WHOLESALE for both hunks -- the fork's tail block (upstream
+  // default-branch resolution, card 1140a745) and the fork's widened '../web/update-checker.js'
+  // import. Upstream's `afterAll` addition to the vitest import belongs to its block and is unused
+  // without it, so it drops out with it. This entry is BOUND to the one above: if that machinery is
+  // ever ported, port upstream's cases in the same change. Do not resurrect them alone -- a test
+  // file is the one place where taking the other side wholesale looks harmless and silently deletes
+  // coverage.
+  'src/__tests__/update-checker-branch.test.ts':
+    "keep the fork side wholesale -- upstream's appended block tests remoteIsOwnOrigin/branchOnRemote/parseGitHubRemote(root), none of which exist in this fork (the deliberate non-port recorded on src/web/update-checker.ts), so it cannot compile here; the fork's own tail block and widened import stay, and upstream's unused afterAll import drops with its block. Revisit ONLY together with the src/web/update-checker.ts entry.",
   // ORIGINAL entry (2026-08-16, card 78c14372) merged `agentDir` (fork) + `readAgentClaudeConfigDir`
   // (upstream) onto one import line. RE-MEASURED 2026-09-01 (heartbeat reconciliation): upstream
   // replaced its own `readAgentClaudeConfigDir` with `resolveAgentConfigDirForRead` (new module,
@@ -1027,6 +1048,7 @@ const ACKNOWLEDGED_UPSTREAM_BLOBS: Readonly<Record<keyof typeof ACKNOWLEDGED_CON
   'src/model-fallback.ts': '93ea8f17a6c9608003f047c1c9b5f8defe0f1da8',
   'src/__tests__/model-fallback.test.ts': '09bc3bf772d195be0980f4bec929eed4ecfadc67',
   'src/web/update-checker.ts': 'c98efe359fd032ee0f196b114d70fb57d166a88c',
+  'src/__tests__/update-checker-branch.test.ts': '71a277dd1ffa34f6a1c77240cc7791a92d9c139d',
   'src/web/context-restart-gate-runner.ts': '268fc2e659fa8210c2b67c1df64e4006c2e727af',
   'src/web.ts': 'a515f9c8750b2aeece08eb66034f466e6d8a7732',
   'src/web/keychain.ts': '1e1730ee0d8f6b1d4b51c5c254f3fab56acfa376',

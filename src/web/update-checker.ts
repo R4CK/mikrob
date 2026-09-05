@@ -298,21 +298,74 @@ async function computeStatus(current: string, cfg: RepoCheckConfig): Promise<Rep
   return status
 }
 
+/** The upstream remote. Its default branch is ASKED FOR, not assumed -- see
+ *  {@link upstreamDefaultBranch}. */
+const UPSTREAM_REMOTE = 'Szotasz/marveen'
+
+/** The fallback when the remote cannot be asked. `main` is what the upstream uses today, so a
+ *  failed lookup leaves the check behaving exactly as it did before this was resolvable. */
+export const UPSTREAM_BRANCH_FALLBACK = 'main'
+
+/** Ask GitHub which branch the upstream repo actually defaults to (card 1140a745).
+ *
+ *  This used to be the literal `main`, which is a silent-blindness shape of the same kind the whole
+ *  update check exists to prevent: if the upstream ever renames its default branch, `commits/main`
+ *  starts 404-ing, the marveen entry turns into a permanent error string, and the dashboard's
+ *  upstream-update banner goes quiet -- with nothing saying why.
+ *
+ *  FAIL-SOFT, DELIBERATELY: any failure (network, rate limit, an unexpected body) returns the
+ *  fallback rather than throwing, because a lookup we could not perform must leave the check no
+ *  worse than it was, not break it. `fetchImpl` is the test seam -- the suite must never reach the
+ *  network to prove this resolves. */
+export async function upstreamDefaultBranch(
+  fetchImpl: typeof fetch = fetch,
+  remote: string = UPSTREAM_REMOTE,
+): Promise<string> {
+  try {
+    const res = await fetchImpl(`https://api.github.com/repos/${remote}`, {
+      headers: GH_HEADERS,
+      signal: AbortSignal.timeout(TOOL_TIMEOUTS['github']),
+    })
+    if (!res.ok) return UPSTREAM_BRANCH_FALLBACK
+    const body = await res.json() as { default_branch?: unknown }
+    // A non-string or EMPTY answer is not usable: an empty branch would build the URL
+    // `.../commits/`, which is a different endpoint entirely and would fail for a reason that
+    // looks nothing like its cause.
+    return typeof body.default_branch === 'string' && body.default_branch.length > 0
+      ? body.default_branch
+      : UPSTREAM_BRANCH_FALLBACK
+  } catch {
+    return UPSTREAM_BRANCH_FALLBACK
+  }
+}
+
+/** Build the upstream entry from ONE resolved branch name.
+ *
+ *  Both fields come from the argument on purpose. `branch` is what the GitHub API is asked about;
+ *  `trackingRef` is the LOCAL ref whose merge-base with HEAD gives the fork point. Fixing only the
+ *  first would swap one silent blindness for another: `mergeBaseWith` returns '' for an absent ref
+ *  and computeStatus reads that as `behind = 0` with NO error -- so a renamed upstream default
+ *  would report "up to date" against a ref that no longer tracks anything. */
+export function upstreamRepoConfig(branch: string): RepoCheckConfig {
+  return {
+    key: 'marveen',
+    label: 'Eredeti Marveen',
+    remote: UPSTREAM_REMOTE,
+    branch,
+    trackingRef: `upstream/${branch}`,
+  }
+}
+
 // The two repos the dashboard checks: the original upstream (Marveen) and OUR
-// fork (MikroB). The upstream entry is fixed to Szotasz/marveen@main; the fork
-// entry is derived from the local checkout (origin remote + tracked branch) so
-// it keeps working on any fork. The `mikrob` result also becomes the flat
-// top-level status (backward compat: badge + apply follow our fork).
-function repoConfigs(): { marveen: RepoCheckConfig; mikrob: RepoCheckConfig } {
+// fork (MikroB). The upstream entry follows whatever branch the upstream repo
+// says is its default; the fork entry is derived from the local checkout
+// (origin remote + tracked branch) so it keeps working on any fork. The
+// `mikrob` result also becomes the flat top-level status (backward compat:
+// badge + apply follow our fork).
+async function repoConfigs(): Promise<{ marveen: RepoCheckConfig; mikrob: RepoCheckConfig }> {
   const branch = trackedBranch()
   return {
-    marveen: {
-      key: 'marveen',
-      label: 'Eredeti Marveen',
-      remote: 'Szotasz/marveen',
-      branch: 'main',
-      trackingRef: 'upstream/main',
-    },
+    marveen: upstreamRepoConfig(await upstreamDefaultBranch()),
     mikrob: {
       key: 'mikrob',
       label: 'MikroB',
@@ -325,7 +378,7 @@ function repoConfigs(): { marveen: RepoCheckConfig; mikrob: RepoCheckConfig } {
 
 export async function refreshUpdateStatus(): Promise<AggregateUpdateStatus> {
   const current = currentGitHead()
-  const cfgs = repoConfigs()
+  const cfgs = await repoConfigs()
   // Both checks are independent; run them concurrently.
   const [marveen, mikrob] = await Promise.all([
     computeStatus(current, cfgs.marveen),
