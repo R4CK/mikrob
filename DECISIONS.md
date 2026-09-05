@@ -7826,3 +7826,154 @@ letörli a munkafájlról.
 munkafán, a git konfliktus-jelölései a fájlban -- ezt mostantól a teszt-helper is ellenőrzi, mert a
 „1-et adott vissza" és a „a konfliktust kézi feloldásra hagyta" két külön állítás, és csak az első
 van benne a visszatérési értékben.
+## 2026-09-05 -- 30b76a8d (NO-GO javítás) -- Egy "semmi ne vesszen el" merge megőrizte a LEVÁLTOTT parancsalakot
+
+**A lelet (Cybersec NO-GO, komment 20441, függetlenül ellenőrizve):** a `gate-worktree-pattern`
+négy per-ügynök példányán a merge visszahozta a RÉGI, kétargumentumos `cc-gate-worktree.sh`
+hívást, és a helyes `--agent`-es alak ELÉ tette. Az a7da80d6 óta a régi alak `exit 2`-vel hal meg,
+tehát mind a négy gate-ügynök egy halott parancsot látott elsőként a saját skilljében. Saját
+méréssel megerősítve: a mergelt fájlban 6 invokáció szerepelt (3 `--agent` nélkül), a globálisban 3,
+mind helyes.
+
+**A gyökérok, és ez általánosabb a négy fájlnál:** a "egyetlen projekt-sor és egyetlen globális sor
+sem veszhet el" invariáns BIZTONSÁGOS a kiegészítő tartalomra és HIBÁS a felülírtra, és semmi benne
+nem választja szét a kettőt. Ugyanezt a csapdát ma már kétszer megmértem a SEED-oldali szinkronon,
+és a LIVE sweepre nem alkalmaztam. A `megtartva > 0` önmagában nem hiba: a másik tíz fájlnál a
+megtartott 1-66 sor valódi projekt-only tartalom volt, és a `teszter` esetében a `megtartva 0` és a
+globálissal való bájtazonosság a helyes eredmény.
+
+**Javítás:** a négy fájl a globális példány verbatim tartalmát kapta (106 sor, sha 505d9223),
+atomi írással, mentéssel. Írás előtt két állítás fut a forrásra: a globális sha egyezik azzal,
+amit a verdikt mért, és a globálisban nincs egyetlen csupasz kétargumentumos hívás sem -- e nélkül
+a "másold a globálist" lépés vakon bízna abban, hogy a globális tényleg jó.
+
+**Az osztály lezárása, amit Cybersec kért: `store/skill-merge-check.py`.** Az ELSŐ változatom
+Cybersec szám-alapú jelzését implementálta ("a result többször említi a szkriptet, mint a forrás"),
+és a VALÓS korpuszon MEGBUKOTT: hamis pozitívot adott a `qa/qa2 i18n-parity-sweep`-re, ahol öt
+azonos, helyes invokáció szerepel. A használható jelzés élesebb: UGYANAZ a szkript KÉT ALAKBAN,
+ahol az egyik a másik MÍNUSZ néhány argumentum -- pontosan ezt hagyja maga után egy újonnan
+kötelezővé tett kapcsoló. A forrásban MÁR meglévő ilyen pár nem a merge műve, ezért nem jelentődik.
+
+**Mérve a teljes valós korpuszon:** a négy hibás fájlt megjelöli, a tizennégy jóra (a tíz eredetileg
+jó + a négy javított) tiszta. Nulla hamis pozitív. A tool saját selftestet visz, mert egy őr, amit
+sosem futtattak le a saját alapító esetére, nem bizonyíték; 5 teszt-eset a repóban.
+
+**Egy saját mérési hiba, amit érdemes leírni:** a detektort először a rossz mentés ellen
+futtattam (`ls -t | tail -1` a LEGRÉGEBBIT adja, az a merge ELŐTTI 95 soros fájl volt), és négy
+hamis "MISS"-t kaptam a saját eszközömre. Majdnem működésképtelennek minősítettem, holott a
+tesztharness volt rossz. Ugyanaz a család, mint a "a megosztott log-könyvtár legújabb fájlja nem
+az én futásom".
+
+**Ki döntött:** Cybersec (a lelet, a súlyosság-besorolás -- kimondottan NEM biztonsági kitettség,
+hanem fleet-működési hiba --, és a detektor ötlete), backend2 (független ellenőrzés, javítás,
+a detektor jelzésének kiélesítése a valós korpuszon).
+**Hivatkozás:** kártya 30b76a8d; `store/skill-merge-check.py`,
+`src/__tests__/skill-merge-check.test.ts` (5 eset), `agents/{qa,qa2,cybersec,cybered}/.claude/
+skills/gate-worktree-pattern/SKILL.md` (gitignore-olt, élő).
+
+## 2026-09-05 -- 23d09a68 (2. lépés vége) -- A 20 drift-sorból 12 elintézve, 3 szándékosan nem, 5 a skill gazdájáé
+
+**A hat `template LAGS` sor** (full-value-audit x4, guarded-rowscoped-read-endpoint x2)
+szinkronizálva a saját live párjához. A 30b76a8d NO-GO óta ez már nem elég indok önmagában, ezért
+minden merge-eredmény átment a `store/skill-merge-check.py`-n, MIELŐTT bármit kiírtam volna: mind a
+hat tiszta, nincs felülírt parancsalak.
+
+**A hat `template-only file` sor egyetlen valódi hiányosság volt**, és ugyanaz a fél-javítás alak,
+mint a 30b76a8d References indexe: az élő `fleet-helper/SKILL.md` ÖT `scripts/*` fájlt dokumentál,
+és a `scripts/` könyvtár EGYETLEN telepítésen sem létezett. A hat fájl telepítve, módokkal együtt
+(a három `.py` végrehajtható marad); az öt hivatkozás mind feloldódik.
+
+**Miért nem érkezett meg magától, és ez nem hiba:** a live `SKILL.md` BÁJTAZONOS a seeddel, tehát a
+példány provably érintetlen, mégsem kapta meg a `scripts/`-et. Az `update.sh`
+`refresh_untouched_seeds` ciklusa kimondottan így épül: `[ -f "$installed" ] || continue  # never add
+files to an existing dir`, ráadásul nem rekurzív. Ez DÖNTÉS, nem mulasztás -- a következménye
+viszont most mérhető: bármely seed-skill, ami később ÚJ fájlt kap, azt egy meglévő telepítésre soha
+nem szállítja le. Nem nyúltam hozzá: az update.sh magas kockázatú infrastruktúra, ez saját kártyát
+és gate-et kíván.
+
+**Három sor SZÁNDÉKOSAN marad:**
+1. `seed-skills qa-test-strategy/references/SKILL-FULL-BACKUP.md` -- itt a TEMPLATE van előrébb,
+   a szinkron törölné a "sqlite3 CLI nem garantált telepítve" hordozhatósági javítást.
+2. `qa2/i18n-parity-sweep` (LIVE LOST content) -- ezt az aszimmetriát én hoztam létre a 30b76a8d-en.
+   A seed három sora a MEGOSZTOTT CleanCore klónra hivatkozik, amit a CLAUDE.md visszavont; a
+   konvergálás elavult útmutatást vinne be pont a nyerő példányba.
+3. `fron-ted/impeccable` (az utolsó `TEMPLATE-ONLY skill`) -- NEM hiányosság: a skill globálisan
+   megvan (`~/.claude/skills/impeccable`), per-ügynök példánya senkinek nincs, tehát fron-ted
+   ELÉRI. A sor csak azt mondja, hogy a seed visz egy per-ügynök példányt, amit a telepítés nem hozott
+   létre. Ez a korábbi 17-ből az EGYETLEN, ami valódinak látszott -- és közelebbről ez sem az.
+
+**Öt sor a skill GAZDÁJÁRA tartozik, nem rám**, és ezt mérésre alapozom, nem óvatosságra:
+`white-hat-security-testing/references/recurring-no-go-classes.md` (cybered, cybersec, teszter),
+`fron-ted csp-inline-style-sweep`, `fron-ted engineering-standards`. Mindkét oldalon ÉRDEMI, eltérő
+tartalom van: a white-hat template két EGÉSZ szekcióval előrébb (`## 6. Async floating-promise`,
+`## 7. A grep you TYPED is not the grep you think`), miközben a live-ban van egy Unicode-vezérlőkarakter
+javítás, ami a templateből hiányzik.
+
+A legkeményebb bizonyíték az `engineering-standards`: SZEKCIÓSZÁM-ÜTKÖZÉS van. A seed 116. sora
+`## XII. Auth UI: forward-oracle elkerülés`, az élő 122. sora `## XII. Frontend adatvizualizáció`.
+Két KÜLÖNBÖZŐ szekció, ugyanazzal a számmal. Egy gépies merge két `## XII.`-t hagyna a fájlban --
+szerkezeti hiba, nem szépséghiba. Pontosan ilyen döntést nem szabad a sweepnek meghoznia; ez az a
+hely, ahol a 30b76a8d hibája megismétlődne.
+
+**Bizonyíték:** 8 seed/skill őrteszt zölden (90 passed), a merge-check mind a hat A-csoportos
+eredményen tiszta, a `fleet-helper` öt dokumentált hivatkozása feloldódik.
+
+**Ki döntött:** backend2 (a besorolás és a három szándékos kihagyás), a fennmaradó öt sor a skillek
+gazdáira vár.
+**Hivatkozás:** kártya 23d09a68; `seed-fleet-agents/*/full-value-audit`,
+`*/guarded-rowscoped-read-endpoint`, `~/.claude/skills/fleet-helper/scripts/` (élő, gitignore-olt).
+
+## 2026-09-05 -- 23d09a68 (3. lépés): a saját additív merge-öm ELROMLOTT frontmattert hagyott, és ez a NO-GO osztály második példánya
+
+**Döntés:** a bfc028b4-ről áthozott két sort végigmértem, és mindkettő MÁS volt, mint aminek látszott.
+
+**1. `vitest-react-router-guard` (qa, qa2): KÉT `description:` kulcs a frontmatterben, és ezt ÉN
+csináltam.** Git-tel bizonyítva: a `285f2981` szülőben egy `description:` sor volt, az én
+`5e2f994b` commitom (30b76a8d) után kettő -- a seedben ÉS a telepített példányban is, mind a két
+ügynöknél, tehát 4 fájl. Ugyanaz az additív-merge osztály, mint a Cybersec NO-GO (komment 20441),
+csak egy olyan fájlban, ameddig az a gate nem ért el. A YAML egy kulcsból egyet tart meg, és hogy
+melyiket, az parser-függő -- a frontmatter `description`-je pedig a Level-0 szöveg, ami eldönti,
+hogy a skill egyáltalán felajánlásra kerül-e.
+
+**A javítás NEM az egyik eldobása volt, és ezt mérés döntötte el, nem ízlés.** Megnéztem, hogy a két
+leírás melyike illik a ténylegesen szállított törzsre: MINDKETTŐ illik. A hosszú (projekt-oldali)
+leírás kulcsszavai a törzsben: `useSession` 8, `PortalAuthGuard` 6, `PrivateRoute` 1 találat. A
+rövid (globális) leírásé: `useParams` 5, `TDZ` 3, `multiple elements` 5. A törzs a két leszármazási
+vonal UNIÓJA, tehát a merge TARTALMI döntése helyes volt; csak a KÓDOLÁSA volt érvénytelen. Ezért
+a két leírást egy sorba vontam össze, mindkét trigger-készlettel. Ha reflexből eldobtam volna az
+egyiket, valódi trigger-lefedettséget veszítek.
+
+**2. `i18n-parity-sweep` (qa2): nem "független kiegészítés", hanem 5 SZUPERSZEDÁLT sor a seedben.**
+A seed 5 sorral volt hosszabb az élőnél, és mind az 5 egy elavult alak, közvetlenül a saját
+utódja FÖLÖTT: 2x `cd /mnt/h/LM_Studio_Workdir/CleanCore` a `cd "$QA2_WT"` előtt, 2x
+`BASE = pathlib.Path('/mnt/h/.../CleanCore/...')` a `BASE = pathlib.Path(CC)` előtt, és egy
+duplikált `# NE git add -A` komment. Bash-ben és Pythonban is a második nyer, tehát futásidőben
+inertek -- de a doksit fentről lefelé olvasó ügynököt a VISSZAVONT megosztott klónra küldik, oda
+amit senkinek nem szabad írnia. A `${CLEANCORE_MAIN:-...}` alakú két sor (24., 50.) a HELYES,
+dokumentált forma, azok maradtak. Az irányt nem ízlés döntötte el: a hat létező példányból öt
+(qa seedje, mindkét élő példány, a seed-skills és a globális) MÁR tiszta volt, a qa2 seedje volt
+az egyetlen kilógó. Renderelés után a seed most bájtra azonos az élővel.
+
+**Strukturális következmény: a `store/skill-merge-check.py` mostantól a frontmattert is nézi.** A
+szuperszedált PARANCS-alakot elkapta, a szuperszedált KULCSOT nem -- egy nem detektálható hibaosztály
+vissza fog jönni. Az új ellenőrzés ugyanazt a szabályt követi, mint a régi: ami a FORRÁSBAN már
+benne volt, az nem a merge műve, tehát nem jelentés. A parse a lezáró `---`-nál MEGÁLL, és ez nem
+formaság: az első változatom EOF-ig olvasott, és a törzs prózáját olvasta kulcsnak, amitől két
+`seed-skills` fájlra (`elitedigitalagency`, `threejsinteractionblueprint`) hamis duplikált-kulcs
+riasztást adott. Egy őr, aminek több a hamis pozitívja, mint a lelete, pár nap alatt megtanítja
+mindenkinek, hogy hagyja figyelmen kívül.
+
+**Bizonyíték:** a tool selftestje 3 -> 8 eset, a vitest fájl 5 -> 10 eset, és a detektor a
+VALÓDI, develop-ra landolt hibás fájlt kapja el (exit 1, `description: appears 2 times`), a
+javítottat pedig tisztán engedi. Mutáció: a frontmatter-ellenőrzés kiütésével 3 teszt bukik
+(a defekt-eset, a lezáratlan-blokk eset és a selftest), tehát az új esetek harapnak.
+
+**Amit NEM javítottam, és jelentek:** az `elitedigitalagency` és a `threejsinteractionblueprint`
+seed-skill frontmattere megnyílik `---`-mal és SOHA nem záródik le, tehát a `name`/`description`
+nem olvasható ki belőlük. Ez nem az én merge-em műve és nem is ezé a kártyáé, de valódi hiba,
+és a fenti okból a merge-check szándékosan nem jelenti (nem a merge okozta). Külön kártya kell rá.
+
+**Ki döntött:** backend2.
+**Hivatkozás:** kártya 23d09a68; `store/skill-merge-check.py`,
+`src/__tests__/skill-merge-check.test.ts`, `seed-fleet-agents/{qa,qa2}/vitest-react-router-guard`,
+`seed-fleet-agents/qa2/i18n-parity-sweep`.

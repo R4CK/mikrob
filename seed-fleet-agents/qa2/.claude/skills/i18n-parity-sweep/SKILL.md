@@ -175,7 +175,6 @@ import json, pathlib, os
 BASE = pathlib.Path(os.environ['QA2_WT']) / 'packages/i18n/messages'  # a fenti eldobható worktree
 import json, pathlib
 
-BASE = pathlib.Path('/mnt/h/LM_Studio_Workdir/CleanCore/packages/i18n/messages')
 BASE = pathlib.Path(CC) / 'packages/i18n/messages'   # CC: a SAJÁT worktree-d, lásd fent
 langs = ['de','es','fr','it','pl']
 
@@ -222,13 +221,11 @@ print('Done.')
 ### 3. Commit (namespace-enként vagy batch)
 
 ```bash
-cd /mnt/h/LM_Studio_Workdir/CleanCore
 cd "$QA2_WT"   # a fenti eldobható worktree, NEM a megosztott fő klón
 cd "$({{INSTALL_DIR}}/store/agent-worktree.sh <a te agent-neved> --path)"
 git add packages/i18n/messages/de.json packages/i18n/messages/es.json \
         packages/i18n/messages/fr.json packages/i18n/messages/it.json \
         packages/i18n/messages/pl.json
-# NE git add -A -- shared checkout, más ágensek is dolgozhatnak!
 # NE git add -A -- a fő klónban más ágensek is dolgozhatnak, a worktree-nek is csak a sajátodat!
 # Explicit fájllista, ne `git add -A`: a saját worktree-d indexe már megvéd más ügynök
 # stage-elt munkájától, de a te SAJÁT szemetedet (build-artefakt, ideiglenes fájl) még mindig
@@ -239,7 +236,6 @@ git commit -m "feat(i18n): <namespace> translations — de/es/fr/it/pl"
 ### 4. Teszt
 
 ```bash
-cd /mnt/h/LM_Studio_Workdir/CleanCore
 cd "$QA2_WT"   # a fenti eldobható worktree, NEM a megosztott fő klón
 cd "$({{INSTALL_DIR}}/store/agent-worktree.sh <a te agent-neved> --path)"
 npx vitest run apps/web/src/i18n-locale-guard.test.ts
@@ -302,7 +298,6 @@ import json, pathlib, os
 BASE = pathlib.Path(os.environ['QA2_WT']) / 'packages/i18n/messages'
 import json, pathlib
 
-BASE = pathlib.Path('/mnt/h/LM_Studio_Workdir/CleanCore/packages/i18n/messages')
 BASE = pathlib.Path(CC) / 'packages/i18n/messages'   # CC: a SAJÁT worktree-d, lásd fent
 
 # Fordítások per locale

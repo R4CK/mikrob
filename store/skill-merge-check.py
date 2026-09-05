@@ -82,6 +82,60 @@ def check(result_text: str, source_text: str) -> list[tuple[str, tuple, tuple]]:
     return rows
 
 
+
+# A top-level YAML key in the frontmatter block: `name:`, `description:`. Indented lines and list
+# items belong to the key above them, so they are not candidates.
+FM_KEY_RX = re.compile(r'^([A-Za-z_][\w-]*):')
+
+
+def frontmatter_keys(text: str) -> Counter | None:
+    """Top-level keys of the leading `---` block, or None if the file has no frontmatter.
+
+    Returns an EMPTY counter for a block that opens and never closes: that file has no readable
+    frontmatter at all, which `frontmatter_issues` reports separately. Scanning to EOF instead
+    would read body prose as keys -- measured: doing that reported bogus duplicate keys on two
+    seed-skills files whose only real defect is the missing terminator.
+    """
+    lines = text.split('\n')
+    if not lines or lines[0].strip() != '---':
+        return None
+    keys: Counter = Counter()
+    for line in lines[1:]:
+        if line.strip() == '---':
+            return keys
+        m = FM_KEY_RX.match(line)
+        if m:
+            keys[m.group(1)] += 1
+    return Counter()  # opened, never closed
+
+
+def frontmatter_issues(result_text: str, source_text: str) -> list[str]:
+    """Frontmatter the merge made unreadable.
+
+    A skill's frontmatter carries `name` and `description` -- the Level-0 text that decides whether
+    the skill is offered at all. YAML has no way to hold two `description:` keys, so an additive
+    merge of two copies whose descriptions differ produces a file whose advertised triggers are
+    parser-dependent. Measured (card 23d09a68): my own 30b76a8d merge did exactly this to
+    vitest-react-router-guard for qa and qa2, in the seed AND the installed copy -- the same
+    additive-merge class as the NO-GO, in a file that gate did not reach.
+
+    An issue already present in the SOURCE is not the merge's doing, so it is not reported here,
+    matching `check`. A pre-existing malformed frontmatter is a lint's job, not this tool's.
+    """
+    res, src = frontmatter_keys(result_text), frontmatter_keys(source_text)
+    if res is None:
+        return []
+    issues = []
+    if not res and (src is None or src):
+        issues.append('frontmatter opens with `---` and never closes, so nothing in it is readable')
+    src_dups = {k for k, v in (src or Counter()).items() if v > 1}
+    for key, n in sorted(res.items()):
+        if n > 1 and key not in src_dups:
+            issues.append('`%s:` appears %d times in the frontmatter -- YAML keeps only one, and '
+                          'which one is parser-dependent' % (key, n))
+    return issues
+
+
 def _selftest() -> int:
     """The founding case, verbatim in shape: the superseded two-argument call kept alongside
     the --agent one. A guard that has never been run against the case that created it is not
@@ -113,9 +167,26 @@ def _selftest() -> int:
     # CONTROL: an identical result is clean.
     if check(source, source):
         failures.append('an identical result was flagged')
+    # THE SECOND FOUNDING CASE (card 23d09a68): the same additive merge, applied to frontmatter.
+    fm_src = '---\nname: s\ndescription: the project copy\n---\nbody\n'
+    fm_bad = '---\nname: s\ndescription: the project copy\ndescription: the global copy\n---\nbody\n'
+    if not any('description' in i for i in frontmatter_issues(fm_bad, fm_src)):
+        failures.append('a duplicated description: key was not flagged')
+    # CONTROL: already duplicated in the source -- not this merge's doing.
+    if frontmatter_issues(fm_bad, fm_bad):
+        failures.append('a duplicate already present in the source was flagged')
+    # CONTROL: a clean merge of the frontmatter stays clean.
+    if frontmatter_issues(fm_src, fm_src):
+        failures.append('a clean frontmatter was flagged')
+    # An opened-but-never-closed block is unreadable, and must not be read as body-prose keys.
+    if not frontmatter_issues('---\nname: s\ndescription: d\n\n# Title\nInput: a\nInput: b\n', fm_src):
+        failures.append('an unterminated frontmatter was not flagged')
+    if any('appears' in i for i in
+           frontmatter_issues('---\nname: s\n\n# T\nInput: a\nInput: b\n', fm_src)):
+        failures.append('body prose was read as duplicate frontmatter keys')
     for f in failures:
         print('SELFTEST FAIL: %s' % f)
-    print('selftest: %s (%d case(s))' % ('FAIL' if failures else 'PASS', 3))
+    print('selftest: %s (%d case(s))' % ('FAIL' if failures else 'PASS', 8))
     return 1 if failures else 0
 
 
@@ -126,13 +197,19 @@ def main(argv: list[str]) -> int:
         sys.stderr.write(__doc__.split('Usage:')[1])
         return 2
     result, source = Path(argv[0]), Path(argv[1])
-    rows = check(result.read_text(encoding='utf-8', errors='replace'),
-                 source.read_text(encoding='utf-8', errors='replace'))
+    result_text = result.read_text(encoding='utf-8', errors='replace')
+    source_text = source.read_text(encoding='utf-8', errors='replace')
+    rows = check(result_text, source_text)
+    fm = frontmatter_issues(result_text, source_text)
+    for issue in fm:
+        print('FRONTMATTER in %s: %s' % (result, issue))
     if not rows:
-        print('OK: %s mentions no script more often than %s' % (result, source))
+        if fm:
+            return 1
+        print('OK: %s mentions no script more often than %s, frontmatter intact' % (result, source))
         return 0
     print('SUSPECT superseded-form preservation in %s (source: %s)' % (result, source))
-    text = result.read_text(encoding='utf-8', errors='replace').splitlines()
+    text = result_text.splitlines()
     for name, a, b in rows:
         print('  %s is invoked BOTH ways -- the first is the second minus %s:'
               % (name, ' '.join(t for t in b if t not in a) or '(nothing)'))
