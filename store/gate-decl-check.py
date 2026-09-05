@@ -34,6 +34,11 @@ Output is one line:
   COMMENT-ONLY|<roles>          designated only in a comment, so no scanner can see it. Exit 1.
   PROSE                         a `Gate:` line that names no role -- the scanners read the prose as
                                 the designation and skip the card from every gate. Exit 1.
+  MID-SENTENCE|<roles>          a real designation written mid-sentence, where the anchored
+                                GATE_DECL_RX no longer sees it -- so the card falls through and
+                                surfaces to every gate. Costs one unnecessary review, never a
+                                missing one, but it is convention drift and grows if unreported.
+                                Exit 1.
   NONE                          no designation anywhere -- not a finding here, since absence is
                                 handled by declared_gate_excludes_me() falling through. Exit 0.
 
@@ -63,6 +68,12 @@ def roles(text):
     return {m.group(1).upper() for m in _ROLE.finditer(text or "")}
 
 
+# The PRE-ANCHORING form, kept ONLY to measure drift against the anchored one. Never used to make a
+# decision: if this and GATE_DECL_RX disagree, the anchored rule is the one the scanners obey, and
+# the disagreement is exactly what gets reported.
+_BARE_DECL_RX = re.compile(r"Gate:\s*([^\n]+)", re.IGNORECASE)
+
+
 def declared_roles(text):
     """Roles from the LAST `Gate:` line in `text`, or None if it declares none.
 
@@ -87,6 +98,18 @@ def check(description, comments):
         if r:
             latest_comment = r
 
+    # A REAL designation the anchored regex cannot see, because it is written mid-sentence
+    # ("... o ismeri a kontextust. QA gate: a javitas ...") or after a boundary the class excludes
+    # (`)` or `-`). Card 82fa48b0 anchored GATE_DECL_RX to a sentence or clause start, which loses 4
+    # such cards board-wide; each one now falls through and surfaces to EVERY gate, so the cost is a
+    # wasted read, not a missed gate. It is still reported: the position of a designation is a
+    # CONVENTION, and fixing the parser does not fix how people write. Unreported, those 4 grow.
+    bare = _BARE_DECL_RX.findall(description or "")
+    if desc is None and bare:
+        drifted = roles(bare[-1])
+        if drifted:
+            return ("MID-SENTENCE", drifted, latest_comment)
+
     if desc is None and latest_comment is None:
         return ("NONE", None, None)
     # A `Gate:` line that names no role at all. GATE_DECL_RX searches rather than anchors, so it
@@ -94,8 +117,9 @@ def check(description, comments):
     # takes that prose as the card's designation and answers True for EVERY gate. Measured on this
     # card (67a5ee01): its own description discusses `Gate: QA + X"` and `Gate: sort description-be
     # irja`, and all three gates are consequently told the card is not theirs. 24 cards board-wide
-    # carry the shape. Reported, not silently repaired: anchoring the shared regex changes 515 skip
-    # decisions across two other agents' scanners and belongs on its own card.
+    # carried the shape when this was written. The anchoring that repair needed SHIPPED on card
+    # 82fa48b0 (2026-09-05), so GATE_DECL_RX no longer matches inside quoted prose and this code is
+    # now reached only by a `Gate:` that starts a sentence and still names no role.
     if desc is not None and not desc:
         return ("PROSE", desc, latest_comment)
     if desc is None:
@@ -142,6 +166,12 @@ def main(argv):
     if code == "NONE":
         print("NONE")
         return 0
+    if code == "MID-SENTENCE":
+        print("MID-SENTENCE|%s (a real designation written mid-sentence, where the anchored "
+              "GATE_DECL_RX does not read it -- the card surfaces to every gate instead, which "
+              "costs a review rather than losing one. Put the `Gate:` on its own line.)"
+              % _fmt(desc))
+        return 1
     if code == "PROSE":
         print("PROSE|a `Gate:` line names no gate role, so declared_gate_excludes_me() reads the "
               "prose as the designation and answers 'not yours' to EVERY gate -- this card is "

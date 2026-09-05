@@ -111,6 +111,51 @@ check('base form: QA PASS', bool(PASS_RE.match('QA PASS -- everything green')), 
 check('base form: QA2 PASS', bool(PASS_RE.match('QA2 PASS')), True)
 check('base form: CYBERSEC GO', bool(PASS_RE.match('CYBERSEC GO')), True)
 check('base form: CYBERED GO', bool(PASS_RE.match('CYBERED GO')), True)
+# ---- sentence/clause anchoring of GATE_DECL_RX (card 82fa48b0) -----------------------------
+#
+# THE FOUNDING CASE, on its ORIGINAL text. This matters: the live 67a5ee01 no longer reproduces the
+# bug, because MikroB appended an explicit `Gate: QA + Cybersec` line to it afterwards. Anyone who
+# tests against the live card gets {QA, CYBERSEC} under every candidate rule and concludes there was
+# nothing to fix. The text below is the live description with that appended line removed -- every
+# `Gate:` in it is prose ABOUT designations, not a designation.
+FOUNDING_ORIGINAL = (
+    '2) A MikroB altal a kartyara irt "Gate: QA + X" designacio eddig CSAK kommentbe kerult,\n'
+    'nem a description-be. Forditott kockazat is van: ha egy epito sajat kommentjebol\n'
+    '(pl. "Gate: QA") atmasolja a description-be, az egy korabban nem letezo designaciot csinal.\n'
+    'MEGOLDAS: (a) a regex bovitese testver-agensekkel; (b) MikroB mostantol a Gate: sort\n'
+    'description-be irja PUT-tal, nem csak kommentbe.'
+)
+# The whole point: NO gate may be excluded by prose that merely discusses designations. Under the
+# old bare-search rule the LAST match was "...a Gate: sort description-be irja PUT-tal...", which
+# names no role -> an empty role set -> all three gates excluded from an undesignated card.
+for _g in ('qa', 'cybersec', 'cybered'):
+    check('founding case (67a5ee01 ORIGINAL text): %s is NOT excluded by quoted prose' % _g,
+          declared_gate_excludes_me(FOUNDING_ORIGINAL, _g), False)
+
+check('quoted prose alone is not a designation',
+      declared_gate_excludes_me('Az epito azt irta "Gate: QA + Cybersec" a kommentben.', 'cybered'),
+      False)
+check('prose naming the line mid-sentence is not a designation',
+      declared_gate_excludes_me('MikroB mostantol a Gate: sort description-be irja.', 'cybersec'),
+      False)
+
+# The 77fd0f07 shape that line-start anchoring broke, and that this rule must keep: a real
+# designation written as the CLOSING SENTENCE of a paragraph. 419 board cards look like this.
+check('REGRESSION 77fd0f07: a designation closing a sentence still counts',
+      declared_gate_excludes_me('... a felbontas szerint. Gate: QA.', 'cybersec'), True)
+check('clause boundary: after a semicolon',
+      declared_gate_excludes_me('elso resz; Gate: QA + Cybersec', 'cybered'), True)
+check('clause boundary: after a comma',
+      declared_gate_excludes_me('valami, Gate: QA + Cybersec', 'cybered'), True)
+check('clause boundary: immediately after an opening paren, no space',
+      declared_gate_excludes_me('valami (Gate: QA+Cybersec, internet-facing)', 'cybered'), True)
+check('a designation on its own line still counts',
+      declared_gate_excludes_me('szoveg\n\nGate: QA + Cybersec', 'cybered'), True)
+check('CONTROL: the boundary class must NOT admit a quote -- that is the founding bug',
+      declared_gate_excludes_me('valami "Gate: QA" valami', 'cybered'), False)
+check('CONTROL: a word ending in -gate is not a designation',
+      declared_gate_excludes_me('a watergate: QA + Cybersec', 'cybered'), False)
+
 check('base form: CYBERED FULL-CARD GO', bool(PASS_RE.match('CYBERED FULL-CARD GO')), True)
 check('base form: QA FAIL', bool(FAIL_RE.match('QA FAIL')), True)
 check('base form: CYBERSEC NO-GO', bool(FAIL_RE.match('CYBERSEC NO-GO')), True)
