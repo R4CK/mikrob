@@ -148,6 +148,24 @@ mkdir -p "$TMP/gates/cc-gate-p-qa-$SHORT/inner-qa-$SHORT"
 run --agent qa --remove "$TMP/gates/cc-gate-p-qa-$SHORT/inner-qa-$SHORT" >/dev/null 2>&1; rc=$?
 [[ $rc -ne 0 ]] && ok "F-2: a nested path under the gate root is refused" || bad "F-2: nested path removed"
 
+# --- 10. REAL CREATION, because every case above takes the --path branch ------------------------
+# This file's cases exit before a worktree is ever built, which is exactly why it stayed green while
+# the first version of the marker broke creation outright: writing the marker BEFORE
+# `git worktree add` left the target non-empty and git refused. The suite caught it in a different
+# file; a selftest that never creates anything cannot vouch for a script whose main job is creating.
+made="card0"
+out="$(run --agent testagent "$made" "$SHA" 2>&1)"; rc=$?
+tree="$TMP/gates/cc-gate-$made-testagent-$SHORT"
+[[ $rc -eq 0 ]] && ok "a worktree is actually CREATED (exit 0)" || bad "creation failed (rc=$rc)" "$out"
+[ -e "$tree/.git" ] && ok "the created tree is a real git worktree" || bad "no .git in the created tree"
+[ "$(cat "$tree/.cc-gate-owner" 2>/dev/null)" = "testagent" ] \
+  && ok "creation writes the owner marker" || bad "creation did not write the owner marker"
+# ...and the top-up path writes it too, which is what retires the legacy fallback without a migration.
+rm -f "$tree/.cc-gate-owner"
+run --agent testagent "$made" "$SHA" >/dev/null 2>&1
+[ "$(cat "$tree/.cc-gate-owner" 2>/dev/null)" = "testagent" ] \
+  && ok "an idempotent top-up restores the owner marker" || bad "top-up did not write the marker"
+
 echo
 echo "cc-gate-worktree.selftest: $pass passed, $fail failed"
 [[ $fail -eq 0 ]]

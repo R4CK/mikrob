@@ -8191,3 +8191,11 @@ megkapják, migráció nélkül.
 kiiktatása 3 esetet vált pirosra. A `..`-szökést viszont MINDKÉT tartalmazás-őr elfogja, tehát
 egyetlen mutáció sem izolálja -- a kombinált mutáció 3 esetet vált pirosra; a beágyazott-útvonal
 eset az, ami egyetlen őrön áll.
+
+**A jelölő a LÉTREHOZÁS UTÁN íródik, és ez egy landolásba került megtanulni.** Az első változat a
+könyvtárat előre létrehozta és a jelölőt a `git worktree add` ELÉ írta -- git ezután megtagadta a
+munkát, mert a cél már nem volt üres („git worktree add failed"). **A saját selftestem ezt NEM
+fogta meg**, mert minden esete a `--path` ágon fut, ami a létrehozás előtt kilép; egy másik
+tesztfájl fogta meg a suite-ban. Egy selftest, ami sosem hoz létre semmit, nem tud jótállni egy
+scriptért, aminek a fő dolga a létrehozás -- ezért került bele négy VALÓS létrehozás-eset, és a
+„jelölőt a létrehozás elé" mutáció most 2 esetet vált pirosra.

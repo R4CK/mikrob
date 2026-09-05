@@ -170,14 +170,6 @@ TREE="$GATE_ROOT/cc-gate-$CARD-$AGENT-$SHORT"
 
 if [ "$PATH_ONLY" -eq 1 ]; then echo "$TREE"; exit 0; fi
 
-# WRITE THE OWNER MARKER FIRST, and unconditionally on every run (card 5e4e629f). First, because a
-# tree that exists without it falls back to the path heuristic on removal, and the whole point is to
-# stop deciding ownership from the path. Unconditionally, because this script is idempotent "create
-# or top up": an existing tree from before the marker gets one on its next top-up, which is how the
-# legacy fallback stops being needed without anyone doing a migration.
-mkdir -p "$TREE"
-printf '%s\n' "$AGENT" >"$TREE/$OWNER_FILE"
-
 # --- create (idempotent) -------------------------------------------------------------------------
 if [ -d "$TREE/.git" ] || [ -f "$TREE/.git" ]; then
   echo "worktree already present: $TREE"
@@ -186,6 +178,18 @@ else
     || die 3 "git worktree add failed for $SHORT"
   echo "worktree created: $TREE @ $SHORT"
 fi
+
+# THE OWNER MARKER, written AFTER the worktree exists and on EVERY run (card 5e4e629f).
+#
+# AFTER, and this cost a landing to learn: the first version created the directory and wrote the
+# marker BEFORE `git worktree add`, which then refused because the target was no longer empty --
+# "git worktree add failed". This script's own selftest did not catch it (its cases take the
+# --path branch, which exits before creation); agent-worktree-deps.test.ts did.
+#
+# ON EVERY RUN, not only at creation, because this script is idempotent "create or top up": a tree
+# made before the marker existed gets one on its next top-up. That is how the legacy path-based
+# fallback in --remove stops being needed, without anyone running a migration.
+printf '%s\n' "$AGENT" >"$TREE/$OWNER_FILE"
 
 # Map @cleancore/<name> -> directory inside the WORKTREE, derived from package.json names. Never a
 # hardcoded list: a package added after this script was written must still resolve.
