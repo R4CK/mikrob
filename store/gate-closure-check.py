@@ -235,6 +235,29 @@ def content_verdict(judged, declared):
             continue
         changed = [f for f in out.split("\n") if f.strip()]
         real = [f for f in changed if os.path.basename(f) not in _SHARED_CHURN]
+        # Card 74aa46a5. The `if not files` guard above refuses to call an EMPTY delivery "same",
+        # and the churn subtraction on the next line can empty the comparison a second time, at a
+        # point that guard no longer covers: when EVERY file the declared commit delivers is one of
+        # the churn names, removing them leaves nothing, and "no real difference remains" is then
+        # indistinguishable from "nothing was ever compared". Measured on the live board: 14 cards
+        # answered AGREE that way, four of them (99fccbcf, e5b7ff19, a14812e8, f1b3f2f0) because the
+        # REVIEW named a `chore(version)` bump -- a commit that delivers package.json and nothing
+        # else, so the subtraction is total by construction.
+        #
+        # `changed` must be non-empty to reach this: when the churn files are byte-identical too,
+        # nothing differs anywhere and "same" is the honest answer, unchanged. And `comparable` must
+        # be empty: a card that delivers real files which simply did not differ WAS compared, and
+        # keeps its pass.
+        comparable = [f for f in files if os.path.basename(f) not in _SHARED_CHURN]
+        if not real and changed and not comparable:
+            hint = ""
+            ok_s, subj = _git(clone, "log", "-1", "--format=%s", d)
+            if ok_s and subj.strip().startswith("chore(version): bump"):
+                hint = (" -- %s is a version bump, so the REVIEW is naming the develop tip instead "
+                        "of the landing merge that carries the work (card 0711c19b)" % d)
+            return ("unresolved",
+                    "every file %s delivers is per-landing churn (%s), so ignoring it leaves "
+                    "nothing to compare%s" % (d, ", ".join(sorted(set(files))), hint))
         if not real:
             skipped = " (ignoring %s)" % ", ".join(sorted(set(changed))) if changed else ""
             return ("same", "%s and %s hold identical content for the %d file(s) %s delivers%s"
