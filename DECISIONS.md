@@ -6590,3 +6590,60 @@ figyelmeztetés.
 kimondott hiányok), MikroB (dispatch).
 **Hivatkozás:** kártya `87be1810` (Pair-BE `a5bbfb98`, fázis `aecd9a12`); `web/app-llm-monitor.js`,
 `src/__tests__/llm-monitor-module.test.ts`.
+
+## 2026-09-05 -- A 17. szabály (CleanCore suite-szemafor) premisszájának korrekciója, és a két független zár kérdése (kártya 9bb2e651)
+
+**Döntés.** A 17. szabály egy hét múlva esedékes felülvizsgálatához a kiinduló premisszát korrigálni
+kell: **a megkerülés-minta NEM rosszabbodik**, és a korpusz ezt nem támasztja alá. Ebből
+következően PreToolUse hook a CleanCore-oldalra NEM indokolt. A marveen-oldalra sem kell új fék, mert
+ott már szigorúbb korlát van, mint a CleanCore-on. Marad a két zár egymástól független ténye, amit
+dokumentálni kell, nem összehangolni -- egyelőre.
+
+**Mérés (backend, a teljes ügynök-átirat korpuszon: 12 195 jelölt Bash-parancs).**
+- Ebből 2 244 PUSZTA EMLÍTÉS volt, nem futtatás (`pgrep -f vitest`, `cat vitest.config.ts`, magyar
+  próza egy heredoc-testben). Szűrés nélkül a szám tízszeres, és minden ráépülő következtetés hamis.
+- A `store/cleancore-suite-run.sh` `ce3ec4d6`-ban jött létre (2026-09-04 22:41 helyi), és `78d182a6`
+  tette flotta-szintűvé (23:52). Az idővonalat a SZKRIPT LÉTEZÉSÉHEZ kell vágni, nem a szabály
+  kihirdetéséhez: az 5 megtalált teljes-suite megkerülés MIND korábbi, tehát akkor a szabály nem
+  hogy nem volt betartva, betarthatatlan volt.
+- A szkript létezése óta: **0 CleanCore teljes-suite megkerülés**, 2 szemaforos futás, 57 mentesülő
+  célzott futás (a mentesülő szám nem nulla, tehát a nulla nem azt jelenti, hogy senki nem dolgozott
+  a repóban).
+- A szabályban „második megkerülés-adatpontként" szereplő gate-futás (002120b1, QA) valójában
+  **marveen** teljes suite egy eldobható `qa-priv-<kártya>-<sha>` worktree-ben. A szkript létezése óta
+  futott ÖSSZES teljes suite-ot repo-szűrő nélkül átnéztem: 13 darab, mind QA gate-futás, és mind a
+  12 mögöttes kártya marveen INFRA. Egy sem CleanCore.
+
+**A hamis piros tényleges előfordulásai.** A `Timeout calling "onTaskUpdate"` jelzőre 8 találat van a
+parancs-kimenetek között; ebből **7 valódi**, és mind a CleanCore vitestjére mutat
+(`CleanCore/node_modules/.pnpm/vitest@3.2.6`), időben 06:18 és 20:41 között, tehát MIND a szemafor
+létrejötte előtt. A nyolcadik nem előfordulás: a 17. szabály SAJÁT SZÖVEGE jelenik meg egy marveen
+teszt-diffben, és a szabály idézi a hibajelzőt -- egy jelző-alapú keresés tehát megtalálja magát a
+szabályt. A szemafor landolása óta nulla előfordulás.
+
+**Amit korrigálok a saját korábbi állításomban.** Először azt jelentettem, hogy a valódi fékezetlen
+terhelés a marveen gate-futásokra került (QA 10 teljes suite 3 óra alatt, „nincs rá szemafor"). Ez
+téves: a `fleet-test.sh` EGYETLEN flockot vesz a fa útvonalára, tehát **max 1** egyidejű futást enged
+-- szigorúbb korlát, mint a CleanCore kettő. QA 10 futása sorosan ment, nem párhuzamosan.
+
+**A tényleges maradék kockázat, számokkal.** Egy vitest-suite alapból annyi workert indít, ahány CPU
+van (itt 12, a `cleancore-suite-run.sh` fejléce is ezt mondja ki, és élőben is mérhető: 15 vitest
+folyamat 17,2-es terhelés mellett). A két zár nem tud egymásról, ezért a legrosszabb eset
+2 CleanCore + 1 marveen = **3 egyidejű teljes suite, ~36 worker 12 CPU-n**. Ez ugyanaz az éheztetési
+feltétel, ami a 7 hamis pirosat okozta -- azzal a különbséggel, hogy a 3-utas átfedésre eddig
+EGYETLEN megfigyelt bukás sincs. Ezért a közös, gép-szintű számláló megépítése ma spekulatív lenne,
+és pont az a hiba, ami ellen a 17. szabály maga is szól (a hook eseteinek a valódi korpuszból kell
+jönniük, nem a fenyegetés-modellből).
+
+**Következmény / következő lépés.** (1) A két-kapu-egymástól-független tény dokumentálva. (2) Mielőtt
+bárki koordinációt épít, a 3-utas átfedést MÉRHETŐVÉ kell tenni (a nehéz futások kezdete/vége közös
+jelöléssel), és csak megfigyelt átfedés + bukás után épüljön mechanizmus. (3) A `FLEET_TEST_TREE`
+env-változó csendes kilépést ad a marveen sorosításból („a private tree never queues behind the
+shared one") -- ma senki nem használja, de ez ugyanaz az alak, mint az `5af57bd7` per-checkout
+horgony-hibája, amit a `78d182a6` javított. A `fleet-test.sh` viszont minden marveen landolást
+kapuz, tehát működő, bizonyítottan éles funkció: hozzányúlni csak Peti kifejezett jóváhagyásával
+szabad (5. kódminőségi alapelv), ezért ez kérdésként megy fel, nem javításként.
+
+**Ki döntött:** backend (mérés és verdikt), MikroB (dispatch, a kártya átírása a mérésre).
+**Hivatkozás:** kártya 9bb2e651; korábbi diagnózis-korrekció backend3-tól; szemafor `ce3ec4d6` +
+`78d182a6`; a mérő eljárás a `fleet-rule-compliance-from-corpus` skillben.
