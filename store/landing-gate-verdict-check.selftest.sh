@@ -70,6 +70,27 @@ Gate-SHA: abc1234' qa 'QA FAIL
 Gate-SHA: abc1234
 the fix was never re-gated')"
 
+# Card c52e2823: a gate ROLE may be staffed by more than one agent (rule 4 load-balances QA/QA2), so
+# a sibling's verdict is that role's verdict. Both directions are pinned: the PASS half unblocks the
+# landings that refused with "QA did not pass" while QA2's verdict sat on the card, and the FAIL half
+# is the one that matters more -- a refusal the parser cannot see is a refusal that vanishes.
+t "a QA2 PASS satisfies the mandatory QA role" OK abc1234 \
+  <<<"$(j qa2 'QA2 PASS
+Gate-SHA: abc1234')"
+
+t "a QA2 FAIL naming the sha refuses, even after a QA PASS on the same sha" FAILED abc1234 \
+  <<<"$(j qa 'QA PASS
+Gate-SHA: abc1234' qa2 'QA2 FAIL
+Gate-SHA: abc1234
+the sibling re-checked and it is broken')"
+
+# CONTROL, so the two cases above cannot pass by the digit being ignored everywhere: an unrelated
+# trailing digit is NOT a sibling role. "QA3" is nobody today, and inventing gates out of arbitrary
+# digits is the permissive direction of this pattern.
+t "CONTROL: an unknown QA3 is not a recognised gate" NONE abc1234 \
+  <<<"$(j qa3 'QA3 PASS
+Gate-SHA: abc1234')"
+
 # Rule 4: QA runs on EVERY card; a security gate is risk-tiered on top of it. So a lone security
 # GO means half the gate ran, not that the card was gated.
 t "a lone CYBERSEC GO is reported but does NOT satisfy the check" NOQA abc1234 \

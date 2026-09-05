@@ -14,9 +14,20 @@ import re
 import sys
 
 # Rule 4c: the verdict word is the comment's FIRST line. Rule 4b: `Gate-SHA:` is its own line.
-PASS = re.compile(r"^(QA\s+PASS|CYBERSEC\s+GO|CYBERED\s+GO)\b", re.I)
-FAIL = re.compile(r"^(QA\s+FAIL|CYBERSEC\s+NO-GO|CYBERED\s+NO-GO)\b", re.I)
-QA = re.compile(r"^QA\s+PASS\b", re.I)
+#
+# `QA2?` -- A GATE ROLE MAY BE STAFFED BY MORE THAN ONE AGENT (card c52e2823). Rule 4 requires
+# load-balancing between same-capability gate siblings (today QA/QA2), and only ONE of a pair
+# reviews a given card, so a sibling's verdict IS that role's verdict. Without the digit `QA2 PASS`
+# matched nothing: every card QA2 gated refused to land with the message "a security gate passed
+# this sha but QA did not" -- an assertion that a verdict is absent while it sits on the card.
+# Measured on 5433c74c, where all three gates had passed and the landing refused twice.
+#
+# The digit belongs on FAIL as much as on PASS, and that direction is the sharper one: a `QA2 FAIL`
+# the parser cannot see is a REFUSAL that vanishes, and this file's ordering ("a failing verdict for
+# THIS sha outranks a passing one") can only rank a refusal it recognises.
+PASS = re.compile(r"^(QA2?\s+PASS|CYBERSEC\s+GO|CYBERED\s+GO)\b", re.I)
+FAIL = re.compile(r"^(QA2?\s+FAIL|CYBERSEC\s+NO-GO|CYBERED\s+NO-GO)\b", re.I)
+QA = re.compile(r"^QA2?\s+PASS\b", re.I)
 GATE_SHA_LINE = re.compile(r"^\s*Gate-SHA:\s*(.+)", re.I)
 HEX = re.compile(r"[0-9a-f]{7,40}", re.I)
 
