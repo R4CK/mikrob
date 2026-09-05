@@ -7467,3 +7467,38 @@ ellenőrizve: a `gate-worktree-pattern` `--agent` sora mind a négy ügynöknél
 irány, atomi írás a futó ügynökök miatt, a references fél-javítás észrevétele).
 **Hivatkozás:** kártya 30b76a8d; `agents/{qa,qa2,teszter,cybersec,cybered}/.claude/skills/...`
 (gitignore-olt, élő), `seed-fleet-agents/{qa,qa2,teszter}/...` (verziókövetett).
+
+## 2026-09-05 -- 23d09a68 (2. lépés) -- A drift-riport `live-only file` kategóriája 100%-ban a saját backupjaink zaja volt
+
+**Döntés:** a `skill-drift-map.py` kihagyja a backup-artefaktumokat (`*.bak`, `*.seedbak.<epoch>`)
+mindkét sweepből. Az `update.sh:707` a mergelt fájl MELLÉ írja a `.seedbak.<epoch>`-ot, a vizsgált
+fán BELÜL, tehát minden sikeres merge egy állandó sort adott a riporthoz.
+
+**Miért nem elvi, hanem mért:** a valós telepítésen a 10 `live-only file` sorból MIND A 10 backup
+volt (9 `seedbak` + egy elárvult `.bak` cybered fájában), nulla valódi lelet. A kategória tehát nem
+zajos volt, hanem teljes egészében zaj.
+
+**Szándékosan szűk minta.** Csak a két backup-utótag, mert egy skill-fájl `SKILL.md` vagy valami a
+`references/` alatt -- egy `.bak` sosem hordoz működést. Egy tág "hagyj ki mindent, ami szokatlan"
+szabály viszont elrejtené az első valódi extra fájlt, amit valaha valaki odatesz. Ezt CONTROL eset
+őrzi: egy valódi extra fájl a live fában TOVÁBBRA IS jelentődik.
+
+**Bizonyíték:** 16 -> 18 eset, két mutáció mindkét irányban: a skip kivétele -> 1 bukás, a skip
+kiszélesítése "mindent kihagy"-ra -> 7 bukás; a revert md5-tel bájtazonos. A drift-riport valódi
+sorai 46-ról 20-ra estek (a mai javításokkal együtt): 6 template-only fájl, 6 two-sided, 6 template
+LAGS, 1 TEMPLATE-ONLY skill, 1 LIVE LOST content, és NULLA live-only fájl.
+
+**Egy aszimmetria, amit ÉN hoztam létre és NEM oldottam fel, indoklással.** A
+`seed-fleet-agents/qa2/i18n-parity-sweep` mostantól `LIVE LOST content`: a 30b76a8d-en a live
+tartalmat bevittem a seedbe, de a seed saját három sorát nem vittem ki a live-ba. Az a három sor
+viszont a MEGOSZTOTT CleanCore klónra hivatkozik (`cd /mnt/h/LM_Studio_Workdir/CleanCore`,
+`BASE = pathlib.Path('/mnt/h/.../CleanCore/packages/i18n/messages')`), amit a CLAUDE.md már
+visszavont: a klón CSAK fetch/landolás-alap, a munka per-ügynök worktree-ben folyik. A
+"konvergálás" tehát elavult útmutatást vinne be pont abba a példányba, amelyik nyer. Ezért
+szándékosan aszimmetrikus maradt; a skill tartalmi frissítése a tulajdonosára tartozik, nem erre a
+kártyára.
+
+**Ki döntött:** backend2 (a lelet a saját mentésemből jött: a `.bak`-ot először a skill-fa mellé
+írtam, és azonnal driftként jelent meg -- ezért kerültek a `store/skill-backups/` alá).
+**Hivatkozás:** kártya 23d09a68; `store/skill-drift-map.py`,
+`src/__tests__/skill-drift-map.test.ts` (16 -> 18 eset).
