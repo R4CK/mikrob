@@ -20,6 +20,7 @@
 #   store/fleet-test.sh src/__tests__/x.ts  # ...run only these paths (any vitest args pass through)
 #   store/fleet-test.sh --ref <sha|branch>  # test a specific commit instead of HEAD
 #   store/fleet-test.sh --path              # print the worktree path and exit (for scripting)
+#   store/fleet-test.sh --lock-path         # print the RESOLVED lock path and exit (for scripting)
 #
 # Exit: the vitest exit code | 2 bad usage | 3 setup failed
 set -uo pipefail
@@ -29,6 +30,12 @@ TEST_TREE="${FLEET_TEST_TREE:-/home/neon/marveen-test}"
 # How long to queue behind another agent's run before giving up. A full suite is ~40s including the
 # build, so this is many runs deep; it exists so a stuck holder fails loudly instead of hanging.
 LOCK_WAIT_SECONDS="${FLEET_TEST_LOCK_WAIT:-900}"
+# The serialisation anchor, resolved here so `--lock-path` can print it before anything is locked.
+# Deliberately NOT derived from $TEST_TREE -- see the block above the flock call for why. Beside the
+# install, never inside a tree: `git clean -fdq` runs in the test tree on every invocation. This is
+# the same path the shared tree's lock already used, so a run started before card 2f0c7d24 and a run
+# started after it still contend on one file.
+LOCK_FILE="${ROOT}-test.lock"
 
 die() { echo "fleet-test.sh: $2" >&2; exit "$1"; }
 
@@ -43,6 +50,11 @@ while [ $# -gt 0 ]; do
   case "$1" in
     --ref)  REF="${2:-}"; shift 2 ;;
     --path) echo "$TEST_TREE"; exit 0 ;;
+    # Prints the value the run would actually lock on, so a guard test can assert the RESOLVED path
+    # instead of pattern-matching the source (card 43ecdbe6, Cybersec's measurement: a source-text
+    # check was satisfied by a COMMENT carrying the right literal, while the code below it took a
+    # per-tree lock). Exits before any lock is taken, so asking is free and never queues.
+    --lock-path) echo "$LOCK_FILE"; exit 0 ;;
     -h|--help) sed -n '2,30p' "$0"; exit 0 ;;
     *) ARGS+=("$1"); shift ;;
   esac
@@ -82,11 +94,8 @@ TARGET="$(git rev-parse "$REF" 2>/dev/null)" || die 2 "unknown ref '$REF'"
 # produces false reds is the expensive kind: on a gate it sends correct work back to in_progress.
 # FLEET_TEST_TREE still chooses WHERE you run; it no longer chooses WHETHER you queue.
 command -v flock >/dev/null 2>&1 || die 3 "flock is required to serialise suite runs (util-linux)"
-# Deliberately NOT derived from $TEST_TREE -- that is the whole point of the change above. Beside
-# the install, never inside a tree: `git clean -fdq` runs in the test tree on every invocation.
-# This is the same path the shared tree's lock already used, so a run started before this change
-# and a run started after it still contend on one file.
-LOCK_FILE="${ROOT}-test.lock"
+# $LOCK_FILE is set with the other constants at the top, so `--lock-path` can report it without
+# reaching this point. Its independence from $TEST_TREE is the whole point of the change above.
 exec 9>"$LOCK_FILE" || die 3 "cannot open the lock file $LOCK_FILE"
 if ! flock -n 9; then
   echo "fleet-test.sh: another suite run holds the fleet lock -- waiting (up to ${LOCK_WAIT_SECONDS}s)" >&2
