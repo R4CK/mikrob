@@ -276,6 +276,40 @@ run "$root" --update
   && ok "CONTROL: a healthy --update still writes the tightened bound" \
   || bad "CONTROL: a healthy --update still writes the tightened bound" "code=$CODE out=$OUT"
 
+# --- Q: THE BOOTSTRAP FLOOR -- a DELETED bound is not a first run -----------------------------
+# Making bootstrap its own verb closed the accidental route to bypass A; it left the deliberate
+# one open, measured: `--bootstrap` on a degraded tree still wrote {"(parse-error)": 861}. Cybered
+# (20989, point 2) named the floor: the previous bound is in git, so a missing baseline is a
+# DELETION. This case needs a real repo, unlike every other case here.
+root="$TMP/gitroot"; mkdir -p "$root/store"
+cp "$SRC" "$root/store/lint-ratchet.sh"
+cat > "$root/store/lint-baseline.json" <<'JSON'
+{ "(parse-error)": 6, "@typescript-eslint/no-unsafe-argument": 101 }
+JSON
+git -C "$root" init -q 2>/dev/null
+git -C "$root" config user.email t@e.st; git -C "$root" config user.name t
+git -C "$root" add -A >/dev/null 2>&1; git -C "$root" commit -qm base >/dev/null 2>&1
+rm -f "$root/store/lint-baseline.json"          # the `rm` that used to disarm everything
+export REPORT_JSON="$TMP/q.json"; mk_report "$REPORT_JSON" "parse=861"
+run "$root" --bootstrap
+[ "$CODE" = 3 ] && [ ! -f "$root/store/lint-baseline.json" ] && echo "$OUT" | grep -q "deleted bound" \
+  && ok "BYPASS A (deliberate half): --bootstrap over a git-tracked baseline REFUSES" \
+  || bad "BYPASS A (deliberate half): --bootstrap over a git-tracked baseline REFUSES" "code=$CODE out=$OUT"
+
+# --- R: CONTROL -- the floor FAILS OPEN where git cannot answer -------------------------------
+# A genuine first run, in a tree that never committed a baseline, must still work. Fail-closed here
+# would make the tool impossible to adopt anywhere new, which is a worse failure than the one above.
+root2="$TMP/gitroot2"; mkdir -p "$root2/store"
+cp "$SRC" "$root2/store/lint-ratchet.sh"
+git -C "$root2" init -q 2>/dev/null
+git -C "$root2" config user.email t@e.st; git -C "$root2" config user.name t
+git -C "$root2" add -A >/dev/null 2>&1; git -C "$root2" commit -qm nobaseline >/dev/null 2>&1
+export REPORT_JSON="$TMP/r.json"; mk_report "$REPORT_JSON" "parse=6" "$UA=101"
+run "$root2" --bootstrap
+[ "$CODE" = 0 ] && [ -f "$root2/store/lint-baseline.json" ] \
+  && ok "CONTROL: --bootstrap still works in a repo that never had a baseline" \
+  || bad "CONTROL: --bootstrap still works in a repo that never had a baseline" "code=$CODE out=$OUT"
+
 echo
 printf 'lint-ratchet selftest: %d passed, %d failed (%d cases)\n' "$pass" "$fail" "$((pass+fail))"
 [ "$fail" -eq 0 ] || exit 1
