@@ -44,6 +44,15 @@
 # `cmp` finds the first differing BYTE in one C-speed pass -- bash cannot compare 447 KB strings
 # byte by byte without the O(n^2) behaviour card d56786a7 measured.
 _common_line_prefix_len() {
+  # BYTE SEMANTICS, FORCED. `cmp` reports a BYTE offset; bash's ${#var} and ${var:i:n} count
+  # CHARACTERS unless the locale is C. On the real DECISIONS.md -- Hungarian prose, UTF-8 -- those
+  # differ by ~36000: the file is 609416 bytes and 573384 characters, and cmp's "differ: byte 601266"
+  # was being used as a character index. The result was a "common prefix" LONGER than one of the two
+  # sides, which is impossible by definition.
+  #
+  # It passed every selftest because every fixture was ASCII, where the two counts coincide. That is
+  # the whole reason this shipped: the tests could not see the difference they were built out of.
+  local LC_ALL=C
   local a="$1" b="$2" n cut head
   n="$(cmp <(printf '%s' "$a") <(printf '%s' "$b") 2>/dev/null | sed -n 's/.*byte \([0-9][0-9]*\).*/\1/p')"
   if [ -z "$n" ]; then
@@ -64,6 +73,10 @@ _common_line_prefix_len() {
 }
 
 try_append_union() {
+  # Same reason as _common_line_prefix_len: this function SLICES with the offset that function
+  # returns, so it has to index the same way cmp counted. Set here as well as there, because the
+  # slicing happens in this scope.
+  local LC_ALL=C
   local wt="$1" file="$2"
   local conflicted
   conflicted="$(git -C "$wt" diff --name-only --diff-filter=U)"
@@ -420,6 +433,44 @@ body of A
 ## entry R (right)
 "
   t_refused "DIFFERENT mid-file insertions are refused -- the union never duplicates the tail"
+
+  # UTF-8: THE INVARIANT, ASSERTED ON THE HELPER DIRECTLY (card b7e57877).
+  #
+  # `cmp` reports a BYTE offset; bash's ${#var} and ${var:i:n} count CHARACTERS unless the locale is
+  # C. On the real DECISIONS.md -- Hungarian prose -- that file is 609416 bytes and 573384
+  # characters, and using one number as the other made the helper return a "common prefix" LONGER
+  # THAN ONE OF THE TWO SIDES. That is impossible by definition, and it is what refused the landing
+  # this card was supposed to unblock.
+  #
+  # WHY THIS IS NOT A setup_conflict FIXTURE. Two were written and BOTH passed with the fix removed:
+  # a small one because the byte/char gap was under one line and the truncate-to-newline step
+  # absorbed it, and a large one because the surviving checks still produced a plausible union for
+  # that particular shape. A fixture that cannot tell the bug from the fix reports coverage that is
+  # not there, so the property is asserted where it is unambiguous: on the helper's own answer.
+  utf8_a="## fejléc
+"
+  for _ in $(seq 1 200); do
+    utf8_a+="Hosszú, ékezetes törzsszöveg: árvíztűrő tükörfúrógép, őúűéáí ÖÜÓŐÚÉÁŰÍ.
+"
+  done
+  utf8_b="${utf8_a}## jobb oldal
+"
+  utf8_a+="## bal oldal
+"
+  utf8_n="$(_common_line_prefix_len "$utf8_a" "$utf8_b")"
+  # The EXPECTED answer, computed independently and in BYTES: the two sides share everything up to
+  # and including the last newline before they diverge, which here is all of utf8_a minus its final
+  # "## bal oldal\n" line. `<=` is not enough as an assertion -- the broken form UNDER-shoots on this
+  # shape (it returns a character count, which is smaller), so only an equality catches it.
+  utf8_expect="$(LC_ALL=C bash -c 'a=$1; h="${a%$'"'"'\n'"'"'*}"; h="${h%$'"'"'\n'"'"'*}"; echo $(( ${#h} + 1 ))' _ "$utf8_a")"
+  n=$((n+1))
+  if [ "$utf8_n" = "$utf8_expect" ]; then
+    echo "  ok   UTF-8: the prefix length is measured in BYTES ($utf8_n), not characters"
+  else
+    echo "  FAIL UTF-8: prefix length $utf8_n, expected $utf8_expect bytes -- a byte offset from cmp"
+    echo "       is being used as a bash CHARACTER index (card b7e57877)"
+    fail=1
+  fi
 
   # REALISTIC SIZE, on a clock (card d56786a7). Every case above runs on a few hundred bytes, so
   # every one of them passed just as happily with the O(n^2) `${ours#"$base"}` strip that froze
