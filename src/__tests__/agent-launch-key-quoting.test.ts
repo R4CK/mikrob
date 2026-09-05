@@ -20,6 +20,15 @@ import { resolveDashboardOrigin } from '../web/agent-scaffold.js'
 const SRC = readFileSync(
   join(import.meta.dirname, '..', 'web', 'agent-process.ts'), 'utf-8')
 
+// The shape of the defect, in ONE place so the source scan and the self-test below cannot drift
+// apart. A quote character before the `${` is an offender WHATEVER follows it: double quotes leave
+// `$(...)` live, and single quotes are not escaping either -- the file's own comment at the sink
+// says so, because an apostrophe IN THE VALUE closes the span (OLLAMA_URL is a cfg() string with no
+// validation). Wrapping shSingleQuote's output in quotes is equally broken: `'` + `'v'` + `'` is an
+// empty string, a BARE v, and another empty string. So only the unquoted `${shSingleQuote(` form is
+// exempt, which is exactly the negative lookahead on the second alternative.
+const UNESCAPED = /ANTHROPIC_\w+=(?:["']\$\{|\$\{(?!shSingleQuote\())/
+
 describe('agent launch command: vault keys are shell-escaped (card 1075d0e4)', () => {
   // The exact shape of the defect. Any secret-bearing env export that interpolates through double
   // quotes is the bug, whatever the variable is called.
@@ -28,7 +37,6 @@ describe('agent launch command: vault keys are shell-escaped (card 1075d0e4)', (
   // three lines above, where ANTHROPIC_BASE_URL took OLLAMA_URL as a BARE `${...}` (Cybersec NO-GO on
   // aa8d7f7d). A guard written from the instances you just fixed describes your diff, not the class.
   it('no ANTHROPIC_* export interpolates a value without shSingleQuote', () => {
-    const UNESCAPED = /ANTHROPIC_\w+=(?:"\$\{|\$\{(?!shSingleQuote\())/
     const offenders = SRC.split('\n')
       .map((line, i) => [i + 1, line] as const)
       .filter(([, line]) => UNESCAPED.test(line))
@@ -38,6 +46,29 @@ describe('agent launch command: vault keys are shell-escaped (card 1075d0e4)', (
         'command runs at tmux launch, BEFORE the hook layer exists, so no PreToolUse guard can see ' +
         'it. Wrap the value in shSingleQuote(...), as the model name already is.',
     ).toEqual([])
+  })
+
+  // The guard, run against its own founding cases. Card 6c30a65a: Cybersec measured that the
+  // previous shape let `'${OLLAMA_URL}'` through -- only the NAMED assertion below happened to
+  // cover that one line, so the same shape on any OTHER line would have scanned clean. A scan that
+  // finds nothing looks identical whether the source is clean or the pattern is blind, so the
+  // pattern states what it catches instead of being trusted.
+  it.each([
+    ['double-quoted raw', 'export ANTHROPIC_AUTH_TOKEN="${deepseekKey}" && '],
+    ['double-quoted around the escaper', 'export ANTHROPIC_AUTH_TOKEN="${shSingleQuote(k)}" && '],
+    ['single-quoted raw (the 6c30a65a miss)', "export ANTHROPIC_BASE_URL='${OLLAMA_URL}' && "],
+    ['single-quoted around the escaper', "export ANTHROPIC_BASE_URL='${shSingleQuote(OLLAMA_URL)}' && "],
+    ['bare raw', 'export ANTHROPIC_MODEL=${model} && '],
+  ])('UNESCAPED catches %s', (_name, line) => {
+    expect(UNESCAPED.test(line)).toBe(true)
+  })
+
+  it.each([
+    ['the escaped interpolation', 'export ANTHROPIC_BASE_URL=${shSingleQuote(OLLAMA_URL)} && '],
+    ['a bare literal', 'export ANTHROPIC_AUTH_TOKEN=ollama && '],
+    ['a constant URL', 'export ANTHROPIC_BASE_URL=https://api.deepseek.com/anthropic && '],
+  ])('UNESCAPED leaves %s alone', (_name, line) => {
+    expect(UNESCAPED.test(line)).toBe(false)
   })
 
   // The instance the narrow guard missed, named explicitly so a future edit cannot quietly drop it
