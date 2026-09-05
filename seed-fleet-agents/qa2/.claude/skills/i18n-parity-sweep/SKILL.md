@@ -9,6 +9,47 @@ description: Find and fix EN-copy violations in locale files (de/es/fr/it/pl). U
 - Parity test / CI fail: "EN-copy violation in de/es/fr/it/pl"
 - i18n fordítási sprint (df12479a-típusú kártyák)
 
+## Munkakönyvtár: eldobható worktree HEAD-en, NEM a megosztott klón (kártya 973ed6eb, qa2-javítás c4f431e4 v2 -- QA FAIL utáni fix)
+
+**A qa2-nek NINCS állandó worktree-je** (ellenőrizve: `store/agent-worktree.sh qa2 --path` létező
+lévén a NEVRE nem hoz létre semmit -- a `--path` ág mindig csak KISZÁMÍTJA az útvonalat, még ha az
+soha nem lett létrehozva, `ls .../CleanCore-worktrees/` szerint nincs `qa2` könyvtár). Az első
+verzió ezt a print-only útvonalat használta ellenőrzés nélkül, ami `cd`/fájlírásnál azonnal elszállt
+(FileNotFoundError) -- ezt QA FAIL-lel reprodukálta (kártya-komment c4f431e4). A qa-testvér skill
+(2a44d04d) ugyanígy nincs-worktree állapotban van, és ugyanezt a mintát alkalmazza: mivel ez a
+workflow ÚJ tartalmat ír (nem egy már felülvizsgált SHA-t ellenőriz), az elején nyitunk egy
+eldobható worktree-t HEAD-en, és a végén eldobjuk:
+
+```bash
+QA2_MAIN="${CLEANCORE_MAIN:-/mnt/h/LM_Studio_Workdir/CleanCore}"
+export QA2_WT="$(mktemp -d)"   # export: a lenti python is olvassa os.environ-ből
+git -C "$QA2_MAIN" worktree add "$QA2_WT" HEAD
+# ... dolgozz a $QA2_WT alatt (lásd lent) ...
+git -C "$QA2_MAIN" worktree remove "$QA2_WT"   # a végén, eldobható
+```
+
+Ha csak ELLENŐRZÖL és nem írsz (pl. gate-ként nézed, mi landolt), a fő klón a helyes hivatkozás
+## Munkakönyvtár: a SAJÁT worktree-d, NEM a megosztott klón (kártya 973ed6eb)
+
+A CleanCore-t minden fejlesztő ügynök a saját git-worktree-jében szerkeszti; a megosztott klón
+CSAK fetch/landolás-alap, oda senki nem commitol. Ezért ez a skill sehol nem nevez fix útvonalat --
+az elején egyszer feloldod a sajátodat, és onnantól `$CC`-t (shellben) vagy `CC`-t (Pythonban)
+használsz:
+
+```bash
+CC="$({{INSTALL_DIR}}/store/agent-worktree.sh <a te agent-neved> --path)"   # pl. backend, fullstack
+```
+
+```python
+import subprocess
+CC = subprocess.run(['{{INSTALL_DIR}}/store/agent-worktree.sh', '<a te agent-neved>', '--path'],
+                    capture_output=True, text=True).stdout.strip()
+```
+
+Ha csak ELLENŐRZŐL és nem írsz (pl. gate-ként nézed, mi landolt), a fő klón a helyes hivatkozás
+`${CLEANCORE_MAIN:-/mnt/h/LM_Studio_Workdir/CleanCore}` -- de ott ne commitolj, és NE dolgozz más
+ügynök worktree-jében.
+
 ## Procedure
 
 ### 1. Parity check futtatása (mit kell fordítani)
@@ -105,14 +146,37 @@ for lang in langs:
         print(f'  {k}: {v!r}')
 ```
 
+### 1b. Local-LLM draft offload (card 4245417b) -- OPCIONÁLIS, token-spórló
+
+A hiányzó kulcsok **mechanikus fordítás-draftját** add ki a lokális GPU-modellnek, ne égess
+online Claude-tokent rá. A `store/i18n-draft.sh` a SOURCE (EN) fájl VALÓS namespace-eiből
+(összes top-level kulcs, rekurzívan flattelve -- **nincs hardcode-olt namespace-allowlist**,
+így egy új namespace, pl. `vertical.*`, sosem csúszik át vakfoltként) kiszedi a célnyelvből
+HIÁNYZÓ kulcsokat, és a `local-llm.sh --task translate` preseten át mindegyikhez draftot kér:
+
+```bash
+# egy nyelvre, a repo tényleges messages-mappájával (NINCS hardcode-olt projekt-út):
+store/i18n-draft.sh --messages-dir <repo>/packages/i18n/messages --lang de --limit 40
+# -> <messages-dir>/de.draft.json (CSAK a hiányzó kulcsok, nyelvenként), a valós fájlt NEM írja
+```
+
+A `.draft.json` **DRAFT-only**: ember + i18n-gate ellenőrzi (ICU-placeholderek, LEGIT_SAME,
+kontextus), majd a lenti SINGLE-PROCESS mintával mergeled a valós locale-fájlba. A draft NEM
+megy közvetlenül élesbe. A placeholdereket (`{name}`, `{rate}`, `<b>..</b>`) a preset megőrzi,
+de a gate KÖTELEZŐEN visszaellenőrzi (lásd §QA gate: double-brace ICU).
+
 ### 2. Fordítás -- SINGLE PROCESS PATTERN (WSL2/NTFS kötelező!)
 
 **KRITIKUS:** WSL2-n a `/mnt/h/...` (NTFS 9P mount) caching miatt külön Python processzek elavult fájlt olvasnak. Mindig EGY processz tölt be mindent, módosít memóriában, és írja ki az összeset.
 
 ```python
+import json, pathlib, os
+
+BASE = pathlib.Path(os.environ['QA2_WT']) / 'packages/i18n/messages'  # a fenti eldobható worktree
 import json, pathlib
 
 BASE = pathlib.Path('/mnt/h/LM_Studio_Workdir/CleanCore/packages/i18n/messages')
+BASE = pathlib.Path(CC) / 'packages/i18n/messages'   # CC: a SAJÁT worktree-d, lásd fent
 langs = ['de','es','fr','it','pl']
 
 def sn(d, dotpath, value):
@@ -159,10 +223,16 @@ print('Done.')
 
 ```bash
 cd /mnt/h/LM_Studio_Workdir/CleanCore
+cd "$QA2_WT"   # a fenti eldobható worktree, NEM a megosztott fő klón
+cd "$({{INSTALL_DIR}}/store/agent-worktree.sh <a te agent-neved> --path)"
 git add packages/i18n/messages/de.json packages/i18n/messages/es.json \
         packages/i18n/messages/fr.json packages/i18n/messages/it.json \
         packages/i18n/messages/pl.json
 # NE git add -A -- shared checkout, más ágensek is dolgozhatnak!
+# NE git add -A -- a fő klónban más ágensek is dolgozhatnak, a worktree-nek is csak a sajátodat!
+# Explicit fájllista, ne `git add -A`: a saját worktree-d indexe már megvéd más ügynök
+# stage-elt munkájától, de a te SAJÁT szemetedet (build-artefakt, ideiglenes fájl) még mindig
+# beviheti egy -A.
 git commit -m "feat(i18n): <namespace> translations — de/es/fr/it/pl"
 ```
 
@@ -170,6 +240,8 @@ git commit -m "feat(i18n): <namespace> translations — de/es/fr/it/pl"
 
 ```bash
 cd /mnt/h/LM_Studio_Workdir/CleanCore
+cd "$QA2_WT"   # a fenti eldobható worktree, NEM a megosztott fő klón
+cd "$({{INSTALL_DIR}}/store/agent-worktree.sh <a te agent-neved> --path)"
 npx vitest run apps/web/src/i18n-locale-guard.test.ts
 # 14/14 kell
 ```
@@ -220,12 +292,18 @@ Ha BÁRMELY locale-ban `{{...}}` dupla-brace van: **FAIL**. A verdikt-kommentbe 
 
 Amikor új user-facing string kerül a kódba és az összes locale-ba egyszerre kell bevenni:
 
+QA2-nél ugyanaz a worktree-szabály, mint a 2. lépésnél: `$QA2_WT`, nem a megosztott fő klón.
+
 ### Pattern: ordered-insert after anchor key
 
 ```python
+import json, pathlib, os
+
+BASE = pathlib.Path(os.environ['QA2_WT']) / 'packages/i18n/messages'
 import json, pathlib
 
 BASE = pathlib.Path('/mnt/h/LM_Studio_Workdir/CleanCore/packages/i18n/messages')
+BASE = pathlib.Path(CC) / 'packages/i18n/messages'   # CC: a SAJÁT worktree-d, lásd fent
 
 # Fordítások per locale
 NEW_KEYS = {
@@ -283,6 +361,7 @@ Languages that commonly differ from EN:
 
 ## Buktatók
 
+- **`agent-worktree.sh qa2 --path` önmagában NEM elég (valós QA FAIL, kártya c4f431e4)**: a `--path` ág a szkriptben MIELŐTT bármilyen létezés-ellenőrzés/mkdir/worktree-add futna, már kiszámolja és kiírja az elméleti útvonalat, majd kilép -- tehát akkor is sikeresen (exit 0) ad vissza egy utat, ha az a könyvtár SOSE lett létrehozva. A qa2-nek nincs állandó worktree-je (`ls .../CleanCore-worktrees/` szerint nincs `qa2` könyvtár, csak backend/backend2/fron-ted/fullstack/teszter -- akik tényleg dolgoznak a klónon). Az első verzió ezt a print-only utat használta ellenőrzés nélkül: a skillt szó szerint követve `cd`/fájlírásnál azonnal elszállt (FileNotFoundError). Ezért ez a skill a fenti eldobható-worktree-HEAD-en mintát használja, nem a fejlesztő-ügynökök állandó-worktree mintáját.
 - **WSL2/NTFS caching**: soha ne használj több Python processzt ugyanarra a locale fájlra. Egy session = egy processz = load-all/apply-all/write-all.
 - **git add -A tilos**: shared checkout, más agent módosíthatott más fájlokat. Csak a saját i18n fájljaidat addd.
 - **LEGIT_SAME false positive**: FR, IT, ES sok kognátot tartalmaz ami pontosan ugyanúgy íródik mint EN (Date, Description, Module, Finance, Photos stb.). Ezek NEM hibák. Frissítsd a LEGIT_WORDS listát ha új kategória kerül elő.

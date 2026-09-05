@@ -1,6 +1,7 @@
 ---
 name: vitest-react-router-guard
 description: Write Vitest tests for React Router v6 auth/role guard components that render <Navigate>. Covers: infinite-redirect-loop pitfall, vi.hoisted mock pattern for useSession, nested vi.mock hoisting override, JSDOM aria-landmark pitfalls (<header> inside <main>), i18n translation value vs key mismatch. Trigger: "test a route guard", "test PortalAuthGuard / AuthGuard / PrivateRoute", "guard test hangs / infinite loop", "vi.mock useSession", "multiple elements with role banner", "getByRole banner fails".
+description: Vitest tests for React Router v6 components. Covers: guard infinite-redirect-loop, vi.hoisted for data constants + vi.fn, useParams mutable-variable mock, multiple-elements-same-text scoping, JSDOM aria-landmark pitfalls, i18n key vs value mismatch. Trigger: "test a route guard", "vi.mock useParams", "useParams returns empty", "TDZ vi.hoisted", "multiple elements with same text", "Found multiple elements", "guard test hangs".
 ---
 
 # Vitest — React Router Guard Testing
@@ -156,6 +157,88 @@ it('crew_lead does NOT see invite button', async () => {
   // ... render and assert
   expect(screen.queryByRole('button', { name: /invite/i })).toBeNull()
 })
+```
+
+## Mocking useParams — mutable variable pattern
+
+`useParams()` only extracts params when the component is inside a real `<Route path=".../:param">`.
+In a plain `MemoryRouter` (no Route), `useParams()` always returns `{}`.
+Mock the whole `react-router-dom` module with a mutable `let` so tests control the value.
+
+```tsx
+let mockThreadId: string | undefined = undefined
+const mockNavigate = vi.fn()
+
+vi.mock('react-router-dom', async () => {
+  const actual = await vi.importActual<typeof import('react-router-dom')>('react-router-dom')
+  return {
+    ...actual,
+    useParams: () => ({ threadId: mockThreadId }),
+    useNavigate: () => mockNavigate,
+  }
+})
+
+// In a describe block that needs the param set:
+describe('thread detail', () => {
+  beforeEach(() => { mockThreadId = 'conv-test-001' })
+  afterEach(() => { mockThreadId = undefined })
+
+  it('renders detail panel', async () => {
+    await renderWithProviders(<MessagesPage />)
+    await waitFor(() => expect(screen.getByTestId('thread-detail')).toBeInTheDocument())
+  })
+})
+```
+
+**Why `async (importOriginal)` here but not for useSession:** For `react-router-dom`,
+you need `vi.importActual` to preserve the real `Link`, `MemoryRouter`, `Routes`,
+`Route`, `Navigate`, etc. Replacing only the two hooks you need avoids
+"Unknown element `<Link>`" crashes in render.
+
+## vi.hoisted for data constants (not just vi.fn)
+
+`vi.hoisted` isn't only for mock functions — any constant referenced inside a
+`vi.mock()` factory needs it, because vitest hoists factories to the module top
+(before `const` declarations run), causing TDZ errors.
+
+```tsx
+// WRONG — MOCK_MSGS is in TDZ when the factory runs
+const MOCK_MSGS = [{ id: 'msg-1', body: 'Hello' }]
+vi.mock('./chatApi', () => ({
+  listMessages: vi.fn().mockResolvedValue({ items: MOCK_MSGS, nextCursor: null }),
+}))
+
+// CORRECT — vi.hoisted runs before the factory
+const { MOCK_MSGS } = vi.hoisted(() => {
+  const msgs = [{ id: 'msg-1', tenantId: 't1', senderId: 'a', body: 'Hello', createdAtMs: 0 }]
+  return { MOCK_MSGS: msgs }
+})
+vi.mock('./chatApi', () => ({
+  listMessages: vi.fn().mockResolvedValue({ items: MOCK_MSGS, nextCursor: null }),
+}))
+```
+
+Constants defined outside `vi.hoisted` (plain `const` at module top) are SAFE to
+reference in `beforeEach`/`it` bodies — only the factory itself is hoisted.
+
+## Multiple elements with same text — scope to container
+
+When the same text appears in multiple panes (e.g. thread subject in both list row
+and detail header), `screen.getByText()` throws `Found multiple elements`.
+Scope the assertion to a specific container:
+
+```tsx
+// WRONG — finds text in BOTH list pane and detail header
+expect(screen.getByText('Test conversation')).toBeInTheDocument()
+
+// CORRECT — scoped to the detail container
+const detail = await screen.findByTestId('thread-detail')
+expect(detail.querySelector('.mp-detail-subject')?.textContent).toBe('Test conversation')
+
+// Also correct — use within()
+import { within } from '@testing-library/react'
+const detail = screen.getByTestId('thread-detail')
+expect(within(detail).getByText('Test conversation')).toBeInTheDocument()
 ```
 
 ## Pitfalls
