@@ -2,7 +2,7 @@
 //
 // THE DRIFT THIS PINS, and this file has already suffered it twice. REPLAY_SOURCES holds four
 // sources; the sentence the agent actually READS listed three. 'clear' has been a replay source on
-// both fork and upstream since card 1ce3fd90, and CLAUDE.md rule 14 makes /clear the ROUTINE way an
+// both fork and upstream since card 1ce3fd90, and a /clear is a ROUTINE way an
 // agent moves between cards -- so the most common replay was described to the agent as "tomorites,
 // resume vagy osszeomlas", none of which happened to it. A reader who trusts the sentence concludes
 // the block is not about them.

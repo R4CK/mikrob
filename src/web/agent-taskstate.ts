@@ -40,7 +40,7 @@ export const TASKSTATE_TTL_MS = 12 * 60 * 60 * 1000
 //
 // 'clear' joined them on 2026-08-23 (card 1ce3fd90). A /clear is a DELIBERATE
 // context wipe, and the fleet now does it in two places where the work is NOT
-// finished: CLAUDE.md rule 14 (clear between two cards) and the model-fallback
+// finished: an agent's own /clear between two cards, and the model-fallback
 // runner, which from this card respawns a stepped-down agent FRESH instead of
 // with --continue. Both are the same shape as a compact -- the conversation is
 // gone, the task is not -- so withholding the record on 'clear' would have made
@@ -121,7 +121,7 @@ export function buildTaskStateInjection(r: AgentTaskState): string {
     // so it must not claim a compact happened. The /clear wording is upstream's
     // (adopted card 272361eb): 'clear' has been a replay source on both sides
     // since 1ce3fd90, but this sentence still listed three of the four, so an
-    // agent restarted by CLAUDE.md rule 14 read a description of someone else's
+    // agent restarted after a /clear read a description of someone else's
     // situation. taskstate-injection-names-every-replay-source.test.ts now pins
     // the sentence to the set -- the drift this file has already suffered twice.
     'A sessiond ujraindult egy FOLYAMATBAN LEVO feladat kozben (tomorites, resume, /clear vagy osszeomlas utani ujraindulas). Ez NEM uj feladat -- FOLYTASD onnan ahol abbamaradt. NE INDITSD ujra a mar kesz lepeseket, es NE delegald ujra amit mar atadtal.',

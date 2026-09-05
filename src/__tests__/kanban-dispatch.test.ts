@@ -114,24 +114,3 @@ describe('isSelfAdvanceMove', () => {
     expect(isSelfAdvanceMove(null, null)).toBe(false)
   })
 })
-
-// The self-advance half of card 900178fa's own gap (card 5003f37e): isGenuineCardSwitch's "does the
-// assignee hold another in_progress card" signal is always false at self-advance time (the agent's
-// previous card already left in_progress before it picks up the next one). This is the replacement
-// signal for that specific path, driven by the actor's PRIOR in_progress card (db.priorInProgressCardForActor)
-// instead.
-import { isGenuineSelfAdvanceSwitch } from '../kanban-dispatch.js'
-
-describe('isGenuineSelfAdvanceSwitch', () => {
-  it('is FALSE on a first-ever pickup (no prior card at all)', () => {
-    expect(isGenuineSelfAdvanceSwitch(null, 'cardB')).toBe(false)
-  })
-
-  it('is FALSE on a re-dispatch of the SAME card (prior equals the new one)', () => {
-    expect(isGenuineSelfAdvanceSwitch('cardA', 'cardA')).toBe(false)
-  })
-
-  it('is TRUE when the prior in_progress card differs from the new one', () => {
-    expect(isGenuineSelfAdvanceSwitch('cardA', 'cardB')).toBe(true)
-  })
-})

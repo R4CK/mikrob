@@ -30,7 +30,6 @@ import { gpuInfo, isGpuLockHeld } from './web/routes/local-llm.js'
 import { getDb } from './db.js'
 import { startStuckInputWatcher } from './web/stuck-input-watcher.js'
 import { startInboxNudgeWatcher } from './web/inbox-nudge-watcher.js'
-import { startSelfAdvanceClearWatcher } from './web/self-advance-clear-watcher.js'
 import { startScaffoldSectionSweeper } from './web/scaffold-section-sweeper.js'
 import { startMessageBacklogWatcher } from './web/message-backlog-watcher.js'
 import { startStuckToolCallWatcher } from './web/stuck-tool-call-watcher.js'
@@ -448,7 +447,6 @@ export function startWebServer(port = 3420): http.Server {
   const inboxNudgeInterval = webOnly ? undefined : startInboxNudgeWatcher()
   if (!webOnly) logger.info('Inbox nudge watcher started (20s poll, 55s offset)')
 
-  const selfAdvanceClearInterval = webOnly ? undefined : startSelfAdvanceClearWatcher()
   // Card 75a6fbe6: the generated CLAUDE.md sections are written at agent START only, so a
   // long-lived agent keeps whatever it was given that day -- measured at 6 of 15 agents
   // carrying the system-directive verification recipe. webOnly-guarded like every other
@@ -690,7 +688,6 @@ export function startWebServer(port = 3420): http.Server {
     clearInterval(stuckInputInterval)
     clearInterval(stuckToolCallInterval)
     if (inboxNudgeInterval) clearInterval(inboxNudgeInterval)
-    if (selfAdvanceClearInterval) clearInterval(selfAdvanceClearInterval)
     if (scaffoldSweepInterval) clearInterval(scaffoldSweepInterval)
     if (messageBacklogInterval) clearInterval(messageBacklogInterval)
     if (reauthHealerInterval) clearInterval(reauthHealerInterval)
