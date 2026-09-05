@@ -315,6 +315,35 @@ try_append_union() {
   esac
   local union="${prefix}${joined}${theirs_added}"
 
+  # THE JUNCTION IS THE ONLY PLACE THIS FUNCTION CREATES BYTES (Cybered J-1/J-2, comments 20593 and
+  # 20597). Every check above examines a HALF -- the prefix, ours' remainder, theirs' remainder --
+  # and each half can be individually blameless while the SEAM between them forms markdown structure
+  # that neither parent contained. Both findings are that shape, both were reproduced before this
+  # was written, and neither loses a byte: they change what the file MEANS, which is the property
+  # the whole function exists to preserve.
+  #
+  # J-1, SETEXT HEADING. A `---` line directly under a non-blank text line is an H2 in markdown, not
+  # a horizontal rule. So when ours' remainder ends on prose and theirs' begins with a rule, the
+  # join silently promotes ours' last line to a heading. Measured live on the default path; Cybered
+  # measured it on about a fifth of the CleanCore pairs. The separator case this function
+  # deliberately allows is NOT this: there the rule sits in the SHARED PREFIX, with a blank line
+  # around it, and no text line is adopted by it.
+  #
+  # J-2, OPEN CODE FENCE. If everything up to the junction leaves a fence open, theirs' entire
+  # entry lands INSIDE it -- its `## ` header stops being a header and stops being greppable, while
+  # every line-based check above still passes because the lines are all present. Parity is counted
+  # over prefix+ours precisely because a fence opened in the shared prefix is closed by each side
+  # separately; what matters is the state at the point theirs is spliced in.
+  local before_junction="${prefix}${joined}" last_before first_after fences
+  last_before="$(printf '%s' "$before_junction" | grep -v '^[[:space:]]*$' | tail -n1)"
+  first_after="$(printf '%s' "$theirs_added" | head -n1)"
+  case "$first_after" in
+  ---|===|--------*|========*)
+    [ -n "$last_before" ] && return 1 ;;
+  esac
+  fences="$(printf '%s' "$before_junction" | grep -c '^```' || true)"
+  [ $(( fences % 2 )) -eq 0 ] || return 1
+
   # HEADER-COUNT CHECK (backend's own verification idea, card cbb66abf) as the actual arithmetic,
   # not the shorthand "both sides' counts added together": base's own headers are counted in BOTH
   # ours and theirs, so the true identity is
@@ -366,6 +395,24 @@ try_append_union() {
 # inherits the CALLER's positional params -- without this check, sourcing this file from inside
 # `cleancore-land.sh --selftest` would see `--selftest` here too and run (and exit on) THIS file's
 # selftest instead of continuing the caller's own script.
+# NOT A MERGE DRIVER, AND THE REFUSAL IS LOUD (Cybersec, card 3ae71df1). Measured: this file is mode
+# 775 and, invoked with three path arguments, returned 0 -- which is exactly `git merge.<name>.driver`
+# calling convention (%O %A %B). Nothing wires it that way today, but nothing structural prevents it
+# either: one `merge.*.driver` config line plus a .gitattributes entry would be enough, and the
+# failure mode is SILENT DATA LOSS -- a driver that exits 0 tells git the merge succeeded, so git
+# keeps %A (ours) and discards theirs, with no conflict and no message.
+#
+# A comment cannot prevent that; an exit code can. Direct execution with anything other than
+# --selftest now fails loudly. Sourcing is unaffected (BASH_SOURCE differs from $0), which is how
+# every real caller uses this file, and the --selftest path below is untouched.
+if [ "${BASH_SOURCE[0]}" = "${0}" ] && [ "${1:-}" != "--selftest" ]; then
+  echo "$(basename "${BASH_SOURCE[0]}"): this file is a SOURCED helper, not an executable." >&2
+  echo "  It takes no positional arguments. If you reached this from a git merge driver" >&2
+  echo "  configuration, REMOVE IT: exiting 0 there would make git keep ours and silently" >&2
+  echo "  discard theirs. Source it and call its function instead; --selftest runs its tests." >&2
+  exit 2
+fi
+
 if [ "${BASH_SOURCE[0]}" = "${0}" ] && [ "${1:-}" = "--selftest" ]; then
   fail=0
   TMP="$(mktemp -d)"
@@ -756,8 +803,15 @@ X törzs
   # their next measurement, comment 20572). Shared new blank and separator lines are the ONE thing
   # allowed through the structural check, so the width of that hole is worth pinning: anything that
   # merely LOOKS like a rule -- a trailing space, `- - -`, `* * *`, four dashes -- is shared new
-  # substantive content and is refused. Measured: only the exact `---` and `***` forms union.
-  # A widening here would be a widening of the only exception in the whole check.
+  # substantive content and is refused.
+  #
+  # THE ALLOWED SET IS FOUR MEMBERS, NOT TWO (Cybersec, comment 20632). An earlier version of this
+  # comment said "only the exact `---` and `***` forms union" while the case arm three lines up
+  # allows `''|'---'|'***'|'___'` -- a blank line and three rule spellings. The comment was written
+  # from the two forms the fixture happened to exercise, not from the code, which is exactly the
+  # habit that produces a doc-accuracy finding. Every member now has its own case below; every
+  # near-miss has its own too, because widening them as a block turns one case red and reads as
+  # coverage of all four.
   setup_conflict separator-near-miss \
     "## 2026-09-01 -- entry A
 body of A
@@ -777,6 +831,199 @@ body of A
 ## 2026-09-06 -- entry C (right)
 "
   t_refused "a separator with a trailing space is not on the exception list -- refused"
+
+  # ONE CASE PER NEAR-MISS FORM, not one case for all four (Cybered F-T). The first version of this
+  # widened all four spellings at once: that turns a single case red and READS as coverage, while
+  # per-form only one of the four was actually pinned. Mutation granularity has to match the claim.
+  setup_conflict near-miss-spaced-dashes \
+    "## 2026-09-01 -- entry A
+body of A
+" \
+    "## 2026-09-01 -- entry A
+body of A
+
+- - -
+
+## 2026-09-05 -- entry B (left)
+" \
+    "## 2026-09-01 -- entry A
+body of A
+
+- - -
+
+## 2026-09-06 -- entry C (right)
+"
+  t_refused "near miss (spaced dashes) is not on the exception list -- refused"
+
+  setup_conflict near-miss-spaced-stars \
+    "## 2026-09-01 -- entry A
+body of A
+" \
+    "## 2026-09-01 -- entry A
+body of A
+
+* * *
+
+## 2026-09-05 -- entry B (left)
+" \
+    "## 2026-09-01 -- entry A
+body of A
+
+* * *
+
+## 2026-09-06 -- entry C (right)
+"
+  t_refused "near miss (spaced stars) is not on the exception list -- refused"
+
+  setup_conflict near-miss-four-dashes \
+    "## 2026-09-01 -- entry A
+body of A
+" \
+    "## 2026-09-01 -- entry A
+body of A
+
+----
+
+## 2026-09-05 -- entry B (left)
+" \
+    "## 2026-09-01 -- entry A
+body of A
+
+----
+
+## 2026-09-06 -- entry C (right)
+"
+  t_refused "near miss (four dashes) is not on the exception list -- refused"
+
+  # ...AND ONE CASE PER ALLOWED MEMBER, enumerated from the case arm rather than from whichever
+  # spelling a fixture happened to use -- the habit that let the comment above claim two members
+  # when the code allows four. The blank-line member is covered by `identical-midfile-insert` and
+  # `---` by `separator-led-append`; these are the two that had no case at all.
+  setup_conflict allowed-stars-separator \
+    "## 2026-09-01 -- entry A
+body of A
+" \
+    "## 2026-09-01 -- entry A
+body of A
+
+***
+
+## 2026-09-05 -- entry B (left)
+" \
+    "## 2026-09-01 -- entry A
+body of A
+
+***
+
+## 2026-09-06 -- entry C (right)
+"
+  t_resolved "the shared stars separator is on the exception list -- unions" \
+    "## 2026-09-01 -- entry A
+body of A
+
+***
+
+## 2026-09-05 -- entry B (left)
+## 2026-09-06 -- entry C (right)
+"
+
+  setup_conflict allowed-underscores-separator \
+    "## 2026-09-01 -- entry A
+body of A
+" \
+    "## 2026-09-01 -- entry A
+body of A
+
+___
+
+## 2026-09-05 -- entry B (left)
+" \
+    "## 2026-09-01 -- entry A
+body of A
+
+___
+
+## 2026-09-06 -- entry C (right)
+"
+  t_resolved "the shared underscores separator is on the exception list -- unions" \
+    "## 2026-09-01 -- entry A
+body of A
+
+___
+
+## 2026-09-05 -- entry B (left)
+## 2026-09-06 -- entry C (right)
+"
+
+  # J-1: THE SEAM MANUFACTURES A SETEXT HEADING (Cybered, comment 20593). A `---` directly under a
+  # non-blank text line is an H2, not a rule. Ours ends on prose, theirs opens with a rule, and the
+  # join promotes ours' last line to a heading that neither parent had. Reproduced on the default
+  # path before the fix; not a byte is lost, which is why every line-based check stays green.
+  setup_conflict junction-setext-heading \
+    "## 2026-09-01 -- entry A
+body of A
+" \
+    "## 2026-09-01 -- entry A
+body of A
+## 2026-09-05 -- entry B (left)
+utolsó prózasor
+" \
+    "## 2026-09-01 -- entry A
+body of A
+---
+
+## 2026-09-06 -- entry C (right)
+"
+  t_refused "J-1: the junction must not manufacture a setext heading"
+
+  # J-2: THE SEAM SWALLOWS THE OTHER SIDE INTO A CODE FENCE (Cybered, comment 20597). Everything up
+  # to the junction leaves a fence open, so theirs' whole entry lands inside it: its `## ` header
+  # stops being a header and stops being greppable, while every line is still present.
+  setup_conflict junction-open-code-fence \
+    "## 2026-09-01 -- entry A
+body of A
+" \
+    "## 2026-09-01 -- entry A
+body of A
+## 2026-09-05 -- entry B (left)
+\`\`\`bash
+echo hello
+" \
+    "## 2026-09-01 -- entry A
+body of A
+## 2026-09-06 -- entry C (right)
+jobb törzs
+"
+  t_refused "J-2: an unclosed code fence at the junction is refused"
+
+  # ...AND THE CONTROL THAT KEEPS J-2 HONEST: a fence that ours CLOSES is ordinary content and must
+  # still union. Without this, "refuse whenever a backtick appears" would pass the case above.
+  setup_conflict junction-closed-code-fence \
+    "## 2026-09-01 -- entry A
+body of A
+" \
+    "## 2026-09-01 -- entry A
+body of A
+## 2026-09-05 -- entry B (left)
+\`\`\`bash
+echo hello
+\`\`\`
+" \
+    "## 2026-09-01 -- entry A
+body of A
+## 2026-09-06 -- entry C (right)
+jobb törzs
+"
+  t_resolved "a CLOSED code fence still unions -- the J-2 rule is about parity, not backticks" \
+    "## 2026-09-01 -- entry A
+body of A
+## 2026-09-05 -- entry B (left)
+\`\`\`bash
+echo hello
+\`\`\`
+## 2026-09-06 -- entry C (right)
+jobb törzs
+"
 
   # THE PRICE OF THE DATED FORM, PINNED RATHER THAN DESCRIBED. A genuine append whose header is
   # undated is refused and falls to the caller's manual path. Measured before accepting it: every
@@ -929,6 +1176,19 @@ body of A
 ## 2026-01-02 -- bal oldali bejegyzes
 ## 2026-01-03 -- jobb oldali bejegyzes
 "
+
+  # NOT A MERGE DRIVER, PINNED (Cybersec, card 3ae71df1). The guard near the top of this file is a
+  # behaviour change -- direct execution used to exit 0 -- and an untested behaviour change is one
+  # the next reader reverts. Three path arguments is the `merge.<name>.driver` convention (%O %A %B);
+  # a driver that exits 0 tells git the merge succeeded, so git keeps ours and silently drops theirs.
+  n=$((n+1))
+  if bash "${BASH_SOURCE[0]}" /dev/null /dev/null /dev/null >/dev/null 2>&1; then
+    echo "  FAIL invoked with three path args (merge-driver convention) it exited 0 -- git would"
+    echo "       take ours and DISCARD theirs with no conflict and no message"
+    fail=1
+  else
+    echo "  ok   invoked like a merge driver it refuses with a non-zero code"
+  fi
 
   # UTF-8: THE INVARIANT, ASSERTED ON THE HELPER DIRECTLY (card b7e57877).
   #

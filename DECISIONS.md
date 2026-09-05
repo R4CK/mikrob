@@ -8248,3 +8248,85 @@ selftest ezért az EREDETI szöveggel dolgozik, és ezt le is írja magáról.
 bővítés külön hagyása).
 **Hivatkozás:** kártya `82fa48b0`; `store/gate_scan_lib.py`, `store/gate-scan-selftest.py`,
 `store/gate-decl-check.py`, `store/gate-decl-check.selftest.py`.
+## 2026-09-05 -- A junction-szerkezeti leletek zárása és a wrapperek merge-driver-védelme (kártya 3ae71df1)
+
+**J-1 és J-2: a seam olyan markdown-szerkezetet képez, amit egyik szülő sem tartalmazott.**
+Mindkettőt reprodukáltam javítás előtt. J-1: egy `---` sor közvetlenül egy nem-üres szövegsor
+ALATT setext H2, nem vízszintes vonal -- ha a mi maradékunk prózával végződik és a másiké
+elválasztóval kezdődik, az összefűzés az utolsó sorunkat FEJLÉCCÉ lépteti elő. J-2: ha a
+junctionig minden nyitva hagy egy kódkerítést, a másik oldal TELJES bejegyzése a kerítésen BELÜLRE
+kerül -- a `## ` fejléce megszűnik fejléc lenni és megszűnik grep-elhető lenni, miközben minden sor
+megvan, tehát minden sor-alapú ellenőrzés zöld marad.
+
+**Ez a hibaosztály szerkezetileg más, mint az eddigiek.** Minden korábbi ellenőrzés egy FELET néz
+(prefix, a mi maradékunk, az ő maradékuk), és mindhárom fél lehet külön-külön hibátlan, miközben a
+KÖZTÜK lévő varrat képez új szerkezetet. A javítás ezért a junctionre kérdez: a nála lévő utolsó
+nem-üres sor és a másik oldal első sora együtt nem alkothat setext fejlécet, és a junctionig
+számolt kerítés-paritásnak párosnak kell lennie (a prefixet is beleszámolva, mert egy ott nyitott
+kerítést mindkét oldal KÜLÖN zár be).
+
+**Kontroll, ami őszintén tartja a J-2 szabályt:** egy LEZÁRT kódkerítés hétköznapi tartalom, és
+továbbra is unionál. E nélkül a „utasíts el minden backtickre" is átmenne a J-2 eseten.
+
+**A wrapperek merge-driverként meghívhatók voltak (Cybersec).** Mérve: mindkét union-wrapper
+(`decisions-append-union.sh` ÉS `readme-bullet-union.sh`) mode 775, és három path-argumentummal
+hívva 0-t adott -- pontosan a `merge.<név>.driver` konvenció (%O %A %B). Ma NINCS bedrótozva, de
+szerkezetileg semmi nem akadályozza: egy config-sor plusz egy `.gitattributes` bejegyzés elég
+lenne, és a hibamódja CSENDES ADATVESZTÉS -- egy 0-val kilépő driver azt mondja a gitnek, hogy a
+merge sikerült, tehát a git megtartja a mienket és eldobja a másikét, konfliktus és üzenet nélkül.
+Kommenttel ez nem előzhető meg, kilépési kóddal igen: közvetlen futtatás `--selftest`-en kívül
+mostantól hangosan, nem-nulla kóddal bukik. A source-olás érintetlen (minden valódi hívó így
+használja). **Fájlosztályra kötve, nem csak a DECISIONS-oldalra** -- a dc5b714d tanulsága szerint
+egy író-függvényre kötött hatókör kihagyja a testvér-fájlt.
+
+**Doksi-pontosság (Cybersec).** A near-miss eset kommentje azt állította, hogy „csak az egzakt
+`---` és `***` formák unionálnak", miközben a case-ág NÉGY tagot enged (`''`, `---`, `***`, `___`).
+A komment abból a két formából íródott, amit a fixture véletlenül használt, nem a kódból. Javítva,
+és mostantól MINDEN tagnak saját esete van.
+
+**F-T: formánként egy eset, nem blokként (Cybered).** A near-miss teszt eredetileg mind a négy
+alakot EGYSZERRE tágította volna: az egyetlen esetet pirosra váltja és lefedettségnek OLVASÓDIK,
+miközben formánként csak egy volt ténylegesen pinnelve. Mostantól négy külön eset, és a mutáció is
+formánként megy -- az egy-formát-beengedő mutáció pontosan a saját esetét vágja pirosra.
+
+**Egy saját hiba, ami majdnem átment:** a teszt-CÍMKÉKBE tett backtickeket a bash
+parancs-behelyettesítésként futtatta, így két near-miss címke azonosra rövidült -- pont a
+formánkénti megkülönböztetést ölte volna meg. A címkékből kivéve.
+
+## 2026-09-05 -- Az upstream clearInputBuffer retry+verify átvétele (kártya b34fa678)
+
+**Döntés.** A fork `clearInputBuffer`-je átveszi az upstream retry+verify alakját (blob
+`31758af9d36f`): háromszor próbálkozik, minden kör újraolvassa a sor-számot, a törlés UTÁN
+`stuckInputSignature`-rel ELLENŐRZI, hogy a doboz tényleg kiürült, és `void` helyett `boolean`-t ad.
+
+**A mögötte lévő incidens (upstream dokumentálja):** a törlés eddig fire-and-forget volt. Egy nem
+verifikált törlés a parkolt tick egy TÖREDÉKÉT hagyta a bufferben, ami onnantól semelyik
+delivery-wrapperrel nem egyezett -- így minden későbbi restart-döntés `machineOrigin=false`-t
+olvasott és halasztott. A session 25,4 órára beragadt. A restart hard cap csak a kárt korlátozza,
+a gyökér az ellenőrizetlen törlés.
+
+**Öt hívási hely van, nem kettő -- és ez szándékos.** A kártya „a channel-monitor.ts két hívási
+helye" megfogalmazása pontos abban, hogy mit kell IGAZÍTANI, de a fork valójában ötször hívja:
+`channel-monitor.ts` 378/393 (re-inject), 413/417 (nincs re-inject), és `agent-process.ts` 2119
+(pre-flight a küldés előtt). Upstream is csak a két re-inject NÉLKÜLI helyet igazítja, és a saját
+belső hívását bájtra változatlanul hagyja -- a re-injectes helyeken a boolean nem ad hozzá semmit,
+mert közvetlenül utána `sendPromptToSession` fut, ami felülírja a doboz tartalmát és saját
+kézbesítés-ellenőrzést visz. Ezt a hűséget megtartottam; a fork ötödik helye sem változott.
+
+**Amit NEM vettem át:** az upstream harmadik re-inject ága (`reinject-recorded`, a STUCKINPUT827
+injected-prompt-registry munkája) a forkban nem létezik, és nem ennek a kártyának a hatóköre.
+
+**Tesztelés, és egy saját vákuum eset.** Öt futásidejű eset a mockolt `execFileSync` fölött (a
+suite meglévő mintája), plusz két forrás-alapú eset a két hívási hely bedrótozására -- utóbbi
+kimondja magáról, hogy a WIRING-et rögzíti, nem a futásidejű viselkedést, mert
+`performStuckInputAction`-höz nincs harness ebben a suite-ban, és egyet építeni egy NORMAL kártyáért
+új infrastruktúra lenne, nem lefedettség.
+Az „olvashatatlan pane" esetem ELŐSZÖR VÁKUUM volt: üres sztringgel etettem, ami a
+`stuckInputSignature(...) == null` ágon megy át, nem az `after == null`-on -- a `capturePane`
+kizárólag akkor ad null-t, ha a `captureTmux` DOB. A mutáció, ami a null-ágat kiveszi, zölden
+hagyta. A fixture most a verify-hívásnál dobat, és a mutáció pirosra váltja.
+
+**Mutációs mérés:** nincs retry (MAX_ATTEMPTS=1) -> 2 piros; verify eltávolítva -> 3 piros; a dobás
+retry-ol ahelyett hogy gyorsan bukna -> 1 piros; az olvashatatlan pane még-beragadtnak számít ->
+1 piros; az egyik hívási hely visszaállítva csupasz `await`-re -> 1 piros (csak a sajátja).
+Mindegyik átmenő kontroll mellett.

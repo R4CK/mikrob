@@ -27,3 +27,22 @@ try_readme_bullet_union() {
   rm -rf "$tmp"
   return "$rc"
 }
+
+# NOT A MERGE DRIVER, AND THE REFUSAL IS LOUD (Cybersec, card 3ae71df1). Measured: this file is mode
+# 775 and, invoked with three path arguments, returned 0 -- which is exactly `git merge.<name>.driver`
+# calling convention (%O %A %B). Nothing wires it that way today, but nothing structural prevents it
+# either: one `merge.*.driver` config line plus a .gitattributes entry would be enough, and the
+# failure mode is SILENT DATA LOSS -- a driver that exits 0 tells git the merge succeeded, so git
+# keeps %A (ours) and discards theirs, with no conflict and no message.
+#
+# A comment cannot prevent that; an exit code can. Direct execution with anything other than
+# --selftest now fails loudly. Sourcing is unaffected (BASH_SOURCE differs from $0), which is how
+# every real caller uses this file, and this file has no --selftest path of its own.
+if [ "${BASH_SOURCE[0]}" = "${0}" ] && [ "${1:-}" != "--selftest" ]; then
+  echo "$(basename "${BASH_SOURCE[0]}"): this file is a SOURCED helper, not an executable." >&2
+  echo "  It takes no positional arguments. If you reached this from a git merge driver" >&2
+  echo "  configuration, REMOVE IT: exiting 0 there would make git keep ours and silently" >&2
+  echo "  discard theirs. Source it and call its function instead." >&2
+  exit 2
+fi
+
