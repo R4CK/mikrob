@@ -55,6 +55,44 @@ describe('npm-lockfile-sync-check.sh selftest', () => {
     expect(out).toMatch(/selftest: [1-9]\d* case\(s\), PASS/)
   })
 
+  // --- card d8c3d10e: the dep-diff draft, and the one property that matters about it ----------
+
+  it('still runs at least 15 cases -- deleting cases is a failure, not a cleanup', () => {
+    // The wrapper above accepts any positive count, so the fail-soft cases could be removed without
+    // anything going red. Same discipline the landers' selftests already use.
+    const out = execFileSync('bash', [NPM_SCRIPT, '--selftest'], { encoding: 'utf-8' })
+    const m = out.match(/selftest: (\d+) case\(s\), PASS/)
+    expect(m, out).not.toBeNull()
+    expect(Number(m![1])).toBeGreaterThanOrEqual(15)
+  })
+
+  it('the dep-diff draft CANNOT change the verdict', () => {
+    // The load-bearing property. This script is a landing gate, so an advisory summary that could
+    // fail it would be worse than no summary -- the same reason the check refuses to let a harness
+    // fault become a verdict. Pinned at source level because the ordering is the guarantee: the
+    // comparison decides, the draft is appended afterwards, and the exit uses the comparison's code.
+    const src = execFileSync('cat', [NPM_SCRIPT], { encoding: 'utf-8' })
+    const decide = src.indexOf('SYNC_RC=$?')
+    const draft = src.indexOf('dep_diff_draft "$SYNC_OUT"')
+    const exit = src.indexOf('exit "$SYNC_RC"')
+    expect(decide, 'the comparison result is not captured').toBeGreaterThan(-1)
+    expect(draft, 'the draft is not wired at all').toBeGreaterThan(draft === -1 ? 0 : -1)
+    expect(draft).toBeGreaterThan(decide)
+    expect(exit).toBeGreaterThan(draft)
+    // And it only ever runs on the FAILING path, so a healthy landing pays nothing.
+    expect(src).toContain('[ "$SYNC_RC" -eq 1 ] && dep_diff_draft')
+  })
+
+  it('the draft is opt-outable, and its helper returns 0 on every path', () => {
+    const src = execFileSync('cat', [NPM_SCRIPT], { encoding: 'utf-8' })
+    expect(src).toContain('NPM_LOCKFILE_SYNC_NO_LLM')
+    const fn = src.slice(src.indexOf('dep_diff_draft() {'))
+    const body = fn.slice(0, fn.indexOf('\n}'))
+    // Every early exit is a `return 0`; a bare `return 1` anywhere would make a router problem
+    // capable of failing a landing.
+    expect(body).not.toMatch(/return [1-9]/)
+  })
+
   it('keeps the same three-way verdict distinction as its pnpm sibling', () => {
     const src = execFileSync('cat', [NPM_SCRIPT], { encoding: 'utf-8' })
     expect(src).toContain('OUT OF SYNC')

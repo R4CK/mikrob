@@ -6,7 +6,7 @@ import { execFileAsync } from '../exec-async.js'
 import { logger } from '../../logger.js'
 import { isModelProfileId, MODEL_PROFILE_IDS } from '../../model-profiles.js'
 import { MAIN_AGENT_ID, currentBotName, PROJECT_ROOT } from '../../config.js'
-import { createAgentMessage, listPendingChannelRequests, updateChannelRequestStatus, getDb, claimPendingForAgent, markMessageFailed, getKanbanCardStateByIdPrefix } from '../../db.js'
+import { createAgentMessage, listPendingChannelRequests, updateChannelRequestStatus, getDb, claimPendingForAgent, markMessageFailed, getKanbanCardStateByIdPrefix, countNewerMessagesFromSameSender } from '../../db.js'
 import { classifyAgentMessage, wrapAgentMessageForDelivery } from '../agent-message-wrap.js'
 import { formatDeliveryStalenessNote } from '../kanban-state-stamp.js'
 import { ensureFederationClaudeMdSection } from '../federation/onboarding.js'
@@ -1931,7 +1931,14 @@ export async function tryHandleAgents(ctx: RouteContext, webDir: string): Promis
         }
         continue
       }
-      const { prefix, wrapped } = wrapAgentMessageForDelivery(cls.category, cls.safeFrom, msg.from_agent, msg.content, msg.id, msg.origin_note)
+      // Same freshness/supersession signal as the router path (card f27c999b). Wired in BOTH for
+      // the reason the comment below already gives about the board re-check: a control that lands
+      // in one of two near-identical delivery paths reads as shipped while half the traffic misses it.
+      const freshness = {
+        ageMs: (nowSec - msg.created_at) * 1000,
+        newerFromSameSender: countNewerMessagesFromSameSender(msg.from_agent, msg.to_agent, msg.id),
+      }
+      const { prefix, wrapped } = wrapAgentMessageForDelivery(cls.category, cls.safeFrom, msg.from_agent, msg.content, msg.id, msg.origin_note, freshness)
       // Card 9566a197: same delivery-time board re-check the router does. Wired in BOTH paths on
       // purpose -- a control that lands in only one of two near-identical delivery paths is the
       // classic way a fix reads as shipped while half the traffic never sees it. The main agent's

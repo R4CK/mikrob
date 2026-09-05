@@ -10,18 +10,37 @@
 // BEFORE any template read or ollama call, so we can run the real script and prove the rejection with
 // no local model up. We assert both that it exits non-zero AND that it failed on the allowlist
 // ("invalid --task"), not on the later existence probe ("unknown --task") -- that ordering is the fix.
-import { describe, it, expect } from 'vitest'
+import { describe, it, expect, beforeAll } from 'vitest'
 import { execFileSync } from 'node:child_process'
+import { mkdtempSync, writeFileSync } from 'node:fs'
+import { tmpdir } from 'node:os'
 import { join, dirname } from 'node:path'
 import { fileURLToPath } from 'node:url'
 
 const SCRIPT = join(dirname(fileURLToPath(import.meta.url)), '..', '..', 'store', 'local-llm.sh')
 
+// A CONFIGURED state dir of our own (card 4c5c540c). read_model() runs BEFORE the --task
+// allowlist and dies with "no model configured" when the model file is missing, so these cases
+// only ever reached the allowlist because the script was reading the LIVE install's state --
+// the same coupling that had the suite appending test rows to the production usage ledger.
+// Borrowing a precondition from the running install makes a test pass for a reason it does not
+// state; this sets it explicitly. The ordering under test (charset check before the `[[ -f ]]`
+// existence probe) is unchanged and still what the assertions below pin.
+let stateDir: string
+
+beforeAll(() => {
+  stateDir = mkdtempSync(join(tmpdir(), 'local-llm-task-allowlist-'))
+  writeFileSync(join(stateDir, 'local-llm-model'), 'qwen2.5-coder:7b\n')
+})
+
 /** Run local-llm.sh and return { status, stderr }. execFileSync throws on non-zero exit, so a
  *  rejection lands in the catch with the child's status + captured stderr. */
 function run(task: string): { status: number; stderr: string } {
   try {
-    execFileSync('bash', [SCRIPT, '--task', task, 'a prompt'], { encoding: 'utf-8', stdio: 'pipe' })
+    execFileSync('bash', [SCRIPT, '--task', task, 'a prompt'], {
+      encoding: 'utf-8', stdio: 'pipe',
+      env: { ...process.env, LOCAL_LLM_STATE_DIR: stateDir },
+    })
     return { status: 0, stderr: '' }
   } catch (e) {
     const err = e as { status?: number; stderr?: string }

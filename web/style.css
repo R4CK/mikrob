@@ -1081,6 +1081,35 @@ main {
 .ovw-llmdist-empty,
 .ovw-llmdist-error { font-size: 13px; color: var(--text-muted); margin: 0; padding: 8px 0; }
 .ovw-llmdist-error { color: var(--danger); }
+/* Swimlane time-window slider (card 4c5c540c). 44px on the thumb and the row so the control
+   is usable with a thumb on a phone, per the responsive rule. */
+.ovw-llmdist-range {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  margin: 4px 0 10px;
+  flex-wrap: wrap;
+}
+.ovw-llmdist-range label { font-size: 12px; color: var(--text-muted); }
+.ovw-llmdist-range input[type="range"] {
+  flex: 1 1 160px;
+  min-width: 120px;
+  height: 44px;
+  accent-color: var(--accent, #4f8cff);
+  background: transparent;
+  cursor: pointer;
+}
+.ovw-llmdist-range output {
+  font-variant-numeric: tabular-nums;
+  font-size: 12px;
+  color: var(--text);
+  min-width: 5.5em;
+  text-align: right;
+}
+@media (max-width: 480px) {
+  .ovw-llmdist-range { gap: 6px; }
+  .ovw-llmdist-range output { min-width: 4.5em; }
+}
 .ovw-llmdist-kpis {
   display: grid;
   grid-template-columns: repeat(5, 1fr);
@@ -1109,10 +1138,60 @@ main {
   color: var(--text);
   font-variant-numeric: tabular-nums;
 }
+/* Ten-minute viewport over the loaded range (card b52c3c42). The canvas is `zoom` viewports
+   wide, so the visible slice is always ten minutes and the operator drags back through time.
+   Only the TRACK area is multiplied -- the 106px label gutter is added back untouched, otherwise
+   the visible slice would be short by the label width and "ten minutes" would be a lie. */
+.ovw-llmdist-scroll {
+  overflow-x: auto;
+  overflow-y: hidden;
+  padding-bottom: 4px;
+  /* Peti asked for a visible handle at the bottom, so the scrollbar is deliberately NOT the thin
+     overlay kind: it is the control. */
+  scrollbar-width: auto;
+  scrollbar-color: var(--accent, #4f8cff) var(--bg);
+}
+.ovw-llmdist-scroll::-webkit-scrollbar { height: 12px; }
+.ovw-llmdist-scroll::-webkit-scrollbar-track { background: var(--bg); border-radius: 6px; }
+.ovw-llmdist-scroll::-webkit-scrollbar-thumb {
+  background: var(--accent, #4f8cff);
+  border-radius: 6px;
+  min-width: 40px;
+}
+.ovw-llmdist-scroll:focus-visible { outline: 2px solid var(--accent, #4f8cff); outline-offset: 2px; }
+.ovw-llmdist-canvas { width: calc(106px + (100% - 106px) * var(--llmdist-zoom, 1)); }
+.ovw-llmdist-scroll-hint { margin: 4px 0 10px; font-size: 11px; color: var(--text-muted); }
 .ovw-llmdist-lanes { display: flex; flex-direction: column; gap: 10px; }
-.ovw-llmdist-lane { display: flex; align-items: center; gap: 10px; }
+.ovw-llmdist-lane { display: flex; align-items: flex-start; gap: 10px; }
+/* Sub-rows produced by the interval packer: one track per row, stacked. A lane with a
+   single row is visually identical to the pre-packing layout. */
+.ovw-llmdist-lane-rows { flex: 1; display: flex; flex-direction: column; gap: 3px; min-width: 0; }
+/* Compact density (card 4c5c540c). Real data needs 20-36 sub-rows because a call's logged
+   duration includes its GPU-lock wait, so queued calls really do overlap in wall-clock time.
+   At the full 30px row that is a ~1200px lane for one model; thin rows keep the "no overlap"
+   guarantee AND a chart that fits, with a scroll as the backstop for an extreme burst. */
+.ovw-llmdist-lane-rows--compact { gap: 1px; max-height: 260px; overflow-y: auto; }
+.ovw-llmdist-lane-rows--compact .ovw-llmdist-lane-track { height: 14px; border-radius: 2px; }
+.ovw-llmdist-lane-rows--compact .ovw-llmdist-block {
+  top: 0;
+  bottom: 0;
+  padding: 0;
+  border-radius: 2px;
+  /* The task name cannot fit in 9px; colour + the tooltip carry it. The text stays in the DOM
+     (clipped, not removed) so the button keeps its accessible name. */
+  font-size: 0;
+  line-height: 0;
+}
 .ovw-llmdist-lane-label {
   width: 96px;
+  line-height: 38px;
+  /* Stays put while the canvas scrolls under it; without this the model name slides
+     off-screen and every lane becomes anonymous after the first drag. */
+  position: sticky;
+  left: 0;
+  z-index: 2;
+  background: var(--card, var(--bg));
+
   flex: 0 0 auto;
   font-size: 12px;
   color: var(--text-muted);
@@ -1122,22 +1201,74 @@ main {
 }
 .ovw-llmdist-lane-track {
   position: relative;
-  flex: 1;
-  height: 30px;
+  /* NOT `flex: 1`. The track used to be a direct child of .ovw-llmdist-lane, a ROW flex
+     container, where flex:1 sized it along the main axis = WIDTH. It now lives inside
+     .ovw-llmdist-lane-rows, a COLUMN container, where the main axis is HEIGHT -- so flex:1's
+     implied `flex-basis: 0%` overrode `height: 30px`, collapsed every track to zero height, and
+     the absolutely-positioned blocks (top:3px/bottom:3px) vanished. Blocks disappeared from the
+     live dashboard; only the KPI tiles and legend were left. The track must keep its own height
+     and stretch on the CROSS axis instead. */
+  flex: 0 0 auto;
+  width: 100%;
+  /* Taller than the original 30px: with the zoom-scaled floor the packer needs 3-4 sub-rows
+     instead of 13, so the height is affordable and the task label finally fits. */
+  height: 38px;
   background: var(--bg);
   border-radius: var(--radius-sm);
   overflow: hidden;
+}
+/* Idle lane (card 21950f77): a model that is installed/configured but got no call in the
+   window. It carries no geometry, so it is drawn as one short dashed row rather than a
+   full-height track -- the roster then costs the viewport ~20px per model instead of 38px plus
+   a gap, which is what keeps the "thicker blocks" of the previous card intact. */
+.ovw-llmdist-lane--idle .ovw-llmdist-lane-label { line-height: 22px; }
+.ovw-llmdist-lane-track--idle {
+  height: 22px;
+  background: transparent;
+  border: 1px dashed var(--border);
+  display: flex;
+  align-items: center;
+  /* The note must stay legible; the track's own clip would cut a sticky child. */
+  overflow: visible;
+}
+.ovw-llmdist-lane-idle-note {
+  /* Sticky for the same reason the model label is: the canvas is up to 24 viewports wide and
+     opens scrolled to NOW, so a note pinned to the canvas origin would sit off-screen and the
+     lane would read as an unexplained empty box. 106px = label width + the lane's 10px gap,
+     the same allowance .ovw-llmdist-canvas reserves. */
+  position: sticky;
+  left: 106px;
+  padding: 0 8px;
+  font-size: 11px;
+  line-height: 20px;
+  color: var(--text-muted);
+  white-space: nowrap;
+}
+/* A model with traffic in the window that ollama no longer lists. Stated only when the roster
+   lookup actually succeeded (rosterAvailable), never inferred from a failed lookup. */
+.ovw-llmdist-lane-label--removed {
+  color: var(--danger);
+  text-decoration: line-through;
 }
 .ovw-llmdist-block {
   position: absolute;
   top: 3px;
   bottom: 3px;
-  min-width: 10px;
   border-radius: 4px;
   border: none;
-  padding: 0 6px;
-  font-size: 10px;
-  line-height: 24px;
+  /* NO horizontal padding. Padding is a MINIMUM WIDTH in disguise: `padding: 0 8px` floors
+     every block at 16px no matter what the percentage says, which is the same class of bug
+     as the `min-width: 10px` removed earlier -- measured, it put 21 on-screen overlaps back
+     into a layout the packer believed was clean. The label is inset with text-indent, which
+     does not affect the box width, and clipped by the existing overflow:hidden. */
+  padding: 0;
+  /* 4px, not 8: measured, an 8px indent ate HALF of a 16px minimum-width block and left 8px
+     for glyphs. Note what this cannot fix -- a five-second call inside a ten-minute viewport
+     is ~1/120 of the width, so short blocks show no text at any indent. Colour plus the
+     legend carry the task type there, and the tooltip carries the detail. */
+  text-indent: 4px;
+  font-size: 12px;
+  line-height: 32px;
   color: #0b0b0f;
   font-weight: 600;
   white-space: nowrap;
@@ -1154,11 +1285,12 @@ main {
 }
 .ovw-llmdist-block[data-status="err"] { outline: 2px solid var(--danger); }
 .ovw-llmdist-axis {
-  display: flex;
-  justify-content: space-between;
-  margin: 6px 0 14px;
+  margin: 6px 0 4px;
   padding-left: 106px;
 }
+/* Ticks sit at the instant they name, so they stay aligned with the blocks above at any zoom. */
+.ovw-llmdist-axis-track { position: relative; height: 14px; }
+.ovw-llmdist-axis-track span { position: absolute; transform: translateX(-50%); white-space: nowrap; }
 .ovw-llmdist-axis span { font-size: 10px; color: var(--text-muted); font-variant-numeric: tabular-nums; }
 .ovw-llmdist-legend {
   display: flex;
@@ -1191,6 +1323,7 @@ main {
   .ovw-llmdist-kpis { grid-template-columns: repeat(2, 1fr); }
   .ovw-llmdist-lane-label { width: 64px; }
   .ovw-llmdist-axis { padding-left: 74px; }
+  .ovw-llmdist-lane-idle-note { left: 74px; }
 }
 
 .overview-team-graph {
@@ -9723,6 +9856,27 @@ body {
 .auth-device-name { color: var(--text); font-weight: 600; }
 .auth-device-meta { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .auth-device-row .auth-device-revoke { margin-left: auto; flex-shrink: 0; }
+
+/* Outgoing-filter name rules (card 98dbbcc9). A stored rule is an escaped regex source, so
+   it wraps rather than being clipped: a truncated pattern is one the operator cannot tell
+   apart from a similar one, and the Remove button is destructive. */
+.name-pattern-row { align-items: flex-start; gap: 8px; flex-wrap: wrap; }
+.name-pattern-src {
+  color: var(--text);
+  font-family: var(--mono, monospace);
+  font-size: 12px;
+  word-break: break-all;
+  overflow-wrap: anywhere;
+  flex: 1 1 12rem;
+  min-width: 0;
+}
+/* 44px so the destructive control stays comfortably tappable on a phone (rule 13). */
+.name-pattern-row .name-pattern-del { margin-left: auto; flex-shrink: 0; min-height: 44px; }
+.auth-name-patterns select { min-height: 44px; }
+.auth-name-patterns #namePatternAddBtn { min-height: 44px; }
+@media (max-width: 480px) {
+  .name-pattern-row .name-pattern-del { margin-left: 0; width: 100%; }
+}
 .auth-device-mint { margin-top: 10px; }
 .auth-device-minted-row { flex-direction: row; max-width: none; }
 .auth-device-minted-row input { flex: 1; font-family: var(--mono, monospace); font-size: 12px; }

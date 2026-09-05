@@ -84,16 +84,93 @@ _ALLOW_PREFIX_RX = re.compile(r"(?:^|[\n;&|(])\s*" + ALLOW_ENV + r"=\S+\s+\S")
 _UNRESOLVED_RX = re.compile(r"[$`*?\[]")
 
 
+# A heredoc BODY is data being written, not commands to judge -- same reading, and the same regex,
+# as cd-chain-guard.py's. Only the BODY is removed: the redirect target stays in the text, so a
+# write INTO a node_modules is still caught. Without this, prose in a document that merely quotes an
+# example command is parsed as that command -- this card's false positive, in its heredoc spelling.
+_HEREDOC_RX = re.compile(r"""<<-?\s*(['"]?)([A-Za-z_][A-Za-z0-9_]*)\1.*?^\s*\2\s*$""", re.S | re.M)
+
+
+def strip_heredoc_bodies(command):
+    return _HEREDOC_RX.sub(lambda m: "<<" + m.group(2), command)
+
+
 def statements(command):
-    for part in _SPLIT_RX.split(command):
-        part = part.strip()
-        if part:
-            yield part
+    """Split into simple commands, HONOURING QUOTES (card c393bf09).
+
+    `_SPLIT_RX.split()` is blind to quoting, and that produced a false positive I reproduced on
+    MYSELF twice while working this card -- once posting a kanban comment, once running the very
+    test harness for the fix. Both times the command performed no file operation at all; the text
+    merely QUOTED an example:
+
+        python3 -c "post({'content':'... az utvonalban (mkdir -p \"$tmp/node_modules/evil\", ...)'})"
+
+    The `(` inside that quoted prose became a statement boundary, so `mkdir -p "$tmp/node_..."` --
+    a fragment of a sentence -- was read as a command. is_mutating saw `mkdir`, path_tokens handed
+    back the prose, and the unresolved `$tmp` tripped the fail-closed branch. The reported symptom
+    ("the Hungarian prose contained node_modules") is this, and it is why backend2 routed around
+    the guard with the Edit tool -- which is worse than the false positive, as their report says.
+
+    Quote-awareness is the whole fix, and it is deliberately NOT a blanket strip of quoted text:
+    the real cases depend on quoted PATHS. `cd "$WT/apps/web/node_modules" && rm @cleancore/i18n`
+    still splits on its `&&` (outside quotes) and still blocks; `mkdir -p "$tmp/node_modules/evil"`
+    is still one statement led by a mutating verb and still blocks. Only separators INSIDE a quoted
+    span stop being separators -- which is what bash does, and the same fix cd-chain-guard's
+    segmenter needed for the same reason.
+    """
+    command = strip_heredoc_bodies(command)
+    buf = []
+    i, n = 0, len(command)
+    dq = sq = False
+    while i < n:
+        c = command[i]
+        if c == "\\" and i + 1 < n and not sq:
+            buf.append(command[i:i + 2])
+            i += 2
+            continue
+        if c == "'" and not dq:
+            sq = not sq
+        elif c == '"' and not sq:
+            dq = not dq
+        if not sq and not dq:
+            m = _SPLIT_RX.match(command, i)
+            if m:
+                part = "".join(buf).strip()
+                if part:
+                    yield part
+                buf = []
+                i = m.end()
+                continue
+        buf.append(c)
+        i += 1
+    part = "".join(buf).strip()
+    if part:
+        yield part
+
+
+# Quoted spans blanked, quotes kept so word positions do not shift. Used for the redirect test
+# only: a `>` inside a string is text, not a redirection.
+_QUOTED_RX = re.compile(r"'[^']*'|\"(?:\\.|[^\"\\])*\"", re.S)
+
+
+def _blank_quoted(stmt):
+    return _QUOTED_RX.sub(lambda m: m.group(0)[0] * 2, stmt)
 
 
 def is_mutating(stmt):
-    """First real word is a writing verb, or the statement redirects into a file."""
-    if re.search(r"(?<![0-9<>])>{1,2}(?!&)", stmt):
+    """First real word is a writing verb, or the statement redirects into a file.
+
+    The redirect test runs on the statement with QUOTED spans blanked. Without that, an ordinary
+    progress line -- `echo "node_modules: symlink -> $MAIN/node_modules (SHARED ...)"` from
+    agent-worktree-marveen.sh, a real line in this repo -- counts as a redirect, because the `>` of
+    the ASCII arrow `->` is not excluded by the lookbehind. It then reads as a mutating statement
+    and the path in the message becomes a write target.
+
+    This was always true; it only became reachable when the splitter stopped cutting such a line
+    into fragments at the `(` and `;` inside its quotes (card c393bf09). Measured over the fleet's
+    own shell scripts: with the splitter fixed and this not, two real lines went pass -> block.
+    """
+    if re.search(r"(?<![0-9<>])>{1,2}(?!&)", _blank_quoted(stmt)):
         return True
     try:
         words = shlex.split(stmt, comments=True)

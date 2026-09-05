@@ -6,6 +6,8 @@ import { createInterface } from 'node:readline'
 import { getDb } from '../db.js'
 import { logger } from '../logger.js'
 import { MAIN_AGENT_ID, PROJECT_ROOT } from '../config.js'
+import { listAgentNames } from './agent-config.js'
+import { resolveAgentConfigDirForRead } from './claude-plans.js'
 import { estimateCostUsd, stripDateSuffix } from '../costops/model-pricing.js'
 
 const PROJECTS_DIR = join(homedir(), '.claude', 'projects')
@@ -23,7 +25,11 @@ interface AgentTranscriptSource {
   projectDir: string
 }
 
-function discoverAgentSources(): AgentTranscriptSource[] {
+// `projectRootOverride` exists for the tests, matching the convention
+// resolveAgentConfigDirForRead() already uses: the isolated dir is found by
+// probing the filesystem, so the probe root has to be redirectable to a
+// fixture. Production callers pass nothing.
+export function discoverAgentSources(projectRootOverride?: string): AgentTranscriptSource[] {
   const sources: AgentTranscriptSource[] = []
   if (!existsSync(PROJECTS_DIR)) return sources
   const mainDirName = encodeProjectPath(PROJECT_ROOT)
@@ -42,6 +48,43 @@ function discoverAgentSources(): AgentTranscriptSource[] {
       sources.push({ agent: agentMatch[1], projectDir: full })
     } else if (entry === mainDirName) {
       sources.push({ agent: MAIN_AGENT_ID, projectDir: full })
+    }
+  }
+
+  // A sub-agent whose config dir was provisioned in ISOLATION writes its transcripts under
+  // agents/<name>/.claude-config/projects/, not into ~/.claude. The loop above only ever sees the
+  // shared root, so from the moment an agent is migrated its token rows stop -- SILENTLY, because
+  // the old directory still exists and still parses. It reads as an idle agent. Upstream measured
+  // three days of fleet consumption missing from the monitor a model-assignment decision was about
+  // to be based on.
+  //
+  // MEASURED HERE BEFORE ADOPTING, and it does NOT currently bite on this install: provisioning
+  // symlinks agents/<name>/.claude-config/projects straight back to ~/.claude/projects, so both
+  // roots are the same physical tree and the shared-root loop already sees everything. What this
+  // adds is independence from that provisioning detail -- an agent given a real isolated tree stops
+  // being invisible. Duplicates are impossible either way: the UNIQUE INDEX on
+  // (agent, session_id, timestamp, input, output) plus INSERT OR IGNORE absorbs the overlap, which
+  // is exactly the case a symlinked layout produces.
+  //
+  // Both roots are kept for a migrated agent, not swapped: the pre-migration history is real and
+  // lives only in the shared root.
+  for (const name of listAgentNames()) {
+    let configDir: string | null = null
+    try { configDir = resolveAgentConfigDirForRead(name, projectRootOverride) } catch { continue }
+    if (!configDir) continue
+    const isolatedProjects = join(configDir, 'projects')
+    if (!existsSync(isolatedProjects)) continue
+    let entries: string[]
+    try { entries = readdirSync(isolatedProjects) } catch { continue }
+    for (const entry of entries) {
+      const full = join(isolatedProjects, entry)
+      let stat
+      try { stat = statSync(full) } catch { continue }
+      if (!stat.isDirectory()) continue
+      // Attribution comes from WHOSE config dir this is, not from the encoded project name: an
+      // agent's isolated dir holds only that agent's work.
+      if (sources.some((s) => s.agent === name && s.projectDir === full)) continue
+      sources.push({ agent: name, projectDir: full })
     }
   }
   return sources
@@ -511,11 +554,25 @@ export function correlateWithKanban(): void {
   `).all() as { agent: string; minTs: number; maxTs: number }[]
 
   for (const row of uncorrelated) {
+    // PARENT CARDS ARE NOT WORK ITEMS HERE (adopted from upstream with card 4b03a88d, and ONLY with
+    // it). This correlation reads updated_at as "the agent was working on this card at that moment"
+    // and uses consecutive timestamps as window boundaries. Now that a subcard write also stamps its
+    // ancestors (db.ts, touchAncestorChain), a parent carries the SAME timestamp as the child that
+    // caused it -- and on a tie, which title won the token rows came down to row order rather than to
+    // what was worked on. Parents are skipped so the leaf keeps the attribution.
+    //
+    // THIS FILTER WAS DELIBERATELY REJECTED ON CARD f27c999b (B-wave 4/6) and adopting it now is not
+    // a reversal: its premise is ancestor stamping, which the fork did not have then. Without
+    // bubbling a parent's updated_at means the parent itself was edited, so the filter would have
+    // DISCARDED correct attribution instead of fixing a wrong one. The two changes are one change and
+    // must never be split -- the conflict-map entry for this file recorded that condition and named
+    // this card as the trigger.
     const cards = db.prepare(`
       SELECT id, title, project, assignee, updated_at
       FROM kanban_cards
       WHERE (assignee = ? OR assignee LIKE '%' || ? || '%')
         AND updated_at BETWEEN ? AND ?
+        AND NOT EXISTS (SELECT 1 FROM kanban_cards child WHERE child.parent_id = kanban_cards.id)
       ORDER BY updated_at ASC
     `).all(row.agent, row.agent, row.minTs, row.maxTs) as any[]
 

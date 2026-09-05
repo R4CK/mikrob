@@ -1,4 +1,5 @@
 import { randomUUID } from 'node:crypto'
+import { appendCardStateStampForDispatch } from '../kanban-state-stamp.js'
 import { join } from 'node:path'
 import {
   listKanbanCards, createKanbanCard, updateKanbanCard,
@@ -7,7 +8,7 @@ import {
   getKanbanLineComments, addKanbanLineComment,
   getKanbanCard, getChildCards, getDb,
   createAgentMessage, markKanbanCardDispatched,
-  getKanbanSeqByIdPrefix,
+  getKanbanSeqByIdPrefix, getKanbanCardStateByIdPrefix,
   listLabels, getLabel, createLabel, updateLabel, deleteLabel,
   addLabelToCard, removeLabelFromCard, getLabelsForAllCards, getLabelsForCard,
   listArchivedKanbanCards,
@@ -216,7 +217,18 @@ async function fireKanbanDispatch(id: string, actor?: string | null): Promise<vo
     }
     const desc = (card.description ?? '').trim()
     const content = `[Kanban feladat #${id}]: ${card.title}${desc ? ' — ' + desc : ''}\n\n${kanbanMoveInstructions(id, target)}`
-    createAgentMessage(MAIN_AGENT_ID, target, content)
+    // Stamp the board state, exactly as POST /api/messages does (card 382dcb15). This path calls
+    // createAgentMessage DIRECTLY -- it runs inside the card-move request -- and therefore never
+    // passed through the route's appendCardStateStamp. So the AUTO-dispatch messages, the one class
+    // that ALWAYS names a card, were the only ones arriving with no card-state at all. Measured on
+    // the incident that opened this card: message 22192 ("[Kanban feladat #fe06da0c]", 19555s in
+    // the queue) carries no [card-state @send] block, while hand-written messages from the same
+    // sender in the same window do.
+    //
+    // The send stamp is also the PRECONDITION for the delivery-time footer: formatDeliveryStalenessNote
+    // returns '' when the content carries no stamp, so without this an unstamped dispatch could never
+    // tell its recipient that the card moved while it waited -- the exact failure this card is about.
+    createAgentMessage(MAIN_AGENT_ID, target, appendCardStateStampForDispatch(content, getKanbanCardStateByIdPrefix))
     markKanbanCardDispatched(id)
     logger.info({ id, target, assignee: card.assignee }, 'Kanban in_progress dispatch fired')
   } catch (err) {
@@ -628,9 +640,19 @@ export async function tryHandleKanban(ctx: RouteContext): Promise<boolean> {
         return true
       }
     }
-    const id = randomUUID().slice(0, 8)
+    // ONE id, used for BOTH the row and the response (card f27c999b, adopted from upstream).
+    // It used to be `createKanbanCard({ id, ...normalized })` with a generated id, and `normalized`
+    // still carries a caller-supplied `id` -- so the spread OVERRODE the generated one in the row
+    // while the response echoed the generated one. HTTP 200 pointing at a card that does not exist,
+    // and the caller's own id silently in the database under a different name than it was told.
     const normalized = normalizeProjectName(data)
-    createKanbanCard({ id, ...normalized })
+    // Read through a TYPED local: `normalized` comes from JSON.parse, so `normalized.id` is `any`,
+    // and letting that flow into `id` made every later call taking it an unsafe-argument finding.
+    // A test-only cast would have hidden that; naming the type is the actual fix.
+    const rawId: unknown = (normalized as Record<string, unknown>).id
+    const suppliedId: string | null = typeof rawId === 'string' && rawId.trim() ? rawId.trim() : null
+    const id: string = suppliedId ?? randomUUID().slice(0, 8)
+    createKanbanCard({ ...normalized, id })
     // Card 4bade960: run the dedup pre-filter on EVERY new card (rule 6b was previously enforced
     // only by agent discipline before opening a card, and by the >2-day dispatch filter for cards
     // already open). One extra async spawn per card create, awaited before responding -- same

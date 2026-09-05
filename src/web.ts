@@ -15,7 +15,7 @@ import { CONTENT_SECURITY_POLICY } from './web/csp.js'
 import { json } from './web/http-helpers.js'
 import { detectLanIp } from './web/network-info.js'
 import { AGENTS_BASE_DIR, listAgentNames, listAllAgentNames } from './web/agent-config.js'
-import { ensureAgentHooks, ensureAgentStalenessHook, ensureEgressGate, ensureNpmProtectGuard, ensureBlastRadiusGuard, ensurePentestToolInstallGuard, ensureSymlinkedNodeModulesGuard, ensureCdChainGuard, ensureNoisyCommandGuard, ensureGitProtectGuard, ensureTaskstateReplayMatcher, ensureGovernanceGateCommands, ensureQuarantineReader, watchEgressAllowlistForReaderRender, ensureDefaultScheduledTasks, agentSettingsPath, ensureAutonomySection, ensureSkillsPathTrapSection } from './web/agent-scaffold.js'
+import { ensureAgentHooks, ensureAgentStalenessHook, ensureEgressGate, ensureNpmProtectGuard, ensureBlastRadiusGuard, ensurePentestToolInstallGuard, ensureSymlinkedNodeModulesGuard, ensureCdChainGuard, ensureOutgoingCopyGate, outgoingCopyGateEnabled, ensureNoisyCommandGuard, ensureGitProtectGuard, ensureTaskstateReplayMatcher, ensureGovernanceGateCommands, ensureQuarantineReader, watchEgressAllowlistForReaderRender, ensureDefaultScheduledTasks, agentSettingsPath, ensureAutonomySection, ensureSkillsPathTrapSection, ensureSystemDirectiveAuthSection } from './web/agent-scaffold.js'
 import { shouldRegisterHooks, pruneStaleHooksFromSettingsFile } from './web/hook-registration-guard.js'
 import { refreshMarveenBotUsername } from './web/telegram.js'
 import { startMessageRouter } from './web/message-router.js'
@@ -31,6 +31,8 @@ import { getDb } from './db.js'
 import { startStuckInputWatcher } from './web/stuck-input-watcher.js'
 import { startInboxNudgeWatcher } from './web/inbox-nudge-watcher.js'
 import { startSelfAdvanceClearWatcher } from './web/self-advance-clear-watcher.js'
+import { startScaffoldSectionSweeper } from './web/scaffold-section-sweeper.js'
+import { startMessageBacklogWatcher } from './web/message-backlog-watcher.js'
 import { startStuckToolCallWatcher } from './web/stuck-tool-call-watcher.js'
 import { startReauthHealer } from './web/reauth-healer.js'
 import { startAutoRestartRunner } from './web/auto-restart-runner.js'
@@ -41,6 +43,7 @@ import { collectTokenUsage } from './web/token-usage.js'
 import { logger } from './logger.js'
 import { tryHandleAuth } from './web/routes/auth.js'
 import { tryHandleSecurity } from './web/routes/security.js'
+import { tryHandleNamePatterns } from './web/routes/name-patterns.js'
 import { tryHandleBridgeServicePorts } from './web/routes/bridge-service-ports.js'
 import { tryHandleProfiles } from './web/routes/profiles.js'
 import { tryHandleMessages } from './web/routes/messages.js'
@@ -52,6 +55,7 @@ import { tryHandleAgentTerminal } from './web/routes/agent-terminal.js'
 import { tryHandleAgentConversation } from './web/routes/agent-conversation.js'
 import { tryHandleAgentTaskState } from './web/routes/agent-taskstate.js'
 import { tryHandleAgentHud } from './web/routes/agent-hud.js'
+import { tryHandleTaskEvents } from './web/routes/task-events.js'
 import { sweepOrphanTaskStates } from './web/agent-taskstate.js'
 import { tryHandleDailyLog } from './web/routes/daily-log.js'
 import { tryHandleMemories } from './web/routes/memories.js'
@@ -194,6 +198,7 @@ export function startWebServer(port = 3420): http.Server {
 
       if (await tryHandleAuth(routeCtx)) return
       if (await tryHandleSecurity(routeCtx)) return
+      if (await tryHandleNamePatterns(routeCtx)) return
       if (await tryHandleBridgeServicePorts(routeCtx)) return
       if (await tryHandleProfiles(routeCtx)) return
       if (await tryHandleMessages(routeCtx)) return
@@ -213,6 +218,7 @@ export function startWebServer(port = 3420): http.Server {
       if (await tryHandleAgentConversation(routeCtx)) return
       if (await tryHandleAgentTaskState(routeCtx)) return
       if (await tryHandleAgentHud(routeCtx)) return
+      if (await tryHandleTaskEvents(routeCtx)) return
       if (await tryHandleAgents(routeCtx, WEB_DIR)) return
       if (await tryHandleMarveen(routeCtx, WEB_DIR)) return
       if (await tryHandleBackgroundTasks(routeCtx)) return
@@ -443,7 +449,17 @@ export function startWebServer(port = 3420): http.Server {
   if (!webOnly) logger.info('Inbox nudge watcher started (20s poll, 55s offset)')
 
   const selfAdvanceClearInterval = webOnly ? undefined : startSelfAdvanceClearWatcher()
+  // Card 75a6fbe6: the generated CLAUDE.md sections are written at agent START only, so a
+  // long-lived agent keeps whatever it was given that day -- measured at 6 of 15 agents
+  // carrying the system-directive verification recipe. webOnly-guarded like every other
+  // writer above: a staging copy must never rewrite the fleet's persona files.
+  const scaffoldSweepInterval = webOnly ? undefined : startScaffoldSectionSweeper()
+  // Card 1e7ba5c1: nothing watched GET /api/messages/backlog, so an agent could hold undelivered
+  // messages for hours with no signal anywhere (measured: 27 messages, oldest 325 minutes, session
+  // running). webOnly-gated like its neighbour -- a dashboard-only process has no router to report on.
+  const messageBacklogInterval = webOnly ? undefined : startMessageBacklogWatcher()
   if (!webOnly) logger.info('Self-advance clear watcher started (20s poll)')
+  if (!webOnly) logger.info('Message-backlog watcher started (5m poll)')
 
   const reauthHealerInterval = webOnly ? undefined : startReauthHealer()
   if (!webOnly && reauthHealerInterval) logger.info('Reauth healer started (3min poll, 90s offset)')
@@ -544,6 +560,13 @@ export function startWebServer(port = 3420): http.Server {
     ensureFederationClaudeMdSection()
     ensureAutonomySection(MAIN_AGENT_ID)
     ensureSkillsPathTrapSection(MAIN_AGENT_ID)
+    // The MAIN agent needs the directive-verification recipe MORE than a sub-agent, not less: it is
+    // the one the context-restart gate and channel-monitor send authenticated directives TO. The
+    // per-agent call lives in startAgentProcess, which the main agent never goes through -- it comes
+    // up via channels.sh -- so without this line its CLAUDE.md is the one that never gets the
+    // section. Adopted from upstream with the sibling section-writers it belongs next to (card
+    // f27c999b, B-wave).
+    ensureSystemDirectiveAuthSection(MAIN_AGENT_ID)
   }
 
   // Backfill the PreCompact hook into existing agents' settings.json so the
@@ -569,6 +592,7 @@ export function startWebServer(port = 3420): http.Server {
       const pentestGuardPatched: string[] = []
       const symlinkNmGuardPatched: string[] = []
       const cdChainGuardPatched: string[] = []
+      const outgoingCopyGatePatched: string[] = []
       const noisyGuardPatched: string[] = []
       const gitGuardPatched: string[] = []
       const taskstateMatcherPatched: string[] = []
@@ -595,6 +619,7 @@ export function startWebServer(port = 3420): http.Server {
         if (ensurePentestToolInstallGuard(agentName)) pentestGuardPatched.push(agentName)
         if (ensureSymlinkedNodeModulesGuard(agentName)) symlinkNmGuardPatched.push(agentName)
         if (ensureCdChainGuard(agentName)) cdChainGuardPatched.push(agentName)
+        if (ensureOutgoingCopyGate(agentName)) outgoingCopyGatePatched.push(agentName)
         if (ensureNoisyCommandGuard(agentName)) noisyGuardPatched.push(agentName)
         if (ensureGitProtectGuard(agentName)) gitGuardPatched.push(agentName)
         if (ensureTaskstateReplayMatcher(agentName)) taskstateMatcherPatched.push(agentName)
@@ -616,6 +641,10 @@ export function startWebServer(port = 3420): http.Server {
       if (pentestGuardPatched.length) logger.info({ patched: pentestGuardPatched }, 'pentest-tool-install guard backfilled into agent settings.json')
       if (symlinkNmGuardPatched.length) logger.info({ patched: symlinkNmGuardPatched }, 'symlinked-node-modules guard backfilled into agent settings.json')
       if (cdChainGuardPatched.length) logger.info({ patched: cdChainGuardPatched }, 'cd-chain guard backfilled into agent settings.json')
+      // Card 74181db2: this one logs a CHANGE, not an arming -- the same call removes the
+      // entry when the operator switches the gate back off, and a silent removal would be
+      // indistinguishable from never having been wired.
+      if (outgoingCopyGatePatched.length) logger.info({ patched: outgoingCopyGatePatched, enabled: outgoingCopyGateEnabled() }, 'outgoing-copy-gate wiring changed in agent settings.json')
       if (noisyGuardPatched.length) logger.info({ patched: noisyGuardPatched }, 'noisy-command guard backfilled into agent settings.json')
       if (gitGuardPatched.length) logger.info({ patched: gitGuardPatched }, 'git-protect guard backfilled into agent settings.json')
       if (taskstateMatcherPatched.length) logger.info({ patched: taskstateMatcherPatched }, 'taskstate-replay SessionStart matcher widened in agent settings.json')
@@ -662,6 +691,8 @@ export function startWebServer(port = 3420): http.Server {
     clearInterval(stuckToolCallInterval)
     if (inboxNudgeInterval) clearInterval(inboxNudgeInterval)
     if (selfAdvanceClearInterval) clearInterval(selfAdvanceClearInterval)
+    if (scaffoldSweepInterval) clearInterval(scaffoldSweepInterval)
+    if (messageBacklogInterval) clearInterval(messageBacklogInterval)
     if (reauthHealerInterval) clearInterval(reauthHealerInterval)
     clearInterval(autoRestartInterval)
     clearInterval(modelFallbackInterval)

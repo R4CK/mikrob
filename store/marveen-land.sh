@@ -42,6 +42,9 @@
 #                       sha is appended as the final argument. fleet-test.sh hardcodes the real repo
 #                       as ROOT, so an automated test of THIS script against a throwaway repo must
 #                       override this to a stub.
+#   MARVEEN_LAND_BUILD  default "npm run build" -- the rebuild run in the live install after a
+#                       src/-touching land (card f1b3f2f0). MARVEEN_LAND_REBUILD=off disables the
+#                       step entirely and says so in the output.
 #   MARVEEN_LAND_MAX_ATTEMPTS  default 3 -- how many full merge+verify+push attempts before giving
 #                       up on a repeatedly-raced push (card 65657bad).
 #   LANDING_DOWNWARD_CHECK=off  disables the downward range check entirely (card dfff9b37).
@@ -76,6 +79,60 @@ sync_live_install() {
   else
     say "live install ($MAIN) NOT fast-forwarded (dirty tree or diverged) -- sync it by hand, tell MikroB"
   fi
+}
+
+# rebuild_live_install (card f1b3f2f0) -- turn a REPEATING CONDITION into a non-event.
+#
+# WHAT WAS ACTUALLY WRONG. store/local-llm-rag.sh imports dist/local-llm-router.js and refuses to
+# use it unless checkBuildFreshness says `fresh`; anything else routes ONLINE. That is the correct
+# fail-safe, but it means a stale dist SILENTLY DISABLES the whole local-model offload -- the
+# symptom is one line in the output of whoever happened to call the script. And it is not a state
+# that gets fixed once: every src/-touching land re-arms it, more than ten times a day.
+#
+# WHAT ALREADY EXISTED, measured rather than assumed (the card's premise said nobody watches this):
+# scripts/build-freshness-guard.sh DOES watch it, on a live systemd --user timer every 5 minutes
+# with a 300s build-time grace period -- verified running while writing this. So the gap was never
+# invisible; it was just never CLOSED. Alerting is not fixing, and a condition that recurs ten times
+# a day cannot be answered by a human running ./update.sh ten times a day.
+#
+# WHAT THIS DOES NOT DO: restart anything. mikrob-channels and mikrob-dashboard keep the modules
+# they already loaded, and a restart stays the separate confirmed gate it was made in card 77075367
+# -- that decision is untouched here. Rebuilding without restarting is exactly what the offload path
+# needs, because local-llm-rag.sh spawns a FRESH node from dist/ on every call. Checked before
+# writing this: nothing under src/web spawns node children from dist/ at runtime, so a rebuilt dist
+# under the running services does not split them across two versions.
+#
+# SERIALIZED, because landings genuinely overlap -- two push races were observed on one evening --
+# and two `tsc` runs writing the same dist/ would interleave their output.
+#
+# FAIL-SOFT AND LOUD. The commits are already pushed by the time this runs; failing the landing here
+# would report a landing that happened as one that did not. A failed build leaves exactly today's
+# situation (stale dist, guard alerts), so it is reported, not fatal.
+rebuild_live_install() {
+  [ "${MARVEEN_LAND_REBUILD:-on}" = "off" ] && { say "rebuild skipped (MARVEEN_LAND_REBUILD=off) -- dist/ stays stale"; return 0; }
+  local current
+  current="$(git -C "$MAIN" symbolic-ref --short -q HEAD 2>/dev/null || true)"
+  # If the live install did not follow the landing, building it would produce a dist for SOME OTHER
+  # source than the one just landed -- worse than stale, because it looks current.
+  if [ "$current" != "$DEFAULT_BRANCH" ]; then
+    say "rebuild skipped -- live install is not on $DEFAULT_BRANCH, so its dist/ would not match this land"
+    return 0
+  fi
+  local out rc
+  # The lock lives under .git, not store/: this script already refuses to run unless $MAIN/.git is a
+  # directory, whereas store/ is not guaranteed (measured -- the land test fixture has no store/, and
+  # flock exits 66 "cannot open lock file", which surfaced as a REBUILD FAILED for a build that was
+  # never actually attempted).
+  out="$(cd "$MAIN" && flock "$MAIN/.git/land-rebuild.lock" sh -c "$BUILD_CMD" 2>&1)"; rc=$?
+  if [ $rc -eq 0 ]; then
+    say "$agent: dist/ rebuilt from the landed source (services NOT restarted -- that stays ./update.sh)"
+  else
+    say "$agent: WARNING -- dist/ REBUILD FAILED (exit $rc). The land itself is fine and pushed; dist/ is"
+    say "  stale exactly as it would have been before this step, so the local-model offload routes"
+    say "  online until someone builds by hand. Last lines:"
+    printf '%s\n' "$out" | tail -5 | sed 's/^/    /'
+  fi
+  return 0
 }
 
 # try_append_union (card cbb66abf): the ONE conflict shape (both sides purely append to
@@ -118,6 +175,9 @@ fi
 DEFAULT_BRANCH="$(g symbolic-ref --short refs/remotes/origin/HEAD 2>/dev/null | sed 's@^origin/@@')"
 [ -n "$DEFAULT_BRANCH" ] || DEFAULT_BRANCH="develop"
 TEST_CMD="${MARVEEN_LAND_TEST:-$MAIN/store/fleet-test.sh --ref}"
+# Card f1b3f2f0. Same seam as MARVEEN_LAND_TEST and for the same reason: the selftest must exercise
+# the rebuild branch without running a real 16s tsc against the live install.
+BUILD_CMD="${MARVEEN_LAND_BUILD:-npm run build}"
 MAX_ATTEMPTS="${MARVEEN_LAND_MAX_ATTEMPTS:-3}"
 
 land_one() {
@@ -156,7 +216,23 @@ land_one() {
 
   # Only when the caller NAMED the card -- without one there is no single card to ask about, since
   # a marveen branch legitimately carries several. Report-only, for the reason in the source note.
-  if [ -n "$LAND_CARD" ]; then gate_verdict_check "$LAND_CARD" "$branch" report || true; fi
+  # THE SECOND ARGUMENT IS A SHA, NOT A BRANCH (card 171c9f42). It used to be "$branch", and the
+  # parser compares HEX PREFIXES -- so an agent branch name could never match anything, and a fully
+  # gated card (QA PASS + Cybersec GO) produced the same "no verdict for this sha" line as a card
+  # with no verdict at all. The check ran, printed, and told us nothing.
+  #
+  # AND THE `|| true` IS GONE. In report mode the helper already returns 0 for every outcome except
+  # a FAILING verdict, so `|| true` swallowed the one answer worth acting on: it made a QA FAIL
+  # indistinguishable from a pass, on the branch about to be merged.
+  if [ -n "$LAND_CARD" ]; then
+    local land_sha
+    land_sha="$(git -C "$wt" rev-parse "$branch" 2>/dev/null)" || land_sha="$branch"
+    gate_verdict_check "$LAND_CARD" "$land_sha" report || {
+      echo "$agent: REFUSED -- card $LAND_CARD carries a FAILING gate verdict for $land_sha."
+      echo "$agent: Nothing merged, nothing pushed. Fix the finding and re-gate."
+      return 5
+    }
+  fi
 
   local msg="merge: $branch into $DEFAULT_BRANCH (marveen-land, base @ $(git -C "$wt" rev-parse --short HEAD))"
   local merge_err
@@ -305,14 +381,13 @@ land_one() {
     # (~13s on marveen) and non-fatal: a graph refresh must not fail a landing.
     "$(dirname "$0")/graphify.sh" build "$MAIN" 2>&1 | tail -1 | sed 's/^/  graphify: /' || true
     sync_live_install
-    # Card 77075367: a src/-touching land does NOT rebuild dist/ or restart mikrob-channels/
-    # mikrob-dashboard (deliberately -- see this function's header comment, restart stays a
-    # separate, confirmed gate). That silence is exactly what let a landed, gated security fix
-    # (f0389e81) sit inactive for ~1h until Cybersec's own retest caught it. This is not the
-    # rebuild -- it is making the gap VISIBLE at the one moment someone is already watching
-    # this output. scripts/build-freshness-guard.sh backstops it if nobody is.
+    # Card 77075367 made this gap VISIBLE at land time, after a gated security fix (f0389e81) sat
+    # inactive for ~1h. Card f1b3f2f0 CLOSES it instead: a src/-touching land now rebuilds dist/
+    # here. The restart half of 77075367's decision is unchanged -- still ./update.sh, still
+    # confirmed -- and scripts/build-freshness-guard.sh stays the backstop for when this step is
+    # skipped or fails.
     if git -C "$wt" diff --name-only "$base_sha..$merge_sha" -- src/ | grep -q .; then
-      say "$agent: WARNING -- this land touches src/. dist/ is now STALE: mikrob-channels and mikrob-dashboard keep serving the OLD build until someone runs ./update.sh (or npm run build + a confirmed restart)."
+      rebuild_live_install
     fi
     echo "$agent: LANDED $branch -> origin/$DEFAULT_BRANCH ($(git -C "$wt" rev-parse --short HEAD))"
     return 0

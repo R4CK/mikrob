@@ -14,7 +14,9 @@ import {
   CARD_STATE_MARKER,
   CARD_STATE_DELIVERY_MARKER,
   MAX_STAMPED_CARDS,
+  supersededDispatch,
   type CardStateSnapshot,
+  type CardStateLookup,
 } from '../web/kanban-state-stamp.js'
 
 const CARDS: Record<string, CardStateSnapshot> = {
@@ -215,6 +217,108 @@ describe('formatDeliveryStalenessNote (card 9566a197)', () => {
 // warns that anything landing in only one of them is a drift bug. These assert BOTH call the
 // re-check AND concatenate its result into the text that is actually delivered; a call whose return
 // value is dropped would satisfy a bare grep for the function name.
+describe('supersededDispatch (card 790c962d)', () => {
+  const board = (status: string): CardStateLookup => (id) => ({ id, status, updatedAt: 1 })
+  const DISPATCH = '[Kanban feladat #4a3c75a5]: [marveen][INFRA][NORMAL] 3 vendorolt skill-fajl\n\nmove it'
+
+  it('reproduces the incident: a dispatch for a card that is already done', () => {
+    // backend's queue held 10 dispatches; 7 were obsolete on arrival, 5 of them exactly like this --
+    // the agent had already finished the card off the board (fleet rule 11), so the message informed
+    // it of nothing while still costing a turn to read and another to say "this is stale".
+    expect(supersededDispatch(DISPATCH, board('done'))).toEqual({ id: '4a3c75a5', status: 'done' })
+  })
+
+  it('waiting counts too -- the work is BUILT and in a gate', () => {
+    expect(supersededDispatch(DISPATCH, board('waiting'))).toEqual({ id: '4a3c75a5', status: 'waiting' })
+  })
+
+  it('CONTROL: in_progress is NOT superseded -- a gate FAIL reopens a card and the dispatch lives', () => {
+    expect(supersededDispatch(DISPATCH, board('in_progress'))).toBeNull()
+  })
+
+  it('CONTROL: planned is NOT superseded -- a card moved back may genuinely need picking up', () => {
+    expect(supersededDispatch(DISPATCH, board('planned'))).toBeNull()
+  })
+
+  it('a message that merely MENTIONS a dispatch header is never suppressed', () => {
+    // The anchoring case, and the whole safety of this feature. Someone writing "the
+    // [Kanban feladat #4a3c75a5] you sent is stale" must not have their message eaten. Same lesson
+    // isUrgentMessage records for verdict words in a body.
+    //
+    // TWO cases, and the second is the one that matters. My first version only had the first: a
+    // mention on a LATER line, which the "first non-empty line" rule already excludes -- so removing
+    // the `^` anchor left that test GREEN. The mutation caught the gap. The anchor's real job is a
+    // mention that sits mid-line on the FIRST line, where only `^` separates it from a dispatch.
+    const laterLine = 'Errol irok:\nA [Kanban feladat #4a3c75a5] amit kuldtel mar nem aktualis.'
+    expect(supersededDispatch(laterLine, board('done'))).toBeNull()
+    const sameLine = 'Errol: a [Kanban feladat #4a3c75a5] amit kuldtel mar nem aktualis.'
+    expect(supersededDispatch(sameLine, board('done')), 'mid-line on line 1 needs the ^').toBeNull()
+  })
+
+  it('an ordinary message is left alone', () => {
+    expect(supersededDispatch('Vettem, koszi a jelzest.', board('done'))).toBeNull()
+  })
+
+  it('FAIL-OPEN: an unknown card is delivered, not dropped', () => {
+    // Opposite posture to the gates elsewhere in this repo, on purpose: delivering a stale dispatch
+    // costs one wasted turn, dropping a live one loses work nobody notices is missing.
+    expect(supersededDispatch(DISPATCH, () => null)).toBeNull()
+  })
+
+  it('FAIL-OPEN: a throwing lookup must not eat the message', () => {
+    expect(() =>
+      supersededDispatch(DISPATCH, () => {
+        throw new Error('db down')
+      }),
+    ).not.toThrow()
+    expect(
+      supersededDispatch(DISPATCH, () => {
+        throw new Error('db down')
+      }),
+    ).toBeNull()
+  })
+
+  it('the header it matches is the one routes/kanban.ts actually produces', () => {
+    // Non-vacuity against the real producer rather than against my idea of it: if the dispatch
+    // template is ever reworded, this fails instead of the matcher silently going inert -- which is
+    // exactly how a suppression can look shipped while never firing.
+    const src = readFileSync(join(process.cwd(), 'src', 'web', 'routes', 'kanban.ts'), 'utf8')
+    expect(src).toContain('`[Kanban feladat #${id}]:')
+  })
+})
+
+describe('the superseded-dispatch drop is wired into the ROUTER path only (card 790c962d)', () => {
+  const readSrc = (rel: string): string => readFileSync(join(process.cwd(), 'src', rel), 'utf8')
+
+  it('the router drops the row instead of delivering it', () => {
+    const src = readSrc('web/message-router.ts')
+    expect(src).toContain('supersededDispatch(msg.content, getKanbanCardStateByIdPrefix)')
+    expect(src).toContain('closeMessagesWithoutDelivery(')
+  })
+
+  it('and it runs BEFORE the readiness/session work, or it would not clear a backlog', () => {
+    // Placement is the feature. Every check after it waits on the receiver's pane being free, and a
+    // busy receiver is the whole problem -- suppressing later would clear the queue only at the rate
+    // the agent drains it, which is the rate that built the queue.
+    const src = readSrc('web/message-router.ts')
+    expect(src.indexOf('supersededDispatch(')).toBeLessThan(src.indexOf('sendPromptToSession(session'))
+  })
+
+  it('drain-inbox deliberately does NOT drop -- recorded so it never reads as an oversight', () => {
+    // The sibling control (formatDeliveryStalenessNote) IS in both paths, and the test above says why.
+    // This one is router-only for two measured reasons, and the decision is pinned here rather than
+    // left to look like a forgotten half:
+    //   1. drain-inbox serves the MAIN agent only, whose queue does not go stale -- measured over 6
+    //      hours, 118 messages at 0.1 min average wait, 0.7 min worst case. There is nothing to drop.
+    //   2. It calls claimPendingForAgent FIRST, which flips the row to 'delivered' before the loop.
+    //      Suppressing after that would be a row marked delivered that the agent never saw -- the
+    //      exact "invisible message loss" shape the file's own from_agent branch warns about.
+    const src = readSrc('web/routes/agents.ts')
+    expect(src).not.toContain('supersededDispatch(')
+    expect(src, 'the claim-before-frame ordering is the reason').toContain('claimPendingForAgent(name, INBOX_DRAIN_CAP)')
+  })
+})
+
 describe('the delivery-time re-check is wired into BOTH delivery paths', () => {
   const readSrc = (rel: string): string => readFileSync(join(process.cwd(), 'src', rel), 'utf8')
 

@@ -5690,3 +5690,818 @@ szűrés helyett.
 **Ki döntött:** Cybersec javasolta (kártyák a14812e8, e5b7ff19 gate-verdiktjei), MikroB vitte fel a
 CLAUDE.md-be, ugyanabban a munkában mint egy rutin upstream-szinkron (agent/mikrob/work ->
 origin/develop merge), külön kártya nélkül -- dokumentációs, kockázatmentes kiegészítés.
+
+---
+
+## 2026-09-04 -- 222fdc5e -- A drift-heartbeat a diverged HALMAZ változására riaszt, nem a darabszámára
+
+**Döntés.** Az `agent-skill-drift-sync.sh` minden futás végén egy verdikt-sort ad
+(`ALERT:no` / `ALERT:yes reasons=...`), és a hatóránkénti scheduled-task kizárólag erre a sorra
+figyel, nem a `stale`/`diverged` számokra. A diverged **halmazt** (nem a méretét) egy állapot-fájl
+őrzi (`store/agent-skill-drift-state.json`), és azt kizárólag az `--apply` futás lépteti tovább.
+
+**Miért.** Cybersec MEDIUM lelete a 13512bde-n: a feladat azt a szabályt kapta, hogy `stale=0 ÉS
+diverged=0` esetén hallgasson. Az élő állandósult állapot viszont **mérten** `current=93 stale=0
+diverged=5` -- vagyis maga a RUTIN eset is `diverged>0`, tehát a feladat ugyanazt az öt sort küldte
+hatóránként, naponta négyszer, örökre. A diverged halmaz jogosan állandó (QA saját 84b304c1-es
+verdiktje szerint azok szándékos, értékes helyi bővítések). Két hét után senki nem olvassa -- és
+akkor sem, amikor végre változik. A hír tehát nem az, hogy VAN diverged, hanem hogy MEGVÁLTOZOTT.
+
+**Miért halmaz és nem darabszám.** Egy darabszám nem lát egy cserét: ha egy bejegyzés eltűnik és egy
+másik megjelenik, a szám azonos marad, miközben valódi változás történt. A selftest ezt konkrétan
+pinneli: egy fixture-swap után a mért darabszám **változatlan** (3), és a gate mégis riaszt.
+
+**A sérült alapvonal szándékosan RIASZT, nem `die`-ol.** A ház-precedens
+(`store/cleancore-main-suite-guard.sh`, kártya 6d46c7d3) meghal egy sérült állapot-fájlon, és jól
+teszi: az egy KAPU, és egy kapu, ami nem tud összehasonlítani, nem mondhat verdiktet. Ez viszont egy
+RIASZTÓ eszköz, aminek a szerződésében `exit 0` áll -- ha meghalna, magával vinné a hatóránkénti
+szinkront is. Ugyanaz az elv, fordított mechanizmus: ha nem tudjuk BIZONYÍTANI, hogy rutin, akkor azt
+mondjuk, hogy nem rutin. Fordítva soha. Ugyanezért kapott verdikt-sort a "nincs agents könyvtár" ág
+is: az azt jelenti, hogy a szkennelés SEMMIT nem nézett meg, és a néma visszatérés
+megkülönböztethetetlen lett volna a rutintól.
+
+**Elfogadott kockázat, kimondva.** Az alapvonal akkor lép tovább, amikor egy `--apply` futás
+ÉSZLELI a változást, nem akkor, amikor az értesítés bizonyítottan megérkezett. Ha a Telegram-küldés
+elbukik, az az egy változás nem hangzik el újra. Ezért az állapot-fájl eltárolja a `previousList` és
+`changedAt` mezőt, így a következő futás kimenete még mindig megmutatja, mi mozdult és mikor --
+látható, csak nem riaszt újra. Az alternatíva (az alapvonalat egy explicit nyugtázásig tartani) a
+nyugtázást visszatenné a prompt-rétegbe, márpedig épp ott bukott meg a szabály legelőször.
+
+**A dry-run nem ír alapvonalat.** Aki csak ránéz, ne fogyassza el azt a változást, amit a következő
+valódi futásnak kellene bejelentenie.
+
+**Verziókövetés (a lelet másik fele).** A feladat `~/.claude/scheduled-tasks/` alatt élt, de
+`seed-scheduled-tasks/` alatt nem, tehát egy újratelepítés után csendben eltűnt volna. Bekerült
+(f2a14f91 / 38eb6971 mintája). **Mérve, hogy ez önmagában NEM elég:** az `update.sh` seedelő ága
+kihagyja a már létező cél-könyvtárat, a `refresh_untouched_seeds` pedig csak azt frissíti, ami
+byte-azonos egy korábban KIADOTT seed-verzióval -- az élő tartalom viszont sosem a seedből jött,
+tehát `KEPT` maradt volna és a javítás inert. Ezért az élő másolat a renderelt seeddel byte-azonosra
+lett írva; onnantól a meglévő mechanizmus magától szinkronban tartja.
+
+**Mellékesen mért, nem ezen a kártyán javítva:** a `.env`-ben nincs `CHAT_ID` (csak egy üres
+`ALLOWED_CHAT_ID`), miközben minden élő seedelt feladat konkrét `chat_id`-t használ. Egy mai
+`--reseed-fleet` tehát üres `chat_id`-vel renderelné mindegyiket. Ezért az élő másolat a MEGLÉVŐ,
+működő értéket kapta vissza, nem az `.env`-ből származót.
+
+**Az arbitrary-command teszt-hook lecserélve.** A TOCTOU-selftest egy környezeti változóból vett
+útvonalat FUTTATOTT az `--apply` úton -- amit mostantól egy felügyelet nélküli scheduled-task
+használ. A változó most egy skill-NEVET tartalmaz, amit a script ÖSSZEHASONLÍT, és egyetlen fix
+jelölő-szöveget ír; a teszt sosem igényelt többet ennél.
+
+## 2026-09-04 12:05 -- A név-szabály mintákat a Python motor validálja, nem a Node (kártya 98dbbcc9)
+
+**Döntés:** A dashboard `bad_name_patterns` CRUD-ja minden mintát egy külön Python segédeszközzel
+(`scripts/name-pattern-tool.py`) ellenőriztet mentés ELŐTT, és a "pontos szöveg" módú bevitelt is
+Python `re.escape`-pel alakítja mintává. Node-oldali `new RegExp` validáció NEM elfogadható.
+**Miért:** A `scripts/hooks/outgoing-copy-gate.py` a mintákat `re.compile("|".join(pats))` alakban
+fordítja, import időben, try/except NÉLKÜL. Egy le nem forduló minta tehát nem "fail-closed"
+állapotot okoz: a hook `re.PatternError`-ral kilép 1-es kóddal, üres stdouttal, és mivel Claude
+Code-ban CSAK a 2-es kód blokkol, a kapu ettől kezdve CSENDBEN NEM FUT egyetlen ügynöknél sem.
+A két motor mérve, mindkét irányban eltér: `(?<n>x)` és `\p{L}` Node-ban érvényes és Pythonban
+összeomlik (hamis ELFOGADÁS -> néma kapu-kiesés), `(?P<n>x)` és `(?#c)x` Pythonban érvényes és
+Node-ban hibás (hamis ELUTASÍTÁS). Öt tesztelt alakból négy eltért. Ugyanez az indok az escapelésre:
+a helyes escape-szabályok a fogyasztó motor szabályai.
+**Kiegészítő döntés:** a validáló visszalépés-robbanást (ReDoS) is elutasít, mert a kapu MINDEN
+eszközhívásnál lefut. A robbanást SIGALRM szakítja meg (a CPython `sre` a match-ciklusban figyeli a
+szignálokat -- mérve, mielőtt ráépítettünk volna), a hívó oldali 10 mp-es process-timeout a tartalék.
+A próba-szövegeket a robbanást TÉNYLEGESEN kiváltó alakra kellett cserélni: `(a+)+$` a "a"*4096-on
+azonnal visszatér (mert illeszkedik), a detonáló alak a futam + EGY nem illeszkedő karakter.
+**Ki döntött:** fullstack (mérés + implementáció), Peti (hibrid felület-igény), MikroB (kiosztás).
+**Hivatkozás:** kártya `98dbbcc9`; `scripts/name-pattern-tool.py` (+ selftest), `src/web/outgoing-name-patterns.ts`,
+`src/web/routes/name-patterns.ts`. A 0600 mód megtartása külön kikötés: `atomicWriteFileSync` csak
+akkor chmod-ol, ha a hívó átadja a módot (lásd a `1ce3fd90` tanulságát).
+
+## 2026-09-04 13:10 -- A teszt-szennyezés gyökere nem három elfelejtett env-változó, hanem két helyes mechanizmus rossz kombinációja (kártya 4c5c540c)
+
+**Döntés:** A helyi-LLM állapotkönyvtár teszt-izolációja EGY globális vitest setup-fájlba kerül
+(`src/__tests__/setup/isolate-local-llm-state.ts`), nem az érintett tesztfájlok `baseEnv()`-jébe.
+**Miért:** A dispatch három fájlt nevezett meg. Megmérve TIZENKETTŐ tesztfájl futtatja a valódi
+`store/local-llm.sh`-t állapot-izoláció nélkül. De a gyökér mélyebb: az `assert-not-live-install.ts`
+már kizárja, hogy a suite az ÉLES checkoutban fusson, a `store/local-llm-state-dir.sh` viszont
+SZÁNDÉKOSAN a FŐ klón store-jára oldja fel egy worktree állapotát (hogy egy worktree-ből hívott
+script lássa a telepítés kill-switcheit). Mindkét mechanizmus helyes külön-külön; a kombinációjuk
+küldte vissza pont ennek az egy fájlnak az írásait az élesbe. Ezért fájlonkénti javítás a mai napot
+oldaná meg, a holnapit nem: a tizenharmadik teszt, ami spawnolja a scriptet, némán visszahozza, és
+az egyetlen tünet hamis sor egy grafikonon, amit senki nem vet össze semmivel. A resolver saját
+dokumentációja az `env` ágat már így írja le: "wins outright, for tests and any future layout".
+**Mért bizonyíték:** a javítás előtt 232 sor `agent=test-agent`, a legfrissebb két perccel korábbi,
+egy rutin landolás fleet-test futásából. A javítás után mind a 12 suite lefuttatva: 0 sor növekedés.
+**Mellékleletek:** (1) az izoláció kibuktatta a `local-llm-sh-task-allowlist.test.ts`-t, ami a
+`read_model()` miatt csak azért jutott el az allowlist-ágig, mert az ÉLES telepítés modell-fájlját
+olvasta -- a teszt előfeltétele mostantól kimondott (saját state-dir konfigurált modellel), a
+vizsgált sorrend (charset-ellenőrzés a `[[ -f ]]` létezés-próba ELŐTT) változatlan. (2) A
+`model-usage-buckets` hibaüzenete "between 1 and 168"-at állított, miközben a kód 0-nál nagyobbat
+fogadott el: a 0.5 működött, de sehol nem volt dokumentálva. A határ most kimondott (0.5-168) és a
+szöveg egyezik a kóddal.
+**Amit NEM tettünk:** a backend tartományát NEM szűkítettük 0.5-4-re. A csúszka tartománya UI-döntés;
+egy általános olvasó végpont szerződését nem szabad egy widget tartományára szűkíteni (egy kézi
+"mutasd az elmúlt napot" lekérdezés legitim).
+**Ki döntött:** fullstack (mérés + implementáció), Peti (csúszka-igény + takarítás), MikroB (a
+sorrendi pontosítás: előbb guard, csak utána takarítás).
+**Hivatkozás:** kártya `4c5c540c`; `vitest.config.ts`, `src/__tests__/setup/isolate-local-llm-state.ts`.
+
+## 2026-09-04 -- 74181db2 -- A kimenő-szöveg kapu eléri a role-ügynököket, de kill-switch mögött, alapból kikapcsolva
+
+**Döntés (MikroB, kártya-komment 19349).** Az `outgoing-copy-gate.py` bekerül a
+role-ügynökök hook-készletébe egy `Bash` matcheren, és megtanul felismerni egy
+Telegram Bot API küldést a Bash-parancson belül. Az egész egy env-kapcsoló mögött
+van (`OUTGOING_COPY_GATE_TELEGRAM_BASH`), ami **alapértelmezetten KI**.
+
+**Miért.** A kapu ma csak a fő ügynök sessionjére áll: mind a 15 role-ügynök
+settings-fájljában NULLA az `outgoing-copy-gate` előfordulás, tehát a CLAUDE.md
+helyesírási szabálya ("a flotta MINDEN ügynökére áll") náluk kizárólag fegyelemmel
+érvényesült. Az EMAIL-oldalon nincs teendő: az `email-send-gate.mjs` minden nem-fő
+ügynöknek keményen tiltja a küldést, tehát nincs mit ellenőrizni.
+
+**Amit a terv-fázisú grilling megbuktatott, MIELŐTT kód készült.** MikroB első
+feltétele az volt, hogy a matcher CSAK a `mcp__plugin_telegram_telegram__reply`
+hívásra szűküljön. Ez bizonyíthatóan no-op lett volna: a role-ügynökök ezt a toolt
+nem tudják hívni (mind a 15-nél `telegram@claude-plugins-official: false`, és
+`--channels` nélkül indulnak, `agent-worker.ts:458`), tehát a kapu tool-név szerinti
+ága náluk halott kód. Az egyetlen tényleges útjuk a `telegram-reply-fallback` skill
+által dokumentált nyers Bot API curl -- amin semmi nem futott, és amit a kapu Bash-ága
+sem nézett (az az EMAIL-detektor).
+
+**Elvetett alternatívák.**
+- *(2) Kimondani, hogy szándékos, és csak dokumentálni.* Védhető volt: a role-ügynökök
+  szokásos útja MikroB csatornáján megy tovább, ami már fedett. Elvetve, mert a
+  strukturális védelem olcsóbban megkapható, mint amennyit a fegyelemre hagyás ér.
+- *(3) A skillbe tett kötelező lépés.* Fegyelem, nem szerkezet (6. kódminőségi elv).
+
+**A mért ár, ami a kapcsolót indokolja.** Egy IRRELEVÁNS Bash-hívásra a valódi kapun,
+15 mintából: min 22,4 ms / medián 23,5 ms / max 26,4 ms (loadavg 9,14). Ezt minden
+role-ügynök MINDEN Bash-hívása fizetné. Ezért a kapcsoló nem csak a hook korai
+kilépését vezérli, hanem magát a BEKÖTÉST is: kikapcsolva a hook be sem kerül a
+settingsbe, tehát nulla a költség, nem 23 ms "eldönteni, hogy ne csináljunk semmit".
+
+**Következmények.**
+- A kapcsoló KÉT irányban működik: kikapcsolva a javító-kör (`ensureGovernanceGateCommands`)
+  el is TÁVOLÍTJA a korábban bedrótozott bejegyzést, különben az "alapból ki" csak friss
+  telepítésre igaz.
+- A Telegram-ág FAIL-OPEN marad (olvashatatlan törzsnél is), egyezően a meglévő MCP-ág
+  indoklásával: a Telegram a tulajdonos egyetlen felügyeleti csatornája, ott a némulás
+  drágább, mint egy átcsúszott ékezet. Az EMAIL-ág fail-closed marad.
+- Az env-változó szándékosan a `<GUARD>=off` konvenció INVERZE: itt a nem-beállított
+  érték jelenti a KI-t.
+
+## 2026-09-04 -- 79f62fd7 -- A könnyű kártyák helyi modellel épülnek, de a fail-safe iránya MEGFORDUL
+
+**Döntés.** Új, dispatch-idejű osztályozó (`store/card-build-route.sh`) dönti el, hogy egy
+`planned` kártya első teljes draftját a helyi modell írja-e meg. Szerkezetében a
+`route-classify.sh` mintája (determinizmus, terelés-prefilter, ablakolt olvasás, saját
+audit-log, fail-fast), de a fail-safe iránya AZ ELLENKEZŐJE.
+
+**Miért fordul meg az irány.** A `route-classify.sh` egyetlen biztonsági tulajdonsága, hogy
+CSAK `LOCAL -> ONLINE` irányba tud tévedni: egy rossz válasz, egy megfagyott vagy hiányzó
+modell ott egy online draftot költ, lyukat soha nem nyit. Ez az osztályozó a MÁSIK irányba
+dönt -- az alapállapot ONLINE, és egy LOCAL verdikt gyengébb építőhöz visz munkát. Ezért itt
+MINDEN kétség ONLINE: kill-switch, olvashatatlan kártya, üres vagy túl hosszú szöveg,
+urgent/high prioritás, determinisztikus szókincs-kapu, `route-classify` SECURITY **vagy
+ABSTAIN**, a modell COMPLEX/BUSY/UNKNOWN válasza, hiányzó modell. LOCAL csak akkor, ha MINDEN
+fokozat igenlően átenged -- konjunkció, nem szavazás.
+
+**Amit a mérés megváltoztatott a terven.** A selftest a tábla 15 VALÓDI kártyáján fut, a
+modellt a legmegengedőbb válaszára (EASY) rögzítve -- így ami mégis ONLINE marad, azt a
+determinisztikus kapu fogta meg. Az első változat ezen **5 kártyát elengedett**: azok
+biztonsága kizárólag a 7B COMPLEX-válaszán állt, egy rossz húzásra a gyengébb építőhöz
+kerültek volna. A négy hiányzó osztály (pénz; tárolt-objektum integritás és presign;
+kliens-adta érték hitelessége; dokumentum-összeállítás) most NÉVVEL szerepel a kapuban, és a
+szám 0-ra ment. A selftest minden futáson kiírja ezt a számot.
+
+**Amit a kockázatból NEM szabad eltúlozni.** A LOCAL kártyát is az online szerep-ügynök
+építi -- a draftot átnézi és finomítja --, és ugyanúgy megy a QA+Cybersec gate-en. A
+hibamód tehát HORGONYZÁS (egy hihetőnek látszó rossz draft elfogadása), nem ellenőrizetlen
+kód. Ez valós, de más nagyságrend, és ez indokolja, hogy egyáltalán belevágjunk.
+
+**A legvalószínűbb bukás, amit a terv-fázisú grilling kihozott.** Nem a téves osztályozás,
+hanem hogy JÓL osztályoz és mégsem történik semmi: a heartbeat egy LLM által végrehajtott
+skill, a dispatch-szöveg tanács. Ezért a heartbeat 4b. lépése a KONKRÉT, futtatható
+`local-llm-rag.sh` parancssort viszi a dispatch-üzenetbe -- e nélkül a változás kívülről
+megkülönböztethetetlen lenne a no-op-tól.
+
+**Nyitva hagyva, szándékosan.** A `seed-scheduled-tasks/` alatti (verziókövetett) heartbeat
+kapta meg a 4b. lépést; a FUTÓ példány (`~/.claude/scheduled-tasks/`) nem. Az MikroB saját
+10 perces köre, a bekapcsolás időzítése az ő döntése.
+
+## 2026-09-04 -- 0c66be37 -- A név-ellenőrzés hibája a KAPUT rontsa el, ne a hookot -- és a timeout DOBJON
+
+**Döntés.** A `re.compile` bekerül a `try`-ba, és a match-időre wall-clock költségkeret kerül. Egy
+hibás vagy lassú minta a NÉV-ELLENŐRZÉST kapcsolja `STATE_BROKEN`-re; a hook maga fut tovább.
+
+**Miért.** A `BAD_NAME = load_bad_name()` MODUL-SZINTEN, import időben fut, és a `re.compile` a
+`try`-on KÍVÜL volt. Egy elgépelt minta így nem egy ágat ölt meg, hanem az EGÉSZ hookot, mielőtt
+bármit ellenőrzött volna. Claude Code-ban csak a 2-es kilépési kód blokkol -- exit 1 + üres stdout
+azt jelenti, hogy a kimenő-szűrés MINDEN ügynöknél NÉMÁN nem fut. Reprodukálva a valódi hookkal:
+`["Kovacs"]` -> exit 2 (blokkol egy ékezet nélküli levelet), `["Kovacs","(?<n>x)"]` -> exit 1, 0
+bájt stdout.
+
+**A MÁSODIK AJTÓ UGYANABBA A SZOBÁBA, amit megmértem, mielőtt eldöntöttem volna, hogy hatókörbe
+tartozik-e.** Egy minta hibátlanul fordulhat és MATCH-időben mégis katasztrofálisan visszalépni. A
+kártya által is említett `zzz(a+)+$` mintára egy `zzz` + 40 `a` törzsön a hook 25 másodperc után is
+FUTOTT. Élesben `timeout: 10`-cel van bejegyezve, tehát a futtató megöli, a kilépési kód nem 2, és a
+küldés ellenőrizetlenül megy ki -- bájtra ugyanaz a következmény, mint a fordítási összeomlásnál. A
+validátor ezt nem zárja: a ReDoS-ellenőrzése PRÓBA-alapú, tehát egy ritka prefixre horgonyzott minta
+átmegy rajta és csak valódi forgalmon lassú. Ezért a keret a hook oldalán van, ahol a tényleges
+szöveg van.
+
+**A load-bearing részlet: a timeout DOB, nem `None`-t ad vissza.** A `None` (nincs találat) lett
+volna az egyetlen rossz válasz: egy csendes „a név rendben". A dobás után a KÉT MEGLÉVŐ háló dönt,
+új állapot bevezetése nélkül -- az email-út fail-closed burkolója exit 2-t csinál belőle, a
+`telegram_gate` dokumentált fail-open ága exit 0-t plusz hangos figyelmeztetést. Mutációval
+igazolva: ha a jelzéskezelő visszatér dobás helyett, a keresés NEM szakad meg (a C-szintű regex-motor
+fut tovább), és a teljes selftest lefagy -- pontosan az éles tünet.
+
+**Az üzenet is javult, mert muszáj volt.** A `BAD_NAME is None` ág egyetlen szövege az volt, hogy „a
+NEV-SZABALY fajl hianyzik/ures". Egy hibás mintánál ez HAMIS, és a következő olvasót egy létező,
+olvasható, érvényes JSON keresésére küldi. A rossz magyarázat rosszabb, mint a hiányzó: megállítja a
+keresést. A két ok most külön nevet kap mindkét felhasználói üzenetben, és a selftest állítja, hogy
+megkülönböztethetők.
+
+## 2026-09-04 -- 171c9f42 -- A FAILING verdikt saját kilépési kódot kap, hogy a flag tolerálhassa a hiányzót és soha ne a bukót
+
+**Döntés.** A `gate_verdict_check` mostantól HÁROM kimenetet ad: 0 = mehet, 1 = nincs használható
+verdikt (egy explicit, megnevezett flag felülírhatja), 2 = BUKÓ verdikt (soha nem felülírható). A
+`cleancore-land.sh` MINDIG meghívja, és a `--allow-ungated` csak az 1-est tolerálja.
+
+**Miért.** A flag eddig nem a DÖNTÉST kerülte meg, hanem a HÍVÁST -- így a FAILED ág sosem futott le.
+Három hely állította, hogy egy bukó verdikt sosem járható körbe (a helper saját üzenete, a lander
+kommentje, és a kártya QA-verdiktje), és egyik sem volt igaz. Egyetlen kilépési kóddal a hívó nem is
+tudja kifejezni a különbséget, ezért kellett a 2-es.
+
+**A marveen-oldal két hibája.** A `marveen-land.sh` az ÁGNEVET adta át ott, ahol sha kell -- a parser
+hex-prefixet hasonlít, tehát egy ágnév SOSEM egyezhet, és egy teljesen gate-elt kártya ugyanazt a
+"nincs verdikt" sort kapta, mint egy ellenőrizetlen. A hívás végén álló `|| true` pedig azt az egy
+kimenetet nyelte el, amiért az egész ott van: report módban a helper amúgy is 0-t ad mindenre a bukó
+verdikten kívül.
+
+**A LOW, ami a legfontosabb volt.** Cybersec megmutatta, hogy a két wiring-teszt a FORRÁS SZÖVEGÉT
+nézte, és a helper `return 1 -> return 0` mutációja mellett is ZÖLD maradt. Egy teszt, ami nem tud
+elbukni a kontroll eltávolításától, nem bizonyíték. A viselkedés-bizonyíték most a selftestben van:
+a VALÓDI `cleancore-land.sh`-t hajtja végig a valódi `--allow-ungated` úton egy stub tábla ellen. A
+wiring-teszt ezt teszi törölhetetlenné (ha azok az esetek eltűnnek, elbukik), és forrás-szinten már
+csak a három ténylegesen hibás dolgot pinneli.
+
+**Egy saját csapda a mérés közben.** Az első mutációs futásom szerint a marveen-oldali két javítás
+NEM volt lefedve. Tévedés volt: a shell-idézőjelezés miatt a csere sosem került a fájlba. Miután a
+szkript ELLENŐRZI, hogy a mutáció tényleg a lemezen van (`applied=True`), mindkettő harap. Egy nem
+alkalmazott mutáció "a teszt vak" alakban hazudik.
+## 2026-09-04 13:16 -- A takarítás a MODELL oszlopra szűr, nem az ügynökére (kártya 4c5c540c)
+
+**Döntés:** A `store/local-llm-usage.log` takarítása a `model == "test-model"` sorokat törli
+(288 db), nem a kártyában megnevezett `agent == "test-agent"` sorokat (256 db).
+**Miért:** A tünet, amit Peti megnevezett, az hogy a swimlane-en HARMADIK modellként jelenik meg
+egy nem létező modell. A swimlane MODELL szerint csoportosít, és a ledgerben a valódi `queue`
+hívó is írt 32 sort a hamis `test-model`-lel. Csak az `agent=test-agent` sorok törlése tehát
+bent hagyta volna a hamis modellt a grafikonon, vagyis pont azt, amit meg kellett szüntetni.
+Ellenőrizve: a ledger összesen HÁROM modellnevet tartalmaz, a `test-model` egyiknek sem valódi
+neve.
+**Amit KIFEJEZETTEN nem töröltünk:** több VALÓDI hívó neve tartalmazza a "test" szót
+(`backend-selftest`, `backend2-functest`, `backend2-test`, `mikrob-hybrid-test`,
+`mikrob-selftest`, és egy csupasz `test`, ami a VALÓDI qwen modellt használta). Egy `grep -v test`
+mindet elvitte volna. A szűrés ezért egyetlen oszlopra horgonyzott, pontos egyenlőség, sosem
+soron végzett részsztring-keresés.
+**Végrehajtás:** `store/usage-log-purge-test-rows.py` (verziókövetett, újrafuttatható,
+alapból dry-run). Előbb egy MÁSOLATON próbáltuk ki: 288 sor törölve, mind az 5624 valódi qwen-sor
+és mind a 8 valódi "test"-nevű hívó érintetlen; csak ezután futott élesben, időbélyeges
+biztonsági mentéssel. A script a futás közben érkező sorokat is megtartja (a ledgerre nincs lock).
+**Sorrend igazolva:** a guard landolása UTÁN takarítottunk, és a `fleet-test.sh --ref 909e815b`
+a három szennyező suite-ra 0 sor növekedést adott -- vagyis a valódi landolási úton is fog.
+**Ki döntött:** fullstack (mérés + végrehajtás), MikroB (sorrend), Peti (igény).
+
+## 2026-09-04 13:30 -- A swimlane-blokkok pakolása a KIRAJZOLT geometrián fut, és sűrű módot kap (kártya 4c5c540c, Peti képe)
+
+**Döntés:** A modell-sávon belüli blokkok interval-packinggel al-sorokba kerülnek (first-fit), a
+pakolás pedig a KIRAJZOLT dobozokra fut (bal/jobb él százalékban), nem a nyers idő-intervallumokra.
+**Miért:** A renderer minden blokkot egy minimum-szélességre kerekít. Élő adaton mérve (4 órás
+ablak): a 74 blokkból 66 (89%) RÖVIDEBB ennél a küszöbnél, tehát szélesebbre rajzolódik, mint
+ameddig tartott, és akkor is ütközik, ha az intervalluma nem érintkezik. Emellett 40 VALÓDI
+idő-átfedés is van. Idő-alapú pakolás tehát a látott hibát nem oldotta volna meg.
+**Következmény, amit ki kellett mondani:** a CSS-ből törölni kellett a `min-width: 10px`-et. Két
+külön alsó korlát (0.6% ÉS 10px) mellett a pakoló nem tudhatja egy blokk valódi kirajzolt
+szélességét -- a "nincs átfedés" igaz lett volna százalékban és hamis a képernyőn (0.6% egy ~700px
+sávon ~4px, tehát a pixel-korlát csendben győzött). Egy szám dönt.
+**SŰRŰ MÓD (a szigorú pakolás ára):** a lokális hívás naplózott időtartama TARTALMAZZA a GPU-lock
+várakozást, ezért a sorban álló hívások wall-clock intervalluma ténylegesen átfed. Mérve: 30 perces
+ablakon 23 al-sor, 1 órán 20, 4 órán 36. A régi 30px-es sormagassággal ez EGYETLEN modellre
+760-1190px magas sáv, vagyis a szigorú pakolás önmagában egy átfedést cserélt volna egy
+használhatatlan grafikonra. Ezért 4 al-sor fölött a sáv vékony sorokra vált (a blokk-felirat
+elfogy, a szín + tooltip viszi a jelentést), 260px fölött pedig görget.
+**Ki döntött:** Peti (ne fedjék egymást), fullstack (a mérés és a sűrű mód, mert a szigorú pakolás
+mért ára ez volt), MikroB (átadás).
+**Hivatkozás:** kártya `4c5c540c`; `web/app-overview.js` (`ovwLlmDistPackRows`),
+`src/__tests__/llmdist-lane-packing.test.ts` (a pakolót ténylegesen FUTTATJA, nem grepeli).
+
+## 2026-09-04 14:55 -- Az uzenet-backlog figyelo a `[session-stuck]` KIEGESZITESE, nem masodik csatorna (kartya 1e7ba5c1)
+
+**Döntés:** A `message-backlog-watcher` megmarad, de KIZÁRÓLAG kiegészítésként: hallgat minden olyan
+ügynökről, akiről a router az elmúlt órában már küldött `[session-stuck]` riasztást, és soha nem
+riaszt a fő-ügynökről. A küszöb továbbra is ÉLETKOR-alapú (nem darabszám), a cooldown ügynökönkénti,
+és a riasztás szövege attól függ, van-e élő panel.
+**Miért:** A kártya eredeti premisszája -- „a backlog végpontot senki nem figyeli" -- MÉRHETŐEN
+TÉVES volt, és ezt Cybered bizonyította: a `message-router.ts` már ma is küldi ugyanazt a riasztást
+ugyanabba a postaládába (174 db / 7 nap), méghozzá TÖBB információval, mert kiolvassa a panelt, és
+így meg tudja különböztetni a dolgozó ügynököt a beragadttól -- amit a sor önmagában nem tud. Az én
+REVIEW-m a router kommentjét idézte („the queue side alone cannot tell them apart"), de a sor ott nem
+ér véget: `; the pane can`. Az emitter ~100 sorral feljebb van ugyanabban a fájlban. A keresésem a
+scheduled-taskokra, a heartbeatre és a `fleet-nudger.sh`-ra terjedt ki, a folyamaton belüli
+watcher-ekre nem -- ott, ahol a fogyasztó ténylegesen él.
+**A maradék rés, ami VALÓS, és amiért a watcher mégis marad:** a router `agentStuckSince` térképe
+MEMÓRIÁBAN él, tehát egy dashboard-újraindítás nullázza, míg az üzenetek `created_at`-ja túléli. Egy
+újraindításon átnyúló, régi sor így teljesen kicsúszhat a `[session-stuck]` alól, mert az órát senki
+nem indítja újra egy már öreg sorra. Ezt a rést fedi le a watcher, és csak ezt.
+**Miért kötelező a fő-ügynök tiltása:** a riasztás CÍMZETTJE a fő-ügynök, tehát egy róla szóló
+riasztás pont abba a sorba kerül, amit leír, és a watcher a saját kimenetét kezdi mérni. Cybered
+visszajátszotta 7 valós napon: 57 riasztásból 11 volt ilyen, és a nyolcadik óránkénti ismétlésre a
+jelentett 11 pending sorból 7 a watcher saját gyártmánya lett volna. Mindkét szomszédos emitter
+(`formatStuckSessionAlert`, `notifyOrchestratorOfFailedHandoff`) ugyanígy tiltja, kiírt indokkal.
+**Ki döntött:** Cybered (mérés + NO-GO), MikroB (hatókör-döntés: kiegészítés, dedup-pal), backend2
+(implementáció).
+**Hivatkozás:** kártya `1e7ba5c1`, Cybered komment 19609, MikroB msg 22523;
+`src/web/message-backlog-watcher.ts`, `db.recentStuckAlertContents`.
+
+## 2026-09-04 14:55 -- Az auto-dispatch belyegzese KULON belepesi ponton megy, ujrakuldes-or nelkul (kartya 382dcb15)
+
+**Döntés:** A `fireKanbanDispatch` az `appendCardStateStampForDispatch`-et hívja, ami ugyanazt a
+bélyeget teszi ki, de a „már van benne marker -> ez újraküldés" őr NÉLKÜL. A `POST /api/messages` út
+változatlanul az őrzött `appendCardStateStamp`-et használja.
+**Miért:** Az őr a TELJES tartalmat vizsgálta (`content.includes(CARD_STATE_MARKER)`), a dispatch-út
+tartalma viszont a kártya saját címéből és leírásából áll össze. Egy olyan kártya tehát, aminek a
+leírása csak MEGEMLÍTI a `[card-state @send]` stringet, „igen"-t kapott, és a dispatch némán,
+bélyegzetlenül ment ki. Nem elméleti és pont ott a legrosszabb, ahol számít: a `382dcb15` (maga a
+bélyegzésről szóló kártya) és a `790c962d` leírása is tartalmazza a markert, tehát az a két kártya,
+amit ezen a feature-ön dolgozva a legvalószínűbben dispatchelnek, épp az a kettő volt, amit nem
+bélyegeztünk volna. És mivel a kézbesítés-kori lábléc a küldés-kori bélyeget veszi bemenetnek, a
+kimaradás kétszeresen láthatatlan.
+**Miért biztonságos az őrt elhagyni ezen az úton:** ez az út SOHA nem újraküldés -- minden híváskor
+frissen állítja össze a tartalmat a tábláról, tehát egy marker abban a szövegben a kártya, ami a
+bélyegzésről BESZÉL, nem egy bélyeg, amit ez a kód írt.
+**Ismert maradék, kimondva:** ha egy leírás nem csak a markert, hanem egy teljes bélyegzett SORT is
+tartalmaz, a `formatDeliveryStalenessNote` azt is beolvassa, mert az egész törzset pásztázza. Ez
+csak téves „változott" tippet adhat, valódit elnyomni nem tud, és egy kézzel írt üzenet ma is meg
+tudja tenni -- tehát tipp-minőségi kérdés, nem ennek a kártyának a hibája.
+**Ki döntött:** Cybered (F1 lelet), MikroB (jóváhagyás), backend2 (implementáció).
+**Hivatkozás:** kártya `382dcb15`, Cybered komment 19612; `src/web/kanban-state-stamp.ts`,
+`src/web/routes/kanban.ts`.
+
+## 2026-09-04 17:55 -- Tíz perces gördíthető viewport a swimlane-en, és a "padding is minimum-width" csapda MÁSODSZOR (kártya b52c3c42)
+
+**Döntés:** A betöltött tartomány (csúszka, 30p-4h) és a LÁTHATÓ ablak (10 perc) két külön
+mechanizmus. A vászon `zoom = tartomány/10perc` viewportnyi széles, vízszintesen gördíthető, és a
+`calc(106px + (100% - 106px) * zoom)` képlet CSAK a sáv-területet szorozza -- a 106px-es
+címke-oszlopot nem. Enélkül a látható szelet a címke szélességével rövidebb lenne, tehát a "tíz
+perc" állítás egyszerűen hamis lenne (~13% eltérés tipikus kártya-szélességen). Böngészőben mérve:
+pontosan 10,00 perc látszik.
+**Geometria:** a minimum-szélesség és a rés a viewport SZÁZALÉKÁBAN van megadva, és zoom-mal
+osztódik, így pixelben ugyanakkora marad bármekkora betöltött tartománynál. Ez teszi
+megfizethetővé a vastagabb blokkokat: a pakoló 4 órán 13 al-sor helyett 4-et kér, mert a blokkok
+89%-a korábban CSAK a padló miatt volt egyáltalán széles.
+**A padló 0,6% -> 2% (a viewporthoz mérve, ~5px -> ~16px):** Peti olvasható blokkokat kért, egy
+rövid hívás pedig pontosan annyi széles, amennyit a padló enged. Mért ár al-sorokban: 3 az
+alapértelmezett 1 órás ablakon, 8 a 4 órás szélsőértéken; a compact-küszöb ezért 8-ról 6-ra ment,
+hogy a gyakori 1 órás nézet teljes magasságú maradjon, a 4 órás pedig vékony sorokra váltson.
+**AMIT NEM SIKERÜLT teljesíteni, és kimondom:** a "olvashatóbb felirat" a MAGASSÁGRA teljesült
+(24px -> 32px blokk, 30px -> 38px sáv) és a minimum szélességre (5px -> 16px), de egy 5 másodperces
+hívás egy 10 perces ablakban a szélesség ~1/120-a: rövid blokkon SEMMILYEN behúzással nem fér el a
+felirat. Mérve: 19 blokkból 1 mutatja a teljes feliratát. Ott a szín + a jelmagyarázat viszi a
+feladat-típust, a tooltip a részletet. Ez a nézet inherens korlátja, nem beállítás kérdése.
+**MÁSODSZOR ugyanaz a csapda:** a `padding: 0 8px`, amit az olvashatóságért tettem be, MINIMUM
+SZÉLESSÉGET jelent (16px), amiről a pakoló nem tud -- böngészőben mérve 21 képernyő-átfedést hozott
+vissza egy olyan elrendezésbe, amit a pakoló tisztának hitt. Pontosan az a hibaosztály, amit a
+`min-width: 10px` eltávolításakor már egyszer lezártunk. A felirat mostantól `text-indent`-tel van
+behúzva, ami nem járul hozzá a doboz szélességéhez, és erre teszt is került.
+**Ki döntött:** Peti (a két vezérlő és a vastagabb blokkok), fullstack (a mérések és az arányok).
+**Hivatkozás:** kártya `b52c3c42`; `web/app-overview.js`, `web/style.css`,
+`src/__tests__/llmdist-lane-packing.test.ts`.
+
+---
+
+## 2026-09-04 -- 790c962d -- Az elavult kártya-dispatch nem kézbesítődik, hanem lezárul
+
+**Döntés.** A `message-router` a kézbesítési hurok LEGELEJÉN eldobja azt az üzenetet, ami kártya-dispatch
+(`[Kanban feladat #<id>]` a SOR ELEJÉN) és a kártya azóta `done` vagy `waiting` lett. A sor
+`closeMessagesWithoutDelivery()`-vel zárul: időbélyeg + indok marad, a tartalom megmarad.
+
+**Mit mértem, mielőtt bármit építettem.** A kártya két javítást kínált (gyorsítás vagy kézbesítés-idejű
+friss-ellenőrzés), és a mérés szerint **egyik sem volt a helyes lépés**:
+
+- **A kézbesítés nem lassú.** 6 óra alatt: mikrob 118 üzenet **0,1 perc** átlagos várakozással, qa 0,4,
+  backend3 0,2. Ez kizárja a "soros feldolgozás / egyetlen worker / rate-limit" magyarázatot. A
+  várakozás a FOGADÓ foglaltságával korrelál -- egy dolgozó Claude-panelbe nem lehet promptot
+  injektálni a kör megsértése nélkül, és a kód ezt tudja is (`shouldAbandon` csak HIÁNYZÓ sessionre ad
+  fel üzenetet, foglaltra nem).
+- **A friss-ellenőrzés már megvolt** (`formatDeliveryStalenessNote`, kártya 9566a197).
+
+**A tényleges veszteség, és ez az új lelet.** A torlódás egyetlen ügynöknél állt (23 függő üzenet,
+minden más sor üres). Abból 10 kártya-dispatch, és a táblával összevetve **tízből hét már elavult**
+volt: öt `done`, kettő `waiting`, a legrégebbi hat órája sorban. Az ügynök elvégezte azt a munkát --
+a TÁBLÁRÓL vette fel (11. szabály), nem a dispatchből. A dispatch tehát nem informált semmiről,
+viszont érkezéskor elvisz egy kört, plusz még egyet, amíg a fogadó felismeri hogy elavult és visszaír.
+
+**Miért nem a meglévő stamp-útra épült.** A `formatDeliveryStalenessNote` send-time stamp blokkot
+igényel, a dispatch-ek viszont nem hordoznak ilyet: a `routes/kanban.ts` `createAgentMessage`-dzsel
+hozza létre őket, megkerülve a POST /api/messages utat, ahol az `appendCardStateStamp` fut. **24 óra
+alatt 62 dispatchből 1** hordozott stampet. A stampre kulcsolás tehát 61/62 arányban INERT lett volna
+-- egy néma no-op, ami közben megépítettnek látszik. Ezért a fejlécből olvassa ki az azonosítót.
+
+**Az elhelyezés maga a funkció.** A hurok legelején fut, MINDEN session-munka előtt. Alatta minden
+ellenőrzés a fogadó paneljének szabaddá válására vár -- és épp az a probléma, hogy a fogadó órákig
+foglalt. A készenléti kapu UTÁN elnyomva a torlódás csak olyan ütemben tisztulna, amilyen ütemben az
+ügynök amúgy is üríti, vagyis abban az ütemben, ami a torlódást okozta.
+
+**FAIL-OPEN, szándékosan, a repó többi kapujával ellentétesen.** Ha a kártya-lekérdezés dob vagy nem
+talál, az üzenet KÉZBESÍTŐDIK. Az aszimmetria a lényeg: egy elavult dispatch kézbesítése egy elpazarolt
+kört ér, egy élő dispatch téves eldobása viszont olyan munkát veszít el, aminek a hiányát senki nem
+veszi észre. Ahol a két hibairány súlya különbözik, a guard a könnyebbet választja.
+
+**A horgonyzás a funkció biztonsága.** A fejléc-minta a SOR ELEJÉHEZ van horgonyozva, hogy egy üzenet,
+ami csak EMLÍT egy dispatchet ("a [Kanban feladat #...] amit küldtél már nem aktuális"), soha ne
+essen áldozatul. A mutáció-próba itt talált egy hibát a saját tesztemben: az első fixture-öm a
+hivatkozást a MÁSODIK sorra tette, amit az "első nem üres sor" szabály amúgy is kizár -- a `^` horgony
+törlése zölden hagyta a tesztet. A valódi eset a fejléc az ELSŐ sor közepén; az a fixture most ott van.
+
+**Csak a router-úton, tudatosan.** A testvér-kontroll (`formatDeliveryStalenessNote`) MINDKÉT úton ott
+van, és a saját tesztje ki is mondja, miért. Ez router-only, két mért okból, és a döntés teszttel van
+rögzítve, hogy ne feledékenységnek látsszon: (1) a `drain-inbox` KIZÁRÓLAG a fő ügynököt szolgálja,
+akinek a sora nem évül el (6 óra, 118 üzenet, 0,1 perc átlag, 0,7 perc a legrosszabb) -- ott nincs mit
+eldobni; (2) az út `claimPendingForAgent`-tel KEZD, ami a hurok előtt `delivered`-re állítja a sort, így
+egy utólagos elnyomás pont az a "láthatatlan üzenetvesztés" lenne, amitől ugyanannak a fájlnak a saját
+`from_agent` ága óv.
+
+## 2026-09-04 18:40 -- Swimlane: a telepített-de-inaktív modell is kap sávot (a korábbi döntés megfordítása)
+
+**Döntés:** a helyi-LLM swimlane mostantól minden telepített/konfigurált modellre rajzol sávot,
+akkor is, ha az adott időablakban egyetlen hívása sem volt. Az inaktív sáv rövid, szaggatott sor
+egy rövid magyarázó szöveggel, nem teljes magasságú üres sáv; a sorrendben minden inaktív sáv az
+összes aktív alá kerül. Külön jelölést kap az a modell, aminek volt forgalma az ablakban, de az
+Ollama már nem listázza (nincs telepítve) -- ezt viszont CSAK akkor mondja ki a felület, ha a
+roster-lekérdezés ténylegesen sikerült; ha az Ollama nem elérhető, a hiányzó információ nem
+fordul át állításra.
+**Miért:** Peti kérése (2026-09-04, Telegram, képmelléklettel). Ez megfordítja a korábbi
+"soha ne legyen üres sáv" döntést (18771-es kártya-komment): azzal a szabállyal egy éppen nem
+használt modell teljesen eltűnt a diagramról, tehát az "inaktív" és a "nem is létezik" állapot
+ugyanúgy nézett ki. A KPI-ban az "Aktív modellek" szám szándékosan NEM tartalmazza az inaktív
+sávokat.
+**Ki döntött:** Peti (kérés) + Fullstack (megvalósítási döntések: inaktív sáv alakja, sorrend,
+roster-forrás, a nem-elérhető Ollama kezelése).
+**Hivatkozás:** kártya 21950f77.
+
+## 2026-09-04 18:40 -- BRIDGEHU813 átvéve, a hozzá tartozó böngésző-suite tudatosan nem
+
+**Döntés:** Az upstream `1df099be` (#1170, BRIDGEHU813) párosítási hibaüzenet-fordítását átvettük
+a forkba (kártya `73cf0a22`), a hozzá tartozó Playwright-suite-ot (`tests/browser/**`,
+`playwright.browser.config.ts`, `browser-verify` script, és a csak ezeket kiszolgáló
+`vitest.config.ts` kizárás) viszont NEM.
+
+**Miért az átvétel:** a párosítási panel magyar volt mindenhol, kivéve azt az egy sort, amit a
+felhasználó hiba esetén elolvas -- ott a szerver angol mondata jelent meg nyersen. Ez a
+CLAUDE.md 12. szabályába ütközik (beszédes, i18n-kulcsból jövő hibaüzenet). Az upstream megoldása a
+helyes irányú: a stabil `code` mezőre fordít, nem a mondatra, és ismeretlen kódnál visszaesik a
+szerver saját mondatára, tehát egy később hozzáadott szerver-hiba angolul jelenik meg, nem üres
+sorként vagy nyers kulcsként.
+
+**Miért nem a böngésző-suite:** a flotta kapuja (`store/fleet-test.sh`) vitestet futtat, és
+egyáltalán nem hív Playwrightot. Egy átvett böngésző-suite tehát olyan suite lenne, amit senki nem
+futtat -- egy nem futó teszt lefedettségnek olvasódik, miközben semmit nem őriz.
+
+**Ami emiatt NEM maradhatott el:** az upstream böngésző-tesztje pinneli a BEKÖTÉST, vagyis azt,
+hogy a hibaág ténylegesen MEGHÍVJA a fordítót. Ezt a garanciát nem ejtettük, hanem áthelyeztük: az
+átvett unit-teszt közvetlenül állítja, és mérve bukik, ha a hívási pontot visszaállítjuk. Enélkül a
+fájl összes többi állítása zöld maradna, miközben a felhasználó újra angolul látná a hibát -- pont
+az a hiba, amit ez a kártya javít.
+
+**Újranyitandó, ha:** a flotta kapuja valaha kap egy Playwright-lépcsőt. Akkor a suite átvétele
+önálló döntés, nem automatikus következmény.
+
+---
+
+## 2026-09-04 -- 711a7e57 -- A selftestek felfedezéssel futnak, nem kézzel írt wrapperenként
+
+**Döntés.** Egyetlen teszt-fájl (`src/__tests__/store-selftests-all-run.test.ts`) felderíti a
+`store/*.selftest.sh` glob-ot, és mindegyiket lefuttatja, `it.each`-csel külön jelentve. Nem nyolc
+kézzel írt wrapper.
+
+**Miért.** Mérve ezen a repón: 13 selftestből **nyolcra semmi nem hivatkozott**, tehát soha nem
+futottak -- megírt, commitolt, zöldnek LÁTSZÓ ellenőrzések, amelyek egyszer sem hajtódtak végre. A
+kártya nyolc wrappert kért; az megjavította volna ezt a nyolcat, és **árván hagyta volna a
+kilencediket**, amint valaki hozzáadja. A kártya saját szövege nevezi meg a valódi okot: "nincs
+auto-felfedezés, minden selftest külön vitest-fájlt igényel". Ezért a felfedezés az ok javítása, a
+nyolc wrapper a tüneté.
+
+**Az állapotuk, mielőtt bármit írtam:** mind a nyolc árva **átment** (89 ellenőrzés összesen). A
+kártya számolt régi, valós bukásokkal; nem volt. Ez jó hír, de nem teszi feleslegessé a bekötést --
+attól, hogy ma zöldek, holnap egy szerkesztés csendben elronthatja őket, és senki nem venné észre.
+
+**Nem-vákuum, mert egy "PASS" önmagában nem bizonyíték.** A wrapper NEM azt nézi, hogy a script
+exit 0-val tért vissza, hanem hogy **nem nulla** esetszámot jelentett, a három használatban lévő
+riport-alak valamelyikében. Egy selftest, aminek minden esete kimaradt vagy a ciklusa be sem lépett,
+tökéletesen boldog összefoglalót ír nulla munkáról. Mutációval igazolva: `All 0 checks pass.` -> FAIL,
+felismerhetetlen alak -> FAIL, elrontott glob -> FAIL, létező célt vesztett kizárás -> FAIL.
+
+**Egy kizárás, indokkal: `local-llm-model-routing`.** A selftest saját kommentje mondja ki, hogy
+kicseréli a `store/local-llm-model-routing.json`-t, és "this IS the file the running fleet uses". A
+`trap cleanup EXIT` normál kilépésre és szokásos jelekre visszaállítja -- **SIGKILL-re nem**, és ez a
+suite landoláskor fut, a landolásokat pedig megölik (ugyanezen a napon egy saját teljes futásomat
+ölte meg egy session-határ). Egy megölt futás 18 ügynök routing-configját hagyná egy nem létező
+modellre mutató hamis fájlon. Kézzel futtatva átmegy (5/5) -- **a BEKÖTÉS nem biztonságos, nem a
+script.**
+
+A javítás egy sor a `local-llm.sh`-ban (`cfg="${LOCAL_LLM_MODEL_ROUTING_FILE:-$HERE/...}"`), ami után
+a selftest ideiglenes fájlra mutathat és csatlakozhat. Az viszont egy ÉLŐ flotta-scriptet szerkeszt,
+ami külön döntés a bekötéstől, ezért nincs ide belegyúrva.
+
+**Költség, mérve:** 62,5 s ez a fájl, ~77 s mind a 13 sorosan. A vitest a FÁJLOKAT futtatja
+párhuzamosan, tehát egy ~80-100 s-os suite-ban ez nagyrészt elrejtőzik. A már bekötött ötöt
+szándékosan ÚJRA futtatja: a "ki köti be máshol" nyilvántartás pontosan az a könyvelés, ami elavul,
+és a saját teszt-fájljuk amúgy is más invariánsokat állít (a skills-symlink például az `rm`-`mv`
+sorrendet), tehát nem redundáns.
+
+---
+
+## 2026-09-04 -- e96b06e7 -- Helyi JSON-kivonatoló a dashboard API-hoz, nem külső tömörítő
+
+**Döntés.** Egy stdlib-only Python szkript (`store/dash.py`) sűríti a gyakori dashboard-API
+válaszokat: `card`, `comments`, `board`, `agents`, `queue`, plus egy `get` menekülőút. Nulla új
+függőség, nulla új kimenő útvonal -- localhost, a már meglévő tokennel.
+
+**Miért nem külső eszköz.** Ez a 241dbf87 (headroom) kiértékelés lelete volt: a `noisy-run.sh`
+SOR-alapú szűrése JSON-válaszon semmit nem ér, mert az egész válasz egy sor. A headroom pont ezt a
+rést töltené be -- de az értéke egy olyan pozícióból jött (minden LLM-hívás előtt), amit egy
+kényelmi funkcióért nem adunk oda. Egy ~200 soros helyi szkript ugyanazt a rést zárja, a mi
+API-alakunkra szabva.
+
+**Mérve, nem feltételezve:** a `GET /api/kanban` 242 kártyát ad vissza, egyenként 18 mezővel,
+minden teljes `description`-nel. Nyersen olvashatatlan; kézzel kivonatolva naponta többször
+újra van találva.
+
+**Az auth szándékosan bent van.** A megszokott alak
+`printf 'Authorization: Bearer %s\n' "$(cat store/.dashboard-token)" | curl -H @- ...`, és a
+hibamódja néma: a `-H @-` elfogyasztja a stdint, így minden olyan kérés, ami testet is csövez, ÜRESET
+küld, a szerver pedig 200-at ad a semmire. Ezt az egész hibaosztályt megszünteti olvasásokra.
+
+**A token soha nem íródik ki**, és ezt a selftest a HIBA-ágon állítja -- ott szokott egy érték
+kicsúszni, mert a hibaszöveg sietve készül.
+
+**Minden rövidítés jelölt.** `...(+N)`, számmal: egy csupasz `...` a olvasót találgatni hagyja, hogy
+a levágott rész számított-e; a szám elég ahhoz, hogy eldöntse, elmenjen-e elolvasni.
+
+**Egy valós hiba, amit az élő próba fogott meg:** a token a gitignorált `store/`-ban él, tehát csak a
+FŐ checkoutban létezik -- minden ügynök viszont a saját worktree-jéből fut, ahol nincs. Az első éles
+hívás pontosan így bukott el. A feloldás most: `DASH_TOKEN_FILE` > a szkript könyvtára > a `git
+rev-parse --git-common-dir`-ből származtatott fő checkout. Hordozható, nem beégetett `/home` út.
+
+**Hurokzárás:** a selftestjét a 711a7e57-en épített felfedezés-wrapper AUTOMATIKUSAN bekötötte,
+nulla szerkesztéssel (14 -> 15 teszt). Ez a legjobb bizonyíték arra, hogy ott a felfedezés volt a
+helyes választás nyolc kézzel írt wrapper helyett: a következő selftest magától bekötődött.
+
+---
+
+## 2026-09-04 -- 89f4c28d -- A routing-selftest hermetikus lett, és ezzel bekötődött
+
+**Döntés.** A `local-llm.sh` mostantól honorálja a `LOCAL_LLM_MODEL_ROUTING_FILE` env-változót
+(`cfg="${LOCAL_LLM_MODEL_ROUTING_FILE:-$HERE/local-llm-model-routing.json}"`), a selftest ideiglenes
+fájlra mutat, és a `store-selftests-all-run` kizárás-listája **üres lett**.
+
+**Miért kellett.** A selftest korábban kicserélte a `store/local-llm-model-routing.json`-t -- a saját
+kommentje szerint "this IS the file the running fleet uses" -- és `trap cleanup EXIT`-tel állította
+vissza. A trap **SIGKILL-re nem fut le**, ez a suite pedig landoláskor fut, a landolásokat pedig
+megölik. Egy megölt futás 18 ügynök routing-configját hagyta volna egy nem létező modellre mutató
+hamis fájlon. Ezért volt kizárva a 711a7e57-en, és ezért nem volt szabad csak úgy bekötni.
+
+**Visszafelé kompatibilis.** A változó nélkül a viselkedés byte-azonos a korábbival: ez egy út arra,
+hogy máshová mutassunk, nem új alapértelmezés.
+
+**Bizonyítva, nem állítva:** a selftest futása előtt és után az élő `/home/neon/marveen/store/`-beli
+config sha256-ja **azonos** (`bc1994fb…`), és a worktree-belié is. Még a mutációs futás sem nyúlt
+hozzá. A kizárás megszűnése után a felfedezés-wrapper 15 -> 16 tesztre nőtt.
+
+**Az override teherhordó, nem dekoráció:** visszaállítva a beégetett útra a selftest elbukik (4/1).
+
+**ÉS AMIT A BEKÖTÉS AZONNAL FELSZÍNRE HOZOTT -- ez a kártya legérdekesebb része.** Az 5. eset
+("missing routing config fails open") a `no model configured` szöveget is bukásnak vette. Ez két
+független dolgot mos össze: a hiányzó ROUTING configot (amiről a case szól) és az üres MODEL
+ÁLLAPOT-KÖNYVTÁRAT (egészen más). A `src/__tests__/setup/isolate-local-llm-state.ts` minden
+vitest-futásnál friss temp könyvtárra állítja a `LOCAL_LLM_STATE_DIR`-t -- pontosan azért, hogy a
+tesztek ne nyúljanak a flotta LLM-állapotához --, tehát a suite-on belül a "no model configured" a
+HELYES válasz, és a case elbukott rajta. Kézzel futtatva sosem bukott, mert ott van konfigurált
+modell.
+
+Ez pontosan az a hibaosztály, amiért ez a kártya-család létezik: **egy nem futó ellenőrzés a saját
+hibáját is elrejti.** Nem volt hibás, amíg nem futott.
+
+A javítás nem lazítás: a case most a Traceback-et nézi (az a crash), ÉS azt, hogy hiányzó config
+mellett ne szivárogjon ki a fake modell (az a routing). Mindkettő a routingról szól, és egyik sem
+függ attól, hogy van-e letöltött modell.
+
+## 2026-09-04 -- 99fccbcf -- A munkafa-frissesség kereséshez: eszköz, nem blokkoló hook
+
+**Döntés:** a „grep az élő telepítésen hamis nullát adhat” hibaosztályra NEM épült blokkoló
+PreToolUse hook. Helyette egy hívható, csak-olvasó eszköz készült (`store/live-tree-freshness.sh`),
+ami kimondja a fa lemaradását, és a keresést a refen futtatja a munkafa helyett.
+
+**Miért:** a hook eseteit a valódi parancs-korpuszból mértem, nem a fenyegetésmodellből. 20 óra
+alatt 4121 Bash-hívásból **15** volt rekurzív keresés az élő checkouton, mind egyetlen ügynöktől,
+és mind `store/` alatti fájl/log keresése -- egyetlen forrás-létezés kérdés sem. Natív Grep/Glob
+hívás ugyanarra az útvonalra: **0**. Egy guard ott napi ~15 hamis pozitívot termelt volna, és a
+valódi esetet (egy `grep -rl` egy 12 committal lemaradt fán) nem fogta volna meg.
+
+**A kitettség viszont valós, és ezt is mértem.** A `marveen-land.sh` a 02f462e1 óta minden
+landolás után előrehúzza az élő checkoutot, de a közvetlenül pusholó kézi landolás nem hívja meg.
+A 142 ablakon mérve: medián 16,4 perc / 3 commit lemaradás, de **22 ablak egy óránál hosszabb** és
+**26 ablakban 5+ commitot** nem látott a fa. 2026-09-04-en önmagában 17, 16, 15, 12 és 12 commitos
+ablakok. A saját hamis nullám egy 12 commit / 60 perces ablakba esett.
+
+**Egy mérés menet közben megfordított egy állításomat.** Azt írtam a script fejlécébe, hogy a
+rossz ref némán, exit 1-gyel tér vissza, tehát megkülönböztethetetlen az őszinte „nincs
+találat”-tól. Ez hamis: a rossz ref hangos (`fatal: unable to resolve revision`, exit 128).
+A ténylegesen néma alak a rossz PATHSPEC (`git grep <minta> <jó-ref> -- nincs/ilyen.ts` -> üres
+kimenet, exit 1), ami egy átnevezett vagy fejből gépelt útvonalnál a valószínűbb hiba. Az eszköz
+ezért mindkettőt külön állapotra képezi le, és a pathspec-ágat a mérés után kapta meg.
+
+**Ki döntött:** backend2 (mérés + döntés), a kártyát MikroB nyitotta backend2 operatív jelzésére.
+
+**Ami NYITVA maradt, MikroB döntése:** (a) az élő checkout periodikus előrehúzása, hogy a kézi
+landolás utáni ablak is bezáruljon -- ez az élő telepítést érinti időzítve, ezért nem egyoldalú
+lépés; (b) a keresési fegyelem fleet-szintű kimondása a root CLAUDE.md-ben.
+
+## 2026-09-04 -- a14812e8 -- Fork-oldali horgony: megnevezett teny, nem blob-pin
+
+**Dontes:** az `ACKNOWLEDGED_CONFLICTS` mentesitesei mostantol OPCIONALISAN megnevezhetnek egy
+fork-oldali tenyt (`ACKNOWLEDGED_FORK_ANCHORS`: szimbolum + fajl + present/absent + miert
+teherhordo). Ha az a teny megvaltozik, a guard ujradontest ker. Fork-oldali BLOB-pin NEM keszult.
+
+**Miert nem blob-pin (a kezenfekvo szimmetria):** lemerve 14 napra ezen a repon **404 fork-oldali
+commit a 72 pinnelt fajlon, es 72-bol 67 mozdult**. Egy fork-oldali blob-pin naponta kb. 29-szer
+avulna el, szinte mindig olyan szerkesztesen, ami a szabaly targyat nem is erinti. Az upstream-pin
+azert engedheti meg maganak a teljes-fajl granularitast, mert az upstream ritkan mozdul; a mi
+oldalunknak nincs meg ez a tulajdonsaga, es egy naponta 29-szer siro kapu pecsetelove valik.
+
+**Miert opcionalis, es miert marad az:** a 73 szabalybol 9 tesz barmilyen fork-oldali allitast, es
+azok tobbsege ATVETELI TORTENET ("not adopted this round"), nem elo, ellenorizheto allitas a farol.
+Minden bejegyzest predikatumba kenyszeriteni azt jelentene, hogy prozat irunk at olyan formalizmusba,
+ami nem illik ra.
+
+**Ket meres forditotta meg a sajat tervemet epites kozben:**
+
+(1) A `content.includes(needle)` horgony VAK az atnevezesre: a `touchAncestorChain` ->
+`touchAncestorChainRENAMED` mutacio zolden ment at, mert az uj nev TARTALMAZZA a regit. Emiatt kapott
+a matcher azonositó-hatar ellenorzest (`containsAsToken`). A mutacio a javitas utan helyesen bukik.
+
+(2) Egy horgony nem lehet KOMMENTTEL kielegitheto. Az `installer-ollama-nonfatal` szabaly termeszetes
+horgonya az `ollama_pull` lenne, ami meg mindig szerepel egyszer az `install-linux.sh`-ban -- egy
+kommentben, ami azt magyarazza, hogy a hivast ELTAVOLITOTTAK. Egy `absent` horgony ott mar az elso
+napon pirosan allna, egy `present` pedig orokre zolden a rossz okbol. Az a bejegyzes ezert NEM kap
+horgonyt, es a kizarast kulon teszt pinneli, hogy egy kesobbi szerkeszto ne a nyilvanvalo horgonyt
+tegye be szo nelkul.
+
+**Az ellenorzes MINDIG fut, nem csak utkozeskor.** A blob-check csak az adott futasban ténylegesen
+utkozo fajlokra ertekelodik; a token-usage.ts hiba viszont utkozes NELKUL tortent -- a szabaly
+egyszeruen nem volt mar igaz. Feltetelesse tenni ujratermelne a lyukat, amit be kell zarnia.
+
+**Ki dontott:** backend2 (meres + terv), a kartyat MikroB nyitotta backend2 leletere (607254fb komment 19951).
+
+## 2026-09-05 -- e5b7ff19 -- Hatokor-allitas sweep: jelento eszkoz, nem kapu
+
+**Dontes:** a "teszt-fejlec olyan hatokort allit, amit nem fed le" osztalyra JELENTO eszkoz keszult
+(`store/test-scope-claim-check.py`), nem blokkolo kapu.
+
+**Miert nem kapu -- merve:** 611 teszt-fajlon 61 fejlec-allitas oldodik fel tulajdonosra, ebbol 33
+nem eri el a kiszolgalot, es kezi ellenorzes utan PONTOSAN EGY valodi eltereses akadt. A tobbi
+forras-kontraktus-or (app.js-t, shell-scriptet, SKILL.md-t olvasnak szovegkent es toredekeket
+allitanak), amelyek fejlece a route-ot a JAVITAS KONTEXTUSAKENT nevezi meg, nem sajat hatokorkent --
+ez legitim es gyakori alak itt. Egy kapu tehat kb. 23 hamis pozitivot adna 1 talalat mellett.
+
+**A megerositett lelet:** `otel-distributed-tracing.test.ts` fejlece szo szerint ezt mondja:
+"Scope: DB layer ... API route (POST/GET /api/spans, GET /api/traces/:id, GET /api/traces)". A fajl
+sajat maga hozza letre az `otel_spans` tablat es `db.prepare`-rel ujraimplementalja a lekerdezeseket;
+a `tryHandleSpans`-t nulla teszt eri el. Ez a kartya sajat 1. peldaja, es MA IS fennall. A 63beeb8a
+(waiting) ugyanennek a vegpontnak az IRASI invariansarol szol, nem a lefedettsegi resrol -- ezert a
+lelet oda ment kommentkent, uj kartya nyitasa helyett (6b. szabaly).
+
+**Az eszkoz sajat vaksaga is mert lelet volt.** Az elso valtozat a kiszolgalo modult BASENAME-
+RESZSZTRINGGEL kereste a teszt kodjaban, es a 'spans' szo egy spans-rol szolo tesztben amugy is
+mindenutt ott van (tabla-nevek, valtozok, SQL) -- tehat a `routes/spans.ts` "elertnek" latszott egy
+olyan fajlbol, ami csak vitestet es better-sqlite3-at importal. Az eszkoz ELVESZTETTE a sajat alapito
+eseteet. A reachability azota IMPORT vagy HANDLER-NEV szerinti token-illesztes. Ugyanaz a containment-
+hibaosztaly, amit ugyanezen a napon a fork-horgonynal is javitani kellett (a14812e8).
+
+**A selftest az elso futason talalt egy masodik hibat:** az argumentum-feldolgozo ketszer leptette az
+indexet, tehat `--repo X --json` mellett a `--json` sosem jutott szohoz.
+
+**Ki dontott:** backend2 (meres + dontes), a kartyat MikroB nyitotta backend2 63beeb8a-REVIEW leletere.
+
+## 2026-09-05 -- f1b3f2f0 -- A landolas ujraepiti a dist-et; a restart valtozatlanul kulon kapu
+
+**Dontes:** a `marveen-land.sh` a sikeres push es az elo checkout elorehuzasa UTAN lefuttatja a
+buildet az ELO TELEPITESBEN, ha a landolt tartomany `src/`-t erint. MikroB dontese volt a (b) irany
+(a feltetel megszuntetese, nem a jelzese); ez annak a vegrehajtasa.
+
+**Amit a kartya premisszajabol JAVITANI kellett:** a kartya szerint "senki nem aggregalja" a
+stale-build tunetet. Ez nem igaz: a `scripts/build-freshness-guard.sh` egy ELO systemd --user
+timeren fut 5 percenkent, 300 masodperces build-turelmi ablakkal -- iras kozben ellenoriztem, epp
+futott, es ezt mondta: "dist/ 2m behind src/ -- within the 300s grace period, no-op". A rés tehat
+sosem volt lathatatlan, csak sosem lett BEZARVA. A kartya lenyege ettol all: a riasztas nem javitas,
+es egy naponta tizszer ujratermelodo feltetelre nem valasz, hogy valaki naponta tizszer lefuttatja
+az update.sh-t.
+
+**A 77075367 dontese NEM lett visszavonva.** Az kimondta, hogy a landolas nem epit ujra ES nem indit
+ujra; ebbol a RESTART fele valtozatlan (tovabbra is ./update.sh, tovabbra is megerositve). Csak az
+ujraepites fele valtozott, es pont az a fele, amire a helyi-modell offload utja ra van kotve: a
+`local-llm-rag.sh` hivasonkent FRISS node-ot indit a dist-bol, tehat neki a build eleg, a restart nem
+kell. Ellenorizve iras elott: a `src/web` alatt semmi nem indit futasidoben node gyereket a dist-bol,
+tehat egy ujraepitett dist nem hasit ketfele verzio koze egy futo szolgaltatast.
+
+**Merve, mert ez minden landolas ara:** a teljes build 16,5 masodperc, a landolas amugy is 140-170
+masodperc. Sorositva fut (`flock`), mert a parhuzamos landolas valos -- egy este ketszer is
+push-versenyt vesztettem.
+
+**Fail-soft es hangos:** a commitok a build futasakor MAR pusholva vannak, tehat egy build-hiba nem
+buktathatja a landolast (az egy megtortent landolast jelentene meg nem tortentkent). Egy bukott build
+pontosan azt az allapotot hagyja hatra, ami eddig is volt, es amire a freshness-guard riaszt.
+
+**Ket sajat hibat a tesztek talaltak meg, nem en:** (1) a lock-fajlt a `store/` ala tettem, ami a
+land-fixture-ben nem letezik -- a `flock` ilyenkor 66-tal all le, es ez REBUILD FAILED-kent jelent meg
+egy olyan buildre, ami el sem indult; a lock azota a `.git` alatt van, aminek a letezeset a script
+amugy is megkoveteli. (2) A "skipped" esetem ROSSZ OKBOL ment at: ket kulon ag irja ugyanazt a szot,
+es a teszt csak a szora allitott -- a specifikus okra allit azota.
+
+**Ki dontett:** MikroB (irany), backend2 (meres + vegrehajtas).
+
+## 2026-09-05 00:55 -- A kártyazárás-ellenőrző elvárt-sha alapértelmezetté tétele (kártya 2003e04b)
+
+**Döntés:** a `store/gate-closure-check.py` `--expect` kapcsolója alapértelmezetté vált: kapcsoló
+nélkül a kártya legfrissebb `REVIEW` kommentjének `Gate-SHA:` sorát használja elvárt shaként. Az
+eltérést viszont NEM sha-egyenlőséggel ítéli meg, hanem tartalommal: feloldja mindkét commitot a két
+klón egyikébe, és összeveti a szállított fájlok tartalmát. Új `UNRESOLVED` állapot arra, amikor az
+eltérés nem ítélhető meg. A régi viselkedés a `--no-expect`-tel áll vissza.
+
+**Miért nem a kártyában scope-olt egyszerű alak:** a kártya és a hozzá tartozó plan-grilling (Cybered)
+két utat kínált -- (a) az elvárt sha a REVIEW-ból, sha-egyenlőséggel, (b) tartalom-alapú összevetés --
+és úgy ítélte, hogy (a) önmagában elég, mert a REVIEW shája „definíció szerint egyezik a
+verdiktekkel". Ez a teljes táblán MÉRVE nem igaz. Az 557 `AGREE` kártyából 38-nál tér el a REVIEW
+shája attól, amit a gate-ek megnéztek, és ebből 23 bizonyíthatóan ártalmatlan: 10-nél a két commit
+bájtra ugyanazt tartalmazza a kártya által szállított fájlokra, 13-nál pedig csak a `package.json`
+(minden landolás verziót bumpol), a `DECISIONS.md` vagy a `README.md` mozdult -- tipikusan a
+munka-commit kontra az őt landoló merge. Tisztán sha-egyenlőséggel tehát a zárások 6,8%-ára szólt
+volna riasztás, háromötöde hamisan, ami néhány nap alatt megtanítja a flottának, hogy hagyja
+figyelmen kívül. A (b) úton ugyanez 15 kártya (2,7%): 14 valódi tartalmi eltérés a kártya saját
+fájljaiban, plusz 1 feloldhatatlan.
+
+**Amit a mérés még megmutatott:** a `STALE` szövege szándékosan nem nevez meg bűnöst. A c458ba0e
+mintában a gate-ek shája az elavult, az edd4c3bf-en viszont fordítva: a szállítmány egy „nem új
+REVIEW" jelzésű INFO-ONLY kommentben lépett tovább, a gate-ek helyesen az ÚJABB shát nézték, és a
+REVIEW a lemaradt artifaktum. Az eszköz a két commitot és az eltérő fájlokat mondja meg; melyik az
+elavult, az az olvasó döntése.
+
+**Kapcsolódó, ugyanebben a munkában:** a `store/*.selftest.py` fájlokat semmi nem futtatta. A
+selftest-felfedezés (kártya 711a7e57) csak a `.selftest.sh` alakra illeszkedett, így a repó mindkét
+python-selftestje -- köztük épp ezé az eszközé -- megírva, commitolva, zöldnek látszóan, soha egyszer
+sem futott le. A felfedezés mostantól interpreter szerint kulcsol, és nyelvenként külön negatív
+kontroll van rá, hogy egy elgépelt kiterjesztés ne tudja csendben lefedetlenül hagyni az egyik nyelvet.
+
+---
+
+## 2026-09-04 -- 5af57bd7 -- Szemafor (max 2) a teljes CleanCore suite-futásokra
+
+**Döntés (MikroB).** Flottaszinten legfeljebb **2 egyidejű** teljes CleanCore suite-futás, `flock`
+alapon; a többi **vár**, nem kap elutasítást. A vitest worker-RPC timeout emelése nem alternatíva.
+
+**Miért nem a timeout.** Kimértem: a worker→fő RPC a birpc `DEFAULT_TIMEOUT = 60 s` értékét
+használja, a vitest 3.2.6 nem ad rá felülírást (a `forks` pool `getRpcOptions()`-je csak
+szerializációt ad, a `worker.js`-ben a `timeout` szó nullaszor szerepel). Csak a `node_modules`
+patchelésével lenne emelhető. És nem is ez a baj: a **fő** folyamat CPU-éheztetése váltja ki, ezért
+nem segített a `--maxWorkers=4` sem — a saját workerjeim korlátozása nem eteti a saját fő
+folyamatomat, amit MÁS ügynökök 12-workeres futásai éheztetnek.
+
+**Szemafor, nem mutex.** A marveen `fleet-test.sh` egyetlen `flock`-ot vesz, mert ott a futások EGY
+fát osztanak — ott a zár HELYESSÉGI kérdés. Itt mindenkinek saját worktree-je van, a futások
+függetlenül helyesek; ami fogy, az a CPU. Tizennyolc ügynök egy 60 perces mutexre sorbaállítva egy
+ritka hamis pirosat cserélne állandó torlódásra.
+
+**`flock` fájlleírón, nem fájl-tartalommal.** A kernel a holder halálakor elengedi, tehát egy
+SIGKILL — ma kétszer így ért véget futás — nem szivárogtat slotot. Tartalom-alapú zárhoz stale-söprő
+kellene, ami újabb elrontható dolog.
+
+**A várakozó nem néma, és ez nem kozmetika.** A 3. szabály szerint egy 10 perce nem mozduló
+`in_progress` kártya beragadt, a 3a. szerint 60 perc után testvérre száll. Egy néma 80 perces
+várakozás tehát elvenné a várakozó ügynöktől a kártyát — rosszabb, mint a hamis piros, amit a
+szemafor elkerülni hivatott. Ezért `PAUSED-SEMAPHORE` komment a várakozás kezdetén, periodikus
+frissítés (300 s, a 10 perces küszöb alatt), `RESUMED-SEMAPHORE` a slot megszerzésekor. Mindegyik
+mozdítja az `updated_at`-et, ami az a mező, amit a figyelő valóban olvas.
+
+**A rutin eset NÉMA.** Ha van szabad slot — a gyakori eset —, semmi nem íródik. Egy értesítés, ami
+egészséges forgalomra is elsül, az, amit két hét múlva átugranak (222fdc5e leckéje, ugyanezen a
+táblán).
+
+**Mért csapda, amit NEM választottam:** kézenfekvő lett volna a `store/load-paused-agents.json`
+marker-fájlba írni, hiszen azt olvassa a `redispatch-guard.sh` `_is_load_paused()`-ja és a
+stuck-card-monitor. **Nem járható:** a `load-guard-bookkeeping.sh:234` a fájlt a saját számított
+halmazából **teljesen felülírja**, tehát egy idegen bejegyzést a következő tickje törölne — a
+kizárás csendben megszűnne, miközben megépítettnek látszik. Ezért megy a jelzés a kártyára, nem a
+marker-fájlba.
+
+**Saját hiba, amit a saját selftestje talált meg.** Az `acquire()` először így szólt:
+`exec {FD}>"$f" 2>/dev/null || continue`. Parancs NÉLKÜLI `exec`-nél a átirányítás a SHELLRE
+vonatkozik és **megmarad**, tehát az a `2>/dev/null` a szkript minden későbbi `echo >&2`-jét
+elnyelte — a sorbanállás-jelzést, a feladás okát, a worktree-hibát. A selftest üres kimenetű exit 3-at
+látott, és ez vezetett a felismerésig. A javítás: a fájlt egy RENDES paranccsal hozzuk létre (annak
+az átirányítása arra a parancsra korlátozódik), az `exec` pedig csupaszon fut.

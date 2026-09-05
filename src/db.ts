@@ -1485,9 +1485,25 @@ export function saveMemory(
   topicKey?: string
 ): void {
   const now = Math.floor(Date.now() / 1000)
-  db.prepare(
+  const info = db.prepare(
     'INSERT INTO memories (chat_id, topic_key, content, sector, salience, created_at, accessed_at) VALUES (?, ?, ?, ?, 1.0, ?, ?)'
   ).run(chatId, topicKey ?? null, content, sector, now, now)
+  const id = Number(info.lastInsertRowid)
+
+  // Fire-and-forget embedding, the same shape saveAgentMemory already uses (card f27c999b,
+  // adopted from upstream). This path had none, so a row written here reached semantic search
+  // only after backfillEmbeddings() ran -- and that runs at STARTUP (index.ts), not on a timer.
+  //
+  // MEASURED before adopting, because the note that asked for this (and my own restatement of it)
+  // overstated the effect: 0 of 1509 rows on this install are unvectorised, including all 20
+  // nightly daily-log digest rows. The backfill is doing its job. What this fixes is the WINDOW,
+  // not a permanent hole: a memory written at 02:00 is unsearchable until the next restart, which
+  // can be a day away, and the guarantee currently depends on a sweep nobody schedules.
+  generateEmbedding(content).then(emb => {
+    if (emb) {
+      db.prepare('UPDATE memories SET embedding = ? WHERE id = ?').run(JSON.stringify(emb), id)
+    }
+  }).catch(() => {})
 }
 
 // Build a safe FTS5 MATCH expression from a free-form user query.
@@ -1762,8 +1778,12 @@ export function searchAgentMemories(agentId: string, query: string, limit: numbe
     ).all(terms, agentId, ...shapeFilter.params, limit * RECENCY_OVERSAMPLE) as (Memory & { rank: number })[]
     return withoutRank(reRankByRecency(candidates, limit)) as Memory[]
   } catch {
+    // `FROM memories m`: the shape fragment above is alias-qualified for the FTS join (see
+    // excludeToolLogShapeSql). Without the alias here this catch raised `no such column:
+    // m.content` -- so the designated safety net for an FTS failure threw a SECOND, unrelated
+    // error instead of degrading, turning a recoverable outage into a hard 500 (card ad209cdf).
     return db.prepare(
-      `SELECT * FROM memories WHERE (agent_id = ? OR category = 'shared') AND (content LIKE ? OR keywords LIKE ?)
+      `SELECT * FROM memories m WHERE (agent_id = ? OR category = 'shared') AND (content LIKE ? OR keywords LIKE ?)
        AND (${shapeFilter.sql}) ORDER BY accessed_at DESC LIMIT ?`
     ).all(agentId, `%${query}%`, `%${query}%`, ...shapeFilter.params, limit) as Memory[]
   }
@@ -2286,6 +2306,53 @@ export function clearPendingSelfAdvanceClear(agentId: string, cardId: string): b
   return db.prepare('DELETE FROM agent_pending_clear WHERE agent_id = ? AND card_id = ?').run(agentId, cardId).changes > 0
 }
 
+/** How far up a parent chain one stamp will walk. The fleet's own decomposition rule is four levels
+ *  (Phase -> Task -> subtask -> step); 16 is slack, not a target, and the limit exists so a malformed
+ *  chain cannot spin. */
+const ANCESTOR_DEPTH_LIMIT = 16
+
+/**
+ * Stamp `updated_at` up the whole parent chain (adopted from upstream, card 4b03a88d).
+ *
+ * WHY THE FORK NEEDS THIS, measured on the live board while taking this card: phase card 607254fb
+ * read as 4.7 HOURS stale while one of its children had been touched 1 minute earlier and another 11
+ * minutes earlier. That is not cosmetic -- working rule 3 detects a stuck card from `updated_at`, and
+ * the orchestrator acted on exactly this reading, judging the lane idle while it was mid-task. A
+ * parent whose children are moving is not stale, and until now nothing said so.
+ *
+ * Cycle- and depth-guarded: `parent_id` is editable through the API, so a looping or runaway chain is
+ * reachable input rather than a theoretical worry. Both cases stop and warn instead of throwing -- a
+ * bad edge must not take down the write that triggered the stamp.
+ */
+function touchAncestorChain(parentId: string | null | undefined, now: number, startedAt: string): void {
+  if (!parentId) return // root card: the common case, and it costs nothing
+  const readParent = db.prepare('SELECT parent_id FROM kanban_cards WHERE id = ?')
+  const stamp = db.prepare('UPDATE kanban_cards SET updated_at = ? WHERE id = ?')
+  const seen = new Set<string>([startedAt])
+  let current: string | null = parentId
+  let depth = 0
+  while (current) {
+    if (seen.has(current)) {
+      logger.warn({ cycleAt: current, from: startedAt }, 'kanban: parent_id cycle -- ancestor stamping stopped')
+      return
+    }
+    if (++depth > ANCESTOR_DEPTH_LIMIT) {
+      logger.warn({ from: startedAt, limit: ANCESTOR_DEPTH_LIMIT }, 'kanban: parent chain too deep -- ancestor stamping stopped')
+      return
+    }
+    seen.add(current)
+    stamp.run(now, current)
+    current = (readParent.get(current) as { parent_id: string | null } | undefined)?.parent_id ?? null
+  }
+}
+
+/** Look the card's parent up and stamp from there -- for call sites that already wrote the card row
+ *  and do not otherwise need its parent_id. */
+function touchAncestorsOf(cardId: string, now: number): void {
+  const row = db.prepare('SELECT parent_id FROM kanban_cards WHERE id=?').get(cardId) as { parent_id: string | null } | undefined
+  touchAncestorChain(row?.parent_id, now, cardId)
+}
+
 export function createKanbanCard(card: {
   id: string
   title: string
@@ -2312,6 +2379,7 @@ export function createKanbanCard(card: {
     card.assignee ?? null, card.priority ?? 'normal',
     card.project ?? null, card.parent_id ?? null, card.due_date ?? null, sortOrder, now, now
   )
+  touchAncestorChain(card.parent_id, now, card.id)
   // Card 6cd61430: a new card can already state its pair and its parent.
   noteRelations(cardEdges({ id: card.id, description: card.description, parent_id: card.parent_id }))
 }
@@ -2463,6 +2531,12 @@ export function updateKanbanCard(
       'INSERT INTO kanban_card_events (card_id, from_status, to_status, actor, created_at, forced) VALUES (?, ?, ?, ?, ?, ?)'
     ).run(id, card.status, f.status, opts?.actor ?? null, now, forcedFlag)
   }
+  if (changed) {
+    touchAncestorChain(f.parent_id, now, id)
+    // A re-parent leaves the OLD chain stale too: that subtree just lost a child, which is a change
+    // to it even though no row beneath it was written.
+    if (card.parent_id && card.parent_id !== f.parent_id) touchAncestorChain(card.parent_id, now, id)
+  }
   if (changed) recordKanbanFieldChanges(id, card, f, opts?.actor, now)
   // Card 6cd61430: an edit can ADD a Pair-* line or a parent. It can also REMOVE one, and this
   // insert-only path cannot see that -- reconcileKanbanRelations() is what deletes the stale edge,
@@ -2599,6 +2673,7 @@ export function moveKanbanCard(id: string, status: KanbanCard['status'], sortOrd
       'INSERT INTO kanban_card_events (card_id, from_status, to_status, actor, created_at, forced) VALUES (?, ?, ?, ?, ?, ?)'
     ).run(id, prev, status, actor ?? null, now, forcedOverride || depBlocked ? 1 : 0)
   }
+  if (changed) touchAncestorsOf(id, now)
   return changed
 }
 
@@ -3330,6 +3405,7 @@ export function addKanbanLineComment(
     'INSERT INTO kanban_line_comments (card_id, sha, file, line, author, content, created_at) VALUES (?, ?, ?, ?, ?, ?, ?)'
   ).run(cardId, sha, file, line, author, content, now)
   db.prepare('UPDATE kanban_cards SET updated_at = ? WHERE id = ?').run(now, cardId)
+  touchAncestorsOf(cardId, now)
   return { id: Number(info.lastInsertRowid), card_id: cardId, sha, file, line, author, content, created_at: now }
 }
 
@@ -3425,6 +3501,7 @@ export function addKanbanComment(cardId: string, author: string, content: string
     'INSERT INTO kanban_comments (card_id, author, content, created_at) VALUES (?, ?, ?, ?)'
   ).run(cardId, author, content, now)
   db.prepare('UPDATE kanban_cards SET updated_at = ? WHERE id = ?').run(now, cardId)
+  touchAncestorsOf(cardId, now)
   // Card 6cd61430: the REVIEW comment carrying `Gate-SHA:` is the fleet's most common marker, and
   // it arrives here. noteRelations cannot fail this write -- see its own comment for why that
   // isolation is deliberate rather than defensive.
@@ -3691,6 +3768,23 @@ export function markMessageDelivered(id: number): boolean {
   return db.prepare("UPDATE agent_messages SET status = 'delivered', delivered_at = ? WHERE id = ? AND status = 'pending'").run(now, id).changes > 0
 }
 
+// Freshness input for the delivery annotation (adopted from upstream, card f27c999b). How many
+// strictly-newer, non-failed messages the SAME sender has queued for the same recipient since this
+// one. A queued message can be delivered long after it was written, describing an already-closed
+// state, while the sender's newer -- current -- messages sit further down the queue; upstream
+// measured that shape nearly re-executing a superseded PROD DEPLOY-GO on 2026-08-22.
+//
+// Deliberately distinct from this fork's own formatDeliveryStalenessNote, which asks a DIFFERENT
+// question: it re-reads the kanban board for the cards the message was stamped with and reports
+// which ones MOVED while it waited. One is "the world changed", the other is "the sender has since
+// said more". Verified as non-overlapping before adopting; keeping both is the point.
+export function countNewerMessagesFromSameSender(fromAgent: string, toAgent: string, msgId: number): number {
+  const row = db.prepare(
+    "SELECT COUNT(*) AS n FROM agent_messages WHERE from_agent = ? AND to_agent = ? AND id > ? AND status != 'failed'"
+  ).get(fromAgent, toAgent, msgId) as { n: number }
+  return row.n
+}
+
 // Per-agent backlog: how many messages are waiting, and how old the oldest one
 // is. The queue only surfaces when somebody opens a pane and notices, which is
 // how an 18-row backlog went unseen on 2026-07-27 and got mistaken for data
@@ -3711,6 +3805,179 @@ export function getPendingBacklogByAgent(): AgentBacklog[] {
     .map(r => ({ agent: r.agent, pending: r.pending, oldestAgeSeconds: Math.max(0, now - r.oldest) }))
     // oldest-first: whoever has been waiting longest is the one worth looking at
     .sort((a, b) => b.oldestAgeSeconds - a.oldestAgeSeconds)
+}
+
+/**
+ * Contents of the `[session-stuck]` alerts the router has already sent about stuck agents.
+ *
+ * Card 1e7ba5c1 round 2 (Cybered F1): the message-backlog watcher is a SUPPLEMENT to that alert, not
+ * a second channel -- `[session-stuck]` fires on the same phenomenon with strictly more information
+ * (it reads the pane, so it can say busy vs idle, which the queue alone cannot). Measured: 174 of
+ * them in 7 days. The backlog watcher only speaks where that one has been silent, so this is the
+ * dedup input. Returning the raw text keeps the agent-name extraction in the watcher, next to the
+ * test that pins it against the router's own formatter.
+ */
+// --- Task-event feed for the Swimlane Timeline (card a5bbfb98) ------------------------------------
+//
+// WHAT THE MEASUREMENT SAID, AND WHY THERE IS NO NEW TABLE. The card allowed for building an
+// append-only event log if none existed, and asked to check first. Checked, on live data:
+//
+//   local_llm_queue  2473 rows, 2464 started / 2473 finished, task_type on 2447 -- real blocks
+//   token_usage    371849 rows, model + agent + tokens, indexed (agent, timestamp)
+//   otel_spans       9229 rows, but only 12 CLOSED (0.13%) and ZERO attributes
+//   task_runs       22076 rows, but (name, agent, ts) only -- a firing, not a span
+//
+// otel_spans looked like the right source and was not: `operation` only ever holds
+// `sender->recipient` for inter-agent messages, and at the time of measurement 9217 of 9229 rows
+// sat in 'running' forever with no end_ms, carrying no duration, no category and no attributes.
+//
+// That was card dbc0b4bf, and it is now fixed at the source: the router closes each span when the
+// message is DELIVERED, which is the operation the span opens and what this table's own header
+// calls it (inter-agent latency). Note what the defect actually was -- the close path was never
+// broken. Of the 12 traced messages that ever reached a terminal status, 12 had closed spans.
+// Tracing and completion were on disjoint populations: nothing marks a tmux-injected message done,
+// because there is no completion signal to observe.
+//
+// It still does not serve THIS endpoint. A send->deliver latency is not a task duration, and the
+// `operation` column still holds only a sender->recipient pair, with no category. The timeline
+// below is unchanged; this note is here so the next reader does not re-derive the same dead end.
+//
+// So the timeline is served from what actually holds the data, and the shape below is deliberately
+// honest about the seam: local tasks HAVE real start/end blocks, online-model work has token counts
+// but no per-task duration anywhere in this database. The endpoint reports that rather than
+// inventing a block width.
+//
+// UNITS. local_llm_queue stamps MILLISECONDS (measured: 1788528687675), token_usage.timestamp and
+// task_runs.ts stamp SECONDS. Mixing them silently puts blocks in 1970 or 56000 AD, so every
+// boundary here converts to ms and the conversion is pinned by a test.
+
+export interface TaskEvent {
+  readonly id: number
+  readonly lane: string
+  readonly agent: string
+  readonly category: string
+  readonly startMs: number
+  readonly endMs: number
+  readonly durationMs: number
+  readonly status: string
+  readonly cardId: string | null
+}
+
+/** Finished local-LLM tasks overlapping [fromMs, toMs), oldest first. Only rows with a real
+ *  start AND end become blocks -- a running task has no width yet, and guessing one would draw a
+ *  block that shrinks on the next poll. */
+export function getTaskEvents(fromMs: number, toMs: number, agent: string | null, limit: number): TaskEvent[] {
+  const rows = db.prepare(
+    `SELECT id, agent, COALESCE(task_type,'(uncategorised)') AS category,
+            started_at, finished_at, status, card_id
+       FROM local_llm_queue
+      WHERE started_at IS NOT NULL AND finished_at IS NOT NULL
+        AND finished_at > started_at
+        AND started_at < ? AND finished_at >= ?
+        AND (? IS NULL OR agent = ?)
+      ORDER BY started_at ASC
+      LIMIT ?`,
+  ).all(toMs, fromMs, agent, agent, limit) as {
+    id: number; agent: string; category: string; started_at: number; finished_at: number;
+    status: string; card_id: string | null
+  }[]
+  return rows.map(r => ({
+    id: r.id,
+    lane: 'local',
+    agent: r.agent,
+    category: r.category,
+    startMs: r.started_at,
+    endMs: r.finished_at,
+    durationMs: r.finished_at - r.started_at,
+    status: r.status,
+    cardId: r.card_id,
+  }))
+}
+
+export interface ModelUsage {
+  readonly model: string
+  readonly requests: number
+  readonly inputTokens: number
+  readonly outputTokens: number
+  readonly agents: number
+}
+
+export interface TaskSummary {
+  readonly fromMs: number
+  readonly toMs: number
+  readonly models: ModelUsage[]
+  readonly activeModels: number
+  readonly taskCount: number
+  readonly failedCount: number
+  readonly byCategory: Record<string, number>
+  readonly avgDurationMs: number | null
+  /** Named seam, not decoration: which lanes can draw real blocks. A caller that assumes every
+   *  model has task blocks would silently render an empty timeline and look like a bug. */
+  readonly blockCoverage: { readonly lanes: string[]; readonly note: string }
+}
+
+export function getTaskSummary(fromMs: number, toMs: number): TaskSummary {
+  const fromS = Math.floor(fromMs / 1000)
+  const toS = Math.ceil(toMs / 1000)
+
+  const models = db.prepare(
+    `SELECT COALESCE(model,'(unreported)') AS model, COUNT(*) AS requests,
+            SUM(input_tokens) AS inputTokens, SUM(output_tokens) AS outputTokens,
+            COUNT(DISTINCT agent) AS agents
+       FROM token_usage
+      WHERE timestamp >= ? AND timestamp < ?
+      GROUP BY 1 ORDER BY requests DESC`,
+  ).all(fromS, toS) as { model: string; requests: number; inputTokens: number | null; outputTokens: number | null; agents: number }[]
+
+  const tasks = db.prepare(
+    `SELECT COALESCE(task_type,'(uncategorised)') AS category, COUNT(*) AS n,
+            SUM(status = 'failed') AS failed,
+            AVG(CASE WHEN finished_at > started_at THEN finished_at - started_at END) AS avgMs
+       FROM local_llm_queue
+      WHERE started_at IS NOT NULL AND started_at < ? AND COALESCE(finished_at, started_at) >= ?
+      GROUP BY 1 ORDER BY n DESC`,
+  ).all(toMs, fromMs) as { category: string; n: number; failed: number; avgMs: number | null }[]
+
+  const byCategory: Record<string, number> = {}
+  let taskCount = 0
+  let failedCount = 0
+  let weighted = 0
+  let weightedN = 0
+  for (const r of tasks) {
+    byCategory[r.category] = r.n
+    taskCount += r.n
+    failedCount += r.failed
+    if (r.avgMs !== null) { weighted += r.avgMs * r.n; weightedN += r.n }
+  }
+
+  return {
+    fromMs,
+    toMs,
+    models: models.map(m => ({
+      model: m.model,
+      requests: m.requests,
+      inputTokens: m.inputTokens ?? 0,
+      outputTokens: m.outputTokens ?? 0,
+      agents: m.agents,
+    })),
+    activeModels: models.length,
+    taskCount,
+    failedCount,
+    byCategory,
+    avgDurationMs: weightedN > 0 ? Math.round(weighted / weightedN) : null,
+    blockCoverage: {
+      lanes: ['local'],
+      note: 'Only local-LLM tasks record start and end, so only the "local" lane can draw timeline blocks. Online-model work is counted and its tokens summed, but no per-task duration is stored anywhere in this database (otel_spans measures inter-agent send->deliver latency, not task work).',
+    },
+  }
+}
+
+export function recentStuckAlertContents(sinceEpochSeconds: number): string[] {
+  const rows = db.prepare(
+    `SELECT content FROM agent_messages
+      WHERE from_agent = 'system' AND created_at >= ? AND content LIKE '[session-stuck]%'`,
+  ).all(sinceEpochSeconds) as { content: string }[]
+  return rows.map(r => r.content)
 }
 
 // Close a pending backlog that is NOT going to be delivered -- stale rows an
@@ -4975,6 +5242,42 @@ export function closeOtelSpan(traceId: string, spanId: string, endMs: number, st
   return db.prepare(`
     UPDATE otel_spans SET end_ms = ?, status = ? WHERE trace_id = ? AND span_id = ?
   `).run(endMs, status, traceId, spanId).changes > 0
+}
+
+/**
+ * Close a span only if it is still open -- FIRST terminal event wins.
+ *
+ * Card dbc0b4bf. These spans are opened by the message router and measure the one thing this
+ * table's own header calls it: inter-agent latency, send -> delivered. A message can ALSO be marked
+ * done later via PUT /api/messages/:id, and closing again there would silently overwrite a measured
+ * latency with a work duration -- two different quantities in one column, indistinguishable
+ * afterwards. Whichever terminal event happens first is the one the span was measuring.
+ *
+ * Deliberately NOT a change to closeOtelSpan above: routes/spans.ts uses that function's return
+ * value to detect "span does not exist yet" and falls back to an upsert-close, so making it
+ * first-writer-wins there would send an already-closed span down the not-found path and rewrite it
+ * anyway. External reporters keep the old, unconditional semantics.
+ */
+export function closeOtelSpanIfOpen(traceId: string, spanId: string, endMs: number, status: OtelSpan['status']): boolean {
+  return db.prepare(`
+    UPDATE otel_spans SET end_ms = ?, status = ?
+    WHERE trace_id = ? AND span_id = ? AND end_ms IS NULL
+  `).run(endMs, status, traceId, spanId).changes > 0
+}
+
+/**
+ * One span by identity, or null. Card 63beeb8a.
+ *
+ * Exists so routes/spans.ts can tell "no such span" from "already closed" -- three states the
+ * boolean returns of the two close helpers cannot distinguish between them. That distinction is the
+ * whole point: closeOtelSpanIfOpen() returning false means EITHER, and the not-found branch of that
+ * route creates-and-closes, so treating an already-closed span as not-found would rewrite the very
+ * measurement the first-writer-wins rule exists to protect. The doc comment on closeOtelSpanIfOpen
+ * above names that trap; this is what lets the route avoid it.
+ */
+export function getOtelSpan(traceId: string, spanId: string): OtelSpan | null {
+  return (db.prepare('SELECT * FROM otel_spans WHERE trace_id = ? AND span_id = ?')
+    .get(traceId, spanId) as OtelSpan | undefined) ?? null
 }
 
 export function getOtelTrace(traceId: string): OtelSpan[] {

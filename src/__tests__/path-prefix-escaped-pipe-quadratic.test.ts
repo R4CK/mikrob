@@ -67,6 +67,24 @@ describe('PATH_PREFIX escaped-pipe fix: quadratic-blowup repro must stay fast (c
   //     n=  5000   9.55ms      n= 20000  35.62ms
   //     n= 10000  19.31ms      n= 40000  70.71ms
   //     n= 80000 148.57ms   -> 4x input, 4.17x time. Quadratic would be 16x.
+  //
+  // 2026-09-04 (card d19bba07): the ratio was still measured on the WALL CLOCK, and that was not
+  // enough -- this went red at 8.88x during card 73cf0a22's fleet-test, on a diff that does not
+  // touch anything this file loads. The ratio does cancel out a machine that is UNIFORMLY slower,
+  // which is what the paragraph above assumed. It does not cancel this: min-of-ROUNDS is biased
+  // AGAINST the longer sample, because catching one uncontended 70ms window is far less likely
+  // than catching one uncontended 19ms window. So under load the large measurement keeps its
+  // contention while the small one sheds it, and the ratio inflates on its own.
+  //
+  // Measured, same construct, 6 runs at full saturation on 12 cores:
+  //     wall ratio  3.20x .. 12.85x   <- 12.85 is the flake, reproduced
+  //     cpu  ratio  3.26x ..  5.16x   <- and 4.37x .. 5.13x idle, the same band
+  // CPU time excludes the descheduled interval, which is exactly the part that was not shared
+  // between the two samples.
+  //
+  // This is NOT a loosened threshold: MAX_RATIO stays 8. Detection was measured, not assumed --
+  // a deliberately quadratic regex measured this same way reads 16.13x .. 18.39x, idle AND under
+  // full load, so a genuine return to O(n^2) still crosses 8 with room to spare.
   const N = 10000
   const M = 4 * N
   const ROUNDS = 3
@@ -78,10 +96,14 @@ describe('PATH_PREFIX escaped-pipe fix: quadratic-blowup repro must stay fast (c
   // makes the DECISIONS.md size case safe, and the opposite of the 525-vs-500 margin that failed.
   const ABSURD_MS = 10_000
 
+  // CPU time, not wall clock -- see the measurement above. The work is CPU-bound regex
+  // backtracking, so this is the same quantity the complexity claim is about, minus the time the
+  // scheduler spent running somebody else's vitest worker.
   const timeOnce = (command: string): number => {
-    const t0 = process.hrtime.bigint()
+    const before = process.cpuUsage()
     gateDecision('Bash', { command })
-    return Number(process.hrtime.bigint() - t0) / 1e6
+    const d = process.cpuUsage(before)
+    return (d.user + d.system) / 1000
   }
 
   /**
@@ -113,12 +135,12 @@ describe('PATH_PREFIX escaped-pipe fix: quadratic-blowup repro must stay fast (c
     // just a slow machine -- the question the old absolute budget could never answer.
     expect(
       ratio,
-      `n=${N} took ${small.toFixed(1)}ms, n=${M} took ${large.toFixed(1)}ms -> ${ratio.toFixed(2)}x. ` +
+      `n=${N} took ${small.toFixed(1)}ms CPU, n=${M} took ${large.toFixed(1)}ms CPU -> ${ratio.toFixed(2)}x. ` +
         `Linear is ~4x, quadratic ~16x; over ${MAX_RATIO}x means the O(n^2) backtracking is back.`,
     ).toBeLessThan(MAX_RATIO)
     expect(
       small,
-      `n=${N} took ${small.toFixed(1)}ms, which is absurd for this input even on a loaded machine ` +
+      `n=${N} took ${small.toFixed(1)}ms CPU, which is absurd for this input even on a loaded machine ` +
         `(measured ~19ms). The growth may still be linear, so the ratio above cannot see this.`,
     ).toBeLessThan(ABSURD_MS)
   })

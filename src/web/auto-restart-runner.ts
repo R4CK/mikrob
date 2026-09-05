@@ -13,7 +13,7 @@ import { MAIN_CHANNELS_SESSION } from './main-agent.js'
 import { respawnMainSessionFresh } from './channel-monitor.js'
 import { paneLooksIdle } from '../pane-state.js'
 import { readAutoRestartConfig } from './auto-restart-store.js'
-import { restartDue, dailyDueAtMs, parseHHMM, mainRestartMechanism, restartBlockedBy, type AutoRestartConfig } from '../auto-restart.js'
+import { restartDue, dailyDueAtMs, parseHHMM, mainRestartMechanism, restartBlockedBy, deferralOverride, type AutoRestartConfig } from '../auto-restart.js'
 import { hasOpenInboundQuestion } from '../db.js'
 
 // Drives per-agent scheduled restarts (see src/auto-restart.ts for the why and
@@ -35,6 +35,13 @@ const INTERVAL_MS = 60_000
 // restart) so a past-due daily slot does not fire at startup. In-memory: a
 // dashboard restart re-seeds, at worst skipping one slot -- never double-fires.
 const lastRestart = new Map<string, number>()
+
+// agent name -> the current open-question deferral streak: when the condition
+// was first seen (ms) and how many due restarts it has deferred so far.
+// Cleared when the question is answered or a restart runs. In-memory like
+// lastRestart: a dashboard restart resets the streak, at worst deferring one
+// extra window -- never overriding early.
+const openQuestionDeferrals = new Map<string, { sinceMs: number; count: number }>()
 
 function localMidnightMs(nowMs: number): number {
   const d = new Date(nowMs)
@@ -104,10 +111,19 @@ async function performRestart(name: string, cfg: AutoRestartConfig): Promise<voi
   }
 }
 
-async function checkAgent(name: string, nowMs: number): Promise<void> {
+/** Exported as a test seam (card 4276708e, Cybersec finding 3): the streak map's LIFECYCLE -- as
+ *  opposed to the pure deferral maths, which src/auto-restart.ts already covers -- lives entirely in
+ *  this function's early returns, and no test reached it before. */
+export async function checkAgent(name: string, nowMs: number): Promise<void> {
   const cfg = readAutoRestartConfig(name)
   if (!cfg.enabled) {
     lastRestart.delete(name) // re-seed cleanly if re-enabled later
+    // Card 4276708e, Cybersec finding 3: the deferral streak has to go with it. Its sibling above
+    // was already cleared here; this one was not, so a stale sinceMs survived disable -> enable, and
+    // the NEXT open question -- a brand-new one -- would be measured against the OLD clock. The cap
+    // then looks long since exceeded and the override fires on the FIRST tick, restarting straight
+    // through a question the owner has only just been asked.
+    openQuestionDeferrals.delete(name)
     return
   }
   // Sub-agents must be up to be restarted; the main session is launchd-managed
@@ -118,7 +134,12 @@ async function checkAgent(name: string, nowMs: number): Promise<void> {
   // (the core SSH-independence invariant). 'stopped' is also left alone (auto-
   // restart cycles running sessions on a schedule; it does not resurrect dead
   // ones, matching the prior local behavior).
-  if (name !== MAIN_AGENT_ID && agentRunState(name) !== 'running') return
+  if (name !== MAIN_AGENT_ID && agentRunState(name) !== 'running') {
+    // Same reason as the disabled branch: a stopped agent's streak must not outlive it and prime an
+    // instant override on the next start.
+    openQuestionDeferrals.delete(name)
+    return
+  }
 
   // Seed on first sight so a daily slot that already elapsed before boot does
   // not fire now.
@@ -142,19 +163,58 @@ async function checkAgent(name: string, nowMs: number): Promise<void> {
     try { return hasOpenInboundQuestion(name) }
     catch { return false }
   })()
+  // Track how long the open question has been deferring this agent. The signal
+  // itself is clockless (an unanswered question stays open forever), so the
+  // streak is what bounds the deferral.
+  if (openQuestion) {
+    if (!openQuestionDeferrals.has(name)) openQuestionDeferrals.set(name, { sinceMs: nowMs, count: 0 })
+  } else {
+    openQuestionDeferrals.delete(name)
+  }
   const blocked = restartBlockedBy({ paneIdle: paneIsIdle(session, host), openQuestion })
   if (blocked) {
-    logger.info({ name, session, blocked }, 'auto-restart: due but deferred to next tick')
-    return
+    const streak = openQuestionDeferrals.get(name) ?? null
+    const capMs = cfg.openQuestionDeferralCapHours * 60 * 60 * 1000
+    if (!deferralOverride(blocked, streak?.sinceMs ?? null, nowMs, capMs)) {
+      if (streak !== null) streak.count += 1
+      logger.info({ name, session, blocked,
+        deferredCount: streak?.count ?? null,
+        deferredForMs: streak === null ? null : nowMs - streak.sinceMs },
+        'auto-restart: due but deferred to next tick')
+      return
+    }
+    // The deferral must have an end AND a voice: past the cap the restart
+    // proceeds, and the override is logged at warn so a permanently
+    // unanswered question is distinguishable from normal operation.
+    logger.warn({ name, session,
+      deferredCount: (streak as { count: number }).count,
+      deferredForMs: nowMs - (streak as { sinceMs: number }).sinceMs,
+      capHours: cfg.openQuestionDeferralCapHours },
+      'auto-restart: open-question deferral exceeded cap, restarting anyway')
   }
 
   try {
     await performRestart(name, cfg)
     lastRestart.set(name, nowMs)
+    // A restart does not answer the question -- reset the streak so the next
+    // due slot gets a full deferral window again instead of overriding at once.
+    openQuestionDeferrals.delete(name)
     logger.info({ name, mode: name === MAIN_AGENT_ID ? 'fresh(main)' : cfg.mode }, 'auto-restart: restarted session')
   } catch (err) {
     logger.warn({ err, name }, 'auto-restart: restart failed')
   }
+}
+
+/** Test seam: both maps are module-level process state, so a test driving two ticks needs a known
+ *  starting point. Exposes the streak map read-only so a test can assert the lifecycle directly
+ *  rather than inferring it from a restart that may not have been attempted for other reasons. */
+export function resetAutoRestartRunnerStateForTest(): void {
+  lastRestart.clear()
+  openQuestionDeferrals.clear()
+}
+
+export function peekOpenQuestionDeferralForTest(name: string): { sinceMs: number; count: number } | null {
+  return openQuestionDeferrals.get(name) ?? null
 }
 
 export function startAutoRestartRunner(): NodeJS.Timeout {

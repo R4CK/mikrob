@@ -1,6 +1,6 @@
 import { describe, it, expect } from 'vitest'
 import { execFileSync } from 'node:child_process'
-import { readFileSync, writeFileSync, mkdirSync, mkdtempSync, rmSync, existsSync, readdirSync } from 'node:fs'
+import { readFileSync, writeFileSync, mkdirSync, mkdtempSync, rmSync, existsSync, readdirSync, symlinkSync, lstatSync } from 'node:fs'
 import { join } from 'node:path'
 import { tmpdir } from 'node:os'
 
@@ -31,6 +31,7 @@ function sliceShellFn(src: string, name: string): string {
 }
 
 const FUNCS = [
+  'prune_seedbaks',
   'render_seed_template',
   'seed_copy_is_untouched',
   'seed_copy_try_merge',
@@ -90,6 +91,112 @@ function runRefresh(install: string, home: string): { out: string; code: number 
     return { out: `${String(err.stdout ?? '')}${String(err.stderr ?? '')}`.trim(), code: err.status ?? -1 }
   }
 }
+
+// Card 4276708e, Cybersec finding 1 (MEDIUM), and this one had ALREADY happened in production.
+//
+// `[ -d "$target_root/$name" ]` FOLLOWS SYMLINKS, so a directory symlink answered yes and every
+// cp/mv below wrote THROUGH it into whatever it pointed at. Measured on the live install: 14 sp-*
+// skill directories are symlinks into the vendored ~/.claude/external/superpowers checkout, and
+// three files inside that third-party repo carried OUR seed content -- byte-identical to
+// seed-skills/ (+70 lines) and different from the vendor's own HEAD. We had silently forked
+// somebody else's repository through a `-d` test.
+//
+// The RED-BEFORE case is the second one: with only the `-d` test, the target file changes. It is
+// worth stating why this could never have been caught by the existing cases -- every one of them
+// creates the target with mkdirSync, so no test in this file had ever pointed the refresh at a
+// symlink at all.
+describe('seed backups do not accumulate without bound (card 4276708e, finding 2)', () => {
+  it('keeps only the newest few and drops the rest', () => {
+    const dir = mkdtempSync(join(tmpdir(), 'seedbak-'))
+    try {
+      const target = join(dir, 'f.md')
+      writeFileSync(target, 'x')
+      for (const s of ['1788500001', '1788500002', '1788500003', '1788500004', '1788500005', '1788500006']) {
+        writeFileSync(`${target}.seedbak.${s}`, s)
+      }
+      const probe = join(dir, 'probe.sh')
+      writeFileSync(probe, ['set -u', 'SEEDBAK_KEEP=3', sliceShellFn(UPDATE, 'prune_seedbaks'), `prune_seedbaks "${target}"`].join('\n') + '\n')
+      execFileSync('bash', [probe], { stdio: 'pipe' })
+      const left = readdirSync(dir).filter((f) => f.includes('.seedbak.')).sort()
+      // Newest three survive; the file itself is untouched.
+      expect(left).toEqual(['f.md.seedbak.1788500004', 'f.md.seedbak.1788500005', 'f.md.seedbak.1788500006'])
+      expect(readFileSync(target, 'utf-8')).toBe('x')
+    } finally {
+      rmSync(dir, { recursive: true, force: true })
+    }
+  })
+
+  it('is a no-op below the cap -- it must not eat the only backup there is', () => {
+    const dir = mkdtempSync(join(tmpdir(), 'seedbak-'))
+    try {
+      const target = join(dir, 'f.md')
+      writeFileSync(target, 'x')
+      writeFileSync(`${target}.seedbak.1788500001`, 'only one')
+      const probe = join(dir, 'probe.sh')
+      writeFileSync(probe, ['set -u', 'SEEDBAK_KEEP=3', sliceShellFn(UPDATE, 'prune_seedbaks'), `prune_seedbaks "${target}"`].join('\n') + '\n')
+      execFileSync('bash', [probe], { stdio: 'pipe' })
+      expect(existsSync(`${target}.seedbak.1788500001`)).toBe(true)
+    } finally {
+      rmSync(dir, { recursive: true, force: true })
+    }
+  })
+
+  it('the merge branch actually CALLS it -- a helper nothing invokes prunes nothing', () => {
+    // Comment lines stripped: the rationale above the call names the function too, and a comment
+    // must not be able to satisfy an assertion about a call.
+    const code = sliceShellFn(UPDATE, 'seed_copy_try_merge')
+      .split('\n').filter((l) => !l.trim().startsWith('#')).join('\n')
+    expect(code).toContain('prune_seedbaks "$installed"')
+  })
+})
+
+describe('seed refresh never writes THROUGH a symlinked target (card 4276708e)', () => {
+  it('leaves a symlinked seed directory, and the tree it points at, completely alone', () => {
+    const f = makeFixture()
+    try {
+      // Foreign ground: a vendored checkout we do not own. Its file matches an OLDER shipped
+      // version, which is what makes this the REAL production shape -- that is precisely the state
+      // seed_copy_is_untouched calls "provably not edited by the operator", so without the -L guard
+      // the refresh happily overwrites it. Seeding it with arbitrary foreign text instead would let
+      // the untouched-check protect the file on its own, and the guard could be deleted with every
+      // test still green (measured: that first version of this test survived the mutation).
+      const foreign = join(f.base, 'vendored', 'demo')
+      mkdirSync(foreign, { recursive: true })
+      writeFileSync(join(foreign, 'SKILL.md'), f.versions[0])
+
+      // The install's seed dir is a SYMLINK to it -- exactly the live sp-* shape.
+      symlinkSync(foreign, join(f.home, '.claude', 'skills', 'demo'))
+
+      const r = runRefresh(f.install, f.home)
+      expect(r.code).toBe(0)
+      // The vendor's file is untouched -- still the OLD version, not refreshed to the current one.
+      expect(readFileSync(join(foreign, 'SKILL.md'), 'utf-8')).toBe(f.versions[0])
+      // ...and the link is still a link, not replaced by a real directory.
+      expect(lstatSync(join(f.home, '.claude', 'skills', 'demo')).isSymbolicLink()).toBe(true)
+      // ...and nothing was reported as refreshed, because nothing was ours to refresh.
+      expect(r.out).not.toMatch(/frissitve: [1-9]/)
+    } finally {
+      rmSync(f.base, { recursive: true, force: true })
+    }
+  })
+
+  it('still refreshes a REAL directory in the same run -- the guard skips links, not work', () => {
+    // Without this, "never writes through a symlink" would also be satisfied by a refresh that
+    // stopped working entirely.
+    const f = makeFixture()
+    try {
+      const dir = join(f.home, '.claude', 'skills', 'demo')
+      mkdirSync(dir, { recursive: true })
+      writeFileSync(join(dir, 'SKILL.md'), f.versions[0])
+      const r = runRefresh(f.install, f.home)
+      expect(r.code).toBe(0)
+      expect(readFileSync(join(dir, 'SKILL.md'), 'utf-8')).toBe(f.versions[2])
+      expect(r.out).toMatch(/frissitve: 1/)
+    } finally {
+      rmSync(f.base, { recursive: true, force: true })
+    }
+  })
+})
 
 describe('seed refresh touches only provably untouched copies', () => {
   it('refreshes a copy that matches the CURRENT shipped version', () => {
@@ -406,5 +513,108 @@ describe('the refresh runs where it can reach an already-current machine', () =>
     const fn = sliceShellFn(UPDATE, 'run_seed_refresh') + sliceShellFn(UPDATE, 'refresh_untouched_seeds')
     expect(fn).not.toMatch(/CLAUDE\.md/)
     expect(UPDATE).toMatch(/REGEN_CLAUDEMD/)   // the flag still exists, unchanged
+  })
+})
+
+// SEEDREFRESH826: the TOP-LEVEL scheduled-tasks/ dir was a one-shot seed --
+// ensureDefaultScheduledTasks copies missing dirs at boot, update.sh never
+// refreshed them, so every shipped fix reached new installs only (measured:
+// 5/5 live seeded copies drifted on the reference host). Same untouched-only
+// rule, plus the {{PROJECT_ROOT}} alias the node seeder resolves.
+describe('top-level scheduled-tasks/ refresh (SEEDREFRESH826)', () => {
+  function makeTopLevelFixture() {
+    const base = mkdtempSync(join(tmpdir(), 'seedrefresh-top-'))
+    const install = join(base, 'install')
+    const home = join(base, 'home')
+    // FORK ADDITION (card 39b32ac6): a SECOND seeded task, used as a witness. A negative case
+    // ("a local edit survives") passes trivially when the refresh never ran at all -- measured
+    // here by deleting the source line under test, which left that case green. The witness is
+    // untouched and behind, so it must refresh in the SAME run; only then does the edited copy
+    // being spared mean the rule held rather than the feature being absent.
+    mkdirSync(join(install, 'scheduled-tasks', 'demo-top'), { recursive: true })
+    mkdirSync(join(install, 'scheduled-tasks', 'demo-witness'), { recursive: true })
+    mkdirSync(join(home, '.claude', 'scheduled-tasks'), { recursive: true })
+    git(install, ['init', '-q'])
+    git(install, ['config', 'user.email', 'test@example.invalid'])
+    git(install, ['config', 'user.name', 'test'])
+    const task = join(install, 'scheduled-tasks', 'demo-top', 'SKILL.md')
+    const versions = [
+      'top v1: cat {{PROJECT_ROOT}}/DREAM.md ({{MAIN_AGENT_ID}})\n',
+      'top v2: cat {{PROJECT_ROOT}}/DREAM.md ({{MAIN_AGENT_ID}})\n',
+    ]
+    const witnessTask = join(install, 'scheduled-tasks', 'demo-witness', 'SKILL.md')
+    for (let i = 0; i < versions.length; i++) {
+      writeFileSync(task, versions[i])
+      writeFileSync(witnessTask, versions[i])
+      git(install, ['add', 'scheduled-tasks/demo-top/SKILL.md', 'scheduled-tasks/demo-witness/SKILL.md'])
+      git(install, ['commit', '-q', '-m', `top v${i + 1}`])
+    }
+    // What the NODE seeder wrote at install time: v1 with PROJECT_ROOT and
+    // MAIN_AGENT_ID resolved -- exactly the on-disk shape update.sh meets.
+    const rendered = (s: string) => s.replaceAll('{{PROJECT_ROOT}}', install).replaceAll('{{MAIN_AGENT_ID}}', 'marveen')
+    const liveDir = join(home, '.claude', 'scheduled-tasks', 'demo-top')
+    mkdirSync(liveDir, { recursive: true })
+    const witnessDir = join(home, '.claude', 'scheduled-tasks', 'demo-witness')
+    mkdirSync(witnessDir, { recursive: true })
+    return {
+      base, install, home, versions, rendered,
+      livePath: join(liveDir, 'SKILL.md'),
+      witnessPath: join(witnessDir, 'SKILL.md'),
+    }
+  }
+
+  function runRefreshAsMain(install: string, home: string): { out: string; code: number } {
+    const script = join(install, 'probe-top.sh')
+    writeFileSync(script, [
+      'set -u',
+      'GREEN=""; NC=""',
+      `INSTALL_DIR="${install}"`,
+      `HOME="${home}"`,
+      'MAIN_AGENT_ID="marveen"; BOT_NAME="Bot"; OWNER_NAME="Owner"; WEB_PORT="3420"',
+      FUNCS,
+      'run_seed_refresh',
+    ].join('\n') + '\n')
+    try {
+      return { out: execFileSync('bash', [script], { encoding: 'utf-8' }).trim(), code: 0 }
+    } catch (e) {
+      const err = e as { stdout?: string; stderr?: string; status?: number }
+      return { out: `${String(err.stdout ?? '')}${String(err.stderr ?? '')}`.trim(), code: err.status ?? -1 }
+    }
+  }
+
+  it('an untouched node-seeded copy (old version, PROJECT_ROOT resolved) is refreshed to current', () => {
+    const f = makeTopLevelFixture()
+    try {
+      writeFileSync(f.livePath, f.rendered(f.versions[0]))
+      const r = runRefreshAsMain(f.install, f.home)
+      expect(r.code).toBe(0)
+      const after = readFileSync(f.livePath, 'utf-8')
+      expect(after).toBe(f.rendered(f.versions[1]))
+      expect(after).not.toContain('{{PROJECT_ROOT}}') // the alias renders, not leaks
+    } finally {
+      rmSync(f.base, { recursive: true, force: true })
+    }
+  })
+
+  it('a locally modified top-level task copy survives byte-for-byte', () => {
+    const f = makeTopLevelFixture()
+    try {
+      const edited = f.rendered(f.versions[0]) + '# helyi tanulsag, nem veszhet el\n'
+      writeFileSync(f.livePath, edited)
+      writeFileSync(f.witnessPath, f.rendered(f.versions[0]))
+      const r = runRefreshAsMain(f.install, f.home)
+      expect(r.code).toBe(0)
+      expect(readFileSync(f.livePath, 'utf-8')).toBe(edited)
+      // The witness proves the refresh actually reached this directory in this run.
+      expect(readFileSync(f.witnessPath, 'utf-8')).toBe(f.rendered(f.versions[1]))
+    } finally {
+      rmSync(f.base, { recursive: true, force: true })
+    }
+  })
+
+  it('RED-BEFORE property: without the new source line, the top-level dir is out of scope', () => {
+    // The pre-fix run_seed_refresh listed only seed-skills + seed-scheduled-tasks;
+    // this pins that the fix is the source line, not an accident of the fixture.
+    expect(FUNCS).toContain('refresh_untouched_seeds "scheduled-tasks"')
   })
 })

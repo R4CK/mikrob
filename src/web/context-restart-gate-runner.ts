@@ -3,7 +3,8 @@ import { join } from 'node:path'
 import { execFileSync } from 'node:child_process'
 import { logger } from '../logger.js'
 import { MAIN_AGENT_ID, PROJECT_ROOT } from '../config.js'
-import { listAgentNames, agentDir, readAgentClaudeConfigDir } from './agent-config.js'
+import { listAgentNames, agentDir } from './agent-config.js'
+import { resolveAgentConfigDirForRead } from './claude-plans.js'
 import { agentSessionName, capturePane } from './agent-process.js'
 import { detectPaneState } from '../pane-state.js'
 import { detectsUsageLimit } from '../model-fallback.js'
@@ -104,7 +105,12 @@ function workingDirFor(name: string): string {
  * the symptom is a gate that never opens and never says why.
  */
 function configDirFor(name: string): string | undefined {
-  return name === MAIN_AGENT_ID ? undefined : (readAgentClaudeConfigDir(name) ?? undefined)
+  // resolveAgentConfigDirForRead, not readAgentClaudeConfigDir (card 272361eb, B-wave). The
+  // recorded conflict rule for this file says to drop readAgentClaudeConfigDir entirely: an agent
+  // whose config dir was auto-provisioned by the launcher has no field to read, so the old call
+  // returned null and this gate then measured the HOST default -- another agent's absence read as
+  // this one's context size, which is the input the gate decides on.
+  return name === MAIN_AGENT_ID ? undefined : (resolveAgentConfigDirForRead(name) ?? undefined)
 }
 
 function agentIdForLedger(name: string): string {

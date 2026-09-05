@@ -106,8 +106,13 @@ describe('generateClaudeMd prompt: no hardcoded localhost:3420', () => {
   it('defines dashboardOrigin using resolveDashboardOrigin', () => {
     // Ensures the fallback logic lives in one place (resolveDashboardOrigin),
     // not as an ad-hoc inline expression that could diverge from the heartbeat
-    // scaffold.
-    expect(src).toContain('resolveDashboardOrigin(DASHBOARD_PUBLIC_URL, WEB_PORT)')
+    // scaffold. The third argument is what lets an operator state the
+    // agent-side answer when it differs from the browser-side public URL.
+    expect(src).toContain('resolveDashboardOrigin(DASHBOARD_PUBLIC_URL, WEB_PORT, AGENT_API_ORIGIN)')
+  })
+
+  it('imports AGENT_API_ORIGIN from config', () => {
+    expect(src).toMatch(/import\s*{[^}]*\bAGENT_API_ORIGIN\b[^}]*}\s*from\s*'\.\.\/config\.js'/)
   })
 })
 
@@ -166,7 +171,7 @@ describe('currentHeartbeatIdentity: delegates to resolveDashboardOrigin', () => 
     expect(fnStart).toBeGreaterThan(0)
     const fnEnd = src.indexOf('\n}', fnStart)
     const fnBody = src.slice(fnStart, fnEnd)
-    expect(fnBody).toContain('resolveDashboardOrigin(DASHBOARD_PUBLIC_URL, WEB_PORT)')
+    expect(fnBody).toContain('resolveDashboardOrigin(DASHBOARD_PUBLIC_URL, WEB_PORT, AGENT_API_ORIGIN)')
   })
 
   it('does not hardcode localhost:PORT as a string literal in currentHeartbeatIdentity', () => {

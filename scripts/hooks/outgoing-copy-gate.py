@@ -32,6 +32,7 @@ import json
 import os
 import re
 import sys
+import threading
 import time
 
 # ADOPTED FROM UPSTREAM VERBATIM (card 3ec64c96, 2026-08-25): upstream independently built
@@ -541,8 +542,52 @@ def load_bad_name():
         return _log_missing_rules()
     pats = data.get("bad_name_patterns") or []
     if pats:
-        return re.compile("|".join(pats))
+        # THE COMPILE MUST BE INSIDE A try (card 0c66be37, Cybersec MEDIUM-2 on 98dbbcc9's GO).
+        # It was outside, and `BAD_NAME = load_bad_name()` runs at MODULE IMPORT -- so ONE typo'd
+        # pattern did not degrade the name check, it killed the ENTIRE hook before it inspected
+        # anything. Measured with the real hook: rules ["Kovacs"] -> exit 2 (blocks a broken-accent
+        # mail); rules ["Kovacs", "(?<n>x)"] -> exit 1, zero bytes of stdout. Claude Code blocks on
+        # exit 2 ONLY, so exit 1 means every outgoing send passes unchecked, fleet-wide, with
+        # nothing anywhere to say the control stopped running. A crashing hook does not fail
+        # closed; it stops running.
+        #
+        # Falling back to STATE_BROKEN keeps the ALREADY-MODELLED consequences: the email path is
+        # fail-closed on `BAD_NAME is None` (refuses and names the rules file), the Telegram path
+        # fail-open with a systemMessage. Both are visible. That is the whole difference between a
+        # degraded control and an invisible one.
+        try:
+            return re.compile("|".join(pats))
+        except re.error as exc:
+            # NOT _log_missing_rules(): that writes "FAJL HIANYZIK/URES", which would be false here
+            # and would send whoever reads the log looking for a file that is present and readable.
+            # A wrong explanation is worse than a missing one -- it stops the next reader looking.
+            return _log_broken_pattern(exc)
     return NO_BAD_NAME_PATTERNS
+
+
+# WHY the name check is down, when it is. Set by the loader, read by the two places that TELL
+# somebody about it. Without this, a bad pattern produced the missing-file wording -- and an
+# operator would go looking for a file that is present, readable and valid JSON (card 0c66be37).
+BROKEN_REASON = None
+
+
+def _log_broken_pattern(exc):
+    """The rules file is present and parses, but a PATTERN in it does not compile.
+
+    Returns None (STATE_BROKEN) like the missing-file path, because the consequence is the same --
+    the name check cannot run -- but says which of the two it was, and names the offending pattern
+    so the fix is one edit rather than a hunt through the list."""
+    global BROKEN_REASON
+    BROKEN_REASON = f"egy nev-minta nem forditható ({exc})"
+    try:
+        log_path = os.path.join(os.path.dirname(_LOCAL_RULES), "outgoing-copy-gate.log")
+        with open(log_path, "a", encoding="utf-8") as fh:
+            fh.write(f"outgoing-copy-gate: HIBAS NEV-MINTA a szabalyfajlban ({_LOCAL_RULES}): "
+                     f"{exc} -- a nev-ellenorzes NEM fut, amig a minta javitva nincs. "
+                     "A fajl letezik es olvashato; egy minta nem forditható.\n")
+    except OSError:
+        pass
+    return None
 
 
 def _log_missing_rules():
@@ -847,6 +892,219 @@ def collect_telegram_body(tool_input: dict) -> str:
     return MDV2_ESCAPE.sub(r"\1", "\n".join(got))
 
 
+# --- Telegram sent from a Bash command (card 74181db2) -----------------------
+#
+# WHY THIS EXISTS AT ALL. The gate's telegram branch matches on the TOOL NAME
+# (`telegram.*__reply$`), and a role agent never has that tool: all 15 launch with
+# `telegram@claude-plugins-official: false` and without `--channels`
+# (agent-worker.ts:458, measured on the running processes). So for them that branch
+# is dead code. The route they DO have is the one `telegram-reply-fallback` documents
+# for exactly the case where the MCP tool is absent: a raw Bot API call over curl,
+# from Bash. Nothing ran on it -- the Bash branch is the EMAIL detector, and
+# `collect_telegram_body` only ever read an MCP tool-input.
+#
+# DEFAULT OFF, AND THAT IS THE POINT (MikroB's decision, card comment 19349). Turning
+# this on costs a python start on EVERY Bash call of EVERY role agent -- measured on
+# this host at median 23.5 ms (15 samples, loadavg 9.14) for an IRRELEVANT command,
+# which is the common case. So the switch is opt-in at BOTH layers: the scaffold does
+# not even wire the hook unless it is set (zero cost when off, not merely a fast exit),
+# and the gate itself re-checks it here, so an already-wired agent stops enforcing the
+# moment the variable goes away -- without regenerating anything.
+TELEGRAM_BASH_ENV = "OUTGOING_COPY_GATE_TELEGRAM_BASH"
+# The wired command carries the decision as argv, because an environment variable cannot
+# reach here: agent panels are started with `tmux new-session` on an ALREADY-RUNNING tmux
+# server, and such a session inherits the SERVER's startup environment, not the caller's
+# (only names listed in tmux `update-environment` refresh, and this one is not among them).
+# So the process that decides to wire the gate writes the decision into the command it
+# writes, and this process reads it from there. The env var stays as a second route for
+# a manual run and for the tests.
+TELEGRAM_BASH_FLAG = "--telegram-bash"
+
+
+def telegram_bash_enabled(env=None, argv=None) -> bool:
+    """Opt-in, and deliberately the INVERSE of the `<GUARD>=off` convention the other
+    hooks use. Those default to protecting; this one changes the cost profile of every
+    Bash call in the fleet, so an unset variable must mean OFF -- a typo in the name can
+    then only leave us where we already are, never silently switch 14 agents on.
+
+    Reads argv FIRST (see TELEGRAM_BASH_FLAG): that is the only channel that actually
+    reaches an agent panel, so an env-only check would make the switch unreachable -- wired
+    into 14 agents, paying a python start on every Bash call, and enforcing nothing."""
+    args = sys.argv[1:] if argv is None else argv
+    if TELEGRAM_BASH_FLAG in args:
+        return True
+    raw = (env if env is not None else os.environ).get(TELEGRAM_BASH_ENV, "")
+    return str(raw).strip().lower() in ("1", "on", "true", "yes")
+
+
+# A Bot API send: the host AND a sending method. Both halves are required -- a bare
+# mention of api.telegram.org (a comment, a doc edit, a grep for it) is not a send, and
+# `sendMessage` on its own is an ordinary English word pair in prose.
+_TG_HOST_RX = re.compile(r"api\.telegram\.org", re.I)
+_TG_METHOD_RX = re.compile(
+    r"/(sendMessage|sendPhoto|sendDocument|sendVoice|sendAudio|sendVideo|"
+    r"sendAnimation|sendMediaGroup|editMessageText)\b",
+    re.I,
+)
+
+
+def is_telegram_bash_send(cmd: str) -> bool:
+    return bool(_TG_HOST_RX.search(cmd) and _TG_METHOD_RX.search(cmd))
+
+
+# `text=` / `caption=` as a form field (-d, --data, --data-urlencode, -F), quoted or not.
+_TG_FIELD_RX = re.compile(
+    r"""(?:^|\s)(?:-d|--data(?:-raw|-urlencode|-binary)?|-F|--form)\s+"""
+    r"""(?:"(?:text|caption)=([^"]*)"|'(?:text|caption)=([^']*)'|(?:text|caption)=(\S+))""",
+    re.I,
+)
+# The same two fields inside a JSON body.
+_TG_JSON_RX = re.compile(r'"(?:text|caption)"\s*:\s*"((?:\\.|[^"\\])*)"', re.I)
+# Anything the shell would expand before curl ever sees it. We hold the UNEXPANDED
+# command text, so auditing this would audit the script, not the message.
+_TG_UNRESOLVED_RX = re.compile(r"\$\(|`|\$\{?\w")
+
+
+# Methods where the Bot API makes the text field MANDATORY. For these an empty extraction
+# is not "nothing to audit" (a captionless photo), it is a FAILED extraction -- see F3.
+_TG_TEXT_REQUIRED_RX = re.compile(r"/(sendMessage|editMessageText)\b", re.I)
+# A body handed to curl from a file or stdin (`-d @payload.json`, `--data @-`). The text is
+# simply not in the command, so there is nothing to read and saying so is the honest answer.
+_TG_FILE_BODY_RX = re.compile(
+    r"(?:^|\s)(?:-d|--data(?:-raw|-urlencode|-binary)?|-F|--form)\s+@(\S+)")
+
+
+def _single_quoted_spans(cmd: str):
+    """Character ranges that sit inside '...'.
+
+    Bash substitutes NOTHING inside single quotes -- not `$VAR`, not `$(...)`, not a
+    backtick -- so text quoted that way is literal and perfectly readable. Treating it as
+    a substitution is what made the gate stand aside on roughly one message in seven
+    (measured: 189 of 1478 fleet messages carry a backtick, and our own style rules ask
+    for backticked identifiers). Inside "..." the shell DOES substitute, so those spans
+    are not literal and are skipped here on purpose.
+
+    Same discipline, opposite direction, as the cd-chain-guard lesson: a guard that reads
+    shell has to honour quote semantics, and only '...' is literal.
+    """
+    spans = []
+    i, n = 0, len(cmd)
+    while i < n:
+        ch = cmd[i]
+        if ch == "'":
+            j = cmd.find("'", i + 1)
+            if j == -1:  # unterminated: treat the remainder as quoted
+                spans.append((i + 1, n))
+                break
+            spans.append((i + 1, j))
+            i = j + 1
+        elif ch == '"':
+            j = i + 1
+            while j < n:
+                if cmd[j] == "\\":
+                    j += 2
+                    continue
+                if cmd[j] == '"':
+                    break
+                j += 1
+            i = j + 1
+        else:
+            i += 1
+    return spans
+
+
+def _in_single_quotes(pos: int, spans) -> bool:
+    return any(a <= pos < b for a, b in spans)
+
+
+def collect_telegram_bash_body(cmd: str):
+    """Return (text, unreadable_reason) for a Bot API send written in Bash.
+
+    Same recovery discipline as `collect_bash_body`, and the same refusal to guess: a
+    body that arrives through `$(cat ...)`, a backtick or a variable is reported as
+    unreadable rather than audited, because what we hold is the command, not the message
+    (the measured 2026-08-11 email case, where a filename supplied the finding and the
+    letter went unread, is the same shape)."""
+    parts = []
+    sq_spans = _single_quoted_spans(cmd)
+    for m in _TG_FIELD_RX.finditer(cmd):
+        dq, sq, bare = m.group(1), m.group(2), m.group(3)
+        val = dq if dq is not None else (sq if sq is not None else (bare or ""))
+        # Only ask about substitution where the shell would actually perform one. The
+        # single-quoted group is literal by definition, so a backtick or a `$` in it is
+        # just a character in the message (F2).
+        if sq is None and _TG_UNRESOLVED_RX.search(val):
+            return ("\n".join(parts),
+                    f"a Telegram-szoveg shell-behelyettesitest tartalmaz ({val[:60]}...)")
+        parts.append(val)
+    for m in _TG_JSON_RX.finditer(cmd):
+        val = m.group(1)
+        # The JSON body is usually written as -d '{...}', i.e. inside single quotes, so the
+        # same rule applies -- but the regex cannot see its own delimiter, so the position
+        # is checked against the command's quoting instead.
+        if not _in_single_quotes(m.start(1), sq_spans) and _TG_UNRESOLVED_RX.search(val):
+            return ("\n".join(parts),
+                    f"a Telegram-szoveg shell-behelyettesitest tartalmaz ({val[:60]}...)")
+        # JSON string escapes only; the MarkdownV2 unescape happens in the caller, once.
+        parts.append(val.replace('\\n', '\n').replace('\\"', '"').replace('\\\\', '\\'))
+    return ("\n".join(parts), None)
+
+
+def telegram_bash_gate(cmd: str) -> None:
+    """Audit a Bot API send written in Bash. FAIL-OPEN, exactly like `telegram_gate`.
+
+    The reasoning is that branch's, unchanged and deliberately not re-litigated here:
+    Telegram is the owner's ONLY supervision channel, so a gate that silences it costs
+    more than a slipped accent. That applies to an UNREADABLE body too -- which is where
+    this differs from the email path on purpose. Email refuses what it cannot inspect
+    because a letter can wait; blocking a supervision message because its text sits in a
+    shell variable would trade a spelling rule for a lost report. The refusal is loud
+    (a systemMessage the session actually sees) rather than silent, so the hole is
+    visible instead of merely permitted. A FOUND problem still blocks."""
+    try:
+        text, unreadable = collect_telegram_bash_body(cmd)
+        if unreadable:
+            print(json.dumps({"systemMessage":
+                "outgoing-copy-gate (Telegram/Bash): a szoveget NEM tudtam megvizsgalni -- "
+                f"{unreadable}. Atengedem (a felugyeleti csatorna nemitasa dragabb), de a "
+                "helyesirast ezen a kuldesen SEMMI nem ellenorizte. Ha ellenorizve akarod, "
+                "add at a szoveget literalkent (-d \"text=...\")."}))
+            sys.exit(0)
+        if not text.strip():
+            # An empty extraction means two very different things depending on the method.
+            # For sendPhoto/sendDocument there may genuinely be no caption. For sendMessage
+            # and editMessageText the Bot API REQUIRES the text field, so empty means the
+            # extraction failed -- typically a body handed over as `-d @payload.json` or on
+            # stdin, which is not in the command at all. That belongs on the loud path, not
+            # on a silent exit that looks identical to an irrelevant command (F3).
+            if _TG_TEXT_REQUIRED_RX.search(cmd):
+                at = _TG_FILE_BODY_RX.search(cmd)
+                why = (f"a torzs fajlbol/stdinbol jon ({at.group(1)[:40]}), tehat a szoveg "
+                       "nincs benne a parancsban") if at else (
+                       "a metodus kotelezove teszi a szoveget, de nem tudtam kinyerni")
+                print(json.dumps({"systemMessage":
+                    "outgoing-copy-gate (Telegram/Bash): a szoveget NEM tudtam megvizsgalni -- "
+                    f"{why}. Atengedem (a felugyeleti csatorna nemitasa dragabb), de a "
+                    "helyesirast ezen a kuldesen SEMMI nem ellenorizte. Ha ellenorizve akarod, "
+                    "add at a szoveget literalkent (-d \"text=...\")."}))
+            sys.exit(0)  # a photo/document send with no caption: nothing to audit
+        problems = audit(MDV2_ESCAPE.sub(r"\1", text))
+    except SystemExit:
+        raise
+    except Exception as exc:  # noqa: BLE001 -- deliberate blanket: fail-open path
+        warn = f"outgoing-copy-gate: TELEGRAM/BASH-ag belso hiba, FAIL-OPEN atengedes: {exc!r}\n"
+        sys.stderr.write(warn)
+        sys.exit(0)
+    if problems:
+        sys.stderr.write(
+            "KIMENO-SZOVEG KAPU (Telegram, Bash): TILTVA, az uzenet nem mehet ki igy.\n\n"
+            + "\n".join(f"  - {p}" for p in problems)
+            + "\n\nJavitsd a szoveget es kuldd ujra.\n"
+        )
+        sys.exit(2)
+    sys.exit(0)
+
+
 def telegram_gate(tool_input: dict) -> None:
     """Audit a Telegram reply. FAIL-OPEN on any internal error (exit 0 + loud
     log): email is deferrable, but Telegram is the owner's ONLY supervision
@@ -884,10 +1142,97 @@ def telegram_gate(tool_input: dict) -> None:
     # logfajlban, amit senki nem olvas.
     if BAD_NAME is None:
         print(json.dumps({"systemMessage":
-            "outgoing-copy-gate: a NEV-SZABALY fajl hianyzik/ures "
-            f"({_LOCAL_RULES}) -- a nev-ellenorzes NEM fut a kimeno uzeneteken. "
-            "Potold a store/outgoing-copy-gate-rules.json-t."}))
+            "outgoing-copy-gate: a nev-ellenorzes NEM fut a kimeno uzeneteken -- "
+            f"{BROKEN_REASON or 'a szabalyfajl hianyzik, olvashatatlan vagy rossz alaku'} "
+            f"({_LOCAL_RULES}). Javitsd a store/outgoing-copy-gate-rules.json-t."}))
     sys.exit(0)
+
+
+# --- match-time budget on the name patterns (card 0c66be37) -------------------------------------
+#
+# THE SECOND DOOR INTO THE SAME ROOM. Guarding the COMPILE stops a typo from killing the hook, but a
+# pattern can compile perfectly and then backtrack catastrophically at MATCH time. Measured on this
+# host with a pattern the card names -- `zzz(a+)+$` against a body containing `zzz` + 40 `a`s -- the
+# hook was STILL RUNNING after 25 seconds. In production it is registered with `timeout: 10`, so
+# Claude Code kills it, the exit code is not 2, and the send goes out UNCHECKED with nothing to say
+# the control stopped. Byte-identical outcome to the compile crash, reached from the other side, and
+# the card asks for the hook-side runtime protection to cover it.
+#
+# The validator cannot close this alone: its ReDoS check is PROBE-based (a handful of fixed strings
+# against the joint regex), so a pattern anchored behind a rare prefix passes validation and is slow
+# only on real traffic. That is the card's own LOW, and it is why the budget lives HERE, where the
+# actual text is.
+#
+# A timeout deliberately RAISES rather than returning "no match". The two existing nets then do the
+# right thing per path, with no new state to model: the email path's fail-closed wrapper turns it
+# into exit 2, and telegram_gate's documented fail-open turns it into exit 0 plus a loud warning.
+# Returning None would have been the one wrong answer -- a silent "the name is fine".
+NAME_MATCH_BUDGET_DEFAULT_S = 2.0
+
+
+def _read_name_budget(raw):
+    """Parse the budget, and NEVER raise doing it (Cybersec NO-GO on my own fix, card 0c66be37).
+
+    I wrote this line as a bare `float(os.environ.get(...))` at module level -- in the very commit
+    that moved a compile INTO a try for exactly this reason. `BUDGET=abc` (or an empty value, or a
+    space) raised ValueError at IMPORT, exit 1, zero stdout: the whole hook silently absent on every
+    agent. Same defect class, same file, same commit. Measured before fixing: `2` -> exit 2,
+    `abc` / `` / ` ` -> exit 1.
+
+    A NON-POSITIVE or unparseable value falls back to the default rather than disabling the timer.
+    Disabling has to be SAID, with the literal `off`, because a typo must cost protection nowhere:
+    if `-1` or `nonsense` silently meant "no budget", the knob would be a way to switch a control
+    off by accident, which is how this class keeps happening.
+    """
+    if raw is None:
+        return NAME_MATCH_BUDGET_DEFAULT_S
+    text = str(raw).strip().lower()
+    if text == "off":
+        return 0.0
+    try:
+        value = float(text)
+    except (TypeError, ValueError):
+        return NAME_MATCH_BUDGET_DEFAULT_S
+    if not (value > 0) or value != value or value == float("inf"):
+        return NAME_MATCH_BUDGET_DEFAULT_S
+    return value
+
+
+NAME_MATCH_BUDGET_S = _read_name_budget(os.environ.get("OUTGOING_COPY_GATE_NAME_BUDGET"))
+
+
+class NamePatternTimeout(Exception):
+    pass
+
+
+def _name_search(plain):
+    """Run the bad-name patterns against `plain` under a wall-clock budget."""
+    if not BAD_NAME:
+        return None
+    # setitimer is POSIX and main-thread only. Where it is unavailable the search still runs, just
+    # unbudgeted -- the pre-existing behaviour, and better than refusing to check at all. Stated
+    # rather than implied, because "there is a timeout" would otherwise be false on those hosts.
+    try:
+        import signal
+        have_timer = hasattr(signal, "setitimer") and threading.current_thread() is threading.main_thread()
+    except Exception:  # noqa: BLE001
+        have_timer = False
+    if not have_timer or NAME_MATCH_BUDGET_S <= 0:
+        return BAD_NAME.search(plain)
+
+    def _fire(_signum, _frame):
+        raise NamePatternTimeout(
+            f"a nev-minta illesztese tullepte a {NAME_MATCH_BUDGET_S:g}s koltsegkeretet "
+            "(valoszinuleg katasztrofalis visszalepes egy mintaban)"
+        )
+
+    prev = signal.signal(signal.SIGALRM, _fire)
+    signal.setitimer(signal.ITIMER_REAL, NAME_MATCH_BUDGET_S)
+    try:
+        return BAD_NAME.search(plain)
+    finally:
+        signal.setitimer(signal.ITIMER_REAL, 0)
+        signal.signal(signal.SIGALRM, prev)
 
 
 def audit(text: str):
@@ -898,7 +1243,7 @@ def audit(text: str):
         problems.append(
             f"GONDOLATJEL (em dash, U+2014) {plain.count(EM_DASH)} helyen -- allo szabaly, soha nem mehet ki."
         )
-    bad = BAD_NAME.search(plain) if BAD_NAME else None
+    bad = _name_search(plain)
     if bad:
         problems.append(
             f"HELYTELEN NEV: {bad.group(0)!r} -- a lokal nev-szabaly (store/outgoing-copy-gate-rules.json) szerint helytelen alak; a helyes irast a szabaly-fajl correction mezoje adja." + _name_correction()
@@ -1028,9 +1373,27 @@ def main():
         text, unreadable = collect_mcp_body(tool_input), None
     elif tool == "Bash":
         cmd = str(tool_input.get("command") or "")
-        if not is_send_invocation(cmd):
+        # Card 74181db2: a Bot API send written in Bash is the ONLY Telegram route a role
+        # agent has (see telegram_bash_gate).
+        #
+        # THE EMAIL DETECTOR RUNS FIRST, and the order is load-bearing rather than tidy. I
+        # wrote it the other way round first, on the reasoning that the two are disjoint --
+        # `is_send_invocation` looks for mail vendors, a Bot API call names none. They are not
+        # disjoint on the CONTENT: an email whose body merely MENTIONS
+        # `api.telegram.org/.../sendMessage` satisfies this detector, and since the telegram
+        # branch is fail-OPEN while the email branch is fail-CLOSED, that hijacked the stricter
+        # path with the looser one. Measured before fixing: a resend.com send with stripped
+        # Hungarian accents and that URL in its prose exited 0 (unchecked) instead of 2.
+        #
+        # Email first makes the failure direction safe: a Telegram send names no mail vendor,
+        # so it still reaches the branch below; and anything that looks like BOTH is treated as
+        # the email it is, on the fail-closed path.
+        if is_send_invocation(cmd):
+            text, unreadable = collect_bash_body(cmd)
+        elif telegram_bash_enabled() and is_telegram_bash_send(cmd):
+            telegram_bash_gate(cmd)  # exits; never falls through
+        else:
             sys.exit(0)
-        text, unreadable = collect_bash_body(cmd)
     else:
         sys.exit(0)
 
@@ -1051,10 +1414,14 @@ def main():
     # szabaly-fajl potlasat. (A telegram-ag fail-open marad systemMessage
     # figyelmeztetessel: az a felugyeleti csatorna, ott a nemulas a dragabb.)
     if BAD_NAME is None:
+        # Card 0c66be37: say WHICH of the two broke. "hianyzik/ures" was the only wording, and a
+        # bad pattern now reaches here too -- sending the reader after a file that is present and
+        # valid. The consequence is identical (the check cannot run); the fix is not.
+        why = BROKEN_REASON or "a fajl hianyzik, olvashatatlan vagy rossz alaku"
         sys.stderr.write(
-            "KIMENO-SZOVEG KAPU: TILTVA -- a NEV-SZABALY fajl hianyzik/ures "
-            f"({_LOCAL_RULES}), igy a nev-ellenorzes nem tud lefutni.\n"
-            "Email fail-closed: potold a store/outgoing-copy-gate-rules.json-t "
+            f"KIMENO-SZOVEG KAPU: TILTVA -- a nev-ellenorzes nem tud lefutni: {why} "
+            f"({_LOCAL_RULES}).\n"
+            "Email fail-closed: javitsd a store/outgoing-copy-gate-rules.json-t "
             "(bad_name_patterns + correction), aztan kuldd ujra.\n"
         )
         sys.exit(2)
@@ -1073,9 +1440,38 @@ def main():
 
 
 if __name__ == "__main__":
-    # --status is a READ-ONLY posture readout, not a hook path: PreToolUse never passes
-    # argv, so this cannot collide with the gate's real job.
+    # --status is a READ-ONLY posture readout. PreToolUse DOES pass argv now (the wired
+    # command carries TELEGRAM_BASH_FLAG), so this checks argv[1] for --status specifically
+    # rather than merely for the presence of arguments -- `... outgoing-copy-gate.py
+    # --telegram-bash` must take the gate path, not print a report and exit 0.
     if len(sys.argv) > 1 and sys.argv[1] == "--status":
         print(status_report())
         sys.exit(0)
-    main()
+    # Upstream's fail-closed net, adopted on card 630d9864 (B-wave). It was recorded as "a
+    # candidate for future adoption, not yet taken" and it is the one genuinely open item in this
+    # file -- MEASURED before adopting: a payload whose tool_input is not a dict (e.g. a bare
+    # string) made collect_mcp_body() raise AttributeError, python exited 1, and PreToolUse treats
+    # 1 as NON-blocking, so the send ran UNCHECKED. That is the exact inverse of this gate's
+    # fail-closed contract, reached by a malformed call rather than by any decision.
+    #
+    # It sits AFTER the --status branch on purpose: --status is a human-invoked read-only readout,
+    # never a hook path, and answering a status question with a "TILTVA" send-refusal would be a
+    # lie about what failed.
+    #
+    # The telegram path never reaches this net: telegram_gate() catches its own errors and exits 0
+    # (fail-open BY DESIGN -- Telegram is the owner's only supervision channel, so silence there
+    # costs more than a slipped accent). Verified in this fork, not assumed from upstream's
+    # comment. So this only ever catches the email/Bash send paths, where blocking is the safe
+    # failure mode.
+    try:
+        main()
+    except SystemExit:
+        raise
+    except Exception as exc:  # noqa: BLE001 -- deliberate blanket: fail-closed net
+        sys.stderr.write(
+            "KIMENO-SZOVEG KAPU: TILTVA, belso hiba a vizsgalat kozben "
+            f"({exc!r}).\n"
+            "Fail-closed: egy vizsgalhatatlan kuldes pont a kaput utne ki. "
+            "Tedd vizsgalhatova a hivast, aztan kuldd ujra.\n"
+        )
+        sys.exit(2)

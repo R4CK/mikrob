@@ -86,6 +86,7 @@ async function renderAuthCard() {
   if (status.method === 'token' || status.method === 'session') {
     renderDeviceKeysSection(body)
     renderBridgeEnrollSection(body)
+    void renderNamePatternsSection(body)
   }
 }
 
@@ -119,6 +120,21 @@ function renderBridgeEnrollSection(body) {
   document.getElementById('authBridgeEnrollBtn').addEventListener('click', bridgeEnrollFromUi)
 }
 
+// The pairing endpoint answers with a stable `code` beside its English
+// `error` sentence. Translate on the code, never on the sentence: the wording
+// is free to change, the code is the contract. An unknown code falls back to
+// the server's own sentence rather than to a blank line or a raw key, so a
+// server error added later degrades to English instead of disappearing.
+function bridgeEnrollErrorText(data) {
+  const code = data && typeof data.code === 'string' ? data.code : ''
+  if (code) {
+    const key = `auth.bridge.err.${code}`
+    const translated = t(key, (data && data.params) || {})
+    if (translated !== key) return translated
+  }
+  return (data && data.error) || t('auth.card.err_generic')
+}
+
 async function bridgeEnrollFromUi() {
   const msg = document.getElementById('authBridgeMsg')
   const out = document.getElementById('authBridgeBundle')
@@ -138,7 +154,7 @@ async function bridgeEnrollFromUi() {
       body: JSON.stringify(hostOverride ? { key_line: keyLine, name, host: hostOverride } : { key_line: keyLine, name }),
     })
     const data = await r.json().catch(() => ({}))
-    if (!r.ok) { msg.classList.add('err'); msg.textContent = data.error || t('auth.card.err_generic'); return }
+    if (!r.ok) { msg.classList.add('err'); msg.textContent = bridgeEnrollErrorText(data); return }
     msg.classList.add('ok')
     msg.textContent = (data.action === 'replaced' ? t('auth.bridge.repaired') : t('auth.bridge.paired')) +
       (data.warnings && data.warnings.length ? ` (${data.warnings.join('; ')})` : '')
@@ -160,4 +176,144 @@ async function bridgeEnrollFromUi() {
     })
     refreshDeviceKeyList()
   } catch { msg.classList.add('err'); msg.textContent = t('auth.login.err_network') }
+}
+
+// ============================================================
+// === Outgoing filter: name/phrase rules (card 98dbbcc9) ===
+// ============================================================
+// CRUD over store/outgoing-copy-gate-rules.json's bad_name_patterns, which the
+// outgoing-copy gate compiles as ONE Python regex on every tool call. The server
+// validates with Python before writing (Node's RegExp disagrees with Python in both
+// directions), so this panel's job is to render the verdict, not to second-guess it.
+//
+// Every pattern is rendered through escapeHtml: these strings are operator input and
+// land in innerHTML, so an unescaped one would be self-inflicted XSS on the very page
+// that manages a security control.
+
+async function renderNamePatternsSection(body) {
+  const wrap = document.createElement('div')
+  wrap.className = 'auth-device-keys auth-name-patterns'
+  wrap.id = 'authNamePatterns'
+  wrap.innerHTML =
+    `<div class="auth-sessions-title">${t('names.title')}</div>` +
+    `<p class="auth-muted">${t('names.desc')}</p>` +
+    `<div id="namePatternsState" class="auth-muted"></div>` +
+    `<div id="namePatternsList"></div>` +
+    `<div class="auth-form">` +
+      `<input id="namePatternValue" type="text" autocapitalize="off" spellcheck="false" maxlength="200" placeholder="${t('names.placeholder')}">` +
+      `<select id="namePatternMode">` +
+        `<option value="literal">${t('names.mode.literal')}</option>` +
+        `<option value="regex">${t('names.mode.regex')}</option>` +
+      `</select>` +
+      `<button class="btn-secondary" id="namePatternAddBtn">${t('names.add')}</button>` +
+      `<p class="auth-muted">${t('names.mode_hint')}</p>` +
+      `<div class="auth-form-msg" id="namePatternMsg"></div>` +
+    `</div>`
+  body.appendChild(wrap)
+  document.getElementById('namePatternAddBtn').addEventListener('click', addNamePatternFromUi)
+  document.getElementById('namePatternValue').addEventListener('keydown', (e) => {
+    if (e.key === 'Enter') addNamePatternFromUi()
+  })
+  await loadNamePatterns()
+}
+
+async function loadNamePatterns() {
+  const listEl = document.getElementById('namePatternsList')
+  const stateEl = document.getElementById('namePatternsState')
+  if (!listEl || !stateEl) return
+  let data
+  try {
+    const r = await fetch('/api/security/name-patterns')
+    if (!r.ok) throw new Error('http')
+    data = await r.json()
+  } catch {
+    stateEl.className = 'auth-form-msg err'
+    stateEl.textContent = t('names.err_generic')
+    return
+  }
+  const pats = Array.isArray(data.patterns) ? data.patterns : []
+  stateEl.className = data.state === 'broken' ? 'auth-form-msg err' : 'auth-muted'
+  stateEl.textContent =
+    data.state === 'broken' ? t('names.state.broken')
+    : data.state === 'empty' ? t('names.state.empty')
+    : t('names.state.active', { n: pats.length })
+  // Two conditions the operator would otherwise never learn about: a relaxed file mode on a
+  // file that names a private person, and a worktree-hosted dashboard whose writes would go
+  // to a copy the fleet's hooks never read.
+  if (data.file_exists && data.file_mode_ok === false) {
+    stateEl.textContent += ' ' + t('names.mode_warn')
+  }
+  const readOnly = data.read_only === true
+  const addBtn = document.getElementById('namePatternAddBtn')
+  if (addBtn) addBtn.disabled = readOnly
+  if (readOnly) {
+    stateEl.className = 'auth-form-msg err'
+    stateEl.textContent = t('names.read_only')
+  }
+
+  if (!pats.length) {
+    listEl.innerHTML = `<p class="auth-muted">${t('names.empty_list')}</p>`
+    return
+  }
+  listEl.innerHTML = pats.map((p) =>
+    `<div class="auth-device-row name-pattern-row">` +
+      `<code class="name-pattern-src">${escapeHtml(p)}</code>` +
+      `<button class="btn-secondary btn-compact name-pattern-del" data-pattern="${escapeHtml(p)}"${readOnly ? ' disabled' : ''}>${t('names.remove')}</button>` +
+    `</div>`).join('')
+  listEl.querySelectorAll('.name-pattern-del').forEach((btn) => {
+    btn.addEventListener('click', () => removeNamePatternFromUi(btn.getAttribute('data-pattern')))
+  })
+}
+
+async function addNamePatternFromUi() {
+  const msg = document.getElementById('namePatternMsg')
+  const input = document.getElementById('namePatternValue')
+  const value = (input.value || '').trim()
+  msg.className = 'auth-form-msg'
+  msg.textContent = ''
+  if (!value) { msg.classList.add('err'); msg.textContent = t('names.err_empty'); return }
+  const mode = document.getElementById('namePatternMode').value
+  try {
+    const r = await fetch('/api/security/name-patterns', {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ value, mode }),
+    })
+    const data = await r.json().catch(() => ({}))
+    if (!r.ok) {
+      // The server's message is the specific reason (which regex construct failed, or that
+      // the pattern backtracks catastrophically). Showing a generic string here would throw
+      // away the only actionable part.
+      msg.classList.add('err')
+      msg.textContent = data.error || t('names.err_generic')
+      return
+    }
+    input.value = ''
+    msg.classList.add('ok')
+    msg.textContent = t('names.added', { n: data.count })
+    await loadNamePatterns()
+  } catch {
+    msg.classList.add('err')
+    msg.textContent = t('names.err_generic')
+  }
+}
+
+async function removeNamePatternFromUi(pattern) {
+  const msg = document.getElementById('namePatternMsg')
+  msg.className = 'auth-form-msg'
+  msg.textContent = ''
+  if (!confirm(t('names.confirm_remove'))) return
+  try {
+    const r = await fetch('/api/security/name-patterns', {
+      method: 'DELETE', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ pattern }),
+    })
+    const data = await r.json().catch(() => ({}))
+    if (!r.ok) { msg.classList.add('err'); msg.textContent = data.error || t('names.err_generic'); return }
+    msg.classList.add('ok')
+    msg.textContent = t('names.removed', { n: data.count })
+    await loadNamePatterns()
+  } catch {
+    msg.classList.add('err')
+    msg.textContent = t('names.err_generic')
+  }
 }

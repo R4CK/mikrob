@@ -1,9 +1,17 @@
 // Tests for OTel distributed tracing (card def5a189).
 //
-// Scope: DB layer (otel_spans table + stampMessageTrace), API route
-// (POST/GET /api/spans, GET /api/traces/:id, GET /api/traces), and the
-// message-router middleware propagation logic (stampTraceOnMessage via the
-// exported shouldAbandon+shouldGiveUpOnInject boundary).
+// Scope: DB layer (otel_spans table + stampMessageTrace) and the message-router middleware
+// propagation logic (stampTraceOnMessage via the exported shouldAbandon+shouldGiveUpOnInject
+// boundary).
+//
+// SCOPE CORRECTED 2026-09-04 (card 63beeb8a). This header used to claim the API route
+// "(POST/GET /api/spans, GET /api/traces/:id, GET /api/traces)" was in scope. It is not, and never
+// was: the helpers below are LOCAL redefinitions of the SQL against a scratch database, and nothing
+// in this file imports or calls tryHandleSpans. The route therefore had zero coverage while a
+// green suite named it -- which is how its write side drifted far enough from the read side for
+// Cybered to find an unconditional close, an unvalidated end_ms and an unchecked agent_id on it.
+// The route's own tests live in spans-post-guards.test.ts. A claimed scope is worse than an absent
+// one: an absent one gets noticed.
 //
 // The DB tests use a real in-memory SQLite instance (same pattern as other
 // integration tests in this repo) to exercise actual SQL without a mock layer

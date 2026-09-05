@@ -630,9 +630,14 @@ async function loadCostEstimatesWidget() {
 // ============================================================
 // === Overview: local-LLM model-distribution swimlane (card d6ecb003, pair-BE 2ffc0a96) ===
 // ============================================================
-// One lane per model that actually has activity in the window (no empty lane for an unused
-// model, per Peti's spec), tasks rendered as blocks positioned by their REAL start-time and
-// duration (not bucketed) and colored by task type, with a hover/focus tooltip and a legend.
+// One lane per model with activity in the window PLUS one per installed/configured model that
+// had none (card 21950f77 -- this REVERSES the original "no empty lane for an unused model"
+// spec: with only busy lanes drawn, an idle model and a model that does not exist looked the
+// same). Tasks render as blocks positioned by their REAL start-time and duration (not bucketed)
+// and colored by task type, with a hover/focus tooltip and a legend. An idle lane draws one
+// short muted row instead of a full-height track, so the roster costs the viewport almost
+// nothing; a lane whose model is no longer installed is labelled as such, but ONLY when the
+// roster was actually readable (see rosterAvailable).
 // Design ref: store/design-refs/local-llm-swimlane-mockup-2026-09-03.jpg.
 const OVW_LLMDIST_PALETTE = ['#4a9eff', '#34d399', '#a78bfa', '#f59e0b', '#f87171', '#22d3ee', '#fb7185', '#facc15']
 let ovwLlmDistTaskColors = new Map()
@@ -684,34 +689,152 @@ function ovwLlmDistKpiHtml(kpi) {
 }
 
 function ovwLlmDistAxisHtml(rangeStartMs, rangeEndMs) {
-  const steps = 6
-  const labels = []
-  for (let i = 0; i <= steps; i++) {
-    const ts = rangeStartMs + ((rangeEndMs - rangeStartMs) * i) / steps
-    labels.push(`<span>${escapeHtml(new Date(ts).toLocaleTimeString('hu-HU', { hour: '2-digit', minute: '2-digit' }))}</span>`)
+  // One tick every two minutes, so roughly five land inside the ten-minute viewport at any zoom.
+  // The old version spread six evenly-spaced labels over the whole range with flex; on a canvas
+  // that is up to 24 viewports wide that puts a label every four screens, which reads as no axis
+  // at all. Absolute positioning keeps every tick over the instant it names.
+  const span = Math.max(1, rangeEndMs - rangeStartMs)
+  const stepMs = 2 * 60 * 1000
+  const out = []
+  // Start on a whole two-minute boundary so the labels read 12:00, 12:02, ... not 12:01:37.
+  const first = Math.ceil(rangeStartMs / stepMs) * stepMs
+  for (let ts = first; ts <= rangeEndMs; ts += stepMs) {
+    const leftPct = ((ts - rangeStartMs) / span) * 100
+    const label = new Date(ts).toLocaleTimeString('hu-HU', { hour: '2-digit', minute: '2-digit' })
+    out.push(`<span style="left:${leftPct.toFixed(3)}%">${escapeHtml(label)}</span>`)
   }
-  return labels.join('')
+  return `<div class="ovw-llmdist-axis-track">${out.join('')}</div>`
 }
 
-function ovwLlmDistLanesHtml(models, rangeStartMs, rangeEndMs) {
+// VIEWPORT (card b52c3c42). The slider decides how much data is LOADED (30min-4h); this decides
+// how much of it is VISIBLE AT ONCE. The canvas is drawn `zoom` times wider than the scroll
+// viewport, so exactly ten minutes are on screen and the operator drags back along the timeline.
+// Two separate mechanisms on purpose -- Peti asked for both, and they answer different questions.
+const OVW_LLMDIST_VIEWPORT_MIN = 10
+// Label column (96px) + its gap (10px). The canvas is sized
+// `106px + (100% - 106px) * zoom` so the TRACK area alone is what gets multiplied; without
+// subtracting the label the visible slice would be short by the label's width and the "10 minutes"
+// claim would be off by ~13% at typical widths.
+const OVW_LLMDIST_LABEL_GUTTER_PX = 106
+
+/** How many viewport-widths of canvas one loaded range needs. */
+function ovwLlmDistZoom(hours) {
+  const h = Number(hours)
+  if (!Number.isFinite(h) || h <= 0) return 1
+  return Math.max(1, (h * 60) / OVW_LLMDIST_VIEWPORT_MIN)
+}
+
+// Minimum rendered block width, in PERCENT of the track, and the clearance the packer keeps
+// between two blocks on the same sub-row. Percent is the single source of truth on purpose:
+// the CSS used to ALSO carry `min-width: 10px`, and with two different floors the packer could
+// never know a block's real rendered width (0.6% of a ~700px track is ~4px, so the pixel floor
+// silently won and inflated every short block past what the geometry said). Blocks cannot be
+// packed without overlap unless one number decides their width.
+// Percent of the VISIBLE VIEWPORT (converted to canvas percent by dividing by zoom below), so
+// the floor means the same number of pixels whatever the loaded range is. Raised from 0.6% (~5px,
+// a sliver with no room for text) to 2% (~16px on a 900px card): Peti asked for readable blocks,
+// and a short call is only ever as wide as the floor makes it. Measured cost in sub-rows at this
+// floor: 3 at the default 1h window, 8 at the 4h extreme -- 24px would have bought no extra rows
+// at 4h but one more at 1h, which is the window actually in use.
+const OVW_LLMDIST_MIN_W_PCT = 2.0
+const OVW_LLMDIST_GAP_PCT = 0.25
+// Above this many packed sub-rows the lane goes compact rather than tall. Raised from 4 once the
+// zoom-scaled floor cut the real-data row count from 13 to 4 at 4h: compact is now the safety
+// valve for a genuine burst, not the everyday view, which is what makes the taller blocks stick.
+// 6, so the common 1h view (3 rows) keeps full-height readable blocks while the 4h extreme
+// (8 rows) drops to thin rows instead of a ~650px card.
+const OVW_LLMDIST_COMPACT_FROM_ROWS = 6
+
+/** Greedy interval packing (first-fit) over RENDERED geometry.
+ *
+ *  Packing on raw start/end times would not fix what the operator sees. Measured on live data in
+ *  a 4h window: 89% of blocks (66 of 74) are SHORTER than the min-width floor, so they render
+ *  wider than their true duration and collide visually even when their intervals do not touch.
+ *  There were also 40 genuine time-overlaps. Both classes are handled by packing the boxes that
+ *  actually get drawn, left edge to right edge, rather than the intervals behind them.
+ *
+ *  Mutates each block with `row` and returns the number of sub-rows used.
+ */
+function ovwLlmDistPackRows(blocks, gapPct) {
+  const gap = typeof gapPct === 'number' ? gapPct : OVW_LLMDIST_GAP_PCT
+  const rowRightEdge = []
+  // Left-to-right, with the original index as a stable tiebreak so two blocks starting at the
+  // same instant keep a deterministic order (and therefore a deterministic row assignment).
+  const order = blocks.map((b, i) => ({ b, i }))
+    .sort((x, y) => (x.b.leftPct - y.b.leftPct) || (x.i - y.i))
+  for (const { b } of order) {
+    const right = b.leftPct + b.widthPct
+    let row = rowRightEdge.findIndex((edge) => b.leftPct >= edge + gap)
+    if (row === -1) {
+      rowRightEdge.push(right)
+      row = rowRightEdge.length - 1
+    } else {
+      rowRightEdge[row] = Math.max(rowRightEdge[row], right)
+    }
+    b.row = row
+  }
+  return rowRightEdge.length
+}
+
+function ovwLlmDistLanesHtml(models, rangeStartMs, rangeEndMs, zoom, rosterAvailable) {
   const span = Math.max(1, rangeEndMs - rangeStartMs)
+  // Both geometry constants are percentages of the CANVAS, which is `zoom` times wider than the
+  // viewport -- so dividing by zoom keeps the VISUAL minimum and the VISUAL gap exactly where they
+  // were before the canvas grew. That is also what makes thicker blocks affordable: measured on
+  // live data the packer needed 13 sub-rows at 4h with the unscaled floor and 4 with this one,
+  // because 89% of blocks were only wide at all because of the floor.
+  const z = Math.max(1, Number(zoom) || 1)
+  const minW = OVW_LLMDIST_MIN_W_PCT / z
+  const gap = OVW_LLMDIST_GAP_PCT / z
   return models.map((m) => {
     const tasks = Array.isArray(m.tasks) ? m.tasks : []
+    // `installed: false` is only MEANINGFUL when the roster lookup succeeded. With ollama down
+    // every lane comes back false, and badging them all "no longer installed" would be a claim
+    // about state we could not read -- the same failure the /models endpoint refuses to make.
+    const removed = rosterAvailable === true && m.installed === false
+    const labelHtml = `<span class="ovw-llmdist-lane-label${removed ? ' ovw-llmdist-lane-label--removed' : ''}"
+        title="${escapeHtml((m.model || '') + (removed ? ' -- ' + t('overview.llmDist.lane_uninstalled') : ''))}"
+      >${escapeHtml(m.model || '?')}</span>`
+    if (!tasks.length) {
+      return `<div class="ovw-llmdist-lane ovw-llmdist-lane--idle">
+      ${labelHtml}
+      <div class="ovw-llmdist-lane-rows">
+        <div class="ovw-llmdist-lane-track ovw-llmdist-lane-track--idle">
+          <span class="ovw-llmdist-lane-idle-note">${escapeHtml(t('overview.llmDist.lane_idle'))}</span>
+        </div>
+      </div>
+    </div>`
+    }
     const blocks = tasks.map((task) => {
       const leftPct = Math.min(100, Math.max(0, ((Number(task.startMs) - rangeStartMs) / span) * 100))
-      const widthPct = Math.min(100 - leftPct, Math.max(0.6, (Number(task.durationMs) / span) * 100))
-      const color = ovwLlmDistColorFor(task.task || '')
-      return `<button type="button" class="ovw-llmdist-block" data-status="${escapeHtml(task.status || 'ok')}"
+      const widthPct = Math.min(100 - leftPct, Math.max(minW, (Number(task.durationMs) / span) * 100))
+      return { task, leftPct, widthPct, row: 0 }
+    })
+    const rowCount = ovwLlmDistPackRows(blocks, gap)
+    // DENSITY. Strict non-overlap is what was asked for, and on real data it is expensive: a
+    // local call's logged duration INCLUDES its wait for the GPU lock, so queued calls genuinely
+    // occupy overlapping wall-clock intervals. Measured live: 23 sub-rows over 30 minutes, 36
+    // over 4 hours. At the original 30px row that is a 760-1190px tall lane for ONE model, which
+    // trades an overlap the operator can squint past for a chart that no longer fits the page.
+    // So past a handful of rows the lane switches to compact rows (the block text clips away,
+    // colour + tooltip carry the meaning) and scrolls if it is still too tall.
+    const compact = rowCount > OVW_LLMDIST_COMPACT_FROM_ROWS
+    const rowsHtml = Array.from({ length: Math.max(1, rowCount) }, (_, r) => {
+      const inRow = blocks.filter((b) => b.row === r).map(({ task, leftPct, widthPct }) => {
+        const color = ovwLlmDistColorFor(task.task || '')
+        return `<button type="button" class="ovw-llmdist-block" data-status="${escapeHtml(task.status || 'ok')}"
         style="left:${leftPct.toFixed(2)}%;width:${widthPct.toFixed(2)}%;background:${color}"
         data-task="${escapeHtml(task.task || '')}" data-agent="${escapeHtml(task.agent || '')}"
         data-duration="${Number(task.durationMs) || 0}" data-tokens-in="${Number(task.tokensIn) || 0}"
         data-tokens-out="${Number(task.tokensOut) || 0}" data-tps-label="${escapeHtml(ovwLlmDistFormatTpsOrNa(task.tokensPerSec))}"
         data-status-label="${escapeHtml(ovwLlmDistStatusLabel(task.status))}"
       >${escapeHtml(task.task || '')}</button>`
+      }).join('')
+      return `<div class="ovw-llmdist-lane-track">${inRow}</div>`
     }).join('')
     return `<div class="ovw-llmdist-lane">
-      <span class="ovw-llmdist-lane-label" title="${escapeHtml(m.model || '')}">${escapeHtml(m.model || '?')}</span>
-      <div class="ovw-llmdist-lane-track">${blocks}</div>
+      ${labelHtml}
+      <div class="ovw-llmdist-lane-rows${compact ? ' ovw-llmdist-lane-rows--compact' : ''}">${rowsHtml}</div>
     </div>`
   }).join('')
 }
@@ -769,13 +892,61 @@ function ovwLlmDistWireTooltips(body) {
   })
 }
 
+// Swimlane time window (card 4c5c540c). Was hardcoded to 6h; Peti asked for 30 minutes to 4
+// hours, which is the range you actually watch while work is flowing. The API's own bounds stay
+// wide (0.5-168) -- this slider is a UI choice, not the contract.
+const OVW_LLMDIST_HOURS_KEY = 'marveen-llmdist-hours'
+const OVW_LLMDIST_MIN_H = 0.5
+const OVW_LLMDIST_MAX_H = 4
+
+function ovwLlmDistHours() {
+  const el = document.getElementById('ovwLlmDistHours')
+  const raw = el ? Number(el.value) : Number(localStorage.getItem(OVW_LLMDIST_HOURS_KEY))
+  // Clamp rather than trust: a stored value survives a future range change, and a slider the
+  // browser restored on reload can hold anything the previous build allowed.
+  if (!Number.isFinite(raw) || raw <= 0) return 1
+  return Math.min(OVW_LLMDIST_MAX_H, Math.max(OVW_LLMDIST_MIN_H, raw))
+}
+
+/** Human label for a fractional-hour window: "30 perc" / "1,5 óra" / "1.5 h".
+ *  The decimal separator is locale-specific -- hardcoding the Hungarian comma would print
+ *  "1,5 h" to an English operator -- so the number is formatted with the ACTIVE i18n language
+ *  (window._lang, the same source t() reads), not with a fixed string replace. */
+function ovwLlmDistHoursLabel(h) {
+  if (h < 1) return t('overview.llmDist.range_minutes', { n: Math.round(h * 60) })
+  const lang = (typeof window !== 'undefined' && window._lang) || 'hu'
+  let n
+  try { n = h.toLocaleString(lang) } catch { n = String(h) }
+  return t('overview.llmDist.range_hours', { n })
+}
+
+function initLlmDistRange() {
+  const el = document.getElementById('ovwLlmDistHours')
+  if (!el || el.dataset.wired === '1') return
+  let stored = Number(localStorage.getItem(OVW_LLMDIST_HOURS_KEY))
+  if (!Number.isFinite(stored) || stored <= 0) stored = 1
+  el.value = String(Math.min(OVW_LLMDIST_MAX_H, Math.max(OVW_LLMDIST_MIN_H, stored)))
+  const out = document.getElementById('ovwLlmDistHoursOut')
+  const paint = () => { if (out) out.textContent = ovwLlmDistHoursLabel(ovwLlmDistHours()) }
+  paint()
+  // `input` paints the label as it slides (no request per pixel); `change` fires once the
+  // operator lets go, and only that refetches.
+  el.addEventListener('input', paint)
+  el.addEventListener('change', () => {
+    try { localStorage.setItem(OVW_LLMDIST_HOURS_KEY, String(ovwLlmDistHours())) } catch { /* private mode */ }
+    void loadLlmDistWidget()
+  })
+  el.dataset.wired = '1'
+}
+
 async function loadLlmDistWidget() {
   const card = document.getElementById('ovwLlmDistCard')
   const kpisEl = document.getElementById('ovwLlmDistKpis')
   const body = document.getElementById('ovwLlmDistBody')
   const metaEl = document.getElementById('ovwLlmDistMeta')
   if (!card || !body) return
-  const hours = 6
+  initLlmDistRange()
+  const hours = ovwLlmDistHours()
   const token = localStorage.getItem('marveen-dashboard-token') || ''
   try {
     const r = await fetch(`/api/local-llm/model-usage-buckets?hours=${hours}`, {
@@ -784,7 +955,7 @@ async function loadLlmDistWidget() {
     if (r.status === 404) { card.hidden = true; return }
     if (!r.ok) throw new Error('HTTP ' + r.status)
     const d = await r.json()
-    if (metaEl) metaEl.textContent = t('overview.llmDist.meta', { hours: d.windowHours || hours })
+    if (metaEl) metaEl.textContent = t('overview.llmDist.meta', { hours: ovwLlmDistHoursLabel(d.windowHours || hours) })
     if (kpisEl) kpisEl.innerHTML = ovwLlmDistKpiHtml(d.kpi || {})
     const models = Array.isArray(d.models) ? d.models : []
     if (!models.length) {
@@ -796,13 +967,25 @@ async function loadLlmDistWidget() {
     models.forEach((m) => (Array.isArray(m.tasks) ? m.tasks : []).forEach((task) => ovwLlmDistColorFor(task.task || '')))
     const rangeEndMs = d.generatedAtMs || Date.now()
     const rangeStartMs = rangeEndMs - (d.windowHours || hours) * 3600000
+    const zoom = ovwLlmDistZoom(d.windowHours || hours)
     body.innerHTML = `
-      <div class="ovw-llmdist-lanes">${ovwLlmDistLanesHtml(models, rangeStartMs, rangeEndMs)}</div>
-      <div class="ovw-llmdist-axis">${ovwLlmDistAxisHtml(rangeStartMs, rangeEndMs)}</div>
+      <div class="ovw-llmdist-scroll" id="ovwLlmDistScroll" tabindex="0"
+           role="group" aria-label="${escapeHtml(t('overview.llmDist.scroll_label'))}">
+        <div class="ovw-llmdist-canvas" style="--llmdist-zoom:${zoom.toFixed(4)}">
+          <div class="ovw-llmdist-lanes">${ovwLlmDistLanesHtml(models, rangeStartMs, rangeEndMs, zoom, d.rosterAvailable)}</div>
+          <div class="ovw-llmdist-axis">${ovwLlmDistAxisHtml(rangeStartMs, rangeEndMs)}</div>
+        </div>
+      </div>
+      <p class="ovw-llmdist-scroll-hint">${escapeHtml(t('overview.llmDist.scroll_hint'))}</p>
       ${ovwLlmDistLegendHtml()}
     `
     ovwLlmDistWireTooltips(body)
     card.hidden = false
+    // Open on NOW (the right edge) and drag back, which is the direction Peti asked for. Must run
+    // after the card is un-hidden: a hidden element has no layout, so scrollWidth would be 0 and
+    // the view would silently open at the oldest end instead.
+    const scroller = document.getElementById('ovwLlmDistScroll')
+    if (scroller) scroller.scrollLeft = scroller.scrollWidth
   } catch {
     body.innerHTML = `<p class="ovw-llmdist-error">${escapeHtml(t('overview.llmDist.error'))}</p>`
     card.hidden = false

@@ -68,24 +68,96 @@ describe('scanBashWord backtick cap: boundary around SCAN_BASH_WORD_MAX_LEN (car
   })
 })
 
-describe('stripHeredocDataPayloads via scanBashWord: quadratic-blowup repro must stay fast (card 1fec67e9)', () => {
-  // Pre-fix measured (this session, --prof-confirmed root cause): n=32000 backticks took ~1.4s
-  // through the real gateDecision(), scaling ~4x per doubling -- n=64000 was already ~6s, within
-  // reach of the hook's own 10s fail-open timeout at n=128000-256000, well under MAX_COMMAND_BYTES.
-  it.each([16000, 32000, 64000])('n=%i adjacent backticks stays under 500ms', (n) => {
-    const text = '`'.repeat(n) + `bash -c "${CT} -r"`
-    const t0 = Date.now()
-    gateDecision('Bash', { command: text })
-    expect(Date.now() - t0).toBeLessThan(500)
+describe('stripHeredocDataPayloads via scanBashWord: growth stays LINEAR (card 1fec67e9, instrument replaced on card e393c67d)', () => {
+  // WHY THIS BLOCK CHANGED SHAPE TWICE OVER, and the second reason is the important one.
+  //
+  // 1. THE INSTRUMENT. These assertions were absolute wall-clock budgets (500ms / 1500ms). A wall
+  //    clock measures the MACHINE, and this fleet runs 15 agents at loadavg 8-35, so the budget
+  //    went red on diffs that do not touch anything this file loads. That is the fourth documented
+  //    case of the class (cards 3208a968, d19bba07, and the three landings lost on fbca2448).
+  //    Wall-clock ratios are not enough either: min-of-rounds is biased against the LONGER sample,
+  //    because catching one uncontended large window is less likely than catching one small one, so
+  //    the ratio inflates on its own under load. CPU time excludes the descheduled interval, which
+  //    is exactly the part the two samples do not share.
+  //
+  // 2. THE INPUT (the part that mattered more). The shape this block measured -- a bare run of
+  //    backticks followed by `bash -c` -- never reaches the code the card 1fec67e9 cap guards.
+  //    Instrumented: scanBashWord is entered ONCE, for 8 inner steps, at n=8000, n=32000 AND
+  //    n=128000 alike. Something upstream consumes the run first. So the block passed for a reason
+  //    unrelated to the fix it is named after, and a mutation proved it: with
+  //    SCAN_BASH_WORD_MAX_LEN raised to Number.MAX_SAFE_INTEGER (i.e. the cap removed, the pre-fix
+  //    state) this shape measured 1.00x-1.18x of the fixed cost across n=8000..128000. It could
+  //    not have detected the regression at any threshold, in any instrument.
+  //
+  //    A run of backticks followed by a FUNCTION DEFINITION does reach it -- 2004 calls and 896676
+  //    inner steps at n=4000 -- because the definition puts a NAME position after the run, which is
+  //    what scanBashWord exists to resolve. Same mutation, measured on that shape:
+  //
+  //        cap present (fixed)   N=1000  3.32x     N=2000  4.75x
+  //        cap removed (pre-fix) N=1000 13.81x     N=2000 17.20x
+  //
+  //    Linear is ~4x, quadratic ~16x, and MAX_RATIO sits at 8 -- the log-space midpoint, so it
+  //    takes a 2x error in either direction to flip. Detection is measured here, not assumed.
+  const N = 2000
+  const M = 4 * N
+  const ROUNDS = 3
+  const MAX_RATIO = 8
+  // Absolute backstop, deliberately absurd. The ratio catches a RETURN to O(n^2); it does not
+  // catch something that stays linear and becomes 100x slower per character. Measured ~5-30ms
+  // under load, refused at 10s: a margin no contention on this machine has ever come near, and the
+  // opposite of the 525-vs-500 failure that started this.
+  const ABSURD_MS = 10_000
+
+  // CPU time, not wall clock -- see (1) above. The work is CPU-bound scanning, so this is the same
+  // quantity the complexity claim is about, minus the scheduler.
+  const cpuMsOnce = (command: string): number => {
+    const before = process.cpuUsage()
+    gateDecision('Bash', { command })
+    const d = process.cpuUsage(before)
+    return (d.user + d.system) / 1000
+  }
+
+  // Interleaved because a load spike between two sequential measurements would land on only one of
+  // them and skew the ratio; minimum-of-rounds because the least-contended sample is the one
+  // closest to the code's own cost, where a mean drags in whatever else the machine was doing.
+  const growthRatio = (build: (n: number) => string): { ratio: number; small: number; large: number } => {
+    let small = Infinity
+    let large = Infinity
+    for (let r = 0; r < ROUNDS; r++) {
+      small = Math.min(small, cpuMsOnce(build(N)))
+      large = Math.min(large, cpuMsOnce(build(M)))
+    }
+    return { ratio: large / small, small, large }
+  }
+
+  // The shape that actually enters scanBashWord repeatedly. This is the assertion that pins the cap.
+  const guardedShape = (n: number): string => '`'.repeat(n) + `() { ${CT} -r; }`
+
+  it('a backtick run before a NAME position grows linearly, not quadratically', () => {
+    const { ratio, small, large } = growthRatio(guardedShape)
+    // The numbers go in the message, so a failure says whether it is a complexity regression or
+    // just a slow machine -- the question the old absolute budget could never answer.
+    expect(
+      ratio,
+      `n=${N} took ${small.toFixed(1)}ms CPU, n=${M} took ${large.toFixed(1)}ms CPU -> ${ratio.toFixed(2)}x. ` +
+        `Linear is ~4x, quadratic ~16x; over ${MAX_RATIO}x means the per-call scan is unbounded again.`,
+    ).toBeLessThan(MAX_RATIO)
   })
 
-  it('stays fast at n=128000, near the practical ceiling this class of input reaches', () => {
-    const text = '`'.repeat(128000) + `bash -c "${CT} -r"`
-    const t0 = Date.now()
-    gateDecision('Bash', { command: text })
-    // Generous margin for full-suite CPU contention -- isolated measured ~410ms; pre-fix this shape
-    // did not complete in any reasonable time (quadratic extrapolation put it past 10s already at
-    // n=~128000-256000).
-    expect(Date.now() - t0).toBeLessThan(1500)
+  it('and stays far under an absurd absolute ceiling (catches linear-but-100x-slower)', () => {
+    expect(cpuMsOnce(guardedShape(M))).toBeLessThan(ABSURD_MS)
   })
+
+  // The ORIGINAL shapes are kept -- they are still legitimate input that must not blow up, and
+  // dropping them would shrink coverage (a previously-green assertion disappearing is its own
+  // failure, regardless of how the replacement looks). They are backstops only: as measured above,
+  // they cannot detect a regression in the cap, so they get the absurd ceiling rather than a ratio
+  // that would imply a guarantee they do not provide.
+  it.each([16000, 32000, 64000, 128000])(
+    'n=%i adjacent backticks before `bash -c` stays far under the absurd ceiling',
+    (n) => {
+      const text = '`'.repeat(n) + `bash -c "${CT} -r"`
+      expect(cpuMsOnce(text)).toBeLessThan(ABSURD_MS)
+    },
+  )
 })

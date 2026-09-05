@@ -1,7 +1,9 @@
 import { readFileSync, writeFileSync, existsSync, mkdirSync, copyFileSync, readdirSync, statSync, rmSync, watchFile, unwatchFile } from 'node:fs'
 import { join } from 'node:path'
 import { homedir } from 'node:os'
-import { PROJECT_ROOT, OWNER_NAME, MAIN_AGENT_ID, HEARTBEAT_AGENT_ID, BOT_NAME, CHANNEL_PROVIDER, WEB_PORT, OWNER_DRIVE_FOLDER, APP_TZ, DASHBOARD_PUBLIC_URL, STORE_DIR } from '../config.js'
+import { PROJECT_ROOT, OWNER_NAME, MAIN_AGENT_ID, HEARTBEAT_AGENT_ID, BOT_NAME, CHANNEL_PROVIDER, WEB_PORT, OWNER_DRIVE_FOLDER, APP_TZ, DASHBOARD_PUBLIC_URL, AGENT_API_ORIGIN, STORE_DIR } from '../config.js'
+import { findDuplicateJsonKeys } from './json-dup-keys.js'
+import { logger } from '../logger.js'
 import { channelStateDir } from '../channel-provider.js'
 import { runAgent } from '../agent.js'
 import { atomicWriteFileSync } from './atomic-write.js'
@@ -17,13 +19,37 @@ import { SYSTEM_DIRECTIVE_SENDER } from './system-directive-id.js'
 // DASHBOARD_PUBLIC_URL wins when set (distributed / k3s deployment); falls
 // back to localhost for single-host installs. Exported so heartbeat-agent-
 // scaffold and tests can import the same logic without duplicating it.
-export function resolveDashboardOrigin(publicUrl: string, port: number | string): string {
-  return (publicUrl || `http://localhost:${port}`).replace(/\/$/, '')
+export function resolveDashboardOrigin(publicUrl: string, port: number | string, agentApiOrigin = ''): string {
+  const fallback = `http://localhost:${port}`
+  const candidate = (agentApiOrigin || publicUrl || fallback).replace(/\/$/, '')
+  // Card 1075d0e4 (Cybersec, second round): this value is a config string with no validation, and it
+  // is interpolated into the curl RECIPES written into every agent's CLAUDE.md. Those are prompt
+  // text rather than the launch command, so the chain is one step longer than the vault-key one --
+  // an agent has to run the documented snippet -- but agents run these recipes routinely and by
+  // design, so `http://x;<command>;#` would execute in the agent's shell. Weaker than the launch
+  // path (hooks exist by then, and they do not here), same class.
+  //
+  // Restricted to a plain http(s) ORIGIN. Anything else falls back rather than being escaped: a
+  // misconfigured origin should make the recipes point somewhere harmless, not smuggle shell.
+  // A PATH PREFIX IS A SUPPORTED DEPLOYMENT, not an anomaly: operators host the dashboard under
+  // a sub-path behind a reverse proxy (k3s), and agent-scaffold-dashboard-origin.test.ts has
+  // pinned that since before this card. My first attempt at this validation allowed only
+  // scheme://host[:port] and silently sent those deployments back to localhost -- the existing
+  // test caught it on the landing. So the path is allowed, from a character set that cannot
+  // start a command: no ; $ ` & | quote space or parenthesis survives the test.
+  //
+  // Card ec7bdad8: agentApiOrigin (AGENT_API_ORIGIN) takes precedence over publicUrl when set --
+  // it names the address agents should actually reach the dashboard on when that differs from the
+  // publicly-advertised one (e.g. hairpin NAT). Same validation applies to it: an unvalidated
+  // candidate still falls back rather than being escaped.
+  return /^https?:\/\/[A-Za-z0-9._-]+(?::\d{1,5})?(?:\/[A-Za-z0-9._~\/-]*)?$/.test(candidate)
+    ? candidate
+    : fallback
 }
 
 // Resolved once at module load; DASHBOARD_PUBLIC_URL requires a restart
 // (see config-registry.ts `requiresRestart` flag), so a const is safe.
-const dashboardOrigin = resolveDashboardOrigin(DASHBOARD_PUBLIC_URL, WEB_PORT)
+const dashboardOrigin = resolveDashboardOrigin(DASHBOARD_PUBLIC_URL, WEB_PORT, AGENT_API_ORIGIN)
 // Dashboard token path emitted into generated CLAUDE.md curl examples.
 // MUST be absolute: sub-agents run from agents/<name>/, where a relative
 // `store/.dashboard-token` does not exist -- curl then sends an empty Bearer
@@ -220,7 +246,21 @@ export function ensureAgentHooks(name: string): boolean {
   if (!tpl.hooks) return false
   let existing: Record<string, unknown> = {}
   if (existsSync(settingsPath)) {
-    try { existing = JSON.parse(readFileSync(settingsPath, 'utf-8')) } catch { /* overwrite */ }
+    try {
+      const rawExisting = readFileSync(settingsPath, 'utf-8')
+      // JSON.parse keeps only the LAST occurrence of a duplicated key, so a settings file with two
+      // "PreToolUse" (or any hook-event) keys silently drops every hook in the earlier block --
+      // guards die with no error and no symptom until the action they gated goes through
+      // unchecked. This fleet has already hit exactly that: `fix(hooks): merge duplicate Stop keys
+      // in .claude/settings.json`. The evidence exists only in the raw text, so check BEFORE
+      // parsing, and name the paths.
+      const dupKeys = findDuplicateJsonKeys(rawExisting)
+      if (dupKeys.length > 0) {
+        logger.warn({ agent: name, settingsPath, dupKeys },
+          'ensureAgentHooks: duplicate JSON keys in settings -- JSON.parse keeps only the last occurrence, hooks in the earlier block are silently dead')
+      }
+      existing = JSON.parse(rawExisting)
+    } catch { /* overwrite */ }
   }
   const tplHooks = tpl.hooks as Record<string, unknown>
   if (existing.hooks) {
@@ -408,6 +448,11 @@ export function writeAgentSettingsFromProfile(name: string, profile: ProfileTemp
   // actual incident vector -- an agent answering its OWN posed question -- is
   // covered by the self-pace block + the #0 CLAUDE.md doctrine.
   if (agentGetsEmailGate(name)) injectEmailSendGate(existing)
+  // Card 74181db2: opt-in, so the common path is the `else` -- and the else must
+  // REMOVE, not merely skip, or an agent scaffolded while the switch was on would keep
+  // enforcing after it was turned off.
+  if (agentGetsOutgoingCopyGate(name)) injectOutgoingCopyGate(existing)
+  else removeOutgoingCopyGate(existing)
   if (agentGetsGovernanceGates(name)) injectSelfPaceGate(existing)
   if (agentGetsKanbanWriteGate(name)) injectKanbanWriteGate(existing)
   injectEgressGate(existing)
@@ -478,6 +523,92 @@ export function injectEmailSendGate(existing: Record<string, unknown>): void {
     ...prev.filter((e) => !JSON.stringify(e).includes('email-send-gate.mjs')),
     entry,
   ]
+}
+
+// --- outgoing-copy-gate for role agents (card 74181db2) ----------------------
+//
+// THE GAP THIS CLOSES, and the gap it does NOT. The gate is wired into the MAIN
+// agent's settings only, so a role agent's outgoing Telegram text gets no accent,
+// em-dash or name check -- while CLAUDE.md's spelling rule says explicitly that it
+// binds every agent in the fleet. Measured on all 15 role agents: zero occurrences
+// of `outgoing-copy-gate` in either `.claude/settings.json` or
+// `.claude-config/settings.json`. The EMAIL half needs nothing: `email-send-gate.mjs`
+// already hard-denies sending for every non-main agent, so there is no copy to check.
+//
+// OPT-IN, AND THE SWITCH IS READ HERE ON PURPOSE (MikroB's decision, card comment
+// 19349). Wiring this hook puts a python start on EVERY Bash call of EVERY role agent
+// -- measured at median 23.5 ms on this host for an irrelevant command, which is the
+// common case. Gating the INJECTION rather than only the hook's early exit is what
+// makes "off" cost nothing at all rather than 23 ms of deciding to do nothing.
+//
+// The two layers must not read the switch from two DIFFERENT environments. This process
+// (the dashboard) sees the variable; an agent's tmux panel does not, and cannot: panels are
+// started with `tmux new-session` against an already-running tmux server, so the session
+// inherits the SERVER's startup environment rather than this one (measured on this host --
+// only names in tmux `update-environment` refresh, and this is not one of them).
+//
+// An env-only check on the hook side therefore does not fail "safe", it fails UNREACHABLE:
+// switching the gate on would wire it into 14 agents, make every Bash call pay a python
+// start, present a settings entry that reads as an armed control -- and enforce nothing.
+// So the decision travels in the COMMAND this process writes (OUTGOING_COPY_GATE_FLAG),
+// which is the one channel the panel does see.
+export const OUTGOING_COPY_GATE_ENV = 'OUTGOING_COPY_GATE_TELEGRAM_BASH'
+export const OUTGOING_COPY_GATE_MATCHER = 'Bash'
+// Carried in the wired command so the enforcing process reads the SAME decision this one
+// made. Must stay in step with TELEGRAM_BASH_FLAG in scripts/hooks/outgoing-copy-gate.py.
+export const OUTGOING_COPY_GATE_FLAG = '--telegram-bash'
+
+// Deliberately the INVERSE of the `<GUARD>=off` convention the other guards use: an
+// unset variable means OFF. Those guards default to protecting, so a typo costs
+// protection; this one changes the cost profile of every Bash call in the fleet, so a
+// typo must leave us where we are rather than silently switching 14 agents on.
+export function outgoingCopyGateEnabled(env: NodeJS.ProcessEnv = process.env): boolean {
+  return ['1', 'on', 'true', 'yes'].includes(String(env[OUTGOING_COPY_GATE_ENV] ?? '').trim().toLowerCase())
+}
+
+// Which agents get it: every agent EXCEPT the main one (whose own settings already
+// carry the gate), and only while the switch is on. Pure + exported so both halves of
+// that condition are unit-testable without touching a settings file.
+export function agentGetsOutgoingCopyGate(name: string, env: NodeJS.ProcessEnv = process.env): boolean {
+  return name !== MAIN_AGENT_ID && outgoingCopyGateEnabled(env)
+}
+
+// Idempotently wire the outgoing-copy-gate PreToolUse hook. Same shape + dedupe
+// discipline as injectEmailSendGate.
+export function injectOutgoingCopyGate(existing: Record<string, unknown>): void {
+  const hooks = (existing.hooks && typeof existing.hooks === 'object'
+    ? existing.hooks
+    : (existing.hooks = {})) as Record<string, unknown>
+  const base = hookCommand(join(PROJECT_ROOT, 'scripts', 'hooks', 'outgoing-copy-gate.py'))
+  // Validate the bare command: isUnsafeHookCommand resolves the script path out of it, and
+  // that check should see exactly what it was written for, not a flag appended afterwards.
+  if (isUnsafeHookCommand(base)) return
+  const command = `${base} ${OUTGOING_COPY_GATE_FLAG}`
+  const entry = {
+    matcher: OUTGOING_COPY_GATE_MATCHER,
+    hooks: [{ type: 'command', command, timeout: 10 }],
+  }
+  const prev = Array.isArray(hooks.PreToolUse) ? (hooks.PreToolUse as unknown[]) : []
+  hooks.PreToolUse = [
+    ...prev.filter((e) => !JSON.stringify(e).includes('outgoing-copy-gate.py')),
+    entry,
+  ]
+}
+
+// Remove a previously wired entry. The switch has to work in BOTH directions or
+// "default off" would only ever hold for a fresh install: an agent scaffolded while
+// the variable was set would keep the hook forever, and unsetting it would look like
+// it worked while every Bash call still paid for a python start. Returns whether
+// anything was removed.
+export function removeOutgoingCopyGate(existing: Record<string, unknown>): boolean {
+  const hooks = (existing.hooks && typeof existing.hooks === 'object'
+    ? existing.hooks
+    : {}) as Record<string, unknown>
+  const prev = Array.isArray(hooks.PreToolUse) ? (hooks.PreToolUse as unknown[]) : []
+  const kept = prev.filter((e) => !JSON.stringify(e).includes('outgoing-copy-gate.py'))
+  if (kept.length === prev.length) return false
+  hooks.PreToolUse = kept
+  return true
 }
 
 // Claude Code runtime self-scheduling tool names denied for sub-agents (fail-
@@ -1065,6 +1196,44 @@ export function ensureCdChainGuard(name: string): boolean {
   return true
 }
 
+// Boot-time backfill for the outgoing-copy-gate (card 74181db2). Same reasoning as the other
+// ensure* backfills -- an inject* alone reaches an agent only when its settings.json is
+// regenerated -- with ONE difference that matters: this one also has to backfill the OFF
+// direction. Every other guard here is unconditional, so its ensure* only ever adds. This one
+// is operator-switched, so a boot after the switch was turned off must REMOVE the entry, or
+// "default off" would hold only for agents that never saw it on.
+//
+// `ensureGovernanceGateCommands` does the same thing for the same reason; both paths exist
+// because the settings-writing paths are not one path, and a guard wired on only one of them
+// reaches an arbitrary subset of the fleet.
+export function ensureOutgoingCopyGate(name: string): boolean {
+  const settingsPath = agentSettingsPath(name)
+  let settings: Record<string, unknown> = {}
+  if (existsSync(settingsPath)) {
+    try { settings = JSON.parse(readFileSync(settingsPath, 'utf-8')) } catch { return false }
+  } else if (!agentGetsOutgoingCopyGate(name)) {
+    // Nothing on disk and nothing wanted: do not create a settings file just to say "off".
+    return false
+  }
+  const hooks = (settings.hooks && typeof settings.hooks === 'object')
+    ? settings.hooks as Record<string, unknown>
+    : {}
+  const ptu = Array.isArray(hooks.PreToolUse) ? hooks.PreToolUse as unknown[] : []
+  const wired = JSON.stringify(ptu).includes('outgoing-copy-gate.py')
+  const wanted = agentGetsOutgoingCopyGate(name)
+  if (wanted === wired) return false
+  if (wanted) {
+    const command = hookCommand(join(PROJECT_ROOT, 'scripts', 'hooks', 'outgoing-copy-gate.py'))
+    if (isUnsafeHookCommand(command)) return false
+    injectOutgoingCopyGate(settings)
+    if (name !== MAIN_AGENT_ID) mkdirSync(join(agentDir(name), '.claude'), { recursive: true })
+  } else if (!removeOutgoingCopyGate(settings)) {
+    return false
+  }
+  atomicWriteFileSync(settingsPath, JSON.stringify(settings, null, 2))
+  return true
+}
+
 // Boot-time backfill for the pentest-tool-install guard, same reasoning as
 // ensureNpmProtectGuard: injectPentestToolInstallGuard alone reaches an agent only when its
 // settings.json is regenerated, so a dashboard restart arms the whole fleet at once.
@@ -1278,11 +1447,21 @@ export function ensureGovernanceGateCommands(name: string): boolean {
   const needEmail = agentGetsEmailGate(name)
     && (!hookCommandWired(ptuJson, emailCmd) || emailGateMatcherStale(ptu))
   const needPace = agentGetsGovernanceGates(name) && !hookCommandWired(ptuJson, paceCmd)
-  if (!needEmail && !needPace) return false
+  // Card 74181db2, both directions. `wanted` false + wired means the operator turned the
+  // switch off: the repair pass is where that actually takes effect, since nothing else
+  // revisits an already-scaffolded settings file.
+  const copyCmd = hookCommand(join(PROJECT_ROOT, 'scripts', 'hooks', 'outgoing-copy-gate.py'))
+  const copyWired = hookCommandWired(ptuJson, copyCmd)
+  const wantCopy = agentGetsOutgoingCopyGate(name)
+  const needCopyAdd = wantCopy && !copyWired
+  const needCopyRemove = !wantCopy && copyWired
+  if (!needEmail && !needPace && !needCopyAdd && !needCopyRemove) return false
   // The injectors dedupe by script basename, so a stale bare-`node` entry is
   // replaced in place rather than accumulated.
   if (needEmail) injectEmailSendGate(settings)
   if (needPace) injectSelfPaceGate(settings)
+  if (needCopyAdd) injectOutgoingCopyGate(settings)
+  if (needCopyRemove) removeOutgoingCopyGate(settings)
   atomicWriteFileSync(settingsPath, JSON.stringify(settings, null, 2))
   return true
 }
@@ -1894,11 +2073,14 @@ export function buildSystemDirectiveAuthBody(name: string): string {
 }
 
 // Same five-rule idempotency contract as ensureFleetRosterSection /
-// ensureAutonomySection / ensureSkillsPathTrapSection.
+// ensureAutonomySection / ensureSkillsPathTrapSection -- EXCEPT for the main
+// agent: its target is PROJECT_ROOT/CLAUDE.md, a git-tracked file, and a
+// runtime write there fights the --ff-only pull that keeps the live checkout
+// current (card 2dd28b5d/99fccbcf). The block is committed there statically
+// instead; this function no-ops for the main agent on purpose.
 export function ensureSystemDirectiveAuthSection(name: string): void {
-  const claudeMdPath = name === MAIN_AGENT_ID
-    ? join(PROJECT_ROOT, 'CLAUDE.md')
-    : join(agentDir(name), 'CLAUDE.md')
+  if (name === MAIN_AGENT_ID) return
+  const claudeMdPath = join(agentDir(name), 'CLAUDE.md')
   if (!existsSync(claudeMdPath)) return
 
   const block = `${SYSTEM_DIRECTIVE_AUTH_BEGIN}\n${buildSystemDirectiveAuthBody(name)}\n${SYSTEM_DIRECTIVE_AUTH_END}`

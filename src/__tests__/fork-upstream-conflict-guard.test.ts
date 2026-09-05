@@ -49,7 +49,26 @@ const FETCH_TIMEOUT_MS = 20_000
 // web/style.css moved OUT to ACKNOWLEDGED_CONFLICTS too (measured 2026-09-01, heartbeat
 // reconciliation ahead of card 0f7f7fe9's land): same pattern as web/app.js, one insertion point.
 // See the ACKNOWLEDGED_CONFLICTS entry below.
-const GUARDED_FILES = ['web/lang/hu.js', 'web/lang/en.js'] as const
+// web/lang/hu.js + web/lang/en.js moved OUT to ACKNOWLEDGED_CONFLICTS (card 368b77f7, measured
+// 2026-09-04): upstream's BRIDGEHU813 (#1170) appended pairing-error strings to the same tail the
+// fork appends its own keys to. Third instance of the same pattern, same resolution as the two
+// above. The measurement is in the entry below and says why an overlay was NOT extracted.
+//
+// THE LIST IS NOW EMPTY, and that is a real state, not a gap: every file it ever held is watched by
+// the stricter `unwatched` check instead, which asserts on the WHOLE conflict set rather than a
+// hand-picked few. MIGRATED_FROM_GUARDED below keeps that honest -- an empty list would otherwise
+// make the guarded assertion pass by having nothing to check.
+const GUARDED_FILES = [] as const
+
+// Every file that was ever in GUARDED_FILES. Each must still be ACKNOWLEDGED, with a written rule:
+// migrating a file out of the zero-conflict claim is a decision, and dropping one entirely -- which
+// would silence it in both lists at once -- must not be possible by deleting a single line.
+const MIGRATED_FROM_GUARDED = [
+  'web/app.js',
+  'web/style.css',
+  'web/lang/hu.js',
+  'web/lang/en.js',
+] as const
 
 // Files that DO conflict today, deliberately, and whose resolution rule is written down (card
 // f085fd44). This list is not a second copy of the one above: those files must never conflict,
@@ -61,6 +80,23 @@ const GUARDED_FILES = ['web/lang/hu.js', 'web/lang/en.js'] as const
 // it already knew about: three files conflicted for weeks with nothing watching them, and the only
 // reason anyone noticed was a human running the dry-run by hand.
 const ACKNOWLEDGED_CONFLICTS = {
+  // Card 2a653b4b, self-created 2026-09-04. Converting the module-level `const TMUX =
+  // resolveFromPath('tmux')` to a lazy resolver collided with upstream, which had already deleted
+  // that const -- and gone FURTHER than this card asks: upstream routes every tmux call through
+  // `tmuxInvocationFor` (agent-process.ts) because an agent owning its own OS user runs its own tmux
+  // server, so a cross-user connection is refused and the bare binary made /keys and /login answer
+  // 500 for exactly the agents most likely to need one. Upstream measured that twice on this install
+  // (2026-08-26, 2026-08-27).
+  //
+  // Resolution: TAKE UPSTREAM WHOLESALE for this file -- it removes the eager const (this card's
+  // goal) AND fixes a bug the fork still has. NOT adopted here on purpose: `tmuxInvocationFor` does
+  // not exist in the fork at all, so adopting it means pulling from agent-process.ts, whose upstream
+  // reconciliation is deliberately deferred (card e80c011a -- 22 hunks on a 1600-line
+  // security-critical file, explicitly not to be hand-merged under time pressure). Until that lands,
+  // the fork's lazy resolver is the INTERIM fix: strictly better than the import-time throw it
+  // replaced, strictly worse than upstream's. Do not resolve this by keeping the fork side.
+  'src/web/routes/agent-terminal.ts':
+    "take UPSTREAM wholesale -- it deletes the eager TMUX const AND routes through tmuxInvocationFor, which fixes the own-OS-user tmux-server 500s the fork still has; the fork's lazy resolver is only an interim fix until agent-process.ts is reconciled (card e80c011a)",
   // Card 684dda18, self-created 2026-09-02: adopting upstream's resolveKanbanDispatch()
   // (session-down is no longer a silent no-op) appended the fork's own isSelfAdvanceMove/
   // isGenuineSelfAdvanceSwitch below it -- the fork's file is now a strict superset of upstream's
@@ -87,6 +123,21 @@ const ACKNOWLEDGED_CONFLICTS = {
   // against on the fork side.
   'src/auto-restart.ts':
     'adopt upstream OPEN_QUESTION_DEFERRAL_CAP_MS + deferralOverride() verbatim -- fork side of the hunk is empty, and this is the same open-question-deferral feature already adopted per the src/web/auto-restart-runner.ts entry',
+  // Card 0c66be37/74181db2, self-created 2026-09-04: a pure ADD/ADD at the tail of
+  // KNOWN_HOOK_SCRIPTS. The fork appended 'outgoing-copy-gate.py' (this app now registers that
+  // gate into ROLE agents' settings, not only the main agent's); upstream appended
+  // 'skill-usage-capture.py' and the /clear continuity pair 'clear-capture.py' + 'clear-replay.py'.
+  // Measured by reading BOTH hunks in the failing guard's own output: there is no semantic tension
+  // -- the list is "hook script filenames THIS app registers", and each side names different, real
+  // hooks that its own side registers.
+  //
+  // Resolution: UNION, all four names. Taking either side wholesale loses real entries. Which way
+  // it fails is worth stating, because the two directions differ: dropping upstream's names leaves
+  // ITS hook entries unprunable (they read as foreign, so a missing-file entry is kept forever),
+  // while dropping the fork's un-registers a gate this fork actively wires. Neither is acceptable,
+  // and neither is the "cheap move" the guard exists to prevent.
+  'src/web/hook-registration-guard.ts':
+    "union of both tails -- keep the fork's 'outgoing-copy-gate.py' AND upstream's 'skill-usage-capture.py' + 'clear-capture.py' + 'clear-replay.py'; the list is additive by construction and neither side may be taken wholesale",
   // BEHAVIOUR-CRITICAL. The fork removed "upgrade to increase your usage limit" from the
   // usage-limit regex (2026-06-30: it matched Claude Code's /upgrade STARTUP HINT, so fresh agents
   // read as limited and got needlessly downgraded). Upstream still has that token AND added a real
@@ -107,7 +158,9 @@ const ACKNOWLEDGED_CONFLICTS = {
   // single-result features onto it one by one.
   'src/web/update-checker.ts':
     'keep the fork aggregate shape, port upstream single-result features onto it' +
-    "Re-measured 2026-09-03 (backend2, card 934dc104 landing-block, 24e46f990c7b..c98efe359fd0): upstream reworked its SINGLE-repo checker -- parseGitHubRemote() now prefers an `upstream` remote over `origin` (a fork otherwise asks itself about itself and stays silent forever), branchOnRemote()/remoteIsOwnOrigin() pick the right branch to query, and upstreamMergeBase() takes a base the queried remote actually knows instead of reporting fork-distance. The rule is unchanged and now has concrete work behind it: these are exactly the 'single-result features' to port onto the fork's aggregate shape. Blob bumped.",
+    "Re-measured 2026-09-03 (backend2, card 934dc104 landing-block, 24e46f990c7b..c98efe359fd0): upstream reworked its SINGLE-repo checker -- parseGitHubRemote() now prefers an `upstream` remote over `origin` (a fork otherwise asks itself about itself and stays silent forever), branchOnRemote()/remoteIsOwnOrigin() pick the right branch to query, and upstreamMergeBase() takes a base the queried remote actually knows instead of reporting fork-distance. The rule is unchanged and now has concrete work behind it: these are exactly the 'single-result features' to port onto the fork's aggregate shape. Blob bumped." +
+    " RE-MEASURED 2026-09-04 (card f27c999b, B-wave 4/6) and the sentence above is MISLEADING, so read this before porting anything: the fork already achieves BOTH of upstream's outcomes, by a different and more general mechanism. (a) 'a fork otherwise asks itself about itself and stays silent forever' does not happen here -- repoConfigs() checks TWO repos explicitly, Szotasz/marveen AND the local origin, and the upstream-update banner reads the marveen entry; upstream's parseGitHubRemote remote-preference is a heuristic for finding the one right repo, which the fork does not need. (b) upstreamMergeBase is already covered: computeStatus tries the raw HEAD compare and, on the measured 404 that a customised fork always produces, falls back to mergeBaseWith(cfg.trackingRef) -- the fork point, which IS a commit the remote knows -- and marks status.fork. Its own comment says this is how the behind-count against Szotasz/marveen@main is measured. Porting upstream's machinery on top would duplicate working logic with a narrower version of it. " +
+    "THE ONE GENUINE RESIDUE, left as a follow-up rather than half-ported: repoConfigs() HARDCODES branch 'main' for the upstream repo. Upstream's branchOnRemote()/fetchDefaultBranch() asks the remote for its default branch instead. If Szotasz/marveen ever renames its default, our upstream check turns into a permanent error string and the banner goes quiet -- the same silent-blindness shape this entry is about, one level over. Small and self-contained: ask GitHub for the default branch, keep 'main' as the fallback.",
   // ORIGINAL entry (2026-08-16, card 78c14372) merged `agentDir` (fork) + `readAgentClaudeConfigDir`
   // (upstream) onto one import line. RE-MEASURED 2026-09-01 (heartbeat reconciliation): upstream
   // replaced its own `readAgentClaudeConfigDir` with `resolveAgentConfigDirForRead` (new module,
@@ -252,7 +305,8 @@ const ACKNOWLEDGED_CONFLICTS = {
   // reopen -- reopening a `waiting` card without a verdict is blocked by the fork-only
   // reviewedCardBlocksInProgress() gate (card c4f2de32), which upstream has no equivalent of.
   'src/web/routes/kanban.ts':
-    "dispatch-text hunk: keep the fork's waiting-text wholesale (fork rule 4, no self-close-to-done). Other two hunks: adopt upstream's resolveKanbanDispatch + reportUndeliveredDispatch (session-down is no longer a silent no-op), keep the fork's self-advance suppression + /clear-before-switch wholesale alongside it -- non-overlapping concerns, not a fork-vs-upstream pick. Re-measured 2026-09-02 (Cybersec, card 9dc0fba8 landing-block, 00ec734f520d..89423d29b8af): upstream moved, entirely outside all three recorded hunks -- it fixed the POST handler so a caller-supplied card id wins in the row AND in the response (it used to store the supplied id and echo the generated one, HTTP 200 pointing at a card that does not exist), and it lifts `actor` out of the field set for db.ts\'s new audit event. Zero hits on resolveKanbanDispatch, reportUndeliveredDispatch, the waiting-text hunk, the self-advance suppression or the /clear-before-switch block. Resolution at the conflict points unchanged; blob bumped.",
+    "dispatch-text hunk: keep the fork's waiting-text wholesale (fork rule 4, no self-close-to-done). Other two hunks: adopt upstream's resolveKanbanDispatch + reportUndeliveredDispatch (session-down is no longer a silent no-op), keep the fork's self-advance suppression + /clear-before-switch wholesale alongside it -- non-overlapping concerns, not a fork-vs-upstream pick. Re-measured 2026-09-02 (Cybersec, card 9dc0fba8 landing-block, 00ec734f520d..89423d29b8af): upstream moved, entirely outside all three recorded hunks -- it fixed the POST handler so a caller-supplied card id wins in the row AND in the response (it used to store the supplied id and echo the generated one, HTTP 200 pointing at a card that does not exist), and it lifts `actor` out of the field set for db.ts\'s new audit event. Zero hits on resolveKanbanDispatch, reportUndeliveredDispatch, the waiting-text hunk, the self-advance suppression or the /clear-before-switch block. Resolution at the conflict points unchanged; blob bumped." +
+    " DONE 2026-09-04 (card f27c999b, B-wave 4/6), and TWO of the three items turned out to be already-solved rather than pending. (1) The POST id bug WAS live here and is fixed: `createKanbanCard({ id, ...normalized })` let a caller-supplied id win in the ROW while the response echoed the generated one -- HTTP 200 naming a card that does not exist. Now one id is resolved first and used for both; kanban-post-id-echo.test.ts pins the property for every shape, and 3 of its 4 cases fail on the old spread order. (2) resolveKanbanDispatch: already adopted -- kanban-dispatch.ts is upstream's verbatim plus two fork-only functions, measured. (3) reportUndeliveredDispatch: NOT adopted, because the fork already closed the same hole its own way. resolveKanbanDispatchTarget returning null no longer goes quiet: the failure lands on the card AND in the main agent's inbox, with four contract tests in kanban-dispatch-silent-noop.test.ts, and that file documents why the stricter 'message first, in_progress after delivery' contract is not available here (createAgentMessage only ENQUEUES, so 'after successful delivery' is not knowable at move time). Adopting upstream's version would be a second mechanism for a closed hole. The waiting-text hunk and the self-advance / clear-before-switch blocks are untouched, as the rule requires.",
   // Card 2e634e5c, fourth file. A genuine two-way merge, not a wholesale pick either direction:
   // the fork owns Firecrawl namespace default-deny + FIRECRAWL_SCRAPE_ALLOWED_KEYS param-allowlist
   // (card 91c4a369); upstream owns the tier-based egressDecision({blocked,tier}) shape, agentType
@@ -319,7 +373,24 @@ const ACKNOWLEDGED_CONFLICTS = {
   // upstream's still-monolithic app.js) is recommended but not opened here -- judgement call for
   // MikroB, not unilaterally opened per the dedup rule.
   'web/app.js':
-    'STUB scaffold + 36 extracted web/app-*.js slices are authoritative; a conflicting upstream hunk must be diffed against its named slice file and only genuinely-new upstream behavior ported forward, never taken wholesale -- proven on the i18n-nav hunk (found + fixed one real gap: missing renderUpdatesVersion re-apply on language switch). Re-audited 2026-08-25 (card 9ef96512, blob c8c11f94): 3 upstream hunks, all in the loadOllamaModels / resetWizard / startup-init region (app-settings.js). Ported: (1) loadOllamaModels refactored to populate both optgroups (ollamaModelGroup edit-panel + agentModelOllamaGroup wizard -- wizard was missing local-model option entirely); (2) agentModelOllamaGroup added to wizard HTML (index.html); (3) resetWizard() now calls loadOllamaModels() (app-wizard.js); (4) loadOllamaModels() added to startup init (app-settings.js). No behavioral gap found in any other region. Re-audited 2026-09-02 (card 684dda18, blob e8c74d15): upstream diff since c8c11f94 has 3 hunks -- (1) activity-badge "thinking orb" spinner for state===working (app-activity.js): NOT a gap, the fork already signals "working" via a different mechanism (activity-badge.act-working has its own "breathing" pulse animation in style.css, card predates this) -- adding the orb on top would double-animate the same signal, skipped as redundant. (2) /api/context-guard-fed static badge on Agents-grid cards (app-agents.js): NOT a gap, the fork already has a strictly superior LIVE-POLLED per-agent context HUD (agentHudBlockHtml + GET /api/agent-hud poll, card e9504aba) with a bar + percentage + color tiers, upstream\'s is a page-load-only static badge -- fork mechanism supersedes it. (3) MiniMax direct-API model option (loadAvailableModels, mirrors the existing DeepSeek pattern, gated behind MINIMAX_API_KEY): a genuinely NEW, not-yet-adopted upstream feature needing a backend port too (src/web/routes/agents.ts models endpoint) -- this is an ADOPTION decision, not a passive conflict resolution, so it is NOT folded in here; opened as its own low-priority follow-up card (48565f81) for Peti to decide on. No further behavioral gap found in this increment. Remaining ~11k lines (other regions, prior to c8c11f94) still not yet hand-audited slice-by-slice.',
+    'STUB scaffold + 36 extracted web/app-*.js slices are authoritative; a conflicting upstream hunk must be diffed against its named slice file and only genuinely-new upstream behavior ported forward, never taken wholesale -- proven on the i18n-nav hunk (found + fixed one real gap: missing renderUpdatesVersion re-apply on language switch). Re-audited 2026-08-25 (card 9ef96512, blob c8c11f94): 3 upstream hunks, all in the loadOllamaModels / resetWizard / startup-init region (app-settings.js). Ported: (1) loadOllamaModels refactored to populate both optgroups (ollamaModelGroup edit-panel + agentModelOllamaGroup wizard -- wizard was missing local-model option entirely); (2) agentModelOllamaGroup added to wizard HTML (index.html); (3) resetWizard() now calls loadOllamaModels() (app-wizard.js); (4) loadOllamaModels() added to startup init (app-settings.js). No behavioral gap found in any other region. Re-audited 2026-09-02 (card 684dda18, blob e8c74d15): upstream diff since c8c11f94 has 3 hunks -- (1) activity-badge "thinking orb" spinner for state===working (app-activity.js): NOT a gap, the fork already signals "working" via a different mechanism (activity-badge.act-working has its own "breathing" pulse animation in style.css, card predates this) -- adding the orb on top would double-animate the same signal, skipped as redundant. (2) /api/context-guard-fed static badge on Agents-grid cards (app-agents.js): NOT a gap, the fork already has a strictly superior LIVE-POLLED per-agent context HUD (agentHudBlockHtml + GET /api/agent-hud poll, card e9504aba) with a bar + percentage + color tiers, upstream\'s is a page-load-only static badge -- fork mechanism supersedes it. (3) MiniMax direct-API model option (loadAvailableModels, mirrors the existing DeepSeek pattern, gated behind MINIMAX_API_KEY): a genuinely NEW, not-yet-adopted upstream feature needing a backend port too (src/web/routes/agents.ts models endpoint) -- this is an ADOPTION decision, not a passive conflict resolution, so it is NOT folded in here; opened as its own low-priority follow-up card (48565f81) for Peti to decide on. No further behavioral gap found in this increment. Remaining ~11k lines (other regions, prior to c8c11f94) still not yet hand-audited slice-by-slice.' +
+    " Re-audited 2026-09-04 (card 740551e6, blob 102cd901): the increment since 1e87b1d9 is " +
+    "+282/-119 across 21 hunks, landed as two upstream commits on 2026-09-04 16:53 (c118ede2 #902 " +
+    "context-guard UI, 4408754b #882 agent-card + Activity retirement), and is ONE coherent upstream " +
+    "change -- it DELETED the Activity page (nav entry, " +
+    "PAGE_HEADER_I18N row, startActivityPoll/stopActivityPoll/loadActivity, and the 8 activity.* " +
+    "locale keys) and merged that content into the Team page, then added (a) agentActivityBodyHtml, " +
+    "(b) a per-agent context-guard SETTINGS UI (setupContextGuardUI / updateContextGuardLiveStatus / " +
+    "startContextGuardPoll, backed by the new agents.settings.ctx_guard_* keys), (c) a live " +
+    ".team-node-active working state plus a run-state line on the team graph, (d) onAgentCardClick. " +
+    "RESOLUTION: do NOT take the deletion -- the fork keeps its own Activity page and its locale " +
+    "keys, so taking upstream wholesale would remove a live fork feature. (c) is redundant with the " +
+    "fork's existing running indicator (.team-node.main.agent-card-running::after), the same " +
+    "reasoning that skipped the thinking-orb last round: two animations for one signal. (b) is a " +
+    "genuinely new capability the fork lacks -- its own agent-hud DISPLAYS context, this EDITS the " +
+    "config -- and needs a backend port, so it is an ADOPTION decision rather than a passive " +
+    "conflict resolution: NOT folded in here, raised on card 740551e6 for triage, the same " +
+    "treatment MiniMax got last round (card 48565f81).",
   // Two independent additive hunks with no behavioral overlap. Fork adds: HEARTBEAT.md ignore,
   // Ingatlan/ runtime data exclusions, and per-extension keep-tracked exceptions for operational
   // scripts (store/*.sh, store/*.py, store/stitch-tools/gen.mjs) by switching store/ → store/*
@@ -338,7 +409,18 @@ const ACKNOWLEDGED_CONFLICTS = {
   // wholesale-one-side pick, same "two independent additive hunks" character as the .gitignore
   // entry above, just CSS instead of ignore-patterns.
   'web/style.css':
-    'two independent additive hunks, no overlap: keep fork .agent-hud* rules AND upstream .agent-ctx-badge rules verbatim, both blocks, either order',
+    'two independent additive hunks, no overlap: keep fork .agent-hud* rules AND upstream ' +
+    '.agent-ctx-badge rules verbatim, both blocks, either order. ' +
+    "RE-MEASURED 2026-09-04 (card 740551e6, upstream blob a7fc0f2b): +65/-1, and the single removed " +
+    "line is a COMMENT -- no CSS rule was taken away, which is what makes the union safe here rather " +
+    "than merely convenient. A naive selector count still looks alarming and a " +
+    ".team-node appears 16x on the fork side, 18x upstream. " +
+    "It is NOT a collision: the shared .team-node{} body is BYTE-IDENTICAL on both sides (extracted " +
+    "and diffed), i.e. merge-base heritage, and every differing selector is additive on exactly one " +
+    "side. Fork-only: .team-node.main.agent-card-running::after. Upstream-only: " +
+    ".team-node.team-node-active, its :hover, and .team-node-status. Resolution unchanged (union, " +
+    "both blocks); this note exists so the next reader does not re-derive the same scare from the " +
+    "same count.",
   // Measured 2026-09-01, same heartbeat reconciliation. Both sides independently arrived at the
   // IDENTICAL functional value (REPLAY_SOURCES = new Set(['compact', 'resume', 'startup', 'clear']))
   // via separate reasoning chains (fork: rule-14 /clear between cards + model-fallback step-down
@@ -399,14 +481,21 @@ const ACKNOWLEDGED_CONFLICTS = {
   //
   // SO THE DECISION IS ADOPT -- but start.sh and stop.sh are ONE PROTOCOL and must move together.
   // start.sh's new _service_live() decides 'already running' from the PIDFILE, and that is only sound
-  // because upstream also made stop.sh remove the pidfile ONLY AFTER the process is confirmed gone
-  // (the other half of 9d3b77f4, 43 insertions in scripts/stop.sh). OUR stop.sh is still the merge-base
-  // version: it does `kill` and then `rm -f` the pidfile immediately, without waiting for exit. Taking
-  // start.sh alone would therefore hand the new liveness check a pidfile that is already gone while the
-  // old process is still winding down -- the update finalizer runs stop.sh then start.sh back to back,
-  // which is exactly the sequence upstream's comment says it fixed. scripts/stop.sh does NOT conflict
-  // (our side is unmodified), so nothing forces it to be looked at -- which is precisely why it is
-  // named here.
+  // if stop.sh removes the pidfile ONLY AFTER the process is confirmed gone (the other half of
+  // 9d3b77f4, 43 insertions in scripts/stop.sh).
+  //
+  // PREMISE CORRECTED (card 4276708e, Cybersec finding 4b). This comment used to say "OUR stop.sh is
+  // still the merge-base version ... it does `kill` and then `rm -f` the pidfile immediately". That
+  // is BACKWARDS, measured against the merge base: scripts/stop.sh is +43/-2 on the fork side, a
+  // strict SUPERSET that ALREADY carries both halves -- the system-scope-first branch and the
+  // wait-for-exit loop -- and the single most important line it REMOVES is exactly the dangerous
+  // early `rm -f "$pidfile"`. In other words the fork independently fixed the race upstream fixed.
+  //
+  // The conclusion (treat the pair as one protocol) survives the correction; the reasoning does not,
+  // and leaving it inverted was the actual hazard: a later reader acting on "our stop.sh is
+  // unmodified, align it to upstream" would overwrite the confirmed-exit block with whatever
+  // upstream has, reintroducing the double-poller race this pair exists to prevent. scripts/stop.sh
+  // does NOT conflict, so nothing forces anyone to look at it -- which is why it is named here.
   'scripts/start.sh':
     'ADOPT upstream wholesale for the OS-dispatch region (our Linux branch is byte-identical to the ' +
     'merge base, so this is a clean take, not authorship): the flock+pidfile idempotent launch, the ' +
@@ -418,7 +507,8 @@ const ACKNOWLEDGED_CONFLICTS = {
     'stop.sh does not conflict, so nothing else will force it to be looked at. Adopting start.sh ' +
     'alone is WORSE than adopting neither',
   'src/web/token-usage.ts':
-    "additive, non-colliding imports on both sides -- keep fork's estimateCostUsd/stripDateSuffix (model-pricing.js) AND upstream's listAgentNames (agent-config.js) + resolveAgentConfigDirForRead (claude-plans.js), all four together",
+    "additive, non-colliding imports on both sides -- keep fork's estimateCostUsd/stripDateSuffix (model-pricing.js) AND upstream's listAgentNames (agent-config.js) + resolveAgentConfigDirForRead (claude-plans.js), all four together. DONE 2026-09-04 (card f27c999b, B-wave 4/6): all four imports present, and upstream's isolated-config-dir discovery loop in discoverAgentSources adopted with it. Measured first -- it does not currently bite here, because provisioning symlinks agents/<name>/.claude-config/projects back to ~/.claude/projects, so both roots are one tree; what it buys is independence from that provisioning detail, and the UNIQUE INDEX + INSERT OR IGNORE makes the overlap a no-op. " +
+    "ADOPTED 2026-09-04 (card 607254fb, B-wave step 1) -- upstream's `AND NOT EXISTS (child.parent_id = ...)` filter in correlateWithKanban, which skips PARENT cards. THIS CLAUSE PREVIOUSLY READ 'DELIBERATELY NOT ADOPTED', on the stated ground that this fork had NO touchAncestorChain. That ground is gone: card 4b03a88d adopted ancestor stamping (db.ts touchAncestorChain, four call sites), and the filter came with it -- exactly the condition the old clause named as its own trigger ('REVISIT IF the fork ever adopts ancestor stamping: at that moment this filter becomes right, and this note is the trigger'). The trigger fired; this is the revision it asked for. Both halves are present on develop and must stay together: the filter is only correct BECAUSE a parent now carries its child's updated_at, so removing ancestor stamping without removing the filter would start discarding correct attribution. WHY THIS WENT STALE, which matters more than the entry itself: ACKNOWLEDGED_UPSTREAM_BLOBS pins each rule to an UPSTREAM blob, so a re-measure round bumps the pin whenever UPSTREAM moves. Nothing pins the FORK side, and this note went wrong because WE moved -- the pin was fresh the whole time it was asserting a fact about our own tree that had stopped being true. A stale exemption is worse than a missing entry: a missing one gets noticed at the next conflict, while this one would have told the next merger, with a '-- checked', to delete a filter that is now correct.",
   // Test-fixture window-size conflict, NOT a source conflict: src/web/schedule-runner.ts itself
   // merges clean (both sides' additions land in different spots of the same guardIdx block), only
   // this pinned slice-window assertion collides because fork and upstream each widened the SAME
@@ -641,7 +731,7 @@ const ACKNOWLEDGED_CONFLICTS = {
   // scoped to the reported bypass; a candidate for a future round. Resolution unchanged: keep the
   // fork file wholesale (still a strict superset on the sentinel fix), same policy as before.
   'scripts/hooks/outgoing-copy-gate.py':
-    "keep the fork file wholesale -- it already carries upstream's is_send_invocation() verbatim (adopted for card 3ec64c96) plus the fork's own separate load_bad_name() sentinel fix upstream lacks (and appears to have reverted on its own side); if upstream's detector changes again, re-adopt that section only, leaving the sentinel fix and attribution comment untouched. Upstream's new fail-closed __main__ wrapper is a candidate for future adoption, not yet taken." +
+    "keep the fork file wholesale -- it already carries upstream's is_send_invocation() verbatim (adopted for card 3ec64c96) plus the fork's own separate load_bad_name() sentinel fix upstream lacks (and appears to have reverted on its own side); if upstream's detector changes again, re-adopt that section only, leaving the sentinel fix and attribution comment untouched. Upstream's fail-closed __main__ wrapper is now ADOPTED (B-wave, card 630d9864) -- it was recorded here as a candidate for years of rounds, and measuring it first showed it was not cosmetic: a payload whose tool_input is not a dict made collect_mcp_body() raise AttributeError, python exited 1, and PreToolUse reads 1 as NON-blocking, so a malformed call walked past the gate unchecked. Taken UNIONED with the fork's --status branch, which stays ahead of the net (a read-only posture readout must not answer with a send-refusal), and verified NOT to reach telegram_gate(), which is fail-OPEN by design. Five cases in outgoing-copy-gate.selftest.py pin both directions." +
     " Round 10 (2026-08-26, card fbb36b41, QA stale-blob catch cd51631d01de..4deba6bb7214): adopted two more upstream fixes verbatim. (1) RESENDGATE826 -- _curl_resend_verdict() narrows the resend-target curl/wget match from method-blind to method-aware: a read-only GET/HEAD domain-verification query (no body) now passes, only an actual send (non-safe method, or an implicit-POST body flag) still blocks; an undecidable method (variable, --config, truncated flag) stays fail-closed ('unknown' != 'read'). Grafted at the same call site the fork already carries upstream's is_send_invocation() from, no fork logic touched. (2) DIGIT-HYPHEN SUFFIX in accent_check_tokens(): a Hungarian numeric suffix glued to a number (429-es, 403-as, 2026-os) is no longer misread as a bare word needing an accent check -- ported with the fork's IDENTIFIER_ALLOWLIST skip-block kept intact and untouched (the two skips are independent 'continue' branches, order does not matter). Comment text kept in the fork's established Hungarian-prose convention for this file rather than copied English verbatim -- functionally identical to upstream's." +
     " Round 11 (2026-08-26, Cybersec NO-GO comment 16540): round 10's two ports each had a real, live-reproduced bypass. (1) RESENDGATE826: `curl -G -d ...` (a documented curl trick moving -d's payload into the query string and sending GET) let get_forced override has_body, so a full send slipped through as 'read' -- fixed by deleting the get_forced exception entirely, has_body alone now decides. (2) DIGIT-HYPHEN SUFFIX: the skip had no shape/length bound, so ANY word after a digit-hyphen vanished from the accent check (`5-keszen` lost a real accent error), not just the intended short numeral suffix -- fixed with a closed DIGIT_HYPHEN_SUFFIX_ALLOWLIST ({es,as,os,ös}), same allowlist-plus-assert shape as IDENTIFIER_ALLOWLIST. Both verified against Cybersec's own live reproductions; 24/24 selftest green. This F5 merge lands round 11 onto live develop, superseding the round-10-only commit 12fcda43 that had landed there directly, independently of this branch, before this merge." +
     " Round 12 (2026-09-02, MikroB landing-block, QA stale-blob catch 4deba6bb7214..c724df596611): upstream refactored (EMAILKAPU901 PR1) -- collect_bash_body()/collect_mcp_body() moved VERBATIM out to a new sibling module scripts/hooks/email_extract.py (a level-2 approval gate elsewhere now hashes the same letter this gate audits, so upstream wants exactly one extraction implementation, parity-pinned by its own test), imported behind a guarded try/except that fails CLOSED for the email path (stub returns an unreadable-reason, same as today's unreadable branch) if the import breaks, and leaves telegram (which never calls these) untouched. NOT adopted this round: the fork's file still has the inline functions verbatim (recorded resolution unchanged, still a strict superset via the sentinel fix), so this round is acknowledge-only. The extraction-module split is a real, reasonable refactor and a candidate for a future round -- but splitting a security-audited function across a new file is exactly the kind of change that wants its own dedicated review (parity test included), not a rider on an unrelated landing-unblock." + " Round 13 (2026-09-03, backend2, fleet-wide landing block, standing authority from MikroB msg 19101): upstream rewrote load_bad_name() itself (CLCOPYGATEHIANY902, c724df596611..d35afdd048eb) -- the exact function this entry's resolution is about. It now returns (regex, state) and SPLITS what the fork treats as one case: a MISSING or EMPTY rules file becomes fail-OPEN for email with a loud systemMessage on every send, while only an INVALID file (present but unparseable/bad schema/uncompilable regex) stays fail-CLOSED. Upstream's reason is a fresh customer install, where the file is deliberately not shipped (it names a private person) and the old behaviour left a paying customer unable to send mail at all. NOT adopted, acknowledge-only. Two reasons, and neither is 'we did not look': (1) it is a security-POSTURE change, not a refactor -- adopting it would relax this fork from fail-closed to fail-open on the email path, which is a decision for a card with a gate, not a rider on a landing-unblock; (2) not adopting keeps this fork on the STRICTER side, so the acknowledge-only choice cannot lose protection. Measured while deciding, and worth its own card: on THIS install store/outgoing-copy-gate-rules.json exists but has ZERO bad_name_patterns. CORRECTED 2026-09-03 (card 934dc104, backend2, measured by running the gate rather than reading it): zero patterns returns the card-3ec64c96 SENTINEL, not None, so the email branch was NOT fail-closed from the main clone -- it passed silently. The fail-closed reading came from a WORKTREE copy, where the script-relative rules path resolved to a file that checkout can never have; card 934dc104 made that path checkout-independent. The state upstream is responding to (a fresh install with no rules file at all) is still real and still not adopted here, for the two reasons above. That is an operational finding for the owner, not a reason to take upstream's relaxation blind.",
@@ -779,7 +869,126 @@ const ACKNOWLEDGED_CONFLICTS = {
   'src/web/routes/messages.ts':
     "both sides added the SAME GET /api/messages/:id handler (identical code, comments differ) -- keep either side's code and the FORK's comment, which records the ab4c85f2 incident that made the endpoint necessary; the fork's other additions in this file (reserved-sender guard, JSON-parse hardening, to-validation, card-state stamping) live in separate regions and are not part of this decision",
   'src/web/channel-monitor.ts':
-    "both sides made the SAME change to triggerMarveenMemorySave (bare sendPromptToSession -> sendSystemDirective(MAIN_AGENT_ID, MAIN_CHANNELS_SESSION, prompt)), so take either for that hunk -- they are semantically equal. Everything ELSE in this file is long-standing fork divergence unrelated to this card (lazy bin resolver vs upstream's eager resolveFromPath consts, and upstream's STUCKINPUT827 injected-prompt-registry work): resolve those on their own merits, they are not part of the ab4c85f2 decision",
+    "both sides made the SAME change to triggerMarveenMemorySave (bare sendPromptToSession -> sendSystemDirective(MAIN_AGENT_ID, MAIN_CHANNELS_SESSION, prompt)), so take either for that hunk -- they are semantically equal. Everything ELSE in this file is long-standing fork divergence unrelated to this card: resolve those on their own merits, they are not part of the ab4c85f2 decision. CORRECTION 2026-09-04 (card 272361eb, B-wave): this entry used to say 'lazy bin resolver vs upstream's eager resolveFromPath consts' and had the two sides BACKWARDS -- upstream was the lazy one, WE had the eager module-level consts, which throw at IMPORT time and take every importer of this module down on a PATH gap. That half is no longer a divergence at all: the fork adopted upstream's tmuxBin()/claudeBin() shape, matching platform.ts's own documented rule and agent-process.ts's existing use. What REMAINS undecided here is upstream's STUCKINPUT827 injected-prompt-registry work and its subagent-overdue alert (shouldAlertStuckSubAgent, SUBAGENT_OVERDUE_ALERT_MIN_INTERVAL_MS), neither of which this fork has.",
+  // Card 368b77f7 (URGENT: this conflict blocked EVERY marveen landing -- marveen-land.sh refuses on
+  // any non-zero fleet-test, with no baseline-delta comparison to fall back on).
+  // Card 73cf0a22 (the BRIDGEHU813 adoption itself). Add/add: upstream created this file in
+  // 1df099be and the fork adopted it in the same shape, so there is no merge base for it and
+  // git shows every fork edit as a conflict. Both differences are structural, not drift, and
+  // neither will ever go away on its own -- which is why this is a written rule rather than a
+  // one-off resolution.
+  'src/__tests__/bridge-pairing-i18n.test.ts':
+    "KEEP THE FORK'S SIDE for exactly two things, take upstream's for everything else. (1) The " +
+    "file it reads is web/app-settings-auth.js, not web/app.js -- this fork extracted the auth " +
+    "panel into that slice, and this file's own web/app.js rule already says an upstream app.js " +
+    "hunk is diffed against the named slice. Taking upstream's path here would make the suite " +
+    "read a file that no longer contains the function; the `start > -1` assertion is what would " +
+    "report it, so the failure would at least be loud. (2) The fork-only test 'the error branch " +
+    "actually CALLS it'. Upstream pins the wiring with tests/browser/**, which this fork " +
+    "deliberately did not adopt (the fleet gate runs vitest and never invokes playwright), so " +
+    "dropping this test in a merge would silently give up the one guarantee that the translator " +
+    "is reached at all -- every other assertion in the file stays green with the call site " +
+    "reverted. Measured on adoption: reverting it fails this test and only this test. " +
+    "EVERYTHING ELSE -- new codes, new cases, changed expectations -- take from upstream on its " +
+    "merits: the coverage test RUNS the real validators, so upstream adding a pairing error " +
+    "shows up here as a missing hu/en key rather than as silently absent coverage.",
+  // Card ec7bdad8 (2026-09-04): the fork adopted upstream's AGENT_API_ORIGIN key, and BOTH sides
+  // now declare it at the same point in the file, which is what git reports as a conflict.
+  'src/config.ts':
+    "TEXTUAL ONLY, and measured as such: the declaration is BYTE-IDENTICAL on both sides " +
+    "(`export const AGENT_API_ORIGIN = cfg('AGENT_API_ORIGIN') ?? ''`), and a real merge produces " +
+    "exactly ONE conflict region, covering the COMMENT above it and nothing else. Take either " +
+    "side's const -- they are the same characters -- and keep ONE comment; the fork's is kept " +
+    "because it records the measurement in the fork's own words (hairpin NAT, curl exit 7, dead " +
+    "address in every generated CLAUDE.md example) and the fork's other config entries are " +
+    "documented the same way. There is NO semantic decision here: if this file ever conflicts on " +
+    "something other than adjacent comment prose, that is a different question and needs its own " +
+    "entry rather than this one being stretched to cover it.",
+  'web/lang/en.js':
+    "keep BOTH key blocks -- this is a union, not a pick. MEASURED 2026-09-04 at the key level, not " +
+    "the line level: 1590 keys at the merge base, the fork ADDED 516 (the outgoing-copy gate's " +
+    "names.* rules UI, card 98dbbcc9, among others), upstream ADDED 27 (auth.bridge.err.*, " +
+    "BRIDGEHU813 #1170), the two sets COLLIDE ON ZERO KEYS, and NEITHER SIDE REMOVED ANY. The " +
+    "CORRECTION 2026-09-04 (card 73cf0a22): that 27 is 26. The upstream hunk adds 29 lines, three " +
+    "of which are its comment header, and upstream's own commit message says 26. The union rule is " +
+    "unaffected -- it turns on the collision count, not on the size of either side -- but the figure " +
+    "is now measured rather than eyeballed. Those 26 keys are ALSO ON THE FORK SIDE as of that " +
+    "card, byte-identical to upstream's, so they are common content now, not an upstream-only " +
+    "addition waiting to be merged. " +
+    "conflict is textual, not semantic: both appended at the same tail. Same shape and same " +
+    "resolution as web/style.css. " +
+    "OVERLAY EXTRACTION CONSIDERED AND DECLINED, which is what the guard's failure message asks for: " +
+    "the fork owns 516 of 2106 keys (24.5%), so an overlay would be a real split, and the argument " +
+    "against it is the tooling -- the i18n key-insert path would have to know which of two files a " +
+    "key belongs in, and this fork has already been bitten by an insert script writing to the wrong " +
+    "place. A union conflict with zero key collisions costs one merge decision; a two-file layout " +
+    "costs a loader change plus a permanent correctness question on every key added. REVISIT IF the " +
+    "collision count is ever non-zero -- that is the point where a union stops being mechanical. " +
+    "RE-MEASURED 2026-09-04 (card 740551e6, upstream blob 702bdb07): 1618 base keys, fork +525, " +
+    "upstream +46, COLLISIONS STILL ZERO -- but the premise 'NEITHER SIDE REMOVED ANY' above is NO " +
+    "LONGER TRUE, and that is the part worth reading. Upstream REMOVED 8 activity.* keys because it " +
+    "DELETED its Activity page and merged that content into the Team page. Of the +46, NINETEEN " +
+    "arrived in this increment alone (14 of them agents.settings.ctx_guard_*) -- the rest predate the " +
+    "previous pin; both figures are correct, they just answer different questions, and the +46 is the " +
+    "one this union rule is about. The fork still HAS that page and still references all 8 removed " +
+    "keys: ALL EIGHT are still referenced by live fork code, in web/index.html, web/app-activity.js " +
+    "and web/app-i18n-nav.js. Stated as coverage rather than as a count on purpose -- a count goes " +
+    "stale on any refactor, while 'every removed key is still used' is both durable and the stronger " +
+    "argument. (Two earlier versions of this note carried a NUMBER and both were wrong: the first " +
+    "quoted a four-key sample as if it were a total, the second said 16 because `grep` was given the " +
+    "key as a PATTERN -- the dot is a wildcard, so activity.empty also matched the CSS class " +
+    "activity-empty. Measured with -F the total is 10. Dotted i18n keys are exactly the case where " +
+    "that bites; backend caught it, card comment 19707.) Direction unchanged, but the union is no longer symmetric: KEEP the fork's activity.* " +
+    "keys explicitly. Taking upstream's deletions would leave a LIVE fork page rendering raw key " +
+    "names. NOTE THE SCOPE: whether the fork should ALSO retire its Activity page is NOT a merge " +
+    "question and must not be settled inside a conflict resolution -- it is a working fork feature, " +
+    "so code-quality rule 5 makes it Peti's call. This entry only records that the merge does not " +
+    "decide it by default.",
+  'web/lang/hu.js':
+    "same as web/lang/en.js, measured identically (1590 base, +516 fork, +27 upstream -- 26, see " +
+    "the en.js entry's 2026-09-04 correction, and both sides carry those keys now, 0 collisions, " +
+    "0 removals on either side). The two locale files are edited in lockstep by both sides, so a " +
+    "resolution that applied to one and not the other would leave the pair out of sync -- which the " +
+    "i18n parity test would then report as a fork defect rather than as half a merge. " +
+    "RE-MEASURED 2026-09-04 (card 740551e6, upstream blob 5a1ba174): identical numbers to en.js " +
+    "(1618 base, +525 fork, +46 upstream, 0 collisions) and the SAME 8 activity.* removals upstream " +
+    "-- so the '0 removals on either side' written at the TOP of this entry is NO LONGER TRUE, and " +
+    "is kept only as the record of what the earlier round measured. Keep the fork's activity.* keys " +
+    "here too: dropping them in one locale and not the other is exactly the half-merge this entry " +
+    "exists to prevent. MikroB's decision, 2026-09-04: hold the union for these eight keys, do NOT " +
+    "take the upstream removal -- the fork's Activity page is live, and retiring it would be a " +
+    "separate call under code-quality rule 5, not a merge outcome.",
+  // Card 272361eb (B-wave 3/6). Upstream's ENTIRE delta in this file is resolveAgentConfigDirForRead
+  // (43+/1-, the function plus its comment), which the fork has now adopted with identical logic --
+  // so the two sides no longer disagree about behaviour, only about how much comment sits above it.
+  'src/web/claude-plans.ts':
+    "keep the fork's copy: the function body is upstream's verbatim (same signature, same " +
+    "projects/-required check, same null fallbacks), and the fork's longer comment carries the " +
+    "measurement that upstream's does not -- 0 of 15 agents on this install are in the state it " +
+    "fixes, so it is a LATENT correctness fix rather than a live defect, and a later reader must " +
+    "not be left believing a bug was repaired that was not happening. If upstream changes the " +
+    "function itself, adopt that; a comment-only delta is not a reason to touch this file.",
+  // Card 272361eb (B-wave 3/6): both sides amended the SAME assertion after the same rename.
+  'src/__tests__/channel-monitor-resume-recovery.test.ts':
+    "keep the FORK's version. Both sides fixed the case that broke when the eager TMUX const became " +
+    "the lazy tmuxBin(), but upstream swapped one literal spelling for another " +
+    "(tmuxPath:\\s*tmuxBin\\(\\)) and will therefore break again on the next rename. The fork " +
+    "matches any expression in that position, because the property under test is that the periodic " +
+    "reap calls the SHARED reaper with a tmux path -- not which expression produced the path. Take " +
+    "upstream's side only if it stops pinning a spelling.",
+  // Card 39b32ac6 (B-wave 2/6), a TAIL-vs-TAIL conflict both sides created for the same feature.
+  'src/__tests__/seed-refresh-untouched-only.test.ts':
+    "keep the fork's 180 lines of fork-owned cases (seed_copy_try_merge, operator-authored skills, " +
+    "the CLAUDE.md exclusion) -- a wholesale take of upstream's file drops all of them -- and APPEND " +
+    "upstream's SEEDREFRESH826 describe block, which covers the same top-level scheduled-tasks refresh " +
+    "with the more realistic fixture (the node seeder's {{PROJECT_ROOT}} alias resolved on disk, which " +
+    "the fork's own first draft did not exercise). Both sides appended at the tail for the same reason, " +
+    "so this is a union, not a pick. ONE fork amendment inside upstream's block, and it is deliberate: " +
+    "upstream's 'a locally modified copy survives' case is VACUOUS -- measured by deleting the source " +
+    "line under test, which left it green, because nothing refreshing at all also leaves the edit alone. " +
+    "A witness task (untouched, one release behind) refreshes in the same run, so the edited copy being " +
+    "spared now means the rule held rather than the feature being absent. Keep upstream's RED-BEFORE " +
+    "case alongside it; it pins the source line by name, which the witness does not.",
 } as const
 
 // THE UPSTREAM CONTENT EACH RULE ABOVE WAS DECIDED AGAINST (card a1d613e3, Cybersec msg 19105).
@@ -808,9 +1017,11 @@ const ACKNOWLEDGED_CONFLICTS = {
 // Typed as Record<keyof typeof ACKNOWLEDGED_CONFLICTS, string>: a rule without a recorded blob, or
 // a blob without a rule, is a COMPILE error rather than a silent gap between two lists.
 const ACKNOWLEDGED_UPSTREAM_BLOBS: Readonly<Record<keyof typeof ACKNOWLEDGED_CONFLICTS, string>> = {
+  'src/web/routes/agent-terminal.ts': 'cf57ba1065272a7bde9723865d5709faaf05ed21',
   'src/kanban-dispatch.ts': '7fffc38f78b99573fb88fd797ac67b3593ffb872',
   'src/__tests__/kanban-dispatch-rearm.test.ts': 'd9a186a0af48c44c14299c284dbe0caf45d8feaa',
   'src/auto-restart.ts': 'a1f2d75ed063a78eb5be23acb2c4138ca14fff19',
+  'src/web/hook-registration-guard.ts': 'bcd6ad718438ee86e45945cd35f5baaf333c3fc9',
   'src/model-fallback.ts': '93ea8f17a6c9608003f047c1c9b5f8defe0f1da8',
   'src/__tests__/model-fallback.test.ts': '09bc3bf772d195be0980f4bec929eed4ecfadc67',
   'src/web/update-checker.ts': 'c98efe359fd032ee0f196b114d70fb57d166a88c',
@@ -824,8 +1035,40 @@ const ACKNOWLEDGED_UPSTREAM_BLOBS: Readonly<Record<keyof typeof ACKNOWLEDGED_CON
   'scripts/hooks/egress-gate.mjs': '229076d5812e7d50a188ca07b43a87fb6239b233',
   'src/__tests__/egress-gate.test.ts': 'c24ca54ffc49de70d602790fa1d6b80e3aea4156',
   'src/web/context-guard-runner.ts': '2876a41d1fb283e5591dec8666b67734b2b52b53',
-  'web/app.js': 'e8c74d15bbb930ca7fff43139b868b0e638e7a11',
-  'web/style.css': 'b774ccb836f07ca78c300077302834a80cd12edb',
+  // BLOB BUMP 2026-09-04 (card 368b77f7, the URGENT landing block) for web/app.js, package.json and
+  // vitest.config.ts. Upstream moved 5c9a9252 -> 1df099be, and all three pins went stale for ONE
+  // commit: BRIDGEHU813 (#1170), "the pairing errors speak the install's language". The recorded
+  // RESOLUTION RULES ARE UNCHANGED -- only the upstream side moved, and it moved for a feature this
+  // fork has not adopted:
+  //   package.json      + a `browser-verify` npm script
+  //   vitest.config.ts  + tests/browser/** added to the exclude list
+  //   web/app.js        + bridgeEnrollErrorText(), translating pairing errors on the server's stable
+  //                       `code` instead of its English sentence
+  //   web/lang/*.js     + the auth.bridge.err.* keys those two consume (see their entries above)
+  //
+  // Diffed against the named slice, as web/app.js's own rule requires: this fork HAS bridge pairing
+  // (bridgeEnrollFromUi lives in the extracted web/app-settings-auth.js) but NOT the code-based error
+  // translation, and it has neither playwright.browser.config.ts nor tests/browser/**. So BRIDGEHU813
+  // is a real, applicable adoption decision -- and it is taken on its own card, NOT folded into this
+  // pin refresh. A feature adoption hidden inside a blob bump is exactly what this map exists to stop.
+  //
+  // ADOPTED 2026-09-04 on that separate card (73cf0a22), so the paragraph above is the record of what
+  // was true at the pin refresh, not a description of today. Taken: the server-side stable `code`
+  // (src/remote-enroll-core.ts, src/web/bridge-enroll.ts, src/web/routes/security.ts -- all three
+  // were byte-identical to upstream's parent, so they now equal upstream's post-image exactly and
+  // conflict on nothing), the 26 auth.bridge.err.* keys in both locales, and bridgeEnrollErrorText()
+  // into web/app-settings-auth.js, which is the slice this file's own app.js rule names.
+  //
+  // NOT taken, and this is the deliberate half: playwright.browser.config.ts, tests/browser/**, the
+  // `browser-verify` script, and the vitest.config.ts exclusion that exists only to serve them. The
+  // fleet gate (store/fleet-test.sh) runs vitest and never invokes playwright, so an adopted browser
+  // suite would be a suite nobody runs -- and an unrun suite reads as coverage while guarding
+  // nothing. The guarantee it carries upstream (that the error branch actually CALLS the translator)
+  // was NOT dropped with it: it is asserted directly in the adopted unit test, and that assertion
+  // was measured to fail when the call site is reverted. Revisit if the fleet gate grows a
+  // playwright stage.
+  'web/app.js': '102cd90154b20f3064740f29f72461d686a75ab9',
+  'web/style.css': 'a7fc0f2baf1989fc5ecd2cd8c78f86c6104b55da',
   'src/web/agent-taskstate.ts': '625d03282bb75b554ce23822f67cc4e51b0706c1',
   'src/__tests__/agent-taskstate.test.ts': '82dc411aa813d66c0800e7f8007dfdcd2a42e43f',
   // 2026-09-02 (fron-ted, landing 5dd4a211): upstream moved 346fa637 -- body-only change in
@@ -836,11 +1079,11 @@ const ACKNOWLEDGED_UPSTREAM_BLOBS: Readonly<Record<keyof typeof ACKNOWLEDGED_CON
   'src/web/token-usage.ts': '346fa63739d85f7af55b06d9359f4ec82db00f3e',
   'src/__tests__/schedule-runner-autostart.test.ts': '678cbb42e4447b206598bfbb9bc271602a3f896b',
   '.gitignore': '1e5adbb2332be0dbf5a710c1899e49305ccb318b',
-  'package.json': '031fc59039e3081034cf870745202076818b1bff',
+  'package.json': 'de3956b78e09e8a3c48f9dafc775e537894a5f0d',
   'package-lock.json': 'f4f25dd6896d5a4f80c13df1b056b632f86f37e6',
   'src/web/heartbeat-agent-scaffold.ts': 'ad28ed576466d9a591209c501ced06998ec1a505',
   'src/web/schedule-runner.ts': 'a7c10a08f1fac72f1401ec53eb415fcd2aee2e24',
-  'vitest.config.ts': '62d4ac7606cd719d40e07fc0d82c7f777dda0b30',
+  'vitest.config.ts': '8f9eb05fdf8e049c48051d9f85f98a297a0e7ca6',
   'src/web/agent-process.ts': '45e20624c63fdb4377943aede3cf4fc0d46b3319',
   'src/web/auto-restart-runner.ts': '044dde0ad94f5a57ff8e611656f288b25fecdaff',
   'src/web/model-fallback-runner.ts': '681fcaefd6588fc2f6f3db880238b8288d1dcd15',
@@ -881,6 +1124,16 @@ const ACKNOWLEDGED_UPSTREAM_BLOBS: Readonly<Record<keyof typeof ACKNOWLEDGED_CON
   'src/__tests__/system-directive-auth-section.test.ts': '80d65e4651601d320447bf188d53548a5ef5f8ba',
   'src/web/channel-monitor.ts': 'd1c642f669ff2a28b6eec79bbf503365c9ac1b08',
   'src/web/routes/messages.ts': '98710db9e171616e0600061eec649542e779506a',
+  // Card 368b77f7, 2026-09-04.
+  'src/__tests__/bridge-pairing-i18n.test.ts': '5da8970e4ff27f4d9b1fef46b179ed26e9063ea0',
+  'src/config.ts': '02c6ff722fe731e1ea6c1e4180b82f379ce8e622',
+  'web/lang/en.js': '702bdb0730c92a8d3201e1618cf508d9559ac4ab',
+  'web/lang/hu.js': '5a1ba1741d5a704bc298f00d5a0f4550b1a2a1b3',
+  // Card 272361eb, 2026-09-04 (B-wave 3/6).
+  'src/web/claude-plans.ts': '548f996dbe82ae1062e94ced4acb5a670bfd2bf9',
+  'src/__tests__/channel-monitor-resume-recovery.test.ts': 'e7850cae42ac213af8bcb18dfc9d8c72acae9370',
+  // Card 39b32ac6, 2026-09-04 (B-wave 2/6): both sides appended a SEEDREFRESH826 block at the tail.
+  'src/__tests__/seed-refresh-untouched-only.test.ts': 'db592152fd319865336fe07aa0ee184d1790a192',
 }
 
 /** A conflict whose written rule was decided against DIFFERENT upstream content than what is
@@ -907,9 +1160,13 @@ export interface StaleAcknowledgement {
  */
 export function classifyConflicts(
   conflicted: readonly string[],
-  blobOf: (file: string) => string | null
+  blobOf: (file: string) => string | null,
+  // The guarded list is a PARAMETER (card 368b77f7) so the guarded branch stays unit-testable even
+  // while the live list is empty. It went empty when web/lang/* migrated to ACKNOWLEDGED_CONFLICTS,
+  // and an untested branch is exactly what would break the day someone re-populates the list.
+  guardedFiles: readonly string[] = GUARDED_FILES
 ): { guarded: string[]; unwatched: string[]; stale: StaleAcknowledgement[] } {
-  const guarded = conflicted.filter((f) => (GUARDED_FILES as readonly string[]).includes(f))
+  const guarded = conflicted.filter((f) => guardedFiles.includes(f))
   const acknowledged = conflicted.filter(
     (f) =>
       !guarded.includes(f) && Object.prototype.hasOwnProperty.call(ACKNOWLEDGED_UPSTREAM_BLOBS, f)
@@ -925,6 +1182,131 @@ export function classifyConflicts(
     }
   }
   return { guarded, unwatched, stale }
+}
+
+// ---------------------------------------------------------------------------------------------
+// FORK-SIDE ANCHORS (card a14812e8)
+//
+// THE GAP THIS CLOSES. ACKNOWLEDGED_UPSTREAM_BLOBS pins every rule to an UPSTREAM blob, so a rule
+// goes stale when UPSTREAM moves. Nothing pinned OUR side, and the token-usage.ts entry went wrong
+// for exactly that reason: it asserted "this fork had NO touchAncestorChain" long after card
+// 4b03a88d added it. WE moved, upstream did not, so the pin stayed fresh the whole time the rule
+// was asserting something false about our own tree -- and the re-measure tool reported 0 stale out
+// of 23. A stale exemption is worse than a missing one: a missing entry gets caught at the next
+// conflict, while that one would have told the next merger, with a "-- checked", to delete a filter
+// that had become correct.
+//
+// WHY NOT A FORK-SIDE BLOB PIN, which is the obvious symmetry. Measured on this repo over 14 days:
+// 404 fork-side commits across the 72 pinned files, and 67 of 72 files moved at all. A blob pin on
+// our side would go stale roughly 29 times a day, almost always on an edit that never touches the
+// region the rule is about. The upstream pin can afford whole-file granularity precisely because
+// upstream moves rarely; our side does not have that property, and a gate that cries ~29 times a
+// day is a gate that gets rubber-stamped.
+//
+// WHY OPTIONAL, AND WHY IT STAYS OPTIONAL. Of the 73 rules, 9 make any fork-side factual claim at
+// all, and most of those are ADOPTION HISTORY ("not adopted this round") rather than a live,
+// checkable statement about the tree. Forcing every entry into a predicate would mean rewriting
+// prose into a formalism that does not fit it -- so an entry without an anchor behaves exactly as
+// before, and only a DECLARED anchor is enforced.
+//
+// UNLIKE the blob check, this runs ALWAYS, not only for files that conflict in this run. The
+// token-usage failure happened with no conflict in play: the rule was simply no longer true. Making
+// it conditional on a conflict would reproduce the hole it exists to close.
+//
+// AN ANCHOR MUST NOT BE SATISFIABLE BY A COMMENT. Measured while choosing these: the natural anchor
+// for the installer-ollama-nonfatal rule ("the fork has no code left for this test to exercise") is
+// `ollama_pull`, which still appears once in install-linux.sh -- inside a comment explaining that
+// the call was REMOVED. A fixed-string anchor there would assert the comment, not the code, and
+// would go green for the wrong reason forever. That entry therefore gets NO anchor rather than a
+// misleading one; the exclusion is deliberate and is the reason this map is Partial.
+
+/** A named, checkable fact about OUR tree that an acknowledgement's rule rests on. */
+export interface ForkAnchor {
+  /** Searched as a FIXED string, never a regex: these come from prose and would otherwise have to
+   *  be escaped by every future editor. */
+  readonly needle: string
+  /** Repo-relative file the needle is expected in (or absent from). One file, not a glob: an anchor
+   *  that ranges over a tree answers a different question every time the tree grows. */
+  readonly file: string
+  readonly expect: 'present' | 'absent'
+  /** Why this fact is load-bearing for the rule -- carried into the failure message, for the same
+   *  reason StaleAcknowledgement carries `rule`: the reader is being asked to re-decide, not to
+   *  bump a number. */
+  readonly because: string
+}
+
+const ACKNOWLEDGED_FORK_ANCHORS: Partial<Record<keyof typeof ACKNOWLEDGED_CONFLICTS, ForkAnchor>> = {
+  // The entry this card came from. Its rule says the two halves "must stay together: the filter is
+  // only correct BECAUSE a parent now carries its child's updated_at". So the anchor is the half
+  // that lives OUTSIDE the conflicting file -- removing ancestor stamping while the parent-skip
+  // filter stays would silently start discarding correct attribution, and nothing else would notice.
+  'src/web/token-usage.ts': {
+    needle: 'touchAncestorChain',
+    file: 'src/db.ts',
+    expect: 'present',
+    because:
+      "token-usage.ts keeps upstream's parent-skip filter ONLY because db.ts stamps a parent with " +
+      'its child updated_at. Drop the stamping and the filter starts discarding real attribution.',
+  },
+  // "the fork's file still has the inline functions verbatim (recorded resolution unchanged, still a
+  // strict superset via the sentinel fix), so this round is acknowledge-only". A def line cannot be
+  // satisfied by prose the way a bare identifier can.
+  'scripts/hooks/outgoing-copy-gate.py': {
+    needle: 'def is_send_invocation',
+    file: 'scripts/hooks/outgoing-copy-gate.py',
+    expect: 'present',
+    because:
+      'the rule is acknowledge-only on the ground that the fork keeps its inline send-detection ' +
+      'functions; if they are extracted or removed, the "strict superset" claim needs re-deciding.',
+  },
+}
+
+/** An acknowledgement whose rule rests on a fork-side fact that is no longer true. */
+export interface DriftedForkAnchor {
+  readonly file: string
+  readonly anchor: ForkAnchor
+  readonly found: boolean
+}
+
+/**
+ * Substring containment is NOT enough, and this was measured rather than reasoned: renaming
+ * `touchAncestorChain` to `touchAncestorChainRENAMED` -- a rename is one of the ways the anchored
+ * fact stops being true -- left `content.includes(needle)` perfectly green, because the new name
+ * CONTAINS the old one. The anchor would have gone on asserting a symbol that no longer exists
+ * under that name.
+ *
+ * So a match must sit on identifier boundaries: no `[A-Za-z0-9_$]` immediately either side. The
+ * needle itself stays a plain fixed string -- authors write these from prose and must not have to
+ * escape anything -- the boundary is applied here instead of being pushed into the declaration.
+ */
+export function containsAsToken(content: string, needle: string): boolean {
+  const isWordChar = (c: string | undefined): boolean => c !== undefined && /[A-Za-z0-9_$]/.test(c)
+  let from = 0
+  for (;;) {
+    const at = content.indexOf(needle, from)
+    if (at === -1) return false
+    if (!isWordChar(content[at - 1]) && !isWordChar(content[at + needle.length])) return true
+    from = at + 1
+  }
+}
+
+/**
+ * Pure and injectable (`readFile`) for the same reason classifyConflicts is: the live test reads the
+ * real tree, and a classification exercised only there would be untested wherever the tree happens
+ * not to trip it. `readFile` returns null for a missing file, which is DRIFT for a 'present' anchor
+ * -- a rule resting on a file that is gone is exactly as stale as one resting on deleted code.
+ */
+export function classifyForkAnchors(
+  anchors: Readonly<Record<string, ForkAnchor>>,
+  readFile: (file: string) => string | null
+): DriftedForkAnchor[] {
+  const drifted: DriftedForkAnchor[] = []
+  for (const [file, anchor] of Object.entries(anchors)) {
+    const content = readFile(anchor.file)
+    const found = content !== null && containsAsToken(content, anchor.needle)
+    if ((anchor.expect === 'present') !== found) drifted.push({ file, anchor, found })
+  }
+  return drifted
 }
 
 // Card 1e8111a3. Cybersec measured 8 unwatched-conflict occurrences where the failure message told
@@ -1231,6 +1613,22 @@ describe('classifyConflicts: an acknowledgement is bound to CONTENT, not to a fi
     ])
   })
 
+  it('every file ever in GUARDED_FILES is still ACKNOWLEDGED -- migrating one out is not deleting it', () => {
+    // GUARDED_FILES is empty now. Without this, the guarded assertion in the live check passes by
+    // having nothing to check, and a file could be dropped from BOTH lists by deleting one line --
+    // silently un-watching a conflict that someone once cared enough about to name.
+    for (const file of MIGRATED_FROM_GUARDED) {
+      expect(
+        Object.prototype.hasOwnProperty.call(ACKNOWLEDGED_CONFLICTS, file),
+        `${file} left GUARDED_FILES but has no written resolution rule`,
+      ).toBe(true)
+      expect(
+        Object.prototype.hasOwnProperty.call(ACKNOWLEDGED_UPSTREAM_BLOBS, file),
+        `${file} has a rule but no pinned upstream blob, so the rule cannot go stale`,
+      ).toBe(true)
+    }
+  })
+
   it('an undecided file is still UNWATCHED, and is never reported as stale', () => {
     const v = classifyConflicts(['src/some/brand-new-file.ts'], () => 'whatever')
     expect(v.unwatched).toEqual(['src/some/brand-new-file.ts'])
@@ -1238,18 +1636,23 @@ describe('classifyConflicts: an acknowledgement is bound to CONTENT, not to a fi
   })
 
   it('a fork-owned GUARDED file is classified as guarded, not as undecided', () => {
-    const v = classifyConflicts([GUARDED_FILES[0]], () => 'whatever')
-    expect(v.guarded).toEqual([GUARDED_FILES[0]])
+    // Uses an injected list: the live GUARDED_FILES is empty today (every member migrated to
+    // ACKNOWLEDGED_CONFLICTS), and a test that indexed it would either not compile or silently
+    // stop exercising this branch.
+    const FAKE = 'web/some-fork-owned.js'
+    const v = classifyConflicts([FAKE], () => 'whatever', [FAKE])
+    expect(v.guarded).toEqual([FAKE])
     expect(v.unwatched).toEqual([])
     expect(v.stale).toEqual([])
   })
 
   it('blobOf is consulted ONLY for acknowledged files -- no needless git call per conflict', () => {
     const asked: string[] = []
-    classifyConflicts([WATCHDOG, 'src/some/brand-new-file.ts', GUARDED_FILES[0]], (f) => {
+    const FAKE = 'web/some-fork-owned.js'
+    classifyConflicts([WATCHDOG, 'src/some/brand-new-file.ts', FAKE], (f) => {
       asked.push(f)
       return RECORDED
-    })
+    }, [FAKE])
     expect(asked).toEqual([WATCHDOG])
   })
 })
@@ -1321,5 +1724,113 @@ describe('readyToPasteEntry + extractConflictHunks (card 1e8111a3: hand a paste-
     const hunk = extractConflictHunks(content, 200)
     expect(hunk.length).toBeLessThan(250)
     expect(hunk).toContain('truncated')
+  })
+})
+
+describe('fork-side anchors: a rule that rests on OUR tree goes stale when OUR tree moves (card a14812e8)', () => {
+  const readReal = (file: string): string | null => {
+    try {
+      return readFileSync(join(REPO_ROOT, file), 'utf-8')
+    } catch {
+      return null
+    }
+  }
+
+  // The one that matters: green on the tree as it is. A guard landing red would block every
+  // marveen landing (card 368b77f7 measured exactly that), so this is not a formality.
+  it('every declared anchor holds on the CURRENT tree', () => {
+    const drifted = classifyForkAnchors(
+      ACKNOWLEDGED_FORK_ANCHORS as Readonly<Record<string, ForkAnchor>>,
+      readReal
+    )
+    expect(
+      drifted.map(
+        (d) =>
+          `${d.file}: expected '${d.anchor.needle}' ${d.anchor.expect} in ${d.anchor.file}, ` +
+          `found=${d.found}. WHY IT MATTERS: ${d.anchor.because} ` +
+          `Re-decide the ACKNOWLEDGED_CONFLICTS rule -- do not just edit the anchor to match.`
+      )
+    ).toEqual([])
+  })
+
+  it('every anchor points at a file that actually exists -- a missing file is drift, not a pass', () => {
+    for (const [, anchor] of Object.entries(ACKNOWLEDGED_FORK_ANCHORS)) {
+      expect(readReal(anchor!.file), `anchor file missing: ${anchor!.file}`).not.toBeNull()
+    }
+  })
+
+  it('a present-anchor whose needle is gone is drift', () => {
+    const anchors = {
+      'a.ts': { needle: 'touchAncestorChain', file: 'src/db.ts', expect: 'present', because: 'x' },
+    } as const
+    const drifted = classifyForkAnchors(anchors, () => 'nothing relevant here')
+    expect(drifted).toHaveLength(1)
+    expect(drifted[0]!.found).toBe(false)
+  })
+
+  it('a present-anchor whose needle is there is NOT drift', () => {
+    const anchors = {
+      'a.ts': { needle: 'touchAncestorChain', file: 'src/db.ts', expect: 'present', because: 'x' },
+    } as const
+    expect(classifyForkAnchors(anchors, () => 'export function touchAncestorChain() {}')).toEqual([])
+  })
+
+  // The inverse direction has to work too, or "expect: absent" would be a decorative field that
+  // silently never fires -- the same class of defect this whole map exists to catch.
+  it('an absent-anchor whose needle APPEARED is drift', () => {
+    const anchors = {
+      'a.ts': { needle: 'ollama_pull', file: 'install-linux.sh', expect: 'absent', because: 'x' },
+    } as const
+    const drifted = classifyForkAnchors(anchors, () => 'ollama_pull "nomic-embed-text"')
+    expect(drifted).toHaveLength(1)
+    expect(drifted[0]!.found).toBe(true)
+  })
+
+  // Measured, not assumed: this exact mutation went GREEN before containsAsToken existed.
+  it('a RENAMED symbol is drift -- substring containment would have missed it', () => {
+    const anchors = {
+      'a.ts': { needle: 'touchAncestorChain', file: 'src/db.ts', expect: 'present', because: 'x' },
+    } as const
+    const drifted = classifyForkAnchors(anchors, () => 'export function touchAncestorChainRENAMED()')
+    expect(drifted).toHaveLength(1)
+  })
+
+  it('containsAsToken matches on identifier boundaries, both sides', () => {
+    expect(containsAsToken('call touchAncestorChain(id)', 'touchAncestorChain')).toBe(true)
+    expect(containsAsToken('touchAncestorChainRENAMED()', 'touchAncestorChain')).toBe(false)
+    expect(containsAsToken('xtouchAncestorChain()', 'touchAncestorChain')).toBe(false)
+    // A later legitimate occurrence must still be found after an earlier glued one.
+    expect(containsAsToken('preTouch touchAncestorChainX; touchAncestorChain()', 'touchAncestorChain')).toBe(true)
+    // Needles that are not bare identifiers still work -- the boundary is about the edges only.
+    expect(containsAsToken('def is_send_invocation(cmd):', 'def is_send_invocation')).toBe(true)
+  })
+
+  it('a missing FILE is drift for a present-anchor -- a rule resting on a deleted file is stale', () => {
+    const anchors = {
+      'a.ts': { needle: 'anything', file: 'gone.ts', expect: 'present', because: 'x' },
+    } as const
+    expect(classifyForkAnchors(anchors, () => null)).toHaveLength(1)
+  })
+
+  // Card a14812e8, measured: `ollama_pull` still appears once in install-linux.sh, inside a comment
+  // saying the call was REMOVED. An anchor there would assert the comment and stay green forever for
+  // the wrong reason. This pins the EXCLUSION so a future editor adding the obvious anchor trips
+  // here and reads why, instead of shipping a check that cannot fail.
+  it('installer-ollama-nonfatal deliberately has NO anchor, because its needle survives only in a comment', () => {
+    expect(
+      Object.prototype.hasOwnProperty.call(
+        ACKNOWLEDGED_FORK_ANCHORS,
+        'src/__tests__/installer-ollama-nonfatal.test.ts'
+      )
+    ).toBe(false)
+    const installer = readReal('install-linux.sh') ?? ''
+    // The measurement the exclusion rests on: the string is present, and only in prose.
+    expect(installer).toContain('ollama_pull')
+    const codeLines = installer
+      .split('\n')
+      .filter((l) => l.includes('ollama_pull') && !l.trimStart().startsWith('#'))
+    expect(codeLines, 'ollama_pull reappeared in CODE -- the exclusion needs re-deciding').toEqual(
+      []
+    )
   })
 })
