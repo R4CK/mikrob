@@ -225,9 +225,18 @@ then
 fi
 
 # LINT RATCHET (card 8fb0aa44). ESLint landed with commit 9783a9d7 and nothing ever called it --
-# not this script, not `npm test` (only `vitest run`), and there is no .github/workflows. 226
-# errors accumulated unnoticed; the weekly audit counted 224 the day before, so the backlog was
-# provably still growing while nobody looked.
+# not this script and not `npm test` (which is `vitest run` and nothing else). 226 errors
+# accumulated unnoticed; the weekly audit counted 224 the day before, so the backlog was provably
+# still growing while nobody looked.
+#
+# CORRECTED 2026-09-05 (card 774624c4): this used to add "and there is no .github/workflows", which
+# stopped being true on 2026-08-22 -- `.github/workflows/test.yml` landed with 56af7a69, and
+# `secret-gate.yml` is older still. THE CONCLUSION IS UNCHANGED, and that is the point of correcting
+# the sentence rather than deleting it: CI runs `npm run typecheck` and `npm test`, and NEITHER runs
+# ESLint (measured -- no workflow mentions lint or eslint at all, and `npm test` is `vitest run`).
+# So this ratchet is still the only thing in the repo that executes the linter. A reader who noticed
+# the false clause could reasonably conclude the opposite -- that CI now covers lint and this block
+# is redundant -- and delete the one mechanism that actually looks.
 #
 # It runs ONLY on a full run. The common call is a single test file that finishes in under a
 # second, and a 16s lint pass on top of that is a tax on the cheapest, most frequent use -- the
