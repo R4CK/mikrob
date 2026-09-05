@@ -14,6 +14,7 @@ const NAV_I18N = {
   docs: 'nav.docs', research: 'nav.research', status: 'nav.status',
   settings: 'nav.settings', vault: 'nav.vault', tokenUsage: 'nav.tokenUsage',
   ideas: 'nav.ideas', federation: 'nav.federation', updates: 'nav.updates', costs: 'nav.costs',
+  llmMonitor: 'nav.llmMonitor',
 }
 
 function renderNav() {
@@ -60,6 +61,7 @@ const PAGE_HEADER_I18N = {
   costsPage:      { title: 'costs.page_title',       sub: 'costs.page_subtitle' },
   federationPage: { title: 'federation.page_title',  sub: 'federation.page_subtitle' },
   approvalsPage:  { title: 'approvals.page_title',   sub: 'approvals.page_subtitle' },
+  llmMonitorPage: { title: 'llmMon.page_title',     sub: 'llmMon.page_subtitle' },
 }
 
 function renderStaticI18n() {

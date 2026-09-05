@@ -32,6 +32,8 @@ Ez a repo a **háttérszolgáltatásokat** adja; a Telegram-kommunikációt a Cl
 
 ## Egyedi fork-fejlesztések (amiért külön fork)
 
+- **LLM monitor oldal**: a Statisztikák menü új oldala, ami egy választott időablakra (1 óra – 7 nap) megmutatja a feladat-idővonalat ügynökönként (valós indulás és időtartam szerint elhelyezett, kategória-színű blokkok, kattintásra részletpanel), a KPI-sort (aktív modellek, feladatok és sikertelenek száma, átlagos feladat-idő, összes kérés, hibaarány), a terhelés-idősort és a modellhasználat táblázatát. A `/api/task-events` és `/api/task-summary` végpontokból dolgozik, és kimondja, mely sávok tudnak blokkot rajzolni.
+
 A MikroB-fork saját fejlesztései a Marveen-bázison felül, főleg a **flotta-workflow, a review-gate-ek és a platform-robusztusság** rétegében. A lista a **jelenlegi állapotot** írja le; a történeti részletek a git-logban és a `DECISIONS.md`-ben élnek.
 
 - **Kártya-függőségek (predecessor/successor)**: irányított sorrend-él két kanban-kártya között, a `parent_id` tartalmazás-hierarchiától függetlenül. Egy nem teljesült előfeltétel visszatartja a kártyát az előrelépéstől; a bypass jogosultsághoz kötött és auditált.

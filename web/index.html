@@ -142,6 +142,10 @@
             <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 20V10"/><path d="M18 20V4"/><path d="M6 20v-4"/></svg>
             <span class="sb-label">Token Monitor</span>
           </a>
+          <a href="#" class="sb-link" data-page="llmMonitor">
+            <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="3" y="4" width="18" height="6" rx="1"/><rect x="3" y="14" width="12" height="6" rx="1"/><line x1="17" y1="17" x2="21" y2="17"/></svg>
+            <span class="sb-label">LLM monitor</span>
+          </a>
         </div>
       </div>
       <div class="sb-group" data-group="system">
@@ -567,6 +571,62 @@
         </div>
         <p class="ovw-cost-note" id="ovwCostNote" hidden></p>
       </div>
+    </div>
+
+    <!-- === LLM monitor page (card 87be1810, pair-BE a5bbfb98, phase aecd9a12) ===
+         Peti's design ref: store/design-refs/local-llm-swimlane-mockup-2026-09-03.jpg.
+         KPI row + Swimlane Timeline (Tasks) + workload time-series + models table, all
+         rendered by loadLlmMonitor() in app-llm-monitor.js from /api/task-summary and
+         /api/task-events. -->
+    <div class="page" id="llmMonitorPage" hidden>
+      <div class="page-header">
+        <div class="page-header-row">
+          <div>
+            <h1 data-i18n="llmMon.page_title">LLM monitor</h1>
+            <p class="subtitle" data-i18n="llmMon.page_subtitle">Feladat-idővonal ügynökönként, terhelés és modellhasználat a választott időablakban</p>
+          </div>
+          <div class="llm-mon-controls">
+            <label for="llmMonWindow" class="llm-mon-window-label" data-i18n="llmMon.window.label">Időablak</label>
+            <select id="llmMonWindow" class="input llm-mon-window">
+              <option value="1" data-i18n="llmMon.window.1h">Utolsó 1 óra</option>
+              <option value="6" selected data-i18n="llmMon.window.6h">Utolsó 6 óra</option>
+              <option value="24" data-i18n="llmMon.window.24h">Utolsó 24 óra</option>
+              <option value="168" data-i18n="llmMon.window.7d">Utolsó 7 nap</option>
+            </select>
+            <button class="btn-secondary btn-compact" id="llmMonRefreshBtn">
+              <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                <polyline points="23 4 23 10 17 10"/><path d="M20.49 15a9 9 0 1 1-2.12-9.36L23 10"/>
+              </svg>
+              <span data-i18n="common.btn.refresh">Frissítés</span>
+            </button>
+          </div>
+        </div>
+      </div>
+
+      <p class="llm-mon-meta" id="llmMonMeta"></p>
+      <p class="llm-mon-status-line" id="llmMonStatus" role="status" aria-live="polite" hidden></p>
+
+      <div class="ovw-llmdist-kpis llm-mon-kpis" id="llmMonKpis"></div>
+      <p class="llm-mon-notes" id="llmMonNotes" hidden></p>
+
+      <section class="llm-mon-panel">
+        <h2 class="llm-section-title" data-i18n="llmMon.swimlane.title">Feladat-idővonal (ügynökönként)</h2>
+        <div id="llmMonLanes"></div>
+      </section>
+
+      <section class="llm-mon-panel">
+        <h2 class="llm-section-title" data-i18n="llmMon.series.title">Terhelés-idősor</h2>
+        <div id="llmMonSeries"></div>
+      </section>
+
+      <section class="llm-mon-panel">
+        <h2 class="llm-section-title" data-i18n="llmMon.models.title">Modellek a választott ablakban</h2>
+        <div id="llmMonModels"></div>
+      </section>
+
+      <!-- Task detail panel (design: TASK DETAILS popup). Anchored next to the clicked block on
+           wide screens, a bottom sheet on narrow ones; Escape / × / outside click closes. -->
+      <div class="llm-mon-detail" id="llmMonDetail" role="dialog" aria-label="Task details" hidden></div>
     </div>
 
     <!-- === Kanban Page === -->
@@ -3963,6 +4023,7 @@
   <script src="/app-docs.js"></script>
   <script src="/app-archive-timeline.js"></script>
   <script src="/app-overview.js"></script>
+  <script src="/app-llm-monitor.js"></script>   <!-- card 87be1810: LLM monitor page (task-events swimlane); after app-overview.js for the shared ovw-llmdist CSS/idiom -->
   <script src="/app-autonomy.js"></script>
   <script src="/app-terminal.js"></script>
   <script src="/app-import-migration.js"></script>
