@@ -7117,3 +7117,37 @@ teljes-suite tesztbe.
 külön kártyán), backend (mérés + megvalósítás).
 **Hivatkozás:** kártya 90eaa6e5 (a 9bb2e651 leletéből); `src/__tests__/gate-sha-repo.test.ts`
 (10 -> 12 eset).
+
+## 2026-09-05 10:35 -- A suite-zár guard-tesztje a FELOLDOTT zár-útvonalat állítja, nem a forrásszöveget
+
+**Döntés:** A `fleet-test.sh` kap egy `--lock-path` kapcsolót, ami kiírja a ténylegesen használt zár
+fájlt és kilép, MIELŐTT bármit zárolna. A `fleet-test-serialises-runs.test.ts` elsődleges állítása
+mostantól ez a visszakapott ÉRTÉK, nem a szkript forrásszövegének mintaillesztése. A szöveg-olvasás
+megmarad másodlagos rétegnek, két javítással: a teljes-soros kommentek olvasás előtt lehullanak, és
+a kapcsos zárójel opcionális mindkét mintában.
+
+**Miért:** Cybersec mérése (a 2f0c7d24 következménye): a szöveg-alapú `problems()` (a) a
+kapcsos zárójel nélküli `LOCK_FILE="$TEST_TREE.lock"` alakot nem nevezte meg, csak a homályos
+"nincs gépszintű horgony" üzenetet adta, és (b) egy KOMMENTBE tett kanonikus sorral teljesen
+elnémítható volt -- per-fa zárral együtt `problems() === []`. Mindkettőt reprodukáltam a landolt
+szkripten, mielőtt hozzányúltam volna: (a) egyetlen homályos lelet, (b) NULLA lelet.
+
+Ez a HARMADIK eset egy napon belül ugyanabból az osztályból (a14812e8, 06d36307-F1, 43ecdbe6),
+ezért a javítás nem a mintát csiszolja, hanem kilép a szöveg-illesztésből: egy visszakapott értéket
+nem lehet a helyes szavak leírásával kielégíteni.
+
+**Amit szándékosan NEM javítok:** a kód UTÁN álló, sor végi kommentet nem vágom le. Helyesen csak
+úgy lehetne, ha tudnám, mikor van a `#` sztringen belül (`${VAR#prefix}` nem komment), és egy
+félig-jó vágó valódi sorokat rontana el. A maradék rés azért vállalható, mert az elsődleges állítás
+már nem szöveges.
+
+**Egy mérési tanulság, ami a tesztbe is bekerült:** a `--lock-path` ALAPÉRTELMEZETT fán mérve nem
+elég bizonyíték. Az alapértelmezett tesztfa `/home/neon/marveen-test`, tehát a per-fa zár
+(`$TEST_TREE.lock`) és a gépszintű (`${ROOT}-test.lock`) UGYANAZT a stringet adja. A megkerülést
+csak a `FLEET_TEST_TREE`-vel felülírt eset mutatja meg -- és ehhez kell egy kontroll is, ami
+igazolja, hogy a szkript egyáltalán olvassa a változót (a `--path` követi), különben egy a
+környezetet teljesen figyelmen kívül hagyó szkript is átmenne.
+
+**Ki döntött:** Cybersec (mérés + a javítási irány), MikroB (kártya), backend (megvalósítás).
+**Hivatkozás:** kártya 43ecdbe6; `store/fleet-test.sh`,
+`src/__tests__/fleet-test-serialises-runs.test.ts` (4 -> 8 eset).
