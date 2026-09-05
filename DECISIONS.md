@@ -5660,3 +5660,33 @@ munkában frissült, nem külön követő kártyán, hogy a szabály és a való
 **Hivatkozás:** kártya `0b23ec28`, commit `b98bfaea`; `store/agent-worktree-deps.sh`,
 `store/agent-worktree-marveen.sh`, `store/cc-gate-worktree.sh`, `src/__tests__/agent-worktree-deps.test.ts`;
 előzmény: 9dc0fba8 incidens és a `symlinked-node-modules-guard.py`.
+
+---
+
+## 2026-09-05 -- CLAUDE.md 12. pont -- Szimbólum-jelenlét ellenőrzése azonosító-határra üljön, ne részsztringre
+
+**Döntés.** A "Kódminőségi alapelvek" szekció új 12. pontja: egy present/absent-őr needle-je
+azonosító-határra üljön (nem részsztring), ÉS a needle vigye magával a deklarációs kulcsszót
+(`function foo`, nem csupasz `foo`), mert a két hiba egymás után nyílik ki -- a határ önmagában nem
+elég, csak a puszta átnevezés ellen véd.
+
+**Miért, két kártyáról ugyanazon a napon.** `a14812e8`: `content.includes('touchAncestorChain')`
+zöld maradt a `touchAncestorChainRENAMED` átnevezésen -- ezt a szerző mérte és `containsAsToken`-nal
+javította. Cybersec GO-ja közben megmutatta a MARADÉK rést: a valódi függvényt kivágva, egy
+sor-/blokk-kommentbe vagy string-literálba írt megnevezés a kulcsszó nélküli needle-t akkor is
+zölden tartja, ha a deklaráció eltűnik -- és ez nem elméleti, a kártya saját második horgonyának
+(`def is_send_invocation`) cél-fájljában MÁR MA is van két ilyen komment-említés. `e5b7ff19`:
+a reachability basename-részsztring volt, és a "spans" szó egy spans-ról szóló tesztben amúgy is
+mindenütt ott van -- a szerző majdnem "nulla lelet"-et jelentett a saját eszköze vakságából, nem
+tiszta korpuszból.
+
+**Mit NEM ír elő.** Nem kéri meglévő őrök visszamenőleges átírását (a két konkrét helyet a saját
+kártyáján jelentették, LOW-MEDIUM, egyik sem blokkolt verdiktet) -- a szabály a következő ilyen őrre
+szól. Azt sem, hogy a tagadás-/idézőjel-szűrés járható út lenne hamis pozitívra: Cybersec mérése
+szerint 61 állításból 8 ül tagadó/idézőjeles soron, köztük valódi állítások is, egy ilyen szűrő csak
+hamis negatívot termelne -- a riport ADDITÍV kategóriát mondjon (fejléc hamis / sehol nincs lefedve)
+szűrés helyett.
+
+**Ki döntött:** Cybersec javasolta (kártyák a14812e8, e5b7ff19 gate-verdiktjei), MikroB vitte fel a
+CLAUDE.md-be, ugyanabban a munkában mint egy rutin upstream-szinkron (agent/mikrob/work ->
+origin/develop merge), külön kártya nélkül -- dokumentációs, kockázatmentes kiegészítés.
