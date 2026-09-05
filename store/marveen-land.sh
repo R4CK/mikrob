@@ -148,6 +148,9 @@ rebuild_live_install() {
 # branches, gate-AFTER-landing, and multi-card landings are the normal case, not the anomaly).
 # shellcheck source=./landing-downward-check.sh
 . "$(dirname "$0")/landing-downward-check.sh"
+# shellcheck source=./readme-bullet-union.sh
+. "$(dirname "$0")/readme-bullet-union.sh"
+
 # gate_verdict_check (card 9081d02d): shared with cleancore-land.sh, but run here in REPORT mode.
 # Marveen gates AFTER landing -- the root CLAUDE.md says "a visszaadott sha a Gate-SHA", i.e. the
 # sha a gate will judge is the one THIS script is about to produce -- so demanding a verdict up
@@ -247,6 +250,16 @@ land_one() {
       say "$agent: DECISIONS.md: both sides purely appended -- auto-unioned, header count verified"
       git -C "$wt" -c user.email=mikrob@marveen.local -c user.name=mikrob commit --no-edit -q \
         || { echo "$agent: auto-unioned DECISIONS.md but the merge commit itself failed"; return 4; }
+    elif [ "$conflicted" = "README.md" ] && try_readme_bullet_union "$wt" "README.md"; then
+      # SEPARATE TOOL, NOT A WIDENING of the DECISIONS union (card 8b73953c, variant (b)). The two
+      # files collide in different shapes: DECISIONS.md grows at the TAIL, README's fork section is
+      # a run of single-line `- **` bullets in the MIDDLE, with prose before it and a sub-heading
+      # plus a doc table after. Measured before building: of the ways two branches add a bullet,
+      # only insertions at the SAME point conflict at all -- far apart and even ADJACENT ones git
+      # merges cleanly, so this one shape is 100% of the real cases.
+      say "$agent: README.md: both sides appended a bullet at the same point -- auto-unioned"
+      git -C "$wt" -c user.email=mikrob@marveen.local -c user.name=mikrob commit --no-edit -q \
+        || { echo "$agent: auto-unioned README.md but the merge commit itself failed"; return 4; }
     elif [ -n "$conflicted" ]; then
       echo "$agent: CONFLICTS in:"; echo "$conflicted" | sed 's/^/    /'
       git -C "$wt" merge --abort 2>/dev/null

@@ -8095,3 +8095,40 @@ sor az egyetlen, ami átmegy a strukturális ellenőrzésen, ezért a lyuk szél
 egzakt `---` és `***` unionál; a záró szóközös `--- `, a `- - -`, a `* * *` és a `----` mind
 elutasítás. Ezt is teszteset rögzíti, mert egy itteni tágítás az EGYETLEN kivételt tágítaná az
 egész ellenőrzésben.
+
+## 2026-09-05 -- README bullet-unió: külön, szűk eszköz, nem a DECISIONS-unió tágítása (kártya 8b73953c)
+
+**Döntés (MikroB plan-grilling delta-döntése, 20555: (b) szűk változat).** A README fork-szekció
+bullet-ütközését egy KÜLÖN eszköz oldja fel (`store/readme-bullet-union.py` + a `.sh` wrapper),
+nem a `decisions-append-union.sh` kiterjesztése.
+
+**Mérés a döntés előtt, nem utána.** Három beszúrás-alakot próbáltam ki valós git-merge-dzsel:
+két távoli beszúrás TISZTÁN mergelődik, két SZOMSZÉDOS beszúrás is tisztán mergelődik, és
+KIZÁRÓLAG a két azonos pozícióba eső beszúrás ütközik. Az automatizálás teljes értéke tehát egyetlen
+alakban van, és a (b) ennek 100%-át fedi, töredék felülettel.
+
+**Miért nem a meglévő függvény.** A DECISIONS.md a FAROKBAN nő, a README fork-szekciója viszont
+egysoros `- **` bulletek futama a fájl KÖZEPÉN, előtte bevezető prózával, utána `###` al-fejléccel
+és egy doksi-táblázattal. Az a függvény ráadásul ugyanezen a napon három gate-leletet termelt, mind
+határ-logika tágításából (b7e57877) -- egy másik fájlt kiszolgáló további tágítás gate alatt
+pontosan ezt ismételné.
+
+**A garancia strukturális, nem alak-felismerés.** A beszúrási pont KÖRÜLI szövegnek pontosan a
+merge-base-nek kell lennie; a két „közép" pedig csak teljes bullet-bejegyzésekből állhat. Így az
+eszköznek soha nem kell kitalálnia, hol van egy bejegyzés határa: a határ ott van, ahol a két oldal
+megszűnt egyezni, és rajta kívül mindennek érintetlennek kell lennie. Ugyanaz a tanulság, mint a
+b7e57877 harmadik körében: a merge-ről kérdezz, ne a sor alakjáról.
+
+**Python, nem több bash.** A testvér-eszköz három review-kört veszített bájt-kontra-karakter
+indexelésen; ez az osztály itt nem létezik, és ez sor-lista művelet.
+
+**Dry-run éles README-történetre, a terv előírása szerint, MIELŐTT bármi bedrótozásra került.**
+52 valós commitból, ami pontosan egy bulletet adott hozzá, 51 rekonstruált ütköző párt futtattam le:
+34 feloldva NULLA tartalmi hibával (minden bázis-sor megmarad, mindkét bullet pontosan egyszer,
+pontos sorszám-azonosság), 16 elutasítva „a beszúrási pont körüli szöveg nem a merge-base" okkal
+(ezek valóban mást is módosítottak), 1 elutasítva nem-bullet sor miatt.
+
+**Amit a replay a SAJÁT mérésemről mutatott meg:** az első harness a „másik" bulletet egy RÉGEBBI
+commitból vette, ami már benne volt a bázisban, tehát duplikátumot szúrt be -- 34-ből 25 „hiba"
+a harness hibája volt, nem az eszközé. A második javítás pedig egy rossz VÁRAKOZÁS volt: „mindkét
+oldal pontosan egy sort ad hozzá" nem igaz, két valós commit bulletet ÉS üres sort adott.

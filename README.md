@@ -127,6 +127,7 @@ A MikroB-fork saját fejlesztései a Marveen-bázison felül, főleg a **flotta-
 - **Teszt-izolált helyi-LLM állapot**: a tesztfuttatás a helyi-LLM scriptek állapotkönyvtárát eldobható könyvtárba tereli, így a suite nem tud az ÉLES használati naplóba írni. Enélkül a worktree-ből futó teszt az állapot-feloldó szabálya miatt a fő telepítés naplóját írta, és a hamis sorok a dashboard grafikonján külön modellként jelentek meg.
 - **Kimenő-szöveg kapu**: hook a fő ügynök saját küldésein, ami elfogja a hiányzó magyar ékezetet, az em dasht, a dupla kötőjelet, a homoglifákat és egy lokális, repón kívüli szabályfájlból töltött névszűrőt. A szabályfájl magánszemély nevét tartalmazza, ezért sosem kerül a repóba.
 - **Név-szabály admin felület**: a kimenő-szöveg kapu név/kifejezés-szűrőjét a dashboard Biztonság paneljéről lehet szerkeszteni (felvétel pontos szövegként vagy regexként, törlés, a kapu három állapotának kimondása). A mentés előtt ugyanaz a Python motor ellenőrzi a mintát, amelyik a kaput is futtatja, mert egy le nem forduló minta nem zárná be a kaput, hanem CSENDBEN kikapcsolná; a szabályfájl 0600 marad, és a minták sosem kerülnek naplóba.
+- **README bullet auto-unió a landolásban**: ha két ág egyszerre vesz fel új fork-fejlesztés bulletet ugyanoda, a landoló összefésüli őket kézi feloldás nélkül; minden más README-ütközésnél megáll.
 
 ### Dokumentáció-index
 
