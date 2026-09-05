@@ -138,6 +138,36 @@ try_append_union() {
   # empty added-half means some assumption above is wrong, so refuse rather than guess.
   [ -n "$ours_added" ] && [ -n "$theirs_added" ] || return 1
 
+  # EACH REMAINDER MUST BEGIN A NEW ENTRY (Cybersec NO-GO, comment 20499).
+  #
+  # THE HOLE: the common prefix can legitimately END WITH A SHARED `## ` HEADER LINE -- both sides
+  # wrote the same header and then DIFFERENT bodies under it. Concatenating the remainders then
+  # produces ONE header with two bodies glued together: not a duplicate entry, a silently merged
+  # one. The old base-anchored boundary could not reach that state, so this is a regression my own
+  # widening introduced -- and `uniq -d` on the headers would not see it either, because there is
+  # only one header.
+  #
+  # WHY NOT THE LITERAL RULE the NO-GO proposed ("each remainder must start with `## `"): MEASURED
+  # on the real file, 18 of its 199 entries are preceded by a `---` separator line and 181 by
+  # ordinary text. An append that carries its own separator therefore begins with `---`, not `## `
+  # -- including the one this card's own DECISIONS entry made an hour ago. The literal rule would
+  # refuse those as edits. So this encodes the INTENT rather than its first spelling: the remainder
+  # must reach a `## ` header with nothing but separator or blank lines before it. Body prose ahead
+  # of the first header is exactly the "both sides continued the same entry" shape.
+  _starts_new_entry() {
+    local rest="$1" line
+    while IFS= read -r line; do
+      case "$line" in
+      '## '*) return 0 ;;
+      ''|'---'|'***'|'___') continue ;;
+      *) return 1 ;;
+      esac
+    done <<<"$rest"
+    return 1                      # no header at all -- not a new entry
+  }
+  _starts_new_entry "$ours_added" || return 1
+  _starts_new_entry "$theirs_added" || return 1
+
   # LINE BOUNDARY. _common_line_prefix already truncates to the last newline, so each remainder
   # begins at the start of a line and the concatenation below cannot splice two half-lines into one
   # -- the failure the old code prevented by requiring the remainder to START with a newline. That
@@ -433,6 +463,64 @@ body of A
 ## entry R (right)
 "
   t_refused "DIFFERENT mid-file insertions are refused -- the union never duplicates the tail"
+
+  # CYBERSEC'S CASE: both sides wrote the SAME header and then DIFFERENT bodies under it. The common
+  # prefix then ends AFTER that shared header, and concatenating the remainders would produce ONE
+  # header carrying both bodies -- a silently merged entry, which a duplicate-header check cannot
+  # see because there is only one header. Must refuse.
+  setup_conflict shared-header-split-body \
+    "## entry A
+body of A
+"\
+    "## entry A
+body of A
+## 2026-01-02 -- ugyanaz a fejlec
+bal oldali torzs
+" \
+    "## entry A
+body of A
+## 2026-01-02 -- ugyanaz a fejlec
+jobb oldali torzs
+"
+  t_refused "a SHARED header with different bodies under it is refused, not glued into one entry"
+
+  # ...AND THE CONTROL THAT KEEPS THAT RULE HONEST: an append carrying its own `---` separator is a
+  # NEW entry, not an edit, and must still union. Measured on the real file: 18 of 199 entries are
+  # preceded by `---`, so the literal "remainder must start with ## " rule the NO-GO proposed would
+  # refuse a legitimate shape -- including this card's own DECISIONS entry.
+  setup_conflict separator-led-append \
+    "## entry A
+body of A
+" \
+    "## entry A
+body of A
+
+---
+
+## 2026-01-02 -- bal oldali bejegyzes
+" \
+    "## entry A
+body of A
+
+---
+
+## 2026-01-03 -- jobb oldali bejegyzes
+"
+  # THE EXPECTED RESULT KEEPS THE SHARED SEPARATOR ONCE, and that is the correct answer rather than a
+  # compromise: both sides wrote the same `---`, so it belongs to the common prefix and appears a
+  # single time. The two new entries then sit adjacent with no rule between them -- which is the
+  # file's majority shape anyway (181 of 199 entries have no `---` before them). A first version of
+  # this expectation demanded the separator twice and failed here; the union was right and my
+  # expectation was wrong.
+  t_resolved "an append that leads with a --- separator still unions (18 of 199 real entries do)" \
+    "## entry A
+body of A
+
+---
+
+## 2026-01-02 -- bal oldali bejegyzes
+## 2026-01-03 -- jobb oldali bejegyzes
+"
 
   # UTF-8: THE INVARIANT, ASSERTED ON THE HELPER DIRECTLY (card b7e57877).
   #
