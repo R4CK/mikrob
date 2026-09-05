@@ -932,7 +932,7 @@ export function ensureBlastRadiusGuard(name: string): boolean {
 //   - 'startup' was added to the dashboard's REPLAY_SOURCES in 2026-07 for crash/watchdog respawns,
 //     but not to this matcher -- so the hook never fired on a cold start and the support was
 //     unreachable.
-//   - 'clear' is what card 1ce3fd90 needs: CLAUDE.md rule 14 clears between cards, and the
+//   - 'clear' is what card 1ce3fd90 needs: agents /clear between cards, and the
 //     model-fallback runner now respawns a stepped-down agent FRESH. Without it, that fresh session
 //     would silently start with no task-state at all -- a continuity LOSS dressed as a fix.
 //

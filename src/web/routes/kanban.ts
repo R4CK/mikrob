@@ -17,7 +17,6 @@ import {
   addKanbanDependency, removeKanbanDependency,
   getKanbanPredecessors, getKanbanSuccessors, dependencyBlockers,
   getUnmetPredecessorsForAllCards, getUnmetKanbanPredecessors,
-  priorInProgressCardForActor, setPendingSelfAdvanceClear,
   countNewHotMemories,
   countPlannedKanbanCards,
   getDbFileSizeMb,
@@ -33,7 +32,6 @@ import { readHardStop, isNewDevStartBlocked } from '../../costops/weekly-hard-st
 import { landedGuardVerdict } from '../kanban-landed-guard.js'
 import { gateCompletenessGuardVerdict } from '../kanban-gate-completeness-guard.js'
 import { dedupPrefilterDescriptionUpdate } from '../kanban-dedup-prefilter-guard.js'
-import { clearBeforeDispatchIfSwitching } from '../kanban-dispatch-clear-guard.js'
 
 // Card project-name drift (Peti 2026-08-08): `project` was free-text with no case-folding, so
 // "CleanCore" / "cleancore" / "MikroB" / "mikrob-infra" / "fleet-infra" / "marveen" / "Infra" all
@@ -97,7 +95,7 @@ function newDevStopWouldBlock(id: string, nextStatus: unknown, force: boolean, a
 }
 const NEW_DEV_STOP_MESSAGE =
   'Heti "új fejlesztés leáll" küszöb átlépve: egy planned kártya nem mehet in_progress-be VAGY egyenesen waiting-be sem (új fejlesztés indítása) a heti resetig. In-flight és gate-munka továbbra is mehet (waiting -> in_progress); tudatos felülíráshoz MikroB force: true-val nyithatja meg.'
-import { resolveKanbanDispatch, isSelfAdvanceMove, isGenuineSelfAdvanceSwitch } from '../../kanban-dispatch.js'
+import { resolveKanbanDispatch, isSelfAdvanceMove } from '../../kanban-dispatch.js'
 import { generateBreakdown } from '../llm-breakdown.js'
 import { logger } from '../../logger.js'
 import { readBody, json, jsonMaybeGzip } from '../http-helpers.js'
@@ -175,15 +173,6 @@ async function fireKanbanDispatch(id: string, actor?: string | null): Promise<vo
     // auto-dispatch fires either) and send nothing. A missing/other actor still dispatches normally.
     if (isSelfAdvanceMove(card.assignee, actor)) {
       markKanbanCardDispatched(id)
-      // Card 5003f37e: the dispatch echo above is correctly suppressed, but that must not also
-      // suppress /clear-before-switch -- self-advance needs it too, just delivered differently (see
-      // the agent_pending_clear schema comment in db.ts for why this only RECORDS the debt here
-      // instead of sending /clear synchronously).
-      const prior = priorInProgressCardForActor(actor as string)
-      if (isGenuineSelfAdvanceSwitch(prior, id)) {
-        setPendingSelfAdvanceClear(actor as string, id, Date.now())
-        logger.info({ id, actor, prior }, 'Kanban self-advance: genuine card switch, /clear queued for next idle window')
-      }
       logger.info({ id, actor, assignee: card.assignee }, 'Kanban self-advance: dispatch echo suppressed')
       return
     }
@@ -202,18 +191,6 @@ async function fireKanbanDispatch(id: string, actor?: string | null): Promise<vo
       // alerting on them would bury the one case that matters.
       if (decision.reason === 'session-down') reportUndeliveredDispatch(id, decision.unreachable ?? String(card.assignee))
       return
-    }
-    // Card 900178fa: /clear the target's pane FIRST when this is a genuine card switch (not a
-    // re-dispatch of the same card after a gate FAIL), and WAIT for that attempt to settle before
-    // enqueueing the card-content message below -- fireKanbanDispatch itself is called
-    // fire-and-forget by its caller (moving the card already returned its HTTP response), so
-    // awaiting here costs nothing external, but ordering it the other way around risks the
-    // message-router delivering the new task BEFORE this direct send gets to clear the pane,
-    // wiping the very instructions it just delivered.
-    try {
-      await clearBeforeDispatchIfSwitching(target, id)
-    } catch (err) {
-      logger.warn({ err, id, target }, 'Kanban dispatch: /clear-before-switch failed (dispatch continues)')
     }
     const desc = (card.description ?? '').trim()
     const content = `[Kanban feladat #${id}]: ${card.title}${desc ? ' — ' + desc : ''}\n\n${kanbanMoveInstructions(id, target)}`
