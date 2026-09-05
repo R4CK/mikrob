@@ -140,10 +140,10 @@ Ez a gate-elés során kritikus: mindig a valódi branch-deltát gate-eld, ne a 
 
 ### REVIEW-kommentben közölt tesztszámot mindig verifkáld (WF-5 tanulság)
 Ha a REVIEW azt állítja "18+13+10 mind zöld" -- NE fogadd el a számot, nézd meg a tényleges tesztfájlokat a commitban:
-- `git show <sha> --name-only | grep test` -> megmutatja a commitban lévő tesztfájlokat
+- `git diff <sha>^1 <sha> --name-only | grep test` -> megmutatja a commitban lévő tesztfájlokat
 - Számold meg a `it(` és `test(` hívásokat minden fájlban, ne a REVIEW állítását.
 - WF-5 konkrét eset: a "10" ShiftEditPage tesztekre vonatkozott, de ShiftEditPage.test.tsx NEM létezett a commitban (a REVIEW tévedett). Így az edit komponens tesztek nélkül ment át.
-Általános szabály: ha a REVIEW-ban szereplő tesztszám és a `git show --name-only` tesztfájlainak valódi száma nem adja ki az összeget, KERESS RÁJUK -- valamelyik fájl hiányzik vagy nem commitolt.
+Általános szabály: ha a REVIEW-ban szereplő tesztszám és a `git diff <sha>^1 <sha> --name-only` tesztfájlainak valódi száma nem adja ki az összeget, KERESS RÁJUK -- valamelyik fájl hiányzik vagy nem commitolt. (NEM `git show --name-only`: egy MERGE-commiton -- és a landolás ezen a flottán mindig az -- csak a MINDEN szülőtől eltérő, konfliktus-feloldott fájlokat listázza, tehát egy hihető, teljesnek látszó, HIÁNYOS listát ad; mérve: egy 12 fájlos landoló merge-re egyetlen fájlt írt ki. A `git diff <sha>^1 <sha>` alak nem-merge commiton azonos a `git show`-val.)
 **Claim bizonyíték nélkül** (f94ae82f tanulság, 2026-08-06): ha a REVIEW azt állítja hogy "X tesztelve van"
 de nincs konkrét atom-bizonyíték, az NEM elég. 151/151 zöld tesztnél is volt 2 MAJOR bug (magic-link),
 mert a negatív atomok (email-mismatch, superadmin izoláció) soha nem kerültek ellenőrzésre.
