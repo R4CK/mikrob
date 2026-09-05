@@ -1,6 +1,7 @@
 ---
 name: threejsinteractionblueprint
 description: Designs a complete Three.js 3D interaction framework — hero scenes, object animations, hover interactions, cursor effects, scroll-triggered camera movements, section transitions, loading experiences, interactive product showcases, and call-to-action animations — always explaining exactly when each interaction triggers and how it improves UX. Use this skill whenever the user mentions Three.js, WebGL, R3F, a 3D interaction system, hero scene, object/mesh animation, hover or cursor effects, scroll-driven camera, section transitions, 3D loading/preloader, interactive product showcase, or CTA animation. Triggers on "3D interakció", "Three.js interakciós rendszer", "hero scene", "kamera scroll", "hover effekt", "kurzor effekt", "product showcase", "loading experience", "interaction blueprint", "design the 3D interactions".
+---
 
 # Three.js Interaction Blueprint
 
