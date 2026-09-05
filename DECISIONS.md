@@ -8064,3 +8064,42 @@ feloldani hivatott.
 
 **Ki döntött:** backend2 (a premissza korrekciója és a javított/jelentett határ).
 **Hivatkozás:** kártya 1d851280; `store/merge-vacuous-git-check.py`, `seed-fleet-agents/{qa,qa2}/qa-test-strategy/SKILL.md`.
+## 2026-09-05 -- A bejegyzés-határ STRUKTURÁLIS lett, a sorminta-létra lezárva (kártya b7e57877, CS-3 NO-GO)
+
+**A probléma, ami háromszor jött vissza.** Ugyanezen a kártyán három fokot másztunk meg: `## `
+határ (Cybersec NO-GO), majd DÁTUMOZOTT `## ` (Cybered CS-2), majd egy DÁTUMOZOTT TÖRZS-sor, ami
+ezt is kielégíti (CS-3, Cybersec 20542 + Cybered 20551). Mindhárom javítás azt kérdezte, hogy MILYEN
+egy bejegyzés-fejléc, és mindháromszor találtunk olyan törzs-sort, ami úgy néz ki. Cybersec ki is
+mondta a jelentésével egy lélegzetre: a sorminta-heurisztika minden szigorítása ugyanezt a kérdést
+teszi fel újra, és a helyes válasz egy ponton az, hogy a határ NEM sorminta.
+
+**A döntés: nem másztunk következő fokra.** Cybered lemért egy 12 soros kronológiai prototípust
+(a maradék első fejlécének dátuma ne legyen korábbi a prefix utolsó fejlécénél), és maga mondta ki,
+hogy ez SEM strukturális zárás, csak szűkebb heurisztika -- egy későbbi dátummal idézett fejléc
+ezen is átjut. Ehelyett a függvény mostantól a MERGE-ről kérdez, nem a SZÖVEGRŐL:
+
+> Írt-e a két oldal AZONOS ÚJ TARTALMAT, mielőtt szétágazott?
+
+Valódi append-append esetén a közös prefix MAGA a merge-base: mindkét oldal csak a saját farkát
+adta hozzá, tehát semmi új nem közös. A létra minden fokán viszont a prefix a bázis PLUSZ valami,
+amit mindkét oldal azonosan írt (megosztott fejléc, vagy fejléc + bevezető sor) -- és pont ez a
+megosztott új tartalom teszi megválaszolhatatlanná, hogy „egy bejegyzés vagy kettő". Az elutasítás
+ott nem heurisztika, hanem annak a kimondása, hogy az adatból nem dönthető el.
+
+**A kivétel, amiért nem egyszerűen „prefix == bázis".** A kártya alapesete az volt, hogy mindkét ág
+UGYANAZT az egy üres sort szúrta be a fájl közepére, majd a saját bejegyzését a végére; az
+elválasztós alaknál pedig mindkettő ugyanazt a `---`-t írta. Üres sor és vízszintes vonal nem hordoz
+összeolvasztható tartalmat, ezért megosztott új ÜRES és ELVÁLASZTÓ sor megengedett, megosztott új
+ÉRDEMI sor nem.
+
+**A két ellenőrzés KIEGÉSZÍTI egymást, egyik sem elég önmagában -- mindkét irányban mérve.**
+A sorminta-határt kiiktatva a CS-1/2/3 továbbra is elutasított (a strukturális fogja), DE két oldal,
+ami PRÓZÁT fűz az UTOLSÓ MEGLÉVŐ bejegyzéshez, RESOLVED-ot kap és a két folytatás egy bejegyzésbe
+ragad -- ott nincs megosztott új tartalom, tehát a strukturális ellenőrzés nem lát semmit. Fordítva,
+a strukturális ellenőrzést kiiktatva a CS-3 RESOLVED lesz. Mindkét esetre saját selftest-eset,
+mindkettő pirosra vált a MÁSIK ellenőrzést eltávolító mutációra. Aki egyiket törli arra hivatkozva,
+hogy „a másik lefedi", egy megnevezett konkrét eseten téved.
+
+**Amit ez NEM old meg, kimondva:** a dátumozott minta a kód szerint már nem a létrát tartja, hanem a
+folytatás-tengelyt; a régi indoklása hamissá vált, ezért át lett írva, nem ott hagyva. A tördelés-
+duplikáció (bc0af927) változatlanul nyitva.

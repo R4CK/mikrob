@@ -88,17 +88,26 @@ try_append_union() {
   # DECISIONS.md convention must not be hardcoded into a file-parameterised function is still
   # answered -- a future append-only file's caller passes its own pattern here.
   #
-  # READ THIS BEFORE WIDENING THE PATTERN (Cybered F-5, measured on Gate-SHA fd0e3446). The entry
-  # boundary is a LINE-PATTERN HEURISTIC, not a structural fact, and a BODY line that matches the
-  # pattern reopens the silent gluing -- it does NOT fail closed. Measured, so this is not a
-  # theoretical caveat: with the dated default, a body line spelled `## 2026-01-01 -- idezett regi
-  # fejlec` (a quoted OLD header inside a new entry) makes both remainders "start a new entry", the
-  # union RESOLVES, and both continuations land under one header. That is the same silent merge the
-  # Cybersec NO-GO was raised for, one level further down. The real corpus has no such line today
-  # (of 201 headers, the 2 that run backwards chronologically were read and are genuinely
-  # out-of-order entries, not quoted headers), which is exactly what was true of CS-2 until it
-  # was not. Every widening of this pattern trades away more of that margin; know what you are
-  # giving up before you do it.
+  # WHAT THIS PATTERN IS FOR, AFTER CS-3 -- and it is NOT what it was introduced for. It was added
+  # to close CS-2 (an undated `## ` body line), and CS-3 then defeated it with a DATED body line
+  # (Cybersec NO-GO 20542, Cybered NO-GO 20551). That whole family is now closed STRUCTURALLY, by
+  # the shared-new-content check further down, which does not look at line shape at all. Leaving
+  # the old justification here would be a lie of exactly the kind Cybersec flagged in the probe
+  # guard's comment, so: this pattern no longer carries the ladder.
+  #
+  # What it still carries is the OTHER axis, and that one the structural check cannot reach: both
+  # sides appending PROSE to the LAST EXISTING entry. Nothing new is shared there, so the structural
+  # check passes, and only this boundary stops the two continuations being glued into that entry.
+  # Measured in both directions (`both-continue-existing-entry` and `cs3-dated-quoted-heading` in
+  # the selftest below, each red under the mutation that removes the OTHER check): neither check
+  # subsumes the other. Do not delete one because "the other covers it".
+  #
+  # WIDENING IT is therefore cheaper than it was, but not free: it does not reopen CS-1/CS-2/CS-3
+  # any more, it reopens the continuation axis. The DATED form specifically buys nothing measurable
+  # over a bare `## ` on the corpus (measured 2026-09-05: marveen 208/208 and CleanCore 154/154
+  # headers dated -- a snapshot, and the files keep growing, so re-measure rather than cite this) and
+  # costs the refusal of an undated append -- it is kept as the stricter of two equivalent choices,
+  # not because anything measured requires it.
   local header_glob="${3:-## [0-9][0-9][0-9][0-9]-*}"
   local conflicted
   conflicted="$(git -C "$wt" diff --name-only --diff-filter=U)"
@@ -142,9 +151,45 @@ try_append_union() {
   # `diff` report "\ No newline at end of file" and emit a `<` line for the last line of base, so the
   # check refused every genuine append. Caught by this file's own selftest, which went red on the two
   # cases that were passing before the rewrite.
-  if diff <(printf '%s\n' "${base%%$'\n'}") <(printf '%s\n' "${prefix%%$'\n'}") | grep -q '^<'; then
-    return 1
-  fi
+  local base_vs_prefix
+  base_vs_prefix="$(diff <(printf '%s\n' "${base%%$'\n'}") <(printf '%s\n' "${prefix%%$'\n'}"))"
+  grep -q '^<' <<<"$base_vs_prefix" && return 1
+
+  # THE STRUCTURAL BOUNDARY, WHICH REPLACES THE LINE-PATTERN LADDER (Cybersec 20542 + Cybered 20551,
+  # third rung of the same defect). Three rungs were climbed on this one card: `## ` (Cybersec
+  # NO-GO), then dated `## ` (Cybered CS-2), then a DATED BODY LINE defeating that (CS-3). Each fix
+  # asked "what does an entry header look like", and each time a body line was found that looks like
+  # one. Cybersec named the pattern in the same breath as reporting it: every tightening of a
+  # line-pattern heuristic re-asks the same question, and at some point the right answer is that the
+  # boundary is not a line pattern. Chronology (Cybered's measured 12-line prototype) is one more
+  # rung -- narrower, still defeated by a header quoted with a LATER date, and they said so
+  # themselves. So this asks a different question entirely, one about the MERGE rather than the TEXT:
+  #
+  #   Did the two sides write the same NEW content before they diverged?
+  #
+  # That is exactly the CS-1/CS-2/CS-3 condition, and it does not care what the content looks like.
+  # In a genuine append-append the common prefix IS the merge-base: both sides added only their own
+  # tail, so nothing new is shared. In every rung of the ladder the prefix contains the base PLUS
+  # something both sides wrote identically -- a shared header, or a shared header and an intro line
+  # -- and it is precisely that shared new content that makes "one entry or two?" unanswerable.
+  # Refusing there is not a heuristic: it is declining to guess where the data cannot tell us.
+  #
+  # THE ONE EXCEPTION, and it is why this is not simply "prefix must equal base": the measured case
+  # this whole card exists for had BOTH sides insert the SAME blank line mid-file before appending
+  # (`git diff --numstat` 30/0 and 924/0, neither side deleting anything), and the separator case
+  # has both sides write the same `---` before their own entry. Blank lines and horizontal rules
+  # carry no content to merge wrongly -- an entry cannot be silently glued to another through them.
+  # So shared new BLANK and SEPARATOR lines are allowed and shared new SUBSTANTIVE lines are not.
+  #
+  # The diff is the one already computed above, so this costs no extra pass over a 447 KB file.
+  local shared_new
+  shared_new="$(sed -n 's/^> //p' <<<"$base_vs_prefix")"
+  while IFS= read -r line; do
+    case "$line" in
+    ''|'---'|'***'|'___') continue ;;
+    *) return 1 ;;
+    esac
+  done <<<"$shared_new"
 
   # OFFSET, not pattern-strip. `${ours#"$prefix"}` is O(n^2) in bash and froze every landing that
   # touched this file: measured on the real 447 KB DECISIONS.md it took 405 SECONDS at 97% CPU
@@ -628,11 +673,61 @@ tail B
 "
   t_refused "a body line starting with ## does not count as an entry boundary (Cybered CS-2)"
 
-  # THE PRICE OF THAT RULE, PINNED RATHER THAN DESCRIBED. Requiring a DATE means a genuine
-  # append whose header is undated is now refused and falls to the caller's manual path. Measured
-  # before accepting it: 199 of 199 headers in marveen's DECISIONS.md are dated and 154 of 154 in
-  # CleanCore's, so this costs nothing today -- but it is a real behaviour change, and a behaviour
-  # change nobody tests is one the next reader will "fix" back.
+  # CS-3, THE THIRD RUNG AND THE ONE THE LINE PATTERN CANNOT REACH (Cybersec NO-GO 20542, Cybered
+  # NO-GO 20551). Same shape as CS-2, except the quoted body heading is DATED -- so it satisfies the
+  # dated boundary, both remainders "start a new entry", and the union glues two continuations under
+  # one header. This is what proved the ladder cannot be climbed: `## `, then dated `## `, and a body
+  # line was found for each. It is refused by the STRUCTURAL check (shared new content before the
+  # split), not by any line pattern -- mutation-verified: with `shared_new` forced empty this case
+  # RESOLVES while every other case in this file stays green, which is exactly how it shipped.
+  setup_conflict cs3-dated-quoted-heading \
+    "## 2026-09-01 -- entry A
+body of A
+" \
+    "## 2026-09-01 -- entry A
+body of A
+## 2026-09-05 -- Same Decision
+intro line
+## 2026-01-01 -- quoted heading OURS
+tail A
+" \
+    "## 2026-09-01 -- entry A
+body of A
+## 2026-09-05 -- Same Decision
+intro line
+## 2026-01-01 -- quoted heading THEIRS
+tail B
+"
+  t_refused "a DATED body heading is not an entry boundary either (CS-3, structural)"
+
+  # ...AND THE OTHER AXIS, WHICH THE STRUCTURAL CHECK CANNOT REACH. Both sides append PROSE to the
+  # LAST EXISTING entry -- no new header on either side, so nothing new is shared and the structural
+  # check passes cleanly. Concatenating the two remainders puts both continuations inside the same
+  # existing entry. Only the line-pattern boundary catches this, and only the structural check
+  # catches CS-3: measured in both directions, neither check subsumes the other, and a reader who
+  # deletes one because "the other one covers it" is wrong on a specific, named case.
+  setup_conflict both-continue-existing-entry \
+    "## 2026-09-01 -- entry A
+body of A
+" \
+    "## 2026-09-01 -- entry A
+body of A
+folytatás BAL
+" \
+    "## 2026-09-01 -- entry A
+body of A
+folytatás JOBB
+"
+  t_refused "both sides continuing the SAME existing entry is refused (line-pattern axis)"
+
+  # THE PRICE OF THE DATED FORM, PINNED RATHER THAN DESCRIBED. A genuine append whose header is
+  # undated is refused and falls to the caller's manual path. Measured before accepting it: every
+  # header in marveen's DECISIONS.md (208 as of 2026-09-05) and CleanCore's (154) is dated, so this
+  # costs nothing
+  # today -- but it is a real behaviour change, and a behaviour change nobody tests is one the next
+  # reader will "fix" back. NOTE that after CS-3 this case no longer documents the price of closing
+  # anything: CS-2 is closed structurally now, so the date is the stricter of two equally safe
+  # spellings. The case is kept because the refusal is still real and still surprises people.
   setup_conflict undated-header-append \
     "## 2026-01-01 -- entry A
 " \
@@ -642,7 +737,7 @@ tail B
     "## 2026-01-01 -- entry A
 ## entry R (right, undated)
 "
-  t_refused "an UNDATED header append is refused -- the documented cost of the CS-2 boundary"
+  t_refused "an UNDATED header append is refused -- the price of the dated form"
 
   # ...AND THE OVERRIDE IS REAL, not a comment. The boundary pattern is a third argument so a
   # future append-only file with another convention can reuse this function instead of copying it;
