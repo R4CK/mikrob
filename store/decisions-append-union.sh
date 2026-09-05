@@ -139,18 +139,39 @@ _ends_inside_code_fence() {
 _seam_makes_setext_heading() {
   # A rule under NOTHING is just a rule: markdown needs a paragraph line above it to promote.
   [ -n "$1" ] || return 1
+  # THE SAME 0-3 SPACE INDENT THE FENCE SIDE ALREADY HANDLES (Cybersec, comment 21040). CommonMark
+  # lets a setext underline be indented up to three spaces, exactly like a fence opener -- and this
+  # predicate anchored at column 0 while `_ends_inside_code_fence`, fixed in the same round, did
+  # not. One class, two halves, and only one of them learned it: measured on the landed copy,
+  # `---` refused and `  ---` passed. Four or more spaces is safe either way (too deep for a setext
+  # underline, and an indented code block cannot interrupt a paragraph).
+  local u="$2"
+  case "$u" in
+  '    '*) return 1 ;;
+  '   '*) u="${u#   }" ;;
+  '  '*)  u="${u#  }" ;;
+  ' '*)   u="${u# }" ;;
+  esac
+  # Trailing spaces or tabs are allowed after the underline; only OTHER text disqualifies it.
+  while :; do
+    case "$u" in
+    *' ') u="${u% }" ;;
+    *"$(printf '\t')") u="${u%?}" ;;
+    *) break ;;
+    esac
+  done
   # ANY RUN OF `-` OR `=`, NOT A HANDFUL OF SPELLINGS. The first version listed
   # `---|===|--------*|========*`, which matches exactly three or at least eight -- so a FOUR to
   # SEVEN character run fell through, and in CommonMark a setext underline is any sequence of `-`
   # (or `=`) with nothing else on the line, of any length. Found by this file's own direct seam
   # cases the moment they were written, which is precisely what Cybersec asked them for: the
   # end-to-end fixture only ever exercised the exact `---` spelling.
-  case "$2" in
+  case "$u" in
   '') return 1 ;;
   *[!-]*) : ;;
   *) return 0 ;;
   esac
-  case "$2" in
+  case "$u" in
   *[!=]*) return 1 ;;
   *) return 0 ;;
   esac
@@ -1121,6 +1142,20 @@ body of A
   # without it the function would refuse a legitimate separator-led append.
   _seam_case "--- with nothing above it is safe"      ""                "---"   safe
   _seam_case "=== with nothing above it is safe"      ""                "==="   safe
+
+  # THE 0-3 SPACE INDENT, WHICH THE FENCE SIDE ALREADY HANDLED AND THIS ONE DID NOT (Cybersec
+  # 21040). CommonMark indents a setext underline up to three spaces exactly as it does a fence
+  # opener; measured on the landed copy, `---` refused and `  ---` passed -- one class, two halves,
+  # and only the half I happened to fix in that round had learned it.
+  _seam_case "1-space indented --- is still a heading"  "prozasor" " ---"    refuse
+  _seam_case "2-space indented --- is still a heading"  "prozasor" "  ---"   refuse
+  _seam_case "3-space indented === is still a heading"  "prozasor" "   ==="  refuse
+  # FOUR is past the limit -- and an indented code block cannot interrupt a paragraph either, so
+  # it is safe by both readings. This is the control that stops "strip all leading space".
+  _seam_case "4-space indented --- is NOT a heading"    "prozasor" "    ---" safe
+  # Trailing spaces or tabs are permitted after the underline; other text is not.
+  _seam_case "--- with trailing spaces is a heading"    "prozasor" "---  "   refuse
+  _seam_case "--- with trailing text is NOT a heading"  "prozasor" "--- x"   safe
 
   # J-2: THE SEAM SWALLOWS THE OTHER SIDE INTO A CODE FENCE (Cybered, comment 20597). Everything up
   # to the junction leaves a fence open, so theirs' whole entry lands inside it: its `## ` header

@@ -8566,3 +8566,24 @@ kölcsönhatása változatlan; ez a döntés a jelentést javítja, nem a fékez
 zavaró, az külön kártya a `max_freeze_seconds` és a felengedés utáni visszaesés-kezelés kérdésére.
 
 **Ki döntött:** backend2, Cybered megfigyelése alapján (komment 21017). Gate: QA.
+## 2026-09-05 -- A setext-oldal is megtanulta a 0-3 szóköz behúzást (kártya 3ae71df1, Cybersec 21040)
+
+**A lelet: a saját aszimmetriám.** Ugyanabban a körben javítottam a kerítés-ellenőrzést úgy, hogy
+kezelje a CommonMark 0-3 szóköz behúzását -- a setext-predikátumot viszont nulladik oszlopra
+horgonyozva hagytam. Mérve a landolt példányon: `---` elutasít, `  ---` átmegy. A CommonMark a
+setext aláhúzást PONTOSAN ugyanúgy engedi három szóközig behúzva, mint a kerítés-nyitót.
+
+**Egy osztály, két fél, és csak az egyik tanulta meg.** Cybersec ezt külön kimondta („nem három
+külön nit"), és igaza van: a gyökér ugyanaz -- sor-eleji horgony egy olyan nyelvtannal szemben,
+ami behúzást enged. Ez pontosan az a minta, amit korábban már felírtam magamnak (egy mezőn
+megtanult horgonyzás nincs alkalmazva a testvérére), és most a saját kódomon ismételtem meg.
+
+**Négy szóköz safe marad, két független okból:** túl mély egy setext aláhúzáshoz, és egy behúzott
+kódblokk nem szakíthat meg egy bekezdést. Ez a kontroll állítja meg a „vágj le minden bevezető
+szóközt" alakot.
+
+**Záró whitespace megengedett** az aláhúzás után (a CommonMark így mondja), más szöveg nem -- a
+`--- x` továbbra is átmegy, a `---  ` nem.
+
+**Mutációs mérés:** a behúzás-levágás elvéve -> 3 piros; a négy-szóközös őr elvéve -> 1 piros; a
+záró-whitespace levágás elvéve -> 1 piros. Átmenő kontroll mellett. 61 selftest-eset.
