@@ -82,6 +82,13 @@ import sys
 
 GATES = ("QA", "CYBERSEC", "CYBERED")
 
+# A gate ROLE may be staffed by more than one agent. Rule 4 requires load-balancing between
+# same-capability gate siblings (today QA/QA2; CYBERSEC2/CYBERED2 are named as future ones), and
+# only ONE of a pair reviews a given card. So a sibling's verdict IS that role's verdict, and the
+# trailing digits are dropped rather than producing a separate gate key -- keying "QA2" apart from
+# "QA" would report the QA gate MISSING on every card QA2 signed off, which is the bug being fixed.
+
+
 # The verdict must be the comment's OPENING word (rule 4c), with the `Gate-SHA:` header allowed to
 # come first -- both orders exist on the board and both are legitimate. Prose that merely MENTIONS
 # "QA PASS" mid-sentence is not a verdict, which is why this anchors rather than searches.
@@ -95,9 +102,12 @@ _LEAD_SKIP = re.compile(r"^(?:\s*Gate-SHA:[^\n]*\n|\s*\n)*", re.IGNORECASE)
 # 65e0b0d5 the real `qa` verdict follows and latest_per_gate takes the last one. It is fixed because
 # the failure direction is a false PASS, not because it has bitten yet.
 _VERDICT = re.compile(
-    r"^\s*(QA|CYBERSEC|CYBERED)\s*(?:GATE|VERDICT)?\s*:?\s*(PASS|FAIL|GO|NO-GO)(?![-\w])",
+    r"^\s*(QA|CYBERSEC|CYBERED)(\d*)\s*(?:GATE|VERDICT)?\s*:?\s*(PASS|FAIL|GO|NO-GO)(?![-\w])",
     re.IGNORECASE,
 )
+# Trailing sibling digits on a gate NAME, e.g. the "2" of "qa2". Anchored to the end so it cannot
+# eat digits from the middle of a word.
+_SIBLING_SUFFIX = re.compile(r"\d+$")
 _SHA_LINE = re.compile(r"^\s*Gate-SHA:\s*([0-9a-fA-F]{7,40})", re.IGNORECASE | re.MULTILINE)
 # The whole `Gate-SHA:` value, because rule 4b lets a REVIEW name several commits ("<sha>, <sha>")
 # and 68 cards on this board do. A verdict naming ANY of them is judging this card's delivery.
@@ -128,7 +138,8 @@ def verdict_of(content):
     if not m:
         return None
     sha_m = _SHA_LINE.search(content)
-    outcome = m.group(2).upper()
+    outcome = m.group(3).upper()
+    # group(2) is the sibling number and is deliberately discarded: see the note on GATES.
     return (m.group(1).upper(), "NO-GO" if outcome == "NO-GO" else outcome,
             sha_m.group(1).lower() if sha_m else None)
 
@@ -375,6 +386,11 @@ def main():
     designated = None
     if argv and argv[0].strip():
         designated = [g for g in re.split(r"[,\s]+", argv[0].strip()) if g]
+        # A designation may name the SIBLING that actually reviewed ("qa2,cybersec"): the board's
+        # own `Gate:` lines do, now that rule 4 load-balances the QA role. Normalise it to the role
+        # the same way a verdict is normalised, or the caller who copies the card's designation
+        # verbatim gets UNREADABLE for a perfectly valid gate set.
+        designated = [_SIBLING_SUFFIX.sub("", g) for g in designated]
         unknown = [g for g in designated if g.upper() not in GATES]
         if unknown:
             print("UNREADABLE|not a gate name: %s" % ", ".join(unknown))
