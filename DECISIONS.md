@@ -7351,3 +7351,30 @@ látja, LOW).
 **Ki döntött:** Cybersec (lelet + javítási irány), backend (megvalósítás).
 **Hivatkozás:** kártya 53c59307, Cybersec komment 20410; `src/web/agent-dir-tripwire.ts`,
 `src/__tests__/agent-dir-namespace-runtime.test.ts` (7 -> 9 eset).
+
+## 2026-09-05 11:20 -- A tripwire sweepenkénti riasztás- és másolás-korlátja (Cybersec H2)
+
+**Döntés:** Az `agent-dir-tripwire.ts` sweepenként legfeljebb 3 RÉSZLETES riasztást küld, a többit egy
+összefoglaló üzenetbe vonja; a karantén-másolat csak a részletesen riasztott nevekre készül, és egy
+5 MB-nál nagyobb könyvtárat egyáltalán nem másol. Minden név latchelődik és minden név bekerül a
+strukturált logba -- csak az ÜZENETEK olvadnak össze, a nyilvántartás nem.
+
+**Miért:** a latch NÉVENKÉNT tart, tehát az egy név ismétlődését korlátozza, a sok nevet nem. Egy
+`mkdir`-ciklus N különböző rosszul formált nevet csinál, amiből egyetlen sweepben N riasztás ÉS N
+rekurzív másolat lett. A modul kommentárja ezt a DoS-t megoldottnak ÁLLÍTOTTA, ezért a komment is
+javítva: kimondja, mit NEM fed a latch.
+
+**Miért nem veszít bizonyítékot a kihagyott másolás:** ez a modul soha nem töröl, tehát az eredeti
+könyvtár pontosan ott marad az `agents/` alatt, ahogy a támadó hagyta. A karantén egy kényelmi
+másolat egy embernek, nem a nyilvántartás. Ezért a korlát biztonságos módon vág, szemben egy
+törléssel, ami sosem lenne az.
+
+**Egy dolgot a mérés vett ki a javításból:** először egy külön `MAX_COPIES_PER_SWEEP` konstans is
+bekerült. A mutációs teszt megmutatta, hogy HOLT: a végtelenre állítása egyetlen tesztet sem
+változtatott, mert csak a részletesen riasztott nevek kerülnek másolásra, tehát a riasztás-korlát
+már eleve korlátozza a másolást is. Kivettem. Egy olyan konstans, amit semmilyen teszt nem tud
+megfogni, nem védelem, csak látszat.
+
+**Ki döntött:** Cybersec (lelet), backend (megvalósítás és a holt konstans kivétele).
+**Hivatkozás:** kártya 75de69d4 (Cybersec komment 20410 H2); `src/web/agent-dir-tripwire.ts`,
+`src/__tests__/agent-dir-namespace-runtime.test.ts` (9 -> 15 eset).

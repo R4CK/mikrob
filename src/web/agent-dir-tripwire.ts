@@ -18,7 +18,7 @@
 // whole distance between a harmless narrow match and arbitrary directory removal. We copy the
 // contents to quarantine and leave the original untouched for a human.
 import { createHash } from 'node:crypto'
-import { mkdirSync, readFileSync, statSync, cpSync } from 'node:fs'
+import { mkdirSync, readFileSync, readdirSync, statSync, cpSync, type Dirent } from 'node:fs'
 import { join } from 'node:path'
 import { STORE_DIR, MAIN_AGENT_ID } from '../config.js'
 import { AGENTS_BASE_DIR, listRejectedAgentDirNames, type AgentDirRejection } from './agent-config.js'
@@ -71,6 +71,26 @@ function createdAtIso(name: string): string | null {
 const NAME_DISPLAY_MAX = 80
 
 /**
+ * Ceilings for ONE sweep (Cybersec H2 on card 53c59307, card 75de69d4).
+ *
+ * The latch bounds repetition PER NAME, and the module comment used to claim that settled the
+ * self-inflicted DoS. It does not: `mkdir` in a loop makes N distinct names, so N alerts and N
+ * recursive copies happen in a single sweep. One command could fill the orchestrator's inbox and
+ * the disk at the same time.
+ *
+ * The individual alerts beyond the ceiling are replaced by ONE summary, and the copies that would
+ * have accompanied them are simply not made. That loses NO evidence, which is the point: this module never deletes, so
+ * the originals are still sitting in agents/ exactly as the attacker left them -- the quarantine
+ * copy is a convenience for a human, not the record. Every name is still latched, so a flood does
+ * not re-alert on the next tick either, and every name still reaches the structured log.
+ */
+const MAX_ALERTS_PER_SWEEP = 3
+/** Names listed by the summary alert before it stops naming them and only counts. */
+const SUMMARY_NAMES_MAX = 10
+/** A single directory larger than this is not copied; the original stays where it is. */
+const QUARANTINE_MAX_BYTES = 5 * 1024 * 1024
+
+/**
  * Render an offending directory name as DATA, never as prose (Cybersec H1 on card 53c59307).
  *
  * THE FINDING, reproduced: `r.name` is raw readdirSync output, so on Linux it may contain ANY byte
@@ -111,17 +131,56 @@ function quarantineSlug(name: string): string {
   return `${safe}.${createHash('sha256').update(name).digest('hex').slice(0, 12)}`
 }
 
+/** Recursive byte size, bounded: it stops as soon as the limit is exceeded, so a directory built to
+ *  be enormous costs a walk rather than a copy. */
+function sizeExceeds(dir: string, limit: number): boolean {
+  let total = 0
+  const walk = (d: string): boolean => {
+    let entries: Dirent[]
+    try { entries = readdirSync(d, { withFileTypes: true }) } catch { return false }
+    for (const e of entries) {
+      const full = join(d, e.name)
+      if (e.isDirectory()) { if (walk(full)) return true; continue }
+      try { total += statSync(full).size } catch { /* vanished mid-walk */ }
+      if (total > limit) return true
+    }
+    return false
+  }
+  return walk(dir)
+}
+
 /** Copy the contents aside so a human can look at it after the original is (eventually) handled. */
 function quarantine(name: string): string | null {
   try {
+    const src = join(AGENTS_BASE_DIR, name)
+    // Size-capped (card 75de69d4). Skipping the copy is safe in a way deleting never would be: the
+    // original is deliberately left in place, so the evidence does not move.
+    if (sizeExceeds(src, QUARANTINE_MAX_BYTES)) {
+      logger.warn({ name, limit: QUARANTINE_MAX_BYTES }, 'agent-dir-tripwire: too large to quarantine, original left in place')
+      return null
+    }
     mkdirSync(QUARANTINE_DIR, { recursive: true })
     const dest = join(QUARANTINE_DIR, `${quarantineSlug(name)}.${Date.now()}`)
-    cpSync(join(AGENTS_BASE_DIR, name), dest, { recursive: true })
+    cpSync(src, dest, { recursive: true })
     return dest
   } catch (err) {
     logger.warn({ err, name }, 'agent-dir-tripwire: quarantine copy failed')
     return null
   }
+}
+
+/** The one message that stands in for every alert past the per-sweep ceiling. */
+function summaryBody(rest: AgentDirRejection[]): string {
+  const named = rest.slice(0, SUMMARY_NAMES_MAX).map((r) => asData(r.name)).join(', ')
+  const more = rest.length > SUMMARY_NAMES_MAX ? `, and ${rest.length - SUMMARY_NAMES_MAX} more` : ''
+  return [
+    `[TRIPWIRE agents/] ${rest.length} FURTHER offending directories appeared in the same sweep, reported together instead of one message each.`,
+    '',
+    `Names (as data): ${named}${more}`,
+    'Many names at once is itself the signal: creating them takes a loop, not a mistake.',
+    'These were NOT copied to quarantine and NOT deleted -- the originals are untouched under agents/, which is where the evidence was all along. Each name is in the structured log with its own line.',
+    'Each is latched, so the next sweep stays quiet unless a directory disappears and comes back.',
+  ].join('\n')
 }
 
 function alertBody(r: AgentDirRejection, copiedTo: string | null): string {
@@ -151,6 +210,12 @@ function alertBody(r: AgentDirRejection, copiedTo: string | null): string {
  * by exactly the actor this control exists to stop. Persisting it means a process restart does not
  * re-arm the weapon either.
  *
+ * WHAT THE LATCH DOES NOT COVER, stated because this comment used to imply it did (Cybersec H2,
+ * card 75de69d4): the latch is keyed on the NAME, so it bounds repetition of one name over time and
+ * nothing else. N distinct names -- a loop, not a mistake -- still produce N alerts and N recursive
+ * copies inside a SINGLE sweep. That is what MAX_ALERTS_PER_SWEEP bounds -- copies included, since
+ * only a detailed alert copies. The two mechanisms are perpendicular and both are needed.
+ *
  * @param send the message writer, injected so this module stays testable without a database.
  * @returns the rejections it alerted on in THIS call (empty on a quiet sweep).
  */
@@ -168,9 +233,15 @@ export function sweepAgentDirTripwire(
     if (!present.has(name)) { latched.delete(name); changed = true }
   }
 
+  const fresh = rejected.filter((r) => !latched.has(r.name))
+  const detailed = fresh.slice(0, MAX_ALERTS_PER_SWEEP)
+  const overflow = fresh.slice(MAX_ALERTS_PER_SWEEP)
+
   const fired: AgentDirRejection[] = []
-  for (const r of rejected) {
-    if (latched.has(r.name)) continue
+  for (const r of detailed) {
+    // No separate copy ceiling: only the names that get a DETAILED alert are copied, so
+    // MAX_ALERTS_PER_SWEEP already bounds the disk half of the amplification. A second constant
+    // measured as dead -- removing it changed no test, which is the definition of unpinnable.
     const copiedTo = quarantine(r.name)
     try {
       send(MAIN_AGENT_ID, MAIN_AGENT_ID, alertBody(r, copiedTo), 'agents/ namespace tripwire (card 53c59307)')
@@ -183,6 +254,21 @@ export function sweepAgentDirTripwire(
     latched.add(r.name)
     changed = true
     fired.push(r)
+  }
+
+  // The overflow is logged per name either way -- only the MESSAGES are collapsed, not the record.
+  if (overflow.length > 0) {
+    for (const r of overflow) {
+      logger.warn({ name: r.name, reason: r.reason, dropped: r.dropped }, 'agent-dir-tripwire: offending directory beyond the per-sweep alert ceiling')
+    }
+    try {
+      send(MAIN_AGENT_ID, MAIN_AGENT_ID, summaryBody(overflow), 'agents/ namespace tripwire summary (card 75de69d4)')
+      for (const r of overflow) { latched.add(r.name); fired.push(r) }
+      changed = true
+    } catch (err) {
+      // Same rule as above: a summary that never left must not latch the names it covered.
+      logger.warn({ err, count: overflow.length }, 'agent-dir-tripwire: summary send failed, staying armed')
+    }
   }
 
   if (changed) writeLatch(latched)
