@@ -7697,3 +7697,35 @@ a detektor jelzésének kiélesítése a valós korpuszon).
 **Hivatkozás:** kártya 30b76a8d; `store/skill-merge-check.py`,
 `src/__tests__/skill-merge-check.test.ts` (5 eset), `agents/{qa,qa2,cybersec,cybered}/.claude/
 skills/gate-worktree-pattern/SKILL.md` (gitignore-olt, élő).
+
+## 2026-09-05 12:15 -- A fenntartott-azonosító őre megfordult: tiltás a felsorolás helyett
+
+**Döntés:** A "egy fenntartott halmaz" ellenőrzés többé nem EGY szintaxist (`new Set([...])`) keres,
+hanem azt tiltja, hogy a `'system-directive'` LITERÁL kód-részben megjelenjen a definiáló modulon
+kívül. A tesztek engedélyezettek, KATEGÓRIAKÉNT és nem négy fájlnév felsorolásaként.
+
+**Miért:** Cybered maga nevezte meg a régi alakot leggyengébb pontnak, Cybersec pedig lemérte: egy
+tömbös és egy `===`-láncos másodpéldány is 7/7 zölden maradt. Ez a nap ÖTÖDIK esete abból az
+osztályból, hogy egy őr a művelet HELYESÍRÁSÁT pinneli a művelet helyett, ezért a javítás nem egy
+bővebb minta -- holnap jön a harmadik szintaxis --, hanem az irány megfordítása. Minden összehasonlítás
+leírja az azonosítót, tehát a literál tiltása a Set, a tömb, az `===`, a `switch` és a `case` alakot
+EGYSZERRE fedi le, anélkül hogy bármelyiket megnevezné.
+
+**Miért a tesztek KATEGÓRIA és nem lista:** egy négy fájlnévből álló kivétel-lista elavul, egy
+kategória nem. Egy tesztnek le KELL írnia az azonosítót, hogy viselkedést állítson, és egy teszt
+másolata nem tud éles kódba szivárogni.
+
+**A határ, ahol meghúztam, és a MÉRÉS ami odatette:** az idézett literált tiltom, nem a csupasz szót.
+A csupasz szó lefedné a regex-alakot (`/^system-directive$/`) is, de a valós fán lemérve KÉT tisztes
+előfordulást hamis pozitívvá tenne: egy generált-szekció jelölőt (`system-directive-auth`) az
+`agent-scaffold.ts`-ben és egy log-üzenet prefixet a `system-directive.ts`-ben. Egy őr, ami ezeket
+jelenti, az az őr, amit kikapcsolnak. A regex-alak tehát tudatosan fedetlen; Cybersec mindkét MÉRT
+mutánsa (tömb, `===`) idézőjelet igényel, és el van kapva.
+
+**Bizonyíték:** mindkét mért mutáns ÉLES fájlba ültetve pirosra viszi az ellenőrzést, és megnevezi a
+fájlt (`web/agent-config.ts`, illetve `web/context-guard-runner.ts`). A komment-eltávolítás és az
+import-útvonalak kontrollja külön eset (7c), különben a saját dokumentációját jelentené.
+
+**Ki döntött:** Cybered (a gyenge pont megnevezése), Cybersec (mérés + az inverzió javaslata),
+backend (megvalósítás és a határ megmérése).
+**Hivatkozás:** kártya 05864b8a; `src/__tests__/agent-dir-namespace-runtime.test.ts` (15 -> 20 eset).

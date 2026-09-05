@@ -167,25 +167,101 @@ describe('agents/ namespace is closed at runtime (card 53c59307)', () => {
     expect(reachable).toContain('web/system-directive-id.ts') // the shared predicate IS reached
   })
 
-  it('7. ONE reserved set: no second copy of the reserved ids anywhere in src/', () => {
-    // A second list is the exact drift class this whole series exists to remove, so it is an
-    // instant finding rather than a style note. Searched by the literal, since a copy would spell
-    // it out; the one legitimate occurrence is the const module that defines it.
+  it('7. ONE reserved set: the reserved id is not SPELLED OUT outside its module (card 05864b8a)', () => {
+    // A second list is the exact drift class this whole series exists to remove.
+    //
+    // THIS CHECK USED TO ENUMERATE ONE SYNTAX -- `new Set([... 'system-directive' ...])` -- and
+    // Cybered named that as the weakest link before anyone tested it. Cybersec then measured it:
+    // an ARRAY copy and an `===` chain both kept this file 7/7 GREEN. That is the fifth instance in
+    // one day of a guard pinning the SPELLING of an operation instead of the operation, so the fix
+    // is not a wider pattern -- tomorrow brings a third syntax -- but the opposite direction.
+    //
+    // INVERTED: the LITERAL may not appear in code outside the module that defines it. Every way of
+    // comparing against a reserved id needs the id written down, so Set, array, ===, switch and
+    // regex are all covered at once, without naming any of them.
+    //
+    // Tests are the one allowed category, as a CATEGORY and not a list of four filenames that would
+    // rot: a test has to spell the id out to assert behaviour, and a test's copy cannot drift into
+    // production. Anything else that needs the value imports it.
+    //
+    // TWO LIMITS, stated rather than filtered away:
+    //  * comments are stripped first, so prose about the rule does not trip it. A guard that
+    //    included prose would report its own documentation and get switched off.
+    //  * a string assembled from pieces ('system-' + 'directive') evades this. That is contrived
+    //    rather than accidental, and chasing it means going back to enumerating shapes.
+    //  * the OTHER reserved id, 'system', is not guarded this way: the word is too common for an
+    //    absence check to mean anything. This covers the distinctive one only.
+    //  * a REGEX form (/^system-directive$/) writes the id unquoted and is NOT caught. Covering it
+    //    means matching the bare word, and that was MEASURED against the real tree: two honest
+    //    occurrences become false positives -- a generated-section marker named
+    //    `system-directive-auth` in agent-scaffold.ts, and a log-message prefix in
+    //    system-directive.ts. A guard that reports those is one that gets switched off, so the
+    //    quoted form is where the line sits. Cybersec's two measured mutants (array, === chain)
+    //    both need quotes and are caught.
     const SRC = join(import.meta.dirname, '..')
+    const DEFINITION = 'system-directive-id.ts'
+    const stripComments = (t: string): string =>
+      t
+        .replace(/\/\*[\s\S]*?\*\//g, '')
+        .split('\n')
+        .map((l) => l.replace(/(^|[^:])\/\/.*$/, '$1'))
+        .join('\n')
+
     const offenders: string[] = []
+    let scanned = 0
     const walk = (dir: string): void => {
       for (const entry of readdirSync(dir, { withFileTypes: true })) {
         const full = join(dir, entry.name)
         if (entry.isDirectory()) { if (entry.name !== 'node_modules') walk(full); continue }
         if (!entry.name.endsWith('.ts')) continue
-        if (basename(full) === 'system-directive-id.ts') continue
-        const text = readFileSync(full, 'utf-8')
-        // A DEFINITION of the set, not a mention: `new Set([...])` carrying the literal.
-        if (/new Set\([^)]*['"]system-directive['"]/s.test(text)) offenders.push(relative(SRC, full))
+        scanned += 1
+        if (basename(full) === DEFINITION) continue
+        if (relative(SRC, full).startsWith('__tests__')) continue
+        // The EXACT quoted literal, not a path segment: `./system-directive-id.js` in an import is
+        // the same characters and is not a copy of the value.
+        if (/(['"`])system-directive\1/.test(stripComments(readFileSync(full, 'utf-8')))) {
+          offenders.push(relative(SRC, full))
+        }
       }
     }
     walk(SRC)
-    expect(offenders, 'the reserved set must live in exactly one module').toEqual([])
+    expect(scanned, 'the walk found no files -- every assertion here would be vacuous').toBeGreaterThan(50)
+    expect(offenders, 'the reserved id must be imported, not spelled out').toEqual([])
+  })
+
+  it.each([
+    ['an ARRAY copy', "const RESERVED_COPY = ['system-directive', 'system']"],
+    ['an === chain', "return l === 'system-directive' || l === 'system'"],
+    ['a switch', "case 'system-directive': return true"],
+    ['the original Set shape', "const S = new Set(['system-directive'])"],
+  ])('7b. a second copy written as %s is CAUGHT (Cybersec, card 05864b8a)', (_n, snippet) => {
+    // Cybersec measured the first two of these passing 7/7 against the previous check. They are
+    // asserted against the same reading case 7 uses, so the two cannot drift apart.
+    const stripComments = (t: string): string =>
+      t
+        .replace(/\/\*[\s\S]*?\*\//g, '')
+        .split('\n')
+        .map((l) => l.replace(/(^|[^:])\/\/.*$/, '$1'))
+        .join('\n')
+    expect(/(['"`])system-directive\1/.test(stripComments(snippet))).toBe(true)
+  })
+
+  it('7c. CONTROL: prose and import paths do NOT trip the check', () => {
+    // The two false positives that would make this guard the first thing someone disables.
+    const stripComments = (t: string): string =>
+      t
+        .replace(/\/\*[\s\S]*?\*\//g, '')
+        .split('\n')
+        .map((l) => l.replace(/(^|[^:])\/\/.*$/, '$1'))
+        .join('\n')
+    const innocent = [
+      "import { SYSTEM_DIRECTIVE_SENDER } from './system-directive-id.js'",
+      "// the reserved id is 'system-directive', defined in one module",
+      "/* a block comment naming 'system-directive' */",
+    ]
+    for (const line of innocent) {
+      expect(/(['"`])system-directive\1/.test(stripComments(line)), line).toBe(false)
+    }
   })
 
   // --- Cybersec H1 (NO-GO on 9bfa6858): the alert must carry the name as DATA -----------------
