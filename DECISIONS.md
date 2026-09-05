@@ -7795,3 +7795,34 @@ dátum nélküli eset pirosra vált, a beégetett mintára visszaállítva a fel
 
 **A megmaradó rés változatlan** (előző bejegyzés): az unió SOROKAT hasonlít, tehát két tartalmilag
 azonos, de eltérő tördelésű bejegyzést duplikál. Külön kártya kérdése.
+
+## 2026-09-05 -- A határ-minta ARGUMENTUM, nem környezeti változó, és a megengedő iránya ki van tűzve (kártya b7e57877, Cybersec)
+
+**Döntés.** A `store/decisions-append-union.sh` bejegyzés-határ mintája a `try_append_union`
+HARMADIK, opcionális ARGUMENTUMA lett. A `DECISIONS_ENTRY_HEADER_GLOB` környezeti változót senki
+nem olvassa többé. Emellett a függvény futásidőben ELUTASÍTJA a megengedő mintát: a mintát próba-
+sorokra illeszti (üres sor, csupasz `## `, `## ` + próza, hétköznapi próza, elválasztók), és ha
+bármelyikre illeszkedik, `return 1` -- a hívó megszokott kézi feloldó útja --, NEM esik vissza
+némán az alapértelmezésre.
+
+**Miért.** Cybersec kimondta, amit a saját három tesztesetem nem fedett: azok azt bizonyították,
+hogy a minta OLVASÓDIK, egyik sem azt, hogy nem állítható be mindent elfogadó értékre. Környezetből
+olvasva bármely szülő-folyamat `*`-ra állíthatta volna, és a csendes összeragasztás visszatér --
+ROSSZABB helyre, mint a javítás előtt, mert a kód addigra azt sugallja, hogy van rá kontroll.
+Cybersec ugyanezt az osztályt (őr-predikátum kitűzetlen megengedő iránnyal) egy napon háromszor
+mérte külön kártyákon. Cybered kifogása (ne égjen be a DECISIONS.md konvenciója egy fájl-
+paraméterezett függvénybe) változatlanul teljesül: a hívó adja át a saját mintáját.
+
+**Amit a mutációs ellenőrzés kimutatott a SAJÁT tesztemről.** Az „environment nem állíthatja be"
+esetet először `*` értékkel írtam meg, és ÁTMENT pontosan arra a mutációra, amit néven nevez: a
+környezet-olvasás visszatételekor a függvény felvette a `*`-ot, a próba-őr elutasította, a hívás 1-et
+adott, a teszt pedig a várt elutasítást látta. Az ŐR MASZKOLTA a regressziót, amit a teszt fogni
+hivatott. Ellenséges értéknek ezért `## entry*` kell: átjut a próbákon, mégis illeszkedik a fixture
+dátumozatlan fejléceire. Négy mutáció, mind fogva: a próba-őr törlése, néma visszaesés az
+alapértelmezésre, a környezet-olvasás visszatétele, és egy elutasítás, ami a konfliktus-jelöléseket
+letörli a munkafájlról.
+
+**Elutasítási út, kimondva** (Cybersec 3. pontja): tiszta `return 1`, a merge érintetlenül marad a
+munkafán, a git konfliktus-jelölései a fájlban -- ezt mostantól a teszt-helper is ellenőrzi, mert a
+„1-et adott vissza" és a „a konfliktust kézi feloldásra hagyta" két külön állítás, és csak az első
+van benne a visszatérési értékben.

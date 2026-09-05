@@ -78,6 +78,16 @@ try_append_union() {
   # slicing happens in this scope.
   local LC_ALL=C
   local wt="$1" file="$2"
+  # ENTRY-BOUNDARY PATTERN: an OPTIONAL THIRD ARGUMENT, deliberately NOT an environment variable
+  # (Cybersec, msg 23484). It was read from the environment for one commit, and that was a real
+  # regression dressed as a feature: any parent process of a landing script could have set it to
+  # `*`, every remainder would have matched, and the silent gluing this function exists to prevent
+  # would have come back -- to a WORSE place than before the fix, because the code now implies the
+  # boundary is controlled. An argument is settable only by code in this repo, which is reviewed
+  # and landed; the ambient-environment surface is gone entirely. Cybered's objection that the
+  # DECISIONS.md convention must not be hardcoded into a file-parameterised function is still
+  # answered -- a future append-only file's caller passes its own pattern here.
+  local header_glob="${3:-## [0-9][0-9][0-9][0-9]-*}"
   local conflicted
   conflicted="$(git -C "$wt" diff --name-only --diff-filter=U)"
   # Must be the ONLY conflicted file -- a conflict alongside anything else is a different, wider
@@ -169,10 +179,30 @@ try_append_union() {
   # fail-closed direction is the cheap one. A non-dated header append is refused from here on; that
   # cost is pinned by its own selftest case rather than left as prose.
   #
-  # OVERRIDABLE rather than hardcoded, because this function takes the filename as a parameter and
-  # a future append-only file may spell its entry boundary differently. The default states THIS
-  # log's convention; a caller with another one sets the variable instead of copying the function.
-  local header_glob="${DECISIONS_ENTRY_HEADER_GLOB:-## [0-9][0-9][0-9][0-9]-*}"
+  # THE PERMISSIVE DIRECTION OF THE PATTERN IS PINNED, not just its working direction (Cybersec,
+  # msg 23484). The three cases added with the pattern proved it is READ; none proved it cannot be
+  # set to something that accepts everything. A guard predicate whose permissive direction is
+  # untested is the failure class Cybersec measured three times in one day on separate cards.
+  #
+  # A boundary pattern that matches a line which can legally appear INSIDE an entry is not a
+  # boundary at all -- that is the whole CS-2 lesson, stated as a runtime precondition rather than
+  # left to the caller's good taste. The probes are lines that must never be entry boundaries: a
+  # blank line, a bare `## ` heading and a `## ` heading with prose after it (exactly the CS-2
+  # shape), ordinary prose, and the separator forms. `*` fails on all of them; `## *` fails on the
+  # two heading probes -- which is correct and not an oversight, since a bare `## ` boundary is the
+  # unsafe spelling this card removed. The default passes all probes: it requires four digits.
+  #
+  # FAIL-CLOSED, and specifically NOT a silent fall back to the default: a caller that passes an
+  # unusable pattern gets the union REFUSED (return 1, the caller's ordinary manual-resolution
+  # path), because quietly substituting a different pattern would resolve the merge under a rule
+  # the caller did not ask for -- the same class of silent substitution this whole function refuses.
+  local probe
+  for probe in '' '## ' '## quoted heading in a body' 'ordinary body prose' '---' '***' '___'; do
+    case "$probe" in
+    $header_glob) return 1 ;;
+    esac
+  done
+
   _starts_new_entry() {
     local rest="$1" line
     while IFS= read -r line; do
@@ -324,6 +354,43 @@ if [ "${BASH_SOURCE[0]}" = "${0}" ] && [ "${1:-}" = "--selftest" ]; then
       else
         echo "  FAIL $1 -> refused but DECISIONS.md no longer shows as unmerged"; fail=1
       fi
+    fi
+    # CYBERSEC'S POINT 3 (msg 23484): the refusal must be the CALLER'S MANUAL PATH, not a quiet
+    # skip that left the tree in some half-state. A return-1 is only worth anything if the merge is
+    # still there to resolve by hand, so the conflict markers git wrote must still be on disk --
+    # asserted rather than assumed, because "returned 1" and "left the conflict intact" are two
+    # different claims and only the first one is in the return value.
+    if ! grep -q '^<<<<<<< ' "$REPO/DECISIONS.md" 2>/dev/null; then
+      echo "  FAIL $1 -> refused but the conflict markers are gone from the working file"; fail=1
+    fi
+    git -C "$REPO" merge --abort 2>/dev/null || true
+  }
+
+  # The same two helpers, with an explicit entry-boundary pattern passed as the third argument.
+  # Separate helpers rather than an optional parameter on the originals: every existing case must
+  # keep calling try_append_union with exactly two arguments, so that the DEFAULT pattern stays
+  # the thing they cover.
+  t_resolved_glob() { # $1 = label, $2 = boundary glob, $3 = expected final content
+    if try_append_union "$REPO" "DECISIONS.md" "$2"; then
+      local got want
+      got="$(cat "$REPO/DECISIONS.md")"
+      want="$(printf '%s' "$3")"
+      if [ "$got" = "$want" ]; then echo "  ok   $1"
+      else echo "  FAIL $1 -> content mismatch"; printf 'got:\n%s\nwant:\n%s\n' "$got" "$want"; fail=1; fi
+    else
+      echo "  FAIL $1 -> expected try_append_union to resolve (return 0), it returned 1"; fail=1
+    fi
+    git -C "$REPO" merge --abort 2>/dev/null || true
+  }
+  t_refused_glob() { # $1 = label, $2 = boundary glob
+    if try_append_union "$REPO" "DECISIONS.md" "$2"; then
+      echo "  FAIL $1 -> expected try_append_union to refuse (return 1), it resolved"; fail=1
+    elif ! git -C "$REPO" diff --name-only --diff-filter=U | grep -qx "DECISIONS.md"; then
+      echo "  FAIL $1 -> refused but DECISIONS.md no longer shows as unmerged"; fail=1
+    elif ! grep -q '^<<<<<<< ' "$REPO/DECISIONS.md" 2>/dev/null; then
+      echo "  FAIL $1 -> refused but the conflict markers are gone from the working file"; fail=1
+    else
+      echo "  ok   $1"
     fi
     git -C "$REPO" merge --abort 2>/dev/null || true
   }
@@ -550,11 +617,80 @@ tail B
 "
   t_refused "an UNDATED header append is refused -- the documented cost of the CS-2 boundary"
 
-  # ...AND THE OVERRIDE IS REAL, not a comment. The boundary pattern is a variable so a future
-  # append-only file with another convention can reuse this function instead of copying it; if that
-  # is only asserted in prose it will rot. Same fixture as above, unioning under an override that
-  # accepts the undated shape.
-  setup_conflict undated-header-append-override \
+  # ...AND THE OVERRIDE IS REAL, not a comment. The boundary pattern is a third argument so a
+  # future append-only file with another convention can reuse this function instead of copying it;
+  # if that is only asserted in prose it will rot. A DIFFERENT-BUT-SAFE convention is used here
+  # (`### ` h3 headers, still dated) rather than a permissive one, because the permissive direction
+  # has its own cases below and mixing the two would let one hide the other.
+  setup_conflict h3-header-override \
+    "### 2026-01-01 -- entry A
+" \
+    "### 2026-01-01 -- entry A
+### 2026-01-02 -- entry L (left)
+" \
+    "### 2026-01-01 -- entry A
+### 2026-01-03 -- entry R (right)
+"
+  t_resolved_glob "the entry-boundary pattern is overridable (third argument)" \
+    '### [0-9][0-9][0-9][0-9]-*' \
+    "### 2026-01-01 -- entry A
+### 2026-01-02 -- entry L (left)
+### 2026-01-03 -- entry R (right)
+"
+
+  # THE PERMISSIVE DIRECTION OF THE PATTERN, WHICH THE THREE CASES ABOVE DO NOT COVER (Cybersec,
+  # msg 23484). They prove the pattern is READ; none of them proves it cannot be set to a value
+  # that accepts everything. That gap is worse than having no override, because the code would
+  # then imply a control that does not hold -- and Cybersec measured this same class (a guard
+  # predicate with an unpinned permissive direction) three times in one day on separate cards.
+  #
+  # `*` accepts every line, so every remainder would "begin a new entry" and the silent gluing
+  # would be back. It must be REFUSED, not honoured -- and refused rather than silently replaced
+  # by the default, so the caller lands in the ordinary manual-resolution path.
+  setup_conflict permissive-glob-star \
+    "## 2026-01-01 -- entry A
+" \
+    "## 2026-01-01 -- entry A
+## 2026-01-02 -- entry L (left)
+" \
+    "## 2026-01-01 -- entry A
+## 2026-01-03 -- entry R (right)
+"
+  t_refused_glob "a permissive boundary pattern (*) is refused, not honoured" '*'
+
+  # ...AND THE ONE THAT MATTERS MOST: the bare `## ` spelling this card REMOVED must not be
+  # reachable through the override either. Cybered's CS-2 fixture, run with `## *` as the pattern
+  # -- if the override honoured it, CS-2 would resolve again and the fix would be undone from the
+  # outside. Same fixture as the CS-2 case, so a regression cannot pass one and fail the other.
+  setup_conflict cs2-via-permissive-override \
+    "## 2026-09-01 -- entry A
+body of A
+" \
+    "## 2026-09-01 -- entry A
+body of A
+## 2026-09-05 -- Same Decision
+intro line
+## quoted heading OURS
+tail A
+" \
+    "## 2026-09-01 -- entry A
+body of A
+## 2026-09-05 -- Same Decision
+intro line
+## quoted heading THEIRS
+tail B
+"
+  t_refused_glob "CS-2 stays refused even when the override asks for the unsafe bare ## " '## *'
+
+  # ...AND THE ENVIRONMENT CANNOT REACH THE PATTERN AT ALL. For one commit this was an environment
+  # variable, which meant any parent process of a landing script could have set it. It is now a
+  # third ARGUMENT, and that is only a real boundary if nothing still reads the old name -- a
+  # leftover `${DECISIONS_ENTRY_HEADER_GLOB:-...}` anywhere in the function would restore the whole
+  # hole while every other case here stayed green. So the hostile value is exported, the function
+  # is called with TWO arguments as the real callers do, and the DEFAULT behaviour must be
+  # completely unaffected: a dated append still unions, which `*` would also have done -- so the
+  # discriminating half is the case below it, where `*` would have RESOLVED and the default refuses.
+  setup_conflict env-cannot-set-the-pattern \
     "## 2026-01-01 -- entry A
 " \
     "## 2026-01-01 -- entry A
@@ -563,14 +699,17 @@ tail B
     "## 2026-01-01 -- entry A
 ## entry R (right, undated)
 "
-  # NOT a subshell: `fail=1` set inside `( ... )` is discarded when it exits, so a regression here
-  # would report itself as a pass. Set, run, unset.
-  DECISIONS_ENTRY_HEADER_GLOB='## *'
-  t_resolved "the entry-boundary pattern is overridable (DECISIONS_ENTRY_HEADER_GLOB)" \
-    "## 2026-01-01 -- entry A
-## entry L (left, undated)
-## entry R (right, undated)
-"
+  #
+  # THE HOSTILE VALUE IS `## entry*`, NOT `*`, AND THAT CHOICE IS THE WHOLE TEST. Written first with
+  # `*`, this case PASSED against the very mutation it names: restoring the environment read made
+  # the function pick up `*`, the probe guard above refused `*`, the call returned 1, and the case
+  # saw the refusal it was waiting for. The guard MASKED the regression the case existed to catch.
+  # `## entry*` passes every probe (it is not blank, not bare `## `, does not match prose or a
+  # separator) and still matches the undated headers in this fixture -- so if the environment can
+  # reach the pattern, this resolves, and only the argument-only form refuses. Re-verified by
+  # mutation: with `${DECISIONS_ENTRY_HEADER_GLOB:-...}` put back, this case goes red.
+  export DECISIONS_ENTRY_HEADER_GLOB='## entry*'
+  t_refused "the environment cannot set the boundary pattern -- it is an argument, not a variable"
   unset DECISIONS_ENTRY_HEADER_GLOB
 
   # ...AND THE CONTROL THAT KEEPS THAT RULE HONEST: an append carrying its own `---` separator is a
