@@ -6505,3 +6505,60 @@ vonatkozik és **megmarad**, tehát az a `2>/dev/null` a szkript minden később
 elnyelte — a sorbanállás-jelzést, a feladás okát, a worktree-hibát. A selftest üres kimenetű exit 3-at
 látott, és ez vezetett a felismerésig. A javítás: a fájlt egy RENDES paranccsal hozzuk létre (annak
 az átirányítása arra a parancsra korlátozódik), az `exec` pedig csupaszon fut.
+
+## 2026-09-05 -- 999fd78a -- A B-hullám `git revert -m1`-gyel nem visszafordítható, és a jelenlegi landolási modellben nem is lehet az
+
+**Döntés:** a 607254fb plan-grilling verdiktjének (4) pontját (`git revert -m1` tesztelve, nem
+feltételezve) végrehajtottam, és a válasz NEMLEGES. A B-hullámot a mai `origin/develop`-ról nem lehet
+`git revert -m1`-gyel visszafordítani. Nem javasoltam és nem is hajtottam végre kényszerített
+revertet: az a CLAUDE.md kódminőségi 5. szabályába ütközne (működő, landolt funkció visszavonása
+Peti kifejezett engedélye nélkül).
+
+**Mérés (eldobható worktree, `/home/neon/marveen-revert-999fd78a`, `origin/develop` @ a392fe31).**
+A hullám 20 committal, három landolási merge-en át, 18 óra alatt ért a develop-ra:
+
+| landolási merge | B-hullám / idegen commit | `revert -m1` ütközés | érintett fájl |
+|---|---|---|---|
+| `78f9be50` | 12 / 1 | 4 | 33 |
+| `13bf2707` | 5 / 4 | 4 | 14 |
+| `cae546af` | 1 / 1 | 1 | 3 |
+
+Egyik sem alkalmazódik tisztán: összesen 9 ütközés, mindegyik kézi feloldást igényel. És ami
+súlyosabb: a revert nem a hullámot fordítaná vissza, hanem mindent, amit az adott landolás hozott.
+A `13bf2707` `-m1` revertje TÖRÖLNÉ a message-backlog-watcher funkciót (1e7ba5c1) és a
+card-state-stamp tesztet (382dcb15); a `78f9be50`-é a local-llm corpus-driven-test-cases anyagot
+(a3b4e0f4); a `cae546af`-é a ponytail watched-repos frissítést.
+
+**A fájl-szintű, sebészi visszaállítás sem járható maradéktalanul.** A hullám 38 fájlt érint. Ebből
+29 visszaállítható a hullám előtti (`7d548869`) állapotra anélkül, hogy későbbi munkát elvinne; 9-en
+viszont idegen commitok ülnek. A legélesebb eset a `scripts/hooks/outgoing-copy-gate.py` és a
+selftestje: rájuk a hullám UTÁN három biztonsági javítás landolt (`d0073382`, `9b43901f`, `c7dd0484`,
+Cybered F1/F2/F3). Egy naiv hullám-rollback ezeket a javításokat CSENDBEN visszavonná, azaz landolt
+biztonsági hibákat élesztene újra. További érintett: `package.json` (35 későbbi commit), `src/db.ts`
+(5), `src/web.ts` (4), `src/web/message-router.ts` (3).
+
+**Miért nem lehetett ez másképp -- ez nem mulasztás, hanem a landolási modell következménye.**
+A `store/marveen-land.sh` a teljes `agent/<ügynök>/work` ágat mergeli a develop-ba, és a per-kártya
+őre (`downward_check`) csak akkor SZIGORÚ, ha a hívó megnevezte a kártyát (`--card`); e nélkül
+riport-üzemmódban fut. A szkript saját forrásjegyzete mondja ki az okot: „without one there is no
+single card to ask about, since a marveen branch legitimately carries several". Vagyis egy
+hullámonként revertelhető merge KONSTRUKCIÓ SZERINT nem jön létre, hacsak a hullám nem kap saját
+ágat, amire az ügynök közben semmi mást nem commitol, és nem `--card`-dal landol.
+
+**Amit ténylegesen leteszteltem és zöld.** A `cae546af` az egyetlen, aminek a revertjét be tudtam
+fejezni (egy ütközés: a `package.json` verziója, mert utána `a392fe31` újra bumpolt; feloldás:
+alap-verzió vissza `1.34.1`-re, a landolás-számláló marad, a lock-fájl alapja egyezik). Az eredmény
+`517c6957`. Ezen a `store/fleet-test.sh --ref 517c6957` **614 fájl / 14801 zöld / 101 skipped**,
+lint-ratchet tartja magát; a develop tipen (`a392fe31`) futtatott kontroll BETŰRE ugyanez, tehát a
+revert egyetlen tesztet sem vesztett el és egyet sem tört el. A revertelt fát a
+`/home/neon/marveen-test` HEAD-je és a benne lévő `1.34.1+mikrob.4` verzió igazolja, tehát a zöld
+futás valóban a revertet mérte, nem a develop tipet.
+
+**Következmény.** (1) A 607254fb (4) pontja a hullámra utólag NEM teljesíthető; a hullám élesben
+marad, a rollback-út nem egy parancs, hanem egy 29 fájlos, felülvizsgált fájl-visszaállítás plusz a
+9 szennyezett fájl kézi kezelése. (2) Jövőbeli kockázatos hullámnál a követelmény csak akkor
+értelmes, ha a hullám SAJÁT ágon, `--card`-dal, idegen commit nélkül landol -- különben a
+plan-grilling olyat kér, amit a landoló szkript definíció szerint nem tud előállítani.
+**Ki döntött:** backend2 (mérés és verdikt), MikroB (dispatch, 999fd78a).
+**Hivatkozás:** kártya 999fd78a; mért revert-commit `517c6957`; landolási merge-ek `78f9be50`,
+`13bf2707`, `cae546af`; hullám előtti alapvonal `7d548869`.
