@@ -26,9 +26,24 @@
 # what the inline block was reaching for (see the worktree-package-import-reads-the-shared-clone
 # lesson); it is now the default, done safely.
 #
-#   store/cc-gate-worktree.sh <card> <sha>     # create or top up; prints the path
-#   store/cc-gate-worktree.sh --path <card> <sha>
-#   store/cc-gate-worktree.sh --remove <path>  # stop anything still running there, then remove
+#   store/cc-gate-worktree.sh --agent <you> <card> <sha>     # create or top up; prints the path
+#   store/cc-gate-worktree.sh --agent <you> --path <card> <sha>
+#   store/cc-gate-worktree.sh --agent <you> --remove <path>   # stop YOUR strays there, then remove
+#
+# The agent name may also come from CC_GATE_AGENT. One of the two is REQUIRED -- see below.
+#
+# THE AGENT IS PART OF THE PATH (card a7da80d6). It used to be card+sha ONLY, so two gates reviewing
+# the SAME card at the SAME sha -- the normal case, since a card is gated by QA and Cybersec/Cybered
+# together -- were handed the SAME directory. Then `--remove` by whichever finished first killed
+# every process whose cwd was inside it and deleted the tree, taking a peer's running vitest with it
+# SILENTLY: no error to the victim, just a suite that stops and a checkout that is gone. QA and
+# Cybered each hit this independently in one gate round and each invented their own `<card>-<name>`
+# path by hand. That is discipline; this is the structure, so it cannot be forgotten.
+#
+# WHY REQUIRED AND NOT DEFAULTED. A default would have to name SOME agent, and every caller that
+# forgot the flag would collide on exactly that name -- reintroducing this bug for a subset of
+# callers while looking fixed. Refusing is loud, immediate, and names the fix; an old two-argument
+# call now dies with a usage error instead of silently sharing a tree with a peer.
 #
 # NEVER run an installer here (pnpm/npm install, npm ci, pnpm add). The entries are links into the
 # shared store; installing would rewrite what every agent is reading. Install in $CLEANCORE_MAIN.
@@ -38,14 +53,42 @@ set -euo pipefail
 
 MAIN="${CLEANCORE_MAIN:-/mnt/h/LM_Studio_Workdir/CleanCore}"
 GATE_ROOT="${CC_GATE_ROOT:-$HOME}"
+AGENT="${CC_GATE_AGENT:-}"
+FORCE=0
 
 die() { echo "cc-gate-worktree.sh: $2" >&2; exit "$1"; }
+
+# `--agent` and `--force` may appear anywhere, so a caller can put the agent first (matching
+# agent-worktree.sh / cleancore-suite-run.sh) or last, without the meaning changing.
+ARGS=()
+while [ $# -gt 0 ]; do
+  case "$1" in
+    --agent) AGENT="${2:-}"; shift 2 || die 2 "--agent needs a name" ;;
+    --force) FORCE=1; shift ;;
+    *) ARGS+=("$1"); shift ;;
+  esac
+done
+set -- "${ARGS[@]:-}"
+
+[ -n "$AGENT" ] || die 2 "the agent name is REQUIRED: pass --agent <you> or set CC_GATE_AGENT. Without it two gates on the same card+sha share one worktree, and --remove by one destroys the other's running work (card a7da80d6)."
+case "$AGENT" in *[!a-zA-Z0-9._-]*) die 2 "agent name must be [a-zA-Z0-9._-]+ (got: $AGENT)" ;; esac
 
 # --- removal ------------------------------------------------------------------------------------
 if [ "${1:-}" = "--remove" ]; then
   target="${2:-}"
   [ -n "$target" ] || die 2 "usage: cc-gate-worktree.sh --remove <path>"
   case "$target" in "$GATE_ROOT"/cc-gate-*) : ;; *) die 2 "refusing to remove a path outside $GATE_ROOT/cc-gate-* (got: $target)" ;; esac
+  # OWNERSHIP, checked before anything is killed or deleted (card a7da80d6). The kill loop below is
+  # deliberate and wanted -- for YOUR OWN strays -- but pointed at a peer's tree it is exactly the
+  # silent data loss this card exists for. The agent segment sits between the card and the short
+  # sha, so a tree this agent owns ends with "-$AGENT-<short>".
+  case "$(basename "$target")" in
+    *"-$AGENT-"*) : ;;
+    *)
+      [ "$FORCE" -eq 1 ] || die 2 "refusing to remove '$target': it is not $AGENT's worktree (the path carries no -$AGENT- segment). A peer may be running tests in it right now, and this command KILLS every process whose cwd is inside. Pass --force only if you know it is abandoned."
+      echo "  --force: removing a worktree that is not $AGENT's" >&2
+      ;;
+  esac
   # A dev server left running in a removed worktree keeps recreating .vite cache dirs there and
   # holds a port -- exactly the orphan vite that had to be hunted down by hand after the incident.
   # Match on the process's own cwd, never on a command-line pattern: a pattern can catch a peer's
@@ -75,7 +118,7 @@ case "$SHA"  in *[!a-zA-Z0-9._/-]*) die 2 "sha must be a plain rev (got: $SHA)" 
 
 SHORT="$(git -C "$MAIN" rev-parse --short "$SHA" 2>/dev/null || true)"
 [ -n "$SHORT" ] || die 3 "no such rev in $MAIN: $SHA"
-TREE="$GATE_ROOT/cc-gate-$CARD-$SHORT"
+TREE="$GATE_ROOT/cc-gate-$CARD-$AGENT-$SHORT"
 
 if [ "$PATH_ONLY" -eq 1 ]; then echo "$TREE"; exit 0; fi
 
@@ -153,4 +196,4 @@ done < <(find "$MAIN" -maxdepth 4 -type d -name node_modules -not -path '*/node_
 
 echo "node_modules: $linked entry links + $scoped @cleancore links, in REAL directories (no directory symlink)"
 echo "path: $TREE"
-echo "tear down with: bash store/cc-gate-worktree.sh --remove $TREE"
+echo "tear down with: bash store/cc-gate-worktree.sh --agent $AGENT --remove $TREE"

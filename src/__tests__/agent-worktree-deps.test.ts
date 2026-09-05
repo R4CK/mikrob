@@ -242,14 +242,16 @@ describe('cc-gate-worktree.sh does not share the vite dep-cache', () => {
     writeFileSync(join(cc, 'node_modules', '.vite', 'deps', 'stale.js'), 'shared\n')
     mkdirSync(join(cc, 'node_modules', 'somepkg'), { recursive: true })
 
-    const out = execFileSync('bash', [CC_GATE_SH, 'card0', sha], {
+    // `--agent` is REQUIRED since card a7da80d6: the path carries the agent so two gates on the
+    // same card+sha cannot share (and destroy) one worktree.
+    const out = execFileSync('bash', [CC_GATE_SH, '--agent', 'testagent', 'card0', sha], {
       encoding: 'utf-8',
       env: { ...process.env, CLEANCORE_MAIN: cc, CC_GATE_ROOT: gates },
       stdio: ['ignore', 'pipe', 'pipe'],
     })
     expect(out).toMatch(/worktree created/)
 
-    const wt = join(gates, `cc-gate-card0-${sha}`)
+    const wt = join(gates, `cc-gate-card0-testagent-${sha}`)
     // A real directory: `lstat` says it is not a link, and it does NOT carry the shared cache
     // contents, so a dev server here cannot serve another tree's stale optimise output.
     expect(lstatSync(join(wt, 'node_modules', '.vite')).isSymbolicLink()).toBe(false)
