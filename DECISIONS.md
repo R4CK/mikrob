@@ -8199,3 +8199,48 @@ fogta meg**, mert minden esete a `--path` ágon fut, ami a létrehozás előtt k
 tesztfájl fogta meg a suite-ban. Egy selftest, ami sosem hoz létre semmit, nem tud jótállni egy
 scriptért, aminek a fő dolga a létrehozás -- ezért került bele négy VALÓS létrehozás-eset, és a
 „jelölőt a létrehozás elé" mutáció most 2 esetet vált pirosra.
+
+## 2026-09-05 -- A junction-szerkezeti leletek zárása és a wrapperek merge-driver-védelme (kártya 3ae71df1)
+
+**J-1 és J-2: a seam olyan markdown-szerkezetet képez, amit egyik szülő sem tartalmazott.**
+Mindkettőt reprodukáltam javítás előtt. J-1: egy `---` sor közvetlenül egy nem-üres szövegsor
+ALATT setext H2, nem vízszintes vonal -- ha a mi maradékunk prózával végződik és a másiké
+elválasztóval kezdődik, az összefűzés az utolsó sorunkat FEJLÉCCÉ lépteti elő. J-2: ha a
+junctionig minden nyitva hagy egy kódkerítést, a másik oldal TELJES bejegyzése a kerítésen BELÜLRE
+kerül -- a `## ` fejléce megszűnik fejléc lenni és megszűnik grep-elhető lenni, miközben minden sor
+megvan, tehát minden sor-alapú ellenőrzés zöld marad.
+
+**Ez a hibaosztály szerkezetileg más, mint az eddigiek.** Minden korábbi ellenőrzés egy FELET néz
+(prefix, a mi maradékunk, az ő maradékuk), és mindhárom fél lehet külön-külön hibátlan, miközben a
+KÖZTÜK lévő varrat képez új szerkezetet. A javítás ezért a junctionre kérdez: a nála lévő utolsó
+nem-üres sor és a másik oldal első sora együtt nem alkothat setext fejlécet, és a junctionig
+számolt kerítés-paritásnak párosnak kell lennie (a prefixet is beleszámolva, mert egy ott nyitott
+kerítést mindkét oldal KÜLÖN zár be).
+
+**Kontroll, ami őszintén tartja a J-2 szabályt:** egy LEZÁRT kódkerítés hétköznapi tartalom, és
+továbbra is unionál. E nélkül a „utasíts el minden backtickre" is átmenne a J-2 eseten.
+
+**A wrapperek merge-driverként meghívhatók voltak (Cybersec).** Mérve: mindkét union-wrapper
+(`decisions-append-union.sh` ÉS `readme-bullet-union.sh`) mode 775, és három path-argumentummal
+hívva 0-t adott -- pontosan a `merge.<név>.driver` konvenció (%O %A %B). Ma NINCS bedrótozva, de
+szerkezetileg semmi nem akadályozza: egy config-sor plusz egy `.gitattributes` bejegyzés elég
+lenne, és a hibamódja CSENDES ADATVESZTÉS -- egy 0-val kilépő driver azt mondja a gitnek, hogy a
+merge sikerült, tehát a git megtartja a mienket és eldobja a másikét, konfliktus és üzenet nélkül.
+Kommenttel ez nem előzhető meg, kilépési kóddal igen: közvetlen futtatás `--selftest`-en kívül
+mostantól hangosan, nem-nulla kóddal bukik. A source-olás érintetlen (minden valódi hívó így
+használja). **Fájlosztályra kötve, nem csak a DECISIONS-oldalra** -- a dc5b714d tanulsága szerint
+egy író-függvényre kötött hatókör kihagyja a testvér-fájlt.
+
+**Doksi-pontosság (Cybersec).** A near-miss eset kommentje azt állította, hogy „csak az egzakt
+`---` és `***` formák unionálnak", miközben a case-ág NÉGY tagot enged (`''`, `---`, `***`, `___`).
+A komment abból a két formából íródott, amit a fixture véletlenül használt, nem a kódból. Javítva,
+és mostantól MINDEN tagnak saját esete van.
+
+**F-T: formánként egy eset, nem blokként (Cybered).** A near-miss teszt eredetileg mind a négy
+alakot EGYSZERRE tágította volna: az egyetlen esetet pirosra váltja és lefedettségnek OLVASÓDIK,
+miközben formánként csak egy volt ténylegesen pinnelve. Mostantól négy külön eset, és a mutáció is
+formánként megy -- az egy-formát-beengedő mutáció pontosan a saját esetét vágja pirosra.
+
+**Egy saját hiba, ami majdnem átment:** a teszt-CÍMKÉKBE tett backtickeket a bash
+parancs-behelyettesítésként futtatta, így két near-miss címke azonosra rövidült -- pont a
+formánkénti megkülönböztetést ölte volna meg. A címkékből kivéve.
