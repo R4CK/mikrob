@@ -7977,3 +7977,36 @@ nem olvasható ki belőlük. Ez nem az én merge-em műve és nem is ezé a kár
 **Hivatkozás:** kártya 23d09a68; `store/skill-merge-check.py`,
 `src/__tests__/skill-merge-check.test.ts`, `seed-fleet-agents/{qa,qa2}/vitest-react-router-guard`,
 `seed-fleet-agents/qa2/i18n-parity-sweep`.
+
+## 2026-09-05 -- A határ-heurisztika maradék rése FAIL-OPEN, nem elutasítás (kártya b7e57877, Cybered F-5 + F-4, Cybersec doksi-lelet)
+
+**Korrekció, mérés alapján.** A kártya korábbi REVIEW-jában azt állítottam, hogy a dátumozott
+határ maradék rése „elutasítás irányú, nem rossz merge". **Ez téves volt.** Cybered lemérte, én
+pedig újramértem a jelenlegi kódon: ha egy TÖRZS-sor illeszkedik a mintára (pl. egy idézett régi,
+dátumozott fejléc egy új bejegyzésen belül), az unió RESOLVED-ot ad, és mindkét folytatás egy
+fejléc alá kerül -- pontosan az a csendes összeolvasztás, amiért a Cybersec NO-GO ment, egy
+szinttel lejjebb. A rés tehát FAIL-OPEN. A „valós korpuszon ma nincs ilyen" rész áll (201 fejlécből
+2 ugrik kronológiailag visszafelé, mindkettő valódi sorrenden kívüli bejegyzés, nem idézett fejléc)
+-- de ez ugyanaz a „latens, amíg nem lett azzá" állapot, ami a CS-2 is volt.
+
+**Következmény a kódban:** a minta mellett kimondva áll, hogy a határ SORMINTA-HEURISZTIKA, és hogy
+minden tágítás ebből a tartalékból költ. Aki legközelebb tágítja, ettől tudatos döntést hoz, nem
+véletlen regressziót.
+
+**Cybersec doksi-lelete: a próba-őr SZŰRŐ, nem precondition.** Az első kommentem azt állította, hogy
+„egy bejegyzésen belül előfordulható sorra illeszkedő minta nem határ -- futásidejű precondition".
+A kód HÉT rögzített próba-sorra illeszt. A különbség a következő olvasónak számít: precondition
+esetén abbahagyja a keresést. A saját ellenséges tesztértékem (`## entry*`) maga a bizonyíték, hogy
+átjut; Cybersec példája élesebb: `## [0-9]*` is átjut, és illeszkedik a `## 2 reasons why` TÖRZS-sorra.
+
+**Amit Cybersectől átvettem indoklásként:** a mintát `case ... in $header_glob)` alakban IDÉZŐJEL
+NÉLKÜL interpolálom, tehát shell minta-pozícióban áll. Környezeti változóként nem csak túl tág
+értékekre volt nyitva, hanem `)` és `|` karakterekre is. Az env-olvasás törlése ezt is bezárta --
+és ezért NEM tesszük a próba-őrt „okosabbá": a határon már nincs támadó.
+
+**Cybered F-4: a MÁSODIK `local LC_ALL=C` teherhordó volt, nulla fedéssel.** Kettő van: egy a
+`_common_line_prefix_len`-ben (ahol a bájt-offszet KELETKEZIK) és egy a `try_append_union`-ban
+(ahol SZELETEL). A meglévő állítás csak az elsőt tűzte ki. Mutációval igazolva: a másodikat törölve
+a selftest 19/19 zöld maradt. Új, END-TO-END UTF-8 fixture rögzíti; a törölt változat REFUSED-ot ad
+ott, ahol az élő helyesen unionál -- vagyis pont az a landolás esne el újra, amit ez a kártya
+feloldani hivatott.
