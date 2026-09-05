@@ -6562,3 +6562,31 @@ plan-grilling olyat kér, amit a landoló szkript definíció szerint nem tud el
 **Ki döntött:** backend2 (mérés és verdikt), MikroB (dispatch, 999fd78a).
 **Hivatkozás:** kártya 999fd78a; mért revert-commit `517c6957`; landolási merge-ek `78f9be50`,
 `13bf2707`, `cae546af`; hullám előtti alapvonal `7d548869`.
+
+## 2026-09-05 -- 87be1810 -- LLM monitor: külön oldal, ügynök-sávok, a hiányzó adat kimondva (Fron Ted)
+
+**Előzmény:** Peti design-képe (store/design-refs/local-llm-swimlane-mockup-2026-09-03.jpg) a
+forrás-igazság: KPI-sor, Swimlane Timeline (Tasks) kattintható részlet-panellel, Workload
+time-series. A backend (a5bbfb98) a `/api/task-events` + `/api/task-summary` feedet szállította,
+és kimondta: csak a helyi LLM-feladatoknak van kezdete ÉS vége (`blockCoverage.lanes = ['local']`),
+az online modellek munkája megszámolható, de feladatonkénti időtartam nincs tárolva. Az Áttekintésen
+már él egy per-MODELL swimlane (d6ecb003) a helyi ledgerből.
+
+**Döntés:** (1) HOL: külön oldal a Statisztikák csoportban ("LLM monitor", #llmMonitor), mert a
+kép egy monitorozó KÉPERNYŐ, nem egy kártya; az Áttekintés kompakt per-modell nézete marad.
+(2) SÁVOK: ügynökönként (a feed lane-je egyetlen "local", az ügynök a valós tengely), a blokkok
+kategória-színnel, valós indulás + időtartam szerint, ugyanazzal a first-fit csomagolóval és
+CSS-geometriával, mint az Áttekintés swimlane-je (egy rendszer, nem kettő). (3) RÉSZLET-PANEL
+kattintásra/Enterre: időtartam, ügynök, kategória, állapot, indulás, kártya-link -- a token/átvitel
+sor helyett egy kimondott jegyzet, mert ezt a feed NEM hordozza (12. szabály: nem mutatunk nullát
+mért érték helyett). (4) TERHELÉS-IDŐSOR: a feedből kliens-oldalon vödrözve (24 vödör, top-4
+kategória + egyéb, Catmull-Rom görbe). A kép "Model A / Model B" percenkénti kérés-görbéje az online
+modellekre NEM építhető a mai kontraktusból (csak összesítés van modellenként); needs-build,
+javasolt BE-mező: `task-summary?buckets=N -> series[]`. (5) A `blockCoverage` jegyzet a felületen
+látszik (lokalizált sor, a szerver angol szövege hoverre), a 2000-es limit túlcsordulása külön
+figyelmeztetés.
+
+**Ki döntött:** Peti (design-kép), backend2 (kontraktus + lefedettség), Fron Ted (oldal, sávok,
+kimondott hiányok), MikroB (dispatch).
+**Hivatkozás:** kártya `87be1810` (Pair-BE `a5bbfb98`, fázis `aecd9a12`); `web/app-llm-monitor.js`,
+`src/__tests__/llm-monitor-module.test.ts`.
