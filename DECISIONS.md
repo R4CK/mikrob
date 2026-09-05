@@ -8448,3 +8448,46 @@ esetet buktat, köztük mind a négy egészséges kontrollt; a valós fán a fut
 (INFO-ONLY előmérés, 20989), MikroB (NO-GO elfogadva, re-dispatch, 21013), backend2
 (implementáció, független újramérés, mutáció-ellenőrzés).
 **Hivatkozás:** kártya `26ab08a2`; `store/lint-ratchet.sh`, `store/lint-ratchet.selftest.sh`.
+
+## 2026-09-05 -- 44849954: a zárás-ellenőrző a verdikt SZERZŐJÉT is nézi
+
+**Döntés:** a `gate-closure-check.py` egy PASSZOLÓ verdiktet csak akkor számít az adott gate
+sign-offjának, ha azt a gate maga írta. Ha nem, a gate saját korábbi verdiktje lép a helyére; ha
+olyan sincs, új válasz jön (`UNVERIFIED-AUTHOR`) a csendes `AGREE` helyett. Egy ELUTASÍTÓ verdikt
+attól függetlenül érvényben marad, ki írta le.
+
+**Miért:** az eszköz a verdiktet SZÖVEG-ALAK szerint hitelesítette és SZERZŐ szerint soha (az
+`author` mezőt sehol nem olvasta). A kanban-API-n a komment szerzője a kérés TÖRZSÉBŐL jön, egy
+közös Bearer token alatt, tehát bármely ügynök írhat bármely szerző nevében -- az alak-ellenőrzés
+volt az egyetlen dolog a készítő és a saját sign-offja között. Cybered lelete (67a5ee01
+gate-eléséből), végponttól végpontig igazolva.
+
+**A szigorú author==gate szűrés ROSSZ válasz, mérve:** 156 kártya-gate páron a legfrissebb verdiktet
+nem a gate írta, és ebből 152 MikroB saját összefoglaló kommentje. Kizárásuk 54 lezárt kártyát
+minősítene visszamenőleg gate nélkülinek.
+
+**Egy implementációs részlet, ami nélkül elromlik:** a szerző-oldali összevonásnak TÜKRÖZNIE kell a
+verdikt-szó oldalit (a `GATES` melletti jegyzet a testvér-számot eldobja, tehát QA2 verdiktje a QA
+gate verdiktje). Csak az egyik oldalon alkalmazva 245 jogos QA2-verdikt minősülne idegennek. A
+záró számjegyek levágása szabályból következik, tehát egy jövőbeli CYBERSEC2/CYBERED2 nem igényel
+szerkesztést.
+
+**Az aszimmetria, és miért nem egyszerű "a gate saját kommentje az erősebb":** ha egy relayelt FAIL
+mögé visszaesnénk a gate régebbi PASS-ára, egy kártya kimondott elutasítás fölött zárulhatna --
+rosszabb, mint a javított hiba. Ezért csak a PASSZOLÓ verdiktnek kell beazonosíthatónak lennie.
+
+**Teljes tábla mérése (2889 kártya, régi kontra új):** 72 kártya olvasata változik, MIND `done`
+státuszú, és MIND `NOSHA`-ból indul -- egyetlen korábbi `AGREE` sem válik elutasítássá. Ebből 26
+`AGREE` lesz (a visszaesés VISSZANYER egy Gate-SHA-t, mert MikroB összefoglalói jellemzően nem
+hordoznak shát), 44 `UNVERIFIED-AUTHOR`, 2 pedig `DISAGREE` -- ez utóbbi két lezárt kártyán a gate-ek
+ténylegesen KÜLÖNBÖZŐ shára adtak verdiktet, amit eddig a `NOSHA` elfedett (`f4442719`, `f7ebaa2d`).
+
+**Amit ez NEM bizonyít:** hogy a szabály senkit nem blokkol. A "mind done" a MAI TÁBLA tulajdonsága,
+nem a szabályé -- ezentúl egy élő kártya is megállhat `UNVERIFIED-AUTHOR`-on, és ez a szándék.
+
+**Hosszú távú válasz (külön döntés, nem ezen a kártyán):** per-ügynök token, hogy a szerző a
+hitelesítésből származzon, ne a kérésből.
+
+**Ki döntött:** Cybered (lelet és javasolt gyógymód), backend2 (implementáció, teljes tábla mérése,
+az aszimmetria és a testvér-összevonás), MikroB (kártya).
+**Hivatkozás:** kártya `44849954`; `store/gate-closure-check.py`, `store/gate-closure-check.selftest.py`.

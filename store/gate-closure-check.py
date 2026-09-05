@@ -65,6 +65,8 @@ Output: exactly one line.
         FAILED|<details>             a designated gate's latest verdict is a FAIL/NO-GO
         MISSING|<details>            a designated gate has no verdict at all
         NOSHA|<details>              a latest verdict carries no Gate-SHA, so agreement is unprovable
+        UNVERIFIED-AUTHOR|<details>  a gate's PASS was written by someone other than that gate, and
+                                     that gate never posted one itself
         STALE|<sha>|<expected>|<why> the gates AGREE, but on a commit whose content differs from the
                                      one this card now declares
         UNRESOLVED|<sha>|<expected>|<why>
@@ -165,18 +167,91 @@ def declared_shas(comments):
     return found
 
 
+# WHO IS ALLOWED TO SPEAK FOR A GATE (card 44849954, Cybered's finding).
+#
+# This tool authenticated a verdict by its TEXT SHAPE and never by its AUTHOR: the `author` field
+# was not read anywhere. Comment authorship on the kanban API comes from the request BODY under one
+# shared Bearer token, so any agent can post as any author -- which means the shape check was the
+# only thing standing between a maker and their own sign-off.
+#
+# STRICT author==gate IS THE WRONG FIX, measured: 156 card-gate pairs on this board carry a latest
+# verdict written by someone other than the gate, and 152 of those are MikroB's own summary
+# comments restating a real verdict. Rejecting them outright would retroactively call 54 closed
+# cards ungated and make the tool unusable the day it shipped.
+#
+# The fold below MIRRORS the one on the verdict-word side (see the note on GATES, which drops the
+# sibling number so QA2's verdict is the QA gate's verdict). Applying it to only one of the two
+# sides is its own bug: measured, an author fold-free version calls 245 legitimate QA2 verdicts
+# foreign. Trailing digits are stripped for the same reason and by the same rule, so a future
+# CYBERSEC2/CYBERED2 needs no edit here.
+_AUTHOR_ALIASES = {"qa-engineer": "QA", "cybersecurity-redteam": "CYBERSEC"}
+_AUTHOR_SIBLING_SUFFIX = re.compile(r"\d+$")
+
+
+def author_role(author):
+    """The gate ROLE this author speaks for, or None for anyone else."""
+    name = (author or "").strip().lower()
+    if not name:
+        return None
+    if name in _AUTHOR_ALIASES:
+        return _AUTHOR_ALIASES[name]
+    role = _AUTHOR_SIBLING_SUFFIX.sub("", name).upper()
+    return role if role in GATES else None
+
+
 def latest_per_gate(comments):
     """The LAST verdict each gate gave. Order is the board's own comment order.
 
     Deliberately not "the highest id" or a timestamp: the caller hands us the list the API returned,
     and re-sorting it here would invent an ordering the board never promised.
     """
-    latest = {}
+    latest, latest_by_role = {}, {}
     for c in comments:
-        v = verdict_of((c or {}).get("content"))
-        if v:
-            latest[v[0]] = v
+        c = c or {}
+        v = verdict_of(c.get("content"))
+        if not v:
+            continue
+        latest[v[0]] = v
+        if author_role(c.get("author")) == v[0]:
+            latest_by_role[v[0]] = v
+
+    # AN UNATTRIBUTABLE PASS IS NOT A PASS; AN UNATTRIBUTABLE REFUSAL IS STILL A REFUSAL.
+    #
+    # The directions are not symmetric, which is why this is not a plain "prefer the gate's own
+    # comment". Discarding a relayed FAIL in favour of an older gate-authored PASS would let a card
+    # close over a stated refusal -- strictly worse than the bug being fixed. So a failing verdict
+    # stands whoever wrote it, and only a PASSING one has to be attributable.
+    #
+    # Falling back to the role's own last verdict is Cybered's remedy, and measured over the board
+    # it is a strict improvement rather than a trade: of the 104 pairs where it applies, it RECOVERS
+    # a `Gate-SHA:` in 30 (MikroB's summaries usually carry none, so those gates read NOSHA today
+    # and become checkable), loses one in ZERO, and changes no sha that both sides state.
+    for gate, v in list(latest.items()):
+        if v[1] not in PASSING:
+            continue
+        if gate in latest_by_role:
+            latest[gate] = latest_by_role[gate]
     return latest
+
+
+def unattributed_gates(comments):
+    """Gates whose latest verdict PASSES but which never posted a verdict themselves.
+
+    Separate from `latest_per_gate` so the verdict a gate is credited with and the question of
+    whether anyone can be held to it stay independently readable. `check` turns this into
+    UNVERIFIED-AUTHOR rather than a silent AGREE: "nobody I can name said this passed" is not the
+    same statement as "it passed", and this tool's whole job is to keep those apart.
+    """
+    seen, by_role = {}, set()
+    for c in comments:
+        c = c or {}
+        v = verdict_of(c.get("content"))
+        if not v:
+            continue
+        seen[v[0]] = v
+        if author_role(c.get("author")) == v[0]:
+            by_role.add(v[0])
+    return {g for g, v in seen.items() if v[1] in PASSING and g not in by_role}
 
 
 def shas_agree(a, b):
@@ -281,6 +356,7 @@ def content_verdict(judged, declared):
 
 def check(comments, designated=None, expect=None, use_declared=True):
     latest = latest_per_gate(comments)
+    unverified = unattributed_gates(comments)
     inferred = designated is None
     if inferred:
         designated = sorted(latest.keys())
@@ -296,6 +372,15 @@ def check(comments, designated=None, expect=None, use_declared=True):
     failed = ["%s=%s" % (g, latest[g][1]) for g in designated if latest[g][1] not in PASSING]
     if failed:
         return "FAILED|" + "; ".join(failed)
+
+    # NOBODY I CAN NAME SAID THIS PASSED (card 44849954). Placed after FAILED, because a refusal
+    # already blocks the closure and naming it is more useful, and BEFORE the sha questions,
+    # because if no gate can be held to the verdict then which sha it judged is moot.
+    unattributed = sorted(g for g in designated if g in unverified)
+    if unattributed:
+        return ("UNVERIFIED-AUTHOR|%s passed, but no comment from that gate says so -- the verdict "
+                "was written by someone else and comment authorship is self-declared, so this is "
+                "not a sign-off anyone can be held to" % ", ".join(unattributed))
 
     nosha = [g for g in designated if latest[g][2] is None]
     if nosha:
