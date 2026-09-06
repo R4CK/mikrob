@@ -178,6 +178,11 @@ fi
 DEFAULT_BRANCH="$(g symbolic-ref --short refs/remotes/origin/HEAD 2>/dev/null | sed 's@^origin/@@')"
 [ -n "$DEFAULT_BRANCH" ] || DEFAULT_BRANCH="develop"
 TEST_CMD="${MARVEEN_LAND_TEST:-$MAIN/store/fleet-test.sh --ref}"
+# fleet-test.sh posts PAUSED-SEMAPHORE / RESUMED-SEMAPHORE to the landing agent's card while it
+# queues for a shared CPU slot (card 492a6d5c). It cannot find that card on its own -- it takes a
+# ref, not an agent -- so the caller that DOES know which agent it is landing for passes the name.
+# Exported rather than argument-passed so MARVEEN_LAND_TEST overrides keep working unchanged.
+export FLEET_TEST_AGENT=""
 # Card f1b3f2f0. Same seam as MARVEEN_LAND_TEST and for the same reason: the selftest must exercise
 # the rebuild branch without running a real 16s tsc against the live install.
 BUILD_CMD="${MARVEEN_LAND_BUILD:-npm run build}"
@@ -185,6 +190,9 @@ MAX_ATTEMPTS="${MARVEEN_LAND_MAX_ATTEMPTS:-3}"
 
 land_one() {
   local agent="$1" dry="$2"
+  # Scoped to this landing: --all lands several agents in one run, and a stale name here would post
+  # one agent's queueing notice onto another agent's card.
+  export FLEET_TEST_AGENT="$agent"
   local branch="agent/${agent}/work"
 
   g show-ref --verify --quiet "refs/heads/$branch" || { say "$agent: no branch $branch -- nothing to land"; return 0; }

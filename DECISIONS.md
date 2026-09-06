@@ -11567,3 +11567,61 @@ tehát a szerződés két különböző felét fedi.
 
 **Hivatkozás:** kártya `5b00c5ec` (szülő `01c846bf`); `src/db.ts`,
 `src/__tests__/kanban-dispatch-claim.test.ts`.
+
+## 2026-09-06 -- A várakozó fleet-test is kimondja, hogy vár (kártya 492a6d5c, Cybersec NO-GO)
+
+**A LELET Cybersecé** (712a8349). A `fleet-test.sh` új `acquire_cpu_slot()` várakozása csak stderr-re
+írt. A `cleancore-suite-run.sh` -- ugyanannak a slot-poolnak a másik fogyasztója, és az elfogadott
+minta -- ezen felül PAUSED-SEMAPHORE / RESUMED-SEMAPHORE kommentet is tesz a várakozó ügynök
+kártyájára. Az indok itt azonos: a 3. szabály szerint egy nem mozduló `in_progress` kártya
+beragadtnak számít, a 3a. szerint 60 perc után testvérre száll. Egy landolás, ami két teljes suite
+mögött jogosan sorban áll, ennél tovább is várhat -- a kártyáját tehát elvennék tőle azért, mert
+helyesen várt. Egy poolban két fogyasztó, az egyik bejelentkezik, a másik néma: ezt utasította el.
+
+**A DÖNTÉS: KÖNYVTÁRBA EMELVE, nem lemásolva.** Új `store/kanban-comment-lib.sh`. A másolás
+alternatívája egy második példányt csinált volna a token-kezelésből, ami nem sablon: azért néz ki
+így (0600-as fejléc-fájl, `-H @file`), mert egy Cybersec-lelet (edb7559f) megmutatta, hogy a
+`-H "Authorization: ... $(cat ...)"` alak a `/proc/<pid>/cmdline`-on olvasható. Ebből egy példányt
+akarok. Precedens: `cleancore-tsc-lib.sh`.
+
+**AMIT SZÁNDÉKOSAN NEM TETTEM MEG, kimondva:** a `cleancore-suite-run.sh` továbbra is hordozza a
+saját másolatát. Az a fájl most KÉT másik kártya alatt áll gate-en (`beb9c8d3`, `f9bad591`); egy
+harmadik szerkesztés három shát hagyna ugyanarra a fájlra. A de-duplikáció külön kártya, nem ennek a
+NO-GO-javításnak a része.
+
+**AZ ÜGYNÖK-NÉV ÚTJA.** A `fleet-test.sh` refet kap, nem ügynököt, tehát magától nem találja meg a
+kártyát. A `marveen-land.sh` viszont tudja, kinek landol, és `FLEET_TEST_AGENT`-ként adja át --
+`land_one()`-on belül scope-olva, mert a `--all` több ügynököt landol egy futásban, és egy beragadt
+név az egyik ügynök várakozás-jelzését a másik kártyájára tenné. Kézzel, ügynök nélkül futtatva a
+könyvtár néma no-op: helyes, mert olyankor nincs kártya, amit annotálni kellene.
+
+**EGY ŐRT NEM TÁGÍTOTTAM, HANEM SZŰKÍTETTEM.** A meglévő forrás-olvasó azt kérte, hogy a ciklus
+fejétől 400 karakteren belül legyen egy `die`. A PAUSED-SEMAPHORE értesítés -- jogos munka, és épp
+ez a NO-GO kérése -- 435-re tolta, és az őr pirosra váltott. A 400 sosem volt a tulajdonság: az
+"a timeout-ot ÉSZLELŐ ág az, amelyik meghal" az, és a régi olvasat BÁRMELY `die`-jal beérte azon az
+ablakon belül. Az őr most a timeout-ÁGRA horgonyoz. Ez szűkítés, nem lazítás azért, hogy a saját
+változtatásom átmenjen.
+
+**INCIDENS, amit én okoztam, és amitől a teszt alakja megváltozott.** A `die` eltávolítását ELŐBEN
+futtattam mutánsként. Az a `die` pontosan az, ami megakadályozza, hogy egy futás a CPU-kapun átesve
+továbbmenjen -- a mutáns tehát nem állt meg, hanem elindított egy VALÓDI teljes suite-ot a
+megosztott gépen, ~3 percre CPU-t vitt és fogta a közös fa-zárat. Leállítva, a fájl visszaállítva,
+más ügynök folyamata nem sérült. A tanulság a kódba került: egy fail-safe KILÉPÉST eltávolító
+mutációt nem szabad élőben futtatni, és nem is kell -- az őr forrást olvas, tehát mutált SZÖVEGET
+kap, nem mutált fájlt. Így áll most kontroll-esetként.
+
+**BIZONYÍTÉK.** 12/12. Az értesítés VISELKEDÉSE mérve, nem forrásból következtetve: egy hamis
+dashboard fogja el, amit a szkript ténylegesen POST-ol. Két harness-versenyt kellett megszüntetni,
+és mindkettőt mérés mutatta meg (a két eset ELLENTÉTES irányban bukott, ami azt mondta, hogy a
+harness a hibás, nem a szkript -- kézzel futtatva a szkript mindkét kommentet helyesen kiküldte):
+(1) az `execFileSync` blokkolja az event loopot, tehát a gyerek olyan HTTP-válaszra várt, ami nem
+jöhetett meg -- innen a 22 másodperces bukás egy 20 másodperces kereten; (2) a `listen(0)`
+ephemeral portja újrahasznosul, tehát az előző eset kései POST-ja a KÖVETKEZŐ eset elfogójába
+esett. Az első aszinkron futtatással, a második esetenkénti ügynök-névvel és szűréssel megszűnt.
+NEGATÍV KONTROLL is van: aki azonnal kap slotot, semmit nem posztol.
+
+**Ki döntött:** Cybersec (a NO-GO); a könyvtárba emelés, az őr szűkítése és a mutációs eljárás
+megváltoztatása backend mérnöki döntése, itt felülvizsgálatra kitéve.
+
+**Hivatkozás:** kártya `492a6d5c`; `store/kanban-comment-lib.sh`, `store/fleet-test.sh`,
+`store/marveen-land.sh`, `src/__tests__/fleet-test-shares-cleancore-cpu-pool.test.ts`.

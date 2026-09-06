@@ -19,7 +19,7 @@
 // never holds the tree lock uselessly while still queueing for CPU capacity.
 import { describe, it, expect, afterEach } from 'vitest'
 import { execFileSync, spawn, type ChildProcess } from 'node:child_process'
-import { readFileSync, mkdirSync, rmSync } from 'node:fs'
+import { readFileSync, mkdirSync, rmSync, writeFileSync } from 'node:fs'
 import { join, dirname } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { tmpdir } from 'node:os'
@@ -69,7 +69,19 @@ function problems(source: string): string[] {
   const waitLoop = at(/while ! acquire_cpu_slot/)
   if (waitLoop < 0) found.push('the CPU-slot wait is not a bounded retry loop')
   else if (!/CPU_WAIT_MAX_S/.test(t.slice(waitLoop, waitLoop + 400))) found.push('the CPU-slot wait has no bound')
-  else if (!/\bdie\b/.test(t.slice(waitLoop, waitLoop + 400))) found.push('a CPU-slot wait timeout is not fatal')
+  else {
+    // ANCHORED TO THE TIMEOUT BRANCH, not to a character distance from the loop head (card
+    // 492a6d5c's Cybersec delta). This used to read "a `die` appears within 400 chars of the loop",
+    // and adding the PAUSED-SEMAPHORE notice -- legitimate work, and required by that NO-GO --
+    // pushed the `die` to 435 and turned the guard red. The proximity number was never the
+    // property; "the branch that detects the timeout is the branch that dies" is, and any `die`
+    // inside that window used to satisfy the old reading whether or not it belonged to this branch.
+    // So this is a narrowing, not a loosened window to let my own change through.
+    const timeoutBranch = at(/-ge "\$CPU_WAIT_MAX_S"/)
+    if (timeoutBranch < 0) found.push('the CPU-slot wait has no timeout branch')
+    else if (!/\bdie\b/.test(t.slice(timeoutBranch, t.indexOf('\n  fi', timeoutBranch) + 1)))
+      found.push('a CPU-slot wait timeout is not fatal')
+  }
 
   return found
 }
@@ -83,6 +95,17 @@ describe('fleet-test.sh shares CleanCore\'s CPU-capacity pool (card 492a6d5c)', 
     const preFix = text.replace(/\nacquire_cpu_slot\(\)[\s\S]*?\ndone\n/, '\n')
     expect(code(preFix), 'the mutation did not apply -- the block was not found').not.toMatch(/acquire_cpu_slot/)
     expect(problems(preFix)).toContain('no shared CPU-slot acquisition at all')
+  })
+
+  it('CONTROL: a NON-FATAL CPU-slot timeout is caught (the property, not the character distance)', () => {
+    // Read on MUTATED TEXT, never by mutating the file and running it -- and that distinction is
+    // not fastidiousness. Removing the `die` is exactly what lets a run fall THROUGH the CPU gate
+    // into a real worktree checkout, build and full suite; done live it starts the runaway this
+    // whole card exists to prevent (measured the hard way while writing this case). The guard is a
+    // source reader, so the honest way to exercise it is to hand it the source.
+    const nonFatal = text.replace('die 3 "no shared CPU slot after', 'echo 3 "no shared CPU slot after')
+    expect(nonFatal, 'the mutation must actually change the text, or this case is vacuous').not.toBe(text)
+    expect(problems(nonFatal)).toContain('a CPU-slot wait timeout is not fatal')
   })
 
   it('CONTROL: acquiring the CPU slot AFTER the tree mutex is caught, not just a missing one', () => {
@@ -146,6 +169,23 @@ describe('fleet-test.sh behaviourally contends with cleancore-suite-run.sh\'s ow
    * ANY invocation that gets past the CPU-slot stage dies quickly at the tree-lock stage instead of
    * ever reaching a real worktree checkout or build/vitest run. This isolates the CPU-slot stage's
    * behaviour (queues or not) without risking a real suite execution as a side effect of the test. */
+  /** ASYNC twin of runPastCpuSlot, and the reason it has to exist: the fake dashboard below lives in
+   *  THIS process, and execFileSync blocks this event loop -- so a child that POSTs a comment waits
+   *  on a response that cannot be produced until the child exits. Measured: each comment burned its
+   *  full `curl --max-time 10`, two of them, and the case died at 22s against a 20s budget. Running
+   *  the child asynchronously keeps the loop free to serve it. */
+  function runPastCpuSlotAsync(env: NodeJS.ProcessEnv): Promise<{ stderr: string }> {
+    return new Promise((resolve) => {
+      const p = spawn('bash', [SCRIPT, '--ref', 'HEAD'], {
+        env: { ...process.env, FLEET_TEST_LOCK_WAIT: '1', ...env },
+        stdio: ['ignore', 'pipe', 'pipe'],
+      })
+      let stderr = ''
+      p.stderr.on('data', (c) => (stderr += c))
+      p.on('close', () => resolve({ stderr }))
+    })
+  }
+
   function runPastCpuSlot(env: NodeJS.ProcessEnv): { stderr: string } {
     let stderr = ''
     try {
@@ -174,6 +214,123 @@ describe('fleet-test.sh behaviourally contends with cleancore-suite-run.sh\'s ow
     // Never reached the tree-lock stage: the CPU-slot stage itself was the one that gave up.
     expect(stderr).not.toMatch(/another suite run holds the fleet lock/)
   }, 15000)
+
+  // --- Cybersec NO-GO on this card (comment 712a8349): a waiter must ANNOUNCE ITSELF ------------
+  // The two cases below are behavioural, not source pins: a fake dashboard captures what the script
+  // actually POSTs. The pair is the point -- a script that posted the notice unconditionally would
+  // pass the first case and fail the second, and unconditional notices are exactly what trains
+  // people to skip them.
+  //
+  // TWO RACES THIS HARNESS HAS TO SURVIVE, both measured rather than guessed -- the first version
+  // failed BOTH cases, and in OPPOSITE directions, which is what said the harness and not the
+  // script was wrong. Run by hand, the script posted both comments correctly.
+  //   1. `runPastCpuSlot` is execFileSync: it BLOCKS this event loop, so the child's POSTs sit in
+  //      the socket queue and Node cannot handle them until the run returns. Reading `seen`
+  //      immediately therefore reads it too early. Hence waitFor below.
+  //   2. `listen(0)` takes an ephemeral port, and a port freed by one case can be handed to the
+  //      next -- so a late POST from the PREVIOUS case lands in THIS case's capture. That is what
+  //      put a SEMAPHORE comment in the negative control. Each case now uses its own agent name and
+  //      filters on it, so crosstalk cannot be mistaken for its own traffic.
+  async function withFakeDashboard(
+    agent: string,
+    fn: (base: string, seen: string[]) => void | Promise<void>,
+  ): Promise<void> {
+    const { createServer } = await import('node:http')
+    const seen: string[] = []
+    const srv = createServer((req, res) => {
+      if (req.url === '/api/kanban') {
+        res.writeHead(200, { 'Content-Type': 'application/json' })
+        res.end(JSON.stringify([{ id: `card-${agent}`, status: 'in_progress', assignee: agent }]))
+        return
+      }
+      let body = ''
+      req.on('data', (c) => (body += c))
+      req.on('end', () => {
+        seen.push(body)
+        res.writeHead(200, { 'Content-Type': 'application/json' })
+        res.end('{}')
+      })
+    })
+    await new Promise<void>((r) => srv.listen(0, '127.0.0.1', r))
+    const port = (srv.address() as { port: number }).port
+    try {
+      await fn(`http://127.0.0.1:${port}`, seen)
+    } finally {
+      srv.close()
+    }
+  }
+
+  /** Own traffic only: see race 2 above. */
+  const mine = (seen: string[], agent: string) => seen.filter((b) => b.includes(`"${agent}"`))
+
+  /** Polls until the predicate holds or the budget runs out, then returns what it saw either way --
+   *  so a failure reports the ACTUAL captured traffic instead of an empty timeout message. */
+  async function waitFor(
+    seen: string[],
+    agent: string,
+    ok: (bodies: string) => boolean,
+    ms = 4000,
+  ): Promise<string> {
+    const deadline = Date.now() + ms
+    for (;;) {
+      const bodies = mine(seen, agent).join('\n')
+      if (ok(bodies) || Date.now() > deadline) return bodies
+      await new Promise((r) => setTimeout(r, 50))
+    }
+  }
+
+  /** A THROWAWAY token, never the live one: the endpoint here is a test server, and a real token is
+   *  only as safe as what it is sent to. */
+  function throwawayToken(): string {
+    const f = join(anchor, 'probe-token')
+    mkdirSync(anchor, { recursive: true })
+    writeFileSync(f, 'test-token-not-real\n')
+    return f
+  }
+
+  it('a QUEUEING run posts PAUSED-SEMAPHORE to the waiting card, so the stuck-monitor does not take it away', async () => {
+    await withFakeDashboard('probe-queue', async (base, seen) => {
+      mkdirSync(`${anchor}/store`, { recursive: true })
+      holdSlot(1, 5)
+      holdSlot(2, 5)
+      await runPastCpuSlotAsync({
+        MARVEEN_MAIN: anchor,
+        CLEANCORE_SUITE_WAIT_MAX_S: '2',
+        CLEANCORE_SUITE_POLL_S: '1',
+        FLEET_TEST_AGENT: 'probe-queue',
+        KANBAN_COMMENT_API: base,
+        KANBAN_COMMENT_TOKEN_FILE: throwawayToken(),
+      })
+      const bodies = await waitFor(seen, 'probe-queue', (b) => /GIVING UP/.test(b))
+      expect(bodies, 'the waiting card must be told it is queueing, not dead').toMatch(
+        /PAUSED-SEMAPHORE/,
+      )
+      // Giving up must ALSO be said out loud, and must say it is not a test result -- otherwise a
+      // run that never happened reads on the card exactly like one that passed.
+      expect(bodies).toMatch(/GIVING UP/)
+      expect(bodies).toMatch(/NEM teszt-eredmeny/)
+    })
+  }, 20000)
+
+  it('CONTROL: a run that gets a slot IMMEDIATELY posts NOTHING -- the routine case stays quiet', async () => {
+    await withFakeDashboard('probe-free', async (base, seen) => {
+      mkdirSync(`${anchor}/store`, { recursive: true })
+      holdRealTreeLock(3)
+      await runPastCpuSlotAsync({
+        MARVEEN_MAIN: anchor,
+        FLEET_TEST_AGENT: 'probe-free',
+        KANBAN_COMMENT_API: base,
+        KANBAN_COMMENT_TOKEN_FILE: throwawayToken(),
+      })
+      // Give a comment every chance to ARRIVE before concluding none was sent: asserting emptiness
+      // right after a blocking run would pass even if one were on its way.
+      const bodies = await waitFor(seen, 'probe-free', () => false, 1200)
+      expect(
+        bodies,
+        'a notice that fires on healthy traffic is one people learn to skip',
+      ).toBe('')
+    })
+  }, 20000)
 
   it('CONTROL: with a free CPU pool, no queueing message appears, and the run reaches the tree-lock stage', () => {
     mkdirSync(`${anchor}/store`, { recursive: true })
