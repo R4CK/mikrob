@@ -313,7 +313,7 @@ run "$root" --update "--accept-cleared=$UA"
 root="$(new_root)"; export REPORT_JSON="$TMP/o4.json"
 mk_report "$REPORT_JSON" "parse=6" "$UV=107"
 run "$root" --update "--accept-cleared=@typescript-eslint/no-unsafe-argumnet"
-[ "$CODE" = 3 ] && echo "$OUT" | grep -q "not in the recorded bound" \
+[ "$CODE" = 3 ] && echo "$OUT" | grep -q "did not go to zero in this run" \
   && ok "R-A: a misspelled --accept-cleared name is refused, not ignored" \
   || bad "R-A: a misspelled --accept-cleared name is refused" "code=$CODE out=$OUT"
 
@@ -415,6 +415,58 @@ run "$root" --bootstrap
 [ "$CODE" = 3 ] && [ ! -f "$root/store/lint-baseline.json" ] \
   && ok "R-B: a still-reporting SYNTACTIC rule does not satisfy the type-aware floor" \
   || bad "R-B: a syntactic rule does not satisfy the type-aware floor" "code=$CODE out=$OUT"
+
+# --- O5: THE BLANKET (Cybersec NO-GO on 382755b3, HIGH, comment 21295) --------------------------
+# The acknowledgement used to be validated against the baseline's KEY SET, which is constant. So a
+# static list naming every rule was permanently valid -- the exact blanket the named form exists to
+# prevent. O3 above did not catch it, and the reason is worth keeping: O3 measures that ONE name
+# does not excuse ANOTHER, which is one rule short of a list that names them all.
+root="$(new_root)"; export REPORT_JSON="$TMP/o5.json"
+mk_report "$REPORT_JSON" "parse=6" "$UA=0" "$UV=0"
+run "$root" --update "--accept-cleared=(parse-error),$UA,$UV"
+[ "$CODE" = 3 ] \
+  && ok "R-A: a STATIC list of every baseline name does not wave a dark run through" \
+  || bad "R-A: a STATIC list of every baseline name does not wave a dark run through" "code=$CODE out=$OUT"
+
+# --- O6: THE CONTROL THAT DECIDES IT -- the stale list fails on the FIRST HEALTHY run ------------
+# This is the property that makes the fix worth anything. A static list was HARMLESS on a healthy
+# run, so it could sit in a wrapper script forever with nothing drawing attention to it, until the
+# day the rules really went dark. Failing here is what stops it going stale quietly. Note the list
+# names only the two REAL rules: the refusal must not depend on `(parse-error)` being in it.
+root="$(new_root)"; export REPORT_JSON="$TMP/o6.json"
+mk_report "$REPORT_JSON" "parse=6" "$UA=101" "$UV=107"
+run "$root" --update "--accept-cleared=$UA,$UV"
+[ "$CODE" = 3 ] && echo "$OUT" | grep -q "did not go to zero in this run" \
+  && ok "R-A: a stale acknowledgement fails on the first HEALTHY run, so it cannot sit in a wrapper" \
+  || bad "R-A: a stale acknowledgement fails on the first HEALTHY run" "code=$CODE out=$OUT"
+
+# --- O7: OVER-CLAIMING is refused; claiming exactly what cleared still passes --------------------
+# The strictness has to cut only where it should: naming a rule that did NOT clear is now an error
+# (deliberate, and stated in the script), while a precise acknowledgement is unaffected.
+root="$(new_root)"; export REPORT_JSON="$TMP/o7.json"
+mk_report "$REPORT_JSON" "parse=6" "$UA=0" "$UV=107"
+run "$root" --update "--accept-cleared=$UA,$UV"
+[ "$CODE" = 3 ] \
+  && ok "R-A: naming a rule that did NOT clear is refused, not ignored" \
+  || bad "R-A: naming a rule that did NOT clear is refused" "code=$CODE out=$OUT"
+root="$(new_root)"; export REPORT_JSON="$TMP/o7b.json"
+mk_report "$REPORT_JSON" "parse=6" "$UA=0" "$UV=107"
+run "$root" --update "--accept-cleared=$UA"
+[ "$CODE" = 0 ] \
+  && ok "CONTROL: naming exactly the rule that cleared still writes the baseline" \
+  || bad "CONTROL: naming exactly the rule that cleared still writes the baseline" "code=$CODE out=$OUT"
+
+# --- O8: `(parse-error)` can never be acknowledged, and that is not cosmetic -------------------
+# The collapse check excludes (parse-error) by construction, so accepting it could never change a
+# verdict -- it would be a name the tool takes and then ignores, which is precisely the class O4
+# exists to stop. Dropping the parse_key exclusion from the validation set is invisible in every
+# other case, so without this it is an unpinned behaviour: measured, that mutant left 34/34 green.
+root="$(new_root)"; export REPORT_JSON="$TMP/o8.json"
+mk_report "$REPORT_JSON" "$UA=101" "$UV=107"
+run "$root" --update "--accept-cleared=(parse-error)"
+[ "$CODE" = 3 ] && echo "$OUT" | grep -q "did not go to zero in this run" \
+  && ok "R-A: (parse-error) cannot be acknowledged -- an inert name is an operator error" \
+  || bad "R-A: (parse-error) cannot be acknowledged" "code=$CODE out=$OUT"
 
 echo
 printf 'lint-ratchet selftest: %d passed, %d failed (%d cases)\n' "$pass" "$fail" "$((pass+fail))"

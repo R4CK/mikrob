@@ -290,14 +290,38 @@ def degradation_reason(counts, baseline, have_baseline, files_linted):
     return None
 
 
-# A NAME THAT IS NOT IN THE BOUND IS AN OPERATOR ERROR, NOT A NO-OP. Silently ignoring a typo
-# would let `--accept-cleared=@typescript-eslint/no-floting-promises` read as an acknowledgement
-# that was never actually made, and the run it waves through is exactly the one being asked about.
-unknown = sorted(accepted_cleared - set(baseline))
+# AN ACKNOWLEDGEMENT IS VALIDATED AGAINST THIS RUN, NOT AGAINST THE STABLE KEY SET (Cybersec
+# NO-GO on 382755b3, HIGH, comment 21295 -- reproduced here independently before fixing).
+#
+# The first version checked the names against `set(baseline)`. The baseline's KEYS are constant;
+# only the collapsed subset moves. So a static list naming every rule was permanently valid, which
+# made `--accept-cleared` exactly the blanket the named form was introduced to avoid. Measured on
+# the shipped script, parse count unchanged:
+#
+#   both ratcheted rules dark, no flag                        -> exit 3  (correct)
+#   the SAME run, --accept-cleared=<every baseline name>       -> exit 0  (the bypass)
+#   CONTROL: a HEALTHY run with that same static list          -> exit 0  (nothing notices)
+#
+# The control is the part that decides it. A static list is harmless on a healthy run, so it can
+# sit in a wrapper script forever and nothing ever draws attention to it -- until the day the rules
+# really do go dark, and then it waves that run through. Naming the rules only makes the line
+# longer; it does not make a stale line fail. That is why my own O3 case did not catch this: O3
+# measures that ONE name does not excuse ANOTHER, which is one rule short of the case that matters.
+#
+# Validating against the rules that ACTUALLY went to zero in THIS run fixes both halves at once: a
+# static list now fails on the FIRST healthy run, so it cannot go stale quietly.
+#
+# The costs, stated rather than discovered later: this is stricter -- naming a rule that did not in
+# fact clear is now an error, not a no-op -- and `(parse-error)` can no longer be named at all,
+# because it is excluded from the collapse set by construction. Both are deliberate.
+cleared_now = {r for r, was in baseline.items()
+               if r != parse_key and was > 0 and counts.get(r, 0) == 0}
+unknown = sorted(accepted_cleared - cleared_now)
 if unknown:
-    print(f'lint-ratchet.sh: --accept-cleared names {", ".join(unknown)}, which is not in the '
-          f'recorded bound. Nothing was accepted -- check the spelling against '
-          f'{baseline_path}.', file=sys.stderr)
+    print(f'lint-ratchet.sh: --accept-cleared names {", ".join(unknown)}, which did not go to zero '
+          f'in this run. Nothing was accepted -- acknowledge only what this run actually cleared '
+          f'(the refusal below prints the exact list, ready to paste), and check the spelling '
+          f'against {baseline_path}.', file=sys.stderr)
     raise SystemExit(3)
 
 degraded = degradation_reason(counts, baseline, have_baseline, len(report))
