@@ -42,4 +42,14 @@ export const AGENT_MESSAGES_ALTER_COLUMNS: readonly string[] = [
   `ALTER TABLE agent_messages ADD COLUMN trace_id TEXT`,
   `ALTER TABLE agent_messages ADD COLUMN span_id TEXT`,
   `ALTER TABLE agent_messages ADD COLUMN parent_span_id TEXT`,
+  // Card 3bd457ed (parent dc35fa1a): does this message ask for an IMMEDIATE
+  // interruption of the receiver, or is it content for the receiver's next
+  // natural check? 1 = wake (every message before this column existed, and
+  // every caller that does not say otherwise), 0 = deliver silently.
+  //
+  // NOT NULL DEFAULT 1 is what makes the migration bit-identical for existing
+  // rows: SQLite backfills the default into every already-present row, so an
+  // old row reads back as a waking message rather than as NULL, and no reader
+  // has to guess what a NULL here would have meant.
+  `ALTER TABLE agent_messages ADD COLUMN wake INTEGER NOT NULL DEFAULT 1`,
 ]
