@@ -9968,3 +9968,31 @@ nem írtam át, hanem egy felülíró kör-jegyzetet fűztem hozzá.
 
 **Ki döntött:** backend3 (mérés és kártya), backend2 (megvalósítás), upstream (az adoptált függvény).
 **Hivatkozás:** kártya d2b881ab; `src/web/agent-scaffold.ts`.
+
+## 2026-09-06 14:26 -- d2b881ab KORREKCIÓ -- a buildert az INJEKTOR-nál átírtam, az ÖSSZEHASONLÍTÁSNÁL nem
+
+**Mi történt:** a `b097473a` az `injectOutgoingCopyGate()`-et átvitte a `pythonHookCommand()`-re, de
+azt a két helyet, ami ezt a bedrótozást FELISMERI (`ensureGovernanceGateCommands` wired-already
+összehasonlítása és az `ensureOutgoingCopyGate` elő-ellenőrzése), a `hookCommand()`-en hagyta. A
+flotta-suite fogta meg: `outgoing-copy-gate-role-wiring.test.ts`, 2 bukás, 626 fájl / 15 248 tesztből.
+
+**Miért nem látszott a saját tesztjeimen:** a BEDRÓTOZOTT parancs helyes volt, tehát minden teszt,
+ami azt vizsgálja, zöld maradt (a 15 újam is). A kár egy réteggel arrébb, az ÖSSZEHASONLÍTÁSBAN volt:
+a javító kör nem ismerte fel a saját munkáját, ezért a `needCopyAdd` minden körben igaz maradt (a
+javítás sosem ült le, minden bootnál újraírta a `settings.json`-t), a `needCopyRemove` pedig végig
+hamis (a kill switch KIKAPCSOLÁSA többé nem távolította el a hookot -- pont a "mindkét irány"
+tulajdonság, amiért a 74181db2 kártya készült).
+
+**A tanulság kimondottan ott állt, amit megsértettem:** a `hookCommand()` saját fejléce ígéri, hogy
+egyetlen builder tartja "the injectors and every wired-already comparison byte-identical, so they
+cannot drift". A mondat első felét alkalmaztam, a másodikat nem.
+
+**Strukturális pin az OSZTÁLYRA, nem erre az egy esetre:** forrás-szkennelés, ami kimondja, hogy `.py`
+út nem mehet a `hookCommand()`-be és `.mjs` út nem mehet a `pythonHookCommand()`-be. Három külön
+visszaállított hívási helyen bizonyítottan harap, plusz egy korpusz-ellenőrzés, hogy egy semmit nem
+illesztő regex ne mehessen el tisztaként. Az illesztés a NYERS fájlon fut, nem komment-mentesítetten:
+ez HIÁNY-állítás, és a komment-eltávolítás az az irány, ami valódi előfordulást tud elrejteni.
+
+**Ki döntött:** backend2.
+**Hivatkozás:** kártya d2b881ab; commit `00691ced`; `src/web/agent-scaffold.ts`,
+`src/__tests__/python-hook-interpreter.test.ts`.
