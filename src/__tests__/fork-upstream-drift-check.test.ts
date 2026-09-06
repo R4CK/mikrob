@@ -17,6 +17,7 @@ import {
   UPSTREAM_REMOTE,
   UPSTREAM_BRANCH,
   type GitRunner,
+  metaAnnouncement,
 } from '../fork-upstream/drift-check.js'
 import { ACKNOWLEDGED_UPSTREAM_BLOBS } from '../fork-upstream/acknowledged-conflicts.js'
 
@@ -157,5 +158,25 @@ describe('runDriftCheck (card 99c2eb09)', () => {
     expect(fetch).toContain(UPSTREAM_REMOTE)
     expect(fetch).toContain(UPSTREAM_BRANCH)
     expect(merge).toContain(`${UPSTREAM_REMOTE}/${UPSTREAM_BRANCH}`)
+  })
+})
+
+describe('metaAnnouncement (card d359535c: the skip state must be loud, not just typeof-boolean)', () => {
+  it('armed: the name says ARMED and the message matches', () => {
+    const a = metaAnnouncement(true)
+    expect(a.name).toContain('ARMED')
+    expect(a.name).not.toContain('SKIPPED')
+    expect(a.message).toContain('ARMED')
+  })
+
+  it('skipped: the name says SKIPPED and the message matches -- this is what used to be invisible', () => {
+    const a = metaAnnouncement(false)
+    expect(a.name).toContain('SKIPPED')
+    expect(a.name).not.toContain('ARMED')
+    expect(a.message).toContain('SKIPPED')
+  })
+
+  it('the two states never produce the same test name (armed cannot masquerade as skipped or vice versa)', () => {
+    expect(metaAnnouncement(true).name).not.toBe(metaAnnouncement(false).name)
   })
 })

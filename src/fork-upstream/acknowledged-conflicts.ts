@@ -1288,7 +1288,27 @@ export const ACKNOWLEDGED_UPSTREAM_BLOBS: Readonly<Record<keyof typeof ACKNOWLED
   'scripts/set-bot-menu.sh': 'b45aca69c59f9b69748592df70d0a9ea77189206',
   'scripts/stuck-modal-guard.sh': '5bf19fc208ac41c204ae007189553efcb1d2790d',
   'src/__tests__/send-honesty-sweep.test.ts': 'afc17a2222a86a7645343f837618ebe74516dacc',
-  'scripts/channels.sh': '287de06ebbbdbda7da72e21ccb3e38a9c8a1da69',
+  // ROUND 19 BLOB BUMP, 2026-09-06 (backend, card 99c2eb09's own landing-block -- the 33rd
+  // re-measure round on this file today, on the very card that removes this check from the landing
+  // gate; 287de06e -> d0ca55bd, +23/-6).
+  //
+  // The recorded conflict is at the two guard-alert POST call sites (the fork's `-H @"$_hdr_file"`
+  // 0600-temp-file pattern plus upstream's HTTP-status capture). Upstream's diff does not touch
+  // them: it replaces the watchdog's plugin-liveness FALLBACK, a host-wide
+  // `ps eww -e | grep CLAUDE_PLUGIN_ROOT`, with a `pgrep -P <this session's pane_pid> bun` scoped
+  // to the session's own process tree. Zero hits on _hdr_file, guard alert, NOTIFYVAKSWEEP or
+  // Authorization in the whole diff. Resolution unchanged; blob bumped.
+  //
+  // AND THE THING THAT MATTERS MORE THAN THE BUMP, recorded here because this is where the next
+  // merger looks: THIS FORK IS EXPOSED TO THE BUG UPSTREAM JUST FIXED. Their measurement is that on
+  // a multi-agent host the host-wide grep matches ANY agent's telegram plugin process, so the
+  // liveness fallback is always true and the watchdog silently stops catching a dead channel (their
+  // case: 14 plugin processes, one agent's channel dead from 07:40 to 08:30 with nobody told). Our
+  // scripts/channels.sh line 1079 still carries that exact host-global grep, and this host had 2
+  // matching processes when I measured. NOT adopted here: a behavioural fix to the channel watchdog
+  // does not belong inside a landing-unblock, and it deserves a gate of its own. This note is the
+  // evidence for that card, in the same shape as the token-usage entry above.
+  'scripts/channels.sh': 'd0ca55bdd5c342e15d4407fe982d2af7dc5b8a5f',
   // ROUND 16 BLOB BUMP, 2026-09-06 (card a6b5fea3): abca56b7 -> 1110d32d, one upstream commit,
   // 31d1e94f (#1189, AUTOUPDNODEENV905) -- the same commit that opened the new updates.ts
   // conflict above. This entry was masked by that one and surfaced the moment it was recorded.

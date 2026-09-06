@@ -115,7 +115,10 @@ describe('the RULE TEXT stays out too (Cybered, comment 19877)', () => {
   // replaces inline code" hunk, obviously a decision; after, it is two small hunks that look purely
   // additive (an isMinimax discriminator line, an if(isMinimax) block), and the reflex on those is
   // union. So the prose that says "union" had to change, and now it is pinned.
-  const RULES = readFileSync(join(REPO_ROOT, 'src/__tests__/fork-upstream-conflict-guard.test.ts'), 'utf-8')
+  // Card 99c2eb09 moved the acknowledgement DATA out of the guard TEST and into a module both
+  // the test and the (now scheduled) drift checker read, so the landing gate stopped depending
+  // on a live upstream fetch. This reader follows the data, not the old filename.
+  const RULES = readFileSync(join(REPO_ROOT, 'src/fork-upstream/acknowledged-conflicts.ts'), 'utf-8')
 
   it('no rule tells a future merger that adopting minimax is safe', () => {
     // Matched with the surrounding words that made them INSTRUCTIONS. Both sentences survive in the

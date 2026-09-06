@@ -24,15 +24,9 @@
 // finally. Skips (not fails) when upstream is unreachable, same "always-armed meta-test states the
 // reason out loud" discipline as REPO_UNDER_TMP-gated suites (see helpers/repo-location.ts).
 import { describe, it, expect } from 'vitest'
-import { execFileSync } from 'node:child_process'
-import { mkdtempSync, readFileSync, rmSync } from 'node:fs'
-import { tmpdir } from 'node:os'
+import { readFileSync } from 'node:fs'
 import { join } from 'node:path'
 import { REPO_ROOT } from './helpers/repo-location.js'
-
-const UPSTREAM_REMOTE = 'upstream'
-const UPSTREAM_BRANCH = 'develop'
-const FETCH_TIMEOUT_MS = 20_000
 import {
   MIGRATED_FROM_GUARDED,
   ACKNOWLEDGED_CONFLICTS,
@@ -47,215 +41,67 @@ import {
 } from '../fork-upstream/acknowledged-conflicts.js'
 
 
-function git(args: string[], cwd: string): string {
-  return execFileSync('git', args, { cwd, encoding: 'utf-8', timeout: FETCH_TIMEOUT_MS })
-}
 
-function upstreamIsReachable(): boolean {
-  try {
-    execFileSync('git', ['remote', 'get-url', UPSTREAM_REMOTE], {
-      cwd: REPO_ROOT,
-      timeout: 5_000,
-      stdio: 'pipe',
-    })
-    execFileSync('git', ['ls-remote', '--exit-code', UPSTREAM_REMOTE, 'HEAD'], {
-      cwd: REPO_ROOT,
-      timeout: FETCH_TIMEOUT_MS,
-      stdio: 'pipe',
-    })
-    return true
-  } catch {
-    return false
-  }
-}
 
-const canRun = upstreamIsReachable()
-const SKIP_REASON =
-  `the '${UPSTREAM_REMOTE}' remote is not configured or not reachable from this environment ` +
-  '(no network, or CI has no upstream fetch access). This guard needs a live upstream fetch, so it ' +
-  'skips rather than false-failing on an environment limitation.'
 
-// Pure, so both states are unit-testable without touching real network reachability (card
-// d359535c, Cybered's finding): the old META test asserted only `typeof canRun === 'boolean'`,
-// which is true whichever way canRun goes -- it could never distinguish armed from skipped, so a
-// suite with a dead upstream remote read exactly as green as one with a live one, and the only
-// trace of the difference was a console.log line most CI views never surface.
+// THE NETWORK CASE THAT USED TO LIVE HERE IS GONE, ON PURPOSE (card 5da60b85, parent 1f276349,
+// MikroB decision 24642 direction "C"). It ran a live `git fetch upstream develop` and a real merge
+// dry-run, from inside the vitest suite -- which IS the landing gate. So an upstream commit landing
+// in the wrong minute blocked somebody else's unrelated landing.
 //
-// The fix does NOT make the guard fail when skipped -- that would reopen exactly the false-red-on-
-// an-environment-limitation problem this file's header comment already rejected (same discipline as
-// REPO_UNDER_TMP-gated suites: skip, do not false-fail, when the precondition is an environment
-// fact rather than a code defect). Instead the skip state is baked into the TEST'S OWN NAME, which
-// every reporter shows (console list, JUnit XML, GitHub Actions summary) -- unlike a console.log
-// line, a test name cannot be collapsed or filtered out of a green run's summary.
-export function metaAnnouncement(armed: boolean): { name: string; message: string } {
-  return armed
-    ? {
-        name: 'META: ARMED -- upstream reachable, the merge-conflict guard below actually ran',
-        message:
-          '[fork-upstream-conflict-guard] ARMED -- upstream reachable, running the real merge dry-run.',
-      }
-    : {
-        name: 'META: SKIPPED -- the merge-conflict guard below did NOT run this pass (no upstream reachability)',
-        message: `[fork-upstream-conflict-guard] SKIPPED -- ${SKIP_REASON}`,
-      }
-}
+// Measured from this file's own re-measure notes before the move: 41 "landing-block" mentions, 32
+// re-measure rounds in five days (09-02: 3, 09-03: 9, 09-04: 1, 09-05: 5, 09-06: 14), five agents,
+// eight cards, one card hit thirteen times. It then happened twice more DURING the landing of the
+// fix itself, an hour apart, which is what settled the sequencing.
+//
+// The deeper reason is not the flakiness: a landing to `develop` does NOT merge upstream, so this
+// check could never catch anything the landing might break. It reports that the WORLD moved, which
+// is a monitoring signal, and monitoring belongs on a schedule (card a1ce8952).
+//
+// It now lives in src/fork-upstream/drift-check.ts, reading the same acknowledgement data this file
+// reads, with its own hermetic tests. What stays here is everything that is about OUR tree and
+// needs no network -- and that is most of it.
 
-const META = metaAnnouncement(canRun)
-
-describe('fork/upstream web-file merge-conflict guard (card 641aca3f)', () => {
-  it(META.name, () => {
-    console.log(META.message)
-    // Content check, not a type check: pins the message to the SAME state the test name reports,
-    // so the two cannot drift apart silently.
-    expect(META.message).toContain(canRun ? 'ARMED' : 'SKIPPED')
-  })
-
-  it.skipIf(!canRun)(
-    'a real merge of upstream/develop conflicts on ZERO fork-owned web files',
-    () => {
-      const worktree = mkdtempSync(join(tmpdir(), 'fork-conflict-guard-'))
-      try {
-        git(['fetch', '--quiet', UPSTREAM_REMOTE, UPSTREAM_BRANCH], REPO_ROOT)
-        // Detached worktree of our own HEAD -- never touches the real checkout's index or files.
-        git(['worktree', 'add', '--quiet', '--detach', worktree, 'HEAD'], REPO_ROOT)
-
-        let conflicted: string[] = []
-        const conflictHunks: Record<string, string> = {}
-        try {
-          git(
-            ['merge', '--no-commit', '--no-ff', `${UPSTREAM_REMOTE}/${UPSTREAM_BRANCH}`],
-            worktree
-          )
-          // Clean merge, nothing conflicted anywhere.
-        } catch {
-          conflicted = git(['diff', '--name-only', '--diff-filter=U'], worktree)
-            .split('\n')
-            .map((l) => l.trim())
-            .filter(Boolean)
-          // Grab both sides' conflict markers WHILE the working tree still has them -- `merge
-          // --abort` below wipes this, so it is now or never (card 1e8111a3, ready-to-paste
-          // failure message).
-          for (const f of conflicted) {
-            try {
-              conflictHunks[f] = extractConflictHunks(readFileSync(join(worktree, f), 'utf-8'))
-            } catch {
-              // Binary file, or otherwise unreadable as text -- the ready-to-paste entry below
-              // still works without a hunk snippet.
-            }
-          }
-        } finally {
-          try {
-            git(['merge', '--abort'], worktree)
-          } catch {
-            // Nothing to abort (merge did not start / already clean) -- fine.
-          }
-        }
-
-        const blobOf = (f: string): string | null => {
-          try {
-            return git(['rev-parse', `${UPSTREAM_REMOTE}/${UPSTREAM_BRANCH}:${f}`], worktree).trim()
-          } catch {
-            return null // deleted upstream -- a delete/modify conflict, not a match
-          }
-        }
-
-        // One classification for all three verdicts, from the same pure function the offline
-        // tests below exercise -- so what runs here is not a second, hand-inlined copy of the
-        // rules that could drift from the one that is actually unit-tested.
-        const verdict = classifyConflicts(conflicted, blobOf)
-
-        const conflictedGuardedFiles = verdict.guarded
-        expect(
-          conflictedGuardedFiles,
-          `upstream/develop now conflicts on fork-owned web file(s): ${conflictedGuardedFiles.join(', ')}. ` +
-            'The "zero-conflict" claim in the README\'s "Upstream-owned vs fork-owned fájlok" section no ' +
-            'longer holds -- re-run the card 641aca3f investigation (measure whether an overlay extraction ' +
-            'is now justified) before the next upstream integration.'
-        ).toEqual([])
-
-        // The check the original guard could not make (card f085fd44). Watching four named files
-        // means a conflict anywhere else is invisible: three files -- one of them behaviour-critical
-        // -- had been conflicting with nothing watching, and were found only because a human ran
-        // the dry-run by hand. So this asserts on the WHOLE conflict set: every conflicting file
-        // must be one someone has already decided how to resolve.
-        const unwatched = verdict.unwatched
-        // Card 1e8111a3: the entry below, not just the instruction to write one. blobOf() is the
-        // same closure classifyConflicts already consulted for acknowledged files -- calling it
-        // again here for unwatched ones costs one more `git rev-parse` per file, paid only on the
-        // failure path.
-        const unwatchedGuidance = unwatched
-          .map(
-            (f) =>
-              `\n--- ${f} ---\n` +
-              readyToPasteEntry(f, blobOf(f)) +
-              (conflictHunks[f] ? `\n\n  both sides' conflicting hunk(s):\n${conflictHunks[f]}` : '')
-          )
-          .join('\n')
-        expect(
-          unwatched,
-          `upstream/develop conflicts on file(s) nobody has decided how to resolve: ${unwatched.join(', ')}. ` +
-            'Decide the rule NOW, while there is time to look at both sides, and record it in ' +
-            'ACKNOWLEDGED_CONFLICTS above -- not during the merge, when the cheap move is to take one ' +
-            'side wholesale. If the file is fork-owned and should never conflict, it belongs in ' +
-            `GUARDED_FILES instead. Ready-to-paste entries:${unwatchedGuidance}`
-        ).toEqual([])
-
-        // THE ACKNOWLEDGEMENT MUST STILL DESCRIBE WHAT IS THERE (card a1d613e3). The two checks
-        // above only ask WHETHER a file was decided about; this one asks whether the decision was
-        // read against TODAY's upstream content. Without it the exemption is permanent: card
-        // 0ea89716 put installer-start-and-fallback.test.ts on the list precisely because upstream
-        // keeps editing it, so a LATER, different conflict there -- in a test whose whole job is to
-        // measure that an installer abort really happened -- would have crossed this gate in
-        // silence, on the strength of a decision about some other hunk.
-        expect(
-          verdict.stale,
-          'the upstream side of these acknowledged conflicts has CHANGED since the rule was ' +
-            'written, so the recorded resolution no longer describes the conflict it is exempting: ' +
-            verdict.stale
-              .map(
-                (s) =>
-                  `${s.file} (recorded ${s.recorded.slice(0, 12)}, now ${s.actual.slice(0, 12)}) ` +
-                  `-- the rule written last time was: "${s.rule}"`
-              )
-              .join('; ') +
-            '. Read both sides again, update the rule in ACKNOWLEDGED_CONFLICTS if the resolution ' +
-            'changed, then record the new sha in ACKNOWLEDGED_UPSTREAM_BLOBS. `git rev-parse ' +
-            `${UPSTREAM_REMOTE}/${UPSTREAM_BRANCH}:<file>\` prints it.`
-        ).toEqual([])
-      } finally {
-        try {
-          git(['worktree', 'remove', '--force', worktree], REPO_ROOT)
-        } catch {
-          rmSync(worktree, { recursive: true, force: true })
-        }
-      }
+// ---- NETWORK-GUARD SENTINEL: nothing below this line is scanned by the guard ----------------
+describe('this file must never reach the network again (card 5da60b85)', () => {
+  it('no case above the sentinel performs a remote git operation', () => {
+    // Without this, the case removed above could be reintroduced by one edit and nobody would
+    // notice until landings started blocking on upstream again.
+    //
+    // TWO THINGS THIS GETS RIGHT THAT THE FIRST VERSION DID NOT. It scans only the source ABOVE a
+    // literal sentinel, because a guard that scans the whole file matches its OWN needle list and
+    // its own test name -- measured: the first version failed on itself. And the needles are
+    // assembled from fragments, so even the list cannot be a hit. A self-matching predicate is a
+    // guard that can only be "fixed" by weakening it.
+    //
+    // The sentinel is asserted to exist and to appear exactly once, so a future edit cannot escape
+    // the scan by moving code below it or by quietly deleting the boundary.
+    const whole = readFileSync(new URL(import.meta.url), 'utf-8')
+    const marks = whole.split('NETWORK-GUARD ' + 'SENTINEL').length - 1
+    // ONE occurrence, not two: the needle is assembled from fragments here, so this line does
+    // not match itself. That is the whole point of the fragmentation, and asserting the count
+    // is what proves it stayed true.
+    expect(marks, 'the sentinel that bounds this scan must exist exactly once').toBe(1)
+    const above = whole.slice(0, whole.indexOf('NETWORK-GUARD ' + 'SENTINEL'))
+    // Comment-stripped: the prose above names every one of these operations, and a scan that
+    // flagged its own explanation would be "fixed" by weakening the pattern (cards 06d36307,
+    // 2f0c7d24).
+    const code = above
+      .split('\n')
+      .map((l) => l.replace(/\/\/.*$/, ''))
+      .join('\n')
+    const forbidden = ['fet' + 'ch', 'ls-' + 'remote', 'mer' + 'ge(', 'execFile' + 'Sync']
+    for (const needle of forbidden) {
+      expect(code, `this file must not perform '${needle}': the network half lives in the drift checker`)
+        .not.toContain(needle)
     }
-  )
+  })
 })
 
 // Always runs, no network involved: pins BOTH states of metaAnnouncement() deterministically (card
 // d359535c). The live META test above can only ever exercise whichever state this environment
 // happens to be in right now -- these two cases are what actually prove the skip path produces a
 // distinct, loud test name rather than silently reusing the armed one.
-describe('metaAnnouncement (card d359535c: the skip state must be loud, not just typeof-boolean)', () => {
-  it('armed: the name says ARMED and the message matches', () => {
-    const a = metaAnnouncement(true)
-    expect(a.name).toContain('ARMED')
-    expect(a.name).not.toContain('SKIPPED')
-    expect(a.message).toContain('ARMED')
-  })
-
-  it('skipped: the name says SKIPPED and the message matches -- this is what used to be invisible', () => {
-    const a = metaAnnouncement(false)
-    expect(a.name).toContain('SKIPPED')
-    expect(a.name).not.toContain('ARMED')
-    expect(a.message).toContain('SKIPPED')
-  })
-
-  it('the two states never produce the same test name (armed cannot masquerade as skipped or vice versa)', () => {
-    expect(metaAnnouncement(true).name).not.toBe(metaAnnouncement(false).name)
-  })
-})
 
 // Offline half of card a1d613e3. The live guard above only runs where the upstream remote is
 // reachable, so without these the content-binding would be exercised nowhere else -- and the whole

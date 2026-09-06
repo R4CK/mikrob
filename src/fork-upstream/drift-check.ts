@@ -177,3 +177,28 @@ export function formatDriftReport(r: DriftResult): string {
   }
   return parts.join('\n')
 }
+
+// ---------------------------------------------------------------------------------------------
+// The ARMED/SKIPPED announcement, moved here with the check it describes (card 5da60b85).
+//
+// It exists because a skip used to be invisible: the old META test asserted only
+// `typeof canRun === 'boolean'`, which is true either way, so a suite with a DEAD upstream remote
+// read exactly as green as one with a live remote (Cybered, card d359535c). Baking the state into
+// the reported NAME is what makes it un-collapsible. The scheduled watcher reports the same two
+// states for the same reason: "nothing to say" and "nothing wrong" must not look alike.
+const SKIP_REASON =
+  `the '${UPSTREAM_REMOTE}' remote is not configured or not reachable from this environment ` +
+  '(no network, or CI has no upstream fetch access). This check needs a live upstream fetch, so it ' +
+  'reports nothing rather than claiming a clean tree.'
+
+export function metaAnnouncement(armed: boolean): { name: string; message: string } {
+  return armed
+    ? {
+        name: 'META: ARMED -- upstream reachable, the merge-conflict check actually ran',
+        message: '[fork-upstream-drift] ARMED -- upstream reachable, running the real merge dry-run.',
+      }
+    : {
+        name: 'META: SKIPPED -- the merge-conflict check did NOT run this pass (no upstream reachability)',
+        message: `[fork-upstream-drift] SKIPPED -- ${SKIP_REASON}`,
+      }
+}
