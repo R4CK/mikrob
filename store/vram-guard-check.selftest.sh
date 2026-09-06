@@ -269,6 +269,65 @@ check "the line names the attribution, not just the percentage" 0 "own=4466 fore
     --metrics-json '{"used_mib":6115,"total_mib":6144}'
 
 
+# ---- atomic state persistence under concurrency (card eaef963d, Cybersec's measurement) --------
+# A confirmed HOLD must survive concurrent callers. RED without the fix: `open(state_path, "w")`
+# truncates in place, so a concurrent reader can observe a half-written file mid-write,
+# JSONDecodeError, default to "ok" -- and then WRITE "ok" back as a legitimate observation,
+# erasing the confirmed tier for every future reader, not just the one that raced. Measured: 40
+# concurrent calls against a confirmed tier=hard state lost the HOLD in 10/12 rounds; a plain
+# flock around the SAME truncating write did not fix it (0/12 fixed -- the wrong half of the
+# 09a3d52a pattern, a genuine cross-process lock problem there, a torn-write problem here). An
+# atomic temp-file + os.replace() fixed it with NO lock at all (0/12 corrupted): a reader either
+# sees the old complete file or the new complete one, never a partial one.
+# MULTIPLE ROUNDS, deliberately: the pre-fix race is PROBABILISTIC (measured 10/12 rounds at 40
+# concurrent, not 12/12), so any single round has a real chance of passing by luck even on the
+# unfixed code -- confirmed here (5 rounds of 40 against a reverted copy: ok/hard/hard/ok/hard).
+# The atomic fix, by contrast, is not probabilistic: a rename is observed whole or not at all, so
+# every round must land on "hard" with no exceptions. One bad round is a real regression, not noise.
+atomic_rounds_failed=0
+for round in 1 2 3 4 5 6; do
+  s="$(st "atomic-$round")"
+  cat > "$s" <<'EOF'
+{"tier": "hard", "since": 1000, "pending": null}
+EOF
+  pids=()
+  for i in $(seq 1 40); do
+    bash "$GUARD" --config "$cfg" --state "$s" --now 1000 \
+      --metrics-json '{"used_mib":9500,"total_mib":10000}' >/dev/null 2>&1 &
+    pids+=($!)
+  done
+  for pid in "${pids[@]}"; do wait "$pid" 2>/dev/null || true; done
+  final_tier="$(python3 -c "import json; print(json.load(open('$s')).get('tier', 'MISSING'))" 2>/dev/null || echo UNREADABLE)"
+  if [ "$final_tier" != "hard" ]; then
+    echo "FAIL atomic-write-under-concurrency round $round: expected the confirmed tier to survive 40 concurrent writers as 'hard', got '$final_tier'"
+    atomic_rounds_failed=$((atomic_rounds_failed+1))
+  fi
+done
+if [ "$atomic_rounds_failed" -eq 0 ]; then
+  passed=$((passed+1))
+else
+  failed=$((failed+1))
+fi
+
+# ---- persist-failure verdict comes from the INSTANTANEOUS level (card eaef963d) ----------------
+# The comment this replaces claimed an unwritable state file "degrades to instantaneous readings",
+# but the code fell through to the HYSTERESIS-only `current` -- which, without a working state file
+# to accumulate `pending` across calls, can never advance past its starting tier. Measured: five
+# calls over 140 simulated seconds at a sustained 96% never held once; the guard silently became a
+# permanent ADMIT. The fix reads the verdict from `instantaneous` on this branch specifically.
+#
+# A state path inside a directory that does not exist makes the atomic replace's own mkstemp()
+# fail (FileNotFoundError, a subclass of OSError) -- the "path cannot be created" half of the
+# finding, distinct from "file exists but is not writable".
+check "persist-failure at 96% HOLDs from the instantaneous level (the defect: it used to ADMIT forever)" 1 "HOLD hard" \
+  bash "$GUARD" --config "$cfg" --state "$tmpdir/no-such-dir/state.json" --now 6000 \
+    --metrics-json '{"used_mib":9600,"total_mib":10000}'
+# CONTROL: without this, a "just always print HOLD on persist failure" non-fix would pass the case
+# above too. The instantaneous level must actually be READ, not assumed.
+check "CONTROL: persist-failure at 16% still ADMITs -- not a stuck-always-HOLD stub" 0 "ADMIT ok" \
+  bash "$GUARD" --config "$cfg" --state "$tmpdir/no-such-dir-2/state.json" --now 6000 \
+    --metrics-json '{"used_mib":1630,"total_mib":10000}'
+
 if [ "$failed" -eq 0 ]; then
   echo "selftest: $passed passed, 0 failed"
   exit 0
