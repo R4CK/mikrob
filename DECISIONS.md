@@ -10370,3 +10370,48 @@ elavult marad).
 **Hivatkozás:** kártyák `5da60b85` + `99c2eb09` (szülő `1f276349`);
 `src/__tests__/fork-upstream-conflict-guard.test.ts`, `src/fork-upstream/drift-check.ts`,
 `src/fork-upstream/acknowledged-conflicts.ts`.
+
+## 2026-09-06 -- Az upstream négy hamis-pozitív javításából egyet veszünk át, hármat nem
+
+**Kontextus:** az upstream `03ca5262` négy új maszk-alternatívát tett a kimenő-szöveg kapu
+`TECHNICAL` regexébe, plusz kivette a puszta `level` szót a magyar nyelv-markerek közül. Mind a
+négy ugyanazt az osztályt célozza: a szóbontó egy technikai alakot magyar szónak lát, és a kapu
+ékezethibát jelent ott, ahol nincs.
+
+**Döntés:** a `level` felét (mindkét részét) ÁTVESSZÜK, a másik hármat NEM.
+
+**Miért:** mind a négy upstream hamis-pozitívot lefuttattam a fork saját `audit()`-jén, mielőtt
+döntöttem. Három közülük -- szám+toldalék (`8:09-es`, `17:06-kor`), tulajdonnév+toldalék
+(`Chrome-ot`, `Drive-ra`) és kötőjeles kisbetűs azonosító (`folyamatos-ellenorzes`) -- MÁR
+ÁTMEGY ezen a forkon, mert ezt az osztályt egy MÁSIK RÉTEGBEN oldottuk meg: a `HYPHEN_WORD`
+tokenizáló a kötőjeles alakot EGÉSZBEN veszi, tehát a `chrome-ot` sosem esik szét `ot`-ra.
+A mögötte álló két szűk allowlist (`DIGIT_HYPHEN_SUFFIX_ALLOWLIST`, `IDENTIFIER_ALLOWLIST`)
+KÉT Cybersec NO-GO eredménye (`fbb36b41` 7/8. és 11. kör), és ezek pontosan az upstream FELTÉTEL
+NÉLKÜLI alakját utasították el: egy korlátlan „számjegy-kötőjel utáni szó" vagy „kisbetűs
+kötőjeles alak" maszk nem csak az ékezet-vizsgálat, hanem a homoglifa-vizsgálat elől is kivágja,
+amit elfed. Átvenni tehát nulla mért nyereség lenne, ugyanazért a tágításért, amit két kapu már
+megvizsgált és elutasított.
+
+A negyedik viszont valódi lyuk itt is, és erre a forkra JOBBAN áll, mint az upstreamre: a saját
+`CLAUDE.md`-nk „Level 1/2/3" autonómia-szintekről beszél, tehát bármely magyar üzenet, ami ezt
+idézi, elakadt. Mérve, hibátlanul ékezetes magyar mondaton: blokkolt, egyedül a `level` szón.
+Külön mérve az angol irány is: a „The new access level lands in the advance market build" mondat
+három magyar markert ért el (`van` az „advance"-ben, `level`, `mar` a „market"-ben), tehát az
+`is_hungarian()` IGAZAT adott egy tiszta angol mondatra, és a vizsgálat egyáltalán elindult.
+
+**Miért nem gyengít:** az átvett maszk szándékosan szűk, csak SZÁM előtt vág. A `level` mint a
+`levelet` valódi elírása továbbra is fennakad -- ez a maszk negatív kontrollja, és külön
+selftest-eset. A marker-eltávolítás ellenirányát is megmértem: egy valódi, ékezethibás magyar
+mondat 9 helyett 8 markert ér el, tehát a nyelv-felismerés nem gyengül.
+
+**Mérés:** 4 új selftest-eset (82 eset zölden a kapu selftestjében), plusz mindkét fél KÜLÖN
+mutáció-tesztelve: bármelyiket visszaállítva pontosan a saját esete bukik és semelyik másik,
+tehát egyik fél sem fedi el a másik hiányát. `tsc --noEmit` zöld, a négy fork-upstream teszt-fájl
+(75 eset) zöld.
+
+**Ki döntött:** MikroB (a `a7a61751` plan-grilling GO-WITH-CHANGES verdiktje, Peti IGEN-je után);
+backend (a hunkonkénti átvesz/kihagy szétválasztás, méréssel).
+
+**Hivatkozás:** kártya `b4404ed2` (szülő `f923328d`, `a7a61751`);
+`scripts/hooks/outgoing-copy-gate.py`, `scripts/hooks/outgoing-copy-gate.selftest.py`,
+`src/fork-upstream/acknowledged-conflicts.ts` (16. kör).
