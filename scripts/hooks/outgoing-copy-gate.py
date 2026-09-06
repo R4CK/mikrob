@@ -317,8 +317,17 @@ HU_MARKERS = [
     "hogy", "nem", "vagy", "amit", "ami", "mert", "ezt", "ez a", "van", "lesz",
     "kell", "tehat", "tehát", "koszonom", "köszönöm", "szia", "sziasztok",
     "kerlek", "kérlek", "csatolva", "udvozlettel", "üdvözlettel", "levelet",
-    "level", "kuldom", "küldöm", "jelezz", "irj", "írj", "mar", "már", "csak",
+    "kuldom", "küldöm", "jelezz", "irj", "írj", "mar", "már", "csak",
 ]
+# A puszta "level" ATVEVE upstream-tol (kartya b4404ed2, upstream 03ca5262).
+# Magyar markerkent gyenge -- a gyakori alak a "levelet", az bent marad --, viszont
+# az ANGOL "level" minden elofordulasa magyar-pontot adott egy angol szovegnek.
+# MERVE ezen a forkon: "The new access level lands in the advance market build."
+# harom markert ert el (van a szoban "advance", level, mar a szoban "market"),
+# tehat is_hungarian() igazat adott EGY TISZTA ANGOL mondatra, es a kapu a
+# "level -> level" javaslattal blokkolt. A marker nelkul ketto marad, atmegy.
+# Az ellenirany merve: egy valodi, ekezethibas magyar mondat 9 helyett 8 markert
+# er el, tehat a nyelv-felismeres nem gyengul.
 
 # Accentless spellings of frequent Hungarian words -> the correct form. Every
 # entry is a word that CANNOT be spelled without its accent, so a hit inside
@@ -792,6 +801,27 @@ def _hit_context(prose: str, pos: int, length: int) -> str:
 # osztaly, mint a 2026-08-11-i `level` fajlnev-talalat. A javitas nem a szotarbol
 # vesz ki (az elrontana a valodi talalatokat is), hanem a technikai regiokat
 # vagja ki a vizsgalt szovegbol. A gondolatjel- es nev-ellenorzes NEM ezen fut.
+#
+# UPSTREAM-KOR (kartya b4404ed2, 2026-09-06, upstream 03ca5262 d97e9683..3ba1db43).
+# Upstream NEGY uj alternativat tett ide ugyanennek az osztalynak negy alesetere.
+# EGYET vettunk at (a `level\s+\d+` alakot), HARMAT NEM, es a kulonbseg MERT, nem
+# velemeny -- mind a negy upstream hamis-pozitivot lefuttattuk ezen a forkon:
+#   - szam + magyar toldalek ("8:09-es", "2-es", "17:06-kor")     -> mar ATMEGY
+#   - tulajdonnev + toldalek ("Chrome-ot", "Drive-ra")            -> mar ATMEGY
+#   - kotojeles kisbetus azonosito ("folyamatos-ellenorzes")      -> mar ATMEGY
+#   - "level 1" hibatlanul ekezetes magyar mondatban              -> BLOKKOLT
+# A harom atmeno esetet ez a fork EGY MASIK RETEGBEN oldotta meg: a HYPHEN_WORD
+# tokenizalo a kotojeles alakot EGESZKENT veszi (tehat "chrome-ot" sosem esik
+# "ot"-ra), plusz a DIGIT_HYPHEN_SUFFIX_ALLOWLIST es az IDENTIFIER_ALLOWLIST.
+# Az a ket allowlist KET Cybersec NO-GO eredmenye (fbb36b41 round 7/8 es round 11),
+# amelyek pontosan az upstream itteni FELTETEL NELKULI alakjat utasitottak el:
+# egy korlatlan "szamjegy-kotojel utani szo" vagy "kisbetus kotojeles alak" maszk
+# az ekezet- ES a homoglifa-vizsgalat elol is kivagja, amit elfed. Atvenni oket
+# tehat nulla nyereseg lenne, ugyanazert a tagitasert, amit ket kapu mar elutasitott.
+# A negyedik eset viszont VALODI lyuk itt is: a sajat CLAUDE.md-nk beszel
+# "Level 1/2/3" autonomia-szintrol, tehat barmely magyar uzenet, ami idezi, elakadt.
+# Az atvett maszk SZANDEKOSAN szuk: csak SZAM elott vag. A "Kaptam egy level toled"
+# alak (valodi "levelet" helyett) tovabbra is fennakad -- ez a maszk negativ kontrollja.
 TECHNICAL = re.compile(
     r"""https?://\S+                # URL
       | [\w.+-]+@[\w-]+\.[\w.]+     # email
@@ -799,6 +829,7 @@ TECHNICAL = re.compile(
       | \b\w+(?:_\w+)+\b            # snake_case azonosito
       | \b\w+\.[A-Za-z]{2,10}\b     # fajlnev / domain (video.mp4, marveen.io)
       | \b[\w-]*/[\w/-]+            # utvonal / slug
+      | \blevel\s+\d+\b            # angol "level 1" (autonomia-szint, log-szint)
     """,
     re.X,
 )
