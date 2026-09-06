@@ -9112,3 +9112,151 @@ tudatosan, nem-blokkolóként maradt nyitva.
 `src/__tests__/agent-config-file-modes.test.ts`; Cybersec 20627/20643/20654/21127/21190, QA
 21293. A négy élő fájl egyszeri remediációját (chmod 0600) MikroB végezte, mert
 visszafordítható és a saját flotta-configjai.
+## 2026-09-06 11:40 -- bb52c2fa (helyesbítés) -- a cmp-táblázatom két sora nem önálló mérés volt
+
+**Ez a bejegyzés a mai `bb52c2fa` bejegyzést helyesbíti.** A lelet és a javítás áll; a MAGYARÁZAT
+két ponton túlmondott a mérésen, és mindkettő az én hibám.
+
+**(1) Öt környezetről írtam, három létezik.** A bejegyzés így szól: „mérve, ugyanaz a két fájl, öt
+környezetben -- unset -> byte, C -> char, C.UTF-8 -> byte, en_US.UTF-8 és hu_HU.UTF-8 -> char". Ezen
+a gépen a `locale -a` HÁRMAT ad: `C`, `C.utf8`, `POSIX`. Az `en_US.UTF-8` és a `hu_HU.UTF-8` nincs
+telepítve, a bash `setlocale: cannot change locale` figyelmeztetéssel visszaesik -- az a két sor
+tehát a FALLBACK-et mérte, nem azt a locale-t, aminek a nevét viseli. Öt független mérésként
+közöltem őket.
+
+**A valós tábla:** unset -> „byte" (a LANG=C.UTF-8-at örökli); `C` -> „char"; `C.utf8` -> „byte";
+`POSIX` -> „char"; egy érvénytelen érték -> „char" (C-re esik vissza).
+
+**(2) A mechanizmus fordítva igaz.** Azt írtam, a cmp szóhasználata „nem követi, hogy a locale
+bájt-orientált-e". Követi, csak az intuícióval ellentétesen: az EGYBÁJTOS locale-ok (C, POSIX, és
+minden érvénytelen érték) mondanak „char"-t, a TÖBBBÁJTOSAK (C.UTF-8, unset) „byte"-ot.
+
+**Amitől a lelet ÉLESEBB lett, nem gyengébb:** egy `byte`-ra szűkített minta MINDEN egybájtos
+locale-ban törik, és ebbe beletartozik az `LC_ALL=C` -- a legvalószínűbb CI-beállítás. A `cmp -l`
+ugyanúgy a helyes válasz: számot ad próza helyett, és a formátuma mind a négy tényleges környezetben
+azonos.
+
+**(3) „Zöld mind a hat próbált környezetben" -- helyesen négy** (unset, C, C.utf8, POSIX), amiből
+három külön locale. A suite mind a négyben zöld.
+
+**Miért külön bejegyzés:** a napló append-only, a hibás szöveg pedig már landolt (464ec279). Ugyanaz
+az eljárás, amit a 79bb0364 „mindkét osztály megszűnik" mondatára alkalmaztam -- egy írott
+műterméken álló állítás akkor is ellenőrizendő, ha a kód körülötte helyes.
+
+**Hogyan derült ki:** Cybersec előre jelezte (24323), mit fog mérni a javításon, és a harmadik pontja
+(„egy kapcsoló, ami sikeresen nem futtat semmit, ugyanaz a néma zöld") előre-méréséhez újrafuttattam
+a saját bizonyítékomat. A locale-lista akkor esett szét. A három pontja egyébként mind teljesül: a
+közvetlen és a locale-t pinnelő hívón átmenő verdikt mind a négy bemeneten egyezik, a `--- x`
+kontroll mindkét úton safe marad, és az N-2 kapcsoló bukó `.py`-ra rc=1-et, hiányzóra rc=2-t ad.
+
+**Hivatkozás:** kártya `bb52c2fa`, komment 21291; a helyesbített bejegyzés e fájl mai
+`bb52c2fa` tétele.
+
+## 2026-09-06 12:00 -- bb52c2fa (F-1/F-2) -- a verdikt mostantól abból következik, ami KIÍRÓDOTT, nem egy jelzőből, amit egy eset elfelejthet
+
+**F-1, és a lelet az ÉN két tesztesetemre szól** (Cybered, komment 21305). Az előző körben két új
+esetet vittem be, épp azért, hogy egy néma zöldet zárjak -- és mindkettő a `bad` változót növelte,
+amit SEMMI nem olvas. A verdiktet a `fail` dönti. Következmény, mérve: a regressziót visszatéve a
+futás kiírta a `FAIL ...` sort, majd azt mondta, hogy `selftest: PASS`, exit 0. A CI zölden ment
+volna át pontosan azon a két regresszión, amiért az esetek készültek.
+
+**És a mutációs bizonyítékom is ezt mérte félre.** A mutációs futásaimban a kiírt `^  FAIL` SOROKAT
+számoltam, nem a verdiktet, ezért „M1 -> 1 piros, M3 -> 1 piros"-t jelentettem olyan esetekre, amik
+valójában dekoratívak voltak. Ez ugyanaz a hibaosztály, amit ezen a kártyán másoknál jeleztem: a
+mérőszám finomabb volt, mint amit a rendszer ténylegesen csinál.
+
+**A javítás nem a két sor.** A két sor kijavítása ott hagyná ugyanazt a csapdát a következő esetnek.
+A selftest mostantól FÁJLBA írja a kimenetét, a végén visszaadja, és a VERDIKT VISSZAOLVASSA: ha
+bármely `  FAIL` sor kiíródott, a futás nem mondhatja azt, hogy PASS, bármit is állít bármelyik
+jelző. Egy eset ezután elfelejtheti a jelzőt, és még mindig számít; azt viszont nem tudja megtenni,
+hogy egy hibát belenyomtat egy zöld futásba. Sima átirányítás és `cat`, nem `tee` process
+substitutionön át: az ellenőrzésnek egy teljesen kiírt fájlt kell látnia, egy pipeline pedig
+alfolyamatba tenné a törzset, ahol a `fail` nem élné túl.
+
+**F-2 -- a kód fejléce még a megcáfolt magyarázatot mondta.** A DECISIONS és a kanban-komment már
+helyes volt, a fejléc nem: pontosan az a „a helyesbítés nem ér el a leszállított kommentig" alak. A
+fejléc most a KÉT tényezőt mondja, és mindkettőt megmértem, nem vettem át:
+
+**1. tényező:** a `local LC_ALL=C` csak akkor jut el a GYEREKFOLYAMATHOZ, ha az LC_ALL MÁR exportálva
+volt. A bash `local`-ja örökli a meglévő export-attribútumot, de nem hoz létre újat. `declare -p`-vel
+bizonyítva egy ilyen függvényen belül: környezetben nincs LC_ALL -> `declare -- LC_ALL="C"` (a gyerek
+NEM látja); exportálva -> `declare -x LC_ALL="C"` (a gyerek LÁTJA).
+
+**2. tényező:** a GNU cmp szóhasználata a locale KARAKTERSZÉLESSÉGÉT követi, a naiv tipp fordítottjaként:
+egybájtos locale (C, POSIX, vagy bármely érvénytelen érték, ami C-re esik) -> „char"; többbájtos
+(C.UTF-8, vagy az ambiens LANG, ha az LC_ALL nincs beállítva) -> „byte".
+
+**A kettő együtt magyarázza a mérést, külön egyik sem:** LC_ALL nélkül a `local` sosem ért el a
+cmp-hez, az a többbájtos ambiens LANG alatt futott és „byte"-ot mondott -- a régi minta működött.
+BÁRMILYEN exportált értékkel a `local` elért a cmp-hez, az egybájtos C-ben futott és „char"-t
+mondott, a minta semmit nem illesztett. Ezért tört el minden exportált értékre: sosem az számított,
+MELYIK locale, hanem hogy exportálva volt-e egyáltalán.
+
+**Mérés a javítás után:** a két korábban dekoratív eset mostantól `selftest: FAIL` + exit 1 a hozzájuk
+tartozó mutációra (előtte PASS + exit 0). Az új invariáns külön próbálva: egy eset, ami kiírja a
+FAIL-t de szándékosan NEM állítja a jelzőt, továbbra is FAIL-t és exit 1-et ad, plusz egy külön sort,
+ami megmondja, hogy a verdikt kényszerítve lett. 70 eset, zöld.
+
+**Hivatkozás:** kártya `bb52c2fa`; Cybered 21305 (F-1/F-2), MikroB 24390.
+---
+
+## 2026-09-06 -- d5c05548: a maszkolas allitasat ELLENORIZNI kell, es a flag csak igazat mondhat
+
+**Dontes (1. gyokerok).** A `gpu-crashloop-guard.sh` `mask_units()` mostantol MEGNEZI, hogy
+a unit tenylegesen maszkolt-e (`UnitFileState`), nem a `systemctl mask` kilepokodet hiszi el;
+ha a maszkolas nem fogott es egy VALODI unit-fajl all az uton, lefuttatja a kezi utat
+(fajl felre `<unit>.real-unit-backup` nevre, `/dev/null` symlink, `daemon-reload`), majd
+UJRA ellenoriz. Amit nem sikerult maszkolni, az nem kerul be a `MASKED_OK` listaba.
+
+**Mert a vedelem hetek ota csak LATSZOLAGOS volt.** Eldobhato probe-unittal sajat kezuleg
+reprodukalva ezen a hoston: `systemctl --user mask` regularis unit-fajl felett
+"Failed to mask unit: File ... already exists"-et ad, exit 1, es a unit `static` marad --
+`--force` ugyanezt. A regi kod ezt NAPLOZTA es tovabbment, majd kiirt egy allapot-flaget,
+ami a unitot maszkoltkent nevezte meg. A szolgaltatas tehat csak le volt allitva, barmely
+`systemctl --user start` visszakapcsolta a GPU-utvonalat. Egy or, aminek a hibamodja egy
+megnyugtato naplosor, rosszabb, mint a semmi, mert senki nem megy utananezni.
+
+**A flag mostantol a TENYT irja le, nem a szandekot.** A `units` mezo a `MASKED_OK`-bol
+keszul; ha egyetlen unitot sem sikerult maszkolni, a flag NEM irodik ki (torlodik), es
+azonnali riasztas megy ki arrol, hogy a gep NINCS vedve. Ez a mai naptol tetszik: a
+970156ce ota ezt a fajlt a LANDOLASI KAPU olvassa, tehat egy hazudo flag arra vinne a
+kaput, hogy elhallgasson egy valojaban vedtelen geprol.
+
+**Egy harmadik hiba, amit a kartya nem nevez meg, es kimertem.** A `systemctl --user unmask`
+ONMAGABAN NEM allitja vissza a unitot: eltavolitja a `/dev/null` symlinket es megall, a
+valodi fajl pedig a `.real-unit-backup` nev alatt marad -- a unit `LoadState=not-found`
+lesz, vagyis a szolgaltatas ELTUNIK. A helyreallito parancs ezert bekerult a riasztas
+szovegebe (`restore_hint`), nem egy kanban-kommentbe, mert a tulajdonos a riasztast olvassa.
+
+**A MELYEBB OK, es ezert wireoltam be a sajat suite-jat.** A `scripts/__tests__/*.test.sh`-t
+SEMMI nem futtatja: nincs ra hivatkozas a `fleet-test.sh`-ban, a `package.json`-ban, egyetlen
+vitest fajlban sem -- az egesz repoban ket emlites van a guard teszt-fajljara, a guard sajat
+fejlece es maga a fajl. A 12 teszt tehat leirt kontroll volt, ami sosem futott le; ez a
+`wired-detection-with-no-consumer` osztaly, ugyanaz, amit a `store-selftests-all-run`
+(711a7e57, 2003e04b) zar a `store/*.selftest.*`-ra. SZANDEKOSAN SZUKEN: csak EZT a suite-ot
+kotottem be. A teljes `scripts/__tests__` bekotese kulon kartya, mert az upstream sajat
+merese szerint (#1200: "25 of our 29 script suites had never run, and two of them were red")
+lesz kozottuk piros, es egy flotta-szintu landolas-blokk pont az, amit ma egesz nap tisztitottunk.
+
+**A 2. GYOKEROK NEM KESZULT EL, SZANDEKOSAN.** A kartya azt keri, allitsam vissza a hianyzo
+CPU-only drop-int (Layer 1). A premissza teves: nem eltunt, hanem PETI SZANDEKOSAN
+eltavolittatta. A 13f92c99 kommit uzenete kimondja, hogy a drop-in "host-local, not versioned
+here", a `wsl-vm-crashloop-ollama-gpu-dxgkrnl` memoria pedig ugyanarrol a naprol rogziti:
+"Peti explicitly overrode the CPU-only stopgap -- he wants GPU as the PRIMARY path... Removed
+the CPU-only drop-in, restored default GPU config." Kesobbi, ezt visszavono dontes nincs sem a
+DECISIONS.md-ben, sem a tablan, sem a memoriaban. A visszaallitasa egy kimondott tulajdonosi
+dontes visszaforditasa lenne (5. kodminosegi elv), raadasul a fo GPU-utvonal kikapcsolasaval.
+MikroB ele vive; a guard fejlece viszont ma HAZUDIK, mert egy nem letezo Layer 1-re hivatkozik --
+ennek a javitasa is az o dontesere var.
+
+**Mérve.** Selftest 12 -> 22 eset. Ot mutacio, mind piros a sajat esetein: az ellenorzes
+elhagyasa (6 bukas), a fallback kikapcsolasa (6), a flag visszairasa `UNITS`-bol (4), a
+meglevo-backup vedelem torlese (1), es a helyreallito parancs kivetele a riasztasbol (1).
+Az utolso ELSO valtozatban TULELT: a `(k)` eset a TELJES kimenetben kereste a
+`real-unit-backup` szot, amit a `mask_one` sajat naplosora is tartalmaz -- az allitas
+durvabb volt, mint a viselkedes, es igy a ket or kozul a rosszat rogzitette. Szukitve az
+ALERT sorra, azota bukik.
+
+**Hivatkozas:** kartya `d5c05548`; `scripts/gpu-crashloop-guard.sh`,
+`scripts/__tests__/gpu-crashloop-guard.test.sh`,
+`src/__tests__/gpu-crashloop-guard-suite-runs.test.ts`; kapcsolodo: 970156ce (a flag fogyasztoja).
