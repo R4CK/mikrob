@@ -662,10 +662,22 @@ export function initDatabase(dbPathOverride?: string): void {
   //
   // What has no row anywhere is the INCIDENT: the moment the heartbeat's D section JUDGED a card
   // stuck, what it saw, and what it decided to do. That last part is the load-bearing half. The
-  // shared token-protection guard (store/redispatch-guard.sh) answers DENY on six different
-  // grounds -- progress, agent-busy, backoff, cap-reached, first-seen-baseline, not-active -- and
-  // every one of those is a DELIBERATE non-action that today leaves no trace at all. A control
+  // shared token-protection guard (store/redispatch-guard.sh) answers DENY on NINE different
+  // grounds, and every one is a DELIBERATE non-action that today leaves no trace at all. A control
   // that decides to do nothing is, in the log, indistinguishable from a control that never ran.
+  //
+  // NINE, not the six the heartbeat's D-section prose lists. Counted from the script itself
+  // (`grep -oE 'DENY:[a-z-]+'`), because the prose and the code disagree: the documented set is
+  // progress / agent-busy / backoff / cap-reached / first-seen-baseline / not-active, and the
+  // script ALSO emits load-paused (the agent is cgroup-throttled or SIGSTOP-frozen -- a real
+  // policy denial), card-not-found and usage. Building the writer from the prose would have left
+  // three branches permanently unlogged, which is the very "a deliberate non-action leaves no
+  // trace" hole this table exists to close, reproduced inside its own fix.
+  //
+  // AND ONE OF THEM CARRIES A PAYLOAD: the script emits `DENY:backoff:<seconds>`, not a bare
+  // `DENY:backoff`. A writer that equality-matches the known reasons would silently classify every
+  // backoff denial as "unknown" -- so `action_detail` stores the verdict VERBATIM and any matching
+  // is by prefix.
   //
   // WHY THIS IS NOT store/redispatch-ledger.json, and why that file is deliberately untouched.
   // The ledger already counts re-dispatches per card, and `redispatch-guard.sh reset <cardId>`

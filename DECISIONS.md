@@ -9586,3 +9586,35 @@ negative control earning its place: without `WHERE resolved_at IS NULL` a card c
 stuck ONCE in its life, and the card's own repeat question would be unanswerable.
 
 **Reference:** card `ac28bc6e` (parent `f92671df`); survey comment 21393. 15 tests, green.
+
+## 2026-09-06 13:30 -- ac28bc6e CORRECTION -- the guard has NINE deny reasons, not six, and one carries a payload
+
+**Correcting my own entry above, which said "six grounds".** I took that list from the heartbeat
+D-section prose instead of from the script. Counted from `store/redispatch-guard.sh` itself, every
+one a live code path with its emitting line:
+
+    DENY:not-active (24)   DENY:load-paused (25)   DENY:progress (27)
+    DENY:agent-busy (29)   DENY:cap-reached (30)   DENY:backoff (33)
+    DENY:usage (213)       DENY:card-not-found (215)   DENY:first-seen-baseline (239)
+
+The prose documents six of them. `load-paused` is a genuine policy denial it omits (the agent is
+cgroup-throttled or SIGSTOP-frozen, deliberately not running); `usage` and `card-not-found` are the
+error paths.
+
+**Why this is not a detail.** The writer in subtask 878cd292 records what the guard decided. Built
+from the prose, three of nine branches would never have been logged -- which is precisely the "a
+deliberate non-action leaves no trace" hole this whole table exists to close, reproduced inside its
+own fix. The class is the one I have hit repeatedly today: a query (here, a paragraph) that answers a
+different question than the sentence quoting it claims.
+
+**And one reason is not a constant.** The script emits `DENY:backoff:<seconds>`, not a bare
+`DENY:backoff`. A writer equality-matching a known-reason list would classify every backoff denial as
+unknown. `action_detail` therefore stores the verdict VERBATIM, and any classification is by PREFIX
+-- which is also why the column is free text that accepts an unrecognised reason rather than
+rejecting it.
+
+**Not fixing the prose here.** The heartbeat SKILL.md is a global scheduled-task file and its
+accuracy is a separate concern from this schema; naming the discrepancy is this card's job, changing
+a fleet-wide task definition is not. Reported to MikroB.
+
+**Reference:** card `ac28bc6e`; corrects the `2026-09-06 13:25` entry in this file.
