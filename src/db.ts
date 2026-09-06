@@ -651,6 +651,87 @@ export function initDatabase(dbPathOverride?: string): void {
     `)
   }
 
+  // --- Stuck incidents: the DETECTION as a row, not as prose (card f92671df / ac28bc6e) ---
+  //
+  // WHAT WAS ACTUALLY MISSING, because it is not what the card first looks like. The fleet already
+  // has plenty of structured data ABOUT A CARD: kanban_card_events carries every status transition
+  // and kanban_card_field_events carries every other edit, including the title that holds the
+  // [NN%] progress marker -- so "when did it last really move" and "for how long has it been
+  // still" are already derivable, and duplicating them here would be a second source of truth for
+  // a question that already has one.
+  //
+  // What has no row anywhere is the INCIDENT: the moment the heartbeat's D section JUDGED a card
+  // stuck, what it saw, and what it decided to do. That last part is the load-bearing half. The
+  // shared token-protection guard (store/redispatch-guard.sh) answers DENY on six different
+  // grounds -- progress, agent-busy, backoff, cap-reached, first-seen-baseline, not-active -- and
+  // every one of those is a DELIBERATE non-action that today leaves no trace at all. A control
+  // that decides to do nothing is, in the log, indistinguishable from a control that never ran.
+  //
+  // WHY THIS IS NOT store/redispatch-ledger.json, and why that file is deliberately untouched.
+  // The ledger already counts re-dispatches per card, and `redispatch-guard.sh reset <cardId>`
+  // DELETES the entry -- working rule 4 requires running it on every close. So the count is
+  // destroyed exactly when the incident would become history. That is the RIGHT behaviour for what
+  // the ledger is: a live backoff BUDGET. If it never reset, a card that stuck once would sit at
+  // the cap forever and the guard would refuse to re-dispatch it again. A live control and a
+  // history answer different questions, so they do not share a store -- the same reasoning
+  // kanban_card_field_events records for its own split from kanban_card_events.
+  //
+  // APPEND-ONLY, enforced by trigger rather than by convention (the posture the kanban_relations
+  // block above already takes). The detection facts are immutable; `resolved_at` and
+  // `resolved_by_event_id` are the ONLY fields written later, and only once, from NULL. Without
+  // the trigger, "append-only" would be a comment that the next direct-sqlite3 writer never reads
+  // -- which is precisely how the timestamp-integrity rows below went wrong.
+  db.exec(`
+    CREATE TABLE IF NOT EXISTS stuck_incidents (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      card_id TEXT NOT NULL,
+      assignee_at_detection TEXT,
+      detected_at INTEGER NOT NULL,
+      stalled_ms_at_detection INTEGER NOT NULL,
+      -- 'redispatch' | 'sibling_handover' | 'none_denied' | 'none_other'
+      action TEXT NOT NULL,
+      -- for 'none_denied': the guard's verdict verbatim (e.g. 'DENY:agent-busy'), so a non-action
+      -- says WHY. Free text on purpose: the guard may grow reasons, and an unknown reason must be
+      -- recordable rather than rejected.
+      action_detail TEXT,
+      -- how many times the D section re-observed THIS SAME unresolved stall. One stall is one row:
+      -- see the dedup note below.
+      detections INTEGER NOT NULL DEFAULT 1,
+      resolved_at INTEGER,
+      resolved_by_event_id INTEGER
+    )
+  `)
+  // The card asks its questions along TWO axes -- per card and per agent -- so both get an index.
+  db.exec(
+    `CREATE INDEX IF NOT EXISTS idx_stuck_incidents_card ON stuck_incidents(card_id, detected_at)`,
+  )
+  db.exec(
+    `CREATE INDEX IF NOT EXISTS idx_stuck_incidents_agent ON stuck_incidents(assignee_at_detection, detected_at)`,
+  )
+  // ONE STALL IS ONE ROW. The D section runs every 10 minutes, so a stall that lasts an hour would
+  // otherwise produce six rows, and "how often did this card get stuck" would be measuring the
+  // HEARTBEAT FREQUENCY rather than the stalls -- a number that looks like data and is not. The
+  // writer bumps `detections` on the open row instead; this partial index is what lets it find one
+  // cheaply, and it also states the invariant: at most ONE unresolved incident per card.
+  db.exec(
+    `CREATE UNIQUE INDEX IF NOT EXISTS idx_stuck_incidents_open ON stuck_incidents(card_id) WHERE resolved_at IS NULL`,
+  )
+  // Append-only: the detection facts cannot be rewritten, and a resolution cannot be un-set or
+  // re-pointed. Both directions matter -- an UPDATE that cleared resolved_at would reopen a closed
+  // incident and let a second one be inserted under the unique index above.
+  db.exec(`
+    CREATE TRIGGER IF NOT EXISTS trg_stuck_incidents_append_only
+    BEFORE UPDATE ON stuck_incidents
+    WHEN OLD.card_id <> NEW.card_id
+      OR OLD.detected_at <> NEW.detected_at
+      OR OLD.stalled_ms_at_detection <> NEW.stalled_ms_at_detection
+      OR OLD.action <> NEW.action
+      OR (OLD.resolved_at IS NOT NULL AND (NEW.resolved_at IS NULL OR NEW.resolved_at <> OLD.resolved_at))
+    BEGIN
+      SELECT RAISE(ABORT, 'stuck_incidents is append-only: detection facts are immutable and a resolution is written once, from NULL');
+    END;
+  `)
+
   // --- Timestamp integrity (card a06314ea) ---------------------------------
   // Every timestamp in this schema is a UNIX EPOCH INTEGER, and every reader assumes it: the
   // stuck-card monitor and the re-dispatch guard both do epoch arithmetic. A row written with a

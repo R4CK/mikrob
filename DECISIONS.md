@@ -9539,3 +9539,50 @@ the half a pure sha-equality check could never have surfaced.
 
 **Reference:** upstream round 18; guard `src/__tests__/fork-upstream-conflict-guard.test.ts`
 (`ACKNOWLEDGED_CONFLICTS` + `ACKNOWLEDGED_UPSTREAM_BLOBS`). Guard green 28/28 after the correction.
+
+## 2026-09-06 13:25 -- ac28bc6e (f92671df 1/4) -- the live control and the history are different questions, so they get different stores
+
+**The card asked for stuck-history as structured data. The survey changed what that means.** Plenty
+about a CARD is already structured: `kanban_card_events` (status transitions) and
+`kanban_card_field_events` (every other edit, including the title that carries the `[NN%]` marker),
+both indexed on `(card_id, created_at)`. "When did it last move" and "how long has it been still" are
+already derivable, and a parallel copy would be a second source of truth for a question that has one.
+
+**What has no row anywhere is the INCIDENT**: the moment the heartbeat's D section JUDGED a card
+stuck, what it saw, and what it decided. The last part is load-bearing. The shared token-protection
+guard answers DENY on six grounds (progress, agent-busy, backoff, cap-reached, first-seen-baseline,
+not-active), and every one is a DELIBERATE non-action that today leaves no trace at all -- in the log,
+a control that decided to do nothing is indistinguishable from a control that never ran.
+
+**THE DECISION, and it is a deliberate refusal of the literal ask.** `store/redispatch-ledger.json`
+already counts re-dispatches per card, and `redispatch-guard.sh reset <cardId>` DELETES the entry --
+which working rule 4 requires on every close. So the count is destroyed exactly when the incident
+would become history. I did NOT convert that file into a history store. Its behaviour is CORRECT for
+what it is: a live backoff BUDGET. A history that never reset would leave a once-stuck card at the cap
+forever, and the guard would refuse to re-dispatch it again -- fixing the reporting question by
+breaking the control. The two stay separate, the same split `kanban_card_field_events` documents for
+its own separation from `kanban_card_events`.
+
+**ONE STALL IS ONE ROW, enforced by a unique PARTIAL index** (`WHERE resolved_at IS NULL`). The D
+section runs every 10 minutes, so without it an hour-long stall becomes six rows and "how often did
+this card get stuck" measures the HEARTBEAT FREQUENCY, not the stalls -- a number that looks like data
+and is not. Re-observation bumps `detections` on the open row instead.
+
+**Append-only enforced by TRIGGER, not by convention.** The rows that historically went wrong in this
+schema came from agents writing directly with the sqlite3 CLI, where a TypeScript-side guard is not
+in the path (the timestamp-integrity block in db.ts documents that history). The trigger also refuses
+to UN-resolve: clearing `resolved_at` would reopen a closed incident and let a second open row exist
+under the unique index, quietly breaking one-stall-one-row from the other direction.
+
+**Rule 11: the DOWN path is exercised, not assumed.** Dropping the table is tested, and so is
+drop-then-redeploy -- including that the TRIGGER returns with the table, since a rollback that
+restored the table without it would look identical until the first tampering write. The persistence
+cases run against a temp FILE, not `:memory:`: `initDatabase(':memory:')` opens a NEW database each
+call, so "drop it and re-run the schema" on memory would silently test a fresh DB and prove nothing.
+
+**Mutation evidence, each guard caught by a different set:** trigger deleted -> 4 red; unique partial
+index -> plain index -> 1 red; partial index -> unconditional unique -> 1 red. The third is the
+negative control earning its place: without `WHERE resolved_at IS NULL` a card could only ever be
+stuck ONCE in its life, and the card's own repeat question would be unanswerable.
+
+**Reference:** card `ac28bc6e` (parent `f92671df`); survey comment 21393. 15 tests, green.
