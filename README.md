@@ -198,6 +198,7 @@ A lista **kategóriákba** van rendezve (11, alább), hogy egy új olvasó ne eg
 | Ötletláda | [docs/ideabox.md](docs/ideabox.md) |
 | Proaktív hírszerző (intel registry) | [docs/intel-registry.md](docs/intel-registry.md) |
 | Kutatás oldal | [docs/kutatas.md](docs/kutatas.md) |
+| Beragadás-történet (stuck_incidents, ledger vs. történet) | [docs/stuck-incidents.md](docs/stuck-incidents.md) |
 | Dashboard mobilon (Tailscale, PWA) | [docs/mobil-dashboard.md](docs/mobil-dashboard.md) |
 | Napló — Audit idővonal | [docs/naplo-audit.md](docs/naplo-audit.md) |
 | Tippek, trükkök | [docs/tippek-trukkok.md](docs/tippek-trukkok.md) |

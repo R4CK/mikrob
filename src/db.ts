@@ -1762,6 +1762,166 @@ export function maybeResolveStuckIncident(
   }
 }
 
+/** One resolving event, described from its OWN table -- see recordSiblingHandover's comment for why
+ *  a bare `resolved_by_event_id` cannot say which table to read. `description` is a short, human
+ *  line built from that event's own columns (never re-derived or guessed); `null` if the row the id
+ *  pointed to no longer exists (an event table is not append-only-guaranteed the way stuck_incidents
+ *  itself is), so a dangling reference reads as "describable, but the target is gone" rather than
+ *  throwing or silently pretending the incident was never resolved. */
+export interface StuckIncidentResolution {
+  readonly table: StuckIncidentEventTable
+  readonly eventId: number
+  readonly description: string | null
+}
+
+export interface StuckIncidentRecord {
+  readonly id: number
+  readonly cardId: string
+  readonly assignee: string | null
+  readonly detectedAt: number
+  readonly action: string
+  readonly actionDetail: string | null
+  readonly detections: number
+  readonly resolvedAt: number | null
+  /** Seconds stuck: `resolvedAt - detectedAt` once resolved, or `now - detectedAt` while still open
+   *  (card a2c452ff's own constraint: computed here from the two timestamps stuck_incidents already
+   *  stores, never a third, duplicated duration column). */
+  readonly durationSeconds: number
+  readonly ongoing: boolean
+  readonly resolution: StuckIncidentResolution | null
+}
+
+export interface StuckIncidentQuery {
+  readonly cardId?: string
+  readonly agent?: string
+  /** Injectable for tests; defaults to the real clock. Only affects `durationSeconds` on incidents
+   *  still open (`ongoing: true`) -- a resolved incident's duration never depends on "now". */
+  readonly nowSec?: number
+}
+
+export interface StuckIncidentAnswers {
+  /** Matching rows for the given filter (both, either, or neither of cardId/agent), newest first. */
+  readonly incidents: readonly StuckIncidentRecord[]
+  /** How many separate incidents THIS CARD has had, ever -- independent of any agent filter also
+   *  passed in, so answering "how often did this card get stuck" does not silently narrow to "...
+   *  while assigned to the one agent you happened to also filter on". Null when no cardId was given. */
+  readonly repeatCountForCard: number | null
+  /** Same idea, for the agent axis: how many separate incidents this agent has had across ALL its
+   *  cards, independent of any cardId filter. Null when no agent was given. */
+  readonly repeatCountForAgent: number | null
+}
+
+interface StuckIncidentRow {
+  readonly id: number
+  readonly card_id: string
+  readonly assignee_at_detection: string | null
+  readonly detected_at: number
+  readonly action: string
+  readonly action_detail: string | null
+  readonly detections: number
+  readonly resolved_at: number | null
+  readonly resolved_by_event_id: number | null
+  readonly resolved_by_event_table: string | null
+}
+
+function describeResolutionEvent(
+  table: StuckIncidentEventTable,
+  eventId: number,
+): StuckIncidentResolution {
+  if (table === 'kanban_card_events') {
+    const row = db
+      .prepare(`SELECT from_status, to_status FROM kanban_card_events WHERE id = ?`)
+      .get(eventId) as { from_status: string | null; to_status: string } | undefined
+    return {
+      table,
+      eventId,
+      description: row ? `status: ${row.from_status ?? '(none)'} -> ${row.to_status}` : null,
+    }
+  }
+  const row = db
+    .prepare(`SELECT field, old_value, new_value FROM kanban_card_field_events WHERE id = ?`)
+    .get(eventId) as { field: string; old_value: string | null; new_value: string | null } | undefined
+  return {
+    table,
+    eventId,
+    description: row ? `${row.field}: ${row.old_value ?? '(none)'} -> ${row.new_value ?? '(none)'}` : null,
+  }
+}
+
+function describeStuckIncident(r: StuckIncidentRow, nowSec: number): StuckIncidentRecord {
+  const ongoing = r.resolved_at == null
+  const durationSeconds = (ongoing ? nowSec : r.resolved_at!) - r.detected_at
+  let resolution: StuckIncidentResolution | null = null
+  if (r.resolved_by_event_id != null && r.resolved_by_event_table != null) {
+    resolution = describeResolutionEvent(
+      r.resolved_by_event_table as StuckIncidentEventTable,
+      r.resolved_by_event_id,
+    )
+  }
+  return {
+    id: r.id,
+    cardId: r.card_id,
+    assignee: r.assignee_at_detection,
+    detectedAt: r.detected_at,
+    action: r.action,
+    actionDetail: r.action_detail,
+    detections: r.detections,
+    resolvedAt: r.resolved_at,
+    durationSeconds,
+    ongoing,
+    resolution,
+  }
+}
+
+/**
+ * Card a2c452ff (4/4, parent f92671df): the card's four questions -- when did it get stuck, how
+ * long, what resolved it, how often has this exact card/agent repeated -- answered from ONE call
+ * against data 878cd292 and d05d72b3 already write, never a new write path of its own.
+ */
+export function getStuckIncidentAnswers(query: StuckIncidentQuery): StuckIncidentAnswers {
+  const nowSec = query.nowSec ?? Math.floor(Date.now() / 1000)
+  const conditions: string[] = []
+  const params: unknown[] = []
+  if (query.cardId) {
+    conditions.push('card_id = ?')
+    params.push(query.cardId)
+  }
+  if (query.agent) {
+    conditions.push('assignee_at_detection = ?')
+    params.push(query.agent)
+  }
+  const where = conditions.length ? `WHERE ${conditions.join(' AND ')}` : ''
+  const rows = db
+    .prepare(
+      `SELECT id, card_id, assignee_at_detection, detected_at, action, action_detail, detections,
+              resolved_at, resolved_by_event_id, resolved_by_event_table
+         FROM stuck_incidents ${where}
+        ORDER BY detected_at DESC`,
+    )
+    .all(...params) as StuckIncidentRow[]
+
+  const repeatCountForCard = query.cardId
+    ? (
+        db.prepare(`SELECT COUNT(*) c FROM stuck_incidents WHERE card_id = ?`).get(query.cardId) as {
+          c: number
+        }
+      ).c
+    : null
+  const repeatCountForAgent = query.agent
+    ? (
+        db
+          .prepare(`SELECT COUNT(*) c FROM stuck_incidents WHERE assignee_at_detection = ?`)
+          .get(query.agent) as { c: number }
+      ).c
+    : null
+
+  return {
+    incidents: rows.map((r) => describeStuckIncident(r, nowSec)),
+    repeatCountForCard,
+    repeatCountForAgent,
+  }
+}
+
 export function getDb(): Database.Database {
   return db
 }
