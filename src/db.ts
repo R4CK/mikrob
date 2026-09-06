@@ -674,10 +674,18 @@ export function initDatabase(dbPathOverride?: string): void {
   // three branches permanently unlogged, which is the very "a deliberate non-action leaves no
   // trace" hole this table exists to close, reproduced inside its own fix.
   //
-  // AND ONE OF THEM CARRIES A PAYLOAD: the script emits `DENY:backoff:<seconds>`, not a bare
-  // `DENY:backoff`. A writer that equality-matches the known reasons would silently classify every
-  // backoff denial as "unknown" -- so `action_detail` stores the verdict VERBATIM and any matching
-  // is by prefix.
+  // AND THREE OF THEM CARRY A PAYLOAD, in PARENTHESES. Measured from the echo sites and confirmed
+  // with live probes, NOT read from a comment -- because the guard's own header comment is wrong
+  // about its own code here, and my first correction of this paragraph copied that comment instead
+  // of measuring. The header says `DENY:backoff:<s>` (colon); the code emits:
+  //
+  //     DENY:not-active(<status>)     DENY:cap-reached(<count>)     DENY:backoff(<n>s)
+  //
+  // and the other six are bare. So a writer that equality-matches a known-reason list drops three
+  // of nine, and one that prefix-matches on `DENY:backoff:` drops backoff too, because the
+  // separator is `(` and not `:`. `action_detail` therefore stores the verdict VERBATIM, and any
+  // classification takes the reason as the text up to the first `(` or `:` -- never an equality
+  // test against a list this file would then have to keep in sync with a script it does not own.
   //
   // WHY THIS IS NOT store/redispatch-ledger.json, and why that file is deliberately untouched.
   // The ledger already counts re-dispatches per card, and `redispatch-guard.sh reset <cardId>`

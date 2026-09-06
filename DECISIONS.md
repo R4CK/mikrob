@@ -9618,3 +9618,35 @@ accuracy is a separate concern from this schema; naming the discrepancy is this 
 a fleet-wide task definition is not. Reported to MikroB.
 
 **Reference:** card `ac28bc6e`; corrects the `2026-09-06 13:25` entry in this file.
+
+## 2026-09-06 13:32 -- ac28bc6e SECOND CORRECTION -- I corrected prose by reading other prose
+
+**My 13:30 correction is itself wrong on one point, and the way it is wrong is the point.** It said
+the guard emits `DENY:backoff:<seconds>`. I took that from the guard's HEADER COMMENT (line 33)
+instead of from the code, having just corrected a different claim I had taken from the heartbeat
+prose. Two corrections, same root, one level apart.
+
+**Measured this time -- from the echo sites, plus live probes:**
+
+    header comment claims:  DENY:backoff:<s>            (colon)
+    code actually emits:    DENY:backoff(<n>s)          (parentheses)
+    and two more carry payloads the header never mentions:
+                            DENY:not-active(<status>)   DENY:cap-reached(<count>)
+    live probe, real cards: `DENY:progress`, `DENY:card-not-found`
+
+So THREE of the nine carry a payload, not one, and the separator is `(`, not `:`. The guard's header
+comment disagrees with the guard's own code.
+
+**The design consequence is concrete, not cosmetic.** A writer that equality-matches a known-reason
+list drops three of nine. A writer that prefix-matches `DENY:backoff:` -- exactly what my previous
+entry would have produced -- drops backoff as well, and backoff is the MOST common denial in a real
+stall, since it fires on every re-observation inside the window. The remedy is unchanged in shape but
+now correct in detail: store the verdict VERBATIM, and take the reason as the text up to the first
+`(` or `:`. No list in this repo needs to stay in sync with a script it does not own.
+
+**The lesson, stated plainly because I keep paying for it.** "Read the schema, not the comment about
+the schema" applies to the correction too. When the first source turned out to be prose, the fix was
+to MEASURE, not to find better prose. Both wrong claims would have passed review: they were specific,
+plausible, and cited a real file.
+
+**Reference:** card `ac28bc6e`; corrects the `2026-09-06 13:30` entry, which corrected the `13:25` one.
