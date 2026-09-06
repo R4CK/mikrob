@@ -9499,3 +9499,43 @@ remedy was never a wider word list. What changes is the claim the shipped commen
 old defect's blast radius, and a comment that presents EVIDENCE has to be right about the evidence.
 
 **Reference:** card `bb52c2fa`; Cybersec 21303. Landed round: `e4345f9e`.
+
+## 2026-09-06 13:20 -- upstream round 18 -- the acknowledged-conflict rule said the JSON-parse hardening was out of scope, and upstream landed inside it
+
+**Fleet-wide landing block, and it was not caused by the diff that hit it.** My comment-only commit
+`0fac5a36` was REFUSED by `marveen-land.sh` on the merge result: `fork-upstream-conflict-guard`
+red, 1 of 15203. Measured on a disposable worktree at `origin/develop` (828880c1) with NO change
+applied: the same test is red there too, 1 failed / 27 passed. So this was the base, not the diff --
+the third time this year that distinction has decided whether a red is mine to fix or to route.
+
+**What upstream did.** `src/web/routes/messages.ts` moved `98710db9e171..5f84469418f8`: a new
+`notify?: boolean` on `PUT /api/messages/:id`, letting a closer suppress the reverse `[Eredmeny]`
+ack. Their reason is measured, not stylistic -- the ack traffic lengthens the very queue whose delay
+made a report late.
+
+**Why this is a rule CORRECTION and not a pin bump.** The recorded rule ended with: the fork's other
+additions "(reserved-sender guard, JSON-parse hardening, to-validation, card-state stamping) live in
+separate regions and are not part of this decision". Upstream's `notify` validation landed EXACTLY in
+the JSON-parse hardening region. There are now TWO conflict hunks where the rule describes one, and
+the rule actively tells the next merger that the second one is out of scope -- so the most likely
+resolution is the wrong one, arrived at by following the note.
+
+**The consequence, measured rather than reasoned.** On `5f84469418f8` upstream's version is a BARE
+`JSON.parse(body.toString())` with no try/catch. The fork's side wraps it and answers 400 on a
+malformed body. Taking upstream's side wholesale on hunk 2 -- the natural reading of "not part of
+this decision" -- DELETES the hardening and turns a malformed request body into an unhandled throw in
+a request handler.
+
+**Resolution recorded for hunk 2: keep BOTH, nested.** The fork's try/catch stays; upstream's notify
+type-check goes INSIDE it. Upstream's check is itself worth having and is fail-closed on its own
+terms (it rejects a non-boolean BEFORE the status write rather than coercing, so a truthy `"false"`
+string cannot send the ack the caller asked to suppress). The point is nesting, not choosing. Hunk 1
+(the GET-handler comment) is unchanged: identical code, keep the fork's comment.
+
+**A note on what this guard is for.** It did its job precisely: it refused a landing because an
+upstream side had moved out from under a recorded resolution. The failure mode it caught was not "the
+blob changed" but "the rule now misdescribes the conflict" -- which is the more valuable half, and
+the half a pure sha-equality check could never have surfaced.
+
+**Reference:** upstream round 18; guard `src/__tests__/fork-upstream-conflict-guard.test.ts`
+(`ACKNOWLEDGED_CONFLICTS` + `ACKNOWLEDGED_UPSTREAM_BLOBS`). Guard green 28/28 after the correction.
