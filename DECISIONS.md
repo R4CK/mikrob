@@ -10415,3 +10415,41 @@ backend (a hunkonkénti átvesz/kihagy szétválasztás, méréssel).
 **Hivatkozás:** kártya `b4404ed2` (szülő `f923328d`, `a7a61751`);
 `scripts/hooks/outgoing-copy-gate.py`, `scripts/hooks/outgoing-copy-gate.selftest.py`,
 `src/fork-upstream/acknowledged-conflicts.ts` (16. kör).
+
+## 2026-09-06 -- A hálózat-őr javítása: a sentinel a fájl VÉGÉRE kerül, és az őr bizonyítja, hogy el tud bukni
+
+**Kontextus:** a `5da60b85` kötelező kompenzáló kontrollja (determinizmus-őr, ami kimondja, hogy a
+`fork-upstream-conflict-guard.test.ts`-ben egyetlen eset sem végez hálózati műveletet) MÉRÉSSEL
+ÜRES volt. Cybersec NO-GO (21593) és QA FAIL, egymástól függetlenül: a sentinel a 65. sorban állt,
+közvetlenül az első `describe` ELŐTT, tehát a vizsgált tartomány a 65 soros import-fejléc volt
+NULLA esettel, és mind a 24 valódi eset a hatókörén kívül esett. QA élőben be is bizonyította:
+a sentinel alá fűzött tiltott hívással a teljes fájl zöld maradt.
+
+**Döntés:** a sentinel a fájl VÉGÉRE kerül, a vizsgált tartomány így a teljes fájl; plusz két
+regressziós eset, ami bizonyítja, hogy az őr TÉNYLEGESEN elbukik.
+
+**Miért nem elég a sentinel áthelyezése önmagában:** attól az őr még ugyanúgy lehetne dísz egy
+következő szerkesztés után. Az eredeti önillesztési problémát a needle-fragmentáció oldja meg, nem
+a sentinel helye -- a sentinel most kizárólag a hatókör-határ, és a helyét külön állítás rögzíti.
+
+**Egy saját mérőeszköz-hiba, kimondva:** az első javításom a vizsgált tartományban lévő esetek
+számára adott ALSÓ KORLÁTOT (`> 20`). Ez NEM diszkriminál: a sentinelt visszatolva a régi helyére
+még mindig több mint húsz eset marad fölötte, mert a saját őr-blokk a fájl alján van -- a mutáció
+TÚLÉLTE. Az állítás most EGYENLŐSÉG a teljes fájl eset-számával, ami pontosan azt köti ki, hogy a
+sentinel a legutolsó eset alatt álljon és sehol máshol.
+
+**Mérés:** 28 eset zölden (24-ről). Két mutáció, kilépési kóddal mérve, mindkettő pontosan a saját
+esetét öli meg és semelyik másikat: (1) QA élő próbájának megismétlése, tiltott hívás a régi
+sentinel-pozíció alá -> a „no case performs a remote git operation" eset pirosra vált; (2) a
+sentinel visszamozgatása a régi helyére -> a „the scan covers EVERY case" eset pirosra vált.
+Ráadásul a javított őr ELSŐ futása magától pirosra váltott a saját új fixture-öm `it('fetches
+upstream'` címén -- a needle-ök részsztringként illesztenek, tehát a „fetches" is találat. Ez a
+helyes irány egy DENY-illesztőnél (nem illeszkedni annyi, mint engedélyezni), és egyben az első
+bizonyíték, hogy az őr most olyan tartományt lát, amit korábban soha.
+
+**Ki döntött:** Cybersec (NO-GO 21593, a gyógymóddal együtt, előre lemérve); QA (független élő
+próbával megerősítve); backend (az egyenlőség-alapú hatókör-állítás, miután a saját alsó-korlátos
+első kísérletem mutációja túlélt).
+
+**Hivatkozás:** kártya `5da60b85` (szülő `1f276349`);
+`src/__tests__/fork-upstream-conflict-guard.test.ts`.
