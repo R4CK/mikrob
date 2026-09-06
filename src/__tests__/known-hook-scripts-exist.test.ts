@@ -107,7 +107,9 @@ describe('KNOWN_HOOK_SCRIPTS only names scripts this checkout actually has (card
   )
 
   it('the reason it matters: a missing .py hook exits with the BLOCKING status, .mjs does not', () => {
-    // The seven python gates are wired as a bare `python3 "<abs path>"`, with no `[ -f ]` wrapper.
+    // The seven python gates end in `python3 "<abs path>"` with no `[ -f ]` wrapper -- since card
+    // d2b881ab behind an interpreter probe (pythonHookCommand), which does not change what follows.
+    // The reasoning below is about a missing SCRIPT, and python3 still exits 2 for that.
     // PreToolUse treats exit 2 as a block and every other status as non-blocking, so a missing
     // script file does not degrade those gates -- it stops the agent's every Bash call. That is
     // what makes an unprunable stale entry a wedge rather than an untidiness.

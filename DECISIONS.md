@@ -9750,3 +9750,43 @@ mert a Claude Code csak akkor ismeri fel slash-parancsként; a szöveg egyetlen 
 
 **Ki döntött:** MikroB (plan-grilling verdikt, 21407), backend2 (mérés és megvalósítás).
 **Hivatkozás:** kártya fed3f037 (a) rész; `src/web/routes/agents.ts`.
+
+## 2026-09-06 14:30 -- A python hook-interpretert ellenőrizzük használat előtt, mert a 127 NEM blokkol (kártya d2b881ab)
+
+**Döntés:** Az upstream `pythonHookCommand()` SZÓ SZERINT átvéve (10. szabály: kész, karbantartott
+megoldás adoptálása saját írása helyett), és a fork MINDEN python-őrére alkalmazva -- upstreamnek
+csak az outgoing-copy-gate-hez kellett, mert a többi őr fork-specifikus. Az `injectOutgoingCopyGate`
+is erre vált a `hookCommand()` helyett.
+
+**Miért:** A `hookCommand()` saját fejléce kimondja, hogy a 127-es kilépés "exactly the non-blocking
+status this whole file exists to stop", és ezért a NODE interpretert használat előtt ellenőrzi. A 14
+python-őr-bedrótozás viszont csupasz `python3 "<script>"` volt. Ha a `python3` bármikor lekerül a
+PATH-ról (pyenv shim, csomagfrissítés, más spawn-környezet), mindegyik 127-tel lép ki, a Claude Code
+azt NEM blokkolónak veszi, és MINDEN python-őr némán leáll: nincs hibaüzenet, nincs log, a
+tool-hívások átmennek. A fork a saját, kimondott tanulságát csak az egyik interpreterre alkalmazta.
+
+**A második, súlyosabb alak:** az `injectOutgoingCopyGate` a parancsát a NODE-builderrel építette egy
+`.py` fájlra, tehát a bedrótozott alak `"<node>" ".../outgoing-copy-gate.py" --telegram-bash` volt,
+ami SyntaxErrorral 1-gyel kilép: a kapu garantált no-op. Lappangó, mert a kill switch alapból ki van
+kapcsolva -- de abban a pillanatban, amikor valaki bekapcsolja, egy kapcsoló, ami azt hiszi, védelmet
+kapcsol be, semmit sem kapcsol be. Ez rosszabb a hiányzó védelemnél: hamis biztonságérzet.
+
+**Ami SZÁNDÉKOSAN kimaradt:** a staleness-guard `bash -c '[ -f <script> ] && exec python3 <script>;
+exit 0'` alakja. Az fail-open SZÁNDÉKKAL (egy törölt szkript ne blokkoljon), tehát a hiányzó
+interpreter nem-blokkoló viselkedése ott KÖVETKEZETES a kimondott szándékkal, nem hiba. Teszt pinneli,
+hogy egy későbbi "takarítás" ne vonjon vissza egy működő döntést.
+
+**Bizonyíték, nem mintaillesztés:** a tesztek VÉGREHAJTJÁK a bedrótozott parancsot python3 nélküli
+PATH-szal. A javított alak 2-vel lép ki (blokkol), a régi csupasz alak 127-tel -- ez a kontroll adja
+a 2-esnek a jelentését. Mérve: a meglévő 72 hook-wiring teszt a HIBÁS és a JAVÍTOTT alakkal egyaránt
+zöld volt, mert egyik sem pinnelte a parancs alakját; ezért nem elég sztringre illeszteni.
+
+**Elavult horgony-állítások javítva ugyanebben a commitban** (a 07f4cd2f-en MikroB által megnevezett
+osztály): `hook-registration-guard.ts` és `known-hook-scripts-exist.test.ts` kommentje azt állította,
+hogy a python-kapuk csupaszon vannak drótozva; a `fork-upstream-conflict-guard` 15. körös
+nyugtázása pedig azt, hogy a `pythonHookCommand` NINCS adoptálva. Az utóbbi merge-idejű
+UTASÍTÁS, nem próza: javítatlanul a következő ütközésnél visszanyithatta volna. A dátumozott mérést
+nem írtam át, hanem egy felülíró kör-jegyzetet fűztem hozzá.
+
+**Ki döntött:** backend3 (mérés és kártya), backend2 (megvalósítás), upstream (az adoptált függvény).
+**Hivatkozás:** kártya d2b881ab; `src/web/agent-scaffold.ts`.
