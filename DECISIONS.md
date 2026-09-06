@@ -10904,3 +10904,43 @@ backend mérnöki döntése, itt felülvizsgálatra kitéve.
 
 **Hivatkozás:** kártya `dbba0424`; `src/pane-state.ts` (`detectsPermissionDialog`),
 `src/web/channel-monitor.ts`, `src/__tests__/pane-permission-dialog.test.ts`, `README.md`.
+
+## 2026-09-06 -- 7d47ca16 -- A csendes kézbesítést OSZTÁLY kéri, nem szabad boolean, és a végpont zárva marad
+
+**A DÖNTÉS.** A `createAgentMessage` többé nem fogad `wake: boolean`-t. A hívó egy nevesített
+üzenetosztályt ad meg (`quietClass`), és csak a `QUIET_MESSAGE_CLASSES` statikus, forráskódbeli
+listán szereplő osztály kap csendet. Minden más -- ismeretlen osztály, elgépelés, nem-string,
+hiányzó érték -- ÉBRESZT. A nyers boolean út nem "nem használjuk", hanem típusszinten nem létezik:
+a régi alak fordítási hiba.
+
+**MIÉRT OSZTÁLY ÉS NEM VISELKEDÉS (MikroB, 21447. komment).** Egy string, ami a forrásban ott van,
+egy gate által OLVASHATÓ tény. Egy hívó megítélése nem az. A lista bővítése ezért kód-változtatás,
+ami a szokásos kapun megy át; nincs konfigurációs fájl, nincs env-változó, és a lista `Object.freeze`
+alatt van, hogy a "nincs futásidejű út, ami bővíti" állítás igaz legyen, ne csak leírva legyen.
+
+**A FAIL-CLOSED IRÁNYA ITT A HANGOSSÁG FELÉ MUTAT.** Egy elutasított kérés ÉBRESZTÉST ad, nem
+elnémítást. Ez ugyanaz az aszimmetria, amit a `messageWakesReceiver` már kimond: egy felesleges
+ébresztés egy megszakítás ára, egy tévedésből elnémított hibajelzés viszont addig láthatatlan, amíg
+valaki véletlenül oda nem néz.
+
+**A TESZT KORLÁTJA, KIMONDVA.** A kártya azt kéri, hogy egy fail/security-osztály felvétele a listára
+BUKJON EL. Ezt csak NÉV szerint lehet kikényszeríteni: a lista stringekből áll, és egy string nem
+hordoz bizonyítékot arról, mihez tartozik. Az őr tehát elkapja az `agent-failure-alert`-et, és nem
+kapja el a `class-17`-et. Ez valódi korlát, nem szépítem: a valószínű hiba az, hogy valaki
+őszintén nevezi el az osztályt és mégis felveszi -- azt fogja. A tesztet lemértem egy mutánssal (a
+lista bővítése `agent-failure-alert`-tel), három eset bukott el rá.
+
+**A VÉGPONT ZÁRVA MARAD, ÉS EZ TUDATOS DÖNTÉS.** A 3bd457ed szándékosan nem nyitotta meg a `wake`
+mezőt a `/api/messages`-en, arra hivatkozva, hogy előbb kell az allowlist. Az allowlist megvan, a
+végpontot MÉGSEM nyitottam ki. A kártya a hívó OLDALÁN kér statikus listát, és a jogosult hívók
+folyamaton belüli figyelők, akiknél az osztály egy forráskód-literál. Egy HTTP-törzsben érkező
+osztálynév visszaadná a választást annak, aki tokent tart -- ugyanaz az ablak, amit az 1. lépés nem
+akart kinyitni, csak most vetettnek látszó névvel. Ha ez később mégis kell, az külön kártya külön
+kapuval; a `message-wake-field.test.ts` végpont-tesztje az, aminek előbb pirosra kell váltania.
+
+**Ki döntött:** MikroB (21447. komment: statikus konstans-lista a hívó oldalán); a végpont zárva
+tartása és a név-alapú őr korlátjának kimondása backend mérnöki döntése, itt felülvizsgálatra kitéve.
+
+**Hivatkozás:** kártya `7d47ca16` (szülő `dc35fa1a`, előzmény `3bd457ed`, következő `8f33a1a1`);
+`src/web/message-wake.ts`, `src/db.ts`, `src/__tests__/message-quiet-class-allowlist.test.ts`,
+`src/__tests__/message-wake-field.test.ts`, `README.md`.
