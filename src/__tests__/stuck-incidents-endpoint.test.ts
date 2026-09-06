@@ -14,7 +14,7 @@ import { describe, expect, it, afterEach } from 'vitest'
 import { mkdtempSync, readFileSync, rmSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
-import { initDatabase, getDb } from '../db.js'
+import { initDatabase, getDb, recordStuckIncident } from '../db.js'
 import { tryHandleStuckIncidents } from '../web/routes/stuck-incidents.js'
 import { REPO_ROOT } from './helpers/repo-location.js'
 
@@ -37,7 +37,12 @@ afterEach(() => {
 /** Minimal request/response doubles: this exercises the handler's own contract (status + body),
  *  which is what the guard depends on. The auth layer is asserted separately, against the real
  *  source, because it lives in web.ts and not here. */
-function call(body: unknown, method = 'POST', path = '/api/stuck-incidents') {
+function call(body: unknown, method = 'POST', pathWithQuery = '/api/stuck-incidents') {
+  // Same split web.ts itself does: `path` is the exact-match key the handlers compare against,
+  // `url.searchParams` is where a GET's query filters live -- a query string glued onto `path`
+  // would silently fail every `path === '/api/stuck-incidents'` check in the real handler.
+  const url = new URL(pathWithQuery, 'http://localhost')
+  const path = url.pathname
   const chunks = [Buffer.from(typeof body === 'string' ? body : JSON.stringify(body))]
   const req = {
     [Symbol.asyncIterator]: async function* () {
@@ -62,7 +67,7 @@ function call(body: unknown, method = 'POST', path = '/api/stuck-incidents') {
       if (payload) out.body = JSON.parse(payload)
     },
   } as unknown as Parameters<typeof tryHandleStuckIncidents>[0]['res']
-  return { out, handled: tryHandleStuckIncidents({ req, res, path, method } as never) }
+  return { out, handled: tryHandleStuckIncidents({ req, res, path, method, url } as never) }
 }
 
 describe('POST /api/stuck-incidents -- the route is GATED, not public', () => {
@@ -142,9 +147,44 @@ describe('POST /api/stuck-incidents -- contract', () => {
   })
 
   it('does not claim other paths or methods', async () => {
+    // GET on THIS path is now the query side (card a2c452ff) -- covered separately below, so the
+    // "unclaimed" probe here uses a method/path combination that genuinely is not this file's.
     freshDb()
-    expect(await call({}, 'GET').handled).toBe(false)
+    expect(await call({}, 'DELETE').handled).toBe(false)
     expect(await call({}, 'POST', '/api/something-else').handled).toBe(false)
+    expect(await call({}, 'GET', '/api/something-else').handled).toBe(false)
+  })
+})
+
+describe('GET /api/stuck-incidents -- the query side (card a2c452ff)', () => {
+  it('answers with the recorded incidents for a filtered cardId', async () => {
+    freshDb()
+    recordStuckIncident({
+      cardId: 'c1',
+      assignee: 'backend3',
+      verdict: 'DENY:agent-busy',
+      detectedAt: 1_700_000_000,
+      stalledMs: 900_000,
+    })
+    const c = call({}, 'GET', '/api/stuck-incidents?cardId=c1')
+    expect(await c.handled).toBe(true)
+    const body = c.out.body as { incidents: unknown[]; repeatCountForCard: number | null }
+    expect(body.incidents).toHaveLength(1)
+    expect(body.repeatCountForCard).toBe(1)
+  })
+
+  it('with no filters, answers with everything', async () => {
+    freshDb()
+    recordStuckIncident({
+      cardId: 'c1', assignee: 'a', verdict: 'ALLOW', detectedAt: 1, stalledMs: 1,
+    })
+    recordStuckIncident({
+      cardId: 'c2', assignee: 'b', verdict: 'ALLOW', detectedAt: 2, stalledMs: 1,
+    })
+    const c = call({}, 'GET', '/api/stuck-incidents')
+    expect(await c.handled).toBe(true)
+    const body = c.out.body as { incidents: unknown[] }
+    expect(body.incidents).toHaveLength(2)
   })
 })
 

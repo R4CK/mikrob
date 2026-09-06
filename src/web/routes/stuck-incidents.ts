@@ -15,7 +15,7 @@
 // body, 500 never swallowed into a fake success. It is the GUARD that must ignore whatever comes
 // back, because a logging fault must not change what the guard decided or the exit code it returns.
 // Both halves are pinned: the writer's tests here, and the guard's own selftest on its side.
-import { recordStuckIncident, recordSiblingHandover } from '../../db.js'
+import { recordStuckIncident, recordSiblingHandover, getStuckIncidentAnswers } from '../../db.js'
 import { readBody, json } from '../http-helpers.js'
 import type { RouteContext } from './types.js'
 
@@ -72,7 +72,18 @@ function handoverBadRequest(body: {
 }
 
 export async function tryHandleStuckIncidents(ctx: RouteContext): Promise<boolean> {
-  const { req, res, path, method } = ctx
+  const { req, res, path, method, url } = ctx
+
+  // The read side (card a2c452ff): the card's four questions -- when did it get stuck, how long,
+  // what resolved it, how often has this exact card/agent repeated -- in one call. cardId and agent
+  // are independent filters, both optional, and may be combined; each also drives its OWN repeat
+  // count regardless of whether the other is set (see getStuckIncidentAnswers's own comment).
+  if (path === '/api/stuck-incidents' && method === 'GET') {
+    const cardId = url.searchParams.get('cardId')?.trim() || undefined
+    const agent = url.searchParams.get('agent')?.trim() || undefined
+    json(res, getStuckIncidentAnswers({ cardId, agent }))
+    return true
+  }
 
   if (path === '/api/stuck-incidents' && method === 'POST') {
     let data: Record<string, unknown>
