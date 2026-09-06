@@ -916,7 +916,13 @@ fi
 if git diff "$OLD_VERSION" "$NEW_VERSION" --name-only | grep -qE "^package(-lock)?\.json$"; then
   echo -e "  Fuggosegek frissitese (lock-strict)..."
   RESULT_PHASE="npm-ci"
-  if ! retry 3 3 npm ci --silent; then
+  # --include=dev adopted from upstream (AUTOUPDNODEENV905, card 50af1a27). Under
+  # NODE_ENV=production a plain `npm ci` PRUNES the compiler, so the TypeScript build
+  # below dies with nothing to point at. No-op on this host today -- NODE_ENV is set
+  # nowhere in .env, start.sh, install-linux.sh or this script (measured 2026-09-06) --
+  # so this is closing a latent hole, not a live outage. The audit below keeps its own
+  # --omit=dev, so the security scope is unchanged.
+  if ! retry 3 3 npm ci --silent --include=dev; then
     echo -e "  HIBA: npm ci sikertelen. Valoszinuleg a package-lock.json nincs szinkronban."
     echo -e "  Reszletekert futtasd: npm ci"
     exit 1
@@ -1447,7 +1453,12 @@ if [ -n "$OLD_FULL" ]; then
   fi
   if rollback_guard_check "$INSTALL_DIR" "$(git rev-parse HEAD 2>/dev/null || echo unknown)" "$OLD_FULL" "update-health-check"; then
     git reset --hard "$OLD_FULL" >/dev/null 2>&1 || true
-    npm ci --silent 2>/dev/null || true
+    # --include=dev: same reason as the main npm ci above, and it matters MORE here.
+    # Without it the rollback re-creates the very pruned tree it is trying to escape,
+    # and it does so silently (`|| true`), so the recovery path would report success on
+    # a build that never ran. The fork's rollback_guard_check wrapper around this block
+    # stays as it is -- upstream has no equivalent.
+    npm ci --silent --include=dev 2>/dev/null || true
     npm rebuild better-sqlite3 --build-from-source --silent 2>/dev/null || true
     npm run build --silent 2>/dev/null || true
     [ -d "$INSTALL_DIR/dist" ] && echo "$OLD_FULL" > "$BUILT"
