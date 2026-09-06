@@ -11298,3 +11298,53 @@ pótlása is PIROSRA váltja.
 **Hivatkozás:** kártya `beb9c8d3` (backend leletéből, `cea77ed2` kapcsán);
 `store/vitest-skip-report.sh`, `store/vitest-skip-report.selftest.sh`,
 `store/cleancore-suite-run.sh`, `README.md`.
+
+## 2026-09-06 -- Két testvér-őr ELLENTÉTESEN döntött ugyanarról a varrat-kérdésről, egy héten belül
+
+**A MEGFIGYELÉS Cybersecé** (`108c7b10` GO, komment 21567), és kifejezetten NEM leletként adta át:
+a `vram-guard-check.sh` `--metrics-json` varrata őrizetlen, és teljesen meghatározza a verdiktet.
+Ugyanezt a kérdést a `09a3d52a`-n tudatosan FORDÍTVA döntöttem el: ott elutasítottam egy
+env-varratot, mert egy TILTÓ eszközben a varrat maga lenne a megkerülés.
+
+**A KÜLÖNBSÉG, amit a két döntés között tartok, kimondva.** A `09a3d52a` főkönyve azt dönti el,
+hogy egy re-dispatch megtörténhet-e -- ott a varrat közvetlenül a tiltás kikapcsolója. A
+VRAM-őr egy KÉSLELTETÉST ad vagy nem ad, és a `load-guard-eval.sh` már precedenst teremtett a
+teszt-varratra ugyanebben a családban. A tét nagyságrenddel kisebb, ezért nem szigorítottam.
+
+**AMIT EZ NEM MOND.** Nem állítom, hogy a különbség elvi. Két, egy héten belül szállított,
+egymás mellett élő őr két ellentétes választ ad ugyanarra a kérdésre, és ha valaki később
+egységesíteni akarja őket, ez a bejegyzés az a hely, ahonnan indul -- nem a git log, amiben a két
+döntés két különböző kártyán, két különböző indoklással áll. Ha a VRAM-őr tétje nő (pl. ha a
+verdiktje valaha blokkolni fog, nem csak késleltetni), a varratot újra kell dönteni.
+
+**Ki döntött:** a megfigyelés Cybersecé; a rögzítés MikroB kérése (24964); a fenti megkülönböztetés
+backend mérnöki döntése, itt felülvizsgálatra kitéve.
+
+**Hivatkozás:** kártyák `108c7b10`, `09a3d52a`; `store/vram-guard-check.sh`,
+`store/redispatch-guard.sh`, `store/load-guard-eval.sh`.
+
+## 2026-09-06 -- Egy JELEN IDŐBEN állított védelem, ami jövő idejű (kártya 0c4cf655 utólagos javítása)
+
+**A LELET Cybersecé** (`0c4cf655` GO, komment 21577). A `resolvesToSharedProjectsRoot` fejléce azt
+állította, hogy a fail-safe iránya által kockáztatott duplikátumot „NOW caught by the dedup key
+(card b774f057)" -- és ugyanez állt a tesztben is.
+
+**MEGMÉRVE az éles adatbázison, nem a jelentésből átvéve:**
+`idx_token_usage_dedup ON token_usage(agent, session_id, timestamp, input_tokens, output_tokens)`.
+Az `agent` az ELSŐ mező, tehát két néven elkönyvelt azonos esemény ma KÉT sor. A `b774f057`
+(az `agent` kivétele a kulcsból) `planned` és blokkolt. A hivatkozott védelem tehát nem létezik.
+
+**A JAVÍTÁS doksi-only, és szándékosan az:** a fail-safe IRÁNYA helyes marad (egy ügynök
+használatát elejteni rosszabb, mint duplán számolni), csak nem védelemnek nevezem, hanem
+kompromisszumnak. Három helyből egy volt pontos (`docs/token-usage.md` helyesen jövő időben írta),
+kettő nem -- mindkettő átírva.
+
+**A TANULSÁG, amiért ez külön bejegyzést kap:** ugyanaz a hibaosztály, amit rendszeresen megfogok
+mások munkájában (egy őr fejléce olyan védelmet nevez meg, ami még nincs sehol), a sajátomban
+csúszott át. Egy másik kártyára hivatkozó védelem-állítás JÖVŐ IDŐBEN íródjon, amíg az a kártya nem
+`done` -- a jelen idő ott nem stílus, hanem hamis állítás.
+
+**Ki döntött:** MikroB (24968, a HOLD alóli doksi-only kivétel).
+
+**Hivatkozás:** kártyák `0c4cf655`, `b774f057`, `0333ab9f`; `src/web/token-usage.ts`,
+`src/__tests__/token-usage-shared-root-skip.test.ts`, `docs/token-usage.md`.
