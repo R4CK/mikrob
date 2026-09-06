@@ -34,8 +34,15 @@ interface AgentTranscriptSource {
  * asking "why is this agent's isolated root skipped" should find one named thing to read.
  *
  * Fails toward TREATING IT AS ISOLATED (returns false) when either path cannot be resolved: a dir
- * we cannot stat is one we should still try to read rather than silently drop, and the duplicate
- * that direction risks is now caught by the dedup key (card b774f057) instead of by this guess.
+ * we cannot stat is one we should still try to read rather than silently drop.
+ *
+ * THE DUPLICATE THAT DIRECTION RISKS IS NOT CAUGHT TODAY, and this comment used to say it was
+ * (Cybersec, card 0c4cf655 gate). Measured on the live database: idx_token_usage_dedup is
+ * (agent, session_id, timestamp, input_tokens, output_tokens) -- `agent` is the FIRST field, so the
+ * same event booked under two names is two rows, not one. Dropping `agent` from that key is card
+ * b774f057, which is still planned and blocked. Until it lands, the duplicate is unguarded; the
+ * direction is still the right one, because dropping an agent's usage outright is worse than
+ * double-counting it, but that is a trade rather than a protection.
  */
 export function resolvesToSharedProjectsRoot(candidate: string, sharedRoot: string): boolean {
   try {
