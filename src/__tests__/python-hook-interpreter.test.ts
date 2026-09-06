@@ -123,6 +123,66 @@ describe('the outgoing-copy-gate is a .py file and must not be handed to NODE (c
   })
 })
 
+describe('the BUILDER must agree with the script EXTENSION, everywhere (card d2b881ab)', () => {
+  // WHY A SOURCE SCAN AND NOT A BEHAVIOUR TEST. hookCommand's own header promises that a single
+  // builder keeps "the injectors and every wired-already comparison byte-identical, so they cannot
+  // drift". Moving injectOutgoingCopyGate to the python builder and leaving ensureGovernanceGate-
+  // Commands' comparison on the node builder broke that promise, and the damage was in the
+  // COMPARISON, not the wired command: the wired form was correct, so every test that inspected it
+  // stayed green, while the repair pass could no longer recognise its own work. It never settled
+  // (needCopyAdd true on every pass) and the OFF direction stopped removing anything. The
+  // outgoing-copy-gate role-wiring tests caught it, but only for THAT gate -- this pins the class.
+  //
+  // Matched on the RAW file, not a comment-stripped copy: this is an ABSENCE claim, and stripping
+  // is the direction that can hide a real occurrence. A comment merely DISCUSSING the wrong pairing
+  // costs a false red, which is the safe way to be wrong here. The pattern needs an actual call
+  // form, so the prose above (and in agent-scaffold.ts) does not trip it.
+  const CALL = /(?<![A-Za-z0-9_$])(python)?[Hh]ookCommand\((?:[^()]|\([^()]*\))*\)/g
+  const PY_SCRIPT = /['"][^'"]*\.py['"]/
+  const JS_SCRIPT = /['"][^'"]*\.(?:mjs|cjs|js)['"]/
+
+  function mispairedBuilders(src: string): string[] {
+    const bad: string[] = []
+    for (const m of src.matchAll(CALL)) {
+      const call = m[0]
+      const isPythonBuilder = call.startsWith('python')
+      if (isPythonBuilder && JS_SCRIPT.test(call)) bad.push(`python builder on a JS script: ${call}`)
+      if (!isPythonBuilder && PY_SCRIPT.test(call)) bad.push(`node builder on a .py script: ${call}`)
+    }
+    return bad
+  }
+
+  const scaffoldSrc = readFileSync(join(__dirname, '..', 'web', 'agent-scaffold.ts'), 'utf8')
+
+  it('no .py path is handed to hookCommand, and no .mjs path to pythonHookCommand', () => {
+    expect(mispairedBuilders(scaffoldSrc)).toEqual([])
+  })
+
+  it('CONTROL: the scan actually bites -- a reverted site is reported', () => {
+    // A scan that finds nothing looks identical to a scan that CANNOT find anything. Both
+    // directions are exercised against the real source, mutated in memory.
+    const revertedComparison = scaffoldSrc.replace('const copyCmd = pythonHookCommand(', 'const copyCmd = hookCommand(')
+    expect(revertedComparison).not.toBe(scaffoldSrc)
+    expect(mispairedBuilders(revertedComparison)).toHaveLength(1)
+
+    const revertedInjector = scaffoldSrc.replace('const base = pythonHookCommand(', 'const base = hookCommand(')
+    expect(revertedInjector).not.toBe(scaffoldSrc)
+    expect(mispairedBuilders(revertedInjector)).toHaveLength(1)
+
+    const jsOnPython = scaffoldSrc.replace(
+      "hookCommand(join(PROJECT_ROOT, 'scripts', 'email-send-gate.mjs'))",
+      "pythonHookCommand(join(PROJECT_ROOT, 'scripts', 'email-send-gate.mjs'))",
+    )
+    expect(jsOnPython).not.toBe(scaffoldSrc)
+    expect(mispairedBuilders(jsOnPython).length).toBeGreaterThan(0)
+  })
+
+  it('and it is looking at a real corpus -- the file does contain builder calls', () => {
+    // Guards against the scan silently passing because the regex matched nothing at all.
+    expect([...scaffoldSrc.matchAll(CALL)].length).toBeGreaterThan(10)
+  })
+})
+
 describe('CONTROL: the staleness guard keeps its DELIBERATE fail-open form', () => {
   it('is left alone, because a removed script must not block there', () => {
     // Not every python wiring in this file is the same decision. The staleness guard is

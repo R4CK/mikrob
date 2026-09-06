@@ -1248,7 +1248,7 @@ export function ensureOutgoingCopyGate(name: string): boolean {
   const wanted = agentGetsOutgoingCopyGate(name)
   if (wanted === wired) return false
   if (wanted) {
-    const command = hookCommand(join(PROJECT_ROOT, 'scripts', 'hooks', 'outgoing-copy-gate.py'))
+    const command = pythonHookCommand(join(PROJECT_ROOT, 'scripts', 'hooks', 'outgoing-copy-gate.py'))
     if (isUnsafeHookCommand(command)) return false
     injectOutgoingCopyGate(settings)
     if (name !== MAIN_AGENT_ID) mkdirSync(join(agentDir(name), '.claude'), { recursive: true })
@@ -1475,7 +1475,13 @@ export function ensureGovernanceGateCommands(name: string): boolean {
   // Card 74181db2, both directions. `wanted` false + wired means the operator turned the
   // switch off: the repair pass is where that actually takes effect, since nothing else
   // revisits an already-scaffolded settings file.
-  const copyCmd = hookCommand(join(PROJECT_ROOT, 'scripts', 'hooks', 'outgoing-copy-gate.py'))
+  // pythonHookCommand, NOT hookCommand: this is the wired-already COMPARISON, and hookCommand's
+  // own header promises that a single builder keeps "the injectors and every wired-already
+  // comparison byte-identical, so they cannot drift". Moving the injector to the python builder
+  // and leaving this one on the node builder broke exactly that promise: the comparison never
+  // matched, so needCopyAdd stayed true on every pass (the repair never settled) and
+  // needCopyRemove stayed false (turning the switch off no longer removed anything).
+  const copyCmd = pythonHookCommand(join(PROJECT_ROOT, 'scripts', 'hooks', 'outgoing-copy-gate.py'))
   const copyWired = hookCommandWired(ptuJson, copyCmd)
   const wantCopy = agentGetsOutgoingCopyGate(name)
   const needCopyAdd = wantCopy && !copyWired
