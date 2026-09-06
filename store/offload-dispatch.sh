@@ -325,6 +325,24 @@ $leaf_desc"
   fi
 }
 
+# VRAM PRESSURE, ONCE PER SWEEP (card f9bad591). Per-LEAF protection already comes for free: every
+# leaf goes through local-llm-rag.sh, which asks the same guard before it routes local. This check
+# exists so a sweep that cannot possibly draft anything does not first walk the whole leaf list,
+# read the board and spend its bookkeeping -- it says so and stops.
+#
+# It EXITS 0, not non-zero: "the GPU is busy" is a normal operating condition for a sweep, not a
+# failure of the sweep, and a non-zero exit here would make the heartbeat treat a healthy machine as
+# a broken one. Missing guard -> skipped; any non-zero exit from it -> stop, same direction as the
+# other two call sites.
+VRAM_GUARD="${OFFLOAD_VRAM_GUARD:-$HERE/vram-guard-check.sh}"
+if [[ -f "$VRAM_GUARD" ]]; then
+  vram_line="$(bash "$VRAM_GUARD" 2>/dev/null)"; vram_rc=$?
+  if [[ "$vram_rc" -ne 0 ]]; then
+    echo "offload-dispatch: SKIPPED -- the local model cannot take work now (${vram_line:-no output}, rc=$vram_rc). Nothing was drafted; the cards are untouched and go online as usual." >&2
+    exit 0
+  fi
+fi
+
 attempted=0
 drafted=0
 # Fields travel base64-encoded end to end (title/description routinely contain newlines/tabs, which
