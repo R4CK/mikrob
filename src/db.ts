@@ -1485,6 +1485,121 @@ function migrateTaskRunsFromJson(): void {
   } catch { /* corrupt file, skip */ }
 }
 
+/** One row of the stuck-incident log. See the schema comment for what the table is FOR: the
+ *  DETECTION and the DECISION, which nothing else records -- not the card history, which
+ *  kanban_card_events and kanban_card_field_events already carry. */
+export interface StuckIncidentInput {
+  readonly cardId: string
+  readonly assignee: string | null
+  /** The guard's verdict, VERBATIM (e.g. `ALLOW`, `DENY:agent-busy`, `DENY:backoff(1200s)`). */
+  readonly verdict: string
+  readonly detectedAt: number
+  readonly stalledMs: number
+}
+
+/** What `recordStuckIncident` did, so a caller (and a test) can tell the three cases apart without
+ *  re-querying. `skipped` means the verdict was not a decision ABOUT a stuck card at all. */
+export type StuckIncidentResult =
+  | { readonly kind: 'opened'; readonly id: number }
+  | { readonly kind: 'redetected'; readonly id: number; readonly detections: number }
+  | { readonly kind: 'skipped'; readonly reason: string }
+
+/**
+ * Classify a guard verdict into a stored `action`, or refuse to store it at all.
+ *
+ * THE REASON IS THE TEXT UP TO THE FIRST `(` OR `:`, never an equality test against a list. Three of
+ * the nine verdicts carry a payload in PARENTHESES -- `DENY:not-active(<status>)`,
+ * `DENY:cap-reached(<count>)`, `DENY:backoff(<n>s)` -- measured from the script's own echo sites,
+ * because the script's HEADER COMMENT disagrees with its code and says `DENY:backoff:<s>`. A list
+ * kept in sync by hand with a script this repo does not own is a second source of truth waiting to
+ * drift; a prefix read cannot drift.
+ *
+ * THREE KINDS, not two. `usage` and `card-not-found` are CALLING ERRORS, not verdicts about a card
+ * (the distinction is MikroB's, from the corrected heartbeat D-section). Storing them would fold our
+ * own bad calls into "how often did the system decide not to intervene" -- the table corrupting the
+ * very number it exists to produce. They are skipped, and the caller is told why. `ledger-busy` is
+ * the third kind: not a decision, not a caller mistake, but "could not evaluate" -- recorded as
+ * `none_other` so it stays visible without inflating the denial count.
+ *
+ * THE VERDICT SET IS NOT FROZEN, and this function has already been wrong about its size once. It
+ * was written against NINE reasons measured from the script's echo sites; `ledger-busy` (card
+ * 09a3d52a) landed in the same afternoon and made it TEN. That is why the fallback STORES an
+ * unrecognised reason rather than dropping it, and why nothing here is an equality test against a
+ * frozen list: the script is owned by another card and moves on its own schedule.
+ */
+export function classifyStuckVerdict(
+  verdict: string,
+): { readonly action: string; readonly detail: string | null } | { readonly skip: string } {
+  const v = verdict.trim()
+  if (v === 'ALLOW') return { action: 'redispatch', detail: null }
+  if (!v.startsWith('DENY:')) return { skip: `unrecognised verdict: ${v.slice(0, 24)}` }
+  const rest = v.slice('DENY:'.length)
+  const reason = rest.split(/[(:]/, 1)[0] ?? ''
+  if (reason === 'usage' || reason === 'card-not-found') {
+    return { skip: `calling error, not a decision about a card: ${reason}` }
+  }
+  // `ledger-busy` is a THIRD kind, and it arrived while this file was being written: the guard grew
+  // it in card 09a3d52a (the ledger is now taken under a lock, and a missing lock REFUSES). It is
+  // neither a decision nor a calling error -- the guard was asked and COULD NOT EVALUATE, because
+  // another process held the lock.
+  //
+  // It is recorded, but as `none_other`, not `none_denied`. Folding it into `none_denied` would
+  // inflate "how often did the system decide not to intervene" with occasions where nothing was
+  // decided at all -- the same corruption that keeps usage/card-not-found out entirely, one step
+  // milder. Dropping it instead would hide a real operational signal: repeated ledger-busy means
+  // lock contention, and that is exactly the kind of thing this table should be able to show.
+  if (reason === 'ledger-busy') return { action: 'none_other', detail: v }
+  // Everything else IS a decision about a stuck card, including load-paused -- a real policy denial
+  // the old six-item prose omitted. An unknown reason is still stored: the guard may grow reasons,
+  // and a new one must be recordable rather than silently dropped. That is not hypothetical -- see
+  // the paragraph above, which is a reason that appeared DURING this card.
+  return { action: 'none_denied', detail: v }
+}
+
+/**
+ * Record one stuck-card detection. ONE STALL IS ONE ROW: if an unresolved incident already exists
+ * for the card, this bumps its `detections` instead of inserting. The D section runs every 10
+ * minutes, so without that an hour-long stall would become six rows and the repeat count would be
+ * measuring the HEARTBEAT FREQUENCY rather than the stalls.
+ *
+ * Never throws. Logging is not the control: a fault here must not change what the guard decided or
+ * what it returns, so the caller can ignore the result entirely. The one thing it must not do is
+ * pretend -- a failure returns `skipped` with the reason rather than a fake id.
+ */
+export function recordStuckIncident(input: StuckIncidentInput): StuckIncidentResult {
+  const cls = classifyStuckVerdict(input.verdict)
+  if ('skip' in cls) return { kind: 'skipped', reason: cls.skip }
+  try {
+    const db = getDb()
+    const open = db
+      .prepare(
+        `SELECT id, detections FROM stuck_incidents WHERE card_id = ? AND resolved_at IS NULL`,
+      )
+      .get(input.cardId) as { id: number; detections: number } | undefined
+    if (open) {
+      db.prepare(`UPDATE stuck_incidents SET detections = detections + 1 WHERE id = ?`).run(open.id)
+      return { kind: 'redetected', id: open.id, detections: open.detections + 1 }
+    }
+    const r = db
+      .prepare(
+        `INSERT INTO stuck_incidents
+           (card_id, assignee_at_detection, detected_at, stalled_ms_at_detection, action, action_detail)
+         VALUES (?, ?, ?, ?, ?, ?)`,
+      )
+      .run(
+        input.cardId,
+        input.assignee,
+        Math.floor(input.detectedAt),
+        Math.floor(input.stalledMs),
+        cls.action,
+        cls.detail,
+      )
+    return { kind: 'opened', id: Number(r.lastInsertRowid) }
+  } catch (e) {
+    return { kind: 'skipped', reason: `write failed: ${e instanceof Error ? e.message : String(e)}` }
+  }
+}
+
 export function getDb(): Database.Database {
   return db
 }
