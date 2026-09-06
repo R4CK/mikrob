@@ -138,7 +138,10 @@ _ends_inside_code_fence() {
 # 0 = would form a heading (refuse), 1 = safe.
 _seam_makes_setext_heading() {
   # A rule under NOTHING is just a rule: markdown needs a paragraph line above it to promote.
-  [ -n "$1" ] || return 1
+  # The `\r` strip is the CRLF half of the same axis the trailing trim below closes: in a CRLF file
+  # a BLANK line arrives as a lone `\r`, which is a non-empty string and would read as a paragraph.
+  local prev="${1%$'\r'}"
+  [ -n "$prev" ] || return 1
   # THE SAME 0-3 SPACE INDENT THE FENCE SIDE ALREADY HANDLES (Cybersec, comment 21040). CommonMark
   # lets a setext underline be indented up to three spaces, exactly like a fence opener -- and this
   # predicate anchored at column 0 while `_ends_inside_code_fence`, fixed in the same round, did
@@ -152,11 +155,20 @@ _seam_makes_setext_heading() {
   '  '*)  u="${u#  }" ;;
   ' '*)   u="${u# }" ;;
   esac
-  # Trailing spaces or tabs are allowed after the underline; only OTHER text disqualifies it.
+  # Trailing WHITESPACE is allowed after the underline; only OTHER text disqualifies it.
+  #
+  # ONE CHARACTER CLASS, NOT AN ENUMERATION OF THE TWO SPELLINGS SOMEONE THOUGHT OF (Cybered, comment
+  # 21147 -- the same collision class this card exists for, one axis further along). The previous
+  # form trimmed space and tab only, so in a CRLF file the underline arrives as `---\r`, the `\r`
+  # survives, and `*[!-]*` carries it to SAFE. Measured on the landed copy: `---`, `  ---` and
+  # `---\t` all REFUSE correctly, while `---\r`, `===\r` and `   ===\r` all read as safe. The FENCE
+  # half was already CR-tolerant, because its check uses `[![:space:]]` -- so once again one half of
+  # the pair had learned the rule and the other had not, and this time the untaught half fails OPEN:
+  # `safe` means the union runs and the inserted text turns its neighbour into a heading nobody
+  # asked for. `[[:space:]]` puts both halves on one grammar rather than closing this one case.
   while :; do
     case "$u" in
-    *' ') u="${u% }" ;;
-    *"$(printf '\t')") u="${u%?}" ;;
+    *[[:space:]]) u="${u%?}" ;;
     *) break ;;
     esac
   done
@@ -532,6 +544,7 @@ if [ "${BASH_SOURCE[0]}" = "${0}" ] && [ "${1:-}" != "--selftest" ]; then
   echo "$(basename "${BASH_SOURCE[0]}"): this file is a SOURCED helper, not an executable." >&2
   echo "  It takes no positional arguments. If you reached this from a git merge driver" >&2
   echo "  configuration, REMOVE IT: exiting 0 there would make git keep ours and silently" >&2
+  echo "  discard theirs." >&2
   echo "  There is NO supported merge-driver configuration for this file -- do not wire one." >&2
   echo "  (--selftest runs its tests. Note the guard cannot see a driver that SOURCES this file:" >&2
   echo "   sourcing inherits the caller's positional parameters, so a caller invoked with three" >&2
@@ -1153,6 +1166,15 @@ body of A
   # FOUR is past the limit -- and an indented code block cannot interrupt a paragraph either, so
   # it is safe by both readings. This is the control that stops "strip all leading space".
   _seam_case "4-space indented --- is NOT a heading"    "prozasor" "    ---" safe
+  # CRLF (Cybered, comment 21147): the trailing trim is a whitespace CLASS now, so a `\r` before
+  # the line end no longer carries the underline to safe. The second case is the control that
+  # keeps the trim from swallowing real text: `--- x` is not an underline with or without a CR.
+  _seam_case "CRLF --- is still a heading"              "prozasor" "$(printf '%s\r' ---)"   refuse
+  _seam_case "CRLF === is still a heading"              "prozasor" "$(printf '%s\r' ===)"   refuse
+  _seam_case "CRLF trailing text is NOT a heading"      "prozasor" "$(printf '%s\r' '--- x')" safe
+  # And the CRLF BLANK previous line: a lone `\r` is markdown-blank, so a rule under it is a
+  # thematic break, not a heading promotion.
+  _seam_case "CRLF blank line above --- is NOT a heading" "$(printf '\r')" "---" safe
   # Trailing spaces or tabs are permitted after the underline; other text is not.
   _seam_case "--- with trailing spaces is a heading"    "prozasor" "---  "   refuse
   _seam_case "--- with trailing text is NOT a heading"  "prozasor" "--- x"   safe
@@ -1216,6 +1238,48 @@ body of A
 jobb törzs
 "
   t_refused "J-2: an unclosed fence indented 2 spaces is refused"
+
+  # PER-WIDTH, like the setext side already is (Cybersec F-3, comment 21120). The 2-space fixture
+  # above pins ONE width, and a mutation map over the 61 cases showed what that costs: deleting the
+  # 1-space branch of the fence indent strip left the suite GREEN, and so did deleting the 3-space
+  # branch -- both silently, because the only indented-fence fixture used two spaces. The 3-space
+  # mutant's harm is reachable end-to-end on the same fixture shape: theirs' whole entry lands
+  # inside an open fence. The setext half was pinned at 1/2/3/4 from the start; this brings the
+  # fence half to the same grain. Do NOT fold these into the 2-space case -- three separate
+  # fixtures are what makes each branch individually load-bearing.
+  setup_conflict junction-unclosed-1sp-fence \
+    "## 2026-09-01 -- entry A
+body of A
+" \
+    "## 2026-09-01 -- entry A
+body of A
+## 2026-09-05 -- entry B (left)
+ \`\`\`bash
+echo hello
+" \
+    "## 2026-09-01 -- entry A
+body of A
+## 2026-09-06 -- entry C (right)
+jobb törzs
+"
+  t_refused "J-2: an unclosed fence indented 1 space is refused"
+
+  setup_conflict junction-unclosed-3sp-fence \
+    "## 2026-09-01 -- entry A
+body of A
+" \
+    "## 2026-09-01 -- entry A
+body of A
+## 2026-09-05 -- entry B (left)
+   \`\`\`bash
+echo hello
+" \
+    "## 2026-09-01 -- entry A
+body of A
+## 2026-09-06 -- entry C (right)
+jobb törzs
+"
+  t_refused "J-2: an unclosed fence indented 3 spaces is refused"
 
   # ...AND THE CONTROLS. Each closer form must still union, or "refuse on any fence character"
   # would pass every case above while breaking ordinary content.
