@@ -332,6 +332,34 @@ const ACKNOWLEDGED_CONFLICTS = {
   // kanban-dispatch-silent-noop.test.ts), adapting one rearm-test case to pass `force: true` on the
   // reopen -- reopening a `waiting` card without a verdict is blocked by the fork-only
   // reviewedCardBlocksInProgress() gate (card c4f2de32), which upstream has no equivalent of.
+  // ROUND 16, 2026-09-06 (card a6b5fea3, QA's finding on the 1d7b51aa gate -- URGENT because a
+  // red entry here blocks EVERY agent's landing). A brand-new three-way conflict, not a blob bump.
+  'src/web/routes/updates.ts':
+    "Keep the FORK's spawnUpdateScript helper wholesale. The conflict is structural, not a " +
+    "disagreement: upstream 31d1e94f (#1189, AUTOUPDNODEENV905) patched the INLINE update.sh spawn " +
+    "inside tryHandleUpdates, and this fork had already lifted that same spawn into the shared " +
+    "helper spawnUpdateScript(res, extraEnv, pidfileContent, releaseLock), called from BOTH the " +
+    "fork-pull path and the post-upstream-merge rebuild+restart path. Upstream's hunk therefore " +
+    "lands on code we moved; there is no line-level pick to make. UPSTREAM'S FIX IS NOT ADOPTED " +
+    "THIS ROUND, and that is a scope decision, not a judgement that it is wrong: a landing-unblock " +
+    "is not the place for a behaviour change on the update path (same line drawn in rounds 12, 13 " +
+    "and 14). THE ARGUMENT AGAINST MY OWN CHOICE, MEASURED, because it is stronger than usual " +
+    "here: this fork IS exposed to the bug upstream fixed. update.sh has bare `npm ci --silent` at " +
+    "both install sites (no --include=dev), and nothing deletes NODE_ENV before the spawn, so " +
+    "under NODE_ENV=production npm omits dev deps, the pruned tree loses tsc, the build fails, the " +
+    "rollback reverts the freshly pulled update.sh along with everything else, the old dist keeps " +
+    "serving, and every health check stays green while the loop repeats -- upstream measured five " +
+    "rollbacks over ten days on a customer install, and the fix cannot arrive through the update " +
+    "path on its own. WHAT KEEPS IT DORMANT HERE IS THE ENVIRONMENT, NOT THE CODE: nothing in this " +
+    "fork sets NODE_ENV=production (grepped the tree -- logger.ts only READS it, the only writers " +
+    "are tests setting 'test'), and five sampled live marveen processes carry no NODE_ENV at all. " +
+    "One operator env line, one systemd unit, one container image default, and this fork reproduces " +
+    "the same self-sustaining loop with no guard in place. Raised with MikroB for its own card " +
+    "rather than ridden in here. IF IT IS ADOPTED LATER, the fix belongs INSIDE spawnUpdateScript " +
+    "so both call paths get it -- upstream only had one to protect -- plus --include=dev on both " +
+    "npm ci sites in update.sh, which is the half that is environment-independent and final. The " +
+    "fork anchor below fires the moment that second half lands, so this note cannot keep claiming " +
+    "an exposure that has been closed.",
   'src/web/routes/kanban.ts':
     "dispatch-text hunk: keep the fork's waiting-text wholesale (fork rule 4, no self-close-to-done). Other two hunks: adopt upstream's resolveKanbanDispatch + reportUndeliveredDispatch (session-down is no longer a silent no-op), keep the fork's self-advance suppression + /clear-before-switch wholesale alongside it -- non-overlapping concerns, not a fork-vs-upstream pick. Re-measured 2026-09-02 (Cybersec, card 9dc0fba8 landing-block, 00ec734f520d..89423d29b8af): upstream moved, entirely outside all three recorded hunks -- it fixed the POST handler so a caller-supplied card id wins in the row AND in the response (it used to store the supplied id and echo the generated one, HTTP 200 pointing at a card that does not exist), and it lifts `actor` out of the field set for db.ts\'s new audit event. Zero hits on resolveKanbanDispatch, reportUndeliveredDispatch, the waiting-text hunk, the self-advance suppression or the /clear-before-switch block. Resolution at the conflict points unchanged; blob bumped." +
     " DONE 2026-09-04 (card f27c999b, B-wave 4/6), and TWO of the three items turned out to be already-solved rather than pending. (1) The POST id bug WAS live here and is fixed: `createKanbanCard({ id, ...normalized })` let a caller-supplied id win in the ROW while the response echoed the generated one -- HTTP 200 naming a card that does not exist. Now one id is resolved first and used for both; kanban-post-id-echo.test.ts pins the property for every shape, and 3 of its 4 cases fail on the old spread order. (2) resolveKanbanDispatch: already adopted -- kanban-dispatch.ts is upstream's verbatim plus two fork-only functions, measured. (3) reportUndeliveredDispatch: NOT adopted, because the fork already closed the same hole its own way. resolveKanbanDispatchTarget returning null no longer goes quiet: the failure lands on the card AND in the main agent's inbox, with four contract tests in kanban-dispatch-silent-noop.test.ts, and that file documents why the stricter 'message first, in_progress after delivery' contract is not available here (createAgentMessage only ENQUEUES, so 'after successful delivery' is not knowable at move time). Adopting upstream's version would be a second mechanism for a closed hole. The waiting-text hunk and the self-advance / clear-before-switch blocks are untouched, as the rule requires." +
@@ -1125,6 +1153,7 @@ const ACKNOWLEDGED_UPSTREAM_BLOBS: Readonly<Record<keyof typeof ACKNOWLEDGED_CON
   'src/web/agent-scaffold.ts': '545991551c700ca6dba0f334810d37d92563e12e',
   'src/db.ts': 'cf4c1052f7efa2fcbfbbfec89f8e76eec543e405',
   'src/web/routes/agents.ts': '0d1f6900159686bee31fb2ec0dea5d692f170a03',
+  'src/web/routes/updates.ts': '0e3ae734d461793bca2cc636571eec71b9746dff',
   'src/web/routes/kanban.ts': '89423d29b8af3e949cb520eefc8f5a0d03ff380c',
   'scripts/hooks/egress-gate.mjs': '229076d5812e7d50a188ca07b43a87fb6239b233',
   'src/__tests__/egress-gate.test.ts': 'c24ca54ffc49de70d602790fa1d6b80e3aea4156',
@@ -1208,7 +1237,14 @@ const ACKNOWLEDGED_UPSTREAM_BLOBS: Readonly<Record<keyof typeof ACKNOWLEDGED_CON
   'scripts/stuck-modal-guard.sh': '5bf19fc208ac41c204ae007189553efcb1d2790d',
   'src/__tests__/send-honesty-sweep.test.ts': 'afc17a2222a86a7645343f837618ebe74516dacc',
   'scripts/channels.sh': 'f3bafcfaa0aa3068fa37f3c0f844a2923117c2bf',
-  'update.sh': 'abca56b71701073b5ce0c604037fb47766739193',
+  // ROUND 16 BLOB BUMP, 2026-09-06 (card a6b5fea3): abca56b7 -> 1110d32d, one upstream commit,
+  // 31d1e94f (#1189, AUTOUPDNODEENV905) -- the same commit that opened the new updates.ts
+  // conflict above. This entry was masked by that one and surfaced the moment it was recorded.
+  // Read the diff: three hunks, all of them --include=dev on an npm ci (the lock-strict install,
+  // the finalize health-check rollback) plus a NEW npm ci in the build-failure rollback that
+  // previously ran none. ZERO hits on either recorded hunk -- render_seed_template's two sed -e
+  // lines and the AHEAD-vs-BEHIND detect block are untouched. Resolution unchanged, blob bumped.
+  'update.sh': '1110d32da5ae78099cb0923d09b8208e0482263c',
   'scripts/install-prod-tree-guard-hook.sh': '9647c9658a5e6352ae0bae57842590a1c2d6e30c',
   'install-linux.sh': '21f10d99336757c0a1416b6e20297b1d3cda42cd',
   'src/__tests__/installer-ollama-nonfatal.test.ts': '7467d0dc6674099a5af6b65d4388d18ff1f99f78',
@@ -1330,6 +1366,25 @@ export interface ForkAnchor {
 }
 
 const ACKNOWLEDGED_FORK_ANCHORS: Partial<Record<keyof typeof ACKNOWLEDGED_CONFLICTS, ForkAnchor>> = {
+  // Round 16 (card a6b5fea3). The updates.ts rule's central factual claim is about a file the
+  // conflict does not touch: that upstream's script-side half of AUTOUPDNODEENV905 is still
+  // ABSENT here, which is what makes 'not adopted' a live exposure rather than a shrug. If a
+  // later card lands --include=dev, the rule stops being true about our own tree while the
+  // upstream pin stays perfectly fresh -- exactly the token-usage.ts failure mode this map was
+  // built for. Needle is the flag alone, not upstream's whole `npm ci --silent --include=dev`
+  // line: an adopter is free to write the flags in the other order, and a needle that missed
+  // that would go green for the wrong reason. An 'absent' anchor cannot be defeated by a
+  // comment the way rule 12 warns a 'present' one can -- a comment merely NAMING the flag trips
+  // it, which costs one re-read and never hides a closed exposure.
+  'src/web/routes/updates.ts': {
+    needle: '--include=dev',
+    file: 'update.sh',
+    expect: 'absent',
+    because:
+      "The updates.ts acknowledgement says upstream's AUTOUPDNODEENV905 fix is not adopted AND " +
+      "that this fork is still exposed. --include=dev appearing in update.sh means the second " +
+      "half landed and the exposure claim needs re-reading, not a blob bump.",
+  },
   // The entry this card came from. Its rule says the two halves "must stay together: the filter is
   // only correct BECAUSE a parent now carries its child's updated_at". So the anchor is the half
   // that lives OUTSIDE the conflicting file -- removing ancestor stamping while the parent-skip
