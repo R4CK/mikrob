@@ -67,10 +67,13 @@ describe('local-llm model toggles: JS contract (card 5dd4a211)', () => {
   it('renders a switch per model ONLY when the flags API answered, with aria-pressed and data-enable', () => {
     const rows = JS.slice(JS.indexOf('// Models list'), JS.indexOf("'models', 'llm-model-row')"))
     expect(rows).toContain('const hasFlags = _llmModelFlags !== null')
-    expect(rows).toContain('const toggleHtml = hasFlags')
-    expect(rows).toContain('class="llm-model-toggle ${disabled ? \'off\' : \'on\'}"')
-    expect(rows).toContain('aria-pressed="${disabled ? \'false\' : \'true\'}"')
-    expect(rows).toContain('data-enable="${disabled ? \'1\' : \'0\'}"')
+    expect(rows).toContain('const toggleHtml = hasFlags ? llmToggleButtonHtml(m.name, disabled)')
+    // Card 404e8dd6 moved the switch markup into llmToggleButtonHtml so the Ollama-down fallback
+    // rows draw the very same control; the fragments are pinned there, not weakened.
+    const helper = JS.slice(JS.indexOf('function llmToggleButtonHtml('), JS.indexOf('function llmFallbackModelRowHtml('))
+    expect(helper).toContain('class="llm-model-toggle ${disabled ? \'off\' : \'on\'}"')
+    expect(helper).toContain('aria-pressed="${disabled ? \'false\' : \'true\'}"')
+    expect(helper).toContain('data-enable="${disabled ? \'1\' : \'0\'}"')
     expect(rows).toContain('${toggleHtml}')
   })
 

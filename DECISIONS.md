@@ -10679,6 +10679,35 @@ horgonyzott marker backend mérnöki döntése, ezen a bejegyzésen keresztül f
 `store/fork-upstream-drift-watch.mjs`, `store/fork-upstream-drift-watch.selftest.sh`,
 `.gitignore`, `README.md`.
 
+## 2026-09-06 -- 404e8dd6 -- The Local LLM switches stay usable when Ollama is down; the card that asked for them was a duplicate
+
+**Dedup first (fron-ted, rule 6b):** the card as dispatched asked for a per-model on/off switch on
+the Local LLM page. That switch had already landed (5d151091 backend, 5dd4a211 frontend, enforced
+in `store/local-llm.sh` for every shell caller). What Peti could not see on 2026-09-06 was
+different: the gpu-crashloop-guard had masked `ollama.service`, `GET /api/local-llm/models`
+answered 503 fail-closed, and the page showed a toast and an EMPTY model list -- the switches were
+invisible exactly on the day they were wanted. MikroB re-scoped both cards to that gap instead of
+closing them as duplicates.
+
+**Decision (FE, contract-first against the re-scoped 75f3c77d):** the flags answer
+(`{ ollamaUp, models }`, the list falling back to `local-llm-model-state.json` when Ollama is down)
+is kept as a fallback list. When the status endpoint reports Ollama down, the page draws the known
+models with their switches under a visible "Ollama is not running" banner; each row shows only the
+benchmark the state file holds (tok/s @ ctx, or "not measured" -- never an invented figure), and
+carries NO Use/Update control, because those need Ollama and a control that cannot act is a dead
+end (rule 9). The switch markup moved into one helper used by both the live and the fallback rows,
+so the two lists cannot drift. With the OLD backend (503) the page keeps today's behaviour (toast,
+no switches), so the two halves can land in either order.
+
+**Measured, not assumed:** Playwright against the real `web/` bundle with the mocked contract, 15
+checks -- three fallback rows, tok/s @ ctx, unmeasured label, disabled row + `aria-pressed`, no
+Use/Update, banner, 44px targets on desktop and at 375px with no horizontal overflow, an enable
+click that POSTs the encoded name and re-renders from the fresh answer, a failing POST that speaks
+the i18n error and re-enables the button, and the 503 path unchanged. Mutation map: fallback branch
+disabled, a Use button on a fallback row, `aria-pressed` dropped from the helper, banner text
+inverted, an invented tok/s on a null benchmark -- each red in the string-contract tests and/or the
+live check; controls 32/32 green.
+
 ## 2026-09-06 -- A VRAM-kapu nem százalékra dönt, hanem arra, KIÉ a memória
 
 **Döntés:** a `store/vram-guard-check.sh` tier-besorolása mostantól az IDEGEN terhelésre megy, nem

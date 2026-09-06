@@ -729,6 +729,7 @@ window._i18n.en = {
   'localLlm.models.toggle.error': 'Could not change the model state. Try again.',
   'localLlm.models.toggle.load_error': 'Model switch states could not be loaded; the list is shown without switches.',
   'localLlm.models.toggle.use_blocked': 'A disabled model cannot be activated -- enable it first.',
+  'localLlm.models.ollama_down_banner': 'Ollama is not running, so this list shows the last benchmarked models. The switches work and take effect from the next Ollama start; activation and pulls are unavailable until then.',
   'localLlm.status.active_disabled': 'Disabled -- routing will not use it until you enable it.',
   'localLlm.models.bench.tip':            'Benchmarked: {date}',
   'localLlm.models.bench.unmeasured_tip': 'No benchmark has been run on this machine — never shown as an invented value.',
