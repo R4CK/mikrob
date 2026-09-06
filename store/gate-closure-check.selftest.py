@@ -552,6 +552,57 @@ case("a real refusal on one gate outranks an unjudgeable one on another",
       c("cybersec", "CYBERSEC NO-GO\nGate-SHA: " + SHA_A)],
      "FAILED", gates="qa,cybersec")
 
+# --- MULTI-SHA `Gate-SHA:` LINES COMPARE BY SET, NOT BY FIRST TOKEN (card f53ef8e4) -------------
+# Rule 4b lets one Gate-SHA line name several commits. Cybersec measured the real board: 16 of 93
+# cards using this shape got a false DISAGREE because the old code kept only the FIRST token, and
+# the sha lists on this board are written OLDEST-first, so "first" is systematically the PRE-FIX
+# commit -- exactly the sha this tool exists to catch a gate NOT re-reviewing. Cases below are the
+# three concrete ones Cybersec named (f00b3a7f, 7d45ecbb, 54fd9c02) plus the negative control that
+# proves set-intersection did not just start saying AGREE to everything.
+case("cumulative list vs delta list, same closing pair (real case f00b3a7f)",
+     [c("qa", V % "77c91c28, 3893a9a7, 510ca707, 07e9dbfb, e2e5ce48, bcda4a1e, 1d220756, b9191faf"),
+      c("cybersec", S % "1d220756, b9191faf"), c("cybered", D % "1d220756, b9191faf")],
+     "AGREE", gates="qa,cybersec,cybered")
+case("cumulative list vs delta list, same closing sha (real case 7d45ecbb)",
+     [c("qa", V % "ba35cb26, 8c587e08"), c("cybersec", S % "8c587e08")],
+     "AGREE", gates="qa,cybersec")
+case("BYTE-IDENTICAL two-sha lists in REVERSED order -- 'last token' would still fail this one "
+     "(real case 54fd9c02, the case that tells set-intersection apart from 'take the last sha')",
+     [c("cybersec", S % "ac307faf, 24d5778d"), c("cybered", D % "24d5778d, ac307faf")],
+     "AGREE", gates="cybersec,cybered")
+case("CONTROL: genuinely disjoint sha lists still DISAGREE -- the fix does not just say AGREE to "
+     "everything (real case edb721ec)",
+     [c("qa", V % "71fc1576, 94ea791b"), c("cybersec", S % "71fc1576, 94ea791b"),
+      c("cybered", D % "21834b10, bb8208a4")],
+     "DISAGREE", gates="qa,cybersec,cybered")
+
+# --- A CARD ID EMBEDDED IN A BRANCH NAME IS NOT A SECOND SHA (card f53ef8e4, real case 4a6c47f0) -
+# Ported filter, not re-derived: src/web/kanban-gate-completeness-guard.ts's extractGateShas()
+# already solved this for a sibling consumer (card a20f0aa7, incident 5bc8f740). A card id is 8 hex
+# chars -- indistinguishable in SHAPE from a short sha -- and this fleet's own citation habit names
+# the branch in parentheses after the sha, so a naive "collect every hex run on the line" scan picks
+# the card id up as a second commit.
+case("a card id inside a branch-name annotation is not a cited sha",
+     [c("cybersec", "CYBERSEC GO\nGate-SHA: d49e9c7af5d5b976b0a328e11cffc95b24b06965 "
+                    "(CleanCore, ág feat/tenant-auth-ip-coarsen-4a6c47f0, NEM landolt main-re)"),
+      c("qa", V % "d49e9c7af5d5b976b0a328e11cffc95b24b06965")],
+     "AGREE", gates="qa,cybersec")
+case("...and the same shape STILL disagrees when the real shas genuinely differ -- the path filter "
+     "does not accidentally widen agreement",
+     [c("cybersec", "CYBERSEC GO\nGate-SHA: aaaa1111 (CleanCore, ág fix/some-card-bbbb2222, "
+                    "NEM landolt)"),
+      c("qa", V % "cccc3333")],
+     "DISAGREE", gates="qa,cybersec")
+case("a merge-base / parent marker beside the real sha is not a cited sha (real incident a20f0aa7)",
+     [c("cybersec", "CYBERSEC GO\nGate-SHA: 8b8377cf (CleanCore, merge-base 0d5ebb6c, NEM landolt)"),
+      c("qa", V % "8b8377cf")],
+     "AGREE", gates="qa,cybersec")
+case("...and it is blanked only where it is MARKED as a parent -- a gate that genuinely verdicted "
+     "on the ancestor commit still disagrees, it is not silently folded into the child's citation",
+     [c("cybersec", "CYBERSEC GO\nGate-SHA: 8b8377cf (CleanCore, merge-base 0d5ebb6c, NEM landolt)"),
+      c("qa", V % "0d5ebb6c")],
+     "DISAGREE", gates="qa,cybersec")
+
 # BYTE-FOR-BYTE REGRESSION CONTROLS (MikroB's acceptance condition, 21177). Not "still FAILED" and
 # "still AGREE" -- the whole line, because a new branch that reworded an existing answer would pass
 # a kind-only assertion while breaking every reader of the output.
