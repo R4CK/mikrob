@@ -376,7 +376,18 @@ export const ACKNOWLEDGED_CONFLICTS = {
     "with a REAL install into a throwaway temp tree (npm 10.9.8): NODE_ENV=production + plain ci PRUNES the " +
     "dev dep, + --include=dev keeps it. The environment claim also still holds: NODE_ENV is set nowhere in " +
     "this install, so what closed is a latent hole. The anchor below is re-aimed at the half that is still " +
-    "open, so it keeps doing the same job for the remaining claim.",
+    "open, so it keeps doing the same job for the remaining claim." +
+    " DONE 2026-09-06, card c116696f (backend2) -- HALF (1) NOW ADOPTED TOO: a new exported " +
+    "buildUpdateScriptEnv(extraEnv) deletes process.env.NODE_ENV before returning the env " +
+    "spawnUpdateScript passes to update.sh, protecting BOTH call paths (fork-pull and " +
+    "post-upstream-merge rebuild+restart) from the one thing --include=dev cannot fix on its own: " +
+    "this process itself inheriting NODE_ENV=production from whatever launched it. " +
+    "Both halves of upstream 31d1e94f (#1189, AUTOUPDNODEENV905) are adopted now, by the fork's own route " +
+    "rather than upstream's line-level patch -- the STRUCTURAL conflict this rule opened with (upstream " +
+    "patched an inline spawn the fork had already lifted into a shared helper) remains the reason there is " +
+    "still no line-level pick to make, so the rule stays acknowledge-only rather than being deleted. The " +
+    "fork anchor below fired exactly as its 50af1a27 author intended and is now re-aimed to expect:'present', " +
+    "guarding against a future revert instead of watching for the fix's arrival.",
   'src/web/routes/kanban.ts':
     "dispatch-text hunk: keep the fork's waiting-text wholesale (fork rule 4, no self-close-to-done). Other two hunks: adopt upstream's resolveKanbanDispatch + reportUndeliveredDispatch (session-down is no longer a silent no-op), keep the fork's self-advance suppression + /clear-before-switch wholesale alongside it -- non-overlapping concerns, not a fork-vs-upstream pick. Re-measured 2026-09-02 (Cybersec, card 9dc0fba8 landing-block, 00ec734f520d..89423d29b8af): upstream moved, entirely outside all three recorded hunks -- it fixed the POST handler so a caller-supplied card id wins in the row AND in the response (it used to store the supplied id and echo the generated one, HTTP 200 pointing at a card that does not exist), and it lifts `actor` out of the field set for db.ts\'s new audit event. Zero hits on resolveKanbanDispatch, reportUndeliveredDispatch, the waiting-text hunk, the self-advance suppression or the /clear-before-switch block. Resolution at the conflict points unchanged; blob bumped." +
     " DONE 2026-09-04 (card f27c999b, B-wave 4/6), and TWO of the three items turned out to be already-solved rather than pending. (1) The POST id bug WAS live here and is fixed: `createKanbanCard({ id, ...normalized })` let a caller-supplied id win in the ROW while the response echoed the generated one -- HTTP 200 naming a card that does not exist. Now one id is resolved first and used for both; kanban-post-id-echo.test.ts pins the property for every shape, and 3 of its 4 cases fail on the old spread order. (2) resolveKanbanDispatch: already adopted -- kanban-dispatch.ts is upstream's verbatim plus two fork-only functions, measured. (3) reportUndeliveredDispatch: NOT adopted, because the fork already closed the same hole its own way. resolveKanbanDispatchTarget returning null no longer goes quiet: the failure lands on the card AND in the main agent's inbox, with four contract tests in kanban-dispatch-silent-noop.test.ts, and that file documents why the stricter 'message first, in_progress after delivery' contract is not available here (createAgentMessage only ENQUEUES, so 'after successful delivery' is not knowable at move time). Adopting upstream's version would be a second mechanism for a closed hole. The waiting-text hunk and the self-advance / clear-before-switch blocks are untouched, as the rule requires." +
@@ -1471,21 +1482,22 @@ export const ACKNOWLEDGED_FORK_ANCHORS: Partial<Record<keyof typeof ACKNOWLEDGED
   // comment the way rule 12 warns a 'present' one can -- a comment merely NAMING the flag trips
   // it, which costs one re-read and never hides a closed exposure.
   'src/web/routes/updates.ts': {
-    // RE-AIMED 2026-09-06 (card 50af1a27). The original anchor watched update.sh for
-    // '--include=dev' with expect:'absent', and it FIRED when that half landed -- which is the
-    // anchor working, not failing. Re-aiming it rather than deleting it keeps the same guarantee
-    // for the half that is still open: nothing yet deletes NODE_ENV inside spawnUpdateScript, and
-    // the rule above still says so. The moment that lands, this fires again and the rule must be
-    // re-read one last time instead of continuing to claim an exposure that is fully closed.
+    // RE-AIMED AGAIN 2026-09-06 (card c116696f, backend2). The anchor watched for
+    // 'delete process.env.NODE_ENV' with expect:'absent' and FIRED the moment this card's fix
+    // landed -- the anchor working as designed, not failing. Flipped to expect:'present': both
+    // halves of AUTOUPDNODEENV905 are now closed, so what is worth guarding going forward is that
+    // neither regresses. buildUpdateScriptEnv (src/web/routes/updates.ts) is the one call site
+    // spawnUpdateScript uses to build the child env, so an accidental revert of the delete trips
+    // this the same way removing --include=dev would trip update-npm-ci-dev-deps.test.ts.
     needle: 'delete process.env.NODE_ENV',
     file: 'src/web/routes/updates.ts',
-    expect: 'absent',
+    expect: 'present',
     because:
-      "The updates.ts acknowledgement now says HALF of upstream's AUTOUPDNODEENV905 fix is adopted " +
-      "(--include=dev in update.sh, card 50af1a27) and half is not: nothing deletes NODE_ENV inside " +
-      "spawnUpdateScript, so both call paths stay exposed to the environment itself. That second " +
-      "half is card c116696f (backend2). Its arrival means the remaining exposure claim needs " +
-      "re-reading, not a blob bump.",
+      "Both halves of upstream's AUTOUPDNODEENV905 are adopted now: --include=dev on both npm ci " +
+      "sites in update.sh (card 50af1a27) and NODE_ENV deleted from process.env inside " +
+      "buildUpdateScriptEnv before spawnUpdateScript hands the env to update.sh (card c116696f). " +
+      "If the delete is ever removed, this fires and the exposure claim needs re-reading, not a " +
+      "silent revert.",
   },
   // The entry this card came from. Its rule says the two halves "must stay together: the filter is
   // only correct BECAUSE a parent now carries its child's updated_at". So the anchor is the half

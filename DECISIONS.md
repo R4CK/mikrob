@@ -10577,3 +10577,49 @@ friss telepítés, ahol a bukás hangos, nem néma -- más kockázati alak.)
 **Hivatkozás:** kártya `50af1a27` (szülő `a7a61751`), érinti `c116696f`-et; `update.sh`,
 `store/update-finalize.sh`, `src/__tests__/update-npm-ci-dev-deps.test.ts`,
 `src/fork-upstream/acknowledged-conflicts.ts`.
+
+## 2026-09-06 -- c116696f -- AUTOUPDNODEENV905 (1) fele: NODE_ENV törlése a spawnUpdateScript belsejében
+
+**Döntés.** `src/web/routes/updates.ts` kap egy exportált `buildUpdateScriptEnv(extraEnv)`
+függvényt, ami `delete process.env.NODE_ENV`-et hajt végre, majd visszaadja a `{ ...process.env,
+...extraEnv }` összeállítást -- ezt hívja `spawnUpdateScript` az `env`-hez, MINDKÉT hívási úton
+(fork-pull és a post-upstream-merge rebuild+restart). Ez az `50af1a27`-ben landolt (2) fél
+(`--include=dev` mindkét `npm ci` ponton) párja: a (2) fél az `update.sh` SAJÁT `npm ci`
+hívásait védi, a (1) fél a folyamatot, ami elindítja az `update.sh`-t -- ha az ŐT indító Node-
+process maga örökölt volna `NODE_ENV=production`-t, az `--include=dev` önmagában nem lenne elég,
+mert a hívási lánc elejére kell a törlés.
+
+**Miért a VALÓDI `process.env`-t módosítja, nem egy másolatot.** Az `update.sh` több ponton is
+`npm ci`-t futtat (fő telepítés, rollback, és a `store/update-finalize.sh`, amit minden futáskor
+újragenerál), és mindegyik GYERMEK-folyamat a SAJÁT indításakor önállóan örökli a
+`process.env`-t. Egy csak a visszaadott másolatra szorítkozó törlés csak az egyik hívást védené;
+a valódi objektum módosítása az összeset. Biztonságos futásidőben törölni, mert az EGYETLEN
+folyamaton belüli olvasó (`src/logger.ts`) a modul BETÖLTÉSEKOR, egyszer olvassa -- jóval azelőtt,
+hogy a frissítési route egyáltalán elérhető lenne -- így semmi nem olvassa újra később azt, amit ez
+töröl.
+
+**A fork-horgony (Cybered mérése, komment 21250; Backend átirányítása, komment 21641) pontosan
+úgy sült el, ahogy tervezve volt.** A horgony (`needle: 'delete process.env.NODE_ENV'`, `file:
+'src/web/routes/updates.ts'`, `expect: 'absent'`) a landolási kapuban pirosra váltott, amint a
+kódot megírtam -- ez a horgony munkája, nem hiba. Az `ACKNOWLEDGED_CONFLICTS['src/web/routes/
+updates.ts']` szövegét ÚJRADÖNTÖTTEM (mindkét fél átvéve, a struktúrális ütközés -- upstream egy
+inline spawnt javított, amit a fork már megosztott helperré emelt -- változatlanul fennáll, tehát a
+bejegyzés marad, csak elfogadás-only), a horgonyt pedig `expect: 'present'`-re fordítottam: mostantól
+egy jövőbeli visszavonás ellen őrködik, nem az érkezésre vár.
+
+**Amit NEM csináltam meg, tudatosan.** Backend (komment 21648) mérve talált egy HARMADIK és
+NEGYEDIK előfordulást ugyanabból a hibaosztályból: `recovery-prev-version.sh:217` (csupasz `npm
+ci --silent`, a kézi katasztrófa-visszaállító út) és `install-linux.sh:1011` (csupasz `npm ci`,
+friss telepítés, de ott a bukás HANGOS, nem néma). Egyik sincs ennek a kártyának a leírásán, és
+mindkettő MikroB/a következő kártya döntése -- nem bővítettem a diffet rájuk.
+
+**Tesztek.** `src/__tests__/update-node-env-strip.test.ts` (5 eset, `buildUpdateScriptEnv`-et
+közvetlenül hívja -- ugyanaz a függvény, amit `spawnUpdateScript` ténylegesen használ, nincs
+párhuzamos, driftelhető implementáció): törli örökölt `production`-t, a VALÓDI `process.env`-en
+(nem csak a visszaadott másolaton), no-op ha nincs beállítva, `extraEnv` felülírja, más kulcsok
+érintetlenek. `fork-upstream-conflict-guard.test.ts` teljes 28/28 zöld az új horgony-iránnyal;
+`tsc --noEmit` tiszta.
+
+**Hivatkozás:** kártya `c116696f`, párja `50af1a27` (szülő `a7a61751`); `src/web/routes/
+updates.ts`, `src/__tests__/update-node-env-strip.test.ts`, `src/fork-upstream/acknowledged-
+conflicts.ts`.

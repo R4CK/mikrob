@@ -292,6 +292,26 @@ export function formatUpstreamAnalysis(a: UpstreamAnalysis): string {
   return lines.join('\n')
 }
 
+/** Deletes NODE_ENV from process.env and returns the env {@link spawnUpdateScript} hands to
+ *  update.sh (AUTOUPDNODEENV905 half 2/2, card c116696f -- half 1/2 landed as update.sh's own
+ *  `--include=dev` on both npm ci sites, card 50af1a27). Under NODE_ENV=production a plain `npm
+ *  ci` prunes dev dependencies including the compiler, so if this process ever inherits that
+ *  value from whatever launched it (systemd unit, container default, operator shell), update.sh's
+ *  build fails, the rollback reverts the very update.sh that would have fixed it, and the loop
+ *  repeats with every health check green.
+ *
+ *  Mutates the REAL process.env, not a copy handed to just this one spawn: update.sh shells out to
+ *  `npm ci` at multiple sites (main install, rollback, and the finalize script it regenerates each
+ *  run), and each of those child processes inherits process.env independently at ITS OWN spawn
+ *  time. Stripping only a local copy here would leave every one of them still exposed. Safe to
+ *  mutate at runtime because the only in-process reader of NODE_ENV, src/logger.ts, reads it once
+ *  at import time -- before the update route can ever be reached -- so nothing later in this
+ *  process's life re-reads the value this deletes. */
+export function buildUpdateScriptEnv(extraEnv: Record<string, string>): NodeJS.ProcessEnv {
+  delete process.env.NODE_ENV
+  return { ...process.env, ...extraEnv }
+}
+
 /** Spawns update.sh detached (same shape for both the fork-pull path and the post-upstream-merge
  *  rebuild+restart path below), with `extraEnv` layered over the inherited environment. The pidfile
  *  lock is handed off to update.sh's own pidfile-overwrite (update.sh:133-158); `releaseLock` is only
@@ -318,7 +338,7 @@ function spawnUpdateScript(
       cwd: PROJECT_ROOT,
       detached: true,
       stdio: ['ignore', outFd, outFd],
-      env: { ...process.env, ...extraEnv },
+      env: buildUpdateScriptEnv(extraEnv),
     })
     child.on('error', (err) => {
       logger.error({ err }, 'update.sh spawn reported an async error')
