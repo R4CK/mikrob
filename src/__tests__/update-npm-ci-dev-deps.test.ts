@@ -67,6 +67,17 @@ describe('update.sh keeps the dev dependencies its own build needs (card 50af1a2
     expect(rollback).toContain('npm ci --silent --include=dev')
   })
 
+  it('the REGENERATED copy carries it too, or the next update silently reverts the fix', () => {
+    // update.sh rewrites store/update-finalize.sh from a FINALIZE_EOF heredoc on every run, so the
+    // rollback site exists twice. The first version of this change edited only update.sh, and the
+    // landing gate refused it -- rollback-distance-guard.test.ts pins the two byte-identical. That
+    // parity test already covers this, and the case is repeated here because a reader arriving at
+    // THIS file to add a third npm ci site needs to know there is a second copy at all.
+    const finalize = readFileSync(join(ROOT, 'store', 'update-finalize.sh'), 'utf-8')
+    expect(npmCiInvocations(finalize).length).toBeGreaterThanOrEqual(1)
+    for (const call of npmCiInvocations(finalize)) expect(call).toContain('--include=dev')
+  })
+
   it('the audit keeps its own --omit=dev, so the security scope did not widen with the install', () => {
     // Installing dev deps must not quietly enlarge what `npm audit` gates on: the audit answers a
     // question about the shipped tree, and that question did not change.

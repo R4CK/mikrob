@@ -10560,5 +10560,20 @@ jegyzet maga nevezi "környezet-független, végleges védelemnek". Az (1) fél 
 amit a 3c nem birtokol. Kommenteltem a `c116696f`-re, hogy backend2 ne csinálja meg újra; hogy a
 kártya szűküljön-e az (1) félre, az MikroB döntése, nem az enyém.
 
+**AMIT A LANDOLÁSI KAPU FOGOTT MEG, ÉS AMI EBBŐL TANULSÁG:** az első kísérlet MEGTAGADVA, mert a
+rollback `npm ci` az `update.sh` `FINALIZE_EOF` heredocjában van, ami minden futáskor újragenerálja
+a `store/update-finalize.sh`-t. Csak az egyik példányt írtam át, tehát a javításomat a következő
+frissítés némán visszaállította volna -- pontosan az a drift-osztály, amiért a paritás-teszt
+(`rollback-distance-guard.test.ts`) létezik. Nem bosszúság volt, hanem valódi hiba az én
+változtatásomban. A második példány szinkronizálva.
+
+**UGYANEZ AZ OSZTÁLY EGY HARMADIK HELYEN IS ÁLL, ÉS NEM JAVÍTOTTAM:** a
+`recovery-prev-version.sh:217` csupasz `npm ci --silent`-et futtat -- ez a kézi visszaállító, az
+utolsó mentsvár, amikor minden más már megbukott. Nincs sem a `50af1a27`, sem a `c116696f` fájl-
+listáján, és egy operátori helyreállítási út módosítása nem rider egy upstream-integrációs kártyán.
+Kommentálva a `c116696f`-re a mérésel együtt. (Az `install-linux.sh:1011` szintén csupasz, de az
+friss telepítés, ahol a bukás hangos, nem néma -- más kockázati alak.)
+
 **Hivatkozás:** kártya `50af1a27` (szülő `a7a61751`), érinti `c116696f`-et; `update.sh`,
-`src/__tests__/update-npm-ci-dev-deps.test.ts`, `src/fork-upstream/acknowledged-conflicts.ts`.
+`store/update-finalize.sh`, `src/__tests__/update-npm-ci-dev-deps.test.ts`,
+`src/fork-upstream/acknowledged-conflicts.ts`.

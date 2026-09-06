@@ -55,7 +55,12 @@ if [ -n "$OLD_FULL" ]; then
   fi
   if rollback_guard_check "$INSTALL_DIR" "$(git rev-parse HEAD 2>/dev/null || echo unknown)" "$OLD_FULL" "update-health-check"; then
     git reset --hard "$OLD_FULL" >/dev/null 2>&1 || true
-    npm ci --silent 2>/dev/null || true
+    # --include=dev: same reason as the main npm ci above, and it matters MORE here.
+    # Without it the rollback re-creates the very pruned tree it is trying to escape,
+    # and it does so silently (`|| true`), so the recovery path would report success on
+    # a build that never ran. The fork's rollback_guard_check wrapper around this block
+    # stays as it is -- upstream has no equivalent.
+    npm ci --silent --include=dev 2>/dev/null || true
     npm rebuild better-sqlite3 --build-from-source --silent 2>/dev/null || true
     npm run build --silent 2>/dev/null || true
     [ -d "$INSTALL_DIR/dist" ] && echo "$OLD_FULL" > "$BUILT"
