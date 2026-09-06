@@ -1,4 +1,4 @@
-import { statSync, readdirSync, existsSync } from 'node:fs'
+import { statSync, readdirSync, existsSync, realpathSync } from 'node:fs'
 import { join, basename } from 'node:path'
 import { homedir } from 'node:os'
 import { createReadStream } from 'node:fs'
@@ -25,16 +25,42 @@ interface AgentTranscriptSource {
   projectDir: string
 }
 
+/**
+ * Is this "isolated" projects dir actually the SHARED one wearing a symlink? (Card 0c4cf655.)
+ *
+ * Provisioning points agents/<name>/.claude-config/projects straight back at ~/.claude/projects,
+ * so the two paths name one physical tree. Comparing the strings cannot see that; comparing the
+ * resolved paths can. Kept as its own exported function because it is the entire fix, and a reader
+ * asking "why is this agent's isolated root skipped" should find one named thing to read.
+ *
+ * Fails toward TREATING IT AS ISOLATED (returns false) when either path cannot be resolved: a dir
+ * we cannot stat is one we should still try to read rather than silently drop, and the duplicate
+ * that direction risks is now caught by the dedup key (card b774f057) instead of by this guess.
+ */
+export function resolvesToSharedProjectsRoot(candidate: string, sharedRoot: string): boolean {
+  try {
+    return realpathSync(candidate) === realpathSync(sharedRoot)
+  } catch {
+    return false
+  }
+}
+
 // `projectRootOverride` exists for the tests, matching the convention
 // resolveAgentConfigDirForRead() already uses: the isolated dir is found by
 // probing the filesystem, so the probe root has to be redirectable to a
-// fixture. Production callers pass nothing.
-export function discoverAgentSources(projectRootOverride?: string): AgentTranscriptSource[] {
+// fixture. Production callers pass nothing. `sharedRootOverride` is the same
+// convention for the shared side, added with the symlink check below so that
+// check can be exercised end to end without touching the live ~/.claude tree.
+export function discoverAgentSources(
+  projectRootOverride?: string,
+  sharedRootOverride?: string,
+): AgentTranscriptSource[] {
   const sources: AgentTranscriptSource[] = []
-  if (!existsSync(PROJECTS_DIR)) return sources
+  const sharedProjects = sharedRootOverride ?? PROJECTS_DIR
+  if (!existsSync(sharedProjects)) return sources
   const mainDirName = encodeProjectPath(PROJECT_ROOT)
-  for (const entry of readdirSync(PROJECTS_DIR)) {
-    const full = join(PROJECTS_DIR, entry)
+  for (const entry of readdirSync(sharedProjects)) {
+    const full = join(sharedProjects, entry)
     let stat
     try { stat = statSync(full) } catch { continue }
     if (!stat.isDirectory()) continue
@@ -58,22 +84,31 @@ export function discoverAgentSources(projectRootOverride?: string): AgentTranscr
   // three days of fleet consumption missing from the monitor a model-assignment decision was about
   // to be based on.
   //
-  // MEASURED HERE BEFORE ADOPTING, and it does NOT currently bite on this install: provisioning
-  // symlinks agents/<name>/.claude-config/projects straight back to ~/.claude/projects, so both
-  // roots are the same physical tree and the shared-root loop already sees everything. What this
-  // adds is independence from that provisioning detail -- an agent given a real isolated tree stops
-  // being invisible. Duplicates are impossible either way: the UNIQUE INDEX on
-  // (agent, session_id, timestamp, input, output) plus INSERT OR IGNORE absorbs the overlap, which
-  // is exactly the case a symlinked layout produces.
+  // THE PARAGRAPH THAT USED TO STAND HERE WAS WRONG, and it is left named rather than deleted
+  // because it is the reason the defect survived review (Cybered, card 07f4cd2f). It said: the
+  // symlinked layout is harmless, because "duplicates are impossible either way -- the UNIQUE INDEX
+  // on (agent, session_id, timestamp, input, output) plus INSERT OR IGNORE absorbs the overlap".
+  // The index has `agent` as its FIRST column, so it absorbs overlap only WITHIN one agent name.
+  // Every isolated agent walking the shared tree therefore books the WHOLE fleet's consumption
+  // under its own name, and each name's copy is unique as far as that index is concerned.
   //
-  // Both roots are kept for a migrated agent, not swapped: the pre-migration history is real and
-  // lives only in the shared root.
+  // Measured on the main clone's store/claudeclaw.db before this fix: 4,033,380 rows, 398,952
+  // distinct events by (session_id, timestamp, input, output) -- 90.1% of the table was the same
+  // consumption counted once per agent. jogasz/penzugy/qa2/teszter/videooo reported byte-identical
+  // totals, and one session id appeared under 16 different agent names.
+  //
+  // So: an isolated projects dir that RESOLVES to the shared root is skipped -- the loop above
+  // already covered it, with correct per-directory attribution. A genuinely separate tree is still
+  // read, which is what this block was added for (an agent given a real isolated dir must not go
+  // silently missing), and both roots are still kept for a migrated agent, because the
+  // pre-migration history is real and lives only in the shared root.
   for (const name of listAgentNames()) {
     let configDir: string | null = null
     try { configDir = resolveAgentConfigDirForRead(name, projectRootOverride) } catch { continue }
     if (!configDir) continue
     const isolatedProjects = join(configDir, 'projects')
     if (!existsSync(isolatedProjects)) continue
+    if (resolvesToSharedProjectsRoot(isolatedProjects, sharedProjects)) continue
     let entries: string[]
     try { entries = readdirSync(isolatedProjects) } catch { continue }
     for (const entry of entries) {

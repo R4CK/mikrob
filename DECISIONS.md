@@ -10156,3 +10156,60 @@ mond valamit, hanem az ablakrol. Ezert hermetikus a selftest.
 dontesre visszaadva a meressel).
 **Hivatkozas:** kartya 49be3576; `store/dedup-prefilter-check.sh`,
 `store/dedup-prefilter-check.selftest.sh`.
+
+## 2026-09-06 -- 0c4cf655: a token-könyvelés minden ügynökre felírta a KÖZÖS fát, és egy leírt mondat mondta biztonságosnak
+
+**Döntés:** A `discoverAgentSources` (src/web/token-usage.ts) kihagyja azt az "izolált"
+`agents/<név>/.claude-config/projects` fát, ami FELOLDVA ugyanaz, mint a közös `~/.claude/projects`.
+A valóban külön fát továbbra is beolvassa.
+
+**A hiba, és ami érdekesebb: miért élte túl a review-t.** A javított blokk saját kommentje kimondta,
+hogy a szimlinkelt elrendezés ártalmatlan, mert "Duplicates are impossible either way: the UNIQUE
+INDEX on (agent, session_id, timestamp, input, output) plus INSERT OR IGNORE absorbs the overlap".
+Ez az állítás hamis, és pontosan azon a ponton, ahol egy olvasó a legkevésbé nézi meg: az indexben
+az `agent` az ELSŐ oszlop, tehát csak ugyanazon a néven belül nyel el. Minden izolált ügynök
+végigjárta a közös fát, és a TELJES flotta fogyasztását a saját nevére írta; minden példány egyedi
+volt az index szemszögéből. A lelet Cyberedé (efaf8926 gate, 2026-09-05). Ugyanez a mondat állt a
+`docs/token-usage.md`-ben és a szomszédos teszt fejlécében is; mindhárom helyen JAVÍTVA, nem
+törölve, mert a következő olvasó azt a mondatot fogja keresni, amit legutóbb elhitt.
+
+**Mérés (élő `store/claudeclaw.db`, csak olvasó lekérdezés):** 4 033 380 sor, ebből
+`(session_id, timestamp, input_tokens, output_tokens)` szerint 398 952 külön esemény, vagyis a tábla
+**90,1%-a duplikátum**. A `jogasz`/`penzugy`/`qa2`/`teszter`/`videooo` bájtra azonos totált mutat, és
+254 429 tartalom-kulcs szerepel egynél több ügynök nevén. Hatás: a `costops/ledger.ts` per-(ügynök,
+nap, modell) árazása nagyságrenddel felfújt és ügynökök között összemosott, a `model-suggest.ts`
+ebből javasol modell-tiert, és egy elszabadult ügynök fogyasztása nem tud kilógni egy olyan táblán,
+ahol minden ügynök sora azonos.
+
+**A fail-safe irány a helyettesítő ellenőrzésben:** ha valamelyik útvonal nem oldható fel,
+`resolvesToSharedProjectsRoot` FALSE-t ad, vagyis a fát izoláltnak tekintjük és beolvassuk. Ez
+tudatos: egy nem statolható könyvtár olyan, amiből még inkább meg kell próbálni begyűjteni az
+adatot, és az ilyenkor kockáztatott duplikátumot a kulcs javítása fogja elkapni; a másik irány
+NÉMÁN ejtene el egy ügynök teljes fogyasztását, ami pont ennek a blokknak a korábbi hibaosztálya.
+
+**A HÁROM LÉPÉS SORRENDJE KÉNYSZER, NEM ÍZLÉS.** (1) ez a betöltés-javítás elállítja az új
+duplikációt; (2) a backfill-takarítás (`a9e07e5c`) eltávolítja a már bent lévő ~3,6M sort; (3) csak
+EZUTÁN cserélhető a dedup-kulcs `agent` nélkülire (`b774f057`), mert egy UNIQUE INDEX nem hozható
+létre duplikátumokat tartalmazó táblán. A három kártya közé predecessor-él van drótozva, nem próza.
+
+**Amit a takarítás tervezéséhez már megmértem, és ami a naiv megoldást kizárja:** a kézenfekvő
+`DELETE ... WHERE id NOT IN (SELECT MIN(id) ...)` a 398 952 csoportból 40 759-nél olyan sort tartana
+meg, aminek üres a `project`-je, holott a csoportban van kitöltött; 9 945-nél a `task_title`,
+32-nél a `model`. Vagyis a naiv takarítás a túlélő sorok 10,2%-áról tüntetné el a
+projekt-attribúciót, azt, amiért az egész takarítás történik. A survivor-szabálynak TELJESSÉG
+szerint kell rangsorolnia, nem id szerint. Ez a követelmény a `a9e07e5c` kártya szövegében is benne
+van, hogy ne csak itt éljen.
+
+**A tartalom-kulcs biztonságos, és ez is mérve van, nem feltételezve:** a `mikrob` az egyetlen
+nem-izolált, tehát tiszta alapvonal, és az ő soraiban NULLA olyan
+`(session_id, timestamp, input, output)` kulcs van, amihez egynél több különböző payload tartozna.
+A táblán összesen 34 kulcsnál tér el a payload, és ezek megnézve mind ugyanannak az eseménynek a
+másolatai: csak a `project` (melyik ügynök konfig-könyvtárán át látszott) és a `model` (a mikrob
+sorai a modell-oszlop feltöltése előttiek) tér el. Vagyis a kulcs valódi eseményeket nem von össze.
+
+**Ki döntött:** Cybered (a lelet); backend (a helyettesítő ellenőrzés iránya, a három lépés sorrendje
+és a survivor-követelmény).
+
+**Hivatkozás:** kártya `0c4cf655` (szülő `07f4cd2f`, testvérek `a9e07e5c`, `b774f057`);
+`src/web/token-usage.ts`, `src/__tests__/token-usage-shared-root-skip.test.ts`,
+`src/__tests__/token-usage-isolated-sources.test.ts`, `docs/token-usage.md`.
