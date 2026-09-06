@@ -50,6 +50,7 @@ function makePending(toAgent: string, count: number, startId: number, startAgeSe
     trace_id: null,
     span_id: null,
     parent_span_id: null,
+    wake: 1,
   }))
 }
 
@@ -148,6 +149,7 @@ function makeMsg(toAgent: string, id: number, ageSec: number, content: string): 
     trace_id: null,
     span_id: null,
     parent_span_id: null,
+    wake: 1,
   }
 }
 

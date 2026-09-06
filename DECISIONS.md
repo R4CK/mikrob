@@ -9996,6 +9996,76 @@ ez HIÁNY-állítás, és a komment-eltávolítás az az irány, ami valódi el�
 **Ki döntött:** backend2.
 **Hivatkozás:** kártya d2b881ab; commit `00691ced`; `src/web/agent-scaffold.ts`,
 `src/__tests__/python-hook-interpreter.test.ts`.
+## 2026-09-06 -- 3bd457ed: a `wake` mező, és miért csak a fő-ügynöknél lehet lekapcsolni az ébresztést
+
+**Döntés:** Az inter-agent üzenet kap egy opcionális `wake` mezőt (alapértelmezés: ébreszt). A
+`wake:false` üzenet ugyanúgy bekerül a postafiókba és ugyanúgy kézbesül, csak nem vált ki azonnali
+megszakítást a címzettnél. A mezőt a fő-ügynöknél HONORÁLJUK, minden más címzettnél viszont
+visszaírjuk ébresztésre, hangosan naplózva.
+
+**Miért éppen így:**
+
+1. *Miért van rá szükség.* Hét nap mérése: 3388 üzenet, ebből 472 automatizált, és a 472-ből 464 a
+   fő-ügynöknek megy, nem a dolgozó ügynököknek. A sorok szó szerint ismétlődnek (session-stuck
+   not-ready 13x, 10x, 9x; BUSY 7x). A nyereség tehát majdnem teljesen a fő-ügynök token-keretén
+   jelentkezik.
+
+2. *Miért nincs dedup-számláló.* MikroB döntése (21447 / 24562): tisztán hívó-deklarált mechanizmus,
+   ismétlődés-számláló NÉLKÜL. Egy automatikus hasonlóság-ítéletnek azt kellene eldöntenie, hogy két
+   üzenet eléggé egyforma-e, és egy első körben másnak látszó, sürgős üzenetet tévedésből
+   elnémíthatna. A hívó-deklarált forma egyszerűbb, auditálhatóbb, és a gate statikus stringre tud
+   nézni, nem viselkedésre. KIMONDOTT KÖLTSÉG: dedup nélkül a `wake:false` az ELSŐ jelzést is
+   passzívvá teszi, nem csak az ismétléseket.
+
+3. *Miért csak a fő-ügynöknél.* A `wake:false` azt ígéri, hogy az üzenet a címzett KÖVETKEZŐ
+   TERMÉSZETES ELLENŐRZÉSÉIG vár. Ilyen ellenőrzése egyedül a fő-ügynöknek van: ő minden körben
+   leszívja a saját postafiókját (`/api/agents/<fő>/drain-inbox`, ami tervezetten elutasít minden más
+   ügynököt). Az al-ügynökök push-alapúak: náluk a router tmux-injektálása MAGA a kézbesítés. Egy
+   al-ügynöknek címzett `wake:false` sor tehát nem csendben várna, hanem a 60 perces
+   abandon-ablakig függőben ülne, majd FAILED lenne. Az üzenet eltűnne, ami pont az, amit ez a mező
+   soha nem tehet. Ezért a kérést visszaírjuk ébresztésre, és a TÁROLT sor 1-et mond: a sor nem
+   állíthat olyan elnémítást, ami nem történt meg.
+
+4. *Az irány fail-OPEN, szándékosan.* Csak a kifejezett 0 némít; minden más érték ébreszt (migrálatlan
+   adatbázis, váratlan érték). Ez tudatosan ELLENTÉTES a redispatch-főkönyv zárjával (`09a3d52a`),
+   ahol a hiba iránya a tiltás. A két hibamód nem egyforma drága: egy feleslegesen felébresztett
+   címzett egy megszakítást veszít, egy tévedésből elnémított hiba- vagy biztonsági jelzés viszont
+   addig láthatatlan, amíg valaki véletlenül rá nem néz.
+
+5. *Két ébresztő út van, nem egy.* A fő-ügynököt a router `[inbox-wakeup]` injektálása ÉS a
+   `inbox-nudge-watcher` is fel tudja ébreszteni, és a második az, amelyik fizetős autonóm kört
+   költ. Ha a mezőt csak a routerben tartanánk tiszteletben, a szigorítás a tartalék úton ülne, a
+   fő úton nem. Mindkét döntési pont ugyanazt az egy predikátumot (`messageWakesReceiver`) hívja,
+   és ezt teszt is rögzíti.
+
+6. *A predikátum külön modulban él.* Nem a sor mellett (`db.ts`), mert mindkét döntési pontot
+   `vi.mock('../db.js')`-szel tesztelik, ami a teljes modult kicseréli: onnan importálva a
+   predikátum minden ilyen suite-ban definiálatlan kötés lenne, és a hiba nem is a hiányzó
+   stubként, hanem független tesztek összeomlásaként jelentkezne.
+
+7. *Amit ez a lépés SZÁNDÉKOSAN nem szállít.* A HTTP-végpont (`POST /api/messages`) NEM fogadja el a
+   mezőt. Az allowlist, ami kimondja, mely üzenetosztály kérhet `wake:false`-t, a következő lépés
+   (`7d47ca16`). Egy szabad formájú `wake:false` a végponton, az allowlist ELŐTT, egy olyan ablakot
+   nyitna, amelyben bármely token-birtokos bármit elnémíthat, a hiba- és biztonsági osztályokat is.
+   A rés maga teszttel van rögzítve, hogy a következő lépés ne feltételezze lezártnak.
+
+**Mérés:** négy mutáns, mind bukik a tesztekre (kilépési kód közvetlenül mérve): a router
+ébresztés-ellenőrzésének törlése (1), a watcher szűretlen sorára visszaállás (1), a predikátum
+konstans igazra állítása (1), és az al-ügynök-visszaírás kikapcsolása (1). Alapvonal 0. A router
+mindhárom esete külön órán fut, mert a modul-szintű 45 másodperces ébresztési cooldown egyébként
+elnémítaná a következő esetet, és az utána jövő állítás rossz okból lenne zöld.
+
+**Rollback:** a migráció egyetlen `ADD COLUMN ... NOT NULL DEFAULT 1`, tehát a meglévő sorok
+ébresztőként töltődnek fel, nem NULL-lal. Ha a kódot vissza kell vonni, az oszlop ottmarad, és egy
+róla nem tudó író ugyanúgy ébresztő sort ír; mindkét irány külön teszttel mérve, nem feltételezve.
+
+**Ki döntött:** MikroB (21447, 24562, 24563: hívó-deklarált mechanizmus, dedup nélkül, allowlisttel);
+backend (a fő-ügynökre szűkítés, a fail-open irány és a HTTP-felület halasztása).
+
+**Hivatkozás:** kártya `3bd457ed` (szülő `dc35fa1a`, nagyszülő `ee2d6220`); `src/web/message-wake.ts`,
+`src/web/message-router.ts`, `src/web/inbox-nudge-watcher.ts`, `src/db.ts`,
+`src/schema/agent-messages-ddl.ts`, `src/__tests__/message-wake-field.test.ts`,
+`src/__tests__/message-wake-deciders.test.ts`.
 
 ## 2026-09-06 14:45 -- A dedup-elo-szuro a SAJAT KIMENETET olvasta vissza; a kartya altal eloirt gyogymod viszont megolne az egyetlen igazolt talalatot (kartya 49be3576)
 

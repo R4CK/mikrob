@@ -47,6 +47,7 @@
 import { logger } from '../logger.js'
 import { MAIN_AGENT_ID } from '../config.js'
 import { getPendingMessages } from '../db.js'
+import { messageWakesReceiver } from './message-wake.js'
 import { getEffectiveSettingValue } from '../settings-store.js'
 import { MAIN_CHANNELS_SESSION } from './main-agent.js'
 import { isSessionReadyForPrompt, sendPromptToSession, sessionExistsOnHost } from './agent-process.js'
@@ -192,8 +193,16 @@ async function tick(): Promise<void> {
   // and take the dashboard down.
   try {
     const now = Date.now()
+    // Card 3bd457ed: this watcher is the SECOND way a message wakes the main
+    // agent (the router's inbox-wakeup is the first), and it is the one that
+    // spends a paid autonomous turn. Honouring wake:false only in the router
+    // would leave the more expensive path wide open -- the hardening would sit
+    // in the fallback and not in the primary. A wake:false message is still
+    // pending, still drained on the next turn, and still counted in the log
+    // line below; it just never buys a turn of its own.
     const pending = getPendingMessages(MAIN_AGENT_ID)
-    const oldest = pending[0]
+    const waking = pending.filter(messageWakesReceiver)
+    const oldest = waking[0]
     const pre = decideNudgePreflight(
       { now, oldestId: oldest ? oldest.id : null, oldestAgeMs: oldest ? now - oldest.created_at * 1000 : 0 },
       state,
