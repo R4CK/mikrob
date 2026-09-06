@@ -69,6 +69,7 @@ A lista **kategóriákba** van rendezve (11, alább), hogy egy új olvasó ne eg
 - **Symlinken átíró node_modules-írás strukturális blokkja**: hook + gate-worktree recept, ami megakadályozza, hogy egy worktree-ből indított fájlművelet a symlinken keresztül a MEGOSZTOTT klón közös függőségi fáját írja át.
 - **A dashboard frontend folyamatos szeletelése**: a monolit `web/app.js` külön betöltött szeletekre bomlik, ugyanazzal az overlay-mintával, mint a fork-fájlok, így egy jövőbeli upstream módosítás konfliktus-felülete arányosan csökken.
 - **Build-freshness őr**: látható figyelmeztetés landoláskor és egy riasztó timer, ha a lefordított `dist` elmarad a landolt forrástól, mert a landolás szándékosan nem épít és nem indít újra semmit.
+- **Döntésnapló-unió szinkron irányban is**: ha egy ügynök a saját ágába mergeli be az integrációs ágat és a `DECISIONS.md` ütközik, egy szkript ugyanazzal a szerkezeti ellenőrzéssel oldja fel, mint a landolás -- de az integrációs ág tartalmát teszi előre, az ügynök saját bejegyzését a fájl végére. Így a napló minden landolás után hozzáfűzés-alakú marad, és nem blokkolja a többi párhuzamos ágat. A merge irányát ellenőrzi, nem feltételezi, és a merge-öt nyitva hagyja: a commit a hívó lépése.
 - **README bullet auto-unió a landolásban**: ha két ág egyszerre vesz fel új fork-fejlesztés bulletet ugyanoda, a landoló összefésüli őket kézi feloldás nélkül; minden más README-ütközésnél megáll.
 
 ### Biztonsági guard-hookok

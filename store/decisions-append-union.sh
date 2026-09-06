@@ -306,6 +306,34 @@ try_append_union() {
   # costs the refusal of an undated append -- it is kept as the stricter of two equivalent choices,
   # not because anything measured requires it.
   local header_glob="${3:-## [0-9][0-9][0-9][0-9]-*}"
+  # CONCATENATION ORDER (card edf9c837), an ARGUMENT for the same reason the header pattern is one:
+  # a caller in this repo decides it, never ambient state.
+  #
+  # WHY IT HAS TO BE DECIDABLE AT ALL. The two remainders are both new, so their order looks
+  # arbitrary -- and it is, for THIS merge. It is not arbitrary for the NEXT one. Whichever block
+  # goes first becomes, relative to every later merge-base, an insertion in the MIDDLE of the file;
+  # and a mid-file insertion on one side is exactly the shape this function then refuses, because
+  # concatenating there would duplicate the base. Measured on card edf9c837: two independent
+  # CleanCore landings blocked in one heartbeat, both for that reason, and neither for the
+  # identical-blank-line case that was suspected.
+  #
+  # So the rule is: the content that is ALREADY on the integration branch goes FIRST, and the new
+  # entry lands at the tail where the next merge-base will find it. The function cannot know which
+  # side that is -- three blobs carry no branch identity -- so the caller says.
+  #
+  #   ours-first   (default) the caller merged the CONTRIBUTING branch into the integration branch.
+  #                Both landers do this (worktree at origin/develop or origin/main), so their
+  #                behaviour is unchanged by this argument existing.
+  #   theirs-first the caller merged the INTEGRATION branch into a working branch -- the sync
+  #                direction, where `ours` is the branch and `theirs` is main/develop.
+  #
+  # FAIL-CLOSED on an unknown value, exactly like the header pattern: a typo must not silently pick
+  # an order, because the whole point of the argument is that the order is a decision.
+  local order="${4:-ours-first}"
+  case "$order" in
+  ours-first|theirs-first) ;;
+  *) return 1 ;;
+  esac
   local conflicted
   conflicted="$(git -C "$wt" diff --name-only --diff-filter=U)"
   # Must be the ONLY conflicted file -- a conflict alongside anything else is a different, wider
@@ -503,12 +531,25 @@ try_append_union() {
   # (base had none, each tail began with one), which is newline-loss-proof by construction. Moving
   # the boundary into the prefix is what made the join explicit, so it is made explicit HERE rather
   # than relying on either side to carry it. Found by this file's own selftest.
-  local joined="$ours_added"
+  #
+  # WHICH REMAINDER IS FIRST is the `order` argument's only effect, and it is applied HERE rather
+  # than by swapping the two variables earlier: every check above is symmetric in the two halves
+  # (each remainder must start a new entry, the header arithmetic, the membership check), so
+  # swapping them earlier would change nothing except which name the reader has to track. The
+  # junction checks below are NOT symmetric -- they look at the seam -- so they read the same two
+  # locals this join builds.
+  local first_added second_added
+  if [ "$order" = "theirs-first" ]; then
+    first_added="$theirs_added"; second_added="$ours_added"
+  else
+    first_added="$ours_added"; second_added="$theirs_added"
+  fi
+  local joined="$first_added"
   case "$joined" in
   *$'\n') ;;
   *) joined="${joined}"$'\n' ;;
   esac
-  local union="${prefix}${joined}${theirs_added}"
+  local union="${prefix}${joined}${second_added}"
 
   # THE JUNCTION IS THE ONLY PLACE THIS FUNCTION CREATES BYTES (Cybered J-1/J-2, comments 20593 and
   # 20597). Every check above examines a HALF -- the prefix, ours' remainder, theirs' remainder --
@@ -553,7 +594,7 @@ try_append_union() {
   *$'\n'$'\n') last_before='' ;;
   *) last_before="$(printf '%s' "$before_junction" | tail -n1)" ;;
   esac
-  first_after="$(printf '%s' "$theirs_added" | head -n1)"
+  first_after="$(printf '%s' "$second_added" | head -n1)"
   _seam_makes_setext_heading "$last_before" "$first_after" && return 1
   _ends_inside_code_fence "$before_junction" && return 1
 
@@ -780,6 +821,32 @@ if [ "${BASH_SOURCE[0]}" = "${0}" ] && [ "${1:-}" = "--selftest" ]; then
     git -C "$REPO" merge --abort 2>/dev/null || true
   }
 
+  # The same two helpers with an explicit ORDER as the fourth argument (card edf9c837). Separate
+  # helpers again, for the reason the glob pair gives: every existing case must keep calling
+  # try_append_union with two arguments, so the DEFAULT order stays the thing they cover.
+  t_resolved_order() { # $1 = label, $2 = order, $3 = expected final content
+    if try_append_union "$REPO" "DECISIONS.md" "" "$2"; then
+      local got want
+      got="$(cat "$REPO/DECISIONS.md")"
+      want="$(printf '%s' "$3")"
+      if [ "$got" = "$want" ]; then echo "  ok   $1"
+      else echo "  FAIL $1 -> content mismatch"; printf 'got:\n%s\nwant:\n%s\n' "$got" "$want"; fail=1; fi
+    else
+      echo "  FAIL $1 -> expected try_append_union to resolve (return 0), it returned 1"; fail=1
+    fi
+    git -C "$REPO" merge --abort 2>/dev/null || true
+  }
+  t_refused_order() { # $1 = label, $2 = order
+    if try_append_union "$REPO" "DECISIONS.md" "" "$2"; then
+      echo "  FAIL $1 -> expected try_append_union to refuse (return 1), it resolved"; fail=1
+    elif ! git -C "$REPO" diff --name-only --diff-filter=U | grep -qx "DECISIONS.md"; then
+      echo "  FAIL $1 -> refused but DECISIONS.md no longer shows as unmerged"; fail=1
+    else
+      echo "  ok   $1"
+    fi
+    git -C "$REPO" merge --abort 2>/dev/null || true
+  }
+
   echo "decisions-append-union selftest"
 
   # THE COMMON CASE: both sides append one new entry each, at the same position -- a real conflict,
@@ -797,6 +864,98 @@ if [ "${BASH_SOURCE[0]}" = "${0}" ] && [ "${1:-}" = "--selftest" ]; then
     "## 2026-01-01 -- entry A
 ## 2026-01-02 -- entry B (left)
 ## 2026-01-03 -- entry C (right)
+"
+
+  # ORDER (card edf9c837). The same fixture, resolved the other way round. Red on the code before
+  # the order argument existed -- that version ignored a fourth argument entirely and always emitted
+  # left-then-right -- and green after, which is the shape MikroB asked these cases to have.
+  #
+  # WHY THE ORDER IS WORTH AN ARGUMENT AT ALL: whichever block goes first becomes, relative to every
+  # LATER merge-base, an insertion in the middle of the file, and a mid-file insertion on one side is
+  # precisely what this function then refuses. So the side already on the integration branch has to
+  # go first, and only the caller knows which that is.
+  setup_conflict order-theirs-first \
+    "## 2026-01-01 -- entry A
+" \
+    "## 2026-01-01 -- entry A
+## 2026-01-02 -- entry B (left)
+" \
+    "## 2026-01-01 -- entry A
+## 2026-01-03 -- entry C (right)
+"
+  t_resolved_order "theirs-first puts the INCOMING side's entry ahead of ours" "theirs-first" \
+    "## 2026-01-01 -- entry A
+## 2026-01-03 -- entry C (right)
+## 2026-01-02 -- entry B (left)
+"
+
+  # The default, stated explicitly. Without this case the argument could silently flip the default
+  # and every other case in this file would still pass -- they pass two arguments, so they cover
+  # "whatever the default is", not "the default is ours-first".
+  setup_conflict order-ours-first \
+    "## 2026-01-01 -- entry A
+" \
+    "## 2026-01-01 -- entry A
+## 2026-01-02 -- entry B (left)
+" \
+    "## 2026-01-01 -- entry A
+## 2026-01-03 -- entry C (right)
+"
+  t_resolved_order "ours-first spelled out gives exactly the default answer" "ours-first" \
+    "## 2026-01-01 -- entry A
+## 2026-01-02 -- entry B (left)
+## 2026-01-03 -- entry C (right)
+"
+
+  # FAIL-CLOSED on an unknown order, for the reason the header pattern is: the argument exists
+  # because the order is a DECISION, so a typo must not quietly pick one.
+  setup_conflict order-unknown \
+    "## 2026-01-01 -- entry A
+" \
+    "## 2026-01-01 -- entry A
+## 2026-01-02 -- entry B (left)
+" \
+    "## 2026-01-01 -- entry A
+## 2026-01-03 -- entry C (right)
+"
+  t_refused_order "an unknown order value is refused, not silently defaulted" "newest-first"
+
+  # THE SEAM MOVES WITH THE ORDER, and this is the case that proves the junction checks were not
+  # left pointing at the old one. Ours ends on PROSE and theirs begins with a `---` rule, so:
+  #   ours-first    the junction promotes that prose line to a setext H2 -> J-1, refused
+  #   theirs-first  the junction is header-after-header -> nothing is promoted, resolved
+  # One fixture, two verdicts, decided only by the order. A version that still read `theirs_added`
+  # for the seam would refuse both.
+  setup_conflict order-seam-follows \
+    "## 2026-01-01 -- entry A
+" \
+    "## 2026-01-01 -- entry A
+## 2026-01-02 -- entry B (left)
+some prose
+" \
+    "## 2026-01-01 -- entry A
+---
+## 2026-01-03 -- entry C (right)
+"
+  t_refused_order "ours-first: the seam would promote our last prose line to a heading" "ours-first"
+
+  setup_conflict order-seam-follows-other-way \
+    "## 2026-01-01 -- entry A
+" \
+    "## 2026-01-01 -- entry A
+## 2026-01-02 -- entry B (left)
+some prose
+" \
+    "## 2026-01-01 -- entry A
+---
+## 2026-01-03 -- entry C (right)
+"
+  t_resolved_order "theirs-first: the same fixture is safe, because the seam moved with it" "theirs-first" \
+    "## 2026-01-01 -- entry A
+---
+## 2026-01-03 -- entry C (right)
+## 2026-01-02 -- entry B (left)
+some prose
 "
 
   # MULTI-ENTRY APPEND on both sides -- the real recurring shape had each side land more than one
