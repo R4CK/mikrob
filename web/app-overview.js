@@ -642,6 +642,17 @@ async function loadCostEstimatesWidget() {
 const OVW_LLMDIST_PALETTE = ['#4a9eff', '#34d399', '#a78bfa', '#f59e0b', '#f87171', '#22d3ee', '#fb7185', '#facc15']
 let ovwLlmDistTaskColors = new Map()
 let ovwLlmDistTooltipEl = null
+// Card e5fc1fb4: the routing answer (GET /api/local-llm/routing, pair-BE ecf38e5a) for the tooltip's
+// "why this model" row; null when the endpoint is absent or failed -- the row is then omitted, never
+// guessed.
+let ovwLlmDistRouting = null
+
+/** Card e5fc1fb4: a lane label click opens the Local LLM page on that model's row. */
+function ovwLlmDistOpenModel(name) {
+  window._llmHighlightModel = name
+  const link = document.querySelector('.sb-link[data-page="localLlm"]')
+  if (link) link.click()
+}
 
 function ovwLlmDistColorFor(task) {
   if (!ovwLlmDistTaskColors.has(task)) {
@@ -776,7 +787,7 @@ function ovwLlmDistPackRows(blocks, gapPct) {
   return rowRightEdge.length
 }
 
-function ovwLlmDistLanesHtml(models, rangeStartMs, rangeEndMs, zoom, rosterAvailable) {
+function ovwLlmDistLanesHtml(models, rangeStartMs, rangeEndMs, zoom, rosterAvailable, disabledModels) {
   const span = Math.max(1, rangeEndMs - rangeStartMs)
   // Both geometry constants are percentages of the CANVAS, which is `zoom` times wider than the
   // viewport -- so dividing by zoom keeps the VISUAL minimum and the VISUAL gap exactly where they
@@ -792,9 +803,14 @@ function ovwLlmDistLanesHtml(models, rangeStartMs, rangeEndMs, zoom, rosterAvail
     // every lane comes back false, and badging them all "no longer installed" would be a claim
     // about state we could not read -- the same failure the /models endpoint refuses to make.
     const removed = rosterAvailable === true && m.installed === false
-    const labelHtml = `<span class="ovw-llmdist-lane-label${removed ? ' ovw-llmdist-lane-label--removed' : ''}"
-        title="${escapeHtml((m.model || '') + (removed ? ' -- ' + t('overview.llmDist.lane_uninstalled') : ''))}"
-      >${escapeHtml(m.model || '?')}</span>`
+    // Card e5fc1fb4: a model the operator switched off (BE field `enabled` from the buckets answer,
+    // or the /models flags fetched alongside) is badged in its lane, and the label is a button that
+    // opens the Local LLM page on that model's row -- the same fact in both places, one source.
+    const off = m.enabled === false || (disabledModels instanceof Set && disabledModels.has(m.model))
+    const labelTitle = (m.model || '') + (removed ? ' -- ' + t('overview.llmDist.lane_uninstalled') : '') + (off ? ' -- ' + t('overview.llmDist.lane_disabled') : '') + ' -- ' + t('overview.llmDist.lane_open')
+    const labelHtml = `<button type="button" class="ovw-llmdist-lane-label ovw-llmdist-lane-link${removed ? ' ovw-llmdist-lane-label--removed' : ''}${off ? ' ovw-llmdist-lane-label--disabled' : ''}"
+        data-model="${escapeHtml(m.model || '')}" title="${escapeHtml(labelTitle)}"
+      >${off ? `<span class="ovw-llmdist-lane-badge">${escapeHtml(t('overview.llmDist.lane_disabled'))}</span>` : ''}${escapeHtml(m.model || '?')}</button>`
     if (!tasks.length) {
       return `<div class="ovw-llmdist-lane ovw-llmdist-lane--idle">
       ${labelHtml}
@@ -869,6 +885,7 @@ function ovwLlmDistShowTooltip(target) {
     <div class="ovw-llmdist-tooltip-row"><span>${escapeHtml(t('overview.llmDist.tooltip.tokens'))}</span><span>${escapeHtml(t('overview.llmDist.tooltip.tokens_value', { total: tokensIn + tokensOut, in: tokensIn, out: tokensOut }))}</span></div>
     <div class="ovw-llmdist-tooltip-row"><span>${escapeHtml(t('overview.llmDist.tooltip.throughput'))}</span><span>${escapeHtml(tpsLabel)}</span></div>
     <div class="ovw-llmdist-tooltip-row"><span>${escapeHtml(t('overview.llmDist.tooltip.status'))}</span><span>${escapeHtml(statusLabel)}</span></div>
+    ${ovwLlmDistRoutingRowHtml(task)}
   `
   el.hidden = false
   const rect = target.getBoundingClientRect()
@@ -877,6 +894,17 @@ function ovwLlmDistShowTooltip(target) {
   const left = Math.max(8, Math.min(rect.left, maxLeft))
   el.style.top = top + 'px'
   el.style.left = left + 'px'
+}
+
+/** Card e5fc1fb4: why this task went to this model -- an override row or the default model. Omitted
+ *  (empty string) when the routing answer is not available, never invented. */
+function ovwLlmDistRoutingRowHtml(task) {
+  if (!ovwLlmDistRouting) return ''
+  const o = ovwLlmDistRouting.overrides && ovwLlmDistRouting.overrides[task]
+  const text = typeof o === 'string' && o
+    ? t('overview.llmDist.tooltip.routing_override', { model: o })
+    : t('overview.llmDist.tooltip.routing_default', { model: ovwLlmDistRouting.defaultModel || '—' })
+  return `<div class="ovw-llmdist-tooltip-row"><span>${escapeHtml(t('overview.llmDist.tooltip.routing'))}</span><span>${escapeHtml(text)}</span></div>`
 }
 
 function ovwLlmDistHideTooltip() {
@@ -955,6 +983,20 @@ async function loadLlmDistWidget() {
     if (r.status === 404) { card.hidden = true; return }
     if (!r.ok) throw new Error('HTTP ' + r.status)
     const d = await r.json()
+    // Card e5fc1fb4: the switch state and the routing table ride along; both tolerate absence
+    // (no badge / no routing row) but never substitute a guess for a failed read.
+    const [flagsRes, routingRes] = await Promise.all([
+      fetch('/api/local-llm/models', { headers: { 'Authorization': 'Bearer ' + token } }).catch(() => null),
+      fetch('/api/local-llm/routing', { headers: { 'Authorization': 'Bearer ' + token } }).catch(() => null),
+    ])
+    const disabledModels = new Set()
+    if (flagsRes && flagsRes.ok) {
+      const f = await flagsRes.json().catch(() => null)
+      for (const m of (f && Array.isArray(f.models) ? f.models : [])) {
+        if (m && typeof m.name === 'string' && m.enabled === false) disabledModels.add(m.name)
+      }
+    }
+    ovwLlmDistRouting = routingRes && routingRes.ok ? await routingRes.json().catch(() => null) : null
     if (metaEl) metaEl.textContent = t('overview.llmDist.meta', { hours: ovwLlmDistHoursLabel(d.windowHours || hours) })
     if (kpisEl) kpisEl.innerHTML = ovwLlmDistKpiHtml(d.kpi || {})
     const models = Array.isArray(d.models) ? d.models : []
@@ -972,7 +1014,7 @@ async function loadLlmDistWidget() {
       <div class="ovw-llmdist-scroll" id="ovwLlmDistScroll" tabindex="0"
            role="group" aria-label="${escapeHtml(t('overview.llmDist.scroll_label'))}">
         <div class="ovw-llmdist-canvas" style="--llmdist-zoom:${zoom.toFixed(4)}">
-          <div class="ovw-llmdist-lanes">${ovwLlmDistLanesHtml(models, rangeStartMs, rangeEndMs, zoom, d.rosterAvailable)}</div>
+          <div class="ovw-llmdist-lanes">${ovwLlmDistLanesHtml(models, rangeStartMs, rangeEndMs, zoom, d.rosterAvailable, disabledModels)}</div>
           <div class="ovw-llmdist-axis">${ovwLlmDistAxisHtml(rangeStartMs, rangeEndMs)}</div>
         </div>
       </div>
@@ -980,6 +1022,7 @@ async function loadLlmDistWidget() {
       ${ovwLlmDistLegendHtml()}
     `
     ovwLlmDistWireTooltips(body)
+    body.querySelectorAll('.ovw-llmdist-lane-link').forEach((b) => b.addEventListener('click', () => ovwLlmDistOpenModel(b.dataset.model)))
     card.hidden = false
     // Open on NOW (the right edge) and drag back, which is the direction Peti asked for. Must run
     // after the card is un-hidden: a hidden element has no layout, so scrollWidth would be 0 and

@@ -120,9 +120,13 @@ describe('resolvesToSharedProjectsRoot', () => {
 
   it('fails toward TREATING IT AS ISOLATED when a path cannot be resolved', () => {
     // Direction matters. False here means "keep reading this dir": a directory we cannot stat is
-    // one whose transcripts we should still try to collect, and the duplicate that risks is caught
-    // by the dedup key (card b774f057). True would silently drop an agent's usage instead, which is
-    // the failure this whole area already had once.
+    // one whose transcripts we should still try to collect. True would silently drop an agent's
+    // usage instead, which is the failure this whole area already had once.
+    //
+    // This comment used to claim the resulting duplicate WAS caught by the dedup key (card
+    // b774f057). It is not: measured on the live database, idx_token_usage_dedup still leads with
+    // `agent`, and b774f057 is planned and blocked. The trade is deliberate, the protection is
+    // future tense.
     expect(resolvesToSharedProjectsRoot(join(root, 'does-not-exist'), shared)).toBe(false)
     expect(resolvesToSharedProjectsRoot(shared, join(root, 'does-not-exist'))).toBe(false)
   })

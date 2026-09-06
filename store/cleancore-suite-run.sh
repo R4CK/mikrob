@@ -214,4 +214,12 @@ status="${PIPESTATUS[0]}"
 # wrapper that turned exit 1 into exit 0 here would be indistinguishable from one hiding a real
 # regression, which is the opposite of what this is for.
 bash "$HERE/vitest-flake-classify.sh" "$status" "$run_log" || true
+
+# AND SAYS WHAT DID NOT RUN AT ALL (card beb9c8d3). This script sets no PG_E2E_URL and nothing else
+# in the fleet does, while CI does -- so every PG-gated e2e file skips here. Measured on the api-e2e
+# project alone: 58 of 65 files and 460 of 491 tests skipped, exit 0. vitest prints those counts but
+# attributes them to nothing, so a green run reads like evidence about files that never executed.
+# Same contract as the classifier above: stderr only, never touches the exit code, silent when
+# nothing was skipped. The worktree is passed so the attribution reads real sources.
+bash "$HERE/vitest-skip-report.sh" "$run_log" "$WT" || true
 exit "$status"

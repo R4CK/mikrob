@@ -239,6 +239,49 @@ def main():
             rules_path=empty_rules,
         )
 
+        # --- ENGLISH "level" (card b4404ed2, adopted from upstream 03ca5262) ------------
+        # Two halves, and each one needs its own case because they fail differently:
+        # dropping the bare "level" HU marker fixes an English body that never should have
+        # reached the accent check at all; the `level \d+` mask fixes a flawless Hungarian
+        # body that reached it correctly and then blocked on a word used in its English sense.
+        case(
+            "ENGLISH BODY: 'level' no longer buys a third Hungarian marker (van/mar are substrings)",
+            REAL_SEND.format(
+                body="The new access level lands in the advance market build. "
+                     "Every level is gated, and the market van route is unchanged."
+            ),
+            ALLOW,
+            rules_path=empty_rules,
+        )
+        case(
+            "'level N' (autonomy/log level) inside FLAWLESS Hungarian prose no longer blocks",
+            REAL_SEND.format(
+                body="Köszönöm, hogy jelezted. Az autonómia level 1 marad, tehát csak jelzek, "
+                     "kérlek nézd meg te is, mert a döntés a tiéd."
+            ),
+            ALLOW,
+            rules_path=empty_rules,
+        )
+        case(
+            "NEGATIVE CONTROL: the mask cuts only before a DIGIT -- 'level' as a real "
+            "misspelling of 'levelet' still BLOCKs",
+            REAL_SEND.format(
+                body="Kaptam egy level tőled tegnap, és megnéztem. Köszönöm, hogy jelezted, "
+                     "kérlek nézd meg te is, mert a döntés a tiéd."
+            ),
+            BLOCK,
+            rules_path=empty_rules,
+        )
+        case(
+            "the mask does not swallow OTHER findings in the same body: 'level 1' passes but "
+            "the stripped accents around it still BLOCK",
+            REAL_SEND.format(
+                body="Kerlek nezd meg, hogy az autonomia level 1 marad-e. Koszonom."
+            ),
+            BLOCK,
+            rules_path=empty_rules,
+        )
+
         # --- Cybersec round 11 NO-GO: two REAL bypasses in the round-10 fixes ---
         case(
             "RESENDGATE826 r11: -G + --data-urlencode is a real send (query-string exfil trick), BLOCK",

@@ -53,6 +53,45 @@ a clone (store/gate-sha-repo.sh, by lookup, not by declaration) and compare the 
 the declared commit touched. Identical means the gates saw this card's work whatever the sha was
 called. A commit that cannot be resolved is its own answer, never a silent AGREE.
 
+WHY A MULTI-SHA `Gate-SHA:` LINE COMPARES BY SET, NOT BY FIRST TOKEN (card f53ef8e4, Cybersec).
+Rule 4b lets one line name several commits ("<sha>, <sha>"), and this script used to keep only the
+FIRST one a verdict wrote. Two gates that both delta-gated the same pair but wrote the tokens in a
+different order, or led with a different one, got a false DISAGREE even though their sets actually
+intersected on the sha that mattered -- fail-closed direction (never a false AGREE), but a false
+block on real fleet infrastructure that lives in this same file, the population the c52e2823 round
+already closed for a different reason. `verdict_of()` now keeps every token on the line as a tuple;
+`sha_sets_agree()` treats two verdicts as agreeing if ANY pair of their tokens is prefix-compatible.
+The sibling tool (`landing-gate-verdict-parse.py`, `shas_in()`) already collected every token this
+way for its own per-sha check -- this file just did not.
+
+WHY A NON-REVIEW COMMENT'S Gate-SHA CAN STILL SINK AN AGREE (card 3e4dc2c3, Cybered). declared_shas()
+deliberately reads ONLY the latest `REVIEW`-opening comment, because sourcing it from any Gate-SHA
+line nets zero (fixes 8 cards, breaks 8 -- see that function's own docstring). But a builder's
+routine "<finding> JAVITVA -- delta-gate kell" declares a newer commit WITHOUT the word REVIEW, so
+declared_shas() correctly never sees it -- and if no designated gate verdicts on that newer sha
+either, the default AGREE (built from the OLD REVIEW's sha, which is genuinely all declared_shas()
+can see) is checking code nobody who matters has reviewed. Measured: 8 of 14 cards with this shape
+read AGREE by default while `--expect <the newer sha>` on the SAME card answers STALE -- the
+default answers a narrower question than the caller is asking, without saying so, the exact failure
+shape `--expect` itself exists to close (see that section above). `undeclared_post_review_shas()`
+answers the narrower question explicitly: a sha declared after the latest REVIEW that neither that
+REVIEW nor any gate verdict in the same span names turns the REVIEW-sourced default into STALE
+rather than a silent AGREE. Deliberately scoped to the default path only -- an explicit `--expect`
+is the caller's own assertion and is not second-guessed by this.
+
+WHY AN INFERRED GATE SET IS NEVER TRUSTED OVER A STATED ONE, AND NEVER OMITS QA (card 864351a9,
+Cybersec). When the caller passes no gate list, this script has always inferred one from whichever
+verdicts are PRESENT (`sorted(latest.keys())`) -- and a lone security-gate verdict then read as
+"every designated gate agrees", a verdict agreeing with itself, because rule 4's QA-is-mandatory
+requirement was never enforced on the INFERRED side. Measured live: 2 of 307 `done` cards closed
+this way, on a gate that was not even the one MikroB actually designated -- the designation was
+right there on the card, in a `MikroB GATE-KIJELOLES: <gates> (<n>-gate) -- <reason>` comment
+(the live convention, comments 19882/19898), unread by this file. Two independent fixes, not one:
+`stated_designation()` reads that comment and, when present, OUTRANKS inference entirely (the same
+precedence a stated `Gate-SHA:` already has over a guessed one); and when there is genuinely no
+stated designation, the inferred set is now seeded with QA even if no QA verdict exists, so a
+QA-less inferred set answers MISSING rather than a self-agreeing AGREE.
+
 Input:  the card's comments JSON on stdin (the /api/kanban/<id>/comments shape).
         Optional argv[1]: comma-separated designated gates, e.g. "qa,cybersec".
         Optional --expect <sha>: the commit this card delivers NOW. Omitted -> taken from the
@@ -75,7 +114,10 @@ Output: exactly one line.
         UNVERIFIED-AUTHOR|<details>  a gate's PASS was written by someone other than that gate, and
                                      that gate never posted one itself
         STALE|<sha>|<expected>|<why> the gates AGREE, but on a commit whose content differs from the
-                                     one this card now declares
+                                     one this card now declares -- OR (card 3e4dc2c3) a non-REVIEW
+                                     comment after the latest REVIEW declared a newer commit that no
+                                     designated gate ever verdicted on; <expected> then lists the
+                                     undeclared sha(s) instead of a single REVIEW-declared one
         UNRESOLVED|<sha>|<expected>|<why>
                                      the shas differ and the difference could NOT be judged (a clone
                                      is missing, a commit was pruned, git failed). Deliberately not
@@ -121,11 +163,45 @@ _VERDICT = re.compile(
 # Trailing sibling digits on a gate NAME, e.g. the "2" of "qa2". Anchored to the end so it cannot
 # eat digits from the middle of a word.
 _SIBLING_SUFFIX = re.compile(r"\d+$")
-_SHA_LINE = re.compile(r"^\s*Gate-SHA:\s*([0-9a-fA-F]{7,40})", re.IGNORECASE | re.MULTILINE)
-# The whole `Gate-SHA:` value, because rule 4b lets a REVIEW name several commits ("<sha>, <sha>")
-# and 68 cards on this board do. A verdict naming ANY of them is judging this card's delivery.
-_SHA_VALUES = re.compile(r"^\s*Gate-SHA:\s*(.+)$", re.IGNORECASE | re.MULTILINE)
+# MikroB's stated gate designation (card 864351a9), e.g. "MikroB GATE-KIJELOLES: QA (1-gate) --
+# <reason>" or "MikroB GATE-KIJELOLES: QA + Cybersec (2-gate) -- <reason>" -- the LIVE convention
+# already in use (comments 19882, 19898), just never read by this file. Plain ASCII, matching this
+# board's own `Gate-SHA:`-style technical markers (no accented "KIJELÖLÉS").
+_GATE_DESIGNATION_LINE = re.compile(r"^\s*MikroB\s+GATE-KIJELOLES\s*:\s*(.+)$", re.IGNORECASE | re.MULTILINE)
+_GATE_NAME_TOKEN = re.compile(r"\b(QA|CYBERSEC|CYBERED)(\d*)\b", re.IGNORECASE)
+# Every `Gate-SHA:` line (rule 4b: line-initial, not necessarily comment-initial -- a line can sit
+# anywhere in the comment), because rule 4b lets a line name several commits ("<sha>, <sha>") and 68
+# cards on this board do. A verdict naming ANY of them is judging this card's delivery.
+_GATE_SHA_LINE = re.compile(r"^\s*Gate-SHA\s*:\s*(.+)$", re.IGNORECASE | re.MULTILINE)
 _SHA_TOKEN = re.compile(r"\b[0-9a-fA-F]{7,40}\b")
+
+# THE TOKEN FILTER BELOW IS PORTED, NOT RE-DERIVED (card f53ef8e4, backend2's own request in comment
+# 21435): src/web/kanban-gate-completeness-guard.ts's extractGateShas() solved this exact problem
+# for a sibling consumer of the same `Gate-SHA:` convention, refined three times against real
+# incidents (d0b4f003, 4ae2d3f5, a20f0aa7) and measured on 3301+ real lines. Card 4a6c47f0 is this
+# file's own live instance: `Gate-SHA: d49e9c7a... (CleanCore, ág feat/tenant-auth-ip-coarsen-
+# 4a6c47f0, ...)` embeds the CARD'S OWN ID in the branch name, and a card id is a valid 7-40 hex
+# string -- naive scanning of the whole line picked it up as a second "sha" and turned a real
+# content DISAGREE into a false AGREE, the exact failure direction this file exists to prevent.
+# Only the field NAME differs between the two files' minimum sha length (this file's OWN `_SHA_TOKEN`
+# was already {7,40} everywhere, matching git's default abbreviation; the TS reference uses {6,40}
+# for its own consumer) -- kept at {7,40} here for consistency with the rest of this file, not
+# widened to match the port.
+_PARENT_MARKED_SHA = re.compile(
+    r"\b(?:szulo|szülő|parent|merge-base)[\s:]+[0-9a-fA-F]{7,40}\b", re.IGNORECASE
+)
+_HEX_ONLY_SEGMENT = re.compile(r"^[0-9a-fA-F]{7,40}$")
+
+
+def _is_path_token(tok):
+    """A '/'-bearing token is a branch name or a path, not a sha citation -- ONLY when some
+    slash-separated segment is not itself a bare hex run, so the fleet's "A/B" short/long
+    both-commits idiom (card 67807f6f) is not swallowed along with a real branch name."""
+    if "/" not in tok:
+        return False
+    stripped = tok.strip("`'\"(),;")
+    segments = [s for s in stripped.split("/") if s]
+    return any(not _HEX_ONLY_SEGMENT.match(s) for s in segments)
 # Anchored exactly like the verdict, and for the same reason in mirror image: a comment that QUOTES a
 # REVIEW must not be able to supply the expected sha. `_LEAD_SKIP` is shared so the two orders rule
 # 4b/4c allow -- verdict first or `Gate-SHA:` first -- work here too.
@@ -142,19 +218,51 @@ _SHARED_CHURN = frozenset(("package.json", "DECISIONS.md", "README.md"))
 PASSING = {"PASS", "GO"}
 
 
+def _line_shas(content):
+    """Every hex token cited on the comment's `Gate-SHA:` line(s), lowercased, in written order and
+    deduplicated, [] if there is no such line (card f53ef8e4, Cybersec's finding).
+
+    Shared by verdict_of() and declared_shas() so a VERDICT's multi-commit Gate-SHA (rule 4b:
+    "<sha>, <sha>") is read the same way a REVIEW's already was -- one token collector, not two
+    that can silently drift apart. Excludes parent/ancestor references and branch/path-embedded
+    lookalikes the same way kanban-gate-completeness-guard.ts's extractGateShas() does (see the
+    filter constants above) -- a plain "take every hex run on the line" would also re-admit the
+    card-id-in-a-branch-name class that filter exists to keep out.
+    """
+    out = []
+    for line in _GATE_SHA_LINE.findall(content):
+        blanked = _PARENT_MARKED_SHA.sub(lambda m: " " * len(m.group(0)), line)
+        for tok in blanked.split():
+            if _is_path_token(tok):
+                continue
+            for m in _SHA_TOKEN.finditer(tok):
+                sha = m.group(0).lower()
+                if sha not in out:
+                    out.append(sha)
+    return out
+
+
 def verdict_of(content):
-    """(gate, outcome, sha) for a comment that OPENS with a verdict, else None."""
+    """(gate, outcome, shas) for a comment that OPENS with a verdict, else None.
+
+    `shas` is a TUPLE of every hex token on the Gate-SHA line (order preserved), or None if the
+    comment carries no such line -- None, not (), so the NOSHA/`is None` checks elsewhere are
+    unchanged by this becoming a collection instead of a single value (card f53ef8e4). Before this,
+    only the FIRST token of a multi-sha line was kept, so two gates that both used the documented
+    "<sha>, <sha>" form but wrote the tokens in a different order, or led with a different one, got
+    a false DISAGREE even though their sets actually intersected on the delivered commit.
+    """
     if not isinstance(content, str):
         return None
     body = content[_LEAD_SKIP.match(content).end():]
     m = _VERDICT.match(body)
     if not m:
         return None
-    sha_m = _SHA_LINE.search(content)
+    shas = _line_shas(content)
     outcome = m.group(3).upper()
     # group(2) is the sibling number and is deliberately discarded: see the note on GATES.
     return (m.group(1).upper(), "NO-GO" if outcome == "NO-GO" else outcome,
-            sha_m.group(1).lower() if sha_m else None)
+            tuple(shas) if shas else None)
 
 
 def declared_shas(comments):
@@ -170,12 +278,84 @@ def declared_shas(comments):
             continue
         if not _REVIEW_OPEN.match(content[_LEAD_SKIP.match(content).end():]):
             continue
-        m = _SHA_VALUES.search(content)
-        if m:
-            shas = [s.lower() for s in _SHA_TOKEN.findall(m.group(1))]
-            if shas:
-                found = shas
+        shas = _line_shas(content)
+        if shas:
+            found = shas
     return found
+
+
+def stated_designation(comments):
+    """The gate set MikroB's LATEST `MikroB GATE-KIJELOLES: ...` comment names, or None if no such
+    comment exists (card 864351a9, Cybersec's finding).
+
+    A STATED designation outranks inference from present verdicts, the same reason a stated
+    `Gate-SHA:` outranks a guessed one (rule 4b): root CLAUDE.md's 4a already documents the
+    inferred set as a fallback for an UNSTATED designation, and two live `done` cards (e96b06e7,
+    89f4c28d) closed on a verdict from a gate MikroB never designated while the actual designation
+    sat right there on the card, in a comment this file never read.
+    """
+    found = None
+    for c in comments:
+        content = (c or {}).get("content")
+        if not isinstance(content, str):
+            continue
+        m = _GATE_DESIGNATION_LINE.search(content)
+        if not m:
+            continue
+        names = []
+        for name, _digits in _GATE_NAME_TOKEN.findall(m.group(1)):
+            u = name.upper()
+            if u not in names:
+                names.append(u)
+        if names:
+            found = names
+    return found
+
+
+def undeclared_post_review_shas(comments):
+    """Shas any comment AFTER the latest `REVIEW` declares on a Gate-SHA line, that are covered by
+    NEITHER that REVIEW's own declared set NOR any gate-verdict comment in the same span (card
+    3e4dc2c3, Cybered's board-wide finding).
+
+    Rule 4a's default expectation comes from the latest REVIEW comment (card 2003e04b) -- correctly
+    NOT from any comment with a Gate-SHA line, per declared_shas()'s own measurement above (sourcing
+    it from any comment fixes 8 cards and breaks 8). But a non-REVIEW comment can still declare a
+    NEWER commit without the word REVIEW -- the routine shape is a builder's own "<finding> JAVITVA
+    -- delta-gate kell", which this file's own README-adjacent convention never required to open
+    with REVIEW. If no gate verdict ANYWHERE in that span names the newer sha either, the tool's
+    default AGREE (built from the OLD REVIEW's sha, because that is genuinely all declared_shas() can
+    see) is silently checking a commit nobody designated has reviewed. Measured on the live board: 8
+    of 14 cards with this shape read AGREE by default while `--expect <the newer sha>` on the SAME
+    card answers STALE -- the check answers a narrower question than the default caller is asking,
+    the same failure shape `--expect` itself was built to close (see the header).
+
+    A gate verdict's OWN Gate-SHA line does not count as an "undeclared" citation -- it is exactly
+    the citation this function is checking FOR, not a stray one to flag.
+    """
+    review_idx = None
+    for i, c in enumerate(comments):
+        content = (c or {}).get("content")
+        if isinstance(content, str) and _REVIEW_OPEN.match(content[_LEAD_SKIP.match(content).end():]):
+            review_idx = i
+    if review_idx is None:
+        return []
+    review_shas = set(declared_shas(comments))
+    gate_shas = set()
+    candidates = []
+    for c in comments[review_idx + 1:]:
+        content = (c or {}).get("content")
+        if not isinstance(content, str):
+            continue
+        v = verdict_of(content)
+        if v is not None:
+            if v[2]:
+                gate_shas.update(v[2])
+            continue
+        for sha in _line_shas(content):
+            if sha not in candidates:
+                candidates.append(sha)
+    covered = review_shas | gate_shas
+    return [s for s in candidates if not any(shas_agree(s, c) for c in covered)]
 
 
 # The author->role fold that used to live here is now gate_author_role.author_role, imported at
@@ -301,7 +481,7 @@ def _gate_state(comments):
         for (g, who), fv in latest_by_author.items():
             if g != gate or fv[1] in PASSING:
                 continue
-            if fv[2] is not None and v[2] is not None and shas_agree(v[2], fv[2]):
+            if fv[2] is not None and v[2] is not None and sha_sets_agree(v[2], fv[2]):
                 latest[gate] = fv
                 undecidable.pop(gate, None)
                 break
@@ -342,6 +522,24 @@ def shas_agree(a, b):
     return a == b or a.startswith(b) or b.startswith(a)
 
 
+def sha_sets_agree(a, b):
+    """Do these two sha COLLECTIONS name a commit in common (card f53ef8e4)?
+
+    Rule 4b lets one Gate-SHA line carry several commits, and two gates that both delta-gated the
+    same pair can legitimately write them in different orders or lead with a different one --
+    comparing only the first token of each turned that into a false DISAGREE even though the sets
+    intersect on the sha that actually matters. Prefix-compatible per pair, same as shas_agree.
+    """
+    return any(shas_agree(x, y) for x in a for y in b)
+
+
+def _fmt_shas(shas):
+    """Render a verdict's sha tuple for an output line: '-' for None/empty, else the shas in the
+    order the verdict wrote them, comma-joined. A single-sha tuple renders identically to the bare
+    string this file used to carry, so every existing byte-for-byte output is unchanged."""
+    return ",".join(shas) if shas else "-"
+
+
 _CLONES = (
     ("marveen", os.environ.get("MARVEEN_MAIN", "/home/neon/marveen")),
     ("cleancore", os.environ.get("CLEANCORE_MAIN", "/mnt/h/LM_Studio_Workdir/CleanCore")),
@@ -379,78 +577,101 @@ def _clone_holding(*shas):
 def content_verdict(judged, declared):
     """Did the gates see this card's work, even though the sha they named is not the declared one?
 
+    `judged` is an ITERABLE of shas now (card f53ef8e4: rule 4b lets a verdict name more than one),
+    tried against each `declared` sha the same way `declared` was already tried in order -- first
+    resolvable pair wins. A single-element `judged` behaves exactly as the old single-sha argument
+    did.
+
     ("same", why) | ("differs", why) | ("unresolved", why)
     """
-    for d in declared:
-        clone = _clone_holding(judged, d)
-        if clone is None:
-            continue
-        # `log -1 --first-parent`, not `show`: `git show --name-only` prints NOTHING for a merge
-        # commit, and a REVIEW naming the LANDING rather than the work commit is one of the two
-        # shapes this board actually uses. Measured: it silently emptied the file list on 8 of the
-        # 37 mismatching cards, which then read as "no files differ" -- a vacuous pass on exactly
-        # the cards the check exists for. `--first-parent` gives what the landing brought in, and
-        # is identical to `show` on an ordinary commit (verified on 5ce2a92b: 6 files either way).
-        ok, out = _git(clone, "log", "-1", "--name-only", "--format=", "--first-parent", d)
-        if not ok:
-            continue
-        files = [f for f in out.split("\n") if f.strip()]
-        if not files:
-            # An empty commit delivers nothing whose content could differ. Saying "same" here would
-            # be a vacuous pass, so this is left to the next declared sha / reported as unresolved.
-            continue
-        ok, out = _git(clone, "diff", "--name-only", judged, d, "--", *files)
-        if not ok:
-            continue
-        changed = [f for f in out.split("\n") if f.strip()]
-        real = [f for f in changed if os.path.basename(f) not in _SHARED_CHURN]
-        # Card 74aa46a5. The `if not files` guard above refuses to call an EMPTY delivery "same",
-        # and the churn subtraction on the next line can empty the comparison a second time, at a
-        # point that guard no longer covers: when EVERY file the declared commit delivers is one of
-        # the churn names, removing them leaves nothing, and "no real difference remains" is then
-        # indistinguishable from "nothing was ever compared". Measured on the live board: 14 cards
-        # answered AGREE that way, four of them (99fccbcf, e5b7ff19, a14812e8, f1b3f2f0) because the
-        # REVIEW named a `chore(version)` bump -- a commit that delivers package.json and nothing
-        # else, so the subtraction is total by construction.
-        #
-        # `changed` must be non-empty to reach this: when the churn files are byte-identical too,
-        # nothing differs anywhere and "same" is the honest answer, unchanged. And `comparable` must
-        # be empty: a card that delivers real files which simply did not differ WAS compared, and
-        # keeps its pass.
-        comparable = [f for f in files if os.path.basename(f) not in _SHARED_CHURN]
-        if not real and changed and not comparable:
-            hint = ""
-            ok_s, subj = _git(clone, "log", "-1", "--format=%s", d)
-            if ok_s and subj.strip().startswith("chore(version): bump"):
-                hint = (" -- %s is a version bump, so the REVIEW is naming the develop tip instead "
-                        "of the landing merge that carries the work (card 0711c19b)" % d)
-            return ("unresolved",
-                    "every file %s delivers is per-landing churn (%s), so ignoring it leaves "
-                    "nothing to compare%s" % (d, ", ".join(sorted(set(files))), hint))
-        if not real:
-            skipped = " (ignoring %s)" % ", ".join(sorted(set(changed))) if changed else ""
-            return ("same", "%s and %s hold identical content for the %d file(s) %s delivers%s"
-                    % (judged, d, len(files), d, skipped))
-        return ("differs", "%s and %s differ in %s" % (judged, d, ", ".join(sorted(real)[:5])))
+    for j in judged:
+        for d in declared:
+            clone = _clone_holding(j, d)
+            if clone is None:
+                continue
+            # `log -1 --first-parent`, not `show`: `git show --name-only` prints NOTHING for a merge
+            # commit, and a REVIEW naming the LANDING rather than the work commit is one of the two
+            # shapes this board actually uses. Measured: it silently emptied the file list on 8 of the
+            # 37 mismatching cards, which then read as "no files differ" -- a vacuous pass on exactly
+            # the cards the check exists for. `--first-parent` gives what the landing brought in, and
+            # is identical to `show` on an ordinary commit (verified on 5ce2a92b: 6 files either way).
+            ok, out = _git(clone, "log", "-1", "--name-only", "--format=", "--first-parent", d)
+            if not ok:
+                continue
+            files = [f for f in out.split("\n") if f.strip()]
+            if not files:
+                # An empty commit delivers nothing whose content could differ. Saying "same" here
+                # would be a vacuous pass, so this is left to the next declared sha / reported as
+                # unresolved.
+                continue
+            ok, out = _git(clone, "diff", "--name-only", j, d, "--", *files)
+            if not ok:
+                continue
+            changed = [f for f in out.split("\n") if f.strip()]
+            real = [f for f in changed if os.path.basename(f) not in _SHARED_CHURN]
+            # Card 74aa46a5. The `if not files` guard above refuses to call an EMPTY delivery "same",
+            # and the churn subtraction on the next line can empty the comparison a second time, at a
+            # point that guard no longer covers: when EVERY file the declared commit delivers is one
+            # of the churn names, removing them leaves nothing, and "no real difference remains" is
+            # then indistinguishable from "nothing was ever compared". Measured on the live board: 14
+            # cards answered AGREE that way, four of them (99fccbcf, e5b7ff19, a14812e8, f1b3f2f0)
+            # because the REVIEW named a `chore(version)` bump -- a commit that delivers package.json
+            # and nothing else, so the subtraction is total by construction.
+            #
+            # `changed` must be non-empty to reach this: when the churn files are byte-identical too,
+            # nothing differs anywhere and "same" is the honest answer, unchanged. And `comparable`
+            # must be empty: a card that delivers real files which simply did not differ WAS
+            # compared, and keeps its pass.
+            comparable = [f for f in files if os.path.basename(f) not in _SHARED_CHURN]
+            if not real and changed and not comparable:
+                hint = ""
+                ok_s, subj = _git(clone, "log", "-1", "--format=%s", d)
+                if ok_s and subj.strip().startswith("chore(version): bump"):
+                    hint = (" -- %s is a version bump, so the REVIEW is naming the develop tip "
+                            "instead of the landing merge that carries the work (card 0711c19b)" % d)
+                return ("unresolved",
+                        "every file %s delivers is per-landing churn (%s), so ignoring it leaves "
+                        "nothing to compare%s" % (d, ", ".join(sorted(set(files))), hint))
+            if not real:
+                skipped = " (ignoring %s)" % ", ".join(sorted(set(changed))) if changed else ""
+                return ("same", "%s and %s hold identical content for the %d file(s) %s delivers%s"
+                        % (j, d, len(files), d, skipped))
+            return ("differs", "%s and %s differ in %s" % (j, d, ", ".join(sorted(real)[:5])))
     return ("unresolved",
             "could not resolve %s and %s to one clone, so the difference could not be judged"
-            % (judged, "/".join(declared)))
+            % ("/".join(judged), "/".join(declared)))
 
 
 def check(comments, designated=None, expect=None, use_declared=True):
     latest, undecidable = _gate_state(comments)
     unverified = unattributed_gates(comments)
     inferred = designated is None
+    source_note = ""
     if inferred:
-        designated = sorted(latest.keys())
-        if not designated:
-            return "MISSING|no gate verdict on this card at all"
+        stated = stated_designation(comments)
+        if stated:
+            # A STATED designation OUTRANKS inference (card 864351a9): it is not a guess needing a
+            # caveat, so `inferred` goes false and it takes the CALLER-provided path below.
+            designated, inferred = stated, False
+            source_note = " (gate designation stated by MikroB)"
+        else:
+            designated = sorted(latest.keys())
+            if not designated:
+                return "MISSING|no gate verdict on this card at all"
+            # QA IS NEVER OPTIONAL IN AN INFERRED SET (card 864351a9, Cybersec's finding). Rule 4
+            # makes QA mandatory on every card; an inferred set built purely from whichever verdicts
+            # happen to be present can therefore never legitimately omit it. Before this, a single
+            # security-gate verdict with no QA at all read as "every designated gate agrees" -- a
+            # verdict agreeing with itself. Measured live: 2 of 307 done cards closed exactly this
+            # way, on a gate that was never even the one MikroB actually designated.
+            if "QA" not in designated:
+                designated = sorted(designated + ["QA"])
+            source_note = " (gates inferred from the verdicts present)"
     designated = [g.upper() for g in designated]
 
     missing = [g for g in designated if g not in latest]
     if missing:
-        return "MISSING|%s has no verdict%s" % (
-            ", ".join(missing), " (gates inferred from the verdicts present)" if inferred else "")
+        return "MISSING|%s has no verdict%s" % (", ".join(missing), source_note)
 
     failed = ["%s=%s" % (g, latest[g][1]) for g in designated if latest[g][1] not in PASSING]
     if failed:
@@ -483,14 +704,14 @@ def check(comments, designated=None, expect=None, use_declared=True):
     if nosha:
         return "NOSHA|%s gave no Gate-SHA, so agreement cannot be checked (%s)" % (
             ", ".join(nosha),
-            "; ".join("%s=%s" % (g, latest[g][2] or "-") for g in designated))
+            "; ".join("%s=%s" % (g, _fmt_shas(latest[g][2])) for g in designated))
 
     shas = [latest[g][2] for g in designated]
-    detail = "; ".join("%s=%s" % (g, latest[g][2]) for g in designated)
+    detail = "; ".join("%s=%s" % (g, _fmt_shas(latest[g][2])) for g in designated)
     for other in shas[1:]:
-        if not shas_agree(shas[0], other):
+        if not sha_sets_agree(shas[0], other):
             return "DISAGREE|the latest verdicts judge different shas: " + detail
-    suffix = " (gates inferred from the verdicts present)" if inferred else ""
+    suffix = source_note
 
     # The gates agree. Whether they agree about the code THIS CARD NOW DELIVERS is a second question,
     # and card 2003e04b is the finding that it must be asked WITHOUT being asked for -- the caller who
@@ -499,6 +720,17 @@ def check(comments, designated=None, expect=None, use_declared=True):
         declared, source = [expect], "--expect"
     elif use_declared:
         declared, source = declared_shas(comments), "the latest REVIEW"
+        # CARD 3e4dc2c3 (Cybered): a non-REVIEW comment after the latest REVIEW can declare a NEWER
+        # commit ("<finding> JAVITVA -- delta-gate kell") that declared_shas() correctly does not
+        # pick up (see its own docstring), but that no designated gate has verdicted on either. The
+        # default AGREE below would then be checking a sha nobody who matters has reviewed. This is
+        # deliberately scoped to the REVIEW-sourced default only -- an explicit `--expect` is the
+        # caller's own assertion and is not second-guessed here (see the header's `--expect` note).
+        orphans = undeclared_post_review_shas(comments)
+        if orphans:
+            return "STALE|%s|%s|a newer sha was declared in a non-REVIEW comment after the latest " \
+                   "REVIEW and no designated gate ever verdicted on it (%s)" % (
+                       _fmt_shas(shas[0]), ",".join(orphans), detail)
     else:
         declared, source = [], "--no-expect"
 
@@ -508,10 +740,10 @@ def check(comments, designated=None, expect=None, use_declared=True):
         # unstated gate designation is said out loud.
         why = ("no --expect given" if source == "--no-expect"
                else "no REVIEW comment declares a Gate-SHA, so the delivered commit is unchecked")
-        return "AGREE|%s|%s%s (%s)" % (shas[0], detail, suffix, why)
+        return "AGREE|%s|%s%s (%s)" % (_fmt_shas(shas[0]), detail, suffix, why)
 
-    if any(shas_agree(shas[0], d) for d in declared):
-        return "AGREE|%s|%s%s" % (shas[0], detail, suffix)
+    if sha_sets_agree(shas[0], declared):
+        return "AGREE|%s|%s%s" % (_fmt_shas(shas[0]), detail, suffix)
 
     # The sha differs from the declared one. On this board that is usually benign -- a work commit
     # versus the landing that carried it -- so the difference is judged by CONTENT before it is
@@ -520,14 +752,14 @@ def check(comments, designated=None, expect=None, use_declared=True):
     joined = ",".join(declared)
     if kind == "same":
         return "AGREE|%s|%s%s (differs from %s per %s, but %s)" % (
-            shas[0], detail, suffix, joined, source, why)
+            _fmt_shas(shas[0]), detail, suffix, joined, source, why)
     if kind == "differs":
         # Deliberately NOT "the gates are stale". Measured on card edd4c3bf, the opposite happens
         # too: the deliverable moved on in an INFO-ONLY comment that says "nem uj REVIEW", the gates
         # correctly judged the NEWER sha, and it is the REVIEW that is behind. The two commits
         # differ and here are the files -- which of them is the stale one is the reader's call.
         return "STALE|%s|%s|the gates judged a commit whose content differs from the declared one: %s (%s)" % (
-            shas[0], joined, why, detail)
+            _fmt_shas(shas[0]), joined, why, detail)
     # Unjudgeable, and the right answer depends on WHO said what the card delivers. An explicit
     # `--expect` is the caller ASSERTING it, and rule 4a's documented use is exactly the case where
     # the old sha no longer resolves (rebuilt, rebased, pruned) -- answering UNRESOLVED there would
@@ -535,8 +767,8 @@ def check(comments, designated=None, expect=None, use_declared=True):
     # hypothesis, and it must not accuse a gate on a hypothesis it could not check.
     if source == "--expect":
         return "STALE|%s|%s|the gates agree, but on a commit this card no longer delivers (%s)" % (
-            shas[0], joined, detail)
-    return "UNRESOLVED|%s|%s|%s (%s)" % (shas[0], joined, why, detail)
+            _fmt_shas(shas[0]), joined, detail)
+    return "UNRESOLVED|%s|%s|%s (%s)" % (_fmt_shas(shas[0]), joined, why, detail)
 
 
 def main():

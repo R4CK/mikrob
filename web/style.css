@@ -1250,6 +1250,34 @@ main {
   color: var(--danger);
   text-decoration: line-through;
 }
+/* Card e5fc1fb4: the lane label is a link to the model's row on the Local LLM page, and a
+   switched-off model wears the same "Letiltva" badge it wears there */
+.ovw-llmdist-lane-link {
+  appearance: none;
+  border: 0;
+  background: transparent;
+  font: inherit;
+  color: inherit;
+  text-align: left;
+  cursor: pointer;
+  padding: 0;
+}
+.ovw-llmdist-lane-link:hover { text-decoration: underline; }
+.ovw-llmdist-lane-link:focus-visible { outline: 2px solid var(--accent, #6366f1); outline-offset: 2px; }
+.ovw-llmdist-lane-label--disabled { color: var(--text-muted); }
+.ovw-llmdist-lane-badge {
+  display: inline-block;
+  margin-right: 4px;
+  padding: 0 6px;
+  border-radius: 999px;
+  font-size: 10px;
+  font-weight: 600;
+  color: var(--text-muted);
+  background: color-mix(in srgb, var(--text-muted) 14%, var(--bg-card));
+}
+@media (pointer: coarse) {
+  .ovw-llmdist-lane-link { min-height: 44px; }
+}
 .ovw-llmdist-block {
   position: absolute;
   top: 3px;
@@ -8839,6 +8867,76 @@ body {
   background: var(--bg-input);
 }
 .llm-category-row.disabled { opacity: 0.6; }
+/* Card e5fc1fb4: the routed model on each preset row, and the routing section's summary + panels */
+.llm-category-routing { display: flex; flex-wrap: wrap; gap: 6px; align-items: center; font-size: 11px; }
+.llm-category-route {
+  display: inline-flex;
+  gap: 4px;
+  align-items: center;
+  padding: 1px 8px;
+  border-radius: 999px;
+  border: 1px solid var(--border);
+  color: var(--text);
+  background: var(--bg-card);
+  max-width: 100%;
+  overflow-wrap: anywhere;
+}
+.llm-category-route em { font-style: normal; color: var(--text-muted); }
+.llm-category-route--override { border-color: var(--accent, #6366f1); }
+.llm-category-route--unknown { color: var(--text-muted); border-style: dashed; }
+.llm-category-route-off { color: var(--warning, #e2a000); font-weight: 600; }
+.llm-routing-summary { font-size: 13px; color: var(--text); margin: 0 0 10px; }
+.llm-routing-note { display: inline-block; padding: 8px 12px; border-radius: var(--radius-sm); border: 1px dashed var(--border); color: var(--text-muted); }
+.llm-routing-note--error { border-color: var(--danger); color: var(--danger); }
+.llm-routing-cols { display: grid; grid-template-columns: 1fr 1fr; gap: 16px; margin-top: 16px; }
+.llm-subsection-title { font-size: 14px; font-weight: 600; margin: 0 0 4px; }
+.llm-routing-list { display: flex; flex-direction: column; gap: 6px; }
+.llm-routing-row, .llm-decision-row {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px 10px;
+  align-items: center;
+  padding: 8px 10px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  background: var(--bg-input);
+  font-size: 12px;
+}
+.llm-routing-cat { font-weight: 600; }
+.llm-routing-ceiling { color: var(--text-muted); }
+.llm-verdict {
+  display: inline-block;
+  min-width: 56px;
+  text-align: center;
+  padding: 1px 8px;
+  border-radius: 999px;
+  font-size: 11px;
+  font-weight: 700;
+}
+.llm-verdict--local { color: var(--success); background: color-mix(in srgb, var(--success) 12%, var(--bg-card)); }
+.llm-verdict--online { color: var(--accent, #6366f1); background: color-mix(in srgb, var(--accent, #6366f1) 12%, var(--bg-card)); }
+.llm-decision-reason { color: var(--text); }
+.llm-decision-meta { color: var(--text-muted); margin-left: auto; }
+@media (max-width: 720px) {
+  .llm-routing-cols { grid-template-columns: 1fr; }
+  .llm-decision-meta { margin-left: 0; width: 100%; }
+}
+.llm-models-summary { font-size: 12px; color: var(--text-muted); margin: -4px 0 10px; }
+.llm-model-route {
+  display: inline-block;
+  padding: 1px 8px;
+  border-radius: 999px;
+  border: 1px solid var(--accent, #6366f1);
+  color: var(--accent, #6366f1);
+  font-size: 11px;
+  font-weight: 600;
+}
+.llm-model-route--default { border-color: var(--success); color: var(--success); }
+.llm-model-row--highlight { animation: llm-row-flash 1.2s ease-in-out 2; }
+@keyframes llm-row-flash {
+  0%, 100% { box-shadow: 0 0 0 0 transparent; }
+  50% { box-shadow: 0 0 0 3px var(--accent, #6366f1); }
+}
 .llm-category-info {
   display: flex;
   align-items: flex-start;
@@ -9045,6 +9143,19 @@ body {
   .llm-model-row .llm-model-actions { width: 100%; }
   .llm-model-toggle { flex: 1 1 auto; }
 }
+/* Card 404e8dd6: Ollama-down fallback list -- the banner names the state, the rows keep the
+   switch (44px, same tokens) and drop the controls that need Ollama */
+.llm-models-banner {
+  padding: 10px 12px;
+  margin-bottom: 8px;
+  border: 1px solid var(--warning, #e2a000);
+  border-radius: var(--radius-sm);
+  background: color-mix(in srgb, var(--warning, #e2a000) 12%, var(--bg-card));
+  color: var(--text);
+  font-size: 13px;
+  line-height: 1.4;
+}
+.llm-model-row-offline { border-style: dashed; }
 .llm-bench-hint {
   font-size: 11px;
   color: var(--warning, #e2a000);

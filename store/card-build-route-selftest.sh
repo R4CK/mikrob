@@ -114,6 +114,32 @@ case_is LOCAL "i18n strings from an existing key list" \
 case_is LOCAL "mechanical rename with an exact target" \
   "Rename the field lastSeenAt to lastActiveAt in the store and update its tests to match." normal
 
+# --- B2. THE LABEL PREFIX MUST NOT DECIDE (card 28295e97) ---------------------------------------
+# The two REAL cards this change is for. Both were routed ONLINE by deterministic-multi-decision
+# with calls=0, and on both the ONLY matching token was `infra` -- which is in the title because
+# every infra card on this board is labelled that way, not because the work is multi-decision.
+case_is LOCAL "e0fbcdab: the sole match was the [INFRA] label" \
+  "[CleanCore][INFRA][LOW] Staging sweep: verziozas-incidens utani egyszeri takaritas. A regi staging objektumok kozul azok maradjanak, amiket a sweep meg nem latott." low
+case_is LOCAL "eb70cb13: the sole match was the [INFRA] label" \
+  "[marveen][INFRA][LOW] Skill frontmatter bovites: a leiro mezo hianyzik ket skillbol, potoljuk az egysoros description-t." low
+
+# THE OTHER DIRECTION, and this is the case that stops the trim from becoming a deletion. The word
+# `landol`/`merge` in the BODY is a real statement about the work, so it must still gate -- only the
+# bracket prefix is cut, never prose. Without this case the trim could quietly widen to the whole
+# text and nothing here would notice.
+case_is ONLINE "edf9c837-shaped: landolas/merge semantics in the BODY still gates" \
+  "[marveen][INFRA][HIGH-ish] DECISIONS.md unio: a landolasi merge iranya donti el a sorrendet, es egy rossz sorrendu merge minden kesobbi agat blokkol. A merge-iranyt ellenorizni kell, nem feltetelezni." normal
+
+# And the negative control for the case above: the SAME sentence with the body words removed keeps
+# only the label, so it must flip to LOCAL. A pair, because a case that passes in one position only
+# does not tell us which half did the work.
+# NOTE ON THIS FIXTURE, because the first attempt was wrong and the failure was informative: it
+# said "DECISIONS.md unio ...", which trips the document-assembly gate -- a DIFFERENT, untouched
+# rule -- so it came out ONLINE for a reason that had nothing to do with the trim. A control has to
+# vary only the thing under test.
+case_is LOCAL "control: the same card WITHOUT the body words is only a label" \
+  "[marveen][INFRA][NORMAL] A hibauzenet szovege ket helyen ter el egymastol. Egysoros javitas a meglevo fuggvenyben, a szoveg egyezzen." normal
+
 echo
 echo "=== C. FAIL-SAFE: every doubt resolves to ONLINE ==="
 case_is ONLINE "empty text" "" normal

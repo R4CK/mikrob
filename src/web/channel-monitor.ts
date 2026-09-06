@@ -35,7 +35,7 @@ import { reapChannelOrphans, reapDetachedChannelClaudes, collectPollerEvidence }
 import { probeTelegramConflict } from './channel-conflict-probe.js'
 import { schedulePluginUnlockAfterRespawn, wasPluginConfirmedAbsent, clearPluginAbsent } from './channel-plugin-unlock.js'
 import {
-  detectPaneState, decidePaneErrorAlert, detectsBlockingMenu, detectsFirstRunGate, detectsModelConsentDialog, type PaneErrorAlertState, type PaneState,
+  detectPaneState, decidePaneErrorAlert, detectsBlockingMenu, detectsPermissionDialog, detectsFirstRunGate, detectsModelConsentDialog, type PaneErrorAlertState, type PaneState,
   stuckInputSignature, decideStuckInputRecovery, parkedChannelInput,
   parkedInputText, shouldClearTruncatedPreamble,
   parkedInputRowCount, submitLanded, decideStuckInputAction,
@@ -1663,6 +1663,18 @@ export function startChannelPluginMonitor(): NodeJS.Timeout | null {
             logger.warn({ session: t.session, agent: label }, 'Blocking "menu" is the model usage-credit consent dialog -- answering it safely instead of Escape')
             await dismissModelConsentDialogIfPresent(t.session)
             sendAlert(`🎛️ A(z) ${label} session a modell-hozzájárulás dialóguson parkolt; az 1-es opcióval (a beállított modell megtartása) továbbléptettem. Modellváltás NEM történt.`)
+          } else if (paneNow != null && detectsPermissionDialog(paneNow)) {
+            // PERMDENY905: a tool-permission prompt also says "Esc to cancel",
+            // so detectsBlockingMenu matches it -- but Escape there is NO, not a
+            // dismiss. This monitor was therefore DENYING the agent's own
+            // requests ~45s after they appeared, silently, while the operator
+            // believed they had approved them. Claude Code opens this prompt even
+            // under --dangerously-skip-permissions when the target is its own
+            // ~/.claude config, so the likeliest victim is self-improvement (the
+            // skills live there). Same rule as the unrecognised trust dialog: no
+            // keystroke is neutral, so send none and say so, loudly.
+            logger.warn({ session: t.session, agent: label }, 'Blocking "menu" is a tool-permission prompt -- a human decides, NO keystrokes sent')
+            sendAlert(`🔐 A(z) ${label} session egy engedélykérésen vár, és NEM nyomtam meg semmit: ott az Escape NEM-et jelentene. Döntsd el te: tmux attach -t ${t.session}`)
           } else {
             logger.warn({ session: t.session, agent: label }, 'Session parked in a blocking interactive menu -- sending Escape to recover')
             try {

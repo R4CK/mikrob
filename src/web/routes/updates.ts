@@ -292,6 +292,32 @@ export function formatUpstreamAnalysis(a: UpstreamAnalysis): string {
   return lines.join('\n')
 }
 
+/** Returns the env {@link spawnUpdateScript} hands to update.sh, with NODE_ENV stripped
+ *  (AUTOUPDNODEENV905 half 2/2, card c116696f -- half 1/2 landed as update.sh's own
+ *  `--include=dev` on both npm ci sites, card 50af1a27). Under NODE_ENV=production a plain `npm
+ *  ci` prunes dev dependencies including the compiler, so if this process ever inherits that
+ *  value from whatever launched it (systemd unit, container default, operator shell), update.sh's
+ *  build fails, the rollback reverts the very update.sh that would have fixed it, and the loop
+ *  repeats with every health check green.
+ *
+ *  Builds a LOCAL COPY and deletes NODE_ENV from THAT, never from the real process.env (Cybersec
+ *  NO-GO on this card's first version, which mutated process.env directly). That version's own
+ *  reasoning was wrong: a child process's env is an OS-level copy taken at its OWN spawn() (execve
+ *  envp), not a live view of the parent's object, so a local copy passed to spawn() already
+ *  protects update.sh AND everything IT spawns (the rollback's npm ci, the regenerated finalize
+ *  script) -- verified against Node's own child_process semantics, not assumed. Mutating the real
+ *  process.env instead would have an unbounded lifetime on OUR OWN long-running process: update.sh
+ *  has several early-exit paths before the finalize/restart step (e.g. a failed `npm ci` at line
+ *  ~928), and on any of them the dashboard process that just deleted its own NODE_ENV keeps running,
+ *  unrestarted, in that state -- silently and indefinitely, until someone restarts it by hand. That
+ *  is the exact "repeated failed update, no restart" shape AUTOUPDNODEENV905 already produced five
+ *  times in ten days; this fix must not add a second way into the same shape. */
+export function buildUpdateScriptEnv(extraEnv: Record<string, string>): NodeJS.ProcessEnv {
+  const env = { ...process.env, ...extraEnv }
+  delete env.NODE_ENV
+  return env
+}
+
 /** Spawns update.sh detached (same shape for both the fork-pull path and the post-upstream-merge
  *  rebuild+restart path below), with `extraEnv` layered over the inherited environment. The pidfile
  *  lock is handed off to update.sh's own pidfile-overwrite (update.sh:133-158); `releaseLock` is only
@@ -318,7 +344,7 @@ function spawnUpdateScript(
       cwd: PROJECT_ROOT,
       detached: true,
       stdio: ['ignore', outFd, outFd],
-      env: { ...process.env, ...extraEnv },
+      env: buildUpdateScriptEnv(extraEnv),
     })
     child.on('error', (err) => {
       logger.error({ err }, 'update.sh spawn reported an async error')

@@ -115,12 +115,48 @@ landed_by_from_worktrees() {
 # is <sha>" -- i.e. it rejected precisely the branches that were ready to land. Measured on card
 # 1e819a83. A branch name can never begin with `(` (git refuses to create one), so dropping lines
 # that do is exact, not a heuristic.
+#
+# DISAMBIGUATION BY CARD ID (card edf9c837). `--contains` lists EVERY branch holding the sha, and
+# after a landing that is routinely several: 476ccb33, ae82bbeb and 1c2e5c36 all contained 9d1d9254.
+# Taking the first line then picks a branch by alphabet, its tip is some other card's newer commit,
+# and the caller refuses with "the extra commits are ungated" -- a false refusal aimed at the one
+# branch that was ready.
+#
+# The preference is on the NAME, deliberately, and NOT on "whose tip equals the gated sha". The
+# caller's very next assertion is that the chosen branch's tip IS the gated sha; selecting for that
+# property here would make that assertion vacuous -- it would pass by construction on whatever this
+# function handed back. So this narrows by card id and leaves the tip check with something real to
+# refuse.
+#
+# The match is anchored to a name boundary, not a substring: an 8-hex card id is short enough that
+# `fix/x-476ccb3399` contains `476ccb33`, and picking that would be the same wrong-branch bug with
+# extra steps. Both live spellings are covered -- `agent/fron-ted/476ccb33` and
+# `fix/evidence-bucket-retention-floor-cbea986c` -- because both end with a `/`- or `-`-delimited id.
+#
+# No match falls through to the old first-line behaviour rather than refusing: a branch that simply
+# does not carry the id in its name is the pre-existing case, and failing there would break landings
+# that work today.
 pick_branch() {
-  sed 's/^[+*[:space:]]*//' \
+  local card="${1:-}" candidates
+  candidates="$(sed 's/^[+*[:space:]]*//' \
     | grep -v '^(' \
     | grep -v '^remotes/origin/main$' \
-    | grep -v '^main$' \
-    | head -1
+    | grep -v '^main$')"
+  [ -n "$candidates" ] || return 0
+  # The card goes into a `grep -E` pattern, so anything that is not a plain word is refused as a
+  # SELECTOR rather than interpolated. The worst case without this is only a false refusal (a wide
+  # pattern picks some branch, and the caller's tip check then rejects it), but a landing script has
+  # no business turning its first argument into a regex at all -- and `.*` matching every candidate
+  # would make the diagnosis look like a branch problem instead of an argument problem.
+  case "$card" in
+    *[!A-Za-z0-9]*) card="" ;;
+  esac
+  if [ -n "$card" ]; then
+    local named
+    named="$(printf '%s\n' "$candidates" | grep -E "(^|[-/])${card}\$" | head -1)"
+    if [ -n "$named" ]; then printf '%s\n' "$named"; return 0; fi
+  fi
+  printf '%s\n' "$candidates" | head -1
 }
 
 if [ "${1:-}" = "--selftest" ]; then
@@ -173,6 +209,41 @@ if [ "${1:-}" = "--selftest" ]; then
   t "pick_branch takes the checked-out branch when there IS one" \
     "$(printf '* agent/backend/work\n  main\n' | pick_branch)" \
     "agent/backend/work"
+  # Card-id disambiguation (card edf9c837). The fixture is the measured case: three branches all
+  # contained 9d1d9254, and alphabetical order handed back the wrong one.
+  MULTI="$(printf '%s\n' \
+    '* (HEAD detached at 9d1d9254)' \
+    '  remotes/origin/agent/fron-ted/1c2e5c36' \
+    '  remotes/origin/agent/fron-ted/476ccb33' \
+    '  remotes/origin/agent/fron-ted/ae82bbeb' \
+    '  remotes/origin/main')"
+  t "pick_branch prefers the branch named for the card" \
+    "$(printf '%s\n' "$MULTI" | pick_branch 476ccb33)" \
+    "remotes/origin/agent/fron-ted/476ccb33"
+  t "pick_branch without a card keeps the old first-line answer" \
+    "$(printf '%s\n' "$MULTI" | pick_branch)" \
+    "remotes/origin/agent/fron-ted/1c2e5c36"
+  t "pick_branch falls back when no branch carries the card id" \
+    "$(printf '%s\n' "$MULTI" | pick_branch deadbeef)" \
+    "remotes/origin/agent/fron-ted/1c2e5c36"
+  t "pick_branch matches the dash-delimited spelling too" \
+    "$(printf '  fix/other-thing\n  fix/evidence-bucket-retention-floor-cbea986c\n' | pick_branch cbea986c)" \
+    "fix/evidence-bucket-retention-floor-cbea986c"
+  # The anchoring case: an 8-hex id is short, so a longer id that merely CONTAINS it must not win.
+  t "pick_branch does not match a card id that is only a PREFIX of a longer one" \
+    "$(printf '  fix/a-476ccb3399\n  fix/b-476ccb33\n' | pick_branch 476ccb33)" \
+    "fix/b-476ccb33"
+  # Ordered so the answer DISCRIMINATES: the fallback is the first line, so a mid-name match
+  # winning would show up as the second name rather than as the same one either way.
+  t "pick_branch ignores a card id that appears mid-name without a boundary" \
+    "$(printf '  fix/plain\n  fix/x476ccb33y\n' | pick_branch 476ccb33)" \
+    "fix/plain"
+  # DISCRIMINATING on purpose: `.*` alone would also return the first candidate, which is what the
+  # fallback returns anyway -- the case would pass with or without the guard. This value selects a
+  # DIFFERENT branch if it is ever treated as a regex, so the two behaviours cannot look alike.
+  t "pick_branch refuses a card id that is not a plain word, instead of interpolating it" \
+    "$(printf '%s\n' "$MULTI" | pick_branch '.*ae82bbeb')" \
+    "remotes/origin/agent/fron-ted/1c2e5c36"
   t "pick_branch yields nothing when only main contains the sha" \
     "$(printf '* (HEAD detached at deadbeef)\n  main\n  remotes/origin/main\n' | pick_branch)" \
     ""
@@ -242,7 +313,7 @@ if git -C "$MAIN" merge-base --is-ancestor "$SHA" origin/main 2>/dev/null; then
 fi
 
 # The gated sha must BE the branch tip. If the branch moved on, the extra commits were never gated.
-BRANCH="$(git -C "$MAIN" branch -a --contains "$SHA" 2>/dev/null | pick_branch)"
+BRANCH="$(git -C "$MAIN" branch -a --contains "$SHA" 2>/dev/null | pick_branch "$CARD")"
 [ -n "$BRANCH" ] || die 3 "no branch contains $SHA"
 TIP="$(git -C "$MAIN" rev-parse --short "$BRANCH" 2>/dev/null)"
 GSHORT="$(git -C "$MAIN" rev-parse --short "$SHA")"
