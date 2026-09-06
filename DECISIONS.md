@@ -9367,3 +9367,64 @@ olvasónak kell összeraknia és lefuttatnia, egy lépés, amit az olvasó ki tu
 **Hivatkozás:** kártya `1b4cd700` (backend3 lelete 2a6a7756/21168); `48565f81` (Peti NO-GO),
 `e80c011a`, Cybered NO-GO 19877; `src/web/agent-process.ts`,
 `src/__tests__/fork-upstream-conflict-guard.test.ts`, `src/__tests__/provider-env-adoption.test.ts`.
+
+## 2026-09-06 13:00 -- bb52c2fa (G-1/G-2 + Cybersec F-2) -- a guard that closes a trap must not sit in the same one, and a run that dies must still say how far it got
+
+**G-1 (Cybered, MEDIUM), and the finding is exactly right.** Last round's fix made the verdict read
+the printed output back, so a case can forget its flag and still count. Nothing pinned THAT. The CI
+wrapper asserts a PASSING run, and a passing run never enters the forcing branch, so the four lines
+could be deleted with the suite still green -- the same trap the guard exists to close, one rung up.
+
+**Measured as a differential, not asserted.** The same deletion applied to the LANDED script and to
+the fixed one:
+
+    landed (3af9d833), read-back deleted  -> selftest: PASS, exit 0   <- G-1 reproduced
+    fixed,             read-back deleted  -> selftest: FAIL, exit 1
+
+The verdict tail is now `_selftest_verdict <logfile> <flag>`, returning the verdict as an EXIT
+STATUS, and three cases call it DIRECTLY with synthetic logs: a dirty log must be forced to fail, a
+clean log must NOT be (the guard is not a blanket), and a clean log must not CLEAR a flag a case
+already set (it may only add). The middle one is the negative control; without it the guard could be
+replaced by an unconditional `fail=1` and the positive case would still be green.
+
+**G-2 (Cybered, LOW): a mid-run death swallowed the entire output.** Stdout is redirected into a log
+for the whole run, and the old EXIT trap deleted the temp directory holding it. Anything already
+printed died with it. The trap now EMITS the log before removing the directory, through a still-open
+fd 3. Measured with a simulated `kill -TERM` at the same point in both versions:
+
+    landed  -> exit 143, 0 bytes to the caller
+    fixed   -> exit 143, 4484 bytes, 71 lines
+
+Ordering is load-bearing and it is ONE trap, not two: a second `trap ... EXIT` would replace the
+first rather than chain. The normal path blanks `_selftest_log` after printing so the trap does not
+repeat it.
+
+**Cybersec F-2 (still open from 21309): my `cut` vs `awk` comment named the WRONG trigger.** It said
+a LARGE offset arrives right-aligned and breaks a single-space `cut`. Measured, and Cybersec is
+right: `cmp -l` right-aligns the offset COLUMN to the widest value in the run, so the padding lands
+on the SMALL offsets, and only when a larger one appears in the same output.
+
+    single difference at byte 20024  -> `20024 141 142`   cut [20024]  awk [20024]   cut WORKS
+    differences at byte 1 and 20024  -> `    1 141 142`   cut []       awk [1]       cut BREAKS
+
+**Why that is not cosmetic.** The comment is a specification for the regression case nobody had
+written yet, and it named the fixture that does NOT reproduce. Anyone building from it gets a green
+test blind to the class it was written for -- the third instance on this file of "the fixture could
+not see the shape it was built out of".
+
+**And the case IS worth adding even though the class is already covered.** Measured: reintroducing
+`cut` turns SIX existing cases red today. That coverage is incidental -- those cases exist for
+fences and UTF-8 offsets and merely happen to carry mixed-magnitude differences, so they can be
+trimmed away and take the pin with them. One named case now states the property; under the `cut`
+mutation the reds go 6 -> 7 and the named one is among them.
+
+**One label constraint, recorded because it is a real constraint on future cases.** The CI wrapper
+asserts the whole output does not contain the literal `FAIL`. That is coarser than it reads (the
+real invariant is a line-anchored `^  FAIL`), and a passing line that merely SPELLS the word turns it
+red -- which is what happened here first. Not loosened: an assertion that catches more is not the
+thing to weaken while fixing an unrelated finding. The passing labels are worded around it, and this
+paragraph is here so the next person does not rediscover it by breaking CI.
+
+**Selftest: 70 -> 74 cases, green, exit 0.** Targeted CI test 3/3 green.
+
+**Reference:** card `bb52c2fa`; Cybered 21325 (G-1, G-2), MikroB 21327, Cybersec 21337 (F-2).
