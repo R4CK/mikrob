@@ -10759,6 +10759,110 @@ sor kezelése és a `own > used` ág iránya backend mérnöki döntése, itt fe
 **Hivatkozás:** kártya `efd18ee4` (szülő `40568837`, testvérek `108c7b10` done, `f9bad591` és
 `a1c4dc51` blokkolt); `store/vram-guard-check.sh`, `store/vram-guard-check.selftest.sh`, `README.md`.
 
+## 2026-09-06 -- e5fc1fb4 -- The Local LLM page is rebuilt around the switches and the routing, and the Overview swimlane is extended rather than duplicated
+
+**Peti's four requirements (Telegram, 2026-09-06), and what each became (fron-ted):**
+1. *Every installed model, each switchable.* The Models block moves directly under Status, gains a
+   measured summary line ("N telepített modell · M letiltva", counted from the flags, not asserted),
+   and each row wears a chip saying which presets are routed to it (override count) or that it is
+   the default for every other preset. The list itself was already every Ollama tag plus the
+   disabled-but-removed rows (5dd4a211) and, since 404e8dd6, the state-file fallback when Ollama is
+   down; the live check now pins five rows including an unbenchmarked and an embedding model.
+2. *Routing made visible.* The former "Kategóriák" section becomes "Feladat-routing": the same
+   preset rows with the same real enable/disable switch (store/local-llm.sh still reads
+   `disabledCategories`, so removing the switch would have removed enforcement), now joined with the
+   model each preset resolves to and why (override from local-llm-model-routing.json, or the default
+   model), plus two panels: the categories the router never hands to a local model (with their
+   ceilings) and the latest card-level LOCAL/ONLINE verdicts from card-build-route.log. None of that
+   was reachable over HTTP, so a BE card (ecf38e5a, backend2, Pair-FE/Pair-BE wired) carries the
+   contract `GET /api/local-llm/routing`; the FE is built against it with a mock and, while the
+   endpoint answers 404, says so in the section and names the card -- switches keep working, the
+   model column reads "nem ismert", no chip is invented.
+3. *The aggressiveness slider stays.* Untouched, in its own section between Models and Routing; the
+   routing summary line quotes its value and the derived difficulty threshold so the two layers read
+   as one decision.
+4. *The Overview swimlane (d6ecb003) is extended, not duplicated.* The lane label becomes a button
+   that opens the Local LLM page on that model's row (highlight flash), a switched-off model wears
+   the same "Letiltva" badge in its lane (from the BE `enabled` field when present, else from the
+   /models flags fetched alongside -- never a guess when both are absent), and the task tooltip gains
+   a "Routing" row (override → model, or default model) only when the routing answer is present.
+
+**Not done here, on purpose:** the Categories i18n keys stay in the catalogs (unused keys are
+harmless, deleting them is not this card's scope); the swimlane's own geometry, palette and data
+contract are untouched. Peti's permission to drop the category model entirely waits for the
+88e3614c routing tasks -- today the switches are enforcement.
+
+**Measured:** Playwright on the real `web/` bundle with the mocked contract, 25 checks across the
+routing-present and routing-absent states, 375px, and the Overview (lanes as buttons, disabled
+badge, tooltip routing row, click-through with highlight). String-contract tests: +50 (68 -> 118 in
+the Local LLM set), the d6ecb003 widget test and 11 other index/overview tests unchanged green.
+Mutation map: routing-absent chip inventing the default model, lane label demoted to a span,
+tooltip routing row without data, disabled count hardcoded to 0, routing loaded after the first
+paint -- each red in the string tests and/or the live check; controls green.
+
+## 2026-09-06 -- f53ef8e4 -- gate-closure-check.py Gate-SHA-listát HALMAZKÉNT, nem első-tagként hasonlít
+
+**Döntés.** A `store/gate-closure-check.py` `verdict_of()`-ja mostantól a Gate-SHA sor MINDEN
+hex tokenjét megtartja (egy tuple-ben, sorrend szerint), nem csak az elsőt. Az egyezés-vizsgálat
+(`sha_sets_agree()`) két verdikt HALMAZAI között bármely metsző pár alapján dönt, nem a puszta
+első elem alapján. A tokenek gyűjtése a `src/web/kanban-gate-completeness-guard.ts`
+`extractGateShas()`-ából PORTOLT szűrőn megy át: egy `szulo`/`parent`/`merge-base` jelölésű sha
+kizárva, és egy `/`-t tartalmazó token (branch/path) csak akkor számít sha-citálásnak, ha egyik
+`/`-szegmense sem csupasz hex -- ez zárja ki a kártya SAJÁT ID-jét egy ágnévből (pl.
+`feat/tenant-auth-ip-coarsen-4a6c47f0`), ami 8 hex karakteren indistinguishable egy rövid sha-tól.
+
+**Miért.** Cybersec mérése a teljes táblán: 93 kártya visel többsoros, vesszős Gate-SHA-listát (a
+4b. szabály kimondottan engedi ezt az alakot), ebből 16 kapott hamis DISAGREE-t, mert a lista
+IDŐRENDI (legrégebbi elöl) és az eszköz az ELSŐ, tehát legrégebbi -- épp a javítás ELŐTTI --
+commitot vágta ki. Három bizonyított eset: `f00b3a7f` (kumulatív 8-elemű QA-lista a másik két gate
+2-elemű deltája ellen, közös záró pár), `7d45ecbb` (ugyanaz), `54fd9c02` (BÁJTRA AZONOS két-sha
+lista FORDÍTOTT sorrendben -- ez az eset, ami a halmaz-metszetet megkülönbözteti egy "vedd az
+utolsó elemet" javítástól, amit a `store/gate-pretriage-candidates.py` a SAJÁT, más okból helyes
+konvenciójaként használ: az egyik oldal `A, B`-t ír, a másik `B, A`-t, az "utolsó elem" szabály itt
+is hamis DISAGREE-t adna).
+
+**A második, saját mérésű lelet, MIELŐTT a javítás landolt volna.** A kártya eredeti javaslata (csak
+a halmaz-gyűjtés, szűrő nélkül) behozta volna az `a20f0aa7` kártya élő incidensét: a `4a6c47f0`
+kártya saját Gate-SHA sora `d49e9c7a... (CleanCore, ág feat/tenant-auth-ip-coarsen-4a6c47f0, ...)`
+alakú, és az ágnévbe ágyazott kártya-ID egy VALÓS hex-alakú token, amit a naiv gyűjtés második
+sha-ként vett volna fel. Élesben mérve, a szűrő NÉLKÜL: `CYBERSEC=d49e9c7a...,4a6c47f0` (a kártya
+ID-je sha-ként!). A `kanban-gate-completeness-guard.ts` már megoldotta ezt a PONTOS osztályt (három
+kör finomítás, `a20f0aa7`/`5bc8f740` élő incidens, 3301+ valós sor mérve) -- backend2 saját korábbi
+kommentje (21435) kifejezetten ennek az újrafelhasználását kérte, nem az újra-kitalálását.
+Átvéve: a `_PARENT_MARKED_SHA` (szulo/parent/merge-base jelölés kizárása) és `_is_path_token`
+(egy `/`-t tartalmazó token csak akkor path, ha valamelyik szegmense nem csupasz hex -- így a
+flotta `A/B` rövid/hosszú "mindkét commit" idiómája nem esik áldozatul).
+
+**Ami emiatt UTÓLAG kiderült egy régi DECISIONS-bejegyzésről.** A `c52e2823` (2. kör) bejegyzés
+`4a6c47f0`-t "valódi, nem hamis" DISAGREE-ként sorolta fel. Ez maga is téves volt: Cybersec saját
+delta-jegyzete (komment 21326, ugyanazon a kártyán) ezt már korábban kimondta -- mindhárom gate
+ténylegesen a `d49e9c7a`-t nevezte meg (QA és Cybered kételemű listája `901b6fbb, d49e9c7a`
+formában, mindkettőt), és a "901b6fbb-en áll" olvasat maga volt az itt javított hiba. A tartalom
+(md5, kommentektől megtisztítva) bájtra azonos a két shán. Élesben újramérve, a mostani javítással:
+`AGREE|901b6fbb,d49e9c7a`. A régi bejegyzést NEM írtam felül (append-only), csak itt mondom ki: az
+a mondat elavult, és ez a bejegyzés az, ami korrigálja.
+
+**Regresszió.** `gate-closure-check.selftest.py`: 91/91 zöld (83 régi + 8 új: a három bizonyított
+eset, egy diszjunkt-lista negatív kontroll, a kártya-ID-ágnév eset + saját negatív kontrollja, a
+merge-base eset + saját negatív kontrollja). Mutáció-tesztelve: az első-token-only állapotra
+visszaállítva a négy halmaz-eset FAIL-re vált, tehát nem vákuum. Élesben ellenőrizve (nem csak
+szintetikusan): `54fd9c02`, `dc5b714d`, `f00b3a7f`, `7d45ecbb`, `4a6c47f0` mind AGREE-re fordul (a
+`4a6c47f0`-nál a kártya-ID immár NEM jelenik meg a sha-halmazban), `edb721ec` helyesen marad
+DISAGREE (valódi diszjunkt lista, negatív kontroll).
+
+**Ismert korlát, kimondva.** Egy sha-t nem csak jelölőszóval (szulo/parent/merge-base) lehet
+"csak kontextus"-ként megnevezni: `3ae71df1`-en Cybersec egy komment prózájában "(21120,
+292a6820) FELOLDVA"-t ír, ahol a `292a6820` egy KORÁBBI, már felváltott NO-GO shája, nem
+jelölőszóval bevezetve. Ez a szűrőn átcsúszik és bekerül a halmazba -- élesben mérve nem okozott
+téves végeredményt (a valódi közös sha, `563de699`, mindhárom gate halmazában jelen van), de
+elméletileg ütközhetne egy másik gate genuinen eltérő shájával. Nem oldottam meg: a természetes
+nyelvi "ez már lezárva" kifejezésmódok felsorolása egy külön, nyitott végű feladat, nem ennek a
+kártyának a hatóköre.
+
+**Hivatkozás:** kártya `f53ef8e4` (Cybersec mérése és javaslata, 24393/21324/21352); kapcsolódó
+`dc5b714d`, `4a6c47f0`, `c52e2823`, `a20f0aa7`; backend2 saját korábbi mérése (komment 21435);
+`store/gate-closure-check.py`, `store/gate-closure-check.selftest.py`,
+`src/web/kanban-gate-completeness-guard.ts` (a portolt referencia).
 ## 2026-09-06 -- dbba0424 -- PERMDENY905: az Escape egy engedélykérésen NEM semleges, tehát nem nyomunk semmit
 
 **A DÖNTÉS.** A channel-monitor menü-helyreállító ága, ami eddig vakon Escape-et küldött minden
