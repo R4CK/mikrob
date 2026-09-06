@@ -453,6 +453,113 @@ grep -q "THERE IS NO LAYER 1 TODAY" "$GUARD" \
   && pass "header: states that this guard is the only layer" \
   || fail "header: does not say what the actual situation is"
 
+# ---------------------------------------------------------------------------
+# (s)-(u) "SYSTEMD COULD NOT BE ASKED" IS NOT "NOT MASKED" (Cybersec F-1/F-2 on
+#         Gate-SHA e2be6386). Cybersec named the coverage gap outright: the fake
+#         systemctl above ALWAYS answers, so the branch where systemd cannot be
+#         reached had zero coverage -- which is exactly why the defect shipped.
+#         These cases give it a systemctl that fails the way a missing user bus
+#         really does.
+# ---------------------------------------------------------------------------
+# A systemctl that cannot reach the bus: non-zero exit, nothing on stdout.
+write_dead_systemctl() {
+  cat > "$1" <<'DEAD'
+#!/bin/bash
+echo "Failed to connect to bus: No medium found" >&2
+exit 1
+DEAD
+  chmod +x "$1"
+}
+
+echo ""
+echo "(s) an unanswerable systemd must NOT delete the flag of a masked machine"
+ST="$(fresh_case s)"
+UNITS_DIR="$ST/units"; SCTL="$ST/systemctl"
+mkdir -p "$UNITS_DIR"
+ln -s /dev/null "$UNITS_DIR/ollama.service"     # genuinely masked, on disk
+write_dead_systemctl "$SCTL"
+quiet_case "$ST"
+echo '{"detected_at": 1, "short_boots": 4, "units": "ollama.service", "reason": "dxgkrnl GPU-passthrough crash-loop"}' > "$ST/.gpu-crashloop-guard-masked.json"
+OUT="$(run_guard_masking "$ST" "$ST/boots.txt" "$ST/kernel.txt" "$SCTL" "$UNITS_DIR")"
+[ -f "$ST/.gpu-crashloop-guard-masked.json" ] \
+  && pass "unknown-state: the flag SURVIVES when systemd cannot be asked" \
+  || fail "unknown-state: the flag of a genuinely masked machine was deleted on an unanswerable systemd ($OUT)"
+echo "$OUT" | grep -q "could not be asked" \
+  && pass "unknown-state: the log says it could not ask, not that nothing is masked" \
+  || fail "unknown-state: the log does not distinguish 'cannot ask' from 'not masked' ($OUT)"
+echo "$OUT" | grep -q "is masked any more" \
+  && fail "unknown-state: it still CLAIMS nothing is masked, which is false here" \
+  || pass "unknown-state: no false 'nothing is masked any more' claim"
+
+echo ""
+echo "(t) an unanswerable systemd must NOT move the real unit file aside"
+ST="$(fresh_case t)"
+UNITS_DIR="$ST/units"; SCTL="$ST/systemctl"
+mkdir -p "$UNITS_DIR"
+printf '[Unit]\nDescription=probe\n' > "$UNITS_DIR/ollama.service"
+write_dead_systemctl "$SCTL"
+date -d '-1 day' +%s > "$ST/.gpu-crashloop-guard-baseline" 2>/dev/null || date +%s > "$ST/.gpu-crashloop-guard-baseline"
+write_short_dxg_boots "$ST/boots.txt" 4 60
+echo "dxgk_ioctl: dxgadapter_release_lock_shared" > "$ST/kernel.txt"
+OUT="$(run_guard_masking "$ST" "$ST/boots.txt" "$ST/kernel.txt" "$SCTL" "$UNITS_DIR")"
+[ -f "$UNITS_DIR/ollama.service" ] && [ ! -L "$UNITS_DIR/ollama.service" ] \
+  && pass "unknown-state: the real unit file is left where it was" \
+  || fail "unknown-state: the unit file was moved aside on an unverifiable answer"
+[ -e "$UNITS_DIR/ollama.service.real-unit-backup" ] \
+  && fail "unknown-state: a backup was created for a mask that was never confirmed" \
+  || pass "unknown-state: no orphan .real-unit-backup left behind"
+[ ! -f "$ST/.gpu-crashloop-guard-masked.json" ] \
+  && pass "unknown-state: no flag is written for a mask that did not happen" \
+  || fail "unknown-state: a flag claims a mask that was never verified"
+echo "$OUT" | grep -q "ALERT_DRYRUN" \
+  && pass "unknown-state: the owner is still alerted that the machine is unprotected" \
+  || fail "unknown-state: failed silently ($OUT)"
+
+echo ""
+echo "(u) systemctl MISSING ENTIRELY behaves the same as an unreachable bus"
+ST="$(fresh_case u)"
+UNITS_DIR="$ST/units"
+mkdir -p "$UNITS_DIR"
+ln -s /dev/null "$UNITS_DIR/ollama.service"
+quiet_case "$ST"
+echo '{"detected_at": 1, "short_boots": 4, "units": "ollama.service", "reason": "dxgkrnl GPU-passthrough crash-loop"}' > "$ST/.gpu-crashloop-guard-masked.json"
+OUT="$(run_guard_masking "$ST" "$ST/boots.txt" "$ST/kernel.txt" "$ST/no-such-systemctl" "$UNITS_DIR")"
+[ -f "$ST/.gpu-crashloop-guard-masked.json" ] \
+  && pass "unknown-state: a missing systemctl binary does not delete the flag either" \
+  || fail "unknown-state: a missing systemctl binary deleted the flag ($OUT)"
+
+# ---------------------------------------------------------------------------
+# (v) EXIT 0 WITH AN EMPTY VALUE IS ALSO "CANNOT ANSWER", and it is not a
+#     hypothetical: measured on this host, a real `systemctl --user show -p
+#     UnitFileState --value <unit it does not know>` exits 0 and prints NOTHING.
+#     So an exit-code-only check would read a vanished unit as a live, unmasked
+#     one and delete the flag. Found by mutation: checking only $? left 43/43
+#     green while genuinely changing that behaviour.
+#
+#     The choice pinned here is to KEEP the flag. A unit that is simply gone
+#     cannot be confirmed unmasked, and the documented restore path puts a real
+#     unit file back (state "static", not empty), so the ordinary recovery still
+#     clears the flag through case (m). This only holds the flag when the unit
+#     itself has disappeared.
+# ---------------------------------------------------------------------------
+echo ""
+echo "(v) exit 0 with an EMPTY UnitFileState does not refute the flag either"
+ST="$(fresh_case v)"
+UNITS_DIR="$ST/units"; SCTL="$ST/systemctl"
+mkdir -p "$UNITS_DIR"
+cat > "$SCTL" <<'QUIET'
+#!/bin/bash
+# Succeeds, says nothing -- exactly what a real systemctl does for an unknown unit.
+exit 0
+QUIET
+chmod +x "$SCTL"
+quiet_case "$ST"
+echo '{"detected_at": 1, "short_boots": 4, "units": "ollama.service", "reason": "dxgkrnl GPU-passthrough crash-loop"}' > "$ST/.gpu-crashloop-guard-masked.json"
+OUT="$(run_guard_masking "$ST" "$ST/boots.txt" "$ST/kernel.txt" "$SCTL" "$UNITS_DIR")"
+[ -f "$ST/.gpu-crashloop-guard-masked.json" ] \
+  && pass "unknown-state: an empty answer with exit 0 keeps the flag" \
+  || fail "unknown-state: an empty-but-successful answer deleted the flag ($OUT)"
+
 echo "========================="
 TOTAL=$((PASS + FAIL))
 echo "Results: $PASS/$TOTAL passed"

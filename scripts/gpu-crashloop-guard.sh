@@ -196,6 +196,37 @@ unit_is_masked() {
   [ "$("$SYSTEMCTL" --user show -p UnitFileState --value "$1" 2>/dev/null)" = "masked" ]
 }
 
+# "SYSTEMD SAID NO" AND "SYSTEMD COULD NOT BE ASKED" ARE DIFFERENT ANSWERS (Cybersec F-1/F-2 on
+# Gate-SHA e2be6386, both MEDIUM, one root -- and the root is my own principle applied to only one
+# of two inputs).
+#
+# unit_is_masked() compares a string to "masked", so an EMPTY answer -- no user bus, the user
+# manager not up yet, systemctl missing, the unit gone -- reads exactly like "not masked".
+# Reproduced: with a systemctl that exits 1 on "Failed to connect to bus", the output is '' and the
+# comparison is false, indistinguishable from a live unmasked unit.
+#
+# Two decisions were being made from that false answer, and the second is the one that bites:
+#   mask_one   -- would move the real unit aside and drop in the /dev/null symlink, then report
+#                 that NOTHING was masked. The service ends up masked on disk while the alert says
+#                 the machine is unprotected, and nothing records where the real unit went.
+#   reconcile  -- runs FIRST in main(), on EVERY invocation, and DELETES the flag of a machine that
+#                 really is masked, logging "none of [...] is masked any more". That does not heal:
+#                 the only writer of the flag is mask_units, which runs only on a fresh detection.
+#
+# The file already states the right rule three functions up, for the OTHER input: "an unreadable
+# claim is not a refuted one" -- written about an unparseable flag. An unanswerable systemd is the
+# same shape and did not get it. Two inputs, one principle, one of them protected.
+#
+# Why it matters beyond tidiness: the flag's absence is exactly the signal that the machine is being
+# held down ON PURPOSE. Missing that signal is what led another agent to restart ollama five times
+# under this guard. That is measured precedent in this fleet, not a hypothetical.
+unit_state_unknown() {
+  local out rc
+  out="$("$SYSTEMCTL" --user show -p UnitFileState --value "$1" 2>/dev/null)"
+  rc=$?
+  [ "$rc" -ne 0 ] || [ -z "$out" ]
+}
+
 # THE MASK THAT NEVER HAPPENED (card d5c05548).
 #
 # `systemctl --user mask` works by writing a symlink to /dev/null into the user unit directory. If a
@@ -225,6 +256,13 @@ mask_one() {
   if unit_is_masked "$u"; then
     log "masked $u (verified)"
     return 0
+  fi
+
+  # Never take the destructive path on an answer we could not get. Moving the real unit aside is
+  # only reversible if someone knows it happened, and the alert we would print says the opposite.
+  if unit_state_unknown "$u"; then
+    log "mask FAILED for $u -- systemd could not be asked (no bus / no user manager / systemctl missing). NOT moving the unit file aside: an unverifiable state is not a refusal, and a half-done mask nobody is told about is worse than an honest failure."
+    return 1
   fi
 
   if [ -f "$unit_path" ] && [ ! -L "$unit_path" ]; then
@@ -297,6 +335,14 @@ PY
 
   still=""
   for u in $claimed; do
+    # THE SAME RULE AS THE UNREADABLE FLAG ABOVE, on the other input. If systemd cannot answer, the
+    # claim is unverified, not refuted -- leave the whole flag exactly as it is and say why. Bailing
+    # on the FIRST unknown rather than per-unit is deliberate: a partial rewrite driven by a half
+    # answerable systemd would be a new claim built out of the same uncertainty.
+    if unit_state_unknown "$u"; then
+      log "masked-flag reconcile: systemd could not be asked about $u (no bus / no user manager / systemctl missing) -- flag left UNTOUCHED. An unanswerable systemd refutes nothing, and deleting the flag here would erase the only signal that this machine is held down on purpose."
+      return 0
+    fi
     if unit_is_masked "$u"; then still="$still $u"; fi
   done
   still="${still# }"
