@@ -12,8 +12,10 @@
 # licenses 501 real new violations, invisibly, because the ratchet only ever compares to its
 # baseline.
 #
-# What IS reproducible, and what this file pins: five of the six ratcheted rules are TYPE-AWARE,
-# and when type resolution fails they do not error -- they find nothing. Removing tsconfig.json
+# What IS reproducible, and what this file pins: FOUR of the six ratcheted rules are TYPE-AWARE
+# (read from @typescript-eslint's own `meta.docs.requiresTypeChecking`; this header said five, and
+# `no-unused-vars` is the one that is not), and when type resolution fails they do not error --
+# they find nothing. Removing tsconfig.json
 # from that same worktree sent every typed rule to ZERO while the script printed five `IMPROVED`
 # lines and its standing advice to run `--update` and record them. A gate that reports its own
 # blindness as progress, and hands you the command to make it permanent.
@@ -250,22 +252,78 @@ after="$(cat "$root/store/lint-baseline.json")"
 root="$(new_root)"; export REPORT_JSON="$TMP/n.json"
 mk_report "$REPORT_JSON" "parse=6"
 run "$root"
-echo "$OUT" | grep -q "are ALL at exactly zero" && ! echo "$OUT" | grep -q "parse errors are ABOVE" \
+# The needle moved from "are ALL at exactly zero" to "at exactly zero in this run" because the
+# threshold is now ONE, and "ALL" was a claim about a plurality that no longer has to exist. The
+# ASSERTION is unchanged in substance: the message must name the collapse and must NOT blame the
+# parse-error count that did not move.
+echo "$OUT" | grep -q "at exactly zero in this run" && ! echo "$OUT" | grep -q "parse errors are ABOVE" \
   && ok "the refusal names the rule collapse, not the parse-error count that did not move" \
   || bad "the refusal names the rule collapse" "code=$CODE out=$OUT"
 
-# --- O: THE ANTI-BLANKET CONTROL, and the stated cost of COLLAPSE_MIN=2 ------------------------
-# Cybersec's warning in full: "a fix that refuses EVERYTHING would be just as green on the first
-# seven cases -- reaching a closed state is not enough". This is the case that separates the two.
-# ONE bounded rule driven to exactly zero is what finishing off a rule looks like, and it must
-# still read as IMPROVED and exit 0. It is also the deliberate hole: a single-rule collapse is
-# indistinguishable from a single-rule fix from in here, and the threshold buys that on purpose.
+# --- O: THIS CASE'S PROMISE WAS REVERSED TOO, and for the same reason as F ---------------------
+# It used to assert that ONE bounded rule at exactly zero stays IMPROVED and exits 0 -- the stated
+# cost of COLLAPSE_MIN=2, written down openly at the time. Cybersec then measured what that cost
+# actually bought (NO-GO 21092, R-A): FIVE consecutive --update runs, each taking one rule to zero,
+# each individually exit 0 and individually defensible, ending at `{"(parse-error)": 6}` -- the end
+# state of the bypass this whole card exists to close. The threshold was not a small hole; it was
+# the same hole with four extra steps.
+#
+# So the threshold is ONE, and the capability moves behind a spoken acknowledgement instead, the
+# same shape --bootstrap already uses. The anti-blanket proof does NOT weaken, it moves to the
+# case below: a refuse-everything mutant cannot produce an exit-0 --update that writes a baseline.
+#
+# Recorded here rather than edited in place, for the same reason as case F: a test whose promise
+# changes silently is how a reviewer loses the thread.
 root="$(new_root)"; export REPORT_JSON="$TMP/o.json"
 mk_report "$REPORT_JSON" "parse=6" "$UV=107"
 run "$root"
-[ "$CODE" = 0 ] && echo "$OUT" | grep -q "IMPROVED" && ! echo "$OUT" | grep -q "COULD NOT MEASURE" \
-  && ok "CONTROL: ONE bounded rule reaching zero is still IMPROVED and exits 0" \
-  || bad "CONTROL: ONE bounded rule reaching zero is still IMPROVED" "code=$CODE out=$OUT"
+[ "$CODE" = 3 ] && echo "$OUT" | grep -q "COULD NOT MEASURE" \
+  && echo "$OUT" | grep -q -- "--accept-cleared=$UA" \
+  && ok "R-A: ONE bounded rule at zero now REFUSES, and names --accept-cleared with the rule" \
+  || bad "R-A: ONE bounded rule at zero now REFUSES and names the flag" "code=$CODE out=$OUT"
+
+# --- O2: THE PERMISSIVE CONTROL FOR R-A -- an acknowledged clearing goes through -----------------
+# Cybersec asked for this one by name: "a test that pins the PERMISSIVE direction too, otherwise
+# the floor will catch legitimate cases next round". Finished work must remain shippable, and the
+# operator's route is one command that the refusal above prints ready to paste.
+root="$(new_root)"; export REPORT_JSON="$TMP/o2.json"
+mk_report "$REPORT_JSON" "parse=6" "$UV=107"
+run "$root" --update "--accept-cleared=$UA"
+[ "$CODE" = 0 ] && [ -f "$root/store/lint-baseline.json" ] \
+  && ! grep -q "no-unsafe-argument" "$root/store/lint-baseline.json" \
+  && grep -q '"@typescript-eslint/no-unused-vars": 107' "$root/store/lint-baseline.json" \
+  && ok "CONTROL: an ACKNOWLEDGED clearing writes the baseline and drops the finished rule" \
+  || bad "CONTROL: an ACKNOWLEDGED clearing writes the baseline" "code=$CODE out=$OUT"
+
+# --- O3: the acknowledgement is NOT a blanket -- an unnamed rule going dark still refuses --------
+# This is what makes --accept-cleared an acknowledgement rather than a bypass, and it is the
+# difference between naming the rules and taking a bare flag. A bare flag could sit in a wrapper
+# script forever and wave the founding five-rules-go-dark measurement straight through.
+root="$(new_root)"; export REPORT_JSON="$TMP/o3.json"
+mk_report "$REPORT_JSON" "parse=6"
+run "$root" --update "--accept-cleared=$UA"
+[ "$CODE" = 3 ] && echo "$OUT" | grep -q "REFUSING to write the baseline" \
+  && echo "$OUT" | grep -q "no-unused-vars" && ! echo "$OUT" | grep -q "no-unsafe-argument: " \
+  && ok "R-A: acknowledging ONE rule does not wave through a SECOND one going dark" \
+  || bad "R-A: acknowledging one rule does not wave through another" "code=$CODE out=$OUT"
+
+# --- O4: a misspelled rule name is an operator error, not a silent no-op ------------------------
+# Silently ignoring an unknown name would let a typo read as an acknowledgement nobody made, and
+# the run it waves through is exactly the one being asked about.
+root="$(new_root)"; export REPORT_JSON="$TMP/o4.json"
+mk_report "$REPORT_JSON" "parse=6" "$UV=107"
+run "$root" --update "--accept-cleared=@typescript-eslint/no-unsafe-argumnet"
+[ "$CODE" = 3 ] && echo "$OUT" | grep -q "not in the recorded bound" \
+  && ok "R-A: a misspelled --accept-cleared name is refused, not ignored" \
+  || bad "R-A: a misspelled --accept-cleared name is refused" "code=$CODE out=$OUT"
+
+# --- O5: --accept-cleared and --bootstrap are refused together ---------------------------------
+root="$(new_root --no-baseline)"; export REPORT_JSON="$TMP/o5.json"
+mk_report "$REPORT_JSON" "parse=6" "$UA=101"
+run "$root" --bootstrap "--accept-cleared=$UA"
+[ "$CODE" = 3 ] && echo "$OUT" | grep -q "different questions" \
+  && ok "--accept-cleared with --bootstrap is refused (they answer different questions)" \
+  || bad "--accept-cleared with --bootstrap is refused" "code=$CODE out=$OUT"
 
 # --- P: CONTROL -- a healthy --update still tightens the bound ---------------------------------
 # The other half of the anti-blanket proof: refusing is not the only thing this script can do.
@@ -309,6 +367,54 @@ run "$root2" --bootstrap
 [ "$CODE" = 0 ] && [ -f "$root2/store/lint-baseline.json" ] \
   && ok "CONTROL: --bootstrap still works in a repo that never had a baseline" \
   || bad "CONTROL: --bootstrap still works in a repo that never had a baseline" "code=$CODE out=$OUT"
+
+# --- S: R-B -- THE BOOTSTRAP FLOOR IS STATE-BASED, so it works where git cannot answer ---------
+# The git floor (case Q) asks "did this file exist before", so in a tree with no repo it has
+# nothing to read and fails open BY DESIGN -- a genuine first run has to stay possible. Cybersec
+# walked through that opening (NO-GO 21092, R-B): --bootstrap on a fully degraded tree with no git
+# wrote {"(parse-error)": 861}, which is bypass A's end state reached by the deliberate route.
+#
+# MikroB's ruling (21035) named the shape: the floor must ask about the RUN, not about the repo --
+# parse errors present AND not one type-aware rule with a single finding. That is answerable on a
+# first run, which is exactly where the git floor is blind.
+#
+# NO git init here, deliberately: this case is only meaningful in the tree where the other floor
+# cannot help.
+root="$TMP/nogit.$RANDOM"; mkdir -p "$root/store"
+cp "$SRC" "$root/store/lint-ratchet.sh"
+export REPORT_JSON="$TMP/s.json"; mk_report "$REPORT_JSON" "parse=861"
+run "$root" --bootstrap
+[ "$CODE" = 3 ] && [ ! -f "$root/store/lint-baseline.json" ] \
+  && echo "$OUT" | grep -q "NOT ONE finding from any type-aware rule" \
+  && ok "R-B: --bootstrap on a degraded tree with NO git REFUSES on the run's own state" \
+  || bad "R-B: --bootstrap on a degraded tree with no git REFUSES" "code=$CODE out=$OUT"
+
+# --- T: THE PERMISSIVE CONTROL FOR R-B -- a healthy first run bootstraps despite parse errors ---
+# Cybersec asked for this by name, and it is the assertion that keeps the floor from being a
+# blanket refusal: this repo's own healthy baseline carries 6 parse errors, so a floor that fired
+# on "any parse error" would make the tool impossible to adopt anywhere, including here. What
+# separates the two states is whether the type-aware rules still SEE anything.
+root="$TMP/nogit2.$RANDOM"; mkdir -p "$root/store"
+cp "$SRC" "$root/store/lint-ratchet.sh"
+export REPORT_JSON="$TMP/t.json"; mk_report "$REPORT_JSON" "parse=6" "$UA=101" "$UV=107"
+run "$root" --bootstrap
+[ "$CODE" = 0 ] && [ -f "$root/store/lint-baseline.json" ] \
+  && grep -q '"(parse-error)": 6' "$root/store/lint-baseline.json" \
+  && ok "CONTROL: a HEALTHY first run bootstraps even with parse errors present" \
+  || bad "CONTROL: a healthy first run bootstraps despite parse errors" "code=$CODE out=$OUT"
+
+# --- U: the floor discriminates on the TYPE-AWARE set, not on findings in general ---------------
+# `no-unused-vars` is NOT type-aware (measured from meta.docs.requiresTypeChecking), so it keeps
+# reporting when the TS program is gone. If the floor counted it, this exact state -- the typed
+# rules dark, the syntactic one still talking -- would pass, and that is the state a lost tsconfig
+# actually produces.
+root="$TMP/nogit3.$RANDOM"; mkdir -p "$root/store"
+cp "$SRC" "$root/store/lint-ratchet.sh"
+export REPORT_JSON="$TMP/u.json"; mk_report "$REPORT_JSON" "parse=861" "$UV=107"
+run "$root" --bootstrap
+[ "$CODE" = 3 ] && [ ! -f "$root/store/lint-baseline.json" ] \
+  && ok "R-B: a still-reporting SYNTACTIC rule does not satisfy the type-aware floor" \
+  || bad "R-B: a syntactic rule does not satisfy the type-aware floor" "code=$CODE out=$OUT"
 
 echo
 printf 'lint-ratchet selftest: %d passed, %d failed (%d cases)\n' "$pass" "$fail" "$((pass+fail))"
