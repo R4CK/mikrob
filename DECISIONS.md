@@ -9476,3 +9476,26 @@ paragraph is here so the next person does not rediscover it by breaking CI.
 **Selftest: 70 -> 74 cases, green, exit 0.** Targeted CI test 3/3 green.
 
 **Reference:** card `bb52c2fa`; Cybered 21325 (G-1, G-2), MikroB 21327, Cybersec 21337 (F-2).
+
+## 2026-09-06 13:15 -- bb52c2fa (follow-up) -- "LC_ALL unset" is not a locale, and that makes the old bug WIDER
+
+**Cybersec's refinement (21303), reproduced before adopting it.** Both my correction and Cybered's
+treated "LC_ALL unset" as one row of a locale table. It is not a locale: it is delegation to LANG.
+
+    LC_ALL unset, LANG=C.UTF-8 -> "differ: byte 4"
+    LC_ALL unset, LANG=C       -> "differ: char 4"
+    LC_ALL unset, LANG unset   -> "differ: char 4"
+
+**Why this is a correction and not a detail.** Every previous statement of the defect -- mine, in
+the code header and in this log -- said the `byte`-only pattern was fine with LC_ALL unset and broke
+when something exported it. Measured, it ALSO broke on a host that simply has no LANG, with nothing
+exported at all: the default state of a bare container. "Unset was fine" was true only because this
+host's ambient LANG happens to be multibyte, which is an accident of the machine, not a property of
+the code. The finding is wider than either of us had written, and in the direction that matters --
+more environments were affected, not fewer.
+
+Nothing about the FIX changes: `cmp -l` emits numbers and is locale-independent, which is why the
+remedy was never a wider word list. What changes is the claim the shipped comment makes about the
+old defect's blast radius, and a comment that presents EVIDENCE has to be right about the evidence.
+
+**Reference:** card `bb52c2fa`; Cybersec 21303. Landed round: `e4345f9e`.
