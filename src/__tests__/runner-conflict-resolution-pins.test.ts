@@ -22,7 +22,10 @@ const read = (rel: string): string => readFileSync(join(HERE, '..', rel), 'utf-8
 
 const AUTO_RESTART = read('web/auto-restart-runner.ts')
 const MODEL_FALLBACK = read('web/model-fallback-runner.ts')
-const GUARD_TEST = readFileSync(join(HERE, 'fork-upstream-conflict-guard.test.ts'), 'utf-8')
+// Card 99c2eb09: the acknowledgement data moved out of the guard TEST into a shared module (so the
+// network-dependent half could leave the landing gate). The name is kept -- what this file pins
+// is the RULES, wherever they live.
+const GUARD_TEST = readFileSync(join(HERE, '..', 'fork-upstream', 'acknowledged-conflicts.ts'), 'utf-8')
 
 /** Comment lines are stripped before matching: a rule that survives only in prose is exactly the
  *  state this card is about. Every assertion below runs against executable text. */

@@ -10255,3 +10255,118 @@ today.
 judgement -- I reported the measurement and asked, and MikroB split the work.
 
 **Reference:** card `ac28bc6e`; Cybersec 21527; structural half on `878cd292`. 15 tests still green.
+## 2026-09-06 -- 99c2eb09: az upstream-drift ellenőrzés kikerül a tesztfájlból, hogy kikerülhessen a landolási kapuból
+
+**Döntés:** A fork/upstream ütközés-elismerések ADATA és a tiszta döntései átkerülnek a
+`src/fork-upstream/acknowledged-conflicts.ts` modulba, és mellé kerül egy futtatható ellenőrző
+(`src/fork-upstream/drift-check.ts`). A suite offline állításai és az új ellenőrző UGYANEZT az egy
+modult olvassák.
+
+**Miért:** MikroB döntése (24642) a `1f276349`-en, a (C) irány. A hálózatfüggő eset a landolási
+kapuban ült: futásidőben `git fetch upstream develop`-et hívott, tehát minden ügynök landolása attól
+függött, hogy az elmúlt percekben mit tett egy TŐLE FÜGGETLEN upstream commit. A tesztfájl saját
+újramérési jegyzeteiből mérve: 41 "landing-block" említés, 32 újramérési kör öt nap alatt (09-02: 3,
+09-03: 9, 09-04: 1, 09-05: 5, 09-06: 14), öt ügynök, nyolc kártya, egy kártya tizenháromszor.
+
+**A mélyebb indok, ami a flakiness-nél fontosabb:** egy `develop`-re landolás NEM mergel upstreamet.
+Az ellenőrzés tárgya egy JÖVŐBELI upstream-merge kockázata, ami ortogonális arra a változtatásra,
+amit a kapu épp átenged. Ezért a kapuban egyetlen olyan hibát sem tud megfogni, amit a landolás
+okoz; azt jelenti, hogy a VILÁG mozdult. Az monitorozás, nem kapu. Bizonyíték a mérésből: az egyik
+blokkolt commit öt `store/*.py` fájl és a `DECISIONS.md` volt, egyetlen `src/` fájl nélkül.
+
+**Amit NEM viszünk ki, és ez a különbség a nyers (B) irányhoz képest:** a fájl 28 tesztjéből csak
+EGY hálózatfüggő. A többi (a `MIGRATED_FROM_GUARDED` részhalmaz-ellenőrzés, a minden elismeréshez
+tartozó blob-pin, a fork-oldali horgonyok, a `classifyConflicts` egységtesztjei, az ARMED/SKIPPED
+névadás) offline, determinisztikus, és valódi védelem: pont az akadályozza meg, hogy egy fájl
+egyetlen sor törlésével mindkét listából kiessen. Ezek MARADNAK a kapuban.
+
+**Egy forrás, nem kettő.** Az elismeréseket kísértés lett volna átmásolni az ellenőrzőbe. Két
+másolat pontosan azt a néma szétcsúszást hozná vissza, ami miatt a közös `agent_messages` DDL is
+létezik (`26ad5302`): ott két kézzel másolt DDL-string csúszott szét egy "identical schema"
+kommenttel a tetején. Ezért a modul az egyetlen forrás, és a tesztfájl is onnan importál.
+
+**EKVIVALENCIA, MÉRVE, NEM FELTÉTELEZVE.** Az új ellenőrzőt lefuttattam a VALÓDI upstream ellen a
+mai fán: `reachable=true`, `guarded=[]`, `unwatched=[]`, `stale=[]`, vagyis pontosan az a három üres
+halmaz, amit a suite esete ma állít, ARMED állapotban. A kiemelés tehát nem "fut", hanem
+UGYANAZT MONDJA.
+
+**A tesztek hermetikusak, és ez nem stílus.** Ha az ellenőrző tesztjei élő upstreamet hívnának,
+visszahoznák pont azt, ami ellen a kártya szól. Ezért minden eset az injektált `GitRunner` varraton
+megy át, remote, fetch és valódi merge nélkül. Amit egy varrat nem tud bizonyítani (hogy a VALÓDI
+hívás ugyanazt a verdiktet adja), azt egyszer, kézzel mértem meg, és ide írtam -- nem csináltam
+belőle hálózatfüggő tesztet.
+
+**Mérés:** 9 hermetikus eset zölden, plusz a meglévő 28 eset a kiemelés után változatlanul zöld.
+Négy mutáns, mind bukik: az `isClean` figyelmen kívül hagyja a `stale`-t, a `merge --abort` törlése,
+az elérhetőség-ellenőrzés kikapcsolása, és a `blobOf` üres stringgel a `null` helyett (ez utóbbi a
+felfelé törölt fájl esetét némítaná el).
+
+**Következő lépések:** `5da60b85` (a hálózatfüggő eset kivétele a suite-ból, plusz egy őr, ami
+kimondja, hogy a fájlban egyetlen eset sem hálózatozik), `a1ce8952` (ütemezett drift-figyelő,
+KÖTELEZŐ dedup-pal: az ellenőrző minden körben ugyanazt a driftet látja, amíg fel nem oldják, tehát
+egy naiv kártyanyitás gépi léptékben sértené a 6b. szabályt).
+
+**Ki döntött:** MikroB (a (C) irány, 24642); backend (a mérés, a modul-határ és a hermetikus
+teszt-alak).
+
+**Hivatkozás:** kártya `99c2eb09` (szülő `1f276349`); `src/fork-upstream/acknowledged-conflicts.ts`,
+`src/fork-upstream/drift-check.ts`, `src/__tests__/fork-upstream-drift-check.test.ts`,
+`src/__tests__/fork-upstream-conflict-guard.test.ts`.
+
+## 2026-09-06 -- 5da60b85: a hálózatfüggő ellenőrzés kikerült a landolási kapuból, és miért EGY landolásban a kiemeléssel
+
+**Döntés:** A `fork-upstream-conflict-guard.test.ts` hálózatfüggő esete (élő `git fetch upstream
+develop` plusz valódi merge-dry-run) TÖRÖLVE a suite-ból. A helyére determinizmus-őr került, ami
+kimondja, hogy a fájlban egyetlen eset sem végez távoli git-műveletet. A 28 tesztből 24 marad: minden
+szerkezeti, saját fánkról szóló állítás bennmaradt.
+
+**Miért egy landolásban a `99c2eb09` kiemeléssel, a saját sorrend-élem ellenére.** A tervem az volt,
+hogy előbb landol a kiemelés, aztán külön a kivétel. Ez a sorrend NEM BEFEJEZHETŐ: amíg a hálózati
+eset a kapuban van, a javítás landolása versenyt fut az upstreammel. Élesben mérve, ugyanazon a
+délutánon, EGY ÓRÁN BELÜL két pin ment el alattam -- `scripts/channels.sh` (287de06e -> d0ca55bd),
+majd `scripts/hooks/outgoing-copy-gate.py` (d97e9683 -> 3ba1db43) --, mindkettő olyan upstream
+változásra, aminek semmi köze a landolásomhoz. Ez a kártya saját premisszájának a legjobb
+bizonyítéka, csak épp az én landolásomon. A tartalmi feltétel, amit a sorrend-él véd (a helyettesítő
+LÉTEZZEN, mielőtt a régi eltűnik), teljesül: a futtatható ellenőrző ugyanabban a szállítmányban van,
+és az ekvivalenciája a valódi upstream ellen mérve.
+
+**Egy pin tudatosan elavult marad.** Az `outgoing-copy-gate.py` bumpját NEM végeztem el. Nem
+mulasztás: mostantól ez a drift-figyelő dolga, és az ELSŐ futása pont ezt fogja jelenteni. Egy
+elavult pin bumpolása a landolásom kedvéért az a taposómalom, amit ez a kártya megszüntet.
+
+**Amit viszont elvégeztem, mert nem hagyhattam benne:** a `scripts/channels.sh` újramérése. Az
+upstream diff teljes egészében a watchdog plugin-életjel FALLBACK-jét érinti (host-szintű
+`ps eww -e | grep CLAUDE_PLUGIN_ROOT` helyett a session saját `pane_pid`-jére szűkített
+`pgrep -P`), a rögzített konfliktus pedig a két guard-alert POST-nál van; nulla átfedés, a feloldás
+változatlan. DE: az upstream mérése szerint egy több-ügynökös hoszton a host-szintű grep BÁRMELYIK
+ügynök plugin-folyamatára illeszkedik, tehát az életjel mindig igaz, és a watchdog némán elveszti a
+halott csatorna felismerését (náluk: 14 plugin-folyamat, egy csatorna 07:40-től 08:30-ig halott,
+senki nem szólt). A mi `scripts/channels.sh`-unk 1079. sora UGYANEZT a host-szintű grepet hordozza,
+és ezen a hoszton méréskor 2 illeszkedő folyamat futott. NEM adoptáltam: egy viselkedés-javítás a
+csatorna-watchdogon nem tartozik egy landolás-feloldásba, és saját kaput érdemel. A jegyzet az
+elismerés mellett áll, hogy a következő merger ott találja.
+
+**Az őr, ami majdnem önmagát fogta meg.** A determinizmus-őr első alakja a TELJES fájlt szkennelte,
+és elbukott a SAJÁT tűlistáján és a saját teszt-nevén. Ez ugyanaz az osztály, mint egy poll-predikátum,
+ami a saját megfigyelőjét is beleszámolja: egy önmagára illeszkedő őrt csak GYENGÍTÉSSEL lehet
+"megjavítani", és pont ezért veszélyes. A végleges alak (a) csak egy literális szentinel FÖLÖTTI
+részt nézi, (b) a tűket darabokból rakja össze, tehát a lista sem találat, és (c) állítja, hogy a
+szentinel PONTOSAN EGYSZER fordul elő -- így nem lehet a szkennelés elől lejjebb tolt kóddal
+kibújni, sem a határ csendes törlésével. Mindkét mutáns bukik: visszacsempészett hálózati hívás a
+szentinel fölé, és a szentinel törlése.
+
+**Ami a hálózati esettel együtt költözött:** az ARMED/SKIPPED bejelentés (`metaAnnouncement`) és a
+két tesztje. Az az állapot arról szól, hogy a HÁLÓZATI ellenőrzés futott-e; egy olyan fájlban, ami
+többé nem hálózatozik, lógó maradvány lett volna. A drift-figyelő ugyanezt a két állapotot fogja
+jelenteni, ugyanabból az okból: a "nincs mit mondanom" és a "nincs baj" nem nézhet ki egyformán.
+
+**Mérés:** 24 offline eset zölden a guard-fájlban, 12 a drift-ellenőrzőében, plusz a két olvasó
+(`provider-env-adoption`, `runner-conflict-resolution-pins`) átállítva az új modulra és zölden -- ezek
+a fájlt SZÖVEGKÉNT olvassák, tehát a kiemelés eltörte őket, és a kapu ezt el is kapta.
+
+**Ki döntött:** MikroB ((C) irány, 24642); backend (az összevont landolás, és hogy egy pin tudatosan
+elavult marad).
+
+**Hivatkozás:** kártyák `5da60b85` + `99c2eb09` (szülő `1f276349`);
+`src/__tests__/fork-upstream-conflict-guard.test.ts`, `src/fork-upstream/drift-check.ts`,
+`src/fork-upstream/acknowledged-conflicts.ts`.
