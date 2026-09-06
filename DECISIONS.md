@@ -9650,3 +9650,29 @@ to MEASURE, not to find better prose. Both wrong claims would have passed review
 plausible, and cited a real file.
 
 **Reference:** card `ac28bc6e`; corrects the `2026-09-06 13:30` entry, which corrected the `13:25` one.
+
+## 2026-09-06 13:40 -- bb52c2fa -- the correction reached the header and not the SECOND copy 90 lines down
+
+**Cybersec F-1, round 2 (21395), and the shape is the one this card family keeps producing.** The
+refuted locale explanation was corrected in the function header. The SAME text also stood at line
+~1789, in the selftest, and there it was not a superseded precedent -- it was the JUSTIFICATION for
+the assertion directly beneath it.
+
+**Why the old explanation is wrong, refuted by its own list.** It said the suite went 61/67 "because
+cmp's MESSAGE says char in some locales and byte in others". If that were the cause, exporting
+C.UTF-8 -- which IS multibyte, and under which cmp says "byte" (measured on this host) -- should have
+WORKED. It broke too. The listed evidence contradicts the stated cause.
+
+**The real mechanism, already stated correctly 90 lines above it:** `local LC_ALL=C` reaches the
+child only when LC_ALL already carries the export attribute, which it does the moment anything
+exported it. cmp therefore ran under single-byte C whatever value was exported, said "char", and the
+byte-only pattern matched nothing. The specific locale never mattered -- only whether one was
+exported at all.
+
+**The lesson is not "fix the comment".** It is that a correction lands where you are looking. I
+corrected the header, verified the header, and reported the header as fixed -- while a second copy of
+the same claim sat in the same file doing more damage than the first, because it was load-bearing for
+an assertion rather than being narrative. Next time a refuted claim is corrected, grep the file for
+its DISTINCTIVE PHRASE, not just the section that prompted the correction.
+
+**Reference:** card `bb52c2fa`; Cybersec 21395. Selftest 74 cases, green.
