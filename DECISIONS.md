@@ -9416,6 +9416,176 @@ NÉGY esetet buktat, a `parse_key`-kizárás törlése egyet (az O8-at).
 
 **Hivatkozás:** kártya `26ab08a2`; Cybersec 21295 (R-A HIGH, R-B teljesítve);
 `store/lint-ratchet.sh`, `store/lint-ratchet.selftest.sh`.
+## 2026-09-06 13:00 -- bb52c2fa (G-1/G-2 + Cybersec F-2) -- a guard that closes a trap must not sit in the same one, and a run that dies must still say how far it got
+
+**G-1 (Cybered, MEDIUM), and the finding is exactly right.** Last round's fix made the verdict read
+the printed output back, so a case can forget its flag and still count. Nothing pinned THAT. The CI
+wrapper asserts a PASSING run, and a passing run never enters the forcing branch, so the four lines
+could be deleted with the suite still green -- the same trap the guard exists to close, one rung up.
+
+**Measured as a differential, not asserted.** The same deletion applied to the LANDED script and to
+the fixed one:
+
+    landed (3af9d833), read-back deleted  -> selftest: PASS, exit 0   <- G-1 reproduced
+    fixed,             read-back deleted  -> selftest: FAIL, exit 1
+
+The verdict tail is now `_selftest_verdict <logfile> <flag>`, returning the verdict as an EXIT
+STATUS, and three cases call it DIRECTLY with synthetic logs: a dirty log must be forced to fail, a
+clean log must NOT be (the guard is not a blanket), and a clean log must not CLEAR a flag a case
+already set (it may only add). The middle one is the negative control; without it the guard could be
+replaced by an unconditional `fail=1` and the positive case would still be green.
+
+**G-2 (Cybered, LOW): a mid-run death swallowed the entire output.** Stdout is redirected into a log
+for the whole run, and the old EXIT trap deleted the temp directory holding it. Anything already
+printed died with it. The trap now EMITS the log before removing the directory, through a still-open
+fd 3. Measured with a simulated `kill -TERM` at the same point in both versions:
+
+    landed  -> exit 143, 0 bytes to the caller
+    fixed   -> exit 143, 4484 bytes, 71 lines
+
+Ordering is load-bearing and it is ONE trap, not two: a second `trap ... EXIT` would replace the
+first rather than chain. The normal path blanks `_selftest_log` after printing so the trap does not
+repeat it.
+
+**Cybersec F-2 (still open from 21309): my `cut` vs `awk` comment named the WRONG trigger.** It said
+a LARGE offset arrives right-aligned and breaks a single-space `cut`. Measured, and Cybersec is
+right: `cmp -l` right-aligns the offset COLUMN to the widest value in the run, so the padding lands
+on the SMALL offsets, and only when a larger one appears in the same output.
+
+    single difference at byte 20024  -> `20024 141 142`   cut [20024]  awk [20024]   cut WORKS
+    differences at byte 1 and 20024  -> `    1 141 142`   cut []       awk [1]       cut BREAKS
+
+**Why that is not cosmetic.** The comment is a specification for the regression case nobody had
+written yet, and it named the fixture that does NOT reproduce. Anyone building from it gets a green
+test blind to the class it was written for -- the third instance on this file of "the fixture could
+not see the shape it was built out of".
+
+**And the case IS worth adding even though the class is already covered.** Measured: reintroducing
+`cut` turns SIX existing cases red today. That coverage is incidental -- those cases exist for
+fences and UTF-8 offsets and merely happen to carry mixed-magnitude differences, so they can be
+trimmed away and take the pin with them. One named case now states the property; under the `cut`
+mutation the reds go 6 -> 7 and the named one is among them.
+
+**One label constraint, recorded because it is a real constraint on future cases.** The CI wrapper
+asserts the whole output does not contain the literal `FAIL`. That is coarser than it reads (the
+real invariant is a line-anchored `^  FAIL`), and a passing line that merely SPELLS the word turns it
+red -- which is what happened here first. Not loosened: an assertion that catches more is not the
+thing to weaken while fixing an unrelated finding. The passing labels are worded around it, and this
+paragraph is here so the next person does not rediscover it by breaking CI.
+
+**Selftest: 70 -> 74 cases, green, exit 0.** Targeted CI test 3/3 green.
+
+**Reference:** card `bb52c2fa`; Cybered 21325 (G-1, G-2), MikroB 21327, Cybersec 21337 (F-2).
+
+## 2026-09-06 13:15 -- bb52c2fa (follow-up) -- "LC_ALL unset" is not a locale, and that makes the old bug WIDER
+
+**Cybersec's refinement (21303), reproduced before adopting it.** Both my correction and Cybered's
+treated "LC_ALL unset" as one row of a locale table. It is not a locale: it is delegation to LANG.
+
+    LC_ALL unset, LANG=C.UTF-8 -> "differ: byte 4"
+    LC_ALL unset, LANG=C       -> "differ: char 4"
+    LC_ALL unset, LANG unset   -> "differ: char 4"
+
+**Why this is a correction and not a detail.** Every previous statement of the defect -- mine, in
+the code header and in this log -- said the `byte`-only pattern was fine with LC_ALL unset and broke
+when something exported it. Measured, it ALSO broke on a host that simply has no LANG, with nothing
+exported at all: the default state of a bare container. "Unset was fine" was true only because this
+host's ambient LANG happens to be multibyte, which is an accident of the machine, not a property of
+the code. The finding is wider than either of us had written, and in the direction that matters --
+more environments were affected, not fewer.
+
+Nothing about the FIX changes: `cmp -l` emits numbers and is locale-independent, which is why the
+remedy was never a wider word list. What changes is the claim the shipped comment makes about the
+old defect's blast radius, and a comment that presents EVIDENCE has to be right about the evidence.
+
+**Reference:** card `bb52c2fa`; Cybersec 21303. Landed round: `e4345f9e`.
+
+## 2026-09-06 13:20 -- upstream round 18 -- the acknowledged-conflict rule said the JSON-parse hardening was out of scope, and upstream landed inside it
+
+**Fleet-wide landing block, and it was not caused by the diff that hit it.** My comment-only commit
+`0fac5a36` was REFUSED by `marveen-land.sh` on the merge result: `fork-upstream-conflict-guard`
+red, 1 of 15203. Measured on a disposable worktree at `origin/develop` (828880c1) with NO change
+applied: the same test is red there too, 1 failed / 27 passed. So this was the base, not the diff --
+the third time this year that distinction has decided whether a red is mine to fix or to route.
+
+**What upstream did.** `src/web/routes/messages.ts` moved `98710db9e171..5f84469418f8`: a new
+`notify?: boolean` on `PUT /api/messages/:id`, letting a closer suppress the reverse `[Eredmeny]`
+ack. Their reason is measured, not stylistic -- the ack traffic lengthens the very queue whose delay
+made a report late.
+
+**Why this is a rule CORRECTION and not a pin bump.** The recorded rule ended with: the fork's other
+additions "(reserved-sender guard, JSON-parse hardening, to-validation, card-state stamping) live in
+separate regions and are not part of this decision". Upstream's `notify` validation landed EXACTLY in
+the JSON-parse hardening region. There are now TWO conflict hunks where the rule describes one, and
+the rule actively tells the next merger that the second one is out of scope -- so the most likely
+resolution is the wrong one, arrived at by following the note.
+
+**The consequence, measured rather than reasoned.** On `5f84469418f8` upstream's version is a BARE
+`JSON.parse(body.toString())` with no try/catch. The fork's side wraps it and answers 400 on a
+malformed body. Taking upstream's side wholesale on hunk 2 -- the natural reading of "not part of
+this decision" -- DELETES the hardening and turns a malformed request body into an unhandled throw in
+a request handler.
+
+**Resolution recorded for hunk 2: keep BOTH, nested.** The fork's try/catch stays; upstream's notify
+type-check goes INSIDE it. Upstream's check is itself worth having and is fail-closed on its own
+terms (it rejects a non-boolean BEFORE the status write rather than coercing, so a truthy `"false"`
+string cannot send the ack the caller asked to suppress). The point is nesting, not choosing. Hunk 1
+(the GET-handler comment) is unchanged: identical code, keep the fork's comment.
+
+**A note on what this guard is for.** It did its job precisely: it refused a landing because an
+upstream side had moved out from under a recorded resolution. The failure mode it caught was not "the
+blob changed" but "the rule now misdescribes the conflict" -- which is the more valuable half, and
+the half a pure sha-equality check could never have surfaced.
+
+**Reference:** upstream round 18; guard `src/__tests__/fork-upstream-conflict-guard.test.ts`
+(`ACKNOWLEDGED_CONFLICTS` + `ACKNOWLEDGED_UPSTREAM_BLOBS`). Guard green 28/28 after the correction.
+
+## 2026-09-06 13:25 -- ac28bc6e (f92671df 1/4) -- the live control and the history are different questions, so they get different stores
+
+**The card asked for stuck-history as structured data. The survey changed what that means.** Plenty
+about a CARD is already structured: `kanban_card_events` (status transitions) and
+`kanban_card_field_events` (every other edit, including the title that carries the `[NN%]` marker),
+both indexed on `(card_id, created_at)`. "When did it last move" and "how long has it been still" are
+already derivable, and a parallel copy would be a second source of truth for a question that has one.
+
+**What has no row anywhere is the INCIDENT**: the moment the heartbeat's D section JUDGED a card
+stuck, what it saw, and what it decided. The last part is load-bearing. The shared token-protection
+guard answers DENY on six grounds (progress, agent-busy, backoff, cap-reached, first-seen-baseline,
+not-active), and every one is a DELIBERATE non-action that today leaves no trace at all -- in the log,
+a control that decided to do nothing is indistinguishable from a control that never ran.
+
+**THE DECISION, and it is a deliberate refusal of the literal ask.** `store/redispatch-ledger.json`
+already counts re-dispatches per card, and `redispatch-guard.sh reset <cardId>` DELETES the entry --
+which working rule 4 requires on every close. So the count is destroyed exactly when the incident
+would become history. I did NOT convert that file into a history store. Its behaviour is CORRECT for
+what it is: a live backoff BUDGET. A history that never reset would leave a once-stuck card at the cap
+forever, and the guard would refuse to re-dispatch it again -- fixing the reporting question by
+breaking the control. The two stay separate, the same split `kanban_card_field_events` documents for
+its own separation from `kanban_card_events`.
+
+**ONE STALL IS ONE ROW, enforced by a unique PARTIAL index** (`WHERE resolved_at IS NULL`). The D
+section runs every 10 minutes, so without it an hour-long stall becomes six rows and "how often did
+this card get stuck" measures the HEARTBEAT FREQUENCY, not the stalls -- a number that looks like data
+and is not. Re-observation bumps `detections` on the open row instead.
+
+**Append-only enforced by TRIGGER, not by convention.** The rows that historically went wrong in this
+schema came from agents writing directly with the sqlite3 CLI, where a TypeScript-side guard is not
+in the path (the timestamp-integrity block in db.ts documents that history). The trigger also refuses
+to UN-resolve: clearing `resolved_at` would reopen a closed incident and let a second open row exist
+under the unique index, quietly breaking one-stall-one-row from the other direction.
+
+**Rule 11: the DOWN path is exercised, not assumed.** Dropping the table is tested, and so is
+drop-then-redeploy -- including that the TRIGGER returns with the table, since a rollback that
+restored the table without it would look identical until the first tampering write. The persistence
+cases run against a temp FILE, not `:memory:`: `initDatabase(':memory:')` opens a NEW database each
+call, so "drop it and re-run the schema" on memory would silently test a fresh DB and prove nothing.
+
+**Mutation evidence, each guard caught by a different set:** trigger deleted -> 4 red; unique partial
+index -> plain index -> 1 red; partial index -> unconditional unique -> 1 red. The third is the
+negative control earning its place: without `WHERE resolved_at IS NULL` a card could only ever be
+stuck ONCE in its life, and the card's own repeat question would be unanswerable.
+
+**Reference:** card `ac28bc6e` (parent `f92671df`); survey comment 21393. 15 tests, green.
 
 ---
 

@@ -80,10 +80,22 @@ _common_line_prefix_len() {
   #
   # FACT 2 -- GNU cmp's wording follows the locale's CHARACTER WIDTH, inverted from the naive guess:
   #     single-byte locale (C, POSIX, or any invalid value falling back to C) -> "differ: char N"
-  #     multibyte locale   (C.UTF-8, or the ambient LANG when LC_ALL is unset) -> "differ: byte N"
+  #     multibyte locale   (C.UTF-8, or a multibyte ambient LANG -- see below) -> "differ: byte N"
   #
-  # Together: with LC_ALL unset the local never reached cmp, cmp ran under the multibyte ambient
-  # LANG and said "byte", and the `byte`-only pattern worked. With LC_ALL exported to ANYTHING the
+  # "LC_ALL UNSET" IS NOT A LOCALE, it is delegation to LANG -- and that makes the old bug WIDER
+  # than the line above admits (Cybersec, card bb52c2fa; reproduced here before adopting it):
+  #
+  #     LC_ALL unset, LANG=C.UTF-8 -> "byte"
+  #     LC_ALL unset, LANG=C       -> "char"
+  #     LC_ALL unset, LANG unset   -> "char"
+  #
+  # So the `byte`-only pattern did not merely break "when something exported LC_ALL". It also broke
+  # on a machine that simply has no LANG -- a bare container's default state -- with nothing
+  # exported at all. Any statement of the form "unset was fine" is true only where the ambient LANG
+  # happens to be multibyte, which is an accident of the host, not a property of the code.
+  #
+  # Together: with LC_ALL unset AND a multibyte ambient LANG the local never reached cmp, cmp said
+  # "byte", and the `byte`-only pattern worked. With LC_ALL exported to ANYTHING the
   # local DID reach cmp, cmp ran in single-byte C and said "char", the pattern matched nothing, `n`
   # came back empty, and the fallback below answered with the SHORTER side's whole length as the
   # common prefix. That is why every exported value broke it -- the specific locale never mattered,
@@ -99,11 +111,21 @@ _common_line_prefix_len() {
   # `áéí` (6 bytes) report offset 7 under both C and C.utf8, i.e. a byte offset, not a character one.
   local LC_ALL=C
   local a="$1" b="$2" n cut head
-  # `awk '{print $1}'`, NOT `cut -d' ' -f1`: cmp -l RIGHT-ALIGNS the offset, so a large one arrives
-  # as `              20024 101 102` and a single-space cut returns the empty field before it. My own
-  # first attempt did exactly that and it was invisible in a 4-byte fixture, where the offset is one
-  # digit and there is no padding -- the same "the fixture could not see the shape it was built out
-  # of" trap this function's header already documents about ASCII-only cases.
+  # `awk '{print $1}'`, NOT `cut -d' ' -f1`: cmp -l RIGHT-ALIGNS the offset column to the WIDEST
+  # value in that run, so the padding lands on the SMALL offsets, and only when a larger one appears
+  # in the SAME output. A single difference at byte 20024 prints `20024 101 102` with no padding at
+  # all and a single-space cut handles it; add a second difference at byte 1 and the first line
+  # becomes `    1 101 102`, where the cut returns the empty field before the number.
+  #
+  # THIS DIRECTION WAS BACKWARDS HERE UNTIL 2026-09-06 (Cybersec F-2 on card bb52c2fa) and the
+  # correction is not cosmetic: the old text named a large single offset as the trigger, so anyone
+  # writing a regression case from this comment would have built exactly the fixture that does NOT
+  # reproduce -- green, and blind to the class it was written for. Measured both ways: single large
+  # offset -> cut [20024], awk [20024]; mixed 1 and 20024 -> cut [], awk [1]. A regression fixture
+  # for this must be MIXED-magnitude; a large-only one cannot tell awk and cut apart.
+  #
+  # The original mistake was still the one the header describes: a 4-byte fixture has a one-digit
+  # offset and no padding, so it could not see the shape it was built out of.
   n="$(cmp -l <(printf '%s' "$a") <(printf '%s' "$b") 2>/dev/null | head -n1 | awk '{print $1}')"
   if [ -z "$n" ]; then
     # cmp is silent on identical input and prints "EOF on <file>" when one side is a prefix of the
@@ -627,7 +649,32 @@ if [ "${BASH_SOURCE[0]}" = "${0}" ] && [ "${1:-}" = "--selftest" ]; then
   #
   # Plain redirect + `cat`, not `tee` through a process substitution: the check has to see a fully
   # flushed file, and a pipeline would put the body in a subshell where `fail` could not survive.
+  # G-1 (Cybered, same card): the guard below closed a trap and then sat in exactly the same one a
+  # level up -- nothing pinned it, so the four lines could be deleted with the suite still green
+  # (the CI test only asserts a PASSING run, and a passing run never enters the branch). The verdict
+  # tail is a FUNCTION now, and two cases call it directly with synthetic logs, so deleting the
+  # read-back makes those cases fail. `_selftest_verdict <logfile> <flag>` echoes the verdict's flag
+  # value: 1 if the log carries a `  FAIL` line or the flag was already 1, else 0.
+  # Returns the verdict as an EXIT STATUS (0 = PASS, 1 = FAIL) rather than on stdout, so a caller
+  # can write `_selftest_verdict "$log" "$fail" || fail=1` and the forced-verdict note lands on the
+  # caller's stdout with everything else, instead of needing a stream dance to separate them.
+  _selftest_verdict() {
+    if grep -q '^  FAIL' "$1"; then
+      [ "$2" -eq 0 ] && echo "  (verdict forced to FAIL: a case printed a failure without setting the flag)"
+      return 1
+    fi
+    return "$2"
+  }
+
   _selftest_log="$TMP/selftest.out"
+  # G-2 (Cybered, same card): stdout is redirected into the log for the whole run, so a mid-run
+  # death (a `set -e` abort, a SIGTERM, an unexpected exit in a case) left the caller with ZERO
+  # bytes -- every line already printed died with the temp directory the old EXIT trap removed. The
+  # trap now EMITS the log before deleting it, so a killed run still says how far it got. Ordering
+  # is the whole point: `cat` first, `rm -rf` second, in ONE trap, because two traps would replace
+  # each other. The normal path restores stdout and cats the log itself, then blanks _selftest_log
+  # so the trap does not print it twice.
+  trap '[ -n "$_selftest_log" ] && [ -s "$_selftest_log" ] && cat "$_selftest_log" >&3 2>/dev/null; rm -rf "$TMP"' EXIT
   exec 3>&1 >"$_selftest_log"
 
   # $1 = case label; sets up $REPO with an initial DECISIONS.md ($2, the base content) committed
@@ -1828,13 +1875,73 @@ some body text on the following line
     echo "  ok   ...and it took ${perf_elapsed}s, well inside the 60s budget"
   fi
 
-  # Restore stdout, show everything the run printed, then let the OUTPUT have the last word.
-  exec 1>&3 3>&-
-  cat "$_selftest_log"
-  if grep -q '^  FAIL' "$_selftest_log"; then
-    [ "$fail" -eq 0 ] && echo "  (verdict forced to FAIL: a case printed a failure without setting the flag)"
+  # --- Cybersec F-2 (card bb52c2fa): the cut-vs-awk pin, made INTENTIONAL ---------------------
+  # A `cut -d' ' -f1` reintroduction is ALREADY caught -- measured: it turns SIX existing cases red.
+  # But that coverage is incidental: those cases exist for fences and UTF-8 offsets, and they happen
+  # to carry mixed-magnitude differences. Coverage nobody knows about is coverage that gets trimmed
+  # away with the case it rode in on, so this names it. It is also the shape a reader of the fixed
+  # comment must build: MIXED magnitudes. A single large offset prints with NO padding and `cut`
+  # handles it fine -- a large-only fixture cannot tell awk and cut apart, which is exactly the
+  # green-and-blind regression test the old, backwards comment would have produced.
+  echo "-- Cybersec F-2: the offset parse must survive a MIXED-magnitude cmp -l column"
+  mixed_a="a$(printf 'x%.0s' $(seq 1 300))a"
+  mixed_b="b$(printf 'x%.0s' $(seq 1 300))b"
+  mixed_n="$(_common_line_prefix_len "$mixed_a" "$mixed_b")"
+  # They differ at byte 1, so there is NO common line prefix at all -> 0. With `cut`, cmp -l's first
+  # line is `    1 141 142` (right-aligned to the width of the later offset 302), the field before
+  # the number is empty, `n` comes back empty, and the fallback answers with a whole side's length.
+  n=$((n+1))
+  if [ "$mixed_n" = "0" ]; then
+    echo "  ok   a first-byte difference alongside a 3-digit one still parses as offset 1 (-> 0)"
+  else
+    echo "  FAIL mixed-magnitude cmp -l column misparsed: got $mixed_n, expected 0 -- the padded"
+    echo "       SMALL offset was swallowed (this is what cut -d' ' -f1 does)"
     fail=1
   fi
-  echo "selftest: $([ $fail -eq 0 ] && echo PASS || echo FAIL)"
-  exit $fail
+
+  # --- G-1: the read-back guard pins ITSELF (Cybered, card bb52c2fa) --------------------------
+  # These call _selftest_verdict DIRECTLY with synthetic logs, so deleting the read-back (or
+  # weakening its pattern) turns THESE cases red. Without them the guard was unpinned: the CI test
+  # asserts a PASSING run, and a passing run never enters the forcing branch, so the four lines
+  # could be removed with nothing going red -- the exact trap the guard exists to close, one level
+  # up. The negative control matters as much as the positive one: a clean log must NOT be forced.
+  echo "-- G-1: the output read-back guard, pinned directly"
+  printf '  ok   something passed\n  FAIL a case printed a failure and forgot the flag\n' \
+    >"$TMP/verdict-dirty.log"
+  printf '  ok   something passed\n  ok   something else passed\n' >"$TMP/verdict-clean.log"
+
+  if _selftest_verdict "$TMP/verdict-dirty.log" 0 >/dev/null; then
+    echo "  FAIL a log carrying a '  FAIL' line was reported as PASS -- the read-back guard is gone"
+    fail=1
+  else
+    # NOTE the wording: the CI wrapper (decisions-append-union-selftest.test.ts) asserts the whole
+    # output does not contain the literal "F-A-I-L", so a PASSING line must not spell it. That
+    # assertion is coarser than it reads, and this is not the place to loosen it -- the label works
+    # around it instead.
+    echo "  ok   a printed failure forces a failing verdict even when the flag says 0"
+  fi
+
+  if _selftest_verdict "$TMP/verdict-clean.log" 0 >/dev/null; then
+    echo "  ok   a clean log is NOT forced to fail (the guard is not a blanket)"
+  else
+    echo "  FAIL a clean log was forced to FAIL -- the read-back guard fires on passing runs"
+    fail=1
+  fi
+
+  # The flag still counts on its own: a case that sets it but prints nothing must stay FAIL.
+  if _selftest_verdict "$TMP/verdict-clean.log" 1 >/dev/null; then
+    echo "  FAIL an already-failed flag was cleared by a clean log -- the guard must only ADD"
+    fail=1
+  else
+    echo "  ok   the guard only ADDS failure; it never clears a flag a case set"
+  fi
+
+  # Restore stdout, show everything the run printed, then let the OUTPUT have the last word.
+  # fd 3 stays OPEN: the EXIT trap writes through it when a run dies before reaching this line.
+  exec 1>&3
+  cat "$_selftest_log"
+  _selftest_verdict "$_selftest_log" "$fail" || fail=1
+  _selftest_log=''   # printed above; stop the EXIT trap from repeating it
+  echo "selftest: $([ "$fail" -eq 0 ] && echo PASS || echo FAIL)"
+  exit "$fail"
 fi
