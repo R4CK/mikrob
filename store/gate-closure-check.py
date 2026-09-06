@@ -65,6 +65,13 @@ Output: exactly one line.
         FAILED|<details>             a designated gate's latest verdict is a FAIL/NO-GO
         MISSING|<details>            a designated gate has no verdict at all
         NOSHA|<details>              a latest verdict carries no Gate-SHA, so agreement is unprovable
+        UNSUPERSEDED|<gates>|<whos>|<details>
+                                     a refusal stands that carries no Gate-SHA, so no later PASS can
+                                     be shown to supersede it: either a relayed refusal still open,
+                                     or an acknowledgement of one the gate has since answered. The
+                                     tool cannot tell, and says so instead of guessing. Neither
+                                     closable (AGREE) nor automatically bounced (FAILED) -- MikroB or
+                                     a human decides. Gates and speakers pair up by position.
         UNVERIFIED-AUTHOR|<details>  a gate's PASS was written by someone other than that gate, and
                                      that gate never posted one itself
         STALE|<sha>|<expected>|<why> the gates AGREE, but on a commit whose content differs from the
@@ -200,21 +207,49 @@ def author_role(author):
 
 
 def latest_per_gate(comments):
-    """The LAST verdict each gate gave. Order is the board's own comment order.
+    """The LAST verdict each gate gave. Order is the board's own comment order."""
+    return _gate_state(comments)[0]
+
+
+def unsuperseded_gates(comments):
+    """Gates carrying a refusal that no later verdict can be SHOWN to supersede.
+
+    Separate from `latest_per_gate` for the same reason `unattributed_gates` is: "this gate refused"
+    and "this gate's refusal cannot be judged" are different statements, and collapsing them into
+    one dict is how the second one gets answered with the first one's word.
+
+    Returns {gate: (who said it, verdict word)}.
+    """
+    return _gate_state(comments)[1]
+
+
+def _gate_state(comments):
+    """(latest verdict per gate, undecidable refusals per gate). Order is the board's own.
 
     Deliberately not "the highest id" or a timestamp: the caller hands us the list the API returned,
     and re-sorting it here would invent an ordering the board never promised.
     """
-    latest, latest_by_role, latest_by_author = {}, {}, {}
+    latest, latest_author, latest_by_role, latest_by_author, undecidable = {}, {}, {}, {}, {}
     for c in comments:
         c = c or {}
         v = verdict_of(c.get("content"))
         if not v:
             continue
+        who = (c.get("author") or "").strip().lower()
         latest[v[0]] = v
-        if author_role(c.get("author")) == v[0]:
+        latest_author[v[0]] = who
+        # ONLY A GATE-ROLE AUTHOR ENTERS THE PER-AUTHOR TABLE (card c52e2823, round 2, QA's finding
+        # 21135 and Cybersec's independent repro 21176). The sibling rule below reads this table, and
+        # keyed by EVERY author it let a non-gate sentence of verdict SHAPE -- MikroB's routine
+        # "CYBERED NO-GO ELFOGADVA, vissza in_progress-be", or a builder's "QA FAIL elfogadva,
+        # javitottam" -- stand in permanently for a refusal the gate itself had already withdrawn.
+        # Measured by QA on the landed file: a real NO-GO, that acknowledgement, then the gate's own
+        # later GO and a QA PASS on the delivered sha answered FAILED, where the same input one
+        # commit earlier answered AGREE. The mirror of this table, `latest_by_role`, has filtered by
+        # role since it was written; only this one did not.
+        if author_role(who) == v[0]:
             latest_by_role[v[0]] = v
-        latest_by_author[(v[0], (c.get("author") or "").strip().lower())] = v
+            latest_by_author[(v[0], who)] = v
 
     # AN UNATTRIBUTABLE PASS IS NOT A PASS; AN UNATTRIBUTABLE REFUSAL IS STILL A REFUSAL.
     #
@@ -232,6 +267,37 @@ def latest_per_gate(comments):
             continue
         if gate in latest_by_role:
             latest[gate] = latest_by_role[gate]
+
+    # A REFUSAL NOBODY CAN BE HELD TO, WITH NO COMMIT TO CHECK IT AGAINST (card c52e2823, round 2).
+    #
+    # The block above keeps an unattributable refusal standing, and that rule is right in its own
+    # direction: dropping it would close a card over a stated refusal. But it answers FAILED to a
+    # sentence it cannot read -- and on this board the sentence is almost always a RELAY. Cybersec
+    # measured the population from the live board: 615 verdict-shaped comments, 18 from an author
+    # who does not hold that gate's role, 11 of those refusals, on 9 cards. The routine shape is
+    # MikroB's own "<GATE> <VERDICT> ELFOGADVA, vissza in_progress-be" acknowledgement, which by
+    # design carries no Gate-SHA because it is not a verdict of its own.
+    #
+    # So this case has TWO readings and no evidence to choose between them: either a real refusal
+    # someone else wrote down (it stands), or an acknowledgement of one the gate has since answered
+    # (it is spent). FAILED asserts the first and UNSUPERSEDED says the truth -- not closable, not
+    # automatically bounced, a human decides. What it must never become is AGREE, which is why the
+    # gate's own passing verdict is a PRECONDITION here rather than a fallback: with nothing
+    # attributable to weigh against, the refusal keeps blocking exactly as it does today.
+    # A GATE'S OWN REFUSAL NEVER REACHES HERE, and it is worth saying WHY rather than guarding for it
+    # twice: if the gate's last word is its own refusal, then `latest_by_role` holds that same
+    # refusal (both dicts are written in the same pass, keyed by the same gate), so the passing
+    # precondition below already declines. Mutating an explicit author check away left all 83 cases
+    # green -- not a hole in the suite, a branch that cannot be taken. The behaviour it looks like it
+    # protects is pinned by a case of its own regardless of which line delivers it.
+    for gate, v in list(latest.items()):
+        if v[1] in PASSING or v[2] is not None:
+            continue
+        role_v = latest_by_role.get(gate)
+        if role_v is None or role_v[1] not in PASSING:
+            continue
+        latest[gate] = role_v
+        undecidable[gate] = (latest_author.get(gate) or "?", v[1])
 
     # A STANDING REFUSAL FROM A SIBLING IS STILL A REFUSAL (card c52e2823).
     #
@@ -254,13 +320,23 @@ def latest_per_gate(comments):
     for gate, v in list(latest.items()):
         if v[1] not in PASSING:
             continue
-        for (g, _who), fv in latest_by_author.items():
+        for (g, who), fv in latest_by_author.items():
             if g != gate or fv[1] in PASSING:
                 continue
-            if fv[2] is None or (v[2] is not None and shas_agree(v[2], fv[2])):
+            if fv[2] is not None and v[2] is not None and shas_agree(v[2], fv[2]):
                 latest[gate] = fv
+                undecidable.pop(gate, None)
                 break
-    return latest
+            if fv[2] is None:
+                # NAMES NO COMMIT, SO NOTHING CAN BE SHOWN TO SUPERSEDE IT (card c52e2823, round 2,
+                # MikroB's ruling 21139 case (b), which is card e4b7096e folded in here). Until now
+                # this blocked outright, and that is one of two guesses dressed as an answer: the
+                # sibling PASS may be a re-review of a fixed commit (then the refusal is gone) or a
+                # disagreement about this one (then it stands), and with no sha on either side the
+                # tool cannot tell which. FAILED asserts the second; AGREE asserts the first. The
+                # honest answer names the ambiguity and hands it to a human.
+                undecidable.setdefault(gate, (who, fv[1]))
+    return latest, undecidable
 
 
 def unattributed_gates(comments):
@@ -384,7 +460,7 @@ def content_verdict(judged, declared):
 
 
 def check(comments, designated=None, expect=None, use_declared=True):
-    latest = latest_per_gate(comments)
+    latest, undecidable = _gate_state(comments)
     unverified = unattributed_gates(comments)
     inferred = designated is None
     if inferred:
@@ -401,6 +477,20 @@ def check(comments, designated=None, expect=None, use_declared=True):
     failed = ["%s=%s" % (g, latest[g][1]) for g in designated if latest[g][1] not in PASSING]
     if failed:
         return "FAILED|" + "; ".join(failed)
+
+    # A REFUSAL THAT CANNOT BE SHOWN SUPERSEDED IS NOT A PASS AND NOT A FAIL (card c52e2823, round
+    # 2, MikroB's ruling 21139). Placed AFTER the FAILED block on purpose: a refusal this tool can
+    # actually read outranks one it cannot, and a card that has both should be bounced on the
+    # readable one. Placed BEFORE the attribution and sha questions for the reason the FAILED block
+    # gives -- if a stated refusal may still be open, which commit it judged is the second question.
+    if any(g in undecidable for g in designated):
+        gates = [g for g in designated if g in undecidable]
+        return "UNSUPERSEDED|%s|%s|%s -- no Gate-SHA on the refusal, so it cannot be shown to be " \
+               "about code that is gone; not closable and not automatically bounced, a human decides" % (
+                   ",".join(gates),
+                   ",".join(undecidable[g][0] for g in gates),
+                   "; ".join("%s=%s by %s, latest verdict %s" % (
+                       g, undecidable[g][1], undecidable[g][0], latest[g][1]) for g in gates))
 
     # NOBODY I CAN NAME SAID THIS PASSED (card 44849954). Placed after FAILED, because a refusal
     # already blocks the closure and naming it is more useful, and BEFORE the sha questions,
