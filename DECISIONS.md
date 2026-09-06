@@ -9676,3 +9676,36 @@ an assertion rather than being narrative. Next time a refuted claim is corrected
 its DISTINCTIVE PHRASE, not just the section that prompted the correction.
 
 **Reference:** card `bb52c2fa`; Cybersec 21395. Selftest 74 cases, green.
+
+## 2026-09-06 13:45 -- upstream round 18 follow-up -- the resolution is pinned by a TEST, not only by the note
+
+**Cybersec supplied something I did not claim, and it makes the round-18 fix stronger.** My
+`ACKNOWLEDGED_CONFLICTS` correction told the next merger what the right resolution is. It did not say
+whether anything would STOP them getting it wrong. There is: the fork's JSON-parse hardening has a
+behavioural pin.
+
+**Re-measured here before adopting it, not taken from the report:**
+
+    origin/develop, untouched                              6/6 GREEN
+    PUT try/catch replaced with upstream's bare parse       2 FAILED  <- "take upstream wholesale"
+    control: an inserted comment                           6/6 GREEN
+
+`src/__tests__/messages-invalid-json-400.test.ts` covers both handlers. So a merger who ignores the
+note and adopts upstream's side of hunk 2 hits failing tests rather than a silent loss of a 400. That
+is the state Cybered's doctrine asks for -- prose AND a red test, never prose alone -- and the rule
+now says so, because "a note is all that stands between you and this mistake" and "you will also get
+red tests" are different instructions to the person reading it at 2am.
+
+**It also settles why the refuted sentence is LABELLED rather than deleted.** The next merger goes
+looking for the sentence they followed last time; finding it struck through with the correction
+attached is more useful than finding it gone.
+
+**A note on how the confirmation arrived, because the failure mode is one I hit twice today.**
+Cybersec's FIRST probe grepped the literal string `'Invalid JSON body'` across the tree, found zero
+test hits, and was one sentence from reporting that only prose protects the hardening. The test
+asserts `/invalid json/i`, a regex -- so the grep answered a different question than the sentence
+would have claimed. The mutation settled it; the grep could not have. Same class as my own
+DECISIONS-heading miscount and my six-versus-nine deny count today: three instances, two agents, one
+shape -- an artifact queried where it was convenient rather than where the fact lives.
+
+**Reference:** upstream round 18; Cybersec message 24509; guard green 28/28 after the addition.
