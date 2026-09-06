@@ -603,6 +603,44 @@ case("...and it is blanked only where it is MARKED as a parent -- a gate that ge
       c("qa", V % "0d5ebb6c")],
      "DISAGREE", gates="qa,cybersec")
 
+# --- A NON-REVIEW COMMENT CAN DECLARE A NEWER, UNGATED COMMIT (card 3e4dc2c3, Cybered) -----------
+# Real shape: REVIEW declares X, both gates pass X (default would be AGREE). Then the BUILDER posts
+# a later comment that is neither a REVIEW nor a verdict -- "<finding> JAVITVA -- delta-gate kell" --
+# naming a newer commit Y. No gate ever verdicts on Y. The default (REVIEW-sourced) answer must not
+# stay AGREE on X: nobody who matters has looked at Y.
+case("a builder's post-REVIEW, non-REVIEW comment names a newer sha no gate ever verdicted on",
+     [c("backend", "REVIEW\nGate-SHA: 58c498f2"), c("qa", V % "58c498f2"), c("cybersec", S % "58c498f2"),
+      c("backend", "F-1 JAVITVA -- delta-gate kell\nGate-SHA: 1c5a41b4")],
+     "STALE", gates="qa,cybersec")
+case("CONTROL: the same history, but a gate DID delta-gate the newer sha -- the orphan check no "
+     "longer fires (the sha IS gate-verdicted now), so the ANSWER IS NOT STALE-for-being-undeclared. "
+     "It falls through to the pre-existing stale-REVIEW-pointer path instead (no real clone in this "
+     "harness -> UNRESOLVED): this fix's job is 'was it reviewed at all', not 'does the REVIEW "
+     "comment's own pointer also need updating', which is a separate, pre-existing gap this card "
+     "does not claim to close",
+     [c("backend", "REVIEW\nGate-SHA: 58c498f2"), c("qa", V % "58c498f2"), c("cybersec", S % "58c498f2"),
+      c("backend", "F-1 JAVITVA -- delta-gate kell\nGate-SHA: 1c5a41b4"),
+      c("qa", V % "1c5a41b4"), c("cybersec", S % "1c5a41b4")],
+     "UNRESOLVED", gates="qa,cybersec")
+case("CONTROL: the same history, but the later comment IS a new REVIEW -- the normal declared_shas "
+     "path already covers it, this is not the orphan case",
+     [c("backend", "REVIEW\nGate-SHA: 58c498f2"), c("qa", V % "58c498f2"), c("cybersec", S % "58c498f2"),
+      c("backend", "REVIEW\nGate-SHA: 1c5a41b4"), c("qa", V % "1c5a41b4"), c("cybersec", S % "1c5a41b4")],
+     "AGREE", gates="qa,cybersec")
+case("CONTROL: an explicit --expect on the OLD sha is the caller's own assertion and is not "
+     "second-guessed by the orphan check",
+     [c("backend", "REVIEW\nGate-SHA: 58c498f2"), c("qa", V % "58c498f2"), c("cybersec", S % "58c498f2"),
+      c("backend", "F-1 JAVITVA -- delta-gate kell\nGate-SHA: 1c5a41b4")],
+     "AGREE", gates="qa,cybersec", expect_sha="58c498f2")
+case("CONTROL: --no-expect also bypasses the orphan check -- the caller asked for no comparison at all",
+     [c("backend", "REVIEW\nGate-SHA: 58c498f2"), c("qa", V % "58c498f2"), c("cybersec", S % "58c498f2"),
+      c("backend", "F-1 JAVITVA -- delta-gate kell\nGate-SHA: 1c5a41b4")],
+     "AGREE", gates="qa,cybersec", extra=("--no-expect",))
+case("CONTROL: a post-REVIEW comment with NO Gate-SHA at all is not an orphan -- nothing to flag",
+     [c("backend", "REVIEW\nGate-SHA: 58c498f2"), c("qa", V % "58c498f2"), c("cybersec", S % "58c498f2"),
+      c("backend", "meg dolgozom rajta, nincs uj sha meg")],
+     "AGREE", gates="qa,cybersec")
+
 # BYTE-FOR-BYTE REGRESSION CONTROLS (MikroB's acceptance condition, 21177). Not "still FAILED" and
 # "still AGREE" -- the whole line, because a new branch that reworded an existing answer would pass
 # a kind-only assertion while breaking every reader of the output.
