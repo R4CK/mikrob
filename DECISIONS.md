@@ -11255,3 +11255,46 @@ hogy le is fusson.
 
 **Hivatkozás:** kártya `edf9c837`; `store/decisions-append-union.sh`, `store/decisions-sync-resolve.sh`,
 `src/__tests__/decisions-sync-resolve-selftest.test.ts`, `README.md`.
+
+## 2026-09-06 -- beb9c8d3 -- A suite-futás kimondja, mennyi NEM futott le belőle
+
+**A LELET.** A `store/cleancore-suite-run.sh` nem állítja be a `PG_E2E_URL`-t, és a flottában semmi
+más sem teszi, miközben a CI igen (`.github/workflows/ci.yml:442`). Minden PG-függő e2e fájl
+`describe.skipIf(!PG_E2E_URL)`, tehát egy flotta-suite végigsétál rajtuk. Mérve ezen a gépen,
+2026-09-06, csak az `api-e2e` projektre: **65 tesztfájlból 58 nem futott le, 491 tesztből 460
+kimaradt, a futás pedig 0-val tért vissza.**
+
+**AMI NEM IGAZ A LELETRE, és ezt ki kell mondani:** a vitest KIÍRJA ezeket a számokat, tehát a
+kihagyás nem szó szerint láthatatlan. A hiba nem a hallgatás, hanem az ATTRIBÚCIÓ hiánya: a 460 egy
+sorban áll azzal a néhány fájllal, ami Stripe- vagy Redis-kulcs híján marad ki, és amit egy olvasó
+jogosan tekint normálisnak. Egy gate zöldet lát és egy megszokott skipped-számot.
+
+**A DÖNTÉS.** Új `store/vitest-skip-report.sh`, a `vitest-flake-classify.sh` mintájára és
+ugyanazzal a szerződéssel: csak stderr, a kilépési kódot SOHA nem írja át, és HALLGAT, ha semmi nem
+maradt ki. A futás végén egy blokk mondja meg, hány fájl és hány teszt nem futott, és ebből mennyi
+hivatkozik a beállítatlan környezetváltozóra.
+
+**AMIT ÁLLÍT, szűkebben mint "ezek MIATTA maradtak ki".** Fájlonként azt kérdezi, hogy a forrás
+HIVATKOZIK-e a változóra, és hogy a változó be van-e állítva itt. Mindkét fél ellenőrizhető. Amit
+nem tud besorolni, az külön, kimondott vödörbe megy -- egy attribúció, ami csendben magába nyeli
+azt, amit nem ért, megszűnik bizonyíték lenni. Mérve a valódi futáson: 58 kihagyott fájlból 54
+hivatkozik a `PG_E2E_URL`-re, a maradék 4 pedig névről is a másik osztály (LemonSqueezy, Stripe,
+Redis, objektumtár).
+
+**MIÉRT NEM KOMMENTEL A KÁRTYÁRA.** A szemafor `PAUSED-SEMAPHORE` üzenetei kommentelnek, mert
+ritkán szólalnak meg. Ez minden helyi futáson megszólal, amíg valaki be nem köt egy Postgrest --
+kártyánkénti komment ebből zaj lenne, pont az, ami ellen a szkript saját elve szól.
+
+**MIÉRT NEM BUKTATJA MEG A FUTÁST.** Egy kihagyás-hiba minden jogos helyi futást eltörne, egy
+kilépési kód átírása pedig ugyanaz a mozdulat, amit egy valódi regressziót elrejtő wrapper tenne.
+
+**BIZONYÍTÉK.** 14 esetes selftest, minden attribúciós esethez saját negatívval: csak kommentben
+szereplő hivatkozás NEM számít bele (a jelenlét-állítás komment-mentesített forráson mér), a
+`PG_E2E_URL_ALT` sem (azonosító-határ, nem részsztring), és egy `://` literál a sor elején nem
+nyeli el a mögötte álló hivatkozást. A bekötés is pinnelve van, komment-mentesített forráson a
+HÍVÁS-KIFEJEZÉSRE illesztve: mérve, hogy a hívás törlése és egy azt megnevező kommenttel való
+pótlása is PIROSRA váltja.
+
+**Hivatkozás:** kártya `beb9c8d3` (backend leletéből, `cea77ed2` kapcsán);
+`store/vitest-skip-report.sh`, `store/vitest-skip-report.selftest.sh`,
+`store/cleancore-suite-run.sh`, `README.md`.
