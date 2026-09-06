@@ -662,10 +662,30 @@ export function initDatabase(dbPathOverride?: string): void {
   //
   // What has no row anywhere is the INCIDENT: the moment the heartbeat's D section JUDGED a card
   // stuck, what it saw, and what it decided to do. That last part is the load-bearing half. The
-  // shared token-protection guard (store/redispatch-guard.sh) answers DENY on six different
-  // grounds -- progress, agent-busy, backoff, cap-reached, first-seen-baseline, not-active -- and
-  // every one of those is a DELIBERATE non-action that today leaves no trace at all. A control
+  // shared token-protection guard (store/redispatch-guard.sh) answers DENY on NINE different
+  // grounds, and every one is a DELIBERATE non-action that today leaves no trace at all. A control
   // that decides to do nothing is, in the log, indistinguishable from a control that never ran.
+  //
+  // NINE, not the six the heartbeat's D-section prose lists. Counted from the script itself
+  // (`grep -oE 'DENY:[a-z-]+'`), because the prose and the code disagree: the documented set is
+  // progress / agent-busy / backoff / cap-reached / first-seen-baseline / not-active, and the
+  // script ALSO emits load-paused (the agent is cgroup-throttled or SIGSTOP-frozen -- a real
+  // policy denial), card-not-found and usage. Building the writer from the prose would have left
+  // three branches permanently unlogged, which is the very "a deliberate non-action leaves no
+  // trace" hole this table exists to close, reproduced inside its own fix.
+  //
+  // AND THREE OF THEM CARRY A PAYLOAD, in PARENTHESES. Measured from the echo sites and confirmed
+  // with live probes, NOT read from a comment -- because the guard's own header comment is wrong
+  // about its own code here, and my first correction of this paragraph copied that comment instead
+  // of measuring. The header says `DENY:backoff:<s>` (colon); the code emits:
+  //
+  //     DENY:not-active(<status>)     DENY:cap-reached(<count>)     DENY:backoff(<n>s)
+  //
+  // and the other six are bare. So a writer that equality-matches a known-reason list drops three
+  // of nine, and one that prefix-matches on `DENY:backoff:` drops backoff too, because the
+  // separator is `(` and not `:`. `action_detail` therefore stores the verdict VERBATIM, and any
+  // classification takes the reason as the text up to the first `(` or `:` -- never an equality
+  // test against a list this file would then have to keep in sync with a script it does not own.
   //
   // WHY THIS IS NOT store/redispatch-ledger.json, and why that file is deliberately untouched.
   // The ledger already counts re-dispatches per card, and `redispatch-guard.sh reset <cardId>`

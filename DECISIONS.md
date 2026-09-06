@@ -9750,6 +9750,184 @@ mert a Claude Code csak akkor ismeri fel slash-parancsként; a szöveg egyetlen 
 
 **Ki döntött:** MikroB (plan-grilling verdikt, 21407), backend2 (mérés és megvalósítás).
 **Hivatkozás:** kártya fed3f037 (a) rész; `src/web/routes/agents.ts`.
+## 2026-09-06 13:30 -- ac28bc6e CORRECTION -- the guard has NINE deny reasons, not six, and one carries a payload
+
+**Correcting my own entry above, which said "six grounds".** I took that list from the heartbeat
+D-section prose instead of from the script. Counted from `store/redispatch-guard.sh` itself, every
+one a live code path with its emitting line:
+
+    DENY:not-active (24)   DENY:load-paused (25)   DENY:progress (27)
+    DENY:agent-busy (29)   DENY:cap-reached (30)   DENY:backoff (33)
+    DENY:usage (213)       DENY:card-not-found (215)   DENY:first-seen-baseline (239)
+
+The prose documents six of them. `load-paused` is a genuine policy denial it omits (the agent is
+cgroup-throttled or SIGSTOP-frozen, deliberately not running); `usage` and `card-not-found` are the
+error paths.
+
+**Why this is not a detail.** The writer in subtask 878cd292 records what the guard decided. Built
+from the prose, three of nine branches would never have been logged -- which is precisely the "a
+deliberate non-action leaves no trace" hole this whole table exists to close, reproduced inside its
+own fix. The class is the one I have hit repeatedly today: a query (here, a paragraph) that answers a
+different question than the sentence quoting it claims.
+
+**And one reason is not a constant.** The script emits `DENY:backoff:<seconds>`, not a bare
+`DENY:backoff`. A writer equality-matching a known-reason list would classify every backoff denial as
+unknown. `action_detail` therefore stores the verdict VERBATIM, and any classification is by PREFIX
+-- which is also why the column is free text that accepts an unrecognised reason rather than
+rejecting it.
+
+**Not fixing the prose here.** The heartbeat SKILL.md is a global scheduled-task file and its
+accuracy is a separate concern from this schema; naming the discrepancy is this card's job, changing
+a fleet-wide task definition is not. Reported to MikroB.
+
+**Reference:** card `ac28bc6e`; corrects the `2026-09-06 13:25` entry in this file.
+
+## 2026-09-06 13:32 -- ac28bc6e SECOND CORRECTION -- I corrected prose by reading other prose
+
+**My 13:30 correction is itself wrong on one point, and the way it is wrong is the point.** It said
+the guard emits `DENY:backoff:<seconds>`. I took that from the guard's HEADER COMMENT (line 33)
+instead of from the code, having just corrected a different claim I had taken from the heartbeat
+prose. Two corrections, same root, one level apart.
+
+**Measured this time -- from the echo sites, plus live probes:**
+
+    header comment claims:  DENY:backoff:<s>            (colon)
+    code actually emits:    DENY:backoff(<n>s)          (parentheses)
+    and two more carry payloads the header never mentions:
+                            DENY:not-active(<status>)   DENY:cap-reached(<count>)
+    live probe, real cards: `DENY:progress`, `DENY:card-not-found`
+
+So THREE of the nine carry a payload, not one, and the separator is `(`, not `:`. The guard's header
+comment disagrees with the guard's own code.
+
+**The design consequence is concrete, not cosmetic.** A writer that equality-matches a known-reason
+list drops three of nine. A writer that prefix-matches `DENY:backoff:` -- exactly what my previous
+entry would have produced -- drops backoff as well, and backoff is the MOST common denial in a real
+stall, since it fires on every re-observation inside the window. The remedy is unchanged in shape but
+now correct in detail: store the verdict VERBATIM, and take the reason as the text up to the first
+`(` or `:`. No list in this repo needs to stay in sync with a script it does not own.
+
+**The lesson, stated plainly because I keep paying for it.** "Read the schema, not the comment about
+the schema" applies to the correction too. When the first source turned out to be prose, the fix was
+to MEASURE, not to find better prose. Both wrong claims would have passed review: they were specific,
+plausible, and cited a real file.
+
+**Reference:** card `ac28bc6e`; corrects the `2026-09-06 13:30` entry, which corrected the `13:25` one.
+
+## 2026-09-06 13:40 -- bb52c2fa -- the correction reached the header and not the SECOND copy 90 lines down
+
+**Cybersec F-1, round 2 (21395), and the shape is the one this card family keeps producing.** The
+refuted locale explanation was corrected in the function header. The SAME text also stood at line
+~1789, in the selftest, and there it was not a superseded precedent -- it was the JUSTIFICATION for
+the assertion directly beneath it.
+
+**Why the old explanation is wrong, refuted by its own list.** It said the suite went 61/67 "because
+cmp's MESSAGE says char in some locales and byte in others". If that were the cause, exporting
+C.UTF-8 -- which IS multibyte, and under which cmp says "byte" (measured on this host) -- should have
+WORKED. It broke too. The listed evidence contradicts the stated cause.
+
+**The real mechanism, already stated correctly 90 lines above it:** `local LC_ALL=C` reaches the
+child only when LC_ALL already carries the export attribute, which it does the moment anything
+exported it. cmp therefore ran under single-byte C whatever value was exported, said "char", and the
+byte-only pattern matched nothing. The specific locale never mattered -- only whether one was
+exported at all.
+
+**The lesson is not "fix the comment".** It is that a correction lands where you are looking. I
+corrected the header, verified the header, and reported the header as fixed -- while a second copy of
+the same claim sat in the same file doing more damage than the first, because it was load-bearing for
+an assertion rather than being narrative. Next time a refuted claim is corrected, grep the file for
+its DISTINCTIVE PHRASE, not just the section that prompted the correction.
+
+**Reference:** card `bb52c2fa`; Cybersec 21395. Selftest 74 cases, green.
+
+## 2026-09-06 13:45 -- upstream round 18 follow-up -- the resolution is pinned by a TEST, not only by the note
+
+**Cybersec supplied something I did not claim, and it makes the round-18 fix stronger.** My
+`ACKNOWLEDGED_CONFLICTS` correction told the next merger what the right resolution is. It did not say
+whether anything would STOP them getting it wrong. There is: the fork's JSON-parse hardening has a
+behavioural pin.
+
+**Re-measured here before adopting it, not taken from the report:**
+
+    origin/develop, untouched                              6/6 GREEN
+    PUT try/catch replaced with upstream's bare parse       2 FAILED  <- "take upstream wholesale"
+    control: an inserted comment                           6/6 GREEN
+
+`src/__tests__/messages-invalid-json-400.test.ts` covers both handlers. So a merger who ignores the
+note and adopts upstream's side of hunk 2 hits failing tests rather than a silent loss of a 400. That
+is the state Cybered's doctrine asks for -- prose AND a red test, never prose alone -- and the rule
+now says so, because "a note is all that stands between you and this mistake" and "you will also get
+red tests" are different instructions to the person reading it at 2am.
+
+**It also settles why the refuted sentence is LABELLED rather than deleted.** The next merger goes
+looking for the sentence they followed last time; finding it struck through with the correction
+attached is more useful than finding it gone.
+
+**A note on how the confirmation arrived, because the failure mode is one I hit twice today.**
+Cybersec's FIRST probe grepped the literal string `'Invalid JSON body'` across the tree, found zero
+test hits, and was one sentence from reporting that only prose protects the hardening. The test
+asserts `/invalid json/i`, a regex -- so the grep answered a different question than the sentence
+would have claimed. The mutation settled it; the grep could not have. Same class as my own
+DECISIONS-heading miscount and my six-versus-nine deny count today: three instances, two agents, one
+shape -- an artifact queried where it was convenient rather than where the fact lives.
+
+**Reference:** upstream round 18; Cybersec message 24509; guard green 28/28 after the addition.
+## 2026-09-06 -- 09a3d52a: a redispatch-guard főkönyve zár alatt ír, és a zár HIÁNYA tilt, nem enged
+
+**Kontextus.** A `store/redispatch-guard.sh` az a közös fojtópont, amin minden automata meglökés és
+újra-dispatch átmegy, és a `MAX_REDISPATCH=3` sapkával ez akadályozza meg a dokumentált token-égő
+hurkot ("ugyanaz a kártya 18-szor fejlődött"). Az állapota a `store/redispatch-ledger.json`.
+
+**A hiba.** A `_ledger_get` és a `_ledger_set` két külön python-folyamat, és a set a TELJES fájlt
+írja vissza a saját pillanatképéből. Két egyidejű futás tehát nem egy számlálót veszít: a vesztes
+felülírása a MÁSIK kártya bejegyzését ejti ki, vagyis annak a kártyának a re-dispatch-számlálója
+nullázódik, és a sapka soha nem áll fel. Pont az a korlátlan hurok válik újra lehetségessé, ami
+miatt a guard megszületett.
+
+**A mérés, és amit NEM állítok.** A szkriptből KIVÁGOTT valódi két függvénnyel, 30 kártya-azonosítóra:
+párhuzamosan 27, 28, 29, 29, 29 bejegyzés maradt meg öt futásban (fal-idő 0,30-0,37 mp), sorosan
+30/30 (1,59 mp). A soros kontroll átfordul, tehát a mérés a versenyt méri. Elérhetőség MA: a `check`
+egyetlen hívói MikroB monitor-promptjai (heartbeat-consolidated D, fleet-nudger), amiket egy session
+sorosít; ellenőriztem, hogy a `load-guard-daemon.sh`, a `load-guard-bookkeeping.sh` és a
+`context-compact-monitor.sh` NEM hívja, csak kommentben említi. Szerkezeti akadály viszont nincs:
+egyetlen turn párhuzamos Bash-hívásai elegendők. Vagyis a mechanizmus bizonyított, a kiváltás egy
+viselkedési döntésre van, és nem állítom, hogy ma élesben elsül.
+
+**Döntés.** Egyetlen `flock`-alapú zár (`${LEDGER}.lock`, 10 mp várakozás) fedi a `check`, a `reset`
+és az `escalations` teljes állapot-módosító szakaszát. EGY zár mindkét állapot-fájlra (főkönyv és
+eszkalációk): a műveletek másodperc alattiak, tehát a második zár csak azt a kérdést szülné meg,
+hogy egy jövőbeli szerkesztés melyiket fogja.
+
+**A zár hiánya TILT, nem enged.** Ez ellentétes az alatta lévő `_is_load_paused` szándékos
+fail-open viselkedésével, és ez nem következetlenség: ott a hibamód "örökre blokkol minden meglökést
+a flottában", itt "kihagy egy tickt". Egy megtagadott meglökést a hívó a következő körben újrapróbál;
+egy elveszett főkönyvi bejegyzést semmi nem állít helyre. Az `escalations` a zár hiányában
+KIFEJEZETTEN nem ír a kimenetre: egy üres lista ott "nincs függő eszkaláció"-nak olvasódna, ami az
+egyetlen rossz válasz, mert egy sapkát elért kártya így némán sosem jutna emberhez.
+
+**A teszt, és a korlátja.** A selftest kap egy 40-elemű párhuzamos burst-esetet (mind a 40 bejegyzés
+maradjon meg, mind count=1) és egy determinisztikus zár-kizárólagosság-esetet (fd 9 fogja, egy
+nulla-várakozású második nyitó bukjon). A `check` BEDRÓTOZÁSÁT viszont csak FORRÁS-szintű állítás
+rögzíti (a zár-hívás a főkönyv-olvasás ELŐTT álljon), a KOMMENTEKTŐL MEGTISZTÍTOTT forráson illesztve,
+mert egy kommentben megnevezett hívás kielégítene egy naiv jelenlét-ellenőrzést. Ez tudatos korlát:
+a valódi `check` a futó dashboardot kérdezi a kártyáról, és az alternatíva, egy env-változós stub-varrat
+magában a guardban, megkerülési felület lenne egy olyan eszközben, aminek a dolga a megtagadás.
+
+**Mutánsok, mind megölve, valódi kilépési kóddal mérve (nem kiírt sorral).** (1) a burst zár nélkül
+fut -> 40-ből 32 bejegyzés maradt, exit 1; (2) a `check` nem veszi fel a zárat -> a bedrótozás-eset
+bukik, exit 1; (3) a `check` a főkönyv-olvasás UTÁN veszi fel -> ugyanaz, a sorrendet nevesítve.
+A kiindulás mindháromszor visszaállt exit 0-ra, és a fájl bitre azonos volt a mutáció előttivel.
+
+**Kísérő lelet, külön kártyán.** Kiderült, hogy ennek a guardnak a selftestje SOHA nem futott a
+suite-ban: a `store-selftests-all-run.test.ts` felfedezése FÁJLNÉV-utótagra kulcsol, tehát egy olyan
+szkript, ami a selftestjét MÓDként hordozza, szerkezetileg láthatatlan neki. Mérve: a `store/` 15
+selftest-módú szkriptjéből TÍZ-et egyetlen teszt sem hív. Ez a kártya csak EZT az egyet drótozza be
+(`src/__tests__/redispatch-guard-selftest.test.ts`), a maradék kilenc külön kártya, mert az, hogy
+átmennek-e, mérve nincs, és ebben a repóban van dokumentált eset arra, hogy egy selftest a futó
+flotta alól cserélt ki egy éles konfigurációs fájlt.
+
+**Hivatkozás:** kártya `09a3d52a` (szülő `ee2d6220`, hermes-agent atomikus esemény-igénylés);
+`store/redispatch-guard.sh`, `src/__tests__/redispatch-guard-selftest.test.ts`.
 
 ## 2026-09-06 14:30 -- A python hook-interpretert ellenőrizzük használat előtt, mert a 127 NEM blokkol (kártya d2b881ab)
 

@@ -1786,10 +1786,21 @@ body of A
   fi
 
   # THE SAME ANSWER UNDER AN EXPORTED LC_ALL (Cybered C-2, card bb52c2fa). The case above was green
-  # only while LC_ALL happened to be UNSET in the runner's environment: exporting C, C.UTF-8,
-  # en_US.UTF-8 or hu_HU.UTF-8 turned the whole suite 61/67, because `cmp`'s MESSAGE says "char" in
-  # some locales and "byte" in others and the old parser only matched the word "byte". Any CI or
-  # agent environment that exports LC_ALL got a FALSE RED on correct code.
+  # only while LC_ALL happened to be UNSET in the runner's environment: exporting ANY value -- C,
+  # C.UTF-8, or a name this host does not even have -- turned the whole suite 61/67. Any CI or agent
+  # environment that exports LC_ALL got a FALSE RED on correct code.
+  #
+  # THE CAUSE IS NOT "cmp says char in some locales and byte in others" (Cybersec F-1 round 2, and
+  # this comment carried that refuted explanation as its justification after the header 90 lines up
+  # had already been corrected -- a correction that reaches one copy and not the other). That
+  # explanation is refuted by its own list: C.UTF-8 IS multibyte and cmp says "byte" under it, so
+  # exporting C.UTF-8 should have worked. It broke too.
+  #
+  # The real mechanism is the one stated at the top of _common_line_prefix_len: `local LC_ALL=C`
+  # only reaches the child when LC_ALL already carries the export attribute, which it does as soon
+  # as ANYTHING exported it. So cmp ran under single-byte C no matter WHICH value was exported, said
+  # "char", and the byte-only pattern matched nothing. The specific locale never mattered -- only
+  # whether one was exported at all.
   #
   # Asserting the VALUE under a foreign locale is what pins it. Asserting only that the suite passes
   # would not: the suite runs in ONE environment, which is exactly how this hid.
