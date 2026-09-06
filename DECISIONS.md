@@ -9723,3 +9723,30 @@ rögzítése a cél: az első nem-szerep szerző, aki egy `Gate-SHA` sort is oda
 **Hivatkozás:** kártya `48b0dd36` (Cybersec MEDIUM a c52e2823-on, 24365);
 `store/landing-gate-verdict-parse.py`, `store/gate_author_role.py`,
 `store/gate-closure-check.py`, `store/landing-gate-verdict-check.selftest.sh` (27 -> 36 eset).
+
+## 2026-09-06 14:00 -- A flotta által kiváltott /compact megmondja, mit NEM szabad átfogalmazni (kártya fed3f037, (a) rész)
+
+**Döntés:** A `POST /api/agents/<n>/compact` végpont nem csupasz `/compact`-ot küld, hanem
+instrukciót is: szó szerint tartandó minden Peti/MikroB utasítás és tiltás, az aktív kártyák
+követelményei, a még nyitott gate-leletek, a meghozott döntések a mögöttük álló méréssel, a nyitott
+kérdések és a már jelentett Gate-SHA-k; szabadon tömöríthető a tool-kimenet, a fájltartalom és az
+ügynök saját elbeszélése. Kill switch: `COMPACT_PROMPT=bare` visszaadja a régi literált.
+
+**Miért:** A hermes-agent micro-compaction leírásának (MIT, referenciaként olvasva, kód nem átvéve)
+egyetlen olyan megfigyelése, ami RÁNK IS áll: soha nem tömöríti a felhasználó üzeneteit, csak a
+levezetett anyagot. Az indoklás a mi hibaosztályunk pontos megfogalmazása: amit az ügynök termel, az
+nagyrészt beszámoló arról, mit csinált, és ez kevés veszteséggel összefoglalható; az utasítás viszont
+az a szándék, amiből minden más levezetődik, és NEM rekonstruálható az utána következő munkából.
+
+**Amit ELVETETTÜNK, méréssel:** magának a mechanizmusnak a portolása (MikroB plan-grilling verdikt).
+Egy körönkénti micro-compaction átírja a már elküldött előzményt, tehát minden körben töri a
+prompt-cache prefixet; ennél a flottánál a cache-találati arány 98,4%, és a tényleges költség a
+49,3 milliárd cache-read token. Ez pontosan az az eset, amit a forrás doksi maga nevez meg
+veszteségesként, és amiért upstream is `off by default`.
+
+**Kockázat és kezelése:** ez flotta-szintű változás egy kritikus úton, ezért a 9. kódminőségi
+szabály szerint kapcsolóval visszavonható commit nélkül. A `/compact` továbbra is a sor ELEJÉN áll,
+mert a Claude Code csak akkor ismeri fel slash-parancsként; a szöveg egyetlen sor.
+
+**Ki döntött:** MikroB (plan-grilling verdikt, 21407), backend2 (mérés és megvalósítás).
+**Hivatkozás:** kártya fed3f037 (a) rész; `src/web/routes/agents.ts`.
