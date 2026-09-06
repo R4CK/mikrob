@@ -54,6 +54,11 @@ export interface BacklogAlert {
   /** Whether the agent has a live tmux session. Decides the ADVICE: a parked agent has no pane to
    *  look at, so telling the reader to check one sends them somewhere that does not exist. */
   readonly sessionAlive: boolean
+  /** Card 2fa2ce04 item 1: the main agent's OWN backlog is never SENT (F2 -- delivering the notice
+   *  would enqueue into the very queue it describes), but that used to mean nobody was told at all.
+   *  A `logOnly` alert is still logged (so a human or monitoring tool reading logs sees it) and still
+   *  starts the cooldown, it just never reaches `deps.send`. Absent/false for every other agent. */
+  readonly logOnly?: boolean
 }
 
 export interface BacklogPolicyOptions {
@@ -101,17 +106,33 @@ export function backlogAlerts(rows: readonly AgentBacklog[], opts: BacklogPolicy
 
   const out: BacklogAlert[] = []
   for (const r of rows) {
-    // F2 (blocker). The alert is DELIVERED to the main agent, so alerting about the main agent puts
-    // the notice into the very queue it is describing -- the watcher would then measure its own
-    // output. Replayed over 7 real days, 11 of 57 alerts were exactly this, and by the eighth hourly
-    // repeat 7 of the 11 pending rows would have been the watcher's own. Both neighbouring emitters
-    // refuse the same way, with the same reason written down.
-    if (r.agent === mainAgentId) continue
     if (r.oldestAgeSeconds < ageThresholdSeconds) continue
-    // F1. The router already said it, with pane state attached. Nothing to add.
-    if (alreadyAlerted?.has(r.agent)) continue
     const last = lastAlertAt.get(r.agent)
     if (last !== undefined && nowMs - last < cooldownMs) continue
+
+    // F2 (blocker), residual closed by card 2fa2ce04 item 1. The alert is DELIVERED to the main
+    // agent, so SENDING about the main agent puts the notice into the very queue it is describing --
+    // the watcher would then measure its own output. Replayed over 7 real days, 11 of 57 alerts were
+    // exactly this, and by the eighth hourly repeat 7 of the 11 pending rows would have been the
+    // watcher's own. That reasoning rules out SENDING, not OBSERVING: before this card nothing
+    // watched the main agent's own backlog at all (neither this file nor the router's [session-stuck],
+    // which addresses its alerts TO the main agent and so has the identical F2 problem for the
+    // reverse direction) -- a real case measured 4 messages sitting unnoticed for 453 minutes. The
+    // router's own [session-stuck] dedup (F1, below) does not apply here either: that mechanism
+    // answers "did the router already describe THIS agent as stuck", which is not the question for
+    // the main agent, so it is deliberately skipped for this branch.
+    if (r.agent === mainAgentId) {
+      out.push({
+        agent: r.agent,
+        pending: r.pending,
+        oldestAgeSeconds: r.oldestAgeSeconds,
+        sessionAlive: isSessionAlive ? isSessionAlive(r.agent) : true,
+        logOnly: true,
+      })
+      continue
+    }
+    // F1. The router already said it, with pane state attached. Nothing to add.
+    if (alreadyAlerted?.has(r.agent)) continue
     out.push({
       agent: r.agent,
       pending: r.pending,
@@ -141,6 +162,16 @@ export function formatBacklogAlert(a: BacklogAlert): string {
 
 const lastAlertAt = new Map<string, number>()
 
+/** Card 2fa2ce04 item 2: when THIS process started. `recentStuckAlertContents` reads `agent_messages`
+ *  by `created_at`, which SURVIVES a dashboard restart -- unlike the router's own `agentStuckSince`
+ *  map (memory, zeroed on restart). Without a floor at process start, a `[session-stuck]` row written
+ *  by the PREVIOUS process minutes before it died can still fall inside STUCK_DEDUP_WINDOW_MS after
+ *  the new process comes up, so this watcher reads "the router already covered it" for an agent the
+ *  new router has not evaluated even once yet -- and the router itself needs a fresh escalation
+ *  window before it would speak again. Two emitters, both silent, for up to STUCK_DEDUP_WINDOW_MS:
+ *  exactly the restart-spanning gap this watcher exists to close, reopened by its own dedup. */
+const PROCESS_STARTED_AT_MS = Date.now()
+
 export interface BacklogSweepDeps {
   readonly now: () => number
   readonly listBacklog: () => AgentBacklog[]
@@ -149,6 +180,10 @@ export interface BacklogSweepDeps {
   readonly send: (to: string, text: string) => void
   readonly warn: (obj: Record<string, unknown>, msg: string) => void
   readonly mainAgentId: string
+  /** Defaults to this module's own load time (= process start, for all practical purposes -- this
+   *  file is loaded once at boot). Overridable so a test can simulate "process started N ms ago"
+   *  without actually spawning a new process. */
+  readonly processStartedAtMs?: number
 }
 
 const productionDeps: BacklogSweepDeps = {
@@ -159,6 +194,7 @@ const productionDeps: BacklogSweepDeps = {
   send: (to, text) => { createAgentMessage('system', to, text) },
   warn: (obj, msg) => { logger.warn(obj, msg) },
   mainAgentId: MAIN_AGENT_ID,
+  processStartedAtMs: PROCESS_STARTED_AT_MS,
 }
 
 /** One tick. Exported with an injectable dep set so the ordering, the failure branches and the
@@ -179,7 +215,10 @@ export function sweepMessageBacklog(deps: BacklogSweepDeps = productionDeps): Ba
   // restart-spanning gap this watcher exists for.
   let alreadyAlerted = new Set<string>()
   try {
-    const since = Math.floor((nowMs - STUCK_DEDUP_WINDOW_MS) / 1000)
+    // Item 2: floored at THIS process's start, so a [session-stuck] row from a process that already
+    // died cannot suppress this one's first evaluation of an agent. See PROCESS_STARTED_AT_MS above.
+    const windowStartMs = Math.max(nowMs - STUCK_DEDUP_WINDOW_MS, deps.processStartedAtMs ?? 0)
+    const since = Math.floor(windowStartMs / 1000)
     alreadyAlerted = agentsAlreadyAlerted(deps.recentStuckAlerts(since))
   } catch (err) {
     deps.warn({ err }, 'message-backlog watch: could not read recent session-stuck alerts; not deduping this tick')
@@ -202,6 +241,13 @@ export function sweepMessageBacklog(deps: BacklogSweepDeps = productionDeps): Ba
       { agent: a.agent, pending: a.pending, oldestAgeSeconds: a.oldestAgeSeconds, sessionAlive: a.sessionAlive },
       'message-backlog watch: an agent has been holding undelivered messages',
     )
+    // Item 1: the main agent's own backlog is logged, never sent (F2) -- the cooldown still starts,
+    // so the log itself does not repeat every 5-minute tick for a backlog that has not changed.
+    if (a.logOnly) {
+      lastAlertAt.set(a.agent, nowMs)
+      sent.push(a)
+      continue
+    }
     try {
       deps.send(deps.mainAgentId, formatBacklogAlert(a))
     } catch (err) {

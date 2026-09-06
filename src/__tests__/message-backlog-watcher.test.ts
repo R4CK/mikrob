@@ -17,6 +17,7 @@ import {
   resetBacklogCooldownsForTest,
   BACKLOG_AGE_ALERT_SECONDS,
   BACKLOG_ALERT_COOLDOWN_MS,
+  STUCK_DEDUP_WINDOW_MS,
   type BacklogSweepDeps,
 } from '../web/message-backlog-watcher.js'
 import { formatStuckSessionAlert } from '../web/message-router.js'
@@ -48,18 +49,32 @@ describe('backlogAlerts: age decides, not count', () => {
   })
 })
 
-describe('backlogAlerts: the main agent is never reported (Cybered F2, BLOCKER)', () => {
-  it('refuses to alert the main agent about the main agent', () => {
-    // The notice is DELIVERED to the main agent, so this would land in the very queue it describes
-    // and the watcher would start measuring its own output. Replayed over 7 real days: 11 of 57
-    // alerts were this, and by the eighth hourly repeat 7 of the 11 pending rows would have been
-    // self-generated -- a monitor mostly measuring itself.
-    expect(backlogAlerts([row('mikrob', 4, 8 * HOUR)], base)).toEqual([])
+describe('backlogAlerts: the main agent is never SENT to (Cybered F2, BLOCKER)', () => {
+  it('reports the main agent as logOnly, never a normal (sendable) alert', () => {
+    // The notice is DELIVERED to the main agent, so SENDING this would land in the very queue it
+    // describes and the watcher would start measuring its own output. Replayed over 7 real days: 11
+    // of 57 alerts were this, and by the eighth hourly repeat 7 of the 11 pending rows would have
+    // been self-generated -- a monitor mostly measuring itself. That argument is against SENDING, not
+    // against noticing at all (card 2fa2ce04 item 1) -- a real case measured 4 messages sitting
+    // unnoticed for 453 minutes because nothing watched the main agent's own queue.
+    const out = backlogAlerts([row('mikrob', 4, 8 * HOUR)], base)
+    expect(out).toHaveLength(1)
+    expect(out[0]).toMatchObject({ agent: 'mikrob', logOnly: true })
   })
 
-  it('still reports everyone else in the same sweep', () => {
+  it('still reports everyone else in the same sweep, as normal (non-logOnly) alerts', () => {
     const out = backlogAlerts([row('mikrob', 4, 8 * HOUR), row('backend', 27, 5 * HOUR)], base)
-    expect(out.map((a) => a.agent)).toEqual(['backend'])
+    expect(out.map((a) => a.agent)).toEqual(['mikrob', 'backend'])
+    expect(out.map((a) => a.logOnly ?? false)).toEqual([true, false])
+  })
+
+  it('the main agent branch still respects the age threshold and the cooldown', () => {
+    // logOnly is not a bypass of the other filters -- it changes what happens once an alert is
+    // decided, not whether one is.
+    expect(backlogAlerts([row('mikrob', 4, 60)], base)).toEqual([]) // too fresh
+    const now = 10_000_000
+    const seen = new Map([['mikrob', now - 1]])
+    expect(backlogAlerts([row('mikrob', 4, 8 * HOUR)], { ...base, nowMs: now, lastAlertAt: seen })).toEqual([]) // cooldown
   })
 })
 
@@ -201,10 +216,20 @@ describe('sweepMessageBacklog: the tick', () => {
     expect(sweepMessageBacklog(deps({ now: () => 1_000_000_000 + 1000 }))).toEqual([])
   })
 
-  it('never sends about the main agent, even when it holds the oldest backlog', () => {
+  it('never SENDS about the main agent, but DOES log it now (card 2fa2ce04 item 1)', () => {
     const d = deps({ listBacklog: () => [row('mikrob', 4, 8 * HOUR)] })
-    expect(sweepMessageBacklog(d)).toEqual([])
+    const out = sweepMessageBacklog(d)
+    expect(out).toHaveLength(1)
+    expect(out[0]).toMatchObject({ agent: 'mikrob', logOnly: true })
+    expect(d.events).toEqual(['warn:holding']) // logged, but no 'send'
     expect(d.events).not.toContain('send')
+  })
+
+  it('a logOnly alert still starts the cooldown -- it does not re-log every tick', () => {
+    const d1 = deps({ listBacklog: () => [row('mikrob', 4, 8 * HOUR)] })
+    sweepMessageBacklog(d1)
+    const d2 = deps({ listBacklog: () => [row('mikrob', 4, 8 * HOUR)] }) // same tick time
+    expect(sweepMessageBacklog(d2)).toEqual([])
   })
 
   it('defers to a real [session-stuck] the router emitted', () => {
@@ -224,5 +249,56 @@ describe('sweepMessageBacklog: the tick', () => {
     const d = deps({ isSessionAlive: () => false })
     const out = sweepMessageBacklog(d)
     expect(out[0]!.sessionAlive).toBe(false)
+  })
+})
+
+describe('sweepMessageBacklog: dedup lookback is bounded by process start (card 2fa2ce04 item 2)', () => {
+  beforeEach(() => { resetBacklogCooldownsForTest() })
+
+  it('a freshly-started process floors the lookback at its own start, not the full window', () => {
+    const seenSince: number[] = []
+    const d = deps({
+      recentStuckAlerts: (since: number) => { seenSince.push(since); return [] },
+      now: () => 1_000_000_000,
+      processStartedAtMs: 1_000_000_000 - 10_000, // this process is 10s old
+    })
+    sweepMessageBacklog(d)
+    expect(seenSince[0]).toBe(Math.floor((1_000_000_000 - 10_000) / 1000))
+  })
+
+  it('CONTROL: a long-lived process is unaffected -- the normal STUCK_DEDUP_WINDOW_MS still applies', () => {
+    const seenSince: number[] = []
+    const d = deps({
+      recentStuckAlerts: (since: number) => { seenSince.push(since); return [] },
+      now: () => 1_000_000_000,
+      processStartedAtMs: 0, // long-lived: "started at the epoch"
+    })
+    sweepMessageBacklog(d)
+    expect(seenSince[0]).toBe(Math.floor((1_000_000_000 - STUCK_DEDUP_WINDOW_MS) / 1000))
+  })
+
+  it('a [session-stuck] row from BEFORE this process started does not suppress its first tick', () => {
+    // The exact restart scenario item 2 names: a router alert written moments before the dashboard
+    // died must not read as "the new router already covered this agent".
+    const staleAlert = formatStuckSessionAlert('backend', 'mikrob', 'agent-backend', 5 * 60_000, 3, null)
+    const staleRowAtSec = Math.floor((1_000_000_000 - 10_000) / 1000) // 10s before `now`
+    const d = deps({
+      now: () => 1_000_000_000,
+      processStartedAtMs: 1_000_000_000 - 5_000, // this process is only 5s old -- AFTER the stale row
+      recentStuckAlerts: (since: number) => (staleRowAtSec >= since ? [staleAlert!] : []),
+    })
+    expect(sweepMessageBacklog(d).map((a) => a.agent)).toEqual(['backend'])
+  })
+
+  it('CONTROL: the SAME row DOES suppress a process old enough to have seen it', () => {
+    // Proves the previous case is about process age, not about the row being unreadable somehow.
+    const staleAlert = formatStuckSessionAlert('backend', 'mikrob', 'agent-backend', 5 * 60_000, 3, null)
+    const staleRowAtSec = Math.floor((1_000_000_000 - 10_000) / 1000)
+    const d = deps({
+      now: () => 1_000_000_000,
+      processStartedAtMs: 1_000_000_000 - 20_000, // this process is 20s old -- BEFORE the stale row
+      recentStuckAlerts: (since: number) => (staleRowAtSec >= since ? [staleAlert!] : []),
+    })
+    expect(sweepMessageBacklog(d)).toEqual([])
   })
 })
