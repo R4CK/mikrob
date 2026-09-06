@@ -417,8 +417,33 @@ const AT_TIMESPEC = String.raw`(?:now|noon|midnight|teatime|today|tomorrow|next\
 const AT_BARE = String.raw`["']*\s*$`
 const AT_FLAG = String.raw`["']*\s+["']*-`
 const AT_TIMESPEC_ARG = String.raw`["']*\s+["']*${AT_TIMESPEC}`
-// batch(1) takes no timespec, so ANY input redirect is already a working submit.
-const BATCH_REDIRECT = String.raw`["']*\s*<`
+// batch(1) takes no timespec, so an input redirect IS already a working submit -- with ONE shape
+// carved out, and the carve-out is the QA FAIL on the first round of this card (comment 21161).
+//
+// THE ASYMMETRY THAT WAS SHIPPED. The first fix hardened at(1)'s redirect and left batch(1)'s alone,
+// so `at <= 0` passed while `batch <= 0` -- the same ordinary comparison, the same collision class --
+// still denied. The card's title promised BOTH binaries; only one had been done. QA reproduced it
+// independently against gateDecision rather than from this file's fixtures.
+//
+// WHY at(1)'s FIX DOES NOT TRANSPLANT. at(1) could be closed by demanding a timespec after the file
+// word, because at(1) requires one. batch(1) requires none, so that lever does not exist here. The
+// lever it DOES have is the mirror image: batch(1) accepts NO OPERANDS. `batch <= 0` is, to bash,
+// a redirect from a file named `=` plus the operand `0` -- and an operand makes batch exit with a
+// usage error, so that shape never described a working submit either.
+//
+// So the carve-out is exactly `<` `=` whitespace OPERAND, and nothing wider:
+//     batch <= 0        -> redirect from `=`, operand `0`  -> usage error   -> allowed (the FP)
+//     batch <=          -> redirect from `=`, no operand    -> WORKING      -> still denied
+//     batch <=0         -> redirect from `=0`, no operand   -> WORKING      -> still denied
+//     batch << EOF      -> a heredoc into batch's stdin     -> WORKING      -> still denied
+//     batch < n         -> redirect from `n`, no operand    -> WORKING      -> still denied
+// The last row is a residual and is named as one: `batch < n` is a genuine comparison in code AND a
+// genuine submit in bash, indistinguishable as text, so it stays fail-closed.
+//
+// The inner `(?![0-9]*[<>&])` keeps the carve-out from being a door: what follows must be a WORD, so
+// `batch <= 2>/dev/null` / `<= >out` / `<= &1` are redirections rather than operands, still leave
+// batch with none, and stay denied.
+const BATCH_REDIRECT = String.raw`["']*\s*<(?!=\s+(?![0-9]*[<>&])\S)`
 // at(1): the redirect has to be followed by the file word and then a timespec. `[^\s;&|<]` keeps a
 // file name that STARTS with `=` matchable (that is the `at <=0 now` bypass) while refusing the
 // heredoc operator `<<`, and the run stops at a command separator so the timespec it finds has to

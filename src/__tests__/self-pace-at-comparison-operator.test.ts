@@ -122,3 +122,56 @@ describe('a QUOTED heredoc delimiter does not make its body inert (card 79bb0364
     expect(bash([`bash <<'EOF'`, `echo run.sh | ${AT} now`, 'EOF'].join(NL))).toBe(true)
   })
 })
+
+// --- the batch(1) half, added after the first round shipped only the at(1) half ---------------
+//
+// QA FAIL on 127c11cc (comment 21161), and the finding is the sharp one: the card's title promised
+// the comparison-operator class for BOTH ordinary-English-word binaries, the shipped fix hardened
+// one of them, and the two names were then ASYMMETRIC inside the same collision class. QA
+// reproduced it against gateDecision directly rather than from this file's fixtures.
+//
+// at(1) was closed by demanding a timespec, which batch(1) does not take. batch(1)'s own lever is
+// the mirror image: it accepts NO OPERANDS, so `batch <= 0` -- a redirect from a file named `=`
+// plus the operand `0` -- exits with a usage error and never described a working submit either.
+// The carve-out is exactly that shape; every row below that IS a working submit stays denied.
+describe('the same comparison, with the batch(1) name (QA FAIL on the first round)', () => {
+  const ALLOWED: Array<[string, string]> = [
+    ['a JS body line', `  if (${BATCH} ${LE} 0) return null`],
+    ['a comparison against a name', `while (${BATCH} ${LE} n) ${BATCH} += 1`],
+    ['at the very start of a body line', `${BATCH} ${LE} 0 and fail()`],
+    ['inside a markdown code span', `proba: ${TICK}${BATCH} ${LE} 0 ${OR} done${TICK} esetben`],
+  ]
+  for (const [name, line] of ALLOWED) {
+    it(`ALLOWS ${name}`, () => {
+      expect(bash(doc(line))).toBe(false)
+    })
+  }
+
+  // The carve-out is `< = whitespace OPERAND`. Everything that is still a WORKING submit has to stay
+  // denied, and each of these was measured DENIED both before and after the change.
+  const DENIED: Array<[string, string]> = [
+    ['a redirect from a file named "=" with no operand', `${BATCH} ${LE}`],
+    ['a redirect from a file named "=0"', `${BATCH} ${LE}0`],
+    ['a heredoc into batch stdin', `${BATCH} ${LT}${LT} JOB`],
+    ['the ordinary redirect form', `${BATCH} ${LT} /tmp/job.sh`],
+    // The carve-out must not open on a REDIRECTION after the `=`: a redirection is not an operand,
+    // so batch still has none and still submits.
+    ['a file-descriptor redirect after the "="', `${BATCH} ${LE} 2>/dev/null`],
+    ['an output redirect after the "="', `${BATCH} ${LE} >out`],
+    ['an fd duplication after the "="', `${BATCH} ${LE} &1`],
+    // STATED RESIDUAL, pinned so it is a decision rather than an oversight: this is a comparison in
+    // code AND a real submit in bash, identical as text. Fail-closed is the only safe reading.
+    ['a strict less-than against a bare name (the residual)', `${BATCH} ${LT} n`],
+  ]
+  for (const [name, line] of DENIED) {
+    it(`DENIES ${name}`, () => {
+      expect(bash(doc(line))).toBe(true)
+    })
+  }
+
+  it('the at(1) side is unchanged by the batch fix (control, both directions)', () => {
+    expect(bash(doc(`if (${AT} ${LE} 0) return`))).toBe(false)
+    expect(bash(doc(`${AT} ${LT} jobfile now + 5 minutes`))).toBe(true)
+    expect(bash(doc(`${AT} ${LE}0 now`))).toBe(true)
+  })
+})
