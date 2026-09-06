@@ -11655,3 +11655,40 @@ váltja, névvel; a kontroll zöld marad.
 
 **Hivatkozás:** kártya `c4da93bf` (szülő `01c846bf`, testvér `5b00c5ec`);
 `src/web/routes/kanban.ts`, `src/__tests__/kanban-dispatch-claim-before-send.test.ts`.
+
+## 2026-09-06 -- Egy MÁSODIK flock-használó kétértelművé tette a "hol a zár" olvasást (kártya 492a6d5c)
+
+**A LELET MIKROB LANDOLÁSI KÍSÉRLETÉBŐL JÖTT**, nem a kártyáról: a `--allow-stacked` futás a
+`fleet-test.sh`-n bukott el, mielőtt bármit pusholt volna. Két dolog:
+
+1. `store/kanban-comment-lib.sh` a git indexben `100644` maradt. Az általam ugyanaznap létrehozott
+   másik két szkriptet chmod-oltam, ezt kihagytam; a shebang-teszt jogosan bukott. `--chmod=+x`.
+
+2. A `fleet-test-serialises-runs.test.ts` KÉT kontrollja elbukott -- és ez az érdemi rész.
+
+**AMI ELTÖRT, ÉS MIÉRT NEM AZ ŐR HIBÁJA.** A kontrollok mutációja "a `flock`-őrtől a következő
+`fi`-ig" tartományt törölte. Ez hallgatólagosan arra épült, hogy a kettő KÖZÖTT nincs `fi` -- ez a
+kártya viszont pont oda tett egyet (a CPU-slot várakozás-értesítése). A mutáció így korábban állt
+meg, a fa-zár állva maradt, és a kontroll azért bukott, mert a mutáció megszűnt azt eltávolítani,
+amit megnevez. Nem az őr romlott el, hanem a mutáció horgonya.
+
+**A MÁSODIK, MÉLYEBB OK.** A `problems()` a legelső `flock`-ra nézett. Ez addig volt egyértelmű,
+amíg a szkriptnek EGY flock-használója volt. A megosztott CPU-pool egy második, jogos használó, és
+az elöl áll -- tehát a csupasz minta mostantól a MÁSIK zárat találja meg, és minden pozíció-
+összevetés csendben a rossz zárról szólna.
+
+**A JAVÍTÁS MINDKETTŐRE SZŰKÍTÉS, NEM LAZÍTÁS.** A mutáció a fa-zár KÉT konkrét darabját törli
+(`command -v flock` sor + az `exec 9>"$LOCK_FILE"` blokk), nem egy `fi`-ig tartó tartományt -- a régi
+span mellékesen elnyelhetett közéjük került kódot is. A `problems()` pedig a fa-mutex SAJÁT
+fd-jére horgonyoz (`exec 9>` / `flock ... 9`; a CPU-pool `$CPU_FD`-t használ), tehát kimondja,
+MELYIK zárról beszél, ahelyett hogy feltételezné, csak egy van. A kontroll épség-ellenőrzése
+ugyanígy a fa-mutexre kérdez, nem a `flock` általános hiányára.
+
+**AMIT EBBŐL TANULOK, és ez a saját mulasztásom:** a kártya egy teszt-fájlt nevezett meg, és én azt
+futtattam. A `fleet-test.sh`-t viszont KÉT teszt-fájl olvassa. Egy megosztott forrás szerkesztése
+után nem a kártyán nevezett tesztet kell lefuttatni, hanem mindet, ami azt a forrást olvassa.
+
+**BIZONYÍTÉK:** 20/20 a két fleet-test őr-fájlon együtt.
+
+**Hivatkozás:** kártya `492a6d5c`; `src/__tests__/fleet-test-serialises-runs.test.ts`,
+`store/kanban-comment-lib.sh` (módbit).
