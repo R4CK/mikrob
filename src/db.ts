@@ -2,7 +2,7 @@ import Database from 'better-sqlite3'
 import { isForceActor } from './kanban-force-actors.js'
 import { join } from 'node:path'
 import { existsSync, mkdirSync, readFileSync, renameSync, chmodSync, openSync, closeSync, statSync } from 'node:fs'
-import { STORE_DIR, DB_FILENAME, ALLOWED_CHAT_ID, OLLAMA_URL, APP_TZ } from './config.js'
+import { STORE_DIR, DB_FILENAME, ALLOWED_CHAT_ID, OLLAMA_URL, APP_TZ, MAIN_AGENT_ID } from './config.js'
 import { getEffectiveSettingValue } from './settings-store.js'
 import { logger } from './logger.js'
 import { TOOL_TIMEOUTS } from './tool-timeouts.js'
@@ -3753,6 +3753,13 @@ export interface AgentMessage {
   trace_id: string | null
   span_id: string | null
   parent_span_id: string | null
+  // Card 3bd457ed: 1 = this message asks to interrupt the receiver now, 0 = it
+  // waits for the receiver's next natural check. Typed as a number, not a
+  // boolean, on purpose: these rows come straight out of SQLite via SELECT *,
+  // so the runtime value IS 0/1, and a `boolean` annotation here would make
+  // `msg.wake === false` a comparison that is never true. Read it through
+  // messageWakesReceiver(), not by truthiness.
+  wake: number
 }
 
 export function createAgentMessage(
@@ -3761,11 +3768,31 @@ export function createAgentMessage(
   content: string,
   originNote?: string | null,
   traceCtx?: { trace_id: string; span_id: string; parent_span_id: string | null } | null,
+  opts?: { wake?: boolean },
 ): AgentMessage {
   const now = Math.floor(Date.now() / 1000)
+  // A wake:false message waits for the receiver's NEXT NATURAL CHECK -- so the
+  // receiver has to have one. Only the main agent does: it drains its own inbox
+  // every turn (/api/agents/<main>/drain-inbox, which refuses any other agent by
+  // design). Sub-agents are push-only; the router's tmux inject IS their
+  // delivery. A wake:false row addressed to a sub-agent would therefore not
+  // "wait quietly", it would sit pending until MESSAGE_ABANDON_WINDOW_MS marked
+  // it FAILED -- the message would disappear, which is precisely what this field
+  // is not allowed to do.
+  //
+  // So the request is honoured for the main agent and coerced back to a wake for
+  // everyone else, and the coercion is recorded rather than performed silently:
+  // the row that gets stored says 1, so the queue never reports a suppression
+  // that did not happen. Federated addresses ('peer/agent') land here too, and
+  // for the same reason -- there is no local pull for them either.
+  let wake = opts?.wake === false ? 0 : 1
+  if (wake === 0 && to !== MAIN_AGENT_ID) {
+    logger.warn({ to, from }, 'createAgentMessage: wake:false is only honoured for the main agent (no pull path elsewhere); delivering as a normal wake')
+    wake = 1
+  }
   const info = db.prepare(
-    'INSERT INTO agent_messages (from_agent, to_agent, content, status, created_at, origin_note, trace_id, span_id, parent_span_id) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)'
-  ).run(from, to, content, 'pending', now, originNote ?? null, traceCtx?.trace_id ?? null, traceCtx?.span_id ?? null, traceCtx?.parent_span_id ?? null)
+    'INSERT INTO agent_messages (from_agent, to_agent, content, status, created_at, origin_note, trace_id, span_id, parent_span_id, wake) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)'
+  ).run(from, to, content, 'pending', now, originNote ?? null, traceCtx?.trace_id ?? null, traceCtx?.span_id ?? null, traceCtx?.parent_span_id ?? null, wake)
   return {
     id: Number(info.lastInsertRowid),
     from_agent: from, to_agent: to, content, status: 'pending',
@@ -3774,6 +3801,7 @@ export function createAgentMessage(
     trace_id: traceCtx?.trace_id ?? null,
     span_id: traceCtx?.span_id ?? null,
     parent_span_id: traceCtx?.parent_span_id ?? null,
+    wake,
   }
 }
 

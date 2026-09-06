@@ -36,6 +36,7 @@ import { setLastInboundModality } from './voice-modality.js'
 import { classifyAgentMessage, wrapAgentMessageForDelivery } from './agent-message-wrap.js'
 import { MAIN_CHANNELS_SESSION } from './main-agent.js'
 import { maybeWakeSubAgentsForTelegram } from './telegram-inbox-wake.js'
+import { messageWakesReceiver } from './message-wake.js'
 
 // A message that cannot be delivered within this window (target session never
 // exists / stays busy) is marked failed so it stops clogging the pending
@@ -767,6 +768,15 @@ export async function runMessageRouterTick(): Promise<void> {
       // session starts a turn and drain-inbox claims the message immediately.
       // Busy session: Claude Code queues the wakeup for the next turn boundary.
       if (isMainAgent) {
+        // Card 3bd457ed: a message that declared wake:false is content for the
+        // main agent's next natural turn, not a reason to start one. It stays
+        // pending exactly as before and drain-inbox claims it on that turn --
+        // only the wakeup injection is skipped. It does not suppress anyone
+        // else's wakeup either: a waking message later in this same tick still
+        // fires one, because the decision is per message, not per tick.
+        if (!messageWakesReceiver(msg)) {
+          continue
+        }
         if (!mainAgentWakeupFiredThisTick && now - lastMainAgentWakeupMs >= MAIN_AGENT_WAKEUP_COOLDOWN_MS) {
           mainAgentWakeupFiredThisTick = true
           lastMainAgentWakeupMs = now
