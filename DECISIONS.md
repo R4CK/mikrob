@@ -10707,3 +10707,54 @@ the i18n error and re-enables the button, and the 503 path unchanged. Mutation m
 disabled, a Use button on a fallback row, `aria-pressed` dropped from the helper, banner text
 inverted, an invented tok/s on a null benchmark -- each red in the string-contract tests and/or the
 live check; controls 32/32 green.
+
+## 2026-09-06 -- A VRAM-kapu nem százalékra dönt, hanem arra, KIÉ a memória
+
+**Döntés:** a `store/vram-guard-check.sh` tier-besorolása mostantól az IDEGEN terhelésre megy, nem
+a nyers kihasználtságra: a saját, betöltött modellünk VRAM-ja (`ollama /api/ps` `size_vram`)
+levonódik, és a maradék dönt. Amíg a saját munkánk tartja a `/tmp/local-llm-gpu.lock`-ot, a mérés
+egyáltalán nem számít idegen terhelésnek (`own-busy` állapot), és nem is kerül a hiszterézisbe.
+
+**Ez nem finomhangolás volt, hanem egy MÉRHETŐ hiba javítása.** Ezen a gépen (2026-09-06):
+összesen 6144 MiB VRAM; leállított ollama mellett 1649 MiB reziduens (asztali/WSL alap, 26,8%); az
+alapértelmezett helyi modell (`qwen2.5-coder:7b-instruct-q4_K_M`) súlyai 4466 MiB. A saját MELEG
+modellünk tehát ~99,5%-ot mutat, ami a `hard_pct` (92) fölött van, vagyis a 108c7b10-ben szállított
+küszöb minden helyi dispatchet VISSZATARTOTT VOLNA pontosan abban az állapotban, amiért a meleg
+modellt egyáltalán tartjuk (mért különbség: 27 mp kontra 120 mp). Ezt nem lehet küszöb-hangolással
+megoldani: nincs az a szám, ami elválasztja a "a mi 4,4 GB-os modellünk be van töltve" esetet a
+"valami más evett meg 4,4 GB-ot" esettől, mert a szám azonos. Csak az attribúció választja el.
+
+**A ZÁR NEM REDUNDÁNS A KIVONÁSSAL, és pontosan egy dolgot fed le:** a modell BETÖLTÉSE alatt a
+VRAM már nő, de az `/api/ps` még nem jelenti, tehát a kivonás nullát lát és az egész betöltés
+idegennek látszik. A `local-llm.sh` pont ezen az ablakon át tartja a flockot. Ezért az `own-busy`
+minta nem is íródik az állapotfájlba: a saját terhelésünkkel tanítani a hiszterézist az a mód,
+ahogy a kapu megtanulna bizalmatlan lenni velünk szemben.
+
+**A KÁRTYA HÁROM ÁLLAPOTOT SOROL FEL, DE NÉGY VAN.** A hiányzó sor: zár szabad + a mi modellünk
+betöltve + az idegen terhelés IS magas. Ezt el kell dönteni valahol, és a kivonás magától eldönti
+(a maradék idegen rész magas -> HOLD), anélkül hogy egy negyedik különleges esetet kellene írni.
+Ezért lett a mechanizmus attribúció és nem eset-táblázat.
+
+**KÉTSÉG ESETÉN ONLINE, MINDEN ÚJ ÁGON.** Elérhetetlen vagy értelmezhetetlen `/api/ps`: nem vonunk
+le semmit, tehát a teljes mérés idegen marad (a HOLD irányába visz). Ha az ollama többet állít
+magáról, mint amennyit az eszköz jelent (`own > used`), az a két mérés ellentmondása, nem
+bizonyíték arra, hogy a GPU szabad: szintén nulla attribúció. A fordított választás (az idegen részt
+nullára szorítani) pont azon a bemeneten ADNA át, amit a legkevésbé értünk.
+
+**EGY SAJÁT HIBA, AMIT A MUTÁCIÓ FOGOTT MEG.** Az első változatban a kártya lényegét hordozó eset
+EGYETLEN mintavétel volt, és az attribúciót teljesen kivevő mutáció TÚLÉLTE: a hiszterézis az ELSŐ
+olvasást úgyis átengedi, akármi a tier, tehát az állításom nem különböztetett meg semmit.
+Fenntartott (sustained_seconds fölötti) mintára cserélve a két tervezés végre eltér, és a mutáció
+meghal. Ugyanaz a hibaosztály, mint egy alsó korlát ott, ahol egyenlőség kell.
+
+**HERMETIKUSSÁG:** a két új bemenetnek env-alapértelmezése is van
+(`VRAM_GUARD_OWN_VRAM_MIB`, `VRAM_GUARD_LOCK_HELD`), és a selftest EGYSZER állítja be őket. Enélkül
+minden meglévő eset a fejlesztő élő ollamáját és a valódi GPU-zárat olvasná, tehát ugyanaz a
+selftest más verdiktet adna egy olyan gépen, ahol be van töltve egy modell -- környezetfüggő teszt,
+ami determinisztikusnak látszik.
+
+**Ki döntött:** MikroB (21170. komment a 108c7b10-on, Cybersec megerősítésével, 24712); a negyedik
+sor kezelése és a `own > used` ág iránya backend mérnöki döntése, itt felülvizsgálatra kitéve.
+
+**Hivatkozás:** kártya `efd18ee4` (szülő `40568837`, testvérek `108c7b10` done, `f9bad591` és
+`a1c4dc51` blokkolt); `store/vram-guard-check.sh`, `store/vram-guard-check.selftest.sh`, `README.md`.
