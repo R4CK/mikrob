@@ -42,7 +42,11 @@ if [ "${BASH_SOURCE[0]}" = "${0}" ] && [ "${1:-}" != "--selftest" ]; then
   echo "$(basename "${BASH_SOURCE[0]}"): this file is a SOURCED helper, not an executable." >&2
   echo "  It takes no positional arguments. If you reached this from a git merge driver" >&2
   echo "  configuration, REMOVE IT: exiting 0 there would make git keep ours and silently" >&2
-  echo "  discard theirs. Source it and call its function instead." >&2
+  echo "  discard theirs." >&2
+  echo "  There is NO supported merge-driver configuration for this file -- do not wire one." >&2
+  echo "  (Source it and call its function instead. Note the guard cannot see a driver that SOURCES" >&2
+  echo "   this file: sourcing inherits the caller's positional parameters, so a caller invoked with" >&2
+  echo "   three arguments would be indistinguishable from a driver call. Cybered R-2.)" >&2
   exit 2
 fi
 

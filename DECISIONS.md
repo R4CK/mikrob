@@ -8667,3 +8667,26 @@ zöldek.
 **Ki döntött:** QA (FAIL + a helyes irány megnevezése), backend3 (a mérés és a konkrét alak).
 
 **Hivatkozás:** kártya `79bb0364`, QA komment 21161.
+
+## 2026-09-06 09:15 -- 3ae71df1 (gate-kör) -- egy nyelvtan mindkét félnek, a sorvég-tengelyen is
+
+**Döntés.** A `_seam_makes_setext_heading` záró-vágása egyetlen karakterosztály (`[[:space:]]`) lett a
+korábbi két kimondott alak (szóköz, tab) helyett, és a KORÁBBI sor üresség-vizsgálata leszedi a záró
+`\r`-t. A kerítés-oldal behúzás-kezelése szélességenként kapott fixture-t (1, 2, 3 szóköz), ahogy a
+setext-oldal már eddig is.
+
+**Miért.** Cybered mérése (komment 21147): a kerítés-fél CR-toleráns volt (`[![:space:]]`), a
+setext-fél nem, ezért CRLF sorvégű fájlban a `---\r` `safe`-et adott -- és itt a `safe` a FAIL-OPEN
+irány: lefut az unió, és a beillesztett szöveg a szomszédjából setext headinget csinál. Ugyanaz az
+egy-fél-tanulta-meg minta, amit ez a kártya a behúzás-tengelyen már egyszer javított, egy tengellyel
+odébb. A karakterosztály nem ezt az egy esetet zárja, hanem a két felet egy nyelvtanra hozza.
+
+**Miért szélességenkénti fixture.** Cybersec F-3 mutációs térképe (komment 21120): a 61 esetes
+selfteszten az 1 szóközös ág törlése NULLA pirosat adott, a 3 szóközösé szintén -- egyetlen 2 szóközös
+fixture volt, tehát két ág fedetlenül állt, és a 3 szóközös mutáns kára end-to-end elő is állt.
+
+**Mutációs mérés a javítás után:** 1sp ág törölve -> 1 fixture piros; 2sp -> 1; 3sp -> 1; a
+whitespace-osztály vissza a két alakra -> 2 piros; a `\r`-strip elvéve -> 1 piros; KONTROLL
+(komment-only mutáció) -> rc=0, nulla piros. 67 selftest-eset (61-ről).
+
+**Hivatkozás:** kártya `3ae71df1`, Cybersec 21120 (F-1/F-2/F-3), Cybered 21147, MikroB 21125.
