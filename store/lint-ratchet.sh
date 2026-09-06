@@ -32,6 +32,8 @@
 #   store/lint-ratchet.sh --update     # rewrite the baseline from the current counts
 #   store/lint-ratchet.sh --show       # print current counts vs baseline, always exit 0
 #   store/lint-ratchet.sh --bootstrap  # CREATE a baseline where none exists (see below)
+#   store/lint-ratchet.sh --update --accept-cleared=<rule>[,<rule>...]
+#                                      # acknowledge that those ratcheted rules are now at ZERO
 #
 # Exit: 0 no rule got worse | 1 a rule got worse | 3 the run could not be MEASURED (ESLint could
 # not run at all, or the run read a DEGRADED view of the tree -- see `degradation_reason`)
@@ -42,17 +44,34 @@ BASELINE="$ROOT/store/lint-baseline.json"
 MODE="check"
 
 BOOTSTRAP=0
-case "${1:-}" in
-  --update)    MODE="update" ;;
-  --show)      MODE="show" ;;
-  # A SEPARATE VERB, not a flag on --update, because the two say different things. `--update`
-  # means "I have a bound and I am moving it"; `--bootstrap` means "there is no bound yet".
-  # Deleting the baseline used to turn the first into the second silently -- see the block beside
-  # `degradation_reason`.
-  --bootstrap) MODE="update"; BOOTSTRAP=1 ;;
-  "")          ;;
-  *) echo "lint-ratchet.sh: unknown argument '$1' (expected --update, --bootstrap, --show or nothing)" >&2; exit 3 ;;
-esac
+ACCEPT_CLEARED=""
+while [ $# -gt 0 ]; do
+  case "$1" in
+    --update)    MODE="update" ;;
+    --show)      MODE="show" ;;
+    # A SEPARATE VERB, not a flag on --update, because the two say different things. `--update`
+    # means "I have a bound and I am moving it"; `--bootstrap` means "there is no bound yet".
+    # Deleting the baseline used to turn the first into the second silently -- see the block beside
+    # `degradation_reason`.
+    --bootstrap) MODE="update"; BOOTSTRAP=1 ;;
+    # THE SPOKEN ACKNOWLEDGEMENT FOR A CLEARED RULE (Cybersec NO-GO 21092, R-A; MikroB 21030).
+    # It NAMES THE RULES rather than being a bare flag, and that is the whole difference between
+    # this and a bypass. A bare --accept-cleared would suppress the collapse signal wholesale, so
+    # a wrapper script could carry it forever and the five-rules-go-dark case -- the founding
+    # measurement of this card -- would sail through it. Naming them cannot be scripted blindly:
+    # the list changes every time, an unlisted rule going dark still refuses, and a name that is
+    # not in the baseline is itself refused rather than silently ignored.
+    --accept-cleared=*) ACCEPT_CLEARED="${1#--accept-cleared=}" ;;
+    *) echo "lint-ratchet.sh: unknown argument '$1' (expected --update, --bootstrap, --show, --accept-cleared=<rules> or nothing)" >&2; exit 3 ;;
+  esac
+  shift
+done
+
+if [ -n "$ACCEPT_CLEARED" ] && [ "$BOOTSTRAP" = 1 ]; then
+  echo "lint-ratchet.sh: --accept-cleared and --bootstrap answer different questions -- one says" >&2
+  echo "    'this recorded rule is now at zero', the other 'there is no record yet'. Pick one." >&2
+  exit 3
+fi
 
 cd "$ROOT" || { echo "lint-ratchet.sh: cannot cd to $ROOT" >&2; exit 3; }
 
@@ -86,11 +105,13 @@ report="$(mktemp)"
 trap 'rm -f "$report"' EXIT
 npx eslint src -f json > "$report" 2>/dev/null
 
-MODE="$MODE" BOOTSTRAP="$BOOTSTRAP" BASELINE="$BASELINE" REPORT="$report" python3 - <<'PY'
+MODE="$MODE" BOOTSTRAP="$BOOTSTRAP" ACCEPT_CLEARED="$ACCEPT_CLEARED" \
+  BASELINE="$BASELINE" REPORT="$report" python3 - <<'PY'
 import json, os, sys, collections
 
 mode = os.environ['MODE']
 bootstrap = os.environ.get('BOOTSTRAP') == '1'
+accepted_cleared = {r for r in os.environ.get('ACCEPT_CLEARED', '').split(',') if r}
 baseline_path = os.environ['BASELINE']
 
 try:
@@ -180,7 +201,40 @@ parse_now, parse_was = counts.get(parse_key, 0), baseline.get(parse_key, 0)
 #
 # ORDER IS MOST-SPECIFIC FIRST, because more than one can be true at once and the first is the
 # most actionable.
-COLLAPSE_MIN = 2
+
+# WHICH RULES GO DARK WHEN THE TS PROGRAM IS LOST, MEASURED RATHER THAN ASSUMED.
+#
+# The comment above (and this file's selftest header) said "five of the six ratcheted rules are
+# TYPE-AWARE". That is wrong, and it matters now that the set is load-bearing code rather than
+# prose. Read from the plugin's own metadata (`meta.docs.requiresTypeChecking` on
+# @typescript-eslint/eslint-plugin, the copy this repo installs):
+#
+#   await-thenable          true
+#   no-floating-promises    true
+#   no-misused-promises     true
+#   no-unsafe-argument      true
+#   no-unused-vars          undefined   <- NOT type-aware
+#
+# FOUR, not five. `no-unused-vars` is a syntactic rule: it keeps reporting with no TS program at
+# all, and it only falls silent when parsing itself fails -- which the `(parse-error)` bucket
+# already covers. Including it here would make the bootstrap floor below STRICTLY WEAKER, because
+# that floor asks whether NONE of these rules found anything: one extra rule that keeps reporting
+# in the degraded state is one more way for the conjunction to come out false.
+TYPE_AWARE_RULES = frozenset({
+    '@typescript-eslint/await-thenable',
+    '@typescript-eslint/no-floating-promises',
+    '@typescript-eslint/no-misused-promises',
+    '@typescript-eslint/no-unsafe-argument',
+})
+
+# ONE, not two (Cybersec NO-GO 21092 R-A, on MikroB's ruling 21030). The previous threshold of two
+# bought a real single-rule fix at the price of a SLICED path: five separate --update runs, each
+# taking one rule to zero, each individually legitimate-looking and exit 0, ending at exactly the
+# end state of the bypass this card closed. Cybersec measured all five steps.
+#
+# The capability is not removed, it is made to ASK -- the same shape as --bootstrap. A genuine
+# "we finished off the last one" now passes with --accept-cleared naming the rule.
+COLLAPSE_MIN = 1
 
 
 def degradation_reason(counts, baseline, have_baseline, files_linted):
@@ -194,17 +248,40 @@ def degradation_reason(counts, baseline, have_baseline, files_linted):
                 f'On a tree with a recorded bound that is a configuration fault, not a clean '
                 f'sweep -- a working run on this repo has never once reported nothing.')
     if not have_baseline:
+        # (d) THE BOOTSTRAP FLOOR, AND IT IS STATE-BASED (Cybersec NO-GO 21092 R-B, on MikroB's
+        # ruling 21035). The git floor above catches a DELETED bound, which is the accidental
+        # route; it answers "did this file exist before", so it cannot answer anything at all in a
+        # tree with no git, and it fails open there by design. The deliberate route walked
+        # straight through that: --bootstrap on a fully degraded tree with no repo wrote
+        # {"(parse-error)": 861}, measured, which is the end state of bypass A.
+        #
+        # This floor asks about the RUN instead of about the repo, so it works on a genuine first
+        # run: parse errors present AND not one type-aware rule found anything is not a codebase,
+        # it is a toolchain that cannot see one. A healthy first run passes it even with parse
+        # errors, because the type-aware rules still report -- that is the control this must not
+        # break, and it is pinned as one.
+        if parse_now > 0 and not any(counts.get(r, 0) for r in TYPE_AWARE_RULES):
+            return (f'{parse_now} parse error(s) and NOT ONE finding from any type-aware rule '
+                    f'({", ".join(sorted(TYPE_AWARE_RULES))}). Those rules report nothing in a '
+                    f'file whose TS program did not resolve, so this reads as a toolchain that '
+                    f'cannot see the tree -- recording it would create a bound that permits '
+                    f'everything they exist to catch.')
         return None
-    # (b) SEVERAL BOUNDED RULES AT EXACTLY ZERO AT ONCE. A real fix drives ONE rule to zero; the
-    # type-aware rules going dark together is what a lost TS program looks like from here. The
-    # threshold is deliberately two rather than one, so that genuinely finishing off a single rule
-    # is not called a degradation -- the cost of that choice is stated in the card.
+    # (b) A BOUNDED RULE AT EXACTLY ZERO. A lost TS program takes the type-aware rules dark
+    # together, and taking them one per run is the sliced version of the same end state. An
+    # acknowledged clearing is subtracted first, so a real fix passes by naming what it fixed.
     collapsed = sorted(r for r, was in baseline.items()
-                       if r != parse_key and was > 0 and counts.get(r, 0) == 0)
+                       if r != parse_key and was > 0 and counts.get(r, 0) == 0
+                       and r not in accepted_cleared)
     if len(collapsed) >= COLLAPSE_MIN:
-        return (f'{len(collapsed)} rules that had recorded findings are ALL at exactly zero in '
-                f'this run ({", ".join(collapsed)}). A fix moves one rule; several going dark at '
-                f'once is what an unresolved TS program looks like from in here.')
+        subject = (f'{len(collapsed)} rules that had recorded findings are'
+                   if len(collapsed) > 1 else
+                   f'{len(collapsed)} rule that had recorded findings is')
+        return (f'{subject} at exactly zero in this run '
+                f'({", ".join(collapsed)}). A rule that was not measured reads exactly like a '
+                f'rule with nothing left to find. If this really is finished work, say so -- the '
+                f'whole command, ready to paste: '
+                f'store/lint-ratchet.sh --update --accept-cleared={",".join(collapsed)}')
     # (a) THE ORIGINAL SIGNAL, kept: the loud half is still real, and still the only one that
     # fires when the set is intact but unreadable.
     if parse_now > parse_was:
@@ -212,6 +289,16 @@ def degradation_reason(counts, baseline, have_baseline, files_linted):
                 f'run read a tree it could not fully parse.')
     return None
 
+
+# A NAME THAT IS NOT IN THE BOUND IS AN OPERATOR ERROR, NOT A NO-OP. Silently ignoring a typo
+# would let `--accept-cleared=@typescript-eslint/no-floting-promises` read as an acknowledgement
+# that was never actually made, and the run it waves through is exactly the one being asked about.
+unknown = sorted(accepted_cleared - set(baseline))
+if unknown:
+    print(f'lint-ratchet.sh: --accept-cleared names {", ".join(unknown)}, which is not in the '
+          f'recorded bound. Nothing was accepted -- check the spelling against '
+          f'{baseline_path}.', file=sys.stderr)
+    raise SystemExit(3)
 
 degraded = degradation_reason(counts, baseline, have_baseline, len(report))
 measurement_degraded = degraded is not None
