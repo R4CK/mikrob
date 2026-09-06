@@ -613,6 +613,56 @@ export function detectsModelConsentDialog(pane: string): boolean {
     && MODEL_CONSENT_CONFIRM_RX.test(footerRegion)
 }
 
+// Claude Code TOOL-PERMISSION prompt (PERMDENY905). Claude Code asks for one
+// even under --dangerously-skip-permissions when the target is its OWN
+// configuration (~/.claude/**: skills, settings, scheduled-tasks), and the
+// permission engine also asks when a deny rule cannot be resolved (the `cd`
+// chain shape, see scripts/hooks/cd-chain-guard.py).
+//
+// Out here the prompt is indistinguishable from a stuck menu: its footer says
+// "Esc to cancel", so detectsBlockingMenu matches it. MEASURED on this install
+// (2026-09-06, a real captured pane from Claude Code v2.1.263): a screen-filling
+// pane showing the Bash permission prompt gives detectsBlockingMenu === true,
+// detectsFirstRunGate === null and detectsModelConsentDialog === false -- so the
+// pane falls straight into the blind-Escape branch. But Escape on a permission
+// prompt is not a harmless dismiss, it is NO. The monitor was therefore DENYING
+// the agent's own requests ~45s after they appeared, while the operator believed
+// they had approved them.
+//
+// Same rule as the unrecognised trust dialog (TRUSTGATE901): no keystroke is
+// neutral here, so send none and say so loudly.
+//
+// Detection deliberately errs BROAD (footer marker OR question+Yes shape): a
+// false positive only costs a genuine stuck menu an alert instead of an Escape
+// -- the operator still hears about it -- while a false negative answers NO on
+// the operator's behalf, silently. The footer term is scanned over
+// MENU_FOOTER_REGION_LINES, the SAME window detectsBlockingMenu uses, on
+// purpose: a refinement that inspects a NARROWER region than the gate it
+// refines re-opens the very gap it exists to close.
+const PERMISSION_AMEND_RX = /\bTab to amend\b/
+const PERMISSION_QUESTION_RX = /Do you want to [^\n?]{0,80}\?/
+const PERMISSION_YES_RX = /(?:^|\n)\s*[\u276f>]?\s*1\.\s*Yes\b/
+
+/**
+ * True when the blocking pane is a Claude Code tool-permission prompt, where
+ * Escape means NO. Refines detectsBlockingMenu; every caller that sends a blind
+ * keystroke on a blocking menu must probe this first and send nothing when it
+ * is true.
+ */
+export function detectsPermissionDialog(pane: string): boolean {
+  if (!pane || !pane.trim()) return false
+  const lines = pane.split('\n')
+  const busyRegion = lines.slice(-BUSY_LIVE_REGION_LINES).join('\n')
+  for (const rx of BUSY_INDICATORS) {
+    if (rx.test(busyRegion)) return false
+  }
+  const footerRegion = lines.slice(-MENU_FOOTER_REGION_LINES).join('\n')
+  if (BUSY_ESC_TO_INTERRUPT_RX.test(footerRegion)) return false
+  if (IDLE_FOOTER_RX.test(pane)) return false
+  return PERMISSION_AMEND_RX.test(footerRegion)
+    || (PERMISSION_QUESTION_RX.test(pane) && PERMISSION_YES_RX.test(pane))
+}
+
 export interface DetectPaneStateOptions {
   /** If true, the 'typing' state (text parked in input box) is
    * merged into 'busy'. Default false -- callers that care about
