@@ -8912,3 +8912,63 @@ hol ROGZITETT egy masik program egy dontest.
 **Hivatkozas:** kartya `970156ce`; `store/local-llm-model-routing.selftest.sh`,
 `src/__tests__/local-llm-guard-sanctioned-skip.test.ts`; MikroB 21246; kapcsolodo: d5c05548
 (a mask() hiba), 1f276349 (ugyanez az osztaly a fork-guardon).
+
+## 2026-09-06 -- c52e2823 (2. kör): egy elutasítás, amit nem lehet megítélni, kap saját szót -- `UNSUPERSEDED`
+
+**Döntés.** A `store/gate-closure-check.py` mostantól három állapotot különböztet meg ott,
+ahol eddig kettő volt. Egy gate elutasítása BLOKKOL (`FAILED`), ha az adott gate szerepét
+viselő szerzőtől jött, vagy ha megnevez egy commitot. Nem blokkol, ha az adott gate maga
+szólalt meg utána a leszállított shára. És sem nem blokkol, sem nem zárható
+(`UNSUPERSEDED|<gate-ek>|<ki mondta>`), ha sha nélkül áll, és nincs mivel bizonyítani, hogy
+egy későbbi PASS felülírta -- ez emberi/MikroB-döntés, nem automatikus visszadobás.
+
+**A kényszerítő lelet.** Az 1. kör (bdb7375d) a testvér-gate elutasítását a per-szerző
+táblából olvasta, és az MINDEN szerzőt tartalmazott, szemben a tükrével (`latest_by_role`),
+ami mindig is szerepre szűrt. Emiatt bármely verdikt-ALAKÚ mondat -- a flotta rutinszerű
+"<GATE> <VERDIKT> ELFOGADVA, vissza in_progress-be" nyugtázása, vagy egy építő "QA FAIL
+elfogadva, javitottam" sora -- véglegesen beállt egy olyan elutasítás helyébe, amit a gate
+maga már visszavont. QA mérte (21135), Cybersec függetlenül reprodukálta és tágabbnak
+találta (21176): nem csak a koordinátoré, hanem minden nem-szerep-szerzős idézet.
+
+**Miért nem elég a puszta szerep-szűrés.** Mert a nyugtázás állhat a gate saját utolsó
+szava UTÁN is. Akkor a gate soha nem válaszolt rá, és a sor eldobása egy esetleg NYITOTT
+elutasítás fölött zárná le a kártyát -- pontosan az az irány, ami ellen a 44849954-es
+aszimmetria ("egy nem attribuálható elutasítás akkor is elutasítás") megszületett. A 21139
+döntés ezért új szót kért, nem szélesebb szűrőt. Az e4b7096e kártya (azonos-szerep FAIL ->
+PASS sha nélkül) ugyanennek a szónak a másik esete, ezért lett ide olvasztva.
+
+**Ahol a megvalósítás ELTÉR a 21139 szövegétől, tudatosan.** A döntés szerint a relay-eset
+MINDIG `UNSUPERSEDED`. A leszállított alak csak akkor, ha utána NEM szólalt meg maga a gate
+a leszállított shára. Ha megszólalt, az pontosan az, amit a "felülírás" jelent, és egy
+eldöntött történetre "eldönthetetlent" válaszolni négy LEZÁRT kártyát parkoltatna egy
+embernek, akinek nincs mit eldöntenie. Az időrend tehát nem díszítés, hanem maga a
+bizonyíték. Ez egy sor visszavétele, ha MikroB másképp dönt.
+
+**Két fail-closed előfeltétel, hogy az új szó ne legyen átjáró.** Relay, ami mögött az adott
+gate-től egyáltalán nincs verdikt -> változatlanul `FAILED` (nincs mihez mérni). Elutasítás,
+ami MEGNEVEZ egy shát -> megítélhető, tehát meg is ítéli, változatlanul.
+
+**Mérve az élő táblán, nem szintetikusan.** 348 kommentelt kártya, régi és új verzió egymás
+mellett, minden változó válasz kézzel visszaolvasva a kártya saját verdikt-történetéből:
+`008739a8`, `efaf8926`, `3ae71df1`, `b24b9e5c` FAILED -> AGREE (mindegyiken valódi,
+szerep-szerzős, egy shára szóló újra-gate-elés áll a nyugtázás után), `4a6c47f0` FAILED ->
+DISAGREE. Az utolsó NEM hamis blokk feloldása: ott a CYBERSEC GO a `d49e9c7a`-ra szól, a QA
+PASS és a CYBERED GO a `901b6fbb`-re, és a két commit ténylegesen eltér az
+`audit-ip-coarsen.ts`-ben -- a régi eszköz jó választ adott rossz okból. Populáció: 633
+verdikt-alakú komment, 18 nem-szerep-szerzőtől, ebből 11 elutasítás 9 kártyán, mind
+MikroB-tól. Az új szó ma EGYETLEN élő kártyán keletkezik (`2cb07372`), és ott egy olvasható
+elutasítás megelőzi -- ez a precedencia (FAILED > UNSUPERSEDED) is pinelve van.
+
+**Amit a tesztelés hozzátett a döntéshez.** A regresszió-mentesség a TELJES soron áll, nem a
+verdikt-szón: egyedülálló valódi QA FAIL és tiszta pass bájtra azonos a korábbi kimenettel
+(MikroB elfogadási feltétele, 21177) -- egy csak-fajta assertion zölden hagyna egy
+átfogalmazott választ, ami minden olvasót eltör. Négy mutáns, négy különböző eset fogja meg.
+Egy ötödik mutáns túlélte mind a 83 esetet, és kiderült, hogy elérhetetlen ág, nem
+tesztlyuk: ha egy gate utolsó szava a saját elutasítása, ugyanaz a sor a `latest_by_role`-ban
+is ott áll, tehát a passzoló előfeltétel már előbb elutasít. A sor kikerült, a viselkedést
+pinelő eset maradt.
+
+**Hivatkozás:** kártya `c52e2823` (magába olvasztva: `e4b7096e`); `store/gate-closure-check.py`,
+`store/gate-closure-check.selftest.py` (83 eset), `CLAUDE.md` 4a. pont; QA 21135, Cybersec
+21176, MikroB 21139 és 21177. Kapcsolódó: `71f95ba0` (az eszköznek nincs gépi fogyasztója,
+tehát ez a javítás csak azt a zárást védi, ahol valaki elindítja).
