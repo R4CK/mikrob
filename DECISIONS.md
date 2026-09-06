@@ -8628,3 +8628,42 @@ nem lehet megkülönböztetni a végrehajtástól.
 jelentette. Gate: QA + Cybersec.
 
 **Hivatkozás:** kártya 79bb0364.
+
+## 2026-09-06 08:55 -- 79bb0364 (2. kör) -- a `batch` oldal is megkapja az összehasonlítás-kizárást; a fenti bejegyzés egyik állítása javítva
+
+**Ez a bejegyzés HELYESBÍTI a mai korábbi, 79bb0364-es bejegyzést.** Az így szólt: „Ezzel a kártya
+79bb0364 mindkét bejelentett hamis-pozitív osztálya megszűnik." A leszállított javítás valójában csak
+az `at(1)` átirányítás-mintáját keményítette; a `batch(1)` mintája változatlan maradt, tehát a
+`batch <= 0` -- ugyanaz az összehasonlítás, ugyanaz a hibaosztály -- továbbra is blokkolt. QA a
+127c11cc-n megtalálta és FÜGGETLENÜL reprodukálta (komment 21161, közvetlen `gateDecision` hívással,
+nem az én fixture-jeimből). A QA FAIL jogos volt, elfogadtam.
+
+**Miért nem lehetett átültetni az `at` javítását.** Az `at(1)`-et azzal lehetett zárni, hogy az
+átirányítás után timespecet követel -- a `batch(1)` viszont nem kér timespecet, ez a kar nála nem
+létezik. Amije VAN, az a tükörképe: a `batch(1)` NEM fogad operandust. A `batch <= 0` a bash számára
+egy `=` nevű fájlból való átirányítás PLUSZ a `0` operandus, és egy operandustól a batch usage
+error-ral kilép -- tehát ez az alak sem írt le működő beküldést soha.
+
+**A kivágás pontosan ez az alak, és semmivel sem szélesebb:**
+`batch <= 0` (átirányítás + operandus -> usage error) átmegy; `batch <=`, `batch <=0`,
+`batch << EOF`, `batch < /tmp/job.sh` mind MŰKÖDŐ beküldés és mind tiltott marad. A kivágáson belüli
+`(?![0-9]*[<>&])` őr azt zárja ki, hogy a kivágás ajtóvá váljon: a `=` után álló `2>/dev/null`,
+`>out`, `&1` átirányítás és nem operandus, tehát a batch operandus nélkül marad és beküld.
+
+**Miért nem a kártya (és QA) által javasolt egyszerűbb kizárás (`<` után ne álljon `=` vagy `<`).**
+Mutációval mérve: az az alak HAT működő beküldést enged át -- `batch <=`, `batch <=0`,
+`batch << EOF` és a három átirányítás-alak. A pontos kivágás mindet tiltva hagyja.
+
+**ÚJ, KIMONDOTT MARADÉK, amit a korábbi bejegyzés maradék-listája nem tartalmazott:** a `batch < n`
+tiltott marad. Ez kódban valódi összehasonlítás, bashben valódi beküldés, szövegként
+megkülönböztethetetlen -- fail-closed az egyetlen biztonságos olvasat. Pinelve saját tesztesettel,
+hogy döntés legyen és ne feledés.
+
+**Mutációs mérés:** a `batch` átirányítás visszaállítva a javítás előttire -> 4 piros (a négy
+hamis-pozitív); az egyszerűbb `(?![<=])` kizárás -> 6 piros (a hat működő beküldés); a kivágáson
+belüli átirányítás-őr elvéve -> 3 piros. Kontrollok (az `at` oldal mindkét iránya) mindháromban
+zöldek.
+
+**Ki döntött:** QA (FAIL + a helyes irány megnevezése), backend3 (a mérés és a konkrét alak).
+
+**Hivatkozás:** kártya `79bb0364`, QA komment 21161.
