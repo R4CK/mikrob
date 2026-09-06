@@ -97,8 +97,25 @@ _record_incident() { # $1 = cardId, $2 = agent, $3 = verdict, $4 = stalled_ms
   # The verdict goes VERBATIM: the server classifies it (three of the reasons carry a parenthesised
   # payload, and the set grew from nine to ten in a single afternoon). Nothing here decides what a
   # verdict MEANS -- a second classifier in shell would be a second source of truth to drift.
-  body="$(printf '{"cardId":"%s","assignee":"%s","verdict":"%s","detectedAt":%s,"stalledMs":%s}' \
-    "$1" "$2" "$3" "$(now_ts)" "${4:-0}")"
+  #
+  # json.dumps, not a hand-built printf template (Cybered NO-GO, card 878cd292, Gate-SHA d1702f82):
+  # a raw '{"...":"%s"}' interpolation of an unescaped field lets a quote in that field close the
+  # JSON string early and inject a second `"cardId"` key -- the server's JSON.parse keeps the LAST
+  # one, so an assignee value like `evil","cardId":"HACKED` makes an already-authenticated agent
+  # write a stuck_incidents row for a card it does not own. AGENT here is the kanban assignee field,
+  # which any authenticated agent can set on any card via PUT -- attacker-reachable, not a constant.
+  # This is the repo's own established pattern for the same problem (store/offload-dispatch.sh,
+  # store/load-guard-bookkeeping.sh, store/gate-pretriage-card.sh, store/update-finalize.sh).
+  body="$(python3 -c '
+import json, sys
+print(json.dumps({
+  "cardId": sys.argv[1],
+  "assignee": sys.argv[2],
+  "verdict": sys.argv[3],
+  "detectedAt": int(sys.argv[4]),
+  "stalledMs": int(sys.argv[5]),
+}))
+' "$1" "$2" "$3" "$(now_ts)" "${4:-0}")" || return 0
   curl -s --max-time 3 -X POST -H @"$hf" -H 'Content-Type: application/json' \
     -d "$body" "${DASH}/api/stuck-incidents" >/dev/null 2>&1 || true
   rm -f "$hf" 2>/dev/null || true
@@ -119,8 +136,19 @@ _record_sibling_handover() { # $1=cardId $2=oldAgent $3=newAgent $4=stalled_ms
   hf="$(mktemp)" || return 0
   chmod 600 "$hf" 2>/dev/null || true
   printf 'Authorization: Bearer %s\n' "$(cat "$TOKEN_FILE" 2>/dev/null)" > "$hf"
-  body="$(printf '{"cardId":"%s","oldAgent":"%s","newAgent":"%s","detectedAt":%s,"stalledMs":%s}' \
-    "$1" "$2" "$3" "$(now_ts)" "${4:-0}")"
+  # json.dumps, not a hand-built printf template -- same Cybered finding as _record_incident above,
+  # and the same fix (oldAgent/newAgent are just as attacker-reachable as _record_incident's AGENT:
+  # both are kanban assignee values, settable by any authenticated agent via PUT).
+  body="$(python3 -c '
+import json, sys
+print(json.dumps({
+  "cardId": sys.argv[1],
+  "oldAgent": sys.argv[2],
+  "newAgent": sys.argv[3],
+  "detectedAt": int(sys.argv[4]),
+  "stalledMs": int(sys.argv[5]),
+}))
+' "$1" "$2" "$3" "$(now_ts)" "${4:-0}")" || return 0
   curl -s --max-time 3 -X POST -H @"$hf" -H 'Content-Type: application/json' \
     -d "$body" "${DASH}/api/stuck-incidents/sibling-handover" >/dev/null 2>&1 || true
   rm -f "$hf" 2>/dev/null || true
@@ -572,6 +600,66 @@ PY
       echo "FAIL sibling-handover-wiring: the lock is taken at line $sh_lockline, AFTER the ledger clear at $sh_delline"
       fails=$((fails+1))
     fi
+    # 12) Cybered NO-GO (card 878cd292, Gate-SHA d1702f82): the POST body must be built by a REAL
+    # JSON encoder, not a printf template -- a quote in AGENT/oldAgent/newAgent (all just the kanban
+    # `assignee` field, settable by any authenticated agent via PUT, so attacker-reachable) could
+    # close the JSON string early and inject a second `"cardId"` key; the server's JSON.parse keeps
+    # the LAST one, letting an already-authenticated agent forge a stuck_incidents row for a card it
+    # does not own. `curl` is overridden for this test only, to capture the POST body instead of
+    # sending it -- no network call, no token leaves this process.
+    curl() { # $@ has -d <body> somewhere; write it out, do nothing else
+      local args=("$@")
+      for ((_ci=0; _ci<${#args[@]}; _ci++)); do
+        [ "${args[$_ci]}" = "-d" ] && printf '%s' "${args[$((_ci+1))]}" > "$tmpdir/captured_body.json"
+      done
+      return 0
+    }
+    malicious_agent='evil","cardId":"HACKED","verdict":"ALLOW'
+    rm -f "$tmpdir/captured_body.json"
+    _record_incident "C-REAL" "$malicious_agent" "DENY:agent-busy" 0
+    if [ ! -s "$tmpdir/captured_body.json" ]; then
+      echo "FAIL json-injection: _record_incident produced no captured body -- curl override not reached"
+      fails=$((fails+1))
+    else
+      parsed="$(python3 -c "
+import json
+with open('$tmpdir/captured_body.json') as f: d = json.load(f)
+print(d.get('cardId'), '|', d.get('verdict'))
+" 2>&1)"
+      [ "$parsed" = "C-REAL | DENY:agent-busy" ] || {
+        echo "FAIL json-injection: a malicious assignee corrupted cardId/verdict via _record_incident: $parsed"
+        fails=$((fails+1))
+      }
+    fi
+    rm -f "$tmpdir/captured_body.json"
+    _record_sibling_handover "C-REAL2" "$malicious_agent" "backend2" 0
+    if [ ! -s "$tmpdir/captured_body.json" ]; then
+      echo "FAIL json-injection: _record_sibling_handover produced no captured body -- curl override not reached"
+      fails=$((fails+1))
+    else
+      parsed2="$(python3 -c "
+import json
+with open('$tmpdir/captured_body.json') as f: d = json.load(f)
+print(d.get('cardId'), '|', d.get('newAgent'))
+" 2>&1)"
+      [ "$parsed2" = "C-REAL2 | backend2" ] || {
+        echo "FAIL json-injection: a malicious oldAgent corrupted cardId/newAgent via _record_sibling_handover: $parsed2"
+        fails=$((fails+1))
+      }
+    fi
+    unset -f curl
+    # CONTROL, discriminating: the OLD printf template (not sourced from the file -- reproduced
+    # inline, since it no longer exists in the current source) really is exploitable by the exact
+    # same input. Without this control, a test that happened to assert something true of BOTH the
+    # buggy and the fixed version would pass for the wrong reason (the class of mistake named in
+    # code-quality rule 12 / the PREFIX-discriminating case elsewhere in this file).
+    old_style_body="$(printf '{"cardId":"%s","assignee":"%s","verdict":"%s","detectedAt":%s,"stalledMs":%s}' \
+      "C-REAL" "$malicious_agent" "DENY:agent-busy" 1700000000 0)"
+    old_parsed="$(printf '%s' "$old_style_body" | python3 -c "import json,sys; print(json.load(sys.stdin).get('cardId'))" 2>&1)"
+    [ "$old_parsed" = "HACKED" ] || {
+      echo "FAIL json-injection CONTROL: the old printf template no longer reproduces the injection ($old_parsed) -- the discriminating case may be stale"
+      fails=$((fails+1))
+    }
     rm -rf "$tmpdir"
     if [ "$fails" -eq 0 ]; then echo "SELFTEST: PASS"; exit 0; else echo "SELFTEST: FAIL ($fails)"; exit 1; fi
     ;;

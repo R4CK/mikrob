@@ -696,33 +696,49 @@ export function initDatabase(dbPathOverride?: string): void {
   // history answer different questions, so they do not share a store -- the same reasoning
   // kanban_card_field_events records for its own split from kanban_card_events.
   //
-  // PARTLY trigger-enforced, and the boundary is stated because the previous version of this
-  // comment claimed more than the mechanism delivers (Cybersec, 2026-09-06, measured against this
-  // DDL and reproduced here before the wording was changed). What the trigger below actually
-  // refuses is FOUR columns -- card_id, detected_at, stalled_ms_at_detection, action -- plus
-  // clearing or re-pointing an already-set resolved_at.
+  // PARTLY trigger-enforced, and the boundary is stated because an earlier version of this comment
+  // claimed more than the mechanism delivered (Cybersec, 2026-09-06, measured against this DDL and
+  // reproduced here before the wording was changed; that measurement is also copied into card
+  // 878cd292's own description, not left to live only in a kanban comment -- MikroB, comment 21530).
+  // Two triggers now cover this table: the BEFORE UPDATE one below refuses FOUR columns -- card_id,
+  // detected_at, stalled_ms_at_detection, action -- plus clearing or re-pointing an already-set
+  // resolved_at; a second BEFORE DELETE one (added in this same card, see below) refuses deleting a
+  // row outright.
   //
-  // WHAT IT DOES NOT REFUSE, measured, one attempt per shape against the shipped statements:
+  // WHAT IS STILL NOT REFUSED, measured, one attempt per shape against the shipped statements:
   //     UPDATE assignee_at_detection      PASSES   <- a DETECTION fact, and the per-agent axis
   //     UPDATE action_detail              PASSES   <- the DENY reason, i.e. the load-bearing half
   //     UPDATE resolved_by_event_id       PASSES   <- while resolved_at itself is protected
-  //     DELETE FROM stuck_incidents       PASSES   <- 0 rows left
-  //     INSERT OR REPLACE on the same id  PASSES   <- every column rewritten
+  //     INSERT OR REPLACE on the same id  PASSES   <- every column rewritten (see the note below)
   // (Controls, deliberately allowed: `detections + 1`, and resolved_at written once from NULL.)
+  // DELETE FROM stuck_incidents is NO LONGER on this list -- closed by the BEFORE DELETE trigger
+  // added below, in this same card.
   //
-  // The last one is the reason a BEFORE UPDATE trigger cannot carry the word "append-only" on its
-  // own: SQLite executes REPLACE as delete-then-insert, so the UPDATE trigger is never consulted.
-  // Adding a BEFORE DELETE trigger does NOT close it either under SQLite's default -- only with
+  // REPLACE is the reason a BEFORE UPDATE trigger cannot carry the word "append-only" on its own:
+  // SQLite executes it as delete-then-insert, so the UPDATE trigger is never consulted. A BEFORE
+  // DELETE trigger does NOT see that implicit delete either under SQLite's default -- only with
   // `recursive_triggers ON`, which this database never sets and which is GLOBAL to all 14 triggers
-  // in this schema (Cybersec measured their own first remedy failing exactly there).
+  // in this schema (Cybersec measured their own first remedy failing exactly there; see the residual
+  // note below the new trigger for why this card does not flip that switch).
   //
-  // The structural half is folded into the writer card (878cd292), where the first producer of
-  // these rows is built: a BEFORE DELETE trigger, with REPLACE recorded as a STATED residual
-  // rather than a pattern pretending to be closed. This comment was narrowed FIRST and separately,
-  // because a guarantee that is merely wrong is worse than one that is merely absent -- the next
-  // writer builds on it. Today the exposure is bounded: the table has no producer yet.
+  // UPDATE ON. This card (878cd292) is the structural half MikroB folded in here (comment 21530):
+  // the table's FIRST producers, recordStuckIncident and recordSiblingHandover, land in this same
+  // change, so "the table has no producer yet" -- true when this paragraph was first written -- is
+  // no longer true, and the DELETE gap closes in the same commit rather than staying a promise for
+  // whoever writes the first row.
   //
-  // The original point still stands for what IS covered: without the trigger even that much would
+  // INSERT OR REPLACE remains a STATED residual, not closed here, and that is a deliberate boundary
+  // rather than an oversight: the only way to make a BEFORE DELETE trigger see a REPLACE's implicit
+  // delete is `PRAGMA recursive_triggers = ON`, which is GLOBAL to this one database connection and
+  // therefore to all 14 triggers in this schema -- Cybersec measured their own first attempt at this
+  // fix failing exactly there, and turning it on to close one column's residual risk is its own
+  // blast-radius question this card does not take on. `INSERT OR REPLACE INTO stuck_incidents` has
+  // no producer in this codebase today (grepped), so the residual is unexercised, not unguarded in
+  // practice -- but it is not the same claim as "closed", and the difference is the whole point of
+  // writing it down instead of letting the guarantee read stronger than it is. The trigger itself is
+  // defined further below, after the table and its indexes, alongside the existing UPDATE one.
+  //
+  // The original point still stands for what IS covered: without these triggers even that much would
   // be a comment the next direct-sqlite3 writer never reads -- which is precisely how the
   // timestamp-integrity rows below went wrong.
   db.exec(`
@@ -778,6 +794,20 @@ export function initDatabase(dbPathOverride?: string): void {
       SELECT RAISE(ABORT, 'stuck_incidents is append-only: detection facts are immutable and a resolution is written once, from NULL');
     END;
   `)
+  // Closes the DELETE half of the gap the comment above the table names (card 878cd292, folded in
+  // by MikroB alongside this card's first producers -- comment 21530). REPLACE remains a stated,
+  // deliberately unclosed residual; see the comment above the table for why.
+  db.exec(`
+    CREATE TRIGGER IF NOT EXISTS trg_stuck_incidents_no_delete
+    BEFORE DELETE ON stuck_incidents
+    BEGIN
+      SELECT RAISE(ABORT, 'stuck_incidents is append-only: rows are never deleted (see the INSERT OR REPLACE residual note above the table)');
+    END;
+  `)
+  // (Rollback path, code-quality rule 11: `DROP TABLE stuck_incidents` removes both triggers with
+  // it -- covered by the existing schema rollback tests, which assert the neighbouring tables
+  // survive and that re-running the initialiser restores the table WITH its triggers, not just its
+  // columns.)
 
   // --- Timestamp integrity (card a06314ea) ---------------------------------
   // Every timestamp in this schema is a UNIX EPOCH INTEGER, and every reader assumes it: the

@@ -212,6 +212,51 @@ describe('stuck_incidents -- append-only, enforced by the DATABASE', () => {
   })
 })
 
+describe('stuck_incidents -- DELETE is refused (card 878cd292, the trigger folded in with the first producer)', () => {
+  it('refuses a DELETE outright', () => {
+    const db = freshDb()
+    const id = insert(db)
+    expect(() => db.prepare(`DELETE FROM stuck_incidents WHERE id=?`).run(id)).toThrow(/append-only/)
+    expect(db.prepare(`SELECT COUNT(*) c FROM stuck_incidents`).get()).toEqual({ c: 1 })
+  })
+
+  it('the trigger fires for a DIRECT sqlite exec too, not only a prepared statement', () => {
+    const db = freshDb()
+    const id = insert(db)
+    expect(() => db.exec(`DELETE FROM stuck_incidents WHERE id=${id}`)).toThrow(/append-only/)
+  })
+
+  it('a DELETE that matches NOTHING is not an error -- only an actual row deletion is refused', () => {
+    const db = freshDb()
+    expect(() => db.prepare(`DELETE FROM stuck_incidents WHERE id=999999`).run()).not.toThrow()
+  })
+
+  it('STATED RESIDUAL, still open: INSERT OR REPLACE bypasses BOTH triggers, unchanged by this card', () => {
+    // Not a bug in what this card shipped -- a documented boundary. Closing it needs
+    // `recursive_triggers = ON`, global to all 14 triggers in this schema, which is its own
+    // blast-radius question this card does not take on (see the db.ts comment on the new trigger).
+    // This test exists so the residual stays PROVEN, not merely asserted in a comment -- if a future
+    // change silently closes or reopens it, this is the assertion that would need to change too.
+    const db = freshDb()
+    const id = insert(db)
+    expect(() =>
+      db
+        .prepare(
+          `INSERT OR REPLACE INTO stuck_incidents
+             (id, card_id, assignee_at_detection, detected_at, stalled_ms_at_detection, action, action_detail, detections, resolved_at, resolved_by_event_id)
+           VALUES (?, 'replaced', 'attacker', 999, 999, 'redispatch', NULL, 1, NULL, NULL)`,
+        )
+        .run(id),
+    ).not.toThrow()
+    const row = db.prepare(`SELECT * FROM stuck_incidents WHERE id=?`).get(id) as Record<
+      string,
+      unknown
+    >
+    expect(row['card_id']).toBe('replaced') // every column rewritten, including the ones the
+    expect(row['action']).toBe('redispatch') // UPDATE trigger protects -- REPLACE never sees it
+  })
+})
+
 describe('stuck_incidents -- ROLLBACK path (code-quality rule 11)', () => {
   it('DOWN: the table can be dropped, and the rest of the schema still works', () => {
     const db = freshDb()
@@ -223,17 +268,18 @@ describe('stuck_incidents -- ROLLBACK path (code-quality rule 11)', () => {
     }
   })
 
-  it('DOWN then UP restores it, and the trigger comes back with it', () => {
+  it('DOWN then UP restores it, and BOTH triggers come back with it', () => {
     const { path, db } = persistentDb()
     db.exec(`DROP TABLE stuck_incidents`)
     initDatabase(path) // the redeploy after a rollback
     const back = getDb()
     const id = insert(back)
-    // The trigger is part of the table's contract; a rollback that restored the table WITHOUT it
-    // would look identical until the first tampering write.
+    // The triggers are part of the table's contract; a rollback that restored the table WITHOUT
+    // them would look identical until the first tampering write or delete.
     expect(() => back.exec(`UPDATE stuck_incidents SET action='x' WHERE id=${id}`)).toThrow(
       /append-only/,
     )
+    expect(() => back.exec(`DELETE FROM stuck_incidents WHERE id=${id}`)).toThrow(/append-only/)
   })
 
   it('DROPPING the table does not break reading the cards the stuck monitor works from', () => {
