@@ -10066,3 +10066,53 @@ backend (a fő-ügynökre szűkítés, a fail-open irány és a HTTP-felület ha
 `src/web/message-router.ts`, `src/web/inbox-nudge-watcher.ts`, `src/db.ts`,
 `src/schema/agent-messages-ddl.ts`, `src/__tests__/message-wake-field.test.ts`,
 `src/__tests__/message-wake-deciders.test.ts`.
+
+## 2026-09-06 -- 108c7b10: a VRAM-kapu fail-safe iránya KÉT eset, nem egy
+
+**Döntés:** A `store/vram-guard-check.sh` a GPU-memória alapján ad ADMIT/HOLD verdiktet a helyi-LLM
+dispatch elé. A mérés hiánya NEM egyetlen esetként kezelendő:
+
+- Az `nvidia-smi` NINCS a gépen -> **ADMIT**. Lehet, hogy nincs is NVIDIA GPU; ilyenkor a kapunak
+  nincs tárgya, és a visszatartás minden ilyen hoszton örökre kikapcsolná a helyi modellt. Ez a
+  kártya saját indoklása, és itt helyes.
+- Az `nvidia-smi` OTT VAN, de hibázik, időtúllépésbe fut vagy értelmezhetetlent ír -> **HOLD**. Van
+  GPU, és nem látjuk az állapotát. Ez valódi kétség, nem a tárgy hiánya.
+
+**Miért tér el ez a kártya szövegétől:** a `108c7b10` egyetlen szabályt mond ki
+("hiányzik/hibázik -> ADMIT"). A második esetre ez rossz irányba mutat, és ezt két, nálam magasabb
+szintű forrás is így mondja: a szülő kártya (`40568837`) kimondja, hogy "ugyanaz a fail-safe
+irányelv mint a load-guard-nál: kétség esetén ONLINE", a CLAUDE.md 16. szabálya pedig szó szerint
+azt írja, hogy "hibás/hiányzó/lefagyott modell esetén ONLINE-t kell választani, sose fordítva". Egy
+ADMIT a második esetben pont akkor kapcsolná ki a kaput, amikor a mérés nem elérhető -- ez a "egy
+biztonságos alapérték csak akkor fail-closed, ha nem tud ILLESZKEDNI" csapda. A kockázat itt nem
+elméleti: a flotta már hordoz egy GPU crash-loop őrt a GPU-passthrough okozta WSL-újraindulásokra.
+
+**Visszafordíthatóság:** a kártya szó szerinti szabálya EGY környezeti változóval visszaáll
+(`VRAM_GUARD_UNREADABLE=admit`), és erre külön selftest-eset van. Nem kell hozzá kódot írni, ha
+MikroB mégis a szó szerinti alakot kéri.
+
+**További döntések ugyanitt:**
+
+1. *Több GPU esetén a sorok ÖSSZEGZŐDNEK*, nem kártyánként dőlnek el. Kártyánként nézve egy üres
+   második GPU átengedne egy modellt, ami valójában a tele elsőre töltődik.
+2. *A hívás időkorlátos.* Egy beragadt `nvidia-smi` a dispatch útvonalon a hívót akasztaná meg; a
+   `timeout` ezt a fenti (b) ágra tereli. A selftest ezt IDŐVEL méri, nem a verdikttel: a verdikt
+   ugyanaz volna időkorlát nélkül is, tehát önmagában nem bizonyítja a korlát létét.
+3. *Hiszterézis, a `load-guard-eval.sh` mintájára*, mindkét irányban. A GPU pont az a mérés, ahol
+   egyetlen minta hazudik: egy befejeződő kérés egy lépésben szabadít fel gigabájtokat, egy betöltő
+   modell ugyanolyan gyorsan foglal.
+4. *A selftest külön FÁJL* (`store/vram-guard-check.selftest.sh`), nem a szkript egyik módja: a repó
+   felderítése a fájlnév-utótagra néz, egy módként hordozott selftest szerkezetileg láthatatlan
+   (`09a3d52a` mérése: 15 ilyen szkriptből tízet semmi nem hívott). Landoláskor magától lefut.
+
+**Mérés:** 18 selftest-eset zölden, GPU nélkül, hermetikusan (a valódi hívási utat stub-binárisok
+fedik, nem a `--metrics-json` varrat). Öt mutáns, mind bukik: az unreadable-alapérték átbillentése
+ADMIT-ra, a hiszterézis törlése, a több-GPU összegzés helyett az utolsó sor, a hiányzó eszköz
+HOLD-ra fordítása, és az időkorlát törlése.
+
+**Ki döntött:** Peti (a kapu léte, Telegram 2026-09-06); backend (a fail-safe irány kettébontása, a
+kártya szövegétől eltérően, a fenti két magasabb szintű forrásra hivatkozva -- MikroB felülbírálhatja
+egyetlen környezeti változóval).
+
+**Hivatkozás:** kártya `108c7b10` (szülő `40568837`); `store/vram-guard-check.sh`,
+`store/vram-guard-check.selftest.sh`, `store/vram-guard-config.json`.
