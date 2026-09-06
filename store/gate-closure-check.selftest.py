@@ -371,11 +371,14 @@ case("a sibling FAIL after the other sibling's PASS still refuses the closure",
 case("a sibling PASS on the SAME sha does not bury the other sibling's FAIL",
      [c("qa", "QA FAIL\nGate-SHA: bbbb2222"), c("qa2", "QA2 PASS\nGate-SHA: bbbb2222"),
       c("cybersec", S % "bbbb2222")], "FAILED", "qa,cybersec")
-# A refusal that names no commit cannot be shown to be superseded, and this file already says an
-# unattributable refusal is still a refusal. Fail-closed is the only reading available.
-case("a refusal with NO Gate-SHA is not superseded by a sibling's PASS either",
+# A refusal that names no commit cannot be shown to be superseded -- and it cannot be shown to still
+# stand either. This answered FAILED until card c52e2823 round 2 (MikroB's ruling 21139, folding in
+# card e4b7096e): FAILED asserts that the sibling PASS is a disagreement about this same commit,
+# when the other reading -- a re-review of a commit that is gone -- fits the same evidence. With no
+# sha on either side the tool has no way to choose, so it names the ambiguity instead of guessing.
+case("a refusal with NO Gate-SHA is not superseded by a sibling's PASS, and cannot be judged either",
      [c("qa", "QA FAIL\nthe fixture carries no sha"), c("qa2", "QA2 PASS\nGate-SHA: bbbb2222"),
-      c("cybersec", S % "bbbb2222")], "FAILED", "qa,cybersec")
+      c("cybersec", S % "bbbb2222")], "UNSUPERSEDED", "qa,cybersec")
 # CONTROL. Measured, so it says what it actually catches rather than what it sounds like: this case
 # goes red when standing refusals are keyed by the ROLE instead of by the AUTHOR -- the shape where a
 # gate can never clear its own FAIL and every self-correction refuses forever. The OTHER over-block
@@ -430,11 +433,16 @@ case("FALLBACK: a relayed PASS defers to the gate's OWN earlier verdict, and rec
 
 # THE ASYMMETRY, and the reason this is not a plain "prefer the gate's own comment". Without it,
 # preferring QA's older PASS would close a card over a stated refusal -- worse than the bug fixed.
-case("ASYMMETRY: a relayed FAIL is NOT overridden by the gate's own earlier PASS",
+# The asymmetry SURVIVES card c52e2823 round 2 unchanged in its own direction: the answer is still
+# not AGREE and the card still does not close. What changed is the word. A relay carrying no sha is
+# read as unjudgeable rather than as a refusal, because on this board the same shape is far more
+# often an acknowledgement of a refusal the gate has already answered (Cybersec's live count, 21176:
+# 18 non-role verdict-shaped comments, 11 of them refusals, on 9 cards).
+case("ASYMMETRY: a relayed FAIL is still not overridden by the gate's own earlier PASS",
      [c("qa", V % SHA_A),
       c("cybersec", S % SHA_A),
       c("mikrob", "QA FAIL -- ujranyitva, a gate visszadobta")],
-     "FAILED", gates="qa,cybersec")
+     "UNSUPERSEDED", gates="qa,cybersec")
 
 case("an unattributed FAIL still reads as FAILED, not UNVERIFIED-AUTHOR",
      [c("backend2", "QA FAIL\nGate-SHA: " + SHA_A), c("cybersec", S % SHA_A)],
@@ -465,6 +473,101 @@ case("CONTROL: attribution does not mask a real sha DISAGREEMENT between two gat
 case("CONTROL: a gate that never posted at all is MISSING, not UNVERIFIED-AUTHOR",
      [c("qa", V % SHA_A)],
      "MISSING", gates="qa,cybersec")
+
+# --- WHO MAY BLOCK, AND WHEN IT CANNOT BE JUDGED (card c52e2823, round 2) ----------------------
+# QA measured the regression the first round shipped (21135) and Cybersec reproduced it independently
+# and wider (21176): the standing-refusal rule read EVERY author, so any sentence of verdict shape
+# from anyone stood in permanently for a refusal. Two failure directions have to be pinned here, and
+# a suite that pins only one is green while the check is absent -- so every author class below gets
+# BOTH: a real refusal that must block, and a relay/quote that must not.
+#
+# The three author classes exist because the population differs, not for symmetry: the coordinator's
+# "<GATE> <VERDICT> ELFOGADVA" is the routine fleet shape, and Cybersec measured a BUILDER's quote
+# ("QA FAIL elfogadva, javitottam") doing the same thing on the same run.
+RELAY = "CYBERED NO-GO ELFOGADVA (21038), vissza in_progress-be."
+QUOTE = "QA FAIL elfogadva, javitottam."
+
+# THE MEASURED DEFECT (QA 21135, Cybersec case A). The gate itself refused, was answered, and passed
+# on the delivered sha. Only the coordinator's acknowledgement in between made this FAILED.
+case("a coordinator's acknowledgement BEFORE the gate's own later GO does not block",
+     [c("cybered", "CYBERED NO-GO\nGate-SHA: " + SHA_A), c("mikrob", RELAY),
+      c("cybered", "CYBERED GO\nGate-SHA: " + SHA_B), c("qa", V % SHA_B)],
+     "AGREE", gates="qa,cybered", expect_sha=SHA_B)
+# CONTROL for it: the same history with the acknowledgement removed. Without this, the case above
+# passing would not tell us the acknowledgement was the cause.
+case("CONTROL: the same history without the acknowledgement -- the relay was the only difference",
+     [c("cybered", "CYBERED NO-GO\nGate-SHA: " + SHA_A),
+      c("cybered", "CYBERED GO\nGate-SHA: " + SHA_B), c("qa", V % SHA_B)],
+     "AGREE", gates="qa,cybered", expect_sha=SHA_B)
+# THE OTHER DIRECTION, and the reason the fix is not simply "ignore non-gate authors": if the relay
+# is the LAST word on that gate, the gate never answered it, and dropping it would close the card
+# over a possibly-open refusal. Cybersec's case C, which also shows why time order is load-bearing:
+# the two cases above and below differ ONLY in where the same line sits.
+case("...but the SAME acknowledgement AFTER the gate's GO cannot be judged, and does not close",
+     [c("cybered", "CYBERED NO-GO\nGate-SHA: " + SHA_A),
+      c("cybered", "CYBERED GO\nGate-SHA: " + SHA_B), c("qa", V % SHA_B), c("mikrob", RELAY)],
+     "UNSUPERSEDED", gates="qa,cybered", expect_sha=SHA_B)
+
+# THE BUILDER CLASS, measured by Cybersec in the same run (case G) and NOT covered by the
+# coordinator cases: the fix filters by ROLE, not by name, so a maker's quote behaves identically.
+case("a builder's quote of an old FAIL before the gate's PASS does not block",
+     [c("backend", QUOTE), c("qa", V % SHA_A), c("cybersec", S % SHA_A)],
+     "AGREE", gates="qa,cybersec", expect_sha=SHA_A)
+case("...and after the gate's PASS it is unjudgeable, exactly as the coordinator's is",
+     [c("qa", V % SHA_A), c("backend", QUOTE), c("cybersec", S % SHA_A)],
+     "UNSUPERSEDED", gates="qa,cybersec", expect_sha=SHA_A)
+
+# FAIL-CLOSED PRECONDITIONS. These two are what stop the new word from becoming a way through, and
+# each removes a different half of the reasoning:
+#   - nothing attributable to weigh the relay against -> it keeps blocking, unchanged;
+#   - the refusal names a commit -> it is judgeable, so it is judged, unchanged.
+case("FAIL-CLOSED: a relayed refusal with no verdict from that gate at all still blocks",
+     [c("mikrob", "QA FAIL -- a gate visszadobta"), c("cybersec", S % SHA_A)],
+     "FAILED", gates="qa,cybersec")
+case("FAIL-CLOSED: a non-gate refusal that NAMES a sha is judgeable, and still blocks",
+     [c("backend2", "QA FAIL\nGate-SHA: " + SHA_A), c("cybersec", S % SHA_A)],
+     "FAILED", gates="qa,cybersec")
+# ...and the same WITH the gate's own PASS present, which is what actually exercises the sha guard.
+# Measured: without this case, dropping `v[2] is not None` from the relay rule leaves the suite
+# green -- the case above cannot catch it, because there the rule is already stopped one step
+# earlier by having no gate verdict to fall back to. Two guards, two cases; neither covers both.
+case("FAIL-CLOSED: a non-gate refusal naming the PASSED sha blocks even with the gate's PASS present",
+     [c("qa", V % SHA_A), c("cybersec", S % SHA_A),
+      c("backend2", "QA FAIL\nGate-SHA: " + SHA_A)],
+     "FAILED", gates="qa,cybersec")
+# THE GATE'S OWN REFUSAL IS NEVER UNJUDGEABLE, whatever it omits. A sha makes a refusal checkable by
+# a stranger; the gate's own name makes it checkable by asking the gate. Only the second is missing
+# in the relay case, so the new word must not reach here. This case is deliberately kept even though
+# the code carries no line dedicated to it: the property is delivered by the fallback precondition
+# (a gate's own last refusal IS its role's last verdict, so there is no passing verdict to fall back
+# to), and a behaviour that holds only as a side effect is exactly the kind that a later, innocent
+# refactor drops.
+case("a gate's OWN later refusal blocks even with no Gate-SHA on it",
+     [c("qa", V % SHA_A), c("cybersec", S % SHA_A), c("qa", "QA FAIL\nujranyitva, nincs sha")],
+     "FAILED", gates="qa,cybersec")
+# PRECEDENCE. A readable refusal outranks an unreadable one: a card carrying both is bounced on the
+# one a human can act on, not parked.
+case("a real refusal on one gate outranks an unjudgeable one on another",
+     [c("qa", V % SHA_A), c("mikrob", "QA FAIL -- relay, no sha"),
+      c("cybersec", "CYBERSEC NO-GO\nGate-SHA: " + SHA_A)],
+     "FAILED", gates="qa,cybersec")
+
+# BYTE-FOR-BYTE REGRESSION CONTROLS (MikroB's acceptance condition, 21177). Not "still FAILED" and
+# "still AGREE" -- the whole line, because a new branch that reworded an existing answer would pass
+# a kind-only assertion while breaking every reader of the output.
+for label, comments, gates_, expect_, want in [
+    ("a lone real QA FAIL", [c("qa", "QA FAIL\nGate-SHA: " + SHA_A), c("cybersec", S % SHA_A)],
+     "qa,cybersec", None, "FAILED|QA=FAIL"),
+    ("a clean pass", [c("qa", V % SHA_A), c("cybersec", S % SHA_A)], "qa,cybersec", SHA_A,
+     "AGREE|%s|QA=%s; CYBERSEC=%s" % (SHA_A, SHA_A, SHA_A)),
+]:
+    n += 1
+    got = run(comments, gates_, expect_)
+    ok = got == want
+    print("%s %-9s <- %-9s %s" % ("OK  " if ok else "FAIL", "verbatim", "verbatim" if ok else "differs",
+                                  "UNCHANGED, byte for byte: " + label))
+    if not ok:
+        failures.append((label, want, got))
 
 print()
 print("selftest: %d case(s), %s" % (n, "PASS" if not failures else "FAIL"))
