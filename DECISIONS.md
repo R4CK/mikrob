@@ -9367,3 +9367,52 @@ olvasónak kell összeraknia és lefuttatnia, egy lépés, amit az olvasó ki tu
 **Hivatkozás:** kártya `1b4cd700` (backend3 lelete 2a6a7756/21168); `48565f81` (Peti NO-GO),
 `e80c011a`, Cybered NO-GO 19877; `src/web/agent-process.ts`,
 `src/__tests__/fork-upstream-conflict-guard.test.ts`, `src/__tests__/provider-env-adoption.test.ts`.
+
+---
+
+## 2026-09-06 -- 26ab08a2 (4. kör): egy nyugtázás, amit az ÁLLANDÓ kulcshalmaz ellen ellenőriztek, takaró
+
+**Cybersec NO-GO (382755b3, HIGH, komment 21295) elfogadva, és a leletet FÜGGETLENÜL
+reprodukáltam, mielőtt hozzányúltam.** Az `--accept-cleared=<szabályok>` kapcsoló azért kapott
+nevesített alakot, hogy ne legyen takaró: mondd meg, MELYIK szabályt zártad le. A validáció viszont
+a neveket a `set(baseline)` ellen nézte -- a baseline KULCSAI állandóak, csak az összeomlott
+részhalmaz mozog. Ezért egy statikus, minden szabályt felsoroló lista örökre érvényes volt, vagyis
+pontosan az a takaró, aminek a megelőzésére a nevesítés készült.
+
+**Mérve a szállított szkripten (saját reprodukció, változatlan parse-számmal):**
+
+```
+  mindkét rácsos szabály sötét, kapcsoló nélkül            -> exit 3   (helyes)
+  UGYANAZ a futás, --accept-cleared=<minden baseline-név>  -> exit 0   (a megkerülés)
+  KONTROLL: EGÉSZSÉGES futás ugyanazzal a statikus listával -> exit 0   (semmi nem veszi észre)
+```
+
+**A harmadik sor dönti el.** A statikus lista egy egészséges futáson ÁRTALMATLAN, tehát elüldögélhet
+egy wrapper-szkriptben örökre úgy, hogy semmi nem hívja fel rá a figyelmet -- egészen addig, amíg
+egy nap a szabályok tényleg elsötétednek, és akkor átengedi azt a futást. A nevesítés csak hosszabbá
+teszi a sort; egy elavult sort nem tesz bukóvá.
+
+**Miért nem fogta meg a saját O3 tesztem.** Az O3 azt méri, hogy EGY név nem ment fel egy MÁSIKAT.
+Ez igaz, és pontosan eggyel kevesebb, mint a kérdéses eset: egy lista, ami MINDET megnevezi. A
+REVIEW-ban írt védelmem ("a lista minden alkalommal más, nem lehet vakon szkriptelni") a fenti
+mérés szerint nem állt.
+
+**A javítás:** a nevek ehhez a FUTÁSHOZ mérődnek, nem az állandó kulcshalmazhoz --
+`cleared_now = {r | r != parse_key, baseline[r] > 0, counts[r] == 0}`, és `unknown = accepted_cleared
+- cleared_now`. Ettől a statikus lista már az ELSŐ egészséges futáson elbukik, tehát nem tud csendben
+megülni egy wrapperben.
+
+**A vállalt árak, kimondva (Cybersec maga sorolta fel őket, egyetértek):** szigorúbb lett -- egy
+megnevezett, de mégsem nullázott szabály mostantól hiba, nem no-op --, a hibaüzenet szövege
+megváltozott („did not go to zero in this run"), és a `(parse-error)` többé nem nevezhető meg.
+
+**Egy mutáció TÚLÉLTE az első körben, és ez lett a 35. eset.** A `parse_key` kizárásának törlése a
+`cleared_now`-ból 34/34 zöldet hagyott: semmi nem rögzítette. Márpedig viselkedésben KÜLÖNBÖZIK --
+a `(parse-error)` megnevezése inert elfogadássá válna, azaz a tool elvenne egy nevet és nem csinálna
+vele semmit, ami pont az az osztály, aminek a megelőzésére az O4 eset létezik. Az O8 ezt zárja.
+
+**Mérve.** 30 -> 35 eset. Két mutáció, mind piros a sajátján: a `set(baseline)`-re visszaállítás
+NÉGY esetet buktat, a `parse_key`-kizárás törlése egyet (az O8-at).
+
+**Hivatkozás:** kártya `26ab08a2`; Cybersec 21295 (R-A HIGH, R-B teljesítve);
+`store/lint-ratchet.sh`, `store/lint-ratchet.selftest.sh`.
