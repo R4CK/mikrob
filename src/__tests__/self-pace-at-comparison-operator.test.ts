@@ -46,7 +46,12 @@ describe('a comparison of a variable named "at" is not an at(1) redirect (card 7
     ['zero spaces around the operator', `if (${AT}${LE}0) return`],
     ['strict less-than against a bare name', `while (${AT} ${LT} n) ${AT} += 1`],
     ['the comparison at the very start of a body line', `${AT} ${LE} 0 and fail()`],
-    ['a heredoc operator, which at(1) cannot submit through either', `${AT} ${LT}${LT} JOB`],
+    // NAME CORRECTED (Cybersec F-2, comment 21173). It used to read "a heredoc operator, which
+    // at(1) cannot submit through either" -- true of THIS line, false as the general claim it
+    // sounded like, and `at <<'EOF' now` is the counter-example that walked through the gate while
+    // this case stayed green. What the assertion actually pins is the missing TIMESPEC, not the
+    // operator; the operator case is pinned in the R-5 block below.
+    ['a heredoc operator with NO timespec -- it is the missing timespec that makes this safe', `${AT} ${LT}${LT} JOB`],
     [
       'Cybersec 23941, verbatim: the condition inside a markdown code span',
       `proba: ${TICK}${AT} ${LE} 0 ${OR} ${AT} === email.length - 1${TICK} esetben`,
@@ -173,5 +178,79 @@ describe('the same comparison, with the batch(1) name (QA FAIL on the first roun
     expect(bash(doc(`if (${AT} ${LE} 0) return`))).toBe(false)
     expect(bash(doc(`${AT} ${LT} jobfile now + 5 minutes`))).toBe(true)
     expect(bash(doc(`${AT} ${LE}0 now`))).toBe(true)
+  })
+})
+
+// --- R-5 and the named-fd hole: the third round -----------------------------------------------
+//
+// TWO GATE FINDINGS ON THE SAME FILE, AND THE REASON THEY ARE HERE TOGETHER: both are the same
+// mistake at different spots -- an enumeration of the SPELLINGS someone thought of, standing in a
+// DENYING regex where a non-match is a permit.
+//
+// Cybersec F-1 (comment 21173): seven working at(1) submits went from denied to allowed when the
+// first round replaced the bare redirect branch. Each was measured with an argv/stdin-printing stub
+// rather than reasoned about -- X1 and X4 below produce argv and stdin BYTE-IDENTICAL to the
+// `at < job now` form that stayed denied. The shipped 169 tests noticed NONE of the seven, which is
+// the actual finding: a suite that stays green across a real behaviour change is not covering it.
+//
+// Cybersec comment 21227: the batch carve-out's premise ("something after the `=` means batch got an
+// OPERAND, therefore a usage error") is false for any token bash CONSUMES instead of passing on. A
+// named-fd redirect leaves batch operandless and submitting.
+describe('R-5: a timespec that is not adjacent to the file word is still a submit (card 79bb0364)', () => {
+  const FORMS: Array<[string, string]> = [
+    ['a heredoc redirect with a timespec', `${AT} ${LT}${LT}'EOF' now`],
+    ['a here-string with a timespec', `${AT} ${LT}${LT}${LT} 'echo hi' now`],
+    ['a flag between the file word and the timespec', `${AT} ${LT} job.txt -m now`],
+    ['another redirect between them', `${AT} ${LT} job.txt 2>/dev/null now`],
+    ['a flag AND its own argument between them', `${AT} ${LT} job.txt -q a now`],
+    ['a quoted file name containing a space', `${AT} ${LT} "my job" now`],
+    ['two redirects', `${AT} ${LT} /dev/null ${LT} job now`],
+  ]
+  for (const [name, line] of FORMS) {
+    it(`DENIES ${name}`, () => {
+      expect(bash(doc(line))).toBe(true)
+    })
+  }
+
+  // WHY THE WIDE BRANCH CARRIES A NARROWER TIMESPEC LIST, pinned as a case rather than left to the
+  // comment. With the full list, the "anything between them" branch reads a bare four-digit number
+  // as a timespec and denies ordinary code. This is the control that fails if someone later
+  // simplifies the union back to one list.
+  it('ALLOWS a comparison whose right-hand side contains a bare four-digit number', () => {
+    expect(bash(doc(`if (${AT} ${LT} len - 1500) return`))).toBe(false)
+  })
+
+  // ...and the other half of that trade: the ADJACENT branch keeps the full list, so a bare
+  // four-digit timespec right after the file word is still a submit. Dropping the union to the wide
+  // branch alone turns these two green.
+  it('DENIES a bare four-digit timespec adjacent to the file word', () => {
+    expect(bash(doc(`${AT} ${LT} job 1530`))).toBe(true)
+  })
+  it('DENIES the dotted date form adjacent to the file word', () => {
+    expect(bash(doc(`${AT} ${LT} job 12.25`))).toBe(true)
+  })
+})
+
+describe('the batch carve-out is not a door for tokens bash CONSUMES (card 79bb0364, 21227)', () => {
+  it('DENIES a named-fd output redirect after the "=" (bash 4.1+)', () => {
+    expect(bash(doc(`${BATCH} ${LE} {fd}>out`))).toBe(true)
+  })
+  it('DENIES a named-fd input redirect after the "="', () => {
+    expect(bash(doc(`${BATCH} ${LE} {fd}<in`))).toBe(true)
+  })
+
+  // THE STATED RESIDUAL, pinned in the direction it actually resolves so it is a decision and not an
+  // oversight. A substitution or an unquoted variable expanding to ZERO words also leaves batch
+  // operandless -- but it is indistinguishable AS TEXT from an ordinary comparison against a
+  // variable, which is the false positive this round exists to remove. Measured: all three read
+  // identically. The first two cases are the cost; the third is what makes paying it correct.
+  it('ALLOWS a zero-word substitution -- residual, indistinguishable from a comparison', () => {
+    expect(bash(doc(`${BATCH} ${LE} $(echo)`))).toBe(false)
+  })
+  it('ALLOWS an empty unquoted variable -- same residual', () => {
+    expect(bash(doc(`${BATCH} ${LE} $EMPTY`))).toBe(false)
+  })
+  it('ALLOWS a comparison against a variable -- the false positive that residual protects', () => {
+    expect(bash(doc(`if (${BATCH} ${LE} $count) return`))).toBe(false)
   })
 })

@@ -443,12 +443,62 @@ const AT_TIMESPEC_ARG = String.raw`["']*\s+["']*${AT_TIMESPEC}`
 // The inner `(?![0-9]*[<>&])` keeps the carve-out from being a door: what follows must be a WORD, so
 // `batch <= 2>/dev/null` / `<= >out` / `<= &1` are redirections rather than operands, still leave
 // batch with none, and stay denied.
-const BATCH_REDIRECT = String.raw`["']*\s*<(?!=\s+(?![0-9]*[<>&])\S)`
-// at(1): the redirect has to be followed by the file word and then a timespec. `[^\s;&|<]` keeps a
-// file name that STARTS with `=` matchable (that is the `at <=0 now` bypass) while refusing the
-// heredoc operator `<<`, and the run stops at a command separator so the timespec it finds has to
-// belong to THIS invocation rather than to a later command on the same line.
-const AT_REDIRECT = String.raw`["']*\s*<\s*["']*[^\s;&|<]\S*\s+["']*${AT_TIMESPEC}`
+//
+// THE CARVE-OUT'S PREMISE HELD FOR ONE CLASS OF TOKEN AND NOT ANOTHER (Cybersec, comment 21227 --
+// they attacked the exact expression I asked them to). The premise is "if something follows the `=`
+// after a space, batch got an OPERAND, therefore a usage error". That is false for any token bash
+// CONSUMES rather than passes on: a named-fd redirect (`{fd}>out`, `{fd}<in`, bash 4.1+) leaves
+// batch with argv(0) and the job body on stdin, byte-identical to the bare `<=` form the gate still
+// denies. The first enumeration listed the redirect SPELLINGS it had thought of -- numeric fds,
+// `>`, `&` -- rather than asking whether the token survives word-splitting as an operand, which is
+// the same shape of mistake as the class this whole card is about.
+//
+// `\{[A-Za-z_]\w*\}[<>]` closes the two named-fd forms at zero measured cost (Cybersec's 20-case
+// battery: 4 divergences before, 2 after, and both remaining ones are the residual below).
+//
+// WHAT IS NOT CLOSED, AND WHY IT IS A RESIDUAL RATHER THAN A MISSING BRANCH: a substitution or an
+// unquoted variable that expands to ZERO words -- `batch <= $(echo)`, `batch <= $EMPTY` -- also
+// leaves batch operandless, and is indistinguishable AS TEXT from `batch <= $count`, an ordinary
+// comparison this round exists to allow. Measured, all three read identically. Any `$`-aware
+// extension would re-open the false positive this round removed, so it goes on the stated residual
+// list next to `batch < n` instead of into the pattern.
+const BATCH_REDIRECT = String.raw`["']*\s*<(?!=\s+(?![0-9]*[<>&]|\{[A-Za-z_]\w*\}[<>])\S)`
+// at(1): the redirect has to be followed by a file word and then a timespec. `[^\s;&|<]` on the
+// ADJACENT branch keeps a file name that STARTS with `=` matchable (that is the `at <=0 now`
+// bypass), and the run stops at a command separator so the timespec it finds has to belong to THIS
+// invocation rather than to a later command on the same line.
+//
+// THE SENTENCE THAT USED TO STAND HERE SAID THAT CLASS "REFUSES THE HEREDOC OPERATOR `<<`", AND IT
+// WAS FALSE IN THE DANGEROUS DIRECTION (Cybersec F-2, comment 21173). `[^\s;&|<]` does not MATCH a
+// `<`, and in a denying regex not matching is PERMITTING -- so what read as a guard was a hole, and
+// `at <<'EOF' now` went through. The concrete assertion written under that name was fine (`at << JOB`
+// with no timespec really cannot submit); the NAME and the comment generalised it into a claim about
+// the operator that the very next probe disproved. Corrected rather than deleted, because the wrong
+// sentence is the useful part: it is why the operator is now spelled `<{1,3}` below.
+// at(1)'s redirect branch is a UNION of two readings, not one pattern (Cybersec R-5, comment 21173,
+// measured on a 34-case battery across five variants). The first round's single pattern demanded
+// that the timespec sit IMMEDIATELY after the file word, and it spelled the redirect operator as a
+// character class that `<<` and `<<<` do not match. In a DENYING regex a non-match is a PERMIT, so
+// both of those were holes rather than guards, and seven working submits changed from denied to
+// allowed. Each was measured with an argv/stdin-printing stub, not inferred: X1 (`<<'EOF' now`) and
+// X4 (`< job 2>/dev/null now`) produce argv and stdin BYTE-IDENTICAL to the `at < job now` form that
+// stayed denied. The rest put a flag, a flag with its own argument, a second redirect, or a quoted
+// filename containing a space between the file word and the timespec.
+//
+// WHY A UNION AND WHY THE WIDE BRANCH GETS A NARROWER WORD LIST. The wide branch alone, carrying the
+// full timespec list, false-denies ordinary code: `if (at < len - 1500) return` matches, because a
+// bare four-digit number is a valid at(1) timespec. Dropping the bare `\d{3,4}` and `\d{1,2}[./]\d{1,2}`
+// alternatives from the WIDE branch removes that, and the ADJACENT branch keeps its full list, so
+// `at < job 1530` and `at < job 12.25` stay denied. Neither branch alone reaches 34/34; the union
+// does, and Cybersec's own five-variant table is what shows the intermediate candidates do not.
+//
+// AND THE MEASUREMENT THAT MATTERS MORE THAN THE MUTATION SCORE, in Cybersec's words: R-5 changes
+// behaviour on seven shapes and the 169 shipped tests notice NONE of them. A suite that stays green
+// across a real behaviour change is not evidence of coverage; the seven shapes are pinned below.
+const AT_TIMESPEC_WORDY = String.raw`(?:now|noon|midnight|teatime|today|tomorrow|next\b|\+\s*\d|\d{1,2}:\d{2}|\d{1,2}\s*(?:am|pm)\b|(?:mon|tue|wed|thu|fri|sat|sun)\b|(?:jan|feb|mar|apr|may|jun|jul|aug|sep|oct|nov|dec)\b)`
+const AT_REDIRECT_ADJACENT = String.raw`["']*\s*<{1,3}\s*["']*[^\s;&|<]\S*\s+["']*${AT_TIMESPEC}`
+const AT_REDIRECT_ANYWHERE = String.raw`["']*\s*<{1,3}[^;&|\n]*?\s["']*${AT_TIMESPEC_WORDY}`
+const AT_REDIRECT = String.raw`(?:${AT_REDIRECT_ADJACENT}|${AT_REDIRECT_ANYWHERE})`
 const AT_INVOCATION = String.raw`(?=${AT_BARE}|${AT_FLAG}|${AT_REDIRECT}|${AT_TIMESPEC_ARG})`
 const BATCH_INVOCATION = String.raw`(?=${AT_BARE}|${AT_FLAG}|${BATCH_REDIRECT}|${AT_TIMESPEC_ARG})`
 // `launchctl` needed the SAME narrowing, for a different reason than at/batch, and

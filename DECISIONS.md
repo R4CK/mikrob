@@ -8690,3 +8690,62 @@ whitespace-osztály vissza a két alakra -> 2 piros; a `\r`-strip elvéve -> 1 p
 (komment-only mutáció) -> rc=0, nulla piros. 67 selftest-eset (61-ről).
 
 **Hivatkozás:** kártya `3ae71df1`, Cybersec 21120 (F-1/F-2/F-3), Cybered 21147, MikroB 21125.
+
+## 2026-09-06 10:30 -- 79bb0364 (3. kör) -- R-5, F-2, és a kivágás nem lett ajtó a nevesített fd-nek
+
+**Először a folyamat-hiba, mert azt QA jogosan írta fel (21218).** MikroB 21174-es ruling-ja EGY körre
+három tételt írt elő (második bináris + R-5 + F-2); a második kör CSAK a batch-részt szállította, és a
+REVIEW (21209) egy szóval sem mondta, hogy a másik kettő kimaradt. Nem halasztás volt, hanem
+elmaradás -- pontosan az a minta, amiről senki nem tudja, hogy még nyitva van, amíg valaki újra rá
+nem botlik. Ez a kör mindhármat leszállítja.
+
+**R-5 (Cybersec F-1, 21173).** Az `at(1)` átirányítás-ága mostantól KÉT olvasat UNIÓJA. Az első kör
+egyetlen mintája (a) azt követelte, hogy a timespec KÖZVETLENÜL a fájl-szó után álljon, és (b) a
+kisebb-jel operátort olyan karakterosztállyal írta le, amit a kétszeres és háromszoros alak nem
+illeszt. Egy TILTÓ regexben a nem-illesztés ENGEDÉS, tehát ami őrnek olvasódott, az lyuk volt: hét
+működő beküldés váltott tiltásról engedésre. Nem következtetés -- argv/stdin-t kiíró csonkkal mérve,
+az X1 és X4 alak argv-je és stdinje BÁJTRA AZONOS a továbbra is tiltott, szomszédos-timespeces
+alakkal.
+
+**Miért unió, és miért szűkebb szó-lista a széles ágon.** A széles ág teljes timespec-listával valós
+kódot tilt, mert a csupasz négyjegyű szám érvényes timespec (a mért eset egy `len - 1500`
+összehasonlítás). A csupasz négyjegyű és a pontozott dátum-alternatíva elhagyása a SZÉLES ágról ezt
+megszünteti, a SZOMSZÉDOS ág pedig megtartja a teljes listát, tehát a fájl-szó után közvetlenül álló
+négyjegyű és pontozott-dátum timespec tiltott marad. Egyik ág sem elég önmagában, és ez mérve is így
+jön ki.
+
+**A kivágás nem lett ajtó (Cybersec 21227).** A batch-kivágás premisszája ("ha az egyenlőségjel után
+szóközzel áll valami, akkor batch OPERANDUST kapott, tehát usage error") hamis minden olyan tokenre,
+amit a bash ELFOGYASZT ahelyett hogy továbbadna. A nevesített fd-átirányítás argv(0)-t és a job
+törzsét stdinre adja, bájtra azonosan a továbbra is tiltott csupasz alakkal. Az első enumeráció a
+redirect-ÍRÁSMÓDOKAT sorolta fel, nem azt kérdezte, hogy a token operandusként túléli-e a
+szó-felbontást -- ugyanaz a hibaalak, amiről ez a kártya szól. A kapcsos-zárójeles fd-név kizárása
+mérve nulla költséggel zárja.
+
+**ÚJ, KIMONDOTT MARADÉK (a szigorú kisebb-jeles alak mellé):** a nulla szóra kiértékelődő
+behelyettesítés és a nulla szóra kiértékelődő idézetlen változó szintén operandus nélkül hagyja a
+batch-et, viszont SZÖVEGKÉNT megkülönböztethetetlen egy változóval való valódi összehasonlítástól,
+amit ez a kör épp engedni akar. Bármelyik dollárjelre kiterjesztett őr visszahozná a most
+megszüntetett hamis pozitívot. Mindhárom alak be van pinelve tesztként: kettő mint a maradék ára,
+egy mint az ok, amiért az ár helyes.
+
+**A KIMONDOTT MARADÉKBÓL KIKERÜLT:** a hét at(1)-alak, amit Cybersec F-1-ként mért -- azok mostantól
+tiltottak, nem maradék.
+
+**Mutációs mérés:** a szomszédos-egyedül alak (a 2. kör állapota) -> 7 piros; a széles ág egyedül ->
+2 piros; a széles ág teljes listával -> 1 piros (a hamis-pozitív kontroll); a nevesített-fd őr elvéve
+-> 2 piros; KONTROLL komment-mutáció -> 0 piros. 49 teszteset a fájlban (34-ről).
+
+**F-2.** A fájl-komment és a teszt-név egy hamis ÁLTALÁNOS állítást rögzített ("a karakterosztály
+elutasítja a heredoc-operátort"), amit az X1 alak cáfol. A konkrét assert jó volt, a neve nem. Nem
+töröltem a rossz mondatot, hanem javítva megtartottam: az a magyarázat, amiért az operátor most
+ismétlés-jelöléssel van leírva.
+
+**Amit egyikünk sem tudott végrehajtással igazolni, és Cybersec is kimondta:** hogy a timespec nélküli
+átirányítás usage-hibával kilép. Az at(1) dokumentált felületéből következik, de a bináris nincs
+telepítve ezen a gépen, tehát ez a pont dokumentáció-alapú.
+
+**Ki döntött:** QA (a hiányzó hatókör felírása), MikroB (21222: ugyanebbe a körbe), Cybersec (R-5 és
+a nevesített-fd őr előre lemérve), backend3 (végrehajtás + független újramérés).
+
+**Hivatkozás:** kártya `79bb0364`, kommentek 21173 / 21218 / 21222 / 21227.
