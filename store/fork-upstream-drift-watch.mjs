@@ -52,12 +52,17 @@ async function openCards(token) {
 }
 
 /** Rule 6a: a planned card without an assignee is a rule violation the moment it is created, and
- *  the same rule says the load is shared between equal siblings rather than piled on one. The
- *  count comes from the board we already fetched, so this costs no extra request. A tie, or any
- *  surprise, resolves to `backend`: a card with an assignee beats a card without one. */
+ *  the same rule says the load is shared between equal siblings rather than piled on one. Rule 3a
+ *  names backend<->backend2 as the sibling pair, but its "pl." is an example and backend3 does the
+ *  same marveen-infra work today, so all three are counted -- balancing across two of three would
+ *  quietly starve the least loaded one. The count comes from the board already fetched, so this
+ *  costs no extra request. Ties and surprises resolve to the first name: a card with an assignee
+ *  beats a card without one, and MikroB re-balances if the count is not the whole story. */
+const BE_SIBLINGS = ['backend', 'backend2', 'backend3']
+
 function pickAssignee(rows) {
   const load = (who) => rows.filter((c) => String(c.assignee || '') === who).length
-  return load('backend2') < load('backend') ? 'backend2' : 'backend'
+  return BE_SIBLINGS.reduce((best, who) => (load(who) < load(best) ? who : best), BE_SIBLINGS[0])
 }
 
 function readState() {

@@ -55,12 +55,26 @@ VRAM_GUARD_UNREADABLE="${VRAM_GUARD_UNREADABLE:-hold}"
 # first so a normal Linux host works unchanged.
 NVIDIA_SMI="${VRAM_GUARD_NVIDIA_SMI:-}"
 SMI_TIMEOUT="${VRAM_GUARD_SMI_TIMEOUT:-5}"
+# The two ATTRIBUTION inputs (card efd18ee4). Empty = probe for real; a value = the test seam, the
+# same shape --metrics-json already uses so the selftest never needs a GPU or a running ollama.
+# Env defaults exist for the same reason VRAM_GUARD_NVIDIA_SMI does: a selftest must be able to
+# make the whole run hermetic ONCE, instead of remembering to pass a flag at every call site --
+# a case added without the flag would silently start reading the developer's live ollama.
+OWN_VRAM_MIB="${VRAM_GUARD_OWN_VRAM_MIB:-}"
+LOCK_HELD="${VRAM_GUARD_LOCK_HELD:-}"
+OLLAMA_HOST="${OLLAMA_HOST:-http://127.0.0.1:11434}"
+OLLAMA_PS_TIMEOUT="${VRAM_GUARD_OLLAMA_TIMEOUT:-2}"
+# Must stay the same path local-llm.sh serialises generation on, or the "our own job is running"
+# state is measured against a lock nobody takes.
+GPU_LOCK="${LOCAL_LLM_GPU_LOCK_PATH:-/tmp/local-llm-gpu.lock}"
 
 while [ $# -gt 0 ]; do
   case "$1" in
     --config) CONFIG="$2"; shift 2 ;;
     --state) STATE="$2"; shift 2 ;;
     --metrics-json) METRICS_JSON="$2"; shift 2 ;;
+    --own-vram-mib) OWN_VRAM_MIB="$2"; shift 2 ;;
+    --lock-held) LOCK_HELD="$2"; shift 2 ;;
     --now) NOW="$2"; shift 2 ;;
     *) echo "vram-guard-check.sh: unknown arg: $1" >&2; exit 2 ;;
   esac
@@ -131,13 +145,71 @@ if [ -z "$METRICS_JSON" ]; then
   METRICS_JSON="$(read_vram_metrics)"
 fi
 
+# ---- attribution ------------------------------------------------------------------------------
+# WHY A PERCENTAGE ALONE CANNOT DECIDE THIS (card efd18ee4, MikroB comment 21170 on 108c7b10).
+#
+# A VRAM reading says HOW FULL the card is, never WHO filled it -- and on this box the difference
+# is the whole answer. Measured 2026-09-06: total 6144 MiB, 1649 MiB resident with ollama stopped
+# (desktop/WSL baseline, 26.8%), and the default local model's own weights are 4466 MiB. Our own
+# WARM model therefore reads ~99.5% -- past hard_pct -- so the threshold shipped in 108c7b10 would
+# HOLD every local dispatch precisely in the steady state the warm model exists to create. That is
+# not a tuning problem: no threshold separates "our 4.4 GB model is loaded" from "something else
+# ate 4.4 GB", because the number is identical.
+#
+# So the pressure that decides is the FOREIGN share: used minus what ollama says it is holding.
+#
+# The lock is not redundant with that subtraction, and the reason is narrow: while a model is being
+# LOADED, VRAM climbs before /api/ps reports it, so the subtraction reads 0 and the whole load
+# looks foreign. local-llm.sh holds this flock across exactly that window.
+read_own_vram_mib() {
+  local out
+  if ! out="$(curl -fsS -m "$OLLAMA_PS_TIMEOUT" "$OLLAMA_HOST/api/ps" 2>/dev/null)"; then
+    # Unreachable or stopped (the gpu-crashloop-guard stops it on purpose). Nothing of ours is
+    # resident that we can prove, so nothing is subtracted and the whole reading counts as foreign.
+    # That errs toward HOLD, i.e. toward ONLINE, which is the direction both the parent card and
+    # CLAUDE.md rule 16 require on doubt.
+    printf '0
+'; return 0
+  fi
+  printf '%s' "$out" | python3 -c '
+import json, sys
+try:
+    d = json.load(sys.stdin)
+    total = sum(int(m.get("size_vram") or 0) for m in (d.get("models") or []))
+except Exception:
+    # A present-but-unparseable answer is doubt, not absence: attribute nothing to ourselves.
+    total = 0
+print(total // (1024 * 1024))
+'
+}
+
+# `flock -n` acquires and releases immediately when the lock is free; it only fails when someone
+# else holds it. Probing this way costs a microsecond of contention and needs no bookkeeping of
+# our own -- a PID file would have to be kept truthful across crashes, which is how a flag that
+# records a decision outlives the decision.
+probe_gpu_lock() {
+  if [ ! -e "$GPU_LOCK" ]; then printf 'no
+'; return 0; fi
+  if flock -n "$GPU_LOCK" true 2>/dev/null; then printf 'no
+'; else printf 'yes
+'; fi
+}
+
+[ -n "$OWN_VRAM_MIB" ] || OWN_VRAM_MIB="$(read_own_vram_mib)"
+[ -n "$LOCK_HELD" ] || LOCK_HELD="$(probe_gpu_lock)"
+
 # ---- decision ---------------------------------------------------------------------------------
-python3 - "$CONFIG" "$STATE" "$METRICS_JSON" "$NOW" "$VRAM_GUARD_UNREADABLE" <<'PYEOF'
+python3 - "$CONFIG" "$STATE" "$METRICS_JSON" "$NOW" "$VRAM_GUARD_UNREADABLE" "$OWN_VRAM_MIB" "$LOCK_HELD" <<'PYEOF'
 import json
 import sys
 
-config_path, state_path, metrics_json, now_s, unreadable_policy = sys.argv[1:6]
+config_path, state_path, metrics_json, now_s, unreadable_policy, own_vram_s, lock_held_s = sys.argv[1:8]
 now = int(now_s)
+try:
+    own_vram_mib = max(0, int(own_vram_s))
+except ValueError:
+    own_vram_mib = 0
+lock_held = lock_held_s == 'yes'
 
 DEFAULTS = {
     "soft_pct": 85,
@@ -169,10 +241,32 @@ used = metrics["used_mib"]
 total = metrics["total_mib"]
 pct = 100.0 * used / total
 
+# ---- three-state attribution (card efd18ee4) ----
+# The tier is computed from the FOREIGN share, not from the raw reading. See the shell header
+# above for the measurement that makes this necessary rather than merely nicer.
+#
+# own_vram > used means the two measurements disagree with each other -- ollama claiming more VRAM
+# than the device reports is an accounting fault, not evidence that the GPU is free. Attributing
+# nothing to ourselves in that case leaves the whole reading foreign, which points at HOLD; the
+# opposite (clamping foreign to zero) would ADMIT on exactly the input we understand least.
+attributable = own_vram_mib if own_vram_mib <= used else 0
+foreign = used - attributable
+foreign_pct = 100.0 * foreign / total
+detail = "own=%d foreign=%d (%.1f%%)" % (attributable, foreign, foreign_pct)
+
+# STATE 1: our own job holds the GPU lock. The load is ours by construction, including the model
+# LOAD window that /api/ps cannot see yet, so this reading carries no information about foreign
+# pressure. It is also not written to the state file: feeding our own load into the hysteresis is
+# how the tier would learn to distrust us. The next lock-free run resumes from the last confirmed
+# tier.
+if lock_held:
+    print("ADMIT own-busy %d/%d MiB (%.1f%%) %s" % (used, total, pct, detail))
+    sys.exit(0)
+
 instantaneous = "ok"
-if pct >= config["hard_pct"]:
+if foreign_pct >= config["hard_pct"]:
     instantaneous = "hard"
-elif pct >= config["soft_pct"]:
+elif foreign_pct >= config["soft_pct"]:
     instantaneous = "soft"
 
 try:
@@ -212,6 +306,6 @@ except OSError as e:
     print("vram-guard-check.sh: could not persist state (%s); hysteresis degraded" % e, file=sys.stderr)
 
 verdict = "ADMIT" if current == "ok" else "HOLD"
-print("%s %s %d/%d MiB (%.1f%%)" % (verdict, current, used, total, pct))
+print("%s %s %d/%d MiB (%.1f%%) %s" % (verdict, current, used, total, pct, detail))
 sys.exit(0 if verdict == "ADMIT" else 1)
 PYEOF

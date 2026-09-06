@@ -41,6 +41,14 @@ check() {
 
 st() { printf '%s/state-%s.json' "$tmpdir" "$1"; }
 
+# HERMETICITY FOR THE ATTRIBUTION INPUTS (card efd18ee4). Without these two, every case below would
+# read the developer's live ollama and the real GPU lock, so the same selftest would give different
+# verdicts on a machine with a model resident -- an environment-dependent test that looks like a
+# deterministic one. Set once here rather than per call site: a case added later without the flag
+# would be the silent regression. The attribution cases override them explicitly.
+export VRAM_GUARD_OWN_VRAM_MIB=0
+export VRAM_GUARD_LOCK_HELD=no
+
 # ---- tiers ------------------------------------------------------------------------------------
 check "below-soft admits" 0 "ADMIT ok" \
   bash "$GUARD" --config "$cfg" --state "$(st a)" --now 1000 \
@@ -173,6 +181,93 @@ check "a missing config falls back to the documented defaults" 1 "HOLD hard" \
 
 check "an unknown argument is refused loudly, not ignored" 2 "unknown arg" \
   bash "$GUARD" --nonsense
+
+
+# ---- three-state attribution (card efd18ee4) ----------------------------------------------------
+# THE PAIR THAT IS THE WHOLE CARD, at the numbers measured on this box on 2026-09-06: total 6144
+# MiB, 1649 MiB resident with ollama stopped, the default local model's weights 4466 MiB. Same
+# device reading, opposite verdicts, and the only thing that differs is WHO the memory belongs to.
+#
+# SUSTAINED on purpose. A single sample proves nothing here: the hysteresis admits the FIRST
+# reading whatever the tier, so a one-shot assertion passes just as well on a guard with no
+# attribution at all -- measured, that exact mutation survived the first version of this case.
+# Held past sustained_seconds, the two designs finally disagree.
+s="$(st own)"
+bash "$GUARD" --config "$cfg" --state "$s" --now 1000 --lock-held no --own-vram-mib 4466 \
+  --metrics-json '{"used_mib":6115,"total_mib":6144}' >/dev/null 2>&1
+check "our own WARM model does not hold us out, even sustained (the defect this card is about)" 0 "ADMIT ok" \
+  bash "$GUARD" --config "$cfg" --state "$s" --now 1031 --lock-held no --own-vram-mib 4466 \
+    --metrics-json '{"used_mib":6115,"total_mib":6144}'
+# CONTROL: the identical device reading with nothing of ours resident is a FOREIGN 99.5%, and must
+# hold. Without this arm the case above would pass just as well on a guard that admits everything.
+s="$(st fgn)"
+check "the same reading with nothing of ours resident is foreign pressure (first sample)" 0 "ADMIT ok" \
+  bash "$GUARD" --config "$cfg" --state "$s" --now 1000 --lock-held no --own-vram-mib 0 \
+    --metrics-json '{"used_mib":6115,"total_mib":6144}'
+check "...and holds once sustained" 1 "HOLD hard" \
+  bash "$GUARD" --config "$cfg" --state "$s" --now 1031 --lock-held no --own-vram-mib 0 \
+    --metrics-json '{"used_mib":6115,"total_mib":6144}'
+
+# STATE 1: our own job holds the GPU lock. Admits even at a foreign-looking 99.5% with nothing
+# attributable yet -- that is exactly the model-LOAD window /api/ps cannot see.
+check "state 1: our own job holds the lock -> admit" 0 "ADMIT own-busy" \
+  bash "$GUARD" --config "$cfg" --state "$(st l1)" --now 1000 --lock-held yes --own-vram-mib 0 \
+    --metrics-json '{"used_mib":6115,"total_mib":6144}'
+
+# ...and the reading is NOT fed to the hysteresis. Our own load must not teach the tier to distrust
+# us: after two sustained own-busy samples the confirmed tier is still whatever it was.
+s="$(st l2)"
+bash "$GUARD" --config "$cfg" --state "$s" --now 1000 --lock-held yes --own-vram-mib 0 \
+  --metrics-json '{"used_mib":6115,"total_mib":6144}' >/dev/null 2>&1
+bash "$GUARD" --config "$cfg" --state "$s" --now 1100 --lock-held yes --own-vram-mib 0 \
+  --metrics-json '{"used_mib":6115,"total_mib":6144}' >/dev/null 2>&1
+check "state 1 does not poison the hysteresis with our own load" 0 "ADMIT ok" \
+  bash "$GUARD" --config "$cfg" --state "$s" --now 1200 --lock-held no --own-vram-mib 4466 \
+    --metrics-json '{"used_mib":6115,"total_mib":6144}'
+
+# STATE 2: lock free, nothing of ours resident, high pressure -> foreign, hold.
+s="$(st s2)"
+bash "$GUARD" --config "$cfg" --state "$s" --now 2000 --lock-held no --own-vram-mib 0 \
+  --metrics-json '{"used_mib":5900,"total_mib":6144}' >/dev/null 2>&1
+check "state 2: foreign load holds" 1 "HOLD hard" \
+  bash "$GUARD" --config "$cfg" --state "$s" --now 2031 --lock-held no --own-vram-mib 0 \
+    --metrics-json '{"used_mib":5900,"total_mib":6144}'
+
+# STATE 3: lock free, our model resident, low foreign pressure -> admit.
+s="$(st s3)"
+bash "$GUARD" --config "$cfg" --state "$s" --now 3000 --lock-held no --own-vram-mib 4466 \
+  --metrics-json '{"used_mib":6000,"total_mib":6144}' >/dev/null 2>&1
+check "state 3: our model resident and the rest quiet -> admit, sustained" 0 "ADMIT ok" \
+  bash "$GUARD" --config "$cfg" --state "$s" --now 3031 --lock-held no --own-vram-mib 4466 \
+    --metrics-json '{"used_mib":6000,"total_mib":6144}'
+
+# THE ROW THE CARD DOES NOT LIST, and it has to be decided somewhere: lock free, our model resident,
+# and foreign pressure high ON TOP of it. Subtracting our share still leaves 5.8 GB of someone
+# else's, so this holds. Deciding it by the same subtraction rather than by a fourth special case is
+# why the mechanism is attribution and not a case table.
+s="$(st s4)"
+bash "$GUARD" --config "$cfg" --state "$s" --now 4000 --lock-held no --own-vram-mib 200 \
+  --metrics-json '{"used_mib":6100,"total_mib":6144}' >/dev/null 2>&1
+check "state 4 (unlisted): our model resident AND a foreign hog -> hold" 1 "HOLD hard" \
+  bash "$GUARD" --config "$cfg" --state "$s" --now 4031 --lock-held no --own-vram-mib 200 \
+    --metrics-json '{"used_mib":6100,"total_mib":6144}'
+
+# ACCOUNTING FAULT: ollama claiming more VRAM than the device reports. The two measurements
+# disagree, so nothing is attributed to us and the whole reading stays foreign -- the direction that
+# holds. Clamping foreign to zero instead would ADMIT on the input we understand least.
+s="$(st bad)"
+bash "$GUARD" --config "$cfg" --state "$s" --now 5000 --lock-held no --own-vram-mib 99999 \
+  --metrics-json '{"used_mib":6100,"total_mib":6144}' >/dev/null 2>&1
+check "own > used is an accounting fault, and it holds rather than admits" 1 "HOLD hard" \
+  bash "$GUARD" --config "$cfg" --state "$s" --now 5031 --lock-held no --own-vram-mib 99999 \
+    --metrics-json '{"used_mib":6100,"total_mib":6144}'
+
+# The verdict line has to CARRY the attribution, or card a1c4dc51 has nothing to surface and a
+# human reading a HOLD cannot tell whose memory caused it.
+check "the line names the attribution, not just the percentage" 0 "own=4466 foreign=1649" \
+  bash "$GUARD" --config "$cfg" --state "$(st out)" --now 6000 --lock-held no --own-vram-mib 4466 \
+    --metrics-json '{"used_mib":6115,"total_mib":6144}'
+
 
 if [ "$failed" -eq 0 ]; then
   echo "selftest: $passed passed, 0 failed"
