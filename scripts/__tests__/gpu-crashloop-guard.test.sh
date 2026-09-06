@@ -309,6 +309,150 @@ ALERT_LINE="$(echo "$OUT" | grep "ALERT_DRYRUN" | head -1)"
   && pass "alert: the ALERT itself carries the full restore command, not just unmask" \
   || fail "alert: a bare unmask would lose the unit and the ALERT does not say so ($ALERT_LINE)"
 
+# ---------------------------------------------------------------------------
+# THE FLAG HAS TO DESCRIBE THE MACHINE NOW (Cybersec on card 970156ce, folded
+# into d5c05548 by MikroB). The flag is consumed by the landing gate as "the
+# guard is deliberately holding ollama down, so skip these two routing cases".
+# Nothing ever deleted it, so after the documented end of an incident -- a human
+# unmasks -- those cases would be skipped forever on a healthy machine, silently.
+# These cases run the guard with NO crash-loop signature, i.e. the ordinary path
+# a recovered machine takes from then on.
+# ---------------------------------------------------------------------------
+# A boots fixture that does NOT trigger detection: one short boot is below
+# MIN_SHORT_BOOTS, so the guard reaches its "no signature" branch.
+quiet_case() {
+  local st="$1"
+  write_short_dxg_boots "$st/boots.txt" 1 60
+  echo "nothing interesting here" > "$st/kernel.txt"
+  date -d '-1 day' +%s > "$st/.gpu-crashloop-guard-baseline" 2>/dev/null || date +%s > "$st/.gpu-crashloop-guard-baseline"
+}
+
+echo ""
+echo "(l) a still-masked unit keeps its flag"
+ST="$(fresh_case l)"
+UNITS_DIR="$ST/units"; SCTL="$ST/systemctl"
+mkdir -p "$UNITS_DIR"
+ln -s /dev/null "$UNITS_DIR/ollama.service"
+write_fake_systemctl "$SCTL" "$UNITS_DIR"
+quiet_case "$ST"
+echo '{"detected_at": 1, "short_boots": 4, "units": "ollama.service", "reason": "dxgkrnl GPU-passthrough crash-loop"}' > "$ST/.gpu-crashloop-guard-masked.json"
+OUT="$(run_guard_masking "$ST" "$ST/boots.txt" "$ST/kernel.txt" "$SCTL" "$UNITS_DIR")"
+grep -q '"units": "ollama.service"' "$ST/.gpu-crashloop-guard-masked.json" 2>/dev/null \
+  && pass "reconcile: a genuinely masked unit keeps its flag" \
+  || fail "reconcile: the flag was dropped for a unit that IS masked ($OUT)"
+
+echo ""
+echo "(m) a MANUAL unmask deletes the flag"
+ST="$(fresh_case m)"
+UNITS_DIR="$ST/units"; SCTL="$ST/systemctl"
+mkdir -p "$UNITS_DIR"
+# What the documented restore leaves behind: a real unit file back at the path.
+printf '[Unit]\nDescription=restored by hand\n' > "$UNITS_DIR/ollama.service"
+write_fake_systemctl "$SCTL" "$UNITS_DIR"
+quiet_case "$ST"
+echo '{"detected_at": 1, "short_boots": 4, "units": "ollama.service", "reason": "dxgkrnl GPU-passthrough crash-loop"}' > "$ST/.gpu-crashloop-guard-masked.json"
+OUT="$(run_guard_masking "$ST" "$ST/boots.txt" "$ST/kernel.txt" "$SCTL" "$UNITS_DIR")"
+[ ! -f "$ST/.gpu-crashloop-guard-masked.json" ] \
+  && pass "reconcile: the flag is REMOVED once the unit is no longer masked" \
+  || fail "reconcile: the flag outlived the mask -- the routing cases stay skipped forever ($OUT)"
+echo "$OUT" | grep -q "flag REMOVED" \
+  && pass "reconcile: the removal is stated in the log, not silent" \
+  || fail "reconcile: nothing in the log says the flag was removed ($OUT)"
+
+echo ""
+echo "(n) a partial unmask keeps only what is still true"
+ST="$(fresh_case n)"
+UNITS_DIR="$ST/units"; SCTL="$ST/systemctl"
+mkdir -p "$UNITS_DIR"
+ln -s /dev/null "$UNITS_DIR/ollama.service"
+printf '[Unit]\nDescription=back\n' > "$UNITS_DIR/other.service"
+write_fake_systemctl "$SCTL" "$UNITS_DIR"
+quiet_case "$ST"
+echo '{"detected_at": 1, "short_boots": 4, "units": "ollama.service other.service", "reason": "dxgkrnl GPU-passthrough crash-loop"}' > "$ST/.gpu-crashloop-guard-masked.json"
+run_guard_masking "$ST" "$ST/boots.txt" "$ST/kernel.txt" "$SCTL" "$UNITS_DIR" >/dev/null
+grep -q '"units": "ollama.service"' "$ST/.gpu-crashloop-guard-masked.json" 2>/dev/null \
+  && pass "reconcile: the still-masked unit survives" \
+  || fail "reconcile: the still-masked unit was dropped"
+grep -q 'other.service' "$ST/.gpu-crashloop-guard-masked.json" 2>/dev/null \
+  && fail "reconcile: the flag still claims a unit that is NOT masked" \
+  || pass "reconcile: the unmasked unit is gone from the flag"
+
+echo ""
+echo "(o) an UNREADABLE flag is left alone, not treated as refuted"
+ST="$(fresh_case o)"
+UNITS_DIR="$ST/units"; SCTL="$ST/systemctl"
+mkdir -p "$UNITS_DIR"
+printf '[Unit]\nDescription=back\n' > "$UNITS_DIR/ollama.service"
+write_fake_systemctl "$SCTL" "$UNITS_DIR"
+quiet_case "$ST"
+printf 'this is not json at all\n' > "$ST/.gpu-crashloop-guard-masked.json"
+OUT="$(run_guard_masking "$ST" "$ST/boots.txt" "$ST/kernel.txt" "$SCTL" "$UNITS_DIR")"
+[ -f "$ST/.gpu-crashloop-guard-masked.json" ] \
+  && pass "reconcile: a flag we cannot parse is not a flag we can refute -- kept" \
+  || fail "reconcile: an unparseable flag was deleted"
+echo "$OUT" | grep -qi "unreadable\|malformed" \
+  && pass "reconcile: the unreadable flag is reported, not swallowed" \
+  || fail "reconcile: nothing said the flag could not be read ($OUT)"
+
+echo ""
+echo "(p) MASK_DRYRUN must not reconcile a flag a REAL run wrote"
+ST="$(fresh_case p)"
+UNITS_DIR="$ST/units"; SCTL="$ST/systemctl"
+mkdir -p "$UNITS_DIR"
+# The unit is NOT masked here, so a reconcile WOULD delete the flag -- that is what makes this a
+# real control. Without the fake systemctl the guard would ask the HOST about ollama.service, which
+# on this machine genuinely IS masked, and the case would pass no matter what the code did (measured:
+# the dry-run mutant survived exactly that way).
+printf '[Unit]\nDescription=not masked\n' > "$UNITS_DIR/ollama.service"
+write_fake_systemctl "$SCTL" "$UNITS_DIR"
+quiet_case "$ST"
+echo '{"detected_at": 1, "short_boots": 4, "units": "ollama.service", "reason": "dxgkrnl GPU-passthrough crash-loop"}' > "$ST/.gpu-crashloop-guard-masked.json"
+GPU_GUARD_SYSTEMCTL="$SCTL" GPU_GUARD_USER_UNIT_DIR="$UNITS_DIR" \
+  run_guard "$ST" "$ST/boots.txt" "$ST/kernel.txt" >/dev/null
+[ -f "$ST/.gpu-crashloop-guard-masked.json" ] \
+  && pass "reconcile: a dry run masks nothing, so it deletes nothing" \
+  || fail "reconcile: a DRY RUN deleted a real run's flag"
+
+# ---------------------------------------------------------------------------
+# (q) THE RESTORE IS ASKABLE, not buried in a source comment (MikroB's point 3
+#     on d5c05548). Measured: `unmask` alone removes the /dev/null symlink and
+#     stops, leaving the unit at LoadState=not-found -- the service is gone, not
+#     restored. Whoever needs that fact is mid-incident.
+# ---------------------------------------------------------------------------
+echo ""
+echo "(q) --restore-hint prints the command that actually works"
+ST="$(fresh_case q)"
+UNITS_DIR="$ST/units"; SCTL="$ST/systemctl"
+mkdir -p "$UNITS_DIR"
+echo '{"detected_at": 1, "short_boots": 4, "units": "ollama.service", "reason": "dxgkrnl GPU-passthrough crash-loop"}' > "$ST/.gpu-crashloop-guard-masked.json"
+OUT="$(GPU_GUARD_STATE_DIR="$ST" GPU_GUARD_SYSTEMCTL="$SCTL" GPU_GUARD_USER_UNIT_DIR="$UNITS_DIR" bash "$GUARD" --restore-hint 2>&1)"
+echo "$OUT" | grep -q "real-unit-backup" \
+  && pass "restore-hint: names the backup file the restore depends on" \
+  || fail "restore-hint: no backup file in the output ($OUT)"
+echo "$OUT" | grep -qi "not enough" \
+  && pass "restore-hint: says a plain unmask is NOT enough" \
+  || fail "restore-hint: does not warn that unmask alone loses the unit ($OUT)"
+echo "$OUT" | grep -q "MASK_DRYRUN\|crash-loop DETECTED" \
+  && fail "restore-hint: ran a guard cycle instead of just answering" \
+  || pass "restore-hint: answers without running a detection cycle"
+
+# ---------------------------------------------------------------------------
+# (r) THE HEADER NO LONGER ADVERTISES A LAYER THAT DOES NOT EXIST. Measured on
+#     2026-09-06: ~/.config/systemd/user/ollama.service.d/ does not exist; Peti
+#     removed the CPU-only drop-in on 2026-08-24 wanting GPU as the primary
+#     path. A reader deciding how hard this guard must try would otherwise
+#     believe a stronger mitigation stands behind it. This is a PROSE claim, so
+#     it is pinned as prose (CLAUDE.md code-quality rule 12's stated exception).
+# ---------------------------------------------------------------------------
+echo ""
+echo "(r) the header does not claim a layer 1 that is gone"
+grep -q "This is layer 2 of the defense" "$GUARD" \
+  && fail "header: still calls itself layer 2 under a drop-in that was removed on purpose" \
+  || pass "header: no longer claims to be the second layer of two"
+grep -q "THERE IS NO LAYER 1 TODAY" "$GUARD" \
+  && pass "header: states that this guard is the only layer" \
+  || fail "header: does not say what the actual situation is"
+
 echo "========================="
 TOTAL=$((PASS + FAIL))
 echo "Results: $PASS/$TOTAL passed"
