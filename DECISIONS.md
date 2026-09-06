@@ -10758,3 +10758,44 @@ sor kezelése és a `own > used` ág iránya backend mérnöki döntése, itt fe
 
 **Hivatkozás:** kártya `efd18ee4` (szülő `40568837`, testvérek `108c7b10` done, `f9bad591` és
 `a1c4dc51` blokkolt); `store/vram-guard-check.sh`, `store/vram-guard-check.selftest.sh`, `README.md`.
+
+## 2026-09-06 -- e5fc1fb4 -- The Local LLM page is rebuilt around the switches and the routing, and the Overview swimlane is extended rather than duplicated
+
+**Peti's four requirements (Telegram, 2026-09-06), and what each became (fron-ted):**
+1. *Every installed model, each switchable.* The Models block moves directly under Status, gains a
+   measured summary line ("N telepített modell · M letiltva", counted from the flags, not asserted),
+   and each row wears a chip saying which presets are routed to it (override count) or that it is
+   the default for every other preset. The list itself was already every Ollama tag plus the
+   disabled-but-removed rows (5dd4a211) and, since 404e8dd6, the state-file fallback when Ollama is
+   down; the live check now pins five rows including an unbenchmarked and an embedding model.
+2. *Routing made visible.* The former "Kategóriák" section becomes "Feladat-routing": the same
+   preset rows with the same real enable/disable switch (store/local-llm.sh still reads
+   `disabledCategories`, so removing the switch would have removed enforcement), now joined with the
+   model each preset resolves to and why (override from local-llm-model-routing.json, or the default
+   model), plus two panels: the categories the router never hands to a local model (with their
+   ceilings) and the latest card-level LOCAL/ONLINE verdicts from card-build-route.log. None of that
+   was reachable over HTTP, so a BE card (ecf38e5a, backend2, Pair-FE/Pair-BE wired) carries the
+   contract `GET /api/local-llm/routing`; the FE is built against it with a mock and, while the
+   endpoint answers 404, says so in the section and names the card -- switches keep working, the
+   model column reads "nem ismert", no chip is invented.
+3. *The aggressiveness slider stays.* Untouched, in its own section between Models and Routing; the
+   routing summary line quotes its value and the derived difficulty threshold so the two layers read
+   as one decision.
+4. *The Overview swimlane (d6ecb003) is extended, not duplicated.* The lane label becomes a button
+   that opens the Local LLM page on that model's row (highlight flash), a switched-off model wears
+   the same "Letiltva" badge in its lane (from the BE `enabled` field when present, else from the
+   /models flags fetched alongside -- never a guess when both are absent), and the task tooltip gains
+   a "Routing" row (override → model, or default model) only when the routing answer is present.
+
+**Not done here, on purpose:** the Categories i18n keys stay in the catalogs (unused keys are
+harmless, deleting them is not this card's scope); the swimlane's own geometry, palette and data
+contract are untouched. Peti's permission to drop the category model entirely waits for the
+88e3614c routing tasks -- today the switches are enforcement.
+
+**Measured:** Playwright on the real `web/` bundle with the mocked contract, 25 checks across the
+routing-present and routing-absent states, 375px, and the Overview (lanes as buttons, disabled
+badge, tooltip routing row, click-through with highlight). String-contract tests: +50 (68 -> 118 in
+the Local LLM set), the d6ecb003 widget test and 11 other index/overview tests unchanged green.
+Mutation map: routing-absent chip inventing the default model, lane label demoted to a span,
+tooltip routing row without data, disabled count hardcoded to 0, routing loaded after the first
+paint -- each red in the string tests and/or the live check; controls green.
