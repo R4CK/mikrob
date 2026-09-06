@@ -7,6 +7,7 @@ import { getEffectiveSettingValue } from './settings-store.js'
 import { logger } from './logger.js'
 import { TOOL_TIMEOUTS } from './tool-timeouts.js'
 import { AGENT_MESSAGES_DDL, AGENT_MESSAGES_ALTER_COLUMNS } from './schema/agent-messages-ddl.js'
+import { isQuietMessageClass } from './web/message-wake.js'
 import {
   MARKER_SOURCE,
   NODE_CARD,
@@ -4008,7 +4009,7 @@ export function createAgentMessage(
   content: string,
   originNote?: string | null,
   traceCtx?: { trace_id: string; span_id: string; parent_span_id: string | null } | null,
-  opts?: { wake?: boolean },
+  opts?: { quietClass?: string },
 ): AgentMessage {
   const now = Math.floor(Date.now() / 1000)
   // A wake:false message waits for the receiver's NEXT NATURAL CHECK -- so the
@@ -4025,9 +4026,22 @@ export function createAgentMessage(
   // the row that gets stored says 1, so the queue never reports a suppression
   // that did not happen. Federated addresses ('peer/agent') land here too, and
   // for the same reason -- there is no local pull for them either.
-  let wake = opts?.wake === false ? 0 : 1
+  // Card 7d47ca16: a caller does not get to hand in a raw boolean. It names a
+  // MESSAGE CLASS, and only a class on QUIET_MESSAGE_CLASSES buys silence -- so
+  // the gate reads a string it can find in the source instead of trusting the
+  // caller's judgement. An unlisted class is not an error the caller has to
+  // handle; it simply wakes, and the refusal is logged so a typo shows up as a
+  // line rather than as a message that quietly stopped being quiet.
+  let wake = 1
+  if (opts?.quietClass !== undefined) {
+    if (isQuietMessageClass(opts.quietClass)) {
+      wake = 0
+    } else {
+      logger.warn({ to, from, quietClass: opts.quietClass }, 'createAgentMessage: quiet delivery refused -- the class is not on QUIET_MESSAGE_CLASSES; delivering as a normal wake')
+    }
+  }
   if (wake === 0 && to !== MAIN_AGENT_ID) {
-    logger.warn({ to, from }, 'createAgentMessage: wake:false is only honoured for the main agent (no pull path elsewhere); delivering as a normal wake')
+    logger.warn({ to, from }, 'createAgentMessage: a quiet delivery is only honoured for the main agent (no pull path elsewhere); delivering as a normal wake')
     wake = 1
   }
   const info = db.prepare(

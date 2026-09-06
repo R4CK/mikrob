@@ -12,7 +12,7 @@
 // plus the two deciders that must honour it (their behaviour is pinned in
 // message-wake-deciders.test.ts). It does NOT open the field on the HTTP
 // endpoint: the allowlist that says which message classes may ask for
-// wake:false is card 7d47ca16, and shipping a free-form wake:false over
+// a quiet delivery is card 7d47ca16, and shipping a free-form wake:false over
 // /api/messages before that allowlist exists would give any token holder a
 // window in which to silence any class -- including a failure or a security
 // notice. The last test in this file pins that gap so the next step cannot
@@ -23,7 +23,7 @@ import { readFileSync } from 'node:fs'
 import { join, dirname } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { AGENT_MESSAGES_DDL, AGENT_MESSAGES_ALTER_COLUMNS } from '../schema/agent-messages-ddl.js'
-import { messageWakesReceiver } from '../web/message-wake.js'
+import { messageWakesReceiver, QUIET_MESSAGE_CLASSES } from '../web/message-wake.js'
 import { initDatabase, createAgentMessage, getPendingMessages, getDb } from '../db.js'
 import { MAIN_AGENT_ID } from '../config.js'
 
@@ -110,32 +110,32 @@ describe('createAgentMessage stores what actually happened', () => {
     expect(noOpts.wake).toBe(1)
     expect(wakeOf(noOpts.id)).toBe(1)
 
-    const explicitTrue = createAgentMessage('backend', MAIN_AGENT_ID, 'wake true', null, null, { wake: true })
-    expect(wakeOf(explicitTrue.id)).toBe(1)
+    const noClass = createAgentMessage('backend', MAIN_AGENT_ID, 'no class', null, null, { quietClass: undefined })
+    expect(wakeOf(noClass.id)).toBe(1)
 
     const emptyOpts = createAgentMessage('backend', MAIN_AGENT_ID, 'empty opts', null, null, {})
     expect(wakeOf(emptyOpts.id)).toBe(1)
   })
 
-  it('honours wake:false for the main agent', () => {
-    const quiet = createAgentMessage('backend', MAIN_AGENT_ID, 'quiet notice', null, null, { wake: false })
+  it('honours a quiet class for the main agent', () => {
+    const quiet = createAgentMessage('backend', MAIN_AGENT_ID, 'quiet notice', null, null, { quietClass: QUIET_MESSAGE_CLASSES[0] })
     expect(quiet.wake).toBe(0)
     expect(wakeOf(quiet.id)).toBe(0)
   })
 
-  it('the wake:false row is STILL in the queue -- suppression is not deletion', () => {
-    const quiet = createAgentMessage('backend', MAIN_AGENT_ID, 'still queued', null, null, { wake: false })
+  it('the quiet row is STILL in the queue -- suppression is not deletion', () => {
+    const quiet = createAgentMessage('backend', MAIN_AGENT_ID, 'still queued', null, null, { quietClass: QUIET_MESSAGE_CLASSES[0] })
     const pending = getPendingMessages(MAIN_AGENT_ID)
     expect(pending.map((m) => m.id)).toContain(quiet.id)
   })
 
-  it('COERCES wake:false back to a wake for a sub-agent, because a sub-agent has no next natural check', () => {
+  it('COERCES a quiet delivery back to a wake for a sub-agent, because a sub-agent has no next natural check', () => {
     // drain-inbox is main-agent only (the route refuses anyone else by design),
-    // so a sub-agent's delivery IS the router's tmux inject. A wake:false row
+    // so a sub-agent's delivery IS the router's tmux inject. A quiet row
     // addressed to one would not wait quietly -- it would sit pending until the
     // 60-minute abandon window marked it FAILED. That is the message
     // disappearing, which is exactly what this field must never do.
-    const toSub = createAgentMessage('mikrob', 'backend', 'to a sub-agent', null, null, { wake: false })
+    const toSub = createAgentMessage('mikrob', 'backend', 'to a sub-agent', null, null, { quietClass: QUIET_MESSAGE_CLASSES[0] })
     expect(toSub.wake).toBe(1)
     expect(wakeOf(toSub.id)).toBe(1)
   })
@@ -144,22 +144,27 @@ describe('createAgentMessage stores what actually happened', () => {
     // The failure this pins is a suppression the queue reports but never
     // performed -- an operator reading the row would conclude the message was
     // deliberately silenced when it was in fact delivered normally.
-    const toSub = createAgentMessage('mikrob', 'qa', 'coerced', null, null, { wake: false })
+    const toSub = createAgentMessage('mikrob', 'qa', 'coerced', null, null, { quietClass: QUIET_MESSAGE_CLASSES[0] })
     expect(toSub.wake).toBe(wakeOf(toSub.id))
   })
 })
 
-describe('the HTTP endpoint does NOT accept wake yet (card 7d47ca16 opens it)', () => {
+describe('the HTTP endpoint still does NOT accept a quiet request (7d47ca16 kept it closed)', () => {
   it('POST /api/messages passes no wake option through to createAgentMessage', () => {
     // Structural, on comment-stripped source: the handler builds its
-    // createAgentMessage call from exactly four arguments, so a `wake` key in
-    // the request body is inert. When 7d47ca16 opens the field behind its
-    // allowlist, this test fails and has to be rewritten -- which is the point.
-    // A silently-ignored body field is otherwise indistinguishable from a
-    // working one, and step 1 shipping a no-op is precisely the outcome that
-    // would go unnoticed.
+    // createAgentMessage call from exactly four arguments, so neither a `wake`
+    // nor a `quietClass` key in the request body reaches the row.
+    //
+    // 7d47ca16 landed the allowlist and deliberately did NOT open the endpoint.
+    // The card asks for a static class list ON THE CALLER SIDE, and the callers
+    // that qualify are in-process watchers whose class is a literal in source.
+    // An HTTP body naming its own class would move the choice back to whoever
+    // holds a token -- the same window step 1 refused to open, only now with a
+    // name that looks vetted. If that is ever wanted, it is its own card with
+    // its own gate, and this test is what has to fail first.
     const src = codeOf('web/routes/messages.ts')
     expect(src).toContain('createAgentMessage(from.trim(), storedTo, stampedContent, trimmedOriginNote)')
     expect(src).not.toMatch(/wake\s*:/)
+    expect(src).not.toMatch(/quietClass/)
   })
 })
