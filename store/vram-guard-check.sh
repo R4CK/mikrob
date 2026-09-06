@@ -201,7 +201,9 @@ probe_gpu_lock() {
 # ---- decision ---------------------------------------------------------------------------------
 python3 - "$CONFIG" "$STATE" "$METRICS_JSON" "$NOW" "$VRAM_GUARD_UNREADABLE" "$OWN_VRAM_MIB" "$LOCK_HELD" <<'PYEOF'
 import json
+import os
 import sys
+import tempfile
 
 config_path, state_path, metrics_json, now_s, unreadable_policy, own_vram_s, lock_held_s = sys.argv[1:8]
 now = int(now_s)
@@ -295,15 +297,52 @@ else:
 
 state["tier"] = current
 state["pending"] = pending
+
+# ATOMIC REPLACE, NOT AN IN-PLACE TRUNCATE (card eaef963d, Cybersec's measurement on 108c7b10).
+# `open(state_path, "w")` truncates the existing file in place before writing a byte of the new
+# content, so a concurrent reader can observe an EMPTY or half-written file mid-write, fail to
+# parse it, and fall back to the "ok" default -- silently erasing a confirmed HOLD for every
+# reader, including this run's own state file for the next caller. Measured: 40 concurrent calls
+# against a confirmed tier="hard" state lost the HOLD in 10/12 rounds; a plain flock around the
+# SAME truncating write did not fix it (0/12 fixed -- the wrong half of the 09a3d52a pattern, which
+# was a genuine cross-process lock problem, not a torn-write one). Writing to a fresh temp file in
+# the SAME directory (so the replace stays on one filesystem) and calling os.replace() is what
+# fixed it (0/12 corrupted, atomic replace alone, no lock): a reader either sees the old complete
+# file or the new complete file, never a partial one, because a rename cannot be observed
+# half-done.
+persist_error = None
 try:
-    with open(state_path, "w") as f:
-        json.dump(state, f)
-        f.write("\n")
+    state_dir = os.path.dirname(os.path.abspath(state_path)) or "."
+    fd, tmp_path = tempfile.mkstemp(prefix=".vram-guard-state-", dir=state_dir)
+    try:
+        with os.fdopen(fd, "w") as f:
+            json.dump(state, f)
+            f.write("\n")
+        os.replace(tmp_path, state_path)
+    except BaseException:
+        try:
+            os.unlink(tmp_path)
+        except OSError:
+            pass
+        raise
 except OSError as e:
-    # An unwritable state file costs the hysteresis, not the decision: without it every run starts
-    # from "ok" and the gate degrades to instantaneous readings. Say so rather than crash a
-    # dispatch path.
-    print("vram-guard-check.sh: could not persist state (%s); hysteresis degraded" % e, file=sys.stderr)
+    persist_error = e
+
+if persist_error is not None:
+    # AN UNWRITABLE STATE FILE MUST NOT READ AS A TIER (card eaef963d, second half of the same
+    # finding). The comment this replaces claimed the gate "degrades to instantaneous readings",
+    # but the code fell through to `current` -- the value loaded from (or defaulted for) the state
+    # file BEFORE this failure -- which never advances past hysteresis without a working state
+    # file to accumulate `pending` across calls. Measured: five calls over 140 simulated seconds at
+    # a sustained 96% never held once; the guard silently became a permanent ADMIT, exactly the
+    # failure mode the comment claimed NOT to have. The verdict on this branch now comes from
+    # `instantaneous` -- what the comment already promised -- so a persist failure degrades the
+    # HYSTERESIS (no memory across calls) without degrading the DIRECTION (still HOLD when the
+    # current reading is over threshold).
+    print("vram-guard-check.sh: could not persist state (%s); hysteresis degraded" % persist_error, file=sys.stderr)
+    verdict = "ADMIT" if instantaneous == "ok" else "HOLD"
+    print("%s %s %d/%d MiB (%.1f%%) %s" % (verdict, instantaneous, used, total, pct, detail))
+    sys.exit(0 if verdict == "ADMIT" else 1)
 
 verdict = "ADMIT" if current == "ok" else "HOLD"
 print("%s %s %d/%d MiB (%.1f%%) %s" % (verdict, current, used, total, pct, detail))

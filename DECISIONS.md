@@ -11094,3 +11094,44 @@ más mechanizmus: `2f0c7d24` (a tree-mutex machine-wide-dá tétele), `5af57bd7`
 CleanCore-oldali szemafor bevezetése), `4ee2519b` (dedup-ellenőrizve, más eszköz: `fe-be-reconcile.py`
 CI-bekötés); `store/fleet-test.sh`, `store/cleancore-suite-run.sh` (érintetlen),
 `src/__tests__/fleet-test-shares-cleancore-cpu-pool.test.ts`.
+
+## 2026-09-06 -- vram-guard-check.sh: atomi állapot-írás + persist-hiba a pillanatnyi szintből (kártya eaef963d)
+
+**A lelet (Cybersec, follow-on a 108c7b10 gate-eléséből, komment 21567, Gate-SHA 84d0b7d9).** Két
+defektus az ÁLLAPOTKEZELÉSBEN, mindkettő ADMIT irányba old fel -- az őr a saját céljával ellentétes
+irányba hibázik.
+
+1) Az állapotfájl írása (`open(state_path, "w")`) CSONKÍT, nincs atomi csere: egy egyidejűleg futó
+példány részlegesen kiírt fájlt olvashat, JSONDecodeError-t kap, `{"tier":"ok"}`-ra esik, és
+VISSZAÍRJA az "ok"-ot -- a megerősített HOLD-ot mindenki számára elrontva. Mérve: 40 egyidejű hívás
+egy megerősített tier=hard állapotból, 12 körben 10-szer veszett el a HOLD. Egy sima flock a
+CSONKÍTÓ írás körül NEM javította (0/12) -- ez a 09a3d52a-minta rossz fele, ott valódi
+kereszt-folyamatos lock-probléma volt, itt csonkított-írás. Az ATOMI csere (mkstemp + os.replace,
+lock NÉLKÜL) 0/12-re javította.
+
+2) Ha az állapotfájl NEM írható, a kód a régi (perzisztencia-mentes) `current` értéket adta vissza,
+ami perzisztencia nélkül SOSEM tud a hiszterézisen keresztül elmozdulni "ok"-ról -- tehát az őr
+csendben TARTÓS ADMIT-tá vált, a "hysteresis degraded" stderr-sor viszont csak "pillanatnyi
+leolvasásra" való degradálást ígért. Mérve: öt hívás 140 szimulált másodpercen át, végig 96%-on,
+SOHA nem tartott.
+
+**A javítás.** (1) `tempfile.mkstemp` + `os.replace` UGYANABBAN a könyvtárban, mint az állapotfájl
+(hogy a replace egy fájlrendszeren maradjon) -- egy olvasó vagy a régi teljes fájlt látja, vagy az
+újat, sosem részlegeset. (2) a persist-hiba ágon a verdikt MOSTANTÓL a `instantaneous` (a
+JELENLEGI mérésből számolt szint) alapján megy, nem a hiszterézis-only `current`-ből -- így egy
+írási hiba a HISZTERÉZIST (memória a hívások között) fokozza le, nem az IRÁNYT.
+
+**Tesztek.** `vram-guard-check.selftest.sh`: 31/31 zöld (28 régi + 2 új eset -- a persist-hiba 96%-on
+HOLD-ot ad, 16%-on kontrollként ADMIT marad -- plusz egy TÖBBKÖRÖS (6x40 egyidejű) atomi-írás
+teszt). Mutáció-tesztelve: a teljes eredeti (csonkító írás + current-alapú persist-ág) visszaállítva
+2/6 körben ténylegesen elvesztette a "hard" állapotot ÉS a persist-teszt is bukott; egy RÉSZLEGES
+mutáns (csak a (2) fix visszaállítva, (1) érintetlenül) KIZÁRÓLAG a persist-tesztet buktatta meg --
+a két teszt független, egyik sem takarja el a másik hiányát. A többkörös teszt szándékos: a
+csonkítás-hiba VALÓSZÍNŰSÉGI (mért 10/12), egyetlen kör akár véletlenül zölden futna át a javítás
+nélküli kódon is (mérve: egy 30-egyidejű körben ez meg is történt) -- az atomi javítás viszont NEM
+valószínűségi (0/12, determinisztikusan), ezért minden kör "hard"-ot KÖVETEL, egyetlen rossz kör is
+valódi regresszió.
+
+**Hivatkozás:** kártya `eaef963d` (Cybersec mérése, follow-on `108c7b10`-ből); kapcsolódó de más
+mechanizmus: `09a3d52a` (ugyanennek a könyvtárnak a másik állapotfájlja, ott a zár volt a helyes
+válasz); `store/vram-guard-check.sh`, `store/vram-guard-check.selftest.sh`.
