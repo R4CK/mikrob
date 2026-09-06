@@ -21,6 +21,7 @@
 #   store/fleet-test.sh --ref <sha|branch>  # test a specific commit instead of HEAD
 #   store/fleet-test.sh --path              # print the worktree path and exit (for scripting)
 #   store/fleet-test.sh --lock-path         # print the RESOLVED lock path and exit (for scripting)
+#   store/fleet-test.sh --cpu-slot-path     # print the RESOLVED shared CPU-slot prefix and exit
 #
 # Exit: the vitest exit code | 2 bad usage | 3 setup failed
 set -uo pipefail
@@ -36,6 +37,20 @@ LOCK_WAIT_SECONDS="${FLEET_TEST_LOCK_WAIT:-900}"
 # the same path the shared tree's lock already used, so a run started before card 2f0c7d24 and a run
 # started after it still contend on one file.
 LOCK_FILE="${ROOT}-test.lock"
+
+# THE SHARED CPU-CAPACITY POOL (card 492a6d5c, backend3's measurement on card 779cd6a7). This is a
+# SEPARATE question from LOCK_FILE above: that lock says "is it safe to touch the tree" (correctness,
+# capped at 1); this says "is there room to run" (CPU, capped at CLEANCORE_SUITE_SLOTS). A fleet-test
+# run and a CleanCore full-suite run (store/cleancore-suite-run.sh) are independently correct but
+# both start one vitest worker per core, so left uncoordinated they still starve each other's CPU into
+# false reds. This deliberately reads the exact CLEANCORE_SUITE_* variables cleancore-suite-run.sh
+# reads (not same-shaped new ones) and defaults to the exact same lock-file prefix, so the two scripts
+# are provably contending on the same files rather than two same-looking pools that quietly drift
+# apart. See the acquisition block below (right before the tree lock) for the full reasoning.
+CPU_SLOTS="${CLEANCORE_SUITE_SLOTS:-2}"
+CPU_LOCK_PREFIX="${CLEANCORE_SUITE_LOCK_PREFIX:-${MARVEEN_MAIN:-/home/neon/marveen}/store/.cleancore-suite-slot}"
+CPU_WAIT_MAX_S="${CLEANCORE_SUITE_WAIT_MAX_S:-7200}"
+CPU_POLL_S="${CLEANCORE_SUITE_POLL_S:-20}"
 
 die() { echo "fleet-test.sh: $2" >&2; exit "$1"; }
 
@@ -55,6 +70,7 @@ while [ $# -gt 0 ]; do
     # check was satisfied by a COMMENT carrying the right literal, while the code below it took a
     # per-tree lock). Exits before any lock is taken, so asking is free and never queues.
     --lock-path) echo "$LOCK_FILE"; exit 0 ;;
+    --cpu-slot-path) echo "$CPU_LOCK_PREFIX"; exit 0 ;;
     -h|--help) sed -n '2,30p' "$0"; exit 0 ;;
     *) ARGS+=("$1"); shift ;;
   esac
@@ -94,6 +110,41 @@ TARGET="$(git rev-parse "$REF" 2>/dev/null)" || die 2 "unknown ref '$REF'"
 # produces false reds is the expensive kind: on a gate it sends correct work back to in_progress.
 # FLEET_TEST_TREE still chooses WHERE you run; it no longer chooses WHETHER you queue.
 command -v flock >/dev/null 2>&1 || die 3 "flock is required to serialise suite runs (util-linux)"
+
+# SHARE CLEANCORE'S CPU-CAPACITY POOL, NOT A SEPARATE ONE (card 492a6d5c, full reasoning in the
+# CPU_SLOTS block near the top of this file). Measured live: an agent landing here (this script)
+# while ALSO running a CleanCore suite in its own correctly-slotted 2/2 (rule 17) starved itself --
+# loadavg 10-24, cross-tenant-canary-callers.test.ts timing out with zero assertion failures, while
+# the identical diff under identical load (loadavg 10.6) run alone was 9/9 green. Acquired BEFORE the
+# tree mutex below, so a run never holds that lock uselessly while still waiting for CPU capacity.
+acquire_cpu_slot() { # sets CPU_FD on success. Same split-redirection shape as cleancore-suite-run.sh's
+  # own acquire(): `exec {FD}>"$f" 2>/dev/null` applies the redirection to the SHELL itself and it
+  # persists, silently swallowing every later `echo >&2` in this script -- found by that script's own
+  # selftest. So: probe/create the file with an ORDINARY command first, and let `exec` run bare.
+  local i f
+  for ((i = 1; i <= CPU_SLOTS; i++)); do
+    f="${CPU_LOCK_PREFIX}-${i}.lock"
+    : >>"$f" 2>/dev/null || continue
+    exec {CPU_FD}>>"$f" || continue
+    if flock -n "$CPU_FD"; then return 0; fi
+    exec {CPU_FD}>&-
+  done
+  return 1
+}
+
+cpu_started="$(date +%s)"; cpu_announced=0
+while ! acquire_cpu_slot; do
+  cpu_waited=$(( $(date +%s) - cpu_started ))
+  if [ "$cpu_waited" -ge "$CPU_WAIT_MAX_S" ]; then
+    die 3 "no shared CPU slot after $((cpu_waited / 60)) min (${CPU_SLOTS} in use, CleanCore suite runs count against this too). Another run is stuck, or raise CLEANCORE_SUITE_SLOTS."
+  fi
+  if [ "$cpu_announced" -eq 0 ]; then
+    cpu_announced=1
+    echo "fleet-test.sh: all ${CPU_SLOTS} shared CPU slot(s) busy (CleanCore suite runs count against this too) -- queueing (cap ${CPU_WAIT_MAX_S}s)" >&2
+  fi
+  sleep "$CPU_POLL_S"
+done
+
 # $LOCK_FILE is set with the other constants at the top, so `--lock-path` can report it without
 # reaching this point. Its independence from $TEST_TREE is the whole point of the change above.
 exec 9>"$LOCK_FILE" || die 3 "cannot open the lock file $LOCK_FILE"
