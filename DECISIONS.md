@@ -11019,3 +11019,38 @@ többi 4 zöld marad. `tsc --noEmit` tiszta.
 
 **Hivatkozás:** kártya `c116696f` (Cybersec NO-GO, komment 21701); `src/web/routes/updates.ts`,
 `src/__tests__/update-node-env-strip.test.ts`, `src/fork-upstream/acknowledged-conflicts.ts`.
+
+## 2026-09-06 -- 864351a9 -- gate-closure-check.py: kikövetkeztetett gate-halmaz sose hagyja ki a QA-t, és egy STATED kijelölés felülírja a találgatást
+
+**Döntés.** `store/gate-closure-check.py` `check()`-je, amikor a hívó nem ad meg gate-listát: (1)
+ELŐSZÖR megnézi, van-e a kártyán `MikroB GATE-KIJELOLES: <gate-ek> (<n>-gate) -- <indoklás>`
+komment (élő, már használt flotta-konvenció, eddig soha nem olvasva) -- ha van, AZ a gate-halmaz,
+nincs találgatás; (2) ha nincs stated kijelölés, a jelen lévő verdiktekből következtetett halmazt
+MOSTANTÓL a kötelező QA-val EGÉSZÍTI KI, akkor is, ha QA egyáltalán nem verdiktelt -- egy QA
+nélküli következtetett halmaz így `MISSING|QA has no verdict`-et ad, sosem `AGREE`-t.
+
+**Miért.** A 4. munkavégzési szabály szerint QA MINDIG kötelező, alkudhatatlanul. A régi
+`sorted(latest.keys())` következtetés viszont pusztán a JELEN LÉVŐ verdiktekből épített halmazt,
+tehát egy MAGÁNYOS biztonsági gate-verdikt (pl. csak CYBERED GO) a saját magával való egyetértésként
+olvasódott: `AGREE`. Élesben mérve: 307 `done` kártyából KETTŐN pontosan ez történt (`e96b06e7`,
+`89f4c28d`), és mindkettőn a VALÓS kijelölés (`MikroB GATE-KIJELOLES: QA (1-gate)`, illetve `QA +
+Cybersec (2-gate)`) szövegesen ott állt a kártyán -- az eszköz egy MÁSIK, ellentmondó halmazt
+következtetett a kimondott érték helyett, ugyanaz az alak, mint a 4b. szabály (kimondott Gate-SHA
+helyett találgatás). Mindkét kártyát MikroB már kézzel retro-gate-elte (QA PASS pótolva a landolt
+shára); ez a javítás azt zárja le, hogy a HIBAOSZTÁLY megismétlődjön.
+
+**A két javítás egymástól független, mindkettő kell:** a stated-kijelölés felülírása egy STATED de
+KISEBB halmazt is tiszteletben tart (ha MikroB kifejezetten csak QA-t kért, egy azon felül
+verdiktelő biztonsági gate nem számít bele -- lásd a szintetikus kontroll-esetet); a QA-seedelés
+pedig arra az esetre való, amikor NINCS stated kijelölés egyáltalán.
+
+**Tesztek.** `gate-closure-check.selftest.py`: 103/103 zöld (97 régi + 6 új, a három ÉLES eset
+szintetikus reprodukciója -- `d5c05548`, `e96b06e7`, `89f4c28d` -- plusz egy kontroll ami AGREE
+marad (QA+biztonsági gate ugyanarra a shára), egy ami a KISEBB stated halmazt tiszteletben tartja,
+és egy ami az UTOLSÓ GATE-KIJELOLES-t követi újra-kijelöléskor). Mutáció-tesztelve KÉT külön
+mutánssal (a QA-seedelés kikapcsolva, illetve a stated-kijelölés-olvasás kikapcsolva) -- mindkettő
+pontosan a hozzá tartozó eseteket buktatja meg, a másik fixet nem érinti.
+
+**Hivatkozás:** kártya `864351a9` (Cybersec mérése, a `d5c05548` zárás-ellenőrzése közben, üzenet
+24538); kapcsolódó de más mechanizmus: `98ae22fe`, `f53ef8e4`, `3e4dc2c3`, `2adaa646`, `cb8ef4f5`;
+`store/gate-closure-check.py`, `store/gate-closure-check.selftest.py`.

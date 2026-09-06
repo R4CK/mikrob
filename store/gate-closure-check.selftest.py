@@ -641,6 +641,31 @@ case("CONTROL: a post-REVIEW comment with NO Gate-SHA at all is not an orphan --
       c("backend", "meg dolgozom rajta, nincs uj sha meg")],
      "AGREE", gates="qa,cybersec")
 
+# --- AN INFERRED GATE SET IS NEVER TRUSTED OVER A STATED ONE, AND NEVER OMITS QA (card 864351a9) --
+# No `gates=` argument below -- every case exercises the INFERRED path (gates=None).
+DES = "MikroB GATE-KIJELOLES: %s -- indoklas"
+case("a lone security-gate verdict, no QA at all, does NOT agree with itself (real case d5c05548)",
+     [c("cybersec", S % "067f6651")],
+     "MISSING")
+case("real case e96b06e7: MikroB designated QA (1-gate), only CYBERED verdicted -- MISSING, not AGREE",
+     [c("mikrob", DES % "QA (1-gate)"), c("cybered", D % "017663e6")],
+     "MISSING")
+case("real case 89f4c28d: MikroB designated QA + Cybersec (2-gate), only CYBERED verdicted -- MISSING",
+     [c("mikrob", DES % "QA + Cybersec (2-gate)"), c("cybered", D % "dcaee71f")],
+     "MISSING")
+case("CONTROL: QA and a security gate both verdict on the SAME sha -- still AGREE, the fix does not "
+     "just turn everything into MISSING",
+     [c("qa", V % "bbbb2222"), c("cybersec", S % "bbbb2222")],
+     "AGREE")
+case("a STATED designation is honoured even when it is SMALLER than the inferred set -- QA "
+     "designated alone, a security gate ALSO verdicted but was not asked for",
+     [c("mikrob", DES % "QA (1-gate)"), c("qa", V % "bbbb2222"), c("cybered", D % "aaaa1111")],
+     "AGREE")
+case("the LATEST GATE-KIJELOLES wins if MikroB redesignates mid-card",
+     [c("mikrob", DES % "QA (1-gate)"), c("mikrob", DES % "QA + Cybersec (2-gate)"),
+      c("qa", V % "bbbb2222")],
+     "MISSING")  # CYBERSEC now required too, and never verdicted
+
 # BYTE-FOR-BYTE REGRESSION CONTROLS (MikroB's acceptance condition, 21177). Not "still FAILED" and
 # "still AGREE" -- the whole line, because a new branch that reworded an existing answer would pass
 # a kind-only assertion while breaking every reader of the output.

@@ -79,6 +79,19 @@ REVIEW nor any gate verdict in the same span names turns the REVIEW-sourced defa
 rather than a silent AGREE. Deliberately scoped to the default path only -- an explicit `--expect`
 is the caller's own assertion and is not second-guessed by this.
 
+WHY AN INFERRED GATE SET IS NEVER TRUSTED OVER A STATED ONE, AND NEVER OMITS QA (card 864351a9,
+Cybersec). When the caller passes no gate list, this script has always inferred one from whichever
+verdicts are PRESENT (`sorted(latest.keys())`) -- and a lone security-gate verdict then read as
+"every designated gate agrees", a verdict agreeing with itself, because rule 4's QA-is-mandatory
+requirement was never enforced on the INFERRED side. Measured live: 2 of 307 `done` cards closed
+this way, on a gate that was not even the one MikroB actually designated -- the designation was
+right there on the card, in a `MikroB GATE-KIJELOLES: <gates> (<n>-gate) -- <reason>` comment
+(the live convention, comments 19882/19898), unread by this file. Two independent fixes, not one:
+`stated_designation()` reads that comment and, when present, OUTRANKS inference entirely (the same
+precedence a stated `Gate-SHA:` already has over a guessed one); and when there is genuinely no
+stated designation, the inferred set is now seeded with QA even if no QA verdict exists, so a
+QA-less inferred set answers MISSING rather than a self-agreeing AGREE.
+
 Input:  the card's comments JSON on stdin (the /api/kanban/<id>/comments shape).
         Optional argv[1]: comma-separated designated gates, e.g. "qa,cybersec".
         Optional --expect <sha>: the commit this card delivers NOW. Omitted -> taken from the
@@ -150,6 +163,12 @@ _VERDICT = re.compile(
 # Trailing sibling digits on a gate NAME, e.g. the "2" of "qa2". Anchored to the end so it cannot
 # eat digits from the middle of a word.
 _SIBLING_SUFFIX = re.compile(r"\d+$")
+# MikroB's stated gate designation (card 864351a9), e.g. "MikroB GATE-KIJELOLES: QA (1-gate) --
+# <reason>" or "MikroB GATE-KIJELOLES: QA + Cybersec (2-gate) -- <reason>" -- the LIVE convention
+# already in use (comments 19882, 19898), just never read by this file. Plain ASCII, matching this
+# board's own `Gate-SHA:`-style technical markers (no accented "KIJELÖLÉS").
+_GATE_DESIGNATION_LINE = re.compile(r"^\s*MikroB\s+GATE-KIJELOLES\s*:\s*(.+)$", re.IGNORECASE | re.MULTILINE)
+_GATE_NAME_TOKEN = re.compile(r"\b(QA|CYBERSEC|CYBERED)(\d*)\b", re.IGNORECASE)
 # Every `Gate-SHA:` line (rule 4b: line-initial, not necessarily comment-initial -- a line can sit
 # anywhere in the comment), because rule 4b lets a line name several commits ("<sha>, <sha>") and 68
 # cards on this board do. A verdict naming ANY of them is judging this card's delivery.
@@ -262,6 +281,34 @@ def declared_shas(comments):
         shas = _line_shas(content)
         if shas:
             found = shas
+    return found
+
+
+def stated_designation(comments):
+    """The gate set MikroB's LATEST `MikroB GATE-KIJELOLES: ...` comment names, or None if no such
+    comment exists (card 864351a9, Cybersec's finding).
+
+    A STATED designation outranks inference from present verdicts, the same reason a stated
+    `Gate-SHA:` outranks a guessed one (rule 4b): root CLAUDE.md's 4a already documents the
+    inferred set as a fallback for an UNSTATED designation, and two live `done` cards (e96b06e7,
+    89f4c28d) closed on a verdict from a gate MikroB never designated while the actual designation
+    sat right there on the card, in a comment this file never read.
+    """
+    found = None
+    for c in comments:
+        content = (c or {}).get("content")
+        if not isinstance(content, str):
+            continue
+        m = _GATE_DESIGNATION_LINE.search(content)
+        if not m:
+            continue
+        names = []
+        for name, _digits in _GATE_NAME_TOKEN.findall(m.group(1)):
+            u = name.upper()
+            if u not in names:
+                names.append(u)
+        if names:
+            found = names
     return found
 
 
@@ -599,16 +646,32 @@ def check(comments, designated=None, expect=None, use_declared=True):
     latest, undecidable = _gate_state(comments)
     unverified = unattributed_gates(comments)
     inferred = designated is None
+    source_note = ""
     if inferred:
-        designated = sorted(latest.keys())
-        if not designated:
-            return "MISSING|no gate verdict on this card at all"
+        stated = stated_designation(comments)
+        if stated:
+            # A STATED designation OUTRANKS inference (card 864351a9): it is not a guess needing a
+            # caveat, so `inferred` goes false and it takes the CALLER-provided path below.
+            designated, inferred = stated, False
+            source_note = " (gate designation stated by MikroB)"
+        else:
+            designated = sorted(latest.keys())
+            if not designated:
+                return "MISSING|no gate verdict on this card at all"
+            # QA IS NEVER OPTIONAL IN AN INFERRED SET (card 864351a9, Cybersec's finding). Rule 4
+            # makes QA mandatory on every card; an inferred set built purely from whichever verdicts
+            # happen to be present can therefore never legitimately omit it. Before this, a single
+            # security-gate verdict with no QA at all read as "every designated gate agrees" -- a
+            # verdict agreeing with itself. Measured live: 2 of 307 done cards closed exactly this
+            # way, on a gate that was never even the one MikroB actually designated.
+            if "QA" not in designated:
+                designated = sorted(designated + ["QA"])
+            source_note = " (gates inferred from the verdicts present)"
     designated = [g.upper() for g in designated]
 
     missing = [g for g in designated if g not in latest]
     if missing:
-        return "MISSING|%s has no verdict%s" % (
-            ", ".join(missing), " (gates inferred from the verdicts present)" if inferred else "")
+        return "MISSING|%s has no verdict%s" % (", ".join(missing), source_note)
 
     failed = ["%s=%s" % (g, latest[g][1]) for g in designated if latest[g][1] not in PASSING]
     if failed:
@@ -648,7 +711,7 @@ def check(comments, designated=None, expect=None, use_declared=True):
     for other in shas[1:]:
         if not sha_sets_agree(shas[0], other):
             return "DISAGREE|the latest verdicts judge different shas: " + detail
-    suffix = " (gates inferred from the verdicts present)" if inferred else ""
+    suffix = source_note
 
     # The gates agree. Whether they agree about the code THIS CARD NOW DELIVERS is a second question,
     # and card 2003e04b is the finding that it must be asked WITHOUT being asked for -- the caller who
