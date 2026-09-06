@@ -1,6 +1,8 @@
 ---
 name: full-value-audit
 description: Run a FULL-VALUE audit of an app -- inventory EVERY frontend + backend function (every page, button, form, endpoint, module), test every user flow at every RBAC level (positive AND negative authz), walk superadmin flows end-to-end, test every API and every DB operation, optimize with numbers, and cover security/WCAG/i18n/observability/resilience/regression, ending in an audit report with three-gate (QA + Cybersec + Cybered) sign-off. Use whenever "teljes értékű audit", "teljes audit", "auditáld végig", "full audit", "audit everything", "minden gombot/funkciót tesztelj" comes up, or before a release / major milestone. Nothing implicit: un-inventoried or un-tested = treated as broken until proven otherwise.
+version: "1.0.0"
+related_skills: [project-workflow, white-hat-security-testing]
 ---
 
 # Full-Value Audit

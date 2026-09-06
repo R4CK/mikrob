@@ -1,6 +1,7 @@
 ---
 name: premiumuimotionsystemprompt
 description: Acts as an award-winning product designer to design a complete luxury interface and motion system for a website — typography, spacing, grids, color, glassmorphism, cards, buttons, navigation, icons, forms, hover effects, loading sequences, micro-interactions, responsive behavior, and a unified motion language. Use this skill whenever the user mentions premium/luxury UI, high-end interface design, a design system, motion language, micro-interactions, hover effects, glassmorphism, loading sequences, "make it feel polished/expensive/intentional", awwwards-quality UI, buttons/cards/forms/navigation styling, spacing or grid systems, typography scale, or wants every interaction to feel refined and consistent. Triggers on "prémium UI", "luxus felület", "design system kell", "motion language", "mikrointerakció", "tedd prémiummá", "polished UI", "luxury interface".
+version: "1.0.0"
 ---
 
 # Premium UI & Motion System Prompt

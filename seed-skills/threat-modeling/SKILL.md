@@ -1,6 +1,7 @@
 ---
 name: threat-modeling
 description: Structured threat modeling for a feature or system BEFORE (or alongside) building it — STRIDE per element over a data-flow diagram, DREAD-style risk scoring, attack trees, and trust-boundary analysis, producing a ranked threat list with mitigations mapped to code paths. Use when designing a new feature, reviewing an architecture, scoping a security review, or answering "what could go wrong here". Triggers: "threat model", "STRIDE", "DREAD", "attack tree", "data flow diagram", "trust boundary", "what could go wrong", "security design review".
+version: "1.0.0"
 ---
 
 # Threat Modeling (STRIDE + DREAD)

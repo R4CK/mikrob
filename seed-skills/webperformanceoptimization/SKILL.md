@@ -1,6 +1,7 @@
 ---
 name: webperformanceoptimization
 description: Optimizes premium 3D animated websites for speed, smoothness, accessibility, and launch-readiness without sacrificing the visual experience. Use this skill whenever the user mentions web performance, Core Web Vitals, LCP/INP/CLS/TTFB, frame rate/FPS drops, jank, lazy loading, code splitting, asset compression, image/texture optimization, responsive rendering, accessibility/a11y/WCAG, SEO, structured data, JSON-LD, analytics integration, caching, CDN, deployment, a pre-launch QA checklist, or wants a 3D/WebGL/Three.js/R3F site to load faster, run smoother, or pass an audit. Triggers on "optimize performance", "make it faster", "Core Web Vitals", "reduce bundle", "lazy load", "compress assets", "smooth 60fps", "accessibility audit", "SEO", "structured data", "caching", "deploy", "QA checklist", "gyorsítsd fel az oldalt", "teljesítmény optimalizálás", "hozzáférhetőség", "indulás előtti ellenőrzés".
+version: "1.0.0"
 ---
 
 # Web Performance Optimization

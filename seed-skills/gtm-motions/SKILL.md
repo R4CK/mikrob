@@ -1,6 +1,7 @@
 ---
 name: gtm-motions
 description: 7 go-to-market motion azonosítása, értékelése és 90 napos execution plan összerakása. Inbound, outbound, paid, community, partner, ABM, PLG. Triggerek: "GTM motion", "hogyan szerezzünk ügyfeleket", "akkvizíciós csatorna", "go-to-market", "PLG vs sales", "melyik csatornán".
+version: "1.0.0"
 ---
 # GTM Motions
 

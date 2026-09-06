@@ -1,6 +1,8 @@
 ---
 name: retrospective
 description: Analyze the current session for improvement opportunities in skills, memory, and workflow. Spawns a sub-agent for unbiased analysis. Use when a session involved complex problem-solving, error recovery, user corrections, or multi-step workflows. Trigger on "/retrospective" command or at session end after significant work.
+version: "1.0.0"
+related_skills: [skill-factory]
 ---
 
 # Retrospective -- Session Analysis & Improvement

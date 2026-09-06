@@ -1,6 +1,7 @@
 ---
 name: webinar-marketing
 description: Webinar stratégia és végrehajtás — témaválasztás, promóció, tartalom struktúra, follow-up, konverzió. B2B SaaS inbound akkvizícióhoz. Triggerek: "webinar", "online esemény", "live session", "workshop marketing", "webinár kampány".
+version: "1.0.0"
 ---
 # Webinar Marketing
 

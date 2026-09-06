@@ -1,6 +1,7 @@
 ---
 name: cro-page
 description: Konverzióoptimalizálás landing-, pricing- és form-oldalakhoz. 7 elemzési dimenzió, priorizált quick-wins és tesztelhető hipotézisek. Triggerek: "miért nem konvertál", "CRO audit", "növeld a konverziót", "form abandonment", "optimization", "landing page review".
+version: "1.0.0"
 ---
 # CRO (Conversion Rate Optimization)
 

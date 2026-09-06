@@ -1,6 +1,8 @@
 ---
 name: gsap-motion-specialist
 description: Deep GSAP motion engineering -- tweens, timelines, eases, stagger, ScrollTrigger (scrub/pin/snap), SVG animation (stroke draw, morph, motion path), text reveals, sequencing, and responsive/reduced-motion handling via matchMedia. Use for choreographed, production-grade web animation and scroll sequencing. Triggers: "GSAP", "ScrollTrigger", "timeline", "tween", "stagger", "SVG animation", "morph", "motion path", "animation sequence", "scroll sequence", "micro-interaction choreography".
+version: "1.0.0"
+related_skills: [scroll-driven-3d-motion, threejs-specialist, ui-visual-design-styles]
 ---
 
 # GSAP Motion Specialist

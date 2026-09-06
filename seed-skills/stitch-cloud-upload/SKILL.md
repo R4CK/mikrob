@@ -1,6 +1,7 @@
 ---
 name: stitch-cloud-upload
 description: Stitch cloud screen generation and persistent upload. Use when generating and persisting screens to a Stitch cloud project via the @google/stitch-sdk. Triggers: "Stitch generate", "Stitch cloud", "generate screens", "upload to Stitch project".
+version: "1.0.0"
 ---
 # Stitch Cloud Screen Upload
 

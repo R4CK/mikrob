@@ -5,6 +5,7 @@ description: >
   "teljes audit", "auditáld végig", "full audit", vagy release/nagyobb
   mérföldkő előtti végigellenőrzés. Az audit CSAK akkor teljes értékű, ha az
   itt felsorolt MINDEN pont lefutott, dokumentálva, bizonyítékkal.
+version: "1.0.0"
 ---
 
 # Teljes értékű audit -- SZABÁLY (KÖTELEZŐ)

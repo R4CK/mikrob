@@ -1,6 +1,7 @@
 ---
 name: kanban-blokkolt-reconcile
 description: Find BLOKKOLT-landolasra waiting cards whose gate commit is NOW on origin/main. Reports which are ready for DONE, sends reconciliation to MikroB. Run at session start or when notified of a push to origin/main.
+version: "1.0.0"
 ---
 # Kanban BLOKKOLT Reconciliation
 

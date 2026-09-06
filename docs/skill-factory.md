@@ -24,6 +24,29 @@ Minden skill egy `SKILL.md` (frontmatter: `name`, `description` a triggereléshe
 ~/.claude/skills/<skill-nev>/SKILL.md
 ```
 
+**Frontmatter-bővítés: `version` + `related_skills` (kártya eb70cb13, a hermes-agent/agentskills.io
+konvenció alapján -- lásd `seed-skills/sp-writing-skills/SKILL.md`, agentskills.io/specification).
+A teljes külső szabvány `name`/`description`/`version`/`author`/`license`/`platforms`/`tags`/
+`related_skills` mezőt ismer; ebből ide csak ez a két opcionális mező kerül be, mert a másik négy
+(`author`/`license`/`platforms`/`tags`) nem mérhető/nem értelmes a flotta saját, nem-publikált
+skilljeire.**
+
+- **`version`** (opcionális, ajánlott sztringként, pl. `"1.0.0"`): minden ÚJ skill `"1.0.0"`-val
+  indul. Bumpold, amikor a PROCEDÚRA vagy a triggerelés érdemben változik (nem tisztán formázási
+  javításnál) -- patch (`1.0.1`) egy Buktató-bővítésnél vagy kis pontosításnál, minor (`1.1.0`) egy
+  új lépés/ág hozzáadásánál, major (`2.0.0`) egy átírt eljárásnál. A cél: egy jövőbeli olvasó lássa,
+  hogy "ugyanazt a verziót látta-e már", nem a pontos szemver-szabály kikényszerítése.
+- **`related_skills`** (opcionális, YAML flow-lista, pl. `[plan-grilling, project-workflow]`): más
+  skillek neve, amiket ez a skill a SAJÁT SZÖVEGÉBEN névvel megnevez, vagy amikkel egy tipikus
+  munkafolyamat egymás után hívja őket. NEM egy teljességi lista minden lehetséges kapcsolatról --
+  csak ott töltsd ki, ahol a kapcsolat ELÉG KONKRÉT ahhoz, hogy egy agent hasznosnak találja
+  (kihagyva üresen marad, nem `related_skills: []`). Vendorolt skillekre (`sp-*`, ld. lent) NE
+  vezesd be -- azok tartalmát a felvevő repo, nem ez a fájl dönti el.
+- Vendorolt skillek (`sp-*` a `seed-skills/`-ben, a superpowers csomagból, ld.
+  `docs/fork-additions-to-vendored-skills.md`) frontmatterjét NE bővítsd ezekkel a mezőkkel -- a
+  tartalmuk a felvevő (upstream) repóé, egy helyi bővítés a következő újra-vendorolásnál csendben
+  eltűnhetne vagy ütközhetne az upstream saját, esetleg eltérő szemantikájú mezőjével.
+
 ### Mikor készül skill
 
 | Helyzet | Akció |

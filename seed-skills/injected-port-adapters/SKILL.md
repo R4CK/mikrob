@@ -1,6 +1,8 @@
 ---
 name: injected-port-adapters
 description: Implement the app-layer ADAPTER for a pure domain's injected port (SDK/IO/crypto wiring) — the counterpart to tenant-pure-domain. Covers the thin-adapter pattern, per-category security constraints (output escaping for SVG/CSV/XML, deterministic lowercase-hex hashing, constant-time + no-secret-log signing, TTL-capped + pre-validated presigning, transient-vs-permanent error mapping), config/secret sourcing, and adapter testing against a real (or sandbox) dependency. Use when wiring a real SDK (Stripe, VIES, NAV, S3/R2, Graph/Gmail, bwip-js, sharp, node:crypto, jose) behind a domain port.
+version: "1.0.0"
+related_skills: [tenant-pure-domain]
 ---
 # Injected-port adapters (the SDK/IO wiring side)
 

@@ -1,6 +1,8 @@
 ---
 name: ui-ux-design-system
 description: Architect and audit a real design SYSTEM and run a gold-standard interface review -- token→primitive→component→pattern layering, UX heuristics (Nielsen), visual hierarchy, color/spacing/type systems, component states & polish, responsive system, integration patterns, performance, and a rigorous interface-review checklist. Use when structuring a component system or reviewing a UI to a high quality bar (the polish pass). Triggers: "design system", "component system", "design tokens", "UX review", "interface review", "audit the UI", "visual hierarchy", "make it polished", "design consistency", "responsive system", "design rendszer", "UI review".
+version: "1.0.0"
+related_skills: [ui-visual-design-styles, user-flow-menu-design, wcag-overlay-patterns]
 ---
 
 # UI/UX Design System & Interface Review

@@ -1,6 +1,7 @@
 ---
 name: finance-modeling
 description: SaaS unit-economics and cash modeling — CAC, LTV, payback, NRR, burn rate, runway, and pricing. Use for budgeting, pricing decisions, financial forecasts, and fundraising-readiness math (finance agent's core skill).
+version: "1.0.0"
 ---
 # Finance Modeling (SaaS unit economics)
 

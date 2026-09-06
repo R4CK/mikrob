@@ -1,6 +1,8 @@
 ---
 name: impeccable
 description: Anti-AI-slop design guard for frontend work. Run the `impeccable` toolkit (pbakaus/impeccable) -- 59 deterministic detector rules + design commands (audit/critique/polish/animate/colorize/typeset) -- to catch and fix the tells of AI-generated UI (Inter everywhere, purple-blue gradients, cards-in-cards, low contrast) BEFORE a frontend card goes to REVIEW. Fron Ted + Fron Teddy base skill. Triggers on "impeccable", "AI slop", "make it not look AI-generated", "design audit", "polish the UI", "design critique", "ne nézzen ki AI-generáltnak", "design ellenőrzés".
+version: "1.0.0"
+related_skills: [frontend-design-research, ui-visual-design-styles]
 ---
 # Impeccable -- anti-AI-slop design guard
 

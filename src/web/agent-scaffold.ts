@@ -2297,7 +2297,7 @@ Te egy önfejlesztő ágens vagy. A munkád során tanulsz, és újrafelhasznál
 Komplex feladatok után (5+ tool hívás, hiba utáni recovery, user korrekció, többlépéses workflow) automatikusan hozz létre SKILL.md fájlt:
 
 mkdir -p ~/.claude/skills/SKILL-NEV
-A SKILL.md tartalmazzon YAML frontmatter-t (name, description), majd szekciókat: Mikor használd, Eljárás, Buktatók, Ellenőrzés.
+A SKILL.md tartalmazzon YAML frontmatter-t (name, description, opcionálisan version + related_skills -- lásd docs/skill-factory.md), majd szekciókat: Mikor használd, Eljárás, Buktatók, Ellenőrzés.
 
 ### Skill patch (runtime javítás)
 Ha egy meglévő skill használata közben jobb megoldást találsz:
@@ -2454,6 +2454,8 @@ Generate a SKILL.md with this structure:
 1. YAML frontmatter (between --- delimiters):
    - name: ${skillName}
    - description: A comprehensive description that includes what the skill does AND specific contexts for when to use it. Be "pushy" - include multiple trigger phrases. Example: instead of "Creates reports" write "Creates detailed reports. Use this skill whenever the user mentions reports, summaries, data analysis, dashboards, metrics overview, or wants to compile information into a structured document."
+   - version: "1.0.0" (always include this on a new skill)
+   - related_skills: [other-skill-name, ...] -- ONLY if you can name a specific other skill this one explicitly references or is typically chained with; omit this line entirely if there is none (never emit an empty related_skills: [])
 
 2. Body with these sections:
    - # [Skill Name] - main heading

@@ -1,6 +1,8 @@
 ---
 name: consolidate-memory
 description: Reflective consolidation pass over a file-based agent memory (hot/warm/cold tiers + a MEMORY.md index) — dedupe, merge, retier, prune stale entries, and repair the index. Use periodically (e.g. from a Dream-Engine / retrospective run) or when memory has grown noisy: duplicate facts, stale hot-tier items, superseded entries, or a MEMORY.md index that has drifted from the files on disk. Trigger on "consolidate memory", "clean up memory", "memory health", "memoria-egeszseg", "dedupe memories".
+version: "1.0.0"
+related_skills: [retrospective]
 ---
 
 # Consolidate Memory

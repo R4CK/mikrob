@@ -1,6 +1,8 @@
 ---
 name: threejs-specialist
 description: Deep Three.js / WebGL engineering -- scene graph, cameras, lights & shadows, PBR materials, geometry, textures, the render loop, raycasting/interaction, GLTF/GLB loading, custom shaders, React Three Fiber, plus mobile/game-style architecture (ECS, instancing, LOD) and product configurators / 3D viewers. Use when BUILDING the actual 3D scene (not just scroll-wiring -- that's scroll-driven-3d-motion). Triggers: "Three.js", "WebGL", "R3F", "React Three Fiber", "shader", "GLTF", "GLB", "3D model", "3D configurator", "3D viewer", "Babylon", "mesh", "material", "lighting".
+version: "1.0.0"
+related_skills: [scroll-driven-3d-motion, ui-visual-design-styles]
 ---
 
 # Three.js Specialist (engine fundamentals + R3F)

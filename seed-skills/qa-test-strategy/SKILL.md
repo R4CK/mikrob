@@ -1,6 +1,7 @@
 ---
 name: qa-test-strategy
 description: Test-pyramid-based QA strategy, regression discipline, and independent sign-off procedure for moving work to DONE. Use when testing/verifying a feature or deciding if work is shippable (QA agent's core skill). Enforces that the author never verifies their own work.
+version: "1.0.0"
 ---
 # QA Test Strategy & Sign-off
 

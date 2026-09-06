@@ -1,6 +1,7 @@
 ---
 name: plan-grilling
 description: Relentlessly interrogate a plan, design, or decision BEFORE committing to it — surface every unresolved branch, hidden assumption, failure mode, and "what happens when X" until the plan holds up or the gaps are explicit. Use before dispatching non-trivial work, before an architecture/design decision, before a risky change, or whenever a plan "sounds fine" but hasn't been stress-tested. Triggers: "grill this plan", "poke holes in this", "is this plan solid", "stress-test the design", "before we build this", "grilling", "kérdezz ki", "élesítsd a tervet", "hol bukik ez".
+version: "1.0.0"
 ---
 
 # Plan grilling

@@ -1,6 +1,7 @@
 ---
 name: seniorfrontenddeveloper
 description: Senior frontend engineering for React/Next.js — scaffolds projects, generates typed components/hooks with tests and Storybook, analyzes bundle size, and enforces performance, accessibility, and rendering-strategy discipline. Use this skill whenever the user mentions frontend, React, Next.js, Vite, a new component, a custom hook, project scaffolding, bundle size, Core Web Vitals, LCP/INP/CLS, a11y/WCAG/accessibility, Server vs Client Components, image optimization, data fetching, Tailwind, a design system, choosing a framework or rendering strategy (RSC/SSR/SSG/SPA), or a frontend performance/architecture review.
+version: "1.0.0"
 ---
 
 # Senior Frontend Developer

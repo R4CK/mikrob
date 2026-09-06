@@ -1,6 +1,7 @@
 ---
 name: i18n-parity-sweep
 description: Find and fix EN-copy violations in locale files (de/es/fr/it/pl). Use when i18n parity check fails or a new namespace is added. Covers WSL2/NTFS caching trap and LEGIT_SAME detection.
+version: "1.0.0"
 ---
 # i18n Parity Sweep
 

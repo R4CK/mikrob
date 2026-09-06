@@ -1,6 +1,7 @@
 ---
 name: wsl-git-push-deploy-key
 description: Push a WSL repo (often on a /mnt/<drive> Windows mount) to a private GitHub repo using an SSH deploy key, when there is no gh CLI and HTTPS push has no credentials. Use when a git push fails with "could not read Username" or the user provides an SSH key path under /mnt/c.
+version: "1.0.0"
 ---
 # WSL git push with an SSH deploy key
 

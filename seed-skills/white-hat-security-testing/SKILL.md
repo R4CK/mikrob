@@ -1,6 +1,7 @@
 ---
 name: white-hat-security-testing
 description: Offensive white-hat security testing methodology for AUTHORIZED targets (this team's own product). Use when security-reviewing, threat-modeling, or pentesting a feature/codebase before it ships. Grounded in OWASP ASVS + Top 10, STRIDE threat modeling, and per-domain attack playbooks. Triggers on "security review", "pentest", "threat model", "is this exploitable", "biztonsagi teszt".
+version: "1.0.0"
 ---
 
 # White-hat Security Testing

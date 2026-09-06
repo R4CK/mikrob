@@ -1,6 +1,8 @@
 ---
 name: gauntlet-loop
 description: Run a build-measure-criticize-improve loop that judges output BLIND against a concrete reference bar and re-dispatches the biggest gap until it passes. Use for ambitious "make it triple-A / match this reference" work where quality is judged by comparison, not just tests -- design builds, feature parity vs a target, "make it as good as X". Wraps the fleet's own gates + loop-engineering. Triggers on "gauntlet loop", "gauntlet", "match this reference", "blind compare", "make it AAA", "iterate until it beats the reference", "hasonlítsd a referenciához".
+version: "1.0.0"
+related_skills: [frontend-design-research, project-workflow]
 ---
 # Gauntlet Loop
 
