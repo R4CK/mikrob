@@ -8749,3 +8749,61 @@ telepítve ezen a gépen, tehát ez a pont dokumentáció-alapú.
 a nevesített-fd őr előre lemérve), backend3 (végrehajtás + független újramérés).
 
 **Hivatkozás:** kártya `79bb0364`, kommentek 21173 / 21218 / 21222 / 21227.
+
+## 2026-09-06 11:20 -- bb52c2fa -- A környezet-függetlenség nem locale-pinneléssel jön, hanem azzal, hogy nem prózát olvasunk
+
+**C-2 (a legdrágább).** A selftest CSAK akkor volt zöld, ha az `LC_ALL` NINCS exportálva. Bármelyik
+exportált érték (C, C.UTF-8, en_US.UTF-8, hu_HU.UTF-8) 61/67-re vitte, hat pirossal -- vagyis bármely
+CI- vagy ügynök-környezet, ami exportálja az LC_ALL-t, HAMIS PIROST kapott helyes kódra. Ez a 17.
+munkavégzési szabály osztálya: a hamis piros a gate-en helyes munkát küld vissza.
+
+**A gyökér nem az, aminek látszott.** A `_common_line_prefix_len` fejléce azt sugallta, hogy a
+`local LC_ALL=C` a `cmp` bájt-szemantikáját is kikényszeríti. Nem: a `cmp` külön folyamat, az
+ÜZENETE lokalizált, és a szóhasználat nem követi azt, hogy a locale bájt-orientált-e. Mérve, ugyanaz
+a két fájl, öt környezetben: `LC_ALL` unset -> "differ: byte", `C` -> "differ: **char**",
+`C.UTF-8` -> "byte", `en_US.UTF-8` és `hu_HU.UTF-8` -> "char". A `byte`-ra szűkített minta tehát a
+legtöbb exportált locale-ban SEMMIT nem illesztett, az `n` üresen jött vissza, és a fallback a
+RÖVIDEBB oldal teljes hosszát adta vissza közös prefixként.
+
+**A javítás nem bővebb szó-lista, mert az ugyanaz a felsorolás-hiba egy szinttel feljebb** -- egy
+fordított locale teljesen más mondatot ír. A `cmp -l` SZÁMOKAT ad (soronként egy eltérő bájt,
+`<1-alapú bájt-offset> <oktális a> <oktális b>`), és a FORMÁTUMA mind az öt környezetben azonos.
+Többbájtosra is ellenőrizve: két fájl, amik `áéí` (6 bájt) után térnek el, C-ben és hu_HU.UTF-8-ban
+egyaránt 7-es offszetet ad, tehát bájt-offszet.
+
+**SAJÁT HIBA UGYANEBBEN A KÖRBEN, kimondva:** az első változatom `cut -d' ' -f1`-gyel olvasta ki az
+offszetet, és a `cmp -l` JOBBRA IGAZÍTJA azt -- egy nagy offszet `              20024 101 102`
+alakban érkezik, és az egyszóközös vágás az előtte álló üres mezőt adja vissza. A 4 bájtos
+próbafixture-ömben ez láthatatlan volt, mert ott az offszet egyjegyű és nincs padding. Pontosan az a
+csapda, amit ennek a függvénynek a fejléce már leír az ASCII-only fixture-ökről. `awk '{print $1}'`.
+
+**C-1.** A `---`/`***`/`___` elválasztókat a skip-lista PONTOSAN illesztette, tehát CRLF-fájlban a
+szabály-sor `---\r`, nem ismerhető fel, és bájtra azonos tartalom LF-en RESOLVED, CRLF-en REFUSED
+volt. Fail-closed, tehát semmi nem mergelődött rosszul -- de egy visszautasítás, amit a felhasználó
+a saját checkoutján nem tud reprodukálni, önmagában is költség.
+
+**Ez a HARMADIK alkalom, hogy ezt a fájlt egy rule két, egymástól elcsúszott fele harapta meg**
+(behúzás, záró whitespace, most a sorvég). Ezért a skip-lista mostantól EGY helyen él
+(`_is_blank_or_rule`), és mindkét hívó azon megy át -- nem két felsorolás, ami ma még egyezik.
+
+**N-1 (Cybersec).** A seam-predikátum most pineli a saját locale-ját, ahogy a kerítés-testvére eddig
+is. A produkciós út egyébként árnyékolta (a `try_append_union` állítja, és a bash dinamikusan
+hatókörözi), tehát a merge-válasz sosem függött a környezettől -- a kitettség a KÖZVETLEN hívó, ami a
+selftest maga. Ettől függetlenül pinelve: egy predikátum, ami hozza a saját locale-ját, nem törhető
+el egy jövőbeli hívóval, aki elfelejti.
+
+**N-2 (Cybersec).** A testvér-wrapper `--selftest` kapcsolója némán, nulla kimenettel tért vissza
+rc=0-val. Nem volt lefedettségi lyuk (a CI a glob alapján megtalálja a `.py` selftestet, 17/17), de
+egy néma siker megkülönböztethetetlen a "minden zöld"-től. Most lefuttatja a valódi selftestet és
+továbbadja a kilépési kódját; a fájlt névvel hivatkozza, hogy egy átnevezés hangosan bukjon.
+
+**Mutációs mérés:** a próza-olvasás vissza -> 1 piros (az új locale-eset); a skip-lista CR-toleranciája
+elvéve -> 1 piros (az új CRLF eset); a seam locale-pin elvéve -> 1 piros (az új seam-locale eset);
+az `awk` visszacserélve `cut`-ra -> 6 piros; KONTROLL komment-mutáció -> 0 piros. 70 teszteset
+(67-ről), és a suite mind a hat próbált környezetben zöld.
+
+**A seam-locale esetről külön:** az első mutációs futáson TÚLÉLTE a pin elvétele, nulla pirossal --
+és ez valódi rés volt, nem redundancia (a mutáns MÁSHOGY viselkedik, csak nem hívta senki idegen
+locale alatt). Ezért került be a hozzá tartozó eset, és utána már pirosat ad.
+
+**Hivatkozás:** kártya `bb52c2fa`; Cybered C-1/C-2 (3ae71df1 zárásakor), Cybersec N-1/N-2 (21236).

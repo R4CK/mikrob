@@ -43,6 +43,21 @@
 #
 # `cmp` finds the first differing BYTE in one C-speed pass -- bash cannot compare 447 KB strings
 # byte by byte without the O(n^2) behaviour card d56786a7 measured.
+# ONE grammar for "this line carries nothing that could be merged wrongly" -- a blank line or a
+# horizontal rule (Cybered C-1, card bb52c2fa). It existed TWICE as an inline `case` list, and the
+# duplication is the defect: this file has now been bitten three times by two halves that were meant
+# to implement one rule and drifted (the setext/fence indent, the setext/fence trailing whitespace,
+# and this one on the LINE ENDING axis). Both copies matched the separators EXACTLY, so on a CRLF
+# file `---\r` was not a rule, and byte-identical content RESOLVED on LF while it was REFUSED on
+# CRLF. Fail-closed, so nothing merged wrongly -- but a refusal a user cannot reproduce on their own
+# copy is its own cost, and the fix belongs in one place rather than two.
+_is_blank_or_rule() {
+  case "${1%$'\r'}" in
+  ''|'---'|'***'|'___') return 0 ;;
+  esac
+  return 1
+}
+
 _common_line_prefix_len() {
   # BYTE SEMANTICS, FORCED. `cmp` reports a BYTE offset; bash's ${#var} and ${var:i:n} count
   # CHARACTERS unless the locale is C. On the real DECISIONS.md -- Hungarian prose, UTF-8 -- those
@@ -52,9 +67,32 @@ _common_line_prefix_len() {
   #
   # It passed every selftest because every fixture was ASCII, where the two counts coincide. That is
   # the whole reason this shipped: the tests could not see the difference they were built out of.
+  #
+  # `local LC_ALL=C` COVERS BASH'S OWN COUNTING AND NOT THE CHILD'S WORDING, and the comment above
+  # used to blur the two (Cybered C-2, card bb52c2fa). `cmp` is a separate process whose MESSAGE is
+  # localised, and its wording does not track "is this locale byte-oriented" the way one would guess.
+  # Measured on this machine, same two files, five environments:
+  #     LC_ALL unset -> "differ: byte 4"      LC_ALL=C           -> "differ: char 4"
+  #     C.UTF-8      -> "differ: byte 4"      en_US.UTF-8/hu_HU  -> "differ: char 4"
+  # So a `byte`-only pattern silently matched NOTHING in most exported locales, `n` came back empty,
+  # and the fallback below answered with the SHORTER side's whole length as the common prefix. The
+  # selftest was green only while LC_ALL happened to be unset: exporting any of C, C.UTF-8,
+  # en_US.UTF-8 or hu_HU.UTF-8 turned it 61/67. Any CI or agent environment that exports LC_ALL got a
+  # FALSE RED on correct code -- the class rule 17 exists for.
+  #
+  # THE FIX IS NOT A WIDER WORD LIST, because that is the same enumeration mistake one rung up: a
+  # translated locale prints a different sentence entirely. `cmp -l` emits NUMBERS -- one line per
+  # differing byte, `<1-based byte offset> <octal a> <octal b>` -- and its FORMAT is identical in all
+  # five environments above. Verified multibyte too: two files differing after `áéí` (6 bytes) report
+  # offset 7 under both C and hu_HU.UTF-8, i.e. a byte offset, not a character one.
   local LC_ALL=C
   local a="$1" b="$2" n cut head
-  n="$(cmp <(printf '%s' "$a") <(printf '%s' "$b") 2>/dev/null | sed -n 's/.*byte \([0-9][0-9]*\).*/\1/p')"
+  # `awk '{print $1}'`, NOT `cut -d' ' -f1`: cmp -l RIGHT-ALIGNS the offset, so a large one arrives
+  # as `              20024 101 102` and a single-space cut returns the empty field before it. My own
+  # first attempt did exactly that and it was invisible in a 4-byte fixture, where the offset is one
+  # digit and there is no padding -- the same "the fixture could not see the shape it was built out
+  # of" trap this function's header already documents about ASCII-only cases.
+  n="$(cmp -l <(printf '%s' "$a") <(printf '%s' "$b") 2>/dev/null | head -n1 | awk '{print $1}')"
   if [ -z "$n" ]; then
     # cmp is silent on identical input and prints "EOF on <file>" when one side is a prefix of the
     # other. Identical means git would not have conflicted this file at all: refuse rather than
@@ -140,6 +178,14 @@ _seam_makes_setext_heading() {
   # A rule under NOTHING is just a rule: markdown needs a paragraph line above it to promote.
   # The `\r` strip is the CRLF half of the same axis the trailing trim below closes: in a CRLF file
   # a BLANK line arrives as a lone `\r`, which is a non-empty string and would read as a paragraph.
+  # PIN THE LOCALE HERE TOO (Cybersec N-1, comment 21236). `_ends_inside_code_fence` does; this half
+  # did not, so the `[[:space:]]` class introduced in the previous round was evaluated under the
+  # AMBIENT locale. Measured: `---` followed by U+2028 or U+3000 REFUSES under C.UTF-8 and is safe
+  # under LC_ALL=C. The production path happens to be shielded -- `try_append_union` sets
+  # `local LC_ALL=C` and bash scopes that dynamically over this call -- so the merge answer was never
+  # environment-dependent; the exposure is a DIRECT caller, which is what the selftest is. Pinned
+  # anyway: a predicate that carries its own locale cannot be broken by a future caller that forgets.
+  local LC_ALL=C
   local prev="${1%$'\r'}"
   [ -n "$prev" ] || return 1
   # THE SAME 0-3 SPACE INDENT THE FENCE SIDE ALREADY HANDLES (Cybersec, comment 21040). CommonMark
@@ -302,10 +348,8 @@ try_append_union() {
   local shared_new
   shared_new="$(sed -n 's/^> //p' <<<"$base_vs_prefix")"
   while IFS= read -r line; do
-    case "$line" in
-    ''|'---'|'***'|'___') continue ;;
-    *) return 1 ;;
-    esac
+    _is_blank_or_rule "$line" && continue
+    return 1
   done <<<"$shared_new"
 
   # OFFSET, not pattern-strip. `${ours#"$prefix"}` is O(n^2) in bash and froze every landing that
@@ -395,11 +439,11 @@ try_append_union() {
   _starts_new_entry() {
     local rest="$1" line
     while IFS= read -r line; do
-      case "$line" in
+      case "${line%$'\r'}" in
       $header_glob) return 0 ;;
-      ''|'---'|'***'|'___') continue ;;
-      *) return 1 ;;
       esac
+      _is_blank_or_rule "$line" && continue
+      return 1
     done <<<"$rest"
     return 1                      # no header at all -- not a new entry
   }
@@ -1175,6 +1219,29 @@ body of A
   # And the CRLF BLANK previous line: a lone `\r` is markdown-blank, so a rule under it is a
   # thematic break, not a heading promotion.
   _seam_case "CRLF blank line above --- is NOT a heading" "$(printf '\r')" "---" safe
+  # AND THE SAME VERDICT UNDER AN EXPORTED FOREIGN LOCALE (Cybersec N-1, comment 21236). The
+  # predicate now pins `local LC_ALL=C` like its fence sibling; without that pin the `[[:space:]]`
+  # class is evaluated under the AMBIENT locale, and `---` followed by U+2028 or U+3000 flips from
+  # safe to REFUSE. The production path never saw it (try_append_union sets the locale and bash
+  # scopes that dynamically over the call), so ONLY a direct call can catch it -- which is exactly
+  # what this file does, and what left the pin unmeasured until this case existed.
+  seam_locale_ok=1
+  for probe_locale in C.UTF-8 en_US.UTF-8; do
+    for probe_u in "$(printf '%s\u2028' ---)" "$(printf '%s\u3000' ---)"; do
+      if LC_ALL="$probe_locale" bash -c '
+        source "$1" --selftest-noop 2>/dev/null || true
+        _seam_makes_setext_heading "prozasor" "$2"' _ "${BASH_SOURCE[0]}" "$probe_u" 2>/dev/null; then
+        seam_locale_ok=0
+      fi
+    done
+  done
+  n=$((n+1))
+  if [ "$seam_locale_ok" = 1 ]; then
+    echo "  ok   seam: a non-ASCII trailing space is safe under an EXPORTED locale too (pinned LC_ALL)"
+  else
+    echo "  FAIL seam: the verdict CHANGES with the ambient locale -- the predicate does not pin it"
+    bad=$((bad+1))
+  fi
   # Trailing spaces or tabs are permitted after the underline; other text is not.
   _seam_case "--- with trailing spaces is a heading"    "prozasor" "---  "   refuse
   _seam_case "--- with trailing text is NOT a heading"  "prozasor" "--- x"   safe
@@ -1544,6 +1611,19 @@ tail B
   # NEW entry, not an edit, and must still union. Measured on the real file: 18 of 199 entries are
   # preceded by `---`, so the literal "remainder must start with ## " rule the NO-GO proposed would
   # refuse a legitimate shape -- including this card's own DECISIONS entry.
+  # THE SAME CONTENT WITH CRLF LINE ENDINGS (Cybered C-1, card bb52c2fa). The separator skip-list
+  # matched `---` EXACTLY, so on a CRLF file the rule line is `---\r`, is not recognised, and
+  # byte-identical content RESOLVED on LF while it was REFUSED on CRLF. Fail-closed, so nothing ever
+  # merged wrongly -- but a refusal a user cannot reproduce on their own checkout is its own cost,
+  # and this is the THIRD time this file has been bitten by two halves of one rule drifting (indent,
+  # trailing whitespace, and now the line ending). The skip-list lives in `_is_blank_or_rule` now,
+  # once, and both call sites go through it.
+  setup_conflict separator-led-append-crlf \
+    "$(printf '## entry A\r\nbody of A\r\n')" \
+    "$(printf '## entry A\r\nbody of A\r\n\r\n---\r\n\r\n## 2026-01-02 -- bal oldali bejegyzes\r\n')" \
+    "$(printf '## entry A\r\nbody of A\r\n\r\n---\r\n\r\n## 2026-01-03 -- jobb oldali bejegyzes\r\n')"
+  t_resolved_any "a CRLF file gets the SAME verdict as the byte-identical LF one"
+
   setup_conflict separator-led-append \
     "## entry A
 body of A
@@ -1627,6 +1707,29 @@ body of A
     echo "  FAIL UTF-8: prefix length $utf8_n, expected $utf8_expect bytes -- a byte offset from cmp"
     echo "       is being used as a bash CHARACTER index (card b7e57877)"
     fail=1
+  fi
+
+  # THE SAME ANSWER UNDER AN EXPORTED LC_ALL (Cybered C-2, card bb52c2fa). The case above was green
+  # only while LC_ALL happened to be UNSET in the runner's environment: exporting C, C.UTF-8,
+  # en_US.UTF-8 or hu_HU.UTF-8 turned the whole suite 61/67, because `cmp`'s MESSAGE says "char" in
+  # some locales and "byte" in others and the old parser only matched the word "byte". Any CI or
+  # agent environment that exports LC_ALL got a FALSE RED on correct code.
+  #
+  # Asserting the VALUE under a foreign locale is what pins it. Asserting only that the suite passes
+  # would not: the suite runs in ONE environment, which is exactly how this hid.
+  local_indep_ok=1
+  for probe_locale in C C.UTF-8 en_US.UTF-8; do
+    probe_n="$(LC_ALL="$probe_locale" bash -c '
+      source "$1" --selftest-noop 2>/dev/null || true
+      _common_line_prefix_len "$2" "$3"' _ "${BASH_SOURCE[0]}" "$utf8_a" "$utf8_b" 2>/dev/null)"
+    [ "$probe_n" = "$utf8_n" ] || local_indep_ok=0
+  done
+  n=$((n+1))
+  if [ "$local_indep_ok" = 1 ]; then
+    echo "  ok   the byte offset is the same under an EXPORTED LC_ALL (C / C.UTF-8 / en_US.UTF-8)"
+  else
+    echo "  FAIL the byte offset CHANGES with the ambient locale -- cmp's wording is being parsed"
+    bad=$((bad+1))
   fi
 
   # ...AND THE SECOND `local LC_ALL=C`, WHICH THE ASSERTION ABOVE DOES NOT COVER (Cybered F-4,

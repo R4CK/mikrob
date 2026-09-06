@@ -50,3 +50,22 @@ if [ "${BASH_SOURCE[0]}" = "${0}" ] && [ "${1:-}" != "--selftest" ]; then
   exit 2
 fi
 
+# `--selftest` USED TO SUCCEED SILENTLY, and a silent success is indistinguishable from "everything
+# is green" (Cybersec N-2, comment 21236). The exemption above exists so the driver guard does not
+# block the selftest -- but this file has no inline cases of its own, so the flag fell through to a
+# bare rc=0 with no output. Nothing was actually uncovered (CI discovers selftests by the
+# `store/*.selftest.{sh,py}` glob, and readme-bullet-union.selftest.py really does run, 17/17), so
+# this was a misleading MANUAL entry point rather than a coverage hole -- which is exactly why it
+# had to be fixed rather than left: the next person to type it would have believed the zero.
+#
+# It now runs the real thing and hands back its exit code. Naming the file rather than globbing:
+# if it is ever renamed, this fails loudly instead of quietly finding nothing.
+if [ "${BASH_SOURCE[0]}" = "${0}" ] && [ "${1:-}" = "--selftest" ]; then
+  _rbu_selftest="$(dirname "${BASH_SOURCE[0]}")/readme-bullet-union.selftest.py"
+  if [ ! -f "$_rbu_selftest" ]; then
+    echo "readme-bullet-union.sh: selftest not found at $_rbu_selftest" >&2
+    exit 2
+  fi
+  exec python3 "$_rbu_selftest"
+fi
+
