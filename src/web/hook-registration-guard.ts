@@ -64,6 +64,12 @@ export const KNOWN_HOOK_SCRIPTS: readonly string[] = [
   // rule would have nothing left to apply to. It applies AT MERGE TIME, when the scripts arrive with
   // it; see the invariant test, which executes this paragraph rather than restating it.
   'skill-usage-capture.py',
+  // Card 58ebcdc9 (upstream-drift re-measure, blob bcd6ad71 -> 9b3bae69): upstream added
+  // 'tool-log-capture.py' to this same union. Unlike clear-capture.py/clear-replay.py above, this
+  // one is SAFE to list now under the exact test this file's own comment states: measured in this
+  // checkout, scripts/hooks/tool-log-capture.py EXISTS, so fileExists is true and the pruner will
+  // never treat a registered entry for it as stale.
+  'tool-log-capture.py',
 
   // Card 38c5e758: the nine Bash-matcher gates this app also writes. They were absent for a long
   // time and the earlier comment here called that harmless, on the reasoning that an unlisted
