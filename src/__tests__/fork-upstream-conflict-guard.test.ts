@@ -201,7 +201,8 @@ const ACKNOWLEDGED_CONFLICTS = {
   // `readAgentClaudeConfigDir` (dead, superseded), adopt both new upstream imports (their usage
   // sites already merged in clean, this was only ever the import line colliding).
   'src/web/context-restart-gate-runner.ts':
-    "three import lines: { listAgentNames, agentDir } from './agent-config.js' (fork's agentDir stays, still used), { resolveAgentConfigDirForRead } from './claude-plans.js' (upstream, replaces the now-dead readAgentClaudeConfigDir -- fixed a stale-transcript bug), { agentSessionName, capturePane, sendPromptToSession } from './agent-process.js' (upstream's sendPromptToSession, used at the wake-delivery call site) -- drop readAgentClaudeConfigDir entirely, zero remaining call sites Re-read 2026-09-03 (card 3bd18e70, blob 268fc2e6): upstream replaced sendPromptToSession with sendSystemDirective from './system-directive.js' at the wake-delivery call site (GUARDHITELES903); that import line and the call site sit outside the conflict hunk and auto-merge, so the only conflicting hunk is still the agent-config/claude-plans import pair -- resolve as above, drop readAgentClaudeConfigDir.",
+    "three import lines: { listAgentNames, agentDir } from './agent-config.js' (fork's agentDir stays, still used), { resolveAgentConfigDirForRead } from './claude-plans.js' (upstream, replaces the now-dead readAgentClaudeConfigDir -- fixed a stale-transcript bug), { agentSessionName, capturePane, sendPromptToSession } from './agent-process.js' (upstream's sendPromptToSession, used at the wake-delivery call site) -- drop readAgentClaudeConfigDir entirely, zero remaining call sites Re-read 2026-09-03 (card 3bd18e70, blob 268fc2e6): upstream replaced sendPromptToSession with sendSystemDirective from './system-directive.js' at the wake-delivery call site (GUARDHITELES903); that import line and the call site sit outside the conflict hunk and auto-merge, so the only conflicting hunk is still the agent-config/claude-plans import pair -- resolve as above, drop readAgentClaudeConfigDir." +
+    " ROUND 17, 2026-09-06 (card 26ab08a2's landing-block, 268fc2e6 -> 83b90ef1, +42/-2). THIS ONE IS DIFFERENT FROM THE USUAL BUMP, AND SAYING SO IS THE POINT: the increment lands ON the import block this rule decides, not outside it. Upstream #1202 (LEDGERACK905) swaps hasOpenInboundQuestion for openInboundQuestionMessageId in that very import list, and adds two things below it -- drainSurfacedMessageId(), which reads store/.ledger-drain-<agent>, and a PURE openQuestionBlocks(openMessageId, surfacedMessageId) holding the gate only until the drain has actually SHOWN the agent the message. The fork side measured, not assumed: this file imports hasOpenInboundQuestion (line 18) and calls it once (line 410), and the fork's own agentDir import that this rule protects is untouched by the change. NOT ADOPTED this round, and the reason is mechanical rather than a judgement: it is HALF of a two-file change whose other half is the new db.ts export, and db.ts here has zero occurrences of openInboundQuestionMessageId (measured). Adopt-together-or-neither, on a card with a gate. The import-pair resolution above is unchanged; what changes is that a future merger will now see a THIRD line moving in the same hunk.",
   // The SAME one-line import class as the entry above, one file over (measured 2026-08-22 on
   // upstream/develop 317937dc). Both sides appended a binding to the SAME import from
   // './web/agent-scaffold.js': the fork's `ensureNpmProtectGuard`, upstream's
@@ -280,7 +281,8 @@ const ACKNOWLEDGED_CONFLICTS = {
   'src/web/agent-scaffold.ts':
     "keep BOTH section-writers (fork ensureLocalFirstSection + upstream ensureSkillsPathTrapSection), AND adopt upstream kanban-write gate (agentGetsKanbanWriteGate/injectKanbanWriteGate), quarantineReader project-scope refactor (EGRESSRENDER824), and watchEgressAllowlistForReaderRender -- all additive, none taken wholesale. Re-read 2026-08-26 (card 72f5f13b, unblocking fbb36b41/489dae5f landings): upstream moved AGAIN since this rule was written (added findDuplicateJsonKeys dup-key detection in ensureAgentHooks, HEARTBEAT_AGENT_ID import, EMAIL_GATE_MATCHER/emailGateMatcherStale export) -- 22 diff hunks total against a 1600-line security-critical file (fleet-wide hook wiring: git-protect/npm-protect/blast-radius/pentest-install guards live here). NOT safe to hand-merge under time pressure just to unblock a landing. The fork's own guards (git-protect/npm-protect/blast-radius/pentest-install, unchanged in this diff) remain authoritative and untouched on live develop. Full reconciliation of ALL upstream additions (this round's + the previously-acknowledged kanban-write-gate round) is done and build+test-verified in the disposable card-72f5f13b merge worktree, pending the Peti-supervised F5 cutover (card 5c134edf) -- that is where this file's real sync lands, not a piecemeal live-develop patch." +
     "Re-measured 2026-09-03 (backend2, card 6500e1d3 landing-block, 2a72fb5c7f38..936cdac15d5c): upstream threaded a new AGENT_API_ORIGIN through resolveDashboardOrigin, giving it a third parameter and the precedence AGENT_API_ORIGIN > DASHBOARD_PUBLIC_URL > localhost. Its reason is measured, not stylistic: on a single-host install behind hairpin NAT the public name resolved but its 443 was unreachable FROM THE HOST, so 73 generated curl examples across 18 agent CLAUDE.md files pointed at a dead address and returned curl exit 7 -- nothing the agent could even surface. An empty AGENT_API_ORIGIN keeps the old behaviour byte-for-byte. None of it touches the section-writers, the kanban-write gate or the quarantineReader scope that this rule decides. Resolution unchanged; blob bumped. The 'not safe to hand-merge under time pressure' warning above STILL STANDS and is not weakened by this bump. FORK-ONLY additions to keep across any future reconciliation (cards ab4c85f2 + 5c5d7bc4, not upstream's): the ensureSystemDirectiveAuthSection section-writer with its BEGIN/END markers and buildSystemDirectiveAuthBody, plus the import of SYSTEM_DIRECTIVE_SENDER from './system-directive-id.js' that body interpolates. That import is the point, not decoration: the scaffold recipe must name the SAME id routes/messages.ts reserves, or agents are sent to verify a field nobody rejects. Upstream has neither the section nor the const module." +
-    " Re-measured 2026-09-06 (backend3, card 79bb0364 landing-block, round 15). Upstream added the GATECOPY828 half of the same feature: TELEGRAM_COPY_GATE_MATCHER (the two Telegram MCP tools), agentGetsTelegramCopyGate/injectTelegramCopyGate/ensureTelegramCopyGate, and a new pythonHookCommand(). The gate itself is NOT adopted -- the fork built it under card 74181db2 with different names, a `Bash` matcher and a kill switch that DEFAULTS OFF, and taking upstream's alongside it double-wires the same script (see the src/web.ts entry). BUT ONE PIECE OF THIS DIFF IS WORTH ADOPTING ON ITS OWN, AND IT WAS MEASURED, NOT ASSUMED: pythonHookCommand() probes `command -v python3` and exits 2 when it is missing, because Claude Code treats 127 as NON-BLOCKING -- the exact failure this file's own hookCommand() header calls 'the non-blocking status this whole file exists to stop'. The fork applies that lesson to node only. Every python guard here is wired as a bare `python3 \"...\"` (git-protect, npm-protect, blast-radius, cd-chain, noisy-command, symlinked-node-modules, pentest-install), so a python3 that leaves the PATH turns all of them into silent no-ops. WORSE, and measured by reading the call site: injectOutgoingCopyGate builds its command with hookCommand(), i.e. it wires NODE to run a .py file -- latent only because the kill switch defaults off, a guaranteed no-op the moment it is turned on. Not fixed here (a landing-unblock is not the place); carded separately. Resolution otherwise unchanged; blob bumped.",
+    " Re-measured 2026-09-06 (backend3, card 79bb0364 landing-block, round 15). Upstream added the GATECOPY828 half of the same feature: TELEGRAM_COPY_GATE_MATCHER (the two Telegram MCP tools), agentGetsTelegramCopyGate/injectTelegramCopyGate/ensureTelegramCopyGate, and a new pythonHookCommand(). The gate itself is NOT adopted -- the fork built it under card 74181db2 with different names, a `Bash` matcher and a kill switch that DEFAULTS OFF, and taking upstream's alongside it double-wires the same script (see the src/web.ts entry). BUT ONE PIECE OF THIS DIFF IS WORTH ADOPTING ON ITS OWN, AND IT WAS MEASURED, NOT ASSUMED: pythonHookCommand() probes `command -v python3` and exits 2 when it is missing, because Claude Code treats 127 as NON-BLOCKING -- the exact failure this file's own hookCommand() header calls 'the non-blocking status this whole file exists to stop'. The fork applies that lesson to node only. Every python guard here is wired as a bare `python3 \"...\"` (git-protect, npm-protect, blast-radius, cd-chain, noisy-command, symlinked-node-modules, pentest-install), so a python3 that leaves the PATH turns all of them into silent no-ops. WORSE, and measured by reading the call site: injectOutgoingCopyGate builds its command with hookCommand(), i.e. it wires NODE to run a .py file -- latent only because the kill switch defaults off, a guaranteed no-op the moment it is turned on. Not fixed here (a landing-unblock is not the place); carded separately. Resolution otherwise unchanged; blob bumped." +
+    " ROUND 17, 2026-09-06 (545991551c70 -> 5b168b5afc24, +82/-5). Upstream #1201 adds hookScriptAlreadyEffectiveInOtherScope() and wires it into ensureAgentHooks -- inside this rule's area, not beside it. What it fixes is real and measured on THEIR side: Claude Code merges the user scope with the project scope and runs BOTH without deduping, so one prompt produced two identical PROVENANCE-KAPU blocks, a doubled spawn and a doubled ~1.4KB context injection, and removing the entry by hand did not hold because ensureAgentHooks merged the template back in on the next dashboard start. It compares SCRIPT BASENAME rather than the command string, because the two scopes spell the same gate differently, and it is deliberately ONE-WAY (only suppresses a write into the shared user scope). RELEVANT TO US, measured: this fork already has _hookScriptBasename (line 181) and uses it inside ensureAgentHooks, so the primitive the fix is built on is present here; what is absent is the cross-scope check itself. NOT ADOPTED this round -- it changes which hooks get written for every fleet agent, which is precisely the security-critical wiring this entry has refused to take wholesale for many rounds. Resolution unchanged; blob bumped.",
   // ORIGINAL entry (2026-08-16, card 88505fb5) described a schema-migration/trigger hunk in
   // ensureSchema() -- that hunk no longer conflicts (both sides' migrations merged clean since).
   // RE-MEASURED 2026-09-01 (heartbeat reconciliation): the file conflicts again, but at a totally
@@ -359,7 +361,18 @@ const ACKNOWLEDGED_CONFLICTS = {
     "so both call paths get it -- upstream only had one to protect -- plus --include=dev on both " +
     "npm ci sites in update.sh, which is the half that is environment-independent and final. The " +
     "fork anchor below fires the moment that second half lands, so this note cannot keep claiming " +
-    "an exposure that has been closed.",
+    "an exposure that has been closed." +
+    " ROUND 17, 2026-09-06 (0e3ae734 -> 7755cd0e, +28/-8), and it is a SECOND upstream commit on this " +
+    "file one round after the first. #1199 rebuilds the GitRunner that tryHandleUpdates injects: " +
+    "aheadCount's inline body becomes a shared countRevs(range) helper, a behindCount is added, and " +
+    "originHasBranch(branch) returns yes/no/UNKNOWN from `git ls-remote --exit-code --heads` -- " +
+    "distinguishing exit 2 (no such branch, evidence) from 128 (transport/auth failure, an unknown " +
+    "that must not block), which is the same absent-is-not-zero discipline this fork keeps arriving " +
+    "at independently. It is ADJACENT to this rule, not on it: the fork side still carries the " +
+    "pre-#1199 shape (GitRunner at line 519, aheadCount's inline try/catch at 530, measured), and the " +
+    "spawnUpdateScript helper this rule is about is not touched by either side. Resolution unchanged; " +
+    "blob bumped. The NODE_ENV half of #1189 remains unadopted and the fork anchor above still guards " +
+    "that claim.",
   'src/web/routes/kanban.ts':
     "dispatch-text hunk: keep the fork's waiting-text wholesale (fork rule 4, no self-close-to-done). Other two hunks: adopt upstream's resolveKanbanDispatch + reportUndeliveredDispatch (session-down is no longer a silent no-op), keep the fork's self-advance suppression + /clear-before-switch wholesale alongside it -- non-overlapping concerns, not a fork-vs-upstream pick. Re-measured 2026-09-02 (Cybersec, card 9dc0fba8 landing-block, 00ec734f520d..89423d29b8af): upstream moved, entirely outside all three recorded hunks -- it fixed the POST handler so a caller-supplied card id wins in the row AND in the response (it used to store the supplied id and echo the generated one, HTTP 200 pointing at a card that does not exist), and it lifts `actor` out of the field set for db.ts\'s new audit event. Zero hits on resolveKanbanDispatch, reportUndeliveredDispatch, the waiting-text hunk, the self-advance suppression or the /clear-before-switch block. Resolution at the conflict points unchanged; blob bumped." +
     " DONE 2026-09-04 (card f27c999b, B-wave 4/6), and TWO of the three items turned out to be already-solved rather than pending. (1) The POST id bug WAS live here and is fixed: `createKanbanCard({ id, ...normalized })` let a caller-supplied id win in the ROW while the response echoed the generated one -- HTTP 200 naming a card that does not exist. Now one id is resolved first and used for both; kanban-post-id-echo.test.ts pins the property for every shape, and 3 of its 4 cases fail on the old spread order. (2) resolveKanbanDispatch: already adopted -- kanban-dispatch.ts is upstream's verbatim plus two fork-only functions, measured. (3) reportUndeliveredDispatch: NOT adopted, because the fork already closed the same hole its own way. resolveKanbanDispatchTarget returning null no longer goes quiet: the failure lands on the card AND in the main agent's inbox, with four contract tests in kanban-dispatch-silent-noop.test.ts, and that file documents why the stricter 'message first, in_progress after delivery' contract is not available here (createAgentMessage only ENQUEUES, so 'after successful delivery' is not knowable at move time). Adopting upstream's version would be a second mechanism for a closed hole. The waiting-text hunk and the self-advance / clear-before-switch blocks are untouched, as the rule requires." +
@@ -1152,13 +1165,46 @@ const ACKNOWLEDGED_UPSTREAM_BLOBS: Readonly<Record<keyof typeof ACKNOWLEDGED_CON
   'src/__tests__/model-fallback.test.ts': '09bc3bf772d195be0980f4bec929eed4ecfadc67',
   'src/web/update-checker.ts': 'b4dffa346e8f60bec6466b6c9b0ca9b48202971b',
   'src/__tests__/update-checker-branch.test.ts': '8084721190d9c37f1ef4935c11ee9164994ab276',
-  'src/web/context-restart-gate-runner.ts': '268fc2e659fa8210c2b67c1df64e4006c2e727af',
+  'src/web/context-restart-gate-runner.ts': '83b90ef1572908bb8b325f435aea8aa6534bacb9',
   'src/web.ts': 'e44e79072705417ccd8d1770cef8def14f3b9780',
   'src/web/keychain.ts': '1e1730ee0d8f6b1d4b51c5c254f3fab56acfa376',
-  'src/web/agent-scaffold.ts': '545991551c700ca6dba0f334810d37d92563e12e',
-  'src/db.ts': 'cf4c1052f7efa2fcbfbbfec89f8e76eec543e405',
+  'src/web/agent-scaffold.ts': '5b168b5afc24e50ffca5be0d06de1161027e7a9a',
+  'src/db.ts': 'c554b375fcabf879fb324789459c72608baf9b5c',
   'src/web/routes/agents.ts': '0d1f6900159686bee31fb2ec0dea5d692f170a03',
-  'src/web/routes/updates.ts': '0e3ae734d461793bca2cc636571eec71b9746dff',
+  // ROUND 17 BLOB BUMPS, 2026-09-06 (card 26ab08a2's landing-block; upstream tip 14028011). Seven
+  // pins went stale at once -- the fifth drift in one day. Three of them carry their reasoning in
+  // the RULE above, because the increment lands on or beside the hunk the rule decides:
+  // context-restart-gate-runner.ts, agent-scaffold.ts and routes/updates.ts.
+  //
+  // The four below are the ordinary kind: upstream moved, ENTIRELY outside the recorded conflict,
+  // each read against its own rule rather than waved through as a set.
+  //
+  //   db.ts (cf4c1052 -> c554b375, +27): the other half of #1202 -- a new
+  //     openInboundQuestionMessageId() beside hasOpenInboundQuestion(), returning WHICH message is
+  //     open so a caller can ask whether the agent has been shown it, and '' (not null) when the
+  //     row carries no id, so "unknown" reads as "not seen". This rule decides a COMMENT-ONLY
+  //     collision at moveKanbanCard(); zero overlap. Pairs with the runner entry above:
+  //     adopt-together-or-neither.
+  //   channel-monitor.ts (8e6eeb28 -> 8195748c, +79/-0, purely additive): #1194's recovery brief
+  //     after a watchdog restart -- a fresh session comes back with the plugin reloaded and the
+  //     conversation gone, so the agent sits at an empty prompt while its uncommitted branch and
+  //     in_progress card wait. It imports restart-recovery-brief.js, a module that does NOT exist
+  //     in this fork (measured), so adopting it would be a two-file port, not a merge. This rule
+  //     decides triggerMarveenMemorySave; zero overlap.
+  //   scripts/channels.sh (f3bafcfa -> 287de06e, +33/-5): #1206 names every resolve_main_model
+  //     failure to store/channels-failures.log instead of returning a silent empty, and searches
+  //     node's standard install paths under a thin launchd PATH. This rule decides the two
+  //     guard-alert POSTs and the -H @"$_hdr_file" 0600-temp-file pattern; zero overlap.
+  //   scripts/hooks/outgoing-copy-gate.py (6a6224cd -> d97e9683, +53/-16): #1195/#1200 add a
+  //     _gate_log() that TIMESTAMPS every line and route the existing writes through it. Their own
+  //     note is worth reading rather than summarising away: 8005 log lines, four distinct messages,
+  //     one of them recording a FAIL-OPEN pass-through on the Telegram branch, with no way to place
+  //     it in time. One of the rewritten call sites is the load_bad_name() sentinel line this rule
+  //     protects -- the SENTINEL LOGIC is untouched, only how its message reaches the log. Round 14
+  //     already recorded that this fork's zero-pattern rules file passes silently under the fork's
+  //     sentinel path while upstream's merged policy makes the same state loud; that argument is
+  //     unchanged and still belongs on a gated card, not here.
+  'src/web/routes/updates.ts': '7755cd0e260fe60fc274d1475afd31f9e4503419',
   'src/web/routes/kanban.ts': '89423d29b8af3e949cb520eefc8f5a0d03ff380c',
   'scripts/hooks/egress-gate.mjs': '229076d5812e7d50a188ca07b43a87fb6239b233',
   'src/__tests__/egress-gate.test.ts': 'c24ca54ffc49de70d602790fa1d6b80e3aea4156',
@@ -1220,7 +1266,7 @@ const ACKNOWLEDGED_UPSTREAM_BLOBS: Readonly<Record<keyof typeof ACKNOWLEDGED_CON
   'scripts/email-send-gate.mjs': 'abaaedc4d0e9f76fa159307659473ffaac306411',
   'src/__tests__/hook-command-quoting.test.ts': '1048b1988e6c8554754900c62570d76d455f1057',
   'src/__tests__/installer-start-and-fallback.test.ts': '9017ce4fcfe808b73fdcd1389ebf1c9eaf374f7e',
-  'scripts/hooks/outgoing-copy-gate.py': '6a6224cdbae2ff84d0f7c6f3602df33ea51e9abd',
+  'scripts/hooks/outgoing-copy-gate.py': 'd97e9683b3ca0582879ca323436f5ab994ad6ff9',
   'scripts/notify.sh': '0b349a43558d33de521f07390ce86d60f40ce92a',
   'scripts/lib/send-telegram.sh': '293aecf24507b6d56bda99e5a4ff937e1491ab97',
   'scripts/disk-space-guard.sh': 'd3f693c01d607952a8165cc4d8106024008f22e4',
@@ -1241,7 +1287,7 @@ const ACKNOWLEDGED_UPSTREAM_BLOBS: Readonly<Record<keyof typeof ACKNOWLEDGED_CON
   'scripts/set-bot-menu.sh': 'b45aca69c59f9b69748592df70d0a9ea77189206',
   'scripts/stuck-modal-guard.sh': '5bf19fc208ac41c204ae007189553efcb1d2790d',
   'src/__tests__/send-honesty-sweep.test.ts': 'afc17a2222a86a7645343f837618ebe74516dacc',
-  'scripts/channels.sh': 'f3bafcfaa0aa3068fa37f3c0f844a2923117c2bf',
+  'scripts/channels.sh': '287de06ebbbdbda7da72e21ccb3e38a9c8a1da69',
   // ROUND 16 BLOB BUMP, 2026-09-06 (card a6b5fea3): abca56b7 -> 1110d32d, one upstream commit,
   // 31d1e94f (#1189, AUTOUPDNODEENV905) -- the same commit that opened the new updates.ts
   // conflict above. This entry was masked by that one and surfaced the moment it was recorded.
@@ -1257,7 +1303,7 @@ const ACKNOWLEDGED_UPSTREAM_BLOBS: Readonly<Record<keyof typeof ACKNOWLEDGED_CON
   'src/web/system-directive.ts': '7b69015ec8f1942349f9f912bfda228fb01ee771',
   'src/__tests__/system-directive.test.ts': '08409868f5f889240baceba1c4a240ac17d2c138',
   'src/__tests__/system-directive-auth-section.test.ts': '80d65e4651601d320447bf188d53548a5ef5f8ba',
-  'src/web/channel-monitor.ts': '8e6eeb2898ebda1528d208750fc2aa91996712e7',
+  'src/web/channel-monitor.ts': '8195748c3c82d33e22022c3678d120804b061188',
   'src/web/routes/messages.ts': '98710db9e171616e0600061eec649542e779506a',
   // Card 368b77f7, 2026-09-04.
   'src/__tests__/bridge-pairing-i18n.test.ts': '5da8970e4ff27f4d9b1fef46b179ed26e9063ea0',

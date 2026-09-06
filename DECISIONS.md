@@ -8690,3 +8690,108 @@ whitespace-osztály vissza a két alakra -> 2 piros; a `\r`-strip elvéve -> 1 p
 (komment-only mutáció) -> rc=0, nulla piros. 67 selftest-eset (61-ről).
 
 **Hivatkozás:** kártya `3ae71df1`, Cybersec 21120 (F-1/F-2/F-3), Cybered 21147, MikroB 21125.
+
+---
+
+## 2026-09-06 -- 26ab08a2 (3. kör): a nullára-esés küszöbe EGY, és a bootstrap-padló ÁLLAPOT-alapú
+
+**Döntés.** Két korábban kimondott MikroB-rendelkezés végrehajtása, Cybersec NO-GO-jára
+(21092, Gate-SHA 49f3c324) reagálva.
+
+**R-A (MikroB 21030).** `COLLAPSE_MIN` 2-ről **1**-re. A képesség nem szűnik meg, hanem
+KÉRNI kell: `--update --accept-cleared=<szabály>[,<szabály>...]`. A kapcsoló NEVESÍTI a
+szabályokat, nem csupasz flag -- ez a különbség a nyugtázás és a megkerülés között. Egy
+csupasz flag elférne egy wrapper-scriptben örökre, és pont a kártya alapító mérését (öt
+szabály egyszerre sötétbe) engedné át. A neveket nem lehet vakon szkriptelni: a lista
+minden alkalommal más, egy NEM nevesített szabály elsötétedése továbbra is megtagadás, és
+egy a bound-ban nem szereplő név maga is megtagadás, nem néma no-op.
+
+**Miért nem maradhatott 2.** A 2-es küszöb ára nem egy kis lyuk volt, hanem UGYANAZ a lyuk
+négy extra lépéssel: Cybersec lemérte az öt egymást követő `--update`-et, mindegyik egy
+szabályt visz nullára, mindegyik önmagában exit 0 és védhetőnek látszik, a végállapot
+`{"(parse-error)": 6}` -- pontosan annak a megkerülésnek a végállapota, amiért ez a kártya
+létezik.
+
+**R-B (MikroB 21035).** A bootstrap-ág padlója ÁLLAPOT-alapú: parse-hiba van ÉS egyetlen
+TÍPUS-ÉRZÉKENY szabálynak sincs egyetlen lelete sem. A git-padló (Cybered javaslata) azt
+kérdezi, "létezett-e korábban ez a fájl", ezért git nélküli fában semmit nem tud
+válaszolni, és ott SZÁNDÉKOSAN fail-open. A szándékos út ezen sétált át: `--bootstrap` egy
+teljesen degradált, git nélküli fán `{"(parse-error)": 861}`-t írt. Az új padló a FUTÁSRÓL
+kérdez, ezért első futásnál is válaszolható -- pont ott, ahol a git-padló vak.
+
+**Egy tényt helyesbítettem, mert kóddá vált.** A szkript és a selftest fejléce is azt
+állította, hogy "a hat racsnizott szabályból ÖT típus-érzékeny". NÉGY. A plugin saját
+metaadatából olvasva (`meta.docs.requiresTypeChecking`, a repo által telepített
+@typescript-eslint/eslint-plugin példányán): `await-thenable`, `no-floating-promises`,
+`no-misused-promises`, `no-unsafe-argument` mind `true`; a `no-unused-vars`
+**undefined** -- szintaktikus szabály, TS-program nélkül is jelent, és csak akkor hallgat
+el, ha maga a parse bukik, amit a `(parse-error)` vödör már lefed. A `no-unused-vars`
+beemelése a halmazba a padlót SZIGORÚAN GYENGÉBBÉ tenné, mert a padló azt kérdezi, hogy
+EGYIK ilyen szabály sem talált-e semmit.
+
+**A VÁLLALT ÁR, kimondva.** A `await-thenable` élő száma MA 1. Amikor valaki ezt az utolsó
+leletet is megjavítja -- vagyis JÓ munkát végez --, a következő `store/lint-ratchet.sh`
+futás exit 3-at ad, és ez a fleet-test része, tehát MINDEN landolást blokkol addig, amíg
+valaki le nem futtatja a nyugtázó parancsot. Ez a 2-es küszöb mellett nem történt volna
+meg. Elfogadjuk, mert a másik oldalon a szeletelt megkerülés áll, és a költséget a
+hibaüzenet viszi le percekre: a megtagadás a TELJES, beilleszthető parancsot kiírja
+(`store/lint-ratchet.sh --update --accept-cleared=<szabályok>`), nem csak a kapcsoló nevét.
+
+**Mérve.** Élő fán a javítás után változatlan: exit 0, 230 lelet, 6 szabály, egyik sem áll
+nullán. Selftest 23 -> 30 eset. Nyolc per-őr mutáció, mind piros a saját esetén; a
+blanket-mutáns (mindig megtagad) 14 esetet buktat, köztük MINDEN egészséges kontrollt --
+ez Cybersec kifejezett kikötése volt, mert egy mindent megtagadó javítás a megkerülés-
+sorokon ugyanígy zöld lenne.
+
+**Két teszt ígérete MEGFORDULT, a case mellett dokumentálva, nem csendben.** Az O eset
+eddig azt rögzítette, hogy egy szabály nullára esése IMPROVED marad (a 2-es küszöb
+kimondott ára); az N eset szövegkeresője az "are ALL at exactly zero" alakot várta, ami
+egy olyan többességre hivatkozott, aminek már nem kell fennállnia. Az N állítása
+tartalmilag változatlan: az üzenet a szabály-összeomlást nevezze meg, ne a nem mozdult
+parse-error számot.
+
+**Hivatkozás:** kártya `26ab08a2`; `store/lint-ratchet.sh`, `store/lint-ratchet.selftest.sh`;
+Cybersec NO-GO 21092, MikroB rendelkezések 21030 és 21035.
+
+---
+
+## 2026-09-06 -- 970156ce: a landolasi kapu csak SZANDEKOS leallitasra hallgathat el
+
+**Dontes.** A `store/local-llm-model-routing.selftest.sh` ket, elo Ollamat igenylo esete
+KIHAGYHATO, de KIZAROLAG akkor, ha a `gpu-crashloop-guard` SZANDEKOSAN maszkolta az
+`ollama.service`-t -- amit a `store/.gpu-crashloop-guard-masked.json` artefaktum `units`
+mezoje mond ki. Minden mas allapotban (nincs flag, mas unitot nevez meg, olvashatatlan
+vagy hibas JSON) a teszt valtozatlanul PIROS.
+
+**Miert nem az egyszeru env-gate.** A kezenfekvo alak ("az Ollama nem valaszol -> skip")
+azt a kepesseget veszi el a kaputol, hogy megkulonboztesse a VEDETT gepet a TORTTOL. Ez
+pontosan az a csendes kihagyas, ami ellen a 89f4c28d szandekosan URESEN tartja a
+`store-selftests-all-run` EXCLUDED listajat. MikroB dontese (komment 21246, Cybersec
+ellenvetesere): a feltetel SZANDEK legyen, ne elerhetoseg.
+
+**A kotelezo negativ kontroll.** Uj teszt-fajl (`local-llm-guard-sanctioned-skip.test.ts`,
+8 eset) rogziti a MEGENGEDO es a TILTO iranyt is, determinisztikusan (minden eset halott
+loopback OLLAMA_HOST-tal fut, tehat nem fugg attol, hogy epp el-e az Ollama). Az elutasitott
+env-gate mint mutans 7-bol 6 esetet buktat.
+
+**Ket meres, ami menet kozben megvaltoztatta a megoldast.**
+1. Az elso valtozat `$HERE`-bol olvasta a flaget. Az orzo az INSTALL store-jaba ir, a
+   selftest viszont agens-WORKTREE-bol fut -- a flag lathatatlan volt, minden eset piros
+   maradt, a javitas keszneek latszott es semmit nem valtoztatott.
+2. A masodik valtozat a `local-llm-state-dir.sh` resolverjen at oldotta fel. Az viszont
+   `LOCAL_LLM_STATE_DIR`-re elsobbseget ad, amit a teszt-suite WORKERENKENT beallit egy
+   ures temp konyvtarra (4c5c540c, hogy a teszt-futasok ne irjanak az eles ledgerbe). Igy a
+   flag-kereses pont ott vakult meg, ahol a javitasnak MUKODNIE kell: a fleet-test-ben. A
+   selftest kezzel futtatva zold volt, a wrapper piros.
+
+**A vegleges alak.** A resolver checkout-to-install szarmaztatasa hasznaljuk, de az `env`
+aga NELKUL, egy PARANCS-BEHELYETTESITESBEN, ahol a valtozo unset. Igy a suite izolacioja
+ebben a shellben erintetlen marad -- a selftest altali local-llm.sh hivasok tovabbra is az
+izolalt konyvtart latjak --, es csak az UT jon vissza. Ellenorizve: a teljes suite-futas
+utan az eles `store/local-llm-usage.log` valtozatlan (mtime 08:04, a futasok 11:07/11:09).
+A ket valtozo ket kulon kerdesre valaszol: hol IRHAT ez a futas local-llm allapotot, kontra
+hol ROGZITETT egy masik program egy dontest.
+
+**Hivatkozas:** kartya `970156ce`; `store/local-llm-model-routing.selftest.sh`,
+`src/__tests__/local-llm-guard-sanctioned-skip.test.ts`; MikroB 21246; kapcsolodo: d5c05548
+(a mask() hiba), 1f276349 (ugyanez az osztaly a fork-guardon).
