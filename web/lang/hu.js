@@ -972,6 +972,7 @@ window._i18n.hu = {
   'localLlm.models.toggle.error': 'A modell állapotát nem sikerült átállítani. Próbáld újra.',
   'localLlm.models.toggle.load_error': 'A modell-kapcsolók állapota nem tölthető be; a lista kapcsolók nélkül látszik.',
   'localLlm.models.toggle.use_blocked': 'Letiltott modell nem aktiválható -- előbb engedélyezd.',
+  'localLlm.models.ollama_down_banner': 'Az Ollama most nem fut, ezért a lista a legutóbb bemért modelleket mutatja. A kapcsolók működnek, és az Ollama következő indulásától érvényesek; aktiválás és letöltés addig nem elérhető.',
   'localLlm.status.active_disabled': 'Letiltva -- a routing nem használja, amíg nem engedélyezed.',
   'localLlm.models.bench.tip':            'Bemérve: {date}',
   'localLlm.models.bench.unmeasured_tip': 'Ezen a gépen még nem futott le sebességmérés -- soha nem jelenik meg kitalált értékként.',

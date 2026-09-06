@@ -9045,6 +9045,19 @@ body {
   .llm-model-row .llm-model-actions { width: 100%; }
   .llm-model-toggle { flex: 1 1 auto; }
 }
+/* Card 404e8dd6: Ollama-down fallback list -- the banner names the state, the rows keep the
+   switch (44px, same tokens) and drop the controls that need Ollama */
+.llm-models-banner {
+  padding: 10px 12px;
+  margin-bottom: 8px;
+  border: 1px solid var(--warning, #e2a000);
+  border-radius: var(--radius-sm);
+  background: color-mix(in srgb, var(--warning, #e2a000) 12%, var(--bg-card));
+  color: var(--text);
+  font-size: 13px;
+  line-height: 1.4;
+}
+.llm-model-row-offline { border-style: dashed; }
 .llm-bench-hint {
   font-size: 11px;
   color: var(--warning, #e2a000);

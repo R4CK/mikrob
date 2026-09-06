@@ -351,11 +351,18 @@ async function llmToggleCategory(task, enabled) {
 // { ok, model }. Built contract-first: while the backend is not landed the GET answers 404 and
 // the switches are simply not rendered (the rest of the models list is unaffected).
 let _llmModelFlags = null // Map<name, { enabled, disabledAt }> | null when the API is absent
+// Card 404e8dd6 (pair-BE 75f3c77d): the flags answer is also the FALLBACK model list. On a day
+// when Ollama is masked (the gpu-crashloop-guard day this card was born on) the status endpoint has
+// no models to list, but GET /api/local-llm/models still names the known models from
+// local-llm-model-state.json and says `ollamaUp: false` -- so the switches stay visible and
+// usable instead of a toast and an empty list. Rows are kept verbatim; nothing is invented.
+let _llmModelList = [] // rows of the last successful GET /api/local-llm/models
+let _llmOllamaUp = null // that answer's `ollamaUp`; null when the BE predates the field
 
 async function llmLoadModelFlags() {
   try {
     const res = await fetch('/api/local-llm/models')
-    if (res.status === 404) { _llmModelFlags = null; return null }
+    if (res.status === 404) { _llmModelList = []; _llmOllamaUp = null; _llmModelFlags = null; return null }
     if (!res.ok) throw new Error('HTTP ' + res.status)
     const d = await res.json()
     const list = Array.isArray(d.models) ? d.models : []
@@ -364,14 +371,48 @@ async function llmLoadModelFlags() {
       if (m && typeof m.name === 'string') map.set(m.name, { enabled: m.enabled !== false, disabledAt: m.disabledAt ?? null })
     }
     _llmModelFlags = map
+    _llmModelList = list.filter(m => m && typeof m.name === 'string')
+    _llmOllamaUp = typeof d.ollamaUp === 'boolean' ? d.ollamaUp : null
     return map
   } catch {
     // Rule 12: a failed flag read must not hide the models list; the switches are omitted and
     // the operator sees the toast, not a silent "everything enabled" guess.
     showToast(t('localLlm.models.toggle.load_error'), 'error')
     _llmModelFlags = null
+    _llmModelList = []
+    _llmOllamaUp = null
     return null
   }
+}
+
+/** The one switch markup, shared by the live list and the Ollama-down fallback list. */
+function llmToggleButtonHtml(name, disabled) {
+  return `<button type="button" class="llm-model-toggle ${disabled ? 'off' : 'on'}" data-model="${escapeHtml(name)}" data-enable="${disabled ? '1' : '0'}" aria-pressed="${disabled ? 'false' : 'true'}" title="${escapeHtml(t(disabled ? 'localLlm.models.toggle.enable_tip' : 'localLlm.models.toggle.disable_tip'))}">${t(disabled ? 'localLlm.models.toggle.enable' : 'localLlm.models.toggle.disable')}</button>`
+}
+
+// Card 404e8dd6: a model row when Ollama is down -- name, the switch, and the benchmark the state
+// file already holds (tok/s @ ctx, never invented). No Use/Update buttons: those need Ollama, and
+// a control that cannot act is a dead end (rule 9), so it is not drawn.
+function llmFallbackModelRowHtml(m) {
+  const disabled = m.enabled === false
+  const b = m.benchmark && typeof m.benchmark.tokPerSec === 'number' ? m.benchmark : null
+  const ctx = b && typeof b.ctx === 'number' ? ` @ ${b.ctx}` : ''
+  const dateLocale = window._lang === 'en' ? 'en-US' : 'hu-HU'
+  const benchDate = b && Number.isFinite(b.measuredAt) ? new Date(b.measuredAt).toLocaleDateString(dateLocale) : ''
+  const tpsHtml = b
+    ? `<span class="llm-rec-tps" title="${escapeHtml(benchDate ? t('localLlm.models.bench.tip', { date: benchDate }) : t('localLlm.rec.tps_tip'))}">⚡ ${llmFmtCount(Math.round(b.tokPerSec))} tok/s${escapeHtml(ctx)}</span>`
+    : `<span class="llm-rec-tps unmeasured" title="${escapeHtml(t('localLlm.models.bench.unmeasured_tip'))}">${t('localLlm.rec.tps_unmeasured')}</span>`
+  const disabledBadge = disabled ? `<span class="llm-badge-disabled">${t('localLlm.models.disabled_badge')}</span>` : ''
+  return `<div class="llm-model-row llm-model-row-offline${disabled ? ' disabled' : ''}" data-model-row="${escapeHtml(m.name)}">
+    <div class="llm-model-info">
+      <span class="llm-model-name">${escapeHtml(m.name)}</span>
+      ${disabledBadge}
+      <span class="llm-rec-meta">${tpsHtml}</span>
+    </div>
+    <div class="llm-model-actions">
+      ${llmToggleButtonHtml(m.name, disabled)}
+    </div>
+  </div>`
 }
 
 function llmModelDisabled(name) {
@@ -472,7 +513,18 @@ async function llmRefreshStatus() {
     // Models list
     const models = Array.isArray(d.models) ? d.models : []
     if (!d.ollama_up) {
-      modelsEl.innerHTML = `<div class="llm-empty">${t('localLlm.status.down')}</div>`
+      // Card 404e8dd6: Ollama down is no longer an empty list. The known models (from the flags
+      // answer, itself fed by local-llm-model-state.json) are drawn with their switches under a
+      // visible "Ollama is not running" banner; only when even that list is empty does the old
+      // "Unavailable" placeholder remain.
+      if (_llmModelList.length > 0) {
+        modelsEl.innerHTML = `<div class="llm-models-banner" role="status">${t('localLlm.models.ollama_down_banner')}</div>`
+          + llmAnimateBatch(_llmModelList.map(llmFallbackModelRowHtml).join(''), 'models-offline', 'llm-model-row')
+        modelsEl.querySelectorAll('.llm-model-toggle').forEach(b =>
+          b.addEventListener('click', () => llmToggleModel(b.dataset.model, b.dataset.enable === '1', b)))
+      } else {
+        modelsEl.innerHTML = `<div class="llm-empty">${t('localLlm.status.down')}</div>`
+      }
     } else if (models.length === 0) {
       modelsEl.innerHTML = `<div class="llm-empty">${t('localLlm.models.empty')}</div>`
     } else {
@@ -507,9 +559,7 @@ async function llmRefreshStatus() {
         const hasFlags = _llmModelFlags !== null
         const disabled = hasFlags && llmModelDisabled(m.name)
         const disabledBadge = disabled ? `<span class="llm-badge-disabled">${t('localLlm.models.disabled_badge')}</span>` : ''
-        const toggleHtml = hasFlags
-          ? `<button type="button" class="llm-model-toggle ${disabled ? 'off' : 'on'}" data-model="${escapeHtml(m.name)}" data-enable="${disabled ? '1' : '0'}" aria-pressed="${disabled ? 'false' : 'true'}" title="${escapeHtml(t(disabled ? 'localLlm.models.toggle.enable_tip' : 'localLlm.models.toggle.disable_tip'))}">${t(disabled ? 'localLlm.models.toggle.enable' : 'localLlm.models.toggle.disable')}</button>`
-          : ''
+        const toggleHtml = hasFlags ? llmToggleButtonHtml(m.name, disabled) : ''
         return `<div class="llm-model-row${active ? ' active' : ''}${notBenched && !active ? ' not-benchmarked' : ''}${disabled ? ' disabled' : ''}" data-model-row="${escapeHtml(m.name)}">
           <div class="llm-model-info">
             <span class="llm-model-name">${escapeHtml(m.name)}</span>
