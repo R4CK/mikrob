@@ -80,10 +80,22 @@ _common_line_prefix_len() {
   #
   # FACT 2 -- GNU cmp's wording follows the locale's CHARACTER WIDTH, inverted from the naive guess:
   #     single-byte locale (C, POSIX, or any invalid value falling back to C) -> "differ: char N"
-  #     multibyte locale   (C.UTF-8, or the ambient LANG when LC_ALL is unset) -> "differ: byte N"
+  #     multibyte locale   (C.UTF-8, or a multibyte ambient LANG -- see below) -> "differ: byte N"
   #
-  # Together: with LC_ALL unset the local never reached cmp, cmp ran under the multibyte ambient
-  # LANG and said "byte", and the `byte`-only pattern worked. With LC_ALL exported to ANYTHING the
+  # "LC_ALL UNSET" IS NOT A LOCALE, it is delegation to LANG -- and that makes the old bug WIDER
+  # than the line above admits (Cybersec, card bb52c2fa; reproduced here before adopting it):
+  #
+  #     LC_ALL unset, LANG=C.UTF-8 -> "byte"
+  #     LC_ALL unset, LANG=C       -> "char"
+  #     LC_ALL unset, LANG unset   -> "char"
+  #
+  # So the `byte`-only pattern did not merely break "when something exported LC_ALL". It also broke
+  # on a machine that simply has no LANG -- a bare container's default state -- with nothing
+  # exported at all. Any statement of the form "unset was fine" is true only where the ambient LANG
+  # happens to be multibyte, which is an accident of the host, not a property of the code.
+  #
+  # Together: with LC_ALL unset AND a multibyte ambient LANG the local never reached cmp, cmp said
+  # "byte", and the `byte`-only pattern worked. With LC_ALL exported to ANYTHING the
   # local DID reach cmp, cmp ran in single-byte C and said "char", the pattern matched nothing, `n`
   # came back empty, and the fallback below answered with the SHORTER side's whole length as the
   # common prefix. That is why every exported value broke it -- the specific locale never mattered,
