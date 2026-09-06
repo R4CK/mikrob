@@ -1,10 +1,12 @@
 // The stuck-incident WRITER (card 878cd292, parent f92671df).
 //
 // What these pin, and why each is here rather than being obvious:
-//   - ALL NINE guard verdicts are classified, taken from the script's own echo sites. The heartbeat
-//     prose documented only six; building from it would have left three branches permanently
-//     unlogged -- the very "a deliberate non-action leaves no trace" hole this table exists to close,
-//     reproduced inside its own fix.
+//   - EVERY guard verdict is classified, taken from the script's own echo sites. The heartbeat prose
+//     documented six; building from it would have left branches permanently unlogged -- the very
+//     "a deliberate non-action leaves no trace" hole this table exists to close, reproduced inside
+//     its own fix. The set was NINE when measured and became TEN the same afternoon (ledger-busy,
+//     card 09a3d52a), which is why the classifier stores an unrecognised reason instead of dropping
+//     it, and why these tests assert BEHAVIOUR per shape rather than a count.
 //   - THE REASON IS A PREFIX READ, never an equality test. Three verdicts carry a parenthesised
 //     payload, and the script's own header comment gets the separator wrong, so a hand-kept list
 //     would drift against a script this repo does not own.
@@ -88,6 +90,18 @@ describe('classifyStuckVerdict -- all NINE verdicts, from the script echo sites'
     expect(classifyStuckVerdict('DENY:backoff(1200s)')).toEqual({
       action: 'none_denied',
       detail: 'DENY:backoff(1200s)',
+    })
+  })
+
+  it('ledger-busy is "could not evaluate" -- recorded, but NOT as a denial', () => {
+    // The third kind, and it appeared DURING this card (guard card 09a3d52a added the lock). The
+    // guard was asked and could not answer, so counting it as a denial would inflate "how often did
+    // the system decide not to intervene" with occasions where nothing was decided -- one step
+    // milder than the calling errors, which are excluded entirely. Dropping it would hide real lock
+    // contention, which is exactly what this table should be able to show.
+    expect(classifyStuckVerdict('DENY:ledger-busy')).toEqual({
+      action: 'none_other',
+      detail: 'DENY:ledger-busy',
     })
   })
 

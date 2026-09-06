@@ -1514,10 +1514,18 @@ export type StuckIncidentResult =
  * kept in sync by hand with a script this repo does not own is a second source of truth waiting to
  * drift; a prefix read cannot drift.
  *
- * `usage` and `card-not-found` are CALLING ERRORS, not verdicts about a card (the distinction is
- * MikroB's, from the corrected heartbeat D-section). Storing them would fold our own bad calls into
- * "how often did the system decide not to intervene" -- the table corrupting the very number it
- * exists to produce. They are skipped, and the caller is told why.
+ * THREE KINDS, not two. `usage` and `card-not-found` are CALLING ERRORS, not verdicts about a card
+ * (the distinction is MikroB's, from the corrected heartbeat D-section). Storing them would fold our
+ * own bad calls into "how often did the system decide not to intervene" -- the table corrupting the
+ * very number it exists to produce. They are skipped, and the caller is told why. `ledger-busy` is
+ * the third kind: not a decision, not a caller mistake, but "could not evaluate" -- recorded as
+ * `none_other` so it stays visible without inflating the denial count.
+ *
+ * THE VERDICT SET IS NOT FROZEN, and this function has already been wrong about its size once. It
+ * was written against NINE reasons measured from the script's echo sites; `ledger-busy` (card
+ * 09a3d52a) landed in the same afternoon and made it TEN. That is why the fallback STORES an
+ * unrecognised reason rather than dropping it, and why nothing here is an equality test against a
+ * frozen list: the script is owned by another card and moves on its own schedule.
  */
 export function classifyStuckVerdict(
   verdict: string,
@@ -1530,9 +1538,21 @@ export function classifyStuckVerdict(
   if (reason === 'usage' || reason === 'card-not-found') {
     return { skip: `calling error, not a decision about a card: ${reason}` }
   }
+  // `ledger-busy` is a THIRD kind, and it arrived while this file was being written: the guard grew
+  // it in card 09a3d52a (the ledger is now taken under a lock, and a missing lock REFUSES). It is
+  // neither a decision nor a calling error -- the guard was asked and COULD NOT EVALUATE, because
+  // another process held the lock.
+  //
+  // It is recorded, but as `none_other`, not `none_denied`. Folding it into `none_denied` would
+  // inflate "how often did the system decide not to intervene" with occasions where nothing was
+  // decided at all -- the same corruption that keeps usage/card-not-found out entirely, one step
+  // milder. Dropping it instead would hide a real operational signal: repeated ledger-busy means
+  // lock contention, and that is exactly the kind of thing this table should be able to show.
+  if (reason === 'ledger-busy') return { action: 'none_other', detail: v }
   // Everything else IS a decision about a stuck card, including load-paused -- a real policy denial
   // the old six-item prose omitted. An unknown reason is still stored: the guard may grow reasons,
-  // and a new one must be recordable rather than silently dropped.
+  // and a new one must be recordable rather than silently dropped. That is not hypothetical -- see
+  // the paragraph above, which is a reason that appeared DURING this card.
   return { action: 'none_denied', detail: v }
 }
 
