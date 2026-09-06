@@ -11136,6 +11136,38 @@ valódi regresszió.
 mechanizmus: `09a3d52a` (ugyanennek a könyvtárnak a másik állapotfájlja, ott a zár volt a helyes
 válasz); `store/vram-guard-check.sh`, `store/vram-guard-check.selftest.sh`.
 
+## 2026-09-06 -- edf9c837 -- A landolo szkript a KARTYA-ID szerint valaszt agat, nem a gate-elt sha szerint
+
+**A DÖNTÉS.** A `cleancore-land.sh` `pick_branch` függvénye megkapja a kártya azonosítóját, és a
+`git branch -a --contains` jelöltjei közül azt választja, aminek a NEVE a kártya-id-re végződik
+(`/` vagy `-` határon). Ha egyik sem, marad a régi első-sor viselkedés.
+
+**MIÉRT NEM A TIP SZERINT.** A kézenfekvő megoldás az lenne, hogy azt az ágat válasszuk, aminek a
+tipje ÉPPEN a gate-elt sha. Ez rossz: a hívó KÖVETKEZŐ állítása pontosan az, hogy a választott ág
+tipje a gate-elt sha. Ha a választás erre a tulajdonságra szűrne, az az állítás üressé válna --
+konstrukció szerint teljesülne, bármit adott volna vissza a függvény. A név szerinti szűkítés
+független attól, amit az ellenőrzés kérdez, tehát az ellenőrzésnek marad mit elutasítania.
+
+**MIÉRT HATÁRRA HORGONYZOTT AZ ILLESZTÉS.** Egy 8 hexes kártya-id rövid: a `fix/x-476ccb3399` név
+tartalmazza a `476ccb33`-at. Egy puszta részsztring-illesztés ugyanazt a rossz-ág hibát hozná vissza,
+csak eggyel bonyolultabban. Mindkét élő névalak lefedve (`agent/fron-ted/476ccb33` és
+`fix/evidence-bucket-retention-floor-cbea986c`). Mutációval mérve: a horgony elvétele két esetet
+buktat, a kártya-argumentum eldobása hármat.
+
+**MIÉRT NEM ELUTASÍTÁS, HA NINCS NÉV-EGYEZÉS.** Az az ág, ami egyszerűen nem hordozza az azonosítót a
+nevében, a MA is működő eset. Egy elutasítás ott olyan landolásokat törne el, amik most rendben
+mennek -- a változtatás így szigorúan additív.
+
+**AMI EBBŐL KIMARADT, ÉS MIÉRT.** A kártya elsődleges fele (a `DECISIONS.md` union-elutasítás) NEM
+ebben a változtatásban van: a mérés megcáfolta a kártya hipotézisét, és a valódi ok egy olyan
+alakra vezet, amit a jelenlegi algoritmus nem tud feloldani, nem pedig egy szűk feltétel
+lazítására. Részletek a kártya kommentjében; az ottani javaslat MikroB terv-fázisú döntését igényli,
+mert egy többszörösen gate-elt biztonsági eszköz kimenetét változtatná meg.
+
+**Ki döntött:** backend mérnöki döntés a kártya másodlagos pontjára (MikroB kártyája nevezte meg a
+kívánt irányt), itt felülvizsgálatra kitéve.
+
+**Hivatkozás:** kártya `edf9c837`; `store/cleancore-land.sh` (`pick_branch` + 6 selftest-eset).
 ## 2026-09-06 -- channels.sh watchdog fallback: host-szintű grep helyett saját folyamatfa (kártya 4c34f201)
 
 **A lelet.** Az upstream mérte meg és javította (kanban `c0390130`, 2026-08-19), a fork a hibás
@@ -11175,6 +11207,147 @@ javítást építettünk.
 kapcsolódó: a fork saját post-init unlock Check 1-je (ugyanaz a `pgrep -P` minta, 825. sor);
 `scripts/channels.sh`, `src/__tests__/channels-watchdog-fallback-scope.test.ts`,
 `src/fork-upstream/acknowledged-conflicts.ts`.
+
+## 2026-09-06 -- edf9c837 -- A döntésnapló-unió SORRENDJE a hívó döntése, és a szinkron iránynak eddig nem volt hívója
+
+**A DÖNTÉS (MikroB, 24922: az (A) irány).** A `try_append_union` kap egy negyedik argumentumot, ami
+megmondja, melyik oldal fele kerül előre: `ours-first` (alapértelmezés) vagy `theirs-first`.
+Ismeretlen érték elutasítás, nem csendes alapértelmezés -- ugyanaz a fail-closed irány, mint az
+entry-boundary mintánál, és ugyanazon okból: a sorrend DÖNTÉS, tehát egy elgépelés nem választhat
+helyettünk.
+
+**MIÉRT SZÁMÍT EGYÁLTALÁN A SORREND.** A két maradék mindegyike új, tehát a sorrendjük ERRE a
+merge-re nézve tetszőleges. A KÖVETKEZŐRE nem: amelyik blokk előre kerül, az MINDEN későbbi
+merge-base-hez képest a fájl KÖZEPÉN álló beszúrás lesz, és egy egyoldali közép-beszúrás pontosan az
+az alak, amit a függvény ezután elutasít (mert ott az összefűzés a base-t duplikálná). Mérve: két
+független CleanCore landolás akadt el egyetlen heartbeat-körben emiatt, és a gyanított ok (azonos kis
+közép-beszúrások) mérésre kizárult -- azok bájtra azonos üres sorok, amiket a függvény már kezel.
+
+**AMI A MÉRÉS KÖZBEN KIDERÜLT, ÉS AMI MIATT (A) ÖNMAGÁBAN NEM-MŰVELET LETT VOLNA.** A függvényt
+pontosan két hely hívja, mindkettő landoló, és mindkettő ugyanúgy mergel: a worktree az integrációs
+ágon áll, az ügynök ága megy bele. Ott `ours` MÁR az integrációs ág, tehát a helyes sorrend az
+alapértelmezés. Az inverzió az ÜGYNÖK szinkron-merge-ében keletkezik (integrációs ág bemergelése a
+saját ágba), ahol `ours` az ügynök ága -- és ahhoz az irányhoz NEM TARTOZOTT SEMMILYEN HÍVÓ: azt a
+konfliktust kézzel oldottuk fel, a sorrendet az döntötte el, ki hogyan fűzte össze a két felet.
+
+Ezért a döntés két darabban landolt, és a második nélkül az első nem ér semmit:
+`store/decisions-sync-resolve.sh` a hiányzó hívó a szinkron irányra, `theirs-first`-tel.
+
+**A SZKRIPT ELLENŐRZI AZ IRÁNYT, NEM FELTÉTELEZI.** A `theirs-first` csak szinkron-merge-re helyes;
+az ellenkező merge után alkalmazva pont azt az alakot hozná létre, amiről ez a kártya szól. Ezért a
+`MERGE_HEAD`-nek egy integrációs ág csúcsának KELL lennie, különben a szkript 2-vel elutasít. Egy
+eszköz, aminek a helyessége azon múlik, hogy az operátor emlékszik-e, melyik irányba mergelt, nem
+javítás.
+
+**NEM COMMITOL.** Ugyanaz a szerződés, mint a landolóknál: felold és stage-el, a merge lezárása a
+hívó lépése.
+
+**BIZONYÍTÉK.** Öt új eset a union selftestjében, köztük az, amelyik EGY fixtúrán két különböző
+verdiktet ad pusztán a sorrendtől (`ours-first`-nél a varrat setext-fejléccé léptetné elő az utolsó
+prózasorunkat, `theirs-first`-nél nem) -- ez az az eset, ami megfogja, ha a varrat-ellenőrzés a régi
+felére mutat. A kártya által kért piros-a-régin/zöld-az-újon alak mérve: a sorrend-argumentumot
+figyelmen kívül hagyó (a kártya előtti) változat három esetet buktat, a varratot nem követő változat
+egyet. A szinkron-szkriptnek saját, valódi repókon futó selftestje van (7 eset), és teszt köti be,
+hogy le is fusson.
+
+**Ki döntött:** MikroB választotta az (A) irányt (24922); a szinkron-oldali hívó, az irány-ellenőrzés
+és a fail-closed ismeretlen-érték kezelés backend mérnöki döntése, itt felülvizsgálatra kitéve.
+
+**Hivatkozás:** kártya `edf9c837`; `store/decisions-append-union.sh`, `store/decisions-sync-resolve.sh`,
+`src/__tests__/decisions-sync-resolve-selftest.test.ts`, `README.md`.
+
+## 2026-09-06 -- beb9c8d3 -- A suite-futás kimondja, mennyi NEM futott le belőle
+
+**A LELET.** A `store/cleancore-suite-run.sh` nem állítja be a `PG_E2E_URL`-t, és a flottában semmi
+más sem teszi, miközben a CI igen (`.github/workflows/ci.yml:442`). Minden PG-függő e2e fájl
+`describe.skipIf(!PG_E2E_URL)`, tehát egy flotta-suite végigsétál rajtuk. Mérve ezen a gépen,
+2026-09-06, csak az `api-e2e` projektre: **65 tesztfájlból 58 nem futott le, 491 tesztből 460
+kimaradt, a futás pedig 0-val tért vissza.**
+
+**AMI NEM IGAZ A LELETRE, és ezt ki kell mondani:** a vitest KIÍRJA ezeket a számokat, tehát a
+kihagyás nem szó szerint láthatatlan. A hiba nem a hallgatás, hanem az ATTRIBÚCIÓ hiánya: a 460 egy
+sorban áll azzal a néhány fájllal, ami Stripe- vagy Redis-kulcs híján marad ki, és amit egy olvasó
+jogosan tekint normálisnak. Egy gate zöldet lát és egy megszokott skipped-számot.
+
+**A DÖNTÉS.** Új `store/vitest-skip-report.sh`, a `vitest-flake-classify.sh` mintájára és
+ugyanazzal a szerződéssel: csak stderr, a kilépési kódot SOHA nem írja át, és HALLGAT, ha semmi nem
+maradt ki. A futás végén egy blokk mondja meg, hány fájl és hány teszt nem futott, és ebből mennyi
+hivatkozik a beállítatlan környezetváltozóra.
+
+**AMIT ÁLLÍT, szűkebben mint "ezek MIATTA maradtak ki".** Fájlonként azt kérdezi, hogy a forrás
+HIVATKOZIK-e a változóra, és hogy a változó be van-e állítva itt. Mindkét fél ellenőrizhető. Amit
+nem tud besorolni, az külön, kimondott vödörbe megy -- egy attribúció, ami csendben magába nyeli
+azt, amit nem ért, megszűnik bizonyíték lenni. Mérve a valódi futáson: 58 kihagyott fájlból 54
+hivatkozik a `PG_E2E_URL`-re, a maradék 4 pedig névről is a másik osztály (LemonSqueezy, Stripe,
+Redis, objektumtár).
+
+**MIÉRT NEM KOMMENTEL A KÁRTYÁRA.** A szemafor `PAUSED-SEMAPHORE` üzenetei kommentelnek, mert
+ritkán szólalnak meg. Ez minden helyi futáson megszólal, amíg valaki be nem köt egy Postgrest --
+kártyánkénti komment ebből zaj lenne, pont az, ami ellen a szkript saját elve szól.
+
+**MIÉRT NEM BUKTATJA MEG A FUTÁST.** Egy kihagyás-hiba minden jogos helyi futást eltörne, egy
+kilépési kód átírása pedig ugyanaz a mozdulat, amit egy valódi regressziót elrejtő wrapper tenne.
+
+**BIZONYÍTÉK.** 14 esetes selftest, minden attribúciós esethez saját negatívval: csak kommentben
+szereplő hivatkozás NEM számít bele (a jelenlét-állítás komment-mentesített forráson mér), a
+`PG_E2E_URL_ALT` sem (azonosító-határ, nem részsztring), és egy `://` literál a sor elején nem
+nyeli el a mögötte álló hivatkozást. A bekötés is pinnelve van, komment-mentesített forráson a
+HÍVÁS-KIFEJEZÉSRE illesztve: mérve, hogy a hívás törlése és egy azt megnevező kommenttel való
+pótlása is PIROSRA váltja.
+
+**Hivatkozás:** kártya `beb9c8d3` (backend leletéből, `cea77ed2` kapcsán);
+`store/vitest-skip-report.sh`, `store/vitest-skip-report.selftest.sh`,
+`store/cleancore-suite-run.sh`, `README.md`.
+
+## 2026-09-06 -- Két testvér-őr ELLENTÉTESEN döntött ugyanarról a varrat-kérdésről, egy héten belül
+
+**A MEGFIGYELÉS Cybersecé** (`108c7b10` GO, komment 21567), és kifejezetten NEM leletként adta át:
+a `vram-guard-check.sh` `--metrics-json` varrata őrizetlen, és teljesen meghatározza a verdiktet.
+Ugyanezt a kérdést a `09a3d52a`-n tudatosan FORDÍTVA döntöttem el: ott elutasítottam egy
+env-varratot, mert egy TILTÓ eszközben a varrat maga lenne a megkerülés.
+
+**A KÜLÖNBSÉG, amit a két döntés között tartok, kimondva.** A `09a3d52a` főkönyve azt dönti el,
+hogy egy re-dispatch megtörténhet-e -- ott a varrat közvetlenül a tiltás kikapcsolója. A
+VRAM-őr egy KÉSLELTETÉST ad vagy nem ad, és a `load-guard-eval.sh` már precedenst teremtett a
+teszt-varratra ugyanebben a családban. A tét nagyságrenddel kisebb, ezért nem szigorítottam.
+
+**AMIT EZ NEM MOND.** Nem állítom, hogy a különbség elvi. Két, egy héten belül szállított,
+egymás mellett élő őr két ellentétes választ ad ugyanarra a kérdésre, és ha valaki később
+egységesíteni akarja őket, ez a bejegyzés az a hely, ahonnan indul -- nem a git log, amiben a két
+döntés két különböző kártyán, két különböző indoklással áll. Ha a VRAM-őr tétje nő (pl. ha a
+verdiktje valaha blokkolni fog, nem csak késleltetni), a varratot újra kell dönteni.
+
+**Ki döntött:** a megfigyelés Cybersecé; a rögzítés MikroB kérése (24964); a fenti megkülönböztetés
+backend mérnöki döntése, itt felülvizsgálatra kitéve.
+
+**Hivatkozás:** kártyák `108c7b10`, `09a3d52a`; `store/vram-guard-check.sh`,
+`store/redispatch-guard.sh`, `store/load-guard-eval.sh`.
+
+## 2026-09-06 -- Egy JELEN IDŐBEN állított védelem, ami jövő idejű (kártya 0c4cf655 utólagos javítása)
+
+**A LELET Cybersecé** (`0c4cf655` GO, komment 21577). A `resolvesToSharedProjectsRoot` fejléce azt
+állította, hogy a fail-safe iránya által kockáztatott duplikátumot „NOW caught by the dedup key
+(card b774f057)" -- és ugyanez állt a tesztben is.
+
+**MEGMÉRVE az éles adatbázison, nem a jelentésből átvéve:**
+`idx_token_usage_dedup ON token_usage(agent, session_id, timestamp, input_tokens, output_tokens)`.
+Az `agent` az ELSŐ mező, tehát két néven elkönyvelt azonos esemény ma KÉT sor. A `b774f057`
+(az `agent` kivétele a kulcsból) `planned` és blokkolt. A hivatkozott védelem tehát nem létezik.
+
+**A JAVÍTÁS doksi-only, és szándékosan az:** a fail-safe IRÁNYA helyes marad (egy ügynök
+használatát elejteni rosszabb, mint duplán számolni), csak nem védelemnek nevezem, hanem
+kompromisszumnak. Három helyből egy volt pontos (`docs/token-usage.md` helyesen jövő időben írta),
+kettő nem -- mindkettő átírva.
+
+**A TANULSÁG, amiért ez külön bejegyzést kap:** ugyanaz a hibaosztály, amit rendszeresen megfogok
+mások munkájában (egy őr fejléce olyan védelmet nevez meg, ami még nincs sehol), a sajátomban
+csúszott át. Egy másik kártyára hivatkozó védelem-állítás JÖVŐ IDŐBEN íródjon, amíg az a kártya nem
+`done` -- a jelen idő ott nem stílus, hanem hamis állítás.
+
+**Ki döntött:** MikroB (24968, a HOLD alóli doksi-only kivétel).
+
+**Hivatkozás:** kártyák `0c4cf655`, `b774f057`, `0333ab9f`; `src/web/token-usage.ts`,
+`src/__tests__/token-usage-shared-root-skip.test.ts`, `docs/token-usage.md`.
 
 ## 2026-09-06 -- delta-review diff korlátlanná tétele + landolás elutasítja az aktív NO-GO-s idegen kártyát (kártya c266ec74)
 
