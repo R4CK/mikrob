@@ -1347,6 +1347,19 @@ export const ACKNOWLEDGED_UPSTREAM_BLOBS: Readonly<Record<keyof typeof ACKNOWLED
   // does not belong inside a landing-unblock, and it deserves a gate of its own. This note is the
   // evidence for that card, in the same shape as the token-usage entry above.
   'scripts/channels.sh': 'd0ca55bdd5c342e15d4407fe982d2af7dc5b8a5f',
+  // THE EXPOSURE THE ROUND 19 NOTE ABOVE FLAGGED IS NOW CLOSED (2026-09-06, backend2, card
+  // 4c34f201). That note said the fork's line 1079 still carried the host-wide
+  // `ps eww -e | grep CLAUDE_PLUGIN_ROOT` and deserved a gate of its own rather than being adopted
+  // inside a landing-unblock -- this is that gate. NOT a blob merge: the fork did not pull
+  // upstream's diff verbatim, it independently applies the SAME technique upstream's fix uses
+  // (`pgrep -P <this session's own pane_pid> bun`, scoped to the session's own process tree),
+  // matching the pattern the fork's own post-init unlock Check 1 already carried a few hundred
+  // lines above the fallback (`pgrep -P "$CLAUDE_PID" bun`) -- proven and known on this fork
+  // already, just unapplied on this one branch until now. Blob pin unchanged (upstream has not
+  // moved since the round 19 measurement); this note records that the exposure itself, not the
+  // diff, is resolved. Pinned by src/__tests__/channels-watchdog-fallback-scope.test.ts, which runs
+  // the real extracted snippet against real process trees (a foreign bun child under a DIFFERENT
+  // pid no longer counts as alive).
   // ROUND 16 BLOB BUMP, 2026-09-06 (card a6b5fea3): abca56b7 -> 1110d32d, one upstream commit,
   // 31d1e94f (#1189, AUTOUPDNODEENV905) -- the same commit that opened the new updates.ts
   // conflict above. This entry was masked by that one and surfaced the moment it was recorded.

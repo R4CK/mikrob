@@ -11168,3 +11168,42 @@ mert egy többszörösen gate-elt biztonsági eszköz kimenetét változtatná m
 kívánt irányt), itt felülvizsgálatra kitéve.
 
 **Hivatkozás:** kártya `edf9c837`; `store/cleancore-land.sh` (`pick_branch` + 6 selftest-eset).
+## 2026-09-06 -- channels.sh watchdog fallback: host-szintű grep helyett saját folyamatfa (kártya 4c34f201)
+
+**A lelet.** Az upstream mérte meg és javította (kanban `c0390130`, 2026-08-19), a fork a hibás
+alakot hordozta. `scripts/channels.sh` 1079. sora a plugin életjelét fallbackként egy HOST-SZINTŰ
+kereséssel állapította meg: `ps eww -e | grep -qE "CLAUDE_PLUGIN_ROOT=[^ ]*/${CHANNEL_PROVIDER}(/|
+@| |$)"`. Ez a minta BÁRMELYIK ügynök plugin-folyamatára illeszkedik a gépen, nem csak a sajátjára --
+egy több-ügynökös hoszton az életjel gyakorlatilag mindig igaz, és a watchdog némán elveszti azt a
+képességét, amiért létezik. Upstream mérése: 14 telegram plugin-folyamat futott más ügynökök alatt,
+az egyik ügynök csatornája 07:40-től 08:30-ig halott volt, senki nem kapott róla jelzést. A mi
+kitettségünk MÉRVE (nem elméleti): 2 illeszkedő folyamat futott ezen a hoszton a mérés pillanatában.
+
+**A javítás.** Az upstream javítását (blob `d0ca55bd`) NEM blob-mergeként vettük át, hanem a fork
+saját magának alkalmazza UGYANAZT a technikát: `pgrep -P <a session sajat pane_pid-je> bun`, ami a
+saját folyamatfára szűkít -- pontosan az a minta, amit a fork post-init unlock Check 1-je MÁR
+használ (825. sor: `pgrep -P "$CLAUDE_PID" bun`). A szűkítés biztonságosságát ELŐRE MÉRTÜK (a card
+kifejezett kérése szerint): `ps --forest` a live `mikrob-channels` session pane_pid-je alatt
+megmutatta, hogy a bun folyamat MINDIG közvetlen gyerek ezen a hoszton, tehát a szűkítés nem indíthat
+hamis restart-hurkot.
+
+**Tesztek.** Új `src/__tests__/channels-watchdog-fallback-scope.test.ts`, 5 eset -- a JAVÍTOTT
+sávot a channels.sh-ból SZÓ SZERINT kiemelve futtatja (a `channels-reap-scope.test.ts` mintája,
+awk helyett bash-blokkra), VALÓDI folyamatfákkal: egy `bun` nevű valódi fájl (nem `exec -a` trükk --
+az argv[0]-átírás NEM állítja át a kernel comm-nevét szkript-futtatásnál, ez egy sikertelen próba
+volt a teszt megírása közben) mint valódi gyerekfolyamat, és egy hamis `tmux` bináris, ami a
+választott pane_pid-et adja vissza. A "MÁSIK ügynök plugin-folyamata" eset (a card kifejezett
+teszt-követelménye) egy VALÓDI, a saját pane_pid-től FÜGGETLEN bun-gyereket hoz létre, és igazolja,
+hogy az új kód NEM veszi életjelnek -- míg a régi (host-szintű env-grep) mechanizmus külön, bash-ből
+igazoltan MATCHEL egy ilyen idegen folyamatra (`CLAUDE_PLUGIN_ROOT` env-vel ellátott folyamat,
+függetlenül a tulajdonostól).
+
+`src/fork-upstream/acknowledged-conflicts.ts`: a round-19 bejegyzés ("NOT adopted here... deserves
+a gate of its own") mellé egy záró jegyzet kerül, ami rögzíti, hogy a KITETTSÉG (nem a blob-diff)
+lezárult -- a blob-pin változatlan (`d0ca55bd`), mert nem blob-mergeltünk, hanem saját, ekvivalens
+javítást építettünk.
+
+**Hivatkozás:** kártya `4c34f201`; upstream: kanban `c0390130` (2026-08-19), blob `d0ca55bd`;
+kapcsolódó: a fork saját post-init unlock Check 1-je (ugyanaz a `pgrep -P` minta, 825. sor);
+`scripts/channels.sh`, `src/__tests__/channels-watchdog-fallback-scope.test.ts`,
+`src/fork-upstream/acknowledged-conflicts.ts`.

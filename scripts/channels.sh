@@ -1070,15 +1070,31 @@ while $TMUX has-session -t "$SESSION" 2>/dev/null; do
   fi
   unset _bot_pid
   # Fallback for plugin builds that never write bot.pid (e.g. telegram@0.0.1):
-  # treat a running plugin poller as alive. The poller is a bun process whose
-  # env CLAUDE_PLUGIN_ROOT points at the <provider> plugin dir. `ps eww -e`
-  # surfaces each process environment on macOS BSD ps (same technique the
-  # orphan-reaper above uses). Without this the watchdog false-restarts every
-  # ~10 min on plugin versions that don't emit a bot.pid.
+  # treat a running plugin poller as alive, scoped to OUR OWN process tree
+  # (CHWATCHDOG1079 fix, card 4c34f201, upstream blob d0ca55bd). `pgrep -P
+  # "$_watchdog_claude_pid" bun` narrows to the bun grandchild of THIS
+  # session's own claude pane -- the same technique the post-init unlock
+  # Check 1 already uses above (`pgrep -P "$CLAUDE_PID" bun`), so the pattern
+  # is already known and proven on this fork, just unapplied on this one
+  # branch. Measured on this host (2026-09-06, `ps --forest` under the
+  # session's own pane_pid): the plugin's bun process IS a direct child of
+  # the claude pane process here, so narrowing to it cannot start a false
+  # restart-loop.
+  #
+  # WAS a HOST-WIDE `ps eww -e | grep CLAUDE_PLUGIN_ROOT=.../${CHANNEL_PROVIDER}`,
+  # which matches ANY agent's plugin process on a multi-agent host, not only
+  # this session's own. Measured upstream (kanban c0390130, 2026-08-19): 14
+  # telegram plugin processes ran under other agents while one agent's own
+  # channel was dead from 07:40 to 08:30, and the fallback stayed permanently
+  # true throughout, so nobody was notified. Measured on THIS fork
+  # (2026-09-06): 2 matching processes already present on this host, so the
+  # exposure is live here too, not theoretical.
   if [ "$_plugin_alive" != "true" ]; then
-    if /bin/ps eww -e 2>/dev/null | grep -qE "CLAUDE_PLUGIN_ROOT=[^ ]*/${CHANNEL_PROVIDER}(/|@| |$)"; then
+    _watchdog_claude_pid="$($TMUX list-panes -t "$SESSION" -F '#{pane_pid}' 2>/dev/null | head -1)"
+    if [ -n "$_watchdog_claude_pid" ] && /usr/bin/pgrep -P "$_watchdog_claude_pid" bun >/dev/null 2>&1; then
       _plugin_alive=true
     fi
+    unset _watchdog_claude_pid
   fi
 
   if [ "$_plugin_alive" = "true" ]; then
