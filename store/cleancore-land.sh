@@ -143,6 +143,14 @@ pick_branch() {
     | grep -v '^remotes/origin/main$' \
     | grep -v '^main$')"
   [ -n "$candidates" ] || return 0
+  # The card goes into a `grep -E` pattern, so anything that is not a plain word is refused as a
+  # SELECTOR rather than interpolated. The worst case without this is only a false refusal (a wide
+  # pattern picks some branch, and the caller's tip check then rejects it), but a landing script has
+  # no business turning its first argument into a regex at all -- and `.*` matching every candidate
+  # would make the diagnosis look like a branch problem instead of an argument problem.
+  case "$card" in
+    *[!A-Za-z0-9]*) card="" ;;
+  esac
   if [ -n "$card" ]; then
     local named
     named="$(printf '%s\n' "$candidates" | grep -E "(^|[-/])${card}\$" | head -1)"
@@ -230,6 +238,12 @@ if [ "${1:-}" = "--selftest" ]; then
   t "pick_branch ignores a card id that appears mid-name without a boundary" \
     "$(printf '  fix/plain\n  fix/x476ccb33y\n' | pick_branch 476ccb33)" \
     "fix/plain"
+  # DISCRIMINATING on purpose: `.*` alone would also return the first candidate, which is what the
+  # fallback returns anyway -- the case would pass with or without the guard. This value selects a
+  # DIFFERENT branch if it is ever treated as a regex, so the two behaviours cannot look alike.
+  t "pick_branch refuses a card id that is not a plain word, instead of interpolating it" \
+    "$(printf '%s\n' "$MULTI" | pick_branch '.*ae82bbeb')" \
+    "remotes/origin/agent/fron-ted/1c2e5c36"
   t "pick_branch yields nothing when only main contains the sha" \
     "$(printf '* (HEAD detached at deadbeef)\n  main\n  remotes/origin/main\n' | pick_branch)" \
     ""
