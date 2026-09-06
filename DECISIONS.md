@@ -10173,3 +10173,61 @@ sorai a modell-oszlop feltöltése előttiek) tér el. Vagyis a kulcs valódi es
 **Hivatkozás:** kártya `0c4cf655` (szülő `07f4cd2f`, testvérek `a9e07e5c`, `b774f057`);
 `src/web/token-usage.ts`, `src/__tests__/token-usage-shared-root-skip.test.ts`,
 `src/__tests__/token-usage-isolated-sources.test.ts`, `docs/token-usage.md`.
+
+## 2026-09-06 -- 99c2eb09: az upstream-drift ellenőrzés kikerül a tesztfájlból, hogy kikerülhessen a landolási kapuból
+
+**Döntés:** A fork/upstream ütközés-elismerések ADATA és a tiszta döntései átkerülnek a
+`src/fork-upstream/acknowledged-conflicts.ts` modulba, és mellé kerül egy futtatható ellenőrző
+(`src/fork-upstream/drift-check.ts`). A suite offline állításai és az új ellenőrző UGYANEZT az egy
+modult olvassák.
+
+**Miért:** MikroB döntése (24642) a `1f276349`-en, a (C) irány. A hálózatfüggő eset a landolási
+kapuban ült: futásidőben `git fetch upstream develop`-et hívott, tehát minden ügynök landolása attól
+függött, hogy az elmúlt percekben mit tett egy TŐLE FÜGGETLEN upstream commit. A tesztfájl saját
+újramérési jegyzeteiből mérve: 41 "landing-block" említés, 32 újramérési kör öt nap alatt (09-02: 3,
+09-03: 9, 09-04: 1, 09-05: 5, 09-06: 14), öt ügynök, nyolc kártya, egy kártya tizenháromszor.
+
+**A mélyebb indok, ami a flakiness-nél fontosabb:** egy `develop`-re landolás NEM mergel upstreamet.
+Az ellenőrzés tárgya egy JÖVŐBELI upstream-merge kockázata, ami ortogonális arra a változtatásra,
+amit a kapu épp átenged. Ezért a kapuban egyetlen olyan hibát sem tud megfogni, amit a landolás
+okoz; azt jelenti, hogy a VILÁG mozdult. Az monitorozás, nem kapu. Bizonyíték a mérésből: az egyik
+blokkolt commit öt `store/*.py` fájl és a `DECISIONS.md` volt, egyetlen `src/` fájl nélkül.
+
+**Amit NEM viszünk ki, és ez a különbség a nyers (B) irányhoz képest:** a fájl 28 tesztjéből csak
+EGY hálózatfüggő. A többi (a `MIGRATED_FROM_GUARDED` részhalmaz-ellenőrzés, a minden elismeréshez
+tartozó blob-pin, a fork-oldali horgonyok, a `classifyConflicts` egységtesztjei, az ARMED/SKIPPED
+névadás) offline, determinisztikus, és valódi védelem: pont az akadályozza meg, hogy egy fájl
+egyetlen sor törlésével mindkét listából kiessen. Ezek MARADNAK a kapuban.
+
+**Egy forrás, nem kettő.** Az elismeréseket kísértés lett volna átmásolni az ellenőrzőbe. Két
+másolat pontosan azt a néma szétcsúszást hozná vissza, ami miatt a közös `agent_messages` DDL is
+létezik (`26ad5302`): ott két kézzel másolt DDL-string csúszott szét egy "identical schema"
+kommenttel a tetején. Ezért a modul az egyetlen forrás, és a tesztfájl is onnan importál.
+
+**EKVIVALENCIA, MÉRVE, NEM FELTÉTELEZVE.** Az új ellenőrzőt lefuttattam a VALÓDI upstream ellen a
+mai fán: `reachable=true`, `guarded=[]`, `unwatched=[]`, `stale=[]`, vagyis pontosan az a három üres
+halmaz, amit a suite esete ma állít, ARMED állapotban. A kiemelés tehát nem "fut", hanem
+UGYANAZT MONDJA.
+
+**A tesztek hermetikusak, és ez nem stílus.** Ha az ellenőrző tesztjei élő upstreamet hívnának,
+visszahoznák pont azt, ami ellen a kártya szól. Ezért minden eset az injektált `GitRunner` varraton
+megy át, remote, fetch és valódi merge nélkül. Amit egy varrat nem tud bizonyítani (hogy a VALÓDI
+hívás ugyanazt a verdiktet adja), azt egyszer, kézzel mértem meg, és ide írtam -- nem csináltam
+belőle hálózatfüggő tesztet.
+
+**Mérés:** 9 hermetikus eset zölden, plusz a meglévő 28 eset a kiemelés után változatlanul zöld.
+Négy mutáns, mind bukik: az `isClean` figyelmen kívül hagyja a `stale`-t, a `merge --abort` törlése,
+az elérhetőség-ellenőrzés kikapcsolása, és a `blobOf` üres stringgel a `null` helyett (ez utóbbi a
+felfelé törölt fájl esetét némítaná el).
+
+**Következő lépések:** `5da60b85` (a hálózatfüggő eset kivétele a suite-ból, plusz egy őr, ami
+kimondja, hogy a fájlban egyetlen eset sem hálózatozik), `a1ce8952` (ütemezett drift-figyelő,
+KÖTELEZŐ dedup-pal: az ellenőrző minden körben ugyanazt a driftet látja, amíg fel nem oldják, tehát
+egy naiv kártyanyitás gépi léptékben sértené a 6b. szabályt).
+
+**Ki döntött:** MikroB (a (C) irány, 24642); backend (a mérés, a modul-határ és a hermetikus
+teszt-alak).
+
+**Hivatkozás:** kártya `99c2eb09` (szülő `1f276349`); `src/fork-upstream/acknowledged-conflicts.ts`,
+`src/fork-upstream/drift-check.ts`, `src/__tests__/fork-upstream-drift-check.test.ts`,
+`src/__tests__/fork-upstream-conflict-guard.test.ts`.
