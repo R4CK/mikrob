@@ -696,11 +696,35 @@ export function initDatabase(dbPathOverride?: string): void {
   // history answer different questions, so they do not share a store -- the same reasoning
   // kanban_card_field_events records for its own split from kanban_card_events.
   //
-  // APPEND-ONLY, enforced by trigger rather than by convention (the posture the kanban_relations
-  // block above already takes). The detection facts are immutable; `resolved_at` and
-  // `resolved_by_event_id` are the ONLY fields written later, and only once, from NULL. Without
-  // the trigger, "append-only" would be a comment that the next direct-sqlite3 writer never reads
-  // -- which is precisely how the timestamp-integrity rows below went wrong.
+  // PARTLY trigger-enforced, and the boundary is stated because the previous version of this
+  // comment claimed more than the mechanism delivers (Cybersec, 2026-09-06, measured against this
+  // DDL and reproduced here before the wording was changed). What the trigger below actually
+  // refuses is FOUR columns -- card_id, detected_at, stalled_ms_at_detection, action -- plus
+  // clearing or re-pointing an already-set resolved_at.
+  //
+  // WHAT IT DOES NOT REFUSE, measured, one attempt per shape against the shipped statements:
+  //     UPDATE assignee_at_detection      PASSES   <- a DETECTION fact, and the per-agent axis
+  //     UPDATE action_detail              PASSES   <- the DENY reason, i.e. the load-bearing half
+  //     UPDATE resolved_by_event_id       PASSES   <- while resolved_at itself is protected
+  //     DELETE FROM stuck_incidents       PASSES   <- 0 rows left
+  //     INSERT OR REPLACE on the same id  PASSES   <- every column rewritten
+  // (Controls, deliberately allowed: `detections + 1`, and resolved_at written once from NULL.)
+  //
+  // The last one is the reason a BEFORE UPDATE trigger cannot carry the word "append-only" on its
+  // own: SQLite executes REPLACE as delete-then-insert, so the UPDATE trigger is never consulted.
+  // Adding a BEFORE DELETE trigger does NOT close it either under SQLite's default -- only with
+  // `recursive_triggers ON`, which this database never sets and which is GLOBAL to all 14 triggers
+  // in this schema (Cybersec measured their own first remedy failing exactly there).
+  //
+  // The structural half is folded into the writer card (878cd292), where the first producer of
+  // these rows is built: a BEFORE DELETE trigger, with REPLACE recorded as a STATED residual
+  // rather than a pattern pretending to be closed. This comment was narrowed FIRST and separately,
+  // because a guarantee that is merely wrong is worse than one that is merely absent -- the next
+  // writer builds on it. Today the exposure is bounded: the table has no producer yet.
+  //
+  // The original point still stands for what IS covered: without the trigger even that much would
+  // be a comment the next direct-sqlite3 writer never reads -- which is precisely how the
+  // timestamp-integrity rows below went wrong.
   db.exec(`
     CREATE TABLE IF NOT EXISTS stuck_incidents (
       id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -736,9 +760,12 @@ export function initDatabase(dbPathOverride?: string): void {
   db.exec(
     `CREATE UNIQUE INDEX IF NOT EXISTS idx_stuck_incidents_open ON stuck_incidents(card_id) WHERE resolved_at IS NULL`,
   )
-  // Append-only: the detection facts cannot be rewritten, and a resolution cannot be un-set or
-  // re-pointed. Both directions matter -- an UPDATE that cleared resolved_at would reopen a closed
-  // incident and let a second one be inserted under the unique index above.
+  // Refuses UPDATEs to the four columns named in the WHEN below, and refuses clearing or moving an
+  // already-set resolved_at. Both resolution directions matter: an UPDATE that cleared resolved_at
+  // would reopen a closed incident and let a second one be inserted under the unique index above.
+  //
+  // NOT a complete append-only guarantee -- see the measured list on the table above. In
+  // particular this fires on UPDATE only, so DELETE and INSERT OR REPLACE go straight past it.
   db.exec(`
     CREATE TRIGGER IF NOT EXISTS trg_stuck_incidents_append_only
     BEFORE UPDATE ON stuck_incidents
