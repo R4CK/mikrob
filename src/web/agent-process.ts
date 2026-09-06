@@ -637,18 +637,25 @@ const AGENT_CONFIG_MODE = 0o600
 /**
  * Write a per-agent config file OWNER-ONLY (card dc5b714d).
  *
- * writeJsonAtomic above fixed the two files that go through it, and four other writes in this file
- * never did: `.mcp.json`, the plugins registry pair, and the agent `.env`. Measured 2026-09-06, all
- * of them sat at 0664 -- and `.mcp.json` is the same content class as the incident that started
- * this: one of them carried an `env` block with an API key in it.
+ * writeJsonAtomic above fixed `.claude-config/.claude.json` and `.claude-config/settings.json`, and
+ * FIVE other writes in this file never went through it: `.mcp.json`, the plugins registry pair, the
+ * agent `.env`, and `.claude/settings.json`. Measured 2026-09-06, all of them sat at 0664 -- and
+ * `.mcp.json` is the same content class as the incident that started this: one carried an `env`
+ * block with an API key in it.
+ *
+ * The count says FIVE because my own first report said four (Cybersec measured the fifth). The one
+ * I missed was `agents/<n>/.claude/settings.json`, and the reason is worth keeping: its BASENAME
+ * matches a file that was already fixed, while its PATH is a different file with a different writer.
+ * Two `settings.json` sit side by side on disk. A grep gives the call sites; only the resolved PATH
+ * decides which of them are the same file.
  *
  * THE TWO STEPS DO DIFFERENT JOBS, and one of them is NOT covered by the tests -- said plainly
  * because the first version of this comment claimed they split the starting states between them,
  * and a mutation showed that is false:
  *   - `chmodSync` is what the at-rest guarantee rests on. It narrows a file that already exists,
- *     which a mode-less write never does (measured), and that is why the four writes above left 15
- *     files each sitting at whatever mode they were born with, indefinitely. Dropping it turns the
- *     REWRITE case red.
+ *     which a mode-less write never does (measured), and that is why the writes above left 15 files
+ *     each sitting at whatever mode they were born with, indefinitely. Dropping it turns the REWRITE
+ *     case red.
  *   - `{ mode }` closes the WINDOW between creation and the chmod. Dropping it leaves every
  *     assertion green, because at rest the chmod has already fixed the file -- so this half is
  *     argued, not measured: under a permissive umask a freshly created config would be

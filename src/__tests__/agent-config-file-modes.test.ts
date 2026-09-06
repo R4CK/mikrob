@@ -2,11 +2,17 @@
 // file was in beforehand.
 //
 // WHY A SECOND FILE, next to isolated-config-mcp-reconcile.test.ts. That one pins `.claude.json`,
-// and card 75c2dbb7 fixed the writer it goes through. Measured on 2026-09-06, FOUR other writes in
+// and card 75c2dbb7 fixed the writer it goes through. Measured on 2026-09-06, FIVE other writes in
 // agent-process.ts never went through that writer at all -- the plugins registry pair, the agent
-// `.env`, and `.mcp.json` -- and every one of their live files sat at 0664. `.mcp.json` is the same
-// content class as the incident that started this line of work: one of the fleet's carried an `env`
-// block with an API key in it, group- and world-readable.
+// `.env`, `.mcp.json`, and `.claude/settings.json` -- and every one of their live files sat at 0664.
+// `.mcp.json` is the same content class as the incident that started this line of work: one of the
+// fleet's carried an `env` block with an API key in it, group- and world-readable.
+//
+// FIVE, not four: my first report said four and Cybersec measured the fifth. The missed one was
+// `.claude/settings.json`, whose BASENAME matches an already-fixed file while its PATH does not --
+// two `settings.json` sit side by side on disk. The code routed all five from the start; only the
+// prose was short, which is exactly the kind of drift a doc-accuracy gate catches and a test does
+// not, so it is corrected in both places rather than only on the card.
 //
 // BOTH STARTING STATES, CROSSED. A mode-less write does not touch the mode of a file that already
 // exists, so a creation-only bench would have called the old code correct for a file sitting on disk
