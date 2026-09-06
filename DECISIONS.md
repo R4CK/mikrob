@@ -11207,3 +11207,51 @@ javítást építettünk.
 kapcsolódó: a fork saját post-init unlock Check 1-je (ugyanaz a `pgrep -P` minta, 825. sor);
 `scripts/channels.sh`, `src/__tests__/channels-watchdog-fallback-scope.test.ts`,
 `src/fork-upstream/acknowledged-conflicts.ts`.
+
+## 2026-09-06 -- edf9c837 -- A döntésnapló-unió SORRENDJE a hívó döntése, és a szinkron iránynak eddig nem volt hívója
+
+**A DÖNTÉS (MikroB, 24922: az (A) irány).** A `try_append_union` kap egy negyedik argumentumot, ami
+megmondja, melyik oldal fele kerül előre: `ours-first` (alapértelmezés) vagy `theirs-first`.
+Ismeretlen érték elutasítás, nem csendes alapértelmezés -- ugyanaz a fail-closed irány, mint az
+entry-boundary mintánál, és ugyanazon okból: a sorrend DÖNTÉS, tehát egy elgépelés nem választhat
+helyettünk.
+
+**MIÉRT SZÁMÍT EGYÁLTALÁN A SORREND.** A két maradék mindegyike új, tehát a sorrendjük ERRE a
+merge-re nézve tetszőleges. A KÖVETKEZŐRE nem: amelyik blokk előre kerül, az MINDEN későbbi
+merge-base-hez képest a fájl KÖZEPÉN álló beszúrás lesz, és egy egyoldali közép-beszúrás pontosan az
+az alak, amit a függvény ezután elutasít (mert ott az összefűzés a base-t duplikálná). Mérve: két
+független CleanCore landolás akadt el egyetlen heartbeat-körben emiatt, és a gyanított ok (azonos kis
+közép-beszúrások) mérésre kizárult -- azok bájtra azonos üres sorok, amiket a függvény már kezel.
+
+**AMI A MÉRÉS KÖZBEN KIDERÜLT, ÉS AMI MIATT (A) ÖNMAGÁBAN NEM-MŰVELET LETT VOLNA.** A függvényt
+pontosan két hely hívja, mindkettő landoló, és mindkettő ugyanúgy mergel: a worktree az integrációs
+ágon áll, az ügynök ága megy bele. Ott `ours` MÁR az integrációs ág, tehát a helyes sorrend az
+alapértelmezés. Az inverzió az ÜGYNÖK szinkron-merge-ében keletkezik (integrációs ág bemergelése a
+saját ágba), ahol `ours` az ügynök ága -- és ahhoz az irányhoz NEM TARTOZOTT SEMMILYEN HÍVÓ: azt a
+konfliktust kézzel oldottuk fel, a sorrendet az döntötte el, ki hogyan fűzte össze a két felet.
+
+Ezért a döntés két darabban landolt, és a második nélkül az első nem ér semmit:
+`store/decisions-sync-resolve.sh` a hiányzó hívó a szinkron irányra, `theirs-first`-tel.
+
+**A SZKRIPT ELLENŐRZI AZ IRÁNYT, NEM FELTÉTELEZI.** A `theirs-first` csak szinkron-merge-re helyes;
+az ellenkező merge után alkalmazva pont azt az alakot hozná létre, amiről ez a kártya szól. Ezért a
+`MERGE_HEAD`-nek egy integrációs ág csúcsának KELL lennie, különben a szkript 2-vel elutasít. Egy
+eszköz, aminek a helyessége azon múlik, hogy az operátor emlékszik-e, melyik irányba mergelt, nem
+javítás.
+
+**NEM COMMITOL.** Ugyanaz a szerződés, mint a landolóknál: felold és stage-el, a merge lezárása a
+hívó lépése.
+
+**BIZONYÍTÉK.** Öt új eset a union selftestjében, köztük az, amelyik EGY fixtúrán két különböző
+verdiktet ad pusztán a sorrendtől (`ours-first`-nél a varrat setext-fejléccé léptetné elő az utolsó
+prózasorunkat, `theirs-first`-nél nem) -- ez az az eset, ami megfogja, ha a varrat-ellenőrzés a régi
+felére mutat. A kártya által kért piros-a-régin/zöld-az-újon alak mérve: a sorrend-argumentumot
+figyelmen kívül hagyó (a kártya előtti) változat három esetet buktat, a varratot nem követő változat
+egyet. A szinkron-szkriptnek saját, valódi repókon futó selftestje van (7 eset), és teszt köti be,
+hogy le is fusson.
+
+**Ki döntött:** MikroB választotta az (A) irányt (24922); a szinkron-oldali hívó, az irány-ellenőrzés
+és a fail-closed ismeretlen-érték kezelés backend mérnöki döntése, itt felülvizsgálatra kitéve.
+
+**Hivatkozás:** kártya `edf9c837`; `store/decisions-append-union.sh`, `store/decisions-sync-resolve.sh`,
+`src/__tests__/decisions-sync-resolve-selftest.test.ts`, `README.md`.
