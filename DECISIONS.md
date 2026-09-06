@@ -11054,3 +11054,43 @@ pontosan a hozzá tartozó eseteket buktatja meg, a másik fixet nem érinti.
 **Hivatkozás:** kártya `864351a9` (Cybersec mérése, a `d5c05548` zárás-ellenőrzése közben, üzenet
 24538); kapcsolódó de más mechanizmus: `98ae22fe`, `f53ef8e4`, `3e4dc2c3`, `2adaa646`, `cb8ef4f5`;
 `store/gate-closure-check.py`, `store/gate-closure-check.selftest.py`.
+
+## 2026-09-06 -- fleet-test.sh megosztja a CleanCore CPU-poolt a marveen-land landolással (kártya 492a6d5c)
+
+**A lelet (backend3 mérése, 24522, kártya 779cd6a7 kapcsán).** `store/cleancore-suite-run.sh` (17.
+munkavégzési szabály) a CleanCore teljes-suite futásokat max 2 egyidejűre poolozza flock-kal --
+DE a `marveen-land.sh` saját `store/fleet-test.sh` futása (a marveen 622 fájlos, 15102 tesztes
+suite-ja) NEM volt ugyanabban a poolban, hanem külön, korlátlan sávon futott. Egy ügynök, aki
+EGYSZERRE landol marveenen (fleet-test fut) ÉS CleanCore suite-ot futtat a saját, szabályosan
+2/2-be foglalt slotjában, önmagát CPU-éheztette: loadavg 10-24 között,
+`cross-tenant-canary-callers.test.ts` 6034ms/5000ms timeout-tal bukott NULLA assert-hibával
+(rule-17 hamis-piros mintája), holott azonos terheléssel, tisztán futtatva (loadavg 10.6) mindkét
+ág 9/9 zöld volt.
+
+**A javítás.** `store/fleet-test.sh` a saját machine-wide tree-mutexe (LOCK_FILE, cards 85faec1b/
+2f0c7d24 -- korrektségi kérdés: "biztonságos-e hozzányúlni a fához") MELLETT most egy MÁSODIK,
+FÜGGETLEN zárolást is kér a build+vitest futtatása ELŐTT: ugyanazokat a számozott lock-fájlokat,
+amiket a `cleancore-suite-run.sh` már használ (`CLEANCORE_SUITE_SLOTS`/`CLEANCORE_SUITE_LOCK_PREFIX`/
+`MARVEEN_MAIN` -- SZÁNDÉKOSAN ugyanazok a nevek, nem hasonló-alakú újak, mert csak úgy garantált,
+hogy a két szkript TÉNYLEGESEN ugyanazon a fájlon versenyez, nem csak ma véletlenül egyező
+alapértéken). Ez a kapacitás-kérdés ("van-e hely futni"), külön a korrektség-kérdéstől ("biztonságos-e
+a fához nyúlni") -- ezért a két lock NEM lett összevonva, és a CPU-slot megszerzése a tree-mutex
+ELŐTT történik, hogy egy futás sose tartsa feleslegesen a tree-lockot, miközben még CPU-kapacitásra
+vár. Új introspekciós kapcsoló: `--cpu-slot-path` (a `--lock-path` mintájára, kártya 43ecdbe6 elve:
+a FELOLDOTT érték, nem a forrásszöveg).
+
+**Tesztek.** Új `src/__tests__/fleet-test-shares-cleancore-cpu-pool.test.ts`, 9 eset: forrás-alapú
+(`acquire_cpu_slot` a tree-mutex ELŐTT fut, a pontos `CLEANCORE_SUITE_*` neveket olvassa, a várakozás
+korlátos és fatal timeout-on) + 3 mutáció-kontroll (a blokk törölve, a blokk a tree-lock UTÁNRA
+mozgatva, a névtér eltérítve) + élő viselkedés-tesztek VALÓDI flock-kal tartott slot-fájlokkal (mindkét
+slot foglalt -> sorban áll, majd feladja a megnevezett okkal; szabad pool -> néma és eljut a
+tree-lock szakaszig; `CLEANCORE_SUITE_SLOTS=3` -> beenged 2 foglalt mellett is). A meglévő
+`fleet-test-serialises-runs.test.ts` és `cleancore-suite-run.selftest.sh` (12/12) VÁLTOZATLANUL zöld
+-- ez utóbbi fájlhoz egyáltalán nem nyúltam, csak ugyanazokat a lock-fájl-neveket olvasom be egy
+másik szkriptből.
+
+**Hivatkozás:** kártya `492a6d5c` (backend3 mérése, üzenet 24522, kártya `779cd6a7`); kapcsolódó de
+más mechanizmus: `2f0c7d24` (a tree-mutex machine-wide-dá tétele), `5af57bd7`/`6e39a5f0` (a
+CleanCore-oldali szemafor bevezetése), `4ee2519b` (dedup-ellenőrizve, más eszköz: `fe-be-reconcile.py`
+CI-bekötés); `store/fleet-test.sh`, `store/cleancore-suite-run.sh` (érintetlen),
+`src/__tests__/fleet-test-shares-cleancore-cpu-pool.test.ts`.
