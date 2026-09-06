@@ -64,6 +64,21 @@ already closed for a different reason. `verdict_of()` now keeps every token on t
 The sibling tool (`landing-gate-verdict-parse.py`, `shas_in()`) already collected every token this
 way for its own per-sha check -- this file just did not.
 
+WHY A NON-REVIEW COMMENT'S Gate-SHA CAN STILL SINK AN AGREE (card 3e4dc2c3, Cybered). declared_shas()
+deliberately reads ONLY the latest `REVIEW`-opening comment, because sourcing it from any Gate-SHA
+line nets zero (fixes 8 cards, breaks 8 -- see that function's own docstring). But a builder's
+routine "<finding> JAVITVA -- delta-gate kell" declares a newer commit WITHOUT the word REVIEW, so
+declared_shas() correctly never sees it -- and if no designated gate verdicts on that newer sha
+either, the default AGREE (built from the OLD REVIEW's sha, which is genuinely all declared_shas()
+can see) is checking code nobody who matters has reviewed. Measured: 8 of 14 cards with this shape
+read AGREE by default while `--expect <the newer sha>` on the SAME card answers STALE -- the
+default answers a narrower question than the caller is asking, without saying so, the exact failure
+shape `--expect` itself exists to close (see that section above). `undeclared_post_review_shas()`
+answers the narrower question explicitly: a sha declared after the latest REVIEW that neither that
+REVIEW nor any gate verdict in the same span names turns the REVIEW-sourced default into STALE
+rather than a silent AGREE. Deliberately scoped to the default path only -- an explicit `--expect`
+is the caller's own assertion and is not second-guessed by this.
+
 Input:  the card's comments JSON on stdin (the /api/kanban/<id>/comments shape).
         Optional argv[1]: comma-separated designated gates, e.g. "qa,cybersec".
         Optional --expect <sha>: the commit this card delivers NOW. Omitted -> taken from the
@@ -86,7 +101,10 @@ Output: exactly one line.
         UNVERIFIED-AUTHOR|<details>  a gate's PASS was written by someone other than that gate, and
                                      that gate never posted one itself
         STALE|<sha>|<expected>|<why> the gates AGREE, but on a commit whose content differs from the
-                                     one this card now declares
+                                     one this card now declares -- OR (card 3e4dc2c3) a non-REVIEW
+                                     comment after the latest REVIEW declared a newer commit that no
+                                     designated gate ever verdicted on; <expected> then lists the
+                                     undeclared sha(s) instead of a single REVIEW-declared one
         UNRESOLVED|<sha>|<expected>|<why>
                                      the shas differ and the difference could NOT be judged (a clone
                                      is missing, a commit was pruned, git failed). Deliberately not
@@ -245,6 +263,52 @@ def declared_shas(comments):
         if shas:
             found = shas
     return found
+
+
+def undeclared_post_review_shas(comments):
+    """Shas any comment AFTER the latest `REVIEW` declares on a Gate-SHA line, that are covered by
+    NEITHER that REVIEW's own declared set NOR any gate-verdict comment in the same span (card
+    3e4dc2c3, Cybered's board-wide finding).
+
+    Rule 4a's default expectation comes from the latest REVIEW comment (card 2003e04b) -- correctly
+    NOT from any comment with a Gate-SHA line, per declared_shas()'s own measurement above (sourcing
+    it from any comment fixes 8 cards and breaks 8). But a non-REVIEW comment can still declare a
+    NEWER commit without the word REVIEW -- the routine shape is a builder's own "<finding> JAVITVA
+    -- delta-gate kell", which this file's own README-adjacent convention never required to open
+    with REVIEW. If no gate verdict ANYWHERE in that span names the newer sha either, the tool's
+    default AGREE (built from the OLD REVIEW's sha, because that is genuinely all declared_shas() can
+    see) is silently checking a commit nobody designated has reviewed. Measured on the live board: 8
+    of 14 cards with this shape read AGREE by default while `--expect <the newer sha>` on the SAME
+    card answers STALE -- the check answers a narrower question than the default caller is asking,
+    the same failure shape `--expect` itself was built to close (see the header).
+
+    A gate verdict's OWN Gate-SHA line does not count as an "undeclared" citation -- it is exactly
+    the citation this function is checking FOR, not a stray one to flag.
+    """
+    review_idx = None
+    for i, c in enumerate(comments):
+        content = (c or {}).get("content")
+        if isinstance(content, str) and _REVIEW_OPEN.match(content[_LEAD_SKIP.match(content).end():]):
+            review_idx = i
+    if review_idx is None:
+        return []
+    review_shas = set(declared_shas(comments))
+    gate_shas = set()
+    candidates = []
+    for c in comments[review_idx + 1:]:
+        content = (c or {}).get("content")
+        if not isinstance(content, str):
+            continue
+        v = verdict_of(content)
+        if v is not None:
+            if v[2]:
+                gate_shas.update(v[2])
+            continue
+        for sha in _line_shas(content):
+            if sha not in candidates:
+                candidates.append(sha)
+    covered = review_shas | gate_shas
+    return [s for s in candidates if not any(shas_agree(s, c) for c in covered)]
 
 
 # The author->role fold that used to live here is now gate_author_role.author_role, imported at
@@ -593,6 +657,17 @@ def check(comments, designated=None, expect=None, use_declared=True):
         declared, source = [expect], "--expect"
     elif use_declared:
         declared, source = declared_shas(comments), "the latest REVIEW"
+        # CARD 3e4dc2c3 (Cybered): a non-REVIEW comment after the latest REVIEW can declare a NEWER
+        # commit ("<finding> JAVITVA -- delta-gate kell") that declared_shas() correctly does not
+        # pick up (see its own docstring), but that no designated gate has verdicted on either. The
+        # default AGREE below would then be checking a sha nobody who matters has reviewed. This is
+        # deliberately scoped to the REVIEW-sourced default only -- an explicit `--expect` is the
+        # caller's own assertion and is not second-guessed here (see the header's `--expect` note).
+        orphans = undeclared_post_review_shas(comments)
+        if orphans:
+            return "STALE|%s|%s|a newer sha was declared in a non-REVIEW comment after the latest " \
+                   "REVIEW and no designated gate ever verdicted on it (%s)" % (
+                       _fmt_shas(shas[0]), ",".join(orphans), detail)
     else:
         declared, source = [], "--no-expect"
 

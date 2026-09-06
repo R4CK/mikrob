@@ -10863,3 +10863,36 @@ kártyának a hatóköre.
 `dc5b714d`, `4a6c47f0`, `c52e2823`, `a20f0aa7`; backend2 saját korábbi mérése (komment 21435);
 `store/gate-closure-check.py`, `store/gate-closure-check.selftest.py`,
 `src/web/kanban-gate-completeness-guard.ts` (a portolt referencia).
+
+## 2026-09-06 -- 3e4dc2c3 -- gate-closure-check.py: nem-REVIEW komment is deklarálhat ellenőrizetlen shát
+
+**Döntés.** `store/gate-closure-check.py`-nak új `undeclared_post_review_shas()` függvénye van. A
+`check()` a REVIEW-forrású alapértelmezett úton (`use_declared`, nem `--expect`/`--no-expect`)
+mostantól megnézi: van-e a legfrissebb `REVIEW` UTÁN olyan komment, ami Gate-SHA-t deklarál, de
+se a REVIEW sajátja, se egyetlen gate-verdikt nem fedi -- ha van, a válasz `STALE`, nem a régi
+REVIEW sháján nyugvó néma `AGREE`.
+
+**Miért.** A `declared_shas()` -- helyesen, saját mérése szerint -- KIZÁRÓLAG a legfrissebb
+`REVIEW`-nyitó kommentből olvas (bármely komment forrásként 8 kártyát javítana, 8-at törne). De egy
+építő rutinszerűen deklarál újabb commitot `REVIEW` szó NÉLKÜL is (pl. "F-1 JAVITVA -- delta-gate
+kell\nGate-SHA: ..."), és ha egyetlen gate sem verdiktel az új shára, az alapértelmezett válasz a
+RÉGI shán marad -- olyan kódot igazol vissza, amit senki nem nézett meg. Cybered mérése a teljes
+táblán: 14 kártyán fordul elő ez az alak, ebből 8-on a válasz hibásan `AGREE`, miközben `--expect`-tel
+ugyanaz a kártya `STALE`-t ad (7 a nyolcból már `done`). A helyes irány fail-closed: `STALE`, nem
+`AGREE`.
+
+**Hatókör, kimondva.** Kizárólag a REVIEW-forrású alapértelmezett utat érinti -- egy explicit
+`--expect` a hívó SAJÁT állítása, nem kérdőjeleződik meg. Az ellenőrzés nem azt kérdezi, hogy a
+REVIEW saját mutatója friss-e (az egy KÜLÖN, korábban is létező hiányosság, amit ez a kártya nem
+old meg -- lásd a szintetikus "a gate DELTA-gate-elt, de a REVIEW nem frissült" kontroll-esetet,
+ami helyesen `UNRESOLVED`-re esik, nem hamis `AGREE`-re és nem a rossz `STALE`-re), hanem azt, hogy
+LÁTTA-E egyáltalán valamelyik gate az újonnan deklarált shát.
+
+**Tesztek.** `gate-closure-check.selftest.py`: 97/97 zöld (91 régi + 6 új: a pozitív eset Cybered
+saját 58c498f2/1c5a41b4 példájával, egy kontroll ahol a gate tényleg delta-gate-elt, egy kontroll
+ahol a kesőbbi komment maga is REVIEW, egy `--expect`, egy `--no-expect`, egy Gate-SHA nélküli
+komment). Mutáció-tesztelve: az orphan-ellenőrzés kikapcsolva (`orphans = []`) pontosan a pozitív
+eset FAIL-re vált, a többi 96 zöld marad -- nem vákuum.
+
+**Hivatkozás:** kártya `3e4dc2c3` (Cybered mérése, üzenet 24426); `store/gate-closure-check.py`,
+`store/gate-closure-check.selftest.py`.
