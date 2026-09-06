@@ -87,6 +87,39 @@ export const ACKNOWLEDGED_CONFLICTS = {
   // (verified: diffing the shared prefix shows zero divergence, the only delta is the fork-only
   // tail). Resolution: keep the fork version wholesale, it already contains everything upstream
   // has plus the fork-only additions.
+  // Card 4f15966e (the upstream merge), conflict measured 2026-09-06. NEW entry: this file did not
+  // conflict until card dbba0424 landed the fork's own detectsPermissionDialog the same day.
+  //
+  // BOTH SIDES BUILT THE SAME THING, from the same upstream report (PERMDENY905): the two
+  // detectsPermissionDialog implementations are byte-identical apart from ONE line, and even the
+  // three regex constants match name for name. So this is convergence, not divergence, and the
+  // question is only which of the two footer readings to keep.
+  //
+  //   fork      const footerRegion = lines.slice(-MENU_FOOTER_REGION_LINES).join('\n')   // 8 lines
+  //   upstream  const footerRegion = liveTailRegion(lines, LIVE_FOOTER_REGION_LINES)      // 5 lines
+  //
+  // Each side fixed a DIFFERENT half, and each still carries the other's gap:
+  //   * upstream added liveTailRegion(), which skips a blank tail. That closes the blind spot the
+  //     fork filed as card 11b04357 and deliberately did NOT fix in dbba0424 -- measured live: a
+  //     real consent prompt with an 18-line blank tail read false on BOTH detectors.
+  //   * the fork widened the refinement to 8 lines to match detectsBlockingMenu, because a
+  //     refinement that inspects a NARROWER region than the gate it refines re-opens the very gap
+  //     it exists to close. Upstream still reads 5 here while its own detectsBlockingMenu reads 8,
+  //     so that asymmetry survives upstream.
+  //
+  // RESOLUTION: NEITHER SIDE WHOLESALE -- take upstream's file, then set this one line to
+  // `liveTailRegion(lines, MENU_FOOTER_REGION_LINES)`. That is upstream's blank-tail fix at the
+  // fork's region width, and it is the only combination where both measured defects are closed.
+  // Everything else in upstream's version of this file is adopted unchanged.
+  //
+  // Card 11b04357 should be deduped against this: the merge brings its fix.
+  'src/pane-state.ts':
+    "take upstream wholesale EXCEPT detectsPermissionDialog's footer line, which becomes" +
+    " liveTailRegion(lines, MENU_FOOTER_REGION_LINES) -- upstream's blank-tail fix at the fork's" +
+    " region width. Upstream reads 5 there while its own detectsBlockingMenu reads 8; a refinement" +
+    " narrower than the gate it refines re-opens the gap (fork measurement, card dbba0424). The" +
+    " blank-tail half is card 11b04357, which upstream fixes and this merge therefore closes.",
+
   'src/kanban-dispatch.ts':
     "keep the fork version wholesale -- it is upstream's resolveKanbanDispatch verbatim plus the fork-only isSelfAdvanceMove appended after, zero divergence on the shared part." +
     " Card 7debd869 (2026-09-05): the tail lost isGenuineSelfAdvanceSwitch when Peti had CLAUDE.md's /clear-between-cards rule deleted and its code removed. isSelfAdvanceMove (dispatch-echo suppression) is untouched, so the resolution above is unchanged -- only the symbol list narrowed. The comment block above records the state at the time of the merge and is left as written.",
@@ -1203,6 +1236,10 @@ export const ACKNOWLEDGED_CONFLICTS = {
 // a blob without a rule, is a COMPILE error rather than a silent gap between two lists.
 export const ACKNOWLEDGED_UPSTREAM_BLOBS: Readonly<Record<keyof typeof ACKNOWLEDGED_CONFLICTS, string>> = {
   'src/web/routes/agent-terminal.ts': 'cf57ba1065272a7bde9723865d5709faaf05ed21',
+  // Card 4f15966e: pinned at the upstream blob whose detectsPermissionDialog this resolution
+  // compares against. If upstream edits this file again, the rule above is re-read before the merge
+  // rather than assumed to still describe what is there.
+  'src/pane-state.ts': '2300b8ec27017cf7588d65e1cb9260279154314d',
   'src/__tests__/governance-gates.test.ts': 'cbebd61b28a48a8ced6935329aa9d7c36e2f13fe',
   'src/kanban-dispatch.ts': '7fffc38f78b99573fb88fd797ac67b3593ffb872',
   'src/__tests__/kanban-dispatch-rearm.test.ts': 'd9a186a0af48c44c14299c284dbe0caf45d8feaa',

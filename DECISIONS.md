@@ -11625,3 +11625,33 @@ megváltoztatása backend mérnöki döntése, itt felülvizsgálatra kitéve.
 
 **Hivatkozás:** kártya `492a6d5c`; `store/kanban-comment-lib.sh`, `store/fleet-test.sh`,
 `store/marveen-land.sh`, `src/__tests__/fleet-test-shares-cleancore-cpu-pool.test.ts`.
+
+## 2026-09-06 -- A dispatch a NYERT igénylés után küld, nem a korábbi olvasás alapján (kártya c4da93bf)
+
+**A DÖNTÉS MIKROB-É** (25001), a javaslatom és az indoklásom alapján: a jelölés a küldés ELŐTT
+történjen, feltételes UPDATE-tel, és a hívó a visszakapott booleanre ágazzon.
+
+**A KÉT HIBA-IRÁNY, kimondva, mert ez egy CSERE, nem egy tiszta nyereség.** Elöl jelölve a rossz
+eset egy megjelölt-de-ki-nem-küldött kártya; hátul jelölve KÉT ügynök ébresztése ugyanarra a
+kártyára. Az első HANGOS (a `reportUndeliveredDispatch` kommentel a kártyán és szól a fő ügynöknek)
+és visszaállítható, mert a `moveKanbanCard` nullázza a `dispatched_at`-et, amikor a kártya elhagyja
+az `in_progress`-t (a `kanban-dispatch-rearm.test.ts` pinneli). A második NÉMA. Egy elmaradt
+dispatch, ami bejelenti magát, jobb, mint egy duplikátum, ami nem.
+
+**AMIT A VÁLTOZÁS VALÓJÁBAN AD.** A függvény tetején lévő olvasás azt mondja, hogy a kártya egy
+pillanattal korábban SZABADNAK LÁTSZOTT; egyedül az írás mondja meg, hogy senki más nem vitte el. A
+kettő addig volt ugyanaz, amíg nem állt `await` közöttük -- ami ma igaz, de soha semmi nem
+garantálta. Az ágazás a sorrendet teszi garanciává a kód pillanatnyi alakja helyett.
+
+**A TESZT, ÉS AMIÉRT A KÉZENFEKVŐ VÁLTOZATA HASZNÁLHATATLAN.** Egy előre megjelölt kártyával indítva
+a függvény a TETEJÉN visszatér (az olvasott kártya már jelölt), tehát az új ág le sem fut. Az eset
+csak akkor mér, ha az OLVASÁS szabadnak mondja a kártyát, miközben a SOR már foglalt -- ezt a
+`getKanbanCard` mockolása állítja elő, ami a legkisebb hű helyettese annak, hogy a sor az olvasás
+UTÁN változott meg. Minden más valódi: az útvonal, a mozgatás, az adatbázis, az igénylés.
+Kontrollal együtt: egy el nem vitt kártya továbbra is kimegy.
+
+**MÉRVE:** a küldés-utáni sorrend visszaállítása (a változtatás előtti alak) az esetet PIROSRA
+váltja, névvel; a kontroll zöld marad.
+
+**Hivatkozás:** kártya `c4da93bf` (szülő `01c846bf`, testvér `5b00c5ec`);
+`src/web/routes/kanban.ts`, `src/__tests__/kanban-dispatch-claim-before-send.test.ts`.
