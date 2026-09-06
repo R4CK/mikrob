@@ -103,7 +103,7 @@ describe('self-pace-gate: prose ending in the at(1) word (card 12f80902)', () =>
     for (const cmd of [
       'echo "claude -p go" | ' + AT + ' now + 5 minutes',
       AT + ' -f /tmp/job.sh',
-      AT + ' < job.txt',
+      AT + ' < job.txt now + 5 minutes',
       AT + ' 14:30',
       AT + ' 1430',
       AT + ' tomorrow',
@@ -112,6 +112,17 @@ describe('self-pace-gate: prose ending in the at(1) word (card 12f80902)', () =>
     ]) {
       expect(selfPaceDecision('Bash', { command: heredoc(cmd) }).deny, cmd).toBe(true)
     }
+  })
+
+  // MOVED SIDES, deliberately, by this block's OWN argument (card 79bb0364). `at < job.txt` used
+  // to sit in the list above under the heading "every shape that can actually submit a job" -- and
+  // it cannot: at(1) requires a timespec, so a bare redirect exits with a usage error exactly as
+  // the bare binary two tests up does. The row was mislabelled from the start, and keeping it cost
+  // a real false-positive class, because the same text is how every language writes a comparison
+  // against a variable named `at`. The working redirect form (`at < job.txt now + 5 minutes`) took
+  // its place in the DENY list, so the coverage this file holds went up, not down.
+  it('ALLOWS a bare redirect with no timespec -- same argument as the bare binary', () => {
+    expect(selfPaceDecision('Bash', { command: heredoc(AT + ' < job.txt') }).deny).toBe(false)
   })
 
   it('STILL DENIES a bare batch -- it needs no timespec, so end-of-segment IS an invocation', () => {
