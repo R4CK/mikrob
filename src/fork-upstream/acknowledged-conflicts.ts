@@ -378,15 +378,20 @@ export const ACKNOWLEDGED_CONFLICTS = {
     "this install, so what closed is a latent hole. The anchor below is re-aimed at the half that is still " +
     "open, so it keeps doing the same job for the remaining claim." +
     " DONE 2026-09-06, card c116696f (backend2) -- HALF (1) NOW ADOPTED TOO: a new exported " +
-    "buildUpdateScriptEnv(extraEnv) deletes process.env.NODE_ENV before returning the env " +
-    "spawnUpdateScript passes to update.sh, protecting BOTH call paths (fork-pull and " +
-    "post-upstream-merge rebuild+restart) from the one thing --include=dev cannot fix on its own: " +
-    "this process itself inheriting NODE_ENV=production from whatever launched it. " +
-    "Both halves of upstream 31d1e94f (#1189, AUTOUPDNODEENV905) are adopted now, by the fork's own route " +
-    "rather than upstream's line-level patch -- the STRUCTURAL conflict this rule opened with (upstream " +
-    "patched an inline spawn the fork had already lifted into a shared helper) remains the reason there is " +
-    "still no line-level pick to make, so the rule stays acknowledge-only rather than being deleted. The " +
-    "fork anchor below fired exactly as its 50af1a27 author intended and is now re-aimed to expect:'present', " +
+    "buildUpdateScriptEnv(extraEnv) deletes NODE_ENV from a LOCAL COPY of process.env before " +
+    "returning it, protecting BOTH call paths (fork-pull and post-upstream-merge rebuild+restart) " +
+    "from the one thing --include=dev cannot fix on its own: this process itself inheriting " +
+    "NODE_ENV=production from whatever launched it. CORRECTED once during gate (Cybersec NO-GO): " +
+    "the first version mutated the REAL process.env, which a child process does not need -- its own " +
+    "env is an OS-level copy taken at ITS spawn(), not a live view of the parent -- and which would " +
+    "have left NODE_ENV permanently deleted from THIS long-running process if update.sh exits before " +
+    "its restart step, reproducing the exact no-restart failure shape AUTOUPDNODEENV905 already hit " +
+    "five times. Both halves of upstream 31d1e94f (#1189, AUTOUPDNODEENV905) are adopted now, by the " +
+    "fork's own route rather than upstream's line-level patch -- the STRUCTURAL conflict this rule " +
+    "opened with (upstream patched an inline spawn the fork had already lifted into a shared helper) " +
+    "remains the reason there is still no line-level pick to make, so the rule stays acknowledge-only " +
+    "rather than being deleted. The fork anchor below fired exactly as its 50af1a27 author intended " +
+    "and is now re-aimed to expect:'present', " +
     "guarding against a future revert instead of watching for the fix's arrival.",
   'src/web/routes/kanban.ts':
     "dispatch-text hunk: keep the fork's waiting-text wholesale (fork rule 4, no self-close-to-done). Other two hunks: adopt upstream's resolveKanbanDispatch + reportUndeliveredDispatch (session-down is no longer a silent no-op), keep the fork's self-advance suppression + /clear-before-switch wholesale alongside it -- non-overlapping concerns, not a fork-vs-upstream pick. Re-measured 2026-09-02 (Cybersec, card 9dc0fba8 landing-block, 00ec734f520d..89423d29b8af): upstream moved, entirely outside all three recorded hunks -- it fixed the POST handler so a caller-supplied card id wins in the row AND in the response (it used to store the supplied id and echo the generated one, HTTP 200 pointing at a card that does not exist), and it lifts `actor` out of the field set for db.ts\'s new audit event. Zero hits on resolveKanbanDispatch, reportUndeliveredDispatch, the waiting-text hunk, the self-advance suppression or the /clear-before-switch block. Resolution at the conflict points unchanged; blob bumped." +
@@ -1482,22 +1487,25 @@ export const ACKNOWLEDGED_FORK_ANCHORS: Partial<Record<keyof typeof ACKNOWLEDGED
   // comment the way rule 12 warns a 'present' one can -- a comment merely NAMING the flag trips
   // it, which costs one re-read and never hides a closed exposure.
   'src/web/routes/updates.ts': {
-    // RE-AIMED AGAIN 2026-09-06 (card c116696f, backend2). The anchor watched for
-    // 'delete process.env.NODE_ENV' with expect:'absent' and FIRED the moment this card's fix
-    // landed -- the anchor working as designed, not failing. Flipped to expect:'present': both
-    // halves of AUTOUPDNODEENV905 are now closed, so what is worth guarding going forward is that
-    // neither regresses. buildUpdateScriptEnv (src/web/routes/updates.ts) is the one call site
-    // spawnUpdateScript uses to build the child env, so an accidental revert of the delete trips
-    // this the same way removing --include=dev would trip update-npm-ci-dev-deps.test.ts.
-    needle: 'delete process.env.NODE_ENV',
+    // RE-AIMED A THIRD TIME 2026-09-06 (card c116696f, Cybersec NO-GO on backend2's first version).
+    // The first fix mutated the REAL process.env ('delete process.env.NODE_ENV'), which Cybersec
+    // NO-GO'd: a child's env is an OS-level copy taken at ITS OWN spawn(), not a live view of the
+    // parent's object, so a LOCAL copy protects update.sh and everything it spawns just as well --
+    // and mutating the real one instead leaves OUR OWN long-running process's NODE_ENV deleted,
+    // unbounded, if update.sh exits before its restart step (several early-exit paths exist), which
+    // is the exact "repeated failed update, no restart" shape AUTOUPDNODEENV905 already produced
+    // five times. The corrected code deletes from a LOCAL copy: 'delete env.NODE_ENV'. Needle
+    // re-aimed to that literal string, expect stays 'present' -- the guarantee being watched (both
+    // halves of AUTOUPDNODEENV905 stay adopted) is unchanged, only the exact text proving it is.
+    needle: 'delete env.NODE_ENV',
     file: 'src/web/routes/updates.ts',
     expect: 'present',
     because:
       "Both halves of upstream's AUTOUPDNODEENV905 are adopted now: --include=dev on both npm ci " +
-      "sites in update.sh (card 50af1a27) and NODE_ENV deleted from process.env inside " +
-      "buildUpdateScriptEnv before spawnUpdateScript hands the env to update.sh (card c116696f). " +
-      "If the delete is ever removed, this fires and the exposure claim needs re-reading, not a " +
-      "silent revert.",
+      "sites in update.sh (card 50af1a27) and NODE_ENV deleted from the LOCAL env copy inside " +
+      "buildUpdateScriptEnv before spawnUpdateScript hands it to update.sh (card c116696f, " +
+      "corrected per Cybersec NO-GO to not mutate the real process.env). If the delete is ever " +
+      "removed, this fires and the exposure claim needs re-reading, not a silent revert.",
   },
   // The entry this card came from. Its rule says the two halves "must stay together: the filter is
   // only correct BECAUSE a parent now carries its child's updated_at". So the anchor is the half

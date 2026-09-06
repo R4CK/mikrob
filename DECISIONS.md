@@ -10977,3 +10977,45 @@ eset FAIL-re vált, a többi 96 zöld marad -- nem vákuum.
 
 **Hivatkozás:** kártya `3e4dc2c3` (Cybered mérése, üzenet 24426); `store/gate-closure-check.py`,
 `store/gate-closure-check.selftest.py`.
+
+## 2026-09-06 -- c116696f (delta) -- buildUpdateScriptEnv LOKÁLIS másolatot módosít, nem az élő process.env-et
+
+**Döntés.** A `buildUpdateScriptEnv()` (card c116696f) MÓDOSÍTVA: a `NODE_ENV` törlése egy
+LOKÁLIS `env` másolaton történik (`const env = { ...process.env, ...extraEnv }; delete
+env.NODE_ENV; return env`), NEM a valódi `process.env`-en. Cybersec NO-GO-ja után, delta-gate.
+
+**Miért volt hibás az eredeti.** Az eredeti indoklásom ("update.sh több ponton is npm ci-t futtat,
+mindegyik gyermek-folyamat külön öröklődik, tehát a valódi process.env-et kell törölni")
+TÉVES volt: egy gyermek-folyamat a SAJÁT env-tábláját a spawn() pillanatában, OS-szintű
+MÁSOLATKÉNT kapja meg (execve envp), nem a szülő élő objektumára mutató referenciaként -- a szülő
+KÉSŐBBI mutációja már nem ér el hozzá. Cybersec ezt saját, futtatott Node child_process-teszttel
+igazolta (nem csak érveléssel). Tehát egy LOKÁLIS másolat, amit a spawn()-nak adunk át, PONTOSAN
+ugyanúgy védi az update.sh-t ÉS minden leszármazottját (rollback npm ci, ujragenerált finalize
+script), mint a valódi objektum módosítása -- a leszármazottak update.sh SAJÁT env-jét öröklik,
+ami már NODE_ENV nélküli, nem a mi Node-folyamatunk élő objektumát.
+
+**Miért veszélyes volt a valódi process.env módosítása.** A mutáció HATÁRIDŐ NÉLKÜLI: az update.sh-nak
+számos korai kilépési pontja van a finalize/restart LÉPÉS ELŐTT (pl. sikertelen `npm ci`, ~928. sor,
+`exit 1`). Ezeken az utakon a HÍVÓ node-folyamat -- a mi hosszan futó dashboard-unk, ami épp törölte
+a SAJÁT `process.env.NODE_ENV`-jét -- tovább fut, változatlanul, törölt állapotban, amíg valaki
+kézzel újra nem indítja. Ez PONTOSAN az a minta (ismétlődő sikertelen frissítés, újraindulás
+nélkül), ami az AUTOUPDNODEENV905-öt öt rollbackra vitte 10 nap alatt egy ügyfélnél -- a javítás
+után minden ilyen ismétlődő sikertelen próbálkozás MOSTANTÓL is törölte volna a NODE_ENV-et az élő
+folyamatból, nyom nélkül, amíg a folyamat esetleg napokig újra nem indul. Ma nincs ismert aktív
+kódút, ami ebből kárt csinálna (a QA/Cybersec által ellenőrzött olvasók mind import-időben futnak),
+de a "ma senki nem olvassa" állapot semmivel nincs kikényszerítve.
+
+**Amit korrigáltam:** a kódot (lokális másolat), a doksi-kommentet (a hibás "must mutate the real
+process.env" indoklás helyett a helyes OS-szintű env-másolás magyarázata), a
+`src/__tests__/update-node-env-strip.test.ts` 2. esetét (mostantól azt várja, hogy
+`process.env.NODE_ENV` VÁLTOZATLAN maradjon a hívás után, ne `undefined` legyen -- rule 7: ez egy
+HIBÁS invariáns pinneléséből a HELYES invariáns pinnelésévé válik, nem gyengítés), és a
+`src/fork-upstream/acknowledged-conflicts.ts` fork-horgonyát (needle `delete process.env.NODE_ENV`
+-> `delete env.NODE_ENV`, ugyanaz az `expect: 'present'`).
+
+**Tesztek.** Mind az 5 eset zöld a korrigált kóddal; mutáció-tesztelve: a régi (process.env-et
+mutáló) kódra visszaállítva a 2. eset FAIL-re vált (`expected undefined to be 'production'`), a
+többi 4 zöld marad. `tsc --noEmit` tiszta.
+
+**Hivatkozás:** kártya `c116696f` (Cybersec NO-GO, komment 21701); `src/web/routes/updates.ts`,
+`src/__tests__/update-node-env-strip.test.ts`, `src/fork-upstream/acknowledged-conflicts.ts`.
