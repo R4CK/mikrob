@@ -62,41 +62,6 @@ import {
 // reads, with its own hermetic tests. What stays here is everything that is about OUR tree and
 // needs no network -- and that is most of it.
 
-// ---- NETWORK-GUARD SENTINEL: nothing below this line is scanned by the guard ----------------
-describe('this file must never reach the network again (card 5da60b85)', () => {
-  it('no case above the sentinel performs a remote git operation', () => {
-    // Without this, the case removed above could be reintroduced by one edit and nobody would
-    // notice until landings started blocking on upstream again.
-    //
-    // TWO THINGS THIS GETS RIGHT THAT THE FIRST VERSION DID NOT. It scans only the source ABOVE a
-    // literal sentinel, because a guard that scans the whole file matches its OWN needle list and
-    // its own test name -- measured: the first version failed on itself. And the needles are
-    // assembled from fragments, so even the list cannot be a hit. A self-matching predicate is a
-    // guard that can only be "fixed" by weakening it.
-    //
-    // The sentinel is asserted to exist and to appear exactly once, so a future edit cannot escape
-    // the scan by moving code below it or by quietly deleting the boundary.
-    const whole = readFileSync(new URL(import.meta.url), 'utf-8')
-    const marks = whole.split('NETWORK-GUARD ' + 'SENTINEL').length - 1
-    // ONE occurrence, not two: the needle is assembled from fragments here, so this line does
-    // not match itself. That is the whole point of the fragmentation, and asserting the count
-    // is what proves it stayed true.
-    expect(marks, 'the sentinel that bounds this scan must exist exactly once').toBe(1)
-    const above = whole.slice(0, whole.indexOf('NETWORK-GUARD ' + 'SENTINEL'))
-    // Comment-stripped: the prose above names every one of these operations, and a scan that
-    // flagged its own explanation would be "fixed" by weakening the pattern (cards 06d36307,
-    // 2f0c7d24).
-    const code = above
-      .split('\n')
-      .map((l) => l.replace(/\/\/.*$/, ''))
-      .join('\n')
-    const forbidden = ['fet' + 'ch', 'ls-' + 'remote', 'mer' + 'ge(', 'execFile' + 'Sync']
-    for (const needle of forbidden) {
-      expect(code, `this file must not perform '${needle}': the network half lives in the drift checker`)
-        .not.toContain(needle)
-    }
-  })
-})
 
 // Always runs, no network involved: pins BOTH states of metaAnnouncement() deterministically (card
 // d359535c). The live META test above can only ever exercise whichever state this environment
@@ -374,3 +339,87 @@ describe('fork-side anchors: a rule that rests on OUR tree goes stale when OUR t
     )
   })
 })
+
+// The scan lives at the BOTTOM of this file, not the top, and that placement is the whole control.
+// Cybersec and QA both measured the first version independently (card 5da60b85, comments 21593 and
+// the QA FAIL beside it): the sentinel sat on line 65, immediately above the first `describe`, so
+// the scanned region was the import header -- 65 lines, ZERO cases -- and all 24 real cases sat
+// outside it. QA proved it live by appending a forbidden call below the sentinel and watching the
+// whole suite stay green. A guard that cannot see its own subject is decoration.
+describe('this file must never reach the network again (card 5da60b85)', () => {
+  const SENTINEL = 'NETWORK-GUARD ' + 'SENTINEL'
+  // Assembled from fragments so this list is not itself a hit. A predicate that matches its own
+  // needles can only be "fixed" by weakening it -- that was the first version's failure.
+  const FORBIDDEN = ['fet' + 'ch', 'ls-' + 'remote', 'mer' + 'ge(', 'execFile' + 'Sync']
+
+  /** Which forbidden operations appear in `source`, ignoring what the prose merely NAMES. */
+  function remoteGitCallsIn(source: string): string[] {
+    // Comment-stripped: the prose above names every one of these operations, and a scan that
+    // flagged its own explanation would be "fixed" by weakening the pattern (cards 06d36307,
+    // 2f0c7d24).
+    const code = source
+      .split('\n')
+      .map((l) => l.replace(/\/\/.*$/, ''))
+      .join('\n')
+    return FORBIDDEN.filter((needle) => code.includes(needle))
+  }
+
+  const whole = readFileSync(new URL(import.meta.url), 'utf-8')
+  const scanned = whole.slice(0, whole.indexOf(SENTINEL))
+
+  it('the sentinel exists exactly once, so the scan boundary cannot be quietly deleted', () => {
+    // ONE occurrence, not two: the needle is assembled from fragments above, so neither that line
+    // nor this one matches itself. Asserting the count is what proves the fragmentation held.
+    expect(whole.split(SENTINEL).length - 1, 'the sentinel that bounds this scan must exist exactly once').toBe(1)
+  })
+
+  it('THE GUARD CAN SEE ITS SUBJECT: the scan covers EVERY case in this file', () => {
+    // This is the assertion whose absence made the first version vacuous. It is deliberately an
+    // EQUALITY against the whole-file count, not a floor: a floor does not discriminate. Measured
+    // while writing this -- the first attempt asserted `> 20` cases in the scanned region, and
+    // moving the sentinel back to its old spot (immediately above this describe) still left more
+    // than twenty cases above it, because this block sits at the bottom. The mutation survived. A
+    // uniform result across both positions means the bench is not measuring the thing.
+    //
+    // Equality pins it exactly: the sentinel may sit below the last case and nowhere else.
+    const marker = 'i' + 't('
+    const inScan = scanned.split(marker).length - 1
+    const inFile = whole.split(marker).length - 1
+    expect(inScan, 'this file must actually contain cases, or the equality below is vacuous').toBeGreaterThan(20)
+    expect(inScan, 'the sentinel must sit BELOW the last case, or the scan misses what it guards').toBe(inFile)
+  })
+
+  it('no case in this file performs a remote git operation', () => {
+    // Without this, the network case removed above could be reintroduced by one edit and nobody
+    // would notice until landings started blocking on upstream again.
+    expect(remoteGitCallsIn(scanned), 'the network half lives in the drift checker, not here').toEqual([])
+  })
+
+  it('REGRESSION: the scan FAILS on a case that does reach the network', () => {
+    // The point Cybersec made: a guard that is green on a corpus containing the very thing it
+    // forbids is not a guard. The forbidden token is assembled at RUNTIME, so this fixture does not
+    // put a contiguous match into this file's own source and cannot make the case above red.
+    const fixture = [
+      "describe('a future edit that brings the network back', () => {",
+      // The title deliberately avoids the word itself: the needles match as plain SUBSTRINGS, so
+      // "fetches" is a hit too. That is the correct side to err on in a DENY matcher -- refusing to
+      // match is permitting -- and it is not theoretical: the first run of this corrected guard went
+      // red on THIS very line, which is the proof it now sees a region the old one never scanned.
+      "  it('pulls from the remote', async () => {",
+      '    await ' + 'fet' + 'ch' + "('https://example.invalid')",
+      '  })',
+      '})',
+    ].join('\n')
+    expect(remoteGitCallsIn(fixture)).toEqual(['fet' + 'ch'])
+  })
+
+  it('REGRESSION: a forbidden operation named only in a COMMENT is not a hit', () => {
+    // The other direction, and the reason for the comment-stripping: this file's own prose says
+    // "git fetch upstream develop" several times while describing what was removed. If those
+    // counted, the only way to keep the guard green would be to soften the pattern.
+    const fixture = '// this used to run a git ' + 'fet' + 'ch' + ' upstream develop\nconst x = 1'
+    expect(remoteGitCallsIn(fixture)).toEqual([])
+  })
+})
+
+// ---- NETWORK-GUARD SENTINEL: everything ABOVE this line is scanned by the guard -------------
