@@ -137,6 +137,65 @@ t "malformed JSON is UNREADABLE, not silently empty" UNREADABLE abc1234 <<<'not 
 t "an empty comment list is NONE" NONE abc1234 <<<'[]'
 t "an unexpected response shape is UNREADABLE" UNREADABLE abc1234 <<<'{"error":"nope"}'
 
+# --- WHO WROTE THE VERDICT (card 48b0dd36, Cybersec) -----------------------------------------
+#
+# This tool permits or refuses the push, and it used to authenticate a verdict by its TEXT SHAPE
+# alone -- the `author` field was read for the message and never for the decision. So a maker could
+# satisfy the mandatory QA requirement by writing `QA PASS` plus a Gate-SHA line on their own card.
+#
+# Reachability was ZERO the day this was measured (639 verdict-shaped first lines on the board, 18
+# from an author who does not hold that gate's role, and not one of those 18 carried a Gate-SHA
+# line), which is why it was a MEDIUM and why every case above still answers exactly as it did.
+# These pin the direction, not a bug fixed in the live corpus.
+t "the MAKER cannot pass their own card by writing the words" UNVERIFIED-AUTHOR abc1234 \
+  <<<"$(j backend 'QA PASS
+Gate-SHA: abc1234
+
+I checked it myself')"
+
+t "the subagent alias qa-engineer IS the QA role" OK abc1234 \
+  <<<"$(j qa-engineer 'QA PASS
+Gate-SHA: abc1234')"
+
+t "the subagent alias cybersecurity-redteam IS the Cybersec role" OK abc1234 \
+  <<<"$(j qa 'QA PASS
+Gate-SHA: abc1234' cybersecurity-redteam 'CYBERSEC GO
+Gate-SHA: abc1234')"
+
+# A ROLE-HOLDER SPEAKING FOR THE OTHER GATE is still unattributable. QA is a real gate author, but
+# not of THIS verdict -- the check is author-role == the role the verdict CLAIMS, not "is a gate".
+t "a gate author signing off a DIFFERENT gate does not count" UNVERIFIED-AUTHOR abc1234 \
+  <<<"$(j qa 'CYBERSEC GO
+Gate-SHA: abc1234')"
+
+# PRECEDENCE, both directions.
+t "a real QA PASS stands even when an unattributable one sits beside it" OK abc1234 \
+  <<<"$(j backend 'QA PASS
+Gate-SHA: abc1234' qa 'QA PASS
+Gate-SHA: abc1234')"
+
+t "an unattributable QA PASS is named, not silently downgraded to 'QA missing'" UNVERIFIED-AUTHOR abc1234 \
+  <<<"$(j backend 'QA PASS
+Gate-SHA: abc1234' cybersec 'CYBERSEC GO
+Gate-SHA: abc1234')"
+
+# THE ASYMMETRY, and it is the case that decides whether this change is safe at all. An
+# unattributable PASS is not a pass; an unattributable REFUSAL is still a refusal. MikroB's
+# "<GATE> <VERDICT> ELFOGADVA" restatement is the routine relay shape on this board, and if the
+# author check applied to refusals too, a landing would proceed over a stated NO-GO -- strictly
+# worse than the hole being closed.
+t "a RELAYED refusal still refuses, author check or not" FAILED abc1234 \
+  <<<"$(j qa 'QA PASS
+Gate-SHA: abc1234' mikrob 'QA FAIL ELFOGADVA, vissza in_progress-be
+Gate-SHA: abc1234')"
+
+# THE LIVE CORPUS, unchanged: the relay comments that exist today carry no Gate-SHA line, so they
+# name no sha and never reached the decision in the first place. This is the case that says the
+# change costs nothing on the board as it stands.
+t "a relay with no Gate-SHA line does not disturb a real QA PASS" OK abc1234 \
+  <<<"$(j qa 'QA PASS
+Gate-SHA: abc1234' mikrob 'QA PASS ELFOGADVA -- zarom a kartyat')"
+
 # --- the shell wrapper: fail-closed vs report ------------------------------------------------
 # shellcheck source=./landing-gate-verdict-check.sh
 . "$HERE/landing-gate-verdict-check.sh"
@@ -223,11 +282,16 @@ TOKEN_TMP="$SELFTEST_TMP/token"; echo tok > "$TOKEN_TMP"
 printf '%s' '{"comments":[{"author":"qa","content":"QA PASS\nGate-SHA: abc1234"}]}' > "$SELFTEST_TMP/ok.json"
 printf '%s' '{"comments":[]}' > "$SELFTEST_TMP/none.json"
 printf '%s' '{"comments":[{"author":"qa","content":"QA FAIL\nGate-SHA: abc1234\n\nbroken"}]}' > "$SELFTEST_TMP/failed.json"
+printf '%s' '{"comments":[{"author":"backend","content":"QA PASS\nGate-SHA: abc1234"}]}' > "$SELFTEST_TMP/unattributed.json"
 
 source "$HERE/landing-gate-verdict-check.sh"
 rc_case "a passing verdict returns 0" 0 "$SELFTEST_TMP/ok.json"
 rc_case "NO usable verdict returns 1 -- overridable by an explicit flag" 1 "$SELFTEST_TMP/none.json"
 rc_case "a FAILING verdict returns 2 -- its OWN code, so a caller can refuse only this one" 2 "$SELFTEST_TMP/failed.json"
+# A NEW ANSWER WORD MUST REFUSE, not fall through to "proceed". The wrapper decides on the prefix
+# alone and only OK returns 0, so UNVERIFIED-AUTHOR is fail-closed by construction -- pinned here
+# because "by construction" is exactly the kind of claim that stops being true after an edit.
+rc_case "an unattributable PASS refuses the landing (rc 1, overridable by an explicit flag)" 1 "$SELFTEST_TMP/unattributed.json"
 
 # ...and now through the REAL lander, on its real flag path.
 # args: label, json fixture, and 1 = must refuse at the gate / 0 = must get past it

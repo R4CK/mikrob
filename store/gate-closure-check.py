@@ -89,7 +89,11 @@ import re
 import subprocess
 import sys
 
-GATES = ("QA", "CYBERSEC", "CYBERED")
+# The role names and the author->role fold both live in gate_author_role.py, so that the tool
+# which PERMITS a landing and this one, which only advises, cannot drift apart (card 48b0dd36).
+from gate_author_role import GATE_ROLES, author_role  # noqa: E402  (sits with the constants it defines)
+
+GATES = GATE_ROLES
 
 # A gate ROLE may be staffed by more than one agent. Rule 4 requires load-balancing between
 # same-capability gate siblings (today QA/QA2; CYBERSEC2/CYBERED2 are named as future ones), and
@@ -174,36 +178,10 @@ def declared_shas(comments):
     return found
 
 
-# WHO IS ALLOWED TO SPEAK FOR A GATE (card 44849954, Cybered's finding).
-#
-# This tool authenticated a verdict by its TEXT SHAPE and never by its AUTHOR: the `author` field
-# was not read anywhere. Comment authorship on the kanban API comes from the request BODY under one
-# shared Bearer token, so any agent can post as any author -- which means the shape check was the
-# only thing standing between a maker and their own sign-off.
-#
-# STRICT author==gate IS THE WRONG FIX, measured: 156 card-gate pairs on this board carry a latest
-# verdict written by someone other than the gate, and 152 of those are MikroB's own summary
-# comments restating a real verdict. Rejecting them outright would retroactively call 54 closed
-# cards ungated and make the tool unusable the day it shipped.
-#
-# The fold below MIRRORS the one on the verdict-word side (see the note on GATES, which drops the
-# sibling number so QA2's verdict is the QA gate's verdict). Applying it to only one of the two
-# sides is its own bug: measured, an author fold-free version calls 245 legitimate QA2 verdicts
-# foreign. Trailing digits are stripped for the same reason and by the same rule, so a future
-# CYBERSEC2/CYBERED2 needs no edit here.
-_AUTHOR_ALIASES = {"qa-engineer": "QA", "cybersecurity-redteam": "CYBERSEC"}
-_AUTHOR_SIBLING_SUFFIX = re.compile(r"\d+$")
-
-
-def author_role(author):
-    """The gate ROLE this author speaks for, or None for anyone else."""
-    name = (author or "").strip().lower()
-    if not name:
-        return None
-    if name in _AUTHOR_ALIASES:
-        return _AUTHOR_ALIASES[name]
-    role = _AUTHOR_SIBLING_SUFFIX.sub("", name).upper()
-    return role if role in GATES else None
+# The author->role fold that used to live here is now gate_author_role.author_role, imported at
+# the top: the landing gate needs the SAME table, and a second copy of it is a divergence
+# waiting for the next alias (card 48b0dd36). The measurements that shaped the rule moved
+# with it.
 
 
 def latest_per_gate(comments):

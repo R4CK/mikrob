@@ -9025,3 +9025,47 @@ tudatosan, nem-blokkolóként maradt nyitva.
 `src/__tests__/agent-config-file-modes.test.ts`; Cybersec 20627/20643/20654/21127/21190, QA
 21293. A négy élő fájl egyszeri remediációját (chmod 0600) MikroB végezte, mert
 visszafordítható és a saját flotta-configjai.
+
+## 2026-09-06 -- 48b0dd36: a landolási kapu a verdikt SZERZŐJÉT is nézi, de csak a PASS oldalon
+
+**Kontextus.** A `landing-gate-verdict-parse.py` az a fél, amelyik ténylegesen ENGEDI vagy TILTJA a
+pusholást (a `gate-closure-check.py` csak tanácsot ad egy sorban, ember dönt). Ez az eszköz eddig a
+verdikt SZÖVEG-ALAKJÁBÓL hitelesített: az `author` mezőt kiírta az üzenetbe, de a döntésbe sosem
+vette be. Vagyis egy `QA PASS` kezdetű, `Gate-SHA:` sort vivő komment BÁRMELY szerzőtől kielégítette
+a 4. szabály kötelező QA-követelményét -- a készítő aláírhatta a saját munkáját azzal, hogy leírja a
+szavakat. Cybersec mérése a c52e2823 zárásakor (24365).
+
+**Döntés, és a lényeg az ASZIMMETRIA.** Egy PASS csak akkor számít, ha a szerző szerepe egyezik
+azzal a gate-tel, amit a verdikt ÁLLÍT magáról (`author_role(szerző) == a verdikt-szó szerepe`). Egy
+FAIL viszont SZÁNDÉKOSAN nem szerző-ellenőrzött: aki leírja, attól áll. Nem attribuálható PASS nem
+PASS; nem attribuálható ELUTASÍTÁS viszont attól még elutasítás. Ha a szerző-ellenőrzés a FAIL-re is
+állna, kiesnének a közvetített elutasítások -- MikroB `<GATE> <VERDIKT> ELFOGADVA` nyugtázása a
+tábla rutinszerű alakja --, és egy landolás átmenne egy kimondott NO-GO fölött. Az szigorúan
+rosszabb, mint a betömött lyuk.
+
+**Ez NEM autentikáció, és nem is állítja magáról.** A kanban API a szerzőt a kérés TÖRZSÉBŐL veszi,
+egyetlen közös Bearer token alatt, tehát bárki posztolhat bárkinek a nevében. A szerző-ellenőrzés a
+gyengébb, de olcsó állítás: egy verdikt, ami még csak nem is ÁLLÍTJA, hogy a gate-től jön, nem annak
+a gate-nek a verdiktje. A tényleges hitelesítés külön kártya tárgya lenne (per-ügynök token), ez
+nem az.
+
+**Új válaszszó: `UNVERIFIED-AUTHOR`.** Nem `OK` (nem landolhat) és nem `FAILED` (nem elutasítás,
+amit vissza kell dobni): a shát megnevezte valami verdikt-alakú, és az ok, amiért nem számít, az,
+hogy KI írta. A burkoló (`landing-gate-verdict-check.sh`) a prefixből dönt és csak az `OK` ad 0-t,
+tehát egy új szó fail-closed a szerkezetéből adódóan -- ezt külön eset rögzíti, mert a
+"szerkezetéből adódóan" pont az az állítás, ami egy szerkesztés után elromlik.
+
+**A szerep-tábla KÖZÖS modulba került (`store/gate_author_role.py`), nem másolva.** A szabály eddig
+csak a tanácsadó olvasóban élt; a másolás mára megoldotta volna, és az első aliasnál, amit valaki az
+egyik fájlba felvesz és a másikba nem, újranyitná. A `gate-closure-check.py` mostantól onnan
+importál (a `GATES` is onnan jön), így a következő testvér-szerep egy helyen kerül be.
+
+**Mérés a döntés mellé (élő tábla, 2026-09-06):** 439 kártya, 651 verdikt-alakú első sor (560 PASS,
+91 FAIL). Nem-szerep szerzőtől 7 PASS és 13 FAIL, és ezek közül EGY SEM visz `Gate-SHA:` sort, tehát
+egyikük sem ér el a döntésig. A változtatás MA nulla verdiktet fordít meg -- ezért volt MEDIUM és nem
+HIGH, és ezért maradt a meglévő 27 selftest-eset mindegyike bit-re ugyanazzal a válasszal. Az irány
+rögzítése a cél: az első nem-szerep szerző, aki egy `Gate-SHA` sort is odaír, ma landolna.
+
+**Hivatkozás:** kártya `48b0dd36` (Cybersec MEDIUM a c52e2823-on, 24365);
+`store/landing-gate-verdict-parse.py`, `store/gate_author_role.py`,
+`store/gate-closure-check.py`, `store/landing-gate-verdict-check.selftest.sh` (27 -> 36 eset).
