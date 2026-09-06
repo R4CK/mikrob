@@ -3187,11 +3187,38 @@ export function moveKanbanCard(id: string, status: KanbanCard['status'], sortOrd
   return changed
 }
 
-// Stamp the once-only kanban -> agent dispatch guard. Returns false if the
-// card id does not exist.
+/**
+ * CLAIM the once-only kanban -> agent dispatch guard. Returns true only if THIS call took it.
+ *
+ * WHAT CHANGED AND WHY (card 5b00c5ec, parent 01c846bf). The statement used to be
+ * `WHERE id=?`, so `changes > 0` answered "does this row exist?" -- and every caller read that
+ * answer as "did I win the claim?". Those are different questions, and the old one is true for
+ * both winner and loser. Adding `AND dispatched_at IS NULL` makes the write itself the arbiter:
+ * SQLite applies it atomically, so exactly one of two concurrent callers can see changes > 0.
+ *
+ * NOT A LIVE BUG TODAY, and the card says so too -- worth repeating here rather than letting a
+ * future reader assume an incident. `fireKanbanDispatch` reads the card and marks it with no
+ * `await` in between (checked, not assumed), so on one event loop there is nothing to interleave.
+ * This is hardening against the first edit that introduces one: at that moment the window opens
+ * silently, and nothing about the old statement would have started failing to announce it.
+ *
+ * THE COLUMN IS NOT A TOMBSTONE, which is what makes a real claim safe here: `moveKanbanCard`
+ * clears `dispatched_at` when a card leaves in_progress, and `kanban-dispatch-rearm.test.ts` pins
+ * that. So a claim that is taken and then not used is recoverable by moving the card out and back,
+ * rather than burning the card's dispatch forever.
+ *
+ * Returns false for a missing card id, unchanged -- and now ALSO false for a card that some other
+ * caller has already claimed. Callers that only wanted "did the row exist" would read that as a
+ * failure; there are none (the two call sites are in fireKanbanDispatch), and card c4da93bf is
+ * where the caller starts branching on this value deliberately.
+ */
 export function markKanbanCardDispatched(id: string): boolean {
   const now = Math.floor(Date.now() / 1000)
-  return db.prepare('UPDATE kanban_cards SET dispatched_at=? WHERE id=?').run(now, id).changes > 0
+  return (
+    db
+      .prepare('UPDATE kanban_cards SET dispatched_at=? WHERE id=? AND dispatched_at IS NULL')
+      .run(now, id).changes > 0
+  )
 }
 
 export type ArchiveKanbanCardResult =
