@@ -11135,3 +11135,36 @@ valódi regresszió.
 **Hivatkozás:** kártya `eaef963d` (Cybersec mérése, follow-on `108c7b10`-ből); kapcsolódó de más
 mechanizmus: `09a3d52a` (ugyanennek a könyvtárnak a másik állapotfájlja, ott a zár volt a helyes
 válasz); `store/vram-guard-check.sh`, `store/vram-guard-check.selftest.sh`.
+
+## 2026-09-06 -- edf9c837 -- A landolo szkript a KARTYA-ID szerint valaszt agat, nem a gate-elt sha szerint
+
+**A DÖNTÉS.** A `cleancore-land.sh` `pick_branch` függvénye megkapja a kártya azonosítóját, és a
+`git branch -a --contains` jelöltjei közül azt választja, aminek a NEVE a kártya-id-re végződik
+(`/` vagy `-` határon). Ha egyik sem, marad a régi első-sor viselkedés.
+
+**MIÉRT NEM A TIP SZERINT.** A kézenfekvő megoldás az lenne, hogy azt az ágat válasszuk, aminek a
+tipje ÉPPEN a gate-elt sha. Ez rossz: a hívó KÖVETKEZŐ állítása pontosan az, hogy a választott ág
+tipje a gate-elt sha. Ha a választás erre a tulajdonságra szűrne, az az állítás üressé válna --
+konstrukció szerint teljesülne, bármit adott volna vissza a függvény. A név szerinti szűkítés
+független attól, amit az ellenőrzés kérdez, tehát az ellenőrzésnek marad mit elutasítania.
+
+**MIÉRT HATÁRRA HORGONYZOTT AZ ILLESZTÉS.** Egy 8 hexes kártya-id rövid: a `fix/x-476ccb3399` név
+tartalmazza a `476ccb33`-at. Egy puszta részsztring-illesztés ugyanazt a rossz-ág hibát hozná vissza,
+csak eggyel bonyolultabban. Mindkét élő névalak lefedve (`agent/fron-ted/476ccb33` és
+`fix/evidence-bucket-retention-floor-cbea986c`). Mutációval mérve: a horgony elvétele két esetet
+buktat, a kártya-argumentum eldobása hármat.
+
+**MIÉRT NEM ELUTASÍTÁS, HA NINCS NÉV-EGYEZÉS.** Az az ág, ami egyszerűen nem hordozza az azonosítót a
+nevében, a MA is működő eset. Egy elutasítás ott olyan landolásokat törne el, amik most rendben
+mennek -- a változtatás így szigorúan additív.
+
+**AMI EBBŐL KIMARADT, ÉS MIÉRT.** A kártya elsődleges fele (a `DECISIONS.md` union-elutasítás) NEM
+ebben a változtatásban van: a mérés megcáfolta a kártya hipotézisét, és a valódi ok egy olyan
+alakra vezet, amit a jelenlegi algoritmus nem tud feloldani, nem pedig egy szűk feltétel
+lazítására. Részletek a kártya kommentjében; az ottani javaslat MikroB terv-fázisú döntését igényli,
+mert egy többszörösen gate-elt biztonsági eszköz kimenetét változtatná meg.
+
+**Ki döntött:** backend mérnöki döntés a kártya másodlagos pontjára (MikroB kártyája nevezte meg a
+kívánt irányt), itt felülvizsgálatra kitéve.
+
+**Hivatkozás:** kártya `edf9c837`; `store/cleancore-land.sh` (`pick_branch` + 6 selftest-eset).
