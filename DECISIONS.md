@@ -10623,3 +10623,58 @@ párhuzamos, driftelhető implementáció): törli örökölt `production`-t, a 
 **Hivatkozás:** kártya `c116696f`, párja `50af1a27` (szülő `a7a61751`); `src/web/routes/
 updates.ts`, `src/__tests__/update-node-env-strip.test.ts`, `src/fork-upstream/acknowledged-
 conflicts.ts`.
+## 2026-09-06 -- Az upstream-drift figyelő EGY kártyát gondoz, és a hallgatás a mérnöki része
+
+**Döntés:** a `99c2eb09`-ben a landolási kapuból kiemelt drift-ellenőrző mostantól egy napi
+ütemezett feladatban fut (`fork-upstream-drift-watch`, `mikrob` munkamenetében, 07:40), és az
+eredményt EGYETLEN kanban-kártyán tartja: nyit egyet, ha nincs nyitva, egyébként arra kommentel.
+A döntési logika tiszta függvény (`src/fork-upstream/drift-watch.ts`), az I/O külön
+(`store/fork-upstream-drift-watch.mjs`).
+
+**Miért nem elég a "nyiss kártyát drift esetén":** az ellenőrző MINDEN körben ugyanazt a driftet
+látja, amíg valaki fel nem oldja. Egy naiv figyelő tehát naponta termelne egy azonos kártyát --
+a 6b. szabály dedup-előírásának megsértése gépi léptékben, ami épp az a zaj, amitől a valódi jelzés
+olvashatatlan lesz.
+
+**HÁROM HALLGATÁS, AMI NEM KÉNYELEM, HANEM KÖVETELMÉNY.**
+(1) *Elérhetetlen upstream:* nem nyit kártyát ÉS nem írja felül az állapotfájlt sem. Ha egy
+hálózati kimaradás a saját ujjlenyomatát írná be, a következő elérhető futás "változást" látna, és
+megismételné azt, amit a tábla már hordoz. A "nincs mit mondani" és a "nincs baj" nem nézhet ki
+egyformán -- ugyanaz az elv, amiért a META-állítás ARMED/SKIPPED néven jelenti magát.
+(2) *Változatlan drift:* az ujjlenyomat a FÁJLHALMAZRA megy, nem az upstream blob-shákra. Az
+`upstream/develop` majdnem minden nap mozdul, tehát egy shákat is tartalmazó ujjlenyomat naponta
+kommentelne, miközben a cselekvésre váró tény -- hogy MELYIK fájlokat nem döntötte újra senki --
+változatlan. Ugyanaz a minta, amit a README skill-drift bejegyzése már kimond: a halmaz
+VÁLTOZÁSÁRA szól a riasztás, nem a darabszámára.
+(3) *Ember által lezárt kártya, mozdulatlan drift mellett:* a zárás VÁLASZ. Egy pótkártya minden
+reggel ugyanaz a duplikáció, egy emberi lépéssel később. A hallgatás addig tart, amíg a világ
+ténylegesen tovább nem mozdul; elveszett állapotfájl esetén viszont nyit, mert a "sosem szóltam"
+nem azonos a "megválaszoltak"-kal.
+
+**A KÁRTYA-AZONOSÍTÁS HORGONYZOTT, NEM RÉSZSZTRING.** A figyelő a `[UPSTREAM-DRIFT]` markert a cím
+ELEJÉN keresi (a 2. szabály `[NN%]` előtagján át). Egy olyan kártya, ami csak EMLÍTI a markert --
+és pont az a kártya ilyen, amelyik ezt a figyelőt kérte -- nem a drift-kártya. Itt fordítva áll a
+kockázat, mint egy DENY-illesztőben: ott a nem-illeszkedés enged át, itt a laza illeszkedés OKOZZA
+a rossz írást, tehát a horgonyzás a biztonságos oldal. A DECOY-eset mindkét szinten (vitest és
+selftest) meg van írva, és a `includes`-ra visszavett mutációt mindkettő megöli.
+
+**BIZONYÍTÁS, NEM ZÖLD PIPA:** öt mutáció a döntési modulra és három a lefordított artefaktumra,
+mind kilépési kóddal mérve, mind pontosan a saját esetét öli meg (a hallgatás-ágak: `unchanged`,
+`closed-and-unchanged`, `upstream-unreachable` állapotírás, a marker-horgony, és a sha-alapú
+ujjlenyomat). Egy hatodik mutáció a GLUE-ra (az állapot sosem íródik) is elbukik, tehát a
+huzalozás bizonyítottan eljut a döntésig -- egy őr, amit senki nem hív, nem őr.
+
+**MÉRT KIINDULÓ ÁLLAPOT (2026-09-06):** elérhető upstream, 0 fork-owned ütközés, 0 nem-döntött
+ütközés, 8 ELAVULT elismerés (`src/db.ts`, `src/web/hook-registration-guard.ts`,
+`src/web/routes/agents.ts`, `src/web/routes/kanban.ts`, `web/app.js`, `web/lang/en.js`,
+`web/lang/hu.js`, `web/style.css`), 53 ütköző fájl összesen. A teljes riport 19 KB, mert minden
+elavult szabály hordozza a felhalmozott újramérési jegyzeteit -- ezért a KÁRTYA a drift ALAKJÁT
+kapja (fájl + rögzített/mostani blob), a prózát nem: az az `acknowledged-conflicts.ts`-ben van.
+
+**Ki döntött:** MikroB (24642, "C" irány) a kártya-felbontásban; a hallgatás három ága és a
+horgonyzott marker backend mérnöki döntése, ezen a bejegyzésen keresztül felülvizsgálatra kitéve.
+
+**Hivatkozás:** kártya `a1ce8952` (szülő `1f276349`, testvérek `99c2eb09`, `5da60b85`);
+`src/fork-upstream/drift-watch.ts`, `src/__tests__/fork-upstream-drift-watch.test.ts`,
+`store/fork-upstream-drift-watch.mjs`, `store/fork-upstream-drift-watch.selftest.sh`,
+`.gitignore`, `README.md`.
