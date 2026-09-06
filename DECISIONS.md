@@ -8972,3 +8972,56 @@ pinelő eset maradt.
 `store/gate-closure-check.selftest.py` (83 eset), `CLAUDE.md` 4a. pont; QA 21135, Cybersec
 21176, MikroB 21139 és 21177. Kapcsolódó: `71f95ba0` (az eszköznek nincs gépi fogyasztója,
 tehát ez a javítás csak azt a zárást védi, ahol valaki elindítja).
+
+## 2026-09-06 -- dc5b714d: az ügynök-config fájlok tulajdonos-csak jogosítást KAPNAK, nem megőriznek
+
+**Döntés.** Minden per-ügynök konfigurációs fájl, amit az `agent-process.ts` ír, 0600-on áll,
+akármilyen módban volt előtte. A kód nem ŐRZI a meglévő módot (az volt a korábbi
+viselkedés), hanem KÉNYSZERÍTI a szűket. A hatókör FÁJLOSZTÁLYRA szól, nem egyetlen író
+függvényre: `known_marketplaces.json`, `installed_plugins.json`, az ügynök `.env`-je, a
+`.mcp.json` és a `.claude/settings.json` -- öt hívási hely, egy helperen (`writeAgentConfig`)
+át.
+
+**A kikényszerítő lelet.** Cybersec mérése (20627, 20643, 20654): a `writeJsonAtomic` a
+`writeFileSync` `mode` opciójára támaszkodott, amit a umask szűkít, és a teszt ígérete
+("preserves a deliberately wider mode too") EGYENESEN ELLENTMONDOTT a flotta
+umask-keményítésének (`ensure-umask-dropin.sh`, `FLEET_UMASK:-0077`). Két landolt döntés nem
+tartható egyszerre. MikroB döntése: a credential-hordozó config MINDIG 0600, tehát a TESZT
+ígérete a hibás, nem a kód. Négy élő izolált config (jogász, marketing, pénzügy, videooo)
+ekkor 0664-en ült, env-blokkokkal; a `.mcp.json` ugyanaz a tartalom-osztály, mint az
+incidens, ami ezt a munkát elindította: egy ügynöké `env` blokkban hordozott API-kulcsot,
+csoport- és világ-olvashatóan.
+
+**Miért NEM a repó saját `atomicWriteFileSync`-je.** Az kivonná ezt a fájlosztályt a flotta
+umask-politikája alól, tehát pont az ELLENKEZŐ irányba menne, mint amit a keményítés elérni
+akart. Ez MikroB kimondott rulingja, és azért kerül a naplóba, mert egy későbbi, jó
+szándékú "egységesítsük az írókat" refaktor pontosan ezt a sort vonná vissza.
+
+**A két lépés két KÜLÖNBÖZŐ esetet fed, nem redundancia.** A `{ mode: 0o600 }` a LÉTREHOZÁS
+pillanatát (ott a umask dönt), a rákövetkező `chmod` a MÁR LEMEZEN LÉVŐ fájlt (egy mode
+nélküli írás nem nyúl a meglévő jogosultsághoz). A flotta pontosan a második állapotban
+volt. Mérve: a `chmod` eltávolítása pontosan egy esetet (a REWRITE-ot) buktat, a `{ mode }`
+eltávolítása EGYET SEM -- mert a chmod már megjavította a fájlt, mire bárki ránéz. A
+`{ mode }` a létrehozás és a chmod közötti ABLAKOT zárja, és egy nyugalmi-állapot assertion
+nem lát ablakot. A nyugalmi garancia tehát mérve van, az ablak érvelve, és a tesztfájl ezt
+ki is mondja ahelyett, hogy egy zöld futás mindkettőt látszana fedni.
+
+**NÉGY helyett ÖT, és a különbség tanulsága.** Az első jelentésem négy megkerülő írót
+mondott. A kimaradt az `agents/<n>/.claude/settings.json`, aminek a BASENEVE egyezik egy már
+javított fájléval, az ÚTJA nem -- két `settings.json` áll egymás mellett a lemezen. A KÓD
+kezdettől mind az ötöt kezelte, a PRÓZA volt rövid, ezért a javítás a modul-kommentre és a
+teszt fejlécére is kiterjedt, nem csak a kártyára: egy kártyán tett korrekció nem éri el a
+leszállított kommentet.
+
+**Amit a teszt strukturálisan véd.** A viselkedési esetek az öt hívási helyből hármat érnek
+el; a másik kettő a spawn-úton él, amit a harness nem tud hajtani. Ezért egy forrás-szintű
+darabszám-őr áll mellettük: csupasz `writeFileSync(` PONTOSAN kétszer szerepelhet, a két
+helper belsejében. Az illesztés KOMMENT-MENTESÍTETT forráson fut (12. kódminőségi elv), két
+kontrollal: egy hozzáadott valódi megkerülést lát, egy kommentbe írtat nem. Cybersec lappangó
+F-3 lelete (az őr csak a nevesített import-alakot látja, a `fs.writeFileSync`-et nem)
+tudatosan, nem-blokkolóként maradt nyitva.
+
+**Hivatkozás:** kártya `dc5b714d` (a `75c2dbb7` folytatása); `src/web/agent-process.ts`,
+`src/__tests__/agent-config-file-modes.test.ts`; Cybersec 20627/20643/20654/21127/21190, QA
+21293. A négy élő fájl egyszeri remediációját (chmod 0600) MikroB végezte, mert
+visszafordítható és a saját flotta-configjai.
