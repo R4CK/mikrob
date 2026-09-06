@@ -375,7 +375,57 @@ const SCHED_BOUNDARY = CMD_POSITION
 //
 // `["']*` rather than `["']?`: `at"" now` is also a working invocation, and a quantifier that
 // only allows one quote is the same incomplete-enumeration mistake one level down.
-const AT_INVOCATION = String.raw`(?=["']*\s*$|["']*\s+["']*-|["']*\s*<|["']*\s+["']*(?:now|noon|midnight|teatime|today|tomorrow|next\b|\+\s*\d|\d{1,2}:\d{2}|\d{3,4}\b|\d{1,2}\s*(?:am|pm)\b|\d{1,2}[./]\d{1,2}|(?:mon|tue|wed|thu|fri|sat|sun)\b|(?:jan|feb|mar|apr|may|jun|jul|aug|sep|oct|nov|dec)\b))`
+//
+// THE TIMESPEC LIST AND THE SHAPES BUILT ON IT ARE NAMED ONCE AND SHARED (card 79bb0364). Before
+// this they were one inline alternation written out twice, and the redirect alternative inside
+// them read `["']*\s*<` -- "anything after a `<` is a real submit". That is true for batch(1) and
+// FALSE for at(1), and that difference is this card's whole defect: an ordinary comparison of a
+// variable named `at` was read as `at < FILE` and denied. Measured by backend2 while gating
+// 51273fc0 -- three blocked Bash calls in three languages, the common line being a `<=` comparison
+// against zero -- with the difference test that settles the diagnosis instead of guessing at it:
+// the SAME code with the variable renamed `pos` passes. `at` is not an exotic name for an index.
+//
+// CYBERSEC'S INDEPENDENT REPORT (23941, filed as a second false-positive class on the same card)
+// IS THE SAME ROOT, seen through a markdown code span: a backtick is a command-position character,
+// so quoting that condition inside a code span in a heredoc body put the word in command position
+// too. Their diagnosis named the or-operator in the quoted condition as half the trigger; measured
+// here it is not part of it at all -- the same code span WITHOUT the or-operator denies
+// identically, and the same span with the variable renamed passes. That matters because the remedy
+// they proposed for it -- skip a heredoc body whose delimiter is QUOTED, "since there is no
+// substitution there" -- would have opened four measured holes at once. A quoted delimiter stops
+// the OUTER shell from substituting; it does not stop `bash <<'EOF'` or `python3 <<'PY'` from
+// EXECUTING that body, which is exactly how the tmux/crontab/schedule-API vectors this branch was
+// built for (card 46c4ad4a) are written.
+//
+// WHY at(1) LOSES THE BARE REDIRECT AND batch(1) KEEPS IT -- the same distinction, and the same
+// argument, that already licensed dropping the end-of-segment branch for at(1) alone (card
+// 12f80902, documented at AT_INVOCATION_UNANCHORED below). at(1) REQUIRES a timespec: `at < job`
+// exits with a usage error and schedules nothing, so that shape never described a working submit
+// in the first place. batch(1) takes NO timespec, so `batch < job` IS a working submit and keeps
+// the bare form. at(1)'s redirect alternative instead demands what a real one always carries: the
+// file word, then a timespec. This keeps `at < job now + 5 minutes` denied, and it also keeps the
+// adversarial `at <=0 now` denied -- a redirect from a file literally named `=0` -- which the
+// narrower fix the card proposed (reject a `<` followed by `=` or `<`) would have let through.
+//
+// RESIDUAL, STATED RATHER THAN IMPLIED: `at < job "$WHEN"`, a redirect whose timespec is a
+// variable, was denied before and is allowed now. That is less "coverage lost" than "arbitrary
+// coverage made consistent" -- `at "$WHEN" < job`, the same invocation with the words in the other
+// order, was ALREADY allowed, because every branch here only inspects what immediately follows the
+// binary. A variable timespec is not matchable as text either way; this file's own stated residual
+// about `$(echo at) now` is the same limit.
+const AT_TIMESPEC = String.raw`(?:now|noon|midnight|teatime|today|tomorrow|next\b|\+\s*\d|\d{1,2}:\d{2}|\d{3,4}\b|\d{1,2}\s*(?:am|pm)\b|\d{1,2}[./]\d{1,2}|(?:mon|tue|wed|thu|fri|sat|sun)\b|(?:jan|feb|mar|apr|may|jun|jul|aug|sep|oct|nov|dec)\b)`
+const AT_BARE = String.raw`["']*\s*$`
+const AT_FLAG = String.raw`["']*\s+["']*-`
+const AT_TIMESPEC_ARG = String.raw`["']*\s+["']*${AT_TIMESPEC}`
+// batch(1) takes no timespec, so ANY input redirect is already a working submit.
+const BATCH_REDIRECT = String.raw`["']*\s*<`
+// at(1): the redirect has to be followed by the file word and then a timespec. `[^\s;&|<]` keeps a
+// file name that STARTS with `=` matchable (that is the `at <=0 now` bypass) while refusing the
+// heredoc operator `<<`, and the run stops at a command separator so the timespec it finds has to
+// belong to THIS invocation rather than to a later command on the same line.
+const AT_REDIRECT = String.raw`["']*\s*<\s*["']*[^\s;&|<]\S*\s+["']*${AT_TIMESPEC}`
+const AT_INVOCATION = String.raw`(?=${AT_BARE}|${AT_FLAG}|${AT_REDIRECT}|${AT_TIMESPEC_ARG})`
+const BATCH_INVOCATION = String.raw`(?=${AT_BARE}|${AT_FLAG}|${BATCH_REDIRECT}|${AT_TIMESPEC_ARG})`
 // `launchctl` needed the SAME narrowing, for a different reason than at/batch, and
 // the comment above ("not English words, so prose cannot collide") was measured
 // wrong on 2026-07-26 (found by Hacker). It is not an English word -- but the
@@ -401,7 +451,7 @@ const AT_INVOCATION = String.raw`(?=["']*\s*$|["']*\s+["']*-|["']*\s*<|["']*\s+[
 // is neither. Fixing only the leading side leaves every quoted-subcommand form still passing.
 const LAUNCHCTL_SUBCOMMAND = String.raw`(?=["']*\s*$|["']*\s+["']*-|["']*\s+["']*[a-z][a-z-]*["']*(?:\s|$))`
 const SCHEDULER_RX = new RegExp(
-  String.raw`(^|${SCHED_BOUNDARY}\s*)${SCHED_PREFIX}(?:(?:crontab|systemd-run)\b(?!-)(?!\s*=)|launchctl\b(?!-)(?!\s*=)${LAUNCHCTL_SUBCOMMAND}|(?:batch|at)\b(?!-)(?!\s*=)${AT_INVOCATION})`,
+  String.raw`(^|${SCHED_BOUNDARY}\s*)${SCHED_PREFIX}(?:(?:crontab|systemd-run)\b(?!-)(?!\s*=)|launchctl\b(?!-)(?!\s*=)${LAUNCHCTL_SUBCOMMAND}|batch\b(?!-)(?!\s*=)${BATCH_INVOCATION}|at\b(?!-)(?!\s*=)${AT_INVOCATION})`,
   'i',
 )
 // ...but allow a pure READ-listing of one's own schedule (parity with the store /
@@ -462,7 +512,7 @@ const SCHEDULER_READ_RX = new RegExp(String.raw`(^|${SCHED_BOUNDARY}\s*)${SCHED_
 // in command-word position, `ls $(which node)` in argument position) while `${CMD}` would still
 // pass -- a race that cannot be won by matching text.
 const SCHEDULER_CMDWORD_RX = new RegExp(
-  String.raw`^\s*${SCHED_PREFIX}(?:(?:crontab|systemd-run)\b(?!-)(?!\s*=)|launchctl\b(?!-)(?!\s*=)${LAUNCHCTL_SUBCOMMAND}|(?:batch|at)\b(?!-)(?!\s*=)${AT_INVOCATION})`,
+  String.raw`^\s*${SCHED_PREFIX}(?:(?:crontab|systemd-run)\b(?!-)(?!\s*=)|launchctl\b(?!-)(?!\s*=)${LAUNCHCTL_SUBCOMMAND}|batch\b(?!-)(?!\s*=)${BATCH_INVOCATION}|at\b(?!-)(?!\s*=)${AT_INVOCATION})`,
   'i',
 )
 // The read exemption needs no quote tolerance here: the expansion approximation already removed
@@ -522,7 +572,7 @@ const SCHEDULER_CMDWORD_READ_RX = new RegExp(
 // This is the THIRD member of the same collision class in this file: ">= 80%" and the
 // "declared trivial difficulty" case are both already documented above. Each previous fix narrowed
 // WHAT may follow the word; this one removes the branch where NOTHING follows it.
-const AT_INVOCATION_UNANCHORED = String.raw`(?=["']*\s+["']*-|["']*\s*<|["']*\s+["']*(?:now|noon|midnight|teatime|today|tomorrow|next\b|\+\s*\d|\d{1,2}:\d{2}|\d{3,4}\b|\d{1,2}\s*(?:am|pm)\b|\d{1,2}[./]\d{1,2}|(?:mon|tue|wed|thu|fri|sat|sun)\b|(?:jan|feb|mar|apr|may|jun|jul|aug|sep|oct|nov|dec)\b))`
+const AT_INVOCATION_UNANCHORED = String.raw`(?=${AT_FLAG}|${AT_REDIRECT}|${AT_TIMESPEC_ARG})`
 const SCHED_BARE_SHAPE = String.raw`(?!\s+[a-z])`
 // COMMAND POSITION WITHIN ONE LINE -- the axis all previous fixes in this class missed
 // (card 442f3289). at(1) and batch(1) are ordinary English words, and in THIS regex, unlike the
@@ -556,7 +606,7 @@ const SCHED_BARE_SHAPE = String.raw`(?!\s+[a-z])`
 // Derived from the ONE grammar above -- see its header for why there is no second list here.
 const LINE_CMD_POSITION = String.raw`(?:^|${CMD_POSITION})\s*`
 const UNANCHORED_SCHEDULER_RX = new RegExp(
-  String.raw`\b(?:crontab|systemd-run)\b(?!-)(?!\s*=)${SCHED_BARE_SHAPE}|\blaunchctl\b(?!-)(?!\s*=)${LAUNCHCTL_SUBCOMMAND}|${LINE_CMD_POSITION}${SCHED_PREFIX}batch\b(?!-)(?!\s*=)${AT_INVOCATION}|${LINE_CMD_POSITION}${SCHED_PREFIX}at\b(?!-)(?!\s*=)${AT_INVOCATION_UNANCHORED}`,
+  String.raw`\b(?:crontab|systemd-run)\b(?!-)(?!\s*=)${SCHED_BARE_SHAPE}|\blaunchctl\b(?!-)(?!\s*=)${LAUNCHCTL_SUBCOMMAND}|${LINE_CMD_POSITION}${SCHED_PREFIX}batch\b(?!-)(?!\s*=)${BATCH_INVOCATION}|${LINE_CMD_POSITION}${SCHED_PREFIX}at\b(?!-)(?!\s*=)${AT_INVOCATION_UNANCHORED}`,
   'i',
 )
 const UNANCHORED_SCHEDULER_READ_RX = new RegExp(

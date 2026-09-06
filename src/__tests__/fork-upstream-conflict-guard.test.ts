@@ -235,7 +235,8 @@ const ACKNOWLEDGED_CONFLICTS = {
   'src/web.ts':
     'merge import line (ensureNpmProtectGuard from fork + ensureSkillsPathTrapSection + watchEgressAllowlistForReaderRender + listAllAgentNames + ensureAgentProvenanceHook from upstream, all on one line, keep listAgentNames too), adopt upstream watchEgressAllowlistForReaderRender call (EGRESSRENDER824), the hook-seed loop\'s listAllAgentNames call-site swap (HBGATEWIRE826), and the new ensureAgentProvenanceHook import (its call-site auto-merges cleanly, verified additive/idempotent) -- keep fork\'s "listAllAgentNames" comment casing, no other conflict in the file Re-read 2026-09-03 (card 3bd18e70, blob 6ed7224c): upstream added ensureSystemDirectiveAuthSection to the same agent-scaffold import (GUARDHITELES903) -- merge it onto the one import line too; its ensureSystemDirectiveAuthSection(MAIN_AGENT_ID) call, the new tryHandleHeartbeat import and its route-chain call are additive and auto-merge. Same conflict, one more name.' +
     "Re-measured 2026-09-03 (backend2, card 934dc104 landing-block, 6ed7224c0882..a515f9c8750b): upstream added a desktop-lock route (its own import line, one route-chain call, one 60s TTL sweeper). None of it touches the agent-scaffold import line this rule is about; all three hunks are additive and auto-merge. Resolution unchanged; blob bumped." +
-    " Re-measured 2026-09-05 (mikrob, landing-block): upstream a515f9c8750b..1906c636641e adds a top-level import (isMalformedBodyError from a new web/malformed-body.js, which the fork does not have) and hardens the request-handler's catch block to answer 400 with route/method/bytes in the log instead of a bare 500 for a malformed JSON body -- a real, reasonable fix (measured against two live incidents in upstream's own log), but a new file + a new response shape is its own decision, not a rider on unblocking every other fork's landing. Does not touch the agent-scaffold import line or either BEGIN/END section-writer block this entry decides. Not adopted this round; candidate for a future round. Blob bumped.",
+    " Re-measured 2026-09-05 (mikrob, landing-block): upstream a515f9c8750b..1906c636641e adds a top-level import (isMalformedBodyError from a new web/malformed-body.js, which the fork does not have) and hardens the request-handler's catch block to answer 400 with route/method/bytes in the log instead of a bare 500 for a malformed JSON body -- a real, reasonable fix (measured against two live incidents in upstream's own log), but a new file + a new response shape is its own decision, not a rider on unblocking every other fork's landing. Does not touch the agent-scaffold import line or either BEGIN/END section-writer block this entry decides. Not adopted this round; candidate for a future round. Blob bumped." +
+    " Re-measured 2026-09-06 (backend3, card 79bb0364 landing-block, round 15). Upstream added ensureTelegramCopyGate to the same agent-scaffold import line this rule is about, plus one call in the hook-backfill loop and its log line (GATECOPY828). NOT adopted, and this one needs a WARNING rather than a plain skip: it is the SAME capability the fork already wires in that loop as ensureOutgoingCopyGate (card 74181db2, line 620), so a future merge that takes upstream's name IN ADDITION would wire outgoing-copy-gate.py twice into every sub-agent, under two different matchers. One or the other, never both. Everything else this rule decides (the import-line union, watchEgressAllowlistForReaderRender, listAllAgentNames, ensureAgentProvenanceHook, ensureSystemDirectiveAuthSection) is untouched. Resolution unchanged; blob bumped.",
   // The call-site half of the same upstream change, and the same INDEPENDENT-ADDITIVE class as
   // src/db.ts below rather than a disagreement (measured 2026-08-22). Two hunks, both caused by the
   // two sides adding a DIFFERENT CLAUDE.md section-writer at the same insertion point, each with
@@ -278,7 +279,8 @@ const ACKNOWLEDGED_CONFLICTS = {
   // alongside the fork's section-writer, neither side taken wholesale.
   'src/web/agent-scaffold.ts':
     "keep BOTH section-writers (fork ensureLocalFirstSection + upstream ensureSkillsPathTrapSection), AND adopt upstream kanban-write gate (agentGetsKanbanWriteGate/injectKanbanWriteGate), quarantineReader project-scope refactor (EGRESSRENDER824), and watchEgressAllowlistForReaderRender -- all additive, none taken wholesale. Re-read 2026-08-26 (card 72f5f13b, unblocking fbb36b41/489dae5f landings): upstream moved AGAIN since this rule was written (added findDuplicateJsonKeys dup-key detection in ensureAgentHooks, HEARTBEAT_AGENT_ID import, EMAIL_GATE_MATCHER/emailGateMatcherStale export) -- 22 diff hunks total against a 1600-line security-critical file (fleet-wide hook wiring: git-protect/npm-protect/blast-radius/pentest-install guards live here). NOT safe to hand-merge under time pressure just to unblock a landing. The fork's own guards (git-protect/npm-protect/blast-radius/pentest-install, unchanged in this diff) remain authoritative and untouched on live develop. Full reconciliation of ALL upstream additions (this round's + the previously-acknowledged kanban-write-gate round) is done and build+test-verified in the disposable card-72f5f13b merge worktree, pending the Peti-supervised F5 cutover (card 5c134edf) -- that is where this file's real sync lands, not a piecemeal live-develop patch." +
-    "Re-measured 2026-09-03 (backend2, card 6500e1d3 landing-block, 2a72fb5c7f38..936cdac15d5c): upstream threaded a new AGENT_API_ORIGIN through resolveDashboardOrigin, giving it a third parameter and the precedence AGENT_API_ORIGIN > DASHBOARD_PUBLIC_URL > localhost. Its reason is measured, not stylistic: on a single-host install behind hairpin NAT the public name resolved but its 443 was unreachable FROM THE HOST, so 73 generated curl examples across 18 agent CLAUDE.md files pointed at a dead address and returned curl exit 7 -- nothing the agent could even surface. An empty AGENT_API_ORIGIN keeps the old behaviour byte-for-byte. None of it touches the section-writers, the kanban-write gate or the quarantineReader scope that this rule decides. Resolution unchanged; blob bumped. The 'not safe to hand-merge under time pressure' warning above STILL STANDS and is not weakened by this bump. FORK-ONLY additions to keep across any future reconciliation (cards ab4c85f2 + 5c5d7bc4, not upstream's): the ensureSystemDirectiveAuthSection section-writer with its BEGIN/END markers and buildSystemDirectiveAuthBody, plus the import of SYSTEM_DIRECTIVE_SENDER from './system-directive-id.js' that body interpolates. That import is the point, not decoration: the scaffold recipe must name the SAME id routes/messages.ts reserves, or agents are sent to verify a field nobody rejects. Upstream has neither the section nor the const module.",
+    "Re-measured 2026-09-03 (backend2, card 6500e1d3 landing-block, 2a72fb5c7f38..936cdac15d5c): upstream threaded a new AGENT_API_ORIGIN through resolveDashboardOrigin, giving it a third parameter and the precedence AGENT_API_ORIGIN > DASHBOARD_PUBLIC_URL > localhost. Its reason is measured, not stylistic: on a single-host install behind hairpin NAT the public name resolved but its 443 was unreachable FROM THE HOST, so 73 generated curl examples across 18 agent CLAUDE.md files pointed at a dead address and returned curl exit 7 -- nothing the agent could even surface. An empty AGENT_API_ORIGIN keeps the old behaviour byte-for-byte. None of it touches the section-writers, the kanban-write gate or the quarantineReader scope that this rule decides. Resolution unchanged; blob bumped. The 'not safe to hand-merge under time pressure' warning above STILL STANDS and is not weakened by this bump. FORK-ONLY additions to keep across any future reconciliation (cards ab4c85f2 + 5c5d7bc4, not upstream's): the ensureSystemDirectiveAuthSection section-writer with its BEGIN/END markers and buildSystemDirectiveAuthBody, plus the import of SYSTEM_DIRECTIVE_SENDER from './system-directive-id.js' that body interpolates. That import is the point, not decoration: the scaffold recipe must name the SAME id routes/messages.ts reserves, or agents are sent to verify a field nobody rejects. Upstream has neither the section nor the const module." +
+    " Re-measured 2026-09-06 (backend3, card 79bb0364 landing-block, round 15). Upstream added the GATECOPY828 half of the same feature: TELEGRAM_COPY_GATE_MATCHER (the two Telegram MCP tools), agentGetsTelegramCopyGate/injectTelegramCopyGate/ensureTelegramCopyGate, and a new pythonHookCommand(). The gate itself is NOT adopted -- the fork built it under card 74181db2 with different names, a `Bash` matcher and a kill switch that DEFAULTS OFF, and taking upstream's alongside it double-wires the same script (see the src/web.ts entry). BUT ONE PIECE OF THIS DIFF IS WORTH ADOPTING ON ITS OWN, AND IT WAS MEASURED, NOT ASSUMED: pythonHookCommand() probes `command -v python3` and exits 2 when it is missing, because Claude Code treats 127 as NON-BLOCKING -- the exact failure this file's own hookCommand() header calls 'the non-blocking status this whole file exists to stop'. The fork applies that lesson to node only. Every python guard here is wired as a bare `python3 \"...\"` (git-protect, npm-protect, blast-radius, cd-chain, noisy-command, symlinked-node-modules, pentest-install), so a python3 that leaves the PATH turns all of them into silent no-ops. WORSE, and measured by reading the call site: injectOutgoingCopyGate builds its command with hookCommand(), i.e. it wires NODE to run a .py file -- latent only because the kill switch defaults off, a guaranteed no-op the moment it is turned on. Not fixed here (a landing-unblock is not the place); carded separately. Resolution otherwise unchanged; blob bumped.",
   // ORIGINAL entry (2026-08-16, card 88505fb5) described a schema-migration/trigger hunk in
   // ensureSchema() -- that hunk no longer conflicts (both sides' migrations merged clean since).
   // RE-MEASURED 2026-09-01 (heartbeat reconciliation): the file conflicts again, but at a totally
@@ -562,13 +564,15 @@ const ACKNOWLEDGED_CONFLICTS = {
   // per-X.Y.Z counter) -- that IS "taking theirs" for X.Y.Z specifically. Measured 2026-08-25
   // (card 9ef96512); version-field ambiguity fixed 2026-08-26 (card 30bb2739).
   'package.json':
-    'dependency list + scripts stay fork-canonical (superset of upstream: react/recharts/vite/eslint/google-auth/newer claude-agent-sdk/overrides; shared-dep version bumps need case-by-case evaluation); the top-level `version` field is the ONE exception -- its X.Y.Z tracks upstream on every sync-merge per rule 12783b1e, fork keeps only its own +mikrob.N counter',
+    'dependency list + scripts stay fork-canonical (superset of upstream: react/recharts/vite/eslint/google-auth/newer claude-agent-sdk/overrides; shared-dep version bumps need case-by-case evaluation); the top-level `version` field is the ONE exception -- its X.Y.Z tracks upstream on every sync-merge per rule 12783b1e, fork keeps only its own +mikrob.N counter' +
+    " Re-measured 2026-09-06 (backend3, card 79bb0364 landing-block, round 15). Upstream bumped the vitest devDependency from ^2.1.0 to ^4.1.10 -- one line, nothing else in the file. NOT adopted: a vitest major across a 15k-test suite is its own card with its own baseline run, not a rider on a landing-unblock, and it travels with the vitest.config.ts testTimeout line (see that entry) -- adopt them together or neither. The dependency-list rule and the version-field exception are untouched by this diff. Resolution unchanged; blob bumped.",
   // Lock-file conflict from independently added/updated dependencies. The fork manages its own
   // package set; upstream its own. Regenerated by `npm ci` from the fork's package.json.
   // Resolution: keep the fork's lockfile; upstream lockfile sections for packages not in the
   // fork's package.json are not applicable.
   'package-lock.json':
-    'keep the fork lockfile canonical; regenerate from fork package.json via npm ci if ever needed',
+    'keep the fork lockfile canonical; regenerate from fork package.json via npm ci if ever needed' +
+    " Re-measured 2026-09-06 (backend3, card 79bb0364 landing-block, round 15). Lockfile churn only, and it follows the package.json vitest 2->4 bump this round declines (see that entry). Nothing to decide separately: the lockfile is regenerated from the fork's own package.json, never merged. Resolution unchanged; blob bumped.",
   // Fork changed three curl calls to the `printf | curl -H @-` token-argv-safe pattern (security
   // fix: token never appears in process argv). Upstream replaced the main kanban heartbeat curl
   // command with a Python one-liner (HBHEREDOC819/HBKANBANDRIFT819 incident hardening: no pipe,
@@ -618,7 +622,8 @@ const ACKNOWLEDGED_CONFLICTS = {
   // upstream's assert-supported-node.ts setup file (porting the file itself from upstream) and
   // update the comment to mention both setup files.
   'vitest.config.ts':
-    'keep fork agents/** exclusion + comment; adopt upstream assert-supported-node.ts in setupFiles (port the file from upstream) + updated comment listing both setup-file gates',
+    'keep fork agents/** exclusion + comment; adopt upstream assert-supported-node.ts in setupFiles (port the file from upstream) + updated comment listing both setup-file gates' +
+    " Re-measured 2026-09-06 (backend3, card 79bb0364 landing-block, round 15). Upstream added one line, testTimeout: 60000, with its reason measured: vitest 4 enforces the 5s default that vitest 2 did not, and three subprocess-spawning tests legitimately take 15-30s. It is a consequence of the vitest 2->4 bump in package.json and is meaningless without it. NOT adopted this round for that reason -- the two move together. The recorded rule (keep the fork agents/** exclusion, port upstream assert-supported-node.ts into setupFiles) is untouched by this diff. Resolution unchanged; blob bumped.",
   // ── Card bc898166: upstream 37b23702 "Fix/agent lifecycle async ordering" (#1014) ────────────
   // Five files at once, because upstream shipped ONE PR that reworks the same area the fork already
   // reworked -- convergent evolution, not a disagreement. Measured file by file against the merge
@@ -658,7 +663,8 @@ const ACKNOWLEDGED_CONFLICTS = {
   'src/web/agent-process.ts':
     'union all three: (1) ISOLATED_CONFIG_SKIP keeps BOTH \'skills\' (fork) and \'projects\' (upstream) entries; (2) adopt upstream\'s resolveProviderEnv() refactor wholesale (verified byte-identical output for ollama/deepseek/openrouter incl. the b7fa5281 shSingleQuote fix, plus adds minimax); (3) adopt upstream\'s umask 002 + agentTmuxTarget(name)/startTarget cmd-assembly change wholesale (verified no-op for any agent without remote/runAsUser config, per upstream\'s own "byte-identical to the prior direct local tmux call" doc comment) -- the fork\'s *Unlocked/withLifecycleLock split (card 74ba7c78) is UNRELATED to this hunk set and already correctly merged, do not touch it (4) Re-read 2026-09-03 (card 3bd18e70, blob 4c439228): the agent-scaffold import line now conflicts too -- union the fork ensureLocalFirstSection with upstream ensureSystemDirectiveAuthSection (GUARDHITELES903) on one line; the ensureSystemDirectiveAuthSection(name) call in startAgentProcess auto-merges (additive).' +
     "Re-measured 2026-09-03 (backend2, card 934dc104 landing-block, 4c43922809b2..45e20624c63f): upstream replaced the identity slash command `/name` with `/rename` (identitySlashCommands + three comments + two log messages), because `/name` does not exist and the rejected line sits parked in the input box, which the router then reads as busy. Untouched: ISOLATED_CONFIG_SKIP, resolveProviderEnv(), the umask/agentTmuxTarget assembly and the agent-scaffold import line -- i.e. every point this rule decides. Resolution unchanged; blob bumped." +
-    " Re-measured 2026-09-05 (MikroB, card efaf8926 landing-block, 45e20624c63f..31758af9d36f): upstream made clearInputBuffer() retry up to 3 times with a post-clear verification read (stuckInputSignature), returning boolean instead of void, to fix a documented incident where a fire-and-forget clear left a leftover fragment and wedged a session 25.4h (machineOrigin read false forever). The fork's copy of this function is UNCHANGED since the pinned blob -- this is a clean, isolated, adoptable safety fix, not a conflict with fork-side work. PORTED 2026-09-05 (backend3, card b34fa678, commit 8a898970): the fork's clearInputBuffer now carries the same retry+verify and returns boolean, so this half is no longer a divergence. Measured while porting, and worth keeping here because the next re-read will meet it: the fork has FIVE call sites, not two -- channel-monitor 378/393 re-inject, 413/417 do not, and agent-process's own pre-flight clear. Only the two no-re-inject sites were adapted, matching upstream, which likewise leaves its internal call byte-identical: after a re-inject sendPromptToSession replaces the box contents and carries its own delivery verification, so the boolean adds nothing there. Upstream's THIRD re-inject branch (reinject-recorded, the STUCKINPUT827 registry work) does not exist in this fork and was deliberately not invented. Everything else this rule decided (ISOLATED_CONFIG_SKIP, resolveProviderEnv, the umask/agentTmuxTarget assembly, the agent-scaffold import line, the /rename change) is untouched by this diff. Resolution unchanged for those; blob bumped.",
+    " Re-measured 2026-09-05 (MikroB, card efaf8926 landing-block, 45e20624c63f..31758af9d36f): upstream made clearInputBuffer() retry up to 3 times with a post-clear verification read (stuckInputSignature), returning boolean instead of void, to fix a documented incident where a fire-and-forget clear left a leftover fragment and wedged a session 25.4h (machineOrigin read false forever). The fork's copy of this function is UNCHANGED since the pinned blob -- this is a clean, isolated, adoptable safety fix, not a conflict with fork-side work. PORTED 2026-09-05 (backend3, card b34fa678, commit 8a898970): the fork's clearInputBuffer now carries the same retry+verify and returns boolean, so this half is no longer a divergence. Measured while porting, and worth keeping here because the next re-read will meet it: the fork has FIVE call sites, not two -- channel-monitor 378/393 re-inject, 413/417 do not, and agent-process's own pre-flight clear. Only the two no-re-inject sites were adapted, matching upstream, which likewise leaves its internal call byte-identical: after a re-inject sendPromptToSession replaces the box contents and carries its own delivery verification, so the boolean adds nothing there. Upstream's THIRD re-inject branch (reinject-recorded, the STUCKINPUT827 registry work) does not exist in this fork and was deliberately not invented. Everything else this rule decided (ISOLATED_CONFIG_SKIP, resolveProviderEnv, the umask/agentTmuxTarget assembly, the agent-scaffold import line, the /rename change) is untouched by this diff. Resolution unchanged for those; blob bumped." +
+    " Re-measured 2026-09-06 (backend3, card 79bb0364 landing-block, round 15). Upstream fixed a measured 12-hour outage in reconcileMcpServers/provisionIsolatedConfigDir: Claude Code resolves LOCAL scope (.claude.json) BEFORE PROJECT scope (<cwd>/.mcp.json), so copying a shared MCP server whose name the agent already defines in its own .mcp.json does not fill a gap, it SHADOWS the agent's definition, credentials included -- silently, with zero tools registered and a healthy-looking backend. The fix adds projectScopedServerNames(cwd), a skip in the gap-fill and stripProjectScopedCollisions() on the first-seed path. THIS FORK IS EXPOSED AND IT IS ALREADY BITING: reconcileMcpServers here takes (cur, sharedDot, name) with no cwd, and measured on this install, `teszter` defines `playwright` in its own .mcp.json AND carries a copy at local scope -- the browser-testing agent's core server, shadowed right now. Not adopted inside a landing-unblock (it is a behavioural fix to agent provisioning and deserves a card with a gate), carded separately; this note is the evidence for that card. Everything this rule already decided (ISOLATED_CONFIG_SKIP, resolveProviderEnv, the umask/agentTmuxTarget assembly, the agent-scaffold import line, /rename, the ported clearInputBuffer retry+verify) is untouched by this diff. Resolution unchanged; blob bumped.",
   // Upstream adds a re-entrancy guard (`tickRunning`) around the sweep, for the exact reason the
   // fork ALSO has: once checkAgent awaits a real restart instead of a blocking execSync('sleep N')
   // (fork card 873c48df), a sweep can still be running when the next interval fires. Measured: the
@@ -782,7 +788,8 @@ const ACKNOWLEDGED_CONFLICTS = {
     "fail-open but LOUD on every send. So on the configuration this install actually runs, upstream is " +
     "the more visible behaviour, not the weaker one, and 'stricter' is the wrong axis to decide it on. " +
     "That is a genuine reason to adopt, and it is still not a reason to do it inside a landing-unblock " +
-    "with no gate. It is the strongest argument for the adoption card, and it should be quoted there.",
+    "with no gate. It is the strongest argument for the adoption card, and it should be quoted there." +
+    " Re-measured 2026-09-06 (backend3, card 79bb0364 landing-block, round 15). Round 15, three upstream changes. (1) load_bad_name() accepts a SECOND spelling of the sanctioned state (name_check_disabled alongside no_name_rule) because two installs each documented one before the branches met -- the same security-POSTURE family this entry has declined in rounds 12, 13 and 14, and declined again here for the same reason: a posture change belongs on a card with a gate. (2) main()'s dispatch widened to telegram edit_message (an edit can replace a working code block with a broken one) and to a named set of outbound email operations. (3) GATECOPY827: telegram_gate() now BLOCKS a reply containing a triple-backtick code block unless format=markdownv2, because Telegram gives no copy button in plain text. Measured on the fork's file: NONE of the three is present here -- this fork's copy gate has no code-block check at all, while the fleet's own telegram-copy-gomb skill describes that check as existing. That gap is a real finding and it is the owner's Telegram path, not this card's; reported rather than patched inside a landing-unblock. Resolution unchanged (keep the fork file wholesale, re-adopt sections deliberately); blob bumped.",
   // New conflict surfaced 2026-08-26 (card 72f5f13b F4 gate, NOTIFYVAK826, upstream advanced
   // past the merge point mid-integration): fork changed the message-body curl call to
   // --data-urlencode (card b43d6dfd security fix -- an `&` in the message must not start a
@@ -822,7 +829,8 @@ const ACKNOWLEDGED_CONFLICTS = {
   'scripts/github-pr-monitor.sh': 'adopt upstream wholesale -- honest-send-via-lib + snapshot-not-persisted-on-failed-alert + an unrelated REPO-parsing regex fix (ERE has no lazy quantifier), no fork-specific logic in this file',
   'scripts/set-bot-menu.sh': 'adopt upstream wholesale -- honest telegram_api_call() replaces a silent fire-and-forget curl for setMyCommands, no fork-specific logic in this file',
   'scripts/stuck-modal-guard.sh': 'adopt upstream wholesale -- honest-send-via-lib + backoff-stamp-only-on-success, no fork-specific logic in this file',
-  'src/__tests__/notify-delivery-honesty.test.ts': 'adopt upstream wholesale -- trivial test-scaffolding update to stage the new scripts/lib/send-telegram.sh alongside notify.sh',
+  'src/__tests__/notify-delivery-honesty.test.ts': 'adopt upstream wholesale -- trivial test-scaffolding update to stage the new scripts/lib/send-telegram.sh alongside notify.sh' +
+    " Re-measured 2026-09-06 (backend3, card 79bb0364 landing-block, round 15). The recorded rule called this 'trivial test-scaffolding'; it is not any more. Upstream parameterised the chat id through stageScript/runNotify and added four CHATID0 cases: notify.sh is the FALLBACK channel, its guard was `[ -z \"$CHAT_ID\" ]`, and the installer's ALLOWED_CHAT_ID=0 placeholder is not empty -- so on an install with no chat bound both the primary path and the fallback posted to chat_id=0. Each case hands the script a curl stub that would report SUCCESS, so passing proves the send was PREVENTED rather than merely failing downstream. The fork's scripts/notify.sh carries the same `[ -z \"$CHAT_ID\" ]` guard, so the test is not adoptable on its own -- it would go red on arrival. Adopt the notify.sh guard and these cases TOGETHER, on their own card. Resolution changed from 'adopt wholesale' to that; blob bumped.",
   // NOT an upstream conflict -- upstream deleted this file outright when notify.sh stopped
   // inlining its curl call (NOTIFYVAKSWEEP826). It is the fork's OWN corpus-wide security guard
   // (card b43d6dfd): it scans every scripts/*.sh + store/*.sh for a bare `-d "text=$VAR"` that
@@ -1039,6 +1047,40 @@ const ACKNOWLEDGED_CONFLICTS = {
     "A witness task (untouched, one release behind) refreshes in the same run, so the edited copy being " +
     "spared now means the rule held rather than the feature being absent. Keep upstream's RED-BEFORE " +
     "case alongside it; it pins the source line by name, which the witness does not.",
+  // New conflict, measured 2026-09-06 (backend3, card 79bb0364 landing-block; PRE-EXISTING -- it
+  // reproduces with that card's own diff stashed, so it is not caused by it). Pure tail ADD/ADD:
+  // both sides appended a new `describe` at the end of the file. Upstream's addition is 68 lines,
+  // `telegram copy gate wiring` (GATECOPY828), asserting that outgoing-copy-gate.py is actually
+  // BOUND to a tool -- a gate whose script passes its own unit tests is not evidence that the gate
+  // runs. The fork's side is its own governance-gate coverage grown over many cards.
+  //
+  // WHY UPSTREAM'S BLOCK IS NOT ADOPTED, and this is a design difference rather than a rename: it
+  // imports agentGetsTelegramCopyGate / injectTelegramCopyGate / TELEGRAM_COPY_GATE_MATCHER, and
+  // the fork has none of the three. The fork built the SAME capability under card 74181db2 with
+  // agentGetsOutgoingCopyGate / injectOutgoingCopyGate / OUTGOING_COPY_GATE_MATCHER, and the two
+  // differ in the two things upstream's block actually asserts: upstream binds the gate to the
+  // Telegram MCP tools (`mcp__plugin_telegram_telegram__reply` + `edit_message`) and covers every
+  // sub-agent unconditionally, while the fork binds it to `Bash` behind a kill switch that
+  // DEFAULTS OFF (deliberately the inverse of the `<GUARD>=off` convention -- it changes the cost
+  // profile of every Bash call in the fleet, so a typo must leave us where we are). Adopting
+  // upstream's block verbatim would not compile, and adopting it after renaming would assert
+  // properties this fork deliberately does not have.
+  //
+  // The equivalent coverage is present and was checked rather than assumed:
+  // src/__tests__/outgoing-copy-gate-role-wiring.test.ts holds the fork's versions of all six of
+  // upstream's cases -- main-agent exemption, one entry on the matcher, idempotence on respawn,
+  // other PreToolUse entries left alone -- plus the two the fork needs and upstream does not
+  // (removal actually taking effect, and the boot backfill disarming).
+  //
+  // Resolution: UNION at the tail -- keep both sides' describes -- and do NOT pull upstream's
+  // block until the fork adopts upstream's MCP-matcher design; it comes with that change, not
+  // before. THE TRIGGER TO REVISIT: upstream's fifth case ("keeps the SAME script wired under a
+  // different matcher") is a real property the fork's injectOutgoingCopyGate does not have -- its
+  // dedupe filter drops every entry naming outgoing-copy-gate.py regardless of matcher. That is
+  // harmless while the fork wires exactly one matcher, and becomes a live defect the moment a
+  // second one is added. If that happens, adopt upstream's case with it.
+  'src/__tests__/governance-gates.test.ts':
+    "tail ADD/ADD -- UNION both sides' appended describes. Do NOT adopt upstream's `telegram copy gate wiring` block: it imports agentGetsTelegramCopyGate/injectTelegramCopyGate/TELEGRAM_COPY_GATE_MATCHER, none of which exist here, and it asserts an MCP-tool matcher plus unconditional sub-agent coverage, while the fork (card 74181db2) binds the same gate to `Bash` behind a default-OFF kill switch. The fork's equivalent coverage is in outgoing-copy-gate-role-wiring.test.ts, checked case by case. Revisit if the fork ever wires this script under a SECOND matcher: upstream's 'keeps the SAME script wired under a different matcher' case is a property injectOutgoingCopyGate does not have, and it stops being harmless at that moment.",
 } as const
 
 // THE UPSTREAM CONTENT EACH RULE ABOVE WAS DECIDED AGAINST (card a1d613e3, Cybersec msg 19105).
@@ -1068,6 +1110,7 @@ const ACKNOWLEDGED_CONFLICTS = {
 // a blob without a rule, is a COMPILE error rather than a silent gap between two lists.
 const ACKNOWLEDGED_UPSTREAM_BLOBS: Readonly<Record<keyof typeof ACKNOWLEDGED_CONFLICTS, string>> = {
   'src/web/routes/agent-terminal.ts': 'cf57ba1065272a7bde9723865d5709faaf05ed21',
+  'src/__tests__/governance-gates.test.ts': 'cbebd61b28a48a8ced6935329aa9d7c36e2f13fe',
   'src/kanban-dispatch.ts': '7fffc38f78b99573fb88fd797ac67b3593ffb872',
   'src/__tests__/kanban-dispatch-rearm.test.ts': 'd9a186a0af48c44c14299c284dbe0caf45d8feaa',
   'src/auto-restart.ts': 'a1f2d75ed063a78eb5be23acb2c4138ca14fff19',
@@ -1077,9 +1120,9 @@ const ACKNOWLEDGED_UPSTREAM_BLOBS: Readonly<Record<keyof typeof ACKNOWLEDGED_CON
   'src/web/update-checker.ts': 'b4dffa346e8f60bec6466b6c9b0ca9b48202971b',
   'src/__tests__/update-checker-branch.test.ts': '8084721190d9c37f1ef4935c11ee9164994ab276',
   'src/web/context-restart-gate-runner.ts': '268fc2e659fa8210c2b67c1df64e4006c2e727af',
-  'src/web.ts': '1906c636641ebc2f544b4d2abf8671afb8c47771',
+  'src/web.ts': 'e44e79072705417ccd8d1770cef8def14f3b9780',
   'src/web/keychain.ts': '1e1730ee0d8f6b1d4b51c5c254f3fab56acfa376',
-  'src/web/agent-scaffold.ts': '936cdac15d5c59305cdff4e7659ec95e95d86f2a',
+  'src/web/agent-scaffold.ts': '545991551c700ca6dba0f334810d37d92563e12e',
   'src/db.ts': 'cf4c1052f7efa2fcbfbbfec89f8e76eec543e405',
   'src/web/routes/agents.ts': '0d1f6900159686bee31fb2ec0dea5d692f170a03',
   'src/web/routes/kanban.ts': '89423d29b8af3e949cb520eefc8f5a0d03ff380c',
@@ -1130,12 +1173,12 @@ const ACKNOWLEDGED_UPSTREAM_BLOBS: Readonly<Record<keyof typeof ACKNOWLEDGED_CON
   'src/web/token-usage.ts': '82ebcf785cd0d988b2f8146b6049ad078fe521c0',
   'src/__tests__/schedule-runner-autostart.test.ts': '678cbb42e4447b206598bfbb9bc271602a3f896b',
   '.gitignore': '1e5adbb2332be0dbf5a710c1899e49305ccb318b',
-  'package.json': 'de3956b78e09e8a3c48f9dafc775e537894a5f0d',
-  'package-lock.json': 'f4f25dd6896d5a4f80c13df1b056b632f86f37e6',
+  'package.json': 'c25069108ff414fb2b875a2b15ff857e14e59d4a',
+  'package-lock.json': 'eaaff86a11a8f04c60b13e1a0aa71ed4e2d8c242',
   'src/web/heartbeat-agent-scaffold.ts': 'ad28ed576466d9a591209c501ced06998ec1a505',
   'src/web/schedule-runner.ts': 'a7c10a08f1fac72f1401ec53eb415fcd2aee2e24',
-  'vitest.config.ts': '8f9eb05fdf8e049c48051d9f85f98a297a0e7ca6',
-  'src/web/agent-process.ts': '31758af9d36ff4afbea29d7d9ea059685138031a',
+  'vitest.config.ts': '004ad75c757bf6e3035510b06a0b6589d45a216f',
+  'src/web/agent-process.ts': 'd58868a3828712611e631081cf3f92dbd3ab87ea',
   'src/web/auto-restart-runner.ts': '044dde0ad94f5a57ff8e611656f288b25fecdaff',
   'src/web/model-fallback-runner.ts': '681fcaefd6588fc2f6f3db880238b8288d1dcd15',
   'src/web/routes/skills.ts': '34c1e440bd5009e79546d686ec9fbc481ba0af7e',
@@ -1143,7 +1186,7 @@ const ACKNOWLEDGED_UPSTREAM_BLOBS: Readonly<Record<keyof typeof ACKNOWLEDGED_CON
   'scripts/email-send-gate.mjs': 'abaaedc4d0e9f76fa159307659473ffaac306411',
   'src/__tests__/hook-command-quoting.test.ts': '1048b1988e6c8554754900c62570d76d455f1057',
   'src/__tests__/installer-start-and-fallback.test.ts': '9017ce4fcfe808b73fdcd1389ebf1c9eaf374f7e',
-  'scripts/hooks/outgoing-copy-gate.py': '0d21a60005cda30a5329e9de75cc2828080406ea',
+  'scripts/hooks/outgoing-copy-gate.py': '6a6224cdbae2ff84d0f7c6f3602df33ea51e9abd',
   'scripts/notify.sh': '5477e66ecad5cca6425a535de0d16fce0e3eca28',
   'scripts/lib/send-telegram.sh': '293aecf24507b6d56bda99e5a4ff937e1491ab97',
   'scripts/disk-space-guard.sh': 'd3f693c01d607952a8165cc4d8106024008f22e4',
@@ -1152,7 +1195,7 @@ const ACKNOWLEDGED_UPSTREAM_BLOBS: Readonly<Record<keyof typeof ACKNOWLEDGED_CON
   'scripts/lib/content-hash.sh': 'a2fc1103d635bd7602229447cb299f4540cd3d22',
   'src/__tests__/content-hash.test.ts': '57cbbd6ffa36d800c3c9b9e8649acba17b960949',
   'scripts/host-restart-watchdog.sh': '07948350e336ec02d58d952df016ab6b07d7d052',
-  'src/__tests__/notify-delivery-honesty.test.ts': '06f96abf8c49fb07b8bbf570c8ca895fe6f23ee9',
+  'src/__tests__/notify-delivery-honesty.test.ts': 'fbeb2e331581d5e843d70b55ecc08ca5f5f9c04b',
   // Upstream deleted this file (delete/modify conflict against the fork's still-modified copy) --
   // there is no upstream blob to pin. This is the documented sentinel for that case (see
   // readyToPasteEntry's blobLine fallback below): if upstream's side of the pair ever changes

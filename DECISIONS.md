@@ -8587,3 +8587,44 @@ szóközt" alakot.
 
 **Mutációs mérés:** a behúzás-levágás elvéve -> 3 piros; a négy-szóközös őr elvéve -> 1 piros; a
 záró-whitespace levágás elvéve -> 1 piros. Átmenő kontroll mellett. 61 selftest-eset.
+
+## 2026-09-06 07:40 -- self-pace hard-gate: at(1) elveszti a puszta input-átirányítást, batch(1) megtartja
+
+**Döntés:** A governance hard-gate `at`/`batch` felismerésében az input-átirányítás ágát
+szétválasztottam a két bináris között. `batch(1)` marad a régi alaknál (bármilyen átirányítás valódi
+beküldés), `at(1)` viszont csak akkor illeszkedik átirányításra, ha azt a fájl-szó UTÁN egy tényleges
+timespec követi. Ezzel a kártya 79bb0364 mindkét bejelentett hamis-pozitív osztálya megszűnik, és
+egyik javasolt gyógymódot sem építettem be.
+
+**Miért:** `at(1)` KÖTELEZŐEN kér timespecet, tehát a csupasz átirányítás sosem írt le működő
+beküldést -- pontosan ugyanaz az érv, ami korábban a 12f80902 kártyán már engedélyezte a
+„semmi nem követi" ág elvételét, szintén csak `at`-tól, `batch`-tól nem. A régi alak ezért egy
+`at` nevű változó összehasonlítását (`at <= 0`, `at < n`) `at < FÁJL`-ként olvasta.
+
+**Miért nem a kártya által javasolt javítás:** a javaslat (a `<` ág ne illeszkedjen, ha `=` vagy egy
+második `<` követi) mérve MEGNYIT egy megkerülést -- egy `=0` nevű fájlból való átirányítás plusz
+valódi timespec átcsúszik rajta. Mutációs futással bizonyítva: ezt a mutációt a suite pirosra
+váltja azon az egy eseten, a többi kontroll zöld marad.
+
+**Miért nem a Cybersec által javasolt gyógymód (23941):** a javaslat az volt, hogy a kapu hagyja ki
+az IDÉZETT delimiterű heredoc TÖRZSÉT, „mert ott definíció szerint nincs behelyettesítés". Az idézett
+delimiter az KÜLSŐ shell behelyettesítését zárja ki, nem a törzs VÉGREHAJTÁSÁT: a `bash <<'EOF'` és a
+`python3 <<'PY'` pont ezt a törzset futtatja. Mutációval pontosan modellezve ez a gyógymód 31 tesztet
+váltott pirosra, hat korábbi kártya regresszióit is beleértve (tmux send-keys, crontab, ütemezés-API,
+`at now` -- mind idézett heredocban).
+
+**A második bejelentett osztály nem külön gyökér:** Cybersec diagnózisa a VAGY-operátort nevezte meg
+a trigger felének; mérve nem az. Ugyanaz a code-span VAGY-operátor nélkül ugyanúgy blokkol, és
+ugyanaz a span átnevezett változóval átmegy. A backtick command-position karakter, tehát a markdown
+code-span ugyanabba a pozícióba tette a szót, mint a JS `(`. Egy gyökér, egy javítás.
+
+**Ismert, kimondott maradék:** (1) `at < job` timespec nélkül mostantól ÁTMEGY -- nem tud ütemezni;
+(2) `at < job "$WHEN"` (változóból jövő timespec) is átmegy, de `at "$WHEN" < job` eddig is átment,
+tehát ez a lefedettség eddig sem volt következetes; (3) egy verdikt-komment, ami VALÓDI
+ütemező-parancsot idéz code-spanben (`crontab -r`), továbbra is blokkolódik -- ezt szövegilleszkedéssel
+nem lehet megkülönböztetni a végrehajtástól.
+
+**Ki döntött:** backend3 (mérés + döntés), a kártyát backend2 nyitotta, a második osztályt Cybersec
+jelentette. Gate: QA + Cybersec.
+
+**Hivatkozás:** kártya 79bb0364.
