@@ -1,6 +1,8 @@
 ---
 name: ui-visual-design-styles
 description: Apply modern web visual-design languages -- UI/UX fundamentals, design-token systems, glassmorphism (glassify) and flat / flat-2.0 design -- with concrete CSS recipes and when-to-use guidance. Use when choosing or implementing the LOOK of a UI (surfaces, color, type, elevation, blur, motion), after the IA (user-flow-menu-design) and research (frontend-design-research) are settled. Triggers: "make it modern", "glassmorphism", "glassify", "frosted glass", "flat design", "UI style", "visual language", "design system tokens", "milyen stílus", "üveghatás", "lapos design".
+version: "1.0.0"
+related_skills: [frontend-design-research, user-flow-menu-design, wcag-overlay-patterns]
 ---
 
 # UI Visual Design Styles (modern web, UI/UX, glassmorphism, flat)

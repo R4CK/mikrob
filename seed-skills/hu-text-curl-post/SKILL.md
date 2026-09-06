@@ -1,6 +1,7 @@
 ---
 name: hu-text-curl-post
 description: Safely post Hungarian-accented text (kanban comment, inter-agent message, daily-log entry) to the MikroB dashboard API via curl without mangling ékezetek. Use whenever HU text is built inline in a bash heredoc/string before a curl POST.
+version: "1.0.0"
 ---
 # HU Text Curl Post (UTF-8 safe)
 

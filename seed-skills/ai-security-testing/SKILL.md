@@ -1,6 +1,7 @@
 ---
 name: ai-security-testing
 description: Security-test AI/LLM/agent systems on AUTHORIZED targets — prompt injection (direct + indirect via retrieved/tool data), jailbreaks, system-prompt & data exfiltration, tool/function-call abuse, excessive agency, insecure output handling, model inversion / membership inference, and training-data poisoning exposure. Use when assessing our own AI features, the fleet's agents, RAG pipelines, or any LLM tool-use surface. Triggers: "AI security", "prompt injection", "jailbreak", "LLM security", "agent tool abuse", "model inversion", "data poisoning", "AI red team". Grounded in OWASP LLM Top 10 + MITRE ATLAS.
+version: "1.0.0"
 ---
 
 # AI / LLM Security Testing

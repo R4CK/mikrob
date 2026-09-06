@@ -1,6 +1,7 @@
 ---
 name: coderefactor
 description: Systematically analyzes and refactors code to improve quality, readability, and structure WITHOUT changing external behavior. Use this skill whenever the user mentions refactoring, cleaning up code, reducing complexity, removing duplication, code smells, technical debt, extracting functions or components, simplifying conditionals, replacing magic numbers, dead code removal, splitting large files, or wants to make code more maintainable. Triggers on "/refactor", "refactor this", "clean up", "tisztítsd meg a kódot", "reduce complexity", "remove duplication", or any request to improve code quality while keeping behavior identical.
+version: "1.0.0"
 ---
 
 # CodeRefactor

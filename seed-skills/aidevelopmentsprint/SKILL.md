@@ -1,6 +1,7 @@
 ---
 name: aidevelopmentsprint
 description: Acts as an expert AI software engineer that breaks a 3D website into production-ready, AI-assisted implementation tasks. For each section it delivers development prompts, reusable components, scene architecture, animation systems, responsive requirements, accessibility checks, testing procedures, optimization techniques, and deployment guidance. Use this skill whenever the user mentions building or shipping a 3D website, breaking a site into tasks, an implementation sprint, a development plan, dev prompts for AI coding, WebGL/Three.js/R3F build tasks, scene architecture, reusable component breakdown, animation systems, a rapid-development workflow, or asks to turn a 3D design into buildable engineering work. Triggers on "development sprint", "break into tasks", "implementation plan", "dev prompts", "build tasks", "3D website build", "bontsd feladatokra", "fejlesztési sprint", "implementációs terv", "task lista", "AI-assisted development".
+version: "1.0.0"
 ---
 
 # AI Development Sprint

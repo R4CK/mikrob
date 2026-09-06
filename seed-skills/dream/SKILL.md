@@ -1,6 +1,8 @@
 ---
 name: dream
 description: Nightly/on-demand memory-consolidation pass over the last 24h of session transcripts. Extracts corrections, repeated preferences, new facts, stale/duplicate memories -- STRICTLY from Peti's own typed messages -- and PROPOSES numbered changes (never auto-applies). Interactive run prints proposals and accepts "/dream apply 1,3" or "/dream apply all"; unattended run writes a quarantined read-only report and applies nothing. Every applied change is its own git commit in the version-controlled memory store. Triggers on "/dream", "dream", "consolidate my memory tonight", "review what you learned", "álmodj", "memória-konszolidáció".
+version: "1.0.0"
+related_skills: [consolidate-memory, retrospective]
 ---
 # /dream -- reflective memory consolidation (propose-only, versioned)
 

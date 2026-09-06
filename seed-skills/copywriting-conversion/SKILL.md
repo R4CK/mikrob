@@ -1,6 +1,7 @@
 ---
 name: copywriting-conversion
 description: Konverziós szöveg landing oldalakhoz, CTA-khoz, headline-okhoz, pricing oldalakhoz. Előbb kontextust gyűjt, aztán struktúrált másolat + 2-3 alternatíva. Triggerek: "írj landing page szöveget", "CTA szöveg", "headline", "sales page", "konverziós copy", "copywriting".
+version: "1.0.0"
 ---
 # Copywriting (Konverziós szöveg)
 

@@ -1,6 +1,8 @@
 ---
 name: project-workflow
 description: The mandatory team workflow for any non-trivial project — Phase/Task/Subtask decomposition, Kanban ownership + progress %, 10-minute stuck detection, and author-cannot-verify sign-off. Use whenever Peti assigns a multi-step project or feature to the fleet. Encodes the standing rules and the full agent team roster.
+version: "1.0.0"
+related_skills: [frontend-design-research, plan-grilling, user-flow-menu-design]
 ---
 # Project Workflow (csapat-szabályok)
 

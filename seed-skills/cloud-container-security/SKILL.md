@@ -1,6 +1,7 @@
 ---
 name: cloud-container-security
 description: Assess cloud + container infrastructure for security misconfigurations on AUTHORIZED accounts — IAM privilege-escalation paths, over-permissive roles/policies, public object storage (S3/R2/GCS), open security-group/firewall rules, exposed secrets in env/metadata, IaC (Terraform/Helm) security gaps, Docker image hardening, and Kubernetes RBAC/pod-security. Use when hardening our deployment, reviewing IaC before apply, or auditing container images pre-ship. Triggers: "cloud security", "IAM audit", "S3/R2 public", "security group", "container security", "Docker hardening", "Kubernetes RBAC", "IaC security", "misconfiguration".
+version: "1.0.0"
 ---
 
 # Cloud & Container Security

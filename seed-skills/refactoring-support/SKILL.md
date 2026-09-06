@@ -1,6 +1,8 @@
 ---
 name: refactoring-support
 description: Safely restructure code WITHOUT changing its observable behavior — establish a test/characterization safety net, find seams, apply small reversible steps, and verify behavior preservation after each. Use when improving structure, reducing complexity/duplication, extracting units, or untangling code that must keep working. Triggers on "refactor", "clean up", "restructure", "reduce complexity", "extract", "rendezd át", "tisztítsd meg", "ne változzon a viselkedés".
+version: "1.0.0"
+related_skills: [code-comprehension, coderefactor, function-explanation]
 ---
 # Refactoring Support (behavior-preserving change)
 

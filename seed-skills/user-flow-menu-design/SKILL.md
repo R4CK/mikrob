@@ -1,6 +1,8 @@
 ---
 name: user-flow-menu-design
 description: Design (Fron Ted) and verify (QA) the COMPLETE user flow and menu/navigation system of a web app from its foundational website structure plus its feature/module set. Use whenever building or reviewing an app's information architecture, navigation, menus, routing, or end-to-end user journeys -- before building screens, and when checking that every feature is reachable and every flow is complete. Triggers: "design the menu/navigation", "user flow", "information architecture", "site map", "menü rendszer", "felhasználói flow", "navigáció", "hova kerüljön ez a funkció".
+version: "1.0.0"
+related_skills: [frontend-design-research]
 ---
 
 # User Flow & Menu System Design

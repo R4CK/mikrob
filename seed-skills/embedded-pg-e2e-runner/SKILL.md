@@ -1,6 +1,8 @@
 ---
 name: embedded-pg-e2e-runner
 description: Run RLS / PG-dependent e2e tests on WSL2 without Docker using embedded-postgres. Covers the full setup: module path resolution, CJS/ESM mismatch, LD_LIBRARY_PATH for WSL2, OOM-kill avoidance, and database URL wiring. Trigger: "run rls e2e", "PG_E2E_URL", "embedded-postgres", "e2e against real postgres", "rls-chat e2e", "run e2e without docker".
+version: "1.0.0"
+related_skills: [cybered-gate-pattern]
 ---
 # Embedded PG18 E2E Runner
 

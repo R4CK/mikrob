@@ -1,6 +1,7 @@
 ---
 name: supplychainsecurity
 description: Protects the software supply chain against dependency and artifact tampering with SBOM generation, artifact signing, and SLSA compliance. Use this skill whenever the user mentions supply chain security, SBOM, software bill of materials, syft, cyclonedx, artifact signing, cosign, Sigstore, keyless signing, image signing, provenance, SLSA, SLSA levels, build attestation, tamper-proof builds, dependency tampering, verifying container images, or wants to harden the build/release pipeline before shipping. Triggers on "generate an SBOM", "sign the image/artifact", "verify this container", "what SLSA level are we", "supply chain audit", "ellátási lánc biztonság", "SBOM kell", "írd alá az image-et".
+version: "1.0.0"
 ---
 
 # Supply Chain Security

@@ -1,6 +1,7 @@
 ---
 name: legal-compliance-review
 description: SaaS/startup legal checklist — Terms of Service, Privacy Policy, DPA, IP assignment, and GDPR/privacy compliance. Use to draft or review legal documents and flag compliance risk (legal agent's core skill). Not a substitute for a licensed attorney.
+version: "1.0.0"
 ---
 # Legal & Compliance Review (SaaS)
 

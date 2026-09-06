@@ -1,6 +1,7 @@
 ---
 name: karpathycoder
 description: Active coding discipline that enforces Andrej Karpathy's four anti-pitfall principles for LLM-assisted development — Think Before Coding, Simplicity First, Surgical Changes, and Goal-Driven Execution. Use this skill whenever the user asks you to write, implement, refactor, fix, or extend code, especially on non-trivial changes (>20 lines), unclear requirements, multi-step tasks, or code you don't fully understand. Triggers on "/karpathy-check", "review my changes", "don't overcomplicate", "keep it simple", "ne bonyolítsd túl", "surgical change", "minimal diff", "surface assumptions", "state tradeoffs", "success criteria", or any moment you catch yourself assuming, over-engineering, drive-by refactoring, or coding without a verifiable goal. Also use before committing to catch bloat, hidden assumptions, and diff noise.
+version: "1.0.0"
 ---
 
 # Karpathy Coder

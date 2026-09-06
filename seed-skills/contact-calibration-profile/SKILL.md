@@ -1,6 +1,7 @@
 ---
 name: contact-calibration-profile
 description: Calibrate communication to one recurring human contact via a machine-readable per-contact profile (language, verbosity, forbidden phrases, and a concept knowledge-graph with levels 0-3). Load the contact's profile at session start, calibrate explanation depth per concept, and update the profile when the contact signals ignorance or demonstrated knowledge. Use when an agent has recurring conversations with a specific person over a channel and their domain knowledge / preferred style should not be re-guessed each session. Triggers on "per-person calibration", "communication profile", "adapt to this contact", "remember what they know", "personalize per contact".
+version: "1.0.0"
 ---
 
 # Contact calibration profile

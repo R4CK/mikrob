@@ -1,6 +1,7 @@
 ---
 name: fork-adopt-investigation
 description: Investigate an upstream/sibling fork (or any community/open-source repo) for a reusable solution BEFORE building your own, and reach an evidence-backed adopt / adapt / build-from-scratch / no-op decision. Use whenever a task says "check fork X for feature Y", "adopt the fix from repo X", "is there a community solution", or the GitHub-first rule applies before implementing a non-trivial capability. Grep-first, fetch read-only (never merge), decide with proof. Triggers on "adopt from fork", "check the fork", "GitHub-first", "grep-first", "is there an existing solution", "port from upstream", "RULE-10".
+version: "1.0.0"
 ---
 
 # Fork / community adopt investigation

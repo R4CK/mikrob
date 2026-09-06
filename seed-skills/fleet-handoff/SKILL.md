@@ -1,6 +1,7 @@
 ---
 name: fleet-handoff
 description: Generate a HANDOFF.md context transfer document for session continuity, pulling live kanban/memory/log data from the fleet dashboard API. Use when switching sessions, handing off to another agent, or preserving complex task context before a context window reset. Trigger on "/fleet-handoff" command or "handoff:" prefix in inter-agent messages.
+version: "1.0.0"
 ---
 
 # Fleet Handoff -- Session Context Transfer

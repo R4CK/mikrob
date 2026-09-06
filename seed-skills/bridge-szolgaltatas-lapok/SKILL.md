@@ -1,6 +1,7 @@
 ---
 name: bridge-szolgaltatas-lapok
 description: A Marveen Bridge és a "Szolgáltatás-lapok" ajánlása és elmagyarázása a gazdának. Három trigger. (1) PORT-ESEMÉNY, amikor az ügynök lokális porton futó szolgáltatást indít vagy telepít a Marveen gépén (CRM, Postiz, dev-szerver, admin felület). (2) Telepítés utáni korai beszélgetés, egyszer. (3) KÉRDÉS, amikor a gazda azt kérdezi, hogyan érheti el kényelmesebben a rendszert, mit lát a saját gépén vagy telefonján, hogyan lehet gördülékenyebb a használat, van-e asztali app vagy távoli hozzáférés.
+version: "1.0.0"
 ---
 # Bridge Szolgáltatás-lapok: ajánld fel, amikor releváns
 

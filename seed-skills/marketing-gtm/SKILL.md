@@ -1,6 +1,7 @@
 ---
 name: marketing-gtm
 description: Positioning, messaging hierarchy, and go-to-market framework for a product or launch. Use for marketing strategy, GTM plans, landing copy, and channel selection (marketing agent's core skill).
+version: "1.0.0"
 ---
 # Marketing & Go-To-Market
 

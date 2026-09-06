@@ -1,6 +1,7 @@
 ---
 name: ui-ux-pro-max
 description: "GENESIS UI/UX Gold Standard. 28 award-winning techniques, 5 engines, 24 CSV databases. Design intelligence + creative execution + modern CSS-native + micro-interactions. 67 styles, 161 palettes, 57 font pairings, 25 charts, 99 UX guidelines, 161 reasoning rules, 13 stacks. Anti-Gravity $10K design philosophy. Spline 3D, Rive, Three.js, GSAP Flip/MotionPath/MorphSVG/DrawSVG. CSS Scroll-Driven Animations, View Transitions API, Container Queries, :has() selector, Popover API. Vercel deploy. Actions: plan, build, create, design, implement, review, fix, improve, optimize, enhance, refactor, check, analyze UI/UX code. Projects: website, landing page, dashboard, admin panel, e-commerce, SaaS, portfolio, blog, mobile app, .html, .tsx, .vue, .svelte. Elements: button, modal, navbar, sidebar, card, table, form, chart, drawer, toast, skeleton. Styles: glassmorphism, claymorphism, minimalism, brutalism, neumorphism, bento grid, dark mode, responsive, skeuomorphism, flat design, retro-futuristic, maximalist, editorial, art deco. Topics: color palette, accessibility, animation, layout, typography, font pairing, spacing, hover, shadow, gradient, 3D, Spline, Rive, deploy, scroll animation, page transition, micro-interaction, WebGL, shader."
+version: "1.0.0"
 ---
 
 # GENESIS UI/UX Gold Standard

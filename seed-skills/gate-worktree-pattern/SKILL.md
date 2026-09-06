@@ -1,6 +1,7 @@
 ---
 name: gate-worktree-pattern
 description: Create a disposable, SHA-pinned worktree for a gate or a bug repro without corrupting the shared clone. Use whenever you need to run tests, a dev server or a repro at a specific commit -- QA/Cybersec/Cybered gates, delta-reviews, "does this land?" checks. Covers the node_modules trap that took the fleet down for 38 minutes.
+version: "1.0.0"
 ---
 
 # Gate worktree pattern

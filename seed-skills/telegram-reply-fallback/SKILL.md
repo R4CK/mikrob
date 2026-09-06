@@ -1,6 +1,7 @@
 ---
 name: telegram-reply-fallback
 description: Reply to a Telegram user when the telegram channel MCP reply tool (mcp__plugin_telegram_telegram__reply) is NOT loaded in the session. Use when ToolSearch cannot find any telegram tool yet a channel message needs an answer.
+version: "1.0.0"
 ---
 # Telegram reply fallback (Bot API curl)
 
