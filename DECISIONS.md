@@ -9644,3 +9644,38 @@ az új (v) eset).
 
 **Hivatkozás:** kártya `d5c05548` (Cybersec 21348, F-1/F-2); `scripts/gpu-crashloop-guard.sh`,
 `scripts/__tests__/gpu-crashloop-guard.test.sh`; kapcsolódó: `970156ce`.
+
+## 2026-09-06 13:40 -- A Gate-SHA soron a POZÍCIÓ dönti el, mi számít idézett shának (kártya a20f0aa7)
+
+**Döntés:** A `kanban-gate-completeness-guard.ts` kör-határ számításában egy hex futam NEM idézett
+commit, ha az őt tartalmazó, szóközzel határolt tokenben van `/` ÉS a token valamelyik `/`-szegmense
+nem maga is csupasz sha. A `merge-base` bekerül a szülő-marker listába; az `alap`/`base` KIMARAD.
+
+**Miért:** Az 5bc8f740 hamis 409-ét ("QA verdikt hiányzik") két alok okozta egyetlen soron:
+`Gate-SHA: 8b8377cf (CleanCore, ag fix/platform-admin-append-tail-5bc8f740, merge-base 0d5ebb6c)`.
+A `5bc8f740` a KÁRTYA SAJÁT ID-je az ágnév végén, és egy kártya-ID nyolc hex karakter, alakra
+megkülönböztethetetlen egy rövid shától; a `0d5ebb6c` pedig definíció szerint ős. Mindkettő KÉSŐBB
+"vezetődik be", mint a valódi QA PASS, ezért a `Math.max` a kör-határt a QA verdiktje utánra húzta.
+
+**Két javaslatot MÉRÉS alapján elutasítottunk:**
+1. "A token-gyűjtés álljon meg az első zárójelnél" -- ezt a fájl saját dokumentációja már cáfolja
+   (367c23a9): a d0b4f003 három gate-je zárójelen BELÜL idézte a kör saját shait.
+2. "Az `alap`/`base` is kerüljön a szülő-marker listába" -- ugyanaz az ok; ezek valódi
+   társ-idézések, nem ősök.
+
+**A szabály maga is KÉTSZER szűkült, mindkétszer egy mért téves eldobás miatt** (3301 valós
+Gate-SHA sor): a szomszédos karakterre kulcsolás elvesztette a backtickbe tett (`3dcbbefc`) és a
+magyar toldalékos (`a21e5528-on`) idézést; a puszta "van benne `/`" szabály pedig elnyelte a
+`89665d8a/06200298` alakot, ami nem útvonal hanem a flotta "mindkét commit" idiómája, és ezzel egy
+valódi QA2 verdiktet érvénytelenített a 67807f6f-en.
+
+**Mérés a végleges szabályra:** 60 sor változik 3301-ből (55 ágnév/útvonal, 7 merge-base, nulla
+megmagyarázatlan, nulla új token); 8 kártya kör-határa mozdul; 6 gate-verdikt válik elavultból
+frissé és MINDEGYIK a saját köre targy-sháját nevezi meg; 0 válik frissből elavulttá. A hatból
+ÖTNÉL a javítás előtti "legújabb sha" maga a kártya ID-je volt, tehát az 5bc8f740 nem egyedi eset.
+A négy korábbi, ebben a fájlban már javított incidens (d0b4f003, 4ae2d3f5, d4a2130d, 67807f6f)
+mind változatlan. A szállított TypeScript kimenetét a mérő modellel összevetve 3312 soron 0 eltérés.
+
+**Ki döntött:** backend2 (mérés és javaslat), MikroB jóváhagyta (24490). Az eredeti gyökér-okot
+backend mérte ki és adta át (24352).
+**Hivatkozás:** kártya a20f0aa7; a mérés a kártyán, a kód `src/web/kanban-gate-completeness-guard.ts`.
