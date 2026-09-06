@@ -23,6 +23,7 @@ import { join } from 'node:path'
 import {
   classifyStuckVerdict,
   recordStuckIncident,
+  recordSiblingHandover,
   initDatabase,
   getDb,
 } from '../db.js'
@@ -230,5 +231,103 @@ describe('recordStuckIncident -- logging is NOT the control', () => {
     const broken = detect()
     expect((nothingToLog as { reason: string }).reason).toMatch(/calling error/)
     expect((broken as { reason: string }).reason).toMatch(/write failed/)
+  })
+})
+
+const handover = (over: Partial<Parameters<typeof recordSiblingHandover>[0]> = {}) =>
+  recordSiblingHandover({
+    cardId: 'c1',
+    oldAgent: 'backend3',
+    newAgent: 'backend2',
+    detectedAt: 1_700_002_000,
+    stalledMs: 3_600_000,
+    ...over,
+  })
+
+describe('recordSiblingHandover -- MikroB decision (msg_id:24795): resolve then reopen, not a new verdict', () => {
+  it('with NO open incident, it just opens a sibling_handover row', () => {
+    freshDb()
+    const r = handover()
+    expect(r.kind).toBe('opened')
+    const row = getDb().prepare(`SELECT * FROM stuck_incidents`).get() as Record<string, unknown>
+    expect(row['action']).toBe('sibling_handover')
+    expect(row['action_detail']).toBe('backend3 -> backend2')
+    expect(row['assignee_at_detection']).toBe('backend3')
+    expect(row['resolved_at']).toBeNull()
+  })
+
+  it('with an OPEN incident, it resolves the old row and opens a NEW one -- action is never rewritten', () => {
+    // This is the property `recordStuckIncident` cannot deliver: `action` is append-only, so a plain
+    // bump-detections on the open `none_denied` row could never become `sibling_handover`.
+    freshDb()
+    detect({ verdict: 'DENY:agent-busy', detectedAt: 1_700_000_000 })
+    const before = getDb().prepare(`SELECT id, action, resolved_at FROM stuck_incidents`).get() as {
+      id: number
+      action: string
+      resolved_at: number | null
+    }
+    expect(before.action).toBe('none_denied')
+    expect(before.resolved_at).toBeNull()
+
+    const r = handover()
+    expect(r.kind).toBe('opened')
+
+    const rows = getDb()
+      .prepare(`SELECT id, action, resolved_at FROM stuck_incidents ORDER BY id`)
+      .all() as { id: number; action: string; resolved_at: number | null }[]
+    expect(rows).toHaveLength(2)
+    expect(rows[0]!.id).toBe(before.id)
+    expect(rows[0]!.action).toBe('none_denied') // untouched -- append-only held
+    expect(rows[0]!.resolved_at).toBe(1_700_002_000)
+    expect(rows[1]!.action).toBe('sibling_handover')
+    expect(rows[1]!.resolved_at).toBeNull()
+  })
+
+  it('the resolve+insert is one transaction: a broken write leaves NEITHER half applied', () => {
+    // Without this, a crash between the two statements could resolve the old incident and never
+    // insert the new one -- a stall that looks handled but produced no sibling_handover row at all.
+    freshDb()
+    detect({ verdict: 'DENY:agent-busy', detectedAt: 1_700_000_000 })
+    const before = getDb().prepare(`SELECT resolved_at FROM stuck_incidents`).get() as {
+      resolved_at: number | null
+    }
+    expect(before.resolved_at).toBeNull()
+    // Force the INSERT half to fail without touching the UPDATE: a CHECK the real schema does not
+    // have, added only for this test, so the transaction's second statement throws.
+    getDb().exec(`
+      CREATE TRIGGER force_insert_fail
+      BEFORE INSERT ON stuck_incidents
+      WHEN NEW.action = 'sibling_handover'
+      BEGIN SELECT RAISE(ABORT, 'forced failure for the atomicity test'); END;
+    `)
+    const r = handover()
+    expect(r.kind).toBe('skipped')
+    const after = getDb().prepare(`SELECT COUNT(*) c, resolved_at FROM stuck_incidents`).get() as {
+      c: number
+      resolved_at: number | null
+    }
+    expect(after.c).toBe(1) // no new row
+    expect(after.resolved_at).toBeNull() // the resolve was ROLLED BACK, not left half-applied
+  })
+
+  it('does not throw when the table is missing -- same fail-open posture as recordStuckIncident', () => {
+    freshDb()
+    getDb().exec(`DROP TABLE stuck_incidents`)
+    let r: ReturnType<typeof recordSiblingHandover> | undefined
+    expect(() => {
+      r = handover()
+    }).not.toThrow()
+    expect(r!.kind).toBe('skipped')
+    expect((r as { reason: string }).reason).toMatch(/write failed/)
+  })
+
+  it('resolved_by_event_id stays NULL -- this is the DIRECT-action resolution path, not d05d72b3\'s', () => {
+    freshDb()
+    detect({ verdict: 'DENY:agent-busy', detectedAt: 1_700_000_000 })
+    handover()
+    const resolved = getDb()
+      .prepare(`SELECT resolved_by_event_id FROM stuck_incidents WHERE resolved_at IS NOT NULL`)
+      .get() as { resolved_by_event_id: number | null }
+    expect(resolved.resolved_by_event_id).toBeNull()
   })
 })

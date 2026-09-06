@@ -16,6 +16,12 @@
 #          or "DENY:<reason>" if it must be suppressed. Exit 0 = ALLOW, 8 = DENY.
 #       The caller (a monitor) nudges ONLY on ALLOW.
 #   redispatch-guard.sh reset <cardId>       -> clear the ledger entry (card closed/done)
+#   redispatch-guard.sh sibling-handover <cardId> <oldAgent> <newAgent>
+#       -> MikroB decision (msg_id:24795, card 878cd292): called from the heartbeat D section, in
+#          the SAME step as the PUT assignee + agent start + dispatch, IN PLACE OF plain `reset`.
+#          Clears the ledger like `reset` does, PLUS resolves whatever stuck_incidents row is open
+#          for the card and opens a new one with action='sibling_handover' (never a DENY; it fires
+#          only after the handover has already been decided).
 #   redispatch-guard.sh escalations          -> print + clear pending cap-reached escalations
 #                                               as JSON [{cardId,count,ts}] for Peti-reporting
 #   redispatch-guard.sh selftest             -> run the built-in self-test (no side effects)
@@ -39,7 +45,11 @@
 set -uo pipefail
 
 STORE="/home/neon/marveen/store"
-DASH="http://localhost:3420"
+# Overridable so the incident-logging path can actually be EXERCISED by a probe. It was a hard
+# literal until card 878cd292, and that cost me two vacuous measurements: with the value fixed, an
+# env override is silently ignored, so a "dashboard is down" probe quietly talks to the LIVE
+# dashboard and reports fail-open holding when nothing was tested. Default unchanged.
+DASH="${DASH:-http://localhost:3420}"
 TOKEN_FILE="${STORE}/.dashboard-token"
 LEDGER="${STORE}/redispatch-ledger.json"
 LOCK_WAIT=10        # seconds to wait for the guard-state lock before refusing
@@ -58,6 +68,63 @@ _curl_get() { # $1 = path ; token via 0600 headerfile, never argv
   printf 'Authorization: Bearer %s\n' "$(cat "$TOKEN_FILE" 2>/dev/null)" > "$hf"
   curl -s --max-time 12 -H @"$hf" "${DASH}$1" 2>/dev/null
   rm -f "$hf" 2>/dev/null || true
+}
+
+# --- Incident logging (card 878cd292, parent f92671df) ------------------------------------------
+#
+# WHY THE LOG IS WRITTEN HERE AND NOT BY THE HEARTBEAT PROMPT. The D section is a PROMPT, so a log
+# it has to remember to write is exactly as reliable as the kanban prose this replaces. This
+# function runs on the SAME path that produces the verdict, so the row is a by-product of the
+# decision rather than a step someone can skip. Working rule 6: structural, not disciplinary.
+#
+# TWO INVARIANTS, and both are the reason this is a separate function rather than inline curl:
+#
+#   1. FAIL-OPEN. A logging fault must never change what `check` decided or the exit code it
+#      returns. Every failure path here is swallowed: no `set -e` exposure, stderr discarded,
+#      return value ignored by every caller. If the dashboard is down, the guard still guards.
+#      LOGGING IS NOT THE CONTROL -- the same rule the schema comment states for a dropped table.
+#
+#   2. IT MUST NOT SLOW THE FLEET. Every heartbeat, for every in-progress card, comes through here.
+#      --max-time is deliberately SHORTER than the 12s read above: a read that times out costs one
+#      stale answer, but a WRITE that hangs costs the whole D-section pass. 3 seconds is well past
+#      a localhost POST and well short of a heartbeat window.
+_record_incident() { # $1 = cardId, $2 = agent, $3 = verdict, $4 = stalled_ms
+  [ "${REDISPATCH_GUARD_LOG:-1}" = "1" ] || return 0
+  local hf body
+  hf="$(mktemp)" || return 0
+  chmod 600 "$hf" 2>/dev/null || true
+  printf 'Authorization: Bearer %s\n' "$(cat "$TOKEN_FILE" 2>/dev/null)" > "$hf"
+  # The verdict goes VERBATIM: the server classifies it (three of the reasons carry a parenthesised
+  # payload, and the set grew from nine to ten in a single afternoon). Nothing here decides what a
+  # verdict MEANS -- a second classifier in shell would be a second source of truth to drift.
+  body="$(printf '{"cardId":"%s","assignee":"%s","verdict":"%s","detectedAt":%s,"stalledMs":%s}' \
+    "$1" "$2" "$3" "$(now_ts)" "${4:-0}")"
+  curl -s --max-time 3 -X POST -H @"$hf" -H 'Content-Type: application/json' \
+    -d "$body" "${DASH}/api/stuck-incidents" >/dev/null 2>&1 || true
+  rm -f "$hf" 2>/dev/null || true
+  return 0
+}
+
+# --- Sibling-handover logging (MikroB decision, msg_id:24795, card 878cd292) ---------------------
+#
+# NOT the same seam as _record_incident above, on MikroB's own call: a handover is a DIFFERENT
+# decision about an already-open stall (resolve it, open a new `sibling_handover` row), not a
+# re-observation of the same one, so it goes to its own endpoint rather than a new verdict string
+# `check` would classify. Same two invariants as _record_incident: fail-open (a logging fault must
+# never stop the handover MikroB already performed -- PUT assignee + agent start + dispatch, done
+# before this is called), and a short --max-time so a hung write cannot cost a whole D-section pass.
+_record_sibling_handover() { # $1=cardId $2=oldAgent $3=newAgent $4=stalled_ms
+  [ "${REDISPATCH_GUARD_LOG:-1}" = "1" ] || return 0
+  local hf body
+  hf="$(mktemp)" || return 0
+  chmod 600 "$hf" 2>/dev/null || true
+  printf 'Authorization: Bearer %s\n' "$(cat "$TOKEN_FILE" 2>/dev/null)" > "$hf"
+  body="$(printf '{"cardId":"%s","oldAgent":"%s","newAgent":"%s","detectedAt":%s,"stalledMs":%s}' \
+    "$1" "$2" "$3" "$(now_ts)" "${4:-0}")"
+  curl -s --max-time 3 -X POST -H @"$hf" -H 'Content-Type: application/json' \
+    -d "$body" "${DASH}/api/stuck-incidents/sibling-handover" >/dev/null 2>&1 || true
+  rm -f "$hf" 2>/dev/null || true
+  return 0
 }
 
 # Fetch one card's fields: prints "status<TAB>updated_at<TAB>assignee" or empty if not found.
@@ -237,35 +304,35 @@ case "$MODE" in
     CARD="${2:-}"; AGENT="${3:-}"
     [ -n "$CARD" ] && [ -n "$AGENT" ] || { echo "DENY:usage"; exit 8; }
     fields="$(_card_fields "$CARD")"
-    if [ -z "$fields" ]; then echo "DENY:card-not-found"; exit 8; fi
+    if [ -z "$fields" ]; then _record_incident "$CARD" "$AGENT" "DENY:card-not-found" 0; echo "DENY:card-not-found"; exit 8; fi
     status="$(printf '%s' "$fields" | cut -f1)"
     upd="$(printf '%s' "$fields" | cut -f2)"
     upd="${upd%%.*}"; [ -n "$upd" ] || upd=0
-    case "$status" in in_progress|waiting) : ;; *) echo "DENY:not-active($status)"; exit 8 ;; esac
+    case "$status" in in_progress|waiting) : ;; *) _record_incident "$CARD" "$AGENT" "DENY:not-active($status)" 0; echo "DENY:not-active($status)"; exit 8 ;; esac
 
     # Card 1128002b (Feladat 4 of the load-brake phase 19f3bbb5): an agent CURRENTLY load-paused
     # (cgroup-throttled or SIGSTOP-frozen, see load-guard-bookkeeping.sh) is not stuck -- it is
     # deliberately not running. Nudging it would queue a message the frozen/throttled process
     # cannot see yet; touching the ledger below would also unfairly burn the backoff/cap budget
     # for time the agent was never actually idle. Checked BEFORE any ledger read/write.
-    if _is_load_paused "$AGENT"; then echo "DENY:load-paused"; exit 8; fi
+    if _is_load_paused "$AGENT"; then _record_incident "$CARD" "$AGENT" "DENY:load-paused" "$(( ($(now_ts) - upd) * 1000 ))"; echo "DENY:load-paused"; exit 8; fi
 
     # Everything from here down READS and then REWRITES the shared guard state, so it runs
     # under the lock (card 09a3d52a). Deliberately AFTER the load-paused check above, which
     # touches no state and must keep failing open.
-    _take_guard_lock || { echo "DENY:ledger-busy"; exit 8; }
+    _take_guard_lock || { _record_incident "$CARD" "$AGENT" "DENY:ledger-busy" "$(( ($(now_ts) - upd) * 1000 ))"; echo "DENY:ledger-busy"; exit 8; }
     IFS=$'\t' read -r count last_ts last_upd <<<"$(_ledger_get "$CARD")"
     ts="$(now_ts)"
 
     # (2) progress since last check -> reset + suppress
     if [ "$upd" -gt "$last_upd" ] && [ "$last_upd" -gt 0 ]; then
       _ledger_set "$CARD" 0 "$ts" "$upd"
-      echo "DENY:progress"; exit 8
+      _record_incident "$CARD" "$AGENT" "DENY:progress" "$(( (ts - upd) * 1000 ))"; echo "DENY:progress"; exit 8
     fi
     # first sighting: baseline the updated_at, do NOT nudge yet (give it a full cycle)
     if [ "$last_ts" -eq 0 ]; then
       _ledger_set "$CARD" 0 "$ts" "$upd"
-      echo "DENY:first-seen-baseline"; exit 8
+      _record_incident "$CARD" "$AGENT" "DENY:first-seen-baseline" "$(( (ts - upd) * 1000 ))"; echo "DENY:first-seen-baseline"; exit 8
     fi
 
     # (3) busy, (4) cap, (5) backoff -- see _decide_active for why cap is checked before backoff
@@ -275,15 +342,15 @@ case "$MODE" in
       agent-busy)
         # refresh last_ts so backoff timer tracks real quiet time, keep count
         _ledger_set "$CARD" "$count" "$ts" "$upd"
-        echo "DENY:agent-busy"; exit 8 ;;
+        _record_incident "$CARD" "$AGENT" "DENY:agent-busy" "$(( (ts - upd) * 1000 ))"; echo "DENY:agent-busy"; exit 8 ;;
       cap-reached)
         _escalate_once "$CARD" "$count"
-        echo "DENY:cap-reached($count)"; exit 8 ;;
+        _record_incident "$CARD" "$AGENT" "DENY:cap-reached($count)" "$(( (ts - upd) * 1000 ))"; echo "DENY:cap-reached($count)"; exit 8 ;;
       backoff:*)
-        echo "DENY:backoff(${decision#backoff:}s)"; exit 8 ;;
+        _record_incident "$CARD" "$AGENT" "DENY:backoff(${decision#backoff:}s)" "$(( (ts - upd) * 1000 ))"; echo "DENY:backoff(${decision#backoff:}s)"; exit 8 ;;
       allow)
         _ledger_set "$CARD" "$(( count + 1 ))" "$ts" "$upd"
-        echo "ALLOW"; exit 0 ;;
+        _record_incident "$CARD" "$AGENT" "ALLOW" "$(( (ts - upd) * 1000 ))"; echo "ALLOW"; exit 0 ;;
     esac
     ;;
 
@@ -291,6 +358,29 @@ case "$MODE" in
     CARD="${2:-}"; [ -n "$CARD" ] || { echo "usage: reset <cardId>"; exit 2; }
     _take_guard_lock || { echo "reset $CARD: guard state is locked by another run, not reset" >&2; exit 8; }
     _ledger_del "$CARD"; echo "reset $CARD"; exit 0 ;;
+
+  sibling-handover)
+    # MikroB decision (msg_id:24795): called from the heartbeat D section, in the SAME step as the
+    # PUT assignee + agent start + dispatch, in place of the plain `reset` it used to call. Does both
+    # jobs `reset` did (clears the ledger, so the new assignee starts without the old agent's
+    # backoff/cap history) PLUS the incident-table resolve+reopen -- one call for the caller, per
+    # MikroB's own wire-format request ("a hivo egyetlen parancsot hiv").
+    CARD="${2:-}"; OLD_AGENT="${3:-}"; NEW_AGENT="${4:-}"
+    [ -n "$CARD" ] && [ -n "$OLD_AGENT" ] && [ -n "$NEW_AGENT" ] || {
+      echo "usage: sibling-handover <cardId> <oldAgent> <newAgent>"; exit 2; }
+    # stalled_ms is best-effort context for the row, not a control value -- a failed card-fields read
+    # (or a card that has meanwhile changed status) must not block the handover, so it degrades to 0
+    # rather than denying anything. This subcommand has no DENY branch at all: it fires only after
+    # MikroB has already decided to hand over.
+    fields="$(_card_fields "$CARD")"
+    upd="$(printf '%s' "$fields" | cut -f2 2>/dev/null)"; upd="${upd%%.*}"; [ -n "$upd" ] || upd=0
+    ts="$(now_ts)"
+    stalled=0; [ "$upd" -gt 0 ] 2>/dev/null && stalled=$(( (ts - upd) * 1000 ))
+    _take_guard_lock || {
+      echo "sibling-handover $CARD: guard state is locked by another run, not performed" >&2; exit 8; }
+    _record_sibling_handover "$CARD" "$OLD_AGENT" "$NEW_AGENT" "$stalled"
+    _ledger_del "$CARD"
+    echo "sibling-handover $CARD: $OLD_AGENT -> $NEW_AGENT"; exit 0 ;;
 
   escalations)
     # print pending (not-yet-notified) escalations as JSON, mark them notified
@@ -405,8 +495,13 @@ print('%d %d' % (len(d), len(bad)))
     # `check` block queries the live dashboard for the card, and the alternative -- an env-var
     # stub seam in the guard itself -- would be a bypass in a tool whose whole job is to refuse.
     # Matched on the COMMENT-STRIPPED source, because a call named only in a comment satisfies a
-    # naive presence check (cards 06d36307, 2f0c7d24).
-    wiring="$(sed -n '/^  check)/,/^    ;;/p' "$0" | sed 's/#.*$//')"
+    # naive presence check (cards 06d36307, 2f0c7d24). The stripper only treats a `#` as a comment
+    # start when it is preceded by whitespace or is the first character of the line -- a plain
+    # `s/#.*$//` (tried first, here) also truncates `${decision#backoff:}` mid-statement, since that
+    # `#` has no preceding space, and silently deleted the rest of that line, echo included (found by
+    # the incident-wiring check below, which counted 9 verdict sites instead of 10 until this line
+    # was fixed).
+    wiring="$(sed -n '/^  check)/,/^    ;;/p' "$0" | sed -E 's/(^|[[:space:]])#.*$//')"
     lockline="$(printf '%s\n' "$wiring" | grep -n '_take_guard_lock' | head -1 | cut -d: -f1)"
     readline="$(printf '%s\n' "$wiring" | grep -n '_ledger_get' | head -1 | cut -d: -f1)"
     if [ -z "$lockline" ] || [ -z "$readline" ]; then
@@ -414,10 +509,73 @@ print('%d %d' % (len(d), len(bad)))
     elif [ "$lockline" -ge "$readline" ]; then
       echo "FAIL check-wiring: the lock is taken at line $lockline, AFTER the ledger read at $readline"; fails=$((fails+1))
     fi
+    # 10) card 878cd292: incident logging is WIRED to every DENY/ALLOW verdict site, not just some of
+    # them. LOGGING IS NOT THE CONTROL (code-quality rule 6): dropping one _record_incident call
+    # changes neither the exit code nor stdout, so a behavioural test cannot see the gap -- only a
+    # SOURCE assertion on the check) block can. Reuses $wiring (already comment-stripped above,
+    # cards 06d36307/2f0c7d24: a call named only in a comment must not satisfy this). The content
+    # goes to a FILE, not into a python string literal, because the block contains backticks and
+    # unexpanded $-vars that an inline python -c/heredoc string would hand to THIS shell to expand
+    # (memory: backticks/$-vars in a python content string get eaten by bash).
+    incident_src="$tmpdir/check_block.sh"
+    printf '%s\n' "$wiring" > "$incident_src"
+    incident_report="$(python3 - "$incident_src" <<'PY'
+import re, sys
+with open(sys.argv[1]) as f:
+    lines = f.read().splitlines()
+verdict_lines = [l for l in lines if re.search(r'echo "(DENY|ALLOW)', l)]
+usage_lines = [l for l in verdict_lines if 'DENY:usage' in l]
+other_lines = [l for l in verdict_lines if 'DENY:usage' not in l]
+fails = 0
+# DENY:usage fires before CARD/AGENT are known to be non-empty -- there is nothing to attribute the
+# row to, and the server's own classifier (classifyStuckVerdict) refuses it as a calling error, not
+# a decision about a card. It must stay the one verdict site that does NOT call the logger.
+if len(usage_lines) != 1:
+    print(f"FAIL incident-wiring: expected exactly one DENY:usage line, found {len(usage_lines)}")
+    fails += 1
+elif '_record_incident' in usage_lines[0]:
+    print("FAIL incident-wiring: DENY:usage must NOT log (no CARD/AGENT yet -- a calling error)")
+    fails += 1
+# The other ten sites (card-not-found, not-active, load-paused, ledger-busy, progress,
+# first-seen-baseline, agent-busy, cap-reached, backoff, ALLOW) must ALL log.
+if len(other_lines) != 10:
+    print(f"FAIL incident-wiring: expected 10 verdict sites outside DENY:usage, found {len(other_lines)}")
+    fails += 1
+for l in other_lines:
+    if '_record_incident' not in l:
+        print(f"FAIL incident-wiring: no _record_incident call on: {l.strip()}")
+        fails += 1
+        continue
+    # Order matters: a call placed AFTER the terminal echo/exit on the same line is dead code.
+    if l.index('_record_incident') > l.index('echo "'):
+        print(f"FAIL incident-wiring order: _record_incident comes after the verdict echo on: {l.strip()}")
+        fails += 1
+print(f"__FAILS__={fails}")
+PY
+)"
+    printf '%s\n' "$incident_report" | grep -v '^__FAILS__='
+    n_incident_fails="$(printf '%s\n' "$incident_report" | sed -n 's/^__FAILS__=//p')"
+    fails=$(( fails + ${n_incident_fails:-1} ))
+    # 11) MikroB decision (msg_id:24795): sibling-handover) must actually clear the ledger AND log
+    # the handover, in that block, not just exist. Same comment-stripped source-assertion posture as
+    # the checks above -- the block's own HTTP call cannot be observed from here without a live
+    # dashboard, so this pins PRESENCE + the one order that matters (the lock before the ledger is
+    # cleared, matching the check) block's own lock-before-read rule).
+    sh_wiring="$(sed -n '/^  sibling-handover)/,/^    ;;/p' "$0" | sed -E 's/(^|[[:space:]])#.*$//')"
+    sh_lockline="$(printf '%s\n' "$sh_wiring" | grep -n '_take_guard_lock' | head -1 | cut -d: -f1)"
+    sh_delline="$(printf '%s\n' "$sh_wiring" | grep -n '_ledger_del' | head -1 | cut -d: -f1)"
+    sh_logline="$(printf '%s\n' "$sh_wiring" | grep -n '_record_sibling_handover' | head -1 | cut -d: -f1)"
+    if [ -z "$sh_lockline" ] || [ -z "$sh_delline" ] || [ -z "$sh_logline" ]; then
+      echo "FAIL sibling-handover-wiring: lock=$sh_lockline del=$sh_delline log=$sh_logline (one of them is missing from the block)"
+      fails=$((fails+1))
+    elif [ "$sh_lockline" -ge "$sh_delline" ]; then
+      echo "FAIL sibling-handover-wiring: the lock is taken at line $sh_lockline, AFTER the ledger clear at $sh_delline"
+      fails=$((fails+1))
+    fi
     rm -rf "$tmpdir"
     if [ "$fails" -eq 0 ]; then echo "SELFTEST: PASS"; exit 0; else echo "SELFTEST: FAIL ($fails)"; exit 1; fi
     ;;
 
   *)
-    echo "usage: $0 {check <cardId> <agent>|reset <cardId>|escalations|selftest}" >&2; exit 2 ;;
+    echo "usage: $0 {check <cardId> <agent>|reset <cardId>|sibling-handover <cardId> <oldAgent> <newAgent>|escalations|selftest}" >&2; exit 2 ;;
 esac

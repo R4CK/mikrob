@@ -147,3 +147,56 @@ describe('POST /api/stuck-incidents -- contract', () => {
     expect(await call({}, 'POST', '/api/something-else').handled).toBe(false)
   })
 })
+
+describe('POST /api/stuck-incidents/sibling-handover -- MikroB decision (msg_id:24795)', () => {
+  it('opens a sibling_handover row', async () => {
+    freshDb()
+    const c = call(
+      { cardId: 'c1', oldAgent: 'backend3', newAgent: 'backend2', detectedAt: 1, stalledMs: 3_600_000 },
+      'POST',
+      '/api/stuck-incidents/sibling-handover',
+    )
+    expect(await c.handled).toBe(true)
+    expect((c.out.body as { kind: string }).kind).toBe('opened')
+    const row = getDb().prepare(`SELECT action, action_detail FROM stuck_incidents`).get() as Record<
+      string,
+      unknown
+    >
+    expect(row['action']).toBe('sibling_handover')
+    expect(row['action_detail']).toBe('backend3 -> backend2')
+  })
+
+  it.each([
+    ['missing cardId', { oldAgent: 'backend3', newAgent: 'backend2', detectedAt: 1, stalledMs: 1 }],
+    ['missing oldAgent', { cardId: 'c', newAgent: 'backend2', detectedAt: 1, stalledMs: 1 }],
+    ['missing newAgent', { cardId: 'c', oldAgent: 'backend3', detectedAt: 1, stalledMs: 1 }],
+    [
+      'non-numeric stalledMs',
+      { cardId: 'c', oldAgent: 'backend3', newAgent: 'backend2', detectedAt: 1, stalledMs: 'x' },
+    ],
+  ])('%s -> 400 and NOTHING is written', async (_label, body) => {
+    freshDb()
+    const c = call(body, 'POST', '/api/stuck-incidents/sibling-handover')
+    expect(await c.handled).toBe(true)
+    expect(c.out.status).toBe(400)
+    expect(getDb().prepare(`SELECT COUNT(*) n FROM stuck_incidents`).get()).toEqual({ n: 0 })
+  })
+
+  it('a malformed body is 400, not a throw', async () => {
+    freshDb()
+    const c = call('{not json', 'POST', '/api/stuck-incidents/sibling-handover')
+    expect(await c.handled).toBe(true)
+    expect(c.out.status).toBe(400)
+  })
+
+  it('does not shadow the plain /api/stuck-incidents route (exact-match, not a prefix)', async () => {
+    freshDb()
+    const c = call(
+      { cardId: 'c1', assignee: 'backend3', verdict: 'ALLOW', detectedAt: 1, stalledMs: 1 },
+      'POST',
+      '/api/stuck-incidents',
+    )
+    expect(await c.handled).toBe(true)
+    expect((c.out.body as { kind: string }).kind).toBe('opened')
+  })
+})

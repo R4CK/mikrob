@@ -15,7 +15,7 @@
 // body, 500 never swallowed into a fake success. It is the GUARD that must ignore whatever comes
 // back, because a logging fault must not change what the guard decided or the exit code it returns.
 // Both halves are pinned: the writer's tests here, and the guard's own selftest on its side.
-import { recordStuckIncident } from '../../db.js'
+import { recordStuckIncident, recordSiblingHandover } from '../../db.js'
 import { readBody, json } from '../http-helpers.js'
 import type { RouteContext } from './types.js'
 
@@ -33,6 +33,32 @@ function badRequest(body: {
   if (typeof body.verdict !== 'string' || body.verdict.trim() === '') return 'verdict is required'
   if (body.assignee !== null && body.assignee !== undefined && typeof body.assignee !== 'string') {
     return 'assignee must be a string or null'
+  }
+  for (const [k, v] of [
+    ['detectedAt', body.detectedAt],
+    ['stalledMs', body.stalledMs],
+  ] as const) {
+    if (typeof v !== 'number' || !Number.isFinite(v) || v < 0) {
+      return `${k} must be a non-negative number`
+    }
+  }
+  return null
+}
+
+/** Same posture as `badRequest` above: narrow validation for one internal caller we own. */
+function handoverBadRequest(body: {
+  cardId?: unknown
+  oldAgent?: unknown
+  newAgent?: unknown
+  detectedAt?: unknown
+  stalledMs?: unknown
+}): string | null {
+  for (const [k, v] of [
+    ['cardId', body.cardId],
+    ['oldAgent', body.oldAgent],
+    ['newAgent', body.newAgent],
+  ] as const) {
+    if (typeof v !== 'string' || v.trim() === '') return `${k} is required`
   }
   for (const [k, v] of [
     ['detectedAt', body.detectedAt],
@@ -71,6 +97,36 @@ export async function tryHandleStuckIncidents(ctx: RouteContext): Promise<boolea
       cardId: (data['cardId'] as string).trim(),
       assignee: typeof data['assignee'] === 'string' ? data['assignee'] : null,
       verdict: (data['verdict'] as string).trim(),
+      detectedAt: data['detectedAt'] as number,
+      stalledMs: data['stalledMs'] as number,
+    })
+    json(res, result)
+    return true
+  }
+
+  // The sibling-handover seam (rule 3a, card 878cd292): MikroB's heartbeat D section calls this,
+  // via `redispatch-guard.sh sibling-handover`, at the exact point it used to call plain `reset`.
+  // Kept as its OWN endpoint rather than a new verdict string on the one above, because it is not a
+  // guard verdict classification at all -- it resolves whatever incident is open and opens a new
+  // `sibling_handover` row, which `recordStuckIncident`'s bump-detections-on-open path cannot do (see
+  // recordSiblingHandover's own comment for why `action` cannot just be rewritten in place).
+  if (path === '/api/stuck-incidents/sibling-handover' && method === 'POST') {
+    let data: Record<string, unknown>
+    try {
+      data = JSON.parse((await readBody(req)).toString()) as Record<string, unknown>
+    } catch {
+      json(res, { error: 'Invalid JSON body' }, 400)
+      return true
+    }
+    const bad = handoverBadRequest(data)
+    if (bad !== null) {
+      json(res, { error: bad }, 400)
+      return true
+    }
+    const result = recordSiblingHandover({
+      cardId: (data['cardId'] as string).trim(),
+      oldAgent: (data['oldAgent'] as string).trim(),
+      newAgent: (data['newAgent'] as string).trim(),
       detectedAt: data['detectedAt'] as number,
       stalledMs: data['stalledMs'] as number,
     })

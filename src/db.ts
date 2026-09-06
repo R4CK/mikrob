@@ -1600,6 +1600,74 @@ export function recordStuckIncident(input: StuckIncidentInput): StuckIncidentRes
   }
 }
 
+/**
+ * Record a sibling handover (rule 3a): MikroB's heartbeat D section reassigning a stuck card to the
+ * assignee's sibling agent instead of re-dispatching to the same one. Called from
+ * `redispatch-guard.sh sibling-handover`, in the same step the D section already does the PUT
+ * assignee + agent start + dispatch, directly in place of the plain `reset` call it used to make.
+ *
+ * WHY THIS IS NOT `recordStuckIncident` WITH A NEW VERDICT STRING. That function bumps
+ * `detections` on whatever incident is already open for the card -- correct for a re-observation of
+ * the SAME stall, wrong here: `action` is one of the four columns the append-only trigger refuses to
+ * rewrite (`OLD.action <> NEW.action` raises ABORT), so if an open incident already exists (e.g.
+ * `none_denied` from the guard's own prior DENY calls), its action could never become
+ * `sibling_handover` -- the handover would be invisible in the table, silently absorbed as a bumped
+ * counter on a row still labelled as a plain denial. A handover is a DIFFERENT decision about the
+ * SAME stall, not a re-observation of the old one, so it needs its own row.
+ *
+ * RESOLVE THEN REOPEN, atomically. The open incident (if any) is closed with `resolved_at` set to
+ * the handover's own timestamp -- allowed once from NULL, per the append-only trigger -- and a new
+ * row is inserted with `action = 'sibling_handover'`. Order matters under the partial unique index
+ * (`idx_stuck_incidents_open`, one open row per card): resolving first is what lets the insert
+ * succeed at all. Both statements run in one `db.transaction()` so a crash between them cannot leave
+ * the card with zero open incidents recorded and the handover row missing, or two open rows.
+ *
+ * `resolved_by_event_id` is left NULL on purpose: that column is for the OTHER resolution path (card
+ * d05d72b3, detecting resolution from existing event tables after the fact). A direct action the
+ * caller already knows happened is a different kind of resolution than one inferred later, and the
+ * NULL is what lets a reader later tell the two apart.
+ *
+ * Never throws, same posture as `recordStuckIncident`: a logging fault here must not stop the actual
+ * handover (the PUT assignee + agent start + dispatch the caller already did before this call).
+ */
+export function recordSiblingHandover(input: {
+  readonly cardId: string
+  readonly oldAgent: string
+  readonly newAgent: string
+  readonly detectedAt: number
+  readonly stalledMs: number
+}): StuckIncidentResult {
+  try {
+    const database = getDb()
+    const detectedAt = Math.floor(input.detectedAt)
+    const id = database.transaction(() => {
+      const open = database
+        .prepare(`SELECT id FROM stuck_incidents WHERE card_id = ? AND resolved_at IS NULL`)
+        .get(input.cardId) as { id: number } | undefined
+      if (open) {
+        database.prepare(`UPDATE stuck_incidents SET resolved_at = ? WHERE id = ?`).run(detectedAt, open.id)
+      }
+      const r = database
+        .prepare(
+          `INSERT INTO stuck_incidents
+             (card_id, assignee_at_detection, detected_at, stalled_ms_at_detection, action, action_detail)
+           VALUES (?, ?, ?, ?, 'sibling_handover', ?)`,
+        )
+        .run(
+          input.cardId,
+          input.oldAgent,
+          detectedAt,
+          Math.floor(input.stalledMs),
+          `${input.oldAgent} -> ${input.newAgent}`,
+        )
+      return Number(r.lastInsertRowid)
+    })()
+    return { kind: 'opened', id }
+  } catch (e) {
+    return { kind: 'skipped', reason: `write failed: ${e instanceof Error ? e.message : String(e)}` }
+  }
+}
+
 export function getDb(): Database.Database {
   return db
 }
