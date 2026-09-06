@@ -11473,3 +11473,65 @@ döntése, itt felülvizsgálatra kitéve.
 
 **Hivatkozás:** kártya `28295e97`; `store/card-build-route.sh`,
 `store/card-build-route-selftest.sh`.
+
+## 2026-09-06 -- A VRAM-kapu bekötése három dispatch-pontba, és egy ÖRÖKÖLT MÉRÉS, ami időközben megdőlt (kártya f9bad591)
+
+**AMI LANDOLT.** A `vram-guard-check.sh` (108c7b10) eddig megvolt, de senki nem hívta. Mostantól
+három ponton fut: a `card-build-route.sh` LOCAL/ONLINE döntése előtt, a `local-llm-rag.sh`
+útválasztásában, és egyszer az `offload-dispatch.sh` sweep elején. HOLD esetén a döntés ONLINE-ra
+esik -- a kártya munkája SOHA nem áll meg, csak a helyi-modell útja zárul.
+
+**HÁROM IRÁNY-DÖNTÉS, kimondva.** (1) Bármely nem-nulla kilépés ONLINE, a kapu HASZNÁLATI hibáját
+(2) is beleértve: kétség a mérés felől ugyanaz, mint kétség a kapacitás felől. (2) A HIÁNYZÓ kapu
+viszont nem kétség, hanem egy gép, amin sosem volt GPU -- azt átugorjuk, különben a helyi modell
+minden ilyen gépen örökre le lenne tiltva. (3) A `local-llm-rag.sh`-ban a VRAM-ok az ADVISORY
+draftot is kihagyja, és ez a lényeg: az advisory út is a helyi modellt hívja, tehát futni hagyva
+pont arra a GPU-ra tenne munkát, amiről a kapu az imént mondta, hogy tele van. Minden más
+online-ok a FELADATRÓL szól; ez a GÉPRŐL, és kapacitás tekintetében nincs olyan, hogy "tanácsadó".
+
+**A SORREND IS DÖNTÉS.** A `local-llm-rag.sh`-ban a VRAM-kérdés a tartalmi router UTÁN áll, és csak
+akkor fut le, ha az local-t mondott: elöl minden feladatra elköltene egy nvidia-smi hívást, azokra
+is, amik tartalmi alapon amúgy is online-ra mennek. A `card-build-route.sh`-ban fordítva, elöl van:
+ott a kártya beolvasása a drágább lépés, és ha a GPU tele van, a kártya szövege már semmit nem
+változtat.
+
+**A CYBERSEC-PREDIKÁTUM, ÉS AMIÉRT ÚJRA KELLETT MÉRNI.** Cybersec kiegészítése (MikroB jóváhagyta,
+24565) egy új determinisztikus kapu: ha a munka TERMÉKE megosztott instrukció-fájl (skill,
+ügynök-CLAUDE.md, ütemezett feladat SKILL.md, hook, settings), az ONLINE. Az indoklás helyes: ott a
+termék próza, amit utána minden ügynök végrehajt, és a kóddal ellentétben semmi nem lesz piros tőle.
+
+Cybersec a hatását 166 élő kártyán 0 megváltozott verdiktnek mérte. **Ez a szám a MAI kódra már nem
+igaz.** Újramérve, ugyanazon a táblán, a jelenlegi routerrel: a predikátum **8 kártyát** fog meg,
+amik nélküle elérnék a modellt -- köztük egy seed-skills SKILL.md javítás, egy scheduled-tasks seed,
+egy agent-skill-drift kártya és egy SSRF-őr a prompt-útba drótozva. A különbség oka a `28295e97`,
+ami egy órával korábban vágta ki a címke-prefixet a multi-decision illesztésből, és épp ezeket
+szabadította fel. Vagyis a predikátum nem tartalék háló többé, hanem teherhordó -- és attól lett
+azzá, amit én magam landoltam egy órája. **Egy örökölt mérés nem bizonyíték arról a kódról, amit
+ténylegesen szerkesztesz.**
+
+**EGY ÁTFEDÉS, amit rögzítek, mert téves attribúcióhoz vezetne.** Cybersec három mért esetéből a
+harmadikat (`ütemezett feladat SKILL.md`) ma NEM ez a predikátum fogja meg, hanem az `utemez` szó,
+amit a `28295e97`-ben én adtam a multi-decision listához egy másik kártya miatt. A verdikt ugyanaz
+és helyes, de a selftestben mindkettő külön esetként áll: a szó szerinti P3 a KORÁBBI kapura, és egy
+P3b ugyanarra a SKILL.md-munkára az ütemezés-szó nélkül, hogy a vizsgált kapu tényleg fusson.
+
+**BIZONYÍTÉK.** A selftest 43/0. Mindkét új őrt mutációval mértem: a predikátum törlésével négy eset
+`LOCAL/all-stages-passed`-re esik (tehát nélküle SEMMI nem fogja meg őket -- ez erősíti meg
+Cybersec P1-P3 leletét a mai kódon), a VRAM-bekötés törlésével kettő. Az `offload-dispatch.sh`
+oldalán forrás-pin áll, komment-mentesített forráson a HÍVÁS-KIFEJEZÉSRE illesztve, és ellenőrzi a
+SORRENDET is (a hívás a sweep-ciklus ELŐTT álljon); mérve, hogy a hívás törlése egy azt megnevező
+kommenttel pótolva is pirosra vált. Ez a pin szándékosan nem viselkedés-teszt, és ezt ki is mondja.
+
+**EGY FLAKE, amit elkerültem:** az `offload-dispatch.selftest.sh` ma azért zöld, mert ezen a gépen a
+GPU üres (ADMIT). A meglévő eseteket a `--test-*` horgonyok az új ellenőrzés ELŐTT hagyják el, tehát
+nem gépfüggőek -- ezt megmértem, nem feltételeztem.
+
+**KIMONDOTT KORLÁT (Cybersecé, átvéve):** a predikátum a kártya PRÓZÁJÁRA illeszkedik, tehát csak
+azt fogja meg, amit a kártya KIMOND. Egy kártya, ami csak a fájlnevet említi útvonal és kulcsszó
+nélkül, átmegy. Szűkítés, nem zárás.
+
+**Ki döntött:** Peti (a VRAM-kapu léte); Cybersec (a predikátum, MikroB jóváhagyásával, 24565);
+az irány-, sorrend- és advisory-döntések backend mérnöki döntései, itt felülvizsgálatra kitéve.
+
+**Hivatkozás:** kártya `f9bad591` (szülő `40568837`); `store/card-build-route.sh`,
+`store/local-llm-rag.sh`, `store/offload-dispatch.sh`, a két selftest, `README.md`.

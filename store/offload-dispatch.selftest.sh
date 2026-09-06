@@ -108,6 +108,27 @@ wait
 final_n="$(python3 -c "import json; print(json.load(open('$AF2'))['leafConc']['attempts'])")"
 check "N=$N concurrent writers under flock produce exactly N (no lost update)" "$final_n" "$N"
 
+# --- the VRAM gate is WIRED, and wired BEFORE the sweep (card f9bad591) ------------------------
+# WHAT THIS IS AND IS NOT. This is a source pin, not a behaviour test: it cannot prove the sweep
+# stops, only that the call is still there and still ahead of the loop. The BEHAVIOUR of the same
+# guard is pinned properly in card-build-route.selftest.sh (four cases, both mutants measured red),
+# and every leaf here goes through local-llm-rag.sh, which asks the same guard. What this stops is
+# the silent deletion -- the failure mode where a guard quietly stops being called and every test
+# stays green because none of them ever looked.
+#
+# Matched on COMMENT-STRIPPED source and on the CALL EXPRESSION, not the bare filename: a comment
+# naming the script would otherwise keep this pin green after the call itself was removed.
+vram_pin="$(python3 - "$DISPATCH" <<'PYEOF'
+import re, sys
+src = open(sys.argv[1], encoding="utf-8").read()
+code = re.sub(r"(?m)^\s*#.*$", "", src)
+call = re.search(r'bash\s+"\$VRAM_GUARD"', code)
+loop = re.search(r"^while IFS=", code, re.M)
+print("MISSING" if not call else ("AFTER-LOOP" if loop and call.start() > loop.start() else "OK"))
+PYEOF
+)"
+check "offload-dispatch.sh calls the VRAM guard, ahead of the sweep loop" "$vram_pin" "OK"
+
 echo
 echo "offload-dispatch.selftest: $PASS passed, $FAIL failed"
 [[ $FAIL -eq 0 ]]

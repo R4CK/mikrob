@@ -82,6 +82,30 @@ if [ "${CARD_BUILD_ROUTE:-on}" = "off" ]; then
   online kill-switch
 fi
 
+# --- 0b. VRAM PRESSURE, BEFORE ANYTHING ELSE (card f9bad591) -----------------------------------
+# A CAPACITY question, not a content one, so it belongs before the card is even read: if the GPU
+# cannot take work right now, nothing about this card's text can change that.
+#
+# HOLD -> ONLINE, never a block. This script only ever chooses WHO builds the card; returning ONLINE
+# means "the online agent builds it", which is today's behaviour anyway. The card work itself is
+# never held up -- that distinction is the card's explicit requirement.
+#
+# ANY non-zero exit routes ONLINE, including the guard's usage error (2). That is the same
+# fail-safe direction the guard itself documents: doubt about the measurement resolves ONLINE. A
+# MISSING guard, by contrast, is not doubt -- it is a host that never had one -- so it is skipped
+# rather than treated as HOLD, which would disable local routing forever on such a host.
+VRAM_GUARD="${CARD_BUILD_ROUTE_VRAM_GUARD:-$HERE/vram-guard-check.sh}"
+if [ -f "$VRAM_GUARD" ]; then
+  vram_line="$(bash "$VRAM_GUARD" 2>/dev/null)"; vram_rc=$?
+  if [ "$vram_rc" -ne 0 ]; then
+    # The audit PATH stays a stable token, like every other reason here (priority-high,
+    # deterministic-money): a path field that embeds the measurement is not greppable and cannot be
+    # asserted on. The measurement goes to stderr, where a reader wants it anyway.
+    echo "card-build-route: local path closed -- ${vram_line:-no output from the vram guard} (rc=$vram_rc)" >&2
+    online vram-hold
+  fi
+fi
+
 # --- 1. READ THE CARD --------------------------------------------------------------------------
 if [ -z "$TEXT" ]; then
   TOKEN="$(cat "$TOKEN_FILE" 2>/dev/null)"
@@ -228,6 +252,36 @@ fi
 if printf '%s' "$SHORT" | grep -Eqi \
   'user-manual|kezikonyv|kézikönyv|felhasznaloi kezi|felhasználói kézi|readme|decisions\.md|dokumentaci|dokumentáci|funkciolist|funkciólist'; then
   online deterministic-document-assembly
+fi
+
+# Work whose PRODUCT is a shared instruction file (Cybersec, card f9bad591, MikroB approved 24565).
+# The four gates above ask what the work TOUCHES; this one asks what it PRODUCES. When the product
+# is prose that every agent then executes -- a skill, an agent CLAUDE.md, a scheduled task's
+# SKILL.md, a hook, settings.json -- nothing goes red if a sentence is wrong. The file's own header
+# calls the local-draft risk ANCHORING rather than shipping unreviewed code; for an instruction file
+# anchoring IS the whole damage, because there is no test behind it.
+#
+# MEASURED by Cybersec on the shipped router with the model stubbed to its most permissive answer:
+# three real instruction-file tasks (a skill's Pitfalls section, an agent's personality section, a
+# scheduled task's SKILL.md) all reached LOCAL with nothing but the 7B in the way, while a money
+# control and a readme control correctly went ONLINE and a genuine helper-plus-tests control
+# correctly went LOCAL. Without those three controls the first three would have proved nothing.
+#
+# RE-MEASURED HERE, on the CURRENT router, and the number CHANGED: Cybersec measured this predicate
+# as costing 0 changed verdicts on 166 live cards. That was true of the router as it stood BEFORE
+# card 28295e97 trimmed the label prefix out of the multi-decision match. On today's code it catches
+# EIGHT cards that now reach the model without it -- among them a seed-skills SKILL.md fix, a
+# scheduled-tasks seed, an agent-skill-drift card and an SSRF guard wired into the prompt path.
+# So this is no longer a free safety net held in reserve; it is load-bearing, and it became so
+# because of the change that landed an hour earlier. An inherited measurement is not evidence about
+# the code you are actually editing.
+#
+# A STATED LIMIT, not a closure: this matches the CARD'S PROSE, so it only catches what the card
+# SAYS. A card naming just a filename ("noisy-command-guard.py") with no path and no keyword still
+# passes; `scripts/hooks` and `PreToolUse` narrow that, they do not close it.
+if printf '%s' "$SHORT" | grep -Eqi \
+  'skill|claude\.md|agens-prompt|agent-prompt|rendszer-prompt|system prompt|utemezett feladat|ütemezett feladat|scheduled-task|scheduled-tasks|seed-skills|seed-scheduled|\.claude/|scripts/hooks|settings\.json|\bhook|PreToolUse'; then
+  online deterministic-shared-instruction-target
 fi
 
 # --- 3. REUSE THE HARDENED SECURITY CLASSIFIER --------------------------------------------------

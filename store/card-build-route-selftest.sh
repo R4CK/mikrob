@@ -37,16 +37,41 @@ printf '#!/usr/bin/env bash\necho MECHANICAL\n' > "$TMP/classify-mech.sh"
 # ...and the opposite stub, for the fail-safe battery.
 printf '#!/usr/bin/env bash\nexit 6\n' > "$TMP/llm-busy.sh"
 printf '#!/usr/bin/env bash\necho UNKNOWN\n' > "$TMP/classify-unknown.sh"
+# VRAM guard stubs (card f9bad591). The real guard's contract is exit 0 = ADMIT, 1 = HOLD, 2 = usage.
+printf '#!/usr/bin/env bash\necho "ADMIT ok 1024/24576 MiB (4%%)"\nexit 0\n' > "$TMP/vram-admit.sh"
+printf '#!/usr/bin/env bash\necho "HOLD hard 23000/24576 MiB (94%%)"\nexit 1\n' > "$TMP/vram-hold.sh"
+printf '#!/usr/bin/env bash\necho "vram-guard-check.sh: unknown arg" >&2\nexit 2\n' > "$TMP/vram-usage.sh"
 chmod +x "$TMP"/*.sh
 
 PASS=0; FAIL=0; MODEL_RELIANT=0
 declare -a FAILED=()
 
-run() { # $1 text, $2 priority, [$3 llm stub], [$4 classify stub]
+run() { # $1 text, $2 priority, [$3 llm stub], [$4 classify stub], [$5 vram stub]
   CARD_BUILD_ROUTE_LOG=/dev/null \
   CARD_BUILD_ROUTE_LLM="${3:-$TMP/llm-easy.sh}" \
   CARD_BUILD_ROUTE_CLASSIFY="${4:-$TMP/classify-mech.sh}" \
+  CARD_BUILD_ROUTE_VRAM_GUARD="${5:-$TMP/vram-admit.sh}" \
     bash "$ROUTER" --text "$1" --priority "${2:-normal}" 2>/dev/null
+}
+
+# ONLINE is not enough on its own when a card could be stopped by SEVERAL gates: a case that only
+# checks the verdict passes just as happily for the WRONG reason, and then silently keeps passing
+# after the gate it was written for is gone. This reads the router's own audit line instead.
+reason_is() { # $1 expected-reason, $2 label, $3 text, $4 priority, [$5 vram stub]
+  local log="$TMP/reason.log"; : > "$log"
+  local got
+  got="$(CARD_BUILD_ROUTE_LOG="$log" \
+    CARD_BUILD_ROUTE_LLM="$TMP/llm-easy.sh" \
+    CARD_BUILD_ROUTE_CLASSIFY="$TMP/classify-mech.sh" \
+    CARD_BUILD_ROUTE_VRAM_GUARD="${5:-$TMP/vram-admit.sh}" \
+    bash "$ROUTER" --text "$3" --priority "${4:-normal}" 2>/dev/null)"
+  local reason; reason="$(awk -F'\t' 'END{print $4}' "$log" 2>/dev/null)"
+  if [ "$got" = ONLINE ] && [ "$reason" = "$1" ]; then
+    PASS=$((PASS+1)); printf 'OK   ONLINE/%-38s %s\n' "$1" "$2"
+  else
+    FAIL=$((FAIL+1)); FAILED+=("$2 (wanted ONLINE/$1, got $got/${reason:-none})")
+    printf 'FAIL wanted ONLINE/%s got %s/%s  %s\n' "$1" "$got" "${reason:-none}" "$2"
+  fi
 }
 
 case_is() { # $1 expected, $2 label, $3 text, $4 priority
@@ -120,7 +145,14 @@ case_is LOCAL "mechanical rename with an exact target" \
 # every infra card on this board is labelled that way, not because the work is multi-decision.
 case_is LOCAL "e0fbcdab: the sole match was the [INFRA] label" \
   "[CleanCore][INFRA][LOW] Staging sweep: verziozas-incidens utani egyszeri takaritas. A regi staging objektumok kozul azok maradjanak, amiket a sweep meg nem latott." low
-case_is LOCAL "eb70cb13: the sole match was the [INFRA] label" \
+# eb70cb13 MOVED from battery B to here, and the move is the interesting part. Card 28295e97 freed
+# it from the label-noise gate, and it briefly reached LOCAL -- correctly, on that gate's terms.
+# Card f9bad591's shared-instruction predicate then catches it again on CONTENT: its product is a
+# skill file, which every agent afterwards executes. So the verdict returned to ONLINE for a
+# different and better reason, and the case asserts the REASON rather than the verdict: checking
+# only ONLINE would keep passing if somebody reverted the trim, hiding the fact that the label noise
+# was doing the work again.
+reason_is deterministic-shared-instruction-target "eb70cb13: a skill file is a shared instruction target, not label noise" \
   "[marveen][INFRA][LOW] Skill frontmatter bovites: a leiro mezo hianyzik ket skillbol, potoljuk az egysoros description-t." low
 
 # THE OTHER DIRECTION, and this is the case that stops the trim from becoming a deletion. The word
@@ -139,6 +171,51 @@ case_is ONLINE "edf9c837-shaped: landolas/merge semantics in the BODY still gate
 # vary only the thing under test.
 case_is LOCAL "control: the same card WITHOUT the body words is only a label" \
   "[marveen][INFRA][NORMAL] A hibauzenet szovege ket helyen ter el egymastol. Egysoros javitas a meglevo fuggvenyben, a szoveg egyezzen." normal
+
+echo
+echo "=== B3. SHARED INSTRUCTION FILES (Cybersec, card f9bad591) ==="
+# Cybersec's three measured cases: each reached LOCAL with the model stubbed permissive, held back
+# by nothing but the 7B. The product here is PROSE the whole fleet then executes, and unlike code
+# nothing goes red when a sentence is wrong.
+reason_is deterministic-shared-instruction-target "P1: a skill's Pitfalls section" \
+  "Egesziisd ki a kanban-gate-scan skill Buktatok szekciojat egy uj ponttal a delta-gate-elesrol." low
+reason_is deterministic-shared-instruction-target "P2: an agent's CLAUDE.md personality section" \
+  "A cybersec agens CLAUDE.md szemelyiseg-szekcioja legyen tomorebb, ket mondattal rovidebb." low
+# P3 VERBATIM, and it is stopped ONE GATE EARLIER than Cybersec measured -- by `utemez`, a word
+# card 28295e97 added to the multi-decision list an hour before this landed, for an unrelated card.
+# The verdict is the same and correct; the OVERLAP is the fact worth recording, because a case that
+# claimed the shared-instruction gate here would be attributing the save to the wrong rule.
+reason_is deterministic-multi-decision "P3 verbatim: caught EARLIER, by the scheduling word" \
+  "A heartbeat-consolidated utemezett feladat SKILL.md D szekciojaba kerüljon be az uj kuszob." low
+# P3 WITHOUT the scheduling word, so the shared-instruction gate is the one actually under test.
+# Without this pair, deleting that gate would leave every P-case green.
+reason_is deterministic-shared-instruction-target "P3b: the same SKILL.md edit, no scheduling word" \
+  "A heartbeat-consolidated SKILL.md D szekciojaba kerüljon be az uj kuszob." low
+
+# THE CONTROLS, without which the three above prove nothing: the bench must reject some things and
+# accept others. C1/C2 are stopped by OTHER gates (so the reason is asserted, not just the verdict),
+# C3 is genuinely bounded work and must still reach LOCAL.
+reason_is deterministic-money "C1 control: money text is stopped, by the MONEY gate" \
+  "Allitsd at a havi dijfizetes checkout osszeget a konfigbol." low
+reason_is deterministic-document-assembly "C2 control: readme text is stopped, by the DOC gate" \
+  "Frissitsd a readme telepitesi szakaszat az uj lepessel." low
+case_is LOCAL "C3 control: a real helper plus three tests still goes LOCAL" \
+  "Write parseDurationMs(raw: string): number and three unit tests for it, including empty and NaN." low
+
+echo
+echo "=== B4. VRAM PRESSURE CLOSES THE LOCAL PATH, AND ONLY THAT (card f9bad591) ==="
+# The guard answers a CAPACITY question, so it must close the local path without ever holding up the
+# card. ONLINE is exactly that: the online agent builds it, which is today's behaviour anyway.
+reason_is vram-hold "the guard says HOLD -> ONLINE" \
+  "Write parseDurationMs(raw: string): number and three unit tests for it." low "$TMP/vram-hold.sh"
+reason_is vram-hold "a guard USAGE error (exit 2) is doubt, and doubt is ONLINE" \
+  "Write parseDurationMs(raw: string): number and three unit tests for it." low "$TMP/vram-usage.sh"
+# The two negatives. Without them "always ONLINE" would pass the case above.
+case_is LOCAL "the guard says ADMIT -> the verdict is unchanged" \
+  "Write parseDurationMs(raw: string): number and three unit tests for it." low
+got="$(run "Write parseDurationMs(raw: string): number and three unit tests for it." low "" "" "$TMP/definitely-no-guard.sh")"
+if [ "$got" = LOCAL ]; then PASS=$((PASS+1)); echo "OK   LOCAL  <- LOCAL   a MISSING guard is skipped, not read as HOLD"
+else FAIL=$((FAIL+1)); FAILED+=("missing vram guard"); echo "FAIL LOCAL  <- $got   a missing guard was treated as HOLD"; fi
 
 echo
 echo "=== C. FAIL-SAFE: every doubt resolves to ONLINE ==="
