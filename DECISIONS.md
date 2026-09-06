@@ -8752,3 +8752,46 @@ parse-error számot.
 
 **Hivatkozás:** kártya `26ab08a2`; `store/lint-ratchet.sh`, `store/lint-ratchet.selftest.sh`;
 Cybersec NO-GO 21092, MikroB rendelkezések 21030 és 21035.
+
+---
+
+## 2026-09-06 -- 970156ce: a landolasi kapu csak SZANDEKOS leallitasra hallgathat el
+
+**Dontes.** A `store/local-llm-model-routing.selftest.sh` ket, elo Ollamat igenylo esete
+KIHAGYHATO, de KIZAROLAG akkor, ha a `gpu-crashloop-guard` SZANDEKOSAN maszkolta az
+`ollama.service`-t -- amit a `store/.gpu-crashloop-guard-masked.json` artefaktum `units`
+mezoje mond ki. Minden mas allapotban (nincs flag, mas unitot nevez meg, olvashatatlan
+vagy hibas JSON) a teszt valtozatlanul PIROS.
+
+**Miert nem az egyszeru env-gate.** A kezenfekvo alak ("az Ollama nem valaszol -> skip")
+azt a kepesseget veszi el a kaputol, hogy megkulonboztesse a VEDETT gepet a TORTTOL. Ez
+pontosan az a csendes kihagyas, ami ellen a 89f4c28d szandekosan URESEN tartja a
+`store-selftests-all-run` EXCLUDED listajat. MikroB dontese (komment 21246, Cybersec
+ellenvetesere): a feltetel SZANDEK legyen, ne elerhetoseg.
+
+**A kotelezo negativ kontroll.** Uj teszt-fajl (`local-llm-guard-sanctioned-skip.test.ts`,
+8 eset) rogziti a MEGENGEDO es a TILTO iranyt is, determinisztikusan (minden eset halott
+loopback OLLAMA_HOST-tal fut, tehat nem fugg attol, hogy epp el-e az Ollama). Az elutasitott
+env-gate mint mutans 7-bol 6 esetet buktat.
+
+**Ket meres, ami menet kozben megvaltoztatta a megoldast.**
+1. Az elso valtozat `$HERE`-bol olvasta a flaget. Az orzo az INSTALL store-jaba ir, a
+   selftest viszont agens-WORKTREE-bol fut -- a flag lathatatlan volt, minden eset piros
+   maradt, a javitas keszneek latszott es semmit nem valtoztatott.
+2. A masodik valtozat a `local-llm-state-dir.sh` resolverjen at oldotta fel. Az viszont
+   `LOCAL_LLM_STATE_DIR`-re elsobbseget ad, amit a teszt-suite WORKERENKENT beallit egy
+   ures temp konyvtarra (4c5c540c, hogy a teszt-futasok ne irjanak az eles ledgerbe). Igy a
+   flag-kereses pont ott vakult meg, ahol a javitasnak MUKODNIE kell: a fleet-test-ben. A
+   selftest kezzel futtatva zold volt, a wrapper piros.
+
+**A vegleges alak.** A resolver checkout-to-install szarmaztatasa hasznaljuk, de az `env`
+aga NELKUL, egy PARANCS-BEHELYETTESITESBEN, ahol a valtozo unset. Igy a suite izolacioja
+ebben a shellben erintetlen marad -- a selftest altali local-llm.sh hivasok tovabbra is az
+izolalt konyvtart latjak --, es csak az UT jon vissza. Ellenorizve: a teljes suite-futas
+utan az eles `store/local-llm-usage.log` valtozatlan (mtime 08:04, a futasok 11:07/11:09).
+A ket valtozo ket kulon kerdesre valaszol: hol IRHAT ez a futas local-llm allapotot, kontra
+hol ROGZITETT egy masik program egy dontest.
+
+**Hivatkozas:** kartya `970156ce`; `store/local-llm-model-routing.selftest.sh`,
+`src/__tests__/local-llm-guard-sanctioned-skip.test.ts`; MikroB 21246; kapcsolodo: d5c05548
+(a mask() hiba), 1f276349 (ugyanez az osztaly a fork-guardon).
