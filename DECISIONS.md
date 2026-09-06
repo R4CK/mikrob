@@ -10173,8 +10173,6 @@ sorai a modell-oszlop feltöltése előttiek) tér el. Vagyis a kulcs valódi es
 **Hivatkozás:** kártya `0c4cf655` (szülő `07f4cd2f`, testvérek `a9e07e5c`, `b774f057`);
 `src/web/token-usage.ts`, `src/__tests__/token-usage-shared-root-skip.test.ts`,
 `src/__tests__/token-usage-isolated-sources.test.ts`, `docs/token-usage.md`.
-
-
 ## 2026-09-06 -- 99c2eb09: az upstream-drift ellenőrzés kikerül a tesztfájlból, hogy kikerülhessen a landolási kapuból
 
 **Döntés:** A fork/upstream ütközés-elismerések ADATA és a tiszta döntései átkerülnek a
