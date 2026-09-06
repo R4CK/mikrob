@@ -10492,3 +10492,88 @@ egészben-átvétel, miután megmértem, hogy a régió bájtra azonos volt az u
 **Hivatkozás:** kártya `494fad0f` (szülő `a7a61751`); `src/web/agent-scaffold.ts`,
 `src/__tests__/quarantine-allowlist-render.test.ts`,
 `src/fork-upstream/acknowledged-conflicts.ts` (18. kör).
+
+## 2026-09-06 -- 3c klaszter: friss pin mellett is négy valódi ütközés, és egy döntés, amit majdnem visszafordítottam
+
+**Kontextus:** a `50af1a27` három fájlja (`update.sh`, `package-lock.json`, `src/model-fallback.ts`)
+mindegyikének FRISS volt az upstream-blob pinje. Ez első ránézésre azt jelentené, hogy nincs
+teendő. Nem azt jelenti.
+
+**A megkülönböztetés, amit rögzíteni kell:** a friss pin azt mondja, hogy a döntés PONTOSAN ehhez
+az upstream tartalomhoz készült, NEM azt, hogy a merge tiszta lesz. Read-only hármas merge-szimuláció
+(`git merge-file` a három blobon, worktree nélkül): `update.sh` 4 ütközés, `package-lock.json` 40,
+`src/model-fallback.ts` 1.
+
+**Döntés fájlonként:**
+
+- **`update.sh`** -- négy ütközésből három MARAD A MIÉNK (a POST_MERGE_MODE szerkezet, ami az
+  upstream blokkját szó szerint tartalmazza az else-ágban; a `{{CHAT_ID}}` behelyettesítés, aminek
+  az elejtése egy Cybered-leletet hozna vissza; a SEEDREFRESH826 komment, ami a mi bővebb,
+  újramért változatunk). A NEGYEDIK ÁTVÉVE: az upstream `--include=dev` kapcsolója a rollback
+  `npm ci`-jén. A fork mindkét hívási helyén hiányzott.
+- **`package-lock.json`** -- a 40 ütközés nem ok a kézi feloldásra, hanem ok a NEM kézi feloldásra.
+  A lockfile a fork saját `package.json`-jából ÚJRAGENERÁLÓDIK, és az FŐ-KLÓN művelet (worktree-ből
+  a függőség-könyvtár szimlink a közös fába). A merge lépéséhez tartozik, nem ehhez.
+- **`src/model-fallback.ts`** -- MARAD A MIÉNK, két független okból: az upstream alternációja
+  visszahozná a `upgrade to increase your usage limit` startup-hint hamis pozitívot, és az alakja
+  nem ERE-biztos (`grep -E` figyelmeztet a `(?:`-re), ami eltörné a `session-limit-pattern.json`
+  hat nem-TS fogyasztóját.
+
+**Amit majdnem elrontottam, kimondva:** az upstreamnek van egy `(\w+ )?` bővítése, ami tényleg fog
+egy alakot, amit mi nem. Már készültem átvenni, amikor elolvastam a JSON saját `_comment`-jét: a
+`f27c999b` kártya (2026-09-04) pontosan ezt a tagot MÉRLEGELTE ÉS ELUTASÍTOTTA, mert nincs MÉRT
+banner-string, ami igényelné, és egy korlátlan szó-joker ennél a detektornál téves
+modell-visszaminősítést okozhat. Az én diszkrimináló példám KITALÁLT, a regex próbálgatására
+gyártott string, nem élesben megfigyelt -- az nem bizonyíték egy olyan döntés ellen, ami éppen a
+mért stringek hiányán alapult. A korábbi döntés áll.
+
+**Mérés a `--include=dev`-hez, VALÓDI telepítéssel eldobható temp-fában** (npm 10.9.8, node
+v22.23.2): `NODE_ENV=production` + sima `npm ci` -> a dev-függőség KIVÁGVA; `--include=dev` ->
+MEGMARAD; `--omit=dev` -> kivágva (kontroll). Hatókör, hogy senki ne állítson többet: a `NODE_ENV`
+ebben a telepítésben sehol nincs beállítva (`.env`, `scripts/start.sh`, `install-linux.sh`,
+`update.sh` -- mind mérve üres), tehát ez LÁTENS lyukat zár, nem élő üzemzavart.
+
+**Műszer-figyelmeztetés a következő olvasónak:** az `npm ci --dry-run` MINDKÉT irányban azt
+jelenti, hogy a dev-függőség hozzáadódik -- nem veszi figyelembe a `NODE_ENV`-alapú vágást, amiről
+a kérdés szól. Az első próbám ez volt, és arra a következtetésre vezetett volna, hogy az upstream
+egy nálunk nem létező mechanizmust javít.
+
+**Ki döntött:** MikroB (az `a7a61751` plan-grilling GO-WITH-CHANGES 2. pontja: az update.sh-t
+eldobható környezetben kell validálni, sose élesben -- így is történt); backend (a négy
+ütközés fájlonkénti feloldása, és hogy a model-fallback korábbi döntését nem írom felül szintetikus
+bizonyíték alapján).
+
+**AMIT A FORK-HORGONY ELKAPOTT, ÉS AMI EBBŐL KÖVETKEZETT:** a `--include=dev` hozzáadására
+elsült a `src/web/routes/updates.ts` fork-horgonya. Nem hiba volt, hanem a horgony dolga: az ottani
+mentesítés azt állítja, hogy az AUTOUPDNODEENV905 NINCS átvéve és a fork exponált, és a horgony
+kimondottan azért figyelte az `update.sh`-t, hogy szóljon, amint ez az állítás félig hamissá válik.
+A szövege pontosan ezt kéri: "Re-decide the ACKNOWLEDGED_CONFLICTS rule -- do not just edit the
+anchor to match." Így is jártam el: a szabályt újradöntöttem (a (2) fél átvéve, az (1) nyitva
+marad), a horgonyt pedig a MEGMARADT állításra irányítottam át (`delete process.env.NODE_ENV` az
+`updates.ts`-ben, `expect: absent`), nem töröltem. Mutációval ellenőrizve, hogy az új horgony
+elsül, amikor az (1) fél landol.
+
+**AMIT NEM ÉN DÖNTÖK EL:** a `c116696f` kártya (backend2, HIGH, planned) MINDKÉT felet tervezi, és
+a leírása előre jelzi ezt a helyzetet ("ellenorizd hogy ez nem duplikalja a mostani kartyat"). Én a
+(2) felet landoltam, mert az `update.sh`-ban van, tehát a 3c klaszter fájljában, és mert a korábbi
+jegyzet maga nevezi "környezet-független, végleges védelemnek". Az (1) fél az `updates.ts`-ben van,
+amit a 3c nem birtokol. Kommenteltem a `c116696f`-re, hogy backend2 ne csinálja meg újra; hogy a
+kártya szűküljön-e az (1) félre, az MikroB döntése, nem az enyém.
+
+**AMIT A LANDOLÁSI KAPU FOGOTT MEG, ÉS AMI EBBŐL TANULSÁG:** az első kísérlet MEGTAGADVA, mert a
+rollback `npm ci` az `update.sh` `FINALIZE_EOF` heredocjában van, ami minden futáskor újragenerálja
+a `store/update-finalize.sh`-t. Csak az egyik példányt írtam át, tehát a javításomat a következő
+frissítés némán visszaállította volna -- pontosan az a drift-osztály, amiért a paritás-teszt
+(`rollback-distance-guard.test.ts`) létezik. Nem bosszúság volt, hanem valódi hiba az én
+változtatásomban. A második példány szinkronizálva.
+
+**UGYANEZ AZ OSZTÁLY EGY HARMADIK HELYEN IS ÁLL, ÉS NEM JAVÍTOTTAM:** a
+`recovery-prev-version.sh:217` csupasz `npm ci --silent`-et futtat -- ez a kézi visszaállító, az
+utolsó mentsvár, amikor minden más már megbukott. Nincs sem a `50af1a27`, sem a `c116696f` fájl-
+listáján, és egy operátori helyreállítási út módosítása nem rider egy upstream-integrációs kártyán.
+Kommentálva a `c116696f`-re a mérésel együtt. (Az `install-linux.sh:1011` szintén csupasz, de az
+friss telepítés, ahol a bukás hangos, nem néma -- más kockázati alak.)
+
+**Hivatkozás:** kártya `50af1a27` (szülő `a7a61751`), érinti `c116696f`-et; `update.sh`,
+`store/update-finalize.sh`, `src/__tests__/update-npm-ci-dev-deps.test.ts`,
+`src/fork-upstream/acknowledged-conflicts.ts`.
