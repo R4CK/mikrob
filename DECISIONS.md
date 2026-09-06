@@ -10213,3 +10213,45 @@ sorai a modell-oszlop feltöltése előttiek) tér el. Vagyis a kulcs valódi es
 **Hivatkozás:** kártya `0c4cf655` (szülő `07f4cd2f`, testvérek `a9e07e5c`, `b774f057`);
 `src/web/token-usage.ts`, `src/__tests__/token-usage-shared-root-skip.test.ts`,
 `src/__tests__/token-usage-isolated-sources.test.ts`, `docs/token-usage.md`.
+
+## 2026-09-06 14:35 -- ac28bc6e -- the append-only comment promised more than the trigger delivers
+
+**Cybersec's MEDIUM on already-gated work, reproduced here against the shipped DDL before a word was
+changed.** The header said "the detection facts are immutable" and the trigger comment said a
+resolution "cannot be un-set or re-pointed". Measured, one attempt per shape:
+
+    BLOCKED:  card_id / detected_at / stalled_ms_at_detection / action, and clearing resolved_at
+    PASSES:   assignee_at_detection, action_detail, resolved_by_event_id, DELETE, INSERT OR REPLACE
+    CONTROLS (allowed by design): detections + 1, resolved_at written once from NULL
+
+Two of the passing columns are the ones the design leans on hardest: `assignee_at_detection` IS a
+detection fact and carries the per-agent axis of the card's own question, and `action_detail` is, in
+my own words in the same file, "the load-bearing half". `INSERT OR REPLACE` rewrote every column.
+
+**My own header sentence turned on me:** "Without the trigger, 'append-only' would be a comment that
+the next direct-sqlite3 writer never reads." That same writer can DELETE and REPLACE, and the comment
+said nothing about it.
+
+**The most useful part of the report was their FAILED first remedy, handed over with the
+measurement.** The obvious fix -- a BEFORE DELETE trigger -- does NOT stop REPLACE under SQLite's
+default, because REPLACE runs as delete-then-insert and only `recursive_triggers ON` routes it
+through the trigger. That pragma is GLOBAL to all 14 triggers in this schema, including the memories
+FTS branches. Without their negative result, "fixed" would have been false confidence, and the
+cheapest-looking switch would have been the widest-reaching one.
+
+**DECISION: (b)+(c), not the pragma.** A BEFORE DELETE trigger, REPLACE recorded as a STATED
+residual, and the comment narrowed to what the mechanism actually refuses. Changing a global pragma
+to protect an internal telemetry table would alter 14 unrelated triggers, and the effect on the
+memories FTS branches would itself need proving. Same shape as the self-pace-gate decision on
+runtime-substituted forms: a stated residual beats a pattern pretending to be closed.
+
+**Split deliberately, with MikroB's approval:** the comment narrowing goes in FIRST and alone
+(comment-only, zero behaviour change), because a guarantee that is merely wrong is worse than one
+that is merely absent -- the next writer builds on it. The structural half folds into 878cd292, where
+the first producer of these rows is built. Exposure is bounded meanwhile: the table has no producer
+today.
+
+**On process:** the card was already `done` with QA PASS + Cybersec GO. I did not touch it on my own
+judgement -- I reported the measurement and asked, and MikroB split the work.
+
+**Reference:** card `ac28bc6e`; Cybersec 21527; structural half on `878cd292`. 15 tests still green.
