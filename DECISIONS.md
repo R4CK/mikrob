@@ -11348,3 +11348,39 @@ csúszott át. Egy másik kártyára hivatkozó védelem-állítás JÖVŐ IDŐB
 
 **Hivatkozás:** kártyák `0c4cf655`, `b774f057`, `0333ab9f`; `src/web/token-usage.ts`,
 `src/__tests__/token-usage-shared-root-skip.test.ts`, `docs/token-usage.md`.
+
+## 2026-09-06 -- delta-review diff korlátlanná tétele + landolás elutasítja az aktív NO-GO-s idegen kártyát (kártya c266ec74)
+
+**A lelet (Cybered, komment 24334, efaf8926/a37bb36d incidens).** A `a37bb36d` landolási merge NÉGY
+commitot vitt fel efaf8926-hoz kötve kettő helyett: a másik kettő (16fcee57, 6193ef7c) MÁS kártyához
+(82fa48b0/2b20b476) tartozott, ugyanazon az `agent/backend2/work` ágon utaztak. Az egyik pont az a sha
+volt, amire Cybered korábban NO-GO-t adott (82fa48b0-on), és 33 percig ez állt fenn a developen egy
+javított verzió (ec637f92) előtt. QA2 delta-diffje ezt nem kapta el, mert `-- src/`-re volt szűkítve,
+a potyautas fájlok pedig a `store/` alatt voltak.
+
+**A javítás, két rész.**
+1. `store/delta-review-diff.sh` -- új, kanonikus, SZÁNDÉKOSAN útvonal-korlátozás NÉLKÜLI
+   `git diff --name-only` két sha között, delta-gate újra-ellenőrzéshez. Bekötve a
+   `gate-worktree-pattern` skillbe, hogy a gate-ek ezt használják egy kézzel írt, útvonalra
+   tippelt diff helyett.
+2. `store/landing-downward-check.sh`: új `foreign_card_gate_check()` -- minden landoló ágon talált
+   IDEGEN kártyára megkérdezi a `gate-closure-check.py`-t, hogy annak jelenleg van-e AKTÍV, még nem
+   javított FAILING gate-verdiktje; ha igen, ELUTASÍT, FELTÉTEL NÉLKÜL (`--card`/enforce-től
+   függetlenül), hacsak a `--allow-stacked` nem nevezi meg. Ez additív a már létező (dfff9b37)
+   downward-checkhez képest, ami eddig csak NÉVEN NEVEZTE az idegen kártyákat, a gate-állapotukat
+   nem nézte -- pontosan ez volt a rés, amin 82fa48b0 élő NO-GO-s commitja átcsúszott.
+
+**Tesztek.** 5 új selftest eset a megosztott downward-check blokkban (mindkét lándoló `--selftest`
+futtatja), mutációval ellenőrizve: az új refuse-hívás visszavonása pontosan a 3 új REPORT-mode esetet
+buktatja meg, semmi mást. `store/delta-review-diff.selftest.sh`, 5 eset, szintén mutációval
+ellenőrizve. `src/__tests__/landing-downward-check.test.ts` (a meglévő ratchet-teszt) zöld,
+floor-ok változatlanok. Teljes fleet-test.sh a merge eredményén: első futás 4 helyi-llm/GPU-lock
+hibával bukott (terhelés-függő flake, lásd kártya `f3b219bb`), második futás változtatás nélkül
+644/644 fájl zöld.
+
+**Amit ez NEM zár le:** a "several of the SAME agent's own already-reviewed cards ride along"
+alapeset (marveen gate-AFTER-landing modellje) szándékosan megmarad engedékenynek -- csak az
+AKTÍV, FAILING verdiktű eset lett feltétel nélkül szigorítva.
+
+**Hivatkozás:** kártya `c266ec74`; `store/delta-review-diff.sh`, `store/landing-downward-check.sh`,
+`seed-skills/gate-worktree-pattern/SKILL.md`, `src/__tests__/landing-downward-check.test.ts`.

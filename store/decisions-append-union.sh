@@ -130,9 +130,21 @@ _common_line_prefix_len() {
   if [ -z "$n" ]; then
     # cmp is silent on identical input and prints "EOF on <file>" when one side is a prefix of the
     # other. Identical means git would not have conflicted this file at all: refuse rather than
-    # answer for a state that should not exist. Otherwise the shorter string is the whole prefix.
+    # answer for a state that should not exist. Otherwise the shorter string is the whole prefix --
+    # and it is ALREADY a real line boundary (card c266ec74, live incident). `a` and `b` both come
+    # from `$(git show ...)`, which strips only the FILE's own trailing newline, never an internal
+    # one -- so the shorter side's own content, in full, ends exactly where its real last line
+    # ended on disk. Falling through to the "back up to the last complete line" step below (built
+    # for the OTHER branch, where `cmp` found a genuine mid-line difference and `head` may end
+    # mid-line) treats that trailing-newline stripping as if it were a real mid-line cut, and
+    # `${head%$'\n'*}` then discards the shorter side's entire FINAL LINE looking for one that was
+    # never missing. Measured live: a clean landing merge where `ours` turned out to be an exact
+    # byte-prefix of `theirs` lost its own last line this way, that line failed the "must start a
+    # new entry" check on BOTH remainders, and a textbook append-only union refused.
     [ "${#a}" -eq "${#b}" ] && return 1
     if [ "${#a}" -lt "${#b}" ]; then n=$(( ${#a} + 1 )); else n=$(( ${#b} + 1 )); fi
+    printf '%s' "$(( n - 1 ))"
+    return
   fi
   cut=$(( n - 1 ))                       # cmp reports 1-based; the bytes BEFORE it are common
   head="${a:0:$cut}"
@@ -2068,6 +2080,52 @@ some body text on the following line
     echo "       SMALL offset was swallowed (this is what cut -d' ' -f1 does)"
     fail=1
   fi
+
+  # --- card c266ec74: ONE SIDE ENTIRELY A PREFIX OF THE OTHER lost its own last line --------------
+  # Live incident: a marveen landing's DECISIONS.md conflicted (git's own diff got confused by an
+  # unrelated mid-file insertion elsewhere in the real 875KB file), and in the index's three stages
+  # `ours` turned out to be an EXACT byte-for-byte prefix of `theirs` (theirs = ours + a clean tail
+  # append) -- the textbook case this whole function exists to handle. It still refused.
+  #
+  # ROOT CAUSE: `cmp` finds no differing byte (one side is a prefix of the other), so `n` comes back
+  # empty and the EOF-fallback answers "the shorter side's own full length" -- correct so far. But
+  # that answer then fell through into the SAME "back up to the last complete line" step built for
+  # the OTHER branch (a real mid-line difference), and `$(...)`'s trailing-newline stripping means
+  # `head` (== the shorter side, `a`, in full) never ends in `\n` -- so `${head%$'\n'*}` matched the
+  # LAST newline anywhere in `head` and discarded everything after it: the shorter side's own final
+  # line, which was a complete line in the real file, just captured without its terminator. Both
+  # `ours_added`/`theirs_added` in try_append_union then inherited that dangling line, it does not
+  # start a new entry header, and the union refused a landing that had nothing wrong with it.
+  a_prefix="## 2026-01-01 -- base entry
+first body line
+second body line."
+  b_superset="${a_prefix}
+
+## 2026-01-02 -- appended entry
+new body line"
+  prefix_of_superset_n="$(_common_line_prefix_len "$a_prefix" "$b_superset")"
+  if [ "$prefix_of_superset_n" = "${#a_prefix}" ]; then
+    echo "  ok   one side entirely a prefix of the other keeps that side's OWN final line"
+  else
+    echo "  FAIL one side entirely a prefix of the other: got $prefix_of_superset_n, want ${#a_prefix}" \
+      "(the shorter side's own last line was dropped)"
+    fail=1
+  fi
+  # And the same shape the OTHER way round (b shorter, a the superset) -- the EOF fallback branches
+  # on which side is shorter, so both directions need their own case.
+  prefix_of_superset_n2="$(_common_line_prefix_len "$b_superset" "$a_prefix")"
+  if [ "$prefix_of_superset_n2" = "${#a_prefix}" ]; then
+    echo "  ok   ...and the same holds with the shorter side passed second"
+  else
+    echo "  FAIL ...with the shorter side passed second: got $prefix_of_superset_n2, want ${#a_prefix}"
+    fail=1
+  fi
+  # NOT also pinned end-to-end through try_append_union/setup_conflict: a small fixture where one
+  # side is a pure prefix of the other is, correctly, a CLEAN git merge (no conflict at all, verified
+  # by hand) -- git only produced a real conflict on the live 875KB file because of an UNRELATED
+  # mid-file insertion confusing its diff elsewhere, which is not practical to reproduce minimally.
+  # The direct calls above pin the actual defect; try_append_union's existing end-to-end cases in
+  # this file already cover that it is reached correctly once a real conflict exists.
 
   # --- G-1: the read-back guard pins ITSELF (Cybered, card bb52c2fa) --------------------------
   # These call _selftest_verdict DIRECTLY with synthetic logs, so deleting the read-back (or
