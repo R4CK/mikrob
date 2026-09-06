@@ -955,6 +955,21 @@
         </div>
       </div>
 
+      <!-- Models (card e5fc1fb4: moved directly under Status -- every installed model with its
+           switch is the first thing the operator sees; the pull row stays with it) -->
+      <div class="llm-section">
+        <h2 class="llm-section-title" data-i18n="localLlm.models.title">Modellek</h2>
+        <p class="llm-models-summary" id="llmModelsSummary" role="status" aria-live="polite"></p>
+        <div class="llm-models" id="llmModels">
+          <div class="llm-loading" data-i18n="common.loading">Betöltés...</div>
+        </div>
+        <div class="llm-pull-row">
+          <input type="text" id="llmPullInput" class="llm-input" data-i18n-placeholder="localLlm.models.pull_placeholder" placeholder="pl. qwen2.5-coder:7b" autocomplete="off" spellcheck="false">
+          <button class="btn-primary btn-compact" id="llmPullBtn" data-i18n="localLlm.models.pull_btn">Letöltés</button>
+        </div>
+        <div class="llm-pull-progress" id="llmPullProgress" hidden></div>
+      </div>
+
       <!-- Offload aggressiveness slider (card 48f3b675) -->
       <div class="llm-section">
         <h2 class="llm-section-title" data-i18n="localLlm.offload.title">Offload agresszivitás</h2>
@@ -1008,18 +1023,33 @@
         </div>
       </div>
 
-      <!-- Categories (card 0c054ebf, redesigned card 8b4ddcf0): all --task presets, not just the 4
-           coding-difficulty levels above. Sourced live from GET /api/local-llm/categories (backed by
-           store/local-llm-skills/*.txt on disk, never a hardcoded list). Per-category toggle
-           is real enforcement (store/local-llm.sh reads the same config before running any
-           --task), not decorative. Card 8b4ddcf0 (Peti): compact tiles, description behind a
-           tap/click-friendly info-tooltip (not inline text -- works on touch/PWA, not just hover). -->
-      <div class="llm-section">
-        <h2 class="llm-section-title" data-i18n="localLlm.categories.title">Kategóriák</h2>
-        <p class="llm-offload-desc" data-i18n="localLlm.categories.desc">Az összes helyi-offload feladattípus, élőben a routerből -- nem csak a kódolási nehézség. Kikapcsolt kategória a dashboardról: az adott feladat innentől online (Claude) fut.</p>
+      <!-- Task routing (card e5fc1fb4, Peti 2026-09-06). This section REPLACES the former
+           "Kategóriák" block: the same --task presets from GET /api/local-llm/categories (backed by
+           store/local-llm-skills/*.txt, never a hardcoded list) with the same real enable/disable
+           switch (store/local-llm.sh reads disabledCategories before any --task -- enforcement, not
+           decoration), now joined with the model each preset is routed to and why, from
+           GET /api/local-llm/routing (pair-BE ecf38e5a). Two panels below: the categories that always
+           run online (router ceilings) and the latest card-level LOCAL/ONLINE verdicts. When the
+           routing endpoint is absent the switches still work and the section says so. -->
+      <div class="llm-section" id="llmRoutingSection">
+        <h2 class="llm-section-title" data-i18n="localLlm.routing.title">Feladat-routing</h2>
+        <p class="llm-offload-desc" data-i18n="localLlm.routing.desc">Melyik feladattípus melyik modellre megy, és miért. A kapcsoló valódi: kikapcsolt preset innentől online (Claude) fut.</p>
+        <div id="llmRoutingSummary" class="llm-routing-summary" role="status" aria-live="polite"></div>
         <div id="llmCategoriesMsg" class="llm-offload-msg" role="status" aria-live="polite"></div>
         <div class="llm-categories-list" id="llmCategoriesList">
           <div class="llm-loading" data-i18n="common.loading">Betöltés...</div>
+        </div>
+        <div class="llm-routing-cols">
+          <div class="llm-routing-col">
+            <h3 class="llm-subsection-title" data-i18n="localLlm.routing.always_online_title">Mindig online</h3>
+            <p class="llm-hint" data-i18n="localLlm.routing.always_online_desc">Ezeket a kategóriákat a router sosem adja a helyi modellnek, a csúszkától függetlenül.</p>
+            <div id="llmRoutingAlwaysOnline" class="llm-routing-list"></div>
+          </div>
+          <div class="llm-routing-col">
+            <h3 class="llm-subsection-title" data-i18n="localLlm.routing.decisions_title">Utolsó kártya-döntések</h3>
+            <p class="llm-hint" data-i18n="localLlm.routing.decisions_desc">A card-build-route döntései dispatch-időben: helyi draft vagy online, és az ok.</p>
+            <div id="llmRoutingDecisions" class="llm-routing-list"></div>
+          </div>
         </div>
       </div>
 
@@ -1057,19 +1087,6 @@
           </div>
           <div class="llm-usage-table-wrap llm-activity-scroll" id="llmUsageRecent"></div>
         </div>
-      </div>
-
-      <!-- Model swap -->
-      <div class="llm-section">
-        <h2 class="llm-section-title" data-i18n="localLlm.models.title">Modellek</h2>
-        <div class="llm-models" id="llmModels">
-          <div class="llm-loading" data-i18n="common.loading">Betöltés...</div>
-        </div>
-        <div class="llm-pull-row">
-          <input type="text" id="llmPullInput" class="llm-input" data-i18n-placeholder="localLlm.models.pull_placeholder" placeholder="pl. qwen2.5-coder:7b" autocomplete="off" spellcheck="false">
-          <button class="btn-primary btn-compact" id="llmPullBtn" data-i18n="localLlm.models.pull_btn">Letöltés</button>
-        </div>
-        <div class="llm-pull-progress" id="llmPullProgress" hidden></div>
       </div>
 
       <!-- Model recommendations + HuggingFace search -->
