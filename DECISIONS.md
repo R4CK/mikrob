@@ -11384,3 +11384,43 @@ AKTÍV, FAILING verdiktű eset lett feltétel nélkül szigorítva.
 
 **Hivatkozás:** kártya `c266ec74`; `store/delta-review-diff.sh`, `store/landing-downward-check.sh`,
 `seed-skills/gate-worktree-pattern/SKILL.md`, `src/__tests__/landing-downward-check.test.ts`.
+
+## 2026-09-06 -- decisions-append-union: az EOF-fallback prefix-valasz elveszitette a sajat utolso sorat (kartya c266ec74)
+
+**A lelet, elesben.** A c266ec74 landolasakor a DECISIONS.md konfliktusba kerult (a git sajat diffje
+osszezavarodott egy korabbi, MASIK kartyahoz (edf9c837) kotheto, nem-a-farokra tett bejegyzestol), es
+a konfliktus harom index-szintjenek adatai kozul `ours` PONTOSAN byte-prefixe volt `theirs`-nek
+(`theirs` = `ours` + egy tiszta farok-fuzes) -- a legegyszerubb eset, amire a `try_append_union`
+epult. Megis elutasitotta.
+
+**A gyoker `_common_line_prefix_len`-ben.** Amikor a `cmp` nem talal elteru byte-ot (mert az egyik
+oldal a masik prefixe), a fuggveny helyesen valaszol a rovidebb oldal teljes hosszaval -- de ez a
+valasz utana belefutott a "vissza a legutolso teljes sorra" lepesbe, amit a MASIK ag szamara epitettek
+(amikor a `cmp` egy valodi, sor-kozepi elterest talal). A `$(git show ...)` csak a FAJL sajat zaro
+ujsorat vagja le, sosem egy belsot -- tehat a rovidebb oldal utolso sora sosem vegzodik `\n`-nel a
+bash-valtozoban, es a `${head%$'\n'*}` ezt a TELJES utolso sort ledobta egy olyan sor-kozepi vagas
+utan kutatva, ami sosem volt ott. Mindket oldal maradek resze (`ours_added`/`theirs_added`) orokolte
+ezt a fuggo sort, az nem indit uj bejegyzest, es az unio elutasitott egy landolast, amiben semmi
+hiba nem volt.
+
+**A javitas.** Az EOF-fallback valasz kozvetlenul visszaadva, kihagyva a felesleges vissza-lepest
+(annak az agnak ket oldala mar teljes `git show`-blob, tehat az a hatar mar valos sorhatar a mogotte
+allo fajlokban).
+
+**Amit ez ONMAGABAN NEM oldott meg, es a kartya sajat masodik targya.** A landolando ag es az
+origin/develop kozotti MASIK iranyu konfliktus (amikor a ket oldal FUGGETLENUL kulonbozo tartalmat
+fuzott a farokhoz, es a korabbi, rossz helyre szurt edf9c837-bejegyzes miatt a kozos prefix a base-nel
+rovidebbre adodott) a meglevo "shared_new csak ures/elvalaszto sor lehet" ellenorzesen buktatta el az
+automata uniot -- ez helyesen viselkedik, csak a landolando agam ELOZETES kezi szinkronizalasa
+(origin/develop aktualis DECISIONS.md-jenek masolasa a sajat agamba a landolas elott) vitte ki a
+tervezett hatokorebol. Ezt a konkret landolast vegul kezzel fejeztem be: a merge-t egy eldobhato
+worktree-ben elkeszitve, a DECISIONS.md-t kezzel osszefuzve, a store/fleet-test.sh-t a merge
+eredmenyen lefuttatva (646/646 fajl, 15501/15501 teszt zolden), majd pusholva.
+
+**Tesztek.** 2 uj kozvetlen selftest-eset a `_common_line_prefix_len`-re (mindket iranyban, melyik
+oldal a rovidebb), mutacioval ellenorizve: a javitas visszavonasa pontosan a live hibat reprodukalja
+(got 44, want 61), es semmi mas nem regresszal (81 ok / 0 fail a mutacio elott es utan is, csak a 2
+uj eset billen).
+
+**Hivatkozas:** kartya `c266ec74`; `store/decisions-append-union.sh`, Gate-SHA `1a8e469e` (a
+landolo merge, kezi befejezessel).
