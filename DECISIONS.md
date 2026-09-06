@@ -9928,3 +9928,71 @@ flotta alól cserélt ki egy éles konfigurációs fájlt.
 
 **Hivatkozás:** kártya `09a3d52a` (szülő `ee2d6220`, hermes-agent atomikus esemény-igénylés);
 `store/redispatch-guard.sh`, `src/__tests__/redispatch-guard-selftest.test.ts`.
+
+## 2026-09-06 14:30 -- A python hook-interpretert ellenőrizzük használat előtt, mert a 127 NEM blokkol (kártya d2b881ab)
+
+**Döntés:** Az upstream `pythonHookCommand()` SZÓ SZERINT átvéve (10. szabály: kész, karbantartott
+megoldás adoptálása saját írása helyett), és a fork MINDEN python-őrére alkalmazva -- upstreamnek
+csak az outgoing-copy-gate-hez kellett, mert a többi őr fork-specifikus. Az `injectOutgoingCopyGate`
+is erre vált a `hookCommand()` helyett.
+
+**Miért:** A `hookCommand()` saját fejléce kimondja, hogy a 127-es kilépés "exactly the non-blocking
+status this whole file exists to stop", és ezért a NODE interpretert használat előtt ellenőrzi. A 14
+python-őr-bedrótozás viszont csupasz `python3 "<script>"` volt. Ha a `python3` bármikor lekerül a
+PATH-ról (pyenv shim, csomagfrissítés, más spawn-környezet), mindegyik 127-tel lép ki, a Claude Code
+azt NEM blokkolónak veszi, és MINDEN python-őr némán leáll: nincs hibaüzenet, nincs log, a
+tool-hívások átmennek. A fork a saját, kimondott tanulságát csak az egyik interpreterre alkalmazta.
+
+**A második, súlyosabb alak:** az `injectOutgoingCopyGate` a parancsát a NODE-builderrel építette egy
+`.py` fájlra, tehát a bedrótozott alak `"<node>" ".../outgoing-copy-gate.py" --telegram-bash` volt,
+ami SyntaxErrorral 1-gyel kilép: a kapu garantált no-op. Lappangó, mert a kill switch alapból ki van
+kapcsolva -- de abban a pillanatban, amikor valaki bekapcsolja, egy kapcsoló, ami azt hiszi, védelmet
+kapcsol be, semmit sem kapcsol be. Ez rosszabb a hiányzó védelemnél: hamis biztonságérzet.
+
+**Ami SZÁNDÉKOSAN kimaradt:** a staleness-guard `bash -c '[ -f <script> ] && exec python3 <script>;
+exit 0'` alakja. Az fail-open SZÁNDÉKKAL (egy törölt szkript ne blokkoljon), tehát a hiányzó
+interpreter nem-blokkoló viselkedése ott KÖVETKEZETES a kimondott szándékkal, nem hiba. Teszt pinneli,
+hogy egy későbbi "takarítás" ne vonjon vissza egy működő döntést.
+
+**Bizonyíték, nem mintaillesztés:** a tesztek VÉGREHAJTJÁK a bedrótozott parancsot python3 nélküli
+PATH-szal. A javított alak 2-vel lép ki (blokkol), a régi csupasz alak 127-tel -- ez a kontroll adja
+a 2-esnek a jelentését. Mérve: a meglévő 72 hook-wiring teszt a HIBÁS és a JAVÍTOTT alakkal egyaránt
+zöld volt, mert egyik sem pinnelte a parancs alakját; ezért nem elég sztringre illeszteni.
+
+**Elavult horgony-állítások javítva ugyanebben a commitban** (a 07f4cd2f-en MikroB által megnevezett
+osztály): `hook-registration-guard.ts` és `known-hook-scripts-exist.test.ts` kommentje azt állította,
+hogy a python-kapuk csupaszon vannak drótozva; a `fork-upstream-conflict-guard` 15. körös
+nyugtázása pedig azt, hogy a `pythonHookCommand` NINCS adoptálva. Az utóbbi merge-idejű
+UTASÍTÁS, nem próza: javítatlanul a következő ütközésnél visszanyithatta volna. A dátumozott mérést
+nem írtam át, hanem egy felülíró kör-jegyzetet fűztem hozzá.
+
+**Ki döntött:** backend3 (mérés és kártya), backend2 (megvalósítás), upstream (az adoptált függvény).
+**Hivatkozás:** kártya d2b881ab; `src/web/agent-scaffold.ts`.
+
+## 2026-09-06 14:26 -- d2b881ab KORREKCIÓ -- a buildert az INJEKTOR-nál átírtam, az ÖSSZEHASONLÍTÁSNÁL nem
+
+**Mi történt:** a `b097473a` az `injectOutgoingCopyGate()`-et átvitte a `pythonHookCommand()`-re, de
+azt a két helyet, ami ezt a bedrótozást FELISMERI (`ensureGovernanceGateCommands` wired-already
+összehasonlítása és az `ensureOutgoingCopyGate` elő-ellenőrzése), a `hookCommand()`-en hagyta. A
+flotta-suite fogta meg: `outgoing-copy-gate-role-wiring.test.ts`, 2 bukás, 626 fájl / 15 248 tesztből.
+
+**Miért nem látszott a saját tesztjeimen:** a BEDRÓTOZOTT parancs helyes volt, tehát minden teszt,
+ami azt vizsgálja, zöld maradt (a 15 újam is). A kár egy réteggel arrébb, az ÖSSZEHASONLÍTÁSBAN volt:
+a javító kör nem ismerte fel a saját munkáját, ezért a `needCopyAdd` minden körben igaz maradt (a
+javítás sosem ült le, minden bootnál újraírta a `settings.json`-t), a `needCopyRemove` pedig végig
+hamis (a kill switch KIKAPCSOLÁSA többé nem távolította el a hookot -- pont a "mindkét irány"
+tulajdonság, amiért a 74181db2 kártya készült).
+
+**A tanulság kimondottan ott állt, amit megsértettem:** a `hookCommand()` saját fejléce ígéri, hogy
+egyetlen builder tartja "the injectors and every wired-already comparison byte-identical, so they
+cannot drift". A mondat első felét alkalmaztam, a másodikat nem.
+
+**Strukturális pin az OSZTÁLYRA, nem erre az egy esetre:** forrás-szkennelés, ami kimondja, hogy `.py`
+út nem mehet a `hookCommand()`-be és `.mjs` út nem mehet a `pythonHookCommand()`-be. Három külön
+visszaállított hívási helyen bizonyítottan harap, plusz egy korpusz-ellenőrzés, hogy egy semmit nem
+illesztő regex ne mehessen el tisztaként. Az illesztés a NYERS fájlon fut, nem komment-mentesítetten:
+ez HIÁNY-állítás, és a komment-eltávolítás az az irány, ami valódi előfordulást tud elrejteni.
+
+**Ki döntött:** backend2.
+**Hivatkozás:** kártya d2b881ab; commit `00691ced`; `src/web/agent-scaffold.ts`,
+`src/__tests__/python-hook-interpreter.test.ts`.

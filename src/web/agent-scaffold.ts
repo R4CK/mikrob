@@ -96,6 +96,27 @@ export function hookCommand(scriptPath: string): string {
   return `test -x "${HOOK_NODE_BIN}" || { echo "${miss}" >&2; exit 2; }; "${HOOK_NODE_BIN}" "${scriptPath}"`
 }
 
+// The python twin of hookCommand(). ADOPTED VERBATIM from upstream/develop (CLAUDE.md rule 10:
+// take the maintained implementation rather than write a second one), then applied here to every
+// python guard -- upstream only needed it for the outgoing-copy-gate, because the other guards in
+// this list are fork-specific and upstream does not carry them.
+//
+// Resolving the interpreter at RUNTIME with `command -v` rather than burning in an absolute path is
+// deliberate and is the better half of the lesson in hookCommand above: the burnt-in node path goes
+// dangling on a `brew upgrade`, and a python path would rot the same way (a pyenv shim, a brew
+// python bump, an Xcode CLT reinstall). What must not happen is the 127 exit, because Claude Code
+// treats 127 as NON-blocking and lets the tool call through -- a gate that silently stops
+// enforcing. So the interpreter is probed first and a miss exits 2, which blocks.
+//
+// WHY THIS FILE NEEDED IT AND DID NOT HAVE IT (card d2b881ab): hookCommand's own header states that
+// 127 is "exactly the non-blocking status this whole file exists to stop", and checks the NODE
+// interpreter accordingly -- but all fourteen python guards were wired as a bare `python3 "<script>"`.
+// The fork applied its own stated lesson to one interpreter and not the other.
+export function pythonHookCommand(scriptPath: string): string {
+  const miss = 'governance-kapu: a hook interpretere nem talalhato (python3 nincs a PATH-on). A kapu ezert BLOKKOL. Javitas: telepitsd a python3-at, vagy inditsd ujra a dashboardot.'
+  return `command -v python3 >/dev/null 2>&1 || { echo "${miss}" >&2; exit 2; }; python3 "${scriptPath}"`
+}
+
 // Wired-already predicate for the ensure* migrations: is `command` present in
 // the serialized PreToolUse array? The command must be JSON-escaped before the
 // includes() -- comparing the RAW string disagrees with the serialized form on
@@ -579,7 +600,11 @@ export function injectOutgoingCopyGate(existing: Record<string, unknown>): void 
   const hooks = (existing.hooks && typeof existing.hooks === 'object'
     ? existing.hooks
     : (existing.hooks = {})) as Record<string, unknown>
-  const base = hookCommand(join(PROJECT_ROOT, 'scripts', 'hooks', 'outgoing-copy-gate.py'))
+  // NODE was building this command for a .py file (card d2b881ab): the wired form was
+  // `"<node>" ".../outgoing-copy-gate.py" --telegram-bash`, which SyntaxErrors and exits 1, so the
+  // gate was a guaranteed no-op. Latent only because the kill switch ships off -- the day someone
+  // turns it on, a switch that believes it enables a protection enables nothing.
+  const base = pythonHookCommand(join(PROJECT_ROOT, 'scripts', 'hooks', 'outgoing-copy-gate.py'))
   // Validate the bare command: isUnsafeHookCommand resolves the script path out of it, and
   // that check should see exactly what it was written for, not a flag appended afterwards.
   if (isUnsafeHookCommand(base)) return
@@ -754,7 +779,7 @@ export function injectGitProtectGuard(existing: Record<string, unknown>): void {
   const hooks = (existing.hooks && typeof existing.hooks === 'object'
     ? existing.hooks
     : (existing.hooks = {})) as Record<string, unknown>
-  const command = `python3 "${join(PROJECT_ROOT, 'scripts', 'hooks', 'git-protect-guard.py')}"`
+  const command = pythonHookCommand(join(PROJECT_ROOT, 'scripts', 'hooks', 'git-protect-guard.py'))
   // Registration guard: a /tmp or missing path must never enter shared settings.
   if (isUnsafeHookCommand(command)) return
   const entry = {
@@ -788,7 +813,7 @@ export function injectNpmProtectGuard(existing: Record<string, unknown>): void {
   const hooks = (existing.hooks && typeof existing.hooks === 'object'
     ? existing.hooks
     : (existing.hooks = {})) as Record<string, unknown>
-  const command = `python3 "${join(PROJECT_ROOT, 'scripts', 'hooks', 'npm-protect-guard.py')}"`
+  const command = pythonHookCommand(join(PROJECT_ROOT, 'scripts', 'hooks', 'npm-protect-guard.py'))
   if (isUnsafeHookCommand(command)) return
   const entry = {
     matcher: 'Bash',
@@ -822,7 +847,7 @@ export function injectSymlinkedNodeModulesGuard(existing: Record<string, unknown
   const hooks = (existing.hooks && typeof existing.hooks === 'object'
     ? existing.hooks
     : (existing.hooks = {})) as Record<string, unknown>
-  const command = `python3 "${join(PROJECT_ROOT, 'scripts', 'hooks', 'symlinked-node-modules-guard.py')}"`
+  const command = pythonHookCommand(join(PROJECT_ROOT, 'scripts', 'hooks', 'symlinked-node-modules-guard.py'))
   if (isUnsafeHookCommand(command)) return
   const entry = {
     matcher: 'Bash',
@@ -846,7 +871,7 @@ export function ensureSymlinkedNodeModulesGuard(name: string): boolean {
   if (existsSync(settingsPath)) {
     try { settings = JSON.parse(readFileSync(settingsPath, 'utf-8')) } catch { return false }
   }
-  const command = `python3 "${join(PROJECT_ROOT, 'scripts', 'hooks', 'symlinked-node-modules-guard.py')}"`
+  const command = pythonHookCommand(join(PROJECT_ROOT, 'scripts', 'hooks', 'symlinked-node-modules-guard.py'))
   const hooks = (settings.hooks && typeof settings.hooks === 'object')
     ? settings.hooks as Record<string, unknown>
     : {}
@@ -880,7 +905,7 @@ export function injectBlastRadiusGuard(existing: Record<string, unknown>): void 
   const hooks = (existing.hooks && typeof existing.hooks === 'object'
     ? existing.hooks
     : (existing.hooks = {})) as Record<string, unknown>
-  const command = `python3 "${join(PROJECT_ROOT, 'scripts', 'hooks', 'blast-radius-guard.py')}"`
+  const command = pythonHookCommand(join(PROJECT_ROOT, 'scripts', 'hooks', 'blast-radius-guard.py'))
   if (isUnsafeHookCommand(command)) return
   const entry = {
     matcher: BLAST_RADIUS_GUARD_MATCHER,
@@ -904,7 +929,7 @@ export function ensureBlastRadiusGuard(name: string): boolean {
   if (existsSync(settingsPath)) {
     try { settings = JSON.parse(readFileSync(settingsPath, 'utf-8')) } catch { return false }
   }
-  const command = `python3 "${join(PROJECT_ROOT, 'scripts', 'hooks', 'blast-radius-guard.py')}"`
+  const command = pythonHookCommand(join(PROJECT_ROOT, 'scripts', 'hooks', 'blast-radius-guard.py'))
   const hooks = (settings.hooks && typeof settings.hooks === 'object')
     ? settings.hooks as Record<string, unknown>
     : {}
@@ -1026,7 +1051,7 @@ export function ensureNpmProtectGuard(name: string): boolean {
   if (existsSync(settingsPath)) {
     try { settings = JSON.parse(readFileSync(settingsPath, 'utf-8')) } catch { return false }
   }
-  const command = `python3 "${join(PROJECT_ROOT, 'scripts', 'hooks', 'npm-protect-guard.py')}"`
+  const command = pythonHookCommand(join(PROJECT_ROOT, 'scripts', 'hooks', 'npm-protect-guard.py'))
   const hooks = (settings.hooks && typeof settings.hooks === 'object')
     ? settings.hooks as Record<string, unknown>
     : {}
@@ -1050,7 +1075,7 @@ export function injectPentestToolInstallGuard(existing: Record<string, unknown>)
   const hooks = (existing.hooks && typeof existing.hooks === 'object'
     ? existing.hooks
     : (existing.hooks = {})) as Record<string, unknown>
-  const command = `python3 "${join(PROJECT_ROOT, 'scripts', 'hooks', 'pentest-tool-install-guard.py')}"`
+  const command = pythonHookCommand(join(PROJECT_ROOT, 'scripts', 'hooks', 'pentest-tool-install-guard.py'))
   if (isUnsafeHookCommand(command)) return
   const entry = {
     matcher: 'Bash',
@@ -1079,7 +1104,7 @@ export function injectCdChainGuard(existing: Record<string, unknown>): void {
   const hooks = (existing.hooks && typeof existing.hooks === 'object'
     ? existing.hooks
     : (existing.hooks = {})) as Record<string, unknown>
-  const command = `python3 "${join(PROJECT_ROOT, 'scripts', 'hooks', 'cd-chain-guard.py')}"`
+  const command = pythonHookCommand(join(PROJECT_ROOT, 'scripts', 'hooks', 'cd-chain-guard.py'))
   if (isUnsafeHookCommand(command)) return
   const entry = {
     matcher: 'Bash',
@@ -1108,7 +1133,7 @@ export function ensureGitProtectGuard(name: string): boolean {
   if (existsSync(settingsPath)) {
     try { settings = JSON.parse(readFileSync(settingsPath, 'utf-8')) } catch { return false }
   }
-  const command = `python3 "${join(PROJECT_ROOT, 'scripts', 'hooks', 'git-protect-guard.py')}"`
+  const command = pythonHookCommand(join(PROJECT_ROOT, 'scripts', 'hooks', 'git-protect-guard.py'))
   const hooks = (settings.hooks && typeof settings.hooks === 'object')
     ? settings.hooks as Record<string, unknown>
     : {}
@@ -1140,7 +1165,7 @@ export function injectNoisyCommandGuard(existing: Record<string, unknown>): void
   const hooks = (existing.hooks && typeof existing.hooks === 'object'
     ? existing.hooks
     : (existing.hooks = {})) as Record<string, unknown>
-  const command = `python3 "${join(PROJECT_ROOT, 'scripts', 'hooks', 'noisy-command-guard.py')}"`
+  const command = pythonHookCommand(join(PROJECT_ROOT, 'scripts', 'hooks', 'noisy-command-guard.py'))
   if (isUnsafeHookCommand(command)) return
   const entry = {
     matcher: 'Bash',
@@ -1162,7 +1187,7 @@ export function ensureNoisyCommandGuard(name: string): boolean {
   if (existsSync(settingsPath)) {
     try { settings = JSON.parse(readFileSync(settingsPath, 'utf-8')) } catch { return false }
   }
-  const command = `python3 "${join(PROJECT_ROOT, 'scripts', 'hooks', 'noisy-command-guard.py')}"`
+  const command = pythonHookCommand(join(PROJECT_ROOT, 'scripts', 'hooks', 'noisy-command-guard.py'))
   const hooks = (settings.hooks && typeof settings.hooks === 'object')
     ? settings.hooks as Record<string, unknown>
     : {}
@@ -1182,7 +1207,7 @@ export function ensureCdChainGuard(name: string): boolean {
   if (existsSync(settingsPath)) {
     try { settings = JSON.parse(readFileSync(settingsPath, 'utf-8')) } catch { return false }
   }
-  const command = `python3 "${join(PROJECT_ROOT, 'scripts', 'hooks', 'cd-chain-guard.py')}"`
+  const command = pythonHookCommand(join(PROJECT_ROOT, 'scripts', 'hooks', 'cd-chain-guard.py'))
   const hooks = (settings.hooks && typeof settings.hooks === 'object')
     ? settings.hooks as Record<string, unknown>
     : {}
@@ -1223,7 +1248,7 @@ export function ensureOutgoingCopyGate(name: string): boolean {
   const wanted = agentGetsOutgoingCopyGate(name)
   if (wanted === wired) return false
   if (wanted) {
-    const command = hookCommand(join(PROJECT_ROOT, 'scripts', 'hooks', 'outgoing-copy-gate.py'))
+    const command = pythonHookCommand(join(PROJECT_ROOT, 'scripts', 'hooks', 'outgoing-copy-gate.py'))
     if (isUnsafeHookCommand(command)) return false
     injectOutgoingCopyGate(settings)
     if (name !== MAIN_AGENT_ID) mkdirSync(join(agentDir(name), '.claude'), { recursive: true })
@@ -1243,7 +1268,7 @@ export function ensurePentestToolInstallGuard(name: string): boolean {
   if (existsSync(settingsPath)) {
     try { settings = JSON.parse(readFileSync(settingsPath, 'utf-8')) } catch { return false }
   }
-  const command = `python3 "${join(PROJECT_ROOT, 'scripts', 'hooks', 'pentest-tool-install-guard.py')}"`
+  const command = pythonHookCommand(join(PROJECT_ROOT, 'scripts', 'hooks', 'pentest-tool-install-guard.py'))
   const hooks = (settings.hooks && typeof settings.hooks === 'object')
     ? settings.hooks as Record<string, unknown>
     : {}
@@ -1450,7 +1475,13 @@ export function ensureGovernanceGateCommands(name: string): boolean {
   // Card 74181db2, both directions. `wanted` false + wired means the operator turned the
   // switch off: the repair pass is where that actually takes effect, since nothing else
   // revisits an already-scaffolded settings file.
-  const copyCmd = hookCommand(join(PROJECT_ROOT, 'scripts', 'hooks', 'outgoing-copy-gate.py'))
+  // pythonHookCommand, NOT hookCommand: this is the wired-already COMPARISON, and hookCommand's
+  // own header promises that a single builder keeps "the injectors and every wired-already
+  // comparison byte-identical, so they cannot drift". Moving the injector to the python builder
+  // and leaving this one on the node builder broke exactly that promise: the comparison never
+  // matched, so needCopyAdd stayed true on every pass (the repair never settled) and
+  // needCopyRemove stayed false (turning the switch off no longer removed anything).
+  const copyCmd = pythonHookCommand(join(PROJECT_ROOT, 'scripts', 'hooks', 'outgoing-copy-gate.py'))
   const copyWired = hookCommandWired(ptuJson, copyCmd)
   const wantCopy = agentGetsOutgoingCopyGate(name)
   const needCopyAdd = wantCopy && !copyWired
