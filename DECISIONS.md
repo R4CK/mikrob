@@ -8952,3 +8952,116 @@ kontroll mindkét úton safe marad, és az N-2 kapcsoló bukó `.py`-ra rc=1-et,
 
 **Hivatkozás:** kártya `bb52c2fa`, komment 21291; a helyesbített bejegyzés e fájl mai
 `bb52c2fa` tétele.
+
+## 2026-09-06 -- c52e2823 (2. kör): egy elutasítás, amit nem lehet megítélni, kap saját szót -- `UNSUPERSEDED`
+
+**Döntés.** A `store/gate-closure-check.py` mostantól három állapotot különböztet meg ott,
+ahol eddig kettő volt. Egy gate elutasítása BLOKKOL (`FAILED`), ha az adott gate szerepét
+viselő szerzőtől jött, vagy ha megnevez egy commitot. Nem blokkol, ha az adott gate maga
+szólalt meg utána a leszállított shára. És sem nem blokkol, sem nem zárható
+(`UNSUPERSEDED|<gate-ek>|<ki mondta>`), ha sha nélkül áll, és nincs mivel bizonyítani, hogy
+egy későbbi PASS felülírta -- ez emberi/MikroB-döntés, nem automatikus visszadobás.
+
+**A kényszerítő lelet.** Az 1. kör (bdb7375d) a testvér-gate elutasítását a per-szerző
+táblából olvasta, és az MINDEN szerzőt tartalmazott, szemben a tükrével (`latest_by_role`),
+ami mindig is szerepre szűrt. Emiatt bármely verdikt-ALAKÚ mondat -- a flotta rutinszerű
+"<GATE> <VERDIKT> ELFOGADVA, vissza in_progress-be" nyugtázása, vagy egy építő "QA FAIL
+elfogadva, javitottam" sora -- véglegesen beállt egy olyan elutasítás helyébe, amit a gate
+maga már visszavont. QA mérte (21135), Cybersec függetlenül reprodukálta és tágabbnak
+találta (21176): nem csak a koordinátoré, hanem minden nem-szerep-szerzős idézet.
+
+**Miért nem elég a puszta szerep-szűrés.** Mert a nyugtázás állhat a gate saját utolsó
+szava UTÁN is. Akkor a gate soha nem válaszolt rá, és a sor eldobása egy esetleg NYITOTT
+elutasítás fölött zárná le a kártyát -- pontosan az az irány, ami ellen a 44849954-es
+aszimmetria ("egy nem attribuálható elutasítás akkor is elutasítás") megszületett. A 21139
+döntés ezért új szót kért, nem szélesebb szűrőt. Az e4b7096e kártya (azonos-szerep FAIL ->
+PASS sha nélkül) ugyanennek a szónak a másik esete, ezért lett ide olvasztva.
+
+**Ahol a megvalósítás ELTÉR a 21139 szövegétől, tudatosan.** A döntés szerint a relay-eset
+MINDIG `UNSUPERSEDED`. A leszállított alak csak akkor, ha utána NEM szólalt meg maga a gate
+a leszállított shára. Ha megszólalt, az pontosan az, amit a "felülírás" jelent, és egy
+eldöntött történetre "eldönthetetlent" válaszolni négy LEZÁRT kártyát parkoltatna egy
+embernek, akinek nincs mit eldöntenie. Az időrend tehát nem díszítés, hanem maga a
+bizonyíték. Ez egy sor visszavétele, ha MikroB másképp dönt.
+
+**Két fail-closed előfeltétel, hogy az új szó ne legyen átjáró.** Relay, ami mögött az adott
+gate-től egyáltalán nincs verdikt -> változatlanul `FAILED` (nincs mihez mérni). Elutasítás,
+ami MEGNEVEZ egy shát -> megítélhető, tehát meg is ítéli, változatlanul.
+
+**Mérve az élő táblán, nem szintetikusan.** 348 kommentelt kártya, régi és új verzió egymás
+mellett, minden változó válasz kézzel visszaolvasva a kártya saját verdikt-történetéből:
+`008739a8`, `efaf8926`, `3ae71df1`, `b24b9e5c` FAILED -> AGREE (mindegyiken valódi,
+szerep-szerzős, egy shára szóló újra-gate-elés áll a nyugtázás után), `4a6c47f0` FAILED ->
+DISAGREE. Az utolsó NEM hamis blokk feloldása: ott a CYBERSEC GO a `d49e9c7a`-ra szól, a QA
+PASS és a CYBERED GO a `901b6fbb`-re, és a két commit ténylegesen eltér az
+`audit-ip-coarsen.ts`-ben -- a régi eszköz jó választ adott rossz okból. Populáció: 633
+verdikt-alakú komment, 18 nem-szerep-szerzőtől, ebből 11 elutasítás 9 kártyán, mind
+MikroB-tól. Az új szó ma EGYETLEN élő kártyán keletkezik (`2cb07372`), és ott egy olvasható
+elutasítás megelőzi -- ez a precedencia (FAILED > UNSUPERSEDED) is pinelve van.
+
+**Amit a tesztelés hozzátett a döntéshez.** A regresszió-mentesség a TELJES soron áll, nem a
+verdikt-szón: egyedülálló valódi QA FAIL és tiszta pass bájtra azonos a korábbi kimenettel
+(MikroB elfogadási feltétele, 21177) -- egy csak-fajta assertion zölden hagyna egy
+átfogalmazott választ, ami minden olvasót eltör. Négy mutáns, négy különböző eset fogja meg.
+Egy ötödik mutáns túlélte mind a 83 esetet, és kiderült, hogy elérhetetlen ág, nem
+tesztlyuk: ha egy gate utolsó szava a saját elutasítása, ugyanaz a sor a `latest_by_role`-ban
+is ott áll, tehát a passzoló előfeltétel már előbb elutasít. A sor kikerült, a viselkedést
+pinelő eset maradt.
+
+**Hivatkozás:** kártya `c52e2823` (magába olvasztva: `e4b7096e`); `store/gate-closure-check.py`,
+`store/gate-closure-check.selftest.py` (83 eset), `CLAUDE.md` 4a. pont; QA 21135, Cybersec
+21176, MikroB 21139 és 21177. Kapcsolódó: `71f95ba0` (az eszköznek nincs gépi fogyasztója,
+tehát ez a javítás csak azt a zárást védi, ahol valaki elindítja).
+
+## 2026-09-06 -- dc5b714d: az ügynök-config fájlok tulajdonos-csak jogosítást KAPNAK, nem megőriznek
+
+**Döntés.** Minden per-ügynök konfigurációs fájl, amit az `agent-process.ts` ír, 0600-on áll,
+akármilyen módban volt előtte. A kód nem ŐRZI a meglévő módot (az volt a korábbi
+viselkedés), hanem KÉNYSZERÍTI a szűket. A hatókör FÁJLOSZTÁLYRA szól, nem egyetlen író
+függvényre: `known_marketplaces.json`, `installed_plugins.json`, az ügynök `.env`-je, a
+`.mcp.json` és a `.claude/settings.json` -- öt hívási hely, egy helperen (`writeAgentConfig`)
+át.
+
+**A kikényszerítő lelet.** Cybersec mérése (20627, 20643, 20654): a `writeJsonAtomic` a
+`writeFileSync` `mode` opciójára támaszkodott, amit a umask szűkít, és a teszt ígérete
+("preserves a deliberately wider mode too") EGYENESEN ELLENTMONDOTT a flotta
+umask-keményítésének (`ensure-umask-dropin.sh`, `FLEET_UMASK:-0077`). Két landolt döntés nem
+tartható egyszerre. MikroB döntése: a credential-hordozó config MINDIG 0600, tehát a TESZT
+ígérete a hibás, nem a kód. Négy élő izolált config (jogász, marketing, pénzügy, videooo)
+ekkor 0664-en ült, env-blokkokkal; a `.mcp.json` ugyanaz a tartalom-osztály, mint az
+incidens, ami ezt a munkát elindította: egy ügynöké `env` blokkban hordozott API-kulcsot,
+csoport- és világ-olvashatóan.
+
+**Miért NEM a repó saját `atomicWriteFileSync`-je.** Az kivonná ezt a fájlosztályt a flotta
+umask-politikája alól, tehát pont az ELLENKEZŐ irányba menne, mint amit a keményítés elérni
+akart. Ez MikroB kimondott rulingja, és azért kerül a naplóba, mert egy későbbi, jó
+szándékú "egységesítsük az írókat" refaktor pontosan ezt a sort vonná vissza.
+
+**A két lépés két KÜLÖNBÖZŐ esetet fed, nem redundancia.** A `{ mode: 0o600 }` a LÉTREHOZÁS
+pillanatát (ott a umask dönt), a rákövetkező `chmod` a MÁR LEMEZEN LÉVŐ fájlt (egy mode
+nélküli írás nem nyúl a meglévő jogosultsághoz). A flotta pontosan a második állapotban
+volt. Mérve: a `chmod` eltávolítása pontosan egy esetet (a REWRITE-ot) buktat, a `{ mode }`
+eltávolítása EGYET SEM -- mert a chmod már megjavította a fájlt, mire bárki ránéz. A
+`{ mode }` a létrehozás és a chmod közötti ABLAKOT zárja, és egy nyugalmi-állapot assertion
+nem lát ablakot. A nyugalmi garancia tehát mérve van, az ablak érvelve, és a tesztfájl ezt
+ki is mondja ahelyett, hogy egy zöld futás mindkettőt látszana fedni.
+
+**NÉGY helyett ÖT, és a különbség tanulsága.** Az első jelentésem négy megkerülő írót
+mondott. A kimaradt az `agents/<n>/.claude/settings.json`, aminek a BASENEVE egyezik egy már
+javított fájléval, az ÚTJA nem -- két `settings.json` áll egymás mellett a lemezen. A KÓD
+kezdettől mind az ötöt kezelte, a PRÓZA volt rövid, ezért a javítás a modul-kommentre és a
+teszt fejlécére is kiterjedt, nem csak a kártyára: egy kártyán tett korrekció nem éri el a
+leszállított kommentet.
+
+**Amit a teszt strukturálisan véd.** A viselkedési esetek az öt hívási helyből hármat érnek
+el; a másik kettő a spawn-úton él, amit a harness nem tud hajtani. Ezért egy forrás-szintű
+darabszám-őr áll mellettük: csupasz `writeFileSync(` PONTOSAN kétszer szerepelhet, a két
+helper belsejében. Az illesztés KOMMENT-MENTESÍTETT forráson fut (12. kódminőségi elv), két
+kontrollal: egy hozzáadott valódi megkerülést lát, egy kommentbe írtat nem. Cybersec lappangó
+F-3 lelete (az őr csak a nevesített import-alakot látja, a `fs.writeFileSync`-et nem)
+tudatosan, nem-blokkolóként maradt nyitva.
+
+**Hivatkozás:** kártya `dc5b714d` (a `75c2dbb7` folytatása); `src/web/agent-process.ts`,
+`src/__tests__/agent-config-file-modes.test.ts`; Cybersec 20627/20643/20654/21127/21190, QA
+21293. A négy élő fájl egyszeri remediációját (chmod 0600) MikroB végezte, mert
+visszafordítható és a saját flotta-configjai.
