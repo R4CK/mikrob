@@ -10863,3 +10863,44 @@ kártyának a hatóköre.
 `dc5b714d`, `4a6c47f0`, `c52e2823`, `a20f0aa7`; backend2 saját korábbi mérése (komment 21435);
 `store/gate-closure-check.py`, `store/gate-closure-check.selftest.py`,
 `src/web/kanban-gate-completeness-guard.ts` (a portolt referencia).
+## 2026-09-06 -- dbba0424 -- PERMDENY905: az Escape egy engedélykérésen NEM semleges, tehát nem nyomunk semmit
+
+**A DÖNTÉS.** A channel-monitor menü-helyreállító ága, ami eddig vakon Escape-et küldött minden
+blokkoló modálisra, mostantól előbb megkérdezi, hogy tool-permission dialógus-e. Ha igen: NULLA
+billentyű és egy hangos riasztás az operátornak. Ugyanaz az elv, amit a fel nem ismert
+trust-dialógusnál (TRUSTGATE901) és a modell-hozzájárulásnál (FABLEFALL1) már kimondtunk: ahol
+minden billentyű egy VÁLASZ, ott nincs ártalmatlan billentyű, tehát nem az ügynök dönt.
+
+**A DEFEKTET NÁLUNK MÉRTEM MEG, NEM AZ UPSTREAM JELENTÉSÉBŐL VETTEM ÁT.** A kártya kifejezetten ezt
+kérte, és jogosan: egy másik telepítés riportja nem bizonyíték a mi másolatunkról. Elfogtam egy
+valódi Bash-engedélykérést ebből a telepítésből (Claude Code v2.1.263, `tmux capture-pane -p`), és
+a három mérés ez lett: `detectsBlockingMenu` IGAZ, `detectsFirstRunGate` NULL,
+`detectsModelConsentDialog` HAMIS. Vagyis a panel pontosan a vak Escape ágába esett. A defekt tehát
+nálunk is fennállt, nem elméleti.
+
+**A FELISMERÉS SZÁNDÉKOSAN SZÉLES, ÉS EZ IRÁNY, NEM LUSTASÁG.** A hamis pozitív ára annyi, hogy egy
+valódi beragadt menü riasztást kap Escape helyett -- az operátor akkor is megtudja. A hamis negatív
+ára az, hogy NEM-et válaszolunk a nevében, csendben. A két hiba nem egyenrangú, ezért a felismerés
+két, egymást fedő jelre épül: a lábjegyzet-jelölőre a footer-régióban VAGY a kérdés+Yes alakra az
+egész panelen.
+
+**A REGIONÁLIS RÉSZLET, AMI SZÁMÍT.** A footer-tag ugyanazon a nyolc soros ablakon fut, mint amit a
+`detectsBlockingMenu` néz. Egy finomítás, ami SZŰKEBB régiót vizsgál, mint a kapu, amit finomít,
+pont azt a rést nyitja újra, ami miatt létezik. Az upstream öt sorral dolgozik; nálunk ez a nyolc a
+helyes érték, mert a mi kapunk nyolcat használ.
+
+**EGY MÉRT ELTÉRÉS, AMIT JELENTEK ÉS NEM JAVÍTOK.** Ugyanaz a dialógus egy frissen indult
+sessionben, ahol a tartalom még nem tölti ki a képernyőt, 11 üres sort kap alá a capture-ben. A mi
+`detectsBlockingMenu`-nk NYERSEN vágja az utolsó nyolc sort, tehát ilyenkor csak üres sorokat lát,
+és a panel semmit nem kap: se Escape-et, se riasztást. Néma, de nem rossz válasz. Az upstream
+előbb levágja az üres farkat (`liveTailRegion`), és látná. Ez a `detectsBlockingMenu`-ről szóló
+külön lelet, nem ennek a kártyának a hatóköre -- egy működő detektorhoz nem nyúlok kártya nélkül.
+Az új detektor viszont a párnázott esetet IS felismeri, tehát ha a kaput később kiszélesítik, ezen
+az ágon nincs több teendő. Az eset teszttel rögzítve, hogy az eltérés kimondott tény legyen.
+
+**Ki döntött:** backend2 lelete (upstream `ab96c868f316` blob, PERMDENY905), MikroB nyitotta
+kártyaként adopciós döntésre; a mérés, a régió-választás és a nem-javítom-a-kaput határvonal
+backend mérnöki döntése, itt felülvizsgálatra kitéve.
+
+**Hivatkozás:** kártya `dbba0424`; `src/pane-state.ts` (`detectsPermissionDialog`),
+`src/web/channel-monitor.ts`, `src/__tests__/pane-permission-dialog.test.ts`, `README.md`.
