@@ -68,23 +68,35 @@ _common_line_prefix_len() {
   # It passed every selftest because every fixture was ASCII, where the two counts coincide. That is
   # the whole reason this shipped: the tests could not see the difference they were built out of.
   #
-  # `local LC_ALL=C` COVERS BASH'S OWN COUNTING AND NOT THE CHILD'S WORDING, and the comment above
-  # used to blur the two (Cybered C-2, card bb52c2fa). `cmp` is a separate process whose MESSAGE is
-  # localised, and its wording does not track "is this locale byte-oriented" the way one would guess.
-  # Measured on this machine, same two files, five environments:
-  #     LC_ALL unset -> "differ: byte 4"      LC_ALL=C           -> "differ: char 4"
-  #     C.UTF-8      -> "differ: byte 4"      en_US.UTF-8/hu_HU  -> "differ: char 4"
-  # So a `byte`-only pattern silently matched NOTHING in most exported locales, `n` came back empty,
-  # and the fallback below answered with the SHORTER side's whole length as the common prefix. The
-  # selftest was green only while LC_ALL happened to be unset: exporting any of C, C.UTF-8,
-  # en_US.UTF-8 or hu_HU.UTF-8 turned it 61/67. Any CI or agent environment that exports LC_ALL got a
-  # FALSE RED on correct code -- the class rule 17 exists for.
+  # WHY THE OLD PARSER BROKE, and it takes TWO facts together -- neither explains it alone (Cybered
+  # C-2 and Cybersec F-2, card bb52c2fa; the first two explanations written here, both mine, were
+  # wrong and are corrected in DECISIONS.md rather than quietly deleted).
+  #
+  # FACT 1 -- `local LC_ALL=C` reaches the CHILD only if LC_ALL was ALREADY EXPORTED. bash's `local`
+  # inherits the existing export attribute; it does not create one. Proved with `declare -p` inside
+  # such a function:
+  #     LC_ALL unset in the environment -> declare -- LC_ALL="C"   (child does NOT see it)
+  #     LC_ALL exported                 -> declare -x LC_ALL="C"   (child DOES see it)
+  #
+  # FACT 2 -- GNU cmp's wording follows the locale's CHARACTER WIDTH, inverted from the naive guess:
+  #     single-byte locale (C, POSIX, or any invalid value falling back to C) -> "differ: char N"
+  #     multibyte locale   (C.UTF-8, or the ambient LANG when LC_ALL is unset) -> "differ: byte N"
+  #
+  # Together: with LC_ALL unset the local never reached cmp, cmp ran under the multibyte ambient
+  # LANG and said "byte", and the `byte`-only pattern worked. With LC_ALL exported to ANYTHING the
+  # local DID reach cmp, cmp ran in single-byte C and said "char", the pattern matched nothing, `n`
+  # came back empty, and the fallback below answered with the SHORTER side's whole length as the
+  # common prefix. That is why every exported value broke it -- the specific locale never mattered,
+  # only whether one was exported. Selftest: green with LC_ALL unset, 61/67 with any export. Any CI
+  # or agent environment that exports LC_ALL got a FALSE RED on correct code -- the rule-17 class.
   #
   # THE FIX IS NOT A WIDER WORD LIST, because that is the same enumeration mistake one rung up: a
   # translated locale prints a different sentence entirely. `cmp -l` emits NUMBERS -- one line per
-  # differing byte, `<1-based byte offset> <octal a> <octal b>` -- and its FORMAT is identical in all
-  # five environments above. Verified multibyte too: two files differing after `áéí` (6 bytes) report
-  # offset 7 under both C and hu_HU.UTF-8, i.e. a byte offset, not a character one.
+  # differing byte, `<1-based byte offset> <octal a> <octal b>` -- and its FORMAT is identical in
+  # every environment tried (unset, C, C.utf8, POSIX; only those three locales exist on this host,
+  # which is why the earlier five-row table in this comment was wrong: two of its rows were the
+  # invalid-locale fallback wearing another name). Verified multibyte: two files differing after
+  # `áéí` (6 bytes) report offset 7 under both C and C.utf8, i.e. a byte offset, not a character one.
   local LC_ALL=C
   local a="$1" b="$2" n cut head
   # `awk '{print $1}'`, NOT `cut -d' ' -f1`: cmp -l RIGHT-ALIGNS the offset, so a large one arrives
@@ -600,6 +612,23 @@ if [ "${BASH_SOURCE[0]}" = "${0}" ] && [ "${1:-}" = "--selftest" ]; then
   fail=0
   TMP="$(mktemp -d)"
   trap 'rm -rf "$TMP"' EXIT
+
+  # THE VERDICT IS DERIVED FROM WHAT WAS PRINTED, NOT ONLY FROM A FLAG A CASE REMEMBERED TO SET
+  # (Cybered F-1, card bb52c2fa -- and the two cases it caught were MINE, added in the previous
+  # round to close a silent green). Both of them incremented `bad`, a variable nothing reads, so
+  # with the regression reintroduced the run printed `FAIL ...` and then said `selftest: PASS`,
+  # exit 0. Worse, my mutation evidence for those two cases counted PRINTED FAIL LINES rather than
+  # the verdict, so it reported them as catching the regression while CI would have gone green.
+  #
+  # Fixing the two sites is not enough -- that leaves the same trap set for the next case someone
+  # adds. So stdout is captured and the verdict READS IT BACK: if any `  FAIL` line was emitted, the
+  # run cannot report PASS, whatever any flag says. A case can now forget the flag and still be
+  # counted; it cannot print a failure into a green run.
+  #
+  # Plain redirect + `cat`, not `tee` through a process substitution: the check has to see a fully
+  # flushed file, and a pipeline would put the body in a subshell where `fail` could not survive.
+  _selftest_log="$TMP/selftest.out"
+  exec 3>&1 >"$_selftest_log"
 
   # $1 = case label; sets up $REPO with an initial DECISIONS.md ($2, the base content) committed
   # on a "main" branch, then a "left" branch and a "right" branch each getting one commit ($3/$4,
@@ -1240,7 +1269,7 @@ body of A
     echo "  ok   seam: a non-ASCII trailing space is safe under an EXPORTED locale too (pinned LC_ALL)"
   else
     echo "  FAIL seam: the verdict CHANGES with the ambient locale -- the predicate does not pin it"
-    bad=$((bad+1))
+    fail=1
   fi
   # Trailing spaces or tabs are permitted after the underline; other text is not.
   _seam_case "--- with trailing spaces is a heading"    "prozasor" "---  "   refuse
@@ -1729,7 +1758,7 @@ body of A
     echo "  ok   the byte offset is the same under an EXPORTED LC_ALL (C / C.UTF-8 / en_US.UTF-8)"
   else
     echo "  FAIL the byte offset CHANGES with the ambient locale -- cmp's wording is being parsed"
-    bad=$((bad+1))
+    fail=1
   fi
 
   # ...AND THE SECOND `local LC_ALL=C`, WHICH THE ASSERTION ABOVE DOES NOT COVER (Cybered F-4,
@@ -1799,6 +1828,13 @@ some body text on the following line
     echo "  ok   ...and it took ${perf_elapsed}s, well inside the 60s budget"
   fi
 
+  # Restore stdout, show everything the run printed, then let the OUTPUT have the last word.
+  exec 1>&3 3>&-
+  cat "$_selftest_log"
+  if grep -q '^  FAIL' "$_selftest_log"; then
+    [ "$fail" -eq 0 ] && echo "  (verdict forced to FAIL: a case printed a failure without setting the flag)"
+    fail=1
+  fi
   echo "selftest: $([ $fail -eq 0 ] && echo PASS || echo FAIL)"
   exit $fail
 fi
