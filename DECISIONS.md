@@ -9723,3 +9723,60 @@ rögzítése a cél: az első nem-szerep szerző, aki egy `Gate-SHA` sort is oda
 **Hivatkozás:** kártya `48b0dd36` (Cybersec MEDIUM a c52e2823-on, 24365);
 `store/landing-gate-verdict-parse.py`, `store/gate_author_role.py`,
 `store/gate-closure-check.py`, `store/landing-gate-verdict-check.selftest.sh` (27 -> 36 eset).
+
+## 2026-09-06 -- 09a3d52a: a redispatch-guard főkönyve zár alatt ír, és a zár HIÁNYA tilt, nem enged
+
+**Kontextus.** A `store/redispatch-guard.sh` az a közös fojtópont, amin minden automata meglökés és
+újra-dispatch átmegy, és a `MAX_REDISPATCH=3` sapkával ez akadályozza meg a dokumentált token-égő
+hurkot ("ugyanaz a kártya 18-szor fejlődött"). Az állapota a `store/redispatch-ledger.json`.
+
+**A hiba.** A `_ledger_get` és a `_ledger_set` két külön python-folyamat, és a set a TELJES fájlt
+írja vissza a saját pillanatképéből. Két egyidejű futás tehát nem egy számlálót veszít: a vesztes
+felülírása a MÁSIK kártya bejegyzését ejti ki, vagyis annak a kártyának a re-dispatch-számlálója
+nullázódik, és a sapka soha nem áll fel. Pont az a korlátlan hurok válik újra lehetségessé, ami
+miatt a guard megszületett.
+
+**A mérés, és amit NEM állítok.** A szkriptből KIVÁGOTT valódi két függvénnyel, 30 kártya-azonosítóra:
+párhuzamosan 27, 28, 29, 29, 29 bejegyzés maradt meg öt futásban (fal-idő 0,30-0,37 mp), sorosan
+30/30 (1,59 mp). A soros kontroll átfordul, tehát a mérés a versenyt méri. Elérhetőség MA: a `check`
+egyetlen hívói MikroB monitor-promptjai (heartbeat-consolidated D, fleet-nudger), amiket egy session
+sorosít; ellenőriztem, hogy a `load-guard-daemon.sh`, a `load-guard-bookkeeping.sh` és a
+`context-compact-monitor.sh` NEM hívja, csak kommentben említi. Szerkezeti akadály viszont nincs:
+egyetlen turn párhuzamos Bash-hívásai elegendők. Vagyis a mechanizmus bizonyított, a kiváltás egy
+viselkedési döntésre van, és nem állítom, hogy ma élesben elsül.
+
+**Döntés.** Egyetlen `flock`-alapú zár (`${LEDGER}.lock`, 10 mp várakozás) fedi a `check`, a `reset`
+és az `escalations` teljes állapot-módosító szakaszát. EGY zár mindkét állapot-fájlra (főkönyv és
+eszkalációk): a műveletek másodperc alattiak, tehát a második zár csak azt a kérdést szülné meg,
+hogy egy jövőbeli szerkesztés melyiket fogja.
+
+**A zár hiánya TILT, nem enged.** Ez ellentétes az alatta lévő `_is_load_paused` szándékos
+fail-open viselkedésével, és ez nem következetlenség: ott a hibamód "örökre blokkol minden meglökést
+a flottában", itt "kihagy egy tickt". Egy megtagadott meglökést a hívó a következő körben újrapróbál;
+egy elveszett főkönyvi bejegyzést semmi nem állít helyre. Az `escalations` a zár hiányában
+KIFEJEZETTEN nem ír a kimenetre: egy üres lista ott "nincs függő eszkaláció"-nak olvasódna, ami az
+egyetlen rossz válasz, mert egy sapkát elért kártya így némán sosem jutna emberhez.
+
+**A teszt, és a korlátja.** A selftest kap egy 40-elemű párhuzamos burst-esetet (mind a 40 bejegyzés
+maradjon meg, mind count=1) és egy determinisztikus zár-kizárólagosság-esetet (fd 9 fogja, egy
+nulla-várakozású második nyitó bukjon). A `check` BEDRÓTOZÁSÁT viszont csak FORRÁS-szintű állítás
+rögzíti (a zár-hívás a főkönyv-olvasás ELŐTT álljon), a KOMMENTEKTŐL MEGTISZTÍTOTT forráson illesztve,
+mert egy kommentben megnevezett hívás kielégítene egy naiv jelenlét-ellenőrzést. Ez tudatos korlát:
+a valódi `check` a futó dashboardot kérdezi a kártyáról, és az alternatíva, egy env-változós stub-varrat
+magában a guardban, megkerülési felület lenne egy olyan eszközben, aminek a dolga a megtagadás.
+
+**Mutánsok, mind megölve, valódi kilépési kóddal mérve (nem kiírt sorral).** (1) a burst zár nélkül
+fut -> 40-ből 32 bejegyzés maradt, exit 1; (2) a `check` nem veszi fel a zárat -> a bedrótozás-eset
+bukik, exit 1; (3) a `check` a főkönyv-olvasás UTÁN veszi fel -> ugyanaz, a sorrendet nevesítve.
+A kiindulás mindháromszor visszaállt exit 0-ra, és a fájl bitre azonos volt a mutáció előttivel.
+
+**Kísérő lelet, külön kártyán.** Kiderült, hogy ennek a guardnak a selftestje SOHA nem futott a
+suite-ban: a `store-selftests-all-run.test.ts` felfedezése FÁJLNÉV-utótagra kulcsol, tehát egy olyan
+szkript, ami a selftestjét MÓDként hordozza, szerkezetileg láthatatlan neki. Mérve: a `store/` 15
+selftest-módú szkriptjéből TÍZ-et egyetlen teszt sem hív. Ez a kártya csak EZT az egyet drótozza be
+(`src/__tests__/redispatch-guard-selftest.test.ts`), a maradék kilenc külön kártya, mert az, hogy
+átmennek-e, mérve nincs, és ebben a repóban van dokumentált eset arra, hogy egy selftest a futó
+flotta alól cserélt ki egy éles konfigurációs fájlt.
+
+**Hivatkozás:** kártya `09a3d52a` (szülő `ee2d6220`, hermes-agent atomikus esemény-igénylés);
+`store/redispatch-guard.sh`, `src/__tests__/redispatch-guard-selftest.test.ts`.

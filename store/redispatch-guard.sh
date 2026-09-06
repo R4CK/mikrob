@@ -42,6 +42,7 @@ STORE="/home/neon/marveen/store"
 DASH="http://localhost:3420"
 TOKEN_FILE="${STORE}/.dashboard-token"
 LEDGER="${STORE}/redispatch-ledger.json"
+LOCK_WAIT=10        # seconds to wait for the guard-state lock before refusing
 ESCAL="${STORE}/stuck-escalations.json"
 LOAD_PAUSED="${STORE}/load-paused-agents.json"
 BASE_BACKOFF=600      # seconds; interval = BASE * 2^count
@@ -87,6 +88,30 @@ _agent_busy() { # $1 = agent short name ; exit 0 = busy, 1 = idle/absent
   s2="$(tmux capture-pane -t "$sess" -p 2>/dev/null)"
   [ "$s1" != "$s2" ] && return 0   # frame changed => actively rendering => busy
   return 1
+}
+
+# ---- guard-state lock (card 09a3d52a) ---------------------------------------------------
+# The ledger helpers below are a READ then a WRITE in two separate python processes, and the
+# write rewrites the WHOLE file from its own snapshot. Two concurrent guard runs therefore do
+# not merely lose one counter: the loser's rewrite drops the OTHER card's entry entirely, which
+# resets that card's re-dispatch count to zero and defeats MAX_REDISPATCH -- the exact unbounded
+# nudge loop this guard exists to stop. Measured with these same two helpers, 30 card ids,
+# 5 runs: 27-29 entries survived concurrently, 30/30 serially.
+#
+# One lock covers BOTH state files (ledger and escalations): the operations are sub-second, so
+# a single lock costs nothing and removes the question of which file a future edit touches.
+#
+# Refusing is the safe direction here. A denied nudge is retried by the caller on its next tick;
+# a lost ledger entry is not recovered by anything. So a lock we cannot take DENIES rather than
+# proceeding unlocked -- unlike _is_load_paused below, which fails OPEN on purpose, because a
+# broken bookkeeping file must not permanently block every nudge in the fleet. The difference:
+# there the failure mode is "block forever", here it is "skip one tick".
+_guard_lock_path() { printf '%s.lock' "$LEDGER"; }
+
+_take_guard_lock() { # exclusive, held until this process exits; 0 = held, 1 = not held
+  exec 9>"$(_guard_lock_path)" 2>/dev/null || return 1
+  flock -w "$LOCK_WAIT" 9 2>/dev/null || return 1
+  return 0
 }
 
 # ledger read/write via python (atomic-ish rewrite)
@@ -225,6 +250,10 @@ case "$MODE" in
     # for time the agent was never actually idle. Checked BEFORE any ledger read/write.
     if _is_load_paused "$AGENT"; then echo "DENY:load-paused"; exit 8; fi
 
+    # Everything from here down READS and then REWRITES the shared guard state, so it runs
+    # under the lock (card 09a3d52a). Deliberately AFTER the load-paused check above, which
+    # touches no state and must keep failing open.
+    _take_guard_lock || { echo "DENY:ledger-busy"; exit 8; }
     IFS=$'\t' read -r count last_ts last_upd <<<"$(_ledger_get "$CARD")"
     ts="$(now_ts)"
 
@@ -260,10 +289,15 @@ case "$MODE" in
 
   reset)
     CARD="${2:-}"; [ -n "$CARD" ] || { echo "usage: reset <cardId>"; exit 2; }
+    _take_guard_lock || { echo "reset $CARD: guard state is locked by another run, not reset" >&2; exit 8; }
     _ledger_del "$CARD"; echo "reset $CARD"; exit 0 ;;
 
   escalations)
     # print pending (not-yet-notified) escalations as JSON, mark them notified
+    # Under the lock: this is a read-modify-write of the same shared state. On failure print
+    # NOTHING on stdout -- an empty list here would read as "no escalations pending", which is
+    # the one wrong answer (a cap-reached card would silently never reach a human).
+    _take_guard_lock || { echo "escalations: guard state is locked by another run, not read" >&2; exit 8; }
     python3 - "$ESCAL" <<'PY'
 import json,sys,os,tempfile
 path=sys.argv[1]
@@ -335,6 +369,51 @@ PY
     _is_load_paused backend 10100 && { echo "FAIL load-paused stale: 400s-stale last_seen still reported paused"; fails=$((fails+1)); }
     # Right at the boundary: exactly max_stale (300s) is no longer "< max_stale" -> not paused.
     _is_load_paused backend 10000 && { echo "FAIL load-paused stale: exactly-300s-old last_seen still reported paused"; fails=$((fails+1)); }
+    # 9) card 09a3d52a: the guard state survives CONCURRENT runs.
+    # WHY this is not a theoretical case: _ledger_get and _ledger_set are two separate python
+    # processes and the set rewrites the WHOLE file from its own snapshot, so without a lock a
+    # concurrent run on a DIFFERENT card silently drops this card's entry -- resetting its
+    # re-dispatch count to zero and defeating MAX_REDISPATCH. Measured without the lock, 30 ids,
+    # 5 runs: 27, 28, 29, 29, 29 survivors. With it, all of them, every run.
+    #
+    # (a) the lock is actually exclusive. Deterministic, no timing: fd 9 is held here, so a
+    # second opener must fail a zero-wait attempt. If this passes while (b) fails, the lock is
+    # taken but not taken in the right PLACE.
+    _take_guard_lock || { echo "FAIL lock: could not take the guard lock at all"; fails=$((fails+1)); }
+    if flock -w 0 "$(_guard_lock_path)" true 2>/dev/null; then
+      echo "FAIL lock: a second holder acquired it while the first still held it"; fails=$((fails+1))
+    fi
+    exec 9>&-   # release before the burst below, or every child would wait on THIS process
+    # (b) a concurrent burst loses nothing. Each child re-opens fd 9, so it contends for real
+    # rather than inheriting this process's file description.
+    echo '{}' > "$LEDGER"
+    for i in $(seq 1 40); do
+      ( _take_guard_lock || exit 1
+        IFS=$'\t' read -r bc blt blu <<<"$(_ledger_get "K$i")"
+        _ledger_set "K$i" "$(( bc + 1 ))" 111 222 ) &
+    done
+    wait
+    burst="$(python3 -c "
+import json,sys
+d=json.load(open(sys.argv[1]))
+bad=[k for k,v in d.items() if v.get('count')!=1]
+print('%d %d' % (len(d), len(bad)))
+" "$LEDGER")"
+    [ "$burst" = "40 0" ] || { echo "FAIL concurrent-burst: expected '40 0' (entries, wrong-count), got '$burst'"; fails=$((fails+1)); }
+    # (c) the WIRING: holding the lock is useless if `check` does not take it before it reads.
+    # This is a SOURCE assertion, not a behavioural one, and that is a deliberate limit: the real
+    # `check` block queries the live dashboard for the card, and the alternative -- an env-var
+    # stub seam in the guard itself -- would be a bypass in a tool whose whole job is to refuse.
+    # Matched on the COMMENT-STRIPPED source, because a call named only in a comment satisfies a
+    # naive presence check (cards 06d36307, 2f0c7d24).
+    wiring="$(sed -n '/^  check)/,/^    ;;/p' "$0" | sed 's/#.*$//')"
+    lockline="$(printf '%s\n' "$wiring" | grep -n '_take_guard_lock' | head -1 | cut -d: -f1)"
+    readline="$(printf '%s\n' "$wiring" | grep -n '_ledger_get' | head -1 | cut -d: -f1)"
+    if [ -z "$lockline" ] || [ -z "$readline" ]; then
+      echo "FAIL check-wiring: lock=$lockline read=$readline (one of them is not in the check block)"; fails=$((fails+1))
+    elif [ "$lockline" -ge "$readline" ]; then
+      echo "FAIL check-wiring: the lock is taken at line $lockline, AFTER the ledger read at $readline"; fails=$((fails+1))
+    fi
     rm -rf "$tmpdir"
     if [ "$fails" -eq 0 ]; then echo "SELFTEST: PASS"; exit 0; else echo "SELFTEST: FAIL ($fails)"; exit 1; fi
     ;;
