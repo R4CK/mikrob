@@ -11535,3 +11535,35 @@ az irány-, sorrend- és advisory-döntések backend mérnöki döntései, itt f
 
 **Hivatkozás:** kártya `f9bad591` (szülő `40568837`); `store/card-build-route.sh`,
 `store/local-llm-rag.sh`, `store/offload-dispatch.sh`, a két selftest, `README.md`.
+
+## 2026-09-06 -- A dispatch-jelölés IGÉNYLÉS lett: a boolean jelentése megváltozott (kártya 5b00c5ec)
+
+**A VÁLTOZÁS.** `markKanbanCardDispatched` eddig `UPDATE ... WHERE id=?` volt, tehát a `changes > 0`
+arra válaszolt, hogy LÉTEZIK-E A SOR. Minden hívó viszont úgy olvasta, hogy "én nyertem az
+igénylést". Ez két különböző kérdés, és a régi mindkét félre igaz: a nyertesre és arra is, aki
+másodikként érkezett. Az `AND dispatched_at IS NULL` kiegészítéssel maga az írás dönt, atomi módon.
+
+**NEM ÉLŐ HIBA, és ezt kimondom.** A `fireKanbanDispatch` törzsében NINCS `await` az ellenőrzés és a
+jelölés között -- megnéztem, nem feltételeztem --, tehát egy szálon ma nincs mit interleave-elni. Ez
+keményítés az ELSŐ olyan szerkesztés ellen, ami bevezet egyet: abban a pillanatban az ablak csendben
+kinyílik, és a régi utasításon semmi nem kezdett volna el hibázni, ami ezt jelezné.
+
+**AMI EZT BIZTONSÁGOSSÁ TESZI:** az oszlop nem sírkő. A `moveKanbanCard` nullázza, amikor a kártya
+elhagyja az `in_progress`-t, és a `kanban-dispatch-rearm.test.ts` ezt pinneli. Egy elvett, de fel nem
+használt igénylés tehát visszakérhető (ki-be mozgatás), nem égeti el a kártya dispatchét örökre. Ezt
+külön teszteset rögzíti, mert a szülő kártya (01c846bf) nyitott kérdése -- jelölés a küldés ELŐTT
+vagy UTÁN -- pont ezen a tényen fordul meg.
+
+**A SZERZŐDÉS-VÁLTOZÁS HÍVÓKRA GYAKOROLT HATÁSA, megnézve:** a függvénynek két hívási helye van,
+mindkettő a `fireKanbanDispatch`-ben, és egyik sem ágazik ma a visszatérési értékre. Nincs olyan
+hívó, aki a régi "létezik-e a sor" jelentésre épített volna. Az ágazás bevezetése a `c4da93bf`
+kártya, tudatosan külön lépésként.
+
+**BIZONYÍTÉK.** Négy új eset, köztük két kontroll: egy nem létező kártya-id továbbra is false (enélkül
+egy "mindig false" mutáns átmenne a lényegi állításokon), és a nyertes igénylés ténylegesen bélyegzi
+az oszlopot (enélkül a `true` puszta konstans is lehetne). Mérve: a régi utasítás visszaállítása a
+második-igénylés esetet PIROSRA váltja, névvel, miközben a rearm-teszt zöld marad -- a két fájl
+tehát a szerződés két különböző felét fedi.
+
+**Hivatkozás:** kártya `5b00c5ec` (szülő `01c846bf`); `src/db.ts`,
+`src/__tests__/kanban-dispatch-claim.test.ts`.
