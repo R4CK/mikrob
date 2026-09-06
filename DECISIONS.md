@@ -11567,3 +11567,128 @@ tehát a szerződés két különböző felét fedi.
 
 **Hivatkozás:** kártya `5b00c5ec` (szülő `01c846bf`); `src/db.ts`,
 `src/__tests__/kanban-dispatch-claim.test.ts`.
+
+## 2026-09-06 -- A várakozó fleet-test is kimondja, hogy vár (kártya 492a6d5c, Cybersec NO-GO)
+
+**A LELET Cybersecé** (712a8349). A `fleet-test.sh` új `acquire_cpu_slot()` várakozása csak stderr-re
+írt. A `cleancore-suite-run.sh` -- ugyanannak a slot-poolnak a másik fogyasztója, és az elfogadott
+minta -- ezen felül PAUSED-SEMAPHORE / RESUMED-SEMAPHORE kommentet is tesz a várakozó ügynök
+kártyájára. Az indok itt azonos: a 3. szabály szerint egy nem mozduló `in_progress` kártya
+beragadtnak számít, a 3a. szerint 60 perc után testvérre száll. Egy landolás, ami két teljes suite
+mögött jogosan sorban áll, ennél tovább is várhat -- a kártyáját tehát elvennék tőle azért, mert
+helyesen várt. Egy poolban két fogyasztó, az egyik bejelentkezik, a másik néma: ezt utasította el.
+
+**A DÖNTÉS: KÖNYVTÁRBA EMELVE, nem lemásolva.** Új `store/kanban-comment-lib.sh`. A másolás
+alternatívája egy második példányt csinált volna a token-kezelésből, ami nem sablon: azért néz ki
+így (0600-as fejléc-fájl, `-H @file`), mert egy Cybersec-lelet (edb7559f) megmutatta, hogy a
+`-H "Authorization: ... $(cat ...)"` alak a `/proc/<pid>/cmdline`-on olvasható. Ebből egy példányt
+akarok. Precedens: `cleancore-tsc-lib.sh`.
+
+**AMIT SZÁNDÉKOSAN NEM TETTEM MEG, kimondva:** a `cleancore-suite-run.sh` továbbra is hordozza a
+saját másolatát. Az a fájl most KÉT másik kártya alatt áll gate-en (`beb9c8d3`, `f9bad591`); egy
+harmadik szerkesztés három shát hagyna ugyanarra a fájlra. A de-duplikáció külön kártya, nem ennek a
+NO-GO-javításnak a része.
+
+**AZ ÜGYNÖK-NÉV ÚTJA.** A `fleet-test.sh` refet kap, nem ügynököt, tehát magától nem találja meg a
+kártyát. A `marveen-land.sh` viszont tudja, kinek landol, és `FLEET_TEST_AGENT`-ként adja át --
+`land_one()`-on belül scope-olva, mert a `--all` több ügynököt landol egy futásban, és egy beragadt
+név az egyik ügynök várakozás-jelzését a másik kártyájára tenné. Kézzel, ügynök nélkül futtatva a
+könyvtár néma no-op: helyes, mert olyankor nincs kártya, amit annotálni kellene.
+
+**EGY ŐRT NEM TÁGÍTOTTAM, HANEM SZŰKÍTETTEM.** A meglévő forrás-olvasó azt kérte, hogy a ciklus
+fejétől 400 karakteren belül legyen egy `die`. A PAUSED-SEMAPHORE értesítés -- jogos munka, és épp
+ez a NO-GO kérése -- 435-re tolta, és az őr pirosra váltott. A 400 sosem volt a tulajdonság: az
+"a timeout-ot ÉSZLELŐ ág az, amelyik meghal" az, és a régi olvasat BÁRMELY `die`-jal beérte azon az
+ablakon belül. Az őr most a timeout-ÁGRA horgonyoz. Ez szűkítés, nem lazítás azért, hogy a saját
+változtatásom átmenjen.
+
+**INCIDENS, amit én okoztam, és amitől a teszt alakja megváltozott.** A `die` eltávolítását ELŐBEN
+futtattam mutánsként. Az a `die` pontosan az, ami megakadályozza, hogy egy futás a CPU-kapun átesve
+továbbmenjen -- a mutáns tehát nem állt meg, hanem elindított egy VALÓDI teljes suite-ot a
+megosztott gépen, ~3 percre CPU-t vitt és fogta a közös fa-zárat. Leállítva, a fájl visszaállítva,
+más ügynök folyamata nem sérült. A tanulság a kódba került: egy fail-safe KILÉPÉST eltávolító
+mutációt nem szabad élőben futtatni, és nem is kell -- az őr forrást olvas, tehát mutált SZÖVEGET
+kap, nem mutált fájlt. Így áll most kontroll-esetként.
+
+**BIZONYÍTÉK.** 12/12. Az értesítés VISELKEDÉSE mérve, nem forrásból következtetve: egy hamis
+dashboard fogja el, amit a szkript ténylegesen POST-ol. Két harness-versenyt kellett megszüntetni,
+és mindkettőt mérés mutatta meg (a két eset ELLENTÉTES irányban bukott, ami azt mondta, hogy a
+harness a hibás, nem a szkript -- kézzel futtatva a szkript mindkét kommentet helyesen kiküldte):
+(1) az `execFileSync` blokkolja az event loopot, tehát a gyerek olyan HTTP-válaszra várt, ami nem
+jöhetett meg -- innen a 22 másodperces bukás egy 20 másodperces kereten; (2) a `listen(0)`
+ephemeral portja újrahasznosul, tehát az előző eset kései POST-ja a KÖVETKEZŐ eset elfogójába
+esett. Az első aszinkron futtatással, a második esetenkénti ügynök-névvel és szűréssel megszűnt.
+NEGATÍV KONTROLL is van: aki azonnal kap slotot, semmit nem posztol.
+
+**Ki döntött:** Cybersec (a NO-GO); a könyvtárba emelés, az őr szűkítése és a mutációs eljárás
+megváltoztatása backend mérnöki döntése, itt felülvizsgálatra kitéve.
+
+**Hivatkozás:** kártya `492a6d5c`; `store/kanban-comment-lib.sh`, `store/fleet-test.sh`,
+`store/marveen-land.sh`, `src/__tests__/fleet-test-shares-cleancore-cpu-pool.test.ts`.
+
+## 2026-09-06 -- A dispatch a NYERT igénylés után küld, nem a korábbi olvasás alapján (kártya c4da93bf)
+
+**A DÖNTÉS MIKROB-É** (25001), a javaslatom és az indoklásom alapján: a jelölés a küldés ELŐTT
+történjen, feltételes UPDATE-tel, és a hívó a visszakapott booleanre ágazzon.
+
+**A KÉT HIBA-IRÁNY, kimondva, mert ez egy CSERE, nem egy tiszta nyereség.** Elöl jelölve a rossz
+eset egy megjelölt-de-ki-nem-küldött kártya; hátul jelölve KÉT ügynök ébresztése ugyanarra a
+kártyára. Az első HANGOS (a `reportUndeliveredDispatch` kommentel a kártyán és szól a fő ügynöknek)
+és visszaállítható, mert a `moveKanbanCard` nullázza a `dispatched_at`-et, amikor a kártya elhagyja
+az `in_progress`-t (a `kanban-dispatch-rearm.test.ts` pinneli). A második NÉMA. Egy elmaradt
+dispatch, ami bejelenti magát, jobb, mint egy duplikátum, ami nem.
+
+**AMIT A VÁLTOZÁS VALÓJÁBAN AD.** A függvény tetején lévő olvasás azt mondja, hogy a kártya egy
+pillanattal korábban SZABADNAK LÁTSZOTT; egyedül az írás mondja meg, hogy senki más nem vitte el. A
+kettő addig volt ugyanaz, amíg nem állt `await` közöttük -- ami ma igaz, de soha semmi nem
+garantálta. Az ágazás a sorrendet teszi garanciává a kód pillanatnyi alakja helyett.
+
+**A TESZT, ÉS AMIÉRT A KÉZENFEKVŐ VÁLTOZATA HASZNÁLHATATLAN.** Egy előre megjelölt kártyával indítva
+a függvény a TETEJÉN visszatér (az olvasott kártya már jelölt), tehát az új ág le sem fut. Az eset
+csak akkor mér, ha az OLVASÁS szabadnak mondja a kártyát, miközben a SOR már foglalt -- ezt a
+`getKanbanCard` mockolása állítja elő, ami a legkisebb hű helyettese annak, hogy a sor az olvasás
+UTÁN változott meg. Minden más valódi: az útvonal, a mozgatás, az adatbázis, az igénylés.
+Kontrollal együtt: egy el nem vitt kártya továbbra is kimegy.
+
+**MÉRVE:** a küldés-utáni sorrend visszaállítása (a változtatás előtti alak) az esetet PIROSRA
+váltja, névvel; a kontroll zöld marad.
+
+**Hivatkozás:** kártya `c4da93bf` (szülő `01c846bf`, testvér `5b00c5ec`);
+`src/web/routes/kanban.ts`, `src/__tests__/kanban-dispatch-claim-before-send.test.ts`.
+
+## 2026-09-06 -- Egy MÁSODIK flock-használó kétértelművé tette a "hol a zár" olvasást (kártya 492a6d5c)
+
+**A LELET MIKROB LANDOLÁSI KÍSÉRLETÉBŐL JÖTT**, nem a kártyáról: a `--allow-stacked` futás a
+`fleet-test.sh`-n bukott el, mielőtt bármit pusholt volna. Két dolog:
+
+1. `store/kanban-comment-lib.sh` a git indexben `100644` maradt. Az általam ugyanaznap létrehozott
+   másik két szkriptet chmod-oltam, ezt kihagytam; a shebang-teszt jogosan bukott. `--chmod=+x`.
+
+2. A `fleet-test-serialises-runs.test.ts` KÉT kontrollja elbukott -- és ez az érdemi rész.
+
+**AMI ELTÖRT, ÉS MIÉRT NEM AZ ŐR HIBÁJA.** A kontrollok mutációja "a `flock`-őrtől a következő
+`fi`-ig" tartományt törölte. Ez hallgatólagosan arra épült, hogy a kettő KÖZÖTT nincs `fi` -- ez a
+kártya viszont pont oda tett egyet (a CPU-slot várakozás-értesítése). A mutáció így korábban állt
+meg, a fa-zár állva maradt, és a kontroll azért bukott, mert a mutáció megszűnt azt eltávolítani,
+amit megnevez. Nem az őr romlott el, hanem a mutáció horgonya.
+
+**A MÁSODIK, MÉLYEBB OK.** A `problems()` a legelső `flock`-ra nézett. Ez addig volt egyértelmű,
+amíg a szkriptnek EGY flock-használója volt. A megosztott CPU-pool egy második, jogos használó, és
+az elöl áll -- tehát a csupasz minta mostantól a MÁSIK zárat találja meg, és minden pozíció-
+összevetés csendben a rossz zárról szólna.
+
+**A JAVÍTÁS MINDKETTŐRE SZŰKÍTÉS, NEM LAZÍTÁS.** A mutáció a fa-zár KÉT konkrét darabját törli
+(`command -v flock` sor + az `exec 9>"$LOCK_FILE"` blokk), nem egy `fi`-ig tartó tartományt -- a régi
+span mellékesen elnyelhetett közéjük került kódot is. A `problems()` pedig a fa-mutex SAJÁT
+fd-jére horgonyoz (`exec 9>` / `flock ... 9`; a CPU-pool `$CPU_FD`-t használ), tehát kimondja,
+MELYIK zárról beszél, ahelyett hogy feltételezné, csak egy van. A kontroll épség-ellenőrzése
+ugyanígy a fa-mutexre kérdez, nem a `flock` általános hiányára.
+
+**AMIT EBBŐL TANULOK, és ez a saját mulasztásom:** a kártya egy teszt-fájlt nevezett meg, és én azt
+futtattam. A `fleet-test.sh`-t viszont KÉT teszt-fájl olvassa. Egy megosztott forrás szerkesztése
+után nem a kártyán nevezett tesztet kell lefuttatni, hanem mindet, ami azt a forrást olvassa.
+
+**BIZONYÍTÉK:** 20/20 a két fleet-test őr-fájlon együtt.
+
+**Hivatkozás:** kártya `492a6d5c`; `src/__tests__/fleet-test-serialises-runs.test.ts`,
+`store/kanban-comment-lib.sh` (módbit).

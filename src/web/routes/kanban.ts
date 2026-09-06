@@ -205,8 +205,23 @@ async function fireKanbanDispatch(id: string, actor?: string | null): Promise<vo
     // The send stamp is also the PRECONDITION for the delivery-time footer: formatDeliveryStalenessNote
     // returns '' when the content carries no stamp, so without this an unstamped dispatch could never
     // tell its recipient that the card moved while it waited -- the exact failure this card is about.
+    // CLAIM FIRST, THEN SEND (card c4da93bf, parent 01c846bf). The read at the top of this function
+    // says the card LOOKED undispatched a moment ago; only this write says nobody else took it. The
+    // two were the same thing while no `await` sat between them -- which is true today and was never
+    // guaranteed by anything. Branching on the claim makes the ordering the guarantee instead of a
+    // property of the current code shape.
+    //
+    // WHICH FAILURE THIS PREFERS, stated because it IS a trade and MikroB decided it (25001):
+    // claiming first risks a card marked-but-not-sent if the send then throws; claiming last risks
+    // TWO agents being woken for one card. The first is loud -- reportUndeliveredDispatch comments
+    // on the card and tells the main agent -- and recoverable, because moveKanbanCard clears
+    // dispatched_at when the card leaves in_progress (pinned by kanban-dispatch-rearm.test.ts). The
+    // second is silent. A missed dispatch that announces itself beats a duplicate that does not.
+    if (!markKanbanCardDispatched(id)) {
+      logger.info({ id, target }, 'Kanban dispatch: another claim won this card, sending nothing')
+      return
+    }
     createAgentMessage(MAIN_AGENT_ID, target, appendCardStateStampForDispatch(content, getKanbanCardStateByIdPrefix))
-    markKanbanCardDispatched(id)
     logger.info({ id, target, assignee: card.assignee }, 'Kanban in_progress dispatch fired')
   } catch (err) {
     logger.warn({ err, id }, 'Kanban dispatch failed (card move still succeeded)')

@@ -51,6 +51,10 @@ CPU_SLOTS="${CLEANCORE_SUITE_SLOTS:-2}"
 CPU_LOCK_PREFIX="${CLEANCORE_SUITE_LOCK_PREFIX:-${MARVEEN_MAIN:-/home/neon/marveen}/store/.cleancore-suite-slot}"
 CPU_WAIT_MAX_S="${CLEANCORE_SUITE_WAIT_MAX_S:-7200}"
 CPU_POLL_S="${CLEANCORE_SUITE_POLL_S:-20}"
+# < the 10-minute stuck threshold, with margin -- same value and same reason as
+# cleancore-suite-run.sh's KEEPALIVE_S: the point of the refresh is to move `updated_at` before the
+# monitor decides the card is dead, so it has to be shorter than that window, not merely periodic.
+CPU_KEEPALIVE_S="${CLEANCORE_SUITE_KEEPALIVE_S:-300}"
 
 die() { echo "fleet-test.sh: $2" >&2; exit "$1"; }
 
@@ -132,18 +136,54 @@ acquire_cpu_slot() { # sets CPU_FD on success. Same split-redirection shape as c
   return 1
 }
 
-cpu_started="$(date +%s)"; cpu_announced=0
+# A WAITER MUST NOT LOOK STUCK (Cybersec NO-GO on card 492a6d5c, comment 712a8349).
+#
+# The queueing above was announced to stderr only. cleancore-suite-run.sh -- the other consumer of
+# this same slot pool, and the accepted pattern -- also posts PAUSED-SEMAPHORE / RESUMED-SEMAPHORE
+# to the waiting agent's card, and it does that for a reason that applies here identically: fleet
+# rule 3 calls an in_progress card stuck when `updated_at` stops moving, and rule 3a hands it to a
+# sibling agent after 60 minutes. A landing that legitimately queues behind two full suites can wait
+# far longer than that. Without these comments the waiting agent's card would be taken away from it
+# for waiting correctly -- strictly worse than the CPU contention this pool exists to prevent, and
+# the exact asymmetry Cybersec refused: one consumer of the pool announcing itself and the other not.
+#
+# KANBAN_COMMENT_AGENT is what makes the card findable, and it is set by marveen-land.sh, which is
+# the caller that knows which agent it is landing for. Run by hand with no agent, the library is a
+# silent no-op -- correct, because a hand run has no card to annotate.
+KANBAN_COMMENT_AGENT="${FLEET_TEST_AGENT:-}"
+export KANBAN_COMMENT_AGENT
+# shellcheck source=./kanban-comment-lib.sh
+. "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/kanban-comment-lib.sh"
+
+cpu_started="$(date +%s)"; cpu_announced=0; cpu_last_note="$cpu_started"
 while ! acquire_cpu_slot; do
   cpu_waited=$(( $(date +%s) - cpu_started ))
   if [ "$cpu_waited" -ge "$CPU_WAIT_MAX_S" ]; then
+    [ "$cpu_announced" -eq 1 ] && kanban_comment "INFO-ONLY RESUMED-SEMAPHORE (GIVING UP)
+
+Nem kaptam megosztott CPU-slotot ${CPU_WAIT_MAX_S} masodperc alatt (${CPU_SLOTS} egyideju futas a felso korlat, a CleanCore suite-futasok is ide szamitanak). A suite NEM futott le -- ez NEM teszt-eredmeny."
     die 3 "no shared CPU slot after $((cpu_waited / 60)) min (${CPU_SLOTS} in use, CleanCore suite runs count against this too). Another run is stuck, or raise CLEANCORE_SUITE_SLOTS."
   fi
   if [ "$cpu_announced" -eq 0 ]; then
     cpu_announced=1
     echo "fleet-test.sh: all ${CPU_SLOTS} shared CPU slot(s) busy (CleanCore suite runs count against this too) -- queueing (cap ${CPU_WAIT_MAX_S}s)" >&2
+    kanban_comment "INFO-ONLY PAUSED-SEMAPHORE
+
+A marveen fleet-test SORBAN ALL, nem ragadt be: mind a ${CPU_SLOTS} megosztott CPU-slot foglalt (kartya 492a6d5c; a CleanCore suite-futasok ugyanebbe a poolba szamitanak). Amint felszabadul egy, indul, es RESUMED-SEMAPHORE kommentet kap.
+
+Ez a komment azert van itt, hogy az updated_at mozogjon: a 3. szabaly szerint egy nem mozdulo in_progress kartya beragadtnak szamit, a 3a. szerint 60 perc utan testverre szall. Egy nema varakozas pont azt valtana ki, amit a pool elkerulni hivatott."
+  elif [ $(( $(date +%s) - cpu_last_note )) -ge "$CPU_KEEPALIVE_S" ]; then
+    cpu_last_note="$(date +%s)"
+    kanban_comment "INFO-ONLY PAUSED-SEMAPHORE (meg mindig sorban, $((cpu_waited / 60)) perce)"
   fi
   sleep "$CPU_POLL_S"
 done
+
+if [ "$cpu_announced" -eq 1 ]; then
+  kanban_comment "INFO-ONLY RESUMED-SEMAPHORE
+
+Kaptam megosztott CPU-slotot $(( ( $(date +%s) - cpu_started ) / 60 )) perc varakozas utan, a marveen fleet-test most indul."
+fi
 
 # $LOCK_FILE is set with the other constants at the top, so `--lock-path` can report it without
 # reaching this point. Its independence from $TEST_TREE is the whole point of the change above.
