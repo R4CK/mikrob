@@ -135,10 +135,60 @@ foreign_cards() {
   foreign_commits "$@" | while read -r sha subj; do cards_in_subject "$subj"; done | sort -u
 }
 
+# The network+verdict step, factored out of foreign_card_gate_check so a test can override this ONE
+# function (shell functions are just names) and exercise the refuse/report logic below without a
+# live board. Reuses gate-closure-check.py's own verdict logic rather than re-deriving "does this
+# card have an unresolved rejection" from raw comments a second time -- that tool already does
+# exactly this, with its own extensive test coverage.
+_foreign_card_verdict() {
+  local id="$1" body
+  body="$(printf 'Authorization: Bearer %s\n' "$(cat "${GATE_CHECK_TOKEN_FILE:-/home/neon/marveen/store/.dashboard-token}" 2>/dev/null)" \
+    | curl -sS -m 20 -H @- "${GATE_CHECK_API:-http://127.0.0.1:3420}/api/kanban/$id/comments" 2>/dev/null)"
+  [ -n "$body" ] || { echo "UNREADABLE|no response fetching card $id's comments"; return; }
+  printf '%s' "$body" | python3 "$(dirname "${BASH_SOURCE[0]}")/gate-closure-check.py" 2>/dev/null
+}
+
+# Card c266ec74 (Cybered's finding off the a37bb36d landing): a foreign card riding along is not
+# always benign the way "several of your own cards on one branch" is (see decision below downward
+# range) -- 82fa48b0's PRE-FIX commit rode along on agent/backend2/work and landed on develop, where
+# it sat live for ~33 minutes until its fix (ec637f92) superseded it, because nothing checked the
+# STATUS of what rides along, only its EXISTENCE. `foreign_commits`/`foreign_cards` above answer
+# "whose work is this"; this answers "is that work currently REJECTED and not yet fixed".
+#
+# UNCONDITIONAL, unlike the rest of downward_check: there is no legitimate reason to silently land a
+# card carrying an active, unsuperseded FAILING gate verdict, so this refuses regardless of --card /
+# enforce. `fgn` is already allow-filtered (foreign_cards excludes --allow-stacked ids), so naming a
+# card there is still the way past this -- the operator is vouching for it by id, not waving away an
+# unknown.
+#   foreign_card_gate_check <foreign-card-ids, one per line> <label>
+foreign_card_gate_check() {
+  local ids="$1" label="${2:-landing}"
+  [ -n "${ids//[[:space:]]/}" ] || return 0
+  local id verdict bad=0
+  while IFS= read -r id; do
+    [ -n "$id" ] || continue
+    verdict="$(_foreign_card_verdict "$id")"
+    case "$verdict" in
+      FAILED\|*)
+        echo "  $label: REFUSED -- riding-along card $id carries a FAILING, unresolved gate verdict:" >&2
+        echo "      $verdict" >&2
+        bad=1
+        ;;
+    esac
+  done <<< "$ids"
+  if [ "$bad" != "0" ]; then
+    echo "  $label: fix and re-gate those cards before landing them alongside this one, or name them" >&2
+    echo "  $label: in --allow-stacked once you have confirmed the fix already rides along." >&2
+    return 1
+  fi
+  return 0
+}
+
 # The whole check, rendered identically by both landers.
 #   downward_check <log-text> <own-card|""> <allow-csv> <enforce 0|1> <label>
 # log-text: "sha<TAB>subject" lines for the range, merges already dropped by the caller.
-# Returns 0 = continue, 1 = refuse (only ever 1 when enforce=1).
+# Returns 0 = continue, 1 = refuse. Ordinarily only when enforce=1 -- EXCEPT foreign_card_gate_check
+# below, which refuses regardless of enforce (see its own comment for why that one is unconditional).
 downward_check() {
   local log="$1" own="${2:-}" allow="${3:-}" enforce="${4:-0}" label="${5:-landing}"
 
@@ -174,6 +224,8 @@ downward_check() {
   fi
   [ -n "$fgc" ] || return 0
 
+  foreign_card_gate_check "$fgn" "$label" || return 1
+
   if [ "$enforce" = "1" ]; then
     echo "  $label: OTHER cards' commits are in this range:"
   else
@@ -204,6 +256,13 @@ downward_check() {
 downward_selftest_cases() {
   local L rc tmp
   rc_of() { downward_check "$1" "$2" "${3:-}" "${4:-1}" test >/dev/null 2>&1; echo $?; }
+
+  # Every rc_of/downward_check case below runs foreign_card_gate_check on whatever foreign cards it
+  # finds -- stub the network step so the suite needs no dashboard and no network (same reason the
+  # header of this file gives for testing on fixtures), and so it defaults to the common, benign
+  # case (no verdict yet at all) rather than accidentally exercising the FAILED path everywhere.
+  # Cases further down override this locally to exercise foreign_card_gate_check itself.
+  _foreign_card_verdict() { echo "MISSING|no gate verdict on this card at all"; }
 
   t "anchored: reads the id after 'card'" \
     "$(cards_in_subject 'feat(x): thing (card 0f7f7fe9, round 4)')" "0f7f7fe9"
@@ -306,4 +365,26 @@ downward_selftest_cases() {
   L="$(git -C "$tmp" log --no-merges --format='%h%x09%s' main..feature 2>/dev/null)"
   t "synthetic repo: an earlier card's commit under the tip REFUSES" "$(rc_of "$L" 11111111)" "1"
   rm -rf "$tmp"
+
+  # foreign_card_gate_check (card c266ec74, the a37bb36d/82fa48b0 incident): a foreign card carrying
+  # an active FAILING gate verdict must refuse regardless of --card/enforce -- the exact shape that
+  # rode along silently and landed for ~33 minutes before its fix superseded it.
+  L="$(printf 'aaa1111\tfeat: own (card 11111111)\nbbb2222\tfix: someone else (card 33333333)\n')"
+
+  _foreign_card_verdict() { [ "$1" = "33333333" ] && echo "FAILED|CYBERSEC=NO-GO" || echo "MISSING|no gate verdict on this card at all"; }
+  t "a foreign card with a FAILING verdict refuses even in REPORT mode (no --card)" \
+    "$(rc_of "$L" '' '' 0)" "1"
+  t "...and the refusal names the card and the verdict" \
+    "$(downward_check "$L" '' '' 0 test 2>&1 >/dev/null | grep -c '33333333 carries a FAILING')" "1"
+  t "--allow-stacked naming the failing card releases it (operator vouches by id)" \
+    "$(rc_of "$L" '' 33333333 0)" "0"
+  t "a DIFFERENT --allow-stacked id does not release it" \
+    "$(rc_of "$L" '' 99999999 0)" "1"
+  _foreign_card_verdict() { echo "MISSING|no gate verdict on this card at all"; }
+
+  L="$(printf 'aaa1111\tfeat: own (card 11111111)\nbbb2222\tfix: someone else (card 44444444)\n')"
+  _foreign_card_verdict() { [ "$1" = "44444444" ] && echo "AGREE|abc1234|QA=PASS" || echo "MISSING|no gate verdict on this card at all"; }
+  t "a foreign card that already AGREE-closes does not trip the gate check" \
+    "$(rc_of "$L" 11111111 '' 0)" "0"
+  _foreign_card_verdict() { echo "MISSING|no gate verdict on this card at all"; }
 }

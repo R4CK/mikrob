@@ -66,6 +66,19 @@ running vitest with it SILENTLY: no error to the victim, just a suite that stops
 is gone. The agent name is now PART OF THE PATH (`cc-gate-<card>-<agent>-<sha>`) and is REQUIRED --
 `--agent <you>` or `CC_GATE_AGENT` -- so this cannot be forgotten the way a prose reminder can.
 
+## Delta-review diff
+
+When re-verifying a fix after a NO-GO/FAIL, get the FULL changed-file list between the
+previously-judged sha and the fix -- never a hand-typed, path-scoped `git diff -- src/` or similar.
+Card c266ec74 (Cybered's finding off the a37bb36d landing): exactly that scoping missed two
+stowaway commits that landed entirely under `store/`, one of them a live, un-fixed NO-GO at the time.
+
+```bash
+bash store/delta-review-diff.sh <old-sha> <new-sha> "$WT"
+```
+
+No pathspec, ever -- a narrowed delta-diff looks complete and is not.
+
 ## Pitfalls
 
 - **A path under `$WT` is not proof the write lands under `$WT`.** Only `readlink -f` on the
