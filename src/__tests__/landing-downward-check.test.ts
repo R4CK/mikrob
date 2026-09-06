@@ -38,7 +38,7 @@ const caseCount = (out: string) => Number(/selftest: (\d+) case\(s\)/.exec(out)?
 
 describe.each([
   // The floors are the counts measured when this file landed, minus nothing: they are a ratchet, so
-  // adding cases is free and removing one fails here. cleancore carries 22 of its own + 26 shared;
+  // adding cases is free and removing one fails here. cleancore carries 23 of its own + 26 shared;
   // marveen carries 3 of its own + 26 shared.
   ['cleancore-land.sh', 42],
   ['marveen-land.sh', 29],
@@ -63,9 +63,9 @@ describe('the shared downward-check cases run from BOTH landers, not just one', 
   it('both counts include the shared block', () => {
     const cc = caseCount(selftest('cleancore-land.sh').out)
     const mv = caseCount(selftest('marveen-land.sh').out)
-    // 22 since card edf9c837 added six pick_branch cases to cleancore-land.sh's own block.
-    expect(cc).toBeGreaterThan(22) // 22 = cleancore-land.sh's own cases
+    // 23 since card edf9c837 added seven pick_branch cases to cleancore-land.sh's own block.
+    expect(cc).toBeGreaterThan(23) // 23 = cleancore-land.sh's own cases
     expect(mv).toBeGreaterThan(3) //  3 = marveen-land.sh's own cases
-    expect(cc - 22).toBe(mv - 3) // the same shared block, in both
+    expect(cc - 23).toBe(mv - 3) // the same shared block, in both
   })
 })
