@@ -710,6 +710,7 @@ export function initDatabase(dbPathOverride?: string): void {
   //     UPDATE assignee_at_detection      PASSES   <- a DETECTION fact, and the per-agent axis
   //     UPDATE action_detail              PASSES   <- the DENY reason, i.e. the load-bearing half
   //     UPDATE resolved_by_event_id       PASSES   <- while resolved_at itself is protected
+  //     UPDATE resolved_by_event_table    PASSES   <- same residual, added with this column (d05d72b3)
   //     INSERT OR REPLACE on the same id  PASSES   <- every column rewritten (see the note below)
   // (Controls, deliberately allowed: `detections + 1`, and resolved_at written once from NULL.)
   // DELETE FROM stuck_incidents is NO LONGER on this list -- closed by the BEFORE DELETE trigger
@@ -759,9 +760,19 @@ export function initDatabase(dbPathOverride?: string): void {
       -- see the dedup note below.
       detections INTEGER NOT NULL DEFAULT 1,
       resolved_at INTEGER,
-      resolved_by_event_id INTEGER
+      resolved_by_event_id INTEGER,
+      -- 'kanban_card_events' | 'kanban_card_field_events' (card d05d72b3). Both tables have their
+      -- OWN independent autoincrement id space, so resolved_by_event_id alone cannot say which one
+      -- to look in -- id 5 can exist, unrelated, in both. Without this column "the resolution is
+      -- traceable" (the property this table exists to deliver) would be false for exactly the rows
+      -- it is supposed to hold.
+      resolved_by_event_table TEXT
     )
   `)
+  // Migration for a database that already had this table from before resolved_by_event_table
+  // existed (ac28bc6e / 878cd292 landed the table and its first producers across several commits
+  // before this column was added) -- CREATE TABLE IF NOT EXISTS above is a no-op on such a database.
+  try { db.exec(`ALTER TABLE stuck_incidents ADD COLUMN resolved_by_event_table TEXT`) } catch { /* already exists */ }
   // The card asks its questions along TWO axes -- per card and per agent -- so both get an index.
   db.exec(
     `CREATE INDEX IF NOT EXISTS idx_stuck_incidents_card ON stuck_incidents(card_id, detected_at)`,
@@ -1696,6 +1707,59 @@ export function recordSiblingHandover(input: {
     return { kind: 'opened', id }
   } catch (e) {
     return { kind: 'skipped', reason: `write failed: ${e instanceof Error ? e.message : String(e)}` }
+  }
+}
+
+/** Which table a `resolved_by_event_id` points into -- see the column comment on the table. */
+export type StuckIncidentEventTable = 'kanban_card_events' | 'kanban_card_field_events'
+
+/**
+ * Card d05d72b3: resolve an open stuck_incidents row from data the app ALREADY writes on every
+ * relevant change, instead of a new explicit "resolve" call a caller would have to remember to
+ * make -- the same "structural, not disciplinary" reasoning (code-quality rule 6) as the detection
+ * side (878cd292). Called as a side effect of inserting the ONE qualifying event, immediately after
+ * it lands, so "the first such event after detection" is simply "the one being written right now";
+ * nothing needs to reconstruct order afterwards.
+ *
+ * QUALIFYING EVENTS, exactly as the card specifies, not broadened: a `kanban_card_events` row whose
+ * `to_status` is `waiting` or `done`, or a `kanban_card_field_events` row whose `field` is `title` or
+ * `assignee`. Callers pass the row they just inserted; this function does not itself decide whether
+ * a change qualifies -- see the call sites in updateKanbanCard/moveKanbanCard/recordKanbanFieldChanges
+ * for that filter, so the "which changes count" decision lives in ONE place per event kind, not
+ * duplicated between a caller-side filter and a callee-side one that could drift apart.
+ *
+ * NEVER THROWS, same posture as recordStuckIncident/recordSiblingHandover -- a resolution fault
+ * must not break an ordinary card write (an unrelated PUT/move failing because THIS side-effect hit
+ * an error would be a much worse outcome than the incident staying open). Unlike the detection
+ * side, though, the SAFE default here costs nothing to lean on: a missed resolution just leaves an
+ * incident open one event longer, which the NEXT qualifying event (or the guard's own
+ * DENY:progress reset) recovers from -- there is no equivalent to "a stuck card silently going
+ * unhandled" on this side of the table.
+ *
+ * RACE-SAFE AND IDEMPOTENT VIA THE WHERE CLAUSE ALONE: `resolved_at IS NULL AND detected_at < ?` in
+ * the SAME UPDATE means a second qualifying event for the same card (e.g. status AND title changed
+ * in one PUT, so this runs twice) is simply a no-op the second time -- the first call already
+ * cleared `resolved_at`, so the WHERE matches nothing. `detected_at < ?`, strictly less-than, is the
+ * negative control the card asks for: an event that happened BEFORE detection must not resolve it
+ * (this would only ever be reached in practice through a caller passing a stale timestamp, since a
+ * NEWLY inserted event is by construction later than any earlier detection -- kept as a real WHERE
+ * clause rather than trusted-by-construction, because a future caller might not hold that
+ * invariant).
+ */
+export function maybeResolveStuckIncident(
+  cardId: string,
+  eventTable: StuckIncidentEventTable,
+  eventId: number,
+  atSec: number,
+): void {
+  try {
+    db.prepare(
+      `UPDATE stuck_incidents
+         SET resolved_at = ?, resolved_by_event_id = ?, resolved_by_event_table = ?
+       WHERE card_id = ? AND resolved_at IS NULL AND detected_at < ?`,
+    ).run(atSec, eventId, eventTable, cardId, atSec)
+  } catch {
+    /* best effort -- see the fail-closed note above; never let this throw into a card write */
   }
 }
 
@@ -2796,9 +2860,15 @@ export function updateKanbanCard(
      WHERE id=?`
   ).run(f.title, f.description, f.status, f.assignee, f.priority, f.project, f.parent_id, f.due_date, f.sort_order, f.updated_at, f.archived_at, id).changes > 0
   if (changed && statusChanges) {
-    db.prepare(
+    const r = db.prepare(
       'INSERT INTO kanban_card_events (card_id, from_status, to_status, actor, created_at, forced) VALUES (?, ?, ?, ?, ?, ?)'
     ).run(id, card.status, f.status, opts?.actor ?? null, now, forcedFlag)
+    // Card d05d72b3: waiting/done is the qualifying transition -- see maybeResolveStuckIncident's
+    // own comment for why the filter lives here, at the ONE place that knows a status event was
+    // just written, rather than duplicated inside that function.
+    if (f.status === 'waiting' || f.status === 'done') {
+      maybeResolveStuckIncident(id, 'kanban_card_events', Number(r.lastInsertRowid), now)
+    }
   }
   if (changed) {
     touchAncestorChain(f.parent_id, now, id)
@@ -2864,7 +2934,13 @@ function recordKanbanFieldChanges(
     const a = (before as unknown as Record<string, unknown>)[field]
     const b = (after as unknown as Record<string, unknown>)[field]
     if (a === b) continue
-    stmt.run(id, field, clipAuditValue(a), clipAuditValue(b), actor ?? null, nowMs)
+    const r = stmt.run(id, field, clipAuditValue(a), clipAuditValue(b), actor ?? null, nowMs)
+    // Card d05d72b3: title ([NN%] progress) or assignee changing is the OTHER qualifying signal --
+    // see maybeResolveStuckIncident's own comment. `archived_at`/`predecessor_removed`, written via
+    // the sibling recordKanbanFieldEvent below, are NOT in this loop and are deliberately excluded.
+    if (field === 'title' || field === 'assignee') {
+      maybeResolveStuckIncident(id, 'kanban_card_field_events', Number(r.lastInsertRowid), nowMs)
+    }
   }
 }
 
@@ -2938,9 +3014,14 @@ export function moveKanbanCard(id: string, status: KanbanCard['status'], sortOrd
     // override -- an ordinary move that happens to carry `force:true` (e.g. an exempt agent's
     // client always sends it) is not itself a guard override and must not read as one; a caller
     // that wants the newDevStop route-layer bypass in the audit trail records that separately.
-    db.prepare(
+    const r = db.prepare(
       'INSERT INTO kanban_card_events (card_id, from_status, to_status, actor, created_at, forced) VALUES (?, ?, ?, ?, ?, ?)'
     ).run(id, prev, status, actor ?? null, now, forcedOverride || depBlocked ? 1 : 0)
+    // Card d05d72b3: the drag/move path is the other live writer of a status transition -- see
+    // updateKanbanCard's sibling hook and maybeResolveStuckIncident's own comment.
+    if (status === 'waiting' || status === 'done') {
+      maybeResolveStuckIncident(id, 'kanban_card_events', Number(r.lastInsertRowid), now)
+    }
   }
   if (changed) touchAncestorsOf(id, now)
   return changed
