@@ -10623,3 +10623,67 @@ párhuzamos, driftelhető implementáció): törli örökölt `production`-t, a 
 **Hivatkozás:** kártya `c116696f`, párja `50af1a27` (szülő `a7a61751`); `src/web/routes/
 updates.ts`, `src/__tests__/update-node-env-strip.test.ts`, `src/fork-upstream/acknowledged-
 conflicts.ts`.
+
+## 2026-09-06 -- f53ef8e4 -- gate-closure-check.py Gate-SHA-listát HALMAZKÉNT, nem első-tagként hasonlít
+
+**Döntés.** A `store/gate-closure-check.py` `verdict_of()`-ja mostantól a Gate-SHA sor MINDEN
+hex tokenjét megtartja (egy tuple-ben, sorrend szerint), nem csak az elsőt. Az egyezés-vizsgálat
+(`sha_sets_agree()`) két verdikt HALMAZAI között bármely metsző pár alapján dönt, nem a puszta
+első elem alapján. A tokenek gyűjtése a `src/web/kanban-gate-completeness-guard.ts`
+`extractGateShas()`-ából PORTOLT szűrőn megy át: egy `szulo`/`parent`/`merge-base` jelölésű sha
+kizárva, és egy `/`-t tartalmazó token (branch/path) csak akkor számít sha-citálásnak, ha egyik
+`/`-szegmense sem csupasz hex -- ez zárja ki a kártya SAJÁT ID-jét egy ágnévből (pl.
+`feat/tenant-auth-ip-coarsen-4a6c47f0`), ami 8 hex karakteren indistinguishable egy rövid sha-tól.
+
+**Miért.** Cybersec mérése a teljes táblán: 93 kártya visel többsoros, vesszős Gate-SHA-listát (a
+4b. szabály kimondottan engedi ezt az alakot), ebből 16 kapott hamis DISAGREE-t, mert a lista
+IDŐRENDI (legrégebbi elöl) és az eszköz az ELSŐ, tehát legrégebbi -- épp a javítás ELŐTTI --
+commitot vágta ki. Három bizonyított eset: `f00b3a7f` (kumulatív 8-elemű QA-lista a másik két gate
+2-elemű deltája ellen, közös záró pár), `7d45ecbb` (ugyanaz), `54fd9c02` (BÁJTRA AZONOS két-sha
+lista FORDÍTOTT sorrendben -- ez az eset, ami a halmaz-metszetet megkülönbözteti egy "vedd az
+utolsó elemet" javítástól, amit a `store/gate-pretriage-candidates.py` a SAJÁT, más okból helyes
+konvenciójaként használ: az egyik oldal `A, B`-t ír, a másik `B, A`-t, az "utolsó elem" szabály itt
+is hamis DISAGREE-t adna).
+
+**A második, saját mérésű lelet, MIELŐTT a javítás landolt volna.** A kártya eredeti javaslata (csak
+a halmaz-gyűjtés, szűrő nélkül) behozta volna az `a20f0aa7` kártya élő incidensét: a `4a6c47f0`
+kártya saját Gate-SHA sora `d49e9c7a... (CleanCore, ág feat/tenant-auth-ip-coarsen-4a6c47f0, ...)`
+alakú, és az ágnévbe ágyazott kártya-ID egy VALÓS hex-alakú token, amit a naiv gyűjtés második
+sha-ként vett volna fel. Élesben mérve, a szűrő NÉLKÜL: `CYBERSEC=d49e9c7a...,4a6c47f0` (a kártya
+ID-je sha-ként!). A `kanban-gate-completeness-guard.ts` már megoldotta ezt a PONTOS osztályt (három
+kör finomítás, `a20f0aa7`/`5bc8f740` élő incidens, 3301+ valós sor mérve) -- backend2 saját korábbi
+kommentje (21435) kifejezetten ennek az újrafelhasználását kérte, nem az újra-kitalálását.
+Átvéve: a `_PARENT_MARKED_SHA` (szulo/parent/merge-base jelölés kizárása) és `_is_path_token`
+(egy `/`-t tartalmazó token csak akkor path, ha valamelyik szegmense nem csupasz hex -- így a
+flotta `A/B` rövid/hosszú "mindkét commit" idiómája nem esik áldozatul).
+
+**Ami emiatt UTÓLAG kiderült egy régi DECISIONS-bejegyzésről.** A `c52e2823` (2. kör) bejegyzés
+`4a6c47f0`-t "valódi, nem hamis" DISAGREE-ként sorolta fel. Ez maga is téves volt: Cybersec saját
+delta-jegyzete (komment 21326, ugyanazon a kártyán) ezt már korábban kimondta -- mindhárom gate
+ténylegesen a `d49e9c7a`-t nevezte meg (QA és Cybered kételemű listája `901b6fbb, d49e9c7a`
+formában, mindkettőt), és a "901b6fbb-en áll" olvasat maga volt az itt javított hiba. A tartalom
+(md5, kommentektől megtisztítva) bájtra azonos a két shán. Élesben újramérve, a mostani javítással:
+`AGREE|901b6fbb,d49e9c7a`. A régi bejegyzést NEM írtam felül (append-only), csak itt mondom ki: az
+a mondat elavult, és ez a bejegyzés az, ami korrigálja.
+
+**Regresszió.** `gate-closure-check.selftest.py`: 91/91 zöld (83 régi + 8 új: a három bizonyított
+eset, egy diszjunkt-lista negatív kontroll, a kártya-ID-ágnév eset + saját negatív kontrollja, a
+merge-base eset + saját negatív kontrollja). Mutáció-tesztelve: az első-token-only állapotra
+visszaállítva a négy halmaz-eset FAIL-re vált, tehát nem vákuum. Élesben ellenőrizve (nem csak
+szintetikusan): `54fd9c02`, `dc5b714d`, `f00b3a7f`, `7d45ecbb`, `4a6c47f0` mind AGREE-re fordul (a
+`4a6c47f0`-nál a kártya-ID immár NEM jelenik meg a sha-halmazban), `edb721ec` helyesen marad
+DISAGREE (valódi diszjunkt lista, negatív kontroll).
+
+**Ismert korlát, kimondva.** Egy sha-t nem csak jelölőszóval (szulo/parent/merge-base) lehet
+"csak kontextus"-ként megnevezni: `3ae71df1`-en Cybersec egy komment prózájában "(21120,
+292a6820) FELOLDVA"-t ír, ahol a `292a6820` egy KORÁBBI, már felváltott NO-GO shája, nem
+jelölőszóval bevezetve. Ez a szűrőn átcsúszik és bekerül a halmazba -- élesben mérve nem okozott
+téves végeredményt (a valódi közös sha, `563de699`, mindhárom gate halmazában jelen van), de
+elméletileg ütközhetne egy másik gate genuinen eltérő shájával. Nem oldottam meg: a természetes
+nyelvi "ez már lezárva" kifejezésmódok felsorolása egy külön, nyitott végű feladat, nem ennek a
+kártyának a hatóköre.
+
+**Hivatkozás:** kártya `f53ef8e4` (Cybersec mérése és javaslata, 24393/21324/21352); kapcsolódó
+`dc5b714d`, `4a6c47f0`, `c52e2823`, `a20f0aa7`; backend2 saját korábbi mérése (komment 21435);
+`store/gate-closure-check.py`, `store/gate-closure-check.selftest.py`,
+`src/web/kanban-gate-completeness-guard.ts` (a portolt referencia).
