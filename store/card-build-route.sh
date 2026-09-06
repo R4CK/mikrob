@@ -153,8 +153,56 @@ fi
 # Widening a fail-safe gate costs speed and nothing else, which is why the bar for adding a word
 # here is deliberately low -- and why battery B of the selftest exists, to prove the additions did
 # not swallow the genuinely bounded work this whole card is FOR.
-if printf '%s' "$SHORT" | grep -Eqi \
-  'migrac|migration|séma|sema|schema|rollback|down-migr|architekt|architect|refaktor|refactor|kontraktus|contract|api-szerzod|breaking|több[- ]fájl|tobb[- ]fajl|multi-file|wiring|bekötés|bekotes|composition root|main\.ts|feature flag|deploy|infra|worktree|landol|merge'; then
+# THE LABEL PREFIX IS NOT A STATEMENT ABOUT THE WORK (card 28295e97). MEASURED on the live board,
+# on the only 8 routing decisions this script has ever made: all 7 ONLINE verdicts came from THIS
+# gate with calls=0, and on 4 of the 5 the matching token was `infra` -- twice as the ONLY match.
+# But every infra card on this board is titled `[marveen][INFRA]...` or `[CleanCore][INFRA]...`, so
+# the gate was matching the fleet's own labelling convention rather than anything about the work.
+# That is the exact failure route-classify.sh's header warns about ("the same noise that made the
+# keyword matcher fire on the fleet's own dialect"), one file over.
+#
+# TRIMMED, NOT DELETED, and the difference is the whole point (MikroB's plan-grilling, card 28295e97).
+# Deleting `infra` from the list was MEASURED and REJECTED: 134 cards have it as their sole match and
+# 98 of those are held by no other deterministic rule, which is precisely the state card 05f8d99c
+# widened this list to prevent. Removing the LEADING TAG RUN instead keeps every word's meaning: a
+# description whose BODY says "infra race condition" or "a landolási logika rossz sorrendben fut"
+# still matches, because only the bracket prefix is cut.
+#
+# SCOPED TO THIS RULE ALONE, deliberately. The money / object-integrity / client-supplied-value /
+# document-assembly gates below keep reading $SHORT untouched: they were measured separately, and
+# widening this trim to them without measuring them would be the same guess this change is fixing.
+#
+# FOUR WORDS ADDED WITH THE TRIM, and they are the reason this is a REPLACEMENT rather than a
+# deletion. Running the existing selftest after the trim alone moved FOUR real battery-A cards from
+# "the deterministic gate holds them" to "only the 7B holds them" -- the state this file's own
+# summary calls out in capitals, and the baseline before the trim had ZERO such cards. So the trim
+# alone fails this script's own acceptance bar, and loosening that bar to let it pass would be the
+# exact move rule 7 forbids. Each added word is the decision shape one of those four cards actually
+# carries, read from the card, not invented:
+#   nevter/namespace/fenntartott  5c5d7bc4 -- "from_agent=system is not the directive channel's own
+#                                             namespace", a trust-boundary question
+#   reteg/réteg                   2ebe24b2 -- "kell egy valaszto-reteg es egy kezelofelulet", a new
+#                                             layer, which is architecture wearing a feature label
+#   parhuzamos/egyidej            5af57bd7 -- three concurrent suite runs saturating one machine
+#   utemez/scheduler              13512bde -- wiring a new tool into the scheduler
+# The file's own rule applies: "Widening a fail-safe gate costs speed and nothing else, which is why
+# the bar for adding a word here is deliberately low."
+#
+# WHAT IT COSTS, measured on 385 non-urgent/high cards: the gate fires on 318 today and on 193 after
+# the trim. ZERO of the freed cards carried a real decision-shape word (migration, schema, contract,
+# wiring, feature flag...) inside the trimmed prefix -- checked explicitly, because a trim that ate
+# one of those would be the deletion this design refused.
+MULTI_TEXT="$(printf '%s' "$SHORT" | python3 -c '
+import re, sys
+# Only the LEADING run of [..] groups, so a bracket used mid-sentence is left alone.
+sys.stdout.write(re.sub(r"^(?:\s*\[[^\]]{0,60}\])+\s*", "", sys.stdin.read()))
+' 2>/dev/null)"
+# FAIL TOWARD THE UNTRIMMED TEXT. If python is missing or the trim produced nothing, the ORIGINAL
+# string is what gets matched -- the direction that keeps the gate firing, never the one that opens it.
+[ -n "${MULTI_TEXT// }" ] || MULTI_TEXT="$SHORT"
+
+if printf '%s' "$MULTI_TEXT" | grep -Eqi \
+  'migrac|migration|séma|sema|schema|rollback|down-migr|architekt|architect|refaktor|refactor|kontraktus|contract|api-szerzod|breaking|több[- ]fájl|tobb[- ]fajl|multi-file|wiring|bekötés|bekotes|composition root|main\.ts|feature flag|deploy|infra|worktree|landol|merge|nevter|névtér|namespace|fenntartott|reteg|réteg|utemez|ütemez|scheduler|parhuzamos|párhuzamos|egyidej'; then
   online deterministic-multi-decision
 fi
 

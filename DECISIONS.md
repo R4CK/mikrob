@@ -11424,3 +11424,52 @@ uj eset billen).
 
 **Hivatkozas:** kartya `c266ec74`; `store/decisions-append-union.sh`, Gate-SHA `1a8e469e` (a
 landolo merge, kezi befejezessel).
+## 2026-09-06 -- A routing-kapu a FLOTTA SAJÁT CÍMKÉJÉRE illeszkedett, nem a munkára (kártya 28295e97)
+
+**A KÁRTYA FELTÉTELEZÉSE MEGCÁFOLVA, méréssel.** A kártya (Peti kérése, MikroB fogalmazásában) azt
+mondta, a gyökér ok a `route-classify.sh` bináris MECHANICAL/SECURITY döntése, és egy köztes
+MODERATE sáv kell. A `card-build-route.log` teljes előzménye 8 sor, ebből 7 ONLINE, és **mind
+`calls=0`**: a döntés soha nem jutott el a `route-classify.sh`-ig. Egy MODERATE sáv ott nulla mai
+döntést oldott volna fel. Ezen felül a `route-classify.sh` szerkezetileg csak eszkalálni tud
+("may only move a task LOCAL -> ONLINE"), tehát több munkát helyire küldeni nem is tudna.
+
+**A TÉNYLEGES ELUTASÍTÓ.** A 2. lépcső `deterministic-multi-decision` kapuja, és ötből négyen az
+`infra` token illeszkedett, kettőnél egyedüliként. De minden ilyen kártya címe `[marveen][INFRA]`
+vagy `[CleanCore][INFRA]` alakú: a kapu a flotta saját címke-konvenciójára illeszkedett, nem a
+munka több-döntésű jellegére. Ugyanaz a hibaosztály, amire a `route-classify.sh` fejléce
+figyelmeztet ("the same noise that made the keyword matcher fire on the fleet's own dialect").
+
+**A SAJÁT ELSŐ JAVASLATOM IS MEGBUKOTT, és ez döntötte el a formát.** Azt ajánlottam, essen ki az
+`infra`. Mérve: 134 kártyán ez az egyetlen találat, és 98-at semmi más determinisztikus szabály nem
+fog -- pontosan az az állapot, amit a `05f8d99c` kártya szélesítése megszüntetett ("nothing but the
+7B stood between them and a weaker builder", 15-ből 5). Törlés helyett tehát **vágás + pótlás**.
+
+**AMI LANDOLT.** (1) A `deterministic-multi-decision` illesztés a szöveg VEZETŐ címke-futamát
+levágva fut, semmi mást nem érintve -- a másik négy determinisztikus osztály (pénz,
+objektum-integritás, kliens-adat, dokumentum-összeállítás) változatlanul a teljes szöveget olvassa,
+és a 3-4. lépcső (`route-classify` + a COMPLEX fokozat, mindkettő abstain->ONLINE) érintetlen.
+(2) Négy szó hozzáadva, mindegyik EGY konkrét kártya valódi döntés-alakja: `nevter/namespace/
+fenntartott` (5c5d7bc4, trust-boundary), `reteg` (2ebe24b2, új réteg = architektúra), `parhuzamos/
+egyidej` (5af57bd7, gép-szintű kontenció), `utemez/scheduler` (13512bde, ütemezőbe kötés).
+
+**MIÉRT KELLETT A PÓTLÁS, mérve.** A vágás ÖNMAGÁBAN négy valódi battery-A kártyát tolt át
+"a determinisztikus kapu fogja" állapotból "csak a 7B fogja" állapotba; az alapvonal előtte NULLA
+ilyen volt. A szkript saját összegzője ezt nagybetűvel kifogásolja, tehát a vágás önmagában
+megbukott a szkript SAJÁT elfogadási mércéjén -- és a mérce lazítása, hogy a változtatás átmenjen,
+pont a 7. kódminőségi elv tiltása. A négy szóval a selftest 32/0, nulla model-reliant.
+
+**A SZÁMOK, mindkét irány.** 385 nem-urgent/high kártyán a kapu 318-on tüzelt, a végleges
+szabállyal 217-en; 106 kártya szabadult, ebből 29-et másik determinisztikus szabály még fog, 77-et
+nem (a csak-vágás variánsnál ez 125 / 94 volt). A 77 a maradék kockázat, kimondva: őket a 3-4.
+lépcső fogja, nem a 2. A megítélt korpuszon (a selftest battery A-ja) a szám 0.
+
+**A DISPATCH-BOILERPLATE VÁGÁSA KIMARADT, méréssel indokolva.** A plan-grilling kérte, de a router
+bemenete a kártya `title`+`description` az API-ból, a sablon pedig a DISPATCH-ÜZENETBE kerül, nem a
+kártyára: 512 kártyából **nullában** fordul elő bármelyik sablonmondat. Holt kódot nem szállítok.
+
+**Ki döntött:** Peti (a cél, Telegram 7001); MikroB plan-grilling GO-WITH-CHANGES (komment 21850,
+három feltétellel); az irány-korrekció, a pótlás és a boilerplate-fél elhagyása backend mérnöki
+döntése, itt felülvizsgálatra kitéve.
+
+**Hivatkozás:** kártya `28295e97`; `store/card-build-route.sh`,
+`store/card-build-route-selftest.sh`.
