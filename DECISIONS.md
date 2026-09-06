@@ -10116,3 +10116,43 @@ egyetlen környezeti változóval).
 
 **Hivatkozás:** kártya `108c7b10` (szülő `40568837`); `store/vram-guard-check.sh`,
 `store/vram-guard-check.selftest.sh`, `store/vram-guard-config.json`.
+## 2026-09-06 14:45 -- A dedup-elo-szuro a SAJAT KIMENETET olvasta vissza; a kartya altal eloirt gyogymod viszont megolne az egyetlen igazolt talalatot (kartya 49be3576)
+
+**Amit a kartya kert:** a proveniencia-hivatkozast (a lelet-kartya, amibol a koveto kartya
+szuletett) vegyuk KI teljesen az illesztesi korpuszbol, mert a negy mai hamis pozitiv mindegyikenel
+a kozos elem ez volt.
+
+**Amit a meres talalt, es amit ezert MEGCSINALTAM:** a hamis pozitivok egy resze nem proveniencia,
+hanem ONSZENNYEZES. Talalatkor a hivo beleirja a kartya leirasaba a `[DEDUP-PREFILTER] ... (kozosen
+hivatkozott ID(k): X) ... (rule 6b).` blokkot. Az a blokk kartya-ID-ket nevez meg ES fix magyar
+prozat visz, tehat a kovetkezo futasnak megkulonboztethetetlen a szerzo sajat szovegetol -- es
+MINDKET jelet eteti:
+  * 1. jel: a 49be3576 es a 96d3e903 a 746ebae4-et NULLA alkalommal emliti szerzoi szovegben, es
+    egyszer-egyszer a sajat elo-szuro blokkjaban. Az eszkoz a sajat kimenetere illesztett.
+  * 2. jel: a blokk prozaja ("Lehetseges duplikatum", "Ellenorizd", "hivatkozott", "kartyat",
+    "problemat", "kommentelj") minden megjelolt kartyan kozos. Ugyanez a par 0,41 pontot es 34
+    kozos szot ad -- MINDKET lexikai kuszob folott --, blokk nelkul 0,07-et es 4-et. A
+    b6f88f86/91dd4386 par ugyanigy 0,41 -> 0,27, kuszob folottrol ala.
+Ez onerosito hurok, nem kellemetlenseg: minden megjelolt kartya valoszinubbe valik, hogy ujra
+megjeloljek, es hogy MAS megjelolt kartyakat is behuzzon. A tablan mar 128 kartya visz ilyen blokkot.
+A javitas: az eszkoz sajat blokkjait ki kell venni a korpuszbol MINDKET oldalon, mielott barmelyik
+jel ranez. Csak az ILLESZTESI KORPUSZBOL -- a kartyan a blokk marad.
+
+**Amit NEM csinaltam meg, es miert:** a proveniencia-kizarast. Megmertem az egyetlen igazolt
+duplikatum-part, amire az egesz heurisztika kalibralva lett (cff4fa09 vs fe2f71ca): a kozos
+hivatkozasuk (34c4840e) MINDKET oldalon proveniencia-nyelvben all -- "34c4840e kovetkezmenye",
+"Cybered lelete (34c4840e ...)", "34c4840e/1da2367a korabbi FAIL-ek kapcsan". Egy szabaly, ami eleg
+szeles ahhoz, hogy a mai negy hamis pozitivot levagja, ezt is levagja. Az 1. jel igazolt igaz
+pozitivja es a hamis pozitivjai SZERKEZETILEG AZONOSAK: mindketto "ket kartya ugyanabbol a leletbol".
+A lexikai pontszam sem valaszt el: a valodi par 0,16/17, a blokk-mentesitett hamis pozitivok
+0,08/14, 0,09/6, 0,16/13, 0,27/25 -- a 232e01e2/e80c011a pont ugyanazt a 0,16-ot adja.
+
+**Egy melleklelet, ami magatol nem derult volna ki:** a fenti igazolt par a `done` lista 877.
+helyen all `updated_at` szerint, az alapertelmezett visszatekintes 200. Az eszkoz egyetlen igazolt
+igaz pozitivja tehat mar reg HATOTAVON KIVUL van az eles tablan -- egy ottani futas nem a jelrol
+mond valamit, hanem az ablakrol. Ezert hermetikus a selftest.
+
+**Ki dontott:** backend2 (meres es az onszennyezes-javitas), MikroB (a proveniencia-kerdes nyitva,
+dontesre visszaadva a meressel).
+**Hivatkozas:** kartya 49be3576; `store/dedup-prefilter-check.sh`,
+`store/dedup-prefilter-check.selftest.sh`.
