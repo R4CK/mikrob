@@ -8795,3 +8795,66 @@ hol ROGZITETT egy masik program egy dontest.
 **Hivatkozas:** kartya `970156ce`; `store/local-llm-model-routing.selftest.sh`,
 `src/__tests__/local-llm-guard-sanctioned-skip.test.ts`; MikroB 21246; kapcsolodo: d5c05548
 (a mask() hiba), 1f276349 (ugyanez az osztaly a fork-guardon).
+
+---
+
+## 2026-09-06 -- d5c05548: a maszkolas allitasat ELLENORIZNI kell, es a flag csak igazat mondhat
+
+**Dontes (1. gyokerok).** A `gpu-crashloop-guard.sh` `mask_units()` mostantol MEGNEZI, hogy
+a unit tenylegesen maszkolt-e (`UnitFileState`), nem a `systemctl mask` kilepokodet hiszi el;
+ha a maszkolas nem fogott es egy VALODI unit-fajl all az uton, lefuttatja a kezi utat
+(fajl felre `<unit>.real-unit-backup` nevre, `/dev/null` symlink, `daemon-reload`), majd
+UJRA ellenoriz. Amit nem sikerult maszkolni, az nem kerul be a `MASKED_OK` listaba.
+
+**Mert a vedelem hetek ota csak LATSZOLAGOS volt.** Eldobhato probe-unittal sajat kezuleg
+reprodukalva ezen a hoston: `systemctl --user mask` regularis unit-fajl felett
+"Failed to mask unit: File ... already exists"-et ad, exit 1, es a unit `static` marad --
+`--force` ugyanezt. A regi kod ezt NAPLOZTA es tovabbment, majd kiirt egy allapot-flaget,
+ami a unitot maszkoltkent nevezte meg. A szolgaltatas tehat csak le volt allitva, barmely
+`systemctl --user start` visszakapcsolta a GPU-utvonalat. Egy or, aminek a hibamodja egy
+megnyugtato naplosor, rosszabb, mint a semmi, mert senki nem megy utananezni.
+
+**A flag mostantol a TENYT irja le, nem a szandekot.** A `units` mezo a `MASKED_OK`-bol
+keszul; ha egyetlen unitot sem sikerult maszkolni, a flag NEM irodik ki (torlodik), es
+azonnali riasztas megy ki arrol, hogy a gep NINCS vedve. Ez a mai naptol tetszik: a
+970156ce ota ezt a fajlt a LANDOLASI KAPU olvassa, tehat egy hazudo flag arra vinne a
+kaput, hogy elhallgasson egy valojaban vedtelen geprol.
+
+**Egy harmadik hiba, amit a kartya nem nevez meg, es kimertem.** A `systemctl --user unmask`
+ONMAGABAN NEM allitja vissza a unitot: eltavolitja a `/dev/null` symlinket es megall, a
+valodi fajl pedig a `.real-unit-backup` nev alatt marad -- a unit `LoadState=not-found`
+lesz, vagyis a szolgaltatas ELTUNIK. A helyreallito parancs ezert bekerult a riasztas
+szovegebe (`restore_hint`), nem egy kanban-kommentbe, mert a tulajdonos a riasztast olvassa.
+
+**A MELYEBB OK, es ezert wireoltam be a sajat suite-jat.** A `scripts/__tests__/*.test.sh`-t
+SEMMI nem futtatja: nincs ra hivatkozas a `fleet-test.sh`-ban, a `package.json`-ban, egyetlen
+vitest fajlban sem -- az egesz repoban ket emlites van a guard teszt-fajljara, a guard sajat
+fejlece es maga a fajl. A 12 teszt tehat leirt kontroll volt, ami sosem futott le; ez a
+`wired-detection-with-no-consumer` osztaly, ugyanaz, amit a `store-selftests-all-run`
+(711a7e57, 2003e04b) zar a `store/*.selftest.*`-ra. SZANDEKOSAN SZUKEN: csak EZT a suite-ot
+kotottem be. A teljes `scripts/__tests__` bekotese kulon kartya, mert az upstream sajat
+merese szerint (#1200: "25 of our 29 script suites had never run, and two of them were red")
+lesz kozottuk piros, es egy flotta-szintu landolas-blokk pont az, amit ma egesz nap tisztitottunk.
+
+**A 2. GYOKEROK NEM KESZULT EL, SZANDEKOSAN.** A kartya azt keri, allitsam vissza a hianyzo
+CPU-only drop-int (Layer 1). A premissza teves: nem eltunt, hanem PETI SZANDEKOSAN
+eltavolittatta. A 13f92c99 kommit uzenete kimondja, hogy a drop-in "host-local, not versioned
+here", a `wsl-vm-crashloop-ollama-gpu-dxgkrnl` memoria pedig ugyanarrol a naprol rogziti:
+"Peti explicitly overrode the CPU-only stopgap -- he wants GPU as the PRIMARY path... Removed
+the CPU-only drop-in, restored default GPU config." Kesobbi, ezt visszavono dontes nincs sem a
+DECISIONS.md-ben, sem a tablan, sem a memoriaban. A visszaallitasa egy kimondott tulajdonosi
+dontes visszaforditasa lenne (5. kodminosegi elv), raadasul a fo GPU-utvonal kikapcsolasaval.
+MikroB ele vive; a guard fejlece viszont ma HAZUDIK, mert egy nem letezo Layer 1-re hivatkozik --
+ennek a javitasa is az o dontesere var.
+
+**Mérve.** Selftest 12 -> 22 eset. Ot mutacio, mind piros a sajat esetein: az ellenorzes
+elhagyasa (6 bukas), a fallback kikapcsolasa (6), a flag visszairasa `UNITS`-bol (4), a
+meglevo-backup vedelem torlese (1), es a helyreallito parancs kivetele a riasztasbol (1).
+Az utolso ELSO valtozatban TULELT: a `(k)` eset a TELJES kimenetben kereste a
+`real-unit-backup` szot, amit a `mask_one` sajat naplosora is tartalmaz -- az allitas
+durvabb volt, mint a viselkedes, es igy a ket or kozul a rosszat rogzitette. Szukitve az
+ALERT sorra, azota bukik.
+
+**Hivatkozas:** kartya `d5c05548`; `scripts/gpu-crashloop-guard.sh`,
+`scripts/__tests__/gpu-crashloop-guard.test.sh`,
+`src/__tests__/gpu-crashloop-guard-suite-runs.test.ts`; kapcsolodo: 970156ce (a flag fogyasztoja).
