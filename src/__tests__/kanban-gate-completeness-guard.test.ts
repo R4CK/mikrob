@@ -500,4 +500,121 @@ describe('gateCompletenessGuardVerdict', () => {
       expect(v.message).toContain('Cybersec')
     })
   })
+
+  describe('a sha glued into a BRANCH NAME is not a citation (card a20f0aa7, real incident 5bc8f740)', () => {
+    it('the measured 5bc8f740 shape: the card\'s OWN ID in the branch name + a merge-base -> QA stays fresh', () => {
+      // Cybersec's real line. Three hex runs on it, only ONE of which is a cited commit:
+      //   8b8377cf  -- the subject
+      //   5bc8f740  -- the CARD ID, tail of the branch name; eight hex chars, shaped like a short sha
+      //   0d5ebb6c  -- the merge-base, an ancestor by definition
+      // Both impostors are "introduced" later than QA's PASS, so Math.max dragged the round boundary
+      // to Cybersec's comment and QA's PASS for the SAME commit, 601s earlier, read as stale.
+      // The dashboard answered 409 "QA verdikt hianyzik"; MikroB had to close it with force:true.
+      card.description = 'Gate: QA + Cybersec'
+      comments = [
+        { author: 'backend', content: 'REVIEW: kesz\nGate-SHA: 8b8377cf', created_at: 100 },
+        { author: 'qa', content: 'REVIEW: QA PASS\nGate-SHA: 8b8377cf', created_at: 200 },
+        {
+          author: 'cybersec',
+          content:
+            'CYBERSEC GO\nGate-SHA: 8b8377cf (CleanCore, ag fix/platform-admin-append-tail-5bc8f740, merge-base 0d5ebb6c, NEM landolt)',
+          created_at: 300,
+        },
+      ]
+      expect(gateCompletenessGuardVerdict('c1', 'done', false).blocked).toBe(false)
+    })
+
+    it('`merge-base <sha>` ALONE is an ancestor reference -- pinned independently of the branch-name half', () => {
+      // The incident line carries BOTH defects at once, so it cannot tell the two fixes apart: drop
+      // either one and that single case goes red. This isolates the marker half, so a future change
+      // that removes `merge-base` from the list is caught by a case that names it.
+      card.description = 'Gate: QA + Cybersec'
+      comments = [
+        { author: 'backend', content: 'REVIEW: kesz\nGate-SHA: 8b8377cf', created_at: 100 },
+        { author: 'qa', content: 'REVIEW: QA PASS\nGate-SHA: 8b8377cf', created_at: 200 },
+        { author: 'cybersec', content: 'CYBERSEC GO\nGate-SHA: 8b8377cf (merge-base 0d5ebb6c)', created_at: 300 },
+      ]
+      expect(gateCompletenessGuardVerdict('c1', 'done', false).blocked).toBe(false)
+    })
+
+    it('CONTROL: a BACKTICKED sha is a real citation and still moves the boundary', () => {
+      // The first cut of this rule keyed on the character adjacent to the hex run, which dropped
+      // this shape (measured live on card ca38deac: "bb27c07b (ag `agent/backend2/work`, pusholva;
+      // a harness `3dcbbefc`)"). A backtick is quoting, not a path.
+      card.description = 'Gate: QA + Cybersec'
+      comments = [
+        { author: 'backend', content: 'REVIEW: kesz\nGate-SHA: 5f7abb6c', created_at: 100 },
+        { author: 'qa', content: 'REVIEW: QA PASS\nGate-SHA: 5f7abb6c', created_at: 200 },
+        { author: 'cybersec', content: 'CYBERSEC GO\nGate-SHA: 5f7abb6c (a harness `3dcbbefc`)', created_at: 300 },
+      ]
+      const v = gateCompletenessGuardVerdict('c1', 'done', false)
+      expect(v.blocked).toBe(true)
+      expect(v.message).toContain('QA')
+    })
+
+    it('CONTROL: a HUNGARIAN-SUFFIXED sha is a real citation and still moves the boundary', () => {
+      // Same rejected first cut: "a21e5528-on", "9f0a8639-ben" are how this fleet writes about a
+      // commit in prose. A hyphen before a suffix is not a path separator.
+      card.description = 'Gate: QA + Cybersec'
+      comments = [
+        { author: 'backend', content: 'REVIEW: kesz\nGate-SHA: 5f7abb6c', created_at: 100 },
+        { author: 'qa', content: 'REVIEW: QA PASS\nGate-SHA: 5f7abb6c', created_at: 200 },
+        { author: 'cybersec', content: 'CYBERSEC GO\nGate-SHA: 5f7abb6c (megfigyeles a21e5528-on)', created_at: 300 },
+      ]
+      const v = gateCompletenessGuardVerdict('c1', 'done', false)
+      expect(v.blocked).toBe(true)
+      expect(v.message).toContain('QA')
+    })
+
+    it('CONTROL: the slash-joined "both commits" idiom A/B is NOT a path and still counts', () => {
+      // The SECOND rejected cut ("any token containing a slash is a path") swallowed this and
+      // invalidated a genuine QA2 verdict on card 67807f6f, where the line read
+      // "aa40afef (a 89665d8a/06200298 tetejen ...)". Every segment here is itself a bare sha, so
+      // the token is a citation pair, not a branch name.
+      card.description = 'Gate: QA + Cybersec'
+      comments = [
+        { author: 'backend', content: 'REVIEW: kesz\nGate-SHA: 5f7abb6c', created_at: 100 },
+        { author: 'qa', content: 'REVIEW: QA PASS\nGate-SHA: 5f7abb6c', created_at: 200 },
+        { author: 'cybersec', content: 'CYBERSEC GO\nGate-SHA: 5f7abb6c (89665d8a/06200298 tetejen)', created_at: 300 },
+      ]
+      const v = gateCompletenessGuardVerdict('c1', 'done', false)
+      expect(v.blocked).toBe(true)
+      expect(v.message).toContain('QA')
+    })
+
+    it('CONTROL: `alap <sha>` and `landolt <sha>` stay INCLUDED -- card 367c23a9 does not regress', () => {
+      // The blunt repair proposed twice for this incident -- drop the parenthetical, or add
+      // alap/base to the parent-marker list -- reopens 367c23a9, where these ARE the round's own
+      // co-citations. Only `merge-base` was added, and only it.
+      for (const shape of ['(alap 9f0f75ef)', '(landolt 9f0f75ef)']) {
+        card.description = 'Gate: QA + Cybersec'
+        comments = [
+          { author: 'backend', content: 'REVIEW: kesz\nGate-SHA: 5f7abb6c', created_at: 100 },
+          { author: 'qa', content: 'REVIEW: QA PASS\nGate-SHA: 5f7abb6c', created_at: 200 },
+          { author: 'cybersec', content: 'CYBERSEC GO\nGate-SHA: 5f7abb6c ' + shape, created_at: 300 },
+        ]
+        const v = gateCompletenessGuardVerdict('c1', 'done', false)
+        expect(v.blocked).toBe(true)
+      }
+    })
+
+    it('a branch-name card ID does not hide a GENUINE later round either', () => {
+      // The rule must not become a way to smuggle a real new commit past the boundary: the branch
+      // token is ignored, but the sha cited beside it is not.
+      card.description = 'Gate: QA + Cybersec'
+      comments = [
+        { author: 'backend', content: 'REVIEW: kesz\nGate-SHA: 8b8377cf', created_at: 100 },
+        { author: 'qa', content: 'REVIEW: QA PASS\nGate-SHA: 8b8377cf', created_at: 200 },
+        {
+          author: 'backend',
+          content: 'REVIEW -- uj kor\nGate-SHA: c0ffee12 (ag fix/whatever-5bc8f740)',
+          created_at: 300,
+        },
+      ]
+      const v = gateCompletenessGuardVerdict('c1', 'done', false)
+      expect(v.blocked).toBe(true)
+      expect(v.message).toContain('QA')
+    })
+  })
+
 })

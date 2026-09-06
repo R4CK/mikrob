@@ -159,7 +159,44 @@ const GATE_SHA_TOKEN_RX = /\b[0-9a-f]{6,40}\b/gi
 // which is the correct Hungarian one and the one CLAUDE.md mandates in prose, would silently never
 // match. A required separator (`[\s:]+`) does the same job for every spelling and additionally
 // stops `parentab12cd` from reading as marker + sha.
-const PARENT_MARKED_SHA_RX = /\b(?:szulo|szülő|parent)[\s:]+[0-9a-f]{6,40}\b/gi
+// `merge-base` joins the marker list (card a20f0aa7, real incident 5bc8f740). A merge-base IS an
+// ancestor by definition -- the same argument the list already rests on -- and Cybersec wrote
+// `Gate-SHA: 8b8377cf (..., merge-base 0d5ebb6c, NEM landolt)`, which dragged the boundary past a QA
+// PASS for the very same commit. `alap`/`base` deliberately stay OUT: the block above states they are
+// genuine co-citations (card 367c23a9), and the board measurement agrees.
+const PARENT_MARKED_SHA_RX = /\b(?:szulo|szülő|parent|merge-base)[\s:]+[0-9a-f]{6,40}\b/gi
+
+// A `/`-BEARING TOKEN IS A BRANCH NAME OR A PATH, NOT A CITATION (card a20f0aa7, incident 5bc8f740).
+//
+// `Gate-SHA: 8b8377cf (CleanCore, ag fix/platform-admin-append-tail-5bc8f740, ...)` carries the
+// CARD'S OWN ID inside the branch name, and a card ID is eight hex chars -- indistinguishable in
+// SHAPE from a short sha, which is the exact class CLAUDE.md 4b names. No marker word can precede it,
+// so the parent-marker mechanism above cannot reach it. Its POSITION can: a sha that is cited stands
+// alone between separators, while a card ID hides inside a slash-joined path token.
+//
+// NARROWED TWICE, each time by a false drop the previous cut produced on the real board (3301
+// Gate-SHA lines):
+//   * keying on the ADJACENT CHARACTER dropped two genuine citation idioms this fleet uses daily --
+//     a backticked sha (`3dcbbefc`) and a Hungarian-suffixed one (`a21e5528-on`, `9f0a8639-ben`).
+//   * keying on "the token contains a slash" then swallowed `89665d8a/06200298`, which is not a path
+//     but the fleet's "both commits" idiom -- and it invalidated a real QA2 verdict on card 67807f6f.
+// So a slash-bearing token only counts as a path when some slash-separated segment is NOT itself a
+// bare sha: `fix/...`, `agent/...`, `origin/main@...` qualify; `A/B` does not.
+//
+// MEASURED: 60 of 3301 lines change (55 branch/path, 7 merge-base, nothing unexplained, nothing
+// added); 8 cards' boundary moves; 6 gate verdicts go stale -> fresh and EVERY ONE of them names its
+// own round's subject sha; 0 go fresh -> stale. In five of those six the pre-fix "newest sha" was
+// literally the card's own ID, so 5bc8f740 was not a one-off. The four earlier incidents this file
+// already fixes (d0b4f003, 4ae2d3f5, d4a2130d, 67807f6f) are all unchanged.
+const HEX_ONLY_SEGMENT_RX = /^[0-9a-f]{6,40}$/i
+function isPathToken(tok: string): boolean {
+  if (!tok.includes('/')) return false
+  return tok
+    .replace(/^[`'"(),;]+|[`'"(),;]+$/g, '')
+    .split('/')
+    .filter(Boolean)
+    .some((seg) => !HEX_ONLY_SEGMENT_RX.test(seg))
+}
 
 /** Every short-sha token declared on a Gate-SHA line in `content` (lowercased, deduped), EXCEPT the
  *  ones introduced as a parent/ancestor reference (see {@link PARENT_MARKED_SHA_RX}). A card can
@@ -174,9 +211,13 @@ function extractGateShas(content: string): ReadonlySet<string> {
     // legitimately appear bare on another line (or another comment) as the round's real subject,
     // and dropping it by value would silently discard that citation too.
     const line = (m[1] ?? '').replace(PARENT_MARKED_SHA_RX, (run) => ' '.repeat(run.length))
-    GATE_SHA_TOKEN_RX.lastIndex = 0
-    let tm: RegExpExecArray | null
-    while ((tm = GATE_SHA_TOKEN_RX.exec(line)) !== null) out.add(tm[0].toLowerCase())
+    // Token by token, so a hex run can be judged by the company it keeps (see isPathToken).
+    for (const tok of line.split(/\s+/)) {
+      if (isPathToken(tok)) continue
+      GATE_SHA_TOKEN_RX.lastIndex = 0
+      let tm: RegExpExecArray | null
+      while ((tm = GATE_SHA_TOKEN_RX.exec(tok)) !== null) out.add(tm[0].toLowerCase())
+    }
   }
   return out
 }

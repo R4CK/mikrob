@@ -13,14 +13,27 @@
 # installed, this time even without an active inference call (GPU discovery on
 # boot was enough). See memory: wsl-vm-crashloop-ollama-gpu-dxgkrnl.
 #
-# This is layer 2 of the defense. Layer 1 is the CPU-only systemd drop-in
-# (ollama.service.d/10-cpu-only-gpu-crashloop-safety.conf) that removes the
-# GPU/dxg ioctl path entirely -- this guard exists in case that is ever
-# reverted, incomplete, or a DIFFERENT process starts touching the GPU:
-# it detects the crash-loop signature from the outside (boot durations +
-# kernel oops text), force-stops+masks the offending unit, and alerts the
-# owner directly (Bot API, not MCP -- the in-session channel is one of the
-# things that dies every cycle in a crash-loop, so it cannot be trusted to
+# THERE IS NO LAYER 1 TODAY -- THIS GUARD IS THE ONLY LAYER (card d5c05548).
+#
+# This header used to describe itself as "layer 2", under a CPU-only systemd
+# drop-in (ollama.service.d/10-cpu-only-gpu-crashloop-safety.conf) that removed
+# the GPU/dxg ioctl path entirely. That drop-in is GONE, on purpose: on
+# 2026-08-24 Peti overrode the CPU-only stopgap because he wants the GPU as the
+# PRIMARY path, and the drop-in was removed with the default GPU config restored
+# (memory wsl-vm-crashloop-ollama-gpu-dxgkrnl; commit 13f92c99 records that the
+# file was host-local and never versioned here). Measured again on 2026-09-06:
+# /home/neon/.config/systemd/user/ollama.service.d/ does not exist at all.
+#
+# The old wording was not merely stale, it was load-bearing in the wrong
+# direction: a reader deciding how hard this guard has to try would have
+# believed a second, stronger mitigation was standing behind it. Nothing is.
+# Whether a new lower layer should exist is Peti's call and is tracked on its
+# own card, not assumed here.
+#
+# What this guard does: it detects the crash-loop signature from the outside
+# (boot durations + kernel oops text), force-stops+masks the offending unit, and
+# alerts the owner directly (Bot API, not MCP -- the in-session channel is one of
+# the things that dies every cycle in a crash-loop, so it cannot be trusted to
 # carry the alert).
 #
 # Determinism + safety:
@@ -41,6 +54,16 @@
 #   GPU_GUARD_ALERT_DRYRUN     - if 1, print "ALERT_DRYRUN: <msg>" not curl
 #   GPU_GUARD_MASK_DRYRUN      - if 1, print "MASK_DRYRUN: <unit>" instead of systemctl mask
 #   GPU_GUARD_UNITS            - space-separated systemd --user units to protect (default: ollama.service)
+#   GPU_GUARD_SYSTEMCTL        - the systemctl binary to call (default: systemctl); the seam that
+#                                lets the mask-fallback below be tested without a real service
+#   GPU_GUARD_USER_UNIT_DIR    - where --user unit FILES live (default: ~/.config/systemd/user)
+#
+# CLI:
+#   gpu-crashloop-guard.sh                 - one guard cycle (what the timer runs)
+#   gpu-crashloop-guard.sh --restore-hint  - print the exact command that puts the masked units
+#                                            back, read from the state flag. `unmask` ALONE IS NOT
+#                                            ENOUGH and the difference is not obvious, so the answer
+#                                            has to be askable at 3am without reading this file.
 
 set -u
 
@@ -160,23 +183,235 @@ detect_crashloop() {
   fi
 }
 
+SYSTEMCTL="${GPU_GUARD_SYSTEMCTL:-systemctl}"
+USER_UNIT_DIR="${GPU_GUARD_USER_UNIT_DIR:-$HOME/.config/systemd/user}"
+
+# The units this run actually got masked, VERIFIED. main() writes the state flag from this and not
+# from UNITS -- see the comment there.
+MASKED_OK=()
+
+# Masked according to systemd itself, not according to an exit code. `mask` returning 0 is not the
+# same claim: this asks the unit what state it is in.
+unit_is_masked() {
+  [ "$("$SYSTEMCTL" --user show -p UnitFileState --value "$1" 2>/dev/null)" = "masked" ]
+}
+
+# "SYSTEMD SAID NO" AND "SYSTEMD COULD NOT BE ASKED" ARE DIFFERENT ANSWERS (Cybersec F-1/F-2 on
+# Gate-SHA e2be6386, both MEDIUM, one root -- and the root is my own principle applied to only one
+# of two inputs).
+#
+# unit_is_masked() compares a string to "masked", so an EMPTY answer -- no user bus, the user
+# manager not up yet, systemctl missing, the unit gone -- reads exactly like "not masked".
+# Reproduced: with a systemctl that exits 1 on "Failed to connect to bus", the output is '' and the
+# comparison is false, indistinguishable from a live unmasked unit.
+#
+# Two decisions were being made from that false answer, and the second is the one that bites:
+#   mask_one   -- would move the real unit aside and drop in the /dev/null symlink, then report
+#                 that NOTHING was masked. The service ends up masked on disk while the alert says
+#                 the machine is unprotected, and nothing records where the real unit went.
+#   reconcile  -- runs FIRST in main(), on EVERY invocation, and DELETES the flag of a machine that
+#                 really is masked, logging "none of [...] is masked any more". That does not heal:
+#                 the only writer of the flag is mask_units, which runs only on a fresh detection.
+#
+# The file already states the right rule three functions up, for the OTHER input: "an unreadable
+# claim is not a refuted one" -- written about an unparseable flag. An unanswerable systemd is the
+# same shape and did not get it. Two inputs, one principle, one of them protected.
+#
+# Why it matters beyond tidiness: the flag's absence is exactly the signal that the machine is being
+# held down ON PURPOSE. Missing that signal is what led another agent to restart ollama five times
+# under this guard. That is measured precedent in this fleet, not a hypothetical.
+unit_state_unknown() {
+  local out rc
+  out="$("$SYSTEMCTL" --user show -p UnitFileState --value "$1" 2>/dev/null)"
+  rc=$?
+  [ "$rc" -ne 0 ] || [ -z "$out" ]
+}
+
+# THE MASK THAT NEVER HAPPENED (card d5c05548).
+#
+# `systemctl --user mask` works by writing a symlink to /dev/null into the user unit directory. If a
+# REGULAR unit file already sits at that path -- which is exactly the case for a hand-installed
+# ollama.service -- systemd refuses rather than overwriting, and `--force` refuses too. Measured on
+# this host with a throwaway probe unit:
+#
+#   systemctl --user mask <u>          -> "Failed to mask unit: File ... already exists", exit 1
+#   systemctl --user mask --force <u>  -> the same
+#   afterwards                          -> UnitFileState=static, i.e. still loadable and startable
+#
+# The old code logged that failure and moved on, then wrote a state flag naming the unit as masked.
+# So for weeks the protection was APPARENT ONLY: the service was stopped, never masked, and any
+# `systemctl --user start` re-armed the GPU path the guard exists to keep off. A guard whose failure
+# mode is a reassuring log line is worse than no guard, because nobody goes looking.
+#
+# The fallback is what a human does by hand: move the real unit aside, put the /dev/null symlink
+# there, reload. It is reversible, and the reversal is NOT just `unmask` -- see restore_hint().
+mask_one() {
+  local u unit_path backup
+  u="$1"
+  unit_path="$USER_UNIT_DIR/$u"
+  backup="$unit_path.real-unit-backup"
+
+  "$SYSTEMCTL" --user stop "$u" 2>/dev/null
+  "$SYSTEMCTL" --user mask "$u" 2>/dev/null
+  if unit_is_masked "$u"; then
+    log "masked $u (verified)"
+    return 0
+  fi
+
+  # Never take the destructive path on an answer we could not get. Moving the real unit aside is
+  # only reversible if someone knows it happened, and the alert we would print says the opposite.
+  if unit_state_unknown "$u"; then
+    log "mask FAILED for $u -- systemd could not be asked (no bus / no user manager / systemctl missing). NOT moving the unit file aside: an unverifiable state is not a refusal, and a half-done mask nobody is told about is worse than an honest failure."
+    return 1
+  fi
+
+  if [ -f "$unit_path" ] && [ ! -L "$unit_path" ]; then
+    if [ -e "$backup" ]; then
+      log "mask fallback for $u: $backup already exists -- refusing to overwrite a previous backup"
+      return 1
+    fi
+    mv "$unit_path" "$backup" 2>/dev/null || { log "mask fallback for $u: could not move $unit_path aside"; return 1; }
+    ln -s /dev/null "$unit_path" 2>/dev/null || {
+      # Put the real unit back rather than leaving the service with no file at all.
+      mv "$backup" "$unit_path" 2>/dev/null
+      log "mask fallback for $u: could not create the /dev/null symlink; original restored"
+      return 1
+    }
+    "$SYSTEMCTL" --user daemon-reload 2>/dev/null
+    if unit_is_masked "$u"; then
+      log "masked $u (verified, via unit-file fallback; real unit saved as $backup)"
+      return 0
+    fi
+  fi
+
+  log "mask FAILED for $u -- it is NOT masked and the fallback did not take. UnitFileState=$("$SYSTEMCTL" --user show -p UnitFileState --value "$u" 2>/dev/null)"
+  return 1
+}
+
+# A FLAG THAT RECORDS A DECISION OUTLIVES THE DECISION UNLESS SOMEONE CLEARS IT (Cybersec, card
+# 970156ce; folded in here by MikroB's decision on d5c05548).
+#
+# The state flag is not a log entry, it is a claim about the machine RIGHT NOW: card 970156ce made
+# store/local-llm-model-routing.selftest.sh skip two routing cases when the flag names
+# ollama.service, on the reasoning that the guard is deliberately holding the service down. Nothing
+# ever deleted the flag. So the moment a human unmasks the unit after a real fix -- the documented,
+# expected end of an incident -- the flag keeps asserting a mask that is gone, and those two cases
+# are skipped forever on a perfectly healthy machine. Silently: a skip prints as a skip.
+#
+# So every cycle re-checks the claim against systemd and rewrites the flag to whatever is STILL
+# true, deleting it when nothing is. This runs on EVERY invocation, including the overwhelmingly
+# common "no crash-loop detected" path -- that is the path a recovered machine takes forever after.
+#
+# It does NOT run under MASK_DRYRUN: a dry run masks nothing, so letting it reconcile would delete a
+# flag a real run wrote.
+#
+# Parse failure is NOT taken as "nothing is masked". A flag we cannot read is a flag we cannot
+# refute, and deleting it would silently un-skip a routing case on a machine that may genuinely be
+# held down. Leave it, say so, and let a human look.
+reconcile_masked_flag() {
+  [ "${GPU_GUARD_MASK_DRYRUN:-}" = "1" ] && return 0
+  [ -f "$MASKED_FLAG" ] || return 0
+
+  local claimed still u
+  claimed="$(python3 - "$MASKED_FLAG" <<'PY' 2>/dev/null
+import json, sys
+try:
+    with open(sys.argv[1], encoding='utf-8') as fh:
+        d = json.load(fh)
+except Exception:
+    sys.exit(3)
+u = d.get('units')
+if isinstance(u, str):
+    print(' '.join(u.split()))
+elif isinstance(u, list) and all(isinstance(x, str) for x in u):
+    print(' '.join(w for x in u for w in x.split()))
+else:
+    sys.exit(3)
+PY
+)" || {
+    log "masked-flag reconcile: $MASKED_FLAG is unreadable/malformed -- leaving it alone (an unreadable claim is not a refuted one)"
+    return 0
+  }
+
+  still=""
+  for u in $claimed; do
+    # THE SAME RULE AS THE UNREADABLE FLAG ABOVE, on the other input. If systemd cannot answer, the
+    # claim is unverified, not refuted -- leave the whole flag exactly as it is and say why. Bailing
+    # on the FIRST unknown rather than per-unit is deliberate: a partial rewrite driven by a half
+    # answerable systemd would be a new claim built out of the same uncertainty.
+    if unit_state_unknown "$u"; then
+      log "masked-flag reconcile: systemd could not be asked about $u (no bus / no user manager / systemctl missing) -- flag left UNTOUCHED. An unanswerable systemd refutes nothing, and deleting the flag here would erase the only signal that this machine is held down on purpose."
+      return 0
+    fi
+    if unit_is_masked "$u"; then still="$still $u"; fi
+  done
+  still="${still# }"
+
+  if [ "$still" = "$claimed" ]; then
+    return 0
+  fi
+  if [ -z "$still" ]; then
+    rm -f "$MASKED_FLAG" 2>/dev/null || true
+    log "masked-flag reconcile: none of [$claimed] is masked any more -- flag REMOVED (consumers must stop treating this machine as deliberately held down)"
+  else
+    local now2
+    now2="$(date +%s)"
+    cat > "$MASKED_FLAG" 2>/dev/null <<EOF
+{"detected_at": $now2, "short_boots": 0, "units": "$still", "reason": "dxgkrnl GPU-passthrough crash-loop", "restore": "$(restore_hint "${still%% *}")"}
+EOF
+    log "masked-flag reconcile: [$claimed] -> [$still] (some units were unmasked outside this guard)"
+  fi
+}
+
 mask_units() {
-  local u already_masked=""
+  local u
+  MASKED_OK=()
   for u in "${UNITS[@]}"; do
     if [ "${GPU_GUARD_MASK_DRYRUN:-}" = "1" ]; then
       echo "MASK_DRYRUN: $u"
+      MASKED_OK+=("$u")
       continue
     fi
-    systemctl --user stop "$u" 2>/dev/null
-    systemctl --user mask "$u" 2>/dev/null \
-      && log "masked $u" \
-      || log "mask FAILED for $u (may already be masked, or unit missing)"
+    if mask_one "$u"; then MASKED_OK+=("$u"); fi
   done
+}
+
+# How to put a unit back, printed into the alert and the log. `systemctl --user unmask` alone is NOT
+# enough and leaves the machine worse: measured on a probe unit, unmask removes the /dev/null
+# symlink and stops there, so the unit ends at LoadState=not-found -- the service is gone, not
+# restored. Whoever unmasks has to move the backup back, and they will only know that if the guard
+# says so where they are looking.
+restore_hint() {
+  local u="$1"
+  echo "$SYSTEMCTL --user unmask $u && mv $USER_UNIT_DIR/$u.real-unit-backup $USER_UNIT_DIR/$u && $SYSTEMCTL --user daemon-reload"
+}
+
+# Print the restore command for whatever the flag currently claims. Deliberately readable without
+# any of the detection machinery: whoever needs this is mid-incident.
+print_restore_hint() {
+  local claimed u
+  if [ ! -f "$MASKED_FLAG" ]; then
+    echo "No units are recorded as masked by this guard ($MASKED_FLAG does not exist)."
+    return 0
+  fi
+  claimed="$(python3 -c 'import json,sys;d=json.load(open(sys.argv[1]));u=d.get("units");print(" ".join(u.split()) if isinstance(u,str) else " ".join(u))' "$MASKED_FLAG" 2>/dev/null)" || {
+    echo "$MASKED_FLAG exists but could not be parsed -- open it by hand."
+    return 1
+  }
+  echo "The guard masked: $claimed"
+  echo "A plain 'unmask' is NOT enough: it removes the /dev/null symlink and stops, leaving the unit"
+  echo "at LoadState=not-found because the real unit file is parked under .real-unit-backup."
+  echo "Full restore, per unit:"
+  for u in $claimed; do echo "  $(restore_hint "$u")"; done
 }
 
 main() {
   mkdir -p "$STATE_DIR" 2>/dev/null || true
   local result short_count now last
+
+  # Before anything else: the flag has to describe the machine as it is NOW, not as it was when some
+  # earlier run decided something. See reconcile_masked_flag().
+  reconcile_masked_flag
 
   # First-ever run: stamp a baseline so pre-existing crash history (already
   # resolved by a human/MikroB before the guard existed) is never scanned.
@@ -197,19 +432,43 @@ main() {
   mask_units
 
   now="$(date +%s)"
+
+  # THE FLAG DESCRIBES WHAT IS TRUE, NOT WHAT WAS ATTEMPTED (card d5c05548).
+  #
+  # It used to be written from UNITS -- the list this run TRIED to mask -- immediately after a
+  # mask_units() that logged its own failures and returned nothing. So on this host the artefact
+  # said the unit was masked while the service sat there loaded and startable, for weeks.
+  #
+  # It matters more now than when it was written: card 970156ce made this file load-bearing for the
+  # LANDING GATE (store/local-llm-model-routing.selftest.sh skips two cases when it names
+  # ollama.service). A flag claiming a mask that never happened would make that gate go quiet about
+  # a machine nobody actually protected. So it is written from MASKED_OK, which only holds units
+  # whose UnitFileState systemd itself reports as masked.
+  if [ "${#MASKED_OK[@]}" -eq 0 ]; then
+    rm -f "$MASKED_FLAG" 2>/dev/null || true
+    log "NOTHING was masked -- no state flag written (a flag here would claim a protection that does not exist)"
+    alert_owner "GPU crashloop guard: crash-loop DETEKTALVA (${short_count}x rovid boot dxgkrnl-hibaval), de EGYETLEN unitot sem sikerult maszkolni: ${UNITS[*]}. A gep NINCS vedve, kezi beavatkozas kell MOST."
+    echo "$now" > "$ALERT_STAMP" 2>/dev/null || true
+    return 1
+  fi
+
   cat > "$MASKED_FLAG" 2>/dev/null <<EOF
-{"detected_at": $now, "short_boots": $short_count, "units": "${UNITS[*]}", "reason": "dxgkrnl GPU-passthrough crash-loop"}
+{"detected_at": $now, "short_boots": $short_count, "units": "${MASKED_OK[*]}", "reason": "dxgkrnl GPU-passthrough crash-loop", "restore": "$(restore_hint "${MASKED_OK[0]}")"}
 EOF
 
   last=0; [ -f "$ALERT_STAMP" ] && last="$(cat "$ALERT_STAMP" 2>/dev/null || echo 0)"
   case "$last" in (''|*[!0-9]*) last=0;; esac
   if [ $(( now - last )) -ge "$ALERT_COOLDOWN" ]; then
-    alert_owner "🔴 GPU crashloop guard: WSL VM ${short_count}x rövid (<${SHORT_BOOT_MAX_SEC}s) bootot élt meg dxgkrnl GPU-hibával az elmúlt $((RECENT_WINDOW_SEC/60)) percben. Automatikusan leállítva+maszkolva: ${UNITS[*]}. A VM-nek mostantól stabilnak kell lennie. Kézi unmask kell, ha vissza akarod kapcsolni: systemctl --user unmask ${UNITS[*]}."
+    alert_owner "🔴 GPU crashloop guard: WSL VM ${short_count}x rövid (<${SHORT_BOOT_MAX_SEC}s) bootot élt meg dxgkrnl GPU-hibával az elmúlt $((RECENT_WINDOW_SEC/60)) percben. Automatikusan leállítva+maszkolva: ${MASKED_OK[*]}. A VM-nek mostantól stabilnak kell lennie. Visszakapcsoláshoz a puszta unmask NEM elég (a valódi unit-fájl félre van téve), ez a teljes parancs: $(restore_hint "${MASKED_OK[0]}")"
     echo "$now" > "$ALERT_STAMP" 2>/dev/null || true
   else
     log "crash-loop persists but within alert cooldown ($(( now - last ))s) -- skip alert"
   fi
 }
+
+case "${1:-}" in
+--restore-hint) print_restore_hint; exit 0 ;;
+esac
 
 main "$@"
 exit 0
