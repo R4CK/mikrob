@@ -9260,3 +9260,57 @@ ALERT sorra, azota bukik.
 **Hivatkozas:** kartya `d5c05548`; `scripts/gpu-crashloop-guard.sh`,
 `scripts/__tests__/gpu-crashloop-guard.test.sh`,
 `src/__tests__/gpu-crashloop-guard-suite-runs.test.ts`; kapcsolodo: 970156ce (a flag fogyasztoja).
+
+---
+
+## 2026-09-06 -- d5c05548 (2. kör): a fejléc egy nem létező rétegre hivatkozott, a flag pedig túlélte a döntést
+
+**MikroB döntése (kártya-komment 21285) három ponttal bővítette a kártyát**, miután jeleztem, hogy
+a 2. gyökérok premisszája téves. Mindhárom ebben a körben készült el.
+
+**(a) A guard fejléce hazudott, és rossz irányba.** A fejléc magát "layer 2"-nek nevezte egy
+CPU-only systemd drop-in (`ollama.service.d/10-cpu-only-gpu-crashloop-safety.conf`) mögött. Az a
+drop-in szándékosan nincs meg: Peti 2026-08-24-én felülbírálta a CPU-only stopgapet, mert a GPU-t
+akarja elsődleges útnak, és a drop-in eltávolításra került. Ma újramérve:
+`/home/neon/.config/systemd/user/ollama.service.d/` nem létezik. Ez nem pusztán elavult szöveg volt:
+aki azt mérlegeli, mennyire kell ennek az őrnek erősnek lennie, egy nála erősebb, mögötte álló
+mitigációt hitt volna. Semmi nincs mögötte. Hogy kell-e új alsó réteg, az Peti döntése és külön
+kártyán fut (MikroB nyitja), itt nem feltételezzük.
+
+**(b) A flag túlélte a döntést, amit rögzített (Cybersec MEDIUM a 970156ce-n).** A flag nem
+naplóbejegyzés, hanem állítás a gép MOSTANI állapotáról: a 970156ce óta a
+`store/local-llm-model-routing.selftest.sh` két routing-esetet KIHAGY, ha a flag megnevezi az
+`ollama.service`-t. A flaget viszont soha semmi nem törölte. Tehát abban a pillanatban, amikor egy
+ember a valódi javítás után unmaskol -- az incidens dokumentált, várt vége --, a flag továbbra is
+egy már nem létező maszkolást állít, és az a két eset ÖRÖKRE kimarad egy tökéletesen egészséges
+gépen. Némán: egy skip skipnek látszik. Mostantól MINDEN ciklus visszaméri az állítást a systemd
+ellen, és arra írja át a flaget, ami még igaz; ha semmi, törli. Ez a "nincs crash-loop" ágon is fut,
+mert egy felépült gép attól kezdve mindig azon az ágon megy.
+
+Két dolgot szándékosan NEM tesz. Nem fut `MASK_DRYRUN` alatt (egy száraz futás semmit nem maszkolt,
+tehát nem törölhet egy valódi futás flagjét), és **egy olvashatatlan flaget nem tekint megcáfoltnak**:
+amit nem tudunk elolvasni, azt nem tudjuk cáfolni sem, a törlése pedig némán visszakapcsolna egy
+routing-esetet egy olyan gépen, amit lehet, hogy tényleg szándékosan tartanak lent. Ilyenkor marad,
+és kimondja, hogy nem olvasható.
+
+**(c) A helyreállítás kérdezhető, nem csak forráskommentben áll.** A `--restore-hint` alparancs a
+flagből kiolvassa a megnevezett uniteket és kiírja a teljes parancsot, plusz kimondja, hogy a puszta
+`unmask` NEM elég. A parancs bekerült magába a flag JSON-be is (`restore` mező), tehát az artefaktum
+hordozza a saját visszavonását. Aki ezt keresi, incidens közepén van.
+
+**Mérve.** 22 -> 35 eset. Hat mutáció, mind piros: a reconcile kiütése (5 bukás), a parse-hiba
+törlésre fordítása (2), a `MASK_DRYRUN`-kivétel elhagyása (1), a "nem elég" figyelmeztetés kivétele
+a `--restore-hint`-ből (1), a törlés elhagyása üres maradéknál (1), és a fejléc-regresszió (2).
+
+**Egy eset ELSŐ változatban hamis okból volt zöld.** A `MASK_DRYRUN`-kontroll (`p`) nem adott át
+hamis `systemctl`-t, ezért a guard az ÉLES hostot kérdezte az `ollama.service`-ről -- ami ezen a
+gépen valóban maszkolt --, és a flag akkor is megmaradt, ha a kód rossz volt: a mutáns túlélt.
+Hamis `systemctl`-lel, ami NEM maszkoltat jelent, az eset azóta bukik a mutánsra. Ugyanaz az osztály,
+mint a `(k)` eseté az előző körben: a kontroll a saját környezetét mérte, nem a viselkedést.
+
+**Kontroll a fogyasztón.** A `local-llm-model-routing.selftest.sh` az új `restore` mezőt tartalmazó
+flaget változatlanul olvassa (3 passed, 0 failed, 2 skipped), tehát a bővítés nem töri a
+970156ce-ben landolt fogyasztót.
+
+**Hivatkozás:** kártya `d5c05548` (MikroB 21285, Cybersec 24349/21278); `scripts/gpu-crashloop-guard.sh`,
+`scripts/__tests__/gpu-crashloop-guard.test.sh`; kapcsolódó: `970156ce`.
