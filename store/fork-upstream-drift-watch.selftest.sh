@@ -117,8 +117,18 @@ check "unreachable does NOT write the state file" "absent" "$([[ -f "$TMP/state.
 check "first drift opens a card" "OPENED:newcard1" "$(run "$TMP/drift-a.json")"
 check "exactly one board write" "1" "$(posts)"
 check "the card is planned, not in_progress" "yes" "$(grep -q '"status":"planned"' "$TMP/log.txt" && echo yes || echo no)"
-check "the card has an assignee (rule 6a)" "yes" "$(grep -qE '"assignee":"backend2?"' "$TMP/log.txt" && echo yes || echo no)"
+check "the card has an assignee (rule 6a)" "yes" "$(grep -qE '"assignee":"backend[23]?"' "$TMP/log.txt" && echo yes || echo no)"
 check "the card carries a Gate: line" "yes" "$(grep -q 'Gate: QA + Cybersec' "$TMP/log.txt" && echo yes || echo no)"
+
+# 2b. rule 6a's load balancing actually reads the board, instead of naming one sibling forever
+cat > "$TMP/board.json" <<'JEOF'
+[{"id": "x1", "title": "más kártya", "assignee": "backend", "created_at": 10},
+ {"id": "x2", "title": "más kártya", "assignee": "backend", "created_at": 11},
+ {"id": "x3", "title": "más kártya", "assignee": "backend2", "created_at": 12}]
+JEOF
+: > "$TMP/log.txt"; rm -f "$TMP/state.json"
+run "$TMP/drift-a.json" > /dev/null
+check "the least loaded BE sibling gets the card" "yes" "$(grep -q '\"assignee\":\"backend3\"' "$TMP/log.txt" && echo yes || echo no)"
 
 # 3. THE POINT OF THE CARD: the same drift with the card open writes nothing at all
 cat > "$TMP/board.json" <<'JEOF'
