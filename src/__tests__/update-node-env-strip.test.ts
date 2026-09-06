@@ -27,10 +27,10 @@ describe('buildUpdateScriptEnv strips NODE_ENV before spawning update.sh (card c
     expect(env.NODE_ENV).toBeUndefined()
   })
 
-  it('strips it from the REAL process.env, not only the returned copy -- update.sh spawns npm ci at multiple sites, each inheriting process.env independently', () => {
+  it('leaves the REAL process.env untouched -- a child process gets an OS-level env COPY at its own spawn() (Cybersec NO-GO: mutating process.env has an unbounded lifetime on this long-running process if update.sh exits before restarting it)', () => {
     process.env.NODE_ENV = 'production'
     buildUpdateScriptEnv({})
-    expect(process.env.NODE_ENV).toBeUndefined()
+    expect(process.env.NODE_ENV).toBe('production')
   })
 
   it('is a no-op, not a throw, when NODE_ENV was never set', () => {
