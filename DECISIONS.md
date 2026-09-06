@@ -10453,3 +10453,42 @@ első kísérletem mutációja túlélt).
 
 **Hivatkozás:** kártya `5da60b85` (szülő `1f276349`);
 `src/__tests__/fork-upstream-conflict-guard.test.ts`.
+
+## 2026-09-06 -- Az upstream három SSRF-megkerülési útja nálunk is nyitva volt, átvéve
+
+**Kontextus:** a `494fad0f` (3b klaszter) egyik fájlja az `src/web/agent-scaffold.ts`, aminek a
+pinje elavult volt. A mögötte lévő upstream delta (`5b168b5a` -> `526dcf56`) nem stílus-változás:
+három megkerülési utat zár az `isPublicFetchHost()`-ban, ami azt dönti el, hogy egy fetch-cél
+kifelé mutat-e vagy befelé.
+
+**Döntés:** a teljes függvény-régió ÁTVÉVE upstream-től, az upstream saját teszt-eseteivel együtt.
+
+**Miért nyitva volt nálunk is:** a fork másolata a függvényről BÁJTRA AZONOS volt az upstream
+javítás ELŐTTI verziójával (mérve az `isPublicFetchHost` és az `ownerAllowedDomains` közötti
+régión), tehát semmi fork-specifikus nem volt, amit át kellett volna menteni a változáson.
+
+A három út: (1) inet_aton-parse-olás -- a wildcard-DNS szolgáltatók mögötti feloldók a vezető
+nullát OKTÁLISNAK, a `0x`-et HEXÁNAK olvassák, tehát a `0177.0.0.1.nip.io` 127.0.0.1-et ad,
+miközben egy decimális-only ellenőrző négy ártalmatlan címkét lát. (2) Egyetlen címkébe csomagolt
+cím -- a `2130706433.nip.io` és a `7f000001.nip.io` ugyanaz a cím egy tokenben, amit sem a pontos,
+sem a kötőjeles négyes-ellenőrzés nem néz meg. (3) Az sslip.io kötőjeles IPv6 alakja,
+`0--1.sslip.io` = `::1`, ami egyik forma sem.
+
+**Miért itt szabad egészben átvenni, ahol ez a bejegyzés máskor megtagadja:** a korábbi
+elutasítások az `ensureAgentHooks`-ról és a szekció-írókról szólnak, vagyis a flotta-szintű
+hook-huzalozásról. Ez ezzel szemben egy önmagában álló, tiszta predikátum, amiben nulla
+fork-divergencia van.
+
+**Mérés -- ELÉRHETŐSÉG MUTÁCIÓVAL, nem az upstream állításának elhívésével:** az átvett teszteket
+lefuttattam a fork JAVÍTÁS ELŐTTI függvényére: pontosan két eset bukik (a csomagolt/inet_aton és a
+kötőjeles IPv6), a harmadik -- „leaves public names alone in every encoding" -- mindkét irányban
+átmegy, és ez helyes: az a 2^24-es alsó korlát negatív kontrollja, ami a `123.example.com`-ot
+elérhetőnek tartja. Javítás után 33/33 zöld, a hat érintett teszt-fájlon 159/159, `tsc --noEmit`
+zöld.
+
+**Ki döntött:** MikroB (az `a7a61751` plan-grilling GO-WITH-CHANGES verdiktje); backend (az
+egészben-átvétel, miután megmértem, hogy a régió bájtra azonos volt az upstream javítás előttivel).
+
+**Hivatkozás:** kártya `494fad0f` (szülő `a7a61751`); `src/web/agent-scaffold.ts`,
+`src/__tests__/quarantine-allowlist-render.test.ts`,
+`src/fork-upstream/acknowledged-conflicts.ts` (18. kör).
