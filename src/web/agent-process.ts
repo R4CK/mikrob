@@ -1102,6 +1102,82 @@ export function shSingleQuote(value: string): string {
   return `'${value.replace(/'/g, `'\\''`)}'`
 }
 
+/**
+ * Which provider a model id belongs to, and the shell export chain that redirects the Claude Code
+ * CLI to that provider's Anthropic-compatible endpoint. Pure -- the caller supplies secrets through
+ * `secretLookup`, so this is testable without a vault. Adopted from upstream (card e80c011a); the
+ * fork previously built these three strings inline in startAgentProcess.
+ *
+ * MINIMAX IS DELIBERATELY ABSENT, and this is the one place that would quietly reintroduce it.
+ * Upstream's version carries a `minimax-` branch, and the conflict-guard rule for this file said to
+ * adopt the refactor "wholesale (... plus adds minimax)". Peti gave MiniMax a NO-GO on card
+ * 48565f81 -- the reason is in CLAUDE.md rule 17: another paid online model works against the goal
+ * of pushing easy work to the local LLM. A refactor is not the place to land a declined feature, so
+ * the shape is upstream's and the provider set stays the fork's. If MiniMax is ever approved, it
+ * goes in here on its own card, not as a side effect of a merge.
+ *
+ * ANTHROPIC_MODEL is REQUIRED for non-Claude models: the interactive TUI validates the `--model`
+ * flag against known Anthropic models and silently falls back to the built-in default for an
+ * unrecognised value like `qwen3.6:27b`, which then errors against the custom ANTHROPIC_BASE_URL
+ * ("model does not exist"). The env var is authoritative and bypasses that validation.
+ *
+ * Card b7fa5281: the model is shell-ESCAPED at the sink (shSingleQuote), not merely wrapped in
+ * literal single quotes -- so a `'` in the value can never close the quote and inject a command.
+ *
+ * THE KEYS ARE ESCAPED THE SAME WAY, and that is NOT upstream's shape (card 1075d0e4, backend,
+ * from Cybered's finding on this card's own gate). Upstream interpolates the vault key into DOUBLE
+ * quotes, where `"` and `$(...)` still expand, so a vault value shaped `x";<command>;#` runs as the
+ * host user at tmux launch -- BEFORE the hook layer exists, so no PreToolUse guard can see it.
+ * Restoring upstream's `"${key}"` here would silently reopen that, which is exactly what this
+ * refactor nearly did: backend fixed the INLINE form on develop while this branch was replacing it.
+ */
+export type ProviderKind = 'claude' | 'deepseek' | 'openrouter' | 'ollama'
+
+export function resolveProviderEnv(
+  model: string,
+  secretLookup: (id: string) => string | null,
+): { provider: ProviderKind; exportsStr: string } {
+  const isClaude = model.startsWith('claude-')
+  const isDeepseek = model.startsWith('deepseek-')
+  // OpenRouter model ids are `provider/model` (contain '/'); Ollama tags use
+  // ':' and no '/'. This discriminator keeps OpenRouter ids off the Ollama path.
+  const isOpenRouter = !isClaude && !isDeepseek && model.includes('/')
+  const isOllama = !isClaude && !isDeepseek && !isOpenRouter
+
+  if (isDeepseek) {
+    const key = secretLookup('DEEPSEEK_API_KEY') ?? ''
+    return {
+      provider: 'deepseek',
+      exportsStr: `export ANTHROPIC_AUTH_TOKEN=${shSingleQuote(key)} && export ANTHROPIC_BASE_URL=https://api.deepseek.com/anthropic && export ANTHROPIC_MODEL=${shSingleQuote(model)} && `,
+    }
+  }
+  if (isOpenRouter) {
+    // Anthropic-compatible endpoint at https://openrouter.ai/api (the SDK appends /v1/messages).
+    // Key from the vault (openrouter-fleet-key).
+    const key = secretLookup('openrouter-fleet-key') ?? ''
+    return {
+      provider: 'openrouter',
+      exportsStr: `export ANTHROPIC_AUTH_TOKEN=${shSingleQuote(key)} && export ANTHROPIC_BASE_URL=https://openrouter.ai/api && export ANTHROPIC_MODEL=${shSingleQuote(model)} && `,
+    }
+  }
+  if (isOllama) {
+    // OLLAMA_URL IS ESCAPED TOO (card e80c011a, Cybersec NO-GO comment 19942). It was the one
+    // shell sink on this line left BARE -- not even double-quoted -- while the model beside it
+    // was escaped and the two keys above it had just been fixed. I had enumerated the sinks by
+    // asking "is this a secret?", and a base URL is not; the question that matters is "does an
+    // outside writer decide this string?", and here one does: OLLAMA_URL is a settings-registry
+    // entry of type 'string' with no valueSet, so validateSettingValue falls straight through to
+    // `return { ok: true, value: String(raw) }` -- zero character validation. A value shaped
+    // `x && <command> #` therefore runs at tmux launch, before the hook layer exists. isOllama is
+    // also the FALLBACK branch, so it is the easiest of the four to reach.
+    return {
+      provider: 'ollama',
+      exportsStr: `export ANTHROPIC_AUTH_TOKEN=ollama && export ANTHROPIC_BASE_URL=${shSingleQuote(OLLAMA_URL)} && export ANTHROPIC_MODEL=${shSingleQuote(model)} && `,
+    }
+  }
+  return { provider: 'claude', exportsStr: '' }
+}
+
 // All tmux operations route through these two wrappers so the local-vs-remote
 // (ssh) decision and the quoting live in ONE place (ssh-tmux.ts). host=null is
 // byte-identical to the prior direct local tmux call. Remote calls get a larger
@@ -1354,42 +1430,9 @@ async function startAgentProcessUnlocked(name: string, opts: { fresh?: boolean }
     const model = resolveOpenRouterModel(readAgentModel(name))
     const authMode = readAgentAuthMode(name)
     const isClaude = model.startsWith('claude-')
-    const isDeepseek = model.startsWith('deepseek-')
-    // OpenRouter model ids are `provider/model` (contain '/'); Ollama tags use
-    // ':' and no '/'. This discriminator keeps OpenRouter ids off the Ollama path.
-    const isOpenRouter = !isClaude && !isDeepseek && model.includes('/')
-    const isOllama = !isClaude && !isDeepseek && !isOpenRouter
-    // ANTHROPIC_MODEL is REQUIRED for non-Claude models: the interactive TUI
-    // validates the `--model` flag against known Anthropic models and silently
-    // falls back to the built-in default (claude-opus-...) for an unrecognized
-    // value like `qwen3.6:27b` or `deepseek-v4-pro` -- which then errors against
-    // the custom ANTHROPIC_BASE_URL ("model does not exist"). The env var is
-    // authoritative and bypasses that validation. (`--print` honors --model, but
-    // the agents run the TUI.) Single-quoted so a `:` in the tag is shell-safe.
-    // Card b7fa5281: the model is shell-escaped at the sink (shSingleQuote), not merely wrapped in
-    // literal single quotes -- so a `'` in the value can never close the quote and inject a command.
-    const ollamaEnv = isOllama ? `export ANTHROPIC_AUTH_TOKEN=ollama && export ANTHROPIC_BASE_URL=${shSingleQuote(OLLAMA_URL)} && export ANTHROPIC_MODEL=${shSingleQuote(model)} && ` : ''
-    // Card 1075d0e4, SECOND round (Cybersec NO-GO on aa8d7f7d): the first fix escaped the three
-    // KEYS and missed a fourth instance of the same class three lines up -- ANTHROPIC_BASE_URL
-    // taking OLLAMA_URL as a BARE `${...}`, not even double-quoted, and therefore the EASIEST
-    // of the four to exploit. OLLAMA_URL is a config value (cfg('OLLAMA_URL')), the same kind of
-    // operator-settable input as the keys. My own guard could not see it: I had scoped the regex
-    // to two variable NAMES and to the double-quoted FORM, so it pinned the instances I had just
-    // fixed rather than the class. The guard is now shape-based -- any ANTHROPIC_* export whose
-    // value interpolates without shSingleQuote -- which is what the card actually claimed.
-    // Card 1075d0e4 (Cybered, on the e80c011a gate): these keys come from the VAULT and go
-    // straight into a shell command line. The model name beside them was already escaped with
-    // shSingleQuote; the keys were interpolated into double quotes, where `"` and `$(...)`
-    // still expand. A vault value shaped `x";<command>;#` therefore ran as neon at tmux launch
-    // -- BEFORE the hook layer exists, so no PreToolUse guard could see it. Not reachable today
-    // (every running agent is on a claude-* model, none takes these branches), which is exactly
-    // why it had to be closed while it was still latent.
-    const deepseekKey = isDeepseek ? (getSecret('DEEPSEEK_API_KEY') ?? '') : ''
-    const deepseekEnv = isDeepseek ? `export ANTHROPIC_AUTH_TOKEN=${shSingleQuote(deepseekKey)} && export ANTHROPIC_BASE_URL=https://api.deepseek.com/anthropic && export ANTHROPIC_MODEL=${shSingleQuote(model)} && ` : ''
-    // OpenRouter: Anthropic-compatible endpoint at https://openrouter.ai/api
-    // (the SDK appends /v1/messages). Key from the vault (openrouter-fleet-key).
-    const openrouterKey = isOpenRouter ? (getSecret('openrouter-fleet-key') ?? '') : ''
-    const openrouterEnv = isOpenRouter ? `export ANTHROPIC_AUTH_TOKEN=${shSingleQuote(openrouterKey)} && export ANTHROPIC_BASE_URL=https://openrouter.ai/api && export ANTHROPIC_MODEL=${shSingleQuote(model)} && ` : ''
+    // Provider discriminator + env-export chain live in resolveProviderEnv (pure, testable, one
+    // place). `isClaude` stays here because the auth-mode branch below still needs it.
+    const { exportsStr: providerEnv } = resolveProviderEnv(model, getSecret)
     // When authMode is 'api', the agent uses its own ANTHROPIC_API_KEY from
     // the vault instead of the host's OAuth. The vault entry ID follows the
     // convention `agent-{name}-api-key`. We inject it as an env var so Claude
@@ -1677,7 +1720,7 @@ async function startAgentProcessUnlocked(name: string, opts: { fresh?: boolean }
     // values like `claude-opus-4-8[1m]` (1M-context suffix) from being glob-expanded AND makes a `'`
     // in the value inert rather than a quote-break -> command injection. Same escape at the three
     // ANTHROPIC_MODEL env sites above.
-    const cmd = `export PATH="/opt/homebrew/bin:$HOME/.bun/bin:/usr/local/bin:/usr/bin:/bin:$PATH" && ${unsetTokens} && ${autoUpdaterEnv}${promptSuggestionEnv}${feedbackSurveyEnv}${mcpEnv}${channelSetup}${apiKeyEnv}${claudeConfigEnv}${oauthTokenEnv}${ollamaEnv}${deepseekEnv}${openrouterEnv}cd "${dir}" && ${claudeBin()} ${continueFlag}${skipFlag}--model ${shSingleQuote(model)} ${channelFlag}`.trimEnd()
+    const cmd = `export PATH="/opt/homebrew/bin:$HOME/.bun/bin:/usr/local/bin:/usr/bin:/bin:$PATH" && ${unsetTokens} && ${autoUpdaterEnv}${promptSuggestionEnv}${feedbackSurveyEnv}${mcpEnv}${channelSetup}${apiKeyEnv}${claudeConfigEnv}${oauthTokenEnv}${providerEnv}cd "${dir}" && ${claudeBin()} ${continueFlag}${skipFlag}--model ${shSingleQuote(model)} ${channelFlag}`.trimEnd()
     runTmux(null, ['new-session', '-d', '-s', session, cmd], { timeout: 10000 })
 
     logger.info({ name, session, channelDir: agentChannelDir }, 'Agent tmux session started')

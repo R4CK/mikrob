@@ -9314,3 +9314,56 @@ flaget változatlanul olvassa (3 passed, 0 failed, 2 skipped), tehát a bővít�
 
 **Hivatkozás:** kártya `d5c05548` (MikroB 21285, Cybersec 24349/21278); `scripts/gpu-crashloop-guard.sh`,
 `scripts/__tests__/gpu-crashloop-guard.test.sh`; kapcsolódó: `970156ce`.
+
+---
+
+## 2026-09-06 -- 1b4cd700: egy LEÍRT szabály állt szemben egy kimondott Peti-döntéssel
+
+**A döntés maga (Peti, 2026-09-04, Telegram, kártya 48565f81 komment 19504): NO-GO a MiniMax M3
+adoptálására.** Indoklása szó szerint: a helyi LLM-modellek pontosan azért vannak, hogy a könnyebb
+programozási feladatokat oda tereljük, és egy újabb fizetős online modell pont ez ellen a cél ellen
+hatna, akkor is, ha olcsóbb a Claude-nál. Ez a döntés eddig KIZÁRÓLAG kanban-kommentben élt (SQLite,
+nem grep-elhető) és a CLAUDE.md 16. szabályának indoklásában. A döntésnaplóban sehol nem szerepelt --
+ezért kerül ide most, visszamenőleg, a saját jogán.
+
+**A mai lelet (backend3, 2a6a7756/21168): a fork saját őre az ELLENKEZŐJÉT írta elő.** A develop-on
+álló `fork-upstream-conflict-guard.test.ts` két bejegyzése így szólt:
+
+- `src/web/agent-process.ts`: „adopt upstream's resolveProviderEnv() refactor wholesale (... plus
+  adds minimax)"
+- `src/web/routes/agents.ts`: egy szó szerinti olvasat „wrongly discard"-olna „two unrelated upstream
+  additions: MiniMax direct-API gating in /api/models/available, and ..."
+
+Mindkét mondat egy jövőbeli összefésülőnek azt mondja, hogy hozza be a MiniMaxot. A fork-őr prózája a
+merge-idő tekintélye: nem kommentár, hanem az az utasítás, amit a következő ütközésnél végrehajtanak.
+Tehát egy leírt szabály állt szemben egy kimondott tulajdonosi döntéssel, és a leírt szabály volt
+kéznél. **Ez a `fix/provider-env-e80c011a-v2` ágon már 2026-09-04 óta javítva volt, csak nem landolt.**
+
+**Amit ma eldöntöttem az összefésülésben.** Mindkét ütközésnél az ág JAVÍTOTT szabályszövege az
+alany, és utána következnek a develop későbbi újramérései, amiket az ág már nem látott (09-03
+`/rename`, 09-05 `clearInputBuffer` retry+verify, 09-06 MCP local-scope árnyékolás). Az
+`agent-process.ts` kódütközésénél az ág refaktor-oldala nyert, DE csak azután, hogy leellenőriztem,
+mi vész el: a develop időközben önállóan berakta az `OLLAMA_URL` escape-elését (1075d0e4) az inline
+blokkba, és az ág `resolveProviderEnv`-je ezt már hordozza, a deepseek/openrouter kulcs- és a
+b7fa5281 modell-escape mellett. A 1075d0e4 hivatkozás a függvény saját fejlécében fennmarad.
+
+**Mérve, mert egy szabály-szöveg pinje pont olyan könnyen dekoratív, mint bármelyik másik.** Három
+mutáció, mind piros: (a) a develop „plus adds minimax" mondatának visszaírása -> „no rule tells a
+future merger that adopting minimax is safe" bukik; (b) a `routes/agents.ts` „wrongly discard ...
+MiniMax" mondatának visszaírása -> „the SECOND door is shut" bukik; (c) egy `minimax-` ág
+visszaadása a `resolveProviderEnv`-be -> két viselkedési eset bukik. Tehát MINDKÉT ajtó és a
+viselkedés is ténylegesen zárva van, nem csak állítva.
+
+**Egy elavult pin is javítva (`src/web/routes/kanban.ts`, 89423d29 -> e5d2e792).** Az upstream egy
+`statusProbe` elő-ellenőrzést tett a dispatch-szövegbe: a fogadó ügynök nézze meg a kártya státuszát,
+mielőtt nekikezd, mert egy foglalt session sorában késő üzenet már elavult kártyára érkezhet, és egy
+késői második nekifutás párhuzamos munkát szül. **A probléma valós és ezt a forkot is érinti, de NEM
+hiány itt:** a `src/web/kanban-state-stamp.ts` a küldés pillanatában `[card-state @send]`, a
+kézbesítéskor `[card-state @delivery]` bélyeget tesz magára az üzenetre, a kártya státuszával és
+azzal az utasítással, hogy olvasd újra a kártyát. Ez erősebb azon a tengelyen, ami a kimenetet
+eldönti: a bélyeg EGYÜTT ÉRKEZIK az üzenettel és nem kér együttműködést, míg egy próba, amit az
+olvasónak kell összeraknia és lefuttatnia, egy lépés, amit az olvasó ki tud hagyni.
+
+**Hivatkozás:** kártya `1b4cd700` (backend3 lelete 2a6a7756/21168); `48565f81` (Peti NO-GO),
+`e80c011a`, Cybered NO-GO 19877; `src/web/agent-process.ts`,
+`src/__tests__/fork-upstream-conflict-guard.test.ts`, `src/__tests__/provider-env-adoption.test.ts`.
