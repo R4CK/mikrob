@@ -9586,3 +9586,61 @@ negative control earning its place: without `WHERE resolved_at IS NULL` a card c
 stuck ONCE in its life, and the card's own repeat question would be unanswerable.
 
 **Reference:** card `ac28bc6e` (parent `f92671df`); survey comment 21393. 15 tests, green.
+
+---
+
+## 2026-09-06 -- d5c05548 (3. kör): „nem tudom megkérdezni" nem azonos azzal, hogy „nincs maszkolva"
+
+**Cybersec F-1/F-2 (GO e2be6386 mellett, két MEDIUM, egy gyökér) elfogadva, és a leletet a
+javítás előtt magam reprodukáltam.** A `unit_is_masked()` egy sztringet hasonlít a `masked`
+értékhez, tehát az ÜRES válasz -- nincs user bus, a user manager még nem áll, a systemctl hiányzik,
+a unit eltűnt -- pontosan úgy olvasódik, mint a „nincs maszkolva". Mérve: egy `Failed to connect to
+bus` hibával 1-gyel kilépő systemctl mellett a kimenet üres, az összehasonlítás hamis, és ez
+megkülönböztethetetlen egy élő, nem maszkolt unittól.
+
+**Két döntés született ebből a hamis válaszból, és a második a súlyosabb.** A `mask_one` félretette
+volna a valódi unit-fájlt és kirakta volna a `/dev/null` symlinket, majd azt jelenti, hogy SEMMIT
+nem maszkolt -- a szolgáltatás a lemezen maszkolva, a riasztás szerint a gép védtelen, és a
+`.real-unit-backup` létezését semmi nem rögzíti. A `reconcile_masked_flag` pedig a `main()` ELSŐ
+lépése, MINDEN futáson fut, és TÖRLI egy valóban maszkolt gép flagjét, azt naplózva, hogy „none of
+[ollama.service] is masked any more". Ez nem gyógyul magától: a flag egyetlen írója a `mask_units`,
+ami csak friss crash-loop észlelésekor fut.
+
+**Élő reprodukció a javítás előtt** (a unit a lemezen `/dev/null` symlink, tehát ténylegesen
+maszkolt; a systemctl nem válaszol): a flag ELTŰNT, a napló pedig egy hamis állítást írt ki.
+
+**A gyökér a saját elvem, egyetlen bemenetre alkalmazva.** A fájlban három függvénnyel feljebb ott
+áll a helyes szabály a MÁSIK bemenetre: „an unreadable claim is not a refuted one" -- az
+olvashatatlan FLAG-ről írva. A megválaszolhatatlan SYSTEMD ugyanaz az alak, és nem kapta meg. Két
+bemenet, egy elv, egy védve. Cybersec ezt pontosan így nevezte meg, és előre kimondta az
+összeférhetetlenséget is: a flag-visszamérés az ő javaslata volt (970156ce), tehát az F-2 az ő
+specifikációjának a hiányossága -- ugyanaz a kvadráns-kihagyás, amit ott már egyszer elkövetett.
+
+**Miért több ez higiéniánál.** A flag hiánya PONTOSAN az a jelzés, hogy a gépet SZÁNDÉKOSAN tartják
+lefogva. Ennek a jelzésnek a hiánya vitte oda egy másik ügynököt, hogy ötször újraindítsa az
+ollamát a guard alatt. Mért precedens ebben a flottában, nem feltételezés.
+
+**A javítás:** `unit_state_unknown()` predikátum (nem nulla kilépőkód VAGY üres érték), és mindkét
+hívó rá van kötve -- a `mask_one` nem mozgat fájlt ismeretlen állapotnál, a `reconcile` pedig az
+ELSŐ ismeretlennél érintetlenül hagyja az egész flaget. Az első ismeretlennél való kilépés
+szándékos: egy félig válaszoló systemd alapján részlegesen átírni a flaget új állítás lenne
+ugyanabból a bizonytalanságból.
+
+**A teszt-oldali hiányt Cybersec kimondta, és igaza volt:** a hamis systemctl MINDIG válaszolt,
+tehát a „nem tudom megkérdezni" ágnak NULLA fedezete volt -- ezért szállíthatott a defekt. Négy új
+eset ad neki fedezetet.
+
+**Egy mutáció TÚLÉLTE, és mérésre küldött.** A csak-kilépőkód változat 43/43 zöldet hagyott.
+Megmértem az ÉLES systemctl-t: egy általa nem ismert unitra 0-val lép ki és SEMMIT nem ír ki. Tehát
+az `exit 0 + üres` alak a termelésben elérhető, és egy csak-kilépőkódos ellenőrzés egy eltűnt unitot
+élő, nem maszkolt unitnak olvasna és törölné a flaget. A rögzített döntés: ilyenkor MARAD a flag --
+egy eltűnt unitról nem lehet megállapítani, hogy nincs maszkolva, a dokumentált visszaállítás pedig
+valódi unit-fájlt tesz vissza (`static`, nem üres), tehát a szokásos gyógyulás az (m) eseten
+keresztül továbbra is töröl.
+
+**Mérve.** 35 -> 44 eset. Négy mutáció, mind piros a sajátján: a predikátum kiütése (6 bukás), a
+`reconcile` őrének elhagyása (4), a `mask_one` őrének elhagyása (2), és a csak-kilépőkódos alak (1,
+az új (v) eset).
+
+**Hivatkozás:** kártya `d5c05548` (Cybersec 21348, F-1/F-2); `scripts/gpu-crashloop-guard.sh`,
+`scripts/__tests__/gpu-crashloop-guard.test.sh`; kapcsolódó: `970156ce`.
