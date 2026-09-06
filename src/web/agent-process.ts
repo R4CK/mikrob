@@ -631,6 +631,39 @@ function writeJsonAtomic(path: string, value: unknown): void {
   chmodSync(path, mode)
 }
 
+/** Owner-only, for every per-agent config this file writes. */
+const AGENT_CONFIG_MODE = 0o600
+
+/**
+ * Write a per-agent config file OWNER-ONLY (card dc5b714d).
+ *
+ * writeJsonAtomic above fixed the two files that go through it, and four other writes in this file
+ * never did: `.mcp.json`, the plugins registry pair, and the agent `.env`. Measured 2026-09-06, all
+ * of them sat at 0664 -- and `.mcp.json` is the same content class as the incident that started
+ * this: one of them carried an `env` block with an API key in it.
+ *
+ * THE TWO STEPS DO DIFFERENT JOBS, and one of them is NOT covered by the tests -- said plainly
+ * because the first version of this comment claimed they split the starting states between them,
+ * and a mutation showed that is false:
+ *   - `chmodSync` is what the at-rest guarantee rests on. It narrows a file that already exists,
+ *     which a mode-less write never does (measured), and that is why the four writes above left 15
+ *     files each sitting at whatever mode they were born with, indefinitely. Dropping it turns the
+ *     REWRITE case red.
+ *   - `{ mode }` closes the WINDOW between creation and the chmod. Dropping it leaves every
+ *     assertion green, because at rest the chmod has already fixed the file -- so this half is
+ *     argued, not measured: under a permissive umask a freshly created config would be
+ *     world-readable for the microseconds before the chmod lands, on a file that can carry an API
+ *     key. It stays because that window is free to close, not because a test would catch its loss.
+ *
+ * Deliberately NOT routed through the repo's own atomicWriteFileSync (MikroB's ruling on this card):
+ * that helper would take these files out from under the fleet's umask policy, the opposite of what
+ * the umask hardening was for.
+ */
+function writeAgentConfig(path: string, data: string): void {
+  writeFileSync(path, data, { mode: AGENT_CONFIG_MODE })
+  chmodSync(path, AGENT_CONFIG_MODE)
+}
+
 // Fill mcpServers gaps in an ALREADY provisioned isolated .claude.json from the
 // shared ~/.claude.json.
 //
@@ -808,7 +841,7 @@ function provisionIsolatedConfigDir(
     }
     const sharedKnown = join(sharedPlugins, 'known_marketplaces.json')
     if (existsSync(sharedKnown)) {
-      writeFileSync(join(pluginsDir, 'known_marketplaces.json'), readFileSync(sharedKnown, 'utf-8'))
+      writeAgentConfig(join(pluginsDir, 'known_marketplaces.json'), readFileSync(sharedKnown, 'utf-8'))
     }
     // Seed installed_plugins.json with every project-scoped install re-pointed at
     // THIS agent's cwd, so the channel plugin is registered for this project from
@@ -824,7 +857,7 @@ function provisionIsolatedConfigDir(
             if (e.scope === 'project') e.projectPath = cwd
           }
         }
-        writeFileSync(join(pluginsDir, 'installed_plugins.json'), JSON.stringify(inst, null, 2) + '\n')
+        writeAgentConfig(join(pluginsDir, 'installed_plugins.json'), JSON.stringify(inst, null, 2) + '\n')
       } catch (err) {
         logger.warn({ err, name }, 'isolated-config: failed to seed installed_plugins.json')
       }
@@ -1270,7 +1303,7 @@ async function startAgentProcessUnlocked(name: string, opts: { fresh?: boolean }
         const next = current !== undefined
           ? raw.replace(/^TEAMS_BOT_DISPLAY_NAME=.*$/m, line)
           : (raw === '' || raw.endsWith('\n') ? raw + line + '\n' : raw + '\n' + line + '\n')
-        writeFileSync(envPath, next)
+        writeAgentConfig(envPath, next)
       }
     } catch { /* best-effort name-sync; never block launch */ }
   }
@@ -1430,7 +1463,7 @@ async function startAgentProcessUnlocked(name: string, opts: { fresh?: boolean }
             'plugin:telegram:telegram': buildTelegramMcpServerConfig(bunBin, pluginDir, agentChannelDir),
           },
         }
-        writeFileSync(mcpJsonPath, JSON.stringify(mcpConfig, null, 2))
+        writeAgentConfig(mcpJsonPath, JSON.stringify(mcpConfig, null, 2))
         useMcpJsonForChannel = true
         logger.info({ name, pluginVersion, pluginDir }, 'Wrote per-agent mcp.json for telegram plugin')
       } catch (err) {
@@ -1454,7 +1487,7 @@ async function startAgentProcessUnlocked(name: string, opts: { fresh?: boolean }
           scopeProvider,
           s.enabledPlugins as Record<string, boolean> | undefined,
         )
-        writeFileSync(settingsPath, JSON.stringify(s, null, 2))
+        writeAgentConfig(settingsPath, JSON.stringify(s, null, 2))
       } catch (err) {
         logger.warn({ err, name }, 'Could not scope channel plugins for sub-agent')
       }
