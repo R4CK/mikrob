@@ -8691,6 +8691,123 @@ whitespace-osztály vissza a két alakra -> 2 piros; a `\r`-strip elvéve -> 1 p
 
 **Hivatkozás:** kártya `3ae71df1`, Cybersec 21120 (F-1/F-2/F-3), Cybered 21147, MikroB 21125.
 
+## 2026-09-06 10:30 -- 79bb0364 (3. kör) -- R-5, F-2, és a kivágás nem lett ajtó a nevesített fd-nek
+
+**Először a folyamat-hiba, mert azt QA jogosan írta fel (21218).** MikroB 21174-es ruling-ja EGY körre
+három tételt írt elő (második bináris + R-5 + F-2); a második kör CSAK a batch-részt szállította, és a
+REVIEW (21209) egy szóval sem mondta, hogy a másik kettő kimaradt. Nem halasztás volt, hanem
+elmaradás -- pontosan az a minta, amiről senki nem tudja, hogy még nyitva van, amíg valaki újra rá
+nem botlik. Ez a kör mindhármat leszállítja.
+
+**R-5 (Cybersec F-1, 21173).** Az `at(1)` átirányítás-ága mostantól KÉT olvasat UNIÓJA. Az első kör
+egyetlen mintája (a) azt követelte, hogy a timespec KÖZVETLENÜL a fájl-szó után álljon, és (b) a
+kisebb-jel operátort olyan karakterosztállyal írta le, amit a kétszeres és háromszoros alak nem
+illeszt. Egy TILTÓ regexben a nem-illesztés ENGEDÉS, tehát ami őrnek olvasódott, az lyuk volt: hét
+működő beküldés váltott tiltásról engedésre. Nem következtetés -- argv/stdin-t kiíró csonkkal mérve,
+az X1 és X4 alak argv-je és stdinje BÁJTRA AZONOS a továbbra is tiltott, szomszédos-timespeces
+alakkal.
+
+**Miért unió, és miért szűkebb szó-lista a széles ágon.** A széles ág teljes timespec-listával valós
+kódot tilt, mert a csupasz négyjegyű szám érvényes timespec (a mért eset egy `len - 1500`
+összehasonlítás). A csupasz négyjegyű és a pontozott dátum-alternatíva elhagyása a SZÉLES ágról ezt
+megszünteti, a SZOMSZÉDOS ág pedig megtartja a teljes listát, tehát a fájl-szó után közvetlenül álló
+négyjegyű és pontozott-dátum timespec tiltott marad. Egyik ág sem elég önmagában, és ez mérve is így
+jön ki.
+
+**A kivágás nem lett ajtó (Cybersec 21227).** A batch-kivágás premisszája ("ha az egyenlőségjel után
+szóközzel áll valami, akkor batch OPERANDUST kapott, tehát usage error") hamis minden olyan tokenre,
+amit a bash ELFOGYASZT ahelyett hogy továbbadna. A nevesített fd-átirányítás argv(0)-t és a job
+törzsét stdinre adja, bájtra azonosan a továbbra is tiltott csupasz alakkal. Az első enumeráció a
+redirect-ÍRÁSMÓDOKAT sorolta fel, nem azt kérdezte, hogy a token operandusként túléli-e a
+szó-felbontást -- ugyanaz a hibaalak, amiről ez a kártya szól. A kapcsos-zárójeles fd-név kizárása
+mérve nulla költséggel zárja.
+
+**ÚJ, KIMONDOTT MARADÉK (a szigorú kisebb-jeles alak mellé):** a nulla szóra kiértékelődő
+behelyettesítés és a nulla szóra kiértékelődő idézetlen változó szintén operandus nélkül hagyja a
+batch-et, viszont SZÖVEGKÉNT megkülönböztethetetlen egy változóval való valódi összehasonlítástól,
+amit ez a kör épp engedni akar. Bármelyik dollárjelre kiterjesztett őr visszahozná a most
+megszüntetett hamis pozitívot. Mindhárom alak be van pinelve tesztként: kettő mint a maradék ára,
+egy mint az ok, amiért az ár helyes.
+
+**A KIMONDOTT MARADÉKBÓL KIKERÜLT:** a hét at(1)-alak, amit Cybersec F-1-ként mért -- azok mostantól
+tiltottak, nem maradék.
+
+**Mutációs mérés:** a szomszédos-egyedül alak (a 2. kör állapota) -> 7 piros; a széles ág egyedül ->
+2 piros; a széles ág teljes listával -> 1 piros (a hamis-pozitív kontroll); a nevesített-fd őr elvéve
+-> 2 piros; KONTROLL komment-mutáció -> 0 piros. 49 teszteset a fájlban (34-ről).
+
+**F-2.** A fájl-komment és a teszt-név egy hamis ÁLTALÁNOS állítást rögzített ("a karakterosztály
+elutasítja a heredoc-operátort"), amit az X1 alak cáfol. A konkrét assert jó volt, a neve nem. Nem
+töröltem a rossz mondatot, hanem javítva megtartottam: az a magyarázat, amiért az operátor most
+ismétlés-jelöléssel van leírva.
+
+**Amit egyikünk sem tudott végrehajtással igazolni, és Cybersec is kimondta:** hogy a timespec nélküli
+átirányítás usage-hibával kilép. Az at(1) dokumentált felületéből következik, de a bináris nincs
+telepítve ezen a gépen, tehát ez a pont dokumentáció-alapú.
+
+**Ki döntött:** QA (a hiányzó hatókör felírása), MikroB (21222: ugyanebbe a körbe), Cybersec (R-5 és
+a nevesített-fd őr előre lemérve), backend3 (végrehajtás + független újramérés).
+
+**Hivatkozás:** kártya `79bb0364`, kommentek 21173 / 21218 / 21222 / 21227.
+
+## 2026-09-06 11:20 -- bb52c2fa -- A környezet-függetlenség nem locale-pinneléssel jön, hanem azzal, hogy nem prózát olvasunk
+
+**C-2 (a legdrágább).** A selftest CSAK akkor volt zöld, ha az `LC_ALL` NINCS exportálva. Bármelyik
+exportált érték (C, C.UTF-8, en_US.UTF-8, hu_HU.UTF-8) 61/67-re vitte, hat pirossal -- vagyis bármely
+CI- vagy ügynök-környezet, ami exportálja az LC_ALL-t, HAMIS PIROST kapott helyes kódra. Ez a 17.
+munkavégzési szabály osztálya: a hamis piros a gate-en helyes munkát küld vissza.
+
+**A gyökér nem az, aminek látszott.** A `_common_line_prefix_len` fejléce azt sugallta, hogy a
+`local LC_ALL=C` a `cmp` bájt-szemantikáját is kikényszeríti. Nem: a `cmp` külön folyamat, az
+ÜZENETE lokalizált, és a szóhasználat nem követi azt, hogy a locale bájt-orientált-e. Mérve, ugyanaz
+a két fájl, öt környezetben: `LC_ALL` unset -> "differ: byte", `C` -> "differ: **char**",
+`C.UTF-8` -> "byte", `en_US.UTF-8` és `hu_HU.UTF-8` -> "char". A `byte`-ra szűkített minta tehát a
+legtöbb exportált locale-ban SEMMIT nem illesztett, az `n` üresen jött vissza, és a fallback a
+RÖVIDEBB oldal teljes hosszát adta vissza közös prefixként.
+
+**A javítás nem bővebb szó-lista, mert az ugyanaz a felsorolás-hiba egy szinttel feljebb** -- egy
+fordított locale teljesen más mondatot ír. A `cmp -l` SZÁMOKAT ad (soronként egy eltérő bájt,
+`<1-alapú bájt-offset> <oktális a> <oktális b>`), és a FORMÁTUMA mind az öt környezetben azonos.
+Többbájtosra is ellenőrizve: két fájl, amik `áéí` (6 bájt) után térnek el, C-ben és hu_HU.UTF-8-ban
+egyaránt 7-es offszetet ad, tehát bájt-offszet.
+
+**SAJÁT HIBA UGYANEBBEN A KÖRBEN, kimondva:** az első változatom `cut -d' ' -f1`-gyel olvasta ki az
+offszetet, és a `cmp -l` JOBBRA IGAZÍTJA azt -- egy nagy offszet `              20024 101 102`
+alakban érkezik, és az egyszóközös vágás az előtte álló üres mezőt adja vissza. A 4 bájtos
+próbafixture-ömben ez láthatatlan volt, mert ott az offszet egyjegyű és nincs padding. Pontosan az a
+csapda, amit ennek a függvénynek a fejléce már leír az ASCII-only fixture-ökről. `awk '{print $1}'`.
+
+**C-1.** A `---`/`***`/`___` elválasztókat a skip-lista PONTOSAN illesztette, tehát CRLF-fájlban a
+szabály-sor `---\r`, nem ismerhető fel, és bájtra azonos tartalom LF-en RESOLVED, CRLF-en REFUSED
+volt. Fail-closed, tehát semmi nem mergelődött rosszul -- de egy visszautasítás, amit a felhasználó
+a saját checkoutján nem tud reprodukálni, önmagában is költség.
+
+**Ez a HARMADIK alkalom, hogy ezt a fájlt egy rule két, egymástól elcsúszott fele harapta meg**
+(behúzás, záró whitespace, most a sorvég). Ezért a skip-lista mostantól EGY helyen él
+(`_is_blank_or_rule`), és mindkét hívó azon megy át -- nem két felsorolás, ami ma még egyezik.
+
+**N-1 (Cybersec).** A seam-predikátum most pineli a saját locale-ját, ahogy a kerítés-testvére eddig
+is. A produkciós út egyébként árnyékolta (a `try_append_union` állítja, és a bash dinamikusan
+hatókörözi), tehát a merge-válasz sosem függött a környezettől -- a kitettség a KÖZVETLEN hívó, ami a
+selftest maga. Ettől függetlenül pinelve: egy predikátum, ami hozza a saját locale-ját, nem törhető
+el egy jövőbeli hívóval, aki elfelejti.
+
+**N-2 (Cybersec).** A testvér-wrapper `--selftest` kapcsolója némán, nulla kimenettel tért vissza
+rc=0-val. Nem volt lefedettségi lyuk (a CI a glob alapján megtalálja a `.py` selftestet, 17/17), de
+egy néma siker megkülönböztethetetlen a "minden zöld"-től. Most lefuttatja a valódi selftestet és
+továbbadja a kilépési kódját; a fájlt névvel hivatkozza, hogy egy átnevezés hangosan bukjon.
+
+**Mutációs mérés:** a próza-olvasás vissza -> 1 piros (az új locale-eset); a skip-lista CR-toleranciája
+elvéve -> 1 piros (az új CRLF eset); a seam locale-pin elvéve -> 1 piros (az új seam-locale eset);
+az `awk` visszacserélve `cut`-ra -> 6 piros; KONTROLL komment-mutáció -> 0 piros. 70 teszteset
+(67-ről), és a suite mind a hat próbált környezetben zöld.
+
+**A seam-locale esetről külön:** az első mutációs futáson TÚLÉLTE a pin elvétele, nulla pirossal --
+és ez valódi rés volt, nem redundancia (a mutáns MÁSHOGY viselkedik, csak nem hívta senki idegen
+locale alatt). Ezért került be a hozzá tartozó eset, és utána már pirosat ad.
+
+**Hivatkozás:** kártya `bb52c2fa`; Cybered C-1/C-2 (3ae71df1 zárásakor), Cybersec N-1/N-2 (21236).
+
 ---
 
 ## 2026-09-06 -- 26ab08a2 (3. kör): a nullára-esés küszöbe EGY, és a bootstrap-padló ÁLLAPOT-alapú
@@ -8796,6 +8913,65 @@ hol ROGZITETT egy masik program egy dontest.
 `src/__tests__/local-llm-guard-sanctioned-skip.test.ts`; MikroB 21246; kapcsolodo: d5c05548
 (a mask() hiba), 1f276349 (ugyanez az osztaly a fork-guardon).
 
+## 2026-09-06 -- c52e2823 (2. kör): egy elutasítás, amit nem lehet megítélni, kap saját szót -- `UNSUPERSEDED`
+
+**Döntés.** A `store/gate-closure-check.py` mostantól három állapotot különböztet meg ott,
+ahol eddig kettő volt. Egy gate elutasítása BLOKKOL (`FAILED`), ha az adott gate szerepét
+viselő szerzőtől jött, vagy ha megnevez egy commitot. Nem blokkol, ha az adott gate maga
+szólalt meg utána a leszállított shára. És sem nem blokkol, sem nem zárható
+(`UNSUPERSEDED|<gate-ek>|<ki mondta>`), ha sha nélkül áll, és nincs mivel bizonyítani, hogy
+egy későbbi PASS felülírta -- ez emberi/MikroB-döntés, nem automatikus visszadobás.
+
+**A kényszerítő lelet.** Az 1. kör (bdb7375d) a testvér-gate elutasítását a per-szerző
+táblából olvasta, és az MINDEN szerzőt tartalmazott, szemben a tükrével (`latest_by_role`),
+ami mindig is szerepre szűrt. Emiatt bármely verdikt-ALAKÚ mondat -- a flotta rutinszerű
+"<GATE> <VERDIKT> ELFOGADVA, vissza in_progress-be" nyugtázása, vagy egy építő "QA FAIL
+elfogadva, javitottam" sora -- véglegesen beállt egy olyan elutasítás helyébe, amit a gate
+maga már visszavont. QA mérte (21135), Cybersec függetlenül reprodukálta és tágabbnak
+találta (21176): nem csak a koordinátoré, hanem minden nem-szerep-szerzős idézet.
+
+**Miért nem elég a puszta szerep-szűrés.** Mert a nyugtázás állhat a gate saját utolsó
+szava UTÁN is. Akkor a gate soha nem válaszolt rá, és a sor eldobása egy esetleg NYITOTT
+elutasítás fölött zárná le a kártyát -- pontosan az az irány, ami ellen a 44849954-es
+aszimmetria ("egy nem attribuálható elutasítás akkor is elutasítás") megszületett. A 21139
+döntés ezért új szót kért, nem szélesebb szűrőt. Az e4b7096e kártya (azonos-szerep FAIL ->
+PASS sha nélkül) ugyanennek a szónak a másik esete, ezért lett ide olvasztva.
+
+**Ahol a megvalósítás ELTÉR a 21139 szövegétől, tudatosan.** A döntés szerint a relay-eset
+MINDIG `UNSUPERSEDED`. A leszállított alak csak akkor, ha utána NEM szólalt meg maga a gate
+a leszállított shára. Ha megszólalt, az pontosan az, amit a "felülírás" jelent, és egy
+eldöntött történetre "eldönthetetlent" válaszolni négy LEZÁRT kártyát parkoltatna egy
+embernek, akinek nincs mit eldöntenie. Az időrend tehát nem díszítés, hanem maga a
+bizonyíték. Ez egy sor visszavétele, ha MikroB másképp dönt.
+
+**Két fail-closed előfeltétel, hogy az új szó ne legyen átjáró.** Relay, ami mögött az adott
+gate-től egyáltalán nincs verdikt -> változatlanul `FAILED` (nincs mihez mérni). Elutasítás,
+ami MEGNEVEZ egy shát -> megítélhető, tehát meg is ítéli, változatlanul.
+
+**Mérve az élő táblán, nem szintetikusan.** 348 kommentelt kártya, régi és új verzió egymás
+mellett, minden változó válasz kézzel visszaolvasva a kártya saját verdikt-történetéből:
+`008739a8`, `efaf8926`, `3ae71df1`, `b24b9e5c` FAILED -> AGREE (mindegyiken valódi,
+szerep-szerzős, egy shára szóló újra-gate-elés áll a nyugtázás után), `4a6c47f0` FAILED ->
+DISAGREE. Az utolsó NEM hamis blokk feloldása: ott a CYBERSEC GO a `d49e9c7a`-ra szól, a QA
+PASS és a CYBERED GO a `901b6fbb`-re, és a két commit ténylegesen eltér az
+`audit-ip-coarsen.ts`-ben -- a régi eszköz jó választ adott rossz okból. Populáció: 633
+verdikt-alakú komment, 18 nem-szerep-szerzőtől, ebből 11 elutasítás 9 kártyán, mind
+MikroB-tól. Az új szó ma EGYETLEN élő kártyán keletkezik (`2cb07372`), és ott egy olvasható
+elutasítás megelőzi -- ez a precedencia (FAILED > UNSUPERSEDED) is pinelve van.
+
+**Amit a tesztelés hozzátett a döntéshez.** A regresszió-mentesség a TELJES soron áll, nem a
+verdikt-szón: egyedülálló valódi QA FAIL és tiszta pass bájtra azonos a korábbi kimenettel
+(MikroB elfogadási feltétele, 21177) -- egy csak-fajta assertion zölden hagyna egy
+átfogalmazott választ, ami minden olvasót eltör. Négy mutáns, négy különböző eset fogja meg.
+Egy ötödik mutáns túlélte mind a 83 esetet, és kiderült, hogy elérhetetlen ág, nem
+tesztlyuk: ha egy gate utolsó szava a saját elutasítása, ugyanaz a sor a `latest_by_role`-ban
+is ott áll, tehát a passzoló előfeltétel már előbb elutasít. A sor kikerült, a viselkedést
+pinelő eset maradt.
+
+**Hivatkozás:** kártya `c52e2823` (magába olvasztva: `e4b7096e`); `store/gate-closure-check.py`,
+`store/gate-closure-check.selftest.py` (83 eset), `CLAUDE.md` 4a. pont; QA 21135, Cybersec
+21176, MikroB 21139 és 21177. Kapcsolódó: `71f95ba0` (az eszköznek nincs gépi fogyasztója,
+tehát ez a javítás csak azt a zárást védi, ahol valaki elindítja).
 ---
 
 ## 2026-09-06 -- d5c05548: a maszkolas allitasat ELLENORIZNI kell, es a flag csak igazat mondhat
