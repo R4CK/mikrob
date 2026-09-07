@@ -212,8 +212,10 @@ fi
 
 # --- Database ---
 echo -e "\n${BOLD}Database${RESET}"
-if [ -f "store/claudeclaw.db" ]; then
-  MEM=$(sqlite3 store/claudeclaw.db "SELECT COUNT(*) FROM memories;" 2>/dev/null || echo "?")
+# $INSTALL_DIR-anchored explicitly (card 5dcde7d3 hardening), not relying on the earlier `cd` --
+# this line's target must never depend on script order above it.
+if [ -f "$INSTALL_DIR/store/claudeclaw.db" ]; then
+  MEM=$(sqlite3 "$INSTALL_DIR/store/claudeclaw.db" "SELECT COUNT(*) FROM memories;" 2>/dev/null || echo "?")
   ok "claudeclaw.db: alive ($MEM memories)"
 else
   fail "store/claudeclaw.db missing"
