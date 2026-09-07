@@ -28,6 +28,46 @@ const workflowFiles = (): string[] =>
     ? readdirSync(WORKFLOWS).filter((f) => f.endsWith('.yml') || f.endsWith('.yaml'))
     : []
 
+// Cybered NO-GO (card cd4f9762, comment 22265) on the first version of this file: a bare
+// `\blint\b` misses "eslint" itself -- "lint" inside "eslint" has no WORD boundary before it (the
+// preceding character is "s", not a non-word character), so `\b` never matches there. Reproduced
+// independently, twice: a `pretest: "eslint src"` script and a workflow `run: npx eslint src` step
+// both slipped through the old pattern (`node -e` confirmed `/\blint\b/i.test("eslint src")` is
+// `false`), reopening the exact silent gap this ratchet exists to close, on a new axis. `lint` and
+// `eslint` each still sit on their own word boundaries in `\b(lint|eslint)\b`, so "delint"/"linter"
+// still do not slip THROUGH the other direction (Rule 12).
+const LINT_MENTION_RE = /\b(lint|eslint)\b/i
+
+describe('LINT_MENTION_RE itself (card cd4f9762, Cybered NO-GO comment 22265)', () => {
+  // Cybered reproduced this against the real files this describe block reads (a scratch
+  // pretest="eslint src" and a scratch workflow "run: npx eslint src"), independently of source
+  // inspection. Pinned here directly on the regex too, so the exact shape cannot regress silently
+  // a second time on the same axis.
+  it('catches a DIRECT eslint invocation, not just an npm/pnpm/yarn "lint" call', () => {
+    expect(LINT_MENTION_RE.test('eslint src')).toBe(true)
+    expect(LINT_MENTION_RE.test('npx eslint src')).toBe(true)
+  })
+
+  it('still catches every "lint" call form the widening was FOR', () => {
+    expect(LINT_MENTION_RE.test('npm run lint')).toBe(true)
+    expect(LINT_MENTION_RE.test('pnpm lint')).toBe(true)
+    expect(LINT_MENTION_RE.test('yarn lint')).toBe(true)
+  })
+
+  it('CONTROL: a word merely CONTAINING "lint" does not slip through the other direction (Rule 12)', () => {
+    expect(LINT_MENTION_RE.test('delint')).toBe(false)
+    expect(LINT_MENTION_RE.test('linter')).toBe(false)
+    expect(LINT_MENTION_RE.test('splinter')).toBe(false)
+  })
+
+  it('a package NAME containing eslint (e.g. installing eslint-plugin-x) DOES match -- documented, ' +
+    'not a bug: neither caller runs this against install/dependency lines, only script COMMANDS ' +
+    '(package.json scripts values) and workflow file bodies, and today neither contains one ' +
+    '(asserted below in each describe block)', () => {
+    expect(LINT_MENTION_RE.test('eslint-plugin-import')).toBe(true)
+  })
+})
+
 describe('the lint-ratchet comment in fleet-test.sh still matches CI (card 774624c4)', () => {
   it('the negative control: there ARE workflows, so the check below is not vacuous', () => {
     // The original defect was a claim that no workflows exist. If they ever disappear, the lint
@@ -40,11 +80,12 @@ describe('the lint-ratchet comment in fleet-test.sh still matches CI (card 77462
   it('NO workflow runs the linter -- which is why the ratchet is still the only caller', () => {
     // Card cd4f9762 (Cybered finding, F-2): the old pattern only matched the CALL FORM used
     // today (`eslint`, `run lint`, `npm run lint`) -- `pnpm lint`/`yarn lint` have no "run" and
-    // slipped through untested. A bare `\blint\b` is the wider net; it still finds zero matches
+    // slipped through untested. LINT_MENTION_RE is the wider net; it still finds zero matches
     // on the current two workflow files (asserted as the negative control above), so widening it
-    // costs nothing today and closes the pnpm/yarn gap.
+    // costs nothing today and closes the pnpm/yarn gap (and, per the comment on its definition,
+    // the direct-eslint gap the first version of this widening reopened).
     const offenders = workflowFiles().filter((f) =>
-      /\blint\b/i.test(readFileSync(join(WORKFLOWS, f), 'utf-8')),
+      LINT_MENTION_RE.test(readFileSync(join(WORKFLOWS, f), 'utf-8')),
     )
     expect(
       offenders,
@@ -75,7 +116,7 @@ describe('the lint-ratchet comment in fleet-test.sh still matches CI (card 77462
       scripts?: Record<string, string>
     }
     const offenders = Object.entries(pkg.scripts ?? {})
-      .filter(([name, cmd]) => name !== 'lint' && /\blint\b/i.test(cmd))
+      .filter(([name, cmd]) => name !== 'lint' && LINT_MENTION_RE.test(cmd))
       .map(([name]) => name)
     expect(
       offenders,
