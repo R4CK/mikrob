@@ -1180,18 +1180,17 @@ export function initDatabase(dbPathOverride?: string): void {
   try { db.exec('ALTER TABLE token_usage ADD COLUMN thinking_tokens INTEGER NOT NULL DEFAULT 0') } catch { /* already exists */ }
   try { db.exec('ALTER TABLE token_usage ADD COLUMN model TEXT') } catch { /* already exists */ }
 
-  // Deduplicate existing rows before creating unique index
-  try {
-    db.exec(`CREATE UNIQUE INDEX IF NOT EXISTS idx_token_usage_dedup ON token_usage(agent, session_id, timestamp, input_tokens, output_tokens)`)
-  } catch {
-    db.exec(`
-      DELETE FROM token_usage WHERE id NOT IN (
-        SELECT MIN(id) FROM token_usage
-        GROUP BY agent, session_id, timestamp, input_tokens, output_tokens
-      )
-    `)
-    db.exec(`CREATE UNIQUE INDEX IF NOT EXISTS idx_token_usage_dedup ON token_usage(agent, session_id, timestamp, input_tokens, output_tokens)`)
-  }
+  // Drop old agent-led index and replace with agent-free key (card b774f057).
+  // session_id is single-agent by definition; two different agents with the same
+  // session_id + timestamp + tokens is a duplication bug, not a legitimate row.
+  db.exec(`DROP INDEX IF EXISTS idx_token_usage_dedup`)
+  db.exec(`
+    DELETE FROM token_usage WHERE id NOT IN (
+      SELECT MIN(id) FROM token_usage
+      GROUP BY session_id, timestamp, input_tokens, output_tokens
+    )
+  `)
+  db.exec(`CREATE UNIQUE INDEX IF NOT EXISTS idx_token_usage_dedup ON token_usage(session_id, timestamp, input_tokens, output_tokens)`)
 
   db.exec(`
     CREATE TABLE IF NOT EXISTS token_usage_cursors (
