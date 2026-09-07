@@ -440,6 +440,23 @@ try_append_union() {
   # empty added-half means some assumption above is wrong, so refuse rather than guess.
   [ -n "$ours_added" ] && [ -n "$theirs_added" ] || return 1
 
+  # F-3 (card 5910f2f3, Cybered comment 20501): THE UNION IS BLIND TO A HEADER DUPLICATED ACROSS
+  # BOTH REMAINDERS. Every check in this function is a MISSING-content check -- header-count
+  # arithmetic, the membership check below, and "each remainder must start a new entry" all ask
+  # "is anything gone", never "is anything doubled". If the SAME entry landed in both
+  # `ours_added` and `theirs_added` -- e.g. cherry-picked to both branches independently, so it
+  # sits at a DIFFERENT OFFSET on each side rather than in the shared prefix -- none of them
+  # notice: the header count stays consistent (both copies get counted, neither is missing),
+  # membership still holds (both copies ARE present, just twice), and each remainder still
+  # legitimately starts a new entry. The union then lands the entry twice. NOT a regression of
+  # this card's own fix -- reproduced identically against the pre-fix, base-anchored version --
+  # so it is checked here rather than left implicit in checks that were never built to catch it.
+  local dup
+  dup="$(comm -12 \
+    <(grep '^## ' <<<"$ours_added" | sort -u) \
+    <(grep '^## ' <<<"$theirs_added" | sort -u))"
+  [ -z "$dup" ] || return 1
+
   # EACH REMAINDER MUST BEGIN A NEW ENTRY (Cybersec NO-GO, comment 20499).
   #
   # THE HOLE: the common prefix can legitimately END WITH A SHARED `## ` HEADER LINE -- both sides
@@ -993,6 +1010,28 @@ some prose
 ## 2026-01-03 -- entry C2 (right)
 ## 2026-01-03 -- entry C3 (right)
 "
+
+  # F-3 (card 5910f2f3, Cybered comment 20501): THE SAME ENTRY ADDED ON BOTH SIDES, AT A
+  # DIFFERENT OFFSET -- e.g. cherry-picked to both branches independently -- so it does NOT sit
+  # in the common prefix (left has an extra entry X between A and the shared one, breaking the
+  # literal prefix match one line early) but DOES appear, identically, in both remainders. None of
+  # the three existing checks catch this: the header-count arithmetic is satisfied (both copies
+  # are counted, nothing is missing on either side of the equation), the membership check is
+  # blind to it (comm runs against sort -u'd header sets on BOTH sides of the comparison, so the
+  # doubled header collapses to one entry identically on both, and nothing looks missing), and
+  # each remainder still legitimately starts a new entry. Left uninjected (no comm -12 check),
+  # this landed "entry D (shared)" TWICE.
+  setup_conflict duplicate-entry-different-offset \
+    "## 2026-01-01 -- entry A
+" \
+    "## 2026-01-01 -- entry A
+## 2026-01-02 -- entry X (left-only)
+## 2026-01-05 -- entry D (shared)
+" \
+    "## 2026-01-01 -- entry A
+## 2026-01-05 -- entry D (shared)
+"
+  t_refused "the same entry added on both sides at a different offset is refused, not silently doubled"
 
   # A REAL EDIT ON ONE SIDE (a correction to the existing entry, not just an append at the tail):
   # must NOT auto-union -- silently keeping "both versions" here is exactly the content-mangling
