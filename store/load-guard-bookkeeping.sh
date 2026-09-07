@@ -271,7 +271,9 @@ KNOWN_AGENTS_JSON=""
 # NO-GO), so a PAUSED-LOAD note signed by one of them asserts something that cannot be true. Sourced
 # rather than re-listed: two copies of one policy is how one of them quietly stops matching.
 # shellcheck source=/dev/null
-. "$SCRIPT_DIR/load-guard-excluded.sh" 2>/dev/null || true
+if ! . "$SCRIPT_DIR/load-guard-excluded.sh" 2>/dev/null; then
+  echo "load-guard-bookkeeping: load-guard-excluded.sh could not be loaded ($SCRIPT_DIR) -- the gate-pool exclusion check is SKIPPED for this run (card be81d16c follow-on, card c5baa683)" >&2
+fi
 
 _valid_author() { # $1 = candidate; echoes the name to use
   local want="$1"
