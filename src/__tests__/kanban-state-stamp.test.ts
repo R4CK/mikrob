@@ -325,7 +325,9 @@ describe('the delivery-time re-check is wired into BOTH delivery paths', () => {
   it('the router appends it to the injected prompt', () => {
     const src = readSrc('web/message-router.ts')
     expect(src).toContain('formatDeliveryStalenessNote(')
-    expect(src).toContain('sendPromptToSession(session, prefix + wrapped + staleNote, host)')
+    // UPDATED (card 30a34eba): queueDepthNote joined the same append chain, AFTER staleNote --
+    // a second, independent decoration, not a replacement for this one.
+    expect(src).toContain('sendPromptToSession(session, prefix + wrapped + staleNote + queueDepthNote, host)')
   })
 
   it('drain-inbox appends it to the block it returns', () => {

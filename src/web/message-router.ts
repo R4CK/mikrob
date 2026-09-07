@@ -18,6 +18,7 @@ import {
   type AgentMessage,
 } from '../db.js'
 import { formatDeliveryStalenessNote, supersededDispatch } from './kanban-state-stamp.js'
+import { formatQueueDepthNote } from './message-queue-depth-note.js'
 import { countNewerMessagesFromSameSender } from '../db.js'
 import { isQualifiedId } from './federation/address.js'
 import { sendFederatedMessage } from './federation/bridge.js'
@@ -959,9 +960,14 @@ export async function runMessageRouterTick(): Promise<void> {
         // since changed column. Appended AFTER the wrapper, not inside it: this text is the
         // router's, not the sender's, and it must not read as part of their payload.
         const staleNote = formatDeliveryStalenessNote(msg.content, getKanbanCardStateByIdPrefix, Math.round(ageMs / 1000))
+        // Card 30a34eba: a SEPARATE fact from the staleness note above -- "how many more messages
+        // are already waiting behind this one for the same recipient" -- so the recipient can
+        // decide for itself whether to self-interrupt a long-running step. `-1` excludes this
+        // message itself, which is still `pending` in the row until markMessageDelivered runs below.
+        const queueDepthNote = formatQueueDepthNote(getPendingMessages(msg.to_agent).length - 1)
         // Inline preamble so a fresh session (post hard-restart) doesn't miss
         // the context that explains the tag semantics.
-        await sendPromptToSession(session, prefix + wrapped + staleNote, host)
+        await sendPromptToSession(session, prefix + wrapped + staleNote + queueDepthNote, host)
         if (!markMessageDelivered(msg.id)) {
           logger.warn({ id: msg.id }, 'markMessageDelivered affected 0 rows (deleted concurrently?)')
         }
