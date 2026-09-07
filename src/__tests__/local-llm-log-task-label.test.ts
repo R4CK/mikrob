@@ -55,7 +55,12 @@ function run(args: readonly string[]): { status: number; out: string } {
   const r = spawnSync('bash', [join(sandbox, 'local-llm.sh'), ...args, 'draft this'], {
     encoding: 'utf-8',
     timeout: 60_000,
-    env: { ...process.env, OLLAMA_HOST: host },
+    // A THROWAWAY lock file, never the real shared /tmp/local-llm-gpu.lock (card f3b219bb).
+    // What this file tests -- the --log-task flag -- has nothing to do with GPU-lock sharing,
+    // so there is no reason to contend with every OTHER concurrent local-llm.sh call on the
+    // fleet: measured flaking under real fleet contention ("gpu lock busy -- could not acquire
+    // within 30s") with no code change on either side.
+    env: { ...process.env, OLLAMA_HOST: host, LOCAL_LLM_GPU_LOCK_PATH: join(sandbox, 'gpu.lock') },
   })
   return { status: r.status ?? -1, out: `${r.stdout ?? ''}${r.stderr ?? ''}` }
 }
