@@ -9020,6 +9020,19 @@ body {
 }
 .llm-verdict--local { color: var(--success); background: color-mix(in srgb, var(--success) 12%, var(--bg-card)); }
 .llm-verdict--online { color: var(--accent, #6366f1); background: color-mix(in srgb, var(--accent, #6366f1) 12%, var(--bg-card)); }
+.llm-decisions-summary {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  align-items: center;
+  padding: 6px 10px;
+  margin-bottom: 6px;
+  background: var(--bg-input);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  font-size: 12px;
+}
+.llm-decisions-window { color: var(--text-muted); margin-left: auto; }
 .llm-decision-reason { color: var(--text); }
 .llm-decision-meta { color: var(--text-muted); margin-left: auto; }
 @media (max-width: 720px) {
