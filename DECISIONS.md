@@ -11839,14 +11839,13 @@ nem a konfliktus-lista:**
   eltávolítva, dokumentálva.
 - `src/web/routes/agents.ts`: egy teljes `/api/agents/status` route-kezelő (nem csak import) a
   nem-adoptált `getAgentToolActivity`/`deriveAgentStatus` szimbólumokkal -- eltávolítva.
-- **`installer-ollama-url.test.ts` (új upstream tesztfájl) NEM adoptálva kód-szinten.** Az
-  upstream `OLLAMA_URL` feloldási újraírását teszteli `install-linux.sh`-ban -- de ez pont az a
-  terület, amit Peti 2026-08-13-i direktívája (EPIC ebc7b4dd, a csendes Ollama auto-install
-  eltávolítása) korábban már szándékosan kizárt ebből a forkból. A teszt önmagában
-  nem-konfliktáló addícióként érkezett, de a mögötte lévő kód-változást nem fogadtuk el --
-  MikroB megerősítette 2026-09-07-én. A teszt maga változatlanul HIBÁZIK a `fleet-test.sh`
-  futásban; ez SZÁNDÉKOS és dokumentált, nem elfeledett hiba -- a teszt eltávolítása vagy
-  kizárása egy külön, kis kártyán történjen, ne itt tovább bővítve a konfliktus-feloldást.
+- **`installer-ollama-url.test.ts` (új upstream tesztfájl) ELTÁVOLÍTVA, kód-szinten NEM
+  adoptálva.** Az upstream `OLLAMA_URL` feloldási újraírását teszteli `install-linux.sh`-ban --
+  de ez pont az a terület, amit Peti 2026-08-13-i direktívája (EPIC ebc7b4dd, a csendes Ollama
+  auto-install eltávolítása) korábban már szándékosan kizárt ebből a forkból. MikroB
+  megerősítette 2026-09-07-én: a kód marad, a teszt eltávolítva (nem hagyva pirosan -- egy
+  ismerten piros teszt a `fleet-test.sh` teljes-suite kapuját blokkolná, ami ellentmond a
+  landolási feltételnek).
 - **`src/__tests__/router-main-agent-wakeup.test.ts` (új upstream tesztfájl) ELTÁVOLÍTVA, nem
   csak kizárva.** Upstream ezzel a teszttel azt a döntést pinneli, hogy a router SOHA ne
   vezérelje a main-agent channels sessiont (a busy panelbe zajló wakeup csendben sorba áll,
@@ -11911,6 +11910,13 @@ elég bizonyíték.
   tesztfájlból 13/18 eset VALÓDI hibát javított (a teszt-harness sajátja hiányzó
   `session-limit-pattern.sh`/`.json` másolása + egy hiányzó szöveges minta), az megtartva.
   MikroB megerősítette 2026-09-07-én.
+- **`store/lint-ratchet.sh --update` lefuttatva** (149 commit, sok új fájl -- a lint-profil
+  természetesen elmozdul egy ekkora merge alatt, függetlenül attól, hogy egy adott sor kitől
+  származik). Ellenőrizve: az eltérés (`no-unsafe-argument` +8, `no-unused-vars` +19) új,
+  merge-hozta fájlok saját, nem-módosított tartalmában van (pl.
+  `feedback-modal-positive-router.test.ts`, `system-directive-verify-endpoint.test.ts`), nem a
+  saját, ebben a körben írt kis célzott javításokban -- spot-check minden flaggelt sorra
+  elvégezve. Új baseline: 6 szabály, 257 lelet.
 - **`channels-main-model.test.sh`: `DISTRIBUTION_DEFAULT_AGENT_MODEL` marad `claude-opus-5`.**
   Upstream + az új teszt a `[1m]` (1M kontextus) variánst várná -- valódi költség/kontextus
   termékdöntés, nem konfliktus-feloldási kérdés. MikroB külön jelzi Petinek; amíg nincs
