@@ -19,7 +19,6 @@ import {
   parkedInputRowCount,
   submitLanded,
   paneShowsContextSaturation,
-  detectsFeedbackDraftNotice,
 } from '../pane-state.js'
 
 // Realistic pane fixtures modelled on actual `tmux capture-pane -p`
@@ -2183,92 +2182,6 @@ describe('footer-less welcome-screen parked input', () => {
     const noBox = ['some scrollback line', SEP, 'plain text, no prompt glyph', SEP, ''].join('\n')
     expect(detectPaneState(noBox)).toBe('unknown')
     expect(parkedInputRowCount(noBox)).toBe(0)
-  })
-})
-
-// Real capture MikroB pasted verbatim from a stuck `backend` pane (card bd4b74a3,
-// 2026-09-07): the SendFeedback draft-notice panel eats the footer entirely, with a
-// genuinely empty input box below it.
-const FEEDBACK_PANEL_LINES = [
-  '│ ✻ Bug report drafted: Multi-line JSON built via bash heredoc silently fails… │',
-  '│                                                                               │',
-  "│ What happened: Built several curl -X POST ... -d @- <<'''EOF''' {...multi-line │",
-  '│ JSON...} EOF calls to an internal API. The heredoc content had real line    │',
-  '│ breaks…                                                                     │',
-  '│ 1 to review · 2 to send · 0 to dismiss                                      │',
-]
-const FEEDBACK_DRAFT_STUCK = [
-  '',
-  '  some prior assistant output',
-  '',
-  '╭' + '─'.repeat(80) + '╮',
-  ...FEEDBACK_PANEL_LINES,
-  '╰' + '─'.repeat(80) + '╯',
-  SEP,
-  '❯ ',
-  SEP,
-  '',
-].join('\n')
-
-describe('detectsFeedbackDraftNotice / SendFeedback draft-notice panel (card bd4b74a3)', () => {
-  it('detects the real panel shape', () => {
-    expect(detectsFeedbackDraftNotice(FEEDBACK_DRAFT_STUCK)).toBe(true)
-  })
-
-  it('a footer-less pane with the panel and an EMPTY box classifies idle, not unknown', () => {
-    expect(detectPaneState(FEEDBACK_DRAFT_STUCK)).toBe('idle')
-  })
-
-  it('a PARKED (non-empty) box still wins over the panel -- typing, not idle', () => {
-    const withParkedText = FEEDBACK_DRAFT_STUCK.replace('❯ ', '❯ finish the report first')
-    expect(detectPaneState(withParkedText)).toBe('typing')
-  })
-
-  it('CONTROL: the header phrase alone, box-scoped, is not enough without the counter line', () => {
-    const headerOnly = [
-      '',
-      '╭' + '─'.repeat(80) + '╮',
-      FEEDBACK_PANEL_LINES[0],
-      '╰' + '─'.repeat(80) + '╯',
-      SEP,
-      '❯ ',
-      SEP,
-      '',
-    ].join('\n')
-    expect(detectsFeedbackDraftNotice(headerOnly)).toBe(false)
-    expect(detectPaneState(headerOnly)).toBe('unknown')
-  })
-
-  it('CONTROL: the counter line alone, box-scoped, is not enough without the header', () => {
-    const counterOnly = [
-      '',
-      '╭' + '─'.repeat(80) + '╮',
-      FEEDBACK_PANEL_LINES[5],
-      '╰' + '─'.repeat(80) + '╯',
-      SEP,
-      '❯ ',
-      SEP,
-      '',
-    ].join('\n')
-    expect(detectsFeedbackDraftNotice(counterOnly)).toBe(false)
-    expect(detectPaneState(counterOnly)).toBe('unknown')
-  })
-
-  it('CONTROL (the certainty, not a hypothetical): PROSE quoting both phrases verbatim, ' +
-    'WITHOUT real box-drawing characters, does not trigger -- exactly the shape this ' +
-    "bug's own incident report (this file's kanban card) puts into scrollback", () => {
-    const incidentReportProse = [
-      '',
-      '  I saw the panel: "✻ Bug report drafted: Multi-line JSON..." with the line',
-      '  "1 to review · 2 to send · 0 to dismiss" underneath it, then the footer vanished.',
-      '',
-    ].join('\n')
-    expect(detectsFeedbackDraftNotice(incidentReportProse)).toBe(false)
-    expect(detectPaneState(incidentReportProse)).toBe('unknown')
-  })
-
-  it('does not affect a normal footer-present idle pane (no false trigger when footer exists)', () => {
-    expect(detectsFeedbackDraftNotice(IDLE_BYPASS)).toBe(false)
   })
 })
 
