@@ -10,7 +10,11 @@ them has already bitten this fleet at least once:
   2. force-push (`git push --force` / `-f` / `--force-with-lease`) to a protected
      branch (main / develop) -- rewrites shared history.
   3. `git add`-ing the contended lockfile (pnpm-lock.yaml / package-lock.json) --
-     MikroB batches dependency changes; agents never touch the lockfile.
+     MikroB batches dependency changes; agents never touch the lockfile. Unlike
+     the other rules here, this one had NO escape hatch even for MikroB's own
+     batching commit (found 2026-09-07, card 4f15966e-adjacent) -- fixed with
+     `GIT_PROTECT_GUARD_LOCKFILE_ALLOW=1`, matching the `_ALLOW`/`=off` pattern
+     the sibling guards (noisy-command-guard, cd-chain-guard) already use.
   4. DESTRUCTIVE WHOLE-TREE ops (card 6b532950) -- `git reset --hard`,
      `git checkout .` / `git checkout -- .`, `git restore .`, `git stash` (bare),
      `git clean -fd`. These do not just affect YOUR files: in a shared checkout
@@ -291,11 +295,12 @@ def main():
                 )
                 sys.exit(2)
 
-            if ADD_LOCK_RX.search(variant):
+            if ADD_LOCK_RX.search(variant) and "GIT_PROTECT_GUARD_LOCKFILE_ALLOW=1" not in variant:
                 sys.stderr.write(
                     "GIT-PROTECT-GUARD: lockfile (pnpm-lock.yaml / package-lock.json) "
                     "git add-je blokkolva -- a fuggosegeket MikroB batcheli, agent nem "
-                    "nyul a lockfile-hoz. Hagyd ki a lockfile-t a commitbol."
+                    "nyul a lockfile-hoz. Hagyd ki a lockfile-t a commitbol. Ha ezt MikroB "
+                    "batcheli, egyszeri korre: GIT_PROTECT_GUARD_LOCKFILE_ALLOW=1 <parancs>."
                 )
                 sys.exit(2)
 

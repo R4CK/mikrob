@@ -562,6 +562,7 @@ run_unit_maintenance
 # explicit --regen-claudemd flag, because that file is the operator's text).
 SEED_REFRESH_UPDATED=0
 SEED_REFRESH_KEPT=0
+SEED_REFRESH_ADDED=0
 
 # Render a template stream the same way the seeder does. Keep in sync with the
 # sed blocks in the seeding loops below and in install-linux.sh.
@@ -778,7 +779,27 @@ refresh_untouched_seeds() {
       [ -f "$f" ] || continue
       base="$(basename "$f")"
       installed="$target_root/$name/$base"
-      [ -f "$installed" ] || continue           # never add files to an existing dir
+      # A FILE THAT NEVER EXISTED CANNOT HAVE BEEN OPERATOR-EDITED (card 383829fc). The untouched-
+      # check below exists to protect a file the operator MIGHT have modified; a brand-new seed file
+      # added to an already-seeded directory (this fork shipping a new script into an existing
+      # skill, e.g. fleet-helper/scripts/) has no installed counterpart at all, so there is nothing
+      # to protect and nothing it could silently overwrite. Measured before this fix: such a file
+      # NEVER reached an already-installed tree -- only a fresh install ever saw it, permanently.
+      # A FILE THAT NEVER EXISTED CANNOT HAVE BEEN OPERATOR-EDITED (card 383829fc). The untouched-
+      # check below exists to protect a file the operator MIGHT have modified; a brand-new seed file
+      # added to an already-seeded directory (this fork shipping a new script into an existing
+      # skill, e.g. fleet-helper/scripts/) has no installed counterpart at all, so there is nothing
+      # to protect and nothing it could silently overwrite. Measured before this fix: such a file
+      # NEVER reached an already-installed tree -- only a fresh install ever saw it, permanently.
+      if [ ! -f "$installed" ]; then
+        if [ "$mode" = "template" ]; then
+          render_seed_template <"$f" >"$installed.seedtmp" && mv "$installed.seedtmp" "$installed"
+        else
+          cp "$f" "$installed"
+        fi
+        SEED_REFRESH_ADDED=$((SEED_REFRESH_ADDED + 1))
+        continue
+      fi
       rel="$src_rel/$name/$base"
       # Already identical to what we would write -> not an update. Without this
       # the run is not idempotent: it would rewrite the same bytes and report a
@@ -815,6 +836,7 @@ run_seed_refresh() {
   SEED_REFRESH_UPDATED="${SEED_REFRESH_UPDATED:-0}"
   SEED_REFRESH_KEPT="${SEED_REFRESH_KEPT:-0}"
   SEED_REFRESH_MERGED="${SEED_REFRESH_MERGED:-0}"
+  SEED_REFRESH_ADDED="${SEED_REFRESH_ADDED:-0}"
   # .env values feed the template rendering; without MAIN_AGENT_ID a rendered
   # comparison would be meaningless, so templated tasks are skipped then.
   if [ -f "$INSTALL_DIR/.env" ]; then
@@ -840,8 +862,8 @@ run_seed_refresh() {
     # something we shipped, so a locally-edited task is kept, not overwritten.
     refresh_untouched_seeds "scheduled-tasks" "$HOME/.claude/scheduled-tasks" "template"
   fi
-  if [ "$SEED_REFRESH_UPDATED" -gt 0 ] || [ "$SEED_REFRESH_MERGED" -gt 0 ]; then
-    echo -e "  ${GREEN}✓${NC} Szallitott skill/feladat frissitve: ${SEED_REFRESH_UPDATED} (erintetlen masolat), ${SEED_REFRESH_MERGED} (osszefesulve helyi szerkesztessel); megtartva: ${SEED_REFRESH_KEPT} (konfliktus vagy nem osszefesulheto)"
+  if [ "$SEED_REFRESH_UPDATED" -gt 0 ] || [ "$SEED_REFRESH_MERGED" -gt 0 ] || [ "$SEED_REFRESH_ADDED" -gt 0 ]; then
+    echo -e "  ${GREEN}✓${NC} Szallitott skill/feladat frissitve: ${SEED_REFRESH_UPDATED} (erintetlen masolat), ${SEED_REFRESH_MERGED} (osszefesulve helyi szerkesztessel), ${SEED_REFRESH_ADDED} (uj fajl potolva); megtartva: ${SEED_REFRESH_KEPT} (konfliktus vagy nem osszefesulheto)"
   fi
   return 0
 }

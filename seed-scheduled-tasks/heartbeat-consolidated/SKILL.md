@@ -64,6 +64,20 @@ AUTOMATIKUS TESTVER-UGYNOK ATADAS 60 PERC UTAN (Peti szabaly 2026-09-02, Telegra
   (e) bash {{INSTALL_DIR}}/store/redispatch-guard.sh reset <cardId> -- uj felelos = friss baseline, ne oroklodjon a regi ugynok backoff-szamlaloja.
 Ha NINCS testver-ugynok a szerepnek (pl. fullstack, teszter, videooo, jogasz, marketing, penzugy egyedulallo -- csak akkor szamit testvernek ha tenyleg ugyanazt a feladat-tipust tudja elvegezni), a regi viselkedes marad: re-dispatch ugyanannak az ugynoknek, vagy {{MAIN_AGENT_ID}} veszi at. A KOZOS TOKEN-VEDELEM GUARD (lent) a testver-atadas ELOTT is fut -- ha a jelenlegi felelosre DENY:agent-busy jon (tenyleg dolgozik, csak lassu a kartya), NE valts testverre, hagyd dolgozni; a testver-atadas kizarolag a valodi >60 perces nem-mozdulasra vonatkozik, nem az eleve elfoglalt-de-elo ugynokre.
 
+D/2. TOBB EGYIDEJU in_progress KARTYA UGYANAZON ASSIGNEE ALATT (Peti audit-lelete, kartya 9aa455c6, 2026-09-07: `backend` 7 kartyat vitt egyszerre, tenylegesen csak egyet dolgozva, a tobbi elhagyva). Futtasd (a fenti kartyalistat ujra-hasznalva, uj lekerdezes nelkul nem lehet -- a script sajat maga keri le):
+  bash {{INSTALL_DIR}}/store/fleet-concurrency-checks.sh multi-in-progress
+`ALERT:no` -> maradj csendben. `ALERT:yes` -> a kiirt uj/valtozott assignee-k mindegyikere: nezd meg mind a felsorolt kartyakat, es allapitsd meg melyiken dolgozik TENYLEGESEN (tmux-panel vagy legfrissebb updated_at), a TOBBIT vagy zard le (ha kesz, csak a waiting-re allitas maradt el) vagy jelold explicit "MIKROB-DONTES-VAR" kommenttel, ha valodi dontesre var (lasd D/3). A script sajat maga jelzi csak UJ/valtozott esetkor (nem minden korben ismetli ugyanazt) -- ALERT:yes-nel MINDIG cselekedj, ne csak naplozd.
+
+D/3. "MIKROB-DONTES-VAR" JELOLES + IDOZITETT ESZKALACIO (Peti audit-lelete, kartya 9aa455c6: a redispatch-guard agent-busy vedelme UGYNOK-szintu, nem KARTYA-szintu -- ha az ugynok tmux panelje AKTIV BARMELYIK masik kartyan, MINDEN tobbi in_progress kartyaja DENY:agent-busy vedelmet kap orakig, jelzes nelkul). Ket resz:
+  (a) Amikor egy kartyat SZANDEKOSAN nem nudge-olsz mert MikroB-dontesre/felulvizsgalatra var (nem az ugynok van elmaradva, hanem Te), irj ra egy kommentet "MIKROB-DONTES-VAR: <mire varunk>" szoveggel -- ez a kimondott marker, nem hallgatolagos feltetelezes.
+  (b) Futtasd:
+    bash {{INSTALL_DIR}}/store/redispatch-guard.sh busy-report
+  A visszaadott JSON minden elemere (kartya, aminek DENY:agent-busy verdiktje >=2 orat FOLYAMATOSAN tartott, csak EGYSZER jelezve per streak): nezd meg a kartyat -- ha valojaban Te (MikroB) dontesere var es meg nincs rajta "MIKROB-DONTES-VAR" jeloles, potold most; ha nincs ilyen ok, es az ugynok tenyleg csak mas munkaval van elfoglalva, jelezd Telegramon EGYSZER (reply chat_id {{CHAT_ID}}), hogy melyik kartya var mar >2 orat egy elfoglalt ugynok mogott, hatha kezi testver-atadas/felulvizsgalat kell.
+
+D/4. project-dispatch-priority.json KIZAROLAGOS ZAR 12 ORANAL TOVABB (Peti audit-lelete, kartya 9aa455c6: a MikroB-projektre zart kizarolagossag ~24 oraig allt, mikozben a CleanCore 29 planned kartyaja egesz nap erintetlen maradt -- ez a 11a szabaly szerint HELYES viselkedes, csak Peti nem tudott rola). Futtasd:
+  bash {{INSTALL_DIR}}/store/fleet-concurrency-checks.sh dispatch-lock-age
+`ALERT:no` -> csend. `ALERT:yes` -> EZ NEM HIBA-JAVITAS, csak TAJEKOZTATAS: kuldj EGY Telegram-uzenetet Petinek (reply chat_id {{CHAT_ID}}), hogy a kizarolagos dispatch-zar mar X oraja all a(z) <projekt(ek)> projekten, es kerdezd meg, akar-e tudatosan beavatkozni (pl. atmenetileg torolni/bovíteni a priority listat) vagy hagyja tovabb futni. A script onmaga NEM valtoztat semmit a zaron, es csak EGYSZER jelez ugyanarra a zarra (ujra jelez, ha a zar idokozben megujul/valtozik es megint atlepi a kuszobot).
+
 === KOZOS TOKEN-VEDELEM GUARD (Peti 2026-07-30, KOTELEZO -- vonatkozik B, C, D szekciora) ===
 MIELOTT barmely agentet megloksz VAGY egy kartyat re-dispatchelsz/nudge-olsz, futtasd:
   bash {{INSTALL_DIR}}/store/redispatch-guard.sh check <cardId> <agent>

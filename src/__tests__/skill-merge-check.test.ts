@@ -80,6 +80,21 @@ describe('store/skill-merge-check.py (card 30b76a8d)', () => {
   it('CONTROL: an unrelated prose addition with no invocation is clean', () => {
     expect(pair(SOURCE + '\nSome added guidance, no command in it.\n', SOURCE).code).toBe(0)
   })
+
+  // Cybersec, gate comment 20477 on this same card: the "always flags" mutation of
+  // _is_strict_subsequence stayed 5/5 GREEN against the tests above, because none of them present
+  // two DIFFERENT, non-subsequence forms of a script that is NEW to the result (not already in the
+  // source, so the source-vs-source dedup at line 70-75 cannot mask a wrongly-flagged pair). Measured
+  // live: the softened predicate re-lit qa/qa2's i18n-parity-sweep -- legitimately varied invocations
+  // of the same script, not a superseded call -- while the whole suite stayed green.
+  it('MUTATION-PROOF: a genuinely different, non-subsequence, DIFFERENT-LENGTH new form is not flagged', () => {
+    const base = 'bash store/i18n-check.sh --lang hu --strict\n'
+    // Longer (4 tokens vs 3) AND unrelated content -- "hu"/"--strict" are not a subsequence of
+    // "en"/"--report"/"json" -- so a length-only predicate would wrongly flag this pair, while the
+    // real one (which checks token order/content, not just length) correctly stays silent.
+    const merged = base + 'bash store/i18n-check.sh --lang en --report json\n'
+    expect(pair(merged, base).code).toBe(0)
+  })
 })
 
 describe('frontmatter the merge made unreadable (card 23d09a68)', () => {

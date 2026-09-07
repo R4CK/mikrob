@@ -25,6 +25,11 @@ export default defineConfig({
       'agents/**',
       'store/adopted/**/evals/fixtures/**',
     ],
+    // Runs ONCE, in the main process, before any worker starts -- unlike setupFiles below, which
+    // vitest's default per-file isolation re-runs for every test file. assert-not-live-install.ts
+    // reads this run's start timestamp from it to tell a marker THIS run's own suite left behind
+    // mid-run from a genuinely pre-existing one (card 5dcde7d3).
+    globalSetup: ['./src/__tests__/setup/record-run-start.ts'],
     // Hard gates, run in every worker before any test module is imported:
     //  - assert-not-live-install: refuse to run inside a live install (see that
     //    setup file's header for the 2026-07-27 incident it prevents).

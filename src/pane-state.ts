@@ -868,7 +868,12 @@ export interface DetectPaneStateOptions {
  *   2. Any BUSY_INDICATOR matches in the live bottom region -> 'busy'.
  *      Covers the spinner/token-count fallbacks that catch the frame-level
  *      footer gap; region-scoped so a stale counter does not pin idle.
- *   3. No idle footer visible -> 'unknown' (pane is not Claude Code).
+ *   3. No idle footer visible:
+ *      3a. Parked ❯ input box -> 'typing' (real unsent text wins).
+ *      3b. SendFeedback draft-notice panel present -> 'idle' (the panel
+ *          itself eats the footer; the box below it is genuinely free).
+ *      3c. Otherwise -> 'unknown' (pane is not Claude Code, or a footer-
+ *          eating cause not yet identified).
  *   4. Wedged thinking-block API error in the live tail -> 'error'.
  *      Checked after the busy guard (a live turn is never 'error') and
  *      after the footer guard (an 'error' surface still shows the
@@ -890,6 +895,41 @@ export interface DetectPaneStateOptions {
 // show up on the dashboard on its own, not wait for someone to extend a union.
 // 'default' is the no-banner footer ('? for shortcuts'), which is what Claude
 // Code renders when no mode is switched on -- i.e. it asks about everything.
+// SENDFEEDBACK "Bug report drafted" NOTICE PANEL (card bd4b74a3, 2026-09-07). The SendFeedback
+// tool's "notify" mode (the default) renders a non-blocking review-notice panel -- rounded
+// box-drawing border, a "✻ Bug report drafted: <summary>" header, a details preview, and a
+// counter line -- when a draft is queued. VERIFIED against a real capture MikroB pasted
+// verbatim from a stuck `backend` pane: while this panel shows, the pane's normal idle
+// footer hint ('? for shortcuts' / 'Bypassing permissions on ...') is ABSENT from the
+// capture entirely, so IDLE_FOOTER_RX has nothing to find and detectPaneState fell through
+// to 'unknown' -- even though the input box below the panel was genuinely empty and ready
+// for a prompt. 'unknown' blocks inter-agent delivery (message-router.ts), so three
+// consecutive dispatches to `backend` sat undelivered for ~35 minutes while the pane was, in
+// substance, idle. Same failure MODE stripSessionTitleBanner already closed for a /rename
+// banner (2026-08-01): a non-blocking informational element eats the pane's live region and
+// starves the footer check, not a real busy/blocked state.
+//
+// TWO anchors required TOGETHER, each BOX-SCOPED, not one bare phrase -- this file's own
+// repeated lesson (the /rename banner fix, the paste-placeholder box-scoping, the
+// queued-messages hint) is that a single generic-shaped pattern risks matching prose that
+// merely QUOTES or DESCRIBES the thing, not the thing itself. This case is a CERTAINTY, not
+// a hypothetical: the very kanban card and inter-agent messages that reported this bug quote
+// both phrases verbatim, in prose, so a bare (non-box-scoped) match would have this bug's OWN
+// incident report permanently misclassifying any pane whose scrollback contains it. Each
+// pattern therefore requires an immediately-preceding `│` box-drawing side character ON THE
+// SAME LINE -- a real rendered panel line, never plain typed/pasted text (nobody's keyboard
+// or a chat client emits a literal `│` positioned right before wrapped prose by coincidence).
+// The glyph-anchored header is stable across drafts (MikroB: "a keret+fejlec allando volt...
+// csak a szamlalo valtozott" -- only the counter numbers change), and the counter line's
+// three-part shape is likewise stable -- but either ALONE, even box-scoped, is a weaker
+// signal than both found together.
+const FEEDBACK_DRAFT_HEADER_RX = /│[^\n]*✻\s*Bug report drafted:/
+const FEEDBACK_DRAFT_COUNTER_RX = /│[^\n]*\d+\s+to review\s*·\s*\d+\s+to send\s*·\s*\d+\s+to dismiss/
+
+export function detectsFeedbackDraftNotice(pane: string): boolean {
+  return FEEDBACK_DRAFT_HEADER_RX.test(pane) && FEEDBACK_DRAFT_COUNTER_RX.test(pane)
+}
+
 export function detectPermissionMode(pane: string): string | null {
   if (!pane || !pane.trim()) return null
   const m = pane.match(
@@ -945,11 +985,16 @@ export function detectPaneState(
     // means the agent has a delivered message waiting to submit. Classify it
     // 'typing' (not 'unknown') so the stuck-input recovery stack can see and
     // resubmit it. An empty box / no box stays 'unknown' -- without a footer
-    // there is nothing to confirm a genuine idle state.
+    // there is nothing to confirm a genuine idle state -- EXCEPT the one other
+    // confirmed footer-eating cause below (card bd4b74a3): the SendFeedback
+    // draft-notice panel. A parked (non-empty) box still wins over it, checked
+    // first, because actual unsent text always takes priority over a passive
+    // notice.
     const box = liveInputBox(pane)
     if (box != null && box.split('\n').some(l => PARKED_INPUT_RX.test(l))) {
       return opts.mergeTypingAsBusy ? 'busy' : 'typing'
     }
+    if (detectsFeedbackDraftNotice(pane)) return 'idle'
     return 'unknown'
   }
 

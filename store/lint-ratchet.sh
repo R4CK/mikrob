@@ -45,6 +45,7 @@ MODE="check"
 
 BOOTSTRAP=0
 ACCEPT_CLEARED=""
+ACCEPT_BLIND_CLEAR=""
 while [ $# -gt 0 ]; do
   case "$1" in
     --update)    MODE="update" ;;
@@ -62,7 +63,15 @@ while [ $# -gt 0 ]; do
     # the list changes every time, an unlisted rule going dark still refuses, and a name that is
     # not in the baseline is itself refused rather than silently ignored.
     --accept-cleared=*) ACCEPT_CLEARED="${1#--accept-cleared=}" ;;
-    *) echo "lint-ratchet.sh: unknown argument '$1' (expected --update, --bootstrap, --show, --accept-cleared=<rules> or nothing)" >&2; exit 3 ;;
+    # A SEPARATE, LOUDER VERB for the one state the script can PROVE is ambiguous (Cybersec
+    # comment 21387 R-F1, card b6f88f86): parse errors present and NOT ONE type-aware rule found
+    # anything. That reads identically whether the tree is genuinely, completely clean of every
+    # type-aware finding, or the TS program simply died -- the script cannot tell them apart from
+    # counts alone, and --accept-cleared silently trusted whichever one the caller believed. This
+    # names the SAME state --bootstrap's own floor already recognises, so trusting it requires
+    # saying so in a way that cannot be confused with the routine "one rule finished" flow below.
+    --accept-blind-clear=*) ACCEPT_BLIND_CLEAR="${1#--accept-blind-clear=}" ;;
+    *) echo "lint-ratchet.sh: unknown argument '$1' (expected --update, --bootstrap, --show, --accept-cleared=<rules>, --accept-blind-clear=<rules> or nothing)" >&2; exit 3 ;;
   esac
   shift
 done
@@ -70,6 +79,20 @@ done
 if [ -n "$ACCEPT_CLEARED" ] && [ "$BOOTSTRAP" = 1 ]; then
   echo "lint-ratchet.sh: --accept-cleared and --bootstrap answer different questions -- one says" >&2
   echo "    'this recorded rule is now at zero', the other 'there is no record yet'. Pick one." >&2
+  exit 3
+fi
+
+if [ -n "$ACCEPT_BLIND_CLEAR" ] && [ "$BOOTSTRAP" = 1 ]; then
+  echo "lint-ratchet.sh: --accept-blind-clear and --bootstrap answer different questions -- one says" >&2
+  echo "    'this recorded rule is now at zero even though the run cannot prove it', the other" >&2
+  echo "    'there is no record yet'. Pick one." >&2
+  exit 3
+fi
+
+if [ -n "$ACCEPT_CLEARED" ] && [ -n "$ACCEPT_BLIND_CLEAR" ]; then
+  echo "lint-ratchet.sh: --accept-cleared and --accept-blind-clear answer different questions -- one" >&2
+  echo "    says 'this run measured the clearing', the other 'this run could not, but I am" >&2
+  echo "    confirming it anyway'. Pick the one that matches this run; do not name a rule in both." >&2
   exit 3
 fi
 
@@ -106,12 +129,14 @@ trap 'rm -f "$report"' EXIT
 npx eslint src -f json > "$report" 2>/dev/null
 
 MODE="$MODE" BOOTSTRAP="$BOOTSTRAP" ACCEPT_CLEARED="$ACCEPT_CLEARED" \
+  ACCEPT_BLIND_CLEAR="$ACCEPT_BLIND_CLEAR" \
   BASELINE="$BASELINE" REPORT="$report" python3 - <<'PY'
 import json, os, sys, collections
 
 mode = os.environ['MODE']
 bootstrap = os.environ.get('BOOTSTRAP') == '1'
 accepted_cleared = {r for r in os.environ.get('ACCEPT_CLEARED', '').split(',') if r}
+accepted_blind_clear = {r for r in os.environ.get('ACCEPT_BLIND_CLEAR', '').split(',') if r}
 baseline_path = os.environ['BASELINE']
 
 try:
@@ -227,6 +252,15 @@ TYPE_AWARE_RULES = frozenset({
     '@typescript-eslint/no-unsafe-argument',
 })
 
+# THE SAME PREDICATE ON BOTH SIDES OF THE FORK (Cybersec comment 21387 R-F1, card b6f88f86). The
+# bootstrap floor below already computes "parse errors present and not one type-aware rule found
+# anything" -- but only inside the `not have_baseline` branch, so a run WITH a baseline never asks
+# it. Measured on the shipped script: naming both dark type-aware rules via --accept-cleared on
+# such a run wrote a baseline with those rules removed entirely, no bound left at all. Computing it
+# once, here, lets both the WITH-baseline collapse check and the bootstrap floor read the same
+# answer instead of one of them silently not asking.
+blind = parse_now > 0 and not any(counts.get(r, 0) for r in TYPE_AWARE_RULES)
+
 # ONE, not two (Cybersec NO-GO 21092 R-A, on MikroB's ruling 21030). The previous threshold of two
 # bought a real single-rule fix at the price of a SLICED path: five separate --update runs, each
 # taking one rule to zero, each individually legitimate-looking and exit 0, ending at exactly the
@@ -260,7 +294,7 @@ def degradation_reason(counts, baseline, have_baseline, files_linted):
         # it is a toolchain that cannot see one. A healthy first run passes it even with parse
         # errors, because the type-aware rules still report -- that is the control this must not
         # break, and it is pinned as one.
-        if parse_now > 0 and not any(counts.get(r, 0) for r in TYPE_AWARE_RULES):
+        if blind:
             return (f'{parse_now} parse error(s) and NOT ONE finding from any type-aware rule '
                     f'({", ".join(sorted(TYPE_AWARE_RULES))}). Those rules report nothing in a '
                     f'file whose TS program did not resolve, so this reads as a toolchain that '
@@ -270,18 +304,30 @@ def degradation_reason(counts, baseline, have_baseline, files_linted):
     # (b) A BOUNDED RULE AT EXACTLY ZERO. A lost TS program takes the type-aware rules dark
     # together, and taking them one per run is the sliced version of the same end state. An
     # acknowledged clearing is subtracted first, so a real fix passes by naming what it fixed.
+    #
+    # ON A BLIND RUN, ONLY THE LOUDER VERB COUNTS (Cybersec comment 21387 R-F1, card b6f88f86).
+    # --accept-cleared is validated against WHAT THIS RUN MEASURED; a blind run cannot measure
+    # anything, so trusting its --accept-cleared here is exactly the state the bootstrap floor
+    # above refuses to record. `accepted_blind_clear` is the only acknowledgement honoured while
+    # blind -- a caller who typed the routine verb is refused below, by name, before this point.
+    honoured = accepted_blind_clear if blind else accepted_cleared
     collapsed = sorted(r for r, was in baseline.items()
                        if r != parse_key and was > 0 and counts.get(r, 0) == 0
-                       and r not in accepted_cleared)
+                       and r not in honoured)
     if len(collapsed) >= COLLAPSE_MIN:
         subject = (f'{len(collapsed)} rules that had recorded findings are'
                    if len(collapsed) > 1 else
                    f'{len(collapsed)} rule that had recorded findings is')
+        verb = '--accept-blind-clear' if blind else '--accept-cleared'
+        caveat = ('' if not blind else
+                  f' This run ALSO has {parse_now} parse error(s) with not one type-aware finding '
+                  f'anywhere, which is indistinguishable from a dead toolchain -- {verb} says you '
+                  f'checked by some OTHER means that this is real, not that the run proves it.')
         return (f'{subject} at exactly zero in this run '
-                f'({", ".join(collapsed)}). A rule that was not measured reads exactly like a '
-                f'rule with nothing left to find. If this really is finished work, say so -- the '
-                f'whole command, ready to paste: '
-                f'store/lint-ratchet.sh --update --accept-cleared={",".join(collapsed)}')
+                f'({", ".join(collapsed)}).{caveat} A rule that was not measured reads exactly '
+                f'like a rule with nothing left to find. If this really is finished work, say so '
+                f'-- the whole command, ready to paste: '
+                f'store/lint-ratchet.sh --update {verb}={",".join(collapsed)}')
     # (a) THE ORIGINAL SIGNAL, kept: the loud half is still real, and still the only one that
     # fires when the set is intact but unreadable.
     if parse_now > parse_was:
@@ -322,6 +368,24 @@ if unknown:
           f'in this run. Nothing was accepted -- acknowledge only what this run actually cleared '
           f'(the refusal below prints the exact list, ready to paste), and check the spelling '
           f'against {baseline_path}.', file=sys.stderr)
+    raise SystemExit(3)
+
+# --accept-blind-clear IS THE LOUDER VERB, NOT A SECOND ROUTINE ONE (card b6f88f86): it exists
+# specifically for the state degradation_reason's `blind` predicate names, so using it when the
+# run is NOT blind is asked-for-the-wrong-thing, same shape as the --bootstrap/--accept-cleared
+# mismatch above. Its names are validated against the same `cleared_now` for the same reason: a
+# static list would otherwise sit unnoticed until the day it actually matters.
+if accepted_blind_clear and not blind:
+    print(f'lint-ratchet.sh: --accept-blind-clear names {", ".join(sorted(accepted_blind_clear))}, '
+          f'but this run is not blind ({parse_now} parse error(s), type-aware rules still '
+          f'reporting) -- that verb is for the one state this run cannot prove either way. Use '
+          f'--accept-cleared instead.', file=sys.stderr)
+    raise SystemExit(3)
+unknown_blind = sorted(accepted_blind_clear - cleared_now)
+if unknown_blind:
+    print(f'lint-ratchet.sh: --accept-blind-clear names {", ".join(unknown_blind)}, which did not '
+          f'go to zero in this run. Nothing was accepted -- acknowledge only what this run '
+          f'actually cleared, and check the spelling against {baseline_path}.', file=sys.stderr)
     raise SystemExit(3)
 
 degraded = degradation_reason(counts, baseline, have_baseline, len(report))

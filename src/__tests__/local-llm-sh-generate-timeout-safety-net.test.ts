@@ -33,6 +33,7 @@ import type { Server } from 'node:http'
 import { join, dirname } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { readFileSync } from 'node:fs'
+import { tmpdir } from 'node:os'
 
 const SCRIPT = join(dirname(fileURLToPath(import.meta.url)), '..', '..', 'store', 'local-llm.sh')
 const execFileP = promisify(execFile)
@@ -98,12 +99,14 @@ describe('local-llm.sh generate-call timeout safety net (card cea524b1)', () => 
     )
   }, 40_000)
 
-  // Card 8a6de2ee: this call goes through the real, shared, unparameterized global GPU lock
-  // (baseEnv() never overrides LOCAL_LLM_GPU_LOCK_PATH here) with LOCAL_LLM_LOCK_WAIT=30 -- under
-  // genuine fleet contention (another concurrent local-llm.sh call elsewhere holding that same
-  // lock) this can legitimately take longer than vitest's default 5000ms while still finishing well
-  // inside its own configured 30s patience. Same class of gap as
-  // local-llm-sh-active-task-registration.test.ts's TEST_TIMEOUT_MS fix, applied here too.
+  // This test proves the already-working normal-call path (no hang, real response), which has
+  // nothing to do with GPU-lock SHARING -- so, unlike card 8a6de2ee's deliberate real-lock tests
+  // in local-llm-sh-active-task-registration.test.ts (which are specifically about that shared
+  // resource's behaviour), this one uses a THROWAWAY LOCAL_LLM_GPU_LOCK_PATH (card f3b219bb).
+  // Previously it shared the real, global /tmp/local-llm-gpu.lock with LOCAL_LLM_LOCK_WAIT=30, and
+  // measurably flaked under genuine fleet contention ("gpu lock busy -- could not acquire within
+  // 30s") when another concurrent local-llm.sh call elsewhere held that same lock for longer than
+  // 30s -- a real, unrelated agent's activity, not a regression in this script.
   it('does not regress the already-working normal-call path (no hang, real response)', async () => {
     const okServer = createServer((req, res) => {
       if (req.url === '/api/tags') {
@@ -124,7 +127,15 @@ describe('local-llm.sh generate-call timeout safety net (card cea524b1)', () => 
       const { stdout } = await execFileP(
         'bash',
         [SCRIPT, '--model', 'test-model', '--caller', 'test-agent', 'hello'],
-        { encoding: 'utf-8', env: baseEnv({ OLLAMA_HOST: `http://127.0.0.1:${port}`, LOCAL_LLM_LOCK_WAIT: '30', LOCAL_LLM_TIMEOUT: '30' }) },
+        {
+          encoding: 'utf-8',
+          env: baseEnv({
+            OLLAMA_HOST: `http://127.0.0.1:${port}`,
+            LOCAL_LLM_LOCK_WAIT: '30',
+            LOCAL_LLM_TIMEOUT: '30',
+            LOCAL_LLM_GPU_LOCK_PATH: join(tmpdir(), `local-llm-gpu-safety-net-${process.pid}.lock`),
+          }),
+        },
       )
       expect(stdout.trim()).toBe('hi')
     } finally {

@@ -520,6 +520,55 @@ describe('marveen-land.sh (card dc185b52)', () => {
     // The branch is untouched: nothing of ours reached origin.
     expect(git(main, 'ls-tree', '-r', '--name-only', 'origin/develop')).not.toContain('backend-new.txt')
   }, LAND_TIMEOUT_MS)
+
+  // Card 4b4c89eb (Cybered measurement, incident bb52c2fa/24405): the 3af9d833 landing pushed 6
+  // conflict-marker lines into DECISIONS.md on develop because the git add/commit chain around a
+  // conflict resolver was not &&-bound to its exit code, and nothing else checked the RESULT before
+  // push. The full suite ran green on the marker-carrying tip -- no test uses a runtime-generated
+  // fixture for this, so nothing structural caught it. These tests commit the marker shape directly
+  // (as literal file content, exactly how the incident actually shipped it -- not via a real
+  // unresolved git conflict), because the check greps the merge result's tree, not git's conflict
+  // state. Nested in this describe (not a sibling) to reuse commitInWorktree's closure.
+  describe('refuses to push unresolved merge-conflict markers (card 4b4c89eb)', () => {
+    it('MUTATION-PROOF: refuses when the branch carries conflict-marker lines, and pushes nothing', async () => {
+      await commitInWorktree('backend', {
+        'oops.txt': '<<<<<<< HEAD\nours\n=======\ntheirs\n>>>>>>> some-branch\n',
+      })
+      const before = git(main, 'rev-parse', 'origin/develop')
+
+      const r = await runLand(['backend'], writeStub(0))
+      expect(r.status).toBe(4)
+      expect(r.out).toContain('merge-conflict markers')
+      expect(r.out).not.toContain('LANDED')
+
+      gitOk(main, 'fetch', '-q', 'origin', 'develop')
+      expect(git(main, 'rev-parse', 'origin/develop'), 'nothing was pushed').toBe(before)
+    }, LAND_TIMEOUT_MS)
+
+    it('a lone "=======" line (e.g. a markdown Setext heading underline) is NOT a false refusal', async () => {
+      // Only the two unambiguous markers (<<<<<<< / >>>>>>>) are checked -- see the script's own
+      // comment for why "=======" alone must not be one of them.
+      await commitInWorktree('backend', {
+        'notes.md': 'Some Heading\n=======\n\nordinary content under it.\n',
+      })
+
+      const r = await runLand(['backend'], writeStub(0))
+      expect(r.status, `a legitimate file falsely refused:\n${r.out}`).toBe(0)
+      expect(r.out).toContain('LANDED')
+
+      gitOk(main, 'fetch', '-q', 'origin', 'develop')
+      const files = git(main, 'ls-tree', '-r', '--name-only', 'origin/develop')
+      expect(files.split('\n')).toContain('notes.md')
+    }, LAND_TIMEOUT_MS)
+
+    it('an ordinary landing with no marker-shaped content reports the clean check and lands', async () => {
+      await commitInWorktree('backend', { 'plain.txt': 'nothing unusual here\n' })
+
+      const r = await runLand(['backend'], writeStub(0))
+      expect(r.status).toBe(0)
+      expect(r.out).toContain('no merge-conflict markers in the merge result')
+    }, LAND_TIMEOUT_MS)
+  })
 })
 
 // Card 0711c19b. The landing report printed only the develop TIP, and since the fork-own version

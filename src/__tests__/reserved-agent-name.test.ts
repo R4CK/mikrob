@@ -306,11 +306,56 @@ describe('door 5: the seed fleet shipped in the repo', () => {
     // one, from a different corpus, next to it. Every assertion above still passes -- the guarded
     // loop is untouched -- while unguarded directories land in agents/ all the same. Counting the
     // copy sites is what closes that, and it is why this asserts a COUNT and not a presence.
-    const COPIES_INTO_FLEET = /^\s*(?:cp|rsync|mv)\b[^\n]*(?:\$FLEET_DIR|\/agents\b)/gm
+    //
+    // Card 38b43fe5 (Cybered's follow-up, comment 20381): the ORIGINAL `^\s*` anchor required the
+    // verb to be the FIRST token on the line, which a second copy site can simply not be -- a
+    // one-line `for x in "$OTHER"/*/; do cp -r "$x" "$FLEET_DIR"; done` sits after `do `, and an
+    // indirect target (`T="$FLEET_DIR"; cp -r "$x" "$T"`) sits after the assignment on the same
+    // line. Neither is at column 0, so the anchored pattern never saw them. Dropping the anchor
+    // makes the verb match ANYWHERE on the line instead of only at its start; comments are already
+    // stripped by installerCode() before matching, so this cannot pick up a commented-out example.
+    const COPIES_INTO_FLEET = /\b(?:cp|rsync|mv)\b[^\n]*(?:\$FLEET_DIR|\/agents\b)/g
     for (const script of INSTALLERS) {
       const hits = installerCode(script).match(COPIES_INTO_FLEET) ?? []
       expect(hits, `${script}: copy sites into the fleet directory`).toHaveLength(1)
     }
+  })
+
+  it('MUTATION-PROOF: a one-line second copy site is caught even when cp is not the first token', () => {
+    // Card 38b43fe5, F-1: the shape the old `^\s*`-anchored regex missed -- a copy verb preceded
+    // by other code on the SAME line (a one-line loop, a chained command), with the fleet-dir
+    // reference still appearing AFTER the verb.
+    const COPIES_INTO_FLEET = /\b(?:cp|rsync|mv)\b[^\n]*(?:\$FLEET_DIR|\/agents\b)/g
+    const bypassLoop = 'for x in "$OTHER_DIR"/*/; do cp -r "$x" "$FLEET_DIR"; done'
+    const chained = 'mkdir -p "$WORK"; cp -r "$SRC" "$FLEET_DIR/agent2"'
+    expect(bypassLoop.match(COPIES_INTO_FLEET) ?? [], 'one-line second loop').toHaveLength(1)
+    expect(chained.match(COPIES_INTO_FLEET) ?? [], 'copy chained after another command').toHaveLength(1)
+    // NOT closed by this fix, and this is not the fix's job: when the fleet-dir reference is
+    // ASSIGNED TO A VARIABLE BEFORE cp runs, on the same line or an earlier one, no single-line
+    // regex can see it (matching cp's own line moves left-to-right from the verb). That is a
+    // genuinely harder, data-flow-shaped gap the card names as an example but does not ask this
+    // fix to close -- recorded here so it is not mistaken for closed.
+    const indirectTarget = 'T="$FLEET_DIR"; cp -r "$src" "$T"'
+    expect(indirectTarget.match(COPIES_INTO_FLEET) ?? [], 'indirect target: KNOWN residual gap').toEqual([])
+  })
+
+  it('exactly ONE SEED_FLEET_DIR= assignment per installer, so a second one cannot redirect it', () => {
+    // Card 38b43fe5, F-2 (the more important half): the earlier `toMatch(/SEED_FLEET_DIR=.../)`
+    // assertion above only proves an assignment EXISTS -- it is satisfied by the FIRST one it finds
+    // and says nothing about whether a second, later assignment silently repoints the variable
+    // before the copy loop reads it. Counting closes that the same way the copy-site count does.
+    const SEED_FLEET_DIR_ASSIGNMENT = /^\s*SEED_FLEET_DIR=/gm
+    for (const script of INSTALLERS) {
+      const hits = installerCode(script).match(SEED_FLEET_DIR_ASSIGNMENT) ?? []
+      expect(hits, `${script}: SEED_FLEET_DIR assignment sites`).toHaveLength(1)
+    }
+  })
+
+  it('MUTATION-PROOF: a second SEED_FLEET_DIR= assignment is counted, not silently overridden', () => {
+    // Card 38b43fe5, F-2: a synthetic corpus with two assignments must fail the count above.
+    const SEED_FLEET_DIR_ASSIGNMENT = /^\s*SEED_FLEET_DIR=/gm
+    const redirected = 'SEED_FLEET_DIR="$INSTALL_DIR/seed-fleet-agents"\nSEED_FLEET_DIR="$ATTACKER_DIR"\n'
+    expect(redirected.match(SEED_FLEET_DIR_ASSIGNMENT) ?? []).toHaveLength(2)
   })
 
   it('a seed directory name must survive sanitizeAgentName UNCHANGED, not merely miss the reserved set', () => {

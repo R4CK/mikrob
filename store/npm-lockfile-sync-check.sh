@@ -146,7 +146,11 @@ dep_diff_draft() {
   local rag="$HERE/local-llm-rag.sh"
   [ -r "$rag" ] || return 0
   local draft
-  draft="$(printf '%s\n' "$1" | timeout 120 bash "$rag" --task dep-diff --caller npm-lockfile-sync 2>/dev/null)" || return 0
+  # Card aeda9f15: overridable so a test can prove the timeout genuinely kills a hung router
+  # rather than merely asserting the string "timeout 120" is present in this file -- a presence
+  # check would still pass after someone deleted the `timeout` call entirely and left only the
+  # number in a comment. Default unchanged for every real caller.
+  draft="$(printf '%s\n' "$1" | timeout "${NPM_LOCKFILE_SYNC_LLM_TIMEOUT_S:-120}" bash "$rag" --task dep-diff --caller npm-lockfile-sync 2>/dev/null)" || return 0
   [ -n "$draft" ] || return 0
   echo
   echo "  --- dep-diff DRAFT (local model; NOT a verdict, the exit code above already decided) ---"
@@ -232,6 +236,21 @@ print(json.dumps({'lockfileVersion': 3, 'packages': pkgs}))
   ( HERE="$(mktemp -d)"; printf '#!/usr/bin/env bash\ncat >/dev/null\n' > "$HERE/local-llm-rag.sh"
     dep_diff_draft "some drift" >/dev/null 2>&1 )
   t "a router that returns EMPTY output returns 0 and prints nothing" "$?" "0"
+
+  # The 5th fail-soft path (card aeda9f15, Cybered): a HUNG router must not hang the landing
+  # gate forever. Proven functionally, not by grepping for the string "timeout 120": a stub
+  # that sleeps far longer than an OVERRIDDEN, short timeout must still return within a bounded
+  # wall-clock budget. Before NPM_LOCKFILE_SYNC_LLM_TIMEOUT_S existed, removing the `timeout`
+  # call entirely still left this whole file at 15/15 PASS -- this case is what would have
+  # caught that (it would time out at 120s and the selftest itself would eventually fail the
+  # wall-clock assertion, or in CI just take two minutes longer, which is its own kind of loud).
+  ( HERE="$(mktemp -d)"; printf '#!/usr/bin/env bash\nsleep 5\necho "should never be seen"\n' > "$HERE/local-llm-rag.sh"
+    start=$(date +%s)
+    NPM_LOCKFILE_SYNC_LLM_TIMEOUT_S=1 dep_diff_draft "some drift" >/dev/null 2>&1
+    rc=$?
+    elapsed=$(( $(date +%s) - start ))
+    [ "$rc" -eq 0 ] && [ "$elapsed" -lt 4 ] )
+  t "a HUNG router is killed by the timeout, not waited out (elapsed < 4s for a 5s sleep, 1s budget)" "$?" "0"
 
   echo "selftest: $n case(s), $([ $fail -eq 0 ] && echo PASS || echo FAIL)"
   exit $fail

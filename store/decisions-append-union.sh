@@ -440,6 +440,44 @@ try_append_union() {
   # empty added-half means some assumption above is wrong, so refuse rather than guess.
   [ -n "$ours_added" ] && [ -n "$theirs_added" ] || return 1
 
+  # F-3 (card 5910f2f3, Cybered comment 20501): THE UNION IS BLIND TO A HEADER DUPLICATED ACROSS
+  # BOTH REMAINDERS. Every check in this function is a MISSING-content check -- header-count
+  # arithmetic, the membership check below, and "each remainder must start a new entry" all ask
+  # "is anything gone", never "is anything doubled". If the SAME entry landed in both
+  # `ours_added` and `theirs_added` -- e.g. cherry-picked to both branches independently, so it
+  # sits at a DIFFERENT OFFSET on each side rather than in the shared prefix -- none of them
+  # notice: the header count stays consistent (both copies get counted, neither is missing),
+  # membership still holds (both copies ARE present, just twice), and each remainder still
+  # legitimately starts a new entry. The union then lands the entry twice. NOT a regression of
+  # this card's own fix -- reproduced identically against the pre-fix, base-anchored version --
+  # so it is checked here rather than left implicit in checks that were never built to catch it.
+  #
+  # WHITESPACE-NORMALIZED, not byte-exact (card bc0af927, remainder of the same defect this card's
+  # own investigation left open). Two branches writing the SAME decision can produce a header line
+  # that differs only in a doubled internal space or a trailing space -- the entry is unmistakably
+  # the same one, but the comparison above never sees it, because it compares the two remainders
+  # byte-for-byte. MEASURED on the landed function before this change: a header differing only in a
+  # doubled internal space, or only in trailing whitespace, both RESOLVED as two distinct entries;
+  # a header identical apart from that (this check's control) already REFUSED, and a genuinely
+  # different second decision still REFUSES here, because normalizing whitespace does not make two
+  # different words equal.
+  #
+  # `[[:space:]]+/ /g` collapses ANY run of whitespace to one space -- not just the literal
+  # double-space and trailing-space cases named on the card, because enumerating spellings is the
+  # exact mistake this file has paid for three times already on the setext/fence and blank-or-rule
+  # checks above (a tab run or a `\r` at line end are whitespace too, and under LC_ALL=C -- set at
+  # the top of this function and inherited by every command below -- `[:space:]` includes CR). The
+  # trailing `s/ $//` then drops the one space the collapse leaves behind when the run was at the
+  # end of the line, so "```A  B```" and "```A B ```" and "```A B\r```" all normalize to "```A B```".
+  # This ONLY touches the header line used for the duplicate check, never the body or the union's
+  # own output -- the direction is strictly REFUSAL, narrowing what auto-resolves, never widening
+  # what the union is willing to glue together.
+  local dup
+  dup="$(comm -12 \
+    <(grep '^## ' <<<"$ours_added" | sed -E 's/[[:space:]]+/ /g; s/ $//' | sort -u) \
+    <(grep '^## ' <<<"$theirs_added" | sed -E 's/[[:space:]]+/ /g; s/ $//' | sort -u))"
+  [ -z "$dup" ] || return 1
+
   # EACH REMAINDER MUST BEGIN A NEW ENTRY (Cybersec NO-GO, comment 20499).
   #
   # THE HOLE: the common prefix can legitimately END WITH A SHARED `## ` HEADER LINE -- both sides
@@ -992,6 +1030,74 @@ some prose
 ## 2026-01-03 -- entry C1 (right)
 ## 2026-01-03 -- entry C2 (right)
 ## 2026-01-03 -- entry C3 (right)
+"
+
+  # F-3 (card 5910f2f3, Cybered comment 20501): THE SAME ENTRY ADDED ON BOTH SIDES, AT A
+  # DIFFERENT OFFSET -- e.g. cherry-picked to both branches independently -- so it does NOT sit
+  # in the common prefix (left has an extra entry X between A and the shared one, breaking the
+  # literal prefix match one line early) but DOES appear, identically, in both remainders. None of
+  # the three existing checks catch this: the header-count arithmetic is satisfied (both copies
+  # are counted, nothing is missing on either side of the equation), the membership check is
+  # blind to it (comm runs against sort -u'd header sets on BOTH sides of the comparison, so the
+  # doubled header collapses to one entry identically on both, and nothing looks missing), and
+  # each remainder still legitimately starts a new entry. Left uninjected (no comm -12 check),
+  # this landed "entry D (shared)" TWICE.
+  setup_conflict duplicate-entry-different-offset \
+    "## 2026-01-01 -- entry A
+" \
+    "## 2026-01-01 -- entry A
+## 2026-01-02 -- entry X (left-only)
+## 2026-01-05 -- entry D (shared)
+" \
+    "## 2026-01-01 -- entry A
+## 2026-01-05 -- entry D (shared)
+"
+  t_refused "the same entry added on both sides at a different offset is refused, not silently doubled"
+
+  # card bc0af927: THE SAME GAP, ONE AXIS FURTHER -- the two copies of the shared header are not
+  # byte-identical, only whitespace-identical. Reproduced against the byte-exact comm -12 check
+  # (i.e. this file's state right before this card's fix): both variants below RESOLVED, landing
+  # "entry D (shared)" twice with a slightly different header on each copy.
+  setup_conflict duplicate-entry-whitespace-double-space \
+    "## 2026-01-01 -- entry A
+" \
+    "## 2026-01-01 -- entry A
+## 2026-01-02 -- entry X (left-only)
+## 2026-01-05 --  entry D (shared)
+" \
+    "## 2026-01-01 -- entry A
+## 2026-01-05 -- entry D (shared)
+"
+  t_refused "the shared header differs only by a doubled internal space -- still refused, not doubled"
+
+  setup_conflict duplicate-entry-whitespace-trailing-space \
+    "## 2026-01-01 -- entry A
+" \
+    "## 2026-01-01 -- entry A
+## 2026-01-02 -- entry X (left-only)
+## 2026-01-05 -- entry D (shared) 
+" \
+    "## 2026-01-01 -- entry A
+## 2026-01-05 -- entry D (shared)
+"
+  t_refused "the shared header differs only by trailing whitespace -- still refused, not doubled"
+
+  # CONTROL for the two cases above: a header that is a GENUINELY DIFFERENT entry, differing by an
+  # actual word rather than whitespace, must still resolve normally -- whitespace-normalizing the
+  # comparison must not start refusing two real, distinct entries.
+  setup_conflict whitespace-normalize-does-not-refuse-real-differences \
+    "## 2026-01-01 -- entry A
+" \
+    "## 2026-01-01 -- entry A
+## 2026-01-05 -- entry D (left version)
+" \
+    "## 2026-01-01 -- entry A
+## 2026-01-06 -- entry E (right)
+"
+  t_resolved "two genuinely different headers (not a whitespace variant of each other) still resolve" \
+    "## 2026-01-01 -- entry A
+## 2026-01-05 -- entry D (left version)
+## 2026-01-06 -- entry E (right)
 "
 
   # A REAL EDIT ON ONE SIDE (a correction to the existing entry, not just an append at the tail):
@@ -2126,6 +2232,70 @@ new body line"
   # mid-file insertion confusing its diff elsewhere, which is not practical to reproduce minimally.
   # The direct calls above pin the actual defect; try_append_union's existing end-to-end cases in
   # this file already cover that it is reached correctly once a real conflict exists.
+
+  # --- card 5910f2f3 F-2: fault-injection coverage for _common_line_prefix_len itself -----------
+  # (Cybered comment 22227 F-2, harness worked out and handed over in msg 25346.) The original ask
+  # was to isolate each of the THREE named checks (starts_new_entry / header-count / membership)
+  # under a corrupted prefix length. Cybered's own line-level tracer proved that is no longer
+  # possible from this angle: b7e57877 landed TWO EARLIER guards since this card was opened --
+  # "THE GUARANTEE" (nothing the merge-base held may be missing from the prefix) and "THE
+  # STRUCTURAL BOUNDARY" (content shared beyond the base must be blank/separator only) -- and BOTH
+  # catch every fault magnitude tried here BEFORE any of the three originally-named checks are ever
+  # reached, independent of which one is disabled. That is not a gap: it is what belt-and-suspenders
+  # means, and Cybered measured it directly (line-annotated tracer, guard-hit logged per case).
+  #
+  # So this proves the WHOLE CHAIN refuses under a corrupted prefix length -- if a future reordering
+  # or removal of one guard ever let a corrupted offset through, at least one of these three cases
+  # would catch it, without needing a test-only hook to disable guards inside production code (the
+  # header_glob/order env-var lesson this file already learned once: an escape hatch built only for
+  # a test is an escape hatch).
+  #
+  # Fixture and fault magnitudes are Cybered's own, reproduced exactly and re-verified against this
+  # worktree's real, unmutated _common_line_prefix_len before being pinned as constants: on this
+  # fixture the real function returns 76.
+  _f2_base=$'## 2026-01-01 -- Old entry\nBody of the old entry, unchanged by both sides.\n'
+  _f2_ours=$'## 2026-01-01 -- Old entry\nBody of the old entry, unchanged by both sides.\n\n## 2026-02-01 -- Ours entry\nOurs body line one.\nOurs body line two.\n'
+  _f2_theirs=$'## 2026-01-01 -- Old entry\nBody of the old entry, unchanged by both sides.\n\n## 2026-03-01 -- Theirs entry\nTheirs body line one.\n'
+
+  # $1 = label, $2 = the constant value to make _common_line_prefix_len return instead of computing
+  # it. Saves and restores the REAL function around the call -- every other case in this file, before
+  # and after, must keep running against the genuine implementation.
+  t_refused_with_corrupted_prefix_len() {
+    local label="$1" fault="$2" _orig_fn
+    _orig_fn="$(declare -f _common_line_prefix_len)"
+    eval "_common_line_prefix_len() { printf '%s' '$fault'; }"
+    if try_append_union "$REPO" "DECISIONS.md"; then
+      echo "  FAIL $label -> expected try_append_union to refuse (return 1), it resolved"; fail=1
+    elif ! git -C "$REPO" diff --name-only --diff-filter=U | grep -qx "DECISIONS.md"; then
+      echo "  FAIL $label -> refused but DECISIONS.md no longer shows as unmerged"; fail=1
+    elif ! grep -q '^<<<<<<< ' "$REPO/DECISIONS.md" 2>/dev/null; then
+      echo "  FAIL $label -> refused but the conflict markers are gone from the working file"; fail=1
+    else
+      echo "  ok   $label"
+    fi
+    eval "$_orig_fn"
+    git -C "$REPO" merge --abort 2>/dev/null || true
+  }
+
+  setup_conflict f2-prefix-len-fault "$_f2_base" "$_f2_ours" "$_f2_theirs"
+  t_refused_with_corrupted_prefix_len \
+    'F-2: a too-LONG corrupted prefix length is refused (86 -- 10 bytes into ours own new header line)' 86
+  setup_conflict f2-prefix-len-fault "$_f2_base" "$_f2_ours" "$_f2_theirs"
+  t_refused_with_corrupted_prefix_len \
+    'F-2: a too-SHORT corrupted prefix length is refused (61 -- 15 bytes back inside base own body line)' 61
+  setup_conflict f2-prefix-len-fault "$_f2_base" "$_f2_ours" "$_f2_theirs"
+  t_refused_with_corrupted_prefix_len \
+    'F-2: an off-by-one-header corrupted prefix length is refused (104 -- bakes ours whole new header into "prefix")' 104
+  # CONTROL: the same fixture, same helper, but with the REAL correct value (76) -- proves the
+  # override mechanism itself does not just always refuse regardless of what it returns.
+  setup_conflict f2-prefix-len-fault "$_f2_base" "$_f2_ours" "$_f2_theirs"
+  if try_append_union "$REPO" "DECISIONS.md"; then
+    echo "  ok   CONTROL: the fault-injection harness itself, given the REAL correct prefix length, resolves normally"
+  else
+    echo "  FAIL CONTROL: the fault-injection harness refused even with the correct (76) prefix length -- the harness itself is broken, not the function"
+    fail=1
+  fi
+  git -C "$REPO" merge --abort 2>/dev/null || true
 
   # --- G-1: the read-back guard pins ITSELF (Cybered, card bb52c2fa) --------------------------
   # These call _selftest_verdict DIRECTLY with synthetic logs, so deleting the read-back (or

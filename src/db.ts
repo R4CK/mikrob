@@ -1540,6 +1540,60 @@ export function initDatabase(dbPathOverride?: string): void {
   db.exec(`CREATE INDEX IF NOT EXISTS idx_otel_spans_trace ON otel_spans(trace_id, start_ms)`)
   db.exec(`CREATE INDEX IF NOT EXISTS idx_otel_spans_agent ON otel_spans(agent_id, start_ms)`)
 
+  // One-shot migration (card 00c9fa38, testver a router zaras-egysegesitesrol -- card 99254564):
+  // before card dbc0b4bf (this repo's own commit 85fcacb, 2026-09-04 19:19:24 +0200 -- fix(otel):
+  // close the message span at DELIVERY) NOTHING ever closed a router span, success or failure. So
+  // `status = 'running'` today means three different things at once: (1) genuinely still in
+  // flight, (2) pre-dbc0b4bf junk that will NEVER be closed retroactively, (3) a POST-dbc0b4bf
+  // failure that predates card 99254564's own fix (the router closed success but not its own
+  // failures until that card). Meaning (2) makes `running` alone useless as a stuck-span
+  // detector, which is exactly what the sibling card wants it to be able to answer cheaply.
+  //
+  // Splits (2) out with its own status: any row that was ALREADY 'running' with a start_ms before
+  // the dbc0b4bf cutoff is relabelled 'legacy_unknown' -- not (1), not really (3) either, just
+  // "we do not and cannot know what happened to this one". Everything created at or after the
+  // cutoff keeps meaning exactly what its status says.
+  //
+  // Idempotent and safe on a fresh DB (whose CREATE TABLE above already carries the new value, so
+  // sqlite_master.sql already matches and this block never fires): rebuilt on the same idiom as
+  // the memories/kanban_cards CHECK-widening migrations elsewhere in this file, because SQLite has
+  // no ALTER TABLE ... DROP/MODIFY CONSTRAINT.
+  try {
+    const current = db.prepare("SELECT sql FROM sqlite_master WHERE name='otel_spans'").get() as { sql: string } | undefined
+    const hasLegacyStatus = !!current?.sql?.match(/'legacy_unknown'/)
+    if (current?.sql && !hasLegacyStatus) {
+      const DBC0B4BF_DELIVERY_CLOSE_CUTOFF_MS = 1788542364000
+      db.exec(`
+        CREATE TABLE otel_spans_new (
+          trace_id        TEXT NOT NULL,
+          span_id         TEXT NOT NULL,
+          parent_span_id  TEXT,
+          agent_id        TEXT NOT NULL,
+          operation       TEXT NOT NULL,
+          start_ms        INTEGER NOT NULL,
+          end_ms          INTEGER,
+          status          TEXT NOT NULL DEFAULT 'ok' CHECK(status IN ('ok','error','timeout','running','legacy_unknown')),
+          attributes      TEXT,
+          PRIMARY KEY (trace_id, span_id)
+        );
+        INSERT INTO otel_spans_new SELECT trace_id, span_id, parent_span_id, agent_id, operation, start_ms, end_ms,
+          CASE
+            WHEN status = 'running' AND start_ms < ${DBC0B4BF_DELIVERY_CLOSE_CUTOFF_MS} THEN 'legacy_unknown'
+            ELSE status
+          END,
+          attributes
+        FROM otel_spans;
+        DROP TABLE otel_spans;
+        ALTER TABLE otel_spans_new RENAME TO otel_spans;
+        CREATE INDEX IF NOT EXISTS idx_otel_spans_trace ON otel_spans(trace_id, start_ms);
+        CREATE INDEX IF NOT EXISTS idx_otel_spans_agent ON otel_spans(agent_id, start_ms);
+      `)
+      logger.info('otel_spans: relabelled pre-dbc0b4bf running rows to legacy_unknown (card 00c9fa38)')
+    }
+  } catch (err) {
+    logger.warn({ err }, 'otel_spans: legacy_unknown migration failed, continuing with the existing schema')
+  }
+
   // One-shot migration from the old JSON file (which had a read-modify-write
   // race). Import rows if they exist, then rename the file so we don't keep
   // re-importing. Wrapped in a transaction so a crash mid-import is safe.
@@ -4667,6 +4721,20 @@ export interface ModelUsage {
   readonly agents: number
 }
 
+/** One line of the per-model requests-per-bucket series (card eea1ba52). Same field names
+ *  (`key`/`counts`) as the FE's own client-side llmMonBucketize() output, on purpose: the
+ *  renderer that already draws the workload-by-category chart can draw this one too, unchanged. */
+export interface ModelSeriesLine {
+  readonly key: string
+  readonly counts: readonly number[]
+}
+
+export interface TaskSeries {
+  readonly bucketMs: number
+  readonly starts: readonly number[]
+  readonly models: readonly ModelSeriesLine[]
+}
+
 export interface TaskSummary {
   readonly fromMs: number
   readonly toMs: number
@@ -4679,9 +4747,56 @@ export interface TaskSummary {
   /** Named seam, not decoration: which lanes can draw real blocks. A caller that assumes every
    *  model has task blocks would silently render an empty timeline and look like a bug. */
   readonly blockCoverage: { readonly lanes: string[]; readonly note: string }
+  /** Present only when the caller asked for `?buckets=N` (card eea1ba52) -- the per-model
+   *  requests-per-minute curves the FE's "LLM monitor" page names as its one known gap
+   *  ("NOT here, said out loud" in app-llm-monitor.js's own header). Omitted, not null, when
+   *  not requested: every existing caller of GET /api/task-summary keeps its old response
+   *  shape untouched. */
+  readonly series?: TaskSeries
 }
 
-export function getTaskSummary(fromMs: number, toMs: number): TaskSummary {
+// Same TOP-N-plus-"(other)" shape as the FE's LLM_MON_TOP_SERIES (app-llm-monitor.js): the
+// legend and the top of the curve should lead with what matters, whichever side computes it.
+const TASK_SUMMARY_TOP_MODELS = 4
+const TASK_SUMMARY_OTHER_MODEL_KEY = '(other)'
+
+/** Per-model requests-per-bucket series (card eea1ba52), computed the same way the FE already
+ *  buckets task-category events client-side: a token_usage row lands in the bucket of its
+ *  timestamp, top models (already known from the caller's own `models` list, sorted by request
+ *  count) keep their own line, everything else folds into "(other)". */
+function buildTaskSeries(fromMs: number, toMs: number, buckets: number, topModels: readonly string[]): TaskSeries {
+  const count = Math.max(1, Math.min(500, Math.floor(buckets)))
+  const span = Math.max(1, toMs - fromMs)
+  const bucketMs = span / count
+  const fromS = Math.floor(fromMs / 1000)
+  const toS = Math.ceil(toMs / 1000)
+
+  const rows = db.prepare(
+    `SELECT COALESCE(model,'(unreported)') AS model, timestamp
+       FROM token_usage
+      WHERE timestamp >= ? AND timestamp < ?`,
+  ).all(fromS, toS) as { model: string; timestamp: number }[]
+
+  const top = new Set(topModels.slice(0, TASK_SUMMARY_TOP_MODELS))
+  const keys = [...topModels.slice(0, TASK_SUMMARY_TOP_MODELS), TASK_SUMMARY_OTHER_MODEL_KEY]
+  const lines = new Map<string, number[]>(keys.map((k) => [k, new Array(count).fill(0)]))
+  let otherUsed = false
+  for (const r of rows) {
+    const tsMs = r.timestamp * 1000
+    const rel = (tsMs - fromMs) / span
+    const i = Math.min(count - 1, Math.max(0, Math.floor(rel * count)))
+    const key = top.has(r.model) ? r.model : TASK_SUMMARY_OTHER_MODEL_KEY
+    if (key === TASK_SUMMARY_OTHER_MODEL_KEY) otherUsed = true
+    lines.get(key)![i] += 1
+  }
+  if (!otherUsed) lines.delete(TASK_SUMMARY_OTHER_MODEL_KEY)
+
+  const starts = Array.from({ length: count }, (_, i) => fromMs + i * bucketMs)
+  const models = [...lines.entries()].map(([key, counts]) => ({ key, counts }))
+  return { bucketMs, starts, models }
+}
+
+export function getTaskSummary(fromMs: number, toMs: number, buckets?: number): TaskSummary {
   const fromS = Math.floor(fromMs / 1000)
   const toS = Math.ceil(toMs / 1000)
 
@@ -4734,6 +4849,9 @@ export function getTaskSummary(fromMs: number, toMs: number): TaskSummary {
       lanes: ['local'],
       note: 'Only local-LLM tasks record start and end, so only the "local" lane can draw timeline blocks. Online-model work is counted and its tokens summed, but no per-task duration is stored anywhere in this database (otel_spans measures inter-agent send->deliver latency, not task work).',
     },
+    ...(buckets && buckets > 0
+      ? { series: buildTaskSeries(fromMs, toMs, buckets, models.map((m) => m.model)) }
+      : {}),
   }
 }
 

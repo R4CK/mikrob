@@ -43,8 +43,10 @@ cd "${REPO_ROOT}"
 
 # Checkpoint WAL into the main DB file so the snapshot is self-contained.
 # Tolerate a missing sqlite3 CLI -- just fall back to copying the files as-is.
-if [[ -f store/claudeclaw.db ]] && command -v sqlite3 >/dev/null 2>&1; then
-  sqlite3 store/claudeclaw.db 'PRAGMA wal_checkpoint(TRUNCATE);' >/dev/null || true
+# ${REPO_ROOT}-anchored explicitly (card 5dcde7d3 hardening), not relying on the earlier `cd` --
+# this line's target must never depend on script order above it.
+if [[ -f "${REPO_ROOT}/store/claudeclaw.db" ]] && command -v sqlite3 >/dev/null 2>&1; then
+  sqlite3 "${REPO_ROOT}/store/claudeclaw.db" 'PRAGMA wal_checkpoint(TRUNCATE);' >/dev/null || true
 fi
 
 # --- Build the two path lists (each relative to its own base). -------------

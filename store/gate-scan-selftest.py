@@ -104,6 +104,24 @@ check('Gate: continued in PROSE on the same line (lesson 77fd0f07)',
 check('case-insensitive gate name',
       declared_gate_excludes_me('Gate: qa + CYBERSEC', 'cybersec'), False)
 
+# --------------------------------------------------------- hyphenated-compound false positive (4b8962df)
+# Cybersec's self-correction of comment 21019: a plain substring test found "cybersec" inside
+# "Cybersec-mentes" (Hungarian for "Cybersec-free") and read the EXCLUDING sentence as naming the
+# role, so the gate was needlessly surfaced instead of correctly excluded. `role_named()` must
+# refuse a hyphen on either side of the match, not just a `\b` (which still matches here, since
+# `-` is not a word character).
+check('a hyphenated EXCLUDING compound does not count as naming the role',
+      declared_gate_excludes_me('Gate: QA (a Cybersec-mentes valtozat a jelenleg ervenyes designacio).', 'cybersec'),
+      True)
+check('...and the role NOT mentioned in the hyphenated compound is unaffected',
+      declared_gate_excludes_me('Gate: QA (a Cybersec-mentes valtozat a jelenleg ervenyes designacio).', 'cybered'),
+      True)
+check('a genuinely standalone mention right after a hyphenated compound still counts',
+      declared_gate_excludes_me('Gate: QA (a Cybersec-mentes valtozat volt, most Cybersec + QA a designacio).', 'cybersec'),
+      False)
+check('CONTROL: sibling-number role (QA2) still matches with the tightened boundary',
+      declared_gate_excludes_me('Gate: QA2 + Cybersec', 'qa2'), False)
+
 # ------------------------------------------------------------- PASS_RE/FAIL_RE vocabulary (171422d2)
 # The 62-board-wide measured synonym shapes (2026-08-24), plus the base forms both scanners already
 # recognized, kept here so a future refactor cannot silently narrow the vocabulary back down.

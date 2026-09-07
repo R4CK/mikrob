@@ -221,6 +221,24 @@ $checkout_err
 Inspect by hand: git -C $TEST_TREE status"
   git -C "$TEST_TREE" reset --hard "$TARGET" >/dev/null 2>&1
   git -C "$TEST_TREE" clean -fdq -e node_modules >/dev/null 2>&1
+
+  # A LIVE MARKER LEFT BY THE SUITE'S OWN PRIOR RUN IS NOISE, NOT A MISCONFIGURATION (card 5dcde7d3).
+  # These three names are all gitignored, so `git clean -fdq` above NEVER removes them -- if some
+  # test in a prior run opened one of them for real (its own DB/token) via a path that resolved into
+  # THIS tree instead of a temp/override path, it survives forever and permanently trips the
+  # belt-and-braces check below on every later run, refusing hundreds of unrelated files with ZERO
+  # test failures (measured: 553 of 649 files REFUSED off a single stray store/claudeclaw.db).
+  #
+  # SAFE ONLY BECAUSE THIS BRANCH PROVES THE TREE IS A LINKED WORKTREE, NEVER THE LIVE INSTALL.
+  # `git worktree`'s own on-disk shape guarantees it: a linked worktree's .git is ALWAYS A FILE (a
+  # "gitdir: <path>" pointer, line 199's own check above already relies on this); the primary clone's
+  # .git is ALWAYS A DIRECTORY. If FLEET_TEST_TREE were ever mispointed at a real install, its .git
+  # would be a directory, this wipe would be skipped, and the belt-and-braces check below still
+  # refuses loudly exactly as before -- this addition narrows WHEN the check can trip, it does not
+  # weaken what it protects.
+  if [ -f "$TEST_TREE/.git" ]; then
+    rm -f "$TEST_TREE/store/.dashboard-token" "$TEST_TREE/store/claudeclaw.db" "$TEST_TREE/store/.claude-oauth-token"
+  fi
 fi
 
 # Share the live install's node_modules by symlink instead of installing a second copy: the deps are

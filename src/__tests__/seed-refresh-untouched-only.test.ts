@@ -297,6 +297,59 @@ describe('seed refresh touches only provably untouched copies', () => {
     }
   })
 
+  // Card 383829fc: a NEW file added to a seed directory in a later release never reached an
+  // already-installed tree -- only a fresh install ever saw it, permanently. `f.install` here
+  // ships a SECOND file the fixture's installed copy does not have yet.
+  it('delivers a NEW file to an already-seeded directory (card 383829fc)', () => {
+    const f = makeFixture()
+    try {
+      writeFileSync(join(f.install, 'seed-skills', 'demo', 'HELPER.md'), 'helper content\n')
+      const dir = join(f.home, '.claude', 'skills', 'demo')
+      mkdirSync(dir, { recursive: true })
+      writeFileSync(join(dir, 'SKILL.md'), f.versions[2])   // the directory IS seeded (SKILL.md exists)
+      const helperPath = join(dir, 'HELPER.md')
+      expect(existsSync(helperPath)).toBe(false)
+      const r = runRefresh(f.install, f.home)
+      expect(r.code).toBe(0)
+      expect(existsSync(helperPath)).toBe(true)
+      expect(readFileSync(helperPath, 'utf-8')).toBe('helper content\n')
+      expect(r.out).toMatch(/1 \(uj fajl potolva\)/)
+    } finally {
+      rmSync(f.base, { recursive: true, force: true })
+    }
+  })
+
+  it('a new TEMPLATED file is delivered RENDERED, not verbatim', () => {
+    const f = makeFixture()
+    try {
+      writeFileSync(join(f.install, 'seed-scheduled-tasks', 'demo-task', 'NEW-HELPER.md'), 'helper for {{MAIN_AGENT_ID}}\n')
+      const dir = join(f.home, '.claude', 'scheduled-tasks', 'demo-task')
+      mkdirSync(dir, { recursive: true })
+      writeFileSync(join(dir, 'SKILL.md'), 'task v3 marveen\n')   // seeded and untouched
+      runRefresh(f.install, f.home)
+      const helperPath = join(dir, 'NEW-HELPER.md')
+      expect(existsSync(helperPath)).toBe(true)
+      expect(readFileSync(helperPath, 'utf-8')).toBe('helper for marveen\n')
+    } finally {
+      rmSync(f.base, { recursive: true, force: true })
+    }
+  })
+
+  it('MUTATION-PROOF: still does NOT deliver a new file into a directory that was never seeded at all', () => {
+    // The directory-scope guard (the "does not create a directory" test below) has to keep holding
+    // even with new-file delivery added -- a new file must never be the thing that smuggles a whole
+    // new directory into an install that never had this skill seeded.
+    const f = makeFixture()
+    try {
+      writeFileSync(join(f.install, 'seed-skills', 'demo', 'HELPER.md'), 'helper content\n')
+      runRefresh(f.install, f.home)   // no demo/ in the target at all -- not even SKILL.md
+      expect(existsSync(join(f.home, '.claude', 'skills', 'demo'))).toBe(false)
+      expect(existsSync(join(f.home, '.claude', 'skills', 'demo', 'HELPER.md'))).toBe(false)
+    } finally {
+      rmSync(f.base, { recursive: true, force: true })
+    }
+  })
+
   it('does not create a directory that was never seeded here', () => {
     const f = makeFixture()
     try {

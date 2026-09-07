@@ -639,7 +639,23 @@ export function writeAgentSettingsFromProfile(name: string, profile: ProfileTemp
   mkdirSync(settingsDir, { recursive: true })
   let existing: Record<string, unknown> = {}
   if (existsSync(settingsPath)) {
-    try { existing = JSON.parse(readFileSync(settingsPath, 'utf-8')) } catch { /* overwrite */ }
+    try {
+      const rawExisting = readFileSync(settingsPath, 'utf-8')
+      // Same read-then-parse shape as ensureAgentHooks above, same risk (backend2's
+      // observation, card 725b159a): JSON.parse keeps only the LAST occurrence of a
+      // duplicated key, so a settings file with two hook-event keys silently drops every
+      // hook in the earlier block. This function only INJECTS specific guard entries into
+      // `existing` below -- it does not re-derive the whole hooks tree the way
+      // ensureAgentHooks' merge does -- so anything the dup-collapse already dropped stays
+      // dropped, with no error and no symptom until the gate it guarded goes through
+      // unchecked. Check BEFORE parsing, same as the sibling function.
+      const dupKeys = findDuplicateJsonKeys(rawExisting)
+      if (dupKeys.length > 0) {
+        logger.warn({ agent: name, settingsPath, dupKeys },
+          'writeAgentSettingsFromProfile: duplicate JSON keys in settings -- JSON.parse keeps only the last occurrence, hooks in the earlier block are silently dead')
+      }
+      existing = JSON.parse(rawExisting)
+    } catch { /* overwrite */ }
   }
   const ctx = { HOME: homedir(), AGENT_DIR: agentRoot }
   const denyList = profile.filesystem.deny.map(p => resolveProfilePlaceholders(p, ctx))

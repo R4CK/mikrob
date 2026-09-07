@@ -18,6 +18,7 @@ import {
   type AgentMessage,
 } from '../db.js'
 import { formatDeliveryStalenessNote, supersededDispatch } from './kanban-state-stamp.js'
+import { formatQueueDepthNote } from './message-queue-depth-note.js'
 import { countNewerMessagesFromSameSender } from '../db.js'
 import { isQualifiedId } from './federation/address.js'
 import { sendFederatedMessage } from './federation/bridge.js'
@@ -120,11 +121,25 @@ export function formatStuckSessionAlert(
   return `[session-stuck] Agent '${agent}' (tmux ${session}) has been not-ready for ${min} min with ${queue}. Run the delivery-stall diagnosis: check the pane (busy vs idle vs full context) and restart the agent if it is wedged.`
 }
 
-function notifyOrchestratorOfStuckSession(agent: string, session: string, stuckMs: number, pendingCount: number, paneState: PaneState | null): void {
+// Card 8f33a1a1 (parent dc35fa1a, step 3): every session-stuck notice is delivered wake:false,
+// through the QUIET_MESSAGE_CLASSES allowlist steps 1-2 (3bd457ed, 7d47ca16) built for exactly this
+// caller. MEASURED (7 days, 3388 messages): 472 automated, 464 of those to the main agent, and the
+// session-stuck lines repeat almost verbatim -- fron-ted not-ready 13x/10x/9x, backend BUSY 7x.
+//
+// STATED COST, not hidden: without per-agent/per-class dedup state (a separate, not-yet-built
+// mechanism -- MikroB comment 24562), this mutes the FIRST session-stuck notice for an agent too, not
+// only the repeats. That is accepted because the receiver is always MAIN_AGENT_ID (formatStuckSessionAlert
+// returns null for anyone else), which drains its own inbox every turn and never parks -- a quiet
+// delivery here is "seen at the next natural check", not "seen never". A REPEAT class name is used
+// (not a bare 'session-stuck') because that is the literal string QUIET_MESSAGE_CLASSES holds; using
+// the true occurrence count to pick a name would defeat the point of a static, code-reviewed list.
+export function notifyOrchestratorOfStuckSession(agent: string, session: string, stuckMs: number, pendingCount: number, paneState: PaneState | null): void {
   try {
     const alert = formatStuckSessionAlert(agent, MAIN_AGENT_ID, session, stuckMs, pendingCount, paneState)
     if (!alert) return
-    createAgentMessage('system', MAIN_AGENT_ID, alert)
+    createAgentMessage('system', MAIN_AGENT_ID, alert, null, null, {
+      quietClass: paneState === 'busy' ? 'session-stuck-busy-repeat' : 'session-stuck-not-ready-repeat',
+    })
     logger.info({ agent, session, stuckMs, pendingCount, paneState }, 'session-stuck surfaced to orchestrator')
   } catch (err) {
     logger.warn({ err, agent }, 'Failed to enqueue session-stuck notification')
@@ -279,6 +294,23 @@ function stampTraceOnMessage(msg: AgentMessage): { trace_id: string; span_id: st
     })
   }
   return { trace_id, span_id, parent_span_id }
+}
+
+// Card 99254564 (Cybered/backend2 finding, dbc0b4bf): the router closed a message's span on ITS
+// OWN successful delivery (line ~985 below) but never on its OWN TERMINAL failures -- inject-retry
+// exhaustion, an abandon after the message had already been stamped on an earlier tick, or an
+// unexpected processing throw. routes/messages.ts's PUT handler closes the span for the SAME class
+// of event (a message reaching a terminal status) when the RECEIVER reports done/failed, so the
+// router's own terminal paths carried a different, weaker guarantee for no principled reason. A
+// span left open here has nothing else to close it: pollUntilDone-style code does not exist for
+// router-internal message delivery. Zero-population today (every abandoned row today carries no
+// trace_id at all), so this closes a real gap before one opens, not a live leak.
+//
+// IF-OPEN semantics (closeOtelSpanIfOpen's own contract): first terminal event wins, so calling
+// this from multiple sites is safe by construction -- whichever fires first closes the span, later
+// calls are no-ops. No-op silently when trace_id/span_id are absent, which is the common case today.
+function closeRouterSpanOnFailure(trace_id: string | null | undefined, span_id: string | null | undefined): void {
+  if (trace_id && span_id) closeOtelSpanIfOpen(trace_id, span_id, Date.now(), 'error')
 }
 
 // Checks for pending messages every 5 seconds and injects them into target
@@ -474,6 +506,7 @@ export async function deliverFederatedBatch(federated: AgentMessage[], now: numb
       // pending row (a concurrent disable/removal purge may have failed it).
       if (markPendingFederatedFailed(msg.id, 'Abandoned: peer unreachable for full retry window')) {
         notifyDelegationFailed(msg, 'a társ a teljes türelmi ablakban elérhetetlen volt')
+        closeRouterSpanOnFailure(msg.trace_id, msg.span_id)
       } else {
         logger.warn({ id: msg.id }, 'markPendingFederatedFailed affected 0 rows (already closed concurrently)')
       }
@@ -815,6 +848,7 @@ export async function runMessageRouterTick(): Promise<void> {
         if (!markMessageFailed(msg.id, 'Abandoned: target session absent for full retry window')) {
           logger.warn({ id: msg.id }, 'markMessageFailed affected 0 rows (deleted concurrently?)')
         }
+        closeRouterSpanOnFailure(msg.trace_id, msg.span_id)
         notifyOrchestratorOfFailedHandoff(msg, 'target session was absent for the entire retry window')
         routerInjectFailures.delete(msg.id)
         routerLoggedMisses.delete(msg.id)
@@ -986,9 +1020,14 @@ export async function runMessageRouterTick(): Promise<void> {
         // since changed column. Appended AFTER the wrapper, not inside it: this text is the
         // router's, not the sender's, and it must not read as part of their payload.
         const staleNote = formatDeliveryStalenessNote(msg.content, getKanbanCardStateByIdPrefix, Math.round(ageMs / 1000))
+        // Card 30a34eba: a SEPARATE fact from the staleness note above -- "how many more messages
+        // are already waiting behind this one for the same recipient" -- so the recipient can
+        // decide for itself whether to self-interrupt a long-running step. `-1` excludes this
+        // message itself, which is still `pending` in the row until markMessageDelivered runs below.
+        const queueDepthNote = formatQueueDepthNote(getPendingMessages(msg.to_agent).length - 1)
         // Inline preamble so a fresh session (post hard-restart) doesn't miss
         // the context that explains the tag semantics.
-        await sendPromptToSession(session, prefix + wrapped + staleNote, host)
+        await sendPromptToSession(session, prefix + wrapped + staleNote + queueDepthNote, host)
         if (!markMessageDelivered(msg.id)) {
           logger.warn({ id: msg.id }, 'markMessageDelivered affected 0 rows (deleted concurrently?)')
         }
@@ -1034,6 +1073,7 @@ export async function runMessageRouterTick(): Promise<void> {
         if (!markMessageFailed(msg.id, `Failed to inject into tmux session after ${failCount} attempts`)) {
           logger.warn({ id: msg.id }, 'markMessageFailed affected 0 rows (deleted concurrently?)')
         }
+        closeRouterSpanOnFailure(traceCtx?.trace_id, traceCtx?.span_id)
         notifyOrchestratorOfFailedHandoff(msg, `tmux inject failed ${failCount}x`)
         routerInjectFailures.delete(msg.id)
         routerLoggedMisses.delete(msg.id)
@@ -1043,6 +1083,13 @@ export async function runMessageRouterTick(): Promise<void> {
         if (!markMessageFailed(msg.id, `Delivery error: ${String(err).slice(0, 200)}`)) {
           logger.warn({ id: msg.id }, 'markMessageFailed affected 0 rows (deleted concurrently?)')
         }
+        // traceCtx (the inner try's local) is out of scope here -- it is declared INSIDE the try
+        // this catches for, and this catch can be reached by a throw before traceCtx was ever
+        // computed (e.g. during voice STT, above the inner try). msg.trace_id/span_id are the raw
+        // row values, set from the top of the loop regardless of how far processing got, so they
+        // are the more robust source here -- and stampTraceOnMessage persists straight back onto
+        // the row, so a message already stamped on an earlier tick carries them from the start.
+        closeRouterSpanOnFailure(msg.trace_id, msg.span_id)
         routerLoggedMisses.delete(msg.id)
       }
     }

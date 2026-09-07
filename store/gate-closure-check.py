@@ -293,11 +293,25 @@ def stated_designation(comments):
     inferred set as a fallback for an UNSTATED designation, and two live `done` cards (e96b06e7,
     89f4c28d) closed on a verdict from a gate MikroB never designated while the actual designation
     sat right there on the card, in a comment this file never read.
+
+    AUTHOR-FILTERED (Cybersec HIGH, same card, round 2). The first version of this function accepted
+    the "MikroB GATE-KIJELOLES: ..." line from ANY comment's content, never checking who wrote it --
+    unlike the rest of this file, which explicitly checks authorship for every other claim it trusts
+    (verdict attribution's `author_role(who) == v[0]`, the line ~700 comment on self-declared
+    authorship). Proven live: a builder's own REVIEW comment quoting/forging a narrower
+    "MikroB GATE-KIJELOLES: QA (1-gate) -- ..." line, posted AFTER MikroB's real wider designation,
+    silently overrode it and produced a QA-only AGREE with Cybersec/Cybered skipped entirely -- the
+    exact rule-4 protection this whole function exists to make load-bearing. Designation is
+    MikroB's alone per root CLAUDE.md rule 4 ("MikroB TTE-feladata... kártyánként kiválasztani/
+    váltogatni a gate-tagokat"), so the check is the literal author, not `author_role` (which has no
+    entry for MikroB -- it answers "who speaks for a GATE", a different question).
     """
     found = None
     for c in comments:
         content = (c or {}).get("content")
         if not isinstance(content, str):
+            continue
+        if (c.get("author") or "").strip().lower() != "mikrob":
             continue
         m = _GATE_DESIGNATION_LINE.search(content)
         if not m:
@@ -574,6 +588,26 @@ def _clone_holding(*shas):
     return None
 
 
+_BUMP_SUBJECT_PREFIX = "chore(version): bump"
+
+
+def _is_version_bump(clone, sha):
+    """Does `sha`'s own commit subject say it is a marveen-land version bump? Same test
+    `content_verdict`'s hint branch already uses (card 0711c19b), factored out so the EQUAL-sha
+    branch (card cb8ef4f5) can ask it too, without content_verdict ever running."""
+    ok, subj = _git(clone, "log", "-1", "--format=%s", sha)
+    return ok and subj.strip().startswith(_BUMP_SUBJECT_PREFIX)
+
+
+def _bump_parent_hint(clone, sha):
+    """The bump commit's own first parent, or None. marveen-land.sh commits the version bump
+    directly on top of the merge it just landed, so the parent is usually the real landing merge a
+    REVIEW should have named instead of the bump (card cb8ef4f5) -- a hint, not a claim: a squashed
+    or hand-made bump could have a different parent, so this is offered, never asserted."""
+    ok, out = _git(clone, "log", "-1", "--format=%H", sha + "^")
+    return out.strip() if ok and out.strip() else None
+
+
 def content_verdict(judged, declared):
     """Did the gates see this card's work, even though the sha they named is not the declared one?
 
@@ -625,8 +659,7 @@ def content_verdict(judged, declared):
             comparable = [f for f in files if os.path.basename(f) not in _SHARED_CHURN]
             if not real and changed and not comparable:
                 hint = ""
-                ok_s, subj = _git(clone, "log", "-1", "--format=%s", d)
-                if ok_s and subj.strip().startswith("chore(version): bump"):
+                if _is_version_bump(clone, d):
                     hint = (" -- %s is a version bump, so the REVIEW is naming the develop tip "
                             "instead of the landing merge that carries the work (card 0711c19b)" % d)
                 return ("unresolved",
@@ -743,6 +776,22 @@ def check(comments, designated=None, expect=None, use_declared=True):
         return "AGREE|%s|%s%s (%s)" % (_fmt_shas(shas[0]), detail, suffix, why)
 
     if sha_sets_agree(shas[0], declared):
+        # CARD cb8ef4f5: the EQUAL-sha branch never asked content_verdict's question at all, because
+        # there is nothing to diff when the shas are the same token -- but "the same token" can still
+        # be a version-bump commit that carries no card content, the exact 74aa46a5 hazard one door
+        # over (there the REVIEW and a gate name DIFFERENT shas and content_verdict catches it; here
+        # everyone names the SAME bump sha, so content_verdict never even runs). Measured: 82 distinct
+        # bump-sha Gate-SHA lines across 51 cards on this board -- the common shape, not the rare one.
+        agreed = next((s for s in shas[0] if any(shas_agree(s, d) for d in declared)), shas[0][0])
+        clone = _clone_holding(agreed)
+        if clone and _is_version_bump(clone, agreed):
+            hint = _bump_parent_hint(clone, agreed)
+            hint_s = (" the landing merge is likely %s -- " % hint) if hint else " "
+            return "BUMPSHA|%s|%s is a version-bump commit carrying no card content, so nobody can " \
+                   "say what it was reviewed for even though every side names it;%sre-check against " \
+                   "the real landing merge (card 0711c19b eliminated this shape at the source, so a " \
+                   "NEW REVIEW should not produce it going forward)" % (
+                       _fmt_shas(shas[0]), agreed, hint_s)
         return "AGREE|%s|%s%s" % (_fmt_shas(shas[0]), detail, suffix)
 
     # The sha differs from the declared one. On this board that is usually benign -- a work commit

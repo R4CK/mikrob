@@ -317,6 +317,63 @@ describe('fork-side anchors: a rule that rests on OUR tree goes stale when OUR t
     expect(classifyForkAnchors(anchors, () => null)).toHaveLength(1)
   })
 
+  // Card 232e01e2 (Cybersec measurement on this file's own re-measure history): a `present` anchor
+  // must not be satisfiable by a comment merely NAMING the needle -- that lets the CODE half of a
+  // rule be edited away while the pin stays green because the explaining comment still mentions it.
+  it('a present-anchor is NOT satisfied by a // comment merely naming the needle', () => {
+    const anchors = {
+      'a.ts': { needle: 'touchAncestorChain', file: 'src/db.ts', expect: 'present', because: 'x' },
+    } as const
+    const drifted = classifyForkAnchors(
+      anchors,
+      () => '// touchAncestorChain used to live here, removed 2026-09-07'
+    )
+    expect(drifted).toHaveLength(1)
+    expect(drifted[0]!.found).toBe(false)
+  })
+
+  it('a present-anchor is NOT satisfied by a # comment either -- both comment styles this map spans', () => {
+    const anchors = {
+      'a.py': {
+        needle: 'def is_send_invocation',
+        file: 'scripts/hooks/outgoing-copy-gate.py',
+        expect: 'present',
+        because: 'x',
+      },
+    } as const
+    const drifted = classifyForkAnchors(
+      anchors,
+      () => '# def is_send_invocation(cmd): removed, see history'
+    )
+    expect(drifted).toHaveLength(1)
+  })
+
+  // THE CONTROL that makes the two cases above mean something: real code on the SAME line as a
+  // trailing comment must still be found. Without this, a stripper that ate too much (or the whole
+  // line) would pass every case above by accident of never finding anything at all.
+  it('CONTROL: a present-anchor whose needle is real code is still found, even with a trailing comment', () => {
+    const anchors = {
+      'a.ts': { needle: 'touchAncestorChain', file: 'src/db.ts', expect: 'present', because: 'x' },
+    } as const
+    const drifted = classifyForkAnchors(
+      anchors,
+      () => 'export function touchAncestorChain() {} // the real thing, not a mention'
+    )
+    expect(drifted).toEqual([])
+  })
+
+  // The asymmetric half of the same fix: an `absent` anchor stays on the RAW text on purpose. A
+  // statement reverted but left behind as a comment is still a prose claim worth re-deciding (the
+  // installer-ollama-nonfatal exclusion below rests on exactly this reasoning already).
+  it('an absent-anchor is STILL drift when the needle survives only in a comment', () => {
+    const anchors = {
+      'a.ts': { needle: 'ollama_pull', file: 'install-linux.sh', expect: 'absent', because: 'x' },
+    } as const
+    const drifted = classifyForkAnchors(anchors, () => '// ollama_pull was removed here')
+    expect(drifted).toHaveLength(1)
+    expect(drifted[0]!.found).toBe(true)
+  })
+
   // Card a14812e8, measured: `ollama_pull` still appears once in install-linux.sh, inside a comment
   // saying the call was REMOVED. An anchor there would assert the comment and stay green forever for
   // the wrong reason. This pins the EXCLUSION so a future editor adding the obvious anchor trips

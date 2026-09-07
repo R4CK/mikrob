@@ -1,6 +1,41 @@
 import { describe, it, expect, beforeEach, vi, afterEach } from 'vitest'
 import Database from 'better-sqlite3'
 
+// Card ca593869 (Cybersec finding on 2a653b4b): mocks makeLazyBinResolver directly (not
+// resolveFromPath) because background-tasks.ts imports and calls makeLazyBinResolver itself --
+// mocking resolveFromPath alone would not intercept platform.ts's OWN internal call to it from
+// inside makeLazyBinResolver's closure (a same-module call is not redirected by vi.mock's
+// export-level override the way a cross-module import is).
+//
+// vi.hoisted: the mock factory below runs before this file's own top-level code, so the flag it
+// reads must be created through vi.hoisted rather than a plain `let`, which would not exist yet.
+const claudeResolveState = vi.hoisted(() => ({ shouldThrow: true }))
+vi.mock('../platform.js', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('../platform.js')>()
+  return {
+    ...actual,
+    makeLazyBinResolver: (name: string) => {
+      if (name !== 'claude') return actual.makeLazyBinResolver(name)
+      // The flag is checked INSIDE the closure, at CALL time (spawnBackgroundTask invokes
+      // claudeBin() well after this factory ran) -- not here, at makeLazyBinResolver('claude')
+      // call time. background-tasks.ts creates claudeBin ONCE at its own module top level, and
+      // ESM module caching means that module (and this closure) is only evaluated once across a
+      // test file's dynamic imports, so a flag read here would freeze at whatever value it had
+      // during the FIRST test to import the module -- exactly the bug this comment exists to
+      // prevent a future edit from reintroducing.
+      const real = actual.makeLazyBinResolver('claude')
+      return () => {
+        if (claudeResolveState.shouldThrow) throw new Error('claude: command not found (PATH gap simulated for this test)')
+        return real()
+      }
+    },
+  }
+})
+
+vi.mock('../logger.js', () => ({
+  logger: { info: vi.fn(), warn: vi.fn(), debug: vi.fn(), error: vi.fn() },
+}))
+
 describe('background_tasks schema and CRUD', () => {
   let db: ReturnType<typeof Database>
 
@@ -162,5 +197,40 @@ describe('background-tasks route ID regex', () => {
     expect(re.test('/api/background-tasks/ABCD12345')).toBe(false)
     expect(re.test('/api/background-tasks/abcd1234')).toBe(false)
     expect(re.test('/api/background-tasks/')).toBe(false)
+  })
+})
+
+// Card ca593869: claudeBin() used to resolve AFTER createBackgroundTaskAtomic() had already
+// inserted a 'running' row and BEFORE the try/catch that cleans up a spawn failure -- so a PATH
+// gap threw straight out of spawnBackgroundTask, leaving the row stuck at 'running' forever
+// (neither pollUntilDone nor checkAndFinalize clean it up; only web.ts's startup sweep does).
+// Three such failures exhausted the agent's MAX_CONCURRENT=3 slots with zero tasks actually
+// running, until a dashboard restart.
+describe('spawnBackgroundTask: a PATH gap must not leave an orphaned running row (card ca593869)', () => {
+  beforeEach(async () => {
+    const { initDatabase } = await import('../db.js')
+    initDatabase(':memory:')
+  })
+
+  it('claudeBin() resolution failure throws BEFORE any row is inserted', async () => {
+    claudeResolveState.shouldThrow = true
+    const { spawnBackgroundTask } = await import('../web/routes/background-tasks.js')
+    const { getRunningBackgroundTasks } = await import('../db.js')
+
+    expect(() => spawnBackgroundTask('marveen', 'test prompt')).toThrow(/claude/)
+    expect(getRunningBackgroundTasks()).toEqual([])
+  })
+
+  it('CONTROL: a task with a resolvable binary DOES reach the insert (unlike the PATH-gap case above)', async () => {
+    claudeResolveState.shouldThrow = false
+    const { spawnBackgroundTask } = await import('../web/routes/background-tasks.js')
+    const { getBackgroundTasks } = await import('../db.js')
+
+    spawnBackgroundTask('samu', 'a normal prompt')
+    // includeFinished=true: the real tmux spawn inside the try/catch may itself fail in this
+    // sandboxed test environment, which synchronously marks the row 'failed' -- that path is
+    // already covered by the existing catch-block behavior, not what this test pins. What
+    // matters here is that the row EXISTS at all, proving the insert was reached this time.
+    expect(getBackgroundTasks('samu', true).length).toBe(1)
   })
 })

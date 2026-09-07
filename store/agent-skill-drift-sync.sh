@@ -47,12 +47,18 @@
 # (card 222fdc5e):
 #   ALERT:no  (diverged set unchanged since <when>, N entries; stale=0, no concurrent-write skips)
 #   ALERT:yes reasons=<comma-list> diverged=N stale=N skipped-concurrent=N skipped-running=N
-# reasons: stale-synced | concurrent-write-skipped | running-agent-skipped | diverged-set-changed |
-#          no-baseline | baseline-unreadable | no-agents-dir
+#             skipped-undetermined=N
+# reasons: stale-synced | concurrent-write-skipped | running-agent-skipped |
+#          undetermined-agent-skipped | diverged-set-changed | no-baseline | baseline-unreadable |
+#          no-agents-dir
 #
-# `skipped-running` is the count of stale copies left alone because their agent was RUNNING (card
-# e667c8bd). It is work still owed, not an error -- the copy stays exactly as stale as it already
-# was, and the next run re-checks. See _agent_is_running for why the write is refused.
+# `skipped-running` is the count of stale copies left alone because their agent was CONFIRMED
+# running (card e667c8bd). `skipped-undetermined` (card 75b90343 part 2) is a DIFFERENT count: tmux
+# could not be read at all, so the tool cannot tell running from parked and fails closed the same
+# way -- but conflating the two into one "is RUNNING" label would tell an operator that every agent
+# in that count is genuinely busy, when some of them are simply unreadable. Both are work still
+# owed, not an error -- the copy stays exactly as stale as it already was, and the next run
+# re-checks. See _agent_running_state for why the write is refused in both cases.
 #
 # PRE-EXISTING IMPRECISION, noted rather than changed here: `stale-synced` fires whenever STALE>0,
 # including on a DRY RUN where nothing was written. That predates this card and has its own
@@ -231,8 +237,24 @@ _agent_is_running() {
   printf '%s\n' "$_RUNNING_SESSIONS" | grep -qx "agent-$1"
 }
 
+# Prints one of: running | undetermined | parked (card 75b90343, part 2). _agent_is_running above
+# collapses "confirmed running" and "could not tell" into the same true/false so the fail-closed
+# skip logic can stay a one-line check; this function keeps the distinction so the REPORT can tell
+# an operator which one actually happened, without changing which copies get skipped.
+_agent_running_state() {
+  if [ "$_RUNNING_SESSIONS" = "?" ]; then
+    echo "undetermined"
+    return
+  fi
+  if printf '%s\n' "$_RUNNING_SESSIONS" | grep -qx "agent-$1"; then
+    echo "running"
+  else
+    echo "parked"
+  fi
+}
+
 run_scan() {
-  CUR=0; STALE=0; DIVERGED=0; SKIPPED=0; SKIPPED_CONCURRENT=0; SKIPPED_RUNNING=0
+  CUR=0; STALE=0; DIVERGED=0; SKIPPED=0; SKIPPED_CONCURRENT=0; SKIPPED_RUNNING=0; SKIPPED_UNDETERMINED=0
   STALE_LIST=""; DIVERGED_LIST=""
   _load_running_sessions
 
@@ -242,7 +264,7 @@ run_scan() {
   # tool scanned nothing at all, which is exactly the state that must never pass as quiet.
   if [ ! -d "$AGENTS_DIR" ]; then
     echo "agent-skill-drift-sync: no $AGENTS_DIR -- nothing to scan"
-    echo "ALERT:yes reasons=no-agents-dir diverged=0 stale=0 skipped-concurrent=0 skipped-running=0"
+    echo "ALERT:yes reasons=no-agents-dir diverged=0 stale=0 skipped-concurrent=0 skipped-running=0 skipped-undetermined=0"
     return 0
   fi
 
@@ -254,7 +276,8 @@ run_scan() {
     [ -d "$skdir" ] || continue
     # Once per agent, not once per skill: the answer cannot change usefully inside one agent's
     # loop, and asking repeatedly would only widen the window between the reading and the write.
-    if _agent_is_running "$agent"; then agent_running=1; else agent_running=0; fi
+    agent_state="$(_agent_running_state "$agent")"
+    if [ "$agent_state" = "parked" ]; then agent_running=0; else agent_running=1; fi
 
     agent_lines=""
     for sdir in "$skdir"/*/; do
@@ -276,8 +299,19 @@ run_scan() {
           if [ "$APPLY" -eq 1 ] && [ "$agent_running" -eq 1 ]; then
             # The wide race the TOCTOU guard below cannot see. See _agent_is_running for why this
             # refuses rather than warns, and why it does not wait for the agent to park.
-            SKIPPED_RUNNING=$((SKIPPED_RUNNING+1))
-            agent_lines="${agent_lines}            -> SKIPPED, ${agent} is RUNNING (a live agent reads and may hand-patch this file) -- re-runs when it parks\n"
+            # "running" and "undetermined" are BOTH skipped (fail-closed, same code path above),
+            # but they are not the same finding: one means a live agent genuinely holds this file,
+            # the other means tmux could not be read at all (card 75b90343 part 2) -- an operator
+            # reading "is RUNNING" for the second case would believe all agents are busy when the
+            # tool simply could not tell. Additive distinction, not filtering: both still count
+            # toward the same fail-closed skip, just labelled by which one actually happened.
+            if [ "$agent_state" = "undetermined" ]; then
+              SKIPPED_UNDETERMINED=$((SKIPPED_UNDETERMINED+1))
+              agent_lines="${agent_lines}            -> SKIPPED, could not determine whether ${agent} is running (tmux state unreadable) -- re-runs when determinable\n"
+            else
+              SKIPPED_RUNNING=$((SKIPPED_RUNNING+1))
+              agent_lines="${agent_lines}            -> SKIPPED, ${agent} is RUNNING (a live agent reads and may hand-patch this file) -- re-runs when it parks\n"
+            fi
           elif [ "$APPLY" -eq 1 ]; then
             # TOCTOU guard: re-hash the live file immediately before the mv and compare against
             # the hash classify_copy just judged safe. If something else wrote to this live
@@ -388,8 +422,11 @@ emit_alert_verdict() {
   [ "$STALE" -gt 0 ] && reasons="${reasons}stale-synced,"
   [ "$SKIPPED_CONCURRENT" -gt 0 ] && reasons="${reasons}concurrent-write-skipped,"
   # A skipped sync is work still owed, so it must not read as routine. It is NOT an error: the copy
-  # simply stays as stale as it already was until the agent parks.
+  # simply stays as stale as it already was until the agent parks. Two distinct reasons (card
+  # 75b90343 part 2): CONFIRMED running vs tmux state UNDETERMINED -- both fail closed the same way,
+  # but they are different findings and must not collapse into one label.
   [ "$SKIPPED_RUNNING" -gt 0 ] && reasons="${reasons}running-agent-skipped,"
+  [ "$SKIPPED_UNDETERMINED" -gt 0 ] && reasons="${reasons}undetermined-agent-skipped,"
 
   if [ ! -f "$STATE" ]; then
     reasons="${reasons}no-baseline,"
@@ -409,7 +446,7 @@ emit_alert_verdict() {
   fi
 
   if [ -n "$reasons" ]; then
-    echo "ALERT:yes reasons=${reasons%,} diverged=${DIVERGED} stale=${STALE} skipped-concurrent=${SKIPPED_CONCURRENT} skipped-running=${SKIPPED_RUNNING}"
+    echo "ALERT:yes reasons=${reasons%,} diverged=${DIVERGED} stale=${STALE} skipped-concurrent=${SKIPPED_CONCURRENT} skipped-running=${SKIPPED_RUNNING} skipped-undetermined=${SKIPPED_UNDETERMINED}"
     [ -n "$prev_list" ] && [ "$prev_list" != "$diverged_now" ] && echo "  diverged set was: ${prev_list:-(empty)}"
     [ -n "$reasons" ] && echo "  diverged set now: ${diverged_now:-(empty)}"
   else
@@ -593,16 +630,33 @@ agent-someone-else")"
     || { echo "  FAIL a parked agent was not synced:"; echo "$out8"; fail=1; }
 
   # FAIL-CLOSED when the reading itself fails. A tmux that errors for any reason OTHER than "no
-  # server running" tells us nothing, and an agent we cannot prove is parked is treated as running.
+  # server running" tells us nothing, and an agent we cannot prove is parked is treated as running
+  # for the SKIP decision -- but (card 75b90343 part 2) the REPORT must say "could not determine",
+  # not "is RUNNING": those are different findings that happen to fail closed the same way, and an
+  # operator reading "is RUNNING" here would wrongly believe agentG is confirmed busy.
   mkdir -p "$tmp/fakebin"
   printf '#!/usr/bin/env bash\necho "connect failed: no such file or directory" >&2\nexit 1\n' > "$tmp/fakebin/tmux"
   chmod +x "$tmp/fakebin/tmux"
   g_stale
   out9="$(AGENT_SKILL_DRIFT_ROOT="$tmp/root" PATH="$tmp/fakebin:$PATH" \
           bash "${BASH_SOURCE[0]}" --apply --agent agentG)"
-  echo "$out9" | grep -q 'SKIPPED, agentG is RUNNING' \
-    && echo "  ok   an UNREADABLE tmux fails closed -- undetermined counts as running" \
-    || { echo "  FAIL undetermined tmux did not fail closed:"; echo "$out9"; fail=1; }
+  echo "$out9" | grep -q 'SKIPPED, could not determine whether agentG is running' \
+    && echo "  ok   an UNREADABLE tmux fails closed, and the report says UNDETERMINED, not RUNNING" \
+    || { echo "  FAIL undetermined tmux did not report distinctly from RUNNING:"; echo "$out9"; fail=1; }
+  if ! echo "$out9" | grep -q 'agentG is RUNNING'; then
+    echo "  ok   the misleading confirmed-RUNNING phrase does not appear for an undetermined read"
+  else
+    echo "  FAIL the undetermined case still printed the confirmed-RUNNING phrase:"; echo "$out9"; fail=1
+  fi
+  echo "$out9" | grep -q 'skipped-undetermined=1' \
+    && echo "  ok   the verdict line carries skipped-undetermined=1 (separate from skipped-running)" \
+    || { echo "  FAIL skipped-undetermined missing from the verdict:"; echo "$out9"; fail=1; }
+  echo "$out9" | grep -q 'reasons=.*undetermined-agent-skipped' \
+    && echo "  ok   undetermined-agent-skipped is its own reason" \
+    || { echo "  FAIL undetermined-agent-skipped is not among the reasons:"; echo "$out9"; fail=1; }
+  grep -q 'OLD VERSION' "$g_target" \
+    && echo "  ok   the undetermined case still left the file untouched (fail-closed)" \
+    || { echo "  FAIL the undetermined case wrote to the file"; fail=1; }
 
   # ...and the other half of that distinction, which is the load-bearing one: "no server running" is
   # tmux ANSWERING, not tmux failing. Collapsing the two would make the tool a permanent no-op on
@@ -614,6 +668,70 @@ agent-someone-else")"
   grep -q 'fix: closed the gap' "$g_target" \
     && echo "  ok   \"no server running\" is an ANSWER, not a failure -- the sync proceeds" \
     || { echo "  FAIL a parked box was treated as undetermined:"; echo "$out10"; fail=1; }
+
+  # --- PART 5: REAL tmux, not the fake-binary/env-var stand-ins above (card 75b90343 part 1) -----
+  # Every case above drives _load_running_sessions via either AGENT_SKILL_DRIFT_TEST_SESSIONS (a
+  # value that stands in for tmux's output BEFORE the real branch at _load_running_sessions ever
+  # runs) or a fake `tmux` binary on PATH. Neither one executes the actual `command -v tmux` /
+  # `tmux list-sessions` code this tool runs in production -- a real tmux version that phrases its
+  # errors differently would sail through every case above with zero red tests. This block runs the
+  # genuine binary, isolated so it cannot touch the live fleet's tmux server: TMUX_TMPDIR points at
+  # a throwaway directory, AND $TMUX is unset -- TMUX_TMPDIR alone is not enough, because a tmux
+  # CLIENT invoked from inside an existing tmux pane (which this very selftest may be running
+  # under) ignores TMUX_TMPDIR and reconnects to the session named in $TMUX instead (measured: with
+  # $TMUX left set, the isolated calls below reached the real 11-session fleet server). Skippable
+  # when tmux is not installed on this host, per the card's own scope note.
+  if command -v tmux >/dev/null 2>&1; then
+    TMUX_ISO="$(mktemp -d)"
+    real_tmux() { env -u TMUX TMUX_TMPDIR="$TMUX_ISO" tmux "$@"; }
+    iso_run() { env -u TMUX TMUX_TMPDIR="$TMUX_ISO" AGENT_SKILL_DRIFT_ROOT="$tmp/root" \
+                bash "${BASH_SOURCE[0]}" --apply --agent agentG; }
+
+    # (a) MEASURED (2026-09-07, tmux 3.6, this host): a socket that was never used at all errors
+    # "No such file or directory", which does not match "no server running" -> undetermined.
+    g_stale
+    out16="$(iso_run)"
+    echo "$out16" | grep -q 'could not determine whether agentG is running' \
+      && echo "  ok   REAL tmux, never-used socket -> undetermined (matches the measured error text)" \
+      || { echo "  FAIL never-used-socket case did not report undetermined:"; echo "$out16"; fail=1; }
+    grep -q 'OLD VERSION' "$g_target" \
+      && echo "  ok   the never-used-socket read left the file untouched (fail-closed)" \
+      || { echo "  FAIL the never-used-socket read wrote to the file"; fail=1; }
+
+    # (b) a GENUINE session named agent-agentG -> the real code must classify it as RUNNING, driven
+    # by actual tmux output, not a fixture standing in for it.
+    real_tmux new-session -d -s agent-agentG
+    g_stale
+    out17="$(iso_run)"
+    echo "$out17" | grep -q 'agentG is RUNNING' \
+      && echo "  ok   REAL tmux with a genuine agent-agentG session -> classified as RUNNING" \
+      || { echo "  FAIL a real running session was not classified as RUNNING:"; echo "$out17"; fail=1; }
+    grep -q 'OLD VERSION' "$g_target" \
+      && echo "  ok   a genuinely running agent's file stayed untouched" \
+      || { echo "  FAIL a genuinely running agent's file was overwritten"; fail=1; }
+
+    # (c) THE CONTROL: once the transient window has passed, tmux settles to "no server running"
+    # (a genuine parked answer), and the sync must proceed. Without this, a guard that always fails
+    # closed on real tmux would pass every assertion above. MEASURED (2026-09-07, tmux 3.6, this
+    # host): the FIRST call immediately after kill-server can still catch a transient "server exited
+    # unexpectedly" (also undetermined, same safe direction -- see the classify_copy-adjacent doc
+    # comment above _agent_running_state), but that window is sub-tens-of-milliseconds and closes
+    # before this script's own startup work (identity rendering, etc.) completes, so asserting on it
+    # through a full script invocation would be racy, not deterministic. One warm-up read here
+    # deliberately consumes that window so the assertion below tests the settled state on purpose,
+    # not by accident of timing.
+    real_tmux kill-server 2>/dev/null
+    real_tmux list-sessions -F '#{session_name}' >/dev/null 2>&1
+    g_stale
+    out18="$(iso_run)"
+    grep -q 'fix: closed the gap' "$g_target" \
+      && echo "  ok   REAL tmux, settled \"no server running\" -> genuinely parked, sync proceeds" \
+      || { echo "  FAIL the settled no-server-running state did not sync:"; echo "$out18"; fail=1; }
+
+    rm -rf "$TMUX_ISO"
+  else
+    echo "  skip REAL tmux integration case (tmux not installed on this host)"
+  fi
 
   # ---------------------------------------------------------------------------------------------
   # The change-based alert trigger (card 222fdc5e). The bug being pinned: the heartbeat treated

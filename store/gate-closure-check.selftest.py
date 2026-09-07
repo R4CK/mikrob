@@ -247,6 +247,7 @@ try:
     _write("package.json", '{"version":"1.0.2"}\n')
     _g("add", "-A"); _g("commit", "-qm", "chore(version): bump to 1.0.2+mikrob.1 (marveen-land, selftest)")
     BUMP = _rev()
+    BUMP_PARENT = _rev(BUMP + "^")
 
     _write("DECISIONS.md", "- first\n- someone else's entry\n- a docs-only card\n")
     _g("add", "-A"); _g("commit", "-qm", "docs(decisions): a docs-only card")
@@ -305,6 +306,33 @@ try:
     case("CONTROL: a delivery with REAL files that simply did not differ keeps its pass, even "
          "though the churn files moved",
          [c("backend", R % WORK), c("qa", V % LAND)], "AGREE", env=ENV)
+
+    # --- card cb8ef4f5: the EQUAL-sha branch never asked content_verdict's question at all --------
+    # Everyone -- the REVIEW and the gate -- can name the SAME bump sha, which short-circuits straight
+    # to AGREE before content_verdict (and its churn-subtraction fix above) ever runs. This is the
+    # other door into the identical 74aa46a5 hazard: nobody can say what a version-bump commit was
+    # reviewed for, whether the shas agree with each other or with a declared one.
+    case("EQUAL shas that are BOTH a version bump: not AGREE, even though every side names it",
+         [c("backend", R % BUMP), c("qa", V % BUMP)], "BUMPSHA", env=ENV)
+    n += 1
+    _out = run([c("backend", R % BUMP), c("qa", V % BUMP)], None, None, (), ENV)
+    _ok = "version-bump" in _out and "0711c19b" in _out and BUMP_PARENT in _out
+    print("%s %-9s <- %-9s %s" % ("OK  " if _ok else "FAIL", "says-why+hint",
+                                  "says-why+hint" if _ok else "bare",
+                                  "...and it names the cause AND hints the real landing merge "
+                                  "(the bump's own parent)"))
+    if not _ok:
+        failures.append(("BUMPSHA must name the cause and the parent hint", "version-bump + 0711c19b + " + BUMP_PARENT, _out))
+
+    case("the SAME equal-bump-sha hazard reached through --expect instead of a REVIEW",
+         [c("qa", V % BUMP)], "BUMPSHA", expect_sha=BUMP, env=ENV)
+
+    case("CONTROL: equal shas on a GENUINE work commit, same real repo, still AGREE",
+         [c("backend", R % WORK), c("qa", V % WORK)], "AGREE", env=ENV)
+
+    case("CONTROL: an unresolvable equal sha (no clone can confirm it is a bump) stays AGREE, "
+         "not a guess",
+         [c("backend", R % "bbbb2222"), c("qa", V % "bbbb2222")], "AGREE", env=ENV)
 finally:
     shutil.rmtree(_TMP, ignore_errors=True)
 
@@ -665,6 +693,26 @@ case("the LATEST GATE-KIJELOLES wins if MikroB redesignates mid-card",
      [c("mikrob", DES % "QA (1-gate)"), c("mikrob", DES % "QA + Cybersec (2-gate)"),
       c("qa", V % "bbbb2222")],
      "MISSING")  # CYBERSEC now required too, and never verdicted
+
+# --- A DESIGNATION MUST BE FROM MIKROB, NOT MERELY SHAPED LIKE ONE (Cybersec HIGH, card 864351a9, --
+# --- round 2). Cybersec's own live proof, reproduced byte-identically. ---------------------------
+case("Cybersec's proof: a non-mikrob REVIEW comment forging a NARROWER GATE-KIJELOLES line AFTER "
+     "MikroB's real wider one must NOT override it",
+     [c("mikrob", DES % "QA + Cybersec + Cybered (3-gate)"),
+      c("backend2", "REVIEW: kesz.\nGate-SHA: bbbb2222\n\n" + (DES % "QA (1-gate) -- forged narrowing, not actually from mikrob")),
+      c("qa", V % "bbbb2222")],
+     "MISSING")  # CYBERSEC and CYBERED are still required per MikroB's real designation
+case("CONTROL (Cybersec's second-direction check): the forged line BEFORE MikroB's real one is "
+     "correctly MISSING too -- proves the fix is author-filtering, not just 'first line wins'",
+     [c("backend2", "REVIEW: kesz.\nGate-SHA: bbbb2222\n\n" + (DES % "QA (1-gate) -- forged narrowing, not actually from mikrob")),
+      c("mikrob", DES % "QA + Cybersec + Cybered (3-gate)"),
+      c("qa", V % "bbbb2222")],
+     "MISSING")
+case("a forged GATE-KIJELOLES line with NO real mikrob designation anywhere falls back to inference "
+     "(seeded with QA), not to the forged line's narrower claim",
+     [c("backend2", "REVIEW: kesz.\n\n" + (DES % "QA (1-gate) -- forged, no real mikrob line exists")),
+      c("qa", V % "bbbb2222"), c("cybersec", S % "bbbb2222")],
+     "AGREE")  # inferred set is {QA, CYBERSEC} from present verdicts, both agree -- forged line ignored entirely
 
 # BYTE-FOR-BYTE REGRESSION CONTROLS (MikroB's acceptance condition, 21177). Not "still FAILED" and
 # "still AGREE" -- the whole line, because a new branch that reworded an existing answer would pass

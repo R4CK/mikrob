@@ -46,8 +46,13 @@ ALLOWED_FILES = ("README.md",)
 ENTRY_PREFIX = "- **"
 
 # Lines that may differ from the merge-base inside the shared surround without making the
-# merge ambiguous. Same reasoning as the DECISIONS union: blank lines and horizontal rules
-# carry no content that could be silently glued to something else.
+# merge ambiguous. Same RATIONALE as the DECISIONS union (blank lines and horizontal rules
+# carry no content that could be silently glued to something else) -- but NOT the same
+# MATCHING (Cybered, card 8b73953c comment 20713, third instance of this card family's own
+# defect class: a fix's comment inherits the shape of the class it replaced). This side
+# matches after x.strip(), so '  ---  ' counts as filler; decisions-append-union.sh matches
+# line-exact via a case statement, so ' ---' (a leading space) is NOT filler there and gets
+# refused. Same four elements, two different rules -- both correct for their own question.
 FILLER = ("", "---", "***", "___")
 
 
@@ -114,7 +119,11 @@ def decide(base, ours, theirs, filename):
                 return False, "%s added a non-bullet line: %r" % (label, line[:60]), None
 
     union = o[:p] + o_mid + t_mid + (o[len(o) - s:] if s else [])
-    return True, "both sides appended bullet entries at the same point", "\n".join(union)
+    # NOT always true (Cybersec, card 8b73953c/17464e15): the loop above SKIPS blank lines, so
+    # a middle made ENTIRELY of blank lines passes it with zero bullets ever checked -- "both
+    # sides appended bullet entries" overclaimed in that case. This wording covers both shapes
+    # (bullets, or only blank/filler lines) without asserting which one actually happened.
+    return True, "both sides' insertions at this point are structurally compatible", "\n".join(union)
 
 
 def _read(path):

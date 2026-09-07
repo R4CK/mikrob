@@ -274,26 +274,92 @@ echo "$OUT" | grep -q "at exactly zero in this run" && ! echo "$OUT" | grep -q "
 #
 # Recorded here rather than edited in place, for the same reason as case F: a test whose promise
 # changes silently is how a reviewer loses the thread.
+#
+# UPDATED AGAIN (card b6f88f86): this exact scenario -- the ONE tracked type-aware rule at zero,
+# parse errors unchanged -- is what the `blind` predicate now names, so the pasteable command it
+# prints is --accept-blind-clear, not --accept-cleared (see O2/O2-flip above for the full story).
 root="$(new_root)"; export REPORT_JSON="$TMP/o.json"
 mk_report "$REPORT_JSON" "parse=6" "$UV=107"
 run "$root"
 [ "$CODE" = 3 ] && echo "$OUT" | grep -q "COULD NOT MEASURE" \
-  && echo "$OUT" | grep -q -- "--accept-cleared=$UA" \
-  && ok "R-A: ONE bounded rule at zero now REFUSES, and names --accept-cleared with the rule" \
+  && echo "$OUT" | grep -q -- "--accept-blind-clear=$UA" \
+  && ok "R-A: ONE bounded rule at zero now REFUSES, and names --accept-blind-clear with the rule" \
   || bad "R-A: ONE bounded rule at zero now REFUSES and names the flag" "code=$CODE out=$OUT"
 
 # --- O2: THE PERMISSIVE CONTROL FOR R-A -- an acknowledged clearing goes through -----------------
 # Cybersec asked for this one by name: "a test that pins the PERMISSIVE direction too, otherwise
 # the floor will catch legitimate cases next round". Finished work must remain shippable, and the
 # operator's route is one command that the refusal above prints ready to paste.
+#
+# UPDATED (card b6f88f86, Cybersec comment 21387 R-F1): this fixture's baseline tracks only ONE of
+# the four canonical type-aware rules, so clearing it is -- by the `blind` predicate below, which
+# checks all four -- INDISTINGUISHABLE from a dead TS program. That ambiguity is real, not a
+# fixture artifact (see O2-multi below, which proves the routine verb still works when a SECOND
+# type-aware rule stays nonzero and the ambiguity genuinely does not exist). The verb this scenario
+# needs is now --accept-blind-clear, not --accept-cleared -- the routine verb on this exact
+# scenario is pinned separately, right below, as the flip this card is about.
 root="$(new_root)"; export REPORT_JSON="$TMP/o2.json"
 mk_report "$REPORT_JSON" "parse=6" "$UV=107"
-run "$root" --update "--accept-cleared=$UA"
+run "$root" --update "--accept-blind-clear=$UA"
 [ "$CODE" = 0 ] && [ -f "$root/store/lint-baseline.json" ] \
   && ! grep -q "no-unsafe-argument" "$root/store/lint-baseline.json" \
   && grep -q '"@typescript-eslint/no-unused-vars": 107' "$root/store/lint-baseline.json" \
-  && ok "CONTROL: an ACKNOWLEDGED clearing writes the baseline and drops the finished rule" \
-  || bad "CONTROL: an ACKNOWLEDGED clearing writes the baseline" "code=$CODE out=$OUT"
+  && ok "CONTROL: an ACKNOWLEDGED blind clearing writes the baseline and drops the finished rule" \
+  || bad "CONTROL: an ACKNOWLEDGED blind clearing writes the baseline" "code=$CODE out=$OUT"
+
+# --- O2-flip: THE EXACT SAME SCENARIO, but the OLD (routine) verb is now REFUSED -----------------
+# This is the defect itself, pinned as a control: before this card, --accept-cleared on this exact
+# report exited 0 and wrote a baseline with the type-aware rule dropped entirely -- indistinguishable
+# from having recorded a dead toolchain as the new normal.
+root="$(new_root)"; export REPORT_JSON="$TMP/o2flip.json"
+mk_report "$REPORT_JSON" "parse=6" "$UV=107"
+run "$root" --update "--accept-cleared=$UA"
+[ "$CODE" = 3 ] && echo "$OUT" | grep -q -- "--accept-blind-clear" \
+  && ok "THE FLIP: the routine verb on a blind run is refused and points at the louder one" \
+  || bad "THE FLIP: the routine verb on a blind run is refused" "code=$CODE out=$OUT"
+
+# --- O2-multi: CONTROL -- with a SECOND type-aware rule still reporting, the ambiguity is real ---
+# and genuinely absent, so the ROUTINE verb still works exactly as before (Cybersec's P3: unmoved).
+# This is what proves the capability was narrowed, not removed: a truly unambiguous partial cleanup
+# still passes with one command, no louder verb needed.
+root2="$TMP/root-o2multi"
+mkdir -p "$root2/store"
+cp "$SRC" "$root2/store/lint-ratchet.sh"
+FP='@typescript-eslint/no-floating-promises'
+cat > "$root2/store/lint-baseline.json" <<JSON
+{
+  "(parse-error)": 6,
+  "$UA": 101,
+  "$FP": 40
+}
+JSON
+export REPORT_JSON="$TMP/o2multi.json"
+mk_report "$REPORT_JSON" "parse=6" "$UA=101"
+run "$root2" --update "--accept-cleared=$FP"
+[ "$CODE" = 0 ] && grep -q '"@typescript-eslint/no-unsafe-argument": 101' "$root2/store/lint-baseline.json" \
+  && ! grep -q "no-floating-promises" "$root2/store/lint-baseline.json" \
+  && ok "CONTROL: a genuinely unambiguous partial cleanup still passes with the routine verb" \
+  || bad "CONTROL: an unambiguous partial cleanup still passes with the routine verb" "code=$CODE out=$OUT"
+
+# --- O2-both-elevated: CONTROL -- the louder verb does not bypass the (a) parse-error floor -------
+# Cybersec's P4: acknowledging the blind collapse must not also excuse parse errors that rose
+# ABOVE their own recorded bound -- that is a separate, independent signal.
+root3="$TMP/root-o2both"
+mkdir -p "$root3/store"
+cp "$SRC" "$root3/store/lint-ratchet.sh"
+cat > "$root3/store/lint-baseline.json" <<JSON
+{
+  "(parse-error)": 6,
+  "$UA": 101,
+  "$FP": 40
+}
+JSON
+export REPORT_JSON="$TMP/o2both.json"
+mk_report "$REPORT_JSON" "parse=20"
+run "$root3" --update "--accept-blind-clear=$UA,$FP"
+[ "$CODE" = 3 ] && echo "$OUT" | grep -q "parse errors are ABOVE the recorded bound" \
+  && ok "CONTROL: --accept-blind-clear does not excuse parse errors rising above their own bound" \
+  || bad "CONTROL: --accept-blind-clear does not excuse a parse-error rise" "code=$CODE out=$OUT"
 
 # --- O3: the acknowledgement is NOT a blanket -- an unnamed rule going dark still refuses --------
 # This is what makes --accept-cleared an acknowledgement rather than a bypass, and it is the
@@ -449,9 +515,12 @@ run "$root" --update "--accept-cleared=$UA,$UV"
 [ "$CODE" = 3 ] \
   && ok "R-A: naming a rule that did NOT clear is refused, not ignored" \
   || bad "R-A: naming a rule that did NOT clear is refused" "code=$CODE out=$OUT"
+# UPDATED (card b6f88f86): this is the same single-type-aware-rule-baseline ambiguity as O2 --
+# clearing the only tracked type-aware rule is blind by the four-rule predicate, so the verb is
+# --accept-blind-clear now, not --accept-cleared (pinned separately as O2-multi/O2-flip above).
 root="$(new_root)"; export REPORT_JSON="$TMP/o7b.json"
 mk_report "$REPORT_JSON" "parse=6" "$UA=0" "$UV=107"
-run "$root" --update "--accept-cleared=$UA"
+run "$root" --update "--accept-blind-clear=$UA"
 [ "$CODE" = 0 ] \
   && ok "CONTROL: naming exactly the rule that cleared still writes the baseline" \
   || bad "CONTROL: naming exactly the rule that cleared still writes the baseline" "code=$CODE out=$OUT"
@@ -467,6 +536,51 @@ run "$root" --update "--accept-cleared=(parse-error)"
 [ "$CODE" = 3 ] && echo "$OUT" | grep -q "did not go to zero in this run" \
   && ok "R-A: (parse-error) cannot be acknowledged -- an inert name is an operator error" \
   || bad "R-A: (parse-error) cannot be acknowledged" "code=$CODE out=$OUT"
+
+# --- V1: --accept-blind-clear on a NOT-blind run is refused, not silently ignored ----------------
+# The louder verb answers one specific question; using it when the run does not ask that question
+# is a caller mistake, same shape as the --bootstrap/--accept-cleared mismatch (O5 near the top).
+root="$(new_root)"; export REPORT_JSON="$TMP/v1.json"
+mk_report "$REPORT_JSON" "parse=6" "$UA=101" "$UV=107"
+run "$root" --update "--accept-blind-clear=$UA"
+[ "$CODE" = 3 ] && echo "$OUT" | grep -q "this run is not blind" \
+  && ok "V1: --accept-blind-clear on a healthy (not-blind) run is refused" \
+  || bad "V1: --accept-blind-clear on a not-blind run is refused" "code=$CODE out=$OUT"
+
+# --- V2: --accept-cleared and --accept-blind-clear together are refused (they answer different ---
+# questions, same family as --bootstrap/--accept-cleared).
+root="$(new_root)"; export REPORT_JSON="$TMP/v2.json"
+mk_report "$REPORT_JSON" "parse=6" "$UV=107"
+run "$root" --update "--accept-cleared=$UA" "--accept-blind-clear=$UA"
+[ "$CODE" = 3 ] && echo "$OUT" | grep -q "different questions" \
+  && ok "V2: --accept-cleared and --accept-blind-clear together are refused" \
+  || bad "V2: --accept-cleared and --accept-blind-clear together are refused" "code=$CODE out=$OUT"
+
+# --- V3: a misspelled --accept-blind-clear name is refused, not ignored (same discipline as O4) --
+root="$(new_root)"; export REPORT_JSON="$TMP/v3.json"
+mk_report "$REPORT_JSON" "parse=6" "$UV=107"
+run "$root" --update "--accept-blind-clear=@typescript-eslint/no-unsafe-argumnet"
+[ "$CODE" = 3 ] && echo "$OUT" | grep -q "did not go to zero in this run" \
+  && ok "V3: a misspelled --accept-blind-clear name is refused, not ignored" \
+  || bad "V3: a misspelled --accept-blind-clear name is refused" "code=$CODE out=$OUT"
+
+# --- V4: --accept-blind-clear and --bootstrap together are refused ------------------------------
+root="$(new_root --no-baseline)"; export REPORT_JSON="$TMP/v4.json"
+mk_report "$REPORT_JSON" "parse=6" "$UA=101"
+run "$root" --bootstrap "--accept-blind-clear=$UA"
+[ "$CODE" = 3 ] && echo "$OUT" | grep -q "different questions" \
+  && ok "V4: --accept-blind-clear with --bootstrap is refused (different questions)" \
+  || bad "V4: --accept-blind-clear with --bootstrap is refused" "code=$CODE out=$OUT"
+
+# --- V5: MUTATION-PROOF -- a static --accept-blind-clear list does not wave a HEALTHY run through -
+# Same control shape as O6, for the new verb: naming rules that never went dark must fail on the
+# first healthy run it meets, or it can sit in a wrapper forever unnoticed.
+root="$(new_root)"; export REPORT_JSON="$TMP/v5.json"
+mk_report "$REPORT_JSON" "parse=6" "$UA=101" "$UV=107"
+run "$root" --update "--accept-blind-clear=$UA,$UV"
+[ "$CODE" = 3 ] \
+  && ok "V5: a stale --accept-blind-clear list fails on a healthy run" \
+  || bad "V5: a stale --accept-blind-clear list fails on a healthy run" "code=$CODE out=$OUT"
 
 echo
 printf 'lint-ratchet selftest: %d passed, %d failed (%d cases)\n' "$pass" "$fail" "$((pass+fail))"

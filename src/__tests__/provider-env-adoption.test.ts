@@ -252,25 +252,50 @@ describe('every shell sink in resolveProviderEnv is escaped, by PROVENANCE (Cybe
 
   it('no interpolation reaches the command line unescaped', () => {
     const body = resolveProviderEnvBody()
-    // Every `${...}` inside the function, minus the ones already wrapped.
-    const all = [...body.matchAll(/\$\{([^{}]*)\}/g)].map((m) => m[1].trim())
-    expect(all.length, 'no interpolations found -- the slice above is probably wrong').toBeGreaterThan(3)
-    const unescaped = all.filter((e) => !e.startsWith('shSingleQuote('))
+    // Non-vacuity FIRST, independent of the offender check below: the slice actually contains
+    // interpolations at all (every `${`, escaped or not), so an empty offender list cannot be
+    // hiding an empty slice.
+    const totalInterpolations = (body.match(/\$\{/g) || []).length
+    expect(totalInterpolations, 'no interpolations found -- the slice above is probably wrong').toBeGreaterThan(3)
+    // Card f1203a7c (Cybered): checks the OPENING boundary only, not a captured span of the full
+    // interpolation body. The old `/\$\{([^{}]*)\}/` extracted the content between `${` and the
+    // NEXT `}` -- which cannot span a NESTED brace, so `${({ u: OLLAMA_URL }).u}` slipped through
+    // unrecognised (measured: 27/27 green with that exact shape present, a simple unescaped
+    // `${OLLAMA_URL}` correctly caught). This form asks only "does shSingleQuote( sit immediately
+    // after `${`", which holds regardless of nesting depth inside the interpolation.
+    const unescaped = [...body.matchAll(/\$\{(?!shSingleQuote\()/g)]
     expect(
-      unescaped,
-      'an interpolation reaches the tmux launch command line without shSingleQuote(). It does not ' +
-        'matter whether the value looks like a secret: what matters is whether something outside ' +
-        'this process decides the string. Wrap it, or prove it cannot be written from outside.',
-    ).toEqual([])
+      unescaped.length,
+      'an interpolation reaches the tmux launch command line without shSingleQuote() immediately ' +
+        'after ${. It does not matter whether the value looks like a secret: what matters is ' +
+        'whether something outside this process decides the string. Wrap it, or prove it cannot ' +
+        'be written from outside.',
+    ).toBe(0)
   })
 
   it('BITES: the exact bare shape this NO-GO was about is caught', () => {
-    // Guard against the assertion above going vacuous (an empty match set also equals []).
+    // Guard against the assertion above going vacuous (an empty match set also has length 0).
     const mutated = 'export function resolveProviderEnv(' +
       '\n  x = `export ANTHROPIC_BASE_URL=${OLLAMA_URL} && `' +
       '\n// All tmux operations route through'
-    const all = [...mutated.matchAll(/\$\{([^{}]*)\}/g)].map((m) => m[1].trim())
-    expect(all.filter((e) => !e.startsWith('shSingleQuote('))).toEqual(['OLLAMA_URL'])
+    expect([...mutated.matchAll(/\$\{(?!shSingleQuote\()/g)].length).toBe(1)
+  })
+
+  it('BITES-NESTED: the nested-brace bypass Cybered measured is caught too (card f1203a7c)', () => {
+    // The exact mutant that slipped past the OLD capture-based regex, 27/27 green: a
+    // same-meaning interpolation reaching the sink through an object-literal indirection with a
+    // brace nested inside the ${...}.
+    const mutated = 'export function resolveProviderEnv(' +
+      '\n  x = `export ANTHROPIC_BASE_URL=${({ u: OLLAMA_URL }).u} && `' +
+      '\n// All tmux operations route through'
+    expect([...mutated.matchAll(/\$\{(?!shSingleQuote\()/g)].length).toBeGreaterThan(0)
+  })
+
+  it('CONTROL: a properly escaped interpolation, even nested, is not flagged', () => {
+    const src = 'export function resolveProviderEnv(' +
+      '\n  x = `export ANTHROPIC_BASE_URL=${shSingleQuote(({ u: OLLAMA_URL }).u)} && `' +
+      '\n// All tmux operations route through'
+    expect([...src.matchAll(/\$\{(?!shSingleQuote\()/g)]).toEqual([])
   })
 })
 
