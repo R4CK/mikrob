@@ -47,9 +47,28 @@ export function requiresPlanGrilling(description: string | null): boolean {
   return PLAN_GRILLING_REQUIRED_RX.test(description)
 }
 
-/** True when some comment on the card carries MikroB's plan-grilling verdict shape. */
+/**
+ * True when some comment FROM MIKROB carries the plan-grilling verdict shape.
+ *
+ * Cybersec HIGH (card 8e42a4c3, gate-eled against a9ece740639700bc44c0bda227f6e9532ef200ca): the
+ * first version of this function checked ONLY the content, never the author -- so the builder
+ * dispatching its OWN card could satisfy the guard with a single self-posted comment shaped like
+ * "VERDIKT ... GO-WITH-CHANGES", no `force: true` and no `mikrob` actor needed at all. Proven live
+ * in Cybersec's own worktree: `planGrillingGuardVerdict('c1', 'in_progress', false, 'backend2')`
+ * against a card carrying that one self-authored comment returned `{ blocked: false }`. This guard
+ * exists SPECIFICALLY to close the fed3f037 class of failure (a required step skipped on
+ * discipline alone) -- an unchecked author turns the guard into exactly that class one level down.
+ *
+ * Same author-check shape as kanban-gate-completeness-guard.ts's own `hasFreshVerdict`
+ * (`(c.author ?? '').toLowerCase() === agent`) -- that guard takes the agent as a parameter because
+ * any of three gate agents may satisfy it; a plan-grilling verdict is always MikroB's alone, so the
+ * comparison is the literal `'mikrob'`, matching kanban-force-actors.ts's own FORCE_ACTORS entry
+ * for the same identity rather than introducing a second, potentially-drifting source for it.
+ */
 function hasPlanGrillingVerdict(comments: readonly Comment[]): boolean {
-  return comments.some((c) => PLAN_GRILLING_VERDICT_RX.test(c.content ?? ''))
+  return comments.some(
+    (c) => (c.author ?? '').toLowerCase() === 'mikrob' && PLAN_GRILLING_VERDICT_RX.test(c.content ?? ''),
+  )
 }
 
 /** Blocks planned -> in_progress when the card's own description requires plan-grilling and no
