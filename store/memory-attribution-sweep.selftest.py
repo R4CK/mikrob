@@ -24,9 +24,12 @@ mas = importlib.util.module_from_spec(_spec)
 _spec.loader.exec_module(mas)
 
 FAILS = []
+CHECKS = 0
 
 
 def check(name, got, want):
+    global CHECKS
+    CHECKS += 1
     if got == want:
         print(f'  ok   {name}')
     else:
@@ -275,6 +278,9 @@ finally:
 
 print()
 if FAILS:
-    print(f'controls: FAIL ({len(FAILS)}): ' + '; '.join(FAILS))
+    print(f'controls: FAIL ({len(FAILS)} of {CHECKS}): ' + '; '.join(FAILS))
     sys.exit(1)
-print('controls: PASS')
+# "selftest: N case(s), PASS" is the shape store-selftests-all-run.test.ts recognises (card
+# 711a7e57/2003e04b) -- a bare "controls: PASS" with no count is indistinguishable from a run that
+# skipped every case, which is exactly the vacuous-pass class that generic checker exists to catch.
+print(f'selftest: {CHECKS} case(s), PASS')

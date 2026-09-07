@@ -27,9 +27,9 @@ describe('memory-attribution-sweep.py selftest', () => {
     expect(src).not.toContain('default_projects_root()')
   })
 
-  it('its selftest passes', () => {
+  it('its selftest passes, in the shape store-selftests-all-run.test.ts recognises (card 711a7e57/2003e04b)', () => {
     const out = execFileSync('python3', [SELFTEST], { encoding: 'utf-8' })
-    expect(out).toContain('controls: PASS')
+    expect(out).toMatch(/selftest: [1-9]\d* case\(s\), PASS/)
   })
 
   it('runs at least 15 checks -- deleting cases is a failure, not a cleanup', () => {
