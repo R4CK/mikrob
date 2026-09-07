@@ -1620,10 +1620,38 @@ export function containsAsToken(content: string, needle: string): boolean {
 }
 
 /**
+ * Strip line comments so a `present` anchor cannot be satisfied by a comment merely NAMING the
+ * needle (card 232e01e2, Cybersec measurement on this file's own re-measure history: the needle
+ * also matched inside a comment describing what the code used to do, so editing away only the CODE
+ * half of a rule -- the ordinary shape of a re-measure round, see the file header above -- left the
+ * anchor green for the wrong reason; a control run that also cleared the comment DID go red, proving
+ * the pin had a tooth, just not where it needed one). Keyed off the anchor's own file extension
+ * (`.py` -> `#`, everything else -> `//`) rather than scanning for both markers unconditionally,
+ * because ACKNOWLEDGED_FORK_ANCHORS spans both TS and Python files and stripping `#` inside a TS
+ * string (a URL fragment, say) or `//` inside a Python one would silently eat real content neither
+ * comment style owns there. Deliberately line-comment-only, not block comments: every needle
+ * anchored today sits in a line-commented region (measured against the three live anchor files),
+ * and a block-comment stripper is real complexity (nesting, a `/*` inside a string) this map does
+ * not need yet.
+ */
+function stripLineComments(content: string, file: string): string {
+  const marker = file.endsWith('.py') ? /#.*$/ : /\/\/.*$/
+  return content
+    .split('\n')
+    .map((line) => line.replace(marker, ''))
+    .join('\n')
+}
+
+/**
  * Pure and injectable (`readFile`) for the same reason classifyConflicts is: the live test reads the
  * real tree, and a classification exercised only there would be untested wherever the tree happens
  * not to trip it. `readFile` returns null for a missing file, which is DRIFT for a 'present' anchor
  * -- a rule resting on a file that is gone is exactly as stale as one resting on deleted code.
+ *
+ * A `present` anchor matches on the COMMENT-STRIPPED text; an `absent` one stays on the RAW text on
+ * purpose (card 232e01e2) -- a statement reverted but left behind as a comment is still a prose
+ * claim worth re-deciding, the same reasoning CLAUDE.md's code-quality rule 12 gives for a `present`
+ * check one level up: the two directions are not symmetric, so neither can share one code path.
  */
 export function classifyForkAnchors(
   anchors: Readonly<Record<string, ForkAnchor>>,
@@ -1632,7 +1660,9 @@ export function classifyForkAnchors(
   const drifted: DriftedForkAnchor[] = []
   for (const [file, anchor] of Object.entries(anchors)) {
     const content = readFile(anchor.file)
-    const found = content !== null && containsAsToken(content, anchor.needle)
+    const searched =
+      content !== null && anchor.expect === 'present' ? stripLineComments(content, anchor.file) : content
+    const found = searched !== null && containsAsToken(searched, anchor.needle)
     if ((anchor.expect === 'present') !== found) drifted.push({ file, anchor, found })
   }
   return drifted
