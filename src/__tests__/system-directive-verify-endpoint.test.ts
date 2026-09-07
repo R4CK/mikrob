@@ -53,8 +53,12 @@ describe('the verification endpoint the receiver rule points at', () => {
 
     const { status, json } = await getMessageRoute(m![1])
     expect(status).toBe(200)
-    // The four acceptance conditions of the scaffold rule, verbatim:
-    expect(json!.from_agent).toBe('system')
+    // The four acceptance conditions of the scaffold rule, verbatim. The sender is
+    // SYSTEM_DIRECTIVE_SENDER ('system-directive'), deliberately NOT the bare 'system'
+    // LEGACY_SYSTEM_SENDER -- see system-directive-id.ts (card 5c5d7bc4, Cybersec MEDIUM):
+    // 'system' is shared by ordinary in-process notifications, one of which interpolates
+    // caller-supplied text, so the directive channel owns its own reserved id.
+    expect(json!.from_agent).toBe('system-directive')
     expect(json!.to_agent).toBe('boni')
     expect(json!.status).not.toBe('failed')
     expect(json!.content).toBe(directive)

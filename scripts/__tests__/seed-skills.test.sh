@@ -98,6 +98,7 @@ SEED_SCHED_DIR="$INSTALL_DIR/seed-scheduled-tasks"
 MAIN_AGENT_ID="testbot"
 BOT_NAME="TestBot"
 OWNER_NAME="Tester"
+CHAT_ID="123456789"
 
 for tpl in "$SEED_SCHED_DIR"/*/; do
   [ -d "$tpl" ] || continue
@@ -110,6 +111,7 @@ for tpl in "$SEED_SCHED_DIR"/*/; do
         -e "s/{{BOT_NAME}}/$BOT_NAME/g" \
         -e "s/{{OWNER_NAME}}/$OWNER_NAME/g" \
         -e "s|{{INSTALL_DIR}}|/opt/testbot|g" \
+        -e "s/{{CHAT_ID}}/$CHAT_ID/g" \
         "$f" > "$target/$(basename "$f")"
   done
 done

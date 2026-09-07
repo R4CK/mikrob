@@ -58,6 +58,7 @@ vi.mock('../db.js', () => ({
   // this helper. Nothing reads the value until that lands; until then it is an
   // unused key, which is why this is safe to ship on its own.
   countNewerMessagesFromSameSender: (..._a: unknown[]) => 0,
+  getKanbanCardStateByIdPrefix: () => null,
 }))
 
 vi.mock('../web/voice-directive.js', () => ({

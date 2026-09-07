@@ -56,8 +56,13 @@ fi
 # that must never trigger a MODEL FALLBACK or a fleet dispatch HOLD, only this human-facing heads-up
 # alert), and "reached your (usage|plan|weekly) limit" / "your limit will reset" are wider variants
 # of the core phrasing this monitor keeps on purpose for earlier/broader warning coverage.
+# The mid-phrase word-wildcard ("approaching X weekly/usage limit", e.g. "Approaching Opus weekly
+# limit") is the SAME upstream term session-limit-pattern.json's own comment deliberately excluded
+# from the SHARED canonical pattern (an unbounded wildcard risks a false model-downgrade for the 5
+# OTHER consumers of that file) -- but this monitor is alert-only, never a model-fallback trigger, so
+# the wildcard is safe HERE and belongs in this script's own EXTRA set (card 4f15966e).
 . "$STORE/session-limit-pattern.sh"
-LIMIT_MONITOR_EXTRA_RX='reached your (usage|plan|weekly) limit|your limit will reset|rate_limit_error|429 too many requests|quota exceeded|out of (usage|credits)'
+LIMIT_MONITOR_EXTRA_RX='reached your (usage|plan|weekly) limit|your limit will reset|approaching [a-z0-9]+ (weekly|usage) limit|rate_limit_error|429 too many requests|quota exceeded|out of (usage|credits)'
 CANDIDATE_RX="${SESSION_LIMIT_RX}|${LIMIT_MONITOR_EXTRA_RX}"
 
 # ---------------------------------------------------------------------------

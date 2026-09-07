@@ -73,11 +73,13 @@ with tempfile.TemporaryDirectory() as tmp:
     check("a naplo megmondja melyik toolrol van szo", "telegram" in joined.lower(), joined)
     check("ez a sor is idobelyeges", bool(lines) and all(STAMP.match(l) for l in lines), joined)
 
-    # (3) the same shape on the email path still BLOCKS, and says why
-    rc, err, lines = run({"tool_name": "mcp__google-workspace__manage_email",
-                          "tool_input": 7}, rules)
-    check("email + nem-szotar tool_input: blokk", rc == 2, f"exit={rc}")
-    check("a blokk-uzenet a hivo szemebe mondja az okot", "nem szotar" in err, err[:200])
+    # DEVIATION (card 4f15966e, backend, 2026-09-07): case (3) (manage_email dispatch) and
+    # the codeblock-markdownv2 half of case (5) below both test the SAME already-declined
+    # ~1293-line outgoing-copy-gate.py rewrite as outgoing-copy-gate.test.py's own removed
+    # section 6 -- see that file's deviation note and ACKNOWLEDGED_CONFLICTS round 15
+    # (2026-09-06, card 79bb0364) for the full reasoning. manage_email is not recognized as
+    # an audited send tool by the current gate at all, so case (3) is removed rather than
+    # left red. MikroB confirmed 2026-09-07.
 
     # (4) the net must not widen the gate to tools this hook does not police
     _, _, before = run({"tool_name": TELEGRAM, "tool_input": {"text": "Rendben van."}}, rules)
@@ -89,9 +91,8 @@ with tempfile.TemporaryDirectory() as tmp:
     # (5) a real problem still blocks: the gate is not weakened by any of this
     rc, err, _ = run({"tool_name": TELEGRAM, "tool_input": {"text": "Ez egy — gondolatjel."}}, rules)
     check("em dash tovabbra is blokkol", rc == 2, f"exit={rc}")
-    rc, err, _ = run({"tool_name": TELEGRAM,
-                      "tool_input": {"text": "Masd:\n```\nls\n```", "format": "text"}}, rules)
-    check("plain textes kodblokk tovabbra is blokkol", rc == 2, f"exit={rc}")
+    # The plain-codeblock-without-markdownv2 check (GATECOPY827) is the other half of the
+    # declined rewrite noted above -- not implemented, removed rather than left red.
 
 print()
 if failed:

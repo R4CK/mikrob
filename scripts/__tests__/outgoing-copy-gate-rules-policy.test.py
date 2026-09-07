@@ -1,21 +1,26 @@
 #!/usr/bin/env python3
 """CLCOPYGATEHIANY902: a MISSING rules file is not the same as a BROKEN one.
 
-Owner decision (TG 14442): the rules file is deliberately not shipped (it
-names a private person), so on every fresh customer install it is ABSENT --
-and the old email path fail-closed on that, blocking a paying customer's
-outbound mail entirely. New policy, pinned here:
+DEVIATION FROM THE ORIGINAL TG 14442 POLICY (card 4f15966e, backend,
+2026-09-07): this file originally pinned an EMAIL-fail-open policy for a
+missing/empty rules file. GATEPERSIST816(2) later narrowed that, on purpose,
+for the email branch specifically: "az EMAIL ut a hianyzo nev-szabalyra
+FAIL-CLOSED... pont a vevo fele a legdragabb a rossz nev" -- a postponable
+send is not worth the risk of an unchecked name reaching a customer. The
+TELEGRAM branch is explicitly UNCHANGED ("A telegram-ag fail-open marad") --
+it is the supervisory channel, where silence is the more expensive failure.
+MikroB confirmed (2026-09-07): keep the gate's current fail-closed email
+behavior, fix this test to match it. Empirically verified against the actual
+gate (outgoing-copy-gate.py) before writing these assertions, not guessed:
 
-  missing / valid-but-empty  -> email goes OUT (fail-open) with a LOUD,
-                                user-visible systemMessage -- the warning is
-                                asserted, not just the exit code, because a
-                                silent pass is indistinguishable from
-                                protection that does not exist;
-  present but INVALID        -> email stays BLOCKED (negative control: a fix
-                                that fail-opens both branches is WORSE than
-                                the bug and would look green without this);
-  valid with patterns        -> the name check still enforces (regression
-                                guard on the thing the gate is for).
+  EMAIL + missing/invalid rules -> BLOCKED (exit 2), loud stderr naming why;
+  EMAIL + valid-but-empty rules -> passes SILENTLY (an empty pattern list is
+                                    a determined, valid ruleset, not a broken
+                                    one -- nothing to warn about);
+  EMAIL + valid with patterns   -> the name check still enforces (regression
+                                    guard on the thing the gate is for);
+  TELEGRAM + missing rules      -> unchanged fail-open with its own loud
+                                    systemMessage (the supervisory channel).
 
 Run: python3 <thisfile>   Exit 0 = all pass.
 """
@@ -57,26 +62,39 @@ CLEAN_MAIL = {
 with tempfile.TemporaryDirectory() as td:
     missing = os.path.join(td, "nincs-ilyen.json")
 
-    # --- missing: OPEN + LOUD --------------------------------------------
+    # --- missing: EMAIL fail-closed (GATEPERSIST816(2)) -------------------
     code, out, err = run_gate(missing, CLEAN_MAIL)
-    check("missing rules: the email goes OUT (exit 0, not blocked)",
-          code == 0, f"exit={code} err={err[:150]!r}")
-    check("missing rules: the pass is LOUD (systemMessage names the absent check)",
-          "systemMessage" in out and "HIANYZIK" in out and "nev-ellenorzes NELKUL" in out,
-          f"out={out[:200]!r}")
+    check("missing rules: the email is BLOCKED (exit 2)",
+          code == 2, f"exit={code} out={out[:150]!r}")
+    check("missing rules: the block is LOUD (stderr names the absent check)",
+          "TILTVA" in err and "fail-closed" in err, f"err={err[:200]!r}")
 
-    # --- valid but empty: OPEN + LOUD ------------------------------------
+    # --- valid but empty: an empty pattern list is a determined ruleset,
+    # not a broken one -- passes SILENTLY, nothing to warn about -----------
     empty = os.path.join(td, "empty.json")
     with open(empty, "w") as fh:
         json.dump({"bad_name_patterns": []}, fh)
-    code, out, _ = run_gate(empty, CLEAN_MAIL)
-    check("valid-empty rules: email goes OUT and the pass is loud",
-          code == 0 and "URES" in out, f"exit={code} out={out[:160]!r}")
+    code, out, err = run_gate(empty, CLEAN_MAIL)
+    check("valid-empty rules: email goes OUT silently (no warning needed)",
+          code == 0 and out == "" and err == "", f"exit={code} out={out[:160]!r} err={err[:160]!r}")
 
     # --- invalid variants: CLOSED (the negative control) ------------------
+    # Message text is NOT uniform across these (empirically verified, not
+    # guessed): not-json/top-level-not-dict route through the generic "file
+    # missing/unreadable/malformed" message; a bad regex gets its own
+    # "nem forditható" reason. "wrong-schema" (a STRING instead of a list for
+    # bad_name_patterns) does NOT hit that path at all -- Python iterates a
+    # string character-by-character, so it silently becomes a one-letter
+    # pattern set and blocks via a coincidental name-audit match, not real
+    # schema validation. That is a separate, pre-existing gap in the gate
+    # (worth its own follow-up card) -- out of scope for this merge-landing
+    # fix, so pinned here as what it actually does rather than what it should.
+    # Every variant still ends up exit 2 (email stays blocked either way),
+    # which is the property this negative control exists to protect.
     invalid_cases = [
         ("not-json", "{ez nem json"),
-        ("wrong-schema (patterns not a list)", json.dumps({"bad_name_patterns": "Szota"})),
+        ("wrong-schema (patterns not a list -- blocks via accidental char-iteration, not validation)",
+         json.dumps({"bad_name_patterns": "Szota"})),
         ("uncompilable regex", json.dumps({"bad_name_patterns": ["[unclosed"]})),
         ("top-level not a dict", json.dumps(["Szota"])),
     ]
@@ -86,7 +104,7 @@ with tempfile.TemporaryDirectory() as td:
             fh.write(content)
         code, _, err = run_gate(bad, CLEAN_MAIL)
         check(f"invalid rules ({label}): email stays BLOCKED (exit 2)",
-              code == 2 and "ervenytelen" in err, f"exit={code} err={err[:150]!r}")
+              code == 2, f"exit={code} err={err[:150]!r}")
 
     # --- valid with patterns: the check still enforces --------------------
     good = os.path.join(td, "good.json")

@@ -34,7 +34,16 @@ describe('update path survives NODE_ENV=production (AUTOUPDNODEENV905)', () => {
     const route = readFileSync(join(ROOT, 'src', 'web', 'routes', 'updates.ts'), 'utf-8')
     const spawnIdx = route.indexOf("spawn('/bin/bash'")
     expect(spawnIdx).toBeGreaterThan(-1)
-    const before = route.slice(Math.max(0, spawnIdx - 600), spawnIdx)
-    expect(before).toContain("delete updateEnv['NODE_ENV']")
+    // AUTOUPDNODEENV905 half 2/2 (card c116696f): the deletion lives in the dedicated
+    // buildUpdateScriptEnv(extraEnv) helper (Cybersec NO-GO on an earlier version that
+    // mutated process.env directly -- this one builds a local copy instead), not inlined
+    // right before the spawn call. Pin both ends: the spawn passes the helper's result as
+    // `env`, and the helper itself deletes NODE_ENV from its own local copy.
+    const spawnCall = route.slice(spawnIdx, spawnIdx + 400)
+    expect(spawnCall).toContain('env: buildUpdateScriptEnv(')
+    const helperIdx = route.indexOf('function buildUpdateScriptEnv(')
+    expect(helperIdx).toBeGreaterThan(-1)
+    const helperBody = route.slice(helperIdx, helperIdx + 300)
+    expect(helperBody).toContain('delete env.NODE_ENV')
   })
 })

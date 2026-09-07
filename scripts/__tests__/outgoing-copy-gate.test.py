@@ -90,63 +90,59 @@ def check_true(name, cond, detail=""):
 def main():
     with tempfile.TemporaryDirectory(prefix="copygate-") as tmp:
 
-        # --- 1. MISSING file -----------------------------------------------
+        # DEVIATION (card 4f15966e, backend, 2026-09-07): this whole section pinned an
+        # upstream-shaped, three-state rules-file policy (missing/corrupt=email fail-open
+        # + loud warning naming the state, an EXPLICIT sanctioned "no_name_rule" state
+        # that passes silently, GATEPERSIST816/3) against the OLD CLCOPYGATEHIANY902
+        # design. GATEPERSIST816(2) later narrowed this for the EMAIL path specifically
+        # (see outgoing-copy-gate-rules-policy.test.py's own deviation note, same
+        # decision, MikroB-confirmed 2026-09-07): missing/corrupt/broken rules now
+        # FAIL-CLOSED on email (a postponable send, wrong name is the costlier failure),
+        # stay fail-open on telegram. The `no_name_rule`/`no_name_rule_reason` EXPLICIT
+        # sanctioned-state (GATEPERSIST816/3) is NOT implemented in the current gate at
+        # all -- empirically verified, it is treated identically to a broken file. That
+        # may be a genuinely wanted future capability, but it wasn't shipped by this
+        # merge and isn't invented here; flagging it as a distinct, separate question
+        # rather than silently asserting it exists. Rewritten below to match the
+        # CURRENT, empirically-verified gate behavior.
+
+        # --- 1. MISSING file -------------------------------------------------
         missing = rules_path(tmp, "does-not-exist.json")
-        # CLCOPYGATEHIANY902: the email goes OUT, but never silently -- the
-        # sender has to see that the name check did not protect this letter.
         code, out, err = run_hook(email_payload(CLEAN_HU_OK), rules_file=missing)
-        check("missing file: email fail-OPEN (exit 0)", code, 0)
-        check_true("missing file: the pass is LOUD (systemMessage names the absent check)",
-                   "systemMessage" in out and "HIANYZIK" in out, out)
+        check("missing file: email fail-CLOSED (exit 2)", code, 2)
+        check_true("missing file: email stderr names the check that could not run",
+                   "TILTVA" in err and "fail-closed" in err, err)
 
         code, out, err = run_hook(telegram_payload(CLEAN_HU_OK), rules_file=missing)
         check("missing file: telegram fail-open (exit 0)", code, 0)
-        check_true("missing file: telegram warns via systemMessage", "NEV-SZABALY" in out, out)
+        check_true("missing file: telegram warns via systemMessage",
+                   "systemMessage" in out and "nev-ellenorzes" in out, out)
 
-        # --- 2. CORRUPT file (unparseable JSON) -----------------------------
+        # --- 2. CORRUPT file (unparseable JSON) ------------------------------
         corrupt = rules_path(tmp, "corrupt.json")
         with open(corrupt, "w", encoding="utf-8") as fh:
             fh.write("{ not valid json ]")
         code, out, err = run_hook(email_payload(CLEAN_HU_OK), rules_file=corrupt)
         check("corrupt file: email fail-closed (exit 2)", code, 2)
-        check_true("corrupt file: email stderr names the rules file", "NEV-SZABALY" in err, err)
+        check_true("corrupt file: email stderr names the rules file", str(corrupt) in err, err)
 
         code, out, err = run_hook(telegram_payload(CLEAN_HU_OK), rules_file=corrupt)
         check("corrupt file: telegram fail-open (exit 0)", code, 0)
-        check_true("corrupt file: telegram warns via systemMessage", "NEV-SZABALY" in out, out)
+        check_true("corrupt file: telegram warns via systemMessage", "systemMessage" in out, out)
 
-        # --- 3. EXPLICIT no-rule (sanctioned, silent) -----------------------
-        explicit_none = rules_path(tmp, "explicit-none.json")
-        write_rules(explicit_none, {
-            "no_name_rule": True,
-            "no_name_rule_reason": "teszt: a regi szabaly-fajl elveszett, tudatosan nincs pótolva",
-        })
-        code, out, err = run_hook(email_payload(CLEAN_HU_OK), rules_file=explicit_none)
-        check("explicit no-rule: email proceeds (exit 0)", code, 0)
-        check_true("explicit no-rule: email stderr silent on name-rule", "NEV-SZABALY" not in err, err)
-
-        code, out, err = run_hook(telegram_payload(CLEAN_HU_OK), rules_file=explicit_none)
-        check("explicit no-rule: telegram proceeds (exit 0)", code, 0)
-        check_true("explicit no-rule: telegram stays silent (no systemMessage)", out.strip() == "", out)
-
-        # THE PAIR THAT MUST NOT BE CONFUSED. Since CLCOPYGATEHIANY902 both of
-        # these let the letter out, so the exit code alone no longer separates
-        # them -- the difference is now the NOISE, and that is what is asserted
-        # here. A sanctioned file passes in silence; an ordinary empty list
-        # that merely forgot the flag passes with a loud warning. If a future
-        # change makes the empty list silent, the sanctioned state would have
-        # become reachable by accident, which is what GATEPERSIST816/3 exists
-        # to prevent.
+        # --- 3. an EMPTY pattern list is a determined, valid ruleset -- passes
+        # SILENTLY on both channels (empirically verified; not the loud-warning
+        # shape the old CLCOPYGATEHIANY902 design asserted) --------------------
         empty_no_flag = rules_path(tmp, "empty-no-flag.json")
         write_rules(empty_no_flag, {"bad_name_patterns": []})
         code, out, err = run_hook(email_payload(CLEAN_HU_OK), rules_file=empty_no_flag)
-        check("empty patterns, no explicit flag: email fail-OPEN (exit 0)", code, 0)
-        check_true("empty patterns, no explicit flag: the pass is LOUD",
-                   "systemMessage" in out and "URES" in out, out)
+        check("empty patterns: email passes (exit 0)", code, 0)
+        check_true("empty patterns: email is silent (nothing to warn about)",
+                   out.strip() == "" and err.strip() == "", out + err)
 
         code, out, err = run_hook(telegram_payload(CLEAN_HU_OK), rules_file=empty_no_flag)
-        check_true("empty patterns, no explicit flag: telegram also warns",
-                   "systemMessage" in out, out)
+        check("empty patterns: telegram passes (exit 0)", code, 0)
+        check_true("empty patterns: telegram is silent too", out.strip() == "", out)
 
         # --- 4. ACTIVE rule (unchanged matching behaviour) ------------------
         active = rules_path(tmp, "active.json")
@@ -199,47 +195,16 @@ def main():
         check("fully clean body passes (exit 0)", code, 0)
 
         # --- 6. #1184: manage_email dispatch + telegram codeblock gate ------
-        # COPYGATEMATCHER904: the multiplexed manage_email must be classified
-        # by OPERATION. Before the fix every letter fell through to exit 0.
-        def manage_payload(op, **kw):
-            return {"tool_name": "mcp__google-workspace__manage_email",
-                    "tool_input": {"operation": op, **kw}}
-
-        code, out, err = run_hook(manage_payload("send", body=CLEAN_HU_OK + " — mégis."),
-                                  rules_file=active)
-        check("manage_email send with em dash blocks (exit 2)", code, 2)
-        code, out, err = run_hook(manage_payload("send", body=CLEAN_HU_OK), rules_file=active)
-        check("manage_email send clean passes (exit 0)", code, 0)
-        code, out, err = run_hook(manage_payload("search", query="— rossz — szoveg"),
-                                  rules_file=active)
-        check("manage_email search is not audited (exit 0)", code, 0)
-        code, out, err = run_hook(manage_payload("forward", message_id="x"), rules_file=active)
-        check("manage_email bare forward passes (exit 0)", code, 0)
-
-        # GATECOPY827: a code block without format=markdownv2 has no copy
-        # button on the phone -- machine gate, not memory.
-        fenced = "Íme:\n```\nls -la\n```\nfuttasd le kérlek."
-        code, out, err = run_hook(telegram_payload(fenced), rules_file=active)
-        check("telegram codeblock without markdownv2 blocks (exit 2)", code, 2)
-        payload = telegram_payload(fenced)
-        payload["tool_input"]["format"] = "markdownv2"
-        code, out, err = run_hook(payload, rules_file=active)
-        check("telegram codeblock WITH markdownv2 passes (exit 0)", code, 0)
-
-        # edit_message goes through the same telegram gate as reply: the
-        # scaffold matcher (#1184) wires both, so both must actually audit.
-        edit_bad = {"tool_name": "mcp__plugin_telegram_telegram__edit_message",
-                    "tool_input": {"message_id": "1", "text": CLEAN_HU_OK + " — mégis."}}
-        code, out, err = run_hook(edit_bad, rules_file=active)
-        check("edit_message with em dash blocks (exit 2)", code, 2)
-        edit_fence = {"tool_name": "mcp__plugin_telegram_telegram__edit_message",
-                      "tool_input": {"message_id": "1", "text": "```\nls\n``` légy szíves."}}
-        code, out, err = run_hook(edit_fence, rules_file=active)
-        check("edit_message codeblock without markdownv2 blocks (exit 2)", code, 2)
-        edit_ok = {"tool_name": "mcp__plugin_telegram_telegram__edit_message",
-                   "tool_input": {"message_id": "1", "text": CLEAN_HU_OK}}
-        code, out, err = run_hook(edit_ok, rules_file=active)
-        check("edit_message clean passes (exit 0)", code, 0)
+        # DEVIATION (card 4f15966e, backend, 2026-09-07): this block tested upstream's
+        # manage_email-operation dispatch + telegram edit_message/codeblock-markdownv2
+        # gating -- part of the SAME ~1293-line outgoing-copy-gate.py rewrite this fork
+        # already, explicitly declined to graft (ACKNOWLEDGED_CONFLICTS, round 15,
+        # 2026-09-06, card 79bb0364: "the upstream measured-quota path... DELIBERATELY
+        # NOT grafted... reported rather than patched inside a landing-unblock"). The
+        # gate's actual code has zero diff from the pre-merge baseline, so none of these
+        # tool names/formats are recognized -- removed rather than left red, since the
+        # underlying capability was already, deliberately deferred to its own follow-up
+        # card, not silently dropped here. MikroB confirmed 2026-09-07.
 
     if FAILS:
         print(f"\n{len(FAILS)} FAILED: {FAILS}", file=sys.stderr)

@@ -175,12 +175,17 @@ else
   fail "resolver over the REAL shipped settings falls through to the distribution default" "SENTINEL-FROM-REGISTRY" "$real_settings_model"
 fi
 
-# (3) The real shipped constant (the single source of truth) is Opus 5 (1M).
+# (3) The real shipped constant (the single source of truth). DEVIATION (card 4f15966e,
+# backend, 2026-09-07): upstream widened the distribution default to the 1M-context
+# variant ('claude-opus-5[1m]'); this is a real cost/context product tradeoff, not a
+# merge-conflict-resolution call, so it stays 'claude-opus-5' (the current fork default)
+# until Peti decides. MikroB is escalating separately. Re-adopt this test's original
+# expectation if/when that decision lands.
 registry_default="$(grep -oE "DISTRIBUTION_DEFAULT_AGENT_MODEL = '[^']+'" "$INSTALL_DIR/src/config-registry.ts" | head -1 | sed "s/.*'\(.*\)'/\1/")"
-if [ "$registry_default" = "claude-opus-5[1m]" ]; then
-  pass "DISTRIBUTION_DEFAULT_AGENT_MODEL is claude-opus-5[1m] (real src constant)"
+if [ "$registry_default" = "claude-opus-5" ]; then
+  pass "DISTRIBUTION_DEFAULT_AGENT_MODEL is claude-opus-5 (real src constant, fork default pending Peti's 1M-variant decision)"
 else
-  fail "DISTRIBUTION_DEFAULT_AGENT_MODEL is claude-opus-5[1m]" "claude-opus-5[1m]" "$registry_default"
+  fail "DISTRIBUTION_DEFAULT_AGENT_MODEL is claude-opus-5" "claude-opus-5" "$registry_default"
 fi
 
 # (4) The template must not resurrect a second model source: no installer ships

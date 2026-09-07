@@ -4,7 +4,10 @@ import { dirname, join } from 'node:path'
 import { fileURLToPath } from 'node:url'
 
 const __dirname = dirname(fileURLToPath(import.meta.url))
-const appSource = readFileSync(join(__dirname, '..', '..', 'web', 'app.js'), 'utf8')
+// renderAgents() lives in app-agents.js (split out of app.js before this file's own merge,
+// card 4f15966e backend 2026-09-07 -- verified via `git diff b0e63a39 HEAD -- web/app.js`
+// showing zero change there; the split predates this merge).
+const appSource = readFileSync(join(__dirname, '..', '..', 'web', 'app-agents.js'), 'utf8')
 
 // Structural guard: renderAgents() must skip the main agent entry from the
 // /api/agents list, because the main agent is already rendered as the dedicated

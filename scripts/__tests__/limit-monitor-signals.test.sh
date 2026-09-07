@@ -27,6 +27,14 @@ new_case() {
   mkdir -p "$c/scripts/lib"; cp "$INSTALL_DIR/scripts/lib/send-telegram.sh" "$c/scripts/lib/"
   # MIOHEREDOC902: the measured quota path now lives in its own file.
   cp "$INSTALL_DIR/scripts/lib/quota-check.py" "$c/scripts/lib/"
+  # The fork's limit-monitor.sh sources the SHARED canonical session-limit
+  # pattern (card 115c21e7) from store/ -- without it, `. "$STORE/session-
+  # limit-pattern.sh"` fails under this script's `set -u`, and EVERY case in
+  # this file fails identically before any real logic runs (found while
+  # completing card 4f15966e's merge: all 18 cases failed uniformly, which is
+  # the signature of a harness gap, not 18 separate script bugs).
+  cp "$INSTALL_DIR/store/session-limit-pattern.sh" "$c/store/"
+  cp "$INSTALL_DIR/store/session-limit-pattern.json" "$c/store/"
   printf 'MAIN_AGENT_ID=probe\nALLOWED_CHAT_ID=1\n' > "$c/.env"
   echo "$c"
 }
@@ -94,172 +102,20 @@ Mailjet free tier: 200 email/nap limit
 limit-monitor: signal unchanged, already alerted
 LINES
 
-echo "(c) the measured path: rate_limits from the status line"
-now=$(date +%s); reset=$((now + 3600))
-
-C="$(deliver_case quota_hit ok)"
-printf '{"written_at":%d,"rate_limits":{"five_hour":{"used_percentage":94,"resets_at":%d}}}\n' "$now" "$reset" \
-  > "$C/store/.claude-rate-limits.json"
-run_case "$C"
-if grep -q "quota:five_hour" "$C/store/limit-monitor.log" 2>/dev/null; then
-  pass "94% of the 5-hour window alerts"
-else
-  fail "94% of the 5-hour window did not alert"
-fi
-# Same window twice must not alert twice; the dedupe key carries resets_at, so
-# the NEXT window (new reset time) is free to alert again.
-: > "$C/store/limit-monitor.log"
-run_case "$C"
-if grep -q "quota signal unchanged" "$C/store/limit-monitor.log" 2>/dev/null; then
-  pass "the same window is not re-alerted"
-else
-  fail "the same window alerted twice"
-fi
-# Creeping up inside the SAME window must stay quiet: keying on the raw
-# percentage would mean a fresh alert for every point between 90 and 100.
-printf '{"written_at":%d,"rate_limits":{"five_hour":{"used_percentage":97,"resets_at":%d}}}\n' "$now" "$reset" \
-  > "$C/store/.claude-rate-limits.json"
-: > "$C/store/limit-monitor.log"
-run_case "$C"
-if alerted "$C"; then
-  fail "94% -> 97% in the same window alerted twice"
-else
-  pass "94% -> 97% in the same window stays at one alert"
-fi
-# Running out completely is a new level, and must be said out loud.
-printf '{"written_at":%d,"rate_limits":{"five_hour":{"used_percentage":100,"resets_at":%d}}}\n' "$now" "$reset" \
-  > "$C/store/.claude-rate-limits.json"
-: > "$C/store/limit-monitor.log"
-run_case "$C"
-if alerted "$C"; then
-  pass "100% alerts even though 90% already did"
-else
-  fail "100% was swallowed by the 90% alert"
-fi
-# A new window (new resets_at) starts clean.
-printf '{"written_at":%d,"rate_limits":{"five_hour":{"used_percentage":94,"resets_at":%d}}}\n' "$now" "$((reset + 18000))" \
-  > "$C/store/.claude-rate-limits.json"
-: > "$C/store/limit-monitor.log"
-run_case "$C"
-if alerted "$C"; then
-  pass "the next window alerts again"
-else
-  fail "the next window stayed silent"
-fi
-
-C="$(new_case quota_weekly)"
-printf '{"written_at":%d,"rate_limits":{"seven_day":{"used_percentage":91,"resets_at":%d}}}\n' "$now" "$reset" \
-  > "$C/store/.claude-rate-limits.json"
-run_case "$C"
-if grep -q "quota:seven_day" "$C/store/limit-monitor.log" 2>/dev/null; then
-  pass "91% of the weekly window alerts"
-else
-  fail "91% of the weekly window did not alert"
-fi
-
-C="$(new_case quota_low)"
-printf '{"written_at":%d,"rate_limits":{"five_hour":{"used_percentage":40,"resets_at":%d},"seven_day":{"used_percentage":12,"resets_at":%d}}}\n' "$now" "$reset" "$reset" \
-  > "$C/store/.claude-rate-limits.json"
-run_case "$C"
-if alerted "$C"; then fail "alerted below the threshold"; else pass "40% / 12% stays quiet"; fi
-
-# A window can roll over while the reading stays put: the numbers only move
-# when a new API response brings them, so after the reset the same block sits
-# there with resets_at in the past. Measured at the 22:00 rollover, 2026-08-18.
-C="$(new_case quota_rolled_over)"
-printf '{"written_at":%d,"rate_limits":{"five_hour":{"used_percentage":99,"resets_at":%d}}}\n' "$now" "$((now - 60))" \
-  > "$C/store/.claude-rate-limits.json"
-run_case "$C"
-if alerted "$C"; then
-  fail "alerted about a window that has already reset"
-elif grep -q "already past their reset" "$C/store/limit-monitor.log" 2>/dev/null; then
-  pass "a window past its reset is skipped, and says so"
-else
-  fail "the rolled-over window was skipped without a trace"
-fi
-# ...but a live window next to a rolled-over one must still get through.
-C="$(new_case quota_mixed)"
-printf '{"written_at":%d,"rate_limits":{"five_hour":{"used_percentage":99,"resets_at":%d},"seven_day":{"used_percentage":92,"resets_at":%d}}}\n' \
-  "$now" "$((now - 60))" "$reset" > "$C/store/.claude-rate-limits.json"
-run_case "$C"
-if grep -q "quota:seven_day" "$C/store/limit-monitor.log" 2>/dev/null; then
-  pass "the live weekly window still alerts beside a rolled-over one"
-else
-  fail "a rolled-over window silenced the live one next to it"
-fi
-
-# MIOHEREDOC902: a missing quota-check.py must be LOUD, never a silent skip --
-# an empty quota reading and a healthy one look identical from the outside.
-C="$(new_case quota_missing_py)"
-rm -f "$C/scripts/lib/quota-check.py"
-printf '{"written_at":%d,"rate_limits":{"five_hour":{"used_percentage":95,"resets_at":%d}}}\n' "$now" "$reset" \
-  > "$C/store/.claude-rate-limits.json"
-run_case "$C"
-if grep -q "quota-check.py hianyzik" "$C/store/limit-monitor.log" 2>/dev/null; then
-  pass "missing quota-check.py is logged loudly (fail-open, not silent)"
-else
-  fail "missing quota-check.py skipped SILENTLY"
-fi
-if alerted "$C"; then
-  fail "missing quota-check.py must not raise a quota alert"
-else
-  pass "no phantom quota alert without the checker"
-fi
-
-C="$(new_case quota_stale)"
-printf '{"written_at":%d,"rate_limits":{"five_hour":{"used_percentage":99,"resets_at":%d}}}\n' "$((now - 90000))" "$((now - 80000))" \
-  > "$C/store/.claude-rate-limits.json"
-run_case "$C"
-if alerted "$C"; then
-  fail "alerted on a day-old reading"
-elif grep -q "quota file stale" "$C/store/limit-monitor.log" 2>/dev/null; then
-  pass "a stale reading is skipped, and says so"
-else
-  fail "a stale reading was skipped without a trace"
-fi
-
-echo "(d) a FAILED delivery must not suppress the retry"
-# This is the case the whole honest-send contract exists for. The Bot API can
-# answer HTTP 200 with {"ok":false} -- bad chat_id, blocked bot, mangled .env --
-# and the old code could not tell that from a delivered alert: it stamped the
-# dedupe key BEFORE sending and logged "ALERT sent" unconditionally. The result
-# was the worst possible one: the alert nobody received, silenced forever by its
-# own suppression stamp, on the one signal that cannot be reported any other way.
-CF="$(deliver_case quota_fail fail)"
-printf '{"written_at":%d,"rate_limits":{"five_hour":{"used_percentage":94,"resets_at":%d}}}\n' "$now" "$reset" \
-  > "$CF/store/.claude-rate-limits.json"
-run_case "$CF"
-if grep -q "ALERT send FAILED" "$CF/store/limit-monitor.log" 2>/dev/null; then
-  pass "an ok:false response is reported as a failure, not as a send"
-else
-  fail "an ok:false response was logged as a successful send"
-fi
-if [ -s "$CF/store/.limit-monitor-quota-state" ]; then
-  fail "the dedupe stamp was written despite the delivery failing"
-else
-  pass "no dedupe stamp after a failed delivery"
-fi
-# ...and therefore the next tick must try again rather than call it old news.
-: > "$CF/store/limit-monitor.log"
-run_case "$CF"
-if grep -q "quota signal unchanged" "$CF/store/limit-monitor.log" 2>/dev/null; then
-  fail "the next tick suppressed an alert that was never delivered"
-else
-  pass "the next tick retries an undelivered alert"
-fi
-
-# The mirror case, so the pair above cannot pass for the wrong reason: with a
-# delivering stub the stamp MUST appear. Without this, a bug that never stamps
-# at all would look like a perfect result.
-CO="$(deliver_case quota_ok_stamp ok)"
-printf '{"written_at":%d,"rate_limits":{"five_hour":{"used_percentage":94,"resets_at":%d}}}\n' "$now" "$reset" \
-  > "$CO/store/.claude-rate-limits.json"
-run_case "$CO"
-if [ -s "$CO/store/.limit-monitor-quota-state" ]; then
-  pass "a delivered alert does write the dedupe stamp"
-else
-  fail "a delivered alert left no dedupe stamp -- alerts would repeat forever"
-fi
+# DEVIATION (card 4f15966e, backend, 2026-09-07): sections (c) "the measured path" and
+# (d) "a FAILED delivery" (both new, upstream-borne) tested the upstream measured-quota
+# path -- reading store/.claude-rate-limits.json via scripts/lib/quota-check.py, with
+# dedupe/rollover/stale-reading/delivery-failure handling for it. This script's own
+# header comment (round 3, 2026-09-02) already, deliberately excludes exactly this:
+# "the upstream measured-quota path and fleet-wide pane_text() scan... are DELIBERATELY
+# NOT grafted -- the fork already alerts from its own quota monitor (store/quota-check.sh
+# + quota-bridge), so a second measured alerter would double-notify Peti; only the
+# honest-send wrapper is adopted." Since the capability was never wired in, EVERY case in
+# these two sections exercises a no-op codepath -- even the handful that happened to read
+# as PASS were vacuously true (nothing fires because the file is never read), not a
+# meaningful assertion. Removed wholesale rather than kept selectively, matching this
+# session's identical treatment of outgoing-copy-gate.py's own already-declined rewrite
+# (ACKNOWLEDGED_CONFLICTS round 15). MikroB confirmed 2026-09-07.
 
 echo ""
 if [ "$FAILED" = 0 ]; then echo "ALL PASS"; else echo "FAILURES"; fi

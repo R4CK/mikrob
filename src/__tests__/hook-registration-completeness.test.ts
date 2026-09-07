@@ -49,6 +49,41 @@ const EXEMPT: Record<string, string> = {
     'legacy: referenced only by a historical rebuild prompt, wired nowhere; kept pending a maintainer decision to remove it',
   'telegram-ack.py':
     'unreferenced anywhere in the repo; dead code kept pending a maintainer decision to remove it',
+  // Companion *.selftest.py files below: each tests a REGISTERED sibling hook (verified
+  // directly against templates/settings.json.template / .claude/settings.json), and is
+  // itself invoked as a test suite, never wired as a PreToolUse/PostToolUse hook.
+  'blast-radius-guard.selftest.py':
+    'selftest for blast-radius-guard.py, which is registered; the selftest itself is not a hook',
+  'cd-chain-guard.selftest.py':
+    'selftest for cd-chain-guard.py, which is registered; the selftest itself is not a hook',
+  'git-protect-guard.selftest.py':
+    'selftest for git-protect-guard.py, which is registered; the selftest itself is not a hook',
+  'noisy-command-guard.selftest.py':
+    'selftest for noisy-command-guard.py, which is registered; the selftest itself is not a hook',
+  'npm-protect-guard.selftest.py':
+    'selftest for npm-protect-guard.py, which is registered; the selftest itself is not a hook',
+  'outgoing-copy-gate.selftest.py':
+    'selftest for outgoing-copy-gate.py, which is registered; the selftest itself is not a hook',
+  'pentest-tool-install-guard.selftest.py':
+    'selftest for pentest-tool-install-guard.py, which is registered; the selftest itself is not a hook',
+  'symlinked-node-modules-guard.selftest.py':
+    'selftest for symlinked-node-modules-guard.py, which is registered; the selftest itself is not a hook',
+  // Card 4f15966e (backend, 2026-09-07): the four entries below PRE-DATE this test (all
+  // present at pre-merge checkpoint b0e63a39) and are genuinely unwired on every
+  // REGISTRATION_SURFACE -- this new completeness check is the first thing to notice, not
+  // a regression this merge introduced. Left as an honest gap for a dedicated follow-up
+  // card rather than silently activated here: wiring a dormant hook into production is a
+  // real behavior change this merge-landing task should not decide unilaterally.
+  'activity_memory_capture.py':
+    'pre-existing (predates this merge), genuinely unwired on every known registration surface -- needs its own follow-up card, not activated here',
+  'activity-memory-capture.selftest.py':
+    'selftest for activity_memory_capture.py (note the underscore/hyphen naming mismatch between the hook and this selftest); the hook itself is unwired, see its own EXEMPT entry',
+  'big-file-guard.py':
+    'pre-existing (predates this merge), genuinely unwired on every known registration surface -- needs its own follow-up card, not activated here',
+  'secret-write-guard.py':
+    'pre-existing (predates this merge), genuinely unwired on every known registration surface -- needs its own follow-up card, not activated here',
+  'shared-memory-inject.py':
+    'pre-existing (predates this merge), genuinely unwired on every known registration surface -- needs its own follow-up card, not activated here',
 }
 
 function registrationCorpus(): string {
