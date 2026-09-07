@@ -244,6 +244,56 @@ run 1788000510
   && ok "CONTROL: a known, throttleable agent still signs as itself" \
   || bad "the validator rejects a legitimate agent too" "$(cat "$CAPTURE")"
 
+# --- 12. a MISSING load-guard-excluded.sh must SPEAK, not silently drop the exclusion (card c5baa683) --
+# Before: `. "$SCRIPT_DIR/load-guard-excluded.sh" 2>/dev/null || true` swallowed a missing/broken
+# file with no trace. is_excluded() then never gets defined, the gate-pool exclusion check is
+# skipped, and _valid_author() falls through to the known-agent registry -- which happily accepts
+# "qa"/"cybersec"/"cybered" as real authors again, reopening exactly what card be81d16c closed,
+# only quietly this time. The presence check below is on the STDERR TEXT, not on the file's
+# existence, per this card's own acceptance criterion.
+REAL_EXCLUDED="$HERE/load-guard-excluded.sh"
+MOVED_EXCLUDED="$TMP/load-guard-excluded.sh.moved-aside"
+mv "$REAL_EXCLUDED" "$MOVED_EXCLUDED"
+trap 'mv -f "$MOVED_EXCLUDED" "$REAL_EXCLUDED" 2>/dev/null; rm -rf "$TMP"' EXIT
+
+: > "$CAPTURE"; printf '%s' '{}' > "$TMP/paused.json"; printf '%s' '{}' > "$TMP/events.json"; printf '%s' '{}' > "$TMP/episodes.json"
+state '{}'
+STDERR_FILE="$TMP/stderr-missing.txt"
+DASH="http://127.0.0.1:9" DASHBOARD_TOKEN_FILE="$TMP/token" \
+  bash "$RUN" --cgroup-state "$TMP/cgroup.json" --sigstop-state "$TMP/sigstop.json" \
+    --paused "$TMP/paused.json" --events "$TMP/events.json" --episodes "$TMP/episodes.json" \
+    --alert-stamp "$TMP/alert.json" --alert-dryrun --now 1788400000 \
+    >/dev/null 2>"$STDERR_FILE"
+rc=$?
+if [ "$rc" = "0" ]; then
+  ok "a missing load-guard-excluded.sh still exits 0 (|| true semantics kept)"
+else
+  bad "exit code was $rc, want 0" "$(cat "$STDERR_FILE")"
+fi
+if grep -q 'load-guard-excluded.sh could not be loaded' "$STDERR_FILE"; then
+  ok "the missing file is announced on stderr, not swallowed"
+else
+  bad "no warning on stderr for a missing load-guard-excluded.sh" "$(cat "$STDERR_FILE")"
+fi
+
+# --- 13. CONTROL: with the file back in place, the normal path is unchanged (no new noise) --------
+mv -f "$MOVED_EXCLUDED" "$REAL_EXCLUDED"
+: > "$CAPTURE"; printf '%s' '{}' > "$TMP/paused.json"; printf '%s' '{}' > "$TMP/events.json"; printf '%s' '{}' > "$TMP/episodes.json"
+state '{}'
+STDERR_FILE="$TMP/stderr-present.txt"
+DASH="http://127.0.0.1:9" DASHBOARD_TOKEN_FILE="$TMP/token" \
+  bash "$RUN" --cgroup-state "$TMP/cgroup.json" --sigstop-state "$TMP/sigstop.json" \
+    --paused "$TMP/paused.json" --events "$TMP/events.json" --episodes "$TMP/episodes.json" \
+    --alert-stamp "$TMP/alert.json" --alert-dryrun --now 1788400010 \
+    >/dev/null 2>"$STDERR_FILE"
+rc=$?
+if [ "$rc" = "0" ] && ! grep -q 'load-guard-excluded.sh could not be loaded' "$STDERR_FILE"; then
+  ok "CONTROL: with the file present, no missing-file warning fires"
+else
+  bad "CONTROL failed: rc=$rc" "$(cat "$STDERR_FILE")"
+fi
+trap 'rm -rf "$TMP"' EXIT
+
 echo
 echo "load-guard-bookkeeping.selftest: $pass passed, $fail failed"
 [[ $fail -eq 0 ]]
