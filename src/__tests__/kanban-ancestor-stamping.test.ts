@@ -139,13 +139,21 @@ describe('bubbling and the token-attribution filter are ONE change (card f27c999
   const tokenSrc = readFileSync(join(ROOT, 'src', 'web', 'token-usage.ts'), 'utf-8')
   const strip = (s: string) => s.split('\n').filter((l) => !l.trim().startsWith('//') && !l.trim().startsWith('*')).join('\n')
 
-  it('if db.ts stamps ancestors, correlateWithKanban MUST skip parents', () => {
+  it('if db.ts stamps ancestors, correlateWithKanban MUST skip TIED parents', () => {
     // Splitting the pair is silently wrong in one direction: bubbling without the filter makes a
     // parent tie with its child on updated_at, so which title takes the token rows comes down to row
     // order. Neither half is individually incorrect, which is exactly why a test has to hold them
     // together rather than a comment asking nicely.
+    //
+    // Card 9005b6a0 tightened the filter from "the parent HAS a child" (91% of parents measured
+    // live, misattributed for no bubbling-related reason) to "the parent TIES a child on
+    // updated_at" -- a whitespace-tolerant regex, not a literal substring, because the tightened
+    // SQL is written across multiple lines. The coupling this test guards is unchanged: SOME
+    // parent-skip condition keyed on child.parent_id/updated_at must exist whenever ancestors are
+    // stamped, whichever exact shape the query takes.
     const stamps = strip(dbSrc).includes('function touchAncestorChain(')
-    const filters = strip(tokenSrc).includes('NOT EXISTS (SELECT 1 FROM kanban_cards child WHERE child.parent_id = kanban_cards.id)')
+    const filterRe = /NOT EXISTS\s*\(\s*SELECT 1 FROM kanban_cards child\s+WHERE child\.parent_id = kanban_cards\.id AND child\.updated_at = kanban_cards\.updated_at\s*\)/
+    const filters = filterRe.test(strip(tokenSrc))
     expect(stamps).toBe(true)
     expect(filters).toBe(stamps)
   })
