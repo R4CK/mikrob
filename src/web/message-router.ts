@@ -278,6 +278,23 @@ function stampTraceOnMessage(msg: AgentMessage): { trace_id: string; span_id: st
   return { trace_id, span_id, parent_span_id }
 }
 
+// Card 99254564 (Cybered/backend2 finding, dbc0b4bf): the router closed a message's span on ITS
+// OWN successful delivery (line ~985 below) but never on its OWN TERMINAL failures -- inject-retry
+// exhaustion, an abandon after the message had already been stamped on an earlier tick, or an
+// unexpected processing throw. routes/messages.ts's PUT handler closes the span for the SAME class
+// of event (a message reaching a terminal status) when the RECEIVER reports done/failed, so the
+// router's own terminal paths carried a different, weaker guarantee for no principled reason. A
+// span left open here has nothing else to close it: pollUntilDone-style code does not exist for
+// router-internal message delivery. Zero-population today (every abandoned row today carries no
+// trace_id at all), so this closes a real gap before one opens, not a live leak.
+//
+// IF-OPEN semantics (closeOtelSpanIfOpen's own contract): first terminal event wins, so calling
+// this from multiple sites is safe by construction -- whichever fires first closes the span, later
+// calls are no-ops. No-op silently when trace_id/span_id are absent, which is the common case today.
+function closeRouterSpanOnFailure(trace_id: string | null | undefined, span_id: string | null | undefined): void {
+  if (trace_id && span_id) closeOtelSpanIfOpen(trace_id, span_id, Date.now(), 'error')
+}
+
 // Checks for pending messages every 5 seconds and injects them into target
 // agent tmux sessions.
 let _tickRunning = false
@@ -471,6 +488,7 @@ export async function deliverFederatedBatch(federated: AgentMessage[], now: numb
       // pending row (a concurrent disable/removal purge may have failed it).
       if (markPendingFederatedFailed(msg.id, 'Abandoned: peer unreachable for full retry window')) {
         notifyDelegationFailed(msg, 'a társ a teljes türelmi ablakban elérhetetlen volt')
+        closeRouterSpanOnFailure(msg.trace_id, msg.span_id)
       } else {
         logger.warn({ id: msg.id }, 'markPendingFederatedFailed affected 0 rows (already closed concurrently)')
       }
@@ -802,6 +820,7 @@ export async function runMessageRouterTick(): Promise<void> {
         if (!markMessageFailed(msg.id, 'Abandoned: target session absent for full retry window')) {
           logger.warn({ id: msg.id }, 'markMessageFailed affected 0 rows (deleted concurrently?)')
         }
+        closeRouterSpanOnFailure(msg.trace_id, msg.span_id)
         notifyOrchestratorOfFailedHandoff(msg, 'target session was absent for the entire retry window')
         routerInjectFailures.delete(msg.id)
         routerLoggedMisses.delete(msg.id)
@@ -1007,6 +1026,7 @@ export async function runMessageRouterTick(): Promise<void> {
         if (!markMessageFailed(msg.id, `Failed to inject into tmux session after ${failCount} attempts`)) {
           logger.warn({ id: msg.id }, 'markMessageFailed affected 0 rows (deleted concurrently?)')
         }
+        closeRouterSpanOnFailure(traceCtx?.trace_id, traceCtx?.span_id)
         notifyOrchestratorOfFailedHandoff(msg, `tmux inject failed ${failCount}x`)
         routerInjectFailures.delete(msg.id)
         routerLoggedMisses.delete(msg.id)
@@ -1016,6 +1036,13 @@ export async function runMessageRouterTick(): Promise<void> {
         if (!markMessageFailed(msg.id, `Delivery error: ${String(err).slice(0, 200)}`)) {
           logger.warn({ id: msg.id }, 'markMessageFailed affected 0 rows (deleted concurrently?)')
         }
+        // traceCtx (the inner try's local) is out of scope here -- it is declared INSIDE the try
+        // this catches for, and this catch can be reached by a throw before traceCtx was ever
+        // computed (e.g. during voice STT, above the inner try). msg.trace_id/span_id are the raw
+        // row values, set from the top of the loop regardless of how far processing got, so they
+        // are the more robust source here -- and stampTraceOnMessage persists straight back onto
+        // the row, so a message already stamped on an earlier tick carries them from the start.
+        closeRouterSpanOnFailure(msg.trace_id, msg.span_id)
         routerLoggedMisses.delete(msg.id)
       }
     }
