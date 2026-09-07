@@ -46,6 +46,8 @@
 #   CLEANCORE_SUITE_LOCK_PREFIX  overrides the slot path outright. Overriding it per checkout
 #                                REMOVES the mutual exclusion -- that is the bug this default fixes.
 #   CLEANCORE_SUITE_SLOTS        default 2
+#   CLEANCORE_SUITE_MAX_WORKERS  overrides the vitest --maxWorkers default (nproc / SLOTS, floor 1).
+#                                Ignored if the caller already passed --maxWorkers after `--`.
 #
 # Exit: the suite's own exit code | 2 usage or an unusable lock directory | 3 no slot within the cap
 set -uo pipefail
@@ -200,6 +202,29 @@ fi
 echo "cleancore-suite-run: slot ${SLOT}/${SLOTS}, running in $WT" >&2
 cd "$WT" || exit 3
 
+# THE SLOT CAP ALONE DOES NOT BOUND CPU (card 34587175, measured during a load-guard CRITICAL
+# investigation). vitest defaults maxWorkers to the CPU count, so a SINGLE full suite run already
+# claims every core -- 12 vitest processes on a 12-core box, load average 16-20. Two such runs
+# under the SLOTS=2 cap then contend for the same 12 cores twice over, which is exactly the
+# CPU-starved-main-process condition the header above describes causing the false-red RPC timeout.
+# The slot semaphore bounds concurrent RUNS; this bounds concurrent WORKERS per run, so that SLOTS
+# concurrent full runs together still fit within nproc instead of nproc*SLOTS.
+#
+# A caller-supplied --maxWorkers is never overridden: this is a default, not a policy the caller
+# cannot opt out of, and a caller passing its own value has already made the CPU-budget decision.
+CORES="$(nproc 2>/dev/null || echo 1)"
+DEFAULT_MAX_WORKERS=$((CORES / SLOTS))
+[ "$DEFAULT_MAX_WORKERS" -lt 1 ] && DEFAULT_MAX_WORKERS=1
+MAX_WORKERS="${CLEANCORE_SUITE_MAX_WORKERS:-$DEFAULT_MAX_WORKERS}"
+vitest_args=("$@")
+caller_set_max_workers=0
+for a in "${vitest_args[@]}"; do
+  case "$a" in
+    --maxWorkers|--maxWorkers=*) caller_set_max_workers=1 ;;
+  esac
+done
+[ "$caller_set_max_workers" -eq 0 ] && vitest_args=("--maxWorkers=$MAX_WORKERS" "${vitest_args[@]}")
+
 # THE LOG IS CAPTURED so the run can be CLASSIFIED, not just returned (card c6153a69). A full suite
 # that hits vitest's worker-RPC timeout exits 1 with ZERO failed tests, and the only evidence is one
 # "Unhandled Error" paragraph a thousand lines above the summary. That has now cost three separate
@@ -207,7 +232,7 @@ cd "$WT" || exit 3
 # same thing. `tee` keeps the live output exactly as before; PIPESTATUS keeps the real exit code.
 run_log="$(mktemp)"
 trap 'rm -f "$_hdr_file" "$run_log"' EXIT
-./node_modules/.bin/vitest run "$@" 2>&1 | tee "$run_log"
+./node_modules/.bin/vitest run "${vitest_args[@]}" 2>&1 | tee "$run_log"
 status="${PIPESTATUS[0]}"
 
 # Adds an explanation on stderr when the run is the known flake; NEVER changes the exit code. A
