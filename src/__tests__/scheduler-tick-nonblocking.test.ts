@@ -120,6 +120,14 @@ const KNOWN_SYNC_RUNNERS = [
   'web.ts',
   'web/auto-restart-runner.ts',
   'web/channel-monitor.ts',
+  // Moved here from NO_OWN_INTERVAL_* (card 4f15966e, backend, 2026-09-07): this file's
+  // syncSweepRoster/scheduleSweep still use setTimeout recursion per-agent, but
+  // startContextRestartGateRunner's periodic roster rescan (LEDGERACK905, non-conflicting
+  // upstream addition landed during the same merge) added a real setInterval, so it is now
+  // correctly derived by backgroundRunnerFiles() instead of falling into the no-own-interval
+  // gap. Its execFileSync (tmux send-keys/capture, ps checks) calls are reviewed local/bounded,
+  // same stance as agent-process.ts's equivalent calls.
+  'web/context-restart-gate-runner.ts',
   'web/stuck-tool-call-watcher.ts',
   'web/update-checker.ts',
 ] as const
@@ -157,15 +165,13 @@ function webStartWiredFiles(): string[] {
  * list is a reviewed decision, not a blind spot (card eabe6867).
  *  - agent-worker.ts: worker-message-driven (per-session setTimeout recursion), already
  *    documented above as a different risk shape than a live shared-loop timer.
- *  - context-restart-gate-runner.ts: setTimeout recursion, not setInterval -- the exact gap
- *    this card measured. Its execFileSync calls are reviewed the same as agent-process.ts's.
- * Both already call a sync child API today (reviewed local/bounded tmux+ps calls, same stance
- * as KNOWN_SYNC_RUNNERS/KNOWN_SYNC_ROUTES), tracked separately below rather than folded into
- * KNOWN_SYNC_RUNNERS -- that list's own invariant (every entry has its OWN setInterval) would
- * go stale for these two on purpose.
+ * context-restart-gate-runner.ts USED to be pinned here too (setTimeout recursion, not
+ * setInterval), but a non-conflicting upstream addition (LEDGERACK905's roster rescan) gave it
+ * a real setInterval during the 4f15966e merge -- moved to KNOWN_SYNC_RUNNERS instead, where
+ * backgroundRunnerFiles() now correctly derives it.
  */
-const NO_OWN_INTERVAL_START_WIRED = ['web/agent-worker.ts', 'web/context-restart-gate-runner.ts'] as const
-const NO_OWN_INTERVAL_SYNC_REVIEWED = ['web/agent-worker.ts', 'web/context-restart-gate-runner.ts'] as const
+const NO_OWN_INTERVAL_START_WIRED = ['web/agent-worker.ts'] as const
+const NO_OWN_INTERVAL_SYNC_REVIEWED = ['web/agent-worker.ts'] as const
 
 /**
  * Every route handler, DERIVED from the directory (card 095edfec, Cybersec). A single inbound

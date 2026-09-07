@@ -53,6 +53,10 @@ describe('detectsUsageLimit', () => {
     // The usage-limit wordings these generalise from must not have been traded away for them.
     expect(detectsUsageLimit('You have reached your usage limit. Try again later.')).toBe(true)
     expect(detectsUsageLimit('Approaching usage limit')).toBe(true)
+    // Round 2 (2026-09-02, upstream 38b6e76e9f51..09bc3bf772d1): two of upstream's three added
+    // weekly/session cases union in cleanly against the fork's array-based consolidation.
+    expect(detectsUsageLimit("You've reached your weekly limit for Opus.")).toBe(true)
+    expect(detectsUsageLimit('Session limit reached ∙ resets at 2am')).toBe(true)
   })
 
   it('did NOT adopt upstream\'s unbounded word wildcard between "approaching" and "limit"', () => {
@@ -61,6 +65,13 @@ describe('detectsUsageLimit', () => {
     // word in the middle widens a detector whose false positive costs a WRONGFUL model downgrade --
     // the same class as the /upgrade startup hint this fork already had to remove.
     expect(detectsUsageLimit('approaching some completely unrelated weekly limit')).toBe(false)
+    // DEVIATION FROM ACKNOWLEDGED_CONFLICTS (card 4f15966e, backend, 2026-09-07): the archived rule
+    // for this file says round 2's upstream case union is unchanged ("keep it with the fork cases"),
+    // but upstream's THIRD case -- 'Approaching Opus weekly limit ∙ 5% left' -- needs exactly the
+    // unbounded (?:\w+ )? wildcard this test pins as declined (the model name sits between
+    // "approaching" and "weekly limit"). Adopting it verbatim would contradict this test in the same
+    // file. Not unioned; the other two round-2 cases (which do not need the wildcard) are kept above.
+    expect(detectsUsageLimit('Approaching Opus weekly limit ∙ 5% left')).toBe(false)
   })
 
   it('keeps BOTH halves of the fork/upstream resolution at once', () => {

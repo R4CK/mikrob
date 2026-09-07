@@ -413,6 +413,11 @@ function renderAgents() {
   }
 
   for (const agent of agents) {
+    // The main agent already has its own dedicated card (mCard, above) --
+    // if it also appears in the /api/agents list (e.g. once its
+    // agents/<id>/ config directory exists), skip it here or it renders
+    // twice.
+    if (agent.name === mainAgentId()) continue
     // agent.name is the sanitized id (API/filesystem); displayName keeps the
     // original accented/cased input the user typed.
     const label = agent.displayName || agent.name

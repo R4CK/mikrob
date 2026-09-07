@@ -47,6 +47,7 @@ const IDENTITY = {
   botName: 'BotName',
   ownerName: 'Owner',
   webPort: 3420,
+  chatId: '1',
 }
 
 describe('seed-skills placeholders are renderable (card 041681b5)', () => {

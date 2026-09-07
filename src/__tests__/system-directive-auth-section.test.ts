@@ -103,6 +103,7 @@ describe('buildSystemDirectiveAuthBody', () => {
   it('names the in-scope prefixes and excludes the nudges', () => {
     const body = buildSystemDirectiveAuthBody('agent-a')
     expect(body).toContain('[CONTEXT-GUARD]')
+    expect(body).toContain('[CONTEXT-RESTART-GATE]')
     expect(body).toContain('[SYSTEM: ...]')
     // The low-impact nudges are explicitly OUT of scope, so an agent does not
     // start treating every routine wake as an injection.
@@ -110,26 +111,23 @@ describe('buildSystemDirectiveAuthBody', () => {
     expect(body).toContain('[Inbox]')
   })
 
-  // FORK DIVERGENCE from the upstream version of this test, which asserts
-  // [CONTEXT-RESTART-GATE] is one of the IN-SCOPE prefixes. It is not, here.
-  // Upstream's restart gate wakes the agent with a directive; ours does not
-  // exist -- our only [CONTEXT-RESTART-GATE] message is
-  // createAgentMessage(name -> MAIN_AGENT_ID) in context-restart-gate-runner.ts,
-  // an ALERT to the coordinator from a real agent id. It asks nothing of its
-  // recipient and already carries provenance, so listing it as in-scope would
-  // tell agents to authenticate a message that will never carry a msg_id.
-  //
-  // Asserting the string alone would pass either way (our body does mention
-  // it, as an exclusion), so this pins the SENTENCE it appears in.
-  it('places [CONTEXT-RESTART-GATE] OUT of scope, matching this fork\'s sender', () => {
+  // NO LONGER A FORK DIVERGENCE (card 4f15966e, backend, 2026-09-07): this test used to pin
+  // [CONTEXT-RESTART-GATE] as OUT of scope, because the fork's only message with that prefix was
+  // createAgentMessage(agent -> coordinator), an alert FROM an agent carrying no msg_id. The test's
+  // own comment anticipated this: "if we ever adopt upstream's gate wake nudge, this test is the
+  // reminder that the rule text has to move it back in-scope in the same change." That adoption
+  // happened -- non-conflicting during this merge, not a deliberate card -- when LEDGERACK905
+  // (db.ts's openInboundQuestionMessageId + context-restart-gate-runner.ts's
+  // gateWakePrompt/deliverPendingWake) landed as a matched pair and started sending a real
+  // [CONTEXT-RESTART-GATE] wake-nudge TO the recipient via sendSystemDirective. This is the "same
+  // change" the old comment asked for.
+  it('places [CONTEXT-RESTART-GATE] IN scope, now that the runner sends it via sendSystemDirective', () => {
     const body = buildSystemDirectiveAuthBody('agent-a')
     const line = body.split('\n').find((l) => l.includes('[CONTEXT-RESTART-GATE]'))
     expect(line).toBeDefined()
-    expect(line).toContain('NEM tartoznak ide')
-    // If we ever adopt upstream's gate wake nudge, this test is the reminder
-    // that the rule text has to move it back in-scope in the same change.
+    expect(line).not.toContain('NEM tartoznak ide')
     const runner = readFileSync(join(SRC, 'context-restart-gate-runner.ts'), 'utf-8')
-    expect(runner).not.toContain('sendSystemDirective')
+    expect(runner).toContain('sendSystemDirective')
   })
 
   it('hands the agent a verification command that does NOT leak the token into argv', () => {

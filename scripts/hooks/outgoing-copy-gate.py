@@ -580,6 +580,17 @@ def load_bad_name():
 BROKEN_REASON = None
 
 
+def _log_stamp():
+    """ISO 8601 local time with a numeric offset, as a log-line prefix (card 4f15966e,
+    backend, 2026-09-07: found via a new merge-borne test). Before this, every write to
+    outgoing-copy-gate.log carried bare text -- 8005 lines across four distinct messages,
+    one of them recording an UNAUDITED Telegram send, with no way to tell which day, let
+    alone which message. A gate log whose entries cannot be placed in time cannot be used
+    to check anything. time.strftime, not datetime, because the module already imports
+    `time` and nothing else here needs a second date/time API."""
+    return time.strftime("%Y-%m-%dT%H:%M:%S%z ")
+
+
 def _log_broken_pattern(exc):
     """The rules file is present and parses, but a PATTERN in it does not compile.
 
@@ -591,7 +602,7 @@ def _log_broken_pattern(exc):
     try:
         log_path = os.path.join(os.path.dirname(_LOCAL_RULES), "outgoing-copy-gate.log")
         with open(log_path, "a", encoding="utf-8") as fh:
-            fh.write(f"outgoing-copy-gate: HIBAS NEV-MINTA a szabalyfajlban ({_LOCAL_RULES}): "
+            fh.write(_log_stamp() + f"outgoing-copy-gate: HIBAS NEV-MINTA a szabalyfajlban ({_LOCAL_RULES}): "
                      f"{exc} -- a nev-ellenorzes NEM fut, amig a minta javitva nincs. "
                      "A fajl letezik es olvashato; egy minta nem forditható.\n")
     except OSError:
@@ -603,7 +614,7 @@ def _log_missing_rules():
     try:
         log_path = os.path.join(os.path.dirname(_LOCAL_RULES), "outgoing-copy-gate.log")
         with open(log_path, "a", encoding="utf-8") as fh:
-            fh.write(f"outgoing-copy-gate: NEV-SZABALY FAJL HIANYZIK/URES ({_LOCAL_RULES}) -- "
+            fh.write(_log_stamp() + f"outgoing-copy-gate: NEV-SZABALY FAJL HIANYZIK/URES ({_LOCAL_RULES}) -- "
                      "a nev-ellenorzes NEM fut; potold a store/outgoing-copy-gate-rules.json-t.\n")
     except OSError:
         pass
@@ -663,7 +674,7 @@ def _log_empty_rules(now=None, interval=_EMPTY_WARN_INTERVAL_S):
         pass  # no stamp yet (or unreadable) -- treat as due
     try:
         with open(os.path.join(store_dir, "outgoing-copy-gate.log"), "a", encoding="utf-8") as fh:
-            fh.write(f"outgoing-copy-gate: NEV-SZABALY SZANDEKOSAN URES ({_LOCAL_RULES}, "
+            fh.write(_log_stamp() + f"outgoing-copy-gate: NEV-SZABALY SZANDEKOSAN URES ({_LOCAL_RULES}, "
                      "bad_name_patterns: 0) -- a fajl ep, de a nev-ellenorzesnek NINCS mire "
                      "illeszkednie; a tobbi ellenorzes (ekezet, em dash, homoglifa) fut. "
                      "Posztura-kiiras: scripts/hooks/outgoing-copy-gate.py --status\n")
@@ -1142,6 +1153,15 @@ def telegram_gate(tool_input: dict) -> None:
     channel -- a gate crash that silences it costs more than a slipped accent.
     A FOUND problem still blocks (exit 2): that is the gate's whole point."""
     try:
+        # A non-dict tool_input (card 4f15966e, backend, 2026-09-07: found via a new
+        # merge-borne test) used to reach collect_telegram_body()'s .get() calls and crash
+        # with a bare AttributeError ("'int' object has no attribute 'get'") -- which reads
+        # like a bug INSIDE the audit, not what it actually is: a malformed payload. Named
+        # explicitly here so the log says the real cause.
+        if not isinstance(tool_input, dict):
+            raise TypeError(
+                f"tool_input nem szotar (dict), hanem {type(tool_input).__name__}"
+            )
         text = collect_telegram_body(tool_input)
         if not text.strip():
             sys.exit(0)  # files-only reply or empty text: nothing to audit
@@ -1149,11 +1169,17 @@ def telegram_gate(tool_input: dict) -> None:
     except SystemExit:
         raise
     except Exception as exc:  # noqa: BLE001 -- deliberate blanket: fail-open path
-        warn = f"outgoing-copy-gate: TELEGRAM-ag belso hiba, FAIL-OPEN atengedes: {exc!r}\n"
+        warn = _log_stamp() + f"outgoing-copy-gate: TELEGRAM-ag belso hiba, FAIL-OPEN atengedes: {exc}\n"
         sys.stderr.write(warn)
         try:
-            log_path = os.path.join(os.path.dirname(os.path.dirname(os.path.dirname(
-                os.path.abspath(__file__)))), "store", "outgoing-copy-gate.log")
+            # SAME directory as every other write in this file (_log_broken_pattern/
+            # _log_missing_rules/_log_empty_rules all use os.path.dirname(_LOCAL_RULES)) --
+            # NOT a path hardcoded off the script's own location (card 4f15966e, backend,
+            # 2026-09-07: found via a new merge-borne test). The old hardcoded form ignored
+            # OUTGOING_COPY_GATE_RULES entirely, so a test running against an isolated
+            # rules file still wrote into the real repo's store/, and the isolated test's
+            # own read of ITS log directory saw nothing.
+            log_path = os.path.join(os.path.dirname(_LOCAL_RULES), "outgoing-copy-gate.log")
             with open(log_path, "a", encoding="utf-8") as fh:
                 fh.write(warn)
         except OSError:

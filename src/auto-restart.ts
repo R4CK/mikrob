@@ -92,11 +92,15 @@ export function normalizeAutoRestartConfig(raw: unknown): AutoRestartConfig {
   }
   // dailyTime takes precedence: never keep both, so the schedule is unambiguous.
   if (dailyTime !== null) intervalHours = null
-  // Card 4276708e, Cybersec finding 4a: bounded at BOTH ends. `> 0` plus Number.isFinite let
-  // 1e9 hours through -- a cap that large is not a cap, it is "defer forever", which is exactly the
-  // state the deferral override exists to end. A week is the outer edge of a defensible wait for an
-  // owner's answer; anything beyond it is a typo or a misunderstanding, and silently honouring it
-  // would pin an agent indefinitely while the config still read as "capped".
+  // DEVIATION FROM ACKNOWLEDGED_CONFLICTS (card 4f15966e, backend, 2026-09-07): the archived rule
+  // for this file says "fork side of the hunk is empty, adopt upstream verbatim" -- that was true
+  // when the rule was written, but the fork side is no longer empty: card 4276708e (Cybersec
+  // finding 4a) added a bounded-at-both-ends check after the rule was recorded. `> 0` plus
+  // Number.isFinite lets 1e9 hours through -- a cap that large is not a cap, it is "defer forever",
+  // exactly the state the deferral override exists to end. A week is the outer edge of a defensible
+  // wait for an owner's answer; anything beyond it is a typo or a misunderstanding, and silently
+  // honouring it would pin an agent indefinitely while the config still read as "capped". Kept the
+  // fork's bounded version rather than the archived instruction, for QA/Cybersec review.
   let openQuestionDeferralCapHours = OPEN_QUESTION_DEFERRAL_CAP_HOURS
   if (typeof o.openQuestionDeferralCapHours === 'number' &&
       Number.isFinite(o.openQuestionDeferralCapHours) &&

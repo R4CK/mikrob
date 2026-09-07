@@ -21,6 +21,7 @@ export default defineConfig({
     exclude: [
       ...configDefaults.exclude,
       'tests/smoke/**',
+      'tests/browser/**',
       'agents/**',
       'store/adopted/**/evals/fixtures/**',
     ],

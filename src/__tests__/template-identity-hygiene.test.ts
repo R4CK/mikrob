@@ -234,6 +234,7 @@ describe('runtime-seeded placeholders are all substituted', () => {
       botName: 'TestBot',
       ownerName: 'TestOwner',
       webPort: 3421,
+      chatId: '1',
     })
     expect(out, 'substituted template must not contain localhost:3420').not.toContain('localhost:3420')
     expect(out, 'substituted template must not contain unresolved {{WEB_PORT}}').not.toContain('{{WEB_PORT}}')

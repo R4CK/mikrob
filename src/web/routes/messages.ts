@@ -55,6 +55,43 @@ export function shouldNotifyDelegator(fromAgent: string, toAgent: string, conten
 // must not loosen the exemption it sits next to.
 const SYSTEM_SENDERS = parseSystemSenderIds(SYSTEM_SENDER_IDS, sanitizeAgentIdent)
 
+/**
+ * How much of a `result` travels inside the completion notification, and what the recipient
+ * is told about the rest.
+ *
+ * WHY THIS IS NOT COSMETIC (measured twice on 2026-08-12): the notification carried the first
+ * 500 characters and then said "the full text is in msg N's result field". Both times the cut
+ * landed mid-argument -- once on a review condition, once on the numbers that decided whether a
+ * filter was safe -- and both times the recipient could only ask for a resend, because the
+ * pointer named a FIELD, not a way to read it. A pointer the consumer cannot follow is the same
+ * as no pointer: the sender ends up retyping, which is exactly what the notification was for.
+ *
+ * TWO CHANGES, AND THE SECOND MATTERS MORE. The cap is 2000, because our results routinely
+ * carry a measurement plus its interpretation and 500 truncates that mid-sentence. And the
+ * marker now names the EXACT command, so following it is one step, not a research task.
+ *
+ * ES A MUTATO MEGMONDJA, MIRE MUTAT (2026-08-21). A megnevezett id NEM az olvasott uzenete,
+ * hanem azé, amelyiknek a `result` mezőjében a teljes szöveg áll. Ezt korábban nem mondtuk ki,
+ * és egy ágens a saját üzenet-id-jével kérdezte le: üres választ kapott, abból adatvesztésre
+ * következtetett, és majdnem hibajelentést írt róla. Egy mutató, ami helyes, de nem mondja meg,
+ * MIRE mutat, ugyanannyi kört visz el, mint egy hiányzó mutató -- csak nem lehet rá fogni.
+ *
+ * The cap stays FINITE on purpose: the notification is injected into a live session, and an
+ * unbounded paste there costs context that the recipient did not choose to spend.
+ */
+export const RESULT_NOTIFY_MAX = 2000
+
+export function resultSummary(id: number, result: string | undefined | null): string {
+  if (!result) return '(nincs eredmény)'
+  if (result.length <= RESULT_NOTIFY_MAX) return result
+  const maradt = result.length - RESULT_NOTIFY_MAX
+  return (
+    result.slice(0, RESULT_NOTIFY_MAX) +
+    `\n... [levágva, még ${maradt} karakter. A teljes szöveg a(z) ${id}. üzenet result mezőjében áll` +
+    ` -- ez NEM ennek az üzenetnek az id-je. Kérd le: bash scripts/agent-msg-get.sh ${id}]`
+  )
+}
+
 export async function tryHandleMessages(ctx: RouteContext): Promise<boolean> {
   const { req, res, path, method, url } = ctx
 
@@ -317,11 +354,33 @@ export async function tryHandleMessages(ctx: RouteContext): Promise<boolean> {
   if (msgUpdateMatch && method === 'PUT') {
     const id = parseInt(msgUpdateMatch[1], 10)
     const body = await readBody(req)
-    let newStatus: string, result: string | undefined
+    let newStatus: string, result: string | undefined, notify: boolean | undefined
     try {
-      ;({ status: newStatus, result } = JSON.parse(body.toString()) as { status: string; result?: string })
+      ;({ status: newStatus, result, notify } = JSON.parse(body.toString()) as
+        { status: string; result?: string; notify?: boolean })
     } catch {
       json(res, { error: 'Invalid JSON body' }, 400)
+      return true
+    }
+    // `notify` lets the CLOSER decide whether the reverse [Eredmény] message is
+    // worth an agent turn at the other end. The two cases share this one code
+    // path and cannot be told apart from here:
+    //   - closing a DELEGATED task   -> the delegator is waiting, the ack IS the result;
+    //   - closing an INCOMING report -> the sender already knows it sent it, and the ack
+    //     (typically the 52-char "(nincs eredmény)" form) only lengthens the very queue
+    //     whose delay made the report late. Measured on a live install: several such acks
+    //     sat queued behind an agent whose delivery was already lagging, so closing the
+    //     reports made the queue that the reports arrive in longer still.
+    // Absent (or null) keeps today's behavior, so no existing caller changes.
+    // Rejected BEFORE the status write, not coerced: a truthy `"false"` string would send
+    // exactly the notification the caller asked to skip, and a half-applied close (status
+    // written, unwanted ack sent) is worse than an actionable error the caller can retry
+    // -- the same reason the GET list handler rejects unknown query params.
+    if (notify !== undefined && notify !== null && typeof notify !== 'boolean') {
+      json(res, {
+        error: 'notify must be a boolean',
+        hint: 'omit it for the default (notify the sender), or send JSON true/false -- not a string',
+      }, 400)
       return true
     }
 
@@ -343,8 +402,12 @@ export async function tryHandleMessages(ctx: RouteContext): Promise<boolean> {
       // Notify the delegator: create a reverse message from executor → delegator so
       // they learn the result without polling. See shouldNotifyDelegator for which
       // senders are skipped and why.
-      if (done && shouldNotifyDelegator(done.from_agent, done.to_agent, done.content)) {
-        const summary = result ? result.slice(0, 500) : '(nincs eredmény)'
+      // `notify: false` suppresses it; `notify: true` is only the default spelled out --
+      // it does NOT override shouldNotifyDelegator, whose guards stop undeliverable and
+      // ping-pong acks, not merely expensive ones.
+      if (done && notify !== false && shouldNotifyDelegator(done.from_agent, done.to_agent, done.content)) {
+        // A vagas NE legyen nema, ES legyen KOVETHETO: lasd resultSummary().
+        const summary = resultSummary(id, result)
         createAgentMessage(
           done.to_agent,
           done.from_agent,

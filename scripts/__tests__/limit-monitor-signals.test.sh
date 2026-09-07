@@ -1,0 +1,122 @@
+#!/bin/bash
+# What limit-monitor.sh must catch -- and what it must stay quiet about.
+#
+# The monitor is the only thing that can report an exhausted Claude quota: the
+# agent cannot, it is the one out of tokens. So a MISS here is silent, and that
+# is the failure this file exists to prevent. Every case runs the real script in
+# an isolated install dir, with HOME pointed at an empty directory so no bot
+# token is found and the alert is logged instead of sent to the owner.
+set -u
+INSTALL_DIR="$(cd "$(dirname "$0")/../.." && pwd)"
+BASE="$(mktemp -d)"
+trap 'rm -rf "$BASE"' EXIT
+FAILED=0
+pass(){ echo "  PASS  $*"; }
+fail(){ echo "  FAIL  $*"; FAILED=1; }
+
+# Own tmux server (empty): otherwise the case would capture the real fleet's
+# panes and every result would depend on what happens to be on screen.
+export TMUX_TMPDIR="$BASE/tmux"; mkdir -p "$TMUX_TMPDIR"
+
+new_case() {
+  local c="$BASE/$1"; mkdir -p "$c/scripts" "$c/store" "$c/fakehome"
+  cp "$INSTALL_DIR/scripts/limit-monitor.sh" "$c/scripts/"
+  # The monitor sources scripts/lib/send-telegram.sh, so a case dir without it
+  # is not a smaller install -- it is a BROKEN one, and the difference would
+  # only show up as a silently missing send. Copy what a real install has.
+  mkdir -p "$c/scripts/lib"; cp "$INSTALL_DIR/scripts/lib/send-telegram.sh" "$c/scripts/lib/"
+  # MIOHEREDOC902: the measured quota path now lives in its own file.
+  cp "$INSTALL_DIR/scripts/lib/quota-check.py" "$c/scripts/lib/"
+  # The fork's limit-monitor.sh sources the SHARED canonical session-limit
+  # pattern (card 115c21e7) from store/ -- without it, `. "$STORE/session-
+  # limit-pattern.sh"` fails under this script's `set -u`, and EVERY case in
+  # this file fails identically before any real logic runs (found while
+  # completing card 4f15966e's merge: all 18 cases failed uniformly, which is
+  # the signature of a harness gap, not 18 separate script bugs).
+  cp "$INSTALL_DIR/store/session-limit-pattern.sh" "$c/store/"
+  cp "$INSTALL_DIR/store/session-limit-pattern.json" "$c/store/"
+  printf 'MAIN_AGENT_ID=probe\nALLOWED_CHAT_ID=1\n' > "$c/.env"
+  echo "$c"
+}
+
+# A case that can actually DELIVER: a bot token plus a curl stub standing in for
+# the Bot API. Without this the dedupe assertions were passing for the wrong
+# reason -- the old code stamped before sending, so "no token" still suppressed
+# the second alert. Now the stamp depends on a real delivery, so the test has to
+# provide one.
+#   deliver_case <name> <ok|fail>
+deliver_case() {
+  local c; c="$(new_case "$1")"
+  mkdir -p "$c/fakehome/.claude/channels/telegram" "$c/fakebin"
+  printf 'TELEGRAM_BOT_TOKEN=123456:AAfake-token-for-tests\n' \
+    > "$c/fakehome/.claude/channels/telegram/.env"
+  if [ "$2" = "ok" ]; then
+    printf '#!/bin/sh\nprintf %%s "{\\"ok\\":true,\\"result\\":{}}"\nexit 0\n' > "$c/fakebin/curl"
+  else
+    # An HTTP 200 carrying ok:false -- the exact shape that used to be invisible.
+    printf '#!/bin/sh\nprintf %%s "{\\"ok\\":false,\\"error_code\\":400,\\"description\\":\\"Bad Request: chat not found\\"}"\nexit 0\n' > "$c/fakebin/curl"
+  fi
+  chmod +x "$c/fakebin/curl"
+  echo "$c"
+}
+run_case() { (cd "$1" && HOME="$1/fakehome" PATH="$1/fakebin:$PATH" bash scripts/limit-monitor.sh >/dev/null 2>&1); }
+# An alert was RAISED -- deliberately independent of whether it was delivered.
+# The old form grepped only "ALERT wanted", the line for a case with no bot
+# token, so the moment a case could actually deliver, the same true state read
+# as "no alert". What these cases assert is that the monitor DECIDED to alert;
+# whether the send succeeded is a separate question with its own cases below.
+alerted() { grep -qE 'ALERT (wanted|sent|send FAILED)' "$1/store/limit-monitor.log" 2>/dev/null; }
+
+echo "(a) text signals that MUST alert"
+i=0
+while IFS= read -r line; do
+  [ -z "$line" ] && continue
+  i=$((i+1)); C="$(new_case "pos$i")"
+  printf '%s\n' "$line" > "$C/store/channels.log"
+  run_case "$C"
+  if alerted "$C"; then pass "$line"; else fail "missed: $line"; fi
+done <<'LINES'
+Claude usage limit reached. Your limit will reset at 10pm.
+5-hour limit reached, resets 11pm
+You've reached your weekly limit for Opus.
+Approaching your usage limit
+Approaching Opus weekly limit, 5% left
+Session limit reached, resets at 2am
+API Error: 429 Too Many Requests
+rate_limit_error
+Out of credits
+LINES
+
+echo "(b) noise that must stay quiet"
+i=0
+while IFS= read -r line; do
+  [ -z "$line" ] && continue
+  i=$((i+1)); C="$(new_case "neg$i")"
+  printf '%s\n' "$line" > "$C/store/channels.log"
+  run_case "$C"
+  if alerted "$C"; then fail "false alarm: $line"; else pass "$line"; fi
+done <<'LINES'
+2026-08-18 20:00:00 [heartbeat] all agents healthy
+API Error: 529 Overloaded. This is a server-side issue, usually temporary
+Mailjet free tier: 200 email/nap limit
+limit-monitor: signal unchanged, already alerted
+LINES
+
+# DEVIATION (card 4f15966e, backend, 2026-09-07): sections (c) "the measured path" and
+# (d) "a FAILED delivery" (both new, upstream-borne) tested the upstream measured-quota
+# path -- reading store/.claude-rate-limits.json via scripts/lib/quota-check.py, with
+# dedupe/rollover/stale-reading/delivery-failure handling for it. This script's own
+# header comment (round 3, 2026-09-02) already, deliberately excludes exactly this:
+# "the upstream measured-quota path and fleet-wide pane_text() scan... are DELIBERATELY
+# NOT grafted -- the fork already alerts from its own quota monitor (store/quota-check.sh
+# + quota-bridge), so a second measured alerter would double-notify Peti; only the
+# honest-send wrapper is adopted." Since the capability was never wired in, EVERY case in
+# these two sections exercises a no-op codepath -- even the handful that happened to read
+# as PASS were vacuously true (nothing fires because the file is never read), not a
+# meaningful assertion. Removed wholesale rather than kept selectively, matching this
+# session's identical treatment of outgoing-copy-gate.py's own already-declined rewrite
+# (ACKNOWLEDGED_CONFLICTS round 15). MikroB confirmed 2026-09-07.
+
+echo ""
+if [ "$FAILED" = 0 ]; then echo "ALL PASS"; else echo "FAILURES"; fi
+exit "$FAILED"
