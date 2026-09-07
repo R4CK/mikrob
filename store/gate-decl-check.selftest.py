@@ -167,6 +167,19 @@ case("COMPOSITION: the reported roles are the later designation's, not the survi
 case("CONTROL: bare and anchored agreeing on the roles is still plain OK",
      "Valami bevezeto mondat. Gate: QA + Cybersec.", [], "OK", 0)
 
+# --- HYPHENATED-COMPOUND FALSE POSITIVE (card 4b8962df) ----------------------------------------
+# `_ROLE` used a plain `\b...\b` boundary, which still matches inside "Cybersec-mentes" (Hungarian
+# for "Cybersec-free") because `-` is not a word character. The role set must read {QA}, not
+# {QA, CYBERSEC} -- the EXCLUDING clause must not count as naming the role. Same defect class and
+# same fix as gate_scan_lib.role_named().
+case("a hyphenated EXCLUDING compound does not count as naming the role",
+     "Gate: QA (a Cybersec-mentes valtozat a jelenleg ervenyes designacio).", [], "OK", 0,
+     roles={"QA"})
+# ...and a genuinely standalone mention alongside the compound still counts.
+case("a standalone mention next to a hyphenated compound still counts",
+     "Gate: QA (a Cybersec-mentes valtozat volt, most Cybersec + QA a designacio).", [], "OK", 0,
+     roles={"QA", "CYBERSEC"})
+
 print()
 print("selftest: %d case(s), %s" % (n, "PASS" if not failures else "FAIL"))
 for f in failures:
