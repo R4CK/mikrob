@@ -11785,3 +11785,75 @@ ami nélkül egy "mindig kommentel" hiba is átmenne).
 
 **Hivatkozás:** kártya `a1c4dc51` (szülő `40568837`); `store/kanban-comment-lib.sh`,
 `store/card-build-route.sh`, `store/card-build-route-selftest.sh`.
+
+## 2026-09-07 -- 149-commit upstream/develop merge: 4 dokumentált eltérés az ACKNOWLEDGED_CONFLICTS-tól, és egy Peti NO-GO csendes visszaszivárgása (kártya 4f15966e)
+
+**A FELADAT.** `upstream/develop` (Szotasz/marveen, ba691592) egyesítése `origin/develop`-pal
+(b0e63a39), Peti jóváhagyásával ("Mehet", 2026-09-07 04:23), a plan-grilling verdikt szerint
+(kártya 4f15966e/a7a61751, komment 21142/21143): minden konfliktusnál a TÉNYLEGES upstream hunkot
+kell elolvasni (nem csak a commit tárgyát), és minden eltérést az archivált
+`ACKNOWLEDGED_CONFLICTS` szövegtől dokumentálni kell. Mérve: 149 commit, 364 fájl, 29923 sor
+(merge-base diff, `git diff --shortstat A...B`), 54 tényleges konfliktus-fájl, mind FRESH
+(a `classifyConflicts()` szerint az upstream blob-pin friss).
+
+**KÖZBEESŐ ADATVESZTÉS.** A munka fele elveszett egy gépi újraindításnál, mert a scratch worktree
+`/tmp` alatt élt (WSL2 törli rebootnál) -- lásd a memória-bejegyzést
+(`scratch-worktree-must-not-live-under-tmp`). Újraindítva `/home/neon/marveen-scratch-worktrees/`
+alatt, a `upstream-merge/4f15966e` branch (a checkpointon állva, b0e63a39) és a
+`classifyConflicts()`-alapú módszertan tette lehetővé a gyors újrakezdést.
+
+**NÉGY DOKUMENTÁLT ELTÉRÉS az archivált szövegtől (mindegyik in-code MERGE NOTE/DEVIATION
+kommenttel, QA/Cybersec review-ra jelölve):**
+1. `src/auto-restart.ts` -- a fork saját, Cybersec-eredetű MIN/MAX határa
+   (`openQuestionDeferralCapHours`) megtartva upstream korlátlan `>0` ellenőrzése helyett; az
+   archivált szöveg "üres a fork oldala" állítása elavult volt (card 4276708e időközben hozzáadta).
+2. `scripts/lib/send-telegram.sh` -- a fork stdin-alapú, argv-biztonságos token-mintája megtartva
+   upstream argv-ben exponáló formája helyett.
+3. `src/web/agent-process.ts` (umask/agentTmuxTarget) -- ELLENTÉTES irányban: az archivált szöveg
+   "nincs runAsUser-fogyasztó a forkban" állítása elavult, az `agentTmuxTarget()` azóta 4+ önálló
+   hívási ponton él -- ITT upstream változata lett elfogadva, nem a fork régi állapota.
+4. `src/web/agent-scaffold.ts` (`resolveDashboardOrigin`) -- a fork regex-validált origin-je
+   megtartva upstream validálatlan verziója helyett (shell-injekció kockázat a generált CLAUDE.md
+   curl-receptekbe).
+
+**MÁSODIK HIBAOSZTÁLY, a konfliktus-feloldáson TÚL: nem-konfliktáló addíciók, amik önmagukban is
+hibásak vagy döntést sértettek, és a `tsc --noEmit` + a kötelező minimax-grep találta meg őket,
+nem a konfliktus-lista:**
+- `src/pane-state.ts`: egy HARMADIK, nem konfliktus-jelölt `detectsPermissionDialog` másolat élt
+  ~50 sorral a feloldott hunkok előtt (HEAD saját régi példánya, amit a 3-way merge LCS-algoritmusa
+  nem ismert fel azonosnak upstream új példányával) -- eltávolítva.
+- `src/web/context-restart-gate-runner.ts`: upstream nem-konfliktáló refaktorja
+  (`gatherGateInputs` külön függvénybe emelve) elfelejtett `await`-elni egy async hívást --
+  `gatherGateInputs`/`diagnoseAgent` async-ra állítva, a `checkAgent` hívó és
+  `scripts/context-restart-gate-doctor.mjs` javítva.
+- `src/web/heartbeat-agent-scaffold.ts`: hiányzott a `mergeClaudeSettingsJson` (HBGATEWIRE826) --
+  upstream mért hibája (a heartbeat settings.json teljes felülírása törölte a seedelt hookokat)
+  emiatt élt volna tovább a forkban is -- portolva, bekötve `ensureHeartbeatAgent`-be.
+- **KRITIKUS: MiniMax-integráció csendesen visszaszivárgott** -- `src/context-guard.ts` (élő
+  kontextus-limit-ág), `src/web/routes/agents.ts` (`/api/models/available` MINIMAX_API_KEY-gating),
+  `web/index.html` (két UI-optgroup), plusz két új upstream tesztfájl
+  (`agent-provider-env.test.ts`, `minimax-model-selector.test.ts`), ami KÖZVETLENÜL ELLENTMOND a
+  fork saját `provider-env-adoption.test.ts`-ének. Egyik sem volt HEAD-en a merge előtt, egyik sem
+  volt a feloldott 54 konfliktus-fájl része -- csendes, nem-konfliktáló addícióként érkezett,
+  közvetlen ütközésben Peti NO-GO-jával (kártya 48565f81) és CLAUDE.md 17. szabályával. Mindet
+  eltávolítva, dokumentálva.
+- `src/web/routes/agents.ts`: egy teljes `/api/agents/status` route-kezelő (nem csak import) a
+  nem-adoptált `getAgentToolActivity`/`deriveAgentStatus` szimbólumokkal -- eltávolítva.
+
+**NYITOTT, MÉG NEM ELDÖNTÖTT ELLENTMONDÁS: a card-blockers UI backendje (`blockerWouldCycle`,
+`addCardBlocker`, `GET /api/kanban/:id/blockers`) MÁR JELEN VAN nem-konfliktáló kódként a
+`src/db.ts`-ben és a `src/web/routes/kanban.ts`-ben, annak ellenére, hogy TÖBB
+`ACKNOWLEDGED_CONFLICTS` bejegyzés "nem adoptálva, a `kanban_dependencies` helyettesíti" döntést
+rögzít.** Nem nyúltam hozzá (nagy, kockázatos, kívül esik a konfliktus-feloldás hatókörén) --
+jelezve MikroB/QA felé felülvizsgálatra, nem eldöntve itt.
+
+**TANULSÁG, ami miatt ez a bejegyzés készült.** Egy 149-commit merge konfliktus-alapú feloldása
+(csak a git által jelölt 54 fájl) NEM garantálja, hogy minden Peti-döntés vagy korábbi
+architektúra-választás sértetlen marad -- a nem-konfliktáló addíciók (git 3-way LCS-e szerint
+"nem ütköző" tartalom) ugyanúgy hordozhatnak visszavont/deklinált funkciókat vagy valódi hibákat.
+A `tsc --noEmit` + guard-selftestek + egy célzott, döntés-specifikus grep (itt: "minimax") volt az,
+ami ezt ténylegesen megtalálta -- a puszta "minden konfliktus fel van oldva" állapot nem lett volna
+elég bizonyíték.
+
+**Hivatkozás:** kártya `4f15966e` (szülő `a7a61751`), checkpoint `b0e63a39`, plan-grilling
+verdikt komment `21142`/`21143`.

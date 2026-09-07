@@ -176,17 +176,12 @@ export function contextLimitForModel(model: string | null | undefined): number {
   const m = model.toLowerCase()
   if (m.includes('[1m]')) return 1_000_000
   if (ONE_MILLION_FAMILIES.some(rx => rx.test(m))) return 1_000_000
-  // minimax-m3 is a special case, NOT a general "trust the vendor" precedent
-  // (see deepseek-v4-pro below, which stays 200_000 on live measurement).
-  // MiniMax's own /anthropic compat endpoint misreports 200K in its model
-  // metadata instead of M3's real 1M (MiniMax-AI/MiniMax-M2.7#46) -- but
-  // agent-process.ts's resolveProviderEnv forces
-  // CLAUDE_CODE_MAX_CONTEXT_TOKENS=1000000 for every minimax- launch, which a
-  // live restart confirmed actually works (pane went from "199k left" to
-  // "999k left"). This 1M and that env var override are a pair: dropping the
-  // override without reverting this would under-restart against a window the
-  // CLI no longer has.
-  if (m.startsWith('minimax-')) return 1_000_000
+  // DEVIATION FROM ACKNOWLEDGED_CONFLICTS (card 4f15966e, backend, 2026-09-07): upstream's minimax-m3
+  // 1M-window branch is NOT adopted, matching this merge's exclusion of MiniMax everywhere else
+  // (Peti NO-GO, card 48565f81, CLAUDE.md rule 17). This branch was paired with agent-process.ts's
+  // resolveProviderEnv CLAUDE_CODE_MAX_CONTEXT_TOKENS=1000000 override for minimax- launches, which
+  // is also not adopted -- keeping only this half would report a 1M window for a model whose actual
+  // launch never sets the override, an active mis-measurement rather than a harmless no-op.
   return 200_000
 }
 

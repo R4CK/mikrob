@@ -584,6 +584,28 @@ export function ensureAgentStalenessHook(name: string): boolean {
 const _provenanceScript = join(PROJECT_ROOT, 'scripts', 'hooks', 'provenance-gate.py')
 const PROVENANCE_HOOK_CMD = `bash -c '[ -f ${_provenanceScript} ] && exec python3 ${_provenanceScript}; exit 0'`
 
+// The GENERATION-path half of the provenance guard (card 4f15966e, backend, 2026-09-07 merge).
+// Same gap the staleness guard above was fixed for under card f7b33416: this hook came in as
+// ensure*-only (backfill loop, web.ts), so a freshly spawned agent ran without it until the next
+// dashboard boot, and the hook-guards-are-code-wired.test.ts meta-test (which derives its list
+// from `inject*` functions) could not see it either. Mirrors injectAgentStalenessHook's shape:
+// merges into UserPromptSubmit, repeats the script path literally (not via the module constant)
+// so the derivation can read it, and de-dupes on the script name.
+export function injectAgentProvenanceHook(existing: Record<string, unknown>): void {
+  const hooks = (existing.hooks && typeof existing.hooks === 'object'
+    ? existing.hooks
+    : (existing.hooks = {})) as Record<string, unknown>
+  const script = join(PROJECT_ROOT, 'scripts', 'hooks', 'provenance-gate.py')
+  const command = `bash -c '[ -f ${script} ] && exec python3 ${script}; exit 0'`
+  if (isUnsafeHookCommand(command)) return
+  const entry = { hooks: [{ type: 'command', command, timeout: 10 }] }
+  const prev = Array.isArray(hooks.UserPromptSubmit) ? (hooks.UserPromptSubmit as unknown[]) : []
+  hooks.UserPromptSubmit = [
+    ...prev.filter((e) => !JSON.stringify(e).includes('provenance-gate.py')),
+    entry,
+  ]
+}
+
 export function ensureAgentProvenanceHook(name: string): boolean {
   const settingsPath = agentSettingsPath(name)
   let settings: Record<string, unknown> = {}
@@ -665,6 +687,8 @@ export function writeAgentSettingsFromProfile(name: string, profile: ProfileTemp
   // Card f7b33416: this one was backfill-only until now, so a freshly spawned agent ran without the
   // staleness guard until the dashboard next booted.
   injectAgentStalenessHook(existing)
+  // Card 4f15966e: same gap, same fix, for the provenance guard.
+  injectAgentProvenanceHook(existing)
   atomicWriteFileSync(settingsPath, JSON.stringify(existing, null, 2))
 }
 

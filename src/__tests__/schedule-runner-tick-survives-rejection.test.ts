@@ -54,6 +54,12 @@ vi.mock('../web/agent-process.js', () => ({
   capturePane: () => null,
   sendEnterToSession: vi.fn(),
   clearStaleParkedInput: vi.fn(() => false),
+  // Genuinely new non-conflicting content from the card 4f15966e upstream merge (backend,
+  // 2026-09-07): resolveBoundChannel's multi-provider resolution and the not-ready-path modal
+  // clear did not exist pre-merge, so this mock never needed them -- schedule-runner-retry-
+  // missing.test.ts's mock (written after they landed) is the reference shape.
+  clearFeedbackModalAndRecheck: () => false,
+  resolveAgentProvider: () => 'telegram',
 }))
 
 function task(name: string, agent: string): ScheduledTask {
