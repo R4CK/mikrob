@@ -597,6 +597,10 @@ SCHED_CHAT_ID="${SCHED_CHAT_ID:-0}"
 # that form (ledger-live-drain does) hash-mismatches every rendered historical
 # version and is permanently classified "touched", so it never refreshes.
 render_seed_template() {
+  # {{PROJECT_ROOT}} is the node seeder's alias for {{INSTALL_DIR}}
+  # (substituteTemplatePlaceholders) -- without it here, any shipped task using
+  # that form (ledger-live-drain does) hash-mismatches every rendered historical
+  # version and is permanently classified "touched", so it never refreshes.
   sed -e "s/{{MAIN_AGENT_ID}}/${MAIN_AGENT_ID:-}/g" \
       -e "s/{{BOT_NAME}}/${BOT_NAME:-}/g" \
       -e "s/{{OWNER_NAME}}/${OWNER_NAME:-}/g" \
@@ -970,6 +974,11 @@ if [ "${SKIP_BUILD:-0}" != "1" ]; then
     ROLLED_BACK=0
     if [ -n "$OLD_VERSION_FULL" ] && rollback_guard_check "$INSTALL_DIR" "$(git rev-parse HEAD 2>/dev/null || echo unknown)" "$OLD_VERSION_FULL" "update-build-failure"; then
       git reset --hard "$OLD_VERSION_FULL" >/dev/null 2>&1 || true
+      # Restore the dependency tree of the OLD version before rebuilding it: the
+      # failed `npm ci` above may have pruned dev deps (NODE_ENV=production),
+      # and without the compiler this rollback build would also fail silently,
+      # leaving git=OLD + node_modules=pruned (AUTOUPDNODEENV905 finding A).
+      npm ci --silent --include=dev 2>/dev/null || true
       npm rebuild better-sqlite3 --build-from-source --silent 2>/dev/null || true
       rm -rf "$INSTALL_DIR/dist"
       npm run build --silent 2>/dev/null || true

@@ -30,19 +30,29 @@ import {
   sendPromptToSession,
   sessionExistsOnHost,
   capturePane,
+  clearFeedbackModalAndRecheck,
 } from './agent-process.js'
 import { detectPaneState, type PaneState } from '../pane-state.js'
 import { setLastInboundModality } from './voice-modality.js'
 import { classifyAgentMessage, wrapAgentMessageForDelivery } from './agent-message-wrap.js'
-import { MAIN_CHANNELS_SESSION } from './main-agent.js'
 import { maybeWakeSubAgentsForTelegram } from './telegram-inbox-wake.js'
 import { messageWakesReceiver } from './message-wake.js'
+import { MAIN_CHANNELS_SESSION } from './main-agent.js'
 
 // A message that cannot be delivered within this window (target session never
 // exists / stays busy) is marked failed so it stops clogging the pending
 // queue and we stop re-scanning it forever. Matches the scheduled-task retry
 // window so a long turn that ate one also eats the other.
 const MESSAGE_ABANDON_WINDOW_MS = 60 * 60 * 1000
+// RESTORED (card 4f15966e, backend, 2026-09-07): this fork-owned wakeup mechanism (card 3bd457ed)
+// existed in HEAD before the merge and was mistakenly dropped in favour of upstream's simpler
+// `if (isMainAgent) continue` during conflict resolution -- message-wake-field.test.ts and
+// message-wake-deciders.test.ts both pin its presence and behaviour here, alongside (not instead
+// of) inbox-nudge-watcher.ts's own check; the two are a matched pair per those tests' own comments,
+// not a fork-vs-upstream pick. See the restored block below (main-agent branch of the per-message
+// loop) for the actual firing logic.
+let lastMainAgentWakeupMs = 0
+const MAIN_AGENT_WAKEUP_COOLDOWN_MS = 45 * 1000
 // How long a message must have waited before the stale-parked-input janitor is
 // allowed to clear the receiver's input box. Long enough that a brief, genuine
 // "agent parked a draft it is about to submit" never gets clobbered; short
@@ -137,13 +147,6 @@ function notifyOrchestratorOfFailedHandoff(msg: AgentMessage, reason: string): v
     logger.warn({ err, id: msg.id }, 'Failed to enqueue handoff-failure notification')
   }
 }
-// Wakeup cooldown for the main agent: the router fires at most one
-// sendPromptToSession wakeup per COOLDOWN_MS window to avoid spamming the
-// channels session. 45s gives enough headroom that a normal turn (typically
-// 5-30s) ends and drain-inbox fires before we would retry.
-let lastMainAgentWakeupMs = 0
-const MAIN_AGENT_WAKEUP_COOLDOWN_MS = 45 * 1000
-
 // Bounce a terminal federated-delivery failure back to the SENDER's inbox as
 // a local 'system' notice, so a delegating agent learns its task never
 // arrived (otherwise the failure only flips a DB row nobody reads, and the
@@ -712,6 +715,8 @@ export async function runMessageRouterTick(): Promise<void> {
     // on their own budget so neither queue starves the other.
     await deliverFederatedBatch(federatedPending, now)
 
+    // Per-tick latch for the main-agent wakeup cooldown below: at most one wakeup fires per tick
+    // regardless of how many pending messages qualify.
     let mainAgentWakeupFiredThisTick = false
     for (const msg of pending) {
       // Skip messages already batched by the reconnect pre-pass: they are
@@ -767,6 +772,14 @@ export async function runMessageRouterTick(): Promise<void> {
       // Fire one lightweight wakeup per cooldown window so an idle channels
       // session starts a turn and drain-inbox claims the message immediately.
       // Busy session: Claude Code queues the wakeup for the next turn boundary.
+      //
+      // RESTORED (card 4f15966e, backend, 2026-09-07): message-wake-field.test.ts and
+      // message-wake-deciders.test.ts both pin this router-side mechanism as a matched pair with
+      // inbox-nudge-watcher.ts's own check, not a fork-vs-upstream pick -- "a hardening that lived
+      // only in the router would sit in the fallback and not in the primary" (the test's own
+      // words). Dropping it in favour of upstream's simpler `if (isMainAgent) continue` during
+      // conflict resolution was a mistake, caught by the full suite rather than by re-reading the
+      // canonical rule text (which does not mention this specific hunk at all).
       if (isMainAgent) {
         // Card 3bd457ed: a message that declared wake:false is content for the
         // main agent's next natural turn, not a reason to start one. It stays
@@ -817,6 +830,19 @@ export async function runMessageRouterTick(): Promise<void> {
       }
 
       if (!(await isSessionReadyForPrompt(session, host))) {
+        // A self-drafted feedback modal ("Bug report drafted ... 0 to dismiss")
+        // holds the pane in a not-ready state, and the pre-flight dismissal in
+        // sendPromptToSession never runs because this gate short-circuits
+        // first. Measured twice on 2026-08-31 on agent-samu: 10 minutes
+        // not-ready, 10 queued messages, the second time AFTER the pre-flight
+        // dismissal had shipped -- the fix was in the wrong place for this
+        // path. Clear it here and re-read readiness ONCE; only a still-held
+        // pane falls through to the stuck bookkeeping below.
+        if (await clearFeedbackModalAndRecheck(session, host)) {
+          agentStuckSince.delete(msg.to_agent)
+          routerLoggedMisses.delete(msg.id)
+          continue // cleared; deliver on the next tick
+        }
         // ---- session-stuck detection (card 2922e380 thread a) ----
         // Track how long this session has been continuously not-ready.
         const stuckStart = agentStuckSince.get(msg.to_agent)
@@ -948,10 +974,11 @@ export async function runMessageRouterTick(): Promise<void> {
         // Freshness/supersession (adopted from upstream, card f27c999b): a DIFFERENT question from
         // the board re-check below -- "has this sender said more since?" rather than "did the board
         // move?". Both are wired here because either alone leaves a real stale-replay path open.
-        const freshness = {
-          ageMs,
-          newerFromSameSender: countNewerMessagesFromSameSender(msg.from_agent, msg.to_agent, msg.id),
-        }
+        // Only meaningful for inter-agent messages (channel-inbound are user messages with no
+        // sender-supersede concept); skip the DB count for channel-inbound to avoid needless work.
+        const freshness = isChannelInbound
+          ? undefined
+          : { ageMs, newerFromSameSender: countNewerMessagesFromSameSender(msg.from_agent, msg.to_agent, msg.id) }
         const { prefix, wrapped } = wrapAgentMessageForDelivery(category, safeFromAgent, msg.from_agent, content, msg.id, msg.origin_note, freshness)
         // Card 9566a197: the send-time card-state stamp is a photograph, and this queue routinely
         // holds a message for two to three hours while the receiver works. Re-read the board HERE,

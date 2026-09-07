@@ -33,7 +33,7 @@
 // CLAUDE.md (owner, main-agent name, store path, calendar account) comes
 // from config via currentHeartbeatIdentity().
 
-import { existsSync, mkdirSync, writeFileSync } from 'node:fs'
+import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs'
 import { join } from 'node:path'
 import {
   PROJECT_ROOT,
@@ -367,19 +367,33 @@ function renderAgentConfigJson(): string {
   return JSON.stringify(HEARTBEAT_AGENT_CONFIG, null, 2) + '\n'
 }
 
-function renderClaudeSettingsJson(): string {
-  return JSON.stringify({ enabledPlugins: CHANNEL_PLUGIN_DISABLES }, null, 2) + '\n'
+// PORTED FROM UPSTREAM (card 4f15966e, backend, 2026-09-07): this file's own ACKNOWLEDGED_CONFLICTS
+// entry did not mention this function at all -- it was never a conflict hunk, it arrived as a pure
+// non-conflicting upstream addition (a new src/__tests__/heartbeat-hook-wiring.test.ts landed with
+// it, HBGATEWIRE826). The project-scope settings must MERGE, never overwrite: the hook-seeding pass
+// (web.ts) writes gate hooks into this SAME file, and this scaffold reruns at every boot after it --
+// a wholesale rewrite deletes every seeded hook, which was one half of how the heartbeat worker ran
+// with ZERO dashboard-side hooks (the kanban-write-gate included) while every test stayed green.
+// Only the key this scaffold OWNS (enabledPlugins) is enforced; everything else (hooks, permissions)
+// is preserved. Exported pure so the wiring test can pin the contract.
+export function mergeClaudeSettingsJson(existingRaw: string | null): string {
+  let existing: Record<string, unknown> = {}
+  if (existingRaw) {
+    try { existing = JSON.parse(existingRaw) as Record<string, unknown> } catch { existing = {} }
+  }
+  existing.enabledPlugins = CHANNEL_PLUGIN_DISABLES
+  return JSON.stringify(existing, null, 2) + '\n'
 }
 
-// Files we ALWAYS rewrite. Settings + agent-config are recreated to
-// keep them in sync with the constants in this file; if the operator
-// hand-edited the on-disk copy, our boot rewrite wins. CLAUDE.md is
-// re-rendered every boot for the same reason: the canonical source of
-// truth for the agent's instructions lives here, not on disk.
+// Files we ALWAYS rewrite wholesale. Agent-config is recreated to keep it in
+// sync with the constants in this file; if the operator hand-edited the
+// on-disk copy, our boot rewrite wins. CLAUDE.md is re-rendered every boot
+// for the same reason: the canonical source of truth for the agent's
+// instructions lives here, not on disk. settings.json is deliberately NOT
+// here -- it is merge-written (see mergeClaudeSettingsJson).
 const ALWAYS_WRITE: ReadonlyArray<readonly [string, () => string]> = [
   ['CLAUDE.md', () => renderHeartbeatClaudeMd(currentHeartbeatIdentity())],
   ['agent-config.json', renderAgentConfigJson],
-  [join('.claude', 'settings.json'), renderClaudeSettingsJson],
 ] as const
 
 // Files we write only when missing. The sentinel is a marker, not a
@@ -408,6 +422,9 @@ export function ensureHeartbeatAgent(): void {
     for (const [relPath, render] of ALWAYS_WRITE) {
       writeFileSync(join(HEARTBEAT_AGENT_DIR, relPath), render())
     }
+    const settingsPath = join(claudeDir, 'settings.json')
+    const existingSettingsRaw = existsSync(settingsPath) ? readFileSync(settingsPath, 'utf-8') : null
+    writeFileSync(settingsPath, mergeClaudeSettingsJson(existingSettingsRaw))
     for (const [relPath, body] of SENTINEL_FILES) {
       const p = join(HEARTBEAT_AGENT_DIR, relPath)
       if (!existsSync(p)) writeFileSync(p, body)

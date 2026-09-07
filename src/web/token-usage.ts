@@ -20,36 +20,35 @@ function encodeProjectPath(p: string): string {
   return p.replace(/[^a-zA-Z0-9-]/g, '-')
 }
 
-interface AgentTranscriptSource {
-  agent: string
-  projectDir: string
-}
-
-/**
- * Is this "isolated" projects dir actually the SHARED one wearing a symlink? (Card 0c4cf655.)
- *
- * Provisioning points agents/<name>/.claude-config/projects straight back at ~/.claude/projects,
- * so the two paths name one physical tree. Comparing the strings cannot see that; comparing the
- * resolved paths can. Kept as its own exported function because it is the entire fix, and a reader
- * asking "why is this agent's isolated root skipped" should find one named thing to read.
- *
- * Fails toward TREATING IT AS ISOLATED (returns false) when either path cannot be resolved: a dir
- * we cannot stat is one we should still try to read rather than silently drop.
- *
- * THE DUPLICATE THAT DIRECTION RISKS IS NOT CAUGHT TODAY, and this comment used to say it was
- * (Cybersec, card 0c4cf655 gate). Measured on the live database: idx_token_usage_dedup is
- * (agent, session_id, timestamp, input_tokens, output_tokens) -- `agent` is the FIRST field, so the
- * same event booked under two names is two rows, not one. Dropping `agent` from that key is card
- * b774f057, which is still planned and blocked. Until it lands, the duplicate is unguarded; the
- * direction is still the right one, because dropping an agent's usage outright is worse than
- * double-counting it, but that is a trade rather than a protection.
- */
-export function resolvesToSharedProjectsRoot(candidate: string, sharedRoot: string): boolean {
+// True when `dir` is the shared ~/.claude/projects wearing another name,
+// reached through a symlink. Compared by realpath, so a symlinked parent
+// counts too. A missing path is not the shared root. `sharedRoot` is a
+// parameter only so the test can point both sides at a fixture.
+//
+// Provisioning points agents/<name>/.claude-config/projects straight back at ~/.claude/projects,
+// so the two paths name one physical tree. Comparing the strings cannot see that; comparing the
+// resolved paths can (card 0c4cf655). Fails toward TREATING IT AS ISOLATED (returns false) when
+// either path cannot be resolved: a dir we cannot stat is one we should still try to read rather
+// than silently drop.
+//
+// THE DUPLICATE THAT DIRECTION RISKS IS NOT CAUGHT TODAY, and this comment used to say it was
+// (Cybersec, card 0c4cf655 gate). Measured on the live database: idx_token_usage_dedup is
+// (agent, session_id, timestamp, input_tokens, output_tokens) -- `agent` is the FIRST field, so the
+// same event booked under two names is two rows, not one. Dropping `agent` from that key is card
+// b774f057, which is still planned and blocked. Until it lands, the duplicate is unguarded; the
+// direction is still the right one, because dropping an agent's usage outright is worse than
+// double-counting it, but that is a trade rather than a protection.
+export function resolvesToSharedProjectsRoot(dir: string, sharedRoot: string = PROJECTS_DIR): boolean {
   try {
-    return realpathSync(candidate) === realpathSync(sharedRoot)
+    return realpathSync(dir) === realpathSync(sharedRoot)
   } catch {
     return false
   }
+}
+
+interface AgentTranscriptSource {
+  agent: string
+  projectDir: string
 }
 
 // `projectRootOverride` exists for the tests, matching the convention
@@ -115,6 +114,21 @@ export function discoverAgentSources(
     if (!configDir) continue
     const isolatedProjects = join(configDir, 'projects')
     if (!existsSync(isolatedProjects)) continue
+    // ...unless the agent was never actually migrated, in which case
+    // agents/<name>/.claude-config/projects is a SYMLINK back to the shared
+    // ~/.claude/projects. Then the comment below is false: the dir holds
+    // EVERY agent's work, and all of it gets booked under this one name.
+    //
+    // MEASURED 2026-09-04 18:40 on a live install: three sub-agents each
+    // reported the whole fleet's consumption, byte-identical down to the
+    // field (43844 calls, 28.5M output, 8.82G cache-read, 636 sessions),
+    // because all three symlinks resolve to the same root; only the main
+    // agent's row was real. 73% of the table was duplicate.
+    // The cursor table cannot absorb it either, being keyed by file path, and
+    // the same transcript reached the parser under three different paths.
+    //
+    // Skipping it loses nothing: the shared root is walked in the loop above,
+    // where attribution comes from the encoded directory name.
     if (resolvesToSharedProjectsRoot(isolatedProjects, sharedProjects)) continue
     let entries: string[]
     try { entries = readdirSync(isolatedProjects) } catch { continue }

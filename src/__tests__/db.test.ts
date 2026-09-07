@@ -79,6 +79,59 @@ describe('memories', () => {
   it('leepulesi soprest vegrehajt hiba nelkul', () => {
     expect(() => decayMemories()).not.toThrow()
   })
+
+  // Regresszio: a saveMemory sokaig csak INSERT-elt, embedding nelkul, ezert az
+  // ezen az uton irt sorok (pl. az ejszakai "[Napi naplo ...]" digest) tartosan
+  // vektorizalatlanul maradtak es kiestek a szemantikus keresesbol. A
+  // saveAgentMemory-hoz hasonloan itt is fire-and-forget embed fut; a teszt azt
+  // rogziti, hogy a hivas elinditja az embed-agat es nem dobja el a sort akkor
+  // sem, ha az embedding szolgaltatas (Ollama) nem elerheto.
+  it('saveMemory nem hasal el, ha nincs Ollama', async () => {
+    expect(() => saveMemory('mem-chat-embed', '[Napi naplo teszt] digest', 'episodic')).not.toThrow()
+    const mems = getMemoriesForChat('mem-chat-embed')
+    expect(mems.length).toBeGreaterThan(0)
+    expect(mems[0].content).toBe('[Napi naplo teszt] digest')
+    // a fire-and-forget agnak egy tick alatt sem szabad unhandled rejectiont dobnia
+    await new Promise(r => setTimeout(r, 50))
+  })
+
+  // A fenti eset csak azt allitja, hogy a beszuras tulel egy halott Ollamat.
+  // Az NEM esik el tole, ha az embed-blokk teljesen hianyzik -- pontosan ezert
+  // maradhatott eszrevetlen, hogy a saveMemory evekig embedding nelkul INSERT-elt.
+  // Ez a teszt a MEGELOZEST rogziti: elerheto embedding-szolgaltatas mellett a
+  // saveMemory-val irt sor NEM maradhat NULL embeddinggel. Ha valaki kiveszi a
+  // fire-and-forget blokkot, ez a teszt bukik.
+  it('saveMemory vektorizalja a sort, ha az embedding-szolgaltatas valaszol', async () => {
+    const vector = Array.from({ length: 8 }, (_, i) => i / 10)
+    const realFetch = globalThis.fetch
+    globalThis.fetch = (async () =>
+      new Response(JSON.stringify({ embedding: vector }), {
+        status: 200,
+        headers: { 'Content-Type': 'application/json' },
+      })) as typeof globalThis.fetch
+
+    try {
+      saveMemory('mem-chat-embed-ok', '[Napi naplo teszt] vektorizalando', 'episodic')
+      const id = getMemoriesForChat('mem-chat-embed-ok')[0].id
+
+      // Az embed-ag fire-and-forget, ezert nem szinkron assert kell, hanem
+      // idokorlatos varakozas. Szinkron ellenorzes vagy hibasan bukna, vagy
+      // veletlenszeruen menne at.
+      const db = getDb()
+      const read = () => (db.prepare('SELECT embedding FROM memories WHERE id = ?')
+        .get(id) as { embedding: string | null }).embedding
+      const deadline = Date.now() + 2000
+      while (read() === null && Date.now() < deadline) {
+        await new Promise(r => setTimeout(r, 20))
+      }
+
+      const stored = read()
+      expect(stored).not.toBeNull()
+      expect(JSON.parse(stored!)).toEqual(vector)
+    } finally {
+      globalThis.fetch = realFetch
+    }
+  })
 })
 
 describe('buildFtsMatchExpression', () => {
@@ -307,6 +360,85 @@ describe('database file permissions', () => {
     if (!existsSync(journalPath)) return
     const mode = statSync(journalPath).mode & 0o777
     expect(mode).toBe(0o600)
+  })
+})
+
+// The context-restart gate blocks while this agent has dispatched work that has
+// not come back. Its own persistent-block alert is sent from the agent TO the
+// agent, so counting self-addressed rows deadlocked the gate against its own
+// alarm: blocked -> alert -> pending count 1 -> still blocked, forever.
+describe('getDispatchedPendingStats -- self-addressed messages', () => {
+  const NOW = 2_000_000_000_000  // ms
+  const TWO_HOURS = 2 * 60 * 60 * 1000
+
+  it('counts real dispatched work to another agent', () => {
+    createAgentMessage('gatetest-a', 'gatetest-b', 'do the thing')
+    const s = getDispatchedPendingStats('gatetest-a', Date.now(), TWO_HOURS)
+    expect(s.count).toBe(1)
+  })
+
+  it('ignores a message the agent sent to itself', () => {
+    createAgentMessage('gatetest-solo', 'gatetest-solo', '[CONTEXT-RESTART-GATE] blocked')
+    const s = getDispatchedPendingStats('gatetest-solo', Date.now(), TWO_HOURS)
+    expect(s.count).toBe(0)
+    expect(s.hasStale).toBe(false)
+  })
+
+  it('a self-message does not mask real dispatched work', () => {
+    createAgentMessage('gatetest-mix', 'gatetest-mix', 'note to self')
+    createAgentMessage('gatetest-mix', 'gatetest-other', 'real delegation')
+    const s = getDispatchedPendingStats('gatetest-mix', Date.now(), TWO_HOURS)
+    expect(s.count).toBe(1)
+  })
+
+  it('classifies an old cross-agent message as stale, not live', () => {
+    createAgentMessage('gatetest-stale', 'gatetest-peer', 'sent long ago')
+    // nowMs far in the future -> the row falls outside the stale cutoff
+    const s = getDispatchedPendingStats('gatetest-stale', NOW, TWO_HOURS)
+    expect(s.count).toBe(0)
+    expect(s.hasStale).toBe(true)
+  })
+})
+
+// Closing an inbound message makes the server post a reverse [Eredmény] row FROM
+// this agent, so finishing work used to block the gate for the whole stale
+// cutoff -- and a busy agent renewed the block with every close. A result report
+// is the end of a delegation, never outstanding work.
+describe('getDispatchedPendingStats -- result notifications', () => {
+  const NOW = 2_000_000_000_000  // ms
+  const TWO_HOURS = 2 * 60 * 60 * 1000
+
+  it('ignores the reverse result notification a close generates', () => {
+    createAgentMessage('gateres-a', 'gateres-b',
+      `${COMPLETION_REPORT_PREFIX} msg_id:42 status:done\n\nkesz`)
+    const s = getDispatchedPendingStats('gateres-a', Date.now(), TWO_HOURS)
+    expect(s.count).toBe(0)
+    expect(s.hasStale).toBe(false)
+  })
+
+  it('does not report an old result notification as stale either', () => {
+    createAgentMessage('gateres-old', 'gateres-peer',
+      `${COMPLETION_REPORT_PREFIX} msg_id:7 status:done\n\nregi`)
+    const s = getDispatchedPendingStats('gateres-old', NOW, TWO_HOURS)
+    expect(s.count).toBe(0)
+    expect(s.hasStale).toBe(false)
+  })
+
+  it('a result notification does not mask real dispatched work', () => {
+    createAgentMessage('gateres-mix', 'gateres-peer',
+      `${COMPLETION_REPORT_PREFIX} msg_id:1 status:done\n\nkesz`)
+    createAgentMessage('gateres-mix', 'gateres-peer', 'valodi delegalas')
+    const s = getDispatchedPendingStats('gateres-mix', Date.now(), TWO_HOURS)
+    expect(s.count).toBe(1)
+  })
+
+  it('counts a message that merely MENTIONS the prefix mid-text', () => {
+    // Only the prefix position marks a notification. A real task that quotes the
+    // word must still block the gate, otherwise the exclusion becomes a hole.
+    createAgentMessage('gateres-quote', 'gateres-peer',
+      `Nezd meg a ${COMPLETION_REPORT_PREFIX} sorokat es jelezz vissza`)
+    const s = getDispatchedPendingStats('gateres-quote', Date.now(), TWO_HOURS)
+    expect(s.count).toBe(1)
   })
 })
 

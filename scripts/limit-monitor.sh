@@ -7,8 +7,18 @@
 # Zero Claude tokens.
 #
 # Signals: rate-limit / usage-limit / 429 / "resets at" in the channels+dashboard
-# logs AND in the live channels tmux pane (where Claude Code prints the limit msg).
-# Dedupes via a state hash so the same event isn't re-alerted.
+# logs AND in the live tmux panes of the WHOLE fleet (where Claude Code prints
+# the limit banner). Dedupes via a state hash so the same event isn't re-alerted.
+#
+# Two things measured on 2026-08-18 shaped this:
+#   - The plan quota is shared by every agent on the subscription, but the
+#     banner is printed in whichever pane made the request that hit it. Watching
+#     only the main channels pane means a sub-agent can hit the wall silently.
+#   - The wordings closest to what the owner actually asks about ("5-hour limit
+#     reached", "Approaching Opus weekly limit", "Session limit reached") did
+#     NOT match the old pattern. A missed limit is silent; that is the failure
+#     that matters here, so the pattern errs wide and the pane match is confined
+#     to the bottom region instead.
 
 set -u
 INSTALL_DIR="$(cd "$(dirname "$0")/.." && pwd)"
@@ -50,6 +60,36 @@ fi
 LIMIT_MONITOR_EXTRA_RX='reached your (usage|plan|weekly) limit|your limit will reset|rate_limit_error|429 too many requests|quota exceeded|out of (usage|credits)'
 CANDIDATE_RX="${SESSION_LIMIT_RX}|${LIMIT_MONITOR_EXTRA_RX}"
 
+# ---------------------------------------------------------------------------
+# Owner alert, Bot API only. No Claude invocation anywhere in this path -- the
+# whole point is that it still works when the quota is gone. GRAFTED from
+# upstream (round 3, 2026-09-02): both alert paths in this file now go through
+# this one honest-send contract (curl exit 0 AND "ok":true), never a bare curl
+# exit. Callers MUST stamp their dedupe state only when this returns 0. The
+# upstream measured-quota path and fleet-wide pane_text() scan that arrived in
+# the same upstream diff are DELIBERATELY NOT grafted -- the fork already
+# alerts from its own quota monitor (store/quota-check.sh + quota-bridge), so
+# a second measured alerter would double-notify Peti; only the honest-send
+# wrapper is adopted.
+# ---------------------------------------------------------------------------
+. "$INSTALL_DIR/scripts/lib/send-telegram.sh"
+
+send_alert() {
+  local msg="$1" tag="$2" token
+  token="$(grep -oE '[0-9]+:[A-Za-z0-9_-]+' "$HOME/.claude/channels/telegram/.env" 2>/dev/null | head -1)"
+  if [ -z "$token" ]; then
+    log "ALERT wanted but no bot token found: $tag"
+    return 1
+  fi
+  if send_telegram_message "$token" "$CHAT_ID" "$msg" \
+       --data-urlencode "disable_web_page_preview=true" 2>>"$LOG"; then
+    log "ALERT sent to $CHAT_ID: $tag"
+    return 0
+  fi
+  log "ALERT send FAILED (nothing was delivered): $tag"
+  return 1
+}
+
 # Collect candidate text: recent log lines + live tmux pane
 CANDIDATE="$(
   { tail -n 200 "$STORE/channels.log" "$STORE/channels.error.log" "$STORE/dashboard.log" 2>/dev/null;
@@ -90,8 +130,7 @@ case $? in
     ;;
 esac
 
-# Alert the owner via Bot API (token-free path; no Claude invocation)
-TOKEN="$(grep -oE '[0-9]+:[A-Za-z0-9_-]+' "$HOME/.claude/channels/telegram/.env" 2>/dev/null | head -1)"
+# (2) Fallback path: text signals in the logs and the live panes.
 SNIP="$(printf '%s' "$CANDIDATE" | head -3)"
 MSG="⚠️ LIMIT-FIGYELMEZTETÉS ($BOT_NAME monitor)
 A logokban/sessionben limit-jel jelent meg:
@@ -99,19 +138,13 @@ A logokban/sessionben limit-jel jelent meg:
 $SNIP
 
 Lehet hogy közeledünk vagy elértük a Claude előfizetés keretét. Ha kell, ritkítom a heartbeatet vagy szünetet tartok. Nézd meg a sessiont ha tudod."
-if [ -n "$TOKEN" ]; then
-  # Honest send via the shared contract (curl exit 0 AND "ok":true); the
-  # dedupe stamp is written ONLY on success so a failed alert retries on the
-  # next timer tick instead of vanishing.
-  . "$INSTALL_DIR/scripts/lib/send-telegram.sh"
-  if send_telegram_message "$TOKEN" "$CHAT_ID" "$MSG" --data-urlencode "disable_web_page_preview=true" 2>>"$LOG"; then
-    # No stamp on an empty hash (fail-open tick): an empty state file is the
-    # exact shape the MD5SUMHIANY826 bug hid behind.
-    [ -n "$HASH" ] && echo "$HASH" > "$STATE"
-    log "ALERT sent to $CHAT_ID: ${HASH:-nohash}"
-  else
-    log "ALERT send FAILED (will retry next tick, stamp NOT written): $HASH"
-  fi
+# Both alert paths now share ONE contract via send_alert(): honest send, and the
+# dedupe stamp written ONLY after a confirmed delivery, so a failed alert retries
+# on the next timer tick instead of vanishing behind its own suppression stamp.
+if send_alert "$MSG" "${HASH:-nohash}"; then
+  # No stamp on an empty hash (fail-open tick): an empty state file is the exact
+  # shape the MD5SUMHIANY826 bug hid behind.
+  [ -n "$HASH" ] && echo "$HASH" > "$STATE"
 else
-  log "ALERT wanted but no bot token found: $HASH"
+  log "ALERT send FAILED (will retry next tick, stamp NOT written): ${HASH:-nohash}"
 fi

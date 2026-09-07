@@ -85,7 +85,7 @@ describe('POST /api/kanban/<id>/archive with children (card 037277a0)', () => {
     createKanbanCard({ id: 'child-6a', title: 'open one', status: 'planned', parent_id: 'parent-6' })
     createIdea({
       id: 'idea-6', title: 'linked idea', description: '', category: 'general', source: 'test',
-      status: 'kanban', kanban_id: 'parent-6', impact: null, effort: null,
+      status: 'kanban', kanban_id: 'parent-6', impact: null, effort: null, scope: 'munka',
     })
 
     const { ctx, out } = fakeCtx('/api/kanban/parent-6/archive', 'POST')
