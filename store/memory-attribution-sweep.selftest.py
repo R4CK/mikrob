@@ -190,6 +190,86 @@ try:
     check('dry-run writes NOTHING to disk',
           'agent:' in after_dry, False)
 
+    # ---------------------------------------------- Cybered kill-chain 1 (comment 22227)
+    # A memory file's frontmatter is content ANY agent's Write tool can produce -- not a
+    # value this script controls. The exploit shape needs EXACTLY ONE real transcript
+    # matching the glob for the old code's "len(matches) == 1 -> authoritative" logic to
+    # misfire, so this uses an ISOLATED projects_root with only one, rather than the
+    # shared `projects` fixture above (which by now holds several agents' transcripts,
+    # where even the OLD vulnerable code's len()!=1 check would coincidentally reject it).
+    glob_projects = os.path.join(tmp, 'projects-glob-attack')
+    os.makedirs(glob_projects)
+    make_transcript(glob_projects, '-home-neon-marveen-agents-victim', '99999999-9999-9999-9999-999999999999')
+
+    check('kill-chain 1: a bare "*" originSessionId is NEVER resolved, even though it '
+          'glob-matches the SOLE real transcript in this projects_root (the exact shape '
+          'that made the old len(matches)==1 check misfire)',
+          mas.resolve_agent('*', glob_projects), None)
+    check('kill-chain 1: a glob character-class originSessionId is also rejected -- the '
+          'fix is a UUID-shape allowlist, not a single-character denylist',
+          mas.resolve_agent('[0-9a-f]*', glob_projects), None)
+    check('kill-chain 1: a glob-escapable-but-still-not-a-UUID string is rejected too '
+          '(the fix is shape validation, not merely escaping)',
+          mas.resolve_agent('not-a-uuid-at-all', glob_projects), None)
+
+    check('CONTROL: with the SAME sole-transcript setup, the REAL uuid for it still '
+          'resolves -- proves the rejections above are about the glob shape, not about '
+          'this projects_root being empty or broken',
+          mas.resolve_agent('99999999-9999-9999-9999-999999999999', glob_projects), 'victim')
+
+    check('CONTROL: a real UUID against the main fixture still resolves (the fix did not '
+          'just start rejecting everything)',
+          mas.resolve_agent(sid_qa, projects), 'qa')
+
+    # ---------------------------------------------- Cybered kill-chain 2 (comment 22227)
+    # A naive read-modify-write on a hub file drops a concurrent agent's own write if it
+    # lands between this script's read and write. _test_hook lands a write deterministically
+    # inside that exact window (right after the first read, before the compare-reread),
+    # rather than relying on real thread scheduling to hit it by chance.
+    cas_pool = os.path.join(tmp, 'memory-cas')
+    os.makedirs(cas_pool)
+    with open(os.path.join(cas_pool, 'race-hub.md'), 'w', encoding='utf-8') as f:
+        f.write('- [entry](race-target.md)\n')
+
+    injected = {'done': False}
+
+    def _inject_concurrent_write():
+        if injected['done']:
+            return
+        injected['done'] = True
+        with open(os.path.join(cas_pool, 'race-hub.md'), 'a', encoding='utf-8') as f:
+            f.write('- [a DIFFERENT agent wrote this mid-sweep](its-own-entry.md)\n')
+
+    ok = mas._apply_marker_cas(
+        os.path.join(cas_pool, 'race-hub.md'), '](race-target.md)', '`[qa]`',
+        _test_hook=_inject_concurrent_write,
+    )
+    with open(os.path.join(cas_pool, 'race-hub.md'), encoding='utf-8') as f:
+        race_result = f.read()
+    check('kill-chain 2: the CAS write reports success (retried past the injected conflict)',
+          ok, True)
+    check('kill-chain 2: the CONCURRENT write survives -- not silently dropped',
+          'a DIFFERENT agent wrote this mid-sweep' in race_result, True)
+    check('kill-chain 2: the marker this call was making STILL gets applied, on the retry',
+          '`[qa]`' in race_result, True)
+    check('kill-chain 2: the hook fired exactly once (first attempt hit the conflict, '
+          'second attempt found nothing new -- not an infinite fight)',
+          injected['done'], True)
+
+    # CONTROL: without contention, one attempt is enough (no silent extra retries hiding
+    # a real bug in the no-conflict path).
+    with open(os.path.join(cas_pool, 'quiet-hub.md'), 'w', encoding='utf-8') as f:
+        f.write('- [entry](quiet-target.md)\n')
+    attempts = {'n': 0}
+
+    def _count_attempts():
+        attempts['n'] += 1
+
+    mas._apply_marker_cas(os.path.join(cas_pool, 'quiet-hub.md'), '](quiet-target.md)', '`[qa]`',
+                           _test_hook=_count_attempts)
+    check('CONTROL: with no contention, exactly one attempt is made',
+          attempts['n'], 1)
+
 finally:
     shutil.rmtree(tmp, ignore_errors=True)
 

@@ -35,6 +35,22 @@ is a no-op" cases -- so it is safe to schedule repeatedly, not just run once):
      separate, later, content-based step the card describes. It only ever
      writes what a transcript directory proves.
 
+CONCURRENCY (Cybered NO-GO, card 0c335d59, comment 22227, on the first version):
+this runs against a LIVE pool ~15 fleet agents write to concurrently, and the
+per-file frontmatter edit (step 2's `agent:` field) is a single-file write with
+no other writer -- but the hub-file marker append (also step 2) touches files
+EVERY agent's index writes land in. That earlier version was a plain read-
+modify-write there, independently reproduced to silently drop a concurrent
+agent's freshly-added bullet line whenever its write landed mid-sweep. Fixed
+with a compare-and-swap per hub file (re-read immediately before writing;
+retry against fresh content if it moved) -- this is `_apply_marker_cas`, not
+plain idempotency. The two are DIFFERENT guarantees: idempotent means a second
+sweep of this script is a no-op (true, see the selftest); safe-under-
+concurrent-OTHER-writers means someone else's write in the same instant is not
+silently lost (now also true, within CAS's bounded-retry limits -- no OS-level
+lock, so a sustained-contention hub file can still exhaust its retries and get
+picked up on the next scheduled run instead).
+
 Run manually:
   python3 store/memory-attribution-sweep.py [--dry-run]
 
@@ -89,11 +105,25 @@ def extract_origin_session_id(frontmatter: str) -> str | None:
     return m.group(1) if m else None
 
 
+# Session ids are UUIDs (see every real example in this file's own docstring/selftest).
+# Cybered's kill-chain 1 (card 0c335d59, comment 22227): origin_session_id came from a
+# memory file's OWN frontmatter -- content any agent's Write tool can produce, not a value
+# this script controls -- and went straight into a glob.glob() pattern unescaped. A value
+# like '*' would match every transcript in every agent directory; if EXACTLY ONE existed
+# anywhere at sweep time, the old code took that as an "authoritative" match and minted a
+# GROUND-TRUTH-LOOKING `agent:` label from zero real session evidence. Rejecting anything
+# that is not a plain UUID closes this before the value ever reaches glob(); glob.escape()
+# is kept too as defense in depth for a future format change that loosens the regex.
+UUID_RE = re.compile(r'^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$', re.IGNORECASE)
+
+
 def resolve_agent(origin_session_id: str, projects_root: str) -> str | None:
     """UUID -> agent name, or None if it does not resolve to EXACTLY ONE
     agent-specific project-key directory (ambiguous, shared-key, or no
     transcript at all are all treated the same: unresolved, never guessed)."""
-    pattern = os.path.join(projects_root, AGENTS_PROJECT_PREFIX + '*', origin_session_id + '.jsonl')
+    if not UUID_RE.match(origin_session_id):
+        return None
+    pattern = os.path.join(projects_root, AGENTS_PROJECT_PREFIX + '*', glob.escape(origin_session_id) + '.jsonl')
     matches = glob.glob(pattern)
     if len(matches) != 1:
         return None
@@ -110,6 +140,52 @@ def inject_agent_field(frontmatter: str, agent: str) -> str:
     return frontmatter[:m.end()] + f'\n  agent: {agent}' + frontmatter[m.end():]
 
 
+MAX_CAS_RETRIES = 5
+
+
+def _marked_lines(text: str, target: str, marker: str) -> tuple[str, bool]:
+    lines = text.splitlines(keepends=True)
+    touched = False
+    for i, line in enumerate(lines):
+        if target in line and marker not in line:
+            lines[i] = line.rstrip('\n') + f' {marker}\n'
+            touched = True
+    return ''.join(lines), touched
+
+
+def _apply_marker_cas(hub_path: str, target: str, marker: str, _test_hook=None) -> bool:
+    """Compare-and-swap update of ONE hub file (Cybered kill-chain 2, card 0c335d59,
+    comment 22227): a naive read-modify-write here silently dropped a concurrent
+    agent's freshly-written bullet line whenever its write landed between this
+    function's own read and write -- independently reproduced against this exact
+    write logic, not just read from source. On every attempt, re-read the file
+    IMMEDIATELY before writing; if its content moved since the read this attempt's
+    edit was computed from, the edit is stale -- retry against the fresh content
+    instead of overwriting it. This shrinks the unguarded window from "the whole
+    compute" to "one reread+write", not to zero (no OS-level lock here, matching
+    Cybered's own offered remedy: flock OR compare-and-swap).
+
+    `_test_hook`, if given, runs once per attempt right after the first read --
+    the selftest's only way to deterministically land a write inside the race
+    window instead of relying on real thread timing."""
+    for _ in range(MAX_CAS_RETRIES):
+        with open(hub_path, 'r', encoding='utf-8') as f:
+            before = f.read()
+        new_text, touched = _marked_lines(before, target, marker)
+        if not touched:
+            return False
+        if _test_hook is not None:
+            _test_hook()
+        with open(hub_path, 'r', encoding='utf-8') as f:
+            current = f.read()
+        if current != before:
+            continue  # someone else wrote in between -- retry against fresh content
+        with open(hub_path, 'w', encoding='utf-8') as f:
+            f.write(new_text)
+        return True
+    return False  # exhausted retries under sustained contention -- next sweep tries again
+
+
 def add_attribution_markers(pool_dir: str, filename: str, agent: str) -> list[str]:
     """Appends a `` `[agent]` `` marker to every list line, in every *.md file
     in the pool (MEMORY.md included -- it links some entries directly), that
@@ -124,16 +200,7 @@ def add_attribution_markers(pool_dir: str, filename: str, agent: str) -> list[st
         hub_path = os.path.join(pool_dir, hub_name)
         if not os.path.isfile(hub_path):
             continue
-        with open(hub_path, 'r', encoding='utf-8') as f:
-            lines = f.readlines()
-        touched = False
-        for i, line in enumerate(lines):
-            if target in line and marker not in line:
-                lines[i] = line.rstrip('\n') + f' {marker}\n'
-                touched = True
-        if touched:
-            with open(hub_path, 'w', encoding='utf-8') as f:
-                f.writelines(lines)
+        if _apply_marker_cas(hub_path, target, marker):
             changed.append(hub_name)
     return changed
 
