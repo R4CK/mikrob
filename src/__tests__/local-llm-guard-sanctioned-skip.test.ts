@@ -41,20 +41,47 @@ function writeFlag(content: string): void {
   writeFileSync(join(stateDir, '.gpu-crashloop-guard-masked.json'), content, 'utf-8')
 }
 
-/** Run the selftest with a dead Ollama and whatever flag state the case set up. */
-function runSelftest(): { code: number; out: string } {
+/** Run the selftest with whatever OLLAMA_HOST/PATH/flag state the case set up (default: dead Ollama, real PATH). */
+function runSelftest(opts: { ollamaHost?: string; extraPath?: string } = {}): { code: number; out: string } {
+  const { ollamaHost = DEAD_OLLAMA, extraPath } = opts
   try {
     const out = execFileSync('bash', [SELFTEST], {
       cwd: REPO_ROOT,
       encoding: 'utf-8',
       timeout: 120_000,
-      env: { ...process.env, OLLAMA_HOST: DEAD_OLLAMA, GPU_GUARD_STATE_DIR: stateDir },
+      env: {
+        ...process.env,
+        OLLAMA_HOST: ollamaHost,
+        GPU_GUARD_STATE_DIR: stateDir,
+        ...(extraPath ? { PATH: `${extraPath}:${process.env.PATH}` } : {}),
+      },
     })
     return { code: 0, out }
   } catch (err) {
     const e = err as { status?: number; stdout?: string; stderr?: string }
     return { code: e.status ?? -1, out: `${e.stdout ?? ''}${e.stderr ?? ''}` }
   }
+}
+
+/** A fake `curl` placed first on PATH, standing in for a real Ollama answering -- the same
+ * technique agent-skill-drift-sync.sh's own selftest uses for a fake `tmux` (card 75b90343),
+ * chosen over a real loopback HTTP server because a curl subprocess spawned from inside this
+ * suite's worker cannot reach a server started in that same worker (measured: every request timed
+ * out at the sandbox boundary, never reaching a server that answered instantly to a plain shell
+ * curl outside the suite). Recognizes "/api/tags" (what ollama_up/ollama_actually_up AND
+ * local-llm.sh's own model-listing checks call) and answers an empty model list with exit 0;
+ * anything else (the /api/generate call) exits non-zero, exactly like curl -f on a real
+ * non-2xx/unroutable response -- which is what drives local-llm.sh into its "model not pulled"
+ * path, the exact proof cases 1 and 3 already check for.
+ */
+function writeFakeCurlThatAnswersOllama(): string {
+  const dir = mkdtempSync(join(tmpdir(), 'fake-curl-'))
+  writeFileSync(
+    join(dir, 'curl'),
+    '#!/usr/bin/env bash\ncase "$*" in\n  *"/api/tags"*) echo \'{"models": []}\'; exit 0 ;;\n  *) exit 22 ;;\nesac\n',
+    { mode: 0o755 }
+  )
+  return dir
 }
 
 describe('the routing selftest skips only for a SANCTIONED mask (card 970156ce)', () => {
@@ -150,5 +177,29 @@ describe('the routing selftest skips only for a SANCTIONED mask (card 970156ce)'
     expect(code).toBe(0)
     expect(out).toContain('[skip]')
     expect(out).toContain('no reason recorded')
+  })
+
+  it('a sanctioned flag does NOT skip once Ollama is actually answering again (card ca2d7873)', () => {
+    // The flag records INTENT at the moment the guard masked ollama, not the CURRENT state. If
+    // someone has since manually unmasked/restarted the service (clearing the flag is the guard's
+    // own job, on its own schedule, not this selftest's), the skip must not survive on a stale
+    // excuse -- that would silently widen the sanctioned window past what it was ever meant to
+    // cover, exactly the failure mode this whole file exists to prevent for the "no flag" case.
+    const fakeCurlDir = writeFakeCurlThatAnswersOllama()
+    try {
+      writeFlag(
+        JSON.stringify({ units: 'ollama.service', reason: 'stale mask -- ollama was restarted by hand' })
+      )
+      const { code, out } = runSelftest({ extraPath: fakeCurlDir })
+      expect(out).not.toContain('[skip]')
+      // With a (fake) Ollama answering but never having the routed model, the routing cases resolve
+      // exactly like the DETERMINISM comment above expects "control 1" to: they run for real and
+      // pass, proving the flag alone no longer bypasses them.
+      expect(out).toContain('[ok ]')
+      expect(out).not.toContain('[FAIL]')
+      expect(code).toBe(0)
+    } finally {
+      rmSync(fakeCurlDir, { recursive: true, force: true })
+    }
   })
 })
