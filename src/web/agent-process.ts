@@ -2043,7 +2043,30 @@ async function stopAgentProcessUnlocked(name: string): Promise<{ ok: boolean; er
   const host = target.host
 
   try {
-    runTmux(target, ['kill-session', '-t', session], { timeout: 5000 })
+    // TWO INDEPENDENT LOCKS GUARDED THE SAME RESOURCE (card 28eb8340). This
+    // function's caller takes withLifecycleLock, keyed by AGENT NAME;
+    // sendPromptToSession's chunked text+Enter delivery takes
+    // withSessionSendLock, keyed by SESSION NAME -- neither knows the other
+    // exists. Nothing stopped a restart from tearing this session down and
+    // rebuilding it from scratch WHILE a delivery was mid-`sendChunks()`:
+    // chunks sent before the kill landed in the dying pane (lost); chunks/the
+    // submitting Enter sent after the new session came up landed in a blank,
+    // just-booted pane racing tmux's own bootstrap -- "typed but never
+    // submitted" (MikroB's own live incident, ~17:2x today, right after a
+    // mikrob-channels restart). Taking the SAME lock here, in 'deliver' mode
+    // (bounded wait, then fail-open exactly like every other 'deliver'
+    // caller -- see session-send-lock.ts's own contract), makes the kill wait
+    // for an in-flight send to finish before tearing the pane down, without
+    // risking a wedged sender blocking a restart forever.
+    const lockResult = await withSessionSendLock(session, host, 'deliver', async () => {
+      runTmux(target, ['kill-session', '-t', session], { timeout: 5000 })
+    })
+    if (lockResult.failedOpen) {
+      logger.warn(
+        { name, session },
+        'stopAgentProcess: killed the tmux session without the send-lock -- a delivery was still in flight past the wait budget',
+      )
+    }
     await delay(2000)
     // Reap any orphaned plugin grandchild that tmux did not tear down. This is
     // a LOCAL pkill against this host's process table, so it only makes sense
