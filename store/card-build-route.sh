@@ -94,6 +94,9 @@ fi
 # fail-safe direction the guard itself documents: doubt about the measurement resolves ONLINE. A
 # MISSING guard, by contrast, is not doubt -- it is a host that never had one -- so it is skipped
 # rather than treated as HOLD, which would disable local routing forever on such a host.
+# shellcheck source=./kanban-comment-lib.sh
+. "$HERE/kanban-comment-lib.sh"
+
 VRAM_GUARD="${CARD_BUILD_ROUTE_VRAM_GUARD:-$HERE/vram-guard-check.sh}"
 if [ -f "$VRAM_GUARD" ]; then
   vram_line="$(bash "$VRAM_GUARD" 2>/dev/null)"; vram_rc=$?
@@ -102,6 +105,17 @@ if [ -f "$VRAM_GUARD" ]; then
     # deterministic-money): a path field that embeds the measurement is not greppable and cannot be
     # asserted on. The measurement goes to stderr, where a reader wants it anyway.
     echo "card-build-route: local path closed -- ${vram_line:-no output from the vram guard} (rc=$vram_rc)" >&2
+    # ON THE CARD ITSELF, not the caller's log (card a1c4dc51). The stderr line above answers "why
+    # did this run print ONLINE"; nobody reads that later. The card's own thread is where someone
+    # asking "why didn't this get a local draft" actually looks -- the same reasoning that put
+    # PAUSED-LOAD/RESUMED-LOAD on load-guard-bookkeeping.sh's cards, applied to a per-card decision
+    # rather than a per-agent pause. Only fires when $CARD_ID names a real card (a bare --text call,
+    # used by every selftest and by the advisory path, has none to comment on).
+    if [ "$CARD_ID" != "-" ]; then
+      kanban_comment_on "$CARD_ID" \
+        "INFO-ONLY PAUSED-VRAM: ${vram_line:-no output from the vram guard} (rc=$vram_rc) -- a GPU epp nem vesz fel helyi munkat, ezert ez a kartya ONLINE-ra ment a helyi 7B helyett. A kartya munkaja ettol nem allt meg, csak a helyi-modell draft maradt el." \
+        "card-build-route"
+    fi
     online vram-hold
   fi
 fi
@@ -282,6 +296,31 @@ fi
 if printf '%s' "$SHORT" | grep -Eqi \
   'skill|claude\.md|agens-prompt|agent-prompt|rendszer-prompt|system prompt|utemezett feladat|ütemezett feladat|scheduled-task|scheduled-tasks|seed-skills|seed-scheduled|\.claude/|scripts/hooks|settings\.json|\bhook|PreToolUse'; then
   online deterministic-shared-instruction-target
+fi
+
+# A DECLARED [SEC] LABEL, checked on the UNTRIMMED text (card 28295e97, MikroB decision 25075).
+# The label-prefix trim two rules above this one is exactly what re-opened this gap: a `[SEC]` tag
+# almost always sits IN that prefix (`[marveen][INFRA][SEC][LOW]`), so trimming the label run to
+# stop `infra` from deciding anything also removed the one label that IS a deliberate classification
+# rather than organisational noise. `infra` says where the work happens; `[SEC]` says someone
+# already decided it touches a trust boundary -- the two are not the same kind of token, and only
+# one of them belongs behind the trim.
+#
+# MEASURED (backend, card 28295e97 second round): of the live board's 37 cards whose ONLY
+# multi-decision match was the trimmed `infra` label, 26 reached the model with no deterministic
+# gate left standing. Cybersec's two named examples (2dd28b5d, 2a07f29e) were both in that 26. A
+# `[SEC]`-tag rule catches 18 of the 26 (re-measured on the current board: 22 of 30, the corpus
+# having moved on); the remaining cards carry no `[SEC]` tag at all and are reported individually
+# rather than folded into this rule (see the card's REVIEW/DECISIONS.md entry -- each either gets
+# its own structural word or an explicit safe-to-leave justification, never a guess).
+#
+# THE MATCH IS THE BRACKET, not the bare word: `security`/`biztonsag` alone is not used here on
+# purpose, because a card can use either word to say the OPPOSITE of what it looks like ("nem
+# biztonsagi kockazat", "IRANY: BIZTONSAGOS") -- measured live: 8 of the cards a bare word-match
+# would have caught were self-declared NON-risks, not trust-boundary work. `\[SEC[^]]*\]` matches
+# the deliberate tag (`[SEC]`, `[SEC-GATE-KOTELEZO]`) and nothing that merely mentions the word.
+if printf '%s' "$SHORT" | grep -Eq '\[SEC[^]]*\]'; then
+  online deterministic-sec-label
 fi
 
 # --- 3. REUSE THE HARDENED SECURITY CLASSIFIER --------------------------------------------------
