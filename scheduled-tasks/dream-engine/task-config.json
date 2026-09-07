@@ -1,0 +1,9 @@
+{
+  "schedule": "7 2 * * *",
+  "agent": "{{MAIN_AGENT_ID}}",
+  "enabled": true,
+  "type": "dream-engine",
+  "skipIfBusy": false,
+  "createdAt": 1778480400,
+  "catchUpMaxAgeMinutes": 1440
+}
