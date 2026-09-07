@@ -179,19 +179,14 @@ describe('detectsPermissionDialog (PERMDENY905)', () => {
     expect(detectsPermissionDialog('')).toBe(false)
   })
 
-  // MEASURED, and reported rather than fixed: our detectsBlockingMenu slices the
-  // last 8 lines RAW, so the same dialog with blank padding below it is not seen
-  // by the GATE at all -- such a pane currently gets nothing, neither an Escape
-  // nor an alert. Silent, but not a wrong answer, which is why it is a separate
-  // finding about detectsBlockingMenu rather than this card's change (upstream
-  // trims the blank tail first, via liveTailRegion; we do not).
-  //
-  // This detector is already broader than the gate: its whole-pane question+Yes
-  // term claims the padded capture too. So widening the gate later needs no
-  // further change here -- and if someone narrows THIS to the footer region to
-  // "match" the gate, the second assertion goes red and says why not to.
-  it('padded capture: the GATE misses it, but this detector does not', () => {
-    expect(detectsBlockingMenu(PERMISSION_PANE_PADDED)).toBe(false)
+  // UPDATED (card 4f15966e, backend, 2026-09-07): this test used to document a gap -- our
+  // detectsBlockingMenu sliced the last 8 lines RAW, so the same dialog with blank padding below it
+  // was not seen by the GATE at all. That gap is closed: detectsBlockingMenu now also reads its
+  // footer through liveTailRegion (card 11b04357's blank-tail fix, landed here non-conflicting
+  // during this merge, not scoped to detectsPermissionDialog alone as the archived conflict rule
+  // for this file assumed). Both the gate and this detector now claim the padded capture.
+  it('padded capture: both the gate and this detector claim it', () => {
+    expect(detectsBlockingMenu(PERMISSION_PANE_PADDED)).toBe(true)
     expect(detectsPermissionDialog(PERMISSION_PANE_PADDED)).toBe(true)
   })
 })

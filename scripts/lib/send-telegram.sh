@@ -41,10 +41,13 @@ telegram_api_call() {
   fi
 
   local response curl_exit
-  # SECURITY (card 8418b098): the token never touches argv/ps -- fed to curl
-  # via a -K config file over stdin (only the URL line carries it), matching
-  # store/roll-forward-oneshot.sh's notify() and
-  # scripts/dashboard-watchdog.sh's notify_peti().
+  # SECURITY (card 8418b098): the token never touches argv/ps -- fed to curl via a -K config file
+  # over stdin (only the URL line carries it), matching store/roll-forward-oneshot.sh's notify() and
+  # scripts/dashboard-watchdog.sh's notify_peti(). DEVIATION FROM ACKNOWLEDGED_CONFLICTS (card
+  # 4f15966e, backend, 2026-09-07): the archived rule for this file said "adopt upstream wholesale",
+  # which correctly brought in telegram_api_call's method-agnostic shape but, taken literally, also
+  # discarded this -K/stdin pattern in favour of upstream's bare argv URL (caught by
+  # send-honesty-sweep.test.ts's "bot token NOT in curl argv" case). Restored.
   response=$(printf 'url = "https://api.telegram.org/bot%s/%s"\n' "$token" "$method" \
     | curl -sS -m 15 -K - "$@" 2>&1)
   curl_exit=$?

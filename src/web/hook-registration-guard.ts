@@ -29,6 +29,7 @@ export const KNOWN_HOOK_SCRIPTS: readonly string[] = [
   'taskstate-replay.py',
   'voice-reply-directive.py',
   'staleness-guard.py',
+  'provenance-gate.py',
   'email-send-gate.mjs',
   'self-pace-gate.mjs',
   'telegram_progress.py',
@@ -104,6 +105,10 @@ export const KNOWN_HOOK_SCRIPTS: readonly string[] = [
   'blast-radius-guard.py',
   'symlinked-node-modules-guard.py',
   'pentest-tool-install-guard.py',
+  // The /clear continuity pair: SessionEnd capture + SessionStart replay (upstream, unioned in
+  // with this merge -- scripts/hooks/clear-capture.py and clear-replay.py arrive as part of it).
+  'clear-capture.py',
+  'clear-replay.py',
 ]
 
 // Path fragment that marks a checkout as an agent worktree. Kept

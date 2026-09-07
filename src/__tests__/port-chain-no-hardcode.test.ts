@@ -101,7 +101,7 @@ describe('PORTCHAIN1: the port chain follows WEB_PORT on a NON-default port', ()
     const raw = readFileSync(join(ROOT, 'templates/settings.json.template'), 'utf-8')
     const rendered = substituteTemplatePlaceholders(raw, {
       projectRoot: '/opt/install', mainAgentId: 'agent', botName: 'Bot',
-      ownerName: 'Owner', webPort: Number(PORT),
+      ownerName: 'Owner', webPort: Number(PORT), chatId: '1',
     })
     expect(rendered).not.toContain('3420')
     expect(rendered).toContain(`localhost:${PORT}/api/memories`)

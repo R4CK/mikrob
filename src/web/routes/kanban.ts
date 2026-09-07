@@ -11,6 +11,8 @@ import {
   getKanbanSeqByIdPrefix, getKanbanCardStateByIdPrefix,
   listLabels, getLabel, createLabel, updateLabel, deleteLabel,
   addLabelToCard, removeLabelFromCard, getLabelsForAllCards, getLabelsForCard,
+  addCardBlocker, removeCardBlocker, getBlockersForCard, getBlockedByCard,
+  getBlockersForAllCards, blockerWouldCycle,
   listArchivedKanbanCards,
   revertIdeaFromKanban,
   getHeartbeatKanbanSummary,
@@ -128,7 +130,39 @@ export function kanbanMoveInstructions(id: string, target: string): string {
   // not to the human).
   const isMainAgent = target === MAIN_AGENT_ID
   const escalateTo = isMainAgent ? OWNER_NAME : MAIN_AGENT_ID
+  // FIRST line on purpose: this dispatch is fired ONCE, at the moment the card
+  // enters in_progress, and the status is correct then -- the `dispatched_at`
+  // guard is right and is not what needs fixing. What can slip is DELIVERY: the
+  // message rides the normal inter-agent queue, and a busy session may only read
+  // it after finishing that round, by which time the card has moved on. Observed
+  // on a live install, on more than one card.
+  //
+  // A status check at dispatch time therefore cannot help (the card is not yet
+  // `testing` when the message is written), so the guard has to travel WITH the
+  // message and be re-evaluated by the reader. The wasted round is the mild
+  // outcome; the expensive one is a second attempt producing parallel work on the
+  // same target -- a SECOND test file for one controller, with its own fixture,
+  // maintained in two places. The receiving agent's own rules already forbid that,
+  // but they cannot fire on a task the agent has no reason to think is finished.
+  //
+  // The check is handed over as a runnable command, like every other step here:
+  // an instruction the reader has to compose is one it can skip. There is no
+  // single-card GET endpoint, hence the board fetch plus a one-field extract.
+  //
+  // The isinstance(list) branch is not defensive padding: measured while writing
+  // this, an unreadable token makes the endpoint answer with an error OBJECT, and
+  // iterating that dict yields its KEYS, so the naive one-liner dies on a Python
+  // TypeError. A traceback is the one answer this line must never give -- the
+  // reader would have no status and no idea why, and the likeliest reaction to a
+  // broken pre-flight check is to skip it. Echoing the server's own error keeps it
+  // actionable.
+  const statusProbe =
+    `  curl -s ${auth} ${base}/api/kanban | python3 -c "import sys,json;d=json.load(sys.stdin);print(next((c['status'] for c in d if c.get('id')=='${id}'),'nincs ilyen kartya') if isinstance(d,list) else 'ismeretlen -- a szerver nem kartya-listat adott: '+str(d)[:120])"`
   return [
+    'MIELŐTT NEKIKEZDESZ: nézd meg a kártya AKTUÁLIS státuszát. Ez az üzenet egy foglalt session sorában KÉSHET, és közben a munka elkészülhetett:',
+    statusProbe,
+    'Ha a válasz már "testing" vagy "done", NE kezdj bele -- az üzenet későn ért ide, a munka már áll. Egy második nekifutás párhuzamos, két helyen karbantartott munkát szül (például egy MÁSODIK teszt-fájlt ugyanarra a vezérlőre). Ilyenkor jelezd a delegálódnak, és ne írj kódot.',
+    '',
     'A kártyát in_progress-re húzták. Amikor VÉGEZTÉL, két lépés (mindkettő a kártyára kerül, a web UI-ban látszik):',
     '',
     '1) Írj egy "REVIEW" kezdetű rövid eredmény-összefoglalót kommentként (1-2 mondat: mi lett a vége):',
@@ -601,6 +635,49 @@ export async function tryHandleKanban(ctx: RouteContext): Promise<boolean> {
     return true
   }
 
+  // --- Blockers: "this card is blocked by that card" ---
+  // GET returns both directions in one payload. The reverse list (what waits on
+  // THIS card) is the half that changes behaviour: it is what tells the operator
+  // that leaving a card open is holding up three others.
+  const cardBlockersMatch = path.match(/^\/api\/kanban\/([^/]+)\/blockers$/)
+  if (cardBlockersMatch && method === 'GET') {
+    const cardId = decodeURIComponent(cardBlockersMatch[1])
+    if (!getKanbanCard(cardId)) { json(res, { error: 'Kártya nem található' }, 404); return true }
+    json(res, { blockers: getBlockersForCard(cardId), blocking: getBlockedByCard(cardId) })
+    return true
+  }
+  if (cardBlockersMatch && method === 'POST') {
+    const cardId = decodeURIComponent(cardBlockersMatch[1])
+    if (!getKanbanCard(cardId)) { json(res, { error: 'Kártya nem található' }, 404); return true }
+    const body = await readBody(req)
+    // `id` is accepted as an alias for `blockerId` for the same reason the label
+    // route accepts it: GET /api/kanban returns cards keyed by `id`.
+    const parsed = JSON.parse(body.toString()) as { blockerId?: string; id?: string }
+    const blockerId = parsed.blockerId ?? parsed.id
+    if (!blockerId) { json(res, { error: 'blockerId mező kötelező' }, 400); return true }
+    if (!getKanbanCard(blockerId)) { json(res, { error: 'A blokkoló kártya nem található' }, 404); return true }
+    // A cycle is refused rather than stored: a block that can never clear is
+    // not information, it is a deadlock the board would render as normal.
+    if (blockerWouldCycle(cardId, blockerId)) {
+      json(res, { error: blockerId === cardId
+        ? 'Egy kártya nem blokkolhatja saját magát'
+        : 'Ez a kapcsolat kört zárna be (a két kártya kölcsönösen egymásra várna)' }, 409)
+      return true
+    }
+    addCardBlocker(cardId, blockerId)
+    json(res, { ok: true })
+    return true
+  }
+
+  const cardBlockerDeleteMatch = path.match(/^\/api\/kanban\/([^/]+)\/blockers\/([^/]+)$/)
+  if (cardBlockerDeleteMatch && method === 'DELETE') {
+    const cardId = decodeURIComponent(cardBlockerDeleteMatch[1])
+    const blockerId = decodeURIComponent(cardBlockerDeleteMatch[2])
+    if (removeCardBlocker(cardId, blockerId)) { json(res, { ok: true }); return true }
+    json(res, { error: 'A kártyán nincs ilyen blokkoló' }, 404)
+    return true
+  }
+
   if (path === '/api/kanban-projects' && method === 'GET') {
     json(res, listKanbanProjects())
     return true
@@ -904,6 +981,29 @@ export async function tryHandleKanban(ctx: RouteContext): Promise<boolean> {
   }
   if (kanbanCommentsMatch && method === 'POST') {
     const cardId = decodeURIComponent(kanbanCommentsMatch[1])
+    // A comment for a card that does not exist used to be STORED, with HTTP 200:
+    // `addKanbanComment` writes whatever card_id it is handed, and this branch
+    // never looked the card up. The row then hangs off an id no board view
+    // resolves -- the comment is invisible -- while the caller's only success
+    // signal says it landed. The `/breakdown` branch below has always guarded
+    // this way; the comment branch had not.
+    //
+    // This is not a hypothetical typo. `templates/CLAUDE.md.template` hands the
+    // agent a curl with a literal `KARTYA_ID` to substitute; an agent that
+    // forgets to substitute it gets a 200 and a comment on a card called
+    // "KARTYA_ID". The same shape reaches the endpoint from a truncated id
+    // column, or from a loop whose body kept its placeholder. Every one of
+    // those is silent today.
+    //
+    // The lookup is exact, matching `getKanbanCard` everywhere else: no caller
+    // in this repo constructs a prefix id (the dispatch instructions in
+    // `kanbanMoveInstructions` interpolate the full id), so rejecting a
+    // non-resolving id turns away only writes that were already lost.
+    const card = getKanbanCard(cardId)
+    if (!card) {
+      json(res, { error: `Kártya nem található: ${cardId}. A komment NEM jött létre. Teljes azonosító kell, a rövidített (prefix) alak nem működik.` }, 404)
+      return true
+    }
     const body = await readBody(req)
     const { author, content } = JSON.parse(body.toString())
     if (!author || !content) { json(res, { error: 'Szerző és tartalom kötelező' }, 400); return true }

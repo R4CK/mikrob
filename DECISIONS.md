@@ -11785,3 +11785,144 @@ ami nélkül egy "mindig kommentel" hiba is átmenne).
 
 **Hivatkozás:** kártya `a1c4dc51` (szülő `40568837`); `store/kanban-comment-lib.sh`,
 `store/card-build-route.sh`, `store/card-build-route-selftest.sh`.
+
+## 2026-09-07 -- 149-commit upstream/develop merge: 4 dokumentált eltérés az ACKNOWLEDGED_CONFLICTS-tól, és egy Peti NO-GO csendes visszaszivárgása (kártya 4f15966e)
+
+**A FELADAT.** `upstream/develop` (Szotasz/marveen, ba691592) egyesítése `origin/develop`-pal
+(b0e63a39), Peti jóváhagyásával ("Mehet", 2026-09-07 04:23), a plan-grilling verdikt szerint
+(kártya 4f15966e/a7a61751, komment 21142/21143): minden konfliktusnál a TÉNYLEGES upstream hunkot
+kell elolvasni (nem csak a commit tárgyát), és minden eltérést az archivált
+`ACKNOWLEDGED_CONFLICTS` szövegtől dokumentálni kell. Mérve: 149 commit, 364 fájl, 29923 sor
+(merge-base diff, `git diff --shortstat A...B`), 54 tényleges konfliktus-fájl, mind FRESH
+(a `classifyConflicts()` szerint az upstream blob-pin friss).
+
+**KÖZBEESŐ ADATVESZTÉS.** A munka fele elveszett egy gépi újraindításnál, mert a scratch worktree
+`/tmp` alatt élt (WSL2 törli rebootnál) -- lásd a memória-bejegyzést
+(`scratch-worktree-must-not-live-under-tmp`). Újraindítva `/home/neon/marveen-scratch-worktrees/`
+alatt, a `upstream-merge/4f15966e` branch (a checkpointon állva, b0e63a39) és a
+`classifyConflicts()`-alapú módszertan tette lehetővé a gyors újrakezdést.
+
+**NÉGY DOKUMENTÁLT ELTÉRÉS az archivált szövegtől (mindegyik in-code MERGE NOTE/DEVIATION
+kommenttel, QA/Cybersec review-ra jelölve):**
+1. `src/auto-restart.ts` -- a fork saját, Cybersec-eredetű MIN/MAX határa
+   (`openQuestionDeferralCapHours`) megtartva upstream korlátlan `>0` ellenőrzése helyett; az
+   archivált szöveg "üres a fork oldala" állítása elavult volt (card 4276708e időközben hozzáadta).
+2. `scripts/lib/send-telegram.sh` -- a fork stdin-alapú, argv-biztonságos token-mintája megtartva
+   upstream argv-ben exponáló formája helyett.
+3. `src/web/agent-process.ts` (umask/agentTmuxTarget) -- ELLENTÉTES irányban: az archivált szöveg
+   "nincs runAsUser-fogyasztó a forkban" állítása elavult, az `agentTmuxTarget()` azóta 4+ önálló
+   hívási ponton él -- ITT upstream változata lett elfogadva, nem a fork régi állapota.
+4. `src/web/agent-scaffold.ts` (`resolveDashboardOrigin`) -- a fork regex-validált origin-je
+   megtartva upstream validálatlan verziója helyett (shell-injekció kockázat a generált CLAUDE.md
+   curl-receptekbe).
+
+**MÁSODIK HIBAOSZTÁLY, a konfliktus-feloldáson TÚL: nem-konfliktáló addíciók, amik önmagukban is
+hibásak vagy döntést sértettek, és a `tsc --noEmit` + a kötelező minimax-grep találta meg őket,
+nem a konfliktus-lista:**
+- `src/pane-state.ts`: egy HARMADIK, nem konfliktus-jelölt `detectsPermissionDialog` másolat élt
+  ~50 sorral a feloldott hunkok előtt (HEAD saját régi példánya, amit a 3-way merge LCS-algoritmusa
+  nem ismert fel azonosnak upstream új példányával) -- eltávolítva.
+- `src/web/context-restart-gate-runner.ts`: upstream nem-konfliktáló refaktorja
+  (`gatherGateInputs` külön függvénybe emelve) elfelejtett `await`-elni egy async hívást --
+  `gatherGateInputs`/`diagnoseAgent` async-ra állítva, a `checkAgent` hívó és
+  `scripts/context-restart-gate-doctor.mjs` javítva.
+- `src/web/heartbeat-agent-scaffold.ts`: hiányzott a `mergeClaudeSettingsJson` (HBGATEWIRE826) --
+  upstream mért hibája (a heartbeat settings.json teljes felülírása törölte a seedelt hookokat)
+  emiatt élt volna tovább a forkban is -- portolva, bekötve `ensureHeartbeatAgent`-be.
+- **KRITIKUS: MiniMax-integráció csendesen visszaszivárgott** -- `src/context-guard.ts` (élő
+  kontextus-limit-ág), `src/web/routes/agents.ts` (`/api/models/available` MINIMAX_API_KEY-gating),
+  `web/index.html` (két UI-optgroup), plusz két új upstream tesztfájl
+  (`agent-provider-env.test.ts`, `minimax-model-selector.test.ts`), ami KÖZVETLENÜL ELLENTMOND a
+  fork saját `provider-env-adoption.test.ts`-ének. Egyik sem volt HEAD-en a merge előtt, egyik sem
+  volt a feloldott 54 konfliktus-fájl része -- csendes, nem-konfliktáló addícióként érkezett,
+  közvetlen ütközésben Peti NO-GO-jával (kártya 48565f81) és CLAUDE.md 17. szabályával. Mindet
+  eltávolítva, dokumentálva.
+- `src/web/routes/agents.ts`: egy teljes `/api/agents/status` route-kezelő (nem csak import) a
+  nem-adoptált `getAgentToolActivity`/`deriveAgentStatus` szimbólumokkal -- eltávolítva.
+- **`installer-ollama-url.test.ts` (új upstream tesztfájl) ELTÁVOLÍTVA, kód-szinten NEM
+  adoptálva.** Az upstream `OLLAMA_URL` feloldási újraírását teszteli `install-linux.sh`-ban --
+  de ez pont az a terület, amit Peti 2026-08-13-i direktívája (EPIC ebc7b4dd, a csendes Ollama
+  auto-install eltávolítása) korábban már szándékosan kizárt ebből a forkból. MikroB
+  megerősítette 2026-09-07-én: a kód marad, a teszt eltávolítva (nem hagyva pirosan -- egy
+  ismerten piros teszt a `fleet-test.sh` teljes-suite kapuját blokkolná, ami ellentmond a
+  landolási feltételnek).
+- **`src/__tests__/router-main-agent-wakeup.test.ts` (új upstream tesztfájl) ELTÁVOLÍTVA, nem
+  csak kizárva.** Upstream ezzel a teszttel azt a döntést pinneli, hogy a router SOHA ne
+  vezérelje a main-agent channels sessiont (a busy panelbe zajló wakeup csendben sorba áll,
+  UserPromptSubmit nélkül, kézbesítés nélkül -- öt kört égetett el upstream saját mért
+  incidensén). Ez KÖZVETLENÜL ELLENTMOND a fork saját `message-wake-field.test.ts` +
+  `message-wake-deciders.test.ts` teszteknek, amik a router main-agent-wakeup hívását MEGKÖVETELIK
+  (mindig kézbesíts, ne állj csendben sorba egy foglalt panelnél -- pont ez a
+  kézbesítés-megbízhatósági hibaosztály, amit ez a mai session sajátmagán is többször
+  tapasztalt/orvosolt kézzel, ld. a package-lock.json és 2fae3b42 landolási körök). MikroB
+  megerősítette 2026-09-07-én: a fork viselkedése marad, upstream teszt eltávolítva.
+  EMAIL-viselkedéshez.** A teszt saját fejléce eredetileg egy korábbi tulajdonos-döntést idézett
+  (TG 14442: hiányzó név-szabály esetén az email menjen ki, fail-open). Ez azóta felülíródott a
+  `GATEPERSIST816(2)` kártyával, ami az EMAIL ágat kifejezetten fail-closed-ra állította (a
+  Telegram ág változatlanul fail-open marad) -- a levél halasztható, a vevő felé menő rossz név a
+  drágább hiba. MikroB megerősítette 2026-09-07-én: a kapu marad fail-closed, a teszt lett
+  igazítva, nem a kód. Mellékesen talált, EBBŐL A MERGE-BŐL NEM SZÁRMAZÓ hiba: a
+  `bad_name_patterns` mező helytelen (lista helyett string) alakja nem valódi séma-ellenőrzéssel
+  bukik el, hanem véletlenül karakterenkénti iterációval -- külön kártyát érdemel, itt nem
+  javítva (hatókörön kívül).
+
+**NYITOTT, MÉG NEM ELDÖNTÖTT ELLENTMONDÁS: a card-blockers UI backendje (`blockerWouldCycle`,
+`addCardBlocker`, `GET /api/kanban/:id/blockers`) MÁR JELEN VAN nem-konfliktáló kódként a
+`src/db.ts`-ben és a `src/web/routes/kanban.ts`-ben, annak ellenére, hogy TÖBB
+`ACKNOWLEDGED_CONFLICTS` bejegyzés "nem adoptálva, a `kanban_dependencies` helyettesíti" döntést
+rögzít.** Nem nyúltam hozzá (nagy, kockázatos, kívül esik a konfliktus-feloldás hatókörén) --
+jelezve MikroB/QA felé felülvizsgálatra, nem eldöntve itt.
+
+**TANULSÁG, ami miatt ez a bejegyzés készült.** Egy 149-commit merge konfliktus-alapú feloldása
+(csak a git által jelölt 54 fájl) NEM garantálja, hogy minden Peti-döntés vagy korábbi
+architektúra-választás sértetlen marad -- a nem-konfliktáló addíciók (git 3-way LCS-e szerint
+"nem ütköző" tartalom) ugyanúgy hordozhatnak visszavont/deklinált funkciókat vagy valódi hibákat.
+A `tsc --noEmit` + guard-selftestek + egy célzott, döntés-specifikus grep (itt: "minimax") volt az,
+ami ezt ténylegesen megtalálta -- a puszta "minden konfliktus fel van oldva" állapot nem lett volna
+elég bizonyíték.
+
+- **`scripts/hooks/outgoing-copy-gate.py`: két VALÓDI, a mergétől független hiba javítva** (nem
+  csak teszt-igazítás) -- egy új, mergével bejött tesztfájl fedte fel őket: (1) a Telegram-ág
+  belső-hiba naplózása időbélyeg nélkül írt a logba (2026-09-05-i mért incidens: 8005 sor,
+  négy üzenet, egyik egy AUDITÁLATLAN Telegram-küldést rögzített, semmilyen módon nem
+  behatárolható időben) -- most minden log-írás `_log_stamp()`-pel kezdődik. (2) A Telegram-ág
+  belső-hiba log-útvonala a szkript SAJÁT helyétől függő, fixen bedrótozott útvonalra írt, nem
+  `_LOCAL_RULES` könyvtárára (mint a fájl másik három log-függvénye) -- emiatt egy izolált
+  tesztkörnyezet írása a VALÓDI repó `store/`-jába ment, a teszt saját könyvtára üresen
+  maradt. Most egységes. (3) Egy nem-dict `tool_input` a Telegram-ágon nyers
+  `AttributeError`-t írt a logba (értelmetlen, a hibát az auditban látszó bugnak mutatja) --
+  most explicit `isinstance` ellenőrzés nevesíti az okot ("nem szotar" + típus + "telegram").
+- **Két új, mergével bejött tesztfájl-szakasz (`outgoing-copy-gate.test.py` 6. blokkja,
+  `outgoing-copy-gate-log.test.py` (3) és (5) fele) ELTÁVOLÍTVA.** Ugyanaz a már-elutasított
+  ~1293-soros upstream-átírás (ACKNOWLEDGED_CONFLICTS, round 15, 2026-09-06, kártya
+  79bb0364) tesztelte: `manage_email` multiplexelt tool operáció-alapú osztályozása, valamint
+  a Telegram `edit_message` + kódblokk-markdownv2 kapu (GATECOPY827). A gate tényleges kódja
+  nulla eltérést mutat a pre-merge baseline-tól -- egyik sincs bekötve. MikroB
+  megerősítette 2026-09-07-én.
+- **`scripts/__tests__/limit-monitor-signals.test.sh` "(c) mért útvonal" + "(d) sikertelen
+  kézbesítés" szakasza (167 sor, új mergével bejött tesztfájl) ELTÁVOLÍTVA.** A
+  `scripts/limit-monitor.sh` saját fejléce már dokumentálja (round 3, 2026-09-02): "the
+  upstream measured-quota path... are DELIBERATELY NOT grafted -- the fork already alerts
+  from its own quota monitor (store/quota-check.sh + quota-bridge), so a second measured
+  alerter would double-notify Peti." A `.claude-rate-limits.json`-t olvasó mért-kvóta út
+  soha nem lett bekötve, tehát a szakasz MINDEN esete (a pár látszólag zöld is) egy
+  no-op kódutat gyakorolt -- eltávolítva, nem szelektíven megtartva. Ugyanebből a
+  tesztfájlból 13/18 eset VALÓDI hibát javított (a teszt-harness sajátja hiányzó
+  `session-limit-pattern.sh`/`.json` másolása + egy hiányzó szöveges minta), az megtartva.
+  MikroB megerősítette 2026-09-07-én.
+- **`store/lint-ratchet.sh --update` lefuttatva** (149 commit, sok új fájl -- a lint-profil
+  természetesen elmozdul egy ekkora merge alatt, függetlenül attól, hogy egy adott sor kitől
+  származik). Ellenőrizve: az eltérés (`no-unsafe-argument` +8, `no-unused-vars` +19) új,
+  merge-hozta fájlok saját, nem-módosított tartalmában van (pl.
+  `feedback-modal-positive-router.test.ts`, `system-directive-verify-endpoint.test.ts`), nem a
+  saját, ebben a körben írt kis célzott javításokban -- spot-check minden flaggelt sorra
+  elvégezve. Új baseline: 6 szabály, 257 lelet.
+- **`channels-main-model.test.sh`: `DISTRIBUTION_DEFAULT_AGENT_MODEL` marad `claude-opus-5`.**
+  Upstream + az új teszt a `[1m]` (1M kontextus) variánst várná -- valódi költség/kontextus
+  termékdöntés, nem konfliktus-feloldási kérdés. MikroB külön jelzi Petinek; amíg nincs
+  döntés, a jelenlegi fork-alapértelmezés marad, a teszt igazítva ehhez.
+- **`src/__tests__/router-main-agent-wakeup.test.ts` (új upstream tesztfájl) ELTÁVOLÍTVA.**
+  Lásd a fenti, külön bekezdést erről a fájlról.
+
+**Hivatkozás:** kártya `4f15966e` (szülő `a7a61751`), checkpoint `b0e63a39`, plan-grilling
+verdikt komment `21142`/`21143`.
