@@ -203,6 +203,26 @@ case_is LOCAL "C3 control: a real helper plus three tests still goes LOCAL" \
   "Write parseDurationMs(raw: string): number and three unit tests for it, including empty and NaN." low
 
 echo
+echo "=== B5. A DECLARED [SEC] LABEL IS READ ON THE UNTRIMMED TEXT (card 28295e97, decision 25075) ==="
+# The two REAL cards Cybersec named -- both lost every deterministic gate to the label-prefix trim,
+# both carry a plain [SEC] tag. Fixed values (priority, tag) so the case is about the label alone.
+reason_is deterministic-sec-label "2dd28b5d-shaped: [SEC] tag, no other structural word" \
+  "[80%][marveen][MikroB][INFRA][SEC][MEDIUM] system-directive-auth section korrekcio, csak a leiro szoveg." normal
+reason_is deterministic-sec-label "2a07f29e-shaped: [SEC] tag, no other structural word" \
+  "[100%][backend][MikroB][INFRA][NORMAL][SEC] noisy-command-guard.py egy uj mintaval bovul." normal
+# A NAMED security-gate tag, not the bare word -- SEC-GATE-KOTELEZO must also match.
+reason_is deterministic-sec-label "a compound [SEC-...] bracket also counts" \
+  "[MikroB][INFRA][FELADAT 2/5][SEC-GATE-KOTELEZO] Repo-jelolt katalogus frissitese." normal
+
+# THE NEGATIVE, and it is the point of anchoring on the BRACKET rather than the bare word: a card
+# that merely SAYS "security"/"biztonsag" while declaring itself SAFE must not be caught here, or
+# the rule would re-introduce the exact false-alarm class it exists to avoid. Measured live: this is
+# not a hypothetical -- 4 open board cards say "nem biztonsagi kockazat" / "IRANY: BIZTONSAGOS" and
+# none of them carry a [SEC] bracket.
+case_is LOCAL "control: 'biztonsagos' with no [SEC] bracket does not trigger the label rule" \
+  "[marveen][INFRA][LOW] A csovonal a cimben csonkitja a kimenetet. Nem biztonsagi kockazat, csak fragilitas -- escape-eld a karaktert." low
+
+echo
 echo "=== B4. VRAM PRESSURE CLOSES THE LOCAL PATH, AND ONLY THAT (card f9bad591) ==="
 # The guard answers a CAPACITY question, so it must close the local path without ever holding up the
 # card. ONLINE is exactly that: the online agent builds it, which is today's behaviour anyway.

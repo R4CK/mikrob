@@ -11692,3 +11692,57 @@ után nem a kártyán nevezett tesztet kell lefuttatni, hanem mindet, ami azt a 
 
 **Hivatkozás:** kártya `492a6d5c`; `src/__tests__/fleet-test-serialises-runs.test.ts`,
 `store/kanban-comment-lib.sh` (módbit).
+
+## 2026-09-07 -- A [SEC] címke önmagában determinisztikus ONLINE, a "biztonsagos" SZÓ nem (kártya 28295e97, MikroB döntése 25075)
+
+**A KÁRTYA.** A `28295e97` (28295e97) második grillingjében kötelezővé tett mérés szerint a
+`deterministic-multi-decision` vágásom (28295e97, korábbi kör) a SEC-jelölt kártyák nagy részét is
+felszabadította: 37 SEC-jelölt kártyából 26-nál semmilyen determinisztikus kapu nem maradt, mert az
+egyetlen találatuk az `infra` volt, ami mostantól csak a törzsben számít, a címke-futamban nem.
+Cybersec két nevesített példája (2dd28b5d, 2a07f29e) mindkettő ebben a 26-ban volt.
+
+**A DÖNTÉS (MikroB, 25075):** azonnal építsem meg a "[SEC] címke önmagában determinisztikus
+ONLINE" szabályt (26→18, majd a mai, kisebb élő korpuszon 30→22), a maradékot pedig kártyánként
+sorolják fel, ne találjak ki hozzá szót találgatva.
+
+**MIÉRT A CÍMKE, ÉS NEM A SZÓ.** A `security`/`biztonsag` puszta szóra illesztés ÚJRA bevezetné azt
+a hibaosztályt, amiért a `[SEC]` egyáltalán kikerült a vágásból: egy kártya mindkét szóval ki tudja
+mondani a KOCKÁZAT HIÁNYÁT is. Mérve élőben: 8 kártya (a mai, szűkebb korpuszon; a nagyobb korpuszon
+26) a puszta szóra illeszkedne, és mind a nyolc SAJÁT MAGÁT nyilvánítja biztonságosnak -- "Nem
+biztonsagi kockazat", "IRANY: BIZTONSAGOS". A `\[SEC[^]]*\]` mintát ezért a ZÁRÓJELES CÍMKÉRE
+horgonyoztam (`[SEC]`, `[SEC-GATE-KOTELEZO]`), ami egy SZÁNDÉKOS besorolás, nem egy szó, ami
+bármelyik irányban előfordulhat.
+
+**A TRIM ÉS A CÍMKE-SZABÁLY EGYÜTT MŰKÖDNEK, MERT KÜLÖNBÖZŐ TOKEN-OSZTÁLYT VÉDENEK.** Az `infra`
+azt mondja, HOL folyik a munka -- szervezési zaj. A `[SEC]` azt mondja, hogy VALAKI MÁR ELDÖNTÖTTE,
+hogy trust-boundary-t érint -- szándékos besorolás. A vágás (28295e97 első köre) az elsőt vette ki a
+mérlegből, ez a szabály a másodikat teszi vissza, ugyanabból a régióból (a `$SHORT` VÁGATLAN
+szövegéből, nem a `$MULTI_TEXT` LEAD-vágott másolatából).
+
+**A MARADÉK, KÁRTYÁNKÉNT (nem egy új szó, találgatás nélkül) -- a mai élő táblán, 4 nyitott kártya:**
+  - `5c6fe8df` (waiting, mikrob) -- VALÓDI biztonsági munka (skill allowed-tools bevezetése,
+    Gate: QA+Cybersec a leírásban kimondva). NEM önmagát nyilvánítja biztonságosnak, hanem egy
+    biztonsági mechanizmust vezet be. JAVASOLT ÚT (nem építve meg, MikroB dönt): egy általánosabb
+    szabály -- ha a leírás egy `Gate: ... Cybersec ...` vagy `Gate: ... Cybered ...` sort tartalmaz,
+    az önmagában ONLINE, mert ez a flotta már meglévő, szándékos jelölése arra, hogy a kártya
+    trust-boundary-t érint (root CLAUDE.md 4b. szabály). Ez erősebb és általánosabb jel, mint egy
+    újabb szó, de KÜLÖN kártyaként kellene megépülnie, mert a Gate-sor a kártya VÉGÉN áll, nem a
+    címkében, és külön mérést igényel.
+  - `67587e7f` (planned, backend3) -- a leírás kimondja: "Nem biztonsagi kockazat ... csak
+    fragilitas". JAVASLAT: hagyd infra-nak, nincs teendő -- a kártya saját szövege a bizonyíték.
+  - `4b8962df` (planned, backend3) -- a leírás kimondja: "IRANY: BIZTONSAGOS" (egy gate-kijelölő
+    szkript hamis-POZITÍV hibája, nem hamis-negatív). JAVASLAT: hagyd infra-nak, nincs teendő.
+  - `75b90343` (planned, backend2) -- LOW/INFO követő munka egy már lezárt Cybersec GO után; a
+    "BIZTONSÁGOS irány" egyetlen tmux-kompatibilitási ágra vonatkozik, nem a kártya egészére.
+    JAVASLAT: hagyd infra-nak, nincs teendő.
+
+Négy másik kártya (6b32a478, 9c6b1802, 7d47ca16, 40f92dd2), ami a korábbi, nagyobb korpuszban még a
+maradékban szerepelt, időközben `done` lett -- a router többé nem látja őket, tehát nincs élő
+kockázat rajtuk.
+
+**BIZONYÍTÉK.** 3 pozitív eset (a két nevesített Cybersec-példa alakja + egy összetett `[SEC-...]`
+címke), 1 negatív kontroll (a "biztonsagos"-t kimondó, de [SEC] címke nélküli kártya LOCAL marad).
+Mutációval mérve: a szabály törlése mind a három pozitív esetet PIROSRA váltja, névvel, a kontroll
+zöld marad. Teljes selftest 47/0.
+
+**Hivatkozás:** kártya `28295e97`; `store/card-build-route.sh`, `store/card-build-route-selftest.sh`.

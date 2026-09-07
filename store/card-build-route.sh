@@ -284,6 +284,31 @@ if printf '%s' "$SHORT" | grep -Eqi \
   online deterministic-shared-instruction-target
 fi
 
+# A DECLARED [SEC] LABEL, checked on the UNTRIMMED text (card 28295e97, MikroB decision 25075).
+# The label-prefix trim two rules above this one is exactly what re-opened this gap: a `[SEC]` tag
+# almost always sits IN that prefix (`[marveen][INFRA][SEC][LOW]`), so trimming the label run to
+# stop `infra` from deciding anything also removed the one label that IS a deliberate classification
+# rather than organisational noise. `infra` says where the work happens; `[SEC]` says someone
+# already decided it touches a trust boundary -- the two are not the same kind of token, and only
+# one of them belongs behind the trim.
+#
+# MEASURED (backend, card 28295e97 second round): of the live board's 37 cards whose ONLY
+# multi-decision match was the trimmed `infra` label, 26 reached the model with no deterministic
+# gate left standing. Cybersec's two named examples (2dd28b5d, 2a07f29e) were both in that 26. A
+# `[SEC]`-tag rule catches 18 of the 26 (re-measured on the current board: 22 of 30, the corpus
+# having moved on); the remaining cards carry no `[SEC]` tag at all and are reported individually
+# rather than folded into this rule (see the card's REVIEW/DECISIONS.md entry -- each either gets
+# its own structural word or an explicit safe-to-leave justification, never a guess).
+#
+# THE MATCH IS THE BRACKET, not the bare word: `security`/`biztonsag` alone is not used here on
+# purpose, because a card can use either word to say the OPPOSITE of what it looks like ("nem
+# biztonsagi kockazat", "IRANY: BIZTONSAGOS") -- measured live: 8 of the cards a bare word-match
+# would have caught were self-declared NON-risks, not trust-boundary work. `\[SEC[^]]*\]` matches
+# the deliberate tag (`[SEC]`, `[SEC-GATE-KOTELEZO]`) and nothing that merely mentions the word.
+if printf '%s' "$SHORT" | grep -Eq '\[SEC[^]]*\]'; then
+  online deterministic-sec-label
+fi
+
 # --- 3. REUSE THE HARDENED SECURITY CLASSIFIER --------------------------------------------------
 # Rule 10, and more to the point: writing a second, weaker security classifier next to one that
 # survived five NO-GO rounds would be the worst possible place to reinvent anything. Its SECURITY
