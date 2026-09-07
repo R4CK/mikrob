@@ -293,11 +293,25 @@ def stated_designation(comments):
     inferred set as a fallback for an UNSTATED designation, and two live `done` cards (e96b06e7,
     89f4c28d) closed on a verdict from a gate MikroB never designated while the actual designation
     sat right there on the card, in a comment this file never read.
+
+    AUTHOR-FILTERED (Cybersec HIGH, same card, round 2). The first version of this function accepted
+    the "MikroB GATE-KIJELOLES: ..." line from ANY comment's content, never checking who wrote it --
+    unlike the rest of this file, which explicitly checks authorship for every other claim it trusts
+    (verdict attribution's `author_role(who) == v[0]`, the line ~700 comment on self-declared
+    authorship). Proven live: a builder's own REVIEW comment quoting/forging a narrower
+    "MikroB GATE-KIJELOLES: QA (1-gate) -- ..." line, posted AFTER MikroB's real wider designation,
+    silently overrode it and produced a QA-only AGREE with Cybersec/Cybered skipped entirely -- the
+    exact rule-4 protection this whole function exists to make load-bearing. Designation is
+    MikroB's alone per root CLAUDE.md rule 4 ("MikroB TTE-feladata... kártyánként kiválasztani/
+    váltogatni a gate-tagokat"), so the check is the literal author, not `author_role` (which has no
+    entry for MikroB -- it answers "who speaks for a GATE", a different question).
     """
     found = None
     for c in comments:
         content = (c or {}).get("content")
         if not isinstance(content, str):
+            continue
+        if (c.get("author") or "").strip().lower() != "mikrob":
             continue
         m = _GATE_DESIGNATION_LINE.search(content)
         if not m:
