@@ -21,12 +21,15 @@
 # (cgroup_throttle has no forced release, unlike sigstop_freeze's 90s -- capping on "since" alone
 # would have falsely un-paused a real, ongoing throttle).
 #
-# On every PAUSE-START/RESUME transition: posts an INFO-ONLY PAUSED-LOAD / RESUMED-LOAD kanban
-# comment on the agent's in_progress card (routine -- log/comment only, never Telegram on its
-# own; INFO-ONLY so store/gate-dispatch-check.sh never mistakes it for a review, see that
-# convention's own memory). An agent continuously paused across ticks (even across a mechanism
-# hand-off, e.g. cgroup_throttle escalating to sigstop_freeze) is NOT a resume+re-pause -- only a
-# fully absent -> present or present -> absent edge counts as a transition.
+# Posts an INFO-ONLY PAUSED-LOAD / RESUMED-LOAD kanban comment on the agent's in_progress card
+# (routine -- log/comment only, never Telegram on its own; INFO-ONLY so store/gate-dispatch-check.sh
+# never mistakes it for a review, see that convention's own memory). An agent continuously paused
+# across ticks (even across a mechanism hand-off, e.g. cgroup_throttle escalating to sigstop_freeze)
+# is NOT a resume+re-pause -- only a fully absent -> present or present -> absent edge counts as a
+# transition. THE PAUSE-START itself is NOT posted immediately (card 16e11afb): a short episode
+# resolves before ever needing the stuck-monitor heartbeat, so RESUMED-LOAD alone (which already
+# reports cycles + duration) is the only comment such an episode gets. An episode that runs long
+# enough to need protecting gets its first note from the existing heartbeat cadence below.
 #
 # ALERTING: only for REPEATED pausing (card's own words: "Rutin pause/resume esemeny csak
 # logba/kommentbe megy, Telegramra csak ismetlodo/tartos ... eseten"). Tracks pause-START
@@ -138,8 +141,16 @@ for agent in set(mechanisms) | set(prev_episodes):
 
     if not ep:
         if is_paused:
-            notes.append({"agent": agent, "kind": "start", "mechanism": mech_str,
-                          "cycles": 1, "duration": 0, "card_id": None})
+            # NO IMMEDIATE NOTE (card 16e11afb). Measured on card 5e4e629f: 17 short episodes (7-63s
+            # each, well under heartbeat) each posted an instant "start" note, for 34 of 36 total
+            # comments on that card -- the actual content (REVIEW, pre-triage) was only 3 comments,
+            # buried in the rest. An immediate start note exists only to protect against the
+            # LONG-episode case (the stuck-monitor 10-minute window); a short episode resolves long
+            # before that window matters, and the eventual RESUMED-LOAD note already reports the
+            # whole episode (cycles + duration). last_post starts at start so the EXISTING heartbeat
+            # check just below fires the first note once, and only once, the episode has run long
+            # enough to actually need the protection -- reusing the mechanism rather than adding a
+            # second one.
             new_episodes[agent] = {"start": now, "cycles": 1, "last_activity": now,
                                    "last_post": now, "mechanism": mech_str, "card_id": None}
         continue
@@ -391,8 +402,6 @@ for line in "${notes[@]}"; do
   [ -n "$n_card" ] || continue
   mins=$(( (n_dur + 30) / 60 ))
   case "$n_kind" in
-    start)
-      _post_comment "$n_card" "$n_agent" "INFO-ONLY: PAUSED-LOAD ($n_mech) -- a load-guard terhelés miatt szüneteltette ezt az ügynököt. A fékezés ideje alatt a kártya nem számít beragadtnak." ;;
     heartbeat)
       _post_comment "$n_card" "$n_agent" "INFO-ONLY: PAUSED-LOAD ($n_mech) -- a fékezés tart: eddig $n_cycles ciklus, kb. $mins perce. A kártya nem számít beragadtnak." ;;
     end)
