@@ -38,12 +38,17 @@ describe('the lint-ratchet comment in fleet-test.sh still matches CI (card 77462
   })
 
   it('NO workflow runs the linter -- which is why the ratchet is still the only caller', () => {
+    // Card cd4f9762 (Cybered finding, F-2): the old pattern only matched the CALL FORM used
+    // today (`eslint`, `run lint`, `npm run lint`) -- `pnpm lint`/`yarn lint` have no "run" and
+    // slipped through untested. A bare `\blint\b` is the wider net; it still finds zero matches
+    // on the current two workflow files (asserted as the negative control above), so widening it
+    // costs nothing today and closes the pnpm/yarn gap.
     const offenders = workflowFiles().filter((f) =>
-      /\b(eslint|run lint|npm run lint)\b/i.test(readFileSync(join(WORKFLOWS, f), 'utf-8')),
+      /\blint\b/i.test(readFileSync(join(WORKFLOWS, f), 'utf-8')),
     )
     expect(
       offenders,
-      'a workflow now runs the linter, so fleet-test.sh\'s lint-ratchet comment (and possibly the ' +
+      'a workflow now mentions lint, so fleet-test.sh\'s lint-ratchet comment (and possibly the ' +
         'ratchet itself) needs re-reading: it states that this script is the only thing that ' +
         'executes ESLint.',
     ).toEqual([])
@@ -57,6 +62,27 @@ describe('the lint-ratchet comment in fleet-test.sh still matches CI (card 77462
       scripts?: Record<string, string>
     }
     expect(pkg.scripts?.['test']).toBe('vitest run')
+  })
+
+  it('NO lifecycle hook other than the "lint" script itself references lint (card cd4f9762, F-1)', () => {
+    // `npm test` runs `pretest` first if one exists, and `npm ci`/`npm install` (CI's own
+    // `.github/workflows/test.yml` step, --ignore-scripts not set) runs `preinstall`. The check
+    // above only pins the `test` key's own value -- a `pretest` or `preinstall` hook that calls
+    // lint would run the linter under CI transitively without EITHER of the two checks above
+    // noticing, since no workflow file would say "lint" either. Pin the general fact instead:
+    // across every npm lifecycle hook, only the `lint` key itself may mention lint.
+    const pkg = JSON.parse(readFileSync(join(ROOT, 'package.json'), 'utf-8')) as {
+      scripts?: Record<string, string>
+    }
+    const offenders = Object.entries(pkg.scripts ?? {})
+      .filter(([name, cmd]) => name !== 'lint' && /\blint\b/i.test(cmd))
+      .map(([name]) => name)
+    expect(
+      offenders,
+      'a script other than "lint" now mentions lint in package.json -- if it is an npm lifecycle ' +
+        'hook (pretest, preinstall, ...) it runs implicitly under `npm test`/`npm ci`, which would ' +
+        'make the two checks above (workflow files, the "test" key) both blind to it.',
+    ).toEqual([])
   })
 
   // A FOURTH CHECK WAS WRITTEN AND REMOVED, and the reason belongs here rather than in a commit
