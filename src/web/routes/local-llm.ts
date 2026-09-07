@@ -139,6 +139,13 @@ const LLM_BENCH_STATE_FILE = join(STORE_DIR, 'local-llm-model-state.json')
 // Per-model operator kill switch (card 5d151091). Read by this module AND by store/local-llm.sh --
 // see src/local-llm-model-disabled.ts for the document shape and the fail direction.
 const MODEL_DISABLED_FILE = join(STORE_DIR, 'local-llm-model-disabled.json')
+// Per-task model override (card baf1b1b0). Written by hand today, read by store/local-llm.sh and
+// (card ecf38e5a) surfaced read-only over HTTP so the dashboard can show it instead of a fleet agent
+// grepping the file.
+const ROUTING_FILE = join(STORE_DIR, 'local-llm-model-routing.json')
+// Append-only, card-independent routing-decision audit trail (store/card-build-route.sh). Never
+// carries card TEXT, only its length -- see that script's own header.
+const CARD_BUILD_ROUTE_LOG_FILE = join(STORE_DIR, 'card-build-route.log')
 // The one catalogue schema this build knows how to read (card 4117f98e). It is compared, not
 // assumed: a document from another version may have moved the very fields read below.
 const CATALOG_SCHEMA_VERSION = 1
@@ -615,6 +622,109 @@ function disabledStateUnreadable(res: http.ServerResponse, err: unknown): void {
   }, 503)
 }
 
+/** Thrown by {@link readRoutingOverrides} when the routing config file exists but is not valid
+ *  JSON -- same fail-closed shape as {@link DisabledModelsUnreadableError}: an unreadable file is a
+ *  state the caller cannot verify, not "no overrides", so it must not be silently swallowed into {}. */
+export class RoutingConfigUnreadableError extends Error {
+  constructor(
+    readonly file: string,
+    readonly cause2: unknown,
+  ) {
+    super(`local-llm routing config is unreadable: ${file}`)
+    this.name = 'RoutingConfigUnreadableError'
+  }
+}
+
+/**
+ * Read store/local-llm-model-routing.json's `overrides` map verbatim (card ecf38e5a). A MISSING file
+ * is the normal state (no task has ever been overridden) and reads as {}. A file that EXISTS but is
+ * not parseable JSON is different in kind -- the caller cannot tell whether an override is silently
+ * missing, so this throws rather than guessing {}, matching local-llm-model-disabled.ts's fail
+ * direction. An `overrides` field that is missing or the wrong shape is NOT a parse failure (this is
+ * a routing display, not a safety switch like the disabled-model file) and falls back to {} rather
+ * than refusing the whole endpoint over a cosmetic document-shape slip.
+ *
+ * @throws RoutingConfigUnreadableError only on invalid JSON syntax.
+ */
+export function readRoutingOverrides(file: string): Record<string, string> {
+  if (!existsSync(file)) return {}
+  let doc: unknown
+  try {
+    doc = JSON.parse(readFileSync(file, 'utf-8'))
+  } catch (err) {
+    throw new RoutingConfigUnreadableError(file, err)
+  }
+  const overrides = (doc as { overrides?: unknown } | null)?.overrides
+  if (!overrides || typeof overrides !== 'object' || Array.isArray(overrides)) return {}
+  const out: Record<string, string> = {}
+  for (const [task, model] of Object.entries(overrides as Record<string, unknown>)) {
+    if (task && typeof model === 'string' && model) out[task] = model
+  }
+  return out
+}
+
+/** One store/card-build-route.sh audit-log entry, shaped for the routing-visibility endpoint. */
+export interface RouteDecisionRow {
+  ts: number
+  cardId: string
+  verdict: 'LOCAL' | 'ONLINE'
+  reason: string
+  modelCalls: number
+  chars: number
+}
+
+/**
+ * Read the last `limit` lines of store/card-build-route.log, newest first (card ecf38e5a). The log
+ * format is `<date> <time>\t<cardId>\t<verdict>\t<reason>\tcalls=<n>\tchars=<n>` (card-build-route.sh's
+ * own log_verdict) -- it NEVER carries card text, only length, so this reader cannot leak one even by
+ * accident (Cybersec's own scope for this card).
+ *
+ * `available: false` means the log could not be READ (e.g. a permissions problem) -- distinct from a
+ * missing file, which is the ordinary "nothing has run yet" state and reports `available: true` with
+ * an empty list, so the FE can tell "no decisions" from "cannot tell you". A malformed INDIVIDUAL line
+ * is skipped rather than failing the whole read, the same tolerance tailUsageLines/parseUsageRows
+ * already apply to the usage ledger.
+ */
+export function readRecentDecisions(
+  file: string,
+  limit = 50,
+): { rows: RouteDecisionRow[]; available: boolean } {
+  if (!existsSync(file)) return { rows: [], available: true }
+  let text: string
+  try {
+    text = readFileSync(file, 'utf-8')
+  } catch (err) {
+    logger.warn({ err, file }, 'readRecentDecisions: log exists but could not be read')
+    return { rows: [], available: false }
+  }
+  const lines = text.split('\n').filter((l) => l.length > 0)
+  const rows: RouteDecisionRow[] = []
+  for (const line of lines.slice(-limit).reverse()) {
+    const p = line.split('\t')
+    if (p.length < 6) continue
+    const m = /^(\d{4})-(\d{2})-(\d{2}) (\d{2}):(\d{2}):(\d{2})$/.exec(p[0] ?? '')
+    if (!m) continue
+    // Local time, deliberately NOT UTC: card-build-route.sh writes `date` in the process's own TZ
+    // (Europe/Budapest fleet-wide), and Date(y,m,d,h,mi,s) constructs in the RUNTIME's local TZ too --
+    // the two match on this host (both under systemd's TZ=Europe/Budapest), the same assumption every
+    // other `date`-sourced timestamp in this file already makes.
+    const ts = new Date(
+      Number(m[1]), Number(m[2]) - 1, Number(m[3]), Number(m[4]), Number(m[5]), Number(m[6]),
+    ).getTime()
+    const callsMatch = /^calls=(\d+)$/.exec(p[4] ?? '')
+    const charsMatch = /^chars=(\d+)$/.exec(p[5] ?? '')
+    rows.push({
+      ts,
+      cardId: p[1] ?? '',
+      verdict: p[2] === 'LOCAL' ? 'LOCAL' : 'ONLINE',
+      reason: p[3] ?? '',
+      modelCalls: callsMatch ? Number(callsMatch[1]) : 0,
+      chars: charsMatch ? Number(charsMatch[1]) : 0,
+    })
+  }
+  return { rows, available: true }
+}
+
 async function bridgeActive(): Promise<boolean> {
   const r = await runCmd('systemctl', ['--user', 'is-active', BRIDGE_UNIT], { timeoutMs: 5000 })
   return r.stdout.trim() === 'active'
@@ -1065,8 +1175,10 @@ export interface ModelUsageSwimlane {
   }
   /** One lane per model with activity in the window PLUS one per installed/configured model
    *  that had none (card 21950f77). `installed` separates "idle but present" from "used here,
-   *  no longer installed" -- the distinction Peti asked to be able to see. */
-  models: Array<{ model: string; tasks: ModelUsageTask[]; installed: boolean }>
+   *  no longer installed" -- the distinction Peti asked to be able to see. `enabled`/`disabledAt`
+   *  (card ecf38e5a) come from the SAME per-model kill switch GET /api/local-llm/models already
+   *  reports, so the swimlane can badge a disabled model from a BE fact instead of a second lookup. */
+  models: Array<{ model: string; tasks: ModelUsageTask[]; installed: boolean; enabled: boolean; disabledAt: number | null }>
 }
 
 /** tokens/s from the CLEAN generation time, or null when it cannot be measured.
@@ -1099,6 +1211,7 @@ export function buildModelUsageSwimlane(
   windowHours: number,
   tail: { oldestTs: number | null; capped: boolean },
   roster: readonly string[] | null = null,
+  disabled: DisabledModels = new Map(),
 ): ModelUsageSwimlane {
   const windowStartMs = nowMs - windowHours * 3600 * 1000
   // UI quick-test probes are not fleet traffic (isRealCall, the fleet's own
@@ -1162,7 +1275,12 @@ export function buildModelUsageSwimlane(
     lanes.push({ model: name, tasks: [] })
   }
   const models = lanes
-    .map((lane) => ({ ...lane, installed: rosterCanon.has(canonicalModelName(lane.model)) }))
+    .map((lane) => ({
+      ...lane,
+      installed: rosterCanon.has(canonicalModelName(lane.model)),
+      enabled: !isModelDisabled(disabled, lane.model),
+      disabledAt: disabled.get(canonicalModelName(lane.model)) ?? null,
+    }))
     // Busy lanes first (most calls first), idle ones after: an idle lane carries no geometry, so
     // letting it sort by name into the middle would push real traffic below the fold.
     .sort((a, b) =>
@@ -1410,6 +1528,16 @@ export async function tryHandleLocalLlm(ctx: RouteContext): Promise<boolean> {
       json(res, { error: 'hours must be a number between 0.5 and 168' }, 400)
       return true
     }
+    // Card ecf38e5a: the swimlane rows now carry the per-model kill switch too, so the Overview
+    // page can badge a disabled model from a BE fact rather than a second lookup. Same fail-closed
+    // read as GET /api/local-llm/models -- a corrupt file must read as "unknown", never "enabled".
+    let disabled: DisabledModels
+    try {
+      disabled = readDisabledModels(MODEL_DISABLED_FILE)
+    } catch (err) {
+      disabledStateUnreadable(res, err)
+      return true
+    }
     const lines = tailUsageLines()
     const rows = parseUsageRows(lines)
     // Oldest row the bounded tail actually reached, taken from the PARSED rows
@@ -1418,7 +1546,7 @@ export async function tryHandleLocalLlm(ctx: RouteContext): Promise<boolean> {
     // truncated one.
     const oldestTs = rows.length > 0 ? Math.min(...rows.map((r) => r.ts)) : null
     const tail = { oldestTs, capped: lines.length >= USAGE_TAIL_MAX_LINES }
-    json(res, buildModelUsageSwimlane(rows, Date.now(), parsedHours, tail, await modelRoster()))
+    json(res, buildModelUsageSwimlane(rows, Date.now(), parsedHours, tail, await modelRoster(), disabled))
     return true
   }
 
@@ -1819,6 +1947,53 @@ export async function tryHandleLocalLlm(ctx: RouteContext): Promise<boolean> {
       return true
     }
     json(res, { categories: listCategories() })
+    return true
+  }
+
+  // GET /api/local-llm/routing -> task-routing VISIBILITY (card ecf38e5a, pair-FE e5fc1fb4, Peti's
+  // Local-LLM page redesign). Today this lives in three places, none reachable over HTTP:
+  // store/local-llm-model-routing.json (per-task overrides), src/local-llm-router.ts's
+  // CATEGORY_CEILINGS (categories that never offload), and store/card-build-route.log (the last
+  // card-level LOCAL/ONLINE decisions). Read-only: no new storage, no new write endpoint -- category
+  // on/off stays POST /api/local-llm/categories, model on/off stays
+  // POST /api/local-llm/models/<name>/enable|disable.
+  if (path === '/api/local-llm/routing' && method === 'GET') {
+    let overrides: Record<string, string>
+    try {
+      overrides = readRoutingOverrides(ROUTING_FILE)
+    } catch (err) {
+      logger.error({ err, file: ROUTING_FILE }, 'local-llm: routing konfiguráció olvashatatlan')
+      json(res, {
+        error: 'routing_unreadable',
+        message: `A feladat-routing konfiguráció nem olvasható (${ROUTING_FILE}). Javítsd vagy töröld a fájlt, majd frissíts.`,
+      }, 503)
+      return true
+    }
+    // DYNAMIC IMPORT, NOT STATIC (same reasoning as the queue POST handler above, and for the exact
+    // same pair of files): local-llm-router.ts imports CODING_DIFFICULTY_LEVELS etc FROM this file at
+    // its own module top-level, so a static import here would close a real circular dependency.
+    const { CATEGORY_CEILINGS } = await import('../../local-llm-router.js')
+    const defaultModel = readActiveModel() || null
+    const presets = listCategories().map((c) => {
+      const override = overrides[c.name]
+      return {
+        task: c.name,
+        enabled: c.enabled,
+        model: override ?? defaultModel,
+        source: (override ? 'override' : 'default') as 'override' | 'default',
+        count: c.count,
+        lastTs: c.lastTs,
+      }
+    })
+    const decisions = readRecentDecisions(CARD_BUILD_ROUTE_LOG_FILE)
+    json(res, {
+      defaultModel,
+      overrides,
+      alwaysOnline: CATEGORY_CEILINGS,
+      presets,
+      recentDecisions: decisions.rows,
+      decisionsLogAvailable: decisions.available,
+    })
     return true
   }
 

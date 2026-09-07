@@ -141,16 +141,59 @@ fi
 # node_modules: pnpm resolves per package, so the ROOT symlink alone is not enough. Without the
 # per-package links vitest dies on '@vitejs/plugin-react' and tsc cannot see any @cleancore/* import,
 # which reads like a broken recipe rather than a missing link. Measured: 30 package dirs + the root.
-linked=0
-[ -e "$TREE/node_modules" ] || { ln -s "$MAIN/node_modules" "$TREE/node_modules"; linked=$((linked + 1)); }
+#
+# WORKSPACE ENTRIES ARE SPECIAL (card 80d3a2af). Symlinking a WHOLE node_modules directory into $MAIN
+# looked equivalent to linking every entry inside it, but it is not: pnpm writes @cleancore/<pkg> as a
+# RELATIVE symlink (../../../../packages/<pkg>), and a relative symlink resolves from where the link
+# FILE lives on disk, not from how it was reached. Since the whole directory lived in $MAIN, every
+# @cleancore/* import resolved to $MAIN/packages/<pkg> no matter which worktree ran the test --
+# measured live on apps/api/src/pg-proof-photo-worm-marker.test.ts: a deliberate syntax error planted
+# in the worktree's OWN packages/evidence source changed nothing, because that file never loaded. So
+# each node_modules directory is now a REAL directory in the worktree, and its entries are linked one
+# at a time: an @cleancore/<pkg> entry points at the WORKTREE'S OWN packages/<pkg> (the whole reason to
+# have a worktree), everything else still points at $MAIN (shared, no duplication, no reinstall).
+link_node_modules_for() {
+  local rel="$1" main_nm tree_nm entry
+  main_nm="$MAIN${rel:+/$rel}/node_modules"
+  tree_nm="$TREE${rel:+/$rel}/node_modules"
+  [ -d "$main_nm" ] || return 0
+
+  # A previous run (or a pre-fix version) of this script may have left the OLD whole-directory
+  # symlink in place -- migrate it rather than leaving @cleancore/* silently pointed at $MAIN forever.
+  [ -L "$tree_nm" ] && rm -f "$tree_nm"
+  mkdir -p "$tree_nm"
+
+  while IFS= read -r entry; do
+    [ -n "$entry" ] || continue
+    if [ "$entry" = "@cleancore" ]; then
+      mkdir -p "$tree_nm/@cleancore"
+      local pkg pkgdir rel_target
+      while IFS= read -r pkg; do
+        [ -n "$pkg" ] || continue
+        [ -e "$tree_nm/@cleancore/$pkg" ] && continue
+        pkgdir="$(pkg_dir_for "$pkg")"
+        if [ -z "$pkgdir" ]; then
+          # Not a workspace package we can find under $MAIN (renamed/removed) -- fall back to $MAIN
+          # rather than leaving the import unresolvable.
+          ln -sfn "$main_nm/@cleancore/$pkg" "$tree_nm/@cleancore/$pkg"
+          continue
+        fi
+        rel_target="$(python3 -c "import os,sys; print(os.path.relpath(sys.argv[1], sys.argv[2]))" "$TREE/$pkgdir" "$tree_nm/@cleancore")"
+        ln -sfn "$rel_target" "$tree_nm/@cleancore/$pkg"
+      done < <(ls "$main_nm/@cleancore" 2>/dev/null)
+    else
+      [ -e "$tree_nm/$entry" ] && continue
+      ln -sfn "$main_nm/$entry" "$tree_nm/$entry"
+    fi
+  done < <(ls -A "$main_nm" 2>/dev/null)
+}
+
+link_node_modules_for ""
 while IFS= read -r d; do
   d="${d%/}"
-  [ -d "$MAIN/$d/node_modules" ] || continue
-  [ -e "$TREE/$d/node_modules" ] && continue
-  ln -s "$MAIN/$d/node_modules" "$TREE/$d/node_modules"
-  linked=$((linked + 1))
+  link_node_modules_for "$d"
 done < <(cd "$MAIN" && ls -d apps/*/ packages/*/ packages/modules/*/ 2>/dev/null)
-echo "node_modules links added: $linked"
+echo "node_modules: per-entry links refreshed (workspace @cleancore/* -> own worktree copy, external -> shared main clone)"
 
 # Before those links are trusted, make sure the thing they point AT is sound: a dangling
 # /tmp-pointing link in the main clone is inherited by every worktree that links from it.

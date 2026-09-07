@@ -141,11 +141,18 @@ foreign_cards() {
 # card have an unresolved rejection" from raw comments a second time -- that tool already does
 # exactly this, with its own extensive test coverage.
 _foreign_card_verdict() {
-  local id="$1" body
+  local id="$1" body verdict
   body="$(printf 'Authorization: Bearer %s\n' "$(cat "${GATE_CHECK_TOKEN_FILE:-/home/neon/marveen/store/.dashboard-token}" 2>/dev/null)" \
     | curl -sS -m 20 -H @- "${GATE_CHECK_API:-http://127.0.0.1:3420}/api/kanban/$id/comments" 2>/dev/null)"
   [ -n "$body" ] || { echo "UNREADABLE|no response fetching card $id's comments"; return; }
-  printf '%s' "$body" | python3 "$(dirname "${BASH_SOURCE[0]}")/gate-closure-check.py" 2>/dev/null
+  # Card c266ec74 (Cybersec DELTA NO-GO on Gate-SHA 177dcccf): a python crash/empty output here used
+  # to fall through as an empty string, which foreign_card_gate_check's case statement did not
+  # recognise either -- so an unreadable gate-closure-check.py run passed SILENTLY, same fail-open
+  # shape as the unreachable-API branch just above. Funnel BOTH "could not ask" cases through the
+  # same UNREADABLE prefix so the caller has exactly one pattern to fail closed on.
+  verdict="$(printf '%s' "$body" | python3 "$(dirname "${BASH_SOURCE[0]}")/gate-closure-check.py" 2>/dev/null)"
+  [ -n "$verdict" ] || { echo "UNREADABLE|gate-closure-check.py produced no verdict for card $id"; return; }
+  echo "$verdict"
 }
 
 # Card c266ec74 (Cybered's finding off the a37bb36d landing): a foreign card riding along is not
@@ -172,6 +179,20 @@ foreign_card_gate_check() {
       FAILED\|*)
         echo "  $label: REFUSED -- riding-along card $id carries a FAILING, unresolved gate verdict:" >&2
         echo "      $verdict" >&2
+        bad=1
+        ;;
+      # Card c266ec74 (Cybersec DELTA NO-GO): "could not check" is NOT "checked and clean". An
+      # unreachable dashboard API or a broken gate-closure-check.py run used to pass through this
+      # case statement untouched (neither FAILED\|* nor anything else matched an empty/UNREADABLE
+      # string), so a landing sailed through a foreign card it never actually verified -- fail-OPEN
+      # on exactly the input this check exists to be unconditional about. Reproduced live:
+      # GATE_CHECK_API pointed at a refused port made foreign_card_gate_check return 0 (pass) for a
+      # card that, had the API been reachable, would have come back FAILED. Empty string is also
+      # caught here (not just UNREADABLE) so a future _foreign_card_verdict override that forgets
+      # this fallback still fails closed rather than silently passing.
+      UNREADABLE\|*|'')
+        echo "  $label: REFUSED -- could not determine card $id's gate verdict (cannot rule out an active FAIL):" >&2
+        echo "      ${verdict:-<empty>}" >&2
         bad=1
         ;;
     esac
@@ -256,6 +277,14 @@ downward_check() {
 downward_selftest_cases() {
   local L rc tmp
   rc_of() { downward_check "$1" "$2" "${3:-}" "${4:-1}" test >/dev/null 2>&1; echo $?; }
+
+  # Captured BEFORE the stub below shadows it, so the REAL-network-path case further down (Cybersec's
+  # ask, card c266ec74) can restore the actual curl-based implementation instead of leaving the name
+  # unbound (`unset -f` has no earlier definition to fall back to -- each `name() {...}` REPLACES the
+  # function table entry outright, it does not push a stack) or, worse, hand-duplicating the real body
+  # here where it could silently drift from the one this file actually ships.
+  local real_foreign_card_verdict
+  real_foreign_card_verdict="$(declare -f _foreign_card_verdict)"
 
   # Every rc_of/downward_check case below runs foreign_card_gate_check on whatever foreign cards it
   # finds -- stub the network step so the suite needs no dashboard and no network (same reason the
@@ -386,5 +415,40 @@ downward_selftest_cases() {
   _foreign_card_verdict() { [ "$1" = "44444444" ] && echo "AGREE|abc1234|QA=PASS" || echo "MISSING|no gate verdict on this card at all"; }
   t "a foreign card that already AGREE-closes does not trip the gate check" \
     "$(rc_of "$L" 11111111 '' 0)" "0"
+  _foreign_card_verdict() { echo "MISSING|no gate verdict on this card at all"; }
+
+  # Card c266ec74 (Cybersec DELTA NO-GO on Gate-SHA 177dcccf, reproduced live): "could not check" is
+  # NOT "checked and clean". Before this fix, neither an unreachable dashboard API nor a broken
+  # gate-closure-check.py run matched the case statement's only pattern (FAILED\|*), so a landing
+  # sailed through a foreign card it never actually verified -- fail-OPEN on the one check this file
+  # says is unconditional.
+  L="$(printf 'aaa1111\tfeat: own (card 11111111)\nbbb2222\tfix: someone else (card 66666666)\n')"
+  _foreign_card_verdict() { [ "$1" = "66666666" ] && echo "UNREADABLE|simulated network failure" || echo "MISSING|no gate verdict on this card at all"; }
+  t "an UNREADABLE verdict (network/parse failure) refuses -- cannot rule out an active FAIL" \
+    "$(rc_of "$L" '' '' 0)" "1"
+  t "...and says it could not determine the verdict, not the FAILING-verdict wording" \
+    "$(downward_check "$L" '' '' 0 test 2>&1 >/dev/null | grep -c 'could not determine card 66666666')" "1"
+  _foreign_card_verdict() { [ "$1" = "66666666" ] && echo "" || echo "MISSING|no gate verdict on this card at all"; }
+  t "an EMPTY verdict (a future override that forgets the UNREADABLE fallback) also refuses" \
+    "$(rc_of "$L" '' '' 0)" "1"
+  t "--allow-stacked naming the unreadable card still releases it (operator vouches by id, same as FAILED)" \
+    "$(rc_of "$L" '' 66666666 0)" "0"
+  _foreign_card_verdict() { echo "MISSING|no gate verdict on this card at all"; }
+
+  # THE REAL NETWORK PATH, not a stub (Cybersec's own point: every case above overrides
+  # _foreign_card_verdict, so none of them exercise the curl call that actually failed live). Restored
+  # from the capture taken before the stub was ever installed -- see that comment for why `unset -f`
+  # would not get this back. Port 1 is privileged and unbound on an ordinary box -- connection
+  # refused, fast, never hangs -- the exact shape Cybersec reproduced live
+  # (GATE_CHECK_API=http://127.0.0.1:1 -> foreign_card_gate_check exited 0, before this fix).
+  eval "$real_foreign_card_verdict"
+  t "REAL curl path: an unreachable dashboard API refuses, it does not silently pass" \
+    "$(GATE_CHECK_API=http://127.0.0.1:1 GATE_CHECK_TOKEN_FILE=/dev/null \
+       foreign_card_gate_check "$(printf '55555555\n')" test >/dev/null 2>&1; echo $?)" \
+    "1"
+  t "...and names the specific card it could not check" \
+    "$(GATE_CHECK_API=http://127.0.0.1:1 GATE_CHECK_TOKEN_FILE=/dev/null \
+       foreign_card_gate_check "$(printf '55555555\n')" test 2>&1 >/dev/null | grep -c 'could not determine card 55555555')" \
+    "1"
   _foreign_card_verdict() { echo "MISSING|no gate verdict on this card at all"; }
 }
