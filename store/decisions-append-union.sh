@@ -2233,6 +2233,70 @@ new body line"
   # The direct calls above pin the actual defect; try_append_union's existing end-to-end cases in
   # this file already cover that it is reached correctly once a real conflict exists.
 
+  # --- card 5910f2f3 F-2: fault-injection coverage for _common_line_prefix_len itself -----------
+  # (Cybered comment 22227 F-2, harness worked out and handed over in msg 25346.) The original ask
+  # was to isolate each of the THREE named checks (starts_new_entry / header-count / membership)
+  # under a corrupted prefix length. Cybered's own line-level tracer proved that is no longer
+  # possible from this angle: b7e57877 landed TWO EARLIER guards since this card was opened --
+  # "THE GUARANTEE" (nothing the merge-base held may be missing from the prefix) and "THE
+  # STRUCTURAL BOUNDARY" (content shared beyond the base must be blank/separator only) -- and BOTH
+  # catch every fault magnitude tried here BEFORE any of the three originally-named checks are ever
+  # reached, independent of which one is disabled. That is not a gap: it is what belt-and-suspenders
+  # means, and Cybered measured it directly (line-annotated tracer, guard-hit logged per case).
+  #
+  # So this proves the WHOLE CHAIN refuses under a corrupted prefix length -- if a future reordering
+  # or removal of one guard ever let a corrupted offset through, at least one of these three cases
+  # would catch it, without needing a test-only hook to disable guards inside production code (the
+  # header_glob/order env-var lesson this file already learned once: an escape hatch built only for
+  # a test is an escape hatch).
+  #
+  # Fixture and fault magnitudes are Cybered's own, reproduced exactly and re-verified against this
+  # worktree's real, unmutated _common_line_prefix_len before being pinned as constants: on this
+  # fixture the real function returns 76.
+  _f2_base=$'## 2026-01-01 -- Old entry\nBody of the old entry, unchanged by both sides.\n'
+  _f2_ours=$'## 2026-01-01 -- Old entry\nBody of the old entry, unchanged by both sides.\n\n## 2026-02-01 -- Ours entry\nOurs body line one.\nOurs body line two.\n'
+  _f2_theirs=$'## 2026-01-01 -- Old entry\nBody of the old entry, unchanged by both sides.\n\n## 2026-03-01 -- Theirs entry\nTheirs body line one.\n'
+
+  # $1 = label, $2 = the constant value to make _common_line_prefix_len return instead of computing
+  # it. Saves and restores the REAL function around the call -- every other case in this file, before
+  # and after, must keep running against the genuine implementation.
+  t_refused_with_corrupted_prefix_len() {
+    local label="$1" fault="$2" _orig_fn
+    _orig_fn="$(declare -f _common_line_prefix_len)"
+    eval "_common_line_prefix_len() { printf '%s' '$fault'; }"
+    if try_append_union "$REPO" "DECISIONS.md"; then
+      echo "  FAIL $label -> expected try_append_union to refuse (return 1), it resolved"; fail=1
+    elif ! git -C "$REPO" diff --name-only --diff-filter=U | grep -qx "DECISIONS.md"; then
+      echo "  FAIL $label -> refused but DECISIONS.md no longer shows as unmerged"; fail=1
+    elif ! grep -q '^<<<<<<< ' "$REPO/DECISIONS.md" 2>/dev/null; then
+      echo "  FAIL $label -> refused but the conflict markers are gone from the working file"; fail=1
+    else
+      echo "  ok   $label"
+    fi
+    eval "$_orig_fn"
+    git -C "$REPO" merge --abort 2>/dev/null || true
+  }
+
+  setup_conflict f2-prefix-len-fault "$_f2_base" "$_f2_ours" "$_f2_theirs"
+  t_refused_with_corrupted_prefix_len \
+    'F-2: a too-LONG corrupted prefix length is refused (86 -- 10 bytes into ours own new header line)' 86
+  setup_conflict f2-prefix-len-fault "$_f2_base" "$_f2_ours" "$_f2_theirs"
+  t_refused_with_corrupted_prefix_len \
+    'F-2: a too-SHORT corrupted prefix length is refused (61 -- 15 bytes back inside base own body line)' 61
+  setup_conflict f2-prefix-len-fault "$_f2_base" "$_f2_ours" "$_f2_theirs"
+  t_refused_with_corrupted_prefix_len \
+    'F-2: an off-by-one-header corrupted prefix length is refused (104 -- bakes ours whole new header into "prefix")' 104
+  # CONTROL: the same fixture, same helper, but with the REAL correct value (76) -- proves the
+  # override mechanism itself does not just always refuse regardless of what it returns.
+  setup_conflict f2-prefix-len-fault "$_f2_base" "$_f2_ours" "$_f2_theirs"
+  if try_append_union "$REPO" "DECISIONS.md"; then
+    echo "  ok   CONTROL: the fault-injection harness itself, given the REAL correct prefix length, resolves normally"
+  else
+    echo "  FAIL CONTROL: the fault-injection harness refused even with the correct (76) prefix length -- the harness itself is broken, not the function"
+    fail=1
+  fi
+  git -C "$REPO" merge --abort 2>/dev/null || true
+
   # --- G-1: the read-back guard pins ITSELF (Cybered, card bb52c2fa) --------------------------
   # These call _selftest_verdict DIRECTLY with synthetic logs, so deleting the read-back (or
   # weakening its pattern) turns THESE cases red. Without them the guard was unpinned: the CI test
