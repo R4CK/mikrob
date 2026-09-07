@@ -224,54 +224,142 @@ try:
           'just start rejecting everything)',
           mas.resolve_agent(sid_qa, projects), 'qa')
 
-    # ---------------------------------------------- Cybered kill-chain 2 (comment 22227)
-    # A naive read-modify-write on a hub file drops a concurrent agent's own write if it
-    # lands between this script's read and write. _test_hook lands a write deterministically
-    # inside that exact window (right after the first read, before the compare-reread),
-    # rather than relying on real thread scheduling to hit it by chance.
-    cas_pool = os.path.join(tmp, 'memory-cas')
-    os.makedirs(cas_pool)
-    with open(os.path.join(cas_pool, 'race-hub.md'), 'w', encoding='utf-8') as f:
+    # ---------------------------------------------- Cybered kill-chain 2 (comment 22227,
+    # then comment 22365/msg 25340 on the compare-and-swap that replaced the original fix)
+    #
+    # PART A: flock closes the race for a COOPERATING writer -- i.e. this same function
+    # called again while the first call still holds the lock. Modelled with a second,
+    # REAL thread that also goes through _apply_marker_locked, so it genuinely blocks on
+    # the OS-level flock rather than being simulated in-process.
+    import threading
+
+    lock_pool = os.path.join(tmp, 'memory-locked')
+    os.makedirs(lock_pool)
+    with open(os.path.join(lock_pool, 'race-hub.md'), 'w', encoding='utf-8') as f:
+        f.write('- [entry](race-target.md)\n- [other entry](other-target.md)\n')
+
+    order = []
+    release_first = threading.Event()
+
+    def _hold_then_release():
+        order.append('first-write-committed')
+        release_first.set()
+
+    def _first_call():
+        mas._apply_marker_locked(
+            os.path.join(lock_pool, 'race-hub.md'), '](race-target.md)', '`[qa]`',
+            _test_hook=_hold_then_release,
+        )
+
+    t = threading.Thread(target=_first_call)
+    t.start()
+    release_first.wait(timeout=5)
+    # The second call is issued while the first thread's lock is very likely still held
+    # (it has not returned from _apply_marker_locked yet) -- if flock is not actually
+    # excluding it, this second call could read the file BEFORE the first call's write
+    # lands, in which case it would compute its own marker from stale content and the
+    # first call's marker would never appear once both writes land. Real flock means this
+    # call simply blocks until the first call releases, then sees the first call's write.
+    ok2 = mas._apply_marker_locked(
+        os.path.join(lock_pool, 'race-hub.md'), '](other-target.md)', '`[backend2]`',
+    )
+    t.join(timeout=5)
+    with open(os.path.join(lock_pool, 'race-hub.md'), encoding='utf-8') as f:
+        locked_result = f.read()
+    check('kill-chain 2, cooperating writer: the second (real, flock-blocked) call reports success',
+          ok2, True)
+    check('kill-chain 2, cooperating writer: BOTH markers are present -- flock genuinely '
+          'excluded the second writer rather than letting it race the first',
+          ('`[qa]`' in locked_result) and ('`[backend2]`' in locked_result), True)
+
+    # PART B: the RESIDUAL gap flock structurally cannot close -- an unrelated, NON-locking
+    # writer (Cybered's exact PoC v4 shape: another agent's own plain Write tool append,
+    # with no lock of any kind), landing inside the held critical section. This is not a
+    # bug in _apply_marker_locked, it is the honest limit documented in its own docstring:
+    # pinned here so a future "helpful" claim that flock alone closed kill-chain 2 gets
+    # caught by this test, not discovered live.
+    unlocked_pool = os.path.join(tmp, 'memory-unlocked-residual')
+    os.makedirs(unlocked_pool)
+    with open(os.path.join(unlocked_pool, 'race-hub.md'), 'w', encoding='utf-8') as f:
         f.write('- [entry](race-target.md)\n')
 
     injected = {'done': False}
 
-    def _inject_concurrent_write():
-        if injected['done']:
-            return
+    def _inject_non_cooperating_write():
         injected['done'] = True
-        with open(os.path.join(cas_pool, 'race-hub.md'), 'a', encoding='utf-8') as f:
-            f.write('- [a DIFFERENT agent wrote this mid-sweep](its-own-entry.md)\n')
+        with open(os.path.join(unlocked_pool, 'race-hub.md'), 'a', encoding='utf-8') as f:
+            f.write('- [a DIFFERENT agent wrote this mid-sweep, NOT using flock](its-own-entry.md)\n')
 
-    ok = mas._apply_marker_cas(
-        os.path.join(cas_pool, 'race-hub.md'), '](race-target.md)', '`[qa]`',
-        _test_hook=_inject_concurrent_write,
+    ok = mas._apply_marker_locked(
+        os.path.join(unlocked_pool, 'race-hub.md'), '](race-target.md)', '`[qa]`',
+        _test_hook=_inject_non_cooperating_write,
     )
-    with open(os.path.join(cas_pool, 'race-hub.md'), encoding='utf-8') as f:
-        race_result = f.read()
-    check('kill-chain 2: the CAS write reports success (retried past the injected conflict)',
+    with open(os.path.join(unlocked_pool, 'race-hub.md'), encoding='utf-8') as f:
+        residual_result = f.read()
+    check('kill-chain 2 residual gap: the locked call still reports success',
           ok, True)
-    check('kill-chain 2: the CONCURRENT write survives -- not silently dropped',
-          'a DIFFERENT agent wrote this mid-sweep' in race_result, True)
-    check('kill-chain 2: the marker this call was making STILL gets applied, on the retry',
-          '`[qa]`' in race_result, True)
-    check('kill-chain 2: the hook fired exactly once (first attempt hit the conflict, '
-          'second attempt found nothing new -- not an infinite fight)',
-          injected['done'], True)
+    check("kill-chain 2 residual gap: this call's OWN marker is applied",
+          '`[qa]`' in residual_result, True)
+    check('kill-chain 2 residual gap: a non-flock concurrent write inside the critical '
+          'section is STILL lost -- flock cannot exclude a writer that never asks for the '
+          'lock (this is the documented limit, not a defect; sweep() self-heal, tested '
+          'below, is what actually bounds it)',
+          'a DIFFERENT agent wrote this mid-sweep' in residual_result, False)
 
-    # CONTROL: without contention, one attempt is enough (no silent extra retries hiding
-    # a real bug in the no-conflict path).
-    with open(os.path.join(cas_pool, 'quiet-hub.md'), 'w', encoding='utf-8') as f:
+    # CONTROL: without contention, a single call still applies the marker correctly.
+    with open(os.path.join(unlocked_pool, 'quiet-hub.md'), 'w', encoding='utf-8') as f:
         f.write('- [entry](quiet-target.md)\n')
-    attempts = {'n': 0}
+    mas._apply_marker_locked(os.path.join(unlocked_pool, 'quiet-hub.md'), '](quiet-target.md)', '`[qa]`')
+    with open(os.path.join(unlocked_pool, 'quiet-hub.md'), encoding='utf-8') as f:
+        quiet_result = f.read()
+    check('CONTROL: with no contention, the marker is applied cleanly',
+          '`[qa]`' in quiet_result, True)
 
-    def _count_attempts():
-        attempts['n'] += 1
+    # ---------------------------------------------- sweep() self-heal (card 0c335d59,
+    # Cybered NO-GO comment 22365/msg 25340): the actual defense against the residual gap
+    # in PART B above is not exclusion (impossible against a non-cooperating writer, see
+    # PART B) but REPAIR -- a lost hub marker must not stay lost past the next sweep.
+    heal_pool = os.path.join(tmp, 'memory-selfheal')
+    heal_projects = os.path.join(tmp, 'projects-selfheal')
+    os.makedirs(heal_pool)
+    sid_heal = 'aaaaaaaa-1111-2222-3333-444444444444'
+    make_transcript(heal_projects, '-home-neon-marveen-agents-fron-ted', sid_heal)
+    make_memory_file(heal_pool, 'healable-target.md', origin_session_id=sid_heal)
+    # Simulate the STATE this repo would be in right after a race dropped the hub marker:
+    # frontmatter already carries `agent: fron-ted` (that single-file write is not raced,
+    # per this file's own module docstring) but the hub file's marker never landed.
+    with open(os.path.join(heal_pool, 'stale-hub.md'), 'w', encoding='utf-8') as f:
+        f.write('- [an entry](healable-target.md)\n')
+    target_path = os.path.join(heal_pool, 'healable-target.md')
+    with open(target_path, encoding='utf-8') as f:
+        healable_text = f.read()
+    fm, body = mas.split_frontmatter(healable_text)
+    with open(target_path, 'w', encoding='utf-8') as f:
+        f.write('---\n' + mas.inject_agent_field(fm, 'fron-ted') + '---\n' + body)
 
-    mas._apply_marker_cas(os.path.join(cas_pool, 'quiet-hub.md'), '](quiet-target.md)', '`[qa]`',
-                           _test_hook=_count_attempts)
-    check('CONTROL: with no contention, exactly one attempt is made',
-          attempts['n'], 1)
+    with open(os.path.join(heal_pool, 'stale-hub.md'), encoding='utf-8') as f:
+        before_heal = f.read()
+    check('self-heal setup control: the hub marker is genuinely missing before the healing sweep',
+          '`[fron-ted]`' in before_heal, False)
+
+    heal_result = mas.sweep(heal_pool, heal_projects, dry_run=False)
+    with open(os.path.join(heal_pool, 'stale-hub.md'), encoding='utf-8') as f:
+        after_heal = f.read()
+    check('self-heal: a sweep over an already-attributed file with a missing hub marker '
+          'reapplies it -- bounding the residual gap to "until the next scheduled sweep", '
+          'not "forever"',
+          '`[fron-ted]`' in after_heal, True)
+    check('self-heal: the healed entry (memory file -> hub files it fixed) is reported, not silently',
+          heal_result['healed'], [('healable-target.md', ['stale-hub.md'])])
+    check("self-heal: the already-attributed file is still counted as 'already', not "
+          're-resolved as if newly attributed',
+          [f for f, _ in heal_result['resolved']], [])
+
+    # CONTROL: a second sweep, with nothing left to heal, heals nothing (idempotent -- this
+    # is not a script that keeps rewriting an already-correct hub file every run).
+    heal_result_2 = mas.sweep(heal_pool, heal_projects, dry_run=False)
+    check('CONTROL: once healed, a further sweep finds nothing left to heal',
+          heal_result_2['healed'], [])
 
 finally:
     shutil.rmtree(tmp, ignore_errors=True)
