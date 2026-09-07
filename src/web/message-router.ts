@@ -111,11 +111,25 @@ export function formatStuckSessionAlert(
   return `[session-stuck] Agent '${agent}' (tmux ${session}) has been not-ready for ${min} min with ${queue}. Run the delivery-stall diagnosis: check the pane (busy vs idle vs full context) and restart the agent if it is wedged.`
 }
 
-function notifyOrchestratorOfStuckSession(agent: string, session: string, stuckMs: number, pendingCount: number, paneState: PaneState | null): void {
+// Card 8f33a1a1 (parent dc35fa1a, step 3): every session-stuck notice is delivered wake:false,
+// through the QUIET_MESSAGE_CLASSES allowlist steps 1-2 (3bd457ed, 7d47ca16) built for exactly this
+// caller. MEASURED (7 days, 3388 messages): 472 automated, 464 of those to the main agent, and the
+// session-stuck lines repeat almost verbatim -- fron-ted not-ready 13x/10x/9x, backend BUSY 7x.
+//
+// STATED COST, not hidden: without per-agent/per-class dedup state (a separate, not-yet-built
+// mechanism -- MikroB comment 24562), this mutes the FIRST session-stuck notice for an agent too, not
+// only the repeats. That is accepted because the receiver is always MAIN_AGENT_ID (formatStuckSessionAlert
+// returns null for anyone else), which drains its own inbox every turn and never parks -- a quiet
+// delivery here is "seen at the next natural check", not "seen never". A REPEAT class name is used
+// (not a bare 'session-stuck') because that is the literal string QUIET_MESSAGE_CLASSES holds; using
+// the true occurrence count to pick a name would defeat the point of a static, code-reviewed list.
+export function notifyOrchestratorOfStuckSession(agent: string, session: string, stuckMs: number, pendingCount: number, paneState: PaneState | null): void {
   try {
     const alert = formatStuckSessionAlert(agent, MAIN_AGENT_ID, session, stuckMs, pendingCount, paneState)
     if (!alert) return
-    createAgentMessage('system', MAIN_AGENT_ID, alert)
+    createAgentMessage('system', MAIN_AGENT_ID, alert, null, null, {
+      quietClass: paneState === 'busy' ? 'session-stuck-busy-repeat' : 'session-stuck-not-ready-repeat',
+    })
     logger.info({ agent, session, stuckMs, pendingCount, paneState }, 'session-stuck surfaced to orchestrator')
   } catch (err) {
     logger.warn({ err, agent }, 'Failed to enqueue session-stuck notification')
