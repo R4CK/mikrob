@@ -60,7 +60,13 @@ from gate_scan_lib import GATE_DECL_RX, BARE_DECL_RX  # noqa: E402
 
 # A gate role, with any sibling number attached. `\d*` rather than an enumerated "QA2" so a future
 # CYBERSEC2/CYBERED2 needs no edit here; there are zero of those on the board today.
-_ROLE = re.compile(r"\b(QA|CYBERSEC|CYBERED)\d*\b", re.IGNORECASE)
+#
+# NOT `\b...\b` (card 4b8962df): `-` is not a word character, so a plain `\b` boundary still
+# matches "Cybersec" inside "Cybersec-mentes" -- an EXCLUDING clause, not a real designation. The
+# lookaround refuses a hyphen on either side too, the same fix gate_scan_lib.role_named() carries
+# for the same reason (one idea, two places is exactly what this module's own docstring warns
+# against elsewhere on this board).
+_ROLE = re.compile(r"(?<![A-Za-z0-9-])(QA|CYBERSEC|CYBERED)\d*(?![A-Za-z0-9-])", re.IGNORECASE)
 
 
 def roles(text):

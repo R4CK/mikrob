@@ -118,6 +118,25 @@ FAIL_RE = re.compile(
 BARE_DECL_RX = re.compile(r'Gate:\s*([^\n]+)', re.IGNORECASE)
 
 
+def role_named(role, text):
+    """True iff `role` appears in `text` as a standalone role name -- not as part of a
+    hyphenated compound that does not name the role itself (card 4b8962df, Cybersec self-
+    correction of comment 21019). A plain substring test (the previous form) matches inside an
+    EXCLUDING clause: "...a Cybersec-mentes valtozat a jelenleg ervenyes designacio..." contains
+    "cybersec" as a substring even though the sentence explicitly excludes that role. A naive
+    `\\b` boundary is not enough either -- `-` is not a word character, so `\\bCybersec\\b` still
+    matches inside "Cybersec-mentes" (the boundary sits right between "Cybersec" and the hyphen).
+    The real boundary this needs also refuses a hyphen on either side, exactly kodminosegi elv
+    12's "szimbolum-jelenlet sosem reszsztring, hataron kell illeszteni" generalised to the
+    hyphenated-compound case that rule already anticipates.
+    """
+    pattern = re.compile(
+        r'(?<![A-Za-z0-9-])' + re.escape(role) + r'(?![A-Za-z0-9-])',
+        re.IGNORECASE,
+    )
+    return pattern.search(text or '') is not None
+
+
 def declared_gate_excludes_me(description, my_gate):
     """True when the card's own description names its gates and MINE is not among them.
 
@@ -172,4 +191,4 @@ def declared_gate_excludes_me(description, my_gate):
     if any(b.end() > last_anchored_end for b in BARE_DECL_RX.finditer(text)):
         return False
 
-    return my_gate.lower() not in matches[-1].group(1).lower()
+    return not role_named(my_gate, matches[-1].group(1))
