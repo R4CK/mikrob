@@ -451,10 +451,31 @@ try_append_union() {
   # legitimately starts a new entry. The union then lands the entry twice. NOT a regression of
   # this card's own fix -- reproduced identically against the pre-fix, base-anchored version --
   # so it is checked here rather than left implicit in checks that were never built to catch it.
+  #
+  # WHITESPACE-NORMALIZED, not byte-exact (card bc0af927, remainder of the same defect this card's
+  # own investigation left open). Two branches writing the SAME decision can produce a header line
+  # that differs only in a doubled internal space or a trailing space -- the entry is unmistakably
+  # the same one, but the comparison above never sees it, because it compares the two remainders
+  # byte-for-byte. MEASURED on the landed function before this change: a header differing only in a
+  # doubled internal space, or only in trailing whitespace, both RESOLVED as two distinct entries;
+  # a header identical apart from that (this check's control) already REFUSED, and a genuinely
+  # different second decision still REFUSES here, because normalizing whitespace does not make two
+  # different words equal.
+  #
+  # `[[:space:]]+/ /g` collapses ANY run of whitespace to one space -- not just the literal
+  # double-space and trailing-space cases named on the card, because enumerating spellings is the
+  # exact mistake this file has paid for three times already on the setext/fence and blank-or-rule
+  # checks above (a tab run or a `\r` at line end are whitespace too, and under LC_ALL=C -- set at
+  # the top of this function and inherited by every command below -- `[:space:]` includes CR). The
+  # trailing `s/ $//` then drops the one space the collapse leaves behind when the run was at the
+  # end of the line, so "```A  B```" and "```A B ```" and "```A B\r```" all normalize to "```A B```".
+  # This ONLY touches the header line used for the duplicate check, never the body or the union's
+  # own output -- the direction is strictly REFUSAL, narrowing what auto-resolves, never widening
+  # what the union is willing to glue together.
   local dup
   dup="$(comm -12 \
-    <(grep '^## ' <<<"$ours_added" | sort -u) \
-    <(grep '^## ' <<<"$theirs_added" | sort -u))"
+    <(grep '^## ' <<<"$ours_added" | sed -E 's/[[:space:]]+/ /g; s/ $//' | sort -u) \
+    <(grep '^## ' <<<"$theirs_added" | sed -E 's/[[:space:]]+/ /g; s/ $//' | sort -u))"
   [ -z "$dup" ] || return 1
 
   # EACH REMAINDER MUST BEGIN A NEW ENTRY (Cybersec NO-GO, comment 20499).
@@ -1032,6 +1053,52 @@ some prose
 ## 2026-01-05 -- entry D (shared)
 "
   t_refused "the same entry added on both sides at a different offset is refused, not silently doubled"
+
+  # card bc0af927: THE SAME GAP, ONE AXIS FURTHER -- the two copies of the shared header are not
+  # byte-identical, only whitespace-identical. Reproduced against the byte-exact comm -12 check
+  # (i.e. this file's state right before this card's fix): both variants below RESOLVED, landing
+  # "entry D (shared)" twice with a slightly different header on each copy.
+  setup_conflict duplicate-entry-whitespace-double-space \
+    "## 2026-01-01 -- entry A
+" \
+    "## 2026-01-01 -- entry A
+## 2026-01-02 -- entry X (left-only)
+## 2026-01-05 --  entry D (shared)
+" \
+    "## 2026-01-01 -- entry A
+## 2026-01-05 -- entry D (shared)
+"
+  t_refused "the shared header differs only by a doubled internal space -- still refused, not doubled"
+
+  setup_conflict duplicate-entry-whitespace-trailing-space \
+    "## 2026-01-01 -- entry A
+" \
+    "## 2026-01-01 -- entry A
+## 2026-01-02 -- entry X (left-only)
+## 2026-01-05 -- entry D (shared) 
+" \
+    "## 2026-01-01 -- entry A
+## 2026-01-05 -- entry D (shared)
+"
+  t_refused "the shared header differs only by trailing whitespace -- still refused, not doubled"
+
+  # CONTROL for the two cases above: a header that is a GENUINELY DIFFERENT entry, differing by an
+  # actual word rather than whitespace, must still resolve normally -- whitespace-normalizing the
+  # comparison must not start refusing two real, distinct entries.
+  setup_conflict whitespace-normalize-does-not-refuse-real-differences \
+    "## 2026-01-01 -- entry A
+" \
+    "## 2026-01-01 -- entry A
+## 2026-01-05 -- entry D (left version)
+" \
+    "## 2026-01-01 -- entry A
+## 2026-01-06 -- entry E (right)
+"
+  t_resolved "two genuinely different headers (not a whitespace variant of each other) still resolve" \
+    "## 2026-01-01 -- entry A
+## 2026-01-05 -- entry D (left version)
+## 2026-01-06 -- entry E (right)
+"
 
   # A REAL EDIT ON ONE SIDE (a correction to the existing entry, not just an append at the tail):
   # must NOT auto-union -- silently keeping "both versions" here is exactly the content-mangling
