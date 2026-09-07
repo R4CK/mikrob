@@ -33,15 +33,44 @@ function tsFiles(dir: string): string[] {
   return out
 }
 
+/** Every EAGER_CONST_RE match in `content`, as `line: text` strings.
+ *
+ *  NOT "test each line separately" (card 5fcfd76c): EAGER_CONST_RE's `\s*` already spans
+ *  newlines, so a prettier-wrapped two-line declaration --
+ *    const someBinaryPath =
+ *      resolveFromPath('some-binary')
+ *  -- matches the FULL-CONTENT test, but splitting on '\n' and testing each half alone finds
+ *  it on NEITHER line (the first has no `resolveFromPath`, the second has no `const ... =`),
+ *  so the old per-line loop silently produced zero offenders for a real match. A single
+ *  content-wide `exec` loop, with the line number derived from the match's own index, catches
+ *  single-line AND multi-line matches alike. A FRESH RegExp per call, not EAGER_CONST_RE
+ *  itself with a `g` flag added: a shared global regex's `lastIndex` would leak across the
+ *  unrelated one-off strings the second describe block below tests with `.test()`.
+ */
+function findOffenders(content: string): string[] {
+  const re = new RegExp(EAGER_CONST_RE.source, EAGER_CONST_RE.flags + 'g')
+  const lines = content.split('\n')
+  const offenders: string[] = []
+  let match: RegExpExecArray | null
+  while ((match = re.exec(content)) !== null) {
+    // EAGER_CONST_RE only captures up to the opening paren, so match[0] alone would truncate
+    // "const TMUX = resolveFromPath(" mid-call. Report the STARTING line's own full text
+    // instead (what the old per-line loop showed for the single-line case), located from the
+    // match's index rather than by re-testing each line in isolation -- see the comment above.
+    const lineNo = content.slice(0, match.index).split('\n').length
+    offenders.push(`${lineNo}: ${lines[lineNo - 1].trim()}`)
+    if (match[0].length === 0) re.lastIndex++ // never loop forever on a zero-width match
+  }
+  return offenders
+}
+
 describe('no eager module-level resolveFromPath constants (card 2a653b4b)', () => {
   it('src/**/*.ts holds none -- a PATH gap must not be able to fail an import', () => {
     const offenders: string[] = []
     for (const file of tsFiles(SRC)) {
       const content = readFileSync(file, 'utf-8')
-      if (!EAGER_CONST_RE.test(content)) continue
-      content.split('\n').forEach((line, i) => {
-        if (EAGER_CONST_RE.test(line)) offenders.push(`${file.slice(SRC.length + 1)}:${i + 1}: ${line.trim()}`)
-      })
+      const rel = file.slice(SRC.length + 1)
+      for (const hit of findOffenders(content)) offenders.push(`${rel}:${hit}`)
     }
     expect(offenders).toEqual([])
   })
@@ -79,4 +108,36 @@ describe('EAGER_CONST_RE: non-vacuous, and correctly ignores the lazy shapes', (
   for (const s of allowed) {
     it(`ignores: ${s.trim().slice(0, 56)}`, () => expect(EAGER_CONST_RE.test(s)).toBe(false))
   }
+})
+
+describe('findOffenders: catches the prettier-wrapped two-line form (card 5fcfd76c)', () => {
+  it('a two-line eager const IS caught, attributed to the line it starts on', () => {
+    const src = "import x from 'y'\nconst someBinaryPath =\n  resolveFromPath('some-binary')\n"
+    expect(findOffenders(src)).toEqual(['2: const someBinaryPath ='])
+  })
+
+  it('CONTROL: the old per-line approach would have found NOTHING for the same input', () => {
+    // Pins the actual regression: EAGER_CONST_RE matches the full two-line content (that part
+    // was never broken), but neither individual line contains a complete match on its own.
+    const lines = "const someBinaryPath =\n  resolveFromPath('some-binary')".split('\n')
+    expect(lines.some((l) => EAGER_CONST_RE.test(l))).toBe(false)
+    expect(EAGER_CONST_RE.test(lines.join('\n'))).toBe(true)
+  })
+
+  it('a single-line eager const is still caught (no regression on the common case)', () => {
+    const src = "const TMUX = resolveFromPath('tmux')\n"
+    expect(findOffenders(src)).toEqual(["1: const TMUX = resolveFromPath('tmux')"])
+  })
+
+  it('two offenders in one file are both reported, each on its own line', () => {
+    const src = "const A = resolveFromPath('a')\nconst B =\n  resolveFromPath('b')\n"
+    expect(findOffenders(src)).toEqual([
+      "1: const A = resolveFromPath('a')",
+      '2: const B =',
+    ])
+  })
+
+  it('a clean file yields no offenders', () => {
+    expect(findOffenders("const tmuxBin = makeLazyBinResolver('tmux')\n")).toEqual([])
+  })
 })
