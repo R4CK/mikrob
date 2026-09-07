@@ -113,6 +113,30 @@ const REAL_MODAL_NO_FOOTER_PANE = [
   '❯',
 ].join('\n')
 
+// A THIRD real capture, this time pasted verbatim by MikroB (card bd4b74a3, 2026-09-07) from
+// `backend`'s own live pane -- 4 inter-agent messages sat undelivered ~10 minutes until a
+// manual dismiss. Different session name, different draft content, no queued-count suffix on
+// the option line (contrast REAL_MODAL_NO_FOOTER_PANE's "· +1 more queued") -- kept as its own
+// fixture rather than folded into the existing footerless case so a future regression on THIS
+// exact incident's shape is traceable to its own card, not just the class.
+const MIKROB_CAPTURE_BACKEND_PANE = [
+  '',
+  '  some prior assistant output',
+  '',
+  '╭──────────────────────────────────────────────────────────────────────────────╮',
+  '│ ✻ Bug report drafted: Multi-line JSON built via bash heredoc silently fails… │',
+  '│                                                                               │',
+  "│ What happened: Built several curl -X POST ... -d @- <<'''EOF''' {...multi-line │",
+  '│ JSON...} EOF calls to an internal API. The heredoc content had real line    │',
+  '│ breaks…                                                                     │',
+  '│ 1 to review · 2 to send · 0 to dismiss                                      │',
+  '╰──────────────────────────────────────────────────────────────────────────────╯',
+  '─'.repeat(80),
+  '❯ ',
+  '─'.repeat(80),
+  '',
+].join('\n')
+
 describe('detectsFeedbackDraftModal', () => {
   it('fires on the real captured modal (known positive)', () => {
     expect(detectsFeedbackDraftModal(REAL_MODAL_PANE)).toBe(true)
@@ -168,6 +192,16 @@ describe('detectsFeedbackDraftModal', () => {
   it('does NOT fire on an empty or blank pane', () => {
     expect(detectsFeedbackDraftModal('')).toBe(false)
     expect(detectsFeedbackDraftModal('   \n  \n')).toBe(false)
+  })
+
+  // Card bd4b74a3 (2026-09-07): MikroB's own capture, a THIRD real-world instance of the
+  // footerless shape, from a different agent/session and a different draft's content. Kept
+  // separate from REAL_MODAL_NO_FOOTER_PANE above precisely because it IS covered by the same
+  // general-purpose check -- the point of pinning it by name is that a future change narrowing
+  // the detector to fit one shape more tightly cannot silently stop covering this one.
+  it("fires on MikroB's card bd4b74a3 capture (a second, independent footerless instance)", () => {
+    expect(detectsFeedbackDraftModal(MIKROB_CAPTURE_BACKEND_PANE)).toBe(true)
+    expect(detectPaneState(MIKROB_CAPTURE_BACKEND_PANE)).not.toBe('idle')
   })
 
   it('documents WHY the detector is needed: the pane still reads idle', () => {
