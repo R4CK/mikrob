@@ -1,5 +1,5 @@
 import { statSync, readdirSync, existsSync, realpathSync } from 'node:fs'
-import { join, basename } from 'node:path'
+import { join, basename, sep } from 'node:path'
 import { homedir } from 'node:os'
 import { createReadStream } from 'node:fs'
 import { createInterface } from 'node:readline'
@@ -137,6 +137,19 @@ export function discoverAgentSources(
       let stat
       try { stat = statSync(full) } catch { continue }
       if (!stat.isDirectory()) continue
+      // An entry inside a genuinely isolated tree can itself be a symlink pointing at a
+      // project directory inside the shared root (e.g. an operator symlinks pre-migration
+      // dirs into the new isolated tree to preserve history access).  That project was
+      // already counted by the shared-root walk above with correct per-directory attribution;
+      // including it here would re-book every event under `name` instead, reproducing the
+      // attribution error this block was introduced to fix.  Fail toward KEEPING the entry
+      // (i.e. skip the check) when either realpath cannot be resolved -- same direction as
+      // resolvesToSharedProjectsRoot. (card 0333ab9f, L3 shape)
+      try {
+        const er = realpathSync(full)
+        const sr = realpathSync(sharedProjects)
+        if (er === sr || er.startsWith(sr + sep)) continue
+      } catch { /* keep */ }
       // Attribution comes from WHOSE config dir this is, not from the encoded project name: an
       // agent's isolated dir holds only that agent's work.
       if (sources.some((s) => s.agent === name && s.projectDir === full)) continue

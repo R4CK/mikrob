@@ -104,6 +104,56 @@ describe('discoverAgentSources skips a shared root wearing a symlink (card 0c4cf
   })
 })
 
+// Card 0333ab9f: the root-level guard catches a projects/ dir that IS the shared root; this
+// describe covers the sub-entry case -- a genuinely isolated projects/ dir that contains ONE
+// entry that is a symlink pointing at a project directory inside the shared root.
+//
+// Without the per-entry realpath check that card added, discoverAgentSources returns that
+// symlinked project dir attributed to the isolated agent, which is wrong: the shared-root walk
+// already counted it under the correct per-directory name ('someone' here, not ISOLATED).
+//
+// The L2 control (genuinely isolated tree is still read) is the companion guard: a "skip every
+// symlink inside the isolated tree" fix would pass L3 while re-opening the original silent-
+// data-loss hole, so both must stay green.
+describe('discoverAgentSources skips a per-entry symlink that resolves into the shared tree (card 0333ab9f, L3)', () => {
+  it('L3: a symlinked entry inside an isolated projects/ dir is skipped (attribution error WITHOUT fix)', () => {
+    // Set up ISOLATED with one real private project AND one entry symlinked to a shared dir.
+    const isolatedCfg = join(root, 'agents', ISOLATED, '.claude-config')
+    const isolatedProjects = join(isolatedCfg, 'projects')
+    mkdirSync(isolatedProjects, { recursive: true })
+
+    const privateDir = join(isolatedProjects, '-some-private-project')
+    mkdirSync(privateDir, { recursive: true })
+    writeFileSync(join(privateDir, 'session.jsonl'), '{}\n')
+
+    // The shared root already has '-home-neon-marveen-agents-someone' from beforeEach.
+    // Symlink that exact subdirectory into the isolated tree.
+    const sharedEntry = join(shared, '-home-neon-marveen-agents-someone')
+    const symlinkEntry = join(isolatedProjects, '-home-neon-marveen-agents-someone')
+    symlinkSync(sharedEntry, symlinkEntry)
+
+    const sources = discoverAgentSources(root, shared).filter((s) => s.agent === ISOLATED)
+    // The real private project must still appear (L2 control: isolated data is kept).
+    expect(sources.map((s) => s.projectDir)).toContain(privateDir)
+    // The symlinked entry must NOT appear: it resolves into the shared tree and was already
+    // attributed to 'someone' by the shared-root walk.
+    expect(sources.map((s) => s.projectDir)).not.toContain(symlinkEntry)
+  })
+
+  it('L2 CONTROL: a genuinely isolated entry is kept (no over-aggressive skip)', () => {
+    // A "skip every symlink inside the isolated tree" fix would pass L3 above but fail here.
+    // Without this control the regression-guard has a blind spot.
+    const isolatedCfg = join(root, 'agents', ISOLATED, '.claude-config')
+    const isolatedProjects = join(isolatedCfg, 'projects')
+    const privateDir = join(isolatedProjects, '-some-private-project')
+    mkdirSync(privateDir, { recursive: true })
+    writeFileSync(join(privateDir, 'session.jsonl'), '{}\n')
+
+    const sources = discoverAgentSources(root, shared).filter((s) => s.agent === ISOLATED)
+    expect(sources.map((s) => s.projectDir)).toContain(privateDir)
+  })
+})
+
 describe('resolvesToSharedProjectsRoot', () => {
   it('sees through a symlink, which string comparison cannot', () => {
     const link = join(root, 'link-to-shared')
