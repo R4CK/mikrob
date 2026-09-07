@@ -1493,6 +1493,60 @@ export function initDatabase(dbPathOverride?: string): void {
   db.exec(`CREATE INDEX IF NOT EXISTS idx_otel_spans_trace ON otel_spans(trace_id, start_ms)`)
   db.exec(`CREATE INDEX IF NOT EXISTS idx_otel_spans_agent ON otel_spans(agent_id, start_ms)`)
 
+  // One-shot migration (card 00c9fa38, testver a router zaras-egysegesitesrol -- card 99254564):
+  // before card dbc0b4bf (this repo's own commit 85fcacb, 2026-09-04 19:19:24 +0200 -- fix(otel):
+  // close the message span at DELIVERY) NOTHING ever closed a router span, success or failure. So
+  // `status = 'running'` today means three different things at once: (1) genuinely still in
+  // flight, (2) pre-dbc0b4bf junk that will NEVER be closed retroactively, (3) a POST-dbc0b4bf
+  // failure that predates card 99254564's own fix (the router closed success but not its own
+  // failures until that card). Meaning (2) makes `running` alone useless as a stuck-span
+  // detector, which is exactly what the sibling card wants it to be able to answer cheaply.
+  //
+  // Splits (2) out with its own status: any row that was ALREADY 'running' with a start_ms before
+  // the dbc0b4bf cutoff is relabelled 'legacy_unknown' -- not (1), not really (3) either, just
+  // "we do not and cannot know what happened to this one". Everything created at or after the
+  // cutoff keeps meaning exactly what its status says.
+  //
+  // Idempotent and safe on a fresh DB (whose CREATE TABLE above already carries the new value, so
+  // sqlite_master.sql already matches and this block never fires): rebuilt on the same idiom as
+  // the memories/kanban_cards CHECK-widening migrations elsewhere in this file, because SQLite has
+  // no ALTER TABLE ... DROP/MODIFY CONSTRAINT.
+  try {
+    const current = db.prepare("SELECT sql FROM sqlite_master WHERE name='otel_spans'").get() as { sql: string } | undefined
+    const hasLegacyStatus = !!current?.sql?.match(/'legacy_unknown'/)
+    if (current?.sql && !hasLegacyStatus) {
+      const DBC0B4BF_DELIVERY_CLOSE_CUTOFF_MS = 1788542364000
+      db.exec(`
+        CREATE TABLE otel_spans_new (
+          trace_id        TEXT NOT NULL,
+          span_id         TEXT NOT NULL,
+          parent_span_id  TEXT,
+          agent_id        TEXT NOT NULL,
+          operation       TEXT NOT NULL,
+          start_ms        INTEGER NOT NULL,
+          end_ms          INTEGER,
+          status          TEXT NOT NULL DEFAULT 'ok' CHECK(status IN ('ok','error','timeout','running','legacy_unknown')),
+          attributes      TEXT,
+          PRIMARY KEY (trace_id, span_id)
+        );
+        INSERT INTO otel_spans_new SELECT trace_id, span_id, parent_span_id, agent_id, operation, start_ms, end_ms,
+          CASE
+            WHEN status = 'running' AND start_ms < ${DBC0B4BF_DELIVERY_CLOSE_CUTOFF_MS} THEN 'legacy_unknown'
+            ELSE status
+          END,
+          attributes
+        FROM otel_spans;
+        DROP TABLE otel_spans;
+        ALTER TABLE otel_spans_new RENAME TO otel_spans;
+        CREATE INDEX IF NOT EXISTS idx_otel_spans_trace ON otel_spans(trace_id, start_ms);
+        CREATE INDEX IF NOT EXISTS idx_otel_spans_agent ON otel_spans(agent_id, start_ms);
+      `)
+      logger.info('otel_spans: relabelled pre-dbc0b4bf running rows to legacy_unknown (card 00c9fa38)')
+    }
+  } catch (err) {
+    logger.warn({ err }, 'otel_spans: legacy_unknown migration failed, continuing with the existing schema')
+  }
+
   // One-shot migration from the old JSON file (which had a read-modify-write
   // race). Import rows if they exist, then rename the file so we don't keep
   // re-importing. Wrapped in a transaction so a crash mid-import is safe.
