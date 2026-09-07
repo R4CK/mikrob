@@ -809,6 +809,38 @@ export function detectsPermissionDialog(pane: string): boolean {
 // cheaper failure. Gating on the footer's "N feedback draft" counter would
 // prune it, but that string TRUNCATES on a narrow pane, and a false negative
 // here costs a 10-minute silent stall.
+//
+// A SECOND, MORE SEVERE RENDERING of the SAME panel was observed 2026-09-07
+// (card bd4b74a3, MikroB's own live capture from `backend`'s pane): the idle
+// footer is ABSENT from the capture entirely, not merely present-with-a-
+// draft-counter as described above. That is a worse symptom -- detectPaneState
+// falls all the way to 'unknown' rather than a wrong 'idle', which additionally
+// blocks the scheduler/router's readiness check before this detector ever gets
+// consulted on the fast path. It does NOT need a separate detector, though: it
+// was verified (test fixture built from MikroB's exact capture) that this same
+// FEEDBACK_DRAFT_OPTIONS_RX + position/adjacency check still returns true for
+// it, because the check depends only on the bordered counter line and a
+// following prompt marker, never on the footer's presence. The existing
+// not-ready path already calls this detector regardless of why isReady failed
+// (message-router.ts's clearFeedbackModalAndRecheck, invoked whenever
+// isSessionReadyForPrompt returns false, not only when it returns idle-with-a-
+// draft-counter) -- so the 'unknown' case is covered by the same code, without
+// change, once that path runs. See feedback-draft-modal-footerless.test.ts for
+// the end-to-end proof against MikroB's exact capture.
+//
+// Cybered independently verified (card bd4b74a3, delta-review) that this
+// detector ALSO cannot discriminate this passive, non-blocking notice shape
+// from a genuinely interactive modal that swallows keystrokes -- both render
+// with the identical template and this check has no way to tell them apart
+// from a static capture. That is fine BY DESIGN here, unlike a hypothetical
+// detector that tried to answer 'idle' or not on the strength of this shape
+// alone: dismissFeedbackDraftModalIfPresent's only action for either case is
+// the SAME safe one ("0", dismiss -- never review, never send), which is a
+// correct, harmless response to both the modal and the notice. The
+// discrimination this comment used to imply ("Unlike the resume/consent
+// modals...") is about WHERE the footer ends up, not about safely
+// distinguishing which UI state produced it -- no caller of this function
+// should assume it answers that question.
 const FEEDBACK_DRAFT_OPTIONS_RX = /^[^\S\n]*│.*?\d+ to review\b.*?\d+ to send\b.*?\d+ to dismiss\b/
 const PROMPT_MARKER_RX = /^[^\S\n]*❯/
 
