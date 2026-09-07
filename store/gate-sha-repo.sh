@@ -117,7 +117,21 @@ except Exception:
 c = d.get("card", d)
 if not isinstance(c, dict) or not c.get("id"):
     sys.exit(1)
-print((c.get("title") or "(untitled)")[:80])
+# Card 67587e7f (Cybered finding, edd4c3bf gate): the caller emits this title as the LAST
+# field of a "|"-delimited line (card-id|<title> or card-id|<sha>|<title>). A title carrying
+# an embedded "|" (5 of 2875 board titles do) survives round-trip through THIS script fine
+# (the whole remaining string is still printed), but a naive downstream consumer splitting on
+# "|" positionally (e.g. cut -f3) reads only up to that embedded pipe and truncates everything
+# after it. Not a security issue (the machine signal is the exit code, not the field count) --
+# just fragility. Strip the delimiter out of the title so a naive split on "|" always lands on
+# the true end of the string, whatever the title contains.
+# NOTE: no apostrophes anywhere in this comment block -- it lives inside a bash SINGLE-quoted
+# string (the python3 -c OPENING quote above), and a literal apostrophe here closes that
+# string early, turning the rest of this python block into raw bash text (measured: broke
+# every test in this file, not just the one exercising this function, because a bash syntax
+# error is a whole-file parse failure, not scoped to the function that would have run it).
+title = (c.get("title") or "(untitled)").replace("|", "/")
+print(title[:80])
 ' <<< "$out" 2>/dev/null || return 1
 }
 
