@@ -122,6 +122,21 @@ if [ "$CURRENT" = "symlink" ]; then
   echo "node_modules: removed the shared symlink (the target in $MAIN is untouched)"
 fi
 
-mv "$STAGE" "$NM"
+# -T (never treat DEST as a directory to move INTO): the ABSENT branch has no `[ -L "$NM" ]`
+# re-check like the symlink branch above, because there was nothing to re-check at the time
+# $CURRENT was captured. If a concurrent, idempotent bootstrap (agent-worktree-marveen.sh)
+# recreates the shared symlink during the ~9s copy above, $NM now exists as a symlink-to-
+# directory, and a bare `mv "$STAGE" "$NM"` follows it and nests STAGE INSIDE the shared main
+# clone's node_modules -- exit 0, and the "REAL directory now at" message below prints as if
+# nothing were wrong (Cybersec finding, card 65cc3860, comment on 9ed6971f).
+#
+# `-T` does NOT turn that race into a clean replace: `mv` (rename(2) under the hood) refuses
+# to put a DIRECTORY where a non-directory (the symlink) already sits -- "cannot overwrite
+# non-directory ... with directory" -- and exits non-zero, leaving $MAIN, the symlink, and
+# $STAGE all untouched. Under `set -euo pipefail` that failure kills the script immediately.
+# That is the actual fix: silent success that corrupts the shared fleet dependency tree
+# becomes a loud failure that corrupts nothing -- $STAGE is left orphaned for manual cleanup,
+# which is a far cheaper problem than 313M landing inside $MAIN/node_modules.
+mv -T "$STAGE" "$NM"
 echo "node_modules: REAL directory now at $NM"
 echo "  a 'cd node_modules && rm -rf ..' from here can no longer reach $MAIN"
