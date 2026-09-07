@@ -1,8 +1,0 @@
-{
-  "schedule": "7 2 * * *",
-  "agent": "marveen",
-  "enabled": true,
-  "type": "dream-engine",
-  "skipIfBusy": false,
-  "createdAt": 1778480400
-}
