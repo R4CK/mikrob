@@ -203,6 +203,74 @@ case_is LOCAL "C3 control: a real helper plus three tests still goes LOCAL" \
   "Write parseDurationMs(raw: string): number and three unit tests for it, including empty and NaN." low
 
 echo
+echo "=== B4b. THE VRAM-HOLD DECISION IS POSTED ON THE CARD ITSELF (card a1c4dc51) ==="
+# BEHAVIOURAL, not a source pin: a fake dashboard captures what the script actually POSTS, the same
+# discipline as fleet-test-shares-cleancore-cpu-pool.test.ts's semaphore-comment cases. Stderr
+# already said WHY a run went online (B4 above); nobody reads that later. The card's own thread is
+# where "why did this not get a local draft" actually gets asked.
+#
+# A tiny python http.server stands in for the dashboard -- no node/vitest dependency needed inside a
+# bash selftest, and the same throwaway-token discipline as the TS harness: never the live token.
+#
+# A REAL card id and the POSITIONAL invocation, not --text: the VRAM check (section 0b) runs BEFORE
+# the card is ever fetched, so on HOLD the router exits before touching CARD_BUILD_ROUTE_API at all.
+# On ADMIT it falls through to a real fetch attempt -- CARD_BUILD_ROUTE_API is pointed at this SAME
+# fake server (never localhost:3420) so that path never reaches the live board either.
+cat > "$TMP/vram-fake-dashboard.py" <<'PYEOF'
+import http.server, sys
+class H(http.server.BaseHTTPRequestHandler):
+    def log_message(self, *a): pass
+    def do_GET(self):
+        self.send_response(200); self.send_header('Content-Type', 'application/json'); self.end_headers()
+        self.wfile.write(b'[]')
+    def do_POST(self):
+        n = int(self.headers.get('Content-Length') or 0)
+        body = self.rfile.read(n).decode()
+        with open(sys.argv[2], 'a') as f:
+            f.write(body + "\n")
+        self.send_response(200); self.end_headers(); self.wfile.write(b'{}')
+port = int(sys.argv[1])
+http.server.HTTPServer(('127.0.0.1', port), H).serve_forever()
+PYEOF
+
+vram_fake_dashboard() { # $1 = card id the router is given, $2 = vram stub, $3 = expect-a-post (1/0)
+  local card="$1" vram="$2" want_post="$3"
+  local seen="$TMP/vram-seen-$card.log"; : > "$seen"
+  local port=$((20000 + RANDOM % 20000))
+  python3 "$TMP/vram-fake-dashboard.py" "$port" "$seen" &
+  local pid=$!
+  sleep 0.3
+  printf 'throwaway-not-real\n' > "$TMP/vram-fake-token"
+  CARD_BUILD_ROUTE_LOG=/dev/null \
+  CARD_BUILD_ROUTE_API="http://127.0.0.1:$port" \
+  CARD_BUILD_ROUTE_TOKEN_FILE="$TMP/vram-fake-token" \
+  CARD_BUILD_ROUTE_LLM="$TMP/llm-easy.sh" \
+  CARD_BUILD_ROUTE_CLASSIFY="$TMP/classify-mech.sh" \
+  CARD_BUILD_ROUTE_VRAM_GUARD="$vram" \
+  KANBAN_COMMENT_API="http://127.0.0.1:$port" \
+  KANBAN_COMMENT_TOKEN_FILE="$TMP/vram-fake-token" \
+    bash "$ROUTER" "$card" >/dev/null 2>&1
+  kill "$pid" 2>/dev/null; wait "$pid" 2>/dev/null
+  local body; body="$(cat "$seen" 2>/dev/null)"
+  if [ "$want_post" -eq 1 ]; then
+    if printf '%s' "$body" | grep -q "PAUSED-VRAM" && printf '%s' "$body" | grep -q "\"card_id\": \"$card\""; then
+      PASS=$((PASS+1)); echo "OK   posted PAUSED-VRAM on card $card"
+    else
+      FAIL=$((FAIL+1)); FAILED+=("vram comment expected on $card, got: ${body:-<nothing>}")
+      echo "FAIL expected a PAUSED-VRAM comment on $card, got: ${body:-<nothing>}"
+    fi
+  else
+    if [ -z "$body" ]; then PASS=$((PASS+1)); echo "OK   no comment posted (ADMIT case)"
+    else FAIL=$((FAIL+1)); FAILED+=("unexpected comment on $card"); echo "FAIL unexpected comment: $body"; fi
+  fi
+}
+
+vram_fake_dashboard abc1230000000000000000000000000000000f "$TMP/vram-hold.sh" 1
+# CONTROL: with ADMIT, nothing is posted -- a script that always comments would pass the case above
+# by being noisy, not by being correct.
+vram_fake_dashboard abc4560000000000000000000000000000000f "$TMP/vram-admit.sh" 0
+
+echo
 echo "=== B5. A DECLARED [SEC] LABEL IS READ ON THE UNTRIMMED TEXT (card 28295e97, decision 25075) ==="
 # The two REAL cards Cybersec named -- both lost every deterministic gate to the label-prefix trim,
 # both carry a plain [SEC] tag. Fixed values (priority, tag) so the case is about the label alone.

@@ -11746,3 +11746,42 @@ Mutációval mérve: a szabály törlése mind a három pozitív esetet PIROSRA 
 zöld marad. Teljes selftest 47/0.
 
 **Hivatkozás:** kártya `28295e97`; `store/card-build-route.sh`, `store/card-build-route-selftest.sh`.
+
+## 2026-09-07 -- A VRAM-HOLD döntés a KÁRTYÁN is megjelenik, nem csak a stderr-en (kártya a1c4dc51)
+
+**A KÁRTYA KÉT FELE.** (1) Unit-teszt a küszöb-logikára (kontroll + HOLD + fail-safe eset) --
+ez nagyrészt már megvolt a `f9bad591` kártyáról (a `card-build-route-selftest.sh` B4 szekciója:
+HOLD→ONLINE, használati hiba→ONLINE, ADMIT→változatlan kontroll, hiányzó kapu→LOCAL kontroll).
+(2) Egy PAUSED-VRAM/RESUMED-VRAM komment-minta a `load-guard-bookkeeping.sh` mintájára, hogy
+LÁTHATÓ legyen, mikor és miért maradt ki EGY kártya a helyi-LLM útról.
+
+**A MEGKÜLÖNBÖZTETÉS a load-guard mintától.** A `load-guard-bookkeeping.sh` egy ÜGYNÖK
+felfüggesztését jelzi, a saját, éppen `in_progress` kártyáján. Itt a döntés EGY KONKRÉT, a
+`card-build-route.sh`-nak átadott kártyáról szól, nem az ügynök állapotáról -- a meglévő
+`kanban_comment()` (ami "az ügynök jelenlegi in_progress kártyáját" keresi meg) itt rossz kártyát
+találna, vagy semmit. Ezért `kanban_comment_on(card_id, body, author?)` néven ÚJ, explicit
+kártya-címzésű függvény került a `kanban-comment-lib.sh`-ba, és a meglévő `kanban_comment()` erre
+lett átírva (delegál, nem duplikál).
+
+**HOL FUT LE.** A `card-build-route.sh` 0b. lépcsőjében (a VRAM-ellenőrzés MÁR MEGVOLT a
+`f9bad591`-ből), a `kanban_comment_on` hívás CSAK akkor fut, ha `$CARD_ID != "-"` -- egy `--text`
+hívás (minden selftest és az advisory útvonal) nem hordoz kártya-azonosítót, tehát nincs mire
+kommentelni. Ez zárja ki, hogy a selftest valaha is éles hálózati hívást indítson: `run()` mindig
+`--text`-tel hívja a routert.
+
+**BIZONYÍTÉK, VISELKEDÉSBŐL, NEM FORRÁSBÓL.** Új B4b szekció: egy beágyazott python
+`http.server` áll a dashboard helyén (a `fleet-test-shares-cleancore-cpu-pool.test.ts` mintája,
+csak bash-natívan, hogy ne kelljen node/vitest-függőség egy bash selftestbe). A router POZICIONÁLIS
+hívással fut (`bash "$ROUTER" <hex-card-id>`, nem `--text`), és a `CARD_BUILD_ROUTE_API` is a HAMIS
+szerverre mutat -- a HOLD-ágban ez sosem számítana (a kártya-olvasás előtt kilép), de az ADMIT
+kontroll-ágban a router tovább is fut a valódi kártya-olvasás felé, és enélkül a ma élő dashboardot
+ütné meg egy nem-létező kártya-id-vel. Két eset: HOLD → a hamis szerver kap egy POST-ot
+`PAUSED-VRAM` szöveggel és a helyes `card_id`-vel; ADMIT → semmilyen POST nem érkezik (a kontroll,
+ami nélkül egy "mindig kommentel" hiba is átmenne).
+
+**MUTÁCIÓVAL MÉRVE:** a `kanban_comment_on` hívás törlése a HOLD-esetet PIROSRA váltja, névvel
+("expected a PAUSED-VRAM comment ... got: <nothing>"), a többi 48 eset zöld marad. Teljes selftest
+49/0.
+
+**Hivatkozás:** kártya `a1c4dc51` (szülő `40568837`); `store/kanban-comment-lib.sh`,
+`store/card-build-route.sh`, `store/card-build-route-selftest.sh`.

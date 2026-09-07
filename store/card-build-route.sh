@@ -94,6 +94,9 @@ fi
 # fail-safe direction the guard itself documents: doubt about the measurement resolves ONLINE. A
 # MISSING guard, by contrast, is not doubt -- it is a host that never had one -- so it is skipped
 # rather than treated as HOLD, which would disable local routing forever on such a host.
+# shellcheck source=./kanban-comment-lib.sh
+. "$HERE/kanban-comment-lib.sh"
+
 VRAM_GUARD="${CARD_BUILD_ROUTE_VRAM_GUARD:-$HERE/vram-guard-check.sh}"
 if [ -f "$VRAM_GUARD" ]; then
   vram_line="$(bash "$VRAM_GUARD" 2>/dev/null)"; vram_rc=$?
@@ -102,6 +105,17 @@ if [ -f "$VRAM_GUARD" ]; then
     # deterministic-money): a path field that embeds the measurement is not greppable and cannot be
     # asserted on. The measurement goes to stderr, where a reader wants it anyway.
     echo "card-build-route: local path closed -- ${vram_line:-no output from the vram guard} (rc=$vram_rc)" >&2
+    # ON THE CARD ITSELF, not the caller's log (card a1c4dc51). The stderr line above answers "why
+    # did this run print ONLINE"; nobody reads that later. The card's own thread is where someone
+    # asking "why didn't this get a local draft" actually looks -- the same reasoning that put
+    # PAUSED-LOAD/RESUMED-LOAD on load-guard-bookkeeping.sh's cards, applied to a per-card decision
+    # rather than a per-agent pause. Only fires when $CARD_ID names a real card (a bare --text call,
+    # used by every selftest and by the advisory path, has none to comment on).
+    if [ "$CARD_ID" != "-" ]; then
+      kanban_comment_on "$CARD_ID" \
+        "INFO-ONLY PAUSED-VRAM: ${vram_line:-no output from the vram guard} (rc=$vram_rc) -- a GPU epp nem vesz fel helyi munkat, ezert ez a kartya ONLINE-ra ment a helyi 7B helyett. A kartya munkaja ettol nem allt meg, csak a helyi-modell draft maradt el." \
+        "card-build-route"
+    fi
     online vram-hold
   fi
 fi

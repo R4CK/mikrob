@@ -73,17 +73,24 @@ for r in rows if isinstance(rows, list) else []:
 ' "$agent" 2>/dev/null
 }
 
-kanban_comment() { # $1 = body. Silent no-op when there is no agent, card, token or API.
-  local card h payload
-  card="$(kanban_comment_card_id)"; [ -n "$card" ] || return 0
+# Post to an EXPLICIT card id -- for a decision ABOUT that card (e.g. "this card was routed
+# online, not this agent's current one"), where kanban_comment's "the agent's own in_progress card"
+# lookup would name the wrong card entirely (card a1c4dc51). Never fails the caller.
+kanban_comment_on() { # $1 = card id, $2 = body, $3 = author override (default: $KANBAN_COMMENT_AGENT, else "unknown")
+  local card="$1" h payload author="${3:-${KANBAN_COMMENT_AGENT:-unknown}}"
+  [ -n "$card" ] || return 0
   h="$(_kc_hdr)" || return 0
   # The body travels as JSON built by python, never by string-splicing into a printf template: a
   # comment carrying a quote or a newline would otherwise produce an invalid body, or worse, inject
   # a field (the shape Cybered flagged for raw printf JSON elsewhere in this repo).
   payload="$(python3 -c '
 import json,sys; print(json.dumps({"card_id":sys.argv[1],"author":sys.argv[2],"content":sys.argv[3]}))' \
-    "$card" "${KANBAN_COMMENT_AGENT:-unknown}" "$1")" || return 0
+    "$card" "$author" "$2")" || return 0
   curl -s --max-time 10 -o /dev/null -H @"$h" \
     -X POST "$KANBAN_COMMENT_API/api/kanban/$card/comments" -H 'Content-Type: application/json' \
     --data-binary "$payload" 2>/dev/null || true
+}
+
+kanban_comment() { # $1 = body. Silent no-op when there is no agent, card, token or API.
+  kanban_comment_on "$(kanban_comment_card_id)" "$1"
 }
