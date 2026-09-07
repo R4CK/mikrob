@@ -28,6 +28,12 @@
 //
 // COST, measured rather than estimated: 77s for all 13 sequentially. vitest runs test FILES in
 // parallel, so inside a suite whose wall-clock is already ~80-100s this file largely hides.
+//
+// EXTENDED AGAIN to MODE-CARRIED selftests (card 453af053, parent ee2d6220). The `.selftest.`
+// filename-suffix discovery above is structurally blind to a script whose selftest is an ARGUMENT
+// instead (`<script> selftest` / `<script> --selftest`) -- the exact same "never run" class, one
+// naming convention over. See MODE_SELFTESTS below for the registry (necessarily hand-kept, since
+// there is no filename signal to discover from) and its own comment for the measurement behind it.
 import { describe, it, expect } from 'vitest'
 import { execFileSync } from 'node:child_process'
 import { readdirSync } from 'node:fs'
@@ -63,13 +69,49 @@ const RUNNERS: ReadonlyArray<readonly [string, string]> = [
   ['.selftest.py', 'python3'],
 ]
 
-function discover(): Array<{ name: string; file: string; runner: string }> {
+/**
+ * store/ scripts that carry their selftest as a MODE (an argument), not a `.selftest.` filename
+ * suffix -- so `discover()` below is structurally blind to them, the exact gap card 453af053
+ * (parent ee2d6220) was opened for: 10 such scripts were found by stripping comments and matching
+ * literal invocations (`<script> selftest` / `<script> --selftest`) rather than filenames, so a
+ * renamed variable or a mid-file mention could not inflate the count the way a naive grep did once
+ * (redispatch-guard.sh showed as "referenced" when it was only mentioned in a comment).
+ *
+ * MEASURED IN A DISPOSABLE CHECKOUT (2026-09-07, per this card's own explicit caution -- a selftest
+ * in this repo has swapped a live config file out from under the running fleet before,
+ * local-llm-model-routing, see EXCLUDED above), never the main clone: all 9 candidates from the
+ * 09a3d52a discovery, minus redispatch-guard.sh (already wired by that card) and minus
+ * cleancore-branch-drift-monitor.sh (a FALSE POSITIVE in the original discovery -- its only
+ * "selftest" occurrence is a comment describing a LESSON LEARNED from a different script's incident;
+ * it has no selftest mode at all, confirmed by reading its full argument-parsing case statement).
+ * The remaining 8 all PASS, non-vacuously (real case counts, not an empty loop) -- so there is no
+ * "red" list for this measurement; nothing needs a follow-up card.
+ */
+const MODE_SELFTESTS: ReadonlyArray<{ file: string; args: readonly string[] }> = [
+  { file: 'agent-skill-drift-sync.sh', args: ['selftest'] },
+  { file: 'context-compact-monitor.sh', args: ['--selftest'] },
+  { file: 'gate-dispatch-check.sh', args: ['selftest'] },
+  { file: 'git-object-integrity-monitor.sh', args: ['--selftest'] },
+  { file: 'live-tree-freshness.sh', args: ['--selftest'] },
+  { file: 'migration-number-check.sh', args: ['selftest'] },
+  { file: 'store-watch-exclusions.sh', args: ['selftest'] },
+  { file: 'sync-agent-templates.sh', args: ['selftest'] },
+]
+
+function discover(): Array<{ name: string; file: string; runner: string; args: readonly string[] }> {
   const files = readdirSync(STORE)
-  return RUNNERS.flatMap(([suffix, runner]) =>
+  const bySuffix = RUNNERS.flatMap(([suffix, runner]) =>
     files
       .filter((f) => f.endsWith(suffix))
-      .map((f) => ({ name: f.slice(0, -suffix.length), file: f, runner })),
-  ).sort((a, b) => a.file.localeCompare(b.file))
+      .map((f) => ({ name: f.slice(0, -suffix.length), file: f, runner, args: [] as readonly string[] })),
+  )
+  const byMode = MODE_SELFTESTS.map((s) => ({
+    name: s.file.replace(/\.sh$/, '') + ' ' + s.args.join(' '),
+    file: s.file,
+    runner: 'bash',
+    args: s.args,
+  }))
+  return [...bySuffix, ...byMode].sort((a, b) => a.file.localeCompare(b.file))
 }
 
 const ALL = discover()
@@ -82,8 +124,15 @@ const RUNNABLE = ALL.filter((s) => !(s.name in EXCLUDED))
  *  for skills-symlink-to-realdir matches `[1-9]\d* case\(s\)` rather than just `PASS`. */
 const OK_SHAPES: readonly RegExp[] = [
   /All ([1-9]\d*) checks pass\./, //            local-llm-* style
-  /selftest: ([1-9]\d*) passed, 0 failed/, //   offload-dispatch style
+  /selftest: ([1-9]\d*) passed, 0 failed/, //   offload-dispatch style, also live-tree-freshness
   /selftest: ([1-9]\d*) case\(s\), PASS/, //    skills-symlink-to-realdir style
+  /selftest OK \(([1-9]\d*) cases?\)/, //       context-compact-monitor / git-object-integrity-monitor style
+  // agent-skill-drift-sync / gate-dispatch-check / migration-number-check / store-watch-exclusions /
+  // sync-agent-templates style: N `ok   <case description>` lines, then a bare `selftest: PASS` with
+  // no count of its own -- the count lives in the "ok" lines above it, so this requires AT LEAST ONE
+  // before accepting the final PASS (same non-vacuous-loop guarantee the other shapes get from their
+  // captured number).
+  /^\s*ok\s+\S[\s\S]*\nselftest: PASS$/m,
 ]
 
 describe('every store/*.selftest.{sh,py} actually runs (cards 711a7e57, 2003e04b)', () => {
@@ -91,7 +140,7 @@ describe('every store/*.selftest.{sh,py} actually runs (cards 711a7e57, 2003e04b
     // The negative control. A renamed directory or a broken glob would otherwise report a perfectly
     // healthy set of selftests that this file never looked at -- which is the very failure the card
     // is about, reintroduced one level up.
-    expect(ALL.length, `no *.selftest.* found under ${STORE}`).toBeGreaterThanOrEqual(12)
+    expect(ALL.length, `no *.selftest.* or mode-selftest found under ${STORE}`).toBeGreaterThanOrEqual(12)
     expect(RUNNABLE.length).toBeGreaterThanOrEqual(ALL.length - Object.keys(EXCLUDED).length)
   })
 
@@ -107,6 +156,18 @@ describe('every store/*.selftest.{sh,py} actually runs (cards 711a7e57, 2003e04b
     }
   })
 
+  it('every registered mode-selftest still exists (card 453af053)', () => {
+    // Same shape as the exclusion-still-exists control below: MODE_SELFTESTS cannot be discovered
+    // from disk (that is the whole reason it is a hand-kept list), so a deleted or renamed script
+    // would otherwise sit here as a dead, silently-failing entry rather than a loud one.
+    for (const s of MODE_SELFTESTS) {
+      expect(
+        ALL.some((a) => a.file === s.file && a.args.join(' ') === s.args.join(' ')),
+        `${s.file} ${s.args.join(' ')} is registered but discover() did not produce it`,
+      ).toBe(true)
+    }
+  })
+
   it('every excluded entry still exists, so a stale exclusion cannot sit here unnoticed', () => {
     // An exclusion for a deleted script is dead weight that reads like a live decision. Worse, it
     // hides that the reason no longer applies to anything.
@@ -117,8 +178,8 @@ describe('every store/*.selftest.{sh,py} actually runs (cards 711a7e57, 2003e04b
     }
   })
 
-  it.each(RUNNABLE.map((s) => [s.file, s] as const))('%s passes', (_label, script) => {
-    const out = execFileSync(script.runner, [join(STORE, script.file)], {
+  it.each(RUNNABLE.map((s) => [s.name, s] as const))('%s passes', (_label, script) => {
+    const out = execFileSync(script.runner, [join(STORE, script.file), ...script.args], {
       encoding: 'utf-8',
       timeout: 180_000,
       // Inherit nothing that could make a selftest take a different path than it does by hand.
