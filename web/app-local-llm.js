@@ -357,18 +357,38 @@ function llmRoutingAlwaysOnlineHtml() {
     </div>`).join('')
 }
 
+function llmRouteReasonLabel(reason) {
+  const key = 'localLlm.routing.reason.' + reason.replace(/-/g, '_')
+  const s = t(key)
+  return s === key ? reason : s
+}
+
 function llmRoutingDecisionsHtml() {
   if (!_llmRouting) return `<div class="llm-empty">${t('localLlm.routing.endpoint_missing_short')}</div>`
   if (!_llmRouting.decisionsLogAvailable) return `<div class="llm-empty">${t('localLlm.routing.decisions_unavailable')}</div>`
-  const rows = _llmRouting.recentDecisions.slice(0, 20)
+  const rows = _llmRouting.recentDecisions.slice(0, 50)
   if (!rows.length) return `<div class="llm-empty">${t('localLlm.routing.decisions_empty')}</div>`
-  return rows.map((r) => {
+  const localCount = rows.filter(r => String(r.verdict).toUpperCase() === 'LOCAL').length
+  const onlineCount = rows.length - localCount
+  const tsList = rows.map(r => r.ts).filter(ts => typeof ts === 'number')
+  let windowNote = ''
+  if (tsList.length >= 2) {
+    const hrs = Math.round((Math.max(...tsList) - Math.min(...tsList)) / 3600000)
+    if (hrs > 0) windowNote = t('localLlm.routing.decisions_window', { hrs })
+  }
+  const summaryHtml = `<div class="llm-decisions-summary">
+    <span class="llm-verdict llm-verdict--local">${t('localLlm.routing.verdict_local')}: ${localCount}</span>
+    <span class="llm-verdict llm-verdict--online">${t('localLlm.routing.verdict_online')}: ${onlineCount}</span>
+    ${windowNote ? `<span class="llm-decisions-window">${escapeHtml(windowNote)}</span>` : ''}
+  </div>`
+  return summaryHtml + rows.map((r) => {
     const online = String(r.verdict).toUpperCase() !== 'LOCAL'
     const when = typeof r.ts === 'number' ? llmFmtTime(Math.round(r.ts / 1000)) : ''
+    const rawReason = String(r.reason || '')
     return `<div class="llm-decision-row">
       <span class="llm-verdict ${online ? 'llm-verdict--online' : 'llm-verdict--local'}">${t(online ? 'localLlm.routing.verdict_online' : 'localLlm.routing.verdict_local')}</span>
       <span class="llm-decision-card"><code>${escapeHtml(String(r.cardId || '?'))}</code></span>
-      <span class="llm-decision-reason">${escapeHtml(String(r.reason || ''))}</span>
+      <span class="llm-decision-reason" title="${escapeHtml(rawReason)}">${escapeHtml(llmRouteReasonLabel(rawReason))}</span>
       <span class="llm-decision-meta">${escapeHtml(when)}${typeof r.modelCalls === 'number' ? ' · ' + t('localLlm.routing.decision_calls', { n: r.modelCalls }) : ''}</span>
     </div>`
   }).join('')
