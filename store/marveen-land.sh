@@ -159,6 +159,10 @@ rebuild_live_install() {
 # its gate ran. Same shape as downward_check above: shared code, different default.
 # shellcheck source=./landing-gate-verdict-check.sh
 . "$(dirname "$0")/landing-gate-verdict-check.sh"
+# find_conflict_markers (card 4b4c89eb): shared with cleancore-land.sh, same reason as the two
+# libraries above -- one copy of the check, not two that can drift.
+# shellcheck source=./conflict-marker-check.sh
+. "$(dirname "$0")/conflict-marker-check.sh"
 
 if [ "${1:-}" = "--selftest" ]; then
   fail=0; n=0
@@ -170,6 +174,8 @@ if [ "${1:-}" = "--selftest" ]; then
   # Downward range check (card dfff9b37) -- the cases live in the shared lib so the two landers
   # cannot end up testing different things about the same code.
   downward_selftest_cases
+  # Conflict-marker check (card 4b4c89eb) -- same sharing reason.
+  conflict_marker_selftest_cases
   echo "selftest: $n case(s), $([ $fail -eq 0 ] && echo PASS || echo FAIL)"
   exit $fail
 fi
@@ -374,6 +380,18 @@ land_one() {
     return 4
   fi
   say "$agent: fleet-test green on the merge result"
+
+  # Merge-conflict marker check (card 4b4c89eb) -- see store/conflict-marker-check.sh for the
+  # incident this closes and why only the two unambiguous markers are checked.
+  local conflict_markers
+  conflict_markers="$(find_conflict_markers "$wt")"
+  if [ -n "$conflict_markers" ]; then
+    echo "$agent: REFUSED -- unresolved merge-conflict markers are in the merge result. Nothing pushed; $branch is untouched."
+    echo "$conflict_markers" | sed 's/^/    /'
+    git -C "$wt" reset -q --hard "$base_sha"
+    return 4
+  fi
+  say "$agent: no merge-conflict markers in the merge result"
 
   if [ "$dry" = "1" ]; then say "$agent: DRY-RUN -- not pushing"; return 0; fi
 

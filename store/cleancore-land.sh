@@ -66,6 +66,9 @@ die() { echo "REFUSED: $2" >&2; exit "$1"; }
 # opposite ends of the landing, and that asymmetry is documented in the helper's own header.
 # shellcheck source=./landing-gate-verdict-check.sh
 . "$(dirname "$0")/landing-gate-verdict-check.sh"
+# find_conflict_markers (card 4b4c89eb): shared with marveen-land.sh, same reason as above.
+# shellcheck source=./conflict-marker-check.sh
+. "$(dirname "$0")/conflict-marker-check.sh"
 
 # --- WHO ran this landing (card 7fe98031) -------------------------------------------------------
 #
@@ -250,6 +253,8 @@ if [ "${1:-}" = "--selftest" ]; then
   # Downward range check (card dfff9b37) -- the cases live in the shared lib so the two landers
   # cannot end up testing different things about the same code.
   downward_selftest_cases
+  # Conflict-marker check (card 4b4c89eb) -- same sharing reason.
+  conflict_marker_selftest_cases
   echo "selftest: $n case(s), $([ $fail -eq 0 ] && echo PASS || echo FAIL)"
   exit $fail
 fi
@@ -500,6 +505,17 @@ else
   fi
   say "typecheck: no new error vs main ($(wc -l < "$MERGE_ERR") inherited)"
 fi
+
+# Merge-conflict marker check (card 4b4c89eb) -- see store/conflict-marker-check.sh for the
+# incident this closes and why only the two unambiguous markers are checked.
+CONFLICT_MARKERS="$(find_conflict_markers "$WT")"
+if [ -n "$CONFLICT_MARKERS" ]; then
+  echo "REFUSED: unresolved merge-conflict markers are in the merge result. Nothing pushed."
+  echo "$CONFLICT_MARKERS" | sed 's/^/    /'
+  rm -f "${MERGE_ERR:-}" 2>/dev/null
+  exit 4
+fi
+say "no merge-conflict markers in the merge result"
 
 if [ "$DRY" = "--dry-run" ]; then say "DRY-RUN: not pushing"; rm -f "${MERGE_ERR:-}" 2>/dev/null; exit 0; fi
 
