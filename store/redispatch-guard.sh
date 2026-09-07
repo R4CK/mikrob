@@ -24,6 +24,12 @@
 #          only after the handover has already been decided).
 #   redispatch-guard.sh escalations          -> print + clear pending cap-reached escalations
 #                                               as JSON [{cardId,count,ts}] for Peti-reporting
+#   redispatch-guard.sh busy-report [thresholdSeconds]
+#       -> card 9aa455c6 finding 2: print + mark-notified any card whose DENY:agent-busy verdict
+#          has been CONTINUOUS for at least thresholdSeconds (default 7200 = 2h, or
+#          $BUSY_REPORT_THRESHOLD_S). JSON [{cardId,busySeconds}]. Does not change any `check`
+#          verdict -- observability only, for a heartbeat D-section step to log/escalate a card
+#          that may simply be waiting behind its agent's OTHER work, unnoticed indefinitely.
 #   redispatch-guard.sh selftest             -> run the built-in self-test (no side effects)
 #
 # DECISION ORDER in `check` (first match wins):
@@ -224,6 +230,9 @@ PY
 }
 
 _ledger_set() { # $1 cardId $2 count $3 last_ts $4 last_updated_at
+  # Card 9aa455c6 finding 2: PRESERVES busy_since/busy_notified (set/cleared only by
+  # _ledger_set_busy below) -- this used to REPLACE the whole entry, which would have silently
+  # wiped the busy-streak tracker on every ordinary count/ts update.
   python3 - "$LEDGER" "$1" "$2" "$3" "$4" <<'PY'
 import json,sys,os,tempfile
 path,cid,count,ts,upd=sys.argv[1],sys.argv[2],int(sys.argv[3]),int(sys.argv[4]),int(sys.argv[5])
@@ -231,7 +240,48 @@ d={}
 try:
     with open(path) as f: d=json.load(f)
 except Exception: d={}
-d[cid]={"count":count,"last_ts":ts,"last_updated_at":upd}
+prev=d.get(cid) or {}
+d[cid]={"count":count,"last_ts":ts,"last_updated_at":upd,
+        "busy_since":int(prev.get("busy_since",0) or 0),
+        "busy_notified":bool(prev.get("busy_notified"))}
+fd,tmp=tempfile.mkstemp(dir=os.path.dirname(path) or ".")
+with os.fdopen(fd,"w") as f: json.dump(d,f,indent=2)
+os.replace(tmp,path)
+PY
+}
+
+# Card 9aa455c6 finding 2: the agent-busy check (_agent_busy above) is AGENT-level, not
+# card-level -- if the agent's tmux panel is active on ANY card, EVERY OTHER in_progress card it
+# owns gets DENY:agent-busy forever, with no signal that one of them may simply be waiting behind
+# a busy agent for hours. This tracks how long a card has been CONTINUOUSLY denied for that one
+# reason, so `busy-report` below can surface it without changing what `check` decides -- read rule
+# 6: this is observability bolted onto the existing verdict, not a new control.
+_ledger_get_busy() { # $1 cardId -> "busy_since<TAB>busy_notified(0/1)" (zeros/0 if absent)
+  python3 - "$LEDGER" "$1" <<'PY'
+import json,sys
+path,cid=sys.argv[1],sys.argv[2]
+d={}
+try:
+    with open(path) as f: d=json.load(f)
+except Exception: d={}
+e=d.get(cid) or {}
+print("%d\t%d" % (int(e.get("busy_since",0) or 0), 1 if e.get("busy_notified") else 0))
+PY
+}
+
+_ledger_set_busy() { # $1 cardId $2 busy_since $3 busy_notified(0/1) -- touches ONLY these two fields
+  python3 - "$LEDGER" "$1" "$2" "$3" <<'PY'
+import json,sys,os,tempfile
+path,cid,bs,bn=sys.argv[1],sys.argv[2],int(sys.argv[3]),sys.argv[4]=="1"
+d={}
+try:
+    with open(path) as f: d=json.load(f)
+except Exception: d={}
+e=dict(d.get(cid) or {})
+e.setdefault("count",0); e.setdefault("last_ts",0); e.setdefault("last_updated_at",0)
+e["busy_since"]=bs
+e["busy_notified"]=bn
+d[cid]=e
 fd,tmp=tempfile.mkstemp(dir=os.path.dirname(path) or ".")
 with os.fdopen(fd,"w") as f: json.dump(d,f,indent=2)
 os.replace(tmp,path)
@@ -326,6 +376,36 @@ if cid not in d:               # ONCE: don't re-add on every subsequent denied t
 PY
 }
 
+# Card 9aa455c6 finding 2. A plain function (not inlined in the `busy-report)` case) for the same
+# reason `_decide_active`/`_is_load_paused` are: it reads `$LEDGER` as a shell variable, so the
+# selftest below can call it directly against its own tmpdir ledger, in-process -- invoking this
+# as `bash "$0" busy-report` from the selftest would run a NEW process that re-executes the
+# top-level `LEDGER="${STORE}/..."` assignment and silently touch the LIVE install's ledger
+# instead of the test's tmpdir, since that assignment is unconditional, not `${LEDGER:-...}`.
+_busy_report() { # $1 = threshold seconds
+  python3 - "$LEDGER" "$(now_ts)" "$1" <<'PY'
+import json,sys,os,tempfile
+path,now,threshold=sys.argv[1],int(sys.argv[2]),int(sys.argv[3])
+try:
+    with open(path) as f: d=json.load(f)
+except Exception: print("[]"); sys.exit(0)
+out=[]
+changed=False
+for cid,e in d.items():
+    bs=int(e.get("busy_since",0) or 0)
+    bn=bool(e.get("busy_notified"))
+    if bs>0 and not bn and (now-bs)>=threshold:
+        out.append({"cardId":cid,"busySeconds":now-bs})
+        e["busy_notified"]=True
+        changed=True
+if changed:
+    fd,tmp=tempfile.mkstemp(dir=os.path.dirname(path) or ".")
+    with os.fdopen(fd,"w") as f: json.dump(d,f,indent=2)
+    os.replace(tmp,path)
+print(json.dumps(out,ensure_ascii=False))
+PY
+}
+
 # ---- commands --------------------------------------------------------------------------
 case "$MODE" in
   check)
@@ -355,11 +435,13 @@ case "$MODE" in
     # (2) progress since last check -> reset + suppress
     if [ "$upd" -gt "$last_upd" ] && [ "$last_upd" -gt 0 ]; then
       _ledger_set "$CARD" 0 "$ts" "$upd"
+      _ledger_set_busy "$CARD" 0 0   # moving again -- any prior busy streak is over
       _record_incident "$CARD" "$AGENT" "DENY:progress" "$(( (ts - upd) * 1000 ))"; echo "DENY:progress"; exit 8
     fi
     # first sighting: baseline the updated_at, do NOT nudge yet (give it a full cycle)
     if [ "$last_ts" -eq 0 ]; then
       _ledger_set "$CARD" 0 "$ts" "$upd"
+      _ledger_set_busy "$CARD" 0 0   # fresh card, no busy streak yet
       _record_incident "$CARD" "$AGENT" "DENY:first-seen-baseline" "$(( (ts - upd) * 1000 ))"; echo "DENY:first-seen-baseline"; exit 8
     fi
 
@@ -370,14 +452,22 @@ case "$MODE" in
       agent-busy)
         # refresh last_ts so backoff timer tracks real quiet time, keep count
         _ledger_set "$CARD" "$count" "$ts" "$upd"
+        # Card 9aa455c6 finding 2: start (or continue) the continuous busy-streak clock. Only set
+        # busy_since the FIRST tick of a streak -- a fresh timestamp every tick would make the
+        # streak look like it never ages.
+        IFS=$'\t' read -r busy_since _busy_notified <<<"$(_ledger_get_busy "$CARD")"
+        [ "$busy_since" -eq 0 ] && _ledger_set_busy "$CARD" "$ts" 0
         _record_incident "$CARD" "$AGENT" "DENY:agent-busy" "$(( (ts - upd) * 1000 ))"; echo "DENY:agent-busy"; exit 8 ;;
       cap-reached)
+        _ledger_set_busy "$CARD" 0 0   # agent is not busy right now (see _decide_active order)
         _escalate_once "$CARD" "$count"
         _record_incident "$CARD" "$AGENT" "DENY:cap-reached($count)" "$(( (ts - upd) * 1000 ))"; echo "DENY:cap-reached($count)"; exit 8 ;;
       backoff:*)
+        _ledger_set_busy "$CARD" 0 0
         _record_incident "$CARD" "$AGENT" "DENY:backoff(${decision#backoff:}s)" "$(( (ts - upd) * 1000 ))"; echo "DENY:backoff(${decision#backoff:}s)"; exit 8 ;;
       allow)
         _ledger_set "$CARD" "$(( count + 1 ))" "$ts" "$upd"
+        _ledger_set_busy "$CARD" 0 0
         _record_incident "$CARD" "$AGENT" "ALLOW" "$(( (ts - upd) * 1000 ))"; echo "ALLOW"; exit 0 ;;
     esac
     ;;
@@ -431,6 +521,20 @@ if out:
     os.replace(tmp,path)
 print(json.dumps(out,ensure_ascii=False))
 PY
+    ;;
+
+  busy-report)
+    # Card 9aa455c6 finding 2: the fleet-wide answer to "which cards have been sitting behind
+    # DENY:agent-busy for a suspiciously long time" -- the underlying check is agent-level (see
+    # _agent_busy), so a card whose agent is genuinely working on something ELSE gets the same
+    # verdict as one whose agent quietly died mid-turn, forever, with nothing distinguishing them.
+    # This does not change what `check` decides for any card -- it only reports.
+    # Optional $2 overrides the default threshold (seconds); same "read, mark notified, write once"
+    # shape as `escalations` above, so a heartbeat calling this every cycle is told about a card
+    # ONCE per continuous streak, not every tick for as long as the streak lasts.
+    THRESHOLD="${2:-${BUSY_REPORT_THRESHOLD_S:-7200}}"
+    _take_guard_lock || { echo "busy-report: guard state is locked by another run, not read" >&2; exit 8; }
+    _busy_report "$THRESHOLD"
     ;;
 
   selftest)
@@ -660,10 +764,84 @@ print(d.get('cardId'), '|', d.get('newAgent'))
       echo "FAIL json-injection CONTROL: the old printf template no longer reproduces the injection ($old_parsed) -- the discriminating case may be stale"
       fails=$((fails+1))
     }
+    # 13) Card 9aa455c6 finding 2: the continuous agent-busy streak tracker.
+    # (a) _ledger_get_busy on an absent entry is zeros, not an error.
+    IFS=$'\t' read -r bs bn <<<"$(_ledger_get_busy NEVER_SEEN)"
+    [ "$bs" = "0" ] && [ "$bn" = "0" ] || { echo "FAIL busy-absent: bs=$bs bn=$bn"; fails=$((fails+1)); }
+    # (b) _ledger_set_busy sets it, and does NOT disturb count/last_ts/last_updated_at that
+    # _ledger_set already wrote for this card.
+    _ledger_set C3 2 500 1000
+    _ledger_set_busy C3 500 0
+    IFS=$'\t' read -r c3count c3lt c3lu <<<"$(_ledger_get C3)"
+    [ "$c3count" = "2" ] && [ "$c3lt" = "500" ] && [ "$c3lu" = "1000" ] || {
+      echo "FAIL busy-preserves-ledger: count=$c3count lt=$c3lt lu=$c3lu"; fails=$((fails+1)); }
+    IFS=$'\t' read -r bs bn <<<"$(_ledger_get_busy C3)"
+    [ "$bs" = "500" ] && [ "$bn" = "0" ] || { echo "FAIL busy-set: bs=$bs bn=$bn"; fails=$((fails+1)); }
+    # (c) the reverse: _ledger_set (the ordinary count/ts writer) must NOT wipe busy_since/notified
+    # that _ledger_set_busy already recorded -- this is the exact bug a whole-entry REPLACE would
+    # reintroduce, and it is why _ledger_set was changed to preserve these two fields.
+    _ledger_set_busy C3 500 1
+    _ledger_set C3 3 600 1000
+    IFS=$'\t' read -r bs bn <<<"$(_ledger_get_busy C3)"
+    [ "$bs" = "500" ] && [ "$bn" = "1" ] || {
+      echo "FAIL busy-survives-ledger-set: bs=$bs bn=$bn (an ordinary count update must not clear the busy streak)"
+      fails=$((fails+1))
+    }
+    # (d) busy-report: below threshold -> empty, nothing marked notified.
+    _ledger_set_busy C3 500 0
+    NOW_FOR_REPORT=1000  # elapsed 500s
+    out="$(python3 - "$LEDGER" "$NOW_FOR_REPORT" 7200 <<'PY'
+import json,sys
+path,now,threshold=sys.argv[1],int(sys.argv[2]),int(sys.argv[3])
+d=json.load(open(path))
+out=[cid for cid,e in d.items() if int(e.get("busy_since",0) or 0)>0 and not e.get("busy_notified") and (now-int(e["busy_since"]))>=threshold]
+print(json.dumps(out))
+PY
+)"
+    [ "$out" = "[]" ] || { echo "FAIL busy-report-below-threshold: $out"; fails=$((fails+1)); }
+    # (e) busy-report: AT/OVER threshold, calling the REAL function `_busy_report` directly (not a
+    # `bash "$0" busy-report` subprocess -- that would re-run the script's top-level
+    # `LEDGER="${STORE}/..."` assignment in a fresh process and silently hit the LIVE install's
+    # ledger instead of this test's tmpdir, since that assignment is unconditional).
+    _ledger_set_busy C3 100 0   # busy since t=100
+    out="$(_busy_report 50)"
+    # now() is real wall-clock here, so "since t=100" is certainly >=50s in the past.
+    printf '%s' "$out" | grep -q '"cardId": *"C3"' || { echo "FAIL busy-report-fires: $out"; fails=$((fails+1)); }
+    # (f) NOTIFIED-ONCE: calling it again must NOT report C3 a second time, matching `escalations`'s
+    # own one-shot shape -- a heartbeat calling this every cycle must hear about a streak once, not
+    # every tick for as long as it lasts.
+    out2="$(_busy_report 50)"
+    printf '%s' "$out2" | grep -q 'C3' && { echo "FAIL busy-report-not-once: reported C3 twice: $out2"; fails=$((fails+1)); }
+    # (g) WIRING: every non-agent-busy verdict branch clears the streak, and the agent-busy branch
+    # sets it -- source assertion (LOGGING IS NOT THE CONTROL, same posture as tests 10/11 above),
+    # reusing the comment-stripped $wiring from test 10.
+    busy_wire_fails=0
+    for branch in 'agent-busy)' 'cap-reached)' 'backoff:*)' 'allow)'; do
+      block="$(printf '%s\n' "$wiring" | awk -v b="$branch" 'index($0,b){f=1} f{print; if (/;;/) exit}')"
+      case "$block" in
+        *_ledger_set_busy*) : ;;
+        *) echo "FAIL busy-wiring: branch '$branch' does not call _ledger_set_busy"; busy_wire_fails=$((busy_wire_fails+1)) ;;
+      esac
+    done
+    fails=$((fails + busy_wire_fails))
+    # (h) progress and first-seen-baseline (the two early-exit branches BEFORE the busy/cap/backoff
+    # dispatch) must also clear the streak -- checked on the full check) block, not just the
+    # busy/cap/backoff sub-dispatch $wiring already sliced above.
+    for marker in 'DENY:progress' 'DENY:first-seen-baseline'; do
+      # 3 lines of context before the marker: enough to reach the _ledger_set_busy call this card
+      # added right above each `_record_incident ... DENY:...` line, without pulling in the
+      # PRECEDING if-block (the two are only ~3 lines apart in the source).
+      block="$(printf '%s\n' "$wiring" | grep -B3 -F "$marker")"
+      case "$block" in
+        *_ledger_set_busy*) : ;;
+        *) echo "FAIL busy-wiring: the $marker line does not clear the busy streak"; fails=$((fails+1)) ;;
+      esac
+    done
+
     rm -rf "$tmpdir"
     if [ "$fails" -eq 0 ]; then echo "SELFTEST: PASS"; exit 0; else echo "SELFTEST: FAIL ($fails)"; exit 1; fi
     ;;
 
   *)
-    echo "usage: $0 {check <cardId> <agent>|reset <cardId>|sibling-handover <cardId> <oldAgent> <newAgent>|escalations|selftest}" >&2; exit 2 ;;
+    echo "usage: $0 {check <cardId> <agent>|reset <cardId>|sibling-handover <cardId> <oldAgent> <newAgent>|escalations|busy-report [thresholdSeconds]|selftest}" >&2; exit 2 ;;
 esac
