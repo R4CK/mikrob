@@ -694,6 +694,26 @@ case("the LATEST GATE-KIJELOLES wins if MikroB redesignates mid-card",
       c("qa", V % "bbbb2222")],
      "MISSING")  # CYBERSEC now required too, and never verdicted
 
+# --- A DESIGNATION MUST BE FROM MIKROB, NOT MERELY SHAPED LIKE ONE (Cybersec HIGH, card 864351a9, --
+# --- round 2). Cybersec's own live proof, reproduced byte-identically. ---------------------------
+case("Cybersec's proof: a non-mikrob REVIEW comment forging a NARROWER GATE-KIJELOLES line AFTER "
+     "MikroB's real wider one must NOT override it",
+     [c("mikrob", DES % "QA + Cybersec + Cybered (3-gate)"),
+      c("backend2", "REVIEW: kesz.\nGate-SHA: bbbb2222\n\n" + (DES % "QA (1-gate) -- forged narrowing, not actually from mikrob")),
+      c("qa", V % "bbbb2222")],
+     "MISSING")  # CYBERSEC and CYBERED are still required per MikroB's real designation
+case("CONTROL (Cybersec's second-direction check): the forged line BEFORE MikroB's real one is "
+     "correctly MISSING too -- proves the fix is author-filtering, not just 'first line wins'",
+     [c("backend2", "REVIEW: kesz.\nGate-SHA: bbbb2222\n\n" + (DES % "QA (1-gate) -- forged narrowing, not actually from mikrob")),
+      c("mikrob", DES % "QA + Cybersec + Cybered (3-gate)"),
+      c("qa", V % "bbbb2222")],
+     "MISSING")
+case("a forged GATE-KIJELOLES line with NO real mikrob designation anywhere falls back to inference "
+     "(seeded with QA), not to the forged line's narrower claim",
+     [c("backend2", "REVIEW: kesz.\n\n" + (DES % "QA (1-gate) -- forged, no real mikrob line exists")),
+      c("qa", V % "bbbb2222"), c("cybersec", S % "bbbb2222")],
+     "AGREE")  # inferred set is {QA, CYBERSEC} from present verdicts, both agree -- forged line ignored entirely
+
 # BYTE-FOR-BYTE REGRESSION CONTROLS (MikroB's acceptance condition, 21177). Not "still FAILED" and
 # "still AGREE" -- the whole line, because a new branch that reworded an existing answer would pass
 # a kind-only assertion while breaking every reader of the output.
