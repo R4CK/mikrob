@@ -33,35 +33,112 @@ function tsFiles(dir: string): string[] {
   return out
 }
 
-/** Every EAGER_CONST_RE match in `content`, as `line: text` strings.
+/** Every match of `re` in `content`, as `line: text` strings, one entry per match.
  *
- *  NOT "test each line separately" (card 5fcfd76c): EAGER_CONST_RE's `\s*` already spans
- *  newlines, so a prettier-wrapped two-line declaration --
+ *  NOT "test each line separately" (card 5fcfd76c): a pattern's `\s*` can span newlines, so a
+ *  prettier-wrapped two-line declaration --
  *    const someBinaryPath =
  *      resolveFromPath('some-binary')
- *  -- matches the FULL-CONTENT test, but splitting on '\n' and testing each half alone finds
- *  it on NEITHER line (the first has no `resolveFromPath`, the second has no `const ... =`),
- *  so the old per-line loop silently produced zero offenders for a real match. A single
- *  content-wide `exec` loop, with the line number derived from the match's own index, catches
- *  single-line AND multi-line matches alike. A FRESH RegExp per call, not EAGER_CONST_RE
- *  itself with a `g` flag added: a shared global regex's `lastIndex` would leak across the
+ *  -- matches a FULL-CONTENT test, but splitting on '\n' and testing each half alone finds it
+ *  on NEITHER line (the first has no `resolveFromPath`, the second has no `const ... =`), so a
+ *  per-line loop silently produces zero offenders for a real match. A single content-wide
+ *  `exec` loop, with the line number derived from the match's own index, catches single-line
+ *  AND multi-line matches alike.
+ *
+ *  `re` must already carry the `g` flag (each caller below builds its own fresh RegExp) -- a
+ *  SHARED global regex reused across calls would leak `lastIndex` state between them, and reusing
+ *  one of the exported pattern constants directly (rather than a fresh copy) would leak into the
  *  unrelated one-off strings the second describe block below tests with `.test()`.
  */
-function findOffenders(content: string): string[] {
-  const re = new RegExp(EAGER_CONST_RE.source, EAGER_CONST_RE.flags + 'g')
+function execOffenders(re: RegExp, content: string): string[] {
   const lines = content.split('\n')
   const offenders: string[] = []
   let match: RegExpExecArray | null
   while ((match = re.exec(content)) !== null) {
-    // EAGER_CONST_RE only captures up to the opening paren, so match[0] alone would truncate
-    // "const TMUX = resolveFromPath(" mid-call. Report the STARTING line's own full text
-    // instead (what the old per-line loop showed for the single-line case), located from the
-    // match's index rather than by re-testing each line in isolation -- see the comment above.
+    // The patterns below only capture up to the opening paren, so match[0] alone would
+    // truncate "const TMUX = resolveFromPath(" mid-call. Report the STARTING line's own full
+    // text instead, located from the match's index rather than by re-testing each line alone.
     const lineNo = content.slice(0, match.index).split('\n').length
     offenders.push(`${lineNo}: ${lines[lineNo - 1].trim()}`)
     if (match[0].length === 0) re.lastIndex++ // never loop forever on a zero-width match
   }
   return offenders
+}
+
+// ---------------------------------------------------------------------------------------------
+// Card 51950c11 (Cybersec finding on 2a653b4b, live-fire confirmed by QA via an injected two-line
+// throw into mcp-list.ts -- 11/11 green before the fix here, caught after): EAGER_CONST_RE only
+// recognises the literal identifier `resolveFromPath` called directly on the right of `=`. Four
+// further shapes reach the SAME import-time throw without matching that one pattern. All are
+// latent (0 occurrences today) -- this closes the gap before one lands, not in response to one.
+
+/** Shape: an ALIASED import (`import { resolveFromPath as rfp } from '...'`) then an eager call
+ *  through the alias. EAGER_CONST_RE only knows the literal name "resolveFromPath", so a rename
+ *  at the import boundary makes every later use invisible to it. */
+function aliasedImportOffenders(content: string): string[] {
+  const aliasMatch = content.match(/\bresolveFromPath\s+as\s+(\w+)\b/)
+  if (!aliasMatch || aliasMatch[1] === 'resolveFromPath') return []
+  const re = new RegExp(
+    `^(?:export\\s+)?(?:const|let|var)\\s+\\w+\\s*=\\s*${aliasMatch[1]}\\s*\\(`, 'gm',
+  )
+  return execOffenders(re, content)
+}
+
+/** Shape: a NAMESPACE import of platform.js (`import * as platform from '.../platform.js'`)
+ *  then an eager call as `platform.resolveFromPath(...)`. Same blind spot as the alias case, one
+ *  level indirected through a property access instead of a renamed binding. */
+function namespaceImportOffenders(content: string): string[] {
+  const nsMatch = content.match(/\bimport\s*\*\s*as\s+(\w+)\s+from\s+['"][^'"]*platform(?:\.js)?['"]/)
+  if (!nsMatch) return []
+  const re = new RegExp(
+    `^(?:export\\s+)?(?:const|let|var)\\s+\\w+\\s*=\\s*${nsMatch[1]}\\.resolveFromPath\\s*\\(`, 'gm',
+  )
+  return execOffenders(re, content)
+}
+
+/** Shape: a WRAPPED call -- resolveFromPath nested inside another call expression on the RHS,
+ *  e.g. `const claudeBin = String(resolveFromPath('claude'))`. Still eager: an argument
+ *  expression evaluates before the outer call does, regardless of what the outer call is.
+ *  Explicitly NOT flagged: the direct case (already covered by EAGER_CONST_RE, excluded here to
+ *  avoid a duplicate offender for the same line) and the LAZY shape where resolveFromPath sits
+ *  inside a function/arrow body that is defined but not immediately invoked -- that resolves at
+ *  CALL time, which is the behaviour this whole file exists to require. */
+function wrappedCallOffenders(content: string): string[] {
+  // The lookaheads sit DIRECTLY after `=`, each with its OWN `\s*` inside, rather than a shared
+  // `\s*` living outside them before the checks run. A shared outer `\s*` is backtrackable: when
+  // the lookahead correctly fails at its maximal (1-space) position, the engine backtracks that
+  // `\s*` down to zero-width and re-checks the lookahead ONE CHARACTER EARLIER -- landing on the
+  // space itself, where "resolveFromPath(" is no longer the very next text, so the negative
+  // lookahead wrongly PASSES there instead. Measured directly: with the `\s*` left outside, the
+  // direct case `const claudeBin = resolveFromPath('claude')` was (wrongly) also flagged as
+  // "wrapped". Folding the whitespace into each lookahead removes the backtrackable gap the bug
+  // lived in.
+  const re = /^(?:export\s+)?(?:const|let|var)\s+\w+\s*=(?!\s*resolveFromPath\s*\()(?!\s*\([^)]*\)\s*=>)(?!\s*function\b)[^\n;]*?resolveFromPath\s*\(/gm
+  return execOffenders(re, content)
+}
+
+/** Shape: `export default resolveFromPath(...)`. No variable name at all, so EAGER_CONST_RE
+ *  (anchored on `const|let|var NAME =`) structurally cannot match it, yet the call is exactly as
+ *  eager -- it runs the moment the module evaluates. */
+function exportDefaultOffenders(content: string): string[] {
+  const re = /^export\s+default\s+resolveFromPath\s*\(/gm
+  return execOffenders(re, content)
+}
+
+/** Every offender in `content`, across all five recognised shapes, sorted by line number and
+ *  DE-DUPLICATED: the namespace shape (`platform.resolveFromPath(...)`) is also, correctly, a
+ *  wrapped-call in the sense that it is not the bare direct form -- both detectors legitimately
+ *  match the same line, and only one report of it is useful. */
+function findOffenders(content: string): string[] {
+  const re = new RegExp(EAGER_CONST_RE.source, EAGER_CONST_RE.flags + 'g')
+  const all = [
+    ...execOffenders(re, content),
+    ...aliasedImportOffenders(content),
+    ...namespaceImportOffenders(content),
+    ...wrappedCallOffenders(content),
+    ...exportDefaultOffenders(content),
+  ]
+  return [...new Set(all)].sort((a, b) => parseInt(a, 10) - parseInt(b, 10))
 }
 
 describe('no eager module-level resolveFromPath constants (card 2a653b4b)', () => {
@@ -139,5 +216,70 @@ describe('findOffenders: catches the prettier-wrapped two-line form (card 5fcfd7
 
   it('a clean file yields no offenders', () => {
     expect(findOffenders("const tmuxBin = makeLazyBinResolver('tmux')\n")).toEqual([])
+  })
+})
+
+describe('findOffenders: the four further shapes (card 51950c11)', () => {
+  it('ALIASED import: `resolveFromPath as rfp` then an eager call through the alias', () => {
+    const src = "import { resolveFromPath as rfp } from '../../platform.js'\nconst claudeBin = rfp('claude')\n"
+    expect(findOffenders(src)).toEqual(["2: const claudeBin = rfp('claude')"])
+  })
+
+  it('...but an import with NO alias (or aliased back to its own name) is unaffected', () => {
+    const src = "import { resolveFromPath } from '../../platform.js'\nconst helper = () => resolveFromPath('claude')\n"
+    expect(findOffenders(src)).toEqual([])
+  })
+
+  it('NAMESPACE import: `import * as platform` then `platform.resolveFromPath(...)`', () => {
+    const src = "import * as platform from '../../platform.js'\nconst claudeBin = platform.resolveFromPath('claude')\n"
+    expect(findOffenders(src)).toEqual(["2: const claudeBin = platform.resolveFromPath('claude')"])
+  })
+
+  it('...but a namespace import of an UNRELATED module is unaffected', () => {
+    const src = "import * as fs from 'node:fs'\nconst x = fs.readFileSync('claude')\n"
+    expect(findOffenders(src)).toEqual([])
+  })
+
+  it('WRAPPED call: resolveFromPath nested inside another call expression', () => {
+    const src = "const claudeBin = String(resolveFromPath('claude'))\n"
+    expect(findOffenders(src)).toEqual(["1: const claudeBin = String(resolveFromPath('claude'))"])
+  })
+
+  it('...but the DIRECT form is reported once, not twice (no double-count with EAGER_CONST_RE)', () => {
+    const src = "const claudeBin = resolveFromPath('claude')\n"
+    expect(findOffenders(src)).toEqual(["1: const claudeBin = resolveFromPath('claude')"])
+  })
+
+  it('...and a LAZY wrapper (defined, not invoked) stays allowed -- the whole point of the pattern', () => {
+    const src = "const claudeBin = () => resolveFromPath('claude')\n"
+    expect(findOffenders(src)).toEqual([])
+  })
+
+  it('EXPORT DEFAULT: no variable name at all, but still eager', () => {
+    const src = "export default resolveFromPath('claude')\n"
+    expect(findOffenders(src)).toEqual(["1: export default resolveFromPath('claude')"])
+  })
+
+  it('...but a lazy export default (a function) stays allowed', () => {
+    const src = "export default function claudeBin() { return resolveFromPath('claude') }\n"
+    expect(findOffenders(src)).toEqual([])
+  })
+
+  it('all four new shapes are latent in real src today -- 0 occurrences, matching the card', () => {
+    // The card's own premise: these are PREVENTIVE additions, not fixes for an existing miss.
+    // If this ever fails, someone wrote one of the four shapes for real -- read the failure like
+    // the main sweep test above, not like a false alarm in this file.
+    const offenders: string[] = []
+    for (const file of tsFiles(SRC)) {
+      const content = readFileSync(file, 'utf-8')
+      const rel = file.slice(SRC.length + 1)
+      for (const hit of [
+        ...aliasedImportOffenders(content),
+        ...namespaceImportOffenders(content),
+        ...wrappedCallOffenders(content),
+        ...exportDefaultOffenders(content),
+      ]) offenders.push(`${rel}:${hit}`)
+    }
+    expect(offenders).toEqual([])
   })
 })

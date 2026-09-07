@@ -234,3 +234,57 @@ describe('the directive channel owns a sender id that no other writer uses (card
     }
   })
 })
+
+// Card f390a08e (backend2's proposal, dc09da2f/2dd28b5d kore): the main agent's own PROJECT_ROOT/
+// CLAUDE.md carries a STATICALLY COMMITTED copy of this section (ensureSystemDirectiveAuthSection
+// no-ops for the main agent -- see the test above -- so nothing keeps that copy synced at runtime).
+// A future change to buildSystemDirectiveAuthBody's wording could drift silently from what is
+// actually committed there, exactly as card 22e4c0d9 once did.
+//
+// MikroB's OWN first attempt at this test failed on the trap this one is built around: the
+// generated text embeds PROJECT_ROOT-derived absolute paths (tokenPath, dashboardOrigin) that are
+// NOT the same in every environment a gate-worktree runs in as in the real install -- so a naive
+// full-body byte-equality test would fail FALSELY in every QA/Cybersec/Cybered gate-worktree
+// (each pinned to its own sha in its own directory), independent of whether the static block is
+// actually correct.
+//
+// This file already mocks PROJECT_ROOT to a fixed, test-controlled tmpRoot (see the top of this
+// file), so buildSystemDirectiveAuthBody's output here is already fully deterministic -- the ONLY
+// remaining variable is that tmpRoot is not the SAME literal path the real, committed CLAUDE.md
+// was generated against. Solved the same way on both sides: normalise the one environment-derived
+// path segment to a fixed placeholder before comparing, rather than hardcoding either side's
+// literal PROJECT_ROOT into the assertion (approach (a)/(b) from the card, combined: the structural
+// comparison is exact -- every word, every line -- and only the path VALUE is abstracted away).
+describe('the STATIC CLAUDE.md block matches the generator (card f390a08e)', () => {
+  const TOKEN_PATH_RE = /cat [^)]+\/store\/\.dashboard-token/g
+  const normalize = (s: string) => s.replace(TOKEN_PATH_RE, 'cat <PROJECT_ROOT>/store/.dashboard-token')
+
+  it('the committed section in THIS checkout\'s own CLAUDE.md equals the generator output, modulo PROJECT_ROOT', async () => {
+    const { REPO_ROOT } = await import('./helpers/repo-location.js')
+    const claudeMd = readFileSync(join(REPO_ROOT, 'CLAUDE.md'), 'utf-8')
+    const start = claudeMd.indexOf(MARKER_BEGIN)
+    const end = claudeMd.indexOf(MARKER_END)
+    expect(start, 'the generated marker is missing from CLAUDE.md -- has the section never been committed?').toBeGreaterThan(-1)
+    expect(end).toBeGreaterThan(start)
+    const committedBlock = claudeMd.slice(start + MARKER_BEGIN.length, end).trim()
+
+    // The committed block was generated for the REAL install's main agent, whatever THIS
+    // checkout currently names it in the "to_agent=" line -- read it back rather than assume
+    // "mikrob", so a renamed install does not make this test lie about what it is comparing.
+    const toAgentMatch = committedBlock.match(/to_agent="([^"]+)"/)
+    expect(toAgentMatch, 'no to_agent="..." line in the committed block -- did the wording change?').not.toBeNull()
+    const committedName = toAgentMatch![1]
+
+    const generated = buildSystemDirectiveAuthBody(committedName).trim()
+
+    expect(normalize(generated)).toBe(normalize(committedBlock))
+  })
+
+  it('CONTROL: the normaliser actually changes something -- it is not vacuously a no-op', () => {
+    // Without this, a normaliser regex that stopped matching anything (a future refactor moves
+    // the token path expression, say) would make the test above an exact-match test again,
+    // silently reintroducing the false-fail-in-every-worktree trap it exists to avoid.
+    const sample = "cat /home/neon/marveen/store/.dashboard-token"
+    expect(normalize(sample)).not.toBe(sample)
+  })
+})

@@ -609,12 +609,23 @@ export function correlateWithKanban(): void {
     // DISCARDED correct attribution instead of fixing a wrong one. The two changes are one change and
     // must never be split -- the conflict-map entry for this file recorded that condition and named
     // this card as the trigger.
+    // Card 9005b6a0 (Cybersec measurement): "HAS a child" is not the condition that matters --
+    // "the STAMP IS AMBIGUOUS" is. The original NOT EXISTS excluded a parent for merely having ANY
+    // child, regardless of when that child last touched it, and measured live this misattributed
+    // 91% of parent cards (201 of 221, 12.7% of correlated rows) to the wrong (earlier) card: a
+    // parent worked on YESTERDAY with a child created TODAY has a non-matching updated_at and was
+    // being thrown out for no reason bubbling would ever cause. The comment above names the actual
+    // failure mode -- a TIE between a parent's own updated_at and a child's, from touchAncestorChain
+    // stamping both at once -- so that is the condition to test for, not mere parenthood.
     const cards = db.prepare(`
       SELECT id, title, project, assignee, updated_at
       FROM kanban_cards
       WHERE (assignee = ? OR assignee LIKE '%' || ? || '%')
         AND updated_at BETWEEN ? AND ?
-        AND NOT EXISTS (SELECT 1 FROM kanban_cards child WHERE child.parent_id = kanban_cards.id)
+        AND NOT EXISTS (
+          SELECT 1 FROM kanban_cards child
+          WHERE child.parent_id = kanban_cards.id AND child.updated_at = kanban_cards.updated_at
+        )
       ORDER BY updated_at ASC
     `).all(row.agent, row.agent, row.minTs, row.maxTs) as any[]
 

@@ -9,9 +9,14 @@
 //     -> { fromMs, toMs, events: TaskEvent[], truncated: boolean }
 //        TaskEvent = { id, lane, agent, category, startMs, endMs, durationMs, status, cardId }
 //
-//   GET /api/task-summary?from=<epochMs>&to=<epochMs>
+//   GET /api/task-summary?from=<epochMs>&to=<epochMs>[&buckets=<1..500>]
 //     -> { fromMs, toMs, models: ModelUsage[], activeModels, taskCount, failedCount,
-//          byCategory: Record<string, number>, avgDurationMs, blockCoverage }
+//          byCategory: Record<string, number>, avgDurationMs, blockCoverage, series? }
+//        series (card eea1ba52, OMITTED unless `buckets` is given -- old callers see the old
+//        shape, unchanged) = { bucketMs, starts: number[], models: { key, counts: number[] }[] },
+//        top 4 models by request count keep their own line, the rest fold into "(other)" --
+//        same field names as the FE's own client-side llmMonBucketize() output, so the existing
+//        chart renderer draws this series unchanged.
 //
 // WHY blockCoverage IS PART OF THE CONTRACT AND NOT A FOOTNOTE. Measured on live data while writing
 // this: only local-LLM tasks record both a start and an end, so only the "local" lane can draw
@@ -28,6 +33,9 @@ import type { RouteContext } from './types.js'
 
 const MAX_LIMIT = 2000
 const DEFAULT_LIMIT = 500
+// Matches buildTaskSeries' own clamp in db.ts -- kept in sync so a rejected value here and an
+// accepted-then-silently-clamped value there never disagree about the same number.
+const MAX_BUCKETS = 500
 /** A whole year of blocks is not a timeline, it is an accidental table scan. The cap is on the
  *  WINDOW, not the row count, so a caller gets told the range is too wide instead of silently
  *  receiving a truncated slice that looks complete. */
@@ -67,7 +75,16 @@ export async function tryHandleTaskEvents(ctx: RouteContext): Promise<boolean> {
   }
 
   if (path === '/api/task-summary') {
-    json(res, getTaskSummary(fromMs, toMs))
+    const bucketsRaw = url.searchParams.get('buckets')
+    let buckets: number | undefined
+    if (bucketsRaw !== null && bucketsRaw.trim() !== '') {
+      const n = Number(bucketsRaw)
+      if (!Number.isFinite(n) || !Number.isInteger(n) || n < 1 || n > MAX_BUCKETS) {
+        return badRequest(res, `A "buckets" egesz szam legyen 1 es ${MAX_BUCKETS} kozott.`)
+      }
+      buckets = n
+    }
+    json(res, getTaskSummary(fromMs, toMs, buckets))
     return true
   }
 

@@ -12,9 +12,9 @@ import { describe, it, expect } from 'vitest'
 import { execFileSync } from 'node:child_process'
 import { existsSync, readFileSync } from 'node:fs'
 import { join } from 'node:path'
-import { STORE_DIR } from '../config.js'
+import { PROJECT_ROOT } from '../config.js'
 
-const SELFTEST = join(STORE_DIR, '..', 'scripts', 'hooks', 'outgoing-copy-gate.selftest.py')
+const SELFTEST = join(PROJECT_ROOT, 'scripts', 'hooks', 'outgoing-copy-gate.selftest.py')
 
 function runSelftest(): { code: number; out: string } {
   try {

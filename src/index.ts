@@ -9,6 +9,7 @@ import {
   writeSync,
 } from 'node:fs'
 import { join } from 'node:path'
+import { fileURLToPath } from 'node:url'
 import { execFileSync } from 'node:child_process'
 import { runLsof } from './lsof.js'
 import type { Server as HttpServer } from 'node:http'
@@ -582,18 +583,29 @@ async function main(): Promise<void> {
   logger.info('Telegram kommunikacio: Claude Code Channels kezeli')
 }
 
-main().catch((err) => {
-  if (err instanceof DeferToPeerError) {
-    logger.info({ peerPid: err.peerPid }, 'Peer dashboard already claimed the pidfile, exiting quietly')
-    process.exit(0)
-  }
-  // Route through shutdown() so any partial init (heartbeat, digest
-  // timers, decay interval) is drained before exit. shutdown() is
-  // idempotent and no-ops if a signal handler already ran; in that case
-  // we must NOT overwrite the exit code the handler already chose --
-  // otherwise a clean SIGTERM plus a concurrent unrelated async rejection
-  // would report crash when the operator expected 0.
-  logger.error({ err }, 'Vegzetes hiba')
-  if (!shuttingDown) exitCode = 1
-  shutdown()
-})
+// Card d91550bc: without this guard, main()'s side effects (a real initDatabase(),
+// a real WEB_PORT bind, killing any peer bound to it, starting the heartbeat/watcher
+// timers) fired unconditionally the moment ANYTHING imported this module -- not just
+// when it was run directly. Nothing imports index.ts today (checked by grep before
+// this fix), so it was a live but dormant risk, not the trigger of any incident yet.
+// process.argv[1] is only ever this file's own path when node/tsx was invoked ON it
+// directly; a test's or another module's `import('./index.js')` leaves argv[1]
+// pointing at ITS OWN entry point (the test runner, tsx repl, etc.), so the guard is
+// false and main() never runs.
+if (process.argv[1] === fileURLToPath(import.meta.url)) {
+  main().catch((err) => {
+    if (err instanceof DeferToPeerError) {
+      logger.info({ peerPid: err.peerPid }, 'Peer dashboard already claimed the pidfile, exiting quietly')
+      process.exit(0)
+    }
+    // Route through shutdown() so any partial init (heartbeat, digest
+    // timers, decay interval) is drained before exit. shutdown() is
+    // idempotent and no-ops if a signal handler already ran; in that case
+    // we must NOT overwrite the exit code the handler already chose --
+    // otherwise a clean SIGTERM plus a concurrent unrelated async rejection
+    // would report crash when the operator expected 0.
+    logger.error({ err }, 'Vegzetes hiba')
+    if (!shuttingDown) exitCode = 1
+    shutdown()
+  })
+}

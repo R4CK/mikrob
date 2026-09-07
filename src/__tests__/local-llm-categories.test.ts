@@ -1,7 +1,7 @@
 import { describe, it, expect } from 'vitest'
 import { readdirSync, readFileSync } from 'node:fs'
 import { join } from 'node:path'
-import { STORE_DIR } from '../config.js'
+import { PROJECT_ROOT, STORE_DIR } from '../config.js'
 import { listCategories, isValidCategoryName } from '../web/routes/local-llm.js'
 
 // Card 0c054ebf: the dashboard must show ALL --task presets, not just the 4
@@ -61,7 +61,7 @@ describe('isValidCategoryName (path-traversal guard, card 18a0acb9)', () => {
   })
 
   it('the POST handler validates the name BEFORE the path join (wiring, not just the predicate)', () => {
-    const src = readFileSync(join(STORE_DIR, '..', 'src', 'web', 'routes', 'local-llm.ts'), 'utf8')
+    const src = readFileSync(join(PROJECT_ROOT, 'src', 'web', 'routes', 'local-llm.ts'), 'utf8')
     const guardAt = src.indexOf('isValidCategoryName(task)')
     const joinAt = src.indexOf('existsSync(join(SKILL_DIR, `${task}.txt`))')
     expect(guardAt).toBeGreaterThan(0)
@@ -73,7 +73,7 @@ describe('isValidCategoryName (path-traversal guard, card 18a0acb9)', () => {
 
 describe('dashboard category-row escapes the meta interpolation (stored-XSS guard, card 18a0acb9)', () => {
   it('web/app.js interpolates ${escapeHtml(meta)}, never a bare ${meta}', () => {
-    const appJs = readFileSync(join(STORE_DIR, '..', 'web', 'app-local-llm.js'), 'utf8')
+    const appJs = readFileSync(join(PROJECT_ROOT, 'web', 'app-local-llm.js'), 'utf8')
     // The escaped form must be present...
     expect(appJs).toContain('llm-category-meta">${escapeHtml(meta)}')
     // ...and the unescaped form must be gone, so a future edit reverting it fails CI.

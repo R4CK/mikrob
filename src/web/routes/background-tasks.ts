@@ -46,6 +46,16 @@ function killSession(session: string): void {
 }
 
 export function spawnBackgroundTask(agentId: string, prompt: string): BackgroundTask | { error: string } {
+  // Resolved BEFORE the running row is inserted (card ca593869, Cybersec finding on 2a653b4b):
+  // resolveFromPath() throws when the binary is not on PATH, and an unguarded throw here used to
+  // happen AFTER createBackgroundTaskAtomic() below but before the try/catch that cleans up on a
+  // spawn failure -- leaving an orphaned "running" row that neither pollUntilDone nor
+  // checkAndFinalize ever clears (only web.ts's own startup sweep does). Three such failures
+  // exhausted the agent's MAX_CONCURRENT slots with zero tasks actually running, until a dashboard
+  // restart. Resolving both binaries first means a PATH gap throws before anything is recorded.
+  const resolvedTmuxBin = tmuxBin()
+  const resolvedClaudeBin = claudeBin()
+
   const id = randomBytes(4).toString('hex').toUpperCase()
   const session = bgSessionName(id)
 
@@ -56,11 +66,11 @@ export function spawnBackgroundTask(agentId: string, prompt: string): Background
 
   const shellCmd = [
     `export PATH="/opt/homebrew/bin:$HOME/.bun/bin:/usr/local/bin:/usr/bin:/bin:$PATH"`,
-    `${claudeBin()} -p "$BG_PROMPT" --output-format text 2>&1`,
+    `${resolvedClaudeBin} -p "$BG_PROMPT" --output-format text 2>&1`,
   ].join(' && ')
 
   try {
-    execFileSync(tmuxBin(), [
+    execFileSync(resolvedTmuxBin, [
       'new-session', '-d', '-s', session, '-x', '200', '-y', '50',
       `${shellCmd}; echo '___BG_DONE___'; sleep 5`,
     ], {

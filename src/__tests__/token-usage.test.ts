@@ -359,6 +359,76 @@ describe('correlateWithKanban', () => {
     // Cleanup
     db.prepare("DELETE FROM kanban_cards WHERE id = 'test-kanban-1'").run()
   })
+
+  // Card 9005b6a0 (Cybersec measurement): the old filter excluded a parent for merely HAVING a
+  // child, regardless of timestamps -- measured live, this misattributed 91% of parent cards
+  // (201 of 221) to the wrong, earlier card. The correct condition is a TIE with a child's
+  // updated_at (what touchAncestorChain's bubbling actually produces), not mere parenthood.
+  it('a parent with a child that DOES NOT tie on updated_at is still attributed correctly', async () => {
+    const db = getDb()
+    const baseTs = 1716210000
+
+    db.prepare(`
+      INSERT OR IGNORE INTO kanban_cards (id, title, status, priority, assignee, project, created_at, updated_at)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+    `).run('parent-untied', 'Parent Untied', 'in_progress', 'normal', 'test-untied', 'test-project', baseTs, baseTs)
+    // The child exists, but was last touched at a DIFFERENT time -- no bubbling tie, so the old
+    // "has a child" filter would have wrongly thrown the parent's own work away.
+    db.prepare(`
+      INSERT OR IGNORE INTO kanban_cards (id, title, status, priority, parent_id, assignee, project, created_at, updated_at)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+    `).run('child-untied', 'Child Untied', 'done', 'normal', 'parent-untied', 'someone-else', 'test-project', baseTs - 500, baseTs - 500)
+
+    db.prepare(`
+      INSERT INTO token_usage (agent, session_id, timestamp, input_tokens, output_tokens)
+      VALUES (?, ?, ?, ?, ?)
+    `).run('test-untied', 'sess-untied', baseTs, 100, 20)
+
+    const { correlateWithKanban } = await import('../web/token-usage.js')
+    correlateWithKanban()
+
+    const row = db.prepare(
+      "SELECT task_title FROM token_usage WHERE agent = 'test-untied'",
+    ).get() as { task_title: string | null } | undefined
+    expect(row?.task_title).toBe('Parent Untied')
+
+    db.prepare("DELETE FROM kanban_cards WHERE id IN ('parent-untied', 'child-untied')").run()
+    db.prepare("DELETE FROM token_usage WHERE agent = 'test-untied'").run()
+  })
+
+  it('a parent that TIES with a child on updated_at is still skipped (the bubbling case)', async () => {
+    const db = getDb()
+    const baseTs = 1716220000
+
+    db.prepare(`
+      INSERT OR IGNORE INTO kanban_cards (id, title, status, priority, assignee, project, created_at, updated_at)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+    `).run('parent-tied', 'Parent Tied', 'in_progress', 'normal', 'test-tied', 'test-project', baseTs, baseTs)
+    // touchAncestorChain's bubbling shape: the child stamps the SAME updated_at onto its parent.
+    db.prepare(`
+      INSERT OR IGNORE INTO kanban_cards (id, title, status, priority, parent_id, assignee, project, created_at, updated_at)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+    `).run('child-tied', 'Child Tied', 'in_progress', 'normal', 'parent-tied', 'test-tied', 'test-project', baseTs, baseTs)
+
+    db.prepare(`
+      INSERT INTO token_usage (agent, session_id, timestamp, input_tokens, output_tokens)
+      VALUES (?, ?, ?, ?, ?)
+    `).run('test-tied', 'sess-tied', baseTs, 100, 20)
+
+    const { correlateWithKanban } = await import('../web/token-usage.js')
+    correlateWithKanban()
+
+    // The tied PARENT must not have won the attribution -- either the leaf did, or nothing did
+    // (both are "not the parent"), matching what the filter is FOR: never let the ambiguous
+    // stamp decide.
+    const row = db.prepare(
+      "SELECT task_title FROM token_usage WHERE agent = 'test-tied'",
+    ).get() as { task_title: string | null } | undefined
+    expect(row?.task_title).not.toBe('Parent Tied')
+
+    db.prepare("DELETE FROM kanban_cards WHERE id IN ('parent-tied', 'child-tied')").run()
+    db.prepare("DELETE FROM token_usage WHERE agent = 'test-tied'").run()
+  })
 })
 
 describe('tryHandleTokenUsage route handler', () => {
