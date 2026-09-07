@@ -36,7 +36,6 @@ export default defineConfig({
     //    WORKTREE back at the main install -- so without this the suite appended
     //    test rows to the production ledger (card 4c5c540c).
     setupFiles: [
-      './src/__tests__/setup/diagnose-live-marker.ts',
       './src/__tests__/setup/assert-not-live-install.ts',
       './src/__tests__/setup/assert-supported-node.ts',
       './src/__tests__/setup/isolate-local-llm-state.ts',
