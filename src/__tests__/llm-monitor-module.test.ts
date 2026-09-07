@@ -29,12 +29,36 @@ type Win = {
   llmMonKpis: (summary: unknown) => { key: string; value: number | null; failed?: number }[]
   llmMonSmoothPath: (points: { x: number; y: number }[]) => string
   llmMonPackRows: (blocks: { leftPct: number; widthPct: number; row: number }[], gap: number) => number
+  llmMonModelSeriesHtml: (summary: unknown, fromMs: number, toMs: number) => string
 }
 
 let win: Win
 beforeAll(async () => {
-  const g = globalThis as unknown as { window: Record<string, unknown> }
+  const g = globalThis as unknown as {
+    window: Record<string, unknown> & { _i18n?: Record<string, Record<string, string>>; _lang?: string }
+    escapeHtml?: (v: unknown) => string
+    t?: (key: string, params?: Record<string, unknown>) => string
+  }
   g.window ||= {}
+  // app-helpers.js's `escapeHtml` and app.js's `t` are bare top-level references -- in the real
+  // page (classic <script>, not a module) top-level function decls attach to `window` for free,
+  // so a bare `escapeHtml(...)`/`t(...)` call resolves against the global object. A dynamic
+  // import() here runs each file as an ES module instead, so the declarations stay
+  // module-scoped and never reach globalThis. Shim both directly (app.js's `t` mirrored below,
+  // minus the {brand}/{bot}/{agentId} token defaults the llmMon keys never use) rather than
+  // importing app.js/app-helpers.js, which would be a no-op for this purpose in this harness.
+  g.escapeHtml = (v: unknown) =>
+    String(v)
+      .replace(/&/g, '&amp;')
+      .replace(/</g, '&lt;')
+      .replace(/>/g, '&gt;')
+      .replace(/"/g, '&quot;')
+      .replace(/'/g, '&#39;')
+  g.t = (key: string, params: Record<string, unknown> = {}) => {
+    const lang = g.window._lang || 'hu'
+    const str = g.window._i18n?.[lang]?.[key] ?? g.window._i18n?.['en']?.[key] ?? key
+    return str.replace(/\{(\w+)\}/g, (_, k) => (params[k] != null ? String(params[k]) : `{${k}}`))
+  }
   await import(/* @vite-ignore */ join(WEB, 'app-llm-monitor.js') as string)
   await import(/* @vite-ignore */ join(WEB, 'lang/hu.js') as string)
   await import(/* @vite-ignore */ join(WEB, 'lang/en.js') as string)
@@ -133,6 +157,49 @@ describe('llmMonKpis -- the five tiles from the summary contract', () => {
   })
 })
 
+describe('llmMonModelSeriesHtml -- per-model requests curve (card eea1ba52)', () => {
+  const T = T0
+  it('renders the SVG chart when summary.series is present', () => {
+    const html = win.llmMonModelSeriesHtml({
+      series: {
+        bucketMs: 30_000,
+        starts: [T, T + 30_000],
+        models: [{ key: 'claude-opus-5', counts: [3, 5] }, { key: 'claude-sonnet-5', counts: [1, 2] }],
+      },
+    }, T, T + 60_000)
+    expect(html).toContain('<svg')
+    expect(html).toContain('llm-mon-series-svg')
+    expect(html).toContain('claude-opus-5')
+    expect(html).toContain('claude-sonnet-5')
+  })
+
+  it('the "(other)" line is labelled via the shared t(\'llmMon.series.other\') key, not its raw key', () => {
+    const html = win.llmMonModelSeriesHtml({
+      series: { bucketMs: 60_000, starts: [T], models: [{ key: 'claude-opus-5', counts: [2] }, { key: '(other)', counts: [7] }] },
+    }, T, T + 60_000)
+    // The raw string "(other)" must not leak into the legend text -- it is translated.
+    // t() defaults to 'hu' (window._lang unset, matching app.js's own fallback), so pin
+    // against the hu dictionary, not en.
+    expect(html).toContain(win._i18n.hu['llmMon.series.other'])
+  })
+
+  it('an empty models array or a missing series is the localized empty state, not a broken chart', () => {
+    expect(win.llmMonModelSeriesHtml({ series: { bucketMs: 1, starts: [], models: [] } }, T, T + 1000))
+      .toContain(win._i18n.hu['llmMon.modelSeries.empty'])
+    expect(win.llmMonModelSeriesHtml({}, T, T + 1000))
+      .toContain(win._i18n.hu['llmMon.modelSeries.empty'])
+    expect(win.llmMonModelSeriesHtml(undefined, T, T + 1000))
+      .toContain(win._i18n.hu['llmMon.modelSeries.empty'])
+  })
+
+  it('uses the modelSeries i18n keys, not the workload-series ones, for its own title/y-label', () => {
+    const html = win.llmMonModelSeriesHtml({
+      series: { bucketMs: 60_000, starts: [T], models: [{ key: 'claude-opus-5', counts: [1] }] },
+    }, T, T + 60_000)
+    expect(html).toContain(win._i18n.hu['llmMon.modelSeries.y_label'].replace('{bucket}', ''))
+  })
+})
+
 describe('llmMonSmoothPath / llmMonPackRows', () => {
   it('builds a cubic path through every point, starting with M and one C per segment', () => {
     const d = win.llmMonSmoothPath([{ x: 0, y: 10 }, { x: 10, y: 0 }, { x: 20, y: 10 }])
@@ -168,7 +235,7 @@ describe('page wiring (string contracts)', () => {
     const mon = HTML.indexOf('src="/app-llm-monitor.js"')
     expect(ovw).toBeGreaterThan(-1)
     expect(mon).toBeGreaterThan(ovw)
-    for (const id of ['llmMonWindow', 'llmMonRefreshBtn', 'llmMonKpis', 'llmMonLanes', 'llmMonSeries', 'llmMonModels', 'llmMonDetail', 'llmMonNotes']) {
+    for (const id of ['llmMonWindow', 'llmMonRefreshBtn', 'llmMonKpis', 'llmMonLanes', 'llmMonSeries', 'llmMonModelSeries', 'llmMonModels', 'llmMonDetail', 'llmMonNotes']) {
       expect(HTML).toContain(`id="${id}"`)
     }
   })
@@ -179,7 +246,10 @@ describe('page wiring (string contracts)', () => {
     expect(NAV).toContain("llmMonitorPage: { title: 'llmMon.page_title',     sub: 'llmMon.page_subtitle' }")
   })
   it('fetches BOTH contract endpoints with the ms window and the 2000 cap', () => {
-    expect(MODULE).toContain('/api/task-summary?from=${fromMs}&to=${toMs}')
+    // Card eea1ba52: the summary fetch now also asks for buckets, so the per-model series chart
+    // has something to draw. A bare `.toContain` of the OLD prefix would still pass after the
+    // param was appended (it is still a substring), so this pins the full call, not a prefix.
+    expect(MODULE).toContain('/api/task-summary?from=${fromMs}&to=${toMs}&buckets=${LLM_MON_BUCKETS}')
     expect(MODULE).toContain('/api/task-events?from=${fromMs}&to=${toMs}&limit=${LLM_MON_MAX_EVENTS}')
     expect(MODULE).toContain('const LLM_MON_MAX_EVENTS = 2000')
   })

@@ -17,12 +17,13 @@
 //        <- derived from the same events client-side
 //   5. Models table: requests / tokens / agents per model in the window            wired
 //        <- task-summary.models
-//   NOT here, said out loud: per-model requests-per-minute for the ONLINE models (the
-//   design's "Model A / Model B" curves). The summary carries per-model TOTALS only; a bucketed
-//   per-model series needs a backend field (proposed to backend as
-//   task-summary?buckets=N -> series[] ). Also: per-task tokens/throughput -- only local-LLM
-//   tasks record start+end and the ledger that has tokens is keyed differently; the detail
-//   panel says so instead of showing zeros (rule 12).
+//   6. Per-model requests-per-bucket curves for the ONLINE models (card eea1ba52, the design's
+//      "Model A / Model B" curves) -- bucketed server-side (only the backend has token_usage
+//      rows for online-model work), top 4 models + "(other)", same renderer as #4            wired
+//        <- task-summary.series (present only when ?buckets=N is asked for)
+//   NOT here, said out loud: per-task tokens/throughput -- only local-LLM tasks record
+//   start+end and the ledger that has tokens is keyed differently; the detail panel says so
+//   instead of showing zeros (rule 12).
 //
 // The only DOM work at load is nothing: every listener is wired on the first loadLlmMonitor(),
 // so the pure helpers below can be imported under a bare window shim in tests.
@@ -292,46 +293,74 @@ function llmMonLegendHtml(events) {
   return `<div class="ovw-llmdist-legend"><strong>${escapeHtml(t('llmMon.swimlane.legend_title'))}:</strong> ${items}</div>`
 }
 
-function llmMonSeriesHtml(events, rangeStartMs, rangeEndMs) {
+/**
+ * The generic bucketed multi-line chart, shared by the task-category workload series (`events`,
+ * bucketed client-side) and the per-model requests series (`summary.series`, bucketed by the
+ * BACKEND, card eea1ba52 -- only the backend has token_usage rows for online-model work). `b` is
+ * `{ bucketMs, starts, series: [{key, counts}] }`; `total[i]` is derived HERE rather than carried
+ * on `b`, so a caller cannot forget to keep it in sync with `series`.
+ */
+function llmMonRenderBucketChart(b, rangeStartMs, rangeEndMs, titleKey, yLabelKey, otherKey) {
   const esc = escapeHtml
-  const b = llmMonBucketize(events, rangeStartMs, rangeEndMs, LLM_MON_BUCKETS)
+  const count = b.starts.length
+  const total = Array.from({ length: count }, (_, i) => b.series.reduce((acc, s) => acc + (s.counts[i] || 0), 0))
   const W = 800
   const H = 220
   const padL = 40
   const padR = 12
   const padT = 12
   const padB = 28
-  const maxY = Math.max(1, ...b.total)
+  const maxY = Math.max(1, ...total)
   const yFor = (v) => padT + (H - padT - padB) * (1 - v / maxY)
-  const xFor = (i) => padL + ((W - padL - padR) * (i + 0.5)) / b.starts.length
+  const xFor = (i) => padL + ((W - padL - padR) * (i + 0.5)) / count
   const gridLines = [0, 0.25, 0.5, 0.75, 1].map((f) => {
     const y = yFor(maxY * f)
     return `<line x1="${padL}" x2="${W - padR}" y1="${y.toFixed(1)}" y2="${y.toFixed(1)}" class="llm-mon-grid"/>
       <text x="${padL - 6}" y="${(y + 3).toFixed(1)}" class="llm-mon-ytick" text-anchor="end">${Math.round(maxY * f)}</text>`
   }).join('')
   const xLabels = [0, 0.25, 0.5, 0.75, 1].map((f) => {
-    const i = Math.min(b.starts.length - 1, Math.round((b.starts.length - 1) * f))
+    const i = Math.min(count - 1, Math.round((count - 1) * f))
     const at = b.starts[i]
     return `<text x="${xFor(i).toFixed(1)}" y="${H - 8}" class="llm-mon-xtick" text-anchor="middle">${esc(llmMonFmtTime(at, rangeEndMs - rangeStartMs >= 24 * 3600_000))}</text>`
   }).join('')
   const paths = b.series.map((s) => {
-    const color = s.key === LLM_MON_OTHER_KEY ? 'var(--text-muted)' : llmMonColorFor(s.key)
+    const color = s.key === otherKey ? 'var(--text-muted)' : llmMonColorFor(s.key)
     const pts = s.counts.map((v, i) => ({ x: xFor(i), y: yFor(v) }))
     const d = llmMonSmoothPath(pts)
     const area = `${d} L${xFor(pts.length - 1).toFixed(1)} ${yFor(0).toFixed(1)} L${xFor(0).toFixed(1)} ${yFor(0).toFixed(1)} Z`
     return `<path d="${area}" fill="${color}" class="llm-mon-area"/><path d="${d}" stroke="${color}" class="llm-mon-line"/>`
   }).join('')
   const legend = b.series.map((s) => {
-    const label = s.key === LLM_MON_OTHER_KEY ? t('llmMon.series.other') : s.key
-    const color = s.key === LLM_MON_OTHER_KEY ? 'var(--text-muted)' : llmMonColorFor(s.key)
+    const label = s.key === otherKey ? t('llmMon.series.other') : s.key
+    const color = s.key === otherKey ? 'var(--text-muted)' : llmMonColorFor(s.key)
     return `<span class="ovw-llmdist-legend-item"><span class="ovw-llmdist-legend-swatch" style="background:${color}"></span>${esc(label)}</span>`
   }).join('')
-  const desc = t('llmMon.series.y_label', { bucket: llmMonBucketLabel(b.bucketMs) })
+  const desc = t(yLabelKey, { bucket: llmMonBucketLabel(b.bucketMs) })
   return `
     <div class="llm-mon-series-head"><span class="llm-mon-series-ylabel">${esc(desc)}</span><div class="ovw-llmdist-legend">${legend}</div></div>
-    <svg class="llm-mon-series-svg" viewBox="0 0 ${W} ${H}" role="img" aria-label="${esc(t('llmMon.series.title'))}: ${esc(desc)}" preserveAspectRatio="none">
+    <svg class="llm-mon-series-svg" viewBox="0 0 ${W} ${H}" role="img" aria-label="${esc(t(titleKey))}: ${esc(desc)}" preserveAspectRatio="none">
       ${gridLines}${paths}${xLabels}
     </svg>`
+}
+
+function llmMonSeriesHtml(events, rangeStartMs, rangeEndMs) {
+  const b = llmMonBucketize(events, rangeStartMs, rangeEndMs, LLM_MON_BUCKETS)
+  return llmMonRenderBucketChart(b, rangeStartMs, rangeEndMs, 'llmMon.series.title', 'llmMon.series.y_label', LLM_MON_OTHER_KEY)
+}
+
+const LLM_MON_MODEL_OTHER_KEY = '(other)' // matches TASK_SUMMARY_OTHER_MODEL_KEY in db.ts
+
+/** Per-model requests series (card eea1ba52): the backend already bucketed it (only it has
+ *  token_usage rows for online-model work), this just draws what `summary.series` carries.
+ *  `null`/absent `series` (buckets was not requested, or the endpoint predates this field) is a
+ *  caller error, not a "no data" state -- loadLlmMonitor only calls this when series is present. */
+function llmMonModelSeriesHtml(summary, rangeStartMs, rangeEndMs) {
+  const series = summary && summary.series
+  if (!series || !Array.isArray(series.models) || !series.models.length) {
+    return `<p class="ovw-llmdist-empty">${escapeHtml(t('llmMon.modelSeries.empty'))}</p>`
+  }
+  const b = { bucketMs: series.bucketMs, starts: series.starts, series: series.models }
+  return llmMonRenderBucketChart(b, rangeStartMs, rangeEndMs, 'llmMon.modelSeries.title', 'llmMon.modelSeries.y_label', LLM_MON_MODEL_OTHER_KEY)
 }
 
 function llmMonModelsHtml(summary) {
@@ -453,16 +482,17 @@ async function loadLlmMonitor() {
   const kpisEl = document.getElementById('llmMonKpis')
   const lanesEl = document.getElementById('llmMonLanes')
   const seriesEl = document.getElementById('llmMonSeries')
+  const modelSeriesEl = document.getElementById('llmMonModelSeries')
   const modelsEl = document.getElementById('llmMonModels')
   const metaEl = document.getElementById('llmMonMeta')
-  if (!kpisEl || !lanesEl || !seriesEl || !modelsEl) return
+  if (!kpisEl || !lanesEl || !seriesEl || !modelSeriesEl || !modelsEl) return
   llmMonCloseDetail()
   llmMonSetStatus(t('common.loading'), 'llm-mon-status-line--loading')
   const toMs = Date.now()
   const fromMs = toMs - hours * 3600_000
   try {
     const [summary, feed] = await Promise.all([
-      llmMonFetchJson(`/api/task-summary?from=${fromMs}&to=${toMs}`),
+      llmMonFetchJson(`/api/task-summary?from=${fromMs}&to=${toMs}&buckets=${LLM_MON_BUCKETS}`),
       llmMonFetchJson(`/api/task-events?from=${fromMs}&to=${toMs}&limit=${LLM_MON_MAX_EVENTS}`),
     ])
     const events = Array.isArray(feed.events) ? feed.events : []
@@ -494,6 +524,10 @@ async function loadLlmMonitor() {
       const scroller = document.getElementById('llmMonScroll')
       if (scroller) scroller.scrollLeft = scroller.scrollWidth
     }
+    // Independent of `events`: the per-model series comes from summary.series (backend-bucketed
+    // token_usage, card eea1ba52), not from the task-events feed, so it draws even in a window
+    // with zero local-LLM task blocks but real online-model traffic.
+    modelSeriesEl.innerHTML = llmMonModelSeriesHtml(summary, fromMs, toMs)
     modelsEl.innerHTML = llmMonModelsHtml(summary)
     llmMonSetStatus('', '')
   } catch (err) {
@@ -504,6 +538,7 @@ async function loadLlmMonitor() {
     kpisEl.innerHTML = ''
     lanesEl.innerHTML = `<button type="button" class="btn-secondary btn-compact" id="llmMonRetryBtn">${escapeHtml(t('llmMon.retry'))}</button>`
     seriesEl.innerHTML = ''
+    modelSeriesEl.innerHTML = ''
     modelsEl.innerHTML = ''
   }
 }
@@ -512,6 +547,7 @@ window.llmMonLanesFromEvents = llmMonLanesFromEvents
 window.llmMonTopCategories = llmMonTopCategories
 window.llmMonBucketize = llmMonBucketize
 window.llmMonKpis = llmMonKpis
+window.llmMonModelSeriesHtml = llmMonModelSeriesHtml
 window.llmMonSmoothPath = llmMonSmoothPath
 window.llmMonPackRows = llmMonPackRows
 window.loadLlmMonitor = loadLlmMonitor

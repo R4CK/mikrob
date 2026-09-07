@@ -4534,6 +4534,20 @@ export interface ModelUsage {
   readonly agents: number
 }
 
+/** One line of the per-model requests-per-bucket series (card eea1ba52). Same field names
+ *  (`key`/`counts`) as the FE's own client-side llmMonBucketize() output, on purpose: the
+ *  renderer that already draws the workload-by-category chart can draw this one too, unchanged. */
+export interface ModelSeriesLine {
+  readonly key: string
+  readonly counts: readonly number[]
+}
+
+export interface TaskSeries {
+  readonly bucketMs: number
+  readonly starts: readonly number[]
+  readonly models: readonly ModelSeriesLine[]
+}
+
 export interface TaskSummary {
   readonly fromMs: number
   readonly toMs: number
@@ -4546,9 +4560,56 @@ export interface TaskSummary {
   /** Named seam, not decoration: which lanes can draw real blocks. A caller that assumes every
    *  model has task blocks would silently render an empty timeline and look like a bug. */
   readonly blockCoverage: { readonly lanes: string[]; readonly note: string }
+  /** Present only when the caller asked for `?buckets=N` (card eea1ba52) -- the per-model
+   *  requests-per-minute curves the FE's "LLM monitor" page names as its one known gap
+   *  ("NOT here, said out loud" in app-llm-monitor.js's own header). Omitted, not null, when
+   *  not requested: every existing caller of GET /api/task-summary keeps its old response
+   *  shape untouched. */
+  readonly series?: TaskSeries
 }
 
-export function getTaskSummary(fromMs: number, toMs: number): TaskSummary {
+// Same TOP-N-plus-"(other)" shape as the FE's LLM_MON_TOP_SERIES (app-llm-monitor.js): the
+// legend and the top of the curve should lead with what matters, whichever side computes it.
+const TASK_SUMMARY_TOP_MODELS = 4
+const TASK_SUMMARY_OTHER_MODEL_KEY = '(other)'
+
+/** Per-model requests-per-bucket series (card eea1ba52), computed the same way the FE already
+ *  buckets task-category events client-side: a token_usage row lands in the bucket of its
+ *  timestamp, top models (already known from the caller's own `models` list, sorted by request
+ *  count) keep their own line, everything else folds into "(other)". */
+function buildTaskSeries(fromMs: number, toMs: number, buckets: number, topModels: readonly string[]): TaskSeries {
+  const count = Math.max(1, Math.min(500, Math.floor(buckets)))
+  const span = Math.max(1, toMs - fromMs)
+  const bucketMs = span / count
+  const fromS = Math.floor(fromMs / 1000)
+  const toS = Math.ceil(toMs / 1000)
+
+  const rows = db.prepare(
+    `SELECT COALESCE(model,'(unreported)') AS model, timestamp
+       FROM token_usage
+      WHERE timestamp >= ? AND timestamp < ?`,
+  ).all(fromS, toS) as { model: string; timestamp: number }[]
+
+  const top = new Set(topModels.slice(0, TASK_SUMMARY_TOP_MODELS))
+  const keys = [...topModels.slice(0, TASK_SUMMARY_TOP_MODELS), TASK_SUMMARY_OTHER_MODEL_KEY]
+  const lines = new Map<string, number[]>(keys.map((k) => [k, new Array(count).fill(0)]))
+  let otherUsed = false
+  for (const r of rows) {
+    const tsMs = r.timestamp * 1000
+    const rel = (tsMs - fromMs) / span
+    const i = Math.min(count - 1, Math.max(0, Math.floor(rel * count)))
+    const key = top.has(r.model) ? r.model : TASK_SUMMARY_OTHER_MODEL_KEY
+    if (key === TASK_SUMMARY_OTHER_MODEL_KEY) otherUsed = true
+    lines.get(key)![i] += 1
+  }
+  if (!otherUsed) lines.delete(TASK_SUMMARY_OTHER_MODEL_KEY)
+
+  const starts = Array.from({ length: count }, (_, i) => fromMs + i * bucketMs)
+  const models = [...lines.entries()].map(([key, counts]) => ({ key, counts }))
+  return { bucketMs, starts, models }
+}
+
+export function getTaskSummary(fromMs: number, toMs: number, buckets?: number): TaskSummary {
   const fromS = Math.floor(fromMs / 1000)
   const toS = Math.ceil(toMs / 1000)
 
@@ -4601,6 +4662,9 @@ export function getTaskSummary(fromMs: number, toMs: number): TaskSummary {
       lanes: ['local'],
       note: 'Only local-LLM tasks record start and end, so only the "local" lane can draw timeline blocks. Online-model work is counted and its tokens summed, but no per-task duration is stored anywhere in this database (otel_spans measures inter-agent send->deliver latency, not task work).',
     },
+    ...(buckets && buckets > 0
+      ? { series: buildTaskSeries(fromMs, toMs, buckets, models.map((m) => m.model)) }
+      : {}),
   }
 }
 

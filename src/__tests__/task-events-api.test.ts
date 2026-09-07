@@ -138,6 +138,58 @@ describe('getTaskSummary: the seconds/milliseconds boundary', () => {
   })
 })
 
+describe('getTaskSummary: per-model series (card eea1ba52)', () => {
+  it('is OMITTED when buckets is not asked for -- old callers see the old shape', () => {
+    usage('a', 'claude-opus-5', T0 + 1000, 5, 5)
+    const s = getTaskSummary(T0, T0 + 60_000)
+    expect(s.series).toBeUndefined()
+  })
+
+  it('buckets each request by its own timestamp, one line per model', () => {
+    usage('a', 'claude-opus-5', T0, 5, 5)
+    usage('a', 'claude-opus-5', T0 + 30_000, 5, 5)
+    usage('b', 'claude-sonnet-5', T0 + 45_000, 5, 5)
+    const s = getTaskSummary(T0, T0 + 60_000, 2)
+    expect(s.series).toBeDefined()
+    expect(s.series!.bucketMs).toBe(30_000)
+    expect(s.series!.starts).toEqual([T0, T0 + 30_000])
+    const opus = s.series!.models.find(m => m.key === 'claude-opus-5')!
+    expect(opus.counts).toEqual([1, 1]) // one at T0 (bucket 0), one at T0+30s (bucket 1)
+    const sonnet = s.series!.models.find(m => m.key === 'claude-sonnet-5')!
+    expect(sonnet.counts).toEqual([0, 1]) // T0+45s falls in the second bucket
+  })
+
+  it('keeps the top 4 models as their own line and folds the rest into "(other)"', () => {
+    // input_tokens set to `i` (not a fixed 1) to keep each row's (agent, session, timestamp,
+    // input_tokens, output_tokens) tuple unique across DIFFERENT models sharing the same
+    // timestamp -- token_usage's own UNIQUE constraint does not include `model`.
+    for (let i = 1; i <= 6; i++) {
+      for (let n = 0; n < 7 - i; n++) usage('a', `model-${i}`, T0 + n * 1000, i, 1)
+    }
+    // model-1..model-6 with descending request counts (6,5,4,3,2,1) -- top 4 keep a line,
+    // model-5 and model-6 fold into "(other)".
+    const s = getTaskSummary(T0, T0 + 60_000, 1)
+    const keys = s.series!.models.map(m => m.key).sort()
+    expect(keys).toEqual(['(other)', 'model-1', 'model-2', 'model-3', 'model-4'].sort())
+    const other = s.series!.models.find(m => m.key === '(other)')!
+    expect(other.counts[0]).toBe(3) // model-5 (2 rows) + model-6 (1 row)
+  })
+
+  it('omits "(other)" entirely when every model fits in the top 4', () => {
+    usage('a', 'model-1', T0, 1, 1)
+    usage('a', 'model-2', T0, 2, 1) // distinct input_tokens: same collision-avoidance as above
+    const s = getTaskSummary(T0, T0 + 60_000, 1)
+    expect(s.series!.models.map(m => m.key).sort()).toEqual(['model-1', 'model-2'])
+  })
+
+  it('a request outside the window (SQL already filters it) never appears in any bucket', () => {
+    usage('a', 'claude-opus-5', T0 - 5000, 1, 1) // before the window -- excluded by the WHERE clause
+    usage('a', 'claude-opus-5', T0 + 1000, 1, 1)
+    const s = getTaskSummary(T0, T0 + 60_000, 1)
+    expect(s.series!.models[0].counts).toEqual([1])
+  })
+})
+
 describe('the route: fail closed on a bad window, and say what to fix (rule 12)', () => {
   it('ignores everything that is not one of its two GET paths', async () => {
     const { ctx } = call('/api/something-else')
@@ -193,5 +245,33 @@ describe('the route: fail closed on a bad window, and say what to fix (rule 12)'
     expect(r.status).toBe(200)
     expect(r.body.activeModels).toBe(1)
     expect(r.body.blockCoverage.lanes).toEqual(['local'])
+  })
+
+  it('the summary has no series field when buckets is not given (card eea1ba52)', async () => {
+    const r = await get(`/api/task-summary?from=${T0}&to=${T0 + 60_000}`)
+    expect(r.body.series).toBeUndefined()
+  })
+
+  it('buckets=N adds the series field, shaped for the existing FE renderer', async () => {
+    usage('a', 'claude-opus-5', T0 + 1000, 5, 5)
+    const r = await get(`/api/task-summary?from=${T0}&to=${T0 + 60_000}&buckets=3`)
+    expect(r.status).toBe(200)
+    expect(r.body.series.starts).toHaveLength(3)
+    expect(r.body.series.models[0]).toHaveProperty('key')
+    expect(r.body.series.models[0]).toHaveProperty('counts')
+  })
+
+  it('rejects a buckets value outside 1..500', async () => {
+    expect((await get(`/api/task-summary?from=${T0}&to=${T0 + 60_000}&buckets=0`)).status).toBe(400)
+    expect((await get(`/api/task-summary?from=${T0}&to=${T0 + 60_000}&buckets=501`)).status).toBe(400)
+    expect((await get(`/api/task-summary?from=${T0}&to=${T0 + 60_000}&buckets=1.5`)).status).toBe(400)
+  })
+
+  it('buckets is ignored on /api/task-events -- it is a task-summary-only parameter', async () => {
+    task(1, 'a', 'x', T0 + 1000, 100)
+    const r = await get(`/api/task-events?from=${T0}&to=${T0 + 60_000}&buckets=3`)
+    expect(r.status).toBe(200)
+    expect(r.body.events).toHaveLength(1)
+    expect(r.body).not.toHaveProperty('series')
   })
 })
