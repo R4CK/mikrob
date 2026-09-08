@@ -18,6 +18,7 @@ import { MAIN_CHANNELS_SESSION } from './main-agent.js'
 import { detectPaneState, paneShowsContextSaturation } from '../pane-state.js'
 import { readContextTokensFromProjectDir, readActiveModelFromProjectDir, readTranscriptMtimeFromProjectDir } from './active-model.js'
 import { readContextGuardConfig } from './context-guard-store.js'
+import { recordRescueFailure, clearRescueFailures } from './rescue-failure-tracker.js'
 import { createAgentMessage } from '../db.js'
 import {
   decideGuard,
@@ -432,6 +433,8 @@ async function checkAgent(name: string, nowMs: number): Promise<void> {
         }
         try {
           await performRestart(name)
+          // The streak is over: only a rescue that actually ran clears it.
+          clearRescueFailures(name)
         } catch (err) {
           // guardStates was advanced to the post-restart phase BEFORE this
           // switch, so a failed rescue would otherwise be filed as a completed
@@ -440,7 +443,34 @@ async function checkAgent(name: string, nowMs: number): Promise<void> {
           // cooldown. Roll the state back so the next sweep re-measures and
           // retries, and never claim the restart on the message queue.
           guardStates.set(name, INITIAL_GUARD_STATE)
-          logger.error({ err, name, reason: decision.reason }, 'context-guard: rescue restart FAILED -- state rolled back for retry')
+          const { count, alert: shouldAlert } = recordRescueFailure(name, nowMs)
+          logger.error({ err, name, reason: decision.reason, consecutiveFailures: count }, 'context-guard: rescue restart FAILED -- state rolled back for retry')
+          // Honest and silent is still silent. A saturated pane cannot be
+          // prompted (dispatch refuses it), so an agent whose rescue keeps
+          // failing is unreachable, and the only thing that knows is this log
+          // line. Escalate on the third consecutive failure, then hourly.
+          if (shouldAlert) {
+            try {
+              const msg = createAgentMessage(
+                name,
+                MAIN_AGENT_ID,
+                `[CONTEXT-GUARD] ${count}. EGYMAST KOVETO bukott mentes a(z) "${name}" agensnel. ` +
+                `Ok: ${decision.reason}` + (pctRound !== null ? ` (kontextus ~${pctRound}%)` : '') +
+                `. Utolso hiba: ${err instanceof Error ? err.message : String(err)}. ` +
+                'A szaturalt pane-t NEM lehet prompttal elerni (a dispatch visszautasitja), tehat ' +
+                'ez az agens addig elerhetetlen, amig a restart nem sikerul. A guard kb. 10 percenkent ' +
+                'ujraprobalja magatol, es ez a riasztas orankent ismetlodik, amig tart. Amit nezz meg: ' +
+                `fut-e a tmux session (agent-${name}), mit mutat a store/context-guard-last-pane-${name}.txt, ` +
+                "es a dashboard.log 'rescue restart FAILED' / 'lost the start race' sorai.",
+                'context-guard rescue failure alert',
+              )
+              if (!msg?.id) throw new Error('createAgentMessage returned no id')
+            } catch (alertErr) {
+              // The alert is the last channel out of a silent failure; losing it
+              // without a trace would restore exactly the silence it exists for.
+              logger.error({ err: alertErr, name, consecutiveFailures: count }, 'context-guard: FAILED TO RAISE the rescue-failure alert')
+            }
+          }
           break
         }
         try {
