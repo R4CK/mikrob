@@ -31,6 +31,7 @@ import {
   shSingleQuote,
 } from './agent-process.js'
 import { sendSystemDirective } from './system-directive.js'
+import { isRestartInFlight, beginRestart, endRestart } from './restart-lock.js'
 import { withSessionSendLock } from './session-send-lock.js'
 import { reapChannelOrphans, reapDetachedChannelClaudes, collectPollerEvidence } from './channel-poller-reap.js'
 import { probeTelegramConflict } from './channel-conflict-probe.js'
@@ -2227,6 +2228,16 @@ export function startChannelPluginMonitor(): NodeJS.Timeout | null {
           logger.debug({ agent: t.agentName }, 'Channel-down restart staggered -- deferring to avoid simultaneous cold-boot race')
           continue
         }
+        // The channel-down restart is itself a stop -> (8s) -> start unit, so
+        // it must hold the same in-flight slot every other supervisor honors:
+        // without the claim, a context-guard rescue landing inside the 8s
+        // settle window would interleave its own stop/start with this one --
+        // the exact stomp the lock exists to prevent, through the one door the
+        // original batch left open.
+        if (!beginRestart(t.agentName!)) {
+          logger.info({ agent: t.agentName }, 'Channel-down restart skipped -- a managed restart is already in flight')
+          continue
+        }
         logger.warn({ agent: t.agentName, provider: t.provider, failures }, 'Agent channel plugin down -- auto-restarting')
         recordChannelEvent({
           at: Date.now(),
@@ -2269,6 +2280,10 @@ export function startChannelPluginMonitor(): NodeJS.Timeout | null {
           savePersistedAgentFailures(t.agentName!, failures + 1)
         } catch (err) {
           logger.error({ err, agent: t.agentName }, 'Failed to auto-restart agent after channel plugin down')
+        } finally {
+          // A leaked slot silently disables every liveness auto-start for this
+          // agent for the life of the process (see restart-lock.ts).
+          endRestart(t.agentName!)
         }
       }
     }
@@ -2345,6 +2360,18 @@ async function reconcileDesiredAgents(): Promise<void> {
   try {
     for (const name of down) {
       if (isAgentRunning(name)) continue
+      // A managed restart (context guard, auto-restart, model fallback, the
+      // dashboard button) is stop+start, and isAgentRunning() reports false for
+      // the ~2s the stop spends waiting on tmux. Starting the agent in that
+      // window does not heal a crash -- it overtakes the restarter and boots
+      // the agent with OUR options instead of theirs (default = --continue,
+      // which is exactly what a saturation rescue is trying to drop). The two
+      // loops are phase-locked, so this is not a rare interleaving: see
+      // restart-lock.ts for the measured levente case.
+      if (isRestartInFlight(name)) {
+        logger.info({ agent: name }, 'Reconcile: managed restart in flight -- leaving the start to it')
+        continue
+      }
       if (isWithinRestartGrace(name)) continue
       if (!memGateAllowsStart(name)) continue   // Commit 3 v1: safe-mode / memory gate
       logger.warn({ agent: name }, 'Desired agent not running -- auto-starting (reconcile)')

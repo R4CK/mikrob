@@ -2239,6 +2239,49 @@ describe('paneShowsContextSaturation', () => {
     expect(paneShowsContextSaturation('')).toBe(false)
     expect(paneShowsContextSaturation('   \n  ')).toBe(false)
   })
+
+  // The OTHER phrasing. Claude Code prints "N% context used" only while
+  // auto-compact is ENABLED; with it off the same footer slot renders
+  // `Context low (N% remaining)` in red and the "used" wording never appears
+  // (read out of the shipped CLI 2.1.247: the two strings are the two arms of
+  // one ternary). A pane sitting there is just as unreachable, so the net has
+  // to know the second wording too.
+  const lowFooter = (banner: string) => [
+    '  some prior assistant output',
+    '',
+    '✻ Cooked for 3m 7s',
+    `                                                              ${banner}`,
+    SEP,
+    '❯ ',
+    SEP,
+    '  ⏵⏵ bypass permissions on (shift+tab to cycle)',
+  ].join('\n')
+
+  it('detects the auto-compact-off wording at exhaustion', () => {
+    expect(paneShowsContextSaturation(lowFooter('Context low (0% remaining) · Run /compact to compact & continue'))).toBe(true)
+    expect(paneShowsContextSaturation(lowFooter('Context low (1% remaining)'))).toBe(true)
+    expect(paneShowsContextSaturation(lowFooter('Context low (2% remaining)'))).toBe(true)
+  })
+
+  it('does NOT treat a merely-low context as saturation', () => {
+    // The banner starts well above the danger zone and the net's response is a
+    // FRESH RESTART. Matching the whole low band would restart working agents.
+    for (const pct of [3, 5, 9, 12, 30]) {
+      expect(paneShowsContextSaturation(lowFooter(`Context low (${pct}% remaining)`))).toBe(false)
+    }
+  })
+
+  it('the low-context wording is still tail-scoped like the rest', () => {
+    const quoted = [
+      '  Note: the guard should also match "Context low (0% remaining)".',
+      ...Array.from({ length: 10 }, () => '  more scrollback padding'),
+      SEP,
+      '❯ ',
+      SEP,
+      '  ⏵⏵ bypass permissions on (shift+tab to cycle)',
+    ].join('\n')
+    expect(paneShowsContextSaturation(quoted)).toBe(false)
+  })
 })
 
 describe('parkedPasteSignature (stuck [Pasted text #N] recovery)', () => {

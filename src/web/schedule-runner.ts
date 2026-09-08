@@ -54,6 +54,7 @@ import {
   resolveAgentProvider,
   clearFeedbackModalAndRecheck,
 } from './agent-process.js'
+import { isRestartInFlight } from './restart-lock.js'
 import { MAIN_CHANNELS_SESSION } from './main-agent.js'
 import { runCommandTask } from './command-task.js'
 import { decideQuotaAction, type QuotaWorkClass } from '../quota-gate.js'
@@ -689,6 +690,15 @@ async function attemptFireTask(
   // only returns {session, host}) -- recompute the same cheap check here
   // rather than widening that function's return type for this one caller.
   const isMainAgent = agentName === MAIN_AGENT_ID
+
+  // A managed restart (context-guard rescue, auto-restart, model fallback) owns
+  // this agent for the length of its stop+start. Delivering into a session that
+  // is about to be killed loses the prompt, and the missing-session branch below
+  // would go further and START the agent with OUR default options -- overtaking
+  // the restarter, because stopAgentProcess's ~2s tmux wait makes isAgentRunning
+  // report false while the restart is only half done (see restart-lock.ts).
+  // 'busy' is the honest answer: the normal retry path delivers once it is over.
+  if (isRestartInFlight(agentName)) return 'busy'
 
   if (!sessionExistsOnHost(host, session)) {
     // The main channels session is service-managed (systemd/launchd via

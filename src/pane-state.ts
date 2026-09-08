@@ -2166,8 +2166,22 @@ export function decideStuckToolCallRecovery(
 // little wider than LIVE_FOOTER_REGION_LINES (which anchors on the footer line
 // itself); still tail-scoped, so a scrollback quote of the same phrase does
 // not trip it.
+// "100% context used" is the phrasing Claude Code uses while AUTO-COMPACT IS
+// ENABLED. With auto-compact off it renders a different string entirely --
+// `Context low (N% remaining)` in red -- and never reaches the "used" wording
+// at all (verified against the shipped CLI 2.1.247: one branch prints
+// `${100-pct}% context used`, the other `Context low (${pctLeft}% remaining)`,
+// and only the first was matched here). A pane in that state is just as
+// unreachable, so the net has to recognise it too.
+//
+// Deliberately capped at 0-2% REMAINING, not at any "context low". The banner
+// appears from well above the danger zone (a session at 30% remaining is
+// working fine), and the net's action is a FRESH RESTART -- the most expensive
+// thing the guard can do to a live agent. Matching the whole low band would
+// turn a warning into a restart trigger; matching only the last two percent
+// keeps this a saturation predicate.
 const CTX_SAT_FOOTER_REGION_LINES = 8
-const CTX_SAT_RX = /100% context used|context (?:is |limit reached|window )?full\b|context limit|auto-?compact required/i
+const CTX_SAT_RX = /100% context used|context (?:is |limit reached|window )?full\b|context limit|auto-?compact required|context low \([0-2]% remaining\)/i
 
 export function paneShowsContextSaturation(capture: string): boolean {
   if (!capture || !capture.trim()) return false
