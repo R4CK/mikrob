@@ -225,3 +225,31 @@ describe('channel-down auto-restart holds the restart slot (fleet addition)', ()
       .toMatch(/finally\s*\{[\s\S]{0,300}endRestart\(t\.agentName!\)/)
   })
 })
+
+// Second sweep of the same caller table (review catch, 2026-09-08): the two
+// channel-config stop->start pairs in routes/agents.ts are the same shape as
+// the channel-down restart and must hold the slot the same way. Pinned for
+// EVERY occurrence of the stop anchor in that file, so a third copy-pasted
+// pair cannot appear unguarded without failing here.
+describe('channel-config stop->start pairs hold the restart slot (routes/agents.ts)', () => {
+  const routesSrc = readSrcFile(joinPath(__dirname, '../web/routes/agents.ts'), 'utf-8')
+  const routesLines = routesSrc.split('\n')
+  const anchors = routesLines
+    .map((l, i) => (l.includes('await stopAgentProcess(name)') && l.includes('stopRes') ? i : -1))
+    .filter(i => i >= 0)
+
+  it('finds both config-branch stop calls', () => {
+    expect(anchors.length, 'expected exactly the two channel-config stop calls').toBe(2)
+  })
+
+  it('each claims the slot before its stop and releases it in a finally', () => {
+    for (const idx of anchors) {
+      const before = routesLines.slice(Math.max(0, idx - 16), idx).join('\n')
+      expect(before, `stop at line ${idx + 1} is not gated on beginRestart`)
+        .toContain('!beginRestart(name)')
+      const after = routesLines.slice(idx, idx + 30).join('\n')
+      expect(after, `stop at line ${idx + 1} has no finally endRestart`)
+        .toMatch(/finally\s*\{[\s\S]{0,200}endRestart\(name\)/)
+    }
+  })
+})
