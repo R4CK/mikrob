@@ -116,7 +116,7 @@ import { detectPaneState, detectPermissionMode } from '../../pane-state.js'
 import { checkAgentPutFields, checkConfigPutFields, AGENT_PUT_WRITABLE_FIELDS } from '../agent-put-fields.js'
 import { detectReauthNeeded } from '../reauth-detect.js'
 import { readAutoRestartConfig, writeAutoRestartConfig } from '../auto-restart-store.js'
-import { readContextGuardConfig, writeContextGuardConfig } from '../context-guard-store.js'
+import { readContextGuardConfig, writeContextGuardConfig, seedContextGuardForNewAgent } from '../context-guard-store.js'
 import { getContextGuardStatus } from '../context-guard-runner.js'
 import type { AutoRestartConfig } from '../../auto-restart.js'
 import type { ContextGuardConfig } from '../../context-guard.js'
@@ -932,6 +932,14 @@ export async function tryHandleAgents(ctx: RouteContext, webDir: string): Promis
     writeAgentModel(name, model)
     writeAgentSecurityProfile(name, profileId)
     writeAgentSettingsFromProfile(name, loadProfileTemplate(profileId))
+    // A new agent comes up with the context guard ARMED (fleet policy, 2026-09-08).
+    // Written as an explicit store row rather than by moving
+    // DEFAULT_CONTEXT_GUARD: the default is also what hidden technical workers
+    // and never-configured existing agents fall back to, and both are
+    // deliberately proactive-tier-off. Placed here, before personality
+    // generation, so the LLM step -- the one that can fail and fall back to a
+    // template -- cannot leave an agent unguarded.
+    seedContextGuardForNewAgent(name)
     if (rawName && rawName !== name) writeAgentDisplayName(name, rawName)
 
     logger.info({ name, description }, 'Generating agent CLAUDE.md and SOUL.md...')
@@ -2085,6 +2093,11 @@ export async function tryHandleAgents(ctx: RouteContext, webDir: string): Promis
       // the single-agent or whole-fleet importer.
       if (peekBundleKind(bundle) === 'fleet') {
         const result = importAllAgentsBundle(bundle, { overwrite })
+        // An imported agent is a NEW agent on this machine: the bundle carries
+        // the agent directory, never store/context-guard.json. Same rule as
+        // creation (fleet policy, 2026-09-08) and idempotent, so re-importing over an
+        // agent an operator has already configured leaves that row alone.
+        for (const a of result.imported) seedContextGuardForNewAgent(a.name)
         logger.info(
           { imported: result.imported.map((a) => a.name), skipped: result.skipped, secrets: result.includesSecrets },
           'Fleet imported from bundle',
@@ -2104,6 +2117,7 @@ export async function tryHandleAgents(ctx: RouteContext, webDir: string): Promis
       }
 
       const result = importAgentBundle(bundle, { overrideName: overrideName || undefined, overwrite })
+      seedContextGuardForNewAgent(result.name)
       logger.info({ name: result.name, overwritten: result.overwritten, secrets: result.manifest.includesSecrets }, 'Agent imported from bundle')
       json(res, {
         ok: true,
