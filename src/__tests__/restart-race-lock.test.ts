@@ -195,3 +195,30 @@ describe('context-guard: a failed rescue is not filed as a completed one', () =>
     expect(tail).toMatch(/rolled back[\s\S]*?\n\s*break/)
   })
 })
+
+// Fleet addition on top of the adopted batch: the channel-down auto-restart in
+// channel-monitor.ts is itself a stop -> (8s settle) -> start unit, and the
+// original batch left it outside the lock. Source-level pin with a FIXED
+// window (a grown-to-fit anchor cannot fail): the claim must sit within the
+// 24 lines before the stop call, and the release in a finally after it.
+import { readFileSync as readSrcFile } from 'node:fs'
+import { join as joinPath } from 'node:path'
+
+describe('channel-down auto-restart holds the restart slot (fleet addition)', () => {
+  const src = readSrcFile(joinPath(__dirname, '../web/channel-monitor.ts'), 'utf-8')
+  const lines = src.split('\n')
+  const stopIdx = lines.findIndex(l => l.includes('await stopAgentProcess(t.agentName!)'))
+
+  it('claims the slot before its stop', () => {
+    expect(stopIdx, 'the channel-down stop call disappeared').toBeGreaterThan(0)
+    const before = lines.slice(Math.max(0, stopIdx - 24), stopIdx).join('\n')
+    expect(before, 'channel-down restart no longer claims the restart slot')
+      .toContain('beginRestart(t.agentName!)')
+  })
+
+  it('releases the slot in a finally after its start', () => {
+    const after = lines.slice(stopIdx, stopIdx + 60).join('\n')
+    expect(after, 'channel-down restart no longer releases the slot in a finally')
+      .toMatch(/finally\s*\{[\s\S]{0,300}endRestart\(t\.agentName!\)/)
+  })
+})

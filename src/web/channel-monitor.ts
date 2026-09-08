@@ -31,7 +31,7 @@ import {
   shSingleQuote,
 } from './agent-process.js'
 import { sendSystemDirective } from './system-directive.js'
-import { isRestartInFlight } from './restart-lock.js'
+import { isRestartInFlight, beginRestart, endRestart } from './restart-lock.js'
 import { withSessionSendLock } from './session-send-lock.js'
 import { reapChannelOrphans, reapDetachedChannelClaudes, collectPollerEvidence } from './channel-poller-reap.js'
 import { probeTelegramConflict } from './channel-conflict-probe.js'
@@ -2228,6 +2228,16 @@ export function startChannelPluginMonitor(): NodeJS.Timeout | null {
           logger.debug({ agent: t.agentName }, 'Channel-down restart staggered -- deferring to avoid simultaneous cold-boot race')
           continue
         }
+        // The channel-down restart is itself a stop -> (8s) -> start unit, so
+        // it must hold the same in-flight slot every other supervisor honors:
+        // without the claim, a context-guard rescue landing inside the 8s
+        // settle window would interleave its own stop/start with this one --
+        // the exact stomp the lock exists to prevent, through the one door the
+        // original batch left open.
+        if (!beginRestart(t.agentName!)) {
+          logger.info({ agent: t.agentName }, 'Channel-down restart skipped -- a managed restart is already in flight')
+          continue
+        }
         logger.warn({ agent: t.agentName, provider: t.provider, failures }, 'Agent channel plugin down -- auto-restarting')
         recordChannelEvent({
           at: Date.now(),
@@ -2270,6 +2280,10 @@ export function startChannelPluginMonitor(): NodeJS.Timeout | null {
           savePersistedAgentFailures(t.agentName!, failures + 1)
         } catch (err) {
           logger.error({ err, agent: t.agentName }, 'Failed to auto-restart agent after channel plugin down')
+        } finally {
+          // A leaked slot silently disables every liveness auto-start for this
+          // agent for the life of the process (see restart-lock.ts).
+          endRestart(t.agentName!)
         }
       }
     }
