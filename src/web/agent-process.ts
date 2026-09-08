@@ -28,6 +28,7 @@ import {
   type FirstRunGateKind,
 } from '../pane-state.js'
 import { scheduleRecoveryBrief } from './restart-recovery-brief.js'
+import { beginRestart, endRestart } from './restart-lock.js'
 import { agentDir, listAgentNames, readAgentModel, readAgentClaudeConfigDir, readAgentClaudePlan, readAgentChannelProvider, readAgentAuthMode, readAgentDisplayName, readAgentRemoteConfig, readAgentRemoteHost, readAgentRunAsUser, readAgentMemoryIsolation } from './agent-config.js'
 import { resolveAgentConfigDir } from './claude-plans.js'
 import { provisionMemoryBoundaryDir } from './memory-boundary.js'
@@ -1801,11 +1802,37 @@ export function getAgentProcessInfo(name: string): { running: boolean; session?:
 }
 
 export async function restartAgentProcess(name: string, opts: { fresh?: boolean } = {}): Promise<{ ok: boolean; pid?: number; error?: string }> {
-  if (isAgentRunning(name)) {
-    const stopResult = await stopAgentProcess(name)
-    if (!stopResult.ok) return { ok: false, error: stopResult.error || 'Failed to stop running agent before restart' }
+  // Hold the restart slot across BOTH halves. stopAgentProcess waits ~2s for
+  // tmux to tear the session down, and for that window isAgentRunning() already
+  // says false -- every liveness-driven supervisor (channel-monitor reconcile,
+  // schedule-runner auto-start, reauth-healer) would otherwise start the agent
+  // with ITS options and win the race. See restart-lock.ts for the measured
+  // levente case: the context-guard's fresh rescue was overtaken twice by a
+  // --continue reconcile start, which resumed the very 100%-context session the
+  // rescue existed to drop.
+  if (!beginRestart(name)) {
+    return { ok: false, error: 'A restart is already in flight for this agent' }
   }
-  return startAgentProcess(name, opts)
+  try {
+    if (isAgentRunning(name)) {
+      const stopResult = await stopAgentProcess(name)
+      if (!stopResult.ok) return { ok: false, error: stopResult.error || 'Failed to stop running agent before restart' }
+    }
+    const started = await startAgentProcess(name, opts)
+    // Losing the start race must NEVER read as success: the session that is up
+    // is somebody else's, launched with somebody else's options, and a caller
+    // that treats this as done (the context guard does) goes on to inject a
+    // resume prompt into a session it did not create. Loud, and !ok.
+    if (!started.ok && /already running/i.test(started.error ?? '')) {
+      logger.error(
+        { name, opts, error: started.error },
+        'Restart lost the start race -- another supervisor started this agent inside the stop window',
+      )
+    }
+    return started
+  } finally {
+    endRestart(name)
+  }
 }
 
 // Claude Code occasionally pops a "How is Claude doing this session? (optional)"

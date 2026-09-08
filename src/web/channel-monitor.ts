@@ -31,6 +31,7 @@ import {
   shSingleQuote,
 } from './agent-process.js'
 import { sendSystemDirective } from './system-directive.js'
+import { isRestartInFlight } from './restart-lock.js'
 import { withSessionSendLock } from './session-send-lock.js'
 import { reapChannelOrphans, reapDetachedChannelClaudes, collectPollerEvidence } from './channel-poller-reap.js'
 import { probeTelegramConflict } from './channel-conflict-probe.js'
@@ -2345,6 +2346,18 @@ async function reconcileDesiredAgents(): Promise<void> {
   try {
     for (const name of down) {
       if (isAgentRunning(name)) continue
+      // A managed restart (context guard, auto-restart, model fallback, the
+      // dashboard button) is stop+start, and isAgentRunning() reports false for
+      // the ~2s the stop spends waiting on tmux. Starting the agent in that
+      // window does not heal a crash -- it overtakes the restarter and boots
+      // the agent with OUR options instead of theirs (default = --continue,
+      // which is exactly what a saturation rescue is trying to drop). The two
+      // loops are phase-locked, so this is not a rare interleaving: see
+      // restart-lock.ts for the measured levente case.
+      if (isRestartInFlight(name)) {
+        logger.info({ agent: name }, 'Reconcile: managed restart in flight -- leaving the start to it')
+        continue
+      }
       if (isWithinRestartGrace(name)) continue
       if (!memGateAllowsStart(name)) continue   // Commit 3 v1: safe-mode / memory gate
       logger.warn({ agent: name }, 'Desired agent not running -- auto-starting (reconcile)')

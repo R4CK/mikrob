@@ -265,7 +265,14 @@ async function performRestart(name: string): Promise<void> {
     // re-launch it non-fresh (--continue), which would defeat the whole point
     // of a context-guard restart -- dropping the saturated context.
     markAgentRestartPending(name)
-    await restartAgentProcess(name, { fresh: true })
+    // The result was discarded here until 2026-09-01. startAgentProcess has an
+    // early "Agent is already running" return, and a supervisor that started
+    // the agent inside our stop window (restart-lock.ts) trips it -- so the
+    // rescue reported success while the pane still held the saturated session
+    // it was supposed to drop. Measured twice on levente, 2026-08-31 19:10 and
+    // 19:41; the second restart WAS the first one's unnoticed failure.
+    const res = await restartAgentProcess(name, { fresh: true })
+    if (!res.ok) throw new Error(res.error ?? 'agent restart failed')
   }
 }
 
@@ -423,7 +430,19 @@ async function checkAgent(name: string, nowMs: number): Promise<void> {
         } catch (err) {
           logger.warn({ err, name }, 'context-guard: pre-restart pane snapshot failed')
         }
-        await performRestart(name)
+        try {
+          await performRestart(name)
+        } catch (err) {
+          // guardStates was advanced to the post-restart phase BEFORE this
+          // switch, so a failed rescue would otherwise be filed as a completed
+          // one: the guard would wait for a session it never started, inject a
+          // resume prompt into the old saturated pane, and then sit out its
+          // cooldown. Roll the state back so the next sweep re-measures and
+          // retries, and never claim the restart on the message queue.
+          guardStates.set(name, INITIAL_GUARD_STATE)
+          logger.error({ err, name, reason: decision.reason }, 'context-guard: rescue restart FAILED -- state rolled back for retry')
+          break
+        }
         try {
           createAgentMessage(
             name,
