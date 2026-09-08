@@ -14,6 +14,7 @@ import {
   isSessionReadyForPrompt,
 } from './agent-process.js'
 import { sendSystemDirective } from './system-directive.js'
+import { notifyChannel } from '../notify.js'
 import { MAIN_CHANNELS_SESSION } from './main-agent.js'
 import { detectPaneState, paneShowsContextSaturation } from '../pane-state.js'
 import { readContextTokensFromProjectDir, readActiveModelFromProjectDir, readTranscriptMtimeFromProjectDir } from './active-model.js'
@@ -451,6 +452,21 @@ async function checkAgent(name: string, nowMs: number): Promise<void> {
           // line. Escalate on the third consecutive failure, then hourly.
           if (shouldAlert) {
             try {
+              // The alert sink must never be the patient's own inbox. For the
+              // MAIN agent a queue message would be addressed to the very agent
+              // whose rescue keeps failing -- main-agent delivery is pull-based,
+              // and a saturated main does not pull, so the alert would sit
+              // "pending" exactly when it matters (measured 2026-09-08: main
+              // saturated twice that day). Route the main-agent case to the
+              // operator notification channel instead.
+              if (name === MAIN_AGENT_ID) {
+                await notifyChannel(
+                  `[CONTEXT-GUARD] ${count}. EGYMAST KOVETO bukott mentes a FO-AGENSNEL (${name}). ` +
+                  `Ok: ${decision.reason}` + (pctRound !== null ? ` (kontextus ~${pctRound}%)` : '') +
+                  `. Utolso hiba: ${err instanceof Error ? err.message : String(err)}. ` +
+                  'A guard kb. 10 percenkent ujraprobalja; ez a riasztas orankent ismetlodik, amig tart.',
+                )
+              } else {
               const msg = createAgentMessage(
                 name,
                 MAIN_AGENT_ID,
@@ -465,6 +481,7 @@ async function checkAgent(name: string, nowMs: number): Promise<void> {
                 'context-guard rescue failure alert',
               )
               if (!msg?.id) throw new Error('createAgentMessage returned no id')
+              }
             } catch (alertErr) {
               // The alert is the last channel out of a silent failure; losing it
               // without a trace would restore exactly the silence it exists for.

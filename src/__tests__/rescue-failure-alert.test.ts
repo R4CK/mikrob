@@ -83,7 +83,10 @@ describe('the guard raises the alert (pinned at the source)', () => {
   // checkAgent is a closure over tmux/transcript IO, so the wiring is pinned by
   // source, the same way the FRESH-restart guarantee has been since 2026-08-04.
   const i = RUNNER.indexOf('await performRestart(name)')
-  const region = RUNNER.slice(i, i + 3000)
+  // 4200, not 3000: the fleet's main-agent sink branch (operator notify for
+  // MAIN_AGENT_ID) sits between the failure log and the queue send, and the
+  // window must still reach the send-verify + catch below it.
+  const region = RUNNER.slice(i, i + 4200)
 
   it('clears the streak only on a rescue that actually ran', () => {
     const success = RUNNER.slice(i, RUNNER.indexOf('} catch (err) {', i))
@@ -120,5 +123,26 @@ describe('the guard raises the alert (pinned at the source)', () => {
     // rollback to an alerting bug would be the worse trade.
     expect(region.indexOf('guardStates.set(name, INITIAL_GUARD_STATE)'))
       .toBeLessThan(region.indexOf('recordRescueFailure(name, nowMs)'))
+  })
+})
+
+// Fleet addition: the alert sink must never be the patient's own inbox. For
+// the MAIN agent a queue message is addressed to the very agent whose rescue
+// keeps failing (pull-model delivery: a saturated main does not pull), so the
+// runner must branch main to the operator notification channel. Source pin
+// with a FIXED window.
+import { readFileSync as readRunnerSrc } from 'node:fs'
+import { join as joinRunnerPath } from 'node:path'
+
+describe('main-agent rescue alert goes to the operator, not its own queue', () => {
+  const src = readRunnerSrc(joinRunnerPath(__dirname, '../web/context-guard-runner.ts'), 'utf-8')
+  const lines = src.split('\n')
+  const sendIdx = lines.findIndex(l => l.includes('const msg = createAgentMessage('))
+
+  it('branches MAIN_AGENT_ID to notifyChannel before the queue send', () => {
+    expect(sendIdx, 'the queue send for sub-agent alerts disappeared').toBeGreaterThan(0)
+    const before = lines.slice(Math.max(0, sendIdx - 20), sendIdx).join('\n')
+    expect(before, 'the main-agent alert no longer branches to the operator channel')
+      .toMatch(/if \(name === MAIN_AGENT_ID\) \{[\s\S]{0,400}notifyChannel\(/)
   })
 })
