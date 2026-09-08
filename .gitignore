@@ -39,6 +39,11 @@ Ingatlan/token*
 !store/*.py
 # Stitch design-gen tools are operational scripts (tracked except node_modules).
 !store/stitch-tools/gen.mjs
+# The upstream-drift watcher's I/O half (card a1ce8952). Named explicitly for the same reason
+# gen.mjs is: the `!store/*.sh` / `!store/*.py` lines above un-ignore the two shapes an
+# operational script usually takes, and a .mjs is exactly the shape that lands IGNORED and
+# unbacked-up instead -- the d7ac3470 failure, one file extension over.
+!store/fork-upstream-drift-watch.mjs
 # The watched-repos registry is hand-maintained CONFIG, not runtime state -- nothing writes it (the
 # watcher and both dashboard consumers only read), so tracking it causes no churn. It was ignored, and
 # a security-relevant correction (repomix pin 1.17.0 -> 1.18.0, card 435e5083) therefore existed only
@@ -214,3 +219,10 @@ transcripts/
 graphify-out/
 # Added by code-review-graph
 .code-review-graph/
+
+# KANBAN-SNAPSHOT.md (card 4306e862-adjacent, Peti 2026-09-08): periodic markdown export of the
+# kanban board, regenerated every 15 minutes by store/kanban-snapshot.sh. Never committed -- it is
+# a derived artifact that churns constantly, and a tracked copy would collide with update.sh's
+# ff-only pull the same way graphify-out/ would (see above). It survives a DB-only data loss simply
+# by being a plain file on disk, same mechanism that saved DECISIONS.md on 2026-09-08.
+KANBAN-SNAPSHOT.md
