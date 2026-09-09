@@ -12,7 +12,8 @@
 //   - the Claude Code runtime tools ScheduleWakeup / CronCreate / CronList /
 //     CronDelete / RemoteTrigger (the autonomous-loop machinery), AND
 //   - the Bash escape routes that achieve the same self-injection: writing the
-//     Claude scheduled_tasks.json directly, tmux send-keys into a session, or
+//     Claude scheduled_tasks.json (or the directory-format scheduled-tasks/<name>/)
+//     directly, tmux send-keys into a session, or
 //     POSTing a new schedule to the dashboard.
 //
 // Why a hook and not only a permissions deny-list: permissive profiles launch
@@ -692,9 +693,13 @@ const UNANCHORED_SCHEDULER_READ_RX = new RegExp(
 // schedule-WRITING is left. See the heredoc loop below for why matching is not enough.
 const UNANCHORED_SCHEDULER_READ_RX_G = new RegExp(UNANCHORED_SCHEDULER_READ_RX.source, 'gi')
 
-// The Claude self-schedule store. Blocked for WRITE on any route (a Bash write,
-// or the native Write/Edit/NotebookEdit tool); a read/grep is legit diagnostics.
-const SCHEDULE_STORE_RX = /scheduled_tasks\.json/i
+// The Claude self-schedule store. Two formats are guarded:
+//   legacy:    scheduled_tasks.json  (single flat file)
+//   directory: scheduled-tasks/<name>/<file>  (e.g. task-config.json, SKILL.md)
+// Blocked for WRITE on any route (a Bash write, or the native Write/Edit/NotebookEdit
+// tool); a read/grep is legit diagnostics. The directory branch is fail-closed: ANY
+// file under a named task subdirectory is blocked, not only task-config.json.
+const SCHEDULE_STORE_RX = /(?:scheduled_tasks\.json|[\\/]scheduled-tasks[\\/][^\\/]+[\\/])/i
 // Write-intent shell tokens (redirect / tee / in-place edit / dd / copy-move).
 const WRITE_INTENT_RX = /(>>?|\btee\b|\bsed\b[\s\S]*\s-i|\bdd\b|\bcp\b|\bmv\b)/i
 // Dashboard schedule API. A WRITE method (POST/PUT/PATCH/DELETE) creates/edits a
@@ -2332,7 +2337,8 @@ export function gateDecision(toolName, toolInput) {
 const GATE_MSG =
   'Self-pace TILTOTT (governance hard-gate). Sub-agentkent NEM utemezhetsz sajat ' +
   'jovobeli turn-t: se ScheduleWakeup/Cron*/RemoteTrigger, se tmux send-keys, se ' +
-  'scheduled_tasks.json iras, se /api/schedules POST, se /loop self-pace. Input-vezerelt ' +
+  'scheduled_tasks.json / scheduled-tasks/<nev>/task-config.json iras, se /api/schedules POST, ' +
+  'se /loop self-pace. Input-vezerelt ' +
   'vagy: csak az operator (channel) vagy egy peer (inter-agent) uzenete inditson. Ha varakozol, ' +
   'maradj idle a prompt-on -- a beerkezo uzenet majd ujrainditja a turn-t. SOHA ne valaszolj ' +
   'magadnak es SOHA ne dontsd el az operator helyett egy hozza intezett kerdest.'
