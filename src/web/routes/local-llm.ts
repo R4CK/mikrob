@@ -47,8 +47,8 @@ import { readWeeklySnapshot } from '../../costops/weekly-limit.js'
  *  flock (store/local-llm.sh's GPU_LOCK_WAIT, default 600s), so its legitimate started_at-to-finish
  *  span can reach GPU_LOCK_WAIT + TIMEOUT (default 120s) = 720s under real contention -- past the
  *  old 10-minute threshold while the call is still genuinely alive. Reclaiming it early would flip
- *  it back to `pending`, where local-llm-worker.sh's claimNext() could then hand a PLACEHOLDER row
- *  (see DIRECT_CALL_PLACEHOLDER) to the model as if it were real work. 20 minutes keeps a
+ *  it back to `pending`, where any queue consumer could pick up a PLACEHOLDER row
+ *  (see DIRECT_CALL_PLACEHOLDER) and pass it to the model as if it were real work. 20 minutes keeps a
  *  comfortable margin over the 720s default worst case for either row source. */
 const STALE_RUNNING_MS = 20 * 60 * 1000
 
@@ -1385,9 +1385,9 @@ export async function tryHandleLocalLlm(ctx: RouteContext): Promise<boolean> {
     // this endpoint from "an already-vetted mechanical sub-task drafted at dispatch time" to "any
     // task any agent chooses to submit". The synchronous local-llm-rag.sh --auto path already runs
     // every prompt through this SAME routeTask() classifier before it ever reaches the 7B; the async
-    // worker (local-llm-worker.sh -> store/local-llm.sh) does not consult it at all -- it never has.
-    // Gating HERE, at the single enqueue choke-point every async caller funnels through (submit.sh,
-    // any future caller, this route itself), closes that gap once for the whole path instead of
+    // worker did not consult it at all historically -- it never had. Gating HERE, at the single
+    // enqueue choke-point every async caller funnels through, closes that gap once for the whole
+    // path instead of
     // needing every future caller to remember to check. A vetoed category (authz/isolation/
     // architecture/security-decision) is refused outright rather than silently queued for local
     // drafting -- the caller does it online instead, exactly like the synchronous path already
