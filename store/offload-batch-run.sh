@@ -17,7 +17,7 @@ HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 DASH="${DASHBOARD_URL:-http://localhost:3420}"
 TOK="$(cat "$HERE/.dashboard-token" 2>/dev/null || true)"
 CAP="${OFFLOAD_BATCH_CAP:-20}"           # max cards dispatched per run
-SCAN_CAP="${OFFLOAD_BATCH_SCAN_CAP:-200}" # max candidates inspected (HTTP checks) per run
+SCAN_CAP="${OFFLOAD_BATCH_SCAN_CAP-200}" # max candidates inspected (HTTP checks) per run
 LOG="$HERE/offload-batch.log"
 
 ts() { date '+%Y-%m-%d %H:%M:%S'; }
