@@ -1467,6 +1467,16 @@ export async function tryHandleLocalLlm(ctx: RouteContext): Promise<boolean> {
   // (DIRECT_CALL_PLACEHOLDER) regardless of what a caller sends, so this endpoint cannot become a
   // second place agent prompt content ends up stored.
   if (path === '/api/local-llm/queue/start' && method === 'POST') {
+    // Reclaim stale direct-sync rows before registering a new one. Card 30a82c61 deleted
+    // local-llm-worker.sh, which was the only caller of /queue/claim and therefore the only
+    // live path for reclaimStaleLocalLlm. Direct-sync callers go through /queue/start, so
+    // reclaim here restores the "cleanup whenever a live caller is present" guarantee without
+    // a second timer: any crashed direct-sync row (dashboard restart, OOM, WSL VM drop) is
+    // cleaned up here, on the next healthy call from local-llm.sh. Direct-sync rows always
+    // go to `failed`, never back to `pending` (see reclaimStaleRunning: no worker can claim them).
+    const reclaimed = reclaimStaleLocalLlm(getDb(), STALE_RUNNING_MS, Date.now())
+    for (const id of reclaimed.escalatedIds) notifyEscalation(id)
+
     const body = (await readBody(req)).toString()
     let payload: Record<string, unknown>
     try {
@@ -1596,9 +1606,10 @@ export async function tryHandleLocalLlm(ctx: RouteContext): Promise<boolean> {
   // Empty queue answers 200 with an empty object rather than 404: "nothing to do" is the normal
   // steady state, not an error, and the worker polls this on every idle tick.
   if (path === '/api/local-llm/queue/claim' && method === 'POST') {
-    // Reclaim first: a worker killed mid-run (service restart, OOM, the WSL VM dropping) leaves its
-    // row `running` forever. Doing it here means recovery happens whenever a worker is alive,
-    // without a second timer -- and a dead worker cannot clean up after itself by definition.
+    // Reclaim before claiming: a worker killed mid-run leaves its row `running` forever. Running
+    // on both /queue/start (direct-sync path, after card 30a82c61 deleted the worker) and here
+    // (worker path, for async offload rows) ensures both row sources are covered -- each trigger
+    // fires whenever a live caller of that path is present, which is the only moment that matters.
     const reclaimed = reclaimStaleLocalLlm(getDb(), STALE_RUNNING_MS, Date.now())
     for (const id of reclaimed.escalatedIds) notifyEscalation(id)
     const row = claimNextLocalLlm(getDb(), Date.now())
