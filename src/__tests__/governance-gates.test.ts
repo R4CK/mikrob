@@ -391,6 +391,49 @@ describe('self-pace-gate gateDecision', () => {
     expect(selfPaceDecision('Write', { file_path: '/home/agent/.claude/scheduled_tasks.json', content: '{}' }).deny).toBe(true)
     expect(selfPaceDecision('Edit', { file_path: '~/.claude/scheduled_tasks.json' }).deny).toBe(true)
   })
+  // Directory-format scheduled-tasks store (card 1cd9fa94): the new store layout
+  // uses ~/.claude/scheduled-tasks/<name>/task-config.json; SCHEDULE_STORE_RX must
+  // cover both the legacy single-file form and any file under a named task subdir.
+  it('denies WRITE to directory-format task-config.json (F5-dir)', () => {
+    expect(selfPaceDecision('Write', {
+      file_path: '/home/neon/.claude/scheduled-tasks/local-llm-worker-poke/task-config.json',
+      content: '{}',
+    }).deny).toBe(true)
+    expect(selfPaceDecision('Edit', {
+      file_path: '~/.claude/scheduled-tasks/agent-skill-drift-sync-heartbeat/task-config.json',
+    }).deny).toBe(true)
+  })
+  it('denies WRITE to any file under a named task subdir -- fail-closed for unknown paths (F5-dir-fc)', () => {
+    expect(selfPaceDecision('Write', {
+      file_path: '/home/neon/.claude/scheduled-tasks/my-task/SKILL.md',
+      content: '# skill',
+    }).deny).toBe(true)
+    expect(selfPaceDecision('NotebookEdit', {
+      notebook_path: '/home/neon/.claude/scheduled-tasks/my-task/notebook.ipynb',
+    }).deny).toBe(true)
+  })
+  it('denies a Bash WRITE to the directory-format store (redirect)', () => {
+    expect(selfPaceDecision('Bash', {
+      command: 'echo "{}" > ~/.claude/scheduled-tasks/local-llm-worker-poke/task-config.json',
+    }).deny).toBe(true)
+    expect(selfPaceDecision('Bash', {
+      command: 'tee ~/.claude/scheduled-tasks/my-task/task-config.json <<EOF\n{}\nEOF',
+    }).deny).toBe(true)
+  })
+  it('ALLOWS read-only inspection of the directory-format store (F4-dir)', () => {
+    expect(selfPaceDecision('Bash', {
+      command: 'cat ~/.claude/scheduled-tasks/local-llm-worker-poke/task-config.json',
+    }).deny).toBe(false)
+    expect(selfPaceDecision('Bash', {
+      command: 'grep schedule ~/.claude/scheduled-tasks/my-task/task-config.json',
+    }).deny).toBe(false)
+  })
+  it('ALLOWS unrelated paths that happen to contain "scheduled" (no false-positive)', () => {
+    expect(selfPaceDecision('Write', {
+      file_path: '/home/agent/project/scheduled-reports/q1/report.json',
+      content: '{}',
+    }).deny).toBe(false)
+  })
   it('denies a shell-driven /loop', () => {
     expect(selfPaceDecision('Bash', { command: 'claude /loop "keep polling"' }).deny).toBe(true)
   })
