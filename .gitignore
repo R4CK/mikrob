@@ -85,6 +85,7 @@ Ingatlan/token*
 !store/codeburn-usage-policy.md
 # Local-LLM offload tooling (config + task templates) is operational, not runtime data.
 !store/local-llm-model
+!store/route-classify-validated-model
 !store/local-llm-skills/
 !store/local-llm-skills/*.txt
 workspace/

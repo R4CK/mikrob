@@ -29,6 +29,25 @@ set -uo pipefail
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 fail=0
 
+# MODEL DRIFT GUARD (card 1ce29322). A model change without re-running this selftest renders every
+# measurement below meaningless -- the original 7B figures were left in the header after the switch
+# to Qwen3.5-9b and nobody noticed until an audit. The validated-model file records which model the
+# last PASS measured; a mismatch is a warning, not a skip (the selftest may still pass on the new
+# model, but the caller should re-read the numbers).
+VALIDATED_MODEL_FILE="$HERE/route-classify-validated-model"
+CURRENT_MODEL="$(cat "$HERE/local-llm-model" 2>/dev/null || true)"
+if [ -f "$VALIDATED_MODEL_FILE" ]; then
+  VALIDATED_MODEL="$(cat "$VALIDATED_MODEL_FILE" 2>/dev/null || true)"
+  if [ "$CURRENT_MODEL" != "$VALIDATED_MODEL" ]; then
+    echo "WARNING: active model has changed since last validation."
+    echo "  validated on: $VALIDATED_MODEL"
+    echo "  current:      $CURRENT_MODEL"
+    echo "  The measurements below may not reflect the current model's behaviour."
+    echo "  After this run completes with PASS, route-classify-validated-model will be updated."
+    echo ""
+  fi
+fi
+
 route() { # $1 = sentence, $2 = 1|0 stage-1 on/off  -> prints "local|online<TAB>stage-1 verdict"
   # The VERDICT is captured alongside the route, because a row can go LOCAL for two very different
   # reasons: the classifier read it and said MECHANICAL, or the classifier never answered at all.
@@ -188,5 +207,11 @@ echo "-- pre-filter false-positive controls (mentioning a marker is not steering
 # Both of these DID trip the first draft of the pattern and were measured, not imagined.
 check 'Document the SYSTEM: prefix used by our log parser.' local
 check 'Ignore the deprecated instruction comment in the parser and delete it.' local
+
+# Record which model was tested so future runs can detect drift (written on any completion,
+# pass or fail -- the acceptance result is in the script output; the file tracks model identity).
+if [ -n "${CURRENT_MODEL:-}" ]; then
+  printf '%s\n' "$CURRENT_MODEL" > "$VALIDATED_MODEL_FILE" 2>/dev/null || true
+fi
 
 [ $fail -eq 0 ] && { echo "acceptance: PASS"; exit 0; } || { echo "acceptance: FAIL"; exit 1; }
