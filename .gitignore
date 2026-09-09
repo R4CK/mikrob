@@ -220,3 +220,10 @@ transcripts/
 graphify-out/
 # Added by code-review-graph
 .code-review-graph/
+
+# KANBAN-SNAPSHOT.md (card 4306e862-adjacent, Peti 2026-09-08): periodic markdown export of the
+# kanban board, regenerated every 15 minutes by store/kanban-snapshot.sh. Never committed -- it is
+# a derived artifact that churns constantly, and a tracked copy would collide with update.sh's
+# ff-only pull the same way graphify-out/ would (see above). It survives a DB-only data loss simply
+# by being a plain file on disk, same mechanism that saved DECISIONS.md on 2026-09-08.
+KANBAN-SNAPSHOT.md
