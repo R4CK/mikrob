@@ -15,6 +15,7 @@
 # WAL open and is actively writing, unlike `cp` which can copy a torn/partial
 # state. Safe to run every hour against the live, in-use database.
 set -euo pipefail
+umask 077
 
 STORE=/home/neon/marveen/store
 DB="$STORE/claudeclaw.db"
@@ -34,6 +35,11 @@ fi
 
 sqlite3 "$DB" ".backup '${DEST}'"
 gzip -f "$DEST"
+# Belt and suspenders (Cybersec MEDIUM, card e804262d): umask only governs
+# file CREATION -- if gzip/mv ever changes, or a future caller writes the
+# temp file differently, umask alone stops protecting it. Force the mode on
+# the actual output file regardless of how it got there.
+chmod 600 "${DEST}.gz"
 
 # Keep only the newest MAX_BACKUPS files; delete the rest (count-based, not
 # age-based -- Peti wants a hard cap on how much disk this eats).
