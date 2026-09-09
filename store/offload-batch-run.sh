@@ -17,7 +17,7 @@ HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 DASH="${DASHBOARD_URL:-http://localhost:3420}"
 TOK="$(cat "$HERE/.dashboard-token" 2>/dev/null || true)"
 CAP="${OFFLOAD_BATCH_CAP:-20}"           # max cards dispatched per run
-SCAN_CAP="${OFFLOAD_BATCH_SCAN_CAP:-200}" # max candidates inspected (HTTP checks) per run
+SCAN_CAP="${OFFLOAD_BATCH_SCAN_CAP-200}" # max candidates inspected (HTTP checks) per run
 LOG="$HERE/offload-batch.log"
 
 ts() { date '+%Y-%m-%d %H:%M:%S'; }
@@ -92,7 +92,8 @@ if [[ "${1:-}" == "--status" ]]; then
   status="$(printf '%s' "$last_end" | sed -n 's/.*status=\([a-z-]*\).*/\1/p')"
   if [[ "$status" != "ok" ]]; then echo "LAST-RUN-FAILED status=$status age=${age_h}h"; exit 1; fi
   if (( age_h > MAX_AGE_H )); then echo "STALE last ok run ${age_h}h ago (max ${MAX_AGE_H}h)"; exit 1; fi
-  echo "FRESH last ok run ${age_h}h ago, ${last_end##*drafted=} card(s)"
+  scanned_n="$(printf '%s' "$last_end" | sed -n 's/.*scanned=\([0-9]*\).*/\1/p')"
+  echo "FRESH last ok run ${age_h}h ago, ${last_end##*drafted=} card(s) scanned=${scanned_n:-?}"
   exit 0
 fi
 
@@ -109,6 +110,13 @@ fi
 hdr_file=""   # declared before the trap so `set -u` cannot kill the handler
 trap 'rm -f "$hdr_file"; emit_end_line' EXIT
 if [[ -z "$TOK" ]]; then BATCH_END_STATUS="no-token"; log "no dashboard token; abort"; echo "ERROR no-token"; exit 0; fi
+
+# Validate SCAN_CAP. The same class as MAX_AGE_H in --status (see line 81): a non-numeric value
+# makes `(( scanned >= SCAN_CAP ))` treat it as 0, so the check fires on every iteration and the
+# cap is silently disabled for the entire run. Tested with the same character-class pattern.
+case "$SCAN_CAP" in
+  ''|*[!0-9]*) BATCH_END_STATUS="invalid-scan-cap"; log "invalid SCAN_CAP '$SCAN_CAP'; abort"; echo "ERROR:invalid-scan-cap:$SCAN_CAP"; exit 0 ;;
+esac
 
 # SECURITY (Cybersec/gate-ops-scripts-token-in-argv, card edb7559f): the token must never be a curl
 # argv (/proc/<pid>/cmdline is world-readable). Private 0600 header file instead, -H @"$hdr_file",
@@ -144,11 +152,13 @@ scanned=0
 for id in "${CARDS[@]}"; do
   (( attempted >= CAP )) && { log "cap $CAP reached; stopping"; break; }
   (( scanned >= SCAN_CAP )) && { log "scan-cap $SCAN_CAP reached; stopping"; break; }
-  scanned=$(( scanned + 1 ))
-  # skip if already drafted
+  # Already-drafted cards are skipped WITHOUT consuming the scan budget. A run whose first N
+  # candidates are all drafted must still reach beyond them: counting the draft-skip against
+  # SCAN_CAP would freeze the batch at the same N candidates on every subsequent night.
   has=$(curl -s -H @"$hdr_file" "$DASH/api/kanban/$id/comments" \
         | python3 -c "import json,sys; d=json.load(sys.stdin); print('Y' if any('LOCAL-LLM DRAFT' in (c.get('content') or '') for c in d) else 'N')" 2>/dev/null || echo Y)
   [[ "$has" == "Y" ]] && continue
+  scanned=$(( scanned + 1 ))
   log "offload -> card $id"
   # "attempted" counts every dispatch call (what CAP bounds, for runtime); "drafted" counts only
   # the ones that actually posted a draft (offload-dispatch.sh exits 0 either way, so the earlier

@@ -120,6 +120,29 @@ describe('offload batch health signal (card 5f00664c)', () => {
     }
   })
 
+  // SCAN_CAP validation (F1, QA re-gate). A non-numeric value makes `(( scanned >= SCAN_CAP ))`
+  // treat SCAN_CAP as 0, so the break fires on every iteration and the cap is silently disabled.
+  // The script must reject it the same way --status rejects --max-age-hours 12h.
+  it.each(['abc', '', '12h', '1_000', '2e2'])('exits 0 with invalid-scan-cap status for OFFLOAD_BATCH_SCAN_CAP=%j', (bad) => {
+    const dir = mkdtempSync(join(tmpdir(), 'offload-scancap-'))
+    try {
+      const log = join(dir, 'batch.log')
+      const copy = join(dir, 'batch.sh')
+      writeFileSync(copy, SRC.replace(/^LOG=.*$/m, `LOG="${log}"`))
+      writeFileSync(join(dir, '.dashboard-token'), 'fake-token')
+      const r = run(copy, [], {
+        OFFLOAD_BATCH_SCAN_CAP: bad,
+        DASHBOARD_URL: 'http://127.0.0.1:1',
+      })
+      // Best-effort, exit 0 always -- but the END line must name the failure.
+      expect(r.status).toBe(0)
+      const text = readFileSync(log, 'utf-8')
+      expect(text).toMatch(/status=invalid-scan-cap/)
+    } finally {
+      rmSync(dir, { recursive: true, force: true })
+    }
+  })
+
   // The END line has to survive abnormal exits, otherwise a crashed run is indistinguishable from a
   // run that never started -- and the whole point is telling those apart.
   //
