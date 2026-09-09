@@ -16,7 +16,8 @@ set -uo pipefail
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 DASH="${DASHBOARD_URL:-http://localhost:3420}"
 TOK="$(cat "$HERE/.dashboard-token" 2>/dev/null || true)"
-CAP="${OFFLOAD_BATCH_CAP:-20}"   # max cards drafted per night (keeps a runaway bounded)
+CAP="${OFFLOAD_BATCH_CAP:-20}"           # max cards dispatched per run
+SCAN_CAP="${OFFLOAD_BATCH_SCAN_CAP:-200}" # max candidates inspected (HTTP checks) per run
 LOG="$HERE/offload-batch.log"
 
 ts() { date '+%Y-%m-%d %H:%M:%S'; }
@@ -35,7 +36,7 @@ log() { echo "[$(ts)] $*" >>"$LOG"; }
 BATCH_END_STATUS="aborted"
 ATTEMPTED=0
 DRAFTED=0
-emit_end_line() { log "batch END status=${BATCH_END_STATUS} attempted=${ATTEMPTED} drafted=${DRAFTED}"; }
+emit_end_line() { log "batch END status=${BATCH_END_STATUS} scanned=${scanned:-0} attempted=${ATTEMPTED} drafted=${DRAFTED}"; }
 
 # Candidate selection/ordering/BLOKKOLT-filter logic (card 3e094b1e, alfeladat f8c72a5a), shared
 # verbatim between the real run (fed from curl) and --test-select (fed from stdin) so a test can
@@ -136,11 +137,14 @@ printf 'Authorization: Bearer %s\n' "$TOK" > "$hdr_file"
 # too, but filtering here avoids spinning the model up for nothing).
 mapfile -t CARDS < <(curl -s -H @"$hdr_file" "$DASH/api/kanban" | python3 -c "$SELECT_PY")
 
-log "batch start: ${#CARDS[@]} candidate cards, cap $CAP"
+log "batch start: ${#CARDS[@]} candidate cards, cap $CAP, scan-cap $SCAN_CAP"
 attempted=0
 drafted=0
+scanned=0
 for id in "${CARDS[@]}"; do
   (( attempted >= CAP )) && { log "cap $CAP reached; stopping"; break; }
+  (( scanned >= SCAN_CAP )) && { log "scan-cap $SCAN_CAP reached; stopping"; break; }
+  scanned=$(( scanned + 1 ))
   # skip if already drafted
   has=$(curl -s -H @"$hdr_file" "$DASH/api/kanban/$id/comments" \
         | python3 -c "import json,sys; d=json.load(sys.stdin); print('Y' if any('LOCAL-LLM DRAFT' in (c.get('content') or '') for c in d) else 'N')" 2>/dev/null || echo Y)
@@ -162,6 +166,6 @@ done
 ATTEMPTED="$attempted"
 DRAFTED="$drafted"
 BATCH_END_STATUS="ok"
-log "batch done: attempted=$attempted drafted=$drafted this run"
-echo "OK attempted=$attempted drafted=$drafted"
+log "batch done: scanned=$scanned attempted=$attempted drafted=$drafted this run"
+echo "OK scanned=$scanned attempted=$attempted drafted=$drafted"
 exit 0
