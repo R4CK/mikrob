@@ -23,9 +23,13 @@
 # the call below pins temperature 0 and a fixed seed, and store/route-classify-selftest.sh now
 # measures the stability itself instead of assuming it.
 #
-# MEASURED, deterministically, 2026-08-14 (qwen2.5-coder 7B q4_K_M on this host) -- the numbers from
-# the stochastic build were discarded, not re-used, since they came from a different process. The
-# current figures live in route-classify-selftest.sh, which prints them on every run.
+# MEASURED, deterministically, 2026-09-09 (Qwen3.5-9b-Sushi-Coder-RL-GGUF:Q4_K_M on this host,
+# replacing qwen2.5-coder 7B q4_K_M measured 2026-08-14). Determinism: mostly stable; one case
+# ("Refactor the invoice PDF renderer so the template is loaded...") was UNSTABLE (5x SECURITY,
+# 1x MECHANICAL across 6 runs). Acceptance: FAIL -- Cybersec's five security-must-ONLINE tasks
+# are NOT reliably caught by stage 1 with this model (several route LOCAL instead of ONLINE).
+# This is a regression vs the prior model; a separate card should address it if required.
+# The current figures live in route-classify-selftest.sh, which prints them on every run.
 #
 # Usage: route-classify.sh "<task description>"
 #   prints SECURITY | MECHANICAL | UNKNOWN   (exit 0 always -- the caller decides, see above)
