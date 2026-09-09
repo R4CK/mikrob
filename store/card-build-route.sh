@@ -323,6 +323,35 @@ if printf '%s' "$SHORT" | grep -Eq '\[SEC[^]]*\]'; then
   online deterministic-sec-label
 fi
 
+# TS ROUTER CATEGORY GATE (card bb11f4b1). src/local-llm-router.ts classifies text into five
+# structural categories (authz, isolation, architecture, multi-file-wiring, security-decision)
+# whose CATEGORY_CEILINGS are 'never' or 'module' -- they should never go local-first. Placed
+# AFTER the SEC label gate so [SEC]-tagged cards always hit the sec-label path first. The bash-regex
+# still runs after this block -- this strengthens the gate, it does not replace anything.
+# BEFORE/AFTER DIFF (measured on live selftest battery + tested card texts): classifyCategory()
+# returns NULL for all current card texts (tuned for code fragments, not board prose); 0 verdicts
+# change. The gate fires on 0 today and is ready to catch future cards whose text matches the four
+# structural categories (authz, isolation, architecture, multi-file-wiring).
+# Node/dist may be missing on some hosts; every failure falls through to the bash-regex as before
+# (fail-safe: doubt resolves ONLINE via downstream gates, never LOCAL).
+ROUTER_JS="${CARD_BUILD_ROUTE_ROUTER_JS:-$HERE/../dist/local-llm-router.js}"
+if [ -f "$ROUTER_JS" ] && command -v node >/dev/null 2>&1; then
+  TS_CATEGORY="$(ROUTE_TEXT="$SHORT" ROUTE_JS="$ROUTER_JS" timeout 5 node --input-type=module 2>/dev/null <<'EOF'
+const { classifyCategory } = await import('file://' + process.env.ROUTE_JS)
+const r = classifyCategory(process.env.ROUTE_TEXT || '')
+process.stdout.write(r ?? '')
+EOF
+  )" || TS_CATEGORY=""
+  # security-decision is excluded: the TS router pattern-matches Hungarian/English security words
+  # in card text as security-decision (false positives on e.g. "biztonsagos", "signature is given"),
+  # and the security case is already covered by route-classify.sh (section 3) + the SEC label gate.
+  # The four remaining categories (authz, isolation, architecture, multi-file-wiring) are structural
+  # code properties the bash-regex does not cover, so a match there is a genuine strengthening.
+  if [ -n "${TS_CATEGORY// }" ] && [ "$TS_CATEGORY" != "security-decision" ]; then
+    online deterministic-ts-category
+  fi
+fi
+
 # --- 3. REUSE THE HARDENED SECURITY CLASSIFIER --------------------------------------------------
 # Rule 10, and more to the point: writing a second, weaker security classifier next to one that
 # survived five NO-GO rounds would be the worst possible place to reinvent anything. Its SECURITY
