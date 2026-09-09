@@ -11926,3 +11926,18 @@ elég bizonyíték.
 
 **Hivatkozás:** kártya `4f15966e` (szülő `a7a61751`), checkpoint `b0e63a39`, plan-grilling
 verdikt komment `21142`/`21143`.
+
+## 2026-09-09 -- route-classify selftest mérési hiba azonosítva (ef95ec94)
+
+**Döntés:** A `route-classify-selftest.sh` `route()` függvényébe `LOCAL_LLM_ADVISORY=0` kerül.
+
+**Háttér:** Az ef95ec94 kártya "stage-1 regresszió" névvel nyílt: Qwen3.5-9b-en Cybersec 5 biztonsági mondata 5/5 FAIL-t mutatott. A valódi ok NEM modell-regresszió: a modell helyesen ad SECURITY-t (igazolva empirikusan, LOCAL_LLM_ADVISORY=0 teszttel). A hiba a selftest mérési módszerében volt:
+- `local-llm-rag.sh` advisory módban (alapértelmezett LOCAL_LLM_ADVISORY=1) az `online()` hívás után NEM lép ki, hanem folytatja a local draft utat.
+- Ez "ROUTE=local -> stage 1 verdict=SECURITY" sort ír stderrbe AZ "ROUTE=online -> ..." sor UTÁN.
+- A selftest `route()` függvénye `tail -1`-et használt: az utolsó ROUTE= sort vette, ami "local" -- ezért mérte "local"-nak a valójában "online"-ra irányított feladatot.
+
+**Fix:** `LOCAL_LLM_ADVISORY=0` a selftest `route()` hívásába -- az `online()` exittel zárul, a mérési artifaktum nem keletkezik. A routing döntés (local vs online) advisory módtól független; a selftest ezt teszteli, nem az advisory draft viselkedést.
+
+**Ellenőrzés:** Selftest futtatva (STABILITY_RUNS=3): determinizmus 3/3 stable x3, Cybersec 5: 5/5 ok (BEFORE=local, AFTER=online), negatív kontrollok: 3/3 ok, held-out: 4/4 ok, Cybersec OWN held-out: 5/5 ok. 1 dilution FAIL (transient GPU contention, `route-classify.sh` BUSY window, nem kapcsolódik a javításhoz).
+
+**Hivatkozás:** kártya `ef95ec94`, szülő `4df3e8e8`.

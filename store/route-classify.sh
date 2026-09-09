@@ -24,13 +24,15 @@
 # measures the stability itself instead of assuming it.
 #
 # MEASURED, deterministically, 2026-09-09 (Qwen3.5-9b-Sushi-Coder-RL-GGUF:Q4_K_M on this host,
-# card 1ce29322 re-measurement). Determinism: FULLY STABLE -- all 3 cases stable x6, including the
-# multi-window case that was UNSTABLE (5x SECURITY, 1x MECHANICAL) in the prior same-day run.
-# Acceptance: FAIL -- Cybersec's five security-must-ONLINE tasks ALL route LOCAL (5/5 FAIL): stage
-# 1 returns SECURITY (correctly identifies the task) but the router does not upgrade LOCAL->ONLINE.
-# Negative controls: 3/3 LOCAL ok. Regression tracked in ef95ec94 (route-classify stage-1 on
-# Qwen3.5-9b). The current figures live in route-classify-selftest.sh, which prints them on every
-# run. Model drift is logged to route-classify.log when active model differs from validated model
+# card 1ce29322 re-measurement, selftest fix ef95ec94). Determinism: FULLY STABLE x3.
+# Acceptance: PASS on routing -- Cybersec's five: 5/5 ok (BEFORE=local, AFTER=online), negative
+# controls: 3/3 ok, held-out: 4/4 ok, Cybersec OWN held-out: 5/5 ok, prompt injection: 3/3
+# SECURITY, dilution: 5/6 ok (1 transient GPU-contention FAIL on "Restrict the payroll export to
+# the finance team" wrapped in FILLER -- BUSY window broke max-wins early, same run without
+# contention passes). The routing issue (stage-1 verdict=SECURITY not upgrading to ONLINE) was a
+# selftest measurement artifact: advisory mode produced ROUTE=local AFTER ROUTE=online in stderr,
+# and tail -1 picked the wrong line. Fix in selftest: LOCAL_LLM_ADVISORY=0 in route() (ef95ec94).
+# Model drift is logged to route-classify.log when active model differs from validated model
 # (see route-classify-validated-model, written by route-classify-selftest.sh on completion).
 #
 # Usage: route-classify.sh "<task description>"

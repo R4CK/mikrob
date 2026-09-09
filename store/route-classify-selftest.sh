@@ -57,7 +57,7 @@ route() { # $1 = sentence, $2 = 1|0 stage-1 on/off  -> prints "local|online<TAB>
   # bare local/online column. One acceptance row failed exactly that way and passed 2/2 on retry, so
   # the script now prints WHY rather than leaving the next reader to re-diagnose it.
   local err out verdict
-  err="$(ROUTE_CLASSIFY="$2" timeout 200 bash "$HERE/local-llm-rag.sh" "$1" 2>&1 >/dev/null)"
+  err="$(ROUTE_CLASSIFY="$2" LOCAL_LLM_ADVISORY=0 timeout 200 bash "$HERE/local-llm-rag.sh" "$1" 2>&1 >/dev/null)"
   out="$(printf '%s' "$err" | grep -o 'ROUTE=[a-z]*' | tail -1)"
   verdict="$(printf '%s' "$err" | grep -o 'stage 1 verdict=[A-Z]*' | tail -1)"
   printf '%s\t%s\n' "${out#ROUTE=}" "${verdict#stage 1 verdict=}"
